@@ -83,6 +83,7 @@ pub const REFERENCE_GRID: &str = "Reference grid";
 pub const PAPER_COLOR: &str = "Paper color";
 pub const SNAP_TO_LAYOUT: &str = "Snap to layout";
 pub const LAYOUT_GRID: &str = "Layout grid";
+pub const SHOW_GRID: &str = "Show layout grid";
 pub const GRID_SPACING: &str = "Grid spacing";
 pub const GRID_COLOR: &str = "Grid color";
 pub const GRID_OPACITY: &str = "Grid opacity";
@@ -257,6 +258,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
 
     top_row(&ctx, state, &mut controls, &rects, page_card);
     tool_strip(&ctx, state, &mut controls, &rects);
+    frame_card(&ctx, state, &mut controls, &rects);
     if measuring {
         super::measure_card(&ctx, state, &mut controls, &rects);
         if state.pad.brush {
@@ -436,17 +438,60 @@ fn top_row(
                 state.redo();
             }
             divider(ui, card.left() + PAD + 2.0 * step + 4.5, card);
-            let snap = at(2.0 * step + 9.0 + PAD);
-            let on = state.atlas.snap;
-            if widgets::icon_button_at(ui, controls, snap, SNAP_TO_LAYOUT, Icon::Magnet, on, true)
+            let grid = at(2.0 * step + 9.0 + PAD);
+            let on = state.doc.project.atlas.grid.on;
+            if widgets::icon_button_at(ui, controls, grid, SHOW_GRID, Icon::LayoutGrid, on, true)
                 .clicked()
             {
-                state.atlas.snap = !on;
+                atlas::edit_grid(state, |g| g.on = !on);
             }
             let open = state.atlas.add;
             let add = at(3.0 * step + 9.0 + PAD);
             if widgets::icon_button_at(ui, controls, add, ADD, Icon::Plus, open, true).clicked() {
                 state.atlas.add = !open;
+            }
+        },
+    );
+}
+
+/// The card below the tool strip while the Select tool edits a map frame. It
+/// holds the switch that snaps the frame to the layout of the page. With no
+/// room below the strip, it goes to the right of the strip.
+fn frame_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
+    let editing = matches!(state.atlas.selection, AtlasSelection::Frame(_));
+    if !editing || state.atlas.tool != AtlasTool::Select {
+        return;
+    }
+    let size = vec2(rects.tools.width(), geometry::strip_height(1));
+    let below = pos2(rects.tools.left(), rects.tools.bottom() + GAP);
+    let min = if rects.tool_cells < TOOL_CELLS || below.y + size.y > rects.panel_bottom {
+        pos2(rects.tools.right() + GAP, rects.tools.top())
+    } else {
+        below
+    };
+    widgets::card(
+        ctx,
+        state.globe.backdrop(),
+        "pad-frame-card",
+        Rect::from_min_size(min, size),
+        Order::Middle,
+        theme::CARD_RADIUS.into(),
+        |ui| {
+            let mut ui = super::padded(ui);
+            let on = state.atlas.snap;
+            let label = super::SNAP;
+            if widgets::tool_cell(
+                &mut ui,
+                controls,
+                SNAP_TO_LAYOUT,
+                label,
+                Icon::Magnet,
+                on,
+                true,
+            )
+            .clicked()
+            {
+                state.atlas.snap = !on;
             }
         },
     );
@@ -1802,6 +1847,7 @@ fn page_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
     if let Some(c) = text_style::rgb_rows(ui, state, controls, PAPER_COLOR, which, paper) {
         atlas::set_paper(state, c);
     }
+    grid_rows(ui, state, controls, units);
 
     ui.add_space(6.0);
     let ready = state.atlas_export.is_none();
@@ -1832,7 +1878,4 @@ fn page_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
     if delete.clicked() {
         atlas::delete_page(state);
     }
-
-    ui.add_space(6.0);
-    grid_rows(ui, state, controls, units);
 }

@@ -28,7 +28,9 @@ use vale_app::ui::pad::atlas::{
     readout_text,
 };
 use vale_app::ui::pad::atlas::{BORDER_GAP, DISTANCE_BY_SIDE, GRID_COLUMN_NAMES, SIDE_DISTANCES};
-use vale_app::ui::pad::atlas::{GRID_OPACITY, GRID_SPACING, LAYOUT_GRID, SNAP_TO_LAYOUT};
+use vale_app::ui::pad::atlas::{
+    GRID_OPACITY, GRID_SPACING, LAYOUT_GRID, SHOW_GRID, SNAP_TO_LAYOUT,
+};
 use vale_app::ui::pad::edge_labels::{
     EDGE_LABELS, HALO as EDGE_HALO, HALO_WIDTH as EDGE_HALO_WIDTH, OFFSET as EDGE_OFFSET,
     ORIENTATIONS, PLACES, SETS, SHOW_LABELS, SIDES, SIZE as EDGE_SIZE, STYLE as EDGE_STYLE,
@@ -506,6 +508,7 @@ fn a_tap_opens_the_panel_of_a_frame_or_of_the_page() {
     tap_with(&mut h, at, Input::Finger);
     assert_eq!(h.state().atlas.selection, AtlasSelection::Page);
     assert!(h.state().atlas.panel_rect.is_some());
+    scroll_to(&mut h, ADD_PAGE);
     assert!(control(&h, ADD_PAGE).is_some());
     assert!(control(&h, SCALE).is_none());
 }
@@ -1173,6 +1176,7 @@ fn pages_and_frames_survive_a_close_and_an_open() {
     tap(&mut h, ADD_HOLE);
     let at = screen(&h, Point::new(4.0, 50.0));
     tap_with(&mut h, at, Input::Finger);
+    scroll_to(&mut h, ADD_PAGE);
     tap(&mut h, ADD_PAGE);
     let mut project = h.state().doc.project.clone();
     session.flush(&mut project, &mut []).unwrap();
@@ -4809,6 +4813,9 @@ fn a_vertex_snaps_to_a_vertex_of_another_frame_and_to_the_page_center() {
     drag_steps(&mut h, from, to, Input::Finger, 6);
     assert!(!h.state().atlas.guides.is_empty());
     screenshot::save(&mut h, "pad-atlas-snap-vertex");
+    let mut phone = pad_with(state(), (393.0, 852.0));
+    add_frame(&mut phone);
+    screenshot::save(&mut phone, "phone-atlas-frame-card");
     release(&mut h, to, Input::Finger);
     assert_eq!(ring(&h, 1)[0], [main.x1, main.y0]);
 
@@ -4925,6 +4932,15 @@ fn the_snap_switch_turns_snapping_off_with_a_finger() {
     assert!(after.x1 < main.x1 - 1.0, "{after:?}");
     tap(&mut h, SNAP_TO_LAYOUT);
     assert!(h.state().atlas.snap);
+
+    // The switch shows only while the Select tool edits a frame.
+    tap(&mut h, "Move");
+    assert!(control(&h, SNAP_TO_LAYOUT).is_none());
+    tap(&mut h, "Select");
+    assert!(control(&h, SNAP_TO_LAYOUT).is_some());
+    h.state_mut().atlas.selection = AtlasSelection::Page;
+    h.run_steps(2);
+    assert!(control(&h, SNAP_TO_LAYOUT).is_none());
 }
 
 #[test]
@@ -4968,4 +4984,30 @@ fn frames_snap_to_the_layout_grid_of_the_page_panel() {
     let moved = shape_bbox(&frame(&h, 1).shape);
     let want = line - 20.0 / ppm;
     assert!((moved.x0 - want).abs() < 0.1, "{want}: {moved:?}");
+}
+
+#[test]
+fn the_grid_button_of_the_top_row_shows_the_layout_grid() {
+    for size in BOARDS.into_iter().chain([(393.0, 852.0)]) {
+        let mut h = pad_with(state(), size);
+        check_controls(&h, "top row");
+        // The buttons of the top row do not overlap.
+        let controls = h.state().pad.controls.clone();
+        let top: Vec<_> = controls.iter().filter(|c| c.rect.top() < 90.0).collect();
+        for (i, a) in top.iter().enumerate() {
+            for b in &top[i + 1..] {
+                let overlap = a.rect.intersect(b.rect);
+                assert!(
+                    overlap.width() <= 0.0 || overlap.height() <= 0.0,
+                    "{size:?}: {} and {}",
+                    a.name,
+                    b.name
+                );
+            }
+        }
+        tap(&mut h, SHOW_GRID);
+        assert!(h.state().doc.project.atlas.grid.on, "{size:?}");
+        tap(&mut h, SHOW_GRID);
+        assert!(!h.state().doc.project.atlas.grid.on, "{size:?}");
+    }
 }

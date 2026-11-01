@@ -44,6 +44,8 @@ pub enum Icon {
     Grid,
     Delete,
     Magnet,
+    /// The layout grid of the pages.
+    LayoutGrid,
     Select,
     Measure,
     /// The handle of a row that a drag moves.
@@ -98,6 +100,7 @@ impl Icon {
                  M12 3c2.5 2.5 3.5 5.5 3.5 9s-1 6.5-3.5 9c-2.5-2.5-3.5-5.5-3.5-9s1-6.5 3.5-9zM3 12h18"
             }
             Icon::Grid => "M12 3v18M3 12h18",
+            Icon::LayoutGrid => "M4 4h16v16h-16zM4 9.33h16M4 14.67h16M9.33 4v16M14.67 4v16",
             Icon::Grip => "M5 8h14M5 12h14M5 16h14",
             Icon::Select => "M5 3l14 8-6 2-2 6z",
             Icon::Measure => "M3 17L17 3l4 4L7 21zM7 13l2 2M10 10l3 3M13 7l2 2",
@@ -383,6 +386,7 @@ mod tests {
             Icon::Reset,
             Icon::World,
             Icon::Grid,
+            Icon::LayoutGrid,
             Icon::Delete,
             Icon::Select,
             Icon::Measure,

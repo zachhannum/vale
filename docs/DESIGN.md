@@ -618,9 +618,9 @@ When you move or resize a frame, or drag a vertex, the frame snaps to the page e
 
 An edge of a polygon frame locks to horizontal, to vertical, or to 45 degrees, with Shift on the desktop and with a second finger held on the canvas on iPad. The lock uses the edge to the vertex before or after, whichever is nearer to the angle of the pen. The locked vertex then slides along the edge to the nearest crossing with a snap target or with a locked line of the other edge. A second finger that holds a lock does not pinch the page.
 
-The button "Snap to layout" turns snapping on and off. On iPad, it is in the top row next to the Add button. On the desktop, it is in the tool bar. The project does not save the switch.
+The switch "Snap to layout" turns snapping on and off. It shows only while the Select tool has a map frame selected. On iPad, it is the Snap cell in a card below the tool strip. On the desktop, it is in the tool bar. The project does not save the switch.
 
-The layout grid is a grid of lines on all pages of the atlas, at a set spacing from the top-left corner of the page. The panel of the page holds the switch "Layout grid", the spacing, the color, and the opacity. While the grid shows, its lines are snap targets too. A line of the page or of a frame wins over a grid line at the same distance. The grid shows only on the screen, and an export leaves it out. The project saves the grid, and a change of the grid is one undo step.
+The layout grid is a grid of lines on all pages of the atlas, at a set spacing from the top-left corner of the page. The grid button in the top row, next to the Add button, shows and hides the grid. On the desktop, the button "Layout grid" in the tool bar does the same. The panel of the page holds the switch "Layout grid", the spacing, the color, and the opacity. While the grid shows, its lines are snap targets too. A line of the page or of a frame wins over a grid line at the same distance. The grid shows only on the screen, and an export leaves it out. The project saves the grid, and a change of the grid is one undo step.
 
 A new frame on an empty page fills the page inside a margin of 10 mm. The panel of the page does not delete the last page.
 

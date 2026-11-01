@@ -155,7 +155,7 @@ pub struct Rects {
 }
 
 /// The height of a card that holds `cells` tool cells.
-fn strip_height(cells: usize) -> f32 {
+pub fn strip_height(cells: usize) -> f32 {
     cells as f32 * CELL.1 + 2.0 * PAD
 }
 
