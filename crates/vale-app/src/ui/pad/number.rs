@@ -218,9 +218,15 @@ impl<'a> Number<'a> {
         }
         let (lo, hi) = self.range;
         let value = if self.step > 0.0 {
-            // The decimals of the step, so that 0.1 steps give no float noise.
-            let scale = 10f64.powi(decimals(self.step) as i32);
-            ((value / self.step).round() * self.step * scale).round() / scale
+            let value = (value / self.step).round() * self.step;
+            // A step with exact decimals, such as 0.1, gives no float noise.
+            match exact_decimals(self.step) {
+                Some(d) => {
+                    let scale = 10f64.powi(d as i32);
+                    (value * scale).round() / scale
+                }
+                None => value,
+            }
         } else {
             value
         };
@@ -231,7 +237,7 @@ impl<'a> Number<'a> {
     fn decimals(&self, shown: f64) -> usize {
         let step = self.step * self.factor;
         if step > 0.0 {
-            decimals(step)
+            exact_decimals(step).unwrap_or(4)
         } else {
             // Three significant digits.
             let digits = shown.abs().max(1e-9).log10().floor() as i32;
@@ -608,6 +614,7 @@ impl<'a> Number<'a> {
                     text: self.number(value),
                     fresh: true,
                     changed: false,
+                    placed: true,
                 }),
             };
             widgets::set_key_edit(&ctx, edit.clone());
@@ -739,14 +746,12 @@ impl<'a> Number<'a> {
     }
 }
 
-/// The decimals of a step, up to 4.
-fn decimals(step: f64) -> usize {
-    (0..4)
-        .find(|d| {
-            let scaled = step * 10f64.powi(*d as i32);
-            (scaled - scaled.round()).abs() < 1e-6
-        })
-        .unwrap_or(4)
+/// The decimals of a step, if it has 3 or fewer.
+fn exact_decimals(step: f64) -> Option<usize> {
+    (0..4).find(|d| {
+        let scaled = step * 10f64.powi(*d as i32);
+        (scaled - scaled.round()).abs() < 1e-6
+    })
 }
 
 /// How the buttons of a stepper move the value.

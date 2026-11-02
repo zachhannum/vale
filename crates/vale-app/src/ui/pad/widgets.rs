@@ -1363,6 +1363,8 @@ pub(super) struct KeyEdit {
     pub(super) fresh: bool,
     /// A key changed the text since the field read it.
     pub(super) changed: bool,
+    /// The field shows the keypad in its own place.
+    pub(super) placed: bool,
 }
 
 fn keypad_id() -> egui::Id {
@@ -1445,6 +1447,7 @@ pub fn key_field(
                 text: shown.to_owned(),
                 fresh: true,
                 changed: false,
+                placed: false,
             }),
         };
         set_key_edit(&ctx, edit.clone());
@@ -2037,10 +2040,10 @@ pub fn color_picker(
     let width = ui.available_width();
     let fill = |h: f32, s: f32, v: f32| Color32::from(Hsva::new(h, s, v, 1.0));
 
-    // The keypad of a field of the picker takes the place of the square and
-    // the strip.
-    let own = keypad_field(ui.ctx()).is_some_and(|field| field.starts_with(name));
-    if !(own && keypad(ui, controls, PICKER_SQUARE + 8.0 + TOUCH)) {
+    // The keypad of a field takes the place of the square and the strip,
+    // unless the field shows its keypad itself.
+    let shown = key_edit(ui.ctx()).is_some_and(|edit| !edit.placed);
+    if !(shown && keypad(ui, controls, PICKER_SQUARE + 8.0 + TOUCH)) {
         let (square, _) = ui.allocate_exact_size(vec2(width, PICKER_SQUARE), Sense::hover());
         let shade = format!("{name} shade");
         let resp = hit(
