@@ -309,6 +309,7 @@ impl ProtoApp {
             mode: brush.mode,
             level,
             strength: brush.strength_m * STAMP_SPACING / span,
+            lower: brush.strength_m * STAMP_SPACING / span,
             talus: 0.0,
             scale: 0.0,
             seed: 0,

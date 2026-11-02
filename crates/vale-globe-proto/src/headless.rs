@@ -114,6 +114,7 @@ pub fn bench(face_size: usize) -> String {
                 mode: Mode::Raise,
                 level: 0,
                 strength: 20.0,
+                lower: 20.0,
                 talus: 0.0,
                 scale: 0.0,
                 seed: 0,

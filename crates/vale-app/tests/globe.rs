@@ -2104,12 +2104,18 @@ fn the_brush_panel_has_the_noise_mode_and_its_settings() {
     h.state_mut().globe.tool = Tool::Brush;
     h.run_steps(2);
     assert!(h.query_all_by_label("Ridged").next().is_none());
+    let count = |h: &Harness<'static, AppState>, label| h.query_all_by_label(label).count();
+    let before = [count(&h, "Raise"), count(&h, "Lower")];
     h.get_by_label("Noise").click();
     h.run_steps(2);
     assert_eq!(h.state().globe.brush.mode, Mode::Noise);
-    for label in ["Strength", "Scale", "Relief", "Seed"] {
+    for label in ["Scale", "Relief", "Seed"] {
         assert!(h.query_all_by_label(label).next().is_some(), "{label}");
     }
+    // The Raise and Lower sliders take the place of the Strength slider.
+    assert!(h.query_all_by_label("Strength").next().is_none());
+    let after = [count(&h, "Raise"), count(&h, "Lower")];
+    assert!(after[0] > before[0] && after[1] > before[1]);
     assert!(!h.state().globe.brush.noise_ridged);
     // The Invert switch shows with the ridged noise only.
     assert!(h.query_all_by_label("Invert").next().is_none());

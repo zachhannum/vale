@@ -23,6 +23,8 @@ pub const PRESSURE_GAIN: f64 = 2.0;
 pub const FLOW: std::ops::RangeInclusive<f64> = 0.01..=1.0;
 /// The limits of the strength setting, in meters.
 pub const STRENGTH_M: std::ops::RangeInclusive<f64> = 50.0..=6000.0;
+/// The limits of the rise and the drop of the noise mode, in meters.
+pub const NOISE_M: std::ops::RangeInclusive<f64> = 0.0..=6000.0;
 /// The limits of the angle of the weather mode, in degrees. Painted land on
 /// a world of the size of the Earth has slopes of 3 degrees or less.
 pub const TALUS_DEG: std::ops::RangeInclusive<f64> = 0.02..=20.0;
@@ -80,6 +82,11 @@ pub struct BrushSettings {
     pub flow: f64,
     /// The height that one pass adds at full pressure, in meters, roughly.
     pub strength_m: f64,
+    /// The largest rise of one pass of the noise mode at full pressure, in
+    /// meters, roughly.
+    pub noise_raise_m: f64,
+    /// The largest drop of one pass of the noise mode, as `noise_raise_m`.
+    pub noise_lower_m: f64,
     /// The target of the flatten mode. `None`: the level under the start of
     /// the stroke.
     pub flatten_level: Option<u16>,
@@ -147,6 +154,8 @@ impl Default for BrushSettings {
             hardness: 0.3,
             flow: 1.0,
             strength_m: 1500.0,
+            noise_raise_m: 1500.0,
+            noise_lower_m: 1500.0,
             flatten_level: None,
             talus_deg: 0.5,
             erosion: 0.5,
@@ -221,8 +230,14 @@ impl BrushSettings {
     /// layer gets the same part of its range, and for a height the value is
     /// `strength_m`.
     pub fn strength_value(&self) -> f64 {
+        self.meters_value(self.strength_m)
+    }
+
+    /// A height in meters as a value of the layer that the brush paints, as
+    /// `strength_value` gives the strength.
+    pub fn meters_value(&self, meters: f64) -> f64 {
         let (min, max) = self.value_range;
-        self.strength_m * (max - min) / (ELEV_MAX - ELEV_MIN)
+        meters * (max - min) / (ELEV_MAX - ELEV_MIN)
     }
 
     /// The settings of an ocean ridge stroke with this brush radius, in
@@ -453,11 +468,16 @@ impl Tip<'_> {
             },
             mode: self.brush.mode,
             level: self.level,
-            strength: self.brush.strength_m * STAMP_SPACING / span
+            strength: STAMP_SPACING / span
                 * match self.brush.mode {
-                    Mode::Uplift => 1.0 + UPLIFT_GAIN * self.brush.erosion.clamp(0.0, 1.0),
-                    _ => 1.0,
+                    Mode::Uplift => {
+                        self.brush.strength_m
+                            * (1.0 + UPLIFT_GAIN * self.brush.erosion.clamp(0.0, 1.0))
+                    }
+                    Mode::Noise => self.brush.noise_raise_m,
+                    _ => self.brush.strength_m,
                 },
+            lower: self.brush.noise_lower_m * STAMP_SPACING / span,
             // `set_world` sets the slope, the warp strength, the scale, the
             // seed, and the channel, which follow the world.
             talus: 0.0,
@@ -1056,6 +1076,9 @@ mod tests {
             noise_ridged: true,
             noise_inverted: true,
             noise_relief: 0.75,
+            strength_m: 3000.0,
+            noise_raise_m: 1500.0,
+            noise_lower_m: 375.0,
             ..BrushSettings::default()
         };
         let raise = BrushSettings {
@@ -1075,9 +1098,12 @@ mod tests {
         assert_eq!(stamp.relief, 0.75);
         assert!((stamp.scale - 0.25).abs() < 1e-12);
         assert_eq!(stamp.seed, 9);
-        // The strength and the flow are those of the raise mode.
+        // The flow is that of the raise mode, and the rise and the drop have
+        // their own settings.
         let raised = first(&raise);
-        assert_eq!((stamp.strength, stamp.flow), (raised.strength, raised.flow));
+        assert_eq!(stamp.flow, raised.flow);
+        assert!((stamp.strength - raised.strength / 2.0).abs() < 1e-9);
+        assert!((stamp.lower - stamp.strength / 4.0).abs() < 1e-9);
     }
 
     #[test]
@@ -1109,6 +1135,7 @@ mod tests {
             mode,
             level: 0,
             strength: 1.0,
+            lower: 1.0,
             talus: 0.0,
             scale: 0.0,
             seed: 0,

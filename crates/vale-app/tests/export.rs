@@ -26,6 +26,7 @@ fn paint(map: &mut Heightmap, lon: f64, lat: f64, radius: f64) {
         mode: Mode::Raise,
         level: 0,
         strength: 9000.0,
+        lower: 0.0,
         talus: 0.0,
         scale: 0.0,
         seed: 0,
