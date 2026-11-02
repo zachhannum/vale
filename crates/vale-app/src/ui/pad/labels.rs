@@ -428,30 +428,6 @@ fn expression_field(
     (field.changed() && ok(typed)).then(|| typed.clone())
 }
 
-/// A slider row of a class for a value from `lo` to `hi`. Returns the new
-/// value when the user moves it.
-pub(super) fn value_slider(
-    ui: &mut egui::Ui,
-    controls: &mut Controls,
-    (name, label): (&str, &str),
-    value: f64,
-    (lo, hi): (f64, f64),
-    text: &str,
-) -> Option<f64> {
-    let mut fraction = ((value - lo) / (hi - lo)).clamp(0.0, 1.0);
-    let moved = widgets::row_slider(ui, controls, name, label, &mut fraction, text);
-    moved.then_some(lo + fraction * (hi - lo))
-}
-
-/// A distance in points for a slider row, for example "2.5 pt".
-pub(super) fn points(value: f64) -> String {
-    if value >= 100.0 {
-        format!("{value:.0} pt")
-    } else {
-        format!("{value:.1} pt")
-    }
-}
-
 /// A color row of a class and its color picker while it is open. The picker
 /// keeps the alpha of the color. Returns the new color.
 pub(super) fn color_rows(

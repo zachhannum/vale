@@ -3,7 +3,7 @@
 use eframe::egui::{self, Order, Rect, pos2, vec2};
 use vale_store::{Units, World};
 
-use super::pad::geometry::{GAP, MARGIN, ROW, Rects, TOUCH};
+use super::pad::geometry::{GAP, MARGIN, ROW, Rects};
 use super::pad::number::Number;
 use super::pad::theme;
 use super::pad::widgets::{self, BODY_PAD, Controls, PANEL_ROW};
@@ -320,7 +320,7 @@ pub fn pad(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
     let new = form.mode == FormMode::New;
     let note = form.radius_note();
     // The rows are in three groups: the name, the radius, and the units.
-    let slider = TOUCH + widgets::TICK_NAMES;
+    let slider = PANEL_ROW + widgets::TICK_NAMES;
     let mut height = ROW + 3.0 * PANEL_ROW + slider + 2.0 * GROUP_GAP + BOTTOM;
     if note.is_some() {
         height += NOTE;

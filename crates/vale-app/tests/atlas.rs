@@ -3858,18 +3858,6 @@ fn the_positions_page_ranks_and_blocks_the_point_positions() {
     }
 }
 
-/// A tap at the left end or at the right end of a slider row.
-fn slider_end(h: &mut Pad, name: &str, right: bool) {
-    scroll_to(h, name);
-    let rect = control(h, name).unwrap_or_else(|| panic!("no control `{name}`"));
-    let at = if right {
-        rect.right_center() - vec2(30.0, 0.0)
-    } else {
-        rect.left_center() + vec2(4.0, 0.0)
-    };
-    tap_with(h, at, Input::Finger);
-}
-
 /// The name of the value field of the number `name`.
 fn value_of(name: &str) -> String {
     format!("{name} value")
