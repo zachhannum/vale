@@ -966,6 +966,12 @@ fn frame_tab(
     }
 }
 
+/// True if the keypad of a field other than those of the color `name` is
+/// open.
+fn other_keypad(ctx: &egui::Context, name: &str) -> bool {
+    widgets::keypad_field(ctx).is_some_and(|field| !field.starts_with(name))
+}
+
 /// The rows of the graticule of a frame: the interval, the color, the
 /// width, and the edge labels. The interval stepper shows the interval that the frame draws, and
 /// a tap on it sets the interval by hand. A tap on the color opens a color
@@ -1002,6 +1008,11 @@ fn graticule_rows(
         atlas::set_graticule_interval(state, id, Some(chosen));
     }
 
+    // The picker shows the open keypad in place of its square, so the
+    // keypad of another field closes it.
+    if other_keypad(ui.ctx(), GRATICULE_COLOR) {
+        state.atlas.graticule_color = false;
+    }
     let open = state.atlas.graticule_color;
     let row = widgets::color_row(ui, controls, GRATICULE_COLOR, g.color, open);
     if row.clicked() {
@@ -1045,6 +1056,11 @@ fn neatline_rows(
 ) {
     let id = frame.id;
     let b = &frame.neatline;
+    // The picker shows the open keypad in place of its square, so the
+    // keypad of another field closes it.
+    if other_keypad(ui.ctx(), NEATLINE_COLOR) {
+        state.atlas.neatline_color = false;
+    }
     let open = state.atlas.neatline_color;
     let row = widgets::color_row(ui, controls, NEATLINE_COLOR, b.color, open);
     if row.clicked() {
