@@ -20,8 +20,10 @@ const HANDLE_INSET: f32 = 4.0;
 /// The space from each end of a track to the place of the handle at that
 /// end.
 pub const TRACK_INSET: f32 = HANDLE_INSET + HANDLE / 2.0;
-/// The space between the panel and the card of the keypad.
+/// The space between a panel and the card of the keypad or the bubble.
 const GAP: f32 = 12.0;
+/// The smallest width of the bubble.
+const BUBBLE_WIDTH: f32 = 112.0;
 /// The smallest width of the label of a slider row, so that the tracks of
 /// the rows line up.
 pub const LABEL_COLUMN: f32 = 96.0;
@@ -381,8 +383,8 @@ impl<'a> Number<'a> {
             out = typed.or(out);
             self.keypad_beside(ui, controls, row);
         }
-        if let (Some(pos), Some(drag)) = (resp.interact_pointer_pos(), dragging(ui, &resp)) {
-            self.bubble(ui, value, drag.note, pos - vec2(0.0, 44.0), false);
+        if let Some(drag) = dragging(ui, &resp) {
+            self.bubble(ui, value, drag.note, row);
         }
         out.filter(|v| *v != self.value)
     }
@@ -428,9 +430,8 @@ impl<'a> Number<'a> {
         let typed = self.field(ui, controls, field, back, value, Look::Plain);
         out = typed.or(out);
         self.keypad_beside(ui, controls, rect);
-        if let (Some(pos), Some(drag)) = (resp.interact_pointer_pos(), dragging(ui, &resp)) {
-            let at = pos2(pos.x.max(rect.right()) + 40.0, pos.y);
-            self.bubble(ui, value, drag.note, at, true);
+        if let Some(drag) = dragging(ui, &resp) {
+            self.bubble(ui, value, drag.note, rect);
         }
         out.filter(|v| *v != self.value)
     }
@@ -734,32 +735,27 @@ impl<'a> Number<'a> {
         out
     }
 
-    /// The keypad of the field, while it is open, in a card at the side of
-    /// the panel or the card that holds `anchor`. The card is at the right
-    /// if it fits there, and else at the left. With no room at either side,
-    /// it floats over the panel below `anchor`.
+    /// The keypad of the field, while it is open, in a card next to the
+    /// panel or the card that holds `anchor`, at the height of `anchor`.
     fn keypad_beside(&self, ui: &egui::Ui, controls: &mut Controls, anchor: Rect) {
         let open = widgets::keypad_field(ui.ctx()).as_deref() == Some(&self.field_name());
         if !self.keypad || !open {
             return;
         }
         let ctx = ui.ctx();
-        let screen = ctx.content_rect().shrink(8.0);
         let size = vec2(4.0 * TOUCH * 1.25, KEYPAD) + vec2(2.0 * PAD, 2.0 * PAD);
-        let panel = ui.clip_rect();
-        let top = anchor.top() - PAD;
-        let card = if panel.right() + GAP + size.x <= screen.right() {
-            Rect::from_min_size(pos2(panel.right() + GAP, top), size)
-        } else if panel.left() - GAP - size.x >= screen.left() {
-            Rect::from_min_size(pos2(panel.left() - GAP - size.x, top), size)
-        } else {
-            Rect::from_min_size(pos2(anchor.right() - size.x, anchor.bottom() + 4.0), size)
-        };
-        let card = keep_in(card, screen);
         let id = format!("{} keypad", self.name);
-        let radius = theme::CARD_RADIUS.into();
         let own = egui::LayerId::new(Order::Foreground, egui::Id::new(&id));
-        let backdrop = blur_over(ctx, card, Some(own));
+        let (card, clear) = place(
+            ctx,
+            anchor,
+            ui.clip_rect(),
+            size,
+            anchor.top() - PAD,
+            Some(own),
+        );
+        let backdrop = clear.then(|| widgets::backdrop(ctx)).flatten();
+        let radius = theme::CARD_RADIUS.into();
         widgets::card(ctx, backdrop, &id, card, Order::Foreground, radius, |ui| {
             let inner = ui.max_rect().shrink(PAD);
             let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner));
@@ -768,9 +764,9 @@ impl<'a> Number<'a> {
     }
 
     /// The bubble with the value during a drag, with the name of the speed
-    /// below it, and the circle of the preview. `at` is the bottom center of
-    /// the bubble, or with `beside`, its left center.
-    fn bubble(&self, ui: &egui::Ui, value: f64, note: Option<&str>, at: Pos2, beside: bool) {
+    /// below it, and the circle of the preview. The bubble is next to the
+    /// panel or the card that holds `anchor`, at the height of `anchor`.
+    fn bubble(&self, ui: &egui::Ui, value: f64, note: Option<&str>, anchor: Rect) {
         let ctx = ui.ctx();
         let id = egui::Id::new(("pad slider bubble", self.name));
         let painter = ctx.layer_painter(egui::LayerId::new(Order::Tooltip, id));
@@ -784,19 +780,16 @@ impl<'a> Number<'a> {
         let text = painter.layout_no_wrap(self.value_text(value), theme::title(), theme::TEXT);
         let note = note.map(|n| painter.layout_no_wrap(n.to_owned(), theme::small(), theme::MUTE));
         let note_size = note.as_ref().map_or(vec2(0.0, -2.0), |n| n.size());
+        // A width that does not follow each digit, so the bubble stays put.
         let size = vec2(
-            text.size().x.max(note_size.x) + 28.0,
+            (text.size().x.max(note_size.x) + 28.0).max(BUBBLE_WIDTH),
             text.size().y + note_size.y + 2.0 + 16.0,
         );
-        let min = if beside {
-            at - vec2(0.0, size.y / 2.0)
-        } else {
-            at - vec2(size.x / 2.0, size.y)
-        };
-        let rect = keep_in(Rect::from_min_size(min, size), screen);
+        let top = anchor.center().y - size.y / 2.0;
+        let (rect, clear) = place(ctx, anchor, ui.clip_rect(), size, top, None);
         let radius = theme::CONTROL_RADIUS;
         painter.add(theme::shadow().as_shape(rect, radius));
-        let backdrop = blur_over(ctx, rect, None);
+        let backdrop = clear.then(|| widgets::backdrop(ctx)).flatten();
         if let Some(format) = backdrop {
             let corner = egui::CornerRadius::from(radius);
             painter.add(card_shape(format, rect, corner, ctx.pixels_per_point()));
@@ -884,26 +877,76 @@ fn dragging(ui: &egui::Ui, resp: &egui::Response) -> Option<Drag> {
     (resp.dragged() && !drag.scroll).then_some(drag)
 }
 
-/// The blur for a card at `rect`, or `None` if a panel or another card is
-/// below a part of it. The blur shows the globe only, so over a panel the
-/// card has the solid fill. `own` is the layer of the card itself.
-fn blur_over(
+/// The place of a card of `size` next to `panel`, the panel or the card
+/// that holds `anchor`, with its top at `top`, over the globe. The place is
+/// at the right of the panel, past any other panel there, then at the
+/// left, then above the panel. True with a place over the globe only. With
+/// no such place, the card is below `anchor`, over the panel. `own` is the
+/// layer of the card itself.
+fn place(
     ctx: &egui::Context,
-    rect: Rect,
+    anchor: Rect,
+    panel: Rect,
+    size: egui::Vec2,
+    top: f32,
     own: Option<egui::LayerId>,
-) -> Option<eframe::egui_wgpu::wgpu::TextureFormat> {
+) -> (Rect, bool) {
+    let screen = ctx.content_rect().shrink(8.0);
+    let fits = |rect: Rect| screen.contains_rect(rect);
+    let top = top.clamp(screen.top(), (screen.bottom() - size.y).max(screen.top()));
+    // At the right, past each panel in the way.
+    let mut x = panel.right() + GAP;
+    for _ in 0..4 {
+        let rect = Rect::from_min_size(pos2(x, top), size);
+        if !fits(rect) {
+            break;
+        }
+        match panel_under(ctx, rect, own) {
+            None => return (rect, true),
+            Some(other) => x = other.right() + GAP,
+        }
+    }
+    // At the left, past each panel in the way.
+    let mut right = panel.left() - GAP;
+    for _ in 0..4 {
+        let rect = Rect::from_min_size(pos2(right - size.x, top), size);
+        if !fits(rect) {
+            break;
+        }
+        match panel_under(ctx, rect, own) {
+            None => return (rect, true),
+            Some(other) => right = other.left() - GAP,
+        }
+    }
+    // Above the panel, as for a sheet at the bottom of the screen.
+    let x = (anchor.center().x - size.x / 2.0).clamp(screen.left(), screen.right() - size.x);
+    let rect = Rect::from_min_size(pos2(x, panel.top() - GAP - size.y), size);
+    if fits(rect) && panel_under(ctx, rect, own).is_none() {
+        return (rect, true);
+    }
+    let below = Rect::from_min_size(pos2(anchor.right() - size.x, anchor.bottom() + 4.0), size);
+    (keep_in(below, screen), false)
+}
+
+/// The rectangle of a panel or a card below a part of `rect`, if there is
+/// one. `own` is the layer of the card at `rect`.
+fn panel_under(ctx: &egui::Context, rect: Rect, own: Option<egui::LayerId>) -> Option<Rect> {
     let points = [
         rect.left_top(),
         rect.right_top(),
         rect.left_bottom(),
         rect.right_bottom(),
         rect.center(),
+        rect.left_center(),
+        rect.right_center(),
     ];
-    let panel = points.iter().any(|p| {
-        let layer = ctx.layer_id_at(*p);
-        layer.is_some_and(|l| l.order != Order::Background && Some(l) != own)
-    });
-    if panel { None } else { widgets::backdrop(ctx) }
+    points.iter().find_map(|p| {
+        let layer = ctx.layer_id_at(*p)?;
+        if layer.order == Order::Background || Some(layer) == own {
+            return None;
+        }
+        ctx.memory(|m| m.area_rect(layer.id))
+    })
 }
 
 /// A rectangle moved into `bounds`.

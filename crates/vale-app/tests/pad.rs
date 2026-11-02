@@ -9142,4 +9142,16 @@ fn manual_the_number_controls_of_the_brush_panel() {
     h.run_steps(3);
     tap(&mut h, "Brush size value");
     screenshot::save(&mut h, "numbers-keypad");
+    tap(&mut h, "Brush size value");
+    // The bubble of the card goes past the open Brush panel.
+    let from = control(&h, "Size").unwrap().center();
+    touch(&mut h, egui::TouchPhase::Start, from, None);
+    h.step();
+    for at in [vec2(0.0, -20.0), vec2(0.0, -40.0)] {
+        touch(&mut h, egui::TouchPhase::Move, from + at, None);
+        h.step();
+    }
+    screenshot::save(&mut h, "numbers-card-drag");
+    touch(&mut h, egui::TouchPhase::End, from + vec2(0.0, -40.0), None);
+    h.run_steps(3);
 }
