@@ -26,6 +26,7 @@ pub mod pick;
 pub mod pipeline;
 pub mod projects;
 pub mod ramps;
+pub mod region;
 pub mod raster_style;
 pub mod resume;
 pub mod scale_bar;
