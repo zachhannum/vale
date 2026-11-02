@@ -4,7 +4,7 @@
 use std::collections::HashSet;
 
 use eframe::egui::{self, Order, Pos2, Rect, pos2, vec2};
-use vale_store::{Geometry, GeometryKind, Layer, LayerId, Uuid};
+use vale_store::{Geometry, Layer, LayerId, Uuid};
 
 use super::AppState;
 use super::pad::geometry::{GAP, MARGIN, ROW, Rects};
@@ -12,14 +12,10 @@ use super::pad::theme;
 use super::pad::widgets::{self, BODY_PAD, Controls, PANEL_ROW};
 use super::point_form::{FormField, keyboard_top};
 use crate::globe::math::{V3, dir_to_lonlat};
-use crate::globe::reshape;
 use crate::globe::select::{self, FeatureRef, SelectEvent};
-use crate::globe::{LineStroke, Tool};
 
 /// The name of the Select tool.
 pub const TOOL: &str = "Select";
-/// The name of the Reshape tool.
-pub const RESHAPE: &str = "Reshape";
 /// The button that deletes the selected features.
 pub const DELETE: &str = "Delete selection";
 const WIDTH: f32 = 360.0;
@@ -68,7 +64,6 @@ impl AppState {
     pub fn poll_select(&mut self) {
         let events = std::mem::take(&mut self.globe.select_press.events);
         self.prune_feature_selection();
-        self.sync_reshape();
         if !self.globe.selecting() {
             self.select_drag = None;
             return;
@@ -152,48 +147,6 @@ impl AppState {
             .retain(|f| live.contains(&(f.layer, f.uuid)));
     }
 
-    /// Gives the Reshape tool the one selected line or polygon. With no
-    /// such feature, the Reshape tool turns into the Select tool.
-    fn sync_reshape(&mut self) {
-        let shapes = self.select_layer().is_some_and(|l| {
-            matches!(
-                l.geometry(),
-                Some(GeometryKind::Line | GeometryKind::Polygon)
-            )
-        });
-        self.globe.reshape = match self.feature_selection.as_slice() {
-            [one] if shapes => Some(one.uuid),
-            _ => None,
-        };
-        if self.globe.tool == Tool::Reshape && self.globe.reshape.is_none() {
-            self.globe.tool = Tool::Select;
-        }
-    }
-
-    /// Reshapes a feature with a stroke of the Reshape tool. The reshape is
-    /// one undo step. A stroke that does not start on the outline changes
-    /// nothing.
-    pub(super) fn reshape_feature(&mut self, id: LayerId, uuid: Uuid, stroke: &LineStroke) {
-        let Some(layer) = self.doc.layer(id) else {
-            return;
-        };
-        let feature = layer.features.iter().find(|x| x.uuid() == uuid);
-        let Some(geometry) = feature.map(|x| &x.geometry) else {
-            return;
-        };
-        let strength = self.globe.line.smoothing;
-        let Some(geometry) = reshape::reshape(geometry, &stroke.runs, stroke.scale, strength)
-        else {
-            return;
-        };
-        self.commit_selection_form();
-        self.commit_point_form();
-        self.save_edit();
-        if self.doc.project.set_geometry(id, uuid, geometry) {
-            self.end_vector_edit(id);
-        }
-    }
-
     /// Moves one vertex of a point feature. The move is one undo step.
     fn move_vertex(&mut self, f: FeatureRef, vertex: usize, to: V3) {
         let Some(layer) = self.doc.layer(f.layer) else {
@@ -235,7 +188,7 @@ impl AppState {
     /// Opens the form of the one selected feature, or closes it.
     fn sync_selection_form(&mut self) {
         let one = match self.feature_selection.as_slice() {
-            [one] if self.globe.selecting() || self.globe.reshaping() => Some(*one),
+            [one] if self.globe.selecting() => Some(*one),
             _ => None,
         };
         let fresh = self
@@ -302,7 +255,7 @@ impl AppState {
 /// The highlight of the selection and of the drag of the Select tool.
 pub fn paint(painter: &egui::Painter, state: &AppState) {
     let globe = &state.globe;
-    if !globe.selecting() && !globe.reshaping() {
+    if !globe.selecting() {
         return;
     }
     let ring = egui::Stroke::new(2.0, theme::ACCENT);
@@ -371,38 +324,20 @@ fn heading(state: &AppState) -> String {
     }
 }
 
-/// The tool of a tap on the Reshape switch or button: the Reshape tool, or
-/// the Select tool again.
-fn toggle_reshape(state: &mut AppState) {
-    let globe = &mut state.globe;
-    globe.tool = if globe.reshaping() {
-        Tool::Select
-    } else {
-        Tool::Reshape
-    };
-}
-
-/// True if the card of the selection shows.
-fn shows_card(state: &AppState) -> bool {
-    let globe = &state.globe;
-    (globe.selecting() || globe.reshaping()) && !state.feature_selection.is_empty()
-}
-
 /// The card of the selection in the iPad layout, near the top of the
-/// screen. It shows the fields of one selected feature, the Reshape switch
-/// of one line or polygon, and the delete button.
+/// screen. It shows the fields of one selected feature, and the delete
+/// button.
 pub fn pad(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
     state.sync_selection_form();
-    if !shows_card(state) {
+    if !state.globe.selecting() || state.feature_selection.is_empty() {
         return;
     }
-    let reshapes = state.globe.reshape.is_some();
     let title = heading(state);
     let mut form = state.selection_form.take();
     let screen = rects.screen;
     let top = rects.workspace.bottom() + GAP;
     let room = keyboard_top(screen) - GAP - top;
-    let fields = (form.as_ref().map_or(0, |f| f.fields.len()) + usize::from(reshapes)) as f32;
+    let fields = form.as_ref().map_or(0, |f| f.fields.len()) as f32;
     let least = ROW + PANEL_ROW + BOTTOM;
     let height = (ROW + (fields + 1.0) * PANEL_ROW + BOTTOM).min(room.max(least));
     let width = WIDTH.min(screen.width() - 2.0 * MARGIN);
@@ -410,8 +345,7 @@ pub fn pad(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
         pos2(screen.center().x - width / 2.0, top),
         vec2(width, height),
     );
-    let (mut close, mut delete, mut commit, mut reshape) = (false, false, false, false);
-    let mut reshaping = state.globe.reshaping();
+    let (mut close, mut delete, mut commit) = (false, false, false);
     let radius = theme::CARD_RADIUS.into();
     let backdrop = state.globe.backdrop();
     widgets::card(ctx, backdrop, CARD, rect, Order::Foreground, radius, |ui| {
@@ -428,18 +362,12 @@ pub fn pad(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
                 let resp = widgets::text_field(ui, controls, name, name, None, text, valid);
                 commit |= resp.lost_focus();
             }
-            if reshapes {
-                reshape = widgets::switch_row(ui, controls, RESHAPE, RESHAPE, &mut reshaping);
-            }
             delete = widgets::button_row_in(ui, controls, DELETE, true, theme::WARN).clicked();
         });
     });
     state.selection_form = form;
     if commit {
         state.commit_selection_form();
-    }
-    if reshape {
-        toggle_reshape(state);
     }
     if delete {
         state.delete_selection();
@@ -451,13 +379,12 @@ pub fn pad(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
 /// The window of the selection in the desktop layout.
 pub fn desktop(ctx: &egui::Context, state: &mut AppState) {
     state.sync_selection_form();
-    if !shows_card(state) {
+    if !state.globe.selecting() || state.feature_selection.is_empty() {
         return;
     }
     let title = heading(state);
     let mut form = state.selection_form.take();
-    let (mut delete, mut commit, mut reshape) = (false, false, false);
-    let (reshapes, reshaping) = (state.globe.reshape.is_some(), state.globe.reshaping());
+    let (mut delete, mut commit) = (false, false);
     egui::Window::new("Selection")
         .id(egui::Id::new(CARD))
         .title_bar(false)
@@ -479,19 +406,11 @@ pub fn desktop(ctx: &egui::Context, state: &mut AppState) {
                         ui.end_row();
                     }
                 });
-            ui.horizontal(|ui| {
-                if reshapes {
-                    reshape = ui.selectable_label(reshaping, RESHAPE).clicked();
-                }
-                delete = ui.button(DELETE).clicked();
-            });
+            delete = ui.button(DELETE).clicked();
         });
     state.selection_form = form;
     if commit {
         state.commit_selection_form();
-    }
-    if reshape {
-        toggle_reshape(state);
     }
     if delete {
         state.delete_selection();
