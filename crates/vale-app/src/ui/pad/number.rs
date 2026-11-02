@@ -725,7 +725,7 @@ fn nice_step(value: f64, up: bool) -> f64 {
     let next = if away {
         series.into_iter().find(|v| *v > magnitude + eps)
     } else {
-        series.into_iter().filter(|v| *v < magnitude - eps).last()
+        series.into_iter().rfind(|v| *v < magnitude - eps)
     };
     sign * next.unwrap_or(0.0)
 }
@@ -771,6 +771,7 @@ fn keep_in(rect: Rect, bounds: Rect) -> Rect {
 }
 
 /// The track, its filled part, the tick of the default, and the thumb.
+#[allow(clippy::too_many_arguments)]
 fn paint_track(
     ui: &egui::Ui,
     whole: Rect,
