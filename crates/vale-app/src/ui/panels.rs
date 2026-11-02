@@ -21,7 +21,7 @@ use crate::globe::brush::{
 use crate::globe::combine::PolygonMode;
 use crate::globe::{Globe, Tool, WorldView, rivers, snap, stats, stroke_test, zoom_test};
 use crate::projects;
-use crate::ui::pad::DESELECT;
+use crate::ui::pad::{DESELECT, vector_tools};
 use crate::world::{self, three_significant};
 
 /// The name of the ocean ridge mode of the brush.
@@ -136,10 +136,22 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                 } else {
                     (LINE_TOOL, Tool::Line)
                 };
-                let draw = egui::Button::selectable(globe.editing(), name);
+                let draw = egui::Button::selectable(globe.editing() && globe.tool == tool, name);
                 let able = lineable || globe.fillable || globe.pointable;
                 if ui.add_enabled(able, draw).clicked() {
                     globe.tool = tool;
+                }
+                let kind = if globe.fillable {
+                    GeometryKind::Polygon
+                } else {
+                    GeometryKind::Line
+                };
+                for t in vector_tools(kind).into_iter().filter(|t| !t.draws) {
+                    let on = globe.editing() && globe.tool == t.tool;
+                    let edit = egui::Button::selectable(on, t.name);
+                    if ui.add_enabled(lineable || globe.fillable, edit).clicked() {
+                        globe.tool = t.tool;
+                    }
                 }
                 if ui
                     .selectable_label(globe.selecting(), select::TOOL)
@@ -154,7 +166,7 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                     globe.tool = Tool::Measure;
                 }
                 if globe.editing() || globe.measuring() {
-                    if globe.drawing() {
+                    if globe.stroking() {
                         number::slider(SMOOTHING, &mut globe.line.smoothing, 0.0..=1.0)
                             .percent()
                             .show(ui);

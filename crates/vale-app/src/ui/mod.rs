@@ -20,12 +20,12 @@ use crate::atlas_export::{ExportStep, PdfExport, RASTER_PIXEL_RATIO};
 use crate::document::Document;
 use crate::files::{Availability, ExportEvent, Files, PlainFiles, SystemEvents};
 use crate::globe::combine::{PolygonMode, StrokeArea};
-use crate::globe::split::SplitStroke;
 use crate::globe::fit;
 use crate::globe::import::{ImportResult, ProbeJob, Source, file_name};
 use crate::globe::line::{self, LineEdit};
 use crate::globe::math::lonlat_to_dir;
 use crate::globe::snap::{LayerTargets, Targets};
+use crate::globe::split::SplitStroke;
 use crate::globe::{Globe, Look, START_ELEVATION, StackItem, Tool, brush};
 use crate::globe::{LineStroke, polygon, reshape};
 use crate::image_layer::{ImageImport, ImageTiles, ImportStep};
@@ -770,15 +770,22 @@ impl AppState {
         globe.fit_layer = fit_layer;
         globe.fillable = polygon.is_some();
         globe.pointable = point.is_some();
-        // A tool that edits a vector layer stays such a tool in a layer of
-        // another kind.
-        if matches!(globe.tool, Tool::Line | Tool::Polygon | Tool::Point) {
-            if globe.lineable {
-                globe.tool = Tool::Line;
-            } else if globe.fillable {
-                globe.tool = Tool::Polygon;
-            } else if globe.pointable {
-                globe.tool = Tool::Point;
+        // A tool of the Vector cell stays the tool in a layer of another
+        // kind that has it. Else the tool that draws in that layer is the
+        // tool.
+        let kind = [
+            (globe.lineable, GeometryKind::Line),
+            (globe.fillable, GeometryKind::Polygon),
+            (globe.pointable, GeometryKind::Point),
+        ]
+        .into_iter()
+        .find_map(|(able, kind)| able.then_some(kind));
+        if let Some(kind) = kind
+            && pad::VECTOR_TOOLS.iter().any(|t| t.tool == globe.tool)
+        {
+            let tools = pad::vector_tools(kind);
+            if !tools.iter().any(|t| t.tool == globe.tool) {
+                globe.tool = tools[0].tool;
             }
         }
         if !height && brush::needs_height(globe.brush.mode) {

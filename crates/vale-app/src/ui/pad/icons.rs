@@ -54,6 +54,8 @@ pub enum Icon {
     /// A polygon with a minus sign.
     PolygonSubtract,
     Measure,
+    /// A square with a line across it.
+    Split,
     /// The handle of a row that a drag moves.
     Grip,
 }
@@ -114,6 +116,7 @@ impl Icon {
             Icon::Reshape => "M6 8v12h12V8M6 8c2-6 10-6 12 0",
             Icon::PolygonAdd => "M3 8l7-4 5 5-2 7-8-1zM19 13v8M15 17h8",
             Icon::PolygonSubtract => "M3 8l7-4 5 5-2 7-8-1zM15 17h8",
+            Icon::Split => "M4 6h16v12H4zM14 2L10 22",
             Icon::Measure => "M3 17L17 3l4 4L7 21zM7 13l2 2M10 10l3 3M13 7l2 2",
             Icon::Magnet => {
                 "M5 4h4v8c0 1.66 1.34 3 3 3s3-1.34 3-3V4h4v8c0 3.87-3.13 7-7 7s-7-3.13-7-7zM5 8h4M15 8h4"
@@ -406,6 +409,7 @@ mod tests {
             Icon::PolygonAdd,
             Icon::PolygonSubtract,
             Icon::Measure,
+            Icon::Split,
             Icon::Grip,
         ] {
             let lines = parse(icon.path());

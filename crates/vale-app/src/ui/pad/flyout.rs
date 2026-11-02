@@ -18,6 +18,8 @@ pub enum Flyout {
     Brush(ModeGroup),
     /// The modes of the polygon tool, on the brush card.
     PolygonMode,
+    /// The tools of the Vector cell of the tool strip.
+    Vector,
 }
 
 impl Flyout {
@@ -33,7 +35,12 @@ pub struct Choice {
     pub name: &'static str,
     pub icon: Icon,
     pub enabled: bool,
+    /// A line above the row divides it from the rows before.
+    pub divider: bool,
 }
+
+/// The height of a divider between two rows of a flyout.
+const DIVIDER: f32 = 9.0;
 
 /// The flyouts of the iPad layout.
 #[derive(Default)]
@@ -138,10 +145,11 @@ pub fn show(
         return None;
     };
     let rows = choices.len() as f32;
+    let dividers = choices.iter().filter(|c| c.divider).count() as f32;
     let room = rects.panel_bottom - rects.tools.top();
     let size = vec2(
         geometry::MODES_WIDTH,
-        (10.0 + rows * PANEL_ROW + 10.0).min(room),
+        (10.0 + rows * PANEL_ROW + dividers * DIVIDER + 10.0).min(room),
     );
     let top = cell
         .top()
@@ -178,6 +186,15 @@ pub fn show(
                 .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
                 .show(&mut ui, |ui| {
                     for (index, choice) in choices.iter().enumerate() {
+                        if choice.divider {
+                            let (line, _) = ui.allocate_exact_size(
+                                vec2(ui.available_width(), DIVIDER),
+                                egui::Sense::hover(),
+                            );
+                            let y = line.center().y;
+                            let stroke = egui::Stroke::new(1.0, theme::divider());
+                            ui.painter().hline(line.x_range(), y, stroke);
+                        }
                         let (name, enabled) = (choice.name, choice.enabled);
                         let row = widgets::text_row(ui, controls, name, 32.0, false, enabled);
                         let at = pos2(row.rect.left() + 11.0, row.rect.center().y);
