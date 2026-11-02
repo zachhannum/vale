@@ -137,12 +137,8 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                 if ui.add_enabled(able, draw).clicked() {
                     globe.tool = tool;
                 }
-                let reshape = egui::Button::selectable(globe.reshaping(), select::RESHAPE);
-                if ui.add_enabled(globe.reshape.is_some(), reshape).clicked() {
-                    globe.tool = Tool::Reshape;
-                }
                 if ui
-                    .selectable_label(globe.selecting(), select::TOOL)
+                    .selectable_label(globe.selecting() || globe.reshaping(), select::TOOL)
                     .clicked()
                 {
                     globe.tool = Tool::Select;

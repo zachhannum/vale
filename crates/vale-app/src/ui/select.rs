@@ -371,6 +371,17 @@ fn heading(state: &AppState) -> String {
     }
 }
 
+/// The tool of a tap on the Reshape switch or button: the Reshape tool, or
+/// the Select tool again.
+fn toggle_reshape(state: &mut AppState) {
+    let globe = &mut state.globe;
+    globe.tool = if globe.reshaping() {
+        Tool::Select
+    } else {
+        Tool::Reshape
+    };
+}
+
 /// True if the card of the selection shows.
 fn shows_card(state: &AppState) -> bool {
     let globe = &state.globe;
@@ -378,19 +389,20 @@ fn shows_card(state: &AppState) -> bool {
 }
 
 /// The card of the selection in the iPad layout, near the top of the
-/// screen. It shows the fields of one selected feature, and the delete
-/// button.
+/// screen. It shows the fields of one selected feature, the Reshape switch
+/// of one line or polygon, and the delete button.
 pub fn pad(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
     state.sync_selection_form();
     if !shows_card(state) {
         return;
     }
+    let reshapes = state.globe.reshape.is_some();
     let title = heading(state);
     let mut form = state.selection_form.take();
     let screen = rects.screen;
     let top = rects.workspace.bottom() + GAP;
     let room = keyboard_top(screen) - GAP - top;
-    let fields = form.as_ref().map_or(0, |f| f.fields.len()) as f32;
+    let fields = (form.as_ref().map_or(0, |f| f.fields.len()) + usize::from(reshapes)) as f32;
     let least = ROW + PANEL_ROW + BOTTOM;
     let height = (ROW + (fields + 1.0) * PANEL_ROW + BOTTOM).min(room.max(least));
     let width = WIDTH.min(screen.width() - 2.0 * MARGIN);
@@ -398,7 +410,8 @@ pub fn pad(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
         pos2(screen.center().x - width / 2.0, top),
         vec2(width, height),
     );
-    let (mut close, mut delete, mut commit) = (false, false, false);
+    let (mut close, mut delete, mut commit, mut reshape) = (false, false, false, false);
+    let mut reshaping = state.globe.reshaping();
     let radius = theme::CARD_RADIUS.into();
     let backdrop = state.globe.backdrop();
     widgets::card(ctx, backdrop, CARD, rect, Order::Foreground, radius, |ui| {
@@ -415,12 +428,18 @@ pub fn pad(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
                 let resp = widgets::text_field(ui, controls, name, name, None, text, valid);
                 commit |= resp.lost_focus();
             }
+            if reshapes {
+                reshape = widgets::switch_row(ui, controls, RESHAPE, RESHAPE, &mut reshaping);
+            }
             delete = widgets::button_row_in(ui, controls, DELETE, true, theme::WARN).clicked();
         });
     });
     state.selection_form = form;
     if commit {
         state.commit_selection_form();
+    }
+    if reshape {
+        toggle_reshape(state);
     }
     if delete {
         state.delete_selection();
@@ -437,7 +456,8 @@ pub fn desktop(ctx: &egui::Context, state: &mut AppState) {
     }
     let title = heading(state);
     let mut form = state.selection_form.take();
-    let (mut delete, mut commit) = (false, false);
+    let (mut delete, mut commit, mut reshape) = (false, false, false);
+    let (reshapes, reshaping) = (state.globe.reshape.is_some(), state.globe.reshaping());
     egui::Window::new("Selection")
         .id(egui::Id::new(CARD))
         .title_bar(false)
@@ -459,11 +479,19 @@ pub fn desktop(ctx: &egui::Context, state: &mut AppState) {
                         ui.end_row();
                     }
                 });
-            delete = ui.button(DELETE).clicked();
+            ui.horizontal(|ui| {
+                if reshapes {
+                    reshape = ui.selectable_label(reshaping, RESHAPE).clicked();
+                }
+                delete = ui.button(DELETE).clicked();
+            });
         });
     state.selection_form = form;
     if commit {
         state.commit_selection_form();
+    }
+    if reshape {
+        toggle_reshape(state);
     }
     if delete {
         state.delete_selection();
