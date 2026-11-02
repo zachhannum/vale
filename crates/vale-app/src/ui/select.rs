@@ -252,12 +252,10 @@ impl AppState {
     }
 }
 
-/// The highlight of the selection and of the drag of the Select tool.
+/// The highlight of the selection and of the drag of the Select tool. The
+/// selection shows in each tool.
 pub fn paint(painter: &egui::Painter, state: &AppState) {
     let globe = &state.globe;
-    if !globe.selecting() {
-        return;
-    }
     let ring = egui::Stroke::new(2.0, theme::ACCENT);
     let line = egui::Stroke::new(3.0, theme::ACCENT);
     for f in &state.feature_selection {

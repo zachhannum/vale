@@ -8615,6 +8615,30 @@ fn the_context_strip_shows_only_the_controls_of_the_tool() {
 }
 
 #[test]
+fn the_selection_shows_in_each_tool() {
+    use vale_app::ui::pad::MEASURE;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
+    select_layer(&mut h, picks.polygon.layer);
+    h.state_mut().feature_selection = vec![picks.polygon];
+    h.run_steps(2);
+    // The wide line in the accent color on the outline.
+    let highlight = |h: &Pad| {
+        painted_shapes(h).iter().any(|s| {
+            matches!(s, egui::Shape::Path(p)
+                if p.stroke.width == 3.0
+                    && p.stroke.color == egui::epaint::ColorMode::Solid(theme::ACCENT))
+        })
+    };
+    assert!(highlight(&h), "the Select tool");
+    for name in [POLYGON, "Pan", MEASURE] {
+        tap(&mut h, name);
+        assert_eq!(h.state().feature_selection, vec![picks.polygon], "{name}");
+        assert!(highlight(&h), "{name}");
+    }
+}
+
+#[test]
 fn a_hold_on_the_mode_cell_opens_the_flyout() {
     use vale_app::ui::pad::POLYGON_MODE;
     let dir = tempfile::tempdir().unwrap();
