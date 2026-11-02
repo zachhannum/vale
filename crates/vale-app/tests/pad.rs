@@ -153,6 +153,26 @@ fn tap(h: &mut Pad, name: &str) {
     h.run_steps(3);
 }
 
+/// Types `text` in the value field of the slider or the stepper `name`
+/// with its keypad, and closes the keypad.
+#[allow(dead_code)]
+fn type_value(h: &mut Pad, name: &str, text: &str) {
+    let field = format!("{name} value");
+    tap(h, &field);
+    for c in text.chars() {
+        tap(h, &format!("{field} {c}"));
+    }
+    tap(h, &format!("{field} Done"));
+}
+
+/// A tap on the plus button (`up`) or the minus button of the stepper
+/// `name`.
+#[allow(dead_code)]
+fn step(h: &mut Pad, name: &str, up: bool) {
+    let button = if up { "Increase" } else { "Decrease" };
+    tap(h, &format!("{button} {name}"));
+}
+
 /// A tap of a finger on the middle of a control, with each half of the
 /// touch in one frame. A `tap` lasts as long as a hold on the brush cell.
 fn quick_tap(h: &mut Pad, name: &str) {

@@ -199,6 +199,26 @@ fn tap(h: &mut Pad, name: &str) {
     tap_with(h, rect.center(), Input::Finger);
 }
 
+/// Types `text` in the value field of the slider or the stepper `name`
+/// with its keypad, and closes the keypad.
+#[allow(dead_code)]
+fn type_value(h: &mut Pad, name: &str, text: &str) {
+    let field = format!("{name} value");
+    tap(h, &field);
+    for c in text.chars() {
+        tap(h, &format!("{field} {c}"));
+    }
+    tap(h, &format!("{field} Done"));
+}
+
+/// A tap on the plus button (`up`) or the minus button of the stepper
+/// `name`.
+#[allow(dead_code)]
+fn step(h: &mut Pad, name: &str, up: bool) {
+    let button = if up { "Increase" } else { "Decrease" };
+    tap(h, &format!("{button} {name}"));
+}
+
 /// A drag from one place to another in `steps` steps. The release is in a
 /// later frame.
 fn drag_steps(h: &mut Pad, from: Pos2, to: Pos2, input: Input, steps: usize) {
