@@ -15,7 +15,7 @@ use vale_store::{Geometry, LonLat};
 
 use super::math::{V3, lonlat_to_dir};
 use super::polygon::{
-    MIN_AREA, MIN_LENGTH, densify, dirs, overlay, path, path_length, rings, signed_area,
+    MIN_AREA, MIN_LENGTH, bounds, densify, dirs, overlay, path, path_length, rings, signed_area,
     to_polygons_many,
 };
 use super::reshape::{REACH, ends, outlines};
@@ -38,21 +38,28 @@ pub enum PolygonMode {
 pub struct StrokeArea {
     rings: Vec<Vec<PathVertex>>,
     dirs: Vec<Vec<V3>>,
-    start: V3,
+    /// The closed path of the stroke, in the order of the pen.
+    path: Vec<V3>,
+    /// A box around the path.
+    bounds: Bounds,
     min_area: f64,
 }
+
+/// A box in 3D around a part of the sphere.
+type Bounds = ([f64; 3], [f64; 3]);
 
 impl StrokeArea {
     /// The area of a stroke. The runs come from a `Tracer`. A stroke that is
     /// too short or that encloses no area gives `None`.
     pub fn new(runs: &[Run], scale: f64, strength: f64) -> Option<Self> {
-        let (start, _) = ends(runs)?;
+        ends(runs)?;
         let path = path(runs, scale, strength);
         if path_length(&path) < MIN_LENGTH / scale {
             return None;
         }
         let min_area = MIN_AREA / (scale * scale);
-        let rings: Vec<Vec<PathVertex>> = rings(&densify(&path))
+        let closed = densify(&path);
+        let rings: Vec<Vec<PathVertex>> = rings(&closed)
             .into_iter()
             .filter(|r| signed_area(&dirs(r)) > min_area)
             .collect();
@@ -60,10 +67,13 @@ impl StrokeArea {
             return None;
         }
         let dirs = rings.iter().map(|r| dirs(r)).collect();
+        let path = super::polygon::dirs(&closed);
+        let bounds = boxed(path.iter().copied(), REACH / scale);
         Some(StrokeArea {
             rings,
             dirs,
-            start,
+            path,
+            bounds,
             min_area,
         })
     }
@@ -74,21 +84,55 @@ impl StrokeArea {
             .any(|r| vector::contains(std::slice::from_ref(r), p))
     }
 
-    /// The stroke starts inside a polygon of the geometry, or within
-    /// `REACH` points of its outline.
-    pub fn starts_in(&self, geometry: &Geometry, scale: f64) -> bool {
+    /// The geometry can overlap the area of the stroke. The test is quick,
+    /// and it can be true for a geometry that does not overlap.
+    pub fn near(&self, geometry: &Geometry) -> bool {
         let Geometry::Polygons(polygons) = geometry else {
             return false;
         };
-        if Feature::new(polygons).holds(self.start) {
+        let mut edges = polygons.iter().flatten().flat_map(|r| r.windows(2));
+        let crosses = edges.any(|w| {
+            let (lo, hi) = bounds(dir(w[0]), dir(w[1]));
+            (0..3).all(|k| lo[k] <= self.bounds.1[k] && self.bounds.0[k] <= hi[k])
+        });
+        if crosses {
             return true;
         }
-        polygons.iter().flatten().any(|ring| {
+        // With no outline near the stroke, one area holds the other, or
+        // they do not meet.
+        let inside = self
+            .path
+            .first()
+            .is_some_and(|&p| Feature::new(polygons).holds(p));
+        let around = polygons
+            .iter()
+            .flatten()
+            .flatten()
+            .next()
+            .is_some_and(|&p| self.holds(dir(p)));
+        inside || around
+    }
+
+    /// The place along the stroke where it first reaches a polygon of the
+    /// geometry: the index of the first vertex of the path in the polygon.
+    /// A start within `REACH` points of the outline reaches it at 0. A
+    /// stroke that does not reach the geometry gives `None`.
+    pub fn reaches(&self, geometry: &Geometry, scale: f64) -> Option<usize> {
+        let Geometry::Polygons(polygons) = geometry else {
+            return None;
+        };
+        let start = *self.path.first()?;
+        let near_start = polygons.iter().flatten().any(|ring| {
             ring.windows(2).any(|w| {
                 let (a, b) = (dir(w[0]), dir(w[1]));
-                distance_to_arc(self.start, a, b) * scale <= REACH
+                distance_to_arc(start, a, b) * scale <= REACH
             })
-        })
+        });
+        if near_start {
+            return Some(0);
+        }
+        let feature = Feature::new(polygons);
+        self.path.iter().position(|&p| feature.holds(p))
     }
 
     /// The geometry with the area of the stroke joined to it. A stroke that
@@ -164,6 +208,19 @@ impl Feature {
     fn holds(&self, p: V3) -> bool {
         self.0.iter().any(|poly| vector::contains(poly, p))
     }
+}
+
+/// A box around directions, with a margin in radians.
+fn boxed(dirs: impl Iterator<Item = V3>, margin: f64) -> Bounds {
+    let mut lo = [f64::INFINITY; 3];
+    let mut hi = [f64::NEG_INFINITY; 3];
+    for d in dirs {
+        for k in 0..3 {
+            lo[k] = lo[k].min(d[k] - margin);
+            hi[k] = hi[k].max(d[k] + margin);
+        }
+    }
+    (lo, hi)
 }
 
 fn dir(p: LonLat) -> V3 {
@@ -259,14 +316,43 @@ mod tests {
     }
 
     #[test]
-    fn the_start_finds_the_polygon() {
+    fn the_stroke_reaches_the_polygon_from_inside_or_from_outside() {
+        // From inside.
         let s = area(&box_way(5.0, 2.0, 15.0, 8.0));
-        assert!(s.starts_in(&square(), SCALE));
-        let s = area(&box_way(20.0, 2.0, 25.0, 8.0));
-        assert!(!s.starts_in(&square(), SCALE));
-        // Within reach of the outline, from outside.
+        assert_eq!(s.reaches(&square(), SCALE), Some(0));
+        // From within reach of the outline, outside.
         let s = area(&box_way(10.5, 2.0, 15.0, 8.0));
-        assert!(s.starts_in(&square(), SCALE));
+        assert_eq!(s.reaches(&square(), SCALE), Some(0));
+        // From away, into the polygon and out again.
+        let s = area(&[[16.0, 2.0], [6.0, 2.0], [6.0, 8.0], [16.0, 8.0]]);
+        assert!(s.reaches(&square(), SCALE).is_some_and(|at| at > 0));
+        assert!(s.near(&square()));
+        let p = polygons(&s.add(&square()).expect("a change"));
+        assert_valid(&p);
+        assert!(inside(&p, [13.0, 5.0]));
+        // Inside the polygon, away from its outline, and around it.
+        assert!(area(&box_way(4.0, 4.0, 6.0, 6.0)).near(&square()));
+        assert!(area(&box_way(-5.0, -5.0, 15.0, 15.0)).near(&square()));
+        // Away from the polygon.
+        let s = area(&box_way(20.0, 2.0, 25.0, 8.0));
+        assert_eq!(s.reaches(&square(), SCALE), None);
+        assert!(!s.near(&square()));
+    }
+
+    #[test]
+    fn a_stroke_reaches_the_nearer_polygon_first() {
+        let east = Geometry::Polygons(vec![vec![box_way(20.0, 0.0, 30.0, 10.0)]]);
+        // From the gap between the two, west into the square, and then east
+        // into the other polygon.
+        let s = area(&[
+            [15.0, 4.0],
+            [5.0, 4.0],
+            [5.0, 6.0],
+            [25.0, 6.0],
+            [25.0, 4.0],
+        ]);
+        let (a, b) = (s.reaches(&square(), SCALE), s.reaches(&east, SCALE));
+        assert!(a.unwrap() < b.unwrap(), "{a:?} {b:?}");
     }
 
     #[test]
@@ -335,6 +421,7 @@ mod tests {
         assert!(inside(&p, [0.0, 89.0]));
         // A cut around the pole leaves a ring of land.
         let s = area(&[[0.0, 85.0], [120.0, 85.0], [240.0, 85.0], [360.0, 85.0]]);
+        assert!(s.near(&cap));
         let p = polygons(&s.subtract(&cap).expect("a change").expect("an area"));
         assert_valid(&p);
         assert!(!inside(&p, [30.0, 89.0]));

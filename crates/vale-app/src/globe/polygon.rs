@@ -442,7 +442,7 @@ fn union(parent: &mut [usize], a: usize, b: usize) {
 
 /// A box around the short arc from `a` to `b`. The arc bends out from its
 /// chord by at most the part `1 / cos(θ / 2) - 1`.
-fn bounds(a: V3, b: V3) -> ([f64; 3], [f64; 3]) {
+pub(super) fn bounds(a: V3, b: V3) -> ([f64; 3], [f64; 3]) {
     let half = angle(a, b) / 2.0;
     let pad = if half < 1.0 {
         1.0 / half.cos() - 1.0

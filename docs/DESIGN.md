@@ -402,8 +402,8 @@ Where the ring crosses the 180 degree meridian, the feature has a polygon on eac
 
 The tool has three modes: New, Add, and Subtract. New is the default, and in New each stroke makes a new feature. In Add and Subtract, the stroke closes into a ring as in New, and its area changes polygons that exist. The stroke snaps and traces as in New, so a part of the new outline can follow a coast.
 
-- Add joins the area of the ring to a polygon. It changes the selected polygon of the layer. With no selection, it changes the polygon where the stroke starts, or the polygon whose outline is within 12 points of the start. A stroke that starts away from a polygon changes nothing. Ground between the stroke and the polygon joins only where it is inside the ring.
-- Subtract cuts the area of the ring out of polygons. It changes the selected polygons of the layer. With no selection, it changes each polygon of the layer that the ring overlaps. A cut through a polygon leaves one feature with two polygons, and a cut inside a polygon leaves a hole. A cut that covers a whole feature deletes the feature.
+- Add joins the area of the ring to one polygon of the layer: the first polygon that the stroke reaches. A stroke that starts inside a polygon, or within 12 points of its outline, reaches that polygon first. A stroke that overlaps no polygon changes nothing. Ground between the stroke and the polygon joins only where it is inside the ring.
+- Subtract cuts the area of the ring out of each polygon of the layer that the ring overlaps. A cut through a polygon leaves one feature with two polygons, and a cut inside a polygon leaves a hole. A cut that covers a whole feature deletes the feature.
 
 The outlines of the feature and the ring divide the sphere into areas, and the result is a set of these areas. Thus the result is valid on the sphere, also across the 180 degree meridian and around a pole. The stored vertices of the old outline do not move, and the feature keeps its UUID and its attributes. A hole is a ring of its polygon, and each ring goes counterclockwise in longitude and latitude. Each stroke is one undo step.
 

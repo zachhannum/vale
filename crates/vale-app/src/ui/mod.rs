@@ -11,7 +11,7 @@ use vale_labeler::Fonts;
 use vale_sphere::LonLat;
 use vale_store::{
     BlendMode, Feature, GeometryKind, ImageId, Layer, LayerId, LayerKind, MapId, Project, Raster,
-    RasterDisplay, RasterId, Rgb, StoreError, Uuid, World,
+    RasterDisplay, RasterId, Rgb, StoreError, World,
 };
 use vale_style::LabelClass;
 use vale_terrain::{Bands, Heightmap, Mode};
@@ -2640,9 +2640,9 @@ impl AppState {
     }
 
     /// Joins the area of a stroke of the polygon tool to a polygon, or cuts
-    /// it out of polygons. The selected polygons of the layer are the
-    /// targets. With no selection, Add changes the polygon where the stroke
-    /// starts, and Subtract changes each polygon that the stroke overlaps.
+    /// it out of polygons. Add changes the first polygon of the layer that
+    /// the stroke reaches. Subtract changes each polygon of the layer that
+    /// the stroke overlaps.
     fn combine_polygons(&mut self, id: LayerId, stroke: &LineStroke) {
         let Some(area) = StrokeArea::new(&stroke.runs, stroke.scale, self.globe.line.smoothing)
         else {
@@ -2651,35 +2651,29 @@ impl AppState {
         let Some(layer) = self.doc.project.layer(id) else {
             return;
         };
-        let selected: Vec<Uuid> = self
-            .feature_selection
-            .iter()
-            .filter(|f| f.layer == id)
-            .map(|f| f.uuid)
+        let near: Vec<&Feature> = (layer.features.iter())
+            .filter(|f| area.near(&f.geometry))
             .collect();
         let mut set = Vec::new();
         let mut removed = Vec::new();
         if stroke.mode == PolygonMode::Add {
-            let target = if selected.is_empty() {
-                layer
-                    .features
-                    .iter()
-                    .rev()
-                    .find(|f| area.starts_in(&f.geometry, stroke.scale))
-            } else {
-                layer.features.iter().find(|f| selected.contains(&f.uuid()))
-            };
-            if let Some(f) = target
-                && let Some(g) = area.add(&f.geometry)
-            {
-                set.push((f.uuid(), g));
-            }
-        } else {
-            let targets = layer
-                .features
+            // A stroke that goes around a polygon reaches it at its end.
+            let mut order: Vec<(usize, &Feature)> = (near.iter())
+                .map(|f| {
+                    (
+                        area.reaches(&f.geometry, stroke.scale)
+                            .unwrap_or(usize::MAX),
+                        *f,
+                    )
+                })
+                .collect();
+            order.sort_by_key(|(at, _)| *at);
+            let added = order
                 .iter()
-                .filter(|f| selected.is_empty() || selected.contains(&f.uuid()));
-            for f in targets {
+                .find_map(|(_, f)| Some((f.uuid(), area.add(&f.geometry)?)));
+            set.extend(added);
+        } else {
+            for f in near {
                 match area.subtract(&f.geometry) {
                     Some(Some(g)) => set.push((f.uuid(), g)),
                     Some(None) => removed.push(f.uuid()),

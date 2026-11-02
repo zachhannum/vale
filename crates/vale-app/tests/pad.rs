@@ -8627,6 +8627,44 @@ fn a_hold_on_the_mode_cell_opens_the_flyout() {
 }
 
 #[test]
+fn add_grows_only_the_polygon_that_the_stroke_reaches_first() {
+    use vale_app::globe::combine::PolygonMode;
+    use vale_store::{Feature, Geometry};
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
+    let id = picks.polygon.layer;
+    // A second polygon east of the square.
+    let east = vec![[20.0, -25.0], [30.0, -25.0], [30.0, -12.0], [20.0, -12.0]];
+    let feature = Feature::new(Geometry::Polygons(vec![vec![east]]), Default::default());
+    let east = FeatureRef {
+        layer: id,
+        uuid: feature.uuid(),
+    };
+    assert!(h.state_mut().doc.project.add_feature(id, feature));
+    select_layer(&mut h, id);
+    tap(&mut h, POLYGON);
+    h.state_mut().globe.line.polygon_mode = PolygonMode::Add;
+    h.state_mut().globe.snap.on = false;
+    let before = geometry_of(&h, east);
+    // From the gap, west into the square, and then east into the other
+    // polygon.
+    pen_way(
+        &mut h,
+        &[
+            [15.0, -20.0],
+            [5.0, -20.0],
+            [5.0, -17.0],
+            [25.0, -17.0],
+            [25.0, -20.0],
+        ],
+    );
+    h.run_steps(3);
+    assert!(inside_polygon(&geometry_of(&h, picks.polygon), 15.0, -18.5));
+    assert_eq!(geometry_of(&h, east), before);
+    assert_eq!(line_features(&h, id).len(), 2);
+}
+
+#[test]
 fn add_and_subtract_change_polygons_in_one_undo_step_each() {
     use vale_app::globe::combine::PolygonMode;
     let dir = tempfile::tempdir().unwrap();
@@ -8655,18 +8693,18 @@ fn add_and_subtract_change_polygons_in_one_undo_step_each() {
         assert_eq!(&geometry_of(h, picks.polygon), after);
     };
 
-    // Add, from inside the square out to the east.
+    // Add, from the east into the square and back out. The stroke starts
+    // away from the polygon.
     let added = stroke(
         &mut h,
-        &[[5.0, -18.0], [16.0, -18.0], [16.0, -14.0], [5.0, -14.0]],
+        &[[16.0, -18.0], [5.0, -18.0], [5.0, -14.0], [16.0, -14.0]],
     );
     assert!(inside_polygon(&added, 13.0, -16.0));
     assert!(inside_polygon(&added, -5.0, -20.0));
     undo_redo(&mut h, &before, &added);
 
-    // Subtract from the selected polygon, through it.
+    // Subtract, through the polygon.
     h.state_mut().globe.line.polygon_mode = PolygonMode::Subtract;
-    h.state_mut().feature_selection = vec![picks.polygon];
     let cut = stroke(
         &mut h,
         &[[-2.0, -28.0], [2.0, -28.0], [2.0, -9.0], [-2.0, -9.0]],
@@ -8679,8 +8717,7 @@ fn add_and_subtract_change_polygons_in_one_undo_step_each() {
     assert!(inside_polygon(&cut, -6.0, -18.0));
     undo_redo(&mut h, &added, &cut);
 
-    // With no selection, Subtract cuts a hole in the polygon under it.
-    h.state_mut().feature_selection.clear();
+    // Subtract inside the polygon cuts a hole.
     let holed = stroke(
         &mut h,
         &[[-8.0, -22.0], [-4.0, -22.0], [-4.0, -16.0], [-8.0, -16.0]],
