@@ -331,6 +331,9 @@ fn atlas_buttons(ui: &mut egui::Ui, state: &mut AppState) {
         if ui.button(ADD_MAP_FRAME).clicked() {
             atlas::add_frame(state);
         }
+        if ui.button(super::region::MAP_FROM_REGION).clicked() {
+            super::region::start(state);
+        }
         for kind in atlas::ItemKind::ALL {
             if ui.button(kind.name()).clicked() {
                 atlas::add_item(state, kind);

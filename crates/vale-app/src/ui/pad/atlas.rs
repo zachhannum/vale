@@ -18,6 +18,7 @@ use super::{Card, CardTitle, GRATICULE, WORKSPACES, WORLDS, WORLDS_LEAD, WORLDS_
 use super::{NO_LAYERS, layer_icon, rule, save_mark, show_card, theme, toggle_worlds, worlds_menu};
 use crate::atlas::{self as math, PAGE_PRESETS};
 use crate::ui::atlas::{self, AtlasSelection, AtlasTool, ClassColor, FrameTab};
+use crate::ui::region;
 use crate::ui::{Action, AppState, ExportFormat, Workspace};
 
 pub const SELECT: &str = "Select";
@@ -605,7 +606,7 @@ fn menu_card(ctx: &egui::Context, id: &str, rect: Rect, contents: impl FnOnce(&m
 }
 
 fn add_menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
-    let rows = 1 + atlas::ItemKind::ALL.len();
+    let rows = 2 + atlas::ItemKind::ALL.len();
     let size = vec2(ADD_WIDTH, 10.0 + rows as f32 * PANEL_ROW + 10.0);
     let left = (rects.actions.right() - size.x).max(rects.screen.left() + geometry::PANEL_GAP);
     let rect = Rect::from_min_size(pos2(left, rects.actions.bottom() + PAD), size);
@@ -617,6 +618,9 @@ fn add_menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, 
         if widgets::text_row(ui, controls, MAP_FRAME, 0.0, false, true).clicked() {
             atlas::add_frame(state);
             state.atlas.add = false;
+        }
+        if widgets::text_row(ui, controls, region::MAP_FROM_REGION, 0.0, false, true).clicked() {
+            region::start(state);
         }
         for kind in atlas::ItemKind::ALL {
             if widgets::text_row(ui, controls, kind.name(), 0.0, false, true).clicked() {
@@ -1612,6 +1616,11 @@ fn projection_tab(
         .unwrap_or_else(|| spec.kind.name().to_string());
     if widgets::open_row(ui, controls, PROJECTION, &shown).clicked() {
         state.atlas.kinds = !state.atlas.kinds;
+    }
+    if let Some(reason) = atlas::suggestion_reason(state, id) {
+        let text = egui::RichText::new(reason).color(theme::MUTE);
+        ui.add(egui::Label::new(text).truncate());
+        ui.add_space(4.0);
     }
     if state.atlas.kinds {
         for kind in ProjectionKind::ALL {

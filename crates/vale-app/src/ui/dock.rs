@@ -649,6 +649,9 @@ fn display_name(d: RasterDisplay) -> &'static str {
 fn projection_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
     let map = frame.map;
     let spec = state.doc.projection(map);
+    if let Some(reason) = atlas::suggestion_reason(state, frame.id) {
+        ui.add(egui::Label::new(egui::RichText::new(reason).weak()).truncate());
+    }
     for k in ProjectionKind::ALL {
         if ui.selectable_label(spec.kind == k, k.name()).clicked() {
             atlas::set_projection_kind(state, frame.id, k);

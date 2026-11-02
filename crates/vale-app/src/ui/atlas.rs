@@ -20,13 +20,15 @@ use vale_store::RasterId;
 use super::pad::theme;
 use super::{AppState, LayerRef};
 use crate::atlas::{self as math, FrameTarget, Handle, PT_PER_MM, PagePreset, Vertex};
+use crate::document::Document;
 use crate::globe::backdrop::{Canvas, REDUCTION, Scene, SceneCallback};
 use crate::globe::flat::FlatMesh;
 use crate::globe::gpu::Mask;
 use crate::globe::nav::Nav;
 use crate::globe::{FrameDraw, FramePlace};
 use crate::page_snap;
-use crate::pipeline::Quality;
+use crate::pipeline::{Pipeline, Quality};
+use crate::region::{Region, RegionKind, fit, suggest};
 use crate::view::{View, ViewTransform};
 
 pub mod measure;
@@ -590,6 +592,8 @@ pub struct AtlasState {
     view_of: Option<PageId>,
     /// Frames snap to the layout of the page.
     pub snap: bool,
+    /// The suggested projection of the last frame of a region.
+    pub suggestion: Option<Suggestion>,
     /// The guides of the snaps of the drag, in page millimeters.
     pub guides: Vec<page_snap::Guide>,
     /// Shift or a second finger locks the angle of the edges of a vertex.
@@ -803,6 +807,7 @@ impl Default for AtlasState {
             mask_count: 0,
             meshes: Vec::new(),
             snap: true,
+            suggestion: None,
             guides: Vec::new(),
             lock: false,
             held: false,
@@ -907,6 +912,15 @@ pub fn sync(state: &mut AppState) {
     if a.vertex.is_some_and(|v| !vertex_ok(v)) {
         a.vertex = None;
     }
+    let suggested = a.suggestion.as_ref().is_some_and(|s| {
+        a.selection == AtlasSelection::Frame(s.frame)
+            && a.tab == FrameTab::Projection
+            && atlas.frame(s.frame).is_some_and(|f| f.map == s.map)
+            && atlas.map(s.map).is_some_and(|m| m.projection == s.proj)
+    });
+    if !suggested {
+        a.suggestion = None;
+    }
     a.images.retain(|id, _| atlas.frame(*id).is_some());
     a.decors.retain(|id, _| atlas.frame(*id).is_some());
     a.spills.retain(|id, _| atlas.frame(*id).is_some());
@@ -954,23 +968,79 @@ pub fn selected_map(state: &AppState) -> MapId {
 /// Adds a frame to the open page and selects it. The frame shows a new
 /// map, or a map that no frame shows.
 pub fn add_frame(state: &mut AppState) -> Option<FrameId> {
+    let (id, _) = place_frame(state, |_, _, frame| frame)?;
+    state.atlas.tab = FrameTab::Frame;
+    Some(id)
+}
+
+/// Adds a frame of a new map, or of a map that no frame shows, to the open
+/// page, and selects it. `setup` gives the map its projection and changes
+/// the new frame.
+fn place_frame(
+    state: &mut AppState,
+    setup: impl FnOnce(&mut Document, &mut Pipeline, FrameRecord) -> FrameRecord,
+) -> Option<(FrameId, MapId)> {
     let page = open_page(state).clone();
     let atlas = &mut state.doc.project.atlas;
     let map_id = atlas.unshown_map().unwrap_or_else(|| atlas.add_map());
-    let map = atlas.map(map_id)?.clone();
-    let projection = match state.pipeline.projection(&state.doc, map_id) {
-        Ok(p) => p,
-        Err(e) => {
-            state.status = format!("{e:#}");
-            return None;
-        }
+    let frame = {
+        let map = state.doc.project.atlas.map(map_id)?.clone();
+        let base = match state.pipeline.projection(&state.doc, map_id) {
+            Ok(p) => math::new_frame(&page, &map, p),
+            Err(e) => {
+                state.status = format!("{e:#}");
+                return None;
+            }
+        };
+        setup(&mut state.doc, &mut state.pipeline, base)
     };
-    let frame = math::new_frame(&page, &map, projection);
     let id = state.doc.project.atlas.add_frame(page.id, frame)?;
     state.atlas.selection = AtlasSelection::Frame(id);
     state.atlas.vertex = None;
-    state.atlas.tab = FrameTab::Frame;
+    Some((id, map_id))
+}
+
+/// The projection that the app suggested for a new frame of a region. It
+/// lasts until the frame or its Projection tab closes, or the projection
+/// changes. It is not saved.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Suggestion {
+    pub frame: FrameId,
+    pub map: MapId,
+    pub kind: RegionKind,
+    /// The suggested projection, as the map stores it.
+    proj: String,
+}
+
+/// Adds a frame of a new map to the open page, with the suggested
+/// projection of `region` and the region in view. The frame opens on the
+/// Projection tab.
+pub fn add_region_map(state: &mut AppState, region: &Region) -> Option<FrameId> {
+    let (kind, spec) = suggest(region);
+    let (id, map) = place_frame(state, |doc, pipeline, mut frame| {
+        doc.set_projection(frame.map, spec);
+        if let Ok(projection) = pipeline.projection(doc, frame.map) {
+            let shape = math::shape_bbox(&frame.shape);
+            let (center, scale) = fit(projection, region, kind, shape.width(), shape.height());
+            frame.center = center;
+            frame.scale = scale;
+        }
+        frame
+    })?;
+    state.atlas.tab = FrameTab::Projection;
+    state.atlas.suggestion = Some(Suggestion {
+        frame: id,
+        map,
+        kind,
+        proj: spec.to_proj(),
+    });
     Some(id)
+}
+
+/// The reason for the projection of a frame, if the app suggested it.
+pub fn suggestion_reason(state: &AppState, id: FrameId) -> Option<&'static str> {
+    let s = state.atlas.suggestion.as_ref().filter(|s| s.frame == id)?;
+    Some(s.kind.reason())
 }
 
 /// Changes a frame with the projection of its map. The frame changes only

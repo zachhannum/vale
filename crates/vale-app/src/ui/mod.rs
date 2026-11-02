@@ -47,6 +47,7 @@ pub mod pad;
 pub mod panels;
 pub mod point_form;
 pub mod raster_form;
+pub mod region;
 pub mod select;
 pub mod style_editor;
 pub mod world_form;
@@ -478,6 +479,8 @@ pub struct AppState {
     pub feature_selection: Vec<crate::globe::select::FeatureRef>,
     /// The drag of the Select tool.
     pub select_drag: Option<select::SelectDrag>,
+    /// The command that makes a map from a region, while it waits.
+    pub region: Option<region::RegionMode>,
     /// The fields of the one selected feature.
     pub selection_form: Option<select::SelectionForm>,
     /// The path of the Measure tool, in both workspaces.
@@ -597,6 +600,7 @@ impl AppState {
             point_form: None,
             feature_selection: Vec::new(),
             select_drag: None,
+            region: None,
             selection_form: None,
             measure: Measure::default(),
             measure_of: (Workspace::default(), vale_store::PageId(0)),
@@ -2185,6 +2189,9 @@ impl AppState {
         self.selection = None;
         self.feature_selection.clear();
         self.selection_form = None;
+        self.region = None;
+        self.globe.region = false;
+        self.atlas.suggestion = None;
         self.select(None);
         self.raster_form = None;
         self.import_note = None;
@@ -3469,6 +3476,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     point_form::desktop(ui.ctx(), state);
     if state.workspace == Workspace::Globe {
         select::desktop(ui.ctx(), state);
+        region::desktop(ui.ctx(), state);
     }
     font_dialog::show(ui.ctx(), state);
     state.frames += 1;

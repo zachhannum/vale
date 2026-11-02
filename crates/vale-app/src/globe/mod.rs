@@ -35,6 +35,7 @@ pub mod math;
 pub mod nav;
 pub mod polygon;
 pub mod preview;
+pub mod region;
 pub mod reshape;
 pub mod rivers;
 pub mod select;
@@ -816,6 +817,9 @@ pub struct Globe {
     pub measure_press: crate::measure::TapPress,
     /// The press of the Select tool.
     pub select_press: select::SelectPress,
+    /// A box drag makes a map from a region. The press of the Select tool
+    /// reads the drag.
+    pub region: bool,
     /// The last tap of the Measure tool: its screen position and the place
     /// under it.
     measure_tap: Option<(Pos2, V3)>,
@@ -940,6 +944,7 @@ impl Globe {
             point_done: None,
             measure_press: Default::default(),
             select_press: Default::default(),
+            region: false,
             measure_tap: None,
             channels_sent: false,
             test_wanted: None,

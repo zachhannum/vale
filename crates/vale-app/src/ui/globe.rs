@@ -115,7 +115,7 @@ fn brush_input(
         if globe.measuring() && !globe.importing() {
             measure_input(ui, rect, resp, globe, &queue, from_queue);
         }
-        if globe.selecting() && !globe.importing() {
+        if (globe.selecting() || globe.region) && !globe.importing() {
             return select_input(ui, rect, resp, globe, &queue, from_queue);
         }
         return Painting::default();
@@ -911,6 +911,7 @@ pub(super) fn canvas_input(
     state.poll_line();
     state.poll_point();
     state.poll_measure();
+    state.poll_region();
     state.poll_select();
     measure_keys(ui, state);
     super::select::keys(ui, state);
@@ -1074,6 +1075,7 @@ pub(super) fn paint_canvas(
         painter.line(line, stroke);
     }
     super::select::paint(&painter, state);
+    super::region::paint(&painter, state);
     if state.globe.nav.active() || more {
         ui.ctx().request_repaint();
     }
