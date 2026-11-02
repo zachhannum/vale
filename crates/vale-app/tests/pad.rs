@@ -170,7 +170,28 @@ fn type_value(h: &mut Pad, name: &str, text: &str) {
 #[allow(dead_code)]
 fn step(h: &mut Pad, name: &str, up: bool) {
     let button = if up { "Increase" } else { "Decrease" };
-    tap(h, &format!("{button} {name}"));
+    // A `tap` lasts long enough to repeat.
+    quick_tap(h, &format!("{button} {name}"));
+}
+
+/// The control `name`, or the value field of the stepper `name`.
+fn row_of(h: &Pad, name: &str) -> Option<Rect> {
+    control(h, name).or_else(|| control(h, &format!("{name} value")))
+}
+
+/// A drag on the slider `name`, along its track, that is longer than the
+/// track. It moves the value to the highest end with `up`, or else to the
+/// lowest end.
+fn slide_to_end(h: &mut Pad, name: &str, up: bool) {
+    let rect = control(h, name).unwrap_or_else(|| panic!("no control `{name}`"));
+    let length = rect.width().max(rect.height()) + 40.0;
+    let sign = if up { 1.0 } else { -1.0 };
+    let along = if rect.height() > rect.width() {
+        vec2(0.0, -sign * length)
+    } else {
+        vec2(sign * length, 0.0)
+    };
+    drag(h, rect.center(), rect.center() + along, None);
 }
 
 /// A tap of a finger on the middle of a control, with each half of the
@@ -350,7 +371,11 @@ fn check_controls(h: &Pad, what: &str) {
                 use vale_app::ui::pad::widgets::{COPY, PASTE};
                 c.name == COPY || c.name == PASTE
             };
-            let covered = popup && (row(a) != row(b) || edit(a) != edit(b));
+            // The value field of a vertical slider is at the top of the
+            // slider, and it takes the touches there.
+            let field = |a: &str, b: &str| b.strip_suffix(" value") == Some(a);
+            let own = field(&a.name, &b.name) || field(&b.name, &a.name);
+            let covered = own || popup && (row(a) != row(b) || edit(a) != edit(b));
             let free = !a.rect.shrink(0.5).intersects(b.rect.shrink(0.5));
             assert!(free || covered, "{what}: {name} and {} overlap", b.name);
         }
@@ -979,24 +1004,16 @@ fn the_values_of_a_raster_layer_have_the_unit_and_the_range_of_the_layer() {
     brush.strength_m = 1500.0;
     assert_eq!(brush.strength_value(), 500.0);
 
-    // The sliders of the Brush panel go over the range of the layer.
+    // The levels of the Brush panel go over the range of the layer, in 240
+    // steps.
     tap(&mut h, "Brush settings");
-    let slider = control(&h, "Brush floor level").unwrap();
-    let y = slider.center().y;
-    drag(
-        &mut h,
-        pos2(slider.center().x, y),
-        pos2(slider.right() + 40.0, y),
-        None,
-    );
+    type_value(&mut h, "Brush floor level", "9000");
     assert_eq!(h.state().globe.brush.floor_m, 4000.0);
-    drag(
-        &mut h,
-        pos2(slider.center().x, y),
-        pos2(slider.left() - 40.0, y),
-        None,
-    );
+    type_value(&mut h, "Brush floor level", "0");
     assert_eq!(h.state().globe.brush.floor_m, 0.0);
+    step(&mut h, "Brush floor level", true);
+    let floor = h.state().globe.brush.floor_m;
+    assert!((floor - 4000.0 / 240.0).abs() < 1e-9, "{floor}");
 
     // A height layer has meters, as before.
     h.state_mut().select(Some(LayerRef::Raster(height)));
@@ -1414,7 +1431,8 @@ fn the_opacity_slider_changes_the_layer_and_is_one_undo_step() {
         assert_eq!(opacity(&h), 0.0, "{what}");
         assert_eq!(saves(&h), saved + 1, "{what}");
 
-        // A tap on the track sets a whole percent.
+        // A tap on the track changes nothing, and a typed value sets a whole
+        // percent.
         let middle = pos2(slider.center().x + 3.3, y);
         touch(&mut h, egui::TouchPhase::Start, middle, None);
         step_and_save(&mut h, true);
@@ -1422,13 +1440,17 @@ fn the_opacity_slider_changes_the_layer_and_is_one_undo_step() {
         for _ in 0..3 {
             step_and_save(&mut h, false);
         }
-        let half = opacity(&h);
-        assert!(half > 0.3 && half < 0.7, "{what}: {half}");
-        assert_eq!((half * 100.0).round() / 100.0, half, "{what}");
+        assert_eq!(opacity(&h), 0.0, "{what}");
+        type_value(&mut h, OPACITY, "42.4");
+        step_and_save(&mut h, false);
+        // The change saves after a short wait.
+        let later = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        h.state_mut().save_tick(false, later);
+        assert_eq!(opacity(&h), 0.42, "{what}");
         assert_eq!(saves(&h), saved + 2, "{what}");
 
-        // One undo puts back the opacity from before the tap, and the next
-        // one puts back the opacity from before the drag.
+        // One undo puts back the opacity from before the typed value, and the
+        // next one puts back the opacity from before the drag.
         tap(&mut h, "Undo");
         assert_eq!(opacity(&h), 0.0, "{what}");
         tap(&mut h, "Undo");
@@ -2184,13 +2206,14 @@ fn a_mode_of_the_flyout_sets_the_mode_and_the_face_of_the_cell() {
 
     // The Brush panel has the angle in the Weather mode only.
     tap(&mut h, "Brush settings");
-    assert!(control(&h, "Brush angle").is_none());
+    assert!(control(&h, "Brush angle value").is_none());
     choose_mode(&mut h, "Weather");
     assert_eq!(h.state().globe.brush.mode, Mode::Weather);
     assert!(h.state().pad.is_open(Panel::Brush));
-    let rect = control(&h, "Brush angle").unwrap();
-    drag(&mut h, rect.center(), rect.right_center(), None);
+    type_value(&mut h, "Brush angle", "30");
     assert!((h.state().globe.brush.talus_deg - 20.0).abs() < 1e-9);
+    step(&mut h, "Brush angle", false);
+    assert!((h.state().globe.brush.talus_deg - 10.0).abs() < 1e-9);
 }
 
 #[test]
@@ -2222,8 +2245,7 @@ fn the_brush_panel_of_the_noise_mode_has_its_settings() {
     assert!(control(&h, "Brush strength").is_none());
     check_controls(&h, "the Noise mode");
     screenshot::save(&mut h, "pad-noise");
-    let rect = control(&h, "Brush scale").unwrap();
-    drag(&mut h, rect.center(), rect.left_center(), None);
+    slide_to_end(&mut h, "Brush scale", false);
     assert!((h.state().globe.brush.scale_km - 5.0).abs() < 1e-9);
     // The Invert switch shows with the ridged noise only.
     assert!(!switch_is_on(&h, "Brush ridged"));
@@ -2236,30 +2258,27 @@ fn the_brush_panel_of_the_noise_mode_has_its_settings() {
     assert!(switch_is_on(&h, "Brush invert"));
     check_controls(&h, "the inverted ridged noise");
     assert_eq!(h.state().globe.brush.noise_relief, 0.5);
-    let rect = control(&h, "Brush relief").unwrap();
-    drag(&mut h, rect.center(), rect.right_center(), None);
+    slide_to_end(&mut h, "Brush relief", true);
     assert_eq!(h.state().globe.brush.noise_relief, 1.0);
     // The Grain slider goes from no grain to features 10 times longer along
     // the stroke.
     assert_eq!(h.state().globe.brush.noise_grain, 0.0);
-    let rect = control(&h, "Brush grain").unwrap();
-    drag(&mut h, rect.center(), rect.right_center(), None);
+    slide_to_end(&mut h, "Brush grain", true);
     assert_eq!(h.state().globe.brush.noise_grain, 9.0);
-    drag(&mut h, rect.center(), rect.left_center(), None);
+    slide_to_end(&mut h, "Brush grain", false);
     assert_eq!(h.state().globe.brush.noise_grain, 0.0);
     // Each of the two sliders goes to 0 apart from the other.
-    let rect = control(&h, "Brush lower").unwrap();
-    drag(&mut h, rect.center(), rect.left_center(), None);
+    slide_to_end(&mut h, "Brush lower", false);
     let brush = &h.state().globe.brush;
     assert_eq!((brush.noise_raise_m, brush.noise_lower_m), (1500.0, 0.0));
-    let rect = control(&h, "Brush raise").unwrap();
-    drag(&mut h, rect.center(), rect.left_center(), None);
+    slide_to_end(&mut h, "Brush raise", false);
     assert_eq!(h.state().globe.brush.noise_raise_m, 0.0);
-    drag(&mut h, rect.center(), rect.right_center(), None);
+    slide_to_end(&mut h, "Brush raise", true);
     assert_eq!(h.state().globe.brush.noise_raise_m, 6000.0);
-    let rect = control(&h, "Brush seed").unwrap();
-    drag(&mut h, rect.center(), rect.right_center(), None);
+    type_value(&mut h, "Brush seed", "999");
     assert_eq!(h.state().doc.project.world.seed, 999);
+    step(&mut h, "Brush seed", false);
+    assert_eq!(h.state().doc.project.world.seed, 998);
 }
 
 #[test]
@@ -2303,15 +2322,13 @@ fn the_brush_panel_has_the_two_sliders_of_the_uplift_mode() {
     );
     assert_eq!(toggled(&h, TERRAIN), Some(true));
     // The strength slider sets the rate of the uplift.
-    let rect = control(&h, "Brush strength").unwrap();
-    drag(&mut h, rect.center(), rect.right_center(), None);
+    slide_to_end(&mut h, "Brush strength", true);
     assert!((h.state().globe.brush.strength_m - 6000.0).abs() < 1e-6);
-    let rect = control(&h, "Brush erosion").unwrap();
-    drag(&mut h, rect.center(), rect.left_center(), None);
+    slide_to_end(&mut h, "Brush erosion", false);
     assert_eq!(h.state().globe.brush.erosion, 0.0);
-    drag(&mut h, rect.left_center(), rect.right_center(), None);
+    slide_to_end(&mut h, "Brush erosion", true);
     assert_eq!(h.state().globe.brush.erosion, 1.0);
-    assert!(control(&h, "Brush angle").is_some());
+    assert!(control(&h, "Brush angle value").is_some());
     check_controls(&h, "the Uplift mode");
 }
 
@@ -2336,8 +2353,7 @@ fn the_brush_panel_has_the_wind_and_the_rain_shadow_of_the_erode_and_uplift_mode
         assert_eq!((world.wind_deg, world.rain_shadow), (270.0, 0.0));
         let r = control(&h, ROWS[0]).unwrap();
         finger_tap(&mut h, pos2(r.right() - 4.0, r.center().y));
-        let r = control(&h, ROWS[1]).unwrap();
-        drag(&mut h, r.center(), r.right_center(), None);
+        slide_to_end(&mut h, ROWS[1], true);
         let world = &h.state().doc.project.world;
         assert_eq!((world.wind_deg, world.rain_shadow), (90.0, 1.0), "{mode:?}");
         let rain = Rain {
@@ -2359,6 +2375,7 @@ fn switch_is_on(h: &Pad, name: &str) -> bool {
 fn the_brush_panel_has_the_floor_and_the_ceiling() {
     const SWITCHES: [&str; 2] = ["Brush floor", "Brush ceiling"];
     const LEVELS: [&str; 2] = ["Brush floor level", "Brush ceiling level"];
+    const FIELDS: [&str; 2] = ["Brush floor level value", "Brush ceiling level value"];
     for mode in [
         None,
         Some("Erode"),
@@ -2377,7 +2394,7 @@ fn the_brush_panel_has_the_floor_and_the_ceiling() {
         let brush = h.state().globe.brush;
         assert!(!brush.floor_on && !brush.ceiling_on, "{what}");
         assert_eq!((brush.floor_m, brush.ceiling_m), (0.0, 1000.0), "{what}");
-        for (switch, level) in SWITCHES.iter().zip(LEVELS) {
+        for (switch, level) in SWITCHES.iter().zip(FIELDS) {
             assert!(!switch_is_on(&h, switch), "{what}: {switch}");
             assert!(control(&h, level).is_none(), "{what}: {level}");
         }
@@ -2388,35 +2405,36 @@ fn the_brush_panel_has_the_floor_and_the_ceiling() {
         let brush = h.state().globe.brush;
         assert!(brush.floor_on && !brush.ceiling_on, "{what}");
         assert!(switch_is_on(&h, SWITCHES[0]) && !switch_is_on(&h, SWITCHES[1]));
-        assert!(control(&h, LEVELS[0]).is_some() && control(&h, LEVELS[1]).is_none());
-        // The switch and its level are two rows of the panel, and the track
-        // of the level is as wide as the track of the size.
-        let (switch, level) = (control(&h, SWITCHES[0]), control(&h, LEVELS[0]));
-        let (switch, level) = (switch.unwrap(), level.unwrap());
+        assert!(control(&h, FIELDS[0]).is_some() && control(&h, FIELDS[1]).is_none());
+        // The switch and its level are two rows of the panel, and the
+        // stepper of the level ends at the right of the row.
+        let switch = control(&h, SWITCHES[0]).unwrap();
+        let plus = control(&h, &format!("Increase {}", LEVELS[0])).unwrap();
         let size = control(&h, "Brush size").unwrap();
-        assert_eq!(level.top(), switch.bottom(), "{what}");
-        assert_eq!(switch.x_range(), size.x_range(), "{what}");
-        assert_eq!(level.x_range(), size.x_range(), "{what}");
+        let below = plus.center().y - switch.center().y;
+        assert_eq!(below, switch.height(), "{what}");
+        assert_eq!(switch.left(), size.left(), "{what}");
+        assert_eq!(plus.right(), switch.right(), "{what}");
 
         tap(&mut h, SWITCHES[1]);
         let brush = h.state().globe.brush;
         assert!(brush.floor_on && brush.ceiling_on, "{what}");
         check_controls(&h, &format!("{what} with the limits on"));
 
-        // A drag on a level sets the meters, in steps of 50 m.
-        let rect = control(&h, LEVELS[0]).unwrap();
-        drag(&mut h, rect.center(), rect.left_center(), None);
+        // A level has the meters of the layer, in steps of 50 m.
+        type_value(&mut h, LEVELS[0], "-9000");
         assert_eq!(h.state().globe.brush.floor_m, -6000.0, "{what}");
-        let to = rect.center() + vec2(-17.0, 0.0);
-        drag(&mut h, rect.left_center(), to, None);
+        type_value(&mut h, LEVELS[0], "-1234");
         let floor = h.state().globe.brush.floor_m;
-        assert!(floor < 0.0 && floor > -3000.0, "{what}: {floor}");
-        assert_eq!(floor % 50.0, 0.0, "{what}: {floor}");
-        let rect = control(&h, LEVELS[1]).unwrap();
-        drag(&mut h, rect.center(), rect.right_center(), None);
+        assert_eq!(floor, -1250.0, "{what}");
+        step(&mut h, LEVELS[0], true);
+        assert_eq!(h.state().globe.brush.floor_m, -1200.0, "{what}");
+        step(&mut h, LEVELS[0], false);
+        assert_eq!(h.state().globe.brush.floor_m, floor, "{what}");
+        type_value(&mut h, LEVELS[1], "6000");
         assert_eq!(h.state().globe.brush.ceiling_m, 6000.0, "{what}");
         // The floor can be above the ceiling.
-        drag(&mut h, rect.right_center(), rect.left_center(), None);
+        type_value(&mut h, LEVELS[1], "-6000");
         let brush = h.state().globe.brush;
         assert_eq!(brush.ceiling_m, -6000.0, "{what}");
         assert!(brush.floor_m > brush.ceiling_m, "{what}");
@@ -2429,7 +2447,7 @@ fn the_brush_panel_has_the_floor_and_the_ceiling() {
         let brush = h.state().globe.brush;
         assert!(!brush.floor_on && brush.ceiling_on, "{what}");
         assert_eq!(brush.floor_m, floor, "{what}");
-        assert!(control(&h, LEVELS[0]).is_none() && control(&h, LEVELS[1]).is_some());
+        assert!(control(&h, FIELDS[0]).is_none() && control(&h, FIELDS[1]).is_some());
         assert_eq!(brush.limits().floor, 0, "{what}");
     }
 
@@ -2442,7 +2460,7 @@ fn the_brush_panel_has_the_floor_and_the_ceiling() {
         h.run_steps(2);
         check_controls(&h, &format!("{size:?} with the limits on"));
         let shown = |h: &Pad| {
-            let names = SWITCHES.iter().chain(&LEVELS);
+            let names = SWITCHES.iter().chain(&FIELDS);
             names.filter(|name| control(h, name).is_some()).count()
         };
         let sheet = h.state().pad.rects.unwrap().sheet.is_some();
@@ -2451,7 +2469,7 @@ fn the_brush_panel_has_the_floor_and_the_ceiling() {
         }
         // The card is too short for the rows. A finger that moves up on a
         // slider scrolls the rows and does not move the slider.
-        const SLIDERS: [&str; 3] = ["Brush angle", "Brush rain shadow", "Brush erosion"];
+        const SLIDERS: [&str; 3] = ["Brush rain shadow", "Brush erosion", "Brush strength"];
         for _ in 0..3 {
             if shown(&h) == 4 {
                 break;
@@ -2467,6 +2485,154 @@ fn the_brush_panel_has_the_floor_and_the_ceiling() {
         tap(&mut h, SWITCHES[1]);
         assert!(!h.state().globe.brush.ceiling_on, "{size:?}");
     }
+}
+
+/// The brush size of the brush that follows the zoom, in points, after a
+/// touch on `path`, at each place of the path.
+fn sizes_along(h: &mut Pad, path: &[Pos2]) -> Vec<f32> {
+    let mut sizes = Vec::new();
+    for (i, at) in path.iter().enumerate() {
+        let phase = if i == 0 {
+            egui::TouchPhase::Start
+        } else {
+            egui::TouchPhase::Move
+        };
+        touch(h, phase, *at, None);
+        h.step();
+        sizes.push(h.state().globe.brush.size_points);
+    }
+    touch(h, egui::TouchPhase::End, *path.last().unwrap(), None);
+    h.run_steps(3);
+    sizes
+}
+
+/// The distance on the track that moves the size of the Brush panel from
+/// `from` to `to`, in points.
+fn size_distance(h: &Pad, from: f32, to: f32) -> f32 {
+    // The track has a log scale, and it ends 72 + 13 points from the left
+    // of the row and 8 + 13 points from the value field.
+    let globe = &h.state().globe;
+    let world_km = h.state().doc.project.world.radius_km;
+    let range = globe.brush.radius_km_range(globe.radius(), world_km);
+    let span = (range.end() / range.start()).ln() as f32;
+    let row = control(h, "Brush size").unwrap();
+    let length = row.width() - 72.0 - 13.0 - 8.0 - 13.0;
+    (to / from).ln() / span * length
+}
+
+#[test]
+fn a_drag_on_the_size_moves_it_by_the_distance_of_the_drag() {
+    let mut h = pad(BOARDS[0]);
+    tap(&mut h, "Brush settings");
+    h.state_mut().globe.brush.size_points = 20.0;
+    h.run_steps(2);
+    let c = control(&h, "Brush size").unwrap().center();
+
+    // A touch with no drag changes nothing.
+    let sizes = sizes_along(&mut h, &[c]);
+    assert_eq!(sizes, [20.0]);
+    assert_eq!(h.state().globe.brush.size_points, 20.0);
+
+    // A drag of 60 points moves the thumb by 60 points, from where it was.
+    let to = c + vec2(60.0, 0.0);
+    let path: Vec<_> = (0..=6).map(|i| c.lerp(to, i as f32 / 6.0)).collect();
+    sizes_along(&mut h, &path);
+    let size = h.state().globe.brush.size_points;
+    let moved = size_distance(&h, 20.0, size);
+    assert!((moved - 60.0).abs() < 1.0, "{size} {moved}");
+}
+
+#[test]
+fn a_drag_far_from_the_track_moves_the_size_8_times_less() {
+    // The change of a 40 point move, on the track or 200 points below it.
+    let moved = |below: f32| {
+        let mut h = pad(BOARDS[0]);
+        tap(&mut h, "Brush settings");
+        h.state_mut().globe.brush.size_points = 20.0;
+        h.run_steps(2);
+        let c = control(&h, "Brush size").unwrap().center();
+        let start = c + vec2(10.0, 0.0);
+        let down = start + vec2(0.0, below);
+        let path = [
+            c,
+            start,
+            down,
+            down + vec2(20.0, 0.0),
+            down + vec2(40.0, 0.0),
+        ];
+        let sizes = sizes_along(&mut h, &path);
+        size_distance(&h, sizes[2], sizes[4])
+    };
+    let (near, far) = (moved(0.0), moved(200.0));
+    assert!((near - 40.0).abs() < 1.0, "{near}");
+    assert!((far - 5.0).abs() < 0.5, "{far}");
+}
+
+#[test]
+fn a_tap_on_the_size_value_opens_the_keypad_and_a_typed_size_sets_it() {
+    let mut h = pad(BOARDS[0]);
+    tap(&mut h, "Brush settings");
+    let km = |h: &Pad| {
+        let globe = &h.state().globe;
+        let world_km = h.state().doc.project.world.radius_km;
+        globe.brush.radius_km(globe.radius(), world_km)
+    };
+    let range = {
+        let globe = &h.state().globe;
+        let world_km = h.state().doc.project.world.radius_km;
+        globe.brush.radius_km_range(globe.radius(), world_km)
+    };
+    assert!(range.contains(&1000.0), "{range:?}");
+    assert!(control(&h, "Brush size value 1").is_none());
+    tap(&mut h, "Brush size value");
+    assert!(control(&h, "Brush size value 1").is_some());
+    for c in ["1", "0", "0", "0", "Done"] {
+        tap(&mut h, &format!("Brush size value {c}"));
+    }
+    assert!(control(&h, "Brush size value 1").is_none());
+    assert!((km(&h) - 1000.0).abs() < 0.01, "{}", km(&h));
+}
+
+#[test]
+fn the_ceiling_level_is_a_stepper_of_50_m_and_takes_a_typed_level() {
+    let mut h = pad(BOARDS[1]);
+    tap(&mut h, "Brush settings");
+    tap(&mut h, "Brush ceiling");
+    assert_eq!(h.state().globe.brush.ceiling_m, 1000.0);
+    step(&mut h, "Brush ceiling level", true);
+    assert_eq!(h.state().globe.brush.ceiling_m, 1050.0);
+    step(&mut h, "Brush ceiling level", false);
+    step(&mut h, "Brush ceiling level", false);
+    assert_eq!(h.state().globe.brush.ceiling_m, 950.0);
+    type_value(&mut h, "Brush ceiling level", "1200");
+    assert_eq!(h.state().globe.brush.ceiling_m, 1200.0);
+}
+
+#[test]
+fn the_brush_panel_locks_the_size_and_sets_the_flatten_level() {
+    use vale_app::ui::pad::{FLATTEN_LEVEL, LOCK_SIZE, PICK_LEVEL, STROKE_START};
+    let mut h = pad(BOARDS[1]);
+    tap(&mut h, "Brush settings");
+    assert!(h.state().globe.brush.lock.is_none());
+    tap(&mut h, LOCK_SIZE);
+    assert!(h.state().globe.brush.lock.is_some());
+    assert!(control(&h, PICK_LEVEL).is_none());
+
+    choose_mode(&mut h, "Flatten");
+    assert_eq!(h.state().globe.brush.flatten_level, None);
+    assert!(h.query_by_label("Level at stroke start").is_some());
+    tap(&mut h, PICK_LEVEL);
+    assert!(h.state().globe.pick_level);
+    let brush = &mut h.state_mut().globe.brush;
+    brush.flatten_level = Some(brush.level(1000.0));
+    h.run_steps(2);
+    type_value(&mut h, FLATTEN_LEVEL, "1200");
+    let brush = h.state().globe.brush;
+    let level = brush.value(brush.flatten_level.unwrap());
+    assert!((level - 1200.0).abs() < 0.2, "{level}");
+    tap(&mut h, STROKE_START);
+    assert_eq!(h.state().globe.brush.flatten_level, None);
+    check_controls(&h, "the Flatten mode");
 }
 
 #[test]
@@ -2487,22 +2653,23 @@ fn the_brush_panel_has_the_two_sliders_of_the_warp_mode() {
     );
     // The strength slider sets the offset in kilometers.
     let meters = s.globe.brush.strength_m;
-    let rect = control(&h, "Brush strength").unwrap();
-    drag(&mut h, rect.center(), rect.right_center(), None);
+    slide_to_end(&mut h, "Brush strength", true);
     assert!((h.state().globe.brush.warp_km - 500.0).abs() < 1e-6);
     assert_eq!(h.state().globe.brush.strength_m, meters);
-    let rect = control(&h, "Brush scale").unwrap();
-    drag(&mut h, rect.center(), rect.left_center(), None);
+    slide_to_end(&mut h, "Brush scale", false);
     assert!((h.state().globe.brush.scale_km - 5.0).abs() < 1e-9);
-    drag(&mut h, rect.left_center(), rect.right_center(), None);
+    slide_to_end(&mut h, "Brush scale", true);
     assert!((h.state().globe.brush.scale_km - 2000.0).abs() < 1e-6);
-    // The seed slider sets the seed of the world.
+    // The seed stepper sets the seed of the world.
     assert_eq!(h.state().doc.project.world.seed, 0);
-    let rect = control(&h, "Brush seed").unwrap();
-    drag(&mut h, rect.center(), rect.right_center(), None);
+    // The minus button is off at the lowest seed.
+    assert!(control(&h, "Decrease Brush seed").is_none());
+    step(&mut h, "Brush seed", true);
+    assert_eq!(h.state().doc.project.world.seed, 1);
+    type_value(&mut h, "Brush seed", "999");
     assert_eq!(h.state().doc.project.world.seed, 999);
     assert_eq!(h.state().globe.world_seed, 999);
-    assert!(control(&h, "Brush angle").is_none());
+    assert!(control(&h, "Brush angle value").is_none());
     check_controls(&h, "the Warp mode");
 }
 
@@ -2543,8 +2710,9 @@ fn edge_age_line(h: &Pad) -> String {
 fn the_brush_panel_has_the_five_sliders_of_the_ocean_ridge_mode() {
     let mut h = pad(BOARDS[0]);
     tap(&mut h, "Brush settings");
+    let field = |h: &Pad, row: &str| control(h, &format!("{row} value"));
     for row in RIDGE_ROWS {
-        assert!(control(&h, row).is_none(), "{row}");
+        assert!(field(&h, row).is_none(), "{row}");
     }
     assert!(control(&h, "Brush hardness").is_some());
     choose_mode(&mut h, "Ocean ridge");
@@ -2555,7 +2723,7 @@ fn the_brush_panel_has_the_five_sliders_of_the_ocean_ridge_mode() {
     );
     assert_eq!(ridge_values(&h), [-700.0, 25.0, 0.0, 400.0, 100.0]);
     for row in RIDGE_ROWS {
-        assert!(control(&h, row).is_some(), "{row}");
+        assert!(field(&h, row).is_some(), "{row}");
     }
     assert!(h.query_by_label(&edge_age_line(&h)).is_some());
     // The size and the flow stay. The mode has no hardness and no strength.
@@ -2563,38 +2731,33 @@ fn the_brush_panel_has_the_five_sliders_of_the_ocean_ridge_mode() {
         assert!(control(&h, row).is_some(), "{row}");
     }
     for row in ["Brush hardness", "Brush strength", "Brush seed"] {
-        assert!(control(&h, row).is_none(), "{row}");
+        assert!(field(&h, row).is_none(), "{row}");
     }
-    // Each slider sets its value from one end of its range to the other.
+    // Each row takes the values from one end of its range to the other, and
+    // a typed value past an end gives the end.
     let ends = [
-        (-6000.0, 6000.0),
-        (10.0, 150.0),
-        (-0.25, 0.15),
-        (100.0, 1500.0),
-        (0.0, 500.0),
+        (("-9000", -6000.0), ("9000", 6000.0)),
+        (("0", 10.0), ("900", 150.0)),
+        (("-90", -0.25), ("90", 0.15)),
+        (("0", 100.0), ("9000", 1500.0)),
+        (("-5", 0.0), ("900", 500.0)),
     ];
-    for (i, (row, (low, high))) in RIDGE_ROWS.into_iter().zip(ends).enumerate() {
-        let rect = control(&h, row).unwrap();
-        drag(&mut h, rect.center(), rect.left_center(), None);
-        assert!((ridge_values(&h)[i] - low).abs() < 1e-6, "{row}");
-        drag(&mut h, rect.left_center(), rect.right_center(), None);
-        assert!((ridge_values(&h)[i] - high).abs() < 1e-6, "{row}");
+    for (i, (row, ends)) in RIDGE_ROWS.into_iter().zip(ends).enumerate() {
+        for (text, value) in [ends.0, ends.1] {
+            type_value(&mut h, row, text);
+            assert!((ridge_values(&h)[i] - value).abs() < 1e-6, "{row} {text}");
+        }
     }
-    // The edge age follows the spreading.
-    let rect = control(&h, "Brush spreading").unwrap();
-    drag(&mut h, rect.right_center(), rect.center(), None);
-    let spread = h.state().globe.brush.ridge_spread_mm;
-    assert!(spread > 10.0 && spread < 150.0 && spread.fract() == 0.0);
+    // The edge age follows the spreading, in steps of 1 mm/yr.
+    type_value(&mut h, "Brush spreading", "60");
+    step(&mut h, "Brush spreading", false);
+    assert_eq!(h.state().globe.brush.ridge_spread_mm, 59.0);
     assert!(h.query_by_label(&edge_age_line(&h)).is_some());
     // The crest moves in steps of 50 m.
-    let rect = control(&h, "Brush crest").unwrap();
-    let part = rect.left_center().lerp(rect.right_center(), 0.37);
-    drag(&mut h, rect.right_center(), part, None);
-    let crest = h.state().globe.brush.ridge_crest_m;
-    assert!(
-        crest > -6000.0 && crest < 6000.0 && crest % 50.0 == 0.0,
-        "{crest}"
-    );
+    step(&mut h, "Brush crest", false);
+    assert_eq!(h.state().globe.brush.ridge_crest_m, 5950.0);
+    type_value(&mut h, "Brush crest", "1234");
+    assert_eq!(h.state().globe.brush.ridge_crest_m, 1250.0);
     check_controls(&h, "the Ocean ridge mode");
 }
 
@@ -2617,8 +2780,9 @@ fn the_ocean_ridge_mode_fits_on_the_smallest_ipad() {
     let (_, panel) = h.state().pad.panels[0];
     assert!(screen.contains_rect(panel), "{panel:?}");
     let rows = ["Brush size", "Brush flow"].into_iter().chain(RIDGE_ROWS);
-    for row in rows.chain(["Brush floor", "Brush ceiling"]) {
-        let rect = control(&h, row).unwrap_or_else(|| panic!("no control `{row}`"));
+    let fields = rows.map(|row| format!("{row} value"));
+    for row in fields.chain(["Brush floor", "Brush ceiling"].map(String::from)) {
+        let rect = control(&h, &row).unwrap_or_else(|| panic!("no control `{row}`"));
         assert!(panel.contains_rect(rect), "{row}: {rect:?} in {panel:?}");
     }
     let line = h.get_by_label(&edge_age_line(&h)).rect();
@@ -2632,10 +2796,10 @@ fn the_ocean_ridge_mode_fits_on_the_smallest_ipad() {
     assert!(brush.floor_on && brush.ceiling_on);
     let (_, panel) = h.state().pad.panels[0];
     assert!(screen.contains_rect(panel), "{panel:?}");
-    let from = control(&h, "Brush offset").unwrap().center();
+    let from = control(&h, "Brush magma").unwrap().center();
     drag(&mut h, from, from - vec2(4.0, 200.0), None);
     assert_eq!(h.state().globe.brush, brush);
-    for row in ["Brush floor level", "Brush ceiling level"] {
+    for row in ["Brush floor level value", "Brush ceiling level value"] {
         let rect = control(&h, row).unwrap_or_else(|| panic!("no control `{row}`"));
         assert!(panel.contains_rect(rect), "{row}: {rect:?} in {panel:?}");
     }
@@ -2683,12 +2847,12 @@ fn the_brush_panel_has_the_sliders_of_the_range_mode() {
     let mut h = pad(BOARDS[0]);
     tap(&mut h, "Brush settings");
     for row in ["Brush spacing", "Brush seed", "Brush erosion"] {
-        assert!(control(&h, row).is_none(), "{row}");
+        assert!(row_of(&h, row).is_none(), "{row}");
     }
     choose_mode(&mut h, "Range");
     assert_eq!(h.state().globe.brush.mode, Mode::Range);
     for row in ["Brush size", "Brush flow"].into_iter().chain(RANGE_ROWS) {
-        assert!(control(&h, row).is_some(), "{row}");
+        assert!(row_of(&h, row).is_some(), "{row}");
     }
     for row in [
         "Brush hardness",
@@ -2696,23 +2860,20 @@ fn the_brush_panel_has_the_sliders_of_the_range_mode() {
         "Brush crest",
         "Brush scale",
     ] {
-        assert!(control(&h, row).is_none(), "{row}");
+        assert!(row_of(&h, row).is_none(), "{row}");
     }
     // The spacing goes from one end of its range to the other.
     assert_eq!(h.state().globe.brush.range_spacing_km, 30.0);
-    let rect = control(&h, "Brush spacing").unwrap();
-    drag(&mut h, rect.center(), rect.left_center(), None);
+    slide_to_end(&mut h, "Brush spacing", false);
     assert!((h.state().globe.brush.range_spacing_km - 5.0).abs() < 1e-9);
-    drag(&mut h, rect.left_center(), rect.right_center(), None);
+    slide_to_end(&mut h, "Brush spacing", true);
     assert!((h.state().globe.brush.range_spacing_km - 300.0).abs() < 1e-6);
-    // The seed slider sets the seed of the world, as in the Warp mode.
-    let rect = control(&h, "Brush seed").unwrap();
-    drag(&mut h, rect.center(), rect.right_center(), None);
+    // The seed stepper sets the seed of the world, as in the Warp mode.
+    type_value(&mut h, "Brush seed", "999");
     assert_eq!(h.state().doc.project.world.seed, 999);
     assert_eq!(h.state().globe.world_seed, 999);
     // The erosion is the erosion of the Uplift mode.
-    let rect = control(&h, "Brush erosion").unwrap();
-    drag(&mut h, rect.center(), rect.left_center(), None);
+    slide_to_end(&mut h, "Brush erosion", false);
     assert_eq!(h.state().globe.brush.erosion, 0.0);
     choose_mode(&mut h, "Uplift");
     assert_eq!(h.state().globe.brush.erosion, 0.0);
@@ -2764,7 +2925,7 @@ fn the_brush_panel_has_the_sliders_of_the_basin_mode() {
     choose_mode(&mut h, "Basin");
     assert_eq!(h.state().globe.brush.mode, Mode::Basin);
     for row in BASIN_ROWS {
-        assert!(control(&h, row).is_some(), "{row}");
+        assert!(row_of(&h, row).is_some(), "{row}");
     }
     // The outline sets the size of a basin.
     for row in [
@@ -2776,18 +2937,16 @@ fn the_brush_panel_has_the_sliders_of_the_basin_mode() {
         "Brush floodplain",
         "Brush angle",
     ] {
-        assert!(control(&h, row).is_none(), "{row}");
+        assert!(row_of(&h, row).is_none(), "{row}");
     }
     // The density goes from one end of its range to the other.
     assert_eq!(h.state().globe.brush.basin_density_km, 40.0);
-    let rect = control(&h, "Brush density").unwrap();
-    drag(&mut h, rect.center(), rect.left_center(), None);
+    slide_to_end(&mut h, "Brush density", false);
     assert!((h.state().globe.brush.basin_density_km - 10.0).abs() < 1e-9);
-    drag(&mut h, rect.left_center(), rect.right_center(), None);
+    slide_to_end(&mut h, "Brush density", true);
     assert!((h.state().globe.brush.basin_density_km - 500.0).abs() < 1e-6);
-    // The seed slider sets the seed of the world.
-    let rect = control(&h, "Brush seed").unwrap();
-    drag(&mut h, rect.center(), rect.right_center(), None);
+    // The seed stepper sets the seed of the world.
+    type_value(&mut h, "Brush seed", "999");
     assert_eq!(h.state().globe.world_seed, 999);
     check_controls(&h, "the Basin mode");
 }
@@ -2842,7 +3001,7 @@ fn the_range_mode_fits_on_the_smallest_ipad() {
     let rows = ["Brush size", "Brush flow"].into_iter().chain(RANGE_ROWS);
     for row in rows.chain(["Brush floor", "Brush ceiling"]) {
         for _ in 0..4 {
-            if control(&h, row).is_some_and(|rect| panel.contains_rect(rect)) {
+            if row_of(&h, row).is_some_and(|rect| panel.contains_rect(rect)) {
                 break;
             }
             let from = control(&h, "Brush flow")
@@ -2851,7 +3010,7 @@ fn the_range_mode_fits_on_the_smallest_ipad() {
                 .center();
             drag(&mut h, from, from - vec2(4.0, 120.0), None);
         }
-        let rect = control(&h, row).unwrap_or_else(|| panic!("no control `{row}`"));
+        let rect = row_of(&h, row).unwrap_or_else(|| panic!("no control `{row}`"));
         assert!(panel.contains_rect(rect), "{row}: {rect:?} in {panel:?}");
         check_controls(&h, &format!("744 high with the Range panel at {row}"));
     }
@@ -2873,28 +3032,29 @@ fn the_brush_panel_has_the_channel_rows_of_the_carve_and_erode_modes() {
         ("Push", [false, false]),
     ] {
         choose_mode(&mut h, mode);
-        let shown = [control(&h, width).is_some(), control(&h, plain).is_some()];
+        let shown = [row_of(&h, width).is_some(), row_of(&h, plain).is_some()];
         assert_eq!(shown, rows, "{mode}");
     }
     choose_mode(&mut h, "Carve");
     assert_eq!(h.state().globe.brush.mode, Mode::Carve);
     check_controls(&h, "the Carve mode");
-    // The channel width goes from one end of its logarithmic range to the
-    // other.
+    // The channel width goes from one end of its range to the other, and
+    // its buttons go through 1, 2, 5, 10.
     let brush = h.state().globe.brush;
     assert_eq!((brush.channel_km, brush.floodplain_km), (0.6, 10.0));
-    let rect = control(&h, width).unwrap();
-    drag(&mut h, rect.center(), rect.left_center(), None);
+    step(&mut h, width, true);
+    assert!((h.state().globe.brush.channel_km - 1.0).abs() < 1e-9);
+    type_value(&mut h, width, "0");
     assert!((h.state().globe.brush.channel_km - 0.05).abs() < 1e-9);
-    drag(&mut h, rect.left_center(), rect.right_center(), None);
+    type_value(&mut h, width, "99");
     assert!((h.state().globe.brush.channel_km - 10.0).abs() < 1e-6);
     // The floodplain has steps of 1 km.
-    let rect = control(&h, plain).unwrap();
-    drag(&mut h, rect.center(), rect.right_center(), None);
+    type_value(&mut h, plain, "999");
     assert_eq!(h.state().globe.brush.floodplain_km, 100.0);
-    drag(&mut h, rect.right_center(), rect.center(), None);
-    let km = h.state().globe.brush.floodplain_km;
-    assert!(km < 100.0 && km == km.round(), "{km}");
+    step(&mut h, plain, false);
+    assert_eq!(h.state().globe.brush.floodplain_km, 99.0);
+    type_value(&mut h, plain, "12.4");
+    assert_eq!(h.state().globe.brush.floodplain_km, 12.0);
     // The Erode mode has the same channel width.
     choose_mode(&mut h, "Erode");
     assert!((h.state().globe.brush.channel_km - 10.0).abs() < 1e-6);
@@ -6205,16 +6365,9 @@ fn the_snap_controls_work_with_a_pen_a_finger_and_a_mouse() {
             assert!(!snap(&h)[i], "{what}: {name} after a mouse");
             tap(&mut h, name);
         }
-        let slider = control(&h, SNAP_DISTANCE).unwrap();
-        let y = slider.center().y;
-        finger_tap(&mut h, pos2(slider.left() + 1.0, y));
+        slide_to_end(&mut h, SNAP_DISTANCE, false);
         assert_eq!(h.state().globe.snap.distance, 4.0, "{what}");
-        drag(
-            &mut h,
-            pos2(slider.left() + 1.0, y),
-            pos2(slider.right() - 1.0, y),
-            None,
-        );
+        slide_to_end(&mut h, SNAP_DISTANCE, true);
         assert_eq!(h.state().globe.snap.distance, 32.0, "{what}");
     }
 }
@@ -7965,15 +8118,17 @@ fn the_panel_of_an_image_layer_works_with_a_finger() {
         // The brush paints no image.
         assert!(!h.state().globe.paintable, "{what}");
 
-        // A tap on the track sets a whole percent.
+        // A drag to the left lowers the opacity in whole percents.
         let slider = control(&h, OPACITY).unwrap();
-        let middle = pos2(slider.center().x + 3.3, slider.center().y);
-        touch(&mut h, egui::TouchPhase::Start, middle, None);
-        h.step();
-        touch(&mut h, egui::TouchPhase::End, middle, None);
-        h.run_steps(3);
+        drag(
+            &mut h,
+            slider.center(),
+            slider.center() - vec2(80.0, 0.0),
+            None,
+        );
         let opacity = h.state().doc.project.image(id).unwrap().opacity;
-        assert!(opacity > 0.3 && opacity < 0.7, "{what}: {opacity}");
+        assert!(opacity > 0.0 && opacity < 1.0, "{what}: {opacity}");
+        assert_eq!((opacity * 100.0).round() / 100.0, opacity, "{what}");
 
         tap(&mut h, raster::BLEND);
         assert_eq!(h.state().pad.page, Some(Page::Blend), "{what}");
