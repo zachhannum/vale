@@ -41,6 +41,7 @@ pub mod reshape;
 pub mod rivers;
 pub mod select;
 pub mod snap;
+pub mod split;
 pub mod stats;
 pub mod stops;
 pub mod stroke_test;

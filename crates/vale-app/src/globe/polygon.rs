@@ -79,9 +79,21 @@ pub(super) fn path_length(path: &[PathVertex]) -> f64 {
 /// not the first again. An arc between two exact vertices is an arc of a
 /// target, and it stays as it is.
 pub(super) fn densify(path: &[PathVertex]) -> Vec<PathVertex> {
+    densify_path(path, true)
+}
+
+/// The open path with more vertices on each long arc.
+pub(super) fn densify_open(path: &[PathVertex]) -> Vec<PathVertex> {
+    densify_path(path, false)
+}
+
+fn densify_path(path: &[PathVertex], closed: bool) -> Vec<PathVertex> {
     let mut out = Vec::with_capacity(path.len());
     for (i, &a) in path.iter().enumerate() {
         out.push(a);
+        if !closed && i + 1 == path.len() {
+            break;
+        }
         let b = path[(i + 1) % path.len()];
         if matches!((a, b), (PathVertex::Exact(_), PathVertex::Exact(_))) {
             continue;
@@ -106,11 +118,11 @@ struct Node {
 /// The simple rings of the area that a closed path encloses, with the
 /// inside on the left.
 pub(super) fn rings(path: &[PathVertex]) -> Vec<Vec<PathVertex>> {
-    let nodes = unspike(path);
+    let nodes = unspike(path, true);
     if nodes.len() < 3 {
         return Vec::new();
     }
-    let graph = Graph::new(&[nodes]);
+    let graph = Graph::new(&[(nodes, true)]);
     let faces = graph.faces();
     let Some(outer) = faces.iter().max_by(|a, b| {
         let area = |f: &Vec<usize>| graph.area(f).rem_euclid(2.0 * TAU);
@@ -138,51 +150,133 @@ pub(super) fn overlay(
     paths: &[Vec<PathVertex>],
     keep: impl Fn(V3) -> bool,
 ) -> Vec<Vec<PathVertex>> {
-    let cycles: Vec<Vec<Node>> = paths
+    let cycles: Vec<(Vec<Node>, bool)> = paths
         .iter()
-        .map(|p| unspike(p))
-        .filter(|c| c.len() >= 3)
+        .map(|p| (unspike(p, true), true))
+        .filter(|c| c.0.len() >= 3)
         .collect();
     if cycles.is_empty() {
         return Vec::new();
     }
     let graph = Graph::new(&cycles);
     let faces = graph.faces();
-    let mut face_of = vec![0; graph.half.len()];
-    let mut kept = Vec::with_capacity(faces.len());
-    for (k, face) in faces.iter().enumerate() {
-        for &h in face {
-            face_of[h] = k;
-        }
-        kept.push(keep(graph.inside(face)));
-    }
+    let face_of = graph.face_of(&faces);
+    let kept: Vec<bool> = faces.iter().map(|f| keep(graph.inside(f))).collect();
     let boundary = |h: usize| kept[face_of[h]] && !kept[face_of[h ^ 1]];
-    let mut used = vec![false; graph.half.len()];
-    let mut out = Vec::new();
-    for start in 0..graph.half.len() {
-        if used[start] || !boundary(start) {
-            continue;
-        }
-        let mut walk = Vec::new();
-        let mut h = start;
-        while !used[h] {
-            used[h] = true;
-            let half = &graph.half[h];
-            walk.push((half.to, graph.arrival(half)));
-            // The first boundary edge clockwise from the way back. The
-            // areas between are kept.
-            h = graph.next(h);
-            while !boundary(h) {
-                h = graph.clockwise(h);
-            }
-        }
-        out.extend(loops(walk));
-    }
-    out
+    graph
+        .walk(boundary)
+        .into_iter()
+        .flat_map(|(_, rings)| rings)
+        .collect()
 }
 
-/// The nodes of a closed path, with no step out and back on itself.
-fn unspike(path: &[PathVertex]) -> Vec<Node> {
+/// The pieces of the area between closed paths that `inside` holds, where
+/// an open path cuts it from side to side. Each piece is its simple rings,
+/// with the inside on the left. Two pieces share the vertices of the cut.
+/// A piece with an area below `min_area` joins the piece next to it. A part
+/// of the area that the path does not cut goes to the piece that holds it,
+/// or else to the largest piece. A path that does not cut gives `None`.
+pub(super) fn cut(
+    paths: &[Vec<PathVertex>],
+    stroke: &[PathVertex],
+    inside: impl Fn(V3) -> bool,
+    min_area: f64,
+) -> Option<Vec<Vec<Vec<PathVertex>>>> {
+    let mut all: Vec<(Vec<Node>, bool)> = paths
+        .iter()
+        .map(|p| (unspike(p, true), true))
+        .filter(|c| c.0.len() >= 3)
+        .collect();
+    let stroke = unspike(stroke, false);
+    if all.is_empty() || stroke.len() < 2 {
+        return None;
+    }
+    all.push((stroke, false));
+    let graph = Graph::new(&all);
+    let faces = graph.faces();
+    let face_of = graph.face_of(&faces);
+    let kept: Vec<bool> = faces.iter().map(|f| inside(graph.inside(f))).collect();
+    let size = |rings: &[Vec<PathVertex>]| -> f64 {
+        (rings.iter())
+            .map(|r| signed_area(&dirs(r)).rem_euclid(2.0 * TAU))
+            .sum()
+    };
+    let across = |h: usize| graph.half[h].stroke && kept[face_of[h]] && kept[face_of[h ^ 1]];
+    // The area of each kept face, from its simple rings.
+    let mut area = vec![0.0; faces.len()];
+    let each = |h: usize| kept[face_of[h]] && face_of[h] != face_of[h ^ 1];
+    for (h, rings) in graph.walk(each) {
+        area[face_of[h]] += size(&rings);
+    }
+    let mut piece: Vec<usize> = (0..faces.len()).collect();
+    for h in (0..graph.half.len()).filter(|&h| across(h)) {
+        let (a, b) = (face_of[h], face_of[h ^ 1]);
+        if area[a] < min_area || area[b] < min_area {
+            union(&mut piece, a, b);
+        }
+    }
+    let piece: Vec<usize> = (0..faces.len()).map(|f| find(&mut piece, f)).collect();
+    let mut cut = vec![false; faces.len()];
+    for h in (0..graph.half.len()).filter(|&h| across(h)) {
+        let (a, b) = (piece[face_of[h]], piece[face_of[h ^ 1]]);
+        if a != b {
+            cut[a] = true;
+        }
+    }
+    if !cut.contains(&true) {
+        return None;
+    }
+    // The faces that the stroke touches. Each one is a disk, so a piece
+    // there has no other outline.
+    let mut parent: Vec<usize> = (0..graph.points.len()).collect();
+    for e in &graph.half {
+        union(&mut parent, e.from, e.to);
+    }
+    let stroke_part = (graph.half.iter())
+        .find(|e| e.stroke)
+        .map(|e| find(&mut parent, e.from))?;
+    let boundary = |h: usize| {
+        let (a, b) = (face_of[h], face_of[h ^ 1]);
+        kept[a] && (!kept[b] || piece[a] != piece[b])
+    };
+    let mut pieces: Vec<Vec<Vec<PathVertex>>> = Vec::new();
+    let mut index = vec![usize::MAX; faces.len()];
+    let mut rest = Vec::new();
+    for (h, rings) in graph.walk(boundary) {
+        let f = piece[face_of[h]];
+        if cut[f] && find(&mut parent, graph.half[h].from) == stroke_part {
+            if index[f] == usize::MAX {
+                index[f] = pieces.len();
+                pieces.push(Vec::new());
+            }
+            pieces[index[f]].extend(rings);
+        } else {
+            rest.extend(rings);
+        }
+    }
+    let largest = (0..pieces.len())
+        .max_by(|&a, &b| size(&pieces[a]).total_cmp(&size(&pieces[b])))
+        .expect("a piece");
+    let shells: Vec<Vec<Vec<V3>>> = pieces
+        .iter()
+        .map(|p| p.iter().map(|r| dirs(r)).collect())
+        .collect();
+    for ring in rest {
+        let p = ring[0].dir();
+        let holder = (0..pieces.len())
+            .find(|&k| {
+                shells[k]
+                    .iter()
+                    .any(|r| super::vector::contains(std::slice::from_ref(r), p))
+            })
+            .unwrap_or(largest);
+        pieces[holder].push(ring);
+    }
+    Some(pieces)
+}
+
+/// The nodes of a path, with no step out and back on itself.
+fn unspike(path: &[PathVertex], closed: bool) -> Vec<Node> {
     let same = |a: &Node, b: &Node| angle(a.dir, b.dir) < SAME;
     let mut out: Vec<Node> = Vec::new();
     for &v in path {
@@ -199,7 +293,7 @@ fn unspike(path: &[PathVertex]) -> Vec<Node> {
             out.push(node);
         }
     }
-    loop {
+    while closed {
         let n = out.len();
         if n >= 2 && same(&out[0], &out[n - 1]) {
             let last = out.pop().expect("a node");
@@ -224,6 +318,8 @@ struct Half {
     /// The node of the path at `to`, if `to` is one, and true if the edge
     /// goes against the path.
     arrive: Option<(usize, bool)>,
+    /// The edge is a part of an open path.
+    stroke: bool,
 }
 
 /// The ring split at each place where it crosses or touches itself. The
@@ -241,36 +337,41 @@ struct Graph {
 }
 
 impl Graph {
-    /// The graph of closed cycles of nodes.
-    fn new(cycles: &[Vec<Node>]) -> Self {
-        let nodes: Vec<Node> = cycles.iter().flatten().cloned().collect();
+    /// The graph of paths of nodes. A closed path is a cycle.
+    fn new(paths: &[(Vec<Node>, bool)]) -> Self {
+        let nodes: Vec<Node> = paths.iter().flat_map(|p| p.0.iter()).cloned().collect();
         let n = nodes.len();
-        // The node after each node in its cycle.
-        let mut succ = Vec::with_capacity(n);
-        for c in cycles {
-            let start = succ.len();
-            succ.extend((1..c.len()).map(|k| start + k));
-            succ.push(start);
+        // The arcs from each node to the next one in its path, and whether
+        // the path is open.
+        let mut arcs: Vec<(usize, usize, bool)> = Vec::with_capacity(n);
+        let mut start = 0;
+        for (c, closed) in paths {
+            arcs.extend((1..c.len()).map(|k| (start + k - 1, start + k, !closed)));
+            if *closed {
+                arcs.push((start + c.len() - 1, start, false));
+            }
+            start += c.len();
         }
+        let m = arcs.len();
         let mut points: Vec<V3> = nodes.iter().map(|v| v.dir).collect();
-        let arc = |i: usize| (i, succ[i]);
+        let arc = |i: usize| (arcs[i].0, arcs[i].1);
         let mut parent: Vec<usize> = (0..n).collect();
         // The places inside each arc, by their angle from its start.
-        let mut splits: Vec<Vec<(f64, usize)>> = vec![Vec::new(); n];
-        let boxes: Vec<([f64; 3], [f64; 3])> = (0..n)
+        let mut splits: Vec<Vec<(f64, usize)>> = vec![Vec::new(); m];
+        let boxes: Vec<([f64; 3], [f64; 3])> = (0..m)
             .map(|i| {
                 let (a, b) = arc(i);
                 bounds(points[a], points[b])
             })
             .collect();
-        let mut order: Vec<usize> = (0..n).collect();
+        let mut order: Vec<usize> = (0..m).collect();
         order.sort_by(|&a, &b| boxes[a].0[0].total_cmp(&boxes[b].0[0]));
         for (k, &i) in order.iter().enumerate() {
             for &j in &order[k + 1..] {
                 if boxes[j].0[0] > boxes[i].1[0] {
                     break;
                 }
-                let adjacent = succ[i] == j || succ[j] == i;
+                let adjacent = arcs[i].1 == arcs[j].0 || arcs[j].1 == arcs[i].0;
                 if adjacent || !overlap(&boxes[i], &boxes[j]) {
                     continue;
                 }
@@ -325,15 +426,18 @@ impl Graph {
                 if u == v || !seen.insert((u.min(v), u.max(v))) {
                     continue;
                 }
+                let stroke = arcs[i].2;
                 half.push(Half {
                     from: u,
                     to: v,
                     arrive: (v == rb).then_some((b, false)),
+                    stroke,
                 });
                 half.push(Half {
                     from: v,
                     to: u,
                     arrive: (u == ra).then_some((a, true)),
+                    stroke,
                 });
             }
         }
@@ -406,6 +510,45 @@ impl Graph {
         faces
     }
 
+    /// The face of each half edge, as an index into `faces`.
+    fn face_of(&self, faces: &[Vec<usize>]) -> Vec<usize> {
+        let mut out = vec![0; self.half.len()];
+        for (k, face) in faces.iter().enumerate() {
+            for &h in face {
+                out[h] = k;
+            }
+        }
+        out
+    }
+
+    /// The simple rings along the half edges that `boundary` chooses, with
+    /// the kept side on the left. Each walk gives its first half edge and
+    /// its rings.
+    fn walk(&self, boundary: impl Fn(usize) -> bool) -> Vec<(usize, Vec<Vec<PathVertex>>)> {
+        let mut used = vec![false; self.half.len()];
+        let mut out = Vec::new();
+        for start in 0..self.half.len() {
+            if used[start] || !boundary(start) {
+                continue;
+            }
+            let mut walk = Vec::new();
+            let mut h = start;
+            while !used[h] {
+                used[h] = true;
+                let half = &self.half[h];
+                walk.push((half.to, self.arrival(half)));
+                // The first boundary edge clockwise from the way back. The
+                // areas between are kept.
+                h = self.next(h);
+                while !boundary(h) {
+                    h = self.clockwise(h);
+                }
+            }
+            out.push((start, loops(walk)));
+        }
+        out
+    }
+
     /// The area on the left of a face, up to a multiple of 4π.
     fn area(&self, face: &[usize]) -> f64 {
         let ring: Vec<V3> = face.iter().map(|&h| self.points[self.half[h].to]).collect();
@@ -460,7 +603,7 @@ fn overlap(a: &([f64; 3], [f64; 3]), b: &([f64; 3], [f64; 3])) -> bool {
 
 /// The place where two short arcs cross. Two arcs on one great circle give
 /// `None`.
-fn crossing(a: V3, b: V3, c: V3, d: V3) -> Option<V3> {
+pub(super) fn crossing(a: V3, b: V3, c: V3, d: V3) -> Option<V3> {
     let (n1, n2) = (cross(a, b), cross(c, d));
     let x = cross(n1, n2);
     if length(x) <= 1e-12 * length(n1) * length(n2) {
