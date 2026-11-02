@@ -9,12 +9,13 @@ use vale_store::{
     TickFrequency, UnitLabelStyle, UnitPosition,
 };
 
-use super::atlas::{keypad_below, panel_width};
+use super::atlas::panel_width;
 use super::geometry::{Rects, TOUCH};
 use super::icons::{self, Icon};
 use super::labels::value_slider;
 use super::raster::heading;
 use super::text_style::{self, TextEvent, TextSpec, rgb_rows};
+use super::widgets::keypad_below;
 use super::widgets::{self, Controls, HIGHLIGHT_INSET, Keys, PANEL_ROW};
 use super::{Card, CardTitle, show_card, theme};
 use crate::ui::atlas::{

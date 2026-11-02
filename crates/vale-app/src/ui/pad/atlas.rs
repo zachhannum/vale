@@ -13,7 +13,7 @@ use super::geometry::{self, GAP, Input, MARGIN, PAD, ROW, Rects, TOUCH, WidthCla
 use super::icons::Icon;
 use super::labels::value_slider;
 use super::text_style;
-use super::widgets::{self, BODY_PAD, Controls, Keys, PANEL_ROW};
+use super::widgets::{self, BODY_PAD, Controls, Keys, PANEL_ROW, keypad_below};
 use super::{Card, CardTitle, GRATICULE, WORKSPACES, WORLDS, WORLDS_LEAD, WORLDS_ROW};
 use super::{NO_LAYERS, layer_icon, rule, save_mark, show_card, theme, toggle_worlds, worlds_menu};
 use crate::atlas::{self as math, PAGE_PRESETS};
@@ -120,8 +120,6 @@ pub const CANCEL_EXPORT: &str = "Cancel export";
 const ACTIONS_WIDTH: f32 = 4.0 * TOUCH + 4.0 * PAD + 9.0 + 2.0 * PAD;
 const ADD_WIDTH: f32 = 220.0;
 const TOOL_CELLS: usize = 3;
-/// The height of the keypad of a field.
-const KEYPAD: f32 = 4.0 * PANEL_ROW;
 /// The smallest space at each side of the text of a tab.
 pub const TAB_PAD: f32 = 12.0;
 
@@ -135,23 +133,6 @@ pub(super) fn panel_width(ctx: &egui::Context) -> f32 {
     let text: f32 = FRAME_TABS.iter().map(|t| text_width(ctx, t)).sum();
     let tabs = text + 2.0 * TAB_PAD * FRAME_TABS.len() as f32 + 2.0 * PAD;
     geometry::RIGHT_PANEL_WIDTH.max(tabs + 2.0 * BODY_PAD)
-}
-
-/// The keypad of the field `name`, below the field, if it is open. The
-/// panel scrolls to show the keypad when it opens.
-pub(super) fn keypad_below(ui: &mut egui::Ui, controls: &mut Controls, name: &str) {
-    let id = egui::Id::new(("pad-atlas-keypad", name));
-    let open = widgets::keypad_field(ui.ctx()).as_deref() == Some(name);
-    let shown = ui.data_mut(|d| std::mem::replace(d.get_temp_mut_or_default::<bool>(id), open));
-    if !open {
-        return;
-    }
-    let top = ui.cursor().top();
-    widgets::keypad(ui, controls, KEYPAD);
-    if !shown {
-        let rect = Rect::from_x_y_ranges(ui.max_rect().x_range(), top..=ui.cursor().top());
-        ui.scroll_to_rect_animation(rect, None, egui::style::ScrollAnimation::none());
-    }
 }
 
 /// The name of a page in the top row and in the title of its panel.

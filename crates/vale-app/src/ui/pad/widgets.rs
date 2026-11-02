@@ -81,7 +81,7 @@ pub fn card(
 /// Makes a rectangle a control. `selected` is the state of a control that
 /// stays on. A control that is not enabled takes no touch. A control is not
 /// in the list while a scroll area cuts it to less than the touch size.
-fn hit(
+pub(super) fn hit(
     ui: &egui::Ui,
     controls: &mut Controls,
     rect: Rect,
@@ -1353,27 +1353,27 @@ impl Key {
 
 /// The text of the field of the open keypad.
 #[derive(Clone)]
-struct KeyEdit {
-    field: egui::Id,
-    name: String,
-    keys: Keys,
-    text: String,
+pub(super) struct KeyEdit {
+    pub(super) field: egui::Id,
+    pub(super) name: String,
+    pub(super) keys: Keys,
+    pub(super) text: String,
     /// The text is the text of the field before the edit. The next key
     /// takes its place.
-    fresh: bool,
+    pub(super) fresh: bool,
     /// A key changed the text since the field read it.
-    changed: bool,
+    pub(super) changed: bool,
 }
 
 fn keypad_id() -> egui::Id {
     egui::Id::new("pad-keypad")
 }
 
-fn key_edit(ctx: &egui::Context) -> Option<KeyEdit> {
+pub(super) fn key_edit(ctx: &egui::Context) -> Option<KeyEdit> {
     ctx.data(|data| data.get_temp(keypad_id()))
 }
 
-fn set_key_edit(ctx: &egui::Context, edit: Option<KeyEdit>) {
+pub(super) fn set_key_edit(ctx: &egui::Context, edit: Option<KeyEdit>) {
     ctx.data_mut(|data| match edit {
         Some(edit) => {
             data.insert_temp(keypad_id(), edit);
@@ -1600,6 +1600,26 @@ pub fn keypad(ui: &mut egui::Ui, controls: &mut Controls, height: f32) -> bool {
     }
     set_key_edit(&ctx, (!done).then_some(edit));
     true
+}
+
+/// The height of the keypad of a field in a panel.
+pub const KEYPAD: f32 = 4.0 * PANEL_ROW;
+
+/// The keypad of the field `name`, below the field, if it is open. The
+/// panel scrolls to show the keypad when it opens.
+pub fn keypad_below(ui: &mut egui::Ui, controls: &mut Controls, name: &str) {
+    let id = egui::Id::new(("pad-atlas-keypad", name));
+    let open = keypad_field(ui.ctx()).as_deref() == Some(name);
+    let shown = ui.data_mut(|d| std::mem::replace(d.get_temp_mut_or_default::<bool>(id), open));
+    if !open {
+        return;
+    }
+    let top = ui.cursor().top();
+    keypad(ui, controls, KEYPAD);
+    if !shown {
+        let rect = Rect::from_x_y_ranges(ui.max_rect().x_range(), top..=ui.cursor().top());
+        ui.scroll_to_rect_animation(rect, None, egui::style::ScrollAnimation::none());
+    }
 }
 
 /// A row of a form with a segmented control: choices of equal width on one

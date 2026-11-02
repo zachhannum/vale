@@ -39,6 +39,7 @@ pub mod geometry;
 pub mod grid_labels;
 pub mod icons;
 pub mod labels;
+pub mod number;
 pub mod raster;
 pub mod rules;
 pub mod text_style;
