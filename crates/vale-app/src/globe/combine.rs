@@ -69,7 +69,9 @@ impl StrokeArea {
     }
 
     fn holds(&self, p: V3) -> bool {
-        self.dirs.iter().any(|r| vector::contains(&[r.clone()], p))
+        self.dirs
+            .iter()
+            .any(|r| vector::contains(std::slice::from_ref(r), p))
     }
 
     /// The stroke starts inside a polygon of the geometry, or within
