@@ -5124,3 +5124,176 @@ fn a_zoomed_frame_loads_the_tiles_of_a_layer_from_the_project_file() {
     assert!(!state.globe.details_loading());
     assert!(state.status.is_empty(), "{}", state.status);
 }
+
+/// Starts Map from region with the globe centered on a place.
+fn start_region(h: &mut Pad, lon: f64, lat: f64) {
+    tap(h, ADD);
+    tap(h, vale_app::ui::region::MAP_FROM_REGION);
+    assert_eq!(h.state().workspace, Workspace::Globe);
+    h.state_mut().globe.view = vale_app::globe::view::GlobeView::centered(lon, lat);
+    h.run_steps(3);
+}
+
+fn globe_at(h: &Pad, lon: f64, lat: f64) -> Pos2 {
+    let dir = vale_app::globe::math::lonlat_to_dir(lon, lat);
+    let pos = h.state().globe.project(dir);
+    pos.unwrap_or_else(|| panic!("{lon}, {lat} does not show"))
+}
+
+/// A pen drag on the globe over 10 W to 10 E, 40 N to 50 N.
+fn drag_region(h: &mut Pad) {
+    start_region(h, 0.0, 45.0);
+    let (from, to) = (globe_at(h, -10.0, 50.0), globe_at(h, 10.0, 40.0));
+    drag(h, from, to, Input::Pen);
+}
+
+#[test]
+fn a_pen_drag_on_the_globe_makes_a_map_centered_on_the_region() {
+    let mut h = pad();
+    let maps = h.state().doc.project.atlas.maps.len();
+    drag_region(&mut h);
+    assert_eq!(h.state().workspace, Workspace::Atlas);
+    assert!(h.state().region.is_none());
+    assert!(h.state().doc.project.atlas.maps.len() >= maps.max(1));
+    let spec = selected_projection(&h);
+    assert_eq!(spec.kind, ProjectionKind::LambertConformal);
+    assert!(spec.lon0.abs() < 1.5, "{spec:?}");
+    assert!((spec.lat0 - 45.0).abs() < 1.0, "{spec:?}");
+    // The parallels are one sixth of the range in from each edge.
+    assert!(((spec.lat0 - spec.lat1) - (spec.lat2 - spec.lat0)).abs() < 1e-9);
+    assert!((spec.lat1 - 41.7).abs() < 1.0, "{spec:?}");
+    assert!((spec.lat2 - 48.3).abs() < 1.0, "{spec:?}");
+    let f = frame(&h, open_page(&h).frames.len() - 1);
+    assert!(f.center[0].abs() < 1.5 && (f.center[1] - 45.0).abs() < 1.0);
+}
+
+#[test]
+fn the_map_of_a_region_is_in_a_new_frame_on_the_open_page_with_the_region_in_view() {
+    let mut h = pad();
+    let page = open_page(&h).id;
+    let frames = open_page(&h).frames.len();
+    drag_region(&mut h);
+    let page = h.state().doc.project.atlas.page(page).unwrap().clone();
+    assert_eq!(open_page(&h).id, page.id);
+    assert_eq!(page.frames.len(), frames + 1);
+    let new = page.frames.last().unwrap().clone();
+    assert_eq!(h.state().atlas.selection, AtlasSelection::Frame(new.id));
+    assert_eq!(h.state().atlas.tab, FrameTab::Projection);
+    let others: Vec<_> = page.frames.iter().map(|f| f.map).collect();
+    assert_eq!(others.iter().filter(|m| **m == new.map).count(), 1);
+    let bbox = shape_bbox(&new.shape);
+    let (min, max) = (
+        screen(&h, Point::new(bbox.x0, bbox.y0)),
+        screen(&h, Point::new(bbox.x1, bbox.y1)),
+    );
+    let shown = Rect::from_min_max(min, max).expand(1.0);
+    for lon in [-10.0, 0.0, 10.0] {
+        for lat in [40.0, 45.0, 50.0] {
+            let at = pos_of(&mut h, frames, [lon, lat]);
+            assert!(
+                shown.contains(at),
+                "{lon}, {lat} at {at:?} is not in {shown:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_finger_drag_in_map_from_region_turns_the_globe() {
+    let mut h = pad();
+    let frames = open_page(&h).frames.len();
+    start_region(&mut h, 0.0, 45.0);
+    let before = globe_at(&h, 0.0, 45.0);
+    drag(&mut h, before, before + vec2(80.0, 0.0), Input::Finger);
+    assert_ne!(globe_at(&h, 0.0, 45.0), before);
+    assert_eq!(h.state().workspace, Workspace::Globe);
+    assert!(h.state().region.is_some());
+    assert_eq!(open_page(&h).frames.len(), frames);
+}
+
+#[test]
+fn the_card_of_map_from_region_closes_back_to_the_atlas() {
+    let mut h = pad();
+    let frames = open_page(&h).frames.len();
+    let tool = h.state().globe.tool;
+    start_region(&mut h, 0.0, 45.0);
+    tap(
+        &mut h,
+        &format!("Close {}", vale_app::ui::region::MAP_FROM_REGION),
+    );
+    assert_eq!(h.state().workspace, Workspace::Atlas);
+    assert!(h.state().region.is_none());
+    assert_eq!(h.state().globe.tool, tool);
+    assert_eq!(open_page(&h).frames.len(), frames);
+}
+
+#[test]
+fn the_projection_tab_of_a_region_frame_shows_the_reason_in_one_line() {
+    let reason = vale_app::region::RegionKind::MidLatitude.reason();
+    let mut h = pad();
+    drag_region(&mut h);
+    let rect = h.get_by_label(reason).rect();
+    assert!(rect.height() < 30.0, "{rect:?}");
+    let id = h.state().atlas.frame().unwrap();
+    atlas::set_projection_kind(h.state_mut(), id, ProjectionKind::Mercator);
+    h.run_steps(3);
+    assert!(h.query_by_label(reason).is_none());
+    atlas::set_projection_kind(h.state_mut(), id, ProjectionKind::LambertConformal);
+    h.run_steps(3);
+    assert!(h.query_by_label(reason).is_some());
+}
+
+#[test]
+fn the_project_file_stores_no_region() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let mut doc = Document::sample();
+    let mut session = Session::open(&path, &mut doc).unwrap();
+    let before = doc.project.atlas.clone();
+    let mut s = state();
+    s.doc = doc;
+    let mut h = pad_with(s, BOARDS[0]);
+    drag_region(&mut h);
+    let mut project = h.state().doc.project.clone();
+    session.flush(&mut project, &mut []).unwrap();
+    drop(session);
+
+    // The same atlas made by hand, with no region, is the atlas of the file.
+    let new = project.atlas.pages.iter().flat_map(|p| &p.frames);
+    let new = new.max_by_key(|f| f.id.0).unwrap().clone();
+    let page = project.atlas.pages.iter().find(|p| p.frames.contains(&new));
+    let mut by_hand = before;
+    let map = by_hand.unshown_map().unwrap_or_else(|| by_hand.add_map());
+    assert_eq!(map, new.map);
+    by_hand.map_mut(map).unwrap().projection = project.atlas.map(map).unwrap().projection.clone();
+    by_hand.add_frame(
+        page.unwrap().id,
+        FrameRecord {
+            id: vale_store::FrameId(0),
+            ..new
+        },
+    );
+    assert_eq!(by_hand, project.atlas);
+
+    let mut doc = Document::sample();
+    let _session = Session::open(&path, &mut doc).unwrap();
+    assert_eq!(doc.project.atlas, project.atlas);
+    let mut s = state();
+    s.doc = doc;
+    let h = pad_with(s, BOARDS[0]);
+    let reason = vale_app::region::RegionKind::MidLatitude.reason();
+    assert!(h.query_by_label(reason).is_none());
+}
+
+#[test]
+fn a_box_around_a_pole_suggests_polar_stereographic() {
+    let mut h = pad();
+    start_region(&mut h, 0.0, 90.0);
+    let (from, to) = (globe_at(&h, -135.0, 70.0), globe_at(&h, 45.0, 70.0));
+    drag(&mut h, from, to, Input::Pen);
+    let spec = selected_projection(&h);
+    assert_eq!(spec.kind, ProjectionKind::PolarStereographic);
+    assert_eq!(spec.lat0, 90.0);
+    let reason = vale_app::region::RegionKind::Polar.reason();
+    assert!(h.query_by_label(reason).is_some());
+}
