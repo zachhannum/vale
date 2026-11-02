@@ -435,6 +435,28 @@ impl Targets {
         }
     }
 
+    /// The feature of the layer `layer` that a stroke from `p` reshapes: the
+    /// feature with the nearest edge within `reach` radians. A stroke from
+    /// the end of a line extends the line, so it reshapes nothing.
+    pub fn reshape(&self, layer: LayerId, p: V3, scale: f64, reach: f64) -> Option<Uuid> {
+        if self.line_end(layer, p, JOIN / scale).is_some() {
+            return None;
+        }
+        let mut best: Option<(f64, Uuid)> = None;
+        for l in self.layers.iter().filter(|l| l.layer == layer) {
+            for e in l.near(p, reach).0 {
+                let (i, k) = l.edges[e as usize];
+                let path = &l.paths[i as usize];
+                let (a, b) = path.ends(k as usize);
+                let d = project(p, a, b).2;
+                if d <= reach && best.is_none_or(|b| d < b.0) {
+                    best = Some((d, path.uuid));
+                }
+            }
+        }
+        best.map(|b| b.1)
+    }
+
     /// The line end in the layer `layer` that is nearest to `p`, within
     /// `reach` radians.
     pub fn line_end(&self, layer: LayerId, p: V3, reach: f64) -> Option<(Uuid, V3)> {
@@ -861,7 +883,8 @@ pub struct Tracer {
     settings: SnapSettings,
     scale: f64,
     layer: LayerId,
-    /// The line that the stroke extends. It is not a target.
+    /// The line that the stroke extends, or the feature that the stroke
+    /// reshapes. It is not a target.
     exclude: Option<Uuid>,
     last: Option<V3>,
     runs: Vec<Run>,
@@ -891,6 +914,13 @@ impl Tracer {
         }
     }
 
+    /// A tracer that does not snap to or trace the feature `uuid`, and does
+    /// not extend a line.
+    pub fn excluding(mut self, uuid: Uuid) -> Self {
+        self.exclude = Some(uuid);
+        self
+    }
+
     fn reach(&self) -> f64 {
         self.settings.distance / self.scale
     }
@@ -902,7 +932,11 @@ impl Tracer {
         self.last = Some(p);
         if first {
             self.free.push(p);
-            if let Some((uuid, end)) = self.targets.line_end(self.layer, p, JOIN / self.scale) {
+            let join = self.exclude.is_none();
+            if let Some((uuid, end)) = join
+                .then(|| self.targets.line_end(self.layer, p, JOIN / self.scale))
+                .flatten()
+            {
                 // The join wins over a snap.
                 self.exclude = Some(uuid);
                 self.joined = Some(end);
@@ -1498,7 +1532,20 @@ pub(super) mod tests {
     }
 
     pub(crate) fn trace(t: &Arc<Targets>, samples: &[V3], s: SnapSettings, layer: u32) -> Vec<Run> {
+        trace_excluding(t, samples, s, layer, None)
+    }
+
+    pub(crate) fn trace_excluding(
+        t: &Arc<Targets>,
+        samples: &[V3],
+        s: SnapSettings,
+        layer: u32,
+        exclude: Option<Uuid>,
+    ) -> Vec<Run> {
         let mut tracer = Tracer::new(Arc::clone(t), s, SCALE, LayerId(layer));
+        if let Some(uuid) = exclude {
+            tracer = tracer.excluding(uuid);
+        }
         for &p in samples {
             tracer.push(p);
         }
@@ -1534,6 +1581,33 @@ pub(super) mod tests {
     fn equator() -> Layer {
         let part = (0..=10).map(|i| [3.0 * f64::from(i), 0.0]).collect();
         layer(1, GeometryKind::Line, vec![Geometry::Lines(vec![part])])
+    }
+
+    #[test]
+    fn a_stroke_from_an_edge_reshapes_its_feature_and_a_stroke_from_an_end_does_not() {
+        let line = equator();
+        let uuid = line.features[0].uuid();
+        let t = targets(&[line]);
+        let reach = 12.0 / SCALE;
+        let at = |lon: f64, lat: f64| dir(lon, lat);
+        assert_eq!(
+            t.reshape(LayerId(1), at(10.0, 0.5), SCALE, reach),
+            Some(uuid)
+        );
+        assert_eq!(t.reshape(LayerId(1), at(0.0, 0.0), SCALE, reach), None);
+        assert_eq!(t.reshape(LayerId(1), at(10.0, 5.0), SCALE, reach), None);
+        assert_eq!(t.reshape(LayerId(2), at(10.0, 0.5), SCALE, reach), None);
+    }
+
+    #[test]
+    fn a_stroke_does_not_trace_or_extend_the_excluded_feature() {
+        let line = equator();
+        let uuid = line.features[0].uuid();
+        let t = Arc::new(targets(&[line]));
+        let samples = pen(&[[0.0, 0.0], [20.0, 0.0], [24.0, 8.0]], 0.5);
+        let runs = trace_excluding(&t, &samples, SnapSettings::default(), 1, Some(uuid));
+        // The start can snap to a vertex of the feature.
+        assert_eq!(kinds(&runs), "VF");
     }
 
     #[test]

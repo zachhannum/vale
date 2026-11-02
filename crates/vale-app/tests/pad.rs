@@ -8385,6 +8385,111 @@ fn selection(h: &Pad) -> Vec<FeatureRef> {
     h.state().feature_selection.clone()
 }
 
+fn geometry_of(h: &Pad, f: FeatureRef) -> vale_store::Geometry {
+    let layer = h.state().doc.project.layer(f.layer).unwrap();
+    let feature = layer.features.iter().find(|x| x.uuid() == f.uuid).unwrap();
+    feature.geometry.clone()
+}
+
+fn inside_polygon(g: &vale_store::Geometry, lon: f64, lat: f64) -> bool {
+    use vale_app::globe::{math::lonlat_to_dir, vector};
+    let vale_store::Geometry::Polygons(polygons) = g else {
+        panic!("not a polygon");
+    };
+    polygons.iter().any(|p| {
+        let rings: Vec<_> = (p.iter().enumerate())
+            .map(|(i, r)| vector::ring(r, i > 0))
+            .collect();
+        vector::contains(&rings, lonlat_to_dir(lon, lat))
+    })
+}
+
+/// A pen stroke through places.
+fn pen_way(h: &mut Pad, way: &[[f64; 2]]) {
+    let path: Vec<Pos2> = way.iter().map(|p| screen_at(h, p[0], p[1])).collect();
+    pen_path(h, &path);
+}
+
+#[test]
+fn a_stroke_from_an_outline_reshapes_the_polygon_in_one_undo_step() {
+    use vale_app::ui::pad::RESHAPE;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
+    select_layer(&mut h, picks.polygon.layer);
+    tap(&mut h, POLYGON);
+    assert_eq!(h.state().globe.tool, Tool::Polygon);
+    assert!(!h.state().globe.line.reshape);
+    tap(&mut h, RESHAPE);
+    assert!(h.state().globe.line.reshape);
+    assert_eq!(toggled(&h, RESHAPE), Some(true));
+    check_controls(&h, "the polygon tool with Reshape");
+    screenshot::save(&mut h, "pad-reshape-switch");
+    h.state_mut().globe.snap.on = false;
+    // The styles of the new layers go in the file first.
+    step_and_save(&mut h, false);
+    h.state_mut().save_waiting().unwrap();
+    let before = geometry_of(&h, picks.polygon);
+    let saved = saves(&h);
+
+    // A bump out of the south side.
+    pen_way(
+        &mut h,
+        &[[-4.0, -25.0], [-4.0, -29.0], [4.0, -29.0], [4.0, -25.0]],
+    );
+    for _ in 0..3 {
+        step_and_save(&mut h, false);
+    }
+    assert_eq!(line_features(&h, picks.polygon.layer).len(), 1);
+    let after = geometry_of(&h, picks.polygon);
+    assert!(inside_polygon(&after, 0.0, -27.0));
+    assert!(inside_polygon(&after, 0.0, -18.0));
+    assert!(!inside_polygon(&before, 0.0, -27.0));
+    assert_eq!(saves(&h), saved + 1);
+
+    tap(&mut h, "Undo");
+    assert_eq!(geometry_of(&h, picks.polygon), before);
+    tap(&mut h, "Redo");
+    assert_eq!(geometry_of(&h, picks.polygon), after);
+}
+
+#[test]
+fn with_reshape_a_stroke_from_a_line_reshapes_it_and_other_strokes_draw_lines() {
+    use vale_app::ui::pad::RESHAPE;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
+    select_layer(&mut h, picks.line.layer);
+    tap(&mut h, LINE);
+    tap(&mut h, RESHAPE);
+    h.state_mut().globe.snap.on = false;
+    pen_way(
+        &mut h,
+        &[[-4.0, 10.0], [-4.0, 14.0], [4.0, 14.0], [4.0, 10.0]],
+    );
+    step_and_save(&mut h, false);
+    assert_eq!(line_features(&h, picks.line.layer).len(), 1);
+    let vale_store::Geometry::Lines(parts) = geometry_of(&h, picks.line) else {
+        panic!("not a line");
+    };
+    assert_eq!(parts.len(), 1);
+    assert_eq!(parts[0][0], [-8.0, 10.0]);
+    assert_eq!(parts[0][parts[0].len() - 1], [8.0, 10.0]);
+    assert!(parts[0].iter().any(|p| p[1] > 13.5));
+    let reshaped = geometry_of(&h, picks.line);
+
+    // A stroke away from the line draws a new line.
+    pen_way(&mut h, &[[-4.0, 20.0], [4.0, 20.0]]);
+    step_and_save(&mut h, false);
+    assert_eq!(line_features(&h, picks.line.layer).len(), 2);
+
+    // With Reshape off, a stroke from the line draws a new line too.
+    tap(&mut h, RESHAPE);
+    assert!(!h.state().globe.line.reshape);
+    pen_way(&mut h, &[[0.0, 10.0], [0.0, 17.0]]);
+    step_and_save(&mut h, false);
+    assert_eq!(line_features(&h, picks.line.layer).len(), 3);
+    assert_eq!(geometry_of(&h, picks.line), reshaped);
+}
+
 #[test]
 fn a_finger_tap_selects_a_small_point_a_line_and_a_polygon_in_each_view() {
     for view in WORLD_VIEWS {

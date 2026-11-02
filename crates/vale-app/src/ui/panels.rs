@@ -61,6 +61,8 @@ pub const MEASURE_TOOL: &str = "Measure";
 pub const SMOOTHING: &str = "Smoothing";
 /// The check box of the terrain fit of the line tool.
 pub const TERRAIN_FIT: &str = "Terrain fit";
+/// The switch that makes a stroke from an outline reshape the feature.
+pub const RESHAPE: &str = "Reshape";
 /// The slider of the balance between the sketch and the terrain.
 pub const BALANCE: &str = "Balance";
 /// The check box that turns all snapping on and off.
@@ -157,6 +159,9 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                         if ui.add(slider).changed() {
                             globe.line.smoothing = percent / 100.0;
                         }
+                    }
+                    if globe.drawing() {
+                        ui.checkbox(&mut globe.line.reshape, RESHAPE);
                     }
                     if globe.lining() {
                         let terrain = globe.fit_layer.is_some();

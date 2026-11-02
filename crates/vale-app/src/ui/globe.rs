@@ -1056,9 +1056,20 @@ pub(super) fn paint_canvas(
     );
     if let Some(line) = globe.line_preview() {
         let mut line = line.to_vec();
-        // The stroke of the polygon tool closes.
-        if globe.filling() && line.len() > 2 {
+        let reshape = globe.reshape_preview();
+        // The stroke of the polygon tool closes, and a stroke that reshapes
+        // stays open.
+        if globe.filling() && reshape.is_none() && line.len() > 2 {
             line.push(line[0]);
+        }
+        // The outline that the stroke reshapes shows in the accent color.
+        let layer = layer.and_then(|id| state.doc.layer(id));
+        let feature = layer.and_then(|l| l.features.iter().find(|f| Some(f.uuid()) == reshape));
+        if let Some(feature) = feature {
+            let outline = egui::Stroke::new(3.0, theme::ACCENT);
+            for run in crate::globe::select::shape(globe, &feature.geometry).lines {
+                painter.line(run, outline);
+            }
         }
         painter.line(line, stroke);
     }

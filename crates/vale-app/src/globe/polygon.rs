@@ -20,11 +20,11 @@ use super::math::{V3, angle, cross, dot, length, normalize};
 use super::snap::{PathVertex, Run, append, distance_to_arc, slerp};
 
 /// A shorter stroke is a tap, and it makes no polygon.
-const MIN_LENGTH: f64 = 3.0;
+pub(super) const MIN_LENGTH: f64 = 3.0;
 /// A smaller area, in square points, is no polygon.
-const MIN_AREA: f64 = 1.0;
+pub(super) const MIN_AREA: f64 = 1.0;
 /// Two points nearer than this, in radians, are at one place.
-const SAME: f64 = 1e-9;
+pub(super) const SAME: f64 = 1e-9;
 /// The longest new edge, in radians. A longer arc gets more vertices, so a
 /// flat map draws the same shape as the globe.
 const MAX_ARC: f64 = PI / 180.0;
@@ -42,19 +42,8 @@ const PERIMETER: f64 = 1080.0;
 /// The polygon of a stroke. The runs come from a `Tracer`. A stroke that is
 /// too short or that encloses no area gives `None`.
 pub fn commit(runs: &[Run], scale: f64, strength: f64) -> Option<Geometry> {
-    let mut path = Vec::new();
-    for run in runs {
-        match run {
-            Run::Free(samples) if !samples.is_empty() => {
-                let smooth = smooth(samples, &[], scale, strength);
-                append(&mut path, smooth.into_iter().map(PathVertex::Free));
-            }
-            Run::Free(_) => {}
-            Run::Traced(traced) => append(&mut path, traced.iter().copied()),
-        }
-    }
-    let length: f64 = path.windows(2).map(|w| angle(w[0].dir(), w[1].dir())).sum();
-    if length < MIN_LENGTH / scale {
+    let path = path(runs, scale, strength);
+    if path_length(&path) < MIN_LENGTH / scale {
         return None;
     }
     let min_area = MIN_AREA / (scale * scale);
@@ -66,10 +55,30 @@ pub fn commit(runs: &[Run], scale: f64, strength: f64) -> Option<Geometry> {
     (!polygons.is_empty()).then_some(Geometry::Polygons(polygons))
 }
 
+/// The path of the runs of a stroke, with each free run smoothed.
+pub(super) fn path(runs: &[Run], scale: f64, strength: f64) -> Vec<PathVertex> {
+    let mut path = Vec::new();
+    for run in runs {
+        match run {
+            Run::Free(samples) if !samples.is_empty() => {
+                let smooth = smooth(samples, &[], scale, strength);
+                append(&mut path, smooth.into_iter().map(PathVertex::Free));
+            }
+            Run::Free(_) => {}
+            Run::Traced(traced) => append(&mut path, traced.iter().copied()),
+        }
+    }
+    path
+}
+
+pub(super) fn path_length(path: &[PathVertex]) -> f64 {
+    path.windows(2).map(|w| angle(w[0].dir(), w[1].dir())).sum()
+}
+
 /// The closed path with more vertices on each long arc. The last vertex is
 /// not the first again. An arc between two exact vertices is an arc of a
 /// target, and it stays as it is.
-fn densify(path: &[PathVertex]) -> Vec<PathVertex> {
+pub(super) fn densify(path: &[PathVertex]) -> Vec<PathVertex> {
     let mut out = Vec::with_capacity(path.len());
     for (i, &a) in path.iter().enumerate() {
         out.push(a);
@@ -96,7 +105,7 @@ struct Node {
 
 /// The simple rings of the area that a closed path encloses, with the
 /// inside on the left.
-fn rings(path: &[PathVertex]) -> Vec<Vec<PathVertex>> {
+pub(super) fn rings(path: &[PathVertex]) -> Vec<Vec<PathVertex>> {
     let nodes = unspike(path);
     if nodes.len() < 3 {
         return Vec::new();
@@ -404,7 +413,7 @@ fn heading(v: V3, to: V3) -> f64 {
 
 /// The area on the left of a closed ring, from -2π to 2π. A ring with a
 /// small area on its right gives a negative area.
-fn signed_area(ring: &[V3]) -> f64 {
+pub(super) fn signed_area(ring: &[V3]) -> f64 {
     let Some(&r) = ring.first() else {
         return 0.0;
     };
@@ -417,7 +426,7 @@ fn signed_area(ring: &[V3]) -> f64 {
     (sum + TAU).rem_euclid(2.0 * TAU) - TAU
 }
 
-fn dirs(ring: &[PathVertex]) -> Vec<V3> {
+pub(super) fn dirs(ring: &[PathVertex]) -> Vec<V3> {
     ring.iter().map(PathVertex::dir).collect()
 }
 
@@ -448,7 +457,7 @@ fn loops(walk: Vec<(usize, Vec<PathVertex>)>) -> Vec<Vec<PathVertex>> {
 /// on a flat map. A ring that crosses the 180 degree meridian gives one
 /// polygon on each side for each part. A ring around a pole goes along the
 /// pole.
-fn to_polygons(ring: &[PathVertex]) -> Vec<Vec<Vec<LonLat>>> {
+pub(super) fn to_polygons(ring: &[PathVertex]) -> Vec<Vec<Vec<LonLat>>> {
     let mut closed = ring.to_vec();
     closed.push(ring[0]);
     let mut parts = to_parts_exact(&closed);
@@ -513,7 +522,7 @@ fn to_polygons(ring: &[PathVertex]) -> Vec<Vec<Vec<LonLat>>> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use std::sync::Arc;
 
     use vale_store::{GeometryKind, Layer};
@@ -587,7 +596,7 @@ mod tests {
     /// Each ring is closed and counterclockwise on a flat map, and no two
     /// edges cross. Each step of a ring is short in longitude, or it is
     /// along a pole or along the 180 degree meridian.
-    fn assert_valid(polygons: &[Vec<Vec<LonLat>>]) {
+    pub(crate) fn assert_valid(polygons: &[Vec<Vec<LonLat>>]) {
         let edges: Vec<(LonLat, LonLat)> = polygons
             .iter()
             .flatten()
@@ -618,7 +627,7 @@ mod tests {
             .collect()
     }
 
-    fn inside(polygons: &[Vec<Vec<LonLat>>], p: LonLat) -> bool {
+    pub(crate) fn inside(polygons: &[Vec<Vec<LonLat>>], p: LonLat) -> bool {
         polygons
             .iter()
             .any(|poly| vector::contains(&globe_rings(poly), dir(p)))
@@ -796,7 +805,7 @@ mod tests {
     }
 
     /// The positions of `want` follow each other in a ring, in either order.
-    fn has_run(polygons: &[Vec<Vec<LonLat>>], want: &[LonLat]) -> bool {
+    pub(crate) fn has_run(polygons: &[Vec<Vec<LonLat>>], want: &[LonLat]) -> bool {
         let back: Vec<LonLat> = want.iter().rev().copied().collect();
         polygons.iter().flatten().any(|r| {
             r.windows(want.len())
