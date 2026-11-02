@@ -2202,6 +2202,14 @@ fn the_brush_panel_of_the_noise_mode_has_its_settings() {
     let rect = control(&h, "Brush relief").unwrap();
     drag(&mut h, rect.center(), rect.right_center(), None);
     assert_eq!(h.state().globe.brush.noise_relief, 1.0);
+    // The Grain slider goes from no grain to features 10 times longer along
+    // the stroke.
+    assert_eq!(h.state().globe.brush.noise_grain, 0.0);
+    let rect = control(&h, "Brush grain").unwrap();
+    drag(&mut h, rect.center(), rect.right_center(), None);
+    assert_eq!(h.state().globe.brush.noise_grain, 9.0);
+    drag(&mut h, rect.center(), rect.left_center(), None);
+    assert_eq!(h.state().globe.brush.noise_grain, 0.0);
     // Each of the two sliders goes to 0 apart from the other.
     let rect = control(&h, "Brush lower").unwrap();
     drag(&mut h, rect.center(), rect.left_center(), None);
