@@ -17,8 +17,8 @@ use vale_app::session::Session;
 use vale_app::ui::gradient::{COLUMN, ColumnParts, GRADIENT, band_row, widest_gap_value};
 use vale_app::ui::pad::flyout::Flyout;
 use vale_app::ui::pad::geometry::{BrushCard, TOOLS, WidthClass};
+use vale_app::ui::pad::number::{LABEL_COLUMN, TRACK_INSET};
 use vale_app::ui::pad::raster;
-use vale_app::ui::pad::widgets::SLIDER_INSET;
 use vale_app::ui::pad::{
     ADD_LAYER, CLEAR_PATH, DRAW, EXPORT_GEOTIFF, GRATICULE, IMPORT_HEIGHTMAP, LAYER_NAME, LINE,
     LayerRef, MEASURE, ModeGroup, NEW_GEOJSON, NEW_HEIGHTMAP, NEW_IMAGE, NEW_RASTER, OPACITY,
@@ -2509,14 +2509,15 @@ fn sizes_along(h: &mut Pad, path: &[Pos2]) -> Vec<f32> {
 /// The distance on the track that moves the size of the Brush panel from
 /// `from` to `to`, in points.
 fn size_distance(h: &Pad, from: f32, to: f32) -> f32 {
-    // The track has a log scale, and it ends LABEL_COLUMN + 13 points from
-    // the left of the row and 8 + 13 points from the value field.
+    // The track has a log scale. It starts LABEL_COLUMN points from the left
+    // of the row and ends 8 points from the value field, and the handle
+    // stays TRACK_INSET from each end.
     let globe = &h.state().globe;
     let world_km = h.state().doc.project.world.radius_km;
     let range = globe.brush.radius_km_range(globe.radius(), world_km);
     let span = (range.end() / range.start()).ln() as f32;
     let row = control(h, "Brush size").unwrap();
-    let length = row.width() - vale_app::ui::pad::number::LABEL_COLUMN - 13.0 - 8.0 - 13.0;
+    let length = row.width() - LABEL_COLUMN - 8.0 - 2.0 * TRACK_INSET;
     (to / from).ln() / span * length
 }
 
@@ -2544,7 +2545,7 @@ fn a_drag_on_the_size_moves_it_by_the_distance_of_the_drag() {
 
 #[test]
 fn a_drag_far_from_the_track_moves_the_size_8_times_less() {
-    // The change of a 32 point move, on the track or 200 points below it.
+    // The change of a 24 point move, on the track or 200 points below it.
     let moved = |below: f32| {
         let mut h = pad(BOARDS[0]);
         tap(&mut h, "Brush settings");
@@ -2558,15 +2559,15 @@ fn a_drag_far_from_the_track_moves_the_size_8_times_less() {
             c,
             start,
             down,
-            down + vec2(16.0, 0.0),
-            down + vec2(32.0, 0.0),
+            down + vec2(12.0, 0.0),
+            down + vec2(24.0, 0.0),
         ];
         let sizes = sizes_along(&mut h, &path);
         size_distance(&h, sizes[2], sizes[4])
     };
     let (near, far) = (moved(0.0), moved(200.0));
-    assert!((near - 32.0).abs() < 1.0, "{near}");
-    assert!((far - 4.0).abs() < 0.5, "{far}");
+    assert!((near - 24.0).abs() < 1.0, "{near}");
+    assert!((far - 3.0).abs() < 0.5, "{far}");
 }
 
 #[test]
@@ -4346,8 +4347,8 @@ fn the_world_form_makes_a_new_world_with_a_small_radius() {
 fn drag_radius(h: &mut Pad, km: f64) {
     let slider = control(h, RADIUS_SLIDER).unwrap();
     let (left, width) = (
-        slider.left() + SLIDER_INSET,
-        slider.width() - 2.0 * SLIDER_INSET,
+        slider.left() + TRACK_INSET,
+        slider.width() - 2.0 * TRACK_INSET,
     );
     let at = |km: f64| pos2(left + radius_fraction(km) as f32 * width, slider.center().y);
     let form = h.state().world_form.as_ref().unwrap();
@@ -4364,8 +4365,8 @@ fn the_radius_slider_snaps_to_the_known_radii() {
         check_form(&h, &format!("{size:?} slider"));
         let slider = control(&h, RADIUS_SLIDER).unwrap();
         let (left, width) = (
-            slider.left() + SLIDER_INSET,
-            slider.width() - 2.0 * SLIDER_INSET,
+            slider.left() + TRACK_INSET,
+            slider.width() - 2.0 * TRACK_INSET,
         );
         let at = |km: f64| pos2(left + radius_fraction(km) as f32 * width, slider.center().y);
         let radius = |h: &Pad| h.state().world_form.as_ref().unwrap().radius_km().unwrap();

@@ -8,12 +8,20 @@ use eframe::egui::{self, Align2, Color32, Order, Pos2, Rect, Sense, pos2, vec2};
 use super::geometry::{CELL, PAD, TOUCH};
 use super::theme;
 use super::widgets::{self, Controls, KEYPAD, KeyEdit, Keys, PANEL_ROW, TICK_NAMES, fade, hit};
+use crate::globe::backdrop::card_shape;
 
-const THUMB: f32 = 26.0;
-/// The thumb while a finger holds it.
-const THUMB_HELD: f32 = 32.0;
-/// The height of the track.
-const TRACK: f32 = 6.0;
+/// The height of a track, of a value box, and of a stepper.
+const HEIGHT: f32 = 36.0;
+/// The width of a vertical track.
+const COLUMN: f32 = 32.0;
+/// The width of the handle, and its space from the edges of the track.
+const HANDLE: f32 = 10.0;
+const HANDLE_INSET: f32 = 4.0;
+/// The space from each end of a track to the place of the handle at that
+/// end.
+pub const TRACK_INSET: f32 = HANDLE_INSET + HANDLE / 2.0;
+/// The space between the panel and the card of the keypad.
+const GAP: f32 = 12.0;
 /// The smallest width of the label of a slider row, so that the tracks of
 /// the rows line up.
 pub const LABEL_COLUMN: f32 = 96.0;
@@ -334,57 +342,54 @@ impl<'a> Number<'a> {
             enabled,
             None,
         );
-        let left = if self.label.is_empty() {
-            row.left() + 6.0 + THUMB / 2.0
+        let start = if self.label.is_empty() {
+            row.left()
         } else {
-            row.left() + (label.size().x + 16.0).max(LABEL_COLUMN) + THUMB / 2.0
+            row.left() + (label.size().x + 16.0).max(LABEL_COLUMN)
         };
-        let right = if self.field {
-            field.left() - 8.0 - THUMB / 2.0
+        let end = if self.field {
+            field.left() - 8.0
         } else {
-            row.right() - 6.0 - THUMB / 2.0
+            row.right()
         };
+        let track = Rect::from_min_max(pos2(start, y - HEIGHT / 2.0), pos2(end, y + HEIGHT / 2.0));
+        let left = track.left() + TRACK_INSET;
+        let right = track.right() - TRACK_INSET;
         let mut out = self.drag(ui, &resp, right - left, |p| (p.x, (p.y - y).abs()));
         let value = out.unwrap_or(self.value);
 
         let x_of = |v: f64| left + self.place(v) as f32 * (right - left);
-        let x = x_of(value);
-        let whole = Rect::from_min_max(
-            pos2(left - TRACK, y - TRACK / 2.0),
-            pos2(right + TRACK, y + TRACK / 2.0),
-        );
-        let filled = Rect::from_min_max(whole.min, pos2(x, whole.bottom()));
-        let marks: Vec<Pos2> = (self.default.iter())
+        let marks: Vec<f32> = (self.default.iter())
             .chain(self.ticks.iter().map(|(v, _)| v))
-            .map(|v| pos2(x_of(*v), y))
+            .map(|v| x_of(*v))
             .collect();
-        paint_track(ui, whole, filled, pos2(x, y), &marks, enabled, &resp);
+        let held = resp.dragged() || resp.is_pointer_button_down_on();
+        paint_track(ui, track, x_of(value), &marks, false, enabled, held);
         let painter = ui.painter();
         let at = pos2(row.left(), y - label.size().y / 2.0);
         painter.galley(at, label, text);
         for (tick, name) in self.ticks {
             let active = (tick - value).abs() <= tick.abs() * 1e-9;
             let color = fade(if active { theme::TEXT } else { theme::MUTE }, enabled);
-            let at = pos2(x_of(*tick), row.bottom() - 6.0);
+            let at = pos2(x_of(*tick), row.bottom() - 4.0);
             painter.text(at, Align2::CENTER_TOP, *name, theme::small(), color);
         }
 
         if self.field {
-            let typed = self.field(ui, controls, field, value, true);
+            let back = field.shrink2(vec2(0.0, (TOUCH - HEIGHT) / 2.0));
+            let typed = self.field(ui, controls, field, back, value, Look::Box);
             out = typed.or(out);
-            if self.keypad {
-                widgets::keypad_below(ui, controls, &self.field_name());
-            }
+            self.keypad_beside(ui, controls, row);
         }
         if let (Some(pos), Some(drag)) = (resp.interact_pointer_pos(), dragging(ui, &resp)) {
-            self.bubble(ui, value, drag.note, pos - vec2(0.0, 40.0), false);
+            self.bubble(ui, value, drag.note, pos - vec2(0.0, 44.0), false);
         }
         out.filter(|v| *v != self.value)
     }
 
     /// Adds the slider as a column `height` high, with the value at the top
     /// and the label at the bottom. Returns the new value when the user
-    /// changes it. The keypad opens at the right of the slider.
+    /// changes it. The keypad opens at the side of the card.
     pub fn vertical(self, ui: &mut egui::Ui, controls: &mut Controls, height: f32) -> Option<f64> {
         let enabled = self.enabled;
         let (rect, _) = ui.allocate_exact_size(vec2(CELL.0, height), Sense::hover());
@@ -397,31 +402,30 @@ impl<'a> Number<'a> {
             enabled,
             None,
         );
-        let top = rect.top() + 20.0 + THUMB / 2.0;
-        let bottom = rect.bottom() - 20.0 - THUMB / 2.0;
         let x = rect.center().x;
+        let track = Rect::from_min_max(
+            pos2(x - COLUMN / 2.0, rect.top() + 22.0),
+            pos2(x + COLUMN / 2.0, rect.bottom() - 22.0),
+        );
+        let top = track.top() + TRACK_INSET;
+        let bottom = track.bottom() - TRACK_INSET;
         let mut out = self.drag(ui, &resp, bottom - top, |p| (-p.y, (p.x - x).abs()));
         let value = out.unwrap_or(self.value);
 
-        let y = bottom - self.place(value) as f32 * (bottom - top);
-        let whole = Rect::from_min_max(
-            pos2(x - TRACK / 2.0, top - TRACK),
-            pos2(x + TRACK / 2.0, bottom + TRACK),
-        );
-        let filled = Rect::from_min_max(pos2(whole.left(), y), whole.max);
-        let marks: Vec<Pos2> = (self.default.iter())
-            .map(|d| pos2(x, bottom - self.place(*d) as f32 * (bottom - top)))
-            .collect();
-        paint_track(ui, whole, filled, pos2(x, y), &marks, enabled, &resp);
+        let y_of = |v: f64| bottom - self.place(v) as f32 * (bottom - top);
+        let marks: Vec<f32> = self.default.iter().map(|d| y_of(*d)).collect();
+        let held = resp.dragged() || resp.is_pointer_button_down_on();
+        paint_track(ui, track, y_of(value), &marks, true, enabled, held);
         let color = fade(theme::MUTE, enabled);
-        let at = pos2(x, rect.bottom() - 6.0);
+        let at = pos2(x, rect.bottom() - 4.0);
         let painter = ui.painter();
         painter.text(at, Align2::CENTER_BOTTOM, self.label, theme::small(), color);
 
         // The field covers the value at the top. It takes the touches there
         // from the track.
         let field = Rect::from_min_size(rect.min, vec2(rect.width(), TOUCH));
-        let typed = self.field(ui, controls, field, value, false);
+        let back = Rect::from_min_size(rect.min, vec2(rect.width(), 20.0));
+        let typed = self.field(ui, controls, field, back, value, Look::Plain);
         out = typed.or(out);
         self.keypad_beside(ui, controls, rect);
         if let (Some(pos), Some(drag)) = (resp.interact_pointer_pos(), dragging(ui, &resp)) {
@@ -431,64 +435,86 @@ impl<'a> Number<'a> {
         out.filter(|v| *v != self.value)
     }
 
-    /// Adds the number as a stepper in a row of a panel: the label, the
-    /// minus button, the value, and the plus button. A button that you hold
-    /// repeats. Returns the new value when the user changes it.
+    /// Adds the number as a stepper in a row of a panel: the label, and one
+    /// control with the minus button, the value, and the plus button. A
+    /// button that you hold repeats. Returns the new value when the user
+    /// changes it.
     pub fn stepper(self, ui: &mut egui::Ui, controls: &mut Controls) -> Option<f64> {
         let enabled = self.enabled;
         let size = vec2(ui.available_width(), PANEL_ROW);
-        let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
-        let y = rect.center().y;
+        let (row, _) = ui.allocate_exact_size(size, Sense::hover());
+        let y = row.center().y;
         let text = fade(theme::TEXT, enabled);
-        let at = pos2(rect.left(), y);
+        let at = pos2(row.left(), y);
         let painter = ui.painter();
         painter.text(at, Align2::LEFT_CENTER, self.label, theme::body(), text);
-        let button = |right: f32| {
-            Rect::from_min_max(
-                pos2(right - TOUCH, y - TOUCH / 2.0),
-                pos2(right, y + TOUCH / 2.0),
-            )
-        };
-        let plus = button(rect.right());
-        let field = Rect::from_min_max(
-            pos2(plus.left() - VALUE_WIDTH, plus.top()),
-            pos2(plus.left(), plus.bottom()),
+        let whole = Rect::from_min_max(
+            pos2(row.right() - 2.0 * TOUCH - VALUE_WIDTH, y - HEIGHT / 2.0),
+            pos2(row.right(), y + HEIGHT / 2.0),
         );
-        let minus = button(field.left());
+        let radius = theme::CONTROL_RADIUS;
+        painter.rect_filled(whole, radius, fade(theme::raise(), enabled));
+        let touch = |left: f32, width: f32| {
+            Rect::from_min_size(pos2(left, y - TOUCH / 2.0), vec2(width, TOUCH))
+        };
+        let minus = touch(whole.left(), TOUCH);
+        let field = touch(minus.right(), VALUE_WIDTH);
+        let plus = touch(field.right(), TOUCH);
+        for x in [field.left(), field.right()] {
+            let line = Rect::from_min_max(
+                pos2(x - 0.5, whole.top() + 8.0),
+                pos2(x + 0.5, whole.bottom() - 8.0),
+            );
+            painter.rect_filled(line, 0.0, theme::divider());
+        }
         let down = self.step_from(self.value, false);
         let up = self.step_from(self.value, true);
         let mut out = None;
-        for (rect, name, next, sign) in [
+        let r = radius as u8;
+        let corners = [
+            egui::CornerRadius {
+                nw: r,
+                sw: r,
+                ne: 0,
+                se: 0,
+            },
+            egui::CornerRadius {
+                nw: 0,
+                sw: 0,
+                ne: r,
+                se: r,
+            },
+        ];
+        for ((rect, name, next, sign), corner) in [
             (minus, self.minus_name(), down, false),
             (plus, self.plus_name(), up, true),
-        ] {
+        ]
+        .into_iter()
+        .zip(corners)
+        {
             let on = enabled && next.is_some();
             let resp = hit(ui, controls, rect, &name, Sense::click(), on, None);
             if on && (resp.clicked() || repeats(ui, &resp)) {
                 out = next;
             }
-            let back = rect.shrink(widgets::HIGHLIGHT_INSET);
-            let fill = if resp.is_pointer_button_down_on() {
-                theme::raise().gamma_multiply(2.0)
-            } else {
-                theme::raise()
-            };
+            let back = rect.intersect(whole);
             let painter = ui.painter();
-            painter.rect_filled(back, theme::CONTROL_RADIUS, fill);
+            if resp.is_pointer_button_down_on() {
+                painter.rect_filled(back, corner, theme::raise());
+            }
             let color = fade(theme::TEXT, on);
             let c = back.center();
             let stroke = egui::Stroke::new(2.0, color);
-            painter.line_segment([c - vec2(7.0, 0.0), c + vec2(7.0, 0.0)], stroke);
+            painter.line_segment([c - vec2(6.0, 0.0), c + vec2(6.0, 0.0)], stroke);
             if sign {
-                painter.line_segment([c - vec2(0.0, 7.0), c + vec2(0.0, 7.0)], stroke);
+                painter.line_segment([c - vec2(0.0, 6.0), c + vec2(0.0, 6.0)], stroke);
             }
         }
         let value = out.unwrap_or(self.value);
-        let typed = self.field(ui, controls, field.shrink2(vec2(4.0, 0.0)), value, true);
+        let back = field.intersect(whole);
+        let typed = self.field(ui, controls, field, back, value, Look::Segment);
         out = typed.or(out);
-        if self.keypad {
-            widgets::keypad_below(ui, controls, &self.field_name());
-        }
+        self.keypad_beside(ui, controls, row);
         out.filter(|v| *v != self.value)
     }
 
@@ -605,14 +631,15 @@ impl<'a> Number<'a> {
 
     /// The value field: a tap opens the keypad, and a second tap or Done
     /// closes it. The typed value takes effect when the keypad closes.
-    /// `boxed`: the field has a box, as in a row.
+    /// `rect` takes the touches, and `back` is the box of the value.
     fn field(
         &self,
         ui: &mut egui::Ui,
         controls: &mut Controls,
         rect: Rect,
+        back: Rect,
         value: f64,
-        boxed: bool,
+        look: Look,
     ) -> Option<f64> {
         let ctx = ui.ctx().clone();
         let name = self.field_name();
@@ -658,24 +685,31 @@ impl<'a> Number<'a> {
         }
 
         let painter = ui.painter();
-        let back = rect.shrink2(vec2(0.0, 6.0));
-        if boxed {
-            let fill = if edit.is_some() || resp.is_pointer_button_down_on() {
-                theme::raise().gamma_multiply(1.6)
-            } else {
-                theme::raise()
-            };
-            painter.rect_filled(back, theme::CONTROL_RADIUS, fill);
+        let pressed = edit.is_some() || resp.is_pointer_button_down_on();
+        let radius = theme::CONTROL_RADIUS;
+        match look {
+            Look::Box => {
+                let fill = if pressed {
+                    theme::raise().gamma_multiply(1.6)
+                } else {
+                    theme::raise()
+                };
+                painter.rect_filled(back, radius, fade(fill, self.enabled));
+            }
+            Look::Segment if pressed => {
+                painter.rect_filled(back, 0.0, theme::raise());
+            }
+            _ => {}
         }
         if edit.is_some() {
             let stroke = egui::Stroke::new(1.5, theme::ACCENT);
             let kind = egui::StrokeKind::Inside;
-            painter.rect_stroke(back, theme::CONTROL_RADIUS, stroke, kind);
+            let r = if look == Look::Segment { 0.0 } else { radius };
+            painter.rect_stroke(back, r, stroke, kind);
         }
-        let (font, color) = if boxed {
-            (theme::mono(), fade(theme::TEXT, self.enabled))
-        } else {
-            (theme::small(), fade(theme::MUTE, self.enabled))
+        let (font, color) = match look {
+            Look::Plain => (theme::small(), fade(theme::MUTE, self.enabled)),
+            _ => (theme::mono(), fade(theme::TEXT, self.enabled)),
         };
         let text = match &edit {
             Some(edit) => {
@@ -688,19 +722,7 @@ impl<'a> Number<'a> {
             None => self.value_text(value),
         };
         let galley = painter.layout_no_wrap(text, font, color);
-        let at = if boxed {
-            pos2(back.right() - 10.0 - galley.size().x, back.center().y)
-        } else {
-            pos2(back.center().x - galley.size().x / 2.0, rect.top() + 6.0)
-        };
-        let at = pos2(
-            at.x,
-            if boxed {
-                at.y - galley.size().y / 2.0
-            } else {
-                at.y
-            },
-        );
+        let at = back.center() - galley.size() / 2.0;
         if let Some(edit) = &edit
             && edit.fresh
         {
@@ -712,18 +734,32 @@ impl<'a> Number<'a> {
         out
     }
 
-    /// The keypad of the field, in a card at the right of `rect`, while it
-    /// is open.
-    fn keypad_beside(&self, ui: &egui::Ui, controls: &mut Controls, rect: Rect) {
+    /// The keypad of the field, while it is open, in a card at the side of
+    /// the panel or the card that holds `anchor`. The card is at the right
+    /// if it fits there, and else at the left. With no room at either side,
+    /// it floats over the panel below `anchor`.
+    fn keypad_beside(&self, ui: &egui::Ui, controls: &mut Controls, anchor: Rect) {
         let open = widgets::keypad_field(ui.ctx()).as_deref() == Some(&self.field_name());
         if !self.keypad || !open {
             return;
         }
+        let ctx = ui.ctx();
+        let screen = ctx.content_rect().shrink(8.0);
         let size = vec2(4.0 * TOUCH * 1.25, KEYPAD) + vec2(2.0 * PAD, 2.0 * PAD);
-        let card = Rect::from_min_size(pos2(rect.right() + PAD + 8.0, rect.top()), size);
+        let panel = ui.clip_rect();
+        let top = anchor.top() - PAD;
+        let card = if panel.right() + GAP + size.x <= screen.right() {
+            Rect::from_min_size(pos2(panel.right() + GAP, top), size)
+        } else if panel.left() - GAP - size.x >= screen.left() {
+            Rect::from_min_size(pos2(panel.left() - GAP - size.x, top), size)
+        } else {
+            Rect::from_min_size(pos2(anchor.right() - size.x, anchor.bottom() + 4.0), size)
+        };
+        let card = keep_in(card, screen);
         let id = format!("{} keypad", self.name);
         let radius = theme::CARD_RADIUS.into();
-        widgets::card(ui.ctx(), None, &id, card, Order::Foreground, radius, |ui| {
+        let backdrop = widgets::backdrop(ctx);
+        widgets::card(ctx, backdrop, &id, card, Order::Foreground, radius, |ui| {
             let inner = ui.max_rect().shrink(PAD);
             let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner));
             widgets::keypad(&mut ui, controls, KEYPAD);
@@ -759,7 +795,12 @@ impl<'a> Number<'a> {
         let rect = keep_in(Rect::from_min_size(min, size), screen);
         let radius = theme::CONTROL_RADIUS;
         painter.add(theme::shadow().as_shape(rect, radius));
-        painter.rect_filled(rect, radius, theme::card(false).to_opaque());
+        let backdrop = widgets::backdrop(ctx);
+        if let Some(format) = backdrop {
+            let corner = egui::CornerRadius::from(radius);
+            painter.add(card_shape(format, rect, corner, ctx.pixels_per_point()));
+        }
+        painter.rect_filled(rect, radius, theme::card(backdrop.is_some()));
         let x = rect.center().x;
         let y = rect.top() + 8.0;
         let below = y + text.size().y + 2.0;
@@ -849,40 +890,67 @@ fn keep_in(rect: Rect, bounds: Rect) -> Rect {
     rect.translate(vec2(dx, dy))
 }
 
-/// The track, its filled part, the tick of the default, and the thumb.
-#[allow(clippy::too_many_arguments)]
+/// How the value field of a control looks.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Look {
+    /// A box of its own, at the right of a slider.
+    Box,
+    /// The middle part of a stepper.
+    Segment,
+    /// Small text with no box, above a vertical slider.
+    Plain,
+}
+
+/// The track, its filled part up to the handle at `at`, the marks of the
+/// values at which the handle stops, and the handle. `at` and `marks` are
+/// places along the track: x, or y for a `vertical` track, which fills from
+/// the bottom.
 fn paint_track(
     ui: &egui::Ui,
-    whole: Rect,
-    filled: Rect,
-    thumb: Pos2,
-    marks: &[Pos2],
+    track: Rect,
+    at: f32,
+    marks: &[f32],
+    vertical: bool,
     enabled: bool,
-    resp: &egui::Response,
+    held: bool,
 ) {
     let painter = ui.painter();
-    let round = TRACK / 2.0;
-    painter.rect_filled(whole, round, theme::track());
+    let radius = theme::CONTROL_RADIUS;
+    painter.rect_filled(track, radius, theme::track());
     if !enabled {
         return;
     }
-    painter.rect_filled(filled, round, theme::ACCENT);
-    for at in marks {
-        painter.circle_filled(*at, 2.0, theme::TEXT.gamma_multiply(0.7));
+    let filled = if vertical {
+        track.with_min_y(at.min(track.bottom()))
+    } else {
+        track.with_max_x(at.max(track.left()))
+    };
+    painter.rect_filled(filled, radius, theme::ACCENT.gamma_multiply(0.85));
+    let inner = track.shrink(HANDLE_INSET + 4.0);
+    for m in marks {
+        let line = if vertical {
+            Rect::from_min_max(pos2(inner.left(), m - 0.75), pos2(inner.right(), m + 0.75))
+        } else {
+            Rect::from_min_max(pos2(m - 0.75, inner.top()), pos2(m + 0.75, inner.bottom()))
+        };
+        painter.rect_filled(line, 0.0, Color32::from_white_alpha(90));
     }
-    let held = resp.dragged() || resp.is_pointer_button_down_on();
-    let size = if held { THUMB_HELD } else { THUMB };
-    painter.circle_filled(
-        thumb + vec2(0.0, 2.0),
-        size / 2.0 + 1.5,
-        Color32::from_black_alpha(60),
-    );
-    painter.circle_filled(thumb, size / 2.0, theme::TEXT);
-    painter.circle_stroke(
-        thumb,
-        size / 2.0,
-        egui::Stroke::new(0.5, Color32::from_black_alpha(40)),
-    );
+    let across = track.shrink(HANDLE_INSET);
+    let handle = if vertical {
+        Rect::from_min_max(
+            pos2(across.left(), at - HANDLE / 2.0),
+            pos2(across.right(), at + HANDLE / 2.0),
+        )
+    } else {
+        Rect::from_min_max(
+            pos2(at - HANDLE / 2.0, across.top()),
+            pos2(at + HANDLE / 2.0, across.bottom()),
+        )
+    };
+    let handle = if held { handle.expand(1.5) } else { handle };
+    let shadow = handle.translate(vec2(0.0, 1.5)).expand(1.0);
+    painter.rect_filled(shadow, 5.0, Color32::from_black_alpha(70));
+    painter.rect_filled(handle, 4.0, theme::TEXT);
 }
 
 #[cfg(test)]

@@ -456,6 +456,7 @@ pub fn readout_line(state: &AppState) -> String {
 
 pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     let ctx = ui.ctx().clone();
+    widgets::set_backdrop(&ctx, state.globe.backdrop());
     let screen = ctx.viewport_rect();
     // The globe paints after the panels, so a change in a panel shows in
     // the same frame.

@@ -839,8 +839,6 @@ pub fn option_row(
     resp
 }
 
-/// The distance from each end of a tick slider to the end of its scale.
-pub const SLIDER_INSET: f32 = THUMB / 2.0 + 6.0;
 /// The width of the label at the left of a row of a form.
 const FORM_LABEL: f32 = 92.0;
 
@@ -1249,6 +1247,21 @@ pub(super) fn set_key_edit(ctx: &egui::Context, edit: Option<KeyEdit>) {
         }
         None => data.remove::<KeyEdit>(keypad_id()),
     });
+}
+
+fn backdrop_id() -> egui::Id {
+    egui::Id::new("pad-backdrop")
+}
+
+/// Keeps the texture format of the blurred canvas for this frame, for the
+/// cards that controls open, or `None` with no blur.
+pub fn set_backdrop(ctx: &egui::Context, format: Option<wgpu::TextureFormat>) {
+    ctx.data_mut(|data| data.insert_temp(backdrop_id(), format));
+}
+
+/// The texture format of the blurred canvas, as `set_backdrop` keeps it.
+pub fn backdrop(ctx: &egui::Context) -> Option<wgpu::TextureFormat> {
+    ctx.data(|data| data.get_temp(backdrop_id())).flatten()
 }
 
 /// True if the keypad of a field is open.
