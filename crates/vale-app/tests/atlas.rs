@@ -5236,13 +5236,39 @@ fn the_projection_tab_of_a_region_frame_shows_the_reason_in_one_line() {
     screenshot::save(&mut h, "pad-region-projection");
     let rect = h.get_by_label(reason).rect();
     assert!(rect.height() < 30.0, "{rect:?}");
+    // A change of the projection ends the reason, and a change back does
+    // not show it again.
     let id = h.state().atlas.frame().unwrap();
     atlas::set_projection_kind(h.state_mut(), id, ProjectionKind::Mercator);
     h.run_steps(3);
     assert!(h.query_by_label(reason).is_none());
     atlas::set_projection_kind(h.state_mut(), id, ProjectionKind::LambertConformal);
     h.run_steps(3);
-    assert!(h.query_by_label(reason).is_some());
+    assert!(h.query_by_label(reason).is_none());
+    assert!(h.state().atlas.suggestion.is_none());
+}
+
+#[test]
+fn the_reason_ends_when_the_projection_tab_closes() {
+    let reason = vale_app::region::RegionKind::MidLatitude.reason();
+    for leave in [FrameTab::Frame, FrameTab::Layers] {
+        let mut h = pad();
+        drag_region(&mut h);
+        assert!(h.query_by_label(reason).is_some());
+        h.state_mut().atlas.tab = leave;
+        h.run_steps(3);
+        h.state_mut().atlas.tab = FrameTab::Projection;
+        h.run_steps(3);
+        assert!(h.query_by_label(reason).is_none(), "{leave:?}");
+    }
+    let mut h = pad();
+    drag_region(&mut h);
+    h.state_mut().atlas.selection = AtlasSelection::None;
+    h.run_steps(3);
+    let id = open_page(&h).frames.last().unwrap().id;
+    h.state_mut().atlas.selection = AtlasSelection::Frame(id);
+    h.run_steps(3);
+    assert!(h.query_by_label(reason).is_none());
 }
 
 #[test]

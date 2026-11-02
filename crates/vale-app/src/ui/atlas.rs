@@ -912,7 +912,13 @@ pub fn sync(state: &mut AppState) {
     if a.vertex.is_some_and(|v| !vertex_ok(v)) {
         a.vertex = None;
     }
-    if a.suggestion.is_some_and(|s| atlas.frame(s.frame).is_none()) {
+    let suggested = a.suggestion.as_ref().is_some_and(|s| {
+        a.selection == AtlasSelection::Frame(s.frame)
+            && a.tab == FrameTab::Projection
+            && atlas.frame(s.frame).is_some_and(|f| f.map == s.map)
+            && atlas.map(s.map).is_some_and(|m| m.projection == s.proj)
+    });
+    if !suggested {
         a.suggestion = None;
     }
     a.images.retain(|id, _| atlas.frame(*id).is_some());
@@ -994,13 +1000,16 @@ fn place_frame(
     Some((id, map_id))
 }
 
-/// The projection that the app suggested for a frame of a region, while
-/// the map has a projection of that kind. It is not saved.
-#[derive(Copy, Clone, Debug, PartialEq)]
+/// The projection that the app suggested for a new frame of a region. It
+/// lasts until the frame or its Projection tab closes, or the projection
+/// changes. It is not saved.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Suggestion {
     pub frame: FrameId,
     pub map: MapId,
     pub kind: RegionKind,
+    /// The suggested projection, as the map stores it.
+    proj: String,
 }
 
 /// Adds a frame of a new map to the open page, with the suggested
@@ -1023,17 +1032,15 @@ pub fn add_region_map(state: &mut AppState, region: &Region) -> Option<FrameId> 
         frame: id,
         map,
         kind,
+        proj: spec.to_proj(),
     });
     Some(id)
 }
 
-/// The reason for the projection of a frame, if the app suggested it and
-/// the kind did not change.
+/// The reason for the projection of a frame, if the app suggested it.
 pub fn suggestion_reason(state: &AppState, id: FrameId) -> Option<&'static str> {
-    let s = state.atlas.suggestion.filter(|s| s.frame == id)?;
-    let frame = state.doc.project.atlas.frame(id)?;
-    (frame.map == s.map && state.doc.projection(s.map).kind == s.kind.projection())
-        .then(|| s.kind.reason())
+    let s = state.atlas.suggestion.as_ref().filter(|s| s.frame == id)?;
+    Some(s.kind.reason())
 }
 
 /// Changes a frame with the projection of its map. The frame changes only

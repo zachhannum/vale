@@ -232,7 +232,7 @@ In the table, the ground width is the width in degrees of longitude times the co
 | Large mid-latitude region | At least 25 degrees of ground width. | Albers equal-area conic | aea |
 | Mid-latitude region, wider than tall | All other regions. | Lambert conformal conic | lcc |
 
-The center of the projection is the center of the region, and a region with a pole has its center on the pole. For the two conic projections, the app sets the standard parallels at one sixth and five sixths of the latitude range. That is a common rule that keeps scale error low across the region. The Projection tab of the new frame shows the reason for the suggestion in one line. The project file does not keep the reason, and the line goes away when the kind of the projection changes.
+The center of the projection is the center of the region, and a region with a pole has its center on the pole. For the two conic projections, the app sets the standard parallels at one sixth and five sixths of the latitude range. That is a common rule that keeps scale error low across the region. The Projection tab of the new frame shows the reason for the suggestion in one line. The line shows one time. It goes away when the Projection tab of the frame closes or when the projection changes, and it does not come back. The project file does not keep the reason.
 
 The projection editor exposes the parameters that matter: center, standard parallels, and rotation. An oblique aspect (a projection tilted so that its center line follows the region) uses the PROJ `ob_tran` wrapper.
 
