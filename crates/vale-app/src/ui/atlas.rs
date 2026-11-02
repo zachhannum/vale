@@ -3409,14 +3409,13 @@ pub fn set_neatline_color(state: &mut AppState, id: FrameId, color: Rgb) {
     });
 }
 
-/// Sets the neatline width of a frame, in points, rounded to 0.25.
+/// Sets the neatline width of a frame, in points, rounded to 0.05.
 pub fn set_neatline_width(state: &mut AppState, id: FrameId, width: f64) {
     if !width.is_finite() {
         return;
     }
     let range = Neatline::WIDTHS;
-    let width = ((width.clamp(*range.start(), *range.end()) * 4.0).round() / 4.0)
-        .clamp(*range.start(), *range.end());
+    let width = stepped(width, range, 0.05);
     edit_frame(state, id, |f, _| {
         f.neatline.width = width;
         true
@@ -3467,17 +3466,19 @@ pub fn set_border_color(state: &mut AppState, id: FrameId, second: bool, color: 
     });
 }
 
-/// `v` in `range`, rounded to `step`.
+/// `v` in `range`, rounded to `step`, which divides 1.
 fn stepped(v: f64, range: std::ops::RangeInclusive<f64>, step: f64) -> f64 {
     let (lo, hi) = (*range.start(), *range.end());
-    ((v.clamp(lo, hi) / step).round() * step).clamp(lo, hi)
+    // A division by a whole number gives the nearest decimal.
+    let per = (1.0 / step).round();
+    ((v.clamp(lo, hi) * per).round() / per).clamp(lo, hi)
 }
 
 /// Sets the band width of the border of a frame, in millimeters, rounded
-/// to 0.25.
+/// to 0.05.
 pub fn set_border_width(state: &mut AppState, id: FrameId, width: f64) {
     if width.is_finite() {
-        let width = stepped(width, Border::WIDTHS, 0.25);
+        let width = stepped(width, Border::WIDTHS, 0.05);
         edit_border(state, id, |b| b.width_mm = width);
     }
 }
@@ -3561,10 +3562,10 @@ pub fn set_border_stroke_color(state: &mut AppState, id: FrameId, color: Rgb) {
 }
 
 /// Sets the stroke width of the border of a frame, in points, rounded to
-/// 0.25.
+/// 0.05.
 pub fn set_border_stroke_width(state: &mut AppState, id: FrameId, width: f64) {
     if width.is_finite() {
-        let width = stepped(width, Border::STROKE_WIDTHS, 0.25);
+        let width = stepped(width, Border::STROKE_WIDTHS, 0.05);
         edit_border(state, id, |b| b.stroke_width = width);
     }
 }

@@ -82,13 +82,13 @@ pub const DELETE_RULE: &str = "Delete rule";
 /// The range of the width slider, in points. The slider has a log scale.
 const WIDTHS: (f64, f64) = (0.1, 20.0);
 /// The range of the dash and gap sliders, in points. The sliders have a log scale.
-const DASHES: (f64, f64) = (0.5, 20.0);
+pub const DASHES: (f64, f64) = (0.1, 20.0);
 /// The range of the diameter of a circle, in points.
 pub const CIRCLE_SIZES: (f64, f64) = (0.1, 32.0);
 /// The range of the size of a point symbol, in points.
 pub const POINT_SIZES: (f64, f64) = (0.1, 64.0);
 /// The range of the size of a scatter symbol, in points.
-pub const SCATTER_SIZES: (f64, f64) = (4.0, 48.0);
+pub const SCATTER_SIZES: (f64, f64) = (0.1, 48.0);
 /// The largest spacing of a scatter, in points. The smallest is its size.
 pub const MAX_SPACING: f64 = 100.0;
 /// The size of a new SVG symbol of a point layer.
@@ -506,7 +506,8 @@ fn scatter_rows(
         open_symbols(state, i);
     }
     let size = Number::new(SIZE, s.size.fallback, SCATTER_SIZES.0..=SCATTER_SIZES.1)
-        .step(1.0)
+        .nice()
+        .step(0.05)
         .unit("pt")
         .stepper(ui, controls);
     if let Some(size) = size {

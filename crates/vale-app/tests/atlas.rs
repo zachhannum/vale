@@ -1855,8 +1855,7 @@ fn the_neatline_controls_work_with_a_finger() {
         scroll_to(&mut h, &field(NEATLINE_WIDTH));
         type_value(&mut h, NEATLINE_WIDTH, "3.6");
         let width = frame(&h, 1).neatline.width;
-        assert!(width > 3.0, "{size:?}: {width}");
-        assert_eq!((width * 4.0).round() / 4.0, width);
+        assert_eq!(width, 3.6, "{size:?}");
         check_controls(&h, "neatline width");
     }
 }
@@ -1876,7 +1875,7 @@ fn the_neatline_survives_a_close_and_an_open() {
     let (main, inset) = (frame(&h, 0).id, frame(&h, 1).id);
     let st = h.state_mut();
     set_neatline_color(st, main, [10, 20, 30]);
-    set_neatline_width(st, main, 2.3);
+    set_neatline_width(st, main, 2.32);
     set_neatline(st, inset, false);
     h.run_steps(2);
     let mut project = h.state().doc.project.clone();
@@ -1889,7 +1888,7 @@ fn the_neatline_survives_a_close_and_an_open() {
     let b = &doc.project.atlas.frame(main).unwrap().neatline;
     assert!(b.on);
     assert_eq!(b.color, [10, 20, 30]);
-    assert_eq!(b.width, 2.25);
+    assert_eq!(b.width, 2.3);
     assert!(!doc.project.atlas.frame(inset).unwrap().neatline.on);
 }
 
@@ -1961,7 +1960,7 @@ fn the_border_and_grid_controls_work_with_a_finger() {
         let d = b.distances_mm[0];
         assert!(b.width_mm > 5.0 && d > 15.0, "{size:?}: {b:?}");
         assert_eq!(b.distances_mm, [d; 4], "{size:?}");
-        assert_eq!((b.width_mm * 4.0).round() / 4.0, b.width_mm);
+        assert_eq!(b.width_mm, 5.6, "{size:?}");
         assert_eq!((d * 2.0).round() / 2.0, d);
         check_controls(&h, "border");
 
@@ -2002,8 +2001,7 @@ fn the_border_and_grid_controls_work_with_a_finger() {
         scroll_to(&mut h, &field(BORDER_STROKE_WIDTH));
         type_value(&mut h, BORDER_STROKE_WIDTH, "2.6");
         let width = frame(&h, 1).border.stroke_width;
-        assert!(width > 2.0, "{size:?}: {width}");
-        assert_eq!((width * 4.0).round() / 4.0, width);
+        assert_eq!(width, 2.6, "{size:?}");
         scroll_to(&mut h, STROKE_COLOR);
         tap(&mut h, STROKE_COLOR);
         let shade = format!("{STROKE_COLOR} shade");

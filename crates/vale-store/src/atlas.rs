@@ -152,7 +152,7 @@ pub struct Neatline {
 
 impl Neatline {
     /// The line widths in points that the app offers.
-    pub const WIDTHS: RangeInclusive<f64> = 0.25..=6.0;
+    pub const WIDTHS: RangeInclusive<f64> = 0.1..=6.0;
 }
 
 impl Default for Neatline {
@@ -302,13 +302,13 @@ impl BorderStyle {
 
 impl Border {
     /// The band widths in millimeters that the app offers.
-    pub const WIDTHS: RangeInclusive<f64> = 0.25..=10.0;
+    pub const WIDTHS: RangeInclusive<f64> = 0.1..=10.0;
     /// The distances in millimeters that the app offers.
     pub const DISTANCES: RangeInclusive<f64> = -100.0..=30.0;
     /// The gaps in millimeters that the app offers.
     pub const GAPS: RangeInclusive<f64> = 0.0..=10.0;
     /// The stroke widths in points that the app offers.
-    pub const STROKE_WIDTHS: RangeInclusive<f64> = 0.25..=4.0;
+    pub const STROKE_WIDTHS: RangeInclusive<f64> = 0.1..=4.0;
 
     /// The border as JSON text, for a project file.
     pub fn to_json(&self) -> String {
@@ -466,7 +466,7 @@ impl EdgeLabels {
     /// The text sizes in points that the app offers.
     pub const SIZES: RangeInclusive<f64> = 4.0..=24.0;
     /// The halo widths in points that the app offers.
-    pub const HALO_WIDTHS: RangeInclusive<f64> = 0.5..=8.0;
+    pub const HALO_WIDTHS: RangeInclusive<f64> = 0.1..=8.0;
     /// The offsets in points that the app offers.
     pub const OFFSETS: RangeInclusive<f64> = 0.0..=20.0;
 
@@ -914,7 +914,7 @@ impl FurnitureText {
     /// The letter spacings, as a fraction of the size, that the app offers.
     pub const LETTER_SPACINGS: RangeInclusive<f64> = 0.0..=1.0;
     /// The halo widths in points that the app offers.
-    pub const HALO_WIDTHS: RangeInclusive<f64> = 0.5..=8.0;
+    pub const HALO_WIDTHS: RangeInclusive<f64> = 0.1..=8.0;
 
     /// The default style with the size `size`.
     pub fn sized(size: f64) -> FurnitureText {
