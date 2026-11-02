@@ -7,10 +7,10 @@ use vale_labeler::Face;
 use vale_store::{FurnitureText, Rgb, TextCase};
 
 use super::labels::{
-    CASE, COLOR, HALO, HALO_COLOR, HALO_WIDTH, LETTER_SPACING, OPACITY, STYLE, color_rows,
-    faces_of, percent, value_slider,
+    CASE, COLOR, HALO, HALO_COLOR, HALO_WIDTH, LETTER_SPACING, OPACITY, STYLE, color_rows, faces_of,
 };
 use super::note_text;
+use super::number::Number;
 use super::widgets::{self, Controls};
 use crate::fonts::{self, DEFAULT_FAMILY};
 use crate::ui::atlas::ClassColor;
@@ -98,11 +98,6 @@ pub fn rgb_rows(
     color_rows(ui, state, controls, (name, which), c).map(|c| [c.r, c.g, c.b])
 }
 
-/// `v` to the nearest multiple of `step`.
-fn round_to(v: f64, step: f64) -> f64 {
-    (v / step).round() * step
-}
-
 /// The rows of a Text section. Returns what the user did.
 pub fn section(
     ui: &mut egui::Ui,
@@ -127,27 +122,24 @@ pub fn section(
         event = Some(TextEvent::OpenFaces);
     }
 
-    let step = spec.size_step;
-    let text = format!("{} pt", round_to(style.size, step));
-    let names = (spec.size_name, "Size");
-    if let Some(size) = value_slider(ui, controls, names, style.size, spec.sizes, &text) {
-        event = Some(TextEvent::Edit(TextEdit::Size(round_to(size, step))));
+    let (lo, hi) = spec.sizes;
+    let size = Number::new(spec.size_name, style.size, lo..=hi)
+        .label("Size")
+        .step(spec.size_step)
+        .unit("pt")
+        .stepper(ui, controls);
+    if let Some(size) = size {
+        event = Some(TextEvent::Edit(TextEdit::Size(size)));
     }
     if widgets::open_row(ui, controls, CASE, style.case.name()).clicked() {
         event = Some(TextEvent::OpenCases);
     }
-    let names = (LETTER_SPACING, LETTER_SPACING);
-    let text = percent(style.letter_spacing);
-    let spacing = value_slider(
-        ui,
-        controls,
-        names,
-        style.letter_spacing,
-        spec.spacings,
-        &text,
-    );
+    let (lo, hi) = spec.spacings;
+    let spacing = Number::new(LETTER_SPACING, style.letter_spacing, lo..=hi)
+        .shown(100.0, "%")
+        .step(0.01)
+        .stepper(ui, controls);
     if let Some(spacing) = spacing {
-        let spacing = round_to(spacing, 0.01);
         event = Some(TextEvent::Edit(TextEdit::LetterSpacing(spacing)));
     }
 
@@ -155,10 +147,11 @@ pub fn section(
     if let Some(c) = rgb_rows(ui, state, controls, COLOR, text_color, style.color) {
         event = Some(TextEvent::Edit(TextEdit::Color(c)));
     }
-    let text = percent(style.opacity);
-    let names = (OPACITY, OPACITY);
-    if let Some(opacity) = value_slider(ui, controls, names, style.opacity, (0.0, 1.0), &text) {
-        event = Some(TextEvent::Edit(TextEdit::Opacity(round_to(opacity, 0.01))));
+    let opacity = Number::new(OPACITY, style.opacity, 0.0..=1.0)
+        .percent()
+        .slider(ui, controls);
+    if let Some(opacity) = opacity {
+        event = Some(TextEvent::Edit(TextEdit::Opacity(opacity)));
     }
 
     let mut halo = style.halo;
@@ -177,18 +170,13 @@ pub fn section(
         if let Some(c) = c {
             event = Some(TextEvent::Edit(TextEdit::HaloColor(c)));
         }
-        let names = (HALO_WIDTH, HALO_WIDTH);
-        let text = format!("{:.1} pt", style.halo_width);
-        let width = value_slider(
-            ui,
-            controls,
-            names,
-            style.halo_width,
-            spec.halo_widths,
-            &text,
-        );
+        let (lo, hi) = spec.halo_widths;
+        let width = Number::new(HALO_WIDTH, style.halo_width, lo..=hi)
+            .step(0.1)
+            .unit("pt")
+            .stepper(ui, controls);
         if let Some(width) = width {
-            event = Some(TextEvent::Edit(TextEdit::HaloWidth(round_to(width, 0.1))));
+            event = Some(TextEvent::Edit(TextEdit::HaloWidth(width)));
         }
     }
     event

@@ -7,7 +7,8 @@ use vale_store::{CoordFormat, EdgeLabels, EdgeOrientation, FrameId, Graticule, R
 
 use super::atlas::{FRAME_TABS, LABEL_FORMAT, LABEL_FORMATS, named_tabs, panel_width};
 use super::geometry::Rects;
-use super::labels::{color_rows, faces_of, percent, points, value_slider};
+use super::labels::{color_rows, faces_of};
+use super::number::Number;
 use super::raster::heading;
 use super::widgets::{self, Controls};
 use super::{Card, CardTitle, show_card};
@@ -168,27 +169,21 @@ fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id: Fr
         state.atlas.edge_styles = true;
         state.atlas.label_color = None;
     }
-    let sizes = (*EdgeLabels::SIZES.start(), *EdgeLabels::SIZES.end());
-    let text = format!("{} pt", (set.size * 2.0).round() / 2.0);
-    if let Some(size) = value_slider(ui, controls, (SIZE, SIZE), set.size, sizes, &text) {
-        let size = (size * 2.0).round() / 2.0;
+    let size = Number::new(SIZE, set.size, EdgeLabels::SIZES)
+        .step(0.5)
+        .unit("pt")
+        .stepper(ui, controls);
+    if let Some(size) = size {
         edit(state, &|e| e.size = size);
     }
     let color = rgba(set.color);
     if let Some(c) = color_rows(ui, state, controls, (COLOR, ClassColor::EdgeText), color) {
         edit(state, &|e| e.color = [c.r, c.g, c.b]);
     }
-    let text = percent(set.opacity);
-    let opacity = value_slider(
-        ui,
-        controls,
-        (OPACITY, OPACITY),
-        set.opacity,
-        (0.0, 1.0),
-        &text,
-    );
+    let opacity = Number::new(OPACITY, set.opacity, 0.0..=1.0)
+        .percent()
+        .slider(ui, controls);
     if let Some(opacity) = opacity {
-        let opacity = (opacity * 100.0).round() / 100.0;
         edit(state, &|e| e.opacity = opacity);
     }
     let mut halo = set.halo;
@@ -200,14 +195,11 @@ fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id: Fr
         if let Some(c) = color_rows(ui, state, controls, which, rgba(set.halo_color)) {
             edit(state, &|e| e.halo_color = [c.r, c.g, c.b]);
         }
-        let range = (
-            *EdgeLabels::HALO_WIDTHS.start(),
-            *EdgeLabels::HALO_WIDTHS.end(),
-        );
-        let text = points(set.halo_width);
-        let names = (HALO_WIDTH, HALO_WIDTH);
-        if let Some(width) = value_slider(ui, controls, names, set.halo_width, range, &text) {
-            let width = (width * 10.0).round() / 10.0;
+        let width = Number::new(HALO_WIDTH, set.halo_width, EdgeLabels::HALO_WIDTHS)
+            .step(0.1)
+            .unit("pt")
+            .stepper(ui, controls);
+        if let Some(width) = width {
             edit(state, &|e| e.halo_width = width);
         }
     }
@@ -223,10 +215,11 @@ fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id: Fr
     if let Some(i) = widgets::choice_row(ui, controls, ORIENTATION, &ORIENTATIONS, active) {
         edit(state, &|e| e.orientation = EdgeOrientation::ALL[i]);
     }
-    let range = (*EdgeLabels::OFFSETS.start(), *EdgeLabels::OFFSETS.end());
-    let text = points(set.offset);
-    if let Some(offset) = value_slider(ui, controls, (OFFSET, OFFSET), set.offset, range, &text) {
-        let offset = (offset * 2.0).round() / 2.0;
+    let offset = Number::new(OFFSET, set.offset, EdgeLabels::OFFSETS)
+        .step(0.5)
+        .unit("pt")
+        .stepper(ui, controls);
+    if let Some(offset) = offset {
         edit(state, &|e| e.offset = offset);
     }
 

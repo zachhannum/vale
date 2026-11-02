@@ -12,6 +12,7 @@ use super::atlas::{FRAME_TABS, named_tabs, panel_width};
 use super::filter;
 use super::geometry::{Rects, TOUCH};
 use super::icons::{self, Icon};
+use super::number::Number;
 use super::text_style::{self, TextEdit, TextEvent, TextSpec};
 use super::widgets::{self, Controls, PANEL_ROW};
 use super::{Card, CardTitle, show_card, theme};
@@ -442,23 +443,6 @@ pub(super) fn value_slider(
     moved.then_some(lo + fraction * (hi - lo))
 }
 
-/// A slider row of a class for a value from `lo` to `hi`, where each step
-/// of the slider multiplies the value by the same factor. `lo` is more than
-/// zero. Returns the new value when the user moves it.
-fn log_slider(
-    ui: &mut egui::Ui,
-    controls: &mut Controls,
-    name: &str,
-    value: f64,
-    (lo, hi): (f64, f64),
-    text: &str,
-) -> Option<f64> {
-    let span = (hi / lo).ln();
-    let mut fraction = ((value.max(lo) / lo).ln() / span).clamp(0.0, 1.0);
-    let moved = widgets::row_slider(ui, controls, name, name, &mut fraction, text);
-    moved.then(|| lo * (fraction * span).exp())
-}
-
 /// A distance in points for a slider row, for example "2.5 pt".
 pub(super) fn points(value: f64) -> String {
     if value >= 100.0 {
@@ -466,11 +450,6 @@ pub(super) fn points(value: f64) -> String {
     } else {
         format!("{value:.1} pt")
     }
-}
-
-/// A percentage for a slider row, for example "5 %".
-pub(super) fn percent(fraction: f64) -> String {
-    format!("{:.0} %", fraction * 100.0)
 }
 
 /// A color row of a class and its color picker while it is open. The picker
@@ -663,10 +642,11 @@ fn placement_segment(
             state.atlas.position_drag = None;
         }
     }
-    let text = points(class.offset);
-    if let Some(offset) = value_slider(ui, controls, (OFFSET, OFFSET), class.offset, OFFSETS, &text)
-    {
-        let offset = (offset * 2.0).round() / 2.0;
+    let offset = Number::new(OFFSET, class.offset, OFFSETS.0..=OFFSETS.1)
+        .step(0.5)
+        .unit("pt")
+        .stepper(ui, controls);
+    if let Some(offset) = offset {
         state.edit_label_class(map, layer, i, |c| c.offset = offset);
     }
     if point {
@@ -678,32 +658,31 @@ fn placement_segment(
         state.label_class_step(map, layer, i, |c| c.repeat = repeat);
     }
     if class.repeat {
-        let text = points(class.repeat_distance);
-        let distance = class.repeat_distance;
-        let moved = log_slider(
-            ui,
-            controls,
-            REPEAT_INTERVAL,
-            distance,
-            REPEAT_INTERVALS,
-            &text,
-        );
-        if let Some(distance) = moved {
-            let distance = (distance / 10.0).round() * 10.0;
+        let (lo, hi) = REPEAT_INTERVALS;
+        let distance = Number::new(REPEAT_INTERVAL, class.repeat_distance, lo..=hi)
+            .nice()
+            .step(10.0)
+            .unit("pt")
+            .stepper(ui, controls);
+        if let Some(distance) = distance {
             state.edit_label_class(map, layer, i, |c| c.repeat_distance = distance);
         }
     }
-    let degrees = class.curve_limit.to_degrees();
-    let text = format!("{degrees:.0}°");
-    let names = (CURVE_LIMIT, CURVE_LIMIT);
-    if let Some(degrees) = value_slider(ui, controls, names, degrees, CURVE_LIMITS, &text) {
-        let limit = degrees.round().to_radians();
+    let (lo, hi) = CURVE_LIMITS;
+    let degrees = Number::new(CURVE_LIMIT, class.curve_limit.to_degrees(), lo..=hi)
+        .step(1.0)
+        .unit("°")
+        .stepper(ui, controls);
+    if let Some(degrees) = degrees {
+        let limit = degrees.to_radians();
         state.edit_label_class(map, layer, i, |c| c.curve_limit = limit);
     }
-    let text = format!("{:.1}×", class.smoothing);
-    let names = (SMOOTHING, SMOOTHING);
-    if let Some(smoothing) = value_slider(ui, controls, names, class.smoothing, SMOOTHINGS, &text) {
-        let smoothing = (smoothing * 10.0).round() / 10.0;
+    let smoothing = Number::new(SMOOTHING, class.smoothing, SMOOTHINGS.0..=SMOOTHINGS.1)
+        .step(0.1)
+        .unit("×")
+        .default(vale_style::SMOOTHING)
+        .slider(ui, controls);
+    if let Some(smoothing) = smoothing {
         state.edit_label_class(map, layer, i, |c| c.smoothing = smoothing);
     }
 }
@@ -717,10 +696,11 @@ fn conflicts_segment(
     (_, map, layer, i): ClassAt,
     class: &LabelClass,
 ) {
-    let text = points(class.buffer);
-    if let Some(buffer) = value_slider(ui, controls, (BUFFER, BUFFER), class.buffer, BUFFERS, &text)
-    {
-        let buffer = (buffer * 2.0).round() / 2.0;
+    let buffer = Number::new(BUFFER, class.buffer, BUFFERS.0..=BUFFERS.1)
+        .step(0.5)
+        .unit("pt")
+        .stepper(ui, controls);
+    if let Some(buffer) = buffer {
         state.edit_label_class(map, layer, i, |c| c.buffer = buffer);
     }
     let mut remove = class.remove_duplicates;
@@ -734,12 +714,12 @@ fn conflicts_segment(
         state.label_class_step(map, layer, i, |c| c.remove_duplicates = remove);
     }
     if class.remove_duplicates {
-        let text = points(class.duplicate_distance);
-        let names = (DUPLICATE_DISTANCE, DUPLICATE_DISTANCE);
-        let distance = class.duplicate_distance;
-        let moved = value_slider(ui, controls, names, distance, DUPLICATE_DISTANCES, &text);
-        if let Some(distance) = moved {
-            let distance = (distance / 10.0).round() * 10.0;
+        let (lo, hi) = DUPLICATE_DISTANCES;
+        let distance = Number::new(DUPLICATE_DISTANCE, class.duplicate_distance, lo..=hi)
+            .step(10.0)
+            .unit("pt")
+            .stepper(ui, controls);
+        if let Some(distance) = distance {
             state.edit_label_class(map, layer, i, |c| c.duplicate_distance = distance);
         }
     }
