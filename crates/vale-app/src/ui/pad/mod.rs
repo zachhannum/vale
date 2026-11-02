@@ -3001,7 +3001,6 @@ fn brush_flyout(
             name,
             icon,
             enabled: globe.is_height() || !needs_height(mode),
-            divider: false,
         })
         .collect();
     let current = group.modes().iter().position(|m| m.2 == globe.brush.mode);
@@ -3013,8 +3012,7 @@ fn brush_flyout(
     }
 }
 
-/// The flyout of the tools of the Vector cell. A divider comes before the
-/// tools that edit.
+/// The flyout of the tools of the Vector cell.
 fn vector_flyout(
     ctx: &egui::Context,
     state: &mut AppState,
@@ -3025,12 +3023,11 @@ fn vector_flyout(
         return;
     };
     let tools = vector_tools(kind);
-    let choices: Vec<Choice> = (tools.iter().enumerate())
-        .map(|(i, t)| Choice {
+    let choices: Vec<Choice> = (tools.iter())
+        .map(|t| Choice {
             name: t.name,
             icon: t.icon,
             enabled: true,
-            divider: i > 0 && !t.draws && tools[i - 1].draws,
         })
         .collect();
     let globe = &mut state.globe;
@@ -3053,7 +3050,6 @@ fn polygon_flyout(
         name,
         icon,
         enabled: true,
-        divider: false,
     });
     let current = POLYGON_MODES
         .iter()

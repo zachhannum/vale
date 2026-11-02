@@ -2654,7 +2654,8 @@ impl AppState {
 
     /// Splits each feature of a layer that a stroke crosses. Each part is a
     /// new feature with the attributes of its feature, in its place in the
-    /// draw order. The selection does not limit the split.
+    /// draw order. The selection does not limit the split, and the parts
+    /// become the selection.
     fn split_features(&mut self, id: LayerId, stroke: &LineStroke) {
         let Some(split) = SplitStroke::new(&stroke.runs, stroke.scale, self.globe.line.smoothing)
         else {
@@ -2677,11 +2678,18 @@ impl AppState {
             return;
         }
         let project = &mut self.doc.project;
+        let mut selection = Vec::new();
         for (uuid, features) in parts {
+            let new = features.iter().map(|f| crate::globe::select::FeatureRef {
+                layer: id,
+                uuid: f.uuid(),
+            });
+            let new: Vec<_> = new.collect();
             if project.replace_feature(id, uuid, features) {
-                self.feature_selection.retain(|f| f.uuid != uuid);
+                selection.extend(new);
             }
         }
+        self.feature_selection = selection;
         self.line_edits += 1;
         self.pipeline.forget(id);
         self.touch();

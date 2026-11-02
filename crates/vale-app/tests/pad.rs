@@ -9338,7 +9338,10 @@ fn split_cuts_each_feature_that_the_stroke_crosses_in_one_undo_step() {
             .iter()
             .any(|f| f.attributes["name"] == Value::Text("Far".into()))
     );
-    assert!(h.state().feature_selection.is_empty());
+    // The parts become the selection.
+    let selected: Vec<_> = h.state().feature_selection.iter().map(|f| f.uuid).collect();
+    let parts: Vec<_> = new.iter().map(|f| f.uuid()).collect();
+    assert_eq!(selected, parts);
     // The two parts of the square share the cut.
     let vale: Vec<_> = (new.iter())
         .filter(|f| f.attributes["name"] == Value::Text("Vale".into()))
@@ -9366,15 +9369,19 @@ fn split_cuts_a_line_into_two_lines_at_the_crossing() {
     choose_split(&mut h);
     h.state_mut().globe.snap.on = false;
     step_and_save(&mut h, false);
-    // A stroke that does not reach the line changes nothing.
+    // A stroke that does not reach the line changes nothing, and the
+    // selection stays.
+    h.state_mut().feature_selection = vec![picks.line];
     pen_way(&mut h, &[[0.0, 2.0], [0.0, 6.0]]);
     step_and_save(&mut h, false);
     assert_eq!(line_features(&h, id).len(), 1);
+    assert_eq!(h.state().feature_selection, vec![picks.line]);
     pen_way(&mut h, &[[0.0, 6.0], [0.0, 14.0]]);
     step_and_save(&mut h, false);
     let lines = line_features(&h, id);
     assert_eq!(lines.len(), 2);
     assert!(lines.iter().all(|f| f.uuid() != picks.line.uuid));
+    assert_eq!(h.state().feature_selection.len(), 2);
     let vale_store::Geometry::Lines(a) = &lines[0].geometry else {
         panic!("not a line");
     };
