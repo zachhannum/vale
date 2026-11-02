@@ -1264,6 +1264,12 @@ pub fn backdrop(ctx: &egui::Context) -> Option<wgpu::TextureFormat> {
     ctx.data(|data| data.get_temp(backdrop_id())).flatten()
 }
 
+/// Keeps the place of the field whose keypad is open, for this frame. A
+/// touch there does not close the keypad.
+pub(super) fn set_keypad_field_rect(ctx: &egui::Context, rect: Rect) {
+    ctx.data_mut(|data| data.insert_temp(keypad_id().with("field"), rect));
+}
+
 /// True if the keypad of a field is open.
 pub fn keypad_is_open(ctx: &egui::Context) -> bool {
     key_edit(ctx).is_some()
@@ -1331,6 +1337,9 @@ pub fn key_field(
             }),
         };
         set_key_edit(&ctx, edit.clone());
+    }
+    if edit.is_some() {
+        set_keypad_field_rect(&ctx, field);
     }
     let mut out = None;
     match edit_menu(ui, controls, id, field) {
@@ -1422,6 +1431,20 @@ pub fn keypad(ui: &mut egui::Ui, controls: &mut Controls, height: f32) -> bool {
         return false;
     };
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
+    // A tap anywhere but the keypad, its field, and the edit menu closes the
+    // keypad. A drag, for example a scroll of the panel, does not.
+    let press = ui.input(|i| i.pointer.interact_pos().filter(|_| i.pointer.any_click()));
+    let field = ctx.data(|data| data.get_temp::<Rect>(keypad_id().with("field")));
+    let inside = |at: Pos2| {
+        let menu = edit_menu_rect(&ctx);
+        rect.expand(PAD * 2.0).contains(at)
+            || field.is_some_and(|f| f.contains(at))
+            || menu.is_some_and(|m| m.contains(at))
+    };
+    if press.is_some_and(|at| !inside(at)) {
+        set_key_edit(&ctx, None);
+        return true;
+    }
     let rows = edit.keys.rows();
     let columns: u8 = rows[0].iter().map(|(_, span)| span).sum();
     let width = rect.width() / f32::from(columns);

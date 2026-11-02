@@ -2596,6 +2596,31 @@ fn a_tap_on_the_size_value_opens_the_keypad_and_a_typed_size_sets_it() {
 }
 
 #[test]
+fn a_tap_outside_the_keypad_closes_it_and_keeps_the_typed_value() {
+    let mut h = pad(BOARDS[0]);
+    tap(&mut h, "Brush settings");
+    tap(&mut h, "Brush ceiling");
+    let name = "Brush ceiling level value";
+    tap(&mut h, name);
+    for c in ["1", "2", "0", "0"] {
+        tap(&mut h, &format!("{name} {c}"));
+    }
+    // A tap on the keypad keeps it open, and a drag on the globe does too.
+    assert!(control(&h, &format!("{name} 1")).is_some());
+    let at = h.state().pad.rects.unwrap().screen.center() + vec2(250.0, 150.0);
+    drag(&mut h, at, at + vec2(60.0, 0.0), None);
+    assert!(control(&h, &format!("{name} 1")).is_some());
+    // A tap on the globe closes it.
+    let at = h.state().pad.rects.unwrap().screen.center() + vec2(250.0, 150.0);
+    touch(&mut h, egui::TouchPhase::Start, at, None);
+    h.step();
+    touch(&mut h, egui::TouchPhase::End, at, None);
+    h.run_steps(3);
+    assert!(control(&h, &format!("{name} 1")).is_none());
+    assert_eq!(h.state().globe.brush.ceiling_m, 1200.0);
+}
+
+#[test]
 fn the_ceiling_level_is_a_stepper_of_50_m_and_takes_a_typed_level() {
     let mut h = pad(BOARDS[1]);
     tap(&mut h, "Brush settings");

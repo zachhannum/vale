@@ -670,6 +670,9 @@ impl<'a> Number<'a> {
             };
             widgets::set_key_edit(&ctx, edit.clone());
         }
+        if edit.is_some() {
+            widgets::set_keypad_field_rect(&ctx, rect);
+        }
         // The text of the open keypad, kept for the frame in which it
         // closes.
         let typed_id = id.with("typed");
