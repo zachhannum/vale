@@ -20,6 +20,7 @@ use crate::atlas_export::{ExportStep, PdfExport, RASTER_PIXEL_RATIO};
 use crate::document::Document;
 use crate::files::{Availability, ExportEvent, Files, PlainFiles, SystemEvents};
 use crate::globe::combine::{PolygonMode, StrokeArea};
+use crate::globe::split::SplitStroke;
 use crate::globe::fit;
 use crate::globe::import::{ImportResult, ProbeJob, Source, file_name};
 use crate::globe::line::{self, LineEdit};
@@ -2584,6 +2585,10 @@ impl AppState {
         let Some(layer) = self.doc.project.layer(id) else {
             return;
         };
+        if stroke.split {
+            self.split_features(id, &stroke);
+            return;
+        }
         let settings = self.globe.line;
         let smoothing = settings.smoothing;
         if stroke.mode != PolygonMode::New {
@@ -2638,6 +2643,41 @@ impl AppState {
             self.pipeline.forget(id);
             self.touch();
         }
+    }
+
+    /// Splits each feature of a layer that a stroke crosses. Each part is a
+    /// new feature with the attributes of its feature, in its place in the
+    /// draw order. The selection does not limit the split.
+    fn split_features(&mut self, id: LayerId, stroke: &LineStroke) {
+        let Some(split) = SplitStroke::new(&stroke.runs, stroke.scale, self.globe.line.smoothing)
+        else {
+            return;
+        };
+        let Some(layer) = self.doc.project.layer(id) else {
+            return;
+        };
+        let parts: Vec<(vale_store::Uuid, Vec<Feature>)> = (layer.features.iter())
+            .filter(|f| split.near(&f.geometry))
+            .filter_map(|f| {
+                let parts = split.split(&f.geometry)?;
+                let new = parts
+                    .into_iter()
+                    .map(|g| Feature::new(g, f.attributes.clone()));
+                Some((f.uuid(), new.collect()))
+            })
+            .collect();
+        if parts.is_empty() {
+            return;
+        }
+        let project = &mut self.doc.project;
+        for (uuid, features) in parts {
+            if project.replace_feature(id, uuid, features) {
+                self.feature_selection.retain(|f| f.uuid != uuid);
+            }
+        }
+        self.line_edits += 1;
+        self.pipeline.forget(id);
+        self.touch();
     }
 
     /// Joins the area of a stroke of the polygon tool to a polygon, or cuts

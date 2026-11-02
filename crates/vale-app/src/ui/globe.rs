@@ -43,7 +43,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
 
 /// Starts a stroke, or starts to pick the flatten level.
 fn press(globe: &mut Globe) {
-    if globe.drawing() {
+    if globe.stroking() {
         globe.line_down();
     } else if globe.placing() {
         globe.point_down();
@@ -125,7 +125,7 @@ fn brush_input(
     let sample = |globe: &mut Globe, pos: egui::Pos2, flow: f64| {
         let dir = globe.unproject(pos);
         globe.input.pos = Some(pos);
-        if globe.drawing() {
+        if globe.stroking() {
             globe.line_sample(pos, dir);
         } else if globe.placing() {
             globe.point_sample(dir);

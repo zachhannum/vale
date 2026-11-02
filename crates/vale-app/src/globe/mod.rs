@@ -141,6 +141,8 @@ pub struct LineStroke {
     pub reshape: Option<Uuid>,
     /// How the stroke of the polygon tool changes the layer.
     pub mode: PolygonMode,
+    /// The stroke splits features.
+    pub split: bool,
 }
 
 /// A point that the point tool placed.
@@ -164,6 +166,8 @@ pub enum Tool {
     Measure,
     /// Selects, moves, and deletes features of any visible vector layer.
     Select,
+    /// Splits lines and polygons of the selected layer along a stroke.
+    Split,
 }
 
 /// The way that the world workspace shows the world.
@@ -1757,9 +1761,21 @@ impl Globe {
         self.tool == Tool::Point && self.pointable
     }
 
+    /// True if Split is the tool and it can split features of the selected
+    /// layer.
+    pub fn splitting(&self) -> bool {
+        self.tool == Tool::Split && (self.lineable || self.fillable)
+    }
+
+    /// True if a tool that takes a stroke on a vector layer can take one
+    /// now.
+    pub fn stroking(&self) -> bool {
+        self.drawing() || self.splitting()
+    }
+
     /// True if a tool that edits a vector layer can edit now.
     pub fn editing(&self) -> bool {
-        self.drawing() || self.placing()
+        self.stroking() || self.placing()
     }
 
     /// True if the Measure tool is the tool.
@@ -1948,6 +1964,7 @@ impl Globe {
             runs: Vec::new(),
             reshape: None,
             mode: self.line.polygon_mode,
+            split: self.splitting(),
         });
     }
 
@@ -1970,7 +1987,10 @@ impl Globe {
         let first = self.line_stroke.as_ref().is_some_and(|s| s.dirs.is_empty());
         let reshape = match (dir, &self.targets, self.draw_layer) {
             (Some(dir), Some(targets), Some(layer))
-                if first && self.line.reshape && self.line.polygon_mode == PolygonMode::New =>
+                if first
+                    && self.line.reshape
+                    && self.line.polygon_mode == PolygonMode::New
+                    && !self.splitting() =>
             {
                 let scale = self.radius();
                 targets.reshape(layer, dir, scale, reshape::REACH / scale)
