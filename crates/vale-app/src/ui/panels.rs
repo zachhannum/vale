@@ -4,8 +4,8 @@ use eframe::egui;
 use vale_sphere::{ProjectionKind, ProjectionSpec};
 use vale_store::{GeometryKind, RasterId, World};
 
-use super::pad::atlas::{LAYOUT_GRID, NEXT_PAGE, PREVIOUS_PAGE, SNAP_TO_LAYOUT, page_title};
 use super::number;
+use super::pad::atlas::{LAYOUT_GRID, NEXT_PAGE, PREVIOUS_PAGE, SNAP_TO_LAYOUT, page_title};
 use super::raster_form::RasterForm;
 use super::world_form::{self, WorldForm};
 use super::{
@@ -901,7 +901,10 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
             (&mut globe.brush.warp_km, WARP_KM, "Strength"),
             (&mut globe.brush.scale_km, SCALE_KM, "Scale"),
         ] {
-            number::slider(name, value, range).log().suffix(" km").show(ui);
+            number::slider(name, value, range)
+                .log()
+                .suffix(" km")
+                .show(ui);
         }
         seed(ui, state);
     } else if globe.brush.mode == Mode::Push {

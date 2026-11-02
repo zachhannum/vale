@@ -250,7 +250,11 @@ impl<'a, T: Numeric> Stepper<'a, T> {
         let (enabled, label) = (self.enabled, self.label);
         let minus = ui.add_enabled(enabled && down.is_some(), egui::Button::new("−").small());
         minus.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, format!("Decrease {label}"))
+            egui::WidgetInfo::labeled(
+                egui::WidgetType::Button,
+                enabled,
+                format!("Decrease {label}"),
+            )
         });
         let speed = match (self.step, &range) {
             (Some(step), _) => step / 4.0,
@@ -271,7 +275,11 @@ impl<'a, T: Numeric> Stepper<'a, T> {
         let mut resp = ui.add_enabled(enabled, drag);
         let plus = ui.add_enabled(enabled && up.is_some(), egui::Button::new("+").small());
         plus.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, format!("Increase {label}"))
+            egui::WidgetInfo::labeled(
+                egui::WidgetType::Button,
+                enabled,
+                format!("Increase {label}"),
+            )
         });
         let stepped = if minus.clicked() {
             down
@@ -380,7 +388,10 @@ mod tests {
     #[test]
     fn a_step_stops_at_the_end_of_the_range() {
         assert_eq!(step_from(8.0, Some(0.25), Some(0.25..=8.0), true), None);
-        assert_eq!(step_from(7.9, Some(0.25), Some(0.25..=8.0), true), Some(8.0));
+        assert_eq!(
+            step_from(7.9, Some(0.25), Some(0.25..=8.0), true),
+            Some(8.0)
+        );
     }
 
     #[test]

@@ -131,16 +131,12 @@ fn layer_section(ui: &mut egui::Ui, state: &mut AppState) {
                     }
                 });
         });
-        ui.horizontal(|ui| {
-            ui.label("Label size");
-            changed |= ui
-                .add(
-                    egui::DragValue::new(&mut label.size)
-                        .speed(0.1)
-                        .range(4.0..=72.0),
-                )
-                .changed();
-        });
+        changed |= super::number::stepper("Label size", &mut label.size)
+            .range(4.0..=72.0)
+            .step(0.5)
+            .suffix(" pt")
+            .show(ui)
+            .changed();
         ui.horizontal(|ui| {
             ui.label("Font");
             let current = label.font.as_deref().unwrap_or(DEFAULT_FAMILY);

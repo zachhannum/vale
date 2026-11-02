@@ -7,7 +7,7 @@ use vale_terrain::{Bands, Rgb, StopLine};
 
 use super::gradient::{self, DESKTOP};
 use super::pad::raster::RampChoice;
-use super::{Action, AppState, LayerRef, pad, style_editor};
+use super::{Action, AppState, LayerRef, number, pad, style_editor};
 use crate::globe::preview::Preview;
 use crate::world;
 
@@ -329,8 +329,9 @@ fn rivers(ui: &mut egui::Ui, state: &mut AppState, raster: &Raster) {
 
 /// The slider of the width of the rivers.
 fn river_width(ui: &mut egui::Ui, preview: &mut Preview, enabled: bool) {
-    let width = egui::Slider::new(&mut preview.river_width, RIVER_WIDTH).text("River width");
-    ui.add_enabled(enabled, width);
+    number::slider("River width", &mut preview.river_width, RIVER_WIDTH)
+        .enabled(enabled)
+        .show(ui);
 }
 
 /// The switch of the smoothing of a raster layer and its minimum feature
@@ -343,14 +344,17 @@ fn smoothing(ui: &mut egui::Ui, state: &mut AppState, raster: &Raster) {
     {
         state.set_raster_smoothing(raster.id, smoothing.on);
     }
-    let size = egui::Slider::new(
-        &mut smoothing.feature_size,
+    let size = &mut smoothing.feature_size;
+    let size = number::slider(
+        pad::raster::FEATURE_SIZE,
+        size,
         0.0..=Smoothing::FEATURE_SIZE_MAX,
     )
-    .step_by(0.25)
+    .step(0.25)
     .suffix(" pt")
-    .text(pad::raster::FEATURE_SIZE);
-    if ui.add_enabled(smoothing.on, size).changed() {
+    .enabled(smoothing.on)
+    .show(ui);
+    if size.changed() {
         state.set_raster_feature_size(raster.id, smoothing.feature_size);
     }
 }
@@ -365,37 +369,55 @@ fn hillshade(ui: &mut egui::Ui, state: &mut AppState, raster: &Raster) {
     {
         state.set_raster_hillshade(raster.id, hillshade.on);
     }
-    let mut percent = (hillshade.opacity * 100.0).round();
-    let opacity = egui::Slider::new(&mut percent, 0.0..=100.0)
-        .step_by(1.0)
-        .suffix(" %")
-        .text(pad::raster::HILLSHADE_OPACITY);
-    if ui.add_enabled(hillshade.on, opacity).changed() {
-        state.set_raster_hillshade_opacity(raster.id, percent / 100.0);
+    let opacity = number::slider(
+        pad::raster::HILLSHADE_OPACITY,
+        &mut hillshade.opacity,
+        0.0..=1.0,
+    )
+    .percent()
+    .step(1.0)
+    .enabled(hillshade.on)
+    .show(ui);
+    if opacity.changed() {
+        state.set_raster_hillshade_opacity(raster.id, hillshade.opacity);
     }
     let highlights = egui::Checkbox::new(&mut hillshade.highlights, "Highlights");
     if ui.add_enabled(hillshade.on, highlights).changed() {
         state.set_raster_hillshade_highlights(raster.id, hillshade.highlights);
     }
-    let azimuth = egui::Slider::new(&mut hillshade.azimuth, 0.0..=360.0)
-        .step_by(1.0)
+    let azimuth = &mut hillshade.azimuth;
+    let azimuth = number::slider(pad::raster::HILLSHADE_AZIMUTH, azimuth, 0.0..=360.0)
+        .step(1.0)
         .suffix("\u{b0}")
-        .text(pad::raster::HILLSHADE_AZIMUTH);
-    if ui.add_enabled(hillshade.on, azimuth).changed() {
+        .enabled(hillshade.on)
+        .show(ui);
+    if azimuth.changed() {
         state.set_raster_hillshade_azimuth(raster.id, hillshade.azimuth);
     }
-    let altitude = egui::Slider::new(&mut hillshade.altitude, Hillshade::ALTITUDES)
-        .step_by(1.0)
-        .suffix("\u{b0}")
-        .text(pad::raster::HILLSHADE_ALTITUDE);
-    if ui.add_enabled(hillshade.on, altitude).changed() {
+    let altitude = &mut hillshade.altitude;
+    let altitude = number::slider(
+        pad::raster::HILLSHADE_ALTITUDE,
+        altitude,
+        Hillshade::ALTITUDES,
+    )
+    .step(1.0)
+    .suffix("\u{b0}")
+    .enabled(hillshade.on)
+    .show(ui);
+    if altitude.changed() {
         state.set_raster_hillshade_altitude(raster.id, hillshade.altitude);
     }
-    let relief = egui::Slider::new(&mut hillshade.exaggeration, Hillshade::EXAGGERATIONS)
-        .logarithmic(true)
-        .suffix("\u{d7}")
-        .text(pad::raster::HILLSHADE_RELIEF);
-    if ui.add_enabled(hillshade.on, relief).changed() {
+    let relief = &mut hillshade.exaggeration;
+    let relief = number::slider(
+        pad::raster::HILLSHADE_RELIEF,
+        relief,
+        Hillshade::EXAGGERATIONS,
+    )
+    .log()
+    .suffix("\u{d7}")
+    .enabled(hillshade.on)
+    .show(ui);
+    if relief.changed() {
         state.set_raster_hillshade_exaggeration(raster.id, hillshade.exaggeration);
     }
     ui.add_enabled_ui(hillshade.on, |ui| {
@@ -518,34 +540,34 @@ fn selected_stop(ui: &mut egui::Ui, bands: &mut Bands, selected: &mut Option<usi
         }
         if fixed {
             ui.label(world::value_text(stop.value, span, unit));
-        } else {
-            let mut value = stop.value;
-            let field = egui::DragValue::new(&mut value)
-                .speed(span / SNAPS)
-                .suffix(format!(" {unit}"));
-            let field = ui.add(field);
-            field.widget_info(|| {
-                egui::WidgetInfo::labeled(egui::WidgetType::DragValue, true, BAND_VALUE)
-            });
-            if field.changed() {
-                bands.move_to(index, value);
-            }
-            if ui.button(REMOVE).clicked() && bands.remove(index) {
-                *selected = None;
-            }
+        } else if ui.button(REMOVE).clicked() && bands.remove(index) {
+            *selected = None;
         }
     });
+    if !lowest && !fixed && selected.is_some() {
+        let mut value = stop.value;
+        let step = 10f64.powf((span / 100.0).log10().floor());
+        let field = number::stepper(BAND_VALUE, &mut value)
+            .step(if step.is_finite() { step } else { 1.0 })
+            .decimals(world::value_decimals(span))
+            .suffix(format!(" {unit}"))
+            .show(ui);
+        if field.changed() {
+            bands.move_to(index, value);
+        }
+    }
     if lowest || selected.is_none() {
         return;
     }
     let mut line = stop.line;
     ui.horizontal(|ui| {
         let mut changed = ui.checkbox(&mut line.on, pad::raster::LINE).changed();
-        let weight = egui::DragValue::new(&mut line.weight)
+        let weight = number::stepper(pad::raster::LINE_WEIGHT, &mut line.weight)
             .range(StopLine::WEIGHTS)
-            .speed(0.05)
-            .suffix(" pt");
-        changed |= ui.add(weight).changed();
+            .step(0.25)
+            .suffix(" pt")
+            .show(ui);
+        changed |= weight.changed();
         if changed {
             bands.set_line(index, line);
         }
@@ -553,18 +575,11 @@ fn selected_stop(ui: &mut egui::Ui, bands: &mut Bands, selected: &mut Option<usi
     ui.horizontal(|ui| {
         let mut changed = ui.checkbox(&mut line.darker, pad::raster::DARKER).changed();
         if line.darker {
-            let darken = egui::DragValue::new(&mut line.darken)
-                .range(0.0..=1.0)
-                .speed(0.01)
-                .custom_formatter(|v, _| format!("{:.0}%", v * 100.0))
-                .custom_parser(|t| {
-                    t.trim_end_matches('%')
-                        .trim()
-                        .parse::<f64>()
-                        .ok()
-                        .map(|v| v / 100.0)
-                });
-            changed |= ui.add(darken).changed();
+            let darken = number::slider(pad::raster::DARKEN, &mut line.darken, 0.0..=1.0)
+                .percent()
+                .step(1.0)
+                .show(ui);
+            changed |= darken.changed();
         } else {
             changed |= ui.color_edit_button_srgb(&mut line.color).changed();
         }
