@@ -2037,8 +2037,10 @@ pub fn color_picker(
     let width = ui.available_width();
     let fill = |h: f32, s: f32, v: f32| Color32::from(Hsva::new(h, s, v, 1.0));
 
-    // The keypad of a field takes the place of the square and the strip.
-    if !keypad(ui, controls, PICKER_SQUARE + 8.0 + TOUCH) {
+    // The keypad of a field of the picker takes the place of the square and
+    // the strip.
+    let own = keypad_field(ui.ctx()).is_some_and(|field| field.starts_with(name));
+    if !(own && keypad(ui, controls, PICKER_SQUARE + 8.0 + TOUCH)) {
         let (square, _) = ui.allocate_exact_size(vec2(width, PICKER_SQUARE), Sense::hover());
         let shade = format!("{name} shade");
         let resp = hit(

@@ -218,7 +218,9 @@ impl<'a> Number<'a> {
         }
         let (lo, hi) = self.range;
         let value = if self.step > 0.0 {
-            (value / self.step).round() * self.step
+            // The decimals of the step, so that 0.1 steps give no float noise.
+            let scale = 10f64.powi(decimals(self.step) as i32);
+            ((value / self.step).round() * self.step * scale).round() / scale
         } else {
             value
         };
@@ -229,16 +231,11 @@ impl<'a> Number<'a> {
     fn decimals(&self, shown: f64) -> usize {
         let step = self.step * self.factor;
         if step > 0.0 {
-            (0..4)
-                .find(|d| {
-                    let scaled = step * 10f64.powi(*d as i32);
-                    (scaled - scaled.round()).abs() < 1e-6
-                })
-                .unwrap_or(4)
+            decimals(step)
         } else {
             // Three significant digits.
             let digits = shown.abs().max(1e-9).log10().floor() as i32;
-            (2 - digits).clamp(0, 3) as usize
+            (2 - digits).clamp(0, 6) as usize
         }
     }
 
@@ -742,6 +739,16 @@ impl<'a> Number<'a> {
     }
 }
 
+/// The decimals of a step, up to 4.
+fn decimals(step: f64) -> usize {
+    (0..4)
+        .find(|d| {
+            let scaled = step * 10f64.powi(*d as i32);
+            (scaled - scaled.round()).abs() < 1e-6
+        })
+        .unwrap_or(4)
+}
+
 /// How the buttons of a stepper move the value.
 #[derive(Clone, Copy)]
 enum Steps<'a> {
@@ -888,6 +895,10 @@ mod tests {
         assert_eq!(n.value_text(2.5), "2.5 mm");
         let n = Number::new("n", 0.0, 1.0..=500.0).log().unit("km");
         assert_eq!(n.value_text(12.345), "12.3 km");
+        let arc = Number::new("n", 0.0, 0.0..=30.0).unit("°");
+        assert_eq!(arc.number(1.0 / 3600.0), "0.000278");
+        let tenth = Number::new("n", 0.0, 0.0..=10.0).step(0.1);
+        assert_eq!(tenth.clean(0.7000001), 0.7);
     }
 
     #[test]

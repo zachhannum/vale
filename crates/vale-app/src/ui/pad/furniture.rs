@@ -625,8 +625,7 @@ fn entry_page(
     state.atlas.entry_name = text;
 }
 
-/// A stepper for a length in millimeters. Returns the new length, to a
-/// tenth.
+/// A stepper for a length in millimeters, in steps of a tenth.
 fn mm_stepper(
     ui: &mut egui::Ui,
     controls: &mut Controls,
@@ -634,11 +633,10 @@ fn mm_stepper(
     value: f64,
     range: std::ops::RangeInclusive<f64>,
 ) -> Option<f64> {
-    let v = Number::new(name, value, range)
+    Number::new(name, value, range)
         .step(0.1)
         .unit("mm")
-        .stepper(ui, controls)?;
-    Some((v * 10.0).round() / 10.0)
+        .stepper(ui, controls)
 }
 
 /// A stepper for a whole number.
@@ -970,7 +968,6 @@ fn bar_rows(
         .unit("pt")
         .stepper(ui, controls)
     {
-        let v = (v * 10.0).round() / 10.0;
         atlas::edit_bar(state, id, false, |b| b.line_width = v);
     }
 }
@@ -1064,7 +1061,6 @@ fn fill_page(
         .unit("pt")
         .stepper(ui, controls)
     {
-        let v = ((v * 20.0).round() / 20.0).max(*widths.start());
         atlas::edit_fill(state, id, second, false, |f| f.line_width = v);
     }
 }
