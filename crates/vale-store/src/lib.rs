@@ -355,6 +355,20 @@ pub struct Layer {
 }
 
 impl Layer {
+    /// Gives a feature the fields of the layer. A missing field gets its
+    /// default value, each value turns into a value of the type of its
+    /// field, and an attribute that is not a field goes.
+    fn conform(&self, feature: &mut Feature) {
+        let mut given = std::mem::take(&mut feature.attributes);
+        for field in &self.fields {
+            let value = match given.remove(&field.name) {
+                Some(value) => field.kind.convert(&value),
+                None => field.default.clone(),
+            };
+            feature.attributes.insert(field.name.clone(), value);
+        }
+    }
+
     /// The geometry kind of a vector layer.
     pub fn geometry(&self) -> Option<GeometryKind> {
         match self.kind {
@@ -1200,15 +1214,31 @@ impl Project {
         if layer.geometry() != Some(feature.geometry.kind()) {
             return false;
         }
-        let mut given = std::mem::take(&mut feature.attributes);
-        for field in &layer.fields {
-            let value = match given.remove(&field.name) {
-                Some(value) => field.kind.convert(&value),
-                None => field.default.clone(),
-            };
-            feature.attributes.insert(field.name.clone(), value);
-        }
+        layer.conform(&mut feature);
         layer.features.push(feature);
+        true
+    }
+
+    /// Puts features in the place of the feature with a UUID, in the draw
+    /// order. Each feature must have the geometry kind of the layer, and
+    /// its attributes change as in `add_feature`.
+    pub fn replace_feature(&mut self, id: LayerId, uuid: Uuid, mut features: Vec<Feature>) -> bool {
+        let Some(layer) = self.layer_mut(id) else {
+            return false;
+        };
+        let Some(i) = layer.features.iter().position(|f| f.uuid == uuid) else {
+            return false;
+        };
+        if features
+            .iter()
+            .any(|f| layer.geometry() != Some(f.geometry.kind()))
+        {
+            return false;
+        }
+        for f in &mut features {
+            layer.conform(f);
+        }
+        layer.features.splice(i..=i, features);
         true
     }
 
@@ -1466,6 +1496,38 @@ mod tests {
         let layer = p.layer(a).unwrap();
         assert_eq!(layer.features.len(), 1);
         assert_ne!(layer.features[0].uuid(), uuid);
+    }
+
+    #[test]
+    fn replace_feature_keeps_the_place_and_the_attributes() {
+        let mut p = Project::new(World::default());
+        let a = p.add_layer(
+            "a".into(),
+            GeometryKind::Point,
+            None,
+            vec![feature(&["mid"]), feature(&["mid"]), feature(&["mid"])],
+        );
+        let uuids: Vec<Uuid> = p
+            .layer(a)
+            .unwrap()
+            .features
+            .iter()
+            .map(|f| f.uuid())
+            .collect();
+        let attributes = p.layer(a).unwrap().features[1].attributes.clone();
+        let pieces = vec![
+            Feature::new(Geometry::Points(vec![[1.0, 0.0]]), attributes.clone()),
+            Feature::new(Geometry::Points(vec![[2.0, 0.0]]), attributes.clone()),
+        ];
+        let new: Vec<Uuid> = pieces.iter().map(|f| f.uuid()).collect();
+        let line = Feature::new(Geometry::Lines(vec![]), BTreeMap::new());
+        assert!(!p.replace_feature(a, uuids[1], vec![line]));
+        assert!(!p.replace_feature(a, Uuid::new_v4(), pieces.clone()));
+        assert!(p.replace_feature(a, uuids[1], pieces));
+        let features = &p.layer(a).unwrap().features;
+        let order: Vec<Uuid> = features.iter().map(|f| f.uuid()).collect();
+        assert_eq!(order, [uuids[0], new[0], new[1], uuids[2]]);
+        assert!(features[1..3].iter().all(|f| f.attributes == attributes));
     }
 
     fn text(s: &str) -> Value {
