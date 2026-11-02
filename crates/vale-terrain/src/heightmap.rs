@@ -176,6 +176,10 @@ pub struct Stamp {
     /// ground above sea level, from 0 to 1. At 1, the noise is zero at sea
     /// level and full at `NOISE_RELIEF_M` above it.
     pub relief: f64,
+    /// The grain of the noise mode. The features of the noise are `1 + grain`
+    /// times longer along the great circle of `motion` than across it. With
+    /// zero grain or zero motion, the noise has no direction.
+    pub grain: f64,
     /// The width and the floodplain of the channels of the carve mode.
     pub channel: ChannelShape,
     pub limits: Limits,
@@ -1558,6 +1562,18 @@ pub(crate) fn noise_octaves(scale: f64, n: usize) -> u32 {
 /// octave is folded at zero, so its value is high where the noise is near
 /// zero. The inverted ridged noise is the ridged noise times -1.
 pub(crate) fn fractal(p: V3, stamp: &Stamp, octaves: u32) -> f64 {
+    let p = match grain_axis(stamp) {
+        Some(axis) => {
+            // The part of `p` in the plane of the great circle shrinks, and
+            // the part across it stays.
+            let g = 1.0 + stamp.grain;
+            add(
+                scale(p, 1.0 / g),
+                scale(axis, (1.0 - 1.0 / g) * dot(p, axis)),
+            )
+        }
+        None => p,
+    };
     let (mut sum, mut total) = (0.0, 0.0);
     let (mut size, mut weight) = (stamp.scale, 1.0);
     for octave in 0..octaves {
@@ -1574,6 +1590,18 @@ pub(crate) fn fractal(p: V3, stamp: &Stamp, octaves: u32) -> f64 {
     } else {
         sum / total
     }
+}
+
+/// The axis of the great circle of the move of a noise stamp, a unit vector,
+/// or `None` if the stamp has no grain. The axis does not change along a
+/// great circle, so the stamps of a straight stroke share one noise.
+pub(crate) fn grain_axis(stamp: &Stamp) -> Option<V3> {
+    if stamp.grain <= 0.0 {
+        return None;
+    }
+    let axis = cross(stamp.center, stamp.motion);
+    let len = length(axis);
+    (len > 1e-12).then(|| scale(axis, 1.0 / len))
 }
 
 /// The offset of a warp stamp at a unit direction, on a face with `n` texels
@@ -1763,6 +1791,7 @@ mod tests {
             motion: [0.0; 3],
             ridged: false,
             relief: 0.0,
+            grain: 0.0,
             channel: ChannelShape::default(),
             invert: false,
             limits: Limits::default(),
@@ -4565,6 +4594,202 @@ mod tests {
         };
         assert!(noised(3) == noised(3));
         assert!(noised(3) != noised(4));
+    }
+
+    /// A noise stamp with grain that moves toward `to`.
+    fn grain_stamp(center: V3, to: V3, grain: f64) -> Stamp {
+        Stamp {
+            motion: scale(arc_motion(center, to), 1e-3),
+            grain,
+            ..noise_stamp(center, 0.2)
+        }
+    }
+
+    #[test]
+    fn noise_with_no_grain_or_no_motion_has_no_direction() {
+        let center = lonlat_to_dir(10.0, 5.0);
+        let levels = |stamp: Stamp| {
+            let mut map = ground_at(128, 1000.0);
+            map.stamp(&stamp);
+            all_levels(&map)
+        };
+        let plain = levels(noise_stamp(center, 0.2));
+        let east = lonlat_to_dir(11.0, 5.0);
+        assert!(levels(grain_stamp(center, east, 0.0)) == plain);
+        let still = Stamp {
+            motion: [0.0; 3],
+            ..grain_stamp(center, east, 4.0)
+        };
+        assert!(levels(still) == plain);
+        assert!(levels(grain_stamp(center, east, 4.0)) != plain);
+    }
+
+    /// The root mean square change of the noise of `stamp` for a move of
+    /// `step` radians along its great circle and across it, at places
+    /// within 0.2 radians of the great circle, with 8 seeds.
+    fn grain_change(stamp: &Stamp, octaves: u32, step: f64) -> (f64, f64) {
+        let axis = normalize(cross(stamp.center, stamp.motion));
+        let dir = cross(axis, stamp.center);
+        let count = 20_000;
+        let (mut along, mut across) = (0.0, 0.0);
+        for (i, seed) in (0..count).flat_map(|i| (1..=8).map(move |seed| (i, seed))) {
+            let stamp = &Stamp { seed, ..*stamp };
+            let t = TAU * f64::from(i) / f64::from(count);
+            let u = 0.2 * (f64::from(i) * 0.618_034).fract() * 2.0 - 0.2;
+            let circle = add(scale(stamp.center, t.cos()), scale(dir, t.sin()));
+            let p = normalize(add(scale(circle, u.cos()), scale(axis, u.sin())));
+            let forward = normalize(cross(axis, p));
+            let side = cross(p, forward);
+            let value = fractal(p, stamp, octaves);
+            let change = |d: V3| fractal(normalize(add(p, scale(d, step))), stamp, octaves) - value;
+            along += change(forward).powi(2);
+            across += change(side).powi(2);
+        }
+        (along.sqrt(), across.sqrt())
+    }
+
+    #[test]
+    fn grain_makes_features_longer_along_the_stroke_by_its_ratio() {
+        let places = [(10.0, 5.0, 0.0), (-70.0, 40.0, 1.0), (130.0, -60.0, 2.5)];
+        for (lon, lat, turn) in places {
+            let center = lonlat_to_dir(lon, lat);
+            let to = lonlat_to_dir(lon + f64::cos(turn), lat + f64::sin(turn));
+            for grain in [1.0, 3.0, 7.0] {
+                let stamp = grain_stamp(center, to, grain);
+                let (along, across) = grain_change(&stamp, 1, 1e-4);
+                let ratio = across / along;
+                let expected = 1.0 + grain;
+                assert!(
+                    (ratio / expected - 1.0).abs() < 0.15,
+                    "{lon} {lat}: {grain} {ratio}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_stamps_of_a_straight_stroke_share_one_grain() {
+        // Two stamps on the equator, which is a great circle, with each
+        // direction.
+        let (a, b) = (lonlat_to_dir(0.0, 0.0), lonlat_to_dir(4.0, 0.0));
+        let first = grain_stamp(a, b, 3.0);
+        let second = grain_stamp(b, lonlat_to_dir(8.0, 0.0), 3.0);
+        let back = grain_stamp(b, a, 3.0);
+        for i in 0..200 {
+            let p = lonlat_to_dir(0.02 * f64::from(i), 0.013 * f64::from(i) - 1.3);
+            let value = fractal(p, &first, 4);
+            assert!((fractal(p, &second, 4) - value).abs() < 1e-9);
+            assert!((fractal(p, &back, 4) - value).abs() < 1e-9);
+        }
+    }
+
+    #[test]
+    fn the_grain_follows_a_curved_stroke() {
+        // A stroke on a small circle around `pole`, of 4 brush radii.
+        let pole = lonlat_to_dir(20.0, 30.0);
+        let e1 = normalize(cross(pole, [0.0, 0.0, 1.0]));
+        let e2 = cross(pole, e1);
+        let (curve, radius) = (0.4, 0.1);
+        let at = |t: f64| {
+            let side = add(scale(e1, t.cos()), scale(e2, t.sin()));
+            add(scale(pole, f64::cos(curve)), scale(side, f64::sin(curve)))
+        };
+        let step = 0.12 * radius / curve;
+        let centers: Vec<V3> = (0..(std::f64::consts::PI / step) as usize)
+            .map(|i| at(i as f64 * step))
+            .collect();
+        let stamps: Vec<Stamp> = centers
+            .windows(2)
+            .map(|w| Stamp {
+                motion: arc_motion(w[0], w[1]),
+                grain: 3.0,
+                scale: 0.05,
+                ..noise_stamp(w[1], radius)
+            })
+            .collect();
+        // The sum of the noise of the stamps, each with a smooth weight.
+        let height = |p: V3, seed: u32| -> f64 {
+            stamps
+                .iter()
+                .filter_map(|s| {
+                    let t = angle(p, s.center) / radius;
+                    let s = Stamp { seed, ..*s };
+                    (t < 1.0).then(|| (1.0 - t * t).powi(2) * fractal(p, &s, 3))
+                })
+                .sum()
+        };
+        // On the middle of the stroke, the ground changes faster across the
+        // stroke than along it, at each part of the curve. The direction of
+        // the stroke turns by more than 120 degrees over the parts.
+        for part in 0..4 {
+            let (mut along, mut across) = (0.0, 0.0);
+            for i in 0..50 {
+                let p = at(0.3 + (f64::from(part) + f64::from(i) / 50.0) * 0.6);
+                let tangent = normalize(cross(pole, p));
+                let normal = cross(p, tangent);
+                for seed in 1..=6 {
+                    let old = height(p, seed);
+                    let change = |dir: V3| height(normalize(add(p, scale(dir, 1e-4))), seed) - old;
+                    along += change(tangent).powi(2);
+                    across += change(normal).powi(2);
+                }
+            }
+            let ratio = (across / along).sqrt();
+            assert!(ratio > 2.5, "{part}: {ratio}");
+        }
+    }
+
+    #[test]
+    fn crossed_strokes_with_grain_leave_no_seam() {
+        let n = 256;
+        let radius = 0.06;
+        let mut map = ground_at(n, 1000.0);
+        // A stroke along the equator and a stroke along longitude 0.
+        let lines: [&dyn Fn(f64) -> V3; 2] =
+            [&|t| lonlat_to_dir(t, 0.0), &|t| lonlat_to_dir(0.0, t)];
+        for line in lines {
+            map.begin_stroke();
+            let mut last = line(-12.0);
+            for i in 1..100 {
+                let center = line(-12.0 + 0.24 * f64::from(i));
+                map.stamp(&Stamp {
+                    motion: arc_motion(last, center),
+                    grain: 4.0,
+                    strength: 300.0,
+                    lower: 300.0,
+                    ..noise_stamp(center, radius)
+                });
+                last = center;
+            }
+            map.end_stroke();
+        }
+        // The largest second difference of the levels on face 0, in the
+        // place where the strokes cross and in the other places of the
+        // strokes.
+        let (mut cross_bend, mut line_bend) = (0, 0);
+        let level = |x: usize, y: usize| i32::from(map.get(0, x as i64, y as i64));
+        for y in 1..n - 1 {
+            for x in 1..n - 1 {
+                let (lon, lat) = dir_to_lonlat(map.texel_dir(0, x, y));
+                let (lon, lat) = (lon.abs().to_radians(), lat.abs().to_radians());
+                let bend = (2 * level(x, y) - level(x - 1, y) - level(x + 1, y))
+                    .abs()
+                    .max((2 * level(x, y) - level(x, y - 1) - level(x, y + 1)).abs());
+                if lon < radius && lat < radius {
+                    cross_bend = cross_bend.max(bend);
+                } else if (lon < 0.5 * radius || lat < 0.5 * radius)
+                    && lon.max(lat) > 2.0 * radius
+                    && lon.max(lat) < 0.15
+                {
+                    line_bend = line_bend.max(bend);
+                }
+            }
+        }
+        assert!(line_bend > 20, "{line_bend}");
+        assert!(
+            f64::from(cross_bend) <= 1.5 * f64::from(line_bend),
+            "{cross_bend} {line_bend}"
+        );
     }
 
     #[test]

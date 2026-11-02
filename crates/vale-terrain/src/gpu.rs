@@ -18,7 +18,7 @@ use crate::cube::{FACES, meters_to_level};
 use crate::erode::{ErodeGrid, ErodeStep};
 use crate::flow::{ChannelMap, ChannelWindow, CoarseHeights, WINDOW_CELLS, Window};
 use crate::heightmap::{
-    Limits, Mode, NOISE_RELIEF_M, StampPlan, TILE_SIZE, TexelRect, noise_octaves,
+    Limits, Mode, NOISE_RELIEF_M, StampPlan, TILE_SIZE, TexelRect, grain_axis, noise_octaves,
 };
 use crate::line::{LINE_SEGMENTS, LinePlan, REACH};
 use crate::range::RangePlan;
@@ -91,6 +91,10 @@ struct FaceStamp {
     octaves: u32,
     /// The largest drop of the noise mode.
     lower: f32,
+    /// The axis of the grain of the noise mode, and the grain. Both are zero
+    /// for a stamp without grain.
+    grain_axis: [f32; 3],
+    grain: f32,
 }
 
 impl FaceStamp {
@@ -126,6 +130,12 @@ impl FaceStamp {
                 - f32::from(meters_to_level(SEA_LEVEL)),
             octaves: noise_octaves(stamp.scale, size as usize),
             lower: stamp.lower as f32,
+            grain_axis: grain_axis(stamp).map_or([0.0; 3], |a| a.map(|c| c as f32)),
+            grain: if grain_axis(stamp).is_some() {
+                stamp.grain as f32
+            } else {
+                0.0
+            },
         }
     }
 }
