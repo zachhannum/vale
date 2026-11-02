@@ -11,7 +11,7 @@ use vale_store::{
 
 use super::geometry::{self, GAP, Input, MARGIN, PAD, ROW, Rects, TOUCH, WidthClass};
 use super::icons::Icon;
-use super::labels::value_slider;
+use super::number::Number;
 use super::text_style;
 use super::widgets::{self, BODY_PAD, Controls, Keys, PANEL_ROW, keypad_below};
 use super::{Card, CardTitle, GRATICULE, WORKSPACES, WORLDS, WORLDS_LEAD, WORLDS_ROW};
@@ -967,8 +967,8 @@ fn frame_tab(
 }
 
 /// The rows of the graticule of a frame: the interval, the color, the
-/// width, and the edge labels. The interval slider shows the interval that the frame draws, and
-/// a drag on it sets the interval by hand. A tap on the color opens a color
+/// width, and the edge labels. The interval stepper shows the interval that the frame draws, and
+/// a tap on it sets the interval by hand. A tap on the color opens a color
 /// picker below it.
 fn graticule_rows(
     ui: &mut egui::Ui,
@@ -990,13 +990,16 @@ fn graticule_rows(
         .iter()
         .position(|i| *i >= drawn * (1.0 - 1e-9))
         .unwrap_or(last);
-    let mut fraction = index as f64 / last as f64;
-    let text = interval_text(INTERVALS[index]);
-    if widgets::row_slider(ui, controls, INTERVAL, INTERVAL, &mut fraction, &text) {
-        let chosen = INTERVALS[(fraction * last as f64).round() as usize];
-        if g.interval != Some(chosen) {
-            atlas::set_graticule_interval(state, id, Some(chosen));
-        }
+    let range = INTERVALS[0]..=INTERVALS[last];
+    let interval = Number::new(INTERVAL, INTERVALS[index], range)
+        .choices(&INTERVALS)
+        .unit("°")
+        .text(interval_text)
+        .stepper(ui, controls);
+    if let Some(chosen) = interval
+        && g.interval != Some(chosen)
+    {
+        atlas::set_graticule_interval(state, id, Some(chosen));
     }
 
     let open = state.atlas.graticule_color;
@@ -1016,12 +1019,12 @@ fn graticule_rows(
         state.atlas.graticule_shown = true;
     }
 
-    let (lo, hi) = (*Graticule::WIDTHS.start(), *Graticule::WIDTHS.end());
-    let mut fraction = (g.width - lo) / (hi - lo);
-    let text = format!("{} pt", (g.width * 10.0).round() / 10.0);
-    let name = GRATICULE_WIDTH;
-    if widgets::row_slider(ui, controls, name, name, &mut fraction, &text) {
-        atlas::set_graticule_width(state, id, lo + fraction * (hi - lo));
+    if let Some(w) = Number::new(GRATICULE_WIDTH, g.width, Graticule::WIDTHS)
+        .step(0.1)
+        .unit("pt")
+        .stepper(ui, controls)
+    {
+        atlas::set_graticule_width(state, id, w);
     }
 
     let summary = super::edge_labels::summary(g);
@@ -1059,18 +1062,12 @@ fn neatline_rows(
         state.atlas.neatline_shown = true;
     }
 
-    let (lo, hi) = (*Neatline::WIDTHS.start(), *Neatline::WIDTHS.end());
-    let mut fraction = (b.width - lo) / (hi - lo);
-    let text = format!("{} pt", (b.width * 4.0).round() / 4.0);
-    if widgets::row_slider(
-        ui,
-        controls,
-        NEATLINE_WIDTH,
-        NEATLINE_WIDTH,
-        &mut fraction,
-        &text,
-    ) {
-        atlas::set_neatline_width(state, id, lo + fraction * (hi - lo));
+    if let Some(w) = Number::new(NEATLINE_WIDTH, b.width, Neatline::WIDTHS)
+        .step(0.25)
+        .unit("pt")
+        .stepper(ui, controls)
+    {
+        atlas::set_neatline_width(state, id, w);
     }
 }
 
@@ -1097,26 +1094,15 @@ fn border_rows(
             atlas::set_border_color(state, id, true, c);
         }
     }
-    let range = |r: std::ops::RangeInclusive<f64>| (*r.start(), *r.end());
-    let text = format!("{} mm", b.width_mm);
-    let names = (BORDER_WIDTH, BORDER_WIDTH);
-    if let Some(w) = value_slider(
-        ui,
-        controls,
-        names,
-        b.width_mm,
-        range(Border::WIDTHS),
-        &text,
-    ) {
+    let mm = |name, value, range, step| Number::new(name, value, range).step(step).unit("mm");
+    if let Some(w) = mm(BORDER_WIDTH, b.width_mm, Border::WIDTHS, 0.25).stepper(ui, controls) {
         atlas::set_border_width(state, id, w);
     }
-    let distances = range(Border::DISTANCES);
+    let distance = |name, d| mm(name, d, Border::DISTANCES, 0.5);
     let mut by_side = atlas::border_by_side(state, b);
     if !by_side {
         let d = b.distances_mm[0];
-        let text = format!("{d} mm");
-        let names = (BORDER_DISTANCE, BORDER_DISTANCE);
-        if let Some(d) = value_slider(ui, controls, names, d, distances, &text) {
+        if let Some(d) = distance(BORDER_DISTANCE, d).stepper(ui, controls) {
             atlas::set_border_distance(state, id, None, d);
         }
     }
@@ -1131,17 +1117,13 @@ fn border_rows(
     }
     if atlas::border_by_side(state, b) {
         for (i, name) in SIDE_DISTANCES.into_iter().enumerate() {
-            let d = b.distances_mm[i];
-            let text = format!("{d} mm");
-            if let Some(d) = value_slider(ui, controls, (name, name), d, distances, &text) {
+            if let Some(d) = distance(name, b.distances_mm[i]).stepper(ui, controls) {
                 atlas::set_border_distance(state, id, Some(i), d);
             }
         }
     }
 
-    let text = format!("{} mm", b.gap_mm);
-    let names = (BORDER_GAP, BORDER_GAP);
-    if let Some(g) = value_slider(ui, controls, names, b.gap_mm, range(Border::GAPS), &text) {
+    if let Some(g) = mm(BORDER_GAP, b.gap_mm, Border::GAPS, 0.25).stepper(ui, controls) {
         atlas::set_border_gap(state, id, g);
     }
 
@@ -1156,10 +1138,11 @@ fn border_rows(
         {
             atlas::set_border_stroke_color(state, id, c);
         }
-        let text = format!("{} pt", b.stroke_width);
-        let names = (STROKE_WIDTH, STROKE_WIDTH);
-        let widths = range(Border::STROKE_WIDTHS);
-        if let Some(w) = value_slider(ui, controls, names, b.stroke_width, widths, &text) {
+        if let Some(w) = Number::new(STROKE_WIDTH, b.stroke_width, Border::STROKE_WIDTHS)
+            .step(0.25)
+            .unit("pt")
+            .stepper(ui, controls)
+        {
             atlas::set_border_stroke_width(state, id, w);
         }
     }
@@ -1460,13 +1443,12 @@ fn raster_panel(
                 let Some(opacity) = state.doc.project.raster(raster).map(|r| r.opacity) else {
                     return;
                 };
-                let mut fraction = f64::from(opacity);
-                let text = format!("{:.0}%", fraction * 100.0);
-                let name = super::OPACITY;
-                if widgets::row_slider(ui, controls, name, "Opacity", &mut fraction, &text) {
-                    // The steps are whole percents.
-                    let opacity = ((fraction * 100.0).round() / 100.0) as f32;
-                    state.set_raster_opacity(raster, opacity);
+                if let Some(v) = Number::new(super::OPACITY, f64::from(opacity), 0.0..=1.0)
+                    .label("Opacity")
+                    .percent()
+                    .slider(ui, controls)
+                {
+                    state.set_raster_opacity(raster, v as f32);
                 }
                 super::raster::style(ui, state, controls, raster);
             }
@@ -1541,18 +1523,12 @@ fn look_panel(
                 look.blend = mode;
             }
         } else {
-            let mut fraction = f64::from(look.opacity);
-            let text = format!("{:.0}%", fraction * 100.0);
-            if widgets::row_slider(
-                ui,
-                controls,
-                super::OPACITY,
-                "Opacity",
-                &mut fraction,
-                &text,
-            ) {
-                // The steps are whole percents.
-                look.opacity = ((fraction * 100.0).round() / 100.0) as f32;
+            if let Some(v) = Number::new(super::OPACITY, f64::from(look.opacity), 0.0..=1.0)
+                .label("Opacity")
+                .percent()
+                .slider(ui, controls)
+            {
+                look.opacity = v as f32;
             }
             if raster {
                 let all = vale_store::RasterDisplay::ALL;
@@ -1761,17 +1737,11 @@ fn grid_rows(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, u
     if let Some(c) = text_style::rgb_rows(ui, state, controls, GRID_COLOR, which, grid.color) {
         atlas::edit_grid(state, |g| g.color = c);
     }
-    let mut fraction = grid.opacity;
-    let text = format!("{} %", (grid.opacity * 100.0).round());
-    if widgets::row_slider(
-        ui,
-        controls,
-        GRID_OPACITY,
-        GRID_OPACITY,
-        &mut fraction,
-        &text,
-    ) {
-        atlas::edit_grid(state, |g| g.opacity = fraction.clamp(0.0, 1.0));
+    if let Some(v) = Number::new(GRID_OPACITY, grid.opacity, 0.0..=1.0)
+        .percent()
+        .slider(ui, controls)
+    {
+        atlas::edit_grid(state, |g| g.opacity = v);
     }
 }
 
