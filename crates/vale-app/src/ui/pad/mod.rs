@@ -20,8 +20,8 @@ use crate::globe::brush::{
     RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM,
     RIDGE_SPREAD_MM, SCALE_KM, SEED, STRENGTH_M, TALUS_DEG, WARP_KM, needs_height,
 };
-use crate::globe::combine::PolygonMode;
 use crate::globe::brush::{BrushSettings, brush_radius};
+use crate::globe::combine::PolygonMode;
 use crate::globe::line::{DEFAULT_SMOOTHING, LineSettings};
 use crate::globe::snap;
 use crate::globe::{Tool, WorldView};
