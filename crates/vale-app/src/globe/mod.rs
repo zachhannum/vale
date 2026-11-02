@@ -2016,6 +2016,11 @@ impl Globe {
         self.line_stroke.as_ref().map(|s| s.screen.as_slice())
     }
 
+    /// The feature that the stroke of the line or polygon tool reshapes.
+    pub fn reshape_preview(&self) -> Option<Uuid> {
+        self.line_stroke.as_ref()?.reshape
+    }
+
     /// The lines of a basin in screen points: the outline, which closes,
     /// and the main river. The outline shows while the pen draws it and
     /// while it waits for its main river. The main river shows until its
@@ -4387,6 +4392,45 @@ mod tests {
         assert!(near(north, 0.5), "{north}");
         assert!(near(up, std::f32::consts::FRAC_1_SQRT_2), "{up}");
         assert_eq!(exaggeration, 1.0);
+    }
+
+    #[test]
+    fn a_stroke_from_an_outline_with_reshape_on_shows_its_feature() {
+        let square = vec![vec![
+            [0.0, 0.0],
+            [10.0, 0.0],
+            [10.0, 10.0],
+            [0.0, 10.0],
+            [0.0, 0.0],
+        ]];
+        let areas = layer(
+            9,
+            GeometryKind::Polygon,
+            vec![Geometry::Polygons(vec![square])],
+        );
+        let uuid = areas.features[0].uuid();
+        let built = Arc::new(LayerTargets::build(areas.id, &areas));
+        let mut globe = Globe {
+            rect: Rect::from_min_size(Pos2::ZERO, Vec2::splat(300.0 / 0.45)),
+            view: GlobeView::centered(5.0, 0.0),
+            draw_layer: Some(LayerId(9)),
+            fillable: true,
+            tool: Tool::Polygon,
+            ..Globe::default()
+        };
+        globe.set_targets(Some(Arc::new(Targets::new(vec![built], Vec::new()))));
+        let stroke = |globe: &mut Globe, lon: f64, lat: f64| {
+            globe.line_down();
+            globe.line_sample(Pos2::ZERO, Some(lonlat_to_dir(lon, lat)));
+            let reshape = globe.reshape_preview();
+            globe.line_up();
+            globe.take_line();
+            reshape
+        };
+        assert_eq!(stroke(&mut globe, 5.0, 0.2), None);
+        globe.line.reshape = true;
+        assert_eq!(stroke(&mut globe, 5.0, 0.2), Some(uuid));
+        assert_eq!(stroke(&mut globe, 5.0, 5.0), None);
     }
 
     #[test]
