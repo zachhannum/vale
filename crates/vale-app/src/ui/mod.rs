@@ -11,7 +11,7 @@ use vale_labeler::Fonts;
 use vale_sphere::LonLat;
 use vale_store::{
     BlendMode, Feature, GeometryKind, ImageId, Layer, LayerId, LayerKind, MapId, Project, Raster,
-    RasterDisplay, RasterId, Rgb, StoreError, World,
+    RasterDisplay, RasterId, Rgb, StoreError, Uuid, World,
 };
 use vale_style::LabelClass;
 use vale_terrain::{Bands, Heightmap, Mode};
@@ -19,13 +19,14 @@ use vale_terrain::{Bands, Heightmap, Mode};
 use crate::atlas_export::{ExportStep, PdfExport, RASTER_PIXEL_RATIO};
 use crate::document::Document;
 use crate::files::{Availability, ExportEvent, Files, PlainFiles, SystemEvents};
+use crate::globe::combine::{PolygonMode, StrokeArea};
 use crate::globe::fit;
 use crate::globe::import::{ImportResult, ProbeJob, Source, file_name};
 use crate::globe::line::{self, LineEdit};
 use crate::globe::math::lonlat_to_dir;
 use crate::globe::snap::{LayerTargets, Targets};
 use crate::globe::{Globe, Look, START_ELEVATION, StackItem, Tool, brush};
-use crate::globe::{polygon, reshape};
+use crate::globe::{LineStroke, polygon, reshape};
 use crate::image_layer::{ImageImport, ImageTiles, ImportStep};
 use crate::measure::{self, Measure};
 use crate::pipeline::{Composed, Pipeline, Selection};
@@ -2584,6 +2585,12 @@ impl AppState {
         };
         let settings = self.globe.line;
         let smoothing = settings.smoothing;
+        if stroke.mode != PolygonMode::New {
+            if layer.geometry() == Some(GeometryKind::Polygon) {
+                self.combine_polygons(id, &stroke);
+            }
+            return;
+        }
         if let Some(uuid) = stroke.reshape {
             // A stroke that does not end on the same ring of a polygon
             // changes nothing.
@@ -2625,6 +2632,71 @@ impl AppState {
             Some(LineEdit::Extend { uuid, geometry }) => project.set_geometry(id, uuid, geometry),
             None => false,
         };
+        if done {
+            self.line_edits += 1;
+            self.pipeline.forget(id);
+            self.touch();
+        }
+    }
+
+    /// Joins the area of a stroke of the polygon tool to a polygon, or cuts
+    /// it out of polygons. The selected polygons of the layer are the
+    /// targets. With no selection, Add changes the polygon where the stroke
+    /// starts, and Subtract changes each polygon that the stroke overlaps.
+    fn combine_polygons(&mut self, id: LayerId, stroke: &LineStroke) {
+        let Some(area) = StrokeArea::new(&stroke.runs, stroke.scale, self.globe.line.smoothing)
+        else {
+            return;
+        };
+        let Some(layer) = self.doc.project.layer(id) else {
+            return;
+        };
+        let selected: Vec<Uuid> = self
+            .feature_selection
+            .iter()
+            .filter(|f| f.layer == id)
+            .map(|f| f.uuid)
+            .collect();
+        let mut set = Vec::new();
+        let mut removed = Vec::new();
+        if stroke.mode == PolygonMode::Add {
+            let target = if selected.is_empty() {
+                layer
+                    .features
+                    .iter()
+                    .rev()
+                    .find(|f| area.starts_in(&f.geometry, stroke.scale))
+            } else {
+                layer.features.iter().find(|f| selected.contains(&f.uuid()))
+            };
+            if let Some(f) = target
+                && let Some(g) = area.add(&f.geometry)
+            {
+                set.push((f.uuid(), g));
+            }
+        } else {
+            let targets = layer
+                .features
+                .iter()
+                .filter(|f| selected.is_empty() || selected.contains(&f.uuid()));
+            for f in targets {
+                match area.subtract(&f.geometry) {
+                    Some(Some(g)) => set.push((f.uuid(), g)),
+                    Some(None) => removed.push(f.uuid()),
+                    None => {}
+                }
+            }
+        }
+        let project = &mut self.doc.project;
+        let mut done = false;
+        for (uuid, g) in set {
+            done |= project.set_geometry(id, uuid, g);
+        }
+        if !removed.is_empty() {
+            done |= project.remove_features(id, &removed) > 0;
+            self.feature_selection
+                .retain(|f| !removed.contains(&f.uuid));
+        }
         if done {
             self.line_edits += 1;
             self.pipeline.forget(id);

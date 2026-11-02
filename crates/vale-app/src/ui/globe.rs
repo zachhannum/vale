@@ -208,15 +208,19 @@ fn brush_input(
         }
     }
 
-    let (pos, pressed, down, shift, moved) = ui.input(|i| {
+    let (pos, pressed, down, shift, option, moved) = ui.input(|i| {
         (
             i.pointer.latest_pos(),
             i.pointer.primary_pressed(),
             i.pointer.primary_down(),
             i.modifiers.shift,
+            i.modifiers.alt,
             i.pointer.delta() != egui::Vec2::ZERO,
         )
     });
+    // Shift and Option choose the mode of the polygon tool, so they start
+    // a stroke and do not turn the globe.
+    let keys = globe.filling();
     // The first touch is also the egui pointer.
     let touched = touched || globe.nav.touching() || globe.input.pen.is_some();
     match pos {
@@ -231,13 +235,16 @@ fn brush_input(
             release(globe);
             globe.pen.stats.up();
         }
-        Some(pos) if pressed && !shift && !touched && resp.contains_pointer() => {
+        Some(pos) if pressed && (keys || !shift) && !touched && resp.contains_pointer() => {
             globe.input.mouse = true;
             press(globe);
             sample(globe, pos, FIXED_FLOW);
             globe.pen.stats.sample(time, None, None);
         }
         _ => {}
+    }
+    if keys {
+        globe.line_keys(shift, option);
     }
     if globe.input.pen.is_none() {
         let hover = globe.pen.hover.filter(|pos| on_canvas(ui, rect, *pos));

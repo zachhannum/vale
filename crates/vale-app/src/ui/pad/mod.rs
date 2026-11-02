@@ -21,6 +21,7 @@ use crate::globe::brush::{
     RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM,
     RIDGE_SPREAD_MM, SCALE_KM, SEED, STRENGTH_M, TALUS_DEG, WARP_KM, needs_height,
 };
+use crate::globe::combine::PolygonMode;
 use crate::globe::snap;
 use crate::globe::{Tool, WorldView};
 use crate::session::{WorldFile, worlds_of};
@@ -67,6 +68,9 @@ pub const TERRAIN_FIT: &str = "Terrain fit";
 pub const TERRAIN_FIT_SWITCH: &str = "Line terrain fit";
 /// The button that makes a stroke from an outline reshape the feature.
 pub const RESHAPE: &str = "Reshape";
+/// The cell of the brush card that chooses how a stroke of the polygon tool
+/// changes the layer: New, Add, or Subtract. A tap chooses the next mode.
+pub const POLYGON_MODE: &str = "Polygon mode";
 /// The name of the Reshape switch of the Brush panel.
 pub const RESHAPE_SWITCH: &str = "Reshape switch";
 /// The slider of the balance between the sketch and the terrain.
@@ -988,11 +992,36 @@ fn brush_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
                 // With a vector layer, the card has the snap button. With a
                 // line or polygon layer, it also has the smoothing of the
                 // tool and the reshape button.
-                // A line layer also has the terrain fit button.
+                // A line layer also has the terrain fit button, and a
+                // polygon layer has the modes of the polygon tool.
                 let fit = state.globe.lineable;
+                let fill = state.globe.fillable;
                 if vector {
+                    if fill {
+                        let mode = &mut state.globe.line.polygon_mode;
+                        let (label, icon, next) = match *mode {
+                            PolygonMode::New => ("New", Icon::Polygon, PolygonMode::Add),
+                            PolygonMode::Add => ("Add", Icon::PolygonAdd, PolygonMode::Subtract),
+                            PolygonMode::Subtract => {
+                                ("Subtract", Icon::PolygonSubtract, PolygonMode::New)
+                            }
+                        };
+                        let on = *mode != PolygonMode::New;
+                        let cell = widgets::tool_cell(
+                            &mut ui,
+                            controls,
+                            POLYGON_MODE,
+                            label,
+                            icon,
+                            on,
+                            true,
+                        );
+                        if cell.clicked() {
+                            *mode = next;
+                        }
+                    }
                     if line {
-                        let cells = if fit { 3.0 } else { 2.0 };
+                        let cells = if fit || fill { 3.0 } else { 2.0 };
                         let height = 2.0 * height - cells * CELL.1;
                         percent_slider(&mut state.globe.line.smoothing, 0.0..=1.0, |f, text| {
                             widgets::vertical_slider(
@@ -1014,6 +1043,9 @@ fn brush_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
                         *snap = !*snap;
                     }
                     if line {
+                        // Reshape works in the New mode of the polygon tool.
+                        let new = state.globe.line.polygon_mode == PolygonMode::New;
+                        let enabled = !fill || new;
                         let on = &mut state.globe.line.reshape;
                         let cell = widgets::tool_cell(
                             &mut ui,
@@ -1021,8 +1053,8 @@ fn brush_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
                             RESHAPE,
                             RESHAPE,
                             Icon::Reshape,
-                            *on,
-                            true,
+                            *on && enabled,
+                            enabled,
                         );
                         if cell.clicked() {
                             *on = !*on;

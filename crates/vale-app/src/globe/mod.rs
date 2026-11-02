@@ -54,6 +54,7 @@ use crate::pen::Pen;
 use backdrop::Canvas;
 use basin::Basiner;
 use brush::{Backlog, BrushSettings, STAMP_SPACING, Sample, Stroke, plan_texels, set_world};
+use combine::PolygonMode;
 pub use detail::DetailRequest;
 use erode::{Eroder, Ground, Lift, brush_window, erode_window, near_side, range_window};
 use export::ExportResult;
@@ -137,6 +138,8 @@ pub struct LineStroke {
     pub runs: Vec<Run>,
     /// The feature that the stroke reshapes.
     pub reshape: Option<Uuid>,
+    /// How the stroke of the polygon tool changes the layer.
+    pub mode: PolygonMode,
 }
 
 /// A point that the point tool placed.
@@ -1943,7 +1946,21 @@ impl Globe {
             tracer,
             runs: Vec::new(),
             reshape: None,
+            mode: self.line.polygon_mode,
         });
+    }
+
+    /// Reads the keys during a stroke of the polygon tool. Shift chooses
+    /// Add, and Option chooses Subtract, until the pen comes up.
+    pub fn line_keys(&mut self, shift: bool, option: bool) {
+        let Some(stroke) = self.line_stroke.as_mut() else {
+            return;
+        };
+        if shift {
+            stroke.mode = PolygonMode::Add;
+        } else if option {
+            stroke.mode = PolygonMode::Subtract;
+        }
     }
 
     /// Adds one sample to the stroke of the line or polygon tool. The stroke ends at
@@ -1951,7 +1968,9 @@ impl Globe {
     pub fn line_sample(&mut self, pos: Pos2, dir: Option<V3>) {
         let first = self.line_stroke.as_ref().is_some_and(|s| s.dirs.is_empty());
         let reshape = match (dir, &self.targets, self.draw_layer) {
-            (Some(dir), Some(targets), Some(layer)) if first && self.line.reshape => {
+            (Some(dir), Some(targets), Some(layer))
+                if first && self.line.reshape && self.line.polygon_mode == PolygonMode::New =>
+            {
                 let scale = self.radius();
                 targets.reshape(layer, dir, scale, reshape::REACH / scale)
             }
@@ -2024,7 +2043,8 @@ impl Globe {
 
     /// The feature that the stroke of the line or polygon tool reshapes.
     pub fn reshape_preview(&self) -> Option<Uuid> {
-        self.line_stroke.as_ref()?.reshape
+        let stroke = self.line_stroke.as_ref()?;
+        stroke.reshape.filter(|_| stroke.mode == PolygonMode::New)
     }
 
     /// The lines of a basin in screen points: the outline, which closes,

@@ -8472,6 +8472,106 @@ fn a_stroke_from_an_outline_reshapes_the_polygon_in_one_undo_step() {
 }
 
 #[test]
+fn the_brush_card_chooses_the_mode_of_the_polygon_tool_on_each_board() {
+    use vale_app::globe::combine::PolygonMode;
+    use vale_app::ui::pad::{POLYGON_MODE, RESHAPE};
+    for size in BOARDS {
+        let what = format!("{size:?}");
+        let dir = tempfile::tempdir().unwrap();
+        let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
+        h.set_size(egui::vec2(size.0, size.1));
+        h.run_steps(2);
+        select_layer(&mut h, picks.polygon.layer);
+        tap(&mut h, POLYGON);
+        assert_eq!(toggled(&h, POLYGON_MODE), Some(false), "{what}");
+        let mode = |h: &Pad| h.state().globe.line.polygon_mode;
+        // A finger, the pen, and the mouse each choose the next mode.
+        let pos = control(&h, POLYGON_MODE).unwrap().center();
+        finger_tap_at(&mut h, pos);
+        assert_eq!(mode(&h), PolygonMode::Add, "{what}");
+        assert_eq!(toggled(&h, POLYGON_MODE), Some(true), "{what}");
+        pen_path(&mut h, &[pos]);
+        assert_eq!(mode(&h), PolygonMode::Subtract, "{what}");
+        // Reshape works in the New mode only.
+        assert_eq!(toggled(&h, RESHAPE), Some(false), "{what}");
+        check_controls(&h, &format!("{what}: the modes of the polygon tool"));
+        if size == BOARDS[0] {
+            screenshot::save(&mut h, "pad-polygon-modes");
+        }
+        click(&mut h, POLYGON_MODE);
+        assert_eq!(mode(&h), PolygonMode::New, "{what}");
+    }
+}
+
+#[test]
+fn add_and_subtract_change_polygons_in_one_undo_step_each() {
+    use vale_app::globe::combine::PolygonMode;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
+    select_layer(&mut h, picks.polygon.layer);
+    tap(&mut h, POLYGON);
+    h.state_mut().globe.line.polygon_mode = PolygonMode::Add;
+    h.state_mut().globe.snap.on = false;
+    step_and_save(&mut h, false);
+    h.state_mut().save_waiting().unwrap();
+    let before = geometry_of(&h, picks.polygon);
+    let stroke = |h: &mut Pad, way: &[[f64; 2]]| {
+        let saved = saves(h);
+        pen_way(h, way);
+        for _ in 0..3 {
+            step_and_save(h, false);
+        }
+        assert_eq!(saves(h), saved + 1);
+        assert_eq!(line_features(h, picks.polygon.layer).len(), 1);
+        geometry_of(h, picks.polygon)
+    };
+    let undo_redo = |h: &mut Pad, before: &vale_store::Geometry, after: &vale_store::Geometry| {
+        tap(h, "Undo");
+        assert_eq!(&geometry_of(h, picks.polygon), before);
+        tap(h, "Redo");
+        assert_eq!(&geometry_of(h, picks.polygon), after);
+    };
+
+    // Add, from inside the square out to the east.
+    let added = stroke(
+        &mut h,
+        &[[5.0, -18.0], [16.0, -18.0], [16.0, -14.0], [5.0, -14.0]],
+    );
+    assert!(inside_polygon(&added, 13.0, -16.0));
+    assert!(inside_polygon(&added, -5.0, -20.0));
+    undo_redo(&mut h, &before, &added);
+
+    // Subtract from the selected polygon, through it.
+    h.state_mut().globe.line.polygon_mode = PolygonMode::Subtract;
+    h.state_mut().feature_selection = vec![picks.polygon];
+    let cut = stroke(
+        &mut h,
+        &[[-2.0, -28.0], [2.0, -28.0], [2.0, -9.0], [-2.0, -9.0]],
+    );
+    let vale_store::Geometry::Polygons(parts) = &cut else {
+        panic!("not a polygon");
+    };
+    assert_eq!(parts.len(), 2);
+    assert!(!inside_polygon(&cut, 0.0, -18.0));
+    assert!(inside_polygon(&cut, -6.0, -18.0));
+    undo_redo(&mut h, &added, &cut);
+
+    // With no selection, Subtract cuts a hole in the polygon under it.
+    h.state_mut().feature_selection.clear();
+    let holed = stroke(
+        &mut h,
+        &[[-8.0, -22.0], [-4.0, -22.0], [-4.0, -16.0], [-8.0, -16.0]],
+    );
+    let vale_store::Geometry::Polygons(parts) = &holed else {
+        panic!("not a polygon");
+    };
+    assert_eq!(parts.iter().map(|p| p.len()).sum::<usize>(), 3);
+    assert!(!inside_polygon(&holed, -6.0, -19.0));
+    assert!(inside_polygon(&holed, -9.0, -19.0));
+    undo_redo(&mut h, &cut, &holed);
+}
+
+#[test]
 fn with_reshape_a_stroke_from_a_line_reshapes_it_and_other_strokes_draw_lines() {
     use vale_app::ui::pad::RESHAPE;
     let dir = tempfile::tempdir().unwrap();

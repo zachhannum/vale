@@ -7,6 +7,7 @@
 
 use vale_store::{Feature, Geometry, LonLat, Uuid};
 
+use super::combine::PolygonMode;
 use super::math::{V3, add, angle, dir_to_lonlat, lonlat_to_dir, normalize, scale};
 use super::snap::{PathVertex, Run, append, distance_to_arc};
 
@@ -39,6 +40,8 @@ pub struct LineSettings {
     pub terrain: f64,
     /// A stroke that starts on the outline of a feature reshapes it.
     pub reshape: bool,
+    /// How a stroke of the polygon tool changes the layer.
+    pub polygon_mode: PolygonMode,
 }
 
 impl Default for LineSettings {
@@ -48,6 +51,7 @@ impl Default for LineSettings {
             fit: false,
             terrain: 0.5,
             reshape: false,
+            polygon_mode: PolygonMode::New,
         }
     }
 }
