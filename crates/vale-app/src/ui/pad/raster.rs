@@ -751,6 +751,7 @@ fn line_controls(ui: &mut egui::Ui, controls: &mut Controls, line: &mut StopLine
         .label("Weight")
         .step(f64::from(WEIGHT_STEP))
         .unit("pt")
+        .keypad_elsewhere()
         .stepper(ui, controls);
     if let Some(weight) = weight {
         line.weight = weight as f32;
@@ -767,6 +768,7 @@ fn line_controls(ui: &mut egui::Ui, controls: &mut Controls, line: &mut StopLine
             .label("Darken")
             .percent()
             .step(0.05)
+            .keypad_elsewhere()
             .slider(ui, controls);
         if let Some(darken) = darken {
             line.darken = darken as f32;

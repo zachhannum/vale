@@ -5157,6 +5157,11 @@ fn the_card_of_a_stop_sets_its_line() {
         }
         assert_eq!(stop(&h).line.weight, end);
     }
+    // The keypad of the weight opens in the place of the picker, inside the
+    // card, and a typed weight takes the nearest step.
+    type_value(&mut h, LINE_WEIGHT, "2.4");
+    assert_eq!(stop(&h).line.weight, 2.5);
+    type_value(&mut h, LINE_WEIGHT, "0.25");
 
     // With the line chosen, the picker sets the color of the line and not
     // the colors of the stop.

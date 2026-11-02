@@ -68,6 +68,7 @@ pub struct Number<'a> {
     steps: Steps<'a>,
     ticks: &'a [(f64, &'a str)],
     field: bool,
+    keypad: bool,
 }
 
 impl<'a> Number<'a> {
@@ -90,6 +91,7 @@ impl<'a> Number<'a> {
             steps: Steps::Step,
             ticks: &[],
             field: true,
+            keypad: true,
         }
     }
 
@@ -151,6 +153,13 @@ impl<'a> Number<'a> {
     /// holds the value.
     pub fn no_field(mut self) -> Self {
         self.field = false;
+        self
+    }
+
+    /// Another control shows the keypad, for example the color picker of
+    /// a card.
+    pub fn keypad_elsewhere(mut self) -> Self {
+        self.keypad = false;
         self
     }
 
@@ -360,7 +369,9 @@ impl<'a> Number<'a> {
         if self.field {
             let typed = self.field(ui, controls, field, value, true);
             out = typed.or(out);
-            widgets::keypad_below(ui, controls, &self.field_name());
+            if self.keypad {
+                widgets::keypad_below(ui, controls, &self.field_name());
+            }
         }
         if let (Some(pos), Some(drag)) = (resp.interact_pointer_pos(), dragging(ui, &resp)) {
             self.bubble(ui, value, drag.note, pos - vec2(0.0, 40.0), false);
@@ -472,7 +483,9 @@ impl<'a> Number<'a> {
         let value = out.unwrap_or(self.value);
         let typed = self.field(ui, controls, field.shrink2(vec2(4.0, 0.0)), value, true);
         out = typed.or(out);
-        widgets::keypad_below(ui, controls, &self.field_name());
+        if self.keypad {
+            widgets::keypad_below(ui, controls, &self.field_name());
+        }
         out.filter(|v| *v != self.value)
     }
 
@@ -614,7 +627,7 @@ impl<'a> Number<'a> {
                     text: self.number(value),
                     fresh: true,
                     changed: false,
-                    placed: true,
+                    placed: self.keypad,
                 }),
             };
             widgets::set_key_edit(&ctx, edit.clone());
@@ -692,7 +705,8 @@ impl<'a> Number<'a> {
     /// The keypad of the field, in a card at the right of `rect`, while it
     /// is open.
     fn keypad_beside(&self, ui: &egui::Ui, controls: &mut Controls, rect: Rect) {
-        if widgets::keypad_field(ui.ctx()).as_deref() != Some(&self.field_name()) {
+        let open = widgets::keypad_field(ui.ctx()).as_deref() == Some(&self.field_name());
+        if !self.keypad || !open {
             return;
         }
         let size = vec2(4.0 * TOUCH * 1.25, KEYPAD) + vec2(2.0 * PAD, 2.0 * PAD);
