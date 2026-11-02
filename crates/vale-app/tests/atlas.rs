@@ -5203,6 +5203,7 @@ fn a_finger_drag_in_map_from_region_turns_the_globe() {
     let mut h = pad();
     let frames = open_page(&h).frames.len();
     start_region(&mut h, 0.0, 45.0);
+    screenshot::save(&mut h, "pad-map-from-region");
     let before = globe_at(&h, 0.0, 45.0);
     drag(&mut h, before, before + vec2(80.0, 0.0), Input::Finger);
     assert_ne!(globe_at(&h, 0.0, 45.0), before);
@@ -5232,6 +5233,7 @@ fn the_projection_tab_of_a_region_frame_shows_the_reason_in_one_line() {
     let reason = vale_app::region::RegionKind::MidLatitude.reason();
     let mut h = pad();
     drag_region(&mut h);
+    screenshot::save(&mut h, "pad-region-projection");
     let rect = h.get_by_label(reason).rect();
     assert!(rect.height() < 30.0, "{rect:?}");
     let id = h.state().atlas.frame().unwrap();
