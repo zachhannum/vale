@@ -432,6 +432,17 @@ A pen drag or a mouse drag that starts on a point of the selection moves that po
 
 On the iPad, a card at the top of the screen shows the selection. With one feature, the card has a field for each attribute, and a change of a field is one undo step when the field loses the focus. With more than one feature, the title of the card is the count. The card has "Delete selection", which deletes all selected features in one undo step. On the desktop, a window at the top right has the same contents. Delete and Backspace delete the selection, and Esc clears it.
 
+### Reshape
+
+Reshape redraws a part of the outline of a line or a polygon with a stroke of the line tool or the polygon tool. The Reshape switch of the tool turns it on. With Reshape on, a stroke that starts within 12 points of the outline of a feature in the selected layer reshapes that feature. The nearest outline wins. A stroke that starts at the end of a line still extends the line, and any other stroke draws a new feature. Reshape needs no selection.
+
+- On a polygon, the stroke ends within 12 points of the same ring. The ring then has two possible shapes, one with each part of the old ring between the ends of the stroke. The shape with the larger area stays. A stroke that crosses itself or the outline gives the simple rings of the area, as in the polygon tool. A hole stays in the polygon that holds it. A stroke that ends away from the ring changes nothing.
+- On a line, a stroke that ends on the line takes the place of the part between its ends. A stroke that ends away from the line takes the place of the rest of the line, toward the end of the line that is nearer to the end of the stroke.
+
+The stroke snaps and traces like the other strokes of the tool, but it does not snap to or trace the feature that it reshapes. The stored vertices of the old outline outside the reshaped part do not change. The parts of a polygon on the two sides of the 180 degree meridian are one outline for the reshape. Each reshape is one undo step, and the feature keeps its attributes.
+
+On the iPad, the Reshape button is on the card below the tool strip, after the Snap button, and the Brush panel has the Reshape switch. On the desktop, the tool bar has the Reshape check box. The switch is not saved in the project.
+
 ### Attribute schema
 
 The panel of a vector layer lists the fields of the layer, each with its type. "Add field…" opens a page with the name, the type, and the default value of a new field. The name has the keyboard focus, so the on-screen keyboard opens. "Add", or Return in the name, adds the field. A tap on a field opens its page. There you change the name, the type, and the default value, and "Delete field" removes the field.
@@ -450,13 +461,13 @@ When the pen comes within the snap distance of an edge, the stroke locks on and 
 
 The traced part goes from the first to the last pen sample within a quarter of the snap distance of the target. It has a copy of each stored vertex of the target, so the two features share the border exactly. The app does not smooth the traced part. Before and after the traced part, the stroke blends from the pen to the target, so it meets the target at the angle of the pen. Each free part has its own smoothing, and its ends stay on the target.
 
-A stroke that starts at the end of a line in the same layer extends that line, and it does not trace that line. The target shows a highlight in the accent color while a stroke snaps or traces. Before a stroke, a pen that hovers or a mouse shows the point where the stroke will start: the end of the line that it extends, or the snapped position.
+A stroke that starts at the end of a line in the same layer extends that line, and it does not trace that line. A stroke from the end of a line extends it also with Reshape on. The target shows a highlight in the accent color while a stroke snaps or traces. Before a stroke, a pen that hovers or a mouse shows the point where the stroke will start: the end of the line that it extends, or the snapped position.
 
 The target of a color stop is the line where the field of the layer crosses the value of the stop. Each stop between the two ends of the range is a target, with a line or without one, because it is the edge of a step. The target comes from the same smoothed field at the current zoom as the steps and the lines. The app reads the field only near the pen.
 
 A position snaps to the nearest point where the field crosses a stop. A trace walks along the line in steps of half a point, and each step goes back onto the line. The field has no seam, so the trace has no gap at a face edge or at a cube corner. The trace of a color stop has no stored vertices, and the app removes each vertex that is less than 0.1 points from the simpler line.
 
-The line tool, the polygon tool, and the point tool have a Snap switch on the brush card. The line tool also has the Fit switch of the terrain fit. The sheet has the Snapping switch, a switch for each target type, a switch for the color stops of each raster layer, and the snap distance. The settings are not saved in the project.
+The line tool, the polygon tool, and the point tool have a Snap switch on the brush card. The line tool and the polygon tool also have the Reshape switch, and the line tool has the Fit switch of the terrain fit. The sheet has the Snapping switch, a switch for each target type, a switch for the color stops of each raster layer, and the snap distance. The settings are not saved in the project.
 
 The service has two parts. A position snap gives the snapped point, the feature, and the stored vertex. A tracer takes the pen samples of a stroke and gives free parts and traced parts. Point placement, vertex editing, and the polygon tool use the same two parts.
 
@@ -671,7 +682,7 @@ The app has seven editing tools in version 1.
 - Freehand lines and polygons on the globe.
 - Point placement with an attribute form, for cities, landmarks, and other named places.
 - An attribute table with sort, filter, and bulk edit.
-- Line and polygon editing by vertex, with snapping and a smooth operation.
+- Line and polygon editing by vertex and by reshape with a stroke, with snapping and a smooth operation.
 - Label editing on the map: pin, move, select a candidate, exclude.
 
 Photoshop, Illustrator, and similar tools keep color artwork and textures. The command Replace from file makes that round trip cheap.
@@ -859,7 +870,7 @@ The prototype leaves out the following.
 - Polygon labels, label fallbacks, leader lines, and manual label changes (pin, move, exclude).
 - The overview of the pages, page templates, SVG export, and tiled raster export.
 - Projection suggestions and Tissot circles.
-- All editing tools other than the freehand line tool, the freehand polygon tool, point placement, and the Select tool: the attribute table and vertex editing.
+- All editing tools other than the freehand line tool, the freehand polygon tool, point placement, the Select tool, and reshape: the attribute table and vertex editing.
 - The GPU Vello backend. The prototype draws with `vello_cpu`.
 - Wholesale procedural world generation. This is a permanent non-goal.
 

@@ -37,6 +37,8 @@ pub struct LineSettings {
     /// The balance of the fit, from 0, which keeps the sketch, to 1, which
     /// follows the terrain.
     pub terrain: f64,
+    /// A stroke that starts on the outline of a feature reshapes it.
+    pub reshape: bool,
 }
 
 impl Default for LineSettings {
@@ -45,6 +47,7 @@ impl Default for LineSettings {
             smoothing: DEFAULT_SMOOTHING,
             fit: false,
             terrain: 0.5,
+            reshape: false,
         }
     }
 }

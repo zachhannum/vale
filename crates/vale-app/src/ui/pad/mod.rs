@@ -65,6 +65,10 @@ pub const SNAP: &str = "Snap";
 pub const TERRAIN_FIT: &str = "Terrain fit";
 /// The switch of the sheet that turns the terrain fit on and off.
 pub const TERRAIN_FIT_SWITCH: &str = "Line terrain fit";
+/// The button that makes a stroke from an outline reshape the feature.
+pub const RESHAPE: &str = "Reshape";
+/// The name of the Reshape switch of the Brush panel.
+pub const RESHAPE_SWITCH: &str = "Reshape switch";
 /// The slider of the balance between the sketch and the terrain.
 pub const TERRAIN_BALANCE: &str = "Terrain fit balance";
 /// The cell of the tool strip that chooses the Measure tool.
@@ -968,12 +972,13 @@ fn brush_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
                 };
                 // With a vector layer, the card has the snap button. With a
                 // line or polygon layer, it also has the smoothing of the
-                // tool.
+                // tool and the reshape button.
                 // A line layer also has the terrain fit button.
                 let fit = state.globe.lineable;
                 if vector {
                     if line {
-                        let height = 2.0 * height - CELL.1 - if fit { CELL.1 } else { 0.0 };
+                        let cells = if fit { 3.0 } else { 2.0 };
+                        let height = 2.0 * height - cells * CELL.1;
                         percent_slider(&mut state.globe.line.smoothing, 0.0..=1.0, |f, text| {
                             widgets::vertical_slider(
                                 &mut ui, controls, SMOOTHING, height, f, text, true,
@@ -992,6 +997,21 @@ fn brush_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
                     );
                     if cell.clicked() {
                         *snap = !*snap;
+                    }
+                    if line {
+                        let on = &mut state.globe.line.reshape;
+                        let cell = widgets::tool_cell(
+                            &mut ui,
+                            controls,
+                            RESHAPE,
+                            RESHAPE,
+                            Icon::Reshape,
+                            *on,
+                            true,
+                        );
+                        if cell.clicked() {
+                            *on = !*on;
+                        }
                     }
                     if fit {
                         let terrain = state.globe.fit_layer.is_some();
@@ -1488,6 +1508,10 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
             &text,
         ) {
             snap.distance = (low + fraction * (high - low)).round();
+        }
+        if !measuring && (state.globe.lineable || state.globe.fillable) {
+            let on = &mut state.globe.line.reshape;
+            widgets::switch_row(ui, controls, RESHAPE_SWITCH, RESHAPE, on);
         }
         if !measuring && state.globe.lineable {
             let terrain = state.globe.fit_layer.is_some();
