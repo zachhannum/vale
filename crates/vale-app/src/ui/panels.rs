@@ -1114,23 +1114,22 @@ pub(super) fn brush_settings(ui: &mut egui::Ui, state: &mut AppState) {
     ui.strong("Flatten level");
     match globe.brush.flatten_level {
         Some(level) => {
-            ui.horizontal(|ui| {
-                let mut value = globe.brush.value(level);
-                let range = globe.brush.value_range;
-                let decimals = world::value_decimals(range.1 - range.0);
-                let stepper = number::stepper("Level", &mut value)
-                    .range(range.0..=range.1)
-                    .step(value_step(range))
-                    .decimals(decimals)
-                    .suffix(format!(" {unit}"))
-                    .show(ui);
-                if stepper.changed() {
-                    globe.brush.flatten_level = Some(globe.brush.level(value));
-                }
-                if ui.button("Use stroke start").clicked() {
-                    globe.brush.flatten_level = None;
-                }
-            });
+            // The button has its own row, so the panel keeps its width.
+            let mut value = globe.brush.value(level);
+            let range = globe.brush.value_range;
+            let decimals = world::value_decimals(range.1 - range.0);
+            let stepper = number::stepper("Level", &mut value)
+                .range(range.0..=range.1)
+                .step(value_step(range))
+                .decimals(decimals)
+                .suffix(format!(" {unit}"))
+                .show(ui);
+            if stepper.changed() {
+                globe.brush.flatten_level = Some(globe.brush.level(value));
+            }
+            if ui.button("Use stroke start").clicked() {
+                globe.brush.flatten_level = None;
+            }
         }
         None => {
             ui.label("Level at stroke start");
