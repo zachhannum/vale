@@ -21,6 +21,7 @@ use vale_terrain::{
 pub mod backdrop;
 pub mod basin;
 pub mod brush;
+pub mod combine;
 pub mod detail;
 pub mod edges;
 pub mod erode;
