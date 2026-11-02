@@ -10,6 +10,7 @@ use vale_style::{
     Color, LayerStyle, PointSymbolizer, Rule, ScatterSymbolizer, Stroke, StrokeKind, Symbolizer,
 };
 
+use super::number::Number;
 use super::raster::heading;
 use super::widgets::{self, Controls, Keys, PANEL_ROW};
 use super::{Page, filter, theme};
@@ -352,7 +353,12 @@ fn paint_rows(
             };
             rule.set_stroke(Some(stroke));
         }
-        if let Some(width) = points_slider(ui, controls, STROKE_WIDTH, stroke.width, WIDTHS) {
+        let width = Number::new(STROKE_WIDTH, stroke.width, WIDTHS.0..=WIDTHS.1)
+            .nice()
+            .step(0.05)
+            .unit("pt")
+            .stepper(ui, controls);
+        if let Some(width) = width {
             stroke.width = width;
             rule.set_stroke(Some(stroke));
         }
@@ -412,7 +418,11 @@ fn symbol_rows(
     let Some(before) = rule.symbol() else {
         if let Some(radius) = marker_radius(rule) {
             let size = 2.0 * radius.fallback;
-            if let Some(size) = step_slider(ui, controls, SIZE, size, CIRCLE_SIZES, 0.5, "pt") {
+            let size = Number::new(SIZE, size, CIRCLE_SIZES.0..=CIRCLE_SIZES.1)
+                .step(0.5)
+                .unit("pt")
+                .stepper(ui, controls);
+            if let Some(size) = size {
                 radius.fallback = size / 2.0;
             }
         }
@@ -423,7 +433,11 @@ fn symbol_rows(
     if symbol_row(ui, state, controls, &s.symbol, tint).clicked() {
         open_symbols(state, i);
     }
-    if let Some(size) = step_slider(ui, controls, SIZE, s.size.fallback, POINT_SIZES, 1.0, "pt") {
+    let size = Number::new(SIZE, s.size.fallback, POINT_SIZES.0..=POINT_SIZES.1)
+        .step(1.0)
+        .unit("pt")
+        .stepper(ui, controls);
+    if let Some(size) = size {
         s.size.fallback = size;
     }
     let mut degrees = s.rotation.fallback.rem_euclid(360.0) as f32;
@@ -489,48 +503,34 @@ fn scatter_rows(
     if symbol_row(ui, state, controls, &s.symbol, tint).clicked() {
         open_symbols(state, i);
     }
-    if let Some(size) = step_slider(
-        ui,
-        controls,
-        SIZE,
-        s.size.fallback,
-        SCATTER_SIZES,
-        1.0,
-        "pt",
-    ) {
+    let size = Number::new(SIZE, s.size.fallback, SCATTER_SIZES.0..=SCATTER_SIZES.1)
+        .step(1.0)
+        .unit("pt")
+        .stepper(ui, controls);
+    if let Some(size) = size {
         s.size.fallback = size;
     }
     let size = s.size.fallback;
     s.spacing.fallback = s.spacing.fallback.max(size);
-    let spacings = (size, MAX_SPACING.max(size));
-    if let Some(spacing) = step_slider(
-        ui,
-        controls,
-        SPACING,
-        s.spacing.fallback,
-        spacings,
-        1.0,
-        "pt",
-    ) {
+    let spacing = Number::new(SPACING, s.spacing.fallback, size..=MAX_SPACING.max(size))
+        .step(1.0)
+        .unit("pt")
+        .stepper(ui, controls);
+    if let Some(spacing) = spacing {
         s.spacing.fallback = spacing.max(size);
     }
-    let mut fraction = (s.size_jitter / 0.5).clamp(0.0, 1.0);
-    let text = format!("{:.0} %", s.size_jitter * 100.0);
-    if widgets::row_slider(
-        ui,
-        controls,
-        SIZE_VARIATION,
-        SIZE_VARIATION,
-        &mut fraction,
-        &text,
-    ) {
-        s.size_jitter = (fraction * 50.0).round() / 100.0;
+    let jitter = Number::new(SIZE_VARIATION, s.size_jitter, 0.0..=0.5)
+        .percent()
+        .slider(ui, controls);
+    if let Some(jitter) = jitter {
+        s.size_jitter = jitter;
     }
-    let mut fraction = (s.rotation_jitter / 180.0).clamp(0.0, 1.0);
-    let text = format!("{:.0}\u{b0}", s.rotation_jitter);
-    let name = ROTATION_VARIATION;
-    if widgets::row_slider(ui, controls, name, name, &mut fraction, &text) {
-        s.rotation_jitter = (fraction * 180.0).round();
+    let jitter = Number::new(ROTATION_VARIATION, s.rotation_jitter, 0.0..=180.0)
+        .step(1.0)
+        .unit("\u{b0}")
+        .slider(ui, controls);
+    if let Some(jitter) = jitter {
+        s.rotation_jitter = jitter;
     }
     tint_rows(ui, state, controls, (id, i), &mut s.tint);
     if Some(&s) != rule.scatter() {
@@ -723,27 +723,6 @@ fn tint_rows(
     }
 }
 
-/// A slider from `lo` to `hi` in steps of `step`, with `unit` after the
-/// value. Returns the new value.
-fn step_slider(
-    ui: &mut egui::Ui,
-    controls: &mut Controls,
-    name: &str,
-    value: f64,
-    (lo, hi): (f64, f64),
-    step: f64,
-    unit: &str,
-) -> Option<f64> {
-    let span = (hi - lo).max(f64::EPSILON);
-    let mut fraction = ((value - lo) / span).clamp(0.0, 1.0);
-    let text = format!("{} {unit}", width_text(value));
-    if !widgets::row_slider(ui, controls, name, name, &mut fraction, &text) {
-        return None;
-    }
-    let value = lo + fraction * span;
-    Some(((value / step).round() * step).clamp(lo, hi))
-}
-
 /// The SVG symbol that replaces the circle of a point layer.
 pub fn new_point_symbol(name: &str) -> PointSymbolizer {
     PointSymbolizer::constant(name, NEW_SYMBOL)
@@ -859,50 +838,32 @@ fn line_rows(
     }
     match stroke.kind {
         StrokeKind::Dashed { dash, gap } => {
-            if let Some(dash) = points_slider(ui, controls, DASH, dash, DASHES) {
+            let points = |name, value| {
+                Number::new(name, value, DASHES.0..=DASHES.1)
+                    .nice()
+                    .step(0.05)
+                    .unit("pt")
+            };
+            if let Some(dash) = points(DASH, dash).stepper(ui, controls) {
                 stroke.kind = StrokeKind::Dashed { dash, gap };
                 rule.set_stroke(Some(stroke));
             }
-            if let Some(gap) = points_slider(ui, controls, GAP, gap, DASHES) {
+            if let Some(gap) = points(GAP, gap).stepper(ui, controls) {
                 stroke.kind = StrokeKind::Dashed { dash, gap };
                 rule.set_stroke(Some(stroke));
             }
         }
         StrokeKind::Taper { start } => {
-            let mut fraction = start.clamp(0.0, 1.0);
-            let text = format!("{:.0} %", fraction * 100.0);
-            if widgets::row_slider(ui, controls, TAPER_START, TAPER_START, &mut fraction, &text) {
-                let start = (fraction * 100.0).round() / 100.0;
+            let start = Number::new(TAPER_START, start, 0.0..=1.0)
+                .percent()
+                .slider(ui, controls);
+            if let Some(start) = start {
                 stroke.kind = StrokeKind::Taper { start };
                 rule.set_stroke(Some(stroke));
             }
         }
         StrokeKind::Solid | StrokeKind::Brush => {}
     }
-}
-
-/// A slider of a length in points, with a log scale from `lo` to `hi`.
-/// Returns the new length, in steps of a twentieth of a point.
-fn points_slider(
-    ui: &mut egui::Ui,
-    controls: &mut Controls,
-    name: &str,
-    value: f64,
-    (lo, hi): (f64, f64),
-) -> Option<f64> {
-    let mut fraction = (value.clamp(lo, hi) / lo).ln() / (hi / lo).ln();
-    let text = format!("{} pt", width_text(value));
-    if !widgets::row_slider(ui, controls, name, name, &mut fraction, &text) {
-        return None;
-    }
-    let value = lo * (hi / lo).powf(fraction);
-    Some(((value * 20.0).round() / 20.0).max(lo))
-}
-
-/// A width with at most two decimals and no trailing zeros.
-fn width_text(width: f64) -> String {
-    let text = format!("{width:.2}");
-    text.trim_end_matches('0').trim_end_matches('.').to_owned()
 }
 
 /// The row of a color and, while it is open, its color picker. Returns true
@@ -959,7 +920,5 @@ mod tests {
         assert_eq!(scale_text(500.0), "500");
         assert_eq!(parse_scale("50,000"), Some(50_000.0));
         assert_eq!(parse_scale("0"), None);
-        assert_eq!(width_text(1.5), "1.5");
-        assert_eq!(width_text(2.0), "2");
     }
 }
