@@ -758,7 +758,8 @@ impl<'a> Number<'a> {
         let card = keep_in(card, screen);
         let id = format!("{} keypad", self.name);
         let radius = theme::CARD_RADIUS.into();
-        let backdrop = widgets::backdrop(ctx);
+        let own = egui::LayerId::new(Order::Foreground, egui::Id::new(&id));
+        let backdrop = blur_over(ctx, card, Some(own));
         widgets::card(ctx, backdrop, &id, card, Order::Foreground, radius, |ui| {
             let inner = ui.max_rect().shrink(PAD);
             let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner));
@@ -795,7 +796,7 @@ impl<'a> Number<'a> {
         let rect = keep_in(Rect::from_min_size(min, size), screen);
         let radius = theme::CONTROL_RADIUS;
         painter.add(theme::shadow().as_shape(rect, radius));
-        let backdrop = widgets::backdrop(ctx);
+        let backdrop = blur_over(ctx, rect, None);
         if let Some(format) = backdrop {
             let corner = egui::CornerRadius::from(radius);
             painter.add(card_shape(format, rect, corner, ctx.pixels_per_point()));
@@ -881,6 +882,28 @@ fn dragging(ui: &egui::Ui, resp: &egui::Response) -> Option<Drag> {
     let id = resp.id.with("drag");
     let drag = ui.data(|data| data.get_temp::<Drag>(id))?;
     (resp.dragged() && !drag.scroll).then_some(drag)
+}
+
+/// The blur for a card at `rect`, or `None` if a panel or another card is
+/// below a part of it. The blur shows the globe only, so over a panel the
+/// card has the solid fill. `own` is the layer of the card itself.
+fn blur_over(
+    ctx: &egui::Context,
+    rect: Rect,
+    own: Option<egui::LayerId>,
+) -> Option<eframe::egui_wgpu::wgpu::TextureFormat> {
+    let points = [
+        rect.left_top(),
+        rect.right_top(),
+        rect.left_bottom(),
+        rect.right_bottom(),
+        rect.center(),
+    ];
+    let panel = points.iter().any(|p| {
+        let layer = ctx.layer_id_at(*p);
+        layer.is_some_and(|l| l.order != Order::Background && Some(l) != own)
+    });
+    if panel { None } else { widgets::backdrop(ctx) }
 }
 
 /// A rectangle moved into `bounds`.
