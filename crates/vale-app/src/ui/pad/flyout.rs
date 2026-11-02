@@ -4,6 +4,7 @@
 //! decides what a tap does.
 
 use eframe::egui::{self, Order, Rect, pos2, vec2};
+use eframe::egui_wgpu::wgpu;
 
 use super::geometry::{self, Rects};
 use super::icons::{self, Icon};
@@ -58,13 +59,6 @@ impl Flyouts {
     /// Opens the flyout, or closes it when it is open.
     pub fn toggle(&mut self, key: Flyout) {
         self.open = (self.open != Some(key)).then_some(key);
-    }
-
-    /// Closes the flyout if it is open.
-    pub fn close(&mut self, key: Flyout) {
-        if self.open == Some(key) {
-            self.open = None;
-        }
     }
 }
 
@@ -128,8 +122,10 @@ fn paint_mark(ui: &egui::Ui, cell: Rect, active: bool, enabled: bool) {
 /// The open flyout, at the right of the tool column, next to its cell. A
 /// tick marks the row of `current`. Returns the row that the user chose. A
 /// choice or a press outside the flyout and its cell closes it.
+#[allow(clippy::too_many_arguments)]
 pub fn show(
     ctx: &egui::Context,
+    backdrop: Option<wgpu::TextureFormat>,
     controls: &mut Controls,
     flyouts: &mut Flyouts,
     rects: &Rects,
@@ -167,15 +163,12 @@ pub fn show(
     let radius = theme::CARD_RADIUS.into();
     widgets::card(
         ctx,
-        None,
+        backdrop,
         &key.id(),
         rect,
         Order::Foreground,
         radius,
         |ui| {
-            // The flyout covers the Brush panel, so its fill is opaque.
-            ui.painter()
-                .rect_filled(rect, radius, theme::card(false).to_opaque());
             let inner = rect.shrink2(vec2(BODY_PAD, 10.0));
             let layout = egui::Layout::top_down(egui::Align::Min);
             let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));

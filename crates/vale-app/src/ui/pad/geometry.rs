@@ -113,6 +113,8 @@ pub struct Input {
     pub sheet_offset: f32,
     /// The Measure tool is the tool.
     pub measure: bool,
+    /// The tool has a context strip: the card below the tool strip.
+    pub strip: bool,
     /// The number of cells of the tool strip.
     pub tools: usize,
 }
@@ -245,8 +247,9 @@ pub fn layout(input: &Input) -> Rects {
         BrushCard::Button => Some(button),
         BrushCard::Hidden => None,
     }
+    .filter(|_| input.strip || input.measure)
     .map(|height| Rect::from_min_size(brush_min, vec2(width, height)));
-    if beside {
+    if beside && brush.is_some() {
         brush_panel.x += width + GAP;
     }
 
@@ -312,6 +315,7 @@ mod tests {
             panel: false,
             sheet_offset: 0.0,
             measure: false,
+            strip: true,
             tools: TOOLS,
         }
     }

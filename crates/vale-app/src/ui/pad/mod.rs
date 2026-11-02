@@ -481,8 +481,14 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         panel: state.pad.brush || state.pad.right.is_some(),
         sheet_offset: state.pad.sheet_offset,
         measure: state.globe.measuring(),
+        strip: has_strip(&state.globe),
         tools: TOOLS,
     };
+    // The Brush panel holds the settings of the context strip.
+    if !has_strip(&state.globe) && !state.globe.measuring() {
+        state.pad.brush = false;
+        input.panel = state.pad.right.is_some();
+    }
     let mut rects = geometry::layout(&input);
     if rects.one_panel && state.pad.brush && state.pad.right.is_some() {
         state.pad.right = None;
@@ -501,9 +507,6 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     let flyouts = &mut state.pad.flyouts;
     if !state.globe.paintable && matches!(flyouts.open, Some(Flyout::Brush(_))) {
         flyouts.open = None;
-    }
-    if !state.globe.filling() {
-        flyouts.close(Flyout::PolygonMode);
     }
 
     top_row(&ctx, state, &mut controls, &rects);
@@ -755,6 +758,12 @@ pub fn toggle_measure(state: &mut AppState) {
     state.pad.flyouts.open = None;
 }
 
+/// The tool has a context strip: the card below the tool strip with the
+/// controls of the tool. The Measure tool has its own card.
+fn has_strip(globe: &crate::globe::Globe) -> bool {
+    globe.brushing() || globe.editing()
+}
+
 /// The child of a card, inside the padding of the card.
 fn padded(ui: &mut egui::Ui) -> egui::Ui {
     let rect = ui.max_rect().shrink(PAD);
@@ -954,20 +963,20 @@ fn brush_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
         radius,
         |ui| {
             let mut ui = padded(ui);
-            let paint = state.globe.paintable;
-            let line = state.globe.lineable || state.globe.fillable;
-            let vector = line || state.globe.pointable;
+            // Each control shows while the tool can use it.
+            let paint = state.globe.brushing();
+            let line = state.globe.drawing();
+            let vector = line || state.globe.placing();
             if let BrushCard::Full(height) = rects.brush_card {
                 let mut slider = |name: &str, fraction: &mut f64, text: &str, on: bool| {
                     widgets::vertical_slider(&mut ui, controls, name, height, fraction, text, on)
                 };
-                // With a vector layer, the card has the snap button. With a
-                // line or polygon layer, it also has the smoothing of the
-                // tool and the reshape button.
-                // A line layer also has the terrain fit button, and a
-                // polygon layer has the modes of the polygon tool.
-                let fit = state.globe.lineable;
-                let fill = state.globe.fillable;
+                // The tools of a vector layer have the snap button. The line
+                // tool and the polygon tool also have the smoothing and the
+                // reshape button. The line tool also has the terrain fit
+                // button, and the polygon tool has its modes.
+                let fit = state.globe.lining();
+                let fill = state.globe.filling();
                 if vector {
                     if fill {
                         let mode = state.globe.line.polygon_mode;
@@ -1049,10 +1058,10 @@ fn brush_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
                             *on = !*on;
                         }
                     }
-                } else {
+                } else if paint {
                     // The outline sets the size of a basin, and a basin has no
                     // flow. The sliders keep their place in the card.
-                    let on = paint && state.globe.brush.mode != Mode::Basin;
+                    let on = state.globe.brush.mode != Mode::Basin;
                     size_slider(state, |f, text| slider("Size", f, text, on));
                     percent_slider(&mut state.globe.brush.flow, FLOW, |f, text| {
                         slider("Flow", f, text, on)
@@ -1067,7 +1076,7 @@ fn brush_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
                 "Brush",
                 Icon::Brush,
                 open,
-                paint || line,
+                true,
             );
             if button.clicked() {
                 state.pad.toggle(Panel::Brush, rects.one_panel);
@@ -1205,9 +1214,9 @@ pub(super) fn show_panel(
     let name = name.as_deref().unwrap_or_default();
     let (key, title, back) = match (panel, layer) {
         (Panel::Brush, _) if state.measuring() => (panel.key(), MEASURE, None),
-        (Panel::Brush, _) if state.globe.lineable => (panel.key(), LINE, None),
-        (Panel::Brush, _) if state.globe.fillable => (panel.key(), POLYGON, None),
-        (Panel::Brush, _) if state.globe.pointable => (panel.key(), POINT, None),
+        (Panel::Brush, _) if state.globe.lining() => (panel.key(), LINE, None),
+        (Panel::Brush, _) if state.globe.filling() => (panel.key(), POLYGON, None),
+        (Panel::Brush, _) if state.globe.placing() => (panel.key(), POINT, None),
         (Panel::Brush, _) => (panel.key(), "Brush", None),
         (Panel::Layers, Some(LayerRef::Raster(_))) if page == Some(Page::Ramps) => {
             ("pad-ramps", raster::COLOR_RAMPS, Some(raster::COLOR_STOPS))
@@ -1481,8 +1490,8 @@ fn sheet_drag(ui: &egui::Ui, pad: &mut PadState, bar: &egui::Response, travel: f
 fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
     ui.spacing_mut().item_spacing.y = 0.0;
     let measuring = state.measuring();
-    let line = !measuring && (state.globe.lineable || state.globe.fillable);
-    if line || measuring || state.globe.pointable {
+    let line = state.globe.drawing();
+    if line || measuring || state.globe.placing() {
         if line {
             percent_slider(
                 &mut state.globe.line.smoothing,
@@ -1528,11 +1537,11 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
         ) {
             snap.distance = (low + fraction * (high - low)).round();
         }
-        if !measuring && (state.globe.lineable || state.globe.fillable) {
+        if line {
             let on = &mut state.globe.line.reshape;
             widgets::switch_row(ui, controls, RESHAPE_SWITCH, RESHAPE, on);
         }
-        if !measuring && state.globe.lineable {
+        if state.globe.lining() {
             let terrain = state.globe.fit_layer.is_some();
             let line = &mut state.globe.line;
             let (name, label) = (TERRAIN_FIT_SWITCH, TERRAIN_FIT);
@@ -2923,8 +2932,9 @@ fn brush_flyout(
         })
         .collect();
     let current = group.modes().iter().position(|m| m.2 == globe.brush.mode);
+    let backdrop = globe.backdrop();
     let flyouts = &mut state.pad.flyouts;
-    if let Some(i) = flyout::show(ctx, controls, flyouts, rects, &choices, current) {
+    if let Some(i) = flyout::show(ctx, backdrop, controls, flyouts, rects, &choices, current) {
         globe.tool = Tool::Brush;
         globe.brush.mode = group.modes()[i].2;
     }
@@ -2942,10 +2952,13 @@ fn polygon_flyout(
         icon,
         enabled: true,
     });
+    let current = POLYGON_MODES
+        .iter()
+        .position(|m| m.2 == state.globe.line.polygon_mode);
+    let backdrop = state.globe.backdrop();
     let mode = &mut state.globe.line.polygon_mode;
-    let current = POLYGON_MODES.iter().position(|m| m.2 == *mode);
     let flyouts = &mut state.pad.flyouts;
-    if let Some(i) = flyout::show(ctx, controls, flyouts, rects, &choices, current) {
+    if let Some(i) = flyout::show(ctx, backdrop, controls, flyouts, rects, &choices, current) {
         *mode = POLYGON_MODES[i].2;
     }
 }

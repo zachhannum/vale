@@ -1808,8 +1808,6 @@ fn a_finger_hits_each_control_at_the_first_try() {
     }
     choose_mode(&mut h, "Carve");
     assert_eq!(h.state().globe.brush.mode, Mode::Carve);
-    tap(&mut h, "Pan");
-    assert_eq!(h.state().globe.tool, Tool::Navigate);
 
     for (name, which) in [
         ("Layers", Panel::Layers),
@@ -1838,6 +1836,12 @@ fn a_finger_hits_each_control_at_the_first_try() {
     let rect = control(&h, "Size").unwrap();
     drag(&mut h, rect.center(), rect.center_bottom(), None);
     assert!(h.state().globe.brush.size_points < size);
+
+    // The Move tool has no context strip, so the Brush panel closes.
+    tap(&mut h, "Pan");
+    assert_eq!(h.state().globe.tool, Tool::Navigate);
+    assert!(control(&h, "Brush settings").is_none());
+    assert!(!h.state().pad.is_open(Panel::Brush));
 
     tap(&mut h, "Atlas");
     assert_eq!(h.state().workspace, Workspace::Atlas);
@@ -2923,6 +2927,9 @@ fn the_globe_does_not_move_when_you_touch_a_card() {
             assert!(!h.state().pad.menu);
             tap(&mut h, "Layers");
         }
+        // The Move tool has no context strip.
+        h.state_mut().globe.tool = Tool::Navigate;
+        h.run_steps(2);
         for card in cards(&h) {
             for from in [card.center(), card.left_top() + vec2(3.0, 3.0)] {
                 let to = screen.center();
@@ -5551,11 +5558,14 @@ fn the_draw_cell_is_the_line_cell_for_a_line_layer() {
     for name in [SCULPT, TERRAIN, "Size", "Flow"] {
         assert!(control(&h, name).is_none(), "{name}");
     }
-    assert!(control(&h, SMOOTHING).is_some());
+    // The context strip shows the controls of the line tool only while it
+    // is the tool.
+    assert!(control(&h, SMOOTHING).is_none());
     assert!(!h.state().globe.lining());
     tap(&mut h, LINE);
     assert_eq!(h.state().globe.tool, Tool::Line);
     assert!(h.state().globe.lining());
+    assert!(control(&h, SMOOTHING).is_some());
     // A finger turns the globe and draws no line.
     let center = h.state().globe.rect.center();
     let before = line_features(&h, rivers);
@@ -5748,11 +5758,14 @@ fn the_draw_cell_is_the_polygon_cell_for_a_polygon_layer() {
     h.run_steps(2);
     assert_eq!(control(&h, POLYGON), Some(draw));
     assert!(control(&h, LINE).is_none());
-    assert!(control(&h, SMOOTHING).is_some());
+    assert!(control(&h, SMOOTHING).is_none());
+    assert!(control(&h, vale_app::ui::pad::POLYGON_MODE).is_none());
     assert!(!h.state().globe.filling());
     tap(&mut h, POLYGON);
     assert_eq!(h.state().globe.tool, Tool::Polygon);
     assert!(h.state().globe.filling());
+    assert!(control(&h, SMOOTHING).is_some());
+    assert!(control(&h, vale_app::ui::pad::POLYGON_MODE).is_some());
     // In a line layer, the tool draws lines.
     let rivers = vector(&h, "Rivers");
     h.state_mut().select(Some(LayerRef::Vector(rivers)));
@@ -8555,6 +8568,50 @@ fn the_flyout_of_the_mode_cell_chooses_the_mode_of_the_polygon_tool_on_each_boar
         assert!(!open(&h), "{what}");
         assert_eq!(mode(&h), PolygonMode::New, "{what}");
     }
+}
+
+#[test]
+fn the_context_strip_shows_only_the_controls_of_the_tool() {
+    use vale_app::ui::pad::{POINT, POLYGON_MODE, RESHAPE};
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
+    let all = [
+        SMOOTHING,
+        SNAP,
+        RESHAPE,
+        TERRAIN_FIT,
+        POLYGON_MODE,
+        "Brush settings",
+        "Size",
+        "Flow",
+    ];
+    let check = |h: &Pad, shown: &[&str], what: &str| {
+        for name in all {
+            let want = shown.contains(&name);
+            assert_eq!(control(h, name).is_some(), want, "{what}: {name}");
+        }
+    };
+    select_layer(&mut h, picks.polygon.layer);
+    assert_eq!(h.state().globe.tool, Tool::Select);
+    check(&h, &[], "the Select tool");
+    tap(&mut h, POLYGON);
+    let polygon = [SMOOTHING, SNAP, RESHAPE, POLYGON_MODE, "Brush settings"];
+    check(&h, &polygon, "the polygon tool");
+    // The list of the modes stays open.
+    quick_tap(&mut h, POLYGON_MODE);
+    h.run_steps(5);
+    assert_eq!(h.state().pad.flyouts.open, Some(Flyout::PolygonMode));
+    quick_tap(&mut h, POLYGON_MODE);
+    select_layer(&mut h, picks.line.layer);
+    assert!(h.state().globe.lining());
+    let line = [SMOOTHING, SNAP, RESHAPE, TERRAIN_FIT, "Brush settings"];
+    check(&h, &line, "the line tool");
+    select_layer(&mut h, picks.point.layer);
+    tap(&mut h, POINT);
+    assert!(h.state().globe.placing());
+    check(&h, &[SNAP, "Brush settings"], "the point tool");
+    tap(&mut h, "Pan");
+    check(&h, &[], "the Move tool");
 }
 
 #[test]
