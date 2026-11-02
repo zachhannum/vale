@@ -166,11 +166,11 @@ fn type_value(h: &mut Pad, name: &str, text: &str) {
 }
 
 /// A tap on the plus button (`up`) or the minus button of the stepper
-/// `name`.
+/// `name`. A `tap` lasts long enough for the button to repeat, and a
+/// `quick_tap` does not.
 #[allow(dead_code)]
 fn step(h: &mut Pad, name: &str, up: bool) {
     let button = if up { "Increase" } else { "Decrease" };
-    // A `tap` lasts long enough to repeat.
     quick_tap(h, &format!("{button} {name}"));
 }
 
@@ -5142,23 +5142,21 @@ fn the_card_of_a_stop_sets_its_line() {
     assert!(stop(&h).line.on);
     assert!(switch_is_on(&h, LINE));
 
-    // The weight goes in steps of a quarter point up to 8 points.
-    let slider = control(&h, LINE_WEIGHT).unwrap();
-    drag(
-        &mut h,
-        slider.left_center(),
-        slider.right_center() + vec2(40.0, 0.0),
-        None,
-    );
-    assert_eq!(stop(&h).line.weight, 8.0);
-    let slider = control(&h, LINE_WEIGHT).unwrap();
-    drag(
-        &mut h,
-        slider.right_center(),
-        slider.left_center() - vec2(40.0, 0.0),
-        None,
-    );
-    assert_eq!(stop(&h).line.weight, 0.25);
+    // The weight goes in steps of a quarter point from a quarter point to
+    // 8 points.
+    // A button is off at the end of the range.
+    for (up, end) in [(true, 8.0), (false, 0.25)] {
+        let button = format!("{} {LINE_WEIGHT}", if up { "Increase" } else { "Decrease" });
+        for _ in 0..40 {
+            if control(&h, &button).is_none() {
+                break;
+            }
+            let weight = stop(&h).line.weight;
+            step(&mut h, LINE_WEIGHT, up);
+            assert_eq!((stop(&h).line.weight - weight).abs(), 0.25);
+        }
+        assert_eq!(stop(&h).line.weight, end);
+    }
 
     // With the line chosen, the picker sets the color of the line and not
     // the colors of the stop.
@@ -6049,10 +6047,9 @@ fn the_style_section_has_the_smoothing_and_the_minimum_feature_size() {
         check_controls(&h, &format!("{what} with the smoothing"));
         screenshot::save(&mut h, &format!("pad-smoothing-{}", size.0));
 
-        // A tap at the left end of the slider gives a size of zero.
-        let slider = control(&h, FEATURE_SIZE).unwrap();
-        finger_tap(&mut h, pos2(slider.left() + 1.0, slider.center().y));
+        set_number(&mut h, FEATURE_SIZE, "0");
         assert_eq!(smoothing(&h).feature_size, 0.0, "{what}");
+        scroll_to_control(&mut h, SMOOTHING);
 
         tap(&mut h, SMOOTHING);
         assert!(!smoothing(&h).on, "{what}");
@@ -6169,13 +6166,11 @@ fn the_hillshade_page_has_each_control_inside_the_card() {
         }
         screenshot::save(&mut h, &format!("pad-hillshade-{}", size.0));
 
-        // A tap at the left end of the opacity slider gives zero.
-        scroll_to_row(&mut h, HILLSHADE_OPACITY);
-        let slider = control(&h, HILLSHADE_OPACITY).unwrap();
-        finger_tap(&mut h, pos2(slider.left() + 1.0, slider.center().y));
+        // The opacity is in whole percents.
+        set_number(&mut h, HILLSHADE_OPACITY, "0");
         assert_eq!(hillshade_of(&h, height).opacity, 0.0, "{what}");
-        let slider = control(&h, HILLSHADE_OPACITY).unwrap();
-        finger_tap(&mut h, slider.center());
+        set_number(&mut h, HILLSHADE_OPACITY, "40.4");
+        assert_eq!(hillshade_of(&h, height).opacity, 0.4, "{what}");
         let opacity = hillshade_of(&h, height).opacity;
         assert!(opacity > 0.0, "{what}: {opacity}");
 
@@ -6235,29 +6230,22 @@ fn the_hillshade_sliders_set_the_light_height_and_the_relief() {
     for size in [BOARDS[0], BOARDS[3]] {
         let what = format!("{size:?}");
         let (mut h, height) = hillshade_page(size);
-        // The track of a slider with a short label starts 72 points right
-        // of the row, and ends 56 points left of its end, inside the half
-        // of the thumb.
-        let ends = |h: &Pad, name: &str| {
-            let slider = control(h, name).unwrap();
-            let y = slider.center().y;
-            let left = pos2(slider.left() + 1.0, y);
-            let right = pos2(slider.right() - 1.0, y);
-            let middle = (slider.left() + 72.0 + slider.right() - 56.0) / 2.0;
-            (left, pos2(middle, y), right)
-        };
-        scroll_to(&mut h, HILLSHADE_RELIEF);
-        let (left, _, right) = ends(&h, HILLSHADE_ALTITUDE);
-        finger_tap(&mut h, left);
+        // The light height is in whole degrees from 5° to 85°.
+        set_number(&mut h, HILLSHADE_ALTITUDE, "0");
         assert_eq!(hillshade_of(&h, height).altitude, 5.0, "{what}");
-        finger_tap(&mut h, right);
+        set_number(&mut h, HILLSHADE_ALTITUDE, "90");
         assert_eq!(hillshade_of(&h, height).altitude, 85.0, "{what}");
+        set_number(&mut h, HILLSHADE_ALTITUDE, "30.4");
+        assert_eq!(hillshade_of(&h, height).altitude, 30.0, "{what}");
 
-        let (left, middle, _) = ends(&h, HILLSHADE_RELIEF);
-        finger_tap(&mut h, left);
+        // The relief is in hundredths from 0.25 to 4, and a drag from the
+        // left end stops at 1.
+        set_number(&mut h, HILLSHADE_RELIEF, "0");
         assert_eq!(hillshade_of(&h, height).exaggeration, 0.25, "{what}");
-        finger_tap(&mut h, middle);
-        assert_eq!(hillshade_of(&h, height).exaggeration, 1.0, "{what}");
+        set_number(&mut h, HILLSHADE_RELIEF, "9");
+        assert_eq!(hillshade_of(&h, height).exaggeration, 4.0, "{what}");
+        set_number(&mut h, HILLSHADE_RELIEF, "1.234");
+        assert_eq!(hillshade_of(&h, height).exaggeration, 1.23, "{what}");
     }
 }
 
@@ -6968,6 +6956,29 @@ fn type_scrolled_keys(h: &mut Pad, field: &str, text: &str) {
     tap(h, &done);
 }
 
+/// Types `text` on the keypad of the number `name` in the Layers panel.
+fn set_number(h: &mut Pad, name: &str, text: &str) {
+    type_scrolled_keys(h, &format!("{name} value"), text);
+}
+
+/// A tap on the plus button (`up`) or the minus button of the stepper
+/// `name` in the Layers panel.
+fn scrolled_step(h: &mut Pad, name: &str, up: bool) {
+    let button = if up { "Increase" } else { "Decrease" };
+    scroll_to_control(h, &format!("{button} {name}"));
+    step(h, name, up);
+}
+
+/// A drag along the slider `name` from near its left end to far past its
+/// right end, which moves the value to the end of the range.
+fn drag_right(h: &mut Pad, name: &str) {
+    scroll_to_control(h, name);
+    let slider = control(h, name).unwrap();
+    let y = slider.center().y;
+    let from = pos2(slider.left() + 100.0, y);
+    drag(h, from, pos2(from.x + 600.0, y), None);
+}
+
 /// The rules of the style of a vector layer.
 fn rules(h: &Pad, id: vale_store::LayerId) -> Vec<vale_style::Rule> {
     h.state().doc.entry(id).unwrap().style.style.rules.clone()
@@ -7124,17 +7135,14 @@ fn a_rule_page_sets_the_stroke_and_the_fill() {
         let stroke = rule(&h).stroke().unwrap();
         assert_eq!(stroke.color, Color::rgb(0xc0, 0x40, 0x20), "{what}");
 
-        // A tap on the width slider sets a width in twentieths of a point.
-        scroll_to_control(&mut h, STROKE_WIDTH);
-        let slider = control(&h, STROKE_WIDTH).unwrap();
-        let at = pos2(slider.right() - 30.0, slider.center().y);
-        touch(&mut h, egui::TouchPhase::Start, at, None);
-        h.step();
-        touch(&mut h, egui::TouchPhase::End, at, None);
-        h.run_steps(3);
+        // The width is in twentieths of a point.
+        scrolled_step(&mut h, STROKE_WIDTH, true);
         let width = rule(&h).stroke().unwrap().width;
         assert!(width > stroke.width, "{what}: {width}");
-        assert_eq!((width * 20.0).round() / 20.0, width, "{what}");
+        assert!(
+            (width * 20.0 - (width * 20.0).round()).abs() < 1e-9,
+            "{what}: {width}"
+        );
 
         scroll_to_control(&mut h, FILL_COLOR);
         tap(&mut h, FILL_COLOR);
@@ -7159,6 +7167,30 @@ fn a_rule_page_sets_the_stroke_and_the_fill() {
 }
 
 #[test]
+fn the_width_stepper_of_a_rule_goes_through_the_series_and_takes_a_typed_width() {
+    use vale_app::ui::pad::rules::STROKE_WIDTH;
+    let mut h = pad(BOARDS[1]);
+    let rivers = vector(&h, "Rivers");
+    let width = |h: &Pad| rules(h, rivers)[0].stroke().unwrap().width;
+    let near = |a: f64, b: f64| (a - b).abs() < 1e-9;
+    open_rule(&mut h, "Rivers", "Default");
+    set_number(&mut h, STROKE_WIDTH, "1.5");
+    assert!(near(width(&h), 1.5), "{}", width(&h));
+    // The buttons go through 1, 2, 5, 10, and so on.
+    scrolled_step(&mut h, STROKE_WIDTH, true);
+    assert!(near(width(&h), 2.0), "{}", width(&h));
+    scrolled_step(&mut h, STROKE_WIDTH, true);
+    assert!(near(width(&h), 5.0), "{}", width(&h));
+    scrolled_step(&mut h, STROKE_WIDTH, false);
+    assert!(near(width(&h), 2.0), "{}", width(&h));
+    // A typed width takes the nearest twentieth of a point inside the range.
+    set_number(&mut h, STROKE_WIDTH, "3.33");
+    assert!(near(width(&h), 3.35), "{}", width(&h));
+    set_number(&mut h, STROKE_WIDTH, "50");
+    assert!(near(width(&h), 20.0), "{}", width(&h));
+}
+
+#[test]
 fn a_width_drag_and_a_color_drag_redraw_and_are_one_undo_step_each() {
     use vale_app::ui::pad::rules::{STROKE_COLOR, STROKE_WIDTH};
     let size = BOARDS[1];
@@ -7168,9 +7200,16 @@ fn a_width_drag_and_a_color_drag_redraw_and_are_one_undo_step_each() {
     let stroke = |h: &Pad| rules(h, rivers)[0].stroke().unwrap();
     let before = stroke(&h);
     open_rule(&mut h, "Rivers", "Default");
-    scroll_to_control(&mut h, STROKE_WIDTH);
     save_frames(&mut h);
     let saved = saves(&h);
+
+    // A tap on the plus button of the width changes the style that the map
+    // draws, and it saves once.
+    scrolled_step(&mut h, STROKE_WIDTH, true);
+    save_frames(&mut h);
+    let width = stroke(&h).width;
+    assert!(width > before.width, "{width}");
+    assert_eq!(saves(&h), saved + 1);
 
     // Each step of a drag changes the style that the map draws, and the
     // drag saves once.
@@ -7192,15 +7231,6 @@ fn a_width_drag_and_a_color_drag_redraw_and_are_one_undo_step_each() {
         values.dedup();
         values
     };
-    let rect = control(&h, STROKE_WIDTH).unwrap();
-    let widths = held(&mut h, STROKE_WIDTH, 30.0, rect.width() - 20.0, &|h| {
-        stroke(h).width
-    });
-    // The press sets the width at the left of the track.
-    assert!(widths.len() >= 5, "{widths:?}");
-    assert!(widths[1..].is_sorted(), "{widths:?}");
-    assert_eq!(saves(&h), saved + 1);
-
     scroll_to_control(&mut h, STROKE_COLOR);
     tap(&mut h, STROKE_COLOR);
     let shade = format!("{STROKE_COLOR} shade");
@@ -7215,7 +7245,7 @@ fn a_width_drag_and_a_color_drag_redraw_and_are_one_undo_step_each() {
     assert_eq!(saves(&h), saved + 1);
 
     tap(&mut h, "Undo");
-    assert_eq!(stroke(&h).width, *widths.last().unwrap());
+    assert_eq!(stroke(&h).width, width);
     tap(&mut h, "Undo");
     assert_eq!(stroke(&h), before);
 }
@@ -7226,16 +7256,6 @@ fn a_rule_page_sets_the_line_type_the_dashes_and_the_taper() {
         BRUSH, DASH, DASHED, GAP, LINE, SOLID, STROKE_WIDTH, TAPER, TAPER_START,
     };
     use vale_style::StrokeKind;
-    // A tap near the right end of a slider.
-    let touch_right = |h: &mut Pad, name: &str| {
-        scroll_to_control(h, name);
-        let slider = control(h, name).unwrap();
-        let at = pos2(slider.right() - 30.0, slider.center().y);
-        touch(h, egui::TouchPhase::Start, at, None);
-        h.step();
-        touch(h, egui::TouchPhase::End, at, None);
-        h.run_steps(3);
-    };
     for size in [BOARDS[1], BOARDS[3]] {
         let what = format!("{size:?}");
         let mut h = pad(size);
@@ -7248,8 +7268,8 @@ fn a_rule_page_sets_the_line_type_the_dashes_and_the_taper() {
         scroll_to_control(&mut h, DASHED);
         tap(&mut h, DASHED);
         assert_eq!(kind(&h), StrokeKind::dashed(), "{what}");
-        touch_right(&mut h, DASH);
-        touch_right(&mut h, GAP);
+        set_number(&mut h, DASH, "12.34");
+        set_number(&mut h, GAP, "6.52");
         let StrokeKind::Dashed { dash, gap } = kind(&h) else {
             panic!("{what}: {:?}", kind(&h));
         };
@@ -7258,14 +7278,14 @@ fn a_rule_page_sets_the_line_type_the_dashes_and_the_taper() {
             "{what}: {dash} {gap}"
         );
         assert!(dash <= 20.0 && gap <= 20.0, "{what}: {dash} {gap}");
-        assert_eq!((dash * 20.0).round() / 20.0, dash, "{what}");
-        assert_eq!((gap * 20.0).round() / 20.0, gap, "{what}");
+        let twentieths = |v: f64| (v * 20.0 - (v * 20.0).round()).abs() < 1e-9;
+        assert!(twentieths(dash) && twentieths(gap), "{what}: {dash} {gap}");
 
         scroll_to_control(&mut h, TAPER);
         tap(&mut h, TAPER);
         assert_eq!(kind(&h), StrokeKind::taper(), "{what}");
         assert!(control(&h, DASH).is_none(), "{what}");
-        touch_right(&mut h, TAPER_START);
+        drag_right(&mut h, TAPER_START);
         let StrokeKind::Taper { start } = kind(&h) else {
             panic!("{what}: {:?}", kind(&h));
         };
@@ -7294,20 +7314,10 @@ fn a_rule_page_sets_the_line_type_the_dashes_and_the_taper() {
     // A marker has no line type.
     let mut h = pad(BOARDS[1]);
     open_rule(&mut h, "Places", "Default");
-    scroll_to_control(&mut h, STROKE_WIDTH);
-    assert!(control(&h, STROKE_WIDTH).is_some());
+    let width = format!("{STROKE_WIDTH} value");
+    scroll_to_control(&mut h, &width);
+    assert!(control(&h, &width).is_some());
     assert!(control(&h, LINE).is_none());
-}
-
-/// A tap near the right end of a slider.
-fn touch_right(h: &mut Pad, name: &str) {
-    scroll_to_control(h, name);
-    let slider = control(h, name).unwrap();
-    let at = pos2(slider.right() - 30.0, slider.center().y);
-    touch(h, egui::TouchPhase::Start, at, None);
-    h.step();
-    touch(h, egui::TouchPhase::End, at, None);
-    h.run_steps(3);
 }
 
 /// The test symbols that the symbol tests add to the project.
@@ -7383,7 +7393,7 @@ fn a_rule_page_sets_a_point_symbol() {
         assert_eq!(h.state().pad.page, Some(Page::Rule(0)), "{what}");
         assert_eq!(symbol(&h).unwrap().symbol, "castle", "{what}");
 
-        touch_right(&mut h, SIZE);
+        set_number(&mut h, SIZE, "40.4");
         let s = symbol(&h).unwrap();
         let points = s.size.fallback;
         assert!(points > 12.0 && points <= 64.0, "{what}: {points}");
@@ -7484,7 +7494,7 @@ fn the_symbol_page_of_an_empty_library_adds_an_svg_file() {
 }
 
 #[test]
-fn a_circle_size_drag_is_one_undo_step() {
+fn a_circle_size_step_is_one_undo_step() {
     use vale_app::ui::pad::rules::{CIRCLE_SIZES, SIZE};
     use vale_style::Symbolizer;
     let dir = tempfile::tempdir().unwrap();
@@ -7501,35 +7511,15 @@ fn a_circle_size_drag_is_one_undo_step() {
     };
     let before = radius(&h).unwrap();
     open_rule(&mut h, "Places", "Default");
-    scroll_to_control(&mut h, SIZE);
     save_frames(&mut h);
     let saved = saves(&h);
-    let rect = control(&h, SIZE).unwrap();
 
-    let y = rect.center().y;
-    let (from, to) = (pos2(rect.left() + 100.0, y), pos2(rect.right() - 20.0, y));
-    touch(&mut h, egui::TouchPhase::Start, from, None);
-    step_and_save(&mut h, true);
-    let mut values = Vec::new();
-    for i in 1..=6 {
-        touch(
-            &mut h,
-            egui::TouchPhase::Move,
-            from.lerp(to, i as f32 / 6.0),
-            None,
-        );
-        step_and_save(&mut h, true);
-        values.extend(radius(&h));
-    }
-    touch(&mut h, egui::TouchPhase::End, to, None);
+    // The stepper sets the diameter in half points.
+    scrolled_step(&mut h, SIZE, true);
     save_frames(&mut h);
-    values.dedup();
-    assert!(values.len() >= 4, "{values:?}");
-    assert!(values.is_sorted(), "{values:?}");
-    // The slider sets the diameter in half points.
-    let last = *values.last().unwrap();
-    assert!(last > before && 2.0 * last <= CIRCLE_SIZES.1, "{values:?}");
-    assert_eq!((4.0 * last).round(), 4.0 * last, "{values:?}");
+    let after = radius(&h).unwrap();
+    assert_eq!(2.0 * after, 2.0 * before + 0.5, "{after}");
+    assert!(2.0 * after <= CIRCLE_SIZES.1, "{after}");
     assert_eq!(saves(&h), saved + 1);
 
     tap(&mut h, "Undo");
@@ -7576,20 +7566,20 @@ fn a_rule_page_adds_a_scatter() {
         tap(&mut h, "pine");
         assert_eq!(scatter(&h).unwrap().symbol, "pine", "{what}");
 
-        touch_right(&mut h, SPACING);
+        set_number(&mut h, SPACING, "50");
         let s = scatter(&h).unwrap();
         let spacing = s.spacing.fallback;
         assert!(spacing > 10.0 && spacing <= 100.0, "{what}: {spacing}");
         assert!(spacing >= s.size.fallback, "{what}");
 
         // A larger size pushes the spacing up with it.
-        touch_right(&mut h, SIZE);
+        set_number(&mut h, SIZE, "30");
         let s = scatter(&h).unwrap();
         assert!(s.size.fallback > 8.0 && s.size.fallback <= 48.0, "{what}");
         assert!(s.spacing.fallback >= s.size.fallback, "{what}");
 
-        touch_right(&mut h, SIZE_VARIATION);
-        touch_right(&mut h, ROTATION_VARIATION);
+        drag_right(&mut h, SIZE_VARIATION);
+        drag_right(&mut h, ROTATION_VARIATION);
         let s = scatter(&h).unwrap();
         assert!(s.size_jitter > 0.2 && s.size_jitter <= 0.5, "{what}");
         assert!(
@@ -7608,7 +7598,7 @@ fn a_rule_page_adds_a_scatter() {
 }
 
 #[test]
-fn a_spacing_drag_is_one_undo_step() {
+fn a_spacing_step_is_one_undo_step() {
     use vale_app::ui::pad::rules::{SCATTER, SPACING};
     let dir = tempfile::tempdir().unwrap();
     let mut h = saved_pad(BOARDS[1], dir.path());
@@ -7619,34 +7609,14 @@ fn a_spacing_drag_is_one_undo_step() {
     scroll_to_control(&mut h, SCATTER);
     tap(&mut h, SCATTER);
     tap(&mut h, "tree");
-    scroll_to_control(&mut h, SPACING);
     save_frames(&mut h);
     let saved = saves(&h);
-    let rect = control(&h, SPACING).unwrap();
-
-    let y = rect.center().y;
-    let (from, to) = (pos2(rect.left() + 100.0, y), pos2(rect.right() - 60.0, y));
-    touch(&mut h, egui::TouchPhase::Start, from, None);
-    step_and_save(&mut h, true);
-    let mut values = Vec::new();
-    for i in 1..=6 {
-        touch(
-            &mut h,
-            egui::TouchPhase::Move,
-            from.lerp(to, i as f32 / 6.0),
-            None,
-        );
-        step_and_save(&mut h, true);
-        values.extend(spacing(&h));
-    }
-    touch(&mut h, egui::TouchPhase::End, to, None);
+    scrolled_step(&mut h, SPACING, true);
     save_frames(&mut h);
-    values.dedup();
-    assert!(values.len() >= 4, "{values:?}");
-    assert!(values.is_sorted(), "{values:?}");
+    assert_eq!(spacing(&h), Some(11.0));
     assert_eq!(saves(&h), saved + 1);
 
-    // One undo takes back the whole drag, and the next takes back the scatter.
+    // One undo takes back the step, and the next takes back the scatter.
     tap(&mut h, "Undo");
     assert_eq!(spacing(&h), Some(10.0));
     tap(&mut h, "Undo");
@@ -7669,7 +7639,7 @@ fn a_start_width_drag_is_one_undo_step() {
     let saved = saves(&h);
     let rect = control(&h, TAPER_START).unwrap();
     let y = rect.center().y;
-    let (from, to) = (pos2(rect.right() - 20.0, y), pos2(rect.left() + 20.0, y));
+    let (from, to) = (pos2(rect.left() + 100.0, y), pos2(rect.left() + 200.0, y));
     touch(&mut h, egui::TouchPhase::Start, from, None);
     step_and_save(&mut h, true);
     let mut starts = Vec::new();
@@ -7689,7 +7659,7 @@ fn a_start_width_drag_is_one_undo_step() {
     save_frames(&mut h);
     starts.dedup();
     assert!(starts.len() >= 4, "{starts:?}");
-    assert!(starts.iter().rev().is_sorted(), "{starts:?}");
+    assert!(starts.is_sorted(), "{starts:?}");
     assert_eq!(saves(&h), saved + 1);
 
     // One undo takes back the whole drag, and the next takes back the taper.

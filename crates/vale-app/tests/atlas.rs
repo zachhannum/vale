@@ -217,11 +217,14 @@ fn type_value(h: &mut Pad, name: &str, text: &str) {
 }
 
 /// A tap on the plus button (`up`) or the minus button of the stepper
-/// `name`.
+/// `name`. A `tap` lasts long enough for the button to repeat, and a click
+/// of the mouse does not.
 #[allow(dead_code)]
 fn step(h: &mut Pad, name: &str, up: bool) {
     let button = if up { "Increase" } else { "Decrease" };
-    tap(h, &format!("{button} {name}"));
+    let name = format!("{button} {name}");
+    let rect = control(h, &name).unwrap_or_else(|| panic!("no control `{name}`"));
+    tap_with(h, rect.center(), Input::Mouse);
 }
 
 /// A drag from one place to another in `steps` steps. The release is in a
@@ -1720,19 +1723,19 @@ fn the_graticule_controls_work_with_a_finger() {
         scroll_up_to(&mut h, EDGE_HALO);
         tap(&mut h, EDGE_HALO);
         assert!(frame(&h, 1).graticule.parallels.halo, "{size:?}");
-        scroll_to(&mut h, EDGE_HALO_WIDTH);
+        scroll_to(&mut h, &value_of(EDGE_HALO_WIDTH));
         check_controls(&h, "edge label halo");
 
         scroll_up_to(&mut h, EDGE_STYLE);
         tap(&mut h, EDGE_STYLE);
-        assert!(control(&h, EDGE_SIZE).is_none(), "{size:?}");
+        assert!(control(&h, &value_of(EDGE_SIZE)).is_none(), "{size:?}");
         tap(&mut h, &format!("Back to {EDGE_LABELS}"));
-        assert!(control(&h, EDGE_SIZE).is_some(), "{size:?}");
+        assert!(control(&h, &value_of(EDGE_SIZE)).is_some(), "{size:?}");
 
         scroll_up_to(&mut h, SHOW_LABELS);
         tap(&mut h, SHOW_LABELS);
         assert!(!frame(&h, 1).graticule.parallels.on, "{size:?}");
-        assert!(control(&h, EDGE_OFFSET).is_none(), "{size:?}");
+        assert!(control(&h, &value_of(EDGE_OFFSET)).is_none(), "{size:?}");
         tap(&mut h, &format!("Back to {}", FRAME_TABS[0]));
         assert!(control(&h, SETS[0].0).is_none(), "{size:?}");
         scroll_to(&mut h, EDGE_LABELS);
@@ -2029,12 +2032,7 @@ fn the_border_and_grid_controls_work_with_a_finger() {
         scroll_to(&mut h, GRID_LABELS);
         tap(&mut h, GRID_LABELS);
         assert_eq!(h.state().atlas.grid, Some(frame(&h, 1).id));
-        let slider = control(&h, GRID_SIZE).unwrap();
-        tap_with(
-            &mut h,
-            slider.right_center() - vec2(30.0, 0.0),
-            Input::Finger,
-        );
+        set_number(&mut h, GRID_SIZE, "24");
         assert!(frame(&h, 1).border.grid_text.size > 20.0, "{size:?}");
         check_controls(&h, "grid labels");
 
@@ -2309,17 +2307,12 @@ fn open_rivers_rule(h: &mut Pad) {
     tap(h, "Open Rivers");
     scroll_to(h, "Default");
     tap(h, "Default");
-    scroll_to(h, STROKE_WIDTH);
+    scroll_to(h, &format!("{STROKE_WIDTH} value"));
 }
 
-/// A drag of a finger on the width slider, from the left to the right or
-/// back.
-fn drag_width(h: &mut Pad, right: bool) {
-    let rect = control(h, STROKE_WIDTH).unwrap();
-    let y = rect.center().y;
-    let (a, b) = (pos2(rect.left() + 30.0, y), pos2(rect.right() - 20.0, y));
-    let (from, to) = if right { (a, b) } else { (b, a) };
-    drag(h, from, to, Input::Finger);
+/// A tap on the plus button of the width stepper.
+fn widen(h: &mut Pad) {
+    step(h, STROKE_WIDTH, true);
 }
 
 /// The strokes of the flat view with a color and a width.
@@ -2380,7 +2373,7 @@ fn the_panel_of_a_layer_in_a_frame_overrides_one_property_of_its_map_only() {
     open_rivers_rule(&mut h);
     // The panel has no switch to the style of the layer.
     assert!(control(&h, "All maps").is_none());
-    drag_width(&mut h, true);
+    widen(&mut h);
     let width = rivers_width(&h, Some(inset));
     assert_ne!(width, before);
     assert_eq!(rivers_width(&h, None), before);
@@ -2411,7 +2404,7 @@ fn an_override_shows_in_each_frame_of_its_map_and_not_in_another_map() {
     let before = rivers_width(&h, None);
     open_rivers_rule(&mut h);
     let composes = h.state().atlas.composes;
-    drag_width(&mut h, true);
+    widen(&mut h);
     let width = rivers_width(&h, Some(inset));
     assert_ne!(width, before);
     assert!(h.state().atlas.composes > composes);
@@ -2428,7 +2421,7 @@ fn a_change_of_the_style_of_the_layer_keeps_each_override() {
     let mut h = inset_pad(BOARDS[0]);
     let (main, inset) = (frame(&h, 0).map, frame(&h, 1).map);
     open_rivers_rule(&mut h);
-    drag_width(&mut h, true);
+    widen(&mut h);
     let width = rivers_width(&h, Some(inset));
     // A change of the color of the layer, from the World workspace.
     let rivers = layer_id(&h, "Rivers");
@@ -2463,8 +2456,8 @@ fn the_controls_of_the_overrides_work_with_a_finger() {
         scroll_to(&mut h, "Default");
         tap(&mut h, "Default");
         check_controls(&h, &format!("{what}: rule"));
-        scroll_to(&mut h, STROKE_WIDTH);
-        drag_width(&mut h, true);
+        scroll_to(&mut h, &format!("{STROKE_WIDTH} value"));
+        widen(&mut h);
         assert_eq!(overrides(&h, inset).len(), 1, "{what}");
 
         // The Layers tab lists the overrides, and Remove overrides takes them away.
@@ -2481,7 +2474,7 @@ fn the_layers_tab_lists_the_layers_with_overrides() {
     let mut h = inset_pad(BOARDS[0]);
     let inset = frame(&h, 1).map;
     open_rivers_rule(&mut h);
-    drag_width(&mut h, true);
+    widen(&mut h);
     tap(&mut h, "Back to Rivers");
     tap(&mut h, "Back to Layers");
     assert!(h.state().atlas.open_layer().is_none());
@@ -2505,7 +2498,7 @@ fn each_drag_of_an_override_is_one_undo_step() {
     let map = frame(&h, 0).map;
     let before = rivers_width(&h, Some(map));
     open_rivers_rule(&mut h);
-    drag_width(&mut h, true);
+    widen(&mut h);
     h.state_mut().save_waiting().unwrap();
     assert_ne!(rivers_width(&h, Some(map)), before);
     tap(&mut h, "Undo");
@@ -2526,7 +2519,7 @@ fn the_overrides_survive_a_close_and_an_open() {
     add_frame(&mut h);
     let (main, inset) = (frame(&h, 0).map, frame(&h, 1).map);
     open_rivers_rule(&mut h);
-    drag_width(&mut h, true);
+    widen(&mut h);
     let width = rivers_width(&h, Some(inset));
     let mut project = h.state().doc.project.clone();
     session.flush(&mut project, &mut []).unwrap();
@@ -3108,13 +3101,8 @@ fn the_labels_tab_makes_a_label_class() {
     h.state_mut()
         .run_action(Action::SetFont(target, "Noto Serif".into()));
     h.run_steps(2);
-    // A tap at about 14 pt, a size that fits the frame.
-    let slider = control(&h, LABEL_SIZE).unwrap();
-    tap_with(
-        &mut h,
-        slider.right_center() - vec2(194.0, 0.0),
-        Input::Finger,
-    );
+    // 14 pt, a size that fits the frame.
+    set_number(&mut h, LABEL_SIZE, "14");
     scroll_to(&mut h, COLOR);
     tap(&mut h, COLOR);
     let shade = format!("{COLOR} shade");
@@ -3198,15 +3186,34 @@ fn the_placement_choices_match_the_feature_type() {
 }
 
 #[test]
+fn the_size_stepper_of_a_class_moves_one_step_and_a_typed_size_stays_in_the_range() {
+    use vale_app::ui::pad::labels::SIZES;
+    let mut h = labels_pad(BOARDS[0]);
+    let map = frame(&h, 0).map;
+    let size = |h: &Pad| classes(h, map, "Places")[0].size;
+    tap(&mut h, "Places");
+    let before = size(&h);
+    step(&mut h, LABEL_SIZE, true);
+    assert_eq!(size(&h), before + 1.0);
+    step(&mut h, LABEL_SIZE, false);
+    assert_eq!(size(&h), before);
+    set_number(&mut h, LABEL_SIZE, "200");
+    assert_eq!(size(&h), SIZES.1);
+    set_number(&mut h, LABEL_SIZE, "1");
+    assert_eq!(size(&h), SIZES.0);
+}
+
+#[test]
 fn a_change_of_a_class_places_the_labels_again_while_you_edit() {
     let mut h = labels_pad(BOARDS[0]);
     let map = frame(&h, 0).map;
     tap(&mut h, "Places");
     let composes = h.state().atlas.composes;
-    let slider = control(&h, LABEL_SIZE).unwrap();
-    let y = slider.center().y;
-    let from = pos2(slider.right() - 120.0, y);
-    drag_steps(&mut h, from, pos2(from.x + 30.0, y), Input::Finger, 4);
+    // A hold on the plus button of the size repeats.
+    let plus = control(&h, &format!("Increase {LABEL_SIZE}"))
+        .unwrap()
+        .center();
+    drag_steps(&mut h, plus, plus, Input::Finger, 12);
     // The finger is still down.
     let size = classes(&h, map, "Places")[0].size;
     assert_ne!(size, 11.0);
@@ -3215,7 +3222,7 @@ fn a_change_of_a_class_places_the_labels_again_while_you_edit() {
     let places: Vec<_> = runs.iter().filter(|g| g.color == PLACES_COLOR).collect();
     assert!(!places.is_empty());
     assert!(places.iter().all(|g| f64::from(g.font_size) == size));
-    release(&mut h, pos2(from.x + 30.0, y), Input::Finger);
+    release(&mut h, plus, Input::Finger);
 
     // One edit of the text, and the field keeps the focus.
     let composes = h.state().atlas.composes;
@@ -3356,23 +3363,24 @@ fn the_controls_of_the_labels_tab_work_with_a_finger() {
         tap(&mut h, "Top right");
         assert!(!classes(&h, map, "Places")[1].positions[0].on, "{what}");
         tap(&mut h, "Back to Class 1");
-        for name in [OFFSET, MOVE_UP] {
+        for name in [&value_of(OFFSET), MOVE_UP] {
             scroll_to(&mut h, name);
             assert!(control(&h, name).is_some(), "{what}: {name}");
         }
         tap(&mut h, SEGMENTS[2].0);
-        scroll_up_to(&mut h, BUFFER);
+        scroll_up_to(&mut h, &value_of(BUFFER));
         check_controls(&h, &format!("{what}: conflicts segment"));
         if size == BOARDS[0] {
             screenshot::save(&mut h, "pad-atlas-label-conflicts");
         }
-        for name in [BUFFER, REMOVE_DUPLICATES] {
+        for name in [&value_of(BUFFER), REMOVE_DUPLICATES] {
             assert!(control(&h, name).is_some(), "{what}: {name}");
         }
-        assert!(control(&h, DUPLICATE_DISTANCE).is_none(), "{what}");
+        let distance = value_of(DUPLICATE_DISTANCE);
+        assert!(control(&h, &distance).is_none(), "{what}");
         tap(&mut h, REMOVE_DUPLICATES);
         assert!(classes(&h, map, "Places")[1].remove_duplicates, "{what}");
-        assert!(control(&h, DUPLICATE_DISTANCE).is_some(), "{what}");
+        assert!(control(&h, &distance).is_some(), "{what}");
         check_controls(&h, &format!("{what}: duplicate distance"));
         tap(&mut h, "Back to Labels");
 
@@ -3380,7 +3388,8 @@ fn the_controls_of_the_labels_tab_work_with_a_finger() {
         tap(&mut h, "Rivers");
         assert_eq!(h.state().atlas.label_segment, ClassSegment::Text, "{what}");
         tap(&mut h, SEGMENTS[1].0);
-        for name in [OFFSET, REPEAT, REPEAT_INTERVAL, CURVE_LIMIT, SMOOTHING] {
+        let numbers = [OFFSET, REPEAT_INTERVAL, CURVE_LIMIT].map(value_of);
+        for name in [&numbers[0], REPEAT, &numbers[1], &numbers[2], SMOOTHING] {
             scroll_to(&mut h, name);
             assert!(control(&h, name).is_some(), "{what}: {name}");
         }
@@ -3465,13 +3474,8 @@ fn the_halo_has_a_color_and_a_width() {
     let square = control(&h, &shade).unwrap();
     tap_with(&mut h, square.right_top() + vec2(-4.0, 4.0), Input::Finger);
     tap(&mut h, HALO_COLOR);
-    scroll_to(&mut h, HALO_WIDTH);
-    let slider = control(&h, HALO_WIDTH).unwrap();
-    tap_with(
-        &mut h,
-        slider.right_center() - vec2(90.0, 0.0),
-        Input::Finger,
-    );
+    scroll_to(&mut h, &value_of(HALO_WIDTH));
+    step(&mut h, HALO_WIDTH, true);
     let class = classes(&h, map, "Places")[0].clone();
     let (old, new) = (before.halo_color, class.halo_color);
     assert_ne!((new.r, new.g, new.b), (old.r, old.g, old.b));
@@ -3487,7 +3491,7 @@ fn the_halo_has_a_color_and_a_width() {
     scroll_to(&mut h, HALO);
     tap(&mut h, HALO);
     assert!(control(&h, HALO_COLOR).is_none());
-    assert!(control(&h, HALO_WIDTH).is_none());
+    assert!(control(&h, &value_of(HALO_WIDTH)).is_none());
     assert_eq!(
         halo_strokes(&mut h, 0, class.halo_color, class.halo_width),
         0
@@ -3499,9 +3503,7 @@ fn the_opacity_fades_the_text() {
     let mut h = labels_pad(BOARDS[0]);
     let map = frame(&h, 0).map;
     tap(&mut h, "Places");
-    scroll_to(&mut h, OPACITY);
-    let slider = control(&h, OPACITY).unwrap();
-    tap_with(&mut h, slider.center(), Input::Finger);
+    set_number(&mut h, OPACITY, "50");
     let class = classes(&h, map, "Places")[0].clone();
     assert!(
         class.opacity > 0.2 && class.opacity < 0.8,
@@ -3720,10 +3722,12 @@ fn the_class_page_has_text_placement_and_conflict_segments() {
         control(h, name).is_some()
     };
     assert_eq!(h.state().atlas.label_segment, ClassSegment::Text);
-    for name in [TEXT, FONT, STYLE, LABEL_SIZE, CASE, OPACITY, HALO] {
+    let size = value_of(LABEL_SIZE);
+    for name in [TEXT, FONT, STYLE, &size, CASE, OPACITY, HALO] {
         assert!(shows(&mut h, name), "{name}");
     }
-    for name in [PLACEMENT, OFFSET, BUFFER] {
+    let (offset, buffer) = (value_of(OFFSET), value_of(BUFFER));
+    for name in [PLACEMENT, &offset, &buffer] {
         assert!(control(&h, name).is_none(), "{name}");
     }
     assert!(shows(&mut h, DELETE_CLASS));
@@ -3731,19 +3735,20 @@ fn the_class_page_has_text_placement_and_conflict_segments() {
     tap(&mut h, SEGMENTS[1].0);
     assert_eq!(h.state().atlas.label_segment, ClassSegment::Placement);
     scroll_up_to(&mut h, PLACEMENT);
-    for name in [PLACEMENT, POSITIONS, OFFSET, DELETE_CLASS] {
+    for name in [PLACEMENT, POSITIONS, &offset, DELETE_CLASS] {
         assert!(shows(&mut h, name), "{name}");
     }
-    for name in [TEXT, BUFFER, REPEAT] {
+    for name in [TEXT, &buffer, REPEAT] {
         assert!(control(&h, name).is_none(), "{name}");
     }
 
     tap(&mut h, SEGMENTS[2].0);
-    scroll_up_to(&mut h, BUFFER);
-    for name in [BUFFER, REMOVE_DUPLICATES, DUPLICATE_DISTANCE, DELETE_CLASS] {
+    scroll_up_to(&mut h, &buffer);
+    let distance = value_of(DUPLICATE_DISTANCE);
+    for name in [&buffer, REMOVE_DUPLICATES, &distance, DELETE_CLASS] {
         assert!(shows(&mut h, name), "{name}");
     }
-    for name in [TEXT, OFFSET] {
+    for name in [TEXT, &offset] {
         assert!(control(&h, name).is_none(), "{name}");
     }
 
@@ -3865,6 +3870,17 @@ fn slider_end(h: &mut Pad, name: &str, right: bool) {
     tap_with(h, at, Input::Finger);
 }
 
+/// The name of the value field of the number `name`.
+fn value_of(name: &str) -> String {
+    format!("{name} value")
+}
+
+/// Scrolls to the number `name` and types `text` on its keypad.
+fn set_number(h: &mut Pad, name: &str, text: &str) {
+    scroll_to(h, &value_of(name));
+    type_value(h, name, text);
+}
+
 #[test]
 fn the_offset_moves_the_labels_away_from_the_feature() {
     use vale_style::LabelPosition;
@@ -3888,10 +3904,10 @@ fn the_offset_moves_the_labels_away_from_the_feature() {
             })
             .collect()
     };
-    slider_end(&mut h, OFFSET, false);
+    set_number(&mut h, OFFSET, "0");
     assert_eq!(classes(&h, map, "Places")[0].offset, 0.0);
     let near = gaps(&mut h);
-    slider_end(&mut h, OFFSET, true);
+    set_number(&mut h, OFFSET, "20");
     assert_eq!(classes(&h, map, "Places")[0].offset, 20.0);
     let far = gaps(&mut h);
     let both: Vec<_> = near.keys().filter(|t| far.contains_key(*t)).collect();
@@ -3933,21 +3949,21 @@ fn the_repeat_options_change_the_line_labels() {
     tap(&mut h, "Rivers");
     tap(&mut h, SEGMENTS[1].0);
     assert!(classes(&h, map, "Rivers")[0].repeat);
-    slider_end(&mut h, REPEAT_INTERVAL, false);
+    set_number(&mut h, REPEAT_INTERVAL, "0");
     assert_eq!(classes(&h, map, "Rivers")[0].repeat_distance, 50.0);
     let repeated = river_labels(&mut h);
     scroll_to(&mut h, REPEAT);
     tap(&mut h, REPEAT);
     assert!(!classes(&h, map, "Rivers")[0].repeat);
-    assert!(control(&h, REPEAT_INTERVAL).is_none());
+    assert!(control(&h, &value_of(REPEAT_INTERVAL)).is_none());
     let once = river_labels(&mut h);
     assert!(once > 0 && once < repeated, "{once} {repeated}");
 
     // The curve limit is in degrees per letter.
-    slider_end(&mut h, CURVE_LIMIT, true);
+    set_number(&mut h, CURVE_LIMIT, "90");
     let limit = classes(&h, map, "Rivers")[0].curve_limit;
     assert!((limit - 60f64.to_radians()).abs() < 1e-9, "{limit}");
-    slider_end(&mut h, SMOOTHING, false);
+    set_number(&mut h, SMOOTHING, "0");
     assert_eq!(classes(&h, map, "Rivers")[0].smoothing, 0.0);
 }
 
@@ -3958,10 +3974,10 @@ fn the_conflict_options_reach_the_labeler() {
     let count = |h: &mut Pad| place_texts(h, 0).len();
     tap(&mut h, "Places");
     tap(&mut h, SEGMENTS[2].0);
-    slider_end(&mut h, BUFFER, false);
+    set_number(&mut h, BUFFER, "0");
     assert_eq!(classes(&h, map, "Places")[0].buffer, 0.0);
     let tight = count(&mut h);
-    slider_end(&mut h, BUFFER, true);
+    set_number(&mut h, BUFFER, "10");
     assert_eq!(classes(&h, map, "Places")[0].buffer, 10.0);
     let loose = count(&mut h);
     assert!(loose < tight, "{loose} {tight}");
@@ -3972,7 +3988,7 @@ fn the_conflict_options_reach_the_labeler() {
     type_text(&mut h, TEXT, "'Town'");
     assert_eq!(classes(&h, map, "Places")[0].text, "'Town'");
     tap(&mut h, SEGMENTS[2].0);
-    slider_end(&mut h, DUPLICATE_DISTANCE, true);
+    set_number(&mut h, DUPLICATE_DISTANCE, "3000");
     assert_eq!(classes(&h, map, "Places")[0].duplicate_distance, 2000.0);
     let apart = count(&mut h);
     tap(&mut h, REMOVE_DUPLICATES);
@@ -3998,11 +4014,8 @@ fn each_change_of_a_placement_option_is_one_undo_step() {
     tap(&mut h, SEGMENTS[1].0);
     let start = class(&h, "Places");
 
-    // One drag of the offset slider in many steps.
-    let slider = control(&h, OFFSET).unwrap();
-    let from = pos2(slider.right() - 120.0, slider.center().y);
-    drag_steps(&mut h, from, from + vec2(40.0, 0.0), Input::Finger, 6);
-    release(&mut h, from + vec2(40.0, 0.0), Input::Finger);
+    // One step of the offset.
+    step(&mut h, OFFSET, true);
     let offset = class(&h, "Places").offset;
     assert_ne!(offset, start.offset);
 
