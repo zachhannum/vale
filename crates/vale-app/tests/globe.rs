@@ -3219,10 +3219,14 @@ fn the_brush_panel_has_the_uplift_mode_and_its_two_sliders() {
     assert_eq!(h.state().globe.brush.erosion, 0.5);
 }
 
-/// Sets the slider with this label to `value`, as a screen reader does.
+/// Sets the slider or the stepper with this label to `value`, as a screen
+/// reader does.
 fn set_slider(h: &mut Harness<'static, AppState>, label: &str, value: f64) {
     use egui::accesskit::{Action, ActionData, ActionRequest, Role};
-    let node = h.get_by_role_and_label(Role::Slider, label);
+    let node = match h.query_by_role_and_label(Role::Slider, label) {
+        Some(node) => node,
+        None => h.get_by_role_and_label(Role::SpinButton, label),
+    };
     let (target_node, target_tree) = node.accesskit_node().locate();
     h.event(egui::Event::AccessKitActionRequest(ActionRequest {
         action: Action::SetValue,
