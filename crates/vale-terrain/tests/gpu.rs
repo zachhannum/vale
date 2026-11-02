@@ -249,6 +249,7 @@ fn stamp(center: V3, radius: f64, hardness: f64, mode: Mode) -> Stamp {
         motion: [0.0; 3],
         ridged: false,
         relief: 0.0,
+        grain: 0.0,
         channel: vale_terrain::ChannelShape::default(),
         invert: false,
         limits: Limits::default(),
@@ -2403,28 +2404,33 @@ fn gpu_noise_matches_cpu_for_one_stamp() {
     let mut worst = 0;
     for (place, lon, lat) in WARP_PLACES {
         for (n, radius) in [(1024, 0.01), (256, 0.06), (256, 0.3)] {
-            // The last value is the largest drop. The largest rise is 4000.
-            for (hardness, ridged, invert, relief, lower) in [
-                (0.0, false, false, 0.0, 4000.0),
-                (0.5, true, false, 0.5, 4000.0),
-                (0.5, true, true, 0.0, 4000.0),
-                (0.95, false, false, 0.8, 4000.0),
-                (0.5, false, false, 0.0, 1000.0),
-                (0.5, true, true, 0.5, 1000.0),
+            // The fifth value is the largest drop. The largest rise is 4000.
+            for (hardness, ridged, invert, relief, lower, grain) in [
+                (0.0, false, false, 0.0, 4000.0, 0.0),
+                (0.5, true, false, 0.5, 4000.0, 0.0),
+                (0.5, true, true, 0.0, 4000.0, 0.0),
+                (0.95, false, false, 0.8, 4000.0, 0.0),
+                (0.5, false, false, 0.0, 1000.0, 0.0),
+                (0.5, true, true, 0.5, 1000.0, 0.0),
+                (0.5, false, false, 0.0, 4000.0, 3.0),
+                (0.5, true, false, 0.5, 4000.0, 9.0),
             ] {
                 let mut cpu = smooth_ground(n);
                 let before = levels(&cpu);
+                let center = lonlat_to_dir(lon, lat);
                 let stamp = Stamp {
                     invert,
                     lower,
-                    ..noise(lonlat_to_dir(lon, lat), radius, hardness, ridged, relief)
+                    grain,
+                    motion: arc_motion(center, lonlat_to_dir(lon + 0.3, lat + 0.2)),
+                    ..noise(center, radius, hardness, ridged, relief)
                 };
                 let difference = run(&mut cpu, &[stamp]).difference;
                 assert!(levels(&cpu) != before, "{place}, radius {radius}");
                 assert!(
                     difference <= TOLERANCE,
                     "noise at the {place}, radius {radius}, ridged {ridged}, invert {invert}, \
-                     lower {lower}: the difference is {difference}"
+                     lower {lower}, grain {grain}: the difference is {difference}"
                 );
                 worst = worst.max(difference);
             }
@@ -2437,17 +2443,23 @@ fn gpu_noise_matches_cpu_for_one_stamp() {
 #[ignore = "gpu"]
 fn gpu_noise_matches_cpu_for_a_stroke() {
     let mut worst = 0;
-    for (lat, radius, ridged) in [
-        (4.0f64, 0.07f64, false),
-        (35.0, 0.12, true),
-        (20.0, 0.05, false),
+    // A stroke along a latitude line other than the equator curves, so the
+    // stroke with grain at latitude 35 has a grain that turns.
+    for (lat, radius, ridged, grain) in [
+        (4.0f64, 0.07f64, false, 0.0),
+        (35.0, 0.12, true, 0.0),
+        (20.0, 0.05, false, 0.0),
+        (35.0, 0.12, true, 4.0),
+        (4.0, 0.07, false, 9.0),
     ] {
         let step = (0.12 * radius).to_degrees() / f64::to_radians(lat).cos();
         let count = (24.0 / step).ceil() as u32;
+        let center = |i: u32| lonlat_to_dir(33.0 + step * f64::from(i), lat);
         let stamps: Vec<_> = (0..count)
-            .map(|i| {
-                let center = lonlat_to_dir(33.0 + step * f64::from(i), lat);
-                noise(center, radius, 0.5, ridged, 0.5)
+            .map(|i| Stamp {
+                grain,
+                motion: arc_motion(center(i.saturating_sub(1)), center(i)),
+                ..noise(center(i), radius, 0.5, ridged, 0.5)
             })
             .collect();
         let mut cpu = smooth_ground(256);
@@ -2456,7 +2468,7 @@ fn gpu_noise_matches_cpu_for_a_stroke() {
         assert!(changes(&before, &levels(&cpu)) > 300, "latitude {lat}");
         assert!(
             difference <= NOISE_STROKE_TOLERANCE,
-            "noise stroke at latitude {lat}: the difference is {difference}"
+            "noise stroke at latitude {lat}, grain {grain}: the difference is {difference}"
         );
         worst = worst.max(difference);
     }

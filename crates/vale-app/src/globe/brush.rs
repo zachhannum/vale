@@ -25,6 +25,9 @@ pub const FLOW: std::ops::RangeInclusive<f64> = 0.01..=1.0;
 pub const STRENGTH_M: std::ops::RangeInclusive<f64> = 50.0..=6000.0;
 /// The limits of the rise and the drop of the noise mode, in meters.
 pub const NOISE_M: std::ops::RangeInclusive<f64> = 0.0..=6000.0;
+/// The limits of the grain of the noise mode. The features are `1 + grain`
+/// times longer along the stroke than across it.
+pub const NOISE_GRAIN: std::ops::RangeInclusive<f64> = 0.0..=9.0;
 /// The limits of the angle of the weather mode, in degrees. Painted land on
 /// a world of the size of the Earth has slopes of 3 degrees or less.
 pub const TALUS_DEG: std::ops::RangeInclusive<f64> = 0.02..=20.0;
@@ -108,6 +111,9 @@ pub struct BrushSettings {
     /// How much the noise of the noise mode grows with the height above sea
     /// level, from 0 to 1.
     pub noise_relief: f64,
+    /// The grain of the noise mode, as `NOISE_GRAIN`. Zero: the noise has no
+    /// direction.
+    pub noise_grain: f64,
     /// The elevation of the crest of the ocean ridge mode, in meters.
     pub ridge_crest_m: f64,
     /// The mean length of a segment of the crest, in kilometers.
@@ -164,6 +170,7 @@ impl Default for BrushSettings {
             noise_ridged: false,
             noise_inverted: false,
             noise_relief: 0.5,
+            noise_grain: 0.0,
             ridge_crest_m: -700.0,
             ridge_segment_km: 400.0,
             ridge_offset_km: 100.0,
@@ -428,6 +435,9 @@ pub struct Stroke {
     level: Option<u16>,
     /// The center of the last stamp of the line.
     last_center: Option<V3>,
+    /// The first stamp of a line of noise with grain. It waits for the
+    /// second stamp, which gives its direction.
+    held: Option<Stamp>,
 }
 
 /// The values that each stamp of one sample gets.
@@ -487,6 +497,10 @@ impl Tip<'_> {
             ridged: self.brush.noise_ridged,
             invert: self.brush.noise_inverted,
             relief: self.brush.noise_relief,
+            grain: match self.brush.mode {
+                Mode::Noise => self.brush.noise_grain,
+                _ => 0.0,
+            },
             channel: ChannelShape::default(),
             limits: self.brush.limits(),
         }
@@ -540,7 +554,16 @@ impl Stroke {
     fn put(&mut self, tip: &Tip, center: V3, flow: f64, out: &mut Vec<Stamp>) {
         let last = self.last_center.replace(center);
         let motion = last.map_or([0.0; 3], |last| arc_motion(last, center));
-        out.push(tip.stamp(center, flow, motion));
+        let stamp = tip.stamp(center, flow, motion);
+        if last.is_none() && stamp.grain > 0.0 {
+            self.held = Some(stamp);
+            return;
+        }
+        if let Some(mut held) = self.held.take() {
+            held.motion = scale(arc_motion(center, held.center), -1.0);
+            out.push(held);
+        }
+        out.push(stamp);
     }
 
     fn tip<'a>(&self, brush: &'a BrushSettings, face_size: usize, level: u16) -> Tip<'a> {
@@ -631,6 +654,8 @@ impl Stroke {
                 self.put(&tip, last.0, last.1, out);
             }
         }
+        // A tap gives one stamp, with no direction.
+        out.extend(self.held.take());
     }
 }
 
@@ -709,7 +734,7 @@ mod tests {
     use vale_terrain::{Heightmap, meters_to_level};
 
     use super::*;
-    use crate::globe::math::{length, lonlat_to_dir};
+    use crate::globe::math::{dot, length, lonlat_to_dir};
 
     fn sample(lon: f64, radius: f64) -> Sample {
         Sample {
@@ -1107,6 +1132,47 @@ mod tests {
     }
 
     #[test]
+    fn the_first_stamp_of_noise_with_grain_waits_for_a_direction() {
+        let brush = BrushSettings {
+            mode: Mode::Noise,
+            noise_grain: 3.0,
+            ..BrushSettings::default()
+        };
+        let mut stroke = Stroke::default();
+        let mut out = Vec::new();
+        stroke.add_sample(&brush, 1024, sample(0.0, 0.1), |_| 7, &mut out);
+        assert!(out.is_empty());
+        stroke.add_sample(&brush, 1024, sample(6.0, 0.1), |_| 7, &mut out);
+        stroke.finish(&brush, 1024, &mut out);
+        assert!(out.len() > 5);
+        assert_eq!(out[0].center, lonlat_to_dir(0.0, 0.0));
+        for stamp in &out {
+            assert_eq!(stamp.grain, 3.0);
+            // The stroke goes east along the equator.
+            let motion = stamp.motion;
+            assert!(motion[1] > 0.0 && motion[2].abs() < 1e-12, "{motion:?}");
+            assert!(dot(motion, stamp.center).abs() < 1e-12);
+        }
+
+        // A tap gives one stamp with no direction.
+        let mut out = Vec::new();
+        let mut tap = Stroke::default();
+        tap.add_sample(&brush, 1024, sample(0.0, 0.1), |_| 7, &mut out);
+        tap.finish(&brush, 1024, &mut out);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].motion, [0.0; 3]);
+
+        // The other modes have no grain.
+        let raise = BrushSettings {
+            mode: Mode::Raise,
+            ..brush
+        };
+        let mut out = Vec::new();
+        Stroke::default().add_sample(&raise, 1024, sample(0.0, 0.1), |_| 7, &mut out);
+        assert_eq!(out[0].grain, 0.0);
+    }
+
+    #[test]
     fn a_warp_stamp_takes_its_angles_from_the_world_radius() {
         let brush = BrushSettings {
             mode: Mode::Warp,
@@ -1142,6 +1208,7 @@ mod tests {
             motion: [0.0; 3],
             ridged: false,
             relief: 0.0,
+            grain: 0.0,
             channel: vale_terrain::ChannelShape::default(),
             invert: false,
             limits: Limits::default(),

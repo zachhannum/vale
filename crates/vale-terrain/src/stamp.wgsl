@@ -38,6 +38,10 @@ struct Stamp {
     octaves: u32,
     // The largest drop of the noise mode. The strength is its largest rise.
     lower: f32,
+    // The axis of the grain of the noise mode, and the grain. Both are zero
+    // for a stamp without grain.
+    grain_axis: vec3<f32>,
+    grain: f32,
 }
 
 // The same number as `GROUP_STAMPS` in `gpu.rs`.
@@ -881,7 +885,12 @@ fn push_level(stamp: Stamp, at: vec2<i32>, old: f32) -> f32 {
 
 // The fractal noise of a noise stamp at a unit direction. The steps are
 // those of `fractal` in `heightmap.rs`.
-fn fractal(p: vec3<f32>, stamp: Stamp) -> f32 {
+fn fractal(at: vec3<f32>, stamp: Stamp) -> f32 {
+    var p = at;
+    if stamp.grain > 0.0 {
+        let g = 1.0 + stamp.grain;
+        p = at / g + stamp.grain_axis * ((1.0 - 1.0 / g) * dot(at, stamp.grain_axis));
+    }
     var sum = 0.0;
     var total = 0.0;
     var size = stamp.scale;

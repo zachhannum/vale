@@ -2109,7 +2109,7 @@ fn the_brush_panel_has_the_noise_mode_and_its_settings() {
     h.get_by_label("Noise").click();
     h.run_steps(2);
     assert_eq!(h.state().globe.brush.mode, Mode::Noise);
-    for label in ["Scale", "Relief", "Seed"] {
+    for label in ["Scale", "Grain", "Relief", "Seed"] {
         assert!(h.query_all_by_label(label).next().is_some(), "{label}");
     }
     // The Raise and Lower sliders take the place of the Strength slider.

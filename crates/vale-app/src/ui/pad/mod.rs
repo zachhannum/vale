@@ -17,9 +17,9 @@ use super::world_form::{self, WorldForm};
 use super::{Action, AppState, Note, SaveMark, Workspace, globe, is_height, panels};
 use crate::globe::brush::BrushSettings;
 use crate::globe::brush::{
-    BASIN_DENSITY, CHANNEL_KM, EROSION, FLOODPLAIN_WIDTH_KM, FLOW, NOISE_M, RANGE_SPACING_KM,
-    RIDGE_CREST_M, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM, SCALE_KM, SEED,
-    STRENGTH_M, TALUS_DEG, WARP_KM, needs_height,
+    BASIN_DENSITY, CHANNEL_KM, EROSION, FLOODPLAIN_WIDTH_KM, FLOW, NOISE_GRAIN, NOISE_M,
+    RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM,
+    RIDGE_SPREAD_MM, SCALE_KM, SEED, STRENGTH_M, TALUS_DEG, WARP_KM, needs_height,
 };
 use crate::globe::snap;
 use crate::globe::{Tool, WorldView};
@@ -1620,6 +1620,12 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
         });
         if let Some(km) = scale {
             brush.scale_km = km;
+        }
+        let (low, high) = (*NOISE_GRAIN.start(), *NOISE_GRAIN.end());
+        let mut fraction = ((brush.noise_grain - low) / (high - low)).clamp(0.0, 1.0);
+        let text = format!("{:.1}×", 1.0 + brush.noise_grain);
+        if widgets::row_slider(ui, controls, "Brush grain", "Grain", &mut fraction, &text) {
+            brush.noise_grain = low + fraction * (high - low);
         }
         let ridged = &mut brush.noise_ridged;
         widgets::switch_row(ui, controls, "Brush ridged", "Ridged", ridged);

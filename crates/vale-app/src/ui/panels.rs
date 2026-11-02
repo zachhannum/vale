@@ -13,8 +13,8 @@ use super::{
 use vale_terrain::Mode;
 
 use crate::globe::brush::{
-    BASIN_DENSITY, CHANNEL_HELP, CHANNEL_KM, EROSION, FLOODPLAIN_WIDTH_KM, FLOW, NOISE_M,
-    RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM,
+    BASIN_DENSITY, CHANNEL_HELP, CHANNEL_KM, EROSION, FLOODPLAIN_WIDTH_KM, FLOW, NOISE_GRAIN,
+    NOISE_M, RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM,
     RIDGE_SPREAD_MM, SCALE_KM, SEED, STRENGTH_M, TALUS_DEG, WARP_KM, needs_height,
 };
 use crate::globe::{Globe, Tool, WorldView, rivers, snap, stats, stroke_test, zoom_test};
@@ -963,6 +963,17 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
             .suffix(" km")
             .text("Scale");
         ui.add(scale);
+        // The slider shows how many times longer the features are along
+        // the stroke.
+        let mut ratio = 1.0 + globe.brush.noise_grain;
+        let range = 1.0 + NOISE_GRAIN.start()..=1.0 + NOISE_GRAIN.end();
+        let grain = egui::Slider::new(&mut ratio, range)
+            .fixed_decimals(1)
+            .suffix("×")
+            .text("Grain");
+        if ui.add(grain).changed() {
+            globe.brush.noise_grain = ratio - 1.0;
+        }
         ui.checkbox(&mut globe.brush.noise_ridged, "Ridged");
         if globe.brush.noise_ridged {
             ui.checkbox(&mut globe.brush.noise_inverted, "Invert");
