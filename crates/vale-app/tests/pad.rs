@@ -7428,8 +7428,7 @@ fn a_rule_page_sets_a_point_symbol() {
         set_number(&mut h, SIZE, "40.4");
         let s = symbol(&h).unwrap();
         let points = s.size.fallback;
-        assert!(points > 12.0 && points <= 64.0, "{what}: {points}");
-        assert_eq!(points.round(), points, "{what}");
+        assert!((points - 40.4).abs() < 1e-9, "{what}: {points}");
 
         // A tap at the right of the dial turns the symbol to the east.
         scroll_to_control(&mut h, ROTATION);
@@ -7546,16 +7545,26 @@ fn a_circle_size_step_is_one_undo_step() {
     save_frames(&mut h);
     let saved = saves(&h);
 
-    // The stepper sets the diameter in half points.
     scrolled_step(&mut h, SIZE, true);
     save_frames(&mut h);
     let after = radius(&h).unwrap();
-    assert_eq!(2.0 * after, 2.0 * before + 0.5, "{after}");
+    assert!(after > before, "{after}");
     assert!(2.0 * after <= CIRCLE_SIZES.1, "{after}");
     assert_eq!(saves(&h), saved + 1);
 
     tap(&mut h, "Undo");
     assert_eq!(radius(&h), Some(before));
+
+    // The stepper goes down through 1, 2, and 5 to the smallest size.
+    for _ in 0..20 {
+        if 2.0 * radius(&h).unwrap() <= CIRCLE_SIZES.0 + 1e-9 {
+            break;
+        }
+        scrolled_step(&mut h, SIZE, false);
+    }
+    let smallest = 2.0 * radius(&h).unwrap();
+    assert!((smallest - CIRCLE_SIZES.0).abs() < 1e-9, "{smallest}");
+    assert!(CIRCLE_SIZES.0 <= 0.1);
 }
 
 #[test]

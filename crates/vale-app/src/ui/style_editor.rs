@@ -148,7 +148,7 @@ fn symbol_rows(
         if let Some(radius) = marker_radius(rule) {
             let mut size = 2.0 * radius.fallback;
             let (lo, hi) = CIRCLE_SIZES;
-            let stepper = number::stepper(SIZE, &mut size).range(lo..=hi).step(0.5);
+            let stepper = number::stepper(SIZE, &mut size).range(lo..=hi);
             if stepper.suffix(" pt").show(ui).changed() {
                 radius.fallback = size / 2.0;
                 changed = true;
@@ -164,7 +164,6 @@ fn symbol_rows(
     let (lo, hi) = POINT_SIZES;
     number::stepper(SIZE, &mut s.size.fallback)
         .range(lo..=hi)
-        .step(1.0)
         .suffix(" pt")
         .show(ui);
     number::stepper(ROTATION, &mut s.rotation.fallback)

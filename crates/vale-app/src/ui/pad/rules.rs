@@ -84,9 +84,9 @@ const WIDTHS: (f64, f64) = (0.1, 20.0);
 /// The range of the dash and gap sliders, in points. The sliders have a log scale.
 const DASHES: (f64, f64) = (0.5, 20.0);
 /// The range of the diameter of a circle, in points.
-pub const CIRCLE_SIZES: (f64, f64) = (2.0, 32.0);
+pub const CIRCLE_SIZES: (f64, f64) = (0.1, 32.0);
 /// The range of the size of a point symbol, in points.
-pub const POINT_SIZES: (f64, f64) = (4.0, 64.0);
+pub const POINT_SIZES: (f64, f64) = (0.1, 64.0);
 /// The range of the size of a scatter symbol, in points.
 pub const SCATTER_SIZES: (f64, f64) = (4.0, 48.0);
 /// The largest spacing of a scatter, in points. The smallest is its size.
@@ -419,7 +419,8 @@ fn symbol_rows(
         if let Some(radius) = marker_radius(rule) {
             let size = 2.0 * radius.fallback;
             let size = Number::new(SIZE, size, CIRCLE_SIZES.0..=CIRCLE_SIZES.1)
-                .step(0.5)
+                .nice()
+                .step(0.05)
                 .unit("pt")
                 .stepper(ui, controls);
             if let Some(size) = size {
@@ -434,7 +435,8 @@ fn symbol_rows(
         open_symbols(state, i);
     }
     let size = Number::new(SIZE, s.size.fallback, POINT_SIZES.0..=POINT_SIZES.1)
-        .step(1.0)
+        .nice()
+        .step(0.05)
         .unit("pt")
         .stepper(ui, controls);
     if let Some(size) = size {
