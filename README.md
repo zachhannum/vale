@@ -34,6 +34,7 @@ A world opens in the globe workspace. A new world has no raster layer. A raster 
 - Click "Line" in the tool bar to draw in the selected line layer. In the iPad layout, the Draw cell is the Line cell while a line layer is selected. A stroke of the pen or the mouse becomes one line feature, and Undo removes it. The Smoothing slider sets how much the app smooths the stroke. A stroke that starts near the end of a line extends that line.
 - While a polygon layer is selected, the Polygon button of the tool bar is in the place of the Line button, and the Draw cell is the Polygon cell in the iPad layout. Click it to draw in the layer. A stroke becomes one polygon feature, and the short arc between its two ends closes it. Undo removes the polygon.
 - While a point layer is selected, the Point button of the tool bar is in the place of the Line button, and the Draw cell is the Point cell in the iPad layout. Click it, and then tap the globe with the pen or click the globe to place a point. A form opens with a field for each field of the layer. Type the values, and then press Return or tap the place of the next point. Undo removes the point and its values.
+- Turn on Reshape on the card of the line tool or the polygon tool, or check "Reshape" in the tool bar. A stroke that starts on the outline of a line or a polygon in the selected layer then redraws a part of the outline. On a polygon, end the stroke on the same ring, and the larger shape stays. On a line, a stroke that ends on the line takes the place of the part between its ends, and a stroke that ends away from the line takes the place of the rest of the line. Any other stroke draws a new feature. Undo puts back the old shape.
 - Click "Measure" in the tool bar, or press M, to measure a path. In the iPad layout, Measure is a cell of the tool strip. Tap or click to add points, and drag to turn the globe. Each segment shows its length, and the status bar shows the length of the path. Tap the first point or press Return to close the path, and the status bar shows the perimeter and the area. Undo removes the last point, and "Clear path" or Esc clears the path. The project does not keep the path.
 - The panel of a vector layer lists its fields. Tap "Add field…" to add a field with a name, a type, and a default value. Tap a field to rename it, change its type or its default value, or delete it. In the Map workspace, the Fields part of the inspector has the same controls. Undo takes back each change.
 - The brush keeps its size on screen when you zoom. Select "Lock size" to keep its size on the ground.
@@ -194,7 +195,7 @@ The job `testflight` in `.github/workflows/ios.yml` does the work, with `scripts
 - Polygon labels, label fallbacks, leader lines, and manual label changes.
 - The overview of the pages, page templates, and SVG export.
 - Projection suggestions and Tissot circles.
-- Editing tools other than the line tool, the polygon tool, the point tool, the Select tool, and the Reshape tool, including the attribute table.
+- Editing tools other than the line tool, the polygon tool, the point tool, the Select tool, and reshape, including the attribute table.
 - The GPU Vello backend. The prototype draws on the CPU with `vello_cpu`.
 
 ## The labeler demo

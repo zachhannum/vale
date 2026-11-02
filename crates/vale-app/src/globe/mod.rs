@@ -10,7 +10,7 @@ use std::time::Instant;
 use eframe::egui::{Pos2, Rect};
 use eframe::egui_wgpu::{self, wgpu};
 use vale_store::{
-    BlendMode, Hillshade, ImageId, LayerId, LonLat, RasterDisplay, RasterId, Smoothing,
+    BlendMode, Hillshade, ImageId, LayerId, LonLat, RasterDisplay, RasterId, Smoothing, Uuid,
 };
 use vale_terrain::{
     Bands, BasinLine, ChannelMap, ChannelWindow, ErodeBrush, ErodeStep, FACES, Heightmap, Mode,
@@ -133,6 +133,8 @@ pub struct LineStroke {
     tracer: Option<Tracer>,
     /// The parts of the stroke after the pen comes up.
     pub runs: Vec<Run>,
+    /// The feature that the stroke reshapes.
+    pub reshape: Option<Uuid>,
 }
 
 /// A point that the point tool placed.
@@ -1934,15 +1936,28 @@ impl Globe {
             off: false,
             tracer,
             runs: Vec::new(),
+            reshape: None,
         });
     }
 
     /// Adds one sample to the stroke of the line or polygon tool. The stroke ends at
     /// the first sample off the world.
     pub fn line_sample(&mut self, pos: Pos2, dir: Option<V3>) {
+        let first = self.line_stroke.as_ref().is_some_and(|s| s.dirs.is_empty());
+        let reshape = match (dir, &self.targets, self.draw_layer) {
+            (Some(dir), Some(targets), Some(layer)) if first && self.line.reshape => {
+                let scale = self.radius();
+                targets.reshape(layer, dir, scale, reshape::REACH / scale)
+            }
+            _ => None,
+        };
         let Some(stroke) = self.line_stroke.as_mut().filter(|s| !s.off) else {
             return;
         };
+        if let Some(uuid) = reshape {
+            stroke.reshape = Some(uuid);
+            stroke.tracer = stroke.tracer.take().map(|t| t.excluding(uuid));
+        }
         match dir {
             Some(dir) => {
                 stroke.screen.push(pos);

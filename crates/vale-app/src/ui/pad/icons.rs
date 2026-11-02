@@ -48,6 +48,7 @@ pub enum Icon {
     /// The layout grid of the pages.
     LayoutGrid,
     Select,
+    Reshape,
     Measure,
     /// The handle of a row that a drag moves.
     Grip,
@@ -105,6 +106,8 @@ impl Icon {
             Icon::LayoutGrid => "M4 4h16v16h-16zM4 9.33h16M4 14.67h16M9.33 4v16M14.67 4v16",
             Icon::Grip => "M5 8h14M5 12h14M5 16h14",
             Icon::Select => "M5 3l14 8-6 2-2 6z",
+            // A square with its top side redrawn as a curve.
+            Icon::Reshape => "M6 8v12h12V8M6 8c2-6 10-6 12 0",
             Icon::Measure => "M3 17L17 3l4 4L7 21zM7 13l2 2M10 10l3 3M13 7l2 2",
             Icon::Magnet => {
                 "M5 4h4v8c0 1.66 1.34 3 3 3s3-1.34 3-3V4h4v8c0 3.87-3.13 7-7 7s-7-3.13-7-7zM5 8h4M15 8h4"
@@ -125,6 +128,7 @@ impl Icon {
             ],
             Icon::Eye | Icon::EyeOff | Icon::Point => &[(12.0, 12.0, 3.0, false)],
             Icon::Grid => &[(12.0, 12.0, 9.0, false)],
+            Icon::Reshape => &[(6.0, 8.0, 1.5, true), (18.0, 8.0, 1.5, true)],
             Icon::More => &[
                 (5.0, 12.0, 1.5, true),
                 (12.0, 12.0, 1.5, true),
@@ -392,6 +396,7 @@ mod tests {
             Icon::LayoutGrid,
             Icon::Delete,
             Icon::Select,
+            Icon::Reshape,
             Icon::Measure,
             Icon::Grip,
         ] {

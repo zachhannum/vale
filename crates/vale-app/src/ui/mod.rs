@@ -23,9 +23,9 @@ use crate::globe::fit;
 use crate::globe::import::{ImportResult, ProbeJob, Source, file_name};
 use crate::globe::line::{self, LineEdit};
 use crate::globe::math::lonlat_to_dir;
-use crate::globe::polygon;
 use crate::globe::snap::{LayerTargets, Targets};
 use crate::globe::{Globe, Look, START_ELEVATION, StackItem, Tool, brush};
+use crate::globe::{polygon, reshape};
 use crate::image_layer::{ImageImport, ImageTiles, ImportStep};
 use crate::measure::{self, Measure};
 use crate::pipeline::{Composed, Pipeline, Selection};
@@ -2564,7 +2564,7 @@ impl AppState {
     }
 
     /// Puts the last stroke of the line tool or the polygon tool in the
-    /// selected layer. The next save makes it one undo step.
+    /// selected layer, or reshapes the feature that the stroke starts on. The next save makes it one undo step.
     pub fn poll_line(&mut self) {
         let Some(stroke) = self.globe.take_line() else {
             return;
@@ -2577,6 +2577,19 @@ impl AppState {
         };
         let settings = self.globe.line;
         let smoothing = settings.smoothing;
+        if let Some(uuid) = stroke.reshape {
+            // A stroke that does not end on the same ring of a polygon
+            // changes nothing.
+            let feature = layer.features.iter().find(|f| f.uuid() == uuid);
+            let shape = feature
+                .and_then(|f| reshape::reshape(&f.geometry, &stroke.runs, stroke.scale, smoothing));
+            if shape.is_some_and(|g| self.doc.project.set_geometry(id, uuid, g)) {
+                self.line_edits += 1;
+                self.pipeline.forget(id);
+                self.touch();
+            }
+            return;
+        }
         let edit = match layer.geometry() {
             Some(GeometryKind::Polygon) => {
                 polygon::commit(&stroke.runs, stroke.scale, smoothing).map(LineEdit::New)

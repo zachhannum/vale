@@ -435,6 +435,28 @@ impl Targets {
         }
     }
 
+    /// The feature of the layer `layer` that a stroke from `p` reshapes: the
+    /// feature with the nearest edge within `reach` radians. A stroke from
+    /// the end of a line extends the line, so it reshapes nothing.
+    pub fn reshape(&self, layer: LayerId, p: V3, scale: f64, reach: f64) -> Option<Uuid> {
+        if self.line_end(layer, p, JOIN / scale).is_some() {
+            return None;
+        }
+        let mut best: Option<(f64, Uuid)> = None;
+        for l in self.layers.iter().filter(|l| l.layer == layer) {
+            for e in l.near(p, reach).0 {
+                let (i, k) = l.edges[e as usize];
+                let path = &l.paths[i as usize];
+                let (a, b) = path.ends(k as usize);
+                let d = project(p, a, b).2;
+                if d <= reach && best.is_none_or(|b| d < b.0) {
+                    best = Some((d, path.uuid));
+                }
+            }
+        }
+        best.map(|b| b.1)
+    }
+
     /// The line end in the layer `layer` that is nearest to `p`, within
     /// `reach` radians.
     pub fn line_end(&self, layer: LayerId, p: V3, reach: f64) -> Option<(Uuid, V3)> {
@@ -1559,6 +1581,22 @@ pub(super) mod tests {
     fn equator() -> Layer {
         let part = (0..=10).map(|i| [3.0 * f64::from(i), 0.0]).collect();
         layer(1, GeometryKind::Line, vec![Geometry::Lines(vec![part])])
+    }
+
+    #[test]
+    fn a_stroke_from_an_edge_reshapes_its_feature_and_a_stroke_from_an_end_does_not() {
+        let line = equator();
+        let uuid = line.features[0].uuid();
+        let t = targets(&[line]);
+        let reach = 12.0 / SCALE;
+        let at = |lon: f64, lat: f64| dir(lon, lat);
+        assert_eq!(
+            t.reshape(LayerId(1), at(10.0, 0.5), SCALE, reach),
+            Some(uuid)
+        );
+        assert_eq!(t.reshape(LayerId(1), at(0.0, 0.0), SCALE, reach), None);
+        assert_eq!(t.reshape(LayerId(1), at(10.0, 5.0), SCALE, reach), None);
+        assert_eq!(t.reshape(LayerId(2), at(10.0, 0.5), SCALE, reach), None);
     }
 
     #[test]
