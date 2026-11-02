@@ -12,7 +12,7 @@ use vale_store::{
 use super::atlas::panel_width;
 use super::geometry::{Rects, TOUCH};
 use super::icons::{self, Icon};
-use super::labels::value_slider;
+use super::number::Number;
 use super::raster::heading;
 use super::text_style::{self, TextEvent, TextSpec, rgb_rows};
 use super::widgets::keypad_below;
@@ -625,40 +625,34 @@ fn entry_page(
     state.atlas.entry_name = text;
 }
 
-/// A slider for a length in millimeters. Returns the new length, to a
+/// A stepper for a length in millimeters. Returns the new length, to a
 /// tenth.
-fn mm_slider(
+fn mm_stepper(
     ui: &mut egui::Ui,
     controls: &mut Controls,
     name: &str,
     value: f64,
     range: std::ops::RangeInclusive<f64>,
 ) -> Option<f64> {
-    let text = format!("{value:.1} mm");
-    let range = (*range.start(), *range.end());
-    let v = value_slider(ui, controls, (name, name), value, range, &text)?;
+    let v = Number::new(name, value, range)
+        .step(0.1)
+        .unit("mm")
+        .stepper(ui, controls)?;
     Some((v * 10.0).round() / 10.0)
 }
 
-/// A slider for a whole number.
-fn count_slider(
+/// A stepper for a whole number.
+fn count_stepper(
     ui: &mut egui::Ui,
     controls: &mut Controls,
     name: &str,
     value: u32,
     range: std::ops::RangeInclusive<u32>,
 ) -> Option<u32> {
-    let lo = f64::from(*range.start());
-    let hi = f64::from(*range.end());
-    let text = value.to_string();
-    let v = value_slider(
-        ui,
-        controls,
-        (name, name),
-        f64::from(value),
-        (lo, hi),
-        &text,
-    )?;
+    let range = f64::from(*range.start())..=f64::from(*range.end());
+    let v = Number::new(name, f64::from(value), range)
+        .step(1.0)
+        .stepper(ui, controls)?;
     let v = v.round() as u32;
     (v != value).then_some(v)
 }
@@ -735,11 +729,11 @@ fn bar_page(
             }
             let range = ScaleBarItem::MARK_HEIGHTS;
             let h = bar.division_mark_height;
-            if let Some(v) = mm_slider(ui, controls, DIVISION_HEIGHT, h, range.clone()) {
+            if let Some(v) = mm_stepper(ui, controls, DIVISION_HEIGHT, h, range.clone()) {
                 atlas::edit_bar(state, id, false, |b| b.division_mark_height = v);
             }
             let h = bar.subdivision_mark_height;
-            if let Some(v) = mm_slider(ui, controls, SUBDIVISION_HEIGHT, h, range) {
+            if let Some(v) = mm_stepper(ui, controls, SUBDIVISION_HEIGHT, h, range) {
                 atlas::edit_bar(state, id, false, |b| b.subdivision_mark_height = v);
             }
         }
@@ -842,7 +836,7 @@ fn units_page(
         BarPick::UnitPosition,
         bar.unit_position.label(),
     );
-    if let Some(v) = mm_slider(ui, controls, GAP, bar.unit_gap, ScaleBarItem::GAPS) {
+    if let Some(v) = mm_stepper(ui, controls, GAP, bar.unit_gap, ScaleBarItem::GAPS) {
         atlas::edit_bar(state, id, false, |b| b.unit_gap = v);
     }
     heading(ui, TEXT);
@@ -856,7 +850,7 @@ fn divisions_page(
     id: FurnitureId,
     bar: &ScaleBarItem,
 ) {
-    let n = count_slider(
+    let n = count_stepper(
         ui,
         controls,
         DIVISIONS,
@@ -872,7 +866,7 @@ fn divisions_page(
     if let Some(i) = widgets::choice_row(ui, controls, SPACING, &labels, active) {
         atlas::edit_bar(state, id, true, |b| b.spacing = all[i]);
     }
-    let n = count_slider(
+    let n = count_stepper(
         ui,
         controls,
         SUBDIVISIONS,
@@ -955,7 +949,7 @@ fn bar_rows(
     let kind = bar.kind;
     if kind != ScaleBarKind::Line {
         let h = bar.bar_height;
-        if let Some(v) = mm_slider(ui, controls, BAR_HEIGHT, h, ScaleBarItem::BAR_HEIGHTS) {
+        if let Some(v) = mm_stepper(ui, controls, BAR_HEIGHT, h, ScaleBarItem::BAR_HEIGHTS) {
             atlas::edit_bar(state, id, false, |b| b.bar_height = v);
         }
     }
@@ -971,13 +965,11 @@ fn bar_rows(
     if let Some(c) = rgb_rows(ui, state, controls, name, ClassColor::Outline, bar.outline) {
         atlas::edit_bar(state, id, false, |b| b.outline = c);
     }
-    let range = (
-        *ScaleBarItem::LINE_WIDTHS.start(),
-        *ScaleBarItem::LINE_WIDTHS.end(),
-    );
-    let text = super::labels::points(bar.line_width);
-    let names = (LINE_WIDTH, LINE_WIDTH);
-    if let Some(v) = value_slider(ui, controls, names, bar.line_width, range, &text) {
+    if let Some(v) = Number::new(LINE_WIDTH, bar.line_width, ScaleBarItem::LINE_WIDTHS)
+        .step(0.1)
+        .unit("pt")
+        .stepper(ui, controls)
+    {
         let v = (v * 10.0).round() / 10.0;
         atlas::edit_bar(state, id, false, |b| b.line_width = v);
     }
@@ -1055,23 +1047,24 @@ fn fill_page(
             atlas::edit_fill(state, id, second, false, |f| f.background = Some(c));
         }
     }
-    let range = |r: std::ops::RangeInclusive<f64>| (*r.start(), *r.end());
-    let text = format!("{:.0}°", fill.angle);
-    let names = (ANGLE, ANGLE);
-    let angles = range(FillPattern::ANGLES);
-    if let Some(v) = value_slider(ui, controls, names, fill.angle, angles, &text) {
-        let v = (v / 5.0).round() * 5.0;
+    if let Some(v) = Number::new(ANGLE, fill.angle, FillPattern::ANGLES)
+        .step(5.0)
+        .unit("°")
+        .stepper(ui, controls)
+    {
         atlas::edit_fill(state, id, second, false, |f| f.angle = v);
     }
-    if let Some(v) = mm_slider(ui, controls, SPACING, fill.spacing, FillPattern::SPACINGS) {
+    if let Some(v) = mm_stepper(ui, controls, SPACING, fill.spacing, FillPattern::SPACINGS) {
         let v = v.max(*FillPattern::SPACINGS.start());
         atlas::edit_fill(state, id, second, false, |f| f.spacing = v);
     }
-    let text = super::labels::points(fill.line_width);
-    let names = (LINE_WIDTH, LINE_WIDTH);
-    let widths = range(FillPattern::LINE_WIDTHS);
-    if let Some(v) = value_slider(ui, controls, names, fill.line_width, widths, &text) {
-        let v = ((v * 20.0).round() / 20.0).max(widths.0);
+    let widths = FillPattern::LINE_WIDTHS;
+    if let Some(v) = Number::new(LINE_WIDTH, fill.line_width, widths.clone())
+        .step(0.05)
+        .unit("pt")
+        .stepper(ui, controls)
+    {
+        let v = ((v * 20.0).round() / 20.0).max(*widths.start());
         atlas::edit_fill(state, id, second, false, |f| f.line_width = v);
     }
 }
@@ -1093,7 +1086,7 @@ fn numbers_page(
     if let Some(p) = position_row(ui, controls, bar.number_position) {
         atlas::edit_bar(state, id, true, |b| b.number_position = p);
     }
-    if let Some(v) = mm_slider(ui, controls, GAP, bar.number_gap, ScaleBarItem::GAPS) {
+    if let Some(v) = mm_stepper(ui, controls, GAP, bar.number_gap, ScaleBarItem::GAPS) {
         atlas::edit_bar(state, id, false, |b| b.number_gap = v);
     }
     let decimals = bar
