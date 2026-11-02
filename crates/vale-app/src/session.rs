@@ -4,6 +4,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use vale_store::{
@@ -14,6 +15,7 @@ use vale_terrain::{Bands, FACES, Heightmap, Stop, StopLine, reduced_face_size};
 
 use crate::document::Document;
 use crate::files::Files;
+use crate::globe::detail::{self, DetailRequest};
 use crate::globe::view::GlobeView;
 use crate::globe::{DISPLAY_CAP, reduce_tile, thumbnail};
 use crate::raster_style::{
@@ -606,6 +608,118 @@ pub type Maps<'a> = [(RasterId, &'a mut Heightmap)];
 /// The record of a heightmap in the project. `None`: the project has no
 /// raster with this ID, or the raster has another face size. A save then
 /// does not write the heightmap.
+/// The texels of a tile of a detail map, or the error of its read.
+pub type DetailResult = Result<(Vec<u16>, Vec<u16>), StoreError>;
+
+/// A thread that reads the tiles of the detail maps of the map frames from
+/// a database, with a connection of its own. Each read is short, so a save
+/// waits for one read at most.
+pub struct DetailReader {
+    database: PathBuf,
+    jobs: mpsc::Sender<(Raster, DetailRequest)>,
+    done: mpsc::Receiver<(DetailRequest, DetailResult)>,
+    /// The requests that wait for the thread. The thread skips a request
+    /// that is not in this list.
+    wanted: Arc<Mutex<Vec<DetailRequest>>>,
+}
+
+impl DetailReader {
+    pub fn new(database: &Path) -> DetailReader {
+        let (jobs, inbox) = mpsc::channel::<(Raster, DetailRequest)>();
+        let (send, done) = mpsc::channel();
+        let wanted = Arc::new(Mutex::new(Vec::new()));
+        let list = Arc::clone(&wanted);
+        let path = database.to_path_buf();
+        std::thread::spawn(move || {
+            let reader = TileReader::open(&path);
+            for (raster, req) in inbox {
+                let lock = list
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if !lock.contains(&req) {
+                    continue;
+                }
+                drop(lock);
+                let result = match &reader {
+                    Ok(reader) => read_detail(reader, &raster, &req),
+                    Err(e) => Err(StoreError::Corrupt(format!("cannot read the file: {e}"))),
+                };
+                if send.send((req, result)).is_err() {
+                    return;
+                }
+            }
+        });
+        DetailReader {
+            database: database.to_path_buf(),
+            jobs,
+            done,
+            wanted,
+        }
+    }
+
+    /// The database that the thread reads.
+    pub fn database(&self) -> &Path {
+        &self.database
+    }
+
+    fn wanted(&self) -> std::sync::MutexGuard<'_, Vec<DetailRequest>> {
+        self.wanted
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// The requests that wait for the thread.
+    pub fn pending(&self) -> Vec<DetailRequest> {
+        self.wanted().clone()
+    }
+
+    /// Keeps only the waiting requests that `keep` returns `true` for. The
+    /// thread skips the others.
+    pub fn retain(&self, keep: impl FnMut(&DetailRequest) -> bool) {
+        self.wanted().retain(keep);
+    }
+
+    /// Asks the thread for the tile of a request of a raster layer.
+    pub fn send(&self, raster: Raster, req: DetailRequest) {
+        self.wanted().push(req);
+        if self.jobs.send((raster, req)).is_err() {
+            self.wanted().retain(|r| *r != req);
+        }
+    }
+
+    /// The next tile that the thread read. With `wait`, the call waits for
+    /// a tile while a request waits. `None`: no tile is there.
+    pub fn next(&self, wait: bool) -> Option<(DetailRequest, DetailResult)> {
+        let got = if wait && !self.wanted().is_empty() {
+            self.done.recv().ok()
+        } else {
+            self.done.try_recv().ok()
+        };
+        if let Some((req, _)) = &got {
+            self.wanted().retain(|r| r != req);
+        }
+        got
+    }
+}
+
+/// Reads the tiles of the whole heightmap under a tile of a detail map, and
+/// makes the texels of the tile from them.
+fn read_detail(reader: &TileReader, raster: &Raster, req: &DetailRequest) -> DetailResult {
+    if raster.face_size != req.full_face_size {
+        return Err(StoreError::Corrupt(format!(
+            "the face size of raster {} changed",
+            raster.id.0
+        )));
+    }
+    let mut map = Session::empty_map(raster)?;
+    let (columns, rows) = req.source_tiles(vale_store::TILE_SIZE);
+    reader.load_rect(raster, req.face, columns, rows, |key, pixels| {
+        let (column, row) = (key.column as usize, key.row as usize);
+        map.load_tile(key.face as usize, column, row, &pixels);
+    })?;
+    Ok(detail::detail_tile(&map, req))
+}
+
 fn record<'a>(project: &'a Project, id: RasterId, map: &Heightmap) -> Option<&'a Raster> {
     let raster = project.raster(id);
     raster.filter(|raster| raster.face_size as usize == map.face_size())

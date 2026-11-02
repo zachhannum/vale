@@ -14,7 +14,8 @@ use crate::gpu::{Readback, read_rect};
 use crate::heightmap::{TILE_SIZE, TexelRect};
 
 /// The shader source of the table and the pool, for bind group 1. The
-/// function `tile_level` reads one texel.
+/// function `tile_level` reads one texel, and `tile_level_of` reads one texel
+/// of a level.
 pub const TILES_WGSL: &str = include_str!("tiles.wgsl");
 
 /// The largest number of chunks. The same number as the chunk bindings of
@@ -37,6 +38,8 @@ const TABLE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Uint;
 struct Uniforms {
     base: u32,
     tile: u32,
+    levels: u32,
+    pad: u32,
 }
 
 /// The place of one tile in the pool.
@@ -57,11 +60,15 @@ struct Chunk {
 pub(crate) struct Pool {
     n: usize,
     tile: usize,
-    /// The number of tiles along one side of a face.
+    /// The number of tiles along one side of a face of level 0.
     per_side: usize,
+    /// The number of levels in the pool. Level `k` has `max(1, n >> k)`
+    /// texels along one side of a face.
+    levels: usize,
     base: u16,
-    /// The slot of each tile plus 1, face by face, in row order. 0 is a tile
-    /// that has no memory.
+    /// The slot of each tile plus 1, level by level, face by face, in row
+    /// order. 0 is a tile that has no memory. Each face of each level has
+    /// the size of a face of level 0.
     table: Vec<u32>,
     table_texture: wgpu::Texture,
     table_view: wgpu::TextureView,
@@ -109,6 +116,18 @@ fn texture(
     })
 }
 
+/// The number of texels along one side of a face of a level, for a face of
+/// `n` texels at level 0. The same size as in `field.wgsl`.
+fn level_size(n: usize, level: usize) -> usize {
+    (n >> level).max(1)
+}
+
+/// The place of a tile in the table: level by level, face by face, in row
+/// order. Each face of each level has `per_side` by `per_side` entries.
+fn table_index(per_side: usize, level: usize, face: usize, tx: usize, ty: usize) -> usize {
+    ((level * FACES + face) * per_side + ty) * per_side + tx
+}
+
 /// The first layer of a chunk, in the count of the layers of all chunks.
 fn first_layer(chunk: usize) -> u32 {
     match chunk {
@@ -150,10 +169,17 @@ pub fn tiles_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
 }
 
 impl Pool {
-    /// A pool with no memory in each tile. Each texel reads as `base`.
-    pub fn new(device: &wgpu::Device, n: usize, tile: usize, base: u16) -> Pool {
+    /// A pool of `levels` levels with no memory in each tile. Each texel
+    /// reads as `base`.
+    pub fn new(device: &wgpu::Device, n: usize, tile: usize, base: u16, levels: usize) -> Pool {
+        assert!(levels >= 1, "a pool has one level at least");
         let per_side = n.div_ceil(tile);
-        let tiles = (FACES * per_side * per_side) as u32;
+        let tiles: u32 = (0..levels)
+            .map(|level| {
+                let side = level_size(n, level).div_ceil(tile);
+                (FACES * side * side) as u32
+            })
+            .sum();
         let layers = tiles.div_ceil(LAYER_SLOTS);
         assert!(
             layers <= first_layer(CHUNKS),
@@ -163,7 +189,7 @@ impl Pool {
             device,
             "tile table",
             TABLE_FORMAT,
-            [per_side as u32, per_side as u32, FACES as u32],
+            [per_side as u32, per_side as u32, (levels * FACES) as u32],
             wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         );
         let table_view = array_view(&table_texture);
@@ -176,6 +202,8 @@ impl Pool {
         let start = Uniforms {
             base: u32::from(base),
             tile: tile as u32,
+            levels: levels as u32,
+            pad: 0,
         };
         uniforms
             .get_mapped_range_mut(..)
@@ -197,8 +225,9 @@ impl Pool {
             n,
             tile,
             per_side,
+            levels,
             base,
-            table: vec![0; tiles as usize],
+            table: vec![0; levels * FACES * per_side * per_side],
             table_texture,
             table_view,
             uniforms,
@@ -261,23 +290,24 @@ impl Pool {
         }
     }
 
-    /// The texels of one tile, clipped to the face.
-    fn tile_rect(&self, tx: usize, ty: usize) -> TexelRect {
+    /// The texels of one tile of a level, clipped to the face.
+    pub fn tile_rect(&self, level: usize, tx: usize, ty: usize) -> TexelRect {
+        let n = level_size(self.n, level);
         TexelRect {
             x0: tx * self.tile,
             y0: ty * self.tile,
-            x1: ((tx + 1) * self.tile).min(self.n),
-            y1: ((ty + 1) * self.tile).min(self.n),
+            x1: ((tx + 1) * self.tile).min(n),
+            y1: ((ty + 1) * self.tile).min(n),
         }
     }
 
-    /// Each tile that has texels in `rect`: its column, its row, and the
-    /// texels of `rect` in it.
-    pub fn tiles_in(&self, rect: TexelRect) -> Vec<(usize, usize, TexelRect)> {
+    /// Each tile of a level that has texels in `rect`: its column, its row,
+    /// and the texels of `rect` in it.
+    pub fn tiles_in(&self, level: usize, rect: TexelRect) -> Vec<(usize, usize, TexelRect)> {
         let mut tiles = Vec::new();
         for ty in rect.y0 / self.tile..rect.y1.div_ceil(self.tile) {
             for tx in rect.x0 / self.tile..rect.x1.div_ceil(self.tile) {
-                let tile = self.tile_rect(tx, ty);
+                let tile = self.tile_rect(level, tx, ty);
                 let part = TexelRect {
                     x0: rect.x0.max(tile.x0),
                     y0: rect.y0.max(tile.y0),
@@ -291,17 +321,22 @@ impl Pool {
     }
 
     /// Is `part` the full tile?
-    pub fn is_full(&self, tx: usize, ty: usize, part: TexelRect) -> bool {
-        part == self.tile_rect(tx, ty)
+    pub fn is_full(&self, level: usize, tx: usize, ty: usize, part: TexelRect) -> bool {
+        part == self.tile_rect(level, tx, ty)
     }
 
-    fn index(&self, face: usize, tx: usize, ty: usize) -> usize {
-        (face * self.per_side + ty) * self.per_side + tx
+    /// The layer of the table texture for a face of a level.
+    fn table_layer(face: usize, level: usize) -> usize {
+        level * FACES + face
+    }
+
+    fn index(&self, level: usize, face: usize, tx: usize, ty: usize) -> usize {
+        table_index(self.per_side, level, face, tx, ty)
     }
 
     /// The slot of a tile, or `None` if the tile has no memory.
-    pub fn slot(&self, face: usize, tx: usize, ty: usize) -> Option<Slot> {
-        match self.table[self.index(face, tx, ty)] {
+    pub fn slot(&self, level: usize, face: usize, tx: usize, ty: usize) -> Option<Slot> {
+        match self.table[self.index(level, face, tx, ty)] {
             0 => None,
             slot => Some(self.place(slot - 1)),
         }
@@ -321,7 +356,7 @@ impl Pool {
         }
     }
 
-    fn write_entry(&self, queue: &wgpu::Queue, face: usize, tx: usize, ty: usize, entry: u32) {
+    fn write_entry(&self, queue: &wgpu::Queue, layer: usize, tx: usize, ty: usize, entry: u32) {
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &self.table_texture,
@@ -329,7 +364,7 @@ impl Pool {
                 origin: wgpu::Origin3d {
                     x: tx as u32,
                     y: ty as u32,
-                    z: face as u32,
+                    z: layer as u32,
                 },
                 aspect: wgpu::TextureAspect::All,
             },
@@ -355,16 +390,18 @@ impl Pool {
     /// call then reads the base level from the slot, as it did from the
     /// table. Without `fill`, the caller writes each texel of the tile in the
     /// same way.
+    #[allow(clippy::too_many_arguments)]
     pub fn ensure(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
+        level: usize,
         face: usize,
         tx: usize,
         ty: usize,
         fill: bool,
     ) -> Slot {
-        if let Some(slot) = self.slot(face, tx, ty) {
+        if let Some(slot) = self.slot(level, face, tx, ty) {
             return slot;
         }
         let number = self.free.pop().unwrap_or_else(|| {
@@ -404,24 +441,32 @@ impl Pool {
                 },
             );
         }
-        let index = self.index(face, tx, ty);
+        let index = self.index(level, face, tx, ty);
         self.table[index] = number + 1;
         let place = (slot.x / self.tile) as u32
             | ((slot.y / self.tile) as u32) << 8
             | slot.layer << 16
             | (slot.chunk as u32) << 24;
-        self.write_entry(queue, face, tx, ty, place + 1);
+        let layer = Pool::table_layer(face, level);
+        self.write_entry(queue, layer, tx, ty, place + 1);
         slot
     }
 
     /// Takes the memory from a tile. The tile then reads as the base level.
     /// The change runs at the next submit, as that of `ensure` does.
-    pub fn release(&mut self, queue: &wgpu::Queue, face: usize, tx: usize, ty: usize) {
-        let index = self.index(face, tx, ty);
+    pub fn release(
+        &mut self,
+        queue: &wgpu::Queue,
+        level: usize,
+        face: usize,
+        tx: usize,
+        ty: usize,
+    ) {
+        let index = self.index(level, face, tx, ty);
         let entry = std::mem::take(&mut self.table[index]);
         if entry != 0 {
             self.free.push(entry - 1);
-            self.write_entry(queue, face, tx, ty, 0);
+            self.write_entry(queue, Pool::table_layer(face, level), tx, ty, 0);
         }
     }
 
@@ -432,6 +477,8 @@ impl Pool {
         let uniforms = Uniforms {
             base: u32::from(level),
             tile: self.tile as u32,
+            levels: self.levels as u32,
+            pad: 0,
         };
         queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&uniforms));
         self.table.fill(0);
@@ -459,37 +506,38 @@ impl Pool {
         }
     }
 
-    /// Writes the texels of a rectangle, row by row. A tile gets memory when
-    /// it gets a level other than the base level. A tile that gets the base
-    /// level in each texel loses its memory. The change runs at the next
-    /// submit, as that of `ensure` does.
+    /// Writes the texels of a rectangle of a level, row by row. A tile gets
+    /// memory when it gets a level other than the base level. A tile that
+    /// gets the base level in each texel loses its memory. The change runs
+    /// at the next submit, as that of `ensure` does.
     pub fn upload(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
+        level: usize,
         face: usize,
         rect: TexelRect,
         data: &[u16],
     ) {
         let width = rect.x1 - rect.x0;
         let mut levels = Vec::new();
-        for (tx, ty, part) in self.tiles_in(rect) {
+        for (tx, ty, part) in self.tiles_in(level, rect) {
             levels.clear();
             for y in part.y0..part.y1 {
                 let row = (y - rect.y0) * width;
                 levels.extend_from_slice(&data[row + part.x0 - rect.x0..row + part.x1 - rect.x0]);
             }
-            let full = self.is_full(tx, ty, part);
-            if levels.iter().all(|level| *level == self.base) {
+            let full = self.is_full(level, tx, ty, part);
+            if levels.iter().all(|value| *value == self.base) {
                 if full {
-                    self.release(queue, face, tx, ty);
+                    self.release(queue, level, face, tx, ty);
                     continue;
                 }
-                if self.slot(face, tx, ty).is_none() {
+                if self.slot(level, face, tx, ty).is_none() {
                     continue;
                 }
             }
-            let slot = self.ensure(device, queue, face, tx, ty, !full);
+            let slot = self.ensure(device, queue, level, face, tx, ty, !full);
             let size = wgpu::Extent3d {
                 width: (part.x1 - part.x0) as u32,
                 height: (part.y1 - part.y0) as u32,
@@ -575,7 +623,22 @@ impl GpuTiles {
         tile: usize,
         base: u16,
     ) -> GpuTiles {
-        let pool = Pool::new(device, face_size as usize, tile, base);
+        GpuTiles::with_levels(device, face_size, tile, base, 1)
+    }
+
+    /// The same as `with_tile_size`, with `levels` levels of the pyramid in
+    /// the tiles. Level `k` has `max(1, face_size >> k)` texels along one
+    /// side of a face, and each level has its own part of the table. In
+    /// `field.wgsl`, a level below `levels` comes from the tiles, and a
+    /// higher level comes from the pyramid.
+    pub fn with_levels(
+        device: &wgpu::Device,
+        face_size: u32,
+        tile: usize,
+        base: u16,
+        levels: u32,
+    ) -> GpuTiles {
+        let pool = Pool::new(device, face_size as usize, tile, base, levels as usize);
         GpuTiles {
             device: device.clone(),
             face_size,
@@ -586,6 +649,21 @@ impl GpuTiles {
 
     pub fn face_size(&self) -> u32 {
         self.face_size
+    }
+
+    /// The number of levels in the tiles.
+    pub fn levels(&self) -> u32 {
+        self.pool().levels as u32
+    }
+
+    /// The number of texels along one side of a tile.
+    pub fn tile_size(&self) -> usize {
+        self.pool().tile
+    }
+
+    /// The texels of one tile of a level, clipped to the face of that level.
+    pub fn tile_rect(&self, level: u32, tx: usize, ty: usize) -> TexelRect {
+        self.pool().tile_rect(level as usize, tx, ty)
     }
 
     fn pool(&self) -> std::sync::MutexGuard<'_, Pool> {
@@ -629,8 +707,35 @@ impl GpuTiles {
     /// A tile gets memory when it gets a level other than the base level. A
     /// tile that gets the base level in each texel loses its memory.
     pub fn upload(&self, queue: &wgpu::Queue, face: u32, rect: TexelRect, data: &[u16]) {
+        self.upload_level(queue, 0, face, rect, data);
+    }
+
+    /// The same as `upload`, for a rectangle of a level. `rect` is in the
+    /// texels of that level.
+    pub fn upload_level(
+        &self,
+        queue: &wgpu::Queue,
+        level: u32,
+        face: u32,
+        rect: TexelRect,
+        data: &[u16],
+    ) {
+        self.pool().upload(
+            &self.device,
+            queue,
+            level as usize,
+            face as usize,
+            rect,
+            data,
+        );
+    }
+
+    /// Takes the memory from one tile of a level. The tile then reads as the
+    /// base level. The change runs at the next submit, as that of `upload`
+    /// does.
+    pub fn release_tile(&self, queue: &wgpu::Queue, level: u32, face: u32, tx: usize, ty: usize) {
         self.pool()
-            .upload(&self.device, queue, face as usize, rect, data);
+            .release(queue, level as usize, face as usize, tx, ty);
     }
 
     /// Adds a copy of a rectangle to `enc`, for a read on the CPU.
@@ -642,5 +747,32 @@ impl GpuTiles {
         rect: TexelRect,
     ) -> Readback {
         read_rect(&self.pool(), device, enc, face, rect)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn each_level_has_its_own_part_of_the_table() {
+        let per_side = 4;
+        let face = per_side * per_side;
+        assert_eq!(table_index(per_side, 0, 0, 0, 0), 0);
+        assert_eq!(table_index(per_side, 0, 5, 3, 3), FACES * face - 1);
+        assert_eq!(table_index(per_side, 1, 0, 0, 0), FACES * face);
+        assert_eq!(
+            table_index(per_side, 1, 2, 1, 3),
+            (FACES + 2) * face + 3 * per_side + 1
+        );
+        assert_eq!(Pool::table_layer(2, 1), FACES + 2);
+    }
+
+    #[test]
+    fn a_level_has_the_face_size_of_the_pyramid() {
+        assert_eq!(level_size(64, 0), 64);
+        assert_eq!(level_size(64, 1), 32);
+        assert_eq!(level_size(45, 1), 22);
+        assert_eq!(level_size(1, 3), 1);
     }
 }

@@ -133,11 +133,22 @@ pub struct MapKey {
     pub layer: LayerKey,
     /// The count of the heightmaps that the globe made before this one.
     pub generation: u64,
-    /// True: the reduced copy that the globe draws. False: the full
-    /// heightmap that the brush paints.
-    pub display: bool,
+    pub kind: MapKind,
     /// Texels on one edge of a face of this heightmap.
     pub face_size: u32,
+}
+
+/// The kind of a heightmap on the GPU.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum MapKind {
+    /// The full heightmap that the brush paints.
+    Full,
+    /// The reduced copy that the globe draws.
+    Copy,
+    /// The detail map of the map frames: levels 0 and 1 of a reduced copy
+    /// at `level` of the whole heightmap, in the tiles that the frames
+    /// show. It has no other levels.
+    Detail { level: u32 },
 }
 
 /// The copy of an image on the GPU: one level of its pyramid, with the next
@@ -265,8 +276,12 @@ struct Resources {
     full: Option<(MapKey, GpuHeightmap)>,
     /// The reduced copies that the globe draws.
     copies: HashMap<MapKey, GpuTiles>,
+    /// The detail maps of the map frames.
+    details: HashMap<MapKey, GpuTiles>,
     /// The smooth levels of each heightmap that the globe draws.
     pyramids: HashMap<MapKey, GpuPyramid>,
+    /// The smooth levels of a detail map, which reads none.
+    no_levels: GpuPyramid,
     /// The channel map of each visible height layer.
     channels: HashMap<LayerKey, Channels>,
     channel_count: u64,
@@ -611,7 +626,9 @@ impl Resources {
             slots: HashMap::new(),
             full: None,
             copies: HashMap::new(),
+            details: HashMap::new(),
             pyramids: HashMap::new(),
+            no_levels: GpuPyramid::new(device, 1),
             channels: HashMap::new(),
             channel_count: 0,
             edges,
@@ -641,6 +658,16 @@ impl Resources {
                 GpuTiles::new(device, key.face_size, 0)
             });
         }
+        let before_details = self.details.len();
+        self.details.retain(|key, _| frame.details.contains(key));
+        changed |= self.details.len() != before_details;
+        for key in &frame.details {
+            self.details.entry(*key).or_insert_with(|| {
+                changed = true;
+                let tile = super::detail::tile_size(key.face_size);
+                GpuTiles::with_levels(device, key.face_size, tile, 0, 2)
+            });
+        }
         let full = frame.full.filter(|_| frame.smooth_full);
         let smooth = |key: &MapKey| Some(*key) == full || frame.copies.contains(key);
         self.pyramids.retain(|key, _| smooth(key));
@@ -664,7 +691,8 @@ impl Resources {
         let live = |pass: &Pass| match pass {
             Pass::Layer(layer) => {
                 let full = frame.full.is_some_and(|key| key.layer == *layer);
-                full || frame.copies.iter().any(|key| key.layer == *layer)
+                let copy = frame.copies.iter().any(|key| key.layer == *layer);
+                full || copy || frame.details.iter().any(|key| key.layer == *layer)
             }
             Pass::Image(id) => frame.images.iter().any(|key| key.image == *id),
             Pass::Ground | Pass::Graticule | Pass::Rim => true,
@@ -896,6 +924,10 @@ impl Resources {
     /// its smooth levels. `None`: the GPU does not have them.
     fn layer_groups(&self, draw: &Draw) -> Option<(wgpu::BindGroup, wgpu::BindGroup)> {
         let source = draw.source?;
+        if let MapKind::Detail { .. } = source.kind {
+            let tiles = self.details.get(&source)?.tiles();
+            return Some((tiles, self.no_levels.bind_group().clone()));
+        }
         let tiles = match &self.full {
             Some((key, heights)) if source == *key => heights.tiles(),
             _ => self.copies.get(&source)?.tiles(),
@@ -1513,6 +1545,20 @@ pub enum Op {
         face: u32,
         rect: TexelRect,
     },
+    /// Writes texels of one level of a detail map.
+    UploadLevel {
+        level: u32,
+        face: u32,
+        rect: TexelRect,
+        data: Vec<u16>,
+    },
+    /// Takes the memory from one tile of a level of a detail map.
+    ReleaseTile {
+        level: u32,
+        face: u32,
+        column: usize,
+        row: usize,
+    },
     /// Writes the channel map of the rivers of a layer, for the picture.
     LayerChannels(Arc<ChannelMap>),
     /// Writes the channel map of the rivers.
@@ -1810,6 +1856,8 @@ pub struct Frame {
     pub full: Option<MapKey>,
     /// The reduced copies that the globe draws.
     pub copies: Vec<MapKey>,
+    /// The detail maps of the map frames.
+    pub details: Vec<MapKey>,
     /// The globe draws a layer from `full`, so it needs its smooth levels.
     pub smooth_full: bool,
     /// The layers that have a channel map of their rivers.
@@ -1867,6 +1915,7 @@ struct Batch<'a> {
     heights: Option<&'a GpuHeightmap>,
     full: Option<MapKey>,
     copies: &'a HashMap<MapKey, GpuTiles>,
+    details: &'a HashMap<MapKey, GpuTiles>,
     pyramids: &'a HashMap<MapKey, GpuPyramid>,
     link: &'a Link,
     encoder: Option<wgpu::CommandEncoder>,
@@ -2006,6 +2055,29 @@ impl Batch<'_> {
         }
     }
 
+    /// Runs one change of the detail map with this key.
+    fn run_detail(&mut self, key: MapKey, op: Op) {
+        let Some(tiles) = self.details.get(&key) else {
+            return;
+        };
+        match op {
+            Op::Reset(level) => tiles.clear(self.queue, level),
+            Op::UploadLevel {
+                level,
+                face,
+                rect,
+                data,
+            } => tiles.upload_level(self.queue, level, face, rect, &data),
+            Op::ReleaseTile {
+                level,
+                face,
+                column,
+                row,
+            } => tiles.release_tile(self.queue, level, face, column, row),
+            _ => {}
+        }
+    }
+
     /// Makes the dirty parts of the smooth levels of each heightmap.
     fn update_levels(&mut self) {
         let pyramids = self.pyramids;
@@ -2087,7 +2159,7 @@ impl Batch<'_> {
                 let readback = heights.read_rect(device, self.encoder(), face, rect);
                 self.readbacks.push((stroke, face, rect, readback));
             }
-            Op::LayerChannels(_) => {}
+            Op::LayerChannels(_) | Op::UploadLevel { .. } | Op::ReleaseTile { .. } => {}
             Op::Channels(map) => {
                 // The stamps before the write follow the rivers before it.
                 self.submit();
@@ -2132,6 +2204,7 @@ fn run_ops(device: &wgpu::Device, queue: &wgpu::Queue, res: &mut Resources, fram
         heights: res.full.as_ref().map(|(_, heights)| heights),
         full: frame.full,
         copies: &res.copies,
+        details: &res.details,
         pyramids: &res.pyramids,
         link,
         encoder: None,
@@ -2142,9 +2215,16 @@ fn run_ops(device: &wgpu::Device, queue: &wgpu::Queue, res: &mut Resources, fram
     // The stamps that follow one another in the queue.
     let (mut plans, mut samples) = (Vec::new(), Vec::new());
     for (map, op) in ops {
-        if map.display {
-            batch.run_copy(map, op);
-            continue;
+        match map.kind {
+            MapKind::Full => {}
+            MapKind::Copy => {
+                batch.run_copy(map, op);
+                continue;
+            }
+            MapKind::Detail { .. } => {
+                batch.run_detail(map, op);
+                continue;
+            }
         }
         // A change of a heightmap that the app replaced.
         if Some(map) != batch.full {

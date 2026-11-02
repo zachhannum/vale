@@ -193,22 +193,39 @@ pub struct Thumbnail {
     pub rgba: Vec<u8>,
 }
 
-/// Reads the tiles of a raster in key order: each tile, or the tiles of one
-/// row of tiles of one face.
+/// The tiles of one face in a rectangle of tile columns and tile rows.
+struct TileRect {
+    face: usize,
+    columns: std::ops::Range<usize>,
+    rows: std::ops::Range<usize>,
+}
+
+/// Reads the tiles of a raster in key order: each tile, or the tiles of a
+/// rectangle of one face.
 fn read_tiles(
     conn: &Connection,
     raster: &Raster,
-    row_of: Option<(usize, usize)>,
+    rect: Option<TileRect>,
     tile: &mut dyn FnMut(TileKey, Vec<u16>),
 ) -> Result<(), StoreError> {
     let per_side = (raster.face_size as usize).div_ceil(TILE_SIZE) as u32;
     let mut rows = conn.prepare(
         "SELECT level, face, tile_column, tile_row, data FROM vale_raster_tile
-         WHERE raster_id = ?1 AND (?2 IS NULL OR (level = 0 AND face = ?2 AND tile_row = ?3))
+         WHERE raster_id = ?1 AND (?2 IS NULL OR (level = 0 AND face = ?2
+           AND tile_row >= ?3 AND tile_row < ?4 AND tile_column >= ?5 AND tile_column < ?6))
          ORDER BY level, face, tile_row, tile_column",
     )?;
-    let (face, row_at) = row_of.map_or((None, None), |(f, r)| (Some(f as i64), Some(r as i64)));
-    let mut rows = rows.query(params![raster.id.0, face, row_at])?;
+    let n = |v: usize| Some(v as i64);
+    let (face, r0, r1, c0, c1) = rect.map_or((None, None, None, None, None), |r| {
+        (
+            n(r.face),
+            n(r.rows.start),
+            n(r.rows.end),
+            n(r.columns.start),
+            n(r.columns.end),
+        )
+    });
+    let mut rows = rows.query(params![raster.id.0, face, r0, r1, c0, c1])?;
     let mut batch: Vec<(TileKey, Vec<u8>)> = Vec::new();
     loop {
         let row = rows.next()?;
@@ -268,7 +285,31 @@ impl TileReader {
         row: usize,
         mut tile: impl FnMut(TileKey, Vec<u16>),
     ) -> Result<(), StoreError> {
-        read_tiles(&self.conn, raster, Some((face, row)), &mut tile)
+        let rect = TileRect {
+            face,
+            columns: 0..usize::MAX >> 1,
+            rows: row..row + 1,
+        };
+        read_tiles(&self.conn, raster, Some(rect), &mut tile)
+    }
+
+    /// Reads the tiles of one face of a raster in a rectangle of tile
+    /// columns and tile rows, in key order. `tile` gets `TILE_SIZE` by
+    /// `TILE_SIZE` pixels, row by row.
+    pub fn load_rect(
+        &self,
+        raster: &Raster,
+        face: usize,
+        columns: std::ops::Range<usize>,
+        rows: std::ops::Range<usize>,
+        mut tile: impl FnMut(TileKey, Vec<u16>),
+    ) -> Result<(), StoreError> {
+        let rect = TileRect {
+            face,
+            columns,
+            rows,
+        };
+        read_tiles(&self.conn, raster, Some(rect), &mut tile)
     }
 }
 
@@ -4612,6 +4653,30 @@ mod tests {
         assert_eq!((stats.tiles_written, stats.tiles_deleted), (1, 40));
         assert_eq!(tiles_of(&file, project.raster(height).unwrap()), fill);
         assert_eq!(tiles_of(&file, project.raster(rain).unwrap()), wet);
+    }
+
+    #[test]
+    fn a_reader_reads_a_rectangle_of_tiles() {
+        let dir = tempfile::tempdir().unwrap();
+        let (project, height, rain) = rasters();
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        let painted: Vec<_> = (0..64u32)
+            .map(|i| (key(2, i % 8, i / 8), pixels(i as usize)))
+            .chain([(key(3, 2, 2), pixels(70))])
+            .collect();
+        let wet = vec![(key(2, 3, 3), pixels(99))];
+        let changes = [put(height, &painted, vec![]), put(rain, &wet, vec![])];
+        file.save_tiles(&project, &changes).unwrap();
+        let reader = TileReader::open(&path(&dir)).unwrap();
+        let mut got = Vec::new();
+        let raster = project.raster(height).unwrap();
+        reader
+            .load_rect(raster, 2, 2..4, 3..5, |k, p| got.push((k, p)))
+            .unwrap();
+        let expected: Vec<_> = [(2, 3), (3, 3), (2, 4), (3, 4)]
+            .map(|(c, r)| (key(2, c, r), pixels((r * 8 + c) as usize)))
+            .into();
+        assert_eq!(got, expected);
     }
 
     #[test]

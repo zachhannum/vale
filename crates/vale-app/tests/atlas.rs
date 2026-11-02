@@ -2,6 +2,7 @@
 //! panels.
 
 mod screenshot;
+mod striped;
 
 use std::time::Instant;
 
@@ -5069,4 +5070,57 @@ fn a_vertex_lines_up_with_another_vertex_of_its_frame() {
     screenshot::save(&mut h, "pad-atlas-vertex-alignment");
     release(&mut h, to, Input::Finger);
     assert_eq!(ring(&h, 1)[0][1], y);
+}
+
+/// A frame of 500 by 500 pixels on the middle of face 0, at about one
+/// texel of `striped::FACE` in each pixel.
+fn zoomed_draw(id: u32, raster: vale_store::RasterId) -> vale_app::globe::FrameDraw {
+    use vale_app::globe::flat::{DEFAULT_SPEC, FlatMesh};
+    let projection = vale_sphere::Projection::new(DEFAULT_SPEC, 1.0).unwrap();
+    vale_app::globe::FrameDraw {
+        id,
+        place: vale_app::globe::FramePlace {
+            center: [250.0; 2],
+            map_center: [0.0; 2],
+            units_to_pixels: 20000.0,
+            rotation: 0.0,
+            points_per_radian: 20000.0,
+            pixels_per_page_point: 1.0,
+        },
+        rect: [0, 0, 500, 500],
+        mesh: std::sync::Arc::new(FlatMesh::new(&projection)),
+        mask: None,
+        shown: vec![raster],
+        images: Vec::new(),
+        raster_looks: Vec::new(),
+        image_looks: Vec::new(),
+    }
+}
+
+#[test]
+fn a_zoomed_frame_loads_the_tiles_of_a_layer_from_the_project_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut state, height, _) = striped::project(&dir.path().join("world.gpkg"), 4.0e5);
+    // A thread reads the tiles.
+    state.headless = false;
+    state.sync_globe();
+    let draw = zoomed_draw(1, height);
+    state.want_frames(vec![draw.clone()]);
+    let globe = &state.globe;
+    assert!(globe.raster_map(height).is_none(), "in the main memory");
+    assert_eq!(globe.frame_detail_level(1, height), Some(0));
+    let tiles = globe.frame_detail_tiles(1, height);
+    assert!(!tiles.is_empty() && tiles.len() <= 16, "{tiles:?}");
+    assert!(!globe.frame_details_ready(1) && globe.details_loading());
+
+    let start = Instant::now();
+    while !state.globe.frame_details_ready(1) {
+        assert!(start.elapsed().as_secs() < 60, "the tiles did not load");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        state.pump_details(false);
+        state.want_frames(vec![draw.clone()]);
+    }
+    assert!(state.globe.frame_ready(&draw));
+    assert!(!state.globe.details_loading());
+    assert!(state.status.is_empty(), "{}", state.status);
 }

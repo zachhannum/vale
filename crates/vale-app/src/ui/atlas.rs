@@ -2209,6 +2209,11 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
         background: paper(&page),
         pixels_per_point: ppp,
     };
+    // The tiles of the detail maps arrive while the frames ask for them.
+    state.want_frames(draws.clone());
+    if state.globe.details_loading() {
+        ctx.request_repaint();
+    }
     let mut callbacks: HashMap<u32, _> = if draws.is_empty() {
         HashMap::new()
     } else {

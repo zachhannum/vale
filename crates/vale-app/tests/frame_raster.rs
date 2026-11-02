@@ -1,6 +1,7 @@
 //! Raster layers in the map frames of the Atlas workspace.
 
 mod images;
+mod striped;
 
 use eframe::egui::{Pos2, pos2};
 use egui_kittest::Harness;
@@ -331,4 +332,216 @@ fn a_band_color_of_a_map_shows_in_the_frames_of_that_map_only() {
     near(pixel(&mut h, a), [grey_of(level); 3], "the other map");
     let record = h.state().doc.project.raster(height).unwrap();
     assert_eq!(record.display, RasterDisplay::Grey);
+}
+
+/// The red values of a row of pixels of the screen.
+fn row(h: &mut App, from: Pos2, count: u32) -> Vec<u8> {
+    h.remove_cursor();
+    h.run_steps(2);
+    let image = h.render().unwrap();
+    (0..count)
+        .map(|i| image.get_pixel(from.x as u32 + i, from.y as u32)[0])
+        .collect()
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_frame_zoomed_on_an_unselected_layer_draws_full_texels() {
+    use vale_terrain::math::lonlat_to_dir;
+    let _gpu = one_gpu_test();
+    let mut state = AppState::new(Document::empty()).unwrap();
+    state.headless = true;
+    state.set_layout(Layout::Pad);
+    state.workspace = Workspace::Atlas;
+    vale_app::ui::atlas::add_frame(&mut state).expect("a page takes a frame");
+    state.globe.set_face_size(8192);
+    let height = state.add_height();
+    state.set_raster_display(height, RasterDisplay::Grey);
+    state.set_raster_smoothing(height, false);
+    state.set_raster_hillshade(height, false);
+    // The brush paints another layer, which the frame does not show.
+    let other = state.add_height();
+    let map = vale_app::ui::atlas::open_page(&state).frames[0].map;
+    let layer = state.doc.project.raster_layer(other).unwrap().id;
+    assert!(state.doc.set_shown(map, layer, false));
+    assert_eq!(state.globe.raster(), Some(other));
+
+    // Stripes of two texels around the middle of the frame, which the copy
+    // with a quarter of the face makes one grey.
+    let center = [10.0, 20.0];
+    let (face, a, b) = vale_terrain::face_of(lonlat_to_dir(center[0], center[1]));
+    let texel = |s: f64| ((vale_terrain::warp(s) + 1.0) / 2.0 * 8192.0) as usize;
+    let (cx, cy) = (texel(a), texel(b));
+    let map = state
+        .globe
+        .raster_map_mut(height)
+        .expect("in the main memory");
+    for y in cy - 600..cy + 600 {
+        for x in cx - 600..cx + 600 {
+            let level = if (x / 2) % 2 == 0 { 50000 } else { 15000 };
+            map.set(face, x, y, level);
+        }
+    }
+    let id = vale_app::ui::atlas::open_page(&state).frames[0].id;
+    let frame = state.doc.project.atlas.frame_mut(id).unwrap();
+    frame.center = center;
+    // One texel is about 3 millimeters on the page.
+    frame.scale = 4.0e5;
+    state.touch();
+    let setup = egui_kittest::wgpu::default_wgpu_setup();
+    let mut h = headless::ui_harness(state, (1194.0, 834.0), 1.0, setup);
+    h.set_render_every_step(true);
+    h.run_steps(4);
+    let frame = open_frame(&h);
+    let start = screen(&h, anchor(&frame.shape)) + eframe::egui::vec2(-30.0, 17.0);
+    // The pixels of the high stripes and of the low stripes. A line of the
+    // graticule is neither.
+    let stripes = |values: &[u8]| {
+        let high = values.iter().filter(|r| **r > 150).count();
+        let low = values.iter().filter(|r| **r < 100).count();
+        (high, low)
+    };
+
+    // With no memory for the detail maps, the frame draws the copy.
+    h.state_mut().globe.set_detail_budget(Some(0));
+    h.run_steps(4);
+    assert_eq!(h.state().globe.frame_detail_level(id.0, height), None);
+    let flat = row(&mut h, start, 60);
+    assert_eq!(stripes(&flat), (0, 0), "{flat:?}");
+
+    h.state_mut().globe.set_detail_budget(None);
+    for _ in 0..100 {
+        h.run_steps(1);
+        let globe = &h.state().globe;
+        if globe.frame_detail_level(id.0, height).is_some() && globe.frame_details_ready(id.0) {
+            break;
+        }
+    }
+    let globe = &h.state().globe;
+    assert_eq!(globe.frame_detail_level(id.0, height), Some(0));
+    assert!(globe.frame_details_ready(id.0));
+    let sharp = row(&mut h, start, 60);
+    let (high, low) = stripes(&sharp);
+    assert!(high >= 10 && low >= 10, "{sharp:?}");
+}
+
+/// Exports the open page to a PNG through the export job of the app.
+fn export_png(h: &mut App, path: &std::path::Path) -> image::RgbaImage {
+    h.state_mut().headless = false;
+    h.state_mut().run_action(Action::Export(path.to_path_buf()));
+    let start = std::time::Instant::now();
+    while h.state().atlas_export.is_some() {
+        assert!(start.elapsed().as_secs() < 600, "the export did not end");
+        h.run_steps(1);
+    }
+    let status = &h.state().status;
+    assert!(status.starts_with("Exported"), "{status}");
+    image::open(path).unwrap().to_rgba8()
+}
+
+/// The pixels of the page per millimeter in an export.
+const EXPORT_PIXELS_PER_MM: f64 = 300.0 / 25.4;
+
+/// The red values of a row of `count` pixels of an exported page, with
+/// its middle at a page point in millimeters.
+fn export_row(image: &image::RgbaImage, middle: Point, count: u32) -> Vec<u8> {
+    let x = (middle.x * EXPORT_PIXELS_PER_MM) as u32 - count / 2;
+    let y = (middle.y * EXPORT_PIXELS_PER_MM) as u32;
+    (0..count).map(|i| image.get_pixel(x + i, y)[0]).collect()
+}
+
+/// The pixels of a row that show a high stripe, and that show a low
+/// stripe.
+fn stripes(values: &[u8]) -> (usize, usize) {
+    let high = values.iter().filter(|r| **r > 150).count();
+    let low = values.iter().filter(|r| **r < 100).count();
+    (high, low)
+}
+
+/// A file-backed project whose frame zooms in on a layer that is not
+/// selected, in the Globe workspace, so that no frame on the screen loads
+/// the tiles.
+fn striped_app(dir: &std::path::Path, scale: f64) -> (App, RasterId, vale_store::FrameId) {
+    let (mut state, height, id) = striped::project(&dir.join("world.gpkg"), scale);
+    state.workspace = Workspace::Globe;
+    let setup = egui_kittest::wgpu::default_wgpu_setup();
+    let mut h = headless::ui_harness(state, (1194.0, 834.0), 1.0, setup);
+    h.set_render_every_step(true);
+    h.run_steps(4);
+    (h, height, id)
+}
+
+#[test]
+#[ignore = "gpu"]
+fn the_export_waits_for_detail_tiles() {
+    let _gpu = one_gpu_test();
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, height, _) = striped_app(dir.path(), 4.0e5);
+    assert!(h.state().globe.raster_map(height).is_none());
+    assert_eq!(h.state().globe.detail_bytes(), 0);
+    let image = export_png(&mut h, &dir.path().join("page.png"));
+    assert!(h.state().export_waits > 0, "the export did not wait");
+    assert_eq!(h.state().export_strips, 1);
+    // A stripe is about 6 millimeters, or 70 pixels, on the page.
+    let middle = anchor(&open_frame(&h).shape) + kurbo::Vec2::new(3.0, 1.0);
+    let values = export_row(&image, middle, 600);
+    let (high, low) = stripes(&values);
+    assert!(high >= 100 && low >= 100, "{values:?}");
+}
+
+#[test]
+#[ignore = "gpu"]
+fn an_export_over_the_detail_budget_draws_in_strips_with_no_seam() {
+    let _gpu = one_gpu_test();
+    let dir = tempfile::tempdir().unwrap();
+    // A texel is about 1.6 pixels on the page. The frame needs more than
+    // one texture of 64 tiles in the pool, and a strip needs one.
+    let (mut h, _, _) = striped_app(dir.path(), 6.4e6);
+    h.state_mut().globe.set_detail_budget(Some(10 << 20));
+    let strips = export_png(&mut h, &dir.path().join("strips.png"));
+    let count = h.state().export_strips;
+    assert!(count >= 2, "{count} strips");
+    let frame = open_frame(&h);
+
+    h.state_mut().globe.set_detail_budget(None);
+    h.state_mut().export_strips = 0;
+    let whole = export_png(&mut h, &dir.path().join("whole.png"));
+    assert_eq!(h.state().export_strips, 1);
+
+    // The stripes show in the middle of the frame.
+    let middle = anchor(&frame.shape);
+    let values = export_row(&strips, middle, 400);
+    let (high, low) = stripes(&values);
+    assert!(high >= 80 && low >= 80, "{values:?}");
+
+    // The export in strips is the export in one piece.
+    let off = strips
+        .pixels()
+        .zip(whole.pixels())
+        .filter(|(a, b)| a.0.iter().zip(b.0).any(|(a, b)| a.abs_diff(b) > 8))
+        .count();
+    assert!(off <= 100, "{off} pixels differ");
+
+    // The rows on each side of each strip boundary show the stripes.
+    let bbox = vale_app::atlas::shape_bbox(&frame.shape);
+    let ratio = vale_app::atlas_export::RASTER_PIXEL_RATIO;
+    let rows = (bbox.height() * vale_app::atlas::PT_PER_MM * ratio).ceil() as u32;
+    let strip = (0..8)
+        .map(|k| rows.div_ceil(1 << k))
+        .find(|h| u64::from(rows.div_ceil(*h)) == count)
+        .expect("the height of a strip");
+    let top = bbox.y0 * EXPORT_PIXELS_PER_MM;
+    let x0 = (middle.x * EXPORT_PIXELS_PER_MM) as u32 - 200;
+    let center = (middle.y - bbox.y0) * EXPORT_PIXELS_PER_MM;
+    let striped = |b: &u32| (f64::from(*b) - center).abs() < 800.0;
+    let boundaries: Vec<u32> = (strip..rows).step_by(strip as usize).collect();
+    assert!(boundaries.iter().any(striped), "{boundaries:?}");
+    for boundary in boundaries.into_iter().filter(striped) {
+        for y in [boundary - 1, boundary] {
+            let y = (top + f64::from(y)).round() as u32;
+            let a: Vec<u8> = (0..400).map(|i| strips.get_pixel(x0 + i, y)[0]).collect();
+            let (high, low) = stripes(&a);
+            assert!(high >= 80 && low >= 80, "row {y}: {a:?}");
+        }
+    }
 }

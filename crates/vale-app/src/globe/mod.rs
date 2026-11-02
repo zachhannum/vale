@@ -21,6 +21,7 @@ use vale_terrain::{
 pub mod backdrop;
 pub mod basin;
 pub mod brush;
+pub mod detail;
 pub mod edges;
 pub mod erode;
 pub mod export;
@@ -50,12 +51,13 @@ use crate::pen::Pen;
 use backdrop::Canvas;
 use basin::Basiner;
 use brush::{Backlog, BrushSettings, STAMP_SPACING, Sample, Stroke, plan_texels, set_world};
+pub use detail::DetailRequest;
 use erode::{Eroder, Ground, Lift, brush_window, erode_window, near_side, range_window};
 use export::ExportResult;
 use flat::FlatView;
 use gpu::{
     Capture, Captured, Changes, Draw, Event, Frame, GlobeCallback, Group, ImageKey, Job as GpuJob,
-    LayerKey, LineOp, Link, MapKey, Mask, Op, Pass, TargetId, Uniforms, Uploads,
+    LayerKey, LineOp, Link, MapKey, MapKind, Mask, Op, Pass, TargetId, Uniforms, Uploads,
 };
 use import::{ImportResult, Job, Source, Step};
 use line::LineSettings;
@@ -91,9 +93,13 @@ pub const DISPLAY_BUDGET: u64 = 256 << 20;
 const NO_MAP: MapKey = MapKey {
     layer: LayerKey::Solo,
     generation: u64::MAX,
-    display: false,
+    kind: MapKind::Full,
     face_size: 0,
 };
+
+/// The most time of one frame of the UI for the tiles of the detail maps
+/// from the main memory.
+const DETAIL_TIME: std::time::Duration = std::time::Duration::from_millis(6);
 
 /// The rate of an erode step of one second, for a strength of one meter.
 const ERODE_RATE: f64 = 0.01;
@@ -499,6 +505,8 @@ struct Layer {
     /// `Some`: the layer is a visible height layer that the brush does not
     /// paint.
     rivers: Option<LayerRivers>,
+    /// The number of the texels, from `detail::next_edits`.
+    edits: u64,
 }
 
 /// The number of texels of a heightmap along one side of a texel of its
@@ -601,6 +609,7 @@ impl Layer {
             copy: None,
             old_copy: None,
             rivers: None,
+            edits: detail::next_edits(),
         }
     }
 
@@ -616,6 +625,9 @@ impl Layer {
     /// heightmap that the brush paints, if that is the whole heightmap of
     /// this layer.
     fn changed(&mut self, brush: Option<&Heightmap>, changes: &Changes, budget: usize) {
+        if changes.reset || !changes.rects.is_empty() {
+            self.edits = detail::next_edits();
+        }
         let Some(full) = brush.or(self.full.as_ref()) else {
             return;
         };
@@ -687,6 +699,7 @@ impl Layer {
         let Some(reduced) = &mut self.reduced else {
             return;
         };
+        self.edits = detail::next_edits();
         let tile = reduced.tile_size();
         let factor = reduction(self.face_size, reduced);
         let base = reduced.base();
@@ -862,6 +875,8 @@ pub struct Globe {
     /// globe draws, made when `shown_field` asks for them. A change of a
     /// heightmap removes them.
     fields: Mutex<Vec<(MapKey, Arc<Pyramid>)>>,
+    /// The detail maps of the raster layers in the map frames.
+    details: detail::Details,
 }
 
 /// What the snap targets of the color stops of a raster layer come from.
@@ -965,6 +980,7 @@ impl Globe {
             edits: 0,
             memory_undo: true,
             fields: Mutex::default(),
+            details: detail::Details::default(),
         };
         globe.begin_full();
         globe
@@ -999,6 +1015,7 @@ impl Globe {
     /// Makes the globe that of a new world: no raster layer, an empty
     /// heightmap with no undo step, and the first views.
     pub fn clear(&mut self) {
+        self.details.clear();
         self.layers.clear();
         self.images.clear();
         self.raster = None;
@@ -1309,6 +1326,7 @@ impl Globe {
             return;
         };
         reduced.set_undo_steps(false);
+        layer.edits = detail::next_edits();
         let changes = Changes {
             reset: true,
             rects: Vec::new(),
@@ -1490,7 +1508,7 @@ impl Globe {
                     key: MapKey {
                         layer: LayerKey::Raster(id),
                         generation: self.generations,
-                        display: true,
+                        kind: MapKind::Copy,
                         face_size,
                     },
                     uploads: Uploads::default(),
@@ -1649,7 +1667,7 @@ impl Globe {
         self.full = layer.map(|layer| MapKey {
             layer,
             generation: self.generations,
-            display: false,
+            kind: MapKind::Full,
             face_size: self.map.face_size() as u32,
         });
         self.full_loaded = false;
@@ -1682,6 +1700,7 @@ impl Globe {
         for layer in &mut self.layers {
             (layer.copy, layer.old_copy, layer.rivers) = (None, None, None);
         }
+        self.details.clear();
         self.sync_copies();
         self.reset_images();
         self.sync_rivers();
@@ -2690,6 +2709,7 @@ impl Globe {
             self.basin_outline = None;
         }
         let zooming = self.run_zoom_test(now);
+        self.details.idle_frame();
         if self.format.is_none() {
             self.sync_maps();
             self.inputs.clear();
@@ -2718,7 +2738,7 @@ impl Globe {
         self.range();
         self.basin();
         self.send_stamps(now);
-        let busy = self.busy() || self.loading();
+        let busy = self.busy() || self.loading() || self.details_loading();
         zooming || in_flight || busy || self.rivers.pending() || self.export.is_some()
     }
 
@@ -3458,7 +3478,14 @@ impl Globe {
                         Some(_) => 0.0,
                         None => self.level_of(layer.smoothing, size),
                     } as f32;
-                    [level, max_level(size) as f32, 0.0, 0.0]
+                    match layer.key.kind {
+                        // A detail map has levels 0 and 1 only.
+                        MapKind::Detail { .. } => {
+                            let max = max_level(size).min(1);
+                            [level.min(max as f32), max as f32, 0.0, 0.0]
+                        }
+                        _ => [level, max_level(size) as f32, 0.0, 0.0],
+                    }
                 }
                 None => [0.0; 4],
             },
@@ -3542,6 +3569,7 @@ impl Globe {
                 let keys = |l: &Layer| [l.copy.as_ref().map(|copy| copy.key), l.old_copy];
                 layers.flat_map(keys).flatten().collect()
             },
+            details: self.details.keys(),
             rivers: river_layers.iter().map(|(layer, _)| *layer).collect(),
             images: self.image_keys(),
             flat,
@@ -3617,6 +3645,9 @@ impl Globe {
             })
             .map(|layer| match *layer {
                 FrameLayer::Raster(id, mut draw) => {
+                    if let Some(key) = self.details.source(frame.id, id) {
+                        draw.key = key;
+                    }
                     if let Some((_, look)) = frame.raster_looks.iter().find(|(r, _)| *r == id) {
                         draw.opacity = look.look.opacity.clamp(0.0, 1.0);
                         draw.blend = look.look.blend;
@@ -3770,6 +3801,182 @@ impl Globe {
         Some((callback, receiver))
     }
 
+    /// Tells the globe the map frames that draw in this frame of the UI, so
+    /// that each frame gets the detail of its raster layers. Call it one
+    /// time in each frame of the UI that draws frames, before
+    /// `paint_frames`, with each frame that draws, the frames of an export
+    /// too. Each frame needs its own `id`.
+    ///
+    /// A frame that needs finer texels than the copy of a raster layer has
+    /// gets the tiles of a detail map under it. The tiles of a layer that
+    /// has its whole heightmap in the main memory arrive in this call, for
+    /// a limited time in each call. The tiles of a layer whose tiles are in
+    /// the project file come from `detail_requests` and
+    /// `give_detail_tile`. With no renderer, the globe finds what the
+    /// frames need, and a tile from the main memory arrives with no texels.
+    pub fn want_frames(&mut self, frames: &[FrameDraw]) {
+        let mut shown = Vec::new();
+        for (at, frame) in frames.iter().enumerate() {
+            for &id in &frame.shown {
+                let Some(layer) = self.layer(id).filter(|_| self.visible(id)) else {
+                    continue;
+                };
+                let look = frame.raster_looks.iter().find(|(r, _)| *r == id);
+                let smoothing = look.map_or(self.smoothing(id), |(_, look)| look.smoothing);
+                let full_face = layer.face_size as u32;
+                let lod = match smoothing.on {
+                    true => smoothing_level(
+                        f64::from(smoothing.feature_size),
+                        frame.place.points_per_radian,
+                        full_face,
+                    ),
+                    false => 0.0,
+                };
+                shown.push(detail::Shown {
+                    frame: at,
+                    raster: id,
+                    full_face,
+                    copy_face: self.copy_face(id),
+                    base: layer.display(&self.map).base(),
+                    edits: layer.edits,
+                    lod,
+                });
+            }
+        }
+        let link = self.format.map(|_| &self.link);
+        self.details
+            .want(frames, &shown, link, &mut self.generations);
+
+        // The tiles from the main memory.
+        let start = Instant::now();
+        let gpu = self.format.is_some();
+        for req in self.details.missing() {
+            if start.elapsed() > DETAIL_TIME {
+                break;
+            }
+            let Some(map) = memory_map(&self.layers, &self.map, self.raster, req.raster) else {
+                continue;
+            };
+            let data = gpu.then(|| detail::detail_tile(map, &req));
+            self.details.store(&req, data, link);
+        }
+    }
+
+    /// True while a map frame waits for tiles of a detail map: from the
+    /// main memory, or from the project file.
+    pub fn details_loading(&self) -> bool {
+        self.details.loading()
+            && (self.details.in_flight() > 0 || !self.details.missing().is_empty())
+    }
+
+    /// The face size of the copy that a frame reads a raster layer from
+    /// when it has no detail map.
+    fn copy_face(&self, id: RasterId) -> u32 {
+        if let Some(key) = self.source(id) {
+            return key.face_size;
+        }
+        let map = self.layer(id).map(|layer| layer.display(&self.map));
+        map.map_or(1, |map| {
+            reduced_face_size(map.face_size() as u32, self.display_cap)
+        })
+    }
+
+    /// New tiles of detail maps that the project file must give, for the
+    /// raster layers that do not have their whole heightmap in the main
+    /// memory. Each one then waits for `give_detail_tile`. At most
+    /// `DETAIL_IN_FLIGHT` wait at one time.
+    pub fn detail_requests(&mut self) -> Vec<DetailRequest> {
+        let room = detail::DETAIL_IN_FLIGHT.saturating_sub(self.details.in_flight());
+        let from_file = |req: &DetailRequest| {
+            memory_map(&self.layers, &self.map, self.raster, req.raster).is_none()
+        };
+        let missing = self.details.missing().into_iter().filter(from_file);
+        let reqs: Vec<DetailRequest> = missing.take(room).collect();
+        self.details.start(&reqs);
+        reqs
+    }
+
+    /// True if a request of `detail_requests` still waits, so a frame
+    /// needs its tile. The project file can skip a request that no frame
+    /// needs.
+    pub fn wants_detail(&self, req: &DetailRequest) -> bool {
+        self.details.wants(req)
+    }
+
+    /// Gives the texels of the tile of a request of `detail_requests`:
+    /// level 0 of the tile, row by row, and the block of level 1 under it,
+    /// as `detail::detail_tile` makes them. `None`: each texel of the tile
+    /// has the base level. The globe drops a tile that no frame needs any
+    /// more.
+    pub fn give_detail_tile(&mut self, req: DetailRequest, data: Option<(Vec<u16>, Vec<u16>)>) {
+        if !self.details.finish(&req) {
+            return;
+        }
+        let link = self.format.map(|_| &self.link);
+        self.details.store(&req, data, link);
+    }
+
+    /// True if the GPU has all that a map frame needs: the copy of each
+    /// raster layer and each image layer that it shows, and each tile of
+    /// its detail maps. A frame that the last `want_frames` did not have
+    /// is not ready.
+    pub fn frame_ready(&self, frame: &FrameDraw) -> bool {
+        let rasters = frame.shown.iter().filter(|id| self.visible(**id));
+        let copies = rasters.into_iter().all(|&id| {
+            let copy = self.layer(id).and_then(|layer| layer.copy.as_ref());
+            self.draws_full(id) || copy.is_some_and(|copy| copy.loaded)
+        });
+        let stack = self.stack.as_deref().unwrap_or_default();
+        let visible = |id: &ImageId| {
+            let found =
+                |item: &StackItem| matches!(item, StackItem::Image { id: of, .. } if of == id);
+            stack.iter().any(found)
+        };
+        let mut images = frame.images.iter().filter(|id| visible(id));
+        let images = images.all(|id| self.image_source(*id).is_some());
+        let copies = self.format.is_none() || (copies && images);
+        copies && self.details.ready(frame.id)
+    }
+
+    /// True if a map frame of the last `want_frames` reads each raster
+    /// layer at the level that its pixels need. With a need over the
+    /// memory of the detail maps, a frame reads a coarser level.
+    pub fn frame_fits(&self, frame: u32) -> bool {
+        self.details.fits(frame)
+    }
+
+    /// The level of the whole heightmap that a map frame reads a raster
+    /// layer at, by the last `want_frames`. `None`: the frame reads the
+    /// copy.
+    pub fn frame_detail_level(&self, frame: u32, id: RasterId) -> Option<u32> {
+        self.details.level(frame, id)
+    }
+
+    /// True if the GPU has each tile of the detail maps that a map frame of
+    /// the last `want_frames` needs.
+    pub fn frame_details_ready(&self, frame: u32) -> bool {
+        self.details.ready(frame)
+    }
+
+    /// The tiles of the detail map that a map frame needs for a raster
+    /// layer, by the last `want_frames`: the face, the column, and the row
+    /// of each.
+    pub fn frame_detail_tiles(&self, frame: u32, id: RasterId) -> Vec<detail::TileKey> {
+        self.details.tiles(frame, id)
+    }
+
+    /// The memory of the detail maps on the GPU, in bytes, by the estimate
+    /// of the globe.
+    pub fn detail_bytes(&self) -> u64 {
+        self.details.bytes()
+    }
+
+    /// Sets the memory of the GPU for the detail maps, in bytes. `None`:
+    /// `detail::DETAIL_BUDGET`.
+    pub fn set_detail_budget(&mut self, budget: Option<u64>) {
+        self.details.budget = budget;
+    }
+
     /// The things that the canvas paints in this frame, from the bottom, or
     /// `None` with no wgpu renderer.
     ///
@@ -3847,7 +4054,7 @@ impl Globe {
                                     smoothing,
                                     hillshade,
                                     rivers: rivers(key.layer, display, on),
-                                    window: !key.display,
+                                    window: key.kind == MapKind::Full,
                                     lines,
                                     blend,
                                 }));
@@ -4002,6 +4209,20 @@ fn light(h: &Hillshade) -> [f32; 4] {
         alt.sin(),
         h.exaggeration,
     ]
+}
+
+/// The whole heightmap of a raster layer in the main memory.
+fn memory_map<'a>(
+    layers: &'a [Layer],
+    brush: &'a Heightmap,
+    raster: Option<RasterId>,
+    id: RasterId,
+) -> Option<&'a Heightmap> {
+    if raster == Some(id) {
+        return Some(brush);
+    }
+    let layer = layers.iter().find(|layer| layer.id == id)?;
+    layer.full.as_ref()
 }
 
 /// One raster layer in a frame.

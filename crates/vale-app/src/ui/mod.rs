@@ -510,6 +510,20 @@ pub struct AppState {
     pub system: SystemEvents,
     /// The whole heightmap that comes from the project file for the brush.
     loader: Option<Loader>,
+    /// The thread that reads the tiles of the detail maps of the map frames
+    /// from the project file.
+    detail_reader: Option<session::DetailReader>,
+    /// The map frames that the atlas drew in its last UI frame, and that
+    /// UI frame.
+    screen_frames: (u64, Vec<crate::globe::FrameDraw>),
+    /// The map frame or the strip of a map frame that the PDF export draws
+    /// next.
+    export_frame: Option<crate::globe::FrameDraw>,
+    /// The UI frames in which the PDF export waited for the tiles of a map
+    /// frame.
+    pub export_waits: u64,
+    /// The strips of the map frames that the PDF export drew.
+    pub export_strips: u64,
     /// The project file that a thread opens.
     opening: Option<Opening>,
     /// The edit count at the last save.
@@ -598,6 +612,11 @@ impl AppState {
             files: Box::new(PlainFiles),
             system: SystemEvents::default(),
             loader: None,
+            detail_reader: None,
+            screen_frames: (0, Vec::new()),
+            export_frame: None,
+            export_waits: 0,
+            export_strips: 0,
             opening: None,
             saved_edits: 0,
             line_edits: 0,
@@ -2747,6 +2766,80 @@ impl AppState {
         }
     }
 
+    /// Gives the detail maps of the map frames the tiles that the project
+    /// file holds. A thread reads them. With `all`, the call waits for each
+    /// tile that the frames need.
+    pub fn pump_details(&mut self, all: bool) {
+        let database = self.session.as_ref().map(|s| s.database().to_path_buf());
+        let same = self.detail_reader.as_ref().map(|r| r.database()) == database.as_deref();
+        if !same {
+            let old = self.detail_reader.take();
+            self.detail_reader = database.as_deref().map(session::DetailReader::new);
+            let pending = old.map(|old| old.pending()).unwrap_or_default();
+            for req in pending {
+                if self.globe.wants_detail(&req) {
+                    self.send_detail(req);
+                }
+            }
+        }
+        loop {
+            if let Some(reader) = &self.detail_reader {
+                reader.retain(|req| self.globe.wants_detail(req));
+            }
+            let reqs = self.globe.detail_requests();
+            let asked = !reqs.is_empty();
+            for req in reqs {
+                self.send_detail(req);
+            }
+            let Some(reader) = &self.detail_reader else {
+                if all && asked {
+                    continue;
+                }
+                return;
+            };
+            let mut got = false;
+            while let Some((req, result)) = reader.next(all) {
+                got = true;
+                let data = match result {
+                    Ok(data) => Some(data),
+                    Err(e) => {
+                        self.status = format!("Could not load tiles: {e}");
+                        None
+                    }
+                };
+                self.globe.give_detail_tile(req, data);
+            }
+            if !all || !(asked || got) {
+                return;
+            }
+        }
+    }
+
+    /// Sends a request of a detail tile to the thread. With no project
+    /// file, or no record of the raster layer, the tile gets the base
+    /// level.
+    fn send_detail(&mut self, req: crate::globe::detail::DetailRequest) {
+        let record = self.doc.project.raster(req.raster).cloned();
+        match (&self.detail_reader, record) {
+            (Some(reader), Some(record)) => reader.send(record, req),
+            _ => self.globe.give_detail_tile(req, None),
+        }
+    }
+
+    /// Tells the globe the map frames that draw in this UI frame, and the
+    /// frame of the PDF export. The atlas calls it before it paints the
+    /// frames.
+    pub fn want_frames(&mut self, screen: Vec<crate::globe::FrameDraw>) {
+        self.want_with_export(&screen);
+        self.screen_frames = (self.frames, screen);
+    }
+
+    fn want_with_export(&mut self, screen: &[crate::globe::FrameDraw]) {
+        let mut frames = screen.to_vec();
+        frames.extend(self.export_frame.clone());
+        self.globe.want_frames(&frames);
+    }
+
     /// Moves the result of an import of a heightmap to the status text.
     pub fn poll_import(&mut self) {
         if let Some(result) = self.globe.take_import_result() {
@@ -2918,18 +3011,43 @@ impl AppState {
             }
             ExportStep::Capture(draw) => {
                 let Some(ui) = ui else {
+                    self.export_frame = None;
                     self.status = "A raster layer needs a GPU for export".to_string();
                     return;
                 };
+                // The globe gets the frame of the export with the frames of
+                // the screen. Without the atlas on the screen, it gets the
+                // frame of the export in each UI frame.
+                let new = self.export_frame.as_ref().map(|d| d.id) != Some(draw.id);
+                self.export_frame = Some(draw.clone());
+                let (at, screen) = &self.screen_frames;
+                let atlas = at + 1 >= self.frames;
+                if new || !atlas {
+                    let screen = if atlas { screen.clone() } else { Vec::new() };
+                    self.want_with_export(&screen);
+                }
+                // A frame that needs more tiles than the budget of the detail
+                // maps draws in strips.
+                if !self.globe.frame_fits(draw.id) && job.split_capture() {
+                    self.atlas_export = Some(job);
+                    return;
+                }
+                if !self.globe.frame_ready(&draw) {
+                    self.export_waits += 1;
+                    self.atlas_export = Some(job);
+                    return;
+                }
                 let canvas = crate::globe::backdrop::Canvas {
                     background: egui::Color32::TRANSPARENT,
                     pixels_per_point: RASTER_PIXEL_RATIO as f32,
                 };
                 let Some((callback, receiver)) = self.globe.capture_frame(canvas, draw) else {
+                    self.export_frame = None;
                     self.status = "The GPU is not ready for raster export".to_string();
                     return;
                 };
                 job.set_capture_receiver(receiver);
+                self.export_strips += 1;
                 ui.painter()
                     .add(eframe::egui_wgpu::Callback::new_paint_callback(
                         ui.max_rect(),
@@ -2939,12 +3057,16 @@ impl AppState {
                 self.status = self.atlas_export_progress().unwrap_or_default();
             }
             ExportStep::Done(Ok(path)) => {
+                self.export_frame = None;
                 self.status = format!("Exported {}", path.display());
                 if self.share_exports {
                     self.share = Some(path);
                 }
             }
-            ExportStep::Done(Err(error)) => self.status = format!("{error:#}"),
+            ExportStep::Done(Err(error)) => {
+                self.export_frame = None;
+                self.status = format!("{error:#}");
+            }
         }
     }
 
@@ -2953,6 +3075,7 @@ impl AppState {
         let Some(job) = self.atlas_export.take() else {
             return;
         };
+        self.export_frame = None;
         self.status = format!("Canceled export of {}", file_name(job.path()));
     }
 
@@ -3277,6 +3400,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         ui.ctx().request_repaint();
     }
     state.pump_images(state.headless);
+    state.pump_details(state.headless);
     if state.poll_open() {
         draw_opening(ui, state);
         ui.ctx().request_repaint_after(LOAD_POLL);
