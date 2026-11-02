@@ -1781,4 +1781,12 @@ fn the_toolbar_and_the_keys_choose_the_mode_of_the_polygon_tool() {
     let way = [[-30.0, -3.0], [-24.0, -3.0], [-24.0, 3.0], [-30.0, 3.0]];
     mouse_way(&mut h, &way, egui::Modifiers::NONE);
     assert_eq!(count(&h), 2);
+
+    // The tool bar has Deselect while features are selected.
+    assert!(h.query_by_label(vale_app::ui::pad::DESELECT).is_none());
+    h.state_mut().feature_selection = vec![vale_app::globe::select::FeatureRef { layer: id, uuid }];
+    h.run_steps(2);
+    h.get_by_label(vale_app::ui::pad::DESELECT).click();
+    h.run_steps(2);
+    assert!(h.state().feature_selection.is_empty());
 }

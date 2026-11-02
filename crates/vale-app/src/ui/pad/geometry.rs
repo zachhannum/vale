@@ -115,6 +115,10 @@ pub struct Input {
     pub measure: bool,
     /// The tool has a context strip: the card below the tool strip.
     pub strip: bool,
+    /// The cells that the context strip has for each tool, such as
+    /// Deselect. A tool with no context strip then has a strip of these
+    /// cells alone.
+    pub extra: usize,
     /// The number of cells of the tool strip.
     pub tools: usize,
 }
@@ -138,7 +142,7 @@ pub struct Rects {
     /// Measure tool.
     pub brush: Option<Rect>,
     /// The number of cells of the card of the Measure tool that show. With
-    /// fewer than `MEASURE_CELLS`, the card scrolls. Zero: the card is not
+    /// fewer than `MEASURE_CELLS` and the extra cells, the card scrolls. Zero: the card is not
     /// the card of the Measure tool.
     pub measure_cells: usize,
     /// The top-left corner of the Brush panel.
@@ -206,7 +210,8 @@ pub fn layout(input: &Input) -> Rects {
         (None, Some(readout), WidthClass::Compact) => readout.top() - 8.0,
         _ => bottom - MARGIN,
     };
-    let button = strip_height(1);
+    // The Brush button and the extra cells are at the foot of the card.
+    let button = strip_height(1 + input.extra);
     let all = input.tools;
     let room = limit - column_top - strip_height(all) - GAP;
     let slider = ((room - button) / 2.0).min(SLIDER);
@@ -243,11 +248,15 @@ pub fn layout(input: &Input) -> Rects {
         pos2(left, brush_top)
     };
     let brush = match brush_card {
+        _ if !input.strip && !input.measure && input.extra == 0 => None,
+        // The extra cells alone.
+        BrushCard::Full(_) | BrushCard::Button if !input.strip && !input.measure => {
+            Some(strip_height(input.extra))
+        }
         BrushCard::Full(slider) => Some(2.0 * slider + button),
         BrushCard::Button => Some(button),
         BrushCard::Hidden => None,
     }
-    .filter(|_| input.strip || input.measure)
     .map(|height| Rect::from_min_size(brush_min, vec2(width, height)));
     if beside && brush.is_some() {
         brush_panel.x += width + GAP;
@@ -255,17 +264,18 @@ pub fn layout(input: &Input) -> Rects {
 
     // The card of the Measure tool goes below the tool strip. With no room
     // there, it goes to the right of the strip.
+    let measure = MEASURE_CELLS + input.extra;
     let (brush, measure_cells) = match brush {
-        Some(_) if input.measure && limit - brush_top >= strip_height(MEASURE_CELLS) => {
-            let size = vec2(width, strip_height(MEASURE_CELLS));
+        Some(_) if input.measure && limit - brush_top >= strip_height(measure) => {
+            let size = vec2(width, strip_height(measure));
             (
                 Some(Rect::from_min_size(pos2(left, brush_top), size)),
-                MEASURE_CELLS,
+                measure,
             )
         }
         Some(_) if input.measure => {
             let cells = ((limit - column_top - 2.0 * PAD) / CELL.1).floor();
-            let cells = (cells.max(1.0) as usize).min(MEASURE_CELLS);
+            let cells = (cells.max(1.0) as usize).min(measure);
             let size = vec2(width, strip_height(cells));
             let card = Rect::from_min_size(pos2(tools.right() + GAP, column_top), size);
             brush_panel.x = card.right() + GAP;
@@ -316,8 +326,30 @@ mod tests {
             sheet_offset: 0.0,
             measure: false,
             strip: true,
+            extra: 0,
             tools: TOOLS,
         }
+    }
+
+    #[test]
+    fn an_extra_cell_goes_to_the_foot_of_the_context_strip() {
+        let mut input = board(1194.0, 834.0);
+        let without = layout(&input);
+        input.extra = 1;
+        let with = layout(&input);
+        let (a, b) = (without.brush.unwrap(), with.brush.unwrap());
+        assert_eq!(a.top(), b.top());
+        assert!(b.bottom() <= a.bottom() + CELL.1);
+        // A tool with no context strip has a strip of the extra cell alone.
+        input.strip = false;
+        let r = layout(&input);
+        assert_eq!(r.brush.unwrap().height(), strip_height(1));
+        input.extra = 0;
+        assert_eq!(layout(&input).brush, None);
+        // The Measure tool has its cells and the extra cell.
+        input.measure = true;
+        input.extra = 1;
+        assert_eq!(layout(&input).measure_cells, MEASURE_CELLS + 1);
     }
 
     fn rect(x: f32, y: f32, w: f32, h: f32) -> Rect {

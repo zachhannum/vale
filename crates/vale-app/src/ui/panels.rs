@@ -20,6 +20,7 @@ use crate::globe::brush::{
 use crate::globe::combine::PolygonMode;
 use crate::globe::{Globe, Tool, WorldView, rivers, snap, stats, stroke_test, zoom_test};
 use crate::projects;
+use crate::ui::pad::DESELECT;
 use crate::world::{self, three_significant};
 
 /// The name of the ocean ridge mode of the brush.
@@ -190,6 +191,9 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                 }
                 if state.globe.measuring() {
                     path_buttons(ui, state);
+                }
+                if !state.feature_selection.is_empty() && ui.button(DESELECT).clicked() {
+                    state.feature_selection.clear();
                 }
                 // The menu stays open while the user works on the list.
                 let stay = egui::containers::menu::MenuConfig::new()

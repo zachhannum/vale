@@ -8639,6 +8639,33 @@ fn the_selection_shows_in_each_tool() {
 }
 
 #[test]
+fn the_context_strip_has_deselect_in_each_tool_while_features_are_selected() {
+    use vale_app::ui::pad::{DESELECT, MEASURE};
+    for size in BOARDS {
+        let what = format!("{size:?}");
+        let dir = tempfile::tempdir().unwrap();
+        let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
+        h.set_size(egui::vec2(size.0, size.1));
+        select_layer(&mut h, picks.polygon.layer);
+        // With no selection, the Select tool has no context strip.
+        assert!(control(&h, DESELECT).is_none(), "{what}");
+        assert!(h.state().pad.rects.unwrap().brush.is_none(), "{what}");
+        for name in [select::TOOL, "Pan", POLYGON, MEASURE] {
+            tap(&mut h, name);
+            h.state_mut().feature_selection = vec![picks.polygon];
+            h.run_steps(2);
+            assert!(control(&h, DESELECT).is_some(), "{what}: {name}");
+            check_controls(&h, &format!("{what}: Deselect in {name}"));
+        }
+        tap(&mut h, POLYGON);
+        tap(&mut h, DESELECT);
+        assert!(h.state().feature_selection.is_empty(), "{what}");
+        assert!(control(&h, DESELECT).is_none(), "{what}");
+        assert_eq!(h.state().globe.tool, Tool::Polygon, "{what}");
+    }
+}
+
+#[test]
 fn a_hold_on_the_mode_cell_opens_the_flyout() {
     use vale_app::ui::pad::POLYGON_MODE;
     let dir = tempfile::tempdir().unwrap();

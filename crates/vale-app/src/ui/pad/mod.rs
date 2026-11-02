@@ -79,6 +79,8 @@ pub const POLYGON_MODES: [(&str, Icon, PolygonMode); 3] = [
     ("Add", Icon::PolygonAdd, PolygonMode::Add),
     ("Subtract", Icon::PolygonSubtract, PolygonMode::Subtract),
 ];
+/// The cell of the context strip that clears the selection.
+pub const DESELECT: &str = "Deselect";
 /// The name of the Reshape switch of the Brush panel.
 pub const RESHAPE_SWITCH: &str = "Reshape switch";
 /// The slider of the balance between the sketch and the terrain.
@@ -482,6 +484,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         sheet_offset: state.pad.sheet_offset,
         measure: state.globe.measuring(),
         strip: has_strip(&state.globe),
+        extra: extra_cells(state),
         tools: TOOLS,
     };
     // The Brush panel holds the settings of the context strip.
@@ -764,6 +767,22 @@ fn has_strip(globe: &crate::globe::Globe) -> bool {
     globe.brushing() || globe.editing()
 }
 
+/// The cells that the context strip has in each tool: Deselect while
+/// features are selected.
+fn extra_cells(state: &AppState) -> usize {
+    usize::from(!state.feature_selection.is_empty())
+}
+
+/// The cell that clears the selection.
+fn deselect_cell(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
+    if state.feature_selection.is_empty() {
+        return;
+    }
+    if widgets::tool_cell(ui, controls, DESELECT, DESELECT, Icon::Close, false, true).clicked() {
+        state.feature_selection.clear();
+    }
+}
+
 /// The child of a card, inside the padding of the card.
 fn padded(ui: &mut egui::Ui) -> egui::Ui {
     let rect = ui.max_rect().shrink(PAD);
@@ -954,6 +973,19 @@ fn brush_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
         return;
     }
     let radius = theme::CARD_RADIUS.into();
+    // A tool with no context strip has a strip of the extra cells alone.
+    if !has_strip(&state.globe) {
+        widgets::card(
+            ctx,
+            state.globe.backdrop(),
+            "pad-brush-card",
+            rect,
+            Order::Middle,
+            radius,
+            |ui| deselect_cell(&mut padded(ui), state, controls),
+        );
+        return;
+    }
     widgets::card(
         ctx,
         state.globe.backdrop(),
@@ -1068,6 +1100,7 @@ fn brush_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
                     });
                 }
             }
+            deselect_cell(&mut ui, state, controls);
             let open = state.pad.brush;
             let button = widgets::tool_cell(
                 &mut ui,
@@ -1104,8 +1137,9 @@ pub(super) fn measure_card(
         theme::CARD_RADIUS.into(),
         |ui| {
             let mut ui = padded(ui);
+            let all = MEASURE_CELLS + extra_cells(state);
             let mut cells = |ui: &mut egui::Ui| measure_cells(ui, state, controls, rects);
-            if rects.measure_cells < MEASURE_CELLS {
+            if rects.measure_cells < all {
                 egui::ScrollArea::vertical()
                     .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
                     .show(&mut ui, cells);
@@ -1138,6 +1172,7 @@ fn measure_cells(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Control
     {
         path.clear();
     }
+    deselect_cell(ui, state, controls);
     let open = state.pad.brush;
     let button = widgets::tool_cell(
         ui,
