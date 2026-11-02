@@ -2509,14 +2509,14 @@ fn sizes_along(h: &mut Pad, path: &[Pos2]) -> Vec<f32> {
 /// The distance on the track that moves the size of the Brush panel from
 /// `from` to `to`, in points.
 fn size_distance(h: &Pad, from: f32, to: f32) -> f32 {
-    // The track has a log scale, and it ends 72 + 13 points from the left
-    // of the row and 8 + 13 points from the value field.
+    // The track has a log scale, and it ends LABEL_COLUMN + 13 points from
+    // the left of the row and 8 + 13 points from the value field.
     let globe = &h.state().globe;
     let world_km = h.state().doc.project.world.radius_km;
     let range = globe.brush.radius_km_range(globe.radius(), world_km);
     let span = (range.end() / range.start()).ln() as f32;
     let row = control(h, "Brush size").unwrap();
-    let length = row.width() - 72.0 - 13.0 - 8.0 - 13.0;
+    let length = row.width() - vale_app::ui::pad::number::LABEL_COLUMN - 13.0 - 8.0 - 13.0;
     (to / from).ln() / span * length
 }
 
@@ -2533,22 +2533,23 @@ fn a_drag_on_the_size_moves_it_by_the_distance_of_the_drag() {
     assert_eq!(sizes, [20.0]);
     assert_eq!(h.state().globe.brush.size_points, 20.0);
 
-    // A drag of 60 points moves the thumb by 60 points, from where it was.
-    let to = c + vec2(60.0, 0.0);
+    // A drag of 30 points moves the thumb by 30 points, from where it was.
+    let to = c + vec2(30.0, 0.0);
     let path: Vec<_> = (0..=6).map(|i| c.lerp(to, i as f32 / 6.0)).collect();
     sizes_along(&mut h, &path);
     let size = h.state().globe.brush.size_points;
     let moved = size_distance(&h, 20.0, size);
-    assert!((moved - 60.0).abs() < 1.0, "{size} {moved}");
+    assert!((moved - 30.0).abs() < 1.0, "{size} {moved}");
 }
 
 #[test]
 fn a_drag_far_from_the_track_moves_the_size_8_times_less() {
-    // The change of a 40 point move, on the track or 200 points below it.
+    // The change of a 32 point move, on the track or 200 points below it.
     let moved = |below: f32| {
         let mut h = pad(BOARDS[0]);
         tap(&mut h, "Brush settings");
-        h.state_mut().globe.brush.size_points = 20.0;
+        // Far from the default size, where the thumb stops.
+        h.state_mut().globe.brush.size_points = 8.0;
         h.run_steps(2);
         let c = control(&h, "Brush size").unwrap().center();
         let start = c + vec2(10.0, 0.0);
@@ -2557,15 +2558,15 @@ fn a_drag_far_from_the_track_moves_the_size_8_times_less() {
             c,
             start,
             down,
-            down + vec2(20.0, 0.0),
-            down + vec2(40.0, 0.0),
+            down + vec2(16.0, 0.0),
+            down + vec2(32.0, 0.0),
         ];
         let sizes = sizes_along(&mut h, &path);
         size_distance(&h, sizes[2], sizes[4])
     };
     let (near, far) = (moved(0.0), moved(200.0));
-    assert!((near - 40.0).abs() < 1.0, "{near}");
-    assert!((far - 5.0).abs() < 0.5, "{far}");
+    assert!((near - 32.0).abs() < 1.0, "{near}");
+    assert!((far - 4.0).abs() < 0.5, "{far}");
 }
 
 #[test]
@@ -8105,7 +8106,7 @@ fn the_panel_of_an_image_layer_works_with_a_finger() {
         drag(
             &mut h,
             slider.center(),
-            slider.center() - vec2(80.0, 0.0),
+            slider.center() - vec2(40.0, 0.0),
             None,
         );
         let opacity = h.state().doc.project.image(id).unwrap().opacity;
@@ -9112,4 +9113,32 @@ fn the_selection_card_edits_the_attributes_of_the_selected_feature() {
     assert!(h.state().selection_form.is_none());
     assert!(control(&h, "name").is_none());
     assert!(control(&h, select::DELETE).is_some());
+}
+
+#[test]
+#[ignore = "gpu"]
+fn manual_the_number_controls_of_the_brush_panel() {
+    let mut h = pad(BOARDS[0]);
+    tap(&mut h, "Brush settings");
+    choose_mode(&mut h, "Raise");
+    tap(&mut h, "Brush ceiling");
+    screenshot::save(&mut h, "numbers-stepper");
+    // A drag that moves away from the track is slower.
+    let from = control(&h, "Brush size").unwrap().center();
+    touch(&mut h, egui::TouchPhase::Start, from, None);
+    h.step();
+    for at in [vec2(20.0, 0.0), vec2(40.0, 0.0), vec2(60.0, 200.0)] {
+        touch(&mut h, egui::TouchPhase::Move, from + at, None);
+        h.step();
+    }
+    screenshot::save(&mut h, "numbers-drag");
+    touch(
+        &mut h,
+        egui::TouchPhase::End,
+        from + vec2(60.0, 200.0),
+        None,
+    );
+    h.run_steps(3);
+    tap(&mut h, "Brush size value");
+    screenshot::save(&mut h, "numbers-keypad");
 }

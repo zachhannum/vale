@@ -14,6 +14,9 @@ const THUMB: f32 = 26.0;
 const THUMB_HELD: f32 = 32.0;
 /// The height of the track.
 const TRACK: f32 = 6.0;
+/// The smallest width of the label of a slider row, so that the tracks of
+/// the rows line up.
+pub const LABEL_COLUMN: f32 = 96.0;
 /// The width of the value field at the right of a row.
 const VALUE_WIDTH: f32 = 84.0;
 /// The distance from the track at which each slower speed starts, and the
@@ -334,7 +337,7 @@ impl<'a> Number<'a> {
         let left = if self.label.is_empty() {
             row.left() + 6.0 + THUMB / 2.0
         } else {
-            row.left() + (label.size().x + 16.0).max(72.0) + THUMB / 2.0
+            row.left() + (label.size().x + 16.0).max(LABEL_COLUMN) + THUMB / 2.0
         };
         let right = if self.field {
             field.left() - 8.0 - THUMB / 2.0
@@ -574,7 +577,14 @@ impl<'a> Number<'a> {
         }
         let pos = resp.interact_pointer_pos()?;
         let (now, away) = along(pos);
-        let (before, _) = along(pos - resp.drag_delta());
+        // The first frame of a drag counts the move from the touch, so the
+        // move before the drag starts is not lost.
+        let origin = ui.input(|i| i.pointer.press_origin());
+        let last = match origin {
+            Some(origin) if resp.drag_started() => origin,
+            _ => pos - resp.drag_delta(),
+        };
+        let (before, _) = along(last);
         let (speed, note) = speed(away);
         let place = (drag.place + f64::from((now - before) / length) * speed).clamp(0.0, 1.0);
         let drag = Drag {
@@ -749,7 +759,7 @@ impl<'a> Number<'a> {
         let rect = keep_in(Rect::from_min_size(min, size), screen);
         let radius = theme::CONTROL_RADIUS;
         painter.add(theme::shadow().as_shape(rect, radius));
-        painter.rect_filled(rect, radius, theme::card(false));
+        painter.rect_filled(rect, radius, theme::card(false).to_opaque());
         let x = rect.center().x;
         let y = rect.top() + 8.0;
         let below = y + text.size().y + 2.0;
