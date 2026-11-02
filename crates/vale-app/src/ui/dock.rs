@@ -29,6 +29,7 @@ use super::pad::atlas::{
 };
 use super::pad::edge_labels::EDGE_LABELS;
 use super::pad::grid_labels::GRID_LABELS;
+use super::pad::labels::HALO_WIDTHS;
 use super::pad::{GRATICULE, NO_LAYERS};
 use super::{AppState, inspector, number, style_editor};
 use crate::atlas::{self as math, PAGE_PRESETS};
@@ -405,7 +406,6 @@ fn neatline_rows(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
             let mut width = b.width;
             let stepper = number::stepper(NEATLINE_WIDTH, &mut width)
                 .range(Neatline::WIDTHS)
-                .step(0.25)
                 .decimals(2)
                 .suffix(" pt");
             if stepper.row(ui).changed() {
@@ -441,7 +441,7 @@ fn border_rows(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
             let mut v = b.width_mm;
             let stepper = number::stepper(BORDER_WIDTH, &mut v)
                 .range(Border::WIDTHS)
-                .step(0.25)
+                .decimals(2)
                 .suffix(" mm");
             if stepper.row(ui).changed() {
                 atlas::set_border_width(state, id, v);
@@ -493,7 +493,7 @@ fn border_rows(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
                 let mut v = b.stroke_width;
                 let stepper = number::stepper(STROKE_WIDTH, &mut v)
                     .range(widths)
-                    .step(0.25)
+                    .decimals(2)
                     .suffix(" pt");
                 if stepper.row(ui).changed() {
                     atlas::set_border_stroke_width(state, id, v);
@@ -970,7 +970,7 @@ fn labels_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
         if class.halo {
             style_editor::color_button(ui, &mut class.halo_color);
             number::stepper(HALO_WIDTH, &mut class.halo_width)
-                .range(0.5..=8.0)
+                .range(HALO_WIDTHS.0..=HALO_WIDTHS.1)
                 .step(0.1)
                 .suffix(" pt")
                 .show(ui);

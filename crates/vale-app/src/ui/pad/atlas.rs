@@ -1063,7 +1063,8 @@ fn neatline_rows(
     }
 
     if let Some(w) = Number::new(NEATLINE_WIDTH, b.width, Neatline::WIDTHS)
-        .step(0.25)
+        .nice()
+        .step(0.05)
         .unit("pt")
         .stepper(ui, controls)
     {
@@ -1095,7 +1096,10 @@ fn border_rows(
         }
     }
     let mm = |name, value, range, step| Number::new(name, value, range).step(step).unit("mm");
-    if let Some(w) = mm(BORDER_WIDTH, b.width_mm, Border::WIDTHS, 0.25).stepper(ui, controls) {
+    if let Some(w) = mm(BORDER_WIDTH, b.width_mm, Border::WIDTHS, 0.05)
+        .nice()
+        .stepper(ui, controls)
+    {
         atlas::set_border_width(state, id, w);
     }
     let distance = |name, d| mm(name, d, Border::DISTANCES, 0.5);
@@ -1139,7 +1143,8 @@ fn border_rows(
             atlas::set_border_stroke_color(state, id, c);
         }
         if let Some(w) = Number::new(STROKE_WIDTH, b.stroke_width, Border::STROKE_WIDTHS)
-            .step(0.25)
+            .nice()
+            .step(0.05)
             .unit("pt")
             .stepper(ui, controls)
         {

@@ -67,7 +67,7 @@ pub const SIZES: (f64, f64) = (4.0, 72.0);
 /// The smallest and the largest letter spacing, as fractions of the size.
 pub const SPACINGS: (f64, f64) = (-0.1, 1.0);
 /// The thinnest and the widest halo, in points.
-pub const HALO_WIDTHS: (f64, f64) = (0.5, 8.0);
+pub const HALO_WIDTHS: (f64, f64) = (0.1, 8.0);
 /// The smallest and the largest offset, in points.
 pub const OFFSETS: (f64, f64) = (0.0, 20.0);
 /// The shortest and the longest repeat interval, in points.

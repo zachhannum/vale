@@ -10,9 +10,9 @@ use vale_style::{Color, LayerStyle, Rule, Stroke, StrokeKind};
 
 use super::pad::filter::{self, ADD_CONDITION, REMOVE_CONDITION};
 use super::pad::rules::{
-    ADD_RULE, ALL_FEATURES, BAD_FILTER, BAD_RANGE, BRUSH, DASH, DASHED, DELETE_RULE, EXPRESSION,
-    FILL, FILTER, GAP, LINE, MAX_SCALE, MIN_SCALE, MOVE_DOWN, MOVE_UP, NO_LIMIT, SOLID, STROKE,
-    STROKE_WIDTH, TAPER, TAPER_START, parse_scale, scale_text,
+    ADD_RULE, ALL_FEATURES, BAD_FILTER, BAD_RANGE, BRUSH, DASH, DASHED, DASHES, DELETE_RULE,
+    EXPRESSION, FILL, FILTER, GAP, LINE, MAX_SCALE, MIN_SCALE, MOVE_DOWN, MOVE_UP, NO_LIMIT, SOLID,
+    STROKE, STROKE_WIDTH, TAPER, TAPER_START, parse_scale, scale_text,
 };
 use super::pad::rules::{
     ADD_SYMBOL, CIRCLE, CIRCLE_SIZES, MARKER, MAX_SPACING, NO_FIELD, NO_SYMBOL_LIST, POINT_SIZES,
@@ -148,7 +148,7 @@ fn symbol_rows(
         if let Some(radius) = marker_radius(rule) {
             let mut size = 2.0 * radius.fallback;
             let (lo, hi) = CIRCLE_SIZES;
-            let stepper = number::stepper(SIZE, &mut size).range(lo..=hi).step(0.5);
+            let stepper = number::stepper(SIZE, &mut size).range(lo..=hi);
             if stepper.suffix(" pt").show(ui).changed() {
                 radius.fallback = size / 2.0;
                 changed = true;
@@ -164,7 +164,6 @@ fn symbol_rows(
     let (lo, hi) = POINT_SIZES;
     number::stepper(SIZE, &mut s.size.fallback)
         .range(lo..=hi)
-        .step(1.0)
         .suffix(" pt")
         .show(ui);
     number::stepper(ROTATION, &mut s.rotation.fallback)
@@ -217,7 +216,6 @@ fn scatter_rows(ui: &mut egui::Ui, rule: &mut Rule, library: &mut Library, salt:
     let (lo, hi) = SCATTER_SIZES;
     number::stepper(SIZE, &mut s.size.fallback)
         .range(lo..=hi)
-        .step(1.0)
         .suffix(" pt")
         .show(ui);
     let size = s.size.fallback;
@@ -602,8 +600,7 @@ fn line_rows(ui: &mut egui::Ui, s: &mut Stroke, kind: GeometryKind, salt: egui::
         StrokeKind::Dashed { dash, gap } => {
             for (label, value) in [(DASH, dash), (GAP, gap)] {
                 changed |= number::stepper(label, value)
-                    .range(0.5..=20.0)
-                    .step(0.5)
+                    .range(DASHES.0..=DASHES.1)
                     .suffix(" pt")
                     .show(ui)
                     .changed();
