@@ -1671,3 +1671,122 @@ fn the_desktop_select_tool_deletes_the_selection_with_the_delete_key() {
     assert!(h.state().feature_selection.is_empty());
     assert!(h.query_by_label(vale_app::ui::select::DELETE).is_none());
 }
+
+/// A mouse stroke through places, with keys held during the stroke.
+fn mouse_way(h: &mut Harness<'static, AppState>, way: &[[f64; 2]], keys: egui::Modifiers) {
+    use vale_app::globe::math::lonlat_to_dir;
+    let at = |h: &Harness<'static, AppState>, p: [f64; 2]| {
+        h.state().globe.project(lonlat_to_dir(p[0], p[1])).unwrap()
+    };
+    let mut path = Vec::new();
+    for w in way.windows(2) {
+        let (a, b) = (at(h, w[0]), at(h, w[1]));
+        for i in 0..8 {
+            path.push(a.lerp(b, i as f32 / 8.0));
+        }
+    }
+    path.push(at(h, way[way.len() - 1]));
+    let button = |pos, pressed| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    h.event(egui::Event::PointerMoved(path[0]));
+    h.event(button(path[0], true));
+    h.step();
+    h.event(egui::Event::ModifiersChanged(keys));
+    for &pos in &path[1..] {
+        h.event(egui::Event::PointerMoved(pos));
+        h.step();
+    }
+    h.event(button(path[path.len() - 1], false));
+    h.step();
+    h.event(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+    h.run_steps(3);
+}
+
+#[test]
+fn the_toolbar_and_the_keys_choose_the_mode_of_the_polygon_tool() {
+    use vale_app::globe::combine::PolygonMode;
+    use vale_app::globe::math::lonlat_to_dir;
+    use vale_app::globe::vector;
+    use vale_app::globe::view::GlobeView;
+    use vale_app::ui::panels::POLYGON_TOOL;
+    use vale_store::{Feature, Geometry, GeometryKind};
+    let mut doc = Document::sample();
+    let id = doc.add_layer(GeometryKind::Polygon);
+    let square = vec![
+        [-10.0, -10.0],
+        [10.0, -10.0],
+        [10.0, 10.0],
+        [-10.0, 10.0],
+        [-10.0, -10.0],
+    ];
+    let feature = Feature::new(Geometry::Polygons(vec![vec![square]]), Default::default());
+    let uuid = feature.uuid();
+    assert!(doc.project.add_feature(id, feature));
+    let mut state = AppState::new(doc).unwrap();
+    state.headless = true;
+    state.select(Some(LayerRef::Vector(id)));
+    state.globe.view = GlobeView::centered(0.0, 0.0);
+    state.globe.snap.on = false;
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(SIZE.0 as f32, SIZE.1 as f32))
+        .with_pixels_per_point(1.0)
+        .build_ui_state(|ui, state: &mut AppState| draw(ui, state), state);
+    h.run_steps(3);
+    h.get_by_label(POLYGON_TOOL).click();
+    h.run_steps(3);
+    assert!(h.state().globe.filling());
+    let mode = |h: &Harness<'static, AppState>| h.state().globe.line.polygon_mode;
+    for (label, want) in [
+        ("Subtract", PolygonMode::Subtract),
+        ("Add", PolygonMode::Add),
+        ("New", PolygonMode::New),
+    ] {
+        h.get_by_label(label).click();
+        h.run_steps(2);
+        assert_eq!(mode(&h), want);
+    }
+    let inside = |h: &Harness<'static, AppState>, lon: f64, lat: f64| {
+        let layer = h.state().doc.project.layer(id).unwrap();
+        let f = layer.features.iter().find(|f| f.uuid() == uuid).unwrap();
+        let Geometry::Polygons(polygons) = &f.geometry else {
+            panic!("not a polygon");
+        };
+        polygons.iter().any(|p| {
+            let rings: Vec<_> = (p.iter().enumerate())
+                .map(|(i, r)| vector::ring(r, i > 0))
+                .collect();
+            vector::contains(&rings, lonlat_to_dir(lon, lat))
+        })
+    };
+    let count =
+        |h: &Harness<'static, AppState>| h.state().doc.project.layer(id).unwrap().features.len();
+
+    // Shift during a stroke from the polygon joins the stroke to it.
+    let way = [[5.0, -5.0], [16.0, -5.0], [16.0, 5.0], [5.0, 5.0]];
+    mouse_way(&mut h, &way, egui::Modifiers::SHIFT);
+    assert!(inside(&h, 13.0, 0.0));
+    assert_eq!(count(&h), 1);
+    // Option cuts the stroke out of it.
+    let way = [[-3.0, -3.0], [3.0, -3.0], [3.0, 3.0], [-3.0, 3.0]];
+    mouse_way(&mut h, &way, egui::Modifiers::ALT);
+    assert!(!inside(&h, 0.0, 0.0));
+    assert!(inside(&h, 7.0, 0.0));
+    assert_eq!(count(&h), 1);
+    assert_eq!(mode(&h), PolygonMode::New);
+    // With no key, the stroke draws a new polygon.
+    let way = [[-30.0, -3.0], [-24.0, -3.0], [-24.0, 3.0], [-30.0, 3.0]];
+    mouse_way(&mut h, &way, egui::Modifiers::NONE);
+    assert_eq!(count(&h), 2);
+
+    // The tool bar has Deselect while features are selected.
+    assert!(h.query_by_label(vale_app::ui::pad::DESELECT).is_none());
+    h.state_mut().feature_selection = vec![vale_app::globe::select::FeatureRef { layer: id, uuid }];
+    h.run_steps(2);
+    h.get_by_label(vale_app::ui::pad::DESELECT).click();
+    h.run_steps(2);
+    assert!(h.state().feature_selection.is_empty());
+}

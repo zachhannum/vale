@@ -110,7 +110,7 @@ pub(super) fn rings(path: &[PathVertex]) -> Vec<Vec<PathVertex>> {
     if nodes.len() < 3 {
         return Vec::new();
     }
-    let graph = Graph::new(&nodes);
+    let graph = Graph::new(&[nodes]);
     let faces = graph.faces();
     let Some(outer) = faces.iter().max_by(|a, b| {
         let area = |f: &Vec<usize>| graph.area(f).rem_euclid(2.0 * TAU);
@@ -129,6 +129,56 @@ pub(super) fn rings(path: &[PathVertex]) -> Vec<Vec<PathVertex>> {
         })
         .collect();
     loops(walk)
+}
+
+/// The simple rings of the areas between closed paths that `keep` chooses,
+/// with the inside on the left. `keep` gets a point inside an area. Two kept
+/// areas that touch at a point have two rings.
+pub(super) fn overlay(
+    paths: &[Vec<PathVertex>],
+    keep: impl Fn(V3) -> bool,
+) -> Vec<Vec<PathVertex>> {
+    let cycles: Vec<Vec<Node>> = paths
+        .iter()
+        .map(|p| unspike(p))
+        .filter(|c| c.len() >= 3)
+        .collect();
+    if cycles.is_empty() {
+        return Vec::new();
+    }
+    let graph = Graph::new(&cycles);
+    let faces = graph.faces();
+    let mut face_of = vec![0; graph.half.len()];
+    let mut kept = Vec::with_capacity(faces.len());
+    for (k, face) in faces.iter().enumerate() {
+        for &h in face {
+            face_of[h] = k;
+        }
+        kept.push(keep(graph.inside(face)));
+    }
+    let boundary = |h: usize| kept[face_of[h]] && !kept[face_of[h ^ 1]];
+    let mut used = vec![false; graph.half.len()];
+    let mut out = Vec::new();
+    for start in 0..graph.half.len() {
+        if used[start] || !boundary(start) {
+            continue;
+        }
+        let mut walk = Vec::new();
+        let mut h = start;
+        while !used[h] {
+            used[h] = true;
+            let half = &graph.half[h];
+            walk.push((half.to, graph.arrival(half)));
+            // The first boundary edge clockwise from the way back. The
+            // areas between are kept.
+            h = graph.next(h);
+            while !boundary(h) {
+                h = graph.clockwise(h);
+            }
+        }
+        out.extend(loops(walk));
+    }
+    out
 }
 
 /// The nodes of a closed path, with no step out and back on itself.
@@ -191,10 +241,19 @@ struct Graph {
 }
 
 impl Graph {
-    fn new(nodes: &[Node]) -> Self {
+    /// The graph of closed cycles of nodes.
+    fn new(cycles: &[Vec<Node>]) -> Self {
+        let nodes: Vec<Node> = cycles.iter().flatten().cloned().collect();
         let n = nodes.len();
+        // The node after each node in its cycle.
+        let mut succ = Vec::with_capacity(n);
+        for c in cycles {
+            let start = succ.len();
+            succ.extend((1..c.len()).map(|k| start + k));
+            succ.push(start);
+        }
         let mut points: Vec<V3> = nodes.iter().map(|v| v.dir).collect();
-        let arc = |i: usize| (i, (i + 1) % n);
+        let arc = |i: usize| (i, succ[i]);
         let mut parent: Vec<usize> = (0..n).collect();
         // The places inside each arc, by their angle from its start.
         let mut splits: Vec<Vec<(f64, usize)>> = vec![Vec::new(); n];
@@ -211,7 +270,7 @@ impl Graph {
                 if boxes[j].0[0] > boxes[i].1[0] {
                     break;
                 }
-                let adjacent = (i + 1) % n == j || (j + 1) % n == i;
+                let adjacent = succ[i] == j || succ[j] == i;
                 if adjacent || !overlap(&boxes[i], &boxes[j]) {
                     continue;
                 }
@@ -291,7 +350,7 @@ impl Graph {
             }
         }
         Graph {
-            nodes: nodes.to_vec(),
+            nodes,
             points,
             half,
             out,
@@ -305,6 +364,26 @@ impl Graph {
         let twin = h ^ 1;
         let list = &self.out[self.half[twin].from];
         list[(self.rank[twin] + list.len() - 1) % list.len()]
+    }
+
+    /// The half edge out of the same place that is next clockwise.
+    fn clockwise(&self, h: usize) -> usize {
+        let list = &self.out[self.half[h].from];
+        list[(self.rank[h] + list.len() - 1) % list.len()]
+    }
+
+    /// A point just on the left of the longest edge of a face.
+    fn inside(&self, face: &[usize]) -> V3 {
+        let ends = |h: usize| (self.points[self.half[h].from], self.points[self.half[h].to]);
+        let longest = face
+            .iter()
+            .map(|&h| ends(h))
+            .max_by(|x, y| angle(x.0, x.1).total_cmp(&angle(y.0, y.1)))
+            .expect("an edge");
+        let (a, b) = longest;
+        let m = normalize([0, 1, 2].map(|k| a[k] + b[k]));
+        let n = normalize(cross(a, b));
+        normalize([0, 1, 2].map(|k| m[k] + 1e-8 * n[k]))
     }
 
     /// The faces of the graph, each as its half edges in order, with the face
@@ -363,7 +442,7 @@ fn union(parent: &mut [usize], a: usize, b: usize) {
 
 /// A box around the short arc from `a` to `b`. The arc bends out from its
 /// chord by at most the part `1 / cos(θ / 2) - 1`.
-fn bounds(a: V3, b: V3) -> ([f64; 3], [f64; 3]) {
+pub(super) fn bounds(a: V3, b: V3) -> ([f64; 3], [f64; 3]) {
     let half = angle(a, b) / 2.0;
     let pad = if half < 1.0 {
         1.0 / half.cos() - 1.0
@@ -458,24 +537,73 @@ fn loops(walk: Vec<(usize, Vec<PathVertex>)>) -> Vec<Vec<PathVertex>> {
 /// polygon on each side for each part. A ring around a pole goes along the
 /// pole.
 pub(super) fn to_polygons(ring: &[PathVertex]) -> Vec<Vec<Vec<LonLat>>> {
-    let mut closed = ring.to_vec();
-    closed.push(ring[0]);
-    let mut parts = to_parts_exact(&closed);
-    if parts.len() > 1 && parts[parts.len() - 1].last() == parts[0].first() {
-        let first = parts.remove(0);
-        parts
-            .last_mut()
-            .expect("a part")
-            .extend_from_slice(&first[1..]);
-    }
-    if parts.len() == 1 && parts[0].first() == parts[0].last() {
-        if parts[0].len() < 4 {
-            return Vec::new();
+    to_polygons_many(&[ring.to_vec()])
+}
+
+/// The polygons in longitude and latitude of the area on the left of simple
+/// rings that do not cross each other. Each ring of the output goes
+/// counterclockwise on a flat map. A hole is in the polygon that holds it.
+pub(super) fn to_polygons_many(rings: &[Vec<PathVertex>]) -> Vec<Vec<Vec<LonLat>>> {
+    let mut outers: Vec<Vec<LonLat>> = Vec::new();
+    let mut holes: Vec<Vec<LonLat>> = Vec::new();
+    let mut parts: Vec<Vec<LonLat>> = Vec::new();
+    for ring in rings {
+        let Some(&first) = ring.first() else {
+            continue;
+        };
+        let mut closed = ring.clone();
+        closed.push(first);
+        let mut ring_parts = to_parts_exact(&closed);
+        if ring_parts.len() > 1 && ring_parts[ring_parts.len() - 1].last() == ring_parts[0].first()
+        {
+            let first = ring_parts.remove(0);
+            ring_parts
+                .last_mut()
+                .expect("a part")
+                .extend_from_slice(&first[1..]);
         }
-        return vec![parts];
+        if ring_parts.len() == 1 && ring_parts[0].first() == ring_parts[0].last() {
+            let part = ring_parts.remove(0);
+            if part.len() >= 4 {
+                if flat_area(&part) >= 0.0 {
+                    outers.push(part);
+                } else {
+                    // A stored hole goes counterclockwise too.
+                    holes.push(part.into_iter().rev().collect());
+                }
+            }
+        } else {
+            parts.extend(ring_parts);
+        }
     }
-    // Each part goes from the 180 degree meridian to it. The edge of the
-    // flat map, with the inside on the left, joins the parts.
+    outers.extend(join_at_edge(&parts));
+    let mut out: Vec<Vec<Vec<LonLat>>> = outers.into_iter().map(|r| vec![r]).collect();
+    for hole in holes {
+        let p = [
+            (hole[0][0] + hole[1][0]) / 2.0,
+            (hole[0][1] + hole[1][1]) / 2.0,
+        ];
+        match out.iter_mut().find(|poly| flat_contains(&poly[0], p)) {
+            Some(poly) => poly.push(hole),
+            // The area outside all outer rings is in the polygon.
+            None => out.push(vec![
+                vec![
+                    [-180.0, -90.0],
+                    [180.0, -90.0],
+                    [180.0, 90.0],
+                    [-180.0, 90.0],
+                    [-180.0, -90.0],
+                ],
+                hole,
+            ]),
+        }
+    }
+    out
+}
+
+/// The outer rings of parts that each go from the 180 degree meridian to it.
+/// The edge of the flat map, with the inside on the left, joins the parts.
+fn join_at_edge(parts: &[Vec<LonLat>]) -> Vec<Vec<LonLat>> {
     let at = |p: LonLat| {
         if p[0] > 0.0 {
             p[1] + 90.0
@@ -515,10 +643,33 @@ pub(super) fn to_polygons(ring: &[PathVertex]) -> Vec<Vec<Vec<LonLat>>> {
         }
         ring.push(ring[0]);
         if ring.len() >= 4 {
-            out.push(vec![ring]);
+            out.push(ring);
         }
     }
     out
+}
+
+/// The area of a closed ring on a flat map, positive when it goes
+/// counterclockwise.
+pub(super) fn flat_area(ring: &[LonLat]) -> f64 {
+    ring.windows(2)
+        .map(|w| w[0][0] * w[1][1] - w[1][0] * w[0][1])
+        .sum::<f64>()
+        / 2.0
+}
+
+/// A point is inside a closed ring on a flat map.
+fn flat_contains(ring: &[LonLat], p: LonLat) -> bool {
+    let mut inside = false;
+    for w in ring.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        if (a[1] > p[1]) != (b[1] > p[1])
+            && p[0] < a[0] + (p[1] - a[1]) / (b[1] - a[1]) * (b[0] - a[0])
+        {
+            inside = !inside;
+        }
+    }
+    inside
 }
 
 #[cfg(test)]
@@ -572,14 +723,6 @@ pub(super) mod tests {
     fn draw(samples: Vec<V3>) -> Vec<Vec<Vec<LonLat>>> {
         let g = commit(&[Run::Free(samples)], SCALE, 0.35).expect("a polygon");
         polygons(&g).clone()
-    }
-
-    /// Twice the area of a ring on a flat map. It is positive for a ring
-    /// that goes counterclockwise.
-    fn flat_area(ring: &[LonLat]) -> f64 {
-        ring.windows(2)
-            .map(|w| w[0][0] * w[1][1] - w[1][0] * w[0][1])
-            .sum()
     }
 
     /// Two segments on a flat map cross, or one touches the inside of the

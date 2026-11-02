@@ -19,13 +19,14 @@ use vale_terrain::{Bands, Heightmap, Mode};
 use crate::atlas_export::{ExportStep, PdfExport, RASTER_PIXEL_RATIO};
 use crate::document::Document;
 use crate::files::{Availability, ExportEvent, Files, PlainFiles, SystemEvents};
+use crate::globe::combine::{PolygonMode, StrokeArea};
 use crate::globe::fit;
 use crate::globe::import::{ImportResult, ProbeJob, Source, file_name};
 use crate::globe::line::{self, LineEdit};
 use crate::globe::math::lonlat_to_dir;
 use crate::globe::snap::{LayerTargets, Targets};
 use crate::globe::{Globe, Look, START_ELEVATION, StackItem, Tool, brush};
-use crate::globe::{polygon, reshape};
+use crate::globe::{LineStroke, polygon, reshape};
 use crate::image_layer::{ImageImport, ImageTiles, ImportStep};
 use crate::measure::{self, Measure};
 use crate::pipeline::{Composed, Pipeline, Selection};
@@ -2584,6 +2585,12 @@ impl AppState {
         };
         let settings = self.globe.line;
         let smoothing = settings.smoothing;
+        if stroke.mode != PolygonMode::New {
+            if layer.geometry() == Some(GeometryKind::Polygon) {
+                self.combine_polygons(id, &stroke);
+            }
+            return;
+        }
         if let Some(uuid) = stroke.reshape {
             // A stroke that does not end on the same ring of a polygon
             // changes nothing.
@@ -2625,6 +2632,65 @@ impl AppState {
             Some(LineEdit::Extend { uuid, geometry }) => project.set_geometry(id, uuid, geometry),
             None => false,
         };
+        if done {
+            self.line_edits += 1;
+            self.pipeline.forget(id);
+            self.touch();
+        }
+    }
+
+    /// Joins the area of a stroke of the polygon tool to a polygon, or cuts
+    /// it out of polygons. Add changes the first polygon of the layer that
+    /// the stroke reaches. Subtract changes each polygon of the layer that
+    /// the stroke overlaps.
+    fn combine_polygons(&mut self, id: LayerId, stroke: &LineStroke) {
+        let Some(area) = StrokeArea::new(&stroke.runs, stroke.scale, self.globe.line.smoothing)
+        else {
+            return;
+        };
+        let Some(layer) = self.doc.project.layer(id) else {
+            return;
+        };
+        let near: Vec<&Feature> = (layer.features.iter())
+            .filter(|f| area.near(&f.geometry))
+            .collect();
+        let mut set = Vec::new();
+        let mut removed = Vec::new();
+        if stroke.mode == PolygonMode::Add {
+            // A stroke that goes around a polygon reaches it at its end.
+            let mut order: Vec<(usize, &Feature)> = (near.iter())
+                .map(|f| {
+                    (
+                        area.reaches(&f.geometry, stroke.scale)
+                            .unwrap_or(usize::MAX),
+                        *f,
+                    )
+                })
+                .collect();
+            order.sort_by_key(|(at, _)| *at);
+            let added = order
+                .iter()
+                .find_map(|(_, f)| Some((f.uuid(), area.add(&f.geometry)?)));
+            set.extend(added);
+        } else {
+            for f in near {
+                match area.subtract(&f.geometry) {
+                    Some(Some(g)) => set.push((f.uuid(), g)),
+                    Some(None) => removed.push(f.uuid()),
+                    None => {}
+                }
+            }
+        }
+        let project = &mut self.doc.project;
+        let mut done = false;
+        for (uuid, g) in set {
+            done |= project.set_geometry(id, uuid, g);
+        }
+        if !removed.is_empty() {
+            done |= project.remove_features(id, &removed) > 0;
+            self.feature_selection
+                .retain(|f| !removed.contains(&f.uuid));
+        }
         if done {
             self.line_edits += 1;
             self.pipeline.forget(id);

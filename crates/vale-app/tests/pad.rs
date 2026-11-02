@@ -15,6 +15,7 @@ use vale_app::headless;
 use vale_app::projects::Locations;
 use vale_app::session::Session;
 use vale_app::ui::gradient::{COLUMN, ColumnParts, GRADIENT, band_row, widest_gap_value};
+use vale_app::ui::pad::flyout::Flyout;
 use vale_app::ui::pad::geometry::{BrushCard, TOOLS, WidthClass};
 use vale_app::ui::pad::raster;
 use vale_app::ui::pad::widgets::SLIDER_INSET;
@@ -202,14 +203,14 @@ fn all_modes() -> impl Iterator<Item = &'static str> {
 
 /// Opens the flyout of a group with taps on its cell.
 fn open_group(h: &mut Pad, group: ModeGroup) {
-    if h.state().pad.modes != Some(group) {
+    if h.state().pad.flyouts.open != Some(Flyout::Brush(group)) {
         let globe = &h.state().globe;
         if !globe.brushing() || ModeGroup::of(globe.brush.mode) != group {
             quick_tap(h, group.name());
         }
         quick_tap(h, group.name());
     }
-    assert_eq!(h.state().pad.modes, Some(group));
+    assert_eq!(h.state().pad.flyouts.open, Some(Flyout::Brush(group)));
 }
 
 /// Opens the flyout of the group of the brush mode.
@@ -238,7 +239,7 @@ fn cards(h: &Pad) -> Vec<Rect> {
     cards.extend(r.brush);
     cards.extend(pad.panels.iter().map(|(_, rect)| *rect));
     cards.extend(pad.menu_rect);
-    cards.extend(pad.modes_rect);
+    cards.extend(pad.flyouts.rect);
     cards.extend(pad.add_rect);
     cards.extend(pad.view_options_rect);
     cards
@@ -268,7 +269,7 @@ fn check_controls(h: &Pad, what: &str) {
     let controls = &h.state().pad.controls;
     assert!(controls.len() >= 7, "{what}: {} controls", controls.len());
     let in_menu = h.state().pad.menu_rect.is_some();
-    let in_modes = h.state().pad.modes_rect.is_some();
+    let in_modes = h.state().pad.flyouts.rect.is_some();
     let in_add = h.state().pad.add_rect.is_some();
     let in_list = h.state().pad.projections_rect.is_some();
     let in_stop = h.state().pad.style.card.is_some() || h.state().pad.style.reset_card.is_some();
@@ -371,7 +372,7 @@ fn each_control_is_large_and_is_outside_the_system_bands() {
         }
         for group in ModeGroup::ALL {
             open_group(&mut h, group);
-            let modes = h.state().pad.modes_rect.unwrap();
+            let modes = h.state().pad.flyouts.rect.unwrap();
             for (name, ..) in group.modes() {
                 let row = control(&h, name).unwrap_or_else(|| panic!("{size:?}: {name}"));
                 assert!(modes.contains_rect(row), "{size:?}: {name}");
@@ -379,7 +380,7 @@ fn each_control_is_large_and_is_outside_the_system_bands() {
             let what = format!("{size:?} with the {} modes", group.name());
             check_controls(&h, &what);
             quick_tap(&mut h, group.name());
-            assert_eq!(h.state().pad.modes, None, "{size:?}");
+            assert_eq!(h.state().pad.flyouts.open, None, "{size:?}");
         }
         if control(&h, "Workspace").is_some() {
             tap(&mut h, "Workspace");
@@ -601,10 +602,13 @@ fn the_brush_cells_are_on_for_a_selected_raster_layer_only() {
     assert!(!disabled(&h, SCULPT));
     let terrain = control(&h, SCULPT).unwrap().translate(vec2(0.0, 52.0));
     finger_tap(&mut h, terrain.center());
-    assert_eq!(h.state().pad.modes, None);
+    assert_eq!(h.state().pad.flyouts.open, None);
     assert_eq!(h.state().globe.brush.mode, Mode::Raise);
     open_modes(&mut h);
-    assert_eq!(h.state().pad.modes, Some(ModeGroup::Sculpt));
+    assert_eq!(
+        h.state().pad.flyouts.open,
+        Some(Flyout::Brush(ModeGroup::Sculpt))
+    );
     for (name, ..) in ModeGroup::Sculpt.modes() {
         assert!(control(&h, name).is_some(), "{name}");
     }
@@ -1804,8 +1808,6 @@ fn a_finger_hits_each_control_at_the_first_try() {
     }
     choose_mode(&mut h, "Carve");
     assert_eq!(h.state().globe.brush.mode, Mode::Carve);
-    tap(&mut h, "Pan");
-    assert_eq!(h.state().globe.tool, Tool::Navigate);
 
     for (name, which) in [
         ("Layers", Panel::Layers),
@@ -1834,6 +1836,12 @@ fn a_finger_hits_each_control_at_the_first_try() {
     let rect = control(&h, "Size").unwrap();
     drag(&mut h, rect.center(), rect.center_bottom(), None);
     assert!(h.state().globe.brush.size_points < size);
+
+    // The Move tool has no context strip, so the Brush panel closes.
+    tap(&mut h, "Pan");
+    assert_eq!(h.state().globe.tool, Tool::Navigate);
+    assert!(control(&h, "Brush settings").is_none());
+    assert!(!h.state().pad.is_open(Panel::Brush));
 
     tap(&mut h, "Atlas");
     assert_eq!(h.state().workspace, Workspace::Atlas);
@@ -1975,7 +1983,7 @@ fn a_tap_on_the_brush_cell_chooses_the_brush_in_its_mode() {
         (s.globe.tool, s.globe.brush.mode),
         (Tool::Brush, Mode::Erode)
     );
-    assert_eq!(s.pad.modes, None);
+    assert_eq!(s.pad.flyouts.open, None);
     assert_eq!(toggled(&h, TERRAIN), Some(true));
     assert_eq!(toggled(&h, SCULPT), Some(false));
 }
@@ -2001,7 +2009,7 @@ fn each_brush_cell_remembers_the_last_mode_of_its_group() {
         (s.globe.tool, s.globe.brush.mode),
         (Tool::Brush, Mode::Push)
     );
-    assert_eq!(s.pad.modes, None);
+    assert_eq!(s.pad.flyouts.open, None);
     assert_eq!(toggled(&h, SCULPT), Some(true));
     assert_eq!(toggled(&h, TERRAIN), Some(false));
     quick_tap(&mut h, TERRAIN);
@@ -2021,7 +2029,7 @@ fn each_flyout_lists_the_modes_of_its_group_and_fits_on_each_screen() {
         for group in ModeGroup::ALL {
             let what = format!("{size:?} {}", group.name());
             open_group(&mut h, group);
-            let flyout = h.state().pad.modes_rect.unwrap();
+            let flyout = h.state().pad.flyouts.rect.unwrap();
             assert!(screen.contains_rect(flyout), "{what}: {flyout:?}");
             let cell = control(&h, group.name()).unwrap();
             let tools = h.state().pad.rects.unwrap().tools;
@@ -2046,19 +2054,18 @@ fn each_flyout_lists_the_modes_of_its_group_and_fits_on_each_screen() {
                 assert!(flyout.contains_rect(row), "{what}: {name}");
             }
             quick_tap(&mut h, group.name());
-            assert_eq!(h.state().pad.modes, None, "{what}");
+            assert_eq!(h.state().pad.flyouts.open, None, "{what}");
         }
     }
 }
 
-/// Holds a finger on a control until the flyout of the brush modes opens,
-/// and lifts it.
+/// Holds a finger on a control until a flyout opens, and lifts it.
 fn hold_cell(h: &mut Pad, name: &str) {
     let pos = control(h, name).unwrap().center();
     touch(h, egui::TouchPhase::Start, pos, None);
     for _ in 0..200 {
         h.step();
-        if h.state().pad.modes.is_some() {
+        if h.state().pad.flyouts.open.is_some() {
             break;
         }
     }
@@ -2075,9 +2082,13 @@ fn a_hold_or_a_second_tap_on_the_brush_cell_opens_the_flyout() {
     for group in ModeGroup::ALL {
         let name = group.name();
         hold_cell(&mut h, name);
-        assert_eq!(h.state().pad.modes, Some(group), "{name}");
+        assert_eq!(
+            h.state().pad.flyouts.open,
+            Some(Flyout::Brush(group)),
+            "{name}"
+        );
         assert_eq!(h.state().globe.tool, Tool::Navigate, "{name}");
-        let flyout = h.state().pad.modes_rect.unwrap();
+        let flyout = h.state().pad.flyouts.rect.unwrap();
         let cell = control(&h, name).unwrap();
         assert_eq!(flyout.left_top(), pos2(tools.right() + 12.0, cell.top()));
         for (mode, ..) in group.modes() {
@@ -2091,7 +2102,7 @@ fn a_hold_or_a_second_tap_on_the_brush_cell_opens_the_flyout() {
         let outside = flyout.right_bottom() + vec2(40.0, 40.0);
         finger_tap(&mut h, outside);
         let s = h.state();
-        assert!(s.pad.modes.is_none() && s.pad.modes_rect.is_none());
+        assert!(s.pad.flyouts.open.is_none() && s.pad.flyouts.rect.is_none());
         assert!(control(&h, "Weather").is_none());
         assert_eq!(s.globe.tool, Tool::Navigate);
     }
@@ -2099,29 +2110,35 @@ fn a_hold_or_a_second_tap_on_the_brush_cell_opens_the_flyout() {
     // The first tap chooses the brush, the second tap opens the flyout,
     // and a third tap closes it.
     quick_tap(&mut h, SCULPT);
-    assert!(h.state().globe.brushing() && h.state().pad.modes.is_none());
+    assert!(h.state().globe.brushing() && h.state().pad.flyouts.open.is_none());
     quick_tap(&mut h, SCULPT);
-    assert_eq!(h.state().pad.modes, Some(ModeGroup::Sculpt));
+    assert_eq!(
+        h.state().pad.flyouts.open,
+        Some(Flyout::Brush(ModeGroup::Sculpt))
+    );
     quick_tap(&mut h, SCULPT);
-    assert_eq!(h.state().pad.modes, None);
+    assert_eq!(h.state().pad.flyouts.open, None);
 
     // A tap on the other cell chooses its mode and closes the flyout.
     quick_tap(&mut h, SCULPT);
     quick_tap(&mut h, TERRAIN);
     assert_eq!(h.state().globe.brush.mode, Mode::Carve);
-    assert_eq!(h.state().pad.modes, None);
+    assert_eq!(h.state().pad.flyouts.open, None);
 
     // A hold while the brush is the tool opens the flyout too.
     hold_cell(&mut h, TERRAIN);
-    assert_eq!(h.state().pad.modes, Some(ModeGroup::Terrain));
+    assert_eq!(
+        h.state().pad.flyouts.open,
+        Some(Flyout::Brush(ModeGroup::Terrain))
+    );
     // A tap on another control closes it.
     tap(&mut h, "Layers");
-    assert!(h.state().pad.modes.is_none() && h.state().pad.is_open(Panel::Layers));
+    assert!(h.state().pad.flyouts.open.is_none() && h.state().pad.is_open(Panel::Layers));
 
     // The flyout is in front of the Brush panel.
     tap(&mut h, "Brush settings");
     open_modes(&mut h);
-    let flyout = h.state().pad.modes_rect.unwrap();
+    let flyout = h.state().pad.flyouts.rect.unwrap();
     assert!(flyout.intersects(panel(&h, Panel::Brush).unwrap()));
 }
 
@@ -2136,7 +2153,7 @@ fn a_mode_of_the_flyout_sets_the_mode_and_the_face_of_the_cell() {
             let s = h.state();
             assert_eq!((s.globe.tool, s.globe.brush.mode), (Tool::Brush, mode));
             assert!(
-                s.pad.modes.is_none() && s.pad.modes_rect.is_none(),
+                s.pad.flyouts.open.is_none() && s.pad.flyouts.rect.is_none(),
                 "{name}"
             );
             let i = ModeGroup::ALL.iter().position(|g| *g == group).unwrap();
@@ -2565,7 +2582,7 @@ fn the_brush_panel_has_the_five_sliders_of_the_ocean_ridge_mode() {
 fn the_ocean_ridge_mode_fits_on_the_smallest_ipad() {
     let mut h = pad((1133.0, 744.0));
     open_group(&mut h, ModeGroup::Terrain);
-    let menu = h.state().pad.modes_rect.unwrap();
+    let menu = h.state().pad.flyouts.rect.unwrap();
     let screen = h.state().pad.rects.unwrap().screen;
     assert!(screen.contains_rect(menu), "{menu:?}");
     // The flyout scrolls to its last row.
@@ -2613,7 +2630,7 @@ fn the_tool_strip_has_the_range_mode() {
     for size in [BOARDS[0], (1133.0, 744.0)] {
         let mut h = pad(size);
         open_group(&mut h, ModeGroup::Terrain);
-        let flyout = h.state().pad.modes_rect.unwrap();
+        let flyout = h.state().pad.flyouts.rect.unwrap();
         // The flyout scrolls to its last row.
         let from = flyout.center();
         drag(&mut h, from, from - vec2(0.0, 0.4 * flyout.height()), None);
@@ -2691,7 +2708,7 @@ fn the_tool_strip_has_the_basin_mode() {
     for size in [BOARDS[0], (1133.0, 744.0)] {
         let mut h = pad(size);
         open_group(&mut h, ModeGroup::Terrain);
-        let flyout = h.state().pad.modes_rect.unwrap();
+        let flyout = h.state().pad.flyouts.rect.unwrap();
         // The flyout scrolls to its last row.
         let from = flyout.center();
         drag(&mut h, from, from - vec2(0.0, 0.4 * flyout.height()), None);
@@ -2792,7 +2809,7 @@ fn the_range_mode_fits_on_the_smallest_ipad() {
     let mut h = pad((1133.0, 744.0));
     let screen = h.state().pad.rects.unwrap().screen;
     open_group(&mut h, ModeGroup::Terrain);
-    let menu = h.state().pad.modes_rect.unwrap();
+    let menu = h.state().pad.flyouts.rect.unwrap();
     let from = menu.center();
     drag(&mut h, from, from - vec2(0.0, 0.4 * menu.height()), None);
     tap(&mut h, "Range");
@@ -2910,6 +2927,9 @@ fn the_globe_does_not_move_when_you_touch_a_card() {
             assert!(!h.state().pad.menu);
             tap(&mut h, "Layers");
         }
+        // The Move tool has no context strip.
+        h.state_mut().globe.tool = Tool::Navigate;
+        h.run_steps(2);
         for card in cards(&h) {
             for from in [card.center(), card.left_top() + vec2(3.0, 3.0)] {
                 let to = screen.center();
@@ -3936,7 +3956,7 @@ fn the_screenshots_show_the_boards() {
         }
         state.pad.menu = menu;
         if name == "more" {
-            state.pad.modes = Some(ModeGroup::Terrain);
+            state.pad.flyouts.open = Some(Flyout::Brush(ModeGroup::Terrain));
             state.globe.tool = Tool::Brush;
             state.globe.brush.mode = Mode::Weather;
         }
@@ -3950,7 +3970,7 @@ fn the_screenshots_show_the_boards() {
         let canvas = image.get_pixel(size.0 as u32 - 3, 300);
         assert_eq!(canvas.0, [15, 17, 19, 255], "{name}");
         assert_ne!(card.0, canvas.0, "{name}");
-        assert_eq!(state.pad.modes_rect.is_some(), name == "more", "{name}");
+        assert_eq!(state.pad.flyouts.rect.is_some(), name == "more", "{name}");
     }
     // The menu of the new layers, and the panel of a vector layer.
     for (name, size) in [
@@ -5538,11 +5558,14 @@ fn the_draw_cell_is_the_line_cell_for_a_line_layer() {
     for name in [SCULPT, TERRAIN, "Size", "Flow"] {
         assert!(control(&h, name).is_none(), "{name}");
     }
-    assert!(control(&h, SMOOTHING).is_some());
+    // The context strip shows the controls of the line tool only while it
+    // is the tool.
+    assert!(control(&h, SMOOTHING).is_none());
     assert!(!h.state().globe.lining());
     tap(&mut h, LINE);
     assert_eq!(h.state().globe.tool, Tool::Line);
     assert!(h.state().globe.lining());
+    assert!(control(&h, SMOOTHING).is_some());
     // A finger turns the globe and draws no line.
     let center = h.state().globe.rect.center();
     let before = line_features(&h, rivers);
@@ -5735,11 +5758,14 @@ fn the_draw_cell_is_the_polygon_cell_for_a_polygon_layer() {
     h.run_steps(2);
     assert_eq!(control(&h, POLYGON), Some(draw));
     assert!(control(&h, LINE).is_none());
-    assert!(control(&h, SMOOTHING).is_some());
+    assert!(control(&h, SMOOTHING).is_none());
+    assert!(control(&h, vale_app::ui::pad::POLYGON_MODE).is_none());
     assert!(!h.state().globe.filling());
     tap(&mut h, POLYGON);
     assert_eq!(h.state().globe.tool, Tool::Polygon);
     assert!(h.state().globe.filling());
+    assert!(control(&h, SMOOTHING).is_some());
+    assert!(control(&h, vale_app::ui::pad::POLYGON_MODE).is_some());
     // In a line layer, the tool draws lines.
     let rivers = vector(&h, "Rivers");
     h.state_mut().select(Some(LayerRef::Vector(rivers)));
@@ -8469,6 +8495,291 @@ fn a_stroke_from_an_outline_reshapes_the_polygon_in_one_undo_step() {
     assert_eq!(geometry_of(&h, picks.polygon), before);
     tap(&mut h, "Redo");
     assert_eq!(geometry_of(&h, picks.polygon), after);
+}
+
+#[test]
+fn the_flyout_of_the_mode_cell_chooses_the_mode_of_the_polygon_tool_on_each_board() {
+    use vale_app::globe::combine::PolygonMode;
+    use vale_app::ui::pad::{POLYGON_MODE, POLYGON_MODES, RESHAPE};
+    for size in BOARDS {
+        let what = format!("{size:?}");
+        let dir = tempfile::tempdir().unwrap();
+        let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
+        h.set_size(egui::vec2(size.0, size.1));
+        h.run_steps(2);
+        select_layer(&mut h, picks.polygon.layer);
+        tap(&mut h, POLYGON);
+        assert_eq!(toggled(&h, POLYGON_MODE), Some(false), "{what}");
+        let mode = |h: &Pad| h.state().globe.line.polygon_mode;
+        let open = |h: &Pad| h.state().pad.flyouts.open == Some(Flyout::PolygonMode);
+        let cell = |h: &Pad| control(h, POLYGON_MODE).unwrap().center();
+        let row = |h: &Pad, name: &str| {
+            control(h, name)
+                .unwrap_or_else(|| panic!("{what}: no {name}"))
+                .center()
+        };
+
+        // A finger opens the flyout and chooses a mode.
+        let at = cell(&h);
+        finger_tap_at(&mut h, at);
+        assert!(open(&h), "{what}");
+        let flyout = h.state().pad.flyouts.rect.unwrap();
+        for (name, ..) in POLYGON_MODES {
+            assert!(
+                flyout.contains_rect(control(&h, name).unwrap()),
+                "{what}: {name}"
+            );
+        }
+        check_controls(&h, &format!("{what}: the flyout of the polygon modes"));
+        if size == BOARDS[0] {
+            screenshot::save(&mut h, "pad-polygon-modes");
+        }
+        let at = row(&h, "Add");
+        finger_tap_at(&mut h, at);
+        assert_eq!(mode(&h), PolygonMode::Add, "{what}");
+        assert!(!open(&h), "{what}");
+        assert_eq!(toggled(&h, POLYGON_MODE), Some(true), "{what}");
+
+        // The pen.
+        let at = cell(&h);
+        pen_path(&mut h, &[at]);
+        assert!(open(&h), "{what}");
+        let at = row(&h, "Subtract");
+        pen_path(&mut h, &[at]);
+        assert_eq!(mode(&h), PolygonMode::Subtract, "{what}");
+        // Reshape works in the New mode only.
+        assert_eq!(toggled(&h, RESHAPE), Some(false), "{what}");
+
+        // The mouse.
+        click(&mut h, POLYGON_MODE);
+        assert!(open(&h), "{what}");
+        click(&mut h, "New");
+        assert_eq!(mode(&h), PolygonMode::New, "{what}");
+
+        // A second tap on the cell and a tap outside close the flyout.
+        quick_tap(&mut h, POLYGON_MODE);
+        assert!(open(&h), "{what}");
+        quick_tap(&mut h, POLYGON_MODE);
+        assert!(!open(&h), "{what}");
+        quick_tap(&mut h, POLYGON_MODE);
+        assert!(open(&h), "{what}");
+        let away = h.state().globe.rect.center();
+        finger_tap_at(&mut h, away);
+        assert!(!open(&h), "{what}");
+        assert_eq!(mode(&h), PolygonMode::New, "{what}");
+    }
+}
+
+#[test]
+fn the_context_strip_shows_only_the_controls_of_the_tool() {
+    use vale_app::ui::pad::{POINT, POLYGON_MODE, RESHAPE};
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
+    let all = [
+        SMOOTHING,
+        SNAP,
+        RESHAPE,
+        TERRAIN_FIT,
+        POLYGON_MODE,
+        "Brush settings",
+        "Size",
+        "Flow",
+    ];
+    let check = |h: &Pad, shown: &[&str], what: &str| {
+        for name in all {
+            let want = shown.contains(&name);
+            assert_eq!(control(h, name).is_some(), want, "{what}: {name}");
+        }
+    };
+    select_layer(&mut h, picks.polygon.layer);
+    assert_eq!(h.state().globe.tool, Tool::Select);
+    check(&h, &[], "the Select tool");
+    tap(&mut h, POLYGON);
+    let polygon = [SMOOTHING, SNAP, RESHAPE, POLYGON_MODE, "Brush settings"];
+    check(&h, &polygon, "the polygon tool");
+    // The list of the modes stays open.
+    quick_tap(&mut h, POLYGON_MODE);
+    h.run_steps(5);
+    assert_eq!(h.state().pad.flyouts.open, Some(Flyout::PolygonMode));
+    quick_tap(&mut h, POLYGON_MODE);
+    select_layer(&mut h, picks.line.layer);
+    assert!(h.state().globe.lining());
+    let line = [SMOOTHING, SNAP, RESHAPE, TERRAIN_FIT, "Brush settings"];
+    check(&h, &line, "the line tool");
+    select_layer(&mut h, picks.point.layer);
+    tap(&mut h, POINT);
+    assert!(h.state().globe.placing());
+    check(&h, &[SNAP, "Brush settings"], "the point tool");
+    tap(&mut h, "Pan");
+    check(&h, &[], "the Move tool");
+}
+
+#[test]
+fn the_selection_shows_in_each_tool() {
+    use vale_app::ui::pad::MEASURE;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
+    select_layer(&mut h, picks.polygon.layer);
+    h.state_mut().feature_selection = vec![picks.polygon];
+    h.run_steps(2);
+    // The wide line in the accent color on the outline.
+    let highlight = |h: &Pad| {
+        painted_shapes(h).iter().any(|s| {
+            matches!(s, egui::Shape::Path(p)
+                if p.stroke.width == 3.0
+                    && p.stroke.color == egui::epaint::ColorMode::Solid(theme::ACCENT))
+        })
+    };
+    assert!(highlight(&h), "the Select tool");
+    for name in [POLYGON, "Pan", MEASURE] {
+        tap(&mut h, name);
+        assert_eq!(h.state().feature_selection, vec![picks.polygon], "{name}");
+        assert!(highlight(&h), "{name}");
+    }
+}
+
+#[test]
+fn the_context_strip_has_deselect_in_each_tool_while_features_are_selected() {
+    use vale_app::ui::pad::{DESELECT, MEASURE};
+    for size in BOARDS {
+        let what = format!("{size:?}");
+        let dir = tempfile::tempdir().unwrap();
+        let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
+        h.set_size(egui::vec2(size.0, size.1));
+        select_layer(&mut h, picks.polygon.layer);
+        // With no selection, the Select tool has no context strip.
+        assert!(control(&h, DESELECT).is_none(), "{what}");
+        assert!(h.state().pad.rects.unwrap().brush.is_none(), "{what}");
+        for name in [select::TOOL, "Pan", POLYGON, MEASURE] {
+            tap(&mut h, name);
+            h.state_mut().feature_selection = vec![picks.polygon];
+            h.run_steps(2);
+            assert!(control(&h, DESELECT).is_some(), "{what}: {name}");
+            check_controls(&h, &format!("{what}: Deselect in {name}"));
+        }
+        tap(&mut h, POLYGON);
+        tap(&mut h, DESELECT);
+        assert!(h.state().feature_selection.is_empty(), "{what}");
+        assert!(control(&h, DESELECT).is_none(), "{what}");
+        assert_eq!(h.state().globe.tool, Tool::Polygon, "{what}");
+    }
+}
+
+#[test]
+fn a_hold_on_the_mode_cell_opens_the_flyout() {
+    use vale_app::ui::pad::POLYGON_MODE;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
+    select_layer(&mut h, picks.polygon.layer);
+    tap(&mut h, POLYGON);
+    hold_cell(&mut h, POLYGON_MODE);
+    // The end of the hold is not a tap, so the flyout stays open.
+    assert_eq!(h.state().pad.flyouts.open, Some(Flyout::PolygonMode));
+}
+
+#[test]
+fn add_grows_only_the_polygon_that_the_stroke_reaches_first() {
+    use vale_app::globe::combine::PolygonMode;
+    use vale_store::{Feature, Geometry};
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
+    let id = picks.polygon.layer;
+    // A second polygon east of the square.
+    let east = vec![[20.0, -25.0], [30.0, -25.0], [30.0, -12.0], [20.0, -12.0]];
+    let feature = Feature::new(Geometry::Polygons(vec![vec![east]]), Default::default());
+    let east = FeatureRef {
+        layer: id,
+        uuid: feature.uuid(),
+    };
+    assert!(h.state_mut().doc.project.add_feature(id, feature));
+    select_layer(&mut h, id);
+    tap(&mut h, POLYGON);
+    h.state_mut().globe.line.polygon_mode = PolygonMode::Add;
+    h.state_mut().globe.snap.on = false;
+    let before = geometry_of(&h, east);
+    // From the gap, west into the square, and then east into the other
+    // polygon.
+    pen_way(
+        &mut h,
+        &[
+            [15.0, -20.0],
+            [5.0, -20.0],
+            [5.0, -17.0],
+            [25.0, -17.0],
+            [25.0, -20.0],
+        ],
+    );
+    h.run_steps(3);
+    assert!(inside_polygon(&geometry_of(&h, picks.polygon), 15.0, -18.5));
+    assert_eq!(geometry_of(&h, east), before);
+    assert_eq!(line_features(&h, id).len(), 2);
+}
+
+#[test]
+fn add_and_subtract_change_polygons_in_one_undo_step_each() {
+    use vale_app::globe::combine::PolygonMode;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
+    select_layer(&mut h, picks.polygon.layer);
+    tap(&mut h, POLYGON);
+    h.state_mut().globe.line.polygon_mode = PolygonMode::Add;
+    h.state_mut().globe.snap.on = false;
+    step_and_save(&mut h, false);
+    h.state_mut().save_waiting().unwrap();
+    let before = geometry_of(&h, picks.polygon);
+    let stroke = |h: &mut Pad, way: &[[f64; 2]]| {
+        let saved = saves(h);
+        pen_way(h, way);
+        for _ in 0..3 {
+            step_and_save(h, false);
+        }
+        assert_eq!(saves(h), saved + 1);
+        assert_eq!(line_features(h, picks.polygon.layer).len(), 1);
+        geometry_of(h, picks.polygon)
+    };
+    let undo_redo = |h: &mut Pad, before: &vale_store::Geometry, after: &vale_store::Geometry| {
+        tap(h, "Undo");
+        assert_eq!(&geometry_of(h, picks.polygon), before);
+        tap(h, "Redo");
+        assert_eq!(&geometry_of(h, picks.polygon), after);
+    };
+
+    // Add, from the east into the square and back out. The stroke starts
+    // away from the polygon.
+    let added = stroke(
+        &mut h,
+        &[[16.0, -18.0], [5.0, -18.0], [5.0, -14.0], [16.0, -14.0]],
+    );
+    assert!(inside_polygon(&added, 13.0, -16.0));
+    assert!(inside_polygon(&added, -5.0, -20.0));
+    undo_redo(&mut h, &before, &added);
+
+    // Subtract, through the polygon.
+    h.state_mut().globe.line.polygon_mode = PolygonMode::Subtract;
+    let cut = stroke(
+        &mut h,
+        &[[-2.0, -28.0], [2.0, -28.0], [2.0, -9.0], [-2.0, -9.0]],
+    );
+    let vale_store::Geometry::Polygons(parts) = &cut else {
+        panic!("not a polygon");
+    };
+    assert_eq!(parts.len(), 2);
+    assert!(!inside_polygon(&cut, 0.0, -18.0));
+    assert!(inside_polygon(&cut, -6.0, -18.0));
+    undo_redo(&mut h, &added, &cut);
+
+    // Subtract inside the polygon cuts a hole.
+    let holed = stroke(
+        &mut h,
+        &[[-8.0, -22.0], [-4.0, -22.0], [-4.0, -16.0], [-8.0, -16.0]],
+    );
+    let vale_store::Geometry::Polygons(parts) = &holed else {
+        panic!("not a polygon");
+    };
+    assert_eq!(parts.iter().map(|p| p.len()).sum::<usize>(), 3);
+    assert!(!inside_polygon(&holed, -6.0, -19.0));
+    assert!(inside_polygon(&holed, -9.0, -19.0));
+    undo_redo(&mut h, &cut, &holed);
 }
 
 #[test]

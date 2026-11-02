@@ -224,6 +224,8 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         },
         sheet_offset: state.pad.sheet_offset,
         measure: measuring,
+        strip: false,
+        extra: 0,
         tools: TOOL_CELLS,
     };
     let mut rects = geometry::layout(&input);

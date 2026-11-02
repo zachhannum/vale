@@ -400,6 +400,15 @@ The short arc of a great circle between the two ends of the stroke closes the ri
 
 Where the ring crosses the 180 degree meridian, the feature has a polygon on each side, with an edge along the meridian. A ring around a pole goes along the meridian to the pole and then along the pole. Each ring is closed and goes counterclockwise in longitude and latitude, and no two of its edges cross.
 
+The tool has three modes: New, Add, and Subtract. New is the default, and in New each stroke makes a new feature. In Add and Subtract, the stroke closes into a ring as in New, and its area changes polygons that exist. The stroke snaps and traces as in New, so a part of the new outline can follow a coast.
+
+- Add joins the area of the ring to one polygon of the layer: the first polygon that the stroke reaches. A stroke that starts inside a polygon, or within 12 points of its outline, reaches that polygon first. A stroke that overlaps no polygon changes nothing. Ground between the stroke and the polygon joins only where it is inside the ring.
+- Subtract cuts the area of the ring out of each polygon of the layer that the ring overlaps. A cut through a polygon leaves one feature with two polygons, and a cut inside a polygon leaves a hole. A cut that covers a whole feature deletes the feature.
+
+The outlines of the feature and the ring divide the sphere into areas, and the result is a set of these areas. Thus the result is valid on the sphere, also across the 180 degree meridian and around a pole. The stored vertices of the old outline do not move, and the feature keeps its UUID and its attributes. A hole is a ring of its polygon, and each ring goes counterclockwise in longitude and latitude. Each stroke is one undo step.
+
+On the iPad, the mode cell is the first cell of the context strip of the polygon tool. It shows the icon and the name of the mode, with a small triangle in its corner, as the Sculpt cell does. A tap or a hold opens the list of the three modes next to the cell. A tap on a mode chooses it and closes the list, and a tap outside the list closes it. On the desktop, the tool bar has the three modes. Shift during a stroke chooses Add for that stroke, and Option chooses Subtract. The mode is not saved in the project.
+
 ### Points
 
 The point tool places cities, landmarks, and other named places in the selected point layer. A tap of the pen or a click of the mouse places one point, and a finger turns the globe. The point snaps to the targets of the snap service. A point that snaps to a vertex gets the stored position of the vertex.
@@ -428,7 +437,7 @@ The Select tool selects features of the selected vector layer, on the globe and 
 
 A tap hits a point or a line within its reach on the screen: 22 points for a finger, 12 points for the pen, and 8 points for the mouse. A finger thus has a target of 44 points. The nearest point or line wins. If no point or line is in reach, the polygon under the tap wins. A feature on the far side of the globe is not hit.
 
-A box selects a feature if a vertex of the feature is in the box, if an edge crosses the box, or if the polygon holds the box. The selection shows in the accent color: a ring around each point, and a wide line on each line and each outline. In the flat view, the selection shows, but the vector layers do not show yet.
+A box selects a feature if a vertex of the feature is in the box, if an edge crosses the box, or if the polygon holds the box. The selection shows in the accent color: a ring around each point, and a wide line on each line and each outline. A change of the tool keeps the selection, and the selection shows in each tool. Deselect in the context strip clears it in each tool, and so does Deselect in the tool bar on the desktop. In the flat view, the selection shows, but the vector layers do not show yet.
 
 A pen drag or a mouse drag that starts on a point of the selection moves that point. The move is one undo step when the pen or the mouse comes up. The tool moves points only. Lines and polygons change in vertex editing.
 
@@ -436,14 +445,14 @@ On the iPad, a card at the top of the screen shows the selection. With one featu
 
 ### Reshape
 
-Reshape redraws a part of the outline of a line or a polygon with a stroke of the line tool or the polygon tool. The Reshape switch of the tool turns it on. With Reshape on, a stroke that starts within 12 points of the outline of a feature in the selected layer reshapes that feature. The nearest outline wins. A stroke that starts at the end of a line still extends the line, and any other stroke draws a new feature. Reshape needs no selection.
+Reshape redraws a part of the outline of a line or a polygon with a stroke of the line tool or the polygon tool. The Reshape switch of the tool turns it on. With Reshape on, a stroke that starts within 12 points of the outline of a feature in the selected layer reshapes that feature. The nearest outline wins. A stroke that starts at the end of a line still extends the line, and any other stroke draws a new feature. Reshape needs no selection. Reshape works in the New mode of the polygon tool only.
 
 - On a polygon, the stroke ends within 12 points of the same ring. The ring then has two possible shapes, one with each part of the old ring between the ends of the stroke. The shape with the larger area stays. A stroke that crosses itself or the outline gives the simple rings of the area, as in the polygon tool. A hole stays in the polygon that holds it. A stroke that ends away from the ring changes nothing.
 - On a line, a stroke that ends on the line takes the place of the part between its ends. A stroke that ends away from the line takes the place of the rest of the line, toward the end of the line that is nearer to the end of the stroke.
 
 The stroke snaps and traces like the other strokes of the tool, but it does not snap to or trace the feature that it reshapes. While the stroke draws, the outline of the feature shows in the accent color, and the stroke of the polygon tool does not close. The stored vertices of the old outline outside the reshaped part do not change. The parts of a polygon on the two sides of the 180 degree meridian are one outline for the reshape. Each reshape is one undo step, and the feature keeps its attributes.
 
-On the iPad, the Reshape button is on the card below the tool strip, after the Snap button, and the Brush panel has the Reshape switch. On the desktop, the tool bar has the Reshape check box. The switch is not saved in the project.
+On the iPad, the Reshape button is on the context strip of the line tool and of the polygon tool, after the Snap button, and the Brush panel has the Reshape switch. On the desktop, the tool bar has the Reshape check box. The switch is not saved in the project.
 
 ### Attribute schema
 
@@ -503,8 +512,9 @@ These rules apply to the layout:
 - The tool strip has six cells: Sculpt, Terrain, Draw, Select, Move, and Measure. The strip has the same cells for each layer selection.
 - The brush modes are in two groups, and each group has a cell. The Sculpt cell holds the modes that shape the ground directly: Raise, Lower, Smooth, Flatten, Warp, Push, and Noise. The Terrain cell holds the modes that need heights in meters: Carve, Ridge, Deposit, Erode, Weather, Uplift, Ocean ridge, Range, and Basin. Each list fits next to the strip on each iPad, and each group has room for new modes.
 - Each of the two cells shows the icon and the name of a mode, with a small triangle in its corner. That mode is the brush mode if it is in the group of the cell, and otherwise it is the last mode that you chose in the group. A tap chooses the brush in that mode. A hold of 0.4 seconds, or a tap on the cell while the brush is in its group, opens the list of the modes of the group next to the cell. A tap on a mode chooses it and closes the list, and a tap outside the list closes it.
-- The Measure cell is always enabled. With Measure, the card below the strip holds Snap, Clear path, and the Brush button, which opens the snap settings.
-- The brush paints the selected raster layer, and the selection does not change the picture or the draw order. If the world has no layer, or the selected layer is not a raster layer, or the selected raster layer is hidden, the Sculpt cell, the Terrain cell, and the card below the strip are disabled, and the tool is Move. If the selected raster layer is not a height layer, the Terrain cell is disabled.
+- The card below the tool strip is the context strip. It holds the controls of the active tool, and each control shows only while the tool can use it. The brush has the Size slider and the Flow slider. The line tool and the polygon tool have the Smoothing slider, Snap, and Reshape. The point tool has Snap. Each of these tools also has the Brush button, which opens the Brush panel. The Select tool and the Move tool have no context strip, and the Brush panel closes when you choose one of them. While features are selected, the context strip of each tool has Deselect, above the Brush button, and the Select tool and the Move tool have a strip with Deselect alone. Deselect makes the sliders shorter. If they become shorter than 110 points, the strip holds the Brush button alone, and the Brush panel holds the sliders.
+- The Measure cell is always enabled. With Measure, the context strip holds Snap, Clear path, and the Brush button, which opens the snap settings.
+- The brush paints the selected raster layer, and the selection does not change the picture or the draw order. If the world has no layer, or the selected layer is not a raster layer, or the selected raster layer is hidden, the Sculpt cell and the Terrain cell are disabled, and the tool is Move. If the selected raster layer is not a height layer, the Terrain cell is disabled.
 - The Draw cell draws in the selected vector layer. With no visible vector layer selected, it is disabled and shows the Line icon. If the selected layer is a visible line layer, the Draw cell is the Line cell. The Smoothing slider of the line tool is in the place of the Size slider, and below it are the Snap button and the Fit button. The Brush panel holds the Smoothing slider, the Terrain fit switch, and the Balance slider. If the selected layer is a visible polygon layer, the Draw cell is the Polygon cell, with the same controls and no terrain fit. A selection does not change the tool, so you tap the cell to draw. If the selected layer is a visible point layer, the Draw cell is the Point cell. The card then has the Snap button and no Smoothing slider. If the tool of one vector layer kind is the tool and you select a vector layer of another kind, the tool changes to the tool of that kind.
 - On a raster layer with a unit other than `m`, the modes that move ground are disabled.
 - The pen paints. One finger turns the globe, and two fingers zoom it.
@@ -684,7 +694,7 @@ The app has seven editing tools in version 1.
 - Freehand lines and polygons on the globe.
 - Point placement with an attribute form, for cities, landmarks, and other named places.
 - An attribute table with sort, filter, and bulk edit.
-- Line and polygon editing by vertex and by reshape with a stroke, with snapping and a smooth operation.
+- Line and polygon editing by vertex and by reshape with a stroke, with snapping and a smooth operation. A stroke also adds an area to a polygon or subtracts an area from polygons.
 - Label editing on the map: pin, move, select a candidate, exclude.
 
 Photoshop, Illustrator, and similar tools keep color artwork and textures. The command Replace from file makes that round trip cheap.

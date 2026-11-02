@@ -17,8 +17,10 @@ use crate::globe::brush::{
     NOISE_M, RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM,
     RIDGE_SPREAD_MM, SCALE_KM, SEED, STRENGTH_M, TALUS_DEG, WARP_KM, needs_height,
 };
+use crate::globe::combine::PolygonMode;
 use crate::globe::{Globe, Tool, WorldView, rivers, snap, stats, stroke_test, zoom_test};
 use crate::projects;
+use crate::ui::pad::DESELECT;
 use crate::world::{self, three_significant};
 
 /// The name of the ocean ridge mode of the brush.
@@ -160,8 +162,17 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                             globe.line.smoothing = percent / 100.0;
                         }
                     }
+                    if globe.filling() {
+                        let mode = &mut globe.line.polygon_mode;
+                        ui.selectable_value(mode, PolygonMode::New, "New");
+                        ui.selectable_value(mode, PolygonMode::Add, "Add")
+                            .on_hover_text("Shift during a stroke");
+                        ui.selectable_value(mode, PolygonMode::Subtract, "Subtract")
+                            .on_hover_text("Option during a stroke");
+                    }
                     if globe.drawing() {
-                        ui.checkbox(&mut globe.line.reshape, RESHAPE);
+                        let new = !globe.filling() || globe.line.polygon_mode == PolygonMode::New;
+                        ui.add_enabled(new, egui::Checkbox::new(&mut globe.line.reshape, RESHAPE));
                     }
                     if globe.lining() {
                         let terrain = globe.fit_layer.is_some();
@@ -180,6 +191,9 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                 }
                 if state.globe.measuring() {
                     path_buttons(ui, state);
+                }
+                if !state.feature_selection.is_empty() && ui.button(DESELECT).clicked() {
+                    state.feature_selection.clear();
                 }
                 // The menu stays open while the user works on the list.
                 let stay = egui::containers::menu::MenuConfig::new()

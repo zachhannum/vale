@@ -16,7 +16,8 @@ use vale_store::{Geometry, LonLat};
 use super::line::{chains, to_parts_exact};
 use super::math::{V3, angle, lonlat_to_dir};
 use super::polygon::{
-    MIN_AREA, MIN_LENGTH, SAME, densify, dirs, path, path_length, rings, signed_area, to_polygons,
+    MIN_AREA, MIN_LENGTH, SAME, densify, dirs, flat_area, path, path_length, rings, signed_area,
+    to_polygons,
 };
 use super::snap::{PathVertex, Run, append, project};
 use super::vector;
@@ -101,7 +102,7 @@ fn slice(path: &[PathVertex], from: &Spot, to: &Spot) -> Vec<PathVertex> {
 }
 
 /// The first and the last point of a stroke.
-fn ends(runs: &[Run]) -> Option<(V3, V3)> {
+pub(super) fn ends(runs: &[Run]) -> Option<(V3, V3)> {
     let points = |r: &Run| -> Vec<V3> {
         match r {
             Run::Free(s) => s.clone(),
@@ -231,19 +232,10 @@ fn reshape_lines(
 /// A ring of a polygon feature on the sphere, with the polygon on the
 /// left. A ring that crosses the 180 degree meridian is one outline.
 pub(super) struct Outline {
-    ring: Vec<PathVertex>,
+    pub(super) ring: Vec<PathVertex>,
     hole: bool,
     /// The polygons and the rings that make the outline.
     sources: Vec<(usize, usize)>,
-}
-
-/// The area of a ring on a flat map, positive when it goes
-/// counterclockwise.
-fn flat_area(ring: &[LonLat]) -> f64 {
-    ring.windows(2)
-        .map(|w| w[0][0] * w[1][1] - w[1][0] * w[0][1])
-        .sum::<f64>()
-        / 2.0
 }
 
 /// The outlines of stored polygons. The edges along the 180 degree
