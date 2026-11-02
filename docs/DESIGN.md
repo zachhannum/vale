@@ -400,6 +400,15 @@ The short arc of a great circle between the two ends of the stroke closes the ri
 
 Where the ring crosses the 180 degree meridian, the feature has a polygon on each side, with an edge along the meridian. A ring around a pole goes along the meridian to the pole and then along the pole. Each ring is closed and goes counterclockwise in longitude and latitude, and no two of its edges cross.
 
+The tool has three modes: New, Add, and Subtract. New is the default, and in New each stroke makes a new feature. In Add and Subtract, the stroke closes into a ring as in New, and its area changes polygons that exist. The stroke snaps and traces as in New, so a part of the new outline can follow a coast.
+
+- Add joins the area of the ring to a polygon. It changes the selected polygon of the layer. With no selection, it changes the polygon where the stroke starts, or the polygon whose outline is within 12 points of the start. A stroke that starts away from a polygon changes nothing. Ground between the stroke and the polygon joins only where it is inside the ring.
+- Subtract cuts the area of the ring out of polygons. It changes the selected polygons of the layer. With no selection, it changes each polygon of the layer that the ring overlaps. A cut through a polygon leaves one feature with two polygons, and a cut inside a polygon leaves a hole. A cut that covers a whole feature deletes the feature.
+
+The outlines of the feature and the ring divide the sphere into areas, and the result is a set of these areas. Thus the result is valid on the sphere, also across the 180 degree meridian and around a pole. The stored vertices of the old outline do not move, and the feature keeps its UUID and its attributes. A hole is a ring of its polygon, and each ring goes counterclockwise in longitude and latitude. Each stroke is one undo step.
+
+On the iPad, the mode cell is the first cell of the card below the tool strip. It shows the mode, and a tap of a finger, of the pen, or of the mouse chooses the next mode. On the desktop, the tool bar has the three modes. Shift during a stroke chooses Add for that stroke, and Option chooses Subtract. The mode is not saved in the project.
+
 ### Points
 
 The point tool places cities, landmarks, and other named places in the selected point layer. A tap of the pen or a click of the mouse places one point, and a finger turns the globe. The point snaps to the targets of the snap service. A point that snaps to a vertex gets the stored position of the vertex.
@@ -436,7 +445,7 @@ On the iPad, a card at the top of the screen shows the selection. With one featu
 
 ### Reshape
 
-Reshape redraws a part of the outline of a line or a polygon with a stroke of the line tool or the polygon tool. The Reshape switch of the tool turns it on. With Reshape on, a stroke that starts within 12 points of the outline of a feature in the selected layer reshapes that feature. The nearest outline wins. A stroke that starts at the end of a line still extends the line, and any other stroke draws a new feature. Reshape needs no selection.
+Reshape redraws a part of the outline of a line or a polygon with a stroke of the line tool or the polygon tool. The Reshape switch of the tool turns it on. With Reshape on, a stroke that starts within 12 points of the outline of a feature in the selected layer reshapes that feature. The nearest outline wins. A stroke that starts at the end of a line still extends the line, and any other stroke draws a new feature. Reshape needs no selection. Reshape works in the New mode of the polygon tool only.
 
 - On a polygon, the stroke ends within 12 points of the same ring. The ring then has two possible shapes, one with each part of the old ring between the ends of the stroke. The shape with the larger area stays. A stroke that crosses itself or the outline gives the simple rings of the area, as in the polygon tool. A hole stays in the polygon that holds it. A stroke that ends away from the ring changes nothing.
 - On a line, a stroke that ends on the line takes the place of the part between its ends. A stroke that ends away from the line takes the place of the rest of the line, toward the end of the line that is nearer to the end of the stroke.
@@ -684,7 +693,7 @@ The app has seven editing tools in version 1.
 - Freehand lines and polygons on the globe.
 - Point placement with an attribute form, for cities, landmarks, and other named places.
 - An attribute table with sort, filter, and bulk edit.
-- Line and polygon editing by vertex and by reshape with a stroke, with snapping and a smooth operation.
+- Line and polygon editing by vertex and by reshape with a stroke, with snapping and a smooth operation. A stroke also adds an area to a polygon or subtracts an area from polygons.
 - Label editing on the map: pin, move, select a candidate, exclude.
 
 Photoshop, Illustrator, and similar tools keep color artwork and textures. The command Replace from file makes that round trip cheap.
