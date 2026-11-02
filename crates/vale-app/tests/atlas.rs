@@ -199,6 +199,11 @@ fn tap(h: &mut Pad, name: &str) {
     tap_with(h, rect.center(), Input::Finger);
 }
 
+/// The name of the value field of a slider or a stepper.
+fn field(name: &str) -> String {
+    format!("{name} value")
+}
+
 /// Types `text` in the value field of the slider or the stepper `name`
 /// with its keypad, and closes the keypad.
 #[allow(dead_code)]
@@ -1569,10 +1574,8 @@ fn strokes(h: &mut Pad, index: usize, rgb: [u8; 3], line: f64) -> usize {
 fn a_hand_set_interval_stays_through_a_zoom() {
     let mut h = inset_pad(BOARDS[0]);
     assert_eq!(frame(&h, 1).graticule.interval, None);
-    scroll_to(&mut h, INTERVAL);
-    let slider = control(&h, INTERVAL).unwrap();
-    let from = slider.center();
-    drag(&mut h, from, from - vec2(60.0, 0.0), Input::Finger);
+    scroll_to(&mut h, &field(INTERVAL));
+    step(&mut h, INTERVAL, false);
     let set = frame(&h, 1).graticule.interval;
     assert!(set.is_some());
     assert!(control(&h, AUTO_INTERVAL).is_some());
@@ -1591,6 +1594,27 @@ fn a_hand_set_interval_stays_through_a_zoom() {
     let id = frame(&h, 1).id;
     let (_, auto) = vale_app::ui::atlas::graticule_intervals(h.state_mut(), id).unwrap();
     assert_eq!(frame(&h, 1).graticule.interval, Some(auto));
+}
+
+#[test]
+fn the_interval_stepper_goes_to_the_previous_interval_and_back() {
+    use vale_sphere::INTERVALS;
+    let mut h = inset_pad(BOARDS[0]);
+    let id = frame(&h, 1).id;
+    let (drawn, _) = vale_app::ui::atlas::graticule_intervals(h.state_mut(), id).unwrap();
+    let i = INTERVALS
+        .iter()
+        .position(|v| *v >= drawn * (1.0 - 1e-9))
+        .unwrap();
+    assert!(i > 0, "{drawn}");
+    scroll_to(&mut h, &field(INTERVAL));
+    step(&mut h, INTERVAL, false);
+    assert_eq!(frame(&h, 1).graticule.interval, Some(INTERVALS[i - 1]));
+    step(&mut h, INTERVAL, true);
+    assert_eq!(frame(&h, 1).graticule.interval, Some(INTERVALS[i]));
+    // A typed value in degrees takes the nearest interval.
+    type_value(&mut h, INTERVAL, "14");
+    assert_eq!(frame(&h, 1).graticule.interval, Some(15.0));
 }
 
 #[test]
@@ -1636,7 +1660,7 @@ fn the_graticule_controls_work_with_a_finger() {
         scroll_to(&mut h, GRATICULE);
         tap(&mut h, GRATICULE);
         assert!(!frame(&h, 1).graticule.on, "{size:?}");
-        assert!(control(&h, INTERVAL).is_none(), "{size:?}");
+        assert!(control(&h, &field(INTERVAL)).is_none(), "{size:?}");
         tap(&mut h, GRATICULE);
         assert!(frame(&h, 1).graticule.on, "{size:?}");
         check_controls(&h, "graticule");
@@ -1654,13 +1678,10 @@ fn the_graticule_controls_work_with_a_finger() {
         tap_with(&mut h, square.right_top() + vec2(-4.0, 4.0), Input::Finger);
         assert_ne!(frame(&h, 1).graticule.color, before, "{size:?}");
 
-        scroll_to(&mut h, GRATICULE_WIDTH);
-        let slider = control(&h, GRATICULE_WIDTH).unwrap();
-        tap_with(
-            &mut h,
-            slider.right_center() - vec2(70.0, 0.0),
-            Input::Finger,
-        );
+        scroll_up_to(&mut h, GRATICULE_COLOR);
+        tap(&mut h, GRATICULE_COLOR);
+        scroll_to(&mut h, &field(GRATICULE_WIDTH));
+        type_value(&mut h, GRATICULE_WIDTH, "1.73");
         let width = frame(&h, 1).graticule.width;
         assert!(width > 1.5, "{size:?}: {width}");
         assert_eq!((width * 10.0).round() / 10.0, width);
@@ -1813,7 +1834,7 @@ fn the_neatline_controls_work_with_a_finger() {
         check_controls(&h, "neatline");
         tap(&mut h, NEATLINE);
         assert!(!frame(&h, 1).neatline.on, "{size:?}");
-        assert!(control(&h, NEATLINE_WIDTH).is_none(), "{size:?}");
+        assert!(control(&h, &field(NEATLINE_WIDTH)).is_none(), "{size:?}");
         tap(&mut h, NEATLINE);
         assert!(frame(&h, 1).neatline.on, "{size:?}");
 
@@ -1826,13 +1847,10 @@ fn the_neatline_controls_work_with_a_finger() {
         tap_with(&mut h, square.right_top() + vec2(-4.0, 4.0), Input::Finger);
         assert_ne!(frame(&h, 1).neatline.color, before, "{size:?}");
 
-        scroll_to(&mut h, NEATLINE_WIDTH);
-        let slider = control(&h, NEATLINE_WIDTH).unwrap();
-        tap_with(
-            &mut h,
-            slider.right_center() - vec2(70.0, 0.0),
-            Input::Finger,
-        );
+        scroll_up_to(&mut h, NEATLINE_COLOR);
+        tap(&mut h, NEATLINE_COLOR);
+        scroll_to(&mut h, &field(NEATLINE_WIDTH));
+        type_value(&mut h, NEATLINE_WIDTH, "3.6");
         let width = frame(&h, 1).neatline.width;
         assert!(width > 3.0, "{size:?}: {width}");
         assert_eq!((width * 4.0).round() / 4.0, width);
@@ -1891,6 +1909,20 @@ fn the_panel_of_the_page_sets_the_paper_color_with_a_finger() {
 }
 
 #[test]
+fn a_typed_border_distance_is_set_and_clamped() {
+    let mut h = inset_pad(BOARDS[0]);
+    scroll_to(&mut h, BORDER);
+    tap(&mut h, BORDER);
+    scroll_to(&mut h, &field(BORDER_DISTANCE));
+    type_value(&mut h, BORDER_DISTANCE, "12.4");
+    assert_eq!(frame(&h, 1).border.distances_mm, [12.5; 4]);
+    type_value(&mut h, BORDER_DISTANCE, "200");
+    assert_eq!(frame(&h, 1).border.distances_mm, [30.0; 4]);
+    type_value(&mut h, BORDER_DISTANCE, "-500");
+    assert_eq!(frame(&h, 1).border.distances_mm, [-100.0; 4]);
+}
+
+#[test]
 fn the_border_and_grid_controls_work_with_a_finger() {
     use vale_app::ui::pad::grid_labels::{GRID_LABELS, SIZE as GRID_SIZE};
     use vale_store::BorderStyle;
@@ -1898,7 +1930,7 @@ fn the_border_and_grid_controls_work_with_a_finger() {
         let mut h = inset_pad(size);
         scroll_to(&mut h, BORDER);
         assert!(!frame(&h, 1).border.on, "{size:?}");
-        assert!(control(&h, BORDER_WIDTH).is_none(), "{size:?}");
+        assert!(control(&h, &field(BORDER_WIDTH)).is_none(), "{size:?}");
         tap(&mut h, BORDER);
         assert!(frame(&h, 1).border.on, "{size:?}");
 
@@ -1918,14 +1950,9 @@ fn the_border_and_grid_controls_work_with_a_finger() {
         scroll_up_to(&mut h, SECOND_COLOR);
         tap(&mut h, SECOND_COLOR);
 
-        for name in [BORDER_WIDTH, BORDER_DISTANCE] {
-            scroll_to(&mut h, name);
-            let slider = control(&h, name).unwrap();
-            tap_with(
-                &mut h,
-                slider.right_center() - vec2(30.0, 0.0),
-                Input::Finger,
-            );
+        for (name, text) in [(BORDER_WIDTH, "5.6"), (BORDER_DISTANCE, "16.2")] {
+            scroll_to(&mut h, &field(name));
+            type_value(&mut h, name, text);
         }
         let b = &frame(&h, 1).border;
         let d = b.distances_mm[0];
@@ -1937,22 +1964,17 @@ fn the_border_and_grid_controls_work_with_a_finger() {
 
         // One side can go inside the box.
         scroll_to(&mut h, DISTANCE_BY_SIDE);
-        assert!(control(&h, SIDE_DISTANCES[0]).is_none(), "{size:?}");
+        assert!(control(&h, &field(SIDE_DISTANCES[0])).is_none(), "{size:?}");
         tap(&mut h, DISTANCE_BY_SIDE);
-        assert!(control(&h, BORDER_DISTANCE).is_none(), "{size:?}");
-        scroll_to(&mut h, SIDE_DISTANCES[0]);
-        let slider = control(&h, SIDE_DISTANCES[0]).unwrap();
-        tap_with(
-            &mut h,
-            slider.left_center() + vec2(30.0, 0.0),
-            Input::Finger,
-        );
+        assert!(control(&h, &field(BORDER_DISTANCE)).is_none(), "{size:?}");
+        scroll_to(&mut h, &field(SIDE_DISTANCES[0]));
+        type_value(&mut h, SIDE_DISTANCES[0], "-60");
         let b = &frame(&h, 1).border;
         assert!(b.distances_mm[0] < -50.0, "{size:?}: {b:?}");
         assert_eq!(b.distances_mm[1..], [d; 3], "{size:?}");
         for name in &SIDE_DISTANCES[1..] {
-            scroll_to(&mut h, name);
-            assert!(control(&h, name).is_some(), "{size:?}: {name}");
+            scroll_to(&mut h, &field(name));
+            assert!(control(&h, &field(name)).is_some(), "{size:?}: {name}");
         }
         check_controls(&h, "distance by side");
         // Off, all sides take the top distance.
@@ -1961,28 +1983,21 @@ fn the_border_and_grid_controls_work_with_a_finger() {
         let b = &frame(&h, 1).border;
         assert_eq!(b.distances_mm, [b.distances_mm[0]; 4], "{size:?}");
 
-        scroll_to(&mut h, BORDER_GAP);
-        let slider = control(&h, BORDER_GAP).unwrap();
-        tap_with(
-            &mut h,
-            slider.right_center() - vec2(30.0, 0.0),
-            Input::Finger,
-        );
+        scroll_to(&mut h, &field(BORDER_GAP));
+        type_value(&mut h, BORDER_GAP, "5.6");
         let gap = frame(&h, 1).border.gap_mm;
         assert!(gap > 5.0, "{size:?}: {gap}");
         assert_eq!((gap * 4.0).round() / 4.0, gap);
 
         scroll_to(&mut h, BORDER_STROKE);
-        assert!(control(&h, BORDER_STROKE_WIDTH).is_none(), "{size:?}");
+        assert!(
+            control(&h, &field(BORDER_STROKE_WIDTH)).is_none(),
+            "{size:?}"
+        );
         tap(&mut h, BORDER_STROKE);
         assert!(frame(&h, 1).border.stroke, "{size:?}");
-        scroll_to(&mut h, BORDER_STROKE_WIDTH);
-        let slider = control(&h, BORDER_STROKE_WIDTH).unwrap();
-        tap_with(
-            &mut h,
-            slider.right_center() - vec2(30.0, 0.0),
-            Input::Finger,
-        );
+        scroll_to(&mut h, &field(BORDER_STROKE_WIDTH));
+        type_value(&mut h, BORDER_STROKE_WIDTH, "2.6");
         let width = frame(&h, 1).border.stroke_width;
         assert!(width > 2.0, "{size:?}: {width}");
         assert_eq!((width * 4.0).round() / 4.0, width);
@@ -4396,8 +4411,8 @@ fn every_page_of_the_scale_bar_panel_works_with_a_finger() {
         // The Divisions page.
         tap_row(&mut h, BarPage::Divisions.name());
         check_page(&mut h, &what, &name("bar-divisions"));
-        slider_end(&mut h, item::DIVISIONS, true);
-        slider_end(&mut h, item::SUBDIVISIONS, true);
+        type_value(&mut h, item::DIVISIONS, "20");
+        type_value(&mut h, item::SUBDIVISIONS, "10");
         let b = bar(&h, 0);
         assert_eq!((b.divisions, b.subdivisions), (20, 10));
         tap_row(&mut h, item::BEFORE_ZERO);
@@ -4464,9 +4479,10 @@ fn every_page_of_the_scale_bar_panel_works_with_a_finger() {
         tap_row(&mut h, BarPage::Style.name());
         tap_row(&mut h, ScaleBarKind::Line.label());
         tap_row(&mut h, BarPage::Bar.name());
-        for name in [item::FILL_1, item::FILL_2, item::FILL, item::BAR_HEIGHT] {
+        for name in [item::FILL_1, item::FILL_2, item::FILL] {
             assert!(control(&h, name).is_none(), "{what}: {name}");
         }
+        assert!(control(&h, &field(item::BAR_HEIGHT)).is_none(), "{what}");
         assert!(control(&h, item::LINE_COLOR).is_some());
         back(&mut h);
         tap_row(&mut h, item::delete_name(ItemKind::ScaleBar));
@@ -4492,7 +4508,7 @@ fn the_fill_page_sets_a_hatch_with_a_finger() {
         assert_eq!(h.state().atlas.item_page, Some(ItemPage::Fill(true)));
         check_page(&mut h, &what, "");
         // A solid fill has no hatch rows.
-        for name in [item::BACKGROUND, item::ANGLE, item::SPACING] {
+        for name in [item::BACKGROUND, &field(item::ANGLE), &field(item::SPACING)] {
             assert!(control(&h, name).is_none(), "{what}: {name}");
         }
         // The solid color becomes the background, and the lines take the
@@ -4506,11 +4522,11 @@ fn the_fill_page_sets_a_hatch_with_a_finger() {
         assert_eq!(bar(&h, 0).fill2.background, None);
         assert_eq!(bar(&h, 0).fill1, vale_store::ScaleBarItem::default().fill1);
         assert!(control(&h, item::LINE_COLOR).is_some(), "{what}");
-        scroll_to(&mut h, item::LINE_WIDTH);
+        scroll_to(&mut h, &field(item::LINE_WIDTH));
         check_page(&mut h, &what, &format!("{prefix}-atlas-bar-fill"));
-        slider_end(&mut h, item::ANGLE, true);
-        slider_end(&mut h, item::SPACING, true);
-        slider_end(&mut h, item::LINE_WIDTH, false);
+        type_value(&mut h, item::ANGLE, "180");
+        type_value(&mut h, item::SPACING, "5");
+        type_value(&mut h, item::LINE_WIDTH, "0.1");
         let fill = bar(&h, 0).fill2;
         assert_eq!(fill.angle, *FillPattern::ANGLES.end());
         assert_eq!(fill.spacing, *FillPattern::SPACINGS.end());
@@ -4608,6 +4624,24 @@ fn each_change_of_a_scale_bar_is_one_undo_step() {
     assert!(bar(&h, 0).before_zero);
     tap(&mut h, "Undo");
     assert!(!bar(&h, 0).before_zero);
+}
+
+#[test]
+fn the_divisions_stepper_adds_one_division_per_tap_up_to_20() {
+    let mut h = pad_with(state(), BOARDS[0]);
+    add_frame(&mut h);
+    add_item(&mut h, ItemKind::ScaleBar);
+    tap_row(&mut h, BarPage::Divisions.name());
+    let n = bar(&h, 0).divisions;
+    assert!(n < 20, "{n}");
+    step(&mut h, item::DIVISIONS, true);
+    assert_eq!(bar(&h, 0).divisions, n + 1);
+    for i in n + 2..=20 {
+        step(&mut h, item::DIVISIONS, true);
+        assert_eq!(bar(&h, 0).divisions, i);
+    }
+    // At 20, the plus button is off.
+    assert!(control(&h, "Increase Divisions").is_none());
 }
 
 #[test]
