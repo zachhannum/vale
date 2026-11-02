@@ -6,6 +6,7 @@ use vale_store::{BlendMode, Hillshade, RasterDisplay, RasterId, Smoothing};
 use vale_terrain::{Bands, MAX_BANDS, Part, StopLine};
 
 use super::geometry::{PAD, Rects};
+use super::number::Number;
 use super::theme;
 use super::widgets::{self, Controls, PANEL_ROW};
 use super::{Page, Panel};
@@ -239,11 +240,16 @@ pub fn style(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, i
         }
         let preview = &mut state.globe.preview;
         let range = elevation::RIVER_WIDTH;
-        let (low, high) = (f64::from(*range.start()), f64::from(*range.end()));
-        let mut fraction = (f64::from(preview.river_width) - low) / (high - low);
-        let text = format!("{:.2}×", preview.river_width);
-        if widgets::row_slider(ui, controls, RIVER_WIDTH, "Width", &mut fraction, &text) {
-            preview.river_width = (low + fraction * (high - low)) as f32;
+        let range = f64::from(*range.start())..=f64::from(*range.end());
+        let width = Number::new(RIVER_WIDTH, f64::from(preview.river_width), range)
+            .label("Width")
+            .step(0.01)
+            .unit("×")
+            .text(|w| format!("{w:.2}×"))
+            .default(1.0)
+            .slider(ui, controls);
+        if let Some(width) = width {
+            preview.river_width = width as f32;
         }
     }
 }
@@ -355,19 +361,14 @@ fn smoothing(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, i
     if !smoothing.on {
         return;
     }
-    let max = Smoothing::FEATURE_SIZE_MAX;
-    let mut fraction = f64::from(smoothing.feature_size / max);
-    let text = format!("{} pt", weight_text(smoothing.feature_size));
-    if widgets::row_slider(
-        ui,
-        controls,
-        FEATURE_SIZE,
-        "Min. feature",
-        &mut fraction,
-        &text,
-    ) {
-        let size = (fraction as f32 * max / WEIGHT_STEP).round() * WEIGHT_STEP;
-        state.set_raster_feature_size(id, size);
+    let max = f64::from(Smoothing::FEATURE_SIZE_MAX);
+    let size = Number::new(FEATURE_SIZE, f64::from(smoothing.feature_size), 0.0..=max)
+        .label("Min. feature")
+        .step(f64::from(WEIGHT_STEP))
+        .unit("pt")
+        .slider(ui, controls);
+    if let Some(size) = size {
+        state.set_raster_feature_size(id, size as f32);
     }
 }
 
@@ -438,13 +439,12 @@ pub fn hillshade_body(
     if !hillshade.on {
         return;
     }
-    let mut fraction = f64::from(hillshade.opacity);
-    let text = format!("{:.0}%", fraction * 100.0);
-    let name = HILLSHADE_OPACITY;
-    if widgets::row_slider(ui, controls, name, "Opacity", &mut fraction, &text) {
-        // The steps are whole percents.
-        let opacity = ((fraction * 100.0).round() / 100.0) as f32;
-        state.set_raster_hillshade_opacity(id, opacity);
+    let opacity = Number::new(HILLSHADE_OPACITY, f64::from(hillshade.opacity), 0.0..=1.0)
+        .label("Opacity")
+        .percent()
+        .slider(ui, controls);
+    if let Some(opacity) = opacity {
+        state.set_raster_hillshade_opacity(id, opacity as f32);
     }
     let name = HILLSHADE_HIGHLIGHTS;
     if widgets::switch_row(ui, controls, name, "Highlights", &mut hillshade.highlights) {
@@ -456,26 +456,27 @@ pub fn hillshade_body(
         state.set_raster_hillshade_azimuth(id, hillshade.azimuth);
     }
 
-    // The steps of the light height are whole degrees.
     let range = Hillshade::ALTITUDES;
-    let (low, high) = (f64::from(*range.start()), f64::from(*range.end()));
-    let mut fraction = (f64::from(hillshade.altitude) - low) / (high - low);
-    let text = format!("{:.0}\u{b0}", hillshade.altitude);
-    let name = HILLSHADE_ALTITUDE;
-    if widgets::row_slider(ui, controls, name, name, &mut fraction, &text) {
-        let altitude = (low + fraction * (high - low)).round() as f32;
-        state.set_raster_hillshade_altitude(id, altitude);
+    let range = f64::from(*range.start())..=f64::from(*range.end());
+    let altitude = Number::new(HILLSHADE_ALTITUDE, f64::from(hillshade.altitude), range)
+        .step(1.0)
+        .unit("\u{b0}")
+        .slider(ui, controls);
+    if let Some(altitude) = altitude {
+        state.set_raster_hillshade_altitude(id, altitude as f32);
     }
 
-    // The relief slider has a log scale, with 1 at the middle. The steps
-    // are hundredths.
-    let low = f64::from(*Hillshade::EXAGGERATIONS.start());
-    let mut fraction = (f64::from(hillshade.exaggeration) / low).log2() / 4.0;
-    let text = format!("{:.2}\u{d7}", hillshade.exaggeration);
-    let name = HILLSHADE_RELIEF;
-    if widgets::row_slider(ui, controls, name, name, &mut fraction, &text) {
-        let exaggeration = (low * (4.0 * fraction).exp2() * 100.0).round() / 100.0;
-        state.set_raster_hillshade_exaggeration(id, exaggeration as f32);
+    let range = Hillshade::EXAGGERATIONS;
+    let range = f64::from(*range.start())..=f64::from(*range.end());
+    let relief = Number::new(HILLSHADE_RELIEF, f64::from(hillshade.exaggeration), range)
+        .log()
+        .step(0.01)
+        .unit("\u{d7}")
+        .text(|r| format!("{r:.2}\u{d7}"))
+        .default(1.0)
+        .slider(ui, controls);
+    if let Some(relief) = relief {
+        state.set_raster_hillshade_exaggeration(id, relief as f32);
     }
 
     let open = state.pad.style.shade_color == Some(id);
@@ -744,12 +745,15 @@ pub fn band_card(
 /// the line changed.
 fn line_controls(ui: &mut egui::Ui, controls: &mut Controls, line: &mut StopLine) -> bool {
     let mut changed = widgets::switch_row(ui, controls, LINE, "Line", &mut line.on);
-    let (lo, hi) = (*StopLine::WEIGHTS.start(), *StopLine::WEIGHTS.end());
-    let mut fraction = f64::from((line.weight - lo) / (hi - lo));
-    let text = format!("{} pt", weight_text(line.weight));
-    if widgets::row_slider(ui, controls, LINE_WEIGHT, "Weight", &mut fraction, &text) {
-        let weight = lo + fraction as f32 * (hi - lo);
-        line.weight = (weight / WEIGHT_STEP).round() * WEIGHT_STEP;
+    let range = StopLine::WEIGHTS;
+    let range = f64::from(*range.start())..=f64::from(*range.end());
+    let weight = Number::new(LINE_WEIGHT, f64::from(line.weight), range)
+        .label("Weight")
+        .step(f64::from(WEIGHT_STEP))
+        .unit("pt")
+        .stepper(ui, controls);
+    if let Some(weight) = weight {
+        line.weight = weight as f32;
         changed = true;
     }
     let active = Some(usize::from(!line.darker));
@@ -759,20 +763,17 @@ fn line_controls(ui: &mut egui::Ui, controls: &mut Controls, line: &mut StopLine
         changed = true;
     }
     if line.darker {
-        let mut fraction = f64::from(line.darken);
-        let text = format!("{:.0}%", line.darken * 100.0);
-        if widgets::row_slider(ui, controls, DARKEN, "Darken", &mut fraction, &text) {
-            line.darken = ((fraction * 20.0).round() / 20.0) as f32;
+        let darken = Number::new(DARKEN, f64::from(line.darken), 0.0..=1.0)
+            .label("Darken")
+            .percent()
+            .step(0.05)
+            .slider(ui, controls);
+        if let Some(darken) = darken {
+            line.darken = darken as f32;
             changed = true;
         }
     }
     changed
-}
-
-/// A weight in points with no zeros at the end, for example `0.25` or `2`.
-fn weight_text(weight: f32) -> String {
-    let text = format!("{weight:.2}");
-    text.trim_end_matches('0').trim_end_matches('.').to_string()
 }
 
 /// The place of a card next to the panel, and the point of the card. The
