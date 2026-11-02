@@ -293,7 +293,7 @@ fn unspike(path: &[PathVertex], closed: bool) -> Vec<Node> {
             out.push(node);
         }
     }
-    while closed {
+    while closed && !out.is_empty() {
         let n = out.len();
         if n >= 2 && same(&out[0], &out[n - 1]) {
             let last = out.pop().expect("a node");

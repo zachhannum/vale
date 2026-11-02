@@ -9210,6 +9210,7 @@ fn the_vector_cell_lists_the_tools_of_the_kind_of_the_selected_layer() {
         // A second tap opens the list, with a row for each tool.
         quick_tap(&mut h, VECTOR);
         assert_eq!(h.state().pad.flyouts.open, Some(Flyout::Vector));
+        screenshot::save(&mut h, &format!("pad-vector-{kind:?}"));
         let list = h.state().pad.flyouts.rect.expect("a list");
         for name in names(kind) {
             let row = control(&h, name).unwrap_or_else(|| panic!("{name}"));

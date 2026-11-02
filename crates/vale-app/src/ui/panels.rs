@@ -141,15 +141,17 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                 if ui.add_enabled(able, draw).clicked() {
                     globe.tool = tool;
                 }
+                // The tools that edit show for the kind of the selected
+                // layer.
                 let kind = if globe.fillable {
-                    GeometryKind::Polygon
+                    Some(GeometryKind::Polygon)
                 } else {
-                    GeometryKind::Line
+                    lineable.then_some(GeometryKind::Line)
                 };
-                for t in vector_tools(kind).into_iter().filter(|t| !t.draws) {
+                let edits = kind.map(vector_tools).unwrap_or_default();
+                for t in edits.into_iter().filter(|t| !t.draws) {
                     let on = globe.editing() && globe.tool == t.tool;
-                    let edit = egui::Button::selectable(on, t.name);
-                    if ui.add_enabled(lineable || globe.fillable, edit).clicked() {
+                    if ui.selectable_label(on, t.name).clicked() {
                         globe.tool = t.tool;
                     }
                 }
