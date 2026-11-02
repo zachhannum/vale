@@ -30,7 +30,7 @@ use super::pad::atlas::{
 use super::pad::edge_labels::EDGE_LABELS;
 use super::pad::grid_labels::GRID_LABELS;
 use super::pad::{GRATICULE, NO_LAYERS};
-use super::{AppState, inspector, style_editor};
+use super::{AppState, inspector, number, style_editor};
 use crate::atlas::{self as math, PAGE_PRESETS};
 
 /// True if the dock shows: a frame, the page, or a layer is selected.
@@ -173,15 +173,11 @@ fn frame_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
                 atlas::set_latitude(state, id, lat);
             }
             ui.end_row();
-            ui.label(ROTATION);
             let mut rotation = frame.rotation;
-            let drag = egui::DragValue::new(&mut rotation).speed(1.0).suffix("°");
-            let drag = ui.add(drag);
-            named(&drag, egui::WidgetType::DragValue, ROTATION);
-            if drag.changed() {
+            let stepper = number::stepper(ROTATION, &mut rotation).step(1.0);
+            if stepper.suffix("°").row(ui).changed() {
                 atlas::set_rotation(state, id, rotation);
             }
-            ui.end_row();
         });
     let mut graticule = frame.graticule.on;
     if ui.checkbox(&mut graticule, GRATICULE).changed() {
@@ -246,19 +242,15 @@ fn graticule_rows(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) 
                 atlas::set_graticule_color(state, id, color);
             }
             ui.end_row();
-            ui.label(GRATICULE_WIDTH);
             let mut width = g.width;
-            let drag = egui::DragValue::new(&mut width)
+            let stepper = number::stepper(GRATICULE_WIDTH, &mut width)
                 .range(Graticule::WIDTHS)
-                .speed(0.05)
-                .fixed_decimals(1)
+                .step(0.1)
+                .decimals(1)
                 .suffix(" pt");
-            let drag = ui.add(drag);
-            named(&drag, egui::WidgetType::DragValue, GRATICULE_WIDTH);
-            if drag.changed() {
+            if stepper.row(ui).changed() {
                 atlas::set_graticule_width(state, id, width);
             }
-            ui.end_row();
         });
     egui::CollapsingHeader::new(EDGE_LABELS)
         .id_salt("atlas-edge-labels")
@@ -330,24 +322,18 @@ fn edge_label_rows(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord)
         egui::Grid::new("atlas-edge-labels")
             .num_columns(2)
             .show(ui, |ui| {
-                let drag =
-                    |ui: &mut egui::Ui, name: &str, value: &mut f64, range, speed, suffix| {
-                        ui.label(name);
-                        let drag = egui::DragValue::new(value)
-                            .range(range)
-                            .speed(speed)
-                            .suffix(suffix);
-                        let drag = ui.add(drag);
-                        named(&drag, egui::WidgetType::DragValue, name);
-                        ui.end_row();
-                    };
-                drag(ui, edge::SIZE, &mut set.size, EdgeLabels::SIZES, 0.1, " pt");
+                number::stepper(edge::SIZE, &mut set.size)
+                    .range(EdgeLabels::SIZES)
+                    .step(0.5)
+                    .suffix(" pt")
+                    .row(ui);
                 ui.label(edge::COLOR);
                 ui.color_edit_button_srgb(&mut set.color);
                 ui.end_row();
-                let mut percent = set.opacity * 100.0;
-                drag(ui, edge::OPACITY, &mut percent, 0.0..=100.0, 1.0, " %");
-                set.opacity = (percent.round() / 100.0).clamp(0.0, 1.0);
+                number::slider(edge::OPACITY, &mut set.opacity, 0.0..=1.0)
+                    .percent()
+                    .step(1.0)
+                    .row(ui);
                 ui.label(edge::HALO);
                 ui.checkbox(&mut set.halo, "");
                 ui.end_row();
@@ -355,15 +341,11 @@ fn edge_label_rows(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord)
                     ui.label(edge::HALO_COLOR);
                     ui.color_edit_button_srgb(&mut set.halo_color);
                     ui.end_row();
-                    let widths = EdgeLabels::HALO_WIDTHS;
-                    drag(
-                        ui,
-                        edge::HALO_WIDTH,
-                        &mut set.halo_width,
-                        widths,
-                        0.05,
-                        " pt",
-                    );
+                    number::stepper(edge::HALO_WIDTH, &mut set.halo_width)
+                        .range(EdgeLabels::HALO_WIDTHS)
+                        .step(0.1)
+                        .suffix(" pt")
+                        .row(ui);
                 }
                 ui.label(edge::POSITION);
                 ui.horizontal(|ui| {
@@ -384,14 +366,11 @@ fn edge_label_rows(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord)
                     }
                 });
                 ui.end_row();
-                drag(
-                    ui,
-                    edge::OFFSET,
-                    &mut set.offset,
-                    EdgeLabels::OFFSETS,
-                    0.1,
-                    " pt",
-                );
+                number::stepper(edge::OFFSET, &mut set.offset)
+                    .range(EdgeLabels::OFFSETS)
+                    .step(0.5)
+                    .suffix(" pt")
+                    .row(ui);
                 ui.label(edge::EDGES);
                 ui.horizontal(|ui| {
                     let e = &mut set.edges;
@@ -423,19 +402,15 @@ fn neatline_rows(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
                 atlas::set_neatline_color(state, id, color);
             }
             ui.end_row();
-            ui.label(NEATLINE_WIDTH);
             let mut width = b.width;
-            let drag = egui::DragValue::new(&mut width)
+            let stepper = number::stepper(NEATLINE_WIDTH, &mut width)
                 .range(Neatline::WIDTHS)
-                .speed(0.05)
-                .fixed_decimals(2)
+                .step(0.25)
+                .decimals(2)
                 .suffix(" pt");
-            let drag = ui.add(drag);
-            named(&drag, egui::WidgetType::DragValue, NEATLINE_WIDTH);
-            if drag.changed() {
+            if stepper.row(ui).changed() {
                 atlas::set_neatline_width(state, id, width);
             }
-            ui.end_row();
         });
 }
 
@@ -463,13 +438,23 @@ fn border_rows(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
             {
                 atlas::set_border_color(state, id, true, c);
             }
-            if let Some(v) = number(ui, BORDER_WIDTH, b.width_mm, Border::WIDTHS, " mm") {
+            let mut v = b.width_mm;
+            let stepper = number::stepper(BORDER_WIDTH, &mut v)
+                .range(Border::WIDTHS)
+                .step(0.25)
+                .suffix(" mm");
+            if stepper.row(ui).changed() {
                 atlas::set_border_width(state, id, v);
             }
             let by_side = atlas::border_by_side(state, b);
             if !by_side {
                 let d = b.distances_mm[0];
-                if let Some(v) = number(ui, BORDER_DISTANCE, d, Border::DISTANCES, " mm") {
+                let mut v = d;
+                let stepper = number::stepper(BORDER_DISTANCE, &mut v)
+                    .range(Border::DISTANCES)
+                    .step(0.5)
+                    .suffix(" mm");
+                if stepper.row(ui).changed() {
                     atlas::set_border_distance(state, id, None, v);
                 }
             }
@@ -479,12 +464,22 @@ fn border_rows(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
             if by_side {
                 for (i, name) in SIDE_DISTANCES.into_iter().enumerate() {
                     let d = b.distances_mm[i];
-                    if let Some(v) = number(ui, name, d, Border::DISTANCES, " mm") {
+                    let mut v = d;
+                    let stepper = number::stepper(name, &mut v)
+                        .range(Border::DISTANCES)
+                        .step(0.5)
+                        .suffix(" mm");
+                    if stepper.row(ui).changed() {
                         atlas::set_border_distance(state, id, Some(i), v);
                     }
                 }
             }
-            if let Some(v) = number(ui, BORDER_GAP, b.gap_mm, Border::GAPS, " mm") {
+            let mut v = b.gap_mm;
+            let stepper = number::stepper(BORDER_GAP, &mut v)
+                .range(Border::GAPS)
+                .step(0.1)
+                .suffix(" mm");
+            if stepper.row(ui).changed() {
                 atlas::set_border_gap(state, id, v);
             }
             if let Some(on) = check(ui, BORDER_STROKE, b.stroke) {
@@ -495,7 +490,12 @@ fn border_rows(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
                     atlas::set_border_stroke_color(state, id, c);
                 }
                 let widths = Border::STROKE_WIDTHS;
-                if let Some(v) = number(ui, STROKE_WIDTH, b.stroke_width, widths, " pt") {
+                let mut v = b.stroke_width;
+                let stepper = number::stepper(STROKE_WIDTH, &mut v)
+                    .range(widths)
+                    .step(0.25)
+                    .suffix(" pt");
+                if stepper.row(ui).changed() {
                     atlas::set_border_stroke_width(state, id, v);
                 }
             }
@@ -611,9 +611,10 @@ fn look_controls(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord, l
     let old = look;
     let raster = state.doc.layer(layer).is_some_and(|l| l.raster().is_some());
     egui::Grid::new("look").num_columns(2).show(ui, |ui| {
-        ui.label("Opacity");
-        ui.add(egui::Slider::new(&mut look.opacity, 0.0..=1.0));
-        ui.end_row();
+        number::slider("Opacity", &mut look.opacity, 0.0..=1.0)
+            .percent()
+            .step(1.0)
+            .row(ui);
         if raster {
             ui.label(SHOW_AS);
             egui::ComboBox::from_id_salt("look-display")
@@ -705,15 +706,11 @@ fn projection_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) 
                 }
             }
             if let Some(azimuth) = spec.azimuth {
-                ui.label(AZIMUTH);
                 let mut value = azimuth;
-                let drag = egui::DragValue::new(&mut value).speed(1.0).suffix("°");
-                let drag = ui.add(drag);
-                named(&drag, egui::WidgetType::DragValue, AZIMUTH);
-                if drag.changed() {
+                let stepper = number::stepper(AZIMUTH, &mut value).step(1.0);
+                if stepper.suffix("°").row(ui).changed() {
                     atlas::set_azimuth(state, frame.id, value);
                 }
-                ui.end_row();
             }
         });
     if spec.kind.can_tilt() {
@@ -841,15 +838,11 @@ fn page_panel(ui: &mut egui::Ui, state: &mut AppState) {
             if let Some(c) = color(ui, GRID_COLOR, grid.color) {
                 atlas::edit_grid(state, |g| g.color = c);
             }
-            ui.label(GRID_OPACITY);
-            let mut opacity = grid.opacity * 100.0;
-            let slider = egui::Slider::new(&mut opacity, 0.0..=100.0).suffix(" %");
-            let resp = ui.add(slider);
-            named(&resp, egui::WidgetType::Slider, GRID_OPACITY);
-            if resp.changed() {
-                atlas::edit_grid(state, |g| g.opacity = opacity / 100.0);
+            let mut opacity = grid.opacity;
+            let slider = number::slider(GRID_OPACITY, &mut opacity, 0.0..=1.0).percent();
+            if slider.step(1.0).row(ui).changed() {
+                atlas::edit_grid(state, |g| g.opacity = opacity);
             }
-            ui.end_row();
         }
     });
     ui.add_space(4.0);
@@ -869,9 +862,9 @@ fn page_panel(ui: &mut egui::Ui, state: &mut AppState) {
 /// controls of the open class.
 fn labels_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
     use super::pad::labels::{
-        ADD_CLASS, BUFFER, CASE, CURVE_LIMIT, DELETE_CLASS, DUPLICATE_DISTANCE, HALO,
-        LETTER_SPACING, MOVE_DOWN, MOVE_UP, NO_LABEL_LAYERS, OFFSET, OPACITY, PLACEMENT, POSITIONS,
-        REMOVE_DUPLICATES, REPEAT, REPEAT_INTERVAL, SMOOTHING, STYLE,
+        ADD_CLASS, BUFFER, CASE, CURVE_LIMIT, DELETE_CLASS, DUPLICATE_DISTANCE, HALO, HALO_WIDTH,
+        LABEL_SIZE, LETTER_SPACING, MOVE_DOWN, MOVE_UP, NO_LABEL_LAYERS, OFFSET, OPACITY,
+        PLACEMENT, POSITIONS, REMOVE_DUPLICATES, REPEAT, REPEAT_INTERVAL, SMOOTHING, STYLE,
     };
     let map = frame.map;
     if state.label_layers().is_empty() {
@@ -948,12 +941,11 @@ fn labels_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
             }
         });
     ui.horizontal(|ui| {
-        ui.label("Size");
-        ui.add(
-            egui::DragValue::new(&mut class.size)
-                .range(4.0..=72.0)
-                .suffix(" pt"),
-        );
+        number::stepper(LABEL_SIZE, &mut class.size)
+            .range(4.0..=72.0)
+            .step(1.0)
+            .suffix(" pt")
+            .show(ui);
         style_editor::color_button(ui, &mut class.color);
     });
     egui::ComboBox::from_label(CASE)
@@ -963,34 +955,25 @@ fn labels_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
                 ui.selectable_value(&mut class.case, c, c.name());
             }
         });
-    let mut spacing = class.letter_spacing * 100.0;
-    let mut opacity = class.opacity * 100.0;
-    ui.horizontal(|ui| {
-        ui.label(LETTER_SPACING);
-        let drag = egui::DragValue::new(&mut spacing)
-            .range(-10.0..=100.0)
-            .suffix(" %");
-        if ui.add(drag).changed() {
-            class.letter_spacing = spacing / 100.0;
-        }
-    });
-    ui.horizontal(|ui| {
-        ui.label(OPACITY);
-        let slider = egui::Slider::new(&mut opacity, 0.0..=100.0).suffix(" %");
-        if ui.add(slider).changed() {
-            class.opacity = opacity / 100.0;
-        }
-    });
+    number::stepper(LETTER_SPACING, &mut class.letter_spacing)
+        .range(-0.1..=1.0)
+        .factor(100.0)
+        .step(1.0)
+        .suffix(" %")
+        .show(ui);
+    number::slider(OPACITY, &mut class.opacity, 0.0..=1.0)
+        .percent()
+        .step(1.0)
+        .show(ui);
     ui.horizontal(|ui| {
         ui.checkbox(&mut class.halo, HALO);
         if class.halo {
             style_editor::color_button(ui, &mut class.halo_color);
-            ui.add(
-                egui::DragValue::new(&mut class.halo_width)
-                    .range(0.5..=8.0)
-                    .speed(0.1)
-                    .suffix(" pt"),
-            );
+            number::stepper(HALO_WIDTH, &mut class.halo_width)
+                .range(0.5..=8.0)
+                .step(0.1)
+                .suffix(" pt")
+                .show(ui);
         }
     });
     egui::ComboBox::from_label(PLACEMENT)
@@ -1022,61 +1005,49 @@ fn labels_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
             class.positions.swap(a, b);
         }
     }
-    ui.horizontal(|ui| {
-        ui.label(OFFSET);
-        let drag = egui::DragValue::new(&mut class.offset)
-            .range(0.0..=20.0)
-            .speed(0.1)
-            .suffix(" pt");
-        ui.add(drag);
-    });
+    number::stepper(OFFSET, &mut class.offset)
+        .range(0.0..=20.0)
+        .step(0.5)
+        .suffix(" pt")
+        .show(ui);
     if kind == vale_store::GeometryKind::Line {
         ui.horizontal(|ui| {
             ui.checkbox(&mut class.repeat, REPEAT);
             if class.repeat {
-                ui.label(REPEAT_INTERVAL);
-                let drag = egui::DragValue::new(&mut class.repeat_distance)
+                number::stepper(REPEAT_INTERVAL, &mut class.repeat_distance)
                     .range(50.0..=2000.0)
-                    .suffix(" pt");
-                ui.add(drag);
+                    .step(10.0)
+                    .suffix(" pt")
+                    .show(ui);
             }
         });
         let mut degrees = class.curve_limit.to_degrees();
-        ui.horizontal(|ui| {
-            ui.label(CURVE_LIMIT);
-            let drag = egui::DragValue::new(&mut degrees)
-                .range(5.0..=60.0)
-                .max_decimals(0)
-                .suffix("°");
-            if ui.add(drag).changed() {
-                class.curve_limit = degrees.to_radians();
-            }
-        });
-        ui.horizontal(|ui| {
-            ui.label(SMOOTHING);
-            let drag = egui::DragValue::new(&mut class.smoothing)
-                .range(0.0..=5.0)
-                .speed(0.05)
-                .suffix("×");
-            ui.add(drag);
-        });
+        let stepper = number::stepper(CURVE_LIMIT, &mut degrees)
+            .range(5.0..=60.0)
+            .step(1.0)
+            .decimals(0)
+            .suffix("°");
+        if stepper.show(ui).changed() {
+            class.curve_limit = degrees.to_radians();
+        }
+        number::slider(SMOOTHING, &mut class.smoothing, 0.0..=5.0)
+            .step(0.1)
+            .suffix("×")
+            .show(ui);
     }
-    ui.horizontal(|ui| {
-        ui.label(BUFFER);
-        let drag = egui::DragValue::new(&mut class.buffer)
-            .range(0.0..=10.0)
-            .speed(0.1)
-            .suffix(" pt");
-        ui.add(drag);
-    });
+    number::stepper(BUFFER, &mut class.buffer)
+        .range(0.0..=10.0)
+        .step(0.5)
+        .suffix(" pt")
+        .show(ui);
     ui.horizontal(|ui| {
         ui.checkbox(&mut class.remove_duplicates, REMOVE_DUPLICATES);
         if class.remove_duplicates {
-            ui.label(DUPLICATE_DISTANCE);
-            let drag = egui::DragValue::new(&mut class.duplicate_distance)
+            number::stepper(DUPLICATE_DISTANCE, &mut class.duplicate_distance)
                 .range(0.0..=2000.0)
-                .suffix(" pt");
-            ui.add(drag);
+                .step(10.0)
+                .suffix(" pt")
+                .show(ui);
         }
     });
     let at = list.iter().position(|(l, j, _)| (*l, *j) == (layer, i));
@@ -1309,28 +1280,6 @@ fn combo<T: PartialEq + Copy>(
     chosen
 }
 
-/// A number row of a grid. Returns the new value while the user drags it.
-fn number(
-    ui: &mut egui::Ui,
-    label: &str,
-    value: f64,
-    range: std::ops::RangeInclusive<f64>,
-    suffix: &str,
-) -> Option<f64> {
-    ui.label(label);
-    let mut v = value;
-    let speed = (range.end() - range.start()) / 200.0;
-    let drag = egui::DragValue::new(&mut v)
-        .range(range)
-        .speed(speed)
-        .max_decimals(2)
-        .suffix(suffix);
-    let resp = ui.add(drag);
-    named(&resp, egui::WidgetType::DragValue, label);
-    ui.end_row();
-    resp.changed().then_some(v)
-}
-
 /// A color row of a grid. Returns the new color.
 fn color(ui: &mut egui::Ui, label: &str, color: vale_store::Rgb) -> Option<vale_store::Rgb> {
     ui.label(label);
@@ -1418,7 +1367,12 @@ fn style_grid(
                 }
             });
         ui.end_row();
-        if let Some(v) = number(ui, item::SIZE, style.size, FurnitureText::SIZES, " pt") {
+        let mut v = style.size;
+        let stepper = number::stepper(item::SIZE, &mut v)
+            .range(FurnitureText::SIZES)
+            .step(0.5)
+            .suffix(" pt");
+        if stepper.row(ui).changed() {
             edit(state, false, &|s| s.size = v);
         }
         let cases = &TextCase::ALL;
@@ -1432,18 +1386,22 @@ fn style_grid(
         ) {
             edit(state, true, &|s| s.case = c);
         }
-        let spacing = style.letter_spacing * 100.0;
-        let range = FurnitureText::LETTER_SPACINGS;
-        let range = range.start() * 100.0..=range.end() * 100.0;
-        if let Some(v) = number(ui, item::LETTER_SPACING, spacing, range, " %") {
-            edit(state, false, &|s| s.letter_spacing = v / 100.0);
+        let mut v = style.letter_spacing;
+        let stepper = number::stepper(item::LETTER_SPACING, &mut v)
+            .range(FurnitureText::LETTER_SPACINGS)
+            .factor(100.0)
+            .step(1.0)
+            .suffix(" %");
+        if stepper.row(ui).changed() {
+            edit(state, false, &|s| s.letter_spacing = v);
         }
         if let Some(c) = color(ui, item::COLOR, style.color) {
             edit(state, false, &|s| s.color = c);
         }
-        let opacity = style.opacity * 100.0;
-        if let Some(v) = number(ui, item::OPACITY, opacity, 0.0..=100.0, " %") {
-            edit(state, false, &|s| s.opacity = v / 100.0);
+        let mut v = style.opacity;
+        let slider = number::slider(item::OPACITY, &mut v, 0.0..=1.0).percent();
+        if slider.step(1.0).row(ui).changed() {
+            edit(state, false, &|s| s.opacity = v);
         }
         if let Some(on) = check(ui, item::HALO, style.halo) {
             edit(state, true, &|s| s.halo = on);
@@ -1453,7 +1411,12 @@ fn style_grid(
                 edit(state, false, &|s| s.halo_color = c);
             }
             let range = FurnitureText::HALO_WIDTHS;
-            if let Some(v) = number(ui, item::HALO_WIDTH, style.halo_width, range, " pt") {
+            let mut v = style.halo_width;
+            let stepper = number::stepper(item::HALO_WIDTH, &mut v)
+                .range(range)
+                .step(0.1)
+                .suffix(" pt");
+            if stepper.row(ui).changed() {
                 edit(state, false, &|s| s.halo_width = v);
             }
         }
@@ -1510,20 +1473,29 @@ fn fill_rows(
     {
         edit(state, false, &|f| f.background = Some(c));
     }
-    if let Some(v) = number(ui, item::ANGLE, fill.angle, FillPattern::ANGLES, "°") {
+    let mut v = fill.angle;
+    let stepper = number::stepper(item::ANGLE, &mut v)
+        .range(FillPattern::ANGLES)
+        .step(5.0)
+        .suffix("°");
+    if stepper.row(ui).changed() {
         edit(state, false, &|f| f.angle = v);
     }
-    if let Some(v) = number(
-        ui,
-        item::SPACING,
-        fill.spacing,
-        FillPattern::SPACINGS,
-        " mm",
-    ) {
+    let mut v = fill.spacing;
+    let stepper = number::stepper(item::SPACING, &mut v)
+        .range(FillPattern::SPACINGS)
+        .step(0.1)
+        .suffix(" mm");
+    if stepper.row(ui).changed() {
         edit(state, false, &|f| f.spacing = v);
     }
     let widths = FillPattern::LINE_WIDTHS;
-    if let Some(v) = number(ui, item::LINE_WIDTH, fill.line_width, widths, " pt") {
+    let mut v = fill.line_width;
+    let stepper = number::stepper(item::LINE_WIDTH, &mut v)
+        .range(widths)
+        .step(0.05)
+        .suffix(" pt");
+    if stepper.row(ui).changed() {
         edit(state, false, &|f| f.line_width = v);
     }
 }
@@ -1630,7 +1602,12 @@ fn bar_sections(
                 ) {
                     edit(state, true, &|b| b.unit_position = p);
                 }
-                if let Some(v) = number(ui, item::GAP, bar.unit_gap, ScaleBarItem::GAPS, " mm") {
+                let mut v = bar.unit_gap;
+                let stepper = number::stepper(item::GAP, &mut v)
+                    .range(ScaleBarItem::GAPS)
+                    .step(0.1)
+                    .suffix(" mm");
+                if stepper.row(ui).changed() {
                     edit(state, false, &|b| b.unit_gap = v);
                 }
             });
@@ -1654,11 +1631,9 @@ fn bar_sections(
                         true,
                     ),
                 ] {
-                    ui.label(label);
                     let mut v = value;
-                    let resp = ui.add(egui::DragValue::new(&mut v).range(range).speed(0.1));
-                    named(&resp, egui::WidgetType::DragValue, label);
-                    if resp.changed() {
+                    let stepper = number::stepper(label, &mut v).range(range).step(1.0);
+                    if stepper.decimals(0).row(ui).changed() {
                         edit(state, false, &|b| {
                             if sub {
                                 b.subdivisions = v;
@@ -1667,7 +1642,6 @@ fn bar_sections(
                             }
                         });
                     }
-                    ui.end_row();
                 }
                 let all = &vale_store::DivisionSpacing::ALL;
                 let label = vale_store::DivisionSpacing::label;
@@ -1731,7 +1705,11 @@ fn bar_sections(
                     };
                     let suffix = format!(" {}", unit.abbreviation());
                     let shown = value.unwrap_or(1.0);
-                    if let Some(v) = number(ui, label, shown, 1e-6..=1e9, &suffix) {
+                    let mut v = shown;
+                    let stepper = number::stepper(label, &mut v)
+                        .range(1e-6..=1e9)
+                        .suffix(&suffix);
+                    if stepper.row(ui).changed() {
                         edit(state, false, &|b| {
                             if second {
                                 b.second_division_value = Some(v);
@@ -1748,16 +1726,15 @@ fn bar_sections(
             .num_columns(2)
             .show(ui, |ui| {
                 let kind = bar.kind;
-                if kind != ScaleBarKind::Line
-                    && let Some(v) = number(
-                        ui,
-                        item::BAR_HEIGHT,
-                        bar.bar_height,
-                        ScaleBarItem::BAR_HEIGHTS,
-                        " mm",
-                    )
-                {
-                    edit(state, false, &|b| b.bar_height = v);
+                if kind != ScaleBarKind::Line {
+                    let mut v = bar.bar_height;
+                    let stepper = number::stepper(item::BAR_HEIGHT, &mut v)
+                        .range(ScaleBarItem::BAR_HEIGHTS)
+                        .step(0.1)
+                        .suffix(" mm");
+                    if stepper.row(ui).changed() {
+                        edit(state, false, &|b| b.bar_height = v);
+                    }
                 }
                 let fills: &[(&str, bool)] = match kind {
                     ScaleBarKind::Alternating | ScaleBarKind::DoubleAlternating => {
@@ -1780,13 +1757,12 @@ fn bar_sections(
                 if let Some(c) = color(ui, label, bar.outline) {
                     edit(state, false, &|b| b.outline = c);
                 }
-                if let Some(v) = number(
-                    ui,
-                    item::LINE_WIDTH,
-                    bar.line_width,
-                    ScaleBarItem::LINE_WIDTHS,
-                    " pt",
-                ) {
+                let mut v = bar.line_width;
+                let stepper = number::stepper(item::LINE_WIDTH, &mut v)
+                    .range(ScaleBarItem::LINE_WIDTHS)
+                    .step(0.1)
+                    .suffix(" pt");
+                if stepper.row(ui).changed() {
                     edit(state, false, &|b| b.line_width = v);
                 }
             });
@@ -1819,22 +1795,20 @@ fn bar_sections(
                     edit(state, true, &|b| b.mark_position = p);
                 }
                 let range = ScaleBarItem::MARK_HEIGHTS;
-                if let Some(v) = number(
-                    ui,
-                    item::DIVISION_HEIGHT,
-                    bar.division_mark_height,
-                    range.clone(),
-                    " mm",
-                ) {
+                let mut v = bar.division_mark_height;
+                let stepper = number::stepper(item::DIVISION_HEIGHT, &mut v)
+                    .range(range.clone())
+                    .step(0.1)
+                    .suffix(" mm");
+                if stepper.row(ui).changed() {
                     edit(state, false, &|b| b.division_mark_height = v);
                 }
-                if let Some(v) = number(
-                    ui,
-                    item::SUBDIVISION_HEIGHT,
-                    bar.subdivision_mark_height,
-                    range,
-                    " mm",
-                ) {
+                let mut v = bar.subdivision_mark_height;
+                let stepper = number::stepper(item::SUBDIVISION_HEIGHT, &mut v)
+                    .range(range)
+                    .step(0.1)
+                    .suffix(" mm");
+                if stepper.row(ui).changed() {
                     edit(state, false, &|b| b.subdivision_mark_height = v);
                 }
             });
@@ -1864,7 +1838,12 @@ fn bar_sections(
                 ) {
                     edit(state, true, &|b| b.number_position = p);
                 }
-                if let Some(v) = number(ui, item::GAP, bar.number_gap, ScaleBarItem::GAPS, " mm") {
+                let mut v = bar.number_gap;
+                let stepper = number::stepper(item::GAP, &mut v)
+                    .range(ScaleBarItem::GAPS)
+                    .step(0.1)
+                    .suffix(" mm");
+                if stepper.row(ui).changed() {
                     edit(state, false, &|b| b.number_gap = v);
                 }
                 ui.label(BarPick::Decimals.name());

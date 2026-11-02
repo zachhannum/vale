@@ -2148,12 +2148,12 @@ fn the_brush_panel_has_the_floor_and_the_ceiling() {
         assert_eq!(brush.limits(), Limits::default(), "{mode}");
         assert_eq!(off(&h), 2, "{mode}");
 
-        h.get_by_label("Floor").click();
+        h.get_by_role_and_label(Role::CheckBox, "Floor").click();
         h.run_steps(2);
         let brush = h.state().globe.brush;
         assert!(brush.floor_on && !brush.ceiling_on, "{mode}");
         assert_eq!(off(&h), 1, "{mode}");
-        h.get_by_label("Ceiling").click();
+        h.get_by_role_and_label(Role::CheckBox, "Ceiling").click();
         h.run_steps(2);
         let brush = h.state().globe.brush;
         assert!(brush.floor_on && brush.ceiling_on, "{mode}");
@@ -2181,6 +2181,31 @@ fn the_brush_panel_has_the_floor_and_the_ceiling() {
         assert!(brush.ceiling_m > 1000.0, "{mode}: {}", brush.ceiling_m);
         assert_eq!(brush.floor_m, 0.0, "{mode}");
     }
+}
+
+#[test]
+fn the_plus_button_of_the_ceiling_raises_it_by_one_step() {
+    let mut h = harness();
+    h.state_mut().globe.tool = Tool::Brush;
+    h.run_steps(2);
+    h.get_by_label("Raise").click();
+    h.run_steps(2);
+    h.get_by_role_and_label(egui::accesskit::Role::CheckBox, "Ceiling")
+        .click();
+    h.run_steps(2);
+    let (min, max) = h.state().globe.brush.value_range;
+    let step = 10f64.powf(((max - min) / 100.0).log10().floor());
+    let before = h.state().globe.brush.ceiling_m;
+    h.get_by_label("Increase Ceiling").click();
+    h.run_steps(2);
+    let after = h.state().globe.brush.ceiling_m;
+    assert!(
+        (after - (before + step)).abs() < 1e-9,
+        "{before} {after} {step}"
+    );
+    h.get_by_label("Decrease Ceiling").click();
+    h.run_steps(2);
+    assert!((h.state().globe.brush.ceiling_m - before).abs() < 1e-9);
 }
 
 /// The level of each texel of the heightmap.
@@ -3219,10 +3244,14 @@ fn the_brush_panel_has_the_uplift_mode_and_its_two_sliders() {
     assert_eq!(h.state().globe.brush.erosion, 0.5);
 }
 
-/// Sets the slider with this label to `value`, as a screen reader does.
+/// Sets the slider or the stepper with this label to `value`, as a screen
+/// reader does.
 fn set_slider(h: &mut Harness<'static, AppState>, label: &str, value: f64) {
     use egui::accesskit::{Action, ActionData, ActionRequest, Role};
-    let node = h.get_by_role_and_label(Role::Slider, label);
+    let node = match h.query_by_role_and_label(Role::Slider, label) {
+        Some(node) => node,
+        None => h.get_by_role_and_label(Role::SpinButton, label),
+    };
     let (target_node, target_tree) = node.accesskit_node().locate();
     h.event(egui::Event::AccessKitActionRequest(ActionRequest {
         action: Action::SetValue,
@@ -6013,7 +6042,8 @@ fn the_desktop_list_has_one_row_per_band_with_the_card_controls() {
     // has no value field and no remove, and the lowest band has only its
     // color.
     let controls = |h: &Harness<AppState>| {
-        [BAND_COLOR, BAND_VALUE, LINE, REMOVE].map(|name| h.query_by_label(name).is_some())
+        [BAND_COLOR, BAND_VALUE, LINE, REMOVE]
+            .map(|name| h.query_all_by_label(name).next().is_some())
     };
     for (band, want) in [
         (sea + 2, [true, true, true, true]),

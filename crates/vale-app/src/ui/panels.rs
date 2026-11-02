@@ -4,6 +4,7 @@ use eframe::egui;
 use vale_sphere::{ProjectionKind, ProjectionSpec};
 use vale_store::{GeometryKind, RasterId, World};
 
+use super::number;
 use super::pad::atlas::{LAYOUT_GRID, NEXT_PAGE, PREVIOUS_PAGE, SNAP_TO_LAYOUT, page_title};
 use super::raster_form::RasterForm;
 use super::world_form::{self, WorldForm};
@@ -154,13 +155,9 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                 }
                 if globe.editing() || globe.measuring() {
                     if globe.drawing() {
-                        let mut percent = globe.line.smoothing * 100.0;
-                        let slider = egui::Slider::new(&mut percent, 0.0..=100.0)
-                            .suffix(" %")
-                            .text(SMOOTHING);
-                        if ui.add(slider).changed() {
-                            globe.line.smoothing = percent / 100.0;
-                        }
+                        number::slider(SMOOTHING, &mut globe.line.smoothing, 0.0..=1.0)
+                            .percent()
+                            .show(ui);
                     }
                     if globe.filling() {
                         let mode = &mut globe.line.polygon_mode;
@@ -178,13 +175,10 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                         let terrain = globe.fit_layer.is_some();
                         let fit = egui::Checkbox::new(&mut globe.line.fit, TERRAIN_FIT);
                         ui.add_enabled(terrain, fit);
-                        let mut percent = globe.line.terrain * 100.0;
-                        let slider = egui::Slider::new(&mut percent, 0.0..=100.0)
-                            .suffix(" %")
-                            .text(BALANCE);
-                        if ui.add_enabled(terrain && globe.line.fit, slider).changed() {
-                            globe.line.terrain = percent / 100.0;
-                        }
+                        number::slider(BALANCE, &mut globe.line.terrain, 0.0..=1.0)
+                            .percent()
+                            .enabled(terrain && globe.line.fit)
+                            .show(ui);
                     }
                     let rasters = raster_layers(state);
                     snap_controls(ui, state, &rasters);
@@ -303,11 +297,10 @@ fn snap_controls(ui: &mut egui::Ui, state: &mut AppState, rasters: &[(RasterId, 
                 snap.set_stops(*id, on);
             }
         }
-        let slider = egui::Slider::new(&mut snap.distance, snap::DISTANCE_RANGE)
-            .step_by(1.0)
+        number::slider(SNAP_DISTANCE, &mut snap.distance, snap::DISTANCE_RANGE)
+            .step(1.0)
             .suffix(" pt")
-            .text(SNAP_DISTANCE);
-        ui.add(slider);
+            .show(ui);
     });
 }
 
@@ -495,22 +488,15 @@ fn selected_layer(ui: &mut egui::Ui, state: &mut AppState) {
         LayerRef::Vector(_) => None,
     };
     if let Some((opacity, blend)) = look {
-        let mut percent = (opacity * 100.0).round();
-        let slider = egui::Slider::new(&mut percent, 0.0..=100.0)
-            .suffix(" %")
-            .fixed_decimals(0)
-            .text("Opacity");
-        let slider = ui.add(slider);
-        named(
-            &slider,
-            egui::WidgetType::Slider,
-            false,
-            OPACITY.to_string(),
-        );
+        let mut opacity = opacity;
+        let slider = number::slider(OPACITY, &mut opacity, 0.0..=1.0)
+            .percent()
+            .step(1.0)
+            .show(ui);
         if slider.changed() {
             match layer {
-                LayerRef::Raster(id) => state.set_raster_opacity(id, percent / 100.0),
-                LayerRef::Image(id) => state.set_image_opacity(id, percent / 100.0),
+                LayerRef::Raster(id) => state.set_raster_opacity(id, opacity),
+                LayerRef::Image(id) => state.set_image_opacity(id, opacity),
                 LayerRef::Vector(_) => false,
             };
         }
@@ -830,27 +816,6 @@ pub(super) fn edge_age_text(brush: &crate::globe::brush::BrushSettings, radius_k
     format!("Edge age {age} Myr")
 }
 
-/// A logarithmic slider of a height in meters. It shows the height as a
-/// value of the layer, which is `scale` times the meters, in a layer with
-/// the value range `span`.
-fn height_slider<'a>(
-    meters: &'a mut f64,
-    range: std::ops::RangeInclusive<f64>,
-    scale: f64,
-    span: f64,
-    unit: &str,
-) -> egui::Slider<'a> {
-    let unit = unit.to_string();
-    egui::Slider::new(meters, range)
-        .logarithmic(true)
-        .smallest_positive(10.0)
-        .custom_formatter(move |meters, _| world::value_text(meters * scale, span, &unit))
-        .custom_parser(move |text| {
-            let number: String = text.chars().take_while(|c| !c.is_alphabetic()).collect();
-            Some(number.trim().parse::<f64>().ok()? / scale)
-        })
-}
-
 /// The name of the strength slider. In the uplift mode, the strength is the
 /// rate of the uplift, and in the range mode and the basin mode the height
 /// of the ground.
@@ -875,18 +840,15 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
             globe.set_basin_outline(None);
         }
     } else {
-        let mut size = globe.brush.radius_km(globe_radius, world_km) / unit_km;
+        let mut size = globe.brush.radius_km(globe_radius, world_km);
         let range = globe.brush.radius_km_range(globe_radius, world_km);
-        let range = range.start() / unit_km..=range.end() / unit_km;
-        let slider = egui::Slider::new(&mut size, range)
-            .logarithmic(true)
-            .custom_formatter(|size, _| three_significant(size))
+        let slider = number::slider("Radius", &mut size, range)
+            .log()
+            .factor(1.0 / unit_km)
             .suffix(format!(" {symbol}"))
-            .text("Radius");
-        if ui.add(slider).changed() {
-            globe
-                .brush
-                .set_radius_km(size * unit_km, globe_radius, world_km);
+            .show(ui);
+        if slider.changed() {
+            globe.brush.set_radius_km(size, globe_radius, world_km);
         }
     }
     // The ocean ridge mode has no falloff and no strength, the range mode
@@ -896,46 +858,42 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
         globe.brush.mode,
         Mode::OceanRidge | Mode::Range | Mode::Basin
     ) {
-        ui.add(egui::Slider::new(&mut globe.brush.hardness, 0.0..=1.0).text("Hardness"));
+        number::slider("Hardness", &mut globe.brush.hardness, 0.0..=1.0).show(ui);
     }
     if globe.brush.mode != Mode::Basin {
-        ui.add(egui::Slider::new(&mut globe.brush.flow, FLOW).text("Flow"));
+        number::slider("Flow", &mut globe.brush.flow, FLOW).show(ui);
     }
     if ridge {
         let brush = &mut globe.brush;
-        let crest = egui::Slider::new(&mut brush.ridge_crest_m, RIDGE_CREST_M)
-            .step_by(50.0)
-            .fixed_decimals(0)
+        number::stepper("Crest", &mut brush.ridge_crest_m)
+            .range(RIDGE_CREST_M)
+            .step(50.0)
+            .decimals(0)
             .suffix(" m")
-            .text("Crest");
-        ui.add(crest);
-        let spread = egui::Slider::new(&mut brush.ridge_spread_mm, RIDGE_SPREAD_MM)
-            .logarithmic(true)
-            .step_by(1.0)
-            .fixed_decimals(0)
+            .show(ui);
+        number::stepper("Spreading", &mut brush.ridge_spread_mm)
+            .range(RIDGE_SPREAD_MM)
+            .step(1.0)
+            .decimals(0)
             .suffix(" mm/yr")
-            .text("Spreading");
-        ui.add(spread);
-        let mut percent = brush.ridge_magma * 100.0;
-        let range = RIDGE_MAGMA.start() * 100.0..=RIDGE_MAGMA.end() * 100.0;
-        let magma = egui::Slider::new(&mut percent, range)
-            .step_by(1.0)
-            .custom_formatter(|percent, _| signed_percent(percent / 100.0))
-            .text("Magma");
-        if ui.add(magma).changed() {
-            brush.ridge_magma = percent / 100.0;
-        }
-        let segment = egui::Slider::new(&mut brush.ridge_segment_km, RIDGE_SEGMENT_KM)
-            .logarithmic(true)
-            .custom_formatter(|km, _| three_significant(km))
+            .show(ui);
+        number::slider("Magma", &mut brush.ridge_magma, RIDGE_MAGMA)
+            .factor(100.0)
+            .step(1.0)
+            .format(|percent| signed_percent(percent / 100.0))
+            .show(ui);
+        number::stepper("Segment", &mut brush.ridge_segment_km)
+            .range(RIDGE_SEGMENT_KM)
+            .step(10.0)
+            .decimals(0)
             .suffix(" km")
-            .text("Segment");
-        ui.add(segment);
-        let offset = egui::Slider::new(&mut brush.ridge_offset_km, RIDGE_OFFSET_KM)
-            .fixed_decimals(0)
+            .show(ui);
+        number::stepper("Offset", &mut brush.ridge_offset_km)
+            .range(RIDGE_OFFSET_KM)
+            .step(5.0)
+            .decimals(0)
             .suffix(" km")
-            .text("Offset");
-        ui.add(offset);
+            .show(ui);
         let radius_km = brush.radius_km(globe_radius, world_km);
         ui.label(edge_age_text(brush, radius_km));
     } else if globe.brush.mode == Mode::Warp {
@@ -943,52 +901,60 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
             (&mut globe.brush.warp_km, WARP_KM, "Strength"),
             (&mut globe.brush.scale_km, SCALE_KM, "Scale"),
         ] {
-            let slider = egui::Slider::new(value, range)
-                .logarithmic(true)
-                .custom_formatter(|km, _| three_significant(km))
+            number::slider(name, value, range)
+                .log()
                 .suffix(" km")
-                .text(name);
-            ui.add(slider);
+                .show(ui);
         }
-        seed_slider(ui, state);
+        seed(ui, state);
     } else if globe.brush.mode == Mode::Push {
         // The motion of the pen and the flow set the distance.
-    } else if globe.brush.mode == Mode::Noise {
-        let brush = &mut globe.brush;
-        let (scale, span) = (
-            brush.meters_value(1.0),
-            brush.value_range.1 - brush.value_range.0,
-        );
-        let raise = &mut brush.noise_raise_m;
-        ui.add(height_slider(raise, NOISE_M, scale, span, &unit).text("Raise"));
-        let lower = &mut brush.noise_lower_m;
-        ui.add(height_slider(lower, NOISE_M, scale, span, &unit).text("Lower"));
     } else {
+        // The height sliders show a height in meters as a value of the
+        // layer.
         let brush = &mut globe.brush;
         let (scale, span) = (
             brush.meters_value(1.0),
             brush.value_range.1 - brush.value_range.0,
         );
-        let strength = height_slider(&mut brush.strength_m, STRENGTH_M, scale, span, &unit);
-        ui.add(strength.text(strength_name(brush.mode)));
+        let text = |v: f64| world::value_text(v, span, &unit);
+        if brush.mode == Mode::Noise {
+            for (name, meters) in [
+                ("Raise", &mut brush.noise_raise_m),
+                ("Lower", &mut brush.noise_lower_m),
+            ] {
+                number::slider(name, meters, NOISE_M)
+                    .log()
+                    .smallest(10.0)
+                    .factor(scale)
+                    .format(text)
+                    .show(ui);
+            }
+        } else {
+            let name = strength_name(brush.mode);
+            number::slider(name, &mut brush.strength_m, STRENGTH_M)
+                .log()
+                .smallest(10.0)
+                .factor(scale)
+                .format(text)
+                .show(ui);
+        }
     }
     let globe = &mut state.globe;
     if globe.brush.mode == Mode::Noise {
-        let scale = egui::Slider::new(&mut globe.brush.scale_km, SCALE_KM)
-            .logarithmic(true)
-            .custom_formatter(|km, _| three_significant(km))
+        number::slider("Scale", &mut globe.brush.scale_km, SCALE_KM)
+            .log()
             .suffix(" km")
-            .text("Scale");
-        ui.add(scale);
+            .show(ui);
         // The slider shows how many times longer the features are along
         // the stroke.
         let mut ratio = 1.0 + globe.brush.noise_grain;
         let range = 1.0 + NOISE_GRAIN.start()..=1.0 + NOISE_GRAIN.end();
-        let grain = egui::Slider::new(&mut ratio, range)
-            .fixed_decimals(1)
+        let grain = number::slider("Grain", &mut ratio, range)
+            .decimals(1)
             .suffix("×")
-            .text("Grain");
-        if ui.add(grain).changed() {
+            .show(ui);
+        if grain.changed() {
             globe.brush.noise_grain = ratio - 1.0;
         }
         ui.checkbox(&mut globe.brush.noise_ridged, "Ridged");
@@ -997,56 +963,53 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
         }
         // The relief follows the height above sea level.
         if globe.is_height() {
-            let mut percent = globe.brush.noise_relief.clamp(0.0, 1.0) * 100.0;
-            let relief = egui::Slider::new(&mut percent, 0.0..=100.0)
-                .step_by(1.0)
-                .suffix(" %")
-                .text("Relief");
-            if ui.add(relief).changed() {
-                globe.brush.noise_relief = percent / 100.0;
+            let mut relief = globe.brush.noise_relief.clamp(0.0, 1.0);
+            let slider = number::slider("Relief", &mut relief, 0.0..=1.0)
+                .percent()
+                .step(1.0)
+                .show(ui);
+            if slider.changed() {
+                globe.brush.noise_relief = relief;
             }
         }
-        seed_slider(ui, state);
+        seed(ui, state);
     }
     let globe = &mut state.globe;
     if globe.brush.mode == Mode::Range {
-        let spacing = egui::Slider::new(&mut globe.brush.range_spacing_km, RANGE_SPACING_KM)
-            .logarithmic(true)
-            .custom_formatter(|km, _| three_significant(km))
+        let spacing = &mut globe.brush.range_spacing_km;
+        number::slider("Spacing", spacing, RANGE_SPACING_KM)
+            .log()
             .suffix(" km")
-            .text("Spacing");
-        ui.add(spacing);
-        seed_slider(ui, state);
+            .show(ui);
+        seed(ui, state);
     }
     let globe = &mut state.globe;
     if globe.brush.mode == Mode::Basin {
-        let density = egui::Slider::new(&mut globe.brush.basin_density_km, BASIN_DENSITY)
-            .logarithmic(true)
-            .custom_formatter(|km, _| three_significant(km))
+        let density = &mut globe.brush.basin_density_km;
+        number::slider("Density", density, BASIN_DENSITY)
+            .log()
             .suffix(" km")
-            .text("Density");
-        ui.add(density);
-        seed_slider(ui, state);
+            .show(ui);
+        seed(ui, state);
     }
     let globe = &mut state.globe;
     if matches!(globe.brush.mode, Mode::Carve | Mode::Erode | Mode::Basin) {
-        let channel = egui::Slider::new(&mut globe.brush.channel_km, CHANNEL_KM)
-            .logarithmic(true)
-            .custom_formatter(|km, _| three_significant(km))
+        number::stepper("Channel width", &mut globe.brush.channel_km)
+            .range(CHANNEL_KM)
             .suffix(" km")
-            .text("Channel width");
-        ui.add(channel).on_hover_text(CHANNEL_HELP);
+            .show(ui)
+            .on_hover_text(CHANNEL_HELP);
     }
     if globe.brush.mode == Mode::Carve {
-        let floodplain = egui::Slider::new(&mut globe.brush.floodplain_km, FLOODPLAIN_WIDTH_KM)
-            .step_by(1.0)
-            .fixed_decimals(0)
+        number::stepper("Floodplain", &mut globe.brush.floodplain_km)
+            .range(FLOODPLAIN_WIDTH_KM)
+            .step(1.0)
+            .decimals(0)
             .suffix(" km")
-            .text("Floodplain");
-        ui.add(floodplain);
+            .show(ui);
     }
     if matches!(globe.brush.mode, Mode::Uplift | Mode::Range) {
-        ui.add(egui::Slider::new(&mut globe.brush.erosion, EROSION).text("Erosion"));
+        number::slider("Erosion", &mut globe.brush.erosion, EROSION).show(ui);
     }
     if matches!(
         globe.brush.mode,
@@ -1070,41 +1033,43 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
             })
             .text("Wind");
         ui.add(wind);
-        let mut percent = world.rain_shadow.clamp(0.0, 1.0) * 100.0;
-        let shadow = egui::Slider::new(&mut percent, 0.0..=100.0)
-            .step_by(1.0)
-            .suffix(" %")
-            .text("Rain shadow");
-        if ui.add(shadow).changed() {
-            world.rain_shadow = percent / 100.0;
+        let mut shadow = world.rain_shadow.clamp(0.0, 1.0);
+        let slider = number::slider("Rain shadow", &mut shadow, 0.0..=1.0)
+            .percent()
+            .step(1.0)
+            .show(ui);
+        if slider.changed() {
+            world.rain_shadow = shadow;
         }
     }
     if matches!(globe.brush.mode, Mode::Weather | Mode::Uplift) {
-        let angle = egui::Slider::new(&mut globe.brush.talus_deg, TALUS_DEG)
-            .logarithmic(true)
-            .custom_formatter(|deg, _| three_significant(deg))
+        number::stepper("Angle", &mut globe.brush.talus_deg)
+            .range(TALUS_DEG)
             .suffix("°")
-            .text("Angle");
-        ui.add(angle);
+            .show(ui);
     }
 }
 
-/// The seed slider of the warp mode, the noise mode, the range mode, and the basin mode. The seed is a
-/// property of the world, so each brush gets the same pattern.
-fn seed_slider(ui: &mut egui::Ui, state: &mut AppState) {
-    let seed = &mut state.doc.project.world.seed;
-    ui.add(egui::Slider::new(seed, SEED).text("Seed"));
+/// The seed of the warp mode, the noise mode, the range mode, and the basin
+/// mode. The seed is a property of the world, so each brush gets the same
+/// pattern.
+fn seed(ui: &mut egui::Ui, state: &mut AppState) {
+    number::stepper("Seed", &mut state.doc.project.world.seed)
+        .range(SEED)
+        .step(1.0)
+        .decimals(0)
+        .show(ui);
 }
 
-/// A field for a value of the layer that the brush paints, in the unit of
-/// the layer. `range` has the values of the lowest and of the highest level.
-fn value_drag<'a>(value: &'a mut f64, (min, max): (f64, f64), unit: &str) -> egui::DragValue<'a> {
-    let span = max - min;
-    egui::DragValue::new(value)
-        .speed(span / 1200.0)
-        .range(min..=max)
-        .fixed_decimals(world::value_decimals(span))
-        .suffix(format!(" {unit}"))
+/// The step of a value of the layer that the brush paints. `range` has the
+/// values of the lowest and of the highest level.
+fn value_step((min, max): (f64, f64)) -> f64 {
+    let span = (max - min).abs();
+    if span > 0.0 && span.is_finite() {
+        10f64.powf((span / 100.0).log10().floor())
+    } else {
+        1.0
+    }
 }
 
 /// The floor and the ceiling of the brush. Each one has a checkbox and a
@@ -1113,13 +1078,20 @@ fn brush_limits(ui: &mut egui::Ui, state: &mut AppState) {
     let unit = state.shown_unit().to_string();
     let brush = &mut state.globe.brush;
     let range = brush.value_range;
+    let decimals = world::value_decimals(range.1 - range.0);
     for (name, on, value) in [
         ("Floor", &mut brush.floor_on, &mut brush.floor_m),
         ("Ceiling", &mut brush.ceiling_on, &mut brush.ceiling_m),
     ] {
         ui.horizontal(|ui| {
             ui.checkbox(on, name);
-            ui.add_enabled(*on, value_drag(value, range, &unit));
+            number::stepper(name, value)
+                .range(range.0..=range.1)
+                .step(value_step(range))
+                .decimals(decimals)
+                .suffix(format!(" {unit}"))
+                .enabled(*on)
+                .show(ui);
         });
     }
 }
@@ -1145,7 +1117,14 @@ pub(super) fn brush_settings(ui: &mut egui::Ui, state: &mut AppState) {
             ui.horizontal(|ui| {
                 let mut value = globe.brush.value(level);
                 let range = globe.brush.value_range;
-                if ui.add(value_drag(&mut value, range, &unit)).changed() {
+                let decimals = world::value_decimals(range.1 - range.0);
+                let stepper = number::stepper("Level", &mut value)
+                    .range(range.0..=range.1)
+                    .step(value_step(range))
+                    .decimals(decimals)
+                    .suffix(format!(" {unit}"))
+                    .show(ui);
+                if stepper.changed() {
                     globe.brush.flatten_level = Some(globe.brush.level(value));
                 }
                 if ui.button("Use stroke start").clicked() {

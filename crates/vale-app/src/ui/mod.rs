@@ -44,6 +44,7 @@ pub mod font_dialog;
 pub mod globe;
 pub mod gradient;
 pub mod inspector;
+pub mod number;
 pub mod pad;
 pub mod panels;
 pub mod point_form;
