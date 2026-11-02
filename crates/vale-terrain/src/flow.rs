@@ -1089,6 +1089,29 @@ pub(crate) fn drop_curves(
     curves
 }
 
+/// The curves of the rivers of a flow on the cells of a window. The level of
+/// a curve is the level of its cells in `levels`, and a curve has no
+/// floodplain. A river cell drains `min_area` or more in `area`.
+pub(crate) fn level_curves(
+    window: &Window,
+    receiver: &[u32],
+    area: &[f32],
+    min_area: f64,
+    levels: &[f64],
+) -> Vec<ChannelCurve> {
+    let dir = |i: usize| window.cell_dir(i % window.cells, i / window.cells);
+    let mut rivers = Rivers::new(receiver, area, min_area, dir, dir);
+    rivers.smooth();
+    let count = rivers.cells.len();
+    let level = |k: usize| levels[rivers.cells[k] as usize];
+    let values = |k: usize| [level(k), f64::from(area[rivers.cells[k] as usize]), 0.0];
+    let after = |k: usize| match rivers.down[k] as usize {
+        down if down < count => level(down),
+        _ => level(k),
+    };
+    rivers.curves_of(normalize, values, after)
+}
+
 /// A square of cells on the texel grid of one face. The grid continues past
 /// the face edges, as it does in `Heightmap::get`, so the window can cover a
 /// part of the next face. A cell is at a fixed place on the sphere: two

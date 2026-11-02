@@ -13,9 +13,9 @@ use super::{
 use vale_terrain::Mode;
 
 use crate::globe::brush::{
-    CHANNEL_HELP, CHANNEL_KM, EROSION, FLOODPLAIN_WIDTH_KM, FLOW, RANGE_SPACING_KM, RIDGE_CREST_M,
-    RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM, SCALE_KM, SEED, STRENGTH_M,
-    TALUS_DEG, WARP_KM, needs_height,
+    BASIN_DENSITY, CHANNEL_HELP, CHANNEL_KM, EROSION, FLOODPLAIN_WIDTH_KM, FLOW, RANGE_SPACING_KM,
+    RIDGE_CREST_M, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM, SCALE_KM, SEED,
+    STRENGTH_M, TALUS_DEG, WARP_KM, needs_height,
 };
 use crate::globe::{Globe, Tool, WorldView, rivers, snap, stats, stroke_test, zoom_test};
 use crate::projects;
@@ -25,6 +25,23 @@ use crate::world::{self, three_significant};
 pub const OCEAN_RIDGE: &str = "Ocean ridge";
 /// The name of the range mode of the brush.
 pub const RANGE: &str = "Range";
+/// The name of the basin mode of the brush.
+pub const BASIN: &str = "Basin";
+/// The hint of the basin mode before the outline.
+pub const BASIN_OUTLINE_HINT: &str = "Draw the outline of the basin.";
+/// The hint of the basin mode after the outline.
+pub const BASIN_RIVER_HINT: &str = "Draw the main river.";
+/// The button that drops the outline of the next basin.
+pub const CLEAR_OUTLINE: &str = "Clear outline";
+
+/// The hint of the basin mode.
+pub fn basin_hint(globe: &crate::globe::Globe) -> &'static str {
+    if globe.basin_outline().is_some() {
+        BASIN_RIVER_HINT
+    } else {
+        BASIN_OUTLINE_HINT
+    }
+}
 
 /// The button of the tool bar that opens the properties of the world.
 pub const WORLD_BUTTON: &str = "World…";
@@ -756,6 +773,7 @@ fn brush_modes(ui: &mut egui::Ui, current: &mut Mode, height: bool) {
             (Mode::Noise, "Noise"),
             (Mode::OceanRidge, OCEAN_RIDGE),
             (Mode::Range, RANGE),
+            (Mode::Basin, BASIN),
         ] {
             let button = egui::Button::selectable(*current == mode, name);
             if ui
@@ -791,11 +809,12 @@ pub(super) fn edge_age_text(brush: &crate::globe::brush::BrushSettings, radius_k
 }
 
 /// The name of the strength slider. In the uplift mode, the strength is the
-/// rate of the uplift, and in the range mode the height of the range.
+/// rate of the uplift, and in the range mode and the basin mode the height
+/// of the ground.
 pub(super) fn strength_name(mode: Mode) -> &'static str {
     match mode {
         Mode::Uplift => "Uplift",
-        Mode::Range => "Height",
+        Mode::Range | Mode::Basin => "Height",
         _ => "Strength",
     }
 }
@@ -806,26 +825,39 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
     let (unit_km, symbol) = world::large_unit(state.doc.project.world.units);
     let globe = &mut state.globe;
     let globe_radius = globe.radius();
-    let mut size = globe.brush.radius_km(globe_radius, world_km) / unit_km;
-    let range = globe.brush.radius_km_range(globe_radius, world_km);
-    let range = range.start() / unit_km..=range.end() / unit_km;
-    let slider = egui::Slider::new(&mut size, range)
-        .logarithmic(true)
-        .custom_formatter(|size, _| three_significant(size))
-        .suffix(format!(" {symbol}"))
-        .text("Radius");
-    if ui.add(slider).changed() {
-        globe
-            .brush
-            .set_radius_km(size * unit_km, globe_radius, world_km);
+    // The outline sets the size of a basin.
+    if globe.brush.mode == Mode::Basin {
+        ui.label(basin_hint(globe));
+        if globe.basin_outline().is_some() && ui.button(CLEAR_OUTLINE).clicked() {
+            globe.set_basin_outline(None);
+        }
+    } else {
+        let mut size = globe.brush.radius_km(globe_radius, world_km) / unit_km;
+        let range = globe.brush.radius_km_range(globe_radius, world_km);
+        let range = range.start() / unit_km..=range.end() / unit_km;
+        let slider = egui::Slider::new(&mut size, range)
+            .logarithmic(true)
+            .custom_formatter(|size, _| three_significant(size))
+            .suffix(format!(" {symbol}"))
+            .text("Radius");
+        if ui.add(slider).changed() {
+            globe
+                .brush
+                .set_radius_km(size * unit_km, globe_radius, world_km);
+        }
     }
-    // The ocean ridge mode has no falloff and no strength, and the range
-    // mode has no falloff.
+    // The ocean ridge mode has no falloff and no strength, the range mode
+    // has no falloff, and the basin mode has no falloff and no flow.
     let ridge = globe.brush.mode == Mode::OceanRidge;
-    if !matches!(globe.brush.mode, Mode::OceanRidge | Mode::Range) {
+    if !matches!(
+        globe.brush.mode,
+        Mode::OceanRidge | Mode::Range | Mode::Basin
+    ) {
         ui.add(egui::Slider::new(&mut globe.brush.hardness, 0.0..=1.0).text("Hardness"));
     }
-    ui.add(egui::Slider::new(&mut globe.brush.flow, FLOW).text("Flow"));
+    if globe.brush.mode != Mode::Basin {
+        ui.add(egui::Slider::new(&mut globe.brush.flow, FLOW).text("Flow"));
+    }
     if ridge {
         let brush = &mut globe.brush;
         let crest = egui::Slider::new(&mut brush.ridge_crest_m, RIDGE_CREST_M)
@@ -931,7 +963,17 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
         seed_slider(ui, state);
     }
     let globe = &mut state.globe;
-    if matches!(globe.brush.mode, Mode::Carve | Mode::Erode) {
+    if globe.brush.mode == Mode::Basin {
+        let density = egui::Slider::new(&mut globe.brush.basin_density_km, BASIN_DENSITY)
+            .logarithmic(true)
+            .custom_formatter(|km, _| three_significant(km))
+            .suffix(" km")
+            .text("Density");
+        ui.add(density);
+        seed_slider(ui, state);
+    }
+    let globe = &mut state.globe;
+    if matches!(globe.brush.mode, Mode::Carve | Mode::Erode | Mode::Basin) {
         let channel = egui::Slider::new(&mut globe.brush.channel_km, CHANNEL_KM)
             .logarithmic(true)
             .custom_formatter(|km, _| three_significant(km))
@@ -950,7 +992,10 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
     if matches!(globe.brush.mode, Mode::Uplift | Mode::Range) {
         ui.add(egui::Slider::new(&mut globe.brush.erosion, EROSION).text("Erosion"));
     }
-    if matches!(globe.brush.mode, Mode::Erode | Mode::Uplift | Mode::Range) {
+    if matches!(
+        globe.brush.mode,
+        Mode::Erode | Mode::Uplift | Mode::Range | Mode::Basin
+    ) {
         // The wind and the rain shadow are properties of the world, so each
         // brush gets the same rain.
         let world = &mut state.doc.project.world;
@@ -988,7 +1033,7 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
     }
 }
 
-/// The seed slider of the warp mode, the noise mode, and the range mode. The seed is a
+/// The seed slider of the warp mode, the noise mode, the range mode, and the basin mode. The seed is a
 /// property of the world, so each brush gets the same pattern.
 fn seed_slider(ui: &mut egui::Ui, state: &mut AppState) {
     let seed = &mut state.doc.project.world.seed;

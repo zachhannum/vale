@@ -25,6 +25,7 @@ use vale_app::headless;
 use vale_app::pen::{PenEvent, PenPhase, PenQueue};
 use vale_app::session::Session;
 use vale_app::ui::gradient::{DESKTOP, GRADIENT, band_row, stop_x};
+use vale_app::ui::panels::{BASIN_OUTLINE_HINT, BASIN_RIVER_HINT, CLEAR_OUTLINE};
 use vale_app::ui::{AppState, LayerRef, RasterSpec, Workspace, draw};
 use vale_import::geojson;
 use vale_store::{RasterDisplay, RasterId};
@@ -4144,6 +4145,312 @@ fn the_brush_panel_has_the_range_mode_and_its_sliders() {
     set_slider(&mut h, "Seed", 42.0);
     let s = h.state();
     assert_eq!(s.globe.brush.range_spacing_km, 120.0);
+    assert_eq!(s.doc.project.world.seed, 42);
+}
+
+/// A harness in the basin mode on the empty world, with this seed.
+fn basin_harness(seed: u32) -> Harness<'static, AppState> {
+    let mut h = uplift_harness();
+    let state = h.state_mut();
+    // The sea is outside a basin, so the basin tests are on land. The fill
+    // is not an undo step of the tests.
+    state.globe.map.fill(meters_to_level(300.0));
+    state.globe.map.set_undo_steps(false);
+    state.globe.map.set_undo_steps(true);
+    state.doc.project.world.seed = seed;
+    state.globe.brush.mode = Mode::Basin;
+    h.run_steps(2);
+    h
+}
+
+/// The samples of the outline of the basin tests: a box around the line of
+/// `ridge_samples`.
+fn basin_outline_samples() -> Vec<vale_app::globe::brush::Sample> {
+    let corners = [(15.0, -16.0), (85.0, -16.0), (85.0, 16.0), (15.0, 16.0)];
+    let mut places = Vec::new();
+    for (i, &(lon0, lat0)) in corners.iter().enumerate() {
+        let (lon1, lat1) = corners[(i + 1) % corners.len()];
+        for step in 0..8 {
+            let t = f64::from(step) / 8.0;
+            places.push((lon0 + (lon1 - lon0) * t, lat0 + (lat1 - lat0) * t));
+        }
+    }
+    places.push(corners[0]);
+    places
+        .into_iter()
+        .map(|(lon, lat)| vale_app::globe::brush::Sample {
+            dir: Some(lonlat_to_dir(lon, lat)),
+            flow: 0.5,
+            radius: 0.1,
+        })
+        .collect()
+}
+
+/// Draws the outline of `basin_outline_samples` with the pen API, one
+/// sample in each frame.
+fn pen_outline(h: &mut Harness<'static, AppState>) {
+    h.state_mut().globe.pen_down();
+    for sample in basin_outline_samples() {
+        let globe = &mut h.state_mut().globe;
+        globe.pen_sample(sample, std::time::Instant::now());
+        h.step();
+    }
+    h.state_mut().globe.pen_up();
+    h.step();
+    settle(h);
+}
+
+/// The points of a line of a basin stroke of these samples on the CPU.
+fn basin_points(
+    h: &Harness<'static, AppState>,
+    samples: Vec<vale_app::globe::brush::Sample>,
+) -> Vec<V3> {
+    use vale_app::globe::brush::Stroke;
+    let globe = &h.state().globe;
+    let (brush, n) = (globe.brush, globe.map.face_size());
+    let mut stamps = Vec::new();
+    let mut stroke = Stroke::default();
+    for sample in samples {
+        stroke.add_sample(&brush, n, sample, |_| 0, &mut stamps);
+    }
+    stroke.finish(&brush, n, &mut stamps);
+    stamps.iter().map(|stamp| stamp.center).collect()
+}
+
+#[test]
+#[ignore = "gpu"]
+fn the_outline_stroke_waits_for_the_main_river_of_the_basin() {
+    let _gpu = one_gpu_test();
+    let mut h = basin_harness(7);
+    let before = all_levels(&h);
+    // The first stroke draws the outline. It changes no texels and makes
+    // no undo step.
+    pen_outline(&mut h);
+    let globe = &h.state().globe;
+    assert!(all_levels(&h) == before);
+    assert!(!globe.can_undo());
+    let outline = basin_points(&h, basin_outline_samples());
+    assert_eq!(globe.basin_outline(), Some(outline.as_slice()));
+    let (closed, river) = globe.basin_preview().unwrap();
+    assert!(closed.len() > 20 && river.is_empty(), "{}", closed.len());
+    // The second stroke draws the main river, and the basin follows.
+    pen_line(&mut h, |_| {});
+    settle(&mut h);
+    let globe = &h.state().globe;
+    assert!(globe.basin_outline().is_none());
+    assert!(globe.basin_preview().is_none());
+    assert!(all_levels(&h) != before);
+    assert!(globe.can_undo());
+    // One undo takes the basin away.
+    assert!(h.state_mut().globe.undo());
+    h.run_steps(2);
+    assert!(all_levels(&h) == before);
+    assert!(!h.state().globe.can_undo());
+}
+
+#[test]
+fn another_mode_or_tool_drops_the_outline_of_the_basin() {
+    let outline: Vec<V3> = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]
+        .iter()
+        .map(|&(lon, lat)| lonlat_to_dir(lon, lat))
+        .collect();
+    for change in [
+        (|g: &mut vale_app::globe::Globe| g.brush.mode = Mode::Range) as fn(&mut _),
+        |g| g.tool = Tool::Navigate,
+    ] {
+        let mut h = harness();
+        let globe = &mut h.state_mut().globe;
+        globe.tool = Tool::Brush;
+        globe.brush.mode = Mode::Basin;
+        globe.set_basin_outline(Some(outline.clone()));
+        h.run_steps(2);
+        assert!(h.state().globe.basin_outline().is_some());
+        change(&mut h.state_mut().globe);
+        h.run_steps(2);
+        assert!(h.state().globe.basin_outline().is_none());
+    }
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_basin_stroke_gives_the_levels_of_the_cpu_basin() {
+    use vale_terrain::BasinLine;
+    let _gpu = one_gpu_test();
+    let mut h = basin_harness(7);
+    let ground = h.state().globe.map.snapshot();
+    let before = all_levels(&h);
+    pen_outline(&mut h);
+    pen_line(&mut h, |h| {
+        // The heightmap waits for the end of the stroke, and the outline
+        // and the main river show.
+        assert!(all_levels(h) == before);
+        let (outline, river) = h.state().globe.basin_preview().unwrap();
+        assert!(outline.len() > 20 && !river.is_empty());
+    });
+    settle(&mut h);
+    assert!(h.state().globe.basin_preview().is_none());
+    let app = all_levels(&h);
+
+    // The same lines on the CPU.
+    let outline = basin_points(&h, basin_outline_samples());
+    let river = basin_points(&h, ridge_samples());
+    let globe = &h.state().globe;
+    let (brush, n, km) = (globe.brush, globe.map.face_size(), globe.world_km);
+    let channel = brush.channel_shape(km);
+    let spec = brush.basin_spec(km, globe.world_seed, globe.world_rain, channel);
+    assert_eq!(spec.seed, 7);
+    let mut line = BasinLine::new(spec, &outline, n);
+    assert!(line.has_outline());
+    for dir in river {
+        line.push(dir);
+    }
+    assert!(line.len() > 20, "{}", line.len());
+    let mut cpu = ground.snapshot();
+    cpu.basin(&vale_terrain::basin(&ground, &line));
+    let texels = (0..6 * n * n).map(|i| (i / (n * n), i % n, i / n % n));
+    let cpu: Vec<u16> = texels
+        .map(|(face, x, y)| cpu.get(face, x as i64, y as i64))
+        .collect();
+    let changed = cpu.iter().zip(&before).filter(|(a, b)| a != b).count();
+    assert!(changed > 2000, "{changed}");
+    assert!(app == cpu);
+    assert_eq!(globe.stats.last().unwrap().id, 2);
+}
+
+#[test]
+#[ignore = "gpu"]
+fn painting_does_not_wait_for_the_basin() {
+    let _gpu = one_gpu_test();
+    let mut h = basin_harness(7);
+    h.state_mut().globe.set_rivers_sync(false);
+    let before = all_levels(&h);
+    pen_outline(&mut h);
+    pen_line(&mut h, |_| {});
+    // The frames that run while the worker makes the basin.
+    let mut waited = 0;
+    let mut frames = 0;
+    while h.state().globe.busy() {
+        if h.state().globe.basin_pending() {
+            waited += 1;
+        }
+        h.step();
+        frames += 1;
+        assert!(frames < 4000, "the stroke did not end");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(waited > 0, "{waited}");
+    let globe = &h.state().globe;
+    assert!(!globe.basin_pending());
+    assert!(globe.can_undo());
+    assert!(all_levels(&h) != before);
+    assert_eq!(globe.stats.last().unwrap().id, 2);
+}
+
+/// Draws the outline of a basin around the stroke of the uplift tests with
+/// the mouse.
+fn mouse_outline(h: &mut Harness<'static, AppState>) {
+    h.run_steps(2);
+    let c = h.state().globe.rect.center();
+    let corners = [
+        (-120.0, -50.0),
+        (120.0, -50.0),
+        (120.0, 50.0),
+        (-120.0, 50.0),
+    ];
+    let corners = corners.map(|(x, y)| c + Vec2::new(x, y));
+    button(h, egui::PointerButton::Primary, corners[0], true);
+    h.step();
+    for (i, &from) in corners.iter().enumerate() {
+        let to = corners[(i + 1) % corners.len()];
+        for step in 1..=8 {
+            h.event(egui::Event::PointerMoved(from.lerp(to, step as f32 / 8.0)));
+            h.step();
+        }
+    }
+    button(h, egui::PointerButton::Primary, corners[0], false);
+    h.step();
+    settle(h);
+}
+
+#[test]
+#[ignore = "gpu"]
+fn one_undo_puts_back_the_ground_from_before_a_basin_stroke() {
+    let _gpu = one_gpu_test();
+    let mut h = basin_harness(7);
+    let before = (all_levels(&h), canvas_image(&mut h));
+    mouse_outline(&mut h);
+    assert!(h.state().globe.basin_outline().is_some());
+    assert!(all_levels(&h) == before.0);
+    let basin = (uplift_stroke(&mut h), canvas_image(&mut h));
+    assert!(basin.0 != before.0);
+    assert!(basin.1.as_raw() != before.1.as_raw());
+    assert_eq!(h.state().globe.stats.last().unwrap().id, 2);
+
+    assert!(h.state_mut().globe.undo());
+    assert!(all_levels(&h) == before.0);
+    assert!(!h.state().globe.can_undo());
+    let image = canvas_image(&mut h);
+    assert!(image.as_raw() == before.1.as_raw(), "the render");
+
+    assert!(h.state_mut().globe.redo());
+    assert!(all_levels(&h) == basin.0);
+    let image = canvas_image(&mut h);
+    assert!(image.as_raw() == basin.1.as_raw(), "the render");
+}
+
+#[test]
+fn the_brush_panel_has_the_basin_mode_and_its_sliders() {
+    let mut h = harness();
+    h.state_mut().globe.tool = Tool::Brush;
+    h.run_steps(2);
+    assert!(h.query_all_by_label("Density").next().is_none());
+    h.get_by_label("Basin").click();
+    h.run_steps(2);
+    let brush = &h.state().globe.brush;
+    assert_eq!(brush.mode, Mode::Basin);
+    assert_eq!(brush.basin_density_km, 40.0);
+    for name in [
+        "Height",
+        "Density",
+        "Seed",
+        "Channel width",
+        "Wind",
+        "Rain shadow",
+        "Floor",
+        "Ceiling",
+        BASIN_OUTLINE_HINT,
+    ] {
+        assert!(h.query_all_by_label(name).next().is_some(), "{name}");
+    }
+    // The outline sets the size of a basin.
+    for name in [
+        "Radius",
+        "Hardness",
+        "Flow",
+        "Erosion",
+        "Spacing",
+        "Floodplain",
+        "Strength",
+        CLEAR_OUTLINE,
+    ] {
+        assert!(h.query_all_by_label(name).next().is_none(), "{name}");
+    }
+    // An outline that waits for its main river has a button that drops it.
+    let outline = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0)];
+    let outline = outline.map(|(lon, lat)| lonlat_to_dir(lon, lat)).to_vec();
+    h.state_mut().globe.set_basin_outline(Some(outline));
+    h.run_steps(2);
+    assert!(h.query_by_label(BASIN_RIVER_HINT).is_some());
+    h.get_by_label(CLEAR_OUTLINE).click();
+    h.run_steps(2);
+    assert!(h.state().globe.basin_outline().is_none());
+    assert!(h.query_by_label(BASIN_OUTLINE_HINT).is_some());
+    assert!(h.query_by_label(CLEAR_OUTLINE).is_none());
+    // The sliders set the density and the seed of the world.
+    set_slider(&mut h, "Density", 120.0);
+    set_slider(&mut h, "Seed", 42.0);
+    let s = h.state();
+    assert_eq!(s.globe.brush.basin_density_km, 120.0);
     assert_eq!(s.doc.project.world.seed, 42);
 }
 

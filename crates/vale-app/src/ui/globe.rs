@@ -991,7 +991,9 @@ pub(super) fn paint_canvas(
             );
         }
     }
-    if let Some(pos) = globe.input.pos.filter(|_| globe.brushing()) {
+    // A basin takes its size from its outline, so it has no brush circle.
+    let circle = globe.brushing() && globe.brush.mode != Mode::Basin;
+    if let Some(pos) = globe.input.pos.filter(|_| circle) {
         let globe_radius = globe.radius();
         let radius = globe.brush.radius(globe_radius);
         let stroke = egui::Stroke::new(1.0, egui::Color32::from_white_alpha(170));
@@ -1009,6 +1011,25 @@ pub(super) fn paint_canvas(
                 }
             }
         }
+    }
+    // The outline of a basin and its main river show until the basin arrives.
+    if let Some((outline, river)) = globe.basin_preview() {
+        let shade = egui::Stroke::new(3.5, egui::Color32::from_black_alpha(90));
+        let line = egui::Stroke::new(1.5, egui::Color32::from_white_alpha(220));
+        if outline.len() > 2 {
+            painter.add(egui::Shape::closed_line(outline.clone(), shade));
+            painter.add(egui::Shape::closed_line(outline, line));
+        }
+        if river.len() > 1 {
+            painter.line(river.clone(), shade);
+            painter.line(river, line);
+        }
+    }
+    if let Some(outline) = globe.outline_preview().filter(|o| o.len() > 1) {
+        let shade = egui::Stroke::new(3.5, egui::Color32::from_black_alpha(90));
+        let line = egui::Stroke::new(1.5, egui::Color32::from_white_alpha(220));
+        painter.line(outline.clone(), shade);
+        painter.line(outline, line);
     }
     // The stroke of the layer, or a plain white one.
     let entries = state.doc.frame.entries.iter();

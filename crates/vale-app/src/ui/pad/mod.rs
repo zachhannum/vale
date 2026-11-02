@@ -17,9 +17,9 @@ use super::world_form::{self, WorldForm};
 use super::{Action, AppState, Note, SaveMark, Workspace, globe, is_height, panels};
 use crate::globe::brush::BrushSettings;
 use crate::globe::brush::{
-    CHANNEL_KM, EROSION, FLOODPLAIN_WIDTH_KM, FLOW, RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_MAGMA,
-    RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM, SCALE_KM, SEED, STRENGTH_M, TALUS_DEG,
-    WARP_KM, needs_height,
+    BASIN_DENSITY, CHANNEL_KM, EROSION, FLOODPLAIN_WIDTH_KM, FLOW, RANGE_SPACING_KM, RIDGE_CREST_M,
+    RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM, SCALE_KM, SEED, STRENGTH_M,
+    TALUS_DEG, WARP_KM, needs_height,
 };
 use crate::globe::snap;
 use crate::globe::{Tool, WorldView};
@@ -93,7 +93,7 @@ pub const SCULPT_MODES: [(&str, Icon, Mode); 7] = [
     ("Noise", Icon::Noise, Mode::Noise),
 ];
 /// The modes of the Terrain cell.
-pub const TERRAIN_MODES: [(&str, Icon, Mode); 8] = [
+pub const TERRAIN_MODES: [(&str, Icon, Mode); 9] = [
     ("Carve", Icon::Carve, Mode::Carve),
     ("Ridge", Icon::Ridge, Mode::Ridge),
     ("Deposit", Icon::Deposit, Mode::Deposit),
@@ -102,6 +102,7 @@ pub const TERRAIN_MODES: [(&str, Icon, Mode); 8] = [
     ("Uplift", Icon::Uplift, Mode::Uplift),
     (panels::OCEAN_RIDGE, Icon::OceanRidge, Mode::OceanRidge),
     (panels::RANGE, Icon::Range, Mode::Range),
+    (panels::BASIN, Icon::Basin, Mode::Basin),
 ];
 
 /// A cell of the tool strip that chooses the brush, and the group of the
@@ -1010,9 +1011,12 @@ fn brush_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
                         }
                     }
                 } else {
-                    size_slider(state, |f, text| slider("Size", f, text, paint));
+                    // The outline sets the size of a basin, and a basin has no
+                    // flow. The sliders keep their place in the card.
+                    let on = paint && state.globe.brush.mode != Mode::Basin;
+                    size_slider(state, |f, text| slider("Size", f, text, on));
                     percent_slider(&mut state.globe.brush.flow, FLOW, |f, text| {
-                        slider("Flow", f, text, paint)
+                        slider("Flow", f, text, on)
                     });
                 }
             }
@@ -1499,24 +1503,31 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
         return;
     }
     let unit = state.shown_unit().to_string();
-    size_slider(state, |fraction, text| {
-        widgets::row_slider(ui, controls, "Brush size", "Size", fraction, text)
-    });
+    // The outline sets the size of a basin.
+    if state.globe.brush.mode == Mode::Basin {
+        basin_rows(ui, controls, &mut state.globe);
+    } else {
+        size_slider(state, |fraction, text| {
+            widgets::row_slider(ui, controls, "Brush size", "Size", fraction, text)
+        });
+    }
     let world_km = state.doc.project.world.radius_km;
     let radius_km = state.globe.brush.radius_km(state.globe.radius(), world_km);
     let height = state.globe.is_height();
     let brush = &mut state.globe.brush;
-    // The ocean ridge mode has no falloff and no strength, and the range
-    // mode has no falloff.
+    // The ocean ridge mode has no falloff and no strength, the range mode
+    // has no falloff, and the basin mode has no falloff and no flow.
     let ridge = brush.mode == Mode::OceanRidge;
-    if !matches!(brush.mode, Mode::OceanRidge | Mode::Range) {
+    if !matches!(brush.mode, Mode::OceanRidge | Mode::Range | Mode::Basin) {
         percent_slider(&mut brush.hardness, 0.0..=1.0, |fraction, text| {
             widgets::row_slider(ui, controls, "Brush hardness", "Hardness", fraction, text)
         });
     }
-    percent_slider(&mut brush.flow, FLOW, |fraction, text| {
-        widgets::row_slider(ui, controls, "Brush flow", "Flow", fraction, text)
-    });
+    if brush.mode != Mode::Basin {
+        percent_slider(&mut brush.flow, FLOW, |fraction, text| {
+            widgets::row_slider(ui, controls, "Brush flow", "Flow", fraction, text)
+        });
+    }
     if ridge {
         ridge_rows(ui, controls, brush, radius_km);
     } else if brush.mode == Mode::Warp {
@@ -1585,7 +1596,22 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
         }
         seed_row(ui, controls, &mut state.doc.project.world.seed);
     }
-    if matches!(brush.mode, Mode::Carve | Mode::Erode) {
+    if brush.mode == Mode::Basin {
+        let text = format!("{} km", world::three_significant(brush.basin_density_km));
+        let density = log_slider(
+            brush.basin_density_km,
+            BASIN_DENSITY,
+            &text,
+            |fraction, text| {
+                widgets::row_slider(ui, controls, "Brush density", "Density", fraction, text)
+            },
+        );
+        if let Some(km) = density {
+            brush.basin_density_km = km;
+        }
+        seed_row(ui, controls, &mut state.doc.project.world.seed);
+    }
+    if matches!(brush.mode, Mode::Carve | Mode::Erode | Mode::Basin) {
         let text = format!("{} km", world::three_significant(brush.channel_km));
         let width = log_slider(brush.channel_km, CHANNEL_KM, &text, |fraction, text| {
             let name = "Brush channel width";
@@ -1614,7 +1640,10 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
             widgets::row_slider(ui, controls, "Brush erosion", "Erosion", fraction, text)
         });
     }
-    if matches!(brush.mode, Mode::Erode | Mode::Uplift | Mode::Range) {
+    if matches!(
+        brush.mode,
+        Mode::Erode | Mode::Uplift | Mode::Range | Mode::Basin
+    ) {
         let world = &mut state.doc.project.world;
         let mut degrees = world.wind_deg as f32;
         if widgets::compass_row(ui, controls, "Brush wind", "Wind", &mut degrees) {
@@ -1657,11 +1686,27 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
     panels::brush_settings(ui, state);
 }
 
+/// The hint of the basin mode, and the button that drops the outline of the
+/// next basin.
+fn basin_rows(ui: &mut egui::Ui, controls: &mut Controls, globe: &mut crate::globe::Globe) {
+    ui.add_space(8.0);
+    let text = egui::RichText::new(panels::basin_hint(globe)).color(theme::MUTE);
+    ui.add(egui::Label::new(text).selectable(false));
+    ui.add_space(8.0);
+    if globe.basin_outline().is_some() {
+        let clear = widgets::button_row(ui, controls, panels::CLEAR_OUTLINE, true);
+        if clear.clicked() {
+            globe.set_basin_outline(None);
+        }
+    }
+}
+
 /// The number of steps of the slider of a limit of the brush. A height has
 /// steps of 50 meters.
 const LIMIT_STEPS: f64 = 240.0;
 
-/// The seed row of the warp mode, the noise mode, and the range mode. The seed is a
+/// The seed row of the warp mode, the noise mode, the range mode, and the
+/// basin mode. The seed is a
 /// property of the world, so each brush gets the same pattern.
 fn seed_row(ui: &mut egui::Ui, controls: &mut Controls, seed: &mut u32) {
     let high = f64::from(*SEED.end());

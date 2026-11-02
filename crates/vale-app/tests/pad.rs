@@ -2590,7 +2590,7 @@ fn the_ocean_ridge_mode_fits_on_the_smallest_ipad() {
 fn the_tool_strip_has_the_range_mode() {
     use vale_app::ui::pad::icons::Icon;
     let range = (panels::RANGE, Icon::Range, Mode::Range);
-    assert_eq!(ModeGroup::Terrain.modes().last(), Some(&range));
+    assert!(ModeGroup::Terrain.modes().contains(&range));
     for size in [BOARDS[0], (1133.0, 744.0)] {
         let mut h = pad(size);
         open_group(&mut h, ModeGroup::Terrain);
@@ -2664,6 +2664,111 @@ fn the_brush_panel_has_the_sliders_of_the_range_mode() {
 }
 
 #[test]
+fn the_tool_strip_has_the_basin_mode() {
+    use vale_app::ui::pad::icons::Icon;
+    let basin = (panels::BASIN, Icon::Basin, Mode::Basin);
+    assert!(ModeGroup::Terrain.modes().contains(&basin));
+    assert_eq!(ModeGroup::of(Mode::Basin), ModeGroup::Terrain);
+    for size in [BOARDS[0], (1133.0, 744.0)] {
+        let mut h = pad(size);
+        open_group(&mut h, ModeGroup::Terrain);
+        let flyout = h.state().pad.modes_rect.unwrap();
+        // The flyout scrolls to its last row.
+        let from = flyout.center();
+        drag(&mut h, from, from - vec2(0.0, 0.4 * flyout.height()), None);
+        let row = control(&h, "Basin").unwrap();
+        assert!(flyout.contains_rect(row), "{size:?}: {row:?}");
+        tap(&mut h, "Basin");
+        let s = h.state();
+        assert_eq!(
+            (s.globe.tool, s.globe.brush.mode),
+            (Tool::Brush, Mode::Basin)
+        );
+        assert_eq!(s.pad.brush_faces[1], Some(("Basin", Icon::Basin)));
+        assert_eq!(toggled(&h, TERRAIN), Some(true));
+        check_controls(&h, &format!("{size:?} with the Basin mode"));
+    }
+}
+
+/// The rows of the basin mode in the brush panel.
+const BASIN_ROWS: [&str; 6] = [
+    "Brush strength",
+    "Brush density",
+    "Brush seed",
+    "Brush channel width",
+    "Brush wind",
+    "Brush rain shadow",
+];
+
+#[test]
+fn the_brush_panel_has_the_sliders_of_the_basin_mode() {
+    let mut h = pad(BOARDS[0]);
+    tap(&mut h, "Brush settings");
+    assert!(control(&h, "Brush density").is_none());
+    choose_mode(&mut h, "Basin");
+    assert_eq!(h.state().globe.brush.mode, Mode::Basin);
+    for row in BASIN_ROWS {
+        assert!(control(&h, row).is_some(), "{row}");
+    }
+    // The outline sets the size of a basin.
+    for row in [
+        "Brush size",
+        "Brush hardness",
+        "Brush flow",
+        "Brush erosion",
+        "Brush spacing",
+        "Brush floodplain",
+        "Brush angle",
+    ] {
+        assert!(control(&h, row).is_none(), "{row}");
+    }
+    // The density goes from one end of its range to the other.
+    assert_eq!(h.state().globe.brush.basin_density_km, 40.0);
+    let rect = control(&h, "Brush density").unwrap();
+    drag(&mut h, rect.center(), rect.left_center(), None);
+    assert!((h.state().globe.brush.basin_density_km - 10.0).abs() < 1e-9);
+    drag(&mut h, rect.left_center(), rect.right_center(), None);
+    assert!((h.state().globe.brush.basin_density_km - 500.0).abs() < 1e-6);
+    // The seed slider sets the seed of the world.
+    let rect = control(&h, "Brush seed").unwrap();
+    drag(&mut h, rect.center(), rect.right_center(), None);
+    assert_eq!(h.state().globe.world_seed, 999);
+    check_controls(&h, "the Basin mode");
+}
+
+#[test]
+fn the_basin_panel_shows_the_step_of_the_outline() {
+    use vale_app::globe::math::lonlat_to_dir;
+    for size in [BOARDS[0], BOARDS[1]] {
+        let mut h = pad(size);
+        tap(&mut h, "Brush settings");
+        choose_mode(&mut h, "Basin");
+        assert!(h.query_by_label(panels::BASIN_OUTLINE_HINT).is_some());
+        assert!(control(&h, panels::CLEAR_OUTLINE).is_none());
+        // The outline sets the size, so the size slider of the brush card is off.
+        if let Some(rect) = control(&h, "Size") {
+            let points = h.state().globe.brush.size_points;
+            drag(&mut h, rect.center(), rect.center_top(), None);
+            assert_eq!(h.state().globe.brush.size_points, points, "{size:?}");
+        }
+        // An outline waits for its main river.
+        let outline = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0)];
+        let outline = outline.map(|(lon, lat)| lonlat_to_dir(lon, lat)).to_vec();
+        h.state_mut().globe.set_basin_outline(Some(outline));
+        h.run_steps(2);
+        assert!(h.query_by_label(panels::BASIN_RIVER_HINT).is_some());
+        let button = control(&h, panels::CLEAR_OUTLINE).unwrap();
+        assert!(button.height() >= 44.0, "{size:?}: {button:?}");
+        check_controls(&h, &format!("{size:?} with an outline"));
+        screenshot::save(&mut h, &format!("pad-basin-outline-{}", size.0));
+        tap(&mut h, panels::CLEAR_OUTLINE);
+        assert!(h.state().globe.basin_outline().is_none());
+        assert!(h.query_by_label(panels::BASIN_OUTLINE_HINT).is_some());
+        assert!(control(&h, panels::CLEAR_OUTLINE).is_none());
+    }
+}
+
+#[test]
 fn the_range_mode_fits_on_the_smallest_ipad() {
     let mut h = pad((1133.0, 744.0));
     let screen = h.state().pad.rects.unwrap().screen;
@@ -2707,6 +2812,7 @@ fn the_brush_panel_has_the_channel_rows_of_the_carve_and_erode_modes() {
         ("Carve", [true, true]),
         ("Erode", [true, false]),
         ("Range", [false, false]),
+        ("Basin", [true, false]),
         ("Noise", [false, false]),
         ("Push", [false, false]),
     ] {
