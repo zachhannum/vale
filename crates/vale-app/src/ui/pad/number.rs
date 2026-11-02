@@ -7,7 +7,7 @@ use eframe::egui::{self, Align2, Color32, Order, Pos2, Rect, Sense, pos2, vec2};
 
 use super::geometry::{CELL, PAD, TOUCH};
 use super::theme;
-use super::widgets::{self, Controls, KEYPAD, KeyEdit, Keys, PANEL_ROW, fade, hit};
+use super::widgets::{self, Controls, KEYPAD, KeyEdit, Keys, PANEL_ROW, TICK_NAMES, fade, hit};
 
 const THUMB: f32 = 26.0;
 /// The thumb while a finger holds it.
@@ -66,6 +66,8 @@ pub struct Number<'a> {
     enabled: bool,
     preview: Option<Box<dyn Fn(f64) -> f32 + 'a>>,
     steps: Steps<'a>,
+    ticks: &'a [(f64, &'a str)],
+    field: bool,
 }
 
 impl<'a> Number<'a> {
@@ -86,6 +88,8 @@ impl<'a> Number<'a> {
             enabled: true,
             preview: None,
             steps: Steps::Step,
+            ticks: &[],
+            field: true,
         }
     }
 
@@ -133,6 +137,20 @@ impl<'a> Number<'a> {
     /// nearest choice.
     pub fn choices(mut self, choices: &'a [f64]) -> Self {
         self.steps = Steps::Choices(choices);
+        self
+    }
+
+    /// Named values below the track of a slider. The thumb stops at each
+    /// one, as at the default.
+    pub fn ticks(mut self, ticks: &'a [(f64, &'a str)]) -> Self {
+        self.ticks = ticks;
+        self
+    }
+
+    /// The slider has no value field, because another field of the form
+    /// holds the value.
+    pub fn no_field(mut self) -> Self {
+        self.field = false;
         self
     }
 
@@ -270,17 +288,28 @@ impl<'a> Number<'a> {
     /// starts up or down scrolls the panel.
     pub fn slider(self, ui: &mut egui::Ui, controls: &mut Controls) -> Option<f64> {
         let enabled = self.enabled;
-        let size = vec2(ui.available_width(), PANEL_ROW);
+        let names = if self.ticks.is_empty() {
+            0.0
+        } else {
+            TICK_NAMES
+        };
+        let size = vec2(ui.available_width(), PANEL_ROW + names);
         let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+        let row = rect.with_max_y(rect.top() + PANEL_ROW);
+        let y = row.center().y;
         let text = fade(theme::TEXT, enabled);
         let label = ui
             .painter()
             .layout_no_wrap(self.label.to_owned(), theme::body(), text);
-        let field = Rect::from_min_max(
-            pos2(rect.right() - VALUE_WIDTH, rect.center().y - TOUCH / 2.0),
-            pos2(rect.right(), rect.center().y + TOUCH / 2.0),
-        );
-        let body = rect.with_max_x(field.left());
+        let field = if self.field {
+            Rect::from_min_max(
+                pos2(row.right() - VALUE_WIDTH, y - TOUCH / 2.0),
+                pos2(row.right(), y + TOUCH / 2.0),
+            )
+        } else {
+            Rect::from_min_max(pos2(row.right(), y), pos2(row.right(), y))
+        };
+        let body = row.with_max_x(field.left());
         let resp = hit(
             ui,
             controls,
@@ -290,30 +319,46 @@ impl<'a> Number<'a> {
             enabled,
             None,
         );
-        let left = rect.left() + (label.size().x + 16.0).max(72.0) + THUMB / 2.0;
-        let right = field.left() - 8.0 - THUMB / 2.0;
-        let y = rect.center().y;
+        let left = if self.label.is_empty() {
+            row.left() + 6.0 + THUMB / 2.0
+        } else {
+            row.left() + (label.size().x + 16.0).max(72.0) + THUMB / 2.0
+        };
+        let right = if self.field {
+            field.left() - 8.0 - THUMB / 2.0
+        } else {
+            row.right() - 6.0 - THUMB / 2.0
+        };
         let mut out = self.drag(ui, &resp, right - left, |p| (p.x, (p.y - y).abs()));
         let value = out.unwrap_or(self.value);
 
-        let place = self.place(value) as f32;
-        let x = left + place * (right - left);
+        let x_of = |v: f64| left + self.place(v) as f32 * (right - left);
+        let x = x_of(value);
         let whole = Rect::from_min_max(
             pos2(left - TRACK, y - TRACK / 2.0),
             pos2(right + TRACK, y + TRACK / 2.0),
         );
         let filled = Rect::from_min_max(whole.min, pos2(x, whole.bottom()));
-        let default = self
-            .default
-            .map(|d| left + self.place(d) as f32 * (right - left));
-        let ticks = default.map(|x| pos2(x, y));
-        paint_track(ui, whole, filled, pos2(x, y), ticks, enabled, &resp);
-        let at = pos2(rect.left(), y - label.size().y / 2.0);
-        ui.painter().galley(at, label, text);
+        let marks: Vec<Pos2> = (self.default.iter())
+            .chain(self.ticks.iter().map(|(v, _)| v))
+            .map(|v| pos2(x_of(*v), y))
+            .collect();
+        paint_track(ui, whole, filled, pos2(x, y), &marks, enabled, &resp);
+        let painter = ui.painter();
+        let at = pos2(row.left(), y - label.size().y / 2.0);
+        painter.galley(at, label, text);
+        for (tick, name) in self.ticks {
+            let active = (tick - value).abs() <= tick.abs() * 1e-9;
+            let color = fade(if active { theme::TEXT } else { theme::MUTE }, enabled);
+            let at = pos2(x_of(*tick), row.bottom() - 6.0);
+            painter.text(at, Align2::CENTER_TOP, *name, theme::small(), color);
+        }
 
-        let typed = self.field(ui, controls, field, value, true);
-        out = typed.or(out);
-        widgets::keypad_below(ui, controls, &self.field_name());
+        if self.field {
+            let typed = self.field(ui, controls, field, value, true);
+            out = typed.or(out);
+            widgets::keypad_below(ui, controls, &self.field_name());
+        }
         if let (Some(pos), Some(drag)) = (resp.interact_pointer_pos(), dragging(ui, &resp)) {
             self.bubble(ui, value, drag.note, pos - vec2(0.0, 40.0), false);
         }
@@ -347,10 +392,10 @@ impl<'a> Number<'a> {
             pos2(x + TRACK / 2.0, bottom + TRACK),
         );
         let filled = Rect::from_min_max(pos2(whole.left(), y), whole.max);
-        let tick = self
-            .default
-            .map(|d| pos2(x, bottom - self.place(d) as f32 * (bottom - top)));
-        paint_track(ui, whole, filled, pos2(x, y), tick, enabled, &resp);
+        let marks: Vec<Pos2> = (self.default.iter())
+            .map(|d| pos2(x, bottom - self.place(*d) as f32 * (bottom - top)))
+            .collect();
+        paint_track(ui, whole, filled, pos2(x, y), &marks, enabled, &resp);
         let color = fade(theme::MUTE, enabled);
         let at = pos2(x, rect.bottom() - 6.0);
         let painter = ui.painter();
@@ -523,11 +568,9 @@ impl<'a> Number<'a> {
         };
         ui.data_mut(|data| data.insert_temp(id, drag));
         let near = |d: f64| f64::from(length) * (place - self.place(d)).abs() <= f64::from(DETENT);
-        let value = match self.default {
-            Some(d) if near(d) => d,
-            _ => self.clean(self.at(place)),
-        };
-        Some(value)
+        let stops = self.default.iter().chain(self.ticks.iter().map(|(v, _)| v));
+        let stop = stops.copied().find(|v| near(*v));
+        Some(stop.unwrap_or_else(|| self.clean(self.at(place))))
     }
 
     fn field_name(&self) -> String {
@@ -777,7 +820,7 @@ fn paint_track(
     whole: Rect,
     filled: Rect,
     thumb: Pos2,
-    tick: Option<Pos2>,
+    marks: &[Pos2],
     enabled: bool,
     resp: &egui::Response,
 ) {
@@ -788,8 +831,8 @@ fn paint_track(
         return;
     }
     painter.rect_filled(filled, round, theme::ACCENT);
-    if let Some(at) = tick {
-        painter.circle_filled(at, 2.0, theme::TEXT.gamma_multiply(0.7));
+    for at in marks {
+        painter.circle_filled(*at, 2.0, theme::TEXT.gamma_multiply(0.7));
     }
     let held = resp.dragged() || resp.is_pointer_button_down_on();
     let size = if held { THUMB_HELD } else { THUMB };

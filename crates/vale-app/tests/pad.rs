@@ -4130,7 +4130,7 @@ fn the_world_form_makes_a_new_world_with_a_small_radius() {
         tap(&mut h, NEW_WORLD);
         assert_eq!(h.state().world_form.as_ref().unwrap().mode, FormMode::New);
         check_form(&h, &format!("{size:?} new"));
-        tap_radius(&mut h, 1737.4);
+        drag_radius(&mut h, 1737.4);
         assert_eq!(h.state().world_form.as_ref().unwrap().radius, "1737.4");
         type_text(&mut h, NAME, "Pebble");
         type_text(&mut h, "Radius (km)", "200");
@@ -4180,18 +4180,18 @@ fn the_world_form_makes_a_new_world_with_a_small_radius() {
     }
 }
 
-/// A tap on the radius slider of the open form at the place of this radius.
-fn tap_radius(h: &mut Pad, km: f64) {
+/// A drag on the radius slider of the open form, from the place of the
+/// radius of the form to the place of this radius.
+fn drag_radius(h: &mut Pad, km: f64) {
     let slider = control(h, RADIUS_SLIDER).unwrap();
     let (left, width) = (
         slider.left() + SLIDER_INSET,
         slider.width() - 2.0 * SLIDER_INSET,
     );
-    let pos = pos2(left + radius_fraction(km) as f32 * width, slider.center().y);
-    touch(h, egui::TouchPhase::Start, pos, None);
-    h.step();
-    touch(h, egui::TouchPhase::End, pos, None);
-    h.run_steps(3);
+    let at = |km: f64| pos2(left + radius_fraction(km) as f32 * width, slider.center().y);
+    let form = h.state().world_form.as_ref().unwrap();
+    let from = form.radius_km().unwrap_or(6371.0);
+    drag(h, at(from), at(km), None);
 }
 
 #[test]
@@ -4223,12 +4223,19 @@ fn the_radius_slider_snaps_to_the_known_radii() {
         // The end of the slider is its upper limit.
         drag(
             &mut h,
-            at(12_000.0),
+            at(km),
             pos2(slider.right(), slider.center().y),
             None,
         );
         assert_eq!(radius(&h), 20_000.0);
-        tap_radius(&mut h, 1737.4);
+        // A touch with no drag does not move the radius.
+        let (pos, phase) = (at(3389.5), egui::TouchPhase::Start);
+        touch(&mut h, phase, pos, None);
+        h.step();
+        touch(&mut h, egui::TouchPhase::End, pos, None);
+        h.run_steps(3);
+        assert_eq!(radius(&h), 20_000.0);
+        drag_radius(&mut h, 1737.4);
         assert_eq!(radius(&h), 1737.4);
         // A typed value can be outside the limits of the slider.
         type_text(&mut h, "Radius (km)", "250");
@@ -4272,7 +4279,7 @@ fn the_properties_of_the_world_apply_at_once_and_a_touch_does_not_reach_the_canv
     drag(&mut h, pos2(900.0, 600.0), pos2(700.0, 500.0), None);
     assert!(h.state().globe.view == view);
 
-    tap_radius(&mut h, 3389.5);
+    drag_radius(&mut h, 3389.5);
     tap(&mut h, "Miles");
     let world = &h.state().doc.project.world;
     assert_eq!((world.radius_km, world.units), (3389.5, Units::Imperial));
