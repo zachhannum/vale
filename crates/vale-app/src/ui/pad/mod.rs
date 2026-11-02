@@ -32,6 +32,7 @@ pub mod browser;
 pub mod edge_labels;
 pub mod fields;
 pub mod filter;
+pub mod flyout;
 pub mod fonts;
 pub mod furniture;
 pub mod geometry;
@@ -44,6 +45,7 @@ pub mod text_style;
 pub mod theme;
 pub mod widgets;
 
+use flyout::{Choice, Flyout, Flyouts};
 use geometry::{BrushCard, CELL, Input, MEASURE_CELLS, PAD, ROW, Rects, TOOLS, TOUCH, WidthClass};
 use icons::Icon;
 use widgets::{BODY_PAD, Controls, PANEL_ROW};
@@ -68,9 +70,15 @@ pub const TERRAIN_FIT: &str = "Terrain fit";
 pub const TERRAIN_FIT_SWITCH: &str = "Line terrain fit";
 /// The button that makes a stroke from an outline reshape the feature.
 pub const RESHAPE: &str = "Reshape";
-/// The cell of the brush card that chooses how a stroke of the polygon tool
-/// changes the layer: New, Add, or Subtract. A tap chooses the next mode.
+/// The cell of the brush card that opens the flyout of the modes of the
+/// polygon tool.
 pub const POLYGON_MODE: &str = "Polygon mode";
+/// The modes of the polygon tool.
+pub const POLYGON_MODES: [(&str, Icon, PolygonMode); 3] = [
+    ("New", Icon::Polygon, PolygonMode::New),
+    ("Add", Icon::PolygonAdd, PolygonMode::Add),
+    ("Subtract", Icon::PolygonSubtract, PolygonMode::Subtract),
+];
 /// The name of the Reshape switch of the Brush panel.
 pub const RESHAPE_SWITCH: &str = "Reshape switch";
 /// The slider of the balance between the sketch and the terrain.
@@ -224,7 +232,7 @@ const ADD_WIDTH: f32 = 220.0;
 /// moves with the finger, in seconds.
 pub const HOLD_TIME: f64 = 0.4;
 /// The largest distance that a finger moves during the hold, in points.
-const HOLD_SLOP: f32 = 6.0;
+pub(crate) const HOLD_SLOP: f32 = 6.0;
 
 /// The time that a row takes to snap open or shut, in seconds.
 const SNAP_TIME: f32 = 0.15;
@@ -330,11 +338,8 @@ pub struct PadState {
     pub worlds: Option<Vec<WorldFile>>,
     /// The menu of the worlds in the last frame.
     pub worlds_rect: Option<Rect>,
-    /// The cell whose flyout of the brush modes is open.
-    pub modes: Option<ModeGroup>,
-    /// A hold on this brush cell opened the flyout, so the end of the press
-    /// is not a tap.
-    brush_held: Option<ModeGroup>,
+    /// The cells with a flyout, and the open flyout.
+    pub flyouts: Flyouts,
     /// The last mode that was chosen in each group, by `ModeGroup::ALL`.
     /// `None`: the first mode of the group.
     group_modes: [Option<Mode>; 2],
@@ -348,10 +353,6 @@ pub struct PadState {
     pub panels: Vec<(Panel, Rect)>,
     /// The workspace menu of the last frame.
     pub menu_rect: Option<Rect>,
-    /// The flyout of the brush modes in the last frame.
-    pub modes_rect: Option<Rect>,
-    /// The brush cells of this frame, by `ModeGroup::ALL`.
-    brush_cells: [Option<Rect>; 2],
     /// The label and the icon of each brush cell in the last frame, by
     /// `ModeGroup::ALL`.
     pub brush_faces: [Option<(&'static str, Icon)>; 2],
@@ -491,13 +492,18 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     let mut controls = std::mem::take(&mut state.pad.controls);
     controls.clear();
     state.pad.panels.clear();
+    state.pad.flyouts.begin_frame();
     state.pad.menu_rect = None;
     state.pad.add_button = None;
     if !state.globe.brushing() || state.globe.brush.mode != Mode::Flatten {
         state.globe.pick_level = false;
     }
-    if !state.globe.paintable {
-        state.pad.modes = None;
+    let flyouts = &mut state.pad.flyouts;
+    if !state.globe.paintable && matches!(flyouts.open, Some(Flyout::Brush(_))) {
+        flyouts.open = None;
+    }
+    if !state.globe.filling() {
+        flyouts.close(Flyout::PolygonMode);
     }
 
     top_row(&ctx, state, &mut controls, &rects);
@@ -542,9 +548,10 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     } else {
         state.pad.menu = false;
     }
-    state.pad.modes_rect = None;
-    if let Some(group) = state.pad.modes {
-        modes_flyout(&ctx, state, &mut controls, &rects, group);
+    match state.pad.flyouts.open {
+        Some(Flyout::Brush(group)) => brush_flyout(&ctx, state, &mut controls, &rects, group),
+        Some(Flyout::PolygonMode) => polygon_flyout(&ctx, state, &mut controls, &rects),
+        None => {}
     }
     state.pad.add_rect = None;
     match state.pad.add_button {
@@ -745,7 +752,7 @@ pub fn toggle_measure(state: &mut AppState) {
             };
         }
     }
-    state.pad.modes = None;
+    state.pad.flyouts.open = None;
 }
 
 /// The child of a card, inside the padding of the card.
@@ -790,7 +797,7 @@ fn tool_strip(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
                     && cell.clicked()
                 {
                     globe.tool = tool;
-                    state.pad.modes = None;
+                    state.pad.flyouts.open = None;
                 }
                 let globe = &mut state.globe;
                 let (name, active) = (select::TOOL, globe.selecting());
@@ -798,7 +805,7 @@ fn tool_strip(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
                     .clicked()
                 {
                     globe.tool = Tool::Select;
-                    state.pad.modes = None;
+                    state.pad.flyouts.open = None;
                 }
                 let globe = &mut state.globe;
                 let active = !globe.brushing()
@@ -845,56 +852,21 @@ fn brush_cell(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, 
     let enabled = globe.paintable && (group == ModeGroup::Sculpt || globe.is_height());
     let active = globe.brushing() && current;
     let name = group.name();
-    let cell = widgets::tool_cell(ui, controls, name, label, icon, active, enabled);
-    state.pad.brush_cells[group.index()] = Some(cell.rect);
+    let key = Flyout::Brush(group);
+    let flyouts = &mut state.pad.flyouts;
+    let tapped = flyout::cell(
+        ui, controls, flyouts, key, name, label, icon, active, enabled,
+    );
     state.pad.brush_faces[group.index()] = Some((label, icon));
-    paint_flyout_mark(ui, cell.rect, active, enabled);
-    let held = state.pad.brush_held == Some(group);
-    if cell.clicked() && !held {
+    if tapped {
         if active {
-            let open = state.pad.modes == Some(group);
-            state.pad.modes = (!open).then_some(group);
+            flyouts.toggle(key);
         } else {
             globe.tool = Tool::Brush;
             globe.brush.mode = mode;
-            state.pad.modes = None;
+            flyouts.open = None;
         }
     }
-    if !cell.is_pointer_button_down_on() {
-        if held {
-            state.pad.brush_held = None;
-        }
-        return;
-    }
-    if held {
-        return;
-    }
-    let press = ui.input(|i| {
-        let (start, origin) = (i.pointer.press_start_time()?, i.pointer.press_origin()?);
-        let pos = i.pointer.interact_pos()?;
-        Some((i.time - start, origin.distance(pos)))
-    });
-    match press {
-        Some((held, moved)) if moved <= HOLD_SLOP && held >= HOLD_TIME => {
-            state.pad.brush_held = Some(group);
-            state.pad.modes = Some(group);
-            ui.ctx().request_repaint();
-        }
-        Some((held, moved)) if moved <= HOLD_SLOP => {
-            let wait = std::time::Duration::from_secs_f64(HOLD_TIME - held);
-            ui.ctx().request_repaint_after(wait);
-        }
-        _ => {}
-    }
-}
-
-/// The small triangle at the bottom-right corner of a cell with a flyout.
-fn paint_flyout_mark(ui: &egui::Ui, cell: Rect, active: bool, enabled: bool) {
-    let color = widgets::fade(if active { theme::TEXT } else { theme::MUTE }, enabled);
-    let corner = cell.right_bottom() - vec2(6.0, 6.0);
-    let points = vec![corner, corner - vec2(6.0, 0.0), corner - vec2(0.0, 6.0)];
-    let shape = egui::Shape::convex_polygon(points, color, egui::Stroke::NONE);
-    ui.painter().add(shape);
 }
 
 /// Shows a value as a slider with a logarithmic scale.
@@ -998,26 +970,26 @@ fn brush_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
                 let fill = state.globe.fillable;
                 if vector {
                     if fill {
-                        let mode = &mut state.globe.line.polygon_mode;
-                        let (label, icon, next) = match *mode {
-                            PolygonMode::New => ("New", Icon::Polygon, PolygonMode::Add),
-                            PolygonMode::Add => ("Add", Icon::PolygonAdd, PolygonMode::Subtract),
-                            PolygonMode::Subtract => {
-                                ("Subtract", Icon::PolygonSubtract, PolygonMode::New)
-                            }
-                        };
-                        let on = *mode != PolygonMode::New;
-                        let cell = widgets::tool_cell(
+                        let mode = state.globe.line.polygon_mode;
+                        let (label, icon, _) = POLYGON_MODES
+                            .into_iter()
+                            .find(|m| m.2 == mode)
+                            .expect("a mode");
+                        let key = Flyout::PolygonMode;
+                        let flyouts = &mut state.pad.flyouts;
+                        let on = mode != PolygonMode::New;
+                        if flyout::cell(
                             &mut ui,
                             controls,
+                            flyouts,
+                            key,
                             POLYGON_MODE,
                             label,
                             icon,
                             on,
                             true,
-                        );
-                        if cell.clicked() {
-                            *mode = next;
+                        ) {
+                            flyouts.toggle(key);
                         }
                     }
                     if line {
@@ -2932,88 +2904,48 @@ fn worlds_menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Control
     state.pad.worlds = open.then_some(list);
 }
 
-/// The flyout of the modes of a group. It opens at the right of the cell of
-/// the group.
-fn modes_flyout(
+/// The flyout of the modes of a brush cell.
+fn brush_flyout(
     ctx: &egui::Context,
     state: &mut AppState,
     controls: &mut Controls,
     rects: &Rects,
     group: ModeGroup,
 ) {
-    let Some(cell) = state.pad.brush_cells[group.index()] else {
-        state.pad.modes = None;
-        return;
-    };
-    let rows = group.modes().len() as f32;
-    let room = rects.panel_bottom - rects.tools.top();
-    let size = vec2(
-        geometry::MODES_WIDTH,
-        (10.0 + rows * PANEL_ROW + 10.0).min(room),
-    );
-    let top = cell
-        .top()
-        .min(rects.panel_bottom - size.y)
-        .max(rects.tools.top());
-    let min = pos2(rects.tools.right() + geometry::GAP, top);
-    let rect = Rect::from_min_size(min, size);
-    state.pad.modes_rect = Some(rect);
-    let pressed = ctx.input(|i| {
-        i.pointer
-            .any_pressed()
-            .then(|| i.pointer.interact_pos())
-            .flatten()
-    });
-    if pressed.is_some_and(|pos| !rect.contains(pos) && !cell.contains(pos)) {
-        state.pad.modes = None;
+    let globe = &mut state.globe;
+    let choices: Vec<Choice> = group
+        .modes()
+        .iter()
+        .map(|&(name, icon, mode)| Choice {
+            name,
+            icon,
+            enabled: globe.is_height() || !needs_height(mode),
+        })
+        .collect();
+    let current = group.modes().iter().position(|m| m.2 == globe.brush.mode);
+    let flyouts = &mut state.pad.flyouts;
+    if let Some(i) = flyout::show(ctx, controls, flyouts, rects, &choices, current) {
+        globe.tool = Tool::Brush;
+        globe.brush.mode = group.modes()[i].2;
     }
-    let radius = theme::CARD_RADIUS.into();
-    widgets::card(
-        ctx,
-        None,
-        // Each flyout keeps its own scroll.
-        match group {
-            ModeGroup::Sculpt => "pad-modes-sculpt",
-            ModeGroup::Terrain => "pad-modes-terrain",
-        },
-        rect,
-        Order::Foreground,
-        radius,
-        |ui| {
-            // The flyout covers the Brush panel, so its fill is opaque.
-            ui.painter()
-                .rect_filled(rect, radius, theme::card(false).to_opaque());
-            let inner = rect.shrink2(vec2(BODY_PAD, 10.0));
-            let layout = egui::Layout::top_down(egui::Align::Min);
-            let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
-            ui.set_clip_rect(inner);
-            ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
-            egui::ScrollArea::vertical()
-                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-                .show(&mut ui, |ui| {
-                    let globe = &mut state.globe;
-                    for &(name, icon, mode) in group.modes() {
-                        let enabled = globe.is_height() || !needs_height(mode);
-                        let row = widgets::text_row(ui, controls, name, 32.0, false, enabled);
-                        let at = pos2(row.rect.left() + 11.0, row.rect.center().y);
-                        let icon_rect =
-                            Rect::from_center_size(at, vec2(widgets::ICON, widgets::ICON));
-                        let color = widgets::fade(theme::TEXT, enabled);
-                        icons::paint(ui.painter(), icon_rect, icon, widgets::ICON, color);
-                        if globe.brush.mode == mode {
-                            let tick = Rect::from_center_size(
-                                pos2(row.rect.right() - 14.0, row.rect.center().y),
-                                vec2(18.0, 18.0),
-                            );
-                            icons::paint(ui.painter(), tick, Icon::Tick, 18.0, theme::ACCENT);
-                        }
-                        if row.clicked() {
-                            globe.tool = Tool::Brush;
-                            globe.brush.mode = mode;
-                            state.pad.modes = None;
-                        }
-                    }
-                });
-        },
-    );
+}
+
+/// The flyout of the modes of the polygon tool.
+fn polygon_flyout(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    controls: &mut Controls,
+    rects: &Rects,
+) {
+    let choices = POLYGON_MODES.map(|(name, icon, _)| Choice {
+        name,
+        icon,
+        enabled: true,
+    });
+    let mode = &mut state.globe.line.polygon_mode;
+    let current = POLYGON_MODES.iter().position(|m| m.2 == *mode);
+    let flyouts = &mut state.pad.flyouts;
+    if let Some(i) = flyout::show(ctx, controls, flyouts, rects, &choices, current) {
+        *mode = POLYGON_MODES[i].2;
+    }
 }

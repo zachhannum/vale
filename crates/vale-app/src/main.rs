@@ -11,6 +11,7 @@ use vale_app::headless;
 use vale_app::pipeline::Pipeline;
 use vale_app::session::Session;
 use vale_app::ui::pad::ModeGroup;
+use vale_app::ui::pad::flyout::Flyout;
 use vale_app::ui::raster_form::RasterForm;
 use vale_app::ui::world_form::WorldForm;
 use vale_app::ui::{Action, AppState};
@@ -62,9 +63,9 @@ fn run() -> anyhow::Result<u8> {
         for panel in &args.panel {
             state.pad.open(*panel);
         }
-        state.pad.modes = args
+        state.pad.flyouts.open = args
             .brush_modes
-            .then(|| ModeGroup::of(state.globe.brush.mode));
+            .then(|| Flyout::Brush(ModeGroup::of(state.globe.brush.mode)));
         apply_measure(&args, &mut state)?;
         let world = &state.doc.project.world;
         state.world_form = args.world_form.map(|mode| WorldForm::open(mode, world));
@@ -175,7 +176,8 @@ fn run() -> anyhow::Result<u8> {
                 // The flyout of the brush modes closes while no layer is
                 // painted, so it opens after the import.
                 if args.brush_modes {
-                    state.pad.modes = Some(ModeGroup::of(state.globe.brush.mode));
+                    state.pad.flyouts.open =
+                        Some(Flyout::Brush(ModeGroup::of(state.globe.brush.mode)));
                 }
                 Ok(())
             };

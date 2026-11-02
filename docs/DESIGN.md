@@ -407,7 +407,7 @@ The tool has three modes: New, Add, and Subtract. New is the default, and in New
 
 The outlines of the feature and the ring divide the sphere into areas, and the result is a set of these areas. Thus the result is valid on the sphere, also across the 180 degree meridian and around a pole. The stored vertices of the old outline do not move, and the feature keeps its UUID and its attributes. A hole is a ring of its polygon, and each ring goes counterclockwise in longitude and latitude. Each stroke is one undo step.
 
-On the iPad, the mode cell is the first cell of the card below the tool strip. It shows the mode, and a tap of a finger, of the pen, or of the mouse chooses the next mode. On the desktop, the tool bar has the three modes. Shift during a stroke chooses Add for that stroke, and Option chooses Subtract. The mode is not saved in the project.
+On the iPad, the mode cell is the first cell of the card below the tool strip. It shows the icon and the name of the mode, with a small triangle in its corner, as the Sculpt cell does. A tap or a hold opens the list of the three modes next to the cell. A tap on a mode chooses it and closes the list, and a tap outside the list closes it. On the desktop, the tool bar has the three modes. Shift during a stroke chooses Add for that stroke, and Option chooses Subtract. The mode is not saved in the project.
 
 ### Points
 
