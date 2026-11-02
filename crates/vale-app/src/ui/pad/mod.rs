@@ -15,13 +15,14 @@ use super::raster_form::{self, RasterForm};
 use super::select;
 use super::world_form::{self, WorldForm};
 use super::{Action, AppState, Note, SaveMark, Workspace, globe, is_height, panels};
-use crate::globe::brush::BrushSettings;
 use crate::globe::brush::{
     BASIN_DENSITY, CHANNEL_KM, EROSION, FLOODPLAIN_WIDTH_KM, FLOW, NOISE_GRAIN, NOISE_M,
     RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM,
     RIDGE_SPREAD_MM, SCALE_KM, SEED, STRENGTH_M, TALUS_DEG, WARP_KM, needs_height,
 };
+use crate::globe::brush::{BrushSettings, brush_radius};
 use crate::globe::combine::PolygonMode;
+use crate::globe::line::{DEFAULT_SMOOTHING, LineSettings};
 use crate::globe::snap;
 use crate::globe::{Tool, WorldView};
 use crate::session::{WorldFile, worlds_of};
@@ -39,6 +40,7 @@ pub mod geometry;
 pub mod grid_labels;
 pub mod icons;
 pub mod labels;
+pub mod number;
 pub mod raster;
 pub mod rules;
 pub mod text_style;
@@ -48,6 +50,7 @@ pub mod widgets;
 use flyout::{Choice, Flyout, Flyouts};
 use geometry::{BrushCard, CELL, Input, MEASURE_CELLS, PAD, ROW, Rects, TOOLS, TOUCH, WidthClass};
 use icons::Icon;
+use number::{Number, Scale};
 use widgets::{BODY_PAD, Controls, PANEL_ROW};
 
 /// The cell of the tool strip that draws on the selected vector layer. It
@@ -453,6 +456,7 @@ pub fn readout_line(state: &AppState) -> String {
 
 pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     let ctx = ui.ctx().clone();
+    widgets::set_backdrop(&ctx, state.globe.backdrop());
     let screen = ctx.viewport_rect();
     // The globe paints after the panels, so a change in a panel shows in
     // the same frame.
@@ -897,37 +901,6 @@ fn brush_cell(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, 
     }
 }
 
-/// Shows a value as a slider with a logarithmic scale.
-fn log_slider(
-    value: f64,
-    range: std::ops::RangeInclusive<f64>,
-    text: &str,
-    slider: impl FnOnce(&mut f64, &str) -> bool,
-) -> Option<f64> {
-    let (low, high) = (*range.start(), *range.end());
-    let span = (high / low).ln();
-    let mut fraction = if span > 0.0 {
-        ((value / low).ln() / span).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-    slider(&mut fraction, text).then(|| low * (fraction * span).exp())
-}
-
-/// Shows a value from 0 as a slider that grows with the square of the
-/// fraction, so the small values get more of the track. Returns the new
-/// value when the slider moves.
-fn square_slider(
-    value: f64,
-    range: std::ops::RangeInclusive<f64>,
-    text: &str,
-    slider: impl FnOnce(&mut f64, &str) -> bool,
-) -> Option<f64> {
-    let high = *range.end();
-    let mut fraction = (value / high).clamp(0.0, 1.0).sqrt();
-    slider(&mut fraction, text).then_some(high * fraction * fraction)
-}
-
 /// The size of the brush on the ground, in the display units of the world.
 pub fn brush_size_text(state: &AppState) -> String {
     let world = &state.doc.project.world;
@@ -936,32 +909,38 @@ pub fn brush_size_text(state: &AppState) -> String {
     world::distance(km, world.units)
 }
 
-/// Shows the size of the brush on the ground as a slider.
-fn size_slider(state: &mut AppState, slider: impl FnOnce(&mut f64, &str) -> bool) {
-    let world_km = state.doc.project.world.radius_km;
-    let globe = &state.globe;
-    let globe_radius = globe.radius();
-    let range = globe.brush.radius_km_range(globe_radius, world_km);
-    let km = globe.brush.radius_km(globe_radius, world_km);
-    let text = brush_size_text(state);
-    if let Some(km) = log_slider(km, range, &text, slider) {
-        let brush = &mut state.globe.brush;
-        brush.set_radius_km(km, globe_radius, world_km);
+/// Shows the size of the brush on the ground with `control`, and sets the
+/// size that it returns. During a drag, a circle shows the brush.
+fn brush_size<'a>(
+    state: &mut AppState,
+    name: &'a str,
+    control: impl FnOnce(Number<'a>) -> Option<f64>,
+) {
+    let world = &state.doc.project.world;
+    let (world_km, units) = (world.radius_km, world.units);
+    let globe_radius = state.globe.radius();
+    let brush = &state.globe.brush;
+    let range = brush.radius_km_range(globe_radius, world_km);
+    let km = brush.radius_km(globe_radius, world_km);
+    let (unit_km, symbol) = world::large_unit(units);
+    let mut number = Number::new(name, km, range)
+        .label("Size")
+        .log()
+        .shown(1.0 / unit_km, symbol)
+        .text(move |km| world::distance(km, units))
+        .preview(move |km| (km / world_km * globe_radius) as f32);
+    if brush.lock.is_none() {
+        let points = BrushSettings::default().size_points;
+        number = number.default(brush_radius(points, globe_radius) * world_km);
+    }
+    if let Some(km) = control(number) {
+        state.globe.brush.set_radius_km(km, globe_radius, world_km);
     }
 }
 
-/// Shows a value from 0 to 1 as a slider with a value in percent.
-fn percent_slider(
-    value: &mut f64,
-    range: std::ops::RangeInclusive<f64>,
-    slider: impl FnOnce(&mut f64, &str) -> bool,
-) {
-    let (low, high) = (*range.start(), *range.end());
-    let mut fraction = ((*value - low) / (high - low)).clamp(0.0, 1.0);
-    let text = format!("{:.0}%", *value * 100.0);
-    if slider(&mut fraction, &text) {
-        *value = low + fraction * (high - low);
-    }
+/// A number from 0 to 1 in whole percents.
+fn percent(name: &str, value: f64) -> Number<'_> {
+    Number::new(name, value, 0.0..=1.0).percent()
 }
 
 fn brush_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
@@ -1000,9 +979,6 @@ fn brush_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
             let line = state.globe.drawing();
             let vector = line || state.globe.placing();
             if let BrushCard::Full(height) = rects.brush_card {
-                let mut slider = |name: &str, fraction: &mut f64, text: &str, on: bool| {
-                    widgets::vertical_slider(&mut ui, controls, name, height, fraction, text, on)
-                };
                 // The tools of a vector layer have the snap button. The line
                 // tool and the polygon tool also have the smoothing and the
                 // reshape button. The line tool also has the terrain fit
@@ -1036,11 +1012,11 @@ fn brush_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
                     if line {
                         let cells = if fit || fill { 3.0 } else { 2.0 };
                         let height = 2.0 * height - cells * CELL.1;
-                        percent_slider(&mut state.globe.line.smoothing, 0.0..=1.0, |f, text| {
-                            widgets::vertical_slider(
-                                &mut ui, controls, SMOOTHING, height, f, text, true,
-                            )
-                        });
+                        let smoothing = &mut state.globe.line.smoothing;
+                        let number = percent(SMOOTHING, *smoothing).default(DEFAULT_SMOOTHING);
+                        if let Some(value) = number.vertical(&mut ui, controls, height) {
+                            *smoothing = value;
+                        }
                     }
                     let snap = &mut state.globe.snap.on;
                     let cell = widgets::tool_cell(
@@ -1094,10 +1070,14 @@ fn brush_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
                     // The outline sets the size of a basin, and a basin has no
                     // flow. The sliders keep their place in the card.
                     let on = state.globe.brush.mode != Mode::Basin;
-                    size_slider(state, |f, text| slider("Size", f, text, on));
-                    percent_slider(&mut state.globe.brush.flow, FLOW, |f, text| {
-                        slider("Flow", f, text, on)
+                    brush_size(state, "Size", |n| {
+                        n.enabled(on).vertical(&mut ui, controls, height)
                     });
+                    let flow = &mut state.globe.brush.flow;
+                    let number = Number::new("Flow", *flow, FLOW).percent().enabled(on);
+                    if let Some(value) = number.vertical(&mut ui, controls, height) {
+                        *flow = value;
+                    }
                 }
             }
             deselect_cell(&mut ui, state, controls);
@@ -1528,14 +1508,11 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
     let line = state.globe.drawing();
     if line || measuring || state.globe.placing() {
         if line {
-            percent_slider(
-                &mut state.globe.line.smoothing,
-                0.0..=1.0,
-                |fraction, text| {
-                    let name = "Line smoothing";
-                    widgets::row_slider(ui, controls, name, SMOOTHING, fraction, text)
-                },
-            );
+            let smoothing = &mut state.globe.line.smoothing;
+            let number = percent("Line smoothing", *smoothing)
+                .label(SMOOTHING)
+                .default(DEFAULT_SMOOTHING);
+            apply(number.slider(ui, controls), smoothing);
         }
         // The Measure tool in a map frame does not snap to color stops.
         let rasters = match state.workspace {
@@ -1559,19 +1536,12 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
                 snap.set_stops(id, on);
             }
         }
-        let (low, high) = (*snap::DISTANCE_RANGE.start(), *snap::DISTANCE_RANGE.end());
-        let mut fraction = (snap.distance - low) / (high - low);
-        let text = format!("{:.0} pt", snap.distance);
-        if widgets::row_slider(
-            ui,
-            controls,
-            SNAP_DISTANCE,
-            "Distance",
-            &mut fraction,
-            &text,
-        ) {
-            snap.distance = (low + fraction * (high - low)).round();
-        }
+        let number = Number::new(SNAP_DISTANCE, snap.distance, snap::DISTANCE_RANGE)
+            .label("Distance")
+            .step(1.0)
+            .unit("pt")
+            .default(snap::DEFAULT_DISTANCE);
+        apply(number.slider(ui, controls), &mut snap.distance);
         if line {
             let on = &mut state.globe.line.reshape;
             widgets::switch_row(ui, controls, RESHAPE_SWITCH, RESHAPE, on);
@@ -1581,11 +1551,11 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
             let line = &mut state.globe.line;
             let (name, label) = (TERRAIN_FIT_SWITCH, TERRAIN_FIT);
             widgets::switch_row_enabled(ui, controls, name, label, &mut line.fit, terrain);
-            let on = terrain && line.fit;
-            percent_slider(&mut line.terrain, 0.0..=1.0, |fraction, text| {
-                let name = TERRAIN_BALANCE;
-                widgets::row_slider_enabled(ui, controls, name, "Balance", fraction, text, on)
-            });
+            let number = percent(TERRAIN_BALANCE, line.terrain)
+                .label("Balance")
+                .default(LineSettings::default().terrain)
+                .enabled(terrain && line.fit);
+            apply(number.slider(ui, controls), &mut line.terrain);
         }
         return;
     }
@@ -1594,88 +1564,81 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
     if state.globe.brush.mode == Mode::Basin {
         basin_rows(ui, controls, &mut state.globe);
     } else {
-        size_slider(state, |fraction, text| {
-            widgets::row_slider(ui, controls, "Brush size", "Size", fraction, text)
-        });
+        brush_size(state, "Brush size", |n| n.slider(ui, controls));
     }
     let world_km = state.doc.project.world.radius_km;
     let radius_km = state.globe.brush.radius_km(state.globe.radius(), world_km);
     let height = state.globe.is_height();
+    let defaults = BrushSettings::default();
     let brush = &mut state.globe.brush;
+    let world = &mut state.doc.project.world;
+    // A height in meters as a value of the layer.
+    let factor = brush.meters_value(1.0);
+    let span = brush.value_range.1 - brush.value_range.0;
+    let layer_text = |meters: f64| world::value_text(meters * factor, span, &unit);
+    let meters = |name: &'static str, label: &'static str, value, range| {
+        Number::new(name, value, range)
+            .label(label)
+            .shown(factor, &unit)
+            .text(layer_text)
+    };
+    let km = |name: &'static str, label: &'static str, value, range| {
+        Number::new(name, value, range).label(label).unit("km")
+    };
     // The ocean ridge mode has no falloff and no strength, the range mode
     // has no falloff, and the basin mode has no falloff and no flow.
     let ridge = brush.mode == Mode::OceanRidge;
     if !matches!(brush.mode, Mode::OceanRidge | Mode::Range | Mode::Basin) {
-        percent_slider(&mut brush.hardness, 0.0..=1.0, |fraction, text| {
-            widgets::row_slider(ui, controls, "Brush hardness", "Hardness", fraction, text)
-        });
+        let number = percent("Brush hardness", brush.hardness)
+            .label("Hardness")
+            .default(defaults.hardness);
+        apply(number.slider(ui, controls), &mut brush.hardness);
     }
     if brush.mode != Mode::Basin {
-        percent_slider(&mut brush.flow, FLOW, |fraction, text| {
-            widgets::row_slider(ui, controls, "Brush flow", "Flow", fraction, text)
-        });
+        let number = Number::new("Brush flow", brush.flow, FLOW)
+            .label("Flow")
+            .percent();
+        apply(number.slider(ui, controls), &mut brush.flow);
     }
     if ridge {
         ridge_rows(ui, controls, brush, radius_km);
     } else if brush.mode == Mode::Warp {
-        let text = format!("{} km", world::three_significant(brush.warp_km));
-        let strength = log_slider(brush.warp_km, WARP_KM, &text, |fraction, text| {
-            widgets::row_slider(ui, controls, "Brush strength", "Strength", fraction, text)
-        });
-        if let Some(km) = strength {
-            brush.warp_km = km;
-        }
-        let text = format!("{} km", world::three_significant(brush.scale_km));
-        let scale = log_slider(brush.scale_km, SCALE_KM, &text, |fraction, text| {
-            widgets::row_slider(ui, controls, "Brush scale", "Scale", fraction, text)
-        });
-        if let Some(km) = scale {
-            brush.scale_km = km;
-        }
-        seed_row(ui, controls, &mut state.doc.project.world.seed);
+        let number = km("Brush strength", "Strength", brush.warp_km, WARP_KM)
+            .log()
+            .default(defaults.warp_km);
+        apply(number.slider(ui, controls), &mut brush.warp_km);
+        let number = km("Brush scale", "Scale", brush.scale_km, SCALE_KM)
+            .log()
+            .default(defaults.scale_km);
+        apply(number.slider(ui, controls), &mut brush.scale_km);
+        seed_stepper(ui, controls, &mut world.seed);
     } else if brush.mode == Mode::Push {
         // The motion of the pen and the flow set the distance.
     } else if brush.mode == Mode::Noise {
-        let span = brush.value_range.1 - brush.value_range.0;
-        let text = world::value_text(brush.meters_value(brush.noise_raise_m), span, &unit);
-        let raise = square_slider(brush.noise_raise_m, NOISE_M, &text, |fraction, text| {
-            widgets::row_slider(ui, controls, "Brush raise", "Raise", fraction, text)
-        });
-        if let Some(meters) = raise {
-            brush.noise_raise_m = meters;
-        }
-        let text = world::value_text(brush.meters_value(brush.noise_lower_m), span, &unit);
-        let lower = square_slider(brush.noise_lower_m, NOISE_M, &text, |fraction, text| {
-            widgets::row_slider(ui, controls, "Brush lower", "Lower", fraction, text)
-        });
-        if let Some(meters) = lower {
-            brush.noise_lower_m = meters;
-        }
+        let number = meters("Brush raise", "Raise", brush.noise_raise_m, NOISE_M)
+            .scale(Scale::Square)
+            .default(defaults.noise_raise_m);
+        apply(number.slider(ui, controls), &mut brush.noise_raise_m);
+        let number = meters("Brush lower", "Lower", brush.noise_lower_m, NOISE_M)
+            .scale(Scale::Square)
+            .default(defaults.noise_lower_m);
+        apply(number.slider(ui, controls), &mut brush.noise_lower_m);
     } else {
-        let (min, max) = brush.value_range;
-        let text = world::value_text(brush.strength_value(), max - min, &unit);
-        let strength = log_slider(brush.strength_m, STRENGTH_M, &text, |fraction, text| {
-            let name = panels::strength_name(brush.mode);
-            widgets::row_slider(ui, controls, "Brush strength", name, fraction, text)
-        });
-        if let Some(meters) = strength {
-            brush.strength_m = meters;
-        }
+        let name = panels::strength_name(brush.mode);
+        let number = meters("Brush strength", name, brush.strength_m, STRENGTH_M)
+            .log()
+            .default(defaults.strength_m);
+        apply(number.slider(ui, controls), &mut brush.strength_m);
     }
     if brush.mode == Mode::Noise {
-        let text = format!("{} km", world::three_significant(brush.scale_km));
-        let scale = log_slider(brush.scale_km, SCALE_KM, &text, |fraction, text| {
-            widgets::row_slider(ui, controls, "Brush scale", "Scale", fraction, text)
-        });
-        if let Some(km) = scale {
-            brush.scale_km = km;
-        }
-        let (low, high) = (*NOISE_GRAIN.start(), *NOISE_GRAIN.end());
-        let mut fraction = ((brush.noise_grain - low) / (high - low)).clamp(0.0, 1.0);
-        let text = format!("{:.1}×", 1.0 + brush.noise_grain);
-        if widgets::row_slider(ui, controls, "Brush grain", "Grain", &mut fraction, &text) {
-            brush.noise_grain = low + fraction * (high - low);
-        }
+        let number = km("Brush scale", "Scale", brush.scale_km, SCALE_KM)
+            .log()
+            .default(defaults.scale_km);
+        apply(number.slider(ui, controls), &mut brush.scale_km);
+        let number = Number::new("Brush grain", brush.noise_grain, NOISE_GRAIN)
+            .label("Grain")
+            .text(|grain| format!("{:.1}×", 1.0 + grain));
+        apply(number.slider(ui, controls), &mut brush.noise_grain);
         let ridged = &mut brush.noise_ridged;
         widgets::switch_row(ui, controls, "Brush ridged", "Ridged", ridged);
         if brush.noise_ridged {
@@ -1684,115 +1647,201 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
         }
         // The relief follows the height above sea level.
         if height {
-            percent_slider(&mut brush.noise_relief, 0.0..=1.0, |fraction, text| {
-                widgets::row_slider(ui, controls, "Brush relief", "Relief", fraction, text)
-            });
+            let number = percent("Brush relief", brush.noise_relief)
+                .label("Relief")
+                .default(defaults.noise_relief);
+            apply(number.slider(ui, controls), &mut brush.noise_relief);
         }
-        seed_row(ui, controls, &mut state.doc.project.world.seed);
+        seed_stepper(ui, controls, &mut world.seed);
     }
     if brush.mode == Mode::Range {
-        let text = format!("{} km", world::three_significant(brush.range_spacing_km));
-        let spacing = log_slider(
-            brush.range_spacing_km,
-            RANGE_SPACING_KM,
-            &text,
-            |fraction, text| {
-                widgets::row_slider(ui, controls, "Brush spacing", "Spacing", fraction, text)
-            },
-        );
-        if let Some(km) = spacing {
-            brush.range_spacing_km = km;
-        }
-        seed_row(ui, controls, &mut state.doc.project.world.seed);
+        let value = brush.range_spacing_km;
+        let number = km("Brush spacing", "Spacing", value, RANGE_SPACING_KM)
+            .log()
+            .default(defaults.range_spacing_km);
+        apply(number.slider(ui, controls), &mut brush.range_spacing_km);
+        seed_stepper(ui, controls, &mut world.seed);
     }
     if brush.mode == Mode::Basin {
-        let text = format!("{} km", world::three_significant(brush.basin_density_km));
-        let density = log_slider(
-            brush.basin_density_km,
-            BASIN_DENSITY,
-            &text,
-            |fraction, text| {
-                widgets::row_slider(ui, controls, "Brush density", "Density", fraction, text)
-            },
-        );
-        if let Some(km) = density {
-            brush.basin_density_km = km;
-        }
-        seed_row(ui, controls, &mut state.doc.project.world.seed);
+        let value = brush.basin_density_km;
+        let number = km("Brush density", "Density", value, BASIN_DENSITY)
+            .log()
+            .default(defaults.basin_density_km);
+        apply(number.slider(ui, controls), &mut brush.basin_density_km);
+        seed_stepper(ui, controls, &mut world.seed);
     }
     if matches!(brush.mode, Mode::Carve | Mode::Erode | Mode::Basin) {
-        let text = format!("{} km", world::three_significant(brush.channel_km));
-        let width = log_slider(brush.channel_km, CHANNEL_KM, &text, |fraction, text| {
-            let name = "Brush channel width";
-            widgets::row_slider(ui, controls, name, "Channel width", fraction, text)
-        });
-        if let Some(km) = width {
-            brush.channel_km = km;
-        }
+        let name = "Brush channel width";
+        let number = km(name, "Channel width", brush.channel_km, CHANNEL_KM).nice();
+        apply(number.stepper(ui, controls), &mut brush.channel_km);
     }
     if brush.mode == Mode::Carve {
-        let text = format!("{:.0} km", brush.floodplain_km);
-        let plain = &mut brush.floodplain_km;
-        linear_slider(plain, FLOODPLAIN_WIDTH_KM, 1.0, &text, |fraction, text| {
-            widgets::row_slider(
-                ui,
-                controls,
-                "Brush floodplain",
-                "Floodplain",
-                fraction,
-                text,
-            )
-        });
+        let value = brush.floodplain_km;
+        let number = km("Brush floodplain", "Floodplain", value, FLOODPLAIN_WIDTH_KM).step(1.0);
+        apply(number.stepper(ui, controls), &mut brush.floodplain_km);
     }
     if matches!(brush.mode, Mode::Uplift | Mode::Range) {
-        percent_slider(&mut brush.erosion, EROSION, |fraction, text| {
-            widgets::row_slider(ui, controls, "Brush erosion", "Erosion", fraction, text)
-        });
+        let number = Number::new("Brush erosion", brush.erosion, EROSION)
+            .label("Erosion")
+            .percent()
+            .default(defaults.erosion);
+        apply(number.slider(ui, controls), &mut brush.erosion);
     }
     if matches!(
         brush.mode,
         Mode::Erode | Mode::Uplift | Mode::Range | Mode::Basin
     ) {
-        let world = &mut state.doc.project.world;
         let mut degrees = world.wind_deg as f32;
         if widgets::compass_row(ui, controls, "Brush wind", "Wind", &mut degrees) {
             world.wind_deg = f64::from(degrees.round());
         }
-        let mut shadow = world.rain_shadow.clamp(0.0, 1.0);
-        percent_slider(&mut shadow, 0.0..=1.0, |fraction, text| {
-            let name = "Brush rain shadow";
-            widgets::row_slider(ui, controls, name, "Rain shadow", fraction, text)
-        });
-        // The steps are whole percents.
-        let shadow = (shadow * 100.0).round() / 100.0;
-        if shadow != world.rain_shadow.clamp(0.0, 1.0) {
-            world.rain_shadow = shadow;
-        }
+        let shadow = world.rain_shadow.clamp(0.0, 1.0);
+        let number = percent("Brush rain shadow", shadow).label("Rain shadow");
+        apply(number.slider(ui, controls), &mut world.rain_shadow);
     }
     if matches!(brush.mode, Mode::Weather | Mode::Uplift) {
-        let text = format!("{}°", world::three_significant(brush.talus_deg));
-        let angle = log_slider(brush.talus_deg, TALUS_DEG, &text, |fraction, text| {
-            widgets::row_slider(ui, controls, "Brush angle", "Angle", fraction, text)
-        });
-        if let Some(degrees) = angle {
-            brush.talus_deg = degrees;
-        }
+        let number = Number::new("Brush angle", brush.talus_deg, TALUS_DEG)
+            .label("Angle")
+            .unit("°")
+            .nice();
+        apply(number.stepper(ui, controls), &mut brush.talus_deg);
     }
     let range = brush.value_range;
-    let floor = (&mut brush.floor_on, &mut brush.floor_m);
-    limit_rows(ui, controls, "Floor", "Brush floor", floor, range, &unit);
-    let ceiling = (&mut brush.ceiling_on, &mut brush.ceiling_m);
-    limit_rows(
-        ui,
-        controls,
-        "Ceiling",
-        "Brush ceiling",
-        ceiling,
-        range,
-        &unit,
-    );
-    ui.spacing_mut().item_spacing.y = 6.0;
-    panels::brush_settings(ui, state);
+    for (label, name, on, value) in [
+        (
+            "Floor",
+            "Brush floor",
+            &mut brush.floor_on,
+            &mut brush.floor_m,
+        ),
+        (
+            "Ceiling",
+            "Brush ceiling",
+            &mut brush.ceiling_on,
+            &mut brush.ceiling_m,
+        ),
+    ] {
+        widgets::switch_row(ui, controls, name, label, on);
+        if *on {
+            let name = format!("{name} level");
+            let number = level(&name, *value, range, &unit).label("Level");
+            apply(number.stepper(ui, controls), value);
+        }
+    }
+    flatten_rows(ui, controls, &mut state.globe, &unit);
+}
+
+/// Sets `value` to a new value of a control.
+fn apply(new: Option<f64>, value: &mut f64) {
+    if let Some(new) = new {
+        *value = new;
+    }
+}
+
+/// The number of steps of a level of the brush. A height has steps of 50
+/// meters.
+const LIMIT_STEPS: f64 = 240.0;
+
+/// A level of the layer that the brush paints, in the unit of the layer.
+/// `range` has the values of the lowest and of the highest level.
+fn level<'a>(name: &'a str, value: f64, (min, max): (f64, f64), unit: &'a str) -> Number<'a> {
+    let span = max - min;
+    Number::new(name, value.clamp(min, max), min..=max)
+        .step(span / LIMIT_STEPS)
+        .unit(unit)
+        .text(move |value| world::value_text(value, span, unit))
+}
+
+/// The seed of the warp mode, the noise mode, the range mode, and the basin
+/// mode. The seed is a property of the world, so each brush gets the same
+/// pattern.
+fn seed_stepper(ui: &mut egui::Ui, controls: &mut Controls, seed: &mut u32) {
+    let range = f64::from(*SEED.start())..=f64::from(*SEED.end());
+    let number = Number::new("Brush seed", f64::from(*seed), range)
+        .label("Seed")
+        .step(1.0);
+    if let Some(value) = number.stepper(ui, controls) {
+        *seed = value as u32;
+    }
+}
+
+/// The settings of the ocean ridge mode, and the age of the crust at the
+/// edge of the stroke. `radius_km` is the brush radius on the ground.
+fn ridge_rows(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    brush: &mut BrushSettings,
+    radius_km: f64,
+) {
+    let number = Number::new("Brush crest", brush.ridge_crest_m, RIDGE_CREST_M)
+        .label("Crest")
+        .step(50.0)
+        .unit("m");
+    apply(number.stepper(ui, controls), &mut brush.ridge_crest_m);
+    let number = Number::new("Brush spreading", brush.ridge_spread_mm, RIDGE_SPREAD_MM)
+        .label("Spreading")
+        .step(1.0)
+        .unit("mm/yr");
+    apply(number.stepper(ui, controls), &mut brush.ridge_spread_mm);
+    let number = Number::new("Brush magma", brush.ridge_magma, RIDGE_MAGMA)
+        .label("Magma")
+        .percent()
+        .text(panels::signed_percent)
+        .default(0.0);
+    apply(number.slider(ui, controls), &mut brush.ridge_magma);
+    let number = Number::new("Brush segment", brush.ridge_segment_km, RIDGE_SEGMENT_KM)
+        .label("Segment")
+        .step(10.0)
+        .unit("km");
+    apply(number.stepper(ui, controls), &mut brush.ridge_segment_km);
+    let number = Number::new("Brush offset", brush.ridge_offset_km, RIDGE_OFFSET_KM)
+        .label("Offset")
+        .step(1.0)
+        .unit("km");
+    apply(number.stepper(ui, controls), &mut brush.ridge_offset_km);
+    raster::note(ui, &panels::edge_age_text(brush, radius_km));
+}
+
+/// The name of the switch that keeps the brush size on the ground.
+pub const LOCK_SIZE: &str = "Lock size";
+/// The name of the stepper of the level of the flatten mode.
+pub const FLATTEN_LEVEL: &str = "Flatten level";
+/// The name of the button that sets the flatten level at each stroke start.
+pub const STROKE_START: &str = "Use stroke start";
+/// The name of the switch that takes the flatten level from the globe.
+pub const PICK_LEVEL: &str = "Pick from globe";
+
+/// The lock of the size, and the level of the flatten mode.
+fn flatten_rows(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    globe: &mut crate::globe::Globe,
+    unit: &str,
+) {
+    let globe_radius = globe.radius();
+    let mut lock = globe.brush.lock.is_some();
+    if widgets::switch_row(ui, controls, LOCK_SIZE, LOCK_SIZE, &mut lock) {
+        globe.brush.set_lock(lock, globe_radius);
+    }
+    if globe.brush.mode != Mode::Flatten {
+        globe.pick_level = false;
+        return;
+    }
+    let brush = &mut globe.brush;
+    match brush.flatten_level {
+        Some(at) => {
+            let number = level(FLATTEN_LEVEL, brush.value(at), brush.value_range, unit);
+            if let Some(value) = number.stepper(ui, controls) {
+                brush.flatten_level = Some(brush.level(value));
+            }
+            if widgets::button_row(ui, controls, STROKE_START, true).clicked() {
+                brush.flatten_level = None;
+            }
+        }
+        None => raster::note(ui, "Level at stroke start"),
+    }
+    let pick = &mut globe.pick_level;
+    widgets::switch_row(ui, controls, PICK_LEVEL, PICK_LEVEL, pick);
 }
 
 /// The hint of the basin mode, and the button that drops the outline of the
@@ -1807,114 +1856,6 @@ fn basin_rows(ui: &mut egui::Ui, controls: &mut Controls, globe: &mut crate::glo
         if clear.clicked() {
             globe.set_basin_outline(None);
         }
-    }
-}
-
-/// The number of steps of the slider of a limit of the brush. A height has
-/// steps of 50 meters.
-const LIMIT_STEPS: f64 = 240.0;
-
-/// The seed row of the warp mode, the noise mode, the range mode, and the
-/// basin mode. The seed is a
-/// property of the world, so each brush gets the same pattern.
-fn seed_row(ui: &mut egui::Ui, controls: &mut Controls, seed: &mut u32) {
-    let high = f64::from(*SEED.end());
-    let mut fraction = (f64::from(*seed) / high).min(1.0);
-    let text = seed.to_string();
-    if widgets::row_slider(ui, controls, "Brush seed", "Seed", &mut fraction, &text) {
-        *seed = (fraction * high).round() as u32;
-    }
-}
-
-/// Shows a value as a slider with a linear scale. The value is a multiple
-/// of `step`.
-fn linear_slider(
-    value: &mut f64,
-    range: std::ops::RangeInclusive<f64>,
-    step: f64,
-    text: &str,
-    slider: impl FnOnce(&mut f64, &str) -> bool,
-) {
-    let (low, high) = (*range.start(), *range.end());
-    let mut fraction = ((*value - low) / (high - low)).clamp(0.0, 1.0);
-    if slider(&mut fraction, text) {
-        *value = ((low + fraction * (high - low)) / step).round() * step;
-    }
-}
-
-/// The sliders of the ocean ridge mode, and the age of the crust at the
-/// edge of the stroke. `radius_km` is the brush radius on the ground.
-fn ridge_rows(
-    ui: &mut egui::Ui,
-    controls: &mut Controls,
-    brush: &mut BrushSettings,
-    radius_km: f64,
-) {
-    let text = format!("{:.0} m", brush.ridge_crest_m);
-    let crest = &mut brush.ridge_crest_m;
-    linear_slider(crest, RIDGE_CREST_M, 50.0, &text, |fraction, text| {
-        widgets::row_slider(ui, controls, "Brush crest", "Crest", fraction, text)
-    });
-    let text = format!("{:.0} mm/yr", brush.ridge_spread_mm);
-    let spread = log_slider(
-        brush.ridge_spread_mm,
-        RIDGE_SPREAD_MM,
-        &text,
-        |fraction, text| {
-            widgets::row_slider(ui, controls, "Brush spreading", "Spreading", fraction, text)
-        },
-    );
-    if let Some(mm) = spread {
-        brush.ridge_spread_mm = mm.round();
-    }
-    let text = panels::signed_percent(brush.ridge_magma);
-    let magma = &mut brush.ridge_magma;
-    linear_slider(magma, RIDGE_MAGMA, 0.01, &text, |fraction, text| {
-        widgets::row_slider(ui, controls, "Brush magma", "Magma", fraction, text)
-    });
-    let text = format!("{} km", world::three_significant(brush.ridge_segment_km));
-    let segment = log_slider(
-        brush.ridge_segment_km,
-        RIDGE_SEGMENT_KM,
-        &text,
-        |fraction, text| {
-            widgets::row_slider(ui, controls, "Brush segment", "Segment", fraction, text)
-        },
-    );
-    if let Some(km) = segment {
-        brush.ridge_segment_km = km;
-    }
-    let text = format!("{:.0} km", brush.ridge_offset_km);
-    let offset = &mut brush.ridge_offset_km;
-    linear_slider(offset, RIDGE_OFFSET_KM, 1.0, &text, |fraction, text| {
-        widgets::row_slider(ui, controls, "Brush offset", "Offset", fraction, text)
-    });
-    raster::note(ui, &panels::edge_age_text(brush, radius_km));
-}
-
-/// The switch of a limit of the brush. While the switch is on, a slider
-/// below it sets the value, in the unit of the layer that the brush paints.
-/// `range` has the values of the lowest and of the highest level of the
-/// layer.
-fn limit_rows(
-    ui: &mut egui::Ui,
-    controls: &mut Controls,
-    label: &str,
-    name: &str,
-    (on, value): (&mut bool, &mut f64),
-    (min, max): (f64, f64),
-    unit: &str,
-) {
-    widgets::switch_row(ui, controls, name, label, on);
-    if !*on {
-        return;
-    }
-    let span = max - min;
-    let mut fraction = ((*value - min) / span).clamp(0.0, 1.0);
-    let text = world::value_text(value.clamp(min, max), span, unit);
-    let name = format!("{name} level");
-    if widgets::row_slider(ui, controls, &name, "Level", &mut fraction, &text) {
-        *value = min + (fraction * LIMIT_STEPS).round() * span / LIMIT_STEPS;
     }
 }
 
@@ -2433,11 +2374,9 @@ fn raster_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
     raster::unit_row(ui, state, controls, id);
     widgets::value_row(ui, "Values", &range);
     widgets::value_row(ui, "Pixel size", &pixel_size);
-    let mut fraction = f64::from(opacity);
-    let text = format!("{:.0}%", fraction * 100.0);
-    if widgets::row_slider(ui, controls, OPACITY, "Opacity", &mut fraction, &text) {
-        // The steps are whole percents.
-        state.set_raster_opacity(id, ((fraction * 100.0).round() / 100.0) as f32);
+    let number = percent(OPACITY, f64::from(opacity)).label("Opacity");
+    if let Some(opacity) = number.slider(ui, controls) {
+        state.set_raster_opacity(id, opacity as f32);
     }
     if height {
         import_row(ui, state, controls, Some(id));
@@ -2475,11 +2414,9 @@ fn image_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, 
     }
     state.pad.name = Some((of, text));
     widgets::value_row(ui, "Size", &size);
-    let mut fraction = f64::from(opacity);
-    let text = format!("{:.0}%", fraction * 100.0);
-    if widgets::row_slider(ui, controls, OPACITY, "Opacity", &mut fraction, &text) {
-        // The steps are whole percents.
-        state.set_image_opacity(id, ((fraction * 100.0).round() / 100.0) as f32);
+    let number = percent(OPACITY, f64::from(opacity)).label("Opacity");
+    if let Some(opacity) = number.slider(ui, controls) {
+        state.set_image_opacity(id, opacity as f32);
     }
     let label = super::elevation::blend_label(blend);
     if widgets::open_row(ui, controls, raster::BLEND, label).clicked() {

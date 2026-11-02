@@ -20,7 +20,7 @@ use super::pad::rules::{
     SIZE_VARIATION, SPACING, SVG_SYMBOL, SYMBOL, TINT, marker_radius, new_tint, numeric_fields,
     pick_symbol, property_field, to_circle, with_field,
 };
-use super::{Action, Note};
+use super::{Action, Note, number};
 use crate::globe::symbol::paint_symbol;
 
 /// The symbols that the editor lists, the text of the last addition of a
@@ -147,7 +147,9 @@ fn symbol_rows(
         }
         if let Some(radius) = marker_radius(rule) {
             let mut size = 2.0 * radius.fallback;
-            if number_row(ui, SIZE, &mut size, CIRCLE_SIZES, " pt") {
+            let (lo, hi) = CIRCLE_SIZES;
+            let stepper = number::stepper(SIZE, &mut size).range(lo..=hi).step(0.5);
+            if stepper.suffix(" pt").show(ui).changed() {
                 radius.fallback = size / 2.0;
                 changed = true;
             }
@@ -159,14 +161,17 @@ fn symbol_rows(
     if let Some(name) = library_row(ui, library, Some(&s.symbol), tint, salt) {
         s.symbol = name;
     }
-    number_row(ui, SIZE, &mut s.size.fallback, POINT_SIZES, " pt");
-    number_row(
-        ui,
-        ROTATION,
-        &mut s.rotation.fallback,
-        (0.0, 359.0),
-        "\u{b0}",
-    );
+    let (lo, hi) = POINT_SIZES;
+    number::stepper(SIZE, &mut s.size.fallback)
+        .range(lo..=hi)
+        .step(1.0)
+        .suffix(" pt")
+        .show(ui);
+    number::stepper(ROTATION, &mut s.rotation.fallback)
+        .range(0.0..=359.0)
+        .step(1.0)
+        .suffix("\u{b0}")
+        .show(ui);
     field_row(ui, SIZE_FIELD, &mut s.size, fields, salt);
     field_row(ui, ROTATION_FIELD, &mut s.rotation, fields, salt);
     tint_row(ui, &mut s.tint);
@@ -209,27 +214,27 @@ fn scatter_rows(ui: &mut egui::Ui, rule: &mut Rule, library: &mut Library, salt:
     if let Some(name) = library_row(ui, library, Some(&s.symbol), tint, salt) {
         s.symbol = name;
     }
-    number_row(ui, SIZE, &mut s.size.fallback, SCATTER_SIZES, " pt");
+    let (lo, hi) = SCATTER_SIZES;
+    number::stepper(SIZE, &mut s.size.fallback)
+        .range(lo..=hi)
+        .step(1.0)
+        .suffix(" pt")
+        .show(ui);
     let size = s.size.fallback;
     s.spacing.fallback = s.spacing.fallback.max(size);
-    number_row(
-        ui,
-        SPACING,
-        &mut s.spacing.fallback,
-        (size, MAX_SPACING.max(size)),
-        " pt",
-    );
-    let mut percent = s.size_jitter * 100.0;
-    if number_row(ui, SIZE_VARIATION, &mut percent, (0.0, 50.0), " %") {
-        s.size_jitter = percent / 100.0;
-    }
-    number_row(
-        ui,
-        ROTATION_VARIATION,
-        &mut s.rotation_jitter,
-        (0.0, 180.0),
-        "\u{b0}",
-    );
+    number::stepper(SPACING, &mut s.spacing.fallback)
+        .range(size..=MAX_SPACING.max(size))
+        .step(1.0)
+        .suffix(" pt")
+        .show(ui);
+    number::slider(SIZE_VARIATION, &mut s.size_jitter, 0.0..=0.5)
+        .percent()
+        .step(1.0)
+        .show(ui);
+    number::slider(ROTATION_VARIATION, &mut s.rotation_jitter, 0.0..=180.0)
+        .step(1.0)
+        .suffix("\u{b0}")
+        .show(ui);
     tint_row(ui, &mut s.tint);
     if Some(&s) != rule.scatter() {
         rule.set_scatter(Some(s));
@@ -299,26 +304,6 @@ fn library_row(
         ui.label(egui::RichText::new(&note.text).color(color));
     }
     picked
-}
-
-/// A label and a drag value from `lo` to `hi`. Returns true if the user
-/// changed the value.
-fn number_row(
-    ui: &mut egui::Ui,
-    label: &str,
-    value: &mut f64,
-    (lo, hi): (f64, f64),
-    suffix: &str,
-) -> bool {
-    ui.horizontal(|ui| {
-        ui.label(label);
-        let drag = egui::DragValue::new(value)
-            .speed(0.5)
-            .range(lo..=hi)
-            .suffix(suffix);
-        ui.add(drag).changed()
-    })
-    .inner
 }
 
 /// A list of "None" and the number fields, which sets the field of a
@@ -547,14 +532,12 @@ fn paint_rows(ui: &mut egui::Ui, rule: &mut Rule, kind: GeometryKind, salt: egui
         }
     });
     if let Some(s) = &mut stroke {
-        ui.horizontal(|ui| {
-            ui.label(STROKE_WIDTH);
-            let drag = egui::DragValue::new(&mut s.width)
-                .speed(0.05)
-                .range(0.1..=20.0)
-                .suffix(" pt");
-            changed |= ui.add(drag).changed();
-        });
+        changed |= number::stepper(STROKE_WIDTH, &mut s.width)
+            .range(0.1..=20.0)
+            .step(0.25)
+            .suffix(" pt")
+            .show(ui)
+            .changed();
         // A marker ignores the line type.
         if kind != GeometryKind::Point {
             changed |= line_rows(ui, s, kind, salt);
@@ -615,35 +598,23 @@ fn line_rows(ui: &mut egui::Ui, s: &mut Stroke, kind: GeometryKind, salt: egui::
                 }
             });
     });
-    let length = |ui: &mut egui::Ui, label: &str, value: &mut f64| {
-        ui.horizontal(|ui| {
-            ui.label(label);
-            let drag = egui::DragValue::new(value)
-                .speed(0.05)
-                .range(0.5..=20.0)
-                .suffix(" pt");
-            ui.add(drag).changed()
-        })
-        .inner
-    };
     match &mut s.kind {
         StrokeKind::Dashed { dash, gap } => {
-            changed |= length(ui, DASH, dash);
-            changed |= length(ui, GAP, gap);
+            for (label, value) in [(DASH, dash), (GAP, gap)] {
+                changed |= number::stepper(label, value)
+                    .range(0.5..=20.0)
+                    .step(0.5)
+                    .suffix(" pt")
+                    .show(ui)
+                    .changed();
+            }
         }
         StrokeKind::Taper { start } => {
-            ui.horizontal(|ui| {
-                ui.label(TAPER_START);
-                let mut percent = *start * 100.0;
-                let drag = egui::DragValue::new(&mut percent)
-                    .speed(1.0)
-                    .range(0.0..=100.0)
-                    .suffix(" %");
-                if ui.add(drag).changed() {
-                    *start = percent / 100.0;
-                    changed = true;
-                }
-            });
+            changed |= number::slider(TAPER_START, start, 0.0..=1.0)
+                .percent()
+                .step(1.0)
+                .show(ui)
+                .changed();
         }
         StrokeKind::Solid | StrokeKind::Brush => {}
     }

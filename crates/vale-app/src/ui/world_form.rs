@@ -3,7 +3,8 @@
 use eframe::egui::{self, Order, Rect, pos2, vec2};
 use vale_store::{Units, World};
 
-use super::pad::geometry::{GAP, MARGIN, ROW, Rects, TOUCH};
+use super::pad::geometry::{GAP, MARGIN, ROW, Rects};
+use super::pad::number::Number;
 use super::pad::theme;
 use super::pad::widgets::{self, BODY_PAD, Controls, PANEL_ROW};
 use super::{Action, AppState};
@@ -319,7 +320,7 @@ pub fn pad(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
     let new = form.mode == FormMode::New;
     let note = form.radius_note();
     // The rows are in three groups: the name, the radius, and the units.
-    let slider = TOUCH + widgets::TICK_NAMES;
+    let slider = PANEL_ROW + widgets::TICK_NAMES;
     let mut height = ROW + 3.0 * PANEL_ROW + slider + 2.0 * GROUP_GAP + BOTTOM;
     if note.is_some() {
         height += NOTE;
@@ -387,11 +388,15 @@ pub fn pad(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
         if let Some(note) = &note {
             widgets::form_note(ui, note, NOTE);
         }
-        let ticks = world::PRESETS.map(|(name, km)| (world::radius_fraction(km), name));
-        let fraction = world::radius_fraction(form.radius_km);
-        let slider =
-            widgets::tick_slider(ui, controls, RADIUS_SLIDER, fraction, &ticks, form.preset());
-        if let Some(fraction) = slider {
+        let ticks = world::PRESETS.map(|(name, km)| (km, name));
+        let slider = Number::new(RADIUS_SLIDER, form.radius_km, world::SLIDER_KM)
+            .label("")
+            .log()
+            .ticks(&ticks)
+            .no_field()
+            .slider(ui, controls);
+        if let Some(km) = slider {
+            let fraction = world::radius_fraction(km);
             form.set_radius_km(world::slider_radius(fraction, form.units));
         }
         ui.add_space(GROUP_GAP);

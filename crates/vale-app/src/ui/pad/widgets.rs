@@ -81,7 +81,7 @@ pub fn card(
 /// Makes a rectangle a control. `selected` is the state of a control that
 /// stays on. A control that is not enabled takes no touch. A control is not
 /// in the list while a scroll area cuts it to less than the touch size.
-fn hit(
+pub(super) fn hit(
     ui: &egui::Ui,
     controls: &mut Controls,
     rect: Rect,
@@ -252,139 +252,6 @@ pub fn tool_cell(
     ui.painter()
         .text(at, Align2::CENTER_BOTTOM, label, theme::small(), color);
     resp
-}
-
-fn track(ui: &egui::Ui, track: Rect, filled: Rect, thumb: egui::Pos2) {
-    let painter = ui.painter();
-    painter.rect_filled(track, 3.0, theme::track());
-    painter.rect_filled(filled, 3.0, theme::MUTE);
-    painter.circle_filled(
-        thumb + vec2(0.0, 1.0),
-        THUMB / 2.0 + 1.0,
-        Color32::from_black_alpha(70),
-    );
-    painter.circle_filled(thumb, THUMB / 2.0, theme::TEXT);
-}
-
-/// A slider that you move up and down. `fraction` is the value, from 0 at the
-/// bottom to 1 at the top. Returns true if the user moved it.
-pub fn vertical_slider(
-    ui: &mut egui::Ui,
-    controls: &mut Controls,
-    name: &str,
-    height: f32,
-    fraction: &mut f64,
-    value: &str,
-    enabled: bool,
-) -> bool {
-    let (rect, _) = ui.allocate_exact_size(vec2(CELL.0, height), Sense::hover());
-    let resp = hit(
-        ui,
-        controls,
-        rect,
-        name,
-        Sense::click_and_drag(),
-        enabled,
-        None,
-    );
-    let top = rect.top() + 20.0 + THUMB / 2.0;
-    let bottom = rect.bottom() - 20.0 - THUMB / 2.0;
-    let before = *fraction;
-    if let Some(pos) = resp.interact_pointer_pos()
-        && (resp.dragged() || resp.clicked() || resp.is_pointer_button_down_on())
-    {
-        *fraction = f64::from((bottom - pos.y) / (bottom - top)).clamp(0.0, 1.0);
-    }
-    let x = rect.center().x;
-    let y = bottom - *fraction as f32 * (bottom - top);
-    let whole = Rect::from_min_max(pos2(x - 3.0, top - 4.0), pos2(x + 3.0, bottom + 4.0));
-    let filled = Rect::from_min_max(pos2(x - 3.0, y), whole.max);
-    if enabled {
-        track(ui, whole, filled, pos2(x, y));
-    } else {
-        ui.painter().rect_filled(whole, 3.0, theme::track());
-    }
-    let painter = ui.painter();
-    let color = fade(theme::MUTE, enabled);
-    let at = pos2(x, rect.top() + 6.0);
-    painter.text(at, Align2::CENTER_TOP, value, theme::small(), color);
-    let at = pos2(x, rect.bottom() - 6.0);
-    painter.text(at, Align2::CENTER_BOTTOM, name, theme::small(), color);
-    *fraction != before
-}
-
-/// A slider in a row of a panel: the name, the track, and the value.
-/// `label` is the name on screen. Returns true if the user moved it. A drag
-/// that starts up or down scrolls the panel and does not move the slider.
-pub fn row_slider(
-    ui: &mut egui::Ui,
-    controls: &mut Controls,
-    name: &str,
-    label: &str,
-    fraction: &mut f64,
-    value: &str,
-) -> bool {
-    row_slider_enabled(ui, controls, name, label, fraction, value, true)
-}
-
-/// A `row_slider` that is dim and does not move while `enabled` is false.
-pub fn row_slider_enabled(
-    ui: &mut egui::Ui,
-    controls: &mut Controls,
-    name: &str,
-    label: &str,
-    fraction: &mut f64,
-    value: &str,
-    enabled: bool,
-) -> bool {
-    let size = vec2(ui.available_width(), PANEL_ROW);
-    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
-    let resp = hit(
-        ui,
-        controls,
-        rect,
-        name,
-        Sense::click_and_drag(),
-        enabled,
-        None,
-    );
-    let text = fade(theme::TEXT, enabled);
-    let label = ui
-        .painter()
-        .layout_no_wrap(label.to_string(), theme::body(), text);
-    let left = rect.left() + (label.size().x + 16.0).max(72.0) + THUMB / 2.0;
-    let right = rect.right() - 56.0 - THUMB / 2.0;
-    let before = *fraction;
-    let scroll_id = resp.id.with("scroll");
-    if resp.drag_started() {
-        let pointer = ui.input(|i| i.pointer.press_origin().zip(i.pointer.interact_pos()));
-        let moved = pointer.map_or(egui::Vec2::ZERO, |(from, to)| to - from);
-        let scroll = moved.y.abs() > moved.x.abs();
-        ui.data_mut(|data| data.insert_temp(scroll_id, scroll));
-    }
-    if resp.dragged() && ui.data(|data| data.get_temp(scroll_id)) == Some(true) {
-        ui.scroll_with_delta(vec2(0.0, resp.drag_delta().y));
-    } else if let Some(pos) = resp.interact_pointer_pos()
-        && (resp.dragged() || resp.clicked())
-    {
-        *fraction = f64::from((pos.x - left) / (right - left)).clamp(0.0, 1.0);
-    }
-    let y = rect.center().y;
-    let x = left + *fraction as f32 * (right - left);
-    let whole = Rect::from_min_max(pos2(left - 6.0, y - 3.0), pos2(right + 6.0, y + 3.0));
-    let filled = Rect::from_min_max(whole.min, pos2(x, y + 3.0));
-    if enabled {
-        track(ui, whole, filled, pos2(x, y));
-    } else {
-        ui.painter().rect_filled(whole, 3.0, theme::track());
-    }
-    let painter = ui.painter();
-    let at = pos2(rect.left(), y - label.size().y / 2.0);
-    painter.galley(at, label, text);
-    let at = pos2(rect.right(), y);
-    let color = fade(theme::MUTE, enabled);
-    painter.text(at, Align2::RIGHT_CENTER, value, theme::mono(), color);
-    *fraction != before
 }
 
 /// The size of the track of a switch.
@@ -972,8 +839,6 @@ pub fn option_row(
     resp
 }
 
-/// The distance from each end of a tick slider to the end of its scale.
-pub const SLIDER_INSET: f32 = THUMB / 2.0 + 6.0;
 /// The width of the label at the left of a row of a form.
 const FORM_LABEL: f32 = 92.0;
 
@@ -1353,33 +1218,56 @@ impl Key {
 
 /// The text of the field of the open keypad.
 #[derive(Clone)]
-struct KeyEdit {
-    field: egui::Id,
-    name: String,
-    keys: Keys,
-    text: String,
+pub(super) struct KeyEdit {
+    pub(super) field: egui::Id,
+    pub(super) name: String,
+    pub(super) keys: Keys,
+    pub(super) text: String,
     /// The text is the text of the field before the edit. The next key
     /// takes its place.
-    fresh: bool,
+    pub(super) fresh: bool,
     /// A key changed the text since the field read it.
-    changed: bool,
+    pub(super) changed: bool,
+    /// The field shows the keypad in its own place.
+    pub(super) placed: bool,
 }
 
 fn keypad_id() -> egui::Id {
     egui::Id::new("pad-keypad")
 }
 
-fn key_edit(ctx: &egui::Context) -> Option<KeyEdit> {
+pub(super) fn key_edit(ctx: &egui::Context) -> Option<KeyEdit> {
     ctx.data(|data| data.get_temp(keypad_id()))
 }
 
-fn set_key_edit(ctx: &egui::Context, edit: Option<KeyEdit>) {
+pub(super) fn set_key_edit(ctx: &egui::Context, edit: Option<KeyEdit>) {
     ctx.data_mut(|data| match edit {
         Some(edit) => {
             data.insert_temp(keypad_id(), edit);
         }
         None => data.remove::<KeyEdit>(keypad_id()),
     });
+}
+
+fn backdrop_id() -> egui::Id {
+    egui::Id::new("pad-backdrop")
+}
+
+/// Keeps the texture format of the blurred canvas for this frame, for the
+/// cards that controls open, or `None` with no blur.
+pub fn set_backdrop(ctx: &egui::Context, format: Option<wgpu::TextureFormat>) {
+    ctx.data_mut(|data| data.insert_temp(backdrop_id(), format));
+}
+
+/// The texture format of the blurred canvas, as `set_backdrop` keeps it.
+pub fn backdrop(ctx: &egui::Context) -> Option<wgpu::TextureFormat> {
+    ctx.data(|data| data.get_temp(backdrop_id())).flatten()
+}
+
+/// Keeps the place of the field whose keypad is open, for this frame. A
+/// touch there does not close the keypad.
+pub(super) fn set_keypad_field_rect(ctx: &egui::Context, rect: Rect) {
+    ctx.data_mut(|data| data.insert_temp(keypad_id().with("field"), rect));
 }
 
 /// True if the keypad of a field is open.
@@ -1445,9 +1333,13 @@ pub fn key_field(
                 text: shown.to_owned(),
                 fresh: true,
                 changed: false,
+                placed: false,
             }),
         };
         set_key_edit(&ctx, edit.clone());
+    }
+    if edit.is_some() {
+        set_keypad_field_rect(&ctx, field);
     }
     let mut out = None;
     match edit_menu(ui, controls, id, field) {
@@ -1539,6 +1431,20 @@ pub fn keypad(ui: &mut egui::Ui, controls: &mut Controls, height: f32) -> bool {
         return false;
     };
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
+    // A tap anywhere but the keypad, its field, and the edit menu closes the
+    // keypad. A drag, for example a scroll of the panel, does not.
+    let press = ui.input(|i| i.pointer.interact_pos().filter(|_| i.pointer.any_click()));
+    let field = ctx.data(|data| data.get_temp::<Rect>(keypad_id().with("field")));
+    let inside = |at: Pos2| {
+        let menu = edit_menu_rect(&ctx);
+        rect.expand(PAD * 2.0).contains(at)
+            || field.is_some_and(|f| f.contains(at))
+            || menu.is_some_and(|m| m.contains(at))
+    };
+    if press.is_some_and(|at| !inside(at)) {
+        set_key_edit(&ctx, None);
+        return true;
+    }
     let rows = edit.keys.rows();
     let columns: u8 = rows[0].iter().map(|(_, span)| span).sum();
     let width = rect.width() / f32::from(columns);
@@ -1600,6 +1506,26 @@ pub fn keypad(ui: &mut egui::Ui, controls: &mut Controls, height: f32) -> bool {
     }
     set_key_edit(&ctx, (!done).then_some(edit));
     true
+}
+
+/// The height of the keypad of a field in a panel.
+pub const KEYPAD: f32 = 4.0 * PANEL_ROW;
+
+/// The keypad of the field `name`, below the field, if it is open. The
+/// panel scrolls to show the keypad when it opens.
+pub fn keypad_below(ui: &mut egui::Ui, controls: &mut Controls, name: &str) {
+    let id = egui::Id::new(("pad-atlas-keypad", name));
+    let open = keypad_field(ui.ctx()).as_deref() == Some(name);
+    let shown = ui.data_mut(|d| std::mem::replace(d.get_temp_mut_or_default::<bool>(id), open));
+    if !open {
+        return;
+    }
+    let top = ui.cursor().top();
+    keypad(ui, controls, KEYPAD);
+    if !shown {
+        let rect = Rect::from_x_y_ranges(ui.max_rect().x_range(), top..=ui.cursor().top());
+        ui.scroll_to_rect_animation(rect, None, egui::style::ScrollAnimation::none());
+    }
 }
 
 /// A row of a form with a segmented control: choices of equal width on one
@@ -1817,54 +1743,6 @@ pub fn value_field(
     resp
 }
 
-/// A slider across a form, with ticks. Each tick has a place from 0 to 1
-/// and a name below it. `active` is the tick at the place of the thumb.
-/// Returns the new place of the thumb if the user moved it.
-pub fn tick_slider(
-    ui: &mut egui::Ui,
-    controls: &mut Controls,
-    name: &str,
-    fraction: f64,
-    ticks: &[(f64, &str)],
-    active: Option<usize>,
-) -> Option<f64> {
-    let size = vec2(ui.available_width(), TOUCH + TICK_NAMES);
-    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
-    let bar = rect.with_max_y(rect.top() + TOUCH);
-    let resp = hit(ui, controls, bar, name, Sense::click_and_drag(), true, None);
-    let left = bar.left() + SLIDER_INSET;
-    let right = bar.right() - SLIDER_INSET;
-    let mut moved = None;
-    if let Some(pos) = resp.interact_pointer_pos()
-        && (resp.dragged() || resp.clicked() || resp.is_pointer_button_down_on())
-    {
-        moved = Some(f64::from((pos.x - left) / (right - left)).clamp(0.0, 1.0));
-    }
-    let y = bar.center().y;
-    let at = |fraction: f64| left + fraction as f32 * (right - left);
-    for (place, _) in ticks {
-        let mark = Rect::from_center_size(pos2(at(*place), y), vec2(2.0, 14.0));
-        ui.painter()
-            .rect_filled(mark, 1.0, theme::MUTE.gamma_multiply(0.5));
-    }
-    let x = at(fraction);
-    let whole = Rect::from_min_max(pos2(left - 6.0, y - 3.0), pos2(right + 6.0, y + 3.0));
-    let filled = Rect::from_min_max(whole.min, pos2(x, y + 3.0));
-    track(ui, whole, filled, pos2(x, y));
-
-    for (index, (place, tick)) in ticks.iter().enumerate() {
-        let color = if active == Some(index) {
-            theme::TEXT
-        } else {
-            theme::MUTE
-        };
-        let text = pos2(at(*place), bar.bottom() - 4.0);
-        ui.painter()
-            .text(text, Align2::CENTER_TOP, *tick, theme::small(), color);
-    }
-    moved
-}
-
 /// A small text below the value of a row of a form, in the warning color.
 pub fn form_note(ui: &mut egui::Ui, text: &str, height: f32) {
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
@@ -2017,8 +1895,10 @@ pub fn color_picker(
     let width = ui.available_width();
     let fill = |h: f32, s: f32, v: f32| Color32::from(Hsva::new(h, s, v, 1.0));
 
-    // The keypad of a field takes the place of the square and the strip.
-    if !keypad(ui, controls, PICKER_SQUARE + 8.0 + TOUCH) {
+    // The keypad of a field takes the place of the square and the strip,
+    // unless the field shows its keypad itself.
+    let shown = key_edit(ui.ctx()).is_some_and(|edit| !edit.placed);
+    if !(shown && keypad(ui, controls, PICKER_SQUARE + 8.0 + TOUCH)) {
         let (square, _) = ui.allocate_exact_size(vec2(width, PICKER_SQUARE), Sense::hover());
         let shade = format!("{name} shade");
         let resp = hit(

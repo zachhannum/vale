@@ -17,8 +17,8 @@ use vale_app::session::Session;
 use vale_app::ui::gradient::{COLUMN, ColumnParts, GRADIENT, band_row, widest_gap_value};
 use vale_app::ui::pad::flyout::Flyout;
 use vale_app::ui::pad::geometry::{BrushCard, TOOLS, WidthClass};
+use vale_app::ui::pad::number::{LABEL_COLUMN, TRACK_INSET};
 use vale_app::ui::pad::raster;
-use vale_app::ui::pad::widgets::SLIDER_INSET;
 use vale_app::ui::pad::{
     ADD_LAYER, CLEAR_PATH, DRAW, EXPORT_GEOTIFF, GRATICULE, IMPORT_HEIGHTMAP, LAYER_NAME, LINE,
     LayerRef, MEASURE, ModeGroup, NEW_GEOJSON, NEW_HEIGHTMAP, NEW_IMAGE, NEW_RASTER, OPACITY,
@@ -151,6 +151,47 @@ fn tap(h: &mut Pad, name: &str) {
     h.step();
     touch(h, egui::TouchPhase::End, pos, None);
     h.run_steps(3);
+}
+
+/// Types `text` in the value field of the slider or the stepper `name`
+/// with its keypad, and closes the keypad.
+#[allow(dead_code)]
+fn type_value(h: &mut Pad, name: &str, text: &str) {
+    let field = format!("{name} value");
+    tap(h, &field);
+    for c in text.chars() {
+        tap(h, &format!("{field} {c}"));
+    }
+    tap(h, &format!("{field} Done"));
+}
+
+/// A tap on the plus button (`up`) or the minus button of the stepper
+/// `name`. A `tap` lasts long enough for the button to repeat, and a
+/// `quick_tap` does not.
+#[allow(dead_code)]
+fn step(h: &mut Pad, name: &str, up: bool) {
+    let button = if up { "Increase" } else { "Decrease" };
+    quick_tap(h, &format!("{button} {name}"));
+}
+
+/// The control `name`, or the value field of the stepper `name`.
+fn row_of(h: &Pad, name: &str) -> Option<Rect> {
+    control(h, name).or_else(|| control(h, &format!("{name} value")))
+}
+
+/// A drag on the slider `name`, along its track, that is longer than the
+/// track. It moves the value to the highest end with `up`, or else to the
+/// lowest end.
+fn slide_to_end(h: &mut Pad, name: &str, up: bool) {
+    let rect = control(h, name).unwrap_or_else(|| panic!("no control `{name}`"));
+    let length = rect.width().max(rect.height()) + 40.0;
+    let sign = if up { 1.0 } else { -1.0 };
+    let along = if rect.height() > rect.width() {
+        vec2(0.0, -sign * length)
+    } else {
+        vec2(sign * length, 0.0)
+    };
+    drag(h, rect.center(), rect.center() + along, None);
 }
 
 /// A tap of a finger on the middle of a control, with each half of the
@@ -330,7 +371,11 @@ fn check_controls(h: &Pad, what: &str) {
                 use vale_app::ui::pad::widgets::{COPY, PASTE};
                 c.name == COPY || c.name == PASTE
             };
-            let covered = popup && (row(a) != row(b) || edit(a) != edit(b));
+            // The value field of a vertical slider is at the top of the
+            // slider, and it takes the touches there.
+            let field = |a: &str, b: &str| b.strip_suffix(" value") == Some(a);
+            let own = field(&a.name, &b.name) || field(&b.name, &a.name);
+            let covered = own || popup && (row(a) != row(b) || edit(a) != edit(b));
             let free = !a.rect.shrink(0.5).intersects(b.rect.shrink(0.5));
             assert!(free || covered, "{what}: {name} and {} overlap", b.name);
         }
@@ -959,24 +1004,16 @@ fn the_values_of_a_raster_layer_have_the_unit_and_the_range_of_the_layer() {
     brush.strength_m = 1500.0;
     assert_eq!(brush.strength_value(), 500.0);
 
-    // The sliders of the Brush panel go over the range of the layer.
+    // The levels of the Brush panel go over the range of the layer, in 240
+    // steps.
     tap(&mut h, "Brush settings");
-    let slider = control(&h, "Brush floor level").unwrap();
-    let y = slider.center().y;
-    drag(
-        &mut h,
-        pos2(slider.center().x, y),
-        pos2(slider.right() + 40.0, y),
-        None,
-    );
+    type_value(&mut h, "Brush floor level", "9000");
     assert_eq!(h.state().globe.brush.floor_m, 4000.0);
-    drag(
-        &mut h,
-        pos2(slider.center().x, y),
-        pos2(slider.left() - 40.0, y),
-        None,
-    );
+    type_value(&mut h, "Brush floor level", "0");
     assert_eq!(h.state().globe.brush.floor_m, 0.0);
+    step(&mut h, "Brush floor level", true);
+    let floor = h.state().globe.brush.floor_m;
+    assert!((floor - 4000.0 / 240.0).abs() < 1e-9, "{floor}");
 
     // A height layer has meters, as before.
     h.state_mut().select(Some(LayerRef::Raster(height)));
@@ -1394,7 +1431,8 @@ fn the_opacity_slider_changes_the_layer_and_is_one_undo_step() {
         assert_eq!(opacity(&h), 0.0, "{what}");
         assert_eq!(saves(&h), saved + 1, "{what}");
 
-        // A tap on the track sets a whole percent.
+        // A tap on the track changes nothing, and a typed value sets a whole
+        // percent.
         let middle = pos2(slider.center().x + 3.3, y);
         touch(&mut h, egui::TouchPhase::Start, middle, None);
         step_and_save(&mut h, true);
@@ -1402,13 +1440,17 @@ fn the_opacity_slider_changes_the_layer_and_is_one_undo_step() {
         for _ in 0..3 {
             step_and_save(&mut h, false);
         }
-        let half = opacity(&h);
-        assert!(half > 0.3 && half < 0.7, "{what}: {half}");
-        assert_eq!((half * 100.0).round() / 100.0, half, "{what}");
+        assert_eq!(opacity(&h), 0.0, "{what}");
+        type_value(&mut h, OPACITY, "42.4");
+        step_and_save(&mut h, false);
+        // The change saves after a short wait.
+        let later = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        h.state_mut().save_tick(false, later);
+        assert_eq!(opacity(&h), 0.42, "{what}");
         assert_eq!(saves(&h), saved + 2, "{what}");
 
-        // One undo puts back the opacity from before the tap, and the next
-        // one puts back the opacity from before the drag.
+        // One undo puts back the opacity from before the typed value, and the
+        // next one puts back the opacity from before the drag.
         tap(&mut h, "Undo");
         assert_eq!(opacity(&h), 0.0, "{what}");
         tap(&mut h, "Undo");
@@ -2164,13 +2206,14 @@ fn a_mode_of_the_flyout_sets_the_mode_and_the_face_of_the_cell() {
 
     // The Brush panel has the angle in the Weather mode only.
     tap(&mut h, "Brush settings");
-    assert!(control(&h, "Brush angle").is_none());
+    assert!(control(&h, "Brush angle value").is_none());
     choose_mode(&mut h, "Weather");
     assert_eq!(h.state().globe.brush.mode, Mode::Weather);
     assert!(h.state().pad.is_open(Panel::Brush));
-    let rect = control(&h, "Brush angle").unwrap();
-    drag(&mut h, rect.center(), rect.right_center(), None);
+    type_value(&mut h, "Brush angle", "30");
     assert!((h.state().globe.brush.talus_deg - 20.0).abs() < 1e-9);
+    step(&mut h, "Brush angle", false);
+    assert!((h.state().globe.brush.talus_deg - 10.0).abs() < 1e-9);
 }
 
 #[test]
@@ -2202,8 +2245,7 @@ fn the_brush_panel_of_the_noise_mode_has_its_settings() {
     assert!(control(&h, "Brush strength").is_none());
     check_controls(&h, "the Noise mode");
     screenshot::save(&mut h, "pad-noise");
-    let rect = control(&h, "Brush scale").unwrap();
-    drag(&mut h, rect.center(), rect.left_center(), None);
+    slide_to_end(&mut h, "Brush scale", false);
     assert!((h.state().globe.brush.scale_km - 5.0).abs() < 1e-9);
     // The Invert switch shows with the ridged noise only.
     assert!(!switch_is_on(&h, "Brush ridged"));
@@ -2216,30 +2258,27 @@ fn the_brush_panel_of_the_noise_mode_has_its_settings() {
     assert!(switch_is_on(&h, "Brush invert"));
     check_controls(&h, "the inverted ridged noise");
     assert_eq!(h.state().globe.brush.noise_relief, 0.5);
-    let rect = control(&h, "Brush relief").unwrap();
-    drag(&mut h, rect.center(), rect.right_center(), None);
+    slide_to_end(&mut h, "Brush relief", true);
     assert_eq!(h.state().globe.brush.noise_relief, 1.0);
     // The Grain slider goes from no grain to features 10 times longer along
     // the stroke.
     assert_eq!(h.state().globe.brush.noise_grain, 0.0);
-    let rect = control(&h, "Brush grain").unwrap();
-    drag(&mut h, rect.center(), rect.right_center(), None);
+    slide_to_end(&mut h, "Brush grain", true);
     assert_eq!(h.state().globe.brush.noise_grain, 9.0);
-    drag(&mut h, rect.center(), rect.left_center(), None);
+    slide_to_end(&mut h, "Brush grain", false);
     assert_eq!(h.state().globe.brush.noise_grain, 0.0);
     // Each of the two sliders goes to 0 apart from the other.
-    let rect = control(&h, "Brush lower").unwrap();
-    drag(&mut h, rect.center(), rect.left_center(), None);
+    slide_to_end(&mut h, "Brush lower", false);
     let brush = &h.state().globe.brush;
     assert_eq!((brush.noise_raise_m, brush.noise_lower_m), (1500.0, 0.0));
-    let rect = control(&h, "Brush raise").unwrap();
-    drag(&mut h, rect.center(), rect.left_center(), None);
+    slide_to_end(&mut h, "Brush raise", false);
     assert_eq!(h.state().globe.brush.noise_raise_m, 0.0);
-    drag(&mut h, rect.center(), rect.right_center(), None);
+    slide_to_end(&mut h, "Brush raise", true);
     assert_eq!(h.state().globe.brush.noise_raise_m, 6000.0);
-    let rect = control(&h, "Brush seed").unwrap();
-    drag(&mut h, rect.center(), rect.right_center(), None);
+    type_value(&mut h, "Brush seed", "999");
     assert_eq!(h.state().doc.project.world.seed, 999);
+    step(&mut h, "Brush seed", false);
+    assert_eq!(h.state().doc.project.world.seed, 998);
 }
 
 #[test]
@@ -2283,15 +2322,13 @@ fn the_brush_panel_has_the_two_sliders_of_the_uplift_mode() {
     );
     assert_eq!(toggled(&h, TERRAIN), Some(true));
     // The strength slider sets the rate of the uplift.
-    let rect = control(&h, "Brush strength").unwrap();
-    drag(&mut h, rect.center(), rect.right_center(), None);
+    slide_to_end(&mut h, "Brush strength", true);
     assert!((h.state().globe.brush.strength_m - 6000.0).abs() < 1e-6);
-    let rect = control(&h, "Brush erosion").unwrap();
-    drag(&mut h, rect.center(), rect.left_center(), None);
+    slide_to_end(&mut h, "Brush erosion", false);
     assert_eq!(h.state().globe.brush.erosion, 0.0);
-    drag(&mut h, rect.left_center(), rect.right_center(), None);
+    slide_to_end(&mut h, "Brush erosion", true);
     assert_eq!(h.state().globe.brush.erosion, 1.0);
-    assert!(control(&h, "Brush angle").is_some());
+    assert!(control(&h, "Brush angle value").is_some());
     check_controls(&h, "the Uplift mode");
 }
 
@@ -2316,8 +2353,7 @@ fn the_brush_panel_has_the_wind_and_the_rain_shadow_of_the_erode_and_uplift_mode
         assert_eq!((world.wind_deg, world.rain_shadow), (270.0, 0.0));
         let r = control(&h, ROWS[0]).unwrap();
         finger_tap(&mut h, pos2(r.right() - 4.0, r.center().y));
-        let r = control(&h, ROWS[1]).unwrap();
-        drag(&mut h, r.center(), r.right_center(), None);
+        slide_to_end(&mut h, ROWS[1], true);
         let world = &h.state().doc.project.world;
         assert_eq!((world.wind_deg, world.rain_shadow), (90.0, 1.0), "{mode:?}");
         let rain = Rain {
@@ -2339,6 +2375,7 @@ fn switch_is_on(h: &Pad, name: &str) -> bool {
 fn the_brush_panel_has_the_floor_and_the_ceiling() {
     const SWITCHES: [&str; 2] = ["Brush floor", "Brush ceiling"];
     const LEVELS: [&str; 2] = ["Brush floor level", "Brush ceiling level"];
+    const FIELDS: [&str; 2] = ["Brush floor level value", "Brush ceiling level value"];
     for mode in [
         None,
         Some("Erode"),
@@ -2357,7 +2394,7 @@ fn the_brush_panel_has_the_floor_and_the_ceiling() {
         let brush = h.state().globe.brush;
         assert!(!brush.floor_on && !brush.ceiling_on, "{what}");
         assert_eq!((brush.floor_m, brush.ceiling_m), (0.0, 1000.0), "{what}");
-        for (switch, level) in SWITCHES.iter().zip(LEVELS) {
+        for (switch, level) in SWITCHES.iter().zip(FIELDS) {
             assert!(!switch_is_on(&h, switch), "{what}: {switch}");
             assert!(control(&h, level).is_none(), "{what}: {level}");
         }
@@ -2368,35 +2405,36 @@ fn the_brush_panel_has_the_floor_and_the_ceiling() {
         let brush = h.state().globe.brush;
         assert!(brush.floor_on && !brush.ceiling_on, "{what}");
         assert!(switch_is_on(&h, SWITCHES[0]) && !switch_is_on(&h, SWITCHES[1]));
-        assert!(control(&h, LEVELS[0]).is_some() && control(&h, LEVELS[1]).is_none());
-        // The switch and its level are two rows of the panel, and the track
-        // of the level is as wide as the track of the size.
-        let (switch, level) = (control(&h, SWITCHES[0]), control(&h, LEVELS[0]));
-        let (switch, level) = (switch.unwrap(), level.unwrap());
+        assert!(control(&h, FIELDS[0]).is_some() && control(&h, FIELDS[1]).is_none());
+        // The switch and its level are two rows of the panel, and the
+        // stepper of the level ends at the right of the row.
+        let switch = control(&h, SWITCHES[0]).unwrap();
+        let plus = control(&h, &format!("Increase {}", LEVELS[0])).unwrap();
         let size = control(&h, "Brush size").unwrap();
-        assert_eq!(level.top(), switch.bottom(), "{what}");
-        assert_eq!(switch.x_range(), size.x_range(), "{what}");
-        assert_eq!(level.x_range(), size.x_range(), "{what}");
+        let below = plus.center().y - switch.center().y;
+        assert_eq!(below, switch.height(), "{what}");
+        assert_eq!(switch.left(), size.left(), "{what}");
+        assert_eq!(plus.right(), switch.right(), "{what}");
 
         tap(&mut h, SWITCHES[1]);
         let brush = h.state().globe.brush;
         assert!(brush.floor_on && brush.ceiling_on, "{what}");
         check_controls(&h, &format!("{what} with the limits on"));
 
-        // A drag on a level sets the meters, in steps of 50 m.
-        let rect = control(&h, LEVELS[0]).unwrap();
-        drag(&mut h, rect.center(), rect.left_center(), None);
+        // A level has the meters of the layer, in steps of 50 m.
+        type_value(&mut h, LEVELS[0], "-9000");
         assert_eq!(h.state().globe.brush.floor_m, -6000.0, "{what}");
-        let to = rect.center() + vec2(-17.0, 0.0);
-        drag(&mut h, rect.left_center(), to, None);
+        type_value(&mut h, LEVELS[0], "-1234");
         let floor = h.state().globe.brush.floor_m;
-        assert!(floor < 0.0 && floor > -3000.0, "{what}: {floor}");
-        assert_eq!(floor % 50.0, 0.0, "{what}: {floor}");
-        let rect = control(&h, LEVELS[1]).unwrap();
-        drag(&mut h, rect.center(), rect.right_center(), None);
+        assert_eq!(floor, -1250.0, "{what}");
+        step(&mut h, LEVELS[0], true);
+        assert_eq!(h.state().globe.brush.floor_m, -1200.0, "{what}");
+        step(&mut h, LEVELS[0], false);
+        assert_eq!(h.state().globe.brush.floor_m, floor, "{what}");
+        type_value(&mut h, LEVELS[1], "6000");
         assert_eq!(h.state().globe.brush.ceiling_m, 6000.0, "{what}");
         // The floor can be above the ceiling.
-        drag(&mut h, rect.right_center(), rect.left_center(), None);
+        type_value(&mut h, LEVELS[1], "-6000");
         let brush = h.state().globe.brush;
         assert_eq!(brush.ceiling_m, -6000.0, "{what}");
         assert!(brush.floor_m > brush.ceiling_m, "{what}");
@@ -2409,7 +2447,7 @@ fn the_brush_panel_has_the_floor_and_the_ceiling() {
         let brush = h.state().globe.brush;
         assert!(!brush.floor_on && brush.ceiling_on, "{what}");
         assert_eq!(brush.floor_m, floor, "{what}");
-        assert!(control(&h, LEVELS[0]).is_none() && control(&h, LEVELS[1]).is_some());
+        assert!(control(&h, FIELDS[0]).is_none() && control(&h, FIELDS[1]).is_some());
         assert_eq!(brush.limits().floor, 0, "{what}");
     }
 
@@ -2422,7 +2460,7 @@ fn the_brush_panel_has_the_floor_and_the_ceiling() {
         h.run_steps(2);
         check_controls(&h, &format!("{size:?} with the limits on"));
         let shown = |h: &Pad| {
-            let names = SWITCHES.iter().chain(&LEVELS);
+            let names = SWITCHES.iter().chain(&FIELDS);
             names.filter(|name| control(h, name).is_some()).count()
         };
         let sheet = h.state().pad.rects.unwrap().sheet.is_some();
@@ -2431,7 +2469,7 @@ fn the_brush_panel_has_the_floor_and_the_ceiling() {
         }
         // The card is too short for the rows. A finger that moves up on a
         // slider scrolls the rows and does not move the slider.
-        const SLIDERS: [&str; 3] = ["Brush angle", "Brush rain shadow", "Brush erosion"];
+        const SLIDERS: [&str; 3] = ["Brush rain shadow", "Brush erosion", "Brush strength"];
         for _ in 0..3 {
             if shown(&h) == 4 {
                 break;
@@ -2447,6 +2485,181 @@ fn the_brush_panel_has_the_floor_and_the_ceiling() {
         tap(&mut h, SWITCHES[1]);
         assert!(!h.state().globe.brush.ceiling_on, "{size:?}");
     }
+}
+
+/// The brush size of the brush that follows the zoom, in points, after a
+/// touch on `path`, at each place of the path.
+fn sizes_along(h: &mut Pad, path: &[Pos2]) -> Vec<f32> {
+    let mut sizes = Vec::new();
+    for (i, at) in path.iter().enumerate() {
+        let phase = if i == 0 {
+            egui::TouchPhase::Start
+        } else {
+            egui::TouchPhase::Move
+        };
+        touch(h, phase, *at, None);
+        h.step();
+        sizes.push(h.state().globe.brush.size_points);
+    }
+    touch(h, egui::TouchPhase::End, *path.last().unwrap(), None);
+    h.run_steps(3);
+    sizes
+}
+
+/// The distance on the track that moves the size of the Brush panel from
+/// `from` to `to`, in points.
+fn size_distance(h: &Pad, from: f32, to: f32) -> f32 {
+    // The track has a log scale. It starts LABEL_COLUMN points from the left
+    // of the row and ends 8 points from the value field, and the handle
+    // stays TRACK_INSET from each end.
+    let globe = &h.state().globe;
+    let world_km = h.state().doc.project.world.radius_km;
+    let range = globe.brush.radius_km_range(globe.radius(), world_km);
+    let span = (range.end() / range.start()).ln() as f32;
+    let row = control(h, "Brush size").unwrap();
+    let length = row.width() - LABEL_COLUMN - 8.0 - 2.0 * TRACK_INSET;
+    (to / from).ln() / span * length
+}
+
+#[test]
+fn a_drag_on_the_size_moves_it_by_the_distance_of_the_drag() {
+    let mut h = pad(BOARDS[0]);
+    tap(&mut h, "Brush settings");
+    h.state_mut().globe.brush.size_points = 20.0;
+    h.run_steps(2);
+    let c = control(&h, "Brush size").unwrap().center();
+
+    // A touch with no drag changes nothing.
+    let sizes = sizes_along(&mut h, &[c]);
+    assert_eq!(sizes, [20.0]);
+    assert_eq!(h.state().globe.brush.size_points, 20.0);
+
+    // A drag of 30 points moves the thumb by 30 points, from where it was.
+    let to = c + vec2(30.0, 0.0);
+    let path: Vec<_> = (0..=6).map(|i| c.lerp(to, i as f32 / 6.0)).collect();
+    sizes_along(&mut h, &path);
+    let size = h.state().globe.brush.size_points;
+    let moved = size_distance(&h, 20.0, size);
+    assert!((moved - 30.0).abs() < 1.0, "{size} {moved}");
+}
+
+#[test]
+fn a_drag_far_from_the_track_moves_the_size_8_times_less() {
+    // The change of a 24 point move, on the track or 200 points below it.
+    let moved = |below: f32| {
+        let mut h = pad(BOARDS[0]);
+        tap(&mut h, "Brush settings");
+        // Far from the default size, where the thumb stops.
+        h.state_mut().globe.brush.size_points = 8.0;
+        h.run_steps(2);
+        let c = control(&h, "Brush size").unwrap().center();
+        let start = c + vec2(10.0, 0.0);
+        let down = start + vec2(0.0, below);
+        let path = [
+            c,
+            start,
+            down,
+            down + vec2(12.0, 0.0),
+            down + vec2(24.0, 0.0),
+        ];
+        let sizes = sizes_along(&mut h, &path);
+        size_distance(&h, sizes[2], sizes[4])
+    };
+    let (near, far) = (moved(0.0), moved(200.0));
+    assert!((near - 24.0).abs() < 1.0, "{near}");
+    assert!((far - 3.0).abs() < 0.5, "{far}");
+}
+
+#[test]
+fn a_tap_on_the_size_value_opens_the_keypad_and_a_typed_size_sets_it() {
+    let mut h = pad(BOARDS[0]);
+    tap(&mut h, "Brush settings");
+    let km = |h: &Pad| {
+        let globe = &h.state().globe;
+        let world_km = h.state().doc.project.world.radius_km;
+        globe.brush.radius_km(globe.radius(), world_km)
+    };
+    let range = {
+        let globe = &h.state().globe;
+        let world_km = h.state().doc.project.world.radius_km;
+        globe.brush.radius_km_range(globe.radius(), world_km)
+    };
+    assert!(range.contains(&1000.0), "{range:?}");
+    assert!(control(&h, "Brush size value 1").is_none());
+    tap(&mut h, "Brush size value");
+    assert!(control(&h, "Brush size value 1").is_some());
+    for c in ["1", "0", "0", "0", "Done"] {
+        tap(&mut h, &format!("Brush size value {c}"));
+    }
+    assert!(control(&h, "Brush size value 1").is_none());
+    assert!((km(&h) - 1000.0).abs() < 0.01, "{}", km(&h));
+}
+
+#[test]
+fn a_tap_outside_the_keypad_closes_it_and_keeps_the_typed_value() {
+    let mut h = pad(BOARDS[0]);
+    tap(&mut h, "Brush settings");
+    tap(&mut h, "Brush ceiling");
+    let name = "Brush ceiling level value";
+    tap(&mut h, name);
+    for c in ["1", "2", "0", "0"] {
+        tap(&mut h, &format!("{name} {c}"));
+    }
+    // A tap on the keypad keeps it open, and a drag on the globe does too.
+    assert!(control(&h, &format!("{name} 1")).is_some());
+    let at = h.state().pad.rects.unwrap().screen.center() + vec2(250.0, 150.0);
+    drag(&mut h, at, at + vec2(60.0, 0.0), None);
+    assert!(control(&h, &format!("{name} 1")).is_some());
+    // A tap on the globe closes it.
+    let at = h.state().pad.rects.unwrap().screen.center() + vec2(250.0, 150.0);
+    touch(&mut h, egui::TouchPhase::Start, at, None);
+    h.step();
+    touch(&mut h, egui::TouchPhase::End, at, None);
+    h.run_steps(3);
+    assert!(control(&h, &format!("{name} 1")).is_none());
+    assert_eq!(h.state().globe.brush.ceiling_m, 1200.0);
+}
+
+#[test]
+fn the_ceiling_level_is_a_stepper_of_50_m_and_takes_a_typed_level() {
+    let mut h = pad(BOARDS[1]);
+    tap(&mut h, "Brush settings");
+    tap(&mut h, "Brush ceiling");
+    assert_eq!(h.state().globe.brush.ceiling_m, 1000.0);
+    step(&mut h, "Brush ceiling level", true);
+    assert_eq!(h.state().globe.brush.ceiling_m, 1050.0);
+    step(&mut h, "Brush ceiling level", false);
+    step(&mut h, "Brush ceiling level", false);
+    assert_eq!(h.state().globe.brush.ceiling_m, 950.0);
+    type_value(&mut h, "Brush ceiling level", "1200");
+    assert_eq!(h.state().globe.brush.ceiling_m, 1200.0);
+}
+
+#[test]
+fn the_brush_panel_locks_the_size_and_sets_the_flatten_level() {
+    use vale_app::ui::pad::{FLATTEN_LEVEL, LOCK_SIZE, PICK_LEVEL, STROKE_START};
+    let mut h = pad(BOARDS[1]);
+    tap(&mut h, "Brush settings");
+    assert!(h.state().globe.brush.lock.is_none());
+    tap(&mut h, LOCK_SIZE);
+    assert!(h.state().globe.brush.lock.is_some());
+    assert!(control(&h, PICK_LEVEL).is_none());
+
+    choose_mode(&mut h, "Flatten");
+    assert_eq!(h.state().globe.brush.flatten_level, None);
+    assert!(h.query_by_label("Level at stroke start").is_some());
+    tap(&mut h, PICK_LEVEL);
+    assert!(h.state().globe.pick_level);
+    let brush = &mut h.state_mut().globe.brush;
+    brush.flatten_level = Some(brush.level(1000.0));
+    h.run_steps(2);
+    type_value(&mut h, FLATTEN_LEVEL, "1200");
+    let brush = h.state().globe.brush;
+    let level = brush.value(brush.flatten_level.unwrap());
+    assert!((level - 1200.0).abs() < 0.2, "{level}");
+    tap(&mut h, STROKE_START);
+    assert_eq!(h.state().globe.brush.flatten_level, None);
+    check_controls(&h, "the Flatten mode");
 }
 
 #[test]
@@ -2467,22 +2680,23 @@ fn the_brush_panel_has_the_two_sliders_of_the_warp_mode() {
     );
     // The strength slider sets the offset in kilometers.
     let meters = s.globe.brush.strength_m;
-    let rect = control(&h, "Brush strength").unwrap();
-    drag(&mut h, rect.center(), rect.right_center(), None);
+    slide_to_end(&mut h, "Brush strength", true);
     assert!((h.state().globe.brush.warp_km - 500.0).abs() < 1e-6);
     assert_eq!(h.state().globe.brush.strength_m, meters);
-    let rect = control(&h, "Brush scale").unwrap();
-    drag(&mut h, rect.center(), rect.left_center(), None);
+    slide_to_end(&mut h, "Brush scale", false);
     assert!((h.state().globe.brush.scale_km - 5.0).abs() < 1e-9);
-    drag(&mut h, rect.left_center(), rect.right_center(), None);
+    slide_to_end(&mut h, "Brush scale", true);
     assert!((h.state().globe.brush.scale_km - 2000.0).abs() < 1e-6);
-    // The seed slider sets the seed of the world.
+    // The seed stepper sets the seed of the world.
     assert_eq!(h.state().doc.project.world.seed, 0);
-    let rect = control(&h, "Brush seed").unwrap();
-    drag(&mut h, rect.center(), rect.right_center(), None);
+    // The minus button is off at the lowest seed.
+    assert!(control(&h, "Decrease Brush seed").is_none());
+    step(&mut h, "Brush seed", true);
+    assert_eq!(h.state().doc.project.world.seed, 1);
+    type_value(&mut h, "Brush seed", "999");
     assert_eq!(h.state().doc.project.world.seed, 999);
     assert_eq!(h.state().globe.world_seed, 999);
-    assert!(control(&h, "Brush angle").is_none());
+    assert!(control(&h, "Brush angle value").is_none());
     check_controls(&h, "the Warp mode");
 }
 
@@ -2523,8 +2737,9 @@ fn edge_age_line(h: &Pad) -> String {
 fn the_brush_panel_has_the_five_sliders_of_the_ocean_ridge_mode() {
     let mut h = pad(BOARDS[0]);
     tap(&mut h, "Brush settings");
+    let field = |h: &Pad, row: &str| control(h, &format!("{row} value"));
     for row in RIDGE_ROWS {
-        assert!(control(&h, row).is_none(), "{row}");
+        assert!(field(&h, row).is_none(), "{row}");
     }
     assert!(control(&h, "Brush hardness").is_some());
     choose_mode(&mut h, "Ocean ridge");
@@ -2535,7 +2750,7 @@ fn the_brush_panel_has_the_five_sliders_of_the_ocean_ridge_mode() {
     );
     assert_eq!(ridge_values(&h), [-700.0, 25.0, 0.0, 400.0, 100.0]);
     for row in RIDGE_ROWS {
-        assert!(control(&h, row).is_some(), "{row}");
+        assert!(field(&h, row).is_some(), "{row}");
     }
     assert!(h.query_by_label(&edge_age_line(&h)).is_some());
     // The size and the flow stay. The mode has no hardness and no strength.
@@ -2543,38 +2758,33 @@ fn the_brush_panel_has_the_five_sliders_of_the_ocean_ridge_mode() {
         assert!(control(&h, row).is_some(), "{row}");
     }
     for row in ["Brush hardness", "Brush strength", "Brush seed"] {
-        assert!(control(&h, row).is_none(), "{row}");
+        assert!(field(&h, row).is_none(), "{row}");
     }
-    // Each slider sets its value from one end of its range to the other.
+    // Each row takes the values from one end of its range to the other, and
+    // a typed value past an end gives the end.
     let ends = [
-        (-6000.0, 6000.0),
-        (10.0, 150.0),
-        (-0.25, 0.15),
-        (100.0, 1500.0),
-        (0.0, 500.0),
+        (("-9000", -6000.0), ("9000", 6000.0)),
+        (("0", 10.0), ("900", 150.0)),
+        (("-90", -0.25), ("90", 0.15)),
+        (("0", 100.0), ("9000", 1500.0)),
+        (("-5", 0.0), ("900", 500.0)),
     ];
-    for (i, (row, (low, high))) in RIDGE_ROWS.into_iter().zip(ends).enumerate() {
-        let rect = control(&h, row).unwrap();
-        drag(&mut h, rect.center(), rect.left_center(), None);
-        assert!((ridge_values(&h)[i] - low).abs() < 1e-6, "{row}");
-        drag(&mut h, rect.left_center(), rect.right_center(), None);
-        assert!((ridge_values(&h)[i] - high).abs() < 1e-6, "{row}");
+    for (i, (row, ends)) in RIDGE_ROWS.into_iter().zip(ends).enumerate() {
+        for (text, value) in [ends.0, ends.1] {
+            type_value(&mut h, row, text);
+            assert!((ridge_values(&h)[i] - value).abs() < 1e-6, "{row} {text}");
+        }
     }
-    // The edge age follows the spreading.
-    let rect = control(&h, "Brush spreading").unwrap();
-    drag(&mut h, rect.right_center(), rect.center(), None);
-    let spread = h.state().globe.brush.ridge_spread_mm;
-    assert!(spread > 10.0 && spread < 150.0 && spread.fract() == 0.0);
+    // The edge age follows the spreading, in steps of 1 mm/yr.
+    type_value(&mut h, "Brush spreading", "60");
+    step(&mut h, "Brush spreading", false);
+    assert_eq!(h.state().globe.brush.ridge_spread_mm, 59.0);
     assert!(h.query_by_label(&edge_age_line(&h)).is_some());
     // The crest moves in steps of 50 m.
-    let rect = control(&h, "Brush crest").unwrap();
-    let part = rect.left_center().lerp(rect.right_center(), 0.37);
-    drag(&mut h, rect.right_center(), part, None);
-    let crest = h.state().globe.brush.ridge_crest_m;
-    assert!(
-        crest > -6000.0 && crest < 6000.0 && crest % 50.0 == 0.0,
-        "{crest}"
-    );
+    step(&mut h, "Brush crest", false);
+    assert_eq!(h.state().globe.brush.ridge_crest_m, 5950.0);
+    type_value(&mut h, "Brush crest", "1234");
+    assert_eq!(h.state().globe.brush.ridge_crest_m, 1250.0);
     check_controls(&h, "the Ocean ridge mode");
 }
 
@@ -2597,8 +2807,9 @@ fn the_ocean_ridge_mode_fits_on_the_smallest_ipad() {
     let (_, panel) = h.state().pad.panels[0];
     assert!(screen.contains_rect(panel), "{panel:?}");
     let rows = ["Brush size", "Brush flow"].into_iter().chain(RIDGE_ROWS);
-    for row in rows.chain(["Brush floor", "Brush ceiling"]) {
-        let rect = control(&h, row).unwrap_or_else(|| panic!("no control `{row}`"));
+    let fields = rows.map(|row| format!("{row} value"));
+    for row in fields.chain(["Brush floor", "Brush ceiling"].map(String::from)) {
+        let rect = control(&h, &row).unwrap_or_else(|| panic!("no control `{row}`"));
         assert!(panel.contains_rect(rect), "{row}: {rect:?} in {panel:?}");
     }
     let line = h.get_by_label(&edge_age_line(&h)).rect();
@@ -2612,10 +2823,10 @@ fn the_ocean_ridge_mode_fits_on_the_smallest_ipad() {
     assert!(brush.floor_on && brush.ceiling_on);
     let (_, panel) = h.state().pad.panels[0];
     assert!(screen.contains_rect(panel), "{panel:?}");
-    let from = control(&h, "Brush offset").unwrap().center();
+    let from = control(&h, "Brush magma").unwrap().center();
     drag(&mut h, from, from - vec2(4.0, 200.0), None);
     assert_eq!(h.state().globe.brush, brush);
-    for row in ["Brush floor level", "Brush ceiling level"] {
+    for row in ["Brush floor level value", "Brush ceiling level value"] {
         let rect = control(&h, row).unwrap_or_else(|| panic!("no control `{row}`"));
         assert!(panel.contains_rect(rect), "{row}: {rect:?} in {panel:?}");
     }
@@ -2663,12 +2874,12 @@ fn the_brush_panel_has_the_sliders_of_the_range_mode() {
     let mut h = pad(BOARDS[0]);
     tap(&mut h, "Brush settings");
     for row in ["Brush spacing", "Brush seed", "Brush erosion"] {
-        assert!(control(&h, row).is_none(), "{row}");
+        assert!(row_of(&h, row).is_none(), "{row}");
     }
     choose_mode(&mut h, "Range");
     assert_eq!(h.state().globe.brush.mode, Mode::Range);
     for row in ["Brush size", "Brush flow"].into_iter().chain(RANGE_ROWS) {
-        assert!(control(&h, row).is_some(), "{row}");
+        assert!(row_of(&h, row).is_some(), "{row}");
     }
     for row in [
         "Brush hardness",
@@ -2676,23 +2887,20 @@ fn the_brush_panel_has_the_sliders_of_the_range_mode() {
         "Brush crest",
         "Brush scale",
     ] {
-        assert!(control(&h, row).is_none(), "{row}");
+        assert!(row_of(&h, row).is_none(), "{row}");
     }
     // The spacing goes from one end of its range to the other.
     assert_eq!(h.state().globe.brush.range_spacing_km, 30.0);
-    let rect = control(&h, "Brush spacing").unwrap();
-    drag(&mut h, rect.center(), rect.left_center(), None);
+    slide_to_end(&mut h, "Brush spacing", false);
     assert!((h.state().globe.brush.range_spacing_km - 5.0).abs() < 1e-9);
-    drag(&mut h, rect.left_center(), rect.right_center(), None);
+    slide_to_end(&mut h, "Brush spacing", true);
     assert!((h.state().globe.brush.range_spacing_km - 300.0).abs() < 1e-6);
-    // The seed slider sets the seed of the world, as in the Warp mode.
-    let rect = control(&h, "Brush seed").unwrap();
-    drag(&mut h, rect.center(), rect.right_center(), None);
+    // The seed stepper sets the seed of the world, as in the Warp mode.
+    type_value(&mut h, "Brush seed", "999");
     assert_eq!(h.state().doc.project.world.seed, 999);
     assert_eq!(h.state().globe.world_seed, 999);
     // The erosion is the erosion of the Uplift mode.
-    let rect = control(&h, "Brush erosion").unwrap();
-    drag(&mut h, rect.center(), rect.left_center(), None);
+    slide_to_end(&mut h, "Brush erosion", false);
     assert_eq!(h.state().globe.brush.erosion, 0.0);
     choose_mode(&mut h, "Uplift");
     assert_eq!(h.state().globe.brush.erosion, 0.0);
@@ -2744,7 +2952,7 @@ fn the_brush_panel_has_the_sliders_of_the_basin_mode() {
     choose_mode(&mut h, "Basin");
     assert_eq!(h.state().globe.brush.mode, Mode::Basin);
     for row in BASIN_ROWS {
-        assert!(control(&h, row).is_some(), "{row}");
+        assert!(row_of(&h, row).is_some(), "{row}");
     }
     // The outline sets the size of a basin.
     for row in [
@@ -2756,18 +2964,16 @@ fn the_brush_panel_has_the_sliders_of_the_basin_mode() {
         "Brush floodplain",
         "Brush angle",
     ] {
-        assert!(control(&h, row).is_none(), "{row}");
+        assert!(row_of(&h, row).is_none(), "{row}");
     }
     // The density goes from one end of its range to the other.
     assert_eq!(h.state().globe.brush.basin_density_km, 40.0);
-    let rect = control(&h, "Brush density").unwrap();
-    drag(&mut h, rect.center(), rect.left_center(), None);
+    slide_to_end(&mut h, "Brush density", false);
     assert!((h.state().globe.brush.basin_density_km - 10.0).abs() < 1e-9);
-    drag(&mut h, rect.left_center(), rect.right_center(), None);
+    slide_to_end(&mut h, "Brush density", true);
     assert!((h.state().globe.brush.basin_density_km - 500.0).abs() < 1e-6);
-    // The seed slider sets the seed of the world.
-    let rect = control(&h, "Brush seed").unwrap();
-    drag(&mut h, rect.center(), rect.right_center(), None);
+    // The seed stepper sets the seed of the world.
+    type_value(&mut h, "Brush seed", "999");
     assert_eq!(h.state().globe.world_seed, 999);
     check_controls(&h, "the Basin mode");
 }
@@ -2822,7 +3028,7 @@ fn the_range_mode_fits_on_the_smallest_ipad() {
     let rows = ["Brush size", "Brush flow"].into_iter().chain(RANGE_ROWS);
     for row in rows.chain(["Brush floor", "Brush ceiling"]) {
         for _ in 0..4 {
-            if control(&h, row).is_some_and(|rect| panel.contains_rect(rect)) {
+            if row_of(&h, row).is_some_and(|rect| panel.contains_rect(rect)) {
                 break;
             }
             let from = control(&h, "Brush flow")
@@ -2831,7 +3037,7 @@ fn the_range_mode_fits_on_the_smallest_ipad() {
                 .center();
             drag(&mut h, from, from - vec2(4.0, 120.0), None);
         }
-        let rect = control(&h, row).unwrap_or_else(|| panic!("no control `{row}`"));
+        let rect = row_of(&h, row).unwrap_or_else(|| panic!("no control `{row}`"));
         assert!(panel.contains_rect(rect), "{row}: {rect:?} in {panel:?}");
         check_controls(&h, &format!("744 high with the Range panel at {row}"));
     }
@@ -2853,28 +3059,29 @@ fn the_brush_panel_has_the_channel_rows_of_the_carve_and_erode_modes() {
         ("Push", [false, false]),
     ] {
         choose_mode(&mut h, mode);
-        let shown = [control(&h, width).is_some(), control(&h, plain).is_some()];
+        let shown = [row_of(&h, width).is_some(), row_of(&h, plain).is_some()];
         assert_eq!(shown, rows, "{mode}");
     }
     choose_mode(&mut h, "Carve");
     assert_eq!(h.state().globe.brush.mode, Mode::Carve);
     check_controls(&h, "the Carve mode");
-    // The channel width goes from one end of its logarithmic range to the
-    // other.
+    // The channel width goes from one end of its range to the other, and
+    // its buttons go through 1, 2, 5, 10.
     let brush = h.state().globe.brush;
     assert_eq!((brush.channel_km, brush.floodplain_km), (0.6, 10.0));
-    let rect = control(&h, width).unwrap();
-    drag(&mut h, rect.center(), rect.left_center(), None);
+    step(&mut h, width, true);
+    assert!((h.state().globe.brush.channel_km - 1.0).abs() < 1e-9);
+    type_value(&mut h, width, "0");
     assert!((h.state().globe.brush.channel_km - 0.05).abs() < 1e-9);
-    drag(&mut h, rect.left_center(), rect.right_center(), None);
+    type_value(&mut h, width, "99");
     assert!((h.state().globe.brush.channel_km - 10.0).abs() < 1e-6);
     // The floodplain has steps of 1 km.
-    let rect = control(&h, plain).unwrap();
-    drag(&mut h, rect.center(), rect.right_center(), None);
+    type_value(&mut h, plain, "999");
     assert_eq!(h.state().globe.brush.floodplain_km, 100.0);
-    drag(&mut h, rect.right_center(), rect.center(), None);
-    let km = h.state().globe.brush.floodplain_km;
-    assert!(km < 100.0 && km == km.round(), "{km}");
+    step(&mut h, plain, false);
+    assert_eq!(h.state().globe.brush.floodplain_km, 99.0);
+    type_value(&mut h, plain, "12.4");
+    assert_eq!(h.state().globe.brush.floodplain_km, 12.0);
     // The Erode mode has the same channel width.
     choose_mode(&mut h, "Erode");
     assert!((h.state().globe.brush.channel_km - 10.0).abs() < 1e-6);
@@ -4110,7 +4317,7 @@ fn the_world_form_makes_a_new_world_with_a_small_radius() {
         tap(&mut h, NEW_WORLD);
         assert_eq!(h.state().world_form.as_ref().unwrap().mode, FormMode::New);
         check_form(&h, &format!("{size:?} new"));
-        tap_radius(&mut h, 1737.4);
+        drag_radius(&mut h, 1737.4);
         assert_eq!(h.state().world_form.as_ref().unwrap().radius, "1737.4");
         type_text(&mut h, NAME, "Pebble");
         type_text(&mut h, "Radius (km)", "200");
@@ -4160,18 +4367,18 @@ fn the_world_form_makes_a_new_world_with_a_small_radius() {
     }
 }
 
-/// A tap on the radius slider of the open form at the place of this radius.
-fn tap_radius(h: &mut Pad, km: f64) {
+/// A drag on the radius slider of the open form, from the place of the
+/// radius of the form to the place of this radius.
+fn drag_radius(h: &mut Pad, km: f64) {
     let slider = control(h, RADIUS_SLIDER).unwrap();
     let (left, width) = (
-        slider.left() + SLIDER_INSET,
-        slider.width() - 2.0 * SLIDER_INSET,
+        slider.left() + TRACK_INSET,
+        slider.width() - 2.0 * TRACK_INSET,
     );
-    let pos = pos2(left + radius_fraction(km) as f32 * width, slider.center().y);
-    touch(h, egui::TouchPhase::Start, pos, None);
-    h.step();
-    touch(h, egui::TouchPhase::End, pos, None);
-    h.run_steps(3);
+    let at = |km: f64| pos2(left + radius_fraction(km) as f32 * width, slider.center().y);
+    let form = h.state().world_form.as_ref().unwrap();
+    let from = form.radius_km().unwrap_or(6371.0);
+    drag(h, at(from), at(km), None);
 }
 
 #[test]
@@ -4183,8 +4390,8 @@ fn the_radius_slider_snaps_to_the_known_radii() {
         check_form(&h, &format!("{size:?} slider"));
         let slider = control(&h, RADIUS_SLIDER).unwrap();
         let (left, width) = (
-            slider.left() + SLIDER_INSET,
-            slider.width() - 2.0 * SLIDER_INSET,
+            slider.left() + TRACK_INSET,
+            slider.width() - 2.0 * TRACK_INSET,
         );
         let at = |km: f64| pos2(left + radius_fraction(km) as f32 * width, slider.center().y);
         let radius = |h: &Pad| h.state().world_form.as_ref().unwrap().radius_km().unwrap();
@@ -4203,12 +4410,19 @@ fn the_radius_slider_snaps_to_the_known_radii() {
         // The end of the slider is its upper limit.
         drag(
             &mut h,
-            at(12_000.0),
+            at(km),
             pos2(slider.right(), slider.center().y),
             None,
         );
         assert_eq!(radius(&h), 20_000.0);
-        tap_radius(&mut h, 1737.4);
+        // A touch with no drag does not move the radius.
+        let (pos, phase) = (at(3389.5), egui::TouchPhase::Start);
+        touch(&mut h, phase, pos, None);
+        h.step();
+        touch(&mut h, egui::TouchPhase::End, pos, None);
+        h.run_steps(3);
+        assert_eq!(radius(&h), 20_000.0);
+        drag_radius(&mut h, 1737.4);
         assert_eq!(radius(&h), 1737.4);
         // A typed value can be outside the limits of the slider.
         type_text(&mut h, "Radius (km)", "250");
@@ -4252,7 +4466,7 @@ fn the_properties_of_the_world_apply_at_once_and_a_touch_does_not_reach_the_canv
     drag(&mut h, pos2(900.0, 600.0), pos2(700.0, 500.0), None);
     assert!(h.state().globe.view == view);
 
-    tap_radius(&mut h, 3389.5);
+    drag_radius(&mut h, 3389.5);
     tap(&mut h, "Miles");
     let world = &h.state().doc.project.world;
     assert_eq!((world.radius_km, world.units), (3389.5, Units::Imperial));
@@ -4955,23 +5169,26 @@ fn the_card_of_a_stop_sets_its_line() {
     assert!(stop(&h).line.on);
     assert!(switch_is_on(&h, LINE));
 
-    // The weight goes in steps of a quarter point up to 8 points.
-    let slider = control(&h, LINE_WEIGHT).unwrap();
-    drag(
-        &mut h,
-        slider.left_center(),
-        slider.right_center() + vec2(40.0, 0.0),
-        None,
-    );
-    assert_eq!(stop(&h).line.weight, 8.0);
-    let slider = control(&h, LINE_WEIGHT).unwrap();
-    drag(
-        &mut h,
-        slider.right_center(),
-        slider.left_center() - vec2(40.0, 0.0),
-        None,
-    );
-    assert_eq!(stop(&h).line.weight, 0.25);
+    // The weight goes in steps of a quarter point from a quarter point to
+    // 8 points.
+    // A button is off at the end of the range.
+    for (up, end) in [(true, 8.0), (false, 0.25)] {
+        let button = format!("{} {LINE_WEIGHT}", if up { "Increase" } else { "Decrease" });
+        for _ in 0..40 {
+            if control(&h, &button).is_none() {
+                break;
+            }
+            let weight = stop(&h).line.weight;
+            step(&mut h, LINE_WEIGHT, up);
+            assert_eq!((stop(&h).line.weight - weight).abs(), 0.25);
+        }
+        assert_eq!(stop(&h).line.weight, end);
+    }
+    // The keypad of the weight opens in the place of the picker, inside the
+    // card, and a typed weight takes the nearest step.
+    type_value(&mut h, LINE_WEIGHT, "2.4");
+    assert_eq!(stop(&h).line.weight, 2.5);
+    type_value(&mut h, LINE_WEIGHT, "0.25");
 
     // With the line chosen, the picker sets the color of the line and not
     // the colors of the stop.
@@ -5862,10 +6079,9 @@ fn the_style_section_has_the_smoothing_and_the_minimum_feature_size() {
         check_controls(&h, &format!("{what} with the smoothing"));
         screenshot::save(&mut h, &format!("pad-smoothing-{}", size.0));
 
-        // A tap at the left end of the slider gives a size of zero.
-        let slider = control(&h, FEATURE_SIZE).unwrap();
-        finger_tap(&mut h, pos2(slider.left() + 1.0, slider.center().y));
+        set_number(&mut h, FEATURE_SIZE, "0");
         assert_eq!(smoothing(&h).feature_size, 0.0, "{what}");
+        scroll_to_control(&mut h, SMOOTHING);
 
         tap(&mut h, SMOOTHING);
         assert!(!smoothing(&h).on, "{what}");
@@ -5982,13 +6198,11 @@ fn the_hillshade_page_has_each_control_inside_the_card() {
         }
         screenshot::save(&mut h, &format!("pad-hillshade-{}", size.0));
 
-        // A tap at the left end of the opacity slider gives zero.
-        scroll_to_row(&mut h, HILLSHADE_OPACITY);
-        let slider = control(&h, HILLSHADE_OPACITY).unwrap();
-        finger_tap(&mut h, pos2(slider.left() + 1.0, slider.center().y));
+        // The opacity is in whole percents.
+        set_number(&mut h, HILLSHADE_OPACITY, "0");
         assert_eq!(hillshade_of(&h, height).opacity, 0.0, "{what}");
-        let slider = control(&h, HILLSHADE_OPACITY).unwrap();
-        finger_tap(&mut h, slider.center());
+        set_number(&mut h, HILLSHADE_OPACITY, "40.4");
+        assert_eq!(hillshade_of(&h, height).opacity, 0.4, "{what}");
         let opacity = hillshade_of(&h, height).opacity;
         assert!(opacity > 0.0, "{what}: {opacity}");
 
@@ -6048,29 +6262,22 @@ fn the_hillshade_sliders_set_the_light_height_and_the_relief() {
     for size in [BOARDS[0], BOARDS[3]] {
         let what = format!("{size:?}");
         let (mut h, height) = hillshade_page(size);
-        // The track of a slider with a short label starts 72 points right
-        // of the row, and ends 56 points left of its end, inside the half
-        // of the thumb.
-        let ends = |h: &Pad, name: &str| {
-            let slider = control(h, name).unwrap();
-            let y = slider.center().y;
-            let left = pos2(slider.left() + 1.0, y);
-            let right = pos2(slider.right() - 1.0, y);
-            let middle = (slider.left() + 72.0 + slider.right() - 56.0) / 2.0;
-            (left, pos2(middle, y), right)
-        };
-        scroll_to(&mut h, HILLSHADE_RELIEF);
-        let (left, _, right) = ends(&h, HILLSHADE_ALTITUDE);
-        finger_tap(&mut h, left);
+        // The light height is in whole degrees from 5° to 85°.
+        set_number(&mut h, HILLSHADE_ALTITUDE, "0");
         assert_eq!(hillshade_of(&h, height).altitude, 5.0, "{what}");
-        finger_tap(&mut h, right);
+        set_number(&mut h, HILLSHADE_ALTITUDE, "90");
         assert_eq!(hillshade_of(&h, height).altitude, 85.0, "{what}");
+        set_number(&mut h, HILLSHADE_ALTITUDE, "30.4");
+        assert_eq!(hillshade_of(&h, height).altitude, 30.0, "{what}");
 
-        let (left, middle, _) = ends(&h, HILLSHADE_RELIEF);
-        finger_tap(&mut h, left);
+        // The relief is in hundredths from 0.25 to 4, and a drag from the
+        // left end stops at 1.
+        set_number(&mut h, HILLSHADE_RELIEF, "0");
         assert_eq!(hillshade_of(&h, height).exaggeration, 0.25, "{what}");
-        finger_tap(&mut h, middle);
-        assert_eq!(hillshade_of(&h, height).exaggeration, 1.0, "{what}");
+        set_number(&mut h, HILLSHADE_RELIEF, "9");
+        assert_eq!(hillshade_of(&h, height).exaggeration, 4.0, "{what}");
+        set_number(&mut h, HILLSHADE_RELIEF, "1.234");
+        assert_eq!(hillshade_of(&h, height).exaggeration, 1.23, "{what}");
     }
 }
 
@@ -6185,16 +6392,9 @@ fn the_snap_controls_work_with_a_pen_a_finger_and_a_mouse() {
             assert!(!snap(&h)[i], "{what}: {name} after a mouse");
             tap(&mut h, name);
         }
-        let slider = control(&h, SNAP_DISTANCE).unwrap();
-        let y = slider.center().y;
-        finger_tap(&mut h, pos2(slider.left() + 1.0, y));
+        slide_to_end(&mut h, SNAP_DISTANCE, false);
         assert_eq!(h.state().globe.snap.distance, 4.0, "{what}");
-        drag(
-            &mut h,
-            pos2(slider.left() + 1.0, y),
-            pos2(slider.right() - 1.0, y),
-            None,
-        );
+        slide_to_end(&mut h, SNAP_DISTANCE, true);
         assert_eq!(h.state().globe.snap.distance, 32.0, "{what}");
     }
 }
@@ -6788,6 +6988,29 @@ fn type_scrolled_keys(h: &mut Pad, field: &str, text: &str) {
     tap(h, &done);
 }
 
+/// Types `text` on the keypad of the number `name` in the Layers panel.
+fn set_number(h: &mut Pad, name: &str, text: &str) {
+    type_scrolled_keys(h, &format!("{name} value"), text);
+}
+
+/// A tap on the plus button (`up`) or the minus button of the stepper
+/// `name` in the Layers panel.
+fn scrolled_step(h: &mut Pad, name: &str, up: bool) {
+    let button = if up { "Increase" } else { "Decrease" };
+    scroll_to_control(h, &format!("{button} {name}"));
+    step(h, name, up);
+}
+
+/// A drag along the slider `name` from near its left end to far past its
+/// right end, which moves the value to the end of the range.
+fn drag_right(h: &mut Pad, name: &str) {
+    scroll_to_control(h, name);
+    let slider = control(h, name).unwrap();
+    let y = slider.center().y;
+    let from = pos2(slider.left() + 100.0, y);
+    drag(h, from, pos2(from.x + 600.0, y), None);
+}
+
 /// The rules of the style of a vector layer.
 fn rules(h: &Pad, id: vale_store::LayerId) -> Vec<vale_style::Rule> {
     h.state().doc.entry(id).unwrap().style.style.rules.clone()
@@ -6944,17 +7167,14 @@ fn a_rule_page_sets_the_stroke_and_the_fill() {
         let stroke = rule(&h).stroke().unwrap();
         assert_eq!(stroke.color, Color::rgb(0xc0, 0x40, 0x20), "{what}");
 
-        // A tap on the width slider sets a width in twentieths of a point.
-        scroll_to_control(&mut h, STROKE_WIDTH);
-        let slider = control(&h, STROKE_WIDTH).unwrap();
-        let at = pos2(slider.right() - 30.0, slider.center().y);
-        touch(&mut h, egui::TouchPhase::Start, at, None);
-        h.step();
-        touch(&mut h, egui::TouchPhase::End, at, None);
-        h.run_steps(3);
+        // The width is in twentieths of a point.
+        scrolled_step(&mut h, STROKE_WIDTH, true);
         let width = rule(&h).stroke().unwrap().width;
         assert!(width > stroke.width, "{what}: {width}");
-        assert_eq!((width * 20.0).round() / 20.0, width, "{what}");
+        assert!(
+            (width * 20.0 - (width * 20.0).round()).abs() < 1e-9,
+            "{what}: {width}"
+        );
 
         scroll_to_control(&mut h, FILL_COLOR);
         tap(&mut h, FILL_COLOR);
@@ -6979,6 +7199,30 @@ fn a_rule_page_sets_the_stroke_and_the_fill() {
 }
 
 #[test]
+fn the_width_stepper_of_a_rule_goes_through_the_series_and_takes_a_typed_width() {
+    use vale_app::ui::pad::rules::STROKE_WIDTH;
+    let mut h = pad(BOARDS[1]);
+    let rivers = vector(&h, "Rivers");
+    let width = |h: &Pad| rules(h, rivers)[0].stroke().unwrap().width;
+    let near = |a: f64, b: f64| (a - b).abs() < 1e-9;
+    open_rule(&mut h, "Rivers", "Default");
+    set_number(&mut h, STROKE_WIDTH, "1.5");
+    assert!(near(width(&h), 1.5), "{}", width(&h));
+    // The buttons go through 1, 2, 5, 10, and so on.
+    scrolled_step(&mut h, STROKE_WIDTH, true);
+    assert!(near(width(&h), 2.0), "{}", width(&h));
+    scrolled_step(&mut h, STROKE_WIDTH, true);
+    assert!(near(width(&h), 5.0), "{}", width(&h));
+    scrolled_step(&mut h, STROKE_WIDTH, false);
+    assert!(near(width(&h), 2.0), "{}", width(&h));
+    // A typed width takes the nearest twentieth of a point inside the range.
+    set_number(&mut h, STROKE_WIDTH, "3.33");
+    assert!(near(width(&h), 3.35), "{}", width(&h));
+    set_number(&mut h, STROKE_WIDTH, "50");
+    assert!(near(width(&h), 20.0), "{}", width(&h));
+}
+
+#[test]
 fn a_width_drag_and_a_color_drag_redraw_and_are_one_undo_step_each() {
     use vale_app::ui::pad::rules::{STROKE_COLOR, STROKE_WIDTH};
     let size = BOARDS[1];
@@ -6988,9 +7232,16 @@ fn a_width_drag_and_a_color_drag_redraw_and_are_one_undo_step_each() {
     let stroke = |h: &Pad| rules(h, rivers)[0].stroke().unwrap();
     let before = stroke(&h);
     open_rule(&mut h, "Rivers", "Default");
-    scroll_to_control(&mut h, STROKE_WIDTH);
     save_frames(&mut h);
     let saved = saves(&h);
+
+    // A tap on the plus button of the width changes the style that the map
+    // draws, and it saves once.
+    scrolled_step(&mut h, STROKE_WIDTH, true);
+    save_frames(&mut h);
+    let width = stroke(&h).width;
+    assert!(width > before.width, "{width}");
+    assert_eq!(saves(&h), saved + 1);
 
     // Each step of a drag changes the style that the map draws, and the
     // drag saves once.
@@ -7012,15 +7263,6 @@ fn a_width_drag_and_a_color_drag_redraw_and_are_one_undo_step_each() {
         values.dedup();
         values
     };
-    let rect = control(&h, STROKE_WIDTH).unwrap();
-    let widths = held(&mut h, STROKE_WIDTH, 30.0, rect.width() - 20.0, &|h| {
-        stroke(h).width
-    });
-    // The press sets the width at the left of the track.
-    assert!(widths.len() >= 5, "{widths:?}");
-    assert!(widths[1..].is_sorted(), "{widths:?}");
-    assert_eq!(saves(&h), saved + 1);
-
     scroll_to_control(&mut h, STROKE_COLOR);
     tap(&mut h, STROKE_COLOR);
     let shade = format!("{STROKE_COLOR} shade");
@@ -7035,7 +7277,7 @@ fn a_width_drag_and_a_color_drag_redraw_and_are_one_undo_step_each() {
     assert_eq!(saves(&h), saved + 1);
 
     tap(&mut h, "Undo");
-    assert_eq!(stroke(&h).width, *widths.last().unwrap());
+    assert_eq!(stroke(&h).width, width);
     tap(&mut h, "Undo");
     assert_eq!(stroke(&h), before);
 }
@@ -7046,16 +7288,6 @@ fn a_rule_page_sets_the_line_type_the_dashes_and_the_taper() {
         BRUSH, DASH, DASHED, GAP, LINE, SOLID, STROKE_WIDTH, TAPER, TAPER_START,
     };
     use vale_style::StrokeKind;
-    // A tap near the right end of a slider.
-    let touch_right = |h: &mut Pad, name: &str| {
-        scroll_to_control(h, name);
-        let slider = control(h, name).unwrap();
-        let at = pos2(slider.right() - 30.0, slider.center().y);
-        touch(h, egui::TouchPhase::Start, at, None);
-        h.step();
-        touch(h, egui::TouchPhase::End, at, None);
-        h.run_steps(3);
-    };
     for size in [BOARDS[1], BOARDS[3]] {
         let what = format!("{size:?}");
         let mut h = pad(size);
@@ -7068,8 +7300,8 @@ fn a_rule_page_sets_the_line_type_the_dashes_and_the_taper() {
         scroll_to_control(&mut h, DASHED);
         tap(&mut h, DASHED);
         assert_eq!(kind(&h), StrokeKind::dashed(), "{what}");
-        touch_right(&mut h, DASH);
-        touch_right(&mut h, GAP);
+        set_number(&mut h, DASH, "12.34");
+        set_number(&mut h, GAP, "6.52");
         let StrokeKind::Dashed { dash, gap } = kind(&h) else {
             panic!("{what}: {:?}", kind(&h));
         };
@@ -7078,14 +7310,14 @@ fn a_rule_page_sets_the_line_type_the_dashes_and_the_taper() {
             "{what}: {dash} {gap}"
         );
         assert!(dash <= 20.0 && gap <= 20.0, "{what}: {dash} {gap}");
-        assert_eq!((dash * 20.0).round() / 20.0, dash, "{what}");
-        assert_eq!((gap * 20.0).round() / 20.0, gap, "{what}");
+        let twentieths = |v: f64| (v * 20.0 - (v * 20.0).round()).abs() < 1e-9;
+        assert!(twentieths(dash) && twentieths(gap), "{what}: {dash} {gap}");
 
         scroll_to_control(&mut h, TAPER);
         tap(&mut h, TAPER);
         assert_eq!(kind(&h), StrokeKind::taper(), "{what}");
         assert!(control(&h, DASH).is_none(), "{what}");
-        touch_right(&mut h, TAPER_START);
+        drag_right(&mut h, TAPER_START);
         let StrokeKind::Taper { start } = kind(&h) else {
             panic!("{what}: {:?}", kind(&h));
         };
@@ -7114,20 +7346,10 @@ fn a_rule_page_sets_the_line_type_the_dashes_and_the_taper() {
     // A marker has no line type.
     let mut h = pad(BOARDS[1]);
     open_rule(&mut h, "Places", "Default");
-    scroll_to_control(&mut h, STROKE_WIDTH);
-    assert!(control(&h, STROKE_WIDTH).is_some());
+    let width = format!("{STROKE_WIDTH} value");
+    scroll_to_control(&mut h, &width);
+    assert!(control(&h, &width).is_some());
     assert!(control(&h, LINE).is_none());
-}
-
-/// A tap near the right end of a slider.
-fn touch_right(h: &mut Pad, name: &str) {
-    scroll_to_control(h, name);
-    let slider = control(h, name).unwrap();
-    let at = pos2(slider.right() - 30.0, slider.center().y);
-    touch(h, egui::TouchPhase::Start, at, None);
-    h.step();
-    touch(h, egui::TouchPhase::End, at, None);
-    h.run_steps(3);
 }
 
 /// The test symbols that the symbol tests add to the project.
@@ -7203,7 +7425,7 @@ fn a_rule_page_sets_a_point_symbol() {
         assert_eq!(h.state().pad.page, Some(Page::Rule(0)), "{what}");
         assert_eq!(symbol(&h).unwrap().symbol, "castle", "{what}");
 
-        touch_right(&mut h, SIZE);
+        set_number(&mut h, SIZE, "40.4");
         let s = symbol(&h).unwrap();
         let points = s.size.fallback;
         assert!(points > 12.0 && points <= 64.0, "{what}: {points}");
@@ -7304,7 +7526,7 @@ fn the_symbol_page_of_an_empty_library_adds_an_svg_file() {
 }
 
 #[test]
-fn a_circle_size_drag_is_one_undo_step() {
+fn a_circle_size_step_is_one_undo_step() {
     use vale_app::ui::pad::rules::{CIRCLE_SIZES, SIZE};
     use vale_style::Symbolizer;
     let dir = tempfile::tempdir().unwrap();
@@ -7321,35 +7543,15 @@ fn a_circle_size_drag_is_one_undo_step() {
     };
     let before = radius(&h).unwrap();
     open_rule(&mut h, "Places", "Default");
-    scroll_to_control(&mut h, SIZE);
     save_frames(&mut h);
     let saved = saves(&h);
-    let rect = control(&h, SIZE).unwrap();
 
-    let y = rect.center().y;
-    let (from, to) = (pos2(rect.left() + 100.0, y), pos2(rect.right() - 20.0, y));
-    touch(&mut h, egui::TouchPhase::Start, from, None);
-    step_and_save(&mut h, true);
-    let mut values = Vec::new();
-    for i in 1..=6 {
-        touch(
-            &mut h,
-            egui::TouchPhase::Move,
-            from.lerp(to, i as f32 / 6.0),
-            None,
-        );
-        step_and_save(&mut h, true);
-        values.extend(radius(&h));
-    }
-    touch(&mut h, egui::TouchPhase::End, to, None);
+    // The stepper sets the diameter in half points.
+    scrolled_step(&mut h, SIZE, true);
     save_frames(&mut h);
-    values.dedup();
-    assert!(values.len() >= 4, "{values:?}");
-    assert!(values.is_sorted(), "{values:?}");
-    // The slider sets the diameter in half points.
-    let last = *values.last().unwrap();
-    assert!(last > before && 2.0 * last <= CIRCLE_SIZES.1, "{values:?}");
-    assert_eq!((4.0 * last).round(), 4.0 * last, "{values:?}");
+    let after = radius(&h).unwrap();
+    assert_eq!(2.0 * after, 2.0 * before + 0.5, "{after}");
+    assert!(2.0 * after <= CIRCLE_SIZES.1, "{after}");
     assert_eq!(saves(&h), saved + 1);
 
     tap(&mut h, "Undo");
@@ -7396,20 +7598,20 @@ fn a_rule_page_adds_a_scatter() {
         tap(&mut h, "pine");
         assert_eq!(scatter(&h).unwrap().symbol, "pine", "{what}");
 
-        touch_right(&mut h, SPACING);
+        set_number(&mut h, SPACING, "50");
         let s = scatter(&h).unwrap();
         let spacing = s.spacing.fallback;
         assert!(spacing > 10.0 && spacing <= 100.0, "{what}: {spacing}");
         assert!(spacing >= s.size.fallback, "{what}");
 
         // A larger size pushes the spacing up with it.
-        touch_right(&mut h, SIZE);
+        set_number(&mut h, SIZE, "30");
         let s = scatter(&h).unwrap();
         assert!(s.size.fallback > 8.0 && s.size.fallback <= 48.0, "{what}");
         assert!(s.spacing.fallback >= s.size.fallback, "{what}");
 
-        touch_right(&mut h, SIZE_VARIATION);
-        touch_right(&mut h, ROTATION_VARIATION);
+        drag_right(&mut h, SIZE_VARIATION);
+        drag_right(&mut h, ROTATION_VARIATION);
         let s = scatter(&h).unwrap();
         assert!(s.size_jitter > 0.2 && s.size_jitter <= 0.5, "{what}");
         assert!(
@@ -7428,7 +7630,7 @@ fn a_rule_page_adds_a_scatter() {
 }
 
 #[test]
-fn a_spacing_drag_is_one_undo_step() {
+fn a_spacing_step_is_one_undo_step() {
     use vale_app::ui::pad::rules::{SCATTER, SPACING};
     let dir = tempfile::tempdir().unwrap();
     let mut h = saved_pad(BOARDS[1], dir.path());
@@ -7439,34 +7641,14 @@ fn a_spacing_drag_is_one_undo_step() {
     scroll_to_control(&mut h, SCATTER);
     tap(&mut h, SCATTER);
     tap(&mut h, "tree");
-    scroll_to_control(&mut h, SPACING);
     save_frames(&mut h);
     let saved = saves(&h);
-    let rect = control(&h, SPACING).unwrap();
-
-    let y = rect.center().y;
-    let (from, to) = (pos2(rect.left() + 100.0, y), pos2(rect.right() - 60.0, y));
-    touch(&mut h, egui::TouchPhase::Start, from, None);
-    step_and_save(&mut h, true);
-    let mut values = Vec::new();
-    for i in 1..=6 {
-        touch(
-            &mut h,
-            egui::TouchPhase::Move,
-            from.lerp(to, i as f32 / 6.0),
-            None,
-        );
-        step_and_save(&mut h, true);
-        values.extend(spacing(&h));
-    }
-    touch(&mut h, egui::TouchPhase::End, to, None);
+    scrolled_step(&mut h, SPACING, true);
     save_frames(&mut h);
-    values.dedup();
-    assert!(values.len() >= 4, "{values:?}");
-    assert!(values.is_sorted(), "{values:?}");
+    assert_eq!(spacing(&h), Some(11.0));
     assert_eq!(saves(&h), saved + 1);
 
-    // One undo takes back the whole drag, and the next takes back the scatter.
+    // One undo takes back the step, and the next takes back the scatter.
     tap(&mut h, "Undo");
     assert_eq!(spacing(&h), Some(10.0));
     tap(&mut h, "Undo");
@@ -7489,7 +7671,7 @@ fn a_start_width_drag_is_one_undo_step() {
     let saved = saves(&h);
     let rect = control(&h, TAPER_START).unwrap();
     let y = rect.center().y;
-    let (from, to) = (pos2(rect.right() - 20.0, y), pos2(rect.left() + 20.0, y));
+    let (from, to) = (pos2(rect.left() + 100.0, y), pos2(rect.left() + 200.0, y));
     touch(&mut h, egui::TouchPhase::Start, from, None);
     step_and_save(&mut h, true);
     let mut starts = Vec::new();
@@ -7509,7 +7691,7 @@ fn a_start_width_drag_is_one_undo_step() {
     save_frames(&mut h);
     starts.dedup();
     assert!(starts.len() >= 4, "{starts:?}");
-    assert!(starts.iter().rev().is_sorted(), "{starts:?}");
+    assert!(starts.is_sorted(), "{starts:?}");
     assert_eq!(saves(&h), saved + 1);
 
     // One undo takes back the whole drag, and the next takes back the taper.
@@ -7945,15 +8127,17 @@ fn the_panel_of_an_image_layer_works_with_a_finger() {
         // The brush paints no image.
         assert!(!h.state().globe.paintable, "{what}");
 
-        // A tap on the track sets a whole percent.
+        // A drag to the left lowers the opacity in whole percents.
         let slider = control(&h, OPACITY).unwrap();
-        let middle = pos2(slider.center().x + 3.3, slider.center().y);
-        touch(&mut h, egui::TouchPhase::Start, middle, None);
-        h.step();
-        touch(&mut h, egui::TouchPhase::End, middle, None);
-        h.run_steps(3);
+        drag(
+            &mut h,
+            slider.center(),
+            slider.center() - vec2(40.0, 0.0),
+            None,
+        );
         let opacity = h.state().doc.project.image(id).unwrap().opacity;
-        assert!(opacity > 0.3 && opacity < 0.7, "{what}: {opacity}");
+        assert!(opacity > 0.0 && opacity < 1.0, "{what}: {opacity}");
+        assert_eq!((opacity * 100.0).round() / 100.0, opacity, "{what}");
 
         tap(&mut h, raster::BLEND);
         assert_eq!(h.state().pad.page, Some(Page::Blend), "{what}");
@@ -8955,4 +9139,44 @@ fn the_selection_card_edits_the_attributes_of_the_selected_feature() {
     assert!(h.state().selection_form.is_none());
     assert!(control(&h, "name").is_none());
     assert!(control(&h, select::DELETE).is_some());
+}
+
+#[test]
+#[ignore = "gpu"]
+fn manual_the_number_controls_of_the_brush_panel() {
+    let mut h = pad(BOARDS[0]);
+    tap(&mut h, "Brush settings");
+    choose_mode(&mut h, "Raise");
+    tap(&mut h, "Brush ceiling");
+    screenshot::save(&mut h, "numbers-stepper");
+    // A drag that moves away from the track is slower.
+    let from = control(&h, "Brush size").unwrap().center();
+    touch(&mut h, egui::TouchPhase::Start, from, None);
+    h.step();
+    for at in [vec2(20.0, 0.0), vec2(40.0, 0.0), vec2(60.0, 200.0)] {
+        touch(&mut h, egui::TouchPhase::Move, from + at, None);
+        h.step();
+    }
+    screenshot::save(&mut h, "numbers-drag");
+    touch(
+        &mut h,
+        egui::TouchPhase::End,
+        from + vec2(60.0, 200.0),
+        None,
+    );
+    h.run_steps(3);
+    tap(&mut h, "Brush size value");
+    screenshot::save(&mut h, "numbers-keypad");
+    tap(&mut h, "Brush size value");
+    // The bubble of the card goes past the open Brush panel.
+    let from = control(&h, "Size").unwrap().center();
+    touch(&mut h, egui::TouchPhase::Start, from, None);
+    h.step();
+    for at in [vec2(0.0, -20.0), vec2(0.0, -40.0)] {
+        touch(&mut h, egui::TouchPhase::Move, from + at, None);
+        h.step();
+    }
+    screenshot::save(&mut h, "numbers-card-drag");
+    touch(&mut h, egui::TouchPhase::End, from + vec2(0.0, -40.0), None);
+    h.run_steps(3);
 }

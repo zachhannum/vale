@@ -405,7 +405,7 @@ fn the_desktop_list_moves_hides_renames_and_deletes_a_raster_layer() {
 
     // The selected layer has a name field, an opacity, and a delete button.
     assert!(h.query_by_label(LAYER_NAME).is_some());
-    assert!(h.query_by_label(OPACITY).is_some());
+    assert!(h.query_all_by_label(OPACITY).next().is_some());
     assert!(h.state_mut().rename_raster(height, "Ground"));
     assert!(h.state_mut().set_raster_opacity(height, 0.4));
     h.run_steps(2);
@@ -459,7 +459,7 @@ fn the_desktop_list_shows_the_panel_of_an_image_layer() {
         "Blend mode",
         DELETE_LAYER,
     ] {
-        assert!(h.query_by_label(name).is_some(), "{name}");
+        assert!(h.query_all_by_label(name).next().is_some(), "{name}");
     }
     assert!(h.query_by_label("64 × 32 px").is_some());
     assert!(h.state_mut().set_image_blend(id, BlendMode::Screen));

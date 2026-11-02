@@ -81,7 +81,13 @@ fn places_controls_and_labels_switch() {
     h.state_mut().selected_layer = Some(LayerRef::Vector(places));
     h.run_steps(2);
     assert!(h.query_by_label("Show labels").is_some());
-    assert!(h.query_by_label(vale_app::ui::pad::rules::SIZE).is_some());
+    assert!(
+        h.query_by_role_and_label(
+            egui::accesskit::Role::SpinButton,
+            vale_app::ui::pad::rules::SIZE
+        )
+        .is_some()
+    );
     assert!(h.query_by_label("Label field").is_some());
     let before = h.state().composed.as_ref().unwrap().labels.placed;
     h.get_by_label("Show labels").click();
@@ -101,7 +107,13 @@ fn polygon_layer_has_no_point_controls() {
         h.query_by_label("Polygon labels are not available yet.")
             .is_some()
     );
-    assert!(h.query_by_label(vale_app::ui::pad::rules::SIZE).is_none());
+    assert!(
+        h.query_by_role_and_label(
+            egui::accesskit::Role::SpinButton,
+            vale_app::ui::pad::rules::SIZE
+        )
+        .is_none()
+    );
 }
 
 #[test]
@@ -142,7 +154,10 @@ fn the_dock_sets_a_point_symbol_and_a_scatter() {
     h.state_mut().selected_layer = Some(LayerRef::Vector(places));
     h.run_steps(2);
     assert!(h.query_by_label(ADD_SYMBOL).is_none());
-    assert!(h.query_by_label(SIZE).is_some());
+    assert!(
+        h.query_by_role_and_label(egui::accesskit::Role::SpinButton, SIZE)
+            .is_some()
+    );
 
     // With no symbols, the rule stays a circle, and the list is off.
     h.get_by_value(CIRCLE).click();
