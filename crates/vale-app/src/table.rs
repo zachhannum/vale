@@ -269,7 +269,7 @@ mod tests {
             None,
         );
         let time = start.elapsed();
-        assert_eq!(rows.len(), 50_000 * 6 / 9 + 1);
+        assert_eq!(rows.len(), (0..50_000).filter(|i| i % 9 > 2).count());
         // A debug build is many times slower than a release build.
         let limit = if cfg!(debug_assertions) { 2.0 } else { 0.1 };
         assert!(time.as_secs_f64() < limit, "{time:?}");

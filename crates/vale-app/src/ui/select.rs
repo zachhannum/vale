@@ -348,8 +348,8 @@ pub fn pad(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
     let top = rects.workspace.bottom() + GAP;
     let room = keyboard_top(screen) - GAP - top;
     let fields = form.as_ref().map_or(0, |f| f.fields.len()) as f32;
-    let least = ROW + 2.0 * PANEL_ROW + BOTTOM;
-    let height = (ROW + (fields + 2.0) * PANEL_ROW + BOTTOM).min(room.max(least));
+    let least = ROW + PANEL_ROW + BOTTOM;
+    let height = (ROW + (fields + 1.0) * PANEL_ROW + BOTTOM).min(room.max(least));
     let width = WIDTH.min(screen.width() - 2.0 * MARGIN);
     let rect = Rect::from_min_size(
         pos2(screen.center().x - width / 2.0, top),
@@ -372,8 +372,20 @@ pub fn pad(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
                 let resp = widgets::text_field(ui, controls, name, name, None, text, valid);
                 commit |= resp.lost_focus();
             }
-            show = widgets::button_row(ui, controls, SHOW_IN_TABLE, true).clicked();
-            delete = widgets::button_row_in(ui, controls, DELETE, true, theme::WARN).clicked();
+            // The two buttons share the last row.
+            let (row, _) =
+                ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), egui::Sense::hover());
+            let half = |left: f32, right: f32| {
+                let rect = Rect::from_x_y_ranges(left..=right, row.y_range());
+                egui::UiBuilder::new().max_rect(rect)
+            };
+            let middle = row.center().x;
+            ui.scope_builder(half(row.left(), middle - GAP / 4.0), |ui| {
+                show = widgets::button_row(ui, controls, SHOW_IN_TABLE, true).clicked();
+            });
+            ui.scope_builder(half(middle + GAP / 4.0, row.right()), |ui| {
+                delete = widgets::button_row_in(ui, controls, DELETE, true, theme::WARN).clicked();
+            });
         });
     });
     state.selection_form = form;

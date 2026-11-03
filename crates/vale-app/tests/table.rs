@@ -11,7 +11,7 @@ use vale_app::globe::select::FeatureRef;
 use vale_app::globe::{Tool, WorldView};
 use vale_app::session::Session;
 use vale_app::ui::pad::LayerRef;
-use vale_app::ui::pad::table::{CLOSE, ROW_HEIGHT};
+use vale_app::ui::pad::table::CLOSE;
 use vale_app::ui::table::{ALL, FILTER, OPEN_TABLE, SELECTED, SHOW_IN_TABLE, cell_name, sort_name};
 use vale_app::ui::{AppState, Layout, draw};
 use vale_store::{Feature, Field, FieldType, Geometry, GeometryKind, LayerId, Uuid, Value};
@@ -400,7 +400,6 @@ fn the_controls_of_the_table_are_touch_size_and_a_drag_scrolls_it() {
             c.name
         );
     }
-    assert!(ROW_HEIGHT >= 44.0);
     // A drag of a finger on the rows scrolls them and selects no row.
     let first = cell_name("name", uuids[0]);
     let from = control(&h, &cell_name("name", uuids[3])).unwrap().center();
