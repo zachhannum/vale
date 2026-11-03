@@ -19,6 +19,10 @@ pub enum LabelPlacement {
     LineAbove,
     LineBelow,
     OnLine,
+    /// Polygons. Curved along the long axis of a long shape, else straight at the visual center.
+    AlongShape,
+    /// Polygons. Straight at the visual center.
+    Horizontal,
 }
 
 const POINT_PLACEMENTS: [LabelPlacement; 1] = [LabelPlacement::Around];
@@ -30,12 +34,17 @@ const LINE_PLACEMENTS: [LabelPlacement; 4] = [
     LabelPlacement::OnLine,
 ];
 
-const ALL_PLACEMENTS: [LabelPlacement; 5] = [
+const POLYGON_PLACEMENTS: [LabelPlacement; 2] =
+    [LabelPlacement::AlongShape, LabelPlacement::Horizontal];
+
+const ALL_PLACEMENTS: [LabelPlacement; 7] = [
     LabelPlacement::Around,
     LabelPlacement::AboveOrBelow,
     LabelPlacement::LineAbove,
     LabelPlacement::LineBelow,
     LabelPlacement::OnLine,
+    LabelPlacement::AlongShape,
+    LabelPlacement::Horizontal,
 ];
 
 impl LabelPlacement {
@@ -44,7 +53,7 @@ impl LabelPlacement {
         match kind {
             GeometryKind::Point => &POINT_PLACEMENTS,
             GeometryKind::Line => &LINE_PLACEMENTS,
-            GeometryKind::Polygon => &[],
+            GeometryKind::Polygon => &POLYGON_PLACEMENTS,
         }
     }
 
@@ -65,6 +74,8 @@ impl LabelPlacement {
             LabelPlacement::LineAbove => "Above line",
             LabelPlacement::LineBelow => "Below line",
             LabelPlacement::OnLine => "On line",
+            LabelPlacement::AlongShape => "Along shape",
+            LabelPlacement::Horizontal => "Horizontal",
         }
     }
 
@@ -76,11 +87,18 @@ impl LabelPlacement {
             LabelPlacement::LineAbove => "line_above",
             LabelPlacement::LineBelow => "line_below",
             LabelPlacement::OnLine => "on_line",
+            LabelPlacement::AlongShape => "along_shape",
+            LabelPlacement::Horizontal => "horizontal",
         }
     }
 
     fn from_key(key: &str) -> Option<LabelPlacement> {
         ALL_PLACEMENTS.into_iter().find(|p| p.key() == key)
+    }
+
+    /// True for the placements of polygons.
+    pub fn is_polygon(self) -> bool {
+        POLYGON_PLACEMENTS.contains(&self)
     }
 }
 
@@ -185,8 +203,23 @@ pub fn offset_for(placement: LabelPlacement) -> f64 {
 /// The default distance between the repeats of a line label, in points.
 pub const REPEAT_DISTANCE: f64 = 600.0;
 
-/// The default curve limit, in radians between glyphs.
+/// The default curve limit of a line label, in radians between glyphs.
 pub const CURVE_LIMIT: f64 = 0.30;
+
+/// The default curve limit of a polygon label, in radians between glyphs.
+pub const POLYGON_CURVE_LIMIT: f64 = 0.2;
+
+/// The default curve limit of a placement.
+pub fn curve_limit_for(placement: LabelPlacement) -> f64 {
+    if placement.is_polygon() {
+        POLYGON_CURVE_LIMIT
+    } else {
+        CURVE_LIMIT
+    }
+}
+
+/// The default spread of a polygon label, in multiples of the font size.
+pub const SPREAD: f64 = 1.0;
 
 /// The default smoothing window, in multiples of the font size.
 pub const SMOOTHING: f64 = 1.5;
@@ -205,12 +238,12 @@ pub const HALO_COLOR: Color = Color::rgba(255, 255, 255, 217);
 /// The default width of the halo, in points.
 pub const HALO_WIDTH: f64 = 2.2;
 
-/// The default letter spacing of a feature type, as a fraction of `size`. Line labels get 0.5 pt.
+/// The default letter spacing of a feature type, as a fraction of `size`. Line labels get 0.5 pt, and polygon labels get 0.15 of the size.
 fn letter_spacing_for(kind: GeometryKind, size: f64) -> f64 {
-    if kind == GeometryKind::Line && size > 0.0 {
-        0.5 / size
-    } else {
-        0.0
+    match kind {
+        GeometryKind::Line if size > 0.0 => 0.5 / size,
+        GeometryKind::Polygon => 0.15,
+        _ => 0.0,
     }
 }
 
@@ -252,8 +285,10 @@ pub struct LabelClass {
     pub repeat: bool,
     /// Lines. The distance between the repeats, in points.
     pub repeat_distance: f64,
-    /// Lines. The largest turn of the text between two glyphs, in radians.
+    /// Lines and polygons. The largest turn of the text between two glyphs, in radians.
     pub curve_limit: f64,
+    /// Polygons. The most extra space between two letters of a curved label, in multiples of `size`.
+    pub spread: f64,
     /// Lines. The smoothing window of the line, in multiples of `size`.
     pub smoothing: f64,
     /// The margin around the label that other labels keep free, in points.
@@ -321,7 +356,8 @@ impl LabelClass {
             positions: PositionRank::defaults(),
             repeat: true,
             repeat_distance: REPEAT_DISTANCE,
-            curve_limit: CURVE_LIMIT,
+            curve_limit: curve_limit_for(placement),
+            spread: SPREAD,
             smoothing: SMOOTHING,
             buffer: BUFFER,
             remove_duplicates: true,
@@ -333,6 +369,7 @@ impl LabelClass {
     pub fn new(name: &str, kind: GeometryKind, priority: i32) -> Option<LabelClass> {
         let placement = LabelPlacement::default_for(kind)?;
         let line = kind == GeometryKind::Line;
+        let polygon = kind == GeometryKind::Polygon;
         let size = 11.0;
         Some(LabelClass {
             name: name.to_owned(),
@@ -342,12 +379,18 @@ impl LabelClass {
             size,
             color: if line {
                 Color::rgb(40, 100, 160)
+            } else if polygon {
+                Color::rgb(0x5a, 0x55, 0x4c)
             } else {
                 Color::rgb(0x2b, 0x2a, 0x26)
             },
             italic: line,
             weight: 400.0,
-            case: TextCase::Normal,
+            case: if polygon {
+                TextCase::Upper
+            } else {
+                TextCase::Normal
+            },
             letter_spacing: letter_spacing_for(kind, size),
             opacity: 1.0,
             halo: true,
@@ -393,6 +436,7 @@ pub fn classes_to_json(classes: &[LabelClass]) -> String {
                 "repeat": c.repeat,
                 "repeat_distance": c.repeat_distance,
                 "curve_limit": c.curve_limit,
+                "spread": c.spread,
                 "smoothing": c.smoothing,
                 "buffer": c.buffer,
                 "remove_duplicates": c.remove_duplicates,
@@ -500,7 +544,8 @@ fn read_class(j: &Json) -> Result<LabelClass, StyleError> {
         positions,
         repeat: flag("repeat", true),
         repeat_distance: number("repeat_distance", REPEAT_DISTANCE),
-        curve_limit: number("curve_limit", CURVE_LIMIT),
+        curve_limit: number("curve_limit", curve_limit_for(placement)),
+        spread: number("spread", SPREAD),
         smoothing: number("smoothing", SMOOTHING),
         buffer: number("buffer", BUFFER),
         remove_duplicates: flag("remove_duplicates", true),
@@ -560,7 +605,12 @@ mod tests {
         a.duplicate_distance = 120.0;
         let mut b = LabelClass::new("Rivers", GeometryKind::Line, -1).unwrap();
         b.placement = LabelPlacement::LineBelow;
-        let classes = vec![a, b];
+        let mut c = LabelClass::new("Seas", GeometryKind::Polygon, 1).unwrap();
+        c.spread = 2.5;
+        c.curve_limit = 0.1;
+        let mut d = LabelClass::new("Lakes", GeometryKind::Polygon, 0).unwrap();
+        d.placement = LabelPlacement::Horizontal;
+        let classes = vec![a, b, c, d];
         let text = classes_to_json(&classes);
         assert_eq!(classes_from_json(&text).unwrap(), classes);
         assert_eq!(classes_to_json(&classes_from_json(&text).unwrap()), text);
@@ -583,12 +633,19 @@ mod tests {
         assert!(read[0].repeat);
         assert_eq!(read[0].repeat_distance, 600.0);
         assert_eq!(read[0].curve_limit, 0.30);
+        assert_eq!(read[0].spread, 1.0);
         assert_eq!(read[0].smoothing, 1.5);
         assert_eq!(read[0].buffer, 1.0);
         assert!(read[0].remove_duplicates);
         assert_eq!(read[0].duplicate_distance, 300.0);
         let point = r##"{"version":1,"classes":[{"color":"#102030","placement":"around"}]}"##;
         assert_eq!(classes_from_json(point).unwrap()[0].offset, 2.0);
+        let polygon =
+            r##"{"version":1,"classes":[{"color":"#102030","placement":"along_shape"}]}"##;
+        let polygon = &classes_from_json(polygon).unwrap()[0];
+        assert_eq!(polygon.placement, LabelPlacement::AlongShape);
+        assert_eq!(polygon.spread, 1.0);
+        assert_eq!(polygon.curve_limit, 0.2);
         assert_eq!(
             classes_from_json(r#"{"version":9,"classes":[]}"#),
             Err(StyleError::Version(Some(9)))
@@ -658,10 +715,11 @@ mod tests {
             LabelClass::from_style("D", &none, GeometryKind::Point, 0),
             None
         );
-        assert_eq!(
-            LabelClass::from_style("D", &style("name"), GeometryKind::Polygon, 0),
-            None
-        );
+        let polygon =
+            LabelClass::from_style("D", &style("name"), GeometryKind::Polygon, 0).unwrap();
+        assert_eq!(polygon.placement, LabelPlacement::AlongShape);
+        assert_eq!(polygon.curve_limit, 0.2);
+        assert_eq!(polygon.spread, 1.0);
     }
 
     #[test]
@@ -685,7 +743,10 @@ mod tests {
         use GeometryKind::{Line, Point, Polygon};
         assert_eq!(LabelPlacement::choices(Point), &[LabelPlacement::Around]);
         assert_eq!(LabelPlacement::choices(Line).len(), 4);
-        assert!(LabelPlacement::choices(Polygon).is_empty());
+        assert_eq!(
+            LabelPlacement::choices(Polygon),
+            &[LabelPlacement::AlongShape, LabelPlacement::Horizontal]
+        );
         assert_eq!(
             LabelPlacement::default_for(Point),
             Some(LabelPlacement::Around)
@@ -694,15 +755,28 @@ mod tests {
             LabelPlacement::default_for(Line),
             Some(LabelPlacement::AboveOrBelow)
         );
-        assert_eq!(LabelPlacement::default_for(Polygon), None);
+        assert_eq!(
+            LabelPlacement::default_for(Polygon),
+            Some(LabelPlacement::AlongShape)
+        );
         for p in ALL_PLACEMENTS {
-            assert_ne!(p.fits(Point), p.fits(Line));
-            assert!(!p.fits(Polygon));
+            let fits = [p.fits(Point), p.fits(Line), p.fits(Polygon)];
+            assert_eq!(fits.iter().filter(|f| **f).count(), 1);
+            assert_eq!(p.fits(Polygon), p.is_polygon());
             assert_eq!(LabelPlacement::from_key(p.key()), Some(p));
         }
+        assert_eq!(LabelPlacement::AlongShape.name(), "Along shape");
+        assert_eq!(LabelPlacement::AlongShape.key(), "along_shape");
+        assert_eq!(LabelPlacement::Horizontal.name(), "Horizontal");
+        assert_eq!(LabelPlacement::Horizontal.key(), "horizontal");
         assert_eq!(LabelPlacement::AboveOrBelow.name(), "Above or below");
         assert_eq!(LabelPlacement::Around.name(), "Around point");
-        assert_eq!(LabelClass::new("A", Polygon, 0), None);
+        let area = LabelClass::new("A", Polygon, 0).unwrap();
+        assert_eq!(area.placement, LabelPlacement::AlongShape);
+        assert_eq!(area.curve_limit, 0.2);
+        assert_eq!(area.spread, 1.0);
+        assert_eq!(area.case, TextCase::Upper);
+        assert_eq!(area.letter_spacing, 0.15);
         for p in LabelPosition::DEFAULT_ORDER {
             assert_eq!(LabelPosition::from_key(p.key()), Some(p));
         }
