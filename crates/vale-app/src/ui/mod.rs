@@ -53,6 +53,7 @@ pub mod raster_form;
 pub mod region;
 pub mod select;
 pub mod style_editor;
+pub mod table;
 pub mod world_form;
 
 /// A request that needs the host: a dialog or a file.
@@ -486,6 +487,8 @@ pub struct AppState {
     pub region: Option<region::RegionMode>,
     /// The fields of the one selected feature.
     pub selection_form: Option<select::SelectionForm>,
+    /// The open attribute table.
+    pub table: Option<table::TableState>,
     /// The path of the Measure tool, in both workspaces.
     pub measure: Measure,
     /// The workspace and the open page of the last frame, which clear the
@@ -605,6 +608,7 @@ impl AppState {
             select_drag: None,
             region: None,
             selection_form: None,
+            table: None,
             measure: Measure::default(),
             measure_of: (Workspace::default(), vale_store::PageId(0)),
             raster_form: None,
@@ -2638,13 +2642,20 @@ impl AppState {
             }
         };
         let project = &mut self.doc.project;
+        let mut new = None;
         let done = match edit {
             Some(LineEdit::New(geometry)) => {
-                project.add_feature(id, Feature::new(geometry, Default::default()))
+                let feature = Feature::new(geometry, Default::default());
+                new = Some(feature.uuid());
+                project.add_feature(id, feature)
             }
             Some(LineEdit::Extend { uuid, geometry }) => project.set_geometry(id, uuid, geometry),
             None => false,
         };
+        if done && let Some(uuid) = new {
+            // A new feature is the selection.
+            self.set_feature_selection(vec![crate::globe::select::FeatureRef { layer: id, uuid }]);
+        }
         if done {
             self.line_edits += 1;
             self.pipeline.forget(id);
@@ -3583,6 +3594,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
                 panels::brush_debug(ui, state);
                 panels::brush(ui, state);
                 elevation::draw(ui, state);
+                table::desktop(ui, state);
                 globe::draw(ui, state);
             }
             Workspace::Atlas => {

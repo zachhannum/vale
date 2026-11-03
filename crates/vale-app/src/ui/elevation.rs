@@ -115,6 +115,12 @@ fn vector_style(ui: &mut egui::Ui, state: &mut AppState, id: LayerId) {
         return;
     };
     ui.heading(&layer.name);
+    if ui.button(super::table::OPEN_TABLE).clicked() {
+        state.open_table(id);
+    }
+    let Some(layer) = state.doc.layer(id) else {
+        return;
+    };
     let fields = layer.fields.clone();
     ui.label(pad::rules::STYLE);
     let symbols = state.doc.symbols().clone();
