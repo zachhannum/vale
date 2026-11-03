@@ -233,9 +233,9 @@ fn reshape_lines(
 /// left. A ring that crosses the 180 degree meridian is one outline.
 pub(super) struct Outline {
     pub(super) ring: Vec<PathVertex>,
-    hole: bool,
+    pub(super) hole: bool,
     /// The polygons and the rings that make the outline.
-    sources: Vec<(usize, usize)>,
+    pub(super) sources: Vec<(usize, usize)>,
 }
 
 /// The outlines of stored polygons. The edges along the 180 degree
@@ -357,7 +357,7 @@ fn reshape_polygons(
 }
 
 /// The polygons after a reshape of an outer ring.
-fn outer(
+pub(super) fn outer(
     polygons: &[Vec<Vec<LonLat>>],
     outline: &Outline,
     ring: &[PathVertex],
@@ -399,7 +399,7 @@ fn outer(
 /// The polygons after a reshape of a hole. The inside of the hole is on
 /// the left of `ring`. A hole that crosses the 180 degree meridian gives
 /// `None`.
-fn hole(
+pub(super) fn hole(
     polygons: &[Vec<Vec<LonLat>>],
     outline: &Outline,
     ring: &[PathVertex],

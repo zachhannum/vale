@@ -54,6 +54,7 @@ pub mod region;
 pub mod select;
 pub mod style_editor;
 pub mod table;
+pub mod vertex;
 pub mod world_form;
 
 /// A request that needs the host: a dialog or a file.
@@ -483,6 +484,11 @@ pub struct AppState {
     pub feature_selection: Vec<crate::globe::select::FeatureRef>,
     /// The drag of the Select tool.
     pub select_drag: Option<select::SelectDrag>,
+    /// The stored positions of the selected vertices of the feature that
+    /// the Vertex tool edits.
+    pub vertex_selection: Vec<vale_store::LonLat>,
+    /// The drag of the Vertex tool.
+    pub vertex_drag: Option<vertex::VertexDrag>,
     /// The command that makes a map from a region, while it waits.
     pub region: Option<region::RegionMode>,
     /// The fields of the one selected feature.
@@ -606,6 +612,8 @@ impl AppState {
             point_form: None,
             feature_selection: Vec::new(),
             select_drag: None,
+            vertex_selection: Vec::new(),
+            vertex_drag: None,
             region: None,
             selection_form: None,
             table: None,
