@@ -216,7 +216,7 @@ fn small_polygon_is_reported() {
 #[test]
 fn horizontal_only_never_curves() {
     let pp = PolygonPlacement {
-        curved: false,
+        mode: PolygonMode::Horizontal,
         ..PolygonPlacement::default()
     };
     let out = run(pp, vec![band()], "Sea", Rect::new(0.0, 0.0, 600.0, 400.0));
@@ -241,4 +241,72 @@ fn polygon_labels_are_deterministic() {
     );
     assert_eq!(a.placed[0].boxes, b.placed[0].boxes);
     assert_eq!(a.total_cost, b.total_cost);
+}
+
+fn triangle() -> Vec<Vec<Point>> {
+    vec![vec![
+        Point::new(100.0, 40.0),
+        Point::new(100.0, 280.0),
+        Point::new(340.0, 280.0),
+    ]]
+}
+
+/// The distance from the first glyph to the last glyph.
+fn glyph_span(label: &PlacedLabel) -> f64 {
+    let glyphs: Vec<_> = label.glyph_runs.iter().flat_map(|r| &r.glyphs).collect();
+    let first = glyphs[0].transform.translation().to_point();
+    let last = glyphs[glyphs.len() - 1].transform.translation().to_point();
+    first.distance(last)
+}
+
+#[test]
+fn curved_mode_curves_a_compact_shape() {
+    let pp = PolygonPlacement {
+        mode: PolygonMode::Curved,
+        ..PolygonPlacement::default()
+    };
+    let bounds = Rect::new(0.0, 0.0, 400.0, 300.0);
+    let out = run(pp, triangle(), "Land", bounds);
+    assert_eq!(out.placed.len(), 1, "{:?}", out.unplaced);
+    assert_eq!(out.placed[0].kind, CandidateKind::Polygon { curved: true });
+    for b in &out.placed[0].boxes {
+        for p in b.corners() {
+            assert!(contains(&triangle(), p));
+        }
+    }
+    let auto = run(PolygonPlacement::default(), triangle(), "Land", bounds);
+    assert_eq!(
+        auto.placed[0].kind,
+        CandidateKind::Polygon { curved: false }
+    );
+}
+
+#[test]
+fn horizontal_labels_spread_their_letters() {
+    let rings = vec![vec![
+        Point::new(60.0, 100.0),
+        Point::new(340.0, 100.0),
+        Point::new(340.0, 220.0),
+        Point::new(60.0, 220.0),
+    ]];
+    let bounds = Rect::new(0.0, 0.0, 400.0, 300.0);
+    let advance = fonts()
+        .measure("Land", &TextStyle::new("Noto Sans", 14.0))
+        .advance;
+    let pp = PolygonPlacement {
+        mode: PolygonMode::Horizontal,
+        ..PolygonPlacement::default()
+    };
+    let spread = run(pp.clone(), rings.clone(), "Land", bounds);
+    let label = &spread.placed[0];
+    assert!(glyph_angles(label).iter().all(|a| a.abs() < 1e-9));
+    assert!(glyph_span(label) > 1.5 * advance, "{}", glyph_span(label));
+    assert!((label.bounds.center().x - 200.0).abs() < 10.0);
+
+    let tight = PolygonPlacement {
+        max_spread: 0.0,
+        ..pp
+    };
+    let out = run(tight, rings, "Land", bounds);
+    assert!(glyph_span(&out.placed[0]) < advance);
 }

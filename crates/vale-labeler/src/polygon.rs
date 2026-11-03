@@ -10,7 +10,7 @@ use crate::collide::OrientedBox;
 use crate::engine::Candidate;
 use crate::geom::{Measured, smooth, wrap_angle};
 use crate::line::{along, parallel};
-use crate::model::{CandidateKind, LabelClass, PolygonPlacement, UnplacedReason};
+use crate::model::{CandidateKind, LabelClass, PolygonMode, PolygonPlacement, UnplacedReason};
 use crate::text::ShapedText;
 use kurbo::{Affine, Point, Rect};
 use std::cmp::Reverse;
@@ -55,7 +55,8 @@ pub(crate) fn candidates(
 ) -> Result<Vec<Candidate>, UnplacedReason> {
     let size = class.style.size;
     let grid = Grid::new(rings, bounds, size).ok_or(UnplacedReason::OutOfBounds)?;
-    let center = grid.center();
+    let ranked = grid.ranked();
+    let center = ranked[0];
     let dmax = grid.edge_distance(center);
     let half = 0.5 * shaped.cap_height + PAD * size;
     if dmax < half {
@@ -67,14 +68,26 @@ pub(crate) fn candidates(
         .is_some_and(|m| m.length() >= LONG * 2.0 * dmax);
 
     let mut out = Vec::new();
-    if pp.curved
+    if pp.mode != PolygonMode::Horizontal
         && let Some(m) = &axis
     {
-        let base = if long { 0.0 } else { UNSUITED };
+        let base = if long || pp.mode == PolygonMode::Curved {
+            0.0
+        } else {
+            UNSUITED
+        };
         curved(&grid, m, class, pp, shaped, base, &mut out);
     }
-    let base = if long && pp.curved { UNSUITED } else { 0.0 };
-    horizontal(&grid, class, shaped, base, dmax, half, &mut out);
+    if pp.mode != PolygonMode::Curved {
+        let base = if long && pp.mode == PolygonMode::Auto {
+            UNSUITED
+        } else {
+            0.0
+        };
+        horizontal(
+            &grid, &ranked, class, pp, shaped, base, dmax, half, &mut out,
+        );
+    }
     if out.is_empty() {
         return Err(UnplacedReason::AreaTooSmall);
     }
@@ -103,11 +116,7 @@ fn curved(
     let limit = pp.max_glyph_turn;
     let mut spans: Vec<f64> = Vec::new();
     for (fi, fill) in FILLS.iter().enumerate() {
-        let extra = if gaps > 0 {
-            ((fill * len - adv) / gaps as f64).clamp(0.0, pp.max_spread.max(0.0) * size)
-        } else {
-            0.0
-        };
+        let extra = spread(fill * len, shaped, pp.max_spread * size);
         let span = adv + extra * gaps as f64;
         if spans.iter().any(|s| (s - span).abs() < 0.5 * size) {
             continue;
@@ -173,10 +182,14 @@ fn curved(
     }
 }
 
-/// Horizontal candidates at the cells farthest from the edge, the visual center first.
+/// Horizontal candidates at the cells farthest from the edge, the visual center first. The
+/// letters spread to fill a part of the width of the shape at each cell.
+#[allow(clippy::too_many_arguments)]
 fn horizontal(
     grid: &Grid,
+    ranked: &[usize],
     class: &LabelClass,
+    pp: &PolygonPlacement,
     shaped: &ShapedText,
     base_cost: f64,
     dmax: f64,
@@ -185,13 +198,13 @@ fn horizontal(
 ) {
     let size = class.style.size;
     let ink = shaped.ink_bounds;
+    let gaps = shaped.glyph_count().saturating_sub(1) as f64;
     let apart = size.max(0.25 * dmax);
-    let mut cells: Vec<usize> = (0..grid.dist.len())
-        .filter(|&i| grid.edge_distance(i) >= half)
-        .collect();
-    cells.sort_by(|&a, &b| grid.dist[b].total_cmp(&grid.dist[a]));
     let mut sites: Vec<Point> = Vec::new();
-    for i in cells {
+    for &i in ranked
+        .iter()
+        .take_while(|&&i| grid.edge_distance(i) >= half)
+    {
         if sites.len() == SITES {
             break;
         }
@@ -201,21 +214,46 @@ fn horizontal(
         }
         sites.push(c);
         let rank = sites.len() - 1;
-        let origin = Point::new(c.x - ink.center().x, c.y - ink.center().y);
-        let transforms = shaped
-            .glyphs()
-            .map(|(_, g)| Affine::translate((origin.x + g.x, origin.y + g.y)))
-            .collect();
-        let Some(cand) = grid.candidate(shaped, transforms, class.margin, PAD * size) else {
-            continue;
-        };
         let d = grid.edge_distance(i);
-        out.push(Candidate {
-            kind: CandidateKind::Polygon { curved: false },
-            cost: base_cost + 3.0 * (1.0 - d / dmax).max(0.0) + 0.1 * rank as f64,
-            ..cand
-        });
+        let width = grid.row_width(i) - 2.0 * PAD * size;
+        let mut spans: Vec<f64> = Vec::new();
+        for (fi, fill) in FILLS.iter().enumerate() {
+            let extra = spread(fill * width, shaped, pp.max_spread * size);
+            let span = extra * gaps;
+            if spans.iter().any(|s| (s - span).abs() < 0.5 * size) {
+                continue;
+            }
+            spans.push(span);
+            let origin = Point::new(c.x - ink.center().x - span / 2.0, c.y - ink.center().y);
+            let transforms = shaped
+                .glyphs()
+                .enumerate()
+                .map(|(k, (_, g))| {
+                    Affine::translate((origin.x + g.x + extra * k as f64, origin.y + g.y))
+                })
+                .collect();
+            let Some(cand) = grid.candidate(shaped, transforms, class.margin, PAD * size) else {
+                continue;
+            };
+            out.push(Candidate {
+                kind: CandidateKind::Polygon { curved: false },
+                cost: base_cost
+                    + 3.0 * (1.0 - d / dmax).max(0.0)
+                    + 0.1 * rank as f64
+                    + 0.5 * fi as f64,
+                ..cand
+            });
+        }
     }
+}
+
+/// The extra space between two letters that makes the text `len` long, at most `max`.
+fn spread(len: f64, shaped: &ShapedText, max: f64) -> f64 {
+    let gaps = shaped.glyph_count().saturating_sub(1);
+    if gaps == 0 {
+        return 0.0;
+    }
+    ((len - shaped.advance) / gaps as f64).clamp(0.0, max.max(0.0))
 }
 
 /// The visible part of a polygon as a grid of cells. A border of cells outside the shape
@@ -374,15 +412,31 @@ impl Grid {
         (self.dist[i] - 0.5).max(0.0) * self.cell
     }
 
-    /// The cell farthest from the edge. The first cell wins a tie.
-    fn center(&self) -> usize {
-        let mut best = 0;
-        for i in 0..self.dist.len() {
-            if self.dist[i] > self.dist[best] {
-                best = i;
-            }
+    /// The width of the shape along the row of cell `i`, through the cell.
+    fn row_width(&self, i: usize) -> f64 {
+        let row = i - i % self.w;
+        let left = (row..=i).rev().take_while(|&k| self.inside[k]).count();
+        let right = (i..row + self.w).take_while(|&k| self.inside[k]).count();
+        (left + right - 1) as f64 * self.cell
+    }
+
+    /// The cells by distance from the edge, farthest first. Of two cells at the same distance,
+    /// the one nearer the centroid of the shape goes first.
+    fn ranked(&self) -> Vec<usize> {
+        let (mut sum, mut n) = (kurbo::Vec2::ZERO, 0.0_f64);
+        for i in (0..self.inside.len()).filter(|&i| self.inside[i]) {
+            sum += self.point(i).to_vec2();
+            n += 1.0;
         }
-        best
+        let centroid = (sum / n.max(1.0)).to_point();
+        let mut cells: Vec<usize> = (0..self.inside.len()).filter(|&i| self.inside[i]).collect();
+        cells.sort_by(|&a, &b| {
+            self.dist[b].total_cmp(&self.dist[a]).then_with(|| {
+                let da = self.point(a).distance_squared(centroid);
+                da.total_cmp(&self.point(b).distance_squared(centroid))
+            })
+        });
+        cells
     }
 
     /// True if `p` is in the shape and at least `pad` from its edge.

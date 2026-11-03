@@ -130,12 +130,24 @@ impl Default for LinePlacement {
     }
 }
 
+/// How a polygon label follows its shape.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub enum PolygonMode {
+    /// Curved text in a long shape, and horizontal text in a compact shape.
+    #[default]
+    Auto,
+    /// Text that curves along the long axis of every shape.
+    Curved,
+    /// Horizontal text.
+    Horizontal,
+}
+
 /// Placement rules for polygon features.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PolygonPlacement {
-    /// Text may curve along the long axis of a long shape. False gives horizontal labels only.
-    pub curved: bool,
-    /// The most extra space between two letters of a curved label, in multiples of the font size.
+    pub mode: PolygonMode,
+    /// The most extra space between two letters, in multiples of the font size. Zero keeps the
+    /// letters together.
     pub max_spread: f64,
     /// The angle between two neighbor glyphs of a curved label, in radians, above which a
     /// candidate costs more. A candidate that turns more than 1.6 times this angle is not used.
@@ -145,7 +157,7 @@ pub struct PolygonPlacement {
 impl Default for PolygonPlacement {
     fn default() -> Self {
         Self {
-            curved: true,
+            mode: PolygonMode::Auto,
             max_spread: 1.0,
             max_glyph_turn: 0.2,
         }
