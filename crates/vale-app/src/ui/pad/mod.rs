@@ -43,6 +43,7 @@ pub mod labels;
 pub mod number;
 pub mod raster;
 pub mod rules;
+pub mod table;
 pub mod text_style;
 pub mod theme;
 pub mod widgets;
@@ -590,6 +591,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
             show_panel(&ctx, state, &mut controls, &rects, panel);
         }
     }
+    table::pad(&ctx, state, &mut controls, &rects);
     expire_notes(&ctx, state);
     raster::band_card(&ctx, state, &mut controls, &rects);
     raster::shade_color_frame(&ctx, state);
@@ -2341,6 +2343,18 @@ fn vector_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
     state.pad.name = Some((of, text));
     widgets::value_row(ui, "Type", kind);
     widgets::value_row(ui, "Features", &features);
+    if widgets::button_row(ui, controls, super::table::OPEN_TABLE, true).clicked() {
+        state.open_table(id);
+        // A compact screen has room for the sheet or the table.
+        if state
+            .pad
+            .rects
+            .as_ref()
+            .is_some_and(|r| r.class == WidthClass::Compact)
+        {
+            state.pad.right = None;
+        }
+    }
     rules::section(ui, state, controls, id);
     if kind != "Polygons" {
         fonts::section(ui, state, controls, id);
