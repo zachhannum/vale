@@ -552,6 +552,22 @@ pub(super) fn measure_keys(ui: &egui::Ui, state: &mut AppState) {
     }
 }
 
+/// Reads the keys of a held ocean ridge or basin. Return applies it, and
+/// Escape discards it.
+fn held_keys(ui: &egui::Ui, state: &mut AppState) {
+    use egui::{Key, Modifiers};
+    if ui.ctx().egui_wants_keyboard_input() || state.globe.holding().is_none() {
+        return;
+    }
+    let key = |key| ui.input_mut(|i| i.consume_key(Modifiers::NONE, key));
+    if key(Key::Enter) {
+        state.globe.apply_held();
+    }
+    if key(Key::Escape) {
+        state.globe.discard_held();
+    }
+}
+
 /// Reads the undo and redo commands. A tap of two fingers and Command+Z
 /// undo. A tap of three fingers, Shift+Command+Z, and Command+Y redo. On
 /// Windows and Linux, Ctrl is the Command key.
@@ -1020,6 +1036,7 @@ pub(super) fn canvas_input(
     state.poll_select();
     state.poll_vertex();
     measure_keys(ui, state);
+    held_keys(ui, state);
     super::select::keys(ui, state);
     super::vertex::keys(ui, state);
     match history_input(ui, &mut state.globe.nav) {
@@ -1099,8 +1116,10 @@ pub(super) fn paint_canvas(
             );
         }
     }
-    // A basin takes its size from its outline, so it has no brush circle.
-    let circle = globe.brushing() && globe.brush.mode != Mode::Basin;
+    // A basin takes its size from its outline, and the pen draws the center
+    // line of an ocean ridge, so they have no brush circle.
+    let line = matches!(globe.brush.mode, Mode::Basin | Mode::OceanRidge);
+    let circle = globe.brushing() && !line;
     if let Some(pos) = globe.input.pos.filter(|_| circle) {
         let globe_radius = globe.radius();
         let radius = globe.brush.radius(globe_radius);
@@ -1132,6 +1151,12 @@ pub(super) fn paint_canvas(
             painter.line(river.clone(), shade);
             painter.line(river, line);
         }
+    }
+    if let Some(axis) = globe.ridge_preview().filter(|a| a.len() > 1) {
+        let shade = egui::Stroke::new(3.5, egui::Color32::from_black_alpha(90));
+        let line = egui::Stroke::new(1.5, egui::Color32::from_white_alpha(220));
+        painter.line(axis.clone(), shade);
+        painter.line(axis, line);
     }
     if let Some(outline) = globe.outline_preview().filter(|o| o.len() > 1) {
         let shade = egui::Stroke::new(3.5, egui::Color32::from_black_alpha(90));

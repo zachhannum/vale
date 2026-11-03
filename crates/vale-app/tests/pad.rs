@@ -2979,6 +2979,18 @@ fn the_brush_panel_has_the_sliders_of_the_basin_mode() {
 }
 
 #[test]
+fn the_ocean_ridge_panel_has_no_buttons_before_a_stroke() {
+    let mut h = pad(BOARDS[0]);
+    tap(&mut h, "Brush settings");
+    choose_mode(&mut h, "Ocean ridge");
+    // The hint and the buttons show only while a ridge is held.
+    assert!(h.query_by_label(panels::HELD_HINT).is_none());
+    assert!(control(&h, panels::APPLY_RIDGE).is_none());
+    assert!(control(&h, panels::DISCARD_RIDGE).is_none());
+    check_controls(&h, "the Ocean ridge mode");
+}
+
+#[test]
 fn the_basin_panel_shows_the_step_of_the_outline() {
     use vale_app::globe::math::lonlat_to_dir;
     for size in [BOARDS[0], BOARDS[1]] {

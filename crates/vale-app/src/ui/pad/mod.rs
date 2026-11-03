@@ -1775,6 +1775,9 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
         return;
     }
     let unit = state.shown_unit().to_string();
+    if state.globe.brush.mode == Mode::OceanRidge {
+        ridge_hint_rows(ui, controls, &mut state.globe);
+    }
     // The outline sets the size of a basin.
     if state.globe.brush.mode == Mode::Basin {
         basin_rows(ui, controls, &mut state.globe);
@@ -2071,6 +2074,34 @@ fn basin_rows(ui: &mut egui::Ui, controls: &mut Controls, globe: &mut crate::glo
         if clear.clicked() {
             globe.set_basin_outline(None);
         }
+    }
+    held_rows(ui, controls, globe);
+}
+
+/// The hint and the buttons of a held ocean ridge. The panel of the ridge
+/// has no room for a hint before the stroke on the smallest iPad.
+fn ridge_hint_rows(ui: &mut egui::Ui, controls: &mut Controls, globe: &mut crate::globe::Globe) {
+    if globe.holding().is_none() {
+        return;
+    }
+    ui.add_space(8.0);
+    let text = egui::RichText::new(panels::HELD_HINT).color(theme::MUTE);
+    ui.add(egui::Label::new(text).selectable(false));
+    ui.add_space(8.0);
+    held_rows(ui, controls, globe);
+}
+
+/// The buttons that apply and discard a held ocean ridge or basin.
+fn held_rows(ui: &mut egui::Ui, controls: &mut Controls, globe: &mut crate::globe::Globe) {
+    let Some(mode) = globe.holding() else {
+        return;
+    };
+    let (apply, discard) = panels::held_buttons(mode);
+    if widgets::button_row(ui, controls, apply, true).clicked() {
+        globe.apply_held();
+    }
+    if widgets::button_row_in(ui, controls, discard, true, theme::WARN).clicked() {
+        globe.discard_held();
     }
 }
 
