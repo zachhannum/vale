@@ -107,6 +107,8 @@ const OCEAN_RIDGE = 10u;
 const RANGE = 11u;
 const PUSH = 12u;
 const NOISE = 13u;
+// The mode of a fault block pass.
+const FAULT = 14u;
 
 // The same number as `WARP_MARGIN` in `heightmap.rs`.
 const WARP_MARGIN = 3.0;
@@ -216,6 +218,12 @@ struct RidgeLine {
     range_spacing: f32,
     range_piece: f32,
     range_tilt: f32,
+    // The numbers of a fault block pass: 1 for a single fault, and the side
+    // to which most blocks tilt. A fault block pass has the height, the
+    // spacing, the piece length, and the tilt in the range numbers.
+    fault_single: f32,
+    fault_side: f32,
+    unused: vec2<f32>,
     segments: array<RidgeSegment, RIDGE_SEGMENTS>,
 }
 
@@ -1920,6 +1928,102 @@ fn range_level(at: RidgePoint, old: f32) -> f32 {
     return clamp(old + floor(change + 0.5), 0.0, 65535.0);
 }
 
+// The numbers of `fault.rs`.
+const FAULT_BREAK_JITTER = 0.3;
+const FAULT_OVERLAP = 0.15;
+const FAULT_SHIFT = 0.2;
+const FAULT_HALF = 0.33;
+const FAULT_WIDTH_JITTER = 0.3;
+const FAULT_CREST = 0.6;
+const FAULT_MIN_FACE = 3.0;
+const FAULT_FILL = 0.3;
+const FAULT_DOMAIN = 0.75;
+const FAULT_BASE = 0.1;
+const FAULT_EDGE_FLAT = 0.5;
+const FAULT_SCARP = 0.06;
+const FAULT_SINGLE_FLAT = 0.2;
+const FAULT_BREAK = 0u;
+const FAULT_SHIFT_CHANNEL = 1u;
+const FAULT_HEIGHT = 2u;
+const FAULT_PHASE = 4u;
+const FAULT_DIP = 5u;
+const FAULT_WIDTH = 6u;
+
+// `FaultPlan::profile`.
+fn fault_profile(q: f32, crest: f32) -> f32 {
+    var raw = 0.0;
+    if q > -1.0 && q < 1.0 {
+        if q <= crest {
+            raw = (q + 1.0) / (crest + 1.0);
+        } else {
+            raw = 1.0 - smooth_between(crest, 1.0, q);
+        }
+    }
+    return max(raw - FAULT_FILL, 0.0) / (1.0 - FAULT_FILL);
+}
+
+// `FaultPlan::block_part`. The distance along the line is `rest` from the
+// start of cell `cell`. The hashes are those of `range_hash`.
+fn fault_part(cell: i32, rest: f32, across: f32) -> f32 {
+    let spacing = ridge.range_spacing;
+    let piece = ridge.range_piece;
+    let o = FAULT_OVERLAP * piece;
+    let k0 = i32(round(across / spacing));
+    var part = 0.0;
+    for (var k = k0 - 2; k <= k0 + 2; k++) {
+        let phase = unit(range_hash(k, 0, FAULT_PHASE));
+        let j0 = cell + i32(floor(rest / piece - phase));
+        for (var j = j0 - 1; j <= j0 + 1; j++) {
+            let jitter0 = FAULT_BREAK_JITTER * (2.0 * unit(range_hash(k, j, FAULT_BREAK)) - 1.0);
+            let jitter1 = FAULT_BREAK_JITTER * (2.0 * unit(range_hash(k, j + 1, FAULT_BREAK)) - 1.0);
+            let b0 = (f32(j - cell) + phase + jitter0) * piece;
+            let b1 = (f32(j + 1 - cell) + phase + jitter1) * piece;
+            let along = smooth_between(b0 - o, b0 + o, rest)
+                * (1.0 - smooth_between(b1 - o, b1 + o, rest));
+            if along <= 0.0 {
+                continue;
+            }
+            let middle = 0.5 * (b0 + b1);
+            let m = clamp((rest - middle) / (0.5 * (b1 - b0)), -1.0, 1.0);
+            let slip = 0.6 + 0.4 * (1.0 - m * m);
+            let shift = FAULT_SHIFT * (2.0 * unit(range_hash(k, j, FAULT_SHIFT_CHANNEL)) - 1.0);
+            let center = spacing * (f32(k) + shift) + ridge.range_tilt * (rest - middle);
+            let dip = select(-ridge.fault_side, ridge.fault_side, unit(range_hash(k, j, FAULT_DIP)) < FAULT_DOMAIN);
+            let width = 1.0 + FAULT_WIDTH_JITTER * (2.0 * unit(range_hash(k, j, FAULT_WIDTH)) - 1.0);
+            let half = FAULT_HALF * width * spacing;
+            let q = dip * (across - center) / half;
+            let crest = min(FAULT_CREST, 1.0 - FAULT_MIN_FACE * ridge.texel / half);
+            let height = 0.6 + 0.4 * unit(range_hash(k, j, FAULT_HEIGHT));
+            part = max(part, height * along * slip * fault_profile(q, crest));
+        }
+    }
+    return part;
+}
+
+// The level of a texel on the fault blocks. `old` is its level from before
+// the stroke. The steps are those of `FaultPlan::level`, without the limits.
+fn fault_level(at: RidgePoint, old: f32) -> f32 {
+    let r = ridge.radius;
+    let taper = smooth_between(0.0, TAPER * r, at.end);
+    let w = r * (TAPER_WIDTH + (1.0 - TAPER_WIDTH) * taper);
+    let d = sqrt(at.across * at.across + at.past2) / w;
+    var part = 0.0;
+    if ridge.fault_single > 0.5 {
+        let fade = 1.0 - smooth_between(FAULT_SINGLE_FLAT, 1.0, d);
+        let step = smooth_between(-FAULT_SCARP, FAULT_SCARP, at.across / w) - 0.5;
+        part = step * fade;
+    } else {
+        let envelope = 1.0 - smooth_between(FAULT_EDGE_FLAT, 1.0, d);
+        if envelope <= 0.0 {
+            return old;
+        }
+        let blocks = fault_part(i32(at.cell), at.rest, at.across);
+        part = envelope * (FAULT_BASE + (1.0 - FAULT_BASE) * blocks);
+    }
+    let change = ridge.range_height * at.flow * taper * part;
+    return clamp(old + floor(change + 0.5), 0.0, 65535.0);
+}
+
 // The level of a texel after a change from `old` to `next`. The steps are
 // those of `Limits::apply`.
 fn limited(old: f32, next: f32) -> f32 {
@@ -2007,6 +2111,13 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<u32> {
         let point = ridge_place(normalize(texel_dir(group.face, at)));
         if point.on {
             value = limited(value, range_level(point, value));
+        }
+        return vec4<u32>(u32(value), 0u, 0u, 0u);
+    }
+    if group.mode == FAULT {
+        let point = ridge_place(normalize(texel_dir(group.face, at)));
+        if point.on {
+            value = limited(value, fault_level(point, value));
         }
         return vec4<u32>(u32(value), 0u, 0u, 0u);
     }
