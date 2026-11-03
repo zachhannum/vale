@@ -2985,8 +2985,8 @@ fn the_ocean_ridge_panel_has_no_buttons_before_a_stroke() {
     choose_mode(&mut h, "Ocean ridge");
     // The hint and the buttons show only while a ridge is held.
     assert!(h.query_by_label(panels::HELD_HINT).is_none());
-    assert!(control(&h, panels::APPLY_RIDGE).is_none());
-    assert!(control(&h, panels::DISCARD_RIDGE).is_none());
+    assert!(control(&h, panels::APPLY).is_none());
+    assert!(control(&h, panels::DISCARD).is_none());
     check_controls(&h, "the Ocean ridge mode");
 }
 
@@ -9864,6 +9864,6 @@ fn manual_a_held_ocean_ridge_on_the_ipad() {
     }
     h.run_steps(4);
     assert!(h.state().globe.holding().is_some());
-    assert!(control(&h, panels::APPLY_RIDGE).is_some());
+    assert!(control(&h, panels::APPLY).is_some());
     screenshot::save(&mut h, "pad-held-ridge");
 }

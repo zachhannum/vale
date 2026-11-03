@@ -2093,14 +2093,13 @@ fn ridge_hint_rows(ui: &mut egui::Ui, controls: &mut Controls, globe: &mut crate
 
 /// The buttons that apply and discard a held ocean ridge or basin.
 fn held_rows(ui: &mut egui::Ui, controls: &mut Controls, globe: &mut crate::globe::Globe) {
-    let Some(mode) = globe.holding() else {
+    if globe.holding().is_none() {
         return;
-    };
-    let (apply, discard) = panels::held_buttons(mode);
-    if widgets::button_row(ui, controls, apply, true).clicked() {
+    }
+    if widgets::button_row(ui, controls, panels::APPLY, true).clicked() {
         globe.apply_held();
     }
-    if widgets::button_row_in(ui, controls, discard, true, theme::WARN).clicked() {
+    if widgets::button_row_in(ui, controls, panels::DISCARD, true, theme::WARN).clicked() {
         globe.discard_held();
     }
 }

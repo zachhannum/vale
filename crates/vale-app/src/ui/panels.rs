@@ -40,21 +40,9 @@ pub const CLEAR_OUTLINE: &str = "Clear outline";
 pub const RIDGE_HINT: &str = "Draw the center line of the ridge.";
 /// The hint of a held ocean ridge or basin.
 pub const HELD_HINT: &str = "Change the settings, then apply.";
-/// The buttons that end a held ocean ridge.
-pub const APPLY_RIDGE: &str = "Apply ridge";
-pub const DISCARD_RIDGE: &str = "Discard ridge";
-/// The buttons that end a held basin.
-pub const APPLY_BASIN: &str = "Apply basin";
-pub const DISCARD_BASIN: &str = "Discard basin";
-
-/// The names of the buttons that apply and discard the held stroke.
-pub fn held_buttons(mode: Mode) -> (&'static str, &'static str) {
-    if mode == Mode::Basin {
-        (APPLY_BASIN, DISCARD_BASIN)
-    } else {
-        (APPLY_RIDGE, DISCARD_RIDGE)
-    }
-}
+/// The buttons that end a held ocean ridge or basin.
+pub const APPLY: &str = "Apply";
+pub const DISCARD: &str = "Discard";
 
 /// The hint of the basin mode.
 pub fn basin_hint(globe: &crate::globe::Globe) -> &'static str {
@@ -887,15 +875,14 @@ fn held_rows(ui: &mut egui::Ui, globe: &mut crate::globe::Globe) {
         Mode::OceanRidge => ui.label(RIDGE_HINT),
         _ => return,
     };
-    let Some(mode) = globe.holding() else {
+    if globe.holding().is_none() {
         return;
-    };
-    let (apply, discard) = held_buttons(mode);
+    }
     ui.horizontal(|ui| {
-        if ui.button(apply).clicked() {
+        if ui.button(APPLY).clicked() {
             globe.apply_held();
         }
-        if ui.button(discard).clicked() {
+        if ui.button(DISCARD).clicked() {
             globe.discard_held();
         }
     });
