@@ -61,6 +61,8 @@ pub struct TableState {
     pub scroll_to: Option<Uuid>,
     /// The selection that the table saw in the last frame.
     seen: Vec<FeatureRef>,
+    /// The rectangle of the table in the last frame.
+    pub rect: Option<egui::Rect>,
 }
 
 impl TableState {
@@ -74,6 +76,7 @@ impl TableState {
             edit: None,
             scroll_to: None,
             seen: Vec::new(),
+            rect: None,
         }
     }
 
@@ -376,6 +379,18 @@ impl AppState {
     }
 }
 
+/// Gives the field the focus, with all of its text selected, so that the
+/// typed text takes the place of the old value.
+pub fn focus_all(resp: &egui::Response, text: &str) {
+    use egui::text::{CCursor, CCursorRange};
+    resp.request_focus();
+    let ctx = &resp.ctx;
+    let mut edit = egui::TextEdit::load_state(ctx, resp.id).unwrap_or_default();
+    let all = CCursorRange::two(CCursor::new(0), CCursor::new(text.chars().count()));
+    edit.cursor.set_char_range(Some(all));
+    edit.store(ctx, resp.id);
+}
+
 /// The text of a value in a cell.
 pub fn cell_text(value: Option<&Value>) -> String {
     value.and_then(|v| v.label()).unwrap_or_default()
@@ -387,10 +402,13 @@ pub fn desktop(ui: &mut egui::Ui, state: &mut AppState) {
     if state.table.is_none() {
         return;
     }
-    egui::Panel::bottom("attribute-table")
+    let panel = egui::Panel::bottom("attribute-table")
         .resizable(true)
         .default_size(260.0)
         .show(ui, |ui| desktop_table(ui, state));
+    if let Some(table) = &mut state.table {
+        table.rect = Some(panel.response.rect);
+    }
 }
 
 fn desktop_table(ui: &mut egui::Ui, state: &mut AppState) {
@@ -482,7 +500,7 @@ fn desktop_table(ui: &mut egui::Ui, state: &mut AppState) {
                                     .text_color_opt(color);
                                 let resp = ui.add_sized(size, text);
                                 if std::mem::take(&mut edit.focus) {
-                                    resp.request_focus();
+                                    focus_all(&resp, &edit.field.text);
                                 }
                                 if resp.lost_focus() {
                                     if ui.input(|i| i.key_pressed(egui::Key::Escape)) {

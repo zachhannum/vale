@@ -15,7 +15,7 @@ use crate::ui::AppState;
 use crate::ui::point_form::{can_take_focus, keyboard_top};
 use crate::ui::table::{
     ALL, CellTap, FILTER, SELECTED, cell_name, cell_text, column_width, count_text, empty_text,
-    scroll_index, sort_name,
+    focus_all, scroll_index, sort_name,
 };
 
 pub const CARD: &str = "attribute-table";
@@ -234,7 +234,7 @@ pub fn pad(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
                                     ui, controls, cell, &name, None, text, valid, font,
                                 );
                                 if edit.focus && focus {
-                                    resp.request_focus();
+                                    focus_all(&resp, &edit.field.text);
                                     edit.focus = false;
                                 }
                                 if resp.lost_focus() {
@@ -257,6 +257,7 @@ pub fn pad(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
             });
     });
     table.scroll_to = None;
+    table.rect = Some(rect);
     // An edit whose row scrolled out of the view ends.
     if !drawn && table.edit.as_ref().is_some_and(|e| !e.focus) {
         act.commit = true;
