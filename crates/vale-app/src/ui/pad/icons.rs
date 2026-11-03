@@ -2,6 +2,8 @@
 
 use eframe::egui::{self, Color32, Pos2, Rect, pos2};
 
+use super::theme;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Icon {
     Raise,
@@ -270,6 +272,7 @@ pub fn parse(d: &str) -> Vec<Vec<Pos2>> {
 
 /// Paints an icon at the center of a rectangle. `size` is the side of the icon.
 pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, size: f32, color: Color32) {
+    let color = opaque(color);
     let scale = size / 24.0;
     let origin = rect.center() - egui::vec2(size, size) / 2.0;
     let place = |p: Pos2| origin + p.to_vec2() * scale;
@@ -294,6 +297,16 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, size: f32, color: 
             painter.circle_stroke(center, radius * scale, stroke);
         }
     }
+}
+
+/// The color that a translucent color gives over the fill of a card. The
+/// strokes of an icon overlap, and a translucent color is darker where they
+/// overlap.
+fn opaque(color: Color32) -> Color32 {
+    let [r, g, b, _] = theme::card(true).to_srgba_unmultiplied();
+    let keep = 1.0 - color.a() as f32 / 255.0;
+    let mix = |c: u8, b: u8| (c as f32 + b as f32 * keep).round().min(255.0) as u8;
+    Color32::from_rgb(mix(color.r(), r), mix(color.g(), g), mix(color.b(), b))
 }
 
 #[cfg(test)]
@@ -344,6 +357,14 @@ mod tests {
             tokens("s-2.46 5.5-5.5.5"),
             vec![('s', vec![-2.46, 5.5, -5.5, 0.5])]
         );
+    }
+
+    #[test]
+    fn a_translucent_color_becomes_opaque_and_an_opaque_color_stays() {
+        let faded = opaque(theme::MUTE.gamma_multiply(theme::OFF));
+        assert_eq!(faded.a(), 255);
+        assert!(faded.r() < theme::MUTE.r());
+        assert_eq!(opaque(theme::TEXT), theme::TEXT);
     }
 
     #[test]
