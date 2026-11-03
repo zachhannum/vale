@@ -3,7 +3,7 @@
 use crate::collide::{GridIndex, OrientedBox};
 use crate::model::*;
 use crate::text::{Fonts, ShapedText};
-use crate::{improve, line, point};
+use crate::{improve, line, point, polygon};
 use kurbo::{Affine, Point, Rect};
 
 pub(crate) struct Candidate {
@@ -114,12 +114,13 @@ pub(crate) fn run(fonts: &mut Fonts, input: &LabelInput) -> Labeling {
             continue;
         };
         match (&f.geometry, &class.placement) {
-            (Geometry::Point { .. }, Placement::Line(_))
-            | (Geometry::Line { .. }, Placement::Point(_)) => {
+            (Geometry::Point { .. }, Placement::Point(_))
+            | (Geometry::Line { .. }, Placement::Line(_))
+            | (Geometry::Polygon { .. }, Placement::Polygon(_)) => {}
+            _ => {
                 unplaced.push(fail(f, 0, UnplacedReason::GeometryMismatch));
                 continue;
             }
-            _ => {}
         }
         let shaped = fonts.shape(&f.text, &class.style);
         if shaped.glyph_count() == 0 {
@@ -229,6 +230,19 @@ pub(crate) fn run(fonts: &mut Fonts, input: &LabelInput) -> Labeling {
                         empty_reason,
                     });
                 }
+            }
+            (Geometry::Polygon { rings }, Placement::Polygon(pp)) => {
+                let (candidates, empty_reason) =
+                    match polygon::candidates(rings, class, pp, shaped, bounds) {
+                        Ok(c) => (c, None),
+                        Err(r) => (Vec::new(), Some(r)),
+                    };
+                instances.push(Instance {
+                    feature_index: *fi,
+                    repeat: 0,
+                    candidates,
+                    empty_reason,
+                });
             }
             _ => {}
         }
