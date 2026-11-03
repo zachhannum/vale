@@ -457,6 +457,14 @@ fn layer_rows(ui: &mut egui::Ui, state: &mut AppState) {
             if pick.clicked() {
                 state.select(Some(layer));
             }
+            if let LayerRef::Vector(id) = layer {
+                pick.context_menu(|ui| {
+                    if ui.button(super::table::OPEN_TABLE).clicked() {
+                        state.open_table(id);
+                        ui.close();
+                    }
+                });
+            }
             ui.weak(kind);
             let open = ui.small_button("›");
             named(

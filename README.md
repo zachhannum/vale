@@ -197,7 +197,7 @@ The job `testflight` in `.github/workflows/ios.yml` does the work, with `scripts
 - Polygon labels, label fallbacks, leader lines, and manual label changes.
 - The overview of the pages, page templates, and SVG export.
 - Tissot circles.
-- Editing tools other than the line tool, the polygon tool, the point tool, the Select tool, and reshape, including the attribute table.
+- Editing tools other than the line tool, the polygon tool, the point tool, the Select tool, reshape, and the attribute table.
 - The GPU Vello backend. The prototype draws on the CPU with `vello_cpu`.
 
 ## The labeler demo

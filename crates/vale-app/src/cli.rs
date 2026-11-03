@@ -52,6 +52,9 @@ pub struct Args {
     /// place that is the first place closes the path.
     #[arg(long, value_name = "LON,LAT LON,LAT ...", allow_hyphen_values = true)]
     pub measure: Option<String>,
+    /// Open the attribute table of the vector layer with this name.
+    #[arg(long, value_name = "LAYER")]
+    pub table: Option<String>,
     /// With --layout pad: open the menu of the worlds.
     #[arg(long)]
     pub worlds_menu: bool,
@@ -445,6 +448,15 @@ pub fn apply_import(args: &Args, state: &mut AppState, wait: bool) -> anyhow::Re
         state.set_raster_hillshade(id, true);
         state.pad.layer = Some(crate::ui::LayerRef::Raster(id));
         state.pad.page = Some(crate::ui::pad::Page::Hillshade);
+    }
+    if let Some(name) = &args.table {
+        let layers = state.doc.project.layers();
+        let id = layers
+            .iter()
+            .find(|l| &l.name == name && l.geometry().is_some())
+            .map(|l| l.id)
+            .ok_or_else(|| anyhow!("--table: no vector layer is named {name}"))?;
+        state.open_table(id);
     }
     Ok(())
 }

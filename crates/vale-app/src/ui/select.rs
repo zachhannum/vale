@@ -11,6 +11,7 @@ use super::pad::geometry::{GAP, MARGIN, ROW, Rects};
 use super::pad::theme;
 use super::pad::widgets::{self, BODY_PAD, Controls, PANEL_ROW};
 use super::point_form::{FormField, keyboard_top};
+use super::table::SHOW_IN_TABLE;
 use crate::globe::math::{V3, dir_to_lonlat};
 use crate::globe::select::{self, FeatureRef, SelectEvent};
 
@@ -246,11 +247,9 @@ impl AppState {
         if changed.is_empty() {
             return;
         }
-        self.commit_point_form();
-        self.save_edit();
-        if self.doc.project.set_attributes(f.layer, f.uuid, changed) {
-            self.end_vector_edit(f.layer);
-        }
+        self.edit_attributes(f.layer, |project| {
+            project.set_attributes(f.layer, f.uuid, changed)
+        });
     }
 }
 
@@ -347,11 +346,14 @@ pub fn pad(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
     let least = ROW + PANEL_ROW + BOTTOM;
     let height = (ROW + (fields + 1.0) * PANEL_ROW + BOTTOM).min(room.max(least));
     let width = WIDTH.min(screen.width() - 2.0 * MARGIN);
-    let rect = Rect::from_min_size(
-        pos2(screen.center().x - width / 2.0, top),
-        vec2(width, height),
-    );
-    let (mut close, mut delete, mut commit) = (false, false, false);
+    // The card stays clear of a wide right panel.
+    let mut left = screen.center().x - width / 2.0;
+    if state.pad.right.is_some() && rects.sheet.is_none() {
+        let beside = rects.right_panel.x - GAP - width;
+        left = left.min(beside).max(rects.tools.right() + GAP);
+    }
+    let rect = Rect::from_min_size(pos2(left, top), vec2(width, height));
+    let (mut close, mut delete, mut commit, mut show) = (false, false, false, false);
     let radius = theme::CARD_RADIUS.into();
     let backdrop = state.globe.backdrop();
     widgets::card(ctx, backdrop, CARD, rect, Order::Foreground, radius, |ui| {
@@ -368,12 +370,28 @@ pub fn pad(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
                 let resp = widgets::text_field(ui, controls, name, name, None, text, valid);
                 commit |= resp.lost_focus();
             }
-            delete = widgets::button_row_in(ui, controls, DELETE, true, theme::WARN).clicked();
+            // The two buttons share the last row.
+            let (row, _) =
+                ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), egui::Sense::hover());
+            let half = |left: f32, right: f32| {
+                let rect = Rect::from_x_y_ranges(left..=right, row.y_range());
+                egui::UiBuilder::new().max_rect(rect)
+            };
+            let middle = row.center().x;
+            ui.scope_builder(half(row.left(), middle - GAP / 4.0), |ui| {
+                show = widgets::button_row(ui, controls, SHOW_IN_TABLE, true).clicked();
+            });
+            ui.scope_builder(half(middle + GAP / 4.0, row.right()), |ui| {
+                delete = widgets::button_row_in(ui, controls, DELETE, true, theme::WARN).clicked();
+            });
         });
     });
     state.selection_form = form;
     if commit {
         state.commit_selection_form();
+    }
+    if show {
+        state.show_in_table();
     }
     if delete {
         state.delete_selection();
@@ -390,7 +408,7 @@ pub fn desktop(ctx: &egui::Context, state: &mut AppState) {
     }
     let title = heading(state);
     let mut form = state.selection_form.take();
-    let (mut delete, mut commit) = (false, false);
+    let (mut delete, mut commit, mut show) = (false, false, false);
     egui::Window::new("Selection")
         .id(egui::Id::new(CARD))
         .title_bar(false)
@@ -412,11 +430,17 @@ pub fn desktop(ctx: &egui::Context, state: &mut AppState) {
                         ui.end_row();
                     }
                 });
-            delete = ui.button(DELETE).clicked();
+            ui.horizontal(|ui| {
+                show = ui.button(SHOW_IN_TABLE).clicked();
+                delete = ui.button(DELETE).clicked();
+            });
         });
     state.selection_form = form;
     if commit {
         state.commit_selection_form();
+    }
+    if show {
+        state.show_in_table();
     }
     if delete {
         state.delete_selection();

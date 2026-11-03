@@ -944,6 +944,22 @@ fn field_in(
     font: egui::FontId,
 ) -> Response {
     let field = form_row(ui, label);
+    field_at(ui, controls, field, name, suffix, text, valid, font)
+}
+
+/// A field for one line of text in a given rectangle, with the edit menu
+/// of a long press. `name` is the name of the control.
+#[allow(clippy::too_many_arguments)]
+pub fn field_at(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    field: Rect,
+    name: &str,
+    suffix: Option<&str>,
+    text: &mut String,
+    valid: bool,
+    font: egui::FontId,
+) -> Response {
     let back = field.shrink(HIGHLIGHT_INSET);
     ui.painter()
         .rect_filled(back, theme::CONTROL_RADIUS, theme::raise());

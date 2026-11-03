@@ -107,6 +107,8 @@ impl AppState {
         if !self.doc.project.add_feature(id, feature) {
             return;
         }
+        let new = crate::globe::select::FeatureRef { layer: id, uuid };
+        self.set_feature_selection(vec![new]);
         if fields.is_empty() {
             self.end_vector_edit(id);
             return;
