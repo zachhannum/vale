@@ -441,7 +441,19 @@ A box selects a feature if a vertex of the feature is in the box, if an edge cro
 
 A pen drag or a mouse drag that starts on a point of the selection moves that point. The move is one undo step when the pen or the mouse comes up. The tool moves points only. Lines and polygons change in vertex editing.
 
-On the iPad, a card at the top of the screen shows the selection. With one feature, the card has a field for each attribute, and a change of a field is one undo step when the field loses the focus. With more than one feature, the title of the card is the count. The card has "Delete selection", which deletes all selected features in one undo step. On the desktop, a window at the top right has the same contents. Delete and Backspace delete the selection, and Esc clears it.
+On the iPad, a card at the top of the screen shows the selection. With one feature, the card has a field for each attribute, and a change of a field is one undo step when the field loses the focus. With more than one feature, the title of the card is the count. The card has "Delete selection", which deletes all selected features in one undo step. On the desktop, a window at the top right has the same contents. Delete and Backspace delete the selection, and Esc clears it. The card and the window also have "Show in table", which opens the attribute table of the layer at the first selected row.
+
+### Attribute table
+
+The attribute table shows the features of a vector layer as rows, with a column for each field. "Open attribute table" on the page of the layer opens it, and so does the context menu of the layer on the desktop. The table shows the selected vector layer, and it follows a change of that layer. The project does not save the table.
+
+The title row has the name of the layer, the count of the rows, the filter field, and the control "All | Selected". The filter is an expression, and the table shows the rows for which it is true. A filter with an error shows no rows, and the text of the error. With Selected, the table shows only the selected rows that the filter shows. All is the default. A tap on the header of a column sorts by its field, up and then down, and a third tap ends the sort. Text sorts with no regard to case, and an empty value is last in both directions. The table builds its rows again only when the features, the sort, the filter, or the shown selection change. It draws only the rows that show, so a layer of 50,000 features scrolls, sorts, and filters with no delay.
+
+The selection of the table is the selection of the Select tool. A tap on a row selects its feature, and the globe and the flat view show it. A change of the selection on the globe scrolls the table to the first selected row. On the desktop, a click with Command adds a row or removes it, and a click with Shift adds the rows between it and the last selected row. A new feature of the line tool, the polygon tool, or the point tool is the selection.
+
+A tap on a cell of a selected row edits the cell, with the same field and the same check of the value as the card of the selection. If more than one row is selected, the edit sets the field of each selected row. Return or a change of the focus ends the edit, and Esc drops it. The edit is one undo step, and a value that is not a value of the type of the field changes nothing.
+
+On the iPad, the table is a card along the bottom of the canvas, between the tool strip and the right panel, and 300 points high at most. The card of the selection stays at the top, so the two show at the same time. While a cell has the keyboard, the table moves up above the keyboard, and the card of the selection does not show. On a compact screen, the table is as wide as the screen, and the sheet and the table do not show at the same time. Each row and each header is 44 points high. On the desktop, the table is in a dock below the canvas.
 
 ### Reshape
 
@@ -906,7 +918,7 @@ The prototype leaves out the following.
 - Polygon labels, label fallbacks, leader lines, and manual label changes (pin, move, exclude).
 - The overview of the pages, page templates, SVG export, and tiled raster export.
 - Tissot circles.
-- All editing tools other than the freehand line tool, the freehand polygon tool, point placement, the Select tool, and reshape: the attribute table and vertex editing.
+- All editing tools other than the freehand line tool, the freehand polygon tool, point placement, the Select tool, reshape, and the attribute table: vertex editing.
 - The GPU Vello backend. The prototype draws with `vello_cpu`.
 - Wholesale procedural world generation. This is a permanent non-goal.
 
