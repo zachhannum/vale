@@ -30,6 +30,17 @@ pub struct Polygon {
     pub rings: Vec<Vec<[f64; 2]>>,
 }
 
+/// A named area, possibly in several parts.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Area {
+    pub name: String,
+    /// Lower is more important.
+    pub rank: i64,
+    /// The Natural Earth feature class, for example "ocean" or "sea".
+    pub class: String,
+    pub parts: Vec<Polygon>,
+}
+
 fn read_features(path: &Path) -> anyhow::Result<Vec<Value>> {
     let text =
         std::fs::read_to_string(path).with_context(|| format!("cannot read {}", path.display()))?;
@@ -155,6 +166,52 @@ pub fn load_polygons(path: &Path) -> anyhow::Result<Vec<Polygon>> {
     Ok(out)
 }
 
+/// Areas with a name in the property `name_key` and a rank in `rank_key`.
+pub fn load_areas(path: &Path, name_key: &str, rank_key: &str) -> anyhow::Result<Vec<Area>> {
+    let mut out = Vec::new();
+    for f in read_features(path)? {
+        let Some(props) = f.get("properties") else {
+            continue;
+        };
+        let Some(name) = props.get(name_key).and_then(Value::as_str) else {
+            continue;
+        };
+        if name.is_empty() {
+            continue;
+        }
+        let rank = props
+            .get(rank_key)
+            .and_then(|v| v.as_i64().or_else(|| v.as_f64().map(|f| f as i64)))
+            .unwrap_or(10);
+        let class = props
+            .get("featurecla")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let parts: Vec<Polygon> = match geometry(&f) {
+            Some(("Polygon", c)) => lines(c)
+                .map(|rings| Polygon { rings })
+                .into_iter()
+                .collect(),
+            Some(("MultiPolygon", c)) => c
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(lines)
+                .map(|rings| Polygon { rings })
+                .collect(),
+            _ => continue,
+        };
+        out.push(Area {
+            name: name.to_string(),
+            rank,
+            class,
+            parts,
+        });
+    }
+    Ok(out)
+}
+
 /// Try to join two parts end to end. Returns the joined part.
 fn try_join(a: &[[f64; 2]], b: &[[f64; 2]]) -> Option<Vec<[f64; 2]>> {
     let (a_first, a_last) = (a.first()?, a.last()?);
@@ -243,6 +300,26 @@ mod tests {
     fn polygons() {
         let p = load_polygons(&ne("ne_110m_land.geojson")).unwrap();
         assert_eq!(p.len(), 127);
+    }
+
+    #[test]
+    fn areas() {
+        let countries = load_areas(
+            &ne("ne_110m_admin_0_countries.geojson"),
+            "NAME",
+            "LABELRANK",
+        )
+        .unwrap();
+        let canada = countries.iter().find(|a| a.name == "Canada").unwrap();
+        assert!(canada.parts.len() > 10);
+        let seas = load_areas(
+            &ne("ne_110m_geography_marine_polys.geojson"),
+            "name",
+            "scalerank",
+        )
+        .unwrap();
+        let ocean = seas.iter().find(|a| a.name == "INDIAN OCEAN").unwrap();
+        assert_eq!((ocean.class.as_str(), ocean.rank), ("ocean", 0));
     }
 
     #[test]

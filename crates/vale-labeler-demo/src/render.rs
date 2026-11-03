@@ -47,6 +47,9 @@ pub fn display_list(scene: &Scene, labeling: &Labeling, options: &RenderOptions)
     for path in &scene.land {
         list.push(fill(path.clone(), rgb([244, 241, 232]), FillRule::EvenOdd));
     }
+    for path in &scene.borders {
+        list.push(stroke(path.clone(), rgb([200, 190, 175]), 0.5, false));
+    }
     for path in &scene.land {
         list.push(stroke(path.clone(), rgb([150, 160, 165]), 0.6, false));
     }
@@ -81,10 +84,11 @@ pub fn display_list(scene: &Scene, labeling: &Labeling, options: &RenderOptions)
     }
 
     for label in &labeling.placed {
-        let color = if label.class == 1 {
-            rgb([40, 100, 160])
-        } else {
-            rgb([30, 30, 30])
+        let color = match label.class {
+            1 => rgb([40, 100, 160]),
+            3 => rgb([110, 95, 80]),
+            4 => rgb([70, 120, 160]),
+            _ => rgb([30, 30, 30]),
         };
         for run in &label.glyph_runs {
             list.push(Item::Glyphs(GlyphRun {

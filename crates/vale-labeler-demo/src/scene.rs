@@ -6,10 +6,10 @@ use anyhow::{Context, bail};
 use kurbo::{BezPath, Point, Rect};
 use vale_labeler::{
     Feature, Fonts, Geometry, LabelClass, LabelInput, LinePlacement, Options, Placement,
-    PointPlacement, TextStyle,
+    PointPlacement, PolygonPlacement, TextStyle,
 };
 
-use crate::data::{join_rivers, load_places, load_polygons, load_rivers};
+use crate::data::{Area, join_rivers, load_areas, load_places, load_polygons, load_rivers};
 use crate::project::{Frame, PageMap, Projection};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, clap::ValueEnum)]
@@ -32,6 +32,8 @@ pub struct Scene {
     pub height: u16,
     /// One closed path per polygon, holes included.
     pub land: Vec<BezPath>,
+    /// The outlines of the countries.
+    pub borders: Vec<BezPath>,
     /// Path and stroke width.
     pub rivers: Vec<(BezPath, f64)>,
     /// Position, symbol radius, capital.
@@ -99,6 +101,16 @@ pub fn build(preset: Preset, data_dir: &Path, seed: u64, improve: bool) -> anyho
     let places = load_places(&file("populated_places_simple")).context("places")?;
     let rivers = join_rivers(load_rivers(&file("rivers_lake_centerlines")).context("rivers")?);
     let polygons = load_polygons(&file("land")).context("land")?;
+    // The area names are optional, so the 50m set works without them.
+    let areas = |kind: &str, name: &str, rank: &str| -> anyhow::Result<Vec<Area>> {
+        if file(kind).exists() {
+            load_areas(&file(kind), name, rank).context(kind.to_string())
+        } else {
+            Ok(Vec::new())
+        }
+    };
+    let countries = areas("admin_0_countries", "NAME", "LABELRANK")?;
+    let seas = areas("geography_marine_polys", "name", "scalerank")?;
 
     let map = PageMap::new(&Frame {
         projection,
@@ -163,6 +175,32 @@ pub fn build(preset: Preset, data_dir: &Path, seed: u64, improve: bool) -> anyho
             placement: Placement::Point(PointPlacement::default()),
             duplicate_distance: Some(400.0),
         },
+        LabelClass {
+            name: "countries".into(),
+            style: TextStyle {
+                letter_spacing: 1.0,
+                ..TextStyle::new("Noto Sans", 11.0)
+            },
+            priority: 2,
+            margin: 2.0,
+            placement: Placement::Polygon(PolygonPlacement::default()),
+            duplicate_distance: None,
+        },
+        LabelClass {
+            name: "seas".into(),
+            style: TextStyle {
+                italic: true,
+                letter_spacing: 1.5,
+                ..TextStyle::new("Noto Sans", 13.0)
+            },
+            priority: 4,
+            margin: 2.0,
+            placement: Placement::Polygon(PolygonPlacement {
+                max_spread: 1.5,
+                ..Default::default()
+            }),
+            duplicate_distance: None,
+        },
     ];
 
     let mut features = Vec::new();
@@ -212,10 +250,51 @@ pub fn build(preset: Preset, data_dir: &Path, seed: u64, improve: bool) -> anyho
         }
     }
 
+    let rings = |area: &Area| -> Vec<Vec<Point>> {
+        area.parts
+            .iter()
+            .flat_map(|p| &p.rings)
+            .filter_map(|r| map.ring_to_page(r))
+            .filter(|r| r.len() >= 3)
+            .collect()
+    };
+    let mut borders = Vec::new();
+    for (index, country) in countries.iter().enumerate() {
+        let rings = rings(country);
+        for ring in &rings {
+            let mut path = open_path(ring);
+            path.close_path();
+            borders.push(path);
+        }
+        features.push(Feature {
+            id: 2_000_000 + index as u64,
+            class: 3,
+            text: country.name.to_uppercase(),
+            priority: -(country.rank as f64),
+            geometry: Geometry::Polygon { rings },
+        });
+    }
+    for (index, sea) in seas.iter().enumerate() {
+        // Natural Earth writes some ocean names in capitals and some not.
+        let text = if sea.class == "ocean" {
+            sea.name.to_uppercase()
+        } else {
+            sea.name.clone()
+        };
+        features.push(Feature {
+            id: 3_000_000 + index as u64,
+            class: 4,
+            text,
+            priority: -(sea.rank as f64),
+            geometry: Geometry::Polygon { rings: rings(sea) },
+        });
+    }
+
     Ok(Scene {
         width,
         height,
         land,
+        borders,
         rivers: scene_rivers,
         places: scene_places,
         input: LabelInput {
