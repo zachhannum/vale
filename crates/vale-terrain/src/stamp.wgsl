@@ -1033,6 +1033,8 @@ const ACTIVE_MYR = 3.0;
 const PATCH_MYR = 4.0;
 const PATCH_OLD_MYR = 10.0;
 const PATCH = 0.3;
+const SWELL = 1.4;
+const SAG = 0.4;
 const TROUGH_LEAST = 0.3;
 const TROUGH_LEAST_KM = 10.0;
 const OFFSET_HALF_KM = 5.0;
@@ -1675,6 +1677,9 @@ struct RidgeTexel {
     lens: f32,
     taper: f32,
     fade: f32,
+    // The noise of the swell, and the sag, of `RidgePlan::level_in`.
+    swell: f32,
+    sag: f32,
 }
 
 // The age of the sea floor at a distance from the crest, as `age` in
@@ -1743,7 +1748,8 @@ fn ridge_crest_segment(at: RidgeTexel, k: i32, lower: f32, upper: f32) -> vec3<f
     let top = ridge.top;
     let foot = ridge.foot;
     let w0 = clamp((foot - ridge_depth(ridge_age(from_rise))) / (foot - top), 0.0, 1.0);
-    let w = w0 * w0 * (1.0 + FOOT) / (w0 + FOOT);
+    let curve = w0 * w0 * (1.0 + FOOT) / (w0 + FOOT);
+    let w = pow_precise(curve, exp_precise(-SWELL * at.swell)) * (1.0 - at.sag);
     let rise = at.taper * max(w * (at.lift - at.low * flat_part) - at.low * sunk * w * (2.0 - w), 0.0);
     let band_group = ridge_group(k);
     let center = ridge_group_shift(band_group);
@@ -1824,7 +1830,8 @@ fn ridge_level(at: RidgePoint, noise: RidgeNoise, old: f32) -> f32 {
     let lift = max(ridge.crest - old, 0.0);
     let low = min(lift / (HILL_TOP * ridge.mean + 1.0), 1.0);
     let fade = 1.0 - smooth_between(HILL_FADE, RIDGE_REACH, far);
-    let texel = RidgeTexel(u, cell, across, at.past2, lift, low, lens, taper, fade);
+    let sag = SAG * clamp(noise.slow.x, 0.0, 1.0);
+    let texel = RidgeTexel(u, cell, across, at.past2, lift, low, lens, taper, fade, noise.bend.z, sag);
     let blend_width = ridge.blend;
     let turn = ridge_turn(across / v);
     let i = cell + i32(floor((u - turn.x) / cell_len));

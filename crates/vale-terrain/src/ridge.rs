@@ -681,6 +681,12 @@ impl RidgePlan {
             let w = ((foot - depth(age(from_rise))) / (foot - top)).clamp(0.0, 1.0);
             // The foot of the rise has no slope.
             let w = w * w * (1.0 + FOOT) / (w + FOOT);
+            // The depth also changes from place to place, so the lines of
+            // equal depth wander, and the crest is deeper in places. The
+            // crest and the foot keep their levels under the swell.
+            let swell = w.powf((-SWELL * noise.bend[2]).exp());
+            let sag = SAG * noise.slow[0].clamp(0.0, 1.0);
+            let w = swell * (1.0 - sag);
             let rise = taper * (w * (lift - low * flat) - low * sunk * w * (2.0 - w)).max(0.0);
             // The magma of the segment changes with the age, so the faults
             // are closer together in some bands and farther apart in others.
@@ -1289,6 +1295,17 @@ const SEDIMENT_RATE: f64 = 0.005;
 const SEDIMENT_SOFT: f64 = 0.3;
 const POND: f64 = 0.3;
 const HILL_LOW: f64 = 1.0;
+
+/// The rise is a power of its curve, from 0 at the foot to 1 at the
+/// crest. The power is `e` to minus `SWELL` times a noise with features of
+/// about one brush radius, so the rise swells where the noise is above
+/// zero and sinks where it is below.
+const SWELL: f64 = 1.4;
+
+/// The largest sag of the whole rise, as a part of the lift. The sag
+/// follows a noise with features of about two brush radii, where the noise
+/// is above zero.
+const SAG: f64 = 0.4;
 
 /// The width of the rise at an end of the line, as a part of its full
 /// width.
@@ -1987,6 +2004,36 @@ mod tests {
                 last = new;
             }
         }
+    }
+
+    #[test]
+    fn the_swell_moves_the_flank_and_keeps_the_crest_and_the_foot() {
+        let plan = shape(spec(), FINE);
+        let r = plan.ridge.radius;
+        let u = middle(&plan, 3);
+        let with = |swell: f64| RidgeNoise {
+            bend: [0.0, 0.0, swell],
+            ..calm()
+        };
+        let at_swell =
+            |swell: f64, across: f64| f64::from(plan.level(START, at(u, across), with(swell)));
+        let lift = f64::from(CREST - START);
+        assert_eq!(at_swell(1.0, 0.0), f64::from(CREST));
+        assert_eq!(at_swell(-1.0, 0.0), f64::from(CREST));
+        assert_eq!(at_swell(1.0, r), f64::from(START));
+        assert_eq!(at_swell(-1.0, r), f64::from(START));
+        let (high, low) = (at_swell(1.0, 0.5 * r), at_swell(-1.0, 0.5 * r));
+        assert!(high - low > 0.2 * lift, "{high} {low}");
+        // The sag lowers the whole rise.
+        let sagged = RidgeNoise {
+            slow: [1.0, -1.0, -1.0],
+            ..calm()
+        };
+        let crest = f64::from(plan.level(START, at(u, 0.0), sagged));
+        assert!(
+            (crest - f64::from(CREST) + SAG * lift).abs() < 2.0,
+            "{crest}"
+        );
     }
 
     #[test]
