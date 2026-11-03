@@ -20,8 +20,10 @@ pub enum LabelPlacement {
     LineBelow,
     OnLine,
     /// Polygons. Curved along the long axis of a long shape, else straight at the visual center.
-    AlongShape,
-    /// Polygons. Straight at the visual center.
+    BestFit,
+    /// Polygons. Curved along the long axis.
+    Curved,
+    /// Polygons. Straight, at the visual center.
     Horizontal,
 }
 
@@ -34,16 +36,20 @@ const LINE_PLACEMENTS: [LabelPlacement; 4] = [
     LabelPlacement::OnLine,
 ];
 
-const POLYGON_PLACEMENTS: [LabelPlacement; 2] =
-    [LabelPlacement::AlongShape, LabelPlacement::Horizontal];
+const POLYGON_PLACEMENTS: [LabelPlacement; 3] = [
+    LabelPlacement::BestFit,
+    LabelPlacement::Curved,
+    LabelPlacement::Horizontal,
+];
 
-const ALL_PLACEMENTS: [LabelPlacement; 7] = [
+const ALL_PLACEMENTS: [LabelPlacement; 8] = [
     LabelPlacement::Around,
     LabelPlacement::AboveOrBelow,
     LabelPlacement::LineAbove,
     LabelPlacement::LineBelow,
     LabelPlacement::OnLine,
-    LabelPlacement::AlongShape,
+    LabelPlacement::BestFit,
+    LabelPlacement::Curved,
     LabelPlacement::Horizontal,
 ];
 
@@ -74,7 +80,8 @@ impl LabelPlacement {
             LabelPlacement::LineAbove => "Above line",
             LabelPlacement::LineBelow => "Below line",
             LabelPlacement::OnLine => "On line",
-            LabelPlacement::AlongShape => "Along shape",
+            LabelPlacement::BestFit => "Best fit",
+            LabelPlacement::Curved => "Curved",
             LabelPlacement::Horizontal => "Horizontal",
         }
     }
@@ -87,7 +94,8 @@ impl LabelPlacement {
             LabelPlacement::LineAbove => "line_above",
             LabelPlacement::LineBelow => "line_below",
             LabelPlacement::OnLine => "on_line",
-            LabelPlacement::AlongShape => "along_shape",
+            LabelPlacement::BestFit => "best_fit",
+            LabelPlacement::Curved => "curved",
             LabelPlacement::Horizontal => "horizontal",
         }
     }
@@ -287,7 +295,7 @@ pub struct LabelClass {
     pub repeat_distance: f64,
     /// Lines and polygons. The largest turn of the text between two glyphs, in radians.
     pub curve_limit: f64,
-    /// Polygons. The most extra space between two letters of a curved label, in multiples of `size`.
+    /// Polygons. The most extra space between two letters, in multiples of `size`.
     pub spread: f64,
     /// Lines. The smoothing window of the line, in multiples of `size`.
     pub smoothing: f64,
@@ -610,7 +618,9 @@ mod tests {
         c.curve_limit = 0.1;
         let mut d = LabelClass::new("Lakes", GeometryKind::Polygon, 0).unwrap();
         d.placement = LabelPlacement::Horizontal;
-        let classes = vec![a, b, c, d];
+        let mut e = LabelClass::new("Bays", GeometryKind::Polygon, 0).unwrap();
+        e.placement = LabelPlacement::Curved;
+        let classes = vec![a, b, c, d, e];
         let text = classes_to_json(&classes);
         assert_eq!(classes_from_json(&text).unwrap(), classes);
         assert_eq!(classes_to_json(&classes_from_json(&text).unwrap()), text);
@@ -640,10 +650,9 @@ mod tests {
         assert_eq!(read[0].duplicate_distance, 300.0);
         let point = r##"{"version":1,"classes":[{"color":"#102030","placement":"around"}]}"##;
         assert_eq!(classes_from_json(point).unwrap()[0].offset, 2.0);
-        let polygon =
-            r##"{"version":1,"classes":[{"color":"#102030","placement":"along_shape"}]}"##;
+        let polygon = r##"{"version":1,"classes":[{"color":"#102030","placement":"best_fit"}]}"##;
         let polygon = &classes_from_json(polygon).unwrap()[0];
-        assert_eq!(polygon.placement, LabelPlacement::AlongShape);
+        assert_eq!(polygon.placement, LabelPlacement::BestFit);
         assert_eq!(polygon.spread, 1.0);
         assert_eq!(polygon.curve_limit, 0.2);
         assert_eq!(
@@ -717,7 +726,7 @@ mod tests {
         );
         let polygon =
             LabelClass::from_style("D", &style("name"), GeometryKind::Polygon, 0).unwrap();
-        assert_eq!(polygon.placement, LabelPlacement::AlongShape);
+        assert_eq!(polygon.placement, LabelPlacement::BestFit);
         assert_eq!(polygon.curve_limit, 0.2);
         assert_eq!(polygon.spread, 1.0);
     }
@@ -745,7 +754,11 @@ mod tests {
         assert_eq!(LabelPlacement::choices(Line).len(), 4);
         assert_eq!(
             LabelPlacement::choices(Polygon),
-            &[LabelPlacement::AlongShape, LabelPlacement::Horizontal]
+            &[
+                LabelPlacement::BestFit,
+                LabelPlacement::Curved,
+                LabelPlacement::Horizontal
+            ]
         );
         assert_eq!(
             LabelPlacement::default_for(Point),
@@ -757,7 +770,7 @@ mod tests {
         );
         assert_eq!(
             LabelPlacement::default_for(Polygon),
-            Some(LabelPlacement::AlongShape)
+            Some(LabelPlacement::BestFit)
         );
         for p in ALL_PLACEMENTS {
             let fits = [p.fits(Point), p.fits(Line), p.fits(Polygon)];
@@ -765,14 +778,16 @@ mod tests {
             assert_eq!(p.fits(Polygon), p.is_polygon());
             assert_eq!(LabelPlacement::from_key(p.key()), Some(p));
         }
-        assert_eq!(LabelPlacement::AlongShape.name(), "Along shape");
-        assert_eq!(LabelPlacement::AlongShape.key(), "along_shape");
+        assert_eq!(LabelPlacement::BestFit.name(), "Best fit");
+        assert_eq!(LabelPlacement::BestFit.key(), "best_fit");
+        assert_eq!(LabelPlacement::Curved.name(), "Curved");
+        assert_eq!(LabelPlacement::Curved.key(), "curved");
         assert_eq!(LabelPlacement::Horizontal.name(), "Horizontal");
         assert_eq!(LabelPlacement::Horizontal.key(), "horizontal");
         assert_eq!(LabelPlacement::AboveOrBelow.name(), "Above or below");
         assert_eq!(LabelPlacement::Around.name(), "Around point");
         let area = LabelClass::new("A", Polygon, 0).unwrap();
-        assert_eq!(area.placement, LabelPlacement::AlongShape);
+        assert_eq!(area.placement, LabelPlacement::BestFit);
         assert_eq!(area.curve_limit, 0.2);
         assert_eq!(area.spread, 1.0);
         assert_eq!(area.case, TextCase::Upper);
