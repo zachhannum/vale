@@ -54,6 +54,8 @@ pub const REPEAT_INTERVAL: &str = "Repeat interval";
 pub const CURVE_LIMIT: &str = "Curve limit";
 pub const SMOOTHING: &str = "Smoothing";
 pub const SPREAD: &str = "Spread";
+pub const FOLLOW_PARALLELS: &str = "Follow parallels";
+pub const UPSIDE_DOWN: &str = "Allow upside-down text";
 pub const BUFFER: &str = "Buffer";
 pub const REMOVE_DUPLICATES: &str = "Remove duplicates";
 pub const DUPLICATE_DISTANCE: &str = "Duplicate distance";
@@ -597,10 +599,54 @@ fn apply_text(edit: &TextEdit, c: &mut LabelClass) {
     c.halo_width = style.halo_width;
 }
 
+/// True if a class of `kind` with `placement` can have straight text that follows the parallels.
+pub fn can_follow_parallels(kind: GeometryKind, placement: LabelPlacement) -> bool {
+    match kind {
+        GeometryKind::Point => true,
+        GeometryKind::Polygon => {
+            matches!(
+                placement,
+                LabelPlacement::BestFit | LabelPlacement::Horizontal
+            )
+        }
+        GeometryKind::Line => false,
+    }
+}
+
+/// True if the text of a class follows the parallels.
+pub fn follows_parallels(kind: GeometryKind, class: &LabelClass) -> bool {
+    (kind == GeometryKind::Polygon && class.placement == LabelPlacement::Parallel)
+        || (class.graticule && can_follow_parallels(kind, class.placement))
+}
+
+/// The switches of a class whose text can follow the parallels.
+fn parallel_switches(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    (map, layer, i): (MapId, LayerId, usize),
+    kind: GeometryKind,
+    class: &LabelClass,
+) {
+    if can_follow_parallels(kind, class.placement) {
+        let mut on = class.graticule;
+        if widgets::switch_row(ui, controls, FOLLOW_PARALLELS, FOLLOW_PARALLELS, &mut on) {
+            state.label_class_step(map, layer, i, |c| c.graticule = on);
+        }
+    }
+    if follows_parallels(kind, class) {
+        let mut on = class.no_flip;
+        if widgets::switch_row(ui, controls, UPSIDE_DOWN, UPSIDE_DOWN, &mut on) {
+            state.label_class_step(map, layer, i, |c| c.no_flip = on);
+        }
+    }
+}
+
 /// The Placement segment of the panel of a class. A point class has its
 /// positions and its offset. A line class has its offset, its repeat, its
 /// curve limit, and its smoothing. A polygon class has its spread, and a
-/// curved one has its curve limit.
+/// class that is not horizontal has its curve limit. A point class and a
+/// polygon class can follow the parallels.
 fn placement_segment(
     ui: &mut egui::Ui,
     state: &mut AppState,
@@ -624,6 +670,7 @@ fn placement_segment(
         if class.placement != LabelPlacement::Horizontal {
             curve_limit(ui, state, controls, (map, layer, i), class);
         }
+        parallel_switches(ui, state, controls, (map, layer, i), kind, class);
         return;
     }
     let point = kind == GeometryKind::Point;
@@ -643,6 +690,7 @@ fn placement_segment(
         state.edit_label_class(map, layer, i, |c| c.offset = offset);
     }
     if point {
+        parallel_switches(ui, state, controls, (map, layer, i), kind, class);
         return;
     }
 

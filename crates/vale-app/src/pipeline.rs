@@ -3,6 +3,7 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::sync::OnceLock;
 
 use anyhow::anyhow;
 use kurbo::{Affine, BezPath, Circle, Point, Rect, Shape};
@@ -143,6 +144,8 @@ struct Cache {
     graticules: HashMap<u64, Vec<Vec<Point>>>,
     /// The graticule lines of the last window, for an interval under 1°.
     window_graticule: Option<WindowGraticule>,
+    /// The parallels for labels, in projected meters. Made at the first use.
+    parallels: OnceLock<Vec<Vec<Point>>>,
 }
 
 struct WindowGraticule {
@@ -714,6 +717,9 @@ fn graticule_step(on: bool, view: &View, radius_m: f64) -> Option<f64> {
 /// The smallest interval that has a graticule over the whole sphere.
 const WORLD_GRATICULE_MIN: f64 = 1.0 - 1e-9;
 
+/// The distance between two points of a parallel for labels, in degrees of longitude.
+const PARALLEL_STEP: f64 = 0.5;
+
 /// The part of the sphere that `area` shows, padded by one interval. The
 /// longitudes are unwrapped about `center_lon`, so they can go past ±180.
 /// A pole inside the area gives all longitudes. The window is empty when
@@ -826,6 +832,50 @@ impl Cache {
         lines
             .iter()
             .flat_map(|l| self.projection.project_line(l))
+            .collect()
+    }
+
+    /// The parallels of each degree from -89° to 89°, in projected meters. Each piece runs from
+    /// west to east.
+    fn parallels(&self) -> &[Vec<Point>] {
+        self.parallels.get_or_init(|| {
+            let n = (360.0 / PARALLEL_STEP).round() as usize;
+            (-89..=89)
+                .flat_map(|lat| {
+                    let line: Vec<LonLat> = (0..=n)
+                        .map(|i| [-180.0 + i as f64 * PARALLEL_STEP, f64::from(lat)])
+                        .collect();
+                    self.projection.project_line(&line)
+                })
+                .collect()
+        })
+    }
+
+    /// The parallels on the page, for the labels of `classes`. None if no class follows the
+    /// parallels. A piece that does not come near `area` is left out.
+    fn page_parallels(
+        &self,
+        vt: &ViewTransform,
+        area: Rect,
+        classes: &[Vec<vale_style::LabelClass>],
+    ) -> Vec<Vec<Point>> {
+        let follows = |c: &vale_style::LabelClass| {
+            c.graticule || c.placement == vale_style::LabelPlacement::Parallel
+        };
+        if !classes.iter().flatten().any(follows) {
+            return Vec::new();
+        }
+        let near = area.inflate(area.width() / 4.0, area.height() / 4.0);
+        self.parallels()
+            .iter()
+            .map(|l| l.iter().map(|p| vt.to_page(*p)).collect::<Vec<_>>())
+            .filter(|l| {
+                let mut b = None;
+                l.iter().for_each(|p| extend_bbox(&mut b, *p));
+                b.is_some_and(|b: Rect| {
+                    b.x0 <= near.x1 && b.x1 >= near.x0 && b.y0 <= near.y1 && b.y1 >= near.y0
+                })
+            })
             .collect()
     }
 
@@ -1060,6 +1110,7 @@ impl Pipeline {
                     layers: HashMap::new(),
                     graticules: HashMap::new(),
                     window_graticule: None,
+                    parallels: OnceLock::new(),
                 };
                 self.caches.insert(0, cache);
                 self.caches.truncate(MAX_CACHES);
@@ -1242,6 +1293,7 @@ impl Pipeline {
                 quality,
                 &[bar_rect],
                 &drawn.symbols,
+                cache.page_parallels(&vt, page, &classes),
             );
             list.items.extend(items);
             label_summary = summary;
@@ -1279,6 +1331,22 @@ impl Pipeline {
             target.to_target(Point::new(page.width_mm, page.height_mm)),
         );
         self.compose_frame_part(doc, frame, target, page_box, fonts, quality, selection)
+    }
+
+    /// The parallels that the labeler gets for a map frame, in target points.
+    pub fn label_parallels(
+        &mut self,
+        doc: &Document,
+        frame: &FrameRecord,
+        target: FrameTarget,
+    ) -> anyhow::Result<Vec<Vec<Point>>> {
+        let ids = drawn_layers(doc, Some(frame.map));
+        let cache = self.ensure(doc, frame.map, &ids)?;
+        let vt = atlas::frame_transform(&cache.projection, frame, target);
+        let classes: Vec<_> = (ids.iter())
+            .map(|id| doc.label_classes(Some(frame.map), *id))
+            .collect();
+        Ok(cache.page_parallels(&vt, frame_area(frame, target), &classes))
     }
 
     /// The part of a map frame in `part`, a box in target points. The list
@@ -1474,6 +1542,7 @@ impl Pipeline {
                 quality,
                 &obstacles,
                 &drawn.symbols,
+                cache.page_parallels(&vt, area, &classes),
             );
             list.items.extend(items);
             label_summary = summary;

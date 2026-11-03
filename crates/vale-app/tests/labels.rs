@@ -796,3 +796,50 @@ fn the_default_positions_match_the_labeler() {
     let ours = vale_style::LabelPosition::DEFAULT_ORDER.map(vale_app::labels::point_position);
     assert_eq!(ours, vale_labeler::PointPosition::DEFAULT_ORDER);
 }
+
+#[test]
+fn a_conic_frame_gives_the_labeler_curved_parallels() {
+    use vale_sphere::{ProjectionKind, ProjectionSpec};
+    for follow in [true, false] {
+        let mut doc = Document::sample();
+        let mut p = Pipeline::new();
+        let map = doc.first_map();
+        let mut spec = ProjectionSpec::new(ProjectionKind::LambertConformal, 10.0, 40.0);
+        spec.lat1 = 30.0;
+        spec.lat2 = 50.0;
+        doc.set_projection(map, spec);
+        let places = layer_id(&doc, "Places");
+        let mut classes = doc.label_classes(Some(map), places);
+        classes[0].graticule = follow;
+        doc.set_label_classes(map, places, &classes);
+        let (_, rect) = first_map_frame(&mut doc, &mut p);
+        let (_, frame) = doc.project.atlas.frames_of_map(map).next().unwrap();
+        let target = FrameTarget {
+            origin: Point::ZERO,
+            pts_per_mm: PT_PER_MM,
+        };
+        let parallels = p.label_parallels(&doc, frame, target).unwrap();
+        if !follow {
+            assert!(parallels.is_empty());
+            continue;
+        }
+        // The parts of the parallels that cross most of the frame.
+        let across: Vec<Vec<Point>> = (parallels.iter())
+            .map(|l| l.iter().copied().filter(|q| rect.contains(*q)).collect())
+            .filter(|l: &Vec<Point>| {
+                l.len() >= 3 && (l[l.len() - 1].x - l[0].x).abs() > rect.width() / 2.0
+            })
+            .collect();
+        assert!(!across.is_empty(), "{} parallels", parallels.len());
+        for l in &across {
+            let (a, b) = (l[0], l[l.len() - 1]);
+            assert!(a.x < b.x, "not west to east: {a:?} {b:?}");
+            // A curved line leaves its chord.
+            let chord = b - a;
+            let bow = (l.iter())
+                .map(|q| ((*q - a).cross(chord) / chord.hypot()).abs())
+                .fold(0.0, f64::max);
+            assert!(bow > 1.0, "straight: {bow}");
+        }
+    }
+}

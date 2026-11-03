@@ -41,10 +41,10 @@ use vale_app::ui::pad::furniture::{
     MAP_FRAME as ITEM_MAP_FRAME, RESET_ENTRIES, STYLE as ITEM_STYLE, delete_name, entry_names,
 };
 use vale_app::ui::pad::labels::{
-    ADD_CLASS, BUFFER, CASE, COLOR, CURVE_LIMIT, DELETE_CLASS, DUPLICATE_DISTANCE, HALO,
-    HALO_COLOR, HALO_WIDTH, LABEL_SIZE, LAYER, MOVE_DOWN, MOVE_UP, OFFSET, OPACITY, PLACEMENT,
-    POSITIONS, REMOVE_DUPLICATES, REORDER, REPEAT, REPEAT_INTERVAL, SEGMENTS, SMOOTHING, SPREAD,
-    STYLE, TEXT,
+    ADD_CLASS, BUFFER, CASE, COLOR, CURVE_LIMIT, DELETE_CLASS, DUPLICATE_DISTANCE,
+    FOLLOW_PARALLELS, HALO, HALO_COLOR, HALO_WIDTH, LABEL_SIZE, LAYER, MOVE_DOWN, MOVE_UP, OFFSET,
+    OPACITY, PLACEMENT, POSITIONS, REMOVE_DUPLICATES, REORDER, REPEAT, REPEAT_INTERVAL, SEGMENTS,
+    SMOOTHING, SPREAD, STYLE, TEXT, UPSIDE_DOWN,
 };
 use vale_app::ui::pad::rules::STROKE_WIDTH;
 use vale_app::ui::pad::widgets::eye_name;
@@ -53,6 +53,7 @@ use vale_app::ui::pad::{
     SNAPPING, readout_line,
 };
 use vale_app::ui::{Action, AppState, ExportFormat, Layout, Screen, Workspace, draw};
+use vale_labeler::{Placement, PolygonMode};
 use vale_render::Item;
 use vale_sphere::measure::{path_length, ring_area};
 use vale_sphere::{ProjectionKind, ProjectionSpec};
@@ -4008,6 +4009,200 @@ fn the_labels_tab_edits_a_polygon_class() {
         assert!(control(&h, &value_of(name)).is_some(), "{name}");
     }
     assert!(label_runs(&mut h, 0).iter().any(|g| g.text == "LAND"));
+}
+
+/// The labeler placement of the first class of a layer.
+fn labeler_placement(h: &Pad, map: MapId, layer: &str, kind: GeometryKind) -> Placement {
+    vale_app::labels::placement(&classes(h, map, layer)[0], kind)
+}
+
+/// A pad with the Labels tab of a frame, and a polygon class "Land" with the text "Land".
+fn land_pad(size: (f32, f32)) -> (Pad, MapId) {
+    let mut h = labels_pad(size);
+    let map = frame(&h, 0).map;
+    let land = layer_id(&h, "Land");
+    let mut class = vale_style::LabelClass::new("Land", GeometryKind::Polygon, 9).unwrap();
+    class.text = "'Land'".into();
+    h.state_mut().doc.set_label_classes(map, land, &[class]);
+    h.state_mut().touch();
+    h.run_steps(2);
+    (h, map)
+}
+
+#[test]
+fn the_labels_tab_places_a_polygon_class_along_a_parallel() {
+    use vale_style::LabelPlacement;
+    let (mut h, map) = land_pad(BOARDS[0]);
+    tap(&mut h, "Land");
+    tap(&mut h, SEGMENTS[1].0);
+    tap(&mut h, PLACEMENT);
+    tap(&mut h, LabelPlacement::Parallel.name());
+    assert_eq!(LabelPlacement::Parallel.name(), "Along parallel");
+    assert_eq!(
+        classes(&h, map, "Land")[0].placement,
+        LabelPlacement::Parallel
+    );
+    let Placement::Polygon(p) = labeler_placement(&h, map, "Land", GeometryKind::Polygon) else {
+        panic!("not a polygon placement");
+    };
+    assert_eq!(p.mode, PolygonMode::Parallel);
+    for name in [SPREAD, CURVE_LIMIT] {
+        assert!(control(&h, &value_of(name)).is_some(), "{name}");
+    }
+    set_number(&mut h, SPREAD, "2");
+    let Placement::Polygon(p) = labeler_placement(&h, map, "Land", GeometryKind::Polygon) else {
+        panic!("not a polygon placement");
+    };
+    assert_eq!(p.max_spread, 2.0);
+    // The text of this placement always follows the parallels.
+    assert!(control(&h, FOLLOW_PARALLELS).is_none());
+    assert!(control(&h, UPSIDE_DOWN).is_some());
+    assert!(label_runs(&mut h, 0).iter().any(|g| g.text == "LAND"));
+}
+
+#[test]
+fn the_parallel_switches_reach_the_labeler() {
+    use vale_style::LabelPlacement;
+    let (mut h, map) = land_pad(BOARDS[0]);
+
+    tap(&mut h, "Places");
+    tap(&mut h, SEGMENTS[1].0);
+    assert!(control(&h, UPSIDE_DOWN).is_none());
+    scroll_to(&mut h, FOLLOW_PARALLELS);
+    tap(&mut h, FOLLOW_PARALLELS);
+    assert!(classes(&h, map, "Places")[0].graticule);
+    scroll_to(&mut h, UPSIDE_DOWN);
+    tap(&mut h, UPSIDE_DOWN);
+    assert!(classes(&h, map, "Places")[0].no_flip);
+    let Placement::Point(p) = labeler_placement(&h, map, "Places", GeometryKind::Point) else {
+        panic!("not a point placement");
+    };
+    assert!(p.graticule && p.no_flip);
+    tap(&mut h, "Back to Labels");
+
+    tap(&mut h, "Land");
+    tap(&mut h, SEGMENTS[1].0);
+    assert!(control(&h, UPSIDE_DOWN).is_none());
+    scroll_to(&mut h, FOLLOW_PARALLELS);
+    tap(&mut h, FOLLOW_PARALLELS);
+    scroll_to(&mut h, UPSIDE_DOWN);
+    tap(&mut h, UPSIDE_DOWN);
+    let c = &classes(&h, map, "Land")[0];
+    assert!(c.graticule && c.no_flip);
+    let Placement::Polygon(p) = labeler_placement(&h, map, "Land", GeometryKind::Polygon) else {
+        panic!("not a polygon placement");
+    };
+    assert!(p.graticule && p.no_flip);
+    assert!(label_runs(&mut h, 0).iter().any(|g| g.text == "LAND"));
+
+    // Curved text does not follow the parallels.
+    scroll_up_to(&mut h, PLACEMENT);
+    tap(&mut h, PLACEMENT);
+    tap(&mut h, LabelPlacement::Curved.name());
+    assert!(control(&h, FOLLOW_PARALLELS).is_none());
+    assert!(control(&h, UPSIDE_DOWN).is_none());
+    tap(&mut h, PLACEMENT);
+    tap(&mut h, LabelPlacement::Horizontal.name());
+    for name in [FOLLOW_PARALLELS, UPSIDE_DOWN] {
+        scroll_to(&mut h, name);
+        assert!(control(&h, name).is_some(), "{name}");
+    }
+}
+
+#[test]
+fn the_parallel_switches_work_with_a_finger() {
+    use vale_style::LabelPlacement;
+    for size in BOARDS {
+        let what = format!("{size:?}");
+        let (mut h, map) = land_pad(size);
+        tap(&mut h, "Places");
+        tap(&mut h, SEGMENTS[1].0);
+        scroll_to(&mut h, FOLLOW_PARALLELS);
+        tap(&mut h, FOLLOW_PARALLELS);
+        scroll_to(&mut h, UPSIDE_DOWN);
+        check_controls(&h, &format!("{what}: point class"));
+        assert!(control(&h, UPSIDE_DOWN).is_some(), "{what}");
+        tap(&mut h, "Back to Labels");
+        tap(&mut h, "Land");
+        tap(&mut h, SEGMENTS[1].0);
+        tap(&mut h, PLACEMENT);
+        check_controls(&h, &format!("{what}: placement page"));
+        tap(&mut h, LabelPlacement::Parallel.name());
+        assert_eq!(
+            classes(&h, map, "Land")[0].placement,
+            LabelPlacement::Parallel,
+            "{what}"
+        );
+        scroll_to(&mut h, UPSIDE_DOWN);
+        check_controls(&h, &format!("{what}: polygon class"));
+        assert!(control(&h, UPSIDE_DOWN).is_some(), "{what}");
+    }
+}
+
+#[test]
+fn each_change_of_a_parallel_switch_is_one_undo_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let mut s = state();
+    s.session = Some(Session::open(&path, &mut s.doc).unwrap());
+    let mut h = pad_with(s, BOARDS[0]);
+    add_frame(&mut h);
+    h.state_mut().save_waiting().unwrap();
+    let map = frame(&h, 0).map;
+    let class = |h: &Pad| classes(h, map, "Places")[0].clone();
+    tap(&mut h, FRAME_TABS[3]);
+    tap(&mut h, "Places");
+    tap(&mut h, SEGMENTS[1].0);
+    let start = class(&h);
+    scroll_to(&mut h, FOLLOW_PARALLELS);
+    tap(&mut h, FOLLOW_PARALLELS);
+    scroll_to(&mut h, UPSIDE_DOWN);
+    tap(&mut h, UPSIDE_DOWN);
+    let c = class(&h);
+    assert!(c.graticule && c.no_flip);
+
+    tap(&mut h, "Undo");
+    let c = class(&h);
+    assert!(c.graticule && !c.no_flip);
+    tap(&mut h, "Undo");
+    assert_eq!(class(&h), start);
+}
+
+#[test]
+fn the_parallel_options_survive_a_close_and_an_open() {
+    use vale_style::LabelPlacement;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let mut doc = Document::sample();
+    let mut session = Session::open(&path, &mut doc).unwrap();
+    let mut s = state();
+    s.doc = doc;
+    let mut h = pad_with(s, BOARDS[0]);
+    add_frame(&mut h);
+    let map = frame(&h, 0).map;
+    tap(&mut h, FRAME_TABS[3]);
+    tap(&mut h, "Places");
+    tap(&mut h, SEGMENTS[1].0);
+    scroll_to(&mut h, FOLLOW_PARALLELS);
+    tap(&mut h, FOLLOW_PARALLELS);
+    scroll_to(&mut h, UPSIDE_DOWN);
+    tap(&mut h, UPSIDE_DOWN);
+    let land = layer_id(&h, "Land");
+    let mut area = vale_style::LabelClass::new("Land", GeometryKind::Polygon, 9).unwrap();
+    area.placement = LabelPlacement::Parallel;
+    area.no_flip = true;
+    h.state_mut().doc.set_label_classes(map, land, &[area]);
+    let places = classes(&h, map, "Places");
+    assert!(places[0].graticule && places[0].no_flip);
+    let lands = classes(&h, map, "Land");
+    let mut project = h.state().doc.project.clone();
+    session.flush(&mut project, &mut []).unwrap();
+    drop(session);
+
+    let mut doc = Document::sample();
+    let _session = Session::open(&path, &mut doc).unwrap();
+    assert_eq!(doc.label_classes(Some(map), layer_id(&h, "Places")), places);
+    assert_eq!(doc.label_classes(Some(map), land), lands);
 }
 
 #[test]
