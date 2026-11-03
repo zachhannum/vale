@@ -16,8 +16,8 @@ use super::select;
 use super::world_form::{self, WorldForm};
 use super::{Action, AppState, Note, SaveMark, Workspace, globe, is_height, panels};
 use crate::globe::brush::{
-    BASIN_DENSITY, CHANNEL_KM, EROSION, FLOODPLAIN_WIDTH_KM, FLOW, NOISE_GRAIN, NOISE_M,
-    RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM,
+    BASIN_DENSITY, CHANNEL_KM, EROSION, FAULT_SPACING_KM, FLOODPLAIN_WIDTH_KM, FLOW, NOISE_GRAIN,
+    NOISE_M, RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM,
     RIDGE_SPREAD_MM, SCALE_KM, SEED, STRENGTH_M, TALUS_DEG, WARP_KM, needs_height,
 };
 use crate::globe::brush::{BrushSettings, brush_radius};
@@ -167,7 +167,7 @@ pub const SCULPT_MODES: [(&str, Icon, Mode); 7] = [
     ("Noise", Icon::Noise, Mode::Noise),
 ];
 /// The modes of the Terrain cell.
-pub const TERRAIN_MODES: [(&str, Icon, Mode); 9] = [
+pub const TERRAIN_MODES: [(&str, Icon, Mode); 10] = [
     ("Carve", Icon::Carve, Mode::Carve),
     ("Ridge", Icon::Ridge, Mode::Ridge),
     ("Deposit", Icon::Deposit, Mode::Deposit),
@@ -176,6 +176,7 @@ pub const TERRAIN_MODES: [(&str, Icon, Mode); 9] = [
     ("Uplift", Icon::Uplift, Mode::Uplift),
     (panels::OCEAN_RIDGE, Icon::OceanRidge, Mode::OceanRidge),
     (panels::RANGE, Icon::Range, Mode::Range),
+    (panels::FAULT_BLOCK, Icon::FaultBlock, Mode::FaultBlock),
     (panels::BASIN, Icon::Basin, Mode::Basin),
 ];
 
@@ -1686,9 +1687,14 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
         Number::new(name, value, range).label(label).unit("km")
     };
     // The ocean ridge mode has no falloff and no strength, the range mode
-    // has no falloff, and the basin mode has no falloff and no flow.
+    // and the fault block mode have no falloff, and the basin mode has no
+    // falloff and no flow.
     let ridge = brush.mode == Mode::OceanRidge;
-    if !matches!(brush.mode, Mode::OceanRidge | Mode::Range | Mode::Basin) {
+    let line = matches!(
+        brush.mode,
+        Mode::OceanRidge | Mode::Range | Mode::FaultBlock | Mode::Basin
+    );
+    if !line {
         let number = percent("Brush hardness", brush.hardness)
             .label("Hardness")
             .default(defaults.hardness);
@@ -1761,6 +1767,25 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
             .default(defaults.range_spacing_km);
         apply(number.slider(ui, controls), &mut brush.range_spacing_km);
         seed_stepper(ui, controls, &mut world.seed);
+    }
+    if brush.mode == Mode::FaultBlock {
+        let single = &mut brush.fault_single;
+        widgets::switch_row(
+            ui,
+            controls,
+            "Brush single fault",
+            panels::SINGLE_FAULT,
+            single,
+        );
+        // A single fault has no spacing and no pattern.
+        if !brush.fault_single {
+            let value = brush.fault_spacing_km;
+            let number = km("Brush spacing", "Spacing", value, FAULT_SPACING_KM)
+                .log()
+                .default(defaults.fault_spacing_km);
+            apply(number.slider(ui, controls), &mut brush.fault_spacing_km);
+            seed_stepper(ui, controls, &mut world.seed);
+        }
     }
     if brush.mode == Mode::Basin {
         let value = brush.basin_density_km;

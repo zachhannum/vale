@@ -13,9 +13,9 @@ use std::collections::HashMap;
 
 use vale_store::{ImageId, RasterId};
 use vale_terrain::{
-    ChannelMap, ChannelWindow, ErodeStep, FACES, FIELD_WGSL, GpuHeightmap, GpuPyramid, GpuTiles,
-    Heightmap, MAX_BANDS, RangePlan, Readback, RidgePlan, StampPlan, TILES_WGSL, TexelRect,
-    pyramid_layout, tiles_layout,
+    ChannelMap, ChannelWindow, ErodeStep, FACES, FIELD_WGSL, FaultPlan, GpuHeightmap, GpuPyramid,
+    GpuTiles, Heightmap, MAX_BANDS, RangePlan, Readback, RidgePlan, StampPlan, TILES_WGSL,
+    TexelRect, pyramid_layout, tiles_layout,
 };
 
 use super::backdrop::{Backdrop, Canvas, REDUCTION};
@@ -1496,10 +1496,12 @@ impl Resources {
 /// The most meshes of projections on the GPU.
 const MESHES: usize = 8;
 
-/// The plan of a line of an ocean ridge stroke or of a range stroke.
+/// The plan of a line of an ocean ridge stroke, a range stroke, or a fault
+/// block stroke.
 pub enum LineOp {
     Ridge(Box<RidgePlan>),
     Range(Box<RangePlan>),
+    Fault(Box<FaultPlan>),
 }
 
 impl LineOp {
@@ -1508,6 +1510,7 @@ impl LineOp {
         match self {
             LineOp::Ridge(plan) => &plan.rects,
             LineOp::Range(plan) => &plan.rects,
+            LineOp::Fault(plan) => &plan.rects,
         }
     }
 }
@@ -2146,6 +2149,7 @@ impl Batch<'_> {
                 let added = match &plan {
                     LineOp::Ridge(plan) => heights.ridge(queue, self.encoder(), plan),
                     LineOp::Range(plan) => heights.range(queue, self.encoder(), plan),
+                    LineOp::Fault(plan) => heights.fault(queue, self.encoder(), plan),
                 };
                 debug_assert!(added, "an empty batch takes one plan");
                 let rects = plan.rects();

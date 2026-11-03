@@ -25,7 +25,7 @@ use vale_app::headless;
 use vale_app::pen::{PenEvent, PenPhase, PenQueue};
 use vale_app::session::Session;
 use vale_app::ui::gradient::{DESKTOP, GRADIENT, band_row, stop_x};
-use vale_app::ui::panels::{BASIN_OUTLINE_HINT, BASIN_RIVER_HINT, CLEAR_OUTLINE};
+use vale_app::ui::panels::{self, BASIN_OUTLINE_HINT, BASIN_RIVER_HINT, CLEAR_OUTLINE};
 use vale_app::ui::{AppState, LayerRef, RasterSpec, Workspace, draw};
 use vale_import::geojson;
 use vale_store::{RasterDisplay, RasterId};
@@ -4181,6 +4181,184 @@ fn the_brush_panel_has_the_range_mode_and_its_sliders() {
     let s = h.state();
     assert_eq!(s.globe.brush.range_spacing_km, 120.0);
     assert_eq!(s.doc.project.world.seed, 42);
+}
+
+/// A harness in the fault block mode on the empty world, with this seed.
+/// `single`: the stroke makes one fault.
+fn fault_harness(seed: u32, single: bool) -> Harness<'static, AppState> {
+    let mut h = uplift_harness();
+    let state = h.state_mut();
+    state.doc.project.world.seed = seed;
+    let brush = &mut state.globe.brush;
+    brush.mode = Mode::FaultBlock;
+    brush.fault_single = single;
+    h.run_steps(2);
+    h
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_fault_block_stroke_gives_the_levels_of_the_cpu_fault_blocks() {
+    use vale_app::globe::brush::Stroke;
+    use vale_terrain::{FaultLine, Heightmap};
+    let _gpu = one_gpu_test();
+    for single in [false, true] {
+        let mut h = fault_harness(7, single);
+        let before = all_levels(&h);
+        pen_line(&mut h, |_| {});
+        settle(&mut h);
+        let app = all_levels(&h);
+
+        // The same line on the CPU.
+        let globe = &h.state().globe;
+        let (brush, n) = (globe.brush, globe.map.face_size());
+        let mut stamps = Vec::new();
+        let mut stroke = Stroke::default();
+        for sample in ridge_samples() {
+            stroke.add_sample(&brush, n, sample, |_| 0, &mut stamps);
+        }
+        stroke.finish(&brush, n, &mut stamps);
+        let spec = brush.fault_spec(0.1, globe.world_km, globe.world_seed);
+        assert_eq!((spec.seed, spec.single), (7, single));
+        let mut line = FaultLine::new(spec, n);
+        for stamp in &stamps {
+            // The flow of a mouse gives the full height.
+            assert_eq!(stamp.flow, 1.0);
+            line.push(stamp.center, stamp.flow);
+        }
+        assert!(line.len() > 20, "{}", line.len());
+        let mut cpu = Heightmap::new(n, globe.map.base());
+        cpu.begin_stroke();
+        let mut from = 0;
+        while from < line.len() {
+            let plan = line.plan(from);
+            cpu.fault(&plan);
+            from = plan.end;
+        }
+        cpu.end_stroke();
+
+        let texels = (0..6 * n * n).map(|i| (i / (n * n), i % n, i / n % n));
+        let cpu: Vec<u16> = texels
+            .map(|(face, x, y)| cpu.get(face, x as i64, y as i64))
+            .collect();
+        let changed = cpu.iter().zip(&before).filter(|(a, b)| a != b).count();
+        assert!(changed > 2000, "{single}: {changed}");
+        let worst = app.iter().zip(&cpu).map(|(a, b)| a.abs_diff(*b)).max();
+        assert!(worst.unwrap() <= 2, "{single}: {worst:?}");
+        // The blocks rise from the ground. A single fault raises the ground
+        // on one side and lowers it on the other.
+        let base = globe.map.base();
+        let height = meters_to_level(brush.strength_m) - meters_to_level(0.0);
+        let (low, top) = (*app.iter().min().unwrap(), *app.iter().max().unwrap());
+        assert!(top > base && top <= base + height, "{single}: {top}");
+        match single {
+            false => assert_eq!(low, base),
+            true => assert!(low < base && top - low > height / 2, "{low} {top}"),
+        }
+    }
+}
+
+#[test]
+#[ignore = "gpu"]
+fn one_undo_puts_back_the_ground_from_before_a_fault_block_stroke() {
+    let _gpu = one_gpu_test();
+    let mut h = fault_harness(7, false);
+    let before = (all_levels(&h), canvas_image(&mut h));
+    let fault = (uplift_stroke(&mut h), canvas_image(&mut h));
+    assert!(fault.0 != before.0);
+    assert!(fault.1.as_raw() != before.1.as_raw());
+    assert_eq!(h.state().globe.stats.last().unwrap().id, 1);
+
+    assert!(h.state_mut().globe.undo());
+    assert!(all_levels(&h) == before.0);
+    assert!(!h.state().globe.can_undo());
+    let image = canvas_image(&mut h);
+    assert!(image.as_raw() == before.1.as_raw(), "the render");
+
+    assert!(h.state_mut().globe.redo());
+    assert!(all_levels(&h) == fault.0);
+    let image = canvas_image(&mut h);
+    assert!(image.as_raw() == fault.1.as_raw(), "the render");
+}
+
+#[test]
+#[ignore = "gpu"]
+fn two_equal_fault_block_strokes_with_the_same_seed_give_equal_results() {
+    let _gpu = one_gpu_test();
+    let mut h = fault_harness(7, false);
+    assert_eq!(h.state().globe.world_seed, 7);
+    let before = all_levels(&h);
+    let first = uplift_stroke(&mut h);
+    assert!(first != before);
+    assert!(h.state_mut().globe.undo());
+    h.run_steps(2);
+    assert!(all_levels(&h) == before);
+    assert!(uplift_stroke(&mut h) == first);
+
+    // A second harness starts from the same ground.
+    drop(h);
+    let mut h = fault_harness(7, false);
+    assert!(all_levels(&h) == before);
+    assert!(uplift_stroke(&mut h) == first);
+
+    // Another seed gives another result.
+    drop(h);
+    let mut h = fault_harness(8, false);
+    assert!(all_levels(&h) == before);
+    let other = uplift_stroke(&mut h);
+    assert!(other != before && other != first);
+
+    // The single fault switch gives another result.
+    drop(h);
+    let mut h = fault_harness(7, true);
+    assert!(all_levels(&h) == before);
+    let single = uplift_stroke(&mut h);
+    assert!(single != before && single != first);
+}
+
+#[test]
+fn the_brush_panel_has_the_fault_block_mode_and_its_sliders() {
+    let mut h = harness();
+    h.state_mut().globe.tool = Tool::Brush;
+    h.run_steps(2);
+    for name in ["Height", "Spacing", "Seed", panels::SINGLE_FAULT] {
+        assert!(h.query_all_by_label(name).next().is_none(), "{name}");
+    }
+    h.get_by_label(panels::FAULT_BLOCK).click();
+    h.run_steps(2);
+    let brush = &h.state().globe.brush;
+    assert_eq!(brush.mode, Mode::FaultBlock);
+    assert_eq!(brush.fault_spacing_km, 25.0);
+    assert!(!brush.fault_single);
+    for name in [
+        "Radius",
+        "Flow",
+        "Height",
+        panels::SINGLE_FAULT,
+        "Spacing",
+        "Seed",
+        "Floor",
+        "Ceiling",
+    ] {
+        assert!(h.query_all_by_label(name).next().is_some(), "{name}");
+    }
+    for name in ["Hardness", "Strength", "Erosion", "Wind", "Crest", "Scale"] {
+        assert!(h.query_all_by_label(name).next().is_none(), "{name}");
+    }
+    // The sliders set the spacing and the seed of the world.
+    set_slider(&mut h, "Spacing", 80.0);
+    set_slider(&mut h, "Seed", 42.0);
+    let s = h.state();
+    assert_eq!(s.globe.brush.fault_spacing_km, 80.0);
+    assert_eq!(s.doc.project.world.seed, 42);
+    // A single fault has no spacing and no seed.
+    h.get_by_label(panels::SINGLE_FAULT).click();
+    h.run_steps(2);
+    assert!(h.state().globe.brush.fault_single);
+    for name in ["Spacing", "Seed"] {
+        assert!(h.query_all_by_label(name).next().is_none(), "{name}");
+    }
+    assert!(h.query_all_by_label("Height").next().is_some());
 }
 
 /// A harness in the basin mode on the empty world, with this seed.

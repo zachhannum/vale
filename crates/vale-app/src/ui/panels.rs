@@ -14,9 +14,10 @@ use super::{
 use vale_terrain::Mode;
 
 use crate::globe::brush::{
-    BASIN_DENSITY, CHANNEL_HELP, CHANNEL_KM, EROSION, FLOODPLAIN_WIDTH_KM, FLOW, NOISE_GRAIN,
-    NOISE_M, RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM,
-    RIDGE_SPREAD_MM, SCALE_KM, SEED, STRENGTH_M, TALUS_DEG, WARP_KM, needs_height,
+    BASIN_DENSITY, CHANNEL_HELP, CHANNEL_KM, EROSION, FAULT_SPACING_KM, FLOODPLAIN_WIDTH_KM, FLOW,
+    NOISE_GRAIN, NOISE_M, RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_MAGMA, RIDGE_OFFSET_KM,
+    RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM, SCALE_KM, SEED, STRENGTH_M, TALUS_DEG, WARP_KM,
+    needs_height,
 };
 use crate::globe::combine::PolygonMode;
 use crate::globe::{Globe, Tool, WorldView, rivers, snap, stats, stroke_test, zoom_test};
@@ -28,6 +29,10 @@ use crate::world::{self, three_significant};
 pub const OCEAN_RIDGE: &str = "Ocean ridge";
 /// The name of the range mode of the brush.
 pub const RANGE: &str = "Range";
+/// The name of the fault block mode of the brush.
+pub const FAULT_BLOCK: &str = "Fault block";
+/// The switch of the fault block mode that makes one fault.
+pub const SINGLE_FAULT: &str = "Single fault";
 /// The name of the basin mode of the brush.
 pub const BASIN: &str = "Basin";
 /// The hint of the basin mode before the outline.
@@ -795,6 +800,7 @@ fn brush_modes(ui: &mut egui::Ui, current: &mut Mode, height: bool) {
             (Mode::Noise, "Noise"),
             (Mode::OceanRidge, OCEAN_RIDGE),
             (Mode::Range, RANGE),
+            (Mode::FaultBlock, FAULT_BLOCK),
             (Mode::Basin, BASIN),
         ] {
             let button = egui::Button::selectable(*current == mode, name);
@@ -836,7 +842,7 @@ pub(super) fn edge_age_text(brush: &crate::globe::brush::BrushSettings, radius_k
 pub(super) fn strength_name(mode: Mode) -> &'static str {
     match mode {
         Mode::Uplift => "Uplift",
-        Mode::Range | Mode::Basin => "Height",
+        Mode::Range | Mode::FaultBlock | Mode::Basin => "Height",
         _ => "Strength",
     }
 }
@@ -866,11 +872,12 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
         }
     }
     // The ocean ridge mode has no falloff and no strength, the range mode
-    // has no falloff, and the basin mode has no falloff and no flow.
+    // and the fault block mode have no falloff, and the basin mode has no
+    // falloff and no flow.
     let ridge = globe.brush.mode == Mode::OceanRidge;
     if !matches!(
         globe.brush.mode,
-        Mode::OceanRidge | Mode::Range | Mode::Basin
+        Mode::OceanRidge | Mode::Range | Mode::FaultBlock | Mode::Basin
     ) {
         number::slider("Hardness", &mut globe.brush.hardness, 0.0..=1.0).show(ui);
     }
@@ -996,6 +1003,19 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
             .suffix(" km")
             .show(ui);
         seed(ui, state);
+    }
+    let globe = &mut state.globe;
+    if globe.brush.mode == Mode::FaultBlock {
+        ui.checkbox(&mut globe.brush.fault_single, SINGLE_FAULT);
+        // A single fault has no spacing and no pattern.
+        if !globe.brush.fault_single {
+            let spacing = &mut globe.brush.fault_spacing_km;
+            number::slider("Spacing", spacing, FAULT_SPACING_KM)
+                .log()
+                .suffix(" km")
+                .show(ui);
+            seed(ui, state);
+        }
     }
     let globe = &mut state.globe;
     if globe.brush.mode == Mode::Basin {

@@ -19,6 +19,7 @@ pub enum Icon {
     Noise,
     OceanRidge,
     Range,
+    FaultBlock,
     Basin,
     More,
     Move,
@@ -79,6 +80,7 @@ impl Icon {
             Icon::Noise => "M2 16l3-4 2 3 3-8 2 6 2-3 3 7 2-4 3 3",
             Icon::OceanRidge => "M3 9h6v6h6v-6h6M9 4v16M15 4v16",
             Icon::Range => "M2 19l5-8 3 4 4-9 4 6 4 7M6 7l3-2M13 5l3-2",
+            Icon::FaultBlock => "M2 19l6-8 1 8 5-10 1 10 6-12 1 12",
             Icon::Basin => "M12 21V3M12 16l-7-5M12 16l7-4M12 10l-5-5M12 10l5-6M5 11l-1-5M19 12l1-5",
             Icon::More => "",
             Icon::Move => {
@@ -378,6 +380,7 @@ mod tests {
             Icon::Noise,
             Icon::OceanRidge,
             Icon::Range,
+            Icon::FaultBlock,
             Icon::Basin,
             Icon::More,
             Icon::Move,
