@@ -1757,6 +1757,44 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn a_moving_vertex_and_its_edges_are_not_targets() {
+        let square = |x0: f64, x1: f64| {
+            Geometry::Polygons(vec![vec![vec![
+                [x0, 0.0],
+                [x1, 0.0],
+                [x1, 10.0],
+                [x0, 10.0],
+                [x0, 0.0],
+            ]]])
+        };
+        let l = layer(
+            1,
+            GeometryKind::Polygon,
+            vec![square(0.0, 10.0), square(10.0, 20.0)],
+        );
+        let a = l.features[0].uuid();
+        let t = targets(&[l]);
+        let s = SnapSettings::default();
+        let near = north(10.0, 0.0, 4.0, SCALE);
+        let snap = |exclude: &Exclude| t.snap_excluding(near, SCALE, &s, exclude);
+        assert_eq!(snap(&Exclude::None).unwrap().exact, Some([10.0, 0.0]));
+        let all = Exclude::Vertex {
+            at: [10.0, 0.0],
+            feature: None,
+        };
+        assert!(snap(&all).is_none());
+        // The vertex of the other square stays a target.
+        let own = Exclude::Vertex {
+            at: [10.0, 0.0],
+            feature: Some(a),
+        };
+        assert_eq!(snap(&own).unwrap().exact, Some([10.0, 0.0]));
+        // The other vertices stay targets.
+        let far = t.snap_excluding(north(20.0, 0.0, 4.0, SCALE), SCALE, &s, &all);
+        assert_eq!(far.unwrap().exact, Some([20.0, 0.0]));
+    }
+
+    #[test]
     fn each_switch_turns_off_its_target_kind() {
         let t = Arc::new(targets(&[equator()]));
         let near_vertex = north(9.0, 0.0, 4.0, SCALE);
