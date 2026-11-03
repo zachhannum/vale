@@ -1651,6 +1651,7 @@ impl AppState {
         let mut class = from.remove(i);
         if !class.placement.fits(kind) {
             class.placement = placement;
+            class.curve_limit = vale_style::curve_limit_for(placement);
         }
         let mut classes = self.doc.label_classes(Some(map), to);
         classes.push(class);
@@ -1662,12 +1663,11 @@ impl AppState {
         Some(classes.len() - 1)
     }
 
-    /// The point layers and the line layers, in the order of the Layers
-    /// panel, with their feature types.
+    /// The vector layers, in the order of the Layers panel, with their
+    /// feature types.
     pub fn label_layers(&self) -> Vec<(LayerId, GeometryKind)> {
         (self.doc.project.layers().iter())
             .filter_map(|l| Some((l.id, l.geometry()?)))
-            .filter(|(_, k)| matches!(k, GeometryKind::Point | GeometryKind::Line))
             .collect()
     }
 

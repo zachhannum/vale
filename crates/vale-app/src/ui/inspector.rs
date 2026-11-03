@@ -95,61 +95,56 @@ fn layer_section(ui: &mut egui::Ui, state: &mut AppState) {
     };
     let mut changed = style_editor::rules(ui, info.id, style, info.kind, &fields, &mut library);
 
-    if info.kind == GeometryKind::Polygon {
-        ui.add_space(4.0);
-        ui.label("Polygon labels are not available yet.");
-    } else {
-        ui.add_space(4.0);
-        let label = &mut style.label;
-        changed |= ui.checkbox(&mut label.enabled, "Show labels").changed();
-        ui.horizontal(|ui| {
-            ui.label("Label field");
-            egui::ComboBox::from_id_salt("label_field")
-                .selected_text(label.field.as_deref().unwrap_or("None"))
-                .width(130.0)
-                .show_ui(ui, |ui| {
-                    for f in &info.fields {
-                        changed |= ui
-                            .selectable_value(&mut label.field, Some(f.clone()), f)
-                            .changed();
-                    }
-                });
-        });
-        ui.horizontal(|ui| {
-            ui.label("Priority field");
-            egui::ComboBox::from_id_salt("priority_field")
-                .selected_text(label.priority_field.as_deref().unwrap_or("None"))
-                .width(120.0)
-                .show_ui(ui, |ui| {
+    ui.add_space(4.0);
+    let label = &mut style.label;
+    changed |= ui.checkbox(&mut label.enabled, "Show labels").changed();
+    ui.horizontal(|ui| {
+        ui.label("Label field");
+        egui::ComboBox::from_id_salt("label_field")
+            .selected_text(label.field.as_deref().unwrap_or("None"))
+            .width(130.0)
+            .show_ui(ui, |ui| {
+                for f in &info.fields {
                     changed |= ui
-                        .selectable_value(&mut label.priority_field, None, "None")
+                        .selectable_value(&mut label.field, Some(f.clone()), f)
                         .changed();
-                    for f in &info.fields {
-                        changed |= ui
-                            .selectable_value(&mut label.priority_field, Some(f.clone()), f)
-                            .changed();
-                    }
-                });
-        });
-        changed |= super::number::stepper("Label size", &mut label.size)
-            .range(4.0..=72.0)
-            .step(0.5)
-            .suffix(" pt")
-            .show(ui)
-            .changed();
-        ui.horizontal(|ui| {
-            ui.label("Font");
-            let current = label.font.as_deref().unwrap_or(DEFAULT_FAMILY);
-            pick_font = ui.button(format!("{current}…")).clicked();
-        });
-        if let Some(warning) = font_warning {
-            ui.label(egui::RichText::new(warning).color(ui.visuals().warn_fg_color));
-        }
-        ui.horizontal(|ui| {
-            changed |= ui.checkbox(&mut label.italic, "Italic").changed();
-            changed |= style_editor::color_button(ui, &mut label.color);
-        });
+                }
+            });
+    });
+    ui.horizontal(|ui| {
+        ui.label("Priority field");
+        egui::ComboBox::from_id_salt("priority_field")
+            .selected_text(label.priority_field.as_deref().unwrap_or("None"))
+            .width(120.0)
+            .show_ui(ui, |ui| {
+                changed |= ui
+                    .selectable_value(&mut label.priority_field, None, "None")
+                    .changed();
+                for f in &info.fields {
+                    changed |= ui
+                        .selectable_value(&mut label.priority_field, Some(f.clone()), f)
+                        .changed();
+                }
+            });
+    });
+    changed |= super::number::stepper("Label size", &mut label.size)
+        .range(4.0..=72.0)
+        .step(0.5)
+        .suffix(" pt")
+        .show(ui)
+        .changed();
+    ui.horizontal(|ui| {
+        ui.label("Font");
+        let current = label.font.as_deref().unwrap_or(DEFAULT_FAMILY);
+        pick_font = ui.button(format!("{current}…")).clicked();
+    });
+    if let Some(warning) = font_warning {
+        ui.label(egui::RichText::new(warning).color(ui.visuals().warn_fg_color));
     }
+    ui.horizontal(|ui| {
+        changed |= ui.checkbox(&mut label.italic, "Italic").changed();
+        changed |= style_editor::color_button(ui, &mut label.color);
+    });
     if changed {
         state.touch();
     }
