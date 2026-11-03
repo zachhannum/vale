@@ -9829,3 +9829,41 @@ fn a_drag_of_a_selected_vertex_moves_all_the_selected_vertices() {
     assert!(!ring.contains(&[-10.0, -12.0]));
     assert_eq!(h.state().vertex_selection.len(), 1);
 }
+
+#[test]
+#[ignore = "gpu"]
+fn manual_a_held_ocean_ridge_on_the_ipad() {
+    use vale_app::globe::math::lonlat_to_dir;
+    let setup = egui_kittest::wgpu::default_wgpu_setup();
+    let mut h = headless::ui_harness(state(), (1194.0, 834.0), 2.0, setup);
+    h.state_mut().add_height();
+    h.state_mut().globe.map.fill(meters_to_level(-4000.0));
+    h.run_steps(4);
+    tap(&mut h, "Brush settings");
+    choose_mode(&mut h, "Ocean ridge");
+    h.state_mut().globe.brush.ridge_crest_m = -2500.0;
+    h.state_mut().globe.pen_down();
+    for i in 0..=30 {
+        let t = f64::from(i);
+        let sample = vale_app::globe::brush::Sample {
+            dir: Some(lonlat_to_dir(-25.0 + 1.6 * t, (t - 15.0).abs() * 0.8 - 6.0)),
+            flow: 0.5,
+            radius: 0.08,
+        };
+        h.state_mut()
+            .globe
+            .pen_sample(sample, std::time::Instant::now());
+        h.step();
+    }
+    h.state_mut().globe.pen_up();
+    for _ in 0..400 {
+        h.step();
+        if h.state().globe.held_idle() {
+            break;
+        }
+    }
+    h.run_steps(4);
+    assert!(h.state().globe.holding().is_some());
+    assert!(control(&h, panels::APPLY_RIDGE).is_some());
+    screenshot::save(&mut h, "pad-held-ridge");
+}
