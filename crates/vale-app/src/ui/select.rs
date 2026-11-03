@@ -21,6 +21,8 @@ pub const DELETE: &str = "Delete selection";
 const WIDTH: f32 = 360.0;
 const BOTTOM: f32 = 12.0;
 const CARD: &str = "selection-card";
+/// The radius of the handle at each end of a selected line.
+const END: f32 = 5.0;
 
 /// A drag of the Select tool.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -258,6 +260,7 @@ pub fn paint(painter: &egui::Painter, state: &AppState) {
     let globe = &state.globe;
     let ring = egui::Stroke::new(2.0, theme::ACCENT);
     let line = egui::Stroke::new(3.0, theme::ACCENT);
+    let dark = egui::Stroke::new(1.5, egui::Color32::from_rgb(11, 31, 26));
     for f in &state.feature_selection {
         let Some(layer) = state.doc.layer(f.layer) else {
             continue;
@@ -271,6 +274,11 @@ pub fn paint(painter: &egui::Painter, state: &AppState) {
         }
         for run in shape.lines {
             painter.line(run, line);
+        }
+        // The ends of a line show as handles, so that the cut of a split
+        // shows between two selected lines.
+        for pos in shape.ends {
+            painter.circle(pos, END, theme::ACCENT, dark);
         }
     }
     match state.select_drag {

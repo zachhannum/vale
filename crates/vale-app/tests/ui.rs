@@ -1790,3 +1790,44 @@ fn the_toolbar_and_the_keys_choose_the_mode_of_the_polygon_tool() {
     h.run_steps(2);
     assert!(h.state().feature_selection.is_empty());
 }
+
+#[test]
+fn the_tool_bar_has_split_for_line_and_polygon_layers() {
+    use vale_app::globe::Tool;
+    use vale_app::globe::view::GlobeView;
+    use vale_app::ui::pad::SPLIT;
+    use vale_store::{Feature, Geometry, GeometryKind};
+    let mut doc = Document::sample();
+    let id = doc.add_layer(GeometryKind::Polygon);
+    let square = vec![
+        [-10.0, -10.0],
+        [10.0, -10.0],
+        [10.0, 10.0],
+        [-10.0, 10.0],
+        [-10.0, -10.0],
+    ];
+    let feature = Feature::new(Geometry::Polygons(vec![vec![square]]), Default::default());
+    assert!(doc.project.add_feature(id, feature));
+    let points = doc.add_layer(GeometryKind::Point);
+    let mut state = AppState::new(doc).unwrap();
+    state.headless = true;
+    state.select(Some(LayerRef::Vector(points)));
+    state.globe.view = GlobeView::centered(0.0, 0.0);
+    state.globe.snap.on = false;
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(SIZE.0 as f32, SIZE.1 as f32))
+        .with_pixels_per_point(1.0)
+        .build_ui_state(|ui, state: &mut AppState| draw(ui, state), state);
+    h.run_steps(3);
+    // A point layer has no Split.
+    assert!(h.query_by_label(SPLIT).is_none());
+    h.state_mut().select(Some(LayerRef::Vector(id)));
+    h.run_steps(3);
+    h.get_by_label(SPLIT).click();
+    h.run_steps(3);
+    assert_eq!(h.state().globe.tool, Tool::Split);
+    assert!(h.state().globe.splitting());
+    mouse_way(&mut h, &[[2.0, -15.0], [2.0, 15.0]], egui::Modifiers::NONE);
+    let layer = h.state().doc.project.layer(id).unwrap();
+    assert_eq!(layer.features.len(), 2);
+}

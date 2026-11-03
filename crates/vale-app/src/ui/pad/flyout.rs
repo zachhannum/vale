@@ -18,6 +18,8 @@ pub enum Flyout {
     Brush(ModeGroup),
     /// The modes of the polygon tool, on the brush card.
     PolygonMode,
+    /// The tools of the Vector cell of the tool strip.
+    Vector,
 }
 
 impl Flyout {

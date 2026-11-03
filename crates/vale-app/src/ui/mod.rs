@@ -25,6 +25,7 @@ use crate::globe::import::{ImportResult, ProbeJob, Source, file_name};
 use crate::globe::line::{self, LineEdit};
 use crate::globe::math::lonlat_to_dir;
 use crate::globe::snap::{LayerTargets, Targets};
+use crate::globe::split::SplitStroke;
 use crate::globe::{Globe, Look, START_ELEVATION, StackItem, Tool, brush};
 use crate::globe::{LineStroke, polygon, reshape};
 use crate::image_layer::{ImageImport, ImageTiles, ImportStep};
@@ -769,15 +770,22 @@ impl AppState {
         globe.fit_layer = fit_layer;
         globe.fillable = polygon.is_some();
         globe.pointable = point.is_some();
-        // A tool that edits a vector layer stays such a tool in a layer of
-        // another kind.
-        if matches!(globe.tool, Tool::Line | Tool::Polygon | Tool::Point) {
-            if globe.lineable {
-                globe.tool = Tool::Line;
-            } else if globe.fillable {
-                globe.tool = Tool::Polygon;
-            } else if globe.pointable {
-                globe.tool = Tool::Point;
+        // A tool of the Vector cell stays the tool in a layer of another
+        // kind that has it. Else the tool that draws in that layer is the
+        // tool.
+        let kind = [
+            (globe.lineable, GeometryKind::Line),
+            (globe.fillable, GeometryKind::Polygon),
+            (globe.pointable, GeometryKind::Point),
+        ]
+        .into_iter()
+        .find_map(|(able, kind)| able.then_some(kind));
+        if let Some(kind) = kind
+            && pad::VECTOR_TOOLS.iter().any(|t| t.tool == globe.tool)
+        {
+            let tools = pad::vector_tools(kind);
+            if !tools.iter().any(|t| t.tool == globe.tool) {
+                globe.tool = tools[0].tool;
             }
         }
         if !height && brush::needs_height(globe.brush.mode) {
@@ -2584,6 +2592,10 @@ impl AppState {
         let Some(layer) = self.doc.project.layer(id) else {
             return;
         };
+        if stroke.split {
+            self.split_features(id, &stroke);
+            return;
+        }
         let settings = self.globe.line;
         let smoothing = settings.smoothing;
         if stroke.mode != PolygonMode::New {
@@ -2638,6 +2650,49 @@ impl AppState {
             self.pipeline.forget(id);
             self.touch();
         }
+    }
+
+    /// Splits each feature of a layer that a stroke crosses. Each part is a
+    /// new feature with the attributes of its feature, in its place in the
+    /// draw order. The selection does not limit the split, and the parts
+    /// become the selection.
+    fn split_features(&mut self, id: LayerId, stroke: &LineStroke) {
+        let Some(split) = SplitStroke::new(&stroke.runs, stroke.scale, self.globe.line.smoothing)
+        else {
+            return;
+        };
+        let Some(layer) = self.doc.project.layer(id) else {
+            return;
+        };
+        let parts: Vec<(vale_store::Uuid, Vec<Feature>)> = (layer.features.iter())
+            .filter(|f| split.near(&f.geometry))
+            .filter_map(|f| {
+                let parts = split.split(&f.geometry)?;
+                let new = parts
+                    .into_iter()
+                    .map(|g| Feature::new(g, f.attributes.clone()));
+                Some((f.uuid(), new.collect()))
+            })
+            .collect();
+        if parts.is_empty() {
+            return;
+        }
+        let project = &mut self.doc.project;
+        let mut selection = Vec::new();
+        for (uuid, features) in parts {
+            let new = features.iter().map(|f| crate::globe::select::FeatureRef {
+                layer: id,
+                uuid: f.uuid(),
+            });
+            let new: Vec<_> = new.collect();
+            if project.replace_feature(id, uuid, features) {
+                selection.extend(new);
+            }
+        }
+        self.feature_selection = selection;
+        self.line_edits += 1;
+        self.pipeline.forget(id);
+        self.touch();
     }
 
     /// Joins the area of a stroke of the polygon tool to a polygon, or cuts

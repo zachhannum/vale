@@ -20,12 +20,11 @@ use vale_app::ui::pad::geometry::{BrushCard, TOOLS, WidthClass};
 use vale_app::ui::pad::number::{LABEL_COLUMN, TRACK_INSET};
 use vale_app::ui::pad::raster;
 use vale_app::ui::pad::{
-    ADD_LAYER, CLEAR_PATH, DRAW, EXPORT_GEOTIFF, GRATICULE, IMPORT_HEIGHTMAP, LAYER_NAME, LINE,
-    LayerRef, MEASURE, ModeGroup, NEW_GEOJSON, NEW_HEIGHTMAP, NEW_IMAGE, NEW_RASTER, OPACITY,
-    POLYGON, Page, Panel, RECENTER, RESET, SCULPT, SMOOTHING, SNAP, SNAP_DISTANCE, SNAP_EDGES,
-    SNAP_VERTICES, SNAPPING, TERRAIN, TERRAIN_BALANCE, TERRAIN_FIT, TERRAIN_FIT_SWITCH,
-    VIEW_OPTIONS, WORLD_PROPERTIES, WORLDS, WORLDS_ROW, brush_size_text, readout_line,
-    readout_text, theme,
+    ADD_LAYER, CLEAR_PATH, EXPORT_GEOTIFF, GRATICULE, IMPORT_HEIGHTMAP, LAYER_NAME, LINE, LayerRef,
+    MEASURE, ModeGroup, NEW_GEOJSON, NEW_HEIGHTMAP, NEW_IMAGE, NEW_RASTER, OPACITY, POLYGON, Page,
+    Panel, RECENTER, RESET, SCULPT, SMOOTHING, SNAP, SNAP_DISTANCE, SNAP_EDGES, SNAP_VERTICES,
+    SNAPPING, TERRAIN, TERRAIN_BALANCE, TERRAIN_FIT, TERRAIN_FIT_SWITCH, VECTOR, VIEW_OPTIONS,
+    WORLD_PROPERTIES, WORLDS, WORLDS_ROW, brush_size_text, readout_line, readout_text, theme,
 };
 use vale_app::ui::raster_form::{self, PRESETS, RasterForm, face_size_name};
 use vale_app::ui::select;
@@ -501,7 +500,7 @@ fn the_layers_panel_adds_selects_and_hides_raster_layers() {
         let mut h = empty_pad(size);
         h.state_mut().form_face_size = Some(64);
         // With no raster layer, the brush cells are off and the tool is Move.
-        for name in [SCULPT, TERRAIN, DRAW] {
+        for name in [SCULPT, TERRAIN, VECTOR] {
             assert!(control(&h, name).is_none(), "{what}: {name}");
         }
         assert!(control(&h, "Pan").is_some(), "{what}");
@@ -1966,16 +1965,16 @@ fn the_tool_strip_has_six_cells_on_each_screen() {
                 );
             }
         };
-        // With a raster layer, the Draw cell is off.
+        // With a raster layer, the Vector cell is off.
         shows(&h, &[SCULPT, TERRAIN, select::TOOL, "Pan", MEASURE]);
-        assert!(disabled(&h, DRAW), "{what}");
+        assert!(disabled(&h, VECTOR), "{what}");
         check_controls(&h, &what);
         check_safe(&h, size, safe, &what);
         // With a vector layer, the brush cells are off.
         let rivers = vector(&h, "Rivers");
         h.state_mut().select(Some(LayerRef::Vector(rivers)));
         h.run_steps(2);
-        shows(&h, &[LINE, select::TOOL, "Pan", MEASURE]);
+        shows(&h, &[VECTOR, select::TOOL, "Pan", MEASURE]);
         assert!(disabled(&h, SCULPT) && disabled(&h, TERRAIN), "{what}");
         check_controls(&h, &format!("{what} with a line layer"));
         check_safe(&h, size, safe, &what);
@@ -2282,14 +2281,15 @@ fn the_brush_panel_of_the_noise_mode_has_its_settings() {
 }
 
 #[test]
-fn the_draw_cell_is_off_with_no_vector_layer_and_follows_the_kind() {
+fn the_vector_cell_is_off_with_no_vector_layer_and_follows_the_kind() {
     use vale_store::GeometryKind;
     let mut h = pad(BOARDS[0]);
     let draw = draw_cell(&h);
     h.state_mut().select(None);
     h.run_steps(2);
-    assert!(disabled(&h, DRAW));
-    assert!(control(&h, DRAW).is_none());
+    assert!(disabled(&h, VECTOR));
+    assert!(control(&h, VECTOR).is_none());
+    assert_eq!(h.state().pad.vector_face, None);
     for (kind, name, tool) in [
         (GeometryKind::Line, LINE, Tool::Line),
         (GeometryKind::Polygon, POLYGON, Tool::Polygon),
@@ -2298,15 +2298,15 @@ fn the_draw_cell_is_off_with_no_vector_layer_and_follows_the_kind() {
         let id = h.state_mut().doc.add_layer(kind);
         h.state_mut().select(Some(LayerRef::Vector(id)));
         h.run_steps(2);
-        assert_eq!(control(&h, name), Some(draw), "{name}");
-        assert!(h.query_by_label(DRAW).is_none(), "{name}");
-        tap(&mut h, name);
+        assert_eq!(control(&h, VECTOR), Some(draw), "{name}");
+        assert_eq!(h.state().pad.vector_face, Some(name));
+        quick_tap(&mut h, VECTOR);
         assert_eq!(h.state().globe.tool, tool, "{name}");
-        assert_eq!(toggled(&h, name), Some(true), "{name}");
+        assert_eq!(toggled(&h, VECTOR), Some(true), "{name}");
     }
     h.state_mut().select(None);
     h.run_steps(2);
-    assert!(disabled(&h, DRAW));
+    assert!(disabled(&h, VECTOR));
 }
 
 #[test]
@@ -5765,13 +5765,14 @@ fn line_stroke(h: &mut Pad, from: Pos2, to: Pos2) {
 }
 
 #[test]
-fn the_draw_cell_is_the_line_cell_for_a_line_layer() {
+fn the_vector_cell_is_the_line_cell_for_a_line_layer() {
     let mut h = pad(BOARDS[0]);
     let draw = draw_cell(&h);
     let rivers = vector(&h, "Rivers");
     h.state_mut().select(Some(LayerRef::Vector(rivers)));
     h.run_steps(2);
-    assert_eq!(control(&h, LINE), Some(draw));
+    assert_eq!(control(&h, VECTOR), Some(draw));
+    assert_eq!(h.state().pad.vector_face, Some(LINE));
     for name in [SCULPT, TERRAIN, "Size", "Flow"] {
         assert!(control(&h, name).is_none(), "{name}");
     }
@@ -5779,7 +5780,7 @@ fn the_draw_cell_is_the_line_cell_for_a_line_layer() {
     // is the tool.
     assert!(control(&h, SMOOTHING).is_none());
     assert!(!h.state().globe.lining());
-    tap(&mut h, LINE);
+    quick_tap(&mut h, VECTOR);
     assert_eq!(h.state().globe.tool, Tool::Line);
     assert!(h.state().globe.lining());
     assert!(control(&h, SMOOTHING).is_some());
@@ -5792,7 +5793,7 @@ fn the_draw_cell_is_the_line_cell_for_a_line_layer() {
     let places = vector(&h, "Places");
     h.state_mut().select(Some(LayerRef::Vector(places)));
     h.run_steps(2);
-    assert!(control(&h, LINE).is_none());
+    assert_eq!(h.state().pad.vector_face, Some(vale_app::ui::pad::POINT));
     assert!(!h.state().globe.lining());
 }
 
@@ -5803,7 +5804,7 @@ fn a_line_stroke_is_one_feature_that_undo_removes_and_a_stroke_from_its_end_exte
     let rivers = vector(&h, "Rivers");
     h.state_mut().select(Some(LayerRef::Vector(rivers)));
     h.run_steps(2);
-    tap(&mut h, LINE);
+    quick_tap(&mut h, VECTOR);
     let before = line_features(&h, rivers);
     let saved = saves(&h);
 
@@ -5863,7 +5864,7 @@ fn a_fitted_line_is_one_undo_step() {
     let rivers = vector(&h, "Rivers");
     h.state_mut().select(Some(LayerRef::Vector(rivers)));
     h.run_steps(2);
-    tap(&mut h, LINE);
+    quick_tap(&mut h, VECTOR);
     assert!(h.state().globe.fit_layer.is_some());
     tap(&mut h, TERRAIN_FIT);
     assert!(h.state().globe.line.fit);
@@ -5894,7 +5895,7 @@ fn the_terrain_fit_controls_are_touch_size_in_each_layout() {
         let lines = h.state_mut().doc.add_layer(vale_store::GeometryKind::Line);
         h.state_mut().select(Some(LayerRef::Vector(lines)));
         h.run_steps(2);
-        tap(&mut h, LINE);
+        quick_tap(&mut h, VECTOR);
         if matches!(h.state().pad.rects.unwrap().brush_card, BrushCard::Full(_)) {
             for name in [TERRAIN_FIT, SMOOTHING] {
                 let rect = control(&h, name).unwrap_or_else(|| panic!("{what}: no {name}"));
@@ -5947,7 +5948,7 @@ fn with_no_height_layer_the_terrain_fit_is_disabled() {
     let rivers = vector(&h, "Rivers");
     h.state_mut().select(Some(LayerRef::Vector(rivers)));
     h.run_steps(2);
-    tap(&mut h, LINE);
+    quick_tap(&mut h, VECTOR);
     assert!(h.state().globe.fit_layer.is_none());
     // A disabled control takes no touch.
     assert!(disabled(&h, TERRAIN_FIT) && control(&h, TERRAIN_FIT).is_none());
@@ -5973,12 +5974,12 @@ fn the_draw_cell_is_the_polygon_cell_for_a_polygon_layer() {
         .add_layer(vale_store::GeometryKind::Polygon);
     h.state_mut().select(Some(LayerRef::Vector(areas)));
     h.run_steps(2);
-    assert_eq!(control(&h, POLYGON), Some(draw));
-    assert!(control(&h, LINE).is_none());
+    assert_eq!(control(&h, VECTOR), Some(draw));
+    assert_eq!(h.state().pad.vector_face, Some(POLYGON));
     assert!(control(&h, SMOOTHING).is_none());
     assert!(control(&h, vale_app::ui::pad::POLYGON_MODE).is_none());
     assert!(!h.state().globe.filling());
-    tap(&mut h, POLYGON);
+    quick_tap(&mut h, VECTOR);
     assert_eq!(h.state().globe.tool, Tool::Polygon);
     assert!(h.state().globe.filling());
     assert!(control(&h, SMOOTHING).is_some());
@@ -6007,7 +6008,7 @@ fn a_polygon_stroke_is_one_feature_that_undo_removes() {
     h.state_mut().save_tick(false, now);
     h.state_mut()
         .save_tick(false, now + std::time::Duration::from_secs(5));
-    tap(&mut h, POLYGON);
+    quick_tap(&mut h, VECTOR);
     h.state_mut().globe.snap.on = false;
     let saved = saves(&h);
 
@@ -6352,7 +6353,7 @@ fn line_pad(size: (f32, f32)) -> (Pad, vale_store::LayerId) {
     let lines = h.state_mut().doc.add_layer(vale_store::GeometryKind::Line);
     h.state_mut().select(Some(LayerRef::Vector(lines)));
     h.run_steps(2);
-    tap(&mut h, LINE);
+    quick_tap(&mut h, VECTOR);
     assert!(h.state().globe.lining());
     (h, lines)
 }
@@ -6415,7 +6416,7 @@ fn the_snap_sheet_has_a_switch_for_the_stops_of_each_raster_layer() {
         let lines = h.state_mut().doc.add_layer(vale_store::GeometryKind::Line);
         h.state_mut().select(Some(LayerRef::Vector(lines)));
         h.run_steps(2);
-        tap(&mut h, LINE);
+        quick_tap(&mut h, VECTOR);
         assert!(h.state().globe.lining(), "{what}");
         tap(&mut h, "Brush settings");
         let rasters = panels::raster_layers(h.state());
@@ -6534,7 +6535,7 @@ fn new_point_layer(h: &mut Pad) -> vale_store::LayerId {
     h.state_mut().save_tick(false, now);
     h.state_mut()
         .save_tick(false, now + std::time::Duration::from_secs(5));
-    tap(h, vale_app::ui::pad::POINT);
+    quick_tap(h, VECTOR);
     h.state_mut().globe.snap.on = false;
     id
 }
@@ -6552,8 +6553,9 @@ fn a_pen_tap_places_a_point_and_opens_a_form_with_each_field_of_the_layer() {
     let places = vector(&h, "Places");
     h.state_mut().select(Some(LayerRef::Vector(places)));
     h.run_steps(2);
-    assert_eq!(control(&h, vale_app::ui::pad::POINT), Some(draw));
-    tap(&mut h, vale_app::ui::pad::POINT);
+    assert_eq!(control(&h, VECTOR), Some(draw));
+    assert_eq!(h.state().pad.vector_face, Some(vale_app::ui::pad::POINT));
+    quick_tap(&mut h, VECTOR);
     assert_eq!(h.state().globe.tool, Tool::Point);
     let before = line_features(&h, places);
     let center = h.state().globe.rect.center();
@@ -6759,7 +6761,7 @@ fn a_new_point_snaps_to_a_vertex() {
     let places = vector(&h, "Places");
     h.state_mut().select(Some(LayerRef::Vector(places)));
     h.run_steps(2);
-    tap(&mut h, vale_app::ui::pad::POINT);
+    quick_tap(&mut h, VECTOR);
     let target = match &line_features(&h, places)[0].geometry {
         vale_store::Geometry::Points(points) => points[0],
         _ => panic!("not a point"),
@@ -8308,14 +8310,7 @@ fn the_measure_cell_of_the_tool_strip_opens_the_tool_with_any_layer_on_each_scre
             assert!(h.state().globe.measuring(), "{what}");
             assert_eq!(toggled(&h, MEASURE), Some(true), "{what}");
             // No other cell of the tool strip is active.
-            for name in [
-                "Pan",
-                SCULPT,
-                TERRAIN,
-                LINE,
-                POLYGON,
-                vale_app::ui::pad::POINT,
-            ] {
+            for name in ["Pan", SCULPT, TERRAIN, VECTOR] {
                 assert_ne!(toggled(&h, name), Some(true), "{what}: {name}");
             }
             // A disabled cell is not in the list of the controls, so the
@@ -8654,7 +8649,7 @@ fn a_stroke_from_an_outline_reshapes_the_polygon_in_one_undo_step() {
     let dir = tempfile::tempdir().unwrap();
     let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
     select_layer(&mut h, picks.polygon.layer);
-    tap(&mut h, POLYGON);
+    quick_tap(&mut h, VECTOR);
     assert_eq!(h.state().globe.tool, Tool::Polygon);
     assert!(!h.state().globe.line.reshape);
     tap(&mut h, RESHAPE);
@@ -8701,7 +8696,7 @@ fn the_flyout_of_the_mode_cell_chooses_the_mode_of_the_polygon_tool_on_each_boar
         h.set_size(egui::vec2(size.0, size.1));
         h.run_steps(2);
         select_layer(&mut h, picks.polygon.layer);
-        tap(&mut h, POLYGON);
+        quick_tap(&mut h, VECTOR);
         assert_eq!(toggled(&h, POLYGON_MODE), Some(false), "{what}");
         let mode = |h: &Pad| h.state().globe.line.polygon_mode;
         let open = |h: &Pad| h.state().pad.flyouts.open == Some(Flyout::PolygonMode);
@@ -8765,7 +8760,7 @@ fn the_flyout_of_the_mode_cell_chooses_the_mode_of_the_polygon_tool_on_each_boar
 
 #[test]
 fn the_context_strip_shows_only_the_controls_of_the_tool() {
-    use vale_app::ui::pad::{POINT, POLYGON_MODE, RESHAPE};
+    use vale_app::ui::pad::{POLYGON_MODE, RESHAPE};
     let dir = tempfile::tempdir().unwrap();
     let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
     let all = [
@@ -8787,7 +8782,7 @@ fn the_context_strip_shows_only_the_controls_of_the_tool() {
     select_layer(&mut h, picks.polygon.layer);
     assert_eq!(h.state().globe.tool, Tool::Select);
     check(&h, &[], "the Select tool");
-    tap(&mut h, POLYGON);
+    quick_tap(&mut h, VECTOR);
     let polygon = [SMOOTHING, SNAP, RESHAPE, POLYGON_MODE, "Brush settings"];
     check(&h, &polygon, "the polygon tool");
     // The list of the modes stays open.
@@ -8800,7 +8795,7 @@ fn the_context_strip_shows_only_the_controls_of_the_tool() {
     let line = [SMOOTHING, SNAP, RESHAPE, TERRAIN_FIT, "Brush settings"];
     check(&h, &line, "the line tool");
     select_layer(&mut h, picks.point.layer);
-    tap(&mut h, POINT);
+    quick_tap(&mut h, VECTOR);
     assert!(h.state().globe.placing());
     check(&h, &[SNAP, "Brush settings"], "the point tool");
     tap(&mut h, "Pan");
@@ -8824,8 +8819,8 @@ fn the_selection_shows_in_each_tool() {
         })
     };
     assert!(highlight(&h), "the Select tool");
-    for name in [POLYGON, "Pan", MEASURE] {
-        tap(&mut h, name);
+    for name in [VECTOR, "Pan", MEASURE] {
+        quick_tap(&mut h, name);
         assert_eq!(h.state().feature_selection, vec![picks.polygon], "{name}");
         assert!(highlight(&h), "{name}");
     }
@@ -8843,14 +8838,14 @@ fn the_context_strip_has_deselect_in_each_tool_while_features_are_selected() {
         // With no selection, the Select tool has no context strip.
         assert!(control(&h, DESELECT).is_none(), "{what}");
         assert!(h.state().pad.rects.unwrap().brush.is_none(), "{what}");
-        for name in [select::TOOL, "Pan", POLYGON, MEASURE] {
-            tap(&mut h, name);
+        for name in [select::TOOL, "Pan", VECTOR, MEASURE] {
+            quick_tap(&mut h, name);
             h.state_mut().feature_selection = vec![picks.polygon];
             h.run_steps(2);
             assert!(control(&h, DESELECT).is_some(), "{what}: {name}");
             check_controls(&h, &format!("{what}: Deselect in {name}"));
         }
-        tap(&mut h, POLYGON);
+        quick_tap(&mut h, VECTOR);
         tap(&mut h, DESELECT);
         assert!(h.state().feature_selection.is_empty(), "{what}");
         assert!(control(&h, DESELECT).is_none(), "{what}");
@@ -8864,7 +8859,7 @@ fn a_hold_on_the_mode_cell_opens_the_flyout() {
     let dir = tempfile::tempdir().unwrap();
     let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
     select_layer(&mut h, picks.polygon.layer);
-    tap(&mut h, POLYGON);
+    quick_tap(&mut h, VECTOR);
     hold_cell(&mut h, POLYGON_MODE);
     // The end of the hold is not a tap, so the flyout stays open.
     assert_eq!(h.state().pad.flyouts.open, Some(Flyout::PolygonMode));
@@ -8886,7 +8881,7 @@ fn add_grows_only_the_polygon_that_the_stroke_reaches_first() {
     };
     assert!(h.state_mut().doc.project.add_feature(id, feature));
     select_layer(&mut h, id);
-    tap(&mut h, POLYGON);
+    quick_tap(&mut h, VECTOR);
     h.state_mut().globe.line.polygon_mode = PolygonMode::Add;
     h.state_mut().globe.snap.on = false;
     let before = geometry_of(&h, east);
@@ -8914,7 +8909,7 @@ fn add_and_subtract_change_polygons_in_one_undo_step_each() {
     let dir = tempfile::tempdir().unwrap();
     let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
     select_layer(&mut h, picks.polygon.layer);
-    tap(&mut h, POLYGON);
+    quick_tap(&mut h, VECTOR);
     h.state_mut().globe.line.polygon_mode = PolygonMode::Add;
     h.state_mut().globe.snap.on = false;
     step_and_save(&mut h, false);
@@ -8981,7 +8976,7 @@ fn with_reshape_a_stroke_from_a_line_reshapes_it_and_other_strokes_draw_lines() 
     let dir = tempfile::tempdir().unwrap();
     let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
     select_layer(&mut h, picks.line.layer);
-    tap(&mut h, LINE);
+    quick_tap(&mut h, VECTOR);
     tap(&mut h, RESHAPE);
     h.state_mut().globe.snap.on = false;
     pen_way(
@@ -9188,4 +9183,215 @@ fn manual_the_number_controls_of_the_brush_panel() {
     screenshot::save(&mut h, "numbers-card-drag");
     touch(&mut h, egui::TouchPhase::End, from + vec2(0.0, -40.0), None);
     h.run_steps(3);
+}
+
+#[test]
+fn the_vector_cell_lists_the_tools_of_the_kind_of_the_selected_layer() {
+    use vale_app::ui::pad::{POINT, SPLIT, vector_tools};
+    let names = |kind| {
+        vector_tools(kind)
+            .iter()
+            .map(|t| t.name)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(names(GeometryKind::Line), [LINE, SPLIT]);
+    assert_eq!(names(GeometryKind::Polygon), [POLYGON, SPLIT]);
+    assert_eq!(names(GeometryKind::Point), [POINT]);
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
+    for (layer, kind) in [
+        (picks.line.layer, GeometryKind::Line),
+        (picks.polygon.layer, GeometryKind::Polygon),
+    ] {
+        select_layer(&mut h, layer);
+        tap(&mut h, "Pan");
+        quick_tap(&mut h, VECTOR);
+        assert_eq!(h.state().pad.flyouts.open, None, "{kind:?}");
+        // A second tap opens the list, with a row for each tool.
+        quick_tap(&mut h, VECTOR);
+        assert_eq!(h.state().pad.flyouts.open, Some(Flyout::Vector));
+        screenshot::save(&mut h, &format!("pad-vector-{kind:?}"));
+        let list = h.state().pad.flyouts.rect.expect("a list");
+        for name in names(kind) {
+            let row = control(&h, name).unwrap_or_else(|| panic!("{name}"));
+            assert!(list.contains(row.center()), "{kind:?}: {name}");
+        }
+        tap(&mut h, SPLIT);
+        assert_eq!(h.state().globe.tool, Tool::Split, "{kind:?}");
+        assert_eq!(h.state().pad.flyouts.open, None);
+        assert_eq!(h.state().pad.vector_face, Some(SPLIT));
+        assert_eq!(toggled(&h, VECTOR), Some(true));
+        // A hold opens the list too, and the tool that draws is in it.
+        hold_cell(&mut h, VECTOR);
+        assert_eq!(h.state().pad.flyouts.open, Some(Flyout::Vector));
+        tap(&mut h, names(kind)[0]);
+        assert_eq!(h.state().pad.vector_face, Some(names(kind)[0]));
+    }
+    // A point layer has one tool and no list.
+    select_layer(&mut h, picks.point.layer);
+    quick_tap(&mut h, VECTOR);
+    quick_tap(&mut h, VECTOR);
+    assert_eq!(h.state().globe.tool, Tool::Point);
+    assert_eq!(h.state().pad.flyouts.open, None);
+}
+
+/// Chooses Split in the list of the Vector cell.
+fn choose_split(h: &mut Pad) {
+    use vale_app::ui::pad::SPLIT;
+    hold_cell(h, VECTOR);
+    tap(h, SPLIT);
+    assert_eq!(h.state().globe.tool, Tool::Split);
+}
+
+#[test]
+fn split_stays_the_tool_in_a_layer_that_has_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
+    select_layer(&mut h, picks.line.layer);
+    choose_split(&mut h);
+    select_layer(&mut h, picks.polygon.layer);
+    assert_eq!(h.state().globe.tool, Tool::Split);
+    // A point layer has no Split, so its tool that draws is the tool.
+    select_layer(&mut h, picks.point.layer);
+    assert_eq!(h.state().globe.tool, Tool::Point);
+    select_layer(&mut h, picks.line.layer);
+    assert_eq!(h.state().globe.tool, Tool::Line);
+}
+
+#[test]
+fn the_context_strip_of_split_has_smoothing_and_snap() {
+    use vale_app::ui::pad::{RESHAPE, SPLIT};
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
+    select_layer(&mut h, picks.polygon.layer);
+    choose_split(&mut h);
+    for name in [SMOOTHING, SNAP] {
+        assert!(control(&h, name).is_some(), "{name}");
+    }
+    for name in [RESHAPE, vale_app::ui::pad::POLYGON_MODE] {
+        assert!(control(&h, name).is_none(), "{name}");
+    }
+    check_controls(&h, SPLIT);
+}
+
+#[test]
+fn split_cuts_each_feature_that_the_stroke_crosses_in_one_undo_step() {
+    use vale_store::{Feature, Field, FieldType, Geometry, Value};
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
+    let id = picks.polygon.layer;
+    let state = h.state_mut();
+    let project = &mut state.doc.project;
+    assert!(project.add_field(id, Field::new("name", FieldType::Text)));
+    let named = |name: &str| [("name".to_string(), Value::Text(name.into()))];
+    assert!(project.set_attributes(id, picks.polygon.uuid, named("Vale")));
+    let east = vec![vec![
+        [12.0, -25.0],
+        [20.0, -25.0],
+        [20.0, -12.0],
+        [12.0, -12.0],
+    ]];
+    let other = Feature::new(Geometry::Polygons(vec![east]), named("Ost").into());
+    assert!(project.add_feature(id, other));
+    // A third polygon away from the stroke stays.
+    let away = vec![vec![
+        [-30.0, -25.0],
+        [-20.0, -25.0],
+        [-20.0, -12.0],
+        [-30.0, -12.0],
+    ]];
+    assert!(project.add_feature(
+        id,
+        Feature::new(Geometry::Polygons(vec![away]), named("Far").into())
+    ));
+    state.save_waiting().unwrap();
+    select_layer(&mut h, id);
+    choose_split(&mut h);
+    h.state_mut().globe.snap.on = false;
+    // The selection does not limit the split.
+    h.state_mut().feature_selection = vec![picks.polygon];
+    step_and_save(&mut h, false);
+    let before = line_features(&h, id);
+    assert_eq!(before.len(), 3);
+    let saved = saves(&h);
+    // From south to north across the two polygons in the east.
+    pen_way(&mut h, &[[0.0, -28.0], [16.0, -18.0], [16.0, -9.0]]);
+    for _ in 0..3 {
+        step_and_save(&mut h, false);
+    }
+    assert_eq!(saves(&h), saved + 1);
+    let after = line_features(&h, id);
+    assert_eq!(after.len(), 5);
+    let olds: Vec<_> = before.iter().map(|f| f.uuid()).collect();
+    let new: Vec<_> = after.iter().filter(|f| !olds.contains(&f.uuid())).collect();
+    assert_eq!(new.len(), 4);
+    let names: Vec<_> = new.iter().map(|f| f.attributes["name"].clone()).collect();
+    for name in ["Vale", "Ost"] {
+        let n = names
+            .iter()
+            .filter(|v| **v == Value::Text(name.into()))
+            .count();
+        assert_eq!(n, 2, "{name}");
+    }
+    assert!(
+        after
+            .iter()
+            .any(|f| f.attributes["name"] == Value::Text("Far".into()))
+    );
+    // The parts become the selection.
+    let selected: Vec<_> = h.state().feature_selection.iter().map(|f| f.uuid).collect();
+    let parts: Vec<_> = new.iter().map(|f| f.uuid()).collect();
+    assert_eq!(selected, parts);
+    // The two parts of the square share the cut.
+    let vale: Vec<_> = (new.iter())
+        .filter(|f| f.attributes["name"] == Value::Text("Vale".into()))
+        .collect();
+    let probes = [[-9.0, -24.0], [9.0, -13.0], [5.0, -20.0], [9.0, -24.0]];
+    for p in probes {
+        let n = vale
+            .iter()
+            .filter(|f| inside_polygon(&f.geometry, p[0], p[1]))
+            .count();
+        assert_eq!(n, 1, "{p:?}");
+    }
+    tap(&mut h, "Undo");
+    assert_eq!(line_features(&h, id), before);
+    tap(&mut h, "Redo");
+    assert_eq!(line_features(&h, id), after);
+}
+
+#[test]
+fn split_cuts_a_line_into_two_lines_at_the_crossing() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
+    let id = picks.line.layer;
+    select_layer(&mut h, id);
+    choose_split(&mut h);
+    h.state_mut().globe.snap.on = false;
+    step_and_save(&mut h, false);
+    // A stroke that does not reach the line changes nothing, and the
+    // selection stays.
+    h.state_mut().feature_selection = vec![picks.line];
+    pen_way(&mut h, &[[0.0, 2.0], [0.0, 6.0]]);
+    step_and_save(&mut h, false);
+    assert_eq!(line_features(&h, id).len(), 1);
+    assert_eq!(h.state().feature_selection, vec![picks.line]);
+    pen_way(&mut h, &[[0.0, 6.0], [0.0, 14.0]]);
+    step_and_save(&mut h, false);
+    let lines = line_features(&h, id);
+    assert_eq!(lines.len(), 2);
+    assert!(lines.iter().all(|f| f.uuid() != picks.line.uuid));
+    assert_eq!(h.state().feature_selection.len(), 2);
+    let vale_store::Geometry::Lines(a) = &lines[0].geometry else {
+        panic!("not a line");
+    };
+    let end = a[a.len() - 1].last().unwrap();
+    // The line is an arc of a great circle, so it bends north of the
+    // parallel.
+    assert!(
+        end[0].abs() < 0.05 && (end[1] - 10.0).abs() < 0.2,
+        "{end:?}"
+    );
+    tap(&mut h, "Undo");
+    assert_eq!(line_features(&h, id).len(), 1);
 }

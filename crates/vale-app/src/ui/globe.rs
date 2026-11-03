@@ -43,7 +43,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
 
 /// Starts a stroke, or starts to pick the flatten level.
 fn press(globe: &mut Globe) {
-    if globe.drawing() {
+    if globe.stroking() {
         globe.line_down();
     } else if globe.placing() {
         globe.point_down();
@@ -125,7 +125,7 @@ fn brush_input(
     let sample = |globe: &mut Globe, pos: egui::Pos2, flow: f64| {
         let dir = globe.unproject(pos);
         globe.input.pos = Some(pos);
-        if globe.drawing() {
+        if globe.stroking() {
             globe.line_sample(pos, dir);
         } else if globe.placing() {
             globe.point_sample(dir);
@@ -1079,7 +1079,19 @@ pub(super) fn paint_canvas(
                 painter.line(run, outline);
             }
         }
-        painter.line(line, stroke);
+        // A cut is not layer data, so it draws as a sketch.
+        if globe.splitting() {
+            painter.line(
+                line.clone(),
+                egui::Stroke::new(3.5, egui::Color32::from_black_alpha(90)),
+            );
+            painter.line(
+                line,
+                egui::Stroke::new(1.5, egui::Color32::from_white_alpha(220)),
+            );
+        } else {
+            painter.line(line, stroke);
+        }
     }
     super::select::paint(&painter, state);
     super::region::paint(&painter, state);

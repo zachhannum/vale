@@ -53,15 +53,68 @@ use icons::Icon;
 use number::{Number, Scale};
 use widgets::{BODY_PAD, Controls, PANEL_ROW};
 
-/// The cell of the tool strip that draws on the selected vector layer. It
-/// has this name while no visible vector layer is selected.
-pub const DRAW: &str = "Draw";
-/// The draw cell while a line layer is selected.
+/// The cell of the tool strip with the tools of the selected vector layer.
+pub const VECTOR: &str = "Vector";
+/// The tool that draws in a line layer.
 pub const LINE: &str = "Line";
-/// The draw cell while a polygon layer is selected.
+/// The tool that draws in a polygon layer.
 pub const POLYGON: &str = "Polygon";
-/// The draw cell while a point layer is selected.
+/// The tool that places points in a point layer.
 pub const POINT: &str = "Point";
+/// The tool that splits lines and polygons along a stroke.
+pub const SPLIT: &str = "Split";
+
+/// A tool of the Vector cell.
+pub struct VectorTool {
+    pub tool: Tool,
+    pub name: &'static str,
+    pub icon: Icon,
+    /// The kinds of the layers that the tool works in.
+    pub kinds: &'static [GeometryKind],
+    /// The tool draws new features, and the others edit features.
+    pub draws: bool,
+}
+
+/// The tools of the Vector cell.
+pub const VECTOR_TOOLS: [VectorTool; 4] = [
+    VectorTool {
+        tool: Tool::Line,
+        name: LINE,
+        icon: Icon::Line,
+        kinds: &[GeometryKind::Line],
+        draws: true,
+    },
+    VectorTool {
+        tool: Tool::Polygon,
+        name: POLYGON,
+        icon: Icon::Polygon,
+        kinds: &[GeometryKind::Polygon],
+        draws: true,
+    },
+    VectorTool {
+        tool: Tool::Point,
+        name: POINT,
+        icon: Icon::Point,
+        kinds: &[GeometryKind::Point],
+        draws: true,
+    },
+    VectorTool {
+        tool: Tool::Split,
+        name: SPLIT,
+        icon: Icon::Split,
+        kinds: &[GeometryKind::Line, GeometryKind::Polygon],
+        draws: false,
+    },
+];
+
+/// The tools of the Vector cell for a kind of layer: the tool that draws,
+/// and then the tools that edit.
+pub fn vector_tools(kind: GeometryKind) -> Vec<&'static VectorTool> {
+    let of = |draws: bool| {
+        (VECTOR_TOOLS.iter()).filter(move |t| t.draws == draws && t.kinds.contains(&kind))
+    };
+    of(true).chain(of(false)).collect()
+}
 /// The slider of the smoothing of the line tool and the polygon tool.
 pub const SMOOTHING: &str = "Smoothing";
 /// The button of the brush card that turns all snapping on and off.
@@ -348,6 +401,10 @@ pub struct PadState {
     /// The last mode that was chosen in each group, by `ModeGroup::ALL`.
     /// `None`: the first mode of the group.
     group_modes: [Option<Mode>; 2],
+    /// The last tool that was chosen in the Vector cell.
+    vector_tool: Option<Tool>,
+    /// The name of the tool that the Vector cell shows, while it is on.
+    pub vector_face: Option<&'static str>,
     /// The distance that the sheet is pulled down from its open place.
     pub sheet_offset: f32,
     /// The controls of the last frame.
@@ -515,6 +572,10 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     if !state.globe.paintable && matches!(flyouts.open, Some(Flyout::Brush(_))) {
         flyouts.open = None;
     }
+    let one_tool = vector_kind(&state.globe).is_none_or(|k| vector_tools(k).len() < 2);
+    if one_tool && flyouts.open == Some(Flyout::Vector) {
+        flyouts.open = None;
+    }
 
     top_row(&ctx, state, &mut controls, &rects);
     tool_strip(&ctx, state, &mut controls, &rects);
@@ -561,6 +622,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     match state.pad.flyouts.open {
         Some(Flyout::Brush(group)) => brush_flyout(&ctx, state, &mut controls, &rects, group),
         Some(Flyout::PolygonMode) => polygon_flyout(&ctx, state, &mut controls, &rects),
+        Some(Flyout::Vector) => vector_flyout(&ctx, state, &mut controls, &rects),
         None => {}
     }
     state.pad.add_rect = None;
@@ -811,26 +873,7 @@ fn tool_strip(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
                 for group in ModeGroup::ALL {
                     brush_cell(ui, state, controls, group);
                 }
-                let globe = &mut state.globe;
-                let draw = if globe.lineable {
-                    Some((LINE, Icon::Line, Tool::Line))
-                } else if globe.fillable {
-                    Some((POLYGON, Icon::Polygon, Tool::Polygon))
-                } else if globe.pointable {
-                    Some((POINT, Icon::Point, Tool::Point))
-                } else {
-                    None
-                };
-                let (name, icon) = draw.map_or((DRAW, Icon::Line), |(name, icon, _)| (name, icon));
-                let active = globe.editing();
-                let enabled = draw.is_some();
-                let cell = widgets::tool_cell(ui, controls, name, name, icon, active, enabled);
-                if let Some((_, _, tool)) = draw
-                    && cell.clicked()
-                {
-                    globe.tool = tool;
-                    state.pad.flyouts.open = None;
-                }
+                vector_cell(ui, state, controls);
                 let globe = &mut state.globe;
                 let (name, active) = (select::TOOL, globe.selecting());
                 if widgets::tool_cell(ui, controls, name, name, Icon::Select, active, true)
@@ -896,6 +939,59 @@ fn brush_cell(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, 
         } else {
             globe.tool = Tool::Brush;
             globe.brush.mode = mode;
+            flyouts.open = None;
+        }
+    }
+}
+
+/// The kind of the selected vector layer, if the globe can edit it.
+fn vector_kind(globe: &crate::globe::Globe) -> Option<GeometryKind> {
+    if globe.lineable {
+        Some(GeometryKind::Line)
+    } else if globe.fillable {
+        Some(GeometryKind::Polygon)
+    } else if globe.pointable {
+        Some(GeometryKind::Point)
+    } else {
+        None
+    }
+}
+
+/// The Vector cell. It shows the tool while the tool is in its list, and
+/// else the last tool that was chosen in it, or the tool that draws. A tap
+/// chooses that tool, and a tap while the cell is on or a hold opens the
+/// flyout of the tools. With one tool, the cell has no flyout.
+fn vector_cell(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
+    let globe = &mut state.globe;
+    let flyouts = &mut state.pad.flyouts;
+    state.pad.vector_face = None;
+    let Some(kind) = vector_kind(globe) else {
+        widgets::tool_cell(ui, controls, VECTOR, VECTOR, Icon::Line, false, false);
+        return;
+    };
+    let tools = vector_tools(kind);
+    let current = tools.iter().find(|t| t.tool == globe.tool);
+    if let Some(t) = current {
+        state.pad.vector_tool = Some(t.tool);
+    }
+    let last = tools.iter().find(|t| Some(t.tool) == state.pad.vector_tool);
+    let face = current.or(last).unwrap_or(&tools[0]);
+    state.pad.vector_face = Some(face.name);
+    let active = current.is_some();
+    let tapped = if tools.len() < 2 {
+        let cell = widgets::tool_cell(ui, controls, VECTOR, face.name, face.icon, active, true);
+        cell.clicked()
+    } else {
+        let key = Flyout::Vector;
+        flyout::cell(
+            ui, controls, flyouts, key, VECTOR, face.name, face.icon, active, true,
+        )
+    };
+    if tapped {
+        if active && tools.len() >= 2 {
+            flyouts.toggle(Flyout::Vector);
+        } else {
+            globe.tool = face.tool;
             flyouts.open = None;
         }
     }
@@ -977,12 +1073,14 @@ fn brush_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
             // Each control shows while the tool can use it.
             let paint = state.globe.brushing();
             let line = state.globe.drawing();
-            let vector = line || state.globe.placing();
+            let stroke = state.globe.stroking();
+            let vector = stroke || state.globe.placing();
             if let BrushCard::Full(height) = rects.brush_card {
                 // The tools of a vector layer have the snap button. The line
-                // tool and the polygon tool also have the smoothing and the
-                // reshape button. The line tool also has the terrain fit
-                // button, and the polygon tool has its modes.
+                // tool, the polygon tool, and Split also have the smoothing.
+                // The line tool and the polygon tool also have the reshape
+                // button. The line tool also has the terrain fit button, and
+                // the polygon tool has its modes.
                 let fit = state.globe.lining();
                 let fill = state.globe.filling();
                 if vector {
@@ -1009,8 +1107,8 @@ fn brush_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
                             flyouts.toggle(key);
                         }
                     }
-                    if line {
-                        let cells = if fit || fill { 3.0 } else { 2.0 };
+                    if stroke {
+                        let cells = [true, line, fit || fill].iter().filter(|&&c| c).count() as f32;
                         let height = 2.0 * height - cells * CELL.1;
                         let smoothing = &mut state.globe.line.smoothing;
                         let number = percent(SMOOTHING, *smoothing).default(DEFAULT_SMOOTHING);
@@ -1232,6 +1330,7 @@ pub(super) fn show_panel(
         (Panel::Brush, _) if state.globe.lining() => (panel.key(), LINE, None),
         (Panel::Brush, _) if state.globe.filling() => (panel.key(), POLYGON, None),
         (Panel::Brush, _) if state.globe.placing() => (panel.key(), POINT, None),
+        (Panel::Brush, _) if state.globe.splitting() => (panel.key(), SPLIT, None),
         (Panel::Brush, _) => (panel.key(), "Brush", None),
         (Panel::Layers, Some(LayerRef::Raster(_))) if page == Some(Page::Ramps) => {
             ("pad-ramps", raster::COLOR_RAMPS, Some(raster::COLOR_STOPS))
@@ -1506,8 +1605,9 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
     ui.spacing_mut().item_spacing.y = 0.0;
     let measuring = state.measuring();
     let line = state.globe.drawing();
-    if line || measuring || state.globe.placing() {
-        if line {
+    let stroke = state.globe.stroking();
+    if stroke || measuring || state.globe.placing() {
+        if stroke {
             let smoothing = &mut state.globe.line.smoothing;
             let number = percent("Line smoothing", *smoothing)
                 .label(SMOOTHING)
@@ -2909,6 +3009,33 @@ fn brush_flyout(
     if let Some(i) = flyout::show(ctx, backdrop, controls, flyouts, rects, &choices, current) {
         globe.tool = Tool::Brush;
         globe.brush.mode = group.modes()[i].2;
+    }
+}
+
+/// The flyout of the tools of the Vector cell.
+fn vector_flyout(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    controls: &mut Controls,
+    rects: &Rects,
+) {
+    let Some(kind) = vector_kind(&state.globe) else {
+        return;
+    };
+    let tools = vector_tools(kind);
+    let choices: Vec<Choice> = (tools.iter())
+        .map(|t| Choice {
+            name: t.name,
+            icon: t.icon,
+            enabled: true,
+        })
+        .collect();
+    let globe = &mut state.globe;
+    let current = tools.iter().position(|t| t.tool == globe.tool);
+    let backdrop = globe.backdrop();
+    let flyouts = &mut state.pad.flyouts;
+    if let Some(i) = flyout::show(ctx, backdrop, controls, flyouts, rects, &choices, current) {
+        globe.tool = tools[i].tool;
     }
 }
 

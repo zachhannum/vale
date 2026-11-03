@@ -46,7 +46,7 @@ pub struct StrokeArea {
 }
 
 /// A box in 3D around a part of the sphere.
-type Bounds = ([f64; 3], [f64; 3]);
+pub(super) type Bounds = ([f64; 3], [f64; 3]);
 
 impl StrokeArea {
     /// The area of a stroke. The runs come from a `Tracer`. A stroke that is
@@ -188,10 +188,10 @@ impl StrokeArea {
 }
 
 /// The stored polygons of a feature, as the globe draws them.
-struct Feature(Vec<Vec<Vec<V3>>>);
+pub(super) struct Feature(Vec<Vec<Vec<V3>>>);
 
 impl Feature {
-    fn new(polygons: &[Vec<Vec<LonLat>>]) -> Self {
+    pub(super) fn new(polygons: &[Vec<Vec<LonLat>>]) -> Self {
         Feature(
             polygons
                 .iter()
@@ -205,13 +205,13 @@ impl Feature {
         )
     }
 
-    fn holds(&self, p: V3) -> bool {
+    pub(super) fn holds(&self, p: V3) -> bool {
         self.0.iter().any(|poly| vector::contains(poly, p))
     }
 }
 
 /// A box around directions, with a margin in radians.
-fn boxed(dirs: impl Iterator<Item = V3>, margin: f64) -> Bounds {
+pub(super) fn boxed(dirs: impl Iterator<Item = V3>, margin: f64) -> Bounds {
     let mut lo = [f64::INFINITY; 3];
     let mut hi = [f64::NEG_INFINITY; 3];
     for d in dirs {
@@ -223,7 +223,7 @@ fn boxed(dirs: impl Iterator<Item = V3>, margin: f64) -> Bounds {
     (lo, hi)
 }
 
-fn dir(p: LonLat) -> V3 {
+pub(super) fn dir(p: LonLat) -> V3 {
     lonlat_to_dir(p[0], p[1])
 }
 
