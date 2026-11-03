@@ -337,11 +337,6 @@ pub fn pad(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
     if !state.globe.selecting() || state.feature_selection.is_empty() {
         return;
     }
-    // The table lifts above the keyboard to the place of the card while
-    // it edits a cell.
-    if state.table.as_ref().is_some_and(|t| t.edit.is_some()) {
-        return;
-    }
     let title = heading(state);
     let mut form = state.selection_form.take();
     let screen = rects.screen;
@@ -351,10 +346,13 @@ pub fn pad(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
     let least = ROW + PANEL_ROW + BOTTOM;
     let height = (ROW + (fields + 1.0) * PANEL_ROW + BOTTOM).min(room.max(least));
     let width = WIDTH.min(screen.width() - 2.0 * MARGIN);
-    let rect = Rect::from_min_size(
-        pos2(screen.center().x - width / 2.0, top),
-        vec2(width, height),
-    );
+    // The card stays clear of a wide right panel.
+    let mut left = screen.center().x - width / 2.0;
+    if state.pad.right.is_some() && rects.sheet.is_none() {
+        let beside = rects.right_panel.x - GAP - width;
+        left = left.min(beside).max(rects.tools.right() + GAP);
+    }
+    let rect = Rect::from_min_size(pos2(left, top), vec2(width, height));
     let (mut close, mut delete, mut commit, mut show) = (false, false, false, false);
     let radius = theme::CARD_RADIUS.into();
     let backdrop = state.globe.backdrop();

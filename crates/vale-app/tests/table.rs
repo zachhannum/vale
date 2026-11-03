@@ -11,8 +11,9 @@ use vale_app::globe::select::FeatureRef;
 use vale_app::globe::{Tool, WorldView};
 use vale_app::session::Session;
 use vale_app::ui::pad::LayerRef;
-use vale_app::ui::pad::table::CLOSE;
-use vale_app::ui::table::{ALL, FILTER, OPEN_TABLE, SELECTED, SHOW_IN_TABLE, cell_name, sort_name};
+use vale_app::ui::pad::Panel;
+use vale_app::ui::pad::table::FEATURES;
+use vale_app::ui::table::{ALL, FILTER, SELECTED, SHOW_IN_TABLE, cell_name, sort_name};
 use vale_app::ui::{AppState, Layout, draw};
 use vale_store::{Feature, Field, FieldType, Geometry, GeometryKind, LayerId, Uuid, Value};
 
@@ -146,12 +147,25 @@ fn rebuilds(h: &Pad) -> u64 {
     h.state().table.as_ref().unwrap().rows.rebuilds()
 }
 
+/// The Layers panel in the iPad layout, and the dock on the desktop.
 fn table_rect(h: &Pad) -> Rect {
+    if h.state().layout == Layout::Pad {
+        let panels = &h.state().pad.panels;
+        let layers = panels.iter().find(|(p, _)| *p == Panel::Layers);
+        return layers.map(|(_, r)| *r).expect("no Layers panel");
+    }
     h.state()
         .table
         .as_ref()
         .and_then(|t| t.rect)
         .expect("no table")
+}
+
+fn selection_card(h: &Pad) -> Rect {
+    let card = h
+        .ctx
+        .memory(|m| m.area_rect(egui::Id::new("selection-card")));
+    card.expect("no selection card")
 }
 
 /// The center of the globe on the canvas, in the Select tool.
@@ -328,10 +342,13 @@ fn the_page_of_a_vector_layer_and_the_selection_card_open_the_table() {
     let name = h.state().doc.project.layer(id).unwrap().name.clone();
     tap(&mut h, "Layers");
     tap(&mut h, &format!("Open {name}"));
-    tap(&mut h, OPEN_TABLE);
+    tap(&mut h, FEATURES);
     assert_eq!(h.state().table.as_ref().map(|t| t.layer), Some(id));
-    tap(&mut h, CLOSE);
+    assert!(control(&h, &cell_name("rank", uuids[1])).is_some());
+    // The table is a page of the layer, and Back closes it.
+    tap(&mut h, &format!("Back to {name}"));
     assert!(h.state().table.is_none());
+    assert!(control(&h, FEATURES).is_some());
 
     let center = select_tool(&mut h);
     tap_at(&mut h, center);
@@ -342,25 +359,34 @@ fn the_page_of_a_vector_layer_and_the_selection_card_open_the_table() {
 }
 
 #[test]
-fn on_ipad_the_table_and_the_selection_card_show_at_the_same_time() {
+fn on_ipad_the_table_is_a_wide_right_panel_beside_the_selection_card() {
     for size in [LANDSCAPE, PORTRAIT] {
         let mut h = harness(size, Layout::Pad);
-        let (id, _) = towns(&mut h, 5, 0);
-        h.state_mut().open_table(id);
+        let (id, uuids) = towns(&mut h, 5, 0);
         let center = select_tool(&mut h);
-        tap_at(&mut h, center);
-        let card = h
-            .ctx
-            .memory(|m| m.area_rect(egui::Id::new("selection-card")));
-        let card = card.expect("no selection card");
-        let table = table_rect(&h);
-        assert!(!card.intersects(table), "{size:?}: {card:?} {table:?}");
-        // The table is right of the tool strip, on the canvas.
-        assert!(table.left() > 80.0 && table.bottom() < size.1, "{size:?}");
-        // With the Layers panel open, the table is left of it.
         tap(&mut h, "Layers");
-        let panel = h.state().pad.panels.iter().map(|(_, r)| *r).next().unwrap();
-        assert!(table_rect(&h).right() < panel.left(), "{size:?}");
+        let normal = table_rect(&h);
+        h.state_mut().open_table(id);
+        tap_at(&mut h, center);
+        let (card, table) = (selection_card(&h), table_rect(&h));
+        assert!(!card.intersects(table), "{size:?}: {card:?} {table:?}");
+        // The panel keeps its top and its right edge, and it is wider.
+        assert_eq!((table.top(), table.right()), (normal.top(), normal.right()));
+        assert!(table.width() > normal.width(), "{size:?}");
+        assert!(card.left() > 80.0, "{size:?}");
+        // The edit of a cell moves neither the panel nor the card.
+        tap(&mut h, &cell_name("rank", uuids[0]));
+        assert!(h.state().table.as_ref().unwrap().edit.is_some());
+        assert_eq!(
+            (selection_card(&h), table_rect(&h)),
+            (card, table),
+            "{size:?}"
+        );
+        // The table closes with the panel, and the panel is narrow again.
+        tap(&mut h, "Close Attribute table");
+        assert!(h.state().table.is_none());
+        tap(&mut h, "Layers");
+        assert_eq!(table_rect(&h).width(), normal.width());
     }
 }
 
@@ -427,6 +453,8 @@ fn manual_the_attribute_table() {
     h.state_mut().open_table(id);
     h.state_mut().set_feature_selection(refs(id, &uuids[2..3]));
     h.run_steps(3);
-    tap(&mut h, "Layers");
+    tap(&mut h, &sort_name("name"));
     screenshot::save(&mut h, "table-pad");
+    tap(&mut h, &cell_name("rank", uuids[2]));
+    screenshot::save(&mut h, "table-pad-edit");
 }

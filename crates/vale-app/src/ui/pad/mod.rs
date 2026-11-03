@@ -352,6 +352,8 @@ pub enum Page {
     Condition(usize),
     /// The symbols that the rule with this index can pick.
     Symbols(usize),
+    /// The attribute table of the layer.
+    Table,
 }
 
 /// The state of the iPad layout.
@@ -586,12 +588,13 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     input.measure = state.globe.measuring();
     input.sheet_offset = state.pad.sheet_offset;
     rects = geometry::layout(&input);
+    table::check(state);
+    table::widen(state, &mut rects);
     for panel in [Panel::Brush, Panel::Layers, Panel::Toolbox] {
         if state.pad.is_open(panel) {
             show_panel(&ctx, state, &mut controls, &rects, panel);
         }
     }
-    table::pad(&ctx, state, &mut controls, &rects);
     expire_notes(&ctx, state);
     raster::band_card(&ctx, state, &mut controls, &rects);
     raster::shade_color_frame(&ctx, state);
@@ -1304,7 +1307,7 @@ pub(super) fn show_panel(
             Some(Page::Ramps | Page::Stops | Page::Hillshade | Page::Blend),
         ) => true,
         (Some(LayerRef::Image(_)), Some(Page::Blend)) => true,
-        (Some(LayerRef::Vector(_)), Some(Page::NewField)) => true,
+        (Some(LayerRef::Vector(_)), Some(Page::NewField | Page::Table)) => true,
         (Some(LayerRef::Vector(_)), Some(Page::Field(i))) => i < field_count,
         (
             Some(LayerRef::Vector(_)),
@@ -1351,6 +1354,9 @@ pub(super) fn show_panel(
             ("pad-blend", raster::BLEND, Some(name))
         }
         (Panel::Layers, Some(LayerRef::Image(_))) => ("pad-image", name, Some("Layers")),
+        (Panel::Layers, Some(LayerRef::Vector(_))) if page == Some(Page::Table) => {
+            ("pad-table", table::TITLE, Some(name))
+        }
         (Panel::Layers, Some(LayerRef::Vector(_))) if page == Some(Page::NewField) => {
             ("pad-new-field", fields::NEW_FIELD, Some(name))
         }
@@ -1388,7 +1394,10 @@ pub(super) fn show_panel(
     };
     let place = match panel {
         Panel::Brush => (rects.brush_panel, geometry::BRUSH_PANEL_WIDTH),
-        _ => (rects.right_panel, geometry::RIGHT_PANEL_WIDTH),
+        _ => {
+            let right = rects.screen.right() - rects.bands.right - geometry::MARGIN;
+            (rects.right_panel, right - rects.right_panel.x)
+        }
     };
     let action = list.then_some((ADD_LAYER, Icon::Plus, state.pad.add));
     let head = CardTitle {
@@ -1443,6 +1452,7 @@ pub(super) fn show_panel(
                 Some(Page::Rule(i)) => rules::rule_body(ui, state, controls, id, i),
                 Some(Page::Condition(i)) => filter::condition_body(ui, state, controls, id, i),
                 Some(Page::Symbols(i)) => rules::symbols_body(ui, state, controls, id, i),
+                Some(Page::Table) => {}
                 _ => vector_body(ui, state, controls, id),
             },
             (Panel::Layers, None) => layers_body(ui, state, controls),
@@ -1454,16 +1464,14 @@ pub(super) fn show_panel(
         head,
         scroll,
     };
-    let rect = show_card(
-        ctx,
-        state,
-        controls,
-        rects,
-        card,
-        on_title,
-        |_, _, _| {},
-        body,
-    );
+    // The table fills the page, and its rows have their own scroll.
+    let top = |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| {
+        if panel == Panel::Layers && page == Some(Page::Table) {
+            let size = ui.available_size();
+            ui.allocate_ui(size, |ui| table::page(ui, state, controls));
+        }
+    };
+    let rect = show_card(ctx, state, controls, rects, card, on_title, top, body);
     state.pad.panels.push((panel, rect));
 }
 
@@ -2342,18 +2350,8 @@ fn vector_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
     }
     state.pad.name = Some((of, text));
     widgets::value_row(ui, "Type", kind);
-    widgets::value_row(ui, "Features", &features);
-    if widgets::button_row(ui, controls, super::table::OPEN_TABLE, true).clicked() {
+    if widgets::open_row(ui, controls, table::FEATURES, &features).clicked() {
         state.open_table(id);
-        // A compact screen has room for the sheet or the table.
-        if state
-            .pad
-            .rects
-            .as_ref()
-            .is_some_and(|r| r.class == WidthClass::Compact)
-        {
-            state.pad.right = None;
-        }
     }
     rules::section(ui, state, controls, id);
     if kind != "Polygons" {

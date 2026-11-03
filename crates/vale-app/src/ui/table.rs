@@ -63,6 +63,8 @@ pub struct TableState {
     seen: Vec<FeatureRef>,
     /// The rectangle of the table in the last frame.
     pub rect: Option<egui::Rect>,
+    /// The scroll offset of the rows in the last frame.
+    pub offset: f32,
 }
 
 impl TableState {
@@ -77,6 +79,7 @@ impl TableState {
             scroll_to: None,
             seen: Vec::new(),
             rect: None,
+            offset: 0.0,
         }
     }
 
@@ -95,10 +98,10 @@ impl TableState {
         };
     }
 
-    /// The arrow of the header of a field.
-    pub fn arrow(&self, field: &str) -> Option<&'static str> {
+    /// The direction of the sort by a field: true for up.
+    pub fn sorted_up(&self, field: &str) -> Option<bool> {
         let sort = self.sort.as_ref().filter(|s| s.field == field)?;
-        Some(if sort.ascending { "▲" } else { "▼" })
+        Some(sort.ascending)
     }
 }
 
@@ -126,6 +129,13 @@ impl AppState {
         table.scroll_to = self.feature_selection.first().map(|f| f.uuid);
         table.seen = self.feature_selection.clone();
         self.table = Some(table);
+        // In the iPad layout, the table is a page of the layer in the
+        // Layers panel.
+        if self.layout == super::Layout::Pad {
+            self.pad.right = Some(super::pad::Panel::Layers);
+            self.pad.layer = Some(super::LayerRef::Vector(layer));
+            self.pad.page = Some(super::pad::Page::Table);
+        }
     }
 
     pub fn close_table(&mut self) {
@@ -152,8 +162,11 @@ impl AppState {
             self.table = None;
             return;
         }
+        // On the desktop, the dock follows the selected vector layer. The
+        // page of the iPad layout closes with its layer page.
         if let Some(id) = self.selected_vector()
             && id != table.layer
+            && self.layout != super::Layout::Pad
         {
             self.commit_cell();
             self.open_table(id);
@@ -391,6 +404,22 @@ pub fn focus_all(resp: &egui::Response, text: &str) {
     edit.store(ctx, resp.id);
 }
 
+/// The arrow of the sorted column, a small triangle around `center`.
+pub fn paint_arrow(painter: &egui::Painter, center: egui::Pos2, up: bool, color: egui::Color32) {
+    let (w, h) = (4.5, 3.0);
+    let tip = if up { -h } else { h };
+    let points = vec![
+        center + egui::vec2(-w, -tip),
+        center + egui::vec2(w, -tip),
+        center + egui::vec2(0.0, tip),
+    ];
+    painter.add(egui::Shape::convex_polygon(
+        points,
+        color,
+        egui::Stroke::NONE,
+    ));
+}
+
 /// The text of a value in a cell.
 pub fn cell_text(value: Option<&Value>) -> String {
     value.and_then(|v| v.label()).unwrap_or_default()
@@ -457,15 +486,18 @@ fn desktop_table(ui: &mut egui::Ui, state: &mut AppState) {
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 for (field, &w) in layer.fields.iter().zip(&widths) {
-                    let text = match table.arrow(&field.name) {
-                        Some(a) => format!("{} {a}", field.name),
-                        None => field.name.clone(),
-                    };
-                    let button = egui::Button::new(egui::RichText::new(text).strong())
+                    let text = egui::RichText::new(&field.name).strong();
+                    let button = egui::Button::new(text)
                         .frame(false)
                         .min_size(egui::vec2(w, row_h));
-                    if ui.add_sized([w, row_h], button).clicked() {
+                    let resp = ui.add_sized([w, row_h], button);
+                    if resp.clicked() {
                         header = Some(field.name.clone());
+                    }
+                    if let Some(up) = table.sorted_up(&field.name) {
+                        let at = egui::pos2(resp.rect.right() - 10.0, resp.rect.center().y);
+                        let color = ui.visuals().strong_text_color();
+                        paint_arrow(ui.painter(), at, up, color);
                     }
                 }
             });
