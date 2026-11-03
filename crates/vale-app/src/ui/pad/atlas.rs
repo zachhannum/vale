@@ -204,7 +204,11 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
             state.atlas.selection != AtlasSelection::None
         },
         sheet_offset: state.pad.sheet_offset,
-        measure: measuring,
+        cells: if measuring {
+            geometry::MEASURE_CELLS
+        } else {
+            0
+        },
         strip: false,
         extra: 0,
         tools: TOOL_CELLS,
@@ -244,7 +248,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     tool_strip(&ctx, state, &mut controls, &rects);
     frame_card(&ctx, state, &mut controls, &rects);
     if measuring {
-        super::measure_card(&ctx, state, &mut controls, &rects);
+        super::cell_card(&ctx, state, &mut controls, &rects);
         if state.pad.brush {
             super::show_panel(&ctx, state, &mut controls, &rects, super::Panel::Brush);
         }

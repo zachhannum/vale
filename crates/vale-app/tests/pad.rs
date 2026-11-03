@@ -8480,7 +8480,7 @@ fn the_measure_cell_and_card_fit_in_the_atlas_on_each_screen() {
         let card = h.state().pad.rects.unwrap().brush.unwrap();
         // On a short screen, the card scrolls, and the Brush button is
         // below its end.
-        let all = h.state().pad.rects.unwrap().measure_cells == 3;
+        let all = h.state().pad.rects.unwrap().card_cells == 3;
         let names: &[&str] = if all {
             &[SNAP, "Brush settings"]
         } else {

@@ -21,6 +21,8 @@ pub const CELL: (f32, f32) = (56.0, 52.0);
 pub const TOOLS: usize = 6;
 /// The number of cells of the card of the Measure tool.
 pub const MEASURE_CELLS: usize = 3;
+/// The number of cells of the card of the Vertex tool.
+pub const VERTEX_CELLS: usize = 5;
 /// The height of one of the two sliders at the left edge.
 pub const SLIDER: f32 = 140.0;
 /// Below this height, a slider at the left edge is too short to use.
@@ -111,8 +113,9 @@ pub struct Input {
     pub panel: bool,
     /// The distance that the sheet is pulled down from its open place.
     pub sheet_offset: f32,
-    /// The Measure tool is the tool.
-    pub measure: bool,
+    /// The number of cells of the card of the tool, for a tool with a card
+    /// of cells, such as the Measure tool. Zero: the tool has no such card.
+    pub cells: usize,
     /// The tool has a context strip: the card below the tool strip.
     pub strip: bool,
     /// The cells that the context strip has for each tool, such as
@@ -141,10 +144,10 @@ pub struct Rects {
     /// The card of the two sliders and the Brush button, or the card of the
     /// Measure tool.
     pub brush: Option<Rect>,
-    /// The number of cells of the card of the Measure tool that show. With
-    /// fewer than `MEASURE_CELLS` and the extra cells, the card scrolls. Zero: the card is not
-    /// the card of the Measure tool.
-    pub measure_cells: usize,
+    /// The number of cells of the card of cells that show. With fewer than
+    /// the cells of the tool and the extra cells, the card scrolls. Zero:
+    /// the card is not a card of cells.
+    pub card_cells: usize,
     /// The top-left corner of the Brush panel.
     pub brush_panel: Pos2,
     /// The top-left corner of the Layers and Toolbox panel.
@@ -248,9 +251,9 @@ pub fn layout(input: &Input) -> Rects {
         pos2(left, brush_top)
     };
     let brush = match brush_card {
-        _ if !input.strip && !input.measure && input.extra == 0 => None,
+        _ if !input.strip && input.cells == 0 && input.extra == 0 => None,
         // The extra cells alone.
-        BrushCard::Full(_) | BrushCard::Button if !input.strip && !input.measure => {
+        BrushCard::Full(_) | BrushCard::Button if !input.strip && input.cells == 0 => {
             Some(strip_height(input.extra))
         }
         BrushCard::Full(slider) => Some(2.0 * slider + button),
@@ -262,20 +265,17 @@ pub fn layout(input: &Input) -> Rects {
         brush_panel.x += width + GAP;
     }
 
-    // The card of the Measure tool goes below the tool strip. With no room
-    // there, it goes to the right of the strip.
-    let measure = MEASURE_CELLS + input.extra;
-    let (brush, measure_cells) = match brush {
-        Some(_) if input.measure && limit - brush_top >= strip_height(measure) => {
-            let size = vec2(width, strip_height(measure));
-            (
-                Some(Rect::from_min_size(pos2(left, brush_top), size)),
-                measure,
-            )
+    // A card of cells goes below the tool strip. With no room there, it
+    // goes to the right of the strip.
+    let all = input.cells + input.extra;
+    let (brush, card_cells) = match brush {
+        Some(_) if input.cells > 0 && limit - brush_top >= strip_height(all) => {
+            let size = vec2(width, strip_height(all));
+            (Some(Rect::from_min_size(pos2(left, brush_top), size)), all)
         }
-        Some(_) if input.measure => {
+        Some(_) if input.cells > 0 => {
             let cells = ((limit - column_top - 2.0 * PAD) / CELL.1).floor();
-            let cells = (cells.max(1.0) as usize).min(measure);
+            let cells = (cells.max(1.0) as usize).min(all);
             let size = vec2(width, strip_height(cells));
             let card = Rect::from_min_size(pos2(tools.right() + GAP, column_top), size);
             brush_panel.x = card.right() + GAP;
@@ -301,7 +301,7 @@ pub fn layout(input: &Input) -> Rects {
         tool_cells,
         brush_card,
         brush,
-        measure_cells,
+        card_cells,
         brush_panel,
         right_panel,
         panel_bottom,
@@ -324,7 +324,7 @@ mod tests {
             view_width: 140.0,
             panel: false,
             sheet_offset: 0.0,
-            measure: false,
+            cells: 0,
             strip: true,
             extra: 0,
             tools: TOOLS,
@@ -347,9 +347,9 @@ mod tests {
         input.extra = 0;
         assert_eq!(layout(&input).brush, None);
         // The Measure tool has its cells and the extra cell.
-        input.measure = true;
+        input.cells = MEASURE_CELLS;
         input.extra = 1;
-        assert_eq!(layout(&input).measure_cells, MEASURE_CELLS + 1);
+        assert_eq!(layout(&input).card_cells, MEASURE_CELLS + 1);
     }
 
     fn rect(x: f32, y: f32, w: f32, h: f32) -> Rect {
@@ -485,13 +485,13 @@ mod tests {
     fn the_card_of_the_measure_tool_holds_its_cells() {
         let measure = |width: f32, height: f32| {
             let mut input = board(width, height);
-            input.measure = true;
+            input.cells = MEASURE_CELLS;
             layout(&input)
         };
         // Below the tool strip.
         for (width, height) in [(1194.0, 834.0), (1024.0, 700.0), (375.0, 834.0)] {
             let r = measure(width, height);
-            assert_eq!(r.measure_cells, MEASURE_CELLS, "{width}x{height}");
+            assert_eq!(r.card_cells, MEASURE_CELLS, "{width}x{height}");
             let card = r.brush.unwrap();
             assert_eq!(card.left(), r.tools.left());
             assert_eq!(card.top(), r.tools.bottom() + GAP);
@@ -499,15 +499,15 @@ mod tests {
         }
         // At the right of the tool strip.
         let r = measure(1024.0, 480.0);
-        assert_eq!(r.measure_cells, MEASURE_CELLS);
+        assert_eq!(r.card_cells, MEASURE_CELLS);
         let card = r.brush.unwrap();
         assert_eq!(card.min, pos2(r.tools.right() + GAP, r.tools.top()));
         assert_eq!(r.brush_panel.x, card.right() + GAP);
         // A short screen scrolls the card.
         let r = measure(1024.0, 280.0);
-        assert_eq!(r.measure_cells, 2);
+        assert_eq!(r.card_cells, 2);
         assert!(r.brush.unwrap().bottom() <= 280.0 - 20.0 - MARGIN);
         // The card is not the card of the Measure tool for another tool.
-        assert_eq!(layout(&board(1194.0, 834.0)).measure_cells, 0);
+        assert_eq!(layout(&board(1194.0, 834.0)).card_cells, 0);
     }
 }

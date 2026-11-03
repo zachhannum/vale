@@ -21,7 +21,7 @@ use crate::globe::brush::{
 use crate::globe::combine::PolygonMode;
 use crate::globe::{Globe, Tool, WorldView, rivers, snap, stats, stroke_test, zoom_test};
 use crate::projects;
-use crate::ui::pad::{DESELECT, vector_tools};
+use crate::ui::pad::{DELETE_VERTEX, DESELECT, MOVE_SHARED, SMOOTH_VERTICES, vector_tools};
 use crate::world::{self, three_significant};
 
 /// The name of the ocean ridge mode of the brush.
@@ -151,7 +151,11 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                 let edits = kind.map(vector_tools).unwrap_or_default();
                 for t in edits.into_iter().filter(|t| !t.draws) {
                     let on = globe.editing() && globe.tool == t.tool;
-                    if ui.selectable_label(on, t.name).clicked() {
+                    let mut label = ui.selectable_label(on, t.name);
+                    if t.tool == Tool::Vertex {
+                        label = label.on_hover_text("A");
+                    }
+                    if label.clicked() {
                         globe.tool = t.tool;
                     }
                 }
@@ -168,7 +172,8 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                     globe.tool = Tool::Measure;
                 }
                 if globe.editing() || globe.measuring() {
-                    if globe.stroking() {
+                    // Smooth vertices smooths as the line tool does.
+                    if globe.stroking() || globe.vertexing() {
                         number::slider(SMOOTHING, &mut globe.line.smoothing, 0.0..=1.0)
                             .percent()
                             .show(ui);
@@ -196,6 +201,9 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                     }
                     let rasters = raster_layers(state);
                     snap_controls(ui, state, &rasters);
+                    if state.globe.vertexing() {
+                        vertex_buttons(ui, state);
+                    }
                 }
                 if state.globe.measuring() {
                     path_buttons(ui, state);
@@ -1324,4 +1332,24 @@ pub fn status(ui: &mut egui::Ui, state: &mut AppState) {
             }
         });
     });
+}
+
+/// The switch and the buttons of the Vertex tool.
+fn vertex_buttons(ui: &mut egui::Ui, state: &mut AppState) {
+    ui.checkbox(&mut state.globe.vertex.shared, MOVE_SHARED);
+    let delete = egui::Button::new(DELETE_VERTEX);
+    if ui
+        .add_enabled(state.can_delete_vertices(), delete)
+        .on_hover_text("Delete")
+        .clicked()
+    {
+        state.delete_vertices();
+    }
+    let smooth = egui::Button::new(SMOOTH_VERTICES);
+    if ui
+        .add_enabled(state.can_smooth_vertices(), smooth)
+        .clicked()
+    {
+        state.smooth_vertices();
+    }
 }
