@@ -1,6 +1,6 @@
 //! The project model and its GeoPackage file: a world, its layers, and their features.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::ops::RangeInclusive;
 
 pub use uuid::Uuid;
@@ -1372,6 +1372,36 @@ impl Project {
         true
     }
 
+    /// Sets one attribute of each feature with a UUID in the set, and gives
+    /// the number of features that it changed. The value turns into a value
+    /// of the type of the field. A name that is not a field of the layer
+    /// changes nothing.
+    pub fn set_attribute_of(
+        &mut self,
+        id: LayerId,
+        uuids: &HashSet<Uuid>,
+        name: &str,
+        value: &Value,
+    ) -> usize {
+        let Some(layer) = self.layer_mut(id) else {
+            return 0;
+        };
+        let Some(field) = layer.fields.iter().find(|f| f.name == name) else {
+            return 0;
+        };
+        let value = field.kind.convert(value);
+        let mut changed = 0;
+        for feature in layer
+            .features
+            .iter_mut()
+            .filter(|f| uuids.contains(&f.uuid))
+        {
+            feature.attributes.insert(name.to_string(), value.clone());
+            changed += 1;
+        }
+        changed
+    }
+
     /// Removes the features with these UUIDs from a vector layer, and gives
     /// the number that it removed.
     pub fn remove_features(&mut self, id: LayerId, uuids: &[Uuid]) -> usize {
@@ -1491,6 +1521,23 @@ mod tests {
         assert!(!f.attributes.contains_key("beta"));
 
         let first = p.layer(a).unwrap().features[0].uuid();
+        let both = HashSet::from([uuid, first, Uuid::new_v4()]);
+        assert_eq!(p.set_attribute_of(a, &both, "mid", &Value::Bool(true)), 2);
+        assert_eq!(p.set_attribute_of(a, &both, "beta", &Value::Bool(true)), 0);
+        assert_eq!(
+            p.set_attribute_of(LayerId(99), &both, "mid", &Value::Null),
+            0
+        );
+        let layer = p.layer(a).unwrap();
+        assert_eq!(
+            layer.features[0].attributes["mid"],
+            Value::Text("true".into())
+        );
+        assert_eq!(
+            layer.features[1].attributes["mid"],
+            Value::Text("true".into())
+        );
+
         assert_eq!(p.remove_features(a, &[uuid, first, Uuid::new_v4()]), 2);
         assert_eq!(p.remove_features(LayerId(99), &[uuid]), 0);
         let layer = p.layer(a).unwrap();
