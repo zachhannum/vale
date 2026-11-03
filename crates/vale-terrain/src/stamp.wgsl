@@ -987,6 +987,7 @@ const CURVE = 0.3;
 const SALT_FAULT = 0x1b873593u;
 const SALT_TURN = 0x6c8e9cf5u;
 const SALT_MIGRATE = 0x3d4fa1c7u;
+const SALT_TRACE_WARP = 0x8e2b4d61u;
 const SALT_MAGMA = 0x9b05688cu;
 const SALT_WALL = 0x4c95e1a3u;
 const SALT_LUMP = 0x2d8e7f19u;
@@ -999,9 +1000,9 @@ const MIGRATE = 0.1;
 const MIGRATE_MYR = 4.0;
 const WANDER_KM = 3.0;
 const WANDER_MYR = 0.8;
-const TRACE_WARP = 0.12;
-const TRACE_WARP_MYR = 3.0;
+const TRACE_WARP_KM = 16.0;
 const TRACE_WARP_OLD_MYR = 10.0;
+const TRACE_WARP_STEP_MYR = 0.05;
 const MIGRATE_ROUND = 0.5;
 const SHORTEST_PART = 0.2;
 const SEGMENT_MAGMA = 0.03;
@@ -1031,11 +1032,11 @@ const ACTIVE = 0.4;
 const ACTIVE_MYR = 3.0;
 const PATCH_MYR = 4.0;
 const PATCH_OLD_MYR = 10.0;
-const PATCH = 0.5;
-const PATCH_OFFSET = 0.9;
-const GAP_MYR = 2.5;
-const GAP_EDGE = vec2<f32>(-0.1, 0.25);
-const TROUGH_FILL = 0.4;
+const PATCH = 0.3;
+const TROUGH_LEAST = 0.3;
+const TROUGH_LEAST_KM = 10.0;
+const OFFSET_HALF_KM = 5.0;
+const TROUGH_FILL = 0.15;
 const TROUGH_MYR = 20.0;
 const TRANSVERSE_SHARE = 0.5;
 const TRANSVERSE = 0.6;
@@ -1452,16 +1453,30 @@ fn ridge_migration(j: i32, tau: f32) -> vec2<f32> {
     sum.y += 0.5 * migrate * slow.y / MIGRATE_MYR;
     sum.x += 0.5 * wander * (small.x - small_zero);
     sum.y += 0.5 * wander * small.y / WANDER_MYR;
-    if migrate > 0.0 {
-        let size = TRACE_WARP * ridge.segment * unit(hash(vec3<u32>(a, 2u, 0u), seed));
-        let t = clamp(tau / TRACE_WARP_OLD_MYR, 0.0, 1.0);
-        let grow = t * t * (3.0 - 2.0 * t);
-        let change = 6.0 * t * (1.0 - t) / TRACE_WARP_OLD_MYR;
-        let warp = noise1(tau / TRACE_WARP_MYR, a, 2u, seed);
-        sum.x += 0.5 * size * grow * warp.x;
-        sum.y += 0.5 * size * (change * warp.x + grow * warp.y / TRACE_WARP_MYR);
-    }
     return sum;
+}
+
+// `RidgePlan::warp`, the move at one age.
+fn ridge_warp_at(along: f32, tau: f32, side: f32) -> f32 {
+    let seed = ridge.seed ^ SALT_TRACE_WARP;
+    let t = clamp(tau / TRACE_WARP_OLD_MYR, 0.0, 1.0);
+    let grow = t * t * (3.0 - 2.0 * t);
+    let first = noise3(vec3<f32>(along / 200.0, tau / 10.0, side), seed).x;
+    let second = noise3(vec3<f32>(along / 90.0, tau / 4.0, side + 3.0), seed).x;
+    return TRACE_WARP_KM / ridge.world_km * grow * (first + 0.45 * second);
+}
+
+// `RidgePlan::warp`: the move and its change with the age.
+fn ridge_warp(j: i32, tau: f32, right: bool) -> vec2<f32> {
+    let along = f32(j) * ridge.segment * ridge.world_km;
+    var side = 0.5;
+    if right {
+        side = 8.5;
+    }
+    let h = TRACE_WARP_STEP_MYR;
+    let ahead = ridge_warp_at(along, tau + h, side);
+    let behind = ridge_warp_at(along, tau - h, side);
+    return vec2<f32>(ridge_warp_at(along, tau, side), (ahead - behind) / (2.0 * h));
 }
 
 // `RidgePlan::trace`: the place along the line from the start of crest cell
@@ -1473,10 +1488,11 @@ fn ridge_trace(j: i32, cell: i32, across: f32, turn: vec2<f32>) -> vec3<f32> {
     let tau_off = off / v;
     let tau = sqrt(tau_off * tau_off + MIGRATE_ROUND * MIGRATE_ROUND) - MIGRATE_ROUND;
     let moved = ridge_migration(j, tau);
+    let warp = ridge_warp(j, tau, off < 0.0);
     let to_tau = off / v / (tau + MIGRATE_ROUND);
     return vec3<f32>(
-        ridge_boundary(j, cell) + turn.x + moved.x,
-        turn.y + moved.y * to_tau / v,
+        ridge_boundary(j, cell) + turn.x + moved.x + warp.x,
+        turn.y + (moved.y + warp.y) * to_tau / v,
         tau,
     );
 }
@@ -1493,27 +1509,21 @@ fn ridge_fracture(j: i32, offset_km: f32, is_transform: bool, age: f32) -> vec4<
     }
     let leave = 0.5 * offset_km / (ridge.spread * ridge.world_km);
     let fresh = 1.0 + ACTIVE * (1.0 - smooth_between(leave, leave + ACTIVE_MYR, age));
-    var cell = GAP_MYR;
-    var edge = GAP_EDGE;
-    if is_transform {
-        cell = PATCH_MYR;
-        edge = vec2<f32>(-0.5, 0.5);
-    }
-    let patches = noise1(age / cell, bitcast<u32>(j), 1u, seed).x;
-    var most = PATCH_OFFSET;
-    if is_transform {
-        most = PATCH;
-    }
-    let patchy = most * smooth_between(0.0, PATCH_OLD_MYR, age);
-    let keep = 1.0 - patchy * (1.0 - smooth_between(edge.x, edge.y, patches));
+    let patches = noise1(age / PATCH_MYR, bitcast<u32>(j), 1u, seed).x;
+    let patchy = PATCH * smooth_between(0.0, PATCH_OLD_MYR, age);
+    let keep = 1.0 - patchy * (1.0 - smooth_between(-0.5, 0.5, patches));
     let filled = 1.0 - TROUGH_FILL * smooth_between(0.0, TROUGH_MYR, age);
-    let full = TROUGH_DEPTH * pow_precise(size, TROUGH_POWER) * strength * kind * fresh;
-    let depth = min(full, TROUGH_MAX) * keep * filled;
-    let half_len = clamp(
+    let least = TROUGH_LEAST * smooth_between(0.0, TROUGH_LEAST_KM, offset_km);
+    let full = max(TROUGH_DEPTH * pow_precise(size, TROUGH_POWER), least) * strength * kind * fresh;
+    var half_len = clamp(
         TROUGH_KM * pow_precise(size * strength * kind, TROUGH_WIDENS),
         TROUGH_KM_RANGE.x,
         TROUGH_KM_RANGE.y,
     );
+    if !is_transform {
+        half_len = max(half_len, OFFSET_HALF_KM);
+    }
+    let depth = min(full, TROUGH_MAX) * keep * filled;
     var height = 0.0;
     if is_transform && unit(ridge_hash(j, 2u, 0u, seed)) < TRANSVERSE_SHARE {
         height = TRANSVERSE * depth;

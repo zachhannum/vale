@@ -259,19 +259,6 @@ impl RidgePlan {
             sum.0 += 0.5 * size * (value - zero);
             sum.1 += 0.5 * size * slope / cell;
         }
-        if migrate > 0.0 {
-            // The warp grows from zero at the crest to its full size on old
-            // floor.
-            let size = TRACE_WARP * sg.length * unit(hash(j as u32, 2, 0, seed));
-            let t = (tau / TRACE_WARP_OLD_MYR).clamp(0.0, 1.0);
-            let (grow, change) = (
-                t * t * (3.0 - 2.0 * t),
-                6.0 * t * (1.0 - t) / TRACE_WARP_OLD_MYR,
-            );
-            let (value, slope) = noise1(tau / TRACE_WARP_MYR, j as u32, 2, seed);
-            sum.0 += 0.5 * size * grow * value;
-            sum.1 += 0.5 * size * (change * value + grow * slope / TRACE_WARP_MYR);
-        }
         sum
     }
 
@@ -286,12 +273,38 @@ impl RidgePlan {
         // The age is round at the crest, so the change has no step there.
         let tau = (off / v).hypot(MIGRATE_ROUND) - MIGRATE_ROUND;
         let (moved, change) = self.migration(sg, j, tau);
+        let (warp, bend) = self.warp(sg, j, tau, off < 0.0);
         let to_tau = off / v / (tau + MIGRATE_ROUND);
         Trace {
-            u: self.boundary(sg, j) + turn.0 + moved,
-            slope: turn.1 + change * to_tau / v,
+            u: self.boundary(sg, j) + turn.0 + moved + warp,
+            slope: turn.1 + (change + bend) * to_tau / v,
             age: tau,
         }
+    }
+
+    /// The move of the trace of boundary `j` along the line from a smooth
+    /// field of the place along the line and the age, at `tau` million
+    /// years of age on one side of the line. Traces near each other move
+    /// together, so they do not cross. The move grows with the age, so
+    /// young traces are straight. The result is the move in radians, and
+    /// its change with the age.
+    fn warp(&self, sg: &Segmenting, j: i32, tau: f64, right: bool) -> (f64, f64) {
+        let seed = self.ridge.seed ^ SALT_TRACE_WARP;
+        let km = self.ridge.world_km;
+        let along = f64::from(j) * sg.length * km;
+        let side = if right { 8.5 } else { 0.5 };
+        let field = |tau: f64| {
+            let t = (tau / TRACE_WARP_OLD_MYR).clamp(0.0, 1.0);
+            let grow = t * t * (3.0 - 2.0 * t);
+            let mut sum = 0.0;
+            for (octave, [weight, along_km, myr]) in TRACE_WARP_OCTAVES.iter().enumerate() {
+                let z = side + 3.0 * octave as f64;
+                sum += weight * noise3([along / along_km, tau / myr, z], seed)[0];
+            }
+            TRACE_WARP_KM / km * grow * sum
+        };
+        let h = TRACE_WARP_STEP_MYR;
+        (field(tau), (field(tau + h) - field(tau - h)) / (2.0 * h))
     }
 
     /// The depth of the ends of a crest segment below its middle, in
@@ -518,20 +531,19 @@ impl RidgePlan {
         // The trace leaves the transform fault at this age.
         let out = 0.5 * step / (self.ridge.spread * self.ridge.world_km);
         let active = 1.0 + ACTIVE * (1.0 - smoothstep(out, out + ACTIVE_MYR, age));
-        let (cell, edge) = if transform {
-            (PATCH_MYR, [-0.5, 0.5])
-        } else {
-            (GAP_MYR, GAP_EDGE)
-        };
-        let (patches, _) = noise1(age / cell, j as u32, 1, seed);
-        let most = if transform { PATCH } else { PATCH_OFFSET };
-        let patchy = most * smoothstep(0.0, PATCH_OLD_MYR, age);
-        let keep = 1.0 - patchy * (1.0 - smoothstep(edge[0], edge[1], patches));
+        let (patches, _) = noise1(age / PATCH_MYR, j as u32, 1, seed);
+        let patchy = PATCH * smoothstep(0.0, PATCH_OLD_MYR, age);
+        let keep = 1.0 - patchy * (1.0 - smoothstep(-0.5, 0.5, patches));
         let filled = 1.0 - TROUGH_FILL * smoothstep(0.0, TROUGH_MYR, age);
-        let full = TROUGH_DEPTH * size.powf(TROUGH_POWER) * strength * kind * active;
-        let depth = full.min(TROUGH_MAX) * keep * filled;
-        let half = (TROUGH_KM * (size * strength * kind).powf(TROUGH_WIDENS))
+        let least = TROUGH_LEAST * smoothstep(0.0, TROUGH_LEAST_KM, step);
+        let full = (TROUGH_DEPTH * size.powf(TROUGH_POWER)).max(least) * strength * kind * active;
+        let mut half = (TROUGH_KM * (size * strength * kind).powf(TROUGH_WIDENS))
             .clamp(TROUGH_KM_RANGE[0], TROUGH_KM_RANGE[1]);
+        if !transform {
+            // The trace of a small offset is a broad trough.
+            half = half.max(OFFSET_HALF_KM);
+        }
+        let depth = full.min(TROUGH_MAX) * keep * filled;
         let ridge = if transform && draw(2) < TRANSVERSE_SHARE {
             TRANSVERSE * depth
         } else {
@@ -987,6 +999,7 @@ const SALT_MAGMA: u32 = 0x9b05_688c;
 const SALT_WALL: u32 = 0x4c95_e1a3;
 const SALT_LUMP: u32 = 0x2d8e_7f19;
 const SALT_FRACTURE: u32 = 0x5f3a_c2e1;
+const SALT_TRACE_WARP: u32 = 0x8e2b_4d61;
 
 /// The largest move of a boundary, as a part of the mean length of a crest
 /// segment.
@@ -1036,14 +1049,15 @@ const MIGRATE_MYR: f64 = 4.0;
 const WANDER_KM: f64 = 3.0;
 const WANDER_MYR: f64 = 0.8;
 
-/// The largest warp of the trace of an offset with no transform fault, as
-/// a part of the mean length of a crest segment, and the age of a cell of
-/// its noise in millions of years. Each trace has its own size of the warp,
-/// from zero to the largest. The warp grows over `TRACE_WARP_OLD_MYR`, so an old
-/// trace is less straight than a young one.
-const TRACE_WARP: f64 = 0.12;
-const TRACE_WARP_MYR: f64 = 3.0;
+/// The warp of the traces: the largest move in kilometers, and for each
+/// octave of the field, its weight, its cell along the line in kilometers,
+/// and its cell of age in millions of years. The warp grows over
+/// `TRACE_WARP_OLD_MYR`. Its change with the age is a difference over
+/// `TRACE_WARP_STEP_MYR` on each side.
+const TRACE_WARP_KM: f64 = 16.0;
+const TRACE_WARP_OCTAVES: [[f64; 3]; 2] = [[1.0, 200.0, 10.0], [0.45, 90.0, 4.0]];
 const TRACE_WARP_OLD_MYR: f64 = 10.0;
+const TRACE_WARP_STEP_MYR: f64 = 0.05;
 
 /// The age of a trace is round over this number of millions of years at
 /// the crest.
@@ -1128,21 +1142,23 @@ const ACTIVE: f64 = 0.4;
 const ACTIVE_MYR: f64 = 3.0;
 
 /// With the age, the trough breaks into patches `PATCH_MYR` long. Over
-/// `PATCH_OLD_MYR`, the patches grow to `PATCH` of the depth, and to
-/// `PATCH_OFFSET` along an offset with no transform fault.
+/// `PATCH_OLD_MYR`, the patches grow to `PATCH` of the depth.
 const PATCH_MYR: f64 = 4.0;
 const PATCH_OLD_MYR: f64 = 10.0;
-const PATCH: f64 = 0.5;
-const PATCH_OFFSET: f64 = 0.9;
+const PATCH: f64 = 0.3;
 
-/// Along an offset with no transform fault, the patches are `GAP_MYR`
-/// long, and a patch is a gap where the noise is below `GAP_EDGE`.
-const GAP_MYR: f64 = 2.5;
-const GAP_EDGE: [f64; 2] = [-0.1, 0.25];
+/// A trough is at least `TROUGH_LEAST` kilometers deep times the strength,
+/// before the other factors of its depth. An offset of `TROUGH_LEAST_KM`
+/// kilometers or more reaches that depth. A trough along an offset with no
+/// transform fault is at least `OFFSET_HALF_KM` kilometers wide on each
+/// side.
+const TROUGH_LEAST: f64 = 0.3;
+const TROUGH_LEAST_KM: f64 = 10.0;
+const OFFSET_HALF_KM: f64 = 5.0;
 
 /// The part of the depth of a trough that sediment fills, over this number
 /// of millions of years.
-const TROUGH_FILL: f64 = 0.4;
+const TROUGH_FILL: f64 = 0.15;
 const TROUGH_MYR: f64 = 20.0;
 
 /// `TRANSVERSE_SHARE` of the transform faults have a transverse ridge on
@@ -2202,7 +2218,7 @@ mod tests {
         for j in 0..60 {
             let small = plan.fracture(j, 20.0, true, 0.0);
             let large = plan.fracture(j, 100.0, true, 0.0);
-            assert!(large.depth > 4.0 * small.depth, "{j}");
+            assert!(large.depth > 2.0 * small.depth, "{j}");
             assert!(large.half > 2.0 * small.half, "{j}");
             assert!(large.depth <= TROUGH_MAX);
             // An offset with no transform fault leaves a fainter trough.
@@ -2235,7 +2251,7 @@ mod tests {
             let old: Vec<f64> = (0..40).map(|i| at(30.0 + f64::from(i))).collect();
             let most = old.iter().copied().fold(0.0, f64::max);
             let least = old.iter().copied().fold(f64::MAX, f64::min);
-            changes += usize::from(most > 1.5 * least);
+            changes += usize::from(most > 1.3 * least);
         }
         assert!(changes > 10, "{changes}");
     }
@@ -2252,6 +2268,7 @@ mod tests {
         let sg = plan.segmenting();
         let (r, km) = (plan.ridge.radius, plan.ridge.world_km);
         let wander = WANDER_KM / km;
+        let warp = 1.45 * TRACE_WARP_KM / km;
         let places: Vec<f64> = (-150..=150).map(|i| r * f64::from(i) / 100.0).collect();
         // The move of a trace from its boundary at the crest.
         let moves = |j: i32| -> Vec<f64> {
@@ -2274,7 +2291,7 @@ mod tests {
         // The traces of all transform faults bend together.
         for &j in &transforms[1..] {
             for (m, n) in moves(j).iter().zip(&first) {
-                assert!((m - n).abs() <= 2.0 * wander + 1e-12, "{j}");
+                assert!((m - n).abs() <= 2.0 * (wander + warp) + 1e-12, "{j}");
             }
         }
         // The angle of the spreading direction is no more than 8 degrees.
@@ -2291,7 +2308,7 @@ mod tests {
                 continue;
             }
             for (i, (m, n)) in moves(j).iter().zip(&first).enumerate() {
-                let most = (MIGRATE + TRACE_WARP) * sg.length + 2.0 * wander;
+                let most = MIGRATE * sg.length + 2.0 * (wander + warp);
                 assert!((m - n).abs() <= most + 1e-12);
                 let turn = plan.turn(&sg, places[i] / plan.ridge.spread);
                 let trace = plan.trace(&sg, j, places[i], turn);
