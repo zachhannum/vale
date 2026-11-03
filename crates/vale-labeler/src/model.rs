@@ -136,7 +136,8 @@ pub enum PolygonMode {
     /// Curved text in a long shape, and horizontal text in a compact shape.
     #[default]
     Auto,
-    /// Text that curves along the long axis of every shape.
+    /// Text that curves along the long axis of every shape. Where no curved text fits, the
+    /// text is horizontal.
     Curved,
     /// Horizontal text.
     Horizontal,

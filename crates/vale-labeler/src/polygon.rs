@@ -33,6 +33,10 @@ const LONG: f64 = 2.5;
 /// shape, or curved text in a compact shape.
 const UNSUITED: f64 = 4.0;
 
+/// The extra cost of a horizontal label in a curved class. It is lower than the cost of an
+/// unplaced label, so the horizontal label is the fallback where no curved label fits.
+const FALLBACK: f64 = 50.0;
+
 /// The fractions of the axis that a curved label spans, best first. Zero adds no spread.
 const FILLS: [f64; 4] = [0.85, 0.7, 0.55, 0.0];
 
@@ -78,16 +82,14 @@ pub(crate) fn candidates(
         };
         curved(&grid, m, class, pp, shaped, base, &mut out);
     }
-    if pp.mode != PolygonMode::Curved {
-        let base = if long && pp.mode == PolygonMode::Auto {
-            UNSUITED
-        } else {
-            0.0
-        };
-        horizontal(
-            &grid, &ranked, class, pp, shaped, base, dmax, half, &mut out,
-        );
-    }
+    let base = match pp.mode {
+        PolygonMode::Auto if long => UNSUITED,
+        PolygonMode::Curved => FALLBACK,
+        _ => 0.0,
+    };
+    horizontal(
+        &grid, &ranked, class, pp, shaped, base, dmax, half, &mut out,
+    );
     if out.is_empty() {
         return Err(UnplacedReason::AreaTooSmall);
     }

@@ -310,3 +310,16 @@ fn horizontal_labels_spread_their_letters() {
     let out = run(tight, rings, "Land", bounds);
     assert!(glyph_span(&out.placed[0]) < advance);
 }
+
+#[test]
+fn curved_mode_falls_back_to_horizontal() {
+    // The band bends more than the curve limit allows anywhere.
+    let pp = PolygonPlacement {
+        mode: PolygonMode::Curved,
+        max_glyph_turn: 0.001,
+        ..PolygonPlacement::default()
+    };
+    let out = run(pp, vec![band()], "Sea", Rect::new(0.0, 0.0, 600.0, 400.0));
+    assert_eq!(out.placed.len(), 1, "{:?}", out.unplaced);
+    assert_eq!(out.placed[0].kind, CandidateKind::Polygon { curved: false });
+}
