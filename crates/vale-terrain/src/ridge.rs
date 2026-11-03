@@ -77,7 +77,9 @@ impl RidgeLine {
         let radius = spec.radius.max(4.0 * step).min(MAX_BRUSH_RADIUS / REACH);
         let spec = Ridge {
             radius,
-            segment: spec.segment.max(20.0 * crack_half_width(radius, step)),
+            segment: spec
+                .segment
+                .max(SEGMENT_BLENDS * blend_width(step, spec.world_km.max(1.0))),
             offset: spec.offset.clamp(0.0, 0.5 * radius),
             spread: spec.spread.max(1e-12),
             world_km: spec.world_km.max(1.0),
@@ -151,10 +153,11 @@ impl RidgePlan {
     fn segmenting(&self) -> Segmenting {
         let spec = &self.ridge;
         let km = spec.world_km;
-        let blend = 1.5 * self.step() + VALLEY_KM / km;
+        let blend = blend_width(self.step(), km);
         // A crest segment is long enough for the blends at its two ends.
         let most = (spec.segment / (SEGMENT_BLENDS * blend)).floor().max(1.0);
-        let count = (spec.segment * km / SECOND_ORDER_KM)
+        let full_rate = 2.0 * spec.spread * km;
+        let count = (spec.segment * km / lerp_table(&SECOND_ORDER_LENGTH, full_rate))
             .round()
             .clamp(1.0, most);
         // The loop of `turn` has no more than `TURN_CELLS` cells.
@@ -971,12 +974,17 @@ const SALT_FRACTURE: u32 = 0x5f3a_c2e1;
 const JITTER: f64 = 0.3;
 
 /// The mean length of a crest segment between two offsets with no
-/// transform fault, in kilometers (Macdonald and others 1991). The Segment
-/// setting is the mean distance between two transform faults.
+/// transform fault, in kilometers, at a full spreading rate in millimeters
+/// per year (Macdonald and others 1991; Sempere and others 1993). The
+/// Segment setting is the mean distance between two transform faults.
+const SECOND_ORDER_LENGTH: [(f64, f64); 3] = [(20.0, 50.0), (50.0, 80.0), (90.0, 140.0)];
+
+/// The length of a crest segment that has the depth of `SEGMENT_DEPTH` at
+/// its ends, in kilometers.
 const SECOND_ORDER_KM: f64 = 130.0;
 
 /// A crest segment is at least this number of blend widths long.
-const SEGMENT_BLENDS: f64 = 10.0;
+const SEGMENT_BLENDS: f64 = 5.0;
 
 /// The width of the valley of a transform fault, in kilometers. Two crest
 /// segments blend over it and 1.5 texels on each side of their boundary.
@@ -1352,27 +1360,28 @@ const GROW: f64 = 1.5;
 /// The blocks start to fade at this number of brush radii from the line.
 const HILL_FADE: f64 = 0.8;
 
-/// Behind its scarp, a block is `(1 - x)` to this power at `x` of its width.
-const BACK: f64 = 1.0;
-
 /// A fault block of throw 1 at `y` fault spacings from its scarp, away from
 /// the axis for a fault that faces the axis. The scarp is `scarp` wide, and
-/// the block tilts back over `w` behind it. The block is the mean over a
-/// box of half width `b`, so it is zero at `-scarp - b` and before, and at
-/// `w + b` and after.
+/// the block tilts back over `w` behind it. The scarp and the back are
+/// smoothstep curves, so the foot, the top, and the end of the block are
+/// round. The block is the mean over a box of half width `b`, so it is zero
+/// at `-scarp - b` and before, and at `w + b` and after.
 fn block(y: f64, scarp: f64, w: f64, b: f64) -> f64 {
     if y + b <= -scarp || y - b >= w {
         return 0.0;
     }
+    // The integral of the block from `-scarp` to `y`.
     let area = |y: f64| {
         if y <= -scarp {
             0.0
         } else if y < 0.0 {
-            (y + scarp) * (y + scarp) / (2.0 * scarp)
+            let t = (y + scarp) / scarp;
+            scarp * t * t * t * (1.0 - 0.5 * t)
         } else if y < w {
-            0.5 * scarp + w / (BACK + 1.0) * (1.0 - (1.0 - y / w).powf(BACK + 1.0))
+            let t = y / w;
+            0.5 * scarp + w * t * (1.0 - t * t * (1.0 - 0.5 * t))
         } else {
-            0.5 * scarp + w / (BACK + 1.0)
+            0.5 * (scarp + w)
         }
     };
     (area(y + b) - area(y - b)) / (2.0 * b)
@@ -1403,10 +1412,10 @@ fn soft_cap(value: f64, cap: f64) -> f64 {
     knee + room * ((value - knee) / room).tanh()
 }
 
-/// A small width in radians. The Segment setting is at least 20 times this
-/// width.
-fn crack_half_width(radius: f64, step: f64) -> f64 {
-    (0.02 * radius).max(3.0 * step)
+/// The width in radians over which two crest segments blend, on a
+/// heightmap with texel steps of `step` radians.
+fn blend_width(step: f64, world_km: f64) -> f64 {
+    1.5 * step + VALLEY_KM / world_km
 }
 
 /// As `noise1`, with a cubic curve through four values. The curve has no
@@ -1595,7 +1604,12 @@ mod tests {
 
     #[test]
     fn the_noise_bends_the_crest() {
-        let plan = shape(spec(), FINE);
+        // A fast ridge has long crest segments.
+        let fast = Ridge {
+            spread: 45.0 / 6371.0,
+            ..spec()
+        };
+        let plan = shape(fast, FINE);
         let r = plan.ridge.radius;
         let step = r / 1000.0;
         // The place of the crest in the middle half of a crest segment.
@@ -1918,6 +1932,41 @@ mod tests {
     }
 
     #[test]
+    fn a_short_segment_setting_holds_on_a_wide_brush() {
+        let km = 6371.0;
+        let spec = Ridge {
+            radius: 1000.0 / km,
+            segment: 100.0 / km,
+            ..spec()
+        };
+        let line = RidgeLine::new(spec, 4096);
+        assert!((line.spec().segment * km - 100.0).abs() < 1e-9);
+        // A slow ridge has crest segments of about 50 km between the
+        // transform faults.
+        let wide = RidgeLine::new(
+            Ridge {
+                segment: 400.0 / km,
+                ..spec
+            },
+            4096,
+        );
+        let sg = wide.plan(0).segmenting();
+        assert_eq!(sg.group, 7);
+    }
+
+    #[test]
+    fn a_block_is_round_at_its_foot_its_top_and_its_end() {
+        let (scarp, w, b) = (0.2, 1.0, 1e-6);
+        let slope = |y: f64| (block(y + 1e-5, scarp, w, b) - block(y - 1e-5, scarp, w, b)) / 2e-5;
+        for y in [-scarp, 0.0, w] {
+            assert!(slope(y).abs() < 0.02, "{y}: {}", slope(y));
+        }
+        assert!(slope(-0.5 * scarp) > 5.0);
+        assert!(slope(0.5 * w) < -1.0);
+        assert!((block(0.0, scarp, w, b) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
     fn the_sum_of_the_faults_has_each_fault_in_its_window() {
         let plan = rough(spec(), FINE);
         let f = plan.faulting();
@@ -1947,15 +1996,16 @@ mod tests {
     fn each_segment_of_the_crest_has_its_own_shift() {
         let stairs = Ridge {
             offset: 0.04,
+            segment: 0.0432,
             ..spec()
         };
         let plan = shape(stairs, FINE);
         let sg = plan.segmenting();
         let (r, length) = (plan.ridge.radius, sg.length);
-        // The Segment setting of 637 km gives 5 crest segments of 127 km
+        // The Segment setting of 275 km gives 5 crest segments of 55 km
         // between two transform faults as a mean.
         assert_eq!(sg.group, 5);
-        assert!((length * plan.ridge.world_km - 127.4).abs() < 0.1);
+        assert!((length * plan.ridge.world_km - 55.0).abs() < 0.1);
         // The mean distance between two boundaries is the segment length,
         // and the distances are not equal.
         let gaps: Vec<f64> = (0..400)

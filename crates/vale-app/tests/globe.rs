@@ -4703,7 +4703,10 @@ fn manual_pictures_of_a_cpu_ocean_ridge() {
     let which = std::env::var("RIDGE_PICTURES").unwrap_or_default();
     let raised: Edit = |brush| brush.ridge_crest_m = RIDGE_SHOT_CREST_M;
     let default: Edit = |_| {};
+    let short: Edit = |brush| brush.ridge_segment_km = 100.0;
     let pictures = [
+        ("short-near", 2048, 1000.0, 7, RIDGE_NEAR, short),
+        ("short-small", 4096, 1000.0, 7, RIDGE_SMALL, short),
         ("raised-near", 2048, 1000.0, 7, RIDGE_NEAR, raised),
         ("raised-far", 2048, 1000.0, 7, RIDGE_FAR, raised),
         ("default-near", 2048, 1000.0, 7, RIDGE_NEAR, default),

@@ -1174,17 +1174,18 @@ fn pond(height: f32, level: f32) -> f32 {
     return height + POND * (full - height);
 }
 
-// `block` in `ridge.rs`. `BACK` is 1, so the back of a block is a square.
+// `block` in `ridge.rs`.
 fn block_area(y: f32, scarp: f32, w: f32) -> f32 {
     if y <= -scarp {
         return 0.0;
     } else if y < 0.0 {
-        return (y + scarp) * (y + scarp) / (2.0 * scarp);
+        let t = (y + scarp) / scarp;
+        return scarp * t * t * t * (1.0 - 0.5 * t);
     } else if y < w {
-        let rest = 1.0 - y / w;
-        return 0.5 * scarp + w / 2.0 * (1.0 - rest * rest);
+        let t = y / w;
+        return 0.5 * scarp + w * t * (1.0 - t * t * (1.0 - 0.5 * t));
     }
-    return 0.5 * scarp + w / 2.0;
+    return 0.5 * (scarp + w);
 }
 
 fn block(y: f32, scarp: f32, w: f32, b: f32) -> f32 {
