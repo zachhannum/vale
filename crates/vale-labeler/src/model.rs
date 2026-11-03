@@ -83,6 +83,10 @@ pub struct PointPlacement {
     pub positions: Vec<PointPosition>,
     /// Gap between the symbol edge and the text.
     pub offset: f64,
+    /// The text follows the parallels of [`LabelInput::parallels`], straight or curved.
+    pub graticule: bool,
+    /// Text that follows the parallels reads from west to east, also where it is upside down.
+    pub no_flip: bool,
 }
 
 impl Default for PointPlacement {
@@ -90,6 +94,8 @@ impl Default for PointPlacement {
         Self {
             positions: PointPosition::DEFAULT_ORDER.to_vec(),
             offset: 2.0,
+            graticule: false,
+            no_flip: false,
         }
     }
 }
@@ -141,6 +147,9 @@ pub enum PolygonMode {
     Curved,
     /// Horizontal text.
     Horizontal,
+    /// Text along a parallel of [`LabelInput::parallels`] through the shape, at the latitude
+    /// with the most room. Where no such text fits, the text is horizontal.
+    Parallel,
 }
 
 /// Placement rules for polygon features.
@@ -153,6 +162,10 @@ pub struct PolygonPlacement {
     /// The angle between two neighbor glyphs of a curved label, in radians, above which a
     /// candidate costs more. A candidate that turns more than 1.6 times this angle is not used.
     pub max_glyph_turn: f64,
+    /// Horizontal text follows the parallels of [`LabelInput::parallels`], straight or curved.
+    pub graticule: bool,
+    /// Text that follows the parallels reads from west to east, also where it is upside down.
+    pub no_flip: bool,
 }
 
 impl Default for PolygonPlacement {
@@ -161,6 +174,8 @@ impl Default for PolygonPlacement {
             mode: PolygonMode::Auto,
             max_spread: 1.0,
             max_glyph_turn: 0.2,
+            graticule: false,
+            no_flip: false,
         }
     }
 }
@@ -261,6 +276,10 @@ pub struct LabelInput {
     pub classes: Vec<LabelClass>,
     pub features: Vec<Feature>,
     pub obstacles: Vec<Obstacle>,
+    /// Lines of constant latitude in page space, each from west to east. Labels that follow
+    /// the graticule use the nearest one, so the lines must be close together, for example
+    /// one each degree, and cross the whole page. With no lines, the parallels are horizontal.
+    pub parallels: Vec<Vec<Point>>,
     pub options: Options,
 }
 
@@ -275,7 +294,8 @@ pub enum CandidateKind {
         side: LineSide,
         start: f64,
     },
-    /// Inside a polygon. `curved` text follows the long axis; other text is horizontal.
+    /// Inside a polygon. `curved` text follows the long axis or a parallel; other text is
+    /// horizontal or follows the parallels.
     Polygon {
         curved: bool,
     },

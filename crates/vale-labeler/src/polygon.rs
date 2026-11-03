@@ -9,6 +9,7 @@
 use crate::collide::OrientedBox;
 use crate::engine::Candidate;
 use crate::geom::{Measured, smooth, wrap_angle};
+use crate::graticule::{Parallels, upright};
 use crate::line::{along, parallel};
 use crate::model::{CandidateKind, LabelClass, PolygonMode, PolygonPlacement, UnplacedReason};
 use crate::text::ShapedText;
@@ -56,6 +57,7 @@ pub(crate) fn candidates(
     pp: &PolygonPlacement,
     shaped: &ShapedText,
     bounds: Rect,
+    parallels: &Parallels,
 ) -> Result<Vec<Candidate>, UnplacedReason> {
     let size = class.style.size;
     let grid = Grid::new(rings, bounds, size).ok_or(UnplacedReason::OutOfBounds)?;
@@ -72,7 +74,11 @@ pub(crate) fn candidates(
         .is_some_and(|m| m.length() >= LONG * 2.0 * dmax);
 
     let mut out = Vec::new();
-    if pp.mode != PolygonMode::Horizontal
+    if pp.mode == PolygonMode::Parallel {
+        along_parallels(
+            &grid, &ranked, parallels, class, pp, shaped, dmax, half, &mut out,
+        );
+    } else if pp.mode != PolygonMode::Horizontal
         && let Some(m) = &axis
     {
         let base = if long || pp.mode == PolygonMode::Curved {
@@ -84,11 +90,12 @@ pub(crate) fn candidates(
     }
     let base = match pp.mode {
         PolygonMode::Auto if long => UNSUITED,
-        PolygonMode::Curved => FALLBACK,
+        PolygonMode::Curved | PolygonMode::Parallel => FALLBACK,
         _ => 0.0,
     };
+    let follow = (pp.graticule || pp.mode == PolygonMode::Parallel).then_some(parallels);
     horizontal(
-        &grid, &ranked, class, pp, shaped, base, dmax, half, &mut out,
+        &grid, &ranked, follow, class, pp, shaped, base, dmax, half, &mut out,
     );
     if out.is_empty() {
         return Err(UnplacedReason::AreaTooSmall);
@@ -133,48 +140,15 @@ fn curved(
             if start < 0.0 || start + span > base.length() {
                 continue;
             }
-            let mut ends: Vec<(Point, Point)> = Vec::new();
-            for (i, (_, g)) in shaped.glyphs().enumerate() {
-                let sa = start + g.x + extra * i as f64;
-                ends.push((base.point_at(sa), base.point_at(sa + g.advance)));
-            }
-            let mut angles: Vec<f64> = Vec::with_capacity(ends.len());
-            for (pa, pb) in &ends {
-                let th = if pa == pb {
-                    angles.last().copied().unwrap_or(0.0)
-                } else {
-                    (pb.y - pa.y).atan2(pb.x - pa.x)
-                };
-                angles.push(th);
-            }
-            let mut turn_sum = 0.0;
-            let mut over: f64 = 0.0;
-            let mut too_sharp = false;
-            for w in angles.windows(2) {
-                let t = wrap_angle(w[1] - w[0]).abs();
-                too_sharp |= t > TURN_CAP * limit;
-                turn_sum += t;
-                over = over.max(t - limit);
-            }
-            if too_sharp {
+            let f = follow(&base, start, shaped, extra);
+            if f.max_turn > TURN_CAP * limit {
                 continue;
             }
-            let transforms: Vec<Affine> = shaped
-                .glyphs()
-                .zip(ends.iter().zip(&angles))
-                .map(|((_, g), ((pa, _), th))| {
-                    Affine::translate(pa.to_vec2())
-                        * Affine::rotate(*th)
-                        * Affine::translate((0.0, g.y))
-                })
-                .collect();
-            let Some(c) = grid.candidate(shaped, transforms, class.margin, PAD * size) else {
+            let turns = turn_cost(&f, limit);
+            let Some(c) = grid.candidate(shaped, f.transforms, class.margin, PAD * size) else {
                 continue;
             };
-            let mut cost = base_cost + 0.5 * fi as f64 + 0.5 * k.abs() + 6.0 * turn_sum / PI;
-            if over > 0.0 {
-                cost += OVER_TURN_COST + OVER_TURN_WEIGHT * over / limit.max(1e-9);
-            }
+            let cost = base_cost + 0.5 * fi as f64 + 0.5 * k.abs() + turns;
             out.push(Candidate {
                 kind: CandidateKind::Polygon { curved: true },
                 cost: cost + c.cost,
@@ -190,6 +164,7 @@ fn curved(
 fn horizontal(
     grid: &Grid,
     ranked: &[usize],
+    parallels: Option<&Parallels>,
     class: &LabelClass,
     pp: &PolygonPlacement,
     shaped: &ShapedText,
@@ -217,7 +192,17 @@ fn horizontal(
         sites.push(c);
         let rank = sites.len() - 1;
         let d = grid.edge_distance(i);
-        let width = grid.row_width(i) - 2.0 * PAD * size;
+        // The curve through the site, and the arc length of the site on it.
+        let through = parallels.map(|ps| {
+            let t = ps.through(c);
+            let (lo, hi) = grid.run(&t.curve, t.at, 0.0);
+            let (curve, map) = upright(t.curve, lo, hi, pp.no_flip);
+            (curve, map(t.at), hi - lo)
+        });
+        let width = match &through {
+            Some((_, _, w)) => *w,
+            None => grid.row_width(i),
+        } - 2.0 * PAD * size;
         let mut spans: Vec<f64> = Vec::new();
         for (fi, fill) in FILLS.iter().enumerate() {
             let extra = spread(fill * width, shaped, pp.max_spread * size);
@@ -226,14 +211,21 @@ fn horizontal(
                 continue;
             }
             spans.push(span);
-            let origin = Point::new(c.x - ink.center().x - span / 2.0, c.y - ink.center().y);
-            let transforms = shaped
-                .glyphs()
-                .enumerate()
-                .map(|(k, (_, g))| {
-                    Affine::translate((origin.x + g.x + extra * k as f64, origin.y + g.y))
-                })
-                .collect();
+            let transforms = if let Some((curve, at, _)) = &through {
+                // The ink centers on the site, as in horizontal text.
+                let base = parallel(curve, ink.center().y);
+                let start = along(curve, &base, at - ink.center().x - span / 2.0);
+                follow(&base, start, shaped, extra).transforms
+            } else {
+                let origin = Point::new(c.x - ink.center().x - span / 2.0, c.y - ink.center().y);
+                shaped
+                    .glyphs()
+                    .enumerate()
+                    .map(|(k, (_, g))| {
+                        Affine::translate((origin.x + g.x + extra * k as f64, origin.y + g.y))
+                    })
+                    .collect()
+            };
             let Some(cand) = grid.candidate(shaped, transforms, class.margin, PAD * size) else {
                 continue;
             };
@@ -247,6 +239,203 @@ fn horizontal(
             });
         }
     }
+}
+
+/// The most curves through the shape that a label along the parallels tries.
+const LATITUDES: usize = 4;
+
+/// Candidates along the parallels through the shape. Curves at more than one latitude go
+/// through the sites farthest from the edge, and the longest part of a curve inside the shape
+/// costs least.
+#[allow(clippy::too_many_arguments)]
+fn along_parallels(
+    grid: &Grid,
+    ranked: &[usize],
+    parallels: &Parallels,
+    class: &LabelClass,
+    pp: &PolygonPlacement,
+    shaped: &ShapedText,
+    dmax: f64,
+    half: f64,
+    out: &mut Vec<Candidate>,
+) {
+    let size = class.style.size;
+    let center = grid.point(ranked[0]);
+    // Sites: the cells farthest from the edge, apart from each other, and a row of points
+    // across the parallel through the visual center.
+    let apart = size.max(0.5 * dmax);
+    let mut sites: Vec<Point> = Vec::new();
+    for &i in ranked
+        .iter()
+        .take_while(|&&i| grid.edge_distance(i) >= half)
+    {
+        if sites.len() == 2 * SITES {
+            break;
+        }
+        let c = grid.point(i);
+        if sites.iter().all(|s| s.distance(c) >= apart) {
+            sites.push(c);
+        }
+    }
+    let t = parallels.through(center);
+    let tangent = t.curve.point_at(t.at + 1.0) - t.curve.point_at(t.at - 1.0);
+    let normal = kurbo::Vec2::new(tangent.y, -tangent.x).normalize();
+    if normal.is_finite() {
+        for k in 1..=6 {
+            for sign in [1.0, -1.0] {
+                let p = center + normal * (sign * k as f64 * apart);
+                if grid.holds(p, half) {
+                    sites.push(p);
+                }
+            }
+        }
+    }
+
+    // The longest part inside the shape of the curve through each site.
+    let mut runs: Vec<(Measured, f64, f64)> = Vec::new();
+    for p in sites {
+        let t = parallels.through(p);
+        let Some((lo, hi)) = grid.longest_run(&t.curve, half) else {
+            continue;
+        };
+        let mid = t.curve.point_at(0.5 * (lo + hi));
+        if runs
+            .iter()
+            .any(|(c, a, b)| c.point_at(0.5 * (a + b)).distance(mid) < 0.5 * size)
+        {
+            continue;
+        }
+        runs.push((t.curve, lo, hi));
+    }
+    runs.sort_by(|a, b| (b.2 - b.1).total_cmp(&(a.2 - a.1)));
+    runs.truncate(LATITUDES);
+    let Some(room) = runs.first().map(|r| r.2 - r.1) else {
+        return;
+    };
+
+    let adv = shaped.advance;
+    let gaps = shaped.glyph_count().saturating_sub(1);
+    for (curve, lo, hi) in runs {
+        let len = hi - lo;
+        if len < adv {
+            continue;
+        }
+        let room_cost = 3.0 * (1.0 - len / room);
+        let (curve, map) = upright(curve, lo, hi, pp.no_flip);
+        let (lo, hi) = {
+            let (a, b) = (map(lo), map(hi));
+            (a.min(b), a.max(b))
+        };
+        let base = parallel(&curve, -shaped.cap_height / 2.0);
+        let mut spans: Vec<f64> = Vec::new();
+        for (fi, fill) in FILLS.iter().enumerate() {
+            let extra = spread(fill * len, shaped, pp.max_spread * size);
+            let span = adv + extra * gaps as f64;
+            if spans.iter().any(|s| (s - span).abs() < 0.5 * size) {
+                continue;
+            }
+            spans.push(span);
+            for k in [0.0, 1.0, -1.0, 2.0, -2.0, 3.0, -3.0] {
+                let mid = lo + 0.5 * len + k * SHIFT * len;
+                if mid - span / 2.0 < lo || mid + span / 2.0 > hi {
+                    continue;
+                }
+                let start = along(&curve, &base, mid) - span / 2.0;
+                if start < 0.0 || start + span > base.length() {
+                    continue;
+                }
+                let f = follow(&base, start, shaped, extra);
+                if f.max_turn > TURN_CAP * pp.max_glyph_turn {
+                    continue;
+                }
+                let turns = turn_cost(&f, pp.max_glyph_turn);
+                let Some(c) = grid.candidate(shaped, f.transforms, class.margin, PAD * size) else {
+                    continue;
+                };
+                let cost = room_cost + 0.5 * fi as f64 + 0.5 * k.abs() + turns;
+                out.push(Candidate {
+                    kind: CandidateKind::Polygon { curved: true },
+                    cost: cost + c.cost,
+                    ..c
+                });
+            }
+        }
+    }
+}
+
+/// Glyphs along a baseline.
+pub(crate) struct Follow {
+    pub transforms: Vec<Affine>,
+    /// The sum of the turns between neighbor glyphs, in radians.
+    pub turn_sum: f64,
+    /// The largest turn between two neighbor glyphs, in radians.
+    pub max_turn: f64,
+}
+
+/// The glyphs of `shaped` along `base` from the arc length `start`, with `extra` space after
+/// each glyph but the last.
+pub(crate) fn follow(base: &Measured, start: f64, shaped: &ShapedText, extra: f64) -> Follow {
+    let mut ends: Vec<(Point, Point)> = Vec::new();
+    for (i, (_, g)) in shaped.glyphs().enumerate() {
+        let sa = start + g.x + extra * i as f64;
+        ends.push((base.point_at(sa), base.point_at(sa + g.advance)));
+    }
+    let mut angles: Vec<f64> = Vec::with_capacity(ends.len());
+    for (pa, pb) in &ends {
+        let th = if pa == pb {
+            angles.last().copied().unwrap_or(0.0)
+        } else {
+            (pb.y - pa.y).atan2(pb.x - pa.x)
+        };
+        angles.push(th);
+    }
+    let (mut turn_sum, mut max_turn) = (0.0, 0.0_f64);
+    for w in angles.windows(2) {
+        let t = wrap_angle(w[1] - w[0]).abs();
+        turn_sum += t;
+        max_turn = max_turn.max(t);
+    }
+    let transforms = shaped
+        .glyphs()
+        .zip(ends.iter().zip(&angles))
+        .map(|((_, g), ((pa, _), th))| {
+            Affine::translate(pa.to_vec2()) * Affine::rotate(*th) * Affine::translate((0.0, g.y))
+        })
+        .collect();
+    Follow {
+        transforms,
+        turn_sum,
+        max_turn,
+    }
+}
+
+/// The cost of the turns of `f`, with `limit` as the angle above which a turn costs more.
+fn turn_cost(f: &Follow, limit: f64) -> f64 {
+    let over = f.max_turn - limit;
+    let mut cost = 6.0 * f.turn_sum / PI;
+    if over > 0.0 {
+        cost += OVER_TURN_COST + OVER_TURN_WEIGHT * over / limit.max(1e-9);
+    }
+    cost
+}
+
+/// One box for each glyph with ink, grown by `margin`, and the bounds of the boxes.
+pub(crate) fn glyph_boxes(
+    shaped: &ShapedText,
+    transforms: &[Affine],
+    margin: f64,
+) -> (Vec<OrientedBox>, Rect) {
+    let boxes: Vec<OrientedBox> = shaped
+        .glyphs()
+        .zip(transforms)
+        .filter_map(|((_, g), tf)| Some(OrientedBox::from_local_rect(g.bbox?, *tf).inflate(margin)))
+        .collect();
+    let mut bounds: Option<Rect> = None;
+    for b in &boxes {
+        let r = b.aabb();
+        bounds = Some(bounds.map_or(r, |u| u.union(r)));
+    }
+    (boxes, bounds.unwrap_or(Rect::ZERO))
 }
 
 /// The extra space between two letters that makes the text `len` long, at most `max`.
@@ -441,6 +630,47 @@ impl Grid {
         cells
     }
 
+    /// The arc lengths where `curve` leaves the shape on each side of the arc length `at`, or
+    /// comes nearer than `pad` to its edge.
+    fn run(&self, curve: &Measured, at: f64, pad: f64) -> (f64, f64) {
+        let step = 0.5 * self.cell;
+        let len = curve.length();
+        let reach = |dir: f64| {
+            let mut s = at;
+            while (0.0..=len).contains(&(s + dir * step))
+                && self.holds(curve.point_at(s + dir * step), pad)
+            {
+                s += dir * step;
+            }
+            s
+        };
+        (reach(-1.0), reach(1.0))
+    }
+
+    /// The longest part of `curve` that is inside the shape and at least `pad` from its edge.
+    fn longest_run(&self, curve: &Measured, pad: f64) -> Option<(f64, f64)> {
+        let step = 0.5 * self.cell;
+        let n = (curve.length() / step).floor() as usize;
+        let mut best: Option<(f64, f64)> = None;
+        let mut open: Option<f64> = None;
+        for k in 0..=n + 1 {
+            let s = k as f64 * step;
+            let inside = k <= n && self.holds(curve.point_at(s), pad);
+            match (inside, open) {
+                (true, None) => open = Some(s),
+                (false, Some(a)) => {
+                    let b = s - step;
+                    if best.is_none_or(|(x, y)| b - a > y - x) {
+                        best = Some((a, b));
+                    }
+                    open = None;
+                }
+                _ => {}
+            }
+        }
+        best.filter(|(a, b)| b > a)
+    }
+
     /// True if `p` is in the shape and at least `pad` from its edge.
     fn holds(&self, p: Point, pad: f64) -> bool {
         self.index(p)
@@ -455,7 +685,6 @@ impl Grid {
         margin: f64,
         pad: f64,
     ) -> Option<Candidate> {
-        let mut boxes = Vec::new();
         for ((_, g), tf) in shaped.glyphs().zip(&transforms) {
             let Some(bb) = g.bbox else { continue };
             for (u, v) in [0.0, 0.5, 1.0]
@@ -467,19 +696,14 @@ impl Grid {
                     return None;
                 }
             }
-            boxes.push(OrientedBox::from_local_rect(bb, *tf).inflate(margin));
         }
-        let mut bounds: Option<Rect> = None;
-        for b in &boxes {
-            let r = b.aabb();
-            bounds = Some(bounds.map_or(r, |u| u.union(r)));
-        }
+        let (boxes, bounds) = glyph_boxes(shaped, &transforms, margin);
         Some(Candidate {
             kind: CandidateKind::Polygon { curved: false },
             cost: 0.0,
             transforms,
             boxes,
-            bounds: bounds.unwrap_or(Rect::ZERO),
+            bounds,
         })
     }
 

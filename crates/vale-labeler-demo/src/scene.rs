@@ -302,6 +302,7 @@ pub fn build(preset: Preset, data_dir: &Path, seed: u64, improve: bool) -> anyho
             classes,
             features,
             obstacles: Vec::new(),
+            parallels: Vec::new(),
             options: Options { seed, improve },
         },
     })

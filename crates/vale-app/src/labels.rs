@@ -175,6 +175,7 @@ pub fn place(
         classes: label_classes,
         features,
         obstacles: symbol_obstacles(obstacles, symbols, &labeled, page),
+        parallels: Vec::new(),
         options: Options {
             seed: 24301,
             improve: quality == Quality::Final,
@@ -252,6 +253,7 @@ fn placement(c: &StyleClass, kind: GeometryKind) -> Placement {
                 .map(|r| point_position(r.position))
                 .collect(),
             offset: c.offset,
+            ..Default::default()
         }),
         StylePlacement::AboveOrBelow => line(LinePlacement::default().sides),
         StylePlacement::LineAbove => line(vec![LineSide::Above]),
@@ -266,6 +268,7 @@ fn placement(c: &StyleClass, kind: GeometryKind) -> Placement {
                 },
                 max_spread: c.spread,
                 max_glyph_turn: c.curve_limit,
+                ..Default::default()
             })
         }
     }

@@ -6,6 +6,7 @@
 mod collide;
 mod engine;
 mod geom;
+mod graticule;
 mod improve;
 mod line;
 mod model;

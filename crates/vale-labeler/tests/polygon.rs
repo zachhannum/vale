@@ -30,6 +30,7 @@ fn run(pp: PolygonPlacement, rings: Vec<Vec<Point>>, text: &str, bounds: Rect) -
             geometry: Geometry::Polygon { rings },
         }],
         obstacles: vec![],
+        parallels: Vec::new(),
         options: Options::default(),
     };
     place_labels(&mut fonts(), &input)

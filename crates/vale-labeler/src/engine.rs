@@ -1,6 +1,7 @@
 //! Filtering, scoring, greedy placement, and output.
 
 use crate::collide::{GridIndex, OrientedBox};
+use crate::graticule::Parallels;
 use crate::model::*;
 use crate::text::{Fonts, ShapedText};
 use crate::{improve, line, point, polygon};
@@ -196,6 +197,7 @@ pub(crate) fn run(fonts: &mut Fonts, input: &LabelInput) -> Labeling {
     }
 
     // Step 1: candidates.
+    let parallels = Parallels::new(&input.parallels, bounds);
     let mut instances: Vec<Instance> = Vec::new();
     for (fi, shaped) in &valid {
         let f = &input.features[*fi];
@@ -211,7 +213,14 @@ pub(crate) fn run(fonts: &mut Fonts, input: &LabelInput) -> Labeling {
                 instances.push(Instance {
                     feature_index: *fi,
                     repeat: 0,
-                    candidates: point::candidates(*position, *symbol_radius, class, pp, shaped),
+                    candidates: point::candidates(
+                        *position,
+                        *symbol_radius,
+                        class,
+                        pp,
+                        shaped,
+                        &parallels,
+                    ),
                     empty_reason: None,
                 });
             }
@@ -233,7 +242,7 @@ pub(crate) fn run(fonts: &mut Fonts, input: &LabelInput) -> Labeling {
             }
             (Geometry::Polygon { rings }, Placement::Polygon(pp)) => {
                 let (candidates, empty_reason) =
-                    match polygon::candidates(rings, class, pp, shaped, bounds) {
+                    match polygon::candidates(rings, class, pp, shaped, bounds, &parallels) {
                         Ok(c) => (c, None),
                         Err(r) => (Vec::new(), Some(r)),
                     };
