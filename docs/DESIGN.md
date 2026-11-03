@@ -646,6 +646,7 @@ The engine supports the placements that readers notice on a good map.
 | Point | Positions around the symbol in a preference order, with an optional leader line |
 | Line | Text that curves along a smoothed copy of the line, above, below, or centered, with repeats on long lines |
 | Polygon | Text that curves along the long axis of the shape and spreads its letters, or a horizontal label at the visual center |
+| Graticule | Polygon text along the parallel with the most room, with spread letters, and point and horizontal polygon text that follows the parallels |
 | Polygon too small for its label | Label outside the shape with a leader line, or a smaller font step |
 | Graticule and frame edge | Text at the frame edge, aligned to the line |
 
@@ -664,6 +665,8 @@ Manual control is part of the design and not a repair tool. You can pin a label,
 The library takes its fonts through Parley and measures real glyph outlines. Collision tests use one box per glyph on curved text, so curved labels pack tightly. A line label tries positions along the whole line, and its letters follow a parallel copy of the line, so the letter spacing stays the same in a bend. Above the curve limit, the turn between two letters adds a cost, and the hard limit is 1.6 times the curve limit. A position where two letters overlap, or where a gap between letters grows or shrinks too much, is not used.
 
 A polygon label uses only the part of the polygon inside the frame, and the largest part if the shape has more than one. The visual center is the point farthest from the edge. The long axis is the path between the two points that are farthest apart inside the shape, and it stays near the middle of the shape. If the axis is at least 2.5 times the width of the shape, the label curves along the axis. Otherwise, the label is horizontal at the visual center. A class can also make all its labels curved or all its labels horizontal. The letters of a label spread to fill a part of the axis or of the width of the shape, up to the spread limit of the class.
+
+The caller gives the graticule as lines of latitude in page space, each from west to east. Text that follows the graticule uses a copy of the nearest parallel through its position. The text is straight where the parallels are straight, and it curves on a conic map. A polygon label along a parallel tries the curves through several points deep inside the shape, and the curve with the longest part inside the shape costs least. Its letters spread as on the long axis. The text reverses where it would be upside down on the page. A class can turn this off, for example for text near a pole.
 
 The labels use the fonts of the system. The app also ships Noto Sans, which is the default font. A label style names a font family, and the project file holds only that name. The font picker has a search field. On iPad, it is the font picker of the system. A project looks the same on two devices if both devices have its fonts. If the device has no font of that family, the labels use Noto Sans, and the panel of the layer shows a warning that names both fonts. PDF export embeds a subset of each font.
 
