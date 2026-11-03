@@ -613,7 +613,11 @@ fn first_map_frame(doc: &mut Document, p: &mut Pipeline) -> (Composed, Rect) {
 #[test]
 fn a_polygon_class_places_its_label_inside_the_frame() {
     use vale_style::LabelPlacement;
-    for placement in [LabelPlacement::AlongShape, LabelPlacement::Horizontal] {
+    for placement in [
+        LabelPlacement::BestFit,
+        LabelPlacement::Curved,
+        LabelPlacement::Horizontal,
+    ] {
         let mut doc = Document::sample();
         let mut p = Pipeline::new();
         let map = doc.first_map();

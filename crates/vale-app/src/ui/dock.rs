@@ -1014,14 +1014,15 @@ fn labels_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
             .suffix(" pt")
             .show(ui);
     }
-    if kind == GeometryKind::Polygon && class.placement == vale_style::LabelPlacement::AlongShape {
+    if kind == GeometryKind::Polygon {
         number::slider(SPREAD, &mut class.spread, SPREADS.0..=SPREADS.1)
             .step(0.1)
             .suffix("×")
             .show(ui);
     }
-    let curved =
-        kind == GeometryKind::Line || class.placement == vale_style::LabelPlacement::AlongShape;
+    let curved = kind == GeometryKind::Line
+        || (kind == GeometryKind::Polygon
+            && class.placement != vale_style::LabelPlacement::Horizontal);
     if kind == GeometryKind::Line {
         ui.horizontal(|ui| {
             ui.checkbox(&mut class.repeat, REPEAT);

@@ -5,8 +5,8 @@ use std::collections::{HashMap, HashSet};
 use kurbo::Rect;
 use vale_labeler::{
     Caps, Feature, Fonts, Geometry, LabelClass, LabelInput, LinePlacement, LineSide, Obstacle,
-    ObstacleKind, Options, Placement, PointPlacement, PointPosition, PolygonPlacement, TextStyle,
-    place_labels,
+    ObstacleKind, Options, Placement, PointPlacement, PointPosition, PolygonMode, PolygonPlacement,
+    TextStyle, place_labels,
 };
 use vale_render::{Color, GlyphRun, Item};
 use vale_store::GeometryKind;
@@ -257,9 +257,13 @@ fn placement(c: &StyleClass, kind: GeometryKind) -> Placement {
         StylePlacement::LineAbove => line(vec![LineSide::Above]),
         StylePlacement::LineBelow => line(vec![LineSide::Below]),
         StylePlacement::OnLine => line(vec![LineSide::Centered]),
-        StylePlacement::AlongShape | StylePlacement::Horizontal => {
+        StylePlacement::BestFit | StylePlacement::Curved | StylePlacement::Horizontal => {
             Placement::Polygon(PolygonPlacement {
-                curved: p == StylePlacement::AlongShape,
+                mode: match p {
+                    StylePlacement::Curved => PolygonMode::Curved,
+                    StylePlacement::Horizontal => PolygonMode::Horizontal,
+                    _ => PolygonMode::Auto,
+                },
                 max_spread: c.spread,
                 max_glyph_turn: c.curve_limit,
             })

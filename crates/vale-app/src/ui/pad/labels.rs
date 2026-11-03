@@ -599,8 +599,8 @@ fn apply_text(edit: &TextEdit, c: &mut LabelClass) {
 
 /// The Placement segment of the panel of a class. A point class has its
 /// positions and its offset. A line class has its offset, its repeat, its
-/// curve limit, and its smoothing. A polygon class along the shape has its
-/// spread and its curve limit.
+/// curve limit, and its smoothing. A polygon class has its spread, and a
+/// curved one has its curve limit.
 fn placement_segment(
     ui: &mut egui::Ui,
     state: &mut AppState,
@@ -613,15 +613,15 @@ fn placement_segment(
         state.atlas.label_page = Some(ClassPage::Placement);
     }
     if kind == GeometryKind::Polygon {
-        if class.placement == LabelPlacement::AlongShape {
-            let spread = Number::new(SPREAD, class.spread, SPREADS.0..=SPREADS.1)
-                .step(0.1)
-                .unit("×")
-                .default(vale_style::SPREAD)
-                .slider(ui, controls);
-            if let Some(spread) = spread {
-                state.edit_label_class(map, layer, i, |c| c.spread = spread);
-            }
+        let spread = Number::new(SPREAD, class.spread, SPREADS.0..=SPREADS.1)
+            .step(0.1)
+            .unit("×")
+            .default(vale_style::SPREAD)
+            .slider(ui, controls);
+        if let Some(spread) = spread {
+            state.edit_label_class(map, layer, i, |c| c.spread = spread);
+        }
+        if class.placement != LabelPlacement::Horizontal {
             curve_limit(ui, state, controls, (map, layer, i), class);
         }
         return;

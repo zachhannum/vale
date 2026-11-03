@@ -3994,8 +3994,18 @@ fn the_labels_tab_edits_a_polygon_class() {
         classes(&h, map, "Land")[0].placement,
         LabelPlacement::Horizontal
     );
+    assert!(control(&h, &value_of(SPREAD)).is_some());
+    assert!(control(&h, &value_of(CURVE_LIMIT)).is_none());
+    assert!(label_runs(&mut h, 0).iter().any(|g| g.text == "LAND"));
+
+    tap(&mut h, PLACEMENT);
+    tap(&mut h, LabelPlacement::Curved.name());
+    assert_eq!(
+        classes(&h, map, "Land")[0].placement,
+        LabelPlacement::Curved
+    );
     for name in [SPREAD, CURVE_LIMIT] {
-        assert!(control(&h, &value_of(name)).is_none(), "{name}");
+        assert!(control(&h, &value_of(name)).is_some(), "{name}");
     }
     assert!(label_runs(&mut h, 0).iter().any(|g| g.text == "LAND"));
 }
