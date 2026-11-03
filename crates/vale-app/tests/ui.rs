@@ -1830,3 +1830,74 @@ fn the_tool_bar_has_split_for_line_and_polygon_layers() {
     let layer = h.state().doc.project.layer(id).unwrap();
     assert_eq!(layer.features.len(), 2);
 }
+
+#[test]
+fn the_tool_bar_has_vertex_and_the_keys_edit_vertices() {
+    use vale_app::globe::Tool;
+    use vale_app::globe::select::FeatureRef;
+    use vale_app::globe::view::GlobeView;
+    use vale_app::ui::pad::{DELETE_VERTEX, MOVE_SHARED, SMOOTH_VERTICES, VERTEX};
+    use vale_store::{Feature, Geometry, GeometryKind};
+    let mut doc = Document::sample();
+    let id = doc.add_layer(GeometryKind::Polygon);
+    let square = vec![
+        [-10.0, -10.0],
+        [10.0, -10.0],
+        [10.0, 10.0],
+        [-10.0, 10.0],
+        [-10.0, -10.0],
+    ];
+    let feature = Feature::new(Geometry::Polygons(vec![vec![square]]), Default::default());
+    let uuid = feature.uuid();
+    assert!(doc.project.add_feature(id, feature));
+    let points = doc.add_layer(GeometryKind::Point);
+    let mut state = AppState::new(doc).unwrap();
+    state.headless = true;
+    state.select(Some(LayerRef::Vector(points)));
+    state.globe.view = GlobeView::centered(0.0, 0.0);
+    state.globe.snap.on = false;
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(SIZE.0 as f32, SIZE.1 as f32))
+        .with_pixels_per_point(1.0)
+        .build_ui_state(|ui, state: &mut AppState| draw(ui, state), state);
+    h.run_steps(3);
+    // A point layer has no Vertex, and A does not choose it.
+    assert!(h.query_by_label(VERTEX).is_none());
+    h.key_press(egui::Key::A);
+    h.run_steps(2);
+    assert_ne!(h.state().globe.tool, Tool::Vertex);
+    h.state_mut().select(Some(LayerRef::Vector(id)));
+    h.run_steps(3);
+    assert!(h.query_by_label(VERTEX).is_some());
+    h.key_press(egui::Key::A);
+    h.run_steps(2);
+    assert_eq!(h.state().globe.tool, Tool::Vertex);
+    assert!(h.query_by_label(MOVE_SHARED).is_some());
+    assert!(h.query_by_label(DELETE_VERTEX).is_some());
+    assert!(h.query_by_label(SMOOTH_VERTICES).is_some());
+    h.state_mut().feature_selection = vec![FeatureRef { layer: id, uuid }];
+    h.run_steps(2);
+    // A mouse drag moves a corner.
+    mouse_way(&mut h, &[[10.0, 10.0], [13.0, 12.0]], egui::Modifiers::NONE);
+    let ring = |h: &Harness<'static, AppState>| {
+        let layer = h.state().doc.project.layer(id).unwrap();
+        let Geometry::Polygons(p) = &layer.features[0].geometry else {
+            panic!("not a polygon");
+        };
+        let mut ring = p[0][0].clone();
+        ring.pop();
+        ring
+    };
+    assert!(!ring(&h).contains(&[10.0, 10.0]));
+    assert_eq!(ring(&h).len(), 4);
+    assert_eq!(h.state().vertex_selection.len(), 1);
+    // Delete deletes the selected vertex, and Backspace does too.
+    h.key_press(egui::Key::Delete);
+    h.run_steps(2);
+    assert_eq!(ring(&h).len(), 3);
+    h.state_mut().vertex_selection = vec![[10.0, -10.0]];
+    h.key_press(egui::Key::Backspace);
+    h.run_steps(2);
+    // A ring keeps three vertices.
+    assert_eq!(ring(&h).len(), 3);
+}
