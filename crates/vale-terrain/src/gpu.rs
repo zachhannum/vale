@@ -16,6 +16,7 @@ use crate::bands::SEA_LEVEL;
 use crate::channel::{ChannelBuffers, ChannelLines, ChannelShape};
 use crate::cube::{FACES, meters_to_level};
 use crate::erode::{ErodeGrid, ErodeStep};
+use crate::fault::FaultPlan;
 use crate::flow::{ChannelMap, ChannelWindow, CoarseHeights, WINDOW_CELLS, Window};
 use crate::heightmap::{
     Limits, Mode, NOISE_RELIEF_M, StampPlan, TILE_SIZE, TexelRect, grain_axis, noise_octaves,
@@ -306,12 +307,18 @@ struct RidgeUniforms {
     range_spacing: f32,
     range_piece: f32,
     range_tilt: f32,
+    /// The numbers of a fault block pass: 1 for a single fault, and the
+    /// side to which most blocks tilt. A fault block pass has the height,
+    /// the spacing, the piece length, and the tilt in the range numbers.
+    fault_single: f32,
+    fault_side: f32,
+    unused: [f32; 2],
     segments: [[f32; 16]; LINE_SEGMENTS],
 }
 
-// The segments start at the offset of the array of `stamp.wgsl`: 36 numbers
+// The segments start at the offset of the array of `stamp.wgsl`: 40 numbers
 // of 4 bytes, a multiple of 16.
-const _: () = assert!(std::mem::offset_of!(RidgeUniforms, segments) == 36 * 4);
+const _: () = assert!(std::mem::offset_of!(RidgeUniforms, segments) == 40 * 4);
 
 fn packed(limits: Limits) -> u32 {
     u32::from(limits.floor) | u32::from(limits.ceiling) << 16
@@ -888,7 +895,7 @@ impl GpuHeightmap {
         let mode = first.stamp.mode;
         if matches!(
             mode,
-            Mode::Erode | Mode::OceanRidge | Mode::Range | Mode::Basin
+            Mode::Erode | Mode::OceanRidge | Mode::Range | Mode::Basin | Mode::FaultBlock
         ) {
             // These stamps change nothing, so they need no pass.
             let same = plans.iter().take_while(|plan| plan.stamp.mode == mode);
@@ -953,7 +960,11 @@ impl GpuHeightmap {
                     Mode::Smooth => 2,
                     Mode::Flatten => 3,
                     Mode::Carve => 4,
-                    Mode::Erode | Mode::OceanRidge | Mode::Range | Mode::Basin => 5,
+                    Mode::Erode
+                    | Mode::OceanRidge
+                    | Mode::Range
+                    | Mode::Basin
+                    | Mode::FaultBlock => 5,
                     Mode::Weather => 6,
                     Mode::Warp => 7,
                     Mode::Ridge => 8,
@@ -1344,6 +1355,38 @@ impl GpuHeightmap {
             ..bytemuck::Zeroable::zeroed()
         };
         self.line_pass(queue, enc, &plan.line, cell, 11, spec.limits, header)
+    }
+
+    /// Adds the fault blocks of a plan to `enc`, as `ridge` adds an ocean
+    /// ridge. The result is that of `Heightmap::fault`.
+    pub fn fault(
+        &self,
+        queue: &wgpu::Queue,
+        enc: &mut wgpu::CommandEncoder,
+        plan: &FaultPlan,
+    ) -> bool {
+        let spec = &plan.fault;
+        let cell = plan.piece();
+        let length_cell = (plan.length / cell + 0.5).floor();
+        let header = RidgeUniforms {
+            length: [
+                length_cell as f32,
+                (plan.length - length_cell * cell) as f32,
+            ],
+            radius: spec.radius as f32,
+            segment: cell as f32,
+            texel: (2.0 * FRAC_PI_4 / f64::from(self.face_size)) as f32,
+            sin_reach: (REACH * spec.radius).sin() as f32,
+            seed: plan.seed(),
+            range_height: spec.height as f32,
+            range_spacing: spec.spacing as f32,
+            range_piece: cell as f32,
+            range_tilt: plan.tilt() as f32,
+            fault_single: if spec.single { 1.0 } else { 0.0 },
+            fault_side: plan.side() as f32,
+            ..bytemuck::Zeroable::zeroed()
+        };
+        self.line_pass(queue, enc, &plan.line, cell, 14, spec.limits, header)
     }
 
     /// Adds the passes of a line brush plan to `enc`, as `ridge`. `header`

@@ -5,11 +5,12 @@ use std::sync::{Arc, OnceLock, mpsc};
 use vale_terrain::math::{V3, add, angle, arc_motion, cross, dot, lonlat_to_dir, normalize, scale};
 use vale_terrain::{
     CHANNEL_WIDTHS_KM, ChannelMap, ChannelShape, ChannelWindow, CoarseHeights, ErodeBrush, Erosion,
-    FACES, FIELD_WGSL, FLOODPLAINS_KM, FlowMap, GROUP_STAMPS, GpuHeightmap, GpuPyramid, GpuTiles,
-    Heightmap, LINE_SEGMENTS, LINE_SPACING, Limits, LinePlan, Mode, OuterFlow, Pyramid,
-    RIDGE_SLOTS, RangeLine, RangePlan, RangeSpec, Readback, Ridge, RidgeLine, RidgePlan,
-    STAMP_SLOTS, Stamp, StampPlan, TILE_SIZE, TILES_WGSL, TexelRect, WINDOW_CELLS, Window,
-    WindowHeights, channel_map, pyramid_layout, tiles_layout, window_channels,
+    FACES, FIELD_WGSL, FLOODPLAINS_KM, FaultLine, FaultPlan, FaultSpec, FlowMap, GROUP_STAMPS,
+    GpuHeightmap, GpuPyramid, GpuTiles, Heightmap, LINE_SEGMENTS, LINE_SPACING, Limits, LinePlan,
+    Mode, OuterFlow, Pyramid, RIDGE_SLOTS, RangeLine, RangePlan, RangeSpec, Readback, Ridge,
+    RidgeLine, RidgePlan, STAMP_SLOTS, Stamp, StampPlan, TILE_SIZE, TILES_WGSL, TexelRect,
+    WINDOW_CELLS, Window, WindowHeights, channel_map, pyramid_layout, tiles_layout,
+    window_channels,
 };
 
 /// The largest difference between a GPU level and a CPU level after raise,
@@ -3436,6 +3437,40 @@ impl LineSpec for Ridge {
     }
 }
 
+impl LineSpec for FaultSpec {
+    type Line = FaultLine;
+    type Plan = FaultPlan;
+    fn line(self, n: usize) -> FaultLine {
+        FaultLine::new(self, n)
+    }
+    fn radius(line: &FaultLine) -> f64 {
+        line.spec().radius
+    }
+    fn push(line: &mut FaultLine, dir: V3, flow: f64) {
+        line.push(dir, flow);
+    }
+    fn len(line: &FaultLine) -> usize {
+        line.len()
+    }
+    fn plan(line: &FaultLine, from: usize) -> FaultPlan {
+        line.plan(from)
+    }
+    fn margin(line: &FaultLine, p: V3) -> f64 {
+        line.margin(p)
+    }
+    fn lay(map: &mut Heightmap, plan: &FaultPlan) {
+        map.fault(plan);
+    }
+    fn pass(
+        map: &GpuHeightmap,
+        queue: &wgpu::Queue,
+        enc: &mut wgpu::CommandEncoder,
+        plan: &FaultPlan,
+    ) -> bool {
+        map.fault(queue, enc, plan)
+    }
+}
+
 impl LineSpec for RangeSpec {
     type Line = RangeLine;
     type Plan = RangePlan;
@@ -3851,6 +3886,101 @@ fn gpu_range_in_steps_matches_one_plan_on_the_cpu() {
     let start = smooth_ground(256);
     let run = ridge_run(&start, range_spec(0.1), &RIDGE_BEND, true, false);
     assert_ridge("range, S-bend in steps", &run, &[0, 2]);
+}
+
+fn fault_spec(radius: f64, single: bool) -> FaultSpec {
+    FaultSpec {
+        radius,
+        height: 20000.0,
+        spacing: 0.3 * radius,
+        seed: 7,
+        single,
+        limits: Limits::default(),
+    }
+}
+
+#[test]
+#[ignore = "gpu"]
+fn gpu_fault_blocks_match_cpu_for_a_straight_stroke() {
+    let start = smooth_ground(256);
+    for single in [false, true] {
+        for radius in [0.05, 0.1, 0.2] {
+            let places = [(-12.0, 5.0), (-12.0 + 250.0 * radius, -3.0)];
+            let run = ridge_run(&start, fault_spec(radius, single), &places, false, false);
+            let name = format!("fault, single {single}, straight, radius {radius}");
+            assert_ridge(&name, &run, &[0]);
+            assert_eq!(run.skipped, 0);
+        }
+    }
+}
+
+#[test]
+#[ignore = "gpu"]
+fn gpu_fault_blocks_match_cpu_across_a_face_edge() {
+    let start = smooth_ground(256);
+    for single in [false, true] {
+        let run = ridge_run(&start, fault_spec(0.1, single), &RIDGE_BEND, false, false);
+        assert_ridge(&format!("fault, single {single}, S-bend"), &run, &[0, 2]);
+    }
+}
+
+#[test]
+#[ignore = "gpu"]
+fn gpu_fault_blocks_match_cpu_at_a_cube_corner() {
+    let start = smooth_ground(256);
+    // Faces 0, 2, and 4 meet at longitude 45 and latitude 35.264.
+    let places = [(36.0, 28.0), (45.0, 35.264), (50.0, 44.0)];
+    let run = ridge_run(&start, fault_spec(0.1, false), &places, false, false);
+    assert_ridge("fault, cube corner", &run, &[0, 2, 4]);
+}
+
+/// The distance along a long line is large, so the place of a texel needs
+/// most of the digits of a 32-bit number.
+#[test]
+#[ignore = "gpu"]
+fn gpu_fault_blocks_match_cpu_on_a_large_face() {
+    let start = smooth_ground(2048);
+    let places = [
+        (-40.0, -20.0),
+        (-10.0, 12.0),
+        (20.0, -10.0),
+        (44.0, 24.0),
+        (60.0, 20.0),
+    ];
+    let run = ridge_run(&start, fault_spec(0.03, false), &places, false, false);
+    assert_ridge("fault, large face", &run, &[0, 2]);
+    assert!(run.plans > 3, "{}", run.plans);
+}
+
+#[test]
+#[ignore = "gpu"]
+fn gpu_fault_blocks_with_limits_match_cpu() {
+    let start = Heightmap::new(256, 30000);
+    let limits = Limits {
+        floor: 29800,
+        ceiling: 40000,
+    };
+    for single in [false, true] {
+        let spec = FaultSpec {
+            limits,
+            ..fault_spec(0.1, single)
+        };
+        let run = ridge_run(&start, spec, &RIDGE_BEND, false, false);
+        assert_ridge(&format!("fault, single {single}, limits"), &run, &[0, 2]);
+        let levels = run.levels.iter().flatten();
+        let (low, high) = levels.fold((u16::MAX, 0), |(low, high), l| (low.min(*l), high.max(*l)));
+        assert!(low >= 29800 && high <= 40000, "{low} {high}");
+    }
+}
+
+#[test]
+#[ignore = "gpu"]
+fn gpu_fault_blocks_in_steps_match_one_plan_on_the_cpu() {
+    let start = smooth_ground(256);
+    for single in [false, true] {
+        let run = ridge_run(&start, fault_spec(0.1, single), &RIDGE_BEND, true, false);
+        assert_ridge(&format!("fault, single {single}, in steps"), &run, &[0, 2]);
+    }
 }
 
 #[test]

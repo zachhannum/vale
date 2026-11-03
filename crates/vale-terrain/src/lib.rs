@@ -13,6 +13,7 @@ mod channel;
 mod cube;
 mod equirect;
 mod erode;
+mod fault;
 mod flow;
 #[cfg(feature = "gpu")]
 mod gpu;
@@ -44,6 +45,7 @@ pub use cube::{
 };
 pub use equirect::{Equirect, EquirectGrid};
 pub use erode::{ErodeBrush, ErodeGrid, ErodeStep, Erosion, OuterFlow};
+pub use fault::{FaultLine, FaultPlan, FaultSpec};
 pub use flow::{
     CHANNEL_SCALE, ChannelMap, ChannelWindow, CoarseHeights, FLOW_SIZE, FlowMap, RIDGE_REACH,
     RIVER_MIN_AREA, RIVER_MIN_CELLS, RIVER_OCTAVES, WINDOW_CELLS, WINDOW_MARGIN, Window,

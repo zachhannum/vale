@@ -13,9 +13,9 @@ use vale_store::{
     BlendMode, Hillshade, ImageId, LayerId, LonLat, RasterDisplay, RasterId, Smoothing, Uuid,
 };
 use vale_terrain::{
-    Bands, BasinLine, ChannelMap, ChannelWindow, ErodeBrush, ErodeStep, FACES, Heightmap, Mode,
-    Pyramid, Rain, RangeLine, RidgeLine, SEA_LEVEL, Stamp, TexelRect, Window, WindowHeights,
-    max_level, meters_to_level, reduced_cap, reduced_face_size, smoothing_level,
+    Bands, BasinLine, ChannelMap, ChannelWindow, ErodeBrush, ErodeStep, FACES, FaultLine,
+    Heightmap, Mode, Pyramid, Rain, RangeLine, RidgeLine, SEA_LEVEL, Stamp, TexelRect, Window,
+    WindowHeights, max_level, meters_to_level, reduced_cap, reduced_face_size, smoothing_level,
 };
 
 pub mod backdrop;
@@ -252,10 +252,12 @@ struct Uplifting {
     window: Option<Window>,
 }
 
-/// The line of an ocean ridge stroke or of a range stroke.
+/// The line of an ocean ridge stroke, a range stroke, or a fault block
+/// stroke.
 enum BrushLine {
     Ridge(RidgeLine),
     Range(RangeLine),
+    Fault(FaultLine),
 }
 
 impl BrushLine {
@@ -263,6 +265,7 @@ impl BrushLine {
         match self {
             BrushLine::Ridge(line) => line.len(),
             BrushLine::Range(line) => line.len(),
+            BrushLine::Fault(line) => line.len(),
         }
     }
 
@@ -280,12 +283,18 @@ impl BrushLine {
                 let end = plan.end;
                 (LineOp::Range(Box::new(plan)), end)
             }
+            BrushLine::Fault(line) => {
+                let plan = line.plan(from);
+                let end = plan.end;
+                (LineOp::Fault(Box::new(plan)), end)
+            }
         }
     }
 }
 
-/// The line of an ocean ridge stroke or of a range stroke. The stamps of
-/// the stroke are the points of the line, and they do not go to the GPU.
+/// The line of an ocean ridge stroke, a range stroke, or a fault block
+/// stroke. The stamps of the stroke are the points of the line, and they
+/// do not go to the GPU.
 struct Ridging {
     line: BrushLine,
     /// The number of points of the line that the plans cover.
@@ -300,14 +309,15 @@ impl Ridging {
             match &mut self.line {
                 BrushLine::Ridge(line) => line.push(stamp.center, stamp.flow),
                 BrushLine::Range(line) => line.push(stamp.center, stamp.flow),
+                BrushLine::Fault(line) => line.push(stamp.center, stamp.flow),
             }
         }
     }
 }
 
-/// The line of an ocean ridge stroke or of a range stroke with a brush of
-/// this radius, in radians, on a world of `km` kilometers with a heightmap
-/// of face size `n`. Other modes have no line.
+/// The line of an ocean ridge stroke, a range stroke, or a fault block
+/// stroke with a brush of this radius, in radians, on a world of `km`
+/// kilometers with a heightmap of face size `n`. Other modes have no line.
 fn line_of(brush: &BrushSettings, km: f64, seed: u32, n: usize, radius: f64) -> Option<Ridging> {
     let (line, range) = match brush.mode {
         Mode::OceanRidge => {
@@ -318,6 +328,10 @@ fn line_of(brush: &BrushSettings, km: f64, seed: u32, n: usize, radius: f64) -> 
             let spec = brush.range_spec(radius, km, seed);
             let range = (brush.erosion > 0.0).then(Ranging::default);
             (BrushLine::Range(RangeLine::new(spec, n)), range)
+        }
+        Mode::FaultBlock => {
+            let spec = brush.fault_spec(radius, km, seed);
+            (BrushLine::Fault(FaultLine::new(spec, n)), None)
         }
         _ => return None,
     };

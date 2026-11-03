@@ -12,6 +12,7 @@ use crate::basin::BasinCut;
 use crate::channel::{ChannelCut, ChannelShape};
 use crate::cube::{ELEV_MAX, ELEV_MIN, FACES, face_dir, face_of, meters_to_level, unwarp, warp};
 use crate::erode::ErodeStep;
+use crate::fault::FaultPlan;
 use crate::flow::{ChannelMap, ChannelWindow};
 use crate::line::{LinePlace, LinePlan, LinePoint};
 use crate::math::{V3, add, cross, dot, length, normalize, scale};
@@ -82,6 +83,9 @@ pub enum Mode {
     /// The mode of the basin brush. A stamp of this mode changes nothing.
     /// `Heightmap::basin` makes the change.
     Basin,
+    /// The mode of the fault block brush. A stamp of this mode changes
+    /// nothing. `Heightmap::fault` makes the change.
+    FaultBlock,
 }
 
 /// The elevation limits of a stamp, in 16-bit steps. A stamp changes only
@@ -1025,7 +1029,7 @@ impl Heightmap {
     pub fn stamp(&mut self, stamp: &Stamp) -> usize {
         if matches!(
             stamp.mode,
-            Mode::Erode | Mode::OceanRidge | Mode::Range | Mode::Basin
+            Mode::Erode | Mode::OceanRidge | Mode::Range | Mode::Basin | Mode::FaultBlock
         ) {
             return 0;
         }
@@ -1153,7 +1157,11 @@ impl Heightmap {
                             Mode::Raise | Mode::Uplift => old + amount * stamp.strength,
                             Mode::Lower => old - amount * stamp.strength,
                             Mode::Flatten => old + (f64::from(stamp.level) - old) * amount.min(1.0),
-                            Mode::Erode | Mode::OceanRidge | Mode::Range | Mode::Basin => continue,
+                            Mode::Erode
+                            | Mode::OceanRidge
+                            | Mode::Range
+                            | Mode::Basin
+                            | Mode::FaultBlock => continue,
                             Mode::Noise => {
                                 let p = face_dir(face, fu, fv);
                                 let value = fractal(p, stamp, octaves);
@@ -1409,6 +1417,13 @@ impl Heightmap {
     /// stroke, as `ridge` lays an ocean ridge. Returns the number of texels
     /// that changed.
     pub fn range(&mut self, plan: &RangePlan) -> usize {
+        self.lay(&plan.line, |start, at, _| plan.level(start, at))
+    }
+
+    /// Lays the fault blocks of a plan on the ground from before the
+    /// stroke, as `ridge` lays an ocean ridge. Returns the number of texels
+    /// that changed.
+    pub fn fault(&mut self, plan: &FaultPlan) -> usize {
         self.lay(&plan.line, |start, at, _| plan.level(start, at))
     }
 
@@ -1766,6 +1781,7 @@ fn save_tile(
 mod tests {
     use super::*;
     use crate::channel::{ChannelLines, channel_size};
+    use crate::fault::{FaultLine, FaultSpec};
     use crate::flow::tests::equator_valley;
     use crate::flow::{
         CoarseHeights, FlowMap, NONE, OUT, Window, WindowHeights, channel_map, drain, sea,
@@ -4951,6 +4967,75 @@ mod tests {
         assert_eq!(map.range(&plan), 0);
         assert!(all_levels(&map) == once);
         map.end_stroke();
+    }
+
+    /// Lays fault blocks near the stroke between two places, one plan for
+    /// each point.
+    fn lay_fault(map: &mut Heightmap, single: bool, from: (f64, f64), to: (f64, f64)) {
+        let spec = FaultSpec {
+            radius: 0.1,
+            height: 20000.0,
+            spacing: 0.03,
+            seed: 7,
+            single,
+            limits: Limits::default(),
+        };
+        let mut line = FaultLine::new(spec, map.face_size());
+        map.begin_stroke();
+        for i in 0..=20 {
+            let k = f64::from(i) / 20.0;
+            let (lon, lat) = (from.0 + (to.0 - from.0) * k, from.1 + (to.1 - from.1) * k);
+            let before = line.len();
+            line.push(lonlat_to_dir(lon, lat), 1.0);
+            map.fault(&line.plan(before));
+        }
+        map.end_stroke();
+    }
+
+    #[test]
+    fn fault_blocks_leave_no_seam_at_a_face_edge() {
+        let n = 256;
+        for single in [false, true] {
+            let mut map = smooth_ground(n);
+            let before = all_levels(&map);
+            // Face 0 and face 2 meet at longitude 45.
+            lay_fault(&mut map, single, (37.0, -6.0), (53.0, 10.0));
+            let after = all_levels(&map);
+            for m in (118..150).step_by(4) {
+                // The texels at the edge, on each face.
+                let changed =
+                    [(m + 1) * n - 1, (2 * n + n - 1) * n + m].map(|i| after[i] != before[i]);
+                assert!(changed[0] && changed[1], "{single} {m}");
+                assert_no_seam(&map, 0, m);
+            }
+        }
+    }
+
+    #[test]
+    fn fault_blocks_leave_no_seam_at_a_cube_corner() {
+        let n = 256;
+        let mut map = smooth_ground(n);
+        // Faces 0, 2, and 4 meet at longitude 45 and latitude 35.264.
+        lay_fault(&mut map, false, (38.0, 29.0), (52.0, 41.0));
+        for face in [0, 2, 4] {
+            for m in [236, 243, 249] {
+                assert_no_seam(&map, face, m);
+            }
+        }
+    }
+
+    #[test]
+    fn a_fault_block_stamp_changes_nothing() {
+        let mut map = smooth_ground(64);
+        let before = all_levels(&map);
+        map.begin_stroke();
+        let stamp = Stamp {
+            mode: Mode::FaultBlock,
+            ..raise(lonlat_to_dir(10.0, 10.0), 0.2)
+        };
+        assert_eq!(map.stamp(&stamp), 0);
+        assert!(!map.end_stroke());
+        assert!(all_levels(&map) == before);
     }
 
     /// Smooth ground with a different bump on each texel, so each mode moves

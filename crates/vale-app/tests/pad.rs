@@ -2908,6 +2908,138 @@ fn the_brush_panel_has_the_sliders_of_the_range_mode() {
 }
 
 #[test]
+fn the_tool_strip_has_the_fault_block_mode() {
+    use vale_app::ui::pad::icons::Icon;
+    let fault = (panels::FAULT_BLOCK, Icon::FaultBlock, Mode::FaultBlock);
+    assert!(ModeGroup::Terrain.modes().contains(&fault));
+    assert_eq!(ModeGroup::of(Mode::FaultBlock), ModeGroup::Terrain);
+    for size in [BOARDS[0], (1133.0, 744.0)] {
+        let mut h = pad(size);
+        open_group(&mut h, ModeGroup::Terrain);
+        let flyout = h.state().pad.flyouts.rect.unwrap();
+        let screen = h.state().pad.rects.unwrap().screen;
+        assert!(screen.contains_rect(flyout), "{size:?}: {flyout:?}");
+        // The flyout scrolls to its last rows.
+        let from = flyout.center();
+        drag(&mut h, from, from - vec2(0.0, 0.4 * flyout.height()), None);
+        let row = control(&h, panels::FAULT_BLOCK).unwrap();
+        assert!(flyout.contains_rect(row), "{size:?}: {row:?}");
+        tap(&mut h, panels::FAULT_BLOCK);
+        let s = h.state();
+        assert_eq!(
+            (s.globe.tool, s.globe.brush.mode),
+            (Tool::Brush, Mode::FaultBlock)
+        );
+        assert_eq!(
+            s.pad.brush_faces[1],
+            Some((panels::FAULT_BLOCK, Icon::FaultBlock))
+        );
+        assert_eq!(toggled(&h, TERRAIN), Some(true));
+        check_controls(&h, &format!("{size:?} with the Fault block mode"));
+    }
+}
+
+/// The switch of the fault block mode that makes one fault.
+const SINGLE_FAULT_ROW: &str = "Brush single fault";
+
+/// The rows of the fault block mode in the brush panel.
+const FAULT_ROWS: [&str; 4] = [
+    "Brush strength",
+    SINGLE_FAULT_ROW,
+    "Brush spacing",
+    "Brush seed",
+];
+
+#[test]
+fn the_brush_panel_has_the_controls_of_the_fault_block_mode() {
+    let mut h = pad(BOARDS[0]);
+    tap(&mut h, "Brush settings");
+    for row in [SINGLE_FAULT_ROW, "Brush spacing", "Brush seed"] {
+        assert!(row_of(&h, row).is_none(), "{row}");
+    }
+    choose_mode(&mut h, panels::FAULT_BLOCK);
+    assert_eq!(h.state().globe.brush.mode, Mode::FaultBlock);
+    for row in ["Brush size", "Brush flow"].into_iter().chain(FAULT_ROWS) {
+        assert!(row_of(&h, row).is_some(), "{row}");
+    }
+    for row in [
+        "Brush hardness",
+        "Brush erosion",
+        "Brush wind",
+        "Brush angle",
+        "Brush crest",
+        "Brush scale",
+    ] {
+        assert!(row_of(&h, row).is_none(), "{row}");
+    }
+    // The spacing goes from one end of its range to the other.
+    assert_eq!(h.state().globe.brush.fault_spacing_km, 25.0);
+    slide_to_end(&mut h, "Brush spacing", false);
+    assert!((h.state().globe.brush.fault_spacing_km - 2.0).abs() < 1e-9);
+    slide_to_end(&mut h, "Brush spacing", true);
+    assert!((h.state().globe.brush.fault_spacing_km - 200.0).abs() < 1e-6);
+    // The seed stepper sets the seed of the world.
+    type_value(&mut h, "Brush seed", "999");
+    assert_eq!(h.state().doc.project.world.seed, 999);
+    assert_eq!(h.state().globe.world_seed, 999);
+    check_controls(&h, "the Fault block mode");
+    // A single fault has no spacing and no seed.
+    assert_eq!(toggled(&h, SINGLE_FAULT_ROW), Some(false));
+    tap(&mut h, SINGLE_FAULT_ROW);
+    assert!(h.state().globe.brush.fault_single);
+    assert_eq!(toggled(&h, SINGLE_FAULT_ROW), Some(true));
+    for row in ["Brush spacing", "Brush seed"] {
+        assert!(row_of(&h, row).is_none(), "{row}");
+    }
+    check_controls(&h, "the Fault block mode with a single fault");
+    tap(&mut h, SINGLE_FAULT_ROW);
+    assert!(!h.state().globe.brush.fault_single);
+    assert!(row_of(&h, "Brush spacing").is_some());
+}
+
+#[test]
+fn the_fault_block_mode_fits_on_the_smallest_ipad() {
+    let mut h = pad((1133.0, 744.0));
+    choose_mode(&mut h, panels::FAULT_BLOCK);
+    tap(&mut h, "Brush settings");
+    let screen = h.state().pad.rects.unwrap().screen;
+    let (_, panel) = h.state().pad.panels[0];
+    assert!(screen.contains_rect(panel), "{panel:?}");
+    let rows = ["Brush size", "Brush flow"].into_iter().chain(FAULT_ROWS);
+    for row in rows.chain(["Brush floor", "Brush ceiling"]) {
+        let rect = row_of(&h, row).unwrap_or_else(|| panic!("no control `{row}`"));
+        assert!(panel.contains_rect(rect), "{row}: {rect:?} in {panel:?}");
+    }
+    check_controls(&h, "744 high with the Fault block panel");
+}
+
+/// Writes an image of the brush panel in the fault block mode, for a person
+/// to look at.
+#[test]
+#[ignore]
+fn screenshot_of_the_fault_block_panel() {
+    let mut state = state();
+    state.add_height();
+    let setup = egui_kittest::wgpu::default_wgpu_setup();
+    let mut h = vale_app::headless::ui_harness(state, (1194.0, 834.0), 2.0, setup);
+    h.run_steps(3);
+    open_group(&mut h, ModeGroup::Terrain);
+    let flyout = h.state().pad.flyouts.rect.unwrap();
+    let from = flyout.center();
+    drag(&mut h, from, from - vec2(0.0, 0.4 * flyout.height()), None);
+    h.render()
+        .unwrap()
+        .save("../../target/app/fault-block-more.png")
+        .unwrap();
+    tap(&mut h, panels::FAULT_BLOCK);
+    tap(&mut h, "Brush settings");
+    h.render()
+        .unwrap()
+        .save("../../target/app/fault-block-panel.png")
+        .unwrap();
+}
+
+#[test]
 fn the_tool_strip_has_the_basin_mode() {
     use vale_app::ui::pad::icons::Icon;
     let basin = (panels::BASIN, Icon::Basin, Mode::Basin);

@@ -6,8 +6,9 @@ use std::time::Instant;
 
 use vale_terrain::{
     BASIN_DENSITY_KM, BasinSpec, CHANNEL_WIDTH_KM, CHANNEL_WIDTHS_KM, ChannelShape, ELEV_MAX,
-    ELEV_MIN, FLOODPLAIN_KM, FLOODPLAINS_KM, GROUP_STAMPS, LINE_SPACING, Limits, MAX_BRUSH_RADIUS,
-    Mode, Rain, RangeSpec, Ridge, Stamp, StampPlan, meters_to_level, talus_levels,
+    ELEV_MIN, FLOODPLAIN_KM, FLOODPLAINS_KM, FaultSpec, GROUP_STAMPS, LINE_SPACING, Limits,
+    MAX_BRUSH_RADIUS, Mode, Rain, RangeSpec, Ridge, Stamp, StampPlan, meters_to_level,
+    talus_levels,
 };
 
 use super::math::{V3, add, angle, arc_motion, normalize, scale};
@@ -50,6 +51,8 @@ pub const RIDGE_SEGMENT_KM: std::ops::RangeInclusive<f64> = 100.0..=1500.0;
 pub const RIDGE_OFFSET_KM: std::ops::RangeInclusive<f64> = 0.0..=500.0;
 /// The limits of the ridge spacing of the range mode, in kilometers.
 pub const RANGE_SPACING_KM: std::ops::RangeInclusive<f64> = 5.0..=300.0;
+/// The limits of the fault spacing of the fault block mode, in kilometers.
+pub const FAULT_SPACING_KM: std::ops::RangeInclusive<f64> = 2.0..=200.0;
 /// The limits of the density of the basin mode, in kilometers.
 pub const BASIN_DENSITY: std::ops::RangeInclusive<f64> = BASIN_DENSITY_KM.0..=BASIN_DENSITY_KM.1;
 /// The limits of the channel width setting, in kilometers.
@@ -129,6 +132,11 @@ pub struct BrushSettings {
     /// The mean distance between two ridges of the range mode, in
     /// kilometers.
     pub range_spacing_km: f64,
+    /// The mean distance between two faults of the fault block mode, in
+    /// kilometers.
+    pub fault_spacing_km: f64,
+    /// The fault block mode makes one fault along the line.
+    pub fault_single: bool,
     /// The mean distance between two tributaries of the basin mode, in
     /// kilometers.
     pub basin_density_km: f64,
@@ -177,6 +185,8 @@ impl Default for BrushSettings {
             ridge_spread_mm: 25.0,
             ridge_magma: 0.0,
             range_spacing_km: 30.0,
+            fault_spacing_km: 25.0,
+            fault_single: false,
             basin_density_km: 40.0,
             channel_km: CHANNEL_WIDTH_KM,
             floodplain_km: FLOODPLAIN_KM,
@@ -196,7 +206,16 @@ pub fn needs_height(mode: Mode) -> bool {
     use Mode::*;
     matches!(
         mode,
-        Carve | Ridge | Deposit | Erode | Weather | Uplift | OceanRidge | Range | Basin
+        Carve
+            | Ridge
+            | Deposit
+            | Erode
+            | Weather
+            | Uplift
+            | OceanRidge
+            | Range
+            | FaultBlock
+            | Basin
     )
 }
 
@@ -278,6 +297,20 @@ impl BrushSettings {
             height: f64::from(height),
             spacing: self.range_spacing_km / world_km,
             seed,
+            limits: self.limits(),
+        }
+    }
+
+    /// The settings of a fault block stroke with this brush radius, in
+    /// radians. `world_km` is the radius of the world.
+    pub fn fault_spec(&self, radius: f64, world_km: f64, seed: u32) -> FaultSpec {
+        let height = meters_to_level(self.strength_m) - meters_to_level(0.0);
+        FaultSpec {
+            radius,
+            height: f64::from(height),
+            spacing: self.fault_spacing_km / world_km,
+            seed,
+            single: self.fault_single,
             limits: self.limits(),
         }
     }
@@ -470,7 +503,7 @@ impl Tip<'_> {
                 | Mode::Push
                 | Mode::Noise => flow,
                 // The flow of a mouse gives the full height of the ridge.
-                Mode::OceanRidge | Mode::Range | Mode::Basin => {
+                Mode::OceanRidge | Mode::Range | Mode::FaultBlock | Mode::Basin => {
                     (input / FIXED_FLOW).min(1.0) * self.brush.flow
                 }
                 // These three modes move toward a target, so each stamp does less.
@@ -533,11 +566,11 @@ pub fn set_world(
 pub const BASIN_SPACING_TEXELS: f64 = 1.5;
 
 /// The distance between the stamps of a mode, as a part of the brush radius.
-/// The stamps of the ocean ridge mode and the range mode are the points of
-/// the line of the stroke.
+/// The stamps of the ocean ridge mode, the range mode, and the fault block
+/// mode are the points of the line of the stroke.
 fn stamp_spacing(mode: Mode) -> f64 {
     match mode {
-        Mode::OceanRidge | Mode::Range => LINE_SPACING,
+        Mode::OceanRidge | Mode::Range | Mode::FaultBlock => LINE_SPACING,
         _ => STAMP_SPACING,
     }
 }
@@ -648,8 +681,12 @@ impl Stroke {
         if let (Some(last), Some(level)) = (self.last, self.level) {
             let tip = self.tip(brush, face_size, level);
             self.line_to(&tip, last, out);
-            // The line of a ridge, a range, or a basin ends at the last sample.
-            let line = matches!(brush.mode, Mode::OceanRidge | Mode::Range | Mode::Basin);
+            // The line of a ridge, a range, fault blocks, or a basin ends at
+            // the last sample.
+            let line = matches!(
+                brush.mode,
+                Mode::OceanRidge | Mode::Range | Mode::FaultBlock | Mode::Basin
+            );
             if line && self.end.is_some() {
                 self.put(&tip, last.0, last.1, out);
             }
@@ -679,6 +716,7 @@ fn stamp_cost(plan: &StampPlan) -> usize {
         | Mode::Uplift
         | Mode::OceanRidge
         | Mode::Range
+        | Mode::FaultBlock
         | Mode::Basin
         | Mode::Noise => 1,
     }
@@ -916,6 +954,32 @@ mod tests {
             let gap = angle(out[0].center, out[1].center);
             assert!((gap / texel - BASIN_SPACING_TEXELS).abs() < 1e-6, "{gap}");
         }
+    }
+
+    #[test]
+    fn the_fault_spec_follows_the_settings() {
+        let brush = BrushSettings {
+            mode: Mode::FaultBlock,
+            strength_m: 2000.0,
+            fault_spacing_km: 50.0,
+            fault_single: true,
+            ceiling_on: true,
+            ..BrushSettings::default()
+        };
+        let spec = brush.fault_spec(0.1, 6371.0, 9);
+        let height = meters_to_level(2000.0) - meters_to_level(0.0);
+        assert_eq!(spec.radius, 0.1);
+        assert_eq!(spec.height, f64::from(height));
+        assert!((spec.spacing - 50.0 / 6371.0).abs() < 1e-12);
+        assert_eq!(spec.seed, 9);
+        assert!(spec.single);
+        assert_eq!(spec.limits, brush.limits());
+        let defaults = BrushSettings::default();
+        assert_eq!(defaults.fault_spacing_km, 25.0);
+        assert!(!defaults.fault_single);
+        assert!(needs_height(Mode::FaultBlock));
+        // The stamps are the points of the line.
+        assert_eq!(stamp_spacing(Mode::FaultBlock), LINE_SPACING);
     }
 
     #[test]
