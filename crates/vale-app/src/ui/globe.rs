@@ -435,9 +435,9 @@ fn vertex_input(
             egui::TouchPhase::Start => {}
         }
     }
-    // The first touch is also the egui pointer. A drag with Shift turns the
-    // view.
-    if !touched && !globe.nav.touching() {
+    // The first touch is also the egui pointer, and the view does not have
+    // the finger on a handle. A drag with Shift turns the view.
+    if !touched && !globe.nav.touching() && press.claimed_finger().is_none() {
         let (pos, pressed, released, shift) = ui.input(|i| {
             let p = &i.pointer;
             let (pressed, released) = (p.primary_pressed(), p.primary_released());

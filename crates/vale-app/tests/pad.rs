@@ -9187,15 +9187,15 @@ fn manual_the_number_controls_of_the_brush_panel() {
 
 #[test]
 fn the_vector_cell_lists_the_tools_of_the_kind_of_the_selected_layer() {
-    use vale_app::ui::pad::{POINT, SPLIT, vector_tools};
+    use vale_app::ui::pad::{POINT, SPLIT, VERTEX, vector_tools};
     let names = |kind| {
         vector_tools(kind)
             .iter()
             .map(|t| t.name)
             .collect::<Vec<_>>()
     };
-    assert_eq!(names(GeometryKind::Line), [LINE, SPLIT]);
-    assert_eq!(names(GeometryKind::Polygon), [POLYGON, SPLIT]);
+    assert_eq!(names(GeometryKind::Line), [LINE, VERTEX, SPLIT]);
+    assert_eq!(names(GeometryKind::Polygon), [POLYGON, VERTEX, SPLIT]);
     assert_eq!(names(GeometryKind::Point), [POINT]);
     let dir = tempfile::tempdir().unwrap();
     let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
@@ -9394,4 +9394,361 @@ fn split_cuts_a_line_into_two_lines_at_the_crossing() {
     );
     tap(&mut h, "Undo");
     assert_eq!(line_features(&h, id).len(), 1);
+}
+
+/// Chooses Vertex in the list of the Vector cell.
+fn choose_vertex(h: &mut Pad) {
+    use vale_app::ui::pad::VERTEX;
+    hold_cell(h, VECTOR);
+    tap(h, VERTEX);
+    assert_eq!(h.state().globe.tool, Tool::Vertex);
+}
+
+/// `select_pad` with the Vertex tool in the polygon layer, with no
+/// snapping, and the square of the layer as the edited feature.
+fn vertex_pad(dir: &std::path::Path) -> (Pad, Picks) {
+    let (mut h, picks) = select_pad(WorldView::Globe, dir);
+    select_layer(&mut h, picks.polygon.layer);
+    choose_vertex(&mut h);
+    h.state_mut().globe.snap.on = false;
+    let inside = screen_at(&h, 0.0, -18.0);
+    finger_tap_at(&mut h, inside);
+    assert_eq!(selection(&h), [picks.polygon]);
+    (h, picks)
+}
+
+/// The distinct vertices of the outer ring of the first polygon.
+fn outer_ring(g: &vale_store::Geometry) -> Vec<[f64; 2]> {
+    let vale_store::Geometry::Polygons(p) = g else {
+        panic!("not a polygon");
+    };
+    let mut ring = p[0][0].clone();
+    if ring.len() > 1 && ring.first() == ring.last() {
+        ring.pop();
+    }
+    ring
+}
+
+fn near(a: [f64; 2], b: [f64; 2], tolerance: f64) -> bool {
+    (a[0] - b[0]).abs() <= tolerance && (a[1] - b[1]).abs() <= tolerance
+}
+
+/// A drag of the mouse from one screen point to another.
+fn mouse_drag(h: &mut Pad, from: Pos2, to: Pos2) {
+    let button = |pos, pressed| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    h.event(egui::Event::PointerMoved(from));
+    h.event(button(from, true));
+    h.step();
+    for i in 1..=6 {
+        h.event(egui::Event::PointerMoved(from.lerp(to, i as f32 / 6.0)));
+        h.step();
+    }
+    h.event(button(to, false));
+    h.run_steps(3);
+}
+
+#[test]
+fn vertex_stays_the_tool_between_line_and_polygon_layers() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
+    select_layer(&mut h, picks.line.layer);
+    choose_vertex(&mut h);
+    assert!(h.state().globe.vertexing());
+    select_layer(&mut h, picks.polygon.layer);
+    assert_eq!(h.state().globe.tool, Tool::Vertex);
+    select_layer(&mut h, picks.point.layer);
+    assert_eq!(h.state().globe.tool, Tool::Point);
+}
+
+#[test]
+fn the_card_of_vertex_has_its_buttons_at_touch_size() {
+    use vale_app::ui::pad::{DELETE_VERTEX, MOVE_SHARED, SMOOTH_VERTICES};
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, _) = vertex_pad(dir.path());
+    // Delete vertex and Smooth vertices are off with no selected vertex.
+    assert!(control(&h, DELETE_VERTEX).is_none());
+    let corner = screen_at(&h, 10.0, -12.0);
+    finger_tap_at(&mut h, corner);
+    assert_eq!(h.state().vertex_selection, [[10.0, -12.0]]);
+    assert!(control(&h, SMOOTH_VERTICES).is_none());
+    for name in [SNAP, MOVE_SHARED, DELETE_VERTEX] {
+        assert!(control(&h, name).is_some(), "{name}");
+    }
+    check_controls(&h, "the Vertex tool");
+    screenshot::save(&mut h, "pad-vertex");
+    // The switch is on by default, and a tap turns it off.
+    assert!(h.state().globe.vertex.shared);
+    assert_eq!(toggled(&h, MOVE_SHARED), Some(true));
+    tap(&mut h, MOVE_SHARED);
+    assert!(!h.state().globe.vertex.shared);
+    // The Brush panel has the snap switches and the smoothing.
+    tap(&mut h, "Brush settings");
+    for name in [SNAPPING, SNAP_VERTICES, SNAP_EDGES, "Line smoothing"] {
+        assert!(row_of(&h, name).is_some(), "{name}");
+    }
+}
+
+#[test]
+fn a_finger_a_pen_and_the_mouse_move_a_vertex_in_one_undo_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, picks) = vertex_pad(dir.path());
+    let corners: [[f64; 2]; 3] = [[10.0, -12.0], [-10.0, -12.0], [10.0, -25.0]];
+    for (i, (corner, pointer)) in corners
+        .into_iter()
+        .zip(["finger", "pen", "mouse"])
+        .enumerate()
+    {
+        let before = geometry_of(&h, picks.polygon);
+        let to = [corner[0] + 3.0 * corner[0].signum(), corner[1] + 2.0];
+        let (from, end) = (
+            screen_at(&h, corner[0], corner[1]),
+            screen_at(&h, to[0], to[1]),
+        );
+        let saved = saves(&h);
+        match i {
+            0 => drag(&mut h, from, end, None),
+            1 => drag(&mut h, from, end, Some(0.5)),
+            _ => mouse_drag(&mut h, from, end),
+        }
+        assert_eq!(saves(&h), saved + 1, "{pointer}");
+        let ring = outer_ring(&geometry_of(&h, picks.polygon));
+        assert!(!ring.contains(&corner), "{pointer}: {ring:?}");
+        assert!(
+            ring.iter().any(|&v| near(v, to, 0.3)),
+            "{pointer}: {ring:?}"
+        );
+        assert_eq!(ring.len(), 4, "{pointer}");
+        h.state_mut().undo();
+        h.run_steps(2);
+        assert_eq!(geometry_of(&h, picks.polygon), before, "{pointer}");
+    }
+}
+
+#[test]
+fn a_finger_drag_away_from_a_handle_moves_the_view() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, picks) = vertex_pad(dir.path());
+    let before = geometry_of(&h, picks.polygon);
+    let (from, to) = (screen_at(&h, 0.0, -18.0), screen_at(&h, 5.0, -10.0));
+    drag(&mut h, from, to, None);
+    assert_eq!(geometry_of(&h, picks.polygon), before);
+    assert!(screen_at(&h, 0.0, -18.0).distance(from) > 20.0);
+}
+
+#[test]
+fn a_tap_on_an_edge_adds_a_vertex_and_delete_vertex_deletes_it() {
+    use vale_app::ui::pad::DELETE_VERTEX;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, picks) = vertex_pad(dir.path());
+    for pointer in ["finger", "pen"] {
+        let saved = saves(&h);
+        let edge = screen_at(&h, 0.0, -25.0);
+        match pointer {
+            "finger" => finger_tap_at(&mut h, edge),
+            _ => pen_tap_at(&mut h, edge),
+        }
+        assert_eq!(saves(&h), saved + 1, "{pointer}");
+        let ring = outer_ring(&geometry_of(&h, picks.polygon));
+        assert_eq!(ring.len(), 5, "{pointer}");
+        let added = ring.iter().copied().find(|&v| near(v, [0.0, -25.0], 0.5));
+        let added = added.unwrap_or_else(|| panic!("{pointer}: {ring:?}"));
+        assert_eq!(h.state().vertex_selection, [added]);
+        tap(&mut h, DELETE_VERTEX);
+        assert_eq!(saves(&h), saved + 2, "{pointer}");
+        assert_eq!(outer_ring(&geometry_of(&h, picks.polygon)).len(), 4);
+        assert!(h.state().vertex_selection.is_empty());
+    }
+}
+
+#[test]
+fn a_handle_takes_a_touch_of_44_points() {
+    use vale_app::ui::vertex::HANDLE_REACH;
+    assert_eq!(2.0 * HANDLE_REACH, 44.0);
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, _) = vertex_pad(dir.path());
+    // Away from the square, on the diagonal from its corner.
+    let out = vec2(1.0, -1.0).normalized();
+    let corner = screen_at(&h, 10.0, -12.0);
+    finger_tap_at(&mut h, corner + out * 21.0);
+    assert_eq!(h.state().vertex_selection, [[10.0, -12.0]]);
+    finger_tap_at(&mut h, corner + out * 23.0);
+    assert!(h.state().vertex_selection.is_empty());
+    pen_tap_at(&mut h, corner + out * 21.0);
+    assert_eq!(h.state().vertex_selection, [[10.0, -12.0]]);
+}
+
+#[test]
+fn a_pen_box_selects_vertices_and_delete_vertex_deletes_them() {
+    use vale_app::ui::pad::DELETE_VERTEX;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, picks) = vertex_pad(dir.path());
+    let corner = screen_at(&h, 10.0, -12.0);
+    drag(
+        &mut h,
+        corner + vec2(40.0, -40.0),
+        corner + vec2(-30.0, 30.0),
+        Some(0.5),
+    );
+    assert_eq!(h.state().vertex_selection, [[10.0, -12.0]]);
+    let saved = saves(&h);
+    tap(&mut h, DELETE_VERTEX);
+    assert_eq!(saves(&h), saved + 1);
+    let ring = outer_ring(&geometry_of(&h, picks.polygon));
+    assert_eq!(ring.len(), 3);
+    assert!(!ring.contains(&[10.0, -12.0]));
+}
+
+/// Adds a feature to a layer, and gives the app the frames to see it.
+fn add_feature(
+    h: &mut Pad,
+    layer: vale_store::LayerId,
+    geometry: vale_store::Geometry,
+) -> FeatureRef {
+    let feature = vale_store::Feature::new(geometry, Default::default());
+    let uuid = feature.uuid();
+    let state = h.state_mut();
+    assert!(state.doc.project.add_feature(layer, feature));
+    state.touch();
+    state.save_waiting().unwrap();
+    h.run_steps(2);
+    FeatureRef { layer, uuid }
+}
+
+#[test]
+fn a_move_of_a_shared_vertex_moves_both_polygons_with_the_switch_on() {
+    use vale_app::ui::pad::MOVE_SHARED;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, picks) = vertex_pad(dir.path());
+    let east = vec![[10.0, -25.0], [30.0, -25.0], [30.0, -12.0], [10.0, -12.0]];
+    let east = add_feature(
+        &mut h,
+        picks.polygon.layer,
+        vale_store::Geometry::Polygons(vec![vec![east]]),
+    );
+    let saved = saves(&h);
+    let (from, to) = (screen_at(&h, 10.0, -12.0), screen_at(&h, 12.0, -8.0));
+    drag(&mut h, from, to, None);
+    assert_eq!(saves(&h), saved + 1, "one undo step");
+    let (west_g, east_g) = (geometry_of(&h, picks.polygon), geometry_of(&h, east));
+    let moved = outer_ring(&west_g)
+        .into_iter()
+        .find(|&v| near(v, [12.0, -8.0], 0.3))
+        .expect("the moved vertex");
+    assert!(outer_ring(&east_g).contains(&moved), "the same position");
+    assert!(!outer_ring(&east_g).contains(&[10.0, -12.0]));
+    // Each side of the new border is in one polygon.
+    for (lon, lat, west) in [
+        (10.5, -14.0, true),
+        (12.0, -14.0, false),
+        (11.0, -9.5, true),
+    ] {
+        assert_eq!(inside_polygon(&west_g, lon, lat), west, "{lon}, {lat}");
+        assert_eq!(inside_polygon(&east_g, lon, lat), !west, "{lon}, {lat}");
+    }
+    // With the switch off, only the edited polygon changes.
+    tap(&mut h, MOVE_SHARED);
+    let east_before = geometry_of(&h, east);
+    let (from, to) = (screen_at(&h, 10.0, -25.0), screen_at(&h, 8.0, -28.0));
+    drag(&mut h, from, to, None);
+    assert_eq!(geometry_of(&h, east), east_before);
+    let ring = outer_ring(&geometry_of(&h, picks.polygon));
+    assert!(!ring.contains(&[10.0, -25.0]));
+}
+
+#[test]
+fn a_vertex_snaps_to_a_vertex_and_an_edge_and_the_switches_apply() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, picks) = vertex_pad(dir.path());
+    h.state_mut().globe.vertex.shared = false;
+    let east = vec![[14.0, -25.0], [30.0, -25.0], [30.0, -12.0], [14.0, -12.0]];
+    add_feature(
+        &mut h,
+        picks.polygon.layer,
+        vale_store::Geometry::Polygons(vec![vec![east]]),
+    );
+    h.state_mut().globe.snap.on = true;
+    let corner = [10.0, -12.0];
+    let cases = [
+        // To the corner of the other square.
+        ([14.0, -12.0], true, true, Some([14.0, -12.0])),
+        ([14.0, -12.0], false, false, None),
+        // To its west edge.
+        ([14.0, -18.0], false, true, Some([14.0, -18.0])),
+        ([14.0, -18.0], false, false, None),
+    ];
+    for (target, vertices, edges, want) in cases {
+        let snap = &mut h.state_mut().globe.snap;
+        (snap.vertices, snap.edges) = (vertices, edges);
+        let before = geometry_of(&h, picks.polygon);
+        let from = screen_at(&h, corner[0], corner[1]);
+        let to = screen_at(&h, target[0], target[1]) + vec2(-4.0, 3.0);
+        drag(&mut h, from, to, Some(0.5));
+        let ring = outer_ring(&geometry_of(&h, picks.polygon));
+        let moved = ring
+            .iter()
+            .copied()
+            .find(|v| !outer_ring(&before).contains(v))
+            .unwrap();
+        match want {
+            Some(w) if vertices => assert_eq!(moved, w),
+            Some(w) => {
+                assert!((moved[0] - w[0]).abs() < 1e-6, "{moved:?} is on the edge");
+                assert!(near(moved, w, 1.0), "{moved:?}");
+            }
+            None => assert!(
+                (moved[0] - target[0]).abs() > 0.05,
+                "{moved:?} did not snap"
+            ),
+        }
+        h.state_mut().undo();
+        h.run_steps(2);
+    }
+}
+
+#[test]
+fn smooth_vertices_changes_only_the_selected_part_in_one_undo_step() {
+    use vale_app::ui::pad::SMOOTH_VERTICES;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
+    let zigzag: Vec<[f64; 2]> = (0..=8)
+        .map(|i| [-8.0 + 2.0 * i as f64, if i % 2 == 0 { 10.0 } else { 12.0 }])
+        .collect();
+    let state = h.state_mut();
+    let line = vale_store::Geometry::Lines(vec![zigzag.clone()]);
+    assert!(
+        state
+            .doc
+            .project
+            .set_geometry(picks.line.layer, picks.line.uuid, line)
+    );
+    state.touch();
+    h.run_steps(2);
+    select_layer(&mut h, picks.line.layer);
+    choose_vertex(&mut h);
+    let on_line = screen_at(&h, -7.0, 11.0);
+    finger_tap_at(&mut h, on_line);
+    assert_eq!(selection(&h), [picks.line]);
+    // A box around the vertices from (-2, 12) to (2, 12).
+    let (a, b) = (screen_at(&h, -2.0, 12.0), screen_at(&h, 2.0, 12.0));
+    // The box starts away from the handles.
+    drag(&mut h, a + vec2(-6.0, -40.0), b + vec2(6.0, 4.0), Some(0.5));
+    assert_eq!(h.state().vertex_selection.len(), 2);
+    let before = geometry_of(&h, picks.line);
+    tap(&mut h, SMOOTH_VERTICES);
+    let vale_store::Geometry::Lines(parts) = geometry_of(&h, picks.line) else {
+        panic!("not a line");
+    };
+    let out = &parts[0];
+    assert_eq!(out[..4], zigzag[..4]);
+    assert_eq!(out[out.len() - 3..], zigzag[6..]);
+    assert!(!out.contains(&zigzag[4]), "the middle vertex moved");
+    // One undo takes the smooth away.
+    h.state_mut().undo();
+    h.run_steps(2);
+    assert_eq!(geometry_of(&h, picks.line), before);
 }
