@@ -103,10 +103,7 @@ fn polygon_layer_has_no_point_controls() {
     let land = id_of(&h, "Land");
     h.state_mut().selected_layer = Some(LayerRef::Vector(land));
     h.run_steps(2);
-    assert!(
-        h.query_by_label("Polygon labels are not available yet.")
-            .is_some()
-    );
+    assert!(h.query_by_label("Show labels").is_some());
     assert!(
         h.query_by_role_and_label(
             egui::accesskit::Role::SpinButton,

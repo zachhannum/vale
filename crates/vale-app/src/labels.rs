@@ -5,7 +5,8 @@ use std::collections::{HashMap, HashSet};
 use kurbo::Rect;
 use vale_labeler::{
     Caps, Feature, Fonts, Geometry, LabelClass, LabelInput, LinePlacement, LineSide, Obstacle,
-    ObstacleKind, Options, Placement, PointPlacement, PointPosition, TextStyle, place_labels,
+    ObstacleKind, Options, Placement, PointPlacement, PointPosition, PolygonMode, PolygonPlacement,
+    TextStyle, place_labels,
 };
 use vale_render::{Color, GlyphRun, Item};
 use vale_store::GeometryKind;
@@ -48,11 +49,6 @@ pub fn place(
     let mut next_id: u64 = 0;
 
     for (pl, layer_classes) in layers.iter().zip(classes) {
-        let is_line = match pl.kind {
-            GeometryKind::Point => false,
-            GeometryKind::Line => true,
-            GeometryKind::Polygon => continue,
-        };
         for c in layer_classes {
             let Ok(text_expr) = Expr::parse(&c.text) else {
                 continue;
@@ -121,19 +117,29 @@ pub fn place(
                     layer_names.push(&pl.layer.name);
                     next_id += 1;
                 };
-                if is_line {
-                    for line in f.lines.iter().filter(|l| l.len() >= 2) {
-                        push(Geometry::Line {
-                            path: line.clone(),
-                            stroke_width,
-                        });
+                match pl.kind {
+                    GeometryKind::Line => {
+                        for line in f.lines.iter().filter(|l| l.len() >= 2) {
+                            push(Geometry::Line {
+                                path: line.clone(),
+                                stroke_width,
+                            });
+                        }
                     }
-                } else {
-                    for p in f.points.iter().filter(|p| page.contains(**p)) {
-                        push(Geometry::Point {
-                            position: *p,
-                            symbol_radius,
-                        });
+                    GeometryKind::Point => {
+                        for p in f.points.iter().filter(|p| page.contains(**p)) {
+                            push(Geometry::Point {
+                                position: *p,
+                                symbol_radius,
+                            });
+                        }
+                    }
+                    GeometryKind::Polygon => {
+                        let rings: Vec<_> =
+                            (f.rings.iter()).filter(|r| r.len() >= 3).cloned().collect();
+                        if !rings.is_empty() {
+                            push(Geometry::Polygon { rings });
+                        }
                     }
                 }
             }
@@ -251,6 +257,17 @@ fn placement(c: &StyleClass, kind: GeometryKind) -> Placement {
         StylePlacement::LineAbove => line(vec![LineSide::Above]),
         StylePlacement::LineBelow => line(vec![LineSide::Below]),
         StylePlacement::OnLine => line(vec![LineSide::Centered]),
+        StylePlacement::BestFit | StylePlacement::Curved | StylePlacement::Horizontal => {
+            Placement::Polygon(PolygonPlacement {
+                mode: match p {
+                    StylePlacement::Curved => PolygonMode::Curved,
+                    StylePlacement::Horizontal => PolygonMode::Horizontal,
+                    _ => PolygonMode::Auto,
+                },
+                max_spread: c.spread,
+                max_glyph_turn: c.curve_limit,
+            })
+        }
     }
 }
 

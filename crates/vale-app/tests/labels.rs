@@ -572,10 +572,17 @@ fn places_frame(edit: impl FnOnce(&mut vale_style::LabelClass)) -> (Document, Co
     edit(&mut classes[0]);
     assert!(doc.set_label_classes(map, places, &classes));
     assert!(!doc.set_label_classes(map, places, &classes));
+    let (c, _) = first_map_frame(&mut doc, &mut p);
+    (doc, c)
+}
 
+/// Adds a frame of the first map to the first page, and composes it. Returns
+/// the frame box in points too.
+fn first_map_frame(doc: &mut Document, p: &mut Pipeline) -> (Composed, Rect) {
+    let map = doc.first_map();
     let page = doc.project.atlas.pages[0].id;
     let atlas = &doc.project.atlas;
-    let projection = p.projection(&doc, map).unwrap();
+    let projection = p.projection(doc, map).unwrap();
     let frame = new_frame(atlas.page(page).unwrap(), &atlas.maps[0], projection);
     let id = doc.project.atlas.add_frame(page, frame).unwrap();
     let atlas = &doc.project.atlas;
@@ -584,18 +591,69 @@ fn places_frame(edit: impl FnOnce(&mut vale_style::LabelClass)) -> (Document, Co
         pts_per_mm: PT_PER_MM,
     };
     let mut f = fonts().unwrap();
+    let record = atlas.frame(id).unwrap();
     let c = p
         .compose_frame(
-            &doc,
+            doc,
             atlas.page(page).unwrap(),
-            atlas.frame(id).unwrap(),
+            record,
             target,
             &mut f,
             Quality::Final,
             None,
         )
         .unwrap();
-    (doc, c)
+    let vale_store::FrameShape::Rectangle([x0, y0, x1, y1]) = record.shape else {
+        panic!("not a rectangle");
+    };
+    let rect = Rect::new(x0, y0, x1, y1).scale_from_origin(PT_PER_MM);
+    (c, rect)
+}
+
+#[test]
+fn a_polygon_class_places_its_label_inside_the_frame() {
+    use vale_style::LabelPlacement;
+    for placement in [
+        LabelPlacement::BestFit,
+        LabelPlacement::Curved,
+        LabelPlacement::Horizontal,
+    ] {
+        let mut doc = Document::sample();
+        let mut p = Pipeline::new();
+        let map = doc.first_map();
+        let sea = add_layer(
+            &mut doc,
+            "Seas",
+            &[r#"{"type":"Feature","properties":{"name":"Long Sea"},"geometry":{"type":"Polygon","coordinates":[[[-60,-8],[60,-8],[60,8],[-60,8],[-60,-8]],[[-5,-2],[5,-2],[5,2],[-5,2],[-5,-2]]]}}"#
+                .to_string()],
+        );
+        let ids: Vec<LayerId> = doc.frame.entries.iter().map(|e| e.layer).collect();
+        for id in ids.into_iter().filter(|id| *id != sea) {
+            doc.set_label_classes(map, id, &[]);
+        }
+        let mut class = vale_style::LabelClass::new("Seas", GeometryKind::Polygon, 0).unwrap();
+        class.placement = placement;
+        assert!(doc.set_label_classes(map, sea, &[class]));
+        let (c, frame) = first_map_frame(&mut doc, &mut p);
+        let runs: Vec<&vale_render::GlyphRun> = (c.list.items.iter())
+            .filter_map(|i| match i {
+                Item::Glyphs(g) if g.text == "LONG SEA" => Some(g),
+                _ => None,
+            })
+            .collect();
+        assert!(!runs.is_empty(), "{placement:?} {:?}", c.labels.unplaced);
+        let origins: Vec<Point> = (runs.iter())
+            .flat_map(|g| g.glyphs.iter().map(|(_, t)| Point::ZERO + t.translation()))
+            .collect();
+        for o in &origins {
+            assert!(frame.contains(*o), "{placement:?} {o:?} {frame:?}");
+        }
+        let ys = origins.iter().map(|o| o.y);
+        let rise = ys.clone().fold(f64::MIN, f64::max) - ys.fold(f64::MAX, f64::min);
+        if placement == LabelPlacement::Horizontal {
+            assert!(rise < 0.01, "{rise}");
+        }
+    }
 }
 
 #[test]

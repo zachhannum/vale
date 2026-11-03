@@ -22,7 +22,7 @@ use crate::ui::{Action, AppState, FontTarget};
 
 pub const ADD_CLASS: &str = "Add class";
 pub const DELETE_CLASS: &str = "Delete class";
-pub const NO_LABEL_LAYERS: &str = "This map has no point or line layers.";
+pub const NO_LABEL_LAYERS: &str = "This map has no vector layers.";
 pub const NO_CLASSES: &str = "No layer of this map has labels.";
 pub const CLASS_NAME: &str = "Class name";
 pub const LAYER: &str = "Layer";
@@ -53,6 +53,7 @@ pub const REPEAT: &str = "Repeat";
 pub const REPEAT_INTERVAL: &str = "Repeat interval";
 pub const CURVE_LIMIT: &str = "Curve limit";
 pub const SMOOTHING: &str = "Smoothing";
+pub const SPREAD: &str = "Spread";
 pub const BUFFER: &str = "Buffer";
 pub const REMOVE_DUPLICATES: &str = "Remove duplicates";
 pub const DUPLICATE_DISTANCE: &str = "Duplicate distance";
@@ -76,6 +77,8 @@ pub const REPEAT_INTERVALS: (f64, f64) = (50.0, 2000.0);
 pub const CURVE_LIMITS: (f64, f64) = (5.0, 60.0);
 /// The smallest and the largest smoothing, in multiples of the size.
 pub const SMOOTHINGS: (f64, f64) = (0.0, 5.0);
+/// The smallest and the largest spread, in multiples of the size.
+pub const SPREADS: (f64, f64) = (0.0, 4.0);
 /// The smallest and the largest buffer, in points.
 pub const BUFFERS: (f64, f64) = (0.0, 10.0);
 /// The smallest and the largest duplicate distance, in points.
@@ -112,8 +115,7 @@ pub(super) fn open_class(state: &mut AppState) -> Option<(MapId, LayerId, usize)
         Some(frame.map)
     });
     let found = map.filter(|m| {
-        let kind = state.doc.layer(layer).and_then(|l| l.geometry());
-        let fits = matches!(kind, Some(GeometryKind::Point | GeometryKind::Line));
+        let fits = state.doc.layer(layer).and_then(|l| l.geometry()).is_some();
         fits && i < state.doc.label_classes(Some(*m), layer).len()
     });
     match found {
@@ -597,7 +599,8 @@ fn apply_text(edit: &TextEdit, c: &mut LabelClass) {
 
 /// The Placement segment of the panel of a class. A point class has its
 /// positions and its offset. A line class has its offset, its repeat, its
-/// curve limit, and its smoothing.
+/// curve limit, and its smoothing. A polygon class has its spread, and a
+/// curved one has its curve limit.
 fn placement_segment(
     ui: &mut egui::Ui,
     state: &mut AppState,
@@ -608,6 +611,20 @@ fn placement_segment(
 ) {
     if widgets::open_row(ui, controls, PLACEMENT, class.placement.name()).clicked() {
         state.atlas.label_page = Some(ClassPage::Placement);
+    }
+    if kind == GeometryKind::Polygon {
+        let spread = Number::new(SPREAD, class.spread, SPREADS.0..=SPREADS.1)
+            .step(0.1)
+            .unit("×")
+            .default(vale_style::SPREAD)
+            .slider(ui, controls);
+        if let Some(spread) = spread {
+            state.edit_label_class(map, layer, i, |c| c.spread = spread);
+        }
+        if class.placement != LabelPlacement::Horizontal {
+            curve_limit(ui, state, controls, (map, layer, i), class);
+        }
+        return;
     }
     let point = kind == GeometryKind::Point;
     if point {
@@ -644,6 +661,25 @@ fn placement_segment(
             state.edit_label_class(map, layer, i, |c| c.repeat_distance = distance);
         }
     }
+    curve_limit(ui, state, controls, (map, layer, i), class);
+    let smoothing = Number::new(SMOOTHING, class.smoothing, SMOOTHINGS.0..=SMOOTHINGS.1)
+        .step(0.1)
+        .unit("×")
+        .default(vale_style::SMOOTHING)
+        .slider(ui, controls);
+    if let Some(smoothing) = smoothing {
+        state.edit_label_class(map, layer, i, |c| c.smoothing = smoothing);
+    }
+}
+
+/// The curve limit of a class, in degrees.
+fn curve_limit(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    (map, layer, i): (MapId, LayerId, usize),
+    class: &LabelClass,
+) {
     let (lo, hi) = CURVE_LIMITS;
     let degrees = Number::new(CURVE_LIMIT, class.curve_limit.to_degrees(), lo..=hi)
         .step(1.0)
@@ -652,14 +688,6 @@ fn placement_segment(
     if let Some(degrees) = degrees {
         let limit = degrees.to_radians();
         state.edit_label_class(map, layer, i, |c| c.curve_limit = limit);
-    }
-    let smoothing = Number::new(SMOOTHING, class.smoothing, SMOOTHINGS.0..=SMOOTHINGS.1)
-        .step(0.1)
-        .unit("×")
-        .default(vale_style::SMOOTHING)
-        .slider(ui, controls);
-    if let Some(smoothing) = smoothing {
-        state.edit_label_class(map, layer, i, |c| c.smoothing = smoothing);
     }
 }
 

@@ -43,8 +43,8 @@ use vale_app::ui::pad::furniture::{
 use vale_app::ui::pad::labels::{
     ADD_CLASS, BUFFER, CASE, COLOR, CURVE_LIMIT, DELETE_CLASS, DUPLICATE_DISTANCE, HALO,
     HALO_COLOR, HALO_WIDTH, LABEL_SIZE, LAYER, MOVE_DOWN, MOVE_UP, OFFSET, OPACITY, PLACEMENT,
-    POSITIONS, REMOVE_DUPLICATES, REORDER, REPEAT, REPEAT_INTERVAL, SEGMENTS, SMOOTHING, STYLE,
-    TEXT,
+    POSITIONS, REMOVE_DUPLICATES, REORDER, REPEAT, REPEAT_INTERVAL, SEGMENTS, SMOOTHING, SPREAD,
+    STYLE, TEXT,
 };
 use vale_app::ui::pad::rules::STROKE_WIDTH;
 use vale_app::ui::pad::widgets::eye_name;
@@ -3170,7 +3170,7 @@ fn the_placement_choices_match_the_feature_type() {
     tap(&mut h, "Places");
     tap(&mut h, LAYER);
     assert!(control(&h, "Places").is_some());
-    assert!(control(&h, "Land").is_none());
+    assert!(control(&h, "Land").is_some());
     tap(&mut h, "Rivers");
     assert!(classes(&h, map, "Places").is_empty());
     let rivers = classes(&h, map, "Rivers");
@@ -3951,6 +3951,63 @@ fn the_repeat_options_change_the_line_labels() {
     assert!((limit - 60f64.to_radians()).abs() < 1e-9, "{limit}");
     set_number(&mut h, SMOOTHING, "0");
     assert_eq!(classes(&h, map, "Rivers")[0].smoothing, 0.0);
+}
+
+#[test]
+fn the_labels_tab_edits_a_polygon_class() {
+    use vale_style::LabelPlacement;
+    let mut h = labels_pad(BOARDS[0]);
+    let map = frame(&h, 0).map;
+    let land = layer_id(&h, "Land");
+    let mut class = vale_style::LabelClass::new("Land", GeometryKind::Polygon, 9).unwrap();
+    class.text = "'Land'".into();
+    h.state_mut().doc.set_label_classes(map, land, &[class]);
+    h.state_mut().touch();
+    h.run_steps(2);
+    assert!(label_runs(&mut h, 0).iter().any(|g| g.text == "LAND"));
+    tap(&mut h, "Land");
+    tap(&mut h, SEGMENTS[1].0);
+    for name in [SPREAD, CURVE_LIMIT] {
+        assert!(control(&h, &value_of(name)).is_some(), "{name}");
+    }
+    for name in [OFFSET, REPEAT_INTERVAL, SMOOTHING] {
+        assert!(control(&h, &value_of(name)).is_none(), "{name}");
+    }
+    assert!(control(&h, REPEAT).is_none());
+    assert!(control(&h, POSITIONS).is_none());
+    set_number(&mut h, SPREAD, "2");
+    assert_eq!(classes(&h, map, "Land")[0].spread, 2.0);
+    set_number(&mut h, CURVE_LIMIT, "20");
+    let limit = classes(&h, map, "Land")[0].curve_limit;
+    assert!((limit - 20f64.to_radians()).abs() < 1e-9, "{limit}");
+
+    scroll_up_to(&mut h, PLACEMENT);
+    tap(&mut h, PLACEMENT);
+    for p in LabelPlacement::choices(GeometryKind::Polygon) {
+        assert!(control(&h, p.name()).is_some(), "{}", p.name());
+    }
+    for p in LabelPlacement::choices(GeometryKind::Line) {
+        assert!(control(&h, p.name()).is_none(), "{}", p.name());
+    }
+    tap(&mut h, LabelPlacement::Horizontal.name());
+    assert_eq!(
+        classes(&h, map, "Land")[0].placement,
+        LabelPlacement::Horizontal
+    );
+    assert!(control(&h, &value_of(SPREAD)).is_some());
+    assert!(control(&h, &value_of(CURVE_LIMIT)).is_none());
+    assert!(label_runs(&mut h, 0).iter().any(|g| g.text == "LAND"));
+
+    tap(&mut h, PLACEMENT);
+    tap(&mut h, LabelPlacement::Curved.name());
+    assert_eq!(
+        classes(&h, map, "Land")[0].placement,
+        LabelPlacement::Curved
+    );
+    for name in [SPREAD, CURVE_LIMIT] {
+        assert!(control(&h, &value_of(name)).is_some(), "{name}");
+    }
+    assert!(label_runs(&mut h, 0).iter().any(|g| g.text == "LAND"));
 }
 
 #[test]

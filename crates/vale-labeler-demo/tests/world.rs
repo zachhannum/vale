@@ -146,6 +146,24 @@ fn well_known_names() {
 }
 
 #[test]
+fn country_and_ocean_names() {
+    let (_, labeling) = run();
+    let kind = |n: &str| {
+        labeling
+            .placed
+            .iter()
+            .find(|l| l.text == n)
+            .unwrap_or_else(|| panic!("{n} not placed"))
+            .kind
+    };
+    for n in ["RUSSIA", "CANADA", "INDIAN OCEAN", "SOUTH ATLANTIC OCEAN"] {
+        kind(n);
+    }
+    assert_eq!(kind("BRAZIL"), CandidateKind::Polygon { curved: false });
+    assert_eq!(kind("ARGENTINA"), CandidateKind::Polygon { curved: true });
+}
+
+#[test]
 fn deterministic() {
     let (scene, mut fonts) = setup();
     let a = place_labels(&mut fonts, &scene.input);
@@ -177,6 +195,8 @@ fn snapshot(labeling: &Labeling) -> String {
         let kind = match l.kind {
             CandidateKind::Point(p) => format!("{p:?}"),
             CandidateKind::Line { side, .. } => format!("Line{side:?}"),
+            CandidateKind::Polygon { curved: true } => "Curved".to_string(),
+            CandidateKind::Polygon { curved: false } => "Horizontal".to_string(),
         };
         let c = l.bounds.center();
         out.push_str(&format!(

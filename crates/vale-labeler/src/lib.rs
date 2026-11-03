@@ -10,6 +10,7 @@ mod improve;
 mod line;
 mod model;
 mod point;
+mod polygon;
 mod text;
 
 pub use kurbo::{self, Affine, BezPath, Point, Rect, Vec2};

@@ -260,7 +260,7 @@ fn slot_candidates(
 
 /// A copy of `m` moved by `d` to the left of its direction, y down. It has the same vertices,
 /// so `along` can map an arc length of `m` to it.
-fn parallel(m: &Measured, d: f64) -> Measured {
+pub(crate) fn parallel(m: &Measured, d: f64) -> Measured {
     let n = m.pts.len();
     let pts: Vec<Point> = (0..n)
         .map(|i| {
@@ -281,7 +281,7 @@ fn parallel(m: &Measured, d: f64) -> Measured {
 }
 
 /// The arc length on `base`, a parallel copy of `m`, at the point beside arc length `s` of `m`.
-fn along(m: &Measured, base: &Measured, s: f64) -> f64 {
+pub(crate) fn along(m: &Measured, base: &Measured, s: f64) -> f64 {
     let n = m.pts.len();
     let i = m.cum.partition_point(|&c| c <= s).clamp(1, n - 1);
     let seg = m.cum[i] - m.cum[i - 1];

@@ -130,11 +130,47 @@ impl Default for LinePlacement {
     }
 }
 
-/// Point or line placement rules.
+/// How a polygon label follows its shape.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub enum PolygonMode {
+    /// Curved text in a long shape, and horizontal text in a compact shape.
+    #[default]
+    Auto,
+    /// Text that curves along the long axis of every shape. Where no curved text fits, the
+    /// text is horizontal.
+    Curved,
+    /// Horizontal text.
+    Horizontal,
+}
+
+/// Placement rules for polygon features.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PolygonPlacement {
+    pub mode: PolygonMode,
+    /// The most extra space between two letters, in multiples of the font size. Zero keeps the
+    /// letters together.
+    pub max_spread: f64,
+    /// The angle between two neighbor glyphs of a curved label, in radians, above which a
+    /// candidate costs more. A candidate that turns more than 1.6 times this angle is not used.
+    pub max_glyph_turn: f64,
+}
+
+impl Default for PolygonPlacement {
+    fn default() -> Self {
+        Self {
+            mode: PolygonMode::Auto,
+            max_spread: 1.0,
+            max_glyph_turn: 0.2,
+        }
+    }
+}
+
+/// Point, line, or polygon placement rules.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Placement {
     Point(PointPlacement),
     Line(LinePlacement),
+    Polygon(PolygonPlacement),
 }
 
 /// A group of labels that share style and rules.
@@ -155,8 +191,19 @@ pub struct LabelClass {
 /// Page-space geometry of a feature.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Geometry {
-    Point { position: Point, symbol_radius: f64 },
-    Line { path: Vec<Point>, stroke_width: f64 },
+    Point {
+        position: Point,
+        symbol_radius: f64,
+    },
+    Line {
+        path: Vec<Point>,
+        stroke_width: f64,
+    },
+    /// Closed rings with the even-odd fill rule, so holes and separate parts need no order.
+    /// The label goes in the largest visible part.
+    Polygon {
+        rings: Vec<Vec<Point>>,
+    },
 }
 
 /// One feature to label.
@@ -228,6 +275,10 @@ pub enum CandidateKind {
         side: LineSide,
         start: f64,
     },
+    /// Inside a polygon. `curved` text follows the long axis; other text is horizontal.
+    Polygon {
+        curved: bool,
+    },
 }
 
 /// One glyph with its transform from glyph-local space to page space.
@@ -284,6 +335,8 @@ pub enum UnplacedReason {
     Obstructed,
     LineTooShort,
     TooCurved,
+    /// The label does not fit inside the visible part of the polygon.
+    AreaTooSmall,
     Collision,
 }
 

@@ -864,8 +864,10 @@ fn labels_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
     use super::pad::labels::{
         ADD_CLASS, BUFFER, CASE, CURVE_LIMIT, DELETE_CLASS, DUPLICATE_DISTANCE, HALO, HALO_WIDTH,
         LABEL_SIZE, LETTER_SPACING, MOVE_DOWN, MOVE_UP, NO_LABEL_LAYERS, OFFSET, OPACITY,
-        PLACEMENT, POSITIONS, REMOVE_DUPLICATES, REPEAT, REPEAT_INTERVAL, SMOOTHING, STYLE,
+        PLACEMENT, POSITIONS, REMOVE_DUPLICATES, REPEAT, REPEAT_INTERVAL, SMOOTHING, SPREAD,
+        SPREADS, STYLE,
     };
+    use vale_store::GeometryKind;
     let map = frame.map;
     if state.label_layers().is_empty() {
         ui.weak(NO_LABEL_LAYERS);
@@ -983,7 +985,7 @@ fn labels_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
                 ui.selectable_value(&mut class.placement, p, p.name());
             }
         });
-    if kind == vale_store::GeometryKind::Point {
+    if kind == GeometryKind::Point {
         ui.label(POSITIONS);
         let count = class.positions.len();
         let mut swap = None;
@@ -1005,12 +1007,23 @@ fn labels_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
             class.positions.swap(a, b);
         }
     }
-    number::stepper(OFFSET, &mut class.offset)
-        .range(0.0..=20.0)
-        .step(0.5)
-        .suffix(" pt")
-        .show(ui);
-    if kind == vale_store::GeometryKind::Line {
+    if kind != GeometryKind::Polygon {
+        number::stepper(OFFSET, &mut class.offset)
+            .range(0.0..=20.0)
+            .step(0.5)
+            .suffix(" pt")
+            .show(ui);
+    }
+    if kind == GeometryKind::Polygon {
+        number::slider(SPREAD, &mut class.spread, SPREADS.0..=SPREADS.1)
+            .step(0.1)
+            .suffix("×")
+            .show(ui);
+    }
+    let curved = kind == GeometryKind::Line
+        || (kind == GeometryKind::Polygon
+            && class.placement != vale_style::LabelPlacement::Horizontal);
+    if kind == GeometryKind::Line {
         ui.horizontal(|ui| {
             ui.checkbox(&mut class.repeat, REPEAT);
             if class.repeat {
@@ -1021,6 +1034,8 @@ fn labels_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
                     .show(ui);
             }
         });
+    }
+    if curved {
         let mut degrees = class.curve_limit.to_degrees();
         let stepper = number::stepper(CURVE_LIMIT, &mut degrees)
             .range(5.0..=60.0)
@@ -1030,6 +1045,8 @@ fn labels_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
         if stepper.show(ui).changed() {
             class.curve_limit = degrees.to_radians();
         }
+    }
+    if kind == GeometryKind::Line {
         number::slider(SMOOTHING, &mut class.smoothing, 0.0..=5.0)
             .step(0.1)
             .suffix("×")
