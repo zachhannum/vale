@@ -999,6 +999,9 @@ const MIGRATE = 0.1;
 const MIGRATE_MYR = 4.0;
 const WANDER_KM = 3.0;
 const WANDER_MYR = 0.8;
+const TRACE_WARP = 0.12;
+const TRACE_WARP_MYR = 3.0;
+const TRACE_WARP_OLD_MYR = 10.0;
 const MIGRATE_ROUND = 0.5;
 const SHORTEST_PART = 0.2;
 const SEGMENT_MAGMA = 0.03;
@@ -1029,6 +1032,9 @@ const ACTIVE_MYR = 3.0;
 const PATCH_MYR = 4.0;
 const PATCH_OLD_MYR = 10.0;
 const PATCH = 0.5;
+const PATCH_OFFSET = 0.9;
+const GAP_MYR = 2.5;
+const GAP_EDGE = vec2<f32>(-0.1, 0.25);
 const TROUGH_FILL = 0.4;
 const TROUGH_MYR = 20.0;
 const TRANSVERSE_SHARE = 0.5;
@@ -1446,6 +1452,15 @@ fn ridge_migration(j: i32, tau: f32) -> vec2<f32> {
     sum.y += 0.5 * migrate * slow.y / MIGRATE_MYR;
     sum.x += 0.5 * wander * (small.x - small_zero);
     sum.y += 0.5 * wander * small.y / WANDER_MYR;
+    if migrate > 0.0 {
+        let size = TRACE_WARP * ridge.segment * unit(hash(vec3<u32>(a, 2u, 0u), seed));
+        let t = clamp(tau / TRACE_WARP_OLD_MYR, 0.0, 1.0);
+        let grow = t * t * (3.0 - 2.0 * t);
+        let change = 6.0 * t * (1.0 - t) / TRACE_WARP_OLD_MYR;
+        let warp = noise1(tau / TRACE_WARP_MYR, a, 2u, seed);
+        sum.x += 0.5 * size * grow * warp.x;
+        sum.y += 0.5 * size * (change * warp.x + grow * warp.y / TRACE_WARP_MYR);
+    }
     return sum;
 }
 
@@ -1478,9 +1493,19 @@ fn ridge_fracture(j: i32, offset_km: f32, is_transform: bool, age: f32) -> vec4<
     }
     let leave = 0.5 * offset_km / (ridge.spread * ridge.world_km);
     let fresh = 1.0 + ACTIVE * (1.0 - smooth_between(leave, leave + ACTIVE_MYR, age));
-    let patches = noise1(age / PATCH_MYR, bitcast<u32>(j), 1u, seed).x;
-    let patchy = PATCH * smooth_between(0.0, PATCH_OLD_MYR, age);
-    let keep = 1.0 - patchy * (1.0 - smooth_between(-0.5, 0.5, patches));
+    var cell = GAP_MYR;
+    var edge = GAP_EDGE;
+    if is_transform {
+        cell = PATCH_MYR;
+        edge = vec2<f32>(-0.5, 0.5);
+    }
+    let patches = noise1(age / cell, bitcast<u32>(j), 1u, seed).x;
+    var most = PATCH_OFFSET;
+    if is_transform {
+        most = PATCH;
+    }
+    let patchy = most * smooth_between(0.0, PATCH_OLD_MYR, age);
+    let keep = 1.0 - patchy * (1.0 - smooth_between(edge.x, edge.y, patches));
     let filled = 1.0 - TROUGH_FILL * smooth_between(0.0, TROUGH_MYR, age);
     let full = TROUGH_DEPTH * pow_precise(size, TROUGH_POWER) * strength * kind * fresh;
     let depth = min(full, TROUGH_MAX) * keep * filled;
