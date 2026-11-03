@@ -13,9 +13,10 @@ use vale_store::{
     BlendMode, Hillshade, ImageId, LayerId, LonLat, RasterDisplay, RasterId, Smoothing, Uuid,
 };
 use vale_terrain::{
-    Bands, BasinLine, ChannelMap, ChannelWindow, ErodeBrush, ErodeStep, FACES, Heightmap, Mode,
-    Pyramid, Rain, RangeLine, RidgeLine, SEA_LEVEL, Stamp, TexelRect, Window, WindowHeights,
-    max_level, meters_to_level, reduced_cap, reduced_face_size, smoothing_level,
+    Bands, BasinLine, BasinSpec, ChannelMap, ChannelWindow, ErodeBrush, ErodeStep, FACES,
+    Heightmap, Mode, Pyramid, Rain, RangeLine, Ridge, RidgeLine, SEA_LEVEL, Stamp, TexelRect,
+    Window, WindowHeights, max_level, meters_to_level, reduced_cap, reduced_face_size,
+    smoothing_level,
 };
 
 pub mod backdrop;
@@ -292,6 +293,8 @@ impl BrushLine {
 /// the stroke are the points of the line, and they do not go to the GPU.
 struct Ridging {
     line: BrushLine,
+    /// The place and the flow of each point of the line.
+    points: Vec<(V3, f64)>,
     /// The number of points of the line that the plans cover.
     sent: usize,
     /// `Some`: the stroke is a range stroke with erosion.
@@ -301,6 +304,7 @@ struct Ridging {
 impl Ridging {
     fn extend(&mut self, stamps: &[Stamp]) {
         for stamp in stamps {
+            self.points.push((stamp.center, stamp.flow));
             match &mut self.line {
                 BrushLine::Ridge(line) => line.push(stamp.center, stamp.flow),
                 BrushLine::Range(line) => line.push(stamp.center, stamp.flow),
@@ -327,6 +331,7 @@ fn line_of(brush: &BrushSettings, km: f64, seed: u32, n: usize, radius: f64) -> 
     };
     Some(Ridging {
         line,
+        points: Vec::new(),
         sent: 0,
         range,
     })
@@ -356,6 +361,8 @@ struct Basining {
     asked: bool,
     /// The texels of the basin went to the GPU.
     done: bool,
+    /// The texels of a basin with other settings are on the GPU.
+    shown: bool,
 }
 
 impl Basining {
@@ -384,11 +391,49 @@ struct Active {
     basin: Option<Basining>,
     /// `Some`: the stroke draws the outline of a basin. It changes no texels.
     outline: Option<Vec<V3>>,
+    /// `Some`: the stroke is an ocean ridge stroke or the main river of a
+    /// basin. Its texels wait for `apply_held`.
+    held: Option<Held>,
     /// The pen is up. Stamps of the stroke can still wait in the backlog.
     ended: bool,
     /// The number of rectangles that the GPU has not given back. `None`: the
     /// stroke did not ask for its texels yet.
     reading: Option<usize>,
+}
+
+/// An ocean ridge or a basin that shows on the GPU. After the pen goes up,
+/// it follows the settings of the brush until it is applied or discarded.
+struct Held {
+    mode: Mode,
+    /// The size and the size lock of the brush that gave `radius`.
+    size: (f32, Option<f64>),
+    /// The radius of an ocean ridge, in radians.
+    radius: f64,
+    /// The flow of the brush while the pen drew the line, and the flow of
+    /// the texels on the GPU. The flow scales the height of an ocean ridge.
+    drawn_flow: f64,
+    flow: f64,
+    /// The settings of the texels on the GPU.
+    spec: HeldSpec,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum HeldSpec {
+    Ridge(Ridge),
+    Basin(BasinSpec),
+}
+
+/// Sends the ground of `map` to the GPU in each rectangle of `touched`, and
+/// empties `touched`. While a stroke runs, `map` holds the ground from
+/// before the stroke.
+fn restore(map: &Heightmap, link: &Link, tag: MapKey, touched: &mut [Option<TexelRect>; FACES]) {
+    for (face, rect) in touched.iter_mut().enumerate() {
+        let Some(rect) = rect.take() else { continue };
+        let mut data = Vec::new();
+        map.read_rect(face, rect, &mut data);
+        let face = face as u32;
+        link.push(tag, Op::Upload { face, rect, data });
+    }
 }
 
 fn union(a: Option<TexelRect>, b: TexelRect) -> TexelRect {
@@ -2103,7 +2148,7 @@ impl Globe {
     /// The lines of a basin in screen points: the outline, which closes,
     /// and the main river. The outline shows while the pen draws it and
     /// while it waits for its main river. The main river shows until its
-    /// basin goes to the GPU.
+    /// basin goes to the GPU, and while the basin is held.
     pub fn basin_preview(&self) -> Option<(Vec<Pos2>, Vec<Pos2>)> {
         // A point closer to the last point than 1.5 points is left out.
         let screen = |dirs: &[V3]| -> Vec<Pos2> {
@@ -2120,12 +2165,41 @@ impl Globe {
         if active.is_some_and(|a| a.outline.is_some()) {
             return None;
         }
-        if let Some(basin) = active.and_then(|a| a.basin.as_ref()) {
-            return (!basin.done)
+        if let Some(active) = active
+            && let Some(basin) = &active.basin
+        {
+            return (!basin.done || active.held.is_some())
                 .then(|| (screen(basin.line.outline()), screen(&basin.line.points())));
         }
         let outline = self.basin_outline.as_ref()?;
         Some((screen(outline), Vec::new()))
+    }
+
+    /// The center line of an ocean ridge in screen points, while the pen
+    /// draws it and while it is held.
+    pub fn ridge_preview(&self) -> Option<Vec<Pos2>> {
+        let active = self
+            .stroke
+            .as_ref()
+            .filter(|a| !a.ended || a.held.is_some())?;
+        let ridge = active.ridge.as_ref()?;
+        if !matches!(ridge.line, BrushLine::Ridge(_)) {
+            return None;
+        }
+        let mut points: Vec<Pos2> = Vec::new();
+        let pen = self.input.pos.filter(|_| !active.ended);
+        for pos in ridge
+            .points
+            .iter()
+            .filter_map(|&(dir, _)| self.project(dir))
+            .chain(pen)
+        {
+            match points.last() {
+                Some(last) if last.distance(pos) < 1.5 => {}
+                _ => points.push(pos),
+            }
+        }
+        Some(points)
     }
 
     /// The outline of a basin while the pen draws it, in screen points. It
@@ -2318,12 +2392,19 @@ impl Globe {
         }
     }
 
+    /// True if an undo can put back the heightmap from before the last
+    /// stroke, or discard the held stroke.
     pub fn can_undo(&self) -> bool {
-        !self.busy() && self.map.can_undo()
+        self.holding().is_some() || (!self.busy() && self.map.can_undo())
     }
 
-    /// Puts back the heightmap from before the last stroke.
+    /// Discards the held stroke, or puts back the heightmap from before the
+    /// last stroke.
     pub fn undo(&mut self) -> bool {
+        if self.holding().is_some() {
+            self.discard_held();
+            return true;
+        }
         self.can_undo() && self.map.undo()
     }
 
@@ -2834,11 +2915,13 @@ impl Globe {
         self.read_inputs();
         self.erode(now);
         self.uplift(now);
+        self.hold(in_flight);
         self.ridge(now);
         self.range();
         self.basin();
         self.send_stamps(now);
-        let busy = self.busy() || self.loading() || self.details_loading();
+        // A held stroke with no work in progress needs no frames.
+        let busy = (self.busy() && !self.held_idle()) || self.loading() || self.details_loading();
         zooming || in_flight || busy || self.rivers.pending() || self.export.is_some()
     }
 
@@ -2926,8 +3009,10 @@ impl Globe {
             match input {
                 Input::Down => {
                     if let Some(active) = &mut self.stroke {
-                        // The stroke before this one still waits for its texels.
+                        // The stroke before this one still waits for its
+                        // texels. A new stroke applies a held one.
                         active.ended = true;
+                        active.held = None;
                         break;
                     }
                     // A strip that waits has texels from before the stroke.
@@ -2957,6 +3042,7 @@ impl Globe {
                         ridge: None,
                         basin: None,
                         outline: None,
+                        held: None,
                         ended: false,
                         reading: None,
                     });
@@ -2980,10 +3066,30 @@ impl Globe {
                                             line: BasinLine::new(spec, &outline, n),
                                             asked: false,
                                             done: false,
+                                            shown: false,
+                                        });
+                                        active.held = Some(Held {
+                                            mode: Mode::Basin,
+                                            size: (self.brush.size_points, self.brush.lock),
+                                            radius: sample.radius,
+                                            drawn_flow: self.brush.flow,
+                                            flow: self.brush.flow,
+                                            spec: HeldSpec::Basin(spec),
                                         });
                                     }
                                     None => active.outline = Some(Vec::new()),
                                 }
+                            }
+                            if self.brush.mode == Mode::OceanRidge {
+                                let spec = self.brush.ridge_spec(sample.radius, km, seed);
+                                active.held = Some(Held {
+                                    mode: Mode::OceanRidge,
+                                    size: (self.brush.size_points, self.brush.lock),
+                                    radius: sample.radius,
+                                    drawn_flow: self.brush.flow,
+                                    flow: self.brush.flow,
+                                    spec: HeldSpec::Ridge(spec),
+                                });
                             }
                         }
                         active.sampled = Some(time);
@@ -3233,6 +3339,122 @@ impl Globe {
         uplift.asked = stamps;
     }
 
+    /// Applies the held stroke when another tool, another mode, another
+    /// layer, a stroke test, or an import needs the heightmap. Else makes
+    /// the held stroke follow the settings of the brush. An ocean ridge
+    /// follows after the GPU did the work before it, and a basin after its
+    /// last basin arrived.
+    fn hold(&mut self, in_flight: bool) {
+        let Some(mode) = self.holding() else {
+            return;
+        };
+        let other = self.tool != Tool::Brush || self.brush.mode != mode;
+        if other || self.pending.is_some() || self.test_wanted.is_some() || self.import.is_some() {
+            self.apply_held();
+            return;
+        }
+        let (km, seed, n) = (self.world_km, self.world_seed, self.map.face_size());
+        let globe_radius = self.radius();
+        let tag = self.tag();
+        let Some(active) = &mut self.stroke else {
+            return;
+        };
+        let Some(held) = &mut active.held else {
+            return;
+        };
+        // A line that changes no texel holds nothing.
+        let sent = active.ridge.as_ref().is_none_or(|r| r.sent == r.line.len());
+        let done = active.basin.as_ref().is_none_or(|b| b.done);
+        if sent && done && active.touched.iter().all(Option::is_none) {
+            active.held = None;
+            return;
+        }
+        let size = (self.brush.size_points, self.brush.lock);
+        if size != held.size {
+            held.size = size;
+            held.radius = self.brush.radius(globe_radius);
+        }
+        if let Some(ridge) = &mut active.ridge {
+            let spec = self.brush.ridge_spec(held.radius, km, seed);
+            let flow = self.brush.flow;
+            let same = held.spec == HeldSpec::Ridge(spec) && held.flow == flow;
+            if !sent || in_flight || same {
+                return;
+            }
+            (held.spec, held.flow) = (HeldSpec::Ridge(spec), flow);
+            let scale = flow / held.drawn_flow.max(1e-6);
+            let mut line = RidgeLine::new(spec, n);
+            for &(dir, flow) in &ridge.points {
+                line.push(dir, (flow * scale).min(1.0));
+            }
+            ridge.line = BrushLine::Ridge(line);
+            ridge.sent = 0;
+            // The plans cover the ground from before the stroke, so the
+            // texels of the old ridge go back to that ground first.
+            restore(&self.map, &self.link, tag, &mut active.touched);
+        }
+        if let Some(basin) = &mut active.basin {
+            let channel = self.brush.channel_shape(km);
+            let spec = self.brush.basin_spec(km, seed, self.world_rain, channel);
+            if !done || self.basiner.pending() || held.spec == HeldSpec::Basin(spec) {
+                return;
+            }
+            held.spec = HeldSpec::Basin(spec);
+            let mut line = BasinLine::new(spec, basin.line.outline(), n);
+            for dir in basin.line.points() {
+                line.push(dir);
+            }
+            *basin = Basining {
+                line,
+                asked: false,
+                done: false,
+                shown: true,
+            };
+        }
+    }
+
+    /// True if a stroke is held and no work of it waits on the CPU. Its
+    /// last work can still be on the GPU.
+    pub fn held_idle(&self) -> bool {
+        let Some(active) = self.stroke.as_ref().filter(|a| a.ended && a.held.is_some()) else {
+            return false;
+        };
+        let sent = active.ridge.as_ref().is_none_or(|r| r.sent == r.line.len());
+        let done = active.basin.as_ref().is_none_or(|b| b.done);
+        sent && done && self.inputs.is_empty() && self.backlog.is_empty()
+    }
+
+    /// The mode of the held stroke. After the pen goes up, an ocean ridge
+    /// or a basin shows and follows the settings, and the heightmap waits
+    /// for `apply_held`.
+    pub fn holding(&self) -> Option<Mode> {
+        let active = self.stroke.as_ref().filter(|a| a.ended)?;
+        Some(active.held.as_ref()?.mode)
+    }
+
+    /// Ends the held stroke. The heightmap gets its texels, as one undo
+    /// step.
+    pub fn apply_held(&mut self) {
+        if let Some(active) = self.stroke.as_mut().filter(|a| a.ended) {
+            active.held = None;
+        }
+    }
+
+    /// Ends the held stroke with no change. The GPU gets the ground from
+    /// before the stroke again.
+    pub fn discard_held(&mut self) {
+        if self.holding().is_none() {
+            return;
+        }
+        let tag = self.tag();
+        if let Some(active) = &mut self.stroke {
+            self.basiner.cancel();
+            restore(&self.map, &self.link, tag, &mut active.touched);
+        }
+        self.map.end_stroke();
+        self.stroke = None;
+    }
+
     /// Sends the ocean ridge or the range of the new points of the line to
     /// the GPU. Each plan goes with the ground from before the stroke, which
     /// the heightmap holds until the texels of the stroke come back.
@@ -3285,6 +3507,7 @@ impl Globe {
             line: BrushLine::Range(line),
             sent,
             range: Some(range),
+            ..
         }) = &mut active.ridge
         else {
             return;
@@ -3373,6 +3596,12 @@ impl Globe {
         let Some(cut) = self.basiner.poll() else {
             return;
         };
+        // The cut covers the ground from before the stroke, so the texels
+        // of an earlier basin go back to that ground first.
+        if basin.shown {
+            restore(&self.map, &self.link, tag, &mut active.touched);
+            basin.shown = false;
+        }
         let texels = cut.rects.iter().map(|(_, _, data)| data.len() as u64).sum();
         self.stats.stamps(active.id, 1, texels);
         for (face, rect, data) in cut.rects {
@@ -3432,6 +3661,10 @@ impl Globe {
         }
         // The readback of a basin stroke follows its texels.
         if active.basin.as_ref().is_some_and(|b| !b.done) {
+            return;
+        }
+        // A held stroke waits for `apply_held`.
+        if active.held.is_some() {
             return;
         }
         let rects = active.touched.iter().enumerate();

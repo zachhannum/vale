@@ -1851,6 +1851,7 @@ impl AppState {
             return self.measure.can_undo();
         }
         match &self.session {
+            Some(_) if self.globe.holding().is_some() => true,
             Some(session) if self.file_log() => !self.globe.busy() && session.can_undo(),
             _ => self.globe.can_undo(),
         }
@@ -1893,6 +1894,11 @@ impl AppState {
             self.can_undo()
         };
         if !able {
+            return;
+        }
+        // An undo discards the held stroke of the brush.
+        if !redo && self.globe.holding().is_some() {
+            self.globe.undo();
             return;
         }
         let file_log = self.file_log();
