@@ -126,6 +126,11 @@ const UPLIFT_ERODE_RATE: f64 = 12.0;
 /// An uplift stroke makes one weather stamp for this number of its stamps.
 const UPLIFT_WEATHER_EVERY: usize = 4;
 
+/// The plans of a line that go to the GPU in one frame hold at most this
+/// number of texels of ground, after the first plan. A large ridge at a
+/// large face size has many plans, and each plan holds megabytes.
+const LINE_TEXELS_PER_FRAME: usize = 8 << 20;
+
 /// A stroke of the line tool or the polygon tool.
 pub struct LineStroke {
     pub screen: Vec<Pos2>,
@@ -2916,7 +2921,7 @@ impl Globe {
         self.erode(now);
         self.uplift(now);
         self.hold(in_flight);
-        self.ridge(now);
+        self.ridge(now, in_flight);
         self.range();
         self.basin();
         self.send_stamps(now);
@@ -3381,6 +3386,10 @@ impl Globe {
             if !sent || in_flight || same {
                 return;
             }
+            let smaller = match held.spec {
+                HeldSpec::Ridge(old) => spec.radius < old.radius,
+                HeldSpec::Basin(_) => false,
+            };
             (held.spec, held.flow) = (HeldSpec::Ridge(spec), flow);
             let scale = flow / held.drawn_flow.max(1e-6);
             let mut line = RidgeLine::new(spec, n);
@@ -3389,9 +3398,14 @@ impl Globe {
             }
             ridge.line = BrushLine::Ridge(line);
             ridge.sent = 0;
-            // The plans cover the ground from before the stroke, so the
-            // texels of the old ridge go back to that ground first.
-            restore(&self.map, &self.link, tag, &mut active.touched);
+            // Each plan writes the ground from before the stroke and then
+            // the ridge into its rectangles, and with the same line, a
+            // radius that is not smaller gives rectangles that are not
+            // smaller. Thus the old ridge shows until the new one covers
+            // it. A smaller ridge needs the ground back first.
+            if smaller {
+                restore(&self.map, &self.link, tag, &mut active.touched);
+            }
         }
         if let Some(basin) = &mut active.basin {
             let channel = self.brush.channel_shape(km);
@@ -3458,7 +3472,11 @@ impl Globe {
     /// Sends the ocean ridge or the range of the new points of the line to
     /// the GPU. Each plan goes with the ground from before the stroke, which
     /// the heightmap holds until the texels of the stroke come back.
-    fn ridge(&mut self, now: Instant) {
+    ///
+    /// The plans of a frame go after the GPU did the plans before them, and
+    /// they hold at most `LINE_TEXELS_PER_FRAME` texels after the first
+    /// one. An ocean ridge goes to the GPU after the pen goes up.
+    fn ridge(&mut self, now: Instant, in_flight: bool) {
         let tag = self.tag();
         let Some(active) = &mut self.stroke else {
             return;
@@ -3466,8 +3484,12 @@ impl Globe {
         let Some(ridge) = &mut active.ridge else {
             return;
         };
+        if in_flight || (active.held.is_some() && !active.ended) {
+            return;
+        }
         let time = active.sampled.unwrap_or(now);
-        while ridge.sent < ridge.line.len() {
+        let mut texels = 0;
+        while ridge.sent < ridge.line.len() && texels < LINE_TEXELS_PER_FRAME {
             let (plan, end) = ridge.line.plan(ridge.sent);
             ridge.sent = end;
             let mut ground = Vec::new();
@@ -3481,8 +3503,9 @@ impl Globe {
             if ground.is_empty() {
                 continue;
             }
-            let texels = ground.iter().map(|(_, _, data)| data.len() as u64).sum();
-            self.stats.stamps(active.id, 1, texels);
+            let count: usize = ground.iter().map(|(_, _, data)| data.len()).sum();
+            texels += count;
+            self.stats.stamps(active.id, 1, count as u64);
             let stroke = active.id;
             let op = Op::Line {
                 plan,
