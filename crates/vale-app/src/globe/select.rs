@@ -48,6 +48,8 @@ pub struct Shape {
     pub points: Vec<(usize, Pos2)>,
     /// The shown runs of the lines and of the outlines of the polygons.
     pub lines: Vec<Vec<Pos2>>,
+    /// The shown first and last vertices of the lines.
+    pub ends: Vec<Pos2>,
     /// The rings of each polygon on the sphere, for the inside test.
     pub polygons: Vec<Vec<Vec<V3>>>,
 }
@@ -66,6 +68,12 @@ pub fn shape(globe: &Globe, geometry: &Geometry) -> Shape {
         Geometry::Lines(lines) => {
             for line in lines {
                 runs(globe, &vector::line(line), false, &mut out.lines);
+                let ends = line
+                    .first()
+                    .into_iter()
+                    .chain(line.last().filter(|_| line.len() > 1));
+                let ends = ends.filter_map(|p| globe.project(lonlat_to_dir(p[0], p[1])));
+                out.ends.extend(ends);
             }
         }
         Geometry::Polygons(polygons) => {
@@ -407,6 +415,19 @@ mod tests {
                 ]]])],
             ),
         ]
+    }
+
+    #[test]
+    fn the_shape_of_a_line_has_its_two_ends_and_a_polygon_has_none() {
+        let layers = layers();
+        for view in [WorldView::Globe, WorldView::Flat] {
+            let globe = globe(view);
+            let line = shape(&globe, &layers[1].features[0].geometry);
+            let ends = vec![at(&globe, -10.0, 20.0), at(&globe, 10.0, 20.0)];
+            assert_eq!(line.ends, ends, "{view:?}");
+            let polygon = shape(&globe, &layers[2].features[0].geometry);
+            assert!(polygon.ends.is_empty(), "{view:?}");
+        }
     }
 
     #[test]

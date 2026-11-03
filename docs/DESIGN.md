@@ -437,7 +437,7 @@ The Select tool selects features of the selected vector layer, on the globe and 
 
 A tap hits a point or a line within its reach on the screen: 22 points for a finger, 12 points for the pen, and 8 points for the mouse. A finger thus has a target of 44 points. The nearest point or line wins. If no point or line is in reach, the polygon under the tap wins. A feature on the far side of the globe is not hit.
 
-A box selects a feature if a vertex of the feature is in the box, if an edge crosses the box, or if the polygon holds the box. The selection shows in the accent color: a ring around each point, and a wide line on each line and each outline. A change of the tool keeps the selection, and the selection shows in each tool. Deselect in the context strip clears it in each tool, and so does Deselect in the tool bar on the desktop. In the flat view, the selection shows, but the vector layers do not show yet.
+A box selects a feature if a vertex of the feature is in the box, if an edge crosses the box, or if the polygon holds the box. The selection shows in the accent color: a ring around each point, a wide line on each line and each outline, and a handle at each end of a line. A change of the tool keeps the selection, and the selection shows in each tool. Deselect in the context strip clears it in each tool, and so does Deselect in the tool bar on the desktop. In the flat view, the selection shows, but the vector layers do not show yet.
 
 A pen drag or a mouse drag that starts on a point of the selection moves that point. The move is one undo step when the pen or the mouse comes up. The tool moves points only. Lines and polygons change in vertex editing.
 
@@ -456,7 +456,7 @@ On the iPad, the Reshape button is on the context strip of the line tool and of 
 
 ### Split
 
-Split cuts lines and polygons along a stroke. One country becomes two, or a road becomes two roads. Split is a tool of the Vector cell for line layers and polygon layers. The stroke splits each feature of the selected layer that it crosses from side to side. A selection does not limit the split.
+Split cuts lines and polygons along a stroke. One country becomes two, or a road becomes two roads. Split is a tool of the Vector cell for line layers and polygon layers. The stroke splits each feature of the selected layer that it crosses from side to side. A selection does not limit the split. The stroke draws as a thin white sketch line, not in the style of the layer.
 
 - A polygon becomes one feature for each area between its outline and the stroke. The parts share the vertices of the cut, so they have no gap and no overlap.
 - A line becomes one feature between each two places where the stroke crosses it. A stroke that touches a line and turns back does not cut it.

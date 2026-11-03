@@ -1079,7 +1079,19 @@ pub(super) fn paint_canvas(
                 painter.line(run, outline);
             }
         }
-        painter.line(line, stroke);
+        // A cut is not layer data, so it draws as a sketch.
+        if globe.splitting() {
+            painter.line(
+                line.clone(),
+                egui::Stroke::new(3.5, egui::Color32::from_black_alpha(90)),
+            );
+            painter.line(
+                line,
+                egui::Stroke::new(1.5, egui::Color32::from_white_alpha(220)),
+            );
+        } else {
+            painter.line(line, stroke);
+        }
     }
     super::select::paint(&painter, state);
     super::region::paint(&painter, state);
