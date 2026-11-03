@@ -259,6 +259,17 @@ impl RidgePlan {
             sum.0 += 0.5 * size * (value - zero);
             sum.1 += 0.5 * size * slope / cell;
         }
+        if migrate > 0.0 {
+            // On old floor, the trace has its own path of straight pieces
+            // with sharp kinks between them.
+            let t = (tau / KINK_OLD_MYR).clamp(0.0, 1.0);
+            let (grow, change) = (t * t * (3.0 - 2.0 * t), 6.0 * t * (1.0 - t) / KINK_OLD_MYR);
+            let size = 0.5 * KINK * sg.length;
+            let (value, slope) = kink1(tau / KINK_MYR, j as u32, 3, seed);
+            let (zero, _) = kink1(0.0, j as u32, 3, seed);
+            sum.0 += size * grow * (value - zero);
+            sum.1 += size * (change * (value - zero) + grow * slope / KINK_MYR);
+        }
         sum
     }
 
@@ -531,9 +542,17 @@ impl RidgePlan {
         // The trace leaves the transform fault at this age.
         let out = 0.5 * step / (self.ridge.spread * self.ridge.world_km);
         let active = 1.0 + ACTIVE * (1.0 - smoothstep(out, out + ACTIVE_MYR, age));
-        let (patches, _) = noise1(age / PATCH_MYR, j as u32, 1, seed);
-        let patchy = PATCH * smoothstep(0.0, PATCH_OLD_MYR, age);
-        let keep = 1.0 - patchy * (1.0 - smoothstep(-0.5, 0.5, patches));
+        let keep = if transform {
+            let (patches, _) = noise1(age / PATCH_MYR, j as u32, 1, seed);
+            let patchy = PATCH * smoothstep(0.0, PATCH_OLD_MYR, age);
+            1.0 - patchy * (1.0 - smoothstep(-0.5, 0.5, patches))
+        } else {
+            // The trough of a small offset breaks into pieces with gaps
+            // between them on old floor.
+            let (pieces, _) = noise1(age / GAP_MYR, j as u32, 1, seed);
+            let broken = smoothstep(0.0, PATCH_OLD_MYR, age);
+            1.0 - broken * (1.0 - smoothstep(-GAP_EDGE, GAP_EDGE, pieces - GAP_SHARE))
+        };
         let filled = 1.0 - TROUGH_FILL * smoothstep(0.0, TROUGH_MYR, age);
         let least = TROUGH_LEAST * smoothstep(0.0, TROUGH_LEAST_KM, step);
         let full = (TROUGH_DEPTH * size.powf(TROUGH_POWER)).max(least) * strength * kind * active;
@@ -1153,6 +1172,22 @@ const PATCH_MYR: f64 = 4.0;
 const PATCH_OLD_MYR: f64 = 10.0;
 const PATCH: f64 = 0.3;
 
+/// The trough along an offset with no transform fault breaks into pieces
+/// over `PATCH_OLD_MYR`. A piece or a gap is about `GAP_MYR` long. A gap is
+/// where a noise from -1 to 1 is below `GAP_SHARE`, and its ends are round
+/// over `GAP_EDGE` of the noise.
+const GAP_MYR: f64 = 5.0;
+const GAP_SHARE: f64 = -0.1;
+const GAP_EDGE: f64 = 0.08;
+
+/// The path of the trace of an offset with no transform fault is straight
+/// pieces between kinks `KINK_MYR` million years apart. Each kink moves the
+/// trace by up to `KINK` of the mean length of a crest segment. The kinks
+/// grow over `KINK_OLD_MYR`.
+const KINK: f64 = 0.12;
+const KINK_MYR: f64 = 4.0;
+const KINK_OLD_MYR: f64 = 6.0;
+
 /// A trough is at least `TROUGH_LEAST` kilometers deep times the strength,
 /// before the other factors of its depth. An offset of `TROUGH_LEAST_KM`
 /// kilometers or more reaches that depth. A trough along an offset with no
@@ -1488,6 +1523,16 @@ fn soft_cap(value: f64, cap: f64) -> f64 {
 /// heightmap with texel steps of `step` radians.
 fn blend_width(step: f64, world_km: f64) -> f64 {
     1.5 * step + VALLEY_KM / world_km
+}
+
+/// As `noise1`, with straight lines between the values, so the noise has a
+/// kink at each whole number.
+fn kink1(x: f64, a: u32, b: u32, seed: u32) -> (f64, f64) {
+    let n = x.floor();
+    let (s, n) = (x - n, n as i32);
+    let value = |c: i32| 2.0 * unit(hash(c as u32, a, b, seed)) - 1.0;
+    let (h0, h1) = (value(n), value(n.wrapping_add(1)));
+    (h0 + (h1 - h0) * s, h1 - h0)
 }
 
 /// As `noise1`, with a cubic curve through four values. The curve has no
@@ -2007,6 +2052,39 @@ mod tests {
     }
 
     #[test]
+    fn an_old_trace_of_a_small_offset_breaks_and_kinks() {
+        let plan = shape(spec(), FINE);
+        let sg = plan.segmenting();
+        let (mut gaps, mut pieces, mut kinks) = (0, 0, 0);
+        for j in 0..40 {
+            if plan.transform(&sg, j) {
+                continue;
+            }
+            // Young troughs are whole, and old troughs have gaps.
+            assert!(plan.fracture(j, 20.0, false, 0.0).depth > 0.0);
+            for i in 0..60 {
+                let depth = plan.fracture(j, 20.0, false, 20.0 + f64::from(i)).depth;
+                gaps += usize::from(depth < 1e-6);
+                pieces += usize::from(depth > 0.2);
+            }
+            // The path has a step of its slope at a kink.
+            let slope = |tau: f64| plan.migration(&sg, j, tau).1 - plan.warp(&sg, j, tau, false).1;
+            let at = 30.0 * KINK_MYR;
+            kinks += usize::from((slope(at + 0.01) - slope(at - 0.01)).abs() > 1e-6);
+        }
+        assert!(gaps > 100 && pieces > 100, "{gaps} {pieces}");
+        assert!(kinks > 10, "{kinks}");
+        // Each move is no more than its part of the segment length, so two
+        // traces do not cross.
+        for tau in [0.0, 5.0, 20.0, 80.0] {
+            for j in 0..40 {
+                let (moved, _) = plan.migration(&sg, j, tau);
+                assert!(moved.abs() <= (0.5 * MIGRATE + KINK) * sg.length + WANDER_KM / 6371.0);
+            }
+        }
+    }
+
+    #[test]
     fn the_swell_moves_the_flank_and_keeps_the_crest_and_the_foot() {
         let plan = shape(spec(), FINE);
         let r = plan.ridge.radius;
@@ -2355,7 +2433,7 @@ mod tests {
                 continue;
             }
             for (i, (m, n)) in moves(j).iter().zip(&first).enumerate() {
-                let most = MIGRATE * sg.length + 2.0 * (wander + warp);
+                let most = (MIGRATE + KINK) * sg.length + 2.0 * (wander + warp);
                 assert!((m - n).abs() <= most + 1e-12);
                 let turn = plan.turn(&sg, places[i] / plan.ridge.spread);
                 let trace = plan.trace(&sg, j, places[i], turn);

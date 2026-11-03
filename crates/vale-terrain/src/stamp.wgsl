@@ -1033,6 +1033,12 @@ const ACTIVE_MYR = 3.0;
 const PATCH_MYR = 4.0;
 const PATCH_OLD_MYR = 10.0;
 const PATCH = 0.3;
+const GAP_MYR = 5.0;
+const GAP_SHARE = -0.1;
+const GAP_EDGE = 0.08;
+const KINK = 0.12;
+const KINK_MYR = 4.0;
+const KINK_OLD_MYR = 6.0;
 const SWELL = 1.4;
 const SAG = 0.4;
 const TROUGH_LEAST = 0.3;
@@ -1234,6 +1240,16 @@ fn noise1(x: f32, a: u32, b: u32, seed: u32) -> vec2<f32> {
     let h0 = 2.0 * unit(hash(vec3<u32>(bitcast<u32>(c), a, b), seed)) - 1.0;
     let h1 = 2.0 * unit(hash(vec3<u32>(bitcast<u32>(c + 1), a, b), seed)) - 1.0;
     return vec2<f32>(h0 + (h1 - h0) * s * s * (3.0 - 2.0 * s), (h1 - h0) * 6.0 * s * (1.0 - s));
+}
+
+// `kink1` in `ridge.rs`.
+fn kink1(x: f32, a: u32, b: u32, seed: u32) -> vec2<f32> {
+    let n = floor(x);
+    let s = x - n;
+    let c = i32(n);
+    let h0 = 2.0 * unit(hash(vec3<u32>(bitcast<u32>(c), a, b), seed)) - 1.0;
+    let h1 = 2.0 * unit(hash(vec3<u32>(bitcast<u32>(c + 1), a, b), seed)) - 1.0;
+    return vec2<f32>(h0 + (h1 - h0) * s, h1 - h0);
 }
 
 // `noise1_round` in `ridge.rs`.
@@ -1455,6 +1471,16 @@ fn ridge_migration(j: i32, tau: f32) -> vec2<f32> {
     sum.y += 0.5 * migrate * slow.y / MIGRATE_MYR;
     sum.x += 0.5 * wander * (small.x - small_zero);
     sum.y += 0.5 * wander * small.y / WANDER_MYR;
+    if migrate > 0.0 {
+        let t = clamp(tau / KINK_OLD_MYR, 0.0, 1.0);
+        let grow = t * t * (3.0 - 2.0 * t);
+        let change = 6.0 * t * (1.0 - t) / KINK_OLD_MYR;
+        let size = 0.5 * KINK * ridge.segment;
+        let kink = kink1(tau / KINK_MYR, a, 3u, seed);
+        let kink_zero = kink1(0.0, a, 3u, seed).x;
+        sum.x += size * grow * (kink.x - kink_zero);
+        sum.y += size * (change * (kink.x - kink_zero) + grow * kink.y / KINK_MYR);
+    }
     return sum;
 }
 
@@ -1511,9 +1537,16 @@ fn ridge_fracture(j: i32, offset_km: f32, is_transform: bool, age: f32) -> vec4<
     }
     let leave = 0.5 * offset_km / (ridge.spread * ridge.world_km);
     let fresh = 1.0 + ACTIVE * (1.0 - smooth_between(leave, leave + ACTIVE_MYR, age));
-    let patches = noise1(age / PATCH_MYR, bitcast<u32>(j), 1u, seed).x;
-    let patchy = PATCH * smooth_between(0.0, PATCH_OLD_MYR, age);
-    let keep = 1.0 - patchy * (1.0 - smooth_between(-0.5, 0.5, patches));
+    var keep = 1.0;
+    if is_transform {
+        let patches = noise1(age / PATCH_MYR, bitcast<u32>(j), 1u, seed).x;
+        let patchy = PATCH * smooth_between(0.0, PATCH_OLD_MYR, age);
+        keep = 1.0 - patchy * (1.0 - smooth_between(-0.5, 0.5, patches));
+    } else {
+        let pieces = noise1(age / GAP_MYR, bitcast<u32>(j), 1u, seed).x;
+        let broken = smooth_between(0.0, PATCH_OLD_MYR, age);
+        keep = 1.0 - broken * (1.0 - smooth_between(-GAP_EDGE, GAP_EDGE, pieces - GAP_SHARE));
+    }
     let filled = 1.0 - TROUGH_FILL * smooth_between(0.0, TROUGH_MYR, age);
     let least = TROUGH_LEAST * smooth_between(0.0, TROUGH_LEAST_KM, offset_km);
     let full = max(TROUGH_DEPTH * pow_precise(size, TROUGH_POWER), least) * strength * kind * fresh;
