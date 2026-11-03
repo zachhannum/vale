@@ -9832,10 +9832,12 @@ fn a_drag_of_a_selected_vertex_moves_all_the_selected_vertices() {
 
 #[test]
 #[ignore = "gpu"]
-fn manual_a_held_ocean_ridge_on_the_ipad() {
+fn a_held_ocean_ridge_has_its_buttons_on_the_canvas() {
     use vale_app::globe::math::lonlat_to_dir;
     let setup = egui_kittest::wgpu::default_wgpu_setup();
     let mut h = headless::ui_harness(state(), (1194.0, 834.0), 2.0, setup);
+    // The GPU does the work of the ridge when a frame renders.
+    h.set_render_every_step(true);
     h.state_mut().add_height();
     h.state_mut().globe.map.fill(meters_to_level(-4000.0));
     h.run_steps(4);
@@ -9864,6 +9866,21 @@ fn manual_a_held_ocean_ridge_on_the_ipad() {
     }
     h.run_steps(4);
     assert!(h.state().globe.holding().is_some());
-    assert!(control(&h, panels::APPLY).is_some());
     screenshot::save(&mut h, "pad-held-ridge");
+    // The buttons are on the canvas, beside the open panel.
+    let (_, panel) = h.state().pad.panels[0];
+    for name in [panels::APPLY, panels::DISCARD] {
+        let rect = control(&h, name).unwrap();
+        assert!(!panel.intersects(rect), "{name}: {rect:?}");
+    }
+    check_controls(&h, "a held ocean ridge");
+    tap(&mut h, panels::APPLY);
+    for _ in 0..400 {
+        h.step();
+        if !h.state().globe.busy() {
+            break;
+        }
+    }
+    assert!(h.state().globe.holding().is_none());
+    assert!(h.state().globe.can_undo());
 }

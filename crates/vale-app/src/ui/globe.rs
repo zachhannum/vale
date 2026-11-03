@@ -988,7 +988,33 @@ pub(super) fn canvas(
 ) {
     if let Some(rect) = canvas_input(ui, state, background) {
         paint_canvas(ui, state, rect, background, cards);
+        held_buttons(ui, state, rect);
     }
+}
+
+/// The Discard and Apply buttons of a held ocean ridge or basin, at the
+/// bottom of the canvas.
+fn held_buttons(ui: &egui::Ui, state: &mut AppState, rect: egui::Rect) {
+    if state.globe.holding().is_none() {
+        return;
+    }
+    let at = rect.center_bottom() - egui::vec2(0.0, 24.0);
+    egui::Area::new(egui::Id::new("held-buttons"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(at)
+        .pivot(egui::Align2::CENTER_BOTTOM)
+        .show(ui.ctx(), |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    if ui.button(super::panels::DISCARD).clicked() {
+                        state.globe.discard_held();
+                    }
+                    if ui.button(super::panels::APPLY).clicked() {
+                        state.globe.apply_held();
+                    }
+                });
+            });
+        });
 }
 
 /// Fills the free space of `ui` with the background and reads the input of

@@ -40,7 +40,7 @@ pub const CLEAR_OUTLINE: &str = "Clear outline";
 pub const RIDGE_HINT: &str = "Draw the center line of the ridge.";
 /// The hint of a held ocean ridge or basin.
 pub const HELD_HINT: &str = "Change the settings, then apply.";
-/// The buttons that end a held ocean ridge or basin.
+/// The buttons on the canvas that end a held ocean ridge or basin.
 pub const APPLY: &str = "Apply";
 pub const DISCARD: &str = "Discard";
 
@@ -866,26 +866,14 @@ pub(super) fn strength_name(mode: Mode) -> &'static str {
     }
 }
 
-/// The hint of the ocean ridge mode and of the basin mode, and the buttons
-/// that apply and discard a held stroke.
-fn held_rows(ui: &mut egui::Ui, globe: &mut crate::globe::Globe) {
+/// The hint of the ocean ridge mode and of the basin mode.
+fn held_rows(ui: &mut egui::Ui, globe: &crate::globe::Globe) {
     match globe.brush.mode {
         Mode::Basin => ui.label(basin_hint(globe)),
         Mode::OceanRidge if globe.holding().is_some() => ui.label(HELD_HINT),
         Mode::OceanRidge => ui.label(RIDGE_HINT),
         _ => return,
     };
-    if globe.holding().is_none() {
-        return;
-    }
-    ui.horizontal(|ui| {
-        if ui.button(APPLY).clicked() {
-            globe.apply_held();
-        }
-        if ui.button(DISCARD).clicked() {
-            globe.discard_held();
-        }
-    });
 }
 
 fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {

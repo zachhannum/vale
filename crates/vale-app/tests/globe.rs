@@ -3795,7 +3795,7 @@ fn ridge_harness(seed: u32) -> Harness<'static, AppState> {
 
 #[test]
 #[ignore = "gpu"]
-fn an_ocean_ridge_shows_on_the_globe_while_you_paint() {
+fn an_ocean_ridge_shows_on_the_globe_after_the_pen_goes_up() {
     let _gpu = one_gpu_test();
     let mut h = ridge_harness(7);
     let before = all_levels(&h);
@@ -3806,26 +3806,40 @@ fn an_ocean_ridge_shows_on_the_globe_while_you_paint() {
     let flat = canvas_with_pointer(&mut h);
     assert!(uplift_stroke_end(&mut h) == before);
 
+    // While the button is down, only the center line shows.
     h.state_mut().globe.brush.ridge_crest_m = -500.0;
     uplift_part(&mut h, 12);
-    // The button is down, and the heightmap of the document has no ridge.
     assert!(h.state().globe.busy());
-    assert!(all_levels(&h) == before);
+    assert!(h.state().globe.ridge_preview().is_some());
     let part = canvas_with_pointer(&mut h);
-    assert_eq!(part.dimensions(), flat.dimensions());
-    let changed = part.pixels().zip(flat.pixels()).filter(|(a, b)| a != b);
+    assert!(part.as_raw() == flat.as_raw());
+    // After the button goes up, the ridge shows, and the heightmap of the
+    // document waits for Apply.
+    let (from, to) = uplift_ends(&h);
+    for i in 13..=24 {
+        h.event(egui::Event::PointerMoved(from.lerp(to, i as f32 / 24.0)));
+        h.step();
+    }
+    button(&mut h, egui::PointerButton::Primary, to, false);
+    wait_held(&mut h);
+    assert!(all_levels(&h) == before);
+    let held = canvas_with_pointer(&mut h);
+    let changed = held.pixels().zip(flat.pixels()).filter(|(a, b)| a != b);
     let changed = changed.count();
-    // The ridge is low near the end of the line, and the center line
-    // covers its axis, so a short part of a stroke changes few pixels.
-    assert!(changed > 500, "{changed}");
-    let ridge = uplift_stroke_end(&mut h);
-    assert!(ridge != before);
+    assert!(changed > 1000, "{changed}");
+    settle(&mut h);
+    assert!(all_levels(&h) != before);
     assert_eq!(h.state().globe.stats.last().unwrap().id, 2);
 }
 
 /// The samples of the ocean ridge stroke of the pen: a line with a bend
 /// across a face edge.
 fn ridge_samples() -> Vec<vale_app::globe::brush::Sample> {
+    ridge_samples_of(0.1)
+}
+
+/// The samples of `ridge_samples` with a brush of this radius, in radians.
+fn ridge_samples_of(radius: f64) -> Vec<vale_app::globe::brush::Sample> {
     let places = (0..=30).map(|i| {
         let t = f64::from(i);
         (20.0 + 2.0 * t, (t - 15.0).abs() * 1.2 - 9.0)
@@ -3834,7 +3848,7 @@ fn ridge_samples() -> Vec<vale_app::globe::brush::Sample> {
         .map(|(lon, lat)| vale_app::globe::brush::Sample {
             dir: Some(lonlat_to_dir(lon, lat)),
             flow: 0.5,
-            radius: 0.1,
+            radius,
         })
         .collect()
 }
@@ -4035,6 +4049,40 @@ fn a_held_ocean_ridge_follows_the_settings_until_it_is_applied() {
 
 #[test]
 #[ignore = "gpu"]
+fn a_held_ocean_ridge_follows_the_size_of_the_brush() {
+    let _gpu = one_gpu_test();
+    let mut h = ridge_harness(7);
+    pen_line(&mut h, |_| {});
+    settle(&mut h);
+    let direct = all_levels(&h);
+    drop(h);
+
+    // A larger ridge covers the old one, and a smaller one puts back the
+    // ground first. Thus a size and back gives the ridge of the stroke.
+    for radius in [0.07, 0.13] {
+        let mut h = ridge_harness(7);
+        pen_line(&mut h, |_| {});
+        wait_held(&mut h);
+        let first = canvas_image(&mut h);
+        // A locked size sets the radius on the sphere.
+        h.state_mut().globe.brush.lock = Some(radius);
+        wait_held(&mut h);
+        assert!(canvas_image(&mut h).as_raw() != first.as_raw(), "{radius}");
+        h.state_mut().globe.brush.lock = Some(0.1);
+        wait_held(&mut h);
+        settle(&mut h);
+        let applied = all_levels(&h);
+        let worst = applied
+            .iter()
+            .zip(&direct)
+            .map(|(a, b)| a.abs_diff(*b))
+            .max();
+        assert!(worst.unwrap() <= 2, "{radius}: {worst:?}");
+    }
+}
+
+#[test]
+#[ignore = "gpu"]
 fn discarding_a_held_ocean_ridge_puts_back_the_ground() {
     let _gpu = one_gpu_test();
     for undo in [false, true] {
@@ -4104,9 +4152,18 @@ fn range_harness(seed: u32, erosion: f64) -> Harness<'static, AppState> {
 
 /// Paints the stroke of `ridge_samples` with the pen API, one sample in each
 /// frame. `each` runs after each frame of the stroke.
-fn pen_line(h: &mut Harness<'static, AppState>, mut each: impl FnMut(&Harness<'static, AppState>)) {
+fn pen_line(h: &mut Harness<'static, AppState>, each: impl FnMut(&Harness<'static, AppState>)) {
+    pen_line_of(h, ridge_samples(), each);
+}
+
+/// Paints the stroke of these samples with the pen API, as `pen_line` does.
+fn pen_line_of(
+    h: &mut Harness<'static, AppState>,
+    samples: Vec<vale_app::globe::brush::Sample>,
+    mut each: impl FnMut(&Harness<'static, AppState>),
+) {
     h.state_mut().globe.pen_down();
-    for sample in ridge_samples() {
+    for sample in samples {
         let globe = &mut h.state_mut().globe;
         globe.pen_sample(sample, std::time::Instant::now());
         h.step();

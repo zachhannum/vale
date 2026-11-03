@@ -620,6 +620,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     raster::reset_card(&ctx, state, &mut controls, &rects);
     raster::ramp_card(&ctx, state, &mut controls, &rects);
     readout(&ctx, ui, state, &rects);
+    held_card(&ctx, state, &mut controls, &rects);
     state.pad.center_rect = None;
     // With no view switch in the top row, the two buttons have their own card.
     if flat && rects.view.is_none() {
@@ -1776,7 +1777,7 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
     }
     let unit = state.shown_unit().to_string();
     if state.globe.brush.mode == Mode::OceanRidge {
-        ridge_hint_rows(ui, controls, &mut state.globe);
+        ridge_hint_rows(ui, &state.globe);
     }
     // The outline sets the size of a basin.
     if state.globe.brush.mode == Mode::Basin {
@@ -2075,12 +2076,11 @@ fn basin_rows(ui: &mut egui::Ui, controls: &mut Controls, globe: &mut crate::glo
             globe.set_basin_outline(None);
         }
     }
-    held_rows(ui, controls, globe);
 }
 
-/// The hint and the buttons of a held ocean ridge. The panel of the ridge
-/// has no room for a hint before the stroke on the smallest iPad.
-fn ridge_hint_rows(ui: &mut egui::Ui, controls: &mut Controls, globe: &mut crate::globe::Globe) {
+/// The hint of a held ocean ridge. The panel of the ridge has no room for a
+/// hint before the stroke on the smallest iPad.
+fn ridge_hint_rows(ui: &mut egui::Ui, globe: &crate::globe::Globe) {
     if globe.holding().is_none() {
         return;
     }
@@ -2088,20 +2088,6 @@ fn ridge_hint_rows(ui: &mut egui::Ui, controls: &mut Controls, globe: &mut crate
     let text = egui::RichText::new(panels::HELD_HINT).color(theme::MUTE);
     ui.add(egui::Label::new(text).selectable(false));
     ui.add_space(8.0);
-    held_rows(ui, controls, globe);
-}
-
-/// The buttons that apply and discard a held ocean ridge or basin.
-fn held_rows(ui: &mut egui::Ui, controls: &mut Controls, globe: &mut crate::globe::Globe) {
-    if globe.holding().is_none() {
-        return;
-    }
-    if widgets::button_row(ui, controls, panels::APPLY, true).clicked() {
-        globe.apply_held();
-    }
-    if widgets::button_row_in(ui, controls, panels::DISCARD, true, theme::WARN).clicked() {
-        globe.discard_held();
-    }
 }
 
 /// The text of the Layers panel of a world with no layer.
@@ -2722,6 +2708,57 @@ fn readout(ctx: &egui::Context, ui: &egui::Ui, state: &AppState, rects: &Rects) 
             }
             let at = pos2(left + lead, rect.center().y - galley.size().y / 2.0);
             ui.painter().galley(at, galley, theme::MUTE);
+        },
+    );
+}
+
+/// The width of a button of the card of a held stroke.
+const HELD_BUTTON: f32 = 120.0;
+
+/// The card of the Discard and Apply buttons of a held ocean ridge or
+/// basin, at the bottom of the canvas above the readout. An open panel
+/// pushes the card to its right.
+fn held_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
+    if state.globe.holding().is_none() {
+        return;
+    }
+    let size = vec2(2.0 * HELD_BUTTON + 3.0 * PAD, PANEL_ROW + 2.0 * PAD);
+    let mut bottom = rects.screen.bottom() - rects.bands.bottom - geometry::GAP;
+    for top in [rects.readout, rects.sheet]
+        .into_iter()
+        .flatten()
+        .map(|r| r.top())
+    {
+        bottom = bottom.min(top - geometry::GAP);
+    }
+    let middle = rects.screen.center().x;
+    let mut rect = Rect::from_min_size(pos2(middle - size.x / 2.0, bottom - size.y), size);
+    let panels = &state.pad.panels;
+    if let Some((_, panel)) = panels.iter().find(|(_, panel)| panel.intersects(rect)) {
+        rect = rect.translate(vec2(panel.right() + geometry::GAP - rect.left(), 0.0));
+    }
+    widgets::card(
+        ctx,
+        state.globe.backdrop(),
+        "pad-held",
+        rect,
+        Order::Middle,
+        theme::CARD_RADIUS.into(),
+        |ui| {
+            let at = |x: f32| {
+                let min = pos2(rect.left() + PAD + x, rect.top() + PAD);
+                Rect::from_min_size(min, vec2(HELD_BUTTON, PANEL_ROW))
+            };
+            let mut button = |ui: &mut egui::Ui, place: Rect, name: &str, fill| {
+                let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(place));
+                widgets::button_row_in(&mut ui, controls, name, true, fill).clicked()
+            };
+            if button(ui, at(0.0), panels::DISCARD, theme::WARN) {
+                state.globe.discard_held();
+            }
+            if button(ui, at(HELD_BUTTON + PAD), panels::APPLY, theme::ACCENT) {
+                state.globe.apply_held();
+            }
         },
     );
 }
