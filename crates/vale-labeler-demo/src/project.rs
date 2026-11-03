@@ -5,8 +5,21 @@ use kurbo::Point;
 /// A spherical projection. Angles in degrees.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum Projection {
-    EqualEarth { lon0: f64 },
-    Laea { lon0: f64, lat0: f64 },
+    EqualEarth {
+        lon0: f64,
+    },
+    Laea {
+        lon0: f64,
+        lat0: f64,
+    },
+    /// Lambert conformal conic on the sphere, with the standard parallels `lat1` and `lat2`
+    /// (Snyder 1987, equations 15-1 to 15-5).
+    Lcc {
+        lon0: f64,
+        lat0: f64,
+        lat1: f64,
+        lat2: f64,
+    },
 }
 
 fn wrap_lon(lon: f64, lon0: f64) -> f64 {
@@ -50,6 +63,29 @@ impl Projection {
                 let x = k * phi.cos() * l.sin();
                 let y = k * (phi0.cos() * phi.sin() - phi0.sin() * phi.cos() * l.cos());
                 Some((x, y))
+            }
+            Projection::Lcc {
+                lon0,
+                lat0,
+                lat1,
+                lat2,
+            } => {
+                // The south pole is at infinity, so the far south is not shown.
+                if lat < -60.0 {
+                    return None;
+                }
+                let t = |deg: f64| (std::f64::consts::FRAC_PI_4 + deg.to_radians() / 2.0).tan();
+                let (phi1, phi2) = (lat1.to_radians(), lat2.to_radians());
+                let n = if (lat1 - lat2).abs() < 1e-9 {
+                    phi1.sin()
+                } else {
+                    (phi1.cos() / phi2.cos()).ln() / (t(lat2) / t(lat1)).ln()
+                };
+                let f = phi1.cos() * t(lat1).powf(n) / n;
+                let rho = f / t(lat).powf(n);
+                let rho0 = f / t(lat0).powf(n);
+                let theta = n * wrap_lon(lon, lon0);
+                Some((rho * theta.sin(), rho0 - rho * theta.cos()))
             }
         }
     }
@@ -194,6 +230,30 @@ mod tests {
             lat0: 0.0,
         };
         assert!((q.forward(90.0, 0.0).unwrap().0 - 2f64.sqrt()).abs() < 1e-9);
+    }
+
+    #[test]
+    fn lcc() {
+        let p = Projection::Lcc {
+            lon0: -96.0,
+            lat0: 23.0,
+            lat1: 33.0,
+            lat2: 45.0,
+        };
+        // Snyder 1987, page 296: the sphere example, scaled to the unit sphere.
+        let (x, y) = p.forward(-75.0, 35.0).unwrap();
+        assert!((x - 0.2966785).abs() < 1e-6, "x {x}");
+        assert!((y - 0.2462112).abs() < 1e-6, "y {y}");
+        let (x, y) = p.forward(-96.0, 23.0).unwrap();
+        assert!(x.abs() < 1e-12 && y.abs() < 1e-12);
+        // A parallel is a circle around the image of the pole.
+        let (_, pole) = p.forward(-96.0, 90.0).unwrap();
+        let r = |lon: f64| {
+            let (x, y) = p.forward(lon, 50.0).unwrap();
+            x.hypot(y - pole)
+        };
+        assert!((r(-130.0) - r(-60.0)).abs() < 1e-12);
+        assert!(p.forward(0.0, -70.0).is_none());
     }
 
     #[test]

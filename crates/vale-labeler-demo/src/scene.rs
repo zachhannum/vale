@@ -6,7 +6,7 @@ use anyhow::{Context, bail};
 use kurbo::{BezPath, Point, Rect};
 use vale_labeler::{
     Feature, Fonts, Geometry, LabelClass, LabelInput, LinePlacement, Options, Placement,
-    PointPlacement, PolygonPlacement, TextStyle,
+    PointPlacement, PolygonMode, PolygonPlacement, TextStyle,
 };
 
 use crate::data::{Area, join_rivers, load_areas, load_places, load_polygons, load_rivers};
@@ -16,6 +16,8 @@ use crate::project::{Frame, PageMap, Projection};
 pub enum Preset {
     World,
     Europe,
+    /// Europe in a conic projection. The country names follow the parallels.
+    Conic,
 }
 
 impl Preset {
@@ -23,6 +25,7 @@ impl Preset {
         match self {
             Preset::World => "world",
             Preset::Europe => "europe",
+            Preset::Conic => "conic",
         }
     }
 }
@@ -38,6 +41,8 @@ pub struct Scene {
     pub rivers: Vec<(BezPath, f64)>,
     /// Position, symbol radius, capital.
     pub places: Vec<(Point, f64, bool)>,
+    /// The parallels and meridians that are drawn.
+    pub graticule: Vec<BezPath>,
     pub input: LabelInput,
 }
 
@@ -80,6 +85,20 @@ pub fn build(preset: Preset, data_dir: &Path, seed: u64, improve: bool) -> anyho
                 lat0: 52.0,
             },
             (-12.0, 42.0, 35.0, 62.0),
+            1600u16,
+            1200u16,
+            0.0,
+        ),
+        Preset::Conic => (
+            "110m",
+            "110m",
+            Projection::Lcc {
+                lon0: 10.0,
+                lat0: 52.0,
+                lat1: 35.0,
+                lat2: 65.0,
+            },
+            (-12.0, 42.0, 34.0, 66.0),
             1600u16,
             1200u16,
             0.0,
@@ -142,7 +161,7 @@ pub fn build(preset: Preset, data_dir: &Path, seed: u64, improve: bool) -> anyho
         }
     }
 
-    let classes = vec![
+    let mut classes = vec![
         LabelClass {
             name: "capitals".into(),
             style: TextStyle::new("Noto Sans", 13.0),
@@ -202,6 +221,19 @@ pub fn build(preset: Preset, data_dir: &Path, seed: u64, improve: bool) -> anyho
             duplicate_distance: None,
         },
     ];
+
+    let mut parallels = Vec::new();
+    let mut graticule = Vec::new();
+    if preset == Preset::Conic {
+        classes[3].placement = Placement::Polygon(PolygonPlacement {
+            mode: PolygonMode::Parallel,
+            max_spread: 0.8,
+            graticule: true,
+            ..Default::default()
+        });
+        parallels = parallel_lines(&map, page, projection);
+        graticule = graticule_lines(&map, projection);
+    }
 
     let mut features = Vec::new();
     let mut scene_places = Vec::new();
@@ -297,13 +329,72 @@ pub fn build(preset: Preset, data_dir: &Path, seed: u64, improve: bool) -> anyho
         borders,
         rivers: scene_rivers,
         places: scene_places,
+        graticule,
         input: LabelInput {
             bounds: page,
             classes,
             features,
             obstacles: Vec::new(),
-            parallels: Vec::new(),
+            parallels,
             options: Options { seed, improve },
         },
     })
+}
+
+/// The longitude of the central meridian, where the projection has one.
+fn central_meridian(projection: Projection) -> f64 {
+    match projection {
+        Projection::EqualEarth { lon0 }
+        | Projection::Laea { lon0, .. }
+        | Projection::Lcc { lon0, .. } => lon0,
+    }
+}
+
+/// The page-space points of a parallel from west to east, in steps of `step` degrees. The
+/// line stops just short of the antimeridian of the projection.
+fn parallel(map: &PageMap, projection: Projection, lat: f64, step: f64) -> Vec<Vec<Point>> {
+    let lon0 = central_meridian(projection);
+    let n = (359.8 / step).floor() as usize;
+    let line: Vec<[f64; 2]> = (0..=n)
+        .map(|i| [lon0 - 179.9 + i as f64 * step, lat])
+        .collect();
+    map.line_to_page(&line)
+}
+
+/// One parallel each degree, in the parts that are on the page or near it.
+fn parallel_lines(map: &PageMap, page: Rect, projection: Projection) -> Vec<Vec<Point>> {
+    let near = page.inflate(50.0, 50.0);
+    let mut out = Vec::new();
+    for lat in -60..90 {
+        for line in parallel(map, projection, f64::from(lat), 0.25) {
+            let mut part: Vec<Point> = Vec::new();
+            for p in line {
+                if near.contains(p) {
+                    part.push(p);
+                } else if !part.is_empty() {
+                    out.push(std::mem::take(&mut part));
+                }
+            }
+            if !part.is_empty() {
+                out.push(part);
+            }
+        }
+    }
+    out.retain(|l| l.len() >= 2);
+    out
+}
+
+/// The parallels and meridians each 10 degrees.
+fn graticule_lines(map: &PageMap, projection: Projection) -> Vec<BezPath> {
+    let mut lines = Vec::new();
+    for lat in (-50..90).step_by(10) {
+        lines.extend(parallel(map, projection, f64::from(lat), 0.5));
+    }
+    for lon in (-180..180).step_by(10) {
+        let line: Vec<[f64; 2]> = (0..=140)
+            .map(|i| [f64::from(lon), -60.0 + f64::from(i)])
+            .collect();
+        lines.extend(map.line_to_page(&line));
+    }
+    lines.iter().map(|l| open_path(l)).collect()
 }

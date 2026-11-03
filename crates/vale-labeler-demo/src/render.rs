@@ -47,6 +47,9 @@ pub fn display_list(scene: &Scene, labeling: &Labeling, options: &RenderOptions)
     for path in &scene.land {
         list.push(fill(path.clone(), rgb([244, 241, 232]), FillRule::EvenOdd));
     }
+    for path in &scene.graticule {
+        list.push(stroke(path.clone(), rgb([160, 180, 195]), 0.5, false));
+    }
     for path in &scene.borders {
         list.push(stroke(path.clone(), rgb([200, 190, 175]), 0.5, false));
     }
