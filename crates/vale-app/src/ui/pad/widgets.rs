@@ -1318,6 +1318,37 @@ pub fn key_field(
     keys: Keys,
     valid: impl Fn(&str) -> bool,
 ) -> Option<String> {
+    field_with_keys(ui, controls, name, label, suffix, shown, keys, valid, true)
+}
+
+/// A field as [`key_field`] that returns the new text only when its keypad
+/// closes, for a value that is slow to apply.
+#[allow(clippy::too_many_arguments)]
+pub fn key_field_on_close(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    name: &str,
+    label: &str,
+    suffix: &str,
+    shown: &str,
+    keys: Keys,
+    valid: impl Fn(&str) -> bool,
+) -> Option<String> {
+    field_with_keys(ui, controls, name, label, suffix, shown, keys, valid, false)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn field_with_keys(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    name: &str,
+    label: &str,
+    suffix: &str,
+    shown: &str,
+    keys: Keys,
+    valid: impl Fn(&str) -> bool,
+    live: bool,
+) -> Option<String> {
     let ctx = ui.ctx().clone();
     let id = ui.id().with(name);
     let (field, right) = match keys {
@@ -1357,7 +1388,12 @@ pub fn key_field(
     if edit.is_some() {
         set_keypad_field_rect(&ctx, field);
     }
+    // The text that a field that is not live returns when its keypad closes.
+    let pending = id.with("pending");
     let mut out = None;
+    if edit.is_none() {
+        out = ui.data_mut(|d| d.remove_temp::<String>(pending));
+    }
     match edit_menu(ui, controls, id, field) {
         Some(EditAction::Copy) => {
             let text = edit.as_ref().map_or(shown, |edit| edit.text.as_str());
@@ -1370,13 +1406,21 @@ pub fn key_field(
                 edit.fresh = false;
                 set_key_edit(&ctx, Some(edit.clone()));
             }
-            out = Some(text);
+            if live || edit.is_none() {
+                out = Some(text);
+            } else {
+                ui.data_mut(|d| d.insert_temp(pending, text));
+            }
         }
         None => {}
     }
     if let Some(edit) = edit.as_mut().filter(|edit| edit.changed) {
         edit.changed = false;
-        out = Some(edit.text.clone());
+        if live {
+            out = Some(edit.text.clone());
+        } else {
+            ui.data_mut(|d| d.insert_temp(pending, edit.text.clone()));
+        }
         set_key_edit(&ctx, Some(edit.clone()));
     }
 

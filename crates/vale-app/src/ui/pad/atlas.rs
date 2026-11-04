@@ -892,9 +892,10 @@ fn frame_tab(
     let keys = Keys::Number;
     let shown = math::scale_text(frame.scale);
     let valid = |text: &str| math::parse_scale(text).is_some();
-    if let Some(scale) = widgets::key_field(ui, controls, SCALE, SCALE, "", &shown, keys, valid)
-        .as_deref()
-        .and_then(math::parse_scale)
+    if let Some(scale) =
+        widgets::key_field_on_close(ui, controls, SCALE, SCALE, "", &shown, keys, valid)
+            .as_deref()
+            .and_then(math::parse_scale)
     {
         atlas::set_scale(state, id, scale);
     }

@@ -946,6 +946,28 @@ fn a_custom_projection_is_saved_in_the_project_and_picked_again() {
 }
 
 #[test]
+fn the_scale_of_a_frame_changes_when_the_keypad_closes() {
+    let mut h = inset_pad(BOARDS[0]);
+    let before = frame(&h, 1).scale;
+    tap(&mut h, SCALE);
+    tap(&mut h, &format!("{SCALE} 5"));
+    assert_eq!(frame(&h, 1).scale, before);
+    for _ in 0..6 {
+        tap(&mut h, &format!("{SCALE} 0"));
+    }
+    assert_eq!(frame(&h, 1).scale, before);
+    tap(&mut h, &format!("{SCALE} Done"));
+    assert_eq!(frame(&h, 1).scale, 5_000_000.0);
+
+    tap(&mut h, SCALE);
+    for key in ["2", "0", "0", "0", "0"] {
+        tap(&mut h, &format!("{SCALE} {key}"));
+    }
+    tap(&mut h, SCALE);
+    assert_eq!(frame(&h, 1).scale, 20_000.0);
+}
+
+#[test]
 fn the_tabs_of_a_frame_work_with_a_finger() {
     for size in BOARDS {
         let mut h = inset_pad(size);
