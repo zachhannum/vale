@@ -10,7 +10,6 @@ use vale_terrain::Mode;
 
 pub use super::LayerRef;
 use super::atlas::AtlasTool;
-use super::point_form;
 use super::raster_form::{self, RasterForm};
 use super::select;
 use super::world_form::{self, WorldForm};
@@ -630,6 +629,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
             show_panel(&ctx, state, &mut controls, &rects, panel);
         }
     }
+    super::new_feature::keep_in_view(state, &rects);
     expire_notes(&ctx, state);
     raster::band_card(&ctx, state, &mut controls, &rects);
     raster::shade_color_frame(&ctx, state);
@@ -677,7 +677,6 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     }
     world_form::pad(&ctx, state, &mut controls, &rects);
     raster_form::pad(&ctx, state, &mut controls, &rects);
-    point_form::pad(&ctx, state, &mut controls, &rects);
     super::region::pad(&ctx, state, &mut controls, &rects);
     if let Some(rect) = canvas.inner {
         globe::paint_canvas(ui, state, rect, theme::CANVAS, true);

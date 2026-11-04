@@ -8,7 +8,7 @@ use super::icons::{self, Icon};
 use super::widgets::{self, Controls, ICON};
 use super::{Page, raster, theme};
 use crate::ui::AppState;
-use crate::ui::point_form::can_take_focus;
+use crate::ui::new_feature::can_take_focus;
 
 /// The heading of the list of the fields.
 pub const FIELDS: &str = "Fields";

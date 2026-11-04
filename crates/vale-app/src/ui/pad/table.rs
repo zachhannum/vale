@@ -10,7 +10,7 @@ use super::theme;
 use super::widgets::{self, Controls, HIGHLIGHT_INSET, PANEL_ROW};
 use super::{LayerRef, Page, Panel};
 use crate::ui::AppState;
-use crate::ui::point_form::{can_take_focus, keyboard_top};
+use crate::ui::new_feature::{can_take_focus, keyboard_top};
 use crate::ui::table::{
     ALL, CellTap, FILTER, SELECTED, cell_name, cell_text, column_width, count_text, empty_text,
     focus_all, paint_arrow, sort_name,
