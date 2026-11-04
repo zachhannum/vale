@@ -65,6 +65,8 @@ pub enum Icon {
     Measure,
     /// A square with a line across it.
     Split,
+    /// The one outline of two squares that overlap.
+    Merge,
     /// A line with square handles at its vertices.
     Vertex,
     /// Two squares with one side in common and a handle on it.
@@ -134,6 +136,7 @@ impl Icon {
             Icon::PolygonAdd => "M3 8l7-4 5 5-2 7-8-1zM19 13v8M15 17h8",
             Icon::PolygonSubtract => "M3 8l7-4 5 5-2 7-8-1zM15 17h8",
             Icon::Split => "M4 6h16v12H4zM14 2L10 22",
+            Icon::Merge => "M3 3h11v7h7v11H10v-7H3z",
             Icon::Vertex => "M4 18L10 8l10 4M2 16h4v4H2zM8 6h4v4H8zM18 10h4v4h-4z",
             Icon::Shared => "M3 5h9v14H3zM12 5h9v14h-9zM10.5 10.5h3v3h-3z",
             Icon::Measure => "M3 17L17 3l4 4L7 21zM7 13l2 2M10 10l3 3M13 7l2 2",
@@ -452,6 +455,7 @@ mod tests {
             Icon::PolygonSubtract,
             Icon::Measure,
             Icon::Split,
+            Icon::Merge,
             Icon::Vertex,
             Icon::Shared,
             Icon::Grip,

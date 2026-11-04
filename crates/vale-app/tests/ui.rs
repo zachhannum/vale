@@ -1969,3 +1969,62 @@ fn the_tool_bar_has_vertex_and_the_keys_edit_vertices() {
     // A ring keeps three vertices.
     assert_eq!(ring(&h).len(), 3);
 }
+
+#[test]
+fn the_edit_menu_merges_the_selected_features_into_the_feature_that_you_choose() {
+    use vale_app::globe::select::FeatureRef;
+    use vale_app::ui::select::MERGE;
+    use vale_store::{Feature, Geometry, GeometryKind};
+    let mut doc = Document::sample();
+    let id = doc.add_layer(GeometryKind::Point);
+    let mut picks = Vec::new();
+    for p in [[1.0, 2.0], [3.0, 4.0]] {
+        let feature = Feature::new(Geometry::Points(vec![p]), Default::default());
+        picks.push(FeatureRef {
+            layer: id,
+            uuid: feature.uuid(),
+        });
+        assert!(doc.project.add_feature(id, feature));
+    }
+    // Two values of a field, so Merge asks which feature keeps its values.
+    let field = vale_store::Field::new("rank", vale_store::FieldType::Real);
+    assert!(doc.project.add_field(id, field));
+    for (f, rank) in picks.iter().zip([1.0, 2.0]) {
+        let one = std::collections::HashSet::from([f.uuid]);
+        let value = vale_store::Value::Number(rank);
+        assert_eq!(doc.project.set_attribute_of(id, &one, "rank", &value), 1);
+    }
+    let mut state = AppState::new(doc).unwrap();
+    state.headless = true;
+    state.select(Some(LayerRef::Vector(id)));
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(SIZE.0 as f32, SIZE.1 as f32))
+        .with_pixels_per_point(1.0)
+        .build_ui_state(|ui, state: &mut AppState| draw(ui, state), state);
+    h.run_steps(3);
+    let merge_off = |h: &mut Harness<'static, AppState>| {
+        h.get_by_label("Edit").click();
+        h.run_steps(2);
+        let off = h.get_by_label(MERGE).accesskit_node().is_disabled();
+        h.key_press(egui::Key::Escape);
+        h.run_steps(2);
+        off
+    };
+    h.state_mut().set_feature_selection(vec![picks[0]]);
+    assert!(merge_off(&mut h));
+    h.state_mut().set_feature_selection(picks.clone());
+    h.run_steps(2);
+    h.get_by_label("Edit").click();
+    h.run_steps(2);
+    h.get_by_label(MERGE).click();
+    h.run_steps(3);
+    assert!(h.state().merging);
+    h.get_by_label("Feature 2").click();
+    h.run_steps(3);
+    assert!(!h.state().merging);
+    let layer = h.state().doc.project.layer(id).unwrap();
+    assert_eq!(layer.features.len(), 1);
+    assert_eq!(layer.features[0].uuid(), picks[1].uuid);
+    let want = Geometry::Points(vec![[1.0, 2.0], [3.0, 4.0]]);
+    assert_eq!(layer.features[0].geometry, want);
+}

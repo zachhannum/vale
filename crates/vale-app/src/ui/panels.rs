@@ -126,6 +126,7 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
             }
             if state.workspace == Workspace::Globe {
                 ui.separator();
+                select::edit_menu(ui, state);
                 select::view_menu(ui, state);
                 ui.separator();
                 // With no layer for the tool, the tool is Navigate.
