@@ -32,6 +32,8 @@ pub const END_WIDTH: &str = "Last width";
 pub const START_SIZE: &str = "First size";
 pub const END_SIZE: &str = "Last size";
 pub const MAKE_RULES: &str = "Make rules";
+/// The note when one class has the value of a label of the ramp.
+pub const ONE_LABELED: &str = "1 class takes the color of its label.";
 /// The note when no feature gives a value.
 pub const NO_VALUES: &str = "No feature has a value.";
 
@@ -229,6 +231,17 @@ pub fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id
         Some(Values::Bad) | None => {}
         Some(_) if classes.is_empty() => note(ui, NO_VALUES),
         Some(_) => note(ui, &summary(count, classes.len())),
+    }
+    let labeled = state.ramps.list().get(ramp).map_or(0, |r| {
+        classes
+            .iter()
+            .filter(|c| c.value.as_deref().is_some_and(|v| r.labeled(v).is_some()))
+            .count()
+    });
+    match labeled {
+        0 => {}
+        1 => note(ui, ONE_LABELED),
+        n => note(ui, &format!("{n} classes take the colors of their labels.")),
     }
     let free = !state.pad.rules_fixed;
     let made = widgets::button_row(ui, controls, MAKE_RULES, free && !classes.is_empty()).clicked();

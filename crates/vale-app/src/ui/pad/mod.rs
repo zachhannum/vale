@@ -383,6 +383,8 @@ pub enum Page {
     Table,
     /// The form that replaces the rules with a rule for each class.
     Classify,
+    /// The labels of the colors of the ramp with this index.
+    RampLabels(usize),
 }
 
 /// The state of the iPad layout.
@@ -1545,7 +1547,7 @@ pub(super) fn show_panel(
     let fits = match (layer, state.pad.page) {
         (
             Some(LayerRef::Raster(_)),
-            Some(Page::Ramps | Page::Stops | Page::Hillshade | Page::Blend),
+            Some(Page::Ramps | Page::Stops | Page::Hillshade | Page::Blend | Page::RampLabels(_)),
         ) => true,
         (Some(LayerRef::Image(_)), Some(Page::Blend)) => true,
         (Some(LayerRef::Vector(_)), Some(Page::NewField | Page::Table | Page::Classify)) => true,
@@ -1587,6 +1589,13 @@ pub(super) fn show_panel(
         (Panel::Brush, _) => (panel.key(), "Brush", None),
         (Panel::Layers, Some(LayerRef::Raster(_))) if page == Some(Page::Ramps) => {
             ("pad-ramps", raster::COLOR_RAMPS, Some(raster::COLOR_STOPS))
+        }
+        (Panel::Layers, Some(LayerRef::Raster(_))) if matches!(page, Some(Page::RampLabels(_))) => {
+            (
+                "pad-ramp-labels",
+                raster::COLOR_LABELS,
+                Some(raster::COLOR_RAMPS),
+            )
         }
         (Panel::Layers, Some(LayerRef::Raster(_))) if page == Some(Page::Stops) => {
             ("pad-stops", raster::COLOR_STOPS, Some(name))
@@ -1689,6 +1698,8 @@ pub(super) fn show_panel(
         }
         if row.back && page == Some(Page::Ramps) {
             state.pad.page = Some(Page::Stops);
+        } else if row.back && matches!(page, Some(Page::RampLabels(_))) {
+            state.pad.page = Some(Page::Ramps);
         } else if let (
             true,
             Some(
@@ -1712,6 +1723,7 @@ pub(super) fn show_panel(
             (Panel::Brush, _) => brush_body(ui, state, controls),
             (Panel::Layers, Some(LayerRef::Raster(id))) => match page {
                 Some(Page::Ramps) => raster::ramps_body(ui, state, controls, id),
+                Some(Page::RampLabels(i)) => raster::labels_body(ui, state, controls, i),
                 Some(Page::Stops) => raster::stops_body(ui, state, controls, id),
                 Some(Page::Hillshade) => {
                     raster::hillshade_body(ui, state, controls, id);

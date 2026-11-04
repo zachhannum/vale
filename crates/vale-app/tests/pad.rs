@@ -5559,6 +5559,45 @@ fn an_imported_ramp_gives_one_color_per_band() {
 }
 
 #[test]
+fn a_custom_ramp_gets_labels_and_a_built_in_ramp_shows_them() {
+    use vale_app::ramps::KOPPEN;
+    use vale_app::ui::pad::raster::{COLOR_RAMPS, EDIT_LABELS, SHOW_LABELS};
+    let mut h = painted_pad(BOARDS[0]);
+    let height = open_height(&mut h);
+    open_stops(&mut h);
+    scroll_to_row(&mut h, COLOR_RAMPS);
+    tap(&mut h, COLOR_RAMPS);
+    let colors = [[33, 113, 181], [116, 196, 118], [140, 81, 10]];
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("zones.png");
+    let legend = image::RgbImage::from_fn(90, 12, |x, _| image::Rgb(colors[x as usize / 30]));
+    legend.save(&path).unwrap();
+    h.state_mut().run_action(Action::ImportRamp(height, path));
+    h.run();
+    let at = h.state().ramps.list().len() - 1;
+
+    scroll_to_control(&mut h, "zones");
+    tap(&mut h, "zones");
+    tap(&mut h, EDIT_LABELS);
+    assert_eq!(h.state().pad.page, Some(Page::RampLabels(at)));
+    check_controls(&h, "the labels of a ramp");
+    type_text(&mut h, "Label 2", "Cfb");
+    screenshot::save(&mut h, "pad-ramp-labels");
+    assert_eq!(h.state().ramps.custom()[0].labels, ["", "Cfb", ""]);
+    tap(&mut h, "Back to Color ramps");
+    assert_eq!(h.state().pad.page, Some(Page::Ramps));
+
+    // The labels of a built-in ramp show, and they do not change.
+    scroll_to_control(&mut h, KOPPEN);
+    tap(&mut h, KOPPEN);
+    assert!(control(&h, EDIT_LABELS).is_none());
+    tap(&mut h, SHOW_LABELS);
+    assert!(matches!(h.state().pad.page, Some(Page::RampLabels(_))));
+    assert!(control(&h, "Label 1").is_none());
+    screenshot::save(&mut h, "pad-koppen-labels");
+}
+
+#[test]
 fn an_imported_ramp_stays_in_the_list_and_applies_from_its_card() {
     use vale_app::ui::pad::raster::{COLOR_RAMPS, DELETE_RAMP, IMPORT_RAMP, REVERSE_RAMP};
     let mut h = painted_pad(BOARDS[0]);
@@ -7543,6 +7582,31 @@ fn classify_by_text_gives_a_rule_for_each_value_and_other_values() {
     let made = rules(&h, rivers);
     let first = made[0].filter.source().unwrap().text().to_owned();
     assert_eq!(first, format!("featurecla = '{}'", made[0].name));
+}
+
+#[test]
+fn classify_gives_a_value_the_color_of_its_label() {
+    use vale_app::ui::pad::classify::{MAKE_RULES, ONE_LABELED};
+    let mut h = pad(BOARDS[0]);
+    let rivers = vector(&h, "Rivers");
+    let ramps = &mut h.state_mut().ramps;
+    ramps.add("Water", vec![[10, 10, 10], [200, 0, 0]]).unwrap();
+    let at = ramps.list().len() - 1;
+    ramps.set_label(at, 1, "River").unwrap();
+    open_classify(&mut h, "Rivers");
+    scroll_to_control(&mut h, "featurecla");
+    tap(&mut h, "featurecla");
+    scroll_to_control(&mut h, "Water");
+    tap(&mut h, "Water");
+    scroll_to_control(&mut h, MAKE_RULES);
+    assert!(h.query_by_label(ONE_LABELED).is_some());
+    tap(&mut h, MAKE_RULES);
+    let made = rules(&h, rivers);
+    let river = made.iter().find(|r| r.name == "River").unwrap();
+    assert_eq!(
+        river.stroke().unwrap().color,
+        vale_style::Color::rgb(200, 0, 0)
+    );
 }
 
 #[test]

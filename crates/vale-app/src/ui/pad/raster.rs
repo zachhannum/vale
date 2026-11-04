@@ -55,6 +55,14 @@ pub const IMPORT_RAMP_HINT: &str = "A row of color blocks, lowest band first.";
 pub const APPLY_RAMP: &str = "Apply";
 pub const DELETE_RAMP: &str = "Delete";
 pub const REVERSE_RAMP: &str = "Reverse";
+/// The button of the card of a custom ramp that opens the labels of its
+/// colors, and the button of a built-in ramp with labels.
+pub const EDIT_LABELS: &str = "Edit labels…";
+pub const SHOW_LABELS: &str = "Show labels";
+/// The title of the page of the labels of a ramp.
+pub const COLOR_LABELS: &str = "Color labels";
+/// The text of the page of the labels.
+pub const LABELS_HINT: &str = "A class with a label as its value takes the color.";
 /// The longest name of a ramp row, in characters.
 const RAMP_NAME: usize = 20;
 /// The width and the height of the bar of a ramp row.
@@ -526,6 +534,8 @@ pub enum RampChoice {
     Apply(bool),
     Reverse,
     Delete,
+    /// Opens the page of the labels of the colors.
+    Labels,
 }
 
 /// The parts of the bands, in the order of `PART_NAMES`.
@@ -954,6 +964,7 @@ pub fn ramp_card(
     };
     let colors = ramp.colors.len();
     let built_in = ramp.built_in;
+    let labeled = ramp.labels.iter().any(|l| !l.is_empty());
     let Some(layer) = state.globe.bands_mut(id) else {
         return;
     };
@@ -976,8 +987,11 @@ pub fn ramp_card(
     };
     // A built-in ramp does not change.
     if !built_in {
+        buttons.push((EDIT_LABELS, theme::TEXT, RampChoice::Labels));
         buttons.push((REVERSE_RAMP, theme::TEXT, RampChoice::Reverse));
         buttons.push((DELETE_RAMP, theme::WARN, RampChoice::Delete));
+    } else if labeled {
+        buttons.push((SHOW_LABELS, theme::TEXT, RampChoice::Labels));
     }
     let name = &ramp.name;
     let text = format!("{name} · {colors} colors");
@@ -1035,9 +1049,46 @@ pub fn ramp_card(
         RampChoice::Apply(keep) => state.apply_ramp(id, index, keep, part),
         RampChoice::Reverse => state.ramps.reverse(index).map_err(|e| e.to_string()),
         RampChoice::Delete => state.ramps.remove(index).map_err(|e| e.to_string()),
+        RampChoice::Labels => {
+            state.pad.page = Some(Page::RampLabels(index));
+            Ok(())
+        }
     };
     if let Err(text) = result {
         state.ramp_note = Some(crate::ui::Note::new(text, true, Some(id)));
+    }
+}
+
+/// The page of the labels of the colors of ramp `index`: a row for each
+/// color, with its color and its label. The label of a custom ramp is a
+/// field, and the label of a built-in ramp is text.
+pub fn labels_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, index: usize) {
+    let Some(ramp) = state.ramps.list().get(index).cloned() else {
+        return;
+    };
+    ui.spacing_mut().item_spacing.y = 0.0;
+    note(ui, LABELS_HINT);
+    ui.add_space(4.0);
+    for (i, (color, label)) in ramp.colors.iter().zip(&ramp.labels).enumerate() {
+        let name = format!("Label {}", i + 1);
+        let top = ui.cursor().top();
+        if ramp.built_in {
+            widgets::value_row(ui, "", label);
+        } else {
+            let mut text = label.clone();
+            let field = widgets::text_field(ui, controls, &name, "", None, &mut text, true);
+            if field.changed()
+                && let Err(e) = state.ramps.set_label(index, i, &text)
+            {
+                state.ramp_note = Some(crate::ui::Note::new(e.to_string(), true, None));
+            }
+        }
+        let swatch = Rect::from_center_size(
+            pos2(ui.max_rect().left() + 16.0, top + PANEL_ROW / 2.0),
+            vec2(32.0, 24.0),
+        );
+        let fill = egui::Color32::from_rgb(color[0], color[1], color[2]);
+        ui.painter().rect_filled(swatch, 4.0, fill);
     }
 }
 
