@@ -38,6 +38,7 @@ fn invalid_features_are_reported() {
             ),
         ],
         obstacles: vec![],
+        parallels: Vec::new(),
         options: Options::default(),
     };
     let out = place_labels(&mut Fonts::new(), &input);
@@ -92,6 +93,7 @@ fn input(features: Vec<Feature>, obstacles: Vec<Obstacle>) -> LabelInput {
         classes: vec![class(0), class(5)],
         features,
         obstacles,
+        parallels: Vec::new(),
         options: Options::default(),
     }
 }
@@ -346,6 +348,7 @@ fn line_input(
         classes,
         features,
         obstacles,
+        parallels: Vec::new(),
         options: Options::default(),
     }
 }
@@ -744,6 +747,7 @@ fn row_class(positions: Vec<PointPosition>) -> LabelClass {
     c.placement = Placement::Point(PointPlacement {
         positions,
         offset: 2.0,
+        ..Default::default()
     });
     c
 }

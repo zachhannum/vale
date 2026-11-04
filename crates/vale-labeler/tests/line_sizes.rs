@@ -144,6 +144,7 @@ fn sweep(fonts: &mut Fonts, path: &[Point], text: &str) -> Vec<bool> {
                     },
                 }],
                 obstacles: vec![],
+                parallels: Vec::new(),
                 options: Options::default(),
             };
             let out = place_labels(fonts, &input);

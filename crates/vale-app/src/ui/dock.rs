@@ -862,10 +862,10 @@ fn page_panel(ui: &mut egui::Ui, state: &mut AppState) {
 /// controls of the open class.
 fn labels_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
     use super::pad::labels::{
-        ADD_CLASS, BUFFER, CASE, CURVE_LIMIT, DELETE_CLASS, DUPLICATE_DISTANCE, HALO, HALO_WIDTH,
-        LABEL_SIZE, LETTER_SPACING, MOVE_DOWN, MOVE_UP, NO_LABEL_LAYERS, OFFSET, OPACITY,
-        PLACEMENT, POSITIONS, REMOVE_DUPLICATES, REPEAT, REPEAT_INTERVAL, SMOOTHING, SPREAD,
-        SPREADS, STYLE,
+        ADD_CLASS, BUFFER, CASE, CURVE_LIMIT, DELETE_CLASS, DUPLICATE_DISTANCE, FOLLOW_PARALLELS,
+        HALO, HALO_WIDTH, LABEL_SIZE, LETTER_SPACING, MOVE_DOWN, MOVE_UP, NO_LABEL_LAYERS, OFFSET,
+        OPACITY, PLACEMENT, POSITIONS, REMOVE_DUPLICATES, REPEAT, REPEAT_INTERVAL, SMOOTHING,
+        SPREAD, SPREADS, STYLE, UPSIDE_DOWN, can_follow_parallels, follows_parallels,
     };
     use vale_store::GeometryKind;
     let map = frame.map;
@@ -1019,6 +1019,12 @@ fn labels_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
             .step(0.1)
             .suffix("×")
             .show(ui);
+    }
+    if can_follow_parallels(kind, class.placement) {
+        ui.checkbox(&mut class.graticule, FOLLOW_PARALLELS);
+    }
+    if follows_parallels(kind, &class) {
+        ui.checkbox(&mut class.no_flip, UPSIDE_DOWN);
     }
     let curved = kind == GeometryKind::Line
         || (kind == GeometryKind::Polygon

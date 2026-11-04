@@ -83,6 +83,7 @@ pub fn scale_bar(
             placement: Placement::Point(PointPlacement {
                 positions: vec![PointPosition::TopRight],
                 offset: 0.0,
+                ..Default::default()
             }),
             duplicate_distance: None,
         }],
@@ -97,6 +98,7 @@ pub fn scale_bar(
             },
         }],
         obstacles: vec![],
+        parallels: Vec::new(),
         options: Options {
             seed: 1,
             improve: false,
@@ -166,6 +168,7 @@ pub(crate) fn glyph_line(
             placement: Placement::Point(PointPlacement {
                 positions: vec![PointPosition::TopRight],
                 offset: 0.0,
+                ..Default::default()
             }),
             duplicate_distance: None,
         }],
@@ -180,6 +183,7 @@ pub(crate) fn glyph_line(
             },
         }],
         obstacles: vec![],
+        parallels: Vec::new(),
         options: Options {
             seed: 1,
             improve: false,

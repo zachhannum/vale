@@ -70,6 +70,7 @@ fn tokyo() -> (GlyphRun, Rect) {
             },
         }],
         obstacles: vec![],
+        parallels: Vec::new(),
         options: Options::default(),
     };
     let out = place_labels(&mut fonts, &input);

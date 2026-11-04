@@ -25,6 +25,8 @@ pub enum LabelPlacement {
     Curved,
     /// Polygons. Straight, at the visual center.
     Horizontal,
+    /// Polygons. Along a parallel, at the latitude with the most room.
+    Parallel,
 }
 
 const POINT_PLACEMENTS: [LabelPlacement; 1] = [LabelPlacement::Around];
@@ -36,13 +38,14 @@ const LINE_PLACEMENTS: [LabelPlacement; 4] = [
     LabelPlacement::OnLine,
 ];
 
-const POLYGON_PLACEMENTS: [LabelPlacement; 3] = [
+const POLYGON_PLACEMENTS: [LabelPlacement; 4] = [
     LabelPlacement::BestFit,
     LabelPlacement::Curved,
+    LabelPlacement::Parallel,
     LabelPlacement::Horizontal,
 ];
 
-const ALL_PLACEMENTS: [LabelPlacement; 8] = [
+const ALL_PLACEMENTS: [LabelPlacement; 9] = [
     LabelPlacement::Around,
     LabelPlacement::AboveOrBelow,
     LabelPlacement::LineAbove,
@@ -51,6 +54,7 @@ const ALL_PLACEMENTS: [LabelPlacement; 8] = [
     LabelPlacement::BestFit,
     LabelPlacement::Curved,
     LabelPlacement::Horizontal,
+    LabelPlacement::Parallel,
 ];
 
 impl LabelPlacement {
@@ -83,6 +87,7 @@ impl LabelPlacement {
             LabelPlacement::BestFit => "Best fit",
             LabelPlacement::Curved => "Curved",
             LabelPlacement::Horizontal => "Horizontal",
+            LabelPlacement::Parallel => "Along parallel",
         }
     }
 
@@ -97,6 +102,7 @@ impl LabelPlacement {
             LabelPlacement::BestFit => "best_fit",
             LabelPlacement::Curved => "curved",
             LabelPlacement::Horizontal => "horizontal",
+            LabelPlacement::Parallel => "parallel",
         }
     }
 
@@ -297,6 +303,10 @@ pub struct LabelClass {
     pub curve_limit: f64,
     /// Polygons. The most extra space between two letters, in multiples of `size`.
     pub spread: f64,
+    /// Points, and polygons with straight text. True makes the text follow the parallels.
+    pub graticule: bool,
+    /// True lets text that follows the parallels read west to east also where it is upside down.
+    pub no_flip: bool,
     /// Lines. The smoothing window of the line, in multiples of `size`.
     pub smoothing: f64,
     /// The margin around the label that other labels keep free, in points.
@@ -366,6 +376,8 @@ impl LabelClass {
             repeat_distance: REPEAT_DISTANCE,
             curve_limit: curve_limit_for(placement),
             spread: SPREAD,
+            graticule: false,
+            no_flip: false,
             smoothing: SMOOTHING,
             buffer: BUFFER,
             remove_duplicates: true,
@@ -445,6 +457,8 @@ pub fn classes_to_json(classes: &[LabelClass]) -> String {
                 "repeat_distance": c.repeat_distance,
                 "curve_limit": c.curve_limit,
                 "spread": c.spread,
+                "graticule": c.graticule,
+                "no_flip": c.no_flip,
                 "smoothing": c.smoothing,
                 "buffer": c.buffer,
                 "remove_duplicates": c.remove_duplicates,
@@ -554,6 +568,8 @@ fn read_class(j: &Json) -> Result<LabelClass, StyleError> {
         repeat_distance: number("repeat_distance", REPEAT_DISTANCE),
         curve_limit: number("curve_limit", curve_limit_for(placement)),
         spread: number("spread", SPREAD),
+        graticule: flag("graticule", false),
+        no_flip: flag("no_flip", false),
         smoothing: number("smoothing", SMOOTHING),
         buffer: number("buffer", BUFFER),
         remove_duplicates: flag("remove_duplicates", true),
@@ -611,6 +627,8 @@ mod tests {
         a.buffer = 3.0;
         a.remove_duplicates = false;
         a.duplicate_distance = 120.0;
+        a.graticule = true;
+        a.no_flip = true;
         let mut b = LabelClass::new("Rivers", GeometryKind::Line, -1).unwrap();
         b.placement = LabelPlacement::LineBelow;
         let mut c = LabelClass::new("Seas", GeometryKind::Polygon, 1).unwrap();
@@ -620,7 +638,12 @@ mod tests {
         d.placement = LabelPlacement::Horizontal;
         let mut e = LabelClass::new("Bays", GeometryKind::Polygon, 0).unwrap();
         e.placement = LabelPlacement::Curved;
-        let classes = vec![a, b, c, d, e];
+        let mut f = LabelClass::new("Plains", GeometryKind::Polygon, 0).unwrap();
+        f.placement = LabelPlacement::Parallel;
+        f.no_flip = true;
+        let mut g = LabelClass::new("Moors", GeometryKind::Polygon, 0).unwrap();
+        g.graticule = true;
+        let classes = vec![a, b, c, d, e, f, g];
         let text = classes_to_json(&classes);
         assert_eq!(classes_from_json(&text).unwrap(), classes);
         assert_eq!(classes_to_json(&classes_from_json(&text).unwrap()), text);
@@ -648,6 +671,8 @@ mod tests {
         assert_eq!(read[0].buffer, 1.0);
         assert!(read[0].remove_duplicates);
         assert_eq!(read[0].duplicate_distance, 300.0);
+        assert!(!read[0].graticule);
+        assert!(!read[0].no_flip);
         let point = r##"{"version":1,"classes":[{"color":"#102030","placement":"around"}]}"##;
         assert_eq!(classes_from_json(point).unwrap()[0].offset, 2.0);
         let polygon = r##"{"version":1,"classes":[{"color":"#102030","placement":"best_fit"}]}"##;
@@ -757,6 +782,7 @@ mod tests {
             &[
                 LabelPlacement::BestFit,
                 LabelPlacement::Curved,
+                LabelPlacement::Parallel,
                 LabelPlacement::Horizontal
             ]
         );
@@ -784,6 +810,8 @@ mod tests {
         assert_eq!(LabelPlacement::Curved.key(), "curved");
         assert_eq!(LabelPlacement::Horizontal.name(), "Horizontal");
         assert_eq!(LabelPlacement::Horizontal.key(), "horizontal");
+        assert_eq!(LabelPlacement::Parallel.name(), "Along parallel");
+        assert_eq!(LabelPlacement::Parallel.key(), "parallel");
         assert_eq!(LabelPlacement::AboveOrBelow.name(), "Above or below");
         assert_eq!(LabelPlacement::Around.name(), "Around point");
         let area = LabelClass::new("A", Polygon, 0).unwrap();

@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use kurbo::Rect;
+use kurbo::{Point, Rect};
 use vale_labeler::{
     Caps, Feature, Fonts, Geometry, LabelClass, LabelInput, LinePlacement, LineSide, Obstacle,
     ObstacleKind, Options, Placement, PointPlacement, PointPosition, PolygonMode, PolygonPlacement,
@@ -30,6 +30,8 @@ const SCATTER_COST: f64 = 0.5;
 /// `layers` runs from the bottom of the drawing to the top. `classes` holds the label classes of
 /// each layer of `layers`. Each class whose filter matches a feature gives the feature a label.
 /// Labels do not overlap `obstacles` or a point symbol. A label over a scatter symbol has a cost.
+/// `parallels` are the lines of constant latitude on the page, each from west to east.
+#[allow(clippy::too_many_arguments)]
 pub fn place(
     layers: &[PageLayer<'_>],
     classes: &[Vec<StyleClass>],
@@ -38,6 +40,7 @@ pub fn place(
     quality: Quality,
     obstacles: &[Rect],
     symbols: &[PlacedSymbol],
+    parallels: Vec<Vec<Point>>,
 ) -> (Vec<Item>, LabelSummary) {
     let mut labeled = HashSet::new();
     let mut label_classes: Vec<LabelClass> = Vec::new();
@@ -175,6 +178,7 @@ pub fn place(
         classes: label_classes,
         features,
         obstacles: symbol_obstacles(obstacles, symbols, &labeled, page),
+        parallels,
         options: Options {
             seed: 24301,
             improve: quality == Quality::Final,
@@ -230,7 +234,7 @@ fn fade(color: Color, opacity: f64) -> Color {
 /// The labeler placement of a class. A placement that does not fit `kind`
 /// gives the default placement of `kind`. A point class tries the positions
 /// that are on, in their rank.
-fn placement(c: &StyleClass, kind: GeometryKind) -> Placement {
+pub fn placement(c: &StyleClass, kind: GeometryKind) -> Placement {
     let p = if c.placement.fits(kind) {
         c.placement
     } else {
@@ -252,22 +256,28 @@ fn placement(c: &StyleClass, kind: GeometryKind) -> Placement {
                 .map(|r| point_position(r.position))
                 .collect(),
             offset: c.offset,
+            graticule: c.graticule,
+            no_flip: c.no_flip,
         }),
         StylePlacement::AboveOrBelow => line(LinePlacement::default().sides),
         StylePlacement::LineAbove => line(vec![LineSide::Above]),
         StylePlacement::LineBelow => line(vec![LineSide::Below]),
         StylePlacement::OnLine => line(vec![LineSide::Centered]),
-        StylePlacement::BestFit | StylePlacement::Curved | StylePlacement::Horizontal => {
-            Placement::Polygon(PolygonPlacement {
-                mode: match p {
-                    StylePlacement::Curved => PolygonMode::Curved,
-                    StylePlacement::Horizontal => PolygonMode::Horizontal,
-                    _ => PolygonMode::Auto,
-                },
-                max_spread: c.spread,
-                max_glyph_turn: c.curve_limit,
-            })
-        }
+        StylePlacement::BestFit
+        | StylePlacement::Curved
+        | StylePlacement::Horizontal
+        | StylePlacement::Parallel => Placement::Polygon(PolygonPlacement {
+            mode: match p {
+                StylePlacement::Curved => PolygonMode::Curved,
+                StylePlacement::Horizontal => PolygonMode::Horizontal,
+                StylePlacement::Parallel => PolygonMode::Parallel,
+                _ => PolygonMode::Auto,
+            },
+            max_spread: c.spread,
+            max_glyph_turn: c.curve_limit,
+            graticule: c.graticule,
+            no_flip: c.no_flip,
+        }),
     }
 }
 

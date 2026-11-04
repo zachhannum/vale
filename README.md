@@ -206,6 +206,12 @@ The job `testflight` in `.github/workflows/ios.yml` does the work, with `scripts
 cargo run --release -p vale-labeler-demo -- --preset world --out target/demo/world.png
 ```
 
+The preset `conic` shows Europe in a Lambert conformal conic projection. The country names follow the parallels:
+
+```sh
+cargo run --release -p vale-labeler-demo -- --preset conic --out target/demo/conic.png
+```
+
 ## Tests
 
 ```sh
