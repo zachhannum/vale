@@ -18,7 +18,7 @@ use vello_cpu::Pixmap;
 use crate::list::{Color, DisplayList, FillRule, Item, RenderError};
 use crate::raster::{Rgba, glyph_run_outline, pixel_size};
 
-/// The format of a target. A view in `Rgba8UnormSrgb` samples the same pixels as sRGB.
+/// The format of a target. Its pixels are premultiplied sRGB values.
 pub const TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
 /// The most that one batch puts in a fixed buffer of Vello. Vello 0.11 has room for 2^21
@@ -166,7 +166,7 @@ impl GpuRenderer {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT
                 | wgpu::TextureUsages::TEXTURE_BINDING
                 | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[wgpu::TextureFormat::Rgba8UnormSrgb],
+            view_formats: &[],
         }))
     }
 

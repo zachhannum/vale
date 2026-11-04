@@ -427,6 +427,7 @@ pub fn run_window(
                 let state = &mut *app.state.borrow_mut();
                 if let Some(render_state) = &cc.wgpu_render_state {
                     state.globe.attach(render_state);
+                    state.map_renderer = crate::ui::map_texture::MapRenderer::new(render_state);
                 }
                 // The renderer gives the largest face size, so it comes first.
                 if restore {

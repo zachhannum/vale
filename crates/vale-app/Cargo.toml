@@ -13,7 +13,7 @@ crate-type = ["staticlib", "rlib"]
 [dependencies]
 vale-store.workspace = true
 vale-style.workspace = true
-vale-render.workspace = true
+vale-render = { workspace = true, features = ["gpu"] }
 vale-sphere.workspace = true
 vale-import.workspace = true
 vale-labeler.workspace = true

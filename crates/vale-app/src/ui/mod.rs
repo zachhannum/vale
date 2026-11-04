@@ -46,6 +46,7 @@ pub mod font_dialog;
 pub mod globe;
 pub mod gradient;
 pub mod inspector;
+pub mod map_texture;
 pub mod new_feature;
 pub mod number;
 pub mod pad;
@@ -449,6 +450,8 @@ pub struct AppState {
     pub cursor_value: Option<f64>,
     /// Last message, for example an import error.
     pub status: String,
+    /// The GPU renderer of the maps of the atlas, in a window with a GPU.
+    pub map_renderer: Option<map_texture::MapRenderer>,
     /// The text of the last import of a heightmap.
     pub import_note: Option<Note>,
     /// The text of the last export of the heightmap.
@@ -603,6 +606,7 @@ impl AppState {
             workspace: Workspace::default(),
             layout: Layout::default(),
             pad: pad::PadState::default(),
+            map_renderer: None,
             globe: Globe::default(),
             doc,
             pipeline: Pipeline::new(),
