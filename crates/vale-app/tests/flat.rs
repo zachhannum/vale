@@ -6,7 +6,7 @@ mod lines;
 use eframe::egui::{self, Pos2, Vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
-use lines::{canvas_image, show_as};
+use lines::{CRATER_RADIUS, canvas_image, set_crater, show_as, two_bands};
 use vale_app::document::Document;
 use vale_app::globe::flat::FlatView;
 use vale_app::globe::math::{V3, angle, lonlat_to_dir};
@@ -417,6 +417,51 @@ fn rivers_show_in_the_flat_view_and_a_switch_hides_them() {
     on.save("../../target/app/rivers-flat.png").unwrap();
     let count = river_pixels(&h, &on);
     assert!(count > 300, "{count}");
+
+    h.get_by_label("Rivers").click();
+    h.run_steps(2);
+    assert!(!h.state().panel_raster().unwrap().rivers);
+    let off = canvas_image(&mut h);
+    assert_eq!(river_pixels(&h, &off), 0);
+}
+
+#[test]
+#[ignore = "gpu"]
+fn lakes_show_in_the_flat_view_and_a_switch_hides_them() {
+    let _gpu = one_gpu_test();
+    let mut h = flat_harness();
+    show_as(h.state_mut(), RasterDisplay::Bands);
+    let id = h.state().globe.raster().unwrap();
+    let globe = &mut h.state_mut().globe;
+    two_bands(globe.bands_mut(id).unwrap(), [40, 40, 40], [150, 140, 120]);
+    globe.preview.panel = true;
+    globe.tool = Tool::Navigate;
+    globe.flat.zoom = 4.0;
+    let crater = lonlat_to_dir(0.0, 0.0);
+    set_crater(&mut globe.map, crater, 800.0);
+    let img = canvas_image(&mut h);
+    std::fs::create_dir_all("../../target/app").unwrap();
+    img.save("../../target/app/lakes-flat.png").unwrap();
+    let globe = &h.state().globe;
+    let channels = globe.channels().unwrap();
+    assert!(channels.has_lakes());
+    // The pixels of the crater well below the lake level are water.
+    let margin = f64::from(meters_to_level(150.0)) - f64::from(meters_to_level(0.0));
+    let min = globe.rect.min.ceil();
+    let (mut wet, mut blue) = (0, 0);
+    for (x, y, p) in img.enumerate_pixels() {
+        let pos = min + Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
+        let Some(dir) = globe.unproject(pos) else {
+            continue;
+        };
+        let level = f64::from(globe.map.sample(dir));
+        if angle(dir, crater) < CRATER_RADIUS && level < channels.lake_level(dir) - margin {
+            let [r, g, b, _] = p.0.map(i32::from);
+            wet += 1;
+            blue += usize::from(b > r + 60 && b > g + 30);
+        }
+    }
+    assert!(wet > 300 && blue == wet, "{blue} of {wet}");
 
     h.get_by_label("Rivers").click();
     h.run_steps(2);
