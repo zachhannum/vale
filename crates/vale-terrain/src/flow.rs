@@ -17,6 +17,7 @@ use crate::bands::SEA_LEVEL;
 use crate::channel::{ChannelCurve, ChannelLines, METERS_PER_LEVEL, plain_factor};
 use crate::cube::{FACES, face_dir, face_of, meters_to_level, unwarp, warp};
 use crate::heightmap::{Heightmap, TexelRect};
+use crate::lake::{LAKE_MIN_AREA, bordered, lake_at, lake_levels};
 use crate::math::{V3, add, angle, normalize, scale};
 
 /// The largest number of flow cells along one side of a face.
@@ -474,6 +475,8 @@ pub struct FlowMap {
     fill: Vec<u16>,
     /// The level of each cell after the flood fills the pits.
     filled: Vec<u16>,
+    /// The lake level of each cell, or 0 for no lake.
+    lakes: Vec<u16>,
 }
 
 impl FlowMap {
@@ -485,12 +488,14 @@ impl FlowMap {
         };
         let flow = drain(&grid, &heights.levels, &[], sea());
         let fill = fill_levels(&grid, &heights.levels, &flow, RIVER_MIN_AREA);
+        let lakes = lake_levels(&grid, &heights.levels, &flow.filled, sea(), LAKE_MIN_AREA);
         FlowMap {
             m: heights.m,
             receiver: flow.receiver,
             area: flow.area,
             fill,
             filled: flow.filled,
+            lakes,
         }
     }
 
@@ -513,6 +518,12 @@ impl FlowMap {
 
     pub fn is_river(&self, face: usize, x: usize, y: usize) -> bool {
         self.area(face, x, y) >= RIVER_MIN_AREA
+    }
+
+    /// The lake level of a cell, or 0 for no lake. A cell beside a lake also
+    /// has the level of the lake.
+    pub fn lake(&self, face: usize, x: usize, y: usize) -> u16 {
+        self.lakes[self.index(face, x, y)]
     }
 
     /// The number of cells along one side of a face.
@@ -542,6 +553,7 @@ impl FlowMap {
     pub fn channels(&self, world_km: f64) -> ChannelMap {
         let mut map = ChannelMap::empty(2 * self.m);
         map.fill.clone_from(&self.fill);
+        map.lakes = bordered(self.m, &self.lakes);
         let mut rivers = self.rivers();
         rivers.smooth();
         for (k, &cell) in rivers.cells.iter().enumerate() {
@@ -905,11 +917,14 @@ fn blend(values: [f64; 4], tx: f64, ty: f64) -> f64 {
 /// pair is the river with the deepest valley at the texel.
 ///
 /// The map also holds the fill level of each cell of the flow, for the
-/// Deposit mode. A cell is 2 texels wide.
+/// Deposit mode, and the lake level of each cell. A cell is 2 texels wide.
 pub struct ChannelMap {
     size: usize,
     data: Vec<u8>,
     fill: Vec<u16>,
+    /// The lake levels, with a border of one cell from the faces next to
+    /// each face.
+    lakes: Vec<u16>,
     lines: ChannelLines,
 }
 
@@ -922,6 +937,7 @@ impl ChannelMap {
             size,
             data: EMPTY.repeat(FACES * size * size),
             fill: vec![0; FACES * cells * cells],
+            lakes: vec![0; FACES * (cells + 2) * (cells + 2)],
             lines: ChannelLines::empty(),
         }
     }
@@ -960,6 +976,27 @@ impl ChannelMap {
         let m = self.size.div_ceil(2);
         let cells = &self.fill[face * m * m..(face + 1) * m * m];
         fill_at(cells, m, u / 2.0 - 0.25, v / 2.0 - 0.25)
+    }
+
+    /// The lake level of each cell, or 0 for no lake, face by face, in row
+    /// order. A face has `size().div_ceil(2) + 2` cells along one side: its
+    /// own cells, and a border of one cell from the faces next to it.
+    pub fn lakes(&self) -> &[u16] {
+        &self.lakes
+    }
+
+    pub fn has_lakes(&self) -> bool {
+        self.lakes.iter().any(|&level| level > 0)
+    }
+
+    /// The lake level at a direction, or 0 for no lake. The level is a blend
+    /// of the 4 cells around the place, so the shore is where the ground
+    /// rises above it.
+    pub fn lake_level(&self, d: V3) -> f64 {
+        let m = self.size.div_ceil(2);
+        let (face, a, b) = face_of(d);
+        let cell = |a: f64| (warp(a) + 1.0) * 0.5 * m as f64 - 0.5;
+        lake_at(&self.lakes, m, face, cell(a), cell(b))
     }
 
     /// The pair of a texel for the lines of the rivers.
