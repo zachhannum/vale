@@ -1617,7 +1617,28 @@ impl Pipeline {
         };
         let mut label_summary = LabelSummary::default();
         if doc.frame.labels {
-            let classes: Vec<_> = (drawn.layers.iter())
+            // The labels come from the whole frame, so that each part of the
+            // frame shows the same labels.
+            let full = frame_area(frame, target);
+            let whole = (area != full).then(|| {
+                draw_map(
+                    &mut DisplayList::new(full.x1, full.y1),
+                    doc,
+                    Some(frame.map),
+                    cache,
+                    &vt,
+                    full,
+                    false,
+                    false,
+                    &ids,
+                    None,
+                    None,
+                    &mut self.scatter,
+                    symbol_scale,
+                )
+            });
+            let labeled = whole.as_ref().unwrap_or(&drawn);
+            let classes: Vec<_> = (labeled.layers.iter())
                 .map(|pl| doc.label_classes(Some(frame.map), pl.layer.id))
                 .collect();
             let obstacles: Vec<Rect> = (edge.iter())
@@ -1625,14 +1646,14 @@ impl Pipeline {
                 .map(|l| edge_labels::quad_bounds(&l.quad))
                 .collect();
             let (items, summary) = labels::place(
-                &drawn.layers,
+                &labeled.layers,
                 &classes,
-                area,
+                full,
                 fonts,
                 quality,
                 &obstacles,
-                &drawn.symbols,
-                cache.page_parallels(&vt, area, &classes),
+                &labeled.symbols,
+                cache.page_parallels(&vt, full, &classes),
             );
             list.items.extend(items);
             label_summary = summary;

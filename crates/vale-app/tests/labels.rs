@@ -874,3 +874,84 @@ fn a_conic_frame_gives_the_labeler_curved_parallels() {
         }
     }
 }
+
+/// The text and the first glyph origin of each label, moved by `shift`.
+fn label_spots(c: &Composed, shift: kurbo::Vec2) -> Vec<(String, i64, i64)> {
+    let mut spots: Vec<_> = (c.list.items.iter())
+        .filter_map(|i| match i {
+            Item::Glyphs(g) => {
+                let o = Point::ZERO + g.glyphs.first()?.1.translation() + shift;
+                Some((
+                    g.text.clone(),
+                    (o.x * 100.0).round() as i64,
+                    (o.y * 100.0).round() as i64,
+                ))
+            }
+            _ => None,
+        })
+        .collect();
+    spots.sort();
+    spots
+}
+
+/// The frame that `places_frame` made, composed in `part` of a target with
+/// its page at `origin`.
+fn compose_part(doc: &Document, origin: Point, part: Rect) -> Composed {
+    let atlas = &doc.project.atlas;
+    let frame = atlas.pages[0].frames.last().unwrap();
+    let target = FrameTarget {
+        origin,
+        pts_per_mm: PT_PER_MM,
+    };
+    let mut f = fonts().unwrap();
+    Pipeline::new()
+        .compose_frame_part(doc, frame, target, part, &mut f, Quality::Final, None)
+        .unwrap()
+}
+
+#[test]
+fn each_part_of_a_frame_shows_the_labels_of_the_whole_frame() {
+    let (doc, whole) = places_frame(|_| {});
+    let all = label_spots(&whole, kurbo::Vec2::ZERO);
+    assert!(all.len() > 3, "{all:?}");
+    let frame = &doc.project.atlas.pages[0].frames.last().unwrap();
+    let b = vale_app::atlas::shape_bbox(&frame.shape).scale_from_origin(PT_PER_MM);
+    let (w, h) = (b.width(), b.height());
+    let parts = [
+        Rect::new(b.x0, b.y0, b.x0 + w / 2.0, b.y1),
+        Rect::new(b.x0 + w / 2.0, b.y0, b.x1, b.y1),
+        Rect::new(
+            b.x0 + w / 4.0,
+            b.y0 + h / 4.0,
+            b.x0 + w / 2.0,
+            b.y0 + h / 2.0,
+        ),
+    ];
+    for part in parts {
+        let c = compose_part(&doc, Point::ZERO, part);
+        assert_eq!(label_spots(&c, kurbo::Vec2::ZERO), all, "{part:?}");
+    }
+    // The canvas puts the top-left corner of the part at 0, 0.
+    let part = parts[2];
+    let shift = kurbo::Vec2::new(-part.x0, -part.y0);
+    let c = compose_part(&doc, Point::ZERO + shift, part + shift);
+    assert_eq!(label_spots(&c, -shift), all);
+}
+
+#[test]
+fn a_label_avoids_a_symbol_outside_the_part() {
+    let (doc, whole) = places_frame(|_| {});
+    let castles: Vec<Rect> = whole.symbols.iter().map(|s| s.bounds).collect();
+    let frame = &doc.project.atlas.pages[0].frames.last().unwrap();
+    let b = vale_app::atlas::shape_bbox(&frame.shape).scale_from_origin(PT_PER_MM);
+    let part = Rect::new(b.x0, b.y0, b.center().x, b.y1);
+    let c = compose_part(&doc, Point::ZERO, part);
+    let labels = halos(&c);
+    assert_eq!(labels.len(), halos(&whole).len());
+    assert!(castles.iter().any(|s| !s.overlaps(part)));
+    for label in labels {
+        for castle in &castles {
+            assert!(!label.overlaps(*castle), "{label:?} {castle:?}");
+        }
+    }
+}
