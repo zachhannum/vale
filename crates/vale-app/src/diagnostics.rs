@@ -89,7 +89,7 @@ struct Store {
     counts: [u64; Count::ALL.len()],
     since: Option<Instant>,
     /// Lines that describe the last event of a kind, by kind.
-    notes: Vec<(&'static str, String)>,
+    notes: Vec<(String, String)>,
 }
 
 static STORE: Mutex<Store> = Mutex::new(Store {
@@ -133,7 +133,7 @@ pub fn count(count: Count, n: u64) {
 
 /// Keeps a line about the last event of `kind`, in place of the line
 /// before it.
-pub fn note(kind: &'static str, line: String) {
+pub fn note(kind: String, line: String) {
     let mut s = store();
     match s.notes.iter_mut().find(|(k, _)| *k == kind) {
         Some(note) => note.1 = line,
@@ -288,8 +288,8 @@ mod tests {
             record(Span::Ui, Duration::from_millis(1));
         }
         assert_eq!(summary(Span::Ui).unwrap().2, KEPT);
-        note("Last compose", "a".to_owned());
-        note("Last compose", "b".to_owned());
+        note("Last compose".to_owned(), "a".to_owned());
+        note("Last compose".to_owned(), "b".to_owned());
         count(Count::DetailSent, 3);
         count(Count::DetailSent, 2);
         assert_eq!(total(Count::DetailSent), 5);

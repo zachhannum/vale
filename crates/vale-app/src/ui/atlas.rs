@@ -2702,10 +2702,9 @@ fn compose(
         ..map.clone()
     };
     diagnostics::note(
-        "Last compose",
+        format!("Last compose of frame {}", frame.id.0),
         format!(
-            "frame {}, {w} x {h} px, {:.1}x zoom, {:?}, {} map items, {} decor items, {under_items} under items",
-            frame.id.0,
+            "{w} x {h} px, {:.1}x zoom, {:?}, {} map items, {} decor items, {under_items} under items",
             zoom,
             quality,
             map.items.len(),
