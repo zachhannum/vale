@@ -201,6 +201,16 @@ mod tests {
     }
 
     #[test]
+    fn a_larger_lake_area_hides_a_lake() {
+        let heights = bowl(64, 5.0);
+        let c = 32;
+        assert_eq!(FlowMap::new(&heights).lake(0, c, c), meters_to_level(500.0));
+        // The pit covers about 0.05 steradians.
+        let flow = FlowMap::with_lake_area(&heights, 0.2);
+        assert_eq!(flow.lake(0, c, c), 0);
+    }
+
+    #[test]
     fn a_small_pit_has_no_lake() {
         // A cell at the middle of a face covers about 9.4e-6 steradians.
         let m = 512;

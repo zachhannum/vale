@@ -482,13 +482,19 @@ pub struct FlowMap {
 impl FlowMap {
     /// A world with no ocean or no land has no flow.
     pub fn new(heights: &CoarseHeights) -> FlowMap {
+        FlowMap::with_lake_area(heights, LAKE_MIN_AREA)
+    }
+
+    /// The same as `new`, with lakes that cover `lake_area` steradians or
+    /// more.
+    pub fn with_lake_area(heights: &CoarseHeights, lake_area: f64) -> FlowMap {
         let grid = CubeGrid {
             m: heights.m,
             solid: solid_angles(heights.m),
         };
         let flow = drain(&grid, &heights.levels, &[], sea());
         let fill = fill_levels(&grid, &heights.levels, &flow, RIVER_MIN_AREA);
-        let lakes = lake_levels(&grid, &heights.levels, &flow.filled, sea(), LAKE_MIN_AREA);
+        let lakes = lake_levels(&grid, &heights.levels, &flow.filled, sea(), lake_area);
         FlowMap {
             m: heights.m,
             receiver: flow.receiver,
