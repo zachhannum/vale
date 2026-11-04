@@ -216,6 +216,7 @@ pub(super) fn tab(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Contro
         return;
     };
     ui.spacing_mut().item_spacing.y = 0.0;
+    super::atlas::apply_to(ui, state, controls, map);
     if state.label_layers().is_empty() {
         state.atlas.label_drag = None;
         hint(ui, NO_LABEL_LAYERS);

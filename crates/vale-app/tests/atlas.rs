@@ -30,6 +30,10 @@ use vale_app::ui::pad::atlas::{
     readout_text,
 };
 use vale_app::ui::pad::atlas::{BORDER_GAP, DISTANCE_BY_SIDE, GRID_COLUMN_NAMES, SIDE_DISTANCES};
+use vale_app::ui::pad::atlas::{
+    DELETE_MAP_STYLE, LINKED_STYLE_HINT, MAP_STYLE, MAP_STYLE_HINT, MAP_STYLE_NAME,
+    NO_MAP_STYLE_ROW, SAVE_AS_MAP_STYLE, THIS_MAP, map_style_row,
+};
 use vale_app::ui::pad::atlas::{GRID_COLOR, GRID_SPACING, LAYOUT_GRID, SHOW_GRID, SNAP_TO_LAYOUT};
 use vale_app::ui::pad::edge_labels::{
     EDGE_LABELS, HALO as EDGE_HALO, HALO_WIDTH as EDGE_HALO_WIDTH, OFFSET as EDGE_OFFSET,
@@ -384,6 +388,20 @@ fn scroll_to(h: &mut Pad, name: &str) {
         }
         let from = pos2(card.left() + 6.0, card.bottom() - 40.0);
         drag(h, from, from - vec2(0.0, 200.0), Input::Finger);
+    }
+}
+
+/// Scrolls the panel up in small steps until a control is inside the
+/// card.
+fn nudge_up_to(h: &mut Pad, name: &str) {
+    for _ in 0..12 {
+        let card = h.state().atlas.panel_rect.unwrap();
+        let inside = |rect: Rect| card.shrink2(vec2(0.0, 40.0)).contains_rect(rect);
+        if control(h, name).is_some_and(inside) {
+            return;
+        }
+        let from = pos2(card.left() + 6.0, card.bottom() - 120.0);
+        drag(h, from, from + vec2(0.0, 60.0), Input::Finger);
     }
 }
 
@@ -987,6 +1005,7 @@ fn the_tabs_of_a_frame_work_with_a_finger() {
         assert!(control(&h, FRAME_TABS[3]).is_some());
         tap(&mut h, POLYGON);
         check_controls(&h, "polygon");
+        scroll_to(&mut h, SCALE);
         tap(&mut h, SCALE);
         for key in ["5", "0", "0", "0", "0", "0", "0", "0"] {
             tap(&mut h, &format!("{SCALE} {key}"));
@@ -1803,6 +1822,7 @@ fn the_graticule_controls_work_with_a_finger() {
         scroll_to(&mut h, GRATICULE_COLOR);
         tap(&mut h, GRATICULE_COLOR);
         scroll_to(&mut h, &hue);
+        nudge_up_to(&mut h, &shade);
         check_controls(&h, "graticule color");
         let before = frame(&h, 1).graticule.color;
         let square = control(&h, &shade).unwrap();
@@ -1974,6 +1994,7 @@ fn the_neatline_controls_work_with_a_finger() {
         scroll_to(&mut h, NEATLINE_COLOR);
         tap(&mut h, NEATLINE_COLOR);
         scroll_to(&mut h, &hue);
+        nudge_up_to(&mut h, &shade);
         check_controls(&h, "neatline color");
         let before = frame(&h, 1).neatline.color;
         scroll_up_to(&mut h, &shade);
@@ -7195,5 +7216,185 @@ fn same_look(a: &[String], b: &[String], what: &str) {
     if let Some(i) = (0..a.len()).find(|&i| a[i] != b[i]) {
         let short = |t: &str| t.chars().take(300).collect::<String>();
         panic!("{what}: item {i}: {} != {}", short(&a[i]), short(&b[i]));
+    }
+}
+
+/// The map style that a map links to.
+fn linked(h: &Pad, map: MapId) -> Option<vale_store::MapStyleId> {
+    own_settings(h, map).style
+}
+
+/// Selects frame `index` of the open page and shows its Frame tab.
+fn frame_tab_of(h: &mut Pad, index: usize) {
+    h.state_mut().atlas.selection = AtlasSelection::Frame(frame(h, index).id);
+    h.run_steps(2);
+    tap(h, FRAME_TABS[0]);
+}
+
+#[test]
+fn the_frame_tab_saves_and_links_a_map_style() {
+    let mut h = styled_pad();
+    let (main, inset) = (frame(&h, 0).map, frame(&h, 1).map);
+    let before = look(&mut h, 1);
+    frame_tab_of(&mut h, 1);
+    scroll_to(&mut h, SAVE_AS_MAP_STYLE);
+    tap(&mut h, SAVE_AS_MAP_STYLE);
+    let style = linked(&h, inset).expect("the inset links a map style");
+    assert!(is_plain(&own_settings(&h, inset)));
+    same_look(&look(&mut h, 1), &before, "save as");
+
+    // The main frame picks the map style from the list.
+    frame_tab_of(&mut h, 0);
+    scroll_to(&mut h, MAP_STYLE);
+    tap(&mut h, MAP_STYLE);
+    assert!(h.state().atlas.map_styles_open);
+    let row = map_style_row("Map style");
+    scroll_to(&mut h, &row);
+    tap(&mut h, &row);
+    assert_eq!(linked(&h, main), Some(style));
+    assert!(!h.state().atlas.map_styles_open);
+    assert!(!shows(&h, main, "Land"));
+    assert_eq!(rivers_width(&h, Some(main)), rivers_width(&h, Some(inset)));
+
+    // None unlinks the map, and its frame keeps its look.
+    let before = look(&mut h, 0);
+    scroll_to(&mut h, MAP_STYLE);
+    tap(&mut h, MAP_STYLE);
+    scroll_to(&mut h, NO_MAP_STYLE_ROW);
+    tap(&mut h, NO_MAP_STYLE_ROW);
+    assert_eq!(linked(&h, main), None);
+    assert!(!is_plain(&own_settings(&h, main)));
+    same_look(&look(&mut h, 0), &before, "none");
+    assert_eq!(linked(&h, inset), Some(style));
+}
+
+#[test]
+fn the_frame_tab_renames_and_deletes_a_map_style() {
+    let mut h = styled_pad();
+    let (main, inset) = (frame(&h, 0).map, frame(&h, 1).map);
+    frame_tab_of(&mut h, 1);
+    assert!(control(&h, MAP_STYLE_NAME).is_none());
+    assert!(control(&h, DELETE_MAP_STYLE).is_none());
+    scroll_to(&mut h, SAVE_AS_MAP_STYLE);
+    tap(&mut h, SAVE_AS_MAP_STYLE);
+    let style = linked(&h, inset).unwrap();
+    h.state_mut().set_map_style_link(main, Some(style));
+    h.run_steps(2);
+
+    scroll_up_to(&mut h, MAP_STYLE_NAME);
+    type_text(&mut h, MAP_STYLE_NAME, "Coast");
+    let name = |h: &Pad| {
+        h.state()
+            .doc
+            .project
+            .atlas
+            .map_style(style)
+            .unwrap()
+            .name
+            .clone()
+    };
+    assert_eq!(name(&h), "Coast");
+    // An empty name does not rename the map style.
+    type_text(&mut h, MAP_STYLE_NAME, "");
+    assert_eq!(name(&h), "Coast");
+    type_text(&mut h, MAP_STYLE_NAME, "Coast map");
+    assert_eq!(name(&h), "Coast map");
+
+    let before = [look(&mut h, 0), look(&mut h, 1)];
+    scroll_to(&mut h, DELETE_MAP_STYLE);
+    tap(&mut h, DELETE_MAP_STYLE);
+    assert!(h.state().doc.project.atlas.map_styles.is_empty());
+    assert_eq!((linked(&h, main), linked(&h, inset)), (None, None));
+    same_look(&look(&mut h, 0), &before[0], "main");
+    same_look(&look(&mut h, 1), &before[1], "inset");
+    assert!(control(&h, DELETE_MAP_STYLE).is_none());
+}
+
+#[test]
+fn the_apply_to_switch_chooses_the_map_style_or_this_map() {
+    let mut h = inset_pad(BOARDS[0]);
+    let (main, inset) = (frame(&h, 0).map, frame(&h, 1).map);
+    // A map with no map style has no switch.
+    tap(&mut h, FRAME_TABS[2]);
+    assert!(control(&h, THIS_MAP).is_none());
+    assert!(h.query_by_label(MAP_STYLE_HINT).is_some());
+
+    let style = h.state_mut().save_as_map_style(inset).unwrap();
+    h.state_mut().set_map_style_link(main, Some(style));
+    h.run_steps(2);
+    assert!(control(&h, THIS_MAP).is_some());
+    assert!(h.query_by_label(LINKED_STYLE_HINT).is_some());
+    let rivers = layer_id(&h, "Rivers");
+    let before = rivers_width(&h, None);
+
+    // With This map, a change in the panel of a layer changes the map only.
+    open_rivers_rule(&mut h);
+    tap(&mut h, THIS_MAP);
+    assert!(!h.state().atlas.to_style);
+    assert!(h.query_by_label(MAP_STYLE_HINT).is_some());
+    widen(&mut h);
+    assert_eq!(overrides(&h, inset).len(), 1);
+    assert!(
+        h.state()
+            .doc
+            .overrides(Target::Style(style), rivers)
+            .is_empty()
+    );
+    assert_eq!(rivers_width(&h, Some(main)), before);
+
+    // With the map style, the change shows in each map of the map style.
+    // The override of the inset stays over it.
+    let own = rivers_width(&h, Some(inset));
+    tap(&mut h, "Map style");
+    assert!(h.state().atlas.to_style);
+    assert!(h.query_by_label(LINKED_STYLE_HINT).is_some());
+    widen(&mut h);
+    assert_eq!(
+        h.state().doc.overrides(Target::Style(style), rivers).len(),
+        1
+    );
+    assert!(rivers_width(&h, Some(main)) > before);
+    assert_eq!(rivers_width(&h, Some(inset)), own);
+}
+
+#[test]
+fn the_map_style_controls_work_with_a_finger() {
+    for size in BOARDS {
+        let what = format!("{size:?}");
+        let mut h = inset_pad(size);
+        let (main, inset) = (frame(&h, 0).map, frame(&h, 1).map);
+        let style = h.state_mut().save_as_map_style(inset).unwrap();
+        h.state_mut().set_map_style_link(main, Some(style));
+        h.run_steps(2);
+
+        tap(&mut h, FRAME_TABS[0]);
+        scroll_to(&mut h, MAP_STYLE);
+        tap(&mut h, MAP_STYLE);
+        check_controls(&h, &format!("{what}: map styles"));
+        let row = map_style_row("Map style");
+        scroll_to(&mut h, &row);
+        assert!(control(&h, &row).is_some(), "{what}");
+        check_controls(&h, &format!("{what}: map style rows"));
+        if size == BOARDS[0] {
+            screenshot::save(&mut h, "pad-atlas-map-styles");
+        }
+        scroll_to(&mut h, DELETE_MAP_STYLE);
+        check_controls(&h, &format!("{what}: map style buttons"));
+
+        tap(&mut h, FRAME_TABS[2]);
+        assert!(control(&h, THIS_MAP).is_some(), "{what}");
+        check_controls(&h, &format!("{what}: layers tab"));
+        scroll_to(&mut h, "Open Rivers");
+        tap(&mut h, "Open Rivers");
+        assert!(control(&h, THIS_MAP).is_some(), "{what}");
+        check_controls(&h, &format!("{what}: layer panel"));
+        if size == BOARDS[0] {
+            screenshot::save(&mut h, "pad-atlas-apply-to");
+        }
+        tap(&mut h, "Back to Layers");
+
+        tap(&mut h, FRAME_TABS[3]);
+        assert!(control(&h, THIS_MAP).is_some(), "{what}");
+        check_controls(&h, &format!("{what}: labels tab"));
     }
 }

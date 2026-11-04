@@ -35,7 +35,29 @@ pub const MAP_FRAME: &str = "Map frame";
 pub const FRAME_TABS: [&str; 4] = ["Frame", "Projection", "Layers", "Labels"];
 pub const MAP_NAME: &str = "Map name";
 pub const MAP_STYLE_HINT: &str = "Changes apply to this map only.";
+/// The hint under the switch when changes go to the map style.
+pub const LINKED_STYLE_HINT: &str = "Changes apply to each map with this map style.";
 pub const STYLE_FOR_THIS_MAP: &str = "Style for this map";
+pub const MAP_STYLE: &str = "Map style";
+/// The value of the Map style row, and the title of its row, when the map
+/// has no map style.
+pub const NO_MAP_STYLE: &str = "None";
+/// The name of the row of the list that unlinks the map style.
+pub const NO_MAP_STYLE_ROW: &str = "No map style";
+pub const MAP_STYLE_NAME: &str = "Map style name";
+pub const SAVE_AS_MAP_STYLE: &str = "Save as map style…";
+pub const DELETE_MAP_STYLE: &str = "Delete map style";
+/// The label of the switch between the map style and this map.
+pub const APPLY_TO: &str = "Apply to";
+pub const THIS_MAP: &str = "This map";
+/// The name of the row of a map style in the list of the Frame tab.
+pub fn map_style_row(name: &str) -> String {
+    format!("Map style {name}")
+}
+/// The heading of the layers with overrides when changes go to a map style.
+pub fn style_for(name: &str) -> String {
+    format!("Style for {name}")
+}
 pub const REMOVE_OVERRIDES: &str = "Remove overrides";
 pub const SHAPE: &str = "Shape";
 pub const RECTANGLE: &str = "Rectangle";
@@ -931,6 +953,7 @@ fn frame_tab(
     if widgets::text_field(ui, controls, MAP_NAME, "Name", None, &mut name, true).changed() {
         atlas::rename_map(state, id, &name);
     }
+    map_style_rows(ui, state, controls, frame.map);
 
     let polygon = matches!(frame.shape, FrameShape::Polygon(_));
     let shapes = [RECTANGLE, POLYGON];
@@ -1016,6 +1039,71 @@ fn frame_tab(
             state.atlas.label_color = None;
         }
     }
+}
+
+/// The rows of the map style of a map: the Map style row with its list,
+/// the name field and the delete button of a linked map style, and the
+/// button that saves the map as a new map style.
+fn map_style_rows(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, map: MapId) {
+    let doc_atlas = &state.doc.project.atlas;
+    let linked = doc_atlas.map(map).and_then(|m| m.style);
+    let styles: Vec<_> = (doc_atlas.map_styles.iter())
+        .map(|s| (s.id, s.name.clone()))
+        .collect();
+    let current = linked.and_then(|id| styles.iter().find(|s| s.0 == id).map(|s| s.1.clone()));
+    let value = current.as_deref().unwrap_or(NO_MAP_STYLE);
+    if widgets::open_row(ui, controls, MAP_STYLE, value).clicked() {
+        state.atlas.map_styles_open = !state.atlas.map_styles_open;
+    }
+    if state.atlas.map_styles_open {
+        let none = linked.is_none();
+        if widgets::option_row(ui, controls, NO_MAP_STYLE_ROW, NO_MAP_STYLE, &[], none).clicked() {
+            state.set_map_style_link(map, None);
+            state.atlas.map_styles_open = false;
+        }
+        for (style, name) in &styles {
+            let on = linked == Some(*style);
+            let row = widgets::option_row(ui, controls, &map_style_row(name), name, &[], on);
+            if row.clicked() {
+                state.set_map_style_link(map, Some(*style));
+                state.atlas.map_styles_open = false;
+            }
+        }
+    }
+    if let (Some(style), Some(name)) = (linked, current) {
+        let mut text = match &state.atlas.map_style_name {
+            Some((of, text)) if *of == style => text.clone(),
+            _ => name.clone(),
+        };
+        let valid = text.trim() == name;
+        if widgets::text_field(
+            ui,
+            controls,
+            MAP_STYLE_NAME,
+            "Style",
+            None,
+            &mut text,
+            valid,
+        )
+        .changed()
+        {
+            atlas::rename_map_style(state, style, &text);
+            state.atlas.map_style_name = Some((style, text));
+        }
+    }
+    if widgets::button_row(ui, controls, SAVE_AS_MAP_STYLE, true).clicked() {
+        state.save_as_map_style(map);
+        state.atlas.map_styles_open = false;
+        state.atlas.map_style_name = None;
+    }
+    if let Some(style) = linked {
+        let delete = widgets::button_row_in(ui, controls, DELETE_MAP_STYLE, true, theme::WARN);
+        if delete.clicked() {
+            state.delete_map_style(style);
+            state.atlas.map_style_name = None;
+        }
+    }
+    ui.add_space(6.0);
 }
 
 /// The rows of the graticule of a frame: the interval, the color, the
@@ -1236,6 +1324,7 @@ fn layers_tab(
         return;
     };
     ui.spacing_mut().item_spacing.y = 0.0;
+    apply_to(ui, state, controls, map);
     let rows: Vec<_> = (state.doc.project.layers().iter())
         .map(|l| (l.id, layer_icon(l), l.name.clone()))
         .collect();
@@ -1281,7 +1370,12 @@ fn layers_tab(
         .collect();
     if !changed.is_empty() {
         ui.add_space(8.0);
-        super::raster::heading(ui, STYLE_FOR_THIS_MAP);
+        let heading = match state.target(map) {
+            crate::document::Target::Style(style) => (state.doc.project.atlas.map_style(style))
+                .map_or_else(|| STYLE_FOR_THIS_MAP.to_string(), |s| style_for(&s.name)),
+            crate::document::Target::Map(_) => STYLE_FOR_THIS_MAP.to_string(),
+        };
+        super::raster::heading(ui, &heading);
         for (layer, name, n) in changed {
             let value = if n == 1 {
                 "1 change".to_string()
@@ -1434,14 +1528,50 @@ fn layer_panel(
             }
         }
     };
+    let hint = |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| {
+        map_hint(ui, state, controls, map);
+    };
     Some(show_card(
-        ctx, state, controls, rects, card, on_title, map_hint, body,
+        ctx, state, controls, rects, card, on_title, hint, body,
     ))
 }
 
-/// The hint at the top of the panel of a layer.
-fn map_hint(ui: &mut egui::Ui, _: &mut AppState, _: &mut Controls) {
-    ui.label(egui::RichText::new(MAP_STYLE_HINT).color(theme::MUTE));
+/// The top of the panel of a layer: the switch between the map style and
+/// this map, with its hint.
+fn map_hint(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, map: MapId) {
+    apply_to(ui, state, controls, map);
+}
+
+/// The switch that chooses whether a change of map `map` goes to its map
+/// style or to the map, with a hint under it. A map with no map style
+/// shows only the hint.
+pub(super) fn apply_to(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    map: MapId,
+) {
+    let doc_atlas = &state.doc.project.atlas;
+    let style = doc_atlas.map(map).and_then(|m| m.style);
+    let name = style
+        .and_then(|s| doc_atlas.map_style(s))
+        .map(|s| s.name.clone());
+    let hint = match name {
+        Some(name) => {
+            let choices = [name.as_str(), THIS_MAP];
+            let active = Some(usize::from(!state.atlas.to_style));
+            if let Some(i) = widgets::choice_row(ui, controls, APPLY_TO, &choices, active) {
+                state.atlas.to_style = i == 0;
+            }
+            if state.atlas.to_style {
+                LINKED_STYLE_HINT
+            } else {
+                MAP_STYLE_HINT
+            }
+        }
+        None => MAP_STYLE_HINT,
+    };
+    ui.label(egui::RichText::new(hint).color(theme::MUTE));
     ui.add_space(4.0);
 }
 
@@ -1559,7 +1689,10 @@ fn raster_panel(
             }
         }
     };
-    let rect = show_card(ctx, state, controls, rects, card, on_title, map_hint, body);
+    let hint = |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| {
+        map_hint(ui, state, controls, map);
+    };
+    let rect = show_card(ctx, state, controls, rects, card, on_title, hint, body);
     // The cards of the editors take their place from the panel.
     state.pad.panels.push((super::Panel::Layers, rect));
     Some(rect)
@@ -1652,8 +1785,11 @@ fn look_panel(
             }
         }
     };
+    let hint = |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| {
+        map_hint(ui, state, controls, map);
+    };
     Some(show_card(
-        ctx, state, controls, rects, card, on_title, map_hint, body,
+        ctx, state, controls, rects, card, on_title, hint, body,
     ))
 }
 

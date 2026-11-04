@@ -634,6 +634,10 @@ pub struct AtlasState {
     pub label_page: Option<ClassPage>,
     /// An edit of a map with a map style changes the map style.
     pub to_style: bool,
+    /// The list of the map styles in the Frame tab is open.
+    pub map_styles_open: bool,
+    /// The text of the name field of a map style while the user types it.
+    pub map_style_name: Option<(MapStyleId, String)>,
     /// The segment of the panel of `label`.
     pub label_segment: ClassSegment,
     /// The color of the label class whose color picker is open.
@@ -800,6 +804,8 @@ impl Default for AtlasState {
             label: None,
             label_page: None,
             to_style: true,
+            map_styles_open: false,
+            map_style_name: None,
             label_segment: ClassSegment::Text,
             label_color: None,
             label_color_shown: false,

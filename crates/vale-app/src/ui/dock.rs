@@ -14,15 +14,16 @@ use super::pad::raster::{BLEND, SHOW_AS};
 
 use super::atlas::{self, AtlasSelection, EdgeSet, FrameTab};
 use super::pad::atlas::{
-    ADD_HOLE, ADD_PAGE, AUTO_INTERVAL, AZIMUTH, BORDER, BORDER_COLOR, BORDER_DISTANCE,
+    ADD_HOLE, ADD_PAGE, APPLY_TO, AUTO_INTERVAL, AZIMUTH, BORDER, BORDER_COLOR, BORDER_DISTANCE,
     BORDER_STROKE, BORDER_STYLE, BORDER_STYLES, BORDER_WIDTH, CENTER_LATITUDE, CENTER_LONGITUDE,
-    CENTER_ON_FRAME, DELETE_PAGE, DELETE_PROJECTION, FIRST_PARALLEL, FRAME_TABS, GRATICULE_COLOR,
-    GRATICULE_WIDTH, GRID_COLOR, GRID_SPACING, HEIGHT, INTERVAL, LABEL_FORMAT, LABEL_FORMATS,
-    LATITUDE, LAYOUT_GRID, LONGITUDE, MAP_NAME, MAP_STYLE_HINT, NEATLINE, NEATLINE_COLOR,
-    NEATLINE_WIDTH, OBLIQUE, ORIENTATIONS, PAGE_NAME, PAPER_COLOR, POLYGON, PROJECTION_NAME,
-    RECTANGLE, REFERENCE_GRID, REMOVE_OVERRIDES, ROTATION, SAVE_PROJECTION, SCALE, SECOND_COLOR,
-    SECOND_PARALLEL, SHAPE, SIZE, STROKE_COLOR, STROKE_WIDTH, UNIT_NAMES, WIDTH, custom_row,
-    length_text, unit_name,
+    CENTER_ON_FRAME, DELETE_MAP_STYLE, DELETE_PAGE, DELETE_PROJECTION, FIRST_PARALLEL, FRAME_TABS,
+    GRATICULE_COLOR, GRATICULE_WIDTH, GRID_COLOR, GRID_SPACING, HEIGHT, INTERVAL, LABEL_FORMAT,
+    LABEL_FORMATS, LATITUDE, LAYOUT_GRID, LINKED_STYLE_HINT, LONGITUDE, MAP_NAME, MAP_STYLE,
+    MAP_STYLE_HINT, MAP_STYLE_NAME, NEATLINE, NEATLINE_COLOR, NEATLINE_WIDTH, NO_MAP_STYLE,
+    OBLIQUE, ORIENTATIONS, PAGE_NAME, PAPER_COLOR, POLYGON, PROJECTION_NAME, RECTANGLE,
+    REFERENCE_GRID, REMOVE_OVERRIDES, ROTATION, SAVE_AS_MAP_STYLE, SAVE_PROJECTION, SCALE,
+    SECOND_COLOR, SECOND_PARALLEL, SHAPE, SIZE, STROKE_COLOR, STROKE_WIDTH, THIS_MAP, UNIT_NAMES,
+    WIDTH, custom_row, length_text, unit_name,
 };
 use super::pad::atlas::{
     BORDER_GAP, DISTANCE_BY_SIDE, GRID_COLUMN_NAMES, GRID_COLUMNS, SIDE_DISTANCES,
@@ -128,6 +129,7 @@ fn frame_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
             atlas::rename_map(state, id, &name);
         }
     });
+    map_style_controls(ui, state, frame.map);
     let polygon = matches!(frame.shape, FrameShape::Polygon(_));
     ui.horizontal(|ui| {
         ui.label(SHAPE);
@@ -523,7 +525,84 @@ fn grid_rows(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
 /// A switch for each layer, which turns the layer on or off in the
 /// map of the frame, and the style of the chosen vector layer, for all maps
 /// or for the map of the frame.
+/// The map style of a map: a menu of the map styles, and the name field
+/// and the delete button of a linked map style, and the button that saves
+/// the map as a new map style.
+fn map_style_controls(ui: &mut egui::Ui, state: &mut AppState, map: vale_store::MapId) {
+    let doc_atlas = &state.doc.project.atlas;
+    let linked = doc_atlas.map(map).and_then(|m| m.style);
+    let styles: Vec<_> = (doc_atlas.map_styles.iter())
+        .map(|s| (s.id, s.name.clone()))
+        .collect();
+    let current = linked.and_then(|id| styles.iter().find(|s| s.0 == id).map(|s| s.1.clone()));
+    ui.horizontal(|ui| {
+        ui.label(MAP_STYLE);
+        let mut chosen = linked;
+        egui::ComboBox::from_id_salt("atlas-map-style")
+            .selected_text(current.as_deref().unwrap_or(NO_MAP_STYLE))
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut chosen, None, NO_MAP_STYLE);
+                for (id, name) in &styles {
+                    ui.selectable_value(&mut chosen, Some(*id), name);
+                }
+            });
+        if chosen != linked {
+            state.set_map_style_link(map, chosen);
+        }
+    });
+    if let (Some(style), Some(name)) = (linked, current) {
+        ui.horizontal(|ui| {
+            ui.label("Style");
+            let mut text = match &state.atlas.map_style_name {
+                Some((of, text)) if *of == style => text.clone(),
+                _ => name.clone(),
+            };
+            let field = ui.add(egui::TextEdit::singleline(&mut text).desired_width(160.0));
+            named(&field, egui::WidgetType::TextEdit, MAP_STYLE_NAME);
+            if field.changed() {
+                atlas::rename_map_style(state, style, &text);
+                state.atlas.map_style_name = Some((style, text));
+            }
+        });
+    }
+    ui.horizontal(|ui| {
+        if ui.button(SAVE_AS_MAP_STYLE).clicked() {
+            state.save_as_map_style(map);
+            state.atlas.map_style_name = None;
+        }
+        if let Some(style) = linked
+            && ui.button(DELETE_MAP_STYLE).clicked()
+        {
+            state.delete_map_style(style);
+            state.atlas.map_style_name = None;
+        }
+    });
+}
+
+/// The switch between the map style of a map and the map, with its hint.
+/// A map with no map style shows only the hint.
+fn apply_to(ui: &mut egui::Ui, state: &mut AppState, map: vale_store::MapId) {
+    let doc_atlas = &state.doc.project.atlas;
+    let style = doc_atlas.map(map).and_then(|m| m.style);
+    let name = style
+        .and_then(|s| doc_atlas.map_style(s))
+        .map(|s| s.name.clone());
+    if let Some(name) = name {
+        ui.horizontal(|ui| {
+            ui.label(APPLY_TO);
+            ui.selectable_value(&mut state.atlas.to_style, true, name);
+            ui.selectable_value(&mut state.atlas.to_style, false, THIS_MAP);
+        });
+        if state.atlas.to_style {
+            ui.weak(LINKED_STYLE_HINT);
+            return;
+        }
+    }
+    ui.weak(MAP_STYLE_HINT);
+}
+
 fn layers_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
+    apply_to(ui, state, frame.map);
     let rows: Vec<_> = (state.doc.project.layers().iter().rev())
         .map(|l| (l.id, l.name.clone()))
         .collect();
@@ -546,7 +625,6 @@ fn layers_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
         return;
     };
     ui.separator();
-    ui.weak(MAP_STYLE_HINT);
     let Some(kind) = state.doc.layer(layer).and_then(|l| l.geometry()) else {
         look_controls(ui, state, frame, layer);
         return;
@@ -854,6 +932,7 @@ fn labels_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
     };
     use vale_store::GeometryKind;
     let map = frame.map;
+    apply_to(ui, state, map);
     if state.label_layers().is_empty() {
         ui.weak(NO_LABEL_LAYERS);
         return;
