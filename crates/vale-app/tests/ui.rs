@@ -1661,15 +1661,74 @@ fn the_desktop_select_tool_deletes_the_selection_with_the_delete_key() {
         .select(Some(vale_app::ui::pad::LayerRef::Vector(id)));
     h.state_mut().feature_selection = vec![FeatureRef { layer: id, uuid }];
     h.run_steps(2);
-    assert!(h.state().selection_form.is_some());
-    assert!(h.query_by_label(vale_app::ui::select::DELETE).is_some());
+    // The selection opens no window.
+    assert!(h.state().selection_form.is_none());
+    assert!(h.query_by_label(vale_app::ui::select::DELETE).is_none());
     h.key_press(egui::Key::Delete);
     h.run_steps(2);
     let places = h.state().doc.project.layer(id).unwrap();
     assert_eq!(places.features.len(), count - 1);
     assert!(places.features.iter().all(|f| f.uuid() != uuid));
     assert!(h.state().feature_selection.is_empty());
-    assert!(h.query_by_label(vale_app::ui::select::DELETE).is_none());
+    // Backspace deletes, and Escape clears the selection.
+    let uuids: Vec<_> = places.features.iter().map(|f| f.uuid()).take(2).collect();
+    h.state_mut().feature_selection = vec![FeatureRef {
+        layer: id,
+        uuid: uuids[0],
+    }];
+    h.run_steps(2);
+    h.key_press(egui::Key::Backspace);
+    h.run_steps(2);
+    assert_eq!(
+        h.state().doc.project.layer(id).unwrap().features.len(),
+        count - 2
+    );
+    h.state_mut().feature_selection = vec![FeatureRef {
+        layer: id,
+        uuid: uuids[1],
+    }];
+    h.run_steps(2);
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+    assert!(h.state().feature_selection.is_empty());
+    assert_eq!(
+        h.state().doc.project.layer(id).unwrap().features.len(),
+        count - 2
+    );
+}
+
+#[test]
+fn on_the_desktop_command_i_shows_and_hides_the_inspector() {
+    use vale_app::globe::select::FeatureRef;
+    use vale_app::ui::select::{ATTRIBUTES, NO_SELECTION, SHOW_ATTRIBUTES};
+    let mut h = globe_harness();
+    assert!(h.query_by_label(NO_SELECTION).is_none());
+    h.get_by_label("View").click();
+    h.run_steps(2);
+    // The label of the command also holds its shortcut.
+    h.get_by_label_contains(SHOW_ATTRIBUTES).click();
+    h.run_steps(2);
+    assert!(h.state().show_attributes);
+    assert!(h.query_by_label(ATTRIBUTES).is_some());
+    assert!(h.query_by_label(NO_SELECTION).is_some());
+    let layers = h.state().doc.project.layers();
+    let places = layers.iter().find(|l| l.name == "Places").unwrap();
+    let (id, uuid) = (places.id, places.features[0].uuid());
+    let fields = places.fields.len();
+    h.state_mut()
+        .select(Some(vale_app::ui::pad::LayerRef::Vector(id)));
+    h.state_mut().feature_selection = vec![FeatureRef { layer: id, uuid }];
+    h.run_steps(2);
+    let form = h.state().selection_form.as_ref().expect("no form");
+    assert_eq!(form.fields.len(), fields);
+    assert!(h.query_by_label(NO_SELECTION).is_none());
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::I);
+    h.run_steps(2);
+    assert!(!h.state().show_attributes);
+    assert!(h.state().selection_form.is_none());
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::I);
+    h.run_steps(2);
+    assert!(h.state().show_attributes);
 }
 
 /// A mouse stroke through places, with keys held during the stroke.

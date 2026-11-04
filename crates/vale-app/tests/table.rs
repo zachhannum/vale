@@ -161,11 +161,10 @@ fn table_rect(h: &Pad) -> Rect {
         .expect("no table")
 }
 
-fn selection_card(h: &Pad) -> Rect {
-    let card = h
-        .ctx
-        .memory(|m| m.area_rect(egui::Id::new("selection-card")));
-    card.expect("no selection card")
+/// The card of the Select tool below the tool strip.
+fn select_card(h: &Pad) -> Rect {
+    let rects = h.state().pad.rects.as_ref().expect("no layout");
+    rects.brush.expect("no card of the Select tool")
 }
 
 /// The center of the globe on the canvas, in the Select tool.
@@ -352,6 +351,7 @@ fn the_page_of_a_vector_layer_and_the_selection_card_open_the_table() {
 
     let center = select_tool(&mut h);
     tap_at(&mut h, center);
+    tap(&mut h, vale_app::ui::select::ATTRIBUTES);
     tap(&mut h, SHOW_IN_TABLE);
     let table = h.state().table.as_ref().expect("no table");
     assert_eq!(table.layer, id);
@@ -359,7 +359,7 @@ fn the_page_of_a_vector_layer_and_the_selection_card_open_the_table() {
 }
 
 #[test]
-fn on_ipad_the_table_is_a_wide_right_panel_beside_the_selection_card() {
+fn on_ipad_the_table_is_a_wide_right_panel_beside_the_select_card() {
     for size in [LANDSCAPE, PORTRAIT] {
         let mut h = harness(size, Layout::Pad);
         let (id, uuids) = towns(&mut h, 5, 0);
@@ -368,20 +368,15 @@ fn on_ipad_the_table_is_a_wide_right_panel_beside_the_selection_card() {
         let normal = table_rect(&h);
         h.state_mut().open_table(id);
         tap_at(&mut h, center);
-        let (card, table) = (selection_card(&h), table_rect(&h));
+        let (card, table) = (select_card(&h), table_rect(&h));
         assert!(!card.intersects(table), "{size:?}: {card:?} {table:?}");
         // The panel keeps its top and its right edge, and it is wider.
         assert_eq!((table.top(), table.right()), (normal.top(), normal.right()));
         assert!(table.width() > normal.width(), "{size:?}");
-        assert!(card.left() > 80.0, "{size:?}");
         // The edit of a cell moves neither the panel nor the card.
         tap(&mut h, &cell_name("rank", uuids[0]));
         assert!(h.state().table.as_ref().unwrap().edit.is_some());
-        assert_eq!(
-            (selection_card(&h), table_rect(&h)),
-            (card, table),
-            "{size:?}"
-        );
+        assert_eq!((select_card(&h), table_rect(&h)), (card, table), "{size:?}");
         // The table closes with the panel, and the panel is narrow again.
         tap(&mut h, "Close Attribute table");
         assert!(h.state().table.is_none());
