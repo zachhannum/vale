@@ -9,6 +9,7 @@ use vale_store::{
     PageUnits, RasterId,
 };
 
+use super::diagnostics_card;
 use super::geometry::{self, GAP, Input, MARGIN, PAD, ROW, Rects, TOUCH, WidthClass};
 use super::icons::Icon;
 use super::number::Number;
@@ -274,6 +275,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     if state.pad.worlds.is_some() {
         worlds_menu(&ctx, state, &mut controls, &rects);
     }
+    diagnostics_card(&ctx, state, &mut controls, &rects);
 
     // The page fits the space between the cards. In the wide layout, the
     // panel has its own place at the right.

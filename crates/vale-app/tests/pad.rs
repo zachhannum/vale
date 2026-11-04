@@ -333,7 +333,8 @@ fn check_controls(h: &Pad, what: &str) {
         || in_add
         || in_list
         || in_stop
-        || h.state().pad.view_options_rect.is_some();
+        || h.state().pad.view_options_rect.is_some()
+        || h.state().pad.diagnostics;
     for (i, a) in controls.iter().enumerate() {
         let (name, rect) = (&a.name, a.rect);
         assert!(
@@ -376,7 +377,14 @@ fn check_controls(h: &Pad, what: &str) {
                 let add = in_add && rows.contains(&name);
                 let stop = in_stop
                     && (name.starts_with(vale_app::ui::pad::raster::COLOR) || raster_stop(name));
-                menu || kind || modes || add || stop || (in_menu && name == "Projection")
+                use vale_app::ui::pad::{COPY_REPORT, RESET_TIMES};
+                let diagnostics = [COPY_REPORT, RESET_TIMES, "Close Diagnostics"].contains(&name);
+                menu || kind
+                    || modes
+                    || add
+                    || stop
+                    || diagnostics
+                    || (in_menu && name == "Projection")
             };
             // The edit menu of a field covers the controls below it.
             let edit = |c: &vale_app::ui::pad::widgets::Control| {
@@ -10389,5 +10397,37 @@ fn the_smallest_lake_slider_sets_the_size_of_the_smallest_lake() {
         assert_eq!(h.state().globe.preview.lake_km2, 1_000_000.0, "{size:?}");
         slide_to_end(&mut h, raster::SMALLEST_LAKE, false);
         assert_eq!(h.state().globe.preview.lake_km2, 100.0, "{size:?}");
+    }
+}
+
+#[test]
+fn the_diagnostics_card_copies_a_report_of_the_frame_times() {
+    use vale_app::ui::pad::{COPY_REPORT, DIAGNOSTICS};
+    let _clipboard = one_clipboard_test();
+    for size in BOARDS {
+        let mut h = painted_pad(size);
+        open_worlds(&mut h);
+        tap(&mut h, DIAGNOSTICS);
+        assert!(h.state().pad.worlds.is_none() && h.state().pad.diagnostics);
+        h.run_steps(4);
+        check_controls(&h, "the diagnostics card");
+        let screen = h.state().pad.rects.unwrap().screen;
+        let copy = control(&h, COPY_REPORT).unwrap();
+        assert!(
+            screen.contains_rect(copy) && copy.height() >= 44.0,
+            "{size:?}"
+        );
+
+        tap(&mut h, COPY_REPORT);
+        let report = vale_app::clipboard::get().unwrap();
+        for line in [
+            "diagnostics",
+            "UI frame (CPU): mean",
+            "Detail tiles asked: ",
+        ] {
+            assert!(report.contains(line), "{size:?}: no `{line}` in {report}");
+        }
+        tap(&mut h, &format!("Close {DIAGNOSTICS}"));
+        assert!(!h.state().pad.diagnostics, "{size:?}");
     }
 }

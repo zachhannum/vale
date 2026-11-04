@@ -633,6 +633,11 @@ fn file_menu(ui: &mut egui::Ui, state: &mut AppState) {
         if ui.button(ALL_WORLDS).clicked() {
             state.actions.push(Action::ShowProjects);
         }
+        if ui.button("Copy diagnostics").clicked() {
+            let report = crate::diagnostics::report(ui.ctx(), state);
+            crate::clipboard::set(ui.ctx(), &report);
+            state.status = "Copied the diagnostics".to_owned();
+        }
     });
 }
 

@@ -256,6 +256,9 @@ pub fn mode_face(mode: Mode) -> (&'static str, Icon) {
 pub const WORLD_PROPERTIES: &str = "World properties";
 /// The row of the menu of the worlds that saves the open project.
 pub const SAVE: &str = "Save";
+pub const DIAGNOSTICS: &str = "Diagnostics";
+pub const COPY_REPORT: &str = "Copy report";
+pub const RESET_TIMES: &str = "Reset times";
 /// The side of the save mark in the readout.
 const SAVE_MARK: f32 = 14.0;
 /// The button that opens the menu of the worlds.
@@ -424,6 +427,8 @@ pub struct PadState {
     pub worlds: Option<Vec<WorldFile>>,
     /// The menu of the worlds in the last frame.
     pub worlds_rect: Option<Rect>,
+    /// The diagnostics card is open.
+    pub diagnostics: bool,
     /// The cells with a flyout, and the open flyout.
     pub flyouts: Flyouts,
     /// The last mode that was chosen in each group, by `ModeGroup::ALL`.
@@ -676,6 +681,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     if state.pad.worlds.is_some() {
         worlds_menu(&ctx, state, &mut controls, &rects);
     }
+    diagnostics_card(&ctx, state, &mut controls, &rects);
     world_form::pad(&ctx, state, &mut controls, &rects);
     raster_form::pad(&ctx, state, &mut controls, &rects);
     super::region::pad(&ctx, state, &mut controls, &rects);
@@ -3235,7 +3241,7 @@ fn worlds_menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Control
     let width = geometry::WORLDS_WIDTH.min(rects.screen.width() - 2.0 * geometry::MARGIN);
     // The row of the start screen needs a folder of projects, and the Save
     // row needs a project file.
-    let rows = 2.0 + f32::from(state.projects.any()) + f32::from(state.session.is_some());
+    let rows = 3.0 + f32::from(state.projects.any()) + f32::from(state.session.is_some());
     let size = vec2(width, 10.0 + shown + rule_height + rows * PANEL_ROW + 10.0);
     let rect = Rect::from_min_size(rects.menu, size);
     state.pad.worlds_rect = Some(rect);
@@ -3315,9 +3321,73 @@ fn worlds_menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Control
                 state.actions.push(Action::ShowProjects);
                 open = false;
             }
+            if widgets::text_row(ui, controls, DIAGNOSTICS, 0.0, false, true).clicked() {
+                crate::diagnostics::reset();
+                state.pad.diagnostics = true;
+                open = false;
+            }
         },
     );
     state.pad.worlds = open.then_some(list);
+}
+
+/// The card of the diagnostics: the times of the parts of a frame and the
+/// state of the detail maps, with a button that copies them. The app draws
+/// each frame while the card is open, so the times are the times of a
+/// frame that draws.
+pub(super) fn diagnostics_card(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    controls: &mut Controls,
+    rects: &Rects,
+) {
+    if !state.pad.diagnostics {
+        return;
+    }
+    ctx.request_repaint();
+    let report = crate::diagnostics::report(ctx, state);
+    let width = 440.0_f32.min(rects.screen.width() - 2.0 * geometry::MARGIN);
+    let bottom = rects.screen.bottom() - geometry::MARGIN;
+    let height = 560.0_f32.min(bottom - rects.menu.y);
+    let rect = Rect::from_min_size(rects.menu, vec2(width, height));
+    let radius = theme::CARD_RADIUS.into();
+    widgets::card(
+        ctx,
+        None,
+        "pad-diagnostics",
+        rect,
+        Order::Foreground,
+        radius,
+        |ui| {
+            ui.painter()
+                .rect_filled(rect, radius, theme::card(false).to_opaque());
+            let inner = rect.shrink2(vec2(BODY_PAD, 10.0));
+            let layout = egui::Layout::top_down(egui::Align::Min);
+            let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
+            let ui = &mut ui;
+            ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+            if widgets::title_row(ui, controls, DIAGNOSTICS, None, false).close {
+                state.pad.diagnostics = false;
+            }
+            if widgets::button_row(ui, controls, COPY_REPORT, true).clicked() {
+                crate::clipboard::set(ui.ctx(), &report);
+                state.status = "Copied the diagnostics".to_owned();
+            }
+            if widgets::text_row(ui, controls, RESET_TIMES, 0.0, false, true).clicked() {
+                crate::diagnostics::reset();
+            }
+            rule(ui);
+            egui::ScrollArea::vertical()
+                .id_salt("pad-diagnostics-text")
+                .show(ui, |ui| {
+                    ui.set_width(inner.width());
+                    let text = egui::RichText::new(&report)
+                        .font(theme::mono())
+                        .color(theme::TEXT);
+                    ui.add(egui::Label::new(text).wrap());
+                });
+        },
+    );
 }
 
 /// The flyout of the modes of a brush cell.
