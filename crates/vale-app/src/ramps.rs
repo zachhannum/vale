@@ -123,6 +123,127 @@ fn parse_hex(text: &str) -> Option<Rgb> {
     Some([channel(0)?, channel(2)?, channel(4)?])
 }
 
+/// The ramps that the app has, before the ramps of the library. The last two
+/// are qualitative: their colors are for classes with no order.
+pub const BUILT_IN: [(&str, &[Rgb]); 8] = [
+    (
+        "Viridis",
+        &[
+            [68, 1, 84],
+            [59, 82, 139],
+            [33, 145, 140],
+            [94, 201, 98],
+            [253, 231, 37],
+        ],
+    ),
+    (
+        "Greens",
+        &[
+            [237, 248, 233],
+            [186, 228, 179],
+            [116, 196, 118],
+            [49, 163, 84],
+            [0, 109, 44],
+        ],
+    ),
+    (
+        "Blues",
+        &[
+            [239, 243, 255],
+            [189, 215, 231],
+            [107, 174, 214],
+            [49, 130, 189],
+            [8, 81, 156],
+        ],
+    ),
+    (
+        "Reds",
+        &[
+            [254, 229, 217],
+            [252, 174, 145],
+            [251, 106, 74],
+            [222, 45, 38],
+            [165, 15, 21],
+        ],
+    ),
+    (
+        "Spectral",
+        &[
+            [215, 25, 28],
+            [253, 174, 97],
+            [255, 255, 191],
+            [171, 221, 164],
+            [43, 131, 186],
+        ],
+    ),
+    (
+        "Earth",
+        &[
+            [245, 240, 220],
+            [217, 201, 154],
+            [168, 180, 108],
+            [107, 142, 78],
+            [62, 92, 58],
+        ],
+    ),
+    (
+        "Bold",
+        &[
+            [27, 158, 119],
+            [217, 95, 2],
+            [117, 112, 179],
+            [231, 41, 138],
+            [102, 166, 30],
+            [230, 171, 2],
+            [166, 118, 29],
+            [102, 102, 102],
+        ],
+    ),
+    (
+        "Pastel",
+        &[
+            [251, 180, 174],
+            [179, 205, 227],
+            [204, 235, 197],
+            [222, 203, 228],
+            [254, 217, 166],
+            [255, 255, 204],
+            [229, 216, 189],
+            [253, 218, 236],
+        ],
+    ),
+];
+
+/// The index in `BUILT_IN` of the first qualitative ramp.
+pub const QUALITATIVE: usize = 6;
+
+/// `n` colors of a ramp from its first color to its last color, with
+/// linear steps between its colors. One color is the middle of the ramp.
+pub fn sample(colors: &[Rgb], n: usize) -> Vec<Rgb> {
+    let Some(last) = colors.len().checked_sub(1) else {
+        return Vec::new();
+    };
+    (0..n)
+        .map(|k| {
+            let t = if n < 2 {
+                0.5
+            } else {
+                k as f64 / (n - 1) as f64
+            } * last as f64;
+            let i = (t.floor() as usize).min(last.saturating_sub(1));
+            let (a, b) = (colors[i], colors[(i + 1).min(last)]);
+            let f = t - i as f64;
+            std::array::from_fn(|c| (a[c] as f64 + (b[c] as f64 - a[c] as f64) * f).round() as u8)
+        })
+        .collect()
+}
+
+/// `n` colors of a qualitative ramp: its colors in order, again from the
+/// first color after the last.
+pub fn cycle(colors: &[Rgb], n: usize) -> Vec<Rgb> {
+    colors.iter().copied().cycle().take(n).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -151,6 +272,22 @@ mod tests {
         third.open(Some(dir.path()));
         assert_eq!(third.list().len(), 1);
         assert_eq!(third.list()[0].colors, [[9; 3]]);
+    }
+
+    #[test]
+    fn a_sample_has_both_ends_and_the_steps_between() {
+        let colors = [[0, 0, 0], [100, 200, 50]];
+        assert_eq!(
+            sample(&colors, 3),
+            vec![[0, 0, 0], [50, 100, 25], [100, 200, 50]]
+        );
+        assert_eq!(sample(&colors, 1), vec![[50, 100, 25]]);
+        let five = BUILT_IN[0].1;
+        assert_eq!(sample(five, 5), five.to_vec());
+        assert_eq!(
+            cycle(&colors, 3),
+            vec![[0, 0, 0], [100, 200, 50], [0, 0, 0]]
+        );
     }
 
     #[test]
