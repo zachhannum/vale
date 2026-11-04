@@ -786,13 +786,16 @@ impl Resources {
         map: &ChannelMap,
     ) {
         let size = map.size() as u32;
-        if self.channels.get(&layer).is_none_or(|c| c.size != size) {
+        // The layers after the faces hold the lakes.
+        let layers = (FACES + map.lake_layers()) as u32;
+        let fits = |c: &Channels| c.size == size && c.texture.depth_or_array_layers() == layers;
+        if self.channels.get(&layer).is_none_or(|c| !fits(c)) {
             let texture = device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("layer channel map"),
                 size: wgpu::Extent3d {
                     width: size,
                     height: size,
-                    depth_or_array_layers: FACES as u32,
+                    depth_or_array_layers: layers,
                 },
                 mip_level_count: 1,
                 sample_count: 1,
@@ -815,21 +818,40 @@ impl Resources {
             self.channels.insert(layer, channels);
         }
         let channels = &self.channels[&layer];
+        let copy = wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(size * 4),
+            rows_per_image: Some(size),
+        };
+        let extent = |layers: usize| wgpu::Extent3d {
+            width: size,
+            height: size,
+            depth_or_array_layers: layers as u32,
+        };
         queue.write_texture(
             channels.texture.as_image_copy(),
             map.bytes(),
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(size * 4),
-                rows_per_image: Some(size),
-            },
-            channels.texture.size(),
+            copy,
+            extent(FACES),
         );
+        let lakes = wgpu::TexelCopyTextureInfo {
+            origin: wgpu::Origin3d {
+                x: 0,
+                y: 0,
+                z: FACES as u32,
+            },
+            ..channels.texture.as_image_copy()
+        };
+        queue.write_texture(lakes, &map.lake_bytes(), copy, extent(map.lake_layers()));
     }
 
-    /// The memory of the channel maps of the layers, in bytes.
+    /// The memory of the channel maps of the layers with their lakes, in
+    /// bytes.
     fn river_bytes(&self) -> u64 {
-        let bytes = |c: &Channels| u64::from(c.size) * u64::from(c.size) * 4 * FACES as u64;
+        let bytes = |c: &Channels| {
+            let layers = u64::from(c.texture.depth_or_array_layers());
+            u64::from(c.size) * u64::from(c.size) * 4 * layers
+        };
         self.channels.values().map(bytes).sum()
     }
 

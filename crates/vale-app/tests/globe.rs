@@ -5766,8 +5766,9 @@ fn each_visible_height_layer_shows_its_rivers() {
     let both = river_halves(&mut h);
     assert!(both[0] > 40 && both[1] > 40, "{both:?}");
     // The layer that the brush does not paint has its own channel map on
-    // the GPU. A channel map has 512 texels of 4 bytes along a face of 256.
-    let one = 6 * 512 * 512 * 4;
+    // the GPU. A channel map has 512 texels of 4 bytes along a face of 256,
+    // and one more layer of texels holds its lakes.
+    let one = 7 * 512 * 512 * 4;
     assert_eq!(h.state().globe.river_bytes(), 2 * one);
 
     // The rivers of a layer follow its opacity and its visibility.

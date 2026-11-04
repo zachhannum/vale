@@ -189,6 +189,18 @@ mod tests {
     }
 
     #[test]
+    fn the_lake_bytes_hold_the_lake_levels_in_order() {
+        let channels = FlowMap::new(&bowl(64, 5.0)).channels(WORLD_KM);
+        assert!(channels.has_lakes());
+        assert_eq!(channels.lake_layers(), 1);
+        let bytes = channels.lake_bytes();
+        assert_eq!(bytes.len(), 128 * 128 * 4);
+        for (i, &level) in channels.lakes().iter().enumerate() {
+            assert_eq!(u16::from_le_bytes([bytes[2 * i], bytes[2 * i + 1]]), level);
+        }
+    }
+
+    #[test]
     fn a_small_pit_has_no_lake() {
         // A cell at the middle of a face covers about 9.4e-6 steradians.
         let m = 512;

@@ -985,6 +985,23 @@ impl ChannelMap {
         &self.lakes
     }
 
+    /// The number of texture layers after the faces that hold the lakes.
+    /// The layers hold the lake levels of `lakes` in order, two levels in
+    /// each texel of 4 bytes, each level with its low byte first.
+    pub fn lake_layers(&self) -> usize {
+        let texels = self.lakes.len().div_ceil(2);
+        texels.div_ceil(self.size * self.size)
+    }
+
+    /// The bytes of the layers of `lake_layers`.
+    pub fn lake_bytes(&self) -> Vec<u8> {
+        let mut bytes = vec![0; self.lake_layers() * self.size * self.size * TEXEL];
+        for (i, level) in self.lakes.iter().enumerate() {
+            bytes[2 * i..2 * i + 2].copy_from_slice(&level.to_le_bytes());
+        }
+        bytes
+    }
+
     pub fn has_lakes(&self) -> bool {
         self.lakes.iter().any(|&level| level > 0)
     }
