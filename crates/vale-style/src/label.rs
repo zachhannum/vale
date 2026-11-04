@@ -228,6 +228,143 @@ pub const ZONES_OUTSIDE: [u8; 8] = [0; 8];
 /// The default distance between the repeats of a polygon label, in points.
 pub const POLYGON_REPEAT_DISTANCE: f64 = 400.0;
 
+/// The mark at the anchor end of a leader line.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub enum LeaderEnd {
+    #[default]
+    None,
+    Dot,
+    Arrow,
+}
+
+impl LeaderEnd {
+    pub const ALL: [LeaderEnd; 3] = [LeaderEnd::None, LeaderEnd::Dot, LeaderEnd::Arrow];
+
+    /// The UI text.
+    pub fn name(self) -> &'static str {
+        match self {
+            LeaderEnd::None => "None",
+            LeaderEnd::Dot => "Dot",
+            LeaderEnd::Arrow => "Arrow",
+        }
+    }
+
+    /// The JSON name.
+    fn key(self) -> &'static str {
+        match self {
+            LeaderEnd::None => "none",
+            LeaderEnd::Dot => "dot",
+            LeaderEnd::Arrow => "arrow",
+        }
+    }
+
+    fn from_key(key: &str) -> Option<LeaderEnd> {
+        LeaderEnd::ALL.into_iter().find(|e| e.key() == key)
+    }
+}
+
+/// How the leader line of a label outside its feature looks. Distances are in points.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct LeaderStyle {
+    /// False draws no line. The label keeps its place.
+    pub show: bool,
+    /// `None` uses the color of the text.
+    pub color: Option<Color>,
+    pub width: f64,
+    /// From 0 to 1, times the opacity of the text.
+    pub opacity: f64,
+    pub dashed: bool,
+    pub dash: f64,
+    pub dash_gap: f64,
+    /// A wider line in the halo color under the line.
+    pub halo: bool,
+    /// `None` uses the halo color of the text.
+    pub halo_color: Option<Color>,
+    /// The width of the halo on each side of the line.
+    pub halo_width: f64,
+    pub end: LeaderEnd,
+    /// The diameter of a dot, or the length of an arrow.
+    pub end_size: f64,
+    /// The space between the line and the label.
+    pub label_gap: f64,
+    /// The space between the line and its anchor.
+    pub anchor_gap: f64,
+}
+
+impl Default for LeaderStyle {
+    fn default() -> Self {
+        LeaderStyle {
+            show: true,
+            color: None,
+            width: 0.75,
+            opacity: 1.0,
+            dashed: false,
+            dash: 3.0,
+            dash_gap: 2.0,
+            halo: false,
+            halo_color: None,
+            halo_width: 1.0,
+            end: LeaderEnd::None,
+            end_size: 3.0,
+            label_gap: 1.0,
+            anchor_gap: 0.0,
+        }
+    }
+}
+
+impl LeaderStyle {
+    fn to_json(self) -> Json {
+        json!({
+            "show": self.show,
+            "color": self.color.map(|c| c.to_hex()),
+            "width": self.width,
+            "opacity": self.opacity,
+            "dashed": self.dashed,
+            "dash": self.dash,
+            "dash_gap": self.dash_gap,
+            "halo": self.halo,
+            "halo_color": self.halo_color.map(|c| c.to_hex()),
+            "halo_width": self.halo_width,
+            "end": self.end.key(),
+            "end_size": self.end_size,
+            "label_gap": self.label_gap,
+            "anchor_gap": self.anchor_gap,
+        })
+    }
+
+    /// Missing keys take the default.
+    fn from_json(j: Option<&Json>) -> LeaderStyle {
+        let d = LeaderStyle::default();
+        let Some(m) = j.and_then(Json::as_object) else {
+            return d;
+        };
+        let number =
+            |key: &str, fallback: f64| m.get(key).and_then(Json::as_f64).unwrap_or(fallback);
+        let flag =
+            |key: &str, fallback: bool| m.get(key).and_then(Json::as_bool).unwrap_or(fallback);
+        let color = |key: &str| m.get(key).and_then(Json::as_str).and_then(Color::from_hex);
+        LeaderStyle {
+            show: flag("show", d.show),
+            color: color("color"),
+            width: number("width", d.width),
+            opacity: number("opacity", d.opacity),
+            dashed: flag("dashed", d.dashed),
+            dash: number("dash", d.dash),
+            dash_gap: number("dash_gap", d.dash_gap),
+            halo: flag("halo", d.halo),
+            halo_color: color("halo_color"),
+            halo_width: number("halo_width", d.halo_width),
+            end: text(m, "end")
+                .as_deref()
+                .and_then(LeaderEnd::from_key)
+                .unwrap_or_default(),
+            end_size: number("end_size", d.end_size),
+            label_gap: number("label_gap", d.label_gap),
+            anchor_gap: number("anchor_gap", d.anchor_gap),
+        }
+    }
+}
+
 /// One position in the rank of a point class. A blocked position is off.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct PositionRank {
@@ -366,6 +503,8 @@ pub struct LabelClass {
     pub zones_outside: [u8; 8],
     /// Polygons. The start of the leader line of a label outside the shape.
     pub anchor: LeaderAnchor,
+    /// Polygons. The look of the leader line of a label outside the shape.
+    pub leader: LeaderStyle,
     /// Polygons. True lets a label cover the holes of the shape.
     pub over_holes: bool,
     /// Polygons. True keeps a label off the other labeled polygons.
@@ -454,6 +593,7 @@ impl LabelClass {
             zones_inside: ZONES_INSIDE,
             zones_outside: ZONES_OUTSIDE,
             anchor: LeaderAnchor::default(),
+            leader: LeaderStyle::default(),
             over_holes: false,
             avoid_polygons: false,
             largest_part: true,
@@ -545,6 +685,7 @@ pub fn classes_to_json(classes: &[LabelClass]) -> String {
                 "zones_inside": c.zones_inside,
                 "zones_outside": c.zones_outside,
                 "anchor": c.anchor.key(),
+                "leader": c.leader.to_json(),
                 "over_holes": c.over_holes,
                 "avoid_polygons": c.avoid_polygons,
                 "largest_part": c.largest_part,
@@ -681,6 +822,7 @@ fn read_class(j: &Json) -> Result<LabelClass, StyleError> {
             .as_deref()
             .and_then(LeaderAnchor::from_key)
             .unwrap_or_default(),
+        leader: LeaderStyle::from_json(m.get("leader")),
         over_holes: flag("over_holes", false),
         avoid_polygons: flag("avoid_polygons", false),
         largest_part: flag("largest_part", true),
@@ -772,6 +914,22 @@ mod tests {
         h.polygon_repeat_distance = 250.0;
         h.overrun = 3.0;
         h.min_area = 120.0;
+        h.leader = LeaderStyle {
+            show: false,
+            color: Some(Color::rgb(200, 10, 20)),
+            width: 1.5,
+            opacity: 0.5,
+            dashed: true,
+            dash: 5.0,
+            dash_gap: 3.0,
+            halo: true,
+            halo_color: Some(Color::rgb(250, 250, 240)),
+            halo_width: 2.0,
+            end: LeaderEnd::Arrow,
+            end_size: 4.0,
+            label_gap: 2.5,
+            anchor_gap: 1.5,
+        };
         let classes = vec![a, b, c, d, e, f, g, h];
         let text = classes_to_json(&classes);
         assert_eq!(classes_from_json(&text).unwrap(), classes);
@@ -809,6 +967,12 @@ mod tests {
         assert!(read[0].largest_part);
         assert_eq!(read[0].polygon_repeat_distance, 400.0);
         assert_eq!((read[0].overrun, read[0].min_area), (0.0, 0.0));
+        assert_eq!(read[0].leader, LeaderStyle::default());
+        let leader = r##"{"version":1,"classes":[{"color":"#102030","placement":"best_fit","leader":{"width":2,"end":"dot"}}]}"##;
+        let leader = classes_from_json(leader).unwrap()[0].leader;
+        assert_eq!((leader.width, leader.end), (2.0, LeaderEnd::Dot));
+        assert!(leader.show);
+        assert_eq!(leader.color, None);
         let point = r##"{"version":1,"classes":[{"color":"#102030","placement":"around"}]}"##;
         assert_eq!(classes_from_json(point).unwrap()[0].offset, 2.0);
         let polygon = r##"{"version":1,"classes":[{"color":"#102030","placement":"best_fit"}]}"##;
