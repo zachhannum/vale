@@ -7436,6 +7436,141 @@ fn open_rule(h: &mut Pad, layer: &str, rule: &str) {
     assert!(matches!(h.state().pad.page, Some(Page::Rule(_))));
 }
 
+/// Opens the Classify form of a vector layer.
+fn open_classify(h: &mut Pad, layer: &str) {
+    use vale_app::ui::pad::classify::CLASSIFY;
+    tap(h, "Layers");
+    tap(h, &format!("Open {layer}"));
+    scroll_to_control(h, CLASSIFY);
+    tap(h, CLASSIFY);
+    assert_eq!(h.state().pad.page, Some(Page::Classify));
+}
+
+#[test]
+fn classify_makes_quantile_rules_in_one_undo_step() {
+    use vale_app::ui::pad::classify::{EXPRESSION, MAKE_RULES};
+    use vale_app::ui::pad::filter::conditions;
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = saved_pad(BOARDS[0], dir.path());
+    let places = vector(&h, "Places");
+    let before = rules(&h, places);
+    open_classify(&mut h, "Places");
+    scroll_to_control(&mut h, EXPRESSION);
+    type_text(&mut h, EXPRESSION, "pop_max");
+    scroll_to_control(&mut h, "Quantiles");
+    tap(&mut h, "Quantiles");
+    scroll_to_control(&mut h, MAKE_RULES);
+    tap(&mut h, MAKE_RULES);
+    save_frames(&mut h);
+    assert_eq!(h.state().pad.page, None);
+    let made = rules(&h, places);
+    assert!(
+        (2..=5).contains(&made.len()),
+        "{:?}",
+        rule_names(&h, places)
+    );
+    let texts: Vec<String> = made
+        .iter()
+        .map(|r| r.filter.source().unwrap().text().to_owned())
+        .collect();
+    assert!(texts[0].starts_with("pop_max < "), "{texts:?}");
+    assert!(
+        texts.last().unwrap().starts_with("pop_max >= "),
+        "{texts:?}"
+    );
+    for r in &made {
+        assert!(r.filter.error().is_none(), "{}", r.name);
+    }
+    let colors: Vec<_> = made.iter().map(|r| r.fill().unwrap()).collect();
+    assert_ne!(colors[0], colors[colors.len() - 1]);
+
+    // The rule page of a middle class shows its two conditions.
+    let middle = made[1].name.clone();
+    assert_eq!(conditions(&texts[1]).len(), 2, "{texts:?}");
+    scroll_to_control(&mut h, &middle);
+    tap(&mut h, &middle);
+    assert_eq!(h.state().pad.page, Some(Page::Rule(1)));
+    for n in 1..=2 {
+        let remove = format!("Remove condition {n}");
+        assert!(control(&h, &remove).is_some(), "{remove}");
+    }
+
+    tap(&mut h, "Undo");
+    assert_eq!(rules(&h, places), before);
+}
+
+#[test]
+fn classify_by_text_gives_a_rule_for_each_value_and_other_values() {
+    use vale_app::classify::{MAX_CATEGORIES, OTHER_VALUES};
+    use vale_app::ui::pad::classify::MAKE_RULES;
+    let mut h = pad(BOARDS[0]);
+    let rivers = vector(&h, "Rivers");
+    let layer = h.state().doc.layer(rivers).unwrap();
+    let mut kinds: Vec<String> = layer
+        .features
+        .iter()
+        .filter_map(|f| f.attributes.get("featurecla")?.label())
+        .collect();
+    kinds.sort();
+    kinds.dedup();
+    open_classify(&mut h, "Rivers");
+    scroll_to_control(&mut h, "featurecla");
+    tap(&mut h, "featurecla");
+    scroll_to_control(&mut h, MAKE_RULES);
+    tap(&mut h, MAKE_RULES);
+    let names = rule_names(&h, rivers);
+    assert_eq!(
+        names.len(),
+        kinds.len().min(MAX_CATEGORIES) + 1,
+        "{names:?}"
+    );
+    assert_eq!(names.last().unwrap(), OTHER_VALUES);
+    for kind in kinds.iter().take(MAX_CATEGORIES) {
+        assert!(names.contains(kind), "{kind}");
+    }
+    let made = rules(&h, rivers);
+    let first = made[0].filter.source().unwrap().text().to_owned();
+    assert_eq!(first, format!("featurecla = '{}'", made[0].name));
+}
+
+#[test]
+fn classify_reads_an_expression() {
+    use vale_app::ui::pad::classify::{EXPRESSION, MAKE_RULES};
+    let mut h = pad(BOARDS[0]);
+    let rivers = vector(&h, "Rivers");
+    open_classify(&mut h, "Rivers");
+    scroll_to_control(&mut h, EXPRESSION);
+    type_text(&mut h, EXPRESSION, "scalerank * 2");
+    scroll_to_control(&mut h, "Natural breaks");
+    tap(&mut h, "Natural breaks");
+    scroll_to_control(&mut h, MAKE_RULES);
+    tap(&mut h, MAKE_RULES);
+    let made = rules(&h, rivers);
+    assert!(made.len() >= 2);
+    let first = made[0].filter.source().unwrap().text().to_owned();
+    assert!(first.starts_with("(scalerank * 2) < "), "{first}");
+}
+
+#[test]
+fn the_classify_form_fits_a_finger() {
+    use vale_app::ui::pad::classify::{MAKE_RULES, STEP_WIDTH};
+    for size in BOARDS {
+        let what = format!("{size:?}");
+        let mut h = pad(size);
+        open_classify(&mut h, "Rivers");
+        check_controls(&h, &what);
+        scroll_to_control(&mut h, "scalerank");
+        tap(&mut h, "scalerank");
+        screenshot::save(&mut h, &format!("pad-classify-top-{}", size.0));
+        scroll_to_control(&mut h, STEP_WIDTH);
+        tap(&mut h, STEP_WIDTH);
+        check_controls(&h, &what);
+        screenshot::save(&mut h, &format!("pad-classify-{}", size.0));
+        scroll_to_control(&mut h, MAKE_RULES);
+        check_controls(&h, &what);
+    }
+}
+
 #[test]
 fn the_style_section_adds_moves_and_deletes_rules() {
     use vale_app::ui::pad::rules::{ADD_RULE, DELETE_RULE, MOVE_UP};

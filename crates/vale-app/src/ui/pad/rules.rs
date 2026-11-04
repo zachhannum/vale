@@ -11,6 +11,7 @@ use vale_style::{
     StrokeKind, Symbolizer,
 };
 
+use super::classify::CLASSIFY;
 use super::furniture::{ANGLE, LINE_COLOR, LINE_WIDTH, fill_kind_rows};
 use super::number::Number;
 use super::raster::heading;
@@ -86,7 +87,7 @@ pub const MOVE_UP: &str = "Move rule up";
 pub const MOVE_DOWN: &str = "Move rule down";
 pub const DELETE_RULE: &str = "Delete rule";
 /// The range of the width slider, in points. The slider has a log scale.
-const WIDTHS: (f64, f64) = (0.1, 20.0);
+pub const WIDTHS: (f64, f64) = (0.1, 20.0);
 /// The range of the dash and gap sliders, in points. The sliders have a log scale.
 pub const DASHES: (f64, f64) = (0.1, 20.0);
 /// The range of the size of a shape, in points.
@@ -135,6 +136,8 @@ pub struct RulesState {
     field: Option<(LayerId, usize, &'static str)>,
     /// The condition of the page of a new condition.
     pub(super) draft: filter::Draft,
+    /// The Classify form.
+    pub(super) classify: super::classify::Draft,
 }
 
 /// The Style section: a row for each rule, first rule first, and the row
@@ -166,6 +169,9 @@ pub fn section(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
         let i = entry.style.add_rule(kind);
         state.pad.page = Some(Page::Rule(i));
         state.touch();
+    }
+    if widgets::button_row(ui, controls, CLASSIFY, !state.pad.rules_fixed).clicked() {
+        state.pad.page = Some(Page::Classify);
     }
 }
 

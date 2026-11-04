@@ -12,6 +12,7 @@ use super::icons::Icon;
 use super::raster::heading;
 use super::widgets::{self, Controls, Keys, PANEL_ROW};
 use super::{Page, theme};
+use crate::classify::number_text;
 use crate::ui::AppState;
 
 /// The row of the rule page that opens the page of a new condition, the
@@ -90,15 +91,6 @@ pub fn condition(field: &str, kind: FieldType, operator: usize, value: &str) -> 
         FieldType::Text => format!("'{}'", value.replace('\'', "''")),
     };
     Some(format!("{} {op} {value}", field_ref(field)))
-}
-
-/// A number as the filter syntax writes it.
-fn number_text(value: f64) -> String {
-    if value.fract() == 0.0 && value.abs() < 1e15 {
-        format!("{value:.0}")
-    } else {
-        format!("{value}")
-    }
 }
 
 /// The parts of a filter that `and` joins at the top level. A filter with

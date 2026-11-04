@@ -124,6 +124,8 @@ fn vector_style(ui: &mut egui::Ui, state: &mut AppState, id: LayerId) {
     let fields = layer.fields.clone();
     ui.label(pad::rules::STYLE);
     let symbols = state.doc.symbols().clone();
+    state.open_ramps();
+    let ramps = pad::classify::ramp_list(state);
     let Some(entry) = state.doc.entry_mut(id) else {
         return;
     };
@@ -134,13 +136,17 @@ fn vector_style(ui: &mut egui::Ui, state: &mut AppState, id: LayerId) {
         actions: &mut state.actions,
     };
     let scroll = egui::ScrollArea::vertical();
-    if scroll
+    let (changed, request) = scroll
         .show(ui, |ui| {
-            style_editor::rules(ui, id, style, kind, &fields, &mut library)
+            let changed = style_editor::rules(ui, id, style, kind, &fields, &mut library);
+            (changed, style_editor::classify(ui, id, &fields, &ramps))
         })
-        .inner
-    {
+        .inner;
+    if changed {
         state.touch();
+    }
+    if let Some(request) = request {
+        pad::classify::apply(state, id, &request);
     }
 }
 

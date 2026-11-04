@@ -551,7 +551,7 @@ pub fn ramp_fit(bands: &Bands, part: Part) -> (usize, &'static str) {
 }
 
 /// The row of a color ramp: its name, and a bar of its colors at the right.
-fn ramp_row(
+pub(super) fn ramp_row(
     ui: &mut egui::Ui,
     controls: &mut Controls,
     name: &str,

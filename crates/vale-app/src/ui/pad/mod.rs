@@ -29,6 +29,7 @@ use crate::world;
 
 pub mod atlas;
 pub mod browser;
+pub mod classify;
 pub mod edge_labels;
 pub mod eyedropper;
 pub mod fields;
@@ -380,6 +381,8 @@ pub enum Page {
     MarkerFill(usize),
     /// The attribute table of the layer.
     Table,
+    /// The form that replaces the rules with a rule for each class.
+    Classify,
 }
 
 /// The state of the iPad layout.
@@ -1545,7 +1548,7 @@ pub(super) fn show_panel(
             Some(Page::Ramps | Page::Stops | Page::Hillshade | Page::Blend),
         ) => true,
         (Some(LayerRef::Image(_)), Some(Page::Blend)) => true,
-        (Some(LayerRef::Vector(_)), Some(Page::NewField | Page::Table)) => true,
+        (Some(LayerRef::Vector(_)), Some(Page::NewField | Page::Table | Page::Classify)) => true,
         (Some(LayerRef::Vector(_)), Some(Page::Field(i))) => i < field_count,
         (
             Some(LayerRef::Vector(_)),
@@ -1601,6 +1604,9 @@ pub(super) fn show_panel(
         (Panel::Layers, Some(LayerRef::Image(_))) => ("pad-image", name, Some("Layers")),
         (Panel::Layers, Some(LayerRef::Vector(_))) if page == Some(Page::Table) => {
             ("pad-table", table::TITLE, Some(name))
+        }
+        (Panel::Layers, Some(LayerRef::Vector(_))) if page == Some(Page::Classify) => {
+            ("pad-classify", classify::TITLE, Some(name))
         }
         (Panel::Layers, Some(LayerRef::Vector(_))) if page == Some(Page::NewField) => {
             ("pad-new-field", fields::NEW_FIELD, Some(name))
@@ -1729,6 +1735,7 @@ pub(super) fn show_panel(
                 Some(Page::Symbols(i)) => rules::symbols_body(ui, state, controls, id, i),
                 Some(Page::MarkerShape(i)) => rules::shape_body(ui, state, controls, id, i),
                 Some(Page::MarkerFill(i)) => rules::marker_fill_body(ui, state, controls, id, i),
+                Some(Page::Classify) => classify::body(ui, state, controls, id),
                 Some(Page::Table) => {}
                 _ => vector_body(ui, state, controls, id),
             },
