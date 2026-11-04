@@ -353,3 +353,70 @@ fn a_parallel_far_longer_than_the_page_gives_the_same_label_quickly() {
         "{far:?} {near:?}"
     );
 }
+
+#[test]
+fn a_polygon_label_along_the_parallels_moves_with_the_page() {
+    // A polygon larger than the page, and parallels at a large scale: arcs of a circle with a
+    // radius of millions of units. Each latitude has the same room, so the label must not
+    // depend on rounding errors that change when the page moves.
+    let apex = Point::new(400.0, -3.0e7);
+    let parallels: Vec<Vec<Point>> = (0..=60)
+        .map(|k| {
+            let r = 3.0e7 + 10.0 * k as f64;
+            (0..=640)
+                .map(|i| {
+                    let a = (90.0 + 50.0 - 100.0 * i as f64 / 640.0).to_radians();
+                    Point::new(apex.x + r * a.cos(), apex.y + r * a.sin())
+                })
+                .collect()
+        })
+        .collect();
+    let ring = vec![
+        Point::new(-9.0e5, -1.0e6),
+        Point::new(1.4e5, -1.0e6),
+        Point::new(1.4e5, 3.7e5),
+        Point::new(-9.0e5, 3.7e5),
+    ];
+    let place = |d: Vec2| {
+        let moved = |ps: &[Point]| ps.iter().map(|p| *p + d).collect::<Vec<_>>();
+        let input = LabelInput {
+            bounds: PAGE + d,
+            classes: vec![class(Placement::Polygon(parallel_mode()))],
+            features: vec![Feature {
+                id: 1,
+                class: 0,
+                text: "Freadlass".into(),
+                priority: 0.0,
+                geometry: Geometry::Polygon {
+                    rings: vec![moved(&ring)],
+                },
+            }],
+            obstacles: vec![],
+            parallels: parallels.iter().map(|l| moved(l)).collect(),
+            options: Options::default(),
+        };
+        let out = place_labels(&mut fonts(), &input);
+        assert_eq!(out.placed.len(), 1, "{:?}", out.unplaced);
+        out.placed[0].bounds - d
+    };
+    let first = place(Vec2::ZERO);
+    for d in [
+        Vec2::new(512.0, 256.0),
+        Vec2::new(59.69279520712753, 14.213210074435791),
+        Vec2::new(-452.3072047928725, -241.78678992556422),
+        Vec2::new(100.3, 37.7),
+        Vec2::new(-1000.0, 500.0),
+        Vec2::new(3.25, -2.71),
+    ] {
+        let b = place(d);
+        assert!(
+            (b.center() - first.center()).hypot() < 0.01,
+            "{d:?}: {b:?} {first:?}"
+        );
+    }
+    // The label is on the parallel through the middle of the page.
+    assert!(
+        (first.center().y - PAGE.center().y).abs() < 10.0,
+        "{first:?}"
+    );
+}
