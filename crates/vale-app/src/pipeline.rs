@@ -8,13 +8,14 @@ use std::sync::OnceLock;
 use anyhow::anyhow;
 use kurbo::{Affine, BezPath, Circle, Point, Rect, Shape};
 use vale_labeler::Fonts;
+use vale_render::hatch::{hatch_segments, offset_ring};
 use vale_render::{DisplayList, FillRule, Item, Symbol, Symbols, stroke, symbol_items};
 use vale_sphere::{
     ClipRect, LonLat, Projection, ProjectionSpec, auto_interval, graticule, graticule_in, wrap180,
 };
 use vale_store::{FrameRecord, Geometry, GeometryKind, Layer, LayerId, MapId, PageRecord, Value};
 use vale_style::expr::Context;
-use vale_style::{Extent, Paint, Stroke, StrokeKind, scale_denominator};
+use vale_style::{Extent, Hatch, MarkerShape, Paint, Stroke, StrokeKind, scale_denominator};
 
 use crate::atlas::{self, FrameTarget, PT_PER_MM};
 use crate::document::{Document, LayerEntry};
@@ -347,11 +348,23 @@ fn paint_key(paint: &Paint) -> [u64; 8] {
         }
         Paint::Marker {
             radius,
+            shape,
             fill,
+            hatch,
             stroke: st,
         } => {
             let [c, w] = stroke(st);
-            [2, radius.to_bits(), color(fill), c, w, 0, 0, 0]
+            let hatch = hatch.map_or(0, |h| {
+                let mut s = DefaultHasher::new();
+                (h.cross, h.angle.to_bits(), h.spacing.to_bits()).hash(&mut s);
+                h.line_width.to_bits().hash(&mut s);
+                s.finish() | 1
+            });
+            let shape = MarkerShape::ALL
+                .iter()
+                .position(|s| *s == shape)
+                .unwrap_or(0) as u64;
+            [2, radius.to_bits(), color(fill), c, w, shape, hatch, 0]
         }
         Paint::Symbol {
             ref symbol,
@@ -603,30 +616,67 @@ fn draw_batch(list: &mut DisplayList, pl: &PageLayer<'_>, batch: &Batch, sd: &mu
             GeometryKind::Point,
             Paint::Marker {
                 radius,
+                shape,
                 fill,
+                hatch,
                 stroke,
             },
         ) if radius > 0.0 => {
-            let circles = |r: f64| {
+            let points = || features().flat_map(|f| &f.points);
+            let outline = |p: Point, r: f64| {
                 let mut path = BezPath::new();
-                for p in features().flat_map(|f| &f.points) {
-                    path.extend(Circle::new(*p, r).to_path(0.1));
+                if shape == MarkerShape::Circle {
+                    path.extend(Circle::new(p, r).to_path(0.1));
+                } else {
+                    let ring = marker_outline(shape, p, radius);
+                    let ring = if r > radius {
+                        offset_ring(&ring, r - radius)
+                    } else {
+                        ring
+                    };
+                    path.extend(closed_path(&ring));
                 }
                 path
             };
-            if let Some(color) = fill {
-                list.push(Item::Fill {
-                    path: circles(radius),
+            let shapes = |r: f64| {
+                let mut path = BezPath::new();
+                for p in points() {
+                    path.extend(outline(*p, r));
+                }
+                path
+            };
+            match (fill, hatch) {
+                (Some(color), None) => list.push(Item::Fill {
+                    path: shapes(radius),
                     color,
                     rule: FillRule::NonZero,
-                });
+                }),
+                (Some(color), Some(hatch)) => {
+                    let mut path = BezPath::new();
+                    for p in points() {
+                        let ring = marker_outline(shape, *p, radius);
+                        for (a, b) in marker_hatch(&ring, &hatch, *p) {
+                            path.move_to(a);
+                            path.line_to(b);
+                        }
+                    }
+                    if !path.elements().is_empty() {
+                        list.push(Item::Stroke {
+                            path,
+                            color,
+                            width: hatch.line_width,
+                            round: false,
+                        });
+                    }
+                }
+                (None, _) => {}
             }
             if let Some(stroke) = stroke {
                 list.push(Item::Stroke {
-                    path: circles(radius + stroke.width / 2.0),
+                    path: shapes(radius + stroke.width / 2.0),
                     color: stroke.color,
                     width: stroke.width,
-                    round: true,
+                    round: shape == MarkerShape::Circle,
                 });
             }
         }
@@ -683,6 +733,46 @@ fn draw_batch(list: &mut DisplayList, pl: &PageLayer<'_>, batch: &Batch, sd: &mu
         }
         _ => {}
     }
+}
+
+/// The outline of a marker of `shape` and `radius` at `center`, in page points.
+pub fn marker_outline(shape: MarkerShape, center: Point, radius: f64) -> Vec<Point> {
+    shape
+        .unit_outline()
+        .into_iter()
+        .map(|(x, y)| Point::new(center.x + x * radius, center.y + y * radius))
+        .collect()
+}
+
+/// The hatch lines inside the outline of a marker at `center`. One line goes through the center.
+pub fn marker_hatch(outline: &[Point], hatch: &Hatch, center: Point) -> Vec<(Point, Point)> {
+    let rings = [outline.to_vec()];
+    let mut out = hatch_segments(&rings, hatch.angle, hatch.spacing, center);
+    if hatch.cross {
+        out.extend(hatch_segments(
+            &rings,
+            hatch.angle + 90.0,
+            hatch.spacing,
+            center,
+        ));
+    }
+    out
+}
+
+/// A closed path through `ring`.
+fn closed_path(ring: &[Point]) -> BezPath {
+    let mut path = BezPath::new();
+    for (i, p) in ring.iter().enumerate() {
+        if i == 0 {
+            path.move_to(*p);
+        } else {
+            path.line_to(*p);
+        }
+    }
+    if !ring.is_empty() {
+        path.close_path();
+    }
+    path
 }
 
 fn push_stroke(list: &mut DisplayList, path: BezPath, stroke: &Stroke, round: bool) {

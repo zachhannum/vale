@@ -22,8 +22,8 @@ use vale_store::{
 };
 use vale_style::expr::{Filter, Property};
 use vale_style::{
-    Color, PointSymbolizer, Rule, ScatterSymbolizer, Stroke, StrokeKind, StrokeSymbolizer, Style,
-    Symbolizer,
+    Color, Hatch, MarkerShape, PointSymbolizer, Rule, ScatterSymbolizer, Stroke, StrokeKind,
+    StrokeSymbolizer, Style, Symbolizer,
 };
 
 const SIZE: (f64, f64) = (1280.0, 800.0);
@@ -2644,4 +2644,126 @@ fn an_item_of_furniture_renders_to_an_image() {
     );
     assert!(furniture_items(&doc, &mut pipeline, arrow, Purpose::Export).is_empty());
     assert!(!furniture_items(&doc, &mut pipeline, arrow, Purpose::Screen).is_empty());
+}
+
+/// A point layer at (0, 0) with one marker of `shape`, a fill, and `hatch`.
+fn marker_doc(shape: MarkerShape, hatch: Option<Hatch>) -> Document {
+    let (mut doc, id) = one_layer(
+        "towns",
+        &[
+            r#"{"type":"Feature","properties":{},"geometry":{"type":"Point","coordinates":[0,0]}}"#
+                .to_string(),
+        ],
+    );
+    doc.entry_mut(id).unwrap().style.style = style_of(Symbolizer::Marker {
+        radius: Property::constant(20.0),
+        shape,
+        fill: Some(Property::constant(Color::rgb(200, 20, 20))),
+        hatch,
+        stroke: Some(StrokeSymbolizer::constant(Stroke::solid(
+            Color::rgb(20, 20, 200),
+            1.0,
+        ))),
+    });
+    doc
+}
+
+/// Whether `p` is inside the polygon `ring` or within `tol` of its edges.
+fn inside_or_on(ring: &[Point], p: Point, tol: f64) -> bool {
+    let n = ring.len();
+    let mut inside = false;
+    for i in 0..n {
+        let (a, b) = (ring[i], ring[(i + 1) % n]);
+        let line = kurbo::Line::new(a, b);
+        if kurbo::ParamCurveNearest::nearest(&line, p, 1e-9)
+            .distance_sq
+            .sqrt()
+            <= tol
+        {
+            return true;
+        }
+        if (a.y > p.y) != (b.y > p.y) && p.x < a.x + (p.y - a.y) / (b.y - a.y) * (b.x - a.x) {
+            inside = !inside;
+        }
+    }
+    inside
+}
+
+#[test]
+fn a_cross_hatched_star_draws_lines_inside_its_outline_and_no_solid_fill() {
+    let hatch = Hatch {
+        cross: true,
+        angle: 30.0,
+        spacing: 3.0,
+        line_width: 0.5,
+    };
+    let doc = marker_doc(MarkerShape::Star, Some(hatch));
+    let mut p = Pipeline::new();
+    let c = compose(&doc, &mut p);
+    let red = vale_render::Color::rgb(200, 20, 20);
+    assert!(
+        !c.list
+            .items
+            .iter()
+            .any(|i| matches!(i, Item::Fill { color, .. } if *color == red)),
+        "a hatched marker has no solid fill"
+    );
+    let hatch_path = c
+        .list
+        .items
+        .iter()
+        .find_map(|i| match i {
+            Item::Stroke {
+                path, color, width, ..
+            } if *color == red => Some((path.clone(), *width)),
+            _ => None,
+        })
+        .expect("hatch lines");
+    assert_eq!(hatch_path.1, 0.5);
+    let center = p.lonlat_to_page(&doc, SIZE, [0.0, 0.0]).unwrap().unwrap();
+    let star = vale_app::pipeline::marker_outline(MarkerShape::Star, center, 20.0);
+    let segments = subpaths(&hatch_path.0);
+    assert!(segments.len() > 6, "{}", segments.len());
+    let mut angles = Vec::new();
+    for s in &segments {
+        assert_eq!(s.len(), 2);
+        for q in s {
+            assert!(inside_or_on(&star, *q, 1e-6), "{q:?} is outside the star");
+        }
+        let d = s[1] - s[0];
+        let a = (-d.y).atan2(d.x).to_degrees().rem_euclid(180.0);
+        if !angles.iter().any(|b: &f64| (a - b).abs() < 1e-6) {
+            angles.push(a);
+        }
+    }
+    angles.sort_by(f64::total_cmp);
+    assert_eq!(angles.len(), 2, "{angles:?}");
+    assert!((angles[0] - 30.0).abs() < 1e-6 && (angles[1] - 120.0).abs() < 1e-6);
+}
+
+#[test]
+fn a_solid_square_marker_fills_a_square() {
+    let doc = marker_doc(MarkerShape::Square, None);
+    let mut p = Pipeline::new();
+    let c = compose(&doc, &mut p);
+    let red = vale_render::Color::rgb(200, 20, 20);
+    let path = c
+        .list
+        .items
+        .iter()
+        .find_map(|i| match i {
+            Item::Fill { path, color, .. } if *color == red => Some(path.clone()),
+            _ => None,
+        })
+        .expect("a solid fill");
+    let center = p.lonlat_to_page(&doc, SIZE, [0.0, 0.0]).unwrap().unwrap();
+    let corners = path
+        .elements()
+        .iter()
+        .filter(|e| matches!(e, kurbo::PathEl::MoveTo(_) | kurbo::PathEl::LineTo(_)))
+        .count();
+    assert_eq!(corners, 4, "a polygon, not curves");
+    let b = path.bounding_box();
+    assert!((b.width() - 40.0).abs() < 1e-6 && (b.height() - 40.0).abs() < 1e-6);
+    assert!((b.center() - center).hypot() < 1e-6);
 }

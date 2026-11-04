@@ -26,10 +26,13 @@ use crate::measure::{DENSIFY_DEG, MOUSE, Measure, TapPress};
 use crate::pen::{PenEvent, PenPhase, QUEUE_PEN};
 use crate::scatter::{ScatterCache, ScatterFill};
 use crate::ui::pad::theme;
+use vale_render::hatch::offset_ring;
 use vale_sphere::LonLat;
 use vale_sphere::measure::densify_great_circle;
 use vale_style::expr::Context;
-use vale_style::{Paint as StylePaint, StrokeKind, scale_denominator};
+use vale_style::{Hatch, MarkerShape, Paint as StylePaint, StrokeKind, scale_denominator};
+
+use crate::pipeline;
 
 const BACKGROUND: egui::Color32 = egui::Color32::from_rgb(22, 25, 31);
 /// The largest angle between two drawn points of a highlight on the flat map.
@@ -594,6 +597,62 @@ pub(super) fn history_input(ui: &egui::Ui, nav: &mut Nav) -> Option<bool> {
     }
 }
 
+/// Paints a marker at `pos`. The stroke is outside the fill, as in the pipeline.
+fn paint_marker(
+    painter: &egui::Painter,
+    pos: egui::Pos2,
+    radius: f64,
+    shape: MarkerShape,
+    fill: Option<vale_style::Color>,
+    hatch: Option<Hatch>,
+    stroke: Option<vale_style::Stroke>,
+) {
+    if radius <= 0.0 {
+        return;
+    }
+    let to_pos = |p: &kurbo::Point| egui::pos2(p.x as f32, p.y as f32);
+    let center = kurbo::Point::new(f64::from(pos.x), f64::from(pos.y));
+    let outline = pipeline::marker_outline(shape, center, radius);
+    match (fill, hatch) {
+        (Some(c), None) if shape == MarkerShape::Circle => {
+            painter.circle_filled(pos, radius as f32, color(c));
+        }
+        (Some(c), None) => {
+            // Each shape is star-shaped around its center, so a fan from the center fills it.
+            let mut mesh = egui::Mesh::default();
+            let c = color(c);
+            mesh.colored_vertex(pos, c);
+            for p in &outline {
+                mesh.colored_vertex(to_pos(p), c);
+            }
+            let n = outline.len() as u32;
+            for i in 0..n {
+                mesh.add_triangle(0, 1 + i, 1 + (i + 1) % n);
+            }
+            painter.add(mesh);
+        }
+        (Some(c), Some(h)) => {
+            let line = egui::Stroke::new(h.line_width as f32, color(c));
+            for (a, b) in pipeline::marker_hatch(&outline, &h, center) {
+                painter.line_segment([to_pos(&a), to_pos(&b)], line);
+            }
+        }
+        (None, _) => {}
+    }
+    if let Some(s) = stroke {
+        let line = egui::Stroke::new(s.width as f32, color(s.color));
+        if shape == MarkerShape::Circle {
+            painter.circle_stroke(pos, (radius + s.width / 2.0) as f32, line);
+        } else {
+            let ring = offset_ring(&outline, s.width / 2.0);
+            painter.add(egui::epaint::PathShape::closed_line(
+                ring.iter().map(to_pos).collect(),
+                line,
+            ));
+        }
+    }
+}
+
 fn color(c: vale_style::Color) -> egui::Color32 {
     egui::Color32::from_rgba_unmultiplied(c.r, c.g, c.b, c.a)
 }
@@ -833,17 +892,14 @@ fn vector_layer(
                             match paint {
                                 StylePaint::Marker {
                                     radius,
+                                    shape,
                                     fill,
+                                    hatch,
                                     stroke,
                                 } => {
                                     flush(&mut pending);
-                                    painter.circle(
-                                        pos,
-                                        *radius as f32,
-                                        fill.map_or(egui::Color32::TRANSPARENT, color),
-                                        stroke.map_or(egui::Stroke::NONE, |s| {
-                                            egui::Stroke::new(s.width as f32, color(s.color))
-                                        }),
+                                    paint_marker(
+                                        painter, pos, *radius, *shape, *fill, *hatch, *stroke,
                                     );
                                 }
                                 StylePaint::Symbol {
