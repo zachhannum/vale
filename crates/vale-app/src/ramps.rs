@@ -15,6 +15,10 @@ const RAMPS_FILE: &str = "ramps.txt";
 pub struct Ramp {
     pub name: String,
     pub colors: Vec<Rgb>,
+    /// The label of each color, for example a class name such as "Cfb". A
+    /// blank label means no label. A class whose value is a label takes the
+    /// color of the label.
+    pub labels: Vec<String>,
     /// A built-in ramp does not change, and the library does not delete it.
     pub built_in: bool,
     /// The colors are for classes with no order, so they do not blend.
@@ -26,10 +30,29 @@ impl Ramp {
     pub fn new(name: impl Into<String>, colors: Vec<Rgb>) -> Ramp {
         Ramp {
             name: name.into(),
+            labels: vec![String::new(); colors.len()],
             colors,
             built_in: false,
             qualitative: false,
         }
+    }
+
+    /// Reverses the order of the colors and of their labels.
+    pub fn reverse(&mut self) {
+        self.colors.reverse();
+        self.labels.reverse();
+    }
+
+    /// The index of the color with this label. Case does not count.
+    pub fn labeled(&self, value: &str) -> Option<usize> {
+        let value = value.trim();
+        (!value.is_empty())
+            .then(|| {
+                self.labels
+                    .iter()
+                    .position(|l| l.trim().eq_ignore_ascii_case(value))
+            })
+            .flatten()
     }
 
     /// `n` colors for `n` classes: the colors in order for a qualitative
@@ -81,7 +104,8 @@ impl Ramps {
 
     /// The custom ramps.
     pub fn custom(&self) -> &[Ramp] {
-        &self.list[BUILT_IN.len()..]
+        let built_in = self.list.iter().take_while(|r| r.built_in).count();
+        &self.list[built_in..]
     }
 
     /// Adds a ramp at the end, and returns its name. A name that another
@@ -105,7 +129,20 @@ impl Ramps {
     /// does not change.
     pub fn reverse(&mut self, index: usize) -> std::io::Result<()> {
         match self.list.get_mut(index) {
-            Some(ramp) if !ramp.built_in => ramp.colors.reverse(),
+            Some(ramp) if !ramp.built_in => ramp.reverse(),
+            _ => return Ok(()),
+        }
+        self.write()
+    }
+
+    /// Sets the label of color `color` of a custom ramp. A built-in ramp does
+    /// not change.
+    pub fn set_label(&mut self, index: usize, color: usize, text: &str) -> std::io::Result<()> {
+        let text = text.replace(['\t', '\n', '\r'], " ");
+        match self.list.get_mut(index) {
+            Some(ramp) if !ramp.built_in && color < ramp.labels.len() => {
+                ramp.labels[color] = text;
+            }
             _ => return Ok(()),
         }
         self.write()
@@ -132,11 +169,21 @@ impl Ramps {
     }
 }
 
+/// One line for each ramp: the name, a tab, the colors, and then a tab and
+/// a label for each color if a color has a label.
 fn text(list: &[Ramp]) -> String {
     list.iter()
         .map(|ramp| {
             let colors: Vec<String> = ramp.colors.iter().map(|c| hex(*c)).collect();
-            format!("{}\t{}\n", ramp.name, colors.join(" "))
+            let mut line = format!("{}\t{}", ramp.name, colors.join(" "));
+            if ramp.labels.iter().any(|l| !l.is_empty()) {
+                for label in &ramp.labels {
+                    line.push('\t');
+                    line.push_str(label);
+                }
+            }
+            line.push('\n');
+            line
         })
         .collect()
 }
@@ -145,10 +192,15 @@ fn text(list: &[Ramp]) -> String {
 fn parse(text: &str) -> Vec<Ramp> {
     text.lines()
         .filter_map(|line| {
-            let (name, colors) = line.split_once('\t')?;
+            let mut parts = line.split('\t');
+            let (name, colors) = (parts.next()?, parts.next()?);
             let colors: Option<Vec<Rgb>> = colors.split_whitespace().map(parse_hex).collect();
             let colors = colors.filter(|c| !c.is_empty())?;
-            Some(Ramp::new(name, colors))
+            let mut ramp = Ramp::new(name, colors);
+            for (label, text) in ramp.labels.iter_mut().zip(parts) {
+                *label = text.to_owned();
+            }
+            Some(ramp)
         })
         .collect()
 }
@@ -166,7 +218,8 @@ fn parse_hex(text: &str) -> Option<Rgb> {
     Some([channel(0)?, channel(2)?, channel(4)?])
 }
 
-/// The built-in ramps. The last two are qualitative.
+/// The built-in ramps. The last two are qualitative, and the Köppen ramp
+/// follows them.
 const BUILT_IN: [(&str, &[Rgb]); 8] = [
     (
         "Viridis",
@@ -259,17 +312,67 @@ const BUILT_IN: [(&str, &[Rgb]); 8] = [
 /// The index in `BUILT_IN` of the first qualitative ramp.
 const QUALITATIVE: usize = 6;
 
+/// The name of the ramp of the climate classes of Köppen and Geiger.
+pub const KOPPEN: &str = "Köppen climate";
+
+/// The classes of Köppen and Geiger and their colors, in the common legend
+/// of Beck and others (2018).
+const KOPPEN_CLASSES: [(&str, Rgb); 30] = [
+    ("Af", [0, 0, 255]),
+    ("Am", [0, 120, 255]),
+    ("Aw", [70, 170, 250]),
+    ("BWh", [255, 0, 0]),
+    ("BWk", [255, 150, 150]),
+    ("BSh", [245, 165, 0]),
+    ("BSk", [255, 220, 100]),
+    ("Csa", [255, 255, 0]),
+    ("Csb", [200, 200, 0]),
+    ("Csc", [150, 150, 0]),
+    ("Cwa", [150, 255, 150]),
+    ("Cwb", [100, 200, 100]),
+    ("Cwc", [50, 150, 50]),
+    ("Cfa", [200, 255, 80]),
+    ("Cfb", [100, 255, 80]),
+    ("Cfc", [50, 200, 0]),
+    ("Dsa", [255, 0, 255]),
+    ("Dsb", [200, 0, 200]),
+    ("Dsc", [150, 50, 150]),
+    ("Dsd", [150, 100, 150]),
+    ("Dwa", [170, 175, 255]),
+    ("Dwb", [90, 120, 220]),
+    ("Dwc", [75, 80, 180]),
+    ("Dwd", [50, 0, 135]),
+    ("Dfa", [0, 255, 255]),
+    ("Dfb", [55, 200, 255]),
+    ("Dfc", [0, 125, 125]),
+    ("Dfd", [0, 70, 95]),
+    ("ET", [178, 178, 178]),
+    ("EF", [102, 102, 102]),
+];
+
 fn built_in() -> Vec<Ramp> {
-    BUILT_IN
+    let mut list: Vec<Ramp> = BUILT_IN
         .iter()
         .enumerate()
         .map(|(i, (name, colors))| Ramp {
             name: (*name).to_owned(),
             colors: colors.to_vec(),
+            labels: vec![String::new(); colors.len()],
             built_in: true,
             qualitative: i >= QUALITATIVE,
         })
-        .collect()
+        .collect();
+    list.push(Ramp {
+        name: KOPPEN.to_owned(),
+        colors: KOPPEN_CLASSES.iter().map(|(_, c)| *c).collect(),
+        labels: KOPPEN_CLASSES
+            .iter()
+            .map(|(l, _)| (*l).to_owned())
+            .collect(),
+        built_in: true,
+        qualitative: true,
+    });
+    list
 }
 
 /// `n` colors of a ramp from its first color to its last color, with
@@ -318,7 +421,7 @@ mod tests {
         let mut again = Ramps::default();
         again.open(Some(dir.path()));
         assert_eq!(again.list(), ramps.list());
-        let first = BUILT_IN.len();
+        let first = Ramps::default().list().len();
         again.reverse(first).unwrap();
         let mut reversed = Ramps::default();
         reversed.open(Some(dir.path()));
@@ -335,7 +438,7 @@ mod tests {
     #[test]
     fn the_built_in_ramps_come_first_and_do_not_change() {
         let mut ramps = Ramps::default();
-        assert_eq!(ramps.list().len(), BUILT_IN.len());
+        assert_eq!(ramps.list().len(), BUILT_IN.len() + 1);
         assert!(ramps.custom().is_empty());
         assert!(ramps.list().iter().all(|r| r.built_in));
         let viridis = ramps.list()[0].clone();
@@ -371,6 +474,44 @@ mod tests {
             cycle(&colors, 3),
             vec![[0, 0, 0], [100, 200, 50], [0, 0, 0]]
         );
+    }
+
+    #[test]
+    fn the_labels_stay_in_the_folder_and_reverse_with_the_colors() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ramps = Ramps::default();
+        ramps.open(Some(dir.path()));
+        ramps.add("Zones", vec![[1; 3], [2; 3], [3; 3]]).unwrap();
+        let at = ramps.list().len() - 1;
+        ramps.set_label(at, 0, "Wet\tland").unwrap();
+        ramps.set_label(at, 2, "Dry").unwrap();
+        ramps.reverse(at).unwrap();
+        let mut again = Ramps::default();
+        again.open(Some(dir.path()));
+        let zones = &again.custom()[0];
+        assert_eq!(zones.labels, ["Dry", "", "Wet land"]);
+        assert_eq!(zones.colors, [[3; 3], [2; 3], [1; 3]]);
+        assert_eq!(zones.labeled("wet land "), Some(2));
+        assert_eq!(zones.labeled(""), None);
+        // A line of an older file has no labels.
+        let old = parse("Old\t#010203 #040506\n");
+        assert_eq!(old[0].labels, ["", ""]);
+    }
+
+    #[test]
+    fn the_koppen_ramp_has_a_label_for_each_color() {
+        let mut ramps = Ramps::default();
+        let at = ramps.list().iter().position(|r| r.name == KOPPEN).unwrap();
+        let koppen = ramps.list()[at].clone();
+        assert!(koppen.built_in && koppen.qualitative);
+        assert_eq!(koppen.colors.len(), 30);
+        assert_eq!(koppen.labels.len(), 30);
+        assert_eq!(
+            koppen.colors[koppen.labeled("Cfb").unwrap()],
+            [100, 255, 80]
+        );
+        ramps.set_label(at, 0, "Rain").unwrap();
+        assert_eq!(ramps.list()[at], koppen);
     }
 
     #[test]

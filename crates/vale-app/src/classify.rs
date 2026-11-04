@@ -9,6 +9,7 @@ use vale_style::expr::{Context, Expr, Filter, Property};
 use vale_style::{Color, Rule, Stroke};
 
 use crate::ramps::Ramp;
+use vale_terrain::Rgb;
 
 /// The methods that find the edges of number classes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -267,6 +268,8 @@ pub struct Class {
     pub name: String,
     pub filter: String,
     pub extra: bool,
+    /// The value of a class of a text value, as text.
+    pub value: Option<String>,
 }
 
 /// The classes of numbers with these inner edges, and the class
@@ -280,6 +283,7 @@ pub fn number_classes(left: &str, edges: &[f64], nulls: bool) -> Vec<Class> {
             name: "All values".to_owned(),
             filter: format!("{left} is not null"),
             extra: false,
+            value: None,
         });
     }
     for (k, pair) in edges.windows(2).enumerate() {
@@ -288,6 +292,7 @@ pub fn number_classes(left: &str, edges: &[f64], nulls: bool) -> Vec<Class> {
                 name: format!("< {}", number_text(pair[0])),
                 filter: format!("{left} < {}", number_text(pair[0])),
                 extra: false,
+                value: None,
             });
         }
         let (a, b) = (number_text(pair[0]), number_text(pair[1]));
@@ -295,6 +300,7 @@ pub fn number_classes(left: &str, edges: &[f64], nulls: bool) -> Vec<Class> {
             name: format!("{a} – {b}"),
             filter: format!("{left} >= {a} and {left} < {b}"),
             extra: false,
+            value: None,
         });
     }
     if let [only] = edges {
@@ -302,6 +308,7 @@ pub fn number_classes(left: &str, edges: &[f64], nulls: bool) -> Vec<Class> {
             name: format!("< {}", number_text(*only)),
             filter: format!("{left} < {}", number_text(*only)),
             extra: false,
+            value: None,
         });
     }
     if let Some(last) = edges.last() {
@@ -309,6 +316,7 @@ pub fn number_classes(left: &str, edges: &[f64], nulls: bool) -> Vec<Class> {
             name: format!("≥ {}", number_text(*last)),
             filter: format!("{left} >= {}", number_text(*last)),
             extra: false,
+            value: None,
         });
     }
     if nulls {
@@ -316,6 +324,7 @@ pub fn number_classes(left: &str, edges: &[f64], nulls: bool) -> Vec<Class> {
             name: NO_VALUE.to_owned(),
             filter: format!("{left} is null"),
             extra: true,
+            value: None,
         });
     }
     out
@@ -336,6 +345,12 @@ pub fn category_classes(left: &str, values: &[Value]) -> Vec<Class> {
             },
             filter: format!("{left} = {}", literal(v)),
             extra: false,
+            value: match v {
+                Value::Null => None,
+                Value::Bool(b) => Some(b.to_string()),
+                Value::Number(n) => Some(number_text(*n)),
+                Value::Text(t) => Some(t.clone()),
+            },
         })
         .collect();
     let list: Vec<String> = values.iter().map(literal).collect();
@@ -348,6 +363,7 @@ pub fn category_classes(left: &str, values: &[Value]) -> Vec<Class> {
         name: OTHER_VALUES.to_owned(),
         filter,
         extra: true,
+        value: None,
     });
     out
 }
@@ -440,12 +456,40 @@ pub fn classes_of(layer: &Layer, text: &str, method: Method, n: usize) -> Option
     Some(classes)
 }
 
-/// The colors of `n` classes from a ramp, in reverse order with `reverse`.
-pub fn class_colors(ramp: &Ramp, n: usize, reverse: bool) -> Vec<Color> {
-    let mut rgb = ramp.classes(n);
+/// The colors of the classes that are not extra, from a ramp that is in
+/// reverse order with `reverse`. A class whose value is the label of a color
+/// takes that color. If a class takes a label, each other class takes the
+/// next color that no label took. If no class takes a label, the colors
+/// come from `Ramp::classes`.
+pub fn class_colors(ramp: &Ramp, classes: &[Class], reverse: bool) -> Vec<Color> {
+    let mut ramp = ramp.clone();
     if reverse {
-        rgb.reverse();
+        ramp.reverse();
     }
+    let open: Vec<&Class> = classes.iter().filter(|c| !c.extra).collect();
+    let matched: Vec<Option<usize>> = open
+        .iter()
+        .map(|c| c.value.as_deref().and_then(|v| ramp.labeled(v)))
+        .collect();
+    let rgb = if matched.iter().all(Option::is_none) {
+        ramp.classes(open.len())
+    } else {
+        let mut free: Vec<Rgb> = (0..ramp.colors.len())
+            .filter(|i| !matched.contains(&Some(*i)))
+            .map(|i| ramp.colors[i])
+            .collect();
+        if free.is_empty() {
+            free = ramp.colors.clone();
+        }
+        let mut rest = free.iter().copied().cycle();
+        matched
+            .iter()
+            .map(|m| match m {
+                Some(i) => ramp.colors[*i],
+                None => rest.next().unwrap_or_default(),
+            })
+            .collect()
+    };
     rgb.iter().map(|c| Color::rgb(c[0], c[1], c[2])).collect()
 }
 
@@ -654,6 +698,32 @@ mod tests {
             };
             assert_eq!(other.matches(&ctx), inside, "{v:?}");
         }
+    }
+
+    #[test]
+    fn a_value_takes_the_color_of_its_label() {
+        let mut ramp = Ramp::new("Zones", vec![[1; 3], [2; 3], [3; 3], [4; 3]]);
+        ramp.labels[1] = "Cfb".into();
+        ramp.labels[3] = "true".into();
+        ramp.qualitative = true;
+        let values = [
+            Value::Text("Moon".into()),
+            Value::Text("cfb".into()),
+            Value::Text("Sun".into()),
+        ];
+        let classes = category_classes("kind", &values);
+        let colors = class_colors(&ramp, &classes, false);
+        let c = |v: u8| Color::rgb(v, v, v);
+        // "Moon" and "Sun" take the colors that no label took, in order.
+        assert_eq!(colors, [c(1), c(2), c(3)]);
+        let reversed = class_colors(&ramp, &classes, true);
+        assert_eq!(reversed, [c(4), c(2), c(3)]);
+        // A bool value matches a label too.
+        let flags = category_classes("wet", &[Value::Bool(true)]);
+        assert_eq!(class_colors(&ramp, &flags, false), [c(4)]);
+        // With no label that matches, the colors come in order.
+        let plain = category_classes("kind", &values[..1]);
+        assert_eq!(class_colors(&ramp, &plain, false), [c(1)]);
     }
 
     #[test]

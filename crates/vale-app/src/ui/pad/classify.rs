@@ -286,8 +286,7 @@ pub fn apply(state: &mut AppState, id: LayerId, request: &Request) -> bool {
     else {
         return false;
     };
-    let steps = classes.iter().filter(|c| !c.extra).count();
-    let colors = classify::class_colors(&request.ramp, steps, request.reverse);
+    let colors = classify::class_colors(&request.ramp, &classes, request.reverse);
     let Some(entry) = state.doc.entry_mut(id) else {
         return false;
     };
