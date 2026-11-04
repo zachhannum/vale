@@ -1986,6 +1986,14 @@ fn the_edit_menu_merges_the_selected_features_into_the_feature_that_you_choose()
         });
         assert!(doc.project.add_feature(id, feature));
     }
+    // Two values of a field, so Merge asks which feature keeps its values.
+    let field = vale_store::Field::new("rank", vale_store::FieldType::Real);
+    assert!(doc.project.add_field(id, field));
+    for (f, rank) in picks.iter().zip([1.0, 2.0]) {
+        let one = std::collections::HashSet::from([f.uuid]);
+        let value = vale_store::Value::Number(rank);
+        assert_eq!(doc.project.set_attribute_of(id, &one, "rank", &value), 1);
+    }
     let mut state = AppState::new(doc).unwrap();
     state.headless = true;
     state.select(Some(LayerRef::Vector(id)));

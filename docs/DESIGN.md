@@ -489,7 +489,7 @@ Merge joins the selected features of one layer into one feature. Two provinces b
 - Two lines that share an end become one line. A line turns around if it must. Lines that do not share an end become parts of one feature.
 - Points become one feature with each point.
 
-Merge asks which feature keeps its attributes. The list names each feature by the value of the label field of the layer, or else as "Feature" and a number. The largest feature is first. The order of a box selection does not show, so the app does not take the first feature. The merged feature keeps the UUID and the place in the draw order of that feature, and it becomes the selection. The merge is on the sphere, so it is correct across the 180 degree meridian and around a pole. Each merge is one undo step.
+Merge asks which feature keeps its attributes. If all the selected features have the same attributes, Merge does not ask, and the largest feature stays. The list names each feature by the value of the label field of the layer, or else as "Feature" and a number. The largest feature is first. The order of a box selection does not show, so the app does not take the first feature. The merged feature keeps the UUID and the place in the draw order of that feature, and it becomes the selection. The merge is on the sphere, so it is correct across the 180 degree meridian and around a pole. Each merge is one undo step.
 
 On the iPad, the card of the Select tool has "Merge…", after "Delete selection". The list opens at the right of the card, and a touch outside the list closes it. On the desktop, "Merge…" is in the Edit menu, and the list is in a window. "Merge…" is off unless two or more features of one layer are selected.
 

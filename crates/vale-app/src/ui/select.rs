@@ -260,6 +260,30 @@ impl AppState {
             .collect()
     }
 
+    /// Starts a merge of the selection. If all the selected features have
+    /// the same attributes, the merge keeps the largest feature, and no list
+    /// asks. Else the list of Merge opens.
+    pub fn start_merge(&mut self) {
+        let Some(&(largest, _)) = self.merge_choices().first() else {
+            return;
+        };
+        let same = self
+            .doc
+            .layer(self.feature_selection[0].layer)
+            .is_some_and(|l| {
+                let selected = (l.features.iter())
+                    .filter(|f| self.feature_selection.iter().any(|s| s.uuid == f.uuid()));
+                let mut attributes = selected.map(|f| &f.attributes);
+                let first = attributes.next();
+                attributes.all(|a| Some(a) == first)
+            });
+        if same {
+            self.merge_selection(largest);
+        } else {
+            self.merging = true;
+        }
+    }
+
     /// Joins the selected features into the feature `keep`, in one undo
     /// step. The feature keeps its UUID, its attributes, and its place in
     /// the draw order, and it becomes the selection.
@@ -606,7 +630,8 @@ pub fn view_menu(ui: &mut egui::Ui, state: &mut AppState) {
 
 /// The Edit menu of the desktop tool bar: Delete selection and Merge.
 /// "Merge…" opens a window with a button for each selected feature, and a
-/// click on a button merges the selection into that feature.
+/// click on a button merges the selection into that feature. Features with
+/// the same attributes merge with no window.
 pub fn edit_menu(ui: &mut egui::Ui, state: &mut AppState) {
     ui.menu_button("Edit", |ui| {
         let any = !state.feature_selection.is_empty();
@@ -618,7 +643,7 @@ pub fn edit_menu(ui: &mut egui::Ui, state: &mut AppState) {
             .add_enabled(state.can_merge(), egui::Button::new(MERGE))
             .clicked()
         {
-            state.merging = true;
+            state.start_merge();
             ui.close();
         }
     });

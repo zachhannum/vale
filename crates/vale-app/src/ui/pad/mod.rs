@@ -1451,7 +1451,11 @@ fn select_cells(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls
     let (open, can) = (state.merging, state.can_merge());
     let merge = widgets::tool_cell(ui, controls, select::MERGE, "Merge", Icon::Merge, open, can);
     if merge.clicked() {
-        state.merging = !open;
+        if open {
+            state.merging = false;
+        } else {
+            state.start_merge();
+        }
     }
     deselect_cell(ui, state, controls);
     Some(merge.rect)

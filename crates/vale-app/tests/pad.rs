@@ -9550,6 +9550,7 @@ fn merge_joins_two_provinces_into_the_feature_that_you_choose_in_one_undo_step()
 fn a_touch_outside_the_list_of_merge_closes_it() {
     let dir = tempfile::tempdir().unwrap();
     let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
+    set_ranks(&mut h, &picks, [1.0, 2.0]);
     h.state_mut()
         .set_feature_selection(vec![picks.point, picks.second]);
     h.run_steps(2);
@@ -9561,6 +9562,49 @@ fn a_touch_outside_the_list_of_merge_closes_it() {
     assert!(!h.state().merging);
     assert!(control(&h, "Feature 1").is_none());
     assert_eq!(line_features(&h, picks.point.layer).len(), 2);
+}
+
+#[test]
+fn merge_does_not_ask_when_the_features_have_the_same_attributes() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
+    set_ranks(&mut h, &picks, [3.0, 3.0]);
+    h.state_mut()
+        .set_feature_selection(vec![picks.second, picks.point]);
+    h.run_steps(2);
+    let saved = saves(&h);
+    tap(&mut h, select::MERGE);
+    assert!(!h.state().merging);
+    assert!(control(&h, select::MERGE_TITLE).is_none());
+    assert_eq!(saves(&h), saved + 1);
+    let features = line_features(&h, picks.point.layer);
+    assert_eq!(features.len(), 1);
+    // The two points are of one size, so the first in the draw order stays.
+    assert_eq!(features[0].uuid(), picks.point.uuid);
+    assert_eq!(
+        features[0].attributes.get("rank"),
+        Some(&vale_store::Value::Number(3.0))
+    );
+    h.state_mut().undo();
+    h.run_steps(2);
+    assert_eq!(line_features(&h, picks.point.layer).len(), 2);
+}
+
+/// Gives the two points of `select_pad` a field "rank" with two values.
+fn set_ranks(h: &mut Pad, picks: &Picks, ranks: [f64; 2]) {
+    use std::collections::HashSet;
+    use vale_store::{Field, FieldType, Value};
+    let id = picks.point.layer;
+    let state = h.state_mut();
+    let project = &mut state.doc.project;
+    assert!(project.add_field(id, Field::new("rank", FieldType::Real)));
+    for (f, rank) in [picks.point, picks.second].into_iter().zip(ranks) {
+        let one = HashSet::from([f.uuid]);
+        let value = Value::Number(rank);
+        assert_eq!(project.set_attribute_of(id, &one, "rank", &value), 1);
+    }
+    state.save_waiting().unwrap();
+    h.run_steps(2);
 }
 
 #[test]
