@@ -1908,6 +1908,10 @@ pub fn color_picker(
         _ => Hsva::from_srgb(*color),
     };
     let before = *color;
+    if let Some(picked) = super::eyedropper::take(ui.ctx(), name) {
+        *color = picked;
+        hsva = Hsva::from_srgb(picked);
+    }
     let width = ui.available_width();
     let fill = |h: f32, s: f32, v: f32| Color32::from(Hsva::new(h, s, v, 1.0));
 
@@ -1966,7 +1970,15 @@ pub fn color_picker(
             .circle_stroke(at, THUMB / 2.0, egui::Stroke::new(1.5, Color32::WHITE));
         ui.add_space(8.0);
 
-        let (strip, _) = ui.allocate_exact_size(vec2(width, TOUCH), Sense::hover());
+        let (row, _) = ui.allocate_exact_size(vec2(width, TOUCH), Sense::hover());
+        let (strip, button) = row.split_left_right_at_x(row.right() - TOUCH - PAD);
+        let button = Rect::from_min_size(button.right_top() - vec2(TOUCH, 0.0), vec2(TOUCH, TOUCH));
+        let eyedropper = format!("{name} eyedropper");
+        let on = super::eyedropper::active_for(ui.ctx(), name);
+        let icon = Icon::Eyedropper;
+        if icon_button_at(ui, controls, button, &eyedropper, icon, on, true).clicked() {
+            super::eyedropper::start(ui.ctx(), name);
+        }
         let hue = format!("{name} hue");
         let resp = hit(
             ui,

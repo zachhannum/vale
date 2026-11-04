@@ -73,6 +73,8 @@ pub enum Icon {
     Shared,
     /// The handle of a row that a drag moves.
     Grip,
+    /// A pipette.
+    Eyedropper,
 }
 
 impl Icon {
@@ -140,6 +142,9 @@ impl Icon {
             Icon::Vertex => "M4 18L10 8l10 4M2 16h4v4H2zM8 6h4v4H8zM18 10h4v4h-4z",
             Icon::Shared => "M3 5h9v14H3zM12 5h9v14h-9zM10.5 10.5h3v3h-3z",
             Icon::Measure => "M3 17L17 3l4 4L7 21zM7 13l2 2M10 10l3 3M13 7l2 2",
+            Icon::Eyedropper => {
+                "M2 22l1-1h3l9-9M3 21v-3l9-9M11 7l6 6M15 6l3.4-3.4c.8-.8 2.2-.8 3 0s.8 2.2 0 3L18 9"
+            }
             Icon::Magnet => {
                 "M5 4h4v8c0 1.66 1.34 3 3 3s3-1.34 3-3V4h4v8c0 3.87-3.13 7-7 7s-7-3.13-7-7zM5 8h4M15 8h4"
             }
@@ -459,6 +464,7 @@ mod tests {
             Icon::Vertex,
             Icon::Shared,
             Icon::Grip,
+            Icon::Eyedropper,
         ] {
             let lines = parse(icon.path());
             let circles = icon.circles();
