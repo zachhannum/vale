@@ -1,8 +1,12 @@
 //! Rule-based styles.
 
+use std::f64::consts::{SQRT_2, TAU};
+use std::ops::RangeInclusive;
 use std::sync::Arc;
 
-use vale_store::{BlendMode, Hillshade, RasterDisplay, Rgb, Smoothing, Stop};
+use vale_store::{
+    BlendMode, FillKind, FillPattern, Hillshade, RasterDisplay, Rgb, Smoothing, Stop,
+};
 
 use crate::expr::{Context, Filter, Property};
 use crate::{Color, Stroke, StrokeKind};
@@ -48,10 +52,12 @@ pub enum Symbolizer {
     Fill { color: Property<Color> },
     /// Strokes lines and polygon outlines.
     Stroke(StrokeSymbolizer),
-    /// A circle at each point. The radius is in points, and the stroke is outside the fill.
+    /// A shape at each point. The radius is in points, and the stroke is outside the fill. The hatch lines take the fill color, so a hatch with no fill draws nothing.
     Marker {
         radius: Property<f64>,
+        shape: MarkerShape,
         fill: Option<Property<Color>>,
+        hatch: Option<Hatch>,
         stroke: Option<StrokeSymbolizer>,
     },
     /// A symbol from the library at each point.
@@ -62,6 +68,123 @@ pub enum Symbolizer {
     Raster(RasterSymbolizer),
     /// The look of an image layer.
     Image(ImageSymbolizer),
+}
+
+/// The shape of a marker.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub enum MarkerShape {
+    #[default]
+    Circle,
+    Square,
+    Diamond,
+    /// The apex points up.
+    Triangle,
+    /// Five points, and the first point is up.
+    Star,
+}
+
+impl MarkerShape {
+    pub const ALL: [MarkerShape; 5] = [
+        MarkerShape::Circle,
+        MarkerShape::Square,
+        MarkerShape::Diamond,
+        MarkerShape::Triangle,
+        MarkerShape::Star,
+    ];
+
+    /// The name in the style JSON.
+    pub fn id(self) -> &'static str {
+        match self {
+            MarkerShape::Circle => "circle",
+            MarkerShape::Square => "square",
+            MarkerShape::Diamond => "diamond",
+            MarkerShape::Triangle => "triangle",
+            MarkerShape::Star => "star",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<MarkerShape> {
+        MarkerShape::ALL.into_iter().find(|s| s.id() == id)
+    }
+
+    /// The UI text.
+    pub fn label(self) -> &'static str {
+        match self {
+            MarkerShape::Circle => "Circle",
+            MarkerShape::Square => "Square",
+            MarkerShape::Diamond => "Diamond",
+            MarkerShape::Triangle => "Triangle",
+            MarkerShape::Star => "Star",
+        }
+    }
+
+    /// The outline for a radius of 1, inside the square from -1 to 1. The y axis points down.
+    pub fn unit_outline(self) -> Vec<(f64, f64)> {
+        // A point at distance `r` from the center, at `a` radians clockwise from up.
+        let polar = |r: f64, a: f64| (r * a.sin(), -r * a.cos());
+        match self {
+            MarkerShape::Circle => (0..64)
+                .map(|i| polar(1.0, TAU * f64::from(i) / 64.0))
+                .collect(),
+            MarkerShape::Square => vec![(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)],
+            MarkerShape::Diamond => vec![(0.0, -1.0), (1.0, 0.0), (0.0, 1.0), (-1.0, 0.0)],
+            MarkerShape::Triangle => vec![(0.0, -1.0), (1.0, 1.0), (-1.0, 1.0)],
+            MarkerShape::Star => (0..10)
+                .map(|i| {
+                    let r = if i % 2 == 0 { 1.0 } else { 0.382 };
+                    polar(r, TAU * f64::from(i) / 10.0)
+                })
+                .collect(),
+        }
+    }
+
+    /// The distance from the center to the farthest vertex, for a radius of 1.
+    pub fn reach(self) -> f64 {
+        match self {
+            MarkerShape::Square | MarkerShape::Triangle => SQRT_2,
+            MarkerShape::Circle | MarkerShape::Diamond | MarkerShape::Star => 1.0,
+        }
+    }
+}
+
+/// The lines that fill a marker. The lengths are in points. The angle is in degrees, counterclockwise from the horizontal.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Hatch {
+    /// A second set of lines at the angle plus 90°.
+    pub cross: bool,
+    pub angle: f64,
+    /// The distance between two lines.
+    pub spacing: f64,
+    pub line_width: f64,
+}
+
+impl Hatch {
+    /// The angles that the app offers.
+    pub const ANGLES: RangeInclusive<f64> = FillPattern::ANGLES;
+    /// The spacings that the app offers.
+    pub const SPACINGS: RangeInclusive<f64> = 1.0..=6.0;
+    /// The line widths that the app offers.
+    pub const LINE_WIDTHS: RangeInclusive<f64> = FillPattern::LINE_WIDTHS;
+
+    /// The fill kind of the hatch.
+    pub fn kind(&self) -> FillKind {
+        if self.cross {
+            FillKind::CrossHatch
+        } else {
+            FillKind::Hatch
+        }
+    }
+}
+
+impl Default for Hatch {
+    fn default() -> Self {
+        Hatch {
+            cross: false,
+            angle: 45.0,
+            spacing: 2.0,
+            line_width: 0.5,
+        }
+    }
 }
 
 /// The look of an image layer. An image layer holds colors, not values, so it has no stops. An image layer draws with the first image symbolizer of its style. The filter and the scale range of its rule do not apply.
@@ -183,7 +306,9 @@ pub enum Paint {
     Stroke(Stroke),
     Marker {
         radius: f64,
+        shape: MarkerShape,
         fill: Option<Color>,
+        hatch: Option<Hatch>,
         stroke: Option<Stroke>,
     },
     Symbol {
@@ -251,11 +376,15 @@ impl Symbolizer {
             Symbolizer::Raster(_) | Symbolizer::Image(_) => return None,
             Symbolizer::Marker {
                 radius,
+                shape,
                 fill,
+                hatch,
                 stroke,
             } => Paint::Marker {
                 radius: radius.eval(ctx),
+                shape: *shape,
                 fill: fill.as_ref().map(|c| c.eval(ctx)),
+                hatch: *hatch,
                 stroke: stroke.as_ref().map(|s| s.resolve(ctx)),
             },
             Symbolizer::Symbol(s) => Paint::Symbol {
@@ -282,6 +411,7 @@ impl Symbolizer {
                 radius,
                 fill,
                 stroke,
+                ..
             } => {
                 radius.is_constant()
                     && fill.as_ref().is_none_or(Property::is_constant)
@@ -300,11 +430,15 @@ impl Symbolizer {
             Symbolizer::Raster(_) | Symbolizer::Image(_) => return None,
             Symbolizer::Marker {
                 radius,
+                shape,
                 fill,
+                hatch,
                 stroke,
             } => Paint::Marker {
                 radius: radius.fallback,
+                shape: *shape,
                 fill: fill.as_ref().map(|c| c.fallback),
+                hatch: *hatch,
                 stroke: stroke.as_ref().map(StrokeSymbolizer::fallback),
             },
             Symbolizer::Symbol(s) => Paint::Symbol {
@@ -321,6 +455,16 @@ impl Symbolizer {
         })
     }
 }
+
+/// The shape, the fill, and the hatch of a marker.
+type MarkerParts<'a> = (
+    &'a mut MarkerShape,
+    &'a mut Option<Property<Color>>,
+    &'a mut Option<Hatch>,
+);
+
+/// The shape, the fill, and the hatch of a marker.
+type MarkerView<'a> = (MarkerShape, Option<&'a Property<Color>>, Option<Hatch>);
 
 impl Rule {
     /// A rule with no filter and no scale range.
@@ -424,6 +568,77 @@ impl Rule {
                 .push(Symbolizer::Stroke(StrokeSymbolizer::constant(v))),
             (None, None) => {}
         }
+    }
+
+    fn marker_mut(&mut self) -> Option<MarkerParts<'_>> {
+        self.symbolizers.iter_mut().find_map(|s| match s {
+            Symbolizer::Marker {
+                shape, fill, hatch, ..
+            } => Some((shape, fill, hatch)),
+            _ => None,
+        })
+    }
+
+    fn marker(&self) -> Option<MarkerView<'_>> {
+        self.symbolizers.iter().find_map(|s| match s {
+            Symbolizer::Marker {
+                shape, fill, hatch, ..
+            } => Some((*shape, fill.as_ref(), *hatch)),
+            _ => None,
+        })
+    }
+
+    /// The shape of the first marker of the rule.
+    pub fn marker_shape(&self) -> Option<MarkerShape> {
+        self.marker().map(|(shape, _, _)| shape)
+    }
+
+    /// Sets the shape of the first marker. A rule with no marker does not change.
+    pub fn set_marker_shape(&mut self, value: MarkerShape) {
+        if let Some((shape, _, _)) = self.marker_mut() {
+            *shape = value;
+        }
+    }
+
+    /// The hatch of the first marker of the rule.
+    pub fn marker_hatch(&self) -> Option<Hatch> {
+        self.marker().and_then(|(_, _, hatch)| hatch)
+    }
+
+    /// Sets the hatch of the first marker. A rule with no marker does not change.
+    pub fn set_marker_hatch(&mut self, value: Option<Hatch>) {
+        if let Some((_, _, hatch)) = self.marker_mut() {
+            *hatch = value;
+        }
+    }
+
+    /// How the first marker of the rule is filled, or `None` with no marker.
+    pub fn marker_fill_kind(&self) -> Option<FillKind> {
+        let (_, fill, hatch) = self.marker()?;
+        Some(match (fill, hatch) {
+            (None, _) => FillKind::None,
+            (Some(_), None) => FillKind::Solid,
+            (Some(_), Some(h)) => h.kind(),
+        })
+    }
+
+    /// Sets how the first marker is filled. A hatch keeps its values and changes only `cross`. A new hatch has the default values. A marker with no fill gets the first default point fill. A rule with no marker does not change.
+    pub fn set_marker_fill_kind(&mut self, kind: FillKind) {
+        let Some((_, fill, hatch)) = self.marker_mut() else {
+            return;
+        };
+        if kind == FillKind::None {
+            *fill = None;
+            *hatch = None;
+            return;
+        }
+        if fill.is_none() {
+            *fill = Some(Property::constant(crate::default_point_fill()));
+        }
+        *hatch = kind.hatched().then(|| Hatch {
+            cross: kind == FillKind::CrossHatch,
+            ..hatch.unwrap_or_default()
+        });
     }
 
     /// The first symbol of the rule.
@@ -555,8 +770,13 @@ pub fn extent_of(paints: &[Paint]) -> Extent {
         match p {
             Paint::Fill(_) => {}
             Paint::Stroke(s) => e.stroke_width = e.stroke_width.max(s.width),
-            Paint::Marker { radius, stroke, .. } => {
-                e.marker_radius = e.marker_radius.max(*radius);
+            Paint::Marker {
+                radius,
+                shape,
+                stroke,
+                ..
+            } => {
+                e.marker_radius = e.marker_radius.max(radius * shape.reach());
                 if let Some(s) = stroke {
                     e.stroke_width = e.stroke_width.max(s.width);
                 }

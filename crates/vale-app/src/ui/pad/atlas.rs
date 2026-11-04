@@ -1286,13 +1286,31 @@ fn layer_panel(
     let name = state.doc.layer(layer)?.name.clone();
     let rules = &state.doc.entry(layer)?.style.style.rules;
     let page = match state.atlas.layer_page {
-        Some(Page::Rule(i) | Page::Condition(i) | Page::Symbols(i)) if i >= rules.len() => None,
-        Some(Page::Rule(_) | Page::Condition(_) | Page::Symbols(_)) => state.atlas.layer_page,
+        Some(
+            Page::Rule(i)
+            | Page::Condition(i)
+            | Page::Symbols(i)
+            | Page::MarkerShape(i)
+            | Page::MarkerFill(i),
+        ) if i >= rules.len() => None,
+        Some(
+            Page::Rule(_)
+            | Page::Condition(_)
+            | Page::Symbols(_)
+            | Page::MarkerShape(_)
+            | Page::MarkerFill(_),
+        ) => state.atlas.layer_page,
         _ => None,
     };
     state.atlas.layer_page = page;
     let rule_name = match page {
-        Some(Page::Rule(i) | Page::Condition(i) | Page::Symbols(i)) => rules[i].name.clone(),
+        Some(
+            Page::Rule(i)
+            | Page::Condition(i)
+            | Page::Symbols(i)
+            | Page::MarkerShape(i)
+            | Page::MarkerFill(i),
+        ) => rules[i].name.clone(),
         _ => String::new(),
     };
     let (key, title, back) = match page {
@@ -1302,6 +1320,12 @@ fn layer_panel(
             rule_name.as_str(),
         ),
         Some(Page::Symbols(_)) => ("pad-atlas-symbols", super::rules::SYMBOLS, &*rule_name),
+        Some(Page::MarkerShape(_)) => (
+            "pad-atlas-marker-shape",
+            super::rules::MARKER_SHAPE,
+            &*rule_name,
+        ),
+        Some(Page::MarkerFill(_)) => ("pad-atlas-marker-fill", super::rules::FILL, &*rule_name),
         Some(_) => ("pad-atlas-rule", rule_name.as_str(), name.as_str()),
         None => ("pad-atlas-layer", name.as_str(), FRAME_TABS[2]),
     };
@@ -1319,7 +1343,12 @@ fn layer_panel(
     let on_title = |state: &mut AppState, row: &widgets::TitleRow| {
         if row.back {
             state.atlas.layer_page = match page {
-                Some(Page::Condition(i) | Page::Symbols(i)) => Some(Page::Rule(i)),
+                Some(
+                    Page::Condition(i)
+                    | Page::Symbols(i)
+                    | Page::MarkerShape(i)
+                    | Page::MarkerFill(i),
+                ) => Some(Page::Rule(i)),
                 Some(_) => None,
                 None => {
                     state.atlas.layer = None;
@@ -1340,6 +1369,12 @@ fn layer_panel(
                 super::filter::condition_body(ui, state, controls, layer, i);
             }
             Some(Page::Symbols(i)) => super::rules::symbols_body(ui, state, controls, layer, i),
+            Some(Page::MarkerShape(i)) => {
+                super::rules::shape_body(ui, state, controls, layer, i);
+            }
+            Some(Page::MarkerFill(i)) => {
+                super::rules::marker_fill_body(ui, state, controls, layer, i);
+            }
             _ => super::rules::section(ui, state, controls, layer),
         });
         if page.is_none() {

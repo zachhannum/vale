@@ -1407,6 +1407,41 @@ fn a_style_survives_a_save_and_a_reopen() {
 }
 
 #[test]
+fn a_marker_shape_and_hatch_survive_a_save_and_an_open() {
+    use vale_store::FillKind;
+    use vale_style::MarkerShape;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("towns.vale");
+    let mut project = Project::new(World::default());
+    let towns = project.add_layer("Towns".into(), GeometryKind::Point, None, Vec::new());
+    ProjectFile::create(&path, &project).unwrap();
+
+    let mut doc = Document::empty();
+    let mut session = Session::open(&path, &mut doc).unwrap();
+    let mut style = doc.entry(towns).unwrap().style.clone();
+    let rule = &mut style.style.rules[0];
+    assert_eq!(rule.marker_shape(), Some(MarkerShape::Circle));
+    assert_eq!(rule.marker_fill_kind(), Some(FillKind::Solid));
+    rule.set_marker_shape(MarkerShape::Square);
+    rule.set_marker_fill_kind(FillKind::Hatch);
+    let mut hatch = rule.marker_hatch().unwrap();
+    hatch.angle = 30.0;
+    hatch.spacing = 3.5;
+    rule.set_marker_hatch(Some(hatch));
+    doc.entry_mut(towns).unwrap().style = style.clone();
+    doc.store_styles();
+    session.flush(&mut doc.project, &mut []).unwrap();
+    drop(session);
+
+    let mut doc = Document::empty();
+    Session::open(&path, &mut doc).unwrap();
+    let rule = &doc.entry(towns).unwrap().style.style.rules[0];
+    assert_eq!(rule.marker_shape(), Some(MarkerShape::Square));
+    assert_eq!(rule.marker_hatch(), Some(hatch));
+    assert_eq!(doc.entry(towns).unwrap().style, style);
+}
+
+#[test]
 fn a_style_edit_is_an_undo_step() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("edit.vale");

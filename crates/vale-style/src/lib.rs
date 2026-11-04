@@ -14,8 +14,9 @@ pub use label::{
 };
 pub use overrides::Overrides;
 pub use rule::{
-    Extent, ImageSymbolizer, METERS_PER_POINT, Paint, PointSymbolizer, RasterSymbolizer, Rule,
-    ScatterSymbolizer, StrokeSymbolizer, Style, Symbolizer, extent_of, scale_denominator,
+    Extent, Hatch, ImageSymbolizer, METERS_PER_POINT, MarkerShape, Paint, PointSymbolizer,
+    RasterSymbolizer, Rule, ScatterSymbolizer, StrokeSymbolizer, Style, Symbolizer, extent_of,
+    scale_denominator,
 };
 pub use vale_render::Color;
 use vale_store::GeometryKind;
@@ -111,6 +112,11 @@ fn pick(list: &[&str; 6], ordinal: usize) -> Color {
     Color::from_hex(list[ordinal % 6]).expect("valid built-in color")
 }
 
+/// The first default fill of a point layer.
+fn default_point_fill() -> Color {
+    pick(&POINT_FILLS, 0)
+}
+
 fn fill(color: Color) -> Symbolizer {
     Symbolizer::Fill {
         color: Property::constant(color),
@@ -157,7 +163,9 @@ impl LayerStyle {
             GeometryKind::Point => (
                 vec![Symbolizer::Marker {
                     radius: Property::constant(2.5),
+                    shape: MarkerShape::Circle,
                     fill: Some(Property::constant(pick(&POINT_FILLS, ordinal))),
+                    hatch: None,
                     stroke: Some(StrokeSymbolizer::constant(Stroke::solid(
                         Color::rgb(255, 255, 255),
                         1.0,

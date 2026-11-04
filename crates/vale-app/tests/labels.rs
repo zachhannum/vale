@@ -365,6 +365,37 @@ fn hit(kind: GeometryKind, geometry: Geometry, f: PageFeature, at: Point) -> boo
 }
 
 #[test]
+fn a_tap_at_the_corner_of_a_square_marker_picks_the_point() {
+    use vale_style::{MarkerShape, Symbolizer};
+    let at = Point::new(118.0, 118.0);
+    let picks = |shape: MarkerShape| {
+        let pt = pf(0, vec![Point::new(100.0, 100.0)], vec![], vec![]);
+        let g = Geometry::Points(vec![[0.0, 0.0]]);
+        let (layer, mut entry, f) = hand_made(GeometryKind::Point, g, pt);
+        for s in &mut entry.style.style.rules[0].symbolizers {
+            if let Symbolizer::Marker {
+                radius, shape: s, ..
+            } = s
+            {
+                *radius = vale_style::expr::Property::constant(20.0);
+                *s = shape;
+            }
+        }
+        let layers = [PageLayer {
+            entry: std::borrow::Cow::Borrowed(&entry),
+            layer: &layer,
+            kind: GeometryKind::Point,
+            features: vec![f],
+            scale: 1.0e7,
+        }];
+        pick(&layers, at).is_some()
+    };
+    // The corner is 25.5 points from the center: inside the square, outside the circle.
+    assert!(picks(MarkerShape::Square));
+    assert!(!picks(MarkerShape::Circle));
+}
+
+#[test]
 fn pick_hand_made() {
     let pt = || pf(0, vec![Point::new(100.0, 100.0)], vec![], vec![]);
     let g = || Geometry::Points(vec![[0.0, 0.0]]);

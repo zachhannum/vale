@@ -4,21 +4,22 @@
 
 use eframe::egui;
 use vale_render::Symbols;
-use vale_store::{Field, FieldType, GeometryKind, LayerId};
+use vale_store::{Field, FieldType, FillKind, GeometryKind, LayerId};
 use vale_style::expr::{Filter, Property};
-use vale_style::{Color, LayerStyle, Rule, Stroke, StrokeKind};
+use vale_style::{Color, Hatch, LayerStyle, MarkerShape, Rule, Stroke, StrokeKind};
 
 use super::pad::filter::{self, ADD_CONDITION, REMOVE_CONDITION};
+use super::pad::furniture::{ANGLE, LINE_COLOR, LINE_WIDTH};
 use super::pad::rules::{
     ADD_RULE, ALL_FEATURES, BAD_FILTER, BAD_RANGE, BRUSH, DASH, DASHED, DASHES, DELETE_RULE,
     EXPRESSION, FILL, FILTER, GAP, LINE, MAX_SCALE, MIN_SCALE, MOVE_DOWN, MOVE_UP, NO_LIMIT, SOLID,
     STROKE, STROKE_WIDTH, TAPER, TAPER_START, parse_scale, scale_text,
 };
 use super::pad::rules::{
-    ADD_SYMBOL, CIRCLE, CIRCLE_SIZES, MARKER, MAX_SPACING, NO_FIELD, NO_SYMBOL_LIST, POINT_SIZES,
-    ROTATION, ROTATION_FIELD, ROTATION_VARIATION, SCATTER, SCATTER_SIZES, SIZE, SIZE_FIELD,
-    SIZE_VARIATION, SPACING, SVG_SYMBOL, SYMBOL, TINT, marker_radius, new_tint, numeric_fields,
-    pick_symbol, property_field, to_circle, with_field,
+    ADD_SYMBOL, CIRCLE_SIZES, COLOR, MARKER, MARKER_SHAPE, MAX_SPACING, NO_FIELD, NO_SYMBOL_LIST,
+    POINT_SIZES, ROTATION, ROTATION_FIELD, ROTATION_VARIATION, SCATTER, SCATTER_SIZES, SHAPE, SIZE,
+    SIZE_FIELD, SIZE_VARIATION, SPACING, SVG_SYMBOL, SYMBOL, TINT, marker_radius, new_tint,
+    numeric_fields, pick_symbol, property_field, to_circle, with_field,
 };
 use super::{Action, Note, number};
 use crate::globe::symbol::paint_symbol;
@@ -104,10 +105,10 @@ pub fn rules(
     changed
 }
 
-/// The choice of a circle or an SVG symbol, the size of a circle, and the
+/// The choice of a shape or an SVG symbol, the shape and the size of a marker, and the
 /// symbol, the size, the rotation, their fields, and the tint of an SVG
 /// symbol. "SVG symbol" picks the first symbol of the library. With no
-/// symbols, the rule stays a circle until the user adds one.
+/// symbols, the rule keeps its shape until the user adds one.
 fn symbol_rows(
     ui: &mut egui::Ui,
     rule: &mut Rule,
@@ -123,9 +124,9 @@ fn symbol_rows(
     ui.horizontal(|ui| {
         ui.label(MARKER);
         egui::ComboBox::from_id_salt(salt.with("symbol-kind"))
-            .selected_text(if svg { SVG_SYMBOL } else { CIRCLE })
+            .selected_text(if svg { SVG_SYMBOL } else { SHAPE })
             .show_ui(ui, |ui| {
-                chose |= ui.selectable_value(&mut svg, false, CIRCLE).changed();
+                chose |= ui.selectable_value(&mut svg, false, SHAPE).changed();
                 chose |= ui.selectable_value(&mut svg, true, SVG_SYMBOL).changed();
             });
     });
@@ -144,6 +145,23 @@ fn symbol_rows(
     let Some(before) = rule.symbol() else {
         if want {
             library_row(ui, library, None, None, salt);
+        }
+        if let Some(current) = rule.marker_shape() {
+            let mut shape = current;
+            ui.horizontal(|ui| {
+                ui.label(MARKER_SHAPE);
+                egui::ComboBox::from_id_salt(salt.with("marker-shape"))
+                    .selected_text(shape.label())
+                    .show_ui(ui, |ui| {
+                        for s in MarkerShape::ALL {
+                            ui.selectable_value(&mut shape, s, s.label());
+                        }
+                    });
+            });
+            if shape != current {
+                rule.set_marker_shape(shape);
+                changed = true;
+            }
         }
         if let Some(radius) = marker_radius(rule) {
             let mut size = 2.0 * radius.fallback;
@@ -547,6 +565,9 @@ fn paint_rows(ui: &mut egui::Ui, rule: &mut Rule, kind: GeometryKind, salt: egui
     if kind == GeometryKind::Line {
         return changed;
     }
+    if kind == GeometryKind::Point {
+        return marker_fill_rows(ui, rule, salt) || changed;
+    }
     let mut fill = rule.fill();
     let mut fill_changed = false;
     ui.horizontal(|ui| {
@@ -563,6 +584,68 @@ fn paint_rows(ui: &mut egui::Ui, rule: &mut Rule, kind: GeometryKind, salt: egui
         rule.set_fill(fill);
     }
     changed || fill_changed
+}
+
+/// The fill kind of a marker, its color, and the angle, the spacing, and the
+/// line width of a hatch.
+fn marker_fill_rows(ui: &mut egui::Ui, rule: &mut Rule, salt: egui::Id) -> bool {
+    let Some(current) = rule.marker_fill_kind() else {
+        return false;
+    };
+    let mut changed = false;
+    let mut kind = current;
+    ui.horizontal(|ui| {
+        ui.label(FILL);
+        egui::ComboBox::from_id_salt(salt.with("marker-fill"))
+            .selected_text(kind.label())
+            .show_ui(ui, |ui| {
+                for k in FillKind::ALL {
+                    ui.selectable_value(&mut kind, k, k.label());
+                }
+            });
+    });
+    if kind != current {
+        rule.set_marker_fill_kind(kind);
+        changed = true;
+    }
+    let hatch = rule.marker_hatch();
+    if let Some(mut c) = rule.fill() {
+        let name = if hatch.is_some() { LINE_COLOR } else { COLOR };
+        let mut picked = false;
+        ui.horizontal(|ui| {
+            ui.label(name);
+            picked = color_button(ui, &mut c);
+        });
+        if picked {
+            rule.set_fill(Some(c));
+            changed = true;
+        }
+    }
+    let Some(mut h) = hatch else {
+        return changed;
+    };
+    let mut hatch_changed = number::stepper(ANGLE, &mut h.angle)
+        .range(Hatch::ANGLES)
+        .step(5.0)
+        .suffix("°")
+        .show(ui)
+        .changed();
+    hatch_changed |= number::stepper(SPACING, &mut h.spacing)
+        .range(Hatch::SPACINGS)
+        .step(0.25)
+        .suffix(" pt")
+        .show(ui)
+        .changed();
+    hatch_changed |= number::stepper(LINE_WIDTH, &mut h.line_width)
+        .range(Hatch::LINE_WIDTHS)
+        .step(0.05)
+        .suffix(" pt")
+        .show(ui)
+        .changed();
+    if hatch_changed {
+        rule.set_marker_hatch(Some(h));
+    }
+    changed || hatch_changed
 }
 
 /// The line type of a stroke, and the lengths of its dashes or its start width.

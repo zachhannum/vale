@@ -141,7 +141,7 @@ fn the_dock_edits_the_rules_of_a_layer() {
 fn the_dock_sets_a_point_symbol_and_a_scatter() {
     use vale_app::ui::Action;
     use vale_app::ui::pad::rules::{
-        ADD_SYMBOL, CIRCLE, NO_SYMBOL_LIST, SCATTER, SIZE, SVG_SYMBOL, SYMBOL,
+        ADD_SYMBOL, NO_SYMBOL_LIST, SCATTER, SHAPE, SIZE, SVG_SYMBOL, SYMBOL,
     };
     let mut h = harness();
     let places = id_of(&h, "Places");
@@ -157,7 +157,7 @@ fn the_dock_sets_a_point_symbol_and_a_scatter() {
     );
 
     // With no symbols, the rule stays a circle, and the list is off.
-    h.get_by_value(CIRCLE).click();
+    h.get_by_value(SHAPE).click();
     h.run_steps(2);
     h.get_by_label(SVG_SYMBOL).click();
     h.run_steps(2);

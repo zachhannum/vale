@@ -71,7 +71,13 @@ pub fn pick(layers: &[PageLayer<'_>], at: Point) -> Option<Selection> {
         };
         let mut best: Option<(f64, usize)> = None;
         for f in &pl.features {
-            if !f.bbox.inflate(8.0, 8.0).contains(at) {
+            // A large marker reaches past the margin of the box.
+            let near = f.bbox.inflate(8.0, 8.0).contains(at)
+                || (kind == GeometryKind::Point && {
+                    let r = reach(f.index);
+                    f.bbox.inflate(r, r).contains(at)
+                });
+            if !near {
                 continue;
             }
             let d = distance(f, kind, at);

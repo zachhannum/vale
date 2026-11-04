@@ -4,12 +4,14 @@
 
 use eframe::egui;
 use vale_render::Symbols;
-use vale_store::{Field, FieldType, GeometryKind, LayerId};
+use vale_store::{Field, FieldType, FillKind, GeometryKind, LayerId};
 use vale_style::expr::{Filter, Property, field_ref};
 use vale_style::{
-    Color, LayerStyle, PointSymbolizer, Rule, ScatterSymbolizer, Stroke, StrokeKind, Symbolizer,
+    Color, Hatch, LayerStyle, MarkerShape, PointSymbolizer, Rule, ScatterSymbolizer, Stroke,
+    StrokeKind, Symbolizer,
 };
 
+use super::furniture::{ANGLE, LINE_COLOR, LINE_WIDTH, fill_kind_rows};
 use super::number::Number;
 use super::raster::heading;
 use super::widgets::{self, Controls, Keys, PANEL_ROW};
@@ -48,8 +50,12 @@ pub const FILL: &str = "Fill";
 pub const FILL_COLOR: &str = "Fill color";
 /// The choice of the marker of a point layer, and its two choices.
 pub const MARKER: &str = "Marker";
-pub const CIRCLE: &str = "Circle";
+pub const SHAPE: &str = "Shape";
 pub const SVG_SYMBOL: &str = "SVG symbol";
+/// The row of the shape of a marker, and the title of its page. A tap opens the page.
+pub const MARKER_SHAPE: &str = "Marker shape";
+/// The color of a solid fill of a marker.
+pub const COLOR: &str = "Color";
 /// The row of the SVG symbol of a point symbol or of a scatter. A tap opens
 /// the symbol page.
 pub const SYMBOL: &str = "Symbol";
@@ -62,8 +68,8 @@ pub const ADD_SYMBOL: &str = "Add symbol…";
 pub const NO_SYMBOL_LIST: &str = "No symbols";
 /// The text of the symbol page when the project has no symbols.
 pub const NO_SYMBOLS: &str = "Add an SVG file to use it as a symbol.";
-/// The size of a circle or of a symbol, in points. The size of a circle is
-/// its diameter.
+/// The size of a shape or of a symbol, in points. The size of a circle is
+/// its diameter, and the size of another shape is its width.
 pub const SIZE: &str = "Size";
 pub const ROTATION: &str = "Rotation";
 pub const SIZE_FIELD: &str = "Size from field";
@@ -83,7 +89,7 @@ pub const DELETE_RULE: &str = "Delete rule";
 const WIDTHS: (f64, f64) = (0.1, 20.0);
 /// The range of the dash and gap sliders, in points. The sliders have a log scale.
 pub const DASHES: (f64, f64) = (0.1, 20.0);
-/// The range of the diameter of a circle, in points.
+/// The range of the size of a shape, in points.
 pub const CIRCLE_SIZES: (f64, f64) = (0.1, 32.0);
 /// The range of the size of a point symbol, in points.
 pub const POINT_SIZES: (f64, f64) = (0.1, 64.0);
@@ -112,6 +118,8 @@ enum Part {
     Stroke,
     Fill,
     Tint,
+    /// The fill of a marker. True: the fill is hatched.
+    Marker(bool),
 }
 
 /// The state of the Style section of a vector layer.
@@ -370,6 +378,14 @@ fn paint_rows(
     if kind == GeometryKind::Line {
         return;
     }
+    if kind == GeometryKind::Point {
+        let value = rule.marker_fill_kind().map_or("", FillKind::label);
+        if widgets::open_row(ui, controls, FILL, value).clicked() {
+            state.pad.page = Some(Page::MarkerFill(i));
+            state.pad.rules.picker = None;
+        }
+        return;
+    }
 
     let mut on = rule.fill().is_some();
     if widgets::switch_row(ui, controls, FILL, FILL, &mut on) {
@@ -392,10 +408,10 @@ fn paint_rows(
     }
 }
 
-/// The choice of a circle or an SVG symbol at each point. A circle has its
-/// size. An SVG symbol has the row of its symbol, its size, its rotation,
+/// The choice of a shape or an SVG symbol at each point. A shape has the
+/// row of its shape page, and its size. An SVG symbol has the row of its symbol, its size, its rotation,
 /// the fields of the size and the rotation, and its tint. A tap on "SVG
-/// symbol" opens the symbol page, and the circle stays until the user picks
+/// symbol" opens the symbol page, and the shape stays until the user picks
 /// a symbol. Returns true if the rule has an SVG symbol.
 fn symbol_rows(
     ui: &mut egui::Ui,
@@ -406,7 +422,7 @@ fn symbol_rows(
 ) -> bool {
     let active = usize::from(rule.symbol().is_some());
     if let Some(index) =
-        widgets::choice_row(ui, controls, MARKER, &[CIRCLE, SVG_SYMBOL], Some(active))
+        widgets::choice_row(ui, controls, MARKER, &[SHAPE, SVG_SYMBOL], Some(active))
     {
         if index == 1 {
             open_symbols(state, i);
@@ -416,6 +432,11 @@ fn symbol_rows(
         }
     }
     let Some(before) = rule.symbol() else {
+        let shape = rule.marker_shape().map_or("", MarkerShape::label);
+        if widgets::open_row(ui, controls, MARKER_SHAPE, shape).clicked() {
+            state.pad.page = Some(Page::MarkerShape(i));
+            state.pad.rules.picker = None;
+        }
         if let Some(radius) = marker_radius(rule) {
             let size = 2.0 * radius.fallback;
             let size = Number::new(SIZE, size, CIRCLE_SIZES.0..=CIRCLE_SIZES.1)
@@ -470,7 +491,7 @@ fn symbol_rows(
     true
 }
 
-/// The radius of the circle of a rule.
+/// The radius of the marker of a rule.
 pub fn marker_radius(rule: &mut Rule) -> Option<&mut Property<f64>> {
     rule.symbolizers.iter_mut().find_map(|s| match s {
         Symbolizer::Marker { radius, .. } => Some(radius),
@@ -656,6 +677,116 @@ pub fn symbols_body(
     state.pad.page = Some(Page::Rule(i));
 }
 
+/// The shape page of rule `i`: a row for each shape, with the row of the
+/// current shape on.
+pub fn shape_body(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    id: LayerId,
+    i: usize,
+) {
+    let Some(current) = rule_at(state, id, i).and_then(Rule::marker_shape) else {
+        return;
+    };
+    ui.spacing_mut().item_spacing.y = 0.0;
+    ui.add_space(8.0);
+    for shape in MarkerShape::ALL {
+        let name = shape.label();
+        if widgets::option_row(ui, controls, name, name, &[], shape == current).clicked() {
+            edit_rule(state, id, i, |r| r.set_marker_shape(shape));
+        }
+    }
+}
+
+/// The fill page of the marker of rule `i`: a row for each fill kind, the
+/// color, and for a hatch the angle, the spacing, and the line width. The
+/// lines of a hatch have the color of the fill.
+pub fn marker_fill_body(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    id: LayerId,
+    i: usize,
+) {
+    let Some(rule) = rule_at(state, id, i) else {
+        return;
+    };
+    let (Some(kind), fill, hatch) = (rule.marker_fill_kind(), rule.fill(), rule.marker_hatch())
+    else {
+        return;
+    };
+    ui.spacing_mut().item_spacing.y = 0.0;
+    ui.add_space(8.0);
+    if let Some(kind) = fill_kind_rows(ui, controls, kind) {
+        state.pad.rules.picker = None;
+        edit_rule(state, id, i, |r| r.set_marker_fill_kind(kind));
+    }
+    let Some(fill) = fill else {
+        return;
+    };
+    ui.add_space(6.0);
+    let open = state.pad.rules.picker.filter(|p| p.0 == id && p.1 == i);
+    let mut rgb = [fill.r, fill.g, fill.b];
+    if color_rows(
+        ui,
+        state,
+        controls,
+        (id, i, Part::Marker(hatch.is_some())),
+        open,
+        &mut rgb,
+    ) {
+        let [r, g, b] = rgb;
+        edit_rule(state, id, i, |rule| {
+            rule.set_fill(Some(Color { r, g, b, ..fill }));
+        });
+    }
+    let Some(mut h) = hatch else {
+        return;
+    };
+    let angle = Number::new(ANGLE, h.angle, Hatch::ANGLES)
+        .step(5.0)
+        .unit("°")
+        .stepper(ui, controls);
+    let spacing = Number::new(SPACING, h.spacing, Hatch::SPACINGS)
+        .step(0.25)
+        .unit("pt")
+        .stepper(ui, controls);
+    let width = Number::new(LINE_WIDTH, h.line_width, Hatch::LINE_WIDTHS)
+        .step(0.05)
+        .unit("pt")
+        .stepper(ui, controls);
+    if angle.is_none() && spacing.is_none() && width.is_none() {
+        return;
+    }
+    h.angle = angle.unwrap_or(h.angle);
+    h.spacing = spacing.unwrap_or(h.spacing);
+    h.line_width = width.unwrap_or(h.line_width);
+    edit_rule(state, id, i, |r| r.set_marker_hatch(Some(h)));
+}
+
+/// Rule `i` of the style of layer `id`.
+fn rule_at(state: &AppState, id: LayerId, i: usize) -> Option<&Rule> {
+    state.doc.entry(id)?.style.style.rules.get(i)
+}
+
+/// Changes rule `i` of the style of layer `id`, and marks the document as
+/// changed if the rule changed.
+fn edit_rule(state: &mut AppState, id: LayerId, i: usize, edit: impl FnOnce(&mut Rule)) {
+    let Some(rule) = state
+        .doc
+        .entry_mut(id)
+        .and_then(|e| e.style.style.rules.get_mut(i))
+    else {
+        return;
+    };
+    let before = rule.clone();
+    edit(rule);
+    if *rule != before {
+        state.touch();
+    }
+}
+
 /// The row of the field of a property and, while it is open, a chip for
 /// "None" and for each field in `fields`. A field makes the property an
 /// expression on the field, with the current value as its fallback.
@@ -742,8 +873,8 @@ pub fn new_tint() -> Color {
     TINT_GRAY
 }
 
-/// Replaces the SVG symbol of a rule with the circle of a new point layer.
-/// A tint becomes the fill of the circle.
+/// Replaces the SVG symbol of a rule with the marker of a new point layer.
+/// A tint becomes the fill of the marker.
 pub fn to_circle(rule: &mut Rule) {
     let Some(at) = rule
         .symbolizers
@@ -883,6 +1014,8 @@ fn color_rows(
         Part::Stroke => STROKE_COLOR,
         Part::Fill => FILL_COLOR,
         Part::Tint => TINT_COLOR,
+        Part::Marker(false) => COLOR,
+        Part::Marker(true) => LINE_COLOR,
     };
     let is_open = open == Some(this);
     if widgets::color_row(ui, controls, name, *rgb, is_open).clicked() {
