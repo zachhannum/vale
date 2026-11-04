@@ -1,6 +1,7 @@
 //! The canvas of the Atlas workspace: the open page and its map frames.
 //! The iPad layout and the desktop layout use the same canvas.
 
+use crate::diagnostics::{self, Span};
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 
@@ -2215,7 +2216,7 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
             let primary = primary == Some(frame.id);
             let at = (place, shown);
             let kind = (primary, layered);
-            crate::diagnostics::timed(crate::diagnostics::Span::Compose, || {
+            diagnostics::timed(Span::Compose, || {
                 compose(&ctx, state, frame, at, vt, keys, quality, kind);
             });
         }
@@ -2622,6 +2623,7 @@ fn compose(
         f64::from(shown.height()) / zoom,
     );
     let selection = state.selection;
+    let started = std::time::Instant::now();
     // A frame with raster layers has the water below them and the rest
     // above them. The GPU draws them between the two.
     let composed = if layered {
@@ -2646,6 +2648,7 @@ fn compose(
         )
     };
     state.atlas.composes += 1;
+    diagnostics::record(Span::ComposeList, started.elapsed());
     let mut composed = match composed {
         Ok(c) => c,
         Err(e) => {
@@ -2658,16 +2661,22 @@ fn compose(
     composed.list.height = height;
     let settled = quality == Quality::Final;
     let keys = (content, place_key);
+    let mut rendering = std::time::Duration::ZERO;
+    let mut under_items = 0;
     if layered {
+        let started = std::time::Instant::now();
         let under = state
             .pipeline
             .compose_frame_under(&state.doc, frame, target, part);
+        diagnostics::record(Span::ComposeUnder, started.elapsed());
         match under {
             Ok(mut list) => {
                 list.width = width;
                 list.height = height;
+                under_items = list.items.len();
+                let started = std::time::Instant::now();
                 let images = &mut state.atlas.unders;
-                match upload(
+                let uploaded = upload(
                     ctx,
                     images,
                     frame.id,
@@ -2676,9 +2685,10 @@ fn compose(
                     (shown, vt),
                     keys,
                     settled,
-                ) {
-                    Ok(()) => {}
-                    Err(e) => state.status = e,
+                );
+                rendering += started.elapsed();
+                if let Err(e) = uploaded {
+                    state.status = e;
                 }
             }
             Err(e) => state.status = format!("{e:#}"),
@@ -2691,8 +2701,20 @@ fn compose(
         items: map.items.split_off(composed.decor),
         ..map.clone()
     };
+    diagnostics::note(
+        "Last compose",
+        format!(
+            "frame {}, {w} x {h} px, {:.1}x zoom, {:?}, {} map items, {} decor items, {under_items} under items",
+            frame.id.0,
+            zoom,
+            quality,
+            map.items.len(),
+            decor.items.len(),
+        ),
+    );
+    let started = std::time::Instant::now();
     let images = &mut state.atlas.images;
-    if let Err(e) = upload(
+    let uploaded = upload(
         ctx,
         images,
         frame.id,
@@ -2701,7 +2723,10 @@ fn compose(
         (shown, vt),
         keys,
         settled,
-    ) {
+    );
+    rendering += started.elapsed();
+    if let Err(e) = uploaded {
+        diagnostics::record(Span::ComposeRender, rendering);
         state.status = e;
         return;
     }
@@ -2715,8 +2740,9 @@ fn compose(
         state.atlas.decors.remove(&frame.id);
     } else {
         let fixed = fixed_view(vt, place.target());
+        let started = std::time::Instant::now();
         let images = &mut state.atlas.decors;
-        if let Err(e) = upload(
+        let uploaded = upload(
             ctx,
             images,
             frame.id,
@@ -2725,11 +2751,15 @@ fn compose(
             (shown, fixed),
             keys,
             settled,
-        ) {
+        );
+        rendering += started.elapsed();
+        if let Err(e) = uploaded {
+            diagnostics::record(Span::ComposeRender, rendering);
             state.status = e;
             return;
         }
     }
+    diagnostics::record(Span::ComposeRender, rendering);
     if primary {
         state.composed = Some(composed);
     }

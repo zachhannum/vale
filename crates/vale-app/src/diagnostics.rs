@@ -18,8 +18,14 @@ const KEPT: usize = 240;
 pub enum Span {
     /// The CPU time of one UI frame.
     Ui,
-    /// The compose of a map frame.
+    /// The compose of a map frame: its lists and its textures.
     Compose,
+    /// The list of a map frame over its raster layers, or of all of it.
+    ComposeList,
+    /// The list of a map frame under its raster layers.
+    ComposeUnder,
+    /// The render of the lists of a map frame to its textures.
+    ComposeRender,
     /// The choice of the tiles of the detail maps.
     DetailChoice,
     /// The requests and the tiles of the detail maps.
@@ -29,9 +35,12 @@ pub enum Span {
 }
 
 impl Span {
-    const ALL: [Span; 5] = [
+    const ALL: [Span; 8] = [
         Span::Ui,
         Span::Compose,
+        Span::ComposeList,
+        Span::ComposeUnder,
+        Span::ComposeRender,
         Span::DetailChoice,
         Span::DetailPump,
         Span::GpuPrepare,
@@ -41,6 +50,9 @@ impl Span {
         match self {
             Span::Ui => "UI frame (CPU)",
             Span::Compose => "Map frame compose",
+            Span::ComposeList => "  Map list",
+            Span::ComposeUnder => "  Under list",
+            Span::ComposeRender => "  Render to textures",
             Span::DetailChoice => "Detail tile choice",
             Span::DetailPump => "Detail tile pump",
             Span::GpuPrepare => "GPU prepare (CPU)",
@@ -76,12 +88,15 @@ struct Store {
     times: [VecDeque<f64>; Span::ALL.len()],
     counts: [u64; Count::ALL.len()],
     since: Option<Instant>,
+    /// Lines that describe the last event of a kind, by kind.
+    notes: Vec<(&'static str, String)>,
 }
 
 static STORE: Mutex<Store> = Mutex::new(Store {
     times: [const { VecDeque::new() }; Span::ALL.len()],
     counts: [0; Count::ALL.len()],
     since: None,
+    notes: Vec::new(),
 });
 
 fn store() -> std::sync::MutexGuard<'static, Store> {
@@ -116,12 +131,23 @@ pub fn count(count: Count, n: u64) {
     s.counts[count as usize] += n;
 }
 
-/// Clears the times and the counts.
+/// Keeps a line about the last event of `kind`, in place of the line
+/// before it.
+pub fn note(kind: &'static str, line: String) {
+    let mut s = store();
+    match s.notes.iter_mut().find(|(k, _)| *k == kind) {
+        Some(note) => note.1 = line,
+        None => s.notes.push((kind, line)),
+    }
+}
+
+/// Clears the times, the counts, and the notes.
 pub fn reset() {
     let mut s = store();
     s.times.iter_mut().for_each(VecDeque::clear);
     s.counts = [0; Count::ALL.len()];
     s.since = Some(Instant::now());
+    s.notes.clear();
 }
 
 /// The mean, the worst, and the number of the kept times of a span, in
@@ -154,6 +180,9 @@ fn timing_lines(out: &mut String) {
     let secs = store().since.map_or(0.0, |t| t.elapsed().as_secs_f64());
     for count in Count::ALL {
         let _ = writeln!(out, "{}: {} in {secs:.1} s", count.name(), total(count));
+    }
+    for (kind, line) in &store().notes {
+        let _ = writeln!(out, "{kind}: {line}");
     }
 }
 
@@ -259,6 +288,8 @@ mod tests {
             record(Span::Ui, Duration::from_millis(1));
         }
         assert_eq!(summary(Span::Ui).unwrap().2, KEPT);
+        note("Last compose", "a".to_owned());
+        note("Last compose", "b".to_owned());
         count(Count::DetailSent, 3);
         count(Count::DetailSent, 2);
         assert_eq!(total(Count::DetailSent), 5);
@@ -266,6 +297,7 @@ mod tests {
         timing_lines(&mut lines);
         assert!(lines.contains("Map frame compose: mean 4.00 ms, worst 6.00 ms, 2 times"));
         assert!(lines.contains("Detail tiles asked: 5 in "));
+        assert!(lines.contains("Last compose: b\n") && !lines.contains("Last compose: a"));
         reset();
         assert_eq!(summary(Span::Compose), None);
         assert_eq!(total(Count::DetailSent), 0);
