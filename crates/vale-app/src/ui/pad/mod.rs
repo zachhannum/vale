@@ -619,6 +619,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     table::check(state);
     table::widen(state, &mut rects);
     state.sync_selection_form(state.pad.is_open(Panel::Attributes));
+    select::drop_focus(&ctx, state);
     for panel in [
         Panel::Brush,
         Panel::Layers,
@@ -1566,18 +1567,29 @@ pub(super) fn show_panel(
             (rects.right_panel, right - rects.right_panel.x)
         }
     };
-    let action = list.then_some((ADD_LAYER, Icon::Plus, state.pad.add));
+    let action = match panel {
+        Panel::Attributes => Some((select::FOCUS_NEW, Icon::TextCursor, state.tools.focus_new)),
+        _ => list.then_some((ADD_LAYER, Icon::Plus, state.pad.add)),
+    };
     let head = CardTitle {
         title,
         back,
         action,
     };
     let on_title = |state: &mut AppState, row: &widgets::TitleRow| {
-        if let Some(add) = &row.action {
-            state.pad.add_button = Some(add.rect);
-            if add.clicked() {
-                state.pad.add = !state.pad.add;
+        match &row.action {
+            Some(focus) if panel == Panel::Attributes => {
+                if focus.clicked() {
+                    state.tools.focus_new = !state.tools.focus_new;
+                }
             }
+            Some(add) => {
+                state.pad.add_button = Some(add.rect);
+                if add.clicked() {
+                    state.pad.add = !state.pad.add;
+                }
+            }
+            None => {}
         }
         if row.back && page == Some(Page::Ramps) {
             state.pad.page = Some(Page::Stops);

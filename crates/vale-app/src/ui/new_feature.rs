@@ -97,6 +97,7 @@ impl AppState {
     /// its values. Returns false if the inspector is closed or the layer has
     /// no fields. `show`: the new point.
     pub(super) fn start_new_feature(&mut self, feature: FeatureRef, show: Option<V3>) -> bool {
+        self.drop_focus = true;
         let fields = self
             .doc
             .layer(feature.layer)

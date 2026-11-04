@@ -6821,26 +6821,44 @@ fn a_text_that_is_not_a_value_of_the_field_type_does_not_go_in_the_new_point() {
 }
 
 #[test]
-fn after_one_name_ten_points_take_ten_taps_and_ten_names_in_ten_undo_steps() {
+fn a_name_does_not_give_the_focus_to_the_next_new_point() {
+    let mut h = pad(BOARDS[0]);
+    let id = new_point_layer(&mut h);
+    tap(&mut h, select::ATTRIBUTES);
+    assert!(!h.state().tools.focus_new);
+    let center = h.state().globe.rect.center();
+    pen_tap_at(&mut h, center);
+    tap(&mut h, "name");
+    type_in_focus(&mut h, "Avalon");
+    pen_tap_at(&mut h, center + vec2(40.0, 0.0));
+    assert_eq!(line_features(&h, id).len(), 2);
+    assert!(no_keyboard(&h));
+    press_return(&mut h);
+    let name = &line_features(&h, id)[0].attributes["name"];
+    assert_eq!(*name, vale_store::Value::Text("Avalon".into()));
+}
+
+#[test]
+fn with_focus_new_features_ten_points_take_ten_taps_and_ten_names_in_ten_undo_steps() {
     let dir = tempfile::tempdir().unwrap();
     let mut h = saved_pad(BOARDS[0], dir.path());
     let id = new_point_layer(&mut h);
     tap(&mut h, select::ATTRIBUTES);
+    // The toggle is in the title row of the inspector.
+    let toggle = control(&h, select::FOCUS_NEW).expect("no toggle");
+    let inspector = panel(&h, Panel::Attributes).unwrap();
+    assert!(inspector.contains_rect(toggle));
+    tap(&mut h, select::FOCUS_NEW);
+    assert!(h.state().tools.focus_new);
     for _ in 0..3 {
         step_and_save(&mut h, false);
     }
     let saved = saves(&h);
     let center = h.state().globe.rect.center();
     for i in 0..10 {
+        // The pen tap is the only touch: the name field has the focus.
         pen_tap_at(&mut h, center + vec2(30.0 * i as f32 - 135.0, 0.0));
-        // A tap on the field starts the run of edits. After that, the pen
-        // tap is the only touch: the name field has the focus.
-        if i == 0 {
-            assert!(no_keyboard(&h));
-            tap(&mut h, "name");
-        } else {
-            assert!(!no_keyboard(&h), "{i}");
-        }
+        assert!(!no_keyboard(&h), "{i}");
         type_in_focus(&mut h, &format!("City {i}"));
         // Return ends the edit, and so does the tap of the next point.
         if i % 2 == 0 || i == 9 {
@@ -6866,6 +6884,38 @@ fn after_one_name_ten_points_take_ten_taps_and_ten_names_in_ten_undo_steps() {
     assert_eq!(features.len(), 9);
     let last = &features[8].attributes["name"];
     assert_eq!(*last, vale_store::Value::Text("City 8".into()));
+    // A second tap turns the toggle off.
+    tap(&mut h, select::FOCUS_NEW);
+    assert!(!h.state().tools.focus_new);
+    pen_tap_at(&mut h, center + vec2(0.0, 60.0));
+    assert!(no_keyboard(&h));
+}
+
+#[test]
+fn with_focus_new_features_a_new_point_takes_the_focus_in_the_field_edited_last() {
+    use vale_store::{Field, FieldType, Value};
+    let mut h = pad(BOARDS[0]);
+    let id = new_point_layer(&mut h);
+    let field = Field::new("people", FieldType::Integer);
+    assert!(h.state_mut().doc.project.add_field(id, field));
+    tap(&mut h, select::ATTRIBUTES);
+    tap(&mut h, select::FOCUS_NEW);
+    let center = h.state().globe.rect.center();
+    // The first new point takes the focus in the first field.
+    pen_tap_at(&mut h, center);
+    type_in_focus(&mut h, "Avalon");
+    press_return(&mut h);
+    type_in_focus(&mut h, "12");
+    press_return(&mut h);
+    // The next takes it in the field that was edited last.
+    pen_tap_at(&mut h, center + vec2(40.0, 0.0));
+    type_in_focus(&mut h, "30");
+    press_return(&mut h);
+    let features = line_features(&h, id);
+    assert_eq!(features[0].attributes["name"], Value::Text("Avalon".into()));
+    assert_eq!(features[0].attributes["people"], Value::Number(12.0));
+    assert_eq!(features[1].attributes["name"], Value::Null);
+    assert_eq!(features[1].attributes["people"], Value::Number(30.0));
 }
 
 #[test]
@@ -6962,11 +7012,8 @@ fn a_new_point_is_not_under_the_inspector_or_the_keyboard() {
         let inspector = panel(&h, Panel::Attributes).expect("no panel");
         let rect = h.state().globe.rect;
         let keyboard = vale_app::ui::new_feature::keyboard_top(rect);
-        // A name starts the run of edits, so each next point has the
-        // keyboard.
-        pen_tap_at(&mut h, rect.center());
-        tap(&mut h, "name");
-        type_in_focus(&mut h, "Avalon");
+        // With "Focus new features", each new point has the keyboard.
+        tap(&mut h, select::FOCUS_NEW);
         // A point low on the screen is under the keyboard. A point next to
         // the panel is too near it.
         let sheet = h.state().pad.rects.unwrap().sheet.is_some();

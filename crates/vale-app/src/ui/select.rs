@@ -25,6 +25,8 @@ pub const ATTRIBUTES: &str = "Attributes";
 pub const NO_SELECTION: &str = "Select a feature to see its attributes.";
 /// The text of the inspector for a feature of a layer with no fields.
 pub const NO_FIELDS: &str = "The layer has no fields.";
+/// The toggle of the inspector that gives a new feature the focus.
+pub const FOCUS_NEW: &str = "Focus new features";
 /// The command of the desktop View menu that shows the inspector.
 pub const SHOW_ATTRIBUTES: &str = "Show attributes";
 /// The command of the desktop View menu that hides the inspector.
@@ -252,9 +254,20 @@ impl AppState {
                 let value = feature.attributes.get(&field.name);
                 FormField::new(field, value.and_then(|v| v.label()).unwrap_or_default())
             });
+            // With "Focus new features", a new feature takes the focus in the
+            // field that was edited last in its layer, or in the first field.
             // The field that was edited last takes the focus in the form of
-            // the next feature of its layer.
+            // the next feature of its layer that the Select tool selects.
+            let new = self.new_feature.as_ref().is_some_and(|n| n.feature == f);
+            let known = |name: &String| layer.fields.iter().any(|field| &field.name == name);
+            let last =
+                (self.last_field.as_ref()).filter(|(id, name)| *id == f.layer && known(name));
             let focus = match &mut self.attribute_focus {
+                _ if new && self.tools.focus_new => last
+                    .map(|(_, name)| name.clone())
+                    .or_else(|| layer.fields.first().map(|field| field.name.clone()))
+                    .map(|name| (name, FOCUS_FRAMES)),
+                _ if new => None,
                 Some((last, name)) if last.layer == f.layer && *last != f => {
                     *last = f;
                     Some((name.clone(), FOCUS_FRAMES))
@@ -421,6 +434,7 @@ struct Outcome {
 impl AppState {
     fn finish_inspector(&mut self, form: Option<SelectionForm>, outcome: Outcome) {
         if let (Some(name), Some(form)) = (outcome.edited, &form) {
+            self.last_field = Some((form.feature.layer, name.clone()));
             self.attribute_focus = Some((form.feature, name));
         }
         self.selection_form = form;
@@ -476,6 +490,15 @@ pub fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
     state.finish_inspector(form, outcome);
 }
 
+/// Takes the focus away from the field that has it, after a new feature.
+/// The fields of each feature have the same IDs, so the field of the last
+/// feature keeps the focus otherwise.
+pub fn drop_focus(ctx: &egui::Context, state: &mut AppState) {
+    if std::mem::take(&mut state.drop_focus) {
+        ctx.memory_mut(|m| m.stop_text_input());
+    }
+}
+
 /// Shows or hides the inspector of the desktop layout.
 pub fn toggle_desktop(state: &mut AppState) {
     state.show_attributes = !state.show_attributes;
@@ -505,16 +528,23 @@ pub fn view_menu(ui: &mut egui::Ui, state: &mut AppState) {
 /// The inspector of the desktop layout: a panel at the right.
 pub fn desktop(ui: &mut egui::Ui, state: &mut AppState) {
     state.sync_selection_form(state.show_attributes);
+    drop_focus(ui.ctx(), state);
     if !state.show_attributes {
         return;
     }
     let mut form = state.selection_form.take();
     let mut outcome = Outcome::default();
     let count = state.feature_selection.len();
+    let mut focus_new = state.tools.focus_new;
     egui::Panel::right(INSPECTOR)
         .default_size(260.0)
         .show(ui, |ui| {
-            ui.strong(ATTRIBUTES);
+            ui.horizontal(|ui| {
+                ui.strong(ATTRIBUTES);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.toggle_value(&mut focus_new, FOCUS_NEW);
+                });
+            });
             ui.separator();
             if count == 0 {
                 ui.weak(NO_SELECTION);
@@ -547,5 +577,6 @@ pub fn desktop(ui: &mut egui::Ui, state: &mut AppState) {
             }
             outcome.show = ui.button(SHOW_IN_TABLE).clicked();
         });
+    state.tools.focus_new = focus_new;
     state.finish_inspector(form, outcome);
 }
