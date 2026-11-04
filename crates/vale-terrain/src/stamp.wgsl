@@ -107,6 +107,7 @@ const OCEAN_RIDGE = 10u;
 const RANGE = 11u;
 const PUSH = 12u;
 const NOISE = 13u;
+const TERRACE = 14u;
 
 // The same number as `WARP_MARGIN` in `heightmap.rs`.
 const WARP_MARGIN = 3.0;
@@ -2186,6 +2187,16 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<u32> {
                 let value = fractal(p, stamp);
                 let size = select(stamp.lower, stamp.strength, value > 0.0);
                 change = amount * size * value * gain;
+            }
+            case TERRACE {
+                // The steps are those of `terrace_level`.
+                let sea = f32(group.sea);
+                let step = max(stamp.level, 1.0);
+                var nearest = sea + floor((old - sea) / step + 0.5) * step;
+                if old < sea {
+                    nearest = min(nearest, sea - 1.0);
+                }
+                change = (nearest - old) * min(amount, 1.0);
             }
             default {
                 change = (stamp.level - old) * min(amount, 1.0);
