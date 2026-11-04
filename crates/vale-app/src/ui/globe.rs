@@ -552,6 +552,22 @@ pub(super) fn measure_keys(ui: &egui::Ui, state: &mut AppState) {
     }
 }
 
+/// Reads the keys of a held ocean ridge or basin. Return applies it, and
+/// Escape discards it.
+fn held_keys(ui: &egui::Ui, state: &mut AppState) {
+    use egui::{Key, Modifiers};
+    if ui.ctx().egui_wants_keyboard_input() || state.globe.holding().is_none() {
+        return;
+    }
+    let key = |key| ui.input_mut(|i| i.consume_key(Modifiers::NONE, key));
+    if key(Key::Enter) {
+        state.globe.apply_held();
+    }
+    if key(Key::Escape) {
+        state.globe.discard_held();
+    }
+}
+
 /// Reads the undo and redo commands. A tap of two fingers and Command+Z
 /// undo. A tap of three fingers, Shift+Command+Z, and Command+Y redo. On
 /// Windows and Linux, Ctrl is the Command key.
@@ -972,7 +988,52 @@ pub(super) fn canvas(
 ) {
     if let Some(rect) = canvas_input(ui, state, background) {
         paint_canvas(ui, state, rect, background, cards);
+        held_buttons(ui, state, rect);
     }
+}
+
+/// The state and the Discard and Apply buttons of a held ocean ridge or
+/// basin, at the bottom of the canvas. The outline of the next basin shows
+/// the hint of its main river and the Clear button there.
+fn held_buttons(ui: &egui::Ui, state: &mut AppState, rect: egui::Rect) {
+    use super::panels::{APPLY, BASIN_RIVER_HINT, CLEAR_OUTLINE, DISCARD, READY, UPDATING};
+    let globe = &mut state.globe;
+    let outline = globe.brushing() && globe.brush.mode == Mode::Basin;
+    let outline = outline && globe.basin_outline().is_some();
+    if globe.holding().is_none() && !outline {
+        return;
+    }
+    let at = rect.center_bottom() - egui::vec2(0.0, 24.0);
+    egui::Area::new(egui::Id::new("held-buttons"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(at)
+        .pivot(egui::Align2::CENTER_BOTTOM)
+        .show(ui.ctx(), |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    if globe.holding().is_none() {
+                        ui.label(BASIN_RIVER_HINT);
+                        if ui.button(CLEAR_OUTLINE).clicked() {
+                            globe.set_basin_outline(None);
+                        }
+                        return;
+                    }
+                    // A spinner shows while the stroke follows the settings.
+                    if globe.held_updating() {
+                        ui.add(egui::Spinner::new());
+                        ui.label(UPDATING);
+                    } else {
+                        ui.label(READY);
+                    }
+                    if ui.button(DISCARD).clicked() {
+                        globe.discard_held();
+                    }
+                    if ui.button(APPLY).clicked() {
+                        globe.apply_held();
+                    }
+                });
+            });
+        });
 }
 
 /// Fills the free space of `ui` with the background and reads the input of
@@ -1020,6 +1081,7 @@ pub(super) fn canvas_input(
     state.poll_select();
     state.poll_vertex();
     measure_keys(ui, state);
+    held_keys(ui, state);
     super::select::keys(ui, state);
     super::vertex::keys(ui, state);
     match history_input(ui, &mut state.globe.nav) {
@@ -1099,8 +1161,10 @@ pub(super) fn paint_canvas(
             );
         }
     }
-    // A basin takes its size from its outline, so it has no brush circle.
-    let circle = globe.brushing() && globe.brush.mode != Mode::Basin;
+    // A basin takes its size from its outline, and the pen draws the center
+    // line of an ocean ridge, so they have no brush circle.
+    let line = matches!(globe.brush.mode, Mode::Basin | Mode::OceanRidge);
+    let circle = globe.brushing() && !line;
     if let Some(pos) = globe.input.pos.filter(|_| circle) {
         let globe_radius = globe.radius();
         let radius = globe.brush.radius(globe_radius);
@@ -1132,6 +1196,12 @@ pub(super) fn paint_canvas(
             painter.line(river.clone(), shade);
             painter.line(river, line);
         }
+    }
+    if let Some(axis) = globe.ridge_preview().filter(|a| a.len() > 1) {
+        let shade = egui::Stroke::new(3.5, egui::Color32::from_black_alpha(90));
+        let line = egui::Stroke::new(1.5, egui::Color32::from_white_alpha(220));
+        painter.line(axis.clone(), shade);
+        painter.line(axis, line);
     }
     if let Some(outline) = globe.outline_preview().filter(|o| o.len() > 1) {
         let shade = egui::Stroke::new(3.5, egui::Color32::from_black_alpha(90));

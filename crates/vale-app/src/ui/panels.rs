@@ -35,11 +35,24 @@ pub const BASIN_OUTLINE_HINT: &str = "Draw the outline of the basin.";
 /// The hint of the basin mode after the outline.
 pub const BASIN_RIVER_HINT: &str = "Draw the main river.";
 /// The button that drops the outline of the next basin.
-pub const CLEAR_OUTLINE: &str = "Clear outline";
+pub const CLEAR_OUTLINE: &str = "Clear";
+/// The hint of the ocean ridge mode.
+pub const RIDGE_HINT: &str = "Draw the center line of the ridge.";
+/// The hint of a held ocean ridge or basin.
+pub const HELD_HINT: &str = "Change the settings, then apply.";
+/// The buttons on the canvas that end a held ocean ridge or basin.
+pub const APPLY: &str = "Apply";
+pub const DISCARD: &str = "Discard";
+/// The state of a held stroke on the canvas, while it follows a change of
+/// the settings and after.
+pub const UPDATING: &str = "Updating…";
+pub const READY: &str = "Ready";
 
 /// The hint of the basin mode.
 pub fn basin_hint(globe: &crate::globe::Globe) -> &'static str {
-    if globe.basin_outline().is_some() {
+    if globe.holding().is_some() {
+        HELD_HINT
+    } else if globe.basin_outline().is_some() {
         BASIN_RIVER_HINT
     } else {
         BASIN_OUTLINE_HINT
@@ -857,18 +870,25 @@ pub(super) fn strength_name(mode: Mode) -> &'static str {
     }
 }
 
+/// The hint of the ocean ridge mode and of the basin mode.
+fn held_rows(ui: &mut egui::Ui, globe: &crate::globe::Globe) {
+    match globe.brush.mode {
+        Mode::Basin => ui.label(basin_hint(globe)),
+        Mode::OceanRidge if globe.holding().is_some() => ui.label(HELD_HINT),
+        Mode::OceanRidge => ui.label(RIDGE_HINT),
+        _ => return,
+    };
+}
+
 fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
     let unit = state.shown_unit().to_string();
     let world_km = state.doc.project.world.radius_km;
     let (unit_km, symbol) = world::large_unit(state.doc.project.world.units);
     let globe = &mut state.globe;
     let globe_radius = globe.radius();
+    held_rows(ui, globe);
     // The outline sets the size of a basin.
     if globe.brush.mode == Mode::Basin {
-        ui.label(basin_hint(globe));
-        if globe.basin_outline().is_some() && ui.button(CLEAR_OUTLINE).clicked() {
-            globe.set_basin_outline(None);
-        }
     } else {
         let mut size = globe.brush.radius_km(globe_radius, world_km);
         let range = globe.brush.radius_km_range(globe_radius, world_km);

@@ -2979,6 +2979,18 @@ fn the_brush_panel_has_the_sliders_of_the_basin_mode() {
 }
 
 #[test]
+fn the_ocean_ridge_panel_has_no_buttons_before_a_stroke() {
+    let mut h = pad(BOARDS[0]);
+    tap(&mut h, "Brush settings");
+    choose_mode(&mut h, "Ocean ridge");
+    // The hint and the buttons show only while a ridge is held.
+    assert!(h.query_by_label(panels::HELD_HINT).is_none());
+    assert!(control(&h, panels::APPLY).is_none());
+    assert!(control(&h, panels::DISCARD).is_none());
+    check_controls(&h, "the Ocean ridge mode");
+}
+
+#[test]
 fn the_basin_panel_shows_the_step_of_the_outline() {
     use vale_app::globe::math::lonlat_to_dir;
     for size in [BOARDS[0], BOARDS[1]] {
@@ -9816,4 +9828,59 @@ fn a_drag_of_a_selected_vertex_moves_all_the_selected_vertices() {
     assert!(ring.contains(&top) && ring.contains(&bottom), "{ring:?}");
     assert!(!ring.contains(&[-10.0, -12.0]));
     assert_eq!(h.state().vertex_selection.len(), 1);
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_held_ocean_ridge_has_its_buttons_on_the_canvas() {
+    use vale_app::globe::math::lonlat_to_dir;
+    let setup = egui_kittest::wgpu::default_wgpu_setup();
+    let mut h = headless::ui_harness(state(), (1194.0, 834.0), 2.0, setup);
+    // The GPU does the work of the ridge when a frame renders.
+    h.set_render_every_step(true);
+    h.state_mut().add_height();
+    h.state_mut().globe.map.fill(meters_to_level(-4000.0));
+    h.run_steps(4);
+    tap(&mut h, "Brush settings");
+    choose_mode(&mut h, "Ocean ridge");
+    h.state_mut().globe.brush.ridge_crest_m = -2500.0;
+    h.state_mut().globe.pen_down();
+    for i in 0..=30 {
+        let t = f64::from(i);
+        let sample = vale_app::globe::brush::Sample {
+            dir: Some(lonlat_to_dir(-25.0 + 1.6 * t, (t - 15.0).abs() * 0.8 - 6.0)),
+            flow: 0.5,
+            radius: 0.08,
+        };
+        h.state_mut()
+            .globe
+            .pen_sample(sample, std::time::Instant::now());
+        h.step();
+    }
+    h.state_mut().globe.pen_up();
+    for _ in 0..400 {
+        h.step();
+        if h.state().globe.held_idle() {
+            break;
+        }
+    }
+    h.run_steps(4);
+    assert!(h.state().globe.holding().is_some());
+    screenshot::save(&mut h, "pad-held-ridge");
+    // The buttons are on the canvas, beside the open panel.
+    let (_, panel) = h.state().pad.panels[0];
+    for name in [panels::APPLY, panels::DISCARD] {
+        let rect = control(&h, name).unwrap();
+        assert!(!panel.intersects(rect), "{name}: {rect:?}");
+    }
+    check_controls(&h, "a held ocean ridge");
+    tap(&mut h, panels::APPLY);
+    for _ in 0..400 {
+        h.step();
+        if !h.state().globe.busy() {
+            break;
+        }
+    }
+    assert!(h.state().globe.holding().is_none());
+    assert!(h.state().globe.can_undo());
 }
