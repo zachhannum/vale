@@ -34,6 +34,7 @@ pub mod image;
 pub mod import;
 pub mod line;
 pub mod math;
+pub mod merge;
 pub mod nav;
 pub mod polygon;
 pub mod preview;
