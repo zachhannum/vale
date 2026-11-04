@@ -18,6 +18,7 @@ use vale_app::session::{Session, new_project_path};
 use vale_app::ui::atlas::measure::measure_lines;
 use vale_app::ui::atlas::{self as atlas, BarPage, BarPick, ItemKind, ItemPage, TextPart};
 use vale_app::ui::atlas::{AtlasSelection, AtlasTool, FrameTab};
+use vale_app::ui::map_texture::MapRenderer;
 use vale_app::ui::pad::atlas::{
     ADD, ADD_HOLE, ADD_PAGE, AUTO_INTERVAL, BORDER, BORDER_DISTANCE, BORDER_STROKE, BORDER_STYLES,
     BORDER_WIDTH, CENTER_ON_FRAME, DELETE_FRAME, DELETE_PAGE, DELETE_PROJECTION, EXPORT_ATLAS_PDF,
@@ -2272,6 +2273,50 @@ fn card_row(image: &image::RgbaImage, card: Rect) -> Vec<i32> {
     (left..right)
         .map(|x| i32::from(image.get_pixel(x, y).0[0]))
         .collect()
+}
+
+/// The UI of the atlas with a frame and a scale bar, with or without the GPU
+/// renderer of the maps. Returns the picture and the number of textures that
+/// the GPU drew.
+fn atlas_picture(gpu: bool) -> (image::RgbaImage, usize) {
+    let setup = egui_kittest::wgpu::default_wgpu_setup();
+    let render_state = egui_kittest::wgpu::create_render_state(
+        setup,
+        eframe::egui_wgpu::RendererOptions::PREDICTABLE,
+    );
+    let mut s = state();
+    if gpu {
+        s.map_renderer = Some(MapRenderer::new(&render_state).expect("the device has compute"));
+    }
+    let mut h = vale_app::headless::ui_harness_on(s, (1194.0, 834.0), 1.0, render_state);
+    h.set_render_every_step(true);
+    h.run_steps(3);
+    atlas::add_frame(h.state_mut());
+    atlas::add_item(h.state_mut(), ItemKind::ScaleBar);
+    h.run_steps(4);
+    let drawn = h.state().atlas.gpu_textures();
+    (h.render().unwrap(), drawn)
+}
+
+#[test]
+#[ignore = "gpu"]
+fn gpu_vello_draws_the_atlas_with_the_pixels_of_the_cpu() {
+    let _gpu = one_gpu_test();
+    let (cpu, none) = atlas_picture(false);
+    let (gpu, drawn) = atlas_picture(true);
+    assert_eq!(none, 0);
+    // The map of the frame and the scale bar.
+    assert_eq!(drawn, 2);
+    std::fs::create_dir_all("../../target/app").unwrap();
+    gpu.save("../../target/app/test-atlas-gpu.png").unwrap();
+    let differ = cpu
+        .pixels()
+        .zip(gpu.pixels())
+        .filter(|(a, b)| a.0.iter().zip(b.0).any(|(x, y)| x.abs_diff(y) > 16))
+        .count();
+    let part = differ as f64 / f64::from(cpu.width() * cpu.height());
+    // Only the antialiasing of some edges differs.
+    assert!(part < 0.002, "{differ} pixels differ");
 }
 
 #[test]

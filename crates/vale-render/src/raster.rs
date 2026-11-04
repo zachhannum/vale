@@ -169,8 +169,8 @@ pub(crate) fn render_items_png(
     Ok((png, covered))
 }
 
-/// Draws the list at `scale` pixels per point.
-pub fn render_pixmap(list: &DisplayList, scale: f64) -> Result<Pixmap, RenderError> {
+/// The size in pixels of the list at `scale` pixels per point.
+pub fn pixel_size(list: &DisplayList, scale: f64) -> Result<(u16, u16), RenderError> {
     if !scale.is_finite() || scale <= 0.0 {
         return Err(RenderError::EmptyPage);
     }
@@ -184,7 +184,12 @@ pub fn render_pixmap(list: &DisplayList, scale: f64) -> Result<Pixmap, RenderErr
             height: ph,
         });
     }
-    let (w, h) = (pw as u16, ph as u16);
+    Ok((pw as u16, ph as u16))
+}
+
+/// Draws the list at `scale` pixels per point.
+pub fn render_pixmap(list: &DisplayList, scale: f64) -> Result<Pixmap, RenderError> {
+    let (w, h) = pixel_size(list, scale)?;
     let mut ctx = new_context(w, h);
     draw_items(&mut ctx, &list.items, Affine::scale(scale))?;
     ctx.flush();

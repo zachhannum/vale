@@ -64,6 +64,8 @@ jobs:
             tests: -p vale-app --test atlas --test export --test frame_raster --test import --test inspector --test session --test ui
           - name: terrain
             tests: -p vale-terrain --features gpu --test gpu
+          - name: render
+            tests: -p vale-render --features gpu --test gpu
     steps:
       - uses: actions/checkout@v4
 

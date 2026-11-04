@@ -12,3 +12,16 @@ vello_cpu.workspace = true
 krilla = { workspace = true, features = ["raster-images"] }
 usvg.workspace = true
 vale-labeler.workspace = true
+vello = { workspace = true, optional = true }
+wgpu = { workspace = true, optional = true }
+
+[features]
+gpu = ["dep:vello", "dep:wgpu"]
+
+[dev-dependencies]
+pollster.workspace = true
+wgpu = { workspace = true, features = ["vulkan", "metal", "gles"] }
+
+[[test]]
+name = "gpu"
+required-features = ["gpu"]

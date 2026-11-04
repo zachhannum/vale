@@ -17,6 +17,7 @@ use std::sync::Arc;
 
 use vale_store::RasterId;
 
+use super::map_texture::{self, MapRenderer, MapTexture};
 use super::pad::theme;
 use super::{AppState, LayerRef};
 use crate::atlas::{self as math, FrameTarget, Handle, PT_PER_MM, PagePreset, Vertex};
@@ -486,10 +487,9 @@ struct Thumb {
 }
 
 impl Thumb {
-    /// Averages `REDUCTION` by `REDUCTION` pixels of a premultiplied image.
-    fn new(img: &vale_render::Rgba) -> Thumb {
+    /// Averages `n` by `n` pixels of a premultiplied image.
+    fn new(img: &vale_render::Rgba, n: usize) -> Thumb {
         static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let n = REDUCTION as usize;
         let size = [img.width.div_ceil(n), img.height.div_ceil(n)];
         let mut rgba = vec![0u8; size[0] * size[1] * 4];
         for y in 0..size[1] {
@@ -515,7 +515,7 @@ impl Thumb {
 }
 
 struct FrameImage {
-    texture: egui::TextureHandle,
+    texture: MapTexture,
     /// A reduced copy for the blurred backdrop of the cards.
     thumb: Arc<Thumb>,
     /// The key of what the frame shows.
@@ -846,6 +846,16 @@ impl AtlasState {
         self.images.get(&id).map(|image| image.texture.size())
     }
 
+    /// The number of the textures of frames and items that the GPU drew.
+    pub fn gpu_textures(&self) -> usize {
+        let frames = self.images.values().map(|i| &i.texture);
+        let items = self.item_images.values().map(|i| &i.texture);
+        frames
+            .chain(items)
+            .filter(|t| matches!(t, MapTexture::Gpu(_)))
+            .count()
+    }
+
     /// The selected frame.
     pub fn frame(&self) -> Option<FrameId> {
         match self.selection {
@@ -880,7 +890,7 @@ impl AtlasState {
 
 /// The texture of an item of furniture.
 struct ItemImage {
-    texture: egui::TextureHandle,
+    texture: MapTexture,
     /// The key of what the item shows.
     content: u64,
     /// The texture on the screen at the last paint.
@@ -2402,30 +2412,22 @@ fn items(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
         ));
         let old = state.atlas.item_images.get(&rec.id).map(|i| i.content);
         if old != Some(content) && !(moving && old.is_some()) {
-            let rendered = crate::furniture::render(
+            let (list, _) = crate::furniture::list(
                 &mut state.pipeline,
                 &state.doc,
                 rec,
                 &mut state.fonts,
-                scale,
                 crate::furniture::Purpose::Screen,
             );
-            let (img, _) = match rendered {
-                Ok(r) => r,
+            let old = state.atlas.item_images.remove(&rec.id).map(|i| i.texture);
+            let name = || format!("item-{}", rec.id.0);
+            let renderer = state.map_renderer.as_mut();
+            let texture = match map_texture::draw(&ctx, renderer, old, name, &list, scale) {
+                Ok((texture, _)) => texture,
                 Err(e) => {
-                    state.status = format!("{e:#}");
+                    state.status = e;
                     continue;
                 }
-            };
-            let image =
-                egui::ColorImage::from_rgba_premultiplied([img.width, img.height], &img.data);
-            let options = egui::TextureOptions::LINEAR;
-            let texture = match state.atlas.item_images.remove(&rec.id) {
-                Some(mut old) => {
-                    old.texture.set(image, options);
-                    old.texture
-                }
-                None => ctx.load_texture(format!("item-{}", rec.id.0), image, options),
             };
             let rect = Rect::NOTHING;
             state.atlas.item_images.insert(
@@ -2562,31 +2564,27 @@ fn compose_spill(
     let list = state
         .pipeline
         .compose_frame_spill(&state.doc, frame, target, part);
-    let img = list
-        .map_err(|e| format!("{e:#}"))
-        .and_then(|list| vale_render::render_rgba(&list, scale).map_err(|e| format!("{e}")));
-    let img = match img {
-        Ok(img) => img,
+    let drawn = list.map_err(|e| format!("{e:#}")).and_then(|list| {
+        let old = state.atlas.spills.remove(&frame.id).map(|s| s.texture);
+        let name = || format!("spill-{}", frame.id.0);
+        let renderer = state.map_renderer.as_mut();
+        let (texture, img) = map_texture::draw(ctx, renderer, old, name, &list, scale)?;
+        Ok((texture, thumb_of(img.as_ref(), None, &list, scale, true)?))
+    });
+    let (texture, thumb) = match drawn {
+        Ok(drawn) => drawn,
         Err(e) => {
             state.status = e;
             return;
         }
     };
-    let image = egui::ColorImage::from_rgba_premultiplied([img.width, img.height], &img.data);
-    let options = egui::TextureOptions::LINEAR;
-    let texture = match state.atlas.spills.remove(&frame.id) {
-        Some(mut old) => {
-            old.texture.set(image, options);
-            old.texture
-        }
-        None => ctx.load_texture(format!("spill-{}", frame.id.0), image, options),
-    };
-    let size = vec2(img.width as f32, img.height as f32) / ppp;
+    let [w, h] = texture.size();
+    let size = vec2(w as f32, h as f32) / ppp;
     state.atlas.spills.insert(
         frame.id,
         FrameImage {
             texture,
-            thumb: Arc::new(Thumb::new(&img)),
+            thumb,
             content,
             place: place_key,
             vt,
@@ -2675,6 +2673,7 @@ fn compose(
                 let images = &mut state.atlas.unders;
                 match upload(
                     ctx,
+                    state.map_renderer.as_mut(),
                     images,
                     frame.id,
                     &list,
@@ -2700,6 +2699,7 @@ fn compose(
     let images = &mut state.atlas.images;
     if let Err(e) = upload(
         ctx,
+        state.map_renderer.as_mut(),
         images,
         frame.id,
         &map,
@@ -2724,6 +2724,7 @@ fn compose(
         let images = &mut state.atlas.decors;
         if let Err(e) = upload(
             ctx,
+            state.map_renderer.as_mut(),
             images,
             frame.id,
             &decor,
@@ -2742,8 +2743,10 @@ fn compose(
 }
 
 /// Renders a list to the texture of a frame in `images`.
+#[allow(clippy::too_many_arguments)]
 fn upload(
     ctx: &egui::Context,
+    renderer: Option<&mut MapRenderer>,
     images: &mut HashMap<FrameId, FrameImage>,
     id: FrameId,
     list: &vale_render::DisplayList,
@@ -2753,22 +2756,20 @@ fn upload(
     settled: bool,
 ) -> Result<(), String> {
     let ppp = ctx.pixels_per_point();
-    let img = vale_render::render_rgba(list, scale).map_err(|e| format!("{e}"))?;
-    let image = egui::ColorImage::from_rgba_premultiplied([img.width, img.height], &img.data);
-    let options = egui::TextureOptions::LINEAR;
-    let texture = match images.remove(&id) {
-        Some(mut old) => {
-            old.texture.set(image, options);
-            old.texture
-        }
-        None => ctx.load_texture(format!("frame-{}", id.0), image, options),
+    let (old, old_thumb) = match images.remove(&id) {
+        Some(old) => (Some(old.texture), Some(old.thumb)),
+        None => (None, None),
     };
-    let size = vec2(img.width as f32, img.height as f32) / ppp;
+    let name = || format!("frame-{}", id.0);
+    let (texture, img) = map_texture::draw(ctx, renderer, old, name, list, scale)?;
+    let thumb = thumb_of(img.as_ref(), old_thumb, list, scale, settled)?;
+    let [w, h] = texture.size();
+    let size = vec2(w as f32, h as f32) / ppp;
     images.insert(
         id,
         FrameImage {
             texture,
-            thumb: Arc::new(Thumb::new(&img)),
+            thumb,
             content,
             place,
             vt,
@@ -2777,6 +2778,27 @@ fn upload(
         },
     );
     Ok(())
+}
+
+/// The reduced copy of a texture: from the pixels of the CPU, or after the
+/// GPU, from a render at the reduced size. While the map moves, the GPU
+/// keeps the last copy.
+fn thumb_of(
+    img: Option<&vale_render::Rgba>,
+    old: Option<Arc<Thumb>>,
+    list: &vale_render::DisplayList,
+    scale: f64,
+    settled: bool,
+) -> Result<Arc<Thumb>, String> {
+    if let Some(img) = img {
+        return Ok(Arc::new(Thumb::new(img, REDUCTION as usize)));
+    }
+    if let Some(old) = old.filter(|_| !settled) {
+        return Ok(old);
+    }
+    let small =
+        vale_render::render_rgba(list, scale / f64::from(REDUCTION)).map_err(|e| format!("{e}"))?;
+    Ok(Arc::new(Thumb::new(&small, 1)))
 }
 
 /// Paints the texture of a frame, and returns the screen rectangle of the

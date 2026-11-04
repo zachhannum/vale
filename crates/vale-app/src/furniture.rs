@@ -412,9 +412,28 @@ pub fn items(
     }
 }
 
+/// An item of furniture as a list in page points, and the box in page
+/// millimeters that the list covers: the box of the item with
+/// [`RENDER_MARGIN_MM`] around it.
+pub fn list(
+    pipeline: &mut Pipeline,
+    doc: &Document,
+    rec: &FurnitureRecord,
+    fonts: &mut Fonts,
+    purpose: Purpose,
+) -> (DisplayList, Rect) {
+    let rect = rect_of(rec).inflate(RENDER_MARGIN_MM, RENDER_MARGIN_MM);
+    let target = FrameTarget {
+        origin: Point::new(-rect.x0 * PT_PER_MM, -rect.y0 * PT_PER_MM),
+        pts_per_mm: PT_PER_MM,
+    };
+    let mut list = DisplayList::new(rect.width() * PT_PER_MM, rect.height() * PT_PER_MM);
+    list.items = items(pipeline, doc, rec, target, fonts, purpose);
+    (list, rect)
+}
+
 /// An item of furniture as an image of `scale` pixels per page point, and
-/// the box in page millimeters that the image covers: the box of the item
-/// with [`RENDER_MARGIN_MM`] around it.
+/// the box in page millimeters that the image covers.
 pub fn render(
     pipeline: &mut Pipeline,
     doc: &Document,
@@ -423,13 +442,7 @@ pub fn render(
     scale: f64,
     purpose: Purpose,
 ) -> anyhow::Result<(Rgba, Rect)> {
-    let rect = rect_of(rec).inflate(RENDER_MARGIN_MM, RENDER_MARGIN_MM);
-    let target = FrameTarget {
-        origin: Point::new(-rect.x0 * PT_PER_MM, -rect.y0 * PT_PER_MM),
-        pts_per_mm: PT_PER_MM,
-    };
-    let mut list = DisplayList::new(rect.width() * PT_PER_MM, rect.height() * PT_PER_MM);
-    list.items = items(pipeline, doc, rec, target, fonts, purpose);
+    let (list, rect) = list(pipeline, doc, rec, fonts, purpose);
     Ok((vale_render::render_rgba(&list, scale)?, rect))
 }
 
