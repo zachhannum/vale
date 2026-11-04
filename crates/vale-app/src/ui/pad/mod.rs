@@ -10,7 +10,6 @@ use vale_terrain::Mode;
 
 pub use super::LayerRef;
 use super::atlas::AtlasTool;
-use super::point_form;
 use super::raster_form::{self, RasterForm};
 use super::select;
 use super::world_form::{self, WorldForm};
@@ -620,6 +619,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     table::check(state);
     table::widen(state, &mut rects);
     state.sync_selection_form(state.pad.is_open(Panel::Attributes));
+    select::drop_focus(&ctx, state);
     for panel in [
         Panel::Brush,
         Panel::Layers,
@@ -630,6 +630,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
             show_panel(&ctx, state, &mut controls, &rects, panel);
         }
     }
+    super::new_feature::keep_in_view(state, &rects);
     expire_notes(&ctx, state);
     raster::band_card(&ctx, state, &mut controls, &rects);
     raster::shade_color_frame(&ctx, state);
@@ -677,7 +678,6 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     }
     world_form::pad(&ctx, state, &mut controls, &rects);
     raster_form::pad(&ctx, state, &mut controls, &rects);
-    point_form::pad(&ctx, state, &mut controls, &rects);
     super::region::pad(&ctx, state, &mut controls, &rects);
     if let Some(rect) = canvas.inner {
         globe::paint_canvas(ui, state, rect, theme::CANVAS, true);
@@ -1567,18 +1567,29 @@ pub(super) fn show_panel(
             (rects.right_panel, right - rects.right_panel.x)
         }
     };
-    let action = list.then_some((ADD_LAYER, Icon::Plus, state.pad.add));
+    let action = match panel {
+        Panel::Attributes => Some((select::FOCUS_NEW, Icon::TextCursor, state.tools.focus_new)),
+        _ => list.then_some((ADD_LAYER, Icon::Plus, state.pad.add)),
+    };
     let head = CardTitle {
         title,
         back,
         action,
     };
     let on_title = |state: &mut AppState, row: &widgets::TitleRow| {
-        if let Some(add) = &row.action {
-            state.pad.add_button = Some(add.rect);
-            if add.clicked() {
-                state.pad.add = !state.pad.add;
+        match &row.action {
+            Some(focus) if panel == Panel::Attributes => {
+                if focus.clicked() {
+                    state.tools.focus_new = !state.tools.focus_new;
+                }
             }
+            Some(add) => {
+                state.pad.add_button = Some(add.rect);
+                if add.clicked() {
+                    state.pad.add = !state.pad.add;
+                }
+            }
+            None => {}
         }
         if row.back && page == Some(Page::Ramps) {
             state.pad.page = Some(Page::Stops);

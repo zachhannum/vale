@@ -413,11 +413,11 @@ On the iPad, the mode cell is the first cell of the context strip of the polygon
 
 The point tool places cities, landmarks, and other named places in the selected point layer. A tap of the pen or a click of the mouse places one point, and a finger turns the globe. The point snaps to the targets of the snap service. A point that snaps to a vertex gets the stored position of the vertex.
 
-The tap opens the attribute form of the point. The form has a text field for each field of the layer, with the default value of the field. A text that is not a value of the type of the field has the warning color, and its value is null. An empty field is null. A layer with no fields opens no form.
+A new point, line, or polygon gets the default value of each field, and it becomes the selection. You enter its attributes in the inspector, so you can name a town, a river, or a country when you draw it. No card and no window opens over the canvas.
 
-The first field has the keyboard focus. Return goes to the next field, and on the last field it closes the form. The next tap also closes the form and places the next point, so ten points take ten taps and ten names. The point and its values are one undo step. Undo, a change of the tool, and a change of the layer close the form first. A ring in the accent color marks the point of the open form.
+When the inspector is open, it shows the new feature. The toggle "Focus new features" is in the title row of the inspector, and it is off at the first start. While it is off, the inspector does not ask for a value. A new feature takes the focus away from the field that has it, so the keyboard goes away. While it is on, a new feature takes the focus in the field that you edited last in its layer, or in the first field. The next tap of the point tool, or the next stroke of the line tool or the polygon tool, places the next feature, so ten points take ten taps and ten names. The app keeps the toggle with the settings of the tools, and the project file does not hold it. Return goes to the next field, and on the last field it ends the edit. The feature and the values that you type before the next feature are one undo step. Undo, a change of the tool, a change of the layer, and a change of the selection end the edit first. When the inspector is closed, nothing opens. A stroke that extends a line or reshapes a feature makes no new feature, so it does not change the selection or the inspector.
 
-On the iPad, the form is a card near the top of the screen. The card is not modal, so the pen can place the next point. The app does not know the height of the on-screen keyboard. It takes the top of the keyboard at 45 percent of the screen height in landscape, and at 62 percent in portrait. If the new point is under the card or under that line, the globe turns, so the point is between them.
+The app does not know the height of the on-screen keyboard of the iPad. It takes the top of the keyboard at 45 percent of the screen height in landscape, and at 62 percent in portrait. If a new point is under the inspector, or under that line while the toggle is on, the globe turns, so the point is in the free part of the canvas.
 
 ### Measure
 
@@ -441,7 +441,7 @@ A box selects a feature if a vertex of the feature is in the box, if an edge cro
 
 A pen drag or a mouse drag that starts on a point of the selection moves that point. The move is one undo step when the pen or the mouse comes up. The tool moves points only. Lines and polygons change in vertex editing.
 
-A selection opens nothing over the map. The inspector shows the attributes of the selection. It follows the selection in each tool, so it always matches the highlight on the canvas. With one feature, the inspector has a field for each attribute, in a column. A value that is not of the field type has the warning color, and a change of a field is one undo step when the field loses the focus. With more than one feature, the inspector shows the count. With no selection, it shows "Select a feature to see its attributes." After you edit a field, the next feature that you select in the layer gets the focus in the same field, so you can tap one river after another and type each name. An empty selection ends this. The inspector also has "Show in table", which opens the attribute table of the layer at the first selected row.
+A selection opens nothing over the map. The inspector shows the attributes of the selection. It follows the selection in each tool, so it always matches the highlight on the canvas. With one feature, the inspector has a field for each attribute, in a column. A value that is not of the field type has the warning color, and a change of a field is one undo step when the field loses the focus. With more than one feature, the inspector shows the count. With no selection, it shows "Select a feature to see its attributes." After you edit a field, the next feature that you select in the layer gets the focus in the same field, so you can tap one river after another and type each name. An empty selection, a change of the layer, and a change of the tool end this. The inspector also has "Show in table", which opens the attribute table of the layer at the first selected row.
 
 On the iPad, the Attributes button opens the inspector in the panel place at the right. While Select is the tool, the context strip has "Delete selection", which deletes all selected features in one undo step. It is off with no selection. On the desktop, the inspector is a panel at the right, and ⌘I and the View menu show and hide it. Delete and Backspace delete the selection, and Esc clears it.
 
@@ -589,7 +589,7 @@ The iPhone layout is the compact layout of the iPad, below 600 points, with thes
 - The Brush panel has no pressure settings.
 - A sheet opens at half height. You pull it up to the full height, or down to its title row.
 - In the Atlas workspace, the page controls are below the top row.
-- The form of a new point is a card below the top row, above the keyboard of the system.
+- The inspector is a sheet. A new point stays above the sheet and above the keyboard of the system.
 - In landscape, the card holds the Brush button alone, at the right of the strip. The width is 600 points or more, so the view switch is in the top row, and a panel floats at the right.
 
 The safe area of the iPhone is larger than the bands of the iPad. In portrait, it leaves out the top 59 points and the bottom 34 points.
@@ -620,7 +620,7 @@ These rules apply to the layout:
 - Selected tools, segments, tabs, and rows have the same tint of the accent color.
 - Each tool and each action shows its name and its key in a tooltip, and the menus show the keys too.
 - The keys of the World tools are R for Raise, F for Lower, S for Smooth, E for Flatten, L for Line, P for Point, V for Select, A for Vertex, and H for the hand. B opens the Brush panel. The keys of the Atlas tools are V for Select, H for the hand, and T for Label. In both workspaces, M selects Measure. While Measure is on, Return closes the path, and Esc clears the path. While Select is on in the World workspace, Delete and Backspace delete the selection, and Esc clears it. While Vertex is on, Delete and Backspace delete the selected vertices, and Esc clears them. In a map frame of the Atlas workspace, ] and [ go to the next and the previous label, Return pins a label, and Delete hides it.
-- A form, for example "New world" or "Export", is a sheet of the window. The attribute form of a new point is a window at the top of the canvas, and the canvas takes the next click.
+- A form, for example "New world" or "Export", is a sheet of the window. A new feature shows in the inspector of the Attributes tab, and the canvas takes the next click.
 - The start screen has a sidebar with the places and the recent worlds, and a grid of cards. The tool bar has a search field, the sort order, a switch between a grid and a list, and "New world…". The menu of a card holds "Open", "Rename…", "Duplicate", "Show in Finder", and "Delete…".
 - The left mouse button and the pen paint. The middle button, or Space with the left button, turns the globe, and the wheel zooms. The brush outline follows the pointer and a hovering pen.
 
@@ -759,7 +759,7 @@ The app has seven editing tools in version 1.
 - Heightmap painting on the globe.
 - The toolbox, with polygonize and five other tools.
 - Freehand lines and polygons on the globe.
-- Point placement with an attribute form, for cities, landmarks, and other named places.
+- Point placement, with the attributes in the inspector, for cities, landmarks, and other named places.
 - An attribute table with sort, filter, and bulk edit.
 - Line and polygon editing by vertex and by reshape with a stroke, with snapping and a smooth operation. A stroke also adds an area to a polygon or subtracts an area from polygons, and a stroke splits lines and polygons.
 - Label editing on the map: pin, move, select a candidate, exclude.

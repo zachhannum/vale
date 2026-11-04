@@ -8,7 +8,7 @@ use eframe::egui;
 use vale_store::{FieldType, LayerId, Uuid, Value};
 
 use super::AppState;
-use super::point_form::FormField;
+use super::new_feature::FormField;
 use crate::globe::select::FeatureRef;
 use crate::table::{RowKey, Rows, Sort};
 
@@ -382,7 +382,7 @@ impl AppState {
         layer: LayerId,
         change: impl FnOnce(&mut vale_store::Project) -> bool,
     ) {
-        self.commit_point_form();
+        self.commit_new_feature();
         self.save_edit();
         if change(&mut self.doc.project) {
             // The form of the selection takes the new values.

@@ -1171,14 +1171,6 @@ pub(super) fn paint_canvas(
 ) {
     let painter = egui::Painter::new(ui.ctx().clone(), ui.layer_id(), rect);
     let layer = state.selected_vector();
-    let placed = state.point_form.as_ref().and_then(|form| {
-        let layer = state.doc.project.layer(form.layer)?;
-        let feature = layer.features.iter().find(|f| f.uuid() == form.feature)?;
-        match &feature.geometry {
-            Geometry::Points(points) => points.first().copied(),
-            _ => None,
-        }
-    });
     let globe = &mut state.globe;
     let more = globe.advance(Instant::now());
     let pixels_per_point = ui.ctx().pixels_per_point();
@@ -1275,11 +1267,6 @@ pub(super) fn paint_canvas(
     });
     if let Some(highlight) = globe.snap_highlight() {
         snap_highlight(&painter, rect, globe, &highlight, stroke.width + 4.0);
-    }
-    // A ring marks the point of the open form.
-    if let Some(pos) = placed.and_then(|p| globe.project(lonlat_to_dir(p[0], p[1]))) {
-        let ring = egui::Stroke::new(2.0, theme::ACCENT);
-        painter.circle_stroke(pos, 9.0, ring);
     }
     measure_overlay(
         &painter,

@@ -8,9 +8,9 @@ use eframe::egui::{self, Pos2};
 use vale_store::{Geometry, Layer, LayerId, Uuid};
 
 use super::AppState;
+use super::new_feature::{FormField, can_take_focus};
 use super::pad::theme;
 use super::pad::widgets::{self, Controls};
-use super::point_form::FormField;
 use super::table::SHOW_IN_TABLE;
 use crate::globe::math::{V3, dir_to_lonlat};
 use crate::globe::select::{self, FeatureRef, SelectEvent};
@@ -25,6 +25,8 @@ pub const ATTRIBUTES: &str = "Attributes";
 pub const NO_SELECTION: &str = "Select a feature to see its attributes.";
 /// The text of the inspector for a feature of a layer with no fields.
 pub const NO_FIELDS: &str = "The layer has no fields.";
+/// The toggle of the inspector that gives a new feature the focus.
+pub const FOCUS_NEW: &str = "Focus new features";
 /// The command of the desktop View menu that shows the inspector.
 pub const SHOW_ATTRIBUTES: &str = "Show attributes";
 /// The command of the desktop View menu that hides the inspector.
@@ -59,6 +61,13 @@ pub struct SelectionForm {
     /// The field that takes the focus when the form shows, and the number
     /// of frames that can still ask for the focus.
     focus: Option<(String, u8)>,
+}
+
+impl SelectionForm {
+    /// True if a field of the form waits for the focus.
+    pub(super) fn takes_focus(&self) -> bool {
+        self.focus.is_some()
+    }
 }
 
 /// The text of the inspector for a selection of `count` features.
@@ -145,6 +154,7 @@ impl AppState {
     /// Replaces the selection of the Select tool.
     pub fn set_feature_selection(&mut self, selection: Vec<FeatureRef>) {
         if selection != self.feature_selection {
+            self.commit_new_feature();
             self.commit_selection_form();
             if selection.is_empty() {
                 self.attribute_focus = None;
@@ -166,6 +176,9 @@ impl AppState {
             .collect();
         self.feature_selection
             .retain(|f| live.contains(&(f.layer, f.uuid)));
+        if self.feature_selection.is_empty() {
+            self.attribute_focus = None;
+        }
     }
 
     /// Moves one vertex of a point feature. The move is one undo step.
@@ -182,7 +195,7 @@ impl AppState {
         };
         *point = dir_to_lonlat(to).into();
         self.commit_selection_form();
-        self.commit_point_form();
+        self.commit_new_feature();
         self.save_edit();
         let geometry = Geometry::Points(points);
         if self.doc.project.set_geometry(f.layer, f.uuid, geometry) {
@@ -198,7 +211,7 @@ impl AppState {
         self.commit_selection_form();
         self.selection_form = None;
         self.attribute_focus = None;
-        self.commit_point_form();
+        self.commit_new_feature();
         self.save_edit();
         let selection = std::mem::take(&mut self.feature_selection);
         let uuids: Vec<Uuid> = selection.iter().map(|f| f.uuid).collect();
@@ -210,8 +223,11 @@ impl AppState {
     /// Opens the form of the one selected feature, or closes it. `shown`:
     /// the inspector shows.
     pub fn sync_selection_form(&mut self, shown: bool) {
-        if !shown {
+        self.inspector_shown = shown;
+        // A change of the tool ends the run of edits.
+        if !shown || self.attribute_tool != self.globe.tool {
             self.attribute_focus = None;
+            self.attribute_tool = self.globe.tool;
         }
         let one = match self.feature_selection.as_slice() {
             [one] if shown => Some(*one),
@@ -238,9 +254,20 @@ impl AppState {
                 let value = feature.attributes.get(&field.name);
                 FormField::new(field, value.and_then(|v| v.label()).unwrap_or_default())
             });
+            // With "Focus new features", a new feature takes the focus in the
+            // field that was edited last in its layer, or in the first field.
             // The field that was edited last takes the focus in the form of
-            // the next feature of its layer.
+            // the next feature of its layer that the Select tool selects.
+            let new = self.new_feature.as_ref().is_some_and(|n| n.feature == f);
+            let known = |name: &String| layer.fields.iter().any(|field| &field.name == name);
+            let last =
+                (self.last_field.as_ref()).filter(|(id, name)| *id == f.layer && known(name));
             let focus = match &mut self.attribute_focus {
+                _ if new && self.tools.focus_new => last
+                    .map(|(_, name)| name.clone())
+                    .or_else(|| layer.fields.first().map(|field| field.name.clone()))
+                    .map(|name| (name, FOCUS_FRAMES)),
+                _ if new => None,
                 Some((last, name)) if last.layer == f.layer && *last != f => {
                     *last = f;
                     Some((name.clone(), FOCUS_FRAMES))
@@ -257,7 +284,7 @@ impl AppState {
     }
 
     /// Puts each changed value of the form in its feature. The change is
-    /// one undo step.
+    /// one undo step, or a part of the undo step of a new feature.
     pub fn commit_selection_form(&mut self) {
         let Some(form) = &self.selection_form else {
             return;
@@ -278,6 +305,12 @@ impl AppState {
             .filter(|(name, value)| feature.attributes.get(name) != Some(value))
             .collect();
         if changed.is_empty() {
+            return;
+        }
+        if self.new_feature.as_ref().is_some_and(|n| n.feature == f) {
+            self.doc.project.set_attributes(f.layer, f.uuid, changed);
+            self.pipeline.forget(f.layer);
+            self.touch();
             return;
         }
         self.edit_attributes(f.layer, |project| {
@@ -352,15 +385,18 @@ pub fn keys(ui: &egui::Ui, state: &mut AppState) {
 }
 
 /// Reads a field of the inspector: its edit and its loss of the focus.
-/// Returns true if the field lost the focus.
+/// Return goes to the next field, and on the last field it ends the edit.
+/// `next`: the name of the next field.
 fn read_field(
     resp: &egui::Response,
     focus: &mut Option<(String, u8)>,
-    remember: &mut Option<String>,
+    outcome: &mut Outcome,
     name: &str,
-) -> bool {
+    next: Option<&String>,
+) {
     if let Some((field, frames)) = focus
         && field == name
+        && can_take_focus(&resp.ctx)
     {
         if *frames == 0 {
             *focus = None;
@@ -370,15 +406,26 @@ fn read_field(
         }
     }
     if resp.changed() {
-        *remember = Some(name.to_owned());
+        outcome.edited = Some(name.to_owned());
     }
-    resp.lost_focus()
+    if !resp.lost_focus() {
+        return;
+    }
+    outcome.commit = true;
+    if resp.ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
+        match next {
+            Some(next) => *focus = Some((next.clone(), FOCUS_FRAMES)),
+            None => outcome.end = true,
+        }
+    }
 }
 
 /// What the inspector does after its frame.
 #[derive(Default)]
 struct Outcome {
     commit: bool,
+    /// Return on the last field ends the edit.
+    end: bool,
     show: bool,
     /// The field that the user edited.
     edited: Option<String>,
@@ -387,11 +434,15 @@ struct Outcome {
 impl AppState {
     fn finish_inspector(&mut self, form: Option<SelectionForm>, outcome: Outcome) {
         if let (Some(name), Some(form)) = (outcome.edited, &form) {
+            self.last_field = Some((form.feature.layer, name.clone()));
             self.attribute_focus = Some((form.feature, name));
         }
         self.selection_form = form;
         if outcome.commit {
             self.commit_selection_form();
+        }
+        if outcome.end {
+            self.commit_new_feature();
         }
         if outcome.show {
             self.show_in_table();
@@ -417,12 +468,16 @@ pub fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
                 ui.add_space(4.0);
                 ui.label(egui::RichText::new(NO_FIELDS).color(theme::MUTE));
             }
+            let names: Vec<String> = form.fields.iter().map(|f| f.name.clone()).collect();
             let focus = &mut form.focus;
-            for field in &mut form.fields {
+            for (i, field) in form.fields.iter_mut().enumerate() {
                 let valid = field.valid();
                 let (name, text) = (&field.name, &mut field.text);
                 let resp = widgets::text_field(ui, controls, name, name, None, text, valid);
-                outcome.commit |= read_field(&resp, focus, &mut outcome.edited, name);
+                if resp.gained_focus() {
+                    resp.scroll_to_me(None);
+                }
+                read_field(&resp, focus, &mut outcome, name, names.get(i + 1));
             }
         }
         None => {
@@ -433,6 +488,15 @@ pub fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
     ui.add_space(8.0);
     outcome.show = widgets::button_row(ui, controls, SHOW_IN_TABLE, true).clicked();
     state.finish_inspector(form, outcome);
+}
+
+/// Takes the focus away from the field that has it, after a new feature.
+/// The fields of each feature have the same IDs, so the field of the last
+/// feature keeps the focus otherwise.
+pub fn drop_focus(ctx: &egui::Context, state: &mut AppState) {
+    if std::mem::take(&mut state.drop_focus) {
+        ctx.memory_mut(|m| m.stop_text_input());
+    }
 }
 
 /// Shows or hides the inspector of the desktop layout.
@@ -464,16 +528,23 @@ pub fn view_menu(ui: &mut egui::Ui, state: &mut AppState) {
 /// The inspector of the desktop layout: a panel at the right.
 pub fn desktop(ui: &mut egui::Ui, state: &mut AppState) {
     state.sync_selection_form(state.show_attributes);
+    drop_focus(ui.ctx(), state);
     if !state.show_attributes {
         return;
     }
     let mut form = state.selection_form.take();
     let mut outcome = Outcome::default();
     let count = state.feature_selection.len();
+    let mut focus_new = state.tools.focus_new;
     egui::Panel::right(INSPECTOR)
         .default_size(260.0)
         .show(ui, |ui| {
-            ui.strong(ATTRIBUTES);
+            ui.horizontal(|ui| {
+                ui.strong(ATTRIBUTES);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.toggle_value(&mut focus_new, FOCUS_NEW);
+                });
+            });
             ui.separator();
             if count == 0 {
                 ui.weak(NO_SELECTION);
@@ -484,20 +555,20 @@ pub fn desktop(ui: &mut egui::Ui, state: &mut AppState) {
                     if form.fields.is_empty() {
                         ui.weak(NO_FIELDS);
                     }
+                    let names: Vec<String> = form.fields.iter().map(|f| f.name.clone()).collect();
                     let focus = &mut form.focus;
                     egui::Grid::new("attribute-fields")
                         .num_columns(2)
                         .show(ui, |ui| {
-                            for field in &mut form.fields {
+                            for (i, field) in form.fields.iter_mut().enumerate() {
                                 ui.label(&field.name);
                                 let color = (!field.valid()).then(|| ui.visuals().warn_fg_color);
                                 let edit = egui::TextEdit::singleline(&mut field.text)
                                     .id(egui::Id::new((INSPECTOR, &field.name)))
                                     .text_color_opt(color);
                                 let resp = ui.add(edit);
-                                let name = &field.name;
-                                outcome.commit |=
-                                    read_field(&resp, focus, &mut outcome.edited, name);
+                                let (name, next) = (&field.name, names.get(i + 1));
+                                read_field(&resp, focus, &mut outcome, name, next);
                                 ui.end_row();
                             }
                         });
@@ -506,5 +577,6 @@ pub fn desktop(ui: &mut egui::Ui, state: &mut AppState) {
             }
             outcome.show = ui.button(SHOW_IN_TABLE).clicked();
         });
+    state.tools.focus_new = focus_new;
     state.finish_inspector(form, outcome);
 }

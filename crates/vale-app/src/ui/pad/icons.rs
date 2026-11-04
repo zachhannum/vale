@@ -46,6 +46,8 @@ pub enum Icon {
     Line,
     Polygon,
     Plus,
+    /// A text cursor.
+    TextCursor,
     Center,
     Reset,
     World,
@@ -117,6 +119,7 @@ impl Icon {
             Icon::Line => "M4 18c4-10 8 2 16-12",
             Icon::Polygon => "M5 7l8-3 6 6-3 9-9-1z",
             Icon::Plus => "M12 5v14M5 12h14",
+            Icon::TextCursor => "M9 4h6M9 20h6M12 4v16",
             Icon::Center => "M12 3v5M12 16v5M3 12h5M16 12h5",
             Icon::World => {
                 "M12 3c4.97 0 9 4.03 9 9s-4.03 9-9 9-9-4.03-9-9 4.03-9 9-9z\
@@ -436,6 +439,7 @@ mod tests {
             Icon::Line,
             Icon::Polygon,
             Icon::Plus,
+            Icon::TextCursor,
             Icon::Center,
             Icon::Reset,
             Icon::World,

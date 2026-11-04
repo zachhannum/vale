@@ -6582,14 +6582,26 @@ fn new_point_layer(h: &mut Pad) -> vale_store::LayerId {
     id
 }
 
-/// The names of the fields of the open point form.
+/// The names of the fields of the inspector.
 fn form_fields(h: &Pad) -> Vec<String> {
-    let form = h.state().point_form.as_ref().expect("no point form");
+    let form = h.state().selection_form.as_ref().expect("no form");
     form.fields.iter().map(|f| f.name.clone()).collect()
 }
 
+/// Types a text and runs the frames of the edit.
+fn type_in_focus(h: &mut Pad, text: &str) {
+    h.event(egui::Event::Text(text.into()));
+    h.run_steps(2);
+}
+
+/// Presses Return and runs the frames of the edit.
+fn press_return(h: &mut Pad) {
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+}
+
 #[test]
-fn a_pen_tap_places_a_point_and_opens_a_form_with_each_field_of_the_layer() {
+fn with_the_inspector_open_a_new_point_is_the_selection_with_no_keyboard() {
     let mut h = pad(BOARDS[0]);
     let draw = draw_cell(&h);
     let places = vector(&h, "Places");
@@ -6599,30 +6611,48 @@ fn a_pen_tap_places_a_point_and_opens_a_form_with_each_field_of_the_layer() {
     assert_eq!(h.state().pad.vector_face, Some(vale_app::ui::pad::POINT));
     quick_tap(&mut h, VECTOR);
     assert_eq!(h.state().globe.tool, Tool::Point);
+    tap(&mut h, select::ATTRIBUTES);
     let before = line_features(&h, places);
     let center = h.state().globe.rect.center();
     // A finger turns the globe and places no point.
     drag(&mut h, center, center + vec2(60.0, 0.0), None);
     assert_eq!(line_features(&h, places), before);
-    assert!(h.state().point_form.is_none());
+    assert!(h.state().new_feature.is_none());
 
     pen_tap_at(&mut h, center);
     let after = line_features(&h, places);
     assert_eq!(after.len(), before.len() + 1);
+    let new = after.last().unwrap().uuid();
+    assert_eq!(
+        selection(&h),
+        [FeatureRef {
+            layer: places,
+            uuid: new
+        }]
+    );
     let fields = h.state().doc.project.layer(places).unwrap().field_names();
     assert!(!fields.is_empty());
     assert_eq!(form_fields(&h), fields);
-    let form = h.state().point_form.as_ref().unwrap();
-    assert_eq!(form.feature, after.last().unwrap().uuid());
-    // The fields that do not fit scroll.
-    assert!(control(&h, &fields[0]).is_some());
-    // Another tool closes the form.
+    assert_eq!(h.state().selection_form.as_ref().unwrap().feature.uuid, new);
+    // No card opens over the canvas. The inspector is the only panel.
+    let panels: Vec<Panel> = h.state().pad.panels.iter().map(|(p, _)| *p).collect();
+    assert_eq!(panels, [Panel::Attributes]);
+    // The inspector does not ask for a value.
+    assert!(no_keyboard(&h));
+    tap(&mut h, &fields[0]);
+    type_in_focus(&mut h, "Avalon");
+    let form = h.state().selection_form.as_ref().unwrap();
+    assert!(form.fields[0].text.ends_with("Avalon"));
+    // Another tool ends the edit.
     tap(&mut h, "Pan");
-    assert!(h.state().point_form.is_none());
+    assert!(h.state().new_feature.is_none());
+    let feature = line_features(&h, places).pop().unwrap();
+    let value = feature.attributes[&fields[0]].label().unwrap_or_default();
+    assert!(value.ends_with("Avalon"));
 }
 
 #[test]
-fn a_new_point_layer_has_a_name_field_and_return_closes_the_form() {
+fn a_new_point_layer_has_a_name_field_and_return_ends_the_edit() {
     let mut h = pad(BOARDS[0]);
     let id = new_point_layer(&mut h);
     let layer = h.state().doc.project.layer(id).unwrap();
@@ -6633,33 +6663,86 @@ fn a_new_point_layer_has_a_name_field_and_return_closes_the_form() {
     let label = &entry.unwrap().style.label;
     assert_eq!(label.field.as_deref(), Some("name"));
     assert!(label.enabled);
+    tap(&mut h, select::ATTRIBUTES);
     let center = h.state().globe.rect.center();
     pen_tap_at(&mut h, center);
     assert_eq!(form_fields(&h), ["name"]);
-    // The field has the focus, so the keyboard types into it at once.
-    h.event(egui::Event::Text("Avalon".into()));
-    h.run_steps(2);
-    h.key_press(egui::Key::Enter);
-    h.run_steps(2);
-    assert!(h.state().point_form.is_none());
+    tap(&mut h, "name");
+    type_in_focus(&mut h, "Avalon");
+    press_return(&mut h);
+    assert!(h.state().new_feature.is_none());
+    assert!(no_keyboard(&h));
     let layer = h.state().doc.project.layer(id).unwrap();
     let name = &layer.features[0].attributes["name"];
     assert_eq!(*name, vale_store::Value::Text("Avalon".into()));
+    assert_eq!(selection(&h).len(), 1);
 }
 
 #[test]
-fn a_point_layer_with_no_fields_places_a_point_with_no_form() {
+fn with_the_inspector_closed_a_new_feature_gets_the_defaults_and_nothing_opens() {
+    use vale_store::Value;
     let dir = tempfile::tempdir().unwrap();
     let mut h = saved_pad(BOARDS[0], dir.path());
     let id = new_point_layer(&mut h);
-    h.state_mut().doc.project.remove_field(id, "name");
+    let town = Value::Text("Town".into());
+    assert!(
+        h.state_mut()
+            .doc
+            .project
+            .set_field_default(id, "name", town.clone())
+    );
     for _ in 0..3 {
         step_and_save(&mut h, false);
     }
     let saved = saves(&h);
     let center = h.state().globe.rect.center();
     pen_tap_at(&mut h, center);
-    assert!(h.state().point_form.is_none());
+    assert!(h.state().new_feature.is_none());
+    assert!(h.state().pad.panels.is_empty());
+    assert!(no_keyboard(&h));
+    assert_eq!(line_features(&h, id)[0].attributes["name"], town);
+    assert_eq!(saves(&h), saved + 1);
+
+    // A new line also gets the default values.
+    let rivers = vector(&h, "Rivers");
+    select_layer(&mut h, rivers);
+    quick_tap(&mut h, VECTOR);
+    let field = vale_store::Field {
+        name: "kind".into(),
+        kind: vale_store::FieldType::Text,
+        default: Value::Text("River".into()),
+    };
+    assert!(h.state_mut().doc.project.add_field(rivers, field));
+    let before = line_features(&h, rivers).len();
+    line_stroke(
+        &mut h,
+        center + vec2(-150.0, 40.0),
+        center + vec2(150.0, -40.0),
+    );
+    let lines = line_features(&h, rivers);
+    assert_eq!(lines.len(), before + 1);
+    let kind = &lines.last().unwrap().attributes["kind"];
+    assert_eq!(*kind, Value::Text("River".into()));
+    assert!(h.state().new_feature.is_none());
+    assert!(h.state().pad.panels.is_empty());
+    assert!(no_keyboard(&h));
+}
+
+#[test]
+fn a_point_layer_with_no_fields_places_a_point_in_one_undo_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = saved_pad(BOARDS[0], dir.path());
+    let id = new_point_layer(&mut h);
+    h.state_mut().doc.project.remove_field(id, "name");
+    tap(&mut h, select::ATTRIBUTES);
+    for _ in 0..3 {
+        step_and_save(&mut h, false);
+    }
+    let saved = saves(&h);
+    let center = h.state().globe.rect.center();
+    pen_tap_at(&mut h, center);
+    assert!(h.state().new_feature.is_none());
+    assert!(h.query_by_label(select::NO_FIELDS).is_some());
     assert_eq!(line_features(&h, id).len(), 1);
     assert!(line_features(&h, id)[0].attributes.is_empty());
     assert_eq!(saves(&h), saved + 1);
@@ -6668,7 +6751,7 @@ fn a_point_layer_with_no_fields_places_a_point_with_no_form() {
 }
 
 #[test]
-fn the_form_shows_each_field_of_the_schema_with_its_default() {
+fn the_inspector_shows_each_field_of_a_new_point_with_its_default() {
     use vale_store::{Field, FieldType, Value};
     let mut h = pad(BOARDS[0]);
     let id = new_point_layer(&mut h);
@@ -6688,27 +6771,28 @@ fn the_form_shows_each_field_of_the_schema_with_its_default() {
         };
         assert!(project.add_field(id, field));
     }
+    tap(&mut h, select::ATTRIBUTES);
     let center = h.state().globe.rect.center();
     pen_tap_at(&mut h, center);
     assert_eq!(form_fields(&h), ["town", "people", "height", "port"]);
-    let form = h.state().point_form.as_ref().unwrap();
+    let form = h.state().selection_form.as_ref().unwrap();
     let texts: Vec<&str> = form.fields.iter().map(|f| f.text.as_str()).collect();
     assert_eq!(texts, ["Hamlet", "7", "2.5", "false"]);
+    tap(&mut h, "town");
     // Return goes from field to field. The whole number and the true or
     // false field get new values.
     let typed = [None, Some((1, "12")), None, Some((5, "true"))];
     for edit in typed {
+        assert!(h.state().new_feature.is_some());
         if let Some((old, new)) = edit {
             for _ in 0..old {
                 h.key_press(egui::Key::Backspace);
             }
-            h.event(egui::Event::Text(new.into()));
-            h.run_steps(2);
+            type_in_focus(&mut h, new);
         }
-        h.key_press(egui::Key::Enter);
-        h.run_steps(2);
+        press_return(&mut h);
     }
-    assert!(h.state().point_form.is_none());
+    assert!(h.state().new_feature.is_none());
     let attributes = &line_features(&h, id)[0].attributes;
     assert_eq!(attributes["town"], Value::Text("Hamlet".into()));
     assert_eq!(attributes["people"], Value::Number(12.0));
@@ -6717,47 +6801,74 @@ fn the_form_shows_each_field_of_the_schema_with_its_default() {
 }
 
 #[test]
-fn a_text_that_is_not_a_value_of_the_field_type_gives_null() {
+fn a_text_that_is_not_a_value_of_the_field_type_does_not_go_in_the_new_point() {
     use vale_store::{Field, FieldType, Value};
     let mut h = pad(BOARDS[0]);
     let id = new_point_layer(&mut h);
     let field = Field::new("people", FieldType::Integer);
     assert!(h.state_mut().doc.project.add_field(id, field));
+    tap(&mut h, select::ATTRIBUTES);
     let center = h.state().globe.rect.center();
     pen_tap_at(&mut h, center);
     assert_eq!(form_fields(&h), ["name", "people"]);
-    h.key_press(egui::Key::Enter);
-    h.run_steps(2);
-    h.event(egui::Event::Text("many".into()));
-    h.run_steps(2);
-    h.key_press(egui::Key::Enter);
-    h.run_steps(2);
-    assert!(h.state().point_form.is_none());
+    tap(&mut h, "people");
+    type_in_focus(&mut h, "many");
+    press_return(&mut h);
+    assert!(h.state().new_feature.is_none());
     let attributes = &line_features(&h, id)[0].attributes;
     assert_eq!(attributes["name"], Value::Null);
     assert_eq!(attributes["people"], Value::Null);
 }
 
 #[test]
-fn ten_named_points_in_a_row_are_ten_undo_steps() {
+fn a_name_does_not_give_the_focus_to_the_next_new_point() {
+    let mut h = pad(BOARDS[0]);
+    let id = new_point_layer(&mut h);
+    tap(&mut h, select::ATTRIBUTES);
+    assert!(!h.state().tools.focus_new);
+    let center = h.state().globe.rect.center();
+    pen_tap_at(&mut h, center);
+    tap(&mut h, "name");
+    type_in_focus(&mut h, "Avalon");
+    pen_tap_at(&mut h, center + vec2(40.0, 0.0));
+    assert_eq!(line_features(&h, id).len(), 2);
+    assert!(no_keyboard(&h));
+    press_return(&mut h);
+    let name = &line_features(&h, id)[0].attributes["name"];
+    assert_eq!(*name, vale_store::Value::Text("Avalon".into()));
+}
+
+#[test]
+fn with_focus_new_features_ten_points_take_ten_taps_and_ten_names_in_ten_undo_steps() {
     let dir = tempfile::tempdir().unwrap();
     let mut h = saved_pad(BOARDS[0], dir.path());
     let id = new_point_layer(&mut h);
+    tap(&mut h, select::ATTRIBUTES);
+    // The toggle is in the title row of the inspector.
+    let toggle = control(&h, select::FOCUS_NEW).expect("no toggle");
+    let inspector = panel(&h, Panel::Attributes).unwrap();
+    assert!(inspector.contains_rect(toggle));
+    tap(&mut h, select::FOCUS_NEW);
+    assert!(h.state().tools.focus_new);
+    for _ in 0..3 {
+        step_and_save(&mut h, false);
+    }
     let saved = saves(&h);
     let center = h.state().globe.rect.center();
     for i in 0..10 {
+        // The pen tap is the only touch: the name field has the focus.
         pen_tap_at(&mut h, center + vec2(30.0 * i as f32 - 135.0, 0.0));
-        h.event(egui::Event::Text(format!("City {i}")));
-        h.run_steps(2);
-        // Return closes the form, and so does the tap of the next point.
+        assert!(!no_keyboard(&h), "{i}");
+        type_in_focus(&mut h, &format!("City {i}"));
+        // Return ends the edit, and so does the tap of the next point.
         if i % 2 == 0 || i == 9 {
-            h.key_press(egui::Key::Enter);
+            press_return(&mut h);
         }
         for _ in 0..3 {
             step_and_save(&mut h, false);
         }
     }
-    assert!(h.state().point_form.is_none());
+    assert!(h.state().new_feature.is_none());
     let names: Vec<_> = line_features(&h, id)
         .iter()
         .map(|f| f.attributes["name"].clone())
@@ -6767,33 +6878,165 @@ fn ten_named_points_in_a_row_are_ten_undo_steps() {
         .collect();
     assert_eq!(names, want);
     assert_eq!(saves(&h), saved + 10);
+    // The point and its name are one undo step.
     tap(&mut h, "Undo");
-    assert_eq!(line_features(&h, id).len(), 9);
+    let features = line_features(&h, id);
+    assert_eq!(features.len(), 9);
+    let last = &features[8].attributes["name"];
+    assert_eq!(*last, vale_store::Value::Text("City 8".into()));
+    // A second tap turns the toggle off.
+    tap(&mut h, select::FOCUS_NEW);
+    assert!(!h.state().tools.focus_new);
+    pen_tap_at(&mut h, center + vec2(0.0, 60.0));
+    assert!(no_keyboard(&h));
 }
 
 #[test]
-fn the_keyboard_does_not_hide_the_form_or_the_new_point() {
-    for size in [BOARDS[0], BOARDS[1]] {
+fn with_focus_new_features_a_new_point_takes_the_focus_in_the_field_edited_last() {
+    use vale_store::{Field, FieldType, Value};
+    let mut h = pad(BOARDS[0]);
+    let id = new_point_layer(&mut h);
+    let field = Field::new("people", FieldType::Integer);
+    assert!(h.state_mut().doc.project.add_field(id, field));
+    tap(&mut h, select::ATTRIBUTES);
+    tap(&mut h, select::FOCUS_NEW);
+    let center = h.state().globe.rect.center();
+    // The first new point takes the focus in the first field.
+    pen_tap_at(&mut h, center);
+    type_in_focus(&mut h, "Avalon");
+    press_return(&mut h);
+    type_in_focus(&mut h, "12");
+    press_return(&mut h);
+    // The next takes it in the field that was edited last.
+    pen_tap_at(&mut h, center + vec2(40.0, 0.0));
+    type_in_focus(&mut h, "30");
+    press_return(&mut h);
+    let features = line_features(&h, id);
+    assert_eq!(features[0].attributes["name"], Value::Text("Avalon".into()));
+    assert_eq!(features[0].attributes["people"], Value::Number(12.0));
+    assert_eq!(features[1].attributes["name"], Value::Null);
+    assert_eq!(features[1].attributes["people"], Value::Number(30.0));
+}
+
+#[test]
+fn a_new_line_takes_its_name_in_the_inspector_in_one_undo_step() {
+    use vale_store::Value;
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = saved_pad(BOARDS[0], dir.path());
+    let rivers = vector(&h, "Rivers");
+    select_layer(&mut h, rivers);
+    quick_tap(&mut h, VECTOR);
+    let field = vale_store::Field::new("given", vale_store::FieldType::Text);
+    assert!(h.state_mut().doc.project.add_field(rivers, field));
+    h.state_mut().save_waiting().unwrap();
+    tap(&mut h, select::ATTRIBUTES);
+    let saved = saves(&h);
+    let before = line_features(&h, rivers);
+    let center = h.state().globe.rect.center();
+    line_stroke(
+        &mut h,
+        center + vec2(-150.0, 40.0),
+        center + vec2(150.0, -40.0),
+    );
+    let lines = line_features(&h, rivers);
+    assert_eq!(lines.len(), before.len() + 1);
+    let new = FeatureRef {
+        layer: rivers,
+        uuid: lines.last().unwrap().uuid(),
+    };
+    assert_eq!(selection(&h), [new]);
+    assert_eq!(h.state().selection_form.as_ref().unwrap().feature, new);
+    assert!(h.state().new_feature.is_some());
+    assert_eq!(saves(&h), saved);
+    assert!(no_keyboard(&h));
+    // Return goes from the first field to the last field.
+    let names = form_fields(&h);
+    tap(&mut h, &names[0]);
+    for _ in 1..names.len() {
+        press_return(&mut h);
+    }
+    type_in_focus(&mut h, "Avon");
+    press_return(&mut h);
+    assert!(h.state().new_feature.is_none());
+    let line = line_features(&h, rivers).pop().unwrap();
+    assert_eq!(line.attributes["given"], Value::Text("Avon".into()));
+    assert_eq!(saves(&h), saved + 1);
+    tap(&mut h, "Undo");
+    assert_eq!(line_features(&h, rivers), before);
+}
+
+#[test]
+fn a_stroke_that_extends_a_line_does_not_change_the_selection_or_the_inspector() {
+    let mut h = pad(BOARDS[0]);
+    let rivers = vector(&h, "Rivers");
+    select_layer(&mut h, rivers);
+    quick_tap(&mut h, VECTOR);
+    tap(&mut h, select::ATTRIBUTES);
+    let center = h.state().globe.rect.center();
+    let end = center + vec2(150.0, -40.0);
+    line_stroke(&mut h, center + vec2(-150.0, 40.0), end);
+    let first = line_features(&h, rivers).pop().unwrap().uuid();
+    line_stroke(
+        &mut h,
+        center + vec2(-150.0, 120.0),
+        center + vec2(100.0, 140.0),
+    );
+    let lines = line_features(&h, rivers);
+    let second = FeatureRef {
+        layer: rivers,
+        uuid: lines.last().unwrap().uuid(),
+    };
+    assert_ne!(second.uuid, first);
+    assert_eq!(selection(&h), [second]);
+    line_stroke(&mut h, end + vec2(4.0, 3.0), end + vec2(60.0, 80.0));
+    let extended = line_features(&h, rivers);
+    assert_eq!(extended.len(), lines.len());
+    let line = |features: &[vale_store::Feature]| {
+        let feature = features.iter().find(|f| f.uuid() == first).unwrap();
+        feature.geometry.clone()
+    };
+    assert_ne!(line(&extended), line(&lines));
+    assert_eq!(selection(&h), [second]);
+    assert_eq!(h.state().selection_form.as_ref().unwrap().feature, second);
+    assert!(h.state().new_feature.is_none());
+}
+
+#[test]
+fn a_new_point_is_not_under_the_inspector_or_the_keyboard() {
+    let phone = (393.0, 852.0);
+    for size in [BOARDS[0], BOARDS[1], phone] {
         let what = format!("{size:?}");
         let mut h = pad(size);
         let id = new_point_layer(&mut h);
+        tap(&mut h, select::ATTRIBUTES);
+        let inspector = panel(&h, Panel::Attributes).expect("no panel");
         let rect = h.state().globe.rect;
-        // A point low on the screen is under the keyboard.
-        pen_tap_at(&mut h, rect.center() + vec2(0.0, 150.0));
-        h.run_steps(2);
-        let keyboard = vale_app::ui::point_form::keyboard_top(rect);
-        let field = control(&h, "name").unwrap();
-        assert!(field.bottom() < keyboard, "{what}");
-        let point = match &line_features(&h, id)[0].geometry {
-            vale_store::Geometry::Points(points) => points[0],
-            _ => panic!("not a point"),
+        let keyboard = vale_app::ui::new_feature::keyboard_top(rect);
+        // With "Focus new features", each new point has the keyboard.
+        tap(&mut h, select::FOCUS_NEW);
+        // A point low on the screen is under the keyboard. A point next to
+        // the panel is too near it.
+        let sheet = h.state().pad.rects.unwrap().sheet.is_some();
+        let near = if sheet {
+            pos2(rect.center().x, inspector.top() - 6.0)
+        } else {
+            pos2(inspector.left() - 6.0, rect.center().y)
         };
-        let dir = vale_app::globe::math::lonlat_to_dir(point[0], point[1]);
-        let pos = h.state().globe.project(dir).unwrap();
-        assert!(
-            pos.y > field.bottom() && pos.y < keyboard,
-            "{what}: {pos:?}"
-        );
+        // On a phone, the sheet covers the place of the keyboard.
+        let low = pos2(rect.center().x, keyboard + 20.0);
+        let taps = if sheet { vec![near] } else { vec![low, near] };
+        for at in taps {
+            pen_tap_at(&mut h, at);
+            h.run_steps(2);
+            let point = match &line_features(&h, id).last().unwrap().geometry {
+                vale_store::Geometry::Points(points) => points[0],
+                _ => panic!("not a point"),
+            };
+            let dir = vale_app::globe::math::lonlat_to_dir(point[0], point[1]);
+            let pos = h.state().globe.project(dir).unwrap();
+            assert!(!inspector.expand(20.0).contains(pos), "{what}: {pos:?}");
+            assert!(pos.y < keyboard, "{what}: {pos:?}");
+        }
     }
 }
 

@@ -145,6 +145,9 @@ pub struct Tools {
     smoothing_of: Option<Tool>,
     current: Option<Choice>,
     last: Option<Choice>,
+    /// A new feature of the point tool, the line tool, or the polygon tool
+    /// takes the focus in the inspector.
+    pub focus_new: bool,
 }
 
 impl Tools {
@@ -289,6 +292,7 @@ impl Tools {
         lines.push(format!("snap_vertices {}", snap.vertices));
         lines.push(format!("snap_edges {}", snap.edges));
         lines.push(format!("snap_distance {}", snap.distance));
+        lines.push(format!("focus_new_features {}", self.focus_new));
         lines.join("\n")
     }
 
@@ -355,6 +359,9 @@ impl Tools {
         }
         if let Some(v) = boolean("snap") {
             snap.on = v;
+        }
+        if let Some(v) = boolean("focus_new_features") {
+            self.focus_new = v;
         }
         if let Some(v) = boolean("snap_vertices") {
             snap.vertices = v;
@@ -594,6 +601,8 @@ mod tests {
             ..SnapSettings::default()
         };
         snap.on = false;
+        assert!(!globe.tools.focus_new);
+        globe.tools.focus_new = true;
 
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(read(dir.path()), None);
@@ -612,6 +621,7 @@ mod tests {
         assert_eq!(next_snap, snap);
         assert!(next.line.fit);
         assert_eq!(next.line.polygon_mode, PolygonMode::Subtract);
+        assert!(next.tools.focus_new);
 
         next.choose(Choice::Brush(Mode::Erode));
         assert_eq!((next.brush.size_points, next.brush.hardness), (8.0, 0.75));

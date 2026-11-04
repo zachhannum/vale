@@ -46,10 +46,10 @@ pub mod font_dialog;
 pub mod globe;
 pub mod gradient;
 pub mod inspector;
+pub mod new_feature;
 pub mod number;
 pub mod pad;
 pub mod panels;
-pub mod point_form;
 pub mod raster_form;
 pub mod region;
 pub mod select;
@@ -478,8 +478,9 @@ pub struct AppState {
     pub share: Option<PathBuf>,
     /// The open form of a new world or of the world of the project.
     pub world_form: Option<world_form::WorldForm>,
-    /// The open form of a point that the point tool placed.
-    pub point_form: Option<point_form::PointForm>,
+    /// The new feature whose values the inspector takes before its undo
+    /// step ends.
+    pub new_feature: Option<new_feature::NewFeature>,
     /// The features that the Select tool selected, in the order of the
     /// selection.
     pub feature_selection: Vec<crate::globe::select::FeatureRef>,
@@ -497,8 +498,17 @@ pub struct AppState {
     /// The field of the inspector that the user edited last, and the
     /// feature that it had the focus in last.
     pub attribute_focus: Option<(crate::globe::select::FeatureRef, String)>,
+    /// The tool of the last frame, which ends the run of edits when it
+    /// changes.
+    attribute_tool: crate::globe::Tool,
+    /// The field of the inspector that the user edited last, and its layer.
+    last_field: Option<(LayerId, String)>,
+    /// A new feature takes the focus away from the field that has it.
+    pub(crate) drop_focus: bool,
     /// The inspector of the desktop layout shows.
     pub show_attributes: bool,
+    /// The inspector showed in the last frame, in either layout.
+    pub inspector_shown: bool,
     /// The open attribute table.
     pub table: Option<table::TableState>,
     /// The path of the Measure tool, in both workspaces.
@@ -619,7 +629,7 @@ impl AppState {
             share_exports: false,
             share: None,
             world_form: None,
-            point_form: None,
+            new_feature: None,
             feature_selection: Vec::new(),
             select_drag: None,
             vertex_selection: Vec::new(),
@@ -627,7 +637,11 @@ impl AppState {
             region: None,
             selection_form: None,
             attribute_focus: None,
+            attribute_tool: Default::default(),
+            last_field: None,
+            drop_focus: false,
             show_attributes: false,
+            inspector_shown: false,
             table: None,
             measure: Measure::default(),
             measure_of: (Workspace::default(), vale_store::PageId(0)),
@@ -1931,7 +1945,7 @@ impl AppState {
             }
             return;
         }
-        self.commit_point_form();
+        self.commit_new_feature();
         self.commit_selection_form();
         let able = if redo {
             self.can_redo()
@@ -1988,8 +2002,8 @@ impl AppState {
     /// save.
     pub fn save_tick(&mut self, hold: bool, now: Instant) -> Option<Duration> {
         self.globe.set_memory_undo(!self.file_log());
-        // The point of an open form waits for its values.
-        let hold = hold || self.point_form.is_some();
+        // A new feature waits for its values.
+        let hold = hold || self.new_feature.is_some();
         let resume_wait = self.resume_tick(hold, now);
         self.doc.store_styles();
         let edits = self.edits();
@@ -2199,7 +2213,7 @@ impl AppState {
     /// project file. Returns `false` if the save failed. The world then
     /// stays open.
     pub fn save_now(&mut self) -> bool {
-        self.commit_point_form();
+        self.commit_new_feature();
         let Some(session) = &mut self.session else {
             return true;
         };
@@ -2663,11 +2677,14 @@ impl AppState {
     }
 
     /// Puts the last stroke of the line tool or the polygon tool in the
-    /// selected layer, or reshapes the feature that the stroke starts on. The next save makes it one undo step.
+    /// selected layer, or reshapes the feature that the stroke starts on.
+    /// The next save makes it one undo step. A new feature becomes the
+    /// selection.
     pub fn poll_line(&mut self) {
         let Some(stroke) = self.globe.take_line() else {
             return;
         };
+        self.commit_new_feature();
         let Some(id) = self.selected_vector() else {
             return;
         };
@@ -2730,12 +2747,17 @@ impl AppState {
             Some(LineEdit::Extend { uuid, geometry }) => project.set_geometry(id, uuid, geometry),
             None => false,
         };
+        let mut held = false;
         if done && let Some(uuid) = new {
-            // A new feature is the selection.
-            self.set_feature_selection(vec![crate::globe::select::FeatureRef { layer: id, uuid }]);
+            let new = crate::globe::select::FeatureRef { layer: id, uuid };
+            self.set_feature_selection(vec![new]);
+            held = self.start_new_feature(new, None);
         }
         if done {
-            self.line_edits += 1;
+            // The undo step of a held feature ends with its values.
+            if !held {
+                self.line_edits += 1;
+            }
             self.pipeline.forget(id);
             self.touch();
         }
@@ -2843,12 +2865,12 @@ impl AppState {
         }
     }
 
-    /// Changes the attribute schema of a vector layer. The open point form
-    /// closes first, and each change that waits saves first. A change that
-    /// `change` makes is one undo step, and the project saves at once.
-    /// Returns the result of `change`.
+    /// Changes the attribute schema of a vector layer. The undo step of a
+    /// new feature ends first, and each change that waits saves first. A
+    /// change that `change` makes is one undo step, and the project saves
+    /// at once. Returns the result of `change`.
     pub fn edit_schema(&mut self, id: LayerId, change: impl FnOnce(&mut Document) -> bool) -> bool {
-        self.commit_point_form();
+        self.commit_new_feature();
         self.save_edit();
         let changed = change(&mut self.doc);
         if changed {
@@ -3654,7 +3676,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         ui.ctx().request_repaint();
     }
     state.sync_measure();
-    state.check_point_form();
+    state.check_new_feature();
     if state.layout == Layout::Pad {
         match state.workspace {
             Workspace::Globe => pad::draw(ui, state),
@@ -3691,7 +3713,6 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     });
     world_form::desktop(ui.ctx(), state);
     raster_form::desktop(ui.ctx(), state);
-    point_form::desktop(ui.ctx(), state);
     if state.workspace == Workspace::Globe {
         region::desktop(ui.ctx(), state);
     }

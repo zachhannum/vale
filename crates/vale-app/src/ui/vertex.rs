@@ -255,7 +255,7 @@ impl AppState {
             return false;
         }
         self.commit_selection_form();
-        self.commit_point_form();
+        self.commit_new_feature();
         self.save_edit();
         let mut changed = false;
         for (uuid, geometry) in changes {
