@@ -8,7 +8,7 @@ use vale_terrain::{Bands, Rgb, StopLine};
 use super::gradient::{self, DESKTOP};
 use super::pad::raster::RampChoice;
 use super::{Action, AppState, LayerRef, number, pad, style_editor};
-use crate::globe::preview::Preview;
+use crate::globe::preview::{LAKE_KM2_RANGE, Preview};
 use crate::world;
 
 /// The range of the factor of the width of a river line.
@@ -172,6 +172,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
                 ui.checkbox(&mut preview.rivers, pad::raster::RIVERS);
                 let on = preview.rivers;
                 river_width(ui, &mut preview, on);
+                lake_size(ui, &mut preview, on);
                 display_choice(ui, &mut preview.display);
                 ui.separator();
                 let mut chosen = selected(&preview, None);
@@ -324,18 +325,31 @@ fn ramp_menus(ui: &mut egui::Ui, state: &mut AppState, id: RasterId) {
 /// The name of the unit field.
 pub const UNIT: &str = "Unit";
 
-/// The switch of the rivers of a height layer, and the width of all rivers.
+/// The switch of the rivers of a height layer, the width of all rivers, and
+/// the size of the smallest lake.
 fn rivers(ui: &mut egui::Ui, state: &mut AppState, raster: &Raster) {
     let mut on = raster.rivers;
     if ui.checkbox(&mut on, pad::raster::RIVERS).changed() {
         state.set_raster_rivers(raster.id, on);
     }
     river_width(ui, &mut state.globe.preview, on);
+    lake_size(ui, &mut state.globe.preview, on);
 }
 
 /// The slider of the width of the rivers.
 fn river_width(ui: &mut egui::Ui, preview: &mut Preview, enabled: bool) {
     number::slider("River width", &mut preview.river_width, RIVER_WIDTH)
+        .enabled(enabled)
+        .show(ui);
+}
+
+/// The slider of the area of the smallest lake.
+fn lake_size(ui: &mut egui::Ui, preview: &mut Preview, enabled: bool) {
+    let range = LAKE_KM2_RANGE;
+    number::slider(pad::raster::SMALLEST_LAKE, &mut preview.lake_km2, range)
+        .log()
+        .suffix(" km²")
+        .decimals(0)
         .enabled(enabled)
         .show(ui);
 }

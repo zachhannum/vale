@@ -17,6 +17,7 @@ mod flow;
 #[cfg(feature = "gpu")]
 mod gpu;
 mod heightmap;
+mod lake;
 mod line;
 pub mod math;
 #[cfg(feature = "gpu")]
@@ -55,6 +56,7 @@ pub use heightmap::{
     Heightmap, Limits, MAX_BRUSH_RADIUS, Mode, NOISE_OCTAVES, NOISE_RELIEF_M, Stamp, StampPlan,
     TILE_SIZE, TexelRect, UNDO_MEMORY_LIMIT, talus_levels,
 };
+pub use lake::LAKE_MIN_AREA;
 pub use line::{LINE_SEGMENTS, LINE_SPACING, LinePlan, LineSegment, StrokeLine};
 #[cfg(feature = "gpu")]
 pub use pyramid::{FIELD_WGSL, GpuPyramid, pyramid_layout};

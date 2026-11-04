@@ -85,7 +85,9 @@ const MODE_SMOOTH: i32 = 2;
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
 // The channel map of `vale-terrain`. The first two bytes of a texel are the
-// distance to the nearest river, and the size of that river.
+// distance to the nearest river, and the size of that river. The layers
+// after the faces hold the lake levels, as in `lake_bytes` of
+// `vale-terrain`.
 @group(0) @binding(1) var channels: texture_2d_array<u32>;
 // The channel window of `vale-terrain`, with the same two bytes.
 @group(0) @binding(2) var window_channels: texture_2d<u32>;
@@ -149,6 +151,37 @@ fn channel(face: i32, x: i32, y: i32) -> vec2<f32> {
     let last = i32(u.flat.y) - 1;
     let c = clamp(vec2<i32>(x, y), vec2<i32>(0), vec2<i32>(last));
     return vec2<f32>(textureLoad(channels, c, face, 0).rg);
+}
+
+// The lake level of a cell of the flow, with the border cells at -1 and at
+// the number of cells. A face of the lakes has a border of one cell from the
+// faces next to it.
+fn lake_cell(face: i32, x: i32, y: i32) -> f32 {
+    let size = i32(u.flat.y);
+    let side = size / 2 + 2;
+    let c = clamp(vec2<i32>(x, y) + 1, vec2<i32>(0), vec2<i32>(side - 1));
+    let i = (face * side + c.y) * side + c.x;
+    let t = i / 2;
+    let layer = 6 + t / (size * size);
+    let at = t % (size * size);
+    let texel = textureLoad(channels, vec2<i32>(at % size, at / size), layer, 0);
+    let pair = select(texel.rg, texel.ba, i % 2 == 1);
+    return f32(pair.x + pair.y * 256u);
+}
+
+// The lake level at a world direction from 0 to 1, or 0 for no lake. The
+// level is a blend of the 4 cells around the place, as in `lake_level` of
+// `vale-terrain`.
+fn lake_level(d: vec3<f32>) -> f32 {
+    let p = place(d);
+    let f = p.at * (u.flat.y * 0.5) - 0.5;
+    let i = vec2<i32>(floor(f));
+    let t = f - floor(f);
+    let c00 = lake_cell(p.face, i.x, i.y);
+    let c10 = lake_cell(p.face, i.x + 1, i.y);
+    let c01 = lake_cell(p.face, i.x, i.y + 1);
+    let c11 = lake_cell(p.face, i.x + 1, i.y + 1);
+    return mix(mix(c00, c10, t.x), mix(c01, c11, t.x), t.y) / 65535.0;
 }
 
 // The distance from a world direction to the nearest river of the window in
@@ -305,7 +338,7 @@ fn soft_light(b: vec3<f32>, s: vec3<f32>) -> vec3<f32> {
 }
 
 // The color of a layer in a world direction: the tint of the height, the
-// hillshade, the rivers, and the lines of the stops. `width` is the change of the height
+// hillshade, the rivers and the lakes, and the lines of the stops. `width` is the change of the height
 // across one pixel. `pixel` is the angle that one pixel covers there.
 // `frag` is the place of the pixel on the render target. When the passes of
 // `edges.wgsl` ran, the band edges and the lines come from their textures.
@@ -325,7 +358,13 @@ fn ground(h: f32, width: f32, d: vec3<f32>, pixel: f32, frag: vec2<f32>) -> vec3
     if u.flat.y > 0.5 {
         // A river stops at the coast.
         let land = clamp((h - u.flat.x) / max(width, 1e-6) + 1.0, 0.0, 1.0);
-        color = mix(color, RIVER_COLOR, 0.9 * land * river(d, pixel));
+        // The ground below the lake level is water, with a soft shore of
+        // one pixel. A river line stops at the shore.
+        let level = lake_level(d);
+        var lake = clamp((level - h) / max(width, 1e-6) + 0.5, 0.0, 1.0);
+        lake = select(0.0, lake * land, level > 0.0);
+        color = mix(color, RIVER_COLOR, 0.9 * land * river(d, pixel) * (1.0 - lake));
+        color = mix(color, RIVER_COLOR, 0.9 * lake);
     }
     if screen {
         let line = line_cover(p);

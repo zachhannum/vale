@@ -4,7 +4,7 @@
 #![allow(dead_code)]
 
 use egui_kittest::Harness;
-use vale_app::globe::math::V3;
+use vale_app::globe::math::{V3, angle, lonlat_to_dir};
 use vale_app::ui::AppState;
 use vale_store::{RasterDisplay, RasterId};
 use vale_terrain::{Bands, Heightmap, Stop, StopLine, meters_to_level};
@@ -334,5 +334,40 @@ pub fn assert_across(found: &[Across], scale: f64, least: usize, what: &str) {
     for a in found {
         let ok = (a.weight - weight).abs() < 0.25 && a.center.abs() < 0.25;
         assert!(ok, "{what}: {a:?}, not a weight of {weight}");
+    }
+}
+
+/// The radius of the crater of `set_crater`, in radians.
+pub const CRATER_RADIUS: f64 = 0.08;
+
+/// The sea with an island on it. The island is a cone with its top 0.3
+/// radians south of `crater` and its coast 0.6 radians from the top. A round
+/// pit on its slope at `crater`, `depth` meters deep, fills to its rim as a
+/// lake, and the slope above it drains into it.
+pub fn set_crater(map: &mut vale_terrain::Heightmap, crater: V3, depth: f64) {
+    let (lon, lat) = vale_terrain::math::dir_to_lonlat(crater);
+    let top = lonlat_to_dir(lon, lat - 17.2);
+    map.fill(meters_to_level(-1000.0));
+    let n = map.face_size();
+    for face in 0..6 {
+        let middle = map.texel_dir(face, n / 2, n / 2);
+        if angle(middle, top) > 1.6 {
+            continue;
+        }
+        for y in 0..n {
+            for x in 0..n {
+                let d = map.texel_dir(face, x, y);
+                let from_top = angle(d, top);
+                if from_top > 0.7 {
+                    continue;
+                }
+                let mut meters = 2000.0 * (1.0 - from_top / 0.6);
+                let r = angle(d, crater) / CRATER_RADIUS;
+                if r < 1.0 {
+                    meters -= depth * (1.0 - r * r);
+                }
+                map.set(face, x, y, meters_to_level(meters));
+            }
+        }
     }
 }

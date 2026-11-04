@@ -10378,3 +10378,16 @@ fn a_held_ocean_ridge_has_its_buttons_on_the_canvas() {
     assert!(h.state().globe.holding().is_none());
     assert!(h.state().globe.can_undo());
 }
+
+#[test]
+fn the_smallest_lake_slider_sets_the_size_of_the_smallest_lake() {
+    for size in BOARDS {
+        let mut h = painted_pad(size);
+        open_height(&mut h);
+        scroll_to_control(&mut h, raster::SMALLEST_LAKE);
+        slide_to_end(&mut h, raster::SMALLEST_LAKE, true);
+        assert_eq!(h.state().globe.preview.lake_km2, 1_000_000.0, "{size:?}");
+        slide_to_end(&mut h, raster::SMALLEST_LAKE, false);
+        assert_eq!(h.state().globe.preview.lake_km2, 100.0, "{size:?}");
+    }
+}

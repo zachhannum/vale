@@ -8,6 +8,7 @@ use eframe::egui::{self, Pos2, Vec2};
 use eframe::egui_wgpu;
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
+use lines::{CRATER_RADIUS, set_crater};
 use lines::{
     LINE_WEIGHT, LineColumn, MEASURE_COLORS, canvas_image, even_slope, flat_land, flat_sea,
     grey_bands, hide_rivers, measure_line, measure_stops, set_coast_line, set_heights,
@@ -5766,8 +5767,9 @@ fn each_visible_height_layer_shows_its_rivers() {
     let both = river_halves(&mut h);
     assert!(both[0] > 40 && both[1] > 40, "{both:?}");
     // The layer that the brush does not paint has its own channel map on
-    // the GPU. A channel map has 512 texels of 4 bytes along a face of 256.
-    let one = 6 * 512 * 512 * 4;
+    // the GPU. A channel map has 512 texels of 4 bytes along a face of 256,
+    // and one more layer of texels holds its lakes.
+    let one = 7 * 512 * 512 * 4;
     assert_eq!(h.state().globe.river_bytes(), 2 * one);
 
     // The rivers of a layer follow its opacity and its visibility.
@@ -7910,4 +7912,299 @@ fn a_scatter_stays_on_the_ground_when_the_globe_turns() {
             assert!((at.unwrap() - i.pos).length() < 1e-3);
         }
     }
+}
+
+/// A harness with the crater of `set_crater` in the middle of the view, at
+/// `zoom`. The land has one color, and the hillshade is off.
+fn crater_harness(face_size: usize, crater: V3, zoom: f64) -> Harness<'static, AppState> {
+    let mut state = state();
+    state.globe.set_face_size(face_size);
+    let id = state.add_height();
+    show_as(&mut state, RasterDisplay::Bands);
+    let globe = &mut state.globe;
+    two_bands(globe.bands_mut(id).unwrap(), [40, 40, 40], [150, 140, 120]);
+    globe.preview.graticule = false;
+    globe.preview.panel = true;
+    let (lon, lat) = vale_terrain::math::dir_to_lonlat(crater);
+    globe.view = GlobeView::centered(lon, lat);
+    globe.view.zoom = zoom;
+    set_crater(&mut globe.map, crater, 800.0);
+    let setup = egui_kittest::wgpu::default_wgpu_setup();
+    let mut h = headless::ui_harness(state, (640.0, 480.0), 1.0, setup);
+    h.set_render_every_step(true);
+    load(&mut h);
+    settle_rivers(&mut h);
+    h
+}
+
+/// A pixel of the canvas on the globe.
+struct LakePixel {
+    dir: V3,
+    /// The level of the heightmap there.
+    level: f64,
+    /// The lake level there, or 0 for no lake.
+    lake: f64,
+    rgb: [u8; 3],
+}
+
+impl LakePixel {
+    fn blue(&self) -> bool {
+        let [r, g, b] = self.rgb.map(i32::from);
+        b > r + 60 && b > g + 30
+    }
+}
+
+/// The level of the heightmap at a direction, as a blend of the 4 texels
+/// around it.
+fn blended_level(map: &vale_terrain::Heightmap, d: V3) -> f64 {
+    let (face, a, b) = vale_terrain::face_of(d);
+    let n = map.face_size() as f64;
+    let texel = |a: f64| (vale_terrain::warp(a) + 1.0) * 0.5 * n - 0.5;
+    let (u, v) = (texel(a), texel(b));
+    let (x, y) = (u.floor(), v.floor());
+    let (tx, ty) = (u - x, v - y);
+    let at = |dx: f64, dy: f64| f64::from(map.get(face, (x + dx) as i64, (y + dy) as i64));
+    let top = at(0.0, 0.0) * (1.0 - tx) + at(1.0, 0.0) * tx;
+    let bottom = at(0.0, 1.0) * (1.0 - tx) + at(1.0, 1.0) * tx;
+    top * (1.0 - ty) + bottom * ty
+}
+
+/// The pixels of the canvas that show the globe.
+fn lake_pixels(h: &Harness<'static, AppState>, img: &image::RgbaImage) -> Vec<LakePixel> {
+    let globe = &h.state().globe;
+    let channels = globe.channels().unwrap();
+    let min = globe.rect.min.ceil();
+    let pixel = |(x, y, p): (u32, u32, &image::Rgba<u8>)| {
+        let pos = min + Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
+        let dir = globe.unproject(pos)?;
+        Some(LakePixel {
+            dir,
+            level: blended_level(&globe.map, dir),
+            lake: channels.lake_level(dir),
+            rgb: [p[0], p[1], p[2]],
+        })
+    };
+    img.enumerate_pixels().filter_map(pixel).collect()
+}
+
+/// The change of the level for a change of the height of `meters` near the
+/// lake.
+fn levels_of(meters: f64) -> f64 {
+    f64::from(meters_to_level(700.0 + meters)) - f64::from(meters_to_level(700.0))
+}
+
+#[test]
+#[ignore = "gpu"]
+fn lakes_show_on_the_globe_and_the_rivers_switch_hides_them() {
+    let _gpu = one_gpu_test();
+    let crater = lonlat_to_dir(10.0, 20.0);
+    let mut h = crater_harness(BRUSH_FACE_SIZE, crater, 3.0);
+    assert!(h.state().globe.channels().unwrap().has_lakes());
+    let img = canvas_image(&mut h);
+    save(&img, "lakes-on");
+    let pixels = lake_pixels(&h, &img);
+    let margin = levels_of(30.0);
+    let wet: Vec<&LakePixel> = pixels
+        .iter()
+        .filter(|p| p.level < p.lake - margin)
+        .collect();
+    let blue = wet.iter().filter(|p| p.blue()).count();
+    assert!(
+        wet.len() > 200 && blue == wet.len(),
+        "{blue} of {}",
+        wet.len()
+    );
+    // The ground above the water is dry, away from the rivers.
+    let channels = h.state().globe.channels().unwrap();
+    let dry = pixels
+        .iter()
+        .filter(|p| p.lake > 0.0 && p.level > p.lake + margin && channels.at(p.dir).0 > 3.0);
+    let dry: Vec<&LakePixel> = dry.collect();
+    assert!(
+        dry.len() > 50 && dry.iter().all(|p| !p.blue()),
+        "{}",
+        dry.len()
+    );
+
+    h.get_by_label("Rivers").click();
+    h.run_steps(2);
+    assert!(!h.state().panel_raster().unwrap().rivers);
+    let off = canvas_image(&mut h);
+    save(&off, "lakes-off");
+    assert_eq!(river_pixels(&h, &off), 0);
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_river_line_stops_at_a_lake_and_starts_at_the_outlet() {
+    let _gpu = one_gpu_test();
+    let crater = lonlat_to_dir(10.0, 20.0);
+    let mut h = crater_harness(BRUSH_FACE_SIZE, crater, 3.0);
+    let img = canvas_image(&mut h);
+    let pixels = lake_pixels(&h, &img);
+    let channels = h.state().globe.channels().unwrap();
+    let margin = levels_of(30.0);
+    let wet: Vec<&LakePixel> = pixels
+        .iter()
+        .filter(|p| p.level < p.lake - margin)
+        .collect();
+    // The channel map has rivers in the lake, and the lake shows no line.
+    let under = wet.iter().filter(|p| {
+        let (distance, flow) = channels.at(p.dir);
+        flow > 0 && distance < 0.5
+    });
+    assert!(under.count() > 10);
+    let first = wet[0].rgb;
+    for p in &wet {
+        let near = (0..3).all(|i| first[i].abs_diff(p.rgb[i]) <= 3);
+        assert!(
+            near,
+            "{:?} and {:?} at {} below {}",
+            first, p.rgb, p.level, p.lake
+        );
+    }
+    // A river leaves the lake at the low side of the rim.
+    let (lon, lat) = vale_terrain::math::dir_to_lonlat(crater);
+    let top = lonlat_to_dir(lon, lat - 17.2);
+    let below = pixels.iter().filter(|p| {
+        let near = angle(p.dir, crater) < 2.5 * CRATER_RADIUS;
+        let downhill = angle(p.dir, top) > angle(crater, top) + CRATER_RADIUS;
+        near && downhill && p.lake == 0.0 && p.blue()
+    });
+    let below = below.count();
+    assert!(below > 20, "{below}");
+}
+
+/// Each pixel of the crater below the rim is water, and each pixel above it
+/// is dry, away from the rivers. The rim is the lake level at the middle of the crater.
+fn assert_shore(h: &mut Harness<'static, AppState>, crater: V3, name: &str) {
+    let img = canvas_image(h);
+    save(&img, name);
+    let globe = &h.state().globe;
+    let channels = globe.channels().unwrap();
+    let rim = channels.lake_level(crater);
+    assert!(rim > 0.0);
+    let pixels = lake_pixels(h, &img);
+    let margin = levels_of(30.0);
+    let near_river = |d: V3| {
+        // The distance byte of the window, in channel texels of the window.
+        let window = globe.window().and_then(|w| {
+            let (u, v) = w.window().channel_of_dir(d)?;
+            let inside = |a: f64| a >= 0.0 && a < w.size() as f64;
+            (inside(u) && inside(v)).then(|| w.texel(u as usize, v as usize))
+        });
+        let fine = window.is_some_and(|[distance, flow]| flow > 0 && distance < 6 * 32);
+        channels.at(d).0 < 3.0 || fine
+    };
+    let (mut wet, mut dry) = (0, 0);
+    for p in pixels
+        .iter()
+        .filter(|p| angle(p.dir, crater) < CRATER_RADIUS)
+    {
+        if p.level < rim - margin {
+            wet += 1;
+            let (level, rgb) = (p.level, p.rgb);
+            assert!(
+                p.blue(),
+                "a dry pixel below the rim {rim} at {level} {rgb:?}"
+            );
+        } else if p.level > rim + margin && !near_river(p.dir) {
+            dry += 1;
+            let (level, rgb) = (p.level, p.rgb);
+            assert!(
+                !p.blue(),
+                "a wet pixel above the rim {rim} at {level} {rgb:?}"
+            );
+        }
+    }
+    assert!(wet > 5000 && dry > 1000, "{wet} and {dry}");
+}
+
+#[test]
+#[ignore = "gpu"]
+fn the_shore_of_a_lake_has_no_steps_of_the_coarse_cells() {
+    let _gpu = one_gpu_test();
+    // A cell of the coarse copy is 4 texels wide.
+    let crater = lonlat_to_dir(10.0, 20.0);
+    let mut h = crater_harness(2048, crater, 10.0);
+    assert_shore(&mut h, crater, "lake-shore");
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_lake_across_a_face_edge_has_no_seam() {
+    let _gpu = one_gpu_test();
+    let crater = lonlat_to_dir(45.0, 0.0);
+    let mut h = crater_harness(2048, crater, 10.0);
+    assert_shore(&mut h, crater, "lake-edge");
+    // The lake has water on both faces.
+    let img = canvas_image(&mut h);
+    let pixels = lake_pixels(&h, &img);
+    let faces: std::collections::BTreeSet<usize> = pixels
+        .iter()
+        .filter(|p| p.blue() && angle(p.dir, crater) < 0.5 * CRATER_RADIUS)
+        .map(|p| vale_terrain::face_of(p.dir).0)
+        .collect();
+    assert_eq!(faces.len(), 2, "{faces:?}");
+}
+
+#[test]
+#[ignore = "gpu"]
+fn the_lakes_follow_each_stroke_and_each_undo() {
+    let _gpu = one_gpu_test();
+    let mut h = gpu_harness();
+    let crater = lonlat_to_dir(0.0, 0.0);
+    let globe = &mut h.state_mut().globe;
+    globe.set_rivers_sync(false);
+    // The view is on the top of the island, and the island has no pit.
+    globe.view = GlobeView::centered(0.0, -17.2);
+    set_crater(&mut globe.map, crater, 0.0);
+    globe.tool = Tool::Brush;
+    globe.brush.mode = Mode::Lower;
+    globe.brush.strength_m = 1000.0;
+    globe.brush.size_points = 30.0;
+    h.step();
+    settle_rivers(&mut h);
+    let lakes = |h: &Harness<'static, AppState>| h.state().globe.channels().unwrap().has_lakes();
+    assert!(!lakes(&h));
+
+    // The stroke digs a pit. Painting does not wait for its lake.
+    mouse_stroke(&mut h);
+    settle(&mut h);
+    assert!(h.state().globe.can_undo());
+    assert!(h.state().globe.rivers_pending());
+    assert!(!lakes(&h));
+    settle_rivers(&mut h);
+    assert!(lakes(&h));
+
+    assert!(h.state_mut().globe.undo());
+    settle_rivers(&mut h);
+    assert!(!lakes(&h));
+    assert!(h.state_mut().globe.redo());
+    settle_rivers(&mut h);
+    assert!(lakes(&h));
+}
+
+#[test]
+#[ignore = "gpu"]
+fn the_smallest_lake_slider_hides_a_smaller_lake() {
+    let _gpu = one_gpu_test();
+    let crater = lonlat_to_dir(10.0, 20.0);
+    let mut h = crater_harness(BRUSH_FACE_SIZE, crater, 3.0);
+    assert!(h.query_all_by_label("Smallest lake").next().is_some());
+    assert!(h.state().globe.channels().unwrap().has_lakes());
+    // The crater covers about 800,000 km² on a world of the size of the
+    // Earth.
+    h.state_mut().globe.preview.lake_km2 = 1_000_000.0;
+    settle_rivers(&mut h);
+    assert!(!h.state().globe.channels().unwrap().has_lakes());
+    let img = canvas_image(&mut h);
+    let wet = lake_pixels(&h, &img)
+        .iter()
+        .filter(|p| p.lake > 0.0)
+        .count();
+    assert_eq!(wet, 0);
+    h.state_mut().globe.preview.lake_km2 = 2000.0;
+    settle_rivers(&mut h);
+    assert!(h.state().globe.channels().unwrap().has_lakes());
 }
