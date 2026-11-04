@@ -6363,3 +6363,27 @@ fn a_box_around_a_pole_suggests_polar_stereographic() {
     let reason = vale_app::region::RegionKind::Polar.reason();
     assert!(h.query_by_label(reason).is_some());
 }
+
+#[test]
+fn the_diagnostics_card_opens_in_the_atlas_and_reports_the_frames_of_the_page() {
+    use vale_app::ui::pad::geometry::WidthClass;
+    use vale_app::ui::pad::{COPY_REPORT, DIAGNOSTICS, WORLDS, WORLDS_ROW};
+    for size in BOARDS {
+        let mut h = inset_pad(size);
+        if h.state().pad.rects.unwrap().class == WidthClass::Compact {
+            tap(&mut h, "Workspace");
+            tap(&mut h, WORLDS_ROW);
+        } else {
+            tap(&mut h, WORLDS);
+        }
+        tap(&mut h, DIAGNOSTICS);
+        assert!(h.state().pad.diagnostics, "{size:?}");
+        h.run_steps(2);
+        assert!(control(&h, COPY_REPORT).is_some(), "{size:?}");
+        let report = vale_app::diagnostics::report(&h.ctx, h.state());
+        assert!(report.contains("Atlas workspace"), "{report}");
+        for f in &vale_app::ui::atlas::open_page(h.state()).frames {
+            assert!(report.contains(&format!("Frame {} ", f.id.0)), "{report}");
+        }
+    }
+}
