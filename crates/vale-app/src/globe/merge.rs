@@ -112,12 +112,12 @@ fn merge_lines(features: &[&[Vec<LonLat>]]) -> Vec<Vec<LonLat>> {
 fn touching(runs: &[Vec<PathVertex>]) -> Option<(usize, usize, bool, bool)> {
     let ends = |r: &[PathVertex]| -> Option<(V3, V3)> { Some((r.first()?.dir(), r.last()?.dir())) };
     let meet = |p: V3, q: V3| angle(p, q) < SAME;
-    for a in 0..runs.len() {
-        let Some((a0, a1)) = ends(&runs[a]) else {
+    for (a, run_a) in runs.iter().enumerate() {
+        let Some((a0, a1)) = ends(run_a) else {
             continue;
         };
-        for b in a + 1..runs.len() {
-            let Some((b0, b1)) = ends(&runs[b]) else {
+        for (b, run_b) in runs.iter().enumerate().skip(a + 1) {
+            let Some((b0, b1)) = ends(run_b) else {
                 continue;
             };
             let found = if meet(a1, b0) {
