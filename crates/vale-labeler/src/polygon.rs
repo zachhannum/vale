@@ -450,7 +450,7 @@ const LATITUDES: usize = 4;
 
 /// Candidates along the parallels through the shape. Curves at more than one latitude go
 /// through the sites farthest from the edge, and the longest part of a curve inside the shape
-/// costs least.
+/// costs least. Of two parts with the same length, the one through the deeper site costs less.
 #[allow(clippy::too_many_arguments)]
 fn along_parallels(
     grid: &Grid,
@@ -511,20 +511,24 @@ fn along_parallels(
         }
         runs.push((t.curve, lo, hi));
     }
-    runs.sort_by(|a, b| (b.2 - b.1).total_cmp(&(a.2 - a.1)));
+    // A run is a whole number of steps. Runs compare by their steps, so a rounding error that
+    // changes when the page moves does not change the order. Equal runs keep the site order.
+    let step = 0.5 * grid.cell;
+    let steps = |lo: f64, hi: f64| ((hi - lo) / step).round();
+    runs.sort_by(|a, b| steps(b.1, b.2).total_cmp(&steps(a.1, a.2)));
     runs.truncate(LATITUDES);
-    let Some(room) = runs.first().map(|r| r.2 - r.1) else {
+    let Some(room) = runs.first().map(|r| steps(r.1, r.2)) else {
         return;
     };
 
     let adv = shaped.advance;
     let gaps = shaped.glyph_count().saturating_sub(1);
-    for (curve, lo, hi) in runs {
+    for (rank, (curve, lo, hi)) in runs.into_iter().enumerate() {
         let len = hi - lo;
         if len < adv {
             continue;
         }
-        let room_cost = 3.0 * (1.0 - len / room);
+        let room_cost = 3.0 * (1.0 - steps(lo, hi) / room);
         let (curve, map) = upright(curve, lo, hi, pp.no_flip);
         let (lo, hi) = {
             let (a, b) = (map(lo), map(hi));
@@ -556,7 +560,7 @@ fn along_parallels(
                 let Some(c) = grid.candidate(shaped, f.transforms, class.margin, PAD * size) else {
                     continue;
                 };
-                let cost = room_cost + 0.5 * fi as f64 + 0.5 * k.abs() + turns;
+                let cost = room_cost + 0.1 * rank as f64 + 0.5 * fi as f64 + 0.5 * k.abs() + turns;
                 out.push(Candidate {
                     kind: CandidateKind::Polygon { curved: true },
                     cost: cost + c.cost,
@@ -980,19 +984,23 @@ impl Grid {
 
     /// The cells by distance from the edge, farthest first. Of two cells at the same distance,
     /// the one nearer the centroid of the shape goes first.
+    /// The distances are in whole cells, so the order does not change when the page moves.
     fn ranked(&self) -> Vec<usize> {
-        let (mut sum, mut n) = (kurbo::Vec2::ZERO, 0.0_f64);
-        for i in (0..self.inside.len()).filter(|&i| self.inside[i]) {
-            sum += self.point(i).to_vec2();
-            n += 1.0;
-        }
-        let centroid = (sum / n.max(1.0)).to_point();
         let mut cells: Vec<usize> = (0..self.inside.len()).filter(|&i| self.inside[i]).collect();
+        let w = self.w as i128;
+        let n = cells.len() as i128;
+        let (sx, sy) = cells
+            .iter()
+            .fold((0, 0), |(x, y), &i| (x + i as i128 % w, y + i as i128 / w));
+        // The squared distance to the centroid, times the square of the number of cells.
+        let d2 = |i: usize| {
+            let (dx, dy) = (n * (i as i128 % w) - sx, n * (i as i128 / w) - sy);
+            dx * dx + dy * dy
+        };
         cells.sort_by(|&a, &b| {
-            self.dist[b].total_cmp(&self.dist[a]).then_with(|| {
-                let da = self.point(a).distance_squared(centroid);
-                da.total_cmp(&self.point(b).distance_squared(centroid))
-            })
+            self.dist[b]
+                .total_cmp(&self.dist[a])
+                .then_with(|| d2(a).cmp(&d2(b)))
         });
         cells
     }
