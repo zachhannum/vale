@@ -704,7 +704,7 @@ The atlas has three levels: maps, pages, and map frames.
 
 A map shows the layers of the world in one projection. It has a name, a projection, a switch for each layer, style overrides, and label classes. A map has no extent, no scale, and no page size. A map frame shows one map. The Add button makes a map frame and its map together, and a delete of the frame deletes its map. The Frame tab of a map frame has the name of its map, and you rename the map there. Each map has one projection center. For another center, you add another map frame.
 
-The app has two workspaces, World and Atlas. In the World workspace you draw and edit the features, and its attribute table edits their attributes. The Atlas workspace holds the maps, the pages, and the map frames. You edit a map in a frame, at the scale of the page, so that the labels and the styles show as they export.
+The app has two workspaces, World and Atlas. In the World workspace you draw and edit the features, and its attribute table edits their attributes. The Atlas workspace holds the maps, the pages, and the map frames. You edit a map in a frame, at the scale of the page, so that the labels and the styles show as they export. The labels of a frame come from the whole frame, so a pan or a zoom of the page does not change them.
 
 A page is one page of the atlas. It has a page size, its map frames, and its furniture (the items around the maps). The page size has presets and a free value, with units. A page has a paper color. Version 1 has text boxes, legends, scale bars, and north arrows. A page can have any number of each.
 
