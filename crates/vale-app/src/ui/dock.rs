@@ -868,9 +868,9 @@ fn labels_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
         SPREAD, SPREADS, STYLE, UPSIDE_DOWN, can_follow_parallels, follows_parallels,
     };
     use super::pad::labels::{
-        AVOID_POLYGONS, INSIDE, LARGEST_PART, LEADER_START, MIN_AREA, MIN_AREAS, OUTSIDE,
-        OVER_HOLES, OVERRUN, OVERRUNS, POLYGON_REPEAT_DISTANCES, REPEAT_DISTANCE, REPEAT_LABEL,
-        ZONES,
+        AVOID_POLYGONS, INSIDE, LARGEST_PART, LEADER_LINE, LEADER_START, MIN_AREA, MIN_AREAS,
+        OUTSIDE, OVER_HOLES, OVERRUN, OVERRUNS, POLYGON_REPEAT_DISTANCES, REPEAT_DISTANCE,
+        REPEAT_LABEL, ZONES,
     };
     use vale_store::GeometryKind;
     let map = frame.map;
@@ -1064,6 +1064,7 @@ fn labels_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
             zone_grid(ui, OUTSIDE, false, &mut class.zones_outside);
         });
         if class.zones_outside.iter().any(|&r| r > 0) {
+            ui.label(LEADER_LINE);
             egui::ComboBox::from_label(LEADER_START)
                 .selected_text(class.anchor.name())
                 .show_ui(ui, |ui| {
@@ -1071,6 +1072,7 @@ fn labels_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
                         ui.selectable_value(&mut class.anchor, anchor, anchor.name());
                     }
                 });
+            leader_controls(ui, &mut class);
         }
         ui.checkbox(&mut class.over_holes, OVER_HOLES);
         ui.checkbox(&mut class.avoid_polygons, AVOID_POLYGONS);
@@ -1975,4 +1977,100 @@ fn zone_grid(ui: &mut egui::Ui, title: &str, inside: bool, ranks: &mut [u8]) {
             }
         });
     });
+}
+
+/// The style of the leader line of a label class.
+fn leader_controls(ui: &mut egui::Ui, class: &mut vale_style::LabelClass) {
+    use super::pad::labels::{
+        ANCHOR_GAP, COLOR, DASH, DASH_GAP, DASHED, DASHES, END_SIZE, END_SIZES, HALO, HALO_COLOR,
+        HALO_WIDTH, LABEL_GAP, LEADER_END, LEADER_GAPS, LINE_HALO_WIDTHS, LINE_WIDTH, LINE_WIDTHS,
+        MATCH_HALO, MATCH_TEXT, OPACITY, SHOW_LINE,
+    };
+    use vale_style::LeaderEnd;
+    let (text, text_halo) = (class.color, class.halo_color);
+    let l = &mut class.leader;
+    ui.checkbox(&mut l.show, SHOW_LINE);
+    if !l.show {
+        return;
+    }
+    let color_button = |ui: &mut egui::Ui, label: &str, c: &mut vale_style::Color| {
+        ui.horizontal(|ui| {
+            let mut rgb = [c.r, c.g, c.b];
+            if ui.color_edit_button_srgb(&mut rgb).changed() {
+                [c.r, c.g, c.b] = rgb;
+            }
+            ui.label(label);
+        });
+    };
+    let mut matched = l.color.is_none();
+    if ui.checkbox(&mut matched, MATCH_TEXT).changed() {
+        l.color = (!matched).then_some(text);
+    }
+    if let Some(c) = &mut l.color {
+        color_button(ui, COLOR, c);
+    }
+    number::stepper(LINE_WIDTH, &mut l.width)
+        .range(LINE_WIDTHS.0..=LINE_WIDTHS.1)
+        .step(0.25)
+        .suffix(" pt")
+        .show(ui);
+    let mut percent = l.opacity * 100.0;
+    if number::slider(OPACITY, &mut percent, 0.0..=100.0)
+        .suffix(" %")
+        .show(ui)
+        .changed()
+    {
+        l.opacity = percent / 100.0;
+    }
+    ui.horizontal(|ui| {
+        ui.checkbox(&mut l.dashed, DASHED);
+        if l.dashed {
+            for (label, value) in [(DASH, &mut l.dash), (DASH_GAP, &mut l.dash_gap)] {
+                number::stepper(label, value)
+                    .range(DASHES.0..=DASHES.1)
+                    .step(0.5)
+                    .suffix(" pt")
+                    .show(ui);
+            }
+        }
+    });
+    ui.checkbox(&mut l.halo, HALO);
+    if l.halo {
+        let mut matched = l.halo_color.is_none();
+        if ui.checkbox(&mut matched, MATCH_HALO).changed() {
+            l.halo_color = (!matched).then_some(text_halo);
+        }
+        if let Some(c) = &mut l.halo_color {
+            color_button(ui, HALO_COLOR, c);
+        }
+        number::stepper(HALO_WIDTH, &mut l.halo_width)
+            .range(LINE_HALO_WIDTHS.0..=LINE_HALO_WIDTHS.1)
+            .step(0.25)
+            .suffix(" pt")
+            .show(ui);
+    }
+    egui::ComboBox::from_label(LEADER_END)
+        .selected_text(l.end.name())
+        .show_ui(ui, |ui| {
+            for end in LeaderEnd::ALL {
+                ui.selectable_value(&mut l.end, end, end.name());
+            }
+        });
+    if l.end != LeaderEnd::None {
+        number::stepper(END_SIZE, &mut l.end_size)
+            .range(END_SIZES.0..=END_SIZES.1)
+            .step(0.5)
+            .suffix(" pt")
+            .show(ui);
+    }
+    for (label, value) in [
+        (LABEL_GAP, &mut l.label_gap),
+        (ANCHOR_GAP, &mut l.anchor_gap),
+    ] {
+        number::stepper(label, value)
+            .range(LEADER_GAPS.0..=LEADER_GAPS.1)
+            .step(0.5)
+            .suffix(" pt")
+            .show(ui);
+    }
 }

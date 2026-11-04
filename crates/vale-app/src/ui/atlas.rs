@@ -325,8 +325,8 @@ pub enum ClassPage {
     Positions,
     /// The ranked zones inside and outside the polygons of a polygon class.
     Zones,
-    /// The points where the leader line of a label outside its polygon can start.
-    LeaderStart,
+    /// The start and the style of the leader line of a label outside its polygon.
+    LeaderLine,
 }
 
 /// A segment of the panel of a label class.
@@ -346,6 +346,9 @@ pub enum ClassSegment {
 pub enum ClassColor {
     Text,
     Halo,
+    /// The leader line of a label outside its polygon.
+    LeaderLine,
+    LeaderHalo,
     EdgeText,
     EdgeHalo,
     /// The text of a part of an item of furniture.
