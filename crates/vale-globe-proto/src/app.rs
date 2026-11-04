@@ -303,8 +303,8 @@ impl ProtoApp {
                 | Mode::OceanRidge
                 | Mode::Range
                 | Mode::Basin => flow,
-                // These three modes move toward a target, so each stamp does less.
-                Mode::Smooth | Mode::Flatten | Mode::Deposit => flow * 0.3,
+                // These modes move toward a target, so each stamp does less.
+                Mode::Smooth | Mode::Flatten | Mode::Terrace | Mode::Deposit => flow * 0.3,
             },
             mode: brush.mode,
             level,

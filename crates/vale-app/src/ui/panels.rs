@@ -16,7 +16,7 @@ use vale_terrain::Mode;
 use crate::globe::brush::{
     BASIN_DENSITY, CHANNEL_HELP, CHANNEL_KM, EROSION, FLOODPLAIN_WIDTH_KM, FLOW, NOISE_GRAIN,
     NOISE_M, RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM,
-    RIDGE_SPREAD_MM, SCALE_KM, SEED, STRENGTH_M, TALUS_DEG, WARP_KM, needs_height,
+    RIDGE_SPREAD_MM, SCALE_KM, SEED, STRENGTH_M, TALUS_DEG, TERRACE_STEP_M, WARP_KM, needs_height,
 };
 use crate::globe::combine::PolygonMode;
 use crate::globe::{Globe, Tool, WorldView, rivers, snap, stats, stroke_test, zoom_test};
@@ -816,6 +816,7 @@ fn brush_modes(ui: &mut egui::Ui, current: &mut Mode, height: bool) {
             (Mode::Carve, "Carve"),
             (Mode::Ridge, "Ridge"),
             (Mode::Deposit, "Deposit"),
+            (Mode::Terrace, "Terrace"),
             (Mode::Erode, "Erode"),
             (Mode::Weather, "Weather"),
             (Mode::Uplift, "Uplift"),
@@ -980,6 +981,13 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
                     .format(text)
                     .show(ui);
             }
+        } else if brush.mode == Mode::Terrace {
+            number::slider("Step", &mut brush.terrace_step_m, TERRACE_STEP_M)
+                .log()
+                .smallest(10.0)
+                .factor(scale)
+                .format(text)
+                .show(ui);
         } else {
             let name = strength_name(brush.mode);
             number::slider(name, &mut brush.strength_m, STRENGTH_M)

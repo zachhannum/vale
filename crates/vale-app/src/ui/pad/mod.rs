@@ -18,7 +18,7 @@ use super::{Action, AppState, Note, SaveMark, Workspace, globe, is_height, panel
 use crate::globe::brush::{
     BASIN_DENSITY, CHANNEL_KM, EROSION, FLOODPLAIN_WIDTH_KM, FLOW, NOISE_GRAIN, NOISE_M,
     RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM,
-    RIDGE_SPREAD_MM, SCALE_KM, SEED, STRENGTH_M, TALUS_DEG, WARP_KM, needs_height,
+    RIDGE_SPREAD_MM, SCALE_KM, SEED, STRENGTH_M, TALUS_DEG, TERRACE_STEP_M, WARP_KM, needs_height,
 };
 use crate::globe::brush::{BrushSettings, brush_radius};
 use crate::globe::combine::PolygonMode;
@@ -186,10 +186,11 @@ pub const SCULPT_MODES: [(&str, Icon, Mode); 7] = [
     ("Noise", Icon::Noise, Mode::Noise),
 ];
 /// The modes of the Terrain cell.
-pub const TERRAIN_MODES: [(&str, Icon, Mode); 9] = [
+pub const TERRAIN_MODES: [(&str, Icon, Mode); 10] = [
     ("Carve", Icon::Carve, Mode::Carve),
     ("Ridge", Icon::Ridge, Mode::Ridge),
     ("Deposit", Icon::Deposit, Mode::Deposit),
+    ("Terrace", Icon::Terrace, Mode::Terrace),
     ("Erode", Icon::Erode, Mode::Erode),
     ("Weather", Icon::Weather, Mode::Weather),
     ("Uplift", Icon::Uplift, Mode::Uplift),
@@ -1842,6 +1843,12 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
             .scale(Scale::Square)
             .default(defaults.noise_lower_m);
         apply(number.slider(ui, controls), &mut brush.noise_lower_m);
+    } else if brush.mode == Mode::Terrace {
+        let value = brush.terrace_step_m;
+        let number = meters("Brush step", "Step", value, TERRACE_STEP_M)
+            .log()
+            .default(defaults.terrace_step_m);
+        apply(number.slider(ui, controls), &mut brush.terrace_step_m);
     } else {
         let name = panels::strength_name(brush.mode);
         let number = meters("Brush strength", name, brush.strength_m, STRENGTH_M)

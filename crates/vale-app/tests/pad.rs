@@ -2216,6 +2216,17 @@ fn a_mode_of_the_flyout_sets_the_mode_and_the_face_of_the_cell() {
 }
 
 #[test]
+fn the_terrace_mode_is_in_the_terrain_cell_and_has_a_step() {
+    let mut h = pad(BOARDS[0]);
+    tap(&mut h, "Brush settings");
+    assert!(control(&h, "Brush step").is_none());
+    choose_mode(&mut h, "Terrace");
+    assert_eq!(h.state().globe.brush.mode, Mode::Terrace);
+    assert!(control(&h, "Brush step").is_some());
+    assert!(control(&h, "Brush strength").is_none());
+}
+
+#[test]
 fn the_brush_panel_of_the_push_mode_has_no_strength() {
     let mut h = pad(BOARDS[0]);
     tap(&mut h, "Brush settings");

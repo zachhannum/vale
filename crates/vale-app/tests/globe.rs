@@ -1907,6 +1907,20 @@ fn the_brush_panel_has_the_deposit_mode() {
 }
 
 #[test]
+fn the_brush_panel_has_the_terrace_mode_with_a_step() {
+    let mut h = harness();
+    h.state_mut().globe.tool = Tool::Brush;
+    h.run_steps(2);
+    assert!(h.query_by_label("Step").is_none());
+    assert!(h.query_all_by_label("Strength").next().is_some());
+    h.get_by_label("Terrace").click();
+    h.run_steps(2);
+    assert_eq!(h.state().globe.brush.mode, Mode::Terrace);
+    assert!(h.query_all_by_label("Step").next().is_some());
+    assert!(h.query_all_by_label("Strength").next().is_none());
+}
+
+#[test]
 #[ignore = "gpu"]
 fn deposit_raises_low_ground_to_the_fill_level_and_leaves_the_sea() {
     let _gpu = one_gpu_test();

@@ -31,6 +31,8 @@ pub const NOISE_GRAIN: std::ops::RangeInclusive<f64> = 0.0..=9.0;
 /// The limits of the angle of the weather mode, in degrees. Painted land on
 /// a world of the size of the Earth has slopes of 3 degrees or less.
 pub const TALUS_DEG: std::ops::RangeInclusive<f64> = 0.02..=20.0;
+/// The limits of the step of the terrace mode, in meters.
+pub const TERRACE_STEP_M: std::ops::RangeInclusive<f64> = 10.0..=3000.0;
 /// The limits of the strength of the warp mode, in kilometers.
 pub const WARP_KM: std::ops::RangeInclusive<f64> = 1.0..=500.0;
 /// The limits of the scale of the warp mode, in kilometers.
@@ -93,6 +95,8 @@ pub struct BrushSettings {
     /// The target of the flatten mode. `None`: the level under the start of
     /// the stroke.
     pub flatten_level: Option<u16>,
+    /// The height between two step levels of the terrace mode, in meters.
+    pub terrace_step_m: f64,
     /// The steepest slope that the weather mode leaves, in degrees.
     pub talus_deg: f64,
     /// The strength of the erosion of the uplift mode, from 0 to 1. At 0,
@@ -163,6 +167,7 @@ impl Default for BrushSettings {
             noise_raise_m: 1500.0,
             noise_lower_m: 1500.0,
             flatten_level: None,
+            terrace_step_m: 200.0,
             talus_deg: 0.5,
             erosion: 0.5,
             warp_km: 50.0,
@@ -189,14 +194,14 @@ impl Default for BrushSettings {
     }
 }
 
-/// True if a brush mode needs heights in meters: it follows the rivers or
-/// the slope of the ground. A raster layer of another unit does not have
+/// True if a brush mode needs heights in meters: it follows the rivers, the
+/// slope of the ground, or sea level. A raster layer of another unit does not have
 /// the mode.
 pub fn needs_height(mode: Mode) -> bool {
     use Mode::*;
     matches!(
         mode,
-        Carve | Ridge | Deposit | Erode | Weather | Uplift | OceanRidge | Range | Basin
+        Carve | Ridge | Deposit | Erode | Weather | Uplift | OceanRidge | Range | Basin | Terrace
     )
 }
 
@@ -473,11 +478,16 @@ impl Tip<'_> {
                 Mode::OceanRidge | Mode::Range | Mode::Basin => {
                     (input / FIXED_FLOW).min(1.0) * self.brush.flow
                 }
-                // These three modes move toward a target, so each stamp does less.
-                Mode::Smooth | Mode::Flatten | Mode::Deposit => flow * 0.3,
+                // These modes move toward a target, so each stamp does less.
+                Mode::Smooth | Mode::Flatten | Mode::Terrace | Mode::Deposit => flow * 0.3,
             },
             mode: self.brush.mode,
-            level: self.level,
+            level: match self.brush.mode {
+                Mode::Terrace => (self.brush.terrace_step_m / span)
+                    .round()
+                    .clamp(1.0, 65535.0) as u16,
+                _ => self.level,
+            },
             strength: STAMP_SPACING / span
                 * match self.brush.mode {
                     Mode::Uplift => {
@@ -672,6 +682,7 @@ fn stamp_cost(plan: &StampPlan) -> usize {
         Mode::Raise
         | Mode::Lower
         | Mode::Flatten
+        | Mode::Terrace
         | Mode::Carve
         | Mode::Ridge
         | Mode::Deposit
@@ -804,6 +815,21 @@ mod tests {
         stroke.add_sample(&brush, 1024, sample(2.0 * arc, 0.1), |_| 7, &mut out);
         assert_eq!(out.len(), count + 1);
         assert_eq!(out[count].motion, [0.0; 3]);
+    }
+
+    #[test]
+    fn a_terrace_stamp_has_the_step_in_levels() {
+        let brush = BrushSettings {
+            mode: Mode::Terrace,
+            terrace_step_m: 300.0,
+            ..BrushSettings::default()
+        };
+        let mut out = Vec::new();
+        Stroke::default().add_sample(&brush, 1024, sample(0.0, 0.1), |_| 7, &mut out);
+        let step = f64::from(out[0].level) * (ELEV_MAX - ELEV_MIN) / 65535.0;
+        assert!((step - 300.0).abs() < 0.1, "{step}");
+        assert_eq!(out[0].flow, 0.3);
+        assert!(needs_height(Mode::Terrace));
     }
 
     #[test]
