@@ -13,7 +13,7 @@ use vale_store::{
     Field, FieldType, GeometryKind, Layer, LayerId, MapId, MapRecord, MapStyleId, MapStyleRecord,
     Project, ProjectionPreset, Units, World,
 };
-use vale_style::{Color, LabelClass, LayerStyle, MapStyle, Overrides, Stroke};
+use vale_style::{Color, LabelClass, LayerStyle, MapStyle, Stroke};
 
 use crate::view::View;
 use crate::world;
@@ -533,43 +533,36 @@ impl Document {
         true
     }
 
-    /// The style overrides of a layer that a target holds itself.
-    pub fn overrides(&self, target: impl Into<Target>, layer: LayerId) -> Overrides {
-        let atlas = &self.project.atlas;
-        let text = match target.into() {
-            Target::Map(m) => atlas.map(m).and_then(|m| m.overrides.get(&layer)),
-            Target::Style(s) => atlas.map_style(s).and_then(|s| s.overrides.get(&layer)),
-        };
-        text.map(|t| Overrides::from_json(t)).unwrap_or_default()
-    }
-
-    /// The style overrides of a layer in a map: the overrides of its map
-    /// style, with the overrides of the map over them.
-    pub fn effective_overrides(&self, map: MapId, layer: LayerId) -> Overrides {
-        self.target_overrides(Target::Map(map), layer)
-    }
-
-    /// The overrides under the overrides of a target: the overrides of the
-    /// map style of a map. A map style has none.
-    fn base_overrides(&self, target: Target, layer: LayerId) -> Overrides {
-        let style = match target {
-            Target::Map(m) => self.project.atlas.map(m).and_then(|m| m.style),
-            Target::Style(_) => None,
-        };
-        style.map_or_else(Overrides::default, |s| {
-            self.overrides(Target::Style(s), layer)
-        })
-    }
-
-    /// The overrides of a target over its base overrides.
-    fn target_overrides(&self, target: Target, layer: LayerId) -> Overrides {
-        let own = self.overrides(target, layer);
-        let base = self.base_overrides(target, layer);
-        if base.is_empty() {
-            own
-        } else {
-            base.layered(&own)
+    /// Gives each map with no map style and each map style a copy of the
+    /// globe style of each layer that it has no style for, and turns the
+    /// style overrides of an older file into styles. Returns `true` if the
+    /// project changed.
+    pub fn fill_map_styles(&mut self) -> bool {
+        let layers = crate::map_styles::needed(&self.project);
+        if layers.is_empty() {
+            return false;
         }
+        let globe: Vec<_> = (layers.into_iter())
+            .filter_map(|id| Some((id, self.layer_style(id)?.to_json())))
+            .collect();
+        crate::map_styles::fill_with(&mut self.project, &globe)
+    }
+
+    /// The stored style of a layer in a target, as JSON. A map with no entry
+    /// gives the entry of its map style.
+    fn style_text(&self, target: Target, layer: LayerId) -> Option<&String> {
+        let atlas = &self.project.atlas;
+        match target {
+            Target::Map(m) => atlas.style_text(m, layer),
+            Target::Style(s) => atlas.map_style(s)?.styles.get(&layer),
+        }
+    }
+
+    /// True if a map links to a map style and holds its own style for a
+    /// layer.
+    pub fn own_style(&self, map: MapId, layer: LayerId) -> bool {
+        let record = self.project.atlas.map(map);
+        record.is_some_and(|m| m.style.is_some() && m.styles.contains_key(&layer))
     }
 
     /// The label classes of a layer in a map. A map with no classes for the
@@ -584,9 +577,8 @@ impl Document {
     }
 
     /// The label classes of a layer in a target. A map gives the classes
-    /// that it draws. A map style with no classes for the layer gives the
-    /// class of the label style of the layer with the overrides of the map
-    /// style.
+    /// that it draws. A target with no classes for the layer gives the class
+    /// of the label style of the layer in the target.
     pub fn label_classes_in(&self, target: impl Into<Target>, layer: LayerId) -> Vec<LabelClass> {
         let target = target.into();
         let stored = self
@@ -644,32 +636,38 @@ impl Document {
         true
     }
 
-    /// The hidden layers, the overrides, and the label classes of a target.
+    /// The hidden layers, the layer styles, and the label classes of a
+    /// target.
     fn parts_mut(&mut self, target: Target) -> Option<Parts<'_>> {
         let atlas = &mut self.project.atlas;
         match target {
             Target::Map(m) => {
                 let m = atlas.map_mut(m)?;
-                Some((&mut m.hidden, &mut m.overrides, &mut m.labels))
+                Some((&mut m.hidden, &mut m.styles, &mut m.labels))
             }
             Target::Style(s) => {
                 let s = atlas.map_style_mut(s)?;
-                Some((&mut s.hidden, &mut s.overrides, &mut s.labels))
+                Some((&mut s.hidden, &mut s.styles, &mut s.labels))
             }
         }
     }
 
-    /// The layer with the style of a map. `None` is the style of the layer.
+    /// The layer with the style of a map. `None` is the globe style.
     pub fn map_entry(&self, map: Option<MapId>, layer: LayerId) -> Option<Cow<'_, LayerEntry>> {
         let entry = self.entry(layer)?;
-        let overrides = (map.map(|m| self.effective_overrides(m, layer))).unwrap_or_default();
-        if overrides.is_empty() {
-            return Some(Cow::Borrowed(entry));
-        }
-        Some(Cow::Owned(LayerEntry {
-            layer,
-            style: entry.style.with_overrides(&overrides),
-        }))
+        let style = map.and_then(|m| self.parsed_style(Target::Map(m), layer));
+        Some(match style {
+            Some(style) => Cow::Owned(LayerEntry { layer, style }),
+            None => Cow::Borrowed(entry),
+        })
+    }
+
+    /// The stored style of a layer in a target, if it parses.
+    fn parsed_style(&self, target: Target, layer: LayerId) -> Option<LayerStyle> {
+        let text = self.style_text(target, layer)?;
+        LayerStyle::from_json(text)
+            .inspect_err(|e| eprintln!("The style of layer {layer:?} in a map is not valid: {e}"))
+            .ok()
     }
 
     /// The style of a layer: the style of its entry, or the stored style of
@@ -682,55 +680,54 @@ impl Document {
     }
 
     /// The style of a layer in a target. A map gives the style that it
-    /// draws.
+    /// draws. A target with no style for the layer gives the globe style.
     pub fn map_style(&self, target: impl Into<Target>, layer: LayerId) -> Option<LayerStyle> {
-        let base = self.layer_style(layer)?;
-        Some(base.with_overrides(&self.target_overrides(target.into(), layer)))
+        self.layer(layer)?;
+        (self.parsed_style(target.into(), layer)).or_else(|| self.layer_style(layer))
     }
 
-    /// Makes `edited` the style of a layer in a target, as overrides of the
-    /// target. The base of a map style is the style of the layer, and the
-    /// base of a map is that style with the overrides of its map style. Each
-    /// override of the target stays. Returns false if nothing changed.
+    /// Makes `edited` the style of a layer in a target. In a map that links
+    /// to a map style, the style becomes the own style of the map. Returns
+    /// false if nothing changed.
     pub fn set_map_style(
         &mut self,
         target: impl Into<Target>,
         layer: LayerId,
         edited: &LayerStyle,
     ) -> bool {
-        let target = target.into();
-        let Some(base) = self.layer_style(layer) else {
-            return false;
-        };
-        let base = base.with_overrides(&self.base_overrides(target, layer));
-        let new = self.overrides(target, layer).merged(&base, edited);
-        self.put_overrides(target, layer, &new)
-    }
-
-    /// Removes the style overrides of a layer in a target. Returns false if
-    /// nothing changed.
-    pub fn clear_overrides(&mut self, target: impl Into<Target>, layer: LayerId) -> bool {
-        self.put_overrides(target, layer, &Overrides::default())
-    }
-
-    fn put_overrides(
-        &mut self,
-        target: impl Into<Target>,
-        layer: LayerId,
-        new: &Overrides,
-    ) -> bool {
-        let Some((_, overrides, _)) = self.parts_mut(target.into()) else {
-            return false;
-        };
-        let text = (!new.is_empty()).then(|| new.to_json());
-        if overrides.get(&layer) == text.as_ref() {
+        if self.layer(layer).is_none() {
             return false;
         }
-        match text {
-            Some(text) => overrides.insert(layer, text),
-            None => overrides.remove(&layer),
+        let Some((_, styles, _)) = self.parts_mut(target.into()) else {
+            return false;
         };
+        let text = edited.to_json();
+        if styles.get(&layer) == Some(&text) {
+            return false;
+        }
+        styles.insert(layer, text);
         true
+    }
+
+    /// Removes the own style of a layer in a map that links to a map style,
+    /// so that the map draws the style of the map style. Returns false if
+    /// nothing changed.
+    pub fn use_map_style(&mut self, map: MapId, layer: LayerId) -> bool {
+        let record = self.project.atlas.map_mut(map);
+        let Some(record) = record.filter(|m| m.style.is_some()) else {
+            return false;
+        };
+        record.styles.remove(&layer).is_some()
+    }
+
+    /// Makes a copy of the globe style the style of a layer in a target.
+    /// Returns false if nothing changed.
+    pub fn copy_globe_style(&mut self, target: impl Into<Target>, layer: LayerId) -> bool {
+        let target = target.into();
+        let Some(globe) = self.layer_style(layer) else {
+            return false;
+        };
+        self.set_map_style(target, layer, &globe)
     }
 
     /// True if a target shows a layer.
@@ -777,6 +774,16 @@ impl Document {
         let mut out = record.clone();
         out.style = None;
         out.shown.clear();
+        out.styles = (self.project.layers().iter())
+            .filter_map(|l| {
+                let text = match atlas.style_text(map, l.id) {
+                    Some(text) => text.clone(),
+                    None => self.layer_style(l.id)?.to_json(),
+                };
+                Some((l.id, text))
+            })
+            .collect();
+        out.legacy_overrides.clear();
         let Some(style) = atlas.style_of(map) else {
             return Some(out);
         };
@@ -786,12 +793,6 @@ impl Document {
         out.hidden = switches
             .copied()
             .filter(|&l| !atlas.shows(map, l))
-            .collect();
-        out.overrides = (atlas.override_layers(map).into_iter())
-            .filter_map(|l| {
-                let o = self.effective_overrides(map, l);
-                (!o.is_empty()).then(|| (l, o.to_json()))
-            })
             .collect();
         out.labels = (record.labels.keys())
             .chain(style.labels.keys())
@@ -810,21 +811,21 @@ impl Document {
             id: MapStyleId(0),
             name: String::new(),
             hidden: resolved.hidden,
-            overrides: resolved.overrides,
+            styles: resolved.styles,
             labels: resolved.labels,
         });
         let record = atlas.map_mut(map)?;
         record.style = Some(id);
         record.hidden.clear();
         record.shown.clear();
-        record.overrides.clear();
+        record.styles.clear();
         record.labels.clear();
         Some(id)
     }
 
-    /// Links a map to a map style, and the map keeps its own settings over
-    /// it. `None` unlinks the map, and the map keeps the settings that it
-    /// draws. Returns false if nothing changed.
+    /// Links a map to a map style, and the map drops its own switches,
+    /// styles, and label classes. `None` unlinks the map, and the map keeps
+    /// the settings that it draws. Returns false if nothing changed.
     pub fn link_map_style(&mut self, map: MapId, style: Option<MapStyleId>) -> bool {
         let atlas = &self.project.atlas;
         let Some(record) = atlas.map(map) else {
@@ -836,6 +837,11 @@ impl Document {
         let new = match style {
             Some(s) => MapRecord {
                 style: Some(s),
+                hidden: BTreeSet::new(),
+                shown: BTreeSet::new(),
+                styles: BTreeMap::new(),
+                legacy_overrides: BTreeMap::new(),
+                labels: BTreeMap::new(),
                 ..record.clone()
             },
             None => match self.resolved_map(map) {

@@ -684,7 +684,8 @@ mod tests {
             style: None,
             hidden: BTreeSet::new(),
             shown: BTreeSet::new(),
-            overrides: Default::default(),
+            styles: Default::default(),
+            legacy_overrides: Default::default(),
             labels: Default::default(),
         }
     }

@@ -16,13 +16,13 @@ use super::atlas::{self, AtlasSelection, EdgeSet, FrameTab};
 use super::pad::atlas::{
     ADD_HOLE, ADD_PAGE, APPLY_TO, AUTO_INTERVAL, AZIMUTH, BORDER, BORDER_COLOR, BORDER_DISTANCE,
     BORDER_STROKE, BORDER_STYLE, BORDER_STYLES, BORDER_WIDTH, CENTER_LATITUDE, CENTER_LONGITUDE,
-    CENTER_ON_FRAME, DELETE_MAP_STYLE, DELETE_PAGE, DELETE_PROJECTION, FIRST_PARALLEL, FRAME_TABS,
-    GRATICULE_COLOR, GRATICULE_WIDTH, GRID_COLOR, GRID_SPACING, HEIGHT, INTERVAL, LABEL_FORMAT,
-    LABEL_FORMATS, LATITUDE, LAYOUT_GRID, LINKED_STYLE_HINT, LONGITUDE, MAP_NAME, MAP_STYLE,
-    MAP_STYLE_HINT, MAP_STYLE_NAME, NEATLINE, NEATLINE_COLOR, NEATLINE_WIDTH, NO_MAP_STYLE,
-    OBLIQUE, ORIENTATIONS, PAGE_NAME, PAPER_COLOR, POLYGON, PROJECTION_NAME, RECTANGLE,
-    REFERENCE_GRID, REMOVE_OVERRIDES, ROTATION, SAVE_AS_MAP_STYLE, SAVE_PROJECTION, SCALE,
-    SECOND_COLOR, SECOND_PARALLEL, SHAPE, SIZE, STROKE_COLOR, STROKE_WIDTH, THIS_MAP, UNIT_NAMES,
+    CENTER_ON_FRAME, COPY_GLOBE_STYLE, DELETE_MAP_STYLE, DELETE_PAGE, DELETE_PROJECTION,
+    FIRST_PARALLEL, FRAME_TABS, GRATICULE_COLOR, GRATICULE_WIDTH, GRID_COLOR, GRID_SPACING, HEIGHT,
+    INTERVAL, LABEL_FORMAT, LABEL_FORMATS, LATITUDE, LAYOUT_GRID, LINKED_STYLE_HINT, LONGITUDE,
+    MAP_NAME, MAP_STYLE, MAP_STYLE_HINT, MAP_STYLE_NAME, NEATLINE, NEATLINE_COLOR, NEATLINE_WIDTH,
+    NO_MAP_STYLE, OBLIQUE, ORIENTATIONS, PAGE_NAME, PAPER_COLOR, POLYGON, PROJECTION_NAME,
+    RECTANGLE, REFERENCE_GRID, ROTATION, SAVE_AS_MAP_STYLE, SAVE_PROJECTION, SCALE, SECOND_COLOR,
+    SECOND_PARALLEL, SHAPE, SIZE, STROKE_COLOR, STROKE_WIDTH, THIS_MAP, UNIT_NAMES, USE_MAP_STYLE,
     WIDTH, custom_row, length_text, unit_name,
 };
 use super::pad::atlas::{
@@ -648,19 +648,21 @@ fn layers_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
     {
         state.touch();
     }
-    remove_overrides(ui, state, frame, layer);
+    style_source(ui, state, frame, layer);
 }
 
-fn remove_overrides(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord, layer: LayerId) {
-    let any = !state
-        .doc
-        .overrides(state.target(frame.map), layer)
-        .is_empty();
+/// The buttons that set the style of a layer in a map from its map style
+/// or from the globe style.
+fn style_source(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord, layer: LayerId) {
+    if state.doc.own_style(frame.map, layer) && ui.button(USE_MAP_STYLE).clicked() {
+        state.use_map_style(frame.map, layer);
+    }
+    let differs = state.differs_from_globe(frame.map, layer);
     if ui
-        .add_enabled(any, egui::Button::new(REMOVE_OVERRIDES))
+        .add_enabled(differs, egui::Button::new(COPY_GLOBE_STYLE))
         .clicked()
     {
-        state.clear_overrides(frame.map, layer);
+        state.copy_globe_style(frame.map, layer);
     }
 }
 
@@ -702,7 +704,7 @@ fn look_controls(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord, l
     if look != old {
         state.set_look(scope, layer, look);
     }
-    remove_overrides(ui, state, frame, layer);
+    style_source(ui, state, frame, layer);
 }
 
 fn display_name(d: RasterDisplay) -> &'static str {

@@ -133,7 +133,11 @@ fn the_blend_mode_works_in_a_frame() {
     h.run_steps(3);
     let [r, ..] = pixel(&mut h, middle);
     assert!(r.abs_diff(grey_of(upper_level)) <= 3, "normal: {r}");
-    h.state_mut().set_raster_blend(upper, BlendMode::Multiply);
+    let layer = h.state().doc.project.raster_layer(upper).unwrap().id;
+    let state = h.state_mut();
+    let mut look = state.look(Some(frame.map), layer).unwrap();
+    look.blend = BlendMode::Multiply;
+    state.set_look(Some(frame.map), layer, look);
     h.state_mut().touch();
     h.run_steps(3);
     let [r, g, b] = pixel(&mut h, middle);
@@ -187,13 +191,20 @@ fn the_opacity_and_the_blend_mode_of_an_image_layer_work_in_a_frame() {
     let (mut h, id, west, east) = atlas_with_image(level);
     let g = grey_of(level);
     let half = |a: u8, b: u8| ((u16::from(a) + u16::from(b)) / 2) as u8;
-    h.state_mut().set_image_opacity(id, 0.5);
+    let map = open_frame(&h).map;
+    let layer = h.state().doc.project.image_layer(id).unwrap().id;
+    let set = |h: &mut App, opacity: f32, blend: BlendMode| {
+        let state = h.state_mut();
+        let mut look = state.look(Some(map), layer).unwrap();
+        (look.opacity, look.blend) = (opacity, blend);
+        state.set_look(Some(map), layer, look);
+    };
+    set(&mut h, 0.5, BlendMode::Normal);
     near(pixel(&mut h, east), [half(255, g), g / 2, g / 2], "half");
-    h.state_mut().set_image_opacity(id, 1.0);
-    h.state_mut().set_image_blend(id, BlendMode::Multiply);
+    set(&mut h, 1.0, BlendMode::Multiply);
     near(pixel(&mut h, east), [g, 0, 0], "multiply");
     near(pixel(&mut h, west), [g; 3], "multiply, transparent");
-    h.state_mut().set_image_blend(id, BlendMode::Screen);
+    set(&mut h, 1.0, BlendMode::Screen);
     near(pixel(&mut h, east), [255, g, g], "screen");
 }
 
@@ -263,7 +274,7 @@ fn a_pdf_export_embeds_the_raster_layers_of_a_frame() {
 
 #[test]
 #[ignore = "gpu"]
-fn a_raster_override_shows_in_the_frames_of_its_map_only() {
+fn a_raster_style_of_a_map_shows_in_the_frames_of_its_map_only() {
     let _gpu = one_gpu_test();
     let level = 40000;
     let (mut h, height) = atlas(level);
@@ -283,10 +294,14 @@ fn a_raster_override_shows_in_the_frames_of_its_map_only() {
     assert!(first.abs_diff(grey_of(level)) <= 3, "{first}");
     assert!(second.abs_diff(grey_of(level)) > 20, "{second}");
 
-    // A change of the style of the layer keeps the override.
+    // A change of the globe style does not reach the frames.
     h.state_mut().set_raster_blend(height, BlendMode::Screen);
     let map_look = h.state().look(Some(frames[1].map), layer).unwrap();
-    assert_eq!((map_look.opacity, map_look.blend), (0.0, BlendMode::Screen));
+    assert_eq!((map_look.opacity, map_look.blend), (0.0, BlendMode::Normal));
+    let main_look = h.state().look(Some(frames[0].map), layer).unwrap();
+    assert_eq!(main_look.blend, BlendMode::Normal);
+    let [first, ..] = pixel(&mut h, a);
+    assert!(first.abs_diff(grey_of(level)) <= 3, "{first}");
     let [second, ..] = pixel(&mut h, b);
     assert!(second.abs_diff(grey_of(level)) > 20, "{second}");
     assert_eq!(h.state().doc.project.raster(height).unwrap().opacity, 1.0);
@@ -294,7 +309,7 @@ fn a_raster_override_shows_in_the_frames_of_its_map_only() {
 
 #[test]
 #[ignore = "gpu"]
-fn an_image_override_shows_in_the_frame_of_its_map() {
+fn an_image_style_of_a_map_shows_in_the_frame_of_its_map() {
     let _gpu = one_gpu_test();
     let level = 32768;
     let (mut h, id, _west, east) = atlas_with_image(level);

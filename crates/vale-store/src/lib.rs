@@ -1432,12 +1432,13 @@ impl Project {
         for map in &mut self.atlas.maps {
             map.hidden.remove(&id);
             map.shown.remove(&id);
-            map.overrides.remove(&id);
+            map.styles.remove(&id);
+            map.legacy_overrides.remove(&id);
             map.labels.remove(&id);
         }
         for style in &mut self.atlas.map_styles {
             style.hidden.remove(&id);
-            style.overrides.remove(&id);
+            style.styles.remove(&id);
             style.labels.remove(&id);
         }
         if let Some(raster) = layer.raster() {
@@ -1797,20 +1798,24 @@ mod tests {
             id: MapStyleId(0),
             name: String::new(),
             hidden: [a, b].into(),
-            overrides: BTreeMap::new(),
+            styles: BTreeMap::new(),
             labels: BTreeMap::new(),
         };
         for layer in [a, b] {
-            style.overrides.insert(layer, "{}".into());
+            style.styles.insert(layer, "{}".into());
             style.labels.insert(layer, "[]".into());
         }
         let id = p.atlas.add_map_style(style);
         p.atlas.maps[0].shown.extend([a, b]);
+        p.atlas.maps[0].styles.insert(a, "{}".into());
+        p.atlas.maps[0].legacy_overrides.insert(a, "{}".into());
         assert!(p.remove_layer(a).is_some());
         assert_eq!(p.atlas.maps[0].shown, [b].into());
+        assert!(p.atlas.maps[0].styles.is_empty());
+        assert!(p.atlas.maps[0].legacy_overrides.is_empty());
         let style = p.atlas.map_style(id).unwrap();
         assert_eq!(style.hidden, [b].into());
-        assert_eq!(style.overrides.keys().collect::<Vec<_>>(), [&b]);
+        assert_eq!(style.styles.keys().collect::<Vec<_>>(), [&b]);
         assert_eq!(style.labels.keys().collect::<Vec<_>>(), [&b]);
     }
 

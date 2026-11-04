@@ -54,11 +54,8 @@ pub const THIS_MAP: &str = "This map";
 pub fn map_style_row(name: &str) -> String {
     format!("Map style {name}")
 }
-/// The heading of the layers with overrides when changes go to a map style.
-pub fn style_for(name: &str) -> String {
-    format!("Style for {name}")
-}
-pub const REMOVE_OVERRIDES: &str = "Remove overrides";
+pub const USE_MAP_STYLE: &str = "Use map style";
+pub const COPY_GLOBE_STYLE: &str = "Copy globe style";
 pub const SHAPE: &str = "Shape";
 pub const RECTANGLE: &str = "Rectangle";
 pub const POLYGON: &str = "Polygon";
@@ -1361,30 +1358,18 @@ fn layers_tab(
             open = Some(layer);
         }
     }
-    // The layers that have style overrides in this map.
+    // The layers that have their own style in a map with a map style.
     let changed: Vec<_> = (rows.iter())
-        .filter_map(|(layer, _, name)| {
-            let n = state.doc.overrides(state.target(map), *layer).len();
-            (n > 0).then(|| (*layer, name.clone(), n))
-        })
+        .filter(|(layer, _, _)| state.doc.own_style(map, *layer))
+        .map(|(layer, _, name)| (*layer, name.clone()))
         .collect();
     if !changed.is_empty() {
         ui.add_space(8.0);
-        let heading = match state.target(map) {
-            crate::document::Target::Style(style) => (state.doc.project.atlas.map_style(style))
-                .map_or_else(|| STYLE_FOR_THIS_MAP.to_string(), |s| style_for(&s.name)),
-            crate::document::Target::Map(_) => STYLE_FOR_THIS_MAP.to_string(),
-        };
-        super::raster::heading(ui, &heading);
-        for (layer, name, n) in changed {
-            let value = if n == 1 {
-                "1 change".to_string()
-            } else {
-                format!("{n} changes")
-            };
+        super::raster::heading(ui, STYLE_FOR_THIS_MAP);
+        for (layer, name) in changed {
             let tapped = ui
                 .push_id(("changed", layer.0), |ui| {
-                    widgets::open_row(ui, controls, &name, &value).clicked()
+                    widgets::open_row(ui, controls, &name, "").clicked()
                 })
                 .inner;
             if tapped {
@@ -1427,7 +1412,7 @@ fn layer_panel(
     }
     let map = state.doc.project.atlas.frame(id)?.map;
     let name = state.doc.layer(layer)?.name.clone();
-    let rules = &state.doc.entry(layer)?.style.style.rules;
+    let rules = state.doc.map_style(state.target(map), layer)?.style.rules;
     let page = match state.atlas.layer_page {
         Some(
             Page::Rule(i)
@@ -1521,11 +1506,7 @@ fn layer_panel(
             _ => super::rules::section(ui, state, controls, layer),
         });
         if page.is_none() {
-            ui.add_space(8.0);
-            let any = !state.doc.overrides(state.target(map), layer).is_empty();
-            if widgets::button_row(ui, controls, REMOVE_OVERRIDES, any).clicked() {
-                state.clear_overrides(map, layer);
-            }
+            style_source_rows(ui, state, controls, map, layer);
         }
     };
     let hint = |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| {
@@ -1534,6 +1515,27 @@ fn layer_panel(
     Some(show_card(
         ctx, state, controls, rects, card, on_title, hint, body,
     ))
+}
+
+/// The rows that set the style of a layer in a map from its map style or
+/// from the globe style.
+fn style_source_rows(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    map: MapId,
+    layer: LayerId,
+) {
+    ui.add_space(8.0);
+    if state.doc.own_style(map, layer)
+        && widgets::button_row(ui, controls, USE_MAP_STYLE, true).clicked()
+    {
+        state.use_map_style(map, layer);
+    }
+    let differs = state.differs_from_globe(map, layer);
+    if widgets::button_row(ui, controls, COPY_GLOBE_STYLE, differs).clicked() {
+        state.copy_globe_style(map, layer);
+    }
 }
 
 /// The top of the panel of a layer: the switch between the map style and
@@ -1682,11 +1684,7 @@ fn raster_panel(
             }
         });
         if page.is_none() {
-            ui.add_space(8.0);
-            let any = !state.doc.overrides(state.target(map), layer).is_empty();
-            if widgets::button_row(ui, controls, REMOVE_OVERRIDES, any).clicked() {
-                state.clear_overrides(map, layer);
-            }
+            style_source_rows(ui, state, controls, map, layer);
         }
     };
     let hint = |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| {
@@ -1778,11 +1776,7 @@ fn look_panel(
             state.set_look(scope, layer, look);
         }
         if page.is_none() {
-            ui.add_space(8.0);
-            let any = !state.doc.overrides(state.target(map), layer).is_empty();
-            if widgets::button_row(ui, controls, REMOVE_OVERRIDES, any).clicked() {
-                state.clear_overrides(map, layer);
-            }
+            style_source_rows(ui, state, controls, map, layer);
         }
     };
     let hint = |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| {

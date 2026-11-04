@@ -21,18 +21,18 @@ use vale_app::ui::atlas::{AtlasSelection, AtlasTool, FrameTab};
 use vale_app::ui::map_texture::MapRenderer;
 use vale_app::ui::pad::atlas::{
     ADD, ADD_HOLE, ADD_PAGE, AUTO_INTERVAL, BORDER, BORDER_DISTANCE, BORDER_STROKE, BORDER_STYLES,
-    BORDER_WIDTH, CENTER_ON_FRAME, DELETE_PAGE, DELETE_PROJECTION, EXPORT_ATLAS_PDF,
-    EXPORT_PAGE_PDF, EXPORT_PAGE_PNG, FIRST_PARALLEL, FRAME_TABS, GRATICULE_COLOR, GRATICULE_WIDTH,
-    HEIGHT, INTERVAL, LABEL_FORMATS, MAP_FRAME, MAP_NAME, NEATLINE, NEATLINE_COLOR, NEATLINE_WIDTH,
-    NEXT_PAGE, OBLIQUE, PAPER_COLOR, POLYGON, PREVIOUS_PAGE, PROJECTION, REFERENCE_GRID,
-    REMOVE_OVERRIDES, SAVE_PROJECTION, SCALE, SECOND_COLOR, SIZE, STROKE_COLOR,
-    STROKE_WIDTH as BORDER_STROKE_WIDTH, STYLE_FOR_THIS_MAP, VERTEX, WIDTH, custom_row, page_title,
-    readout_text,
+    BORDER_WIDTH, CENTER_ON_FRAME, COPY_GLOBE_STYLE, DELETE_PAGE, DELETE_PROJECTION,
+    EXPORT_ATLAS_PDF, EXPORT_PAGE_PDF, EXPORT_PAGE_PNG, FIRST_PARALLEL, FRAME_TABS,
+    GRATICULE_COLOR, GRATICULE_WIDTH, HEIGHT, INTERVAL, LABEL_FORMATS, MAP_FRAME, MAP_NAME,
+    NEATLINE, NEATLINE_COLOR, NEATLINE_WIDTH, NEXT_PAGE, OBLIQUE, PAPER_COLOR, POLYGON,
+    PREVIOUS_PAGE, PROJECTION, REFERENCE_GRID, SAVE_PROJECTION, SCALE, SECOND_COLOR, SIZE,
+    STROKE_COLOR, STROKE_WIDTH as BORDER_STROKE_WIDTH, STYLE_FOR_THIS_MAP, VERTEX, WIDTH,
+    custom_row, page_title, readout_text,
 };
 use vale_app::ui::pad::atlas::{BORDER_GAP, DISTANCE_BY_SIDE, GRID_COLUMN_NAMES, SIDE_DISTANCES};
 use vale_app::ui::pad::atlas::{
     DELETE_MAP_STYLE, LINKED_STYLE_HINT, MAP_STYLE, MAP_STYLE_HINT, MAP_STYLE_NAME,
-    NO_MAP_STYLE_ROW, SAVE_AS_MAP_STYLE, THIS_MAP, map_style_row,
+    NO_MAP_STYLE_ROW, SAVE_AS_MAP_STYLE, THIS_MAP, USE_MAP_STYLE, map_style_row,
 };
 use vale_app::ui::pad::atlas::{GRID_COLOR, GRID_SPACING, LAYOUT_GRID, SHOW_GRID, SNAP_TO_LAYOUT};
 use vale_app::ui::pad::edge_labels::{
@@ -2489,8 +2489,19 @@ fn rivers_rgb(h: &Pad) -> [u8; 4] {
     [c.r, c.g, c.b, c.a]
 }
 
-fn overrides(h: &Pad, map: MapId) -> vale_style::Overrides {
-    h.state().doc.overrides(map, layer_id(h, "Rivers"))
+/// The style of a layer that a target holds itself, as JSON.
+fn own_text(h: &Pad, target: Target, layer: LayerId) -> Option<String> {
+    let atlas = &h.state().doc.project.atlas;
+    let styles = match target {
+        Target::Map(m) => &atlas.map(m)?.styles,
+        Target::Style(s) => &atlas.map_style(s)?.styles,
+    };
+    styles.get(&layer).cloned()
+}
+
+/// The style of Rivers that a target holds itself, as JSON.
+fn own_rivers(h: &Pad, target: Target) -> Option<String> {
+    own_text(h, target, layer_id(h, "Rivers"))
 }
 
 /// Opens the page of the first rule of Rivers in the Layers tab of the
@@ -2528,7 +2539,7 @@ fn flat_strokes(h: &mut Pad, rgba: [u8; 4], line: f64) -> usize {
 }
 
 #[test]
-fn a_change_of_the_style_of_a_layer_shows_on_the_globe_the_flat_view_and_two_maps() {
+fn a_change_of_the_globe_style_does_not_change_a_map() {
     let mut h = inset_pad(BOARDS[0]);
     let (main, inset) = (frame(&h, 0).map, frame(&h, 1).map);
     assert_ne!(main, inset);
@@ -2549,22 +2560,48 @@ fn a_change_of_the_style_of_a_layer_shows_on_the_globe_the_flat_view_and_two_map
     h.run_steps(2);
     let after = rivers_width(&h, None);
     assert_ne!(after, before);
-    // The globe draws the style of the layer.
+    // The globe and the flat view draw the globe style, and the maps keep
+    // their own style.
+    assert!(flat_strokes(&mut h, rgb, after) > 0);
+    assert_eq!(rivers_width(&h, Some(main)), before);
+    assert_eq!(rivers_width(&h, Some(inset)), before);
+    for i in 0..2 {
+        assert!(strokes(&mut h, i, rgb, before) > 0, "frame {i}");
+        assert_eq!(strokes(&mut h, i, rgb, after), 0, "frame {i}");
+    }
+
+    // Copy globe style copies the globe style into the map of the inset.
+    tap(&mut h, FRAME_TABS[2]);
+    scroll_to(&mut h, "Open Rivers");
+    tap(&mut h, "Open Rivers");
+    scroll_to(&mut h, COPY_GLOBE_STYLE);
+    tap(&mut h, COPY_GLOBE_STYLE);
+    assert_eq!(rivers_width(&h, Some(inset)), after);
+    assert_eq!(rivers_width(&h, Some(main)), before);
+    assert!(strokes(&mut h, 1, rgb, after) > 0);
+    assert!(strokes(&mut h, 0, rgb, before) > 0);
+
+    // With the map style, the copy goes into the map style, and each map
+    // of the map style changes.
+    let style = h.state_mut().save_as_map_style(main).unwrap();
+    h.state_mut().set_map_style_link(inset, Some(style));
+    h.run_steps(2);
+    assert_eq!(rivers_width(&h, Some(inset)), before);
+    assert!(h.state().atlas.to_style);
+    h.state_mut().copy_globe_style(inset, rivers);
+    h.run_steps(2);
     assert_eq!(rivers_width(&h, Some(main)), after);
     assert_eq!(rivers_width(&h, Some(inset)), after);
-    for i in 0..2 {
-        assert!(strokes(&mut h, i, rgb, after) > 0, "frame {i}");
-        assert_eq!(strokes(&mut h, i, rgb, before), 0, "frame {i}");
-    }
-    assert!(flat_strokes(&mut h, rgb, after) > 0);
-    assert!(overrides(&h, main).is_empty() && overrides(&h, inset).is_empty());
+    assert_eq!(own_rivers(&h, Target::Map(inset)), None);
 }
 
 #[test]
-fn the_panel_of_a_layer_in_a_frame_overrides_one_property_of_its_map_only() {
+fn the_panel_of_a_layer_in_a_frame_changes_only_its_map() {
     let mut h = inset_pad(BOARDS[0]);
     let (main, inset) = (frame(&h, 0).map, frame(&h, 1).map);
     let before = rivers_width(&h, None);
+    let main_text = own_rivers(&h, Target::Map(main));
+    assert!(main_text.is_some());
     open_rivers_rule(&mut h);
     // The panel has no switch to the style of the layer.
     assert!(control(&h, "All maps").is_none());
@@ -2573,16 +2610,12 @@ fn the_panel_of_a_layer_in_a_frame_overrides_one_property_of_its_map_only() {
     assert_ne!(width, before);
     assert_eq!(rivers_width(&h, None), before);
     assert_eq!(rivers_width(&h, Some(main)), before);
-    let o = overrides(&h, inset);
-    assert_eq!(
-        o.pointers().collect::<Vec<_>>(),
-        ["/rules/Default/symbolizers/0/width"]
-    );
-    assert!(overrides(&h, main).is_empty());
+    assert_eq!(own_rivers(&h, Target::Map(main)), main_text);
+    assert_ne!(own_rivers(&h, Target::Map(inset)), main_text);
 }
 
 #[test]
-fn an_override_shows_in_each_frame_of_its_map_and_not_in_another_map() {
+fn a_change_in_a_frame_shows_in_each_frame_of_its_map_and_not_in_another_map() {
     let mut h = inset_pad(BOARDS[0]);
     add_frame(&mut h);
     // The second frame and the third frame show one map.
@@ -2612,62 +2645,48 @@ fn an_override_shows_in_each_frame_of_its_map_and_not_in_another_map() {
 }
 
 #[test]
-fn a_change_of_the_style_of_the_layer_keeps_each_override() {
-    let mut h = inset_pad(BOARDS[0]);
-    let (main, inset) = (frame(&h, 0).map, frame(&h, 1).map);
-    open_rivers_rule(&mut h);
-    widen(&mut h);
-    let width = rivers_width(&h, Some(inset));
-    // A change of the color of the layer, from the World workspace.
-    let rivers = layer_id(&h, "Rivers");
-    let red = vale_style::Color::rgb(200, 10, 10);
-    let s = h.state_mut();
-    let rule = &mut s.doc.entry_mut(rivers).unwrap().style.style.rules[0];
-    let mut stroke = rule.stroke().unwrap();
-    stroke.color = red;
-    rule.set_stroke(Some(stroke));
-    s.touch();
-    h.run_steps(2);
-    let style = h.state().doc.map_style(inset, rivers).unwrap();
-    assert_eq!(style.style.rules[0].stroke().unwrap().color, red);
-    assert_eq!(rivers_width(&h, Some(inset)), width);
-    assert!(strokes(&mut h, 1, [200, 10, 10, 255], width) > 0);
-    let base = rivers_width(&h, None);
-    assert!(strokes(&mut h, 0, [200, 10, 10, 255], base) > 0);
-    assert!(overrides(&h, main).is_empty());
-}
-
-#[test]
-fn the_controls_of_the_overrides_work_with_a_finger() {
+fn the_controls_of_the_layer_panel_of_a_frame_work_with_a_finger() {
+    use vale_app::ui::pad::rules::DELETE_RULE;
     for size in BOARDS {
         let what = format!("{size:?}");
         let mut h = inset_pad(size);
         let inset = frame(&h, 1).map;
+        let before = rivers_width(&h, None);
         tap(&mut h, FRAME_TABS[2]);
         check_controls(&h, &format!("{what}: layers tab"));
         scroll_to(&mut h, "Open Rivers");
         tap(&mut h, "Open Rivers");
         check_controls(&h, &format!("{what}: layer"));
+        // A map with no map style has no Use map style.
+        assert!(control(&h, USE_MAP_STYLE).is_none(), "{what}");
         scroll_to(&mut h, "Default");
         tap(&mut h, "Default");
         check_controls(&h, &format!("{what}: rule"));
+        scroll_to(&mut h, DELETE_RULE);
+        assert!(control(&h, DELETE_RULE).is_some(), "{what}");
         scroll_to(&mut h, &format!("{STROKE_WIDTH} value"));
         widen(&mut h);
-        assert_eq!(overrides(&h, inset).len(), 1, "{what}");
+        assert_ne!(rivers_width(&h, Some(inset)), before, "{what}");
 
-        // The Layers tab lists the overrides, and Remove overrides takes them away.
+        // Copy globe style brings back the globe style.
         tap(&mut h, "Back to Rivers");
-        check_controls(&h, &format!("{what}: overrides"));
-        scroll_to(&mut h, REMOVE_OVERRIDES);
-        tap(&mut h, REMOVE_OVERRIDES);
-        assert!(overrides(&h, inset).is_empty(), "{what}");
+        check_controls(&h, &format!("{what}: changed"));
+        scroll_to(&mut h, COPY_GLOBE_STYLE);
+        tap(&mut h, COPY_GLOBE_STYLE);
+        assert_eq!(rivers_width(&h, Some(inset)), before, "{what}");
     }
 }
 
 #[test]
-fn the_layers_tab_lists_the_layers_with_overrides() {
+fn the_layers_tab_lists_the_layers_with_a_style_for_this_map() {
     let mut h = inset_pad(BOARDS[0]);
-    let inset = frame(&h, 1).map;
+    let (main, inset) = (frame(&h, 0).map, frame(&h, 1).map);
+    let style = h.state_mut().save_as_map_style(main).unwrap();
+    h.state_mut().set_map_style_link(inset, Some(style));
+    h.state_mut().atlas.to_style = false;
+    h.run_steps(2);
+    tap(&mut h, FRAME_TABS[2]);
+    assert!(h.query_by_label(STYLE_FOR_THIS_MAP).is_none());
     open_rivers_rule(&mut h);
     widen(&mut h);
     tap(&mut h, "Back to Rivers");
@@ -2678,11 +2697,11 @@ fn the_layers_tab_lists_the_layers_with_overrides() {
     // A tap opens the panel of the layer.
     tap(&mut h, "Rivers");
     assert_eq!(h.state().atlas.open_layer(), Some(layer_id(&h, "Rivers")));
-    assert_eq!(overrides(&h, inset).len(), 1);
+    assert!(own_rivers(&h, Target::Map(inset)).is_some());
 }
 
 #[test]
-fn each_drag_of_an_override_is_one_undo_step() {
+fn each_change_in_a_frame_is_one_undo_step() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("project.gpkg");
     let mut s = state();
@@ -2692,17 +2711,19 @@ fn each_drag_of_an_override_is_one_undo_step() {
     h.state_mut().save_waiting().unwrap();
     let map = frame(&h, 0).map;
     let before = rivers_width(&h, Some(map));
+    let text = own_rivers(&h, Target::Map(map));
     open_rivers_rule(&mut h);
     widen(&mut h);
     h.state_mut().save_waiting().unwrap();
     assert_ne!(rivers_width(&h, Some(map)), before);
     tap(&mut h, "Undo");
     assert_eq!(rivers_width(&h, Some(map)), before);
-    assert!(overrides(&h, map).is_empty());
+    assert_eq!(own_rivers(&h, Target::Map(map)), text);
+    assert!(h.state().can_redo());
 }
 
 #[test]
-fn the_overrides_survive_a_close_and_an_open() {
+fn the_styles_of_the_maps_survive_a_close_and_an_open() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("project.gpkg");
     let mut doc = Document::sample();
@@ -2726,11 +2747,12 @@ fn the_overrides_survive_a_close_and_an_open() {
     let rivers = layer_id(&h, "Rivers");
     let style = doc.map_style(inset, rivers).unwrap();
     assert_eq!(style.style.rules[0].stroke().unwrap().width, width);
-    assert!(doc.overrides(main, rivers).is_empty());
+    let main_style = doc.map_style(main, rivers).unwrap();
+    assert_eq!(Some(main_style), doc.layer_style(rivers));
 }
 
 #[test]
-fn the_panel_of_a_raster_layer_overrides_its_opacity_and_blend_mode_in_this_map() {
+fn the_panel_of_a_raster_layer_changes_its_opacity_and_blend_mode_in_this_map() {
     use vale_app::ui::pad::OPACITY;
     use vale_app::ui::pad::raster::BLEND;
     for size in BOARDS {
@@ -2755,15 +2777,6 @@ fn the_panel_of_a_raster_layer_overrides_its_opacity_and_blend_mode_in_this_map(
         assert!(look.opacity < 0.5, "{what}: {look:?}");
         assert_eq!(h.state().doc.project.raster(height).unwrap().opacity, 1.0);
         assert_eq!(h.state().look(Some(main), layer).unwrap().opacity, 1.0);
-        let pointers: Vec<String> = h
-            .state()
-            .doc
-            .overrides(inset, layer)
-            .pointers()
-            .map(str::to_owned)
-            .collect();
-        assert_eq!(pointers.len(), 1, "{what}: {pointers:?}");
-        assert!(pointers[0].ends_with("/opacity"), "{what}: {pointers:?}");
 
         scroll_to(&mut h, BLEND);
         tap(&mut h, BLEND);
@@ -2773,7 +2786,9 @@ fn the_panel_of_a_raster_layer_overrides_its_opacity_and_blend_mode_in_this_map(
         tap(&mut h, &multiply);
         let look = h.state().look(Some(inset), layer).unwrap();
         assert_eq!(look.blend, vale_store::BlendMode::Multiply, "{what}");
-        assert_eq!(h.state().doc.overrides(inset, layer).len(), 2, "{what}");
+        assert!(look.opacity < 0.5, "{what}: {look:?}");
+        let main_look = h.state().look(Some(main), layer).unwrap();
+        assert_eq!(main_look.blend, vale_store::BlendMode::Normal, "{what}");
         assert_eq!(
             h.state().look(None, layer).unwrap().blend,
             vale_store::BlendMode::Normal
@@ -2793,7 +2808,7 @@ fn raster_style(h: &Pad, map: Option<MapId>, layer: LayerId) -> vale_style::Rast
 }
 
 #[test]
-fn the_raster_panel_overrides_a_band_color_and_the_hillshade_in_this_map_only() {
+fn the_raster_panel_changes_a_band_color_and_the_hillshade_in_this_map_only() {
     use vale_app::ui::gradient::band_row;
     use vale_app::ui::pad::Page;
     use vale_app::ui::pad::raster::{COLOR, COLOR_STOPS, HILLSHADE, HILLSHADE_ON};
@@ -2846,10 +2861,6 @@ fn the_raster_panel_overrides_a_band_color_and_the_hillshade_in_this_map_only() 
             .colors()
             .to_vec();
         assert_eq!(globe_colors, base_colors, "{what}");
-        let o = h.state().doc.overrides(inset, layer);
-        let pointers: Vec<_> = o.pointers().collect();
-        assert_eq!(pointers.len(), 2, "{what}: {pointers:?}");
-        assert!(h.state().doc.overrides(main, layer).is_empty());
 
         // The hillshade.
         // In a narrow sheet, the card can cover the back button, and a tap
@@ -6928,7 +6939,7 @@ fn own_settings(h: &Pad, map: MapId) -> vale_store::MapRecord {
 fn is_plain(record: &vale_store::MapRecord) -> bool {
     record.hidden.is_empty()
         && record.shown.is_empty()
-        && record.overrides.is_empty()
+        && record.styles.is_empty()
         && record.labels.is_empty()
 }
 
@@ -6950,12 +6961,13 @@ fn a_change_of_a_map_style_shows_in_each_map_that_links_to_it() {
     assert_ne!(width, before);
     assert_eq!(rivers_width(&h, Some(maps[1])), width);
     assert_eq!(rivers_width(&h, Some(maps[0])), before);
+    assert_eq!(rivers_width(&h, None), before);
     let rivers = layer_id(&h, "Rivers");
-    assert_eq!(
-        h.state().doc.overrides(Target::Style(style), rivers).len(),
-        1
-    );
-    assert!(overrides(&h, maps[1]).is_empty() && overrides(&h, maps[2]).is_empty());
+    let doc = &h.state().doc;
+    let styled = doc.map_style(Target::Style(style), rivers).unwrap();
+    assert_eq!(styled.style.rules[0].stroke().unwrap().width, width);
+    assert_eq!(own_rivers(&h, Target::Map(maps[1])), None);
+    assert_eq!(own_rivers(&h, Target::Map(maps[2])), None);
     assert!(strokes(&mut h, 1, rgb, width) > 0);
     assert!(strokes(&mut h, 2, rgb, width) > 0);
     assert_eq!(strokes(&mut h, 0, rgb, width), 0);
@@ -6968,7 +6980,7 @@ fn a_change_of_a_map_style_shows_in_each_map_that_links_to_it() {
 }
 
 #[test]
-fn an_override_of_a_map_applies_on_top_of_its_map_style() {
+fn a_linked_map_holds_its_own_style_for_a_layer() {
     let mut h = inset_pad(BOARDS[0]);
     let (main, inset) = (frame(&h, 0).map, frame(&h, 1).map);
     let style = h.state_mut().save_as_map_style(inset).unwrap();
@@ -6977,21 +6989,24 @@ fn an_override_of_a_map_applies_on_top_of_its_map_style() {
     widen(&mut h);
     let styled = rivers_width(&h, Some(inset));
     assert_eq!(rivers_width(&h, Some(main)), styled);
+    let style_text = own_rivers(&h, Target::Style(style));
 
     h.state_mut().atlas.to_style = false;
     widen(&mut h);
     let own = rivers_width(&h, Some(inset));
     assert!(own > styled);
     assert_eq!(rivers_width(&h, Some(main)), styled);
-    let rivers = layer_id(&h, "Rivers");
-    let doc = &h.state().doc;
-    let width = |s: vale_style::LayerStyle| s.style.rules[0].stroke().unwrap().width;
-    assert_eq!(
-        width(doc.map_style(Target::Style(style), rivers).unwrap()),
-        styled
-    );
-    assert_eq!(overrides(&h, inset).len(), 1);
-    assert!(overrides(&h, main).is_empty());
+    assert_eq!(own_rivers(&h, Target::Style(style)), style_text);
+    assert!(own_rivers(&h, Target::Map(inset)).is_some());
+    assert!(own_rivers(&h, Target::Map(main)).is_none());
+
+    // Use map style takes the own style away.
+    tap(&mut h, "Back to Rivers");
+    scroll_to(&mut h, USE_MAP_STYLE);
+    tap(&mut h, USE_MAP_STYLE);
+    assert_eq!(rivers_width(&h, Some(inset)), styled);
+    assert!(own_rivers(&h, Target::Map(inset)).is_none());
+    assert!(control(&h, USE_MAP_STYLE).is_none());
 
     // The map shows a layer that its map style hides.
     let land = layer_id(&h, "Land");
@@ -7008,8 +7023,8 @@ fn an_override_of_a_map_applies_on_top_of_its_map_style() {
     assert!(record.hidden.is_empty() && record.shown.is_empty());
 }
 
-/// A map frame with a style override, a layer that is off, and a label
-/// class of its own. The inset is selected.
+/// A map frame with a style of its own for Rivers, a layer that is off,
+/// and a label class of its own. The inset is selected.
 fn styled_pad() -> Pad {
     let mut h = inset_pad(BOARDS[0]);
     let inset = frame(&h, 1).map;
@@ -7027,8 +7042,9 @@ fn save_as_map_style_keeps_the_look_of_the_frames() {
     let inset = frame(&h, 1).map;
     let before = look(&mut h, 1);
     let record = own_settings(&h, inset);
-    assert!(!record.hidden.is_empty() && !record.overrides.is_empty());
+    assert!(!record.hidden.is_empty() && !record.styles.is_empty());
     assert!(!record.labels.is_empty());
+    let drawn = record.styles.clone();
     let style = h.state_mut().save_as_map_style(inset).unwrap();
     h.run_steps(2);
     same_look(&look(&mut h, 1), &before, "save as");
@@ -7037,7 +7053,11 @@ fn save_as_map_style_keeps_the_look_of_the_frames() {
     assert!(is_plain(&record));
     let s = h.state().doc.project.atlas.map_style(style).unwrap();
     assert_eq!(s.name, "Map style");
-    assert!(!s.hidden.is_empty() && !s.overrides.is_empty() && !s.labels.is_empty());
+    assert!(!s.hidden.is_empty() && !s.labels.is_empty());
+    // The map style holds a style for each layer.
+    assert_eq!(s.styles, drawn);
+    let layers = h.state().doc.project.layers().iter();
+    assert!(layers.into_iter().all(|l| s.styles.contains_key(&l.id)));
 
     // A second save gives the map a new map style with the same look.
     let second = h.state_mut().save_as_map_style(inset).unwrap();
@@ -7067,7 +7087,7 @@ fn unlinking_a_map_style_keeps_the_look_of_the_frames() {
     h.state_mut().set_map_style_link(inset, Some(style));
     same_look(&look(&mut h, 1), &before, "link back");
 
-    // An override of the map stays through the unlink.
+    // A style of the map stays through the unlink.
     h.state_mut().atlas.to_style = false;
     widen_in(&mut h, inset);
     let width = rivers_width(&h, Some(inset));
@@ -7091,6 +7111,14 @@ fn deleting_a_map_style_copies_its_settings_into_each_map() {
     widen_in(&mut h, inset);
     let before = [look(&mut h, 0), look(&mut h, 1)];
     assert_ne!(before[0], before[1]);
+    let layers: Vec<LayerId> = (h.state().doc.project.layers().iter())
+        .map(|l| l.id)
+        .collect();
+    let drawn = |h: &Pad, map: MapId| -> Vec<_> {
+        let doc = &h.state().doc;
+        layers.iter().map(|l| doc.map_style(map, *l)).collect()
+    };
+    let styles = [drawn(&h, main), drawn(&h, inset)];
     h.state_mut().delete_map_style(style);
     h.run_steps(2);
     same_look(&look(&mut h, 0), &before[0], "main");
@@ -7099,6 +7127,12 @@ fn deleting_a_map_style_copies_its_settings_into_each_map() {
     assert!(atlas.map_styles.is_empty());
     assert!(atlas.maps.iter().all(|m| m.style.is_none()));
     assert!(!is_plain(&own_settings(&h, main)));
+    // Each map holds a copy of each style that it drew.
+    for (map, styles) in [main, inset].into_iter().zip(&styles) {
+        let record = own_settings(&h, map);
+        assert!(layers.iter().all(|l| record.styles.contains_key(l)));
+        assert_eq!(&drawn(&h, map), styles);
+    }
 }
 
 #[test]
@@ -7171,6 +7205,7 @@ fn each_change_of_a_map_style_is_one_undo_step() {
         h.state_mut().undo();
         h.run_steps(2);
         assert_eq!(settings(h), before, "{what}");
+        assert!(h.state().can_redo(), "{what}");
         h.state_mut().redo();
         h.run_steps(2);
         assert_eq!(settings(h), after, "{what}");
@@ -7179,10 +7214,43 @@ fn each_change_of_a_map_style_is_one_undo_step() {
         h.state_mut().save_as_map_style(inset).unwrap();
     });
     let style = h.state().doc.project.atlas.map_styles[0].id;
+    // A link drops the own switches, styles, and label classes of the map.
+    let land = layer_id(&h, "Land");
+    h.state_mut().set_map_shown(main, land, false);
+    h.state_mut().add_label_class(main).unwrap();
+    h.state_mut().save_waiting().unwrap();
+    let own = own_settings(&h, main);
+    assert!(!own.hidden.is_empty() && !own.styles.is_empty() && !own.labels.is_empty());
     check(&mut h, "link", &|h| {
         h.state_mut().set_map_style_link(main, Some(style))
     });
+    assert!(is_plain(&own_settings(&h, main)));
+    h.state_mut().undo();
+    h.run_steps(2);
+    assert_eq!(own_settings(&h, main), own);
+    h.state_mut().redo();
+    h.run_steps(2);
     check(&mut h, "widen", &|h| widen_in(h, inset));
+    h.state_mut().atlas.to_style = false;
+    check(&mut h, "own style", &|h| widen_in(h, inset));
+    let rivers = layer_id(&h, "Rivers");
+    check(&mut h, "use map style", &|h| {
+        h.state_mut().use_map_style(inset, rivers)
+    });
+    check(&mut h, "copy globe style", &|h| {
+        h.state_mut().copy_globe_style(inset, rivers)
+    });
+    check(&mut h, "add rule", &|h| {
+        h.state_mut().edit_map_style(inset, rivers, |s| {
+            let kind = s.doc.layer(rivers).unwrap().geometry().unwrap();
+            s.doc.entry_mut(rivers).unwrap().style.add_rule(kind);
+        });
+        h.run_steps(2);
+    });
+    let globe = rivers_rules(&h, None);
+    assert_eq!(rivers_rules(&h, Some(inset)), globe + 1);
+    assert_eq!(rivers_rules(&h, Some(main)), globe);
+    h.state_mut().atlas.to_style = true;
     check(&mut h, "rename", &|h| {
         assert!(atlas::rename_map_style(h.state_mut(), style, "Coast"));
     });
@@ -7190,6 +7258,17 @@ fn each_change_of_a_map_style_is_one_undo_step() {
         h.state_mut().set_map_style_link(main, None)
     });
     check(&mut h, "delete", &|h| h.state_mut().delete_map_style(style));
+}
+
+/// The count of the rules of Rivers: in the globe style, or in a map.
+fn rivers_rules(h: &Pad, map: Option<MapId>) -> usize {
+    let rivers = layer_id(h, "Rivers");
+    let doc = &h.state().doc;
+    let style = match map {
+        Some(map) => doc.map_style(map, rivers).unwrap(),
+        None => doc.layer_style(rivers).unwrap(),
+    };
+    style.style.rules.len()
 }
 
 /// The items of a frame of the open page as text, with no font IDs. Each
@@ -7332,27 +7411,20 @@ fn the_apply_to_switch_chooses_the_map_style_or_this_map() {
     tap(&mut h, THIS_MAP);
     assert!(!h.state().atlas.to_style);
     assert!(h.query_by_label(MAP_STYLE_HINT).is_some());
+    let style_text = own_text(&h, Target::Style(style), rivers);
     widen(&mut h);
-    assert_eq!(overrides(&h, inset).len(), 1);
-    assert!(
-        h.state()
-            .doc
-            .overrides(Target::Style(style), rivers)
-            .is_empty()
-    );
+    assert!(own_text(&h, Target::Map(inset), rivers).is_some());
+    assert_eq!(own_text(&h, Target::Style(style), rivers), style_text);
     assert_eq!(rivers_width(&h, Some(main)), before);
 
     // With the map style, the change shows in each map of the map style.
-    // The override of the inset stays over it.
+    // The own style of the inset stays over it.
     let own = rivers_width(&h, Some(inset));
     tap(&mut h, "Map style");
     assert!(h.state().atlas.to_style);
     assert!(h.query_by_label(LINKED_STYLE_HINT).is_some());
     widen(&mut h);
-    assert_eq!(
-        h.state().doc.overrides(Target::Style(style), rivers).len(),
-        1
-    );
+    assert_ne!(own_text(&h, Target::Style(style), rivers), style_text);
     assert!(rivers_width(&h, Some(main)) > before);
     assert_eq!(rivers_width(&h, Some(inset)), own);
 }

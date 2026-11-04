@@ -294,7 +294,7 @@ fn drawn_layers(doc: &Document, map: Option<MapId>) -> Vec<LayerId> {
 }
 
 /// The features of the layers that meet `area`, in page space, with the
-/// style overrides of `map`.
+/// styles of `map`.
 fn build_page_layers<'a>(
     doc: &'a Document,
     map: Option<MapId>,

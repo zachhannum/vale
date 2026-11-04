@@ -1908,3 +1908,82 @@ fn a_raster_style_of_version_2_takes_the_lines_the_smoothing_and_the_hillshade_o
     );
     assert!(record(&doc.project, height).hillshade.on);
 }
+
+/// The stroke width of the first rule of a style.
+fn first_width(style: &LayerStyle) -> f64 {
+    style.style.rules[0].stroke().unwrap().width
+}
+
+#[test]
+fn a_file_of_version_34_opens_and_its_maps_look_the_same() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("old.vale");
+    let mut doc = Document::sample();
+    let mut session = Session::open(&path, &mut doc).unwrap();
+    let (main, inset) = (doc.project.atlas.maps[0].id, doc.project.atlas.add_map());
+    session.flush(&mut doc.project, &mut []).unwrap();
+    drop(session);
+    let rivers = (doc.project.layers().iter())
+        .find(|l| l.name == "Rivers")
+        .unwrap()
+        .id;
+    let globe = doc.layer_style(rivers).unwrap();
+    let width = first_width(&globe) + 2.0;
+
+    // The file of an older version has no map styles and no layer styles
+    // in its maps, and the inset has a style override.
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    for table in [
+        "vale_shared_style_hidden",
+        "vale_shared_style_layer",
+        "vale_shared_style_label",
+        "vale_shared_style",
+        "vale_map_shown",
+        "vale_map_layer_style",
+    ] {
+        conn.execute_batch(&format!(
+            "DROP TABLE {table};
+             DELETE FROM gpkg_extensions WHERE table_name = '{table}';
+             DELETE FROM gpkg_contents WHERE table_name = '{table}';"
+        ))
+        .unwrap();
+    }
+    conn.execute_batch(
+        "ALTER TABLE vale_map DROP COLUMN shared_style_id;
+         DELETE FROM vale_meta WHERE key = 'next_map_style_id';
+         UPDATE vale_meta SET value = '34' WHERE key = 'format_version';",
+    )
+    .unwrap();
+    let text = format!(r#"{{"/rules/Default/symbolizers/0/width":{width}}}"#);
+    conn.execute(
+        "INSERT INTO vale_map_style (map_id, layer_id, overrides) VALUES (?1, ?2, ?3)",
+        rusqlite::params![inset.0, rivers.0, text],
+    )
+    .unwrap();
+    drop(conn);
+
+    let mut doc = Document::sample();
+    let session = Session::open(&path, &mut doc).unwrap();
+    assert_eq!(first_width(&doc.map_style(inset, rivers).unwrap()), width);
+    assert_eq!(doc.map_style(main, rivers).unwrap(), globe);
+    assert_eq!(doc.layer_style(rivers).unwrap(), globe);
+    for map in &doc.project.atlas.maps {
+        assert!(map.legacy_overrides.is_empty());
+        let layers = doc.project.layers().iter();
+        assert!(layers.into_iter().all(|l| map.styles.contains_key(&l.id)));
+    }
+    drop(session);
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    let rows: i64 = conn
+        .query_row("SELECT count(*) FROM vale_map_style", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(rows, 0);
+    drop(conn);
+
+    // A second open does not change the file.
+    let (_, first) = ProjectFile::open(&path).unwrap();
+    let mut doc = Document::sample();
+    drop(Session::open(&path, &mut doc).unwrap());
+    let (_, second) = ProjectFile::open(&path).unwrap();
+    assert_eq!(first, second);
+}

@@ -490,7 +490,8 @@ fn world(r: &mut Reader) -> Option<World> {
 }
 
 /// The image of the atlas holds the maps, the pages, the custom
-/// projections, the style overrides and the label classes of the maps, the
+/// projections, the style overrides of an older file and the label classes
+/// of the maps, the
 /// furniture of the pages, and the map styles. Of the counters of the IDs,
 /// it holds only the counter of the map styles. An image that ends after the
 /// projections has no overrides. An image that ends after the overrides has
@@ -554,7 +555,7 @@ fn put_atlas(out: &mut Vec<u8>, atlas: &Atlas) {
     }
     let overrides: Vec<_> = (atlas.maps.iter())
         .flat_map(|m| {
-            m.overrides
+            m.legacy_overrides
                 .iter()
                 .map(move |(layer, text)| (m.id, layer, text))
         })
@@ -624,9 +625,25 @@ fn opaque([r, g, b]: [u8; 3]) -> Rgba {
     [r, g, b, 255]
 }
 
-/// The map styles, the counter of their IDs, and the map style and the
-/// `shown` set of each map.
+/// The map styles, the counter of their IDs, and the map style, the `shown`
+/// set, and the layer styles of each map. Many maps hold the same layer
+/// style, so the image holds each distinct style text one time, and a layer
+/// style is the index of its text.
 fn put_map_styles(out: &mut Vec<u8>, atlas: &Atlas) {
+    let mut index = std::collections::HashMap::new();
+    let mut distinct = Vec::new();
+    let all = (atlas.map_styles.iter().flat_map(|s| s.styles.values()))
+        .chain(atlas.maps.iter().flat_map(|m| m.styles.values()));
+    for text in all {
+        index.entry(text.as_str()).or_insert_with(|| {
+            distinct.push(text);
+            distinct.len() - 1
+        });
+    }
+    put_u32(out, distinct.len());
+    for text in distinct {
+        put_bytes(out, text.as_bytes());
+    }
     let put_layers = |out: &mut Vec<u8>, layers: &std::collections::BTreeSet<LayerId>| {
         put_u32(out, layers.len());
         for layer in layers {
@@ -640,12 +657,19 @@ fn put_map_styles(out: &mut Vec<u8>, atlas: &Atlas) {
             put_bytes(out, text.as_bytes());
         }
     };
+    let put_styles = |out: &mut Vec<u8>, styles: &std::collections::BTreeMap<LayerId, String>| {
+        put_u32(out, styles.len());
+        for (layer, text) in styles {
+            put_u32(out, layer.0 as usize);
+            put_u32(out, index[text.as_str()]);
+        }
+    };
     put_u32(out, atlas.map_styles.len());
     for style in &atlas.map_styles {
         put_u32(out, style.id.0 as usize);
         put_bytes(out, style.name.as_bytes());
         put_layers(out, &style.hidden);
-        put_texts(out, &style.overrides);
+        put_styles(out, &style.styles);
         put_texts(out, &style.labels);
     }
     put_u32(out, atlas.next_map_style_id as usize);
@@ -660,6 +684,7 @@ fn put_map_styles(out: &mut Vec<u8>, atlas: &Atlas) {
             None => out.push(0),
         }
         put_layers(out, &map.shown);
+        put_styles(out, &map.styles);
     }
 }
 
@@ -697,7 +722,8 @@ fn atlas(r: &mut Reader) -> Option<AtlasImage> {
             style: None,
             hidden,
             shown: std::collections::BTreeSet::new(),
-            overrides: std::collections::BTreeMap::new(),
+            styles: std::collections::BTreeMap::new(),
+            legacy_overrides: std::collections::BTreeMap::new(),
             labels: std::collections::BTreeMap::new(),
         });
     }
@@ -761,7 +787,7 @@ fn atlas(r: &mut Reader) -> Option<AtlasImage> {
             let layer = LayerId(r.u32()?);
             let text = string(r)?;
             let map = maps.iter_mut().find(|m| m.id == id)?;
-            map.overrides.insert(layer, text);
+            map.legacy_overrides.insert(layer, text);
         }
     }
     if !r.0.is_empty() {
@@ -819,6 +845,12 @@ fn atlas(r: &mut Reader) -> Option<AtlasImage> {
     }
     let (mut styles, mut next_style) = (Vec::new(), 0);
     if !r.0.is_empty() {
+        let distinct: Vec<String> = (0..count(r)?).map(|_| string(r)).collect::<Option<_>>()?;
+        let styles_of = |r: &mut Reader| -> Option<std::collections::BTreeMap<LayerId, String>> {
+            (0..count(r)?)
+                .map(|_| Some((LayerId(r.u32()?), distinct.get(count(r)?)?.clone())))
+                .collect()
+        };
         let layers = |r: &mut Reader| -> Option<std::collections::BTreeSet<LayerId>> {
             (0..count(r)?).map(|_| Some(LayerId(r.u32()?))).collect()
         };
@@ -832,7 +864,7 @@ fn atlas(r: &mut Reader) -> Option<AtlasImage> {
                 id: MapStyleId(r.u32()?),
                 name: string(r)?,
                 hidden: layers(r)?,
-                overrides: texts(r)?,
+                styles: styles_of(r)?,
                 labels: texts(r)?,
             });
         }
@@ -845,8 +877,9 @@ fn atlas(r: &mut Reader) -> Option<AtlasImage> {
                 None
             };
             let shown = layers(r)?;
+            let own = styles_of(r)?;
             let map = maps.iter_mut().find(|m| m.id == id)?;
-            (map.style, map.shown) = (style, shown);
+            (map.style, map.shown, map.styles) = (style, shown, own);
         }
     }
     let image = (maps, pages, presets, grid, styles, next_style);
@@ -1312,11 +1345,13 @@ mod tests {
         before.maps[0].name = "Wide".into();
         let second_map = before.add_map();
         let text = r#"{"/label/size":20.0}"#.to_string();
-        before.maps[0].overrides.insert(LayerId(3), text.clone());
+        before.maps[0]
+            .legacy_overrides
+            .insert(LayerId(3), text.clone());
         before
             .map_mut(second_map)
             .unwrap()
-            .overrides
+            .legacy_overrides
             .insert(LayerId(4), text);
         let classes = r#"[{"name":"Towns"}]"#.to_string();
         before.maps[0].labels.insert(LayerId(3), classes);
@@ -1441,7 +1476,7 @@ mod tests {
             id: MapStyleId(0),
             name: "Coast".into(),
             hidden: [LayerId(1), LayerId(4)].into(),
-            overrides: [(LayerId(2), r#"{"/label/size":9.0}"#.into())].into(),
+            styles: [(LayerId(2), r#"{"rules":[]}"#.into())].into(),
             labels: [(LayerId(3), "[]".into())].into(),
         };
         let gone = before.add_map_style(style.clone());
@@ -1450,6 +1485,11 @@ mod tests {
         before.maps[0].style = Some(id);
         before.maps[0].shown.insert(LayerId(4));
         before.map_mut(second).unwrap().shown.insert(LayerId(1));
+        let own = [
+            (LayerId(2), r#"{"rules":[]}"#.into()),
+            (LayerId(5), "{}".into()),
+        ];
+        before.map_mut(second).unwrap().styles = own.into();
         let mut out = Vec::new();
         put_atlas(&mut out, &before);
         let image = atlas(&mut Reader(&out)).unwrap();
@@ -1465,9 +1505,28 @@ mod tests {
             image
                 .0
                 .iter()
-                .all(|m| m.style.is_none() && m.shown.is_empty())
+                .all(|m| m.style.is_none() && m.shown.is_empty() && m.styles.is_empty())
         );
         assert_eq!((image.4, image.5), (Vec::new(), 0));
+    }
+
+    #[test]
+    fn an_atlas_image_holds_each_layer_style_one_time() {
+        let mut before = Atlas::new(Units::Metric);
+        let text = format!(r#"{{"rules":[{{"name":"{}"}}]}}"#, "x".repeat(1000));
+        for _ in 0..9 {
+            before.add_map();
+        }
+        for map in &mut before.maps {
+            map.styles = (0..20).map(|i| (LayerId(i), text.clone())).collect();
+        }
+        let mut out = Vec::new();
+        put_map_styles(&mut out, &before);
+        // One text, and a layer and an index for each of 200 styles.
+        assert!(out.len() < text.len() + 200 * 8 + 200, "{}", out.len());
+        let mut image = Vec::new();
+        put_atlas(&mut image, &before);
+        assert_eq!(atlas(&mut Reader(&image)).unwrap().0, before.maps);
     }
 
     #[test]
@@ -1486,7 +1545,7 @@ mod tests {
     fn an_atlas_image_without_label_classes_reads() {
         let mut before = Atlas::new(Units::Metric);
         let text = r#"{"/label/size":20.0}"#.to_string();
-        before.maps[0].overrides.insert(LayerId(3), text);
+        before.maps[0].legacy_overrides.insert(LayerId(3), text);
         let mut out = without_map_styles(&before);
         // The paper of one page, no frames, the layout grid, and no alphas.
         out.truncate(out.len() - 15 - 4 - before.grid.to_json().len() - 4);

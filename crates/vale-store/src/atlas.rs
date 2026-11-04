@@ -26,10 +26,11 @@ pub struct PageId(pub u32);
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct FrameId(pub u32);
 
-/// A map: a projection and the layers that it does not show.
+/// A map: a projection, the layers that it does not show, and the style of
+/// each layer.
 ///
-/// The style of a layer applies first, then the map style, then the
-/// overrides of the map.
+/// A map with no map style holds a style for each layer. A map with a map
+/// style holds a style only for a layer that has its own style in the map.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MapRecord {
     pub id: MapId,
@@ -42,13 +43,15 @@ pub struct MapRecord {
     pub hidden: BTreeSet<LayerId>,
     /// The layers that the map shows, although its map style hides them.
     pub shown: BTreeSet<LayerId>,
-    /// The style overrides of each layer, as the JSON text of `vale_style::Overrides`. A layer with no overrides has no entry.
-    pub overrides: BTreeMap<LayerId, String>,
+    /// The style of each layer in the map, as the JSON text of `vale_style::LayerStyle`.
+    pub styles: BTreeMap<LayerId, String>,
+    /// The style overrides of a file of version 34 or older, as the JSON text of `vale_style::Overrides`. The app turns them into styles and clears them.
+    pub legacy_overrides: BTreeMap<LayerId, String>,
     /// The label classes of each layer in the map, as JSON text. A layer with no entry uses the label style of the layer. An entry with no class means that the layer has no labels in the map.
     pub labels: BTreeMap<LayerId, String>,
 }
 
-/// A named set of layer switches, style overrides, and label classes that
+/// A named set of layer switches, layer styles, and label classes that
 /// many maps share. The fields have the meaning and the JSON text of the
 /// same fields of [`MapRecord`].
 #[derive(Clone, Debug, PartialEq)]
@@ -56,7 +59,7 @@ pub struct MapStyleRecord {
     pub id: MapStyleId,
     pub name: String,
     pub hidden: BTreeSet<LayerId>,
-    pub overrides: BTreeMap<LayerId, String>,
+    pub styles: BTreeMap<LayerId, String>,
     pub labels: BTreeMap<LayerId, String>,
 }
 
@@ -1223,7 +1226,8 @@ impl Atlas {
                 style: None,
                 hidden: BTreeSet::new(),
                 shown: BTreeSet::new(),
-                overrides: BTreeMap::new(),
+                styles: BTreeMap::new(),
+                legacy_overrides: BTreeMap::new(),
                 labels: BTreeMap::new(),
             }],
             map_styles: Vec::new(),
@@ -1427,7 +1431,8 @@ impl Atlas {
             style: None,
             hidden: BTreeSet::new(),
             shown: BTreeSet::new(),
-            overrides: BTreeMap::new(),
+            styles: BTreeMap::new(),
+            legacy_overrides: BTreeMap::new(),
             labels: BTreeMap::new(),
         })
     }
@@ -1526,16 +1531,13 @@ impl Atlas {
             .or_else(|| self.style_of(map)?.labels.get(&layer))
     }
 
-    /// The layers that have style overrides in a map or in its map style.
-    pub fn override_layers(&self, map: MapId) -> BTreeSet<LayerId> {
-        let mut out = BTreeSet::new();
-        if let Some(m) = self.map(map) {
-            out.extend(m.overrides.keys().copied());
-        }
-        if let Some(s) = self.style_of(map) {
-            out.extend(s.overrides.keys().copied());
-        }
-        out
+    /// The style of a layer in a map: the entry of the map, else the entry
+    /// of its map style.
+    pub fn style_text(&self, map: MapId, layer: LayerId) -> Option<&String> {
+        let m = self.map(map)?;
+        m.styles
+            .get(&layer)
+            .or_else(|| self.style_of(map)?.styles.get(&layer))
     }
 
     /// Each frame of a map, with its page, in atlas order.
@@ -1724,7 +1726,7 @@ mod tests {
             id: MapStyleId(99),
             name: name.to_string(),
             hidden: BTreeSet::new(),
-            overrides: BTreeMap::new(),
+            styles: BTreeMap::new(),
             labels: BTreeMap::new(),
         }
     }
@@ -1767,14 +1769,15 @@ mod tests {
         let (a, b, c, d) = (LayerId(1), LayerId(2), LayerId(3), LayerId(4));
         let mut s = style("");
         s.hidden.extend([a, b]);
-        s.overrides.insert(c, "{}".into());
+        s.styles.insert(c, "style".into());
         s.labels.insert(a, "style".into());
         s.labels.insert(b, "style".into());
         let id = atlas.add_map_style(s);
         let m = atlas.map_mut(map).unwrap();
         m.shown.insert(a);
         m.hidden.insert(c);
-        m.overrides.insert(d, "{}".into());
+        m.styles.insert(c, "map".into());
+        m.styles.insert(d, "map".into());
         m.labels.insert(a, "map".into());
         for layer in [a, b, c, d] {
             assert_eq!(atlas.shows(map, layer), layer != c, "{layer:?}");
@@ -1786,7 +1789,11 @@ mod tests {
         assert_eq!(atlas.label_text(map, a).unwrap(), "map");
         assert_eq!(atlas.label_text(map, b).unwrap(), "style");
         assert_eq!(atlas.label_text(map, c), None);
-        assert_eq!(atlas.override_layers(map), BTreeSet::from([c, d]));
+        assert_eq!(atlas.style_text(map, a), None);
+        assert_eq!(atlas.style_text(map, c).unwrap(), "map");
+        assert_eq!(atlas.style_text(map, d).unwrap(), "map");
+        atlas.map_mut(map).unwrap().styles.remove(&c);
+        assert_eq!(atlas.style_text(map, c).unwrap(), "style");
     }
 
     #[test]

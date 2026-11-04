@@ -333,9 +333,12 @@ pub fn is_height(raster: &Raster) -> bool {
 /// layer of the project.
 fn save_session(
     session: &mut Session,
-    project: &mut Project,
+    doc: &mut Document,
     globe: &mut Globe,
 ) -> Result<(), StoreError> {
+    // A new map and a new layer get their styles in the same undo step.
+    doc.fill_map_styles();
+    let project = &mut doc.project;
     globe.sync_maps();
     sync_reduced(project, globe);
     session.flush(project, &mut globe.raster_maps())?;
@@ -1045,7 +1048,7 @@ impl AppState {
         if self.globe.busy() {
             return;
         }
-        if let Err(e) = save_session(session, &mut self.doc.project, &mut self.globe) {
+        if let Err(e) = save_session(session, &mut self.doc, &mut self.globe) {
             self.status = format!("Could not save project: {e}");
         }
     }
@@ -1462,12 +1465,10 @@ impl AppState {
 
     /// Runs `edit`, which edits the style of `layer` in the panel of the
     /// Layers tab of a frame of `map`. During `edit`, the layer has the style
-    /// of the map, `pad.page` is the page of that panel, and the rules cannot
-    /// be added, moved, or deleted. A change becomes the overrides of the
-    /// map, and the style of the layer stays.
+    /// of the map, and `pad.page` is the page of that panel. A change goes to
+    /// the target of the map, and the globe style stays.
     pub fn edit_map_style(&mut self, map: MapId, layer: LayerId, edit: impl FnOnce(&mut AppState)) {
         let world_page = std::mem::replace(&mut self.pad.page, self.atlas.layer_page);
-        self.pad.rules_fixed = true;
         let target = self.target(map);
         let base = self.doc.entry(layer).map(|e| e.style.clone());
         let shown = base
@@ -1483,7 +1484,6 @@ impl AppState {
                 self.touch();
             }
         }
-        self.pad.rules_fixed = false;
         self.atlas.layer_page = std::mem::replace(&mut self.pad.page, world_page);
     }
 
@@ -1491,7 +1491,7 @@ impl AppState {
     /// in the panel of the Layers tab of a frame of `map`. During `edit`,
     /// `pad.page` is the page of that panel, and the raster record and the
     /// bands of the globe hold the style of the map. The base comes back
-    /// after `edit`, and a change becomes the overrides of the map.
+    /// after `edit`, and a change goes to the target of the map.
     pub fn edit_map_raster(
         &mut self,
         map: MapId,
@@ -1588,8 +1588,8 @@ impl AppState {
         })
     }
 
-    /// Sets the look of a raster layer or an image layer: in the style of
-    /// the layer, or as overrides of `map`.
+    /// Sets the look of a raster layer or an image layer: in the globe
+    /// style, or in the target of `map`.
     pub fn set_look(&mut self, map: Option<MapId>, layer: LayerId, look: Look) {
         let Some(l) = self.doc.project.layer(layer) else {
             return;
@@ -1869,13 +1869,45 @@ impl AppState {
         }
     }
 
-    /// Removes the style overrides of a layer in the target of a map, as
-    /// one undo step.
-    pub fn clear_overrides(&mut self, map: MapId, layer: LayerId) {
+    /// Removes the own style of a layer in a map that links to a map style,
+    /// as one undo step.
+    pub fn use_map_style(&mut self, map: MapId, layer: LayerId) {
         self.save_edit();
-        if self.doc.clear_overrides(self.target(map), layer) {
+        if self.doc.use_map_style(map, layer) {
             self.touch();
             self.save_edit();
+        }
+    }
+
+    /// Makes a copy of the globe style the style of a layer in the target
+    /// of a map, as one undo step.
+    pub fn copy_globe_style(&mut self, map: MapId, layer: LayerId) {
+        self.sync_raster_style(layer);
+        self.save_edit();
+        if self.doc.copy_globe_style(self.target(map), layer) {
+            self.touch();
+            self.save_edit();
+        }
+    }
+
+    /// True if the style of a layer in the target of a map differs from the
+    /// globe style.
+    pub fn differs_from_globe(&self, map: MapId, layer: LayerId) -> bool {
+        self.doc.map_style(self.target(map), layer) != self.doc.layer_style(layer)
+    }
+
+    /// Puts the live bands of a raster layer into its record and its style.
+    fn sync_raster_style(&mut self, layer: LayerId) {
+        let Some(id) = self.doc.project.layer(layer).and_then(|l| l.raster()) else {
+            return;
+        };
+        let Some(bands) = self.globe.bands_mut(id).map(|b| b.clone()) else {
+            return;
+        };
+        if let Some(record) = self.doc.project.raster_mut(id) {
+            record.stops = session::record_stops(bands.stops());
+            record.colors = bands.colors().to_vec();
+            raster_style::store_raster_styles(&mut self.doc.project);
         }
     }
 
@@ -2073,16 +2105,17 @@ impl AppState {
         let hold = hold || self.new_feature.is_some();
         let resume_wait = self.resume_tick(hold, now);
         self.doc.store_styles();
+        self.doc.fill_map_styles();
         let edits = self.edits();
         let session = self.session.as_mut()?;
         let saves = session.saves();
         let globe = &mut self.globe;
-        let project = &mut self.doc.project;
         let result = if edits != self.saved_edits {
             // The edit is one undo step, with no part of the next stroke.
             self.saved_edits = edits;
-            save_session(session, project, globe).map(|()| None)
+            save_session(session, &mut self.doc, globe).map(|()| None)
         } else {
+            let project = &mut self.doc.project;
             let hold = hold || globe.busy();
             sync_reduced(project, globe);
             session.tick(project, &mut globe.raster_maps(), hold, now)
@@ -2139,7 +2172,7 @@ impl AppState {
             return Ok(());
         }
         self.saved_edits = edits;
-        let saved = save_session(session, &mut self.doc.project, globe);
+        let saved = save_session(session, &mut self.doc, globe);
         // The system can stop the app in the background, so the project
         // file gets the working copy now.
         let saved = saved.and_then(|()| self.write_back());
@@ -2290,7 +2323,7 @@ impl AppState {
         if globe.busy() {
             globe.map.cancel_stroke();
         }
-        let saved = save_session(session, &mut self.doc.project, globe);
+        let saved = save_session(session, &mut self.doc, globe);
         match saved.and_then(|()| self.write_back()) {
             Ok(()) => true,
             Err(e) => {
@@ -2962,7 +2995,7 @@ impl AppState {
             return;
         };
         self.saved_edits = edits;
-        match save_session(session, &mut self.doc.project, &mut self.globe) {
+        match save_session(session, &mut self.doc, &mut self.globe) {
             Ok(()) => self.saved_at = Some(std::time::Instant::now()),
             Err(e) => {
                 self.save_failed = true;
@@ -3765,6 +3798,8 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         queue.take();
     }
     state.globe.stats.tick(std::time::Instant::now());
+    // A new map and a new layer get their styles before the panels show them.
+    state.doc.fill_map_styles();
     state.poll_import();
     state.poll_probe(false);
     if state.raster_probe.is_some() {

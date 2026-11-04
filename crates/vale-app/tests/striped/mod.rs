@@ -33,13 +33,16 @@ pub fn project(path: &Path, scale: f64) -> (AppState, RasterId, FrameId) {
     state.session = Some(Session::open(path, &mut state.doc).unwrap());
     state.set_layout(Layout::Pad);
     state.workspace = Workspace::Atlas;
-    vale_app::ui::atlas::add_frame(&mut state).expect("a page takes a frame");
     let height = state
         .add_raster(RasterSpec::height("Height", FACE))
         .unwrap();
     state.set_raster_display(height, RasterDisplay::Grey);
     state.set_raster_smoothing(height, false);
     state.set_raster_hillshade(height, false);
+    vale_app::ui::atlas::add_frame(&mut state).expect("a page takes a frame");
+    let shown = vale_app::ui::atlas::open_page(&state).frames[0].map;
+    let layer = state.doc.project.raster_layer(height).unwrap().id;
+    state.copy_globe_style(shown, layer);
 
     let (face, a, b) = vale_terrain::face_of(lonlat_to_dir(CENTER[0], CENTER[1]));
     let texel = |s: f64| ((vale_terrain::warp(s) + 1.0) / 2.0 * FACE as f64) as usize;
@@ -61,9 +64,8 @@ pub fn project(path: &Path, scale: f64) -> (AppState, RasterId, FrameId) {
         state.globe.raster_map(height).is_none(),
         "in the main memory"
     );
-    let map = vale_app::ui::atlas::open_page(&state).frames[0].map;
     let layer = state.doc.project.raster_layer(other).unwrap().id;
-    assert!(state.doc.set_shown(map, layer, false));
+    assert!(state.doc.set_shown(shown, layer, false));
 
     let id = vale_app::ui::atlas::open_page(&state).frames[0].id;
     let frame = state.doc.project.atlas.frame_mut(id).unwrap();
