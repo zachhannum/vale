@@ -1268,6 +1268,7 @@ pub(super) fn cell_card(
     let Some(rect) = rects.brush.filter(|_| rects.card_cells > 0) else {
         return;
     };
+    let mut merge_cell = None;
     widgets::card(
         ctx,
         state.globe.backdrop(),
@@ -1292,7 +1293,7 @@ pub(super) fn cell_card(
                 if vertexing {
                     vertex_cells(ui, state, controls, rects);
                 } else if selecting {
-                    select_cells(ui, state, controls);
+                    merge_cell = select_cells(ui, state, controls);
                 } else {
                     measure_cells(ui, state, controls, rects);
                 }
@@ -1306,6 +1307,84 @@ pub(super) fn cell_card(
             }
         },
     );
+    match merge_cell {
+        Some(cell) if state.merging => merge_menu(ctx, state, controls, rects, cell),
+        _ => state.merging = false,
+    }
+}
+
+/// The list of Merge, at the right of its cell: one row for each selected
+/// feature, the largest first. A tap on a row merges the selection into
+/// that feature. A touch outside the list closes it.
+fn merge_menu(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    controls: &mut Controls,
+    rects: &Rects,
+    cell: Rect,
+) {
+    let choices = state.merge_choices();
+    let pressed = ctx.input(|i| {
+        i.pointer
+            .any_pressed()
+            .then(|| i.pointer.interact_pos())
+            .flatten()
+    });
+    let font = theme::body();
+    let widest = (choices.iter().map(|c| c.1.as_str()))
+        .chain([select::MERGE_TITLE])
+        .map(|t| ctx.fonts_mut(|f| f.layout_no_wrap(t.to_owned(), font.clone(), theme::TEXT)))
+        .map(|g| g.size().x)
+        .fold(0.0, f32::max);
+    let screen = rects.screen.shrink(PAD);
+    let width = (widest + 2.0 * widgets::BODY_PAD + 16.0).clamp(220.0, 360.0);
+    let height = 20.0 + (choices.len() + 1) as f32 * widgets::PANEL_ROW;
+    let top = cell.top().min(screen.bottom() - height).max(screen.top());
+    let rect = Rect::from_min_size(
+        pos2(cell.right() + 2.0 * PAD + 8.0, top),
+        vec2(width, height),
+    );
+    if choices.is_empty() || pressed.is_some_and(|p| !rect.contains(p) && !cell.contains(p)) {
+        state.merging = false;
+        return;
+    }
+    let mut keep = None;
+    let radius = theme::CARD_RADIUS.into();
+    widgets::card(
+        ctx,
+        None,
+        "pad-merge",
+        rect,
+        Order::Foreground,
+        radius,
+        |ui| {
+            ui.painter()
+                .rect_filled(rect, radius, theme::card(false).to_opaque());
+            let inner = rect.shrink2(vec2(widgets::BODY_PAD, 10.0));
+            let layout = egui::Layout::top_down(egui::Align::Min);
+            let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
+            ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+            let (title, _) = ui.allocate_exact_size(
+                vec2(inner.width(), widgets::PANEL_ROW),
+                egui::Sense::hover(),
+            );
+            ui.painter().text(
+                title.left_center(),
+                egui::Align2::LEFT_CENTER,
+                select::MERGE_TITLE,
+                theme::body(),
+                theme::MUTE,
+            );
+            for (uuid, name) in &choices {
+                if widgets::text_row(&mut ui, controls, name, 0.0, false, true).clicked() {
+                    keep = Some(*uuid);
+                }
+            }
+        },
+    );
+    if let Some(uuid) = keep {
+        state.merge_selection(uuid);
+    }
 }
 
 /// The cells of the card of the Vertex tool: the snap switch, the switch of
@@ -1362,14 +1441,20 @@ fn vertex_cells(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls
     brush_button(ui, state, controls, rects);
 }
 
-/// The cells of the card of the Select tool: Delete selection, and
-/// Deselect.
-fn select_cells(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
+/// The cells of the card of the Select tool: Delete selection, Merge, and
+/// Deselect. Returns the place of the Merge cell.
+fn select_cells(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) -> Option<Rect> {
     let (name, any) = (select::DELETE, !state.feature_selection.is_empty());
     if widgets::tool_cell(ui, controls, name, "Delete", Icon::Trash, false, any).clicked() {
         state.delete_selection();
     }
+    let (open, can) = (state.merging, state.can_merge());
+    let merge = widgets::tool_cell(ui, controls, select::MERGE, "Merge", Icon::Merge, open, can);
+    if merge.clicked() {
+        state.merging = !open;
+    }
     deselect_cell(ui, state, controls);
+    Some(merge.rect)
 }
 
 /// The cells of the card of the Measure tool: the snap switch, the Clear

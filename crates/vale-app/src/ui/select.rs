@@ -19,6 +19,10 @@ use crate::globe::select::{self, FeatureRef, SelectEvent};
 pub const TOOL: &str = "Select";
 /// The button that deletes the selected features.
 pub const DELETE: &str = "Delete selection";
+/// The command that merges the selected features into one feature.
+pub const MERGE: &str = "Merge…";
+/// The title of the list of Merge.
+pub const MERGE_TITLE: &str = "Keep attributes of";
 /// The name of the inspector, and of the button that opens it.
 pub const ATTRIBUTES: &str = "Attributes";
 /// The empty state of the inspector.
@@ -216,6 +220,81 @@ impl AppState {
         let selection = std::mem::take(&mut self.feature_selection);
         let uuids: Vec<Uuid> = selection.iter().map(|f| f.uuid).collect();
         if self.doc.project.remove_features(id, &uuids) > 0 {
+            self.end_vector_edit(id);
+        }
+    }
+
+    /// Two or more features of one layer are selected.
+    pub fn can_merge(&self) -> bool {
+        let mut layers = self.feature_selection.iter().map(|f| f.layer);
+        let first = layers.next();
+        self.feature_selection.len() >= 2 && layers.all(|l| Some(l) == first)
+    }
+
+    /// The selected features that Merge lists, the largest first, each with
+    /// its name. The name is the value of the label field of the layer, or
+    /// else "Feature" and the place in the list.
+    pub fn merge_choices(&self) -> Vec<(Uuid, String)> {
+        if !self.can_merge() {
+            return Vec::new();
+        }
+        let id = self.feature_selection[0].layer;
+        let Some(layer) = self.doc.layer(id) else {
+            return Vec::new();
+        };
+        let field = (self.doc.entry(id)).and_then(|e| e.style.label.field.clone());
+        let mut features: Vec<_> = (layer.features.iter())
+            .filter(|f| self.feature_selection.iter().any(|s| s.uuid == f.uuid()))
+            .map(|f| (crate::globe::merge::size(&f.geometry), f))
+            .collect();
+        features.sort_by(|a, b| b.0.total_cmp(&a.0));
+        let name = |i: usize, f: &vale_store::Feature| {
+            let value = field.as_ref().and_then(|n| f.attributes.get(n));
+            let label = value
+                .and_then(|v| v.label())
+                .filter(|s| !s.trim().is_empty());
+            label.unwrap_or_else(|| format!("Feature {}", i + 1))
+        };
+        (features.iter().enumerate())
+            .map(|(i, (_, f))| (f.uuid(), name(i, f)))
+            .collect()
+    }
+
+    /// Joins the selected features into the feature `keep`, in one undo
+    /// step. The feature keeps its UUID, its attributes, and its place in
+    /// the draw order, and it becomes the selection.
+    pub fn merge_selection(&mut self, keep: Uuid) {
+        self.merging = false;
+        if !self.can_merge() || !self.feature_selection.iter().any(|f| f.uuid == keep) {
+            return;
+        }
+        let id = self.feature_selection[0].layer;
+        let Some(layer) = self.doc.layer(id) else {
+            return;
+        };
+        let selected = |uuid: Uuid| self.feature_selection.iter().any(|f| f.uuid == uuid);
+        let geometries: Vec<&Geometry> = (layer.features.iter())
+            .filter(|f| selected(f.uuid()))
+            .map(|f| &f.geometry)
+            .collect();
+        let Some(merged) = crate::globe::merge::merge(&geometries) else {
+            return;
+        };
+        self.commit_selection_form();
+        self.selection_form = None;
+        self.commit_point_form();
+        self.save_edit();
+        let others: Vec<Uuid> = (self.feature_selection.iter())
+            .map(|f| f.uuid)
+            .filter(|&u| u != keep)
+            .collect();
+        let project = &mut self.doc.project;
+        if project.set_geometry(id, keep, merged) {
+            project.remove_features(id, &others);
+            self.feature_selection = vec![FeatureRef {
+                layer: id,
+                uuid: keep,
+            }];
             self.end_vector_edit(id);
         }
     }
@@ -523,6 +602,49 @@ pub fn view_menu(ui: &mut egui::Ui, state: &mut AppState) {
             ui.close();
         }
     });
+}
+
+/// The Edit menu of the desktop tool bar: Delete selection and Merge.
+/// "Merge…" opens a window with a button for each selected feature, and a
+/// click on a button merges the selection into that feature.
+pub fn edit_menu(ui: &mut egui::Ui, state: &mut AppState) {
+    ui.menu_button("Edit", |ui| {
+        let any = !state.feature_selection.is_empty();
+        if ui.add_enabled(any, egui::Button::new(DELETE)).clicked() {
+            state.delete_selection();
+            ui.close();
+        }
+        if ui
+            .add_enabled(state.can_merge(), egui::Button::new(MERGE))
+            .clicked()
+        {
+            state.merging = true;
+            ui.close();
+        }
+    });
+    if !state.merging {
+        return;
+    }
+    let choices = state.merge_choices();
+    let mut open = !choices.is_empty();
+    let mut keep = None;
+    egui::Window::new("Merge")
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 80.0))
+        .show(ui.ctx(), |ui| {
+            ui.label(MERGE_TITLE);
+            for (uuid, name) in &choices {
+                if ui.button(name).clicked() {
+                    keep = Some(*uuid);
+                }
+            }
+        });
+    state.merging = open;
+    if let Some(uuid) = keep {
+        state.merge_selection(uuid);
+    }
 }
 
 /// The inspector of the desktop layout: a panel at the right.

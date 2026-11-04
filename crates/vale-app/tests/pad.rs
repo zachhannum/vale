@@ -9475,6 +9475,95 @@ fn the_select_card_has_delete_selection_and_it_is_off_with_no_selection() {
 }
 
 #[test]
+fn merge_joins_two_provinces_into_the_feature_that_you_choose_in_one_undo_step() {
+    use std::collections::HashSet;
+    use vale_store::{Feature, Field, FieldType, Geometry, Value};
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
+    let id = picks.polygon.layer;
+    let small = {
+        let state = h.state_mut();
+        let ring = vec![[10.0, -25.0], [16.0, -25.0], [16.0, -12.0], [10.0, -12.0]];
+        let feature = Feature::new(Geometry::Polygons(vec![vec![ring]]), Default::default());
+        let uuid = feature.uuid();
+        let project = &mut state.doc.project;
+        assert!(project.add_feature(id, feature));
+        assert!(project.add_field(id, Field::new("name", FieldType::Text)));
+        for (u, name) in [(picks.polygon.uuid, "Big"), (uuid, "Small")] {
+            let one = HashSet::from([u]);
+            let value = Value::Text(name.into());
+            assert_eq!(project.set_attribute_of(id, &one, "name", &value), 1);
+        }
+        state.doc.entry_mut(id).unwrap().style.label.field = Some("name".into());
+        state.save_waiting().unwrap();
+        uuid
+    };
+    select_layer(&mut h, id);
+    assert!(disabled(&h, select::MERGE));
+    h.state_mut().set_feature_selection(vec![FeatureRef {
+        layer: id,
+        uuid: small,
+    }]);
+    h.run_steps(2);
+    assert!(disabled(&h, select::MERGE));
+    let (from, to) = (screen_at(&h, -14.0, -8.0), screen_at(&h, 20.0, -28.0));
+    drag(&mut h, from, to, Some(0.5));
+    assert_eq!(selection(&h).len(), 2);
+    assert!(!disabled(&h, select::MERGE));
+    tap(&mut h, select::MERGE);
+    // The list names each feature by the label field, the largest first.
+    let (big_row, small_row) = (control(&h, "Big").unwrap(), control(&h, "Small").unwrap());
+    assert!(big_row.top() < small_row.top());
+    let card = h.state().pad.rects.unwrap().brush.unwrap();
+    assert!(big_row.left() > card.right());
+    check_controls(&h, "the list of Merge");
+    screenshot::save(&mut h, "pad-merge");
+    let saved = saves(&h);
+    tap(&mut h, "Small");
+    assert_eq!(saves(&h), saved + 1);
+    assert!(!h.state().merging);
+    let features = line_features(&h, id);
+    assert_eq!(features.len(), 1);
+    assert_eq!(features[0].uuid(), small);
+    assert_eq!(
+        features[0].attributes.get("name"),
+        Some(&Value::Text("Small".into()))
+    );
+    let Geometry::Polygons(p) = &features[0].geometry else {
+        panic!("not a polygon");
+    };
+    // The border between the two goes away.
+    assert_eq!((p.len(), p[0].len()), (1, 1), "{p:?}");
+    assert_eq!(
+        selection(&h),
+        [FeatureRef {
+            layer: id,
+            uuid: small
+        }]
+    );
+    h.state_mut().undo();
+    h.run_steps(2);
+    assert_eq!(line_features(&h, id).len(), 2);
+}
+
+#[test]
+fn a_touch_outside_the_list_of_merge_closes_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
+    h.state_mut()
+        .set_feature_selection(vec![picks.point, picks.second]);
+    h.run_steps(2);
+    tap(&mut h, select::MERGE);
+    assert!(h.state().merging);
+    assert!(control(&h, "Feature 1").is_some());
+    let at = h.state().globe.rect.right_bottom() - vec2(40.0, 40.0);
+    finger_tap_at(&mut h, at);
+    assert!(!h.state().merging);
+    assert!(control(&h, "Feature 1").is_none());
+    assert_eq!(line_features(&h, picks.point.layer).len(), 2);
+}
+
+#[test]
 fn the_attributes_button_opens_and_closes_the_inspector_and_it_stays_open_in_each_tool() {
     let dir = tempfile::tempdir().unwrap();
     let (mut h, picks) = select_pad(WorldView::Globe, dir.path());

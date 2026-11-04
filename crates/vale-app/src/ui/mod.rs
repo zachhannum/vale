@@ -484,6 +484,9 @@ pub struct AppState {
     /// The features that the Select tool selected, in the order of the
     /// selection.
     pub feature_selection: Vec<crate::globe::select::FeatureRef>,
+    /// The list of Merge shows, which asks which feature keeps its
+    /// attributes.
+    pub merging: bool,
     /// The drag of the Select tool.
     pub select_drag: Option<select::SelectDrag>,
     /// The stored positions of the selected vertices of the feature that
@@ -631,6 +634,7 @@ impl AppState {
             world_form: None,
             new_feature: None,
             feature_selection: Vec::new(),
+            merging: false,
             select_drag: None,
             vertex_selection: Vec::new(),
             vertex_drag: None,
