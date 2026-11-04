@@ -324,3 +324,331 @@ fn curved_mode_falls_back_to_horizontal() {
     assert_eq!(out.placed.len(), 1, "{:?}", out.unplaced);
     assert_eq!(out.placed[0].kind, CandidateKind::Polygon { curved: false });
 }
+
+/// A square ring from `(x0, y0)` with side `side`.
+fn square(x0: f64, y0: f64, side: f64) -> Vec<Point> {
+    vec![
+        Point::new(x0, y0),
+        Point::new(x0 + side, y0),
+        Point::new(x0 + side, y0 + side),
+        Point::new(x0, y0 + side),
+    ]
+}
+
+/// Labels of polygon features, one for each item of `shapes`, all with the class `pp`.
+fn run_all(pp: PolygonPlacement, shapes: Vec<Vec<Vec<Point>>>, text: &str) -> Labeling {
+    let input = LabelInput {
+        bounds: Rect::new(0.0, 0.0, 800.0, 600.0),
+        classes: vec![LabelClass {
+            name: "area".into(),
+            style: TextStyle::new("Noto Sans", 14.0),
+            priority: 0,
+            margin: 0.0,
+            placement: Placement::Polygon(pp),
+            duplicate_distance: None,
+        }],
+        features: shapes
+            .into_iter()
+            .enumerate()
+            .map(|(i, rings)| Feature {
+                id: i as u64 + 1,
+                class: 0,
+                text: text.into(),
+                priority: 0.0,
+                geometry: Geometry::Polygon { rings },
+            })
+            .collect(),
+        obstacles: vec![],
+        parallels: Vec::new(),
+        options: Options::default(),
+    };
+    place_labels(&mut fonts(), &input)
+}
+
+fn horizontal() -> PolygonPlacement {
+    PolygonPlacement {
+        mode: PolygonMode::Horizontal,
+        max_spread: 0.0,
+        ..PolygonPlacement::default()
+    }
+}
+
+/// The ranks of the zones inside, with `best` at rank 1 and the others at rank 2.
+fn prefer(best: Zone) -> PolygonZones {
+    let mut zones = PolygonZones::default();
+    for z in Zone::INSIDE {
+        zones.inside[z as usize] = if z == best { 1 } else { 2 };
+    }
+    zones
+}
+
+#[test]
+fn the_best_zone_inside_gets_the_label() {
+    let rings = vec![square(100.0, 100.0, 300.0)];
+    for (zone, check) in [
+        (Zone::TopLeft, (true, true)),
+        (Zone::BottomRight, (false, false)),
+    ] {
+        let pp = PolygonPlacement {
+            zones: prefer(zone),
+            ..horizontal()
+        };
+        let out = run_all(pp, vec![rings.clone()], "Land");
+        let c = out.placed[0].bounds.center();
+        assert_eq!((c.x < 200.0, c.y < 200.0), check, "{zone:?}: {c:?}");
+        assert!(out.placed[0].leader.is_none());
+    }
+}
+
+#[test]
+fn a_blocked_zone_gets_no_label() {
+    let rings = vec![square(100.0, 100.0, 300.0)];
+    let mut zones = PolygonZones::default();
+    zones.inside[Zone::Center as usize] = 0;
+    let pp = PolygonPlacement {
+        zones,
+        ..horizontal()
+    };
+    let out = run_all(pp, vec![rings], "Land");
+    let c = out.placed[0].bounds.center();
+    assert!(c.distance(Point::new(250.0, 250.0)) > 40.0, "{c:?}");
+
+    // With every zone inside blocked, and one outside, the label goes outside.
+    let mut zones = PolygonZones {
+        inside: [0; 9],
+        outside: [0; 8],
+    };
+    zones.outside[Zone::OUTSIDE
+        .iter()
+        .position(|z| *z == Zone::Right)
+        .unwrap()] = 1;
+    let pp = PolygonPlacement {
+        zones,
+        ..horizontal()
+    };
+    let out = run_all(pp, vec![vec![square(100.0, 100.0, 300.0)]], "Land");
+    let label = &out.placed[0];
+    assert!(label.bounds.x0 > 400.0, "{:?}", label.bounds);
+    assert!(label.leader.is_some());
+}
+
+#[test]
+fn a_small_polygon_gets_a_label_outside_in_the_best_zone() {
+    let rings = vec![square(300.0, 300.0, 10.0)];
+    let out = run_all(horizontal(), vec![rings.clone()], "Island");
+    assert_eq!(out.unplaced[0].reason, UnplacedReason::AreaTooSmall);
+
+    let mut zones = PolygonZones {
+        outside: [2; 8],
+        ..PolygonZones::default()
+    };
+    zones.outside[Zone::OUTSIDE
+        .iter()
+        .position(|z| *z == Zone::TopRight)
+        .unwrap()] = 1;
+    let pp = PolygonPlacement {
+        zones,
+        ..horizontal()
+    };
+    let out = run_all(pp, vec![rings], "Island");
+    let label = &out.placed[0];
+    assert!(
+        label.bounds.x0 > 305.0 && label.bounds.y1 < 305.0,
+        "{:?}",
+        label.bounds
+    );
+}
+
+#[test]
+fn the_leader_starts_at_the_anchor_of_the_class() {
+    // A C shape: its centroid is in the gap, outside the shape.
+    let ring = vec![
+        Point::new(100.0, 100.0),
+        Point::new(300.0, 100.0),
+        Point::new(300.0, 140.0),
+        Point::new(140.0, 140.0),
+        Point::new(140.0, 260.0),
+        Point::new(300.0, 260.0),
+        Point::new(300.0, 300.0),
+        Point::new(100.0, 300.0),
+    ];
+    let mut zones = PolygonZones {
+        inside: [0; 9],
+        outside: [0; 8],
+    };
+    zones.outside[Zone::OUTSIDE
+        .iter()
+        .position(|z| *z == Zone::Right)
+        .unwrap()] = 1;
+    let leader = |anchor| {
+        let pp = PolygonPlacement {
+            zones: zones.clone(),
+            anchor,
+            ..horizontal()
+        };
+        let out = run_all(pp, vec![vec![ring.clone()]], "Bay");
+        out.placed[0].leader.expect("a leader")
+    };
+    let rings = [ring.clone()];
+    let center = leader(LeaderAnchor::Center);
+    assert!(!contains(&rings, center.anchor), "{center:?}");
+    assert!(
+        center.anchor.distance(Point::new(180.0, 200.0)) < 20.0,
+        "{center:?}"
+    );
+
+    let inside = leader(LeaderAnchor::Inside);
+    assert!(contains(&rings, inside.anchor), "{inside:?}");
+
+    let outline = leader(LeaderAnchor::Outline);
+    let on_edge = ring.iter().zip(ring.iter().cycle().skip(1)).any(|(a, b)| {
+        let ab = *b - *a;
+        let t = ((outline.anchor - *a).dot(ab) / ab.hypot2()).clamp(0.0, 1.0);
+        (*a + ab * t).distance(outline.anchor) < 1e-6
+    });
+    assert!(on_edge, "{outline:?}");
+    // The leader ends on the edge of the label.
+    let label = run_all(
+        PolygonPlacement {
+            zones: zones.clone(),
+            anchor: LeaderAnchor::Outline,
+            ..horizontal()
+        },
+        vec![vec![ring.clone()]],
+        "Bay",
+    );
+    let b = label.placed[0].bounds;
+    assert!(outline.end.x >= b.x0 - 1.0 && outline.end.x <= b.x1 + 1.0);
+}
+
+/// A lake with an island in the middle, 200 wide and 50 high.
+fn lake() -> Vec<Vec<Point>> {
+    vec![
+        square(100.0, 100.0, 300.0),
+        vec![
+            Point::new(150.0, 225.0),
+            Point::new(350.0, 225.0),
+            Point::new(350.0, 275.0),
+            Point::new(150.0, 275.0),
+        ],
+    ]
+}
+
+#[test]
+fn a_label_avoids_holes_unless_the_class_allows_them() {
+    let rings = lake();
+    let island = Rect::new(150.0, 225.0, 350.0, 275.0);
+    let out = run_all(horizontal(), vec![rings.clone()], "Lake");
+    assert!(
+        out.placed[0].bounds.intersect(island).area() <= 0.0,
+        "{:?}",
+        out.placed[0].bounds
+    );
+
+    let pp = PolygonPlacement {
+        over_holes: true,
+        ..horizontal()
+    };
+    let out = run_all(pp, vec![rings], "Lake");
+    let c = out.placed[0].bounds.center();
+    assert!(island.contains(c), "{c:?}");
+}
+
+#[test]
+fn a_label_can_avoid_other_polygons() {
+    let lake = vec![lake()[1].clone()];
+    let land = vec![square(100.0, 100.0, 300.0)];
+    let island = Rect::new(150.0, 225.0, 350.0, 275.0);
+    let label_of = |pp: PolygonPlacement| {
+        let mut out = run_all(pp, vec![land.clone(), lake.clone()], "Land");
+        out.placed.retain(|l| l.feature == 1);
+        out.placed[0].bounds
+    };
+    assert!(label_of(horizontal()).intersect(island).area() > 0.0);
+    let pp = PolygonPlacement {
+        avoid_other_polygons: true,
+        ..horizontal()
+    };
+    let b = label_of(pp);
+    assert!(b.intersect(island).area() <= 0.0, "{b:?}");
+}
+
+#[test]
+fn the_class_labels_the_largest_part_or_each_part() {
+    let rings = vec![
+        square(100.0, 100.0, 200.0),
+        square(400.0, 100.0, 120.0),
+        square(600.0, 100.0, 5.0),
+    ];
+    let out = run_all(horizontal(), vec![rings.clone()], "Isles");
+    assert_eq!(out.placed.len(), 1);
+    assert!(out.placed[0].bounds.center().x < 300.0);
+
+    let pp = PolygonPlacement {
+        largest_part_only: false,
+        ..horizontal()
+    };
+    let out = run_all(pp, vec![rings], "Isles");
+    // The smallest part has no room, and it is not reported.
+    assert_eq!(out.placed.len(), 2, "{:?}", out.unplaced);
+    assert!(out.unplaced.is_empty());
+    assert!(out.placed.iter().any(|l| l.bounds.center().x > 400.0));
+}
+
+#[test]
+fn a_large_polygon_repeats_its_label() {
+    let rings = vec![square(20.0, 20.0, 560.0)];
+    let out = run_all(horizontal(), vec![rings.clone()], "Sea");
+    assert_eq!(out.placed.len(), 1);
+
+    let pp = PolygonPlacement {
+        repeat_distance: Some(200.0),
+        ..horizontal()
+    };
+    let out = run_all(pp, vec![rings], "Sea");
+    assert!(out.placed.len() >= 4, "{}", out.placed.len());
+    for a in &out.placed {
+        for b in &out.placed {
+            if a.repeat != b.repeat {
+                assert!(a.bounds.center().distance(b.bounds.center()) > 100.0);
+            }
+        }
+    }
+}
+
+#[test]
+fn a_label_can_go_past_the_outline_by_the_overrun() {
+    // A strip a little lower than the text.
+    let rings = vec![vec![
+        Point::new(100.0, 100.0),
+        Point::new(400.0, 100.0),
+        Point::new(400.0, 109.0),
+        Point::new(100.0, 109.0),
+    ]];
+    let out = run_all(horizontal(), vec![rings.clone()], "Strip");
+    assert!(out.placed.is_empty());
+
+    let pp = PolygonPlacement {
+        overrun: 6.0,
+        ..horizontal()
+    };
+    let out = run_all(pp, vec![rings], "Strip");
+    let b = out.placed[0].bounds;
+    assert!(b.y0 >= 94.0 && b.y1 <= 115.0, "{b:?}");
+}
+
+#[test]
+fn a_polygon_below_the_minimum_area_gets_no_label() {
+    let rings = vec![square(100.0, 100.0, 100.0)];
+    let pp = PolygonPlacement {
+        min_area: 12_000.0,
+        ..horizontal()
+    };
+    let out = run_all(pp.clone(), vec![rings.clone()], "Land");
+    assert_eq!(out.unplaced[0].reason, UnplacedReason::BelowMinimumArea);
+    let pp = PolygonPlacement {
+        min_area: 8_000.0,
+        ..pp
+    };
+    assert_eq!(run_all(pp, vec![rings], "Land").placed.len(), 1);
+}

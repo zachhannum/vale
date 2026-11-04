@@ -17,9 +17,10 @@ pub(crate) struct Candidate {
     pub boxes: Vec<OrientedBox>,
     /// Union of the box AABBs.
     pub bounds: Rect,
+    pub leader: Option<Leader>,
 }
 
-/// One label to place: a feature, or one repeat of a line feature.
+/// One label to place: a feature, or one repeat of a line or polygon feature.
 pub(crate) struct Instance {
     pub feature_index: usize,
     pub repeat: u32,
@@ -196,6 +197,22 @@ pub(crate) fn run(fonts: &mut Fonts, input: &LabelInput) -> Labeling {
         }
     }
 
+    // The rings and bounds of every polygon feature, for the labels that avoid other polygons.
+    let polygons: Vec<(usize, &[Vec<Point>], Rect)> = input
+        .features
+        .iter()
+        .enumerate()
+        .filter_map(|(fi, f)| match &f.geometry {
+            Geometry::Polygon { rings } => {
+                let mut pts = rings.iter().flatten();
+                let first = pts.next()?;
+                let bbox = pts.fold(Rect::from_points(*first, *first), |b, p| b.union_pt(*p));
+                Some((fi, rings.as_slice(), bbox))
+            }
+            _ => None,
+        })
+        .collect();
+
     // Step 1: candidates.
     let parallels = Parallels::new(&input.parallels, bounds);
     let mut instances: Vec<Instance> = Vec::new();
@@ -241,17 +258,31 @@ pub(crate) fn run(fonts: &mut Fonts, input: &LabelInput) -> Labeling {
                 }
             }
             (Geometry::Polygon { rings }, Placement::Polygon(pp)) => {
-                let (candidates, empty_reason) =
-                    match polygon::candidates(rings, class, pp, shaped, bounds, &parallels) {
+                let others: Vec<&[Vec<Point>]> = if pp.avoid_other_polygons {
+                    let own = polygons.iter().find(|p| p.0 == *fi).map(|p| p.2);
+                    polygons
+                        .iter()
+                        .filter(|(o, _, b)| {
+                            o != fi && own.is_some_and(|r| r.intersect(*b).area() > 0.0)
+                        })
+                        .map(|p| p.1)
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                let slots = polygon::slots(rings, &others, class, pp, shaped, bounds, &parallels);
+                for (repeat, slot) in slots.into_iter().enumerate() {
+                    let (candidates, empty_reason) = match slot {
                         Ok(c) => (c, None),
                         Err(r) => (Vec::new(), Some(r)),
                     };
-                instances.push(Instance {
-                    feature_index: *fi,
-                    repeat: 0,
-                    candidates,
-                    empty_reason,
-                });
+                    instances.push(Instance {
+                        feature_index: *fi,
+                        repeat: repeat as u32,
+                        candidates,
+                        empty_reason,
+                    });
+                }
             }
             _ => {}
         }
@@ -416,6 +447,7 @@ pub(crate) fn run(fonts: &mut Fonts, input: &LabelInput) -> Labeling {
                     boxes: c.boxes.clone(),
                     bounds: c.bounds,
                     cost: c.cost,
+                    leader: c.leader,
                 });
             }
             None => {
