@@ -16,8 +16,9 @@ mod undo;
 pub use atlas::{
     Atlas, Border, BorderStyle, CoordFormat, EdgeLabels, EdgeOrientation, Edges, FrameId,
     FrameRecord, FrameShape, Furniture, FurnitureId, FurnitureRecord, FurnitureText, Graticule,
-    GridColumns, LayoutGrid, LegendEntry, LegendItem, MapId, MapRecord, Neatline, NorthArrowItem,
-    PageId, PageRecord, PageUnits, ProjectionPreset, TextAlign, TextCase, TextItem, title_case,
+    GridColumns, LayoutGrid, LegendEntry, LegendItem, MapId, MapRecord, MapStyleId, MapStyleRecord,
+    Neatline, NorthArrowItem, PageId, PageRecord, PageUnits, ProjectionPreset, TextAlign, TextCase,
+    TextItem, title_case,
 };
 pub use fill::{FillKind, FillPattern};
 pub use gpkg::{
@@ -1430,8 +1431,14 @@ impl Project {
         let layer = self.layers.remove(i);
         for map in &mut self.atlas.maps {
             map.hidden.remove(&id);
+            map.shown.remove(&id);
             map.overrides.remove(&id);
             map.labels.remove(&id);
+        }
+        for style in &mut self.atlas.map_styles {
+            style.hidden.remove(&id);
+            style.overrides.remove(&id);
+            style.labels.remove(&id);
         }
         if let Some(raster) = layer.raster() {
             self.rasters.retain(|r| r.id != raster);
@@ -1779,6 +1786,32 @@ mod tests {
         assert!(p.remove_layer(a).is_none());
         let b = p.add_layer("b".into(), GeometryKind::Line, None, vec![]);
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn a_removed_layer_leaves_the_maps_and_the_map_styles() {
+        let mut p = Project::new(World::default());
+        let a = p.add_layer("a".into(), GeometryKind::Line, None, vec![]);
+        let b = p.add_layer("b".into(), GeometryKind::Line, None, vec![]);
+        let mut style = MapStyleRecord {
+            id: MapStyleId(0),
+            name: String::new(),
+            hidden: [a, b].into(),
+            overrides: BTreeMap::new(),
+            labels: BTreeMap::new(),
+        };
+        for layer in [a, b] {
+            style.overrides.insert(layer, "{}".into());
+            style.labels.insert(layer, "[]".into());
+        }
+        let id = p.atlas.add_map_style(style);
+        p.atlas.maps[0].shown.extend([a, b]);
+        assert!(p.remove_layer(a).is_some());
+        assert_eq!(p.atlas.maps[0].shown, [b].into());
+        let style = p.atlas.map_style(id).unwrap();
+        assert_eq!(style.hidden, [b].into());
+        assert_eq!(style.overrides.keys().collect::<Vec<_>>(), [&b]);
+        assert_eq!(style.labels.keys().collect::<Vec<_>>(), [&b]);
     }
 
     #[test]

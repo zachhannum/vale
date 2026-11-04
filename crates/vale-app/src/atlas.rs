@@ -681,7 +681,9 @@ mod tests {
             id: MapId(0),
             name: "Map".to_string(),
             projection: "+proj=eqearth +lon_0=15".to_string(),
+            style: None,
             hidden: BTreeSet::new(),
+            shown: BTreeSet::new(),
             overrides: Default::default(),
             labels: Default::default(),
         }

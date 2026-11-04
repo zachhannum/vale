@@ -14,6 +14,10 @@ use crate::{LayerId, LonLat, Rgb, Rgba, Units};
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct MapId(pub u32);
 
+/// The ID of a map style.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct MapStyleId(pub u32);
+
 /// The ID of a page.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct PageId(pub u32);
@@ -23,17 +27,36 @@ pub struct PageId(pub u32);
 pub struct FrameId(pub u32);
 
 /// A map: a projection and the layers that it does not show.
+///
+/// The style of a layer applies first, then the map style, then the
+/// overrides of the map.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MapRecord {
     pub id: MapId,
     pub name: String,
     /// The PROJ string of the projection, with no radius.
     pub projection: String,
+    /// The map style. `None`: the map has no map style.
+    pub style: Option<MapStyleId>,
     /// The layers that the map does not show.
     pub hidden: BTreeSet<LayerId>,
+    /// The layers that the map shows, although its map style hides them.
+    pub shown: BTreeSet<LayerId>,
     /// The style overrides of each layer, as the JSON text of `vale_style::Overrides`. A layer with no overrides has no entry.
     pub overrides: BTreeMap<LayerId, String>,
     /// The label classes of each layer in the map, as JSON text. A layer with no entry uses the label style of the layer. An entry with no class means that the layer has no labels in the map.
+    pub labels: BTreeMap<LayerId, String>,
+}
+
+/// A named set of layer switches, style overrides, and label classes that
+/// many maps share. The fields have the meaning and the JSON text of the
+/// same fields of [`MapRecord`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct MapStyleRecord {
+    pub id: MapStyleId,
+    pub name: String,
+    pub hidden: BTreeSet<LayerId>,
+    pub overrides: BTreeMap<LayerId, String>,
     pub labels: BTreeMap<LayerId, String>,
 }
 
@@ -1166,6 +1189,7 @@ pub struct ProjectionPreset {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Atlas {
     pub maps: Vec<MapRecord>,
+    pub map_styles: Vec<MapStyleRecord>,
     /// The custom projections, in the order in which they were first saved.
     pub presets: Vec<ProjectionPreset>,
     /// In atlas order.
@@ -1173,6 +1197,7 @@ pub struct Atlas {
     /// The layout grid of all pages.
     pub grid: LayoutGrid,
     pub(crate) next_map_id: u32,
+    pub(crate) next_map_style_id: u32,
     pub(crate) next_page_id: u32,
     pub(crate) next_frame_id: u32,
     pub(crate) next_furniture_id: u32,
@@ -1195,10 +1220,13 @@ impl Atlas {
                 id: MapId(0),
                 name: "Map".to_string(),
                 projection: EQUAL_EARTH.to_string(),
+                style: None,
                 hidden: BTreeSet::new(),
+                shown: BTreeSet::new(),
                 overrides: BTreeMap::new(),
                 labels: BTreeMap::new(),
             }],
+            map_styles: Vec::new(),
             presets: Vec::new(),
             pages: vec![PageRecord {
                 id: PageId(0),
@@ -1212,6 +1240,7 @@ impl Atlas {
             }],
             grid: LayoutGrid::default(),
             next_map_id: 1,
+            next_map_style_id: 0,
             next_page_id: 1,
             next_frame_id: 0,
             next_furniture_id: 0,
@@ -1390,12 +1419,14 @@ impl Atlas {
     /// layer, after the last map. Its name is the first free name of "Map",
     /// "Map 2", "Map 3", and so on.
     pub fn add_map(&mut self) -> MapId {
-        let name = self.free_name("Map");
+        let name = free_name("Map", |n| self.maps.iter().any(|m| m.name == n));
         self.push_map(MapRecord {
             id: MapId(0),
             name,
             projection: EQUAL_EARTH.to_string(),
+            style: None,
             hidden: BTreeSet::new(),
+            shown: BTreeSet::new(),
             overrides: BTreeMap::new(),
             labels: BTreeMap::new(),
         })
@@ -1431,16 +1462,80 @@ impl Atlas {
         MapId(self.next_map_id - 1)
     }
 
-    /// `base`, or `base` with the first free number from 2.
-    fn free_name(&self, base: &str) -> String {
-        let taken = |n: &str| self.maps.iter().any(|m| m.name == n);
-        if !taken(base) {
-            return base.to_string();
+    pub fn map_style(&self, id: MapStyleId) -> Option<&MapStyleRecord> {
+        self.map_styles.iter().find(|s| s.id == id)
+    }
+
+    pub fn map_style_mut(&mut self, id: MapStyleId) -> Option<&mut MapStyleRecord> {
+        self.map_styles.iter_mut().find(|s| s.id == id)
+    }
+
+    /// The map style of a map.
+    pub fn style_of(&self, map: MapId) -> Option<&MapStyleRecord> {
+        self.map_style(self.map(map)?.style?)
+    }
+
+    /// Adds a map style after the last map style, with a new ID in place of
+    /// the ID of `style`. A style with no name gets the first free name of
+    /// "Map style", "Map style 2", and so on.
+    pub fn add_map_style(&mut self, mut style: MapStyleRecord) -> MapStyleId {
+        if style.name.is_empty() {
+            style.name = free_name("Map style", |n| self.map_styles.iter().any(|s| s.name == n));
         }
-        (2..)
-            .map(|i| format!("{base} {i}"))
-            .find(|n| !taken(n))
-            .expect("a free name")
+        style.id = MapStyleId(self.next_map_style_id);
+        self.next_map_style_id += 1;
+        self.map_styles.push(style);
+        MapStyleId(self.next_map_style_id - 1)
+    }
+
+    /// Removes a map style. A map with this style keeps its own settings
+    /// and has no map style.
+    pub fn remove_map_style(&mut self, id: MapStyleId) -> Option<MapStyleRecord> {
+        let i = self.map_styles.iter().position(|s| s.id == id)?;
+        for map in &mut self.maps {
+            if map.style == Some(id) {
+                map.style = None;
+            }
+        }
+        Some(self.map_styles.remove(i))
+    }
+
+    /// Whether a map shows a layer. The `shown` and `hidden` sets of the
+    /// map come first, then the `hidden` set of its map style.
+    pub fn shows(&self, map: MapId, layer: LayerId) -> bool {
+        let Some(m) = self.map(map) else {
+            return true;
+        };
+        if m.shown.contains(&layer) {
+            return true;
+        }
+        if m.hidden.contains(&layer) {
+            return false;
+        }
+        !self
+            .style_of(map)
+            .is_some_and(|s| s.hidden.contains(&layer))
+    }
+
+    /// The label classes of a layer in a map: the entry of the map, else
+    /// the entry of its map style.
+    pub fn label_text(&self, map: MapId, layer: LayerId) -> Option<&String> {
+        let m = self.map(map)?;
+        m.labels
+            .get(&layer)
+            .or_else(|| self.style_of(map)?.labels.get(&layer))
+    }
+
+    /// The layers that have style overrides in a map or in its map style.
+    pub fn override_layers(&self, map: MapId) -> BTreeSet<LayerId> {
+        let mut out = BTreeSet::new();
+        if let Some(m) = self.map(map) {
+            out.extend(m.overrides.keys().copied());
+        }
+        if let Some(s) = self.style_of(map) {
+            out.extend(s.overrides.keys().copied());
+        }
+        out
     }
 
     /// Each frame of a map, with its page, in atlas order.
@@ -1451,6 +1546,17 @@ impl Atlas {
             .flat_map(|p| p.frames.iter().map(move |f| (p, f)));
         frames.filter(move |(_, f)| f.map == id)
     }
+}
+
+/// `base`, or `base` with the first free number from 2.
+fn free_name(base: &str, taken: impl Fn(&str) -> bool) -> String {
+    if !taken(base) {
+        return base.to_string();
+    }
+    (2..)
+        .map(|i| format!("{base} {i}"))
+        .find(|n| !taken(n))
+        .expect("a free name")
 }
 
 /// The rings of a shape as a little-endian blob: the number of rings, then
@@ -1611,6 +1717,76 @@ mod tests {
         atlas.map_mut(second).unwrap().name = "Map 4".to_string();
         let fourth = atlas.add_map();
         assert_eq!(atlas.map(fourth).unwrap().name, "Map 2");
+    }
+
+    fn style(name: &str) -> MapStyleRecord {
+        MapStyleRecord {
+            id: MapStyleId(99),
+            name: name.to_string(),
+            hidden: BTreeSet::new(),
+            overrides: BTreeMap::new(),
+            labels: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn new_map_styles_get_free_names_and_new_ids() {
+        let mut atlas = Atlas::new(Units::Metric);
+        let a = atlas.add_map_style(style(""));
+        let b = atlas.add_map_style(style("Coast"));
+        let c = atlas.add_map_style(style(""));
+        let names: Vec<&str> = atlas.map_styles.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["Map style", "Coast", "Map style 2"]);
+        assert!(a < b && b < c);
+        atlas.map_style_mut(a).unwrap().name = "Old".to_string();
+        let d = atlas.add_map_style(style(""));
+        assert_eq!(atlas.map_style(d).unwrap().name, "Map style");
+    }
+
+    #[test]
+    fn a_removed_map_style_leaves_its_maps_with_no_style() {
+        let mut atlas = Atlas::new(Units::Metric);
+        let map = atlas.maps[0].id;
+        let other = atlas.add_map();
+        let id = atlas.add_map_style(style(""));
+        atlas.map_mut(map).unwrap().style = Some(id);
+        atlas.map_mut(other).unwrap().style = Some(id);
+        assert_eq!(atlas.style_of(map).unwrap().id, id);
+        assert_eq!(atlas.remove_map_style(id).unwrap().id, id);
+        assert!(atlas.remove_map_style(id).is_none());
+        assert!(atlas.maps.iter().all(|m| m.style.is_none()));
+        assert!(atlas.style_of(map).is_none());
+        // The ID of a removed map style is not used again.
+        assert!(atlas.add_map_style(style("")) > id);
+    }
+
+    #[test]
+    fn a_map_shows_a_layer_by_its_own_sets_then_by_its_style() {
+        let mut atlas = Atlas::new(Units::Metric);
+        let map = atlas.maps[0].id;
+        let (a, b, c, d) = (LayerId(1), LayerId(2), LayerId(3), LayerId(4));
+        let mut s = style("");
+        s.hidden.extend([a, b]);
+        s.overrides.insert(c, "{}".into());
+        s.labels.insert(a, "style".into());
+        s.labels.insert(b, "style".into());
+        let id = atlas.add_map_style(s);
+        let m = atlas.map_mut(map).unwrap();
+        m.shown.insert(a);
+        m.hidden.insert(c);
+        m.overrides.insert(d, "{}".into());
+        m.labels.insert(a, "map".into());
+        for layer in [a, b, c, d] {
+            assert_eq!(atlas.shows(map, layer), layer != c, "{layer:?}");
+        }
+        atlas.map_mut(map).unwrap().style = Some(id);
+        for (layer, shown) in [(a, true), (b, false), (c, false), (d, true)] {
+            assert_eq!(atlas.shows(map, layer), shown, "{layer:?}");
+        }
+        assert_eq!(atlas.label_text(map, a).unwrap(), "map");
+        assert_eq!(atlas.label_text(map, b).unwrap(), "style");
+        assert_eq!(atlas.label_text(map, c), None);
+        assert_eq!(atlas.override_layers(map), BTreeSet::from([c, d]));
     }
 
     #[test]
