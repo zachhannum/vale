@@ -28,7 +28,7 @@ use super::pad::rules::{
 use super::{Action, Note, number};
 use crate::classify::{self, Method, Step};
 use crate::globe::symbol::paint_symbol;
-use crate::ramps::{BUILT_IN, QUALITATIVE};
+use crate::ramps::Ramp;
 
 /// The symbols that the editor lists, the text of the last addition of a
 /// symbol, and the actions of the app.
@@ -724,7 +724,7 @@ pub fn classify(
     ui: &mut egui::Ui,
     id: LayerId,
     fields: &[Field],
-    ramps: &[(String, Vec<vale_terrain::Rgb>)],
+    ramps: &[Ramp],
 ) -> Option<Request> {
     let key = egui::Id::new(("classify", id.0));
     let (mut text, mut method, mut classes, mut ramp, mut reverse): (
@@ -780,25 +780,24 @@ pub fn classify(
             });
             ui.horizontal(|ui| {
                 ui.label(COLOR_RAMP);
-                let name = ramps.get(ramp).map_or("", |r| r.0.as_str());
+                let name = ramps.get(ramp).map_or("", |r| r.name.as_str());
                 egui::ComboBox::from_id_salt(("classify-ramp", id.0))
                     .selected_text(name)
                     .show_ui(ui, |ui| {
-                        for (i, (n, _)) in ramps.iter().enumerate() {
-                            ui.selectable_value(&mut ramp, i, n);
+                        for (i, r) in ramps.iter().enumerate() {
+                            ui.selectable_value(&mut ramp, i, &r.name);
                         }
                     });
             });
             ui.checkbox(&mut reverse, REVERSE);
             if ui.button(MAKE_RULES).clicked()
-                && let Some((_, colors)) = ramps.get(ramp)
+                && let Some(r) = ramps.get(ramp)
             {
                 out = Some(Request {
                     text: text.clone(),
                     method: Method::ALL[method],
                     classes,
-                    colors: colors.clone(),
-                    qualitative: (QUALITATIVE..BUILT_IN.len()).contains(&ramp),
+                    ramp: r.clone(),
                     reverse,
                     step: Step::None,
                 });

@@ -5533,11 +5533,13 @@ fn an_imported_ramp_gives_one_color_per_band() {
     let before = h.state().globe.map.bands.clone();
     let count = before.colors().len();
     assert!(count > colors.len());
+    // The new ramp is the last ramp of the library.
+    let at = h.state().ramps.list().len() - 1;
 
     // A fit keeps the stops, and each band takes the color at its middle
     // along the ramp.
     h.state_mut()
-        .apply_ramp(height, 0, true, Part::All)
+        .apply_ramp(height, at, true, Part::All)
         .unwrap();
     let bands = h.state().globe.map.bands.clone();
     assert_eq!(bands.stops(), before.stops());
@@ -5551,7 +5553,7 @@ fn an_imported_ramp_gives_one_color_per_band() {
 
     // A ramp with new stops gives one band for each color.
     h.state_mut()
-        .apply_ramp(height, 0, false, Part::All)
+        .apply_ramp(height, at, false, Part::All)
         .unwrap();
     assert_eq!(h.state().globe.map.bands.colors(), colors);
 }
@@ -5584,12 +5586,13 @@ fn an_imported_ramp_stays_in_the_list_and_applies_from_its_card() {
     h.run();
     // The import changes no layer.
     assert_eq!(h.state().globe.map.bands, before);
-    assert_eq!(h.state().ramps.list().len(), 1);
+    assert_eq!(h.state().ramps.custom().len(), 1);
     assert!(h.query_by_label("Added legend (3 colors)").is_some());
 
     // The layer has more bands than the ramp has colors, so the card offers
     // two ways.
     let bands = before.stops().len() - 1;
+    scroll_to_control(&mut h, "legend");
     tap(&mut h, "legend");
     assert!(h.state().pad.style.ramp_card.is_some());
     check_controls(&h, "with the card of a ramp");
@@ -5598,10 +5601,10 @@ fn an_imported_ramp_stays_in_the_list_and_applies_from_its_card() {
     // order.
     tap(&mut h, REVERSE_RAMP);
     let reversed: Vec<_> = colors.iter().rev().copied().collect();
-    assert_eq!(h.state().ramps.list()[0].colors, reversed);
+    assert_eq!(h.state().ramps.custom()[0].colors, reversed);
     assert!(h.state().pad.style.ramp_card.is_some());
     tap(&mut h, REVERSE_RAMP);
-    assert_eq!(h.state().ramps.list()[0].colors, colors);
+    assert_eq!(h.state().ramps.custom()[0].colors, colors);
     tap(&mut h, "Make 3 bands");
     let found: Vec<_> = h
         .state()
@@ -5615,10 +5618,19 @@ fn an_imported_ramp_stays_in_the_list_and_applies_from_its_card() {
     assert_eq!(found, colors);
     assert_eq!(h.state().pad.style.ramp_card, None);
 
+    scroll_to_control(&mut h, "legend");
     tap(&mut h, "legend");
     tap(&mut h, DELETE_RAMP);
-    assert!(h.state().ramps.list().is_empty());
+    assert!(h.state().ramps.custom().is_empty());
     assert_eq!(h.state().globe.map.bands.bands().len(), 3);
+
+    // A built-in ramp applies, but it does not reverse, and it stays.
+    scroll_to_control(&mut h, "Viridis");
+    tap(&mut h, "Viridis");
+    assert!(h.state().pad.style.ramp_card.is_some());
+    assert!(control(&h, REVERSE_RAMP).is_none());
+    assert!(control(&h, DELETE_RAMP).is_none());
+    tap(&mut h, "Viridis");
 
     // A ramp with no blue colors changes only the land.
     let land = [[116, 196, 118], [140, 81, 10], [246, 244, 240]];

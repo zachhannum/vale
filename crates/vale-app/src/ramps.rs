@@ -1,6 +1,7 @@
-//! The color ramps of the app. Each world can use them. The library is a
-//! text file in the folder of the state, with one ramp on each line: the
-//! name, a tab, and the hex codes of the colors.
+//! The color ramps of the app. Each world can use them. The library has the
+//! built-in ramps, which do not change, and then the custom ramps. The
+//! custom ramps are a text file in the folder of the state, with one ramp
+//! on each line: the name, a tab, and the hex codes of the colors.
 
 use std::path::{Path, PathBuf};
 
@@ -14,29 +15,73 @@ const RAMPS_FILE: &str = "ramps.txt";
 pub struct Ramp {
     pub name: String,
     pub colors: Vec<Rgb>,
+    /// A built-in ramp does not change, and the library does not delete it.
+    pub built_in: bool,
+    /// The colors are for classes with no order, so they do not blend.
+    pub qualitative: bool,
 }
 
-#[derive(Default)]
+impl Ramp {
+    /// A custom ramp.
+    pub fn new(name: impl Into<String>, colors: Vec<Rgb>) -> Ramp {
+        Ramp {
+            name: name.into(),
+            colors,
+            built_in: false,
+            qualitative: false,
+        }
+    }
+
+    /// `n` colors for `n` classes: the colors in order for a qualitative
+    /// ramp, and even steps from the first color to the last color for
+    /// another ramp.
+    pub fn classes(&self, n: usize) -> Vec<Rgb> {
+        if self.qualitative {
+            cycle(&self.colors, n)
+        } else {
+            sample(&self.colors, n)
+        }
+    }
+}
+
+/// The library of the ramps: the built-in ramps, then the custom ramps.
 pub struct Ramps {
-    /// The folder of the file. With no folder, the ramps are only in the
-    /// memory.
+    /// The folder of the file. With no folder, the custom ramps are only in
+    /// the memory.
     dir: Option<PathBuf>,
     list: Vec<Ramp>,
 }
 
+impl Default for Ramps {
+    fn default() -> Self {
+        Ramps {
+            dir: None,
+            list: built_in(),
+        }
+    }
+}
+
 impl Ramps {
-    /// Reads the ramps of a folder, if it is not the folder of the list.
+    /// Reads the custom ramps of a folder, if it is not the folder of the
+    /// list.
     pub fn open(&mut self, dir: Option<&Path>) {
         if self.dir.as_deref() == dir {
             return;
         }
         self.dir = dir.map(Path::to_path_buf);
         let text = dir.and_then(|d| std::fs::read_to_string(d.join(RAMPS_FILE)).ok());
-        self.list = text.map_or_else(Vec::new, |t| parse(&t));
+        self.list = built_in();
+        self.list.extend(text.map_or_else(Vec::new, |t| parse(&t)));
     }
 
+    /// The built-in ramps, then the custom ramps.
     pub fn list(&self) -> &[Ramp] {
         &self.list
+    }
+
+    /// The custom ramps.
+    pub fn custom(&self) -> &[Ramp] {
+        &self.list[BUILT_IN.len()..]
     }
 
     /// Adds a ramp at the end, and returns its name. A name that another
@@ -51,26 +96,27 @@ impl Ramps {
             })
             .find(|n| !taken(n))
             .unwrap_or_default();
-        self.list.push(Ramp {
-            name: name.clone(),
-            colors,
-        });
+        self.list.push(Ramp::new(name.clone(), colors));
         self.write()?;
         Ok(name)
     }
 
-    /// Reverses the order of the colors of a ramp.
+    /// Reverses the order of the colors of a custom ramp. A built-in ramp
+    /// does not change.
     pub fn reverse(&mut self, index: usize) -> std::io::Result<()> {
-        if let Some(ramp) = self.list.get_mut(index) {
-            ramp.colors.reverse();
+        match self.list.get_mut(index) {
+            Some(ramp) if !ramp.built_in => ramp.colors.reverse(),
+            _ => return Ok(()),
         }
         self.write()
     }
 
+    /// Deletes a custom ramp. A built-in ramp stays.
     pub fn remove(&mut self, index: usize) -> std::io::Result<()> {
-        if index < self.list.len() {
-            self.list.remove(index);
+        if !self.list.get(index).is_some_and(|r| !r.built_in) {
+            return Ok(());
         }
+        self.list.remove(index);
         self.write()
     }
 
@@ -81,7 +127,7 @@ impl Ramps {
         };
         std::fs::create_dir_all(dir)?;
         let partial = dir.join(format!("{RAMPS_FILE}.partial"));
-        std::fs::write(&partial, text(&self.list))?;
+        std::fs::write(&partial, text(self.custom()))?;
         std::fs::rename(partial, dir.join(RAMPS_FILE))
     }
 }
@@ -102,10 +148,7 @@ fn parse(text: &str) -> Vec<Ramp> {
             let (name, colors) = line.split_once('\t')?;
             let colors: Option<Vec<Rgb>> = colors.split_whitespace().map(parse_hex).collect();
             let colors = colors.filter(|c| !c.is_empty())?;
-            Some(Ramp {
-                name: name.to_owned(),
-                colors,
-            })
+            Some(Ramp::new(name, colors))
         })
         .collect()
 }
@@ -123,9 +166,8 @@ fn parse_hex(text: &str) -> Option<Rgb> {
     Some([channel(0)?, channel(2)?, channel(4)?])
 }
 
-/// The ramps that the app has, before the ramps of the library. The last two
-/// are qualitative: their colors are for classes with no order.
-pub const BUILT_IN: [(&str, &[Rgb]); 8] = [
+/// The built-in ramps. The last two are qualitative.
+const BUILT_IN: [(&str, &[Rgb]); 8] = [
     (
         "Viridis",
         &[
@@ -215,11 +257,24 @@ pub const BUILT_IN: [(&str, &[Rgb]); 8] = [
 ];
 
 /// The index in `BUILT_IN` of the first qualitative ramp.
-pub const QUALITATIVE: usize = 6;
+const QUALITATIVE: usize = 6;
+
+fn built_in() -> Vec<Ramp> {
+    BUILT_IN
+        .iter()
+        .enumerate()
+        .map(|(i, (name, colors))| Ramp {
+            name: (*name).to_owned(),
+            colors: colors.to_vec(),
+            built_in: true,
+            qualitative: i >= QUALITATIVE,
+        })
+        .collect()
+}
 
 /// `n` colors of a ramp from its first color to its last color, with
 /// linear steps between its colors. One color is the middle of the ramp.
-pub fn sample(colors: &[Rgb], n: usize) -> Vec<Rgb> {
+fn sample(colors: &[Rgb], n: usize) -> Vec<Rgb> {
     let Some(last) = colors.len().checked_sub(1) else {
         return Vec::new();
     };
@@ -240,7 +295,7 @@ pub fn sample(colors: &[Rgb], n: usize) -> Vec<Rgb> {
 
 /// `n` colors of a qualitative ramp: its colors in order, again from the
 /// first color after the last.
-pub fn cycle(colors: &[Rgb], n: usize) -> Vec<Rgb> {
+fn cycle(colors: &[Rgb], n: usize) -> Vec<Rgb> {
     colors.iter().copied().cycle().take(n).collect()
 }
 
@@ -249,7 +304,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_ramps_stay_in_the_folder() {
+    fn the_custom_ramps_stay_in_the_folder() {
         let dir = tempfile::tempdir().unwrap();
         let mut ramps = Ramps::default();
         ramps.open(Some(dir.path()));
@@ -263,15 +318,43 @@ mod tests {
         let mut again = Ramps::default();
         again.open(Some(dir.path()));
         assert_eq!(again.list(), ramps.list());
-        again.reverse(0).unwrap();
+        let first = BUILT_IN.len();
+        again.reverse(first).unwrap();
         let mut reversed = Ramps::default();
         reversed.open(Some(dir.path()));
-        assert_eq!(reversed.list()[0].colors, [[250, 128, 0], [1, 2, 3]]);
-        again.remove(0).unwrap();
+        assert_eq!(reversed.custom()[0].colors, [[250, 128, 0], [1, 2, 3]]);
+        again.remove(first).unwrap();
         let mut third = Ramps::default();
         third.open(Some(dir.path()));
-        assert_eq!(third.list().len(), 1);
-        assert_eq!(third.list()[0].colors, [[9; 3]]);
+        assert_eq!(third.custom().len(), 1);
+        assert_eq!(third.custom()[0].colors, [[9; 3]]);
+        let file = std::fs::read_to_string(dir.path().join(RAMPS_FILE)).unwrap();
+        assert!(!file.contains("Viridis"), "{file}");
+    }
+
+    #[test]
+    fn the_built_in_ramps_come_first_and_do_not_change() {
+        let mut ramps = Ramps::default();
+        assert_eq!(ramps.list().len(), BUILT_IN.len());
+        assert!(ramps.custom().is_empty());
+        assert!(ramps.list().iter().all(|r| r.built_in));
+        let viridis = ramps.list()[0].clone();
+        ramps.reverse(0).unwrap();
+        ramps.remove(0).unwrap();
+        assert_eq!(ramps.list()[0], viridis);
+        assert_eq!(ramps.add("Viridis", vec![[0; 3]]).unwrap(), "Viridis 2");
+        assert!(!ramps.custom()[0].built_in);
+    }
+
+    #[test]
+    fn classes_blend_or_cycle_the_colors() {
+        let ramps = Ramps::default();
+        let bold = ramps.list().iter().find(|r| r.name == "Bold").unwrap();
+        assert!(bold.qualitative);
+        assert_eq!(bold.classes(9)[8], bold.colors[0]);
+        let viridis = &ramps.list()[0];
+        assert!(!viridis.qualitative);
+        assert_eq!(viridis.classes(5), viridis.colors);
     }
 
     #[test]
@@ -302,6 +385,6 @@ mod tests {
         let mut ramps = Ramps::default();
         ramps.open(None);
         ramps.add("A", vec![[0; 3]]).unwrap();
-        assert_eq!(ramps.list().len(), 1);
+        assert_eq!(ramps.custom().len(), 1);
     }
 }

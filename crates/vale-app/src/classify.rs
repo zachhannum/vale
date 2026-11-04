@@ -7,7 +7,8 @@ use std::collections::HashMap;
 use vale_store::{GeometryKind, Layer, Value};
 use vale_style::expr::{Context, Expr, Filter, Property};
 use vale_style::{Color, Rule, Stroke};
-use vale_terrain::Rgb;
+
+use crate::ramps::Ramp;
 
 /// The methods that find the edges of number classes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -439,15 +440,9 @@ pub fn classes_of(layer: &Layer, text: &str, method: Method, n: usize) -> Option
     Some(classes)
 }
 
-/// The colors of `n` classes from a ramp. A qualitative ramp gives its
-/// colors in order, and another ramp gives steps from its first color to
-/// its last color.
-pub fn class_colors(ramp: &[Rgb], n: usize, qualitative: bool, reverse: bool) -> Vec<Color> {
-    let mut rgb = if qualitative {
-        crate::ramps::cycle(ramp, n)
-    } else {
-        crate::ramps::sample(ramp, n)
-    };
+/// The colors of `n` classes from a ramp, in reverse order with `reverse`.
+pub fn class_colors(ramp: &Ramp, n: usize, reverse: bool) -> Vec<Color> {
+    let mut rgb = ramp.classes(n);
     if reverse {
         rgb.reverse();
     }

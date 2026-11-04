@@ -336,7 +336,7 @@ pub fn ramps_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Contro
         Some(n) if n.layer == Some(id) => {
             super::note_text(ui, None, &mut state.ramp_note, Some(id))
         }
-        _ if state.ramps.list().is_empty() => note(ui, IMPORT_RAMP_HINT),
+        _ if state.ramps.custom().is_empty() => note(ui, IMPORT_RAMP_HINT),
         _ => {}
     }
     let style = &mut state.pad.style;
@@ -953,6 +953,7 @@ pub fn ramp_card(
         return;
     };
     let colors = ramp.colors.len();
+    let built_in = ramp.built_in;
     let Some(layer) = state.globe.bands_mut(id) else {
         return;
     };
@@ -973,8 +974,11 @@ pub fn ramp_card(
             (&fresh, theme::ACCENT, RampChoice::Apply(false)),
         ]
     };
-    buttons.push((REVERSE_RAMP, theme::TEXT, RampChoice::Reverse));
-    buttons.push((DELETE_RAMP, theme::WARN, RampChoice::Delete));
+    // A built-in ramp does not change.
+    if !built_in {
+        buttons.push((REVERSE_RAMP, theme::TEXT, RampChoice::Reverse));
+        buttons.push((DELETE_RAMP, theme::WARN, RampChoice::Delete));
+    }
     let name = &ramp.name;
     let text = format!("{name} · {colors} colors");
     let choice = if split { PANEL_ROW + 8.0 } else { 0.0 };

@@ -125,7 +125,7 @@ fn vector_style(ui: &mut egui::Ui, state: &mut AppState, id: LayerId) {
     ui.label(pad::rules::STYLE);
     let symbols = state.doc.symbols().clone();
     state.open_ramps();
-    let ramps = pad::classify::ramp_list(state);
+    let ramps = state.ramps.list().to_vec();
     let Some(entry) = state.doc.entry_mut(id) else {
         return;
     };
@@ -310,9 +310,11 @@ fn ramp_menus(ui: &mut egui::Ui, state: &mut AppState, id: RasterId) {
                 let fresh = format!("Make {colors} {kind}bands");
                 choose(ui, &fresh, RampChoice::Apply(false));
             }
-            ui.separator();
-            choose(ui, pad::raster::REVERSE_RAMP, RampChoice::Reverse);
-            choose(ui, pad::raster::DELETE_RAMP, RampChoice::Delete);
+            if !ramp.built_in {
+                ui.separator();
+                choose(ui, pad::raster::REVERSE_RAMP, RampChoice::Reverse);
+                choose(ui, pad::raster::DELETE_RAMP, RampChoice::Delete);
+            }
         });
     }
     let Some((index, part, choice)) = chosen else {

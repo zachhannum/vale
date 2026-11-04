@@ -82,7 +82,7 @@ fn layer_section(ui: &mut egui::Ui, state: &mut AppState) {
         .map_or(Vec::new(), |l| l.fields.clone());
     let symbols = state.doc.symbols().clone();
     state.open_ramps();
-    let ramps = super::pad::classify::ramp_list(state);
+    let ramps = state.ramps.list().to_vec();
     let font_warning = (state.doc.entry(info.id))
         .and_then(|e| crate::fonts::missing(e.style.label.font.as_deref(), &state.font_families));
     let mut pick_font = false;

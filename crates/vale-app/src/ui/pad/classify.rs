@@ -11,7 +11,7 @@ use super::raster::{heading, note, ramp_row};
 use super::rules::{CIRCLE_SIZES, WIDTHS};
 use super::widgets::{self, Controls};
 use crate::classify::{self, Method, Step};
-use crate::ramps::{BUILT_IN, QUALITATIVE};
+use crate::ramps::Ramp;
 use crate::ui::AppState;
 
 /// The title of the form, and the button of the Style section that opens it.
@@ -53,8 +53,8 @@ pub struct Draft {
     text: String,
     method: Option<Method>,
     classes: usize,
-    /// The ramp that the user picks: an index in `BUILT_IN` and then in the
-    /// library. `None`: the default ramp of the values.
+    /// The index of the ramp that the user picks in the library. `None`:
+    /// the default ramp of the values.
     ramp: Option<usize>,
     reverse: bool,
     step: bool,
@@ -169,15 +169,14 @@ pub fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id
         }
     }
 
-    let mut list = ramp_list(state);
-    let ramp =
-        draft
-            .ramp
-            .filter(|r| *r < list.len())
-            .unwrap_or(if number { 0 } else { QUALITATIVE });
+    let list = state.ramps.list();
+    let ramp = draft
+        .ramp
+        .filter(|r| *r < list.len())
+        .unwrap_or_else(|| default_ramp(list, !number));
     heading(ui, COLOR_RAMP);
-    for (i, (name, colors)) in list.iter().enumerate() {
-        if ramp_row(ui, controls, name, colors, i == ramp).clicked() {
+    for (i, r) in list.iter().enumerate() {
+        if ramp_row(ui, controls, &r.name, &r.colors, i == ramp).clicked() {
             draft.ramp = Some(i);
         }
     }
@@ -239,13 +238,11 @@ pub fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id
             (true, GeometryKind::Point) => Step::Size(draft.first, draft.last),
             (true, _) => Step::Width(draft.first, draft.last),
         };
-        let colors = list.swap_remove(ramp).1;
         let request = Request {
             text: draft.text.clone(),
             method: draft.method.unwrap_or(Method::Quantiles),
             classes: draft.classes,
-            colors,
-            qualitative: (QUALITATIVE..BUILT_IN.len()).contains(&ramp),
+            ramp: state.ramps.list()[ramp].clone(),
             reverse: draft.reverse,
             step,
         };
@@ -262,27 +259,17 @@ pub struct Request {
     pub text: String,
     pub method: Method,
     pub classes: usize,
-    /// The colors of the ramp.
-    pub colors: Vec<vale_terrain::Rgb>,
-    pub qualitative: bool,
+    pub ramp: Ramp,
     pub reverse: bool,
     pub step: Step,
 }
 
-/// The built-in ramps and the ramps of the library, by name.
-pub fn ramp_list(state: &AppState) -> Vec<(String, Vec<vale_terrain::Rgb>)> {
-    let mut list: Vec<(String, Vec<vale_terrain::Rgb>)> = BUILT_IN
-        .iter()
-        .map(|(n, c)| ((*n).to_owned(), c.to_vec()))
-        .collect();
-    list.extend(
-        state
-            .ramps
-            .list()
-            .iter()
-            .map(|r| (r.name.clone(), r.colors.clone())),
-    );
-    list
+/// The ramp that the form starts on: the first qualitative ramp for
+/// categories, and the first other ramp for numbers.
+pub fn default_ramp(list: &[Ramp], qualitative: bool) -> usize {
+    list.iter()
+        .position(|r| r.qualitative == qualitative)
+        .unwrap_or(0)
 }
 
 /// Replaces the rules of the layer with a rule for each class. Each rule has
@@ -300,8 +287,7 @@ pub fn apply(state: &mut AppState, id: LayerId, request: &Request) -> bool {
         return false;
     };
     let steps = classes.iter().filter(|c| !c.extra).count();
-    let colors =
-        classify::class_colors(&request.colors, steps, request.qualitative, request.reverse);
+    let colors = classify::class_colors(&request.ramp, steps, request.reverse);
     let Some(entry) = state.doc.entry_mut(id) else {
         return false;
     };
