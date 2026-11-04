@@ -320,3 +320,36 @@ fn the_text_stays_upright_unless_the_class_allows_flipped_text() {
         }
     }
 }
+
+#[test]
+fn a_parallel_far_longer_than_the_page_gives_the_same_label_quickly() {
+    // At a large scale, a parallel is millions of units long on the page.
+    let long: Vec<Vec<Point>> = (0..=60)
+        .map(|k| {
+            let y = 10.0 * k as f64;
+            vec![Point::new(-1.0e8, y), Point::new(1.0e8, y)]
+        })
+        .collect();
+    let label = |parallels| {
+        let out = run(
+            Placement::Polygon(parallel_mode()),
+            Geometry::Polygon {
+                rings: vec![bar_and_block()],
+            },
+            "Long Bar",
+            parallels,
+        );
+        assert_eq!(out.placed.len(), 1, "{:?}", out.unplaced);
+        out.placed[0].bounds
+    };
+    let start = std::time::Instant::now();
+    let far = label(long);
+    assert!(start.elapsed().as_secs_f64() < 5.0, "{:?}", start.elapsed());
+    // The samples along each parallel start at its start, so the labels can differ by less
+    // than a step of half a cell.
+    let near = label(straight());
+    assert!(
+        (far.center() - near.center()).hypot() < 2.0,
+        "{far:?} {near:?}"
+    );
+}
