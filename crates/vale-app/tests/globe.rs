@@ -461,6 +461,67 @@ fn the_globe_draws_vector_layers_with_great_circle_edges_up_to_its_edge() {
     assert_ne!(at(0.0, -60.0), [255, 0, 0]);
 }
 
+#[test]
+#[ignore = "gpu"]
+fn a_hatched_square_marker_on_the_globe_has_lines_and_gaps() {
+    use vale_style::expr::Property;
+    use vale_style::{Hatch, MarkerShape, Rule, Style, Symbolizer};
+    let _gpu = one_gpu_test();
+    let mut state = AppState::new(Document::empty()).unwrap();
+    state.headless = true;
+    state.globe.view = GlobeView::centered(0.0, 0.0);
+    let red = Color::rgb(255, 0, 0);
+    let hatch = Hatch {
+        cross: false,
+        angle: 45.0,
+        spacing: 5.0,
+        line_width: 1.0,
+    };
+    // One layer for each shape, and the square in the middle has a hatch.
+    for (i, shape) in MarkerShape::ALL.into_iter().enumerate() {
+        let lon = -40.0 + 20.0 * i as f64;
+        let text = format!(r#"{{"type":"Point","coordinates":[{lon},0]}}"#);
+        let id = state
+            .doc
+            .add_imported(geojson::read_str(shape.id(), &text).unwrap(), None)[0];
+        let hatch = (shape == MarkerShape::Square).then_some(hatch);
+        state.doc.entry_mut(id).unwrap().style.style = Style {
+            rules: vec![Rule::new(
+                shape.label(),
+                vec![Symbolizer::Marker {
+                    radius: Property::constant(20.0),
+                    shape,
+                    fill: Some(Property::constant(red)),
+                    hatch,
+                    stroke: None,
+                }],
+            )],
+        };
+    }
+    let (img, state) = headless::ui_png(state, (1280.0, 800.0), 1.0).unwrap();
+    std::fs::create_dir_all("../../target/app").unwrap();
+    img.save("../../target/app/test-globe-markers.png").unwrap();
+    let (rect, view) = (state.globe.rect, state.globe.view);
+    let center = view.project(rect, lonlat_to_dir(-20.0, 0.0)).unwrap();
+    let (mut line, mut gap) = (0, 0);
+    for dy in -17..=17 {
+        for dx in -17..=17 {
+            let p = center + Vec2::new(dx as f32, dy as f32);
+            let [r, g, b, _] = img.get_pixel(p.x as u32, p.y as u32).0;
+            if r > 220 && g < 40 && b < 40 {
+                line += 1;
+            } else if r < 200 || g > 100 {
+                gap += 1;
+            }
+        }
+    }
+    assert!(line > 100 && gap > 300, "{line} {gap}");
+    // The solid diamond next to it is red in the middle.
+    let diamond = view.project(rect, lonlat_to_dir(0.0, 0.0)).unwrap();
+    let [r, g, b, _] = img.get_pixel(diamond.x as u32, diamond.y as u32).0;
+    assert_eq!([r, g, b], [255, 0, 0]);
+}
+
 /// The face size of the brush tests.
 const BRUSH_FACE_SIZE: usize = 256;
 
