@@ -139,6 +139,7 @@ pub enum RenderError {
     TooLarge { width: f64, height: f64 },
     Png(String),
     Pdf(String),
+    Gpu(String),
 }
 
 impl fmt::Display for RenderError {
@@ -150,6 +151,7 @@ impl fmt::Display for RenderError {
             }
             RenderError::Png(m) => write!(f, "PNG error: {m}"),
             RenderError::Pdf(m) => write!(f, "PDF error: {m}"),
+            RenderError::Gpu(m) => write!(f, "GPU error: {m}"),
         }
     }
 }
