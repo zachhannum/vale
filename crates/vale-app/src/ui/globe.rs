@@ -992,8 +992,8 @@ pub(super) fn canvas(
     }
 }
 
-/// The Discard and Apply buttons of a held ocean ridge or basin, at the
-/// bottom of the canvas.
+/// The state and the Discard and Apply buttons of a held ocean ridge or
+/// basin, at the bottom of the canvas.
 fn held_buttons(ui: &egui::Ui, state: &mut AppState, rect: egui::Rect) {
     if state.globe.holding().is_none() {
         return;
@@ -1006,6 +1006,13 @@ fn held_buttons(ui: &egui::Ui, state: &mut AppState, rect: egui::Rect) {
         .show(ui.ctx(), |ui| {
             egui::Frame::popup(ui.style()).show(ui, |ui| {
                 ui.horizontal(|ui| {
+                    // A spinner shows while the stroke follows the settings.
+                    if state.globe.held_updating() {
+                        ui.add(egui::Spinner::new());
+                        ui.label(super::panels::UPDATING);
+                    } else {
+                        ui.label(super::panels::READY);
+                    }
                     if ui.button(super::panels::DISCARD).clicked() {
                         state.globe.discard_held();
                     }

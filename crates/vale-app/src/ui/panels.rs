@@ -43,6 +43,10 @@ pub const HELD_HINT: &str = "Change the settings, then apply.";
 /// The buttons on the canvas that end a held ocean ridge or basin.
 pub const APPLY: &str = "Apply";
 pub const DISCARD: &str = "Discard";
+/// The state of a held stroke on the canvas, while it follows a change of
+/// the settings and after.
+pub const UPDATING: &str = "Updating…";
+pub const READY: &str = "Ready";
 
 /// The hint of the basin mode.
 pub fn basin_hint(globe: &crate::globe::Globe) -> &'static str {

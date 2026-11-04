@@ -2712,17 +2712,21 @@ fn readout(ctx: &egui::Context, ui: &egui::Ui, state: &AppState, rects: &Rects) 
     );
 }
 
-/// The width of a button of the card of a held stroke.
+/// The width of a button of the card of a held stroke, and of its state.
 const HELD_BUTTON: f32 = 120.0;
+const HELD_STATE: f32 = 132.0;
 
-/// The card of the Discard and Apply buttons of a held ocean ridge or
-/// basin, at the bottom of the canvas above the readout. An open panel
-/// pushes the card to its right.
+/// The card of a held ocean ridge or basin, at the bottom of the canvas
+/// above the readout: its state, and the Discard and Apply buttons. An
+/// open panel pushes the card to its right.
 fn held_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
     if state.globe.holding().is_none() {
         return;
     }
-    let size = vec2(2.0 * HELD_BUTTON + 3.0 * PAD, PANEL_ROW + 2.0 * PAD);
+    let size = vec2(
+        HELD_STATE + 2.0 * HELD_BUTTON + 3.0 * PAD,
+        PANEL_ROW + 2.0 * PAD,
+    );
     let mut bottom = rects.screen.bottom() - rects.bands.bottom - geometry::GAP;
     for top in [rects.readout, rects.sheet]
         .into_iter()
@@ -2746,9 +2750,31 @@ fn held_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls,
         theme::CARD_RADIUS.into(),
         |ui| {
             let at = |x: f32| {
-                let min = pos2(rect.left() + PAD + x, rect.top() + PAD);
+                let min = pos2(rect.left() + HELD_STATE + PAD + x, rect.top() + PAD);
                 Rect::from_min_size(min, vec2(HELD_BUTTON, PANEL_ROW))
             };
+            // A spinner shows while the stroke follows the settings.
+            let middle = rect.center().y;
+            let left = rect.left() + BODY_PAD;
+            let updating = state.globe.held_updating();
+            let mut text_left = left;
+            if updating {
+                let spin = Rect::from_center_size(pos2(left + 8.0, middle), vec2(16.0, 16.0));
+                ui.put(spin, egui::Spinner::new().size(16.0).color(theme::MUTE));
+                text_left += 24.0;
+            }
+            let name = if updating {
+                panels::UPDATING
+            } else {
+                panels::READY
+            };
+            ui.painter().text(
+                pos2(text_left, middle),
+                egui::Align2::LEFT_CENTER,
+                name,
+                theme::body(),
+                theme::MUTE,
+            );
             let mut button = |ui: &mut egui::Ui, place: Rect, name: &str, fill| {
                 let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(place));
                 widgets::button_row_in(&mut ui, controls, name, true, fill).clicked()

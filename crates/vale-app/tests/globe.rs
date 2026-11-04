@@ -509,7 +509,7 @@ fn settle(h: &mut Harness<'static, AppState>) {
     for _ in 0..400 {
         h.step();
         let globe = &mut h.state_mut().globe;
-        if globe.held_idle() {
+        if globe.holding().is_some() {
             globe.apply_held();
         }
         if !h.state().globe.busy() {
@@ -3976,7 +3976,9 @@ fn one_undo_puts_back_the_ground_from_before_an_ocean_ridge_stroke() {
 
 /// Runs frames until the held stroke shows on the GPU.
 fn wait_held(h: &mut Harness<'static, AppState>) {
-    for _ in 0..400 {
+    // A change of the settings waits for them to hold still.
+    for _ in 0..1000 {
+        std::thread::sleep(std::time::Duration::from_millis(2));
         h.step();
         if h.state().globe.held_idle() {
             h.run_steps(2);
@@ -4019,17 +4021,12 @@ fn a_held_ocean_ridge_follows_the_settings_until_it_is_applied() {
     assert!(globe.ridge_preview().is_some_and(|line| line.len() > 10));
     // The ridge shows, and the heightmap of the document waits for it.
     assert!(all_levels(&h) == before.0);
-    let first = canvas_image(&mut h);
-    assert!(first.as_raw() != before.1.as_raw());
+    assert!(canvas_image(&mut h).as_raw() != before.1.as_raw());
+    // Apply waits for the ridge of the new settings.
     let globe = &mut h.state_mut().globe;
     globe.brush.ridge_crest_m = -1500.0;
     globe.brush.flow = 0.5;
-    wait_held(&mut h);
-    assert!(all_levels(&h) == before.0);
-    let second = canvas_image(&mut h);
-    assert!(second.as_raw() != first.as_raw());
-
-    h.state_mut().globe.apply_held();
+    globe.apply_held();
     run_until_idle(&mut h);
     let globe = &h.state().globe;
     assert!(globe.holding().is_none() && globe.ridge_preview().is_none());
@@ -4045,6 +4042,33 @@ fn a_held_ocean_ridge_follows_the_settings_until_it_is_applied() {
     h.run_steps(2);
     assert!(all_levels(&h) == before.0);
     assert!(!h.state().globe.can_undo());
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_held_ocean_ridge_waits_for_the_settings_to_hold_still() {
+    let _gpu = one_gpu_test();
+    let mut h = ridge_harness(7);
+    pen_line(&mut h, |_| {});
+    wait_held(&mut h);
+    assert!(!h.state().globe.held_updating());
+    // The plans that went to the GPU.
+    let plans = |h: &Harness<'static, AppState>| h.state().globe.stats.last().unwrap().stamps.count;
+    let first = plans(&h);
+    // A slider drag changes the setting in each frame.
+    let start = std::time::Instant::now();
+    for crest in [-1200.0, -1400.0, -1600.0] {
+        h.state_mut().globe.brush.ridge_crest_m = crest;
+        h.step();
+        assert!(h.state().globe.held_updating());
+    }
+    if start.elapsed() < std::time::Duration::from_millis(200) {
+        assert_eq!(plans(&h), first);
+    }
+    wait_held(&mut h);
+    assert!(!h.state().globe.held_updating());
+    // One redraw follows the last setting.
+    assert_eq!(plans(&h), 2 * first);
 }
 
 #[test]
