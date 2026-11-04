@@ -282,7 +282,7 @@ impl AppState {
         };
         self.commit_selection_form();
         self.selection_form = None;
-        self.commit_point_form();
+        self.commit_new_feature();
         self.save_edit();
         let others: Vec<Uuid> = (self.feature_selection.iter())
             .map(|f| f.uuid)
