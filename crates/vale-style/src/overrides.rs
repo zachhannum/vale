@@ -88,6 +88,19 @@ impl Overrides {
         }
         out
     }
+
+    /// These overrides with the overrides of `top` over them. An override of `top` replaces each override at its place and under it.
+    pub fn layered(&self, top: &Overrides) -> Overrides {
+        let under = |p: &str, t: &str| {
+            p == t || p.strip_prefix(t).is_some_and(|rest| rest.starts_with('/'))
+        };
+        let mut out: BTreeMap<String, Json> = (self.0.iter())
+            .filter(|(p, _)| !top.0.keys().any(|t| under(p, t)))
+            .map(|(p, v)| (p.clone(), v.clone()))
+            .collect();
+        out.extend(top.0.clone());
+        Overrides(out)
+    }
 }
 
 impl LayerStyle {

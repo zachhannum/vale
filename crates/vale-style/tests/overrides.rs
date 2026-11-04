@@ -219,3 +219,38 @@ fn a_map_does_not_override_the_mask() {
     assert!(Overrides::between(&base, &edited).is_empty());
     assert!(Overrides::between(&edited, &base).is_empty());
 }
+
+#[test]
+fn layered_overrides_apply_the_top_over_the_base() {
+    let style = two_rules();
+    let mut a = style.clone();
+    set_width(&mut a, 0, 3.0);
+    set_color(&mut a, 1, BLUE);
+    let base = Overrides::between(&style, &a);
+    let mut b = style.clone();
+    set_width(&mut b, 0, 5.0);
+    let top = Overrides::between(&style, &b);
+    let both = style.with_overrides(&base.layered(&top));
+    assert_eq!(width(&both, 0), 5.0);
+    let mut expected = a;
+    set_width(&mut expected, 0, 5.0);
+    assert_eq!(both, expected);
+}
+
+#[test]
+fn a_shallow_top_override_replaces_the_deep_base_overrides_under_it() {
+    let base =
+        Overrides::from_json(r#"{"/rules/Major/symbolizers/0/width":3.0,"/rules/Majority":1}"#);
+    let top = Overrides::from_json(r#"{"/rules/Major":{"name":"Major"}}"#);
+    let l = base.layered(&top);
+    assert_eq!(
+        l.pointers().collect::<Vec<_>>(),
+        ["/rules/Major", "/rules/Majority"]
+    );
+    let deep = Overrides::from_json(r#"{"/rules/Major/symbolizers/0/width":4.0}"#);
+    let l = top.layered(&deep);
+    assert_eq!(
+        l.pointers().collect::<Vec<_>>(),
+        ["/rules/Major", "/rules/Major/symbolizers/0/width"]
+    );
+}
