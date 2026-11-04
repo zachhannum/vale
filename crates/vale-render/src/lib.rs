@@ -1,5 +1,6 @@
 //! Display list and rendering backends for Vale.
 
+pub mod hatch;
 pub mod list;
 pub mod pdf;
 pub mod raster;
