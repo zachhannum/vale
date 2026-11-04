@@ -15,6 +15,7 @@ use vale_app::headless;
 use vale_app::projects::Locations;
 use vale_app::session::Session;
 use vale_app::ui::gradient::{COLUMN, ColumnParts, GRADIENT, band_row, widest_gap_value};
+use vale_app::ui::pad::eyedropper;
 use vale_app::ui::pad::flyout::Flyout;
 use vale_app::ui::pad::geometry::{BrushCard, TOOLS, WidthClass};
 use vale_app::ui::pad::number::{LABEL_COLUMN, TRACK_INSET};
@@ -6345,6 +6346,125 @@ fn the_shade_color_row_opens_the_color_picker() {
         assert!(control(&h, hue).is_none(), "{what}");
         assert_eq!(hillshade_of(&h, height).color, color, "{what}");
     }
+}
+
+/// A renderer of a gradient: the pixel at (x, y) is (x, y, 128) for x and y
+/// below 256. It answers the screenshot of the eyedropper with no GPU.
+struct Gradient;
+
+impl egui_kittest::TestRenderer for Gradient {
+    fn handle_delta(&mut self, delta: &mut egui::TexturesDelta) {
+        delta.clear();
+    }
+
+    fn render(
+        &mut self,
+        ctx: &egui::Context,
+        _: &egui::FullOutput,
+    ) -> Result<image::RgbaImage, String> {
+        let size = ctx.viewport_rect().size() * ctx.pixels_per_point();
+        let pixel = |x: u32, y: u32| image::Rgba([x.min(255) as u8, y.min(255) as u8, 128, 255]);
+        Ok(image::RgbaImage::from_fn(
+            size.x as u32,
+            size.y as u32,
+            pixel,
+        ))
+    }
+}
+
+/// The hillshade page of `hillshade_page`, with the color picker of the
+/// hillshade open, in a harness that renders a gradient.
+fn eyedropper_page() -> (Pad, RasterId) {
+    let (width, height) = BOARDS[0];
+    let mut h = Harness::builder()
+        .with_size(vec2(width, height))
+        .with_pixels_per_point(1.0)
+        .renderer(Gradient)
+        .build_ui_state(|ui, state: &mut AppState| draw(ui, state), state());
+    h.run_steps(3);
+    h.state_mut().add_height();
+    h.run_steps(2);
+    h.state_mut().globe.map.set(0, 0, 0, meters_to_level(100.0));
+    h.run_steps(2);
+    let id = open_height(&mut h);
+    scroll_to(&mut h, raster::HILLSHADE);
+    tap(&mut h, raster::HILLSHADE);
+    tap(&mut h, raster::HILLSHADE_ON);
+    scroll_to(&mut h, raster::HILLSHADE_COLOR);
+    tap(&mut h, raster::HILLSHADE_COLOR);
+    scroll_to(&mut h, "Shade color hue");
+    (h, id)
+}
+
+const SHADE_EYEDROPPER: &str = "Shade color eyedropper";
+
+#[test]
+fn the_eyedropper_picks_the_color_of_the_screen_under_the_finger() {
+    let (mut h, id) = eyedropper_page();
+    assert!(control(&h, eyedropper::CANCEL).is_none());
+    tap(&mut h, SHADE_EYEDROPPER);
+    assert!(control(&h, eyedropper::CANCEL).is_some());
+
+    // The pixel at (x, y) of the gradient is (x, y, 128), up to 255.
+    let gradient = |at: Pos2| [at.x.min(255.0) as u8, at.y.min(255.0) as u8, 128];
+    let from = h.state().globe.rect.center();
+    let at = pos2(200.0, 230.0);
+    let view = h.state().globe.view;
+    drag(&mut h, from, at, None);
+    assert_eq!(hillshade_of(&h, id).color, gradient(at));
+    assert_eq!(h.state().globe.view, view);
+    assert!(control(&h, eyedropper::CANCEL).is_none());
+    assert!(control(&h, "Shade color hue").is_some());
+}
+
+#[test]
+fn a_touch_does_not_go_to_a_control_while_the_eyedropper_is_on() {
+    let (mut h, id) = eyedropper_page();
+    // A tap on the color row closes the picker.
+    let row = control(&h, raster::HILLSHADE_COLOR).unwrap();
+    tap(&mut h, SHADE_EYEDROPPER);
+    finger_tap(&mut h, row.center());
+    assert!(control(&h, "Shade color hue").is_some());
+    let at = row.center();
+    let picked = [at.x.min(255.0) as u8, at.y.min(255.0) as u8, 128];
+    assert_eq!(hillshade_of(&h, id).color, picked);
+}
+
+#[test]
+#[ignore = "gpu"]
+fn the_eyedropper_picks_a_pixel_of_the_globe() {
+    let mut h = gpu_pad(BOARDS[0]);
+    let id = open_height(&mut h);
+    scroll_to(&mut h, raster::HILLSHADE);
+    tap(&mut h, raster::HILLSHADE);
+    tap(&mut h, raster::HILLSHADE_ON);
+    scroll_to(&mut h, raster::HILLSHADE_COLOR);
+    tap(&mut h, raster::HILLSHADE_COLOR);
+    scroll_to(&mut h, "Shade color hue");
+    settle(&mut h);
+    let at = h.state().globe.rect.center() - vec2(60.0, 40.0);
+    let pixel = h.render().unwrap().get_pixel(at.x as u32, at.y as u32).0;
+
+    tap(&mut h, SHADE_EYEDROPPER);
+    touch(&mut h, egui::TouchPhase::Start, at, None);
+    h.run_steps(2);
+    screenshot::save(&mut h, "pad-eyedropper");
+    touch(&mut h, egui::TouchPhase::End, at, None);
+    h.run_steps(3);
+    assert_eq!(hillshade_of(&h, id).color, [pixel[0], pixel[1], pixel[2]]);
+}
+
+#[test]
+fn cancel_ends_the_eyedropper_and_keeps_the_color() {
+    let (mut h, id) = eyedropper_page();
+    let color = hillshade_of(&h, id).color;
+    tap(&mut h, SHADE_EYEDROPPER);
+    tap(&mut h, eyedropper::CANCEL);
+    assert!(control(&h, eyedropper::CANCEL).is_none());
+    assert_eq!(hillshade_of(&h, id).color, color);
+    // The next touch goes to the picker again.
+    tap(&mut h, SHADE_EYEDROPPER);
+    assert!(control(&h, eyedropper::CANCEL).is_some());
 }
 
 /// Scrolls the panel of a layer until a control is inside the card, with a

@@ -3639,6 +3639,12 @@ fn draw_opening(ui: &mut egui::Ui, state: &AppState) {
 pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     let queue = state.globe.pen.queue.as_ref();
     let switches = queue.map(|queue| queue.take_switches()).unwrap_or_default();
+    // The pen does not paint while the eyedropper is on.
+    if let Some(queue) = queue
+        && pad::eyedropper::active(ui.ctx())
+    {
+        queue.take();
+    }
     state.globe.stats.tick(std::time::Instant::now());
     state.poll_import();
     state.poll_probe(false);
@@ -3686,6 +3692,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
             Workspace::Globe => pad::draw(ui, state),
             Workspace::Atlas => pad::atlas::draw(ui, state),
         }
+        pad::eyedropper::draw(ui.ctx(), &mut state.pad.controls);
         font_dialog::show(ui.ctx(), state);
         state.frames += 1;
         return;
