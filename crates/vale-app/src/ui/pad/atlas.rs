@@ -1246,7 +1246,7 @@ fn layers_tab(
     }
     let mut open = None;
     for &(layer, icon, ref name) in &rows {
-        let shown = state.doc.shown(map, layer);
+        let shown = state.doc.shown(state.target(map), layer);
         let (rect, _) =
             ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), egui::Sense::hover());
         let row = ui
@@ -1275,7 +1275,7 @@ fn layers_tab(
     // The layers that have style overrides in this map.
     let changed: Vec<_> = (rows.iter())
         .filter_map(|(layer, _, name)| {
-            let n = state.doc.overrides(map, *layer).len();
+            let n = state.doc.overrides(state.target(map), *layer).len();
             (n > 0).then(|| (*layer, name.clone(), n))
         })
         .collect();
@@ -1428,7 +1428,7 @@ fn layer_panel(
         });
         if page.is_none() {
             ui.add_space(8.0);
-            let any = !state.doc.overrides(map, layer).is_empty();
+            let any = !state.doc.overrides(state.target(map), layer).is_empty();
             if widgets::button_row(ui, controls, REMOVE_OVERRIDES, any).clicked() {
                 state.clear_overrides(map, layer);
             }
@@ -1553,7 +1553,7 @@ fn raster_panel(
         });
         if page.is_none() {
             ui.add_space(8.0);
-            let any = !state.doc.overrides(map, layer).is_empty();
+            let any = !state.doc.overrides(state.target(map), layer).is_empty();
             if widgets::button_row(ui, controls, REMOVE_OVERRIDES, any).clicked() {
                 state.clear_overrides(map, layer);
             }
@@ -1646,7 +1646,7 @@ fn look_panel(
         }
         if page.is_none() {
             ui.add_space(8.0);
-            let any = !state.doc.overrides(map, layer).is_empty();
+            let any = !state.doc.overrides(state.target(map), layer).is_empty();
             if widgets::button_row(ui, controls, REMOVE_OVERRIDES, any).clicked() {
                 state.clear_overrides(map, layer);
             }

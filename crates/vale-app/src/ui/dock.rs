@@ -533,7 +533,7 @@ fn layers_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
     let open = state.atlas.open_layer();
     for (layer, name) in rows {
         ui.horizontal(|ui| {
-            let mut shown = state.doc.shown(frame.map, layer);
+            let mut shown = state.doc.shown(state.target(frame.map), layer);
             if ui.checkbox(&mut shown, &name).changed() {
                 state.set_map_shown(frame.map, layer, shown);
             }
@@ -555,17 +555,18 @@ fn layers_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
         .doc
         .layer(layer)
         .map_or(Vec::new(), |l| l.fields.clone());
+    let target = state.target(frame.map);
     let symbols = state.doc.symbols().clone();
     let mut library = style_editor::Library {
         symbols: &symbols,
         note: state.symbol_note.as_ref(),
         actions: &mut state.actions,
     };
-    let Some(mut style) = state.doc.map_style(frame.map, layer) else {
+    let Some(mut style) = state.doc.map_style(target, layer) else {
         return;
     };
     if style_editor::rules(ui, layer, &mut style, kind, &fields, &mut library)
-        && state.doc.set_map_style(frame.map, layer, &style)
+        && state.doc.set_map_style(target, layer, &style)
     {
         state.touch();
     }
@@ -573,7 +574,10 @@ fn layers_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
 }
 
 fn remove_overrides(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord, layer: LayerId) {
-    let any = !state.doc.overrides(frame.map, layer).is_empty();
+    let any = !state
+        .doc
+        .overrides(state.target(frame.map), layer)
+        .is_empty();
     if ui
         .add_enabled(any, egui::Button::new(REMOVE_OVERRIDES))
         .clicked()
@@ -884,7 +888,8 @@ fn labels_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
     let Some(kind) = state.doc.layer(layer).and_then(|l| l.geometry()) else {
         return;
     };
-    let Some(mut class) = state.doc.label_classes(Some(map), layer).get(i).cloned() else {
+    let classes = state.doc.label_classes_in(state.target(map), layer);
+    let Some(mut class) = classes.get(i).cloned() else {
         state.atlas.label = None;
         return;
     };

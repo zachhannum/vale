@@ -177,10 +177,7 @@ pub type MapLooks = (Vec<(RasterId, RasterLook)>, Vec<(ImageId, Look)>);
 /// overrides.
 pub fn map_looks(doc: &Document, map: MapId) -> MapLooks {
     let (mut rasters, mut images) = (Vec::new(), Vec::new());
-    let Some(record) = doc.project.atlas.map(map) else {
-        return (rasters, images);
-    };
-    for &layer in record.overrides.keys() {
+    for layer in doc.project.atlas.override_layers(map) {
         let (Some(l), Some(style)) = (doc.project.layer(layer), doc.map_style(map, layer)) else {
             continue;
         };
