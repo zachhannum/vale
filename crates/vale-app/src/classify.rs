@@ -167,19 +167,20 @@ fn natural_breaks(sorted: &[f64], n: usize) -> Vec<f64> {
     // best[c][j]: the least cost of values `0..j` in `c + 1` classes, and
     // the start of the last class.
     let mut best = vec![vec![(f64::INFINITY, 0usize); len + 1]; n];
-    for j in 1..=len {
-        best[0][j] = (cost(0, j), 0);
+    for (j, b) in best[0].iter_mut().enumerate().skip(1) {
+        *b = (cost(0, j), 0);
     }
     for c in 1..n {
-        for j in c + 1..=len {
-            let mut b = (f64::INFINITY, c);
-            for i in c..j {
-                let total = best[c - 1][i].0 + cost(i, j);
+        let (done, rest) = best.split_at_mut(c);
+        let (prev, row) = (&done[c - 1], &mut rest[0]);
+        for (j, b) in row.iter_mut().enumerate().skip(c + 1) {
+            *b = (f64::INFINITY, c);
+            for (i, p) in prev.iter().enumerate().take(j).skip(c) {
+                let total = p.0 + cost(i, j);
                 if total < b.0 {
-                    b = (total, i);
+                    *b = (total, i);
                 }
             }
-            best[c][j] = b;
         }
     }
     let mut starts = Vec::with_capacity(n - 1);
