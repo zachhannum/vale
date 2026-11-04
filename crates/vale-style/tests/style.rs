@@ -3,9 +3,9 @@ use std::collections::BTreeMap;
 use vale_store::GeometryKind;
 use vale_style::expr::{Context, Filter, Property, Value};
 use vale_style::{
-    Color, Extent, ImageSymbolizer, LayerStyle, Paint, PointSymbolizer, Rule, STYLE_VERSION,
-    ScatterSymbolizer, Stroke, StrokeKind, StrokeSymbolizer, Style, StyleError, Symbolizer,
-    extent_of, scale_denominator,
+    Color, Extent, Hatch, ImageSymbolizer, LayerStyle, MarkerShape, Paint, PointSymbolizer, Rule,
+    STYLE_VERSION, ScatterSymbolizer, Stroke, StrokeKind, StrokeSymbolizer, Style, StyleError,
+    Symbolizer, extent_of, scale_denominator,
 };
 
 fn river(kind: &str, flow: f64) -> BTreeMap<String, Value> {
@@ -157,7 +157,7 @@ fn the_json_has_a_version() {
     let json = LayerStyle::default_for(GeometryKind::Line, 0, &[]).to_json();
     let root: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(root["version"], STYLE_VERSION);
-    assert_eq!(STYLE_VERSION, 4);
+    assert_eq!(STYLE_VERSION, 5);
 }
 
 #[test]
@@ -204,11 +204,11 @@ fn json_errors() {
         root.to_string()
     };
     let newer = edit(&|m| {
-        m.insert("version".into(), 5.into());
+        m.insert("version".into(), 6.into());
     });
     assert_eq!(
         LayerStyle::from_json(&newer),
-        Err(StyleError::Version(Some(5)))
+        Err(StyleError::Version(Some(6)))
     );
     let none = edit(&|m| {
         m.remove("version");
@@ -426,7 +426,7 @@ fn solid_json_is_unchanged() {
     let json = line_with(StrokeKind::Solid).to_json();
     let expected = concat!(
         r##"{"label":{"color":"#2864a0","enabled":false,"field":null,"font":null,"italic":true,"priority_field":null,"size":11.0},"##,
-        r##""rules":[{"filter":"","name":"Default","symbolizers":[{"color":"#0000ff","type":"stroke","width":2.0}]}],"version":4}"##,
+        r##""rules":[{"filter":"","name":"Default","symbolizers":[{"color":"#0000ff","type":"stroke","width":2.0}]}],"version":5}"##,
     );
     assert_eq!(json, expected);
 }
@@ -701,7 +701,9 @@ fn the_extent_of_symbols() {
     };
     let marker = Paint::Marker {
         radius: 3.0,
+        shape: MarkerShape::Circle,
         fill: None,
+        hatch: None,
         stroke: Some(Stroke::solid(RED, 1.5)),
     };
     let scatter = Paint::Scatter {
@@ -774,4 +776,115 @@ fn a_raster_style_of_version_2_reads_the_default_lines_smoothing_and_hillshade()
         vale_style::style_version(&style.to_json()),
         Some(STYLE_VERSION)
     );
+}
+
+fn marker_rule(style: &LayerStyle) -> &Rule {
+    &style.style.rules[0]
+}
+
+#[test]
+fn an_old_marker_reads_as_a_circle_with_no_hatch() {
+    let json = LayerStyle::default_for(GeometryKind::Point, 0, &[]).to_json();
+    let mut root: serde_json::Value = serde_json::from_str(&json).unwrap();
+    root["version"] = 4.into();
+    let marker = root["rules"][0]["symbolizers"][0].as_object_mut().unwrap();
+    assert_eq!(marker["shape"], "circle");
+    assert!(marker["hatch"].is_null());
+    marker.remove("shape");
+    marker.remove("hatch");
+    let style = LayerStyle::from_json(&root.to_string()).unwrap();
+    let rule = marker_rule(&style);
+    assert_eq!(rule.marker_shape(), Some(MarkerShape::Circle));
+    assert_eq!(rule.marker_hatch(), None);
+    assert_eq!(rule.marker_fill_kind(), Some(vale_store::FillKind::Solid));
+}
+
+#[test]
+fn a_square_with_a_cross_hatch_round_trips() {
+    let mut style = LayerStyle::default_for(GeometryKind::Point, 0, &[]);
+    let rule = &mut style.style.rules[0];
+    rule.set_marker_shape(MarkerShape::Square);
+    rule.set_marker_hatch(Some(Hatch {
+        cross: true,
+        angle: 30.0,
+        spacing: 3.5,
+        line_width: 0.25,
+    }));
+    let json = style.to_json();
+    let root: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let marker = &root["rules"][0]["symbolizers"][0];
+    assert_eq!(marker["shape"], "square");
+    assert_eq!(marker["hatch"]["kind"], "cross_hatch");
+    assert_eq!(LayerStyle::from_json(&json).unwrap(), style);
+}
+
+#[test]
+fn an_unknown_marker_shape_is_an_error() {
+    let json = LayerStyle::default_for(GeometryKind::Point, 0, &[])
+        .to_json()
+        .replace("\"shape\":\"circle\"", "\"shape\":\"hexagon\"");
+    assert!(matches!(
+        LayerStyle::from_json(&json),
+        Err(StyleError::Invalid(_))
+    ));
+}
+
+#[test]
+fn the_extent_of_a_square_marker_reaches_its_corners() {
+    let square = Paint::Marker {
+        radius: 5.0,
+        shape: MarkerShape::Square,
+        fill: Some(RED),
+        hatch: None,
+        stroke: None,
+    };
+    let e = extent_of(&[square]);
+    assert!((e.marker_radius - 5.0 * std::f64::consts::SQRT_2).abs() < 1e-9);
+}
+
+#[test]
+fn each_outline_fits_its_reach() {
+    for shape in MarkerShape::ALL {
+        let outline = shape.unit_outline();
+        assert!(outline.len() >= 3);
+        let far = outline.iter().map(|(x, y)| x.hypot(*y)).fold(0.0, f64::max);
+        assert!((far - shape.reach()).abs() < 1e-9, "{shape:?}");
+        assert_eq!(MarkerShape::from_id(shape.id()), Some(shape));
+    }
+    let triangle = MarkerShape::Triangle.unit_outline();
+    assert_eq!(triangle[0], (0.0, -1.0));
+}
+
+#[test]
+fn the_marker_fill_kind_changes_the_fill_and_the_hatch() {
+    use vale_store::FillKind;
+    let mut style = LayerStyle::default_for(GeometryKind::Point, 0, &[]);
+    let rule = &mut style.style.rules[0];
+    let color = rule.fill().unwrap();
+    rule.set_marker_fill_kind(FillKind::Hatch);
+    assert_eq!(rule.marker_fill_kind(), Some(FillKind::Hatch));
+    assert_eq!(rule.marker_hatch(), Some(Hatch::default()));
+    assert_eq!(rule.fill(), Some(color));
+    rule.set_marker_hatch(Some(Hatch {
+        spacing: 4.0,
+        ..Hatch::default()
+    }));
+    rule.set_marker_fill_kind(FillKind::CrossHatch);
+    let hatch = rule.marker_hatch().unwrap();
+    assert!(hatch.cross);
+    assert_eq!(hatch.spacing, 4.0);
+    rule.set_marker_fill_kind(FillKind::Solid);
+    assert_eq!(rule.marker_hatch(), None);
+    assert_eq!(rule.fill(), Some(color));
+    rule.set_marker_fill_kind(FillKind::None);
+    assert_eq!(rule.fill(), None);
+    assert_eq!(rule.marker_fill_kind(), Some(FillKind::None));
+    rule.set_marker_fill_kind(FillKind::Hatch);
+    assert!(rule.fill().is_some());
+    assert_eq!(rule.marker_hatch(), Some(Hatch::default()));
+
+    let mut lines = Rule::new("Lines", vec![]);
+    assert_eq!(lines.marker_fill_kind(), None);
+    lines.set_marker_fill_kind(FillKind::Hatch);
+    assert!(lines.symbolizers.is_empty());
 }

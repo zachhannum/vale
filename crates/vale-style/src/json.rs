@@ -9,12 +9,12 @@ use vale_store::{BlendMode, Hillshade, RasterDisplay, Rgb, Smoothing, Stop, Stop
 
 use crate::expr::{Filter, FromValue, Property};
 use crate::{
-    Color, ImageSymbolizer, LabelStyle, LayerStyle, PointSymbolizer, RasterSymbolizer, Rule,
-    ScatterSymbolizer, StrokeKind, StrokeSymbolizer, Style, Symbolizer,
+    Color, Hatch, ImageSymbolizer, LabelStyle, LayerStyle, MarkerShape, PointSymbolizer,
+    RasterSymbolizer, Rule, ScatterSymbolizer, StrokeKind, StrokeSymbolizer, Style, Symbolizer,
 };
 
 /// The version of the style JSON that this build writes. It reads this version and each earlier version.
-pub const STYLE_VERSION: u64 = 4;
+pub const STYLE_VERSION: u64 = 5;
 
 /// Why a style JSON did not load.
 #[derive(Clone, Debug, PartialEq)]
@@ -117,12 +117,21 @@ fn symbolizer_json(s: &Symbolizer) -> Json {
         }
         Symbolizer::Marker {
             radius,
+            shape,
             fill,
+            hatch,
             stroke,
         } => json!({
             "type": "marker",
             "radius": number_json(radius),
+            "shape": shape.id(),
             "fill": fill.as_ref().map(color_json),
+            "hatch": hatch.map(|h| json!({
+                "kind": h.kind().id(),
+                "angle": h.angle,
+                "spacing": h.spacing,
+                "line_width": h.line_width,
+            })),
             "stroke": stroke.as_ref().map(|s| Json::Object(stroke_json(s))),
         }),
         Symbolizer::Symbol(s) => json!({
@@ -222,9 +231,21 @@ fn read_symbolizer(j: &Json) -> Result<Symbolizer, StyleError> {
         Some("stroke") => Ok(Symbolizer::Stroke(read_stroke(m)?)),
         Some("marker") => Ok(Symbolizer::Marker {
             radius: read_number(m.get("radius"))?,
+            shape: match m.get("shape") {
+                None => MarkerShape::Circle,
+                Some(j) => j
+                    .as_str()
+                    .and_then(MarkerShape::from_id)
+                    .ok_or_else(|| invalid(format!("unknown marker shape {j}")))?,
+            },
             fill: match m.get("fill") {
                 None | Some(Json::Null) => None,
                 c => Some(read_color(c)?),
+            },
+            hatch: match m.get("hatch") {
+                None | Some(Json::Null) => None,
+                Some(Json::Object(h)) => Some(read_hatch(h)?),
+                Some(_) => return Err(invalid("a marker hatch is not an object")),
             },
             stroke: match m.get("stroke") {
                 None | Some(Json::Null) => None,
@@ -263,6 +284,23 @@ fn read_symbolizer(j: &Json) -> Result<Symbolizer, StyleError> {
         Some(t) => Err(invalid(format!("unknown symbolizer {t}"))),
         None => Err(invalid("a symbolizer has no type")),
     }
+}
+
+/// A missing number is the default.
+fn read_hatch(m: &Map<String, Json>) -> Result<Hatch, StyleError> {
+    let d = Hatch::default();
+    let number = |k: &str, d: f64| m.get(k).and_then(Json::as_f64).unwrap_or(d);
+    let cross = match m.get("kind").and_then(Json::as_str) {
+        Some("hatch") => false,
+        Some("cross_hatch") => true,
+        _ => return Err(invalid("a marker hatch has no valid kind")),
+    };
+    Ok(Hatch {
+        cross,
+        angle: number("angle", d.angle),
+        spacing: number("spacing", d.spacing),
+        line_width: number("line_width", d.line_width),
+    })
 }
 
 fn read_symbol_name(m: &Map<String, Json>) -> Result<String, StyleError> {
