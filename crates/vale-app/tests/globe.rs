@@ -8184,3 +8184,27 @@ fn the_lakes_follow_each_stroke_and_each_undo() {
     settle_rivers(&mut h);
     assert!(lakes(&h));
 }
+
+#[test]
+#[ignore = "gpu"]
+fn the_smallest_lake_slider_hides_a_smaller_lake() {
+    let _gpu = one_gpu_test();
+    let crater = lonlat_to_dir(10.0, 20.0);
+    let mut h = crater_harness(BRUSH_FACE_SIZE, crater, 3.0);
+    assert!(h.query_all_by_label("Smallest lake").next().is_some());
+    assert!(h.state().globe.channels().unwrap().has_lakes());
+    // The crater covers about 800,000 km² on a world of the size of the
+    // Earth.
+    h.state_mut().globe.preview.lake_km2 = 1_000_000.0;
+    settle_rivers(&mut h);
+    assert!(!h.state().globe.channels().unwrap().has_lakes());
+    let img = canvas_image(&mut h);
+    let wet = lake_pixels(&h, &img)
+        .iter()
+        .filter(|p| p.lake > 0.0)
+        .count();
+    assert_eq!(wet, 0);
+    h.state_mut().globe.preview.lake_km2 = 2000.0;
+    settle_rivers(&mut h);
+    assert!(h.state().globe.channels().unwrap().has_lakes());
+}

@@ -5,8 +5,8 @@ use std::f64::consts::FRAC_PI_2;
 use std::sync::{Arc, mpsc};
 
 use vale_terrain::{
-    ChannelMap, ChannelWindow, CoarseHeights, FlowMap, Heightmap, TexelRect, WINDOW_CELLS,
-    WINDOW_MARGIN, Window, WindowHeights, window_channels,
+    ChannelMap, ChannelWindow, CoarseHeights, FlowMap, Heightmap, LAKE_MIN_AREA, TexelRect,
+    WINDOW_CELLS, WINDOW_MARGIN, Window, WindowHeights, window_channels,
 };
 
 use super::math::V3;
@@ -76,9 +76,10 @@ pub fn cell_angle(window: &Window) -> f64 {
 }
 
 /// One request, with its number.
-/// Each job has the radius of the world in kilometers.
+/// Each job has the radius of the world in kilometers. A global job also has
+/// the smallest lake in steradians.
 enum Job {
-    Global(u64, CoarseHeights, f64),
+    Global(u64, CoarseHeights, f64, f64),
     Window(u64, WindowHeights, f64),
 }
 
@@ -122,6 +123,8 @@ pub struct Rivers {
     channel_window: Option<ChannelWindow>,
     /// The radius of the world, in kilometers.
     world_km: f64,
+    /// The solid angle of the smallest lake, in steradians.
+    lake_area: f64,
 }
 
 /// Computes the newest job of each kind until the sender is gone. A window
@@ -132,19 +135,23 @@ fn work(jobs: mpsc::Receiver<Job>, done: mpsc::Sender<Done>) {
     loop {
         if global.is_none() && window.is_none() {
             match jobs.recv() {
-                Ok(Job::Global(number, heights, km)) => global = Some((number, heights, km)),
+                Ok(Job::Global(number, heights, km, lake)) => {
+                    global = Some((number, heights, km, lake));
+                }
                 Ok(Job::Window(number, heights, km)) => window = Some((number, heights, km)),
                 Err(_) => return,
             }
         }
         for job in jobs.try_iter() {
             match job {
-                Job::Global(number, heights, km) => global = Some((number, heights, km)),
+                Job::Global(number, heights, km, lake) => {
+                    global = Some((number, heights, km, lake));
+                }
                 Job::Window(number, heights, km) => window = Some((number, heights, km)),
             }
         }
-        let result = if let Some((number, heights, km)) = global.take() {
-            let new = flow.insert(FlowMap::new(&heights));
+        let result = if let Some((number, heights, km, lake)) = global.take() {
+            let new = flow.insert(FlowMap::with_lake_area(&heights, lake));
             Done::Global(number, new.channels(km))
         } else if let Some((number, heights, km)) = window.take() {
             // A window job comes after a global job, so the flow is there.
@@ -175,12 +182,21 @@ impl Rivers {
             channels: None,
             channel_window: None,
             world_km: 6371.0,
+            lake_area: LAKE_MIN_AREA,
         }
     }
 
     /// Sets the radius of the world for the next requests, in kilometers.
     pub fn set_world_km(&mut self, world_km: f64) {
         self.world_km = world_km;
+    }
+
+    /// Sets the solid angle of the smallest lake for the next requests, in
+    /// steradians. Returns true if the value changed.
+    pub fn set_lake_area(&mut self, lake_area: f64) -> bool {
+        let changed = lake_area != self.lake_area;
+        self.lake_area = lake_area;
+        changed
     }
 
     pub fn sync(&self) -> bool {
@@ -229,12 +245,14 @@ impl Rivers {
         self.has_flow = true;
         let (number, heights) = (self.global.sent, self.coarse.clone());
         if self.sync {
-            let flow = self.flow.insert(FlowMap::new(&heights));
+            let flow = self
+                .flow
+                .insert(FlowMap::with_lake_area(&heights, self.lake_area));
             let _ = self
                 .done
                 .send(Done::Global(number, flow.channels(self.world_km)));
         } else {
-            self.send(Job::Global(number, heights, self.world_km));
+            self.send(Job::Global(number, heights, self.world_km, self.lake_area));
         }
     }
 
@@ -361,6 +379,29 @@ mod tests {
         rivers.rebuild(&map);
         rivers.request();
         assert!(!wait(&mut rivers).0.unwrap().has_rivers());
+    }
+
+    #[test]
+    fn the_lakes_follow_the_lake_area() {
+        const N: usize = 64;
+        let mut map = hill(N);
+        // A pit at the top of the hill.
+        for y in 0..N {
+            for x in 0..N {
+                let (dx, dy) = (x as f64 - 32.0, y as f64 - 32.0);
+                if dx * dx + dy * dy < 36.0 {
+                    map.set(0, x, y, meters_to_level(500.0));
+                }
+            }
+        }
+        let mut rivers = Rivers::new(&map, false);
+        rivers.request();
+        assert!(wait(&mut rivers).0.unwrap().has_lakes());
+        assert!(!rivers.set_lake_area(LAKE_MIN_AREA));
+        // The pit covers about 0.07 steradians.
+        assert!(rivers.set_lake_area(0.5));
+        rivers.request();
+        assert!(!wait(&mut rivers).0.unwrap().has_lakes());
     }
 
     #[test]

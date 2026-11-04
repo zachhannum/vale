@@ -10,6 +10,7 @@ use super::number::Number;
 use super::theme;
 use super::widgets::{self, Controls, PANEL_ROW};
 use super::{Page, Panel};
+use crate::globe::preview::{LAKE_KM2, LAKE_KM2_RANGE};
 use crate::ui::{Action, AppState, elevation, gradient};
 use crate::world;
 
@@ -84,6 +85,7 @@ pub const RIVERS: &str = "Rivers";
 /// The switch of the lines of the stops of a raster layer.
 pub const BAND_LINES: &str = "Band lines";
 pub const RIVER_WIDTH: &str = "River width";
+pub const SMALLEST_LAKE: &str = "Smallest lake";
 
 /// The height of the heading of a section.
 const HEADING: f32 = 40.0;
@@ -250,6 +252,15 @@ pub fn style(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, i
             .slider(ui, controls);
         if let Some(width) = width {
             preview.river_width = width as f32;
+        }
+        let lake = Number::new(SMALLEST_LAKE, preview.lake_km2, LAKE_KM2_RANGE)
+            .log()
+            .unit("km²")
+            .text(|a| format!("{a:.0} km²"))
+            .default(LAKE_KM2)
+            .slider(ui, controls);
+        if let Some(lake) = lake {
+            preview.lake_km2 = lake;
         }
     }
 }

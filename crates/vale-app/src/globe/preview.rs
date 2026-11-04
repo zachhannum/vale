@@ -3,6 +3,12 @@
 use vale_store::{RasterDisplay, RasterId};
 use vale_terrain::{Bands, MAX_BANDS, Rgb};
 
+/// The area of the smallest lake of a new session, in square kilometers.
+pub const LAKE_KM2: f64 = 2000.0;
+
+/// The range of the area of the smallest lake, in square kilometers.
+pub const LAKE_KM2_RANGE: std::ops::RangeInclusive<f64> = 100.0..=1_000_000.0;
+
 /// How the globe shows the heightmap.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Preview {
@@ -15,6 +21,8 @@ pub struct Preview {
     pub rivers: bool,
     /// The factor of the width of a river line on screen.
     pub river_width: f32,
+    /// The area of the smallest lake, in square kilometers.
+    pub lake_km2: f64,
     /// The elevation panel is open.
     pub panel: bool,
     /// The band limit that a panel edits: the raster layer, and an index
@@ -29,6 +37,7 @@ impl Default for Preview {
             graticule: true,
             rivers: true,
             river_width: 1.0,
+            lake_km2: LAKE_KM2,
             panel: false,
             selected: None,
         }

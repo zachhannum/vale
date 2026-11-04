@@ -1505,6 +1505,7 @@ impl Globe {
     /// does not paint, and takes them from each other layer.
     fn sync_rivers(&mut self) {
         let sync = self.rivers.sync();
+        let lake_area = self.lake_area();
         for at in 0..self.layers.len() {
             let layer = &self.layers[at];
             let wanted =
@@ -1515,6 +1516,7 @@ impl Globe {
             }
             let rivers = wanted.then(|| {
                 let mut rivers = Rivers::new(layer.display(&self.map), sync);
+                rivers.set_lake_area(lake_area);
                 rivers.request();
                 LayerRivers {
                     rivers,
@@ -2560,6 +2562,11 @@ impl Globe {
         choose_window(middle, self.span(), self.map.face_size(), self.chosen)
     }
 
+    /// The solid angle of the smallest lake, in steradians.
+    fn lake_area(&self) -> f64 {
+        self.preview.lake_km2 / (self.world_km * self.world_km)
+    }
+
     /// Asks for the rivers of the heightmap as it is now. A heightmap with
     /// no heights in meters has no rivers.
     fn request_rivers(&mut self) {
@@ -2625,7 +2632,16 @@ impl Globe {
         let tag = self.tag();
         let budget = self.uploads.budget;
         self.sync_maps();
+        let lake_area = self.lake_area();
+        if self.rivers.set_lake_area(lake_area) {
+            self.request_rivers();
+        }
         for layer in &mut self.layers {
+            if let Some(rivers) = &mut layer.rivers
+                && rivers.rivers.set_lake_area(lake_area)
+            {
+                rivers.rivers.request();
+            }
             // The rivers of the layer that arrived.
             if let Some(rivers) = &mut layer.rivers
                 && let Some(channels) = rivers.rivers.poll()
