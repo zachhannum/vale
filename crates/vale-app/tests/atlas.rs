@@ -2645,35 +2645,77 @@ fn a_change_in_a_frame_shows_in_each_frame_of_its_map_and_not_in_another_map() {
 }
 
 #[test]
-fn the_controls_of_the_layer_panel_of_a_frame_work_with_a_finger() {
-    use vale_app::ui::pad::rules::DELETE_RULE;
+fn the_style_controls_of_a_frame_work_with_a_finger() {
+    use vale_app::ui::pad::rules::{ADD_RULE, DELETE_RULE, MOVE_DOWN, MOVE_UP};
     for size in BOARDS {
         let what = format!("{size:?}");
         let mut h = inset_pad(size);
-        let inset = frame(&h, 1).map;
-        let before = rivers_width(&h, None);
+        let (main, inset) = (frame(&h, 0).map, frame(&h, 1).map);
+        let globe = rivers_rules(&h, None);
         tap(&mut h, FRAME_TABS[2]);
         check_controls(&h, &format!("{what}: layers tab"));
         scroll_to(&mut h, "Open Rivers");
         tap(&mut h, "Open Rivers");
         check_controls(&h, &format!("{what}: layer"));
-        // A map with no map style has no Use map style.
+        // A map with no map style has no Use map style, and a map with the
+        // globe style has nothing to copy.
+        scroll_to(&mut h, COPY_GLOBE_STYLE);
         assert!(control(&h, USE_MAP_STYLE).is_none(), "{what}");
-        scroll_to(&mut h, "Default");
-        tap(&mut h, "Default");
-        check_controls(&h, &format!("{what}: rule"));
-        scroll_to(&mut h, DELETE_RULE);
-        assert!(control(&h, DELETE_RULE).is_some(), "{what}");
-        scroll_to(&mut h, &format!("{STROKE_WIDTH} value"));
-        widen(&mut h);
-        assert_ne!(rivers_width(&h, Some(inset)), before, "{what}");
+        assert!(control(&h, COPY_GLOBE_STYLE).is_none(), "{what}");
+
+        // Two new rules, and the page of the middle rule.
+        for _ in 0..2 {
+            scroll_to(&mut h, ADD_RULE);
+            check_controls(&h, &format!("{what}: add rule"));
+            tap(&mut h, ADD_RULE);
+            assert!(h.state().atlas.layer_page.is_some(), "{what}");
+            tap(&mut h, "Back to Rivers");
+        }
+        assert_eq!(rivers_rules(&h, Some(inset)), globe + 2, "{what}");
+        let last = h.state().doc.map_style(inset, layer_id(&h, "Rivers"));
+        let last = last.unwrap().style.rules.last().unwrap().name.clone();
+        scroll_to(&mut h, &last);
+        tap(&mut h, &last);
+        scroll_to(&mut h, MOVE_UP);
+        tap(&mut h, MOVE_UP);
+        for name in [MOVE_UP, MOVE_DOWN, DELETE_RULE] {
+            scroll_to(&mut h, name);
+            assert!(control(&h, name).is_some(), "{what}: {name}");
+            check_controls(&h, &format!("{what}: {name}"));
+        }
+        assert_eq!(rivers_rules(&h, None), globe, "{what}");
+        assert_eq!(rivers_rules(&h, Some(main)), globe, "{what}");
 
         // Copy globe style brings back the globe style.
         tap(&mut h, "Back to Rivers");
-        check_controls(&h, &format!("{what}: changed"));
         scroll_to(&mut h, COPY_GLOBE_STYLE);
+        check_controls(&h, &format!("{what}: changed"));
         tap(&mut h, COPY_GLOBE_STYLE);
-        assert_eq!(rivers_width(&h, Some(inset)), before, "{what}");
+        assert_eq!(rivers_rules(&h, Some(inset)), globe, "{what}");
+
+        // A linked map with a style of its own has Use map style.
+        let style = h.state_mut().save_as_map_style(main).unwrap();
+        h.state_mut().set_map_style_link(inset, Some(style));
+        h.run_steps(2);
+        scroll_up_to(&mut h, THIS_MAP);
+        tap(&mut h, THIS_MAP);
+        assert!(!h.state().atlas.to_style, "{what}");
+        assert!(control(&h, USE_MAP_STYLE).is_none(), "{what}");
+        scroll_to(&mut h, "Default");
+        tap(&mut h, "Default");
+        scroll_to(&mut h, &format!("{STROKE_WIDTH} value"));
+        widen(&mut h);
+        tap(&mut h, "Back to Rivers");
+        scroll_to(&mut h, COPY_GLOBE_STYLE);
+        assert!(control(&h, USE_MAP_STYLE).is_some(), "{what}");
+        assert!(control(&h, COPY_GLOBE_STYLE).is_some(), "{what}");
+        check_controls(&h, &format!("{what}: own style"));
+        if size == BOARDS[0] {
+            screenshot::save(&mut h, "pad-atlas-frame-layer-style");
+        }
+        tap(&mut h, USE_MAP_STYLE);
+        assert_eq!(own_rivers(&h, Target::Map(inset)), None, "{what}");
+        assert!(control(&h, USE_MAP_STYLE).is_none(), "{what}");
     }
 }
 
@@ -7469,4 +7511,131 @@ fn the_map_style_controls_work_with_a_finger() {
         assert!(control(&h, THIS_MAP).is_some(), "{what}");
         check_controls(&h, &format!("{what}: labels tab"));
     }
+}
+
+/// Scrolls the panel up or down until a control shows.
+fn find(h: &mut Pad, name: &str) {
+    scroll_up_to(h, name);
+    scroll_to(h, name);
+}
+
+#[test]
+fn linking_and_unlinking_in_the_frame_tab_keep_the_look() {
+    let mut h = styled_pad();
+    let (main, inset) = (frame(&h, 0).map, frame(&h, 1).map);
+    let before = look(&mut h, 1);
+    frame_tab_of(&mut h, 1);
+    find(&mut h, SAVE_AS_MAP_STYLE);
+    tap(&mut h, SAVE_AS_MAP_STYLE);
+    let style = linked(&h, inset).unwrap();
+    same_look(&look(&mut h, 1), &before, "save as");
+
+    // None gives the map a copy of the settings that it drew.
+    find(&mut h, MAP_STYLE);
+    tap(&mut h, MAP_STYLE);
+    find(&mut h, NO_MAP_STYLE_ROW);
+    tap(&mut h, NO_MAP_STYLE_ROW);
+    assert_eq!(linked(&h, inset), None);
+    let own = own_settings(&h, inset);
+    assert!(!own.hidden.is_empty() && !own.styles.is_empty() && !own.labels.is_empty());
+    same_look(&look(&mut h, 1), &before, "none");
+
+    // A link drops the settings of the map, and the map style draws the
+    // same look.
+    let row = map_style_row("Map style");
+    find(&mut h, MAP_STYLE);
+    tap(&mut h, MAP_STYLE);
+    find(&mut h, &row);
+    tap(&mut h, &row);
+    assert_eq!(linked(&h, inset), Some(style));
+    assert!(is_plain(&own_settings(&h, inset)));
+    same_look(&look(&mut h, 1), &before, "link");
+
+    // The main map drops its own switches, styles, and label classes too.
+    let rivers = layer_id(&h, "Rivers");
+    h.state_mut().set_map_shown(main, rivers, false);
+    h.state_mut().add_label_class(main).unwrap();
+    h.run_steps(2);
+    assert!(!is_plain(&own_settings(&h, main)));
+    frame_tab_of(&mut h, 0);
+    find(&mut h, MAP_STYLE);
+    tap(&mut h, MAP_STYLE);
+    find(&mut h, &row);
+    tap(&mut h, &row);
+    assert_eq!(linked(&h, main), Some(style));
+    assert!(is_plain(&own_settings(&h, main)));
+    assert!(shows(&h, main, "Rivers") && !shows(&h, main, "Land"));
+}
+
+/// The names of the rules of Rivers: in the globe style, or in a map.
+fn rivers_rule_names(h: &Pad, map: Option<MapId>) -> Vec<String> {
+    let rivers = layer_id(h, "Rivers");
+    let doc = &h.state().doc;
+    let style = match map {
+        Some(map) => doc.map_style(map, rivers).unwrap(),
+        None => doc.layer_style(rivers).unwrap(),
+    };
+    style.style.rules.iter().map(|r| r.name.clone()).collect()
+}
+
+/// Adds a rule in the panel of Rivers of the selected frame, moves it up,
+/// and deletes it. After each step, `check` gets the rules that the panel
+/// shows.
+fn add_move_and_delete(h: &mut Pad, map: MapId, check: &dyn Fn(&Pad, &str)) {
+    use vale_app::ui::pad::rules::{ADD_RULE, DELETE_RULE, MOVE_UP};
+    let globe = rivers_rule_names(h, None);
+    let n = globe.len();
+    tap(h, FRAME_TABS[2]);
+    scroll_to(h, "Open Rivers");
+    tap(h, "Open Rivers");
+    scroll_to(h, ADD_RULE);
+    tap(h, ADD_RULE);
+    let added = rivers_rule_names(h, Some(map));
+    assert_eq!(added.len(), n + 1);
+    assert_eq!(added[..n], globe[..]);
+    check(h, "add");
+
+    scroll_to(h, MOVE_UP);
+    tap(h, MOVE_UP);
+    let moved = rivers_rule_names(h, Some(map));
+    assert_eq!(moved[n - 1], added[n]);
+    assert_eq!(moved[n], added[n - 1]);
+    check(h, "move");
+
+    scroll_to(h, DELETE_RULE);
+    tap(h, DELETE_RULE);
+    assert_eq!(rivers_rule_names(h, Some(map)), globe);
+    check(h, "delete");
+}
+
+#[test]
+fn a_rule_added_moved_and_deleted_in_a_frame_changes_only_that_map() {
+    let mut h = inset_pad(BOARDS[0]);
+    let (main, inset) = (frame(&h, 0).map, frame(&h, 1).map);
+    let globe = rivers_rule_names(&h, None);
+    let main_text = own_rivers(&h, Target::Map(main));
+    add_move_and_delete(&mut h, inset, &|h, what| {
+        assert_eq!(rivers_rule_names(h, None), globe, "{what}");
+        assert_eq!(rivers_rule_names(h, Some(main)), globe, "{what}");
+        assert_eq!(own_rivers(h, Target::Map(main)), main_text, "{what}");
+    });
+
+    // With the map style, each map of the map style changes, and a map
+    // with no map style stays.
+    let mut h = inset_pad(BOARDS[0]);
+    add_frame(&mut h);
+    let maps = [0, 1, 2].map(|i| frame(&h, i).map);
+    let style = h.state_mut().save_as_map_style(maps[1]).unwrap();
+    h.state_mut().set_map_style_link(maps[2], Some(style));
+    h.state_mut().atlas.selection = AtlasSelection::Frame(frame(&h, 1).id);
+    h.run_steps(2);
+    assert!(h.state().atlas.to_style);
+    add_move_and_delete(&mut h, maps[1], &|h, what| {
+        let linked = rivers_rule_names(h, Some(maps[1]));
+        assert_eq!(rivers_rule_names(h, Some(maps[2])), linked, "{what}");
+        assert_eq!(rivers_rule_names(h, Some(maps[0])), globe, "{what}");
+        assert_eq!(rivers_rule_names(h, None), globe, "{what}");
+        assert_eq!(own_rivers(h, Target::Map(maps[1])), None, "{what}");
+        assert_eq!(own_rivers(h, Target::Map(maps[2])), None, "{what}");
+    });
 }
