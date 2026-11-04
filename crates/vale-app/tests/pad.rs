@@ -7391,9 +7391,62 @@ fn check_tiles(h: &Pad, what: &str) {
 }
 
 #[test]
+fn a_finger_sets_the_shape_and_the_hatch_of_a_marker() {
+    use vale_app::ui::pad::furniture::LINE_COLOR;
+    use vale_app::ui::pad::rules::{COLOR, FILL, MARKER_SHAPE, SPACING};
+    use vale_style::MarkerShape;
+    for size in [BOARDS[1], BOARDS[3]] {
+        let what = format!("{size:?}");
+        let mut h = pad(size);
+        let places = vector(&h, "Places");
+        let rule = |h: &Pad| rules(h, places)[0].clone();
+        open_rule(&mut h, "Places", "Default");
+        assert_eq!(rule(&h).marker_shape(), Some(MarkerShape::Circle), "{what}");
+
+        scroll_to_control(&mut h, MARKER_SHAPE);
+        tap(&mut h, MARKER_SHAPE);
+        assert_eq!(h.state().pad.page, Some(Page::MarkerShape(0)), "{what}");
+        check_controls(&h, &format!("{what} on the shape page"));
+        tap(&mut h, "Diamond");
+        assert_eq!(
+            rule(&h).marker_shape(),
+            Some(MarkerShape::Diamond),
+            "{what}"
+        );
+        tap(&mut h, "Back to Default");
+        assert_eq!(h.state().pad.page, Some(Page::Rule(0)), "{what}");
+
+        scroll_to_control(&mut h, FILL);
+        tap(&mut h, FILL);
+        assert_eq!(h.state().pad.page, Some(Page::MarkerFill(0)), "{what}");
+        assert!(control(&h, COLOR).is_some(), "{what}");
+        assert!(control(&h, SPACING).is_none(), "{what}");
+        tap(&mut h, "Cross-hatch");
+        let hatch = rule(&h)
+            .marker_hatch()
+            .unwrap_or_else(|| panic!("{what}: no hatch"));
+        assert!(hatch.cross, "{what}");
+        assert!(rule(&h).fill().is_some(), "{what}");
+        assert!(control(&h, COLOR).is_none(), "{what}");
+        assert!(control(&h, LINE_COLOR).is_some(), "{what}");
+        check_controls(&h, &format!("{what} on the fill page"));
+        let before = hatch.spacing;
+        scrolled_step(&mut h, SPACING, true);
+        let after = rule(&h).marker_hatch().unwrap().spacing;
+        assert!(after > before, "{what}: {before} {after}");
+
+        tap(&mut h, "None");
+        assert!(rule(&h).fill().is_none() && rule(&h).marker_hatch().is_none());
+        assert!(control(&h, LINE_COLOR).is_none(), "{what}");
+        tap(&mut h, "Solid");
+        assert!(rule(&h).fill().is_some() && rule(&h).marker_hatch().is_none());
+    }
+}
+
+#[test]
 fn a_rule_page_sets_a_point_symbol() {
     use vale_app::ui::pad::rules::{
-        CIRCLE, FILL, NO_FIELD, ROTATION, SIZE, SIZE_FIELD, STROKE, SVG_SYMBOL, SYMBOL, TINT,
+        FILL, NO_FIELD, ROTATION, SHAPE, SIZE, SIZE_FIELD, STROKE, SVG_SYMBOL, SYMBOL, TINT,
         TINT_COLOR,
     };
     use vale_style::Symbolizer;
@@ -7482,8 +7535,8 @@ fn a_rule_page_sets_a_point_symbol() {
         scroll_to_control(&mut h, SYMBOL);
         screenshot::save(&mut h, &format!("pad-symbol-{}", size.0));
 
-        scroll_to_control(&mut h, CIRCLE);
-        tap(&mut h, CIRCLE);
+        scroll_to_control(&mut h, SHAPE);
+        tap(&mut h, SHAPE);
         assert!(symbol(&h).is_none(), "{what}");
         assert!(rules(&h, places)[0].fill().is_some(), "{what}");
     }

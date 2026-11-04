@@ -995,6 +995,22 @@ pub fn set_kind(f: &mut FillPattern, kind: FillKind, outline: vale_store::Rgb) {
     f.kind = kind;
 }
 
+/// A row for each fill kind, with the row of `current` on. Returns the kind that the user tapped.
+pub(super) fn fill_kind_rows(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    current: FillKind,
+) -> Option<FillKind> {
+    let mut picked = None;
+    for kind in FillKind::ALL {
+        let name = kind.label();
+        if widgets::option_row(ui, controls, name, name, &[], current == kind).clicked() {
+            picked = Some(kind);
+        }
+    }
+    picked
+}
+
 /// The page of a fill of a scale bar: the kind, the color, and for a hatch
 /// the background, the angle, the spacing, and the line width.
 fn fill_page(
@@ -1006,12 +1022,9 @@ fn fill_page(
     second: bool,
 ) {
     let fill = if second { &bar.fill2 } else { &bar.fill1 };
-    for kind in FillKind::ALL {
-        let name = kind.label();
-        if widgets::option_row(ui, controls, name, name, &[], fill.kind == kind).clicked() {
-            let outline = bar.outline;
-            atlas::edit_fill(state, id, second, true, |f| set_kind(f, kind, outline));
-        }
+    if let Some(kind) = fill_kind_rows(ui, controls, fill.kind) {
+        let outline = bar.outline;
+        atlas::edit_fill(state, id, second, true, |f| set_kind(f, kind, outline));
     }
     if fill.kind == FillKind::None {
         return;

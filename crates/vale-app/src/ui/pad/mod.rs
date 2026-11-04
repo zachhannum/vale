@@ -370,6 +370,10 @@ pub enum Page {
     Condition(usize),
     /// The symbols that the rule with this index can pick.
     Symbols(usize),
+    /// The shapes of the marker of the rule with this index.
+    MarkerShape(usize),
+    /// The fill of the marker of the rule with this index.
+    MarkerFill(usize),
     /// The attribute table of the layer.
     Table,
 }
@@ -1395,9 +1399,13 @@ pub(super) fn show_panel(
     };
     let rule_count = rules.map_or(0, Vec::len);
     let rule_name = match state.pad.page {
-        Some(Page::Rule(i) | Page::Condition(i) | Page::Symbols(i)) => {
-            rules.and_then(|r| r.get(i)).map(|r| r.name.clone())
-        }
+        Some(
+            Page::Rule(i)
+            | Page::Condition(i)
+            | Page::Symbols(i)
+            | Page::MarkerShape(i)
+            | Page::MarkerFill(i),
+        ) => rules.and_then(|r| r.get(i)).map(|r| r.name.clone()),
         _ => None,
     };
     if name.is_none() {
@@ -1414,7 +1422,13 @@ pub(super) fn show_panel(
         (Some(LayerRef::Vector(_)), Some(Page::Field(i))) => i < field_count,
         (
             Some(LayerRef::Vector(_)),
-            Some(Page::Rule(i) | Page::Condition(i) | Page::Symbols(i)),
+            Some(
+                Page::Rule(i)
+                | Page::Condition(i)
+                | Page::Symbols(i)
+                | Page::MarkerShape(i)
+                | Page::MarkerFill(i),
+            ),
         ) => i < rule_count,
         _ => false,
     };
@@ -1475,6 +1489,18 @@ pub(super) fn show_panel(
         (Panel::Layers, Some(LayerRef::Vector(_))) if matches!(page, Some(Page::Symbols(_))) => {
             ("pad-symbols", rules::SYMBOLS, rule_name.as_deref())
         }
+        (Panel::Layers, Some(LayerRef::Vector(_)))
+            if matches!(page, Some(Page::MarkerShape(_))) =>
+        {
+            (
+                "pad-marker-shape",
+                rules::MARKER_SHAPE,
+                rule_name.as_deref(),
+            )
+        }
+        (Panel::Layers, Some(LayerRef::Vector(_))) if matches!(page, Some(Page::MarkerFill(_))) => {
+            ("pad-marker-fill", rules::FILL, rule_name.as_deref())
+        }
         (Panel::Layers, Some(LayerRef::Vector(_))) if matches!(page, Some(Page::Rule(_))) => (
             "pad-rule",
             rule_name.as_deref().unwrap_or_default(),
@@ -1518,7 +1544,13 @@ pub(super) fn show_panel(
         }
         if row.back && page == Some(Page::Ramps) {
             state.pad.page = Some(Page::Stops);
-        } else if let (true, Some(Page::Condition(i) | Page::Symbols(i))) = (row.back, page) {
+        } else if let (
+            true,
+            Some(
+                Page::Condition(i) | Page::Symbols(i) | Page::MarkerShape(i) | Page::MarkerFill(i),
+            ),
+        ) = (row.back, page)
+        {
             state.pad.page = Some(Page::Rule(i));
         } else if row.back && page.is_some() {
             state.pad.page = None;
@@ -1556,6 +1588,8 @@ pub(super) fn show_panel(
                 Some(Page::Rule(i)) => rules::rule_body(ui, state, controls, id, i),
                 Some(Page::Condition(i)) => filter::condition_body(ui, state, controls, id, i),
                 Some(Page::Symbols(i)) => rules::symbols_body(ui, state, controls, id, i),
+                Some(Page::MarkerShape(i)) => rules::shape_body(ui, state, controls, id, i),
+                Some(Page::MarkerFill(i)) => rules::marker_fill_body(ui, state, controls, id, i),
                 Some(Page::Table) => {}
                 _ => vector_body(ui, state, controls, id),
             },
