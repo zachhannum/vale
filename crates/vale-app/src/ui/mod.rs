@@ -17,6 +17,7 @@ use vale_style::LabelClass;
 use vale_terrain::{Bands, Heightmap, Mode};
 
 use crate::atlas_export::{ExportStep, PdfExport, RASTER_PIXEL_RATIO};
+use crate::diagnostics;
 use crate::document::Document;
 use crate::files::{Availability, ExportEvent, Files, PlainFiles, SystemEvents};
 use crate::globe::combine::{PolygonMode, StrokeArea};
@@ -3053,9 +3054,11 @@ impl AppState {
             let mut got = false;
             while let Some((req, result)) = reader.next(all) {
                 got = true;
+                diagnostics::count(diagnostics::Count::DetailReceived, 1);
                 let data = match result {
                     Ok(data) => Some(data),
                     Err(e) => {
+                        diagnostics::count(diagnostics::Count::DetailFailed, 1);
                         self.status = format!("Could not load tiles: {e}");
                         None
                     }
@@ -3072,6 +3075,7 @@ impl AppState {
     /// file, or no record of the raster layer, the tile gets the base
     /// level.
     fn send_detail(&mut self, req: crate::globe::detail::DetailRequest) {
+        diagnostics::count(diagnostics::Count::DetailSent, 1);
         let record = self.doc.project.raster(req.raster).cloned();
         match (&self.detail_reader, record) {
             (Some(reader), Some(record)) => reader.send(record, req),
@@ -3090,7 +3094,9 @@ impl AppState {
     fn want_with_export(&mut self, screen: &[crate::globe::FrameDraw]) {
         let mut frames = screen.to_vec();
         frames.extend(self.export_frame.clone());
-        self.globe.want_frames(&frames);
+        diagnostics::timed(diagnostics::Span::DetailChoice, || {
+            self.globe.want_frames(&frames);
+        });
     }
 
     /// Moves the result of an import of a heightmap to the status text.
@@ -3633,6 +3639,10 @@ fn draw_opening(ui: &mut egui::Ui, state: &AppState) {
 
 /// Draws the whole UI.
 pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
+    diagnostics::timed(diagnostics::Span::Ui, || draw_frame(ui, state));
+}
+
+fn draw_frame(ui: &mut egui::Ui, state: &mut AppState) {
     let queue = state.globe.pen.queue.as_ref();
     let switches = queue.map(|queue| queue.take_switches()).unwrap_or_default();
     state.globe.stats.tick(std::time::Instant::now());
@@ -3655,7 +3665,8 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         ui.ctx().request_repaint();
     }
     state.pump_images(state.headless);
-    state.pump_details(state.headless);
+    let all = state.headless;
+    diagnostics::timed(diagnostics::Span::DetailPump, || state.pump_details(all));
     if state.poll_open() {
         draw_opening(ui, state);
         ui.ctx().request_repaint_after(LOAD_POLL);

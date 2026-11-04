@@ -2286,6 +2286,7 @@ impl egui_wgpu::CallbackTrait for GlobeCallback {
         egui_encoder: &mut wgpu::CommandEncoder,
         resources: &mut egui_wgpu::CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
+        let start = std::time::Instant::now();
         let frame = &*self.frame;
         let stale = resources
             .get::<Resources>()
@@ -2348,6 +2349,7 @@ impl egui_wgpu::CallbackTrait for GlobeCallback {
                 resources.insert(backdrop);
             }
         }
+        crate::diagnostics::record(crate::diagnostics::Span::GpuPrepare, start.elapsed());
         Vec::new()
     }
 

@@ -4436,6 +4436,11 @@ impl Globe {
         self.details.tiles(frame, id)
     }
 
+    /// The tiles of the detail maps that wait for the project file.
+    pub fn details_in_flight(&self) -> usize {
+        self.details.in_flight()
+    }
+
     /// The memory of the detail maps on the GPU, in bytes, by the estimate
     /// of the globe.
     pub fn detail_bytes(&self) -> u64 {

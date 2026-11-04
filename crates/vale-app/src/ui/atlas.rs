@@ -2214,16 +2214,10 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
             let keys = (content, place_key);
             let primary = primary == Some(frame.id);
             let at = (place, shown);
-            compose(
-                &ctx,
-                state,
-                frame,
-                at,
-                vt,
-                keys,
-                quality,
-                (primary, layered),
-            );
+            let kind = (primary, layered);
+            crate::diagnostics::timed(crate::diagnostics::Span::Compose, || {
+                compose(&ctx, state, frame, at, vt, keys, quality, kind);
+            });
         }
         // One spill each frame, after its frame settles.
         let spill = state.atlas.spills.get(&frame.id);

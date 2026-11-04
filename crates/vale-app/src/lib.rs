@@ -5,6 +5,7 @@ pub mod atlas;
 pub mod atlas_export;
 pub mod cli;
 pub mod clipboard;
+pub mod diagnostics;
 pub mod document;
 pub mod edge_labels;
 pub mod files;
