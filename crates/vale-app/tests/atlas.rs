@@ -1069,8 +1069,35 @@ fn a_drag_on_the_paper_moves_the_page() {
 }
 
 #[test]
-fn a_pinch_in_the_selected_frame_changes_only_that_frame() {
+fn with_the_select_tool_a_pinch_and_the_wheel_in_the_selected_frame_zoom_the_page() {
     let mut h = inset_pad(BOARDS[0]);
+    assert_eq!(h.state().atlas.tool, AtlasTool::Select);
+    let (before, maps_before) = (place(&h), maps(&h));
+    let scale = frame(&h, 1).scale;
+    let at = middle(&h, 1);
+    pinch(&mut h, at, 40.0, 60.0, 0.0, Vec2::ZERO);
+    let zoom = place(&h).pts_per_mm / before.pts_per_mm;
+    assert!((zoom - 1.5).abs() < 0.01, "{zoom}");
+    let zoomed = place(&h);
+    let at = middle(&h, 1);
+    h.event(egui::Event::PointerMoved(at));
+    h.step();
+    h.event(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: vec2(0.0, 200.0),
+        phase: egui::TouchPhase::Move,
+        modifiers: Modifiers::NONE,
+    });
+    h.run_steps(10);
+    assert!(place(&h).pts_per_mm > zoomed.pts_per_mm * 1.05);
+    assert_eq!(frame(&h, 1).scale, scale);
+    assert_eq!(maps(&h), maps_before);
+}
+
+#[test]
+fn with_the_move_tool_a_pinch_in_the_selected_frame_changes_only_that_frame() {
+    let mut h = inset_pad(BOARDS[0]);
+    tap(&mut h, "Move");
     let (before, maps_before) = (place(&h), maps(&h));
     let scale = frame(&h, 1).scale;
     let at = middle(&h, 1);
@@ -1589,6 +1616,7 @@ fn a_hand_set_interval_stays_through_a_zoom() {
     assert!(set.is_some());
     assert!(control(&h, AUTO_INTERVAL).is_some());
 
+    tap(&mut h, "Move");
     let scale = frame(&h, 1).scale;
     let at = middle(&h, 1);
     pinch(&mut h, at, 40.0, 80.0, 0.0, Vec2::ZERO);
