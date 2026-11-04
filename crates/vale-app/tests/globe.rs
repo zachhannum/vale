@@ -4732,7 +4732,8 @@ fn the_brush_panel_has_the_basin_mode_and_its_sliders() {
     let outline = outline.map(|(lon, lat)| lonlat_to_dir(lon, lat)).to_vec();
     h.state_mut().globe.set_basin_outline(Some(outline));
     h.run_steps(2);
-    assert!(h.query_by_label(BASIN_RIVER_HINT).is_some());
+    // The hint shows in the panel and on the canvas, beside the button.
+    assert_eq!(h.query_all_by_label(BASIN_RIVER_HINT).count(), 2);
     h.get_by_label(CLEAR_OUTLINE).click();
     h.run_steps(2);
     assert!(h.state().globe.basin_outline().is_none());

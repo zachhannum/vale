@@ -35,7 +35,7 @@ pub const BASIN_OUTLINE_HINT: &str = "Draw the outline of the basin.";
 /// The hint of the basin mode after the outline.
 pub const BASIN_RIVER_HINT: &str = "Draw the main river.";
 /// The button that drops the outline of the next basin.
-pub const CLEAR_OUTLINE: &str = "Clear outline";
+pub const CLEAR_OUTLINE: &str = "Clear";
 /// The hint of the ocean ridge mode.
 pub const RIDGE_HINT: &str = "Draw the center line of the ridge.";
 /// The hint of a held ocean ridge or basin.
@@ -889,9 +889,6 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
     held_rows(ui, globe);
     // The outline sets the size of a basin.
     if globe.brush.mode == Mode::Basin {
-        if globe.basin_outline().is_some() && ui.button(CLEAR_OUTLINE).clicked() {
-            globe.set_basin_outline(None);
-        }
     } else {
         let mut size = globe.brush.radius_km(globe_radius, world_km);
         let range = globe.brush.radius_km_range(globe_radius, world_km);

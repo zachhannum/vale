@@ -1781,7 +1781,7 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
     }
     // The outline sets the size of a basin.
     if state.globe.brush.mode == Mode::Basin {
-        basin_rows(ui, controls, &mut state.globe);
+        basin_rows(ui, &state.globe);
     } else {
         brush_size(state, "Brush size", |n| n.slider(ui, controls));
     }
@@ -2063,19 +2063,12 @@ fn flatten_rows(
     widgets::switch_row(ui, controls, PICK_LEVEL, PICK_LEVEL, pick);
 }
 
-/// The hint of the basin mode, and the button that drops the outline of the
-/// next basin.
-fn basin_rows(ui: &mut egui::Ui, controls: &mut Controls, globe: &mut crate::globe::Globe) {
+/// The hint of the basin mode.
+fn basin_rows(ui: &mut egui::Ui, globe: &crate::globe::Globe) {
     ui.add_space(8.0);
     let text = egui::RichText::new(panels::basin_hint(globe)).color(theme::MUTE);
     ui.add(egui::Label::new(text).selectable(false));
     ui.add_space(8.0);
-    if globe.basin_outline().is_some() {
-        let clear = widgets::button_row(ui, controls, panels::CLEAR_OUTLINE, true);
-        if clear.clicked() {
-            globe.set_basin_outline(None);
-        }
-    }
 }
 
 /// The hint of a held ocean ridge. The panel of the ridge has no room for a
@@ -2712,19 +2705,62 @@ fn readout(ctx: &egui::Context, ui: &egui::Ui, state: &AppState, rects: &Rects) 
     );
 }
 
-/// The width of a button of the card of a held stroke, and of its state.
+/// The width of a button of the card of a held stroke, and the least width
+/// of its state.
 const HELD_BUTTON: f32 = 120.0;
 const HELD_STATE: f32 = 132.0;
 
+/// What the card of a basin or an ocean ridge shows.
+#[derive(Clone, Copy, PartialEq)]
+enum HeldCard {
+    /// The outline of the next basin waits for its main river.
+    Outline,
+    /// A stroke is held, and the flag is true while it follows the settings.
+    Held(bool),
+}
+
 /// The card of a held ocean ridge or basin, at the bottom of the canvas
-/// above the readout: its state, and the Discard and Apply buttons. An
-/// open panel pushes the card to its right.
+/// above the readout: its state, and the Discard and Apply buttons. The
+/// outline of the next basin shows the hint of its main river and the
+/// Clear button. An open panel pushes the card to its right.
 fn held_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
-    if state.globe.holding().is_none() {
-        return;
-    }
+    let globe = &state.globe;
+    let outline = globe.brushing() && globe.brush.mode == Mode::Basin;
+    let card = match globe.holding() {
+        Some(_) => HeldCard::Held(globe.held_updating()),
+        None if outline && globe.basin_outline().is_some() => HeldCard::Outline,
+        None => return,
+    };
+    let (text, buttons): (&str, &[(&str, egui::Color32)]) = match card {
+        HeldCard::Outline => (
+            panels::BASIN_RIVER_HINT,
+            &[(panels::CLEAR_OUTLINE, theme::WARN)],
+        ),
+        HeldCard::Held(true) => (
+            panels::UPDATING,
+            &[
+                (panels::DISCARD, theme::WARN),
+                (panels::APPLY, theme::ACCENT),
+            ],
+        ),
+        HeldCard::Held(false) => (
+            panels::READY,
+            &[
+                (panels::DISCARD, theme::WARN),
+                (panels::APPLY, theme::ACCENT),
+            ],
+        ),
+    };
+    let spinner = card == HeldCard::Held(true);
+    let lead = if spinner { 24.0 } else { 0.0 };
+    let text_width = ctx.fonts_mut(|fonts| {
+        let galley = fonts.layout_no_wrap(text.to_string(), theme::body(), theme::MUTE);
+        galley.size().x
+    });
+    let slot = HELD_STATE.max(lead + text_width.ceil() + 2.0 * BODY_PAD);
+    let count = buttons.len() as f32;
     let size = vec2(
-        HELD_STATE + 2.0 * HELD_BUTTON + 3.0 * PAD,
+        slot + count * HELD_BUTTON + (count + 1.0) * PAD,
         PANEL_ROW + 2.0 * PAD,
     );
     let mut bottom = rects.screen.bottom() - rects.bands.bottom - geometry::GAP;
@@ -2741,6 +2777,7 @@ fn held_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls,
     if let Some((_, panel)) = panels.iter().find(|(_, panel)| panel.intersects(rect)) {
         rect = rect.translate(vec2(panel.right() + geometry::GAP - rect.left(), 0.0));
     }
+    let mut clicked = None;
     widgets::card(
         ctx,
         state.globe.backdrop(),
@@ -2749,44 +2786,38 @@ fn held_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls,
         Order::Middle,
         theme::CARD_RADIUS.into(),
         |ui| {
-            let at = |x: f32| {
-                let min = pos2(rect.left() + HELD_STATE + PAD + x, rect.top() + PAD);
-                Rect::from_min_size(min, vec2(HELD_BUTTON, PANEL_ROW))
-            };
-            // A spinner shows while the stroke follows the settings.
             let middle = rect.center().y;
             let left = rect.left() + BODY_PAD;
-            let updating = state.globe.held_updating();
-            let mut text_left = left;
-            if updating {
+            // A spinner shows while the stroke follows the settings.
+            if spinner {
                 let spin = Rect::from_center_size(pos2(left + 8.0, middle), vec2(16.0, 16.0));
                 ui.put(spin, egui::Spinner::new().size(16.0).color(theme::MUTE));
-                text_left += 24.0;
             }
-            let name = if updating {
-                panels::UPDATING
-            } else {
-                panels::READY
-            };
             ui.painter().text(
-                pos2(text_left, middle),
+                pos2(left + lead, middle),
                 egui::Align2::LEFT_CENTER,
-                name,
+                text,
                 theme::body(),
                 theme::MUTE,
             );
-            let mut button = |ui: &mut egui::Ui, place: Rect, name: &str, fill| {
+            for (i, &(name, fill)) in buttons.iter().enumerate() {
+                let x = rect.left() + slot + PAD + i as f32 * (HELD_BUTTON + PAD);
+                let place =
+                    Rect::from_min_size(pos2(x, rect.top() + PAD), vec2(HELD_BUTTON, PANEL_ROW));
                 let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(place));
-                widgets::button_row_in(&mut ui, controls, name, true, fill).clicked()
-            };
-            if button(ui, at(0.0), panels::DISCARD, theme::WARN) {
-                state.globe.discard_held();
-            }
-            if button(ui, at(HELD_BUTTON + PAD), panels::APPLY, theme::ACCENT) {
-                state.globe.apply_held();
+                if widgets::button_row_in(&mut ui, controls, name, true, fill).clicked() {
+                    clicked = Some(name);
+                }
             }
         },
     );
+    let globe = &mut state.globe;
+    match clicked {
+        Some(panels::CLEAR_OUTLINE) => globe.set_basin_outline(None),
+        Some(panels::DISCARD) => globe.discard_held(),
+        Some(panels::APPLY) => globe.apply_held(),
+        _ => {}
+    }
 }
 
 /// The save mark: an arc that turns during a save, a tick when the file

@@ -993,9 +993,14 @@ pub(super) fn canvas(
 }
 
 /// The state and the Discard and Apply buttons of a held ocean ridge or
-/// basin, at the bottom of the canvas.
+/// basin, at the bottom of the canvas. The outline of the next basin shows
+/// the hint of its main river and the Clear button there.
 fn held_buttons(ui: &egui::Ui, state: &mut AppState, rect: egui::Rect) {
-    if state.globe.holding().is_none() {
+    use super::panels::{APPLY, BASIN_RIVER_HINT, CLEAR_OUTLINE, DISCARD, READY, UPDATING};
+    let globe = &mut state.globe;
+    let outline = globe.brushing() && globe.brush.mode == Mode::Basin;
+    let outline = outline && globe.basin_outline().is_some();
+    if globe.holding().is_none() && !outline {
         return;
     }
     let at = rect.center_bottom() - egui::vec2(0.0, 24.0);
@@ -1006,18 +1011,25 @@ fn held_buttons(ui: &egui::Ui, state: &mut AppState, rect: egui::Rect) {
         .show(ui.ctx(), |ui| {
             egui::Frame::popup(ui.style()).show(ui, |ui| {
                 ui.horizontal(|ui| {
+                    if globe.holding().is_none() {
+                        ui.label(BASIN_RIVER_HINT);
+                        if ui.button(CLEAR_OUTLINE).clicked() {
+                            globe.set_basin_outline(None);
+                        }
+                        return;
+                    }
                     // A spinner shows while the stroke follows the settings.
-                    if state.globe.held_updating() {
+                    if globe.held_updating() {
                         ui.add(egui::Spinner::new());
-                        ui.label(super::panels::UPDATING);
+                        ui.label(UPDATING);
                     } else {
-                        ui.label(super::panels::READY);
+                        ui.label(READY);
                     }
-                    if ui.button(super::panels::DISCARD).clicked() {
-                        state.globe.discard_held();
+                    if ui.button(DISCARD).clicked() {
+                        globe.discard_held();
                     }
-                    if ui.button(super::panels::APPLY).clicked() {
-                        state.globe.apply_held();
+                    if ui.button(APPLY).clicked() {
+                        globe.apply_held();
                     }
                 });
             });
