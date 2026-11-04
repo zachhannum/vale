@@ -9,11 +9,12 @@ use vale_style::expr::{Expr, Filter, Property, field_ref};
 use vale_style::{Color, Hatch, LayerStyle, MarkerShape, Rule, Stroke, StrokeKind};
 
 use super::pad::classify::{
-    BAD_EXPRESSION, CLASS_COUNT, CLASSIFY, CLASSIFY_BY, COLOR_RAMP, MAKE_RULES, METHOD, REVERSE,
+    BAD_EXPRESSION, CLASS_COUNT, CLASSIFY, COLOR_RAMP, FIELD, METHOD, REPLACE_RULES, REVERSE,
     Request,
 };
 use super::pad::filter::{self, ADD_CONDITION, REMOVE_CONDITION};
 use super::pad::furniture::{ANGLE, LINE_COLOR, LINE_WIDTH};
+use super::pad::raster::IMPORT_RAMP;
 use super::pad::rules::{
     ADD_RULE, ALL_FEATURES, BAD_FILTER, BAD_RANGE, BRUSH, DASH, DASHED, DASHES, DELETE_RULE,
     EXPRESSION, FILL, FILTER, GAP, LINE, MAX_SCALE, MIN_SCALE, MOVE_DOWN, MOVE_UP, NO_LIMIT, SOLID,
@@ -719,12 +720,13 @@ pub fn color_button(ui: &mut egui::Ui, c: &mut Color) -> bool {
 }
 
 /// The Classify section of the desktop layout. It returns a request when
-/// the user clicks "Make rules".
+/// the user clicks "Replace rules".
 pub fn classify(
     ui: &mut egui::Ui,
     id: LayerId,
     fields: &[Field],
     ramps: &[Ramp],
+    library: &mut Library,
 ) -> Option<Request> {
     let key = egui::Id::new(("classify", id.0));
     let (mut text, mut method, mut classes, mut ramp, mut reverse): (
@@ -745,7 +747,7 @@ pub fn classify(
         .id_salt(key)
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label(CLASSIFY_BY);
+                ui.label(FIELD);
                 egui::ComboBox::from_id_salt(("classify-field", id.0))
                     .selected_text(text.clone())
                     .width(130.0)
@@ -789,8 +791,11 @@ pub fn classify(
                         }
                     });
             });
+            if ui.button(IMPORT_RAMP).clicked() {
+                library.actions.push(Action::ImportRampDialog(None));
+            }
             ui.checkbox(&mut reverse, REVERSE);
-            if ui.button(MAKE_RULES).clicked()
+            if ui.button(REPLACE_RULES).clicked()
                 && let Some(r) = ramps.get(ramp)
             {
                 out = Some(Request {

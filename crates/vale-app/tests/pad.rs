@@ -5528,7 +5528,8 @@ fn an_imported_ramp_gives_one_color_per_band() {
     let path = dir.path().join("legend.png");
     let legend = image::RgbImage::from_fn(90, 12, |x, _| image::Rgb(colors[x as usize / 30]));
     legend.save(&path).unwrap();
-    h.state_mut().run_action(Action::ImportRamp(height, path));
+    h.state_mut()
+        .run_action(Action::ImportRamp(Some(height), path));
     h.run();
     let before = h.state().globe.map.bands.clone();
     let count = before.colors().len();
@@ -5561,7 +5562,7 @@ fn an_imported_ramp_gives_one_color_per_band() {
 #[test]
 fn a_custom_ramp_gets_labels_and_a_built_in_ramp_shows_them() {
     use vale_app::ramps::KOPPEN;
-    use vale_app::ui::pad::raster::{COLOR_RAMPS, EDIT_LABELS, SHOW_LABELS};
+    use vale_app::ui::pad::raster::{COLOR_RAMPS, EDIT_LABELS, VIEW_LABELS};
     let mut h = painted_pad(BOARDS[0]);
     let height = open_height(&mut h);
     open_stops(&mut h);
@@ -5572,7 +5573,8 @@ fn a_custom_ramp_gets_labels_and_a_built_in_ramp_shows_them() {
     let path = dir.path().join("zones.png");
     let legend = image::RgbImage::from_fn(90, 12, |x, _| image::Rgb(colors[x as usize / 30]));
     legend.save(&path).unwrap();
-    h.state_mut().run_action(Action::ImportRamp(height, path));
+    h.state_mut()
+        .run_action(Action::ImportRamp(Some(height), path));
     h.run();
     let at = h.state().ramps.list().len() - 1;
 
@@ -5591,7 +5593,7 @@ fn a_custom_ramp_gets_labels_and_a_built_in_ramp_shows_them() {
     scroll_to_control(&mut h, KOPPEN);
     tap(&mut h, KOPPEN);
     assert!(control(&h, EDIT_LABELS).is_none());
-    tap(&mut h, SHOW_LABELS);
+    tap(&mut h, VIEW_LABELS);
     assert!(matches!(h.state().pad.page, Some(Page::RampLabels(_))));
     assert!(control(&h, "Label 1").is_none());
     screenshot::save(&mut h, "pad-koppen-labels");
@@ -5611,7 +5613,7 @@ fn an_imported_ramp_stays_in_the_list_and_applies_from_its_card() {
     assert!(
         h.state()
             .actions
-            .contains(&Action::ImportRampDialog(height))
+            .contains(&Action::ImportRampDialog(Some(height)))
     );
     h.state_mut().actions.clear();
 
@@ -5621,7 +5623,8 @@ fn an_imported_ramp_stays_in_the_list_and_applies_from_its_card() {
     let legend = image::RgbImage::from_fn(90, 12, |x, _| image::Rgb(colors[x as usize / 30]));
     legend.save(&path).unwrap();
     let before = h.state().globe.map.bands.clone();
-    h.state_mut().run_action(Action::ImportRamp(height, path));
+    h.state_mut()
+        .run_action(Action::ImportRamp(Some(height), path));
     h.run();
     // The import changes no layer.
     assert_eq!(h.state().globe.map.bands, before);
@@ -5676,7 +5679,8 @@ fn an_imported_ramp_stays_in_the_list_and_applies_from_its_card() {
     let path = dir.path().join("land.png");
     let legend = image::RgbImage::from_fn(90, 12, |x, _| image::Rgb(land[x as usize / 30]));
     legend.save(&path).unwrap();
-    h.state_mut().run_action(Action::ImportRamp(height, path));
+    h.state_mut()
+        .run_action(Action::ImportRamp(Some(height), path));
     h.run();
     tap(&mut h, "land");
     check_controls(&h, "with the card of a land ramp");
@@ -5697,7 +5701,8 @@ fn an_imported_ramp_stays_in_the_list_and_applies_from_its_card() {
     assert_eq!(found, [colors[0], land[0], land[1], land[2]]);
 
     let path = dir.path().join("none.png");
-    h.state_mut().run_action(Action::ImportRamp(height, path));
+    h.state_mut()
+        .run_action(Action::ImportRamp(Some(height), path));
     h.run();
     assert!(h.state().ramp_note.as_ref().is_some_and(|n| n.warning));
 
@@ -7499,7 +7504,7 @@ fn open_classify(h: &mut Pad, layer: &str) {
 
 #[test]
 fn classify_makes_quantile_rules_in_one_undo_step() {
-    use vale_app::ui::pad::classify::{EXPRESSION, MAKE_RULES};
+    use vale_app::ui::pad::classify::{EXPRESSION, REPLACE_RULES};
     use vale_app::ui::pad::filter::conditions;
     let dir = tempfile::tempdir().unwrap();
     let mut h = saved_pad(BOARDS[0], dir.path());
@@ -7510,8 +7515,8 @@ fn classify_makes_quantile_rules_in_one_undo_step() {
     type_text(&mut h, EXPRESSION, "pop_max");
     scroll_to_control(&mut h, "Quantiles");
     tap(&mut h, "Quantiles");
-    scroll_to_control(&mut h, MAKE_RULES);
-    tap(&mut h, MAKE_RULES);
+    scroll_to_control(&mut h, REPLACE_RULES);
+    tap(&mut h, REPLACE_RULES);
     save_frames(&mut h);
     assert_eq!(h.state().pad.page, None);
     let made = rules(&h, places);
@@ -7553,7 +7558,7 @@ fn classify_makes_quantile_rules_in_one_undo_step() {
 #[test]
 fn classify_by_text_gives_a_rule_for_each_value_and_other_values() {
     use vale_app::classify::{MAX_CATEGORIES, OTHER_VALUES};
-    use vale_app::ui::pad::classify::MAKE_RULES;
+    use vale_app::ui::pad::classify::REPLACE_RULES;
     let mut h = pad(BOARDS[0]);
     let rivers = vector(&h, "Rivers");
     let layer = h.state().doc.layer(rivers).unwrap();
@@ -7567,8 +7572,8 @@ fn classify_by_text_gives_a_rule_for_each_value_and_other_values() {
     open_classify(&mut h, "Rivers");
     scroll_to_control(&mut h, "featurecla");
     tap(&mut h, "featurecla");
-    scroll_to_control(&mut h, MAKE_RULES);
-    tap(&mut h, MAKE_RULES);
+    scroll_to_control(&mut h, REPLACE_RULES);
+    tap(&mut h, REPLACE_RULES);
     let names = rule_names(&h, rivers);
     assert_eq!(
         names.len(),
@@ -7586,7 +7591,8 @@ fn classify_by_text_gives_a_rule_for_each_value_and_other_values() {
 
 #[test]
 fn classify_gives_a_value_the_color_of_its_label() {
-    use vale_app::ui::pad::classify::{MAKE_RULES, ONE_LABELED};
+    use vale_app::ui::pad::classify::{REPLACE_RULES, summary};
+    use vale_app::ui::pad::raster::{IMPORT_RAMP, USE_RAMP};
     let mut h = pad(BOARDS[0]);
     let rivers = vector(&h, "Rivers");
     let ramps = &mut h.state_mut().ramps;
@@ -7596,11 +7602,24 @@ fn classify_gives_a_value_the_color_of_its_label() {
     open_classify(&mut h, "Rivers");
     scroll_to_control(&mut h, "featurecla");
     tap(&mut h, "featurecla");
+    // The row of the ramp opens the page of the ramps, and "Use" picks one.
+    scroll_to_control(&mut h, "Bold");
+    tap(&mut h, "Bold");
+    assert_eq!(h.state().pad.page, Some(Page::Ramps));
+    tap(&mut h, IMPORT_RAMP);
+    assert!(h.state().actions.contains(&Action::ImportRampDialog(None)));
+    h.state_mut().actions.clear();
     scroll_to_control(&mut h, "Water");
     tap(&mut h, "Water");
-    scroll_to_control(&mut h, MAKE_RULES);
-    assert!(h.query_by_label(ONE_LABELED).is_some());
-    tap(&mut h, MAKE_RULES);
+    tap(&mut h, USE_RAMP);
+    assert_eq!(h.state().pad.page, Some(Page::Classify));
+    scroll_to_control(&mut h, "Water");
+    tap(&mut h, "Water");
+    tap(&mut h, "Back to Classify");
+    assert_eq!(h.state().pad.page, Some(Page::Classify));
+    scroll_to_control(&mut h, REPLACE_RULES);
+    assert!(h.query_by_label(&summary(2, 1)).is_some());
+    tap(&mut h, REPLACE_RULES);
     let made = rules(&h, rivers);
     let river = made.iter().find(|r| r.name == "River").unwrap();
     assert_eq!(
@@ -7611,7 +7630,7 @@ fn classify_gives_a_value_the_color_of_its_label() {
 
 #[test]
 fn classify_reads_an_expression() {
-    use vale_app::ui::pad::classify::{EXPRESSION, MAKE_RULES};
+    use vale_app::ui::pad::classify::{EXPRESSION, REPLACE_RULES};
     let mut h = pad(BOARDS[0]);
     let rivers = vector(&h, "Rivers");
     open_classify(&mut h, "Rivers");
@@ -7619,8 +7638,8 @@ fn classify_reads_an_expression() {
     type_text(&mut h, EXPRESSION, "scalerank * 2");
     scroll_to_control(&mut h, "Natural breaks");
     tap(&mut h, "Natural breaks");
-    scroll_to_control(&mut h, MAKE_RULES);
-    tap(&mut h, MAKE_RULES);
+    scroll_to_control(&mut h, REPLACE_RULES);
+    tap(&mut h, REPLACE_RULES);
     let made = rules(&h, rivers);
     assert!(made.len() >= 2);
     let first = made[0].filter.source().unwrap().text().to_owned();
@@ -7629,7 +7648,7 @@ fn classify_reads_an_expression() {
 
 #[test]
 fn the_classify_form_fits_a_finger() {
-    use vale_app::ui::pad::classify::{MAKE_RULES, STEP_WIDTH};
+    use vale_app::ui::pad::classify::{REPLACE_RULES, VARY_WIDTH};
     for size in BOARDS {
         let what = format!("{size:?}");
         let mut h = pad(size);
@@ -7638,11 +7657,11 @@ fn the_classify_form_fits_a_finger() {
         scroll_to_control(&mut h, "scalerank");
         tap(&mut h, "scalerank");
         screenshot::save(&mut h, &format!("pad-classify-top-{}", size.0));
-        scroll_to_control(&mut h, STEP_WIDTH);
-        tap(&mut h, STEP_WIDTH);
+        scroll_to_control(&mut h, VARY_WIDTH);
+        tap(&mut h, VARY_WIDTH);
         check_controls(&h, &what);
         screenshot::save(&mut h, &format!("pad-classify-{}", size.0));
-        scroll_to_control(&mut h, MAKE_RULES);
+        scroll_to_control(&mut h, REPLACE_RULES);
         check_controls(&h, &what);
     }
 }

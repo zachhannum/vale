@@ -1478,7 +1478,12 @@ fn raster_panel(
         ui.spacing_mut().item_spacing.y = 0.0;
         state.edit_map_raster(map, layer, raster, |state| match state.pad.page {
             Some(Page::Stops) => super::raster::stops_body(ui, state, controls, raster),
-            Some(Page::Ramps) => super::raster::ramps_body(ui, state, controls, raster),
+            Some(Page::Ramps) => super::raster::ramps_body(
+                ui,
+                state,
+                controls,
+                super::raster::RampUser::Raster(raster),
+            ),
             Some(Page::Hillshade) => {
                 super::raster::hillshade_body(ui, state, controls, raster);
             }

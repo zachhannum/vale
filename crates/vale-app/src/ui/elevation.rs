@@ -139,7 +139,10 @@ fn vector_style(ui: &mut egui::Ui, state: &mut AppState, id: LayerId) {
     let (changed, request) = scroll
         .show(ui, |ui| {
             let changed = style_editor::rules(ui, id, style, kind, &fields, &mut library);
-            (changed, style_editor::classify(ui, id, &fields, &ramps))
+            (
+                changed,
+                style_editor::classify(ui, id, &fields, &ramps, &mut library),
+            )
         })
         .inner;
     if changed {
@@ -248,7 +251,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
                     .on_hover_text(pad::raster::IMPORT_RAMP_HINT)
                     .clicked()
                 {
-                    state.actions.push(Action::ImportRampDialog(id));
+                    state.actions.push(Action::ImportRampDialog(Some(id)));
                     ui.close();
                 }
                 ramp_menus(ui, state, id);
@@ -318,7 +321,7 @@ fn ramp_menus(ui: &mut egui::Ui, state: &mut AppState, id: RasterId) {
             }
             if !ramp.built_in || ramp.labels.iter().any(|l| !l.is_empty()) {
                 ui.separator();
-                ui.label(pad::raster::COLOR_LABELS);
+                ui.label(pad::raster::LABELS);
                 for (i, (c, label)) in ramp.colors.iter().zip(&ramp.labels).enumerate() {
                     ui.horizontal(|ui| {
                         let (rect, _) =
@@ -351,7 +354,7 @@ fn ramp_menus(ui: &mut egui::Ui, state: &mut AppState, id: RasterId) {
         RampChoice::Apply(keep) => state.apply_ramp(id, index, keep, part),
         RampChoice::Reverse => state.ramps.reverse(index).map_err(|e| e.to_string()),
         RampChoice::Delete => state.ramps.remove(index).map_err(|e| e.to_string()),
-        RampChoice::Labels => Ok(()),
+        RampChoice::Labels | RampChoice::Use => Ok(()),
     };
     if let Err(text) = result {
         state.ramp_note = Some(super::Note::new(text, true, Some(id)));

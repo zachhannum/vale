@@ -1550,7 +1550,10 @@ pub(super) fn show_panel(
             Some(Page::Ramps | Page::Stops | Page::Hillshade | Page::Blend | Page::RampLabels(_)),
         ) => true,
         (Some(LayerRef::Image(_)), Some(Page::Blend)) => true,
-        (Some(LayerRef::Vector(_)), Some(Page::NewField | Page::Table | Page::Classify)) => true,
+        (
+            Some(LayerRef::Vector(_)),
+            Some(Page::NewField | Page::Table | Page::Classify | Page::Ramps | Page::RampLabels(_)),
+        ) => true,
         (Some(LayerRef::Vector(_)), Some(Page::Field(i))) => i < field_count,
         (
             Some(LayerRef::Vector(_)),
@@ -1590,12 +1593,10 @@ pub(super) fn show_panel(
         (Panel::Layers, Some(LayerRef::Raster(_))) if page == Some(Page::Ramps) => {
             ("pad-ramps", raster::COLOR_RAMPS, Some(raster::COLOR_STOPS))
         }
-        (Panel::Layers, Some(LayerRef::Raster(_))) if matches!(page, Some(Page::RampLabels(_))) => {
-            (
-                "pad-ramp-labels",
-                raster::COLOR_LABELS,
-                Some(raster::COLOR_RAMPS),
-            )
+        (Panel::Layers, Some(LayerRef::Raster(_) | LayerRef::Vector(_)))
+            if matches!(page, Some(Page::RampLabels(_))) =>
+        {
+            ("pad-ramp-labels", raster::LABELS, Some(raster::COLOR_RAMPS))
         }
         (Panel::Layers, Some(LayerRef::Raster(_))) if page == Some(Page::Stops) => {
             ("pad-stops", raster::COLOR_STOPS, Some(name))
@@ -1613,6 +1614,9 @@ pub(super) fn show_panel(
         (Panel::Layers, Some(LayerRef::Image(_))) => ("pad-image", name, Some("Layers")),
         (Panel::Layers, Some(LayerRef::Vector(_))) if page == Some(Page::Table) => {
             ("pad-table", table::TITLE, Some(name))
+        }
+        (Panel::Layers, Some(LayerRef::Vector(_))) if page == Some(Page::Ramps) => {
+            ("pad-ramps", raster::COLOR_RAMPS, Some(classify::TITLE))
         }
         (Panel::Layers, Some(LayerRef::Vector(_))) if page == Some(Page::Classify) => {
             ("pad-classify", classify::TITLE, Some(name))
@@ -1697,7 +1701,8 @@ pub(super) fn show_panel(
             None => {}
         }
         if row.back && page == Some(Page::Ramps) {
-            state.pad.page = Some(Page::Stops);
+            let vector = matches!(layer, Some(LayerRef::Vector(_)));
+            state.pad.page = Some(if vector { Page::Classify } else { Page::Stops });
         } else if row.back && matches!(page, Some(Page::RampLabels(_))) {
             state.pad.page = Some(Page::Ramps);
         } else if let (
@@ -1722,7 +1727,9 @@ pub(super) fn show_panel(
         |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| match (panel, layer) {
             (Panel::Brush, _) => brush_body(ui, state, controls),
             (Panel::Layers, Some(LayerRef::Raster(id))) => match page {
-                Some(Page::Ramps) => raster::ramps_body(ui, state, controls, id),
+                Some(Page::Ramps) => {
+                    raster::ramps_body(ui, state, controls, raster::RampUser::Raster(id))
+                }
                 Some(Page::RampLabels(i)) => raster::labels_body(ui, state, controls, i),
                 Some(Page::Stops) => raster::stops_body(ui, state, controls, id),
                 Some(Page::Hillshade) => {
@@ -1748,6 +1755,10 @@ pub(super) fn show_panel(
                 Some(Page::MarkerShape(i)) => rules::shape_body(ui, state, controls, id, i),
                 Some(Page::MarkerFill(i)) => rules::marker_fill_body(ui, state, controls, id, i),
                 Some(Page::Classify) => classify::body(ui, state, controls, id),
+                Some(Page::Ramps) => {
+                    raster::ramps_body(ui, state, controls, raster::RampUser::Classify(id))
+                }
+                Some(Page::RampLabels(i)) => raster::labels_body(ui, state, controls, i),
                 Some(Page::Table) => {}
                 _ => vector_body(ui, state, controls, id),
             },

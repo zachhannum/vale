@@ -468,7 +468,7 @@ fn apply_ramp(args: &Args, state: &mut AppState, wait: bool) -> anyhow::Result<(
     let id = state
         .selected_raster()
         .ok_or_else(|| anyhow!("--import-ramp needs a raster layer"))?;
-    state.run_action(Action::ImportRamp(id, path.clone()));
+    state.run_action(Action::ImportRamp(Some(id), path.clone()));
     // The panel of the layer shows the result.
     state.pad.layer = Some(crate::ui::LayerRef::Raster(id));
     match &state.ramp_note {

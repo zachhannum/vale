@@ -6,6 +6,7 @@ use vale_store::{GeometryKind, LayerId, Value};
 use vale_style::LayerStyle;
 use vale_style::expr::{Expr, field_ref};
 
+use super::Page;
 use super::number::Number;
 use super::raster::{heading, note, ramp_row};
 use super::rules::{CIRCLE_SIZES, WIDTHS};
@@ -17,7 +18,8 @@ use crate::ui::AppState;
 /// The title of the form, and the button of the Style section that opens it.
 pub const TITLE: &str = "Classify";
 pub const CLASSIFY: &str = "Classify…";
-pub const CLASSIFY_BY: &str = "Classify by";
+/// The heading of the chips of the fields.
+pub const FIELD: &str = "Field";
 /// The field of the expression that gives the values.
 pub const EXPRESSION: &str = "Expression";
 pub const BAD_EXPRESSION: &str = "Not a valid expression.";
@@ -25,17 +27,15 @@ pub const METHOD: &str = "Method";
 pub const CLASS_COUNT: &str = "Classes";
 pub const COLOR_RAMP: &str = "Color ramp";
 pub const REVERSE: &str = "Reverse colors";
-pub const STEP_WIDTH: &str = "Step width";
-pub const STEP_SIZE: &str = "Step size";
-pub const START_WIDTH: &str = "First width";
-pub const END_WIDTH: &str = "Last width";
-pub const START_SIZE: &str = "First size";
-pub const END_SIZE: &str = "Last size";
-pub const MAKE_RULES: &str = "Make rules";
-/// The note when one class has the value of a label of the ramp.
-pub const ONE_LABELED: &str = "1 class takes the color of its label.";
+/// The switches that make the width or the size step from the first class
+/// to the last class, and the values of the first and the last class.
+pub const VARY_WIDTH: &str = "Vary width";
+pub const VARY_SIZE: &str = "Vary size";
+pub const FROM: &str = "From";
+pub const TO: &str = "To";
+pub const REPLACE_RULES: &str = "Replace rules";
 /// The note when no feature gives a value.
-pub const NO_VALUES: &str = "No feature has a value.";
+pub const NO_VALUES: &str = "No values.";
 
 /// The values of the expression for the features of the layer.
 #[derive(Clone, Debug)]
@@ -58,6 +58,8 @@ pub struct Draft {
     /// The index of the ramp that the user picks in the library. `None`:
     /// the default ramp of the values.
     ramp: Option<usize>,
+    /// The index of the ramp that the form shows.
+    shown: usize,
     reverse: bool,
     step: bool,
     first: f64,
@@ -106,7 +108,7 @@ pub fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id
         return;
     };
 
-    heading(ui, CLASSIFY_BY);
+    heading(ui, FIELD);
     let refs: Vec<String> = layer.fields.iter().map(|f| field_ref(&f.name)).collect();
     let names: Vec<&str> = layer.fields.iter().map(|f| f.name.as_str()).collect();
     let active = refs
@@ -174,19 +176,20 @@ pub fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id
         .ramp
         .filter(|r| *r < list.len())
         .unwrap_or_else(|| default_ramp(list, !number));
+    draft.shown = ramp;
     heading(ui, COLOR_RAMP);
-    for (i, r) in list.iter().enumerate() {
-        if ramp_row(ui, controls, &r.name, &r.colors, i == ramp).clicked() {
-            draft.ramp = Some(i);
-        }
+    if let Some(r) = list.get(ramp)
+        && ramp_row(ui, controls, &r.name, &r.colors, false).clicked()
+    {
+        state.pad.page = Some(Page::Ramps);
     }
     ui.add_space(8.0);
     widgets::switch_row(ui, controls, REVERSE, REVERSE, &mut draft.reverse);
 
     if number {
         let (switch, names, range) = match kind {
-            GeometryKind::Point => (STEP_SIZE, [START_SIZE, END_SIZE], CIRCLE_SIZES),
-            _ => (STEP_WIDTH, [START_WIDTH, END_WIDTH], WIDTHS),
+            GeometryKind::Point => (VARY_SIZE, [FROM, TO], CIRCLE_SIZES),
+            _ => (VARY_WIDTH, [FROM, TO], WIDTHS),
         };
         widgets::switch_row(ui, controls, switch, switch, &mut draft.step);
         if draft.step {
@@ -225,26 +228,21 @@ pub fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id
         }
         _ => Vec::new(),
     };
-    let count = state.doc.entry(id).map_or(0, |e| e.style.style.rules.len());
-    ui.add_space(8.0);
-    match &values {
-        Some(Values::Bad) | None => {}
-        Some(_) if classes.is_empty() => note(ui, NO_VALUES),
-        Some(_) => note(ui, &summary(count, classes.len())),
-    }
     let labeled = state.ramps.list().get(ramp).map_or(0, |r| {
         classes
             .iter()
             .filter(|c| c.value.as_deref().is_some_and(|v| r.labeled(v).is_some()))
             .count()
     });
-    match labeled {
-        0 => {}
-        1 => note(ui, ONE_LABELED),
-        n => note(ui, &format!("{n} classes take the colors of their labels.")),
+    ui.add_space(8.0);
+    match &values {
+        Some(Values::Bad) | None => {}
+        Some(_) if classes.is_empty() => note(ui, NO_VALUES),
+        Some(_) => note(ui, &summary(classes.len(), labeled)),
     }
     let free = !state.pad.rules_fixed;
-    let made = widgets::button_row(ui, controls, MAKE_RULES, free && !classes.is_empty()).clicked();
+    let made =
+        widgets::button_row(ui, controls, REPLACE_RULES, free && !classes.is_empty()).clicked();
     if made {
         let step = match (draft.step && number, kind) {
             (false, _) => Step::None,
@@ -275,6 +273,35 @@ pub struct Request {
     pub ramp: Ramp,
     pub reverse: bool,
     pub step: Step,
+}
+
+/// The index of the ramp of the Classify form of layer `id`.
+pub(super) fn ramp_of(state: &AppState, id: LayerId) -> usize {
+    let draft = &state.pad.rules.classify;
+    if draft.layer == Some(id) {
+        draft.shown
+    } else {
+        0
+    }
+}
+
+/// Picks ramp `index` for the Classify form of layer `id`.
+pub(super) fn use_ramp(state: &mut AppState, id: LayerId, index: usize) {
+    let draft = &mut state.pad.rules.classify;
+    if draft.layer == Some(id) {
+        draft.ramp = Some(index);
+    }
+}
+
+/// Keeps the ramp of the Classify form when the library deletes ramp
+/// `index`.
+pub(super) fn ramp_removed(state: &mut AppState, index: usize) {
+    let draft = &mut state.pad.rules.classify;
+    draft.ramp = match draft.ramp {
+        Some(r) if r == index => None,
+        Some(r) if r > index => Some(r - 1),
+        other => other,
+    };
 }
 
 /// The ramp that the form starts on: the first qualitative ramp for
@@ -321,14 +348,15 @@ pub fn apply(state: &mut AppState, id: LayerId, request: &Request) -> bool {
     true
 }
 
-/// The note above the button: the count of the rules before and after.
-fn summary(before: usize, after: usize) -> String {
-    let rules = |n: usize| {
-        if n == 1 {
-            "1 rule".to_owned()
-        } else {
-            format!("{n} rules")
-        }
+/// The note above the button: the count of the new rules, and of the rules
+/// whose value matches a label.
+pub fn summary(rules: usize, labeled: usize) -> String {
+    let mut text = match rules {
+        1 => "1 rule".to_owned(),
+        n => format!("{n} rules"),
     };
-    format!("Replaces {} with {}.", rules(before), rules(after))
+    if labeled > 0 {
+        text.push_str(&format!(" · {labeled} labeled"));
+    }
+    text
 }

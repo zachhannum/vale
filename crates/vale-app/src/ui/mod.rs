@@ -92,11 +92,13 @@ pub enum Action {
     /// in degrees, the grid of an equirectangular image.
     ImportGeoJson(PathBuf),
     /// Asks for a legend image for a new color ramp. The panel of this
-    /// raster layer shows the result.
-    ImportRampDialog(RasterId),
+    /// raster layer shows the result, or the ramp page of the Classify form
+    /// with no layer.
+    ImportRampDialog(Option<RasterId>),
     /// Adds the colors of the blocks of this legend image to the color
-    /// ramps. The panel of this raster layer shows the result.
-    ImportRamp(RasterId, PathBuf),
+    /// ramps. The panel of this raster layer, or the ramp page of the
+    /// Classify form with no layer, shows the result.
+    ImportRamp(Option<RasterId>, PathBuf),
     /// Asks for an SVG file to add to the symbols of the project.
     AddSymbolDialog,
     /// Adds this SVG file to the symbols of the project, and saves.
@@ -3500,9 +3502,9 @@ impl AppState {
                 let note = match self.import_ramp(&path) {
                     Ok((name, count)) => {
                         let text = format!("Added {name} ({count} colors)");
-                        Note::new(text, false, Some(id))
+                        Note::new(text, false, id)
                     }
-                    Err(text) => Note::new(text, true, Some(id)),
+                    Err(text) => Note::new(text, true, id),
                 };
                 self.status = note.text.clone();
                 self.ramp_note = Some(note);

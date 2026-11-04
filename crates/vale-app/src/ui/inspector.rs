@@ -96,7 +96,7 @@ fn layer_section(ui: &mut egui::Ui, state: &mut AppState) {
         actions: &mut state.actions,
     };
     let mut changed = style_editor::rules(ui, info.id, style, info.kind, &fields, &mut library);
-    let classes = style_editor::classify(ui, info.id, &fields, &ramps);
+    let classes = style_editor::classify(ui, info.id, &fields, &ramps, &mut library);
 
     ui.add_space(4.0);
     let label = &mut style.label;
