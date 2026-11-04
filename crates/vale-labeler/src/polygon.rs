@@ -1015,27 +1015,58 @@ impl Grid {
     }
 
     /// The longest part of `curve` that is inside the shape and at least `pad` from its edge.
+    /// It samples the curve at each half cell, but only where the curve is near the grid.
     fn longest_run(&self, curve: &Measured, pad: f64) -> Option<(f64, f64)> {
         let step = 0.5 * self.cell;
         let n = (curve.length() / step).floor() as usize;
         let mut best: Option<(f64, f64)> = None;
-        let mut open: Option<f64> = None;
-        for k in 0..=n + 1 {
-            let s = k as f64 * step;
-            let inside = k <= n && self.holds(curve.point_at(s), pad);
-            match (inside, open) {
-                (true, None) => open = Some(s),
-                (false, Some(a)) => {
-                    let b = s - step;
-                    if best.is_none_or(|(x, y)| b - a > y - x) {
-                        best = Some((a, b));
+        for (first, last) in self.steps_near(curve, step, n) {
+            let mut open: Option<f64> = None;
+            // The step after `last` is off the grid or past the end, so it closes a run.
+            for k in first..=last + 1 {
+                let s = k as f64 * step;
+                let inside = k <= n && self.holds(curve.point_at(s), pad);
+                match (inside, open) {
+                    (true, None) => open = Some(s),
+                    (false, Some(a)) => {
+                        let b = s - step;
+                        if best.is_none_or(|(x, y)| b - a > y - x) {
+                            best = Some((a, b));
+                        }
+                        open = None;
                     }
-                    open = None;
+                    _ => {}
                 }
-                _ => {}
             }
         }
         best.filter(|(a, b)| b > a)
+    }
+
+    /// The ranges of the steps `0..=n` of `step` along `curve` that are within one step of the
+    /// grid, in order and apart. A step outside them is off the grid.
+    fn steps_near(&self, curve: &Measured, step: f64, n: usize) -> Vec<(usize, usize)> {
+        let size = kurbo::Size::new(self.w as f64 * self.cell, self.h as f64 * self.cell);
+        let near = Rect::from_origin_size(self.origin, size).inflate(step, step);
+        let mut out: Vec<(usize, usize)> = Vec::new();
+        for i in 0..curve.pts.len().saturating_sub(1) {
+            let (a, b) = (curve.pts[i], curve.pts[i + 1]);
+            let Some((t0, t1)) = clip_segment(a, b, near) else {
+                continue;
+            };
+            let len = curve.cum[i + 1] - curve.cum[i];
+            let s0 = curve.cum[i] + t0 * len;
+            let s1 = curve.cum[i] + t1 * len;
+            let first = ((s0 / step).floor().max(0.0) as usize).saturating_sub(1);
+            let last = ((s1 / step).ceil().max(0.0) as usize + 1).min(n);
+            if first > last {
+                continue;
+            }
+            match out.last_mut() {
+                Some(prev) if first <= prev.1 + 1 => prev.1 = prev.1.max(last),
+                _ => out.push((first, last)),
+            }
+        }
+        out
     }
 
     /// True if `p` is in the shape and at least `pad` from its edge.
@@ -1209,4 +1240,28 @@ fn farthest(cost: &[f64]) -> Option<usize> {
         }
     }
     best
+}
+
+/// The part of the segment `a`-`b` inside `area`, as the parameters of its ends, by the
+/// Liang-Barsky method.
+fn clip_segment(a: Point, b: Point, area: Rect) -> Option<(f64, f64)> {
+    let d = b - a;
+    let (mut t0, mut t1) = (0.0_f64, 1.0_f64);
+    for (p, q) in [
+        (-d.x, a.x - area.x0),
+        (d.x, area.x1 - a.x),
+        (-d.y, a.y - area.y0),
+        (d.y, area.y1 - a.y),
+    ] {
+        if p == 0.0 {
+            if q < 0.0 {
+                return None;
+            }
+        } else if p < 0.0 {
+            t0 = t0.max(q / p);
+        } else {
+            t1 = t1.min(q / p);
+        }
+    }
+    (t0 <= t1).then_some((t0, t1))
 }
