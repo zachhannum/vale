@@ -133,7 +133,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         view_width: 0.0,
         panel: false,
         sheet_offset: 0.0,
-        measure: false,
+        cells: 0,
         strip: false,
         extra: 0,
         tools: geometry::TOOLS,

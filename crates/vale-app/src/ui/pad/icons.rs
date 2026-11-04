@@ -58,6 +58,10 @@ pub enum Icon {
     Measure,
     /// A square with a line across it.
     Split,
+    /// A line with square handles at its vertices.
+    Vertex,
+    /// Two squares with one side in common and a handle on it.
+    Shared,
     /// The handle of a row that a drag moves.
     Grip,
 }
@@ -119,6 +123,8 @@ impl Icon {
             Icon::PolygonAdd => "M3 8l7-4 5 5-2 7-8-1zM19 13v8M15 17h8",
             Icon::PolygonSubtract => "M3 8l7-4 5 5-2 7-8-1zM15 17h8",
             Icon::Split => "M4 6h16v12H4zM14 2L10 22",
+            Icon::Vertex => "M4 18L10 8l10 4M2 16h4v4H2zM8 6h4v4H8zM18 10h4v4h-4z",
+            Icon::Shared => "M3 5h9v14H3zM12 5h9v14h-9zM10.5 10.5h3v3h-3z",
             Icon::Measure => "M3 17L17 3l4 4L7 21zM7 13l2 2M10 10l3 3M13 7l2 2",
             Icon::Magnet => {
                 "M5 4h4v8c0 1.66 1.34 3 3 3s3-1.34 3-3V4h4v8c0 3.87-3.13 7-7 7s-7-3.13-7-7zM5 8h4M15 8h4"
@@ -431,6 +437,8 @@ mod tests {
             Icon::PolygonSubtract,
             Icon::Measure,
             Icon::Split,
+            Icon::Vertex,
+            Icon::Shared,
             Icon::Grip,
         ] {
             let lines = parse(icon.path());

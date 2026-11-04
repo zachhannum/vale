@@ -51,6 +51,8 @@ pub struct Painting {
     pub pen: bool,
     /// The primary mouse button paints.
     pub mouse: bool,
+    /// The finger that a tool takes. It does not move the view.
+    pub finger: Option<u64>,
 }
 
 /// True if a screen position is on the canvas, with no other layer above.
@@ -124,7 +126,7 @@ impl Nav {
                 if on_canvas && self.pen.is_some() {
                     self.palms += 1;
                 }
-                if !on_canvas || self.pen.is_some() {
+                if !on_canvas || self.pen.is_some() || self.painting.finger == Some(id) {
                     return;
                 }
                 if pen {
@@ -409,6 +411,7 @@ mod tests {
             painting: Painting {
                 pen: true,
                 mouse: false,
+                finger: None,
             },
             ..Nav::default()
         };

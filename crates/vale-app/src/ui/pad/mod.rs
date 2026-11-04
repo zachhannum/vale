@@ -49,7 +49,9 @@ pub mod theme;
 pub mod widgets;
 
 use flyout::{Choice, Flyout, Flyouts};
-use geometry::{BrushCard, CELL, Input, MEASURE_CELLS, PAD, ROW, Rects, TOOLS, TOUCH, WidthClass};
+use geometry::{
+    BrushCard, CELL, Input, MEASURE_CELLS, PAD, ROW, Rects, TOOLS, TOUCH, VERTEX_CELLS, WidthClass,
+};
 use icons::Icon;
 use number::{Number, Scale};
 use widgets::{BODY_PAD, Controls, PANEL_ROW};
@@ -64,6 +66,15 @@ pub const POLYGON: &str = "Polygon";
 pub const POINT: &str = "Point";
 /// The tool that splits lines and polygons along a stroke.
 pub const SPLIT: &str = "Split";
+/// The tool that edits the vertices of lines and polygons.
+pub const VERTEX: &str = "Vertex";
+/// The switch of the Vertex tool that moves the vertices at one position in
+/// all features together.
+pub const MOVE_SHARED: &str = "Move shared vertices";
+/// The button of the Vertex tool that deletes the selected vertices.
+pub const DELETE_VERTEX: &str = "Delete vertex";
+/// The button of the Vertex tool that smooths the selected part.
+pub const SMOOTH_VERTICES: &str = "Smooth vertices";
 
 /// A tool of the Vector cell.
 pub struct VectorTool {
@@ -77,7 +88,7 @@ pub struct VectorTool {
 }
 
 /// The tools of the Vector cell.
-pub const VECTOR_TOOLS: [VectorTool; 4] = [
+pub const VECTOR_TOOLS: [VectorTool; 5] = [
     VectorTool {
         tool: Tool::Line,
         name: LINE,
@@ -98,6 +109,13 @@ pub const VECTOR_TOOLS: [VectorTool; 4] = [
         icon: Icon::Point,
         kinds: &[GeometryKind::Point],
         draws: true,
+    },
+    VectorTool {
+        tool: Tool::Vertex,
+        name: VERTEX,
+        icon: Icon::Vertex,
+        kinds: &[GeometryKind::Line, GeometryKind::Polygon],
+        draws: false,
     },
     VectorTool {
         tool: Tool::Split,
@@ -546,13 +564,13 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
             + if flat { 3.0 * TOUCH + 9.0 + PAD } else { 0.0 },
         panel: state.pad.brush || state.pad.right.is_some(),
         sheet_offset: state.pad.sheet_offset,
-        measure: state.globe.measuring(),
+        cells: card_cells(&state.globe),
         strip: has_strip(&state.globe),
         extra: extra_cells(state),
         tools: TOOLS,
     };
     // The Brush panel holds the settings of the context strip.
-    if !has_strip(&state.globe) && !state.globe.measuring() {
+    if !has_strip(&state.globe) && card_cells(&state.globe) == 0 {
         state.pad.brush = false;
         input.panel = state.pad.right.is_some();
     }
@@ -585,7 +603,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     brush_card(&ctx, state, &mut controls, &rects);
     // A button above can open or close a panel. The panels use the new state.
     input.panel = state.pad.brush || state.pad.right.is_some();
-    input.measure = state.globe.measuring();
+    input.cells = card_cells(&state.globe);
     input.sheet_offset = state.pad.sheet_offset;
     rects = geometry::layout(&input);
     table::check(state);
@@ -838,6 +856,18 @@ fn has_strip(globe: &crate::globe::Globe) -> bool {
     globe.brushing() || globe.editing()
 }
 
+/// The number of cells of the card of a tool with a card of cells in the
+/// place of the context strip.
+fn card_cells(globe: &crate::globe::Globe) -> usize {
+    if globe.measuring() {
+        MEASURE_CELLS
+    } else if globe.vertexing() {
+        VERTEX_CELLS
+    } else {
+        0
+    }
+}
+
 /// The cells that the context strip has in each tool: Deselect while
 /// features are selected.
 fn extra_cells(state: &AppState) -> usize {
@@ -1048,8 +1078,8 @@ fn brush_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
     let Some(rect) = rects.brush else {
         return;
     };
-    if rects.measure_cells > 0 {
-        measure_card(ctx, state, controls, rects);
+    if rects.card_cells > 0 {
+        cell_card(ctx, state, controls, rects);
         return;
     }
     let radius = theme::CARD_RADIUS.into();
@@ -1201,14 +1231,15 @@ fn brush_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
     );
 }
 
-/// The card of the Measure tool in the place of the brush card.
-pub(super) fn measure_card(
+/// The card of cells of the Measure tool or the Vertex tool, in the place
+/// of the brush card.
+pub(super) fn cell_card(
     ctx: &egui::Context,
     state: &mut AppState,
     controls: &mut Controls,
     rects: &Rects,
 ) {
-    let Some(rect) = rects.brush.filter(|_| rects.measure_cells > 0) else {
+    let Some(rect) = rects.brush.filter(|_| rects.card_cells > 0) else {
         return;
     };
     widgets::card(
@@ -1220,9 +1251,21 @@ pub(super) fn measure_card(
         theme::CARD_RADIUS.into(),
         |ui| {
             let mut ui = padded(ui);
-            let all = MEASURE_CELLS + extra_cells(state);
-            let mut cells = |ui: &mut egui::Ui| measure_cells(ui, state, controls, rects);
-            if rects.measure_cells < all {
+            let vertexing = state.globe.vertexing() && state.workspace == Workspace::Globe;
+            let own = if vertexing {
+                VERTEX_CELLS
+            } else {
+                MEASURE_CELLS
+            };
+            let all = own + extra_cells(state);
+            let mut cells = |ui: &mut egui::Ui| {
+                if vertexing {
+                    vertex_cells(ui, state, controls, rects);
+                } else {
+                    measure_cells(ui, state, controls, rects);
+                }
+            };
+            if rects.card_cells < all {
                 egui::ScrollArea::vertical()
                     .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
                     .show(&mut ui, cells);
@@ -1231,6 +1274,60 @@ pub(super) fn measure_card(
             }
         },
     );
+}
+
+/// The cells of the card of the Vertex tool: the snap switch, the switch of
+/// the move of shared vertices, Delete vertex, Smooth vertices, and the
+/// Brush button, which opens the snapping settings.
+fn vertex_cells(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
+    let snap = &mut state.globe.snap.on;
+    if widgets::tool_cell(ui, controls, SNAP, SNAP, Icon::Magnet, *snap, true).clicked() {
+        *snap = !*snap;
+    }
+    let shared = &mut state.globe.vertex.shared;
+    if widgets::tool_cell(
+        ui,
+        controls,
+        MOVE_SHARED,
+        "Shared",
+        Icon::Shared,
+        *shared,
+        true,
+    )
+    .clicked()
+    {
+        *shared = !*shared;
+    }
+    let can = state.can_delete_vertices();
+    if widgets::tool_cell(
+        ui,
+        controls,
+        DELETE_VERTEX,
+        "Delete",
+        Icon::Delete,
+        false,
+        can,
+    )
+    .clicked()
+    {
+        state.delete_vertices();
+    }
+    let can = state.can_smooth_vertices();
+    if widgets::tool_cell(
+        ui,
+        controls,
+        SMOOTH_VERTICES,
+        "Smooth",
+        Icon::Smooth,
+        false,
+        can,
+    )
+    .clicked()
+    {
+        state.smooth_vertices();
+    }
+    deselect_cell(ui, state, controls);
+    brush_button(ui, state, controls, rects);
 }
 
 /// The cells of the card of the Measure tool: the snap switch, the Clear
@@ -1256,6 +1353,11 @@ fn measure_cells(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Control
         path.clear();
     }
     deselect_cell(ui, state, controls);
+    brush_button(ui, state, controls, rects);
+}
+
+/// The Brush button of a card of cells, which opens the Brush panel.
+fn brush_button(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
     let open = state.pad.brush;
     let button = widgets::tool_cell(
         ui,
@@ -1336,6 +1438,7 @@ pub(super) fn show_panel(
         (Panel::Brush, _) if state.globe.filling() => (panel.key(), POLYGON, None),
         (Panel::Brush, _) if state.globe.placing() => (panel.key(), POINT, None),
         (Panel::Brush, _) if state.globe.splitting() => (panel.key(), SPLIT, None),
+        (Panel::Brush, _) if state.globe.vertexing() => (panel.key(), VERTEX, None),
         (Panel::Brush, _) => (panel.key(), "Brush", None),
         (Panel::Layers, Some(LayerRef::Raster(_))) if page == Some(Page::Ramps) => {
             ("pad-ramps", raster::COLOR_RAMPS, Some(raster::COLOR_STOPS))
@@ -1616,8 +1719,10 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
     let measuring = state.measuring();
     let line = state.globe.drawing();
     let stroke = state.globe.stroking();
-    if stroke || measuring || state.globe.placing() {
-        if stroke {
+    let vertexing = state.globe.vertexing();
+    if stroke || measuring || state.globe.placing() || vertexing {
+        // Smooth vertices smooths as the line tool does.
+        if stroke || vertexing {
             let smoothing = &mut state.globe.line.smoothing;
             let number = percent("Line smoothing", *smoothing)
                 .label(SMOOTHING)

@@ -140,6 +140,45 @@ pub struct LayerTargets {
 
 /// A point, a line, or a polygon ring. A line is a chain of the stored
 /// parts.
+/// The targets that a snap leaves out.
+#[derive(Clone, Copy, Debug, Default)]
+pub enum Exclude {
+    #[default]
+    None,
+    /// All of a feature.
+    Feature(Uuid),
+    /// Each vertex at the stored position `at`, and each edge with an end
+    /// there, in the feature `feature`, or in all features.
+    Vertex { at: LonLat, feature: Option<Uuid> },
+}
+
+impl From<Option<Uuid>> for Exclude {
+    fn from(uuid: Option<Uuid>) -> Self {
+        uuid.map_or(Exclude::None, Exclude::Feature)
+    }
+}
+
+impl Exclude {
+    fn skips_vertex(&self, path: &TargetPath, k: usize) -> bool {
+        match *self {
+            Exclude::None => false,
+            Exclude::Feature(uuid) => path.uuid == uuid,
+            Exclude::Vertex { at, feature } => {
+                feature.is_none_or(|f| f == path.uuid) && super::vertex::same(path.ll[k], at)
+            }
+        }
+    }
+
+    fn skips_edge(&self, path: &TargetPath, k: usize) -> bool {
+        match self {
+            Exclude::Vertex { .. } => {
+                self.skips_vertex(path, k) || self.skips_vertex(path, (k + 1) % path.ll.len())
+            }
+            _ => self.skips_vertex(path, k),
+        }
+    }
+}
+
 pub(super) struct TargetPath {
     pub(super) uuid: Uuid,
     /// The stored positions. A seam at 180 degrees and a pole keep both of
@@ -370,6 +409,18 @@ impl Targets {
     /// color stop, the nearer one wins. The feature `exclude` is not a
     /// target.
     pub fn snap(&self, p: V3, scale: f64, s: &SnapSettings, exclude: Option<Uuid>) -> Option<Snap> {
+        self.snap_excluding(p, scale, s, &exclude.into())
+    }
+
+    /// The position that `p` snaps to, as [`Targets::snap`], with the
+    /// targets that `exclude` names left out.
+    pub fn snap_excluding(
+        &self,
+        p: V3,
+        scale: f64,
+        s: &SnapSettings,
+        exclude: &Exclude,
+    ) -> Option<Snap> {
         if !s.on {
             return None;
         }
@@ -413,7 +464,7 @@ impl Targets {
         p: V3,
         scale: f64,
         s: &SnapSettings,
-        exclude: Option<Uuid>,
+        exclude: &Exclude,
     ) -> Option<LineHit> {
         let reach = s.distance / scale;
         let edge = s.edges.then(|| self.edge(p, reach, exclude)).flatten();
@@ -476,7 +527,7 @@ impl Targets {
 
     /// The nearest vertex within `reach`: an end of a target edge, or a
     /// point.
-    pub(super) fn vertex(&self, p: V3, reach: f64, exclude: Option<Uuid>) -> Option<Hit> {
+    pub(super) fn vertex(&self, p: V3, reach: f64, exclude: &Exclude) -> Option<Hit> {
         let mut best: Option<Hit> = None;
         for (li, layer) in self.layers.iter().enumerate() {
             let (edges, points) = layer.near(p, reach);
@@ -488,7 +539,10 @@ impl Targets {
             for (i, k) in ends.chain(points.iter().map(|&i| (i, 0))) {
                 let path = &layer.paths[i as usize];
                 let d = angle(p, path.dirs[k as usize]);
-                if d > reach || Some(path.uuid) == exclude || best.is_some_and(|b| b.dist <= d) {
+                if d > reach
+                    || exclude.skips_vertex(path, k as usize)
+                    || best.is_some_and(|b| b.dist <= d)
+                {
                     continue;
                 }
                 best = Some(Hit {
@@ -505,13 +559,13 @@ impl Targets {
     }
 
     /// The nearest point on a target edge within `reach`.
-    pub(super) fn edge(&self, p: V3, reach: f64, exclude: Option<Uuid>) -> Option<Hit> {
+    pub(super) fn edge(&self, p: V3, reach: f64, exclude: &Exclude) -> Option<Hit> {
         let mut best: Option<Hit> = None;
         for (li, layer) in self.layers.iter().enumerate() {
             for e in layer.near(p, reach).0 {
                 let (i, k) = layer.edges[e as usize];
                 let path = &layer.paths[i as usize];
-                if Some(path.uuid) == exclude {
+                if exclude.skips_edge(path, k as usize) {
                     continue;
                 }
                 let (a, b) = path.ends(k as usize);
@@ -1013,9 +1067,9 @@ impl Tracer {
         let (s, targets) = (&self.settings, &self.targets);
         let vertex = s
             .vertices
-            .then(|| targets.vertex(p, self.reach(), self.exclude))
+            .then(|| targets.vertex(p, self.reach(), &self.exclude.into()))
             .flatten();
-        let line = targets.line(p, self.scale, s, self.exclude);
+        let line = targets.line(p, self.scale, s, &self.exclude.into());
         self.point = vertex.map(|v| v.dir).or(line.map(|l| l.dir()));
         let Some(line) = line else {
             return;
@@ -1509,7 +1563,9 @@ pub(super) mod tests {
                     })
                     .filter(|&d| d <= reach)
                     .fold(f64::INFINITY, f64::min);
-                let found = t.edge(p, reach, None).map_or(f64::INFINITY, |h| h.dist);
+                let found = t
+                    .edge(p, reach, &Exclude::None)
+                    .map_or(f64::INFINITY, |h| h.dist);
                 assert_eq!(found, scan, "reach {reach}");
             }
         }
@@ -1698,6 +1754,44 @@ pub(super) mod tests {
         assert_eq!(kinds(&runs), "FTF");
         // The blend into the target takes the first vertex.
         assert_eq!(exact(&runs), part[1..4]);
+    }
+
+    #[test]
+    fn a_moving_vertex_and_its_edges_are_not_targets() {
+        let square = |x0: f64, x1: f64| {
+            Geometry::Polygons(vec![vec![vec![
+                [x0, 0.0],
+                [x1, 0.0],
+                [x1, 10.0],
+                [x0, 10.0],
+                [x0, 0.0],
+            ]]])
+        };
+        let l = layer(
+            1,
+            GeometryKind::Polygon,
+            vec![square(0.0, 10.0), square(10.0, 20.0)],
+        );
+        let a = l.features[0].uuid();
+        let t = targets(&[l]);
+        let s = SnapSettings::default();
+        let near = north(10.0, 0.0, 4.0, SCALE);
+        let snap = |exclude: &Exclude| t.snap_excluding(near, SCALE, &s, exclude);
+        assert_eq!(snap(&Exclude::None).unwrap().exact, Some([10.0, 0.0]));
+        let all = Exclude::Vertex {
+            at: [10.0, 0.0],
+            feature: None,
+        };
+        assert!(snap(&all).is_none());
+        // The vertex of the other square stays a target.
+        let own = Exclude::Vertex {
+            at: [10.0, 0.0],
+            feature: Some(a),
+        };
+        assert_eq!(snap(&own).unwrap().exact, Some([10.0, 0.0]));
+        // The other vertices stay targets.
+        let far = t.snap_excluding(north(20.0, 0.0, 4.0, SCALE), SCALE, &s, &all);
+        assert_eq!(far.unwrap().exact, Some([20.0, 0.0]));
     }
 
     #[test]

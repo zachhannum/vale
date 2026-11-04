@@ -54,7 +54,7 @@ pub fn title(count: usize) -> String {
 impl AppState {
     /// The layer that the Select tool selects in: the selected vector
     /// layer, if it is visible.
-    fn select_layer(&self) -> Option<&Layer> {
+    pub(super) fn select_layer(&self) -> Option<&Layer> {
         let id = self.selected_vector()?;
         self.doc.layer(id).filter(|l| l.visible)
     }

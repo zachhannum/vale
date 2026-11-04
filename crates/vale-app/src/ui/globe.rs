@@ -106,7 +106,7 @@ fn brush_input(
         .collect();
     hover_input(globe, &queue);
     let brushing = globe.brushing() && globe.format.is_some();
-    if !(brushing || globe.editing()) || globe.importing() {
+    if !(brushing || globe.stroking() || globe.placing()) || globe.importing() {
         if globe.input.pen.take().is_some() || std::mem::take(&mut globe.input.mouse) {
             release(globe);
             globe.pen.stats.up();
@@ -117,6 +117,9 @@ fn brush_input(
         }
         if (globe.selecting() || globe.region) && !globe.importing() {
             return select_input(ui, rect, resp, globe, &queue, from_queue);
+        }
+        if globe.vertexing() && !globe.importing() {
+            return vertex_input(ui, rect, resp, globe, &queue, from_queue);
         }
         return Painting::default();
     }
@@ -253,6 +256,7 @@ fn brush_input(
     Painting {
         pen: true,
         mouse: globe.input.mouse,
+        finger: None,
     }
 }
 
@@ -368,6 +372,98 @@ fn select_input(
     Painting {
         pen: true,
         mouse: globe.select_press.mouse(),
+        finger: None,
+    }
+}
+
+/// Reads the pen, the touches, and the mouse for the Vertex tool. A pen and
+/// the mouse belong to the tool. A finger that starts on a handle drags
+/// it, and other fingers move the view.
+fn vertex_input(
+    ui: &egui::Ui,
+    rect: egui::Rect,
+    resp: &egui::Response,
+    globe: &mut Globe,
+    queue: &[(egui::Pos2, PenEvent)],
+    from_queue: bool,
+) -> Painting {
+    let on = |pos| on_canvas(ui, rect, pos);
+    let handles = std::mem::take(&mut globe.vertex.handles);
+    let on_handle = |pos: egui::Pos2| {
+        let reach = super::vertex::HANDLE_REACH;
+        handles.iter().any(|h| h.distance(pos) <= reach)
+    };
+    let press = &mut globe.vertex.press;
+    for (pos, event) in queue {
+        match event.phase {
+            PenPhase::Down if on(*pos) => {
+                press.down(QUEUE_PEN, *pos, Pointer::Pen, on_handle(*pos))
+            }
+            PenPhase::Move => press.moved(QUEUE_PEN, *pos),
+            PenPhase::Up => press.up(QUEUE_PEN, *pos),
+            PenPhase::Cancel => press.cancel(QUEUE_PEN),
+            _ => {}
+        }
+    }
+    let mut touched = false;
+    let events = ui.input(|i| i.events.clone());
+    for event in &events {
+        let egui::Event::Touch {
+            id,
+            phase,
+            pos,
+            force,
+            ..
+        } = event
+        else {
+            continue;
+        };
+        touched = true;
+        if from_queue && force.is_some() {
+            continue;
+        }
+        let pointer = if force.is_some() {
+            Pointer::Pen
+        } else {
+            Pointer::Finger
+        };
+        match phase {
+            egui::TouchPhase::Start if on(*pos) => press.down(id.0, *pos, pointer, on_handle(*pos)),
+            egui::TouchPhase::Move => press.moved(id.0, *pos),
+            egui::TouchPhase::End => press.up(id.0, *pos),
+            egui::TouchPhase::Cancel => press.cancel(id.0),
+            egui::TouchPhase::Start => {}
+        }
+    }
+    // The first touch is also the egui pointer, and the view does not have
+    // the finger on a handle. A drag with Shift turns the view.
+    if !touched && !globe.nav.touching() && press.claimed_finger().is_none() {
+        let (pos, pressed, released, shift) = ui.input(|i| {
+            let p = &i.pointer;
+            let (pressed, released) = (p.primary_pressed(), p.primary_released());
+            (p.latest_pos(), pressed, released, i.modifiers.shift)
+        });
+        match pos {
+            Some(pos) => {
+                if pressed && !shift && resp.contains_pointer() {
+                    press.down(MOUSE, pos, Pointer::Mouse, on_handle(pos));
+                }
+                press.moved(MOUSE, pos);
+                if released {
+                    press.up(MOUSE, pos);
+                }
+            }
+            None if released => press.cancel(MOUSE),
+            None => {}
+        }
+    }
+    globe.vertex.handles = handles;
+    let hover = globe.pen.hover.filter(|pos| on(*pos));
+    globe.input.pos = resp.hover_pos().or(hover);
+    Painting {
+        pen: true,
+        mouse: globe.vertex.press.mouse(),
+        finger: globe.vertex.press.claimed_finger(),
     }
 }
 
@@ -907,6 +1003,8 @@ pub(super) fn canvas_input(
     if rect.width() < 8.0 || rect.height() < 8.0 {
         return None;
     }
+    state.refresh_vertex_handles();
+    let globe = &mut state.globe;
     let painting = brush_input(ui, rect, &resp, globe, now);
     match globe.world_view {
         WorldView::Globe => globe.nav.update(ui, rect, &resp, &mut globe.view, painting),
@@ -920,8 +1018,10 @@ pub(super) fn canvas_input(
     state.poll_measure();
     state.poll_region();
     state.poll_select();
+    state.poll_vertex();
     measure_keys(ui, state);
     super::select::keys(ui, state);
+    super::vertex::keys(ui, state);
     match history_input(ui, &mut state.globe.nav) {
         Some(true) => state.redo(),
         Some(false) => state.undo(),
@@ -1094,6 +1194,7 @@ pub(super) fn paint_canvas(
         }
     }
     super::select::paint(&painter, state);
+    super::vertex::paint(&painter, state);
     super::region::paint(&painter, state);
     if state.globe.nav.active() || more {
         ui.ctx().request_repaint();

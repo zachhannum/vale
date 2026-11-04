@@ -48,6 +48,7 @@ pub mod stroke_test;
 pub mod symbol;
 pub mod thumbnail;
 pub mod vector;
+pub mod vertex;
 pub mod view;
 pub mod zoom_test;
 
@@ -168,6 +169,9 @@ pub enum Tool {
     Select,
     /// Splits lines and polygons of the selected layer along a stroke.
     Split,
+    /// Moves, adds, deletes, and smooths the vertices of a line or a polygon
+    /// of the selected layer.
+    Vertex,
 }
 
 /// The way that the world workspace shows the world.
@@ -826,6 +830,8 @@ pub struct Globe {
     pub measure_press: crate::measure::TapPress,
     /// The press of the Select tool.
     pub select_press: select::SelectPress,
+    /// The state of the Vertex tool.
+    pub vertex: vertex::VertexTool,
     /// A box drag makes a map from a region. The press of the Select tool
     /// reads the drag.
     pub region: bool,
@@ -953,6 +959,7 @@ impl Globe {
             point_done: None,
             measure_press: Default::default(),
             select_press: Default::default(),
+            vertex: Default::default(),
             region: false,
             measure_tap: None,
             channels_sent: false,
@@ -1767,6 +1774,12 @@ impl Globe {
         self.tool == Tool::Split && (self.lineable || self.fillable)
     }
 
+    /// True if Vertex is the tool and it can edit features of the selected
+    /// layer.
+    pub fn vertexing(&self) -> bool {
+        self.tool == Tool::Vertex && (self.lineable || self.fillable)
+    }
+
     /// True if a tool that takes a stroke on a vector layer can take one
     /// now.
     pub fn stroking(&self) -> bool {
@@ -1775,7 +1788,7 @@ impl Globe {
 
     /// True if a tool that edits a vector layer can edit now.
     pub fn editing(&self) -> bool {
-        self.stroking() || self.placing()
+        self.stroking() || self.placing() || self.vertexing()
     }
 
     /// True if the Measure tool is the tool.
@@ -1853,6 +1866,25 @@ impl Globe {
             },
             None => PlacedPoint { dir, exact: None },
         });
+    }
+
+    /// The position that a vertex at `from` of the feature `feature` moves
+    /// to when it is dragged to `dir`, with the stored position of a vertex
+    /// that it snaps to. With `shared`, the vertices at `from` of all
+    /// features move, so none of them is a target.
+    pub fn vertex_snap(&self, dir: V3, from: LonLat, feature: Uuid) -> (V3, Option<LonLat>) {
+        let exclude = snap::Exclude::Vertex {
+            at: from,
+            feature: (!self.vertex.shared).then_some(feature),
+        };
+        let snap = self
+            .targets
+            .as_ref()
+            .and_then(|t| t.snap_excluding(dir, self.radius(), &self.snap, &exclude));
+        match snap {
+            Some(snap) => (snap.dir, snap.exact),
+            None => (dir, None),
+        }
     }
 
     /// True while the pen of the point tool is down.
@@ -2045,7 +2077,7 @@ impl Globe {
                 point: Some(snap.dir),
             });
         }
-        if !self.editing() {
+        if !self.editing() || self.vertexing() {
             return None;
         }
         let dir = self.unproject(self.input.pos?)?;
