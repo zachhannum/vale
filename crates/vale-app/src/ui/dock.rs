@@ -867,6 +867,11 @@ fn labels_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
         OPACITY, PLACEMENT, POSITIONS, REMOVE_DUPLICATES, REPEAT, REPEAT_INTERVAL, SMOOTHING,
         SPREAD, SPREADS, STYLE, UPSIDE_DOWN, can_follow_parallels, follows_parallels,
     };
+    use super::pad::labels::{
+        AVOID_POLYGONS, INSIDE, LARGEST_PART, LEADER_START, MIN_AREA, MIN_AREAS, OUTSIDE,
+        OVER_HOLES, OVERRUN, OVERRUNS, POLYGON_REPEAT_DISTANCES, REPEAT_DISTANCE, REPEAT_LABEL,
+        ZONES,
+    };
     use vale_store::GeometryKind;
     let map = frame.map;
     if state.label_layers().is_empty() {
@@ -1051,6 +1056,45 @@ fn labels_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
         if stepper.show(ui).changed() {
             class.curve_limit = degrees.to_radians();
         }
+    }
+    if kind == GeometryKind::Polygon {
+        ui.label(ZONES);
+        ui.horizontal(|ui| {
+            zone_grid(ui, INSIDE, true, &mut class.zones_inside);
+            zone_grid(ui, OUTSIDE, false, &mut class.zones_outside);
+        });
+        if class.zones_outside.iter().any(|&r| r > 0) {
+            egui::ComboBox::from_label(LEADER_START)
+                .selected_text(class.anchor.name())
+                .show_ui(ui, |ui| {
+                    for anchor in vale_style::LeaderAnchor::ALL {
+                        ui.selectable_value(&mut class.anchor, anchor, anchor.name());
+                    }
+                });
+        }
+        ui.checkbox(&mut class.over_holes, OVER_HOLES);
+        ui.checkbox(&mut class.avoid_polygons, AVOID_POLYGONS);
+        ui.checkbox(&mut class.largest_part, LARGEST_PART);
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut class.polygon_repeat, REPEAT_LABEL);
+            if class.polygon_repeat {
+                let (lo, hi) = POLYGON_REPEAT_DISTANCES;
+                number::slider(REPEAT_DISTANCE, &mut class.polygon_repeat_distance, lo..=hi)
+                    .step(10.0)
+                    .suffix(" pt")
+                    .show(ui);
+            }
+        });
+        number::stepper(OVERRUN, &mut class.overrun)
+            .range(OVERRUNS.0..=OVERRUNS.1)
+            .step(0.5)
+            .suffix(" pt")
+            .show(ui);
+        number::stepper(MIN_AREA, &mut class.min_area)
+            .range(MIN_AREAS.0..=MIN_AREAS.1)
+            .step(50.0)
+            .suffix(" pt²")
+            .show(ui);
     }
     if kind == GeometryKind::Line {
         number::slider(SMOOTHING, &mut class.smoothing, 0.0..=5.0)
@@ -1891,5 +1935,44 @@ fn bar_sections(
                 }
             });
         text_grid(ui, state, id, TextPart::Numbers, &bar.number_style);
+    });
+}
+
+/// A 3×3 grid of the zones of one section, under its title. `ranks` runs
+/// row by row from the top left, and the outside grid has no center. A
+/// click on a zone gives it the next rank.
+fn zone_grid(ui: &mut egui::Ui, title: &str, inside: bool, ranks: &mut [u8]) {
+    use super::pad::labels::{ZONE_OFF, next_rank, zone_name};
+    ui.vertical(|ui| {
+        ui.label(title);
+        egui::Grid::new(("zones", inside)).show(ui, |ui| {
+            for cell in 0..9 {
+                let k = match (inside, cell) {
+                    (true, _) => Some(cell),
+                    (false, 4) => None,
+                    (false, c) if c < 4 => Some(c),
+                    (false, c) => Some(c - 1),
+                };
+                match k {
+                    Some(k) => {
+                        let text = match ranks[k] {
+                            0 => ZONE_OFF.to_owned(),
+                            n => n.to_string(),
+                        };
+                        let button = egui::Button::new(text).min_size(egui::vec2(32.0, 24.0));
+                        let resp = ui.add(button).on_hover_text(zone_name(inside, k));
+                        if resp.clicked() {
+                            ranks[k] = next_rank(ranks[k]);
+                        }
+                    }
+                    None => {
+                        ui.label("");
+                    }
+                }
+                if cell % 3 == 2 {
+                    ui.end_row();
+                }
+            }
+        });
     });
 }

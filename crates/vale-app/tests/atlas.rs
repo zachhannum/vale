@@ -46,6 +46,10 @@ use vale_app::ui::pad::labels::{
     OPACITY, PLACEMENT, POSITIONS, REMOVE_DUPLICATES, REORDER, REPEAT, REPEAT_INTERVAL, SEGMENTS,
     SMOOTHING, SPREAD, STYLE, TEXT, UPSIDE_DOWN,
 };
+use vale_app::ui::pad::labels::{
+    AVOID_POLYGONS, LARGEST_PART, LEADER_START, MIN_AREA, OVER_HOLES, OVERRUN, REPEAT_DISTANCE,
+    REPEAT_LABEL, ZONES, zone_name,
+};
 use vale_app::ui::pad::rules::STROKE_WIDTH;
 use vale_app::ui::pad::widgets::eye_name;
 use vale_app::ui::pad::{
@@ -4203,6 +4207,269 @@ fn the_parallel_options_survive_a_close_and_an_open() {
     let _session = Session::open(&path, &mut doc).unwrap();
     assert_eq!(doc.label_classes(Some(map), layer_id(&h, "Places")), places);
     assert_eq!(doc.label_classes(Some(map), land), lands);
+}
+
+/// The polygon placement of the class "Land".
+fn land_placement(h: &Pad, map: MapId) -> vale_labeler::PolygonPlacement {
+    match labeler_placement(h, map, "Land", GeometryKind::Polygon) {
+        Placement::Polygon(p) => p,
+        _ => panic!("not a polygon placement"),
+    }
+}
+
+/// Opens the Placement segment of the class "Land".
+fn open_land_placement(h: &mut Pad) {
+    tap(h, "Land");
+    tap(h, SEGMENTS[1].0);
+}
+
+#[test]
+fn a_tap_on_a_zone_changes_its_rank() {
+    let (mut h, map) = land_pad(BOARDS[0]);
+    open_land_placement(&mut h);
+    scroll_to(&mut h, ZONES);
+    tap(&mut h, ZONES);
+    let top_left = zone_name(true, 0);
+    assert_eq!(top_left, "Inside top left");
+    assert_eq!(land_placement(&h, map).zones.inside[0], 1);
+    tap(&mut h, &top_left);
+    assert_eq!(classes(&h, map, "Land")[0].zones_inside[0], 2);
+    assert_eq!(land_placement(&h, map).zones.inside[0], 2);
+    tap(&mut h, &top_left);
+    assert_eq!(land_placement(&h, map).zones.inside[0], 3);
+    tap(&mut h, &top_left);
+    assert_eq!(land_placement(&h, map).zones.inside[0], 0);
+    tap(&mut h, &top_left);
+    assert_eq!(land_placement(&h, map).zones.inside[0], 1);
+    // The outside grid has no center.
+    assert_eq!(zone_name(false, 4), "Outside right");
+    assert!(control(&h, "Outside center").is_none());
+    tap(&mut h, &zone_name(false, 4));
+    assert_eq!(land_placement(&h, map).zones.outside[4], 1);
+}
+
+#[test]
+fn an_outside_zone_shows_the_leader_start() {
+    use vale_labeler::LeaderAnchor;
+    let (mut h, map) = land_pad(BOARDS[0]);
+    open_land_placement(&mut h);
+    scroll_to(&mut h, ZONES);
+    assert!(control(&h, LEADER_START).is_none());
+    tap(&mut h, ZONES);
+    tap(&mut h, "Outside right");
+    tap(&mut h, "Back to Land");
+    scroll_to(&mut h, LEADER_START);
+    tap(&mut h, LEADER_START);
+    tap(&mut h, vale_style::LeaderAnchor::Outline.name());
+    assert_eq!(vale_style::LeaderAnchor::Outline.name(), "Nearest edge");
+    assert_eq!(land_placement(&h, map).anchor, LeaderAnchor::Outline);
+}
+
+#[test]
+fn the_polygon_switches_reach_the_labeler() {
+    let (mut h, map) = land_pad(BOARDS[0]);
+    open_land_placement(&mut h);
+    let p = land_placement(&h, map);
+    assert!(!p.over_holes && !p.avoid_other_polygons && p.largest_part_only);
+    assert_eq!(p.repeat_distance, None);
+    for name in [OVER_HOLES, AVOID_POLYGONS, LARGEST_PART, REPEAT_LABEL] {
+        scroll_to(&mut h, name);
+        tap(&mut h, name);
+    }
+    let p = land_placement(&h, map);
+    assert!(p.over_holes && p.avoid_other_polygons && !p.largest_part_only);
+    assert_eq!(p.repeat_distance, Some(vale_style::POLYGON_REPEAT_DISTANCE));
+    scroll_to(&mut h, REPEAT_LABEL);
+    tap(&mut h, REPEAT_LABEL);
+    assert_eq!(land_placement(&h, map).repeat_distance, None);
+    assert!(control(&h, &value_of(REPEAT_DISTANCE)).is_none());
+}
+
+#[test]
+fn the_polygon_numbers_reach_the_labeler_in_points() {
+    let (mut h, map) = land_pad(BOARDS[0]);
+    open_land_placement(&mut h);
+    scroll_to(&mut h, REPEAT_LABEL);
+    tap(&mut h, REPEAT_LABEL);
+    set_number(&mut h, REPEAT_DISTANCE, "800");
+    set_number(&mut h, OVERRUN, "3");
+    set_number(&mut h, MIN_AREA, "500");
+    let c = &classes(&h, map, "Land")[0];
+    assert_eq!(
+        (c.polygon_repeat_distance, c.overrun, c.min_area),
+        (800.0, 3.0, 500.0)
+    );
+    // A page unit is one point.
+    let p = land_placement(&h, map);
+    assert_eq!(p.repeat_distance, Some(800.0));
+    assert_eq!(p.overrun, 3.0);
+    assert_eq!(p.min_area, 500.0);
+}
+
+#[test]
+fn the_polygon_options_work_with_a_finger() {
+    for size in BOARDS {
+        let what = format!("{size:?}");
+        let (mut h, map) = land_pad(size);
+        open_land_placement(&mut h);
+        scroll_to(&mut h, ZONES);
+        tap(&mut h, ZONES);
+        check_controls(&h, &format!("{what}: zones page"));
+        if size == BOARDS[0] {
+            screenshot::save(&mut h, "pad-atlas-label-zones");
+        }
+        for k in 0..9 {
+            assert!(control(&h, &zone_name(true, k)).is_some(), "{what}: {k}");
+        }
+        // A small sheet shows the outside grid after a scroll.
+        for k in 0..8 {
+            scroll_to(&mut h, &zone_name(false, k));
+            assert!(control(&h, &zone_name(false, k)).is_some(), "{what}: {k}");
+        }
+        check_controls(&h, &format!("{what}: outside zones"));
+        tap(&mut h, &zone_name(false, 0));
+        assert_eq!(classes(&h, map, "Land")[0].zones_outside[0], 1, "{what}");
+        tap(&mut h, "Back to Land");
+        scroll_to(&mut h, LEADER_START);
+        tap(&mut h, LEADER_START);
+        check_controls(&h, &format!("{what}: leader page"));
+        tap(&mut h, "Back to Land");
+        scroll_to(&mut h, REPEAT_LABEL);
+        tap(&mut h, REPEAT_LABEL);
+        for name in [
+            OVER_HOLES,
+            AVOID_POLYGONS,
+            LARGEST_PART,
+            &value_of(REPEAT_DISTANCE),
+            &value_of(OVERRUN),
+            &value_of(MIN_AREA),
+        ] {
+            scroll_up_to(&mut h, name);
+            scroll_to(&mut h, name);
+            assert!(control(&h, name).is_some(), "{what}: {name}");
+            check_controls(&h, &format!("{what}: {name}"));
+        }
+    }
+}
+
+#[test]
+fn each_tap_on_a_zone_or_a_polygon_switch_is_one_undo_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let mut s = state();
+    s.session = Some(Session::open(&path, &mut s.doc).unwrap());
+    let mut h = pad_with(s, BOARDS[0]);
+    add_frame(&mut h);
+    let map = frame(&h, 0).map;
+    let land = layer_id(&h, "Land");
+    let area = vale_style::LabelClass::new("Land", GeometryKind::Polygon, 9).unwrap();
+    h.state_mut().doc.set_label_classes(map, land, &[area]);
+    h.state_mut().touch();
+    h.state_mut().save_waiting().unwrap();
+    let class = |h: &Pad| classes(h, map, "Land")[0].clone();
+    tap(&mut h, FRAME_TABS[3]);
+    open_land_placement(&mut h);
+    let start = class(&h);
+    scroll_to(&mut h, ZONES);
+    tap(&mut h, ZONES);
+    tap(&mut h, "Inside center");
+    tap(&mut h, "Back to Land");
+    scroll_to(&mut h, OVER_HOLES);
+    tap(&mut h, OVER_HOLES);
+    let c = class(&h);
+    assert!(c.over_holes);
+    assert_eq!(c.zones_inside[4], 2);
+
+    tap(&mut h, "Undo");
+    let c = class(&h);
+    assert!(!c.over_holes);
+    assert_eq!(c.zones_inside[4], 2);
+    tap(&mut h, "Undo");
+    assert_eq!(class(&h), start);
+}
+
+#[test]
+fn the_polygon_options_survive_a_close_and_an_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let mut doc = Document::sample();
+    let mut session = Session::open(&path, &mut doc).unwrap();
+    let mut s = state();
+    s.doc = doc;
+    let mut h = pad_with(s, BOARDS[0]);
+    add_frame(&mut h);
+    let map = frame(&h, 0).map;
+    let land = layer_id(&h, "Land");
+    let area = vale_style::LabelClass::new("Land", GeometryKind::Polygon, 9).unwrap();
+    h.state_mut().doc.set_label_classes(map, land, &[area]);
+    h.state_mut().touch();
+    h.run_steps(2);
+    tap(&mut h, FRAME_TABS[3]);
+    open_land_placement(&mut h);
+    scroll_to(&mut h, ZONES);
+    tap(&mut h, ZONES);
+    tap(&mut h, "Inside top");
+    tap(&mut h, "Outside bottom");
+    tap(&mut h, "Back to Land");
+    scroll_to(&mut h, LEADER_START);
+    tap(&mut h, LEADER_START);
+    tap(&mut h, vale_style::LeaderAnchor::Center.name());
+    for name in [OVER_HOLES, AVOID_POLYGONS, LARGEST_PART, REPEAT_LABEL] {
+        scroll_to(&mut h, name);
+        tap(&mut h, name);
+    }
+    set_number(&mut h, REPEAT_DISTANCE, "600");
+    set_number(&mut h, OVERRUN, "2");
+    set_number(&mut h, MIN_AREA, "250");
+    let lands = classes(&h, map, "Land");
+    let c = &lands[0];
+    assert_eq!((c.zones_inside[1], c.zones_outside[6]), (2, 1));
+    assert_eq!(c.anchor, vale_style::LeaderAnchor::Center);
+    assert!(c.over_holes && c.avoid_polygons && !c.largest_part && c.polygon_repeat);
+    assert_eq!(
+        (c.polygon_repeat_distance, c.overrun, c.min_area),
+        (600.0, 2.0, 250.0)
+    );
+    let mut project = h.state().doc.project.clone();
+    session.flush(&mut project, &mut []).unwrap();
+    drop(session);
+
+    let mut doc = Document::sample();
+    let _session = Session::open(&path, &mut doc).unwrap();
+    assert_eq!(doc.label_classes(Some(map), land), lands);
+}
+
+#[test]
+fn a_label_outside_its_polygon_draws_a_leader_line() {
+    use vale_app::labels::LEADER_WIDTH;
+    let (mut h, map) = land_pad(BOARDS[0]);
+    let land = layer_id(&h, "Land");
+    let leaders = |h: &mut Pad, color: vale_render::Color| {
+        (frame_items(h, 0).into_iter())
+            .filter(|i| {
+                matches!(i, Item::Stroke { width, color: c, .. }
+                    if *width == LEADER_WIDTH && *c == color)
+            })
+            .count()
+    };
+    let mut class = classes(&h, map, "Land")[0].clone();
+    class.color = vale_render::Color::rgb(200, 10, 90);
+    h.state_mut()
+        .doc
+        .set_label_classes(map, land, std::slice::from_ref(&class));
+    h.state_mut().touch();
+    h.run_steps(2);
+    assert_eq!(leaders(&mut h, class.color), 0);
+
+    class.zones_inside = [0; 9];
+    class.zones_outside = [1; 8];
+    h.state_mut()
+        .doc
+        .set_label_classes(map, land, &[class.clone()]);
+    h.state_mut().touch();
+    h.run_steps(2);
+    assert!(label_runs(&mut h, 0).iter().any(|g| g.text == "LAND"));
+    assert!(leaders(&mut h, class.color) > 0);
 }
 
 #[test]

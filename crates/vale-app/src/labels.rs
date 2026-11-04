@@ -4,9 +4,9 @@ use std::collections::{HashMap, HashSet};
 
 use kurbo::{Point, Rect};
 use vale_labeler::{
-    Caps, Feature, Fonts, Geometry, LabelClass, LabelInput, LinePlacement, LineSide, Obstacle,
-    ObstacleKind, Options, Placement, PointPlacement, PointPosition, PolygonMode, PolygonPlacement,
-    TextStyle, place_labels,
+    Caps, Feature, Fonts, Geometry, LabelClass, LabelInput, LeaderAnchor, LinePlacement, LineSide,
+    Obstacle, ObstacleKind, Options, Placement, PointPlacement, PointPosition, PolygonMode,
+    PolygonPlacement, PolygonZones, TextStyle, place_labels,
 };
 use vale_render::{Color, GlyphRun, Item};
 use vale_store::GeometryKind;
@@ -24,6 +24,9 @@ const MAX_SOFT: usize = 20_000;
 
 /// The cost of a label over one scatter symbol.
 const SCATTER_COST: f64 = 0.5;
+
+/// The width of the leader line of a label outside its polygon, in points.
+pub const LEADER_WIDTH: f64 = 0.75;
 
 /// Places labels for the visible layers.
 ///
@@ -188,6 +191,19 @@ pub fn place(
 
     let mut items = Vec::new();
     for label in &labeling.placed {
+        if let Some(leader) = &label.leader {
+            let mut path = kurbo::BezPath::new();
+            path.move_to(leader.anchor);
+            path.line_to(leader.end);
+            items.push(Item::Stroke {
+                path,
+                color: class_colors[label.class],
+                width: LEADER_WIDTH,
+                round: true,
+            });
+        }
+    }
+    for label in &labeling.placed {
         if let Some((color, width)) = class_halos[label.class] {
             items.push(Item::Stroke {
                 path: label.outlines(),
@@ -277,6 +293,21 @@ pub fn placement(c: &StyleClass, kind: GeometryKind) -> Placement {
             max_glyph_turn: c.curve_limit,
             graticule: c.graticule,
             no_flip: c.no_flip,
+            zones: PolygonZones {
+                inside: c.zones_inside,
+                outside: c.zones_outside,
+            },
+            anchor: match c.anchor {
+                vale_style::LeaderAnchor::Center => LeaderAnchor::Center,
+                vale_style::LeaderAnchor::Inside => LeaderAnchor::Inside,
+                vale_style::LeaderAnchor::Outline => LeaderAnchor::Outline,
+            },
+            over_holes: c.over_holes,
+            avoid_other_polygons: c.avoid_polygons,
+            largest_part_only: c.largest_part,
+            repeat_distance: c.polygon_repeat.then_some(c.polygon_repeat_distance),
+            overrun: c.overrun,
+            min_area: c.min_area,
         }),
     }
 }

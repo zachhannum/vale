@@ -323,6 +323,10 @@ pub enum ClassPage {
     Condition,
     /// The ranked positions of a point class.
     Positions,
+    /// The ranked zones inside and outside the polygons of a polygon class.
+    Zones,
+    /// The points where the leader line of a label outside its polygon can start.
+    LeaderStart,
 }
 
 /// A segment of the panel of a label class.

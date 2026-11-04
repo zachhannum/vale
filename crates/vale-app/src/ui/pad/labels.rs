@@ -56,6 +56,47 @@ pub const SMOOTHING: &str = "Smoothing";
 pub const SPREAD: &str = "Spread";
 pub const FOLLOW_PARALLELS: &str = "Follow parallels";
 pub const UPSIDE_DOWN: &str = "Allow upside-down text";
+/// The row of the zones of a polygon class, and the title of its page.
+pub const ZONES: &str = "Zones";
+/// The headings of the zones page.
+pub const INSIDE: &str = "Inside";
+pub const OUTSIDE: &str = "Outside";
+/// The row of the start of the leader line, and the title of its page.
+pub const LEADER_START: &str = "Leader start";
+pub const OVER_HOLES: &str = "Label over holes";
+pub const AVOID_POLYGONS: &str = "Avoid other polygons";
+pub const LARGEST_PART: &str = "Largest part only";
+pub const REPEAT_LABEL: &str = "Repeat label";
+pub const REPEAT_DISTANCE: &str = "Repeat distance";
+pub const OVERRUN: &str = "Overrun";
+pub const MIN_AREA: &str = "Minimum area";
+/// The text of a blocked zone.
+pub const ZONE_OFF: &str = "Off";
+/// The names of the zones inside a polygon, row by row from the top left.
+pub const INSIDE_ZONES: [&str; 9] = [
+    "top left",
+    "top",
+    "top right",
+    "left",
+    "center",
+    "right",
+    "bottom left",
+    "bottom",
+    "bottom right",
+];
+/// The names of the zones outside a polygon, row by row from the top left.
+pub const OUTSIDE_ZONES: [&str; 8] = [
+    "top left",
+    "top",
+    "top right",
+    "left",
+    "right",
+    "bottom left",
+    "bottom",
+    "bottom right",
+];
+/// The highest rank that a tap on a zone gives.
+pub const MAX_ZONE_RANK: u8 = 3;
 pub const BUFFER: &str = "Buffer";
 pub const REMOVE_DUPLICATES: &str = "Remove duplicates";
 pub const DUPLICATE_DISTANCE: &str = "Duplicate distance";
@@ -81,6 +122,12 @@ pub const CURVE_LIMITS: (f64, f64) = (5.0, 60.0);
 pub const SMOOTHINGS: (f64, f64) = (0.0, 5.0);
 /// The smallest and the largest spread, in multiples of the size.
 pub const SPREADS: (f64, f64) = (0.0, 4.0);
+/// The shortest and the longest distance between repeated polygon labels, in points.
+pub const POLYGON_REPEAT_DISTANCES: (f64, f64) = (50.0, 2000.0);
+/// The smallest and the largest overrun, in points.
+pub const OVERRUNS: (f64, f64) = (0.0, 20.0);
+/// The smallest and the largest minimum area, in square points.
+pub const MIN_AREAS: (f64, f64) = (0.0, 10000.0);
 /// The smallest and the largest buffer, in points.
 pub const BUFFERS: (f64, f64) = (0.0, 10.0);
 /// The smallest and the largest duplicate distance, in points.
@@ -317,6 +364,8 @@ pub(super) fn class_panel(
             &*class.name,
         ),
         Some(ClassPage::Positions) => ("pad-atlas-positions", POSITIONS, &*class.name),
+        Some(ClassPage::Zones) => ("pad-atlas-zones", ZONES, &*class.name),
+        Some(ClassPage::LeaderStart) => ("pad-atlas-leader", LEADER_START, &*class.name),
         None => ("pad-atlas-class", class.name.as_str(), FRAME_TABS[3]),
     };
     let head = CardTitle {
@@ -362,6 +411,8 @@ pub(super) fn class_panel(
             Some(ClassPage::Case) => case_page(ui, state, controls, at, &class),
             Some(ClassPage::Condition) => condition_page(ui, state, controls, at, &class),
             Some(ClassPage::Positions) => positions_page(ui, state, controls, at, &class),
+            Some(ClassPage::Zones) => zones_page(ui, state, controls, at, &class),
+            Some(ClassPage::LeaderStart) => leader_page(ui, state, controls, at, &class),
             None => {
                 match segment {
                     ClassSegment::Text => text_segment(ui, state, controls, at, &class),
@@ -671,6 +722,7 @@ fn placement_segment(
             curve_limit(ui, state, controls, (map, layer, i), class);
         }
         parallel_switches(ui, state, controls, (map, layer, i), kind, class);
+        polygon_options(ui, state, controls, (map, layer, i), class);
         return;
     }
     let point = kind == GeometryKind::Point;
@@ -717,6 +769,197 @@ fn placement_segment(
         .slider(ui, controls);
     if let Some(smoothing) = smoothing {
         state.edit_label_class(map, layer, i, |c| c.smoothing = smoothing);
+    }
+}
+
+/// The name of a zone button: the section and the zone, for example
+/// "Inside top left".
+pub fn zone_name(inside: bool, k: usize) -> String {
+    if inside {
+        format!("{INSIDE} {}", INSIDE_ZONES[k])
+    } else {
+        format!("{OUTSIDE} {}", OUTSIDE_ZONES[k])
+    }
+}
+
+/// The rank of a zone after a tap: 1, 2, 3, then off, then 1 again.
+pub fn next_rank(rank: u8) -> u8 {
+    match rank {
+        0 => 1,
+        r if r < MAX_ZONE_RANK => r + 1,
+        _ => 0,
+    }
+}
+
+/// True if a label of the class can go outside its polygon.
+fn has_outside(class: &LabelClass) -> bool {
+    class.zones_outside.iter().any(|&r| r > 0)
+}
+
+/// The zones, the leader start, the switches, and the numbers of a polygon
+/// class.
+fn polygon_options(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    (map, layer, i): (MapId, LayerId, usize),
+    class: &LabelClass,
+) {
+    let on = (class.zones_inside.iter())
+        .chain(&class.zones_outside)
+        .filter(|&&r| r > 0)
+        .count();
+    let all = class.zones_inside.len() + class.zones_outside.len();
+    if widgets::open_row(ui, controls, ZONES, &format!("{on} of {all}")).clicked() {
+        state.atlas.label_page = Some(ClassPage::Zones);
+    }
+    if has_outside(class)
+        && widgets::open_row(ui, controls, LEADER_START, class.anchor.name()).clicked()
+    {
+        state.atlas.label_page = Some(ClassPage::LeaderStart);
+    }
+    type Set = fn(&mut LabelClass, bool);
+    let switches: [(&str, bool, Set); 3] = [
+        (OVER_HOLES, class.over_holes, |c, on| c.over_holes = on),
+        (AVOID_POLYGONS, class.avoid_polygons, |c, on| {
+            c.avoid_polygons = on;
+        }),
+        (LARGEST_PART, class.largest_part, |c, on| {
+            c.largest_part = on
+        }),
+    ];
+    for (name, mut on, set) in switches {
+        if widgets::switch_row(ui, controls, name, name, &mut on) {
+            state.label_class_step(map, layer, i, |c| set(c, on));
+        }
+    }
+    let mut repeat = class.polygon_repeat;
+    if widgets::switch_row(ui, controls, REPEAT_LABEL, REPEAT_LABEL, &mut repeat) {
+        state.label_class_step(map, layer, i, |c| c.polygon_repeat = repeat);
+    }
+    if class.polygon_repeat {
+        let (lo, hi) = POLYGON_REPEAT_DISTANCES;
+        let distance = Number::new(REPEAT_DISTANCE, class.polygon_repeat_distance, lo..=hi)
+            .nice()
+            .step(10.0)
+            .unit("pt")
+            .default(vale_style::POLYGON_REPEAT_DISTANCE)
+            .slider(ui, controls);
+        if let Some(distance) = distance {
+            state.edit_label_class(map, layer, i, |c| c.polygon_repeat_distance = distance);
+        }
+    }
+    let overrun = Number::new(OVERRUN, class.overrun, OVERRUNS.0..=OVERRUNS.1)
+        .step(0.5)
+        .unit("pt")
+        .stepper(ui, controls);
+    if let Some(overrun) = overrun {
+        state.edit_label_class(map, layer, i, |c| c.overrun = overrun);
+    }
+    let area = Number::new(MIN_AREA, class.min_area, MIN_AREAS.0..=MIN_AREAS.1)
+        .step(50.0)
+        .unit("pt²")
+        .stepper(ui, controls);
+    if let Some(area) = area {
+        state.edit_label_class(map, layer, i, |c| c.min_area = area);
+    }
+}
+
+/// The side of a zone button.
+const ZONE_BUTTON: f32 = 56.0;
+/// The space between two zone buttons.
+const ZONE_GAP: f32 = 6.0;
+
+/// A 3×3 grid of the zones of one section. `ranks` runs row by row from the
+/// top left, and the outside grid has no center. Returns the place of the
+/// zone that the user taps.
+fn zone_grid(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    inside: bool,
+    ranks: &[u8],
+) -> Option<usize> {
+    let side = 3.0 * ZONE_BUTTON + 2.0 * ZONE_GAP;
+    let size = vec2(ui.available_width(), side + 8.0);
+    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+    let grid = Rect::from_center_size(rect.center(), vec2(side, side));
+    let mut tapped = None;
+    for (k, &rank) in ranks.iter().enumerate() {
+        // The outside grid skips the center.
+        let cell = if inside || k < 4 { k } else { k + 1 };
+        let (x, y) = ((cell % 3) as f32, (cell / 3) as f32);
+        let min = grid.min + vec2(x, y) * (ZONE_BUTTON + ZONE_GAP);
+        let button = Rect::from_min_size(min, vec2(ZONE_BUTTON, ZONE_BUTTON));
+        let name = zone_name(inside, k);
+        let resp = widgets::tap_area(ui, controls, button, &name, true);
+        if resp.clicked() {
+            tapped = Some(k);
+        }
+        let pressed = resp.is_pointer_button_down_on();
+        let (fill, text, color) = match rank {
+            0 => (theme::track(), ZONE_OFF.to_owned(), theme::MUTE),
+            n => (theme::raise(), n.to_string(), theme::TEXT),
+        };
+        let fill = if pressed { theme::divider() } else { fill };
+        let painter = ui.painter();
+        painter.rect_filled(button, theme::CONTROL_RADIUS, fill);
+        painter.text(
+            button.center(),
+            Align2::CENTER_CENTER,
+            text,
+            theme::body(),
+            color,
+        );
+    }
+    if !inside {
+        let center = Rect::from_center_size(grid.center(), vec2(ZONE_BUTTON, ZONE_BUTTON));
+        ui.painter().rect_stroke(
+            center,
+            theme::CONTROL_RADIUS,
+            egui::Stroke::new(1.0, theme::divider()),
+            egui::StrokeKind::Inside,
+        );
+    }
+    tapped
+}
+
+/// The zones inside and outside the polygons of a class, each with its
+/// rank. A tap on a zone gives it the next rank.
+fn zones_page(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    (_, map, layer, i): ClassAt,
+    class: &LabelClass,
+) {
+    super::raster::heading(ui, INSIDE);
+    if let Some(k) = zone_grid(ui, controls, true, &class.zones_inside) {
+        let rank = next_rank(class.zones_inside[k]);
+        state.label_class_step(map, layer, i, |c| c.zones_inside[k] = rank);
+    }
+    super::raster::heading(ui, OUTSIDE);
+    if let Some(k) = zone_grid(ui, controls, false, &class.zones_outside) {
+        let rank = next_rank(class.zones_outside[k]);
+        state.label_class_step(map, layer, i, |c| c.zones_outside[k] = rank);
+    }
+}
+
+/// The points where the leader line of a label outside its polygon can
+/// start.
+fn leader_page(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    (_, map, layer, i): ClassAt,
+    class: &LabelClass,
+) {
+    for anchor in vale_style::LeaderAnchor::ALL {
+        let name = anchor.name();
+        let on = anchor == class.anchor;
+        if widgets::option_row(ui, controls, name, name, &[], on).clicked() {
+            state.label_class_step(map, layer, i, |c| c.anchor = anchor);
+            state.atlas.label_page = None;
+        }
     }
 }
 
