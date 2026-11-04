@@ -14,8 +14,8 @@ use vale_store::{
 };
 use vale_terrain::{
     Bands, BasinLine, BasinSpec, ChannelMap, ChannelWindow, ErodeBrush, ErodeStep, FACES,
-    Heightmap, Mode, Pyramid, Rain, RangeLine, Ridge, RidgeLine, SEA_LEVEL, Stamp, TexelRect,
-    Window, WindowHeights, max_level, meters_to_level, reduced_cap, reduced_face_size,
+    Heightmap, Mode, Pyramid, Rain, RangeLine, Ridge, RidgeLine, RidgePlan, SEA_LEVEL, Stamp,
+    TexelRect, Window, WindowHeights, max_level, meters_to_level, reduced_cap, reduced_face_size,
     smoothing_level,
 };
 
@@ -133,7 +133,13 @@ const HOLD_SETTLE: std::time::Duration = std::time::Duration::from_millis(250);
 /// The plans of a line that go to the GPU in one frame hold at most this
 /// number of texels of ground, after the first plan. A large ridge at a
 /// large face size has many plans, and each plan holds megabytes.
-const LINE_TEXELS_PER_FRAME: usize = 4 << 20;
+const LINE_TEXELS_PER_FRAME: usize = 1 << 20;
+
+/// An ocean ridge plan goes to the GPU in strips of at most this number of
+/// texels. A texel of a ridge depends only on its ground, so a strip gives
+/// the texels of the whole plan. Thus the GPU work of one frame is small,
+/// and the frames of the UI do not wait for a large plan.
+const RIDGE_PIECE_TEXELS: usize = 1 << 20;
 
 /// A stroke of the line tool or the polygon tool.
 pub struct LineStroke {
@@ -306,11 +312,18 @@ struct Ridging {
     points: Vec<(V3, f64)>,
     /// The number of points of the line that the plans cover.
     sent: usize,
+    /// The pieces of the last plan that wait for the GPU.
+    pieces: VecDeque<LineOp>,
     /// `Some`: the stroke is a range stroke with erosion.
     range: Option<Ranging>,
 }
 
 impl Ridging {
+    /// True if each plan of the line and each piece went to the GPU.
+    fn all_sent(&self) -> bool {
+        self.sent == self.line.len() && self.pieces.is_empty()
+    }
+
     fn extend(&mut self, stamps: &[Stamp]) {
         for stamp in stamps {
             self.points.push((stamp.center, stamp.flow));
@@ -342,6 +355,7 @@ fn line_of(brush: &BrushSettings, km: f64, seed: u32, n: usize, radius: f64) -> 
         line,
         points: Vec::new(),
         sent: 0,
+        pieces: VecDeque::new(),
         range,
     })
 }
@@ -437,6 +451,27 @@ struct Held {
 enum HeldSpec {
     Ridge(Ridge),
     Basin(BasinSpec),
+}
+
+/// The strips of each rectangle of `plan`, with `RIDGE_PIECE_TEXELS` texels
+/// at most, each as a plan of its own.
+fn ridge_pieces(plan: &RidgePlan) -> impl Iterator<Item = Box<RidgePlan>> + '_ {
+    let rects = plan.rects.iter().enumerate();
+    let rects = rects.filter_map(|(face, rect)| Some((face, (*rect)?)));
+    rects.flat_map(move |(face, rect)| {
+        let width = (rect.x1 - rect.x0).max(1);
+        let rows = (RIDGE_PIECE_TEXELS / width).max(1);
+        (rect.y0..rect.y1).step_by(rows).map(move |y0| {
+            let mut piece = plan.clone();
+            piece.line.rects = [None; FACES];
+            piece.line.rects[face] = Some(TexelRect {
+                y0,
+                y1: (y0 + rows).min(rect.y1),
+                ..rect
+            });
+            Box::new(piece)
+        })
+    })
 }
 
 /// Sends the ground of `map` to the GPU in each rectangle of `touched`, and
@@ -3389,7 +3424,7 @@ impl Globe {
             return;
         };
         // A line that changes no texel holds nothing.
-        let sent = active.ridge.as_ref().is_none_or(|r| r.sent == r.line.len());
+        let sent = active.ridge.as_ref().is_none_or(Ridging::all_sent);
         let done = active.basin.as_ref().is_none_or(|b| b.done);
         if sent && done && active.touched.iter().all(Option::is_none) {
             active.held = None;
@@ -3438,6 +3473,7 @@ impl Globe {
                 }
                 ridge.line = BrushLine::Ridge(line);
                 ridge.sent = 0;
+                ridge.pieces.clear();
                 // Each plan writes the ground from before the stroke and
                 // then the ridge into its rectangles, and with the same
                 // line, a radius that is not smaller gives rectangles that
@@ -3477,7 +3513,7 @@ impl Globe {
         let Some(held) = &active.held else {
             return false;
         };
-        let sent = active.ridge.as_ref().is_none_or(|r| r.sent == r.line.len());
+        let sent = active.ridge.as_ref().is_none_or(Ridging::all_sent);
         let done = active.basin.as_ref().is_none_or(|b| b.done);
         let current = held.wanted == (held.spec, held.flow);
         current && sent && done && self.inputs.is_empty() && self.backlog.is_empty()
@@ -3540,9 +3576,21 @@ impl Globe {
         }
         let time = active.sampled.unwrap_or(now);
         let mut texels = 0;
-        while ridge.sent < ridge.line.len() && texels < LINE_TEXELS_PER_FRAME {
-            let (plan, end) = ridge.line.plan(ridge.sent);
-            ridge.sent = end;
+        while !ridge.all_sent() && texels < LINE_TEXELS_PER_FRAME {
+            let plan = match ridge.pieces.pop_front() {
+                Some(piece) => piece,
+                None => {
+                    let (plan, end) = ridge.line.plan(ridge.sent);
+                    ridge.sent = end;
+                    match plan {
+                        LineOp::Ridge(plan) => {
+                            ridge.pieces.extend(ridge_pieces(&plan).map(LineOp::Ridge));
+                            continue;
+                        }
+                        plan => plan,
+                    }
+                }
+            };
             let mut ground = Vec::new();
             for (face, rect) in plan.rects().iter().enumerate() {
                 let Some(rect) = *rect else { continue };
@@ -3729,7 +3777,7 @@ impl Globe {
         // The readback of a range stroke follows its held steps, so one undo
         // step has the whole stroke.
         if let Some(ridge) = &active.ridge
-            && (ridge.sent < ridge.line.len() || ridge.range.as_ref().is_some_and(|r| !r.done))
+            && (!ridge.all_sent() || ridge.range.as_ref().is_some_and(|r| !r.done))
         {
             return;
         }
@@ -4750,6 +4798,42 @@ mod tests {
 
     use super::*;
     use math::lonlat_to_dir;
+
+    #[test]
+    fn the_pieces_of_a_ridge_plan_cover_its_rectangles_once() {
+        let brush = BrushSettings::default();
+        let n = 8192;
+        let mut line = RidgeLine::new(brush.ridge_spec(0.1, 6371.0, 7), n);
+        for i in 0..=30 {
+            line.push(lonlat_to_dir(f64::from(i), 0.0), 1.0);
+        }
+        let LineOp::Ridge(plan) = BrushLine::Ridge(line).plan(0).0 else {
+            unreachable!();
+        };
+        let texels = |r: TexelRect| (r.x1 - r.x0) * (r.y1 - r.y0);
+        let whole: usize = plan.rects.iter().flatten().map(|&r| texels(r)).sum();
+        assert!(whole > 4 * RIDGE_PIECE_TEXELS, "{whole}");
+        let pieces: Vec<_> = ridge_pieces(&plan).collect();
+        let mut sum = 0;
+        for piece in &pieces {
+            let rects: Vec<_> = piece
+                .rects
+                .iter()
+                .enumerate()
+                .filter(|(_, r)| r.is_some())
+                .collect();
+            assert_eq!(rects.len(), 1);
+            let (face, rect) = (rects[0].0, rects[0].1.unwrap());
+            let whole = plan.rects[face].unwrap();
+            assert!(texels(rect) <= RIDGE_PIECE_TEXELS);
+            assert!((rect.x0, rect.x1) == (whole.x0, whole.x1));
+            assert!(rect.y0 >= whole.y0 && rect.y1 <= whole.y1);
+            assert_eq!(piece.segments.len(), plan.segments.len());
+            sum += texels(rect);
+        }
+        // The strips of a face follow one another with no gap.
+        assert_eq!(sum, whole);
+    }
 
     #[test]
     fn a_frame_scales_the_widths_by_the_page() {
