@@ -238,27 +238,52 @@ fn unscaled(k: f64, exp: i32) -> f64 {
     }
 }
 
-/// The common values that are not null or blank, most common first, then
-/// in text order, at most `max`.
-pub fn categories(values: &[Value], max: usize) -> Vec<Value> {
+/// The values that are not null or blank, each one time, most common first,
+/// then in text order.
+pub fn categories(values: &[Value]) -> Vec<Value> {
     let mut counts: HashMap<String, (usize, &Value)> = HashMap::new();
     for v in values {
-        let key = match v {
-            Value::Null => continue,
-            Value::Text(t) if t.trim().is_empty() => continue,
-            Value::Text(t) => t.clone(),
-            Value::Bool(b) => b.to_string(),
-            Value::Number(n) => number_text(*n),
+        let Some(key) = value_text(v) else {
+            continue;
         };
         counts.entry(key).or_insert((0, v)).0 += 1;
     }
     let mut list: Vec<(String, usize, &Value)> =
         counts.into_iter().map(|(k, (n, v))| (k, n, v)).collect();
     list.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    list.into_iter()
-        .take(max)
-        .map(|(_, _, v)| v.clone())
+    list.into_iter().map(|(_, _, v)| v.clone()).collect()
+}
+
+/// The values of `categories` that get a class: each value that is a label
+/// of the ramp, and the `max` most common other values.
+pub fn common(categories: &[Value], max: usize, ramp: Option<&Ramp>) -> Vec<Value> {
+    let mut rest = max;
+    categories
+        .iter()
+        .filter(|v| {
+            let labeled = ramp
+                .zip(value_text(v))
+                .is_some_and(|(r, t)| r.labeled(&t).is_some());
+            if labeled {
+                return true;
+            }
+            let keep = rest > 0;
+            rest = rest.saturating_sub(1);
+            keep
+        })
+        .cloned()
         .collect()
+}
+
+/// A value as the text that a label matches. `None` for null and blank text.
+fn value_text(value: &Value) -> Option<String> {
+    match value {
+        Value::Null => None,
+        Value::Text(t) if t.trim().is_empty() => None,
+        Value::Text(t) => Some(t.clone()),
+        Value::Bool(b) => Some(b.to_string()),
+        Value::Number(n) => Some(number_text(*n)),
+    }
 }
 
 /// A class: the name and the filter of its rule. The rule of an extra
@@ -345,12 +370,7 @@ pub fn category_classes(left: &str, values: &[Value]) -> Vec<Class> {
             },
             filter: format!("{left} = {}", literal(v)),
             extra: false,
-            value: match v {
-                Value::Null => None,
-                Value::Bool(b) => Some(b.to_string()),
-                Value::Number(n) => Some(number_text(*n)),
-                Value::Text(t) => Some(t.clone()),
-            },
+            value: value_text(v),
         })
         .collect();
     let list: Vec<String> = values.iter().map(literal).collect();
@@ -437,16 +457,23 @@ pub fn number_text(value: f64) -> String {
 }
 
 /// The classes of the values of the expression `text` on the features of
-/// a layer, with `n` classes of numbers. `None` if the text is not an
-/// expression or if no feature has a value.
-pub fn classes_of(layer: &Layer, text: &str, method: Method, n: usize) -> Option<Vec<Class>> {
+/// a layer, with `n` classes of numbers. Each text value that is a label of
+/// `ramp` gets a class. `None` if the text is not an expression or if no
+/// feature has a value.
+pub fn classes_of(
+    layer: &Layer,
+    text: &str,
+    method: Method,
+    n: usize,
+    ramp: Option<&Ramp>,
+) -> Option<Vec<Class>> {
     let expr = Expr::parse(text).ok()?;
     let all = values(layer, &expr);
     let left = left_side(text);
     let classes = match numbers(&all) {
         Some((sorted, nulls)) => number_classes(&left, &breaks(&sorted, method, n), nulls > 0),
         None => {
-            let common = categories(&all, MAX_CATEGORIES);
+            let common = common(&categories(&all), MAX_CATEGORIES, ramp);
             if common.is_empty() {
                 return None;
             }
@@ -673,7 +700,7 @@ mod tests {
             .map(|t| Value::Text((*t).to_owned()))
             .chain([Value::Null])
             .collect();
-        let common = categories(&values, MAX_CATEGORIES);
+        let common = common(&categories(&values), MAX_CATEGORIES, None);
         let classes = category_classes("kind", &common);
         let names: Vec<&str> = classes.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(names, ["lake", "forest", "it's", OTHER_VALUES]);
@@ -724,6 +751,36 @@ mod tests {
         // With no label that matches, the colors come in order.
         let plain = category_classes("kind", &values[..1]);
         assert_eq!(class_colors(&ramp, &plain, false), [c(1)]);
+    }
+
+    #[test]
+    fn each_value_with_a_label_gets_a_class_past_the_most_common() {
+        let ramps = crate::ramps::Ramps::default();
+        let koppen = ramps
+            .list()
+            .iter()
+            .find(|r| r.name == crate::ramps::KOPPEN)
+            .unwrap();
+        // Each code shows fewer times than the code before it, so "Dwb"
+        // is not among the 12 most common values.
+        let mut values = Vec::new();
+        for (i, code) in koppen.labels.iter().enumerate() {
+            for _ in 0..30 - i {
+                values.push(Value::Text(code.clone()));
+            }
+        }
+        values.push(Value::Text("Moon".into()));
+        let sorted = categories(&values);
+        assert_eq!(sorted.len(), 31);
+        let plain = common(&sorted, MAX_CATEGORIES, None);
+        assert_eq!(plain.len(), MAX_CATEGORIES);
+        assert!(!plain.contains(&Value::Text("Dwb".into())));
+        let labeled = common(&sorted, MAX_CATEGORIES, Some(koppen));
+        assert_eq!(labeled.len(), 31);
+        let classes = category_classes("climate", &labeled);
+        let colors = class_colors(koppen, &classes, false);
+        let dwb = classes.iter().position(|c| c.name == "Dwb").unwrap();
+        assert_eq!(colors[dwb], Color::rgb(90, 120, 220));
     }
 
     #[test]

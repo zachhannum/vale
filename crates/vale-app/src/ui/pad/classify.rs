@@ -42,7 +42,7 @@ pub const NO_VALUES: &str = "No feature has a value.";
 enum Values {
     /// Sorted numbers, and the count of the features with no number.
     Numbers(Vec<f64>, usize),
-    /// The common values, most common first.
+    /// The values, each one time, most common first.
     Categories(Vec<Value>),
     /// The text is not an expression.
     Bad,
@@ -137,9 +137,7 @@ pub fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id
                 let all = classify::values(layer, &expr);
                 match classify::numbers(&all) {
                     Some((sorted, nulls)) => Values::Numbers(sorted, nulls),
-                    None => {
-                        Values::Categories(classify::categories(&all, classify::MAX_CATEGORIES))
-                    }
+                    None => Values::Categories(classify::categories(&all)),
                 }
             }
             Err(_) => Values::Bad,
@@ -220,8 +218,10 @@ pub fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id
             };
             classify::number_classes(&left, &edges, *nulls > 0)
         }
-        Some(Values::Categories(common)) if !common.is_empty() => {
-            classify::category_classes(&left, common)
+        Some(Values::Categories(all)) if !all.is_empty() => {
+            let ramp = state.ramps.list().get(ramp);
+            let common = classify::common(all, classify::MAX_CATEGORIES, ramp);
+            classify::category_classes(&left, &common)
         }
         _ => Vec::new(),
     };
@@ -295,8 +295,13 @@ pub fn apply(state: &mut AppState, id: LayerId, request: &Request) -> bool {
     let Some(kind) = layer.geometry() else {
         return false;
     };
-    let Some(classes) = classify::classes_of(layer, &request.text, request.method, request.classes)
-    else {
+    let Some(classes) = classify::classes_of(
+        layer,
+        &request.text,
+        request.method,
+        request.classes,
+        Some(&request.ramp),
+    ) else {
         return false;
     };
     let colors = classify::class_colors(&request.ramp, &classes, request.reverse);
