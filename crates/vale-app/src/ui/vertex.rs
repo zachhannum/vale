@@ -9,7 +9,7 @@ use super::pad::geometry::TOUCH;
 use super::pad::theme;
 use crate::globe::math::V3;
 use crate::globe::select::{self, FeatureRef, Pointer};
-use crate::globe::vertex::{self, VertexEvent, lonlat};
+use crate::globe::vertex::{self, VertexEvent};
 
 /// The distance in points at which a pointer takes a handle. The target of
 /// a handle is a touch of 44 points.
@@ -25,11 +25,13 @@ pub enum VertexDrag {
     /// A box from `start` to `end`, in screen points.
     Box { start: Pos2, end: Pos2 },
     /// A move of the vertex at `from` to the snapped position `to`, with
-    /// the stored position of a vertex that it snaps to.
+    /// the stored position of a vertex that it snaps to. With `group`, the
+    /// other selected vertices move with it.
     Move {
         feature: FeatureRef,
         from: LonLat,
         to: Option<(V3, Option<LonLat>)>,
+        group: bool,
     },
 }
 
@@ -84,11 +86,19 @@ impl AppState {
                     });
                     self.vertex_drag = Some(match grabbed {
                         Some((feature, from)) => {
-                            self.vertex_selection = vec![from];
+                            // A selected vertex moves the selection, and
+                            // another vertex moves alone.
+                            let selected = self.vertex_selection.iter();
+                            let group = selected.clone().any(|&v| vertex::same(v, from))
+                                && self.vertex_selection.len() > 1;
+                            if !group {
+                                self.vertex_selection = vec![from];
+                            }
                             VertexDrag::Move {
                                 feature,
                                 from,
                                 to: None,
+                                group,
                             }
                         }
                         None => VertexDrag::Box {
@@ -113,13 +123,15 @@ impl AppState {
                         Some(VertexDrag::Move {
                             feature,
                             from,
-                            to: Some((dir, exact)),
+                            to: Some(to),
+                            group,
                         }) => {
-                            let to = exact.unwrap_or_else(|| lonlat(dir));
+                            let moves = self.drag_moves(from, to, group);
+                            let froms: Vec<LonLat> = moves.iter().map(|m| m.0).collect();
                             let scale = self.globe.radius();
-                            let op = |g: &Geometry| vertex::move_vertex(g, from, to, scale);
-                            if self.edit_vertices(feature, &[from], op) {
-                                self.vertex_selection = vec![to];
+                            let op = |g: &Geometry| vertex::move_vertices(g, &moves, scale);
+                            if self.edit_vertices(feature, &froms, op) {
+                                self.vertex_selection = moves.iter().map(|m| m.1).collect();
                             }
                         }
                         _ => {}
@@ -171,12 +183,30 @@ impl AppState {
     fn vertex_drag_to(&mut self, pos: Pos2) {
         match &mut self.vertex_drag {
             Some(VertexDrag::Box { end, .. }) => *end = pos,
-            Some(VertexDrag::Move { feature, from, to }) => {
+            Some(VertexDrag::Move {
+                feature, from, to, ..
+            }) => {
                 let (from, uuid) = (*from, feature.uuid);
                 *to = (self.globe.unproject(pos)).map(|d| self.globe.vertex_snap(d, from, uuid));
             }
             None => {}
         }
+    }
+
+    /// The moves of a drag of the vertex at `from` to `to`: the vertex, and
+    /// with `group`, the other selected vertices.
+    fn drag_moves(
+        &self,
+        from: LonLat,
+        to: (V3, Option<LonLat>),
+        group: bool,
+    ) -> Vec<(LonLat, LonLat)> {
+        let group = if group {
+            &self.vertex_selection[..]
+        } else {
+            &[]
+        };
+        vertex::group_moves(from, to, group)
     }
 
     /// The features that an edit of the feature `f` changes: `f`, and with
@@ -290,17 +320,19 @@ pub fn paint(painter: &egui::Painter, state: &AppState) {
     if let Some(VertexDrag::Move {
         from,
         to: Some((dir, exact)),
+        group,
         ..
     }) = state.vertex_drag
     {
-        let to = exact.unwrap_or_else(|| lonlat(dir));
+        let moves = state.drag_moves(from, (dir, exact), group);
+        let froms: Vec<LonLat> = moves.iter().map(|m| m.0).collect();
         let scale = globe.radius();
         let line = egui::Stroke::new(3.0, theme::ACCENT);
         let layer = state.doc.layer(f.layer);
-        for uuid in state.vertex_targets(f, &[from]) {
+        for uuid in state.vertex_targets(f, &froms) {
             let feature = layer.and_then(|l| l.features.iter().find(|x| x.uuid() == uuid));
             let Some(moved) =
-                feature.and_then(|x| vertex::move_vertex(&x.geometry, from, to, scale))
+                feature.and_then(|x| vertex::move_vertices(&x.geometry, &moves, scale))
             else {
                 continue;
             };
@@ -311,7 +343,7 @@ pub fn paint(painter: &egui::Painter, state: &AppState) {
                 shown = moved;
             }
         }
-        selected = vec![to];
+        selected = moves.iter().map(|m| m.1).collect();
         if exact.is_some()
             && let Some(pos) = globe.project(dir)
         {

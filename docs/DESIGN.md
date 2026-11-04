@@ -484,6 +484,7 @@ On the iPad, the context strip of Split has the Smoothing slider and the Snap bu
 Vertex edits one line or polygon by its vertices. Vertex is a tool of the Vector cell for line layers and polygon layers, and A chooses it on the desktop. A tap on a line or a polygon of the selected layer selects it, and its vertices show as handles. A handle is small on the screen, and it takes a touch of 44 points with each pointer. Of two handles in reach, the nearer one wins.
 
 - A drag of a handle moves its vertex. A pen, a finger, and the mouse drag a handle. A finger that starts away from a handle moves the view.
+- A drag of a selected handle moves all the selected vertices. Each of them turns on the sphere by the same rotation as the dragged vertex, so the shape keeps its form. Only the dragged vertex snaps. A drag of a handle that is not selected moves that vertex alone.
 - A tap on a handle selects its vertex. A tap on an edge adds a vertex there and selects it. A tap on empty ground clears the selected vertices, and a second tap clears the selection.
 - A drag of the pen or the mouse that starts away from a handle selects the vertices in a box.
 - "Delete vertex" deletes the selected vertices, and so do Delete and Backspace on the desktop. A line keeps two vertices, and a ring keeps three.

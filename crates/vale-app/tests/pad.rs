@@ -9752,3 +9752,68 @@ fn smooth_vertices_changes_only_the_selected_part_in_one_undo_step() {
     h.run_steps(2);
     assert_eq!(geometry_of(&h, picks.line), before);
 }
+
+#[test]
+fn a_drag_of_a_selected_vertex_moves_all_the_selected_vertices() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, picks) = vertex_pad(dir.path());
+    let (top, bottom) = ([10.0, -12.0], [10.0, -25.0]);
+    for (i, pointer) in ["finger", "pen", "mouse"].into_iter().enumerate() {
+        let before = geometry_of(&h, picks.polygon);
+        // A box around the two corners at the east side.
+        let (a, b) = (
+            screen_at(&h, top[0], top[1]),
+            screen_at(&h, bottom[0], bottom[1]),
+        );
+        drag(
+            &mut h,
+            a + vec2(40.0, -40.0),
+            b + vec2(-30.0, 30.0),
+            Some(0.5),
+        );
+        assert_eq!(h.state().vertex_selection.len(), 2, "{pointer}");
+        let saved = saves(&h);
+        let (from, to) = (a, screen_at(&h, 13.0, -10.0));
+        match i {
+            0 => drag(&mut h, from, to, None),
+            1 => drag(&mut h, from, to, Some(0.5)),
+            _ => mouse_drag(&mut h, from, to),
+        }
+        assert_eq!(saves(&h), saved + 1, "{pointer}: one undo step");
+        let ring = outer_ring(&geometry_of(&h, picks.polygon));
+        assert_eq!(ring.len(), 4, "{pointer}: {ring:?}");
+        assert!(
+            !ring.contains(&top) && !ring.contains(&bottom),
+            "{pointer}: {ring:?}"
+        );
+        assert!(ring.contains(&[-10.0, -12.0]) && ring.contains(&[-10.0, -25.0]));
+        let moved: Vec<_> = ring.iter().filter(|v| v[0] > 11.0).collect();
+        assert_eq!(moved.len(), 2, "{pointer}: {ring:?}");
+        assert!(
+            moved.iter().any(|&&v| near(v, [13.0, -10.0], 0.3)),
+            "{pointer}"
+        );
+        assert_eq!(h.state().vertex_selection.len(), 2, "{pointer}");
+        h.state_mut().undo();
+        h.run_steps(2);
+        assert_eq!(geometry_of(&h, picks.polygon), before, "{pointer}");
+    }
+    // A drag of a vertex that is not selected moves it alone.
+    let (a, b) = (
+        screen_at(&h, top[0], top[1]),
+        screen_at(&h, bottom[0], bottom[1]),
+    );
+    drag(
+        &mut h,
+        a + vec2(40.0, -40.0),
+        b + vec2(-30.0, 30.0),
+        Some(0.5),
+    );
+    assert_eq!(h.state().vertex_selection.len(), 2);
+    let (from, to) = (screen_at(&h, -10.0, -12.0), screen_at(&h, -13.0, -10.0));
+    drag(&mut h, from, to, Some(0.5));
+    let ring = outer_ring(&geometry_of(&h, picks.polygon));
+    assert!(ring.contains(&top) && ring.contains(&bottom), "{ring:?}");
+    assert!(!ring.contains(&[-10.0, -12.0]));
+    assert_eq!(h.state().vertex_selection.len(), 1);
+}

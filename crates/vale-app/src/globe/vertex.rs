@@ -16,7 +16,7 @@ use vale_store::{Geometry, Layer, LonLat, Uuid};
 use super::Globe;
 use super::brush::slerp;
 use super::line::{chains, smooth, to_parts_exact};
-use super::math::{V3, angle, dir_to_lonlat, lonlat_to_dir};
+use super::math::{Mat3, V3, angle, dir_to_lonlat, lonlat_to_dir};
 use super::polygon::MIN_AREA;
 use super::reshape::{hole, outer, outlines};
 use super::select::Pointer;
@@ -246,15 +246,39 @@ pub fn sharing(layer: &Layer, at: LonLat, except: Uuid) -> Vec<Uuid> {
 
 /// The geometry with each vertex at `from` moved to `to`.
 pub fn move_vertex(geometry: &Geometry, from: LonLat, to: LonLat, scale: f64) -> Option<Geometry> {
+    move_vertices(geometry, &[(from, to)], scale)
+}
+
+/// The geometry with each vertex at the first position of a move moved to
+/// the second position.
+pub fn move_vertices(
+    geometry: &Geometry,
+    moves: &[(LonLat, LonLat)],
+    scale: f64,
+) -> Option<Geometry> {
+    let to = |v: LonLat| moves.iter().find(|m| same(v, m.0)).map(|m| m.1);
     edit(geometry, scale, false, |path| {
-        path.has(from).then(|| {
-            let moved = path
-                .verts
-                .iter()
-                .map(|&v| if same(v, from) { to } else { v });
+        path.verts.iter().any(|&v| to(v).is_some()).then(|| {
+            let moved = path.verts.iter().map(|&v| to(v).unwrap_or(v));
             clean(moved, path.closed)
         })
     })
+}
+
+/// The moves of a drag of the vertex at `from` to `to`, with the vertices
+/// `group`. The vertex goes to `to`, and each vertex of the group turns on
+/// the sphere by the same rotation.
+pub fn group_moves(
+    from: LonLat,
+    to: (V3, Option<LonLat>),
+    group: &[LonLat],
+) -> Vec<(LonLat, LonLat)> {
+    let turn = Mat3::between(dir(from), to.0);
+    let mut out = vec![(from, to.1.unwrap_or_else(|| lonlat(to.0)))];
+    for &v in group.iter().filter(|&&v| !same(v, from)) {
+        out.push((v, lonlat(turn.mul_vec(dir(v)))));
+    }
+    out
 }
 
 /// The geometry with a vertex at `at` on each edge from `a` to `b`, in
@@ -695,6 +719,31 @@ mod tests {
         assert_valid(polygons);
         assert!(inside(polygons, [179.0, 9.0]));
         assert!(inside(polygons, [-178.0, 9.5]));
+    }
+
+    #[test]
+    fn a_group_move_turns_each_vertex_by_the_rotation_of_the_dragged_one() {
+        let (from, to) = ([10.0, 10.0], [14.0, 12.0]);
+        let moves = group_moves(from, (dir(to), None), &[[10.0, 0.0], from]);
+        assert_eq!(moves.len(), 2);
+        assert!(near(moves[0].1, to));
+        // The angle between the two vertices stays the same.
+        let before = angle(dir(from), dir([10.0, 0.0]));
+        let after = angle(dir(moves[0].1), dir(moves[1].1));
+        assert!((before - after).abs() < 1e-12);
+        let g = square(0.0, 0.0, 10.0, 10.0);
+        let moved = move_vertices(&g, &moves, SCALE).unwrap();
+        let ring = &rings(&moved)[0][0];
+        assert!(!ring.contains(&[10.0, 10.0]) && !ring.contains(&[10.0, 0.0]));
+        assert!(ring.contains(&[0.0, 0.0]) && ring.contains(&[0.0, 10.0]));
+        assert_valid(rings(&moved));
+        // A snapped position is kept as it is.
+        let moves = group_moves(from, (dir(to), Some(to)), &[[10.0, 0.0]]);
+        assert_eq!(moves[0].1, to);
+    }
+
+    fn near(a: LonLat, b: LonLat) -> bool {
+        (a[0] - b[0]).abs() < 1e-9 && (a[1] - b[1]).abs() < 1e-9
     }
 
     #[test]
