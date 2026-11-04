@@ -2,7 +2,7 @@
 //! color stops.
 
 use eframe::egui::{self, Align2, Order, Pos2, Rect, Sense, Vec2, pos2, vec2};
-use vale_store::{BlendMode, Hillshade, RasterDisplay, RasterId, Smoothing};
+use vale_store::{BlendMode, Hillshade, LayerId, RasterDisplay, RasterId, Smoothing};
 use vale_terrain::{Bands, MAX_BANDS, Part, StopLine};
 
 use super::geometry::{PAD, Rects};
@@ -55,6 +55,15 @@ pub const IMPORT_RAMP_HINT: &str = "A row of color blocks, lowest band first.";
 pub const APPLY_RAMP: &str = "Apply";
 pub const DELETE_RAMP: &str = "Delete";
 pub const REVERSE_RAMP: &str = "Reverse";
+/// The button of the card of a ramp in the Classify form.
+pub const USE_RAMP: &str = "Use";
+/// The buttons that open the labels of the colors of a custom ramp and of a
+/// built-in ramp.
+pub const EDIT_LABELS: &str = "Edit labels…";
+pub const VIEW_LABELS: &str = "View labels";
+/// The title of the page of the labels of a ramp.
+pub const LABELS: &str = "Labels";
+pub const LABELS_HINT: &str = "A value that matches a label gets its color.";
 /// The longest name of a ramp row, in characters.
 const RAMP_NAME: usize = 20;
 /// The width and the height of the bar of a ramp row.
@@ -120,8 +129,8 @@ pub struct StyleState {
     reset_anchor: Option<(RasterId, Rect)>,
     /// The card that asks before a reset in the last frame.
     pub reset_card: Option<Rect>,
-    /// The layer and the ramp whose card is open.
-    ramp: Option<(RasterId, usize)>,
+    /// The user and the ramp whose card is open.
+    ramp: Option<(RampUser, usize)>,
     /// The row of the ramp in this frame, while its card is open.
     ramp_anchor: Option<Rect>,
     /// The card of a ramp in the last frame.
@@ -324,37 +333,71 @@ pub fn stops_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Contro
     state.globe.preview.selected = selected.map(|index| (id, index));
 }
 
+/// The part of the app that the page of the color ramps serves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RampUser {
+    /// The color stops of a raster layer.
+    Raster(RasterId),
+    /// The Classify form of a vector layer.
+    Classify(LayerId),
+}
+
+impl RampUser {
+    /// The raster layer whose panel shows the note of an import.
+    fn raster(self) -> Option<RasterId> {
+        match self {
+            RampUser::Raster(id) => Some(id),
+            RampUser::Classify(_) => None,
+        }
+    }
+}
+
 /// The page of the color ramps of the Layers panel: the import, and one row
 /// for each ramp. A tap on a row opens the card of the ramp, which
 /// `ramp_card` shows.
-pub fn ramps_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id: RasterId) {
+pub fn ramps_body(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    user: RampUser,
+) {
     if widgets::text_row(ui, controls, IMPORT_RAMP, 0.0, false, true).clicked() {
-        state.actions.push(Action::ImportRampDialog(id));
+        state.actions.push(Action::ImportRampDialog(user.raster()));
     }
     state.open_ramps();
     match &state.ramp_note {
-        Some(n) if n.layer == Some(id) => {
-            super::note_text(ui, None, &mut state.ramp_note, Some(id))
+        Some(n) if n.layer == user.raster() => {
+            super::note_text(ui, None, &mut state.ramp_note, user.raster())
         }
-        _ if state.ramps.list().is_empty() => note(ui, IMPORT_RAMP_HINT),
+        _ if state.ramps.custom().is_empty() => note(ui, IMPORT_RAMP_HINT),
         _ => {}
     }
+    let chosen = match user {
+        RampUser::Classify(id) => Some(super::classify::ramp_of(state, id)),
+        RampUser::Raster(_) => None,
+    };
     let style = &mut state.pad.style;
     style.ramp_anchor = None;
     if style
         .ramp
-        .is_some_and(|(layer, i)| layer != id || i >= state.ramps.list().len())
+        .is_some_and(|(u, i)| u != user || i >= state.ramps.list().len())
     {
         style.ramp = None;
     }
     for (index, ramp) in state.ramps.list().iter().enumerate() {
-        let open = style.ramp == Some((id, index));
-        let row = ramp_row(ui, controls, &ramp.name, &ramp.colors, open);
+        let open = style.ramp == Some((user, index));
+        let row = ramp_row(
+            ui,
+            controls,
+            &ramp.name,
+            &ramp.colors,
+            open || chosen == Some(index),
+        );
         if row.clicked() {
-            style.ramp = (!open).then_some((id, index));
+            style.ramp = (!open).then_some((user, index));
             style.ramp_part = None;
         }
-        if style.ramp == Some((id, index)) {
+        if style.ramp == Some((user, index)) {
             style.ramp_anchor = Some(row.rect);
         }
     }
@@ -526,6 +569,10 @@ pub enum RampChoice {
     Apply(bool),
     Reverse,
     Delete,
+    /// Opens the page of the labels of the colors.
+    Labels,
+    /// Picks the ramp for the Classify form.
+    Use,
 }
 
 /// The parts of the bands, in the order of `PART_NAMES`.
@@ -551,7 +598,7 @@ pub fn ramp_fit(bands: &Bands, part: Part) -> (usize, &'static str) {
 }
 
 /// The row of a color ramp: its name, and a bar of its colors at the right.
-fn ramp_row(
+pub(super) fn ramp_row(
     ui: &mut egui::Ui,
     controls: &mut Controls,
     name: &str,
@@ -943,7 +990,8 @@ pub fn ramp_card(
     rects: &Rects,
 ) {
     state.pad.style.ramp_card = None;
-    let (Some((id, index)), Some(row)) = (state.pad.style.ramp, state.pad.style.ramp_anchor.take())
+    let (Some((user, index)), Some(row)) =
+        (state.pad.style.ramp, state.pad.style.ramp_anchor.take())
     else {
         state.pad.style.ramp = None;
         return;
@@ -953,28 +1001,48 @@ pub fn ramp_card(
         return;
     };
     let colors = ramp.colors.len();
-    let Some(layer) = state.globe.bands_mut(id) else {
-        return;
-    };
-    let split = layer.sea().is_some();
-    let part = state
-        .pad
-        .style
-        .ramp_part
-        .unwrap_or(layer.part(&ramp.colors));
-    let (bands, kind) = ramp_fit(layer, part);
-    let keep = format!("Fit to {bands} {kind}bands");
-    let fresh = format!("Make {colors} {kind}bands");
-    let mut buttons: Vec<(&str, egui::Color32, RampChoice)> = if colors == bands {
-        vec![(APPLY_RAMP, theme::ACCENT, RampChoice::Apply(true))]
-    } else {
-        vec![
-            (&keep, theme::ACCENT, RampChoice::Apply(true)),
-            (&fresh, theme::ACCENT, RampChoice::Apply(false)),
-        ]
-    };
-    buttons.push((REVERSE_RAMP, theme::TEXT, RampChoice::Reverse));
-    buttons.push((DELETE_RAMP, theme::WARN, RampChoice::Delete));
+    let built_in = ramp.built_in;
+    let labeled = ramp.labels.iter().any(|l| !l.is_empty());
+    let (keep, fresh);
+    let (mut buttons, split, part): (Vec<(&str, egui::Color32, RampChoice)>, bool, Part) =
+        match user {
+            RampUser::Raster(id) => {
+                let Some(layer) = state.globe.bands_mut(id) else {
+                    return;
+                };
+                let split = layer.sea().is_some();
+                let part = state
+                    .pad
+                    .style
+                    .ramp_part
+                    .unwrap_or(layer.part(&ramp.colors));
+                let (bands, kind) = ramp_fit(layer, part);
+                keep = format!("Fit to {bands} {kind}bands");
+                fresh = format!("Make {colors} {kind}bands");
+                let buttons = if colors == bands {
+                    vec![(APPLY_RAMP, theme::ACCENT, RampChoice::Apply(true))]
+                } else {
+                    vec![
+                        (keep.as_str(), theme::ACCENT, RampChoice::Apply(true)),
+                        (fresh.as_str(), theme::ACCENT, RampChoice::Apply(false)),
+                    ]
+                };
+                (buttons, split, part)
+            }
+            RampUser::Classify(_) => (
+                vec![(USE_RAMP, theme::ACCENT, RampChoice::Use)],
+                false,
+                Part::All,
+            ),
+        };
+    // A built-in ramp does not change.
+    if !built_in {
+        buttons.push((EDIT_LABELS, theme::TEXT, RampChoice::Labels));
+        buttons.push((REVERSE_RAMP, theme::TEXT, RampChoice::Reverse));
+        buttons.push((DELETE_RAMP, theme::WARN, RampChoice::Delete));
+    } else if labeled {
+        buttons.push((VIEW_LABELS, theme::TEXT, RampChoice::Labels));
+    }
     let name = &ramp.name;
     let text = format!("{name} · {colors} colors");
     let choice = if split { PANEL_ROW + 8.0 } else { 0.0 };
@@ -1027,13 +1095,60 @@ pub fn ramp_card(
     if chosen != RampChoice::Reverse {
         state.pad.style.ramp = None;
     }
-    let result = match chosen {
-        RampChoice::Apply(keep) => state.apply_ramp(id, index, keep, part),
-        RampChoice::Reverse => state.ramps.reverse(index).map_err(|e| e.to_string()),
-        RampChoice::Delete => state.ramps.remove(index).map_err(|e| e.to_string()),
+    let result = match (chosen, user) {
+        (RampChoice::Apply(keep), RampUser::Raster(id)) => state.apply_ramp(id, index, keep, part),
+        (RampChoice::Apply(_), RampUser::Classify(_)) => Ok(()),
+        (RampChoice::Use, RampUser::Classify(id)) => {
+            super::classify::use_ramp(state, id, index);
+            state.pad.page = Some(Page::Classify);
+            Ok(())
+        }
+        (RampChoice::Use, RampUser::Raster(_)) => Ok(()),
+        (RampChoice::Reverse, _) => state.ramps.reverse(index).map_err(|e| e.to_string()),
+        (RampChoice::Delete, _) => {
+            super::classify::ramp_removed(state, index);
+            state.ramps.remove(index).map_err(|e| e.to_string())
+        }
+        (RampChoice::Labels, _) => {
+            state.pad.page = Some(Page::RampLabels(index));
+            Ok(())
+        }
     };
     if let Err(text) = result {
-        state.ramp_note = Some(crate::ui::Note::new(text, true, Some(id)));
+        state.ramp_note = Some(crate::ui::Note::new(text, true, user.raster()));
+    }
+}
+
+/// The page of the labels of the colors of ramp `index`: a row for each
+/// color, with its color and its label. The label of a custom ramp is a
+/// field, and the label of a built-in ramp is text.
+pub fn labels_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, index: usize) {
+    let Some(ramp) = state.ramps.list().get(index).cloned() else {
+        return;
+    };
+    ui.spacing_mut().item_spacing.y = 0.0;
+    note(ui, LABELS_HINT);
+    ui.add_space(4.0);
+    for (i, (color, label)) in ramp.colors.iter().zip(&ramp.labels).enumerate() {
+        let name = format!("Label {}", i + 1);
+        let top = ui.cursor().top();
+        if ramp.built_in {
+            widgets::value_row(ui, "", label);
+        } else {
+            let mut text = label.clone();
+            let field = widgets::text_field(ui, controls, &name, "", None, &mut text, true);
+            if field.changed()
+                && let Err(e) = state.ramps.set_label(index, i, &text)
+            {
+                state.ramp_note = Some(crate::ui::Note::new(e.to_string(), true, None));
+            }
+        }
+        let swatch = Rect::from_center_size(
+            pos2(ui.max_rect().left() + 16.0, top + PANEL_ROW / 2.0),
+            vec2(32.0, 24.0),
+        );
+        let fill = egui::Color32::from_rgb(color[0], color[1], color[2]);
+        ui.painter().rect_filled(swatch, 4.0, fill);
     }
 }
 

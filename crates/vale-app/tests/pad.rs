@@ -5528,16 +5528,19 @@ fn an_imported_ramp_gives_one_color_per_band() {
     let path = dir.path().join("legend.png");
     let legend = image::RgbImage::from_fn(90, 12, |x, _| image::Rgb(colors[x as usize / 30]));
     legend.save(&path).unwrap();
-    h.state_mut().run_action(Action::ImportRamp(height, path));
+    h.state_mut()
+        .run_action(Action::ImportRamp(Some(height), path));
     h.run();
     let before = h.state().globe.map.bands.clone();
     let count = before.colors().len();
     assert!(count > colors.len());
+    // The new ramp is the last ramp of the library.
+    let at = h.state().ramps.list().len() - 1;
 
     // A fit keeps the stops, and each band takes the color at its middle
     // along the ramp.
     h.state_mut()
-        .apply_ramp(height, 0, true, Part::All)
+        .apply_ramp(height, at, true, Part::All)
         .unwrap();
     let bands = h.state().globe.map.bands.clone();
     assert_eq!(bands.stops(), before.stops());
@@ -5551,9 +5554,49 @@ fn an_imported_ramp_gives_one_color_per_band() {
 
     // A ramp with new stops gives one band for each color.
     h.state_mut()
-        .apply_ramp(height, 0, false, Part::All)
+        .apply_ramp(height, at, false, Part::All)
         .unwrap();
     assert_eq!(h.state().globe.map.bands.colors(), colors);
+}
+
+#[test]
+fn a_custom_ramp_gets_labels_and_a_built_in_ramp_shows_them() {
+    use vale_app::ramps::KOPPEN;
+    use vale_app::ui::pad::raster::{COLOR_RAMPS, EDIT_LABELS, VIEW_LABELS};
+    let mut h = painted_pad(BOARDS[0]);
+    let height = open_height(&mut h);
+    open_stops(&mut h);
+    scroll_to_row(&mut h, COLOR_RAMPS);
+    tap(&mut h, COLOR_RAMPS);
+    let colors = [[33, 113, 181], [116, 196, 118], [140, 81, 10]];
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("zones.png");
+    let legend = image::RgbImage::from_fn(90, 12, |x, _| image::Rgb(colors[x as usize / 30]));
+    legend.save(&path).unwrap();
+    h.state_mut()
+        .run_action(Action::ImportRamp(Some(height), path));
+    h.run();
+    let at = h.state().ramps.list().len() - 1;
+
+    scroll_to_control(&mut h, "zones");
+    tap(&mut h, "zones");
+    tap(&mut h, EDIT_LABELS);
+    assert_eq!(h.state().pad.page, Some(Page::RampLabels(at)));
+    check_controls(&h, "the labels of a ramp");
+    type_text(&mut h, "Label 2", "Cfb");
+    screenshot::save(&mut h, "pad-ramp-labels");
+    assert_eq!(h.state().ramps.custom()[0].labels, ["", "Cfb", ""]);
+    tap(&mut h, "Back to Color ramps");
+    assert_eq!(h.state().pad.page, Some(Page::Ramps));
+
+    // The labels of a built-in ramp show, and they do not change.
+    scroll_to_control(&mut h, KOPPEN);
+    tap(&mut h, KOPPEN);
+    assert!(control(&h, EDIT_LABELS).is_none());
+    tap(&mut h, VIEW_LABELS);
+    assert!(matches!(h.state().pad.page, Some(Page::RampLabels(_))));
+    assert!(control(&h, "Label 1").is_none());
+    screenshot::save(&mut h, "pad-koppen-labels");
 }
 
 #[test]
@@ -5570,7 +5613,7 @@ fn an_imported_ramp_stays_in_the_list_and_applies_from_its_card() {
     assert!(
         h.state()
             .actions
-            .contains(&Action::ImportRampDialog(height))
+            .contains(&Action::ImportRampDialog(Some(height)))
     );
     h.state_mut().actions.clear();
 
@@ -5580,16 +5623,18 @@ fn an_imported_ramp_stays_in_the_list_and_applies_from_its_card() {
     let legend = image::RgbImage::from_fn(90, 12, |x, _| image::Rgb(colors[x as usize / 30]));
     legend.save(&path).unwrap();
     let before = h.state().globe.map.bands.clone();
-    h.state_mut().run_action(Action::ImportRamp(height, path));
+    h.state_mut()
+        .run_action(Action::ImportRamp(Some(height), path));
     h.run();
     // The import changes no layer.
     assert_eq!(h.state().globe.map.bands, before);
-    assert_eq!(h.state().ramps.list().len(), 1);
+    assert_eq!(h.state().ramps.custom().len(), 1);
     assert!(h.query_by_label("Added legend (3 colors)").is_some());
 
     // The layer has more bands than the ramp has colors, so the card offers
     // two ways.
     let bands = before.stops().len() - 1;
+    scroll_to_control(&mut h, "legend");
     tap(&mut h, "legend");
     assert!(h.state().pad.style.ramp_card.is_some());
     check_controls(&h, "with the card of a ramp");
@@ -5598,10 +5643,10 @@ fn an_imported_ramp_stays_in_the_list_and_applies_from_its_card() {
     // order.
     tap(&mut h, REVERSE_RAMP);
     let reversed: Vec<_> = colors.iter().rev().copied().collect();
-    assert_eq!(h.state().ramps.list()[0].colors, reversed);
+    assert_eq!(h.state().ramps.custom()[0].colors, reversed);
     assert!(h.state().pad.style.ramp_card.is_some());
     tap(&mut h, REVERSE_RAMP);
-    assert_eq!(h.state().ramps.list()[0].colors, colors);
+    assert_eq!(h.state().ramps.custom()[0].colors, colors);
     tap(&mut h, "Make 3 bands");
     let found: Vec<_> = h
         .state()
@@ -5615,17 +5660,27 @@ fn an_imported_ramp_stays_in_the_list_and_applies_from_its_card() {
     assert_eq!(found, colors);
     assert_eq!(h.state().pad.style.ramp_card, None);
 
+    scroll_to_control(&mut h, "legend");
     tap(&mut h, "legend");
     tap(&mut h, DELETE_RAMP);
-    assert!(h.state().ramps.list().is_empty());
+    assert!(h.state().ramps.custom().is_empty());
     assert_eq!(h.state().globe.map.bands.bands().len(), 3);
+
+    // A built-in ramp applies, but it does not reverse, and it stays.
+    scroll_to_control(&mut h, "Viridis");
+    tap(&mut h, "Viridis");
+    assert!(h.state().pad.style.ramp_card.is_some());
+    assert!(control(&h, REVERSE_RAMP).is_none());
+    assert!(control(&h, DELETE_RAMP).is_none());
+    tap(&mut h, "Viridis");
 
     // A ramp with no blue colors changes only the land.
     let land = [[116, 196, 118], [140, 81, 10], [246, 244, 240]];
     let path = dir.path().join("land.png");
     let legend = image::RgbImage::from_fn(90, 12, |x, _| image::Rgb(land[x as usize / 30]));
     legend.save(&path).unwrap();
-    h.state_mut().run_action(Action::ImportRamp(height, path));
+    h.state_mut()
+        .run_action(Action::ImportRamp(Some(height), path));
     h.run();
     tap(&mut h, "land");
     check_controls(&h, "with the card of a land ramp");
@@ -5646,7 +5701,8 @@ fn an_imported_ramp_stays_in_the_list_and_applies_from_its_card() {
     assert_eq!(found, [colors[0], land[0], land[1], land[2]]);
 
     let path = dir.path().join("none.png");
-    h.state_mut().run_action(Action::ImportRamp(height, path));
+    h.state_mut()
+        .run_action(Action::ImportRamp(Some(height), path));
     h.run();
     assert!(h.state().ramp_note.as_ref().is_some_and(|n| n.warning));
 
@@ -7434,6 +7490,180 @@ fn open_rule(h: &mut Pad, layer: &str, rule: &str) {
     scroll_to_control(h, rule);
     tap(h, rule);
     assert!(matches!(h.state().pad.page, Some(Page::Rule(_))));
+}
+
+/// Opens the Classify form of a vector layer.
+fn open_classify(h: &mut Pad, layer: &str) {
+    use vale_app::ui::pad::classify::CLASSIFY;
+    tap(h, "Layers");
+    tap(h, &format!("Open {layer}"));
+    scroll_to_control(h, CLASSIFY);
+    tap(h, CLASSIFY);
+    assert_eq!(h.state().pad.page, Some(Page::Classify));
+}
+
+#[test]
+fn classify_makes_quantile_rules_in_one_undo_step() {
+    use vale_app::ui::pad::classify::{EXPRESSION, REPLACE_RULES};
+    use vale_app::ui::pad::filter::conditions;
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = saved_pad(BOARDS[0], dir.path());
+    let places = vector(&h, "Places");
+    let before = rules(&h, places);
+    open_classify(&mut h, "Places");
+    scroll_to_control(&mut h, EXPRESSION);
+    type_text(&mut h, EXPRESSION, "pop_max");
+    scroll_to_control(&mut h, "Quantiles");
+    tap(&mut h, "Quantiles");
+    scroll_to_control(&mut h, REPLACE_RULES);
+    tap(&mut h, REPLACE_RULES);
+    save_frames(&mut h);
+    assert_eq!(h.state().pad.page, None);
+    let made = rules(&h, places);
+    assert!(
+        (2..=5).contains(&made.len()),
+        "{:?}",
+        rule_names(&h, places)
+    );
+    let texts: Vec<String> = made
+        .iter()
+        .map(|r| r.filter.source().unwrap().text().to_owned())
+        .collect();
+    assert!(texts[0].starts_with("pop_max < "), "{texts:?}");
+    assert!(
+        texts.last().unwrap().starts_with("pop_max >= "),
+        "{texts:?}"
+    );
+    for r in &made {
+        assert!(r.filter.error().is_none(), "{}", r.name);
+    }
+    let colors: Vec<_> = made.iter().map(|r| r.fill().unwrap()).collect();
+    assert_ne!(colors[0], colors[colors.len() - 1]);
+
+    // The rule page of a middle class shows its two conditions.
+    let middle = made[1].name.clone();
+    assert_eq!(conditions(&texts[1]).len(), 2, "{texts:?}");
+    scroll_to_control(&mut h, &middle);
+    tap(&mut h, &middle);
+    assert_eq!(h.state().pad.page, Some(Page::Rule(1)));
+    for n in 1..=2 {
+        let remove = format!("Remove condition {n}");
+        assert!(control(&h, &remove).is_some(), "{remove}");
+    }
+
+    tap(&mut h, "Undo");
+    assert_eq!(rules(&h, places), before);
+}
+
+#[test]
+fn classify_by_text_gives_a_rule_for_each_value_and_other_values() {
+    use vale_app::classify::{MAX_CATEGORIES, OTHER_VALUES};
+    use vale_app::ui::pad::classify::REPLACE_RULES;
+    let mut h = pad(BOARDS[0]);
+    let rivers = vector(&h, "Rivers");
+    let layer = h.state().doc.layer(rivers).unwrap();
+    let mut kinds: Vec<String> = layer
+        .features
+        .iter()
+        .filter_map(|f| f.attributes.get("featurecla")?.label())
+        .collect();
+    kinds.sort();
+    kinds.dedup();
+    open_classify(&mut h, "Rivers");
+    scroll_to_control(&mut h, "featurecla");
+    tap(&mut h, "featurecla");
+    scroll_to_control(&mut h, REPLACE_RULES);
+    tap(&mut h, REPLACE_RULES);
+    let names = rule_names(&h, rivers);
+    assert_eq!(
+        names.len(),
+        kinds.len().min(MAX_CATEGORIES) + 1,
+        "{names:?}"
+    );
+    assert_eq!(names.last().unwrap(), OTHER_VALUES);
+    for kind in kinds.iter().take(MAX_CATEGORIES) {
+        assert!(names.contains(kind), "{kind}");
+    }
+    let made = rules(&h, rivers);
+    let first = made[0].filter.source().unwrap().text().to_owned();
+    assert_eq!(first, format!("featurecla = '{}'", made[0].name));
+}
+
+#[test]
+fn classify_gives_a_value_the_color_of_its_label() {
+    use vale_app::ui::pad::classify::{REPLACE_RULES, summary};
+    use vale_app::ui::pad::raster::{IMPORT_RAMP, USE_RAMP};
+    let mut h = pad(BOARDS[0]);
+    let rivers = vector(&h, "Rivers");
+    let ramps = &mut h.state_mut().ramps;
+    ramps.add("Water", vec![[10, 10, 10], [200, 0, 0]]).unwrap();
+    let at = ramps.list().len() - 1;
+    ramps.set_label(at, 1, "River").unwrap();
+    open_classify(&mut h, "Rivers");
+    scroll_to_control(&mut h, "featurecla");
+    tap(&mut h, "featurecla");
+    // The row of the ramp opens the page of the ramps, and "Use" picks one.
+    scroll_to_control(&mut h, "Bold");
+    tap(&mut h, "Bold");
+    assert_eq!(h.state().pad.page, Some(Page::Ramps));
+    tap(&mut h, IMPORT_RAMP);
+    assert!(h.state().actions.contains(&Action::ImportRampDialog(None)));
+    h.state_mut().actions.clear();
+    scroll_to_control(&mut h, "Water");
+    tap(&mut h, "Water");
+    tap(&mut h, USE_RAMP);
+    assert_eq!(h.state().pad.page, Some(Page::Classify));
+    scroll_to_control(&mut h, "Water");
+    tap(&mut h, "Water");
+    tap(&mut h, "Back to Classify");
+    assert_eq!(h.state().pad.page, Some(Page::Classify));
+    scroll_to_control(&mut h, REPLACE_RULES);
+    assert!(h.query_by_label(&summary(2, 1)).is_some());
+    tap(&mut h, REPLACE_RULES);
+    let made = rules(&h, rivers);
+    let river = made.iter().find(|r| r.name == "River").unwrap();
+    assert_eq!(
+        river.stroke().unwrap().color,
+        vale_style::Color::rgb(200, 0, 0)
+    );
+}
+
+#[test]
+fn classify_reads_an_expression() {
+    use vale_app::ui::pad::classify::{EXPRESSION, REPLACE_RULES};
+    let mut h = pad(BOARDS[0]);
+    let rivers = vector(&h, "Rivers");
+    open_classify(&mut h, "Rivers");
+    scroll_to_control(&mut h, EXPRESSION);
+    type_text(&mut h, EXPRESSION, "scalerank * 2");
+    scroll_to_control(&mut h, "Natural breaks");
+    tap(&mut h, "Natural breaks");
+    scroll_to_control(&mut h, REPLACE_RULES);
+    tap(&mut h, REPLACE_RULES);
+    let made = rules(&h, rivers);
+    assert!(made.len() >= 2);
+    let first = made[0].filter.source().unwrap().text().to_owned();
+    assert!(first.starts_with("(scalerank * 2) < "), "{first}");
+}
+
+#[test]
+fn the_classify_form_fits_a_finger() {
+    use vale_app::ui::pad::classify::{REPLACE_RULES, VARY_WIDTH};
+    for size in BOARDS {
+        let what = format!("{size:?}");
+        let mut h = pad(size);
+        open_classify(&mut h, "Rivers");
+        check_controls(&h, &what);
+        scroll_to_control(&mut h, "scalerank");
+        tap(&mut h, "scalerank");
+        screenshot::save(&mut h, &format!("pad-classify-top-{}", size.0));
+        scroll_to_control(&mut h, VARY_WIDTH);
+        tap(&mut h, VARY_WIDTH);
+        check_controls(&h, &what);
+        screenshot::save(&mut h, &format!("pad-classify-{}", size.0));
+        scroll_to_control(&mut h, REPLACE_RULES);
+        check_controls(&h, &what);
+    }
 }
 
 #[test]

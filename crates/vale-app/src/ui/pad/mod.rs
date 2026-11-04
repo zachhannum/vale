@@ -29,6 +29,7 @@ use crate::world;
 
 pub mod atlas;
 pub mod browser;
+pub mod classify;
 pub mod edge_labels;
 pub mod eyedropper;
 pub mod fields;
@@ -380,6 +381,10 @@ pub enum Page {
     MarkerFill(usize),
     /// The attribute table of the layer.
     Table,
+    /// The form that replaces the rules with a rule for each class.
+    Classify,
+    /// The labels of the colors of the ramp with this index.
+    RampLabels(usize),
 }
 
 /// The state of the iPad layout.
@@ -1542,10 +1547,13 @@ pub(super) fn show_panel(
     let fits = match (layer, state.pad.page) {
         (
             Some(LayerRef::Raster(_)),
-            Some(Page::Ramps | Page::Stops | Page::Hillshade | Page::Blend),
+            Some(Page::Ramps | Page::Stops | Page::Hillshade | Page::Blend | Page::RampLabels(_)),
         ) => true,
         (Some(LayerRef::Image(_)), Some(Page::Blend)) => true,
-        (Some(LayerRef::Vector(_)), Some(Page::NewField | Page::Table)) => true,
+        (
+            Some(LayerRef::Vector(_)),
+            Some(Page::NewField | Page::Table | Page::Classify | Page::Ramps | Page::RampLabels(_)),
+        ) => true,
         (Some(LayerRef::Vector(_)), Some(Page::Field(i))) => i < field_count,
         (
             Some(LayerRef::Vector(_)),
@@ -1585,6 +1593,11 @@ pub(super) fn show_panel(
         (Panel::Layers, Some(LayerRef::Raster(_))) if page == Some(Page::Ramps) => {
             ("pad-ramps", raster::COLOR_RAMPS, Some(raster::COLOR_STOPS))
         }
+        (Panel::Layers, Some(LayerRef::Raster(_) | LayerRef::Vector(_)))
+            if matches!(page, Some(Page::RampLabels(_))) =>
+        {
+            ("pad-ramp-labels", raster::LABELS, Some(raster::COLOR_RAMPS))
+        }
         (Panel::Layers, Some(LayerRef::Raster(_))) if page == Some(Page::Stops) => {
             ("pad-stops", raster::COLOR_STOPS, Some(name))
         }
@@ -1601,6 +1614,12 @@ pub(super) fn show_panel(
         (Panel::Layers, Some(LayerRef::Image(_))) => ("pad-image", name, Some("Layers")),
         (Panel::Layers, Some(LayerRef::Vector(_))) if page == Some(Page::Table) => {
             ("pad-table", table::TITLE, Some(name))
+        }
+        (Panel::Layers, Some(LayerRef::Vector(_))) if page == Some(Page::Ramps) => {
+            ("pad-ramps", raster::COLOR_RAMPS, Some(classify::TITLE))
+        }
+        (Panel::Layers, Some(LayerRef::Vector(_))) if page == Some(Page::Classify) => {
+            ("pad-classify", classify::TITLE, Some(name))
         }
         (Panel::Layers, Some(LayerRef::Vector(_))) if page == Some(Page::NewField) => {
             ("pad-new-field", fields::NEW_FIELD, Some(name))
@@ -1682,7 +1701,10 @@ pub(super) fn show_panel(
             None => {}
         }
         if row.back && page == Some(Page::Ramps) {
-            state.pad.page = Some(Page::Stops);
+            let vector = matches!(layer, Some(LayerRef::Vector(_)));
+            state.pad.page = Some(if vector { Page::Classify } else { Page::Stops });
+        } else if row.back && matches!(page, Some(Page::RampLabels(_))) {
+            state.pad.page = Some(Page::Ramps);
         } else if let (
             true,
             Some(
@@ -1705,7 +1727,10 @@ pub(super) fn show_panel(
         |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| match (panel, layer) {
             (Panel::Brush, _) => brush_body(ui, state, controls),
             (Panel::Layers, Some(LayerRef::Raster(id))) => match page {
-                Some(Page::Ramps) => raster::ramps_body(ui, state, controls, id),
+                Some(Page::Ramps) => {
+                    raster::ramps_body(ui, state, controls, raster::RampUser::Raster(id))
+                }
+                Some(Page::RampLabels(i)) => raster::labels_body(ui, state, controls, i),
                 Some(Page::Stops) => raster::stops_body(ui, state, controls, id),
                 Some(Page::Hillshade) => {
                     raster::hillshade_body(ui, state, controls, id);
@@ -1729,6 +1754,11 @@ pub(super) fn show_panel(
                 Some(Page::Symbols(i)) => rules::symbols_body(ui, state, controls, id, i),
                 Some(Page::MarkerShape(i)) => rules::shape_body(ui, state, controls, id, i),
                 Some(Page::MarkerFill(i)) => rules::marker_fill_body(ui, state, controls, id, i),
+                Some(Page::Classify) => classify::body(ui, state, controls, id),
+                Some(Page::Ramps) => {
+                    raster::ramps_body(ui, state, controls, raster::RampUser::Classify(id))
+                }
+                Some(Page::RampLabels(i)) => raster::labels_body(ui, state, controls, i),
                 Some(Page::Table) => {}
                 _ => vector_body(ui, state, controls, id),
             },

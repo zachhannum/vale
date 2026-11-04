@@ -5,11 +5,16 @@
 use eframe::egui;
 use vale_render::Symbols;
 use vale_store::{Field, FieldType, FillKind, GeometryKind, LayerId};
-use vale_style::expr::{Filter, Property};
+use vale_style::expr::{Expr, Filter, Property, field_ref};
 use vale_style::{Color, Hatch, LayerStyle, MarkerShape, Rule, Stroke, StrokeKind};
 
+use super::pad::classify::{
+    BAD_EXPRESSION, CLASS_COUNT, CLASSIFY, COLOR_RAMP, FIELD, METHOD, REPLACE_RULES, REVERSE,
+    Request,
+};
 use super::pad::filter::{self, ADD_CONDITION, REMOVE_CONDITION};
 use super::pad::furniture::{ANGLE, LINE_COLOR, LINE_WIDTH};
+use super::pad::raster::IMPORT_RAMP;
 use super::pad::rules::{
     ADD_RULE, ALL_FEATURES, BAD_FILTER, BAD_RANGE, BRUSH, DASH, DASHED, DASHES, DELETE_RULE,
     EXPRESSION, FILL, FILTER, GAP, LINE, MAX_SCALE, MIN_SCALE, MOVE_DOWN, MOVE_UP, NO_LIMIT, SOLID,
@@ -22,7 +27,9 @@ use super::pad::rules::{
     numeric_fields, pick_symbol, property_field, to_circle, with_field,
 };
 use super::{Action, Note, number};
+use crate::classify::{self, Method, Step};
 use crate::globe::symbol::paint_symbol;
+use crate::ramps::Ramp;
 
 /// The symbols that the editor lists, the text of the last addition of a
 /// symbol, and the actions of the app.
@@ -710,4 +717,97 @@ pub fn color_button(ui: &mut egui::Ui, c: &mut Color) -> bool {
     } else {
         false
     }
+}
+
+/// The Classify section of the desktop layout. It returns a request when
+/// the user clicks "Replace rules".
+pub fn classify(
+    ui: &mut egui::Ui,
+    id: LayerId,
+    fields: &[Field],
+    ramps: &[Ramp],
+    library: &mut Library,
+) -> Option<Request> {
+    let key = egui::Id::new(("classify", id.0));
+    let (mut text, mut method, mut classes, mut ramp, mut reverse): (
+        String,
+        usize,
+        usize,
+        usize,
+        bool,
+    ) = ui.data(|d| d.get_temp(key)).unwrap_or((
+        String::new(),
+        1,
+        classify::DEFAULT_CLASSES,
+        0,
+        false,
+    ));
+    let mut out = None;
+    egui::CollapsingHeader::new(CLASSIFY)
+        .id_salt(key)
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(FIELD);
+                egui::ComboBox::from_id_salt(("classify-field", id.0))
+                    .selected_text(text.clone())
+                    .width(130.0)
+                    .show_ui(ui, |ui| {
+                        for f in fields {
+                            let r = field_ref(&f.name);
+                            ui.selectable_value(&mut text, r, &f.name);
+                        }
+                    });
+            });
+            ui.horizontal(|ui| {
+                ui.label(EXPRESSION);
+                ui.text_edit_singleline(&mut text);
+            });
+            if !text.trim().is_empty() && Expr::parse(&text).is_err() {
+                ui.label(BAD_EXPRESSION);
+            }
+            ui.horizontal(|ui| {
+                ui.label(METHOD);
+                egui::ComboBox::from_id_salt(("classify-method", id.0))
+                    .selected_text(Method::ALL[method].label())
+                    .show_ui(ui, |ui| {
+                        for (i, m) in Method::ALL.iter().enumerate() {
+                            ui.selectable_value(&mut method, i, m.label());
+                        }
+                    });
+            });
+            let (min, max) = classify::CLASSES;
+            ui.horizontal(|ui| {
+                ui.label(CLASS_COUNT);
+                ui.add(egui::DragValue::new(&mut classes).range(min..=max));
+            });
+            ui.horizontal(|ui| {
+                ui.label(COLOR_RAMP);
+                let name = ramps.get(ramp).map_or("", |r| r.name.as_str());
+                egui::ComboBox::from_id_salt(("classify-ramp", id.0))
+                    .selected_text(name)
+                    .show_ui(ui, |ui| {
+                        for (i, r) in ramps.iter().enumerate() {
+                            ui.selectable_value(&mut ramp, i, &r.name);
+                        }
+                    });
+            });
+            if ui.button(IMPORT_RAMP).clicked() {
+                library.actions.push(Action::ImportRampDialog(None));
+            }
+            ui.checkbox(&mut reverse, REVERSE);
+            if ui.button(REPLACE_RULES).clicked()
+                && let Some(r) = ramps.get(ramp)
+            {
+                out = Some(Request {
+                    text: text.clone(),
+                    method: Method::ALL[method],
+                    classes,
+                    ramp: r.clone(),
+                    reverse,
+                    step: Step::None,
+                });
+            }
+        });
+    ui.data_mut(|d| d.insert_temp(key, (text, method, classes, ramp, reverse)));
+    out
 }

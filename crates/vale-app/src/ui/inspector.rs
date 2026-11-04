@@ -81,6 +81,8 @@ fn layer_section(ui: &mut egui::Ui, state: &mut AppState) {
         .layer(info.id)
         .map_or(Vec::new(), |l| l.fields.clone());
     let symbols = state.doc.symbols().clone();
+    state.open_ramps();
+    let ramps = state.ramps.list().to_vec();
     let font_warning = (state.doc.entry(info.id))
         .and_then(|e| crate::fonts::missing(e.style.label.font.as_deref(), &state.font_families));
     let mut pick_font = false;
@@ -94,6 +96,7 @@ fn layer_section(ui: &mut egui::Ui, state: &mut AppState) {
         actions: &mut state.actions,
     };
     let mut changed = style_editor::rules(ui, info.id, style, info.kind, &fields, &mut library);
+    let classes = style_editor::classify(ui, info.id, &fields, &ramps, &mut library);
 
     ui.add_space(4.0);
     let label = &mut style.label;
@@ -147,6 +150,9 @@ fn layer_section(ui: &mut egui::Ui, state: &mut AppState) {
     });
     if changed {
         state.touch();
+    }
+    if let Some(request) = classes {
+        super::pad::classify::apply(state, info.id, &request);
     }
     if pick_font {
         state.font_dialog = Some(super::font_dialog::FontDialog::new(

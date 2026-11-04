@@ -20,8 +20,9 @@ use crate::ui::{self, Action, AppState};
 enum PickFor {
     #[default]
     Heightmap,
-    /// The colors of the file go into the ramps of this raster layer.
-    Ramp(vale_store::RasterId),
+    /// The colors of the file go into the library of the ramps. The panel
+    /// of the raster layer shows the note.
+    Ramp(Option<vale_store::RasterId>),
     /// The image of the form of a new raster layer.
     RasterImage,
     /// A new symbol of the project.
