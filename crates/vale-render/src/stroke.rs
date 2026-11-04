@@ -3,7 +3,7 @@
 //! All functions take the parts of one feature in page space. A feature can have several
 //! parts, and the arc length runs on from the end of one part to the start of the next.
 
-use kurbo::{BezPath, Circle, Point, Shape, Vec2};
+use kurbo::{BezPath, Circle, Point, Rect, Shape, Vec2};
 
 /// The most dabs that one feature gets from `brush_dabs`.
 pub const MAX_DABS: usize = 20_000;
@@ -13,46 +13,142 @@ pub const MAX_DABS: usize = 20_000;
 /// A dash includes the vertices that it crosses. The phase runs on across vertices and parts.
 /// If `dash` or `gap` is not a positive number, the parts come back unchanged.
 pub fn dash(parts: &[Vec<Point>], dash: f64, gap: f64) -> Vec<Vec<Point>> {
+    let all = Rect::new(
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+        f64::INFINITY,
+        f64::INFINITY,
+    );
+    dash_within(parts, dash, gap, all)
+}
+
+/// The dashes of `dash` that are inside `area`. A dash that crosses the edge of `area` stops at
+/// the edge. The phase is the phase of the whole parts, so a dash keeps its place when `area`
+/// moves. The work is in proportion to the vertices and to the dashes inside `area`.
+pub fn dash_within(parts: &[Vec<Point>], dash: f64, gap: f64, area: Rect) -> Vec<Vec<Point>> {
     if !(dash > 0.0 && gap > 0.0 && dash.is_finite() && gap.is_finite()) {
         return parts.to_vec();
     }
-    let mut out = Vec::new();
-    let mut on = true;
-    let mut left = dash;
+    let mut d = Dasher {
+        dash,
+        gap,
+        on: true,
+        left: dash,
+        cur: Vec::new(),
+        out: Vec::new(),
+    };
     for part in parts {
         if part.len() < 2 {
             continue;
         }
-        let mut cur: Vec<Point> = if on { vec![part[0]] } else { Vec::new() };
+        d.cur = if d.on { vec![part[0]] } else { Vec::new() };
         for w in part.windows(2) {
             let (a, b) = (w[0], w[1]);
             let len = a.distance(b);
-            let mut t = 0.0;
-            while len > 0.0 && len - t >= left {
-                t += left;
-                let p = a.lerp(b, t / len);
-                if on {
-                    push_new(&mut cur, p);
-                    if cur.len() >= 2 {
-                        out.push(std::mem::take(&mut cur));
-                    }
-                    cur.clear();
-                } else {
-                    cur = vec![p];
-                }
-                on = !on;
-                left = if on { dash } else { gap };
+            let Some((t0, t1)) = clip(a, b, area) else {
+                d.skip(len, b);
+                continue;
+            };
+            let (p0, p1) = (a.lerp(b, t0), a.lerp(b, t1));
+            if t0 > 0.0 {
+                d.skip(len * t0, p0);
             }
-            left -= len - t;
-            if on {
-                push_new(&mut cur, b);
+            d.walk(p0, p1);
+            if t1 < 1.0 {
+                d.skip(len * (1.0 - t1), b);
             }
         }
-        if on && cur.len() >= 2 {
-            out.push(cur);
+        d.flush();
+    }
+    d.out
+}
+
+/// The state of `dash_within` along the parts.
+struct Dasher {
+    dash: f64,
+    gap: f64,
+    /// The pen is in a dash.
+    on: bool,
+    /// The length to the end of the dash or the gap.
+    left: f64,
+    cur: Vec<Point>,
+    out: Vec<Vec<Point>>,
+}
+
+impl Dasher {
+    /// Cuts the segment `a`-`b` into dashes.
+    fn walk(&mut self, a: Point, b: Point) {
+        let len = a.distance(b);
+        let mut t = 0.0;
+        while len > 0.0 && len - t >= self.left {
+            t += self.left;
+            let p = a.lerp(b, t / len);
+            if self.on {
+                push_new(&mut self.cur, p);
+                self.flush();
+            } else {
+                self.cur = vec![p];
+            }
+            self.on = !self.on;
+            self.left = if self.on { self.dash } else { self.gap };
+        }
+        self.left -= len - t;
+        if self.on {
+            push_new(&mut self.cur, b);
         }
     }
-    out
+
+    /// Moves the phase on by `length` with no dashes, to the point `to`.
+    fn skip(&mut self, length: f64, to: Point) {
+        self.flush();
+        let cycle = self.dash + self.gap;
+        let at = if self.on {
+            self.dash - self.left
+        } else {
+            cycle - self.left
+        };
+        let at = (at + length).rem_euclid(cycle);
+        self.on = at < self.dash;
+        self.left = if self.on { self.dash - at } else { cycle - at };
+        self.cur = if self.on { vec![to] } else { Vec::new() };
+    }
+
+    /// Ends the dash at the last point.
+    fn flush(&mut self) {
+        let cur = std::mem::take(&mut self.cur);
+        if self.on && cur.len() >= 2 {
+            self.out.push(cur);
+        }
+    }
+}
+
+/// The part of the segment `a`-`b` inside `area`, as the parameters of its ends, by the
+/// Liang-Barsky method.
+fn clip(a: Point, b: Point, area: Rect) -> Option<(f64, f64)> {
+    let inside =
+        |p: Point| (area.x0..=area.x1).contains(&p.x) && (area.y0..=area.y1).contains(&p.y);
+    if inside(a) && inside(b) {
+        return Some((0.0, 1.0));
+    }
+    let d = b - a;
+    let (mut t0, mut t1) = (0.0_f64, 1.0_f64);
+    for (p, q) in [
+        (-d.x, a.x - area.x0),
+        (d.x, area.x1 - a.x),
+        (-d.y, a.y - area.y0),
+        (d.y, area.y1 - a.y),
+    ] {
+        if p == 0.0 {
+            if q < 0.0 {
+                return None;
+            }
+        } else if p < 0.0 {
+            t0 = t0.max(q / p);
+        } else {
+            t1 = t1.min(q / p);
+        }
+    }
+    (t0 < t1).then_some((t0, t1))
 }
 
 fn push_new(v: &mut Vec<Point>, p: Point) {

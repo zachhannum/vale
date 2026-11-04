@@ -2767,3 +2767,42 @@ fn a_solid_square_marker_fills_a_square() {
     assert!((b.width() - 40.0).abs() < 1e-6 && (b.height() - 40.0).abs() < 1e-6);
     assert!((b.center() - center).hypot() < 1e-6);
 }
+
+#[test]
+fn a_frame_at_a_large_scale_dashes_only_the_line_inside_it() {
+    // A parallel of 9,000 km, which is millions of points long on the page.
+    let parallel: Vec<[f64; 2]> = (0..=24)
+        .map(|i| [-60.0 + 5.0 * f64::from(i), 45.0])
+        .collect();
+    let (mut doc, id) = lines_at(&[("a", &parallel)]);
+    doc.entry_mut(id).unwrap().style.style = Style {
+        rules: vec![kind_rule(
+            "a",
+            Color::rgb(0, 0, 200),
+            1.5,
+            StrokeKind::Dashed {
+                dash: 6.0,
+                gap: 3.0,
+            },
+        )],
+    };
+    let mut pipeline = Pipeline::new();
+    let page = doc.project.atlas.pages[0].id;
+    let fid = frame_on(&mut doc, &mut pipeline, page);
+    let frame = doc.project.atlas.frame_mut(fid).unwrap();
+    frame.scale = 1.0e3;
+    frame.center = [0.0, 45.0];
+    let items = compose_frame(&doc, &mut pipeline, fid);
+    let dashes: usize = (items.iter())
+        .filter_map(|i| match i {
+            Item::Stroke {
+                path,
+                round: false,
+                color,
+                ..
+            } if color.b == 200 => Some(subpaths(path).len()),
+            _ => None,
+        })
+        .sum();
+    assert!((10..2000).contains(&dashes), "{dashes} dashes");
+}

@@ -189,3 +189,55 @@ fn brush_is_deterministic_and_inside_the_width() {
     let long = vec![vec![Point::new(0.0, 0.0), Point::new(1.0e6, 0.0)]];
     assert!(brush_dabs(&long, 1.0, 1).len() <= vale_render::stroke::MAX_DABS);
 }
+
+#[test]
+fn dashes_within_an_area_are_the_dashes_of_the_whole_line_there() {
+    use vale_render::Rect;
+    use vale_render::stroke::dash_within;
+    // A zigzag that leaves the area and comes back.
+    let line: Vec<Point> = (0..40)
+        .map(|i| Point::new(7.3 * f64::from(i), if i % 2 == 0 { -40.0 } else { 70.0 }))
+        .collect();
+    let parts = vec![line[..20].to_vec(), line[19..].to_vec()];
+    let area = Rect::new(50.0, 0.0, 200.0, 30.0);
+    let inside =
+        |p: &Point| p.x >= 50.0 - 1e-9 && p.x <= 200.0 + 1e-9 && p.y >= -1e-9 && p.y <= 30.0 + 1e-9;
+    let cut = dash_within(&parts, 3.0, 2.0, area);
+    assert!(cut.len() > 10, "{} dashes", cut.len());
+    for piece in &cut {
+        assert!(piece.iter().all(inside), "{piece:?}");
+        // Each point of a dash in the area is on a dash of the whole line.
+        for p in piece {
+            let on = dash(&parts, 3.0, 2.0).iter().any(|d| {
+                d.windows(2).any(|w| {
+                    let (dist, _) = project(*p, w[0], w[1]);
+                    dist < 1e-9
+                })
+            });
+            assert!(on, "{p:?} is in a gap of the whole line");
+        }
+    }
+    // The ends of the dashes of the whole line that are inside the area are ends in the cut too.
+    let ends: Vec<Point> = cut.iter().flat_map(|d| [d[0], d[d.len() - 1]]).collect();
+    let mut checked = 0;
+    for d in dash(&parts, 3.0, 2.0) {
+        for end in [d[0], d[d.len() - 1]] {
+            if inside(&end) && end.x > 51.0 && end.x < 199.0 && end.y > 1.0 && end.y < 29.0 {
+                assert!(ends.iter().any(|e| e.distance(end) < 1e-9), "{end:?}");
+                checked += 1;
+            }
+        }
+    }
+    assert!(checked > 10);
+}
+
+#[test]
+fn a_dash_far_outside_the_area_costs_no_dashes() {
+    use vale_render::Rect;
+    use vale_render::stroke::dash_within;
+    // A line a million points long that crosses an area ten points wide.
+    let parts = vec![vec![Point::new(-5.0e5, 5.0), Point::new(5.0e5, 5.0)]];
+    let area = Rect::new(0.0, 0.0, 10.0, 10.0);
+    let cut = dash_within(&parts, 3.0, 2.0, area);
+    assert!((2..=3).contains(&cut.len()), "{} dashes", cut.len());
+}

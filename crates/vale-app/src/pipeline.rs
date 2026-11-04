@@ -571,8 +571,10 @@ fn draw_batch(list: &mut DisplayList, pl: &PageLayer<'_>, batch: &Batch, sd: &mu
             let line = pl.kind == GeometryKind::Line;
             match stroke.kind {
                 StrokeKind::Dashed { dash, gap } => {
+                    let reach = stroke.width + 1.0;
+                    let shown = sd.area.inflate(reach, reach);
                     let parts: Vec<_> = features()
-                        .flat_map(|f| stroke::dash(&f.lines, dash, gap))
+                        .flat_map(|f| stroke::dash_within(&f.lines, dash, gap, shown))
                         .collect();
                     push_stroke(list, polylines_path(&parts, false), &stroke, false);
                 }
