@@ -960,6 +960,7 @@ impl GpuHeightmap {
                     Mode::Deposit => 9,
                     Mode::Push => 12,
                     Mode::Noise => 13,
+                    Mode::Terrace => 14,
                 },
                 reach: first.reach as i32,
                 size: self.face_size as i32,

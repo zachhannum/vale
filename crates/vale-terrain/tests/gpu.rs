@@ -224,7 +224,13 @@ fn hills(n: usize) -> Heightmap {
     map
 }
 
-const MODES: [Mode; 4] = [Mode::Raise, Mode::Lower, Mode::Smooth, Mode::Flatten];
+const MODES: [Mode; 5] = [
+    Mode::Raise,
+    Mode::Lower,
+    Mode::Smooth,
+    Mode::Flatten,
+    Mode::Terrace,
+];
 
 fn tolerance(mode: Mode) -> u16 {
     match mode {
@@ -240,7 +246,8 @@ fn stamp(center: V3, radius: f64, hardness: f64, mode: Mode) -> Stamp {
         hardness,
         flow: 0.8,
         mode,
-        level: 52000,
+        // The flatten target, or the terrace step. The hills cross sea level.
+        level: if mode == Mode::Terrace { 1500 } else { 52000 },
         strength: 3000.0,
         lower: 3000.0,
         talus: 0.0,
@@ -300,7 +307,7 @@ fn gpu_matches_cpu_for_one_stamp() {
         ("cube corner", lonlat_to_dir(45.0, 35.264)),
         ("pole", lonlat_to_dir(0.0, 90.0)),
     ];
-    let mut worst = [0; 4];
+    let mut worst = [0; MODES.len()];
     for (m, mode) in MODES.into_iter().enumerate() {
         for (place, center) in places {
             for radius in [0.01, 0.06, 0.3] {
@@ -326,7 +333,7 @@ fn gpu_matches_cpu_for_one_stamp() {
 #[test]
 #[ignore = "gpu"]
 fn gpu_matches_cpu_for_a_stroke() {
-    let mut worst = [0; 4];
+    let mut worst = [0; MODES.len()];
     let mut most_batches = 0;
     for (m, mode) in MODES.into_iter().enumerate() {
         for (lat, radius, hardness) in [(4.0, 0.07, 0.5), (35.0, 0.12, 0.0), (20.0, 0.03, 0.95)] {
@@ -2697,7 +2704,7 @@ const HILL_LIMITS: Limits = Limits {
 #[test]
 #[ignore = "gpu"]
 fn gpu_matches_cpu_with_limits_for_a_stroke() {
-    let mut worst = [0; 4];
+    let mut worst = [0; MODES.len()];
     for (m, mode) in MODES.into_iter().enumerate() {
         for (lat, radius, hardness) in [(4.0, 0.07, 0.5), (35.0, 0.12, 0.0)] {
             let count = STAMP_SLOTS as usize / 2;

@@ -33,6 +33,11 @@ pub enum Mode {
     Lower,
     Smooth,
     Flatten,
+    /// Pulls each texel toward the nearest step level. The step levels are
+    /// sea level and each multiple of `Stamp::level` above and below it. A
+    /// texel does not cross sea level, and a texel below sea level stays
+    /// below it.
+    Terrace,
     /// Cuts a channel along each river of the channel lines, with the width
     /// and the floodplain of `Stamp::channel`. The bed of a channel is
     /// `Stamp::strength` below the floodplain level for the largest rivers,
@@ -146,7 +151,8 @@ pub struct Stamp {
     /// The effect at the center, from 0 to 1. Pressure sets this value.
     pub flow: f64,
     pub mode: Mode,
-    /// The target of the flatten mode.
+    /// The target of the flatten mode. In the terrace mode, the height
+    /// between two step levels, in 16-bit steps.
     pub level: u16,
     /// The largest change of the raise and lower modes, in 16-bit steps. In
     /// the noise mode, the largest rise. In the warp mode, the largest offset
@@ -1153,6 +1159,9 @@ impl Heightmap {
                             Mode::Raise | Mode::Uplift => old + amount * stamp.strength,
                             Mode::Lower => old - amount * stamp.strength,
                             Mode::Flatten => old + (f64::from(stamp.level) - old) * amount.min(1.0),
+                            Mode::Terrace => {
+                                old + (terrace_level(old, sea, stamp.level) - old) * amount.min(1.0)
+                            }
                             Mode::Erode | Mode::OceanRidge | Mode::Range | Mode::Basin => continue,
                             Mode::Noise => {
                                 let p = face_dir(face, fu, fv);
@@ -1546,6 +1555,20 @@ pub(crate) fn noise3(p: V3, seed: u32) -> V3 {
     let along_x = |dy: u32, dz: u32| between(corner(0, dy, dz), corner(1, dy, dz), tx);
     let along_y = |dz: u32| between(along_x(0, dz), along_x(1, dz), ty);
     between(along_y(0), along_y(1), tz)
+}
+
+/// The step level of the terrace mode that is nearest to `old`. The step
+/// levels are `sea` and each multiple of `step` above and below it. A tie
+/// goes to the higher step, as on the GPU. Sea level is land, so the target
+/// of a texel below sea level is one level below it at most.
+pub(crate) fn terrace_level(old: f64, sea: f64, step: u16) -> f64 {
+    let step = f64::from(step.max(1));
+    let level = sea + ((old - sea) / step + 0.5).floor() * step;
+    if old < sea {
+        level.min(sea - 1.0)
+    } else {
+        level
+    }
 }
 
 /// The number of octaves of the noise mode on a face with `n` texels along
@@ -5178,5 +5201,112 @@ mod tests {
                 assert!(limits.pair_room(high, low) >= most, "{old} {new}");
             }
         }
+    }
+
+    /// A face of 64 texels with a ramp along x: `sea + (x - 32) * 30` on
+    /// each row. The ramp crosses sea level at the face center.
+    fn terrace_ramp() -> (Heightmap, f64) {
+        let sea = f64::from(meters_to_level(SEA_LEVEL));
+        let mut map = Heightmap::with_tile_size(64, 16, sea as u16);
+        let rect = TexelRect {
+            x0: 0,
+            y0: 0,
+            x1: 64,
+            y1: 64,
+        };
+        let row: Vec<u16> = (0..64)
+            .map(|x| (sea + (x as f64 - 32.0) * 30.0) as u16)
+            .collect();
+        map.store_rect(0, rect, &row.repeat(64));
+        (map, sea)
+    }
+
+    fn terrace(flow: f64, hardness: f64) -> Stamp {
+        Stamp {
+            mode: Mode::Terrace,
+            level: 200,
+            flow,
+            hardness,
+            ..raise([1.0, 0.0, 0.0], 0.3)
+        }
+    }
+
+    #[test]
+    fn terrace_moves_each_texel_toward_the_nearest_step_level() {
+        let (mut map, sea) = terrace_ramp();
+        let before: Vec<u16> = (0..64).map(|x| map.get(0, x, 32)).collect();
+        map.stamp(&terrace(0.5, 1.0));
+        let mut moved = 0;
+        for x in 26..38 {
+            let old = f64::from(before[x as usize]);
+            let target = terrace_level(old, sea, 200);
+            let new = f64::from(map.get(0, x, 32));
+            assert_eq!(new, (old + (target - old) * 0.5).round(), "texel {x}");
+            moved += usize::from(new != old);
+        }
+        assert!(moved > 6);
+        // The brush weight scales the move: the edge moves less than the core.
+        let (mut soft, _) = terrace_ramp();
+        soft.stamp(&terrace(1.0, 0.0));
+        let (mut hard, _) = terrace_ramp();
+        hard.stamp(&terrace(1.0, 1.0));
+        let step =
+            |map: &Heightmap, x| f64::from(map.get(0, x, 32)) - f64::from(before[x as usize]);
+        assert!(step(&soft, 40).abs() < step(&hard, 40).abs());
+    }
+
+    #[test]
+    fn many_terrace_stamps_give_flat_steps_with_steep_sides() {
+        let (mut map, sea) = terrace_ramp();
+        for _ in 0..40 {
+            map.stamp(&Stamp {
+                flow: 0.3,
+                ..terrace(0.3, 0.6)
+            });
+        }
+        let row: Vec<f64> = (0..64).map(|x| f64::from(map.get(0, x, 32))).collect();
+        // Each texel of the core is on a step level, to within one level.
+        let mut steps = BTreeSet::new();
+        for (x, &old) in row.iter().enumerate().take(38).skip(27) {
+            let level = terrace_level(old, sea, 200);
+            assert!((old - level).abs() <= 1.0, "texel {x}: {old}");
+            steps.insert(level as i64);
+        }
+        assert!(steps.len() >= 2, "{steps:?}");
+        // Neighbors on one step are flat, and the side between two steps is
+        // one full step high. The step below sea level is one level lower.
+        for x in 27..37 {
+            let rise = row[x + 1] - row[x];
+            assert!(
+                rise.abs() <= 2.0 || (rise - 200.0).abs() <= 3.0,
+                "{x}: {rise}"
+            );
+        }
+    }
+
+    #[test]
+    fn terrace_does_not_move_a_texel_across_sea_level() {
+        let sea = f64::from(meters_to_level(SEA_LEVEL));
+        for old in [
+            sea - 900.0,
+            sea - 300.0,
+            sea - 1.0,
+            sea,
+            sea + 1.0,
+            sea + 450.0,
+        ] {
+            let mut map = Heightmap::with_tile_size(64, 16, old as u16);
+            for _ in 0..10 {
+                map.stamp(&Stamp {
+                    level: 1000,
+                    ..terrace(1.0, 1.0)
+                });
+            }
+            let new = f64::from(map.get(0, 32, 32));
+            assert_eq!(new < sea, old < sea, "{old} went to {new}");
+        }
+        assert_eq!(terrace_level(sea - 1.0, sea, 1000), sea - 1.0);
+        assert_eq!(terrace_level(sea + 400.0, sea, 1000), sea);
+        assert_eq!(terrace_level(sea - 600.0, sea, 1000), sea - 1000.0);
     }
 }
