@@ -33,6 +33,7 @@ pub mod scale_bar;
 pub mod scatter;
 pub mod session;
 pub mod table;
+pub mod tools;
 pub mod ui;
 pub mod view;
 pub mod workcopy;

@@ -6,8 +6,9 @@ use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use vale_app::cli::Args;
 use vale_app::document::Document;
-use vale_app::globe::WorldView;
 use vale_app::globe::view::GlobeView;
+use vale_app::globe::{Tool, WorldView};
+use vale_app::pen::PenSwitch;
 use vale_app::projects;
 use vale_app::projects::Locations;
 use vale_app::resume::Resume;
@@ -18,7 +19,7 @@ use vale_app::ui::pad::geometry::TOUCH;
 use vale_app::ui::pad::{SAVE, WORLDS};
 use vale_app::ui::panels::{ALL_WORLDS, FILE_MENU};
 use vale_app::ui::world_form::{CREATE, NEW_WORLD};
-use vale_app::ui::{Action, AppState, Layout, SAVE_MARK_TIME, SaveMark, Screen, draw};
+use vale_app::ui::{Action, AppState, Layout, SAVE_MARK_TIME, SaveMark, Screen, Workspace, draw};
 use vale_sphere::{ProjectionKind, ProjectionSpec};
 use vale_store::{Project, ProjectFile, World};
 use vale_terrain::math::lonlat_to_dir;
@@ -652,4 +653,75 @@ fn the_save_mark_turns_after_an_automatic_save() {
         h.state().save_mark(saved + SAVE_MARK_TIME),
         Some(SaveMark::Saved)
     );
+}
+
+/// Sends a double tap of the pen.
+fn double_tap(h: &mut App, switch: PenSwitch) {
+    let queue = h.state_mut().globe.pen.queue.get_or_insert_default();
+    queue.push_switch(switch);
+    run(h);
+}
+
+/// Chooses a brush mode, as the tool strip does.
+fn choose_mode(h: &mut App, mode: Mode) {
+    let globe = &mut h.state_mut().globe;
+    globe.tool = Tool::Brush;
+    globe.brush.mode = mode;
+    run(h);
+}
+
+#[test]
+fn the_pencil_switches_tools_and_each_tool_keeps_its_settings_after_a_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    create(dir.path(), "Aurelia");
+    let mut h = start(dir.path(), Layout::Pad);
+    click(&mut h, "Open Aurelia");
+    h.state_mut().add_height();
+    run(&mut h);
+    assert!(h.state().globe.paintable);
+
+    // Raise a range with a large brush, then choose Smooth and make the
+    // brush small.
+    choose_mode(&mut h, Mode::Raise);
+    h.state_mut().globe.brush.size_points = 150.0;
+    run(&mut h);
+    choose_mode(&mut h, Mode::Smooth);
+    assert_eq!(h.state().globe.brush.size_points, 36.0, "a new mode");
+    h.state_mut().globe.brush.size_points = 8.0;
+    h.state_mut().globe.brush.hardness = 0.9;
+    run(&mut h);
+
+    let brush = |h: &App| {
+        (
+            h.state().globe.brush.mode,
+            h.state().globe.brush.size_points,
+        )
+    };
+    double_tap(&mut h, PenSwitch::Last);
+    assert_eq!(brush(&h), (Mode::Raise, 150.0));
+    double_tap(&mut h, PenSwitch::Last);
+    assert_eq!(brush(&h), (Mode::Smooth, 8.0));
+    double_tap(&mut h, PenSwitch::Eraser);
+    assert_eq!(brush(&h), (Mode::Raise, 150.0));
+    double_tap(&mut h, PenSwitch::Eraser);
+    assert_eq!(brush(&h), (Mode::Lower, 36.0));
+
+    // The Atlas workspace has no switch.
+    h.state_mut().workspace = Workspace::Atlas;
+    double_tap(&mut h, PenSwitch::Last);
+    assert_eq!(brush(&h), (Mode::Lower, 36.0));
+    h.state_mut().workspace = Workspace::Globe;
+    run(&mut h);
+
+    // The system stops the app with no exit call.
+    h.state_mut().save_tick(false, Instant::now());
+    drop(h);
+
+    let mut h = start(dir.path(), Layout::Pad);
+    assert_eq!(h.state().screen, Screen::Editor);
+    choose_mode(&mut h, Mode::Smooth);
+    assert_eq!(brush(&h), (Mode::Smooth, 8.0));
+    assert_eq!(h.state().globe.brush.hardness, 0.9);
+    choose_mode(&mut h, Mode::Raise);
+    assert_eq!(brush(&h), (Mode::Raise, 150.0));
 }
