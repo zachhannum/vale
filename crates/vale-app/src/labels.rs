@@ -4,15 +4,16 @@ use std::collections::{HashMap, HashSet};
 
 use kurbo::{Point, Rect};
 use vale_labeler::{
-    Caps, Feature, Fonts, Geometry, LabelClass, LabelInput, LinePlacement, LineSide, Obstacle,
-    ObstacleKind, Options, Placement, PointPlacement, PointPosition, PolygonMode, PolygonPlacement,
-    TextStyle, place_labels,
+    Caps, Feature, Fonts, Geometry, LabelClass, LabelInput, LeaderAnchor, LinePlacement, LineSide,
+    Obstacle, ObstacleKind, Options, Placement, PointPlacement, PointPosition, PolygonMode,
+    PolygonPlacement, PolygonZones, TextStyle, place_labels,
 };
-use vale_render::{Color, GlyphRun, Item};
+use vale_render::{Color, FillRule, GlyphRun, Item};
 use vale_store::GeometryKind;
 use vale_style::expr::{Expr, Filter};
 use vale_style::{
-    LabelClass as StyleClass, LabelPlacement as StylePlacement, LabelPosition, TextCase,
+    LabelClass as StyleClass, LabelPlacement as StylePlacement, LabelPosition, LeaderEnd,
+    LeaderStyle, TextCase,
 };
 
 use crate::pipeline::{LabelSummary, PageLayer, PlacedSymbol, Quality, UnplacedInfo};
@@ -47,6 +48,8 @@ pub fn place(
     let mut class_colors: Vec<Color> = Vec::new();
     // The color and the width of the halo of each class, if it has one.
     let mut class_halos: Vec<Option<(Color, f64)>> = Vec::new();
+    // The style of the leader line of each class, with its line color and its halo color.
+    let mut class_leaders: Vec<(LeaderStyle, Color, Color)> = Vec::new();
     let mut features: Vec<Feature> = Vec::new();
     let mut layer_names: Vec<&str> = Vec::new();
     let mut next_id: u64 = 0;
@@ -77,6 +80,13 @@ pub fn place(
                 duplicate_distance: c.remove_duplicates.then_some(c.duplicate_distance),
             });
             class_colors.push(fade(c.color, c.opacity));
+            let leader = c.leader;
+            let leader_opacity = leader.opacity.clamp(0.0, 1.0) * c.opacity;
+            class_leaders.push((
+                leader,
+                fade(leader.color.unwrap_or(c.color), leader_opacity),
+                fade(leader.halo_color.unwrap_or(c.halo_color), leader_opacity),
+            ));
             class_halos.push(
                 c.halo
                     .then(|| (fade(c.halo_color, c.opacity), c.halo_width)),
@@ -188,6 +198,17 @@ pub fn place(
 
     let mut items = Vec::new();
     for label in &labeling.placed {
+        if let Some(leader) = &label.leader {
+            let (style, color, halo) = &class_leaders[label.class];
+            items.extend(leader_items(
+                (leader.anchor, leader.end),
+                style,
+                *color,
+                *halo,
+            ));
+        }
+    }
+    for label in &labeling.placed {
         if let Some((color, width)) = class_halos[label.class] {
             items.push(Item::Stroke {
                 path: label.outlines(),
@@ -223,6 +244,93 @@ pub fn place(
             .collect(),
     };
     (items, summary)
+}
+
+/// The items of a leader line from `anchor` to `end` at the label: the halo, the line, and
+/// the mark at the anchor end, in `color`. A hidden line, or a line that its gaps use up, gives
+/// no items.
+pub fn leader_items(
+    (anchor, end): (Point, Point),
+    style: &LeaderStyle,
+    color: Color,
+    halo: Color,
+) -> Vec<Item> {
+    let mut items = Vec::new();
+    let along = end - anchor;
+    let length = along.hypot();
+    let (anchor_gap, label_gap) = (style.anchor_gap.max(0.0), style.label_gap.max(0.0));
+    if !style.show || !length.is_finite() || length <= anchor_gap + label_gap {
+        return items;
+    }
+    let u = along / length;
+    let start = anchor + u * anchor_gap;
+    let stop = end - u * label_gap;
+    let size = style.end_size.max(0.0);
+    let mark = match style.end {
+        LeaderEnd::None => None,
+        LeaderEnd::Dot => Some(kurbo::Shape::to_path(
+            &kurbo::Circle::new(start, size / 2.0),
+            0.05,
+        )),
+        LeaderEnd::Arrow => {
+            let base = start + u * size;
+            let side = kurbo::Vec2::new(-u.y, u.x) * (0.4 * size);
+            let mut path = kurbo::BezPath::new();
+            path.move_to(start);
+            path.line_to(base + side);
+            path.line_to(base - side);
+            path.close_path();
+            Some(path)
+        }
+    };
+    // The line stops at the base of an arrow.
+    let from = match style.end {
+        LeaderEnd::Arrow => start + u * size.min((stop - start).hypot()),
+        _ => start,
+    };
+    let parts = if (stop - from).hypot() <= 1e-9 {
+        Vec::new()
+    } else if style.dashed {
+        vale_render::stroke::dash(&[vec![from, stop]], style.dash, style.dash_gap)
+    } else {
+        vec![vec![from, stop]]
+    };
+    let mut line = kurbo::BezPath::new();
+    for part in parts.iter().filter(|p| p.len() >= 2) {
+        line.move_to(part[0]);
+        for p in &part[1..] {
+            line.line_to(*p);
+        }
+    }
+    let width = style.width.max(0.0);
+    if style.halo {
+        let mut path = line.clone();
+        if let Some(mark) = &mark {
+            path.extend(mark.iter());
+        }
+        items.push(Item::Stroke {
+            path,
+            color: halo,
+            width: width + 2.0 * style.halo_width.max(0.0),
+            round: true,
+        });
+    }
+    if !line.elements().is_empty() && width > 0.0 {
+        items.push(Item::Stroke {
+            path: line,
+            color,
+            width,
+            round: true,
+        });
+    }
+    if let Some(path) = mark {
+        items.push(Item::Fill {
+            path,
+            color,
+            rule: FillRule::NonZero,
+        });
+    }
+    items
 }
 
 /// `color` with its alpha times `opacity`.
@@ -277,6 +385,21 @@ pub fn placement(c: &StyleClass, kind: GeometryKind) -> Placement {
             max_glyph_turn: c.curve_limit,
             graticule: c.graticule,
             no_flip: c.no_flip,
+            zones: PolygonZones {
+                inside: c.zones_inside,
+                outside: c.zones_outside,
+            },
+            anchor: match c.anchor {
+                vale_style::LeaderAnchor::Center => LeaderAnchor::Center,
+                vale_style::LeaderAnchor::Inside => LeaderAnchor::Inside,
+                vale_style::LeaderAnchor::Outline => LeaderAnchor::Outline,
+            },
+            over_holes: c.over_holes,
+            avoid_other_polygons: c.avoid_polygons,
+            largest_part_only: c.largest_part,
+            repeat_distance: c.polygon_repeat.then_some(c.polygon_repeat_distance),
+            overrun: c.overrun,
+            min_area: c.min_area,
         }),
     }
 }

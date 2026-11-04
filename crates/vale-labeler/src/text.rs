@@ -668,6 +668,7 @@ mod tests {
             boxes: vec![],
             bounds: Rect::ZERO,
             cost: 0.0,
+            leader: None,
         };
         let ob = label.outlines().bounding_box();
         let want = sb + Vec2::new(100.0, 50.0);

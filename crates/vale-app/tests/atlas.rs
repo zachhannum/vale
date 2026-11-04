@@ -46,6 +46,11 @@ use vale_app::ui::pad::labels::{
     OPACITY, PLACEMENT, POSITIONS, REMOVE_DUPLICATES, REORDER, REPEAT, REPEAT_INTERVAL, SEGMENTS,
     SMOOTHING, SPREAD, STYLE, TEXT, UPSIDE_DOWN,
 };
+use vale_app::ui::pad::labels::{
+    ANCHOR_GAP, AVOID_POLYGONS, DASH, DASH_GAP, DASHED, END_SIZE, LABEL_GAP, LARGEST_PART,
+    LEADER_LINE, LINE_WIDTH, MATCH_HALO, MATCH_TEXT, MIN_AREA, OVER_HOLES, OVERRUN,
+    REPEAT_DISTANCE, REPEAT_LABEL, SHOW_LINE, ZONES, zone_name,
+};
 use vale_app::ui::pad::rules::STROKE_WIDTH;
 use vale_app::ui::pad::widgets::eye_name;
 use vale_app::ui::pad::{
@@ -4203,6 +4208,706 @@ fn the_parallel_options_survive_a_close_and_an_open() {
     let _session = Session::open(&path, &mut doc).unwrap();
     assert_eq!(doc.label_classes(Some(map), layer_id(&h, "Places")), places);
     assert_eq!(doc.label_classes(Some(map), land), lands);
+}
+
+/// The polygon placement of the class "Land".
+fn land_placement(h: &Pad, map: MapId) -> vale_labeler::PolygonPlacement {
+    match labeler_placement(h, map, "Land", GeometryKind::Polygon) {
+        Placement::Polygon(p) => p,
+        _ => panic!("not a polygon placement"),
+    }
+}
+
+/// Opens the Placement segment of the class "Land".
+fn open_land_placement(h: &mut Pad) {
+    tap(h, "Land");
+    tap(h, SEGMENTS[1].0);
+}
+
+#[test]
+fn a_tap_on_a_zone_changes_its_rank() {
+    let (mut h, map) = land_pad(BOARDS[0]);
+    open_land_placement(&mut h);
+    scroll_to(&mut h, ZONES);
+    tap(&mut h, ZONES);
+    let top_left = zone_name(true, 0);
+    assert_eq!(top_left, "Inside top left");
+    assert_eq!(land_placement(&h, map).zones.inside[0], 1);
+    tap(&mut h, &top_left);
+    assert_eq!(classes(&h, map, "Land")[0].zones_inside[0], 2);
+    assert_eq!(land_placement(&h, map).zones.inside[0], 2);
+    tap(&mut h, &top_left);
+    assert_eq!(land_placement(&h, map).zones.inside[0], 3);
+    tap(&mut h, &top_left);
+    assert_eq!(land_placement(&h, map).zones.inside[0], 0);
+    tap(&mut h, &top_left);
+    assert_eq!(land_placement(&h, map).zones.inside[0], 1);
+    // The outside grid has no center.
+    assert_eq!(zone_name(false, 4), "Outside right");
+    assert!(control(&h, "Outside center").is_none());
+    tap(&mut h, &zone_name(false, 4));
+    assert_eq!(land_placement(&h, map).zones.outside[4], 1);
+}
+
+#[test]
+fn an_outside_zone_shows_the_leader_line() {
+    use vale_labeler::LeaderAnchor;
+    let (mut h, map) = land_pad(BOARDS[0]);
+    open_land_placement(&mut h);
+    scroll_to(&mut h, ZONES);
+    assert!(control(&h, LEADER_LINE).is_none());
+    tap(&mut h, ZONES);
+    tap(&mut h, "Outside right");
+    tap(&mut h, "Back to Land");
+    scroll_to(&mut h, LEADER_LINE);
+    tap(&mut h, LEADER_LINE);
+    tap(&mut h, vale_style::LeaderAnchor::Outline.name());
+    assert_eq!(vale_style::LeaderAnchor::Outline.name(), "Nearest edge");
+    assert_eq!(land_placement(&h, map).anchor, LeaderAnchor::Outline);
+}
+
+#[test]
+fn the_polygon_switches_reach_the_labeler() {
+    let (mut h, map) = land_pad(BOARDS[0]);
+    open_land_placement(&mut h);
+    let p = land_placement(&h, map);
+    assert!(!p.over_holes && !p.avoid_other_polygons && p.largest_part_only);
+    assert_eq!(p.repeat_distance, None);
+    for name in [OVER_HOLES, AVOID_POLYGONS, LARGEST_PART, REPEAT_LABEL] {
+        scroll_to(&mut h, name);
+        tap(&mut h, name);
+    }
+    let p = land_placement(&h, map);
+    assert!(p.over_holes && p.avoid_other_polygons && !p.largest_part_only);
+    assert_eq!(p.repeat_distance, Some(vale_style::POLYGON_REPEAT_DISTANCE));
+    scroll_to(&mut h, REPEAT_LABEL);
+    tap(&mut h, REPEAT_LABEL);
+    assert_eq!(land_placement(&h, map).repeat_distance, None);
+    assert!(control(&h, &value_of(REPEAT_DISTANCE)).is_none());
+}
+
+#[test]
+fn the_polygon_numbers_reach_the_labeler_in_points() {
+    let (mut h, map) = land_pad(BOARDS[0]);
+    open_land_placement(&mut h);
+    scroll_to(&mut h, REPEAT_LABEL);
+    tap(&mut h, REPEAT_LABEL);
+    set_number(&mut h, REPEAT_DISTANCE, "800");
+    set_number(&mut h, OVERRUN, "3");
+    set_number(&mut h, MIN_AREA, "500");
+    let c = &classes(&h, map, "Land")[0];
+    assert_eq!(
+        (c.polygon_repeat_distance, c.overrun, c.min_area),
+        (800.0, 3.0, 500.0)
+    );
+    // A page unit is one point.
+    let p = land_placement(&h, map);
+    assert_eq!(p.repeat_distance, Some(800.0));
+    assert_eq!(p.overrun, 3.0);
+    assert_eq!(p.min_area, 500.0);
+}
+
+#[test]
+fn the_polygon_options_work_with_a_finger() {
+    for size in BOARDS {
+        let what = format!("{size:?}");
+        let (mut h, map) = land_pad(size);
+        open_land_placement(&mut h);
+        scroll_to(&mut h, ZONES);
+        tap(&mut h, ZONES);
+        check_controls(&h, &format!("{what}: zones page"));
+        if size == BOARDS[0] {
+            screenshot::save(&mut h, "pad-atlas-label-zones");
+        }
+        for k in 0..9 {
+            assert!(control(&h, &zone_name(true, k)).is_some(), "{what}: {k}");
+        }
+        // A small sheet shows the outside grid after a scroll.
+        for k in 0..8 {
+            scroll_to(&mut h, &zone_name(false, k));
+            assert!(control(&h, &zone_name(false, k)).is_some(), "{what}: {k}");
+        }
+        check_controls(&h, &format!("{what}: outside zones"));
+        tap(&mut h, &zone_name(false, 0));
+        assert_eq!(classes(&h, map, "Land")[0].zones_outside[0], 1, "{what}");
+        tap(&mut h, "Back to Land");
+        scroll_to(&mut h, LEADER_LINE);
+        tap(&mut h, LEADER_LINE);
+        check_controls(&h, &format!("{what}: leader page"));
+        tap(&mut h, "Back to Land");
+        scroll_to(&mut h, REPEAT_LABEL);
+        tap(&mut h, REPEAT_LABEL);
+        for name in [
+            OVER_HOLES,
+            AVOID_POLYGONS,
+            LARGEST_PART,
+            &value_of(REPEAT_DISTANCE),
+            &value_of(OVERRUN),
+            &value_of(MIN_AREA),
+        ] {
+            scroll_up_to(&mut h, name);
+            scroll_to(&mut h, name);
+            assert!(control(&h, name).is_some(), "{what}: {name}");
+            check_controls(&h, &format!("{what}: {name}"));
+        }
+    }
+}
+
+#[test]
+fn each_tap_on_a_zone_or_a_polygon_switch_is_one_undo_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let mut s = state();
+    s.session = Some(Session::open(&path, &mut s.doc).unwrap());
+    let mut h = pad_with(s, BOARDS[0]);
+    add_frame(&mut h);
+    let map = frame(&h, 0).map;
+    let land = layer_id(&h, "Land");
+    let area = vale_style::LabelClass::new("Land", GeometryKind::Polygon, 9).unwrap();
+    h.state_mut().doc.set_label_classes(map, land, &[area]);
+    h.state_mut().touch();
+    h.state_mut().save_waiting().unwrap();
+    let class = |h: &Pad| classes(h, map, "Land")[0].clone();
+    tap(&mut h, FRAME_TABS[3]);
+    open_land_placement(&mut h);
+    let start = class(&h);
+    scroll_to(&mut h, ZONES);
+    tap(&mut h, ZONES);
+    tap(&mut h, "Inside center");
+    tap(&mut h, "Back to Land");
+    scroll_to(&mut h, OVER_HOLES);
+    tap(&mut h, OVER_HOLES);
+    let c = class(&h);
+    assert!(c.over_holes);
+    assert_eq!(c.zones_inside[4], 2);
+
+    tap(&mut h, "Undo");
+    let c = class(&h);
+    assert!(!c.over_holes);
+    assert_eq!(c.zones_inside[4], 2);
+    tap(&mut h, "Undo");
+    assert_eq!(class(&h), start);
+}
+
+#[test]
+fn the_polygon_options_survive_a_close_and_an_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let mut doc = Document::sample();
+    let mut session = Session::open(&path, &mut doc).unwrap();
+    let mut s = state();
+    s.doc = doc;
+    let mut h = pad_with(s, BOARDS[0]);
+    add_frame(&mut h);
+    let map = frame(&h, 0).map;
+    let land = layer_id(&h, "Land");
+    let area = vale_style::LabelClass::new("Land", GeometryKind::Polygon, 9).unwrap();
+    h.state_mut().doc.set_label_classes(map, land, &[area]);
+    h.state_mut().touch();
+    h.run_steps(2);
+    tap(&mut h, FRAME_TABS[3]);
+    open_land_placement(&mut h);
+    scroll_to(&mut h, ZONES);
+    tap(&mut h, ZONES);
+    tap(&mut h, "Inside top");
+    tap(&mut h, "Outside bottom");
+    tap(&mut h, "Back to Land");
+    scroll_to(&mut h, LEADER_LINE);
+    tap(&mut h, LEADER_LINE);
+    tap(&mut h, vale_style::LeaderAnchor::Center.name());
+    tap(&mut h, "Back to Land");
+    for name in [OVER_HOLES, AVOID_POLYGONS, LARGEST_PART, REPEAT_LABEL] {
+        scroll_to(&mut h, name);
+        tap(&mut h, name);
+    }
+    set_number(&mut h, REPEAT_DISTANCE, "600");
+    set_number(&mut h, OVERRUN, "2");
+    set_number(&mut h, MIN_AREA, "250");
+    let lands = classes(&h, map, "Land");
+    let c = &lands[0];
+    assert_eq!((c.zones_inside[1], c.zones_outside[6]), (2, 1));
+    assert_eq!(c.anchor, vale_style::LeaderAnchor::Center);
+    assert!(c.over_holes && c.avoid_polygons && !c.largest_part && c.polygon_repeat);
+    assert_eq!(
+        (c.polygon_repeat_distance, c.overrun, c.min_area),
+        (600.0, 2.0, 250.0)
+    );
+    let mut project = h.state().doc.project.clone();
+    session.flush(&mut project, &mut []).unwrap();
+    drop(session);
+
+    let mut doc = Document::sample();
+    let _session = Session::open(&path, &mut doc).unwrap();
+    assert_eq!(doc.label_classes(Some(map), land), lands);
+}
+
+/// The color of the leader lines in the leader tests.
+const LEADER_COLOR: vale_render::Color = vale_render::Color::rgb(200, 10, 90);
+/// The color of the halo of the leader lines in the leader tests.
+const LEADER_HALO: vale_render::Color = vale_render::Color::rgb(10, 200, 90);
+
+/// A leader line in the colors of the leader tests.
+fn leader_style() -> vale_style::LeaderStyle {
+    vale_style::LeaderStyle {
+        color: Some(LEADER_COLOR),
+        halo_color: Some(LEADER_HALO),
+        ..Default::default()
+    }
+}
+
+/// The items of the first frame, with the class "Land" outside its polygons and its leader
+/// line in `leader`.
+fn leader_frame(h: &mut Pad, map: MapId, leader: vale_style::LeaderStyle) -> Vec<Item> {
+    let land = layer_id(h, "Land");
+    let mut class = classes(h, map, "Land")[0].clone();
+    class.zones_inside = [0; 9];
+    class.zones_outside = [1; 8];
+    class.leader = leader;
+    h.state_mut().doc.set_label_classes(map, land, &[class]);
+    h.state_mut().touch();
+    h.run_steps(2);
+    frame_items(h, 0)
+}
+
+/// The paths and the widths of the strokes in `color`.
+fn strokes_in(items: &[Item], of: vale_render::Color) -> Vec<(kurbo::BezPath, f64)> {
+    (items.iter())
+        .filter_map(|i| match i {
+            Item::Stroke {
+                path, color, width, ..
+            } if *color == of => Some((path.clone(), *width)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The paths of the fills in `color`.
+fn fills_in(items: &[Item], of: vale_render::Color) -> Vec<kurbo::BezPath> {
+    (items.iter())
+        .filter_map(|i| match i {
+            Item::Fill { path, color, .. } if *color == of => Some(path.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The first and the last point of a path.
+fn path_ends(path: &kurbo::BezPath) -> (Point, Point) {
+    use kurbo::PathEl;
+    let point = |e: &PathEl| match *e {
+        PathEl::MoveTo(p) | PathEl::LineTo(p) => p,
+        _ => panic!("not a line: {e:?}"),
+    };
+    let els = path.elements();
+    (point(&els[0]), point(&els[els.len() - 1]))
+}
+
+/// The number of subpaths of a path.
+fn subpaths(path: &kurbo::BezPath) -> usize {
+    (path.elements().iter())
+        .filter(|e| matches!(e, kurbo::PathEl::MoveTo(_)))
+        .count()
+}
+
+#[test]
+fn a_label_outside_its_polygon_draws_a_leader_line() {
+    let (mut h, map) = land_pad(BOARDS[0]);
+    let land = layer_id(&h, "Land");
+    let mut class = classes(&h, map, "Land")[0].clone();
+    class.leader = leader_style();
+    h.state_mut()
+        .doc
+        .set_label_classes(map, land, std::slice::from_ref(&class));
+    h.state_mut().touch();
+    h.run_steps(2);
+    assert!(strokes_in(&frame_items(&mut h, 0), LEADER_COLOR).is_empty());
+
+    let items = leader_frame(&mut h, map, leader_style());
+    assert!(label_runs(&mut h, 0).iter().any(|g| g.text == "LAND"));
+    let lines = strokes_in(&items, LEADER_COLOR);
+    assert!(!lines.is_empty());
+    for (path, width) in &lines {
+        assert_eq!(*width, vale_style::LeaderStyle::default().width);
+        assert_eq!(subpaths(path), 1);
+    }
+    // The leaders are under the text.
+    let first_glyphs = items.iter().position(|i| matches!(i, Item::Glyphs(_)));
+    let last_leader = items
+        .iter()
+        .rposition(|i| matches!(i, Item::Stroke { color, .. } if *color == LEADER_COLOR));
+    assert!(last_leader < first_glyphs);
+}
+
+#[test]
+fn the_leader_line_style_reaches_the_display_list() {
+    use vale_style::{LeaderEnd, LeaderStyle};
+    let (mut h, map) = land_pad(BOARDS[0]);
+    let base = leader_style();
+    let items = leader_frame(&mut h, map, base);
+    let lines = strokes_in(&items, LEADER_COLOR);
+    assert!(!lines.is_empty());
+    let (anchor, end) = path_ends(&lines[0].0);
+    let length = anchor.distance(end);
+    assert!(length > 0.0);
+    assert!(fills_in(&items, LEADER_COLOR).is_empty());
+
+    // A hidden line draws nothing, and the label keeps its place.
+    let items = leader_frame(
+        &mut h,
+        map,
+        LeaderStyle {
+            show: false,
+            ..base
+        },
+    );
+    assert!(strokes_in(&items, LEADER_COLOR).is_empty());
+    assert!(label_runs(&mut h, 0).iter().any(|g| g.text == "LAND"));
+
+    let items = leader_frame(&mut h, map, LeaderStyle { width: 2.0, ..base });
+    assert_eq!(strokes_in(&items, LEADER_COLOR)[0].1, 2.0);
+
+    let items = leader_frame(
+        &mut h,
+        map,
+        LeaderStyle {
+            opacity: 0.5,
+            ..base
+        },
+    );
+    let half = vale_render::Color {
+        a: 128,
+        ..LEADER_COLOR
+    };
+    assert_eq!(strokes_in(&items, half).len(), lines.len());
+
+    let dashed = LeaderStyle {
+        dashed: true,
+        dash: 1.0,
+        dash_gap: 1.0,
+        ..base
+    };
+    let items = leader_frame(&mut h, map, dashed);
+    let (path, _) = &strokes_in(&items, LEADER_COLOR)[0];
+    assert!(subpaths(path) > 2, "{}", subpaths(path));
+
+    let halo = LeaderStyle {
+        halo: true,
+        halo_width: 1.5,
+        ..base
+    };
+    let items = leader_frame(&mut h, map, halo);
+    let halos = strokes_in(&items, LEADER_HALO);
+    assert_eq!(halos.len(), lines.len());
+    assert_eq!(halos[0].1, base.width + 3.0);
+    assert_eq!(strokes_in(&items, LEADER_COLOR).len(), lines.len());
+    // The halo is under the line.
+    let at =
+        |c| (items.iter()).position(|i| matches!(i, Item::Stroke { color, .. } if *color == c));
+    assert!(at(LEADER_HALO) < at(LEADER_COLOR));
+
+    let dot = LeaderStyle {
+        end: LeaderEnd::Dot,
+        end_size: 4.0,
+        ..base
+    };
+    let items = leader_frame(&mut h, map, dot);
+    let marks = fills_in(&items, LEADER_COLOR);
+    assert_eq!(marks.len(), lines.len());
+    let bounds = kurbo::Shape::bounding_box(&marks[0]);
+    assert!(bounds.center().distance(anchor) < 0.01, "{bounds:?}");
+    assert!((bounds.width() - 4.0).abs() < 0.05, "{bounds:?}");
+
+    let arrow = LeaderStyle {
+        end: LeaderEnd::Arrow,
+        end_size: 4.0,
+        ..base
+    };
+    let items = leader_frame(&mut h, map, arrow);
+    let marks = fills_in(&items, LEADER_COLOR);
+    assert_eq!(marks.len(), lines.len());
+    let bounds = kurbo::Shape::bounding_box(&marks[0]);
+    assert!(bounds.inflate(0.01, 0.01).contains(anchor), "{bounds:?}");
+    // The line stops at the base of the arrow.
+    let (from, to) = path_ends(&strokes_in(&items, LEADER_COLOR)[0].0);
+    assert!((from.distance(anchor) - 4.0).abs() < 1e-6);
+    assert!(to.distance(end) < 1e-6);
+
+    let gaps = LeaderStyle {
+        label_gap: 3.0,
+        anchor_gap: 2.0,
+        ..base
+    };
+    let items = leader_frame(&mut h, map, gaps);
+    let (from, to) = path_ends(&strokes_in(&items, LEADER_COLOR)[0].0);
+    assert!((from.distance(anchor) - 2.0).abs() < 1e-6);
+    // The default gap at the label is 1 point.
+    assert!((from.distance(to) - (length - 4.0)).abs() < 1e-6);
+}
+
+/// Opens the Leader line page of the class "Land", with one outside zone on.
+fn open_leader_page(h: &mut Pad) {
+    open_land_placement(h);
+    scroll_to(h, ZONES);
+    tap(h, ZONES);
+    scroll_to(h, "Outside right");
+    tap(h, "Outside right");
+    tap(h, "Back to Land");
+    scroll_to(h, LEADER_LINE);
+    tap(h, LEADER_LINE);
+}
+
+/// Taps the color square of the color row `name`, near its top right corner, and closes the
+/// picker.
+fn pick_color(h: &mut Pad, name: &str) {
+    scroll_to(h, name);
+    tap(h, name);
+    let shade = format!("{name} shade");
+    scroll_to(h, &shade);
+    let square = control(h, &shade).unwrap();
+    tap_with(h, square.right_top() + vec2(-4.0, 4.0), Input::Finger);
+    scroll_up_to(h, name);
+    tap(h, name);
+}
+
+/// Scrolls to the control `name` and taps it.
+fn scroll_tap(h: &mut Pad, name: &str) {
+    scroll_up_to(h, name);
+    scroll_to(h, name);
+    tap(h, name);
+}
+
+#[test]
+fn the_leader_line_page_edits_the_style() {
+    use vale_style::{LeaderEnd, LeaderStyle};
+    let (mut h, map) = land_pad(BOARDS[0]);
+    let leader = |h: &Pad| classes(h, map, "Land")[0].leader;
+    let text = classes(&h, map, "Land")[0].color;
+    open_leader_page(&mut h);
+    assert_eq!(leader(&h), LeaderStyle::default());
+
+    scroll_tap(&mut h, SHOW_LINE);
+    assert!(!leader(&h).show);
+    assert!(control(&h, MATCH_TEXT).is_none());
+    assert!(control(&h, &value_of(LINE_WIDTH)).is_none());
+    scroll_tap(&mut h, SHOW_LINE);
+    assert!(leader(&h).show);
+
+    assert!(control(&h, COLOR).is_none());
+    scroll_tap(&mut h, MATCH_TEXT);
+    assert_eq!(leader(&h).color, Some(text));
+    pick_color(&mut h, COLOR);
+    let color = leader(&h).color.unwrap();
+    assert_ne!((color.r, color.g, color.b), (text.r, text.g, text.b));
+
+    set_number(&mut h, LINE_WIDTH, "2");
+    set_number(&mut h, OPACITY, "50");
+    scroll_tap(&mut h, DASHED);
+    set_number(&mut h, DASH, "4");
+    set_number(&mut h, DASH_GAP, "1");
+    scroll_tap(&mut h, HALO);
+    set_number(&mut h, HALO_WIDTH, "2");
+    assert!(control(&h, HALO_COLOR).is_none());
+    scroll_tap(&mut h, MATCH_HALO);
+    let halo = classes(&h, map, "Land")[0].halo_color;
+    assert_eq!(leader(&h).halo_color, Some(halo));
+    pick_color(&mut h, HALO_COLOR);
+    scroll_tap(&mut h, LeaderEnd::Arrow.name());
+    set_number(&mut h, END_SIZE, "5");
+    set_number(&mut h, LABEL_GAP, "2");
+    set_number(&mut h, ANCHOR_GAP, "1");
+
+    let l = leader(&h);
+    assert_eq!((l.width, l.opacity), (2.0, 0.5));
+    assert!(l.dashed);
+    assert_eq!((l.dash, l.dash_gap), (4.0, 1.0));
+    assert!(l.halo);
+    assert_eq!(l.halo_width, 2.0);
+    let c = l.halo_color.unwrap();
+    assert_ne!((c.r, c.g, c.b), (halo.r, halo.g, halo.b));
+    assert_eq!((l.end, l.end_size), (LeaderEnd::Arrow, 5.0));
+    assert_eq!((l.label_gap, l.anchor_gap), (2.0, 1.0));
+
+    scroll_tap(&mut h, LeaderEnd::None.name());
+    assert_eq!(leader(&h).end, LeaderEnd::None);
+    assert!(control(&h, &value_of(END_SIZE)).is_none());
+    scroll_tap(&mut h, MATCH_TEXT);
+    assert_eq!(leader(&h).color, None);
+    scroll_tap(&mut h, MATCH_HALO);
+    assert_eq!(leader(&h).halo_color, None);
+    assert!(control(&h, HALO_COLOR).is_none());
+}
+
+#[test]
+fn the_leader_line_page_works_with_a_finger() {
+    use vale_style::{LeaderAnchor, LeaderEnd};
+    for size in BOARDS {
+        let what = format!("{size:?}");
+        let (mut h, _) = land_pad(size);
+        open_leader_page(&mut h);
+        check_controls(&h, &format!("{what}: leader page"));
+        for name in [
+            MATCH_TEXT,
+            DASHED,
+            HALO,
+            MATCH_HALO,
+            LeaderEnd::Arrow.name(),
+        ] {
+            scroll_tap(&mut h, name);
+        }
+        scroll_up_to(&mut h, LeaderAnchor::Center.name());
+        if size == BOARDS[0] {
+            screenshot::save(&mut h, "pad-atlas-leader-line");
+        }
+        if size == BOARDS[3] {
+            screenshot::save(&mut h, "pad-atlas-leader-line-small");
+        }
+        let names = [
+            LeaderAnchor::Center.name().to_owned(),
+            LeaderAnchor::Inside.name().to_owned(),
+            LeaderAnchor::Outline.name().to_owned(),
+            SHOW_LINE.to_owned(),
+            MATCH_TEXT.to_owned(),
+            COLOR.to_owned(),
+            value_of(LINE_WIDTH),
+            value_of(OPACITY),
+            DASHED.to_owned(),
+            value_of(DASH),
+            value_of(DASH_GAP),
+            HALO.to_owned(),
+            MATCH_HALO.to_owned(),
+            HALO_COLOR.to_owned(),
+            value_of(HALO_WIDTH),
+            LeaderEnd::None.name().to_owned(),
+            LeaderEnd::Dot.name().to_owned(),
+            LeaderEnd::Arrow.name().to_owned(),
+            value_of(END_SIZE),
+            value_of(LABEL_GAP),
+            value_of(ANCHOR_GAP),
+        ];
+        for name in &names {
+            scroll_up_to(&mut h, name);
+            scroll_to(&mut h, name);
+            assert!(control(&h, name).is_some(), "{what}: {name}");
+            check_controls(&h, &format!("{what}: {name}"));
+        }
+    }
+}
+
+#[test]
+fn each_tap_on_a_leader_switch_is_one_undo_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let mut s = state();
+    s.session = Some(Session::open(&path, &mut s.doc).unwrap());
+    let mut h = pad_with(s, BOARDS[0]);
+    add_frame(&mut h);
+    let map = frame(&h, 0).map;
+    let land = layer_id(&h, "Land");
+    let mut area = vale_style::LabelClass::new("Land", GeometryKind::Polygon, 9).unwrap();
+    area.zones_outside[4] = 1;
+    h.state_mut().doc.set_label_classes(map, land, &[area]);
+    h.state_mut().touch();
+    h.state_mut().save_waiting().unwrap();
+    let leader = |h: &Pad| classes(h, map, "Land")[0].leader;
+    tap(&mut h, FRAME_TABS[3]);
+    open_land_placement(&mut h);
+    scroll_to(&mut h, LEADER_LINE);
+    tap(&mut h, LEADER_LINE);
+    let start = leader(&h);
+    scroll_tap(&mut h, DASHED);
+    scroll_tap(&mut h, vale_style::LeaderEnd::Dot.name());
+    let l = leader(&h);
+    assert!(l.dashed);
+    assert_eq!(l.end, vale_style::LeaderEnd::Dot);
+
+    tap(&mut h, "Undo");
+    let l = leader(&h);
+    assert!(l.dashed);
+    assert_eq!(l.end, vale_style::LeaderEnd::None);
+    tap(&mut h, "Undo");
+    assert_eq!(leader(&h), start);
+}
+
+#[test]
+fn the_leader_style_survives_a_close_and_an_open() {
+    use vale_style::{LeaderEnd, LeaderStyle};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let mut doc = Document::sample();
+    let mut session = Session::open(&path, &mut doc).unwrap();
+    let mut s = state();
+    s.doc = doc;
+    let mut h = pad_with(s, BOARDS[0]);
+    add_frame(&mut h);
+    let map = frame(&h, 0).map;
+    let land = layer_id(&h, "Land");
+    let mut area = vale_style::LabelClass::new("Land", GeometryKind::Polygon, 9).unwrap();
+    area.zones_outside[4] = 1;
+    h.state_mut().doc.set_label_classes(map, land, &[area]);
+    h.state_mut().touch();
+    h.run_steps(2);
+    tap(&mut h, FRAME_TABS[3]);
+    open_land_placement(&mut h);
+    scroll_to(&mut h, LEADER_LINE);
+    tap(&mut h, LEADER_LINE);
+    for name in [MATCH_TEXT, DASHED, HALO, LeaderEnd::Arrow.name()] {
+        scroll_tap(&mut h, name);
+    }
+    scroll_up_to(&mut h, &value_of(LINE_WIDTH));
+    set_number(&mut h, LINE_WIDTH, "2");
+    set_number(&mut h, ANCHOR_GAP, "3");
+    let lands = classes(&h, map, "Land");
+    let l = lands[0].leader;
+    assert_ne!(l, LeaderStyle::default());
+    assert!(l.color.is_some() && l.dashed && l.halo);
+    assert_eq!((l.end, l.width, l.anchor_gap), (LeaderEnd::Arrow, 2.0, 3.0));
+    let mut project = h.state().doc.project.clone();
+    session.flush(&mut project, &mut []).unwrap();
+    drop(session);
+
+    let mut doc = Document::sample();
+    let _session = Session::open(&path, &mut doc).unwrap();
+    assert_eq!(doc.label_classes(Some(map), land), lands);
+}
+
+/// Saves a picture of a leader line with a halo, a dash, and an arrow, at four times the size.
+#[test]
+fn manual_a_leader_line_with_a_halo_a_dash_and_an_arrow() {
+    use vale_style::{LeaderEnd, LeaderStyle};
+    if std::env::var_os("VALE_SCREENSHOTS").is_none() {
+        return;
+    }
+    let (mut h, map) = land_pad(BOARDS[0]);
+    let style = LeaderStyle {
+        dashed: true,
+        halo: true,
+        halo_color: Some(vale_render::Color::rgb(255, 255, 255)),
+        end: LeaderEnd::Arrow,
+        end_size: 4.0,
+        ..leader_style()
+    };
+    let items = leader_frame(&mut h, map, style);
+    let (path, _) = &strokes_in(&items, LEADER_COLOR)[0];
+    let around = kurbo::Shape::bounding_box(path).inflate(60.0, 30.0);
+    let mut list = vale_render::DisplayList::new(around.x1, around.y1);
+    list.push(Item::Fill {
+        path: kurbo::Shape::to_path(&kurbo::Rect::new(0.0, 0.0, around.x1, around.y1), 0.1),
+        color: vale_render::Color::rgb(255, 255, 255),
+        rule: vale_render::FillRule::NonZero,
+    });
+    list.items.extend(items);
+    let scale = 4.0;
+    let png = vale_render::render_png(&list, scale).unwrap();
+    let image = image::load_from_memory(&png).unwrap();
+    let crop = image.crop_imm(
+        (around.x0.max(0.0) * scale) as u32,
+        (around.y0.max(0.0) * scale) as u32,
+        (around.width() * scale) as u32,
+        (around.height() * scale) as u32,
+    );
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/app");
+    std::fs::create_dir_all(dir).unwrap();
+    crop.save(format!("{dir}/test-leader-line.png")).unwrap();
 }
 
 #[test]

@@ -11,12 +11,18 @@ use crate::engine::Candidate;
 use crate::geom::{Measured, smooth, wrap_angle};
 use crate::graticule::{Parallels, upright};
 use crate::line::{along, parallel};
-use crate::model::{CandidateKind, LabelClass, PolygonMode, PolygonPlacement, UnplacedReason};
+use crate::model::{
+    CandidateKind, LabelClass, Leader, LeaderAnchor, PolygonMode, PolygonPlacement, UnplacedReason,
+    Zone,
+};
 use crate::text::ShapedText;
 use kurbo::{Affine, Point, Rect};
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 use std::f64::consts::{PI, SQRT_2};
+
+/// The most labels of one part of a polygon.
+const MAX_REPEATS: usize = 64;
 
 /// The most cells of the grid.
 const MAX_CELLS: f64 = 60_000.0;
@@ -44,40 +50,120 @@ const FILLS: [f64; 4] = [0.85, 0.7, 0.55, 0.0];
 /// The step between the positions of a curved label along the axis, as a fraction of its length.
 const SHIFT: f64 = 0.08;
 
-/// The most horizontal positions.
+/// The most horizontal positions of each zone rank, and half the most positions along the
+/// parallels.
 const SITES: usize = 8;
 
 const TURN_CAP: f64 = 1.6;
 const OVER_TURN_COST: f64 = 20.0;
 const OVER_TURN_WEIGHT: f64 = 10.0;
 
-pub(crate) fn candidates(
+/// The label slots of a polygon, one for each instance: a part of the shape, or a region of a
+/// part where the label repeats. Each slot has its candidates, or the reason that it has none.
+pub(crate) fn slots(
     rings: &[Vec<Point>],
+    others: &[&[Vec<Point>]],
     class: &LabelClass,
     pp: &PolygonPlacement,
     shaped: &ShapedText,
     bounds: Rect,
     parallels: &Parallels,
-) -> Result<Vec<Candidate>, UnplacedReason> {
+) -> Vec<Result<Vec<Candidate>, UnplacedReason>> {
     let size = class.style.size;
-    let grid = Grid::new(rings, bounds, size).ok_or(UnplacedReason::OutOfBounds)?;
+    // The depth that the middle of a label needs.
+    let half = (0.5 * shaped.cap_height + PAD * size - pp.overrun.max(0.0)).max(0.0);
+    let Some(raster) = Raster::new(rings, others, pp, bounds, size) else {
+        return vec![Err(UnplacedReason::OutOfBounds)];
+    };
+    let mut parts = raster.parts();
+    if pp.largest_part_only {
+        parts.truncate(1);
+    }
+    let cell_area = raster.cell * raster.cell;
+    parts.retain(|p| p.len() as f64 * cell_area >= pp.min_area);
+    if parts.is_empty() {
+        return vec![Err(UnplacedReason::BelowMinimumArea)];
+    }
+    let mut out = Vec::new();
+    for part in parts {
+        let grid = Grid::new(&raster, &part, pp.overrun);
+        let regions = match pp.repeat_distance {
+            Some(d) => grid.regions(d.max(size), half),
+            None => Vec::new(),
+        };
+        if regions.len() < 2 {
+            out.push(candidates(
+                &grid,
+                Some((&raster, rings)),
+                class,
+                pp,
+                shaped,
+                half,
+                parallels,
+            ));
+        } else {
+            for region in regions {
+                let grid = Grid::new(&raster, &region, pp.overrun);
+                out.push(candidates(&grid, None, class, pp, shaped, half, parallels));
+            }
+        }
+    }
+    // A part or a region where the label does not fit gets no label, if another one gets one.
+    if out.len() > 1 && out.iter().any(Result::is_ok) {
+        out.retain(Result::is_ok);
+    }
+    out
+}
+
+/// The candidates in one slot. With `whole`, the polygon and its rings, the slot also gets the
+/// candidates outside the polygon.
+fn candidates(
+    grid: &Grid,
+    whole: Option<(&Raster, &[Vec<Point>])>,
+    class: &LabelClass,
+    pp: &PolygonPlacement,
+    shaped: &ShapedText,
+    half: f64,
+    parallels: &Parallels,
+) -> Result<Vec<Candidate>, UnplacedReason> {
     let ranked = grid.ranked();
     let center = ranked[0];
     let dmax = grid.edge_distance(center);
-    let half = 0.5 * shaped.cap_height + PAD * size;
-    if dmax < half {
+    let mut out = Vec::new();
+    if dmax >= half {
+        inside(
+            grid, &ranked, class, pp, shaped, dmax, half, parallels, &mut out,
+        );
+    }
+    if let Some((raster, rings)) = whole {
+        outside(grid, raster, rings, center, class, pp, shaped, &mut out);
+    }
+    if out.is_empty() {
         return Err(UnplacedReason::AreaTooSmall);
     }
-    let axis = grid.axis(center, half);
+    Ok(out)
+}
+
+/// The candidates inside the shape.
+#[allow(clippy::too_many_arguments)]
+fn inside(
+    grid: &Grid,
+    ranked: &[usize],
+    class: &LabelClass,
+    pp: &PolygonPlacement,
+    shaped: &ShapedText,
+    dmax: f64,
+    half: f64,
+    parallels: &Parallels,
+    out: &mut Vec<Candidate>,
+) {
+    let axis = grid.axis(ranked[0], half);
     let long = axis
         .as_ref()
         .is_some_and(|m| m.length() >= LONG * 2.0 * dmax);
 
-    let mut out = Vec::new();
     if pp.mode == PolygonMode::Parallel {
-        along_parallels(
-            &grid, &ranked, parallels, class, pp, shaped, dmax, half, &mut out,
-        );
+        along_parallels(grid, ranked, parallels, class, pp, shaped, dmax, half, out);
     } else if pp.mode != PolygonMode::Horizontal
         && let Some(m) = &axis
     {
@@ -86,7 +172,7 @@ pub(crate) fn candidates(
         } else {
             UNSUITED
         };
-        curved(&grid, m, class, pp, shaped, base, &mut out);
+        curved(grid, m, class, pp, shaped, base, out);
     }
     let base = match pp.mode {
         PolygonMode::Auto if long => UNSUITED,
@@ -95,12 +181,116 @@ pub(crate) fn candidates(
     };
     let follow = (pp.graticule || pp.mode == PolygonMode::Parallel).then_some(parallels);
     horizontal(
-        &grid, &ranked, follow, class, pp, shaped, base, dmax, half, &mut out,
+        grid, ranked, follow, class, pp, shaped, base, dmax, half, out,
     );
-    if out.is_empty() {
-        return Err(UnplacedReason::AreaTooSmall);
+}
+
+/// The extra cost of a label outside the polygon. It is more than the cost of each label inside.
+const OUTSIDE: f64 = 60.0;
+
+/// The extra cost of each rank of a zone after the first.
+const ZONE_STEP: f64 = 1.0;
+
+/// The space between a label outside the polygon and the outline, as a multiple of the font size.
+const OUTSIDE_GAP: f64 = 0.3;
+
+/// Horizontal candidates outside the polygon, one in each zone that is not blocked, each with a
+/// leader line to the anchor of the class.
+#[allow(clippy::too_many_arguments)]
+fn outside(
+    grid: &Grid,
+    raster: &Raster,
+    rings: &[Vec<Point>],
+    center: usize,
+    class: &LabelClass,
+    pp: &PolygonPlacement,
+    shaped: &ShapedText,
+    out: &mut Vec<Candidate>,
+) {
+    let size = class.style.size;
+    let ink = shaped.ink_bounds;
+    let visual = grid.point(center);
+    let start = match pp.anchor {
+        LeaderAnchor::Center => grid.centroid(),
+        LeaderAnchor::Inside | LeaderAnchor::Outline => visual,
+    };
+    let gap = OUTSIDE_GAP * size;
+    let step = raster.cell.max(0.25 * size);
+    let reach = raster.extent().width() + raster.extent().height() + ink.width() + ink.height();
+    for zone in Zone::OUTSIDE {
+        let rank = pp.zones.outside(zone);
+        if rank == 0 {
+            continue;
+        }
+        let (dx, dy) = zone.offset();
+        let place = |t: f64| {
+            let x0 = match dx {
+                1 => start.x + t,
+                -1 => start.x - t - ink.width(),
+                _ => start.x - 0.5 * ink.width(),
+            };
+            let y0 = match dy {
+                1 => start.y + t,
+                -1 => start.y - t - ink.height(),
+                _ => start.y - 0.5 * ink.height(),
+            };
+            Rect::new(x0, y0, x0 + ink.width(), y0 + ink.height())
+        };
+        let mut t = 0.0;
+        while t <= reach && !raster.clear(place(t).inflate(gap, gap)) {
+            t += step;
+        }
+        if t > reach {
+            continue;
+        }
+        let rect = place(t);
+        let anchor = match pp.anchor {
+            LeaderAnchor::Center => start,
+            LeaderAnchor::Inside => visual,
+            LeaderAnchor::Outline => nearest_on_outline(rings, rect.center()).unwrap_or(visual),
+        };
+        let end = Point::new(
+            anchor.x.clamp(rect.x0, rect.x1),
+            anchor.y.clamp(rect.y0, rect.y1),
+        );
+        let origin = Point::new(rect.x0 - ink.x0, rect.y0 - ink.y0);
+        let transforms: Vec<Affine> = shaped
+            .glyphs()
+            .map(|(_, g)| Affine::translate((origin.x + g.x, origin.y + g.y)))
+            .collect();
+        let (boxes, bounds) = glyph_boxes(shaped, &transforms, class.margin);
+        out.push(Candidate {
+            kind: CandidateKind::Polygon { curved: false },
+            cost: OUTSIDE + ZONE_STEP * (rank - 1) as f64 + 0.2 * t / size,
+            transforms,
+            boxes,
+            bounds,
+            leader: Some(Leader { anchor, end }),
+        });
     }
-    Ok(out)
+}
+
+/// The point of the rings nearest to `p`.
+fn nearest_on_outline(rings: &[Vec<Point>], p: Point) -> Option<Point> {
+    let mut best: Option<(f64, Point)> = None;
+    for ring in rings {
+        let n = ring.len();
+        for k in 0..n {
+            let (a, b) = (ring[k], ring[(k + 1) % n]);
+            let ab = b - a;
+            let t = if ab.hypot2() > 0.0 {
+                ((p - a).dot(ab) / ab.hypot2()).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let q = a + ab * t;
+            let d = q.distance_squared(p);
+            if best.is_none_or(|(bd, _)| d < bd) {
+                best = Some((d, q));
+            }
+        }
+    }
+    best.map(|(_, q)| q)
 }
 
 /// Candidates along the axis `m`, with letters spread to fill a part of it.
@@ -158,8 +348,8 @@ fn curved(
     }
 }
 
-/// Horizontal candidates at the cells farthest from the edge, the visual center first. The
-/// letters spread to fill a part of the width of the shape at each cell.
+/// Horizontal candidates at the cells farthest from the edge in the zones of each rank.
+/// The letters spread to fill a part of the width of the shape at each cell.
 #[allow(clippy::too_many_arguments)]
 fn horizontal(
     grid: &Grid,
@@ -177,20 +367,33 @@ fn horizontal(
     let ink = shaped.ink_bounds;
     let gaps = shaped.glyph_count().saturating_sub(1) as f64;
     let apart = size.max(0.25 * dmax);
+    // For each rank, best first, the deepest cells in the zones of that rank, apart from each
+    // other.
+    let mut ranks: Vec<u8> = pp.zones.inside.iter().copied().filter(|r| *r > 0).collect();
+    ranks.sort_unstable();
+    ranks.dedup();
     let mut sites: Vec<Point> = Vec::new();
-    for &i in ranked
-        .iter()
-        .take_while(|&&i| grid.edge_distance(i) >= half)
-    {
-        if sites.len() == SITES {
-            break;
+    let mut picks: Vec<(usize, f64, usize)> = Vec::new();
+    for r in ranks {
+        let mut k = 0;
+        for &i in ranked
+            .iter()
+            .take_while(|&&i| grid.edge_distance(i) >= half)
+        {
+            if k == SITES {
+                break;
+            }
+            let c = grid.point(i);
+            if pp.zones.inside(grid.zone(c)) != r || sites.iter().any(|s| s.distance(c) < apart) {
+                continue;
+            }
+            sites.push(c);
+            picks.push((i, ZONE_STEP * (r - 1) as f64, k));
+            k += 1;
         }
+    }
+    for (i, zone_cost, rank) in picks {
         let c = grid.point(i);
-        if sites.iter().any(|s| s.distance(c) < apart) {
-            continue;
-        }
-        sites.push(c);
-        let rank = sites.len() - 1;
         let d = grid.edge_distance(i);
         // The curve through the site, and the arc length of the site on it.
         let through = parallels.map(|ps| {
@@ -232,6 +435,7 @@ fn horizontal(
             out.push(Candidate {
                 kind: CandidateKind::Polygon { curved: false },
                 cost: base_cost
+                    + zone_cost
                     + 3.0 * (1.0 - d / dmax).max(0.0)
                     + 0.1 * rank as f64
                     + 0.5 * fi as f64,
@@ -447,21 +651,25 @@ fn spread(len: f64, shaped: &ShapedText, max: f64) -> f64 {
     ((len - shaped.advance) / gaps as f64).clamp(0.0, max.max(0.0))
 }
 
-/// The visible part of a polygon as a grid of cells. A border of cells outside the shape
-/// surrounds the grid.
-struct Grid {
+/// The visible polygon as a grid of cells. A border of cells outside the shape surrounds the
+/// grid, as wide as the overrun of the class.
+struct Raster {
     origin: Point,
     cell: f64,
     w: usize,
     h: usize,
-    /// Cells of the largest part.
-    inside: Vec<bool>,
-    /// The distance from each cell to the nearest cell outside, in cells.
-    dist: Vec<f64>,
+    /// Cells inside the polygon.
+    fill: Vec<bool>,
 }
 
-impl Grid {
-    fn new(rings: &[Vec<Point>], bounds: Rect, size: f64) -> Option<Grid> {
+impl Raster {
+    fn new(
+        rings: &[Vec<Point>],
+        others: &[&[Vec<Point>]],
+        pp: &PolygonPlacement,
+        bounds: Rect,
+        size: f64,
+    ) -> Option<Raster> {
         let mut bbox: Option<Rect> = None;
         for p in rings.iter().flatten() {
             if !p.is_finite() {
@@ -477,14 +685,61 @@ impl Grid {
         if !cell.is_finite() || cell <= 0.0 {
             return None;
         }
-        let w = (clip.width() / cell).ceil() as usize + 2;
-        let h = (clip.height() / cell).ceil() as usize + 2;
-        let origin = Point::new(clip.x0 - cell, clip.y0 - cell);
-
-        // Even-odd scanlines through the cell centers.
+        let border = 1 + (pp.overrun.max(0.0) / cell).ceil() as usize;
+        let w = (clip.width() / cell).ceil() as usize + 2 * border;
+        let h = (clip.height() / cell).ceil() as usize + 2 * border;
+        let origin = Point::new(
+            clip.x0 - border as f64 * cell,
+            clip.y0 - border as f64 * cell,
+        );
+        let mut r = Raster {
+            origin,
+            cell,
+            w,
+            h,
+            fill: vec![false; w * h],
+        };
         let mut fill = vec![false; w * h];
+        if pp.over_holes {
+            // Each outer ring fills on its own, so a hole does not cut it.
+            for (k, ring) in rings.iter().enumerate() {
+                let depth = rings
+                    .iter()
+                    .enumerate()
+                    .filter(|(o, other)| {
+                        *o != k && ring.first().is_some_and(|p| contains(other, *p))
+                    })
+                    .count();
+                if depth % 2 == 0 {
+                    r.scan(std::slice::from_ref(ring), clip, &mut fill);
+                }
+            }
+        } else {
+            r.scan(rings, clip, &mut fill);
+        }
+        // A shape smaller than a cell fills the cell at its center.
+        if !fill.contains(&true)
+            && let Some(i) = r.index(clip.center())
+        {
+            fill[i] = true;
+        }
+        let mut cut = vec![false; w * h];
+        for other in others {
+            r.scan(other, clip, &mut cut);
+        }
+        for (f, c) in fill.iter_mut().zip(&cut) {
+            *f &= !c;
+        }
+        r.fill = fill;
+        Some(r)
+    }
+
+    /// Sets the cells inside `rings` with the even-odd rule, by scanlines through the cell
+    /// centers.
+    fn scan(&self, rings: &[Vec<Point>], clip: Rect, fill: &mut [bool]) {
+        let (origin, cell, w) = (self.origin, self.cell, self.w);
         let mut xs: Vec<f64> = Vec::new();
-        for j in 1..h - 1 {
+        for j in 1..self.h - 1 {
             let y = origin.y + (j as f64 + 0.5) * cell;
             if y < clip.y0 || y > clip.y1 {
                 continue;
@@ -513,73 +768,185 @@ impl Grid {
                 }
             }
         }
+    }
 
-        // Keep the largest 4-connected part.
-        let mut part = vec![0u32; w * h];
-        let mut best = (0, 0usize);
+    fn index(&self, p: Point) -> Option<usize> {
+        let i = ((p.x - self.origin.x) / self.cell).floor();
+        let j = ((p.y - self.origin.y) / self.cell).floor();
+        if i < 0.0 || j < 0.0 || i >= self.w as f64 || j >= self.h as f64 {
+            return None;
+        }
+        Some(j as usize * self.w + i as usize)
+    }
+
+    /// The bounds of the grid.
+    fn extent(&self) -> Rect {
+        Rect::new(
+            self.origin.x,
+            self.origin.y,
+            self.origin.x + self.w as f64 * self.cell,
+            self.origin.y + self.h as f64 * self.cell,
+        )
+    }
+
+    /// True if no cell that `rect` touches is inside the polygon.
+    fn clear(&self, rect: Rect) -> bool {
+        let e = self.extent();
+        let r = rect.intersect(e);
+        if !(r.width() >= 0.0 && r.height() >= 0.0) || rect.x0 > e.x1 || rect.y0 > e.y1 {
+            return true;
+        }
+        let to =
+            |v: f64, o: f64, n: usize| (((v - o) / self.cell).floor().max(0.0) as usize).min(n - 1);
+        let (i0, i1) = (to(r.x0, e.x0, self.w), to(r.x1, e.x0, self.w));
+        let (j0, j1) = (to(r.y0, e.y0, self.h), to(r.y1, e.y0, self.h));
+        (j0..=j1).all(|j| (i0..=i1).all(|i| !self.fill[j * self.w + i]))
+    }
+
+    /// The 4-connected parts of the polygon, largest first. Each part is a list of cells.
+    fn parts(&self) -> Vec<Vec<usize>> {
+        let w = self.w;
+        let mut seen = vec![false; self.fill.len()];
+        let mut parts: Vec<Vec<usize>> = Vec::new();
         let mut stack = Vec::new();
-        let mut id = 0;
-        for s in 0..w * h {
-            if !fill[s] || part[s] != 0 {
+        for s in 0..self.fill.len() {
+            if !self.fill[s] || seen[s] {
                 continue;
             }
-            id += 1;
-            let mut count = 0;
-            part[s] = id;
+            let mut part = Vec::new();
+            seen[s] = true;
             stack.push(s);
             while let Some(c) = stack.pop() {
-                count += 1;
+                part.push(c);
                 for n in [c - 1, c + 1, c - w, c + w] {
-                    if fill[n] && part[n] == 0 {
-                        part[n] = id;
+                    if self.fill[n] && !seen[n] {
+                        seen[n] = true;
                         stack.push(n);
                     }
                 }
             }
-            if count > best.1 {
-                best = (id, count);
-            }
+            parts.push(part);
         }
-        if best.1 == 0 {
-            return None;
-        }
-        let inside: Vec<bool> = part.iter().map(|&p| p == best.0).collect();
+        parts.sort_by_key(|p| Reverse(p.len()));
+        parts
+    }
+}
 
-        // Two-pass chamfer distance.
-        let mut dist: Vec<f64> = inside
-            .iter()
-            .map(|&i| if i { f64::INFINITY } else { 0.0 })
-            .collect();
-        let steps = [
-            (-1, 0, 1.0),
-            (-1, -1, SQRT_2),
-            (0, -1, 1.0),
-            (1, -1, SQRT_2),
-        ];
-        for j in 1..h - 1 {
-            for i in 1..w - 1 {
-                for (di, dj, d) in steps {
-                    let n = (j as isize + dj) as usize * w + (i as isize + di) as usize;
-                    dist[j * w + i] = dist[j * w + i].min(dist[n] + d);
-                }
-            }
+/// Even-odd point in one ring.
+fn contains(ring: &[Point], p: Point) -> bool {
+    let mut inside = false;
+    let n = ring.len();
+    for k in 0..n {
+        let (a, b) = (ring[k], ring[(k + 1) % n]);
+        if (a.y <= p.y) != (b.y <= p.y) && p.x < a.x + (p.y - a.y) / (b.y - a.y) * (b.x - a.x) {
+            inside = !inside;
         }
-        for j in (1..h - 1).rev() {
-            for i in (1..w - 1).rev() {
-                for (di, dj, d) in steps {
-                    let n = (j as isize - dj) as usize * w + (i as isize - di) as usize;
-                    dist[j * w + i] = dist[j * w + i].min(dist[n] + d);
-                }
-            }
+    }
+    inside
+}
+
+/// A part of the polygon, or a region of a part, on the cells of its raster.
+struct Grid {
+    origin: Point,
+    cell: f64,
+    w: usize,
+    h: usize,
+    /// The cells of the part.
+    inside: Vec<bool>,
+    /// The distance from each cell to the nearest cell outside, in cells.
+    dist: Vec<f64>,
+    /// The distance from each cell outside to the nearest cell inside, in cells. Empty if the
+    /// overrun is zero.
+    out_dist: Vec<f64>,
+    overrun: f64,
+    /// The bounds of the cell centers of the part.
+    bbox: Rect,
+}
+
+impl Grid {
+    fn new(raster: &Raster, cells: &[usize], overrun: f64) -> Grid {
+        let (w, h) = (raster.w, raster.h);
+        let mut inside = vec![false; w * h];
+        for &c in cells {
+            inside[c] = true;
         }
-        Some(Grid {
-            origin,
-            cell,
+        let dist = chamfer(&inside, w, h);
+        let out_dist = if overrun > 0.0 {
+            let outside: Vec<bool> = inside.iter().map(|i| !i).collect();
+            chamfer(&outside, w, h)
+        } else {
+            Vec::new()
+        };
+        let mut g = Grid {
+            origin: raster.origin,
+            cell: raster.cell,
             w,
             h,
             inside,
             dist,
-        })
+            out_dist,
+            overrun: overrun.max(0.0),
+            bbox: Rect::ZERO,
+        };
+        let first = g.point(cells[0]);
+        g.bbox = cells.iter().fold(Rect::from_points(first, first), |b, &c| {
+            b.union_pt(g.point(c))
+        });
+        g
+    }
+
+    /// The zone of `p` inside the part: the cell of a three by three grid over its bounds.
+    fn zone(&self, p: Point) -> Zone {
+        let b = self.bbox;
+        let third = |v: f64, lo: f64, len: f64| {
+            if len <= 0.0 {
+                1
+            } else {
+                ((3.0 * (v - lo) / len).floor() as usize).min(2)
+            }
+        };
+        let col = third(p.x, b.x0, b.width());
+        let row = third(p.y, b.y0, b.height());
+        Zone::INSIDE[row * 3 + col]
+    }
+
+    /// The centroid of the cells of the part.
+    fn centroid(&self) -> Point {
+        let (mut sum, mut n) = (kurbo::Vec2::ZERO, 0.0_f64);
+        for i in (0..self.inside.len()).filter(|&i| self.inside[i]) {
+            sum += self.point(i).to_vec2();
+            n += 1.0;
+        }
+        (sum / n.max(1.0)).to_point()
+    }
+
+    /// The regions of the part for labels that repeat each `distance`. The sites of the labels
+    /// are cells at least `half` from the edge and `distance` apart, and each cell belongs to
+    /// the nearest site.
+    fn regions(&self, distance: f64, half: f64) -> Vec<Vec<usize>> {
+        let mut seeds: Vec<Point> = Vec::new();
+        for i in self.ranked() {
+            if self.edge_distance(i) < half || seeds.len() == MAX_REPEATS {
+                break;
+            }
+            let c = self.point(i);
+            if seeds.iter().all(|s| s.distance(c) >= distance) {
+                seeds.push(c);
+            }
+        }
+        let mut regions = vec![Vec::new(); seeds.len()];
+        for i in (0..self.inside.len()).filter(|&i| self.inside[i]) {
+            let p = self.point(i);
+            let near = (0..seeds.len()).min_by(|&a, &b| {
+                seeds[a]
+                    .distance_squared(p)
+                    .total_cmp(&seeds[b].distance_squared(p))
+            });
+            if let Some(k) = near {
+                regions[k].push(i);
+            }
+        }
+        regions
     }
 
     fn point(&self, i: usize) -> Point {
@@ -677,6 +1044,18 @@ impl Grid {
             .is_some_and(|i| self.inside[i] && self.edge_distance(i) >= pad)
     }
 
+    /// True if ink at `p` keeps the distance `pad` from the edge, less the overrun.
+    fn holds_ink(&self, p: Point, pad: f64) -> bool {
+        let need = pad - self.overrun;
+        match self.index(p) {
+            Some(i) if self.inside[i] => self.edge_distance(i) >= need,
+            Some(i) if !self.out_dist.is_empty() => {
+                (self.out_dist[i] - 0.5).max(0.0) * self.cell <= -need
+            }
+            _ => false,
+        }
+    }
+
     /// A candidate with one box per glyph, or `None` if some ink leaves the shape.
     fn candidate(
         &self,
@@ -692,7 +1071,7 @@ impl Grid {
                 .flat_map(|u| [0.0, 0.5, 1.0].map(|v| (u, v)))
             {
                 let p = *tf * Point::new(bb.x0 + u * bb.width(), bb.y0 + v * bb.height());
-                if !self.holds(p, pad) {
+                if !self.holds_ink(p, pad) {
                     return None;
                 }
             }
@@ -704,6 +1083,7 @@ impl Grid {
             transforms,
             boxes,
             bounds,
+            leader: None,
         })
     }
 
@@ -786,6 +1166,38 @@ impl Grid {
         }
         (cost, parent)
     }
+}
+
+/// The distance from each cell in `mask` to the nearest cell outside it, in cells, by a
+/// two-pass chamfer. The border of the grid keeps its start value.
+fn chamfer(mask: &[bool], w: usize, h: usize) -> Vec<f64> {
+    let mut dist: Vec<f64> = mask
+        .iter()
+        .map(|&i| if i { f64::INFINITY } else { 0.0 })
+        .collect();
+    let steps = [
+        (-1, 0, 1.0),
+        (-1, -1, SQRT_2),
+        (0, -1, 1.0),
+        (1, -1, SQRT_2),
+    ];
+    for j in 1..h - 1 {
+        for i in 1..w - 1 {
+            for (di, dj, d) in steps {
+                let n = (j as isize + dj) as usize * w + (i as isize + di) as usize;
+                dist[j * w + i] = dist[j * w + i].min(dist[n] + d);
+            }
+        }
+    }
+    for j in (1..h - 1).rev() {
+        for i in (1..w - 1).rev() {
+            for (di, dj, d) in steps {
+                let n = (j as isize - dj) as usize * w + (i as isize - di) as usize;
+                dist[j * w + i] = dist[j * w + i].min(dist[n] + d);
+            }
+        }
+    }
+    dist
 }
 
 /// The reached cell with the highest cost. The first cell wins a tie.

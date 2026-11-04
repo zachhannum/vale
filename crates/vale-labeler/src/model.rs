@@ -152,6 +152,103 @@ pub enum PolygonMode {
     Parallel,
 }
 
+/// A zone of a polygon label. Inside the polygon, the zones are the cells of a three by three
+/// grid over the bounds of the shape. Outside it, a zone is a direction from the anchor.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum Zone {
+    TopLeft,
+    Top,
+    TopRight,
+    Left,
+    /// Inside only.
+    Center,
+    Right,
+    BottomLeft,
+    Bottom,
+    BottomRight,
+}
+
+impl Zone {
+    /// The zones inside a polygon, row by row from the top.
+    pub const INSIDE: [Zone; 9] = [
+        Zone::TopLeft,
+        Zone::Top,
+        Zone::TopRight,
+        Zone::Left,
+        Zone::Center,
+        Zone::Right,
+        Zone::BottomLeft,
+        Zone::Bottom,
+        Zone::BottomRight,
+    ];
+
+    /// The zones outside a polygon, row by row from the top.
+    pub const OUTSIDE: [Zone; 8] = [
+        Zone::TopLeft,
+        Zone::Top,
+        Zone::TopRight,
+        Zone::Left,
+        Zone::Right,
+        Zone::BottomLeft,
+        Zone::Bottom,
+        Zone::BottomRight,
+    ];
+
+    /// The column and the row of the zone, each from -1 to 1. The row grows down the page.
+    pub fn offset(self) -> (i32, i32) {
+        let i = self as i32;
+        (i % 3 - 1, i / 3 - 1)
+    }
+}
+
+/// The rank of each zone of a polygon label. Rank 1 is best, and a higher rank costs more.
+/// Rank 0 blocks the zone. Zones apply to horizontal text, and only a zone outside the
+/// polygon gets a leader line.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct PolygonZones {
+    /// In the order of [`Zone::INSIDE`].
+    pub inside: [u8; 9],
+    /// In the order of [`Zone::OUTSIDE`].
+    pub outside: [u8; 8],
+}
+
+impl PolygonZones {
+    /// The rank of `zone` inside the polygon.
+    pub fn inside(&self, zone: Zone) -> u8 {
+        self.inside[zone as usize]
+    }
+
+    /// The rank of `zone` outside the polygon. The center has rank 0.
+    pub fn outside(&self, zone: Zone) -> u8 {
+        Zone::OUTSIDE
+            .iter()
+            .position(|z| *z == zone)
+            .map_or(0, |i| self.outside[i])
+    }
+}
+
+impl Default for PolygonZones {
+    /// All zones inside have rank 1, and all zones outside are blocked.
+    fn default() -> Self {
+        Self {
+            inside: [1; 9],
+            outside: [0; 8],
+        }
+    }
+}
+
+/// The point of a polygon where the leader line of a label outside the polygon starts.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub enum LeaderAnchor {
+    /// The centroid of the shape, which can be outside a concave shape.
+    Center,
+    /// The visual center, which is always inside the shape.
+    #[default]
+    Inside,
+    /// The point of the outline nearest to the label.
+    Outline,
+}
+
 /// Placement rules for polygon features.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PolygonPlacement {
@@ -166,6 +263,22 @@ pub struct PolygonPlacement {
     pub graticule: bool,
     /// Text that follows the parallels reads from west to east, also where it is upside down.
     pub no_flip: bool,
+    pub zones: PolygonZones,
+    pub anchor: LeaderAnchor,
+    /// A label can cover the holes of the polygon, for example the islands of a lake.
+    pub over_holes: bool,
+    /// A label avoids the other polygon features, as it avoids holes.
+    pub avoid_other_polygons: bool,
+    /// Only the largest part of a polygon with many parts gets a label. Otherwise each part
+    /// gets one, and a part where the label does not fit gets none.
+    pub largest_part_only: bool,
+    /// The distance between repeated labels of a large polygon; `None` gives one label per part.
+    pub repeat_distance: Option<f64>,
+    /// The distance that a label can go past the outline, in page units.
+    pub overrun: f64,
+    /// A part of the visible polygon with less area than this gets no label, in square page
+    /// units.
+    pub min_area: f64,
 }
 
 impl Default for PolygonPlacement {
@@ -176,6 +289,14 @@ impl Default for PolygonPlacement {
             max_glyph_turn: 0.2,
             graticule: false,
             no_flip: false,
+            zones: PolygonZones::default(),
+            anchor: LeaderAnchor::default(),
+            over_holes: false,
+            avoid_other_polygons: false,
+            largest_part_only: true,
+            repeat_distance: None,
+            overrun: 0.0,
+            min_area: 0.0,
         }
     }
 }
@@ -215,7 +336,7 @@ pub enum Geometry {
         stroke_width: f64,
     },
     /// Closed rings with the even-odd fill rule, so holes and separate parts need no order.
-    /// The label goes in the largest visible part.
+    /// A ring inside an odd number of other rings is a hole.
     Polygon {
         rings: Vec<Vec<Point>>,
     },
@@ -319,6 +440,15 @@ pub struct PlacedGlyphRun {
     pub glyphs: Vec<PlacedGlyph>,
 }
 
+/// A line from a feature to its label.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Leader {
+    /// The end on the feature.
+    pub anchor: Point,
+    /// The end on the edge of the ink bounds of the label.
+    pub end: Point,
+}
+
 /// A label that was placed.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlacedLabel {
@@ -334,6 +464,7 @@ pub struct PlacedLabel {
     /// Axis-aligned bounds of `boxes`.
     pub bounds: Rect,
     pub cost: f64,
+    pub leader: Option<Leader>,
 }
 
 impl PlacedLabel {
@@ -357,6 +488,8 @@ pub enum UnplacedReason {
     TooCurved,
     /// The label does not fit inside the visible part of the polygon.
     AreaTooSmall,
+    /// The visible part of the polygon has less area than the class allows.
+    BelowMinimumArea,
     Collision,
 }
 

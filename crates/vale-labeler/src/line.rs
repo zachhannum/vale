@@ -244,6 +244,7 @@ fn slot_candidates(
                 cost += OVER_TURN_COST + OVER_TURN_WEIGHT * over / limit.max(EPS);
             }
             out.push(Candidate {
+                leader: None,
                 kind: CandidateKind::Line { side, start: s0 },
                 cost,
                 transforms,

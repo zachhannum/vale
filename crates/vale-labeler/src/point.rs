@@ -64,6 +64,7 @@ pub(crate) fn candidates(
             let transforms = follow(&base, start, shaped, 0.0).transforms;
             let (boxes, bounds) = glyph_boxes(shaped, &transforms, class.margin);
             out.push(Candidate {
+                leader: None,
                 kind: CandidateKind::Point(pos),
                 cost,
                 transforms,
@@ -84,6 +85,7 @@ pub(crate) fn candidates(
         );
         let b = OrientedBox::from_rect(ink).inflate(class.margin);
         out.push(Candidate {
+            leader: None,
             kind: CandidateKind::Point(pos),
             cost,
             transforms,
