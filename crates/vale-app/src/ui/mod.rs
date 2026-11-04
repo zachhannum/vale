@@ -493,6 +493,11 @@ pub struct AppState {
     pub region: Option<region::RegionMode>,
     /// The fields of the one selected feature.
     pub selection_form: Option<select::SelectionForm>,
+    /// The field of the inspector that the user edited last, and the
+    /// feature that it had the focus in last.
+    pub attribute_focus: Option<(crate::globe::select::FeatureRef, String)>,
+    /// The inspector of the desktop layout shows.
+    pub show_attributes: bool,
     /// The open attribute table.
     pub table: Option<table::TableState>,
     /// The path of the Measure tool, in both workspaces.
@@ -616,6 +621,8 @@ impl AppState {
             vertex_drag: None,
             region: None,
             selection_form: None,
+            attribute_focus: None,
+            show_attributes: false,
             table: None,
             measure: Measure::default(),
             measure_of: (Workspace::default(), vale_store::PageId(0)),
@@ -3608,6 +3615,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
                 panels::brush_debug(ui, state);
                 panels::brush(ui, state);
                 elevation::draw(ui, state);
+                select::desktop(ui, state);
                 table::desktop(ui, state);
                 globe::draw(ui, state);
             }
@@ -3623,7 +3631,6 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     raster_form::desktop(ui.ctx(), state);
     point_form::desktop(ui.ctx(), state);
     if state.workspace == Workspace::Globe {
-        select::desktop(ui.ctx(), state);
         region::desktop(ui.ctx(), state);
     }
     font_dialog::show(ui.ctx(), state);

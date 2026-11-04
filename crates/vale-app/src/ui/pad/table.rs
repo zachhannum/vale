@@ -24,8 +24,6 @@ pub const FEATURES: &str = "Features";
 pub const ROW_HEIGHT: f32 = TOUCH;
 /// The width of the Layers panel while it shows the table.
 const WIDTH: f32 = 480.0;
-/// The width of the selection card, which stays beside the panel.
-const CARD_WIDTH: f32 = 360.0;
 const CELL_PAD: f32 = 12.0;
 
 /// True if the Layers panel shows the table of the layer of the table.
@@ -46,14 +44,14 @@ pub fn check(state: &mut AppState) {
 }
 
 /// Makes the right panel wider while it shows the table. The panel stays
-/// clear of the tool strip and of the selection card.
+/// clear of the tool strip and of the cards beside it.
 pub fn widen(state: &AppState, rects: &mut Rects) {
     if rects.sheet.is_some() || !showing(state) {
         return;
     }
     let normal = super::geometry::RIGHT_PANEL_WIDTH;
     let right = rects.right_panel.x + normal;
-    let room = right - (rects.tools.right() + GAP + CARD_WIDTH + GAP);
+    let room = right - rects.brush_panel.x;
     let width = WIDTH.min(room).max(normal);
     rects.right_panel.x = right - width;
 }

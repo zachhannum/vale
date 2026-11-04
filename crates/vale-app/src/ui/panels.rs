@@ -126,6 +126,8 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
             }
             if state.workspace == Workspace::Globe {
                 ui.separator();
+                select::view_menu(ui, state);
+                ui.separator();
                 // With no layer for the tool, the tool is Navigate.
                 let globe = &mut state.globe;
                 let (paintable, lineable) = (globe.paintable, globe.lineable);
@@ -222,7 +224,7 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                     path_buttons(ui, state);
                 }
                 if !state.feature_selection.is_empty() && ui.button(DESELECT).clicked() {
-                    state.feature_selection.clear();
+                    state.set_feature_selection(Vec::new());
                 }
                 // The menu stays open while the user works on the list.
                 let stay = egui::containers::menu::MenuConfig::new()

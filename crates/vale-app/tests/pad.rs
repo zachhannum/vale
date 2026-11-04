@@ -20,14 +20,16 @@ use vale_app::ui::pad::geometry::{BrushCard, TOOLS, WidthClass};
 use vale_app::ui::pad::number::{LABEL_COLUMN, TRACK_INSET};
 use vale_app::ui::pad::raster;
 use vale_app::ui::pad::{
-    ADD_LAYER, CLEAR_PATH, EXPORT_GEOTIFF, GRATICULE, IMPORT_HEIGHTMAP, LAYER_NAME, LINE, LayerRef,
-    MEASURE, ModeGroup, NEW_GEOJSON, NEW_HEIGHTMAP, NEW_IMAGE, NEW_RASTER, OPACITY, POLYGON, Page,
-    Panel, RECENTER, RESET, SCULPT, SMOOTHING, SNAP, SNAP_DISTANCE, SNAP_EDGES, SNAP_VERTICES,
-    SNAPPING, TERRAIN, TERRAIN_BALANCE, TERRAIN_FIT, TERRAIN_FIT_SWITCH, VECTOR, VIEW_OPTIONS,
-    WORLD_PROPERTIES, WORLDS, WORLDS_ROW, brush_size_text, readout_line, readout_text, theme,
+    ADD_LAYER, CLEAR_PATH, DESELECT, EXPORT_GEOTIFF, GRATICULE, IMPORT_HEIGHTMAP, LAYER_NAME, LINE,
+    LayerRef, MEASURE, ModeGroup, NEW_GEOJSON, NEW_HEIGHTMAP, NEW_IMAGE, NEW_RASTER, OPACITY,
+    POLYGON, Page, Panel, RECENTER, RESET, SCULPT, SMOOTHING, SNAP, SNAP_DISTANCE, SNAP_EDGES,
+    SNAP_VERTICES, SNAPPING, TERRAIN, TERRAIN_BALANCE, TERRAIN_FIT, TERRAIN_FIT_SWITCH, VECTOR,
+    VIEW_OPTIONS, WORLD_PROPERTIES, WORLDS, WORLDS_ROW, brush_size_text, readout_line,
+    readout_text, theme,
 };
 use vale_app::ui::raster_form::{self, PRESETS, RasterForm, face_size_name};
 use vale_app::ui::select;
+use vale_app::ui::table::SHOW_IN_TABLE;
 use vale_app::ui::world_form::{CREATE, FormMode, NAME, NEW_WORLD, RADIUS_SLIDER, WorldForm};
 use vale_app::ui::{Action, AppState, FontTarget, Layout, Workspace, draw, panels};
 use vale_app::world::{radius_fraction, three_significant};
@@ -140,6 +142,15 @@ fn drag(h: &mut Pad, from: Pos2, to: Pos2, force: Option<f32>) {
     }
     touch(h, egui::TouchPhase::End, to, force);
     h.run_steps(3);
+}
+
+/// Opens or closes the Toolbox panel. Below 1,000 points, its row is in the
+/// workspace menu.
+fn toolbox(h: &mut Pad) {
+    if control(h, "Toolbox").is_none() {
+        tap(h, "Workspace");
+    }
+    tap(h, "Toolbox");
 }
 
 /// A tap of a finger on the middle of a control.
@@ -348,8 +359,10 @@ fn check_controls(h: &Pad, what: &str) {
                 let kind = vale_sphere::ProjectionKind::ALL
                     .iter()
                     .any(|k| k.name() == name);
-                let menu =
-                    ["World", "Globe", "Flat", GRATICULE, "Atlas", WORLDS_ROW].contains(&name);
+                let menu = [
+                    "World", "Globe", "Flat", GRATICULE, "Atlas", WORLDS_ROW, "Toolbox",
+                ]
+                .contains(&name);
                 let modes = in_modes && all_modes().any(|mode| mode == name);
                 let rows = [
                     NEW_RASTER,
@@ -405,11 +418,16 @@ fn each_control_is_large_and_is_outside_the_system_bands() {
     for size in BOARDS {
         let mut h = painted_pad(size);
         check_controls(&h, &format!("{size:?}"));
-        for name in ["Layers", "Open Height", "Toolbox", "Brush settings"] {
+        for name in [
+            "Layers",
+            "Open Height",
+            select::ATTRIBUTES,
+            "Brush settings",
+        ] {
             if control(&h, name).is_none() {
                 // An open sheet covers the Brush button.
                 assert_eq!(name, "Brush settings");
-                tap(&mut h, "Close Toolbox");
+                tap(&mut h, "Close Attributes");
             }
             tap(&mut h, name);
             check_controls(&h, &format!("{size:?} after {name}"));
@@ -1852,7 +1870,7 @@ fn a_finger_hits_each_control_at_the_first_try() {
 
     for (name, which) in [
         ("Layers", Panel::Layers),
-        ("Toolbox", Panel::Toolbox),
+        (select::ATTRIBUTES, Panel::Attributes),
         ("Brush settings", Panel::Brush),
     ] {
         tap(&mut h, name);
@@ -3383,8 +3401,8 @@ fn the_pen_paints_on_the_canvas_and_a_panel_stays_open() {
     assert!(!h.state().pad.is_open(Panel::Layers));
     tap(&mut h, "Brush settings");
     assert!(!h.state().pad.is_open(Panel::Brush));
-    tap(&mut h, "Toolbox");
-    tap(&mut h, "Toolbox");
+    toolbox(&mut h);
+    toolbox(&mut h);
     assert_eq!(h.state().pad.right, None);
 }
 
@@ -3831,10 +3849,11 @@ fn the_top_row_and_the_panels_match_the_landscape_board() {
     assert!(r.view.unwrap().contains_rect(control(&h, "Globe").unwrap()));
     assert_eq!(
         r.actions,
-        Rect::from_min_size(pos2(969.0, 32.0), vec2(209.0, 52.0))
+        Rect::from_min_size(pos2(921.0, 32.0), vec2(257.0, 52.0))
     );
-    let lefts = ["Layers", "Toolbox"].map(|name| control(&h, name).unwrap().left());
-    assert_eq!(lefts, [1082.0, 1130.0]);
+    let names = ["Layers", "Toolbox", select::ATTRIBUTES];
+    let lefts = names.map(|name| control(&h, name).unwrap().left());
+    assert_eq!(lefts, [1034.0, 1082.0, 1130.0]);
     assert_eq!(
         r.tools,
         Rect::from_min_size(pos2(16.0, 96.0), vec2(64.0, 320.0))
@@ -3869,7 +3888,7 @@ fn the_top_row_and_the_panels_match_the_landscape_board() {
     let brush = panel(&h, Panel::Brush).unwrap();
     assert_eq!((brush.min, brush.width()), (pos2(92.0, 96.0), 340.0));
     // Toolbox opens in the place of Layers.
-    tap(&mut h, "Toolbox");
+    toolbox(&mut h);
     assert_eq!(panel(&h, Panel::Layers), None);
     assert_eq!(panel(&h, Panel::Toolbox).unwrap().min, pos2(858.0, 96.0));
     assert!(panel(&h, Panel::Brush).is_some());
@@ -3892,7 +3911,7 @@ fn the_top_row_and_the_panels_match_the_portrait_board() {
     assert!(control(&h, "Globe").is_some());
     assert_eq!(r.actions.right(), 818.0);
 
-    tap(&mut h, "Toolbox");
+    toolbox(&mut h);
     let toolbox = panel(&h, Panel::Toolbox).unwrap();
     assert_eq!((toolbox.min, toolbox.width()), (pos2(498.0, 96.0), 320.0));
     tap(&mut h, "Brush settings");
@@ -3930,7 +3949,7 @@ fn the_top_row_and_the_panels_match_the_split_view_boards() {
         let menu = h.state().pad.menu_rect.unwrap();
         assert_eq!(
             menu,
-            Rect::from_min_size(pos2(16.0, 88.0), vec2(240.0, 334.0))
+            Rect::from_min_size(pos2(16.0, 88.0), vec2(240.0, 382.0))
         );
         let tops = ["World", "Globe", "Atlas"].map(|name| control(&h, name).unwrap().top());
         assert_eq!(tops, [98.0, 146.0, 303.0]);
@@ -3955,7 +3974,7 @@ fn the_top_row_and_the_panels_match_the_split_view_boards() {
         let sheet = Rect::from_min_size(pos2(0.0, 434.0), vec2(size.0, 400.0));
         assert_eq!(panel(&h, Panel::Layers), Some(sheet));
         assert_eq!(h.state().pad.rects.unwrap().readout, None);
-        tap(&mut h, "Toolbox");
+        toolbox(&mut h);
         assert_eq!(h.state().pad.panels, vec![(Panel::Toolbox, sheet)]);
     }
 }
@@ -8847,8 +8866,10 @@ fn the_context_strip_has_deselect_in_each_tool_while_features_are_selected() {
         let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
         h.set_size(egui::vec2(size.0, size.1));
         select_layer(&mut h, picks.polygon.layer);
-        // With no selection, the Select tool has no context strip.
+        // With no selection, there is no Deselect, and Move has no context
+        // strip.
         assert!(control(&h, DESELECT).is_none(), "{what}");
+        quick_tap(&mut h, "Pan");
         assert!(h.state().pad.rects.unwrap().brush.is_none(), "{what}");
         for name in [select::TOOL, "Pan", VECTOR, MEASURE] {
             quick_tap(&mut h, name);
@@ -9106,55 +9127,221 @@ fn a_pen_drag_on_a_selected_point_moves_it_in_one_undo_step() {
 }
 
 #[test]
-fn the_delete_button_deletes_the_selection_in_one_undo_step() {
+fn a_selection_opens_no_card_over_the_canvas() {
     let dir = tempfile::tempdir().unwrap();
     let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
+    let at = screen_at(&h, 0.0, 0.0);
+    finger_tap_at(&mut h, at);
+    assert_eq!(selection(&h), [picks.point]);
+    assert!(h.state().pad.panels.is_empty());
+    assert!(h.state().selection_form.is_none());
+    assert!(control(&h, "name").is_none());
+    assert!(control(&h, SHOW_IN_TABLE).is_none());
+    // The one control of the selection is in the card below the strip.
+    let card = h.state().pad.rects.unwrap().brush.expect("no card");
+    assert!(card.contains_rect(control(&h, select::DELETE).unwrap()));
+}
+
+#[test]
+fn the_select_card_has_delete_selection_and_it_is_off_with_no_selection() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
+    assert!(disabled(&h, select::DELETE));
     let (from, to) = (screen_at(&h, -3.0, 14.0), screen_at(&h, 3.0, -3.0));
     drag(&mut h, from, to, Some(0.5));
     assert_eq!(selection(&h).len(), 2);
+    assert!(!disabled(&h, select::DELETE));
+    check_controls(&h, "the card of the Select tool");
     let saved = saves(&h);
     tap(&mut h, select::DELETE);
     assert_eq!(saves(&h), saved + 1);
     assert!(line_features(&h, picks.point.layer).is_empty());
     assert_eq!(line_features(&h, picks.line.layer).len(), 1);
     assert_eq!(selection(&h), []);
-    assert!(control(&h, select::DELETE).is_none());
+    assert!(disabled(&h, select::DELETE));
     h.state_mut().undo();
     h.run_steps(2);
     assert_eq!(line_features(&h, picks.point.layer).len(), 2);
+    // The other tools have no Delete selection.
+    tap(&mut h, "Pan");
+    assert!(h.query_by_label(select::DELETE).is_none());
 }
 
 #[test]
-fn the_selection_card_edits_the_attributes_of_the_selected_feature() {
-    use vale_store::Value;
+fn the_attributes_button_opens_and_closes_the_inspector_and_it_stays_open_in_each_tool() {
     let dir = tempfile::tempdir().unwrap();
     let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
-    let point = screen_at(&h, 0.0, 0.0);
-    finger_tap_at(&mut h, point);
+    let open = |h: &Pad| panel(h, Panel::Attributes).is_some();
+    tap(&mut h, select::ATTRIBUTES);
+    assert!(open(&h));
+    assert!(h.state().pad.is_open(Panel::Attributes));
+    check_controls(&h, "the Attributes panel");
+    // Select.
+    let at = screen_at(&h, 0.0, 0.0);
+    finger_tap_at(&mut h, at);
+    assert!(open(&h));
+    assert_eq!(
+        h.state().selection_form.as_ref().unwrap().feature,
+        picks.point
+    );
+    // Draw: the line tool draws a line.
+    select_layer(&mut h, picks.line.layer);
+    quick_tap(&mut h, VECTOR);
+    assert_eq!(h.state().globe.tool, Tool::Line);
+    let lines = line_features(&h, picks.line.layer).len();
+    let (from, to) = (screen_at(&h, -6.0, -4.0), screen_at(&h, 6.0, -4.0));
+    drag(&mut h, from, to, Some(0.5));
+    h.run_steps(4);
+    assert_eq!(line_features(&h, picks.line.layer).len(), lines + 1);
+    assert!(open(&h));
+    // Paint: the brush paints the height layer.
+    let raster = h.state().doc.project.rasters()[0].id;
+    let layers = h.state().doc.project.layers();
+    let height = layers.iter().find(|l| l.kind == LayerKind::Raster(raster));
+    let height = height.unwrap().id;
+    h.state_mut().doc.project.set_layer_visible(height, true);
+    h.state_mut().select(Some(LayerRef::Raster(raster)));
+    h.run_steps(2);
+    quick_tap(&mut h, SCULPT);
+    assert_eq!(h.state().globe.tool, Tool::Brush);
+    drag(&mut h, from, to, Some(0.5));
+    assert!(open(&h));
+    tap(&mut h, select::ATTRIBUTES);
+    assert!(!open(&h));
+}
+
+#[test]
+fn with_one_feature_the_inspector_edits_each_attribute_in_one_undo_step() {
+    use vale_store::{Field, FieldType, Value};
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
+    let id = picks.point.layer;
+    let field = Field::new("people", FieldType::Integer);
+    assert!(h.state_mut().doc.project.add_field(id, field));
+    h.state_mut().save_waiting().unwrap();
+    tap(&mut h, select::ATTRIBUTES);
+    let at = screen_at(&h, 0.0, 0.0);
+    finger_tap_at(&mut h, at);
     // A new point layer has a name field.
     let form = h.state().selection_form.as_ref().expect("no form");
     assert_eq!(form.feature, picks.point);
-    assert!(control(&h, select::DELETE).is_some());
+    let names: Vec<_> = form.fields.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(names, ["name", "people"]);
     let saved = saves(&h);
     tap(&mut h, "name");
     h.event(egui::Event::Text("Avalon".into()));
     h.run_steps(2);
+    // The change is one undo step when the field loses the focus.
+    assert_eq!(saves(&h), saved);
+    tap(&mut h, "people");
+    assert_eq!(saves(&h), saved + 1);
+    let attributes = |h: &Pad| line_features(h, id)[0].attributes.clone();
+    assert_eq!(attributes(&h)["name"], Value::Text("Avalon".into()));
+    // A value that is not of the field type has the warning color, and it
+    // does not go in the feature.
+    h.event(egui::Event::Text("many".into()));
+    h.run_steps(2);
+    let warned = painted_shapes(&h).iter().any(|shape| match shape {
+        egui::Shape::Text(text) => {
+            text.galley.text() == "many"
+                && text
+                    .galley
+                    .job
+                    .sections
+                    .iter()
+                    .all(|s| s.format.color == theme::WARN)
+        }
+        _ => false,
+    });
+    assert!(warned);
     h.key_press(egui::Key::Enter);
     h.run_steps(2);
     assert_eq!(saves(&h), saved + 1);
-    let name = |h: &Pad| line_features(h, picks.point.layer)[0].attributes["name"].clone();
-    assert_eq!(name(&h), Value::Text("Avalon".into()));
+    assert_eq!(attributes(&h)["people"], Value::Null);
     h.state_mut().undo();
     h.run_steps(2);
-    assert_eq!(name(&h), Value::Null);
+    assert_eq!(attributes(&h)["name"], Value::Null);
     let form = h.state().selection_form.as_ref().unwrap();
     assert_eq!(form.fields[0].text, "");
-    // A selection of two features shows the count and no fields.
+}
+
+#[test]
+fn the_inspector_shows_the_count_of_a_selection_and_an_empty_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, _) = select_pad(WorldView::Globe, dir.path());
+    tap(&mut h, select::ATTRIBUTES);
+    assert!(h.query_by_label(select::NO_SELECTION).is_some());
     let (from, to) = (screen_at(&h, -3.0, 14.0), screen_at(&h, 3.0, -3.0));
     drag(&mut h, from, to, Some(0.5));
+    assert_eq!(selection(&h).len(), 2);
     assert!(h.state().selection_form.is_none());
+    assert!(h.query_by_label(&select::title(2)).is_some());
+    assert!(h.query_by_label(select::NO_SELECTION).is_none());
     assert!(control(&h, "name").is_none());
-    assert!(control(&h, select::DELETE).is_some());
+    tap(&mut h, DESELECT);
+    assert!(h.query_by_label(select::NO_SELECTION).is_some());
+}
+
+#[test]
+fn after_an_edit_a_tap_on_another_feature_puts_the_focus_in_the_same_field() {
+    use vale_store::Value;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
+    let id = picks.point.layer;
+    tap(&mut h, select::ATTRIBUTES);
+    let at = screen_at(&h, 0.0, 0.0);
+    pen_tap_at(&mut h, at);
+    tap(&mut h, "name");
+    h.event(egui::Event::Text("Avalon".into()));
+    h.run_steps(2);
+    let name = |h: &Pad, f: FeatureRef| {
+        let features = line_features(h, id);
+        let feature = features.iter().find(|x| x.uuid() == f.uuid).unwrap();
+        feature.attributes["name"].clone()
+    };
+    for (f, text) in [(picks.second, "Lyonesse"), (picks.point, "Ys")] {
+        let [lon, lat] = if f == picks.point {
+            [0.0, 0.0]
+        } else {
+            [-2.0, 2.0]
+        };
+        let at = screen_at(&h, lon, lat);
+        pen_tap_at(&mut h, at);
+        assert_eq!(selection(&h), [f]);
+        assert!(h.ctx.memory(|m| m.focused()).is_some(), "{text}");
+        h.event(egui::Event::Text(text.into()));
+        h.run_steps(2);
+    }
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    assert_eq!(name(&h, picks.second), Value::Text("Lyonesse".into()));
+    assert_eq!(name(&h, picks.point), Value::Text("AvalonYs".into()));
+    // An empty selection ends the run of edits.
+    tap(&mut h, DESELECT);
+    let at = screen_at(&h, -2.0, 2.0);
+    pen_tap_at(&mut h, at);
+    assert!(no_keyboard(&h));
+}
+
+#[test]
+fn below_600_points_the_inspector_is_a_sheet() {
+    for size in BOARDS {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut h, _) = select_pad(WorldView::Globe, dir.path());
+        h.set_size(vec2(size.0, size.1));
+        h.run_steps(3);
+        tap(&mut h, select::ATTRIBUTES);
+        let rects = h.state().pad.rects.unwrap();
+        let rect = panel(&h, Panel::Attributes).expect("no panel");
+        if size.0 < 600.0 {
+            let sheet = rects.sheet.expect("no sheet");
+            assert_eq!(rect, sheet, "{size:?}");
+        } else {
+            assert!(rects.sheet.is_none(), "{size:?}");
+            assert_eq!(rect.left(), rects.right_panel.x, "{size:?}");
+        }
+        check_controls(&h, &format!("{size:?}: Attributes"));
+    }
 }
 
 #[test]

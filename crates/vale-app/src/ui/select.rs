@@ -1,16 +1,16 @@
 //! The Select tool of the world workspace: the selection of features, the
-//! move of a point, the delete, and the card that edits the attributes.
+//! move of a point, the delete, and the inspector that edits the attributes
+//! of the selection.
 
 use std::collections::HashSet;
 
-use eframe::egui::{self, Order, Pos2, Rect, pos2, vec2};
+use eframe::egui::{self, Pos2};
 use vale_store::{Geometry, Layer, LayerId, Uuid};
 
 use super::AppState;
-use super::pad::geometry::{GAP, MARGIN, ROW, Rects};
 use super::pad::theme;
-use super::pad::widgets::{self, BODY_PAD, Controls, PANEL_ROW};
-use super::point_form::{FormField, keyboard_top};
+use super::pad::widgets::{self, Controls};
+use super::point_form::FormField;
 use super::table::SHOW_IN_TABLE;
 use crate::globe::math::{V3, dir_to_lonlat};
 use crate::globe::select::{self, FeatureRef, SelectEvent};
@@ -19,9 +19,21 @@ use crate::globe::select::{self, FeatureRef, SelectEvent};
 pub const TOOL: &str = "Select";
 /// The button that deletes the selected features.
 pub const DELETE: &str = "Delete selection";
-const WIDTH: f32 = 360.0;
-const BOTTOM: f32 = 12.0;
-const CARD: &str = "selection-card";
+/// The name of the inspector, and of the button that opens it.
+pub const ATTRIBUTES: &str = "Attributes";
+/// The empty state of the inspector.
+pub const NO_SELECTION: &str = "Select a feature to see its attributes.";
+/// The text of the inspector for a feature of a layer with no fields.
+pub const NO_FIELDS: &str = "The layer has no fields.";
+/// The command of the desktop View menu that shows the inspector.
+pub const SHOW_ATTRIBUTES: &str = "Show attributes";
+/// The command of the desktop View menu that hides the inspector.
+pub const HIDE_ATTRIBUTES: &str = "Hide attributes";
+const INSPECTOR: &str = "attributes";
+/// The number of frames that ask for the focus in a new form. At the end of
+/// its first frame, the tap that selects the feature takes the focus from
+/// the field.
+const FOCUS_FRAMES: u8 = 3;
 /// The radius of the handle at each end of a selected line.
 const END: f32 = 5.0;
 
@@ -44,9 +56,12 @@ pub struct SelectionForm {
     pub fields: Vec<FormField>,
     /// The undo count when the fields took their values.
     history: u64,
+    /// The field that takes the focus when the form shows, and the number
+    /// of frames that can still ask for the focus.
+    focus: Option<(String, u8)>,
 }
 
-/// The title of the card of a selection of `count` features.
+/// The text of the inspector for a selection of `count` features.
 pub fn title(count: usize) -> String {
     format!("{count} features")
 }
@@ -131,6 +146,9 @@ impl AppState {
     pub fn set_feature_selection(&mut self, selection: Vec<FeatureRef>) {
         if selection != self.feature_selection {
             self.commit_selection_form();
+            if selection.is_empty() {
+                self.attribute_focus = None;
+            }
             self.feature_selection = selection;
         }
     }
@@ -179,6 +197,7 @@ impl AppState {
         };
         self.commit_selection_form();
         self.selection_form = None;
+        self.attribute_focus = None;
         self.commit_point_form();
         self.save_edit();
         let selection = std::mem::take(&mut self.feature_selection);
@@ -188,10 +207,14 @@ impl AppState {
         }
     }
 
-    /// Opens the form of the one selected feature, or closes it.
-    fn sync_selection_form(&mut self) {
+    /// Opens the form of the one selected feature, or closes it. `shown`:
+    /// the inspector shows.
+    pub fn sync_selection_form(&mut self, shown: bool) {
+        if !shown {
+            self.attribute_focus = None;
+        }
         let one = match self.feature_selection.as_slice() {
-            [one] if self.globe.selecting() => Some(*one),
+            [one] if shown => Some(*one),
             _ => None,
         };
         let fresh = self
@@ -215,10 +238,20 @@ impl AppState {
                 let value = feature.attributes.get(&field.name);
                 FormField::new(field, value.and_then(|v| v.label()).unwrap_or_default())
             });
+            // The field that was edited last takes the focus in the form of
+            // the next feature of its layer.
+            let focus = match &mut self.attribute_focus {
+                Some((last, name)) if last.layer == f.layer && *last != f => {
+                    *last = f;
+                    Some((name.clone(), FOCUS_FRAMES))
+                }
+                _ => None,
+            };
             Some(SelectionForm {
                 feature: f,
                 fields: fields.collect(),
                 history: self.history,
+                focus,
             })
         });
     }
@@ -318,131 +351,160 @@ pub fn keys(ui: &egui::Ui, state: &mut AppState) {
     }
 }
 
-/// The title of the card or the window, and the count of the selection.
-fn heading(state: &AppState) -> String {
-    match &state.selection_form {
-        Some(form) => state
-            .doc
-            .layer(form.feature.layer)
-            .map_or_else(String::new, |l| l.name.clone()),
-        None => title(state.feature_selection.len()),
+/// Reads a field of the inspector: its edit and its loss of the focus.
+/// Returns true if the field lost the focus.
+fn read_field(
+    resp: &egui::Response,
+    focus: &mut Option<(String, u8)>,
+    remember: &mut Option<String>,
+    name: &str,
+) -> bool {
+    if let Some((field, frames)) = focus
+        && field == name
+    {
+        if *frames == 0 {
+            *focus = None;
+        } else {
+            resp.request_focus();
+            *frames -= 1;
+        }
+    }
+    if resp.changed() {
+        *remember = Some(name.to_owned());
+    }
+    resp.lost_focus()
+}
+
+/// What the inspector does after its frame.
+#[derive(Default)]
+struct Outcome {
+    commit: bool,
+    show: bool,
+    /// The field that the user edited.
+    edited: Option<String>,
+}
+
+impl AppState {
+    fn finish_inspector(&mut self, form: Option<SelectionForm>, outcome: Outcome) {
+        if let (Some(name), Some(form)) = (outcome.edited, &form) {
+            self.attribute_focus = Some((form.feature, name));
+        }
+        self.selection_form = form;
+        if outcome.commit {
+            self.commit_selection_form();
+        }
+        if outcome.show {
+            self.show_in_table();
+        }
     }
 }
 
-/// The card of the selection in the iPad layout, near the top of the
-/// screen. It shows the fields of one selected feature, and the delete
-/// button.
-pub fn pad(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
-    state.sync_selection_form();
-    if !state.globe.selecting() || state.feature_selection.is_empty() {
+/// The body of the Attributes panel of the iPad layout. With one selected
+/// feature, it has a field for each attribute. With more than one, it
+/// shows the count.
+pub fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
+    let count = state.feature_selection.len();
+    if count == 0 {
+        ui.add_space(4.0);
+        ui.label(egui::RichText::new(NO_SELECTION).color(theme::MUTE));
         return;
     }
-    let title = heading(state);
     let mut form = state.selection_form.take();
-    let screen = rects.screen;
-    let top = rects.workspace.bottom() + GAP;
-    let room = keyboard_top(screen) - GAP - top;
-    let fields = form.as_ref().map_or(0, |f| f.fields.len()) as f32;
-    let least = ROW + PANEL_ROW + BOTTOM;
-    let height = (ROW + (fields + 1.0) * PANEL_ROW + BOTTOM).min(room.max(least));
-    let width = WIDTH.min(screen.width() - 2.0 * MARGIN);
-    // The card stays clear of a wide right panel.
-    let mut left = screen.center().x - width / 2.0;
-    if state.pad.right.is_some() && rects.sheet.is_none() {
-        let beside = rects.right_panel.x - GAP - width;
-        left = left.min(beside).max(rects.tools.right() + GAP);
-    }
-    let rect = Rect::from_min_size(pos2(left, top), vec2(width, height));
-    let (mut close, mut delete, mut commit, mut show) = (false, false, false, false);
-    let radius = theme::CARD_RADIUS.into();
-    let backdrop = state.globe.backdrop();
-    widgets::card(ctx, backdrop, CARD, rect, Order::Foreground, radius, |ui| {
-        ui.spacing_mut().item_spacing.y = 0.0;
-        close = widgets::title_row(ui, controls, &title, None, false).close;
-        let inner = ui.available_rect_before_wrap().shrink2(vec2(BODY_PAD, 0.0));
-        let layout = egui::Layout::top_down(egui::Align::Min);
-        let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
-        egui::ScrollArea::vertical().show(&mut ui, |ui| {
-            ui.spacing_mut().item_spacing.y = 0.0;
-            for field in form.iter_mut().flat_map(|f| &mut f.fields) {
+    let mut outcome = Outcome::default();
+    match form.as_mut() {
+        Some(form) => {
+            if form.fields.is_empty() {
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new(NO_FIELDS).color(theme::MUTE));
+            }
+            let focus = &mut form.focus;
+            for field in &mut form.fields {
                 let valid = field.valid();
                 let (name, text) = (&field.name, &mut field.text);
                 let resp = widgets::text_field(ui, controls, name, name, None, text, valid);
-                commit |= resp.lost_focus();
+                outcome.commit |= read_field(&resp, focus, &mut outcome.edited, name);
             }
-            // The two buttons share the last row.
-            let (row, _) =
-                ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), egui::Sense::hover());
-            let half = |left: f32, right: f32| {
-                let rect = Rect::from_x_y_ranges(left..=right, row.y_range());
-                egui::UiBuilder::new().max_rect(rect)
-            };
-            let middle = row.center().x;
-            ui.scope_builder(half(row.left(), middle - GAP / 4.0), |ui| {
-                show = widgets::button_row(ui, controls, SHOW_IN_TABLE, true).clicked();
-            });
-            ui.scope_builder(half(middle + GAP / 4.0, row.right()), |ui| {
-                delete = widgets::button_row_in(ui, controls, DELETE, true, theme::WARN).clicked();
-            });
-        });
-    });
-    state.selection_form = form;
-    if commit {
-        state.commit_selection_form();
+        }
+        None => {
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new(title(count)).color(theme::MUTE));
+        }
     }
-    if show {
-        state.show_in_table();
-    }
-    if delete {
-        state.delete_selection();
-    } else if close {
-        state.set_feature_selection(Vec::new());
-    }
+    ui.add_space(8.0);
+    outcome.show = widgets::button_row(ui, controls, SHOW_IN_TABLE, true).clicked();
+    state.finish_inspector(form, outcome);
 }
 
-/// The window of the selection in the desktop layout.
-pub fn desktop(ctx: &egui::Context, state: &mut AppState) {
-    state.sync_selection_form();
-    if !state.globe.selecting() || state.feature_selection.is_empty() {
+/// Shows or hides the inspector of the desktop layout.
+pub fn toggle_desktop(state: &mut AppState) {
+    state.show_attributes = !state.show_attributes;
+}
+
+/// The View menu of the desktop tool bar, and its shortcut: ⌘I shows and
+/// hides the inspector.
+pub fn view_menu(ui: &mut egui::Ui, state: &mut AppState) {
+    let shortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::I);
+    if ui.input_mut(|i| i.consume_shortcut(&shortcut)) {
+        toggle_desktop(state);
+    }
+    ui.menu_button("View", |ui| {
+        let name = if state.show_attributes {
+            HIDE_ATTRIBUTES
+        } else {
+            SHOW_ATTRIBUTES
+        };
+        let button = egui::Button::new(name).shortcut_text(ui.ctx().format_shortcut(&shortcut));
+        if ui.add(button).clicked() {
+            toggle_desktop(state);
+            ui.close();
+        }
+    });
+}
+
+/// The inspector of the desktop layout: a panel at the right.
+pub fn desktop(ui: &mut egui::Ui, state: &mut AppState) {
+    state.sync_selection_form(state.show_attributes);
+    if !state.show_attributes {
         return;
     }
-    let title = heading(state);
     let mut form = state.selection_form.take();
-    let (mut delete, mut commit, mut show) = (false, false, false);
-    egui::Window::new("Selection")
-        .id(egui::Id::new(CARD))
-        .title_bar(false)
-        .collapsible(false)
-        .resizable(false)
-        .anchor(egui::Align2::RIGHT_TOP, vec2(-12.0, 48.0))
-        .show(ctx, |ui| {
-            ui.strong(&title);
-            egui::Grid::new("selection-fields")
-                .num_columns(2)
-                .show(ui, |ui| {
-                    for field in form.iter_mut().flat_map(|f| &mut f.fields) {
-                        ui.label(&field.name);
-                        let color = (!field.valid()).then(|| ui.visuals().warn_fg_color);
-                        let edit = egui::TextEdit::singleline(&mut field.text)
-                            .id(egui::Id::new((CARD, &field.name)))
-                            .text_color_opt(color);
-                        commit |= ui.add(edit).lost_focus();
-                        ui.end_row();
+    let mut outcome = Outcome::default();
+    let count = state.feature_selection.len();
+    egui::Panel::right(INSPECTOR)
+        .default_size(260.0)
+        .show(ui, |ui| {
+            ui.strong(ATTRIBUTES);
+            ui.separator();
+            if count == 0 {
+                ui.weak(NO_SELECTION);
+                return;
+            }
+            match form.as_mut() {
+                Some(form) => {
+                    if form.fields.is_empty() {
+                        ui.weak(NO_FIELDS);
                     }
-                });
-            ui.horizontal(|ui| {
-                show = ui.button(SHOW_IN_TABLE).clicked();
-                delete = ui.button(DELETE).clicked();
-            });
+                    let focus = &mut form.focus;
+                    egui::Grid::new("attribute-fields")
+                        .num_columns(2)
+                        .show(ui, |ui| {
+                            for field in &mut form.fields {
+                                ui.label(&field.name);
+                                let color = (!field.valid()).then(|| ui.visuals().warn_fg_color);
+                                let edit = egui::TextEdit::singleline(&mut field.text)
+                                    .id(egui::Id::new((INSPECTOR, &field.name)))
+                                    .text_color_opt(color);
+                                let resp = ui.add(edit);
+                                let name = &field.name;
+                                outcome.commit |=
+                                    read_field(&resp, focus, &mut outcome.edited, name);
+                                ui.end_row();
+                            }
+                        });
+                }
+                None => drop(ui.label(title(count))),
+            }
+            outcome.show = ui.button(SHOW_IN_TABLE).clicked();
         });
-    state.selection_form = form;
-    if commit {
-        state.commit_selection_form();
-    }
-    if show {
-        state.show_in_table();
-    }
-    if delete {
-        state.delete_selection();
-    }
+    state.finish_inspector(form, outcome);
 }

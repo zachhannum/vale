@@ -50,7 +50,8 @@ pub mod widgets;
 
 use flyout::{Choice, Flyout, Flyouts};
 use geometry::{
-    BrushCard, CELL, Input, MEASURE_CELLS, PAD, ROW, Rects, TOOLS, TOUCH, VERTEX_CELLS, WidthClass,
+    BrushCard, CELL, Input, MEASURE_CELLS, PAD, ROW, Rects, SELECT_CELLS, TOOLS, TOUCH,
+    VERTEX_CELLS, WidthClass,
 };
 use icons::Icon;
 use number::{Number, Scale};
@@ -341,6 +342,7 @@ pub enum Panel {
     Brush,
     Layers,
     Toolbox,
+    Attributes,
 }
 
 impl Panel {
@@ -349,6 +351,7 @@ impl Panel {
             Panel::Brush => "pad-brush",
             Panel::Layers => "pad-layers",
             Panel::Toolbox => "pad-toolbox",
+            Panel::Attributes => "pad-attributes",
         }
     }
 }
@@ -384,7 +387,7 @@ pub struct PadState {
     pub page: Option<Page>,
     /// The texts of the open page of a field.
     field: Option<fields::Draft>,
-    /// The panel at the right: Layers, Toolbox, or none.
+    /// The panel at the right: Layers, Toolbox, Attributes, or none.
     pub right: Option<Panel>,
     /// The layer that the Layers panel shows. `None`: the panel shows the
     /// list of the layers.
@@ -490,6 +493,9 @@ impl PadState {
 }
 
 pub const WORKSPACES: [&str; 2] = ["World", "Atlas"];
+/// The button that opens the Toolbox panel, and its row in the workspace
+/// menu below 1,000 points.
+pub const TOOLBOX: &str = "Toolbox";
 const VIEWS: [&str; 2] = ["Globe", "Flat"];
 /// The action that makes the place at the middle of the canvas the center of
 /// the projection of the flat view.
@@ -570,7 +576,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         tools: TOOLS,
     };
     // The Brush panel holds the settings of the context strip.
-    if !has_strip(&state.globe) && card_cells(&state.globe) == 0 {
+    if !has_strip(&state.globe) && card_cells(&state.globe) == 0 || state.globe.selecting() {
         state.pad.brush = false;
         input.panel = state.pad.right.is_some();
     }
@@ -608,7 +614,13 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     rects = geometry::layout(&input);
     table::check(state);
     table::widen(state, &mut rects);
-    for panel in [Panel::Brush, Panel::Layers, Panel::Toolbox] {
+    state.sync_selection_form(state.pad.is_open(Panel::Attributes));
+    for panel in [
+        Panel::Brush,
+        Panel::Layers,
+        Panel::Toolbox,
+        Panel::Attributes,
+    ] {
         if state.pad.is_open(panel) {
             show_panel(&ctx, state, &mut controls, &rects, panel);
         }
@@ -661,7 +673,6 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     world_form::pad(&ctx, state, &mut controls, &rects);
     raster_form::pad(&ctx, state, &mut controls, &rects);
     point_form::pad(&ctx, state, &mut controls, &rects);
-    select::pad(&ctx, state, &mut controls, &rects);
     super::region::pad(&ctx, state, &mut controls, &rects);
     if let Some(rect) = canvas.inner {
         globe::paint_canvas(ui, state, rect, theme::CANVAS, true);
@@ -813,14 +824,21 @@ fn top_row(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
             let divider = pos2(card.left() + PAD + 2.0 * step + 4.5, card.center().y);
             let line = Rect::from_center_size(divider, vec2(1.0, 24.0));
             ui.painter().rect_filled(line, 0.0, theme::divider());
-            let x = 2.0 * step + 9.0 + PAD;
-            for (panel, name, icon, x) in [
-                (Panel::Layers, "Layers", Icon::Layers, x),
-                (Panel::Toolbox, "Toolbox", Icon::Toolbox, x + step),
+            let mut x = 2.0 * step + 9.0 + PAD;
+            // Below 1,000 points, the Toolbox row is in the workspace menu.
+            let narrow = rects.class != WidthClass::Wide;
+            for (panel, name, icon) in [
+                (Panel::Layers, "Layers", Icon::Layers),
+                (Panel::Toolbox, TOOLBOX, Icon::Toolbox),
+                (Panel::Attributes, select::ATTRIBUTES, Icon::Attributes),
             ] {
+                if narrow && panel == Panel::Toolbox {
+                    continue;
+                }
+                let at = at(x);
+                x += step;
                 let active = state.pad.is_open(panel);
-                if widgets::icon_button_at(ui, controls, at(x), name, icon, active, true).clicked()
-                {
+                if widgets::icon_button_at(ui, controls, at, name, icon, active, true).clicked() {
                     state.pad.toggle(panel, rects.one_panel);
                 }
             }
@@ -864,6 +882,8 @@ fn card_cells(globe: &crate::globe::Globe) -> usize {
         MEASURE_CELLS
     } else if globe.vertexing() {
         VERTEX_CELLS
+    } else if globe.selecting() {
+        SELECT_CELLS
     } else {
         0
     }
@@ -881,7 +901,7 @@ fn deselect_cell(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Control
         return;
     }
     if widgets::tool_cell(ui, controls, DESELECT, DESELECT, Icon::Close, false, true).clicked() {
-        state.feature_selection.clear();
+        state.set_feature_selection(Vec::new());
     }
 }
 
@@ -1232,8 +1252,8 @@ fn brush_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
     );
 }
 
-/// The card of cells of the Measure tool or the Vertex tool, in the place
-/// of the brush card.
+/// The card of cells of the Measure tool, the Vertex tool, or the Select
+/// tool, in the place of the brush card.
 pub(super) fn cell_card(
     ctx: &egui::Context,
     state: &mut AppState,
@@ -1252,9 +1272,13 @@ pub(super) fn cell_card(
         theme::CARD_RADIUS.into(),
         |ui| {
             let mut ui = padded(ui);
-            let vertexing = state.globe.vertexing() && state.workspace == Workspace::Globe;
+            let globe = state.workspace == Workspace::Globe;
+            let vertexing = state.globe.vertexing() && globe;
+            let selecting = state.globe.selecting() && globe;
             let own = if vertexing {
                 VERTEX_CELLS
+            } else if selecting {
+                SELECT_CELLS
             } else {
                 MEASURE_CELLS
             };
@@ -1262,6 +1286,8 @@ pub(super) fn cell_card(
             let mut cells = |ui: &mut egui::Ui| {
                 if vertexing {
                     vertex_cells(ui, state, controls, rects);
+                } else if selecting {
+                    select_cells(ui, state, controls);
                 } else {
                     measure_cells(ui, state, controls, rects);
                 }
@@ -1329,6 +1355,16 @@ fn vertex_cells(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls
     }
     deselect_cell(ui, state, controls);
     brush_button(ui, state, controls, rects);
+}
+
+/// The cells of the card of the Select tool: Delete selection, and
+/// Deselect.
+fn select_cells(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
+    let (name, any) = (select::DELETE, !state.feature_selection.is_empty());
+    if widgets::tool_cell(ui, controls, name, "Delete", Icon::Trash, false, any).clicked() {
+        state.delete_selection();
+    }
+    deselect_cell(ui, state, controls);
 }
 
 /// The cells of the card of the Measure tool: the snap switch, the Clear
@@ -1482,7 +1518,8 @@ pub(super) fn show_panel(
         ),
         (Panel::Layers, Some(LayerRef::Vector(_))) => ("pad-vector", name, Some("Layers")),
         (Panel::Layers, None) => (panel.key(), "Layers", None),
-        (Panel::Toolbox, _) => (panel.key(), "Toolbox", None),
+        (Panel::Toolbox, _) => (panel.key(), TOOLBOX, None),
+        (Panel::Attributes, _) => (panel.key(), select::ATTRIBUTES, None),
     };
     let list = panel == Panel::Layers && layer.is_none();
     if list && state.pad.reorder.is_none() {
@@ -1561,6 +1598,7 @@ pub(super) fn show_panel(
             },
             (Panel::Layers, None) => layers_body(ui, state, controls),
             (Panel::Toolbox, _) => toolbox_body(ui, state),
+            (Panel::Attributes, _) => select::body(ui, state, controls),
         };
     let card = Card {
         key,
@@ -3025,9 +3063,9 @@ fn menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rect
     let compact = rects.class == WidthClass::Compact;
     let flat = state.globe.world_view == WorldView::Flat;
     let rows = match (compact, flat) {
-        (true, true) => 7.0,
-        (true, false) => 6.0,
-        (false, _) => 2.0,
+        (true, true) => 8.0,
+        (true, false) => 7.0,
+        (false, _) => 3.0,
     };
     let rules = if compact { 2.0 } else { 1.0 };
     let height = 10.0 + rows * PANEL_ROW + rules * 13.0 + 10.0;
@@ -3097,6 +3135,10 @@ fn menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rect
                     state.pad.menu = false;
                     toggle_worlds(state);
                 }
+            }
+            if widgets::text_row(ui, controls, TOOLBOX, 0.0, false, true).clicked() {
+                state.pad.menu = false;
+                state.pad.toggle(Panel::Toolbox, rects.one_panel);
             }
         },
     );

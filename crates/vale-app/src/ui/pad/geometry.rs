@@ -23,6 +23,8 @@ pub const TOOLS: usize = 6;
 pub const MEASURE_CELLS: usize = 3;
 /// The number of cells of the card of the Vertex tool.
 pub const VERTEX_CELLS: usize = 5;
+/// The number of cells of the card of the Select tool.
+pub const SELECT_CELLS: usize = 1;
 /// The height of one of the two sliders at the left edge.
 pub const SLIDER: f32 = 140.0;
 /// Below this height, a slider at the left edge is too short to use.
@@ -36,8 +38,11 @@ pub const WORLDS_WIDTH: f32 = 300.0;
 pub const MODES_WIDTH: f32 = 200.0;
 pub const SHEET_HEIGHT: f32 = 400.0;
 pub const READOUT_HEIGHT: f32 = 32.0;
-/// The width of the actions bar: four buttons and a divider.
-pub const ACTIONS_WIDTH: f32 = 4.0 * TOUCH + 4.0 * PAD + 9.0 + 2.0 * PAD;
+/// The width of the actions bar: five buttons and a divider.
+pub const ACTIONS_WIDTH: f32 = 5.0 * TOUCH + 5.0 * PAD + 9.0 + 2.0 * PAD;
+/// The width of the actions bar below 1,000 points, which has no Toolbox
+/// button.
+pub const NARROW_ACTIONS_WIDTH: f32 = ACTIONS_WIDTH - TOUCH - PAD;
 
 /// The bands at the screen edges that the system uses.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -178,7 +183,11 @@ pub fn layout(input: &Input) -> Rects {
     let column_top = top + ROW + GAP;
 
     let workspace = Rect::from_min_size(pos2(left, top), vec2(input.workspace_width, ROW));
-    let actions = Rect::from_min_max(pos2(right - ACTIONS_WIDTH, top), pos2(right, top + ROW));
+    let actions_width = match class {
+        WidthClass::Wide => ACTIONS_WIDTH,
+        _ => NARROW_ACTIONS_WIDTH,
+    };
+    let actions = Rect::from_min_max(pos2(right - actions_width, top), pos2(right, top + ROW));
     let view = (class != WidthClass::Compact).then(|| {
         let center = pos2(screen.center().x, top + ROW / 2.0);
         Rect::from_center_size(center, vec2(input.view_width, ROW))
@@ -371,7 +380,7 @@ mod tests {
         assert_eq!(r.class, WidthClass::Wide);
         assert_eq!(r.workspace, rect(16.0, 32.0, 230.0, 52.0));
         assert_eq!(r.view, Some(rect(527.0, 32.0, 140.0, 52.0)));
-        assert_eq!(r.actions, rect(969.0, 32.0, 209.0, 52.0));
+        assert_eq!(r.actions, rect(921.0, 32.0, 257.0, 52.0));
         assert_eq!(r.tools, rect(16.0, 96.0, 64.0, 320.0));
         assert_eq!(r.brush_card, BrushCard::Full(140.0));
         assert_eq!(r.brush, Some(rect(16.0, 428.0, 64.0, 340.0)));
