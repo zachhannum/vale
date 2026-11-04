@@ -1469,6 +1469,7 @@ impl AppState {
     /// the target of the map, and the globe style stays.
     pub fn edit_map_style(&mut self, map: MapId, layer: LayerId, edit: impl FnOnce(&mut AppState)) {
         let world_page = std::mem::replace(&mut self.pad.page, self.atlas.layer_page);
+        self.pad.in_frame = true;
         let target = self.target(map);
         let base = self.doc.entry(layer).map(|e| e.style.clone());
         let shown = base
@@ -1484,6 +1485,7 @@ impl AppState {
                 self.touch();
             }
         }
+        self.pad.in_frame = false;
         self.atlas.layer_page = std::mem::replace(&mut self.pad.page, world_page);
     }
 

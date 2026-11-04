@@ -240,7 +240,7 @@ pub fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id
         Some(_) if classes.is_empty() => note(ui, NO_VALUES),
         Some(_) => note(ui, &summary(classes.len(), labeled)),
     }
-    let free = !state.pad.rules_fixed;
+    let free = !state.pad.in_frame;
     let made =
         widgets::button_row(ui, controls, REPLACE_RULES, free && !classes.is_empty()).clicked();
     if made {

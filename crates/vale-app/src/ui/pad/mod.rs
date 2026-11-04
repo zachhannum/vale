@@ -460,6 +460,8 @@ pub struct PadState {
     pub style: raster::StyleState,
     /// The Style section of the panel of a vector layer.
     pub rules: rules::RulesState,
+    /// The panel edits the style of a map, which has no Classify page.
+    pub in_frame: bool,
 }
 
 impl PadState {
