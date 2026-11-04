@@ -1430,16 +1430,16 @@ fn selected_at(
 }
 
 /// The frame whose map a gesture of two fingers and the wheel change: the
-/// selected frame under a screen position. While the Measure tool is the
-/// tool, the gestures change the page.
+/// selected frame under a screen position, with the Move tool. With the
+/// other tools, the gestures change the page.
 fn frame_gesture(
     state: &AppState,
     page: &PageRecord,
     place: PagePlace,
     pos: Pos2,
 ) -> Option<FrameId> {
-    let measuring = state.atlas.tool == AtlasTool::Measure;
-    selected_at(state, page, place, pos).filter(|_| !measuring)
+    let moving = state.atlas.tool == AtlasTool::Move;
+    selected_at(state, page, place, pos).filter(|_| moving)
 }
 
 /// Moves the page on the screen by `d` points.
@@ -1578,8 +1578,8 @@ fn input(ui: &egui::Ui, state: &mut AppState, resp: &egui::Response, place: Page
         }
     }
 
-    // Two fingers move and zoom the map of the selected frame below them.
-    // Elsewhere, they move and zoom the page.
+    // With the Move tool, two fingers move and zoom the map of the selected
+    // frame below them. Elsewhere, they move and zoom the page.
     if let Some(touch) = fingers {
         let pinch = match state.atlas.pinch {
             Some(pinch) => Some(pinch),
@@ -1612,7 +1612,7 @@ fn input(ui: &egui::Ui, state: &mut AppState, resp: &egui::Response, place: Page
     }
 
     // The wheel and a pinch of the trackpad zoom the map of the selected
-    // frame, or the page, about the pointer.
+    // frame with the Move tool, or the page, about the pointer.
     if !touches && let Some(pos) = resp.hover_pos() {
         let (scroll, pinch) = ui.input(|i| (i.smooth_scroll_delta.y, i.zoom_delta()));
         let factor = (f64::from(scroll) * 0.002).exp() * f64::from(pinch);

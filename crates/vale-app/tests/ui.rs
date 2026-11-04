@@ -1221,7 +1221,7 @@ fn the_page_buttons_open_the_page_before_and_after() {
 }
 
 #[test]
-fn the_wheel_zooms_the_page_and_in_the_selected_frame_the_map() {
+fn the_wheel_zooms_the_page_and_with_the_move_tool_the_map_of_the_selected_frame() {
     let mut h = harness();
     h.run_steps(3);
     let frame = h.state().doc.project.atlas.pages[0].frames[0].clone();
@@ -1247,8 +1247,17 @@ fn the_wheel_zooms_the_page_and_in_the_selected_frame_the_map() {
     assert!(after.to_mm(pos).distance(mm) < 0.5);
     let page = vale_app::ui::atlas::open_page(h.state());
     assert_eq!(page.frames[0], frame);
-    // In the selected frame, the wheel zooms the map.
+    // With the Select tool, the wheel in the selected frame zooms the page.
     h.state_mut().atlas.selection = AtlasSelection::Frame(frame.id);
+    h.run_steps(3);
+    let before = h.state().atlas.place.unwrap();
+    let pos = frame_middle(&h);
+    wheel(&mut h, pos);
+    assert!(h.state().atlas.place.unwrap().pts_per_mm > before.pts_per_mm * 1.05);
+    let page = vale_app::ui::atlas::open_page(h.state());
+    assert_eq!(page.frames[0], frame);
+    // With the Move tool, the wheel in the selected frame zooms the map.
+    h.state_mut().atlas.tool = AtlasTool::Move;
     h.run_steps(3);
     let before = h.state().atlas.place.unwrap();
     let pos = frame_middle(&h);
