@@ -70,6 +70,8 @@ objc2-ui-kit = { version = "0.3.2", default-features = false, features = [
     "UIGestureRecognizer",
     "UIGestureRecognizerSubclass",
     "UIHoverGestureRecognizer",
+    "UIInteraction",
+    "UIPencilInteraction",
     "block2",
     "objc2-uniform-type-identifiers",
     "UIViewController",
