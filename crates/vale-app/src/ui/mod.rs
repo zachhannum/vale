@@ -35,6 +35,7 @@ use crate::projects::{self, Location, Locations};
 use crate::raster_style;
 use crate::resume::{self, Resume};
 use crate::session::{self, Session};
+use crate::tools::{self, Choice, Tools};
 use crate::workcopy;
 
 pub mod atlas;
@@ -566,6 +567,10 @@ pub struct AppState {
     resume: Option<Resume>,
     /// The time of the last write of the state for the next start.
     resume_at: Option<Instant>,
+    /// The settings of each tool, and the switch to the last tool.
+    pub tools: Tools,
+    /// The settings of the tools that the state folder holds.
+    tools_saved: Option<String>,
 }
 
 /// What the snap targets of the globe come from.
@@ -653,6 +658,8 @@ impl AppState {
             save_failed: false,
             resume: None,
             resume_at: None,
+            tools: Tools::default(),
+            tools_saved: None,
         };
         state.font_families = state.fonts.families();
         state.set_layout(Layout::default());
@@ -710,6 +717,37 @@ impl AppState {
     /// raster layer while it is visible. A layer that is not in the project
     /// is not selected. Call this after a change of the selection or of the
     /// layers.
+    /// Keeps the settings of the tool that the last frame left, and applies
+    /// the switches of the pen. Call this in each frame, before the UI.
+    /// Returns true if a setting changed.
+    pub fn switch_tools(&mut self, switches: &[crate::pen::PenSwitch]) -> bool {
+        let globe = &mut self.globe;
+        let kind = [
+            (globe.lineable, GeometryKind::Line),
+            (globe.fillable, GeometryKind::Polygon),
+            (globe.pointable, GeometryKind::Point),
+        ]
+        .into_iter()
+        .find_map(|(able, kind)| able.then_some(kind));
+        let (paintable, height) = (globe.paintable, globe.is_height());
+        let (tool, brush, line) = (&mut globe.tool, &mut globe.brush, &mut globe.line);
+        let mut changed = self.tools.observe(*tool, brush, line);
+        if self.workspace != Workspace::Globe {
+            return changed;
+        }
+        let available = |choice: Choice| match choice {
+            Choice::Brush(mode) => paintable && (height || !brush::needs_height(mode)),
+            Choice::Tool(t) if pad::VECTOR_TOOLS.iter().any(|v| v.tool == t) => {
+                kind.is_some_and(|kind| pad::vector_tools(kind).iter().any(|v| v.tool == t))
+            }
+            Choice::Tool(_) => true,
+        };
+        for &switch in switches {
+            changed |= self.tools.switch(switch, tool, brush, line, available);
+        }
+        changed
+    }
+
     pub fn sync_globe(&mut self) {
         let (project, globe) = (&self.doc.project, &mut self.globe);
         let gone = match self.selected_layer {
@@ -2080,6 +2118,17 @@ impl AppState {
             let _ = resume.write(dir);
             self.resume = Some(resume);
         }
+        let tools = self.tools_now();
+        if self.tools_saved.as_ref() != Some(&tools) {
+            let _ = tools::write(dir, &tools);
+            self.tools_saved = Some(tools);
+        }
+    }
+
+    /// The text of the settings of the tools.
+    fn tools_now(&self) -> String {
+        let globe = &self.globe;
+        self.tools.text(&globe.brush, &globe.line, &globe.snap)
     }
 
     /// Writes a change of the state for the next start, one time in
@@ -2088,7 +2137,8 @@ impl AppState {
     fn resume_tick(&mut self, hold: bool, now: Instant) -> Option<Duration> {
         if hold
             || self.projects.state_dir().is_none()
-            || self.resume.as_ref() == Some(&self.resume_now())
+            || (self.resume.as_ref() == Some(&self.resume_now())
+                && self.tools_saved.as_ref() == Some(&self.tools_now()))
         {
             return None;
         }
@@ -2106,6 +2156,13 @@ impl AppState {
     /// Opens the project of the last run in the projects folder, at its last
     /// view. Call this one time, at the start.
     pub fn restore(&mut self) {
+        let text = self.projects.state_dir().and_then(tools::read);
+        if let Some(text) = text {
+            let globe = &mut self.globe;
+            let (brush, line, snap) = (&mut globe.brush, &mut globe.line, &mut globe.snap);
+            self.tools.load(&text, brush, line, snap);
+            self.tools_saved = Some(text);
+        }
         let Some(resume) = self.projects.state_dir().and_then(Resume::read) else {
             return;
         };
@@ -3554,6 +3611,8 @@ fn draw_opening(ui: &mut egui::Ui, state: &AppState) {
 
 /// Draws the whole UI.
 pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
+    let queue = state.globe.pen.queue.as_ref();
+    let switches = queue.map(|queue| queue.take_switches()).unwrap_or_default();
     state.globe.stats.tick(std::time::Instant::now());
     state.poll_import();
     state.poll_probe(false);
@@ -3591,6 +3650,9 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     }
     browser::dialogs(ui, state);
     state.sync_globe();
+    if state.switch_tools(&switches) {
+        ui.ctx().request_repaint();
+    }
     state.sync_measure();
     state.check_point_form();
     if state.layout == Layout::Pad {

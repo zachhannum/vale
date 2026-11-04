@@ -1,23 +1,24 @@
-//! Apple Pencil input from UIKit: the coalesced samples, the tilt, and the
-//! hover. winit gets the same touches, because the recognizer never
-//! recognizes a gesture.
+//! Apple Pencil input from UIKit: the coalesced samples, the tilt, the
+//! hover, and the double tap and the squeeze. winit gets the same touches,
+//! because the recognizer never recognizes a gesture.
 
 use std::ffi::c_void;
 use std::ptr::NonNull;
 
 use eframe::egui;
 use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol, Sel};
+use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol, ProtocolObject, Sel};
 use objc2::{
     DefinedClass, MainThreadMarker, MainThreadOnly, available, define_class, msg_send, sel,
 };
 use objc2_foundation::{NSArray, NSNumber, NSProcessInfo, NSSet};
 use objc2_ui_kit::{
-    UIEvent, UIGestureRecognizer, UIGestureRecognizerState, UIHoverGestureRecognizer, UITouch,
-    UITouchType, UIView,
+    UIEvent, UIGestureRecognizer, UIGestureRecognizerState, UIHoverGestureRecognizer,
+    UIPencilInteraction, UIPencilInteractionDelegate, UIPencilInteractionPhase,
+    UIPencilInteractionSqueeze, UIPencilPreferredAction, UITouch, UITouchType, UIView,
 };
 
-use super::{PenEvent, PenPhase, PenQueue};
+use super::{PenEvent, PenPhase, PenQueue, PenSwitch};
 
 struct Ivars {
     ctx: egui::Context,
@@ -118,6 +119,58 @@ define_class!(
     unsafe impl NSObjectProtocol for PenRecognizer {}
 );
 
+define_class!(
+    // SAFETY: NSObject allows subclasses, and the type has no Drop.
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "ValePencilDelegate"]
+    #[ivars = Ivars]
+    struct PencilDelegate;
+
+    unsafe impl NSObjectProtocol for PencilDelegate {}
+
+    unsafe impl UIPencilInteractionDelegate for PencilDelegate {
+        #[unsafe(method(pencilInteractionDidTap:))]
+        fn did_tap(&self, _interaction: &UIPencilInteraction) {
+            let mtm = self.mtm();
+            self.switch(UIPencilInteraction::preferredTapAction(mtm));
+        }
+
+        #[unsafe(method(pencilInteraction:didReceiveSqueeze:))]
+        fn did_squeeze(
+            &self,
+            _interaction: &UIPencilInteraction,
+            squeeze: &UIPencilInteractionSqueeze,
+        ) {
+            if squeeze.phase() == UIPencilInteractionPhase::Ended {
+                let mtm = self.mtm();
+                self.switch(UIPencilInteraction::preferredSqueezeAction(mtm));
+            }
+        }
+    }
+);
+
+impl PencilDelegate {
+    fn new(mtm: MainThreadMarker, ivars: Ivars) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(ivars);
+        // SAFETY: NSObject has the initializer init.
+        unsafe { msg_send![super(this), init] }
+    }
+
+    /// Sends the switch of the system setting `action`. Another action of
+    /// the setting does nothing in the app.
+    fn switch(&self, action: UIPencilPreferredAction) {
+        let switch = match action {
+            UIPencilPreferredAction::SwitchPrevious => PenSwitch::Last,
+            UIPencilPreferredAction::SwitchEraser => PenSwitch::Eraser,
+            _ => return,
+        };
+        let ivars = self.ivars();
+        ivars.queue.push_switch(switch);
+        ivars.ctx.request_repaint();
+    }
+}
+
 impl PenRecognizer {
     fn new(mtm: MainThreadMarker, ivars: Ivars) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(ivars);
@@ -177,7 +230,8 @@ impl PenRecognizer {
     }
 }
 
-/// Adds the pen recognizer and the hover recognizer to the UIView of winit.
+/// Adds the pen recognizer, the hover recognizer, and the Pencil interaction
+/// to the UIView of winit.
 /// Call it one time, on the main thread. `view` must point to a live UIView.
 pub fn install(view: NonNull<c_void>, ctx: egui::Context, queue: PenQueue) {
     let Some(mtm) = MainThreadMarker::new() else {
@@ -185,6 +239,20 @@ pub fn install(view: NonNull<c_void>, ctx: egui::Context, queue: PenQueue) {
     };
     // SAFETY: winit keeps its view for the life of the window.
     let view: &UIView = unsafe { view.cast::<UIView>().as_ref() };
+
+    let delegate = PencilDelegate::new(
+        mtm,
+        Ivars {
+            ctx: ctx.clone(),
+            queue: queue.clone(),
+        },
+    );
+    let interaction = UIPencilInteraction::new(mtm);
+    interaction.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
+    view.addInteraction(ProtocolObject::from_ref(&*interaction));
+    // The interaction does not retain its delegate, and the app has one
+    // delegate for its whole life.
+    std::mem::forget(delegate);
 
     let pen = PenRecognizer::new(mtm, Ivars { ctx, queue });
     let pencil =

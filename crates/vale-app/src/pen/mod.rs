@@ -40,21 +40,50 @@ pub struct PenEvent {
     pub time: f64,
 }
 
-/// The pen events that wait for the canvas.
+/// The action of a double tap or a squeeze of the pen, from the Pencil
+/// setting of the system.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PenSwitch {
+    /// The setting "Switch between current tool and last used tool".
+    Last,
+    /// The setting "Switch between current tool and eraser".
+    Eraser,
+}
+
+#[derive(Default)]
+struct Queued {
+    events: Vec<PenEvent>,
+    switches: Vec<PenSwitch>,
+}
+
+/// The pen events and the pen switches that wait for the canvas.
 #[derive(Clone, Default)]
-pub struct PenQueue(Arc<Mutex<Vec<PenEvent>>>);
+pub struct PenQueue(Arc<Mutex<Queued>>);
 
 impl PenQueue {
     pub fn push(&self, events: impl IntoIterator<Item = PenEvent>) {
         if let Ok(mut queue) = self.0.lock() {
-            queue.extend(events);
+            queue.events.extend(events);
         }
     }
 
     pub fn take(&self) -> Vec<PenEvent> {
         self.0
             .lock()
-            .map(|mut q| std::mem::take(&mut *q))
+            .map(|mut q| std::mem::take(&mut q.events))
+            .unwrap_or_default()
+    }
+
+    pub fn push_switch(&self, switch: PenSwitch) {
+        if let Ok(mut queue) = self.0.lock() {
+            queue.switches.push(switch);
+        }
+    }
+
+    pub fn take_switches(&self) -> Vec<PenSwitch> {
+        self.0
+            .lock()
+            .map(|mut q| std::mem::take(&mut q.switches))
             .unwrap_or_default()
     }
 }
@@ -228,6 +257,9 @@ mod tests {
         queue.clone().push([event, event]);
         assert_eq!(queue.take().len(), 2);
         assert!(queue.take().is_empty());
+        queue.push_switch(PenSwitch::Last);
+        assert_eq!(queue.take_switches(), [PenSwitch::Last]);
+        assert!(queue.take_switches().is_empty());
 
         let mut stats = PenStats::default();
         assert_eq!(stats.hover_line(), "Hover: not seen");
