@@ -6601,7 +6601,7 @@ fn press_return(h: &mut Pad) {
 }
 
 #[test]
-fn with_the_inspector_open_a_new_point_is_the_selection_and_its_first_field_has_the_focus() {
+fn with_the_inspector_open_a_new_point_is_the_selection_with_no_keyboard() {
     let mut h = pad(BOARDS[0]);
     let draw = draw_cell(&h);
     let places = vector(&h, "Places");
@@ -6637,7 +6637,9 @@ fn with_the_inspector_open_a_new_point_is_the_selection_and_its_first_field_has_
     // No card opens over the canvas. The inspector is the only panel.
     let panels: Vec<Panel> = h.state().pad.panels.iter().map(|(p, _)| *p).collect();
     assert_eq!(panels, [Panel::Attributes]);
-    // The first field has the focus, so the keyboard types into it at once.
+    // The inspector does not ask for a value.
+    assert!(no_keyboard(&h));
+    tap(&mut h, &fields[0]);
     type_in_focus(&mut h, "Avalon");
     let form = h.state().selection_form.as_ref().unwrap();
     assert!(form.fields[0].text.ends_with("Avalon"));
@@ -6665,6 +6667,7 @@ fn a_new_point_layer_has_a_name_field_and_return_ends_the_edit() {
     let center = h.state().globe.rect.center();
     pen_tap_at(&mut h, center);
     assert_eq!(form_fields(&h), ["name"]);
+    tap(&mut h, "name");
     type_in_focus(&mut h, "Avalon");
     press_return(&mut h);
     assert!(h.state().new_feature.is_none());
@@ -6775,6 +6778,7 @@ fn the_inspector_shows_each_field_of_a_new_point_with_its_default() {
     let form = h.state().selection_form.as_ref().unwrap();
     let texts: Vec<&str> = form.fields.iter().map(|f| f.text.as_str()).collect();
     assert_eq!(texts, ["Hamlet", "7", "2.5", "false"]);
+    tap(&mut h, "town");
     // Return goes from field to field. The whole number and the true or
     // false field get new values.
     let typed = [None, Some((1, "12")), None, Some((5, "true"))];
@@ -6807,7 +6811,7 @@ fn a_text_that_is_not_a_value_of_the_field_type_does_not_go_in_the_new_point() {
     let center = h.state().globe.rect.center();
     pen_tap_at(&mut h, center);
     assert_eq!(form_fields(&h), ["name", "people"]);
-    press_return(&mut h);
+    tap(&mut h, "people");
     type_in_focus(&mut h, "many");
     press_return(&mut h);
     assert!(h.state().new_feature.is_none());
@@ -6817,7 +6821,7 @@ fn a_text_that_is_not_a_value_of_the_field_type_does_not_go_in_the_new_point() {
 }
 
 #[test]
-fn ten_points_take_ten_taps_and_ten_names_and_are_ten_undo_steps() {
+fn after_one_name_ten_points_take_ten_taps_and_ten_names_in_ten_undo_steps() {
     let dir = tempfile::tempdir().unwrap();
     let mut h = saved_pad(BOARDS[0], dir.path());
     let id = new_point_layer(&mut h);
@@ -6828,8 +6832,15 @@ fn ten_points_take_ten_taps_and_ten_names_and_are_ten_undo_steps() {
     let saved = saves(&h);
     let center = h.state().globe.rect.center();
     for i in 0..10 {
-        // The pen tap is the only touch: the name field has the focus.
         pen_tap_at(&mut h, center + vec2(30.0 * i as f32 - 135.0, 0.0));
+        // A tap on the field starts the run of edits. After that, the pen
+        // tap is the only touch: the name field has the focus.
+        if i == 0 {
+            assert!(no_keyboard(&h));
+            tap(&mut h, "name");
+        } else {
+            assert!(!no_keyboard(&h), "{i}");
+        }
         type_in_focus(&mut h, &format!("City {i}"));
         // Return ends the edit, and so does the tap of the next point.
         if i % 2 == 0 || i == 9 {
@@ -6887,13 +6898,15 @@ fn a_new_line_takes_its_name_in_the_inspector_in_one_undo_step() {
     assert_eq!(h.state().selection_form.as_ref().unwrap().feature, new);
     assert!(h.state().new_feature.is_some());
     assert_eq!(saves(&h), saved);
+    assert!(no_keyboard(&h));
+    // Return goes from the first field to the last field.
     let names = form_fields(&h);
-    for (i, _) in names.iter().enumerate() {
-        if i + 1 == names.len() {
-            type_in_focus(&mut h, "Avon");
-        }
+    tap(&mut h, &names[0]);
+    for _ in 1..names.len() {
         press_return(&mut h);
     }
+    type_in_focus(&mut h, "Avon");
+    press_return(&mut h);
     assert!(h.state().new_feature.is_none());
     let line = line_features(&h, rivers).pop().unwrap();
     assert_eq!(line.attributes["given"], Value::Text("Avon".into()));
@@ -6949,6 +6962,11 @@ fn a_new_point_is_not_under_the_inspector_or_the_keyboard() {
         let inspector = panel(&h, Panel::Attributes).expect("no panel");
         let rect = h.state().globe.rect;
         let keyboard = vale_app::ui::new_feature::keyboard_top(rect);
+        // A name starts the run of edits, so each next point has the
+        // keyboard.
+        pen_tap_at(&mut h, rect.center());
+        tap(&mut h, "name");
+        type_in_focus(&mut h, "Avalon");
         // A point low on the screen is under the keyboard. A point next to
         // the panel is too near it.
         let sheet = h.state().pad.rects.unwrap().sheet.is_some();

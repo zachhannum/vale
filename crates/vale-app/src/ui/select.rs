@@ -61,6 +61,13 @@ pub struct SelectionForm {
     focus: Option<(String, u8)>,
 }
 
+impl SelectionForm {
+    /// True if a field of the form waits for the focus.
+    pub(super) fn takes_focus(&self) -> bool {
+        self.focus.is_some()
+    }
+}
+
 /// The text of the inspector for a selection of `count` features.
 pub fn title(count: usize) -> String {
     format!("{count} features")
@@ -167,6 +174,9 @@ impl AppState {
             .collect();
         self.feature_selection
             .retain(|f| live.contains(&(f.layer, f.uuid)));
+        if self.feature_selection.is_empty() {
+            self.attribute_focus = None;
+        }
     }
 
     /// Moves one vertex of a point feature. The move is one undo step.
@@ -212,8 +222,10 @@ impl AppState {
     /// the inspector shows.
     pub fn sync_selection_form(&mut self, shown: bool) {
         self.inspector_shown = shown;
-        if !shown {
+        // A change of the tool ends the run of edits.
+        if !shown || self.attribute_tool != self.globe.tool {
             self.attribute_focus = None;
+            self.attribute_tool = self.globe.tool;
         }
         let one = match self.feature_selection.as_slice() {
             [one] if shown => Some(*one),
@@ -240,12 +252,9 @@ impl AppState {
                 let value = feature.attributes.get(&field.name);
                 FormField::new(field, value.and_then(|v| v.label()).unwrap_or_default())
             });
-            // The first field takes the focus in the form of a new feature.
             // The field that was edited last takes the focus in the form of
             // the next feature of its layer.
-            let new = self.new_feature.as_ref().is_some_and(|n| n.feature == f);
             let focus = match &mut self.attribute_focus {
-                _ if new => (layer.fields.first()).map(|field| (field.name.clone(), FOCUS_FRAMES)),
                 Some((last, name)) if last.layer == f.layer && *last != f => {
                     *last = f;
                     Some((name.clone(), FOCUS_FRAMES))

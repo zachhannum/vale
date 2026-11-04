@@ -498,6 +498,9 @@ pub struct AppState {
     /// The field of the inspector that the user edited last, and the
     /// feature that it had the focus in last.
     pub attribute_focus: Option<(crate::globe::select::FeatureRef, String)>,
+    /// The tool of the last frame, which ends the run of edits when it
+    /// changes.
+    attribute_tool: crate::globe::Tool,
     /// The inspector of the desktop layout shows.
     pub show_attributes: bool,
     /// The inspector showed in the last frame, in either layout.
@@ -630,6 +633,7 @@ impl AppState {
             region: None,
             selection_form: None,
             attribute_focus: None,
+            attribute_tool: Default::default(),
             show_attributes: false,
             inspector_shown: false,
             table: None,

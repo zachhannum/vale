@@ -155,7 +155,8 @@ pub fn keyboard_top(screen: Rect) -> f32 {
 }
 
 /// Turns the globe so that the new point is not under the inspector of the
-/// iPad layout, and is above the keyboard.
+/// iPad layout. If a field takes the focus, the point is also above the
+/// keyboard.
 pub fn keep_in_view(state: &mut AppState, rects: &Rects) {
     let Some(dir) = state.new_feature.as_mut().and_then(|new| new.show.take()) else {
         return;
@@ -164,8 +165,17 @@ pub fn keep_in_view(state: &mut AppState, rects: &Rects) {
         return;
     };
     let screen = rects.screen;
+    let keyboard = state
+        .selection_form
+        .as_ref()
+        .is_some_and(|f| f.takes_focus());
+    let bottom = if keyboard {
+        keyboard_top(screen)
+    } else {
+        screen.bottom()
+    };
     let top_left = pos2(screen.left(), rects.workspace.bottom());
-    let mut free = Rect::from_min_max(top_left, pos2(screen.right(), keyboard_top(screen)));
+    let mut free = Rect::from_min_max(top_left, pos2(screen.right(), bottom));
     let panels = &state.pad.panels;
     if let Some((_, panel)) = panels.iter().find(|(p, _)| *p == Panel::Attributes) {
         if rects.sheet.is_some() {
