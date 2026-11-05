@@ -39,13 +39,13 @@ impl Overrides {
         self.0.keys().map(String::as_str)
     }
 
-    /// The overrides that change `base` into `edited`. A rule that `base` does not have gives no override.
+    /// The overrides that change `base` into `edited`. A rule that `base` does not have gives no override. A map does not override the mask.
     pub fn between(base: &LayerStyle, edited: &LayerStyle) -> Overrides {
         let a = tree(base);
         let b = tree(edited);
         let mut out = BTreeMap::new();
         for (key, bv) in b.as_object().into_iter().flatten() {
-            if key == "version" {
+            if key == "version" || key == "mask" {
                 continue;
             }
             let av = a.get(key);

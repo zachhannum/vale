@@ -5,7 +5,7 @@ use std::ops::RangeInclusive;
 use std::sync::Arc;
 
 use vale_store::{
-    BlendMode, FillKind, FillPattern, Hillshade, RasterDisplay, Rgb, Smoothing, Stop,
+    BlendMode, FillKind, FillPattern, Hillshade, LayerId, RasterDisplay, Rgb, Smoothing, Stop,
 };
 
 use crate::expr::{Context, Filter, Property};
@@ -23,6 +23,49 @@ pub fn scale_denominator(ground_meters_per_point: f64) -> f64 {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Style {
     pub rules: Vec<Rule>,
+    /// The region that limits the fills and the strokes. `None` draws everywhere.
+    pub mask: Option<Mask>,
+}
+
+/// A region of the world that limits a style.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum Mask {
+    /// The cells of a raster layer with a value in the range. The lower limit is in the range, and the upper limit is not. `None` has no limit.
+    Raster {
+        layer: LayerId,
+        min: Option<f64>,
+        max: Option<f64>,
+    },
+    /// The inside of the polygons of a polygon layer.
+    Polygons { layer: LayerId },
+}
+
+impl Mask {
+    /// The land of the height layer `layer`: each value from 0 up.
+    pub const fn land(layer: LayerId) -> Mask {
+        Mask::Raster {
+            layer,
+            min: Some(0.0),
+            max: None,
+        }
+    }
+
+    /// The layer that gives the region.
+    pub fn layer(&self) -> LayerId {
+        match *self {
+            Mask::Raster { layer, .. } | Mask::Polygons { layer } => layer,
+        }
+    }
+
+    /// The value `v` of a raster mask is in the range. A polygon mask holds no value.
+    pub fn contains(&self, v: f64) -> bool {
+        match *self {
+            Mask::Raster { min, max, .. } => {
+                min.is_none_or(|m| v >= m) && max.is_none_or(|m| v < m)
+            }
+            Mask::Polygons { .. } => false,
+        }
+    }
 }
 
 /// A filter, a scale range, and the symbolizers that draw each feature that matches.

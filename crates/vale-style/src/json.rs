@@ -5,16 +5,16 @@
 use std::fmt;
 
 use serde_json::{Map, Value as Json, json};
-use vale_store::{BlendMode, Hillshade, RasterDisplay, Rgb, Smoothing, Stop, StopLine};
+use vale_store::{BlendMode, Hillshade, LayerId, RasterDisplay, Rgb, Smoothing, Stop, StopLine};
 
 use crate::expr::{Filter, FromValue, Property};
 use crate::{
-    Color, Hatch, ImageSymbolizer, LabelStyle, LayerStyle, MarkerShape, PointSymbolizer,
+    Color, Hatch, ImageSymbolizer, LabelStyle, LayerStyle, MarkerShape, Mask, PointSymbolizer,
     RasterSymbolizer, Rule, ScatterSymbolizer, StrokeKind, StrokeSymbolizer, Style, Symbolizer,
 };
 
 /// The version of the style JSON that this build writes. It reads this version and each earlier version.
-pub const STYLE_VERSION: u64 = 5;
+pub const STYLE_VERSION: u64 = 6;
 
 /// Why a style JSON did not load.
 #[derive(Clone, Debug, PartialEq)]
@@ -60,7 +60,11 @@ impl LayerStyle {
             "italic": l.italic,
             "font": l.font,
         });
-        json!({ "version": STYLE_VERSION, "rules": rules, "label": label }).to_string()
+        let mut root = json!({ "version": STYLE_VERSION, "rules": rules, "label": label });
+        if let Some(mask) = &self.style.mask {
+            root["mask"] = mask_json(mask);
+        }
+        root.to_string()
     }
 
     pub fn from_json(text: &str) -> Result<LayerStyle, StyleError> {
@@ -78,10 +82,34 @@ impl LayerStyle {
             .map(read_rule)
             .collect::<Result<_, _>>()?;
         let label = read_label(object(root, "label")?)?;
+        let mask = root.get("mask").and_then(read_mask);
         Ok(LayerStyle {
-            style: Style { rules },
+            style: Style { rules, mask },
             label,
         })
+    }
+}
+
+fn mask_json(m: &Mask) -> Json {
+    match *m {
+        Mask::Raster { layer, min, max } => {
+            json!({ "kind": "raster", "layer": layer.0, "min": min, "max": max })
+        }
+        Mask::Polygons { layer } => json!({ "kind": "polygons", "layer": layer.0 }),
+    }
+}
+
+/// A mask of an unknown kind reads as no mask.
+fn read_mask(j: &Json) -> Option<Mask> {
+    let layer = LayerId(u32::try_from(j.get("layer")?.as_u64()?).ok()?);
+    match j.get("kind")?.as_str()? {
+        "raster" => Some(Mask::Raster {
+            layer,
+            min: j.get("min").and_then(Json::as_f64),
+            max: j.get("max").and_then(Json::as_f64),
+        }),
+        "polygons" => Some(Mask::Polygons { layer }),
+        _ => None,
     }
 }
 

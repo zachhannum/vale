@@ -1,6 +1,6 @@
-use vale_store::GeometryKind;
+use vale_store::{GeometryKind, LayerId};
 use vale_style::expr::Property;
-use vale_style::{Color, LayerStyle, Overrides, Rule, Stroke, StrokeSymbolizer, Symbolizer};
+use vale_style::{Color, LayerStyle, Mask, Overrides, Rule, Stroke, StrokeSymbolizer, Symbolizer};
 
 const BLUE: Color = Color::rgb(0, 0, 255);
 const RED: Color = Color::rgb(255, 0, 0);
@@ -209,4 +209,13 @@ fn a_hillshade_value_is_one_override() {
     assert_eq!(pointers.len(), 1);
     assert!(pointers[0].ends_with("/hillshade/azimuth"), "{pointers:?}");
     assert_eq!(base.with_overrides(&o), edited);
+}
+
+#[test]
+fn a_map_does_not_override_the_mask() {
+    let base = two_rules();
+    let mut edited = base.clone();
+    edited.style.mask = Some(Mask::land(LayerId(2)));
+    assert!(Overrides::between(&base, &edited).is_empty());
+    assert!(Overrides::between(&edited, &base).is_empty());
 }
