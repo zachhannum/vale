@@ -53,24 +53,32 @@ struct Key {
     mask_features: usize,
 }
 
-/// The cuts of the masked layers.
+/// The most cuts of one layer that the cache keeps. Each map can have its
+/// own mask for a layer.
+const MAX_CUTS: usize = 4;
+
+/// The cuts of the masked layers. The last cut of a layer is first.
 #[derive(Default)]
 pub struct MaskCache {
-    entries: HashMap<LayerId, (Key, Arc<MaskedLayer>)>,
+    entries: HashMap<LayerId, Vec<(Key, Arc<MaskedLayer>)>>,
 }
 
 impl MaskCache {
-    /// The parts of the features of layer `id` inside its mask. `None`: the
-    /// layer has no mask or a raster mask, so the layer draws whole.
-    pub fn layer(&mut self, doc: &Document, id: LayerId) -> Option<Arc<MaskedLayer>> {
-        let Some(key) = key(doc, id) else {
-            self.entries.remove(&id);
-            return None;
-        };
-        if let Some((old, masked)) = self.entries.get(&id)
-            && *old == key
-        {
-            return Some(masked.clone());
+    /// The parts of the features of layer `id` inside `mask`. `None`: no
+    /// mask or a raster mask, so the layer draws whole.
+    pub fn layer(
+        &mut self,
+        doc: &Document,
+        id: LayerId,
+        mask: Option<Mask>,
+    ) -> Option<Arc<MaskedLayer>> {
+        let key = key(doc, id, mask?)?;
+        let cuts = self.entries.entry(id).or_default();
+        if let Some(i) = cuts.iter().position(|(old, _)| *old == key) {
+            let cut = cuts.remove(i);
+            let masked = cut.1.clone();
+            cuts.insert(0, cut);
+            return Some(masked);
         }
         let layer = doc.layer(id)?;
         let region = Region::new(&region_polygons(doc, &key.mask)?);
@@ -93,14 +101,18 @@ impl MaskCache {
             features,
             generation: next_generation(),
         });
-        self.entries.insert(id, (key, masked.clone()));
+        let cuts = self.entries.entry(id).or_default();
+        cuts.insert(0, (key, masked.clone()));
+        cuts.truncate(MAX_CUTS);
         Some(masked)
     }
 
     /// Cuts layer `id` again, and each layer that `id` masks.
     pub fn forget(&mut self, id: LayerId) {
-        self.entries
-            .retain(|layer, (key, _)| *layer != id && key.mask.layer() != id);
+        self.entries.remove(&id);
+        for cuts in self.entries.values_mut() {
+            cuts.retain(|(key, _)| key.mask.layer() != id);
+        }
     }
 
     /// Keeps only the cuts of the layers that `keep` gives.
@@ -109,9 +121,9 @@ impl MaskCache {
     }
 }
 
-/// What the cut of layer `id` comes from. `None`: the layer draws whole.
-fn key(doc: &Document, id: LayerId) -> Option<Key> {
-    let mask = doc.entry(id)?.style.style.mask?;
+/// What the cut of layer `id` by `mask` comes from. `None`: the layer
+/// draws whole.
+fn key(doc: &Document, id: LayerId, mask: Mask) -> Option<Key> {
     let layer = doc.layer(id)?;
     layer.geometry()?;
     let mask_features = match mask {

@@ -187,8 +187,7 @@ pub fn section(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
     if widgets::button_row(ui, controls, CLASSIFY, true).clicked() {
         state.pad.page = Some(Page::Classify);
     }
-    // A map does not override the mask.
-    if kind != GeometryKind::Point && !state.pad.rules_fixed {
+    if kind != GeometryKind::Point {
         let text = mask_text(state, id);
         if widgets::open_row(ui, controls, MASK, &text).clicked() {
             state.pad.page = Some(Page::Mask);
