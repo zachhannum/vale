@@ -9,7 +9,7 @@ use vale_store::{BorderStyle, FrameRecord, GridColumns};
 
 use crate::atlas::{FrameTarget, PT_PER_MM, frame_transform, interval_at_scale};
 use crate::edge_labels::{inside, target_rings};
-use crate::furniture::{Painted, TextInk, rgb};
+use crate::furniture::{Painted, TextInk, rgba};
 use crate::pipeline::{frame_area, graticule_window};
 
 /// The inner and the outer edge of the band, in target points. The inner
@@ -89,7 +89,7 @@ pub fn items(
     match b.style {
         BorderStyle::Solid => out.push(Item::Fill {
             path: edges.clone(),
-            color: rgb(b.color),
+            color: rgba(b.color),
             rule: FillRule::EvenOdd,
         }),
         BorderStyle::Graduated => {
@@ -110,7 +110,7 @@ pub fn items(
                     let first = piece.cell.is_none_or(|[x, y]| (x + y).rem_euclid(2) == 0);
                     out.push(Item::Fill {
                         path: piece.rect.to_path(0.1),
-                        color: rgb(if first { b.color } else { b.color2 }),
+                        color: rgba(if first { b.color } else { b.color2 }),
                         rule: FillRule::NonZero,
                     });
                 }
@@ -121,7 +121,7 @@ pub fn items(
     if b.stroke {
         out.push(Item::Stroke {
             path: edges,
-            color: rgb(b.stroke_color),
+            color: rgba(b.stroke_color),
             width: b.stroke_width * unit,
             round: false,
         });

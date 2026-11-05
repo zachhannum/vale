@@ -634,26 +634,61 @@ pub fn text_row(
 pub const SWATCH: f32 = 24.0;
 
 /// A row with the name at the left and a swatch of `color` at the right.
-/// A tap opens or closes the color picker of the row. `open`: the picker is
-/// open.
+/// The swatch shows the alpha of the color over a checkerboard. A tap opens
+/// or closes the color picker of the row. `open`: the picker is open.
 pub fn color_row(
     ui: &mut egui::Ui,
     controls: &mut Controls,
     name: &str,
-    color: [u8; 3],
+    color: [u8; 4],
     open: bool,
 ) -> Response {
     let row = text_row(ui, controls, name, 0.0, open, true);
-    let [r, g, b] = color;
+    let [r, g, b, a] = color;
     let swatch = Rect::from_center_size(
         pos2(row.rect.right() - SWATCH / 2.0, row.rect.center().y),
         vec2(SWATCH, SWATCH),
     );
     let painter = ui.painter();
-    painter.rect_filled(swatch, 6.0, Color32::from_rgb(r, g, b));
+    if a < 255 {
+        paint_checker(painter, swatch, SWATCH / 4.0, 6);
+    }
+    painter.rect_filled(swatch, 6.0, Color32::from_rgba_unmultiplied(r, g, b, a));
     let stroke = egui::Stroke::new(1.0, theme::divider());
     painter.rect_stroke(swatch, 6.0, stroke, egui::StrokeKind::Inside);
     row
+}
+
+/// An opaque color with the red, green, and blue of `rgb`.
+pub fn opaque(rgb: [u8; 3]) -> [u8; 4] {
+    let [r, g, b] = rgb;
+    [r, g, b, 255]
+}
+
+/// Paints a checkerboard of light and dark grey cells of the size `cell`
+/// over `rect`. The cells at the corners of `rect` are rounded by `radius`.
+pub fn paint_checker(painter: &egui::Painter, rect: Rect, cell: f32, radius: u8) {
+    const LIGHT: Color32 = Color32::from_gray(200);
+    const DARK: Color32 = Color32::from_gray(140);
+    let cols = (rect.width() / cell).ceil().max(1.0) as usize;
+    let rows = (rect.height() / cell).ceil().max(1.0) as usize;
+    for row in 0..rows {
+        for col in 0..cols {
+            let min = rect.min + vec2(col as f32 * cell, row as f32 * cell);
+            let at = Rect::from_min_max(min, (min + vec2(cell, cell)).min(rect.max));
+            let (first, last) = (col == 0, col + 1 == cols);
+            let (top, bottom) = (row == 0, row + 1 == rows);
+            let round = |on: bool| if on { radius } else { 0 };
+            let corners = CornerRadius {
+                nw: round(top && first),
+                ne: round(top && last),
+                sw: round(bottom && first),
+                se: round(bottom && last),
+            };
+            let color = if (row + col) % 2 == 0 { LIGHT } else { DARK };
+            painter.rect_filled(at, corners, color);
+        }
+    }
 }
 
 /// Paints the arrow of a row that opens a page, at the right of the row.
@@ -1131,7 +1166,7 @@ fn edit_menu(
 /// The keys of a keypad.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Keys {
-    /// The digits of a hex code.
+    /// The digits of a hex code, with an alpha or without.
     Hex,
     /// The digits, the minus sign, and the decimal point of a number.
     Number,
@@ -1192,7 +1227,7 @@ impl Keys {
     /// The most characters of a text.
     fn max_chars(self) -> usize {
         match self {
-            Keys::Hex => 6,
+            Keys::Hex => 8,
             Keys::Number => 12,
         }
     }
@@ -1875,42 +1910,79 @@ const PICKER_SQUARE: f32 = 180.0;
 /// The number of cells along each side of the meshes of the color picker.
 const PICKER_CELLS: usize = 24;
 
-/// The color as the code of six hex digits.
-pub fn hex_text(color: [u8; 3]) -> String {
-    format!("{:02X}{:02X}{:02X}", color[0], color[1], color[2])
+/// The color as a hex code: `RRGGBB` for an opaque color, and `RRGGBBAA`
+/// for a color with alpha.
+pub fn hex_text(color: [u8; 4]) -> String {
+    let [r, g, b, a] = color;
+    if a == 255 {
+        format!("{r:02X}{g:02X}{b:02X}")
+    } else {
+        format!("{r:02X}{g:02X}{b:02X}{a:02X}")
+    }
 }
 
-/// The color of a code of six hex digits, with or without a `#` before it.
-pub fn parse_hex(text: &str) -> Option<[u8; 3]> {
+/// The color of a hex code, with or without a `#` before it. Six digits
+/// give an opaque color. `alpha`: the code can also have eight digits, the
+/// last two of which are the alpha.
+pub fn parse_hex(text: &str, alpha: bool) -> Option<[u8; 4]> {
     let text = text.trim().trim_start_matches('#');
-    if text.len() != 6 || !text.is_ascii() {
+    let digits = text.len();
+    if !(digits == 6 || alpha && digits == 8) || !text.is_ascii() {
         return None;
     }
     let byte = |at: usize| u8::from_str_radix(&text[at..at + 2], 16).ok();
-    Some([byte(0)?, byte(2)?, byte(4)?])
+    let a = if digits == 8 { byte(6)? } else { 255 };
+    Some([byte(0)?, byte(2)?, byte(4)?, a])
 }
 
-/// A color picker for a finger: a square of saturation and value, a strip
-/// of hues, and a field for the hex code. `name` starts the names of its
-/// controls. Returns true if the user changed the color.
+/// A color picker for a finger, for an opaque color: a square of saturation
+/// and value, a strip of hues, and a field for the hex code. `name` starts
+/// the names of its controls. Returns true if the user changed the color.
 pub fn color_picker(
     ui: &mut egui::Ui,
     controls: &mut Controls,
     name: &str,
     color: &mut [u8; 3],
 ) -> bool {
+    let [r, g, b] = *color;
+    let mut rgba = [r, g, b, 255];
+    let changed = picker(ui, controls, name, &mut rgba, false);
+    *color = [rgba[0], rgba[1], rgba[2]];
+    changed
+}
+
+/// A color picker for a finger, for a color with alpha: the picker of
+/// [`color_picker`] with a strip of opacities below the strip of hues.
+pub fn color_picker_alpha(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    name: &str,
+    color: &mut [u8; 4],
+) -> bool {
+    picker(ui, controls, name, color, true)
+}
+
+fn picker(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    name: &str,
+    color: &mut [u8; 4],
+    alpha: bool,
+) -> bool {
     use egui::ecolor::Hsva;
     // The hue stays while the color is grey, so it is kept between frames.
     let id = ui.id().with(name).with("hsva");
     let kept: Option<(Hsva, [u8; 3])> = ui.data(|data| data.get_temp(id));
+    let rgb = |c: &[u8; 4]| [c[0], c[1], c[2]];
     let mut hsva = match kept {
-        Some((hsva, rgb)) if rgb == *color => hsva,
-        _ => Hsva::from_srgb(*color),
+        Some((hsva, kept)) if kept == rgb(color) => hsva,
+        _ => Hsva::from_srgb(rgb(color)),
     };
     let before = *color;
-    if let Some(picked) = super::eyedropper::take(ui.ctx(), name) {
-        *color = picked;
-        hsva = Hsva::from_srgb(picked);
+    // The eyedropper picks the red, green, and blue, and the alpha stays.
+    if let Some([r, g, b]) = super::eyedropper::take(ui.ctx(), name) {
+        *color = [r, g, b, color[3]];
+        hsva = Hsva::from_srgb([r, g, b]);
     }
     let width = ui.available_width();
     let fill = |h: f32, s: f32, v: f32| Color32::from(Hsva::new(h, s, v, 1.0));
@@ -1918,7 +1990,8 @@ pub fn color_picker(
     // The keypad of a field takes the place of the square and the strip,
     // unless the field shows its keypad itself.
     let shown = key_edit(ui.ctx()).is_some_and(|edit| !edit.placed);
-    if !(shown && keypad(ui, controls, PICKER_SQUARE + 8.0 + TOUCH)) {
+    let strips = if alpha { 2.0 * TOUCH } else { TOUCH };
+    if !(shown && keypad(ui, controls, PICKER_SQUARE + 8.0 + strips)) {
         let (square, _) = ui.allocate_exact_size(vec2(width, PICKER_SQUARE), Sense::hover());
         let shade = format!("{name} shade");
         let resp = hit(
@@ -2019,7 +2092,11 @@ pub fn color_picker(
             egui::StrokeKind::Outside,
         );
         if moved {
-            *color = hsva.to_srgb();
+            let [r, g, b] = hsva.to_srgb();
+            *color = [r, g, b, color[3]];
+        }
+        if alpha {
+            opacity_strip(ui, controls, name, color, width);
         }
     }
     let hex = format!("{name} hex");
@@ -2031,14 +2108,75 @@ pub fn color_picker(
         "",
         &hex_text(*color),
         Keys::Hex,
-        |text| parse_hex(text).is_some(),
+        |text| parse_hex(text, alpha).is_some(),
     );
-    if let Some(typed) = typed.as_deref().and_then(parse_hex) {
+    if let Some(typed) = typed.as_deref().and_then(|text| parse_hex(text, alpha)) {
         *color = typed;
-        hsva = Hsva::from_srgb(typed);
+        hsva = Hsva::from_srgb(rgb(&typed));
     }
-    ui.data_mut(|data| data.insert_temp(id, (hsva, *color)));
+    ui.data_mut(|data| data.insert_temp(id, (hsva, rgb(color))));
     *color != before
+}
+
+/// The strip of opacities of the color picker: the color from transparent
+/// at the left to opaque at the right, over a checkerboard. The percent of
+/// the alpha is at the right of the strip. A tap or a drag sets the alpha.
+fn opacity_strip(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    name: &str,
+    color: &mut [u8; 4],
+    width: f32,
+) {
+    let (row, _) = ui.allocate_exact_size(vec2(width, TOUCH), Sense::hover());
+    let (strip, label) = row.split_left_right_at_x(row.right() - TOUCH - PAD);
+    let opacity = format!("{name} opacity");
+    let resp = hit(
+        ui,
+        controls,
+        strip,
+        &opacity,
+        Sense::click_and_drag(),
+        true,
+        None,
+    );
+    if let Some(pos) = resp.interact_pointer_pos()
+        && (resp.dragged() || resp.clicked() || resp.is_pointer_button_down_on())
+    {
+        let t = ((pos.x - strip.left()) / strip.width()).clamp(0.0, 1.0);
+        color[3] = (t * 255.0).round() as u8;
+    }
+    let bar = strip.shrink2(vec2(0.0, 8.0));
+    let painter = ui.painter();
+    paint_checker(painter, bar, bar.height() / 2.0, 0);
+    let [r, g, b, a] = *color;
+    let mut mesh = egui::Mesh::default();
+    let clear = Color32::from_rgba_unmultiplied(r, g, b, 0);
+    let solid = Color32::from_rgb(r, g, b);
+    mesh.colored_vertex(bar.left_top(), clear);
+    mesh.colored_vertex(bar.left_bottom(), clear);
+    mesh.colored_vertex(bar.right_top(), solid);
+    mesh.colored_vertex(bar.right_bottom(), solid);
+    mesh.add_triangle(0, 1, 3);
+    mesh.add_triangle(0, 3, 2);
+    painter.add(egui::Shape::mesh(mesh));
+    let x = bar.left() + a as f32 / 255.0 * bar.width();
+    let thumb = Rect::from_center_size(pos2(x, strip.center().y), vec2(8.0, TOUCH - 8.0));
+    painter.rect_filled(thumb, 3.0, theme::TEXT);
+    painter.rect_stroke(
+        thumb,
+        3.0,
+        egui::Stroke::new(1.0, Color32::BLACK),
+        egui::StrokeKind::Outside,
+    );
+    let percent = format!("{}%", (a as f32 / 2.55).round());
+    painter.text(
+        label.right_center(),
+        Align2::RIGHT_CENTER,
+        percent,
+        theme::small(),
+        theme::MUTE,
+    );
 }
 
 #[cfg(test)]

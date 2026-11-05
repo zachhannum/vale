@@ -300,16 +300,22 @@ pub fn clip_line_measured(rot: &Mat3, pts: &[V3], step: f64) -> Vec<Vec<Measured
     out
 }
 
-/// The shapes of a stroke on screen. Each point of `parts` is in screen
-/// points and carries its fraction of the whole line. `seed` picks the dabs
-/// of a brush.
+/// The shapes of a stroke on screen, and the alpha of the group that holds
+/// them. Each point of `parts` is in screen points and carries its fraction
+/// of the whole line. `seed` picks the dabs of a brush.
+///
+/// For a translucent color, the shapes are opaque, and the group alpha is
+/// the alpha of the color. The shapes must go to one layer that gets the
+/// group alpha once, so that the overlaps of the pieces do not show darker.
+/// A group alpha of 1 means that the shapes can go to the screen directly.
 pub fn stroke_shapes(
     parts: &[Vec<(Point, f64)>],
     stroke: &vale_style::Stroke,
     seed: u64,
-) -> Vec<egui::Shape> {
+) -> (Vec<egui::Shape>, f32) {
     let c = stroke.color;
-    let color = egui::Color32::from_rgba_unmultiplied(c.r, c.g, c.b, c.a);
+    let group = f32::from(c.a) / 255.0;
+    let color = egui::Color32::from_rgb(c.r, c.g, c.b);
     let width = stroke.width as f32;
     let pos = |p: Point| egui::pos2(p.x as f32, p.y as f32);
     let plain = || -> Vec<Vec<Point>> {
@@ -327,7 +333,7 @@ pub fn stroke_shapes(
             })
             .collect()
     };
-    match stroke.kind {
+    let shapes = match stroke.kind {
         StrokeKind::Solid => lines(plain()),
         StrokeKind::Dashed { dash, gap } => lines(stroke::dash(&plain(), dash, gap)),
         StrokeKind::Taper { start } => {
@@ -346,12 +352,13 @@ pub fn stroke_shapes(
         StrokeKind::Brush => stroke::brush_dabs(&plain(), stroke.width, seed)
             .into_iter()
             .map(|d| {
-                let a = (f32::from(c.a) * d.alpha).round() as u8;
+                let a = (255.0 * d.alpha).round() as u8;
                 let color = egui::Color32::from_rgba_unmultiplied(c.r, c.g, c.b, a);
                 egui::Shape::circle_filled(pos(d.center), d.radius as f32, color)
             })
             .collect(),
-    }
+    };
+    (shapes, group)
 }
 
 /// The part of a polygon on the near side of the globe.
@@ -771,7 +778,7 @@ mod tests {
         let parts = measured_line(40);
         let color = vale_style::Color::rgb(200, 0, 0);
         let shapes = |kind| {
-            stroke_shapes(
+            let (shapes, alpha) = stroke_shapes(
                 &parts,
                 &vale_style::Stroke {
                     color,
@@ -779,7 +786,9 @@ mod tests {
                     kind,
                 },
                 7,
-            )
+            );
+            assert_eq!(alpha, 1.0);
+            shapes
         };
         let solid = shapes(StrokeKind::Solid);
         assert_eq!(solid.len(), 1);
@@ -806,6 +815,68 @@ mod tests {
         );
         // The same seed gives the same brush.
         assert_eq!(brush, shapes(StrokeKind::Brush));
+    }
+
+    #[test]
+    fn a_translucent_stroke_gives_opaque_shapes_and_a_group_alpha() {
+        use egui::Shape;
+        let parts = measured_line(40);
+        let shapes = |a, kind| {
+            stroke_shapes(
+                &parts,
+                &vale_style::Stroke {
+                    color: vale_style::Color::rgba(200, 0, 0, a),
+                    width: 4.0,
+                    kind,
+                },
+                7,
+            )
+        };
+        let colors = |shapes: &[Shape]| -> Vec<egui::Color32> {
+            shapes
+                .iter()
+                .map(|s| match s {
+                    Shape::Path(p) if p.closed => p.fill,
+                    Shape::Path(p) => match &p.stroke.color {
+                        egui::epaint::ColorMode::Solid(c) => *c,
+                        other => panic!("{other:?}"),
+                    },
+                    Shape::Circle(c) => c.fill,
+                    other => panic!("{other:?}"),
+                })
+                .collect()
+        };
+        for kind in [
+            StrokeKind::Solid,
+            StrokeKind::Dashed {
+                dash: 5.0,
+                gap: 3.0,
+            },
+            StrokeKind::taper(),
+        ] {
+            let (translucent, alpha) = shapes(128, kind);
+            assert_eq!(alpha, 128.0 / 255.0);
+            assert!(
+                colors(&translucent).iter().all(|c| c.a() == 255),
+                "{kind:?}"
+            );
+            // An opaque color draws directly, with the same shapes.
+            let (opaque, alpha) = shapes(255, kind);
+            assert_eq!(alpha, 1.0);
+            assert_eq!(opaque, translucent);
+        }
+        // The dabs of a brush build up in the group, and the color alpha
+        // applies once to the group.
+        let (brush, alpha) = shapes(128, StrokeKind::Brush);
+        assert_eq!(alpha, 128.0 / 255.0);
+        let dabs = stroke::brush_dabs(&[parts[0].iter().map(|(p, _)| *p).collect()], 4.0, 7);
+        assert_eq!(brush.len(), dabs.len());
+        for (shape, d) in brush.iter().zip(&dabs) {
+            let Shape::Circle(c) = shape else { panic!() };
+            let expected =
+                egui::Color32::from_rgba_unmultiplied(200, 0, 0, (255.0 * d.alpha).round() as u8);
+            assert_eq!(c.fill, expected);
+        }
     }
 
     /// The radius of each circle of a taper, in order along the line.
@@ -853,7 +924,7 @@ mod tests {
             width,
             kind: StrokeKind::Taper { start },
         };
-        let radii = taper_radii(&stroke_shapes(&screen, &stroke, 0));
+        let radii = taper_radii(&stroke_shapes(&screen, &stroke, 0).0);
         let w0 = 2.0 * f64::from(radii[0].1);
         let expected = width * (start + (1.0 - start) * f0);
         assert!((w0 - expected).abs() < 1e-4, "{w0} and {expected}");

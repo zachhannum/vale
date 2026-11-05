@@ -3,10 +3,10 @@
 use std::ops::RangeInclusive;
 
 use crate::atlas::{
-    FrameId, FurnitureText, JsonMap, json_object, read_color, read_flag, read_number, read_string,
+    FrameId, FurnitureText, JsonMap, json_object, read_flag, read_number, read_rgba, read_string,
 };
-use crate::gpkg::hex;
-use crate::{FillPattern, Rgb, Units};
+use crate::gpkg::hex_rgba;
+use crate::{FillPattern, Rgba, Units};
 
 /// An enum of choices with a name in a project file and a UI name.
 macro_rules! choices {
@@ -232,7 +232,7 @@ pub struct ScaleBarItem {
     pub fill1: FillPattern,
     pub fill2: FillPattern,
     /// The color of the outline, the lines, and the marks.
-    pub outline: Rgb,
+    pub outline: Rgba,
     pub line_width: f64,
     pub mark_frequency: TickFrequency,
     pub mark_position: ScalePosition,
@@ -303,7 +303,7 @@ impl ScaleBarItem {
         put("bar_height", self.bar_height.into());
         put("fill1", self.fill1.value());
         put("fill2", self.fill2.value());
-        put("outline", hex(self.outline).into());
+        put("outline", hex_rgba(self.outline).into());
         put("line_width", self.line_width.into());
         put("mark_frequency", self.mark_frequency.id().into());
         put("mark_position", self.mark_position.id().into());
@@ -390,7 +390,7 @@ impl ScaleBarItem {
         if let Some(v) = map.get("fill2") {
             b.fill2 = FillPattern::read(v)?;
         }
-        read_color(&map, "outline", &mut b.outline)?;
+        read_rgba(&map, "outline", &mut b.outline)?;
         read_number(&map, "line_width", &mut b.line_width)?;
         choice(
             &map,
@@ -461,7 +461,7 @@ impl ScaleBarItem {
 
 impl Default for ScaleBarItem {
     fn default() -> Self {
-        let ink = [0x2b, 0x2b, 0x2b];
+        let ink = [0x2b, 0x2b, 0x2b, 0xff];
         ScaleBarItem {
             frame: None,
             kind: ScaleBarKind::Alternating,
@@ -476,7 +476,7 @@ impl Default for ScaleBarItem {
             fit: ScaleFit::AdjustDivisionValue,
             bar_height: 1.5,
             fill1: FillPattern::solid(ink),
-            fill2: FillPattern::solid([0xff, 0xff, 0xff]),
+            fill2: FillPattern::solid([0xff, 0xff, 0xff, 0xff]),
             outline: ink,
             line_width: 0.5,
             mark_frequency: TickFrequency::DivisionsAndFirstSubdivisions,
@@ -522,14 +522,14 @@ mod tests {
             bar_height: 2.5,
             fill1: FillPattern {
                 kind: FillKind::Hatch,
-                color: [1, 2, 3],
-                background: Some([11, 12, 13]),
+                color: [1, 2, 3, 4],
+                background: Some([11, 12, 13, 14]),
                 angle: 30.0,
                 spacing: 1.2,
                 line_width: 0.25,
             },
-            fill2: FillPattern::solid([4, 5, 6]),
-            outline: [7, 8, 9],
+            fill2: FillPattern::solid([4, 5, 6, 255]),
+            outline: [7, 8, 9, 10],
             line_width: 0.8,
             mark_frequency: TickFrequency::EndsAndZero,
             mark_position: ScalePosition::Center,
@@ -551,12 +551,11 @@ mod tests {
                 weight: 600.0,
                 italic: true,
                 size: 6.5,
-                color: [10, 20, 30],
+                color: [10, 20, 30, 128],
                 case: TextCase::AllSmallCaps,
                 letter_spacing: 0.1,
-                opacity: 0.5,
                 halo: true,
-                halo_color: [200, 210, 220],
+                halo_color: [200, 210, 220, 128],
                 halo_width: 2.5,
             },
             unit_style: FurnitureText {
@@ -587,7 +586,7 @@ mod tests {
             r##"{"font": null, "weight": 400, "italic": false, "size": 9, "color": "102030"}"##;
         let bar = ScaleBarItem::from_json(old).unwrap();
         let style = FurnitureText {
-            color: [0x10, 0x20, 0x30],
+            color: [0x10, 0x20, 0x30, 0xff],
             ..FurnitureText::sized(9.0)
         };
         assert_eq!(bar.number_style, style);
@@ -597,7 +596,7 @@ mod tests {
         // A fill that is a color is a solid fill.
         let old = r#"{"fill1": "102030", "fill2": "ffffff"}"#;
         let bar = ScaleBarItem::from_json(old).unwrap();
-        assert_eq!(bar.fill1, FillPattern::solid([0x10, 0x20, 0x30]));
+        assert_eq!(bar.fill1, FillPattern::solid([0x10, 0x20, 0x30, 0xff]));
         assert_eq!(bar.fill2, ScaleBarItem::default().fill2);
         for bad in [
             r#"{"divisions": 0}"#,

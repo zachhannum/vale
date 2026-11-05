@@ -292,3 +292,33 @@ fn an_image_draws_again_after_batches() {
         assert_eq!(gpu.data[at..at + 4], cpu.data[at..at + 4]);
     }
 }
+
+#[test]
+#[ignore = "gpu"]
+fn a_layer_applies_its_alpha_once() {
+    let mut list = DisplayList::new(50.0, 20.0);
+    let blue = Color::rgb(0, 0, 255);
+    let x = |i: i32| 10.0 + 3.0 * f64::from(i);
+    list.push(Item::Layer {
+        alpha: 0.5,
+        items: (0..8)
+            .map(|i| fill(rect_path(x(i), 0.0, x(i) + 10.0, 20.0), blue))
+            .collect(),
+    });
+    list.push(fill(rect_path(45.0, 0.0, 50.0, 20.0), blue));
+    // These limits split the scene after each item outside a layer.
+    let small = Limits {
+        tiles: 1,
+        ..Limits::default()
+    };
+    for limits in [Limits::default(), small] {
+        let (gpu, _) = render(&list, 1.0, limits);
+        let px = |x: usize| &gpu.data[(10 * 50 + x) * 4..][..4];
+        let alone = px(11);
+        assert!(alone[3].abs_diff(128) <= 1, "{alone:?}");
+        assert_eq!(alone, px(25));
+        assert_eq!(px(47), [0, 0, 255, 255]);
+        let (most, _) = compare(&gpu, &render_rgba(&list, 1.0).unwrap(), 0);
+        assert!(most <= 2, "a channel differs by {most}");
+    }
+}

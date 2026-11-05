@@ -150,6 +150,95 @@ fn draw_run(s: &mut Surface, run: &GlyphRun, fonts: &mut HashMap<(u64, u32), Opt
     }
 }
 
+/// Draws the items on a page with the bounds `page`, and closes the clips that they leave
+/// open.
+fn draw_items(
+    s: &mut Surface,
+    items: &[Item],
+    fonts: &mut HashMap<(u64, u32), Option<Font>>,
+    page: Rect,
+) -> Result<(), RenderError> {
+    // One entry for each open clip. `false` marks an empty clip, which hides all items.
+    let mut clips: Vec<bool> = Vec::new();
+    for item in items {
+        let hidden = clips.contains(&false);
+        match item {
+            Item::PushClip { path, rule } => {
+                match to_path(path).filter(|_| !hidden) {
+                    Some(p) => {
+                        s.push_clip_path(&p, &krilla_rule(*rule));
+                        clips.push(true);
+                    }
+                    None => clips.push(false),
+                }
+                continue;
+            }
+            Item::PopClip => {
+                if clips.pop() == Some(true) {
+                    s.pop();
+                }
+                continue;
+            }
+            _ if hidden => continue,
+            Item::Fill { path, color, rule } => fill_path(s, path, *color, krilla_rule(*rule)),
+            Item::Stroke {
+                path,
+                color,
+                width,
+                round,
+            } => {
+                let Some(p) = to_path(path) else { continue };
+                s.set_fill(None);
+                s.set_stroke(Some(Stroke {
+                    paint: rgb::Color::new(color.r, color.g, color.b).into(),
+                    width: *width as f32,
+                    opacity: opacity(*color),
+                    line_cap: if *round {
+                        LineCap::Round
+                    } else {
+                        LineCap::Butt
+                    },
+                    line_join: if *round {
+                        LineJoin::Round
+                    } else {
+                        LineJoin::Miter
+                    },
+                    ..Default::default()
+                }));
+                s.draw_path(&p);
+            }
+            Item::Glyphs(run) => draw_run(s, run, fonts),
+            Item::Image {
+                png,
+                rect,
+                interpolate,
+            } => draw_png(s, png.clone(), *rect, *interpolate)?,
+            Item::Layer { alpha, items } => {
+                s.push_opacity(
+                    NormalizedF32::new(alpha.clamp(0.0, 1.0)).unwrap_or(NormalizedF32::ONE),
+                );
+                let result = draw_items(s, items, fonts, page);
+                s.pop();
+                result?;
+            }
+            Item::Rasterize { bounds, items } => {
+                let crop = bounds.intersect(page);
+                if !(crop.width() > 0.0 && crop.height() > 0.0) {
+                    continue;
+                }
+                let (png, rect) = render_items_png(items, crop, RASTER_SCALE)?;
+                draw_png(s, png, rect, true)?;
+            }
+        }
+    }
+    for pushed in clips {
+        if pushed {
+            s.pop();
+        }
+    }
+    Ok(())
+}
+
 /// Pixels per point of a `Rasterize` item: 300 dpi.
 const RASTER_SCALE: f64 = 300.0 / 72.0;
 
@@ -189,79 +278,8 @@ impl PdfDocument {
             .ok_or(RenderError::EmptyPage)?;
         let mut page = self.doc.start_page_with(settings);
         let mut s = page.surface();
-        // One entry for each open clip. `false` marks an empty clip, which hides all items.
-        let mut clips: Vec<bool> = Vec::new();
-        for item in &list.items {
-            let hidden = clips.contains(&false);
-            match item {
-                Item::PushClip { path, rule } => {
-                    match to_path(path).filter(|_| !hidden) {
-                        Some(p) => {
-                            s.push_clip_path(&p, &krilla_rule(*rule));
-                            clips.push(true);
-                        }
-                        None => clips.push(false),
-                    }
-                    continue;
-                }
-                Item::PopClip => {
-                    if clips.pop() == Some(true) {
-                        s.pop();
-                    }
-                    continue;
-                }
-                _ if hidden => continue,
-                Item::Fill { path, color, rule } => {
-                    fill_path(&mut s, path, *color, krilla_rule(*rule))
-                }
-                Item::Stroke {
-                    path,
-                    color,
-                    width,
-                    round,
-                } => {
-                    let Some(p) = to_path(path) else { continue };
-                    s.set_fill(None);
-                    s.set_stroke(Some(Stroke {
-                        paint: rgb::Color::new(color.r, color.g, color.b).into(),
-                        width: *width as f32,
-                        opacity: opacity(*color),
-                        line_cap: if *round {
-                            LineCap::Round
-                        } else {
-                            LineCap::Butt
-                        },
-                        line_join: if *round {
-                            LineJoin::Round
-                        } else {
-                            LineJoin::Miter
-                        },
-                        ..Default::default()
-                    }));
-                    s.draw_path(&p);
-                }
-                Item::Glyphs(run) => draw_run(&mut s, run, &mut self.fonts),
-                Item::Image {
-                    png,
-                    rect,
-                    interpolate,
-                } => draw_png(&mut s, png.clone(), *rect, *interpolate)?,
-                Item::Rasterize { bounds, items } => {
-                    let page = Rect::new(0.0, 0.0, list.width, list.height);
-                    let crop = bounds.intersect(page);
-                    if !(crop.width() > 0.0 && crop.height() > 0.0) {
-                        continue;
-                    }
-                    let (png, rect) = render_items_png(items, crop, RASTER_SCALE)?;
-                    draw_png(&mut s, png, rect, true)?;
-                }
-            }
-        }
-        for pushed in clips {
-            if pushed {
-                s.pop();
-            }
-        }
+        let bounds = Rect::new(0.0, 0.0, list.width, list.height);
+        draw_items(&mut s, &list.items, &mut self.fonts, bounds)?;
         s.finish();
         page.finish();
         Ok(())

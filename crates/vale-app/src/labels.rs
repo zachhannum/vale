@@ -79,18 +79,14 @@ pub fn place(
                 placement: placement(c, pl.kind),
                 duplicate_distance: c.remove_duplicates.then_some(c.duplicate_distance),
             });
-            class_colors.push(fade(c.color, c.opacity));
+            class_colors.push(c.color);
             let leader = c.leader;
-            let leader_opacity = leader.opacity.clamp(0.0, 1.0) * c.opacity;
             class_leaders.push((
                 leader,
-                fade(leader.color.unwrap_or(c.color), leader_opacity),
-                fade(leader.halo_color.unwrap_or(c.halo_color), leader_opacity),
+                leader.color.unwrap_or(c.color),
+                leader.halo_color.unwrap_or(c.halo_color),
             ));
-            class_halos.push(
-                c.halo
-                    .then(|| (fade(c.halo_color, c.opacity), c.halo_width)),
-            );
+            class_halos.push(c.halo.then_some((c.halo_color, c.halo_width)));
 
             for f in &pl.features {
                 let Some(feature) = pl.layer.features.get(f.index) else {
@@ -331,12 +327,6 @@ pub fn leader_items(
         });
     }
     items
-}
-
-/// `color` with its alpha times `opacity`.
-fn fade(color: Color, opacity: f64) -> Color {
-    let a = (f64::from(color.a) * opacity.clamp(0.0, 1.0)).round() as u8;
-    Color { a, ..color }
 }
 
 /// The labeler placement of a class. A placement that does not fit `kind`

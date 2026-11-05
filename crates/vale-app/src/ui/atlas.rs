@@ -10,7 +10,7 @@ use vale_sphere::{Projection, ProjectionKind, ProjectionSpec};
 use vale_store::{
     Border, BorderStyle, CoordFormat, EdgeLabels, FrameId, FrameRecord, FrameShape, Furniture,
     FurnitureId, FurnitureRecord, FurnitureText, Graticule, LayerId, LegendItem, MapId, Neatline,
-    NorthArrowItem, PageId, PageRecord, PageUnits, Rgb, ScaleBarItem, TextItem,
+    NorthArrowItem, PageId, PageRecord, PageUnits, Rgb, Rgba, ScaleBarItem, TextItem,
 };
 
 use std::sync::Arc;
@@ -2921,9 +2921,8 @@ fn layout_grid(ui: &egui::Ui, state: &AppState, place: PagePlace, area: Rect) {
         return;
     }
     let painter = ui.painter_at(area.intersect(place.rect));
-    let [r, g, b] = grid.color;
-    let alpha = (grid.opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
-    let stroke = egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(r, g, b, alpha));
+    let [r, g, b, a] = grid.color;
+    let stroke = egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(r, g, b, a));
     let page = open_page(state);
     let (w, h) = (page.width_mm, page.height_mm);
     let mut x = grid.spacing_mm;
@@ -3099,7 +3098,7 @@ pub fn set_rotation(state: &mut AppState, id: FrameId, degrees: f64) {
 }
 
 /// The parts of a neatline as a hash key.
-fn neatline_key(b: &Neatline) -> (bool, Rgb, u64) {
+fn neatline_key(b: &Neatline) -> (bool, Rgba, u64) {
     (b.on, b.color, b.width.to_bits())
 }
 
@@ -3121,7 +3120,7 @@ pub fn set_graticule_interval(state: &mut AppState, id: FrameId, interval: Optio
     });
 }
 
-pub fn set_graticule_color(state: &mut AppState, id: FrameId, color: Rgb) {
+pub fn set_graticule_color(state: &mut AppState, id: FrameId, color: Rgba) {
     edit_frame(state, id, |f, _| {
         f.graticule.color = color;
         true
@@ -3431,7 +3430,7 @@ pub fn set_neatline(state: &mut AppState, id: FrameId, on: bool) {
     });
 }
 
-pub fn set_neatline_color(state: &mut AppState, id: FrameId, color: Rgb) {
+pub fn set_neatline_color(state: &mut AppState, id: FrameId, color: Rgba) {
     edit_frame(state, id, |f, _| {
         f.neatline.color = color;
         true
@@ -3485,7 +3484,7 @@ pub fn set_border_style(state: &mut AppState, id: FrameId, style: BorderStyle) {
 
 /// Sets the first color of the border of a frame, or the second color of a
 /// graduated border.
-pub fn set_border_color(state: &mut AppState, id: FrameId, second: bool, color: Rgb) {
+pub fn set_border_color(state: &mut AppState, id: FrameId, second: bool, color: Rgba) {
     edit_border(state, id, |b| {
         if second {
             b.color2 = color;
@@ -3586,7 +3585,7 @@ pub fn set_border_stroke(state: &mut AppState, id: FrameId, on: bool) {
     edit_border(state, id, |b| b.stroke = on);
 }
 
-pub fn set_border_stroke_color(state: &mut AppState, id: FrameId, color: Rgb) {
+pub fn set_border_stroke_color(state: &mut AppState, id: FrameId, color: Rgba) {
     edit_border(state, id, |b| b.stroke_color = color);
 }
 

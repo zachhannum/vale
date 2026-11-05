@@ -234,13 +234,8 @@ pub(crate) fn text_style(style: &FurnitureText, unit: f64, fonts: &mut Fonts) ->
     }
 }
 
-pub(crate) fn rgb([r, g, b]: [u8; 3]) -> Color {
-    Color::rgb(r, g, b)
-}
-
-/// `color` with the alpha `opacity`.
-fn faded([r, g, b]: [u8; 3], opacity: f64) -> Color {
-    Color::rgba(r, g, b, (255.0 * opacity.clamp(0.0, 1.0)).round() as u8)
+pub(crate) fn rgba([r, g, b, a]: [u8; 4]) -> Color {
+    Color::rgba(r, g, b, a)
 }
 
 /// A furniture style in a target: the labeler style, the colors, the halo,
@@ -270,11 +265,8 @@ impl TextInk {
     pub fn new(style: &FurnitureText, unit: f64, fonts: &mut Fonts) -> TextInk {
         TextInk {
             style: text_style(style, unit, fonts),
-            color: faded(style.color, style.opacity),
-            halo: (style.halo).then(|| {
-                let color = faded(style.halo_color, style.opacity);
-                (color, style.halo_width * unit)
-            }),
+            color: rgba(style.color),
+            halo: (style.halo).then(|| (rgba(style.halo_color), style.halo_width * unit)),
             case: style.case,
         }
     }
@@ -557,7 +549,7 @@ fn north_items(
     if side <= 0.0 {
         return Vec::new();
     }
-    let color = rgb(item.color);
+    let color = rgba(item.color);
     let to = Affine::translate(rect.center().to_vec2()) * Affine::rotate(angle.to_radians());
     let ink = TextInk::new(&item.letter_style, unit, fonts);
     let metrics = fonts.measure(&ink.case.apply("N"), &ink.style);

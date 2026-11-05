@@ -30,8 +30,8 @@ use crate::tile::{self, TILE_SIZE};
 use crate::undo::{self, UNDO_LIMIT};
 use crate::{
     BlendMode, Feature, Field, FieldType, Geometry, GeometryKind, Hillshade, Image, ImageId, Layer,
-    LayerId, LayerKind, LonLat, Project, Raster, RasterDisplay, RasterId, Rgb, Smoothing, Stop,
-    StopLine, SymbolRecord, Units, Uuid, Value, World, clamp_feature_size, clamp_opacity,
+    LayerId, LayerKind, LonLat, Project, Raster, RasterDisplay, RasterId, Rgb, Rgba, Smoothing,
+    Stop, StopLine, SymbolRecord, Units, Uuid, Value, World, clamp_feature_size, clamp_opacity,
 };
 
 /// The version of the `vale_` tables that this code writes.
@@ -1844,10 +1844,10 @@ fn write_atlas(tx: &Transaction, project: &Project) -> Result<(), StoreError> {
                 f.rotation,
                 f.graticule.on,
                 f.graticule.interval,
-                hex(f.graticule.color),
+                hex_rgba(f.graticule.color),
                 f.graticule.width,
                 f.neatline.on,
-                hex(f.neatline.color),
+                hex_rgba(f.neatline.color),
                 f.neatline.width,
                 f.graticule.format.id(),
                 f.graticule.meridians.to_json(),
@@ -2182,6 +2182,20 @@ pub(crate) fn parse_color(hex: &str) -> Option<Rgb> {
     ])
 }
 
+/// Reads `rrggbb` or `rrggbbaa`. A color with no alpha is opaque.
+pub(crate) fn parse_rgba(hex: &str) -> Option<Rgba> {
+    match hex.len() {
+        6 => parse_color(hex).map(|[r, g, b]| [r, g, b, 255]),
+        8 => {
+            let n = u32::from_str_radix(hex, 16).ok()?;
+            hex.bytes()
+                .all(|b| b.is_ascii_hexdigit())
+                .then_some(n.to_be_bytes())
+        }
+        _ => None,
+    }
+}
+
 fn parse_colors(text: &str) -> Option<Vec<Rgb>> {
     text.split(',')
         .filter(|s| !s.is_empty())
@@ -2196,6 +2210,14 @@ fn parse_limits(text: &str) -> Option<Vec<f64>> {
 
 pub(crate) fn hex([r, g, b]: Rgb) -> String {
     format!("{r:02x}{g:02x}{b:02x}")
+}
+
+/// The color as `rrggbb` if it is opaque, else as `rrggbbaa`.
+pub(crate) fn hex_rgba([r, g, b, a]: Rgba) -> String {
+    match a {
+        255 => hex([r, g, b]),
+        _ => format!("{r:02x}{g:02x}{b:02x}{a:02x}"),
+    }
 }
 
 /// The colors as `rrggbb`, with commas between them.
@@ -2825,7 +2847,7 @@ fn load_atlas(conn: &Connection, units: Units) -> Result<Atlas, StoreError> {
         let graticule = Graticule {
             on: r.get(9)?,
             interval,
-            color: parse_color(&color).ok_or_else(bad)?,
+            color: parse_rgba(&color).ok_or_else(bad)?,
             width,
             format: CoordFormat::from_id(&format).ok_or_else(bad)?,
             meridians: EdgeLabels::from_json(&meridians).ok_or_else(bad)?,
@@ -2838,7 +2860,7 @@ fn load_atlas(conn: &Connection, units: Units) -> Result<Atlas, StoreError> {
         }
         let neatline = Neatline {
             on: r.get(13)?,
-            color: parse_color(&border_color).ok_or_else(bad)?,
+            color: parse_rgba(&border_color).ok_or_else(bad)?,
             width: border_width,
         };
         let border: String = r.get(19)?;
@@ -3546,7 +3568,7 @@ mod tests {
             graticule: Graticule {
                 on: false,
                 interval: Some(7.5),
-                color: [0x12, 0x34, 0xab],
+                color: [0x12, 0x34, 0xab, 0x80],
                 width: 1.25,
                 format: CoordFormat::Decimal,
                 meridians: EdgeLabels {
@@ -3558,10 +3580,9 @@ mod tests {
                     weight: 700.0,
                     italic: true,
                     size: 9.5,
-                    color: [1, 2, 3],
-                    opacity: 0.5,
+                    color: [1, 2, 3, 128],
                     halo: true,
-                    halo_color: [4, 5, 6],
+                    halo_color: [4, 5, 6, 128],
                     halo_width: 1.5,
                     outside: true,
                     edges: Edges {
@@ -3577,19 +3598,19 @@ mod tests {
             },
             neatline: Neatline {
                 on: false,
-                color: [0xaa, 0x10, 0x20],
+                color: [0xaa, 0x10, 0x20, 0x40],
                 width: 3.5,
             },
             border: Border {
                 on: true,
                 style: atlas::BorderStyle::Graduated,
-                color: [9, 8, 7],
-                color2: [6, 5, 4],
+                color: [9, 8, 7, 200],
+                color2: [6, 5, 4, 255],
                 width_mm: 2.5,
                 distances_mm: [-12.5, 4.0, 4.0, 4.0],
                 gap_mm: 2.5,
                 stroke: true,
-                stroke_color: [3, 2, 1],
+                stroke_color: [3, 2, 1, 100],
                 stroke_width: 1.5,
                 grid: true,
                 grid_text: atlas::FurnitureText {
@@ -3654,7 +3675,7 @@ mod tests {
         let arrow = NorthArrowItem {
             frame: Some(frame),
             hide_if_varies: false,
-            color: [0xc0, 0x10, 0x10],
+            color: [0xc0, 0x10, 0x10, 0xff],
             ..NorthArrowItem::default()
         };
         for (rect, item) in [
@@ -3737,6 +3758,22 @@ mod tests {
 
         let (mut file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
         assert_eq!(loaded.atlas, project.atlas);
+        // A color with alpha has 8 hex digits, and an opaque color has 6.
+        let colors: Vec<(String, String)> = (file.conn)
+            .prepare("SELECT graticule_color, border_color FROM vale_frame ORDER BY id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(
+            colors.contains(&("1234ab80".into(), "aa102040".into())),
+            "{colors:?}"
+        );
+        assert!(
+            colors.contains(&("96a5af".into(), "2b2b2b".into())),
+            "{colors:?}"
+        );
         assert!(file.undo().unwrap().is_some());
         assert_eq!(file.project().atlas.maps, before.atlas.maps);
         assert_eq!(file.project().atlas.pages, before.atlas.pages);

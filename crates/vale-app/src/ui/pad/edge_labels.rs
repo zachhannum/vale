@@ -3,7 +3,7 @@
 
 use eframe::egui::{self, Rect};
 use vale_labeler::Face;
-use vale_store::{CoordFormat, EdgeLabels, EdgeOrientation, FrameId, Graticule, Rgb};
+use vale_store::{CoordFormat, EdgeLabels, EdgeOrientation, FrameId, Graticule, Rgba};
 
 use super::atlas::{FRAME_TABS, LABEL_FORMAT, LABEL_FORMATS, named_tabs, panel_width};
 use super::geometry::Rects;
@@ -29,7 +29,6 @@ pub const FONT: &str = "Font";
 pub const STYLE: &str = "Style";
 pub const SIZE: &str = "Size";
 pub const COLOR: &str = "Color";
-pub const OPACITY: &str = "Opacity";
 pub const HALO: &str = "Halo";
 pub const HALO_COLOR: &str = "Halo color";
 pub const HALO_WIDTH: &str = "Halo width";
@@ -178,13 +177,7 @@ fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id: Fr
     }
     let color = rgba(set.color);
     if let Some(c) = color_rows(ui, state, controls, (COLOR, ClassColor::EdgeText), color) {
-        edit(state, &|e| e.color = [c.r, c.g, c.b]);
-    }
-    let opacity = Number::new(OPACITY, set.opacity, 0.0..=1.0)
-        .percent()
-        .slider(ui, controls);
-    if let Some(opacity) = opacity {
-        edit(state, &|e| e.opacity = opacity);
+        edit(state, &|e| e.color = [c.r, c.g, c.b, c.a]);
     }
     let mut halo = set.halo;
     if widgets::switch_row(ui, controls, HALO, HALO, &mut halo) {
@@ -193,7 +186,7 @@ fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id: Fr
     if set.halo {
         let which = (HALO_COLOR, ClassColor::EdgeHalo);
         if let Some(c) = color_rows(ui, state, controls, which, rgba(set.halo_color)) {
-            edit(state, &|e| e.halo_color = [c.r, c.g, c.b]);
+            edit(state, &|e| e.halo_color = [c.r, c.g, c.b, c.a]);
         }
         let width = Number::new(HALO_WIDTH, set.halo_width, EdgeLabels::HALO_WIDTHS)
             .step(0.1)
@@ -262,6 +255,6 @@ fn styles_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
     }
 }
 
-fn rgba([r, g, b]: Rgb) -> vale_style::Color {
-    vale_style::Color { r, g, b, a: 255 }
+fn rgba([r, g, b, a]: Rgba) -> vale_style::Color {
+    vale_style::Color { r, g, b, a }
 }

@@ -357,14 +357,14 @@ fn paint_rows(
         rule.set_stroke(on.then_some(stroke));
     }
     if let Some(mut stroke) = rule.stroke() {
-        let mut rgb = [stroke.color.r, stroke.color.g, stroke.color.b];
-        if color_rows(ui, state, controls, (id, i, Part::Stroke), open, &mut rgb) {
-            stroke.color = Color {
-                r: rgb[0],
-                g: rgb[1],
-                b: rgb[2],
-                ..stroke.color
-            };
+        if color_rows(
+            ui,
+            state,
+            controls,
+            (id, i, Part::Stroke),
+            open,
+            &mut stroke.color,
+        ) {
             rule.set_stroke(Some(stroke));
         }
         let width = Number::new(STROKE_WIDTH, stroke.width, WIDTHS.0..=WIDTHS.1)
@@ -398,16 +398,10 @@ fn paint_rows(
         let fill = default.fill().unwrap_or(Color::rgb(200, 200, 200));
         rule.set_fill(on.then_some(fill));
     }
-    if let Some(fill) = rule.fill() {
-        let mut rgb = [fill.r, fill.g, fill.b];
-        if color_rows(ui, state, controls, (id, i, Part::Fill), open, &mut rgb) {
-            rule.set_fill(Some(Color {
-                r: rgb[0],
-                g: rgb[1],
-                b: rgb[2],
-                ..fill
-            }));
-        }
+    if let Some(mut fill) = rule.fill()
+        && color_rows(ui, state, controls, (id, i, Part::Fill), open, &mut fill)
+    {
+        rule.set_fill(Some(fill));
     }
     if kind == GeometryKind::Polygon {
         scatter_rows(ui, state, controls, (id, i), rule);
@@ -733,19 +727,16 @@ pub fn marker_fill_body(
     };
     ui.add_space(6.0);
     let open = state.pad.rules.picker.filter(|p| p.0 == id && p.1 == i);
-    let mut rgb = [fill.r, fill.g, fill.b];
+    let mut picked = fill;
     if color_rows(
         ui,
         state,
         controls,
         (id, i, Part::Marker(hatch.is_some())),
         open,
-        &mut rgb,
+        &mut picked,
     ) {
-        let [r, g, b] = rgb;
-        edit_rule(state, id, i, |rule| {
-            rule.set_fill(Some(Color { r, g, b, ..fill }));
-        });
+        edit_rule(state, id, i, |rule| rule.set_fill(Some(picked)));
     }
     let Some(mut h) = hatch else {
         return;
@@ -850,16 +841,14 @@ fn tint_rows(
     }
     let open = state.pad.rules.picker.filter(|p| p.0 == id && p.1 == i);
     if let Some(t) = tint {
-        let c = t.fallback;
-        let mut rgb = [c.r, c.g, c.b];
-        if color_rows(ui, state, controls, (id, i, Part::Tint), open, &mut rgb) {
-            t.fallback = Color {
-                r: rgb[0],
-                g: rgb[1],
-                b: rgb[2],
-                ..c
-            };
-        }
+        color_rows(
+            ui,
+            state,
+            controls,
+            (id, i, Part::Tint),
+            open,
+            &mut t.fallback,
+        );
     }
 }
 
@@ -1006,15 +995,15 @@ fn line_rows(
     }
 }
 
-/// The row of a color and, while it is open, its color picker. Returns true
-/// if the user changed the color.
+/// The row of a color and, while it is open, its color picker with an
+/// opacity strip. Returns true if the user changed the color.
 fn color_rows(
     ui: &mut egui::Ui,
     state: &mut AppState,
     controls: &mut Controls,
     this: (LayerId, usize, Part),
     open: Option<(LayerId, usize, Part)>,
-    rgb: &mut [u8; 3],
+    color: &mut Color,
 ) -> bool {
     let name = match this.2 {
         Part::Stroke => STROKE_COLOR,
@@ -1024,7 +1013,8 @@ fn color_rows(
         Part::Marker(true) => LINE_COLOR,
     };
     let is_open = open == Some(this);
-    if widgets::color_row(ui, controls, name, *rgb, is_open).clicked() {
+    let mut rgba = [color.r, color.g, color.b, color.a];
+    if widgets::color_row(ui, controls, name, rgba, is_open).clicked() {
         state.pad.rules.picker = (!is_open).then_some(this);
         // The keypad of a scale field or of the other picker closes.
         widgets::close_keypad(ui.ctx());
@@ -1034,7 +1024,10 @@ fn color_rows(
     }
     state.pad.rules.shown = true;
     ui.add_space(4.0);
-    widgets::color_picker(ui, controls, name, rgb)
+    let changed = widgets::color_picker_alpha(ui, controls, name, &mut rgba);
+    let [r, g, b, a] = rgba;
+    *color = Color { r, g, b, a };
+    changed
 }
 
 /// Closes the color picker when it did not show in this frame, with the

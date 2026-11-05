@@ -523,6 +523,82 @@ fn a_hatched_square_marker_on_the_globe_has_lines_and_gaps() {
     assert_eq!([r, g, b], [255, 0, 0]);
 }
 
+#[test]
+#[ignore = "gpu"]
+fn a_translucent_line_has_one_alpha_at_a_corner_and_a_crossing() {
+    let _gpu = one_gpu_test();
+    for pixels_per_point in [1.0, 2.0] {
+        check_translucent_line(pixels_per_point);
+    }
+}
+
+fn check_translucent_line(pixels_per_point: f32) {
+    let mut state = AppState::new(Document::empty()).unwrap();
+    state.headless = true;
+    state.globe.view = GlobeView::centered(10.0, 0.0);
+    // An even red ground under the lines.
+    let ground = state.doc.add_imported(
+        geojson::read_str(
+            "ground",
+            r#"{"type":"Polygon","coordinates":[[[-40,-40],[60,-40],[60,40],[-40,40],[-40,-40]]]}"#,
+        )
+        .unwrap(),
+        None,
+    )[0];
+    let style = &mut state.doc.entry_mut(ground).unwrap().style;
+    style.set_fill(Some(Color::rgb(255, 0, 0)));
+    style.set_stroke(None);
+    // A line with a right angle at (0, 0), and a line that crosses itself.
+    let lines = state.doc.add_imported(
+        geojson::read_str(
+            "lines",
+            r#"{"type":"MultiLineString","coordinates":[[[-30,0],[0,0],[0,30]],[[30,-30],[50,-10],[50,-30],[30,-10]]]}"#,
+        )
+        .unwrap(),
+        None,
+    )[0];
+    let style = &mut state.doc.entry_mut(lines).unwrap().style;
+    style.set_fill(None);
+    style.set_stroke(Some(Stroke::solid(Color::rgba(0, 0, 255, 128), 8.0)));
+
+    let size = (1280.0, 800.0);
+    let (img, state) = headless::ui_png(state, size, pixels_per_point.into()).unwrap();
+    std::fs::create_dir_all("../../target/app").unwrap();
+    img.save(format!(
+        "../../target/app/test-globe-translucent-line-{pixels_per_point}x.png"
+    ))
+    .unwrap();
+    let (rect, view) = (state.globe.rect, state.globe.view);
+    let pixel = |p: Pos2| img.get_pixel(p.x as u32, p.y as u32).0;
+    let at = |dir: V3| view.project(rect, dir).unwrap() * pixels_per_point;
+    let middle = pixel(at(lonlat_to_dir(-15.0, 0.0)));
+    // The line mixes with the ground.
+    assert!(middle[0] > 80 && middle[0] < 180, "{middle:?}");
+    assert!(middle[2] > 80 && middle[2] < 180, "{middle:?}");
+    let even = |center: Pos2, what: &str| {
+        for dy in -2..=2 {
+            for dx in -2..=2 {
+                let p = pixel(center + Vec2::new(dx as f32, dy as f32));
+                for c in 0..3 {
+                    let d = (i32::from(p[c]) - i32::from(middle[c])).abs();
+                    assert!(d <= 2, "{what} {dx} {dy}: {p:?} and {middle:?}");
+                }
+            }
+        }
+    };
+    even(at(lonlat_to_dir(0.0, 0.0)), "corner");
+    let (a, b) = (lonlat_to_dir(30.0, -30.0), lonlat_to_dir(50.0, -10.0));
+    let (c, d) = (lonlat_to_dir(50.0, -30.0), lonlat_to_dir(30.0, -10.0));
+    let crossing = normalize(cross(cross(a, b), cross(c, d)));
+    let crossing = if crossing[0] < 0.0 {
+        scale_v(crossing, -1.0)
+    } else {
+        crossing
+    };
+    even(at(crossing), "crossing");
+    assert_eq!(pixel(at(slerp(a, b, 0.2))), middle);
+}
+
 /// The face size of the brush tests.
 const BRUSH_FACE_SIZE: usize = 256;
 

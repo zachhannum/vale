@@ -481,3 +481,87 @@ fn pdf_keeps_symbols_vector() {
     let raw = String::from_utf8_lossy(&bytes);
     assert!(!raw.contains("/Subtype/Image"), "a symbol became an image");
 }
+
+/// Two opaque squares that overlap from x 20 to 30, in a layer with half alpha.
+fn layer_list() -> DisplayList {
+    let mut list = DisplayList::new(50.0, 20.0);
+    list.push(Item::Layer {
+        alpha: 0.5,
+        items: vec![
+            Item::Fill {
+                path: rect_path(10.0, 0.0, 30.0, 20.0),
+                color: BLUE,
+                rule: FillRule::NonZero,
+            },
+            Item::Fill {
+                path: rect_path(20.0, 0.0, 40.0, 20.0),
+                color: BLUE,
+                rule: FillRule::NonZero,
+            },
+        ],
+    });
+    list
+}
+
+#[test]
+fn a_layer_applies_its_alpha_once() {
+    let pm = render_pixmap(&layer_list(), 1.0).unwrap();
+    let alone = px(&pm, 15, 10);
+    let overlap = px(&pm, 25, 10);
+    assert!((126..=129).contains(&alone[3]), "{alone:?}");
+    assert_eq!(alone, overlap);
+    assert_eq!(px(&pm, 45, 10), [0, 0, 0, 0]);
+}
+
+#[test]
+fn a_layer_closes_the_clips_inside_it() {
+    let mut list = DisplayList::new(50.0, 20.0);
+    list.push(Item::Layer {
+        alpha: 1.0,
+        items: vec![Item::PushClip {
+            path: rect_path(0.0, 0.0, 10.0, 10.0),
+            rule: FillRule::NonZero,
+        }],
+    });
+    page_fill(&mut list, RED);
+    let pm = render_pixmap(&list, 1.0).unwrap();
+    assert_eq!(px(&pm, 45, 15), [255, 0, 0, 255]);
+}
+
+#[test]
+fn a_translucent_corner_has_the_alpha_of_its_segments() {
+    let mut list = DisplayList::new(60.0, 60.0);
+    let mut p = BezPath::new();
+    p.move_to((10.0, 10.0));
+    p.line_to((50.0, 10.0));
+    p.line_to((50.0, 50.0));
+    list.push(Item::Stroke {
+        path: p,
+        color: Color::rgba(0, 0, 255, 128),
+        width: 6.0,
+        round: true,
+    });
+    let pm = render_pixmap(&list, 1.0).unwrap();
+    let mid = px(&pm, 30, 10);
+    let corner = px(&pm, 50, 10);
+    assert!(mid[3] > 100, "{mid:?}");
+    assert_eq!(mid, corner);
+}
+
+#[test]
+fn pdf_accepts_layers() {
+    let mut list = layer_list();
+    list.push(Item::Rasterize {
+        bounds: Rect::new(0.0, 0.0, 50.0, 20.0),
+        items: layer_list().items,
+    });
+    list.push(Item::PushClip {
+        path: BezPath::new(),
+        rule: FillRule::NonZero,
+    });
+    list.items.extend(layer_list().items);
+    let bytes = render_pdf(&list).unwrap();
+    assert!(bytes.starts_with(b"%PDF-"));
+    let raw = String::from_utf8_lossy(&bytes);
+    assert!(raw.contains("/Subtype/Image"), "PDF has no image object");
+}

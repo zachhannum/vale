@@ -28,8 +28,8 @@ use crate::gpkg::{
 };
 use crate::{
     BlendMode, Feature, Field, FieldType, GeometryKind, Hillshade, Image, ImageId, Layer, LayerId,
-    LayerKind, Project, Raster, RasterDisplay, RasterId, Smoothing, Stop, StopLine, Units, Uuid,
-    Value, World, clamp_feature_size, clamp_opacity, infer_fields,
+    LayerKind, Project, Raster, RasterDisplay, RasterId, Rgba, Smoothing, Stop, StopLine, Units,
+    Uuid, Value, World, clamp_feature_size, clamp_opacity, infer_fields,
 };
 
 /// The default limit of the size of the log, in bytes of compressed images.
@@ -531,14 +531,14 @@ fn put_atlas(out: &mut Vec<u8>, atlas: &Atlas) {
                 }
                 None => out.push(0),
             }
-            out.extend_from_slice(&graticule.color);
+            out.extend_from_slice(&graticule.color[..3]);
             put_f64(out, graticule.width);
             put_bytes(out, graticule.format.id().as_bytes());
             put_bytes(out, graticule.meridians.to_json().as_bytes());
             put_bytes(out, graticule.parallels.to_json().as_bytes());
             let neatline = &frame.neatline;
             out.push(neatline.on as u8);
-            out.extend_from_slice(&neatline.color);
+            out.extend_from_slice(&neatline.color[..3]);
             put_f64(out, neatline.width);
         }
     }
@@ -600,11 +600,22 @@ fn put_atlas(out: &mut Vec<u8>, atlas: &Atlas) {
     }
     let frames: Vec<_> = atlas.pages.iter().flat_map(|p| &p.frames).collect();
     put_u32(out, frames.len());
-    for frame in frames {
+    for frame in &frames {
         put_u32(out, frame.id.0 as usize);
         put_bytes(out, frame.border.to_json().as_bytes());
     }
     put_bytes(out, atlas.grid.to_json().as_bytes());
+    // The alpha of the graticule and the neatline of each frame.
+    put_u32(out, frames.len());
+    for frame in frames {
+        put_u32(out, frame.id.0 as usize);
+        out.push(frame.graticule.color[3]);
+        out.push(frame.neatline.color[3]);
+    }
+}
+
+fn opaque([r, g, b]: [u8; 3]) -> Rgba {
+    [r, g, b, 255]
 }
 
 fn flag(r: &mut Reader) -> Option<bool> {
@@ -663,7 +674,7 @@ fn atlas(r: &mut Reader) -> Option<AtlasImage> {
                 graticule: Graticule {
                     on: flag(r)?,
                     interval: if flag(r)? { Some(r.f64()?) } else { None },
-                    color: r.take::<3>()?,
+                    color: opaque(r.take::<3>()?),
                     width: r.f64()?,
                     format: CoordFormat::from_id(&string(r)?)?,
                     meridians: EdgeLabels::from_json(&string(r)?)?,
@@ -671,7 +682,7 @@ fn atlas(r: &mut Reader) -> Option<AtlasImage> {
                 },
                 neatline: Neatline {
                     on: flag(r)?,
-                    color: r.take::<3>()?,
+                    color: opaque(r.take::<3>()?),
                     width: r.f64()?,
                 },
                 border: Border::default(),
@@ -746,6 +757,16 @@ fn atlas(r: &mut Reader) -> Option<AtlasImage> {
     let mut grid = LayoutGrid::default();
     if !r.0.is_empty() {
         grid = LayoutGrid::from_json(&string(r)?)?;
+    }
+    if !r.0.is_empty() {
+        for _ in 0..count(r)? {
+            let id = FrameId(r.u32()?);
+            let [graticule, neatline] = r.take::<2>()?;
+            let mut frames = pages.iter_mut().flat_map(|p| &mut p.frames);
+            let frame = frames.find(|f| f.id == id)?;
+            frame.graticule.color[3] = graticule;
+            frame.neatline.color[3] = neatline;
+        }
     }
     r.0.is_empty().then_some((maps, pages, presets, grid))
 }
@@ -1234,7 +1255,7 @@ mod tests {
             } else {
                 Neatline {
                     on: false,
-                    color: [0xaa, 0x10, 0x20],
+                    color: [0xaa, 0x10, 0x20, 0x40],
                     width: 3.5,
                 }
             },
@@ -1251,7 +1272,7 @@ mod tests {
         let manual = Graticule {
             on: false,
             interval: Some(7.5),
-            color: [0x12, 0x34, 0x56],
+            color: [0x12, 0x34, 0x56, 0x80],
             width: 1.25,
             format: CoordFormat::Decimal,
             parallels: EdgeLabels {
@@ -1301,8 +1322,7 @@ mod tests {
         before.grid = LayoutGrid {
             on: true,
             spacing_mm: 12.5,
-            color: [0x10, 0x20, 0x30],
-            opacity: 0.5,
+            color: [0x10, 0x20, 0x30, 0x80],
         };
         let mut out = Vec::new();
         put_atlas(&mut out, &before);
@@ -1325,8 +1345,8 @@ mod tests {
         let before = Atlas::new(Units::Metric);
         let mut out = Vec::new();
         put_atlas(&mut out, &before);
-        // The paper of one page, no frames, and the layout grid.
-        out.truncate(out.len() - 15 - 4 - before.grid.to_json().len());
+        // The paper of one page, no frames, the layout grid, and no alphas.
+        out.truncate(out.len() - 15 - 4 - before.grid.to_json().len() - 4);
         // An image of an older build ends after the projections.
         assert_eq!(out.split_off(out.len() - 12), [0; 12]);
         let image = atlas(&mut Reader(&out)).unwrap();
@@ -1340,8 +1360,8 @@ mod tests {
         before.maps[0].overrides.insert(LayerId(3), text);
         let mut out = Vec::new();
         put_atlas(&mut out, &before);
-        // The paper of one page, no frames, and the layout grid.
-        out.truncate(out.len() - 15 - 4 - before.grid.to_json().len());
+        // The paper of one page, no frames, the layout grid, and no alphas.
+        out.truncate(out.len() - 15 - 4 - before.grid.to_json().len() - 4);
         // An image of an older build ends after the overrides.
         assert_eq!(out.split_off(out.len() - 8), [0; 8]);
         let image = atlas(&mut Reader(&out)).unwrap();
@@ -1354,7 +1374,7 @@ mod tests {
         before.maps[0].labels.insert(LayerId(3), "[]".into());
         let mut out = Vec::new();
         put_atlas(&mut out, &before);
-        out.truncate(out.len() - 4 - before.grid.to_json().len());
+        out.truncate(out.len() - 4 - before.grid.to_json().len() - 4);
         // An image of an older build ends after the label classes. The rest
         // is the furniture count, one page with white paper, and no frames.
         let tail = out.split_off(out.len() - 19);
@@ -1386,10 +1406,44 @@ mod tests {
         let frame = before.frame(id).unwrap();
         let border = frame.border.to_json();
         let grid = before.grid.to_json();
-        let tail = 4 + 7 + 4 + 4 + (4 + border.len()) + (4 + grid.len());
+        let tail = 4 + 7 + 4 + 4 + (4 + border.len()) + (4 + grid.len()) + (4 + 6);
         out.truncate(out.len() - tail);
         let image = atlas(&mut Reader(&out)).unwrap();
         assert_eq!(image.1, before.pages);
+    }
+
+    #[test]
+    fn an_atlas_image_without_alphas_reads_opaque() {
+        let mut before = Atlas::new(Units::Metric);
+        let page = before.pages[0].id;
+        let frame = FrameRecord {
+            id: FrameId(0),
+            map: MapId(0),
+            shape: FrameShape::Rectangle([10.0, 10.0, 100.0, 80.0]),
+            center: [0.0, 0.0],
+            scale: 1e7,
+            rotation: 0.0,
+            graticule: Graticule {
+                color: [1, 2, 3, 4],
+                ..Graticule::default()
+            },
+            neatline: Neatline {
+                color: [5, 6, 7, 8],
+                ..Neatline::default()
+            },
+            border: Border::default(),
+        };
+        let id = before.add_frame(page, frame).unwrap();
+        let mut out = Vec::new();
+        put_atlas(&mut out, &before);
+        let image = atlas(&mut Reader(&out)).unwrap();
+        assert_eq!(image.1, before.pages);
+        // An image of an older build ends after the layout grid.
+        out.truncate(out.len() - 4 - 6);
+        let image = atlas(&mut Reader(&out)).unwrap();
+        let frame = image.1[0].frames.iter().find(|f| f.id == id).unwrap();
+        assert_eq!(frame.graticule.color, [1, 2, 3, 255]);
+        assert_eq!(frame.neatline.color, [5, 6, 7, 255]);
     }
 
     #[test]

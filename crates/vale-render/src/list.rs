@@ -99,6 +99,12 @@ pub enum Item {
         bounds: Rect,
         items: Vec<Item>,
     },
+    /// Draws the items as one group, then applies `alpha` (0 to 1) to the group once. Where
+    /// the items overlap, the alpha does not build up.
+    Layer {
+        alpha: f32,
+        items: Vec<Item>,
+    },
     /// Clips the items up to the matching `PopClip` to the inside of `path`.
     PushClip {
         path: BezPath,

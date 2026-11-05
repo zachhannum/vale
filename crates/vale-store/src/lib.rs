@@ -35,6 +35,10 @@ pub use undo::UNDO_LIMIT;
 /// A color as red, green, and blue.
 pub type Rgb = [u8; 3];
 
+/// A color as red, green, blue, and alpha. The alpha is not premultiplied,
+/// and 255 is opaque.
+pub type Rgba = [u8; 4];
+
 /// A position as `[lon, lat]` in degrees.
 pub type LonLat = [f64; 2];
 

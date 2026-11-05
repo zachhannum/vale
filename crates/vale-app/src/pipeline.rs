@@ -312,11 +312,11 @@ fn km_per_point(cache: &Cache, vt: &ViewTransform) -> f64 {
 }
 
 /// The features of a layer that one paint draws. `order` is the index of the rule and the index of the symbolizer.
-struct Batch {
-    order: (usize, usize),
-    paint: Paint,
-    /// Indices in `PageLayer::features`.
-    features: Vec<usize>,
+pub(crate) struct Batch {
+    pub order: (usize, usize),
+    pub paint: Paint,
+    /// Indices in the features that `style_batches` takes.
+    pub features: Vec<usize>,
 }
 
 /// The bits of a paint, for grouping.
@@ -403,15 +403,26 @@ fn paint_key(paint: &Paint) -> [u64; 8] {
 
 /// The batches of a layer, in draw order: rule by rule, and symbolizer by symbolizer. Features with the same paint share a batch, in the order of the features.
 fn batches(pl: &PageLayer<'_>) -> Vec<Batch> {
-    let style = &pl.entry.style.style;
-    if let Some(paints) = style.constant_paints(pl.scale) {
+    style_batches(&pl.entry.style.style, pl.scale, pl.features.len(), |i| {
+        pl.context(pl.features[i].index)
+    })
+}
+
+/// The batches of `count` features with `style` at the scale denominator `scale`, as `batches` gives them. `context` gives the style context of feature `i`.
+pub(crate) fn style_batches<'a>(
+    style: &vale_style::Style,
+    scale: f64,
+    count: usize,
+    context: impl Fn(usize) -> Context<'a>,
+) -> Vec<Batch> {
+    if let Some(paints) = style.constant_paints(scale) {
         return paints
             .into_iter()
             .enumerate()
             .map(|(i, paint)| Batch {
                 order: (0, i),
                 paint,
-                features: (0..pl.features.len()).collect(),
+                features: (0..count).collect(),
             })
             .collect();
     }
@@ -421,10 +432,10 @@ fn batches(pl: &PageLayer<'_>) -> Vec<Batch> {
         .rules
         .iter()
         .enumerate()
-        .filter(|(_, r)| r.in_scale(pl.scale))
+        .filter(|(_, r)| r.in_scale(scale))
         .collect();
-    for (i, f) in pl.features.iter().enumerate() {
-        let ctx = pl.context(f.index);
+    for i in 0..count {
+        let ctx = context(i);
         for (r, rule) in &rules {
             if !rule.filter.matches(&ctx) {
                 continue;
@@ -577,10 +588,15 @@ fn draw_batch(list: &mut DisplayList, pl: &PageLayer<'_>, batch: &Batch, sd: &mu
                     push_stroke(list, polylines_path(&parts, false), &stroke, false);
                 }
                 StrokeKind::Taper { start } if line => {
+                    // One fill for the batch, so that the alpha does not build up where two lines overlap.
+                    let mut path = BezPath::new();
                     for f in features().filter(|f| !f.lines.is_empty()) {
                         let pieces = stroke::taper(&f.lines, start * stroke.width, stroke.width);
+                        path.extend(stroke::taper_path(&pieces));
+                    }
+                    if !path.elements().is_empty() {
                         list.push(Item::Fill {
-                            path: stroke::taper_path(&pieces),
+                            path,
                             color: stroke.color,
                             rule: FillRule::NonZero,
                         });
@@ -594,8 +610,9 @@ fn draw_batch(list: &mut DisplayList, pl: &PageLayer<'_>, batch: &Batch, sd: &mu
                             let circle = Circle::new(d.center, d.radius);
                             let b = circle.bounding_box();
                             bounds = Some(bounds.map_or(b, |r| r.union(b)));
+                            // The dabs build up at full alpha, and the layer applies the alpha of the color once.
                             let mut color = stroke.color;
-                            color.a = (f32::from(color.a) * d.alpha).round() as u8;
+                            color.a = (255.0 * d.alpha).round() as u8;
                             items.push(Item::Fill {
                                 path: circle.to_path(0.1),
                                 color,
@@ -604,6 +621,15 @@ fn draw_batch(list: &mut DisplayList, pl: &PageLayer<'_>, batch: &Batch, sd: &mu
                         }
                     }
                     if let Some(bounds) = bounds {
+                        let alpha = stroke.color.a;
+                        let items = if alpha == 255 {
+                            items
+                        } else {
+                            vec![Item::Layer {
+                                alpha: f32::from(alpha) / 255.0,
+                                items,
+                            }]
+                        };
                         list.push(Item::Rasterize { bounds, items });
                     }
                 }
@@ -1499,8 +1525,8 @@ impl Pipeline {
         let step = atlas::graticule_interval(&cache.projection, frame);
         cache.ensure_graticule(step, &vt, part, frame.center[0]);
         let cache = &self.caches[0];
-        let [r, g, b] = frame.graticule.color;
-        let stroke = Stroke::solid(vale_render::Color::rgb(r, g, b), frame.graticule.width);
+        let [r, g, b, a] = frame.graticule.color;
+        let stroke = Stroke::solid(vale_render::Color::rgba(r, g, b, a), frame.graticule.width);
         let graticule = step
             .and_then(|s| cache.graticule_lines(s))
             .map(|lines| (lines, stroke));
@@ -1579,8 +1605,8 @@ impl Pipeline {
         let step = atlas::graticule_interval(&cache.projection, frame);
         cache.ensure_graticule(step, &vt, area, frame.center[0]);
         let cache = &self.caches[0];
-        let [r, g, b] = frame.graticule.color;
-        let stroke = Stroke::solid(vale_render::Color::rgb(r, g, b), frame.graticule.width);
+        let [r, g, b, a] = frame.graticule.color;
+        let stroke = Stroke::solid(vale_render::Color::rgba(r, g, b, a), frame.graticule.width);
         let graticule = step
             .and_then(|s| cache.graticule_lines(s))
             .map(|lines| (lines, stroke));
@@ -1667,10 +1693,10 @@ impl Pipeline {
         list.items.extend(edge_labels::items(&edge, false));
         list.push(Item::PopClip);
         if frame.neatline.on {
-            let [r, g, b] = frame.neatline.color;
+            let [r, g, b, a] = frame.neatline.color;
             list.push(Item::Stroke {
                 path: shape_path(&frame.shape.rings(), target),
-                color: vale_render::Color::rgb(r, g, b),
+                color: vale_render::Color::rgba(r, g, b, a),
                 width: frame.neatline.width,
                 round: false,
             });

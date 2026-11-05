@@ -30,9 +30,7 @@ use vale_app::ui::pad::atlas::{
     readout_text,
 };
 use vale_app::ui::pad::atlas::{BORDER_GAP, DISTANCE_BY_SIDE, GRID_COLUMN_NAMES, SIDE_DISTANCES};
-use vale_app::ui::pad::atlas::{
-    GRID_OPACITY, GRID_SPACING, LAYOUT_GRID, SHOW_GRID, SNAP_TO_LAYOUT,
-};
+use vale_app::ui::pad::atlas::{GRID_COLOR, GRID_SPACING, LAYOUT_GRID, SHOW_GRID, SNAP_TO_LAYOUT};
 use vale_app::ui::pad::edge_labels::{
     EDGE_LABELS, HALO as EDGE_HALO, HALO_WIDTH as EDGE_HALO_WIDTH, OFFSET as EDGE_OFFSET,
     ORIENTATIONS, PLACES, SETS, SHOW_LABELS, SIDES, SIZE as EDGE_SIZE, STYLE as EDGE_STYLE,
@@ -44,8 +42,8 @@ use vale_app::ui::pad::furniture::{
 use vale_app::ui::pad::labels::{
     ADD_CLASS, BUFFER, CASE, COLOR, CURVE_LIMIT, DELETE_CLASS, DUPLICATE_DISTANCE,
     FOLLOW_PARALLELS, HALO, HALO_COLOR, HALO_WIDTH, LABEL_SIZE, LAYER, MOVE_DOWN, MOVE_UP, OFFSET,
-    OPACITY, PLACEMENT, POSITIONS, REMOVE_DUPLICATES, REORDER, REPEAT, REPEAT_INTERVAL, SEGMENTS,
-    SMOOTHING, SPREAD, STYLE, TEXT, UPSIDE_DOWN,
+    PLACEMENT, POSITIONS, REMOVE_DUPLICATES, REORDER, REPEAT, REPEAT_INTERVAL, SEGMENTS, SMOOTHING,
+    SPREAD, STYLE, TEXT, UPSIDE_DOWN,
 };
 use vale_app::ui::pad::labels::{
     ANCHOR_GAP, AVOID_POLYGONS, DASH, DASH_GAP, DASHED, END_SIZE, LABEL_GAP, LARGEST_PART,
@@ -1584,7 +1582,7 @@ fn the_switches_of_each_map_survive_a_close_and_an_open() {
 }
 
 /// The strokes of a frame of the open page with a color and a width.
-fn strokes(h: &mut Pad, index: usize, rgb: [u8; 3], line: f64) -> usize {
+fn strokes(h: &mut Pad, index: usize, rgba: [u8; 4], line: f64) -> usize {
     use vale_app::atlas::{FrameTarget, PT_PER_MM};
     use vale_app::pipeline::{Quality, fonts};
     let page = open_page(h);
@@ -1599,7 +1597,8 @@ fn strokes(h: &mut Pad, index: usize, rgb: [u8; 3], line: f64) -> usize {
         .pipeline
         .compose_frame(&s.doc, &page, &f, target, &mut fonts, Quality::Final, None)
         .unwrap();
-    let color = vale_render::Color::rgb(rgb[0], rgb[1], rgb[2]);
+    let [r, g, b, a] = rgba;
+    let color = vale_render::Color::rgba(r, g, b, a);
     (composed.list.items.iter())
         .filter(
             |i| matches!(i, Item::Stroke { color: c, width, .. } if *c == color && *width == line),
@@ -1765,6 +1764,8 @@ fn the_graticule_controls_work_with_a_finger() {
         tap(&mut h, EDGE_STYLE);
         assert!(control(&h, &value_of(EDGE_SIZE)).is_none(), "{size:?}");
         tap(&mut h, &format!("Back to {EDGE_LABELS}"));
+        scroll_up_to(&mut h, &value_of(EDGE_SIZE));
+        scroll_to(&mut h, &value_of(EDGE_SIZE));
         assert!(control(&h, &value_of(EDGE_SIZE)).is_some(), "{size:?}");
 
         scroll_up_to(&mut h, SHOW_LABELS);
@@ -1795,7 +1796,7 @@ fn the_graticule_settings_survive_a_close_and_an_open() {
     let (main, inset) = (frame(&h, 0).id, frame(&h, 1).id);
     let st = h.state_mut();
     set_graticule_interval(st, main, Some(5.0 / 60.0));
-    set_graticule_color(st, main, [10, 20, 30]);
+    set_graticule_color(st, main, [10, 20, 30, 128]);
     set_graticule_width(st, main, 1.3);
     set_graticule_format(st, main, CoordFormat::Decimal);
     edit_edge_labels(st, main, EdgeSet::Parallels, |e| {
@@ -1817,7 +1818,7 @@ fn the_graticule_settings_survive_a_close_and_an_open() {
     let g = &doc.project.atlas.frame(main).unwrap().graticule;
     assert!(g.on);
     assert_eq!(g.interval, Some(5.0 / 60.0));
-    assert_eq!(g.color, [10, 20, 30]);
+    assert_eq!(g.color, [10, 20, 30, 128]);
     assert_eq!(g.width, 1.3);
     assert_eq!(g.format, CoordFormat::Decimal);
     assert!(g.parallels.outside && g.parallels.halo && !g.parallels.edges.left);
@@ -1909,7 +1910,7 @@ fn the_neatline_survives_a_close_and_an_open() {
     add_frame(&mut h);
     let (main, inset) = (frame(&h, 0).id, frame(&h, 1).id);
     let st = h.state_mut();
-    set_neatline_color(st, main, [10, 20, 30]);
+    set_neatline_color(st, main, [10, 20, 30, 128]);
     set_neatline_width(st, main, 2.32);
     set_neatline(st, inset, false);
     h.run_steps(2);
@@ -1922,7 +1923,7 @@ fn the_neatline_survives_a_close_and_an_open() {
     assert_eq!(doc.project.atlas, project.atlas);
     let b = &doc.project.atlas.frame(main).unwrap().neatline;
     assert!(b.on);
-    assert_eq!(b.color, [10, 20, 30]);
+    assert_eq!(b.color, [10, 20, 30, 128]);
     assert_eq!(b.width, 2.3);
     assert!(!doc.project.atlas.frame(inset).unwrap().neatline.on);
 }
@@ -2156,8 +2157,8 @@ fn the_screen_draws_the_line_widths_of_the_page_at_each_zoom() {
             "zoom {zoom}"
         );
         let list = &composed.list;
-        let wide = |c: [u8; 3], w: f64| {
-            let c = vale_render::Color::rgb(c[0], c[1], c[2]);
+        let wide = |c: [u8; 4], w: f64| {
+            let c = vale_render::Color::rgba(c[0], c[1], c[2], c[3]);
             (list.items.iter()).any(
                 |i| matches!(i, Item::Stroke { color, width, .. } if *color == c && *width == w),
             )
@@ -2365,11 +2366,11 @@ fn rivers_width(h: &Pad, map: Option<MapId>) -> f64 {
     style.style.rules[0].stroke().unwrap().width
 }
 
-fn rivers_rgb(h: &Pad) -> [u8; 3] {
+fn rivers_rgb(h: &Pad) -> [u8; 4] {
     let rivers = layer_id(h, "Rivers");
     let style = &h.state().doc.entry(rivers).unwrap().style;
     let c = style.style.rules[0].stroke().unwrap().color;
-    [c.r, c.g, c.b]
+    [c.r, c.g, c.b, c.a]
 }
 
 fn overrides(h: &Pad, map: MapId) -> vale_style::Overrides {
@@ -2393,7 +2394,7 @@ fn widen(h: &mut Pad) {
 }
 
 /// The strokes of the flat view with a color and a width.
-fn flat_strokes(h: &mut Pad, rgb: [u8; 3], line: f64) -> usize {
+fn flat_strokes(h: &mut Pad, rgba: [u8; 4], line: f64) -> usize {
     use vale_app::pipeline::{Quality, fonts};
     let mut fonts = fonts().unwrap();
     let s = h.state_mut();
@@ -2401,7 +2402,8 @@ fn flat_strokes(h: &mut Pad, rgb: [u8; 3], line: f64) -> usize {
         .pipeline
         .compose(&s.doc, (1200.0, 800.0), &mut fonts, Quality::Final, None)
         .unwrap();
-    let color = vale_render::Color::rgb(rgb[0], rgb[1], rgb[2]);
+    let [r, g, b, a] = rgba;
+    let color = vale_render::Color::rgba(r, g, b, a);
     (composed.list.items.iter())
         .filter(
             |i| matches!(i, Item::Stroke { color: c, width, .. } if *c == color && *width == line),
@@ -2513,9 +2515,9 @@ fn a_change_of_the_style_of_the_layer_keeps_each_override() {
     let style = h.state().doc.map_style(inset, rivers).unwrap();
     assert_eq!(style.style.rules[0].stroke().unwrap().color, red);
     assert_eq!(rivers_width(&h, Some(inset)), width);
-    assert!(strokes(&mut h, 1, [200, 10, 10], width) > 0);
+    assert!(strokes(&mut h, 1, [200, 10, 10, 255], width) > 0);
     let base = rivers_width(&h, None);
-    assert!(strokes(&mut h, 0, [200, 10, 10], base) > 0);
+    assert!(strokes(&mut h, 0, [200, 10, 10, 255], base) > 0);
     assert!(overrides(&h, main).is_empty());
 }
 
@@ -3576,19 +3578,16 @@ fn the_halo_has_a_color_and_a_width() {
 }
 
 #[test]
-fn the_opacity_fades_the_text() {
+fn the_alpha_of_the_text_color_reaches_the_label() {
     let mut h = labels_pad(BOARDS[0]);
     let map = frame(&h, 0).map;
     tap(&mut h, "Places");
-    set_number(&mut h, OPACITY, "50");
+    // The Text section has no opacity slider. The color holds the opacity.
+    assert!(control(&h, &value_of("Opacity")).is_none());
+    pick_opacity(&mut h, COLOR, 0.5);
     let class = classes(&h, map, "Places")[0].clone();
-    assert!(
-        class.opacity > 0.2 && class.opacity < 0.8,
-        "{}",
-        class.opacity
-    );
-    let alpha = (255.0 * class.opacity).round() as u8;
-    let halo = (217.0 * class.opacity).round() as u8;
+    let alpha = class.color.a;
+    assert!((alpha as i32 - 128).abs() <= 2, "{alpha}");
     let runs = label_runs(&mut h, 0);
     let rgb = |c: vale_render::Color| (c.r, c.g, c.b);
     let places: Vec<_> = (runs.iter())
@@ -3596,8 +3595,9 @@ fn the_opacity_fades_the_text() {
         .collect();
     assert!(!places.is_empty());
     assert!(places.iter().all(|g| g.color.a == alpha));
-    let faded = vale_render::Color::rgba(255, 255, 255, halo);
-    assert_eq!(halo_strokes(&mut h, 0, faded, 2.2), places.len());
+    // The halo keeps its own alpha.
+    let halo = class.halo_color;
+    assert!(halo_strokes(&mut h, 0, halo, 2.2) >= places.len());
 }
 
 #[test]
@@ -3800,7 +3800,7 @@ fn the_class_page_has_text_placement_and_conflict_segments() {
     };
     assert_eq!(h.state().atlas.label_segment, ClassSegment::Text);
     let size = value_of(LABEL_SIZE);
-    for name in [TEXT, FONT, STYLE, &size, CASE, OPACITY, HALO] {
+    for name in [TEXT, FONT, STYLE, &size, CASE, COLOR, HALO] {
         assert!(shows(&mut h, name), "{name}");
     }
     let (offset, buffer) = (value_of(OFFSET), value_of(BUFFER));
@@ -4639,18 +4639,16 @@ fn the_leader_line_style_reaches_the_display_list() {
     let items = leader_frame(&mut h, map, LeaderStyle { width: 2.0, ..base });
     assert_eq!(strokes_in(&items, LEADER_COLOR)[0].1, 2.0);
 
-    let items = leader_frame(
-        &mut h,
-        map,
-        LeaderStyle {
-            opacity: 0.5,
-            ..base
-        },
-    );
+    // The alpha of the leader color reaches the strokes.
     let half = vale_render::Color {
         a: 128,
         ..LEADER_COLOR
     };
+    let faded = LeaderStyle {
+        color: Some(half),
+        ..base
+    };
+    let items = leader_frame(&mut h, map, faded);
     assert_eq!(strokes_in(&items, half).len(), lines.len());
 
     let dashed = LeaderStyle {
@@ -4742,6 +4740,20 @@ fn pick_color(h: &mut Pad, name: &str) {
     tap(h, name);
 }
 
+/// Opens the color picker of the color row `name`, taps its opacity strip
+/// at the fraction `t` of its width, and closes the picker.
+fn pick_opacity(h: &mut Pad, name: &str, t: f32) {
+    scroll_to(h, name);
+    tap(h, name);
+    let strip = format!("{name} opacity");
+    scroll_to(h, &strip);
+    let rect = control(h, &strip).unwrap();
+    let at = pos2(rect.left() + t * rect.width(), rect.center().y);
+    tap_with(h, at, Input::Finger);
+    scroll_up_to(h, name);
+    tap(h, name);
+}
+
 /// Scrolls to the control `name` and taps it.
 fn scroll_tap(h: &mut Pad, name: &str) {
     scroll_up_to(h, name);
@@ -4773,7 +4785,8 @@ fn the_leader_line_page_edits_the_style() {
     assert_ne!((color.r, color.g, color.b), (text.r, text.g, text.b));
 
     set_number(&mut h, LINE_WIDTH, "2");
-    set_number(&mut h, OPACITY, "50");
+    assert!(control(&h, &value_of("Opacity")).is_none());
+    pick_opacity(&mut h, COLOR, 0.5);
     scroll_tap(&mut h, DASHED);
     set_number(&mut h, DASH, "4");
     set_number(&mut h, DASH_GAP, "1");
@@ -4790,7 +4803,12 @@ fn the_leader_line_page_edits_the_style() {
     set_number(&mut h, ANCHOR_GAP, "1");
 
     let l = leader(&h);
-    assert_eq!((l.width, l.opacity), (2.0, 0.5));
+    assert_eq!(l.width, 2.0);
+    assert!(
+        (l.color.unwrap().a as i32 - 128).abs() <= 2,
+        "{:?}",
+        l.color
+    );
     assert!(l.dashed);
     assert_eq!((l.dash, l.dash_gap), (4.0, 1.0));
     assert!(l.halo);
@@ -4842,7 +4860,6 @@ fn the_leader_line_page_works_with_a_finger() {
             MATCH_TEXT.to_owned(),
             COLOR.to_owned(),
             value_of(LINE_WIDTH),
-            value_of(OPACITY),
             DASHED.to_owned(),
             value_of(DASH),
             value_of(DASH_GAP),
@@ -5545,7 +5562,7 @@ fn the_fill_page_sets_a_hatch_with_a_finger() {
         tap_row(&mut h, FillKind::CrossHatch.label());
         let b = bar(&h, 0);
         assert_eq!(b.fill2.kind, FillKind::CrossHatch);
-        assert_eq!(b.fill2.background, Some([0xff, 0xff, 0xff]));
+        assert_eq!(b.fill2.background, Some([0xff, 0xff, 0xff, 0xff]));
         assert_eq!(b.fill2.color, b.outline);
         tap_row(&mut h, item::BACKGROUND);
         assert_eq!(bar(&h, 0).fill2.background, None);
@@ -5572,7 +5589,7 @@ fn the_fill_page_sets_a_hatch_with_a_finger() {
         tap(&mut h, "Undo");
         assert_eq!(bar(&h, 0).fill2.spacing, FillPattern::default().spacing);
         tap(&mut h, "Undo");
-        assert_eq!(bar(&h, 0).fill2.background, Some([0xff, 0xff, 0xff]));
+        assert_eq!(bar(&h, 0).fill2.background, Some([0xff, 0xff, 0xff, 0xff]));
         tap(&mut h, "Undo");
         assert_eq!(bar(&h, 0).fill2.kind, FillKind::Solid);
         if prefix == "pad" {
@@ -6076,9 +6093,9 @@ fn frames_snap_to_the_layout_grid_of_the_page_panel() {
     scroll_to(&mut h, LAYOUT_GRID);
     assert!(control(&h, GRID_SPACING).is_none());
     tap(&mut h, LAYOUT_GRID);
-    scroll_to(&mut h, GRID_OPACITY);
+    scroll_to(&mut h, GRID_COLOR);
     assert!(h.state().doc.project.atlas.grid.on);
-    for name in [GRID_SPACING, GRID_OPACITY] {
+    for name in [GRID_SPACING, GRID_COLOR] {
         assert!(control(&h, name).is_some(), "{name}");
     }
     check_controls(&h, "page panel with the grid");

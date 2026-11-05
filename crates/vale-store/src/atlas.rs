@@ -6,9 +6,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::RangeInclusive;
 
-use crate::gpkg::{Reader, hex, parse_color};
+use crate::gpkg::{Reader, hex_rgba, parse_rgba};
 pub use crate::scale_bar::ScaleBarItem;
-use crate::{LayerId, LonLat, Rgb, Units};
+use crate::{LayerId, LonLat, Rgb, Rgba, Units};
 
 /// The ID of a map.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -145,7 +145,7 @@ pub struct FrameRecord {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Neatline {
     pub on: bool,
-    pub color: Rgb,
+    pub color: Rgba,
     /// The line width in points.
     pub width: f64,
 }
@@ -159,7 +159,7 @@ impl Default for Neatline {
     fn default() -> Self {
         Neatline {
             on: true,
-            color: [0x2b, 0x2b, 0x2b],
+            color: [0x2b, 0x2b, 0x2b, 0xff],
             width: 1.0,
         }
     }
@@ -172,9 +172,7 @@ pub struct LayoutGrid {
     pub on: bool,
     /// The distance between two lines.
     pub spacing_mm: f64,
-    pub color: Rgb,
-    /// From 0 to 1.
-    pub opacity: f64,
+    pub color: Rgba,
 }
 
 impl LayoutGrid {
@@ -186,22 +184,25 @@ impl LayoutGrid {
         serde_json::json!({
             "on": self.on,
             "spacing": self.spacing_mm,
-            "color": hex(self.color),
-            "opacity": self.opacity,
+            "color": hex_rgba(self.color),
         })
         .to_string()
     }
 
     /// Reads [`LayoutGrid::to_json`]. A missing key gets its default. `None`
-    /// if a value is bad.
+    /// if a value is bad. An old key `opacity` multiplies the alpha.
     pub fn from_json(text: &str) -> Option<LayoutGrid> {
         let map = json_object(text)?;
         let mut g = LayoutGrid::default();
         read_flag(&map, "on", &mut g.on)?;
         read_number(&map, "spacing", &mut g.spacing_mm)?;
-        read_color(&map, "color", &mut g.color)?;
-        read_number(&map, "opacity", &mut g.opacity)?;
-        (g.spacing_mm > 0.0 && (0.0..=1.0).contains(&g.opacity)).then_some(g)
+        if map.contains_key("opacity") {
+            // The default color of an old grid is opaque.
+            g.color[3] = 255;
+        }
+        read_rgba(&map, "color", &mut g.color)?;
+        read_old_opacity(&map, &mut [&mut g.color])?;
+        (g.spacing_mm > 0.0).then_some(g)
     }
 }
 
@@ -210,8 +211,7 @@ impl Default for LayoutGrid {
         LayoutGrid {
             on: false,
             spacing_mm: 10.0,
-            color: [0x3d, 0x8b, 0xfd],
-            opacity: 0.35,
+            color: [0x3d, 0x8b, 0xfd, 89],
         }
     }
 }
@@ -222,9 +222,9 @@ impl Default for LayoutGrid {
 pub struct Border {
     pub on: bool,
     pub style: BorderStyle,
-    pub color: Rgb,
+    pub color: Rgba,
     /// The second color of a graduated band.
-    pub color2: Rgb,
+    pub color2: Rgba,
     /// The width of the band in millimeters.
     pub width_mm: f64,
     /// The distance in millimeters from the bounding box to the band, at
@@ -236,7 +236,7 @@ pub struct Border {
     pub gap_mm: f64,
     /// A line on the inner and the outer edge of the band.
     pub stroke: bool,
-    pub stroke_color: Rgb,
+    pub stroke_color: Rgba,
     /// The stroke width in points.
     pub stroke_width: f64,
     /// The reference grid: a letter in the band for each interval of the
@@ -315,14 +315,14 @@ impl Border {
         serde_json::json!({
             "on": self.on,
             "style": self.style.id(),
-            "color": hex(self.color),
-            "color2": hex(self.color2),
+            "color": hex_rgba(self.color),
+            "color2": hex_rgba(self.color2),
             "width": self.width_mm,
             "distances": self.distances_mm,
             "gap": self.gap_mm,
             "grid_columns": self.grid_columns.id(),
             "stroke": self.stroke,
-            "stroke_color": hex(self.stroke_color),
+            "stroke_color": hex_rgba(self.stroke_color),
             "stroke_width": self.stroke_width,
             "grid": self.grid,
             "grid_text": self.grid_text.value(),
@@ -339,8 +339,8 @@ impl Border {
         if let Some(v) = map.get("style") {
             b.style = BorderStyle::from_id(v.as_str()?)?;
         }
-        read_color(&map, "color", &mut b.color)?;
-        read_color(&map, "color2", &mut b.color2)?;
+        read_rgba(&map, "color", &mut b.color)?;
+        read_rgba(&map, "color2", &mut b.color2)?;
         read_number(&map, "width", &mut b.width_mm)?;
         if let Some(v) = map.get("distances") {
             let list = v.as_array().filter(|l| l.len() == 4)?;
@@ -353,7 +353,7 @@ impl Border {
             b.grid_columns = GridColumns::from_id(v.as_str()?)?;
         }
         read_flag(&map, "stroke", &mut b.stroke)?;
-        read_color(&map, "stroke_color", &mut b.stroke_color)?;
+        read_rgba(&map, "stroke_color", &mut b.stroke_color)?;
         read_number(&map, "stroke_width", &mut b.stroke_width)?;
         read_flag(&map, "grid", &mut b.grid)?;
         b.grid_text = b.grid_text.read_key(&map, "grid_text")?;
@@ -366,17 +366,17 @@ impl Default for Border {
         Border {
             on: false,
             style: BorderStyle::Solid,
-            color: [0xc9, 0xaa, 0xa0],
-            color2: [0xff, 0xff, 0xff],
+            color: [0xc9, 0xaa, 0xa0, 0xff],
+            color2: [0xff, 0xff, 0xff, 0xff],
             width_mm: 2.0,
             distances_mm: [8.0; 4],
             gap_mm: 1.0,
             stroke: false,
-            stroke_color: [0x2b, 0x2b, 0x2b],
+            stroke_color: [0x2b, 0x2b, 0x2b, 0xff],
             stroke_width: 0.5,
             grid: false,
             grid_text: FurnitureText {
-                color: [0x2b, 0x2b, 0x2b],
+                color: [0x2b, 0x2b, 0x2b, 0xff],
                 ..FurnitureText::sized(5.0)
             },
             grid_columns: GridColumns::Letters,
@@ -391,7 +391,7 @@ pub struct Graticule {
     /// Degrees between two lines. `None`: the frame picks the interval from
     /// its scale.
     pub interval: Option<f64>,
-    pub color: Rgb,
+    pub color: Rgba,
     /// The line width in points.
     pub width: f64,
     pub format: CoordFormat,
@@ -411,11 +411,9 @@ pub struct EdgeLabels {
     pub italic: bool,
     /// The text size in points.
     pub size: f64,
-    pub color: Rgb,
-    /// 0 to 1.
-    pub opacity: f64,
+    pub color: Rgba,
     pub halo: bool,
-    pub halo_color: Rgb,
+    pub halo_color: Rgba,
     /// The halo width in points.
     pub halo_width: f64,
     /// The labels are outside the shape of the frame, not inside it.
@@ -478,10 +476,9 @@ impl EdgeLabels {
             "weight": self.weight,
             "italic": self.italic,
             "size": self.size,
-            "color": hex(self.color),
-            "opacity": self.opacity,
+            "color": hex_rgba(self.color),
             "halo": self.halo,
-            "halo_color": hex(self.halo_color),
+            "halo_color": hex_rgba(self.halo_color),
             "halo_width": self.halo_width,
             "outside": self.outside,
             "edges": {
@@ -497,7 +494,8 @@ impl EdgeLabels {
     }
 
     /// Reads [`EdgeLabels::to_json`]. A missing key gets its default, and
-    /// an unknown key is ignored. `None` if a value is bad.
+    /// an unknown key is ignored. `None` if a value is bad. An old key
+    /// `opacity` multiplies the alpha of the text and the halo.
     pub fn from_json(text: &str) -> Option<EdgeLabels> {
         let value: serde_json::Value = serde_json::from_str(text).ok()?;
         let map = value.as_object()?;
@@ -514,12 +512,6 @@ impl EdgeLabels {
             }
             Some(())
         };
-        let color = |key: &str, to: &mut Rgb| -> Option<()> {
-            if let Some(v) = map.get(key) {
-                *to = parse_color(v.as_str()?)?;
-            }
-            Some(())
-        };
         flag("on", &mut e.on)?;
         match map.get("font") {
             None | Some(serde_json::Value::Null) => {}
@@ -530,10 +522,10 @@ impl EdgeLabels {
         e.weight = weight as f32;
         flag("italic", &mut e.italic)?;
         number("size", &mut e.size)?;
-        color("color", &mut e.color)?;
-        number("opacity", &mut e.opacity)?;
+        read_rgba(map, "color", &mut e.color)?;
         flag("halo", &mut e.halo)?;
-        color("halo_color", &mut e.halo_color)?;
+        read_rgba(map, "halo_color", &mut e.halo_color)?;
+        read_old_opacity(map, &mut [&mut e.color, &mut e.halo_color])?;
         number("halo_width", &mut e.halo_width)?;
         flag("outside", &mut e.outside)?;
         if let Some(edges) = map.get("edges") {
@@ -553,11 +545,7 @@ impl EdgeLabels {
         if let Some(v) = map.get("orientation") {
             e.orientation = EdgeOrientation::from_id(v.as_str()?)?;
         }
-        let valid = e.size > 0.0
-            && e.halo_width > 0.0
-            && e.offset >= 0.0
-            && (0.0..=1.0).contains(&e.opacity)
-            && e.weight > 0.0;
+        let valid = e.size > 0.0 && e.halo_width > 0.0 && e.offset >= 0.0 && e.weight > 0.0;
         valid.then_some(e)
     }
 }
@@ -570,10 +558,9 @@ impl Default for EdgeLabels {
             weight: 400.0,
             italic: false,
             size: 7.0,
-            color: [0x4b, 0x52, 0x57],
-            opacity: 1.0,
+            color: [0x4b, 0x52, 0x57, 0xff],
             halo: false,
-            halo_color: [0xff, 0xff, 0xff],
+            halo_color: [0xff, 0xff, 0xff, 0xff],
             halo_width: 2.0,
             outside: false,
             edges: Edges {
@@ -624,7 +611,7 @@ impl Default for Graticule {
         Graticule {
             on: true,
             interval: None,
-            color: [0x96, 0xa5, 0xaf],
+            color: [0x96, 0xa5, 0xaf, 0xff],
             width: 0.5,
             format: CoordFormat::Dms,
             meridians: EdgeLabels::default(),
@@ -666,14 +653,12 @@ pub struct FurnitureText {
     pub italic: bool,
     /// The text size in points.
     pub size: f64,
-    pub color: Rgb,
+    pub color: Rgba,
     pub case: TextCase,
     /// A fraction of `size`. 0.05 adds 5 % of the size between letters.
     pub letter_spacing: f64,
-    /// 0 to 1, for the text and its halo.
-    pub opacity: f64,
     pub halo: bool,
-    pub halo_color: Rgb,
+    pub halo_color: Rgba,
     /// The halo width in points.
     pub halo_width: f64,
 }
@@ -808,7 +793,7 @@ pub struct NorthArrowItem {
     /// The arrow is not shown if the direction of north is not the same
     /// across the frame.
     pub hide_if_varies: bool,
-    pub color: Rgb,
+    pub color: Rgba,
     /// The style of the letter N.
     pub letter_style: FurnitureText,
 }
@@ -894,9 +879,24 @@ pub(crate) fn read_number(map: &JsonMap, key: &str, to: &mut f64) -> Option<()> 
     Some(())
 }
 
-pub(crate) fn read_color(map: &JsonMap, key: &str, to: &mut Rgb) -> Option<()> {
+/// Reads a color with or without alpha.
+pub(crate) fn read_rgba(map: &JsonMap, key: &str, to: &mut Rgba) -> Option<()> {
     if let Some(v) = map.get(key) {
-        *to = parse_color(v.as_str()?)?;
+        *to = parse_rgba(v.as_str()?)?;
+    }
+    Some(())
+}
+
+/// Multiplies the alpha of `colors` by the key `opacity` of an old file.
+/// `None` if the opacity is not from 0 to 1.
+pub(crate) fn read_old_opacity(map: &JsonMap, colors: &mut [&mut Rgba]) -> Option<()> {
+    let mut opacity = 1.0;
+    read_number(map, "opacity", &mut opacity)?;
+    if !(0.0..=1.0).contains(&opacity) {
+        return None;
+    }
+    for c in colors {
+        c[3] = (f64::from(c[3]) * opacity).round() as u8;
     }
     Some(())
 }
@@ -930,15 +930,14 @@ impl FurnitureText {
         map.insert("weight".into(), serde_json::json!(self.weight));
         map.insert("italic".into(), self.italic.into());
         map.insert("size".into(), serde_json::json!(self.size));
-        map.insert("color".into(), hex(self.color).into());
+        map.insert("color".into(), hex_rgba(self.color).into());
         map.insert("case".into(), self.case.id().into());
         map.insert(
             "letter_spacing".into(),
             serde_json::json!(self.letter_spacing),
         );
-        map.insert("opacity".into(), serde_json::json!(self.opacity));
         map.insert("halo".into(), self.halo.into());
-        map.insert("halo_color".into(), hex(self.halo_color).into());
+        map.insert("halo_color".into(), hex_rgba(self.halo_color).into());
         map.insert("halo_width".into(), serde_json::json!(self.halo_width));
     }
 
@@ -949,7 +948,8 @@ impl FurnitureText {
         serde_json::Value::Object(map)
     }
 
-    /// Reads the keys of the style from `map` over `self`.
+    /// Reads the keys of the style from `map` over `self`. An old key
+    /// `opacity` multiplies the alpha of the text and the halo.
     pub(crate) fn read(mut self, map: &JsonMap) -> Option<FurnitureText> {
         match map.get("font") {
             None | Some(serde_json::Value::Null) => {}
@@ -960,19 +960,16 @@ impl FurnitureText {
         self.weight = weight as f32;
         read_flag(map, "italic", &mut self.italic)?;
         read_number(map, "size", &mut self.size)?;
-        read_color(map, "color", &mut self.color)?;
+        read_rgba(map, "color", &mut self.color)?;
         if let Some(v) = map.get("case") {
             self.case = TextCase::from_id(v.as_str()?)?;
         }
         read_number(map, "letter_spacing", &mut self.letter_spacing)?;
-        read_number(map, "opacity", &mut self.opacity)?;
         read_flag(map, "halo", &mut self.halo)?;
-        read_color(map, "halo_color", &mut self.halo_color)?;
+        read_rgba(map, "halo_color", &mut self.halo_color)?;
         read_number(map, "halo_width", &mut self.halo_width)?;
-        let valid = self.size > 0.0
-            && self.weight > 0.0
-            && self.halo_width > 0.0
-            && (0.0..=1.0).contains(&self.opacity);
+        read_old_opacity(map, &mut [&mut self.color, &mut self.halo_color])?;
+        let valid = self.size > 0.0 && self.weight > 0.0 && self.halo_width > 0.0;
         valid.then_some(self)
     }
 
@@ -993,12 +990,11 @@ impl Default for FurnitureText {
             weight: 400.0,
             italic: false,
             size: 10.0,
-            color: [0x2b, 0x2b, 0x2b],
+            color: [0x2b, 0x2b, 0x2b, 0xff],
             case: TextCase::Normal,
             letter_spacing: 0.0,
-            opacity: 1.0,
             halo: false,
-            halo_color: [0xff, 0xff, 0xff],
+            halo_color: [0xff, 0xff, 0xff, 0xff],
             halo_width: 1.5,
         }
     }
@@ -1125,7 +1121,7 @@ impl NorthArrowItem {
     pub fn to_json(&self) -> String {
         serde_json::json!({
             "hide_if_varies": self.hide_if_varies,
-            "color": hex(self.color),
+            "color": hex_rgba(self.color),
             "letter_style": self.letter_style.value(),
         })
         .to_string()
@@ -1137,7 +1133,7 @@ impl NorthArrowItem {
         let map = json_object(text)?;
         let mut item = NorthArrowItem::default();
         read_flag(&map, "hide_if_varies", &mut item.hide_if_varies)?;
-        read_color(&map, "color", &mut item.color)?;
+        read_rgba(&map, "color", &mut item.color)?;
         item.letter_style = item.letter_style.read_key(&map, "letter_style")?;
         Some(item)
     }
@@ -1148,7 +1144,7 @@ impl Default for NorthArrowItem {
         NorthArrowItem {
             frame: None,
             hide_if_varies: true,
-            color: [0x2b, 0x2b, 0x2b],
+            color: [0x2b, 0x2b, 0x2b, 0xff],
             letter_style: FurnitureText {
                 weight: 600.0,
                 ..FurnitureText::sized(9.0)
@@ -1504,10 +1500,9 @@ mod tests {
             weight: 600.0,
             italic: true,
             size: 8.5,
-            color: [10, 20, 30],
-            opacity: 0.75,
+            color: [10, 20, 30, 191],
             halo: true,
-            halo_color: [200, 210, 220],
+            halo_color: [200, 210, 220, 255],
             halo_width: 1.5,
             outside: true,
             edges: Edges {
@@ -1520,7 +1515,12 @@ mod tests {
             orientation: EdgeOrientation::Horizontal,
             ..EdgeLabels::default()
         };
-        assert_eq!(EdgeLabels::from_json(&set.to_json()), Some(set));
+        // A color with alpha is 8 hex digits, and an opaque color is 6.
+        let json = set.to_json();
+        assert!(json.contains(r#""color":"0a141ebf""#), "{json}");
+        assert!(json.contains(r#""halo_color":"c8d2dc""#), "{json}");
+        assert!(!json.contains("opacity"), "{json}");
+        assert_eq!(EdgeLabels::from_json(&json), Some(set));
         assert_eq!(EdgeLabels::from_json("{}"), Some(EdgeLabels::default()));
         let unknown = EdgeLabels::from_json(r#"{"size": 9, "future": 1}"#).unwrap();
         assert_eq!(unknown.size, 9.0);
@@ -1710,12 +1710,11 @@ mod tests {
             weight: 700.0,
             italic: true,
             size: 14.5,
-            color: [10, 20, 30],
+            color: [10, 20, 30, 153],
             case: TextCase::SmallCaps,
             letter_spacing: 0.08,
-            opacity: 0.6,
             halo: true,
-            halo_color: [250, 240, 230],
+            halo_color: [250, 240, 230, 153],
             halo_width: 2.5,
         }
     }
@@ -1770,7 +1769,7 @@ mod tests {
         let arrow = NorthArrowItem {
             frame,
             hide_if_varies: false,
-            color: [200, 0, 0],
+            color: [200, 0, 0, 64],
             letter_style: styled(),
         };
         round_trip(Furniture::NorthArrow(arrow), frame);
@@ -1794,7 +1793,7 @@ mod tests {
         let old = r##"{"title": "Key", "size": 6, "weight": 400, "color": "102030"}"##;
         let legend = LegendItem::from_json(old).unwrap();
         let style = FurnitureText {
-            color: [0x10, 0x20, 0x30],
+            color: [0x10, 0x20, 0x30, 0xff],
             ..FurnitureText::sized(6.0)
         };
         assert_eq!(legend.title_style, style);
@@ -1830,6 +1829,49 @@ mod tests {
             let none = TextItem::from_json(bad).is_none() || LegendItem::from_json(bad).is_none();
             assert!(none, "{bad}");
         }
+    }
+
+    #[test]
+    fn an_old_opacity_multiplies_the_alpha() {
+        // 255 × 0.5 = 127.5, which rounds up to 128.
+        let old = r#"{"color": "102030", "halo_color": "ffffff", "opacity": 0.5}"#;
+        let labels = EdgeLabels::from_json(old).unwrap();
+        assert_eq!(labels.color, [0x10, 0x20, 0x30, 128]);
+        assert_eq!(labels.halo_color, [0xff, 0xff, 0xff, 128]);
+        let text = TextItem::from_json(old).unwrap().style;
+        assert_eq!(text.color, [0x10, 0x20, 0x30, 128]);
+        assert_eq!(text.halo_color, [0xff, 0xff, 0xff, 128]);
+        let legend = r#"{"title_style": {"color": "102030", "opacity": 0.5}}"#;
+        let legend = LegendItem::from_json(legend).unwrap();
+        assert_eq!(legend.title_style.color, [0x10, 0x20, 0x30, 128]);
+        assert_eq!(legend.entry_style, LegendItem::default().entry_style);
+        let grid = r#"{"on": true, "spacing": 5, "color": "102030", "opacity": 0.5}"#;
+        let grid = LayoutGrid::from_json(grid).unwrap();
+        assert_eq!(grid.color, [0x10, 0x20, 0x30, 128]);
+        // The old default grid is the new default grid.
+        let grid = LayoutGrid::from_json(r#"{"opacity": 0.35}"#).unwrap();
+        assert_eq!(grid, LayoutGrid::default());
+        for bad in [r#"{"opacity": -0.1}"#, r#"{"opacity": 1.5}"#] {
+            assert_eq!(LayoutGrid::from_json(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_color_reads_with_or_without_alpha() {
+        let grid = LayoutGrid::from_json(r#"{"color": "102030"}"#).unwrap();
+        assert_eq!(grid.color, [0x10, 0x20, 0x30, 0xff]);
+        let grid = LayoutGrid::from_json(r#"{"color": "10203040"}"#).unwrap();
+        assert_eq!(grid.color, [0x10, 0x20, 0x30, 0x40]);
+        for bad in ["1020304", "102030405", "1020304g", "+1020304"] {
+            let text = format!(r#"{{"color": "{bad}"}}"#);
+            assert_eq!(LayoutGrid::from_json(&text), None, "{bad}");
+        }
+        let grid = LayoutGrid {
+            color: [1, 2, 3, 4],
+            ..LayoutGrid::default()
+        };
+        assert!(grid.to_json().contains(r#""color":"01020304""#));
+        assert_eq!(LayoutGrid::from_json(&grid.to_json()), Some(grid));
     }
 
     #[test]

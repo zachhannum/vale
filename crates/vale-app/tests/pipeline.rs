@@ -204,6 +204,7 @@ fn one_layer_of_each_kind() {
             Item::Glyphs(_) => "glyphs".to_string(),
             Item::Image { .. } => "image".to_string(),
             Item::Rasterize { .. } => "rasterize".to_string(),
+            Item::Layer { .. } => "layer".to_string(),
             Item::PushClip { .. } => "push clip".to_string(),
             Item::PopClip => "pop clip".to_string(),
         })
@@ -238,6 +239,7 @@ fn describe(item: &Item) -> String {
         Item::Glyphs(_) => "glyphs".to_string(),
         Item::Image { .. } => "image".to_string(),
         Item::Rasterize { .. } => "rasterize".to_string(),
+        Item::Layer { alpha, .. } => format!("layer {alpha}"),
         Item::PushClip { rule, .. } => format!("push clip {rule:?}"),
         Item::PopClip => "pop clip".to_string(),
     }
@@ -403,7 +405,7 @@ fn compose_frame_full(
 
 #[test]
 fn each_projection_draws_a_graticule_in_a_frame() {
-    const RED: [u8; 3] = [200, 10, 20];
+    const RED: [u8; 4] = [200, 10, 20, 255];
     let red = Color::rgb(RED[0], RED[1], RED[2]);
     let has_stroke = |c: &vale_app::pipeline::Composed| {
         c.list.items.iter().any(|i| {
@@ -626,8 +628,8 @@ fn a_new_projection_changes_each_frame() {
     assert_eq!(pipeline.cache_count(), 2);
 }
 
-fn neatline_items(list: &vale_render::DisplayList, color: [u8; 3], width: f64) -> Vec<&Item> {
-    let color = vale_render::Color::rgb(color[0], color[1], color[2]);
+fn neatline_items(list: &vale_render::DisplayList, color: [u8; 4], width: f64) -> Vec<&Item> {
+    let color = vale_render::Color::rgba(color[0], color[1], color[2], color[3]);
     (list.items.iter())
         .filter(
             |i| matches!(i, Item::Stroke { color: c, width: w, .. } if *c == color && *w == width),
@@ -653,7 +655,7 @@ fn the_neatline_follows_each_ring_of_the_shape_and_stays_vector() {
         ],
         vec![[40.0, 40.0], [80.0, 40.0], [80.0, 80.0], [40.0, 80.0]],
     ]);
-    frame.neatline.color = [200, 10, 20];
+    frame.neatline.color = [200, 10, 20, 255];
     frame.neatline.width = 3.0;
     let render = |doc: &Document, pipeline: &mut Pipeline| {
         let page = doc.project.atlas.page(page).unwrap();
@@ -663,7 +665,7 @@ fn the_neatline_follows_each_ring_of_the_shape_and_stays_vector() {
             .unwrap()
     };
     let list = render(&doc, &mut pipeline);
-    let neatlines = neatline_items(&list, [200, 10, 20], 3.0);
+    let neatlines = neatline_items(&list, [200, 10, 20, 255], 3.0);
     assert_eq!(neatlines.len(), 1);
     let Item::Stroke { path, .. } = neatlines[0] else {
         unreachable!()
@@ -691,7 +693,7 @@ fn the_neatline_follows_each_ring_of_the_shape_and_stays_vector() {
 
     doc.project.atlas.frame_mut(id).unwrap().neatline.on = false;
     let list = render(&doc, &mut pipeline);
-    assert!(neatline_items(&list, [200, 10, 20], 3.0).is_empty());
+    assert!(neatline_items(&list, [200, 10, 20, 255], 3.0).is_empty());
 }
 
 /// The page as a list, with one rectangle frame from 40, 40 to 200, 160 mm.
@@ -716,8 +718,8 @@ fn page_list(doc: &Document, pipeline: &mut Pipeline) -> vale_render::DisplayLis
         .unwrap()
 }
 
-fn fills_of(list: &vale_render::DisplayList, color: [u8; 3]) -> Vec<kurbo::Rect> {
-    let color = vale_render::Color::rgb(color[0], color[1], color[2]);
+fn fills_of(list: &vale_render::DisplayList, color: [u8; 4]) -> Vec<kurbo::Rect> {
+    let color = vale_render::Color::rgba(color[0], color[1], color[2], color[3]);
     (list.items.iter())
         .filter_map(|i| match i {
             Item::Fill { path, color: c, .. } if *c == color => Some(path.bounding_box()),
@@ -726,7 +728,7 @@ fn fills_of(list: &vale_render::DisplayList, color: [u8; 3]) -> Vec<kurbo::Rect>
         .collect()
 }
 
-fn pixel(list: &vale_render::DisplayList, at_mm: (f64, f64)) -> [u8; 3] {
+fn pixel(list: &vale_render::DisplayList, at_mm: (f64, f64)) -> [u8; 4] {
     let pixmap = render_pixmap(list, 1.0).unwrap();
     let w = usize::from(pixmap.width());
     let (x, y) = (
@@ -735,7 +737,7 @@ fn pixel(list: &vale_render::DisplayList, at_mm: (f64, f64)) -> [u8; 3] {
     );
     let i = (y * w + x) * 4;
     let d = pixmap.data_as_u8_slice();
-    [d[i], d[i + 1], d[i + 2]]
+    [d[i], d[i + 1], d[i + 2], d[i + 3]]
 }
 
 fn is_pdf(list: &vale_render::DisplayList) -> bool {
@@ -743,20 +745,44 @@ fn is_pdf(list: &vale_render::DisplayList) -> bool {
 }
 
 #[test]
+fn the_alpha_of_the_frame_colors_reaches_the_display_list() {
+    let (mut doc, mut pipeline, id) = bordered();
+    let frame = doc.project.atlas.frame_mut(id).unwrap();
+    frame.graticule.on = true;
+    frame.graticule.interval = Some(30.0);
+    frame.graticule.color = [200, 10, 20, 100];
+    frame.neatline.on = true;
+    frame.neatline.color = [10, 20, 200, 90];
+    frame.border.on = true;
+    frame.border.color = [1, 2, 3, 80];
+    frame.border.stroke = true;
+    frame.border.stroke_color = [4, 5, 6, 70];
+    let list = page_list(&doc, &mut pipeline);
+    let stroked = |[r, g, b, a]: [u8; 4]| {
+        let c = vale_render::Color::rgba(r, g, b, a);
+        (list.items.iter()).any(|i| matches!(i, Item::Stroke { color, .. } if *color == c))
+    };
+    assert!(stroked([200, 10, 20, 100]), "the graticule");
+    assert!(stroked([10, 20, 200, 90]), "the neatline");
+    assert!(stroked([4, 5, 6, 70]), "the stroke of the border");
+    assert_eq!(fills_of(&list, [1, 2, 3, 80]).len(), 1, "the border");
+}
+
+#[test]
 fn a_page_draws_its_paper_color() {
     let (mut doc, mut pipeline, _) = bordered();
     doc.project.atlas.pages[0].paper = [0xf3, 0xef, 0xdf];
     let list = page_list(&doc, &mut pipeline);
-    assert_eq!(fills_of(&list, [0xf3, 0xef, 0xdf]).len(), 1);
+    assert_eq!(fills_of(&list, [0xf3, 0xef, 0xdf, 0xff]).len(), 1);
     assert!(matches!(list.items[0], Item::Fill { .. }));
-    assert_eq!(pixel(&list, (5.0, 5.0)), [0xf3, 0xef, 0xdf]);
+    assert_eq!(pixel(&list, (5.0, 5.0)), [0xf3, 0xef, 0xdf, 0xff]);
     assert!(is_pdf(&list));
 }
 
 #[test]
 fn the_border_is_at_its_distance_outside_the_box_and_can_be_off() {
     let (mut doc, mut pipeline, id) = bordered();
-    let red = [200, 10, 20];
+    let red = [200, 10, 20, 255];
     let frame = doc.project.atlas.frame_mut(id).unwrap();
     frame.border.on = true;
     frame.border.color = red;
@@ -778,7 +804,7 @@ fn the_border_is_at_its_distance_outside_the_box_and_can_be_off() {
     }
     // The band, and paper between the band and the shape.
     assert_eq!(pixel(&list, (31.0, 100.0)), red);
-    assert_eq!(pixel(&list, (35.0, 100.0)), [255, 255, 255]);
+    assert_eq!(pixel(&list, (35.0, 100.0)), [255, 255, 255, 255]);
     assert_eq!(pixel(&list, (100.0, 169.0)), red);
     assert!(list.items.iter().all(|i| !matches!(i, Item::Image { .. })));
     assert!(is_pdf(&list));
@@ -790,7 +816,7 @@ fn the_border_is_at_its_distance_outside_the_box_and_can_be_off() {
 #[test]
 fn a_graduated_border_changes_color_at_each_graticule_line() {
     let (mut doc, mut pipeline, id) = bordered();
-    let (a, b) = ([200, 10, 20], [10, 20, 200]);
+    let (a, b) = ([200, 10, 20, 255], [10, 20, 200, 255]);
     let frame = doc.project.atlas.frame_mut(id).unwrap();
     frame.border.on = true;
     frame.border.style = vale_store::BorderStyle::Graduated;
@@ -926,7 +952,7 @@ fn the_reference_grid_labels_each_graticule_interval_in_the_band() {
 #[test]
 fn a_part_of_the_shape_crosses_the_band_and_covers_it() {
     let (mut doc, mut pipeline, id) = bordered();
-    let red = [200, 10, 20];
+    let red = [200, 10, 20, 255];
     let frame = doc.project.atlas.frame_mut(id).unwrap();
     // A body from y 60 down, with a part that goes up to y 40 from x 80 to
     // 120.
@@ -958,7 +984,7 @@ fn a_part_of_the_shape_crosses_the_band_and_covers_it() {
     );
     assert_eq!(
         pixel(&list, (28.0, 100.0)),
-        [255, 255, 255],
+        [255, 255, 255, 255],
         "outside the band"
     );
     assert_eq!(pixel(&list, (31.0, 100.0)), red);
@@ -977,7 +1003,7 @@ fn a_part_of_the_shape_crosses_the_band_and_covers_it() {
 #[test]
 fn the_band_keeps_a_gap_around_the_shape_where_it_crosses() {
     let (mut doc, mut pipeline, id) = bordered();
-    let red = [200, 10, 20];
+    let red = [200, 10, 20, 255];
     let frame = doc.project.atlas.frame_mut(id).unwrap();
     frame.shape = FrameShape::Polygon(vec![vec![
         [40.0, 60.0],
@@ -996,8 +1022,8 @@ fn the_band_keeps_a_gap_around_the_shape_where_it_crosses() {
     frame.border.gap_mm = 2.0;
     let list = page_list(&doc, &mut pipeline);
     assert_eq!(pixel(&list, (77.0, 53.0)), red);
-    assert_eq!(pixel(&list, (79.0, 53.0)), [255, 255, 255], "the gap");
-    assert_eq!(pixel(&list, (121.0, 53.0)), [255, 255, 255], "the gap");
+    assert_eq!(pixel(&list, (79.0, 53.0)), [255, 255, 255, 255], "the gap");
+    assert_eq!(pixel(&list, (121.0, 53.0)), [255, 255, 255, 255], "the gap");
     assert_eq!(pixel(&list, (123.0, 53.0)), red);
 
     doc.project.atlas.frame_mut(id).unwrap().border.gap_mm = 0.0;
@@ -1078,7 +1104,7 @@ fn the_grid_labels_stay_beside_the_map_and_count_from_the_whole_shape() {
 #[test]
 fn the_border_stroke_draws_the_edges_and_the_divisions_of_the_band() {
     let (mut doc, mut pipeline, id) = bordered();
-    let black = [1, 2, 3];
+    let black = [1, 2, 3, 255];
     let frame = doc.project.atlas.frame_mut(id).unwrap();
     frame.border.on = true;
     frame.border.stroke = true;
@@ -1100,7 +1126,7 @@ fn the_border_stroke_draws_the_edges_and_the_divisions_of_the_band() {
     assert!(is_pdf(&list));
 
     // A graduated band has a line across it at each division.
-    let (a, c) = ([200, 10, 20], [10, 20, 200]);
+    let (a, c) = ([200, 10, 20, 255], [10, 20, 200, 255]);
     let frame = doc.project.atlas.frame_mut(id).unwrap();
     frame.border.style = vale_store::BorderStyle::Graduated;
     (frame.border.color, frame.border.color2) = (a, c);
@@ -1339,6 +1365,56 @@ fn each_stroke_kind_draws_in_a_frame_and_in_pdf() {
     doc.entry_mut(id).unwrap().style.style = style(&no_brush);
     let list = compose_frame_full(&doc, &mut pipeline, frame).list;
     assert!(!images(&list), "a vector stroke became an image");
+}
+
+#[test]
+fn a_translucent_taper_or_brush_applies_its_alpha_once() {
+    let cross_a = [[-40.0, -20.0], [40.0, 20.0]];
+    let cross_b = [[-40.0, 20.0], [40.0, -20.0]];
+    let (mut doc, id) = lines_at(&[
+        ("taper", &cross_a),
+        ("taper", &cross_b),
+        ("brush", &cross_a),
+        ("brush", &cross_b),
+    ]);
+    let color = Color::rgba(0, 0, 200, 128);
+    doc.entry_mut(id).unwrap().style.style = Style {
+        rules: vec![
+            kind_rule("taper", color, 4.0, StrokeKind::taper()),
+            kind_rule("brush", color, 4.0, StrokeKind::Brush),
+        ],
+    };
+    let mut pipeline = Pipeline::new();
+    let page = doc.project.atlas.pages[0].id;
+    let frame = frame_on(&mut doc, &mut pipeline, page);
+    let list = compose_frame_full(&doc, &mut pipeline, frame).list;
+    // The two crossing tapers are one fill, so the crossing is not darker.
+    let tapers = list
+        .items
+        .iter()
+        .filter(|i| matches!(i, Item::Fill { color: c, .. } if *c == color))
+        .count();
+    assert_eq!(tapers, 1);
+    // The dabs of the brush are in one layer with the alpha of the color.
+    let layers: Vec<_> = list
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            Item::Rasterize { items, .. } => Some(items),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(layers.len(), 1);
+    let [Item::Layer { alpha, items }] = layers[0].as_slice() else {
+        panic!("{:?}", layers[0].iter().map(describe).collect::<Vec<_>>());
+    };
+    assert!((alpha - 128.0 / 255.0).abs() < 1e-6);
+    assert!(items.len() > 10);
+    assert!(
+        items
+            .iter()
+            .any(|i| matches!(i, Item::Fill { color, .. } if color.a > 128))
+    );
 }
 
 /// A document with one layer of the GeoJSON features `features`.
@@ -1995,11 +2071,10 @@ fn edge_labels_have_their_style_and_halo() {
     let mut pipeline = Pipeline::new();
     let id = regional_frame(&mut doc, &mut pipeline);
     let set = &mut doc.project.atlas.frame_mut(id).unwrap().graticule.meridians;
-    set.color = [200, 10, 20];
-    set.opacity = 0.5;
+    set.color = [200, 10, 20, 128];
     set.size = 11.0;
     set.halo = true;
-    set.halo_color = [1, 2, 3];
+    set.halo_color = [1, 2, 3, 128];
     set.halo_width = 1.5;
     let items = compose_frame(&doc, &mut pipeline, id);
     let red = vale_render::Color::rgba(200, 10, 20, 128);
@@ -2075,7 +2150,7 @@ fn manual_edge_label_pictures() {
             g.parallels.outside = true;
             g.parallels.orientation = vale_store::EdgeOrientation::Horizontal;
             g.meridians.outside = true;
-            g.meridians.color = [140, 30, 30];
+            g.meridians.color = [140, 30, 30, 255];
             g.meridians.size = 8.0;
             g.parallels.halo = true;
             g.parallels.edges.top = false;
@@ -2450,7 +2525,10 @@ fn manual_scale_bar_pictures() {
     let cross = ScaleBarItem {
         kind: ScaleBarKind::DoubleAlternating,
         bar_height: 3.0,
-        fill1: hatched(vale_store::FillKind::CrossHatch, Some([0xf2, 0xe6, 0xc8])),
+        fill1: hatched(
+            vale_store::FillKind::CrossHatch,
+            Some([0xf2, 0xe6, 0xc8, 0xff]),
+        ),
         ..ScaleBarItem::default()
     };
     bars.push((cross, 3.5));

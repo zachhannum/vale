@@ -708,11 +708,11 @@ fn line_rows(ui: &mut egui::Ui, s: &mut Stroke, kind: GeometryKind, salt: egui::
     changed
 }
 
-/// A color button that keeps the alpha of `c`.
+/// A color button that edits the color and its alpha.
 pub fn color_button(ui: &mut egui::Ui, c: &mut Color) -> bool {
-    let mut rgb = [c.r, c.g, c.b];
-    if ui.color_edit_button_srgb(&mut rgb).changed() {
-        (c.r, c.g, c.b) = (rgb[0], rgb[1], rgb[2]);
+    let mut rgba = [c.r, c.g, c.b, c.a];
+    if ui.color_edit_button_srgba_unmultiplied(&mut rgba).changed() {
+        [c.r, c.g, c.b, c.a] = rgba;
         true
     } else {
         false
