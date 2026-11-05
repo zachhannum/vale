@@ -2,9 +2,9 @@
 
 use std::ops::RangeInclusive;
 
-use crate::Rgb;
-use crate::atlas::{JsonMap, read_color, read_number};
-use crate::gpkg::{hex, parse_color};
+use crate::Rgba;
+use crate::atlas::{JsonMap, read_number, read_rgba};
+use crate::gpkg::{hex_rgba, parse_rgba};
 
 /// How an area is filled.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
@@ -63,9 +63,9 @@ impl FillKind {
 pub struct FillPattern {
     pub kind: FillKind,
     /// The solid color, or the color of the lines.
-    pub color: Rgb,
+    pub color: Rgba,
     /// The color behind the lines. `None`: the paper shows through.
-    pub background: Option<Rgb>,
+    pub background: Option<Rgba>,
     /// The direction of the lines in degrees, counterclockwise from the
     /// horizontal. A cross-hatch adds lines at the angle plus 90°.
     pub angle: f64,
@@ -83,7 +83,7 @@ impl FillPattern {
     pub const LINE_WIDTHS: RangeInclusive<f64> = 0.1..=2.0;
 
     /// A solid fill of `color`.
-    pub fn solid(color: Rgb) -> FillPattern {
+    pub fn solid(color: Rgba) -> FillPattern {
         FillPattern {
             color,
             ..FillPattern::default()
@@ -94,8 +94,8 @@ impl FillPattern {
     pub fn value(&self) -> serde_json::Value {
         let mut map = JsonMap::new();
         map.insert("kind".into(), self.kind.id().into());
-        map.insert("color".into(), hex(self.color).into());
-        map.insert("background".into(), self.background.map(hex).into());
+        map.insert("color".into(), hex_rgba(self.color).into());
+        map.insert("background".into(), self.background.map(hex_rgba).into());
         map.insert("angle".into(), self.angle.into());
         map.insert("spacing".into(), self.spacing.into());
         map.insert("line_width".into(), self.line_width.into());
@@ -106,17 +106,17 @@ impl FillPattern {
     /// that color. A missing key gets its default. `None` if a value is bad.
     pub fn read(v: &serde_json::Value) -> Option<FillPattern> {
         if let Some(text) = v.as_str() {
-            return Some(FillPattern::solid(parse_color(text)?));
+            return Some(FillPattern::solid(parse_rgba(text)?));
         }
         let map = v.as_object()?;
         let mut f = FillPattern::default();
         if let Some(k) = map.get("kind") {
             f.kind = FillKind::from_id(k.as_str()?)?;
         }
-        read_color(map, "color", &mut f.color)?;
+        read_rgba(map, "color", &mut f.color)?;
         match map.get("background") {
             None | Some(serde_json::Value::Null) => {}
-            Some(c) => f.background = Some(parse_color(c.as_str()?)?),
+            Some(c) => f.background = Some(parse_rgba(c.as_str()?)?),
         }
         read_number(map, "angle", &mut f.angle)?;
         read_number(map, "spacing", &mut f.spacing)?;
@@ -129,7 +129,7 @@ impl Default for FillPattern {
     fn default() -> Self {
         FillPattern {
             kind: FillKind::Solid,
-            color: [0x2b, 0x2b, 0x2b],
+            color: [0x2b, 0x2b, 0x2b, 0xff],
             background: None,
             angle: 45.0,
             spacing: 0.8,
@@ -146,8 +146,8 @@ mod tests {
     fn a_fill_survives_json() {
         let fill = FillPattern {
             kind: FillKind::CrossHatch,
-            color: [1, 2, 3],
-            background: Some([4, 5, 6]),
+            color: [1, 2, 3, 0x80],
+            background: Some([4, 5, 6, 0xff]),
             angle: 30.0,
             spacing: 1.5,
             line_width: 0.2,
@@ -167,7 +167,7 @@ mod tests {
     fn a_color_is_a_solid_fill() {
         let v = serde_json::json!("102030");
         let f = FillPattern::read(&v).unwrap();
-        assert_eq!(f, FillPattern::solid([0x10, 0x20, 0x30]));
+        assert_eq!(f, FillPattern::solid([0x10, 0x20, 0x30, 0xff]));
         assert_eq!(
             FillPattern::read(&serde_json::json!({})),
             Some(FillPattern::default())

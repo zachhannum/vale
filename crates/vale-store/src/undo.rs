@@ -28,8 +28,8 @@ use crate::gpkg::{
 };
 use crate::{
     BlendMode, Feature, Field, FieldType, GeometryKind, Hillshade, Image, ImageId, Layer, LayerId,
-    LayerKind, Project, Raster, RasterDisplay, RasterId, Smoothing, Stop, StopLine, Units, Uuid,
-    Value, World, clamp_feature_size, clamp_opacity, infer_fields,
+    LayerKind, Project, Raster, RasterDisplay, RasterId, Rgba, Smoothing, Stop, StopLine, Units,
+    Uuid, Value, World, clamp_feature_size, clamp_opacity, infer_fields,
 };
 
 /// The default limit of the size of the log, in bytes of compressed images.
@@ -531,14 +531,14 @@ fn put_atlas(out: &mut Vec<u8>, atlas: &Atlas) {
                 }
                 None => out.push(0),
             }
-            out.extend_from_slice(&graticule.color);
+            out.extend_from_slice(&graticule.color[..3]);
             put_f64(out, graticule.width);
             put_bytes(out, graticule.format.id().as_bytes());
             put_bytes(out, graticule.meridians.to_json().as_bytes());
             put_bytes(out, graticule.parallels.to_json().as_bytes());
             let neatline = &frame.neatline;
             out.push(neatline.on as u8);
-            out.extend_from_slice(&neatline.color);
+            out.extend_from_slice(&neatline.color[..3]);
             put_f64(out, neatline.width);
         }
     }
@@ -600,11 +600,22 @@ fn put_atlas(out: &mut Vec<u8>, atlas: &Atlas) {
     }
     let frames: Vec<_> = atlas.pages.iter().flat_map(|p| &p.frames).collect();
     put_u32(out, frames.len());
-    for frame in frames {
+    for frame in &frames {
         put_u32(out, frame.id.0 as usize);
         put_bytes(out, frame.border.to_json().as_bytes());
     }
     put_bytes(out, atlas.grid.to_json().as_bytes());
+    // The alpha of the graticule and the neatline of each frame.
+    put_u32(out, frames.len());
+    for frame in frames {
+        put_u32(out, frame.id.0 as usize);
+        out.push(frame.graticule.color[3]);
+        out.push(frame.neatline.color[3]);
+    }
+}
+
+fn opaque([r, g, b]: [u8; 3]) -> Rgba {
+    [r, g, b, 255]
 }
 
 fn flag(r: &mut Reader) -> Option<bool> {
@@ -663,7 +674,7 @@ fn atlas(r: &mut Reader) -> Option<AtlasImage> {
                 graticule: Graticule {
                     on: flag(r)?,
                     interval: if flag(r)? { Some(r.f64()?) } else { None },
-                    color: r.take::<3>()?,
+                    color: opaque(r.take::<3>()?),
                     width: r.f64()?,
                     format: CoordFormat::from_id(&string(r)?)?,
                     meridians: EdgeLabels::from_json(&string(r)?)?,
@@ -671,7 +682,7 @@ fn atlas(r: &mut Reader) -> Option<AtlasImage> {
                 },
                 neatline: Neatline {
                     on: flag(r)?,
-                    color: r.take::<3>()?,
+                    color: opaque(r.take::<3>()?),
                     width: r.f64()?,
                 },
                 border: Border::default(),
@@ -746,6 +757,16 @@ fn atlas(r: &mut Reader) -> Option<AtlasImage> {
     let mut grid = LayoutGrid::default();
     if !r.0.is_empty() {
         grid = LayoutGrid::from_json(&string(r)?)?;
+    }
+    if !r.0.is_empty() {
+        for _ in 0..count(r)? {
+            let id = FrameId(r.u32()?);
+            let [graticule, neatline] = r.take::<2>()?;
+            let mut frames = pages.iter_mut().flat_map(|p| &mut p.frames);
+            let frame = frames.find(|f| f.id == id)?;
+            frame.graticule.color[3] = graticule;
+            frame.neatline.color[3] = neatline;
+        }
     }
     r.0.is_empty().then_some((maps, pages, presets, grid))
 }

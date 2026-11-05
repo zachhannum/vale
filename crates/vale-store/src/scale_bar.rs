@@ -3,10 +3,10 @@
 use std::ops::RangeInclusive;
 
 use crate::atlas::{
-    FrameId, FurnitureText, JsonMap, json_object, read_color, read_flag, read_number, read_string,
+    FrameId, FurnitureText, JsonMap, json_object, read_flag, read_number, read_rgba, read_string,
 };
-use crate::gpkg::hex;
-use crate::{FillPattern, Rgb, Units};
+use crate::gpkg::hex_rgba;
+use crate::{FillPattern, Rgba, Units};
 
 /// An enum of choices with a name in a project file and a UI name.
 macro_rules! choices {
@@ -232,7 +232,7 @@ pub struct ScaleBarItem {
     pub fill1: FillPattern,
     pub fill2: FillPattern,
     /// The color of the outline, the lines, and the marks.
-    pub outline: Rgb,
+    pub outline: Rgba,
     pub line_width: f64,
     pub mark_frequency: TickFrequency,
     pub mark_position: ScalePosition,
@@ -303,7 +303,7 @@ impl ScaleBarItem {
         put("bar_height", self.bar_height.into());
         put("fill1", self.fill1.value());
         put("fill2", self.fill2.value());
-        put("outline", hex(self.outline).into());
+        put("outline", hex_rgba(self.outline).into());
         put("line_width", self.line_width.into());
         put("mark_frequency", self.mark_frequency.id().into());
         put("mark_position", self.mark_position.id().into());
@@ -390,7 +390,7 @@ impl ScaleBarItem {
         if let Some(v) = map.get("fill2") {
             b.fill2 = FillPattern::read(v)?;
         }
-        read_color(&map, "outline", &mut b.outline)?;
+        read_rgba(&map, "outline", &mut b.outline)?;
         read_number(&map, "line_width", &mut b.line_width)?;
         choice(
             &map,
@@ -461,7 +461,7 @@ impl ScaleBarItem {
 
 impl Default for ScaleBarItem {
     fn default() -> Self {
-        let ink = [0x2b, 0x2b, 0x2b];
+        let ink = [0x2b, 0x2b, 0x2b, 0xff];
         ScaleBarItem {
             frame: None,
             kind: ScaleBarKind::Alternating,
@@ -476,7 +476,7 @@ impl Default for ScaleBarItem {
             fit: ScaleFit::AdjustDivisionValue,
             bar_height: 1.5,
             fill1: FillPattern::solid(ink),
-            fill2: FillPattern::solid([0xff, 0xff, 0xff]),
+            fill2: FillPattern::solid([0xff, 0xff, 0xff, 0xff]),
             outline: ink,
             line_width: 0.5,
             mark_frequency: TickFrequency::DivisionsAndFirstSubdivisions,

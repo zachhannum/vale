@@ -30,8 +30,8 @@ use crate::tile::{self, TILE_SIZE};
 use crate::undo::{self, UNDO_LIMIT};
 use crate::{
     BlendMode, Feature, Field, FieldType, Geometry, GeometryKind, Hillshade, Image, ImageId, Layer,
-    LayerId, LayerKind, LonLat, Project, Raster, RasterDisplay, RasterId, Rgb, Smoothing, Stop,
-    StopLine, SymbolRecord, Units, Uuid, Value, World, clamp_feature_size, clamp_opacity,
+    LayerId, LayerKind, LonLat, Project, Raster, RasterDisplay, RasterId, Rgb, Rgba, Smoothing,
+    Stop, StopLine, SymbolRecord, Units, Uuid, Value, World, clamp_feature_size, clamp_opacity,
 };
 
 /// The version of the `vale_` tables that this code writes.
@@ -1844,10 +1844,10 @@ fn write_atlas(tx: &Transaction, project: &Project) -> Result<(), StoreError> {
                 f.rotation,
                 f.graticule.on,
                 f.graticule.interval,
-                hex(f.graticule.color),
+                hex_rgba(f.graticule.color),
                 f.graticule.width,
                 f.neatline.on,
-                hex(f.neatline.color),
+                hex_rgba(f.neatline.color),
                 f.neatline.width,
                 f.graticule.format.id(),
                 f.graticule.meridians.to_json(),
@@ -2182,6 +2182,20 @@ pub(crate) fn parse_color(hex: &str) -> Option<Rgb> {
     ])
 }
 
+/// Reads `rrggbb` or `rrggbbaa`. A color with no alpha is opaque.
+pub(crate) fn parse_rgba(hex: &str) -> Option<Rgba> {
+    match hex.len() {
+        6 => parse_color(hex).map(|[r, g, b]| [r, g, b, 255]),
+        8 => {
+            let n = u32::from_str_radix(hex, 16).ok()?;
+            hex.bytes()
+                .all(|b| b.is_ascii_hexdigit())
+                .then_some(n.to_be_bytes())
+        }
+        _ => None,
+    }
+}
+
 fn parse_colors(text: &str) -> Option<Vec<Rgb>> {
     text.split(',')
         .filter(|s| !s.is_empty())
@@ -2196,6 +2210,14 @@ fn parse_limits(text: &str) -> Option<Vec<f64>> {
 
 pub(crate) fn hex([r, g, b]: Rgb) -> String {
     format!("{r:02x}{g:02x}{b:02x}")
+}
+
+/// The color as `rrggbb` if it is opaque, else as `rrggbbaa`.
+pub(crate) fn hex_rgba([r, g, b, a]: Rgba) -> String {
+    match a {
+        255 => hex([r, g, b]),
+        _ => format!("{r:02x}{g:02x}{b:02x}{a:02x}"),
+    }
 }
 
 /// The colors as `rrggbb`, with commas between them.
@@ -2825,7 +2847,7 @@ fn load_atlas(conn: &Connection, units: Units) -> Result<Atlas, StoreError> {
         let graticule = Graticule {
             on: r.get(9)?,
             interval,
-            color: parse_color(&color).ok_or_else(bad)?,
+            color: parse_rgba(&color).ok_or_else(bad)?,
             width,
             format: CoordFormat::from_id(&format).ok_or_else(bad)?,
             meridians: EdgeLabels::from_json(&meridians).ok_or_else(bad)?,
@@ -2838,7 +2860,7 @@ fn load_atlas(conn: &Connection, units: Units) -> Result<Atlas, StoreError> {
         }
         let neatline = Neatline {
             on: r.get(13)?,
-            color: parse_color(&border_color).ok_or_else(bad)?,
+            color: parse_rgba(&border_color).ok_or_else(bad)?,
             width: border_width,
         };
         let border: String = r.get(19)?;
