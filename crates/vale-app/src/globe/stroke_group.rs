@@ -30,12 +30,12 @@ struct Params {
 pub fn tessellate(
     shapes: Vec<egui::Shape>,
     pixels_per_point: f32,
-    options: &epaint::TessellationOptions,
+    options: epaint::TessellationOptions,
     clip: egui::Rect,
 ) -> egui::Mesh {
     let options = epaint::TessellationOptions {
         prerasterized_discs: false,
-        ..options.clone()
+        ..options
     };
     let mut tessellator = epaint::Tessellator::new(pixels_per_point, options, [1, 1], Vec::new());
     tessellator.set_clip_rect(clip);
@@ -57,8 +57,8 @@ pub fn group_shape(
     clip: egui::Rect,
 ) -> Option<egui::Shape> {
     let pixels_per_point = ctx.pixels_per_point();
-    let options = ctx.tessellation_options(|o| o.clone());
-    let mesh = tessellate(shapes, pixels_per_point, &options, clip);
+    let options = ctx.tessellation_options(|o| *o);
+    let mesh = tessellate(shapes, pixels_per_point, options, clip);
     let rect = mesh.calc_bounds().intersect(clip);
     if mesh.is_empty() || !rect.is_positive() {
         return None;
@@ -539,7 +539,7 @@ mod tests {
         // The shapes of a translucent stroke are opaque, and the group
         // alpha applies once to the whole layer.
         let group = 0.5;
-        let mesh = tessellate(l_line(egui::Color32::RED), 1.0, &options, clip);
+        let mesh = tessellate(l_line(egui::Color32::RED), 1.0, options, clip);
         let image: Vec<f32> = rasterize(&mesh, size).iter().map(|a| a * group).collect();
         let middle = at(&image, 20, 50);
         assert!((middle - group).abs() < 1e-3, "{middle}");
@@ -550,7 +550,7 @@ mod tests {
         // The same line drawn shape by shape with the alpha in its color
         // shows darker where the strip folds over at the corner.
         let translucent = egui::Color32::from_rgba_unmultiplied(255, 0, 0, 128);
-        let mesh = tessellate(l_line(translucent), 1.0, &options, clip);
+        let mesh = tessellate(l_line(translucent), 1.0, options, clip);
         let direct = rasterize(&mesh, size);
         let darkest = (17..24)
             .flat_map(|y| (17..24).map(move |x| (x, y)))
