@@ -48,7 +48,7 @@ pub const RESET_TO_MAP_STYLE: &str = "Reset to map style";
 pub const EDITED: &str = "Edited";
 /// The value of the Map style row of a map with local changes.
 pub fn edited_value(name: &str) -> String {
-    format!("{name} — {EDITED}")
+    format!("{name} ({})", EDITED.to_lowercase())
 }
 /// The name of the row of a map style in the Map style page.
 pub fn map_style_row(name: &str) -> String {
