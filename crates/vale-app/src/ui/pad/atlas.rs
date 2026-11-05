@@ -87,7 +87,6 @@ pub const LAYOUT_GRID: &str = "Layout grid";
 pub const SHOW_GRID: &str = "Show layout grid";
 pub const GRID_SPACING: &str = "Grid spacing";
 pub const GRID_COLOR: &str = "Grid color";
-pub const GRID_OPACITY: &str = "Grid opacity";
 pub const CENTER_ON_FRAME: &str = "Center on frame";
 pub const PROJECTION: &str = "Map projection";
 pub const CENTER_LONGITUDE: &str = "Center longitude";
@@ -1017,7 +1016,7 @@ fn graticule_rows(
     if state.atlas.graticule_color {
         ui.add_space(4.0);
         let mut color = g.color;
-        if widgets::color_picker(ui, controls, GRATICULE_COLOR, &mut color) {
+        if widgets::color_picker_alpha(ui, controls, GRATICULE_COLOR, &mut color) {
             atlas::set_graticule_color(state, id, color);
         }
         state.atlas.graticule_shown = true;
@@ -1060,7 +1059,7 @@ fn neatline_rows(
     if state.atlas.neatline_color {
         ui.add_space(4.0);
         let mut color = b.color;
-        if widgets::color_picker(ui, controls, NEATLINE_COLOR, &mut color) {
+        if widgets::color_picker_alpha(ui, controls, NEATLINE_COLOR, &mut color) {
             atlas::set_neatline_color(state, id, color);
         }
         state.atlas.neatline_shown = true;
@@ -1090,12 +1089,13 @@ fn border_rows(
         atlas::set_border_style(state, id, BorderStyle::ALL[i]);
     }
     let first = ClassColor::Border(false);
-    if let Some(c) = text_style::rgb_rows(ui, state, controls, BORDER_COLOR, first, b.color) {
+    if let Some(c) = text_style::rgba_rows(ui, state, controls, BORDER_COLOR, first, b.color) {
         atlas::set_border_color(state, id, false, c);
     }
     if b.style == BorderStyle::Graduated {
         let second = ClassColor::Border(true);
-        if let Some(c) = text_style::rgb_rows(ui, state, controls, SECOND_COLOR, second, b.color2) {
+        if let Some(c) = text_style::rgba_rows(ui, state, controls, SECOND_COLOR, second, b.color2)
+        {
             atlas::set_border_color(state, id, true, c);
         }
     }
@@ -1142,7 +1142,7 @@ fn border_rows(
     if b.stroke {
         let which = ClassColor::BorderStroke;
         if let Some(c) =
-            text_style::rgb_rows(ui, state, controls, STROKE_COLOR, which, b.stroke_color)
+            text_style::rgba_rows(ui, state, controls, STROKE_COLOR, which, b.stroke_color)
         {
             atlas::set_border_stroke_color(state, id, c);
         }
@@ -1783,14 +1783,8 @@ fn grid_rows(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, u
     }
     keypad_below(ui, controls, GRID_SPACING);
     let which = ClassColor::LayoutGrid;
-    if let Some(c) = text_style::rgb_rows(ui, state, controls, GRID_COLOR, which, grid.color) {
+    if let Some(c) = text_style::rgba_rows(ui, state, controls, GRID_COLOR, which, grid.color) {
         atlas::edit_grid(state, |g| g.color = c);
-    }
-    if let Some(v) = Number::new(GRID_OPACITY, grid.opacity, 0.0..=1.0)
-        .percent()
-        .slider(ui, controls)
-    {
-        atlas::edit_grid(state, |g| g.opacity = v);
     }
 }
 

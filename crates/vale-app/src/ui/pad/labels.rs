@@ -34,7 +34,6 @@ pub const LABEL_SIZE: &str = "Label size";
 pub const CASE: &str = "Case";
 pub const LETTER_SPACING: &str = "Letter spacing";
 pub const COLOR: &str = "Color";
-pub const OPACITY: &str = "Opacity";
 pub const HALO: &str = "Halo";
 pub const HALO_COLOR: &str = "Halo color";
 pub const HALO_WIDTH: &str = "Halo width";
@@ -508,17 +507,30 @@ fn expression_field(
     (field.changed() && ok(typed)).then(|| typed.clone())
 }
 
-/// A color row of a class and its color picker while it is open. The picker
-/// keeps the alpha of the color. Returns the new color.
+/// A color row of a class and its color picker while it is open, with an
+/// opacity strip. Returns the new color.
 pub(super) fn color_rows(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    named: (&str, ClassColor),
+    c: vale_style::Color,
+) -> Option<vale_style::Color> {
+    picker_rows(ui, state, controls, named, c, true)
+}
+
+/// A color row and its color picker while it is open. `alpha`: the picker
+/// has an opacity strip. Without it, the color stays opaque.
+pub(super) fn picker_rows(
     ui: &mut egui::Ui,
     state: &mut AppState,
     controls: &mut Controls,
     (name, which): (&str, ClassColor),
     c: vale_style::Color,
+    alpha: bool,
 ) -> Option<vale_style::Color> {
     let open = state.atlas.label_color == Some(which);
-    if widgets::color_row(ui, controls, name, [c.r, c.g, c.b], open).clicked() {
+    if widgets::color_row(ui, controls, name, [c.r, c.g, c.b, c.a], open).clicked() {
         state.atlas.label_color = (!open).then_some(which);
         if open {
             widgets::close_keypad(ui.ctx());
@@ -529,10 +541,18 @@ pub(super) fn color_rows(
     }
     ui.add_space(4.0);
     state.atlas.label_color_shown = true;
-    let mut rgb = [c.r, c.g, c.b];
-    widgets::color_picker(ui, controls, name, &mut rgb).then(|| {
-        let [r, g, b] = rgb;
-        vale_style::Color { r, g, b, a: c.a }
+    let mut rgba = [c.r, c.g, c.b, c.a];
+    let changed = if alpha {
+        widgets::color_picker_alpha(ui, controls, name, &mut rgba)
+    } else {
+        let mut rgb = [c.r, c.g, c.b];
+        let changed = widgets::color_picker(ui, controls, name, &mut rgb);
+        rgba = widgets::opaque(rgb);
+        changed
+    };
+    changed.then(|| {
+        let [r, g, b, a] = rgba;
+        vale_style::Color { r, g, b, a }
     })
 }
 
@@ -640,38 +660,35 @@ fn text_segment(
 
 /// The text settings of a class as a text style.
 fn text_style(class: &LabelClass) -> FurnitureText {
-    let rgb = |c: vale_style::Color| [c.r, c.g, c.b];
+    let rgba = |c: vale_style::Color| [c.r, c.g, c.b, c.a];
     FurnitureText {
         font: class.font.clone(),
         weight: class.weight,
         italic: class.italic,
         size: class.size,
-        color: rgb(class.color),
+        color: rgba(class.color),
         case: class.case,
         letter_spacing: class.letter_spacing,
-        opacity: class.opacity,
         halo: class.halo,
-        halo_color: rgb(class.halo_color),
+        halo_color: rgba(class.halo_color),
         halo_width: class.halo_width,
     }
 }
 
-/// Applies a change of the Text section to a class. A color keeps the
-/// alpha of the class.
+/// Applies a change of the Text section to a class.
 fn apply_text(edit: &TextEdit, c: &mut LabelClass) {
     let mut style = text_style(c);
     edit.apply(&mut style);
-    let with = |[r, g, b]: [u8; 3], old: vale_style::Color| vale_style::Color { r, g, b, a: old.a };
+    let color = |[r, g, b, a]: [u8; 4]| vale_style::Color { r, g, b, a };
     c.font = style.font;
     c.weight = style.weight;
     c.italic = style.italic;
     c.size = style.size;
-    c.color = with(style.color, c.color);
+    c.color = color(style.color);
     c.case = style.case;
     c.letter_spacing = style.letter_spacing;
-    c.opacity = style.opacity;
     c.halo = style.halo;
-    c.halo_color = with(style.halo_color, c.halo_color);
+    c.halo_color = color(style.halo_color);
     c.halo_width = style.halo_width;
 }
 
@@ -1024,12 +1041,6 @@ fn leader_page(
         .stepper(ui, controls);
     if let Some(width) = width {
         edit(state, &|l| l.width = width);
-    }
-    let opacity = Number::new(OPACITY, style.opacity, 0.0..=1.0)
-        .percent()
-        .slider(ui, controls);
-    if let Some(opacity) = opacity {
-        edit(state, &|l| l.opacity = opacity);
     }
     let mut dashed = style.dashed;
     if widgets::switch_row(ui, controls, DASHED, DASHED, &mut dashed) {

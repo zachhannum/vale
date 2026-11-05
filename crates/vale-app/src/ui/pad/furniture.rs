@@ -14,7 +14,7 @@ use super::geometry::{Rects, TOUCH};
 use super::icons::{self, Icon};
 use super::number::Number;
 use super::raster::heading;
-use super::text_style::{self, TextEvent, TextSpec, rgb_rows};
+use super::text_style::{self, TextEvent, TextSpec, rgba_rows};
 use super::widgets::keypad_below;
 use super::widgets::{self, Controls, HIGHLIGHT_INSET, Keys, PANEL_ROW};
 use super::{Card, CardTitle, show_card, theme};
@@ -24,9 +24,7 @@ use crate::ui::atlas::{
 use crate::ui::{Action, AppState, FontTarget};
 
 pub use super::fonts::FONT;
-pub use super::labels::{
-    CASE, COLOR, HALO, HALO_COLOR, HALO_WIDTH, LETTER_SPACING, OPACITY, STYLE,
-};
+pub use super::labels::{CASE, COLOR, HALO, HALO_COLOR, HALO_WIDTH, LETTER_SPACING, STYLE};
 
 /// The field of the text of a text item.
 pub const ITEM_TEXT: &str = "Item text";
@@ -288,7 +286,7 @@ fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, rec: &
         }
         Furniture::NorthArrow(item) => {
             frame_row(ui, state, controls, rec);
-            let c = rgb_rows(
+            let c = rgba_rows(
                 ui,
                 state,
                 controls,
@@ -960,7 +958,7 @@ fn bar_rows(
     }
     let line = matches!(kind, ScaleBarKind::SteppedLine | ScaleBarKind::Line);
     let name = if line { LINE_COLOR } else { OUTLINE };
-    if let Some(c) = rgb_rows(ui, state, controls, name, ClassColor::Outline, bar.outline) {
+    if let Some(c) = rgba_rows(ui, state, controls, name, ClassColor::Outline, bar.outline) {
         atlas::edit_bar(state, id, false, |b| b.outline = c);
     }
     if let Some(v) = Number::new(LINE_WIDTH, bar.line_width, ScaleBarItem::LINE_WIDTHS)
@@ -987,7 +985,7 @@ fn fills(kind: ScaleBarKind) -> &'static [(&'static str, bool)] {
 
 /// Sets the kind of a fill. A solid fill that becomes a hatch keeps its
 /// color as the background, and its lines take the color of the outline.
-pub fn set_kind(f: &mut FillPattern, kind: FillKind, outline: vale_store::Rgb) {
+pub fn set_kind(f: &mut FillPattern, kind: FillKind, outline: vale_store::Rgba) {
     if f.kind == FillKind::Solid && kind.hatched() {
         f.background = Some(f.color);
         f.color = outline;
@@ -1040,7 +1038,7 @@ fn fill_page(
     } else {
         COLOR
     };
-    if let Some(c) = rgb_rows(ui, state, controls, name, which, fill.color) {
+    if let Some(c) = rgba_rows(ui, state, controls, name, which, fill.color) {
         atlas::edit_fill(state, id, second, false, |f| f.color = c);
     }
     if !fill.kind.hatched() {
@@ -1048,12 +1046,12 @@ fn fill_page(
     }
     let mut on = fill.background.is_some();
     if widgets::switch_row(ui, controls, BACKGROUND, BACKGROUND, &mut on) {
-        let color = on.then_some([0xff, 0xff, 0xff]);
+        let color = on.then_some([0xff, 0xff, 0xff, 0xff]);
         atlas::edit_fill(state, id, second, true, |f| f.background = color);
     }
     if let Some(back) = fill.background {
         let which = ClassColor::Background(second);
-        if let Some(c) = rgb_rows(ui, state, controls, BACKGROUND_COLOR, which, back) {
+        if let Some(c) = rgba_rows(ui, state, controls, BACKGROUND_COLOR, which, back) {
             atlas::edit_fill(state, id, second, false, |f| f.background = Some(c));
         }
     }

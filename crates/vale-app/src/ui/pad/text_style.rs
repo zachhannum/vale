@@ -1,13 +1,14 @@
 //! The Text section of a label class and of a text part of an item of
 //! furniture: the font, the face, the size, the case, the letter spacing,
-//! the color, the opacity, and the halo.
+//! the color, and the halo.
 
 use eframe::egui;
 use vale_labeler::Face;
-use vale_store::{FurnitureText, Rgb, TextCase};
+use vale_store::{FurnitureText, Rgb, Rgba, TextCase};
 
 use super::labels::{
-    CASE, COLOR, HALO, HALO_COLOR, HALO_WIDTH, LETTER_SPACING, OPACITY, STYLE, color_rows, faces_of,
+    CASE, COLOR, HALO, HALO_COLOR, HALO_WIDTH, LETTER_SPACING, STYLE, color_rows, faces_of,
+    picker_rows,
 };
 use super::note_text;
 use super::number::Number;
@@ -35,10 +36,9 @@ pub struct TextSpec {
 pub enum TextEdit {
     Size(f64),
     LetterSpacing(f64),
-    Color(Rgb),
-    Opacity(f64),
+    Color(Rgba),
     Halo(bool),
-    HaloColor(Rgb),
+    HaloColor(Rgba),
     HaloWidth(f64),
     Face(Face),
     Case(TextCase),
@@ -50,7 +50,6 @@ impl TextEdit {
             TextEdit::Size(v) => s.size = v,
             TextEdit::LetterSpacing(v) => s.letter_spacing = v,
             TextEdit::Color(c) => s.color = c,
-            TextEdit::Opacity(v) => s.opacity = v,
             TextEdit::Halo(on) => s.halo = on,
             TextEdit::HaloColor(c) => s.halo_color = c,
             TextEdit::HaloWidth(v) => s.halo_width = v,
@@ -84,8 +83,22 @@ pub enum TextEvent {
     Edit(TextEdit),
 }
 
-/// A color row and its color picker while it is open, for a color with no
-/// alpha. Returns the new color.
+/// A color row and its color picker while it is open, with an opacity
+/// strip. Returns the new color.
+pub fn rgba_rows(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    name: &str,
+    which: ClassColor,
+    [r, g, b, a]: Rgba,
+) -> Option<Rgba> {
+    let c = vale_style::Color { r, g, b, a };
+    color_rows(ui, state, controls, (name, which), c).map(|c| [c.r, c.g, c.b, c.a])
+}
+
+/// A color row and its color picker while it is open, for an opaque color.
+/// Returns the new color.
 pub fn rgb_rows(
     ui: &mut egui::Ui,
     state: &mut AppState,
@@ -95,7 +108,7 @@ pub fn rgb_rows(
     [r, g, b]: Rgb,
 ) -> Option<Rgb> {
     let c = vale_style::Color { r, g, b, a: 255 };
-    color_rows(ui, state, controls, (name, which), c).map(|c| [c.r, c.g, c.b])
+    picker_rows(ui, state, controls, (name, which), c, false).map(|c| [c.r, c.g, c.b])
 }
 
 /// The rows of a Text section. Returns what the user did.
@@ -144,14 +157,8 @@ pub fn section(
     }
 
     let (text_color, halo_color) = spec.colors;
-    if let Some(c) = rgb_rows(ui, state, controls, COLOR, text_color, style.color) {
+    if let Some(c) = rgba_rows(ui, state, controls, COLOR, text_color, style.color) {
         event = Some(TextEvent::Edit(TextEdit::Color(c)));
-    }
-    let opacity = Number::new(OPACITY, style.opacity, 0.0..=1.0)
-        .percent()
-        .slider(ui, controls);
-    if let Some(opacity) = opacity {
-        event = Some(TextEvent::Edit(TextEdit::Opacity(opacity)));
     }
 
     let mut halo = style.halo;
@@ -159,7 +166,7 @@ pub fn section(
         event = Some(TextEvent::Edit(TextEdit::Halo(halo)));
     }
     if style.halo {
-        let c = rgb_rows(
+        let c = rgba_rows(
             ui,
             state,
             controls,
