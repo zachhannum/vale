@@ -58,6 +58,13 @@ pub fn card(
     egui::Area::new(egui::Id::new(id))
         .order(order)
         .fixed_pos(rect.min)
+        // A drag on the card goes to its controls, and the card stays in
+        // its place.
+        .movable(false)
+        // A sheet paints past the safe area, to the bottom of the screen.
+        // `constrain_to` also turns on the constraint, which moves the card
+        // by the change of its size during a drag of the sheet.
+        .constrain_to(ctx.viewport_rect())
         .constrain(false)
         .fade_in(false)
         .sizing_pass(false)

@@ -584,6 +584,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         strip: has_strip(&state.globe),
         extra: extra_cells(state),
         tools: TOOLS,
+        row: class == WidthClass::Compact,
     };
     // The Brush panel holds the settings of the context strip.
     if !has_strip(&state.globe) && card_cells(&state.globe) == 0 || state.globe.selecting() {
@@ -594,7 +595,9 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     if rects.one_panel && state.pad.brush && state.pad.right.is_some() {
         state.pad.right = None;
     }
-    state.pad.sheet_offset = input.sheet_offset.clamp(0.0, rects.sheet_travel);
+    state.pad.sheet_offset = input
+        .sheet_offset
+        .clamp(-rects.sheet_rise, rects.sheet_travel);
 
     let mut controls = std::mem::take(&mut state.pad.controls);
     controls.clear();
@@ -918,14 +921,28 @@ fn deselect_cell(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Control
 
 /// The child of a card, inside the padding of the card.
 fn padded(ui: &mut egui::Ui) -> egui::Ui {
+    padded_in(ui, false)
+}
+
+/// The child of a card, inside the padding of the card. In a `row`, the
+/// cells go from left to right.
+fn padded_in(ui: &mut egui::Ui, row: bool) -> egui::Ui {
     let rect = ui.max_rect().shrink(PAD);
-    let layout = egui::Layout::top_down(egui::Align::Min);
+    let layout = if row {
+        egui::Layout::left_to_right(egui::Align::Min)
+    } else {
+        egui::Layout::top_down(egui::Align::Min)
+    };
     let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(layout));
     ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
     ui
 }
 
 fn tool_strip(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
+    // An open sheet covers the row of the strip.
+    if rects.tool_cells == 0 {
+        return;
+    }
     let radius = theme::CARD_RADIUS.into();
     widgets::card(
         ctx,
@@ -935,7 +952,7 @@ fn tool_strip(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
         Order::Middle,
         radius,
         |ui| {
-            let mut ui = padded(ui);
+            let mut ui = padded_in(ui, rects.row);
             let mut cells = |ui: &mut egui::Ui| {
                 for group in ModeGroup::ALL {
                     brush_cell(ui, state, controls, group);
@@ -968,7 +985,7 @@ fn tool_strip(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
                 }
             };
             if rects.tool_cells < TOOLS {
-                egui::ScrollArea::vertical()
+                egui::ScrollArea::new([rects.row, !rects.row])
                     .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
                     .show(&mut ui, cells);
             } else {
@@ -1124,7 +1141,7 @@ fn brush_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
             rect,
             Order::Middle,
             radius,
-            |ui| deselect_cell(&mut padded(ui), state, controls),
+            |ui| deselect_cell(&mut padded_in(ui, rects.row), state, controls),
         );
         return;
     }
@@ -1136,7 +1153,16 @@ fn brush_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
         Order::Middle,
         radius,
         |ui| {
-            let mut ui = padded(ui);
+            let mut ui = padded_in(ui, rects.row);
+            // In the row layout, a slider is a row as long as `length`.
+            let row = rects.row;
+            let slide = |number: Number<'_>, ui: &mut egui::Ui, controls: &mut Controls, length| {
+                if row {
+                    number.horizontal(ui, controls, length)
+                } else {
+                    number.vertical(ui, controls, length)
+                }
+            };
             // Each control shows while the tool can use it.
             let paint = state.globe.brushing();
             let line = state.globe.drawing();
@@ -1176,10 +1202,11 @@ fn brush_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
                     }
                     if stroke {
                         let cells = [true, line, fit || fill].iter().filter(|&&c| c).count() as f32;
-                        let height = 2.0 * height - cells * CELL.1;
+                        let cell = if row { CELL.0 } else { CELL.1 };
+                        let length = 2.0 * height - cells * cell;
                         let smoothing = &mut state.globe.line.smoothing;
                         let number = percent(SMOOTHING, *smoothing).default(DEFAULT_SMOOTHING);
-                        if let Some(value) = number.vertical(&mut ui, controls, height) {
+                        if let Some(value) = slide(number, &mut ui, controls, length) {
                             *smoothing = value;
                         }
                     }
@@ -1236,11 +1263,11 @@ fn brush_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
                     // flow. The sliders keep their place in the card.
                     let on = state.globe.brush.mode != Mode::Basin;
                     brush_size(state, "Size", |n| {
-                        n.enabled(on).vertical(&mut ui, controls, height)
+                        slide(n.enabled(on), &mut ui, controls, height)
                     });
                     let flow = &mut state.globe.brush.flow;
                     let number = Number::new("Flow", *flow, FLOW).percent().enabled(on);
-                    if let Some(value) = number.vertical(&mut ui, controls, height) {
+                    if let Some(value) = slide(number, &mut ui, controls, height) {
                         *flow = value;
                     }
                 }
@@ -1283,7 +1310,7 @@ pub(super) fn cell_card(
         Order::Middle,
         theme::CARD_RADIUS.into(),
         |ui| {
-            let mut ui = padded(ui);
+            let mut ui = padded_in(ui, rects.row);
             let globe = state.workspace == Workspace::Globe;
             let vertexing = state.globe.vertexing() && globe;
             let selecting = state.globe.selecting() && globe;
@@ -1305,7 +1332,7 @@ pub(super) fn cell_card(
                 }
             };
             if rects.card_cells < all {
-                egui::ScrollArea::vertical()
+                egui::ScrollArea::new([rects.row, !rects.row])
                     .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
                     .show(&mut ui, cells);
             } else {
@@ -1345,11 +1372,19 @@ fn merge_menu(
     let screen = rects.screen.shrink(PAD);
     let width = (widest + 2.0 * widgets::BODY_PAD + 16.0).clamp(220.0, 360.0);
     let height = 20.0 + (choices.len() + 1) as f32 * widgets::PANEL_ROW;
-    let top = cell.top().min(screen.bottom() - height).max(screen.top());
-    let rect = Rect::from_min_size(
-        pos2(cell.right() + 2.0 * PAD + 8.0, top),
-        vec2(width, height),
-    );
+    // In the row layout, the list is above its cell.
+    let rect = if rects.row {
+        let height = height.min(cell.top() - 8.0 - rects.column_top);
+        let left = cell.right() - width;
+        let left = left.min(screen.right() - width).max(screen.left());
+        Rect::from_min_size(pos2(left, cell.top() - 8.0 - height), vec2(width, height))
+    } else {
+        let top = cell.top().min(screen.bottom() - height).max(screen.top());
+        Rect::from_min_size(
+            pos2(cell.right() + 2.0 * PAD + 8.0, top),
+            vec2(width, height),
+        )
+    };
     if choices.is_empty() || pressed.is_some_and(|p| !rect.contains(p) && !cell.contains(p)) {
         state.merging = false;
         return;
@@ -1854,7 +1889,7 @@ fn show_card(
         let row = widgets::title_row_with(ui, controls, head.title, head.back, sheet, head.action);
         on_title(state, &row);
         if sheet {
-            sheet_drag(ui, &mut state.pad, &row.bar, rects.sheet_travel);
+            sheet_drag(ui, &mut state.pad, &row.bar, rects);
             if state.pad.sheet_offset >= rects.sheet_travel {
                 return;
             }
@@ -1899,24 +1934,38 @@ fn show_card(
 
 /// Moves the sheet with a drag on its title row. At the end of the drag, the
 /// sheet goes to the nearer of its two places. A tap changes the place.
-fn sheet_drag(ui: &egui::Ui, pad: &mut PadState, bar: &egui::Response, travel: f32) {
+fn sheet_drag(ui: &egui::Ui, pad: &mut PadState, bar: &egui::Response, rects: &Rects) {
+    let (rise, travel) = (rects.sheet_rise, rects.sheet_travel);
     if bar.dragged() {
-        pad.sheet_offset = (pad.sheet_offset + bar.drag_delta().y).clamp(0.0, travel);
+        pad.sheet_offset = (pad.sheet_offset + bar.drag_delta().y).clamp(-rise, travel);
         ui.ctx().request_repaint();
     }
-    let down = if bar.drag_stopped() {
+    // The places of the sheet: the full height, the half height, and the
+    // title row.
+    let places = [-rise, 0.0, travel];
+    let offset = pad.sheet_offset;
+    pad.sheet_offset = if bar.drag_stopped() {
         let speed = ui.input(|i| i.pointer.velocity().y);
-        if speed.abs() > 300.0 {
-            speed > 0.0
+        if speed > 300.0 {
+            places.into_iter().find(|p| *p > offset).unwrap_or(travel)
+        } else if speed < -300.0 {
+            places
+                .into_iter()
+                .rev()
+                .find(|p| *p < offset)
+                .unwrap_or(-rise)
         } else {
-            pad.sheet_offset > travel / 2.0
+            let near = |p: &f32| (p - offset).abs();
+            places
+                .into_iter()
+                .min_by(|a, b| near(a).total_cmp(&near(b)))
+                .unwrap_or(0.0)
         }
     } else if bar.clicked() {
-        pad.sheet_offset < travel / 2.0
+        if offset >= travel { 0.0 } else { travel }
     } else {
         return;
     };
-    pad.sheet_offset = if down { travel } else { 0.0 };
 }
 
 fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
@@ -2888,7 +2937,7 @@ fn readout(ctx: &egui::Context, ui: &egui::Ui, state: &AppState, rects: &Rects) 
     let mark = state.save_mark(std::time::Instant::now());
     let lead = if mark.is_some() { SAVE_MARK + 8.0 } else { 0.0 };
     let size = vec2(lead + galley.size().x.ceil() + 24.0, band.height());
-    let rect = if rects.class == WidthClass::Compact {
+    let rect = if rects.class == WidthClass::Compact && !rects.row {
         Rect::from_min_size(band.min, size)
     } else {
         Rect::from_center_size(band.center(), size)
@@ -3098,7 +3147,12 @@ fn center_buttons(
 fn center_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
     let size = vec2(2.0 * TOUCH + 3.0 * PAD, ROW);
     let middle = rects.screen.center().x;
-    let mut rect = Rect::from_min_size(pos2(middle - size.x / 2.0, rects.tools.top()), size);
+    let top = if rects.row {
+        rects.column_top
+    } else {
+        rects.tools.top()
+    };
+    let mut rect = Rect::from_min_size(pos2(middle - size.x / 2.0, top), size);
     // An open panel pushes the card to its right. With no room there, the
     // card does not show.
     let panels = &state.pad.panels;

@@ -357,7 +357,7 @@ impl<'a> Number<'a> {
         let track = Rect::from_min_max(pos2(start, y - HEIGHT / 2.0), pos2(end, y + HEIGHT / 2.0));
         let left = track.left() + TRACK_INSET;
         let right = track.right() - TRACK_INSET;
-        let mut out = self.drag(ui, &resp, right - left, |p| (p.x, (p.y - y).abs()));
+        let mut out = self.drag(ui, &resp, true, right - left, |p| (p.x, (p.y - y).abs()));
         let value = out.unwrap_or(self.value);
 
         let x_of = |v: f64| left + self.place(v) as f32 * (right - left);
@@ -411,7 +411,7 @@ impl<'a> Number<'a> {
         );
         let top = track.top() + TRACK_INSET;
         let bottom = track.bottom() - TRACK_INSET;
-        let mut out = self.drag(ui, &resp, bottom - top, |p| (-p.y, (p.x - x).abs()));
+        let mut out = self.drag(ui, &resp, false, bottom - top, |p| (-p.y, (p.x - x).abs()));
         let value = out.unwrap_or(self.value);
 
         let y_of = |v: f64| bottom - self.place(v) as f32 * (bottom - top);
@@ -427,6 +427,55 @@ impl<'a> Number<'a> {
         // from the track.
         let field = Rect::from_min_size(rect.min, vec2(rect.width(), TOUCH));
         let back = Rect::from_min_size(rect.min, vec2(rect.width(), 20.0));
+        let typed = self.field(ui, controls, field, back, value, Look::Plain);
+        out = typed.or(out);
+        self.keypad_beside(ui, controls, rect);
+        if let Some(drag) = dragging(ui, &resp) {
+            self.bubble(ui, value, drag.note, rect);
+        }
+        out.filter(|v| *v != self.value)
+    }
+
+    /// Adds the slider as a row `width` wide, with the label and the value
+    /// above the track. Returns the new value when the user changes it. The
+    /// keypad opens above the card.
+    pub fn horizontal(self, ui: &mut egui::Ui, controls: &mut Controls, width: f32) -> Option<f64> {
+        let enabled = self.enabled;
+        let (rect, _) = ui.allocate_exact_size(vec2(width, CELL.1), Sense::hover());
+        let rect = rect.shrink2(vec2(PAD, 0.0));
+        let resp = hit(
+            ui,
+            controls,
+            rect,
+            self.name,
+            Sense::click_and_drag(),
+            enabled,
+            None,
+        );
+        let track = Rect::from_min_max(
+            pos2(rect.left(), rect.top() + 22.0),
+            pos2(rect.right(), rect.bottom() - 4.0),
+        );
+        let y = track.center().y;
+        let left = track.left() + TRACK_INSET;
+        let right = track.right() - TRACK_INSET;
+        let mut out = self.drag(ui, &resp, false, right - left, |p| (p.x, (p.y - y).abs()));
+        let value = out.unwrap_or(self.value);
+
+        let x_of = |v: f64| left + self.place(v) as f32 * (right - left);
+        let marks: Vec<f32> = self.default.iter().map(|d| x_of(*d)).collect();
+        let held = resp.dragged() || resp.is_pointer_button_down_on();
+        paint_track(ui, track, x_of(value), &marks, false, enabled, held);
+        let color = fade(theme::MUTE, enabled);
+        let at = pos2(rect.left() + 2.0, rect.top() + 2.0);
+        let painter = ui.painter();
+        painter.text(at, Align2::LEFT_TOP, self.label, theme::small(), color);
+
+        // The field covers the value at the right. It takes the touches
+        // there from the track.
+        let size = vec2((rect.width() / 2.0).clamp(TOUCH, VALUE_WIDTH), TOUCH);
+        let field = Rect::from_min_size(pos2(rect.right() - size.x, rect.top()), size);
+        let back = field.with_max_y(field.top() + 20.0);
         let typed = self.field(ui, controls, field, back, value, Look::Plain);
         out = typed.or(out);
         self.keypad_beside(ui, controls, rect);
@@ -566,14 +615,16 @@ impl<'a> Number<'a> {
         moved.then_some(next)
     }
 
-    /// Moves the value with a drag on `resp`. `length` is the length of the
-    /// track. `along` gives, for a place on the screen, its place along the
+    /// Moves the value with a drag on `resp`. A drag that is more up or
+    /// down than along the track scrolls if `scrolls`. `length` is the
+    /// length of the track. `along` gives, for a place on the screen, its place along the
     /// track and its distance from the track. Returns the value while the
     /// drag moves it.
     fn drag(
         &self,
         ui: &egui::Ui,
         resp: &egui::Response,
+        scrolls: bool,
         length: f32,
         along: impl Fn(Pos2) -> (f32, f32),
     ) -> Option<f64> {
@@ -581,9 +632,7 @@ impl<'a> Number<'a> {
         if resp.drag_started() {
             let pointer = ui.input(|i| i.pointer.press_origin().zip(i.pointer.interact_pos()));
             let moved = pointer.map_or(egui::Vec2::ZERO, |(from, to)| to - from);
-            // Only a row in a panel scrolls.
-            let (a, _) = along(pos2(0.0, 1.0));
-            let scroll = a == 0.0 && moved.y.abs() > moved.x.abs();
+            let scroll = scrolls && moved.y.abs() > moved.x.abs();
             let drag = Drag {
                 place: self.place(self.value),
                 scroll,
@@ -921,11 +970,19 @@ fn place(
             Some(other) => right = other.left() - GAP,
         }
     }
-    // Above the panel, as for a sheet at the bottom of the screen.
+    // Above the panel, past each card in the way, as for a sheet at the
+    // bottom of the screen.
     let x = (anchor.center().x - size.x / 2.0).clamp(screen.left(), screen.right() - size.x);
-    let rect = Rect::from_min_size(pos2(x, panel.top() - GAP - size.y), size);
-    if fits(rect) && panel_under(ctx, rect, own).is_none() {
-        return (rect, true);
+    let mut bottom = panel.top() - GAP;
+    for _ in 0..4 {
+        let rect = Rect::from_min_size(pos2(x, bottom - size.y), size);
+        if !fits(rect) {
+            break;
+        }
+        match panel_under(ctx, rect, own) {
+            None => return (rect, true),
+            Some(other) => bottom = other.top() - GAP,
+        }
     }
     let below = Rect::from_min_size(pos2(anchor.right() - size.x, anchor.bottom() + 4.0), size);
     (keep_in(below, screen), false)
