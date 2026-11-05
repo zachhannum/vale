@@ -2506,8 +2506,8 @@ impl egui_wgpu::CallbackTrait for GlobeCallback {
     }
 }
 
-/// Starts the compile of the pipelines of the globe on a worker thread,
-/// before the first frame of a globe needs them.
+/// Starts the compile of the core pipelines of the globe on a worker
+/// thread, before the first frame of a globe needs them.
 pub fn start(render_state: &egui_wgpu::RenderState, link: &Link) {
     let format = render_state.target_format;
     let mut renderer = render_state.renderer.write();
@@ -2516,13 +2516,10 @@ pub fn start(render_state: &egui_wgpu::RenderState, link: &Link) {
         .get::<Resources>()
         .is_none_or(|r| r.format != format)
     {
-        resources.insert(Resources::new(&render_state.device, format, link));
-    }
-    if resources
-        .get::<Backdrop>()
-        .is_none_or(|b| b.format != format)
-    {
-        resources.insert(Backdrop::new(&render_state.device, format));
+        let res = Resources::new(&render_state.device, format, link);
+        // An offscreen render waits here, so that no compile outlives it.
+        let _ = res.core.get();
+        resources.insert(res);
     }
 }
 

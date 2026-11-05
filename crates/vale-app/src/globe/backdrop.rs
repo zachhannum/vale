@@ -82,7 +82,8 @@ pub struct Backdrop {
     pub format: wgpu::TextureFormat,
     layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
-    /// A worker compiles them. Until then, the cards show no blur.
+    /// A worker compiles them when a card first needs them. Until then,
+    /// the cards show no blur.
     pipelines: Compiled<Pipelines>,
     /// The picture of a canvas that the CPU drew: its key, and the bind
     /// group that reads it.
@@ -204,7 +205,7 @@ impl Backdrop {
         });
         let (worker_device, worker_layout) = (device.clone(), layout.clone());
         let pipelines =
-            Compiled::start(move || Pipelines::new(&worker_device, &worker_layout, format));
+            Compiled::lazy(move || Pipelines::new(&worker_device, &worker_layout, format));
         Backdrop {
             format,
             pipelines,
