@@ -312,11 +312,11 @@ fn km_per_point(cache: &Cache, vt: &ViewTransform) -> f64 {
 }
 
 /// The features of a layer that one paint draws. `order` is the index of the rule and the index of the symbolizer.
-struct Batch {
-    order: (usize, usize),
-    paint: Paint,
-    /// Indices in `PageLayer::features`.
-    features: Vec<usize>,
+pub(crate) struct Batch {
+    pub order: (usize, usize),
+    pub paint: Paint,
+    /// Indices in the features that `style_batches` takes.
+    pub features: Vec<usize>,
 }
 
 /// The bits of a paint, for grouping.
@@ -403,15 +403,26 @@ fn paint_key(paint: &Paint) -> [u64; 8] {
 
 /// The batches of a layer, in draw order: rule by rule, and symbolizer by symbolizer. Features with the same paint share a batch, in the order of the features.
 fn batches(pl: &PageLayer<'_>) -> Vec<Batch> {
-    let style = &pl.entry.style.style;
-    if let Some(paints) = style.constant_paints(pl.scale) {
+    style_batches(&pl.entry.style.style, pl.scale, pl.features.len(), |i| {
+        pl.context(pl.features[i].index)
+    })
+}
+
+/// The batches of `count` features with `style` at the scale denominator `scale`, as `batches` gives them. `context` gives the style context of feature `i`.
+pub(crate) fn style_batches<'a>(
+    style: &vale_style::Style,
+    scale: f64,
+    count: usize,
+    context: impl Fn(usize) -> Context<'a>,
+) -> Vec<Batch> {
+    if let Some(paints) = style.constant_paints(scale) {
         return paints
             .into_iter()
             .enumerate()
             .map(|(i, paint)| Batch {
                 order: (0, i),
                 paint,
-                features: (0..pl.features.len()).collect(),
+                features: (0..count).collect(),
             })
             .collect();
     }
@@ -421,10 +432,10 @@ fn batches(pl: &PageLayer<'_>) -> Vec<Batch> {
         .rules
         .iter()
         .enumerate()
-        .filter(|(_, r)| r.in_scale(pl.scale))
+        .filter(|(_, r)| r.in_scale(scale))
         .collect();
-    for (i, f) in pl.features.iter().enumerate() {
-        let ctx = pl.context(f.index);
+    for i in 0..count {
+        let ctx = context(i);
         for (r, rule) in &rules {
             if !rule.filter.matches(&ctx) {
                 continue;
