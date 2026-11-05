@@ -17,10 +17,10 @@ use super::pad::atlas::{
     ADD_HOLE, ADD_PAGE, AUTO_INTERVAL, AZIMUTH, BORDER, BORDER_COLOR, BORDER_DISTANCE,
     BORDER_STROKE, BORDER_STYLE, BORDER_STYLES, BORDER_WIDTH, CENTER_LATITUDE, CENTER_LONGITUDE,
     CENTER_ON_FRAME, DELETE_FRAME, DELETE_PAGE, DELETE_PROJECTION, FIRST_PARALLEL, FRAME_TABS,
-    GRATICULE_COLOR, GRATICULE_WIDTH, GRID_COLOR, GRID_OPACITY, GRID_SPACING, HEIGHT, INTERVAL,
-    LABEL_FORMAT, LABEL_FORMATS, LATITUDE, LAYOUT_GRID, LONGITUDE, MAP_NAME, MAP_STYLE_HINT,
-    NEATLINE, NEATLINE_COLOR, NEATLINE_WIDTH, OBLIQUE, ORIENTATIONS, PAGE_NAME, PAPER_COLOR,
-    POLYGON, PROJECTION_NAME, RECTANGLE, REFERENCE_GRID, REMOVE_OVERRIDES, REMOVE_VERTEX, ROTATION,
+    GRATICULE_COLOR, GRATICULE_WIDTH, GRID_COLOR, GRID_SPACING, HEIGHT, INTERVAL, LABEL_FORMAT,
+    LABEL_FORMATS, LATITUDE, LAYOUT_GRID, LONGITUDE, MAP_NAME, MAP_STYLE_HINT, NEATLINE,
+    NEATLINE_COLOR, NEATLINE_WIDTH, OBLIQUE, ORIENTATIONS, PAGE_NAME, PAPER_COLOR, POLYGON,
+    PROJECTION_NAME, RECTANGLE, REFERENCE_GRID, REMOVE_OVERRIDES, REMOVE_VERTEX, ROTATION,
     SAVE_PROJECTION, SCALE, SECOND_COLOR, SECOND_PARALLEL, SHAPE, SIZE, STROKE_COLOR, STROKE_WIDTH,
     UNIT_NAMES, WIDTH, custom_row, length_text, unit_name,
 };
@@ -237,7 +237,7 @@ fn graticule_rows(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) 
             ui.end_row();
             ui.label(GRATICULE_COLOR);
             let mut color = g.color;
-            let button = ui.color_edit_button_srgb(&mut color);
+            let button = ui.color_edit_button_srgba_unmultiplied(&mut color);
             named(&button, egui::WidgetType::ColorButton, GRATICULE_COLOR);
             if button.changed() {
                 atlas::set_graticule_color(state, id, color);
@@ -329,18 +329,14 @@ fn edge_label_rows(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord)
                     .suffix(" pt")
                     .row(ui);
                 ui.label(edge::COLOR);
-                ui.color_edit_button_srgb(&mut set.color);
+                ui.color_edit_button_srgba_unmultiplied(&mut set.color);
                 ui.end_row();
-                number::slider(edge::OPACITY, &mut set.opacity, 0.0..=1.0)
-                    .percent()
-                    .step(1.0)
-                    .row(ui);
                 ui.label(edge::HALO);
                 ui.checkbox(&mut set.halo, "");
                 ui.end_row();
                 if set.halo {
                     ui.label(edge::HALO_COLOR);
-                    ui.color_edit_button_srgb(&mut set.halo_color);
+                    ui.color_edit_button_srgba_unmultiplied(&mut set.halo_color);
                     ui.end_row();
                     number::stepper(edge::HALO_WIDTH, &mut set.halo_width)
                         .range(EdgeLabels::HALO_WIDTHS)
@@ -397,7 +393,7 @@ fn neatline_rows(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
         .show(ui, |ui| {
             ui.label(NEATLINE_COLOR);
             let mut color = b.color;
-            let button = ui.color_edit_button_srgb(&mut color);
+            let button = ui.color_edit_button_srgba_unmultiplied(&mut color);
             named(&button, egui::WidgetType::ColorButton, NEATLINE_COLOR);
             if button.changed() {
                 atlas::set_neatline_color(state, id, color);
@@ -816,7 +812,7 @@ fn page_panel(ui: &mut egui::Ui, state: &mut AppState) {
             }
         });
         ui.end_row();
-        if let Some(c) = color(ui, PAPER_COLOR, page.paper) {
+        if let Some(c) = rgb_color(ui, PAPER_COLOR, page.paper) {
             atlas::set_paper(state, c);
         }
 
@@ -837,11 +833,6 @@ fn page_panel(ui: &mut egui::Ui, state: &mut AppState) {
             ui.end_row();
             if let Some(c) = color(ui, GRID_COLOR, grid.color) {
                 atlas::edit_grid(state, |g| g.color = c);
-            }
-            let mut opacity = grid.opacity;
-            let slider = number::slider(GRID_OPACITY, &mut opacity, 0.0..=1.0).percent();
-            if slider.step(1.0).row(ui).changed() {
-                atlas::edit_grid(state, |g| g.opacity = opacity);
             }
         }
     });
@@ -864,8 +855,8 @@ fn labels_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
     use super::pad::labels::{
         ADD_CLASS, BUFFER, CASE, CURVE_LIMIT, DELETE_CLASS, DUPLICATE_DISTANCE, FOLLOW_PARALLELS,
         HALO, HALO_WIDTH, LABEL_SIZE, LETTER_SPACING, MOVE_DOWN, MOVE_UP, NO_LABEL_LAYERS, OFFSET,
-        OPACITY, PLACEMENT, POSITIONS, REMOVE_DUPLICATES, REPEAT, REPEAT_INTERVAL, SMOOTHING,
-        SPREAD, SPREADS, STYLE, UPSIDE_DOWN, can_follow_parallels, follows_parallels,
+        PLACEMENT, POSITIONS, REMOVE_DUPLICATES, REPEAT, REPEAT_INTERVAL, SMOOTHING, SPREAD,
+        SPREADS, STYLE, UPSIDE_DOWN, can_follow_parallels, follows_parallels,
     };
     use super::pad::labels::{
         AVOID_POLYGONS, INSIDE, LARGEST_PART, LEADER_LINE, LEADER_START, MIN_AREA, MIN_AREAS,
@@ -967,10 +958,6 @@ fn labels_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
         .factor(100.0)
         .step(1.0)
         .suffix(" %")
-        .show(ui);
-    number::slider(OPACITY, &mut class.opacity, 0.0..=1.0)
-        .percent()
-        .step(1.0)
         .show(ui);
     ui.horizontal(|ui| {
         ui.checkbox(&mut class.halo, HALO);
@@ -1246,7 +1233,7 @@ fn item_panel(ui: &mut egui::Ui, state: &mut AppState, rec: &vale_store::Furnitu
             ui.horizontal(|ui| {
                 ui.label(item::ARROW_COLOR);
                 let mut color = n.color;
-                let button = ui.color_edit_button_srgb(&mut color);
+                let button = ui.color_edit_button_srgba_unmultiplied(&mut color);
                 named(&button, egui::WidgetType::ColorButton, item::ARROW_COLOR);
                 if button.changed() {
                     atlas::edit_item(state, id, |r| match &mut r.item {
@@ -1349,8 +1336,19 @@ fn combo<T: PartialEq + Copy>(
     chosen
 }
 
-/// A color row of a grid. Returns the new color.
-fn color(ui: &mut egui::Ui, label: &str, color: vale_store::Rgb) -> Option<vale_store::Rgb> {
+/// A color row of a grid, with the alpha of the color. Returns the new
+/// color.
+fn color(ui: &mut egui::Ui, label: &str, color: vale_store::Rgba) -> Option<vale_store::Rgba> {
+    ui.label(label);
+    let mut c = color;
+    let button = ui.color_edit_button_srgba_unmultiplied(&mut c);
+    named(&button, egui::WidgetType::ColorButton, label);
+    ui.end_row();
+    button.changed().then_some(c)
+}
+
+/// A color row of a grid, for an opaque color. Returns the new color.
+fn rgb_color(ui: &mut egui::Ui, label: &str, color: vale_store::Rgb) -> Option<vale_store::Rgb> {
     ui.label(label);
     let mut c = color;
     let button = ui.color_edit_button_srgb(&mut c);
@@ -1467,11 +1465,6 @@ fn style_grid(
         if let Some(c) = color(ui, item::COLOR, style.color) {
             edit(state, false, &|s| s.color = c);
         }
-        let mut v = style.opacity;
-        let slider = number::slider(item::OPACITY, &mut v, 0.0..=1.0).percent();
-        if slider.step(1.0).row(ui).changed() {
-            edit(state, false, &|s| s.opacity = v);
-        }
         if let Some(on) = check(ui, item::HALO, style.halo) {
             edit(state, true, &|s| s.halo = on);
         }
@@ -1501,7 +1494,7 @@ fn fill_rows(
     label: &str,
     second: bool,
     fill: &vale_store::FillPattern,
-    outline: vale_store::Rgb,
+    outline: vale_store::Rgba,
 ) {
     use super::pad::furniture as item;
     use vale_store::{FillKind, FillPattern};
@@ -1534,7 +1527,7 @@ fn fill_rows(
         return;
     }
     if let Some(on) = check(ui, item::BACKGROUND, fill.background.is_some()) {
-        let back = on.then_some([0xff, 0xff, 0xff]);
+        let back = on.then_some([0xff, 0xff, 0xff, 0xff]);
         edit(state, true, &|f| f.background = back);
     }
     if let Some(back) = fill.background
@@ -1984,7 +1977,7 @@ fn leader_controls(ui: &mut egui::Ui, class: &mut vale_style::LabelClass) {
     use super::pad::labels::{
         ANCHOR_GAP, COLOR, DASH, DASH_GAP, DASHED, DASHES, END_SIZE, END_SIZES, HALO, HALO_COLOR,
         HALO_WIDTH, LABEL_GAP, LEADER_END, LEADER_GAPS, LINE_HALO_WIDTHS, LINE_WIDTH, LINE_WIDTHS,
-        MATCH_HALO, MATCH_TEXT, OPACITY, SHOW_LINE,
+        MATCH_HALO, MATCH_TEXT, SHOW_LINE,
     };
     use vale_style::LeaderEnd;
     let (text, text_halo) = (class.color, class.halo_color);
@@ -1995,10 +1988,7 @@ fn leader_controls(ui: &mut egui::Ui, class: &mut vale_style::LabelClass) {
     }
     let color_button = |ui: &mut egui::Ui, label: &str, c: &mut vale_style::Color| {
         ui.horizontal(|ui| {
-            let mut rgb = [c.r, c.g, c.b];
-            if ui.color_edit_button_srgb(&mut rgb).changed() {
-                [c.r, c.g, c.b] = rgb;
-            }
+            style_editor::color_button(ui, c);
             ui.label(label);
         });
     };
@@ -2014,14 +2004,6 @@ fn leader_controls(ui: &mut egui::Ui, class: &mut vale_style::LabelClass) {
         .step(0.25)
         .suffix(" pt")
         .show(ui);
-    let mut percent = l.opacity * 100.0;
-    if number::slider(OPACITY, &mut percent, 0.0..=100.0)
-        .suffix(" %")
-        .show(ui)
-        .changed()
-    {
-        l.opacity = percent / 100.0;
-    }
     ui.horizontal(|ui| {
         ui.checkbox(&mut l.dashed, DASHED);
         if l.dashed {
