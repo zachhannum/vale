@@ -10,7 +10,7 @@ use std::num::NonZeroUsize;
 
 use kurbo::{Affine, BezPath, Cap, Join, Rect, Shape, Stroke};
 use vello::peniko::{
-    Blob, Fill, ImageAlphaType, ImageBrush, ImageData, ImageFormat, ImageQuality, ImageSampler,
+    Blob, Fill, ImageAlphaType, ImageBrush, ImageData, ImageFormat, ImageQuality, ImageSampler, Mix,
 };
 use vello::{AaConfig, AaSupport, RenderParams, Renderer, RendererOptions, Scene};
 use vello_cpu::Pixmap;
@@ -388,6 +388,8 @@ struct Encoder<'a> {
     tiles: u64,
     bins: u64,
     clips: Vec<(&'a BezPath, Fill)>,
+    /// The number of open `Layer` items.
+    layers: usize,
 }
 
 impl<'a> Encoder<'a> {
@@ -402,6 +404,7 @@ impl<'a> Encoder<'a> {
             tiles: 0,
             bins: 0,
             clips: Vec::new(),
+            layers: 0,
         }
     }
 
@@ -423,8 +426,13 @@ impl<'a> Encoder<'a> {
         self.bins += cells(256.0);
     }
 
-    /// Starts a new scene if this one is full. The new scene opens the same clips.
+    /// Starts a new scene if this one is full. The new scene opens the same clips. A scene
+    /// does not split inside a `Layer`, because two parts of a group would each get the alpha.
+    /// Thus a very large layer can go over the limits.
     fn check(&mut self) {
+        if self.layers > 0 {
+            return;
+        }
         let m = self.scene.bump_estimate(None);
         let full = self.tiles > self.limits.tiles
             || self.bins > self.limits.bins
@@ -505,6 +513,21 @@ impl<'a> Encoder<'a> {
                     self.cover(*rect);
                 }
                 Item::Rasterize { items, .. } => self.items(items)?,
+                Item::Layer { alpha, items } => {
+                    self.scene.push_layer(
+                        Fill::NonZero,
+                        Mix::Normal,
+                        alpha.clamp(0.0, 1.0),
+                        Affine::IDENTITY,
+                        &self.viewport,
+                    );
+                    self.cover(self.base.inverse().transform_rect_bbox(self.viewport));
+                    self.layers += 1;
+                    let result = self.items(items);
+                    self.layers -= 1;
+                    self.scene.pop_layer();
+                    result?;
+                }
                 Item::PushClip { path, rule } => {
                     let fill = fill_rule(*rule);
                     self.scene.push_clip_layer(fill, self.base, path);

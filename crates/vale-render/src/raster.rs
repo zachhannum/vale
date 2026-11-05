@@ -105,6 +105,12 @@ fn draw_items(ctx: &mut RenderContext, items: &[Item], base: Affine) -> Result<(
                 ctx.set_transform(base);
             }
             Item::Rasterize { items, .. } => draw_items(ctx, items, base)?,
+            Item::Layer { alpha, items } => {
+                ctx.push_opacity_layer(alpha.clamp(0.0, 1.0));
+                draw_items(ctx, items, base)?;
+                ctx.pop_layer();
+                ctx.set_transform(base);
+            }
             Item::PushClip { path, rule } => {
                 ctx.set_fill_rule(fill_rule(*rule));
                 ctx.push_clip_path(path);
