@@ -399,7 +399,9 @@ type RowPlaces = (Rect, usize, BrushCard, Option<Rect>, usize, Option<Rect>);
 impl Rows<'_> {
     fn layout(&self) -> RowPlaces {
         let input = self.input;
-        let room = self.right - self.left;
+        // A row can go as near the edges as `GAP`, so the six cells fit on
+        // a screen 375 points wide.
+        let room = self.right - self.left + 2.0 * (MARGIN - GAP);
         let fit = |cells: usize| {
             let most = ((room - 2.0 * PAD) / CELL.0).floor().max(1.0) as usize;
             cells.min(most)

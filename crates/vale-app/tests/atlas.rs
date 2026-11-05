@@ -970,9 +970,30 @@ fn the_tabs_of_a_frame_work_with_a_finger() {
         check_controls(&h, "projection list");
         tap(&mut h, ProjectionKind::Mercator.name());
         assert_eq!(selected_projection(&h).kind, ProjectionKind::Mercator);
+        // A place on the page, outside the frames. A sheet that covers it is
+        // pulled down to its title row, and a pull up opens it again after the tap.
         let at = screen(&h, Point::new(4.0, 50.0));
+        let covered = h
+            .state()
+            .pad
+            .rects
+            .unwrap()
+            .sheet
+            .filter(|s| s.contains(at));
+        if let Some(sheet) = covered {
+            let bar = pos2(sheet.center().x, sheet.top() + 26.0);
+            drag(&mut h, bar, bar + vec2(0.0, sheet.height()), Input::Finger);
+            assert!(!h.state().pad.rects.unwrap().sheet.unwrap().contains(at));
+        }
         tap_with(&mut h, at, Input::Finger);
         assert_eq!(h.state().atlas.selection, AtlasSelection::Page, "{size:?}");
+        if covered.is_some() {
+            let sheet = h.state().pad.rects.unwrap().sheet.unwrap();
+            let bar = pos2(sheet.center().x, sheet.top() + 26.0);
+            drag(&mut h, bar, bar - vec2(0.0, 300.0), Input::Finger);
+            let travel = h.state().pad.rects.unwrap().sheet_travel;
+            assert!(h.state().pad.sheet_offset < travel, "{size:?}");
+        }
         check_controls(&h, "page panel");
         tap(&mut h, SIZE);
         check_controls(&h, "page sizes");

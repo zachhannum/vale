@@ -121,9 +121,10 @@ fn paint_mark(ui: &egui::Ui, cell: Rect, active: bool, enabled: bool) {
     ui.painter().add(shape);
 }
 
-/// The open flyout, at the right of the tool column, next to its cell. A
-/// tick marks the row of `current`. Returns the row that the user chose. A
-/// choice or a press outside the flyout and its cell closes it.
+/// The open flyout, at the right of the tool column, next to its cell, or
+/// above the row of its cell in the row layout. A tick marks the row of
+/// `current`. Returns the row that the user chose. A choice or a press
+/// outside the flyout and its cell closes it.
 #[allow(clippy::too_many_arguments)]
 pub fn show(
     ctx: &egui::Context,
@@ -144,7 +145,9 @@ pub fn show(
     // In the row layout, the list is above its cell. Else it is at the
     // right of the strip.
     let rect = if rects.row {
-        let bottom = rects.tools.top() - geometry::GAP;
+        // A cell of the card of the tool has the list above the card.
+        let card = rects.brush.filter(|card| card.contains_rect(cell));
+        let bottom = card.unwrap_or(rects.tools).top() - geometry::GAP;
         let size = vec2(geometry::MODES_WIDTH, full.min(bottom - rects.column_top));
         let screen = rects.screen.shrink2(vec2(geometry::MARGIN, 0.0));
         let left = cell.left().min(screen.right() - size.x).max(screen.left());
