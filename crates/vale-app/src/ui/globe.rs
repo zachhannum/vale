@@ -1409,3 +1409,63 @@ pub(super) fn paint_canvas(
         ui.ctx().request_repaint();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vale_style::{Color, Stroke};
+
+    /// The shapes that `vector_layer` gives for a line layer with `stroke`.
+    fn line_shapes(
+        stroke: Stroke,
+        format: Option<egui_wgpu::wgpu::TextureFormat>,
+    ) -> Vec<egui::Shape> {
+        let mut doc = Document::empty();
+        let text = r#"{"type":"MultiLineString","coordinates":[[[-30,0],[0,0],[0,30]],[[10,-10],[30,-10]]]}"#;
+        let id = doc.add_imported(vale_import::geojson::read_str("lines", text).unwrap(), None)[0];
+        let style = &mut doc.entry_mut(id).unwrap().style;
+        style.set_fill(None);
+        style.set_stroke(Some(stroke));
+        let view = GlobeView::centered(0.0, 0.0);
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 400.0));
+        let mut scatter = ScatterCache::default();
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let painter = ui.ctx().layer_painter(egui::LayerId::background());
+            vector_layer(&painter, format, rect, &doc, &view, id, &mut scatter);
+        });
+        output.textures_delta.clear();
+        output.shapes.into_iter().map(|s| s.shape).collect()
+    }
+
+    #[test]
+    fn a_translucent_stroke_goes_to_one_group_and_an_opaque_stroke_goes_directly() {
+        let format = Some(egui_wgpu::wgpu::TextureFormat::Rgba8Unorm);
+        let callbacks = |shapes: &[egui::Shape]| {
+            shapes
+                .iter()
+                .filter(|s| matches!(s, egui::Shape::Callback(_)))
+                .count()
+        };
+        let translucent = Stroke::solid(Color::rgba(0, 0, 255, 128), 6.0);
+        let shapes = line_shapes(translucent, format);
+        // Both lines share the paint, so they share one group.
+        assert_eq!(shapes.len(), 1);
+        assert_eq!(callbacks(&shapes), 1);
+        let opaque = Stroke::solid(Color::rgb(0, 0, 255), 6.0);
+        let shapes = line_shapes(opaque, format);
+        assert_eq!(shapes.len(), 2);
+        assert_eq!(callbacks(&shapes), 0);
+        // Without wgpu, the translucent lines go to the painter with the
+        // alpha in their color.
+        let shapes = line_shapes(translucent, None);
+        assert_eq!(callbacks(&shapes), 0);
+        assert!(shapes.iter().all(|s| matches!(
+            s,
+            egui::Shape::Path(p) if matches!(
+                p.stroke.color,
+                egui::epaint::ColorMode::Solid(c) if c.a() == 128
+            )
+        )));
+    }
+}
