@@ -26,6 +26,7 @@ use crate::globe::backdrop::{Canvas, REDUCTION, Scene, SceneCallback};
 use crate::globe::flat::FlatMesh;
 use crate::globe::gpu::Mask;
 use crate::globe::nav::Nav;
+use crate::globe::select::Pointer;
 use crate::globe::{FrameDraw, FramePlace};
 use crate::page_snap;
 use crate::pipeline::{Pipeline, Quality};
@@ -292,6 +293,9 @@ pub enum AtlasTool {
     /// A tap selects, and a drag moves a frame or a handle.
     #[default]
     Select,
+    /// A tap on a frame shows its vertices. A tap and a box select vertices,
+    /// a drag of a handle moves them, and a tap on an edge adds a vertex.
+    Vertex,
     /// A drag moves the map in a frame.
     Move,
     /// A tap in a frame adds a point to the path of the Measure tool, and a
@@ -551,6 +555,9 @@ enum Drag {
     ItemHandle(FurnitureId, usize, Vec2),
     /// The whole item.
     Item(FurnitureId),
+    /// A box that selects vertices, from this screen position to the
+    /// pointer.
+    Box(Pos2),
     /// Nothing.
     Idle,
 }
@@ -567,8 +574,8 @@ pub struct AtlasState {
     /// The open page.
     pub page: PageId,
     pub selection: AtlasSelection,
-    /// The selected vertex of the selected polygon frame.
-    pub vertex: Option<Vertex>,
+    /// The selected vertices of the selected frame in the Vertex tool.
+    pub vertices: Vec<Vertex>,
     pub tool: AtlasTool,
     pub tab: FrameTab,
     /// The list of the page sizes of the panel of the page is open.
@@ -687,6 +694,8 @@ pub struct AtlasState {
     drag: Option<Drag>,
     /// The pointer at the last step of the drag.
     drag_last: Pos2,
+    /// The kind of the pointer that last came down.
+    pointer: Pointer,
     /// What the two-finger gesture changes.
     pinch: Option<Pinch>,
     /// More than one finger touched the screen since the first finger came
@@ -762,7 +771,7 @@ impl Default for AtlasState {
         AtlasState {
             page: PageId(0),
             selection: AtlasSelection::None,
-            vertex: None,
+            vertices: Vec::new(),
             tool: AtlasTool::Select,
             tab: FrameTab::Frame,
             sizes: false,
@@ -820,6 +829,7 @@ impl Default for AtlasState {
             held: false,
             drag: None,
             drag_last: Pos2::ZERO,
+            pointer: Pointer::Mouse,
             pinch: None,
             fingers: false,
             wheel_at: None,
@@ -897,8 +907,8 @@ struct ItemImage {
     rect: Rect,
 }
 
-/// Makes the open page, the selection, and the selected vertex valid for
-/// the atlas of the document.
+/// Makes the open page, the selection, and the selected vertices valid for
+/// the atlas of the document and the tool.
 pub fn sync(state: &mut AppState) {
     let atlas = &state.doc.project.atlas;
     let a = &mut state.atlas;
@@ -922,12 +932,12 @@ pub fn sync(state: &mut AppState) {
     if a.item().is_none() {
         a.item_page = None;
     }
-    let vertex_ok = |(r, i): Vertex| match frame.map(|f| &f.shape) {
-        Some(FrameShape::Polygon(rings)) => rings.get(r).is_some_and(|ring| i < ring.len()),
-        _ => false,
-    };
-    if a.vertex.is_some_and(|v| !vertex_ok(v)) {
-        a.vertex = None;
+    let rings = frame.map(|f| f.shape.rings()).unwrap_or_default();
+    let vertex_ok = |&(r, i): &Vertex| rings.get(r).is_some_and(|ring| i < ring.len());
+    if a.tool == AtlasTool::Vertex {
+        a.vertices.retain(vertex_ok);
+    } else {
+        a.vertices.clear();
     }
     let suggested = a.suggestion.as_ref().is_some_and(|s| {
         a.selection == AtlasSelection::Frame(s.frame)
@@ -970,7 +980,7 @@ pub fn go_to_page(state: &mut AppState, step: isize) {
         if state.atlas.frame().is_some() || state.atlas.item().is_some() {
             state.atlas.selection = AtlasSelection::None;
         }
-        state.atlas.vertex = None;
+        state.atlas.vertices.clear();
     }
 }
 
@@ -1013,7 +1023,7 @@ fn place_frame(
     };
     let id = state.doc.project.atlas.add_frame(page.id, frame)?;
     state.atlas.selection = AtlasSelection::Frame(id);
-    state.atlas.vertex = None;
+    state.atlas.vertices.clear();
     Some((id, map_id))
 }
 
@@ -1125,7 +1135,7 @@ pub fn add_item(state: &mut AppState, kind: ItemKind) -> Option<FurnitureId> {
     let rect = [x, y, x + w, y + h];
     let id = state.doc.project.atlas.add_furniture(page, rect, item)?;
     state.atlas.selection = AtlasSelection::Item(id);
-    state.atlas.vertex = None;
+    state.atlas.vertices.clear();
     state.atlas.item_page = None;
     Some(id)
 }
@@ -1561,6 +1571,27 @@ fn input(ui: &egui::Ui, state: &mut AppState, resp: &egui::Response, place: Page
         let m = i.modifiers;
         (i.pointer.any_down(), i.time, m.alt, m.shift)
     });
+    // A touch with a force is a pen. A press with no touch is the mouse.
+    ui.input(|i| {
+        for event in &i.events {
+            match event {
+                egui::Event::Touch {
+                    phase: egui::TouchPhase::Start,
+                    force,
+                    ..
+                } => {
+                    state.atlas.pointer = match force {
+                        Some(_) => Pointer::Pen,
+                        None => Pointer::Finger,
+                    };
+                }
+                egui::Event::PointerButton { pressed: true, .. } if !i.any_touches() => {
+                    state.atlas.pointer = Pointer::Mouse;
+                }
+                _ => {}
+            }
+        }
+    });
     let mut fingers = ui.input(|i| i.multi_touch());
     let touches = fingers.is_some();
     // A second finger on the canvas during the drag of a vertex locks the
@@ -1680,6 +1711,13 @@ fn input(ui: &egui::Ui, state: &mut AppState, resp: &egui::Response, place: Page
         }
     }
     if resp.drag_stopped() || !any_down || state.atlas.drag.is_none() {
+        if let Some(Drag::Box(start)) = state.atlas.drag {
+            select_box(
+                state,
+                place,
+                Rect::from_two_pos(start, state.atlas.drag_last),
+            );
+        }
         state.atlas.drag = None;
         state.atlas.guides.clear();
     }
@@ -1709,6 +1747,40 @@ fn input(ui: &egui::Ui, state: &mut AppState, resp: &egui::Response, place: Page
             delete_item(state);
         }
     }
+    if !typing && state.atlas.tool == AtlasTool::Vertex {
+        if delete {
+            delete_vertices(state);
+        }
+        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            deselect(state);
+        }
+    }
+}
+
+/// Selects the vertices of the selected frame inside a screen rectangle.
+fn select_box(state: &mut AppState, place: PagePlace, rect: Rect) {
+    let Some(frame) = state
+        .atlas
+        .frame()
+        .and_then(|id| state.doc.project.atlas.frame(id))
+    else {
+        return;
+    };
+    let inside = math::vertex_handles(&frame.shape).into_iter();
+    let inside = inside.filter_map(|(handle, p)| match handle {
+        Handle::Vertex(v) if rect.contains(place.to_screen(p)) => Some(v),
+        _ => None,
+    });
+    state.atlas.vertices = inside.collect();
+}
+
+/// Clears the selected vertices, or else the selection.
+pub fn deselect(state: &mut AppState) {
+    if state.atlas.vertices.is_empty() {
+        state.atlas.selection = AtlasSelection::None;
+    } else {
+        state.atlas.vertices.clear();
+    }
 }
 
 /// Deletes the selected frame and clears the selection. The items of
@@ -1726,22 +1798,38 @@ pub fn delete_frame(state: &mut AppState) {
     }
     state.doc.project.atlas.prune_maps();
     state.atlas.selection = AtlasSelection::None;
-    state.atlas.vertex = None;
+    state.atlas.vertices.clear();
     state.atlas.images.remove(&id);
     state.atlas.decors.remove(&id);
     state.atlas.spills.remove(&id);
 }
 
-/// Removes the selected vertex of the selected frame.
-pub fn remove_vertex(state: &mut AppState, v: Vertex) -> bool {
+/// True if "Delete vertex" can delete the selected vertices: the outer
+/// ring keeps 3 vertices.
+pub fn can_delete_vertices(state: &AppState) -> bool {
+    let frame = state.atlas.frame();
+    let frame = frame.and_then(|id| state.doc.project.atlas.frame(id));
+    let vertices = &state.atlas.vertices;
+    frame.is_some_and(|f| math::can_remove_vertices(&f.shape, vertices))
+}
+
+/// Deletes the selected vertices of the selected frame. A rectangle
+/// becomes a polygon in the same edit.
+pub fn delete_vertices(state: &mut AppState) -> bool {
     let Some(id) = state.atlas.frame() else {
         return false;
     };
-    let removed = edit_frame(state, id, |f, _| math::remove_vertex(&mut f.shape, v));
-    if removed {
-        state.atlas.vertex = None;
+    let vertices = state.atlas.vertices.clone();
+    let deleted = edit_frame(state, id, |f, _| {
+        let mut shape = math::to_polygon(&f.shape);
+        let deleted = math::remove_vertices(&mut shape, &vertices);
+        f.shape = shape;
+        deleted
+    });
+    if deleted {
+        state.atlas.vertices.clear();
     }
-    removed
+    deleted
 }
 
 fn start_drag(
@@ -1767,6 +1855,21 @@ fn start_drag(
             None => Drag::Page,
         },
         AtlasTool::Measure => Drag::Page,
+        AtlasTool::Vertex => {
+            let grabbed = handle_at(state, pos);
+            if let (Some(id), Some((Handle::Vertex(v), center))) = (state.atlas.frame(), grabbed) {
+                // A selected vertex moves the selection, and another vertex
+                // moves alone.
+                if !state.atlas.vertices.contains(&v) {
+                    state.atlas.vertices = vec![v];
+                }
+                return Drag::Handle(id, Handle::Vertex(v), place.to_mm(center) - at);
+            }
+            match state.atlas.pointer {
+                Pointer::Finger => Drag::Page,
+                Pointer::Pen | Pointer::Mouse => Drag::Box(pos),
+            }
+        }
         AtlasTool::Select => {
             if let (Some(id), Some((handle, center))) = (state.atlas.item(), handle_at(state, pos))
             {
@@ -1777,35 +1880,17 @@ fn start_drag(
             }
             if let Some(id) = item_at(page, at) {
                 state.atlas.selection = AtlasSelection::Item(id);
-                state.atlas.vertex = None;
+                state.atlas.vertices.clear();
                 return Drag::Item(id);
             }
             if let (Some(id), Some((handle, center))) = (state.atlas.frame(), handle_at(state, pos))
             {
-                let grab = place.to_mm(center) - at;
-                let handle = match handle {
-                    Handle::Edge(v) => {
-                        let mut new = None;
-                        edit_frame(state, id, |f, _| {
-                            new = math::insert_vertex(&mut f.shape, v);
-                            new.is_some()
-                        });
-                        match new {
-                            Some(v) => Handle::Vertex(v),
-                            None => return Drag::Idle,
-                        }
-                    }
-                    other => other,
-                };
-                if let Handle::Vertex(v) = handle {
-                    state.atlas.vertex = Some(v);
-                }
-                return Drag::Handle(id, handle, grab);
+                return Drag::Handle(id, handle, place.to_mm(center) - at);
             }
             match under {
                 Some(id) => {
                     if state.atlas.frame() != Some(id) {
-                        state.atlas.vertex = None;
+                        state.atlas.vertices.clear();
                     }
                     state.atlas.selection = AtlasSelection::Frame(id);
                     let corner = page.frames.iter().find(|f| f.id == id);
@@ -1829,14 +1914,16 @@ fn snap_targets(state: &AppState, moving: FrameId) -> Option<page_snap::Targets>
     Some(page_snap::targets(open_page(state), moving, None, spacing))
 }
 
-/// The vertices of a shape other than `v`.
-fn other_vertices(shape: &FrameShape, v: Vertex) -> Vec<Point> {
+/// The vertices of a shape other than `moving`.
+fn other_vertices(shape: &FrameShape, moving: &[Vertex]) -> Vec<Point> {
     let rings = shape.rings();
     let all = rings.iter().enumerate().flat_map(|(r, ring)| {
         let ring = ring.iter().enumerate();
         ring.map(move |(i, &[x, y])| ((r, i), Point::new(x, y)))
     });
-    all.filter(|(at, _)| *at != v).map(|(_, p)| p).collect()
+    all.filter(|(at, _)| !moving.contains(at))
+        .map(|(_, p)| p)
+        .collect()
 }
 
 /// The vertices before and after a vertex in its ring.
@@ -1863,6 +1950,13 @@ fn drag_to(state: &mut AppState, drag: Drag, place: PagePlace, pos: Pos2, d: Vec
             let targets = snap_targets(state, id);
             let reach = state.globe.snap.distance / place.pts_per_mm;
             let lock = state.atlas.lock;
+            let moving = match handle {
+                Handle::Vertex(v) if state.atlas.vertices.contains(&v) => {
+                    state.atlas.vertices.clone()
+                }
+                Handle::Vertex(v) => vec![v],
+                Handle::Resize(_) => Vec::new(),
+            };
             let mut guides = Vec::new();
             edit_frame(state, id, |f, _| match handle {
                 Handle::Resize(i) => {
@@ -1879,9 +1973,11 @@ fn drag_to(state: &mut AppState, drag: Drag, place: PagePlace, pos: Pos2, d: Vec
                     math::resize(&mut f.shape, i, corner)
                 }
                 Handle::Vertex(v) => {
-                    let near = neighbors(&f.shape, v);
+                    // The first edit of a rectangle makes it a polygon.
+                    let mut shape = math::to_polygon(&f.shape);
+                    let near = neighbors(&shape, v);
                     let targets = targets.clone().map(|mut t| {
-                        t.align = other_vertices(&f.shape, v);
+                        t.align = other_vertices(&shape, &moving);
                         t
                     });
                     let (to, g) = match (&targets, lock && !near.is_empty()) {
@@ -1890,9 +1986,24 @@ fn drag_to(state: &mut AppState, drag: Drag, place: PagePlace, pos: Pos2, d: Vec
                         (None, false) => (to, Vec::new()),
                     };
                     guides = g;
-                    math::move_vertex(&mut f.shape, v, to)
+                    let rings = shape.rings();
+                    let Some(&[x, y]) = rings.get(v.0).and_then(|ring| ring.get(v.1)) else {
+                        return false;
+                    };
+                    // Only the dragged vertex snaps, and the others move by
+                    // the same distance.
+                    let d = to - Point::new(x, y);
+                    if d == Vec2::ZERO {
+                        return false;
+                    }
+                    for &(r, i) in &moving {
+                        if let Some(&[x, y]) = rings.get(r).and_then(|ring| ring.get(i)) {
+                            math::move_vertex(&mut shape, (r, i), Point::new(x, y) + d);
+                        }
+                    }
+                    f.shape = shape;
+                    true
                 }
-                Handle::Edge(_) => false,
             });
             state.atlas.guides = guides;
         }
@@ -1959,23 +2070,58 @@ fn drag_to(state: &mut AppState, drag: Drag, place: PagePlace, pos: Pos2, d: Vec
                 });
             }
         }
-        Drag::Page | Drag::Idle => {}
+        Drag::Page | Drag::Box(_) | Drag::Idle => {}
     }
 }
 
-/// A tap selects a vertex of the selected frame, a frame, the page, or
-/// nothing. A tap on a frame also selects the feature below it.
-fn tap(state: &mut AppState, page: &PageRecord, place: PagePlace, pos: Pos2) {
-    if state.atlas.tool == AtlasTool::Select
-        && let Some((handle, _)) = handle_at(state, pos)
-    {
-        if let Handle::Vertex(v) = handle {
-            state.atlas.vertex = Some(v);
+/// A tap of the Vertex tool selects a vertex of the selected frame, adds a
+/// vertex on an edge, or selects a frame. A tap on empty page clears the
+/// selected vertices, and a second tap clears the selection.
+fn vertex_tap(state: &mut AppState, page: &PageRecord, place: PagePlace, pos: Pos2) {
+    state.atlas.sizes = false;
+    let at = place.to_mm(pos);
+    if let Some(id) = state.atlas.frame() {
+        if let Some((Handle::Vertex(v), _)) = handle_at(state, pos) {
+            state.atlas.vertices = vec![v];
+            return;
         }
+        let shape = page.frames.iter().find(|f| f.id == id).map(|f| &f.shape);
+        let reach = f64::from(HANDLE_TARGET / 2.0) / place.pts_per_mm;
+        if let Some((v, on)) = shape.and_then(|s| math::edge_at(s, at, reach)) {
+            let mut new = None;
+            edit_frame(state, id, |f, _| {
+                let mut shape = math::to_polygon(&f.shape);
+                new = math::insert_vertex(&mut shape, v, on);
+                f.shape = shape;
+                new.is_some()
+            });
+            if let Some(v) = new {
+                state.atlas.vertices = vec![v];
+            }
+            return;
+        }
+    }
+    match frame_at(page, at) {
+        Some(id) => {
+            state.atlas.selection = AtlasSelection::Frame(id);
+            state.atlas.vertices.clear();
+        }
+        None => deselect(state),
+    }
+}
+
+/// A tap selects a frame, the page, or nothing. A tap on a frame also
+/// selects the feature below it.
+fn tap(state: &mut AppState, page: &PageRecord, place: PagePlace, pos: Pos2) {
+    if state.atlas.tool == AtlasTool::Vertex {
+        vertex_tap(state, page, place, pos);
+        return;
+    }
+    if state.atlas.tool == AtlasTool::Select && handle_at(state, pos).is_some() {
         return;
     }
     let at = place.to_mm(pos);
-    state.atlas.vertex = None;
+    state.atlas.vertices.clear();
     state.atlas.sizes = false;
     if let Some(id) = item_at(page, at) {
         state.atlas.selection = AtlasSelection::Item(id);
@@ -2956,6 +3102,11 @@ fn selection(ui: &egui::Ui, state: &mut AppState, place: PagePlace) {
     }
     let painter = ui.painter();
     let stroke = egui::Stroke::new(2.0, ACCENT);
+    if let Some(Drag::Box(start)) = state.atlas.drag {
+        let rect = Rect::from_two_pos(start, state.atlas.drag_last);
+        let fill = ACCENT.gamma_multiply(0.15);
+        painter.rect(rect, 0.0, fill, stroke, egui::StrokeKind::Inside);
+    }
     match state.atlas.selection {
         AtlasSelection::None => {}
         AtlasSelection::Page => {
@@ -2968,6 +3119,10 @@ fn selection(ui: &egui::Ui, state: &mut AppState, place: PagePlace) {
             };
             let rect = place.rect_to_screen(crate::furniture::rect_of(rec));
             painter.rect_stroke(rect, 0.0, stroke, egui::StrokeKind::Middle);
+            // The Vertex tool does not resize an item.
+            if state.atlas.tool == AtlasTool::Vertex {
+                return;
+            }
             let dark = egui::Stroke::new(1.5, Color32::from_rgb(11, 31, 26));
             let shape = FrameShape::Rectangle(rec.rect);
             for (handle, p) in math::handles(&shape) {
@@ -2999,26 +3154,18 @@ fn selection(ui: &egui::Ui, state: &mut AppState, place: PagePlace) {
             }
             let dark = egui::Stroke::new(1.5, Color32::from_rgb(11, 31, 26));
             let mut handles = Vec::new();
-            for (handle, p) in math::handles(&frame.shape) {
+            let shown = if state.atlas.tool == AtlasTool::Vertex {
+                math::vertex_handles(&frame.shape)
+            } else {
+                math::handles(&frame.shape)
+            };
+            for (handle, p) in shown {
                 let center = place.to_screen(p);
-                let on = matches!(handle, Handle::Vertex(v) if state.atlas.vertex == Some(v));
-                match handle {
-                    Handle::Edge(_) => {
-                        let r = HANDLE_RADIUS - 1.0;
-                        painter.circle(center, r, Color32::from_rgb(11, 31, 26), stroke);
-                        let s = egui::Stroke::new(1.5, ACCENT);
-                        painter.line_segment([center - vec2(3.0, 0.0), center + vec2(3.0, 0.0)], s);
-                        painter.line_segment([center - vec2(0.0, 3.0), center + vec2(0.0, 3.0)], s);
-                    }
-                    _ => {
-                        let r = if on {
-                            HANDLE_RADIUS + 2.0
-                        } else {
-                            HANDLE_RADIUS
-                        };
-                        let fill = if on { Color32::WHITE } else { ACCENT };
-                        painter.circle(center, r, fill, dark);
-                    }
+                let on = matches!(handle, Handle::Vertex(v) if state.atlas.vertices.contains(&v));
+                if on {
+                    painter.circle(center, HANDLE_RADIUS + 2.0, Color32::WHITE, stroke);
+                } else {
+                    painter.circle(center, HANDLE_RADIUS, ACCENT, dark);
                 }
                 let size = vec2(HANDLE_TARGET, HANDLE_TARGET);
                 handles.push((handle, Rect::from_center_size(center, size)));
@@ -3038,7 +3185,7 @@ pub fn set_polygon(state: &mut AppState, id: FrameId, polygon: bool) {
         };
         true
     });
-    state.atlas.vertex = None;
+    state.atlas.vertices.clear();
 }
 
 /// Adds a hole to a polygon frame.
@@ -3390,13 +3537,18 @@ pub fn rename_map(state: &mut AppState, id: FrameId, name: &str) {
 }
 
 /// The canvas of the desktop layout, in the space between the panels. The
-/// keys V and H choose the Select tool and the Move tool.
+/// keys V, A, and H choose the Select tool, the Vertex tool, and the Move
+/// tool.
 pub fn desktop(ui: &mut egui::Ui, state: &mut AppState) {
     let typing = ui.ctx().memory(|m| m.focused().is_some());
     if !typing {
-        let (v, h) = ui.input(|i| (i.key_pressed(egui::Key::V), i.key_pressed(egui::Key::H)));
+        let key = |k| ui.input(|i| i.key_pressed(k));
+        let (v, a, h) = (key(egui::Key::V), key(egui::Key::A), key(egui::Key::H));
         if v {
             state.atlas.tool = AtlasTool::Select;
+        }
+        if a {
+            state.atlas.tool = AtlasTool::Vertex;
         }
         if h {
             state.atlas.tool = AtlasTool::Move;

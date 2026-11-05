@@ -94,7 +94,7 @@ pub fn panel(
         }
         if row.close {
             state.atlas.selection = AtlasSelection::None;
-            state.atlas.vertex = None;
+            state.atlas.vertices.clear();
         }
     };
     let top = |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| {

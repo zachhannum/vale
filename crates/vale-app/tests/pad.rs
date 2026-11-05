@@ -9393,17 +9393,21 @@ fn the_measure_cell_and_card_fit_in_the_atlas_on_each_screen() {
         vale_app::ui::atlas::add_frame(h.state_mut());
         h.run_steps(3);
         let strip = h.state().pad.rects.unwrap().tools;
-        let names = ["Select", "Move", MEASURE];
-        let cells = names.map(|name| control(&h, name).unwrap_or_else(|| panic!("{what}: {name}")));
-        for (i, cell) in cells.iter().enumerate() {
-            assert!(strip.contains_rect(*cell), "{what}: {}", names[i]);
+        let names = ["Select", "Vertex", "Move", MEASURE];
+        for name in names {
+            scroll_strip_to(&mut h, name);
+            let cell = control(&h, name).unwrap_or_else(|| panic!("{what}: {name}"));
+            assert!(strip.contains_rect(cell), "{what}: {name}");
         }
-        assert!(cells[1].bottom() <= cells[2].top(), "{what}");
+        let cells = names.map(|name| control(&h, name).unwrap());
+        for pair in cells.windows(2) {
+            assert!(pair[0].bottom() <= pair[1].top(), "{what}");
+        }
         tap(&mut h, MEASURE);
         assert!(h.state().measuring(), "{what}");
         assert_eq!(h.state().atlas.tool, AtlasTool::Measure, "{what}");
         assert_eq!(toggled(&h, MEASURE), Some(true), "{what}");
-        for name in ["Select", "Move"] {
+        for name in ["Select", "Vertex", "Move"] {
             assert_ne!(toggled(&h, name), Some(true), "{what}: {name}");
         }
         assert!(!readout_line(h.state()).starts_with("Length"), "{what}");
@@ -9454,6 +9458,57 @@ fn the_measure_cell_and_card_fit_in_the_atlas_on_each_screen() {
         // Select leaves the tool.
         tap(&mut h, "Select");
         assert_eq!(h.state().atlas.tool, AtlasTool::Select, "{what}");
+    }
+}
+
+#[test]
+fn the_vertex_cell_and_card_fit_in_the_atlas_on_each_screen() {
+    use vale_app::ui::atlas::AtlasTool;
+    use vale_app::ui::pad::atlas::{SNAP_TO_LAYOUT, VERTEX};
+    use vale_app::ui::pad::{DELETE_VERTEX, DESELECT};
+    for (size, safe) in measure_screens() {
+        let what = format!("Atlas {size:?}");
+        let mut h = safe_pad(size, safe);
+        h.state_mut().workspace = Workspace::Atlas;
+        vale_app::ui::atlas::add_frame(h.state_mut());
+        h.run_steps(3);
+        scroll_strip_to(&mut h, VERTEX);
+        tap(&mut h, VERTEX);
+        assert_eq!(h.state().atlas.tool, AtlasTool::Vertex, "{what}");
+        assert_eq!(toggled(&h, VERTEX), Some(true), "{what}");
+        h.state_mut().atlas.vertices = vec![(0, 0)];
+        h.run_steps(2);
+        let names = [SNAP_TO_LAYOUT, DELETE_VERTEX, DESELECT];
+        let cells = names.map(|name| control(&h, name).unwrap_or_else(|| panic!("{what}: {name}")));
+        for pair in cells.windows(2) {
+            assert!(pair[0].bottom() <= pair[1].top(), "{what}");
+        }
+        let card = cells[0].union(cells[2]);
+        let r = h.state().pad.rects.unwrap();
+        let mut cards = vec![r.workspace, r.actions, r.tools];
+        cards.extend(r.view);
+        cards.extend(h.state().atlas.panel_rect);
+        for other in cards {
+            assert!(!card.intersects(other), "{what}: {card:?} {other:?}");
+        }
+        for c in &h.state().pad.controls {
+            let r = c.rect;
+            assert!(
+                r.width() >= 44.0 && r.height() >= 44.0,
+                "{what}: {}",
+                c.name
+            );
+        }
+        check_safe(&h, size, safe, &what);
+        tap(&mut h, DELETE_VERTEX);
+        assert!(h.state().atlas.vertices.is_empty(), "{what}");
+        assert!(
+            matches!(
+                h.state().atlas.frame().and_then(|id| h.state().doc.project.atlas.frame(id)),
+                Some(f) if f.shape.rings()[0].len() == 3
+            ),
+            "{what}"
+        );
     }
 }
 

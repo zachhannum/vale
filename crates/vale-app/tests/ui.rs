@@ -13,8 +13,9 @@ use vale_app::ui::pad::atlas::{
     ADD_PAGE, CENTER_ON_FRAME, DELETE_FRAME, FRAME_TABS, MAP_NAME, NEXT_PAGE, PAGE_NAME,
     PREVIOUS_PAGE, SCALE,
 };
+use vale_app::ui::pad::{DELETE_VERTEX, DESELECT};
 use vale_app::ui::pad::{SCULPT, TERRAIN};
-use vale_app::ui::panels::{ADD_MAP_FRAME, ADD_MENU};
+use vale_app::ui::panels::{ADD_MAP_FRAME, ADD_MENU, VERTEX_TOOL};
 use vale_app::ui::panels::{DELETE_LAYER, LAYER_NAME, LAYERS_MENU, OPACITY, WORLD_BUTTON};
 use vale_app::ui::world_form::{CREATE, FormMode, NEW_WORLD, WorldForm};
 use vale_app::ui::{
@@ -1282,13 +1283,19 @@ fn the_dock_deletes_the_selected_frame() {
 }
 
 #[test]
-#[ignore = "vertex tool"]
-fn the_delete_key_removes_a_selected_vertex_or_else_the_frame() {
+fn the_delete_key_removes_the_selected_vertices_in_the_vertex_tool() {
     let mut h = harness();
     let frame = h.state().doc.project.atlas.pages[0].frames[0].id;
     vale_app::ui::atlas::set_polygon(h.state_mut(), frame, true);
+    // A fifth vertex, so that two deletes keep 3 vertices.
+    let f = h.state_mut().doc.project.atlas.frame_mut(frame).unwrap();
+    if let vale_store::FrameShape::Polygon(rings) = &mut f.shape {
+        let ([ax, ay], [bx, by]) = (rings[0][0], rings[0][1]);
+        rings[0].insert(1, [(ax + bx) / 2.0, (ay + by) / 2.0]);
+    }
     h.state_mut().atlas.selection = AtlasSelection::Frame(frame);
-    h.state_mut().atlas.vertex = Some((0, 0));
+    h.state_mut().atlas.tool = AtlasTool::Vertex;
+    h.state_mut().atlas.vertices = vec![(0, 0)];
     h.run_steps(3);
     let ring = |h: &Harness<'static, AppState>| match &h.state().doc.project.atlas.frame(frame) {
         Some(f) => match &f.shape {
@@ -1301,13 +1308,43 @@ fn the_delete_key_removes_a_selected_vertex_or_else_the_frame() {
     h.key_press(egui::Key::Delete);
     h.run_steps(2);
     assert_eq!(ring(&h), before - 1);
-    assert_eq!(h.state().atlas.vertex, None);
+    assert!(h.state().atlas.vertices.is_empty());
     assert_eq!(h.state().atlas.selection, AtlasSelection::Frame(frame));
 
+    // With no selected vertex, Backspace does not delete the frame.
     h.key_press(egui::Key::Backspace);
     h.run_steps(2);
-    assert!(h.state().doc.project.atlas.frame(frame).is_none());
+    assert_eq!(ring(&h), before - 1);
+
+    // The tool bar deletes the selected vertices and deselects.
+    h.state_mut().atlas.vertices = vec![(0, 1)];
+    h.run_steps(2);
+    h.get_by_label(DELETE_VERTEX).click();
+    h.run_steps(2);
+    assert_eq!(ring(&h), before - 2);
+    h.state_mut().atlas.vertices = vec![(0, 1)];
+    h.run_steps(2);
+    h.get_by_label(DESELECT).click();
+    h.run_steps(2);
+    assert!(h.state().atlas.vertices.is_empty());
+    h.get_by_label(DESELECT).click();
+    h.run_steps(2);
     assert_eq!(h.state().atlas.selection, AtlasSelection::None);
+}
+
+#[test]
+fn the_a_key_chooses_the_vertex_tool() {
+    let mut h = harness();
+    h.run_steps(3);
+    h.key_press(egui::Key::A);
+    h.run_steps(2);
+    assert_eq!(h.state().atlas.tool, AtlasTool::Vertex);
+    h.key_press(egui::Key::V);
+    h.run_steps(2);
+    assert_eq!(h.state().atlas.tool, AtlasTool::Select);
+    h.get_by_label(VERTEX_TOOL).click();
+    h.run_steps(2);
+    assert_eq!(h.state().atlas.tool, AtlasTool::Vertex);
 }
 
 #[test]

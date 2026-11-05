@@ -350,10 +350,9 @@ pub enum Handle {
     /// top-left, 1 top, 2 top-right, 3 right, 4 bottom-right, 5 bottom, 6
     /// bottom-left, 7 left.
     Resize(usize),
-    /// A vertex of a polygon.
+    /// A vertex of a polygon, or a corner of a rectangle in the order of
+    /// `FrameShape::rings`.
     Vertex(Vertex),
-    /// The middle of the edge from a vertex of a polygon to the next vertex.
-    Edge(Vertex),
 }
 
 /// The resize handles of a shape and their page points: the 8 handles of
@@ -378,27 +377,37 @@ pub fn handles(shape: &FrameShape) -> Vec<(Handle, Point)> {
         .collect()
 }
 
-/// The vertex handles and the edge handles of a polygon and their page
-/// points. A rectangle has none.
+/// The vertex handles of a shape and their page points: each vertex of
+/// each ring. A rectangle has its 4 corners.
 pub fn vertex_handles(shape: &FrameShape) -> Vec<(Handle, Point)> {
-    let FrameShape::Polygon(rings) = shape else {
-        return Vec::new();
-    };
     let mut out = Vec::new();
-    for (r, ring) in rings.iter().enumerate() {
+    for (r, ring) in shape.rings().iter().enumerate() {
         for (i, &[x, y]) in ring.iter().enumerate() {
             out.push((Handle::Vertex((r, i)), Point::new(x, y)));
         }
     }
-    for (r, ring) in rings.iter().enumerate() {
+    out
+}
+
+/// The edge of a shape nearest to a page point, within `reach`: the vertex
+/// at the start of the edge and the nearest point on the edge.
+pub fn edge_at(shape: &FrameShape, p: Point, reach: f64) -> Option<(Vertex, Point)> {
+    let mut best: Option<(f64, Vertex, Point)> = None;
+    for (r, ring) in shape.rings().iter().enumerate() {
         for i in 0..ring.len() {
             let [ax, ay] = ring[i];
             let [bx, by] = ring[(i + 1) % ring.len()];
-            let middle = Point::new((ax + bx) / 2.0, (ay + by) / 2.0);
-            out.push((Handle::Edge((r, i)), middle));
+            let (a, b) = (Point::new(ax, ay), Point::new(bx, by));
+            let ab = b - a;
+            let t = ((p - a).dot(ab) / ab.hypot2().max(1e-12)).clamp(0.0, 1.0);
+            let q = a + ab * t;
+            let d = q.distance(p);
+            if d <= reach && best.is_none_or(|(e, ..)| d < e) {
+                best = Some((d, (r, i), q));
+            }
         }
     }
-    out
+    best.map(|(_, v, q)| (v, q))
 }
 
 fn vertex_mut(shape: &mut FrameShape, (r, i): Vertex) -> Option<&mut [f64; 2]> {
@@ -420,41 +429,58 @@ pub fn move_vertex(shape: &mut FrameShape, v: Vertex, to: Point) -> bool {
     }
 }
 
-/// Puts a vertex at the middle of the edge from vertex `v` to the next
+/// Puts a vertex at a page point on the edge from vertex `v` to the next
 /// vertex. Returns the new vertex.
-pub fn insert_vertex(shape: &mut FrameShape, (r, i): Vertex) -> Option<Vertex> {
+pub fn insert_vertex(shape: &mut FrameShape, (r, i): Vertex, at: Point) -> Option<Vertex> {
     let FrameShape::Polygon(rings) = shape else {
         return None;
     };
     let ring = rings.get_mut(r)?;
-    let [ax, ay] = *ring.get(i)?;
-    let [bx, by] = ring[(i + 1) % ring.len()];
-    ring.insert(i + 1, [(ax + bx) / 2.0, (ay + by) / 2.0]);
+    if i >= ring.len() {
+        return None;
+    }
+    ring.insert(i + 1, [at.x, at.y]);
     Some((r, i + 1))
 }
 
-/// Removes a vertex of a polygon. A ring keeps at least 3 vertices: the
-/// outer ring refuses, and a hole of 3 vertices goes away. Returns false if
-/// nothing changed.
-pub fn remove_vertex(shape: &mut FrameShape, (r, i): Vertex) -> bool {
+/// True if `remove_vertices` can remove the vertices: the polygon has
+/// them, and its outer ring keeps 3 vertices.
+pub fn can_remove_vertices(shape: &FrameShape, vertices: &[Vertex]) -> bool {
+    let rings = shape.rings();
+    let has = |&(r, i): &Vertex| rings.get(r).is_some_and(|ring| i < ring.len());
+    let outer = vertices.iter().filter(|v| v.0 == 0).count();
+    !vertices.is_empty() && vertices.iter().all(has) && rings[0].len() >= outer + 3
+}
+
+/// Removes vertices of a polygon. The outer ring keeps 3 vertices, so a
+/// removal that leaves fewer changes nothing. A hole that keeps fewer than
+/// 3 vertices goes away. Returns false if nothing changed.
+pub fn remove_vertices(shape: &mut FrameShape, vertices: &[Vertex]) -> bool {
+    if !can_remove_vertices(shape, vertices) {
+        return false;
+    }
     let FrameShape::Polygon(rings) = shape else {
         return false;
     };
-    let Some(ring) = rings.get_mut(r) else {
-        return false;
-    };
-    if i >= ring.len() {
-        return false;
+    let mut gone = vertices.to_vec();
+    gone.sort_unstable();
+    gone.dedup();
+    // From the last ring and the last vertex, so the places of the other
+    // vertices stay.
+    for r in (0..rings.len()).rev() {
+        let mine: Vec<usize> = gone.iter().filter(|v| v.0 == r).map(|v| v.1).collect();
+        if mine.is_empty() {
+            continue;
+        }
+        if r > 0 && rings[r].len() < mine.len() + 3 {
+            rings.remove(r);
+            continue;
+        }
+        for &i in mine.iter().rev() {
+            rings[r].remove(i);
+        }
     }
-    if ring.len() > 3 {
-        ring.remove(i);
-        true
-    } else if r > 0 {
-        rings.remove(r);
-        true
-    } else {
-        false
-    }
+    true
 }
 
 /// Adds a square hole at the anchor of a shape. Its side is half of the
@@ -803,18 +829,27 @@ mod tests {
         let mut s = notched();
         assert!(move_vertex(&mut s, (0, 3), Point::new(50.0, 60.0)));
         assert_eq!(s.rings()[0][3], [50.0, 60.0]);
-        assert_eq!(insert_vertex(&mut s, (0, 4)), Some((0, 5)));
-        assert_eq!(s.rings()[0][5], [0.0, 50.0]);
-        assert!(remove_vertex(&mut s, (0, 5)));
+        assert_eq!(
+            edge_at(&s, Point::new(-2.0, 40.0), 3.0),
+            Some(((0, 4), Point::new(0.0, 40.0)))
+        );
+        assert_eq!(edge_at(&s, Point::new(-5.0, 40.0), 3.0), None);
+        let at = Point::new(0.0, 40.0);
+        assert_eq!(insert_vertex(&mut s, (0, 4), at), Some((0, 5)));
+        assert_eq!(s.rings()[0][5], [0.0, 40.0]);
+        assert!(remove_vertices(&mut s, &[(0, 5)]));
         assert_eq!(s.rings()[0].len(), 5);
-        // A hole of 3 vertices goes away.
-        assert!(remove_vertex(&mut s, (1, 0)));
-        assert!(remove_vertex(&mut s, (1, 0)));
+        // A hole that keeps fewer than 3 vertices goes away.
+        assert!(remove_vertices(&mut s, &[(1, 0)]));
+        assert_eq!(s.rings()[1].len(), 3);
+        assert!(remove_vertices(&mut s, &[(1, 2), (0, 1)]));
         assert_eq!(s.rings().len(), 1);
+        assert_eq!(s.rings()[0].len(), 4);
         // The outer ring keeps 3 vertices.
-        assert!(remove_vertex(&mut s, (0, 0)));
-        assert!(remove_vertex(&mut s, (0, 0)));
-        assert!(!remove_vertex(&mut s, (0, 0)));
+        assert!(!can_remove_vertices(&s, &[(0, 0), (0, 2)]));
+        assert!(!remove_vertices(&mut s, &[(0, 0), (0, 2)]));
+        assert!(remove_vertices(&mut s, &[(0, 0)]));
+        assert!(!remove_vertices(&mut s, &[(0, 0)]));
         assert_eq!(s.rings()[0].len(), 3);
         assert!(!move_vertex(&mut s, (4, 0), Point::ZERO));
     }
@@ -854,13 +889,15 @@ mod tests {
     }
 
     #[test]
-    fn a_polygon_has_vertex_and_edge_handles() {
+    fn a_shape_has_a_handle_at_each_vertex() {
         let hs = vertex_handles(&notched());
-        assert_eq!(hs.len(), 18);
+        assert_eq!(hs.len(), 9);
         assert_eq!(hs[0], (Handle::Vertex((0, 0)), Point::ZERO));
-        assert!(hs.contains(&(Handle::Edge((0, 4)), Point::new(0.0, 50.0))));
+        assert_eq!(hs[5], (Handle::Vertex((1, 0)), Point::new(20.0, 10.0)));
         let rect = FrameShape::Rectangle([0.0, 0.0, 10.0, 10.0]);
-        assert!(vertex_handles(&rect).is_empty());
+        let hs = vertex_handles(&rect);
+        assert_eq!(hs.len(), 4);
+        assert_eq!(hs[2], (Handle::Vertex((0, 2)), Point::new(10.0, 10.0)));
     }
 
     #[test]

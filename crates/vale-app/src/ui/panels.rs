@@ -73,6 +73,8 @@ pub const POLYGON_TOOL: &str = "Polygon";
 pub const POINT_TOOL: &str = "Point";
 /// The button of the Measure tool.
 pub const MEASURE_TOOL: &str = "Measure";
+/// The button of the Atlas tool bar that chooses the Vertex tool.
+pub const VERTEX_TOOL: &str = "Vertex";
 /// The slider of the smoothing of the line tool.
 pub const SMOOTHING: &str = "Smoothing";
 /// The check box of the terrain fit of the line tool.
@@ -386,7 +388,8 @@ fn atlas_buttons(ui: &mut egui::Ui, state: &mut AppState) {
         }
     });
     let editing = matches!(state.atlas.selection, atlas::AtlasSelection::Frame(_));
-    if editing && state.atlas.tool == atlas::AtlasTool::Select {
+    let vertexing = state.atlas.tool == atlas::AtlasTool::Vertex;
+    if editing && (vertexing || state.atlas.tool == atlas::AtlasTool::Select) {
         let snap = ui.selectable_label(state.atlas.snap, SNAP_TO_LAYOUT);
         if snap.clicked() {
             state.atlas.snap = !state.atlas.snap;
@@ -397,9 +400,33 @@ fn atlas_buttons(ui: &mut egui::Ui, state: &mut AppState) {
         atlas::edit_grid(state, |g| g.on = !on);
     }
     ui.separator();
+    let vertex = ui
+        .selectable_label(vertexing, VERTEX_TOOL)
+        .on_hover_text("A");
+    if vertex.clicked() {
+        state.atlas.tool = if vertexing {
+            atlas::AtlasTool::Select
+        } else {
+            atlas::AtlasTool::Vertex
+        };
+    }
     let measuring = state.measuring();
     if ui.selectable_label(measuring, MEASURE_TOOL).clicked() {
         pad::toggle_measure(state);
+    }
+    if editing && vertexing {
+        let delete = egui::Button::new(DELETE_VERTEX);
+        let can = atlas::can_delete_vertices(state);
+        if ui
+            .add_enabled(can, delete)
+            .on_hover_text("Delete")
+            .clicked()
+        {
+            atlas::delete_vertices(state);
+        }
+        if ui.button(DESELECT).on_hover_text("Esc").clicked() {
+            atlas::deselect(state);
+        }
     }
     if measuring {
         snap_controls(ui, state, &[]);
