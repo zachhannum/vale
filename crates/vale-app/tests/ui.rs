@@ -1282,6 +1282,7 @@ fn the_dock_deletes_the_selected_frame() {
 }
 
 #[test]
+#[ignore = "vertex tool"]
 fn the_delete_key_removes_a_selected_vertex_or_else_the_frame() {
     let mut h = harness();
     let frame = h.state().doc.project.atlas.pages[0].frames[0].id;

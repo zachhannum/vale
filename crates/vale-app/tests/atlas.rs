@@ -25,7 +25,7 @@ use vale_app::ui::pad::atlas::{
     EXPORT_PAGE_PDF, EXPORT_PAGE_PNG, FIRST_PARALLEL, FRAME_TABS, GRATICULE_COLOR, GRATICULE_WIDTH,
     HEIGHT, INTERVAL, LABEL_FORMATS, MAP_FRAME, MAP_NAME, NEATLINE, NEATLINE_COLOR, NEATLINE_WIDTH,
     NEXT_PAGE, OBLIQUE, PAPER_COLOR, POLYGON, PREVIOUS_PAGE, PROJECTION, REFERENCE_GRID,
-    REMOVE_OVERRIDES, REMOVE_VERTEX, SAVE_PROJECTION, SCALE, SECOND_COLOR, SIZE, STROKE_COLOR,
+    REMOVE_OVERRIDES, SAVE_PROJECTION, SCALE, SECOND_COLOR, SIZE, STROKE_COLOR,
     STROKE_WIDTH as BORDER_STROKE_WIDTH, STYLE_FOR_THIS_MAP, WIDTH, custom_row, page_title,
     readout_text,
 };
@@ -616,61 +616,90 @@ fn ring_len(h: &Pad, ring: usize) -> usize {
     }
 }
 
+fn rings(h: &Pad) -> Vec<Vec<[f64; 2]>> {
+    match frame(h, 1).shape {
+        FrameShape::Polygon(rings) => rings,
+        FrameShape::Rectangle(_) => panic!("not a polygon"),
+    }
+}
+
 #[test]
-fn the_vertices_of_a_polygon_frame_move_add_and_go_away() {
+fn a_polygon_frame_moves_and_scales_with_a_finger_a_pen_and_a_mouse() {
     let mut h = inset_pad(BOARDS[0]);
     h.state_mut().atlas.snap = false;
     tap(&mut h, POLYGON);
-    assert_eq!(ring_len(&h, 0), 4);
+    tap(&mut h, ADD_HOLE);
+    assert_eq!((ring_len(&h, 0), ring_len(&h, 1)), (4, 4));
     let ppm = h.state().atlas.place.unwrap().pts_per_mm;
     for input in INPUTS {
-        // A drag moves a vertex.
-        let FrameShape::Polygon(rings) = frame(&h, 1).shape else {
-            panic!("not a polygon");
-        };
-        let [x, y] = rings[0][0];
-        let from = handle(&h, Handle::Vertex((0, 0)));
-        drag(&mut h, from, from + vec2(-15.0, 10.0), input);
-        let FrameShape::Polygon(rings) = frame(&h, 1).shape else {
-            panic!("not a polygon");
-        };
-        let [nx, ny] = rings[0][0];
-        assert!((nx - x + 15.0 / ppm).abs() < 0.1, "{input:?}");
-        assert!((ny - y - 10.0 / ppm).abs() < 0.1, "{input:?}");
+        // A drag on the body, between the outer ring and the hole, moves
+        // the shape.
+        let before = rings(&h);
+        let b = shape_bbox(&frame(&h, 1).shape);
+        let body = Point::new(b.x0 + b.width() * 0.3, b.y0 + b.height() * 0.125);
+        let from = screen(&h, body);
+        drag(&mut h, from, from - vec2(40.0, 30.0), input);
+        let moved = rings(&h);
+        for (a, b) in before.iter().flatten().zip(moved.iter().flatten()) {
+            assert!((b[0] - a[0] + 40.0 / ppm).abs() < 0.1, "{input:?}");
+            assert!((b[1] - a[1] + 30.0 / ppm).abs() < 0.1, "{input:?}");
+        }
 
-        // A drag of the middle of an edge adds a vertex.
-        let edge = handle(&h, Handle::Edge((0, 1)));
-        drag(&mut h, edge, edge + vec2(12.0, 12.0), input);
-        assert_eq!(ring_len(&h, 0), 5, "{input:?}");
-        assert_eq!(h.state().atlas.vertex, Some((0, 2)));
+        // The bottom-right handle scales the shape and its hole.
+        let b = shape_bbox(&frame(&h, 1).shape);
+        let corner = handle(&h, Handle::Resize(4));
+        drag(&mut h, corner, corner - vec2(20.0, 10.0), input);
+        let scaled = rings(&h);
+        let a = shape_bbox(&frame(&h, 1).shape);
+        assert_eq!((a.x0, a.y0), (b.x0, b.y0), "{input:?}");
+        assert!(
+            (b.width() - a.width() - 20.0 / ppm).abs() < 0.1,
+            "{input:?}"
+        );
+        assert!(
+            (b.height() - a.height() - 10.0 / ppm).abs() < 0.1,
+            "{input:?}"
+        );
+        let (sx, sy) = (a.width() / b.width(), a.height() / b.height());
+        for (p, q) in moved.iter().flatten().zip(scaled.iter().flatten()) {
+            assert!(
+                (q[0] - (b.x0 + (p[0] - b.x0) * sx)).abs() < 1e-6,
+                "{input:?}"
+            );
+            assert!(
+                (q[1] - (b.y0 + (p[1] - b.y0) * sy)).abs() < 1e-6,
+                "{input:?}"
+            );
+        }
+        assert_eq!((ring_len(&h, 0), ring_len(&h, 1)), (4, 4), "{input:?}");
+    }
+    // The main frame stays.
+    let main = shape_bbox(&frame(&h, 0).shape);
+    assert_eq!((main.x0, main.y0), (10.0, 10.0));
+}
 
-        // A tap selects a vertex, and two taps remove it.
-        let at = handle(&h, Handle::Vertex((0, 3)));
-        tap_with(&mut h, at, input);
-        assert_eq!(h.state().atlas.vertex, Some((0, 3)), "{input:?}");
-        let at = handle(&h, Handle::Vertex((0, 2)));
+#[test]
+fn the_select_tool_shows_no_vertex_handles() {
+    let mut h = inset_pad(BOARDS[0]);
+    tap(&mut h, POLYGON);
+    let handles = &h.state().atlas.handles;
+    assert_eq!(handles.len(), 8);
+    assert!(handles.iter().all(|(h, _)| matches!(h, Handle::Resize(_))));
+
+    // A double tap on a corner does not remove a vertex.
+    for input in INPUTS {
+        let at = handle(&h, Handle::Resize(0));
         double_tap(&mut h, at, input);
         assert_eq!(ring_len(&h, 0), 4, "{input:?}");
+        assert_eq!(h.state().atlas.vertex, None, "{input:?}");
     }
 
-    // The Remove vertex button and the Delete key remove the selected vertex.
-    assert!(control(&h, REMOVE_VERTEX).is_none());
-    let at = handle(&h, Handle::Vertex((0, 1)));
-    tap_with(&mut h, at, Input::Finger);
-    tap(&mut h, REMOVE_VERTEX);
-    assert_eq!(ring_len(&h, 0), 3);
-    // The outer ring keeps three vertices.
-    let at = handle(&h, Handle::Vertex((0, 1)));
-    tap_with(&mut h, at, Input::Finger);
-    tap(&mut h, REMOVE_VERTEX);
-    assert_eq!(ring_len(&h, 0), 3);
-    tap(&mut h, ADD_HOLE);
-    assert_eq!(ring_len(&h, 1), 4);
-    let at = handle(&h, Handle::Vertex((1, 0)));
-    tap_with(&mut h, at, Input::Mouse);
+    // The Delete key deletes the frame, not a vertex.
+    let id = frame(&h, 1).id;
+    h.state_mut().atlas.vertex = Some((0, 0));
     h.key_press(egui::Key::Delete);
     h.run_steps(2);
-    assert_eq!(ring_len(&h, 1), 3);
+    assert!(h.state().doc.project.atlas.frame(id).is_none());
 }
 
 #[test]
@@ -5956,6 +5985,24 @@ fn a_resized_frame_snaps_the_edge_of_its_handle() {
     );
 }
 
+#[test]
+fn a_scaled_polygon_snaps_the_edge_of_its_handle() {
+    let mut h = inset_pad(BOARDS[0]);
+    tap(&mut h, POLYGON);
+    let (center, _, _, ppm) = page_metrics(&h);
+    let inset = shape_bbox(&frame(&h, 1).shape);
+    let left = handle(&h, Handle::Resize(7));
+    let d = (center.x - inset.x0) * ppm - 4.0;
+    drag(&mut h, left, left + vec2(d as f32, 0.0), Input::Pen);
+    assert!(!matches!(frame(&h, 1).shape, FrameShape::Rectangle(_)));
+    let after = shape_bbox(&frame(&h, 1).shape);
+    assert!((after.x0 - center.x).abs() < 1e-9, "{after:?}");
+    assert_eq!(
+        (after.y0, after.x1, after.y1),
+        (inset.y0, inset.x1, inset.y1)
+    );
+}
+
 fn ring(h: &Pad, index: usize) -> Vec<[f64; 2]> {
     match &frame(h, index).shape {
         FrameShape::Polygon(rings) => rings[0].clone(),
@@ -5964,6 +6011,7 @@ fn ring(h: &Pad, index: usize) -> Vec<[f64; 2]> {
 }
 
 #[test]
+#[ignore = "vertex tool"]
 fn a_vertex_snaps_to_a_vertex_of_another_frame_and_to_the_page_center() {
     let mut h = inset_pad(BOARDS[0]);
     tap(&mut h, POLYGON);
@@ -5989,6 +6037,7 @@ fn a_vertex_snaps_to_a_vertex_of_another_frame_and_to_the_page_center() {
 }
 
 #[test]
+#[ignore = "vertex tool"]
 fn shift_locks_the_edge_of_a_vertex_to_horizontal() {
     let mut h = inset_pad(BOARDS[0]);
     tap(&mut h, POLYGON);
@@ -6010,6 +6059,7 @@ fn shift_locks_the_edge_of_a_vertex_to_horizontal() {
 }
 
 #[test]
+#[ignore = "vertex tool"]
 fn a_second_finger_locks_the_edge_of_a_vertex_to_vertical() {
     let mut h = inset_pad(BOARDS[0]);
     tap(&mut h, POLYGON);
@@ -6175,6 +6225,7 @@ fn the_grid_button_of_the_top_row_shows_the_layout_grid() {
 }
 
 #[test]
+#[ignore = "vertex tool"]
 fn a_vertex_lines_up_with_another_vertex_of_its_frame() {
     let mut h = inset_pad(BOARDS[0]);
     tap(&mut h, POLYGON);

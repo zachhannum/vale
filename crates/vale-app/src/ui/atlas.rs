@@ -1684,8 +1684,7 @@ fn input(ui: &egui::Ui, state: &mut AppState, resp: &egui::Response, place: Page
         state.atlas.guides.clear();
     }
 
-    // A second quick tap on a vertex removes it. A second quick tap off the
-    // page fits the page to the screen.
+    // A second quick tap off the page fits the page to the screen.
     if state.atlas.tool == AtlasTool::Measure {
         measure::input(ui, state, resp, &page, place);
     } else if resp.clicked()
@@ -1693,18 +1692,10 @@ fn input(ui: &egui::Ui, state: &mut AppState, resp: &egui::Response, place: Page
     {
         let last = state.atlas.last_tap.replace((now, pos));
         let again = last.is_some_and(|(t, p)| now - t < DOUBLE_TAP && p.distance(pos) < 12.0);
-        match handle_at(state, pos) {
-            Some((Handle::Vertex(v), _)) if again && state.atlas.vertex == Some(v) => {
-                remove_vertex(state, v);
-                state.atlas.last_tap = None;
-            }
-            _ => {
-                tap(state, &page, place, pos);
-                if again && !place.rect.contains(pos) {
-                    state.atlas.view = PageView::default();
-                    state.atlas.last_tap = None;
-                }
-            }
+        tap(state, &page, place, pos);
+        if again && !place.rect.contains(pos) {
+            state.atlas.view = PageView::default();
+            state.atlas.last_tap = None;
         }
     }
 
@@ -1712,9 +1703,7 @@ fn input(ui: &egui::Ui, state: &mut AppState, resp: &egui::Response, place: Page
     let delete =
         ui.input(|i| i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace));
     if delete && !typing && state.atlas.tool == AtlasTool::Select {
-        if let Some(v) = state.atlas.vertex {
-            remove_vertex(state, v);
-        } else if state.atlas.frame().is_some() {
+        if state.atlas.frame().is_some() {
             delete_frame(state);
         } else if state.atlas.item().is_some() {
             delete_item(state);

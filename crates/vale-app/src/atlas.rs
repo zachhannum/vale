@@ -356,46 +356,49 @@ pub enum Handle {
     Edge(Vertex),
 }
 
-/// The handles of a shape and their page points.
+/// The resize handles of a shape and their page points: the 8 handles of
+/// its box.
 pub fn handles(shape: &FrameShape) -> Vec<(Handle, Point)> {
-    match shape {
-        FrameShape::Rectangle(_) => {
-            let b = shape_bbox(shape);
-            let c = b.center();
-            let points = [
-                (b.x0, b.y0),
-                (c.x, b.y0),
-                (b.x1, b.y0),
-                (b.x1, c.y),
-                (b.x1, b.y1),
-                (c.x, b.y1),
-                (b.x0, b.y1),
-                (b.x0, c.y),
-            ];
-            let points = points.into_iter().map(|(x, y)| Point::new(x, y));
-            points
-                .enumerate()
-                .map(|(i, p)| (Handle::Resize(i), p))
-                .collect()
-        }
-        FrameShape::Polygon(rings) => {
-            let mut out = Vec::new();
-            for (r, ring) in rings.iter().enumerate() {
-                for (i, &[x, y]) in ring.iter().enumerate() {
-                    out.push((Handle::Vertex((r, i)), Point::new(x, y)));
-                }
-            }
-            for (r, ring) in rings.iter().enumerate() {
-                for i in 0..ring.len() {
-                    let [ax, ay] = ring[i];
-                    let [bx, by] = ring[(i + 1) % ring.len()];
-                    let middle = Point::new((ax + bx) / 2.0, (ay + by) / 2.0);
-                    out.push((Handle::Edge((r, i)), middle));
-                }
-            }
-            out
+    let b = shape_bbox(shape);
+    let c = b.center();
+    let points = [
+        (b.x0, b.y0),
+        (c.x, b.y0),
+        (b.x1, b.y0),
+        (b.x1, c.y),
+        (b.x1, b.y1),
+        (c.x, b.y1),
+        (b.x0, b.y1),
+        (b.x0, c.y),
+    ];
+    let points = points.into_iter().map(|(x, y)| Point::new(x, y));
+    points
+        .enumerate()
+        .map(|(i, p)| (Handle::Resize(i), p))
+        .collect()
+}
+
+/// The vertex handles and the edge handles of a polygon and their page
+/// points. A rectangle has none.
+pub fn vertex_handles(shape: &FrameShape) -> Vec<(Handle, Point)> {
+    let FrameShape::Polygon(rings) = shape else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (r, ring) in rings.iter().enumerate() {
+        for (i, &[x, y]) in ring.iter().enumerate() {
+            out.push((Handle::Vertex((r, i)), Point::new(x, y)));
         }
     }
+    for (r, ring) in rings.iter().enumerate() {
+        for i in 0..ring.len() {
+            let [ax, ay] = ring[i];
+            let [bx, by] = ring[(i + 1) % ring.len()];
+            let middle = Point::new((ax + bx) / 2.0, (ay + by) / 2.0);
+            out.push((Handle::Edge((r, i)), middle));
+        }
+    }
+    out
 }
 
 fn vertex_mut(shape: &mut FrameShape, (r, i): Vertex) -> Option<&mut [f64; 2]> {
@@ -484,17 +487,14 @@ pub fn to_rectangle(shape: &FrameShape) -> FrameShape {
     FrameShape::Rectangle([b.x0, b.y0, b.x1, b.y1])
 }
 
-/// Moves a resize handle of a rectangle to a page point. The rectangle keeps
-/// a width and a height of at least `MIN_SIZE_MM`. Returns false if the
-/// shape is not a rectangle or the handle does not exist.
+/// Moves a resize handle of a shape to a page point. The box of the shape
+/// keeps a width and a height of at least `MIN_SIZE_MM`. A polygon scales
+/// all its rings with its box. Returns false if the handle does not exist.
 pub fn resize(shape: &mut FrameShape, handle: usize, to: Point) -> bool {
-    let FrameShape::Rectangle(r) = shape else {
-        return false;
-    };
     if handle >= 8 {
         return false;
     }
-    let b = Rect::new(r[0], r[1], r[2], r[3]).abs();
+    let b = shape_bbox(shape).abs();
     let (mut x0, mut y0, mut x1, mut y1) = (b.x0, b.y0, b.x1, b.y1);
     if matches!(handle, 0 | 6 | 7) {
         x0 = to.x.min(x1 - MIN_SIZE_MM);
@@ -508,7 +508,24 @@ pub fn resize(shape: &mut FrameShape, handle: usize, to: Point) -> bool {
     if matches!(handle, 4..=6) {
         y1 = to.y.max(y0 + MIN_SIZE_MM);
     }
-    *r = [x0, y0, x1, y1];
+    match shape {
+        FrameShape::Rectangle(r) => *r = [x0, y0, x1, y1],
+        FrameShape::Polygon(rings) => {
+            let scale = |v: f64, a0: f64, a1: f64, n0: f64, n1: f64| {
+                if a1 > a0 {
+                    n0 + (v - a0) / (a1 - a0) * (n1 - n0)
+                } else {
+                    n0
+                }
+            };
+            for p in rings.iter_mut().flatten() {
+                *p = [
+                    scale(p[0], b.x0, b.x1, x0, x1),
+                    scale(p[1], b.y0, b.y1, y0, y1),
+                ];
+            }
+        }
+    }
     true
 }
 
@@ -838,10 +855,54 @@ mod tests {
 
     #[test]
     fn a_polygon_has_vertex_and_edge_handles() {
-        let hs = handles(&notched());
+        let hs = vertex_handles(&notched());
         assert_eq!(hs.len(), 18);
         assert_eq!(hs[0], (Handle::Vertex((0, 0)), Point::ZERO));
         assert!(hs.contains(&(Handle::Edge((0, 4)), Point::new(0.0, 50.0))));
+        let rect = FrameShape::Rectangle([0.0, 0.0, 10.0, 10.0]);
+        assert!(vertex_handles(&rect).is_empty());
+    }
+
+    #[test]
+    fn a_polygon_has_the_resize_handles_of_its_box() {
+        let hs = handles(&notched());
+        assert_eq!(hs.len(), 8);
+        assert_eq!(hs[0], (Handle::Resize(0), Point::ZERO));
+        assert_eq!(hs[4], (Handle::Resize(4), Point::new(100.0, 100.0)));
+    }
+
+    #[test]
+    fn a_polygon_with_a_hole_scales_with_its_box() {
+        let mut s = notched();
+        assert!(resize(&mut s, 4, Point::new(200.0, 50.0)));
+        assert_eq!(
+            s,
+            FrameShape::Polygon(vec![
+                vec![
+                    [0.0, 0.0],
+                    [200.0, 0.0],
+                    [200.0, 50.0],
+                    [100.0, 25.0],
+                    [0.0, 50.0],
+                ],
+                vec![[40.0, 5.0], [60.0, 5.0], [60.0, 10.0], [40.0, 10.0]],
+            ])
+        );
+        assert!(resize(&mut s, 7, Point::new(100.0, 0.0)));
+        assert_eq!(shape_bbox(&s), Rect::new(100.0, 0.0, 200.0, 50.0));
+        let FrameShape::Polygon(rings) = &s else {
+            panic!("a polygon stays a polygon");
+        };
+        assert_eq!(rings[1][0], [120.0, 5.0]);
+    }
+
+    #[test]
+    fn a_scaled_polygon_keeps_the_minimum_size() {
+        let mut s = notched();
+        assert!(resize(&mut s, 0, Point::new(500.0, 500.0)));
+        let b = shape_bbox(&s);
+        assert_eq!(b, Rect::new(95.0, 95.0, 100.0, 100.0));
+        assert!(!resize(&mut s, 8, Point::ZERO));
     }
 
     #[test]
