@@ -25,6 +25,12 @@ pub fn card(blur: bool) -> Color32 {
     Color32::from_rgba_unmultiplied(26, 29, 33, alpha)
 }
 
+/// The fill of a menu that opens over a card. It is opaque and lighter
+/// than the card.
+pub fn menu() -> Color32 {
+    card(false).to_opaque().blend(raise())
+}
+
 /// The fill of a selected control.
 pub fn raise() -> Color32 {
     Color32::from_white_alpha(33)

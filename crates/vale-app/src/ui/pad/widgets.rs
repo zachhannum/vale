@@ -613,6 +613,19 @@ pub fn text_row(
     selected: bool,
     enabled: bool,
 ) -> Response {
+    text_row_as(ui, controls, name, name, indent, selected, enabled)
+}
+
+/// A `text_row` that shows `text`. `name` is the name of the control.
+pub fn text_row_as(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    name: &str,
+    text: &str,
+    indent: f32,
+    selected: bool,
+    enabled: bool,
+) -> Response {
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), Sense::hover());
     let resp = hit(
         ui,
@@ -633,7 +646,7 @@ pub fn text_row(
     let at = pos2(rect.left() + indent, rect.center().y);
     let color = fade(theme::TEXT, enabled);
     ui.painter()
-        .text(at, Align2::LEFT_CENTER, name, theme::body(), color);
+        .text(at, Align2::LEFT_CENTER, text, theme::body(), color);
     resp
 }
 
@@ -941,8 +954,6 @@ pub fn choice_row_name(name: &str, choice: &str) -> String {
 /// The number of rows that the menu of a `choice_field` shows without a
 /// scroll. The half row shows that the menu scrolls.
 const MENU_ROWS: f32 = 5.5;
-/// The space between the menu of a `choice_field` and its edges.
-const MENU_INSET: f32 = 6.0;
 
 /// A `text_field` with a button at its right end that opens and closes a
 /// menu of `choices`. The menu is a card below the field, or above it if
@@ -983,13 +994,13 @@ pub fn choice_field(
     }
     let ctx = ui.ctx().clone();
     let rows = (choices.len() as f32).min(MENU_ROWS);
-    let size = vec2(row.width(), rows * TOUCH + 2.0 * MENU_INSET);
+    let size = vec2(row.width(), 10.0 + rows * PANEL_ROW + 10.0);
     let screen = ctx.viewport_rect();
-    let below = row.bottom() + EDIT_GAP;
+    let below = row.bottom() + PAD;
     let y = if below + size.y <= screen.bottom() - PAD {
         below
     } else {
-        (row.top() - EDIT_GAP - size.y).max(screen.top() + PAD)
+        (row.top() - PAD - size.y).max(screen.top() + PAD)
     };
     let rect = Rect::from_min_size(pos2(row.left(), y), size);
     let pressed = ui.input(|i| {
@@ -1005,16 +1016,10 @@ pub fn choice_field(
     let current = choices.iter().position(|c| c == text.trim());
     let mut chosen = None;
     let id = format!("pad-choices-{}", ui.id().with(name).value());
-    let radius = theme::CONTROL_RADIUS.into();
+    let radius = theme::CARD_RADIUS.into();
     card(&ctx, None, &id, rect, egui::Order::Tooltip, radius, |ui| {
-        // The menu is lighter than the card below it.
-        let back = theme::card(false).to_opaque();
-        ui.painter()
-            .rect_filled(rect, radius, back.lerp_to_gamma(theme::TEXT, 0.12));
-        let border = egui::Stroke::new(1.0, theme::MUTE);
-        ui.painter()
-            .rect_stroke(rect, radius, border, egui::StrokeKind::Inside);
-        let inner = rect.shrink(MENU_INSET);
+        ui.painter().rect_filled(rect, radius, theme::menu());
+        let inner = rect.shrink2(vec2(BODY_PAD, 10.0));
         let layout = egui::Layout::top_down(egui::Align::Min);
         let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
         ui.set_clip_rect(inner);
@@ -1023,9 +1028,22 @@ pub fn choice_field(
             .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
             .show(&mut ui, |ui| {
                 for (index, choice) in choices.iter().enumerate() {
-                    let row_name = choice_row_name(name, choice);
                     let on = current == Some(index);
-                    if menu_row(ui, controls, &row_name, choice, on).clicked() {
+                    let row_name = choice_row_name(name, choice);
+                    let row = text_row_as(ui, controls, &row_name, choice, 0.0, false, true);
+                    // The current value has a tick and no highlight.
+                    let info = || {
+                        egui::WidgetInfo::selected(egui::WidgetType::Button, true, on, &row_name)
+                    };
+                    row.widget_info(info);
+                    if on {
+                        let tick = Rect::from_center_size(
+                            pos2(row.rect.right() - 14.0, row.rect.center().y),
+                            vec2(18.0, 18.0),
+                        );
+                        icons::paint(ui.painter(), tick, Icon::Tick, 18.0, theme::ACCENT);
+                    }
+                    if row.clicked() {
                         chosen = Some(index);
                     }
                 }
@@ -1035,28 +1053,6 @@ pub fn choice_field(
         *open = false;
     }
     (resp, chosen)
-}
-
-/// A row of the menu of a `choice_field`. The row that is `on` has a mark.
-/// `name` is the name of the control.
-fn menu_row(
-    ui: &mut egui::Ui,
-    controls: &mut Controls,
-    name: &str,
-    text: &str,
-    on: bool,
-) -> Response {
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), TOUCH), Sense::hover());
-    let resp = hit(ui, controls, rect, name, Sense::click(), true, Some(on));
-    fill(ui, rect, &resp, false);
-    let mark = Rect::from_center_size(pos2(rect.left() + 18.0, rect.center().y), vec2(18.0, 18.0));
-    if on {
-        icons::paint(ui.painter(), mark, Icon::Tick, 18.0, theme::ACCENT);
-    }
-    let at = pos2(rect.left() + 38.0, rect.center().y);
-    ui.painter()
-        .text(at, Align2::LEFT_CENTER, text, theme::body(), theme::TEXT);
-    resp
 }
 
 /// A field for more than one line of text, as wide as the row and `lines`
@@ -1242,7 +1238,7 @@ fn edit_menu(
     }
     let mut action = None;
     let can_paste = crate::clipboard::has_text();
-    let radius = theme::CONTROL_RADIUS.into();
+    let radius = theme::CARD_RADIUS.into();
     card(
         ctx,
         None,
@@ -1251,16 +1247,11 @@ fn edit_menu(
         egui::Order::Tooltip,
         radius,
         |ui| {
-            // The menu is lighter than the card below it.
-            let back = theme::card(false).to_opaque();
-            let back = back.lerp_to_gamma(theme::TEXT, 0.12);
-            ui.painter().rect_filled(rect, radius, back);
-            let border = egui::Stroke::new(1.0, theme::MUTE);
-            ui.painter()
-                .rect_stroke(rect, radius, border, egui::StrokeKind::Inside);
+            ui.painter().rect_filled(rect, radius, theme::menu());
             let x = rect.center().x;
-            let divider = [pos2(x, rect.top() + 8.0), pos2(x, rect.bottom() - 8.0)];
-            ui.painter().line_segment(divider, border);
+            let divider = [pos2(x, rect.top() + 10.0), pos2(x, rect.bottom() - 10.0)];
+            ui.painter()
+                .line_segment(divider, egui::Stroke::new(1.0, theme::divider()));
             let items = [(COPY, true), (PASTE, can_paste)];
             for (i, (item, enabled)) in items.into_iter().enumerate() {
                 let at = Rect::from_min_size(

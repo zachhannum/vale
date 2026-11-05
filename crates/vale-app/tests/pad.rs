@@ -5540,6 +5540,7 @@ fn a_long_press_on_a_field_opens_copy_and_paste_with_no_keyboard() {
     long_press(&mut h, &hex);
     assert!(no_keyboard(&h));
     assert!(control(&h, COPY).is_some());
+    screenshot::save(&mut h, "pad-edit-menu");
     check_controls(&h, "the edit menu of a field");
     tap(&mut h, COPY);
     assert!(control(&h, COPY).is_none());
@@ -10348,7 +10349,6 @@ fn a_field_lists_the_values_of_the_layer_and_a_tap_on_a_value_is_one_undo_step()
     assert!(rows.windows(2).all(|w| w[0].top() < w[1].top()));
     assert!(rows[0].top() >= field.bottom());
     check_controls(&h, "the list of values");
-    screenshot::save(&mut h, "pad-field-values");
     assert_eq!(toggled(&h, "name: Medium"), Some(false));
     let saved = saves(&h);
     tap(&mut h, "name: Medium");
@@ -10364,6 +10364,7 @@ fn a_field_lists_the_values_of_the_layer_and_a_tap_on_a_value_is_one_undo_step()
     tap(&mut h, &button);
     assert_eq!(toggled(&h, "name: Medium"), Some(true));
     assert_eq!(toggled(&h, "name: small"), Some(false));
+    screenshot::save(&mut h, "pad-field-values");
     // A tap outside the menu closes it.
     tap(&mut h, "name");
     assert!(control(&h, "name: small").is_none());
