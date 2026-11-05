@@ -18,10 +18,11 @@ use super::{Card, CardTitle, GRATICULE, WORKSPACES, WORLDS, WORLDS_LEAD, WORLDS_
 use super::{NO_LAYERS, layer_icon, rule, save_mark, show_card, theme, toggle_worlds, worlds_menu};
 use crate::atlas::{self as math, PAGE_PRESETS};
 use crate::ui::atlas::{self, AtlasSelection, AtlasTool, ClassColor, FrameTab};
-use crate::ui::region;
 use crate::ui::{Action, AppState, ExportFormat, Workspace};
+use crate::ui::{region, select};
 
 pub const SELECT: &str = "Select";
+pub const VERTEX: &str = "Vertex";
 pub const MOVE: &str = "Move";
 pub const PREVIOUS_PAGE: &str = "Previous page";
 pub const NEXT_PAGE: &str = "Next page";
@@ -40,8 +41,6 @@ pub const SHAPE: &str = "Shape";
 pub const RECTANGLE: &str = "Rectangle";
 pub const POLYGON: &str = "Polygon";
 pub const ADD_HOLE: &str = "Add hole";
-pub const DELETE_FRAME: &str = "Delete frame";
-pub const REMOVE_VERTEX: &str = "Remove vertex";
 pub const SCALE: &str = "Scale";
 pub const LONGITUDE: &str = "Longitude";
 pub const LATITUDE: &str = "Latitude";
@@ -118,7 +117,7 @@ pub const CANCEL_EXPORT: &str = "Cancel export";
 /// The width of the actions card: four buttons and a divider.
 const ACTIONS_WIDTH: f32 = 4.0 * TOUCH + 4.0 * PAD + 9.0 + 2.0 * PAD;
 const ADD_WIDTH: f32 = 220.0;
-const TOOL_CELLS: usize = 3;
+const TOOL_CELLS: usize = 4;
 /// The smallest space at each side of the text of a tab.
 pub const TAB_PAD: f32 = 12.0;
 
@@ -248,7 +247,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
 
     top_row(&ctx, state, &mut controls, &rects, page_card);
     tool_strip(&ctx, state, &mut controls, &rects);
-    frame_card(&ctx, state, &mut controls, &rects);
+    frame_card(&ctx, state, &mut controls, &rects, page_card);
     if measuring {
         super::cell_card(&ctx, state, &mut controls, &rects);
         if state.pad.brush {
@@ -444,21 +443,46 @@ fn top_row(
     );
 }
 
-/// The card below the tool strip while the Select tool edits a map frame. It
-/// holds the switch that snaps the frame to the layout of the page. With no
-/// room below the strip, it goes to the right of the strip.
-fn frame_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
-    let editing = matches!(state.atlas.selection, AtlasSelection::Frame(_));
-    if !editing || state.atlas.tool != AtlasTool::Select {
-        return;
-    }
-    let size = vec2(rects.tools.width(), geometry::strip_height(1));
+/// The context strip: the card below the tool strip while a frame or an
+/// item of furniture is selected. With the Select tool, it holds the
+/// switch that snaps a frame to the layout of the page, "Delete selection",
+/// and Deselect. With the Vertex tool, it holds the switch, "Delete
+/// vertex", and Deselect. With the Move tool, it holds Deselect. With no
+/// room below the strip, it goes to the right of the strip, below the page
+/// card if the page card is there. It ends above the sheet, and it scrolls
+/// if it is too long.
+fn frame_card(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    controls: &mut Controls,
+    rects: &Rects,
+    page_card: Rect,
+) {
+    let tool = state.atlas.tool;
+    let framed = state.atlas.frame().is_some();
+    let cells = match tool {
+        AtlasTool::Vertex if framed => 3,
+        AtlasTool::Select if atlas::has_selection(state) => 2 + usize::from(framed),
+        AtlasTool::Move if atlas::has_selection(state) => 1,
+        _ => return,
+    };
+    let mut size = vec2(rects.tools.width(), geometry::strip_height(cells));
+    let limit = rects.sheet.map_or(rects.panel_bottom, |s| s.top() - GAP);
     let below = pos2(rects.tools.left(), rects.tools.bottom() + GAP);
-    let min = if rects.tool_cells < TOOL_CELLS || below.y + size.y > rects.panel_bottom {
-        pos2(rects.tools.right() + GAP, rects.tools.top())
+    let min = if rects.tool_cells < TOOL_CELLS || below.y + size.y > limit {
+        let top = match rects.view {
+            None => page_card.bottom() + GAP,
+            Some(_) => rects.tools.top(),
+        };
+        pos2(rects.tools.right() + GAP, top)
     } else {
         below
     };
+    let room = limit - min.y;
+    let scroll = size.y > room;
+    if scroll {
+        size.y = room.max(geometry::strip_height(1));
+    }
     widgets::card(
         ctx,
         state.globe.backdrop(),
@@ -468,20 +492,55 @@ fn frame_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
         theme::CARD_RADIUS.into(),
         |ui| {
             let mut ui = super::padded(ui);
-            let on = state.atlas.snap;
-            let label = super::SNAP;
-            if widgets::tool_cell(
-                &mut ui,
-                controls,
-                SNAP_TO_LAYOUT,
-                label,
-                Icon::Magnet,
-                on,
-                true,
-            )
-            .clicked()
-            {
-                state.atlas.snap = !on;
+            let mut cells = |ui: &mut egui::Ui| {
+                let on = state.atlas.snap;
+                let label = super::SNAP;
+                if framed
+                    && tool != AtlasTool::Move
+                    && widgets::tool_cell(
+                        ui,
+                        controls,
+                        SNAP_TO_LAYOUT,
+                        label,
+                        Icon::Magnet,
+                        on,
+                        true,
+                    )
+                    .clicked()
+                {
+                    state.atlas.snap = !on;
+                }
+                if tool == AtlasTool::Vertex {
+                    let (name, can) = (super::DELETE_VERTEX, atlas::can_delete_vertices(state));
+                    if widgets::tool_cell(ui, controls, name, "Delete", Icon::Delete, false, can)
+                        .clicked()
+                    {
+                        atlas::delete_vertices(state);
+                    }
+                } else if tool == AtlasTool::Select {
+                    let name = select::DELETE;
+                    if widgets::tool_cell(ui, controls, name, "Delete", Icon::Trash, false, true)
+                        .clicked()
+                    {
+                        atlas::delete_selection(state);
+                    }
+                }
+                let name = super::DESELECT;
+                if widgets::tool_cell(ui, controls, name, name, Icon::Close, false, true).clicked()
+                {
+                    if tool == AtlasTool::Vertex {
+                        atlas::deselect(state);
+                    } else {
+                        atlas::clear_selection(state);
+                    }
+                }
+            };
+            if scroll {
+                egui::ScrollArea::vertical()
+                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                    .show(&mut ui, cells);
+            } else {
+                cells(&mut ui);
             }
         },
     );
@@ -501,6 +560,7 @@ fn tool_strip(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
             let mut cells = |ui: &mut egui::Ui| {
                 for (name, icon, tool) in [
                     (SELECT, Icon::Select, AtlasTool::Select),
+                    (VERTEX, Icon::Vertex, AtlasTool::Vertex),
                     (MOVE, Icon::Move, AtlasTool::Move),
                     (super::MEASURE, Icon::Measure, AtlasTool::Measure),
                 ] {
@@ -672,7 +732,7 @@ fn selection_panel(
     let on_title = |state: &mut AppState, row: &widgets::TitleRow| {
         if row.close {
             state.atlas.selection = AtlasSelection::None;
-            state.atlas.vertex = None;
+            state.atlas.vertices.clear();
         }
     };
     let class_open = super::labels::open_class(state).is_some();
@@ -879,16 +939,8 @@ fn frame_tab(
     {
         atlas::set_polygon(state, id, chosen == 1);
     }
-    if polygon {
-        if widgets::button_row(ui, controls, ADD_HOLE, true).clicked() {
-            atlas::add_hole(state, id);
-        }
-        let vertex = state.atlas.vertex;
-        if widgets::button_row(ui, controls, REMOVE_VERTEX, vertex.is_some()).clicked()
-            && let Some(v) = vertex
-        {
-            atlas::remove_vertex(state, v);
-        }
+    if polygon && widgets::button_row(ui, controls, ADD_HOLE, true).clicked() {
+        atlas::add_hole(state, id);
     }
 
     let keys = Keys::Number;
@@ -963,12 +1015,6 @@ fn frame_tab(
             state.atlas.grid_page = None;
             state.atlas.label_color = None;
         }
-    }
-
-    ui.add_space(6.0);
-    let delete = widgets::button_row_in(ui, controls, DELETE_FRAME, true, theme::WARN);
-    if delete.clicked() {
-        atlas::delete_frame(state);
     }
 }
 
@@ -1362,7 +1408,7 @@ fn layer_panel(
         }
         if row.close {
             state.atlas.selection = AtlasSelection::None;
-            state.atlas.vertex = None;
+            state.atlas.vertices.clear();
         }
     };
     let body = |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| {
@@ -1474,7 +1520,7 @@ fn raster_panel(
         }
         if row.close {
             state.atlas.selection = AtlasSelection::None;
-            state.atlas.vertex = None;
+            state.atlas.vertices.clear();
         }
     };
     let body = |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| {
@@ -1560,7 +1606,7 @@ fn look_panel(
         }
         if row.close {
             state.atlas.selection = AtlasSelection::None;
-            state.atlas.vertex = None;
+            state.atlas.vertices.clear();
         }
     };
     let body = |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| {

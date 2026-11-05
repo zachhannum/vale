@@ -82,16 +82,6 @@ pub const SHOW_ZERO: &str = "Show zero";
 /// The decimals that each number picks.
 pub const AUTO_DECIMALS: &str = "Automatic";
 
-/// The button that deletes an item of a kind.
-pub fn delete_name(kind: ItemKind) -> &'static str {
-    match kind {
-        ItemKind::Text => "Delete text",
-        ItemKind::Legend => "Delete legend",
-        ItemKind::ScaleBar => "Delete scale bar",
-        ItemKind::NorthArrow => "Delete north arrow",
-    }
-}
-
 fn key_of(kind: ItemKind) -> &'static str {
     match kind {
         ItemKind::Text => "pad-atlas-text",
@@ -323,12 +313,6 @@ fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, rec: &
                 &item.letter_style,
             );
         }
-    }
-    ui.add_space(6.0);
-    let kind = ItemKind::of(&rec.item);
-    let delete = widgets::button_row_in(ui, controls, delete_name(kind), true, theme::WARN);
-    if delete.clicked() {
-        atlas::delete_item(state);
     }
 }
 

@@ -21,12 +21,12 @@ use vale_app::ui::atlas::{AtlasSelection, AtlasTool, FrameTab};
 use vale_app::ui::map_texture::MapRenderer;
 use vale_app::ui::pad::atlas::{
     ADD, ADD_HOLE, ADD_PAGE, AUTO_INTERVAL, BORDER, BORDER_DISTANCE, BORDER_STROKE, BORDER_STYLES,
-    BORDER_WIDTH, CENTER_ON_FRAME, DELETE_FRAME, DELETE_PAGE, DELETE_PROJECTION, EXPORT_ATLAS_PDF,
+    BORDER_WIDTH, CENTER_ON_FRAME, DELETE_PAGE, DELETE_PROJECTION, EXPORT_ATLAS_PDF,
     EXPORT_PAGE_PDF, EXPORT_PAGE_PNG, FIRST_PARALLEL, FRAME_TABS, GRATICULE_COLOR, GRATICULE_WIDTH,
     HEIGHT, INTERVAL, LABEL_FORMATS, MAP_FRAME, MAP_NAME, NEATLINE, NEATLINE_COLOR, NEATLINE_WIDTH,
     NEXT_PAGE, OBLIQUE, PAPER_COLOR, POLYGON, PREVIOUS_PAGE, PROJECTION, REFERENCE_GRID,
-    REMOVE_OVERRIDES, REMOVE_VERTEX, SAVE_PROJECTION, SCALE, SECOND_COLOR, SIZE, STROKE_COLOR,
-    STROKE_WIDTH as BORDER_STROKE_WIDTH, STYLE_FOR_THIS_MAP, WIDTH, custom_row, page_title,
+    REMOVE_OVERRIDES, SAVE_PROJECTION, SCALE, SECOND_COLOR, SIZE, STROKE_COLOR,
+    STROKE_WIDTH as BORDER_STROKE_WIDTH, STYLE_FOR_THIS_MAP, VERTEX, WIDTH, custom_row, page_title,
     readout_text,
 };
 use vale_app::ui::pad::atlas::{BORDER_GAP, DISTANCE_BY_SIDE, GRID_COLUMN_NAMES, SIDE_DISTANCES};
@@ -37,7 +37,7 @@ use vale_app::ui::pad::edge_labels::{
 };
 use vale_app::ui::pad::furniture::{
     self as item, ALIGNMENTS, COLOR as ITEM_COLOR, ENTRIES, ENTRY_NAME, ITEM_TEXT,
-    MAP_FRAME as ITEM_MAP_FRAME, RESET_ENTRIES, STYLE as ITEM_STYLE, delete_name, entry_names,
+    MAP_FRAME as ITEM_MAP_FRAME, RESET_ENTRIES, STYLE as ITEM_STYLE, entry_names,
 };
 use vale_app::ui::pad::labels::{
     ADD_CLASS, BUFFER, CASE, COLOR, CURVE_LIMIT, DELETE_CLASS, DUPLICATE_DISTANCE,
@@ -53,9 +53,10 @@ use vale_app::ui::pad::labels::{
 use vale_app::ui::pad::rules::STROKE_WIDTH;
 use vale_app::ui::pad::widgets::eye_name;
 use vale_app::ui::pad::{
-    CLEAR_PATH, GRATICULE, MEASURE, Panel, SNAP, SNAP_DISTANCE, SNAP_EDGES, SNAP_VERTICES,
-    SNAPPING, readout_line,
+    CLEAR_PATH, DELETE_VERTEX, DESELECT, GRATICULE, MEASURE, Panel, SNAP, SNAP_DISTANCE,
+    SNAP_EDGES, SNAP_VERTICES, SNAPPING, readout_line,
 };
+use vale_app::ui::select::DELETE as DELETE_SELECTION;
 use vale_app::ui::{Action, AppState, ExportFormat, Layout, Screen, Workspace, draw};
 use vale_labeler::{Placement, PolygonMode};
 use vale_render::Item;
@@ -616,61 +617,90 @@ fn ring_len(h: &Pad, ring: usize) -> usize {
     }
 }
 
+fn rings(h: &Pad) -> Vec<Vec<[f64; 2]>> {
+    match frame(h, 1).shape {
+        FrameShape::Polygon(rings) => rings,
+        FrameShape::Rectangle(_) => panic!("not a polygon"),
+    }
+}
+
 #[test]
-fn the_vertices_of_a_polygon_frame_move_add_and_go_away() {
+fn a_polygon_frame_moves_and_scales_with_a_finger_a_pen_and_a_mouse() {
     let mut h = inset_pad(BOARDS[0]);
     h.state_mut().atlas.snap = false;
     tap(&mut h, POLYGON);
-    assert_eq!(ring_len(&h, 0), 4);
+    tap(&mut h, ADD_HOLE);
+    assert_eq!((ring_len(&h, 0), ring_len(&h, 1)), (4, 4));
     let ppm = h.state().atlas.place.unwrap().pts_per_mm;
     for input in INPUTS {
-        // A drag moves a vertex.
-        let FrameShape::Polygon(rings) = frame(&h, 1).shape else {
-            panic!("not a polygon");
-        };
-        let [x, y] = rings[0][0];
-        let from = handle(&h, Handle::Vertex((0, 0)));
-        drag(&mut h, from, from + vec2(-15.0, 10.0), input);
-        let FrameShape::Polygon(rings) = frame(&h, 1).shape else {
-            panic!("not a polygon");
-        };
-        let [nx, ny] = rings[0][0];
-        assert!((nx - x + 15.0 / ppm).abs() < 0.1, "{input:?}");
-        assert!((ny - y - 10.0 / ppm).abs() < 0.1, "{input:?}");
+        // A drag on the body, between the outer ring and the hole, moves
+        // the shape.
+        let before = rings(&h);
+        let b = shape_bbox(&frame(&h, 1).shape);
+        let body = Point::new(b.x0 + b.width() * 0.3, b.y0 + b.height() * 0.125);
+        let from = screen(&h, body);
+        drag(&mut h, from, from - vec2(40.0, 30.0), input);
+        let moved = rings(&h);
+        for (a, b) in before.iter().flatten().zip(moved.iter().flatten()) {
+            assert!((b[0] - a[0] + 40.0 / ppm).abs() < 0.1, "{input:?}");
+            assert!((b[1] - a[1] + 30.0 / ppm).abs() < 0.1, "{input:?}");
+        }
 
-        // A drag of the middle of an edge adds a vertex.
-        let edge = handle(&h, Handle::Edge((0, 1)));
-        drag(&mut h, edge, edge + vec2(12.0, 12.0), input);
-        assert_eq!(ring_len(&h, 0), 5, "{input:?}");
-        assert_eq!(h.state().atlas.vertex, Some((0, 2)));
+        // The bottom-right handle scales the shape and its hole.
+        let b = shape_bbox(&frame(&h, 1).shape);
+        let corner = handle(&h, Handle::Resize(4));
+        drag(&mut h, corner, corner - vec2(20.0, 10.0), input);
+        let scaled = rings(&h);
+        let a = shape_bbox(&frame(&h, 1).shape);
+        assert_eq!((a.x0, a.y0), (b.x0, b.y0), "{input:?}");
+        assert!(
+            (b.width() - a.width() - 20.0 / ppm).abs() < 0.1,
+            "{input:?}"
+        );
+        assert!(
+            (b.height() - a.height() - 10.0 / ppm).abs() < 0.1,
+            "{input:?}"
+        );
+        let (sx, sy) = (a.width() / b.width(), a.height() / b.height());
+        for (p, q) in moved.iter().flatten().zip(scaled.iter().flatten()) {
+            assert!(
+                (q[0] - (b.x0 + (p[0] - b.x0) * sx)).abs() < 1e-6,
+                "{input:?}"
+            );
+            assert!(
+                (q[1] - (b.y0 + (p[1] - b.y0) * sy)).abs() < 1e-6,
+                "{input:?}"
+            );
+        }
+        assert_eq!((ring_len(&h, 0), ring_len(&h, 1)), (4, 4), "{input:?}");
+    }
+    // The main frame stays.
+    let main = shape_bbox(&frame(&h, 0).shape);
+    assert_eq!((main.x0, main.y0), (10.0, 10.0));
+}
 
-        // A tap selects a vertex, and two taps remove it.
-        let at = handle(&h, Handle::Vertex((0, 3)));
-        tap_with(&mut h, at, input);
-        assert_eq!(h.state().atlas.vertex, Some((0, 3)), "{input:?}");
-        let at = handle(&h, Handle::Vertex((0, 2)));
+#[test]
+fn the_select_tool_shows_no_vertex_handles() {
+    let mut h = inset_pad(BOARDS[0]);
+    tap(&mut h, POLYGON);
+    let handles = &h.state().atlas.handles;
+    assert_eq!(handles.len(), 8);
+    assert!(handles.iter().all(|(h, _)| matches!(h, Handle::Resize(_))));
+
+    // A double tap on a corner does not remove a vertex.
+    for input in INPUTS {
+        let at = handle(&h, Handle::Resize(0));
         double_tap(&mut h, at, input);
         assert_eq!(ring_len(&h, 0), 4, "{input:?}");
+        assert!(h.state().atlas.vertices.is_empty(), "{input:?}");
     }
 
-    // The Remove vertex button and the Delete key remove the selected vertex.
-    assert!(control(&h, REMOVE_VERTEX).is_none());
-    let at = handle(&h, Handle::Vertex((0, 1)));
-    tap_with(&mut h, at, Input::Finger);
-    tap(&mut h, REMOVE_VERTEX);
-    assert_eq!(ring_len(&h, 0), 3);
-    // The outer ring keeps three vertices.
-    let at = handle(&h, Handle::Vertex((0, 1)));
-    tap_with(&mut h, at, Input::Finger);
-    tap(&mut h, REMOVE_VERTEX);
-    assert_eq!(ring_len(&h, 0), 3);
-    tap(&mut h, ADD_HOLE);
-    assert_eq!(ring_len(&h, 1), 4);
-    let at = handle(&h, Handle::Vertex((1, 0)));
-    tap_with(&mut h, at, Input::Mouse);
+    // The Delete key deletes the frame, not a vertex.
+    let id = frame(&h, 1).id;
+    h.state_mut().atlas.vertices = vec![(0, 0)];
     h.key_press(egui::Key::Delete);
     h.run_steps(2);
-    assert_eq!(ring_len(&h, 1), 3);
+    assert!(h.state().doc.project.atlas.frame(id).is_none());
 }
 
 #[test]
@@ -1001,9 +1031,8 @@ fn the_tabs_of_a_frame_work_with_a_finger() {
         h.state_mut().atlas.selection = AtlasSelection::Frame(inset);
         h.state_mut().atlas.tab = FrameTab::Frame;
         h.run_steps(3);
-        scroll_to(&mut h, DELETE_FRAME);
-        assert!(control(&h, DELETE_FRAME).is_some(), "{size:?}");
-        check_controls(&h, "bottom of the frame tab");
+        assert!(control(&h, DELETE_SELECTION).is_some(), "{size:?}");
+        check_controls(&h, "context strip of the frame");
     }
 }
 
@@ -1223,7 +1252,7 @@ fn the_panel_of_the_page_adds_a_page_and_deletes_the_open_page() {
 }
 
 #[test]
-fn the_frame_tab_deletes_the_frame_and_an_undo_brings_it_back() {
+fn the_context_strip_deletes_the_frame_and_undo_brings_it_back() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("project.gpkg");
     let mut s = state();
@@ -1236,22 +1265,68 @@ fn the_frame_tab_deletes_the_frame_and_an_undo_brings_it_back() {
     let inset = frame(&h, 1);
     assert_eq!(h.state().atlas.selection, AtlasSelection::Frame(inset.id));
 
-    scroll_to(&mut h, DELETE_FRAME);
-    tap(&mut h, DELETE_FRAME);
+    assert!(control(&h, SNAP_TO_LAYOUT).is_some());
+    assert!(control(&h, DESELECT).is_some());
+    screenshot::save(&mut h, "pad-atlas-select-strip");
+    tap(&mut h, DELETE_SELECTION);
     let page = open_page(&h);
     assert_eq!(page.frames.len(), 1);
     assert!(page.frames.iter().all(|f| f.id != inset.id));
     assert_eq!(h.state().atlas.selection, AtlasSelection::None);
-    assert_eq!(h.state().atlas.vertex, None);
+    assert!(h.state().atlas.vertices.is_empty());
     assert!(!h.state().atlas.has_image(inset.id));
     assert_eq!(h.state().atlas.panel_rect, None);
-    assert!(control(&h, DELETE_FRAME).is_none());
+    assert!(control(&h, DELETE_SELECTION).is_none());
+    assert!(control(&h, DESELECT).is_none());
 
     h.state_mut().save_waiting().unwrap();
     tap(&mut h, "Undo");
     let page = open_page(&h);
     assert_eq!(page.frames.len(), 2);
     assert_eq!(page.frames[1], inset);
+}
+
+#[test]
+fn deselect_clears_the_atlas_selection() {
+    let mut h = inset_pad(BOARDS[0]);
+    let inset = frame(&h, 1).id;
+    assert_eq!(h.state().atlas.tool, AtlasTool::Select);
+    // Deselect in the context strip clears the selected frame.
+    tap(&mut h, DESELECT);
+    assert_eq!(h.state().atlas.selection, AtlasSelection::None);
+    assert!(control(&h, DESELECT).is_none());
+    assert!(control(&h, DELETE_SELECTION).is_none());
+    assert_eq!(open_page(&h).frames.len(), 2);
+    // It clears a selected item of furniture.
+    add_item(&mut h, ItemKind::NorthArrow);
+    assert!(matches!(h.state().atlas.selection, AtlasSelection::Item(_)));
+    assert!(control(&h, SNAP_TO_LAYOUT).is_none());
+    tap(&mut h, DESELECT);
+    assert_eq!(h.state().atlas.selection, AtlasSelection::None);
+    assert_eq!(open_page(&h).furniture.len(), 1);
+    // Esc clears the selection on the desktop.
+    h.state_mut().atlas.selection = AtlasSelection::Frame(inset);
+    h.run_steps(2);
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+    assert_eq!(h.state().atlas.selection, AtlasSelection::None);
+}
+
+#[test]
+fn the_move_tool_strip_has_deselect() {
+    let mut h = inset_pad(BOARDS[0]);
+    let inset = frame(&h, 1).id;
+    tap(&mut h, "Move");
+    assert_eq!(h.state().atlas.tool, AtlasTool::Move);
+    assert_eq!(h.state().atlas.selection, AtlasSelection::Frame(inset));
+    assert!(control(&h, DESELECT).is_some());
+    for name in [SNAP_TO_LAYOUT, DELETE_SELECTION, DELETE_VERTEX] {
+        assert!(control(&h, name).is_none(), "{name}");
+    }
+    tap(&mut h, DESELECT);
+    assert_eq!(h.state().atlas.selection, AtlasSelection::None);
+    assert!(control(&h, DESELECT).is_none());
+    assert_eq!(open_page(&h).frames.len(), 2);
 }
 
 #[test]
@@ -1430,14 +1505,12 @@ fn the_frame_tab_renames_the_map_of_the_frame() {
 #[test]
 fn deleting_a_frame_deletes_its_map_but_the_last_map_stays() {
     let mut h = inset_pad(BOARDS[0]);
-    scroll_to(&mut h, DELETE_FRAME);
-    tap(&mut h, DELETE_FRAME);
+    tap(&mut h, DELETE_SELECTION);
     assert_eq!(map_names(&h), ["Map"]);
     let first = h.state().doc.project.atlas.pages[0].frames[0].id;
     h.state_mut().atlas.selection = AtlasSelection::Frame(first);
     h.run_steps(2);
-    scroll_to(&mut h, DELETE_FRAME);
-    tap(&mut h, DELETE_FRAME);
+    tap(&mut h, DELETE_SELECTION);
     assert_eq!(map_names(&h), ["Map"]);
     // The next frame takes the map that no frame shows.
     add_frame(&mut h);
@@ -1903,6 +1976,7 @@ fn the_neatline_controls_work_with_a_finger() {
         scroll_to(&mut h, &hue);
         check_controls(&h, "neatline color");
         let before = frame(&h, 1).neatline.color;
+        scroll_up_to(&mut h, &shade);
         let square = control(&h, &shade).unwrap();
         tap_with(&mut h, square.right_top() + vec2(-4.0, 4.0), Input::Finger);
         assert_ne!(frame(&h, 1).neatline.color, before, "{size:?}");
@@ -5154,12 +5228,11 @@ fn the_add_button_adds_each_item_of_furniture() {
         assert!(h.state().atlas.has_item_image(rec.id), "{kind:?}");
         // The panel of the item opens.
         assert!(h.state().atlas.panel_rect.is_some(), "{kind:?}");
-        scroll_to(&mut h, delete_name(kind));
-        assert!(control(&h, delete_name(kind)).is_some(), "{kind:?}");
+        assert!(control(&h, DELETE_SELECTION).is_some(), "{kind:?}");
         check_controls(&h, kind.name());
     }
-    // A delete takes the item away.
-    tap(&mut h, delete_name(ItemKind::NorthArrow));
+    // Delete in the context strip takes the item away.
+    tap(&mut h, DELETE_SELECTION);
     assert_eq!(open_page(&h).furniture.len(), 3);
     assert_eq!(h.state().atlas.selection, AtlasSelection::None);
 }
@@ -5304,8 +5377,7 @@ fn deleting_a_frame_relinks_its_items() {
 
     h.state_mut().atlas.selection = AtlasSelection::Frame(main);
     h.run_steps(2);
-    scroll_to(&mut h, DELETE_FRAME);
-    tap(&mut h, DELETE_FRAME);
+    tap(&mut h, DELETE_SELECTION);
     assert_eq!(open_page(&h).frames.len(), 1);
     assert_eq!(item(&h, 0).item.frame(), Some(inset));
     assert_eq!(item(&h, 1).item.frame(), Some(inset));
@@ -5313,8 +5385,7 @@ fn deleting_a_frame_relinks_its_items() {
 
     h.state_mut().atlas.selection = AtlasSelection::Frame(inset);
     h.run_steps(2);
-    scroll_to(&mut h, DELETE_FRAME);
-    tap(&mut h, DELETE_FRAME);
+    tap(&mut h, DELETE_SELECTION);
     assert_eq!(item(&h, 0).item.frame(), None);
     assert_eq!(item(&h, 1).item.frame(), None);
     assert_eq!(open_page(&h).furniture.len(), 3);
@@ -5552,7 +5623,7 @@ fn every_page_of_the_scale_bar_panel_works_with_a_finger() {
         assert!(control(&h, &field(item::BAR_HEIGHT)).is_none(), "{what}");
         assert!(control(&h, item::LINE_COLOR).is_some());
         back(&mut h);
-        tap_row(&mut h, item::delete_name(ItemKind::ScaleBar));
+        tap(&mut h, DELETE_SELECTION);
         assert!(open_page(&h).furniture.is_empty());
     }
 }
@@ -5956,6 +6027,32 @@ fn a_resized_frame_snaps_the_edge_of_its_handle() {
     );
 }
 
+#[test]
+fn a_scaled_polygon_snaps_the_edge_of_its_handle() {
+    let mut h = inset_pad(BOARDS[0]);
+    tap(&mut h, POLYGON);
+    let (center, _, _, ppm) = page_metrics(&h);
+    let inset = shape_bbox(&frame(&h, 1).shape);
+    let left = handle(&h, Handle::Resize(7));
+    let d = (center.x - inset.x0) * ppm - 4.0;
+    drag(&mut h, left, left + vec2(d as f32, 0.0), Input::Pen);
+    assert!(!matches!(frame(&h, 1).shape, FrameShape::Rectangle(_)));
+    let after = shape_bbox(&frame(&h, 1).shape);
+    assert!((after.x0 - center.x).abs() < 1e-9, "{after:?}");
+    assert_eq!(
+        (after.y0, after.x1, after.y1),
+        (inset.y0, inset.x1, inset.y1)
+    );
+}
+
+/// The middle of the edge of the outer ring of the inset from vertex `i` to
+/// the next vertex, on the screen.
+fn edge_middle(h: &Pad, i: usize) -> Pos2 {
+    let ring = &frame(h, 1).shape.rings()[0];
+    let ([ax, ay], [bx, by]) = (ring[i], ring[(i + 1) % ring.len()]);
+    screen(h, Point::new((ax + bx) / 2.0, (ay + by) / 2.0))
+}
+
 fn ring(h: &Pad, index: usize) -> Vec<[f64; 2]> {
     match &frame(h, index).shape {
         FrameShape::Polygon(rings) => rings[0].clone(),
@@ -5967,6 +6064,7 @@ fn ring(h: &Pad, index: usize) -> Vec<[f64; 2]> {
 fn a_vertex_snaps_to_a_vertex_of_another_frame_and_to_the_page_center() {
     let mut h = inset_pad(BOARDS[0]);
     tap(&mut h, POLYGON);
+    tap(&mut h, VERTEX);
     let (center, _, _, _) = page_metrics(&h);
     let main = shape_bbox(&frame(&h, 0).shape);
     // The top-right corner of the main frame.
@@ -5992,6 +6090,7 @@ fn a_vertex_snaps_to_a_vertex_of_another_frame_and_to_the_page_center() {
 fn shift_locks_the_edge_of_a_vertex_to_horizontal() {
     let mut h = inset_pad(BOARDS[0]);
     tap(&mut h, POLYGON);
+    tap(&mut h, VERTEX);
     h.state_mut().atlas.snap = false;
     let start = ring(&h, 1);
     let from = handle(&h, Handle::Vertex((0, 0)));
@@ -6013,6 +6112,7 @@ fn shift_locks_the_edge_of_a_vertex_to_horizontal() {
 fn a_second_finger_locks_the_edge_of_a_vertex_to_vertical() {
     let mut h = inset_pad(BOARDS[0]);
     tap(&mut h, POLYGON);
+    tap(&mut h, VERTEX);
     h.state_mut().atlas.snap = false;
     let start = ring(&h, 1);
     let view = h.state().atlas.view;
@@ -6095,9 +6195,12 @@ fn the_snap_switch_turns_snapping_off_with_a_finger() {
     tap(&mut h, SNAP_TO_LAYOUT);
     assert!(h.state().atlas.snap);
 
-    // The switch shows only while the Select tool edits a frame.
+    // The switch shows only while the Select tool or the Vertex tool edits a
+    // frame.
     tap(&mut h, "Move");
     assert!(control(&h, SNAP_TO_LAYOUT).is_none());
+    tap(&mut h, VERTEX);
+    assert!(control(&h, SNAP_TO_LAYOUT).is_some());
     tap(&mut h, "Select");
     assert!(control(&h, SNAP_TO_LAYOUT).is_some());
     h.state_mut().atlas.selection = AtlasSelection::Page;
@@ -6178,9 +6281,13 @@ fn the_grid_button_of_the_top_row_shows_the_layout_grid() {
 fn a_vertex_lines_up_with_another_vertex_of_its_frame() {
     let mut h = inset_pad(BOARDS[0]);
     tap(&mut h, POLYGON);
-    // A drag of the middle of the top edge adds a vertex below the edge.
-    let edge = handle(&h, Handle::Edge((0, 0)));
-    drag(&mut h, edge, edge + vec2(0.0, 37.0), Input::Finger);
+    tap(&mut h, VERTEX);
+    // A tap on the middle of the top edge adds a vertex, and a drag moves
+    // it below the edge.
+    let edge = edge_middle(&h, 0);
+    tap_with(&mut h, edge, Input::Finger);
+    let new = handle(&h, Handle::Vertex((0, 1)));
+    drag(&mut h, new, new + vec2(0.0, 37.0), Input::Finger);
     let [_, y] = ring(&h, 1)[1];
     // The first vertex goes to 3 points below the new vertex, far from
     // the other targets.
@@ -6191,6 +6298,339 @@ fn a_vertex_lines_up_with_another_vertex_of_its_frame() {
     screenshot::save(&mut h, "pad-atlas-vertex-alignment");
     release(&mut h, to, Input::Finger);
     assert_eq!(ring(&h, 1)[0][1], y);
+}
+
+/// A page with a main frame and a polygon inset, with the Vertex tool and
+/// no snapping.
+fn vertex_pad() -> Pad {
+    let mut h = inset_pad(BOARDS[0]);
+    tap(&mut h, POLYGON);
+    tap(&mut h, VERTEX);
+    h.state_mut().atlas.snap = false;
+    h.run_steps(2);
+    h
+}
+
+fn selected_vertices(h: &Pad) -> Vec<(usize, usize)> {
+    let mut v = h.state().atlas.vertices.clone();
+    v.sort_unstable();
+    v
+}
+
+fn is_disabled(h: &Pad, name: &str) -> bool {
+    use egui_kittest::kittest::NodeT;
+    h.get_by_label(name).accesskit_node().is_disabled()
+}
+
+#[test]
+fn a_vertex_edit_turns_a_rectangle_into_a_polygon() {
+    for edit in ["move", "add", "delete"] {
+        let mut h = inset_pad(BOARDS[0]);
+        tap(&mut h, VERTEX);
+        h.state_mut().atlas.snap = false;
+        h.run_steps(2);
+        let handles = &h.state().atlas.handles;
+        assert_eq!(handles.len(), 4, "{edit}");
+        assert!(handles.iter().all(|(h, _)| matches!(h, Handle::Vertex(_))));
+        // A tap on a corner selects it, and the frame stays a rectangle.
+        let corner = handle(&h, Handle::Vertex((0, 2)));
+        tap_with(&mut h, corner, Input::Pen);
+        assert_eq!(selected_vertices(&h), [(0, 2)], "{edit}");
+        let before = frame(&h, 1).shape.rings()[0].clone();
+        assert!(matches!(frame(&h, 1).shape, FrameShape::Rectangle(_)));
+        match edit {
+            "move" => drag(&mut h, corner, corner + vec2(-30.0, -20.0), Input::Pen),
+            "add" => {
+                let at = edge_middle(&h, 0);
+                tap_with(&mut h, at, Input::Pen)
+            }
+            _ => tap(&mut h, DELETE_VERTEX),
+        }
+        assert!(
+            matches!(frame(&h, 1).shape, FrameShape::Polygon(_)),
+            "{edit}"
+        );
+        let after = ring(&h, 1);
+        match edit {
+            "move" => {
+                assert_eq!(after.len(), 4);
+                assert!(after[2][0] < before[2][0] - 1.0 && after[2][1] < before[2][1] - 1.0);
+                assert_eq!(after[0], before[0]);
+            }
+            "add" => assert_eq!(after.len(), 5),
+            _ => assert_eq!(after, [before[0], before[1], before[3]]),
+        }
+    }
+}
+
+#[test]
+fn taps_select_a_vertex_and_clear_the_vertices_and_then_the_frame() {
+    let mut h = vertex_pad();
+    let inset = frame(&h, 1).id;
+    let main = shape_bbox(&frame(&h, 0).shape);
+    let empty = screen(&h, Point::new(main.x0 / 2.0, main.y0 / 2.0));
+    for input in INPUTS {
+        let at = handle(&h, Handle::Vertex((0, 1)));
+        tap_with(&mut h, at, input);
+        assert_eq!(selected_vertices(&h), [(0, 1)], "{input:?}");
+        let at = handle(&h, Handle::Vertex((0, 3)));
+        tap_with(&mut h, at, input);
+        assert_eq!(selected_vertices(&h), [(0, 3)], "{input:?}");
+        tap_with(&mut h, empty, input);
+        assert!(selected_vertices(&h).is_empty(), "{input:?}");
+        assert_eq!(h.state().atlas.selection, AtlasSelection::Frame(inset));
+        tap_with(&mut h, empty, input);
+        assert_eq!(h.state().atlas.selection, AtlasSelection::None, "{input:?}");
+        let at = middle(&h, 1);
+        tap_with(&mut h, at, input);
+        assert_eq!(h.state().atlas.selection, AtlasSelection::Frame(inset));
+    }
+    // A tap on another frame selects it.
+    let other = screen(&h, Point::new(main.x0 + 2.0, main.y0 + 2.0));
+    tap_with(&mut h, other, Input::Finger);
+    let id = frame(&h, 0).id;
+    assert_eq!(h.state().atlas.selection, AtlasSelection::Frame(id));
+
+    // Deselect clears the vertices, and then the frame.
+    let at = middle(&h, 1);
+    tap_with(&mut h, at, Input::Finger);
+    let at = handle(&h, Handle::Vertex((0, 0)));
+    tap_with(&mut h, at, Input::Finger);
+    tap(&mut h, DESELECT);
+    assert!(selected_vertices(&h).is_empty());
+    assert_eq!(h.state().atlas.selection, AtlasSelection::Frame(inset));
+    tap(&mut h, DESELECT);
+    assert_eq!(h.state().atlas.selection, AtlasSelection::None);
+
+    // Another tool clears the vertices and keeps the frame.
+    let at = middle(&h, 1);
+    tap_with(&mut h, at, Input::Finger);
+    let at = handle(&h, Handle::Vertex((0, 0)));
+    tap_with(&mut h, at, Input::Finger);
+    tap(&mut h, "Select");
+    assert!(selected_vertices(&h).is_empty());
+    assert_eq!(h.state().atlas.selection, AtlasSelection::Frame(inset));
+}
+
+#[test]
+fn a_pen_box_selects_frame_vertices() {
+    let mut h = vertex_pad();
+    let before = frame(&h, 1).shape;
+    for input in [Input::Pen, Input::Mouse] {
+        h.state_mut().atlas.vertices.clear();
+        // From the body of the frame past its top-left corner.
+        let corner = handle(&h, Handle::Vertex((0, 0)));
+        let at = middle(&h, 1);
+        drag(&mut h, at, corner - vec2(30.0, 30.0), input);
+        assert_eq!(selected_vertices(&h), [(0, 0)], "{input:?}");
+        // From above the left of the top edge to below the right.
+        let right = handle(&h, Handle::Vertex((0, 1)));
+        drag(
+            &mut h,
+            corner - vec2(30.0, 30.0),
+            right + vec2(30.0, 30.0),
+            input,
+        );
+        assert_eq!(selected_vertices(&h), [(0, 0), (0, 1)], "{input:?}");
+        assert_eq!(frame(&h, 1).shape, before, "{input:?}");
+    }
+    screenshot::save(&mut h, "pad-atlas-vertex");
+}
+
+#[test]
+fn a_finger_drag_away_from_a_handle_pans_the_page() {
+    let mut h = vertex_pad();
+    let before = frame(&h, 1).shape;
+    let main = shape_bbox(&frame(&h, 0).shape);
+    let empty = screen(&h, Point::new(main.x0 / 2.0, main.y0 / 2.0));
+    for from in [middle(&h, 1), empty] {
+        let view = h.state().atlas.view.offset;
+        drag(&mut h, from, from + vec2(40.0, 25.0), Input::Finger);
+        let moved = h.state().atlas.view.offset - view;
+        assert!((moved - vec2(40.0, 25.0)).length() < 0.01, "{moved:?}");
+        assert_eq!(frame(&h, 1).shape, before);
+        assert!(selected_vertices(&h).is_empty());
+    }
+}
+
+#[test]
+fn a_drag_of_a_selected_vertex_moves_all_selected() {
+    let mut h = vertex_pad();
+    let ppm = h.state().atlas.place.unwrap().pts_per_mm;
+    let corner = handle(&h, Handle::Vertex((0, 0)));
+    let right = handle(&h, Handle::Vertex((0, 1)));
+    drag(
+        &mut h,
+        corner - vec2(30.0, 30.0),
+        right + vec2(30.0, 30.0),
+        Input::Pen,
+    );
+    assert_eq!(selected_vertices(&h), [(0, 0), (0, 1)]);
+    let before = ring(&h, 1);
+    drag(&mut h, right, right + vec2(-20.0, 15.0), Input::Finger);
+    let after = ring(&h, 1);
+    let d = |k: usize| [after[k][0] - before[k][0], after[k][1] - before[k][1]];
+    let want = [-20.0 / ppm, 15.0 / ppm];
+    for k in [0, 1] {
+        let (dx, dy) = (d(k)[0] - want[0], d(k)[1] - want[1]);
+        assert!(
+            dx.abs() < 1e-3 && dy.abs() < 1e-3,
+            "{k}: {:?} {want:?}",
+            d(k)
+        );
+    }
+    assert_eq!((after[2], after[3]), (before[2], before[3]));
+    assert_eq!(selected_vertices(&h), [(0, 0), (0, 1)]);
+
+    // A drag of a vertex that is not selected moves it alone.
+    let before = after;
+    let other = handle(&h, Handle::Vertex((0, 2)));
+    drag(&mut h, other, other + vec2(10.0, 10.0), Input::Mouse);
+    let after = ring(&h, 1);
+    assert_ne!(after[2], before[2]);
+    assert_eq!(
+        (after[0], after[1], after[3]),
+        (before[0], before[1], before[3])
+    );
+    assert_eq!(selected_vertices(&h), [(0, 2)]);
+}
+
+#[test]
+fn a_tap_on_an_edge_adds_a_vertex() {
+    for input in INPUTS {
+        let mut h = vertex_pad();
+        let ppm = h.state().atlas.place.unwrap().pts_per_mm;
+        let start = ring(&h, 1);
+        let ([ax, ay], [bx, _]) = (start[0], start[1]);
+        // A third of the way along the top edge, a little off the edge.
+        let x = ax + (bx - ax) / 3.0;
+        let at = screen(&h, Point::new(x, ay)) + vec2(0.0, 6.0);
+        tap_with(&mut h, at, input);
+        let after = ring(&h, 1);
+        assert_eq!(after.len(), 5, "{input:?}");
+        let [nx, ny] = after[1];
+        assert!(
+            (nx - x).abs() < 0.5 / ppm && ny == ay,
+            "{input:?}: {nx} {ny}"
+        );
+        assert_eq!(selected_vertices(&h), [(0, 1)], "{input:?}");
+    }
+}
+
+#[test]
+fn each_vertex_edit_is_one_undo_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let mut s = state();
+    s.session = Some(Session::open(&path, &mut s.doc).unwrap());
+    let mut h = pad_with(s, BOARDS[0]);
+    add_frame(&mut h);
+    add_frame(&mut h);
+    tap(&mut h, VERTEX);
+    h.state_mut().atlas.snap = false;
+    h.state_mut().save_waiting().unwrap();
+    let later = || Instant::now() + std::time::Duration::from_secs(5);
+    let mut shapes = vec![frame(&h, 1).shape];
+
+    // A move of two vertices. The app does not save while the pointer is
+    // down.
+    let corner = handle(&h, Handle::Vertex((0, 0)));
+    let right = handle(&h, Handle::Vertex((0, 1)));
+    drag(
+        &mut h,
+        corner - vec2(30.0, 30.0),
+        right + vec2(30.0, 30.0),
+        Input::Pen,
+    );
+    drag_steps(&mut h, right, right + vec2(-20.0, 15.0), Input::Finger, 3);
+    h.state_mut().save_tick(true, later());
+    let end = right + vec2(-30.0, 25.0);
+    touch(&mut h, 1, egui::TouchPhase::Move, end, None);
+    h.step();
+    release(&mut h, end, Input::Finger);
+    h.state_mut().save_waiting().unwrap();
+    shapes.push(frame(&h, 1).shape);
+    // An add.
+    let at = edge_middle(&h, 2);
+    tap_with(&mut h, at, Input::Finger);
+    h.state_mut().save_waiting().unwrap();
+    shapes.push(frame(&h, 1).shape);
+    // A delete.
+    tap(&mut h, DELETE_VERTEX);
+    h.state_mut().save_waiting().unwrap();
+    shapes.push(frame(&h, 1).shape);
+    assert_eq!(ring(&h, 1).len(), 4);
+
+    for want in shapes.iter().rev().skip(1) {
+        tap(&mut h, "Undo");
+        assert_eq!(&frame(&h, 1).shape, want);
+    }
+    assert!(matches!(frame(&h, 1).shape, FrameShape::Rectangle(_)));
+}
+
+#[test]
+fn delete_vertex_keeps_three_and_removes_a_small_hole() {
+    let mut h = inset_pad(BOARDS[0]);
+    tap(&mut h, POLYGON);
+    scroll_to(&mut h, ADD_HOLE);
+    tap(&mut h, ADD_HOLE);
+    tap(&mut h, VERTEX);
+    assert_eq!(ring_len(&h, 1), 4);
+    assert!(is_disabled(&h, DELETE_VERTEX));
+    // A box selects two vertices of the hole, and the hole goes away.
+    let a = handle(&h, Handle::Vertex((1, 0)));
+    let b = handle(&h, Handle::Vertex((1, 1)));
+    drag(&mut h, a - vec2(30.0, 30.0), b + vec2(8.0, 8.0), Input::Pen);
+    assert_eq!(selected_vertices(&h), [(1, 0), (1, 1)]);
+    tap(&mut h, DELETE_VERTEX);
+    assert_eq!(rings(&h).len(), 1);
+    assert!(selected_vertices(&h).is_empty());
+
+    // The outer ring keeps 3 vertices.
+    let at = handle(&h, Handle::Vertex((0, 0)));
+    tap_with(&mut h, at, Input::Finger);
+    tap(&mut h, DELETE_VERTEX);
+    assert_eq!(ring_len(&h, 0), 3);
+    let at = handle(&h, Handle::Vertex((0, 0)));
+    tap_with(&mut h, at, Input::Finger);
+    assert!(is_disabled(&h, DELETE_VERTEX));
+    h.key_press(egui::Key::Delete);
+    h.run_steps(2);
+    assert_eq!(ring_len(&h, 0), 3);
+    assert_eq!(selected_vertices(&h), [(0, 0)]);
+}
+
+#[test]
+fn delete_backspace_and_esc_in_the_vertex_tool() {
+    let mut h = vertex_pad();
+    let inset = frame(&h, 1).id;
+    let at = edge_middle(&h, 0);
+    tap_with(&mut h, at, Input::Finger);
+    assert_eq!(ring_len(&h, 0), 5);
+    h.key_press(egui::Key::Backspace);
+    h.run_steps(2);
+    assert_eq!(ring_len(&h, 0), 4);
+    assert!(selected_vertices(&h).is_empty());
+    let at = handle(&h, Handle::Vertex((0, 0)));
+    tap_with(&mut h, at, Input::Mouse);
+    h.key_press(egui::Key::Delete);
+    h.run_steps(2);
+    assert_eq!(ring_len(&h, 0), 3);
+    // With no vertex selected, Delete does not delete the frame.
+    h.key_press(egui::Key::Delete);
+    h.run_steps(2);
+    assert_eq!(frame(&h, 1).id, inset);
+
+    let at = handle(&h, Handle::Vertex((0, 0)));
+
+    tap_with(&mut h, at, Input::Mouse);
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+    assert!(selected_vertices(&h).is_empty());
+    assert_eq!(h.state().atlas.selection, AtlasSelection::Frame(inset));
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+    assert_eq!(h.state().atlas.selection, AtlasSelection::None);
 }
 
 /// A frame of 500 by 500 pixels on the middle of face 0, at about one
