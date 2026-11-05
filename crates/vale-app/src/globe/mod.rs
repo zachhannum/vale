@@ -46,6 +46,7 @@ pub mod snap;
 pub mod split;
 pub mod stats;
 pub mod stops;
+pub mod stroke_group;
 pub mod stroke_test;
 pub mod symbol;
 pub mod thumbnail;
