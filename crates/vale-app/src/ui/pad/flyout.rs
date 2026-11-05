@@ -140,17 +140,24 @@ pub fn show(
         return None;
     };
     let rows = choices.len() as f32;
-    let room = rects.panel_bottom - rects.tools.top();
-    let size = vec2(
-        geometry::MODES_WIDTH,
-        (10.0 + rows * PANEL_ROW + 10.0).min(room),
-    );
-    let top = cell
-        .top()
-        .min(rects.panel_bottom - size.y)
-        .max(rects.tools.top());
-    let min = pos2(rects.tools.right() + geometry::GAP, top);
-    let rect = Rect::from_min_size(min, size);
+    let full = 10.0 + rows * PANEL_ROW + 10.0;
+    // In the row layout, the list is above its cell. Else it is at the
+    // right of the strip.
+    let rect = if rects.row {
+        let bottom = rects.tools.top() - geometry::GAP;
+        let size = vec2(geometry::MODES_WIDTH, full.min(bottom - rects.column_top));
+        let screen = rects.screen.shrink2(vec2(geometry::MARGIN, 0.0));
+        let left = cell.left().min(screen.right() - size.x).max(screen.left());
+        Rect::from_min_size(pos2(left, bottom - size.y), size)
+    } else {
+        let room = rects.panel_bottom - rects.tools.top();
+        let size = vec2(geometry::MODES_WIDTH, full.min(room));
+        let top = cell
+            .top()
+            .min(rects.panel_bottom - size.y)
+            .max(rects.tools.top());
+        Rect::from_min_size(pos2(rects.tools.right() + geometry::GAP, top), size)
+    };
     flyouts.rect = Some(rect);
     let pressed = ctx.input(|i| {
         i.pointer

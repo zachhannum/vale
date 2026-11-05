@@ -4135,6 +4135,65 @@ fn the_screenshot_of_an_iphone_keeps_the_controls_in_the_safe_area() {
     }
 }
 
+/// The screens of the iPhone mockups in portrait, and the change from the
+/// drawing screen that each one has.
+const PHONE_SCREENS: [(&str, fn(&mut AppState)); 5] = [
+    ("PhoneDraw", |_| {}),
+    ("PhoneDrawMenu", |s| s.pad.menu = true),
+    ("PhoneDrawLayers", |s| s.pad.open(Panel::Layers)),
+    ("PhoneDrawBrush", |s| s.pad.open(Panel::Brush)),
+    ("PhoneDrawStyle", |s| {
+        let layers = s.doc.project.layers();
+        let rivers = layers.iter().find(|l| l.name == "Rivers").unwrap().id;
+        s.select(Some(LayerRef::Vector(rivers)));
+        s.globe.tool = Tool::Line;
+        s.pad.open(Panel::Layers);
+        s.pad.layer = Some(LayerRef::Vector(rivers));
+        // The style is at the full height.
+        s.pad.sheet_offset = -1000.0;
+    }),
+];
+
+#[test]
+#[ignore = "gpu"]
+fn the_five_iphone_screens_render_at_393_by_852() {
+    let _gpu = one_gpu_test();
+    std::fs::create_dir_all("../../target/app").unwrap();
+    let (size, [top, right, bottom, left]) = IPHONES[0];
+    for (name, change) in PHONE_SCREENS {
+        let mut state = state();
+        state.globe.set_face_size(64);
+        state.add_height();
+        state.globe.tool = Tool::Brush;
+        state.globe.brush.mode = Mode::Raise;
+        let insets = egui::epaint::MarginF32 {
+            left,
+            right,
+            top,
+            bottom,
+        };
+        let safe = Some(egui::SafeAreaInsets(insets));
+        let prepare = |s: &mut AppState| {
+            change(s);
+            Ok(())
+        };
+        let (image, state) = headless::ui_png_safe(state, size, 1.0, safe, prepare).unwrap();
+        assert_eq!(image.dimensions(), (393, 852), "{name}");
+        image
+            .save(format!("../../target/app/test-{name}.png"))
+            .unwrap();
+        let (width, height) = (size.0 as f32, size.1 as f32);
+        for c in &state.pad.controls {
+            let r = c.rect;
+            let inside = r.top() >= top
+                && r.bottom() <= height - bottom
+                && r.left() >= left
+                && r.right() <= width - right;
+            assert!(inside, "{name}: {} is {r:?}", c.name);
+        }
+    }
+}
+
 #[test]
 fn the_readout_shows_the_place_and_the_elevation() {
     assert_eq!(
