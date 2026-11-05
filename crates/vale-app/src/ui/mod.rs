@@ -745,6 +745,17 @@ impl AppState {
         self.sync_globe();
     }
 
+    /// Selects a layer if it is a vector layer.
+    pub fn select_vector(&mut self, layer: LayerId) {
+        let vector = self
+            .doc
+            .layer(layer)
+            .is_some_and(|l| l.geometry().is_some());
+        if vector && self.selected_vector() != Some(layer) {
+            self.select(Some(LayerRef::Vector(layer)));
+        }
+    }
+
     /// Gives the globe the visible layers of the project in the draw order,
     /// with the opacity of each raster layer. The brush paints the selected
     /// raster layer while it is visible. A layer that is not in the project

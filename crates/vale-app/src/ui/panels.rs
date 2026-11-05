@@ -411,6 +411,14 @@ fn atlas_buttons(ui: &mut egui::Ui, state: &mut AppState) {
     if frame.on_hover_text("F").clicked() {
         state.atlas.tool = atlas::AtlasTool::Frame;
     }
+    let selecting = state.atlas.tool == atlas::AtlasTool::Select;
+    if ui
+        .selectable_label(selecting, select::TOOL)
+        .on_hover_text("V")
+        .clicked()
+    {
+        state.atlas.tool = atlas::AtlasTool::Select;
+    }
     let vertex = ui
         .selectable_label(vertexing, VERTEX_TOOL)
         .on_hover_text("A");
@@ -450,6 +458,10 @@ fn atlas_buttons(ui: &mut egui::Ui, state: &mut AppState) {
         if ui.button(DESELECT).on_hover_text("Esc").clicked() {
             atlas::clear_selection(state);
         }
+    }
+    let selected = atlas::has_selection(state) || !state.feature_selection.is_empty();
+    if selecting && selected && ui.button(DESELECT).on_hover_text("Esc").clicked() {
+        atlas::deselect(state);
     }
     if measuring {
         snap_controls(ui, state, &[]);

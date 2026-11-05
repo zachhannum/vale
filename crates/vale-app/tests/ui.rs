@@ -1368,6 +1368,55 @@ fn the_keys_f_and_h_choose_the_tools() {
 }
 
 #[test]
+fn the_v_key_and_the_select_button_choose_the_select_tool() {
+    let mut h = harness();
+    h.run_steps(3);
+    h.key_press(egui::Key::V);
+    h.run_steps(2);
+    assert_eq!(h.state().atlas.tool, AtlasTool::Select);
+    h.key_press(egui::Key::F);
+    h.run_steps(2);
+    assert_eq!(h.state().atlas.tool, AtlasTool::Frame);
+    h.get_by_label("Select").click();
+    h.run_steps(2);
+    assert_eq!(h.state().atlas.tool, AtlasTool::Select);
+}
+
+#[test]
+fn with_the_select_tool_esc_clears_the_features_and_then_the_frame() {
+    use vale_app::globe::select::FeatureRef;
+    use vale_app::ui::LayerRef;
+    let mut h = harness();
+    h.run_steps(3);
+    let s = h.state_mut();
+    let layer = (s.doc.project.layers().iter())
+        .find(|l| l.geometry().is_some() && !l.features.is_empty())
+        .unwrap();
+    let found = FeatureRef {
+        layer: layer.id,
+        uuid: layer.features[0].uuid(),
+    };
+    s.select(Some(LayerRef::Vector(found.layer)));
+    s.atlas.tool = AtlasTool::Select;
+    let frame = vale_app::ui::atlas::open_page(s).frames[0].id;
+    s.atlas.selection = AtlasSelection::Frame(frame);
+    s.set_feature_selection(vec![found]);
+    h.run_steps(2);
+    h.key_press(egui::Key::Delete);
+    h.run_steps(2);
+    assert_eq!(h.state().feature_selection, vec![found]);
+    assert_eq!(h.state().atlas.selection, AtlasSelection::Frame(frame));
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+    assert!(h.state().feature_selection.is_empty());
+    assert_eq!(h.state().atlas.selection, AtlasSelection::Frame(frame));
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+    assert_eq!(h.state().atlas.selection, AtlasSelection::None);
+    assert_eq!(vale_app::ui::atlas::open_page(h.state()).frames.len(), 1);
+}
+
+#[test]
 #[ignore = "gpu"]
 fn the_desktop_atlas_renders_offscreen() {
     let _gpu = one_gpu_test();

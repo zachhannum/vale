@@ -137,7 +137,7 @@ pub const CANCEL_EXPORT: &str = "Cancel export";
 /// The width of the actions card: four buttons and a divider.
 const ACTIONS_WIDTH: f32 = 4.0 * TOUCH + 4.0 * PAD + 9.0 + 2.0 * PAD;
 const ADD_WIDTH: f32 = 220.0;
-const TOOL_CELLS: usize = 4;
+const TOOL_CELLS: usize = 5;
 /// The smallest space at each side of the text of a tab.
 pub const TAB_PAD: f32 = 12.0;
 
@@ -463,11 +463,12 @@ fn top_row(
     );
 }
 
-/// The context strip: the card below the tool strip while a frame or an
-/// item of furniture is selected. With the Frame tool, it holds the
-/// switch that snaps a frame to the layout of the page, "Delete selection",
-/// and Deselect. With the Vertex tool, it holds the switch, "Delete
-/// vertex", and Deselect. With the Move tool, it holds Deselect. With no
+/// The context strip: the card below the tool strip while a frame, an item
+/// of furniture, or a feature is selected. With the Frame tool, it holds
+/// the switch that snaps a frame to the layout of the page, "Delete
+/// selection", and Deselect. With the Vertex tool, it holds the switch,
+/// "Delete vertex", and Deselect. With the Select tool and the Move tool,
+/// it holds Deselect. With no
 /// room below the strip, it goes to the right of the strip, below the page
 /// card if the page card is there. It ends above the sheet, and it scrolls
 /// if it is too long.
@@ -484,6 +485,9 @@ fn frame_card(
         AtlasTool::Vertex if framed => 3,
         AtlasTool::Frame if atlas::has_selection(state) => 2 + usize::from(framed),
         AtlasTool::Move if atlas::has_selection(state) => 1,
+        AtlasTool::Select if atlas::has_selection(state) || !state.feature_selection.is_empty() => {
+            1
+        }
         _ => return,
     };
     let mut size = vec2(rects.tools.width(), geometry::strip_height(cells));
@@ -516,7 +520,7 @@ fn frame_card(
                 let on = state.atlas.snap;
                 let label = super::SNAP;
                 if framed
-                    && tool != AtlasTool::Move
+                    && matches!(tool, AtlasTool::Frame | AtlasTool::Vertex)
                     && widgets::tool_cell(
                         ui,
                         controls,
@@ -548,7 +552,7 @@ fn frame_card(
                 let name = super::DESELECT;
                 if widgets::tool_cell(ui, controls, name, name, Icon::Close, false, true).clicked()
                 {
-                    if tool == AtlasTool::Vertex {
+                    if matches!(tool, AtlasTool::Vertex | AtlasTool::Select) {
                         atlas::deselect(state);
                     } else {
                         atlas::clear_selection(state);
@@ -580,6 +584,7 @@ fn tool_strip(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
             let mut cells = |ui: &mut egui::Ui| {
                 for (name, label, icon, tool) in [
                     (FRAME_TOOL, "Frame", Icon::Frame, AtlasTool::Frame),
+                    (select::TOOL, select::TOOL, Icon::Select, AtlasTool::Select),
                     (VERTEX, VERTEX, Icon::Vertex, AtlasTool::Vertex),
                     (MOVE, MOVE, Icon::Move, AtlasTool::Move),
                     (
@@ -1469,7 +1474,7 @@ fn layers_tab(
                     icon,
                     name,
                     Some(shown),
-                    false,
+                    state.selected_vector() == Some(layer),
                     true,
                     false,
                     0.0,
@@ -1485,6 +1490,7 @@ fn layers_tab(
         }
     }
     if let Some(layer) = open {
+        state.select_vector(layer);
         state.atlas.layer = Some((id, layer));
         state.atlas.layer_page = None;
         state.pad.rules = Default::default();

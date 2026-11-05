@@ -9414,13 +9414,15 @@ fn the_measure_cell_and_card_fit_in_the_atlas_on_each_screen() {
         vale_app::ui::atlas::add_frame(h.state_mut());
         h.run_steps(3);
         let strip = h.state().pad.rects.unwrap().tools;
-        let names = ["Frame tool", "Vertex", "Move", MEASURE];
+        let names = ["Frame tool", "Select", "Vertex", "Move", MEASURE];
         for name in names {
             scroll_strip_to(&mut h, name);
             let cell = control(&h, name).unwrap_or_else(|| panic!("{what}: {name}"));
             assert!(strip.contains_rect(cell), "{what}: {name}");
         }
-        let cells = names.map(|name| control(&h, name).unwrap());
+        // On a short screen, the strip scrolls, and only some cells show.
+        let cells: Vec<_> = names.iter().filter_map(|name| control(&h, name)).collect();
+        assert!(cells.len() > 1, "{what}");
         for pair in cells.windows(2) {
             assert!(pair[0].bottom() <= pair[1].top(), "{what}");
         }
@@ -9428,7 +9430,7 @@ fn the_measure_cell_and_card_fit_in_the_atlas_on_each_screen() {
         assert!(h.state().measuring(), "{what}");
         assert_eq!(h.state().atlas.tool, AtlasTool::Measure, "{what}");
         assert_eq!(toggled(&h, MEASURE), Some(true), "{what}");
-        for name in ["Frame tool", "Vertex", "Move"] {
+        for name in ["Frame tool", "Select", "Vertex", "Move"] {
             assert_ne!(toggled(&h, name), Some(true), "{what}: {name}");
         }
         assert!(!readout_line(h.state()).starts_with("Length"), "{what}");
@@ -9477,6 +9479,7 @@ fn the_measure_cell_and_card_fit_in_the_atlas_on_each_screen() {
             );
         }
         // Frame leaves the tool.
+        scroll_strip_to(&mut h, "Frame tool");
         tap(&mut h, "Frame tool");
         assert_eq!(h.state().atlas.tool, AtlasTool::Frame, "{what}");
     }

@@ -13,7 +13,7 @@ use super::pad::theme;
 use super::pad::widgets::{self, Controls};
 use super::table::SHOW_IN_TABLE;
 use crate::globe::math::{V3, dir_to_lonlat};
-use crate::globe::select::{self, FeatureRef, SelectEvent};
+use crate::globe::select::{self, FeatureRef, SelectEvent, Shape};
 
 /// The name of the Select tool.
 pub const TOOL: &str = "Select";
@@ -177,11 +177,16 @@ impl AppState {
     /// Keeps only the selected features that still exist in the layer of
     /// the Select tool.
     fn prune_feature_selection(&mut self) {
+        self.prune_feature_selection_to(self.select_layer().map(|l| l.id));
+    }
+
+    /// Keeps only the selected features that still exist in `layer`.
+    pub(super) fn prune_feature_selection_to(&mut self, layer: Option<LayerId>) {
         if self.feature_selection.is_empty() {
             return;
         }
-        let live: HashSet<(LayerId, Uuid)> = self
-            .select_layer()
+        let live: HashSet<(LayerId, Uuid)> = layer
+            .and_then(|id| self.doc.layer(id))
             .into_iter()
             .flat_map(|l| l.features.iter().map(|f| (l.id, f.uuid())))
             .collect();
@@ -463,8 +468,6 @@ pub fn choices(layer: &Layer, name: &str) -> Vec<String> {
 pub fn paint(painter: &egui::Painter, state: &AppState) {
     let globe = &state.globe;
     let ring = egui::Stroke::new(2.0, theme::ACCENT);
-    let line = egui::Stroke::new(3.0, theme::ACCENT);
-    let dark = egui::Stroke::new(1.5, egui::Color32::from_rgb(11, 31, 26));
     for f in &state.feature_selection {
         let Some(layer) = state.doc.layer(f.layer) else {
             continue;
@@ -472,18 +475,7 @@ pub fn paint(painter: &egui::Painter, state: &AppState) {
         let Some(feature) = layer.features.iter().find(|x| x.uuid() == f.uuid) else {
             continue;
         };
-        let shape = select::shape(globe, &feature.geometry);
-        for (_, pos) in &shape.points {
-            painter.circle_stroke(*pos, 9.0, ring);
-        }
-        for run in shape.lines {
-            painter.line(run, line);
-        }
-        // The ends of a line show as handles, so that the cut of a split
-        // shows between two selected lines.
-        for pos in shape.ends {
-            painter.circle(pos, END, theme::ACCENT, dark);
-        }
+        paint_shape(painter, select::shape(globe, &feature.geometry));
     }
     match state.select_drag {
         Some(SelectDrag::Box { start, end }) => {
@@ -498,6 +490,26 @@ pub fn paint(painter: &egui::Painter, state: &AppState) {
             }
         }
         _ => {}
+    }
+}
+
+/// Draws a selected feature in the accent color: a ring around each point,
+/// a wide line on each line and each outline, and a handle at each end of a
+/// line.
+pub fn paint_shape(painter: &egui::Painter, shape: Shape) {
+    let ring = egui::Stroke::new(2.0, theme::ACCENT);
+    let line = egui::Stroke::new(3.0, theme::ACCENT);
+    let dark = egui::Stroke::new(1.5, egui::Color32::from_rgb(11, 31, 26));
+    for (_, pos) in &shape.points {
+        painter.circle_stroke(*pos, 9.0, ring);
+    }
+    for run in shape.lines {
+        painter.line(run, line);
+    }
+    // The ends of a line show as handles, so that the cut of a split shows
+    // between two selected lines.
+    for pos in shape.ends {
+        painter.circle(pos, END, theme::ACCENT, dark);
     }
 }
 

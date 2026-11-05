@@ -22,7 +22,7 @@ use vale_app::ui::map_texture::MapRenderer;
 use vale_app::ui::pad::atlas::{
     ADD, ADD_HOLE, ADD_PAGE, AUTO_INTERVAL, BORDER, BORDER_DISTANCE, BORDER_STROKE, BORDER_STYLES,
     BORDER_WIDTH, CENTER_ON_FRAME, COPY_GLOBE_STYLE, DELETE_PAGE, DELETE_PROJECTION,
-    EXPORT_ATLAS_PDF, EXPORT_PAGE_PDF, EXPORT_PAGE_PNG, FIRST_PARALLEL, FRAME_TABS,
+    EXPORT_ATLAS_PDF, EXPORT_PAGE_PDF, EXPORT_PAGE_PNG, FIRST_PARALLEL, FRAME_TABS, FRAME_TOOL,
     GRATICULE_COLOR, GRATICULE_WIDTH, HEIGHT, INTERVAL, LABEL_FORMATS, MAP_FRAME, MAP_NAME,
     NEATLINE, NEATLINE_COLOR, NEATLINE_WIDTH, NEXT_PAGE, OBLIQUE, PAPER_COLOR, POLYGON,
     PREVIOUS_PAGE, PROJECTION, REFERENCE_GRID, SAVE_PROJECTION, SCALE, SECOND_COLOR, SIZE,
@@ -60,7 +60,7 @@ use vale_app::ui::pad::{
     CLEAR_PATH, DELETE_VERTEX, DESELECT, GRATICULE, MEASURE, Panel, SNAP, SNAP_DISTANCE,
     SNAP_EDGES, SNAP_VERTICES, SNAPPING, readout_line,
 };
-use vale_app::ui::select::DELETE as DELETE_SELECTION;
+use vale_app::ui::select::{DELETE as DELETE_SELECTION, TOOL as SELECT_TOOL};
 use vale_app::ui::{Action, AppState, ExportFormat, Layout, Screen, Workspace, draw};
 use vale_labeler::{Placement, PolygonMode};
 use vale_render::Item;
@@ -7938,4 +7938,238 @@ fn save_as_map_style_asks_for_the_name() {
     let name = &h.state().doc.project.atlas.map_style(style).unwrap().name;
     assert_eq!(name, "Coast");
     assert!(control(&h, &map_style_row("Coast")).is_some());
+}
+
+/// A page with a main frame and an inset frame, and a new point layer with
+/// a town at the middle of the inset. The layer is the selected layer, and
+/// the Select tool is the tool.
+fn towns_pad(size: (f32, f32)) -> (Pad, Pos2, vale_app::globe::select::FeatureRef) {
+    use vale_app::globe::select::FeatureRef;
+    use vale_app::ui::LayerRef;
+    let mut h = inset_pad(size);
+    let at = middle(&h, 1);
+    let lonlat = place_at(&mut h, 1, at);
+    let s = h.state_mut();
+    let layer = s.doc.add_layer(GeometryKind::Point);
+    let town = Feature::new(Geometry::Points(vec![lonlat]), Default::default());
+    let found = FeatureRef {
+        layer,
+        uuid: town.uuid(),
+    };
+    assert!(s.doc.project.add_feature(layer, town));
+    s.pipeline.forget(layer);
+    s.touch();
+    s.select(Some(LayerRef::Vector(layer)));
+    h.run_steps(2);
+    tap(&mut h, SELECT_TOOL);
+    assert_eq!(h.state().atlas.tool, AtlasTool::Select);
+    let at = pos_of(&mut h, 1, lonlat);
+    (h, at, found)
+}
+
+/// Adds a point to the layer of `found` at a screen position in a frame.
+fn add_town(
+    h: &mut Pad,
+    layer: LayerId,
+    index: usize,
+    pos: Pos2,
+) -> vale_app::globe::select::FeatureRef {
+    let lonlat = place_at(h, index, pos);
+    let s = h.state_mut();
+    let town = Feature::new(Geometry::Points(vec![lonlat]), Default::default());
+    let found = vale_app::globe::select::FeatureRef {
+        layer,
+        uuid: town.uuid(),
+    };
+    assert!(s.doc.project.add_feature(layer, town));
+    s.pipeline.forget(layer);
+    s.touch();
+    h.run_steps(2);
+    found
+}
+
+#[test]
+fn with_the_select_tool_a_tap_selects_the_feature_in_reach_and_its_frame() {
+    for (input, near, far) in [
+        (Input::Finger, 20.0, 25.0),
+        (Input::Pen, 10.0, 15.0),
+        (Input::Mouse, 6.0, 11.0),
+    ] {
+        let (mut h, at, town) = towns_pad(BOARDS[0]);
+        let inset = frame(&h, 1).id;
+        tap_with(&mut h, at + vec2(near, 0.0), input);
+        assert_eq!(h.state().feature_selection, vec![town], "{input:?}");
+        assert_eq!(
+            h.state().atlas.selection,
+            AtlasSelection::Frame(inset),
+            "{input:?}"
+        );
+        tap_with(&mut h, at + vec2(0.0, far), input);
+        assert!(h.state().feature_selection.is_empty(), "{input:?}");
+        assert_eq!(
+            h.state().atlas.selection,
+            AtlasSelection::Frame(inset),
+            "{input:?}"
+        );
+    }
+}
+
+#[test]
+fn with_the_select_tool_a_layer_that_the_map_hides_has_no_hit() {
+    let (mut h, at, town) = towns_pad(BOARDS[0]);
+    let map = frame(&h, 1).map;
+    h.state_mut().set_map_shown(map, town.layer, false);
+    h.run_steps(2);
+    tap_with(&mut h, at, Input::Finger);
+    assert!(h.state().feature_selection.is_empty());
+}
+
+#[test]
+fn with_the_select_tool_a_tap_outside_the_frames_clears_the_selection() {
+    let (mut h, at, town) = towns_pad(BOARDS[0]);
+    tap_with(&mut h, at, Input::Finger);
+    assert_eq!(h.state().feature_selection, vec![town]);
+    let off = margin(&h);
+    tap_with(&mut h, off, Input::Finger);
+    assert!(h.state().feature_selection.is_empty());
+    assert_eq!(h.state().atlas.selection, AtlasSelection::None);
+}
+
+#[test]
+fn with_the_select_tool_a_pen_or_a_mouse_selects_in_a_box_and_a_finger_pans() {
+    for input in [Input::Pen, Input::Mouse] {
+        let (mut h, at, town) = towns_pad(BOARDS[0]);
+        let other = add_town(&mut h, town.layer, 1, at + vec2(30.0, 20.0));
+        drag(&mut h, at - vec2(15.0, 15.0), at + vec2(45.0, 35.0), input);
+        let mut selected = h.state().feature_selection.clone();
+        selected.sort_by_key(|f| f.uuid);
+        let mut both = vec![town, other];
+        both.sort_by_key(|f| f.uuid);
+        assert_eq!(selected, both, "{input:?}");
+        assert_eq!(
+            h.state().atlas.selection,
+            AtlasSelection::Frame(frame(&h, 1).id),
+            "{input:?}"
+        );
+    }
+    let (mut h, at, town) = towns_pad(BOARDS[0]);
+    tap_with(&mut h, at, Input::Finger);
+    let offset = h.state().atlas.view.offset;
+    drag(
+        &mut h,
+        at - vec2(15.0, 15.0),
+        at + vec2(45.0, 35.0),
+        Input::Finger,
+    );
+    assert_ne!(h.state().atlas.view.offset, offset);
+    assert_eq!(h.state().feature_selection, vec![town]);
+}
+
+#[test]
+fn the_selection_shows_in_each_frame_that_shows_the_layer_cut_at_the_frames() {
+    use vale_app::ui::LayerRef;
+    let (mut h, at, _) = towns_pad(BOARDS[0]);
+    tap_with(&mut h, at, Input::Finger);
+    let place = place(&h);
+    let shown = atlas::features::highlight(h.state_mut(), place);
+    assert!(!shown.points.is_empty());
+    // A river from the town to far outside the inset.
+    let start = place_at(&mut h, 1, at);
+    let s = h.state_mut();
+    let rivers = s.doc.add_layer(GeometryKind::Line);
+    let line = Feature::new(
+        Geometry::Lines(vec![vec![start, [start[0] + 60.0, start[1]]]]),
+        Default::default(),
+    );
+    let river = vale_app::globe::select::FeatureRef {
+        layer: rivers,
+        uuid: line.uuid(),
+    };
+    assert!(s.doc.project.add_feature(rivers, line));
+    s.pipeline.forget(rivers);
+    s.touch();
+    s.select(Some(LayerRef::Vector(rivers)));
+    s.set_feature_selection(vec![river]);
+    h.run_steps(2);
+    let shown = atlas::features::highlight(h.state_mut(), place);
+    assert!(!shown.lines.is_empty());
+    let page = open_page(&h);
+    let inside = |p: Pos2| {
+        let mm = place.to_mm(p);
+        // A point on the edge of a frame is in the frame.
+        page.frames.iter().any(|f| {
+            let at = |d: f64| vale_app::atlas::contains(&f.shape, mm + kurbo::Vec2::new(d, d));
+            at(0.0) || at(0.05) || at(-0.05)
+        })
+    };
+    for line in &shown.lines {
+        for p in line {
+            assert!(inside(*p), "{p:?}");
+        }
+    }
+    for map in page.frames.iter().map(|f| f.map) {
+        h.state_mut().set_map_shown(map, rivers, false);
+    }
+    h.run_steps(2);
+    let shown = atlas::features::highlight(h.state_mut(), place);
+    assert!(shown.lines.is_empty());
+}
+
+#[test]
+fn the_selection_of_the_atlas_is_the_selection_of_the_world() {
+    let (mut h, at, town) = towns_pad(BOARDS[0]);
+    tap_with(&mut h, at, Input::Finger);
+    assert_eq!(h.state().feature_selection, vec![town]);
+    tap(&mut h, "World");
+    assert_eq!(h.state().workspace, Workspace::Globe);
+    h.run_steps(2);
+    assert_eq!(h.state().feature_selection, vec![town]);
+}
+
+#[test]
+fn with_the_select_tool_the_context_strip_has_deselect_only() {
+    let (mut h, at, town) = towns_pad(BOARDS[0]);
+    tap_with(&mut h, at, Input::Finger);
+    assert!(control(&h, DESELECT).is_some());
+    for name in [SNAP_TO_LAYOUT, DELETE_SELECTION, DELETE_VERTEX] {
+        assert!(control(&h, name).is_none(), "{name}");
+    }
+    let frames = open_page(&h).frames.len();
+    for key in [egui::Key::Delete, egui::Key::Backspace] {
+        h.key_press(key);
+        h.run_steps(2);
+    }
+    assert_eq!(open_page(&h).frames.len(), frames);
+    assert_eq!(h.state().feature_selection, vec![town]);
+    let layer = h.state().doc.layer(town.layer).unwrap();
+    assert!(layer.features.iter().any(|f| f.uuid() == town.uuid));
+    let inset = frame(&h, 1).id;
+    tap(&mut h, DESELECT);
+    assert!(h.state().feature_selection.is_empty());
+    assert_eq!(h.state().atlas.selection, AtlasSelection::Frame(inset));
+    tap(&mut h, DESELECT);
+    assert_eq!(h.state().atlas.selection, AtlasSelection::None);
+    assert!(control(&h, DESELECT).is_none());
+}
+
+#[test]
+fn a_row_of_the_layers_tab_selects_its_vector_layer() {
+    let (mut h, _, town) = towns_pad(BOARDS[0]);
+    h.state_mut().select(None);
+    tap(&mut h, FRAME_TOOL);
+    let inset = middle(&h, 1);
+    tap_with(&mut h, inset, Input::Finger);
+    tap(&mut h, FRAME_TABS[2]);
+    let name = h.state().doc.layer(town.layer).unwrap().name.clone();
+    tap(&mut h, &format!("Layer {name}"));
+    assert_eq!(h.state().selected_vector(), Some(town.layer));
+}
+
+#[test]
+fn the_frame_tool_does_not_box_select_features() {
+    let (mut h, at, _) = towns_pad(BOARDS[0]);
+    tap(&mut h, FRAME_TOOL);
+    let off = margin(&h);
+    drag(&mut h, off, at + vec2(10.0, 10.0), Input::Pen);
+    assert!(h.state().feature_selection.is_empty());
 }

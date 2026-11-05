@@ -611,6 +611,9 @@ fn layers_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
                 state.set_map_shown(frame.map, layer, shown);
             }
             if ui.selectable_label(open == Some(layer), "Style").clicked() {
+                if open != Some(layer) {
+                    state.select_vector(layer);
+                }
                 state.atlas.layer = (open != Some(layer)).then_some((frame.id, layer));
             }
             if edited.contains(&layer) {
