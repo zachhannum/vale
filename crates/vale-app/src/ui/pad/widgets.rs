@@ -419,6 +419,8 @@ pub struct LayerRow {
     pub open: bool,
     /// A tap on the Delete button of an open row.
     pub delete: bool,
+    /// A tap on the Rename button of an open row.
+    pub rename: bool,
 }
 
 /// The width of the Delete button of an open row of the layer list.
@@ -477,6 +479,7 @@ pub fn layer_row(
     });
     let highlight = rect.expand2(vec2(8.0, -HIGHLIGHT_INSET));
     let delete = delete_behind(ui, controls, rect, name, live, shift);
+    let rename = live && rename_behind(ui, controls, rect, name, shift);
     let painter = sliding_painter(ui, rect, shift);
     let moved = vec2(shift, 0.0);
     let highlight = highlight.translate(moved);
@@ -486,10 +489,9 @@ pub fn layer_row(
     if selected || lifted || body.as_ref().is_some_and(|b| b.is_pointer_button_down_on()) {
         painter.rect_filled(highlight, 5.0, theme::raise());
     }
-    let kind = Rect::from_center_size(
-        pos2(rect.left() + 10.0 + shift, rect.center().y),
-        vec2(18.0, 18.0),
-    );
+    // The icon and the name stay in place while a swipe opens the row, and
+    // the row slides over its buttons.
+    let kind = Rect::from_center_size(pos2(rect.left() + 10.0, rect.center().y), vec2(18.0, 18.0));
     icons::paint(&painter, kind, icon, 18.0, theme::MUTE);
     let shown = visible != Some(false);
     let mut name_right = body_right - 4.0;
@@ -505,9 +507,7 @@ pub fn layer_row(
             .font(theme::body())
             .color(theme::MUTE);
         let layout = egui::Layout::right_to_left(egui::Align::Center);
-        let builder = egui::UiBuilder::new()
-            .max_rect(place.translate(moved))
-            .layout(layout);
+        let builder = egui::UiBuilder::new().max_rect(place).layout(layout);
         let mut child = ui.new_child(builder);
         child.set_clip_rect(painter.clip_rect());
         child.add(egui::Label::new(text).selectable(false));
@@ -515,8 +515,7 @@ pub fn layer_row(
     let clip = Rect::from_min_max(
         pos2(rect.left() + 28.0, rect.top()),
         pos2(name_right, rect.bottom()),
-    )
-    .translate(moved);
+    );
     painter
         .with_clip_rect(painter.clip_rect().intersect(clip))
         .text(
@@ -537,25 +536,14 @@ pub fn layer_row(
         }
         open =
             icon_button_at(ui, controls, open_rect, &open_name, Icon::Open, false, true).clicked();
-    } else {
+    } else if shift == 0.0 {
         if visible.is_some() {
-            icons::paint(
-                &painter,
-                eye_rect.translate(moved),
-                eye_icon,
-                ICON,
-                theme::MUTE,
-            );
+            icons::paint(&painter, eye_rect, eye_icon, ICON, theme::MUTE);
         }
-        icons::paint(
-            &painter,
-            open_rect.translate(moved),
-            Icon::Open,
-            ICON,
-            theme::MUTE,
-        );
+        icons::paint(&painter, open_rect, Icon::Open, ICON, theme::MUTE);
     }
     LayerRow {
+        rename,
         body,
         eye,
         open,

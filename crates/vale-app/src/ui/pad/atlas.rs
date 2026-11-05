@@ -1189,7 +1189,7 @@ fn map_style_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Contro
             continue;
         }
         let width = widgets::RENAME_WIDTH;
-        if swipe::drag_by(
+        if swipe::drag(
             ui,
             &mut state.atlas.map_style_swipe,
             style,

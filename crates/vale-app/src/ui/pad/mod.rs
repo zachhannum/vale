@@ -403,6 +403,9 @@ pub struct PadState {
     pub reorder: Option<Reorder>,
     /// The row of the layer list that a finger swiped.
     pub swipe: Option<Swipe>,
+    /// The layer that the user renames in the layer list, and the text of
+    /// its name field.
+    pub rename: Option<(LayerId, String)>,
     /// The text of the name field of the panel of a vector layer.
     name: Option<(LayerRef, String)>,
     /// The list of the projections of the flat view is open.
@@ -2480,6 +2483,24 @@ fn swipe_rows(
     });
     for (i, row) in rows.iter().enumerate() {
         let (id, rect) = (row.id, place(i));
+        if let Some((_, text)) = state.pad.rename.as_mut().filter(|r| r.0 == id) {
+            // The row is the name field while the user renames the layer. The
+            // name changes when the field loses the focus.
+            let valid = !text.trim().is_empty();
+            let field = ui
+                .push_id(id.0, |ui| {
+                    let font = theme::body();
+                    widgets::field_at(ui, controls, rect, LAYER_NAME, None, text, valid, font)
+                })
+                .inner;
+            if field.lost_focus() {
+                let text = state.pad.rename.take().map(|r| r.1);
+                state.doc.rename_layer(id, &text.unwrap_or_default());
+            } else if !field.has_focus() {
+                field.request_focus();
+            }
+            continue;
+        }
         let on = selected == Some(row.layer);
         let (icon, name, visible) = (row.icon, &row.name, Some(row.visible));
         let open = state.pad.swipe.filter(|s| s.row == id);
@@ -2496,6 +2517,11 @@ fn swipe_rows(
             state.remove_layer(id);
             continue;
         }
+        if out.rename {
+            state.pad.swipe = None;
+            state.pad.rename = Some((id, row.name.clone()));
+            continue;
+        }
         if out.eye {
             state.set_layer_visible(id, !row.visible);
         }
@@ -2505,7 +2531,7 @@ fn swipe_rows(
             state.pad.swipe = None;
         }
         let Some(body) = out.body else { continue };
-        if swipe::drag(ui, &mut state.pad.swipe, id, &body) {
+        if swipe::drag(ui, &mut state.pad.swipe, id, &body, widgets::RENAME_WIDTH) {
             continue;
         }
         if body.dragged() {

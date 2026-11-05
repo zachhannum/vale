@@ -5,8 +5,6 @@ use std::hash::Hash;
 
 use eframe::egui::{self, Pos2, Rect, Response, vec2};
 
-use super::widgets;
-
 /// The time that a row takes to snap open or shut, in seconds.
 const SNAP_TIME: f32 = 0.15;
 
@@ -57,19 +55,9 @@ pub fn shift<K: Copy + PartialEq + Hash + std::fmt::Debug>(
 
 /// Follows a sideways drag of the body of row `row`. A drag that starts
 /// sideways moves the row, and the row opens or shuts when the finger lifts.
-/// Returns true if the row moves with the finger, so that the body takes no
-/// other touch.
+/// The buttons behind the row are `width` wide. Returns true if the row
+/// moves with the finger, so that the body takes no other touch.
 pub fn drag<K: Copy + PartialEq>(
-    ui: &egui::Ui,
-    swipe: &mut Option<Swipe<K>>,
-    row: K,
-    body: &Response,
-) -> bool {
-    drag_by(ui, swipe, row, body, widgets::DELETE_WIDTH)
-}
-
-/// [`drag`] for a row whose buttons are `width` wide.
-pub fn drag_by<K: Copy + PartialEq>(
     ui: &egui::Ui,
     swipe: &mut Option<Swipe<K>>,
     row: K,
