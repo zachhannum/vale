@@ -349,7 +349,20 @@ fn check_controls(h: &Pad, what: &str) {
     let in_edit = controls
         .iter()
         .any(|c| c.name == vale_app::ui::pad::widgets::COPY);
-    let popup = in_edit
+    // The rows of the open menu of the values of a field.
+    let choice_rows: Vec<String> = (h.state().selection_form.as_ref())
+        .and_then(|form| {
+            let open = form.open.as_ref()?;
+            let i = form.fields.iter().position(|f| &f.name == open)?;
+            let rows = form.choices[i].iter();
+            Some(
+                rows.map(|c| vale_app::ui::pad::widgets::choice_row_name(open, c))
+                    .collect(),
+            )
+        })
+        .unwrap_or_default();
+    let popup = !choice_rows.is_empty()
+        || in_edit
         || in_menu
         || in_modes
         || in_add
@@ -400,7 +413,8 @@ fn check_controls(h: &Pad, what: &str) {
                     && (name.starts_with(vale_app::ui::pad::raster::COLOR) || raster_stop(name));
                 menu || kind || modes || add || stop || (in_menu && name == "Projection")
             };
-            // The edit menu of a field covers the controls below it.
+            // The edit menu and the menu of the values of a field cover the
+            // controls below them.
             let edit = |c: &vale_app::ui::pad::widgets::Control| {
                 use vale_app::ui::pad::widgets::{COPY, PASTE};
                 c.name == COPY || c.name == PASTE
@@ -409,7 +423,9 @@ fn check_controls(h: &Pad, what: &str) {
             // slider, and it takes the touches there.
             let field = |a: &str, b: &str| b.strip_suffix(" value") == Some(a);
             let own = field(&a.name, &b.name) || field(&b.name, &a.name);
-            let covered = own || popup && (row(a) != row(b) || edit(a) != edit(b));
+            let choice = |c: &vale_app::ui::pad::widgets::Control| choice_rows.contains(&c.name);
+            let covered =
+                own || popup && (row(a) != row(b) || edit(a) != edit(b) || choice(a) != choice(b));
             let free = !a.rect.shrink(0.5).intersects(b.rect.shrink(0.5));
             assert!(free || covered, "{what}: {name} and {} overlap", b.name);
         }
@@ -10325,7 +10341,7 @@ fn a_field_lists_the_values_of_the_layer_and_a_tap_on_a_value_is_one_undo_step()
     let button = vale_app::ui::pad::widgets::choices_name("name");
     assert!(control(&h, &button).is_some());
     assert!(control(&h, "name: small").is_none());
-    // The list opens below the field, in the panel.
+    // The menu opens below the field.
     tap(&mut h, &button);
     let field = control(&h, "name").unwrap();
     let rows = ["name: large", "name: Medium", "name: small"].map(|r| control(&h, r).unwrap());
@@ -10348,6 +10364,10 @@ fn a_field_lists_the_values_of_the_layer_and_a_tap_on_a_value_is_one_undo_step()
     tap(&mut h, &button);
     assert_eq!(toggled(&h, "name: Medium"), Some(true));
     assert_eq!(toggled(&h, "name: small"), Some(false));
+    // A tap outside the menu closes it.
+    tap(&mut h, "name");
+    assert!(control(&h, "name: small").is_none());
+    assert!(h.state().selection_form.as_ref().unwrap().open.is_none());
     h.state_mut().undo();
     h.run_steps(2);
     assert_eq!(name(&h), Value::Null);

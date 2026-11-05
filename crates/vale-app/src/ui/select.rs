@@ -649,10 +649,16 @@ pub fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
                 let resp = if choices.is_empty() {
                     widgets::text_field(ui, controls, name, name, None, text, valid)
                 } else {
-                    let shown = open.as_ref() == Some(name);
-                    let (resp, tap) = widgets::choice_field(ui, controls, name, text, valid, shown);
-                    if tap {
-                        *open = (!shown).then(|| name.clone());
+                    let mut shown = open.as_ref() == Some(name);
+                    let (resp, chosen) =
+                        widgets::choice_field(ui, controls, name, text, valid, choices, &mut shown);
+                    if let Some(chosen) = chosen {
+                        pick(text, &choices[chosen], &mut outcome, name);
+                    }
+                    if shown {
+                        *open = Some(name.clone());
+                    } else if open.as_ref() == Some(name) {
+                        *open = None;
                     }
                     resp
                 };
@@ -660,17 +666,6 @@ pub fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
                     resp.scroll_to_me(None);
                 }
                 read_field(&resp, focus, &mut outcome, name, names.get(i + 1));
-                if open.as_ref() != Some(name) {
-                    continue;
-                }
-                for choice in choices {
-                    let on = text.trim() == choice;
-                    let row = format!("{name}: {choice}");
-                    if widgets::pick_row(ui, controls, &row, choice, on).clicked() {
-                        pick(text, choice, &mut outcome, name);
-                        *open = None;
-                    }
-                }
             }
         }
         None => {
