@@ -2550,6 +2550,10 @@ impl AppState {
         let Some(opening) = &self.opening else {
             return false;
         };
+        // No frame of the globe waits for a shader compile.
+        if !self.globe.pipelines_ready() {
+            return true;
+        }
         let opened = match opening.done.try_recv() {
             Ok(opened) => opened,
             Err(mpsc::TryRecvError::Empty) => return true,

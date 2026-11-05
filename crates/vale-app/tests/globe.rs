@@ -21,7 +21,7 @@ use vale_app::globe::math::{V3, add, angle, cross, lonlat_to_dir, normalize, sca
 use vale_app::globe::snap::Run;
 use vale_app::globe::view::GlobeView;
 use vale_app::globe::{FACE_SIZE, Tool};
-use vale_app::globe::{edges, gpu};
+use vale_app::globe::{compile, edges, gpu};
 use vale_app::headless;
 use vale_app::pen::{PenEvent, PenPhase, PenQueue};
 use vale_app::session::Session;
@@ -612,6 +612,19 @@ fn face_size_sets_the_heightmap_of_the_globe() {
 
     let args = Args::try_parse_from(["vale-app", "--face-size", "0"]).unwrap();
     assert!(apply_globe(&args, &mut state.globe, FACE_SIZE).is_err());
+}
+
+/// Worker threads compile the pipelines of the globe, so the frames on the
+/// test thread create none, and the first frames draw the globe.
+#[test]
+#[ignore = "gpu"]
+fn the_first_frame_of_the_globe_creates_no_pipeline_on_its_thread() {
+    let _gpu = one_gpu_test();
+    let mut h = gpu_harness();
+    let image = canvas_image(&mut h);
+    assert_eq!(compile::pipelines_on_this_thread(), 0);
+    let (w, hh) = image.dimensions();
+    assert_ne!(image.get_pixel(w / 2, hh / 2), image.get_pixel(2, 2));
 }
 
 #[test]

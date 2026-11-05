@@ -10,6 +10,7 @@ use std::collections::HashMap;
 
 use eframe::egui_wgpu::wgpu;
 
+use super::compile::render_pipeline;
 use super::gpu::{CANVAS, LayerKey, TargetId};
 
 /// A layer in one render target.
@@ -192,20 +193,15 @@ pub struct Groups<'a> {
     pub uniforms: &'a wgpu::BindGroup,
     pub tiles: &'a wgpu::BindGroup,
     pub levels: &'a wgpu::BindGroup,
+    pub pipelines: &'a EdgePipelines,
 }
 
-/// The pipelines and the textures of the lines of the stops.
+/// The textures of the lines of the stops.
 pub struct Edges {
     /// The layout of the last group of the passes before the layer pass.
     layout: wgpu::BindGroupLayout,
     /// The layout of the last group of the layer pass.
     resolve: wgpu::BindGroupLayout,
-    heights: wgpu::RenderPipeline,
-    flat_heights: wgpu::RenderPipeline,
-    clean: wgpu::RenderPipeline,
-    seeds: wgpu::RenderPipeline,
-    blocks: wgpu::RenderPipeline,
-    nearest: wgpu::RenderPipeline,
     no_heights: wgpu::TextureView,
     no_places: wgpu::TextureView,
     /// The group of a layer pass with no lines.
@@ -216,47 +212,29 @@ pub struct Edges {
     runs: u64,
 }
 
-impl Edges {
+/// The pipelines of the passes of the lines of the stops.
+#[derive(Clone)]
+pub struct EdgePipelines {
+    heights: wgpu::RenderPipeline,
+    flat_heights: wgpu::RenderPipeline,
+    clean: wgpu::RenderPipeline,
+    seeds: wgpu::RenderPipeline,
+    blocks: wgpu::RenderPipeline,
+    nearest: wgpu::RenderPipeline,
+}
+
+impl EdgePipelines {
     /// `shader` holds `globe.wgsl` and `edges.wgsl`. `globe`, `tiles`, and
-    /// `levels` are the layouts of the first 3 groups of the layer pass, and
-    /// `vertex` is the layout of a vertex of the flat view.
+    /// `levels` are the layouts of the first 3 groups of the layer pass,
+    /// `edges` is the layout of `Edges`, and `vertex` is the layout of a
+    /// vertex of the flat view.
     pub fn new(
         device: &wgpu::Device,
         shader: &wgpu::ShaderModule,
-        globe: &wgpu::BindGroupLayout,
-        tiles: &wgpu::BindGroupLayout,
-        levels: &wgpu::BindGroupLayout,
+        [globe, tiles, levels]: [&wgpu::BindGroupLayout; 3],
+        edges: &wgpu::BindGroupLayout,
         vertex: wgpu::VertexBufferLayout<'_>,
-    ) -> Edges {
-        let texture = |binding, sample_type| wgpu::BindGroupLayoutEntry {
-            binding,
-            visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Texture {
-                sample_type,
-                view_dimension: wgpu::TextureViewDimension::D2,
-                multisampled: false,
-            },
-            count: None,
-        };
-        let float = wgpu::TextureSampleType::Float { filterable: false };
-        let uint = wgpu::TextureSampleType::Uint;
-        // The passes before the layer pass read the heights, the places, the
-        // cut heights, and the blocks. The layer pass reads the heights, the
-        // cut heights, and the nearest places, in a group of its own, so
-        // that it keeps under the limit of the textures of one pass.
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("edges"),
-            entries: &[
-                texture(0, float),
-                texture(1, uint),
-                texture(2, float),
-                texture(4, uint),
-            ],
-        });
-        let resolve = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("edge lines"),
-            entries: &[texture(0, float), texture(2, float), texture(3, uint)],
-        });
+    ) -> EdgePipelines {
         let with_tiles = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("edge heights"),
             bind_group_layouts: &[Some(globe), Some(tiles), Some(levels)],
@@ -264,7 +242,7 @@ impl Edges {
         });
         let with_edges = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("edge places"),
-            bind_group_layouts: &[Some(globe), None, None, Some(&layout)],
+            bind_group_layouts: &[Some(globe), None, None, Some(edges)],
             immediate_size: 0,
         });
         let target = |format| {
@@ -280,52 +258,34 @@ impl Edges {
                         buffers: &[Option<wgpu::VertexBufferLayout<'_>>],
                         fragment,
                         targets: &[Option<wgpu::ColorTargetState>]| {
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(label),
-                layout: Some(layout),
-                vertex: wgpu::VertexState {
-                    module: shader,
-                    entry_point: Some(vertex_entry),
-                    buffers,
-                    compilation_options: Default::default(),
+            render_pipeline(
+                device,
+                &wgpu::RenderPipelineDescriptor {
+                    label: Some(label),
+                    layout: Some(layout),
+                    vertex: wgpu::VertexState {
+                        module: shader,
+                        entry_point: Some(vertex_entry),
+                        buffers,
+                        compilation_options: Default::default(),
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: shader,
+                        entry_point: Some(fragment),
+                        targets,
+                        compilation_options: Default::default(),
+                    }),
+                    primitive: wgpu::PrimitiveState::default(),
+                    depth_stencil: None,
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview_mask: None,
+                    cache: None,
                 },
-                fragment: Some(wgpu::FragmentState {
-                    module: shader,
-                    entry_point: Some(fragment),
-                    targets,
-                    compilation_options: Default::default(),
-                }),
-                primitive: wgpu::PrimitiveState::default(),
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
-                multiview_mask: None,
-                cache: None,
-            })
+            )
         };
         let heights = [target(SHOWN)];
         let flat = [Some(vertex)];
-        let empty = |label, format| {
-            let texture = device.create_texture(&wgpu::TextureDescriptor {
-                label: Some(label),
-                size: wgpu::Extent3d {
-                    width: 1,
-                    height: 1,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
-            });
-            texture.create_view(&Default::default())
-        };
-        let no_heights = empty("no edge heights", HEIGHTS);
-        let no_places = empty("no edge places", PLACES);
-        let h = &no_heights;
-        let none = group(device, &resolve, &[(0, h), (2, h), (3, &no_places)]);
-        Edges {
+        EdgePipelines {
             heights: pipeline(
                 "edge heights",
                 &with_tiles,
@@ -374,6 +334,63 @@ impl Edges {
                 "fs_edge_nearest",
                 &[target(PLACES)],
             ),
+        }
+    }
+}
+
+impl Edges {
+    pub fn new(device: &wgpu::Device) -> Edges {
+        let texture = |binding, sample_type| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type,
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        };
+        let float = wgpu::TextureSampleType::Float { filterable: false };
+        let uint = wgpu::TextureSampleType::Uint;
+        // The passes before the layer pass read the heights, the places, the
+        // cut heights, and the blocks. The layer pass reads the heights, the
+        // cut heights, and the nearest places, in a group of its own, so
+        // that it keeps under the limit of the textures of one pass.
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("edges"),
+            entries: &[
+                texture(0, float),
+                texture(1, uint),
+                texture(2, float),
+                texture(4, uint),
+            ],
+        });
+        let resolve = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("edge lines"),
+            entries: &[texture(0, float), texture(2, float), texture(3, uint)],
+        });
+        let empty = |label, format| {
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            texture.create_view(&Default::default())
+        };
+        let no_heights = empty("no edge heights", HEIGHTS);
+        let no_places = empty("no edge places", PLACES);
+        let h = &no_heights;
+        let none = group(device, &resolve, &[(0, h), (2, h), (3, &no_places)]);
+        Edges {
             layout,
             resolve,
             no_heights,
@@ -388,6 +405,11 @@ impl Edges {
     /// The layout of the last group of the layer pass.
     pub fn resolve_layout(&self) -> &wgpu::BindGroupLayout {
         &self.resolve
+    }
+
+    /// The layout of the last group of the passes before the layer pass.
+    pub fn layout(&self) -> &wgpu::BindGroupLayout {
+        &self.layout
     }
 
     /// The last group of the layer pass of a layer.
@@ -521,11 +543,11 @@ impl Edges {
             pass.set_bind_group(2, groups.levels, &[]);
             match &mesh {
                 None => {
-                    pass.set_pipeline(&self.heights);
+                    pass.set_pipeline(&groups.pipelines.heights);
                     pass.draw(0..3, 0..1);
                 }
                 Some(mesh) => {
-                    pass.set_pipeline(&self.flat_heights);
+                    pass.set_pipeline(&groups.pipelines.flat_heights);
                     pass.set_vertex_buffer(0, mesh.vertices.slice(..));
                     pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
                     pass.draw_indexed(0..mesh.count, 0, 0..1);
@@ -535,7 +557,7 @@ impl Edges {
         {
             let mut pass = begin(encoder, "edge clean", &[attachment(&target.clean, -1.0)]);
             clip(&mut pass, clean);
-            pass.set_pipeline(&self.clean);
+            pass.set_pipeline(&groups.pipelines.clean);
             pass.set_bind_group(0, groups.uniforms, &[]);
             pass.set_bind_group(3, &target.read_raw, &[]);
             pass.draw(0..3, 0..1);
@@ -543,7 +565,7 @@ impl Edges {
         {
             let mut pass = begin(encoder, "edge seeds", &[attachment(&scratch.seeds, empty)]);
             clip(&mut pass, places);
-            pass.set_pipeline(&self.seeds);
+            pass.set_pipeline(&groups.pipelines.seeds);
             pass.set_bind_group(0, groups.uniforms, &[]);
             pass.set_bind_group(3, &target.read_clean, &[]);
             pass.draw(0..3, 0..1);
@@ -551,7 +573,7 @@ impl Edges {
         if let Some(places) = places {
             let mut pass = begin(encoder, "edge blocks", &[attachment(&scratch.blocks, 0.0)]);
             clip(&mut pass, Some(block_scissor(places, blocks)));
-            pass.set_pipeline(&self.blocks);
+            pass.set_pipeline(&groups.pipelines.blocks);
             pass.set_bind_group(0, groups.uniforms, &[]);
             pass.set_bind_group(3, &scratch.read_seeds, &[]);
             pass.draw(0..3, 0..1);
@@ -563,7 +585,7 @@ impl Edges {
                 &[attachment(&target.nearest_view, empty)],
             );
             clip(&mut pass, nearest);
-            pass.set_pipeline(&self.nearest);
+            pass.set_pipeline(&groups.pipelines.nearest);
             pass.set_bind_group(0, groups.uniforms, &[]);
             pass.set_bind_group(3, &scratch.read_blocks, &[]);
             pass.draw(0..3, 0..1);
