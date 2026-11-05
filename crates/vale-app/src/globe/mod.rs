@@ -202,11 +202,23 @@ pub enum WorldView {
     Flat,
 }
 
+/// A finger that can start a stroke on a device with no pen.
+pub struct FingerPress {
+    pub id: u64,
+    /// The time when the finger came down, in seconds.
+    pub start: f64,
+    /// The places that the finger touched, from the first.
+    pub path: Vec<Pos2>,
+}
+
 /// The pen or the mouse button that paints. The canvas sets it.
 #[derive(Default)]
 pub struct BrushInput {
-    /// The touch of the pen that is down.
+    /// The touch of the pen that is down. On a device with no pen, it is
+    /// the finger that paints.
     pub pen: Option<u64>,
+    /// The finger that can still become a stroke or a gesture of the view.
+    pub finger: Option<FingerPress>,
     /// The primary mouse button paints.
     pub mouse: bool,
     /// The last position of the pen.
@@ -1068,7 +1080,7 @@ impl Globe {
             view: GlobeView::centered(15.0, 25.0),
             flat: FlatView::default(),
             world_view: WorldView::default(),
-            nav: Nav::default(),
+            nav: Nav::new(crate::projects::phone()),
             rect: Rect::ZERO,
             format: None,
             tool: Tool::default(),

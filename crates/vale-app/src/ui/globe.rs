@@ -15,14 +15,14 @@ use crate::globe::backdrop::Canvas;
 use crate::globe::brush::{FIXED_FLOW, Sample, pen_flow, slerp};
 use crate::globe::math::V3;
 use crate::globe::math::{angle, dir_to_lonlat, lonlat_to_dir};
-use crate::globe::nav::{Nav, Painting, Tap, on_canvas};
+use crate::globe::nav::{Nav, Painting, TAP_SECONDS, TAP_SLOP, Tap, on_canvas};
 use crate::globe::select::Pointer;
 use crate::globe::snap::Highlight;
 use crate::globe::stroke_group;
 use crate::globe::symbol::{GlobeScatter, SymbolMesh, append_missing, view_places};
 use crate::globe::vector;
 use crate::globe::view::GlobeView;
-use crate::globe::{Globe, Paint, WorldView};
+use crate::globe::{FingerPress, Globe, Paint, WorldView};
 use crate::measure::{DENSIFY_DEG, MOUSE, Measure, TapPress};
 use crate::pen::{PenEvent, PenPhase, QUEUE_PEN};
 use crate::scatter::{ScatterCache, ScatterFill};
@@ -68,6 +68,92 @@ fn release(globe: &mut Globe) {
     }
 }
 
+/// Starts the stroke of the finger that waits, with the places that it
+/// touched. The finger no longer moves the view.
+fn finger_down(globe: &mut Globe, time: f64, sample: &impl Fn(&mut Globe, egui::Pos2, f64)) {
+    let Some(finger) = globe.input.finger.take() else {
+        return;
+    };
+    globe.nav.forget(finger.id);
+    globe.input.pen = Some(finger.id);
+    press(globe);
+    for pos in finger.path {
+        sample(globe, pos, FIXED_FLOW);
+    }
+    globe.pen.stats.sample(time, None, None);
+}
+
+/// Reads one touch on a device with no pen. One finger paints with no
+/// pressure. It waits until it moves, holds, or lifts, because a second
+/// finger in that time gives both fingers to the view. A second finger
+/// also ends a stroke and gives both fingers to the view. `started` is true
+/// if a finger came down earlier in the frame, before the view reads it.
+#[allow(clippy::too_many_arguments)]
+fn finger_input(
+    ui: &egui::Ui,
+    rect: egui::Rect,
+    globe: &mut Globe,
+    started: &mut bool,
+    id: u64,
+    phase: egui::TouchPhase,
+    pos: egui::Pos2,
+    time: f64,
+    sample: &impl Fn(&mut Globe, egui::Pos2, f64),
+) {
+    let waits = globe.input.finger.as_ref().is_some_and(|f| f.id == id);
+    match phase {
+        egui::TouchPhase::Start => {
+            let alone = !std::mem::replace(started, true) && globe.nav.counts().1 == 0;
+            if globe.input.finger.take().is_some() {
+                return;
+            }
+            if let Some(painter) = globe.input.pen.take() {
+                let last = globe.input.pos.take().unwrap_or(pos);
+                release(globe);
+                globe.pen.stats.up();
+                globe.nav.adopt(painter, last);
+                return;
+            }
+            if alone && !globe.input.mouse && on_canvas(ui, rect, pos) {
+                let path = vec![pos];
+                globe.input.finger = Some(FingerPress {
+                    id,
+                    start: time,
+                    path,
+                });
+            }
+        }
+        egui::TouchPhase::Move if waits => {
+            let finger = globe.input.finger.as_mut().unwrap();
+            finger.path.push(pos);
+            if (pos - finger.path[0]).length() > TAP_SLOP {
+                finger_down(globe, time, sample);
+            }
+        }
+        egui::TouchPhase::Move => {
+            if globe.input.pen == Some(id) {
+                sample(globe, pos, FIXED_FLOW);
+                globe.pen.stats.sample(time, None, None);
+            }
+        }
+        egui::TouchPhase::End | egui::TouchPhase::Cancel => {
+            if waits {
+                if phase == egui::TouchPhase::End {
+                    finger_down(globe, time, sample);
+                } else {
+                    globe.input.finger = None;
+                }
+            }
+            if globe.input.pen == Some(id) {
+                globe.input.pen = None;
+                globe.input.pos = None;
+                release(globe);
+                globe.pen.stats.up();
+            }
+        }
+    }
+}
+
 /// Reads the hover events of the pen queue. A hover event can arrive after
 /// the pen comes down, so the pen does not hover while it is down.
 fn hover_input(globe: &mut Globe, events: &[(egui::Pos2, PenEvent)]) {
@@ -91,7 +177,8 @@ fn hover_input(globe: &mut Globe, events: &[(egui::Pos2, PenEvent)]) {
 /// brush tool, a pen and the primary mouse button paint a raster layer that
 /// the brush can paint. In the line tool, they draw a line in the selected
 /// line layer. A touch with a force is a pen. With a pen queue, the pen
-/// comes from the queue and not from egui.
+/// comes from the queue and not from egui. On a device with no pen, one
+/// finger takes the place of the pen.
 fn brush_input(
     ui: &egui::Ui,
     rect: egui::Rect,
@@ -116,6 +203,7 @@ fn brush_input(
             globe.pen.stats.up();
         }
         globe.input.pos = None;
+        globe.input.finger = None;
         if globe.measuring() && !globe.importing() {
             measure_input(ui, rect, resp, globe, &queue, from_queue);
         }
@@ -170,6 +258,8 @@ fn brush_input(
         }
     }
 
+    let no_pen = globe.nav.no_pen;
+    let mut started = false;
     let mut touched = false;
     let events = ui.input(|i| i.events.clone());
     for event in &events {
@@ -184,6 +274,11 @@ fn brush_input(
             continue;
         };
         touched = true;
+        if no_pen {
+            let started = &mut started;
+            finger_input(ui, rect, globe, started, id.0, *phase, *pos, time, &sample);
+            continue;
+        }
         if from_queue && force.is_some() {
             continue;
         }
@@ -213,6 +308,15 @@ fn brush_input(
                 }
             }
         }
+    }
+
+    if globe
+        .input
+        .finger
+        .as_ref()
+        .is_some_and(|f| time - f.start > TAP_SECONDS)
+    {
+        finger_down(globe, time, &sample);
     }
 
     let (pos, pressed, down, shift, option, moved) = ui.input(|i| {
@@ -260,7 +364,8 @@ fn brush_input(
     Painting {
         pen: true,
         mouse: globe.input.mouse,
-        finger: None,
+        finger: globe.input.pen.filter(|_| no_pen),
+        fingers: no_pen,
     }
 }
 
@@ -377,6 +482,7 @@ fn select_input(
         pen: true,
         mouse: globe.select_press.mouse(),
         finger: None,
+        fingers: false,
     }
 }
 
@@ -468,6 +574,7 @@ fn vertex_input(
         pen: true,
         mouse: globe.vertex.press.mouse(),
         finger: globe.vertex.press.claimed_finger(),
+        fingers: false,
     }
 }
 

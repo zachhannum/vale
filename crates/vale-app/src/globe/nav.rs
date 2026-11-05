@@ -11,10 +11,10 @@ const WHEEL_ZOOM: f64 = 0.002;
 
 /// The longest tap, from the first finger down to the last finger up, in
 /// seconds.
-const TAP_SECONDS: f64 = 0.3;
+pub const TAP_SECONDS: f64 = 0.3;
 
 /// The largest move of a finger in a tap, in points.
-const TAP_SLOP: f32 = 10.0;
+pub const TAP_SLOP: f32 = 10.0;
 
 struct Finger {
     pos: Pos2,
@@ -53,6 +53,9 @@ pub struct Painting {
     pub mouse: bool,
     /// The finger that a tool takes. It does not move the view.
     pub finger: Option<u64>,
+    /// One finger belongs to the tool, so one finger alone does not move
+    /// the view.
+    pub fingers: bool,
 }
 
 /// True if a screen position is on the canvas, with no other layer above.
@@ -78,6 +81,8 @@ pub struct Nav {
     time: f64,
     touching: Option<Touching>,
     tap: Option<Tap>,
+    /// The device has no pen, so a touch with a force is a finger.
+    pub no_pen: bool,
 }
 
 /// The angle from `a` to `b` in radians, from -π to π. Screen y points down,
@@ -93,6 +98,13 @@ fn turn(a: Vec2, b: Vec2) -> f64 {
 }
 
 impl Nav {
+    pub fn new(no_pen: bool) -> Self {
+        Self {
+            no_pen,
+            ..Self::default()
+        }
+    }
+
     /// True while a finger or a mouse button holds the globe.
     pub fn active(&self) -> bool {
         !self.fingers.is_empty() || self.drag.is_some()
@@ -192,9 +204,25 @@ impl Nav {
             } = event
             {
                 let on_canvas = on_canvas(ui, rect, *pos);
-                self.touch(id.0, *phase, *pos, on_canvas, force.is_some());
+                let pen = force.is_some() && !self.no_pen;
+                self.touch(id.0, *phase, *pos, on_canvas, pen);
             }
         }
+    }
+
+    /// Gives a finger to a tool. The finger stops to move the view, and the
+    /// fingers that are down are no longer a tap.
+    pub fn forget(&mut self, id: u64) {
+        self.fingers.remove(&id);
+        self.touching = None;
+    }
+
+    /// Takes a finger from a tool at `pos`. The finger moves the view, and
+    /// it is not part of a tap.
+    pub fn adopt(&mut self, id: u64, pos: Pos2) {
+        let (prev, start) = (pos, pos);
+        self.fingers.insert(id, Finger { pos, prev, start });
+        self.touching = None;
     }
 
     /// Takes the tap that ended after the last call.
@@ -219,7 +247,7 @@ impl Nav {
         }
         let mut fingers = self.fingers.values();
         match (fingers.next(), fingers.next()) {
-            (Some(a), None) => {
+            (Some(a), None) if !self.painting.fingers => {
                 if a.prev != a.pos {
                     view.gesture(rect, a.prev, a.pos, 1.0, 0.0);
                 }
@@ -328,7 +356,8 @@ impl Nav {
                 } => {
                     touched = true;
                     let on_canvas = on_canvas(ui, rect, *pos);
-                    self.touch(id.0, *phase, *pos, on_canvas, force.is_some());
+                    let pen = force.is_some() && !self.no_pen;
+                    self.touch(id.0, *phase, *pos, on_canvas, pen);
                 }
                 // A trackpad scrolls in points. A wheel scrolls in lines or pages.
                 egui::Event::MouseWheel { unit, .. } => {
@@ -412,6 +441,7 @@ mod tests {
                 pen: true,
                 mouse: false,
                 finger: None,
+                fingers: false,
             },
             ..Nav::default()
         };
@@ -425,6 +455,43 @@ mod tests {
         nav.move_fingers(&mut view, rect());
         assert_eq!(view, before);
         assert!(nav.touching() && !nav.active());
+    }
+
+    #[test]
+    fn one_finger_of_a_tool_does_not_move_the_view_and_two_fingers_do() {
+        let mut nav = Nav {
+            painting: Painting {
+                fingers: true,
+                ..Painting::default()
+            },
+            ..Nav::default()
+        };
+        let mut view = GlobeView::centered(15.0, 25.0);
+        let before = view;
+        let (a, b) = (Pos2::new(300.0, 250.0), Pos2::new(400.0, 250.0));
+        nav.touch(1, Start, a, true, false);
+        nav.touch(1, Move, a + Vec2::new(80.0, 0.0), true, false);
+        nav.move_fingers(&mut view, rect());
+        assert_eq!(view, before);
+        nav.touch(2, Start, b, true, false);
+        nav.touch(2, Move, b + Vec2::new(180.0, 0.0), true, false);
+        nav.time += TAP_SECONDS + 0.1;
+        nav.move_fingers(&mut view, rect());
+        assert!(view.zoom > 1.5, "{}", view.zoom);
+    }
+
+    #[test]
+    fn a_finger_that_a_tool_takes_and_gives_back_is_not_a_tap() {
+        let mut nav = Nav::default();
+        let (a, b) = (Pos2::new(300.0, 250.0), Pos2::new(400.0, 250.0));
+        nav.touch(1, Start, a, true, false);
+        nav.forget(1);
+        assert!(!nav.touching());
+        nav.adopt(1, a);
+        nav.touch(2, Start, b, true, false);
+        nav.touch(1, End, a, true, false);
+        nav.touch(2, End, b, true, false);
+        assert_eq!(nav.take_tap(), None);
     }
 
     /// Puts `count` fingers down, and lifts them after `seconds`.
