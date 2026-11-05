@@ -150,7 +150,17 @@ pub(super) fn overlay(
     paths: &[Vec<PathVertex>],
     keep: impl Fn(V3) -> bool,
 ) -> Vec<Vec<PathVertex>> {
-    let cycles: Vec<(Vec<Node>, bool)> = paths
+    overlay_open(paths, &[], keep)
+}
+
+/// The rings of `overlay`, where open paths divide the areas too. An open
+/// path between two kept areas, or inside one area, is no edge of a ring.
+pub(super) fn overlay_open(
+    paths: &[Vec<PathVertex>],
+    open: &[Vec<PathVertex>],
+    keep: impl Fn(V3) -> bool,
+) -> Vec<Vec<PathVertex>> {
+    let mut cycles: Vec<(Vec<Node>, bool)> = paths
         .iter()
         .map(|p| (unspike(p, true), true))
         .filter(|c| c.0.len() >= 3)
@@ -158,6 +168,11 @@ pub(super) fn overlay(
     if cycles.is_empty() {
         return Vec::new();
     }
+    cycles.extend(
+        open.iter()
+            .map(|p| (unspike(p, false), false))
+            .filter(|c| c.0.len() >= 2),
+    );
     let graph = Graph::new(&cycles);
     let faces = graph.faces();
     let face_of = graph.face_of(&faces);
@@ -597,7 +612,7 @@ pub(super) fn bounds(a: V3, b: V3) -> ([f64; 3], [f64; 3]) {
     (lo, hi)
 }
 
-fn overlap(a: &([f64; 3], [f64; 3]), b: &([f64; 3], [f64; 3])) -> bool {
+pub(super) fn overlap(a: &([f64; 3], [f64; 3]), b: &([f64; 3], [f64; 3])) -> bool {
     (0..3).all(|k| a.0[k] <= b.1[k] && b.0[k] <= a.1[k])
 }
 
@@ -720,13 +735,19 @@ pub(super) fn to_polygons_many(rings: &[Vec<PathVertex>]) -> Vec<Vec<Vec<LonLat>
         }
     }
     outers.extend(join_at_edge(&parts));
+    let areas: Vec<f64> = outers.iter().map(|r| flat_area(r)).collect();
     let mut out: Vec<Vec<Vec<LonLat>>> = outers.into_iter().map(|r| vec![r]).collect();
     for hole in holes {
         let p = [
             (hole[0][0] + hole[1][0]) / 2.0,
             (hole[0][1] + hole[1][1]) / 2.0,
         ];
-        match out.iter_mut().find(|poly| flat_contains(&poly[0], p)) {
+        // An island in a lake can hold a lake too, so the hole goes in the
+        // smallest outer ring around it.
+        let holder = (0..out.len().min(areas.len()))
+            .filter(|&i| flat_contains(&out[i][0], p))
+            .min_by(|&a, &b| areas[a].total_cmp(&areas[b]));
+        match holder.map(|i| &mut out[i]) {
             Some(poly) => poly.push(hole),
             // The area outside all outer rings is in the polygon.
             None => out.push(vec![

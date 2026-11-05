@@ -1715,6 +1715,7 @@ fn an_added_svg_is_saved_in_the_project() {
     let id = doc.add_imported(points, None)[0];
     doc.frame.labels = false;
     doc.entry_mut(id).unwrap().style.style = Style {
+        mask: None,
         rules: vec![Rule::new(
             "Oak",
             vec![Symbolizer::Symbol(PointSymbolizer::constant("oak", 20.0))],

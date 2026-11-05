@@ -102,7 +102,7 @@ fn turning(ring: &[V3]) -> f64 {
 
 /// The arc from `p` to `q` crosses the arc from `a` to `b`. Each arc is the
 /// short arc of its great circle.
-fn arcs_cross(p: V3, q: V3, a: V3, b: V3) -> bool {
+pub(super) fn arcs_cross(p: V3, q: V3, a: V3, b: V3) -> bool {
     let (n1, n2) = (cross(p, q), cross(a, b));
     if (dot(n1, a) > 0.0) == (dot(n1, b) > 0.0) || (dot(n2, p) > 0.0) == (dot(n2, q) > 0.0) {
         return false;
@@ -470,6 +470,45 @@ fn inside(path: &[P2], p: P2) -> bool {
     odd
 }
 
+/// The loops of `triangulate` from rings for an even-odd fill: a ring inside
+/// an even number of other rings goes counterclockwise, and a ring inside an
+/// odd number goes clockwise. A last point that repeats the first goes.
+pub fn even_odd_loops(rings: Vec<Vec<P2>>) -> Vec<Vec<P2>> {
+    let mut rings: Vec<Vec<P2>> = rings
+        .into_iter()
+        .map(|mut r| {
+            if r.len() > 1 && r.first() == r.last() {
+                r.pop();
+            }
+            r
+        })
+        .filter(|r| r.len() >= 3)
+        .collect();
+    // A ring is inside another ring when most of a few of its points are.
+    let samples = |r: &[P2]| -> Vec<P2> {
+        let step = (r.len() / 5).max(1);
+        r.iter().step_by(step).take(5).copied().collect()
+    };
+    let depths: Vec<usize> = (0..rings.len())
+        .map(|i| {
+            let points = samples(&rings[i]);
+            (0..rings.len())
+                .filter(|&j| j != i)
+                .filter(|&j| {
+                    let n = points.iter().filter(|&&p| inside(&rings[j], p)).count();
+                    2 * n > points.len()
+                })
+                .count()
+        })
+        .collect();
+    for (ring, depth) in rings.iter_mut().zip(depths) {
+        if (area2(ring) > 0.0) != depth.is_multiple_of(2) {
+            ring.reverse();
+        }
+    }
+    rings
+}
+
 /// Triangles that cover the fill of `Clipped::loops`: the points, and three
 /// indexes for each triangle.
 pub fn triangulate(loops: &[Vec<P2>]) -> (Vec<P2>, Vec<u32>) {
@@ -515,6 +554,26 @@ mod tests {
     use crate::globe::view::GlobeView;
 
     const STEP: f64 = 0.05;
+
+    #[test]
+    fn an_even_odd_ring_inside_another_is_a_hole() {
+        let square = |h: f64| vec![[-h, -h], [h, -h], [h, h], [-h, h], [-h, -h]];
+        let island = vec![[-0.1, -0.1], [0.1, -0.1], [0.1, 0.1], [-0.1, 0.1]];
+        let loops = even_odd_loops(vec![square(1.0), square(0.5), island]);
+        let areas: Vec<f64> = loops.iter().map(|l| area2(l)).collect();
+        assert!(
+            areas[0] > 0.0 && areas[1] < 0.0 && areas[2] > 0.0,
+            "{areas:?}"
+        );
+        let (points, indexes) = triangulate(&loops);
+        let covers = |p: P2| {
+            indexes.chunks(3).any(|t| {
+                let tri: Vec<P2> = t.iter().map(|&i| points[i as usize]).collect();
+                inside(&tri, p)
+            })
+        };
+        assert!(covers([0.75, 0.0]) && !covers([0.3, 0.0]) && covers([0.0, 0.0]));
+    }
 
     fn rot(lon: f64, lat: f64) -> Mat3 {
         GlobeView::centered(lon, lat).rot

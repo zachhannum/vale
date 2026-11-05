@@ -1,4 +1,5 @@
 mod common;
+mod masked;
 
 use std::path::Path;
 
@@ -22,7 +23,7 @@ use vale_store::{
 };
 use vale_style::expr::{Filter, Property};
 use vale_style::{
-    Color, Hatch, MarkerShape, PointSymbolizer, Rule, ScatterSymbolizer, Stroke, StrokeKind,
+    Color, Hatch, MarkerShape, Mask, PointSymbolizer, Rule, ScatterSymbolizer, Stroke, StrokeKind,
     StrokeSymbolizer, Style, Symbolizer,
 };
 
@@ -329,6 +330,7 @@ fn rules_with_filters_draw_their_features_in_their_own_colors() {
     let (mut doc, id) = lines(&[("major", 1.0), ("minor", 1.0), ("major", 1.0)]);
     let (red, blue) = (Color::rgb(200, 0, 0), Color::rgb(0, 0, 200));
     doc.entry_mut(id).unwrap().style.style = Style {
+        mask: None,
         rules: vec![
             stroke_rule("Minor", "kind = 'minor'", blue, 1.0),
             stroke_rule("Major", "kind = 'major'", red, 3.0),
@@ -348,6 +350,7 @@ fn a_width_expression_follows_the_attribute() {
     let (mut doc, id) = lines(&[("a", 2.0), ("a", 6.0), ("a", 2.0), ("a", 4.0)]);
     let blue = Color::rgb(0, 0, 200);
     doc.entry_mut(id).unwrap().style.style = Style {
+        mask: None,
         rules: vec![Rule::new(
             "Flow",
             vec![Symbolizer::Stroke(StrokeSymbolizer {
@@ -1213,6 +1216,7 @@ fn a_dashed_curved_line_has_even_dashes() {
     );
     let (dash, gap) = (6.0, 3.0);
     doc.entry_mut(id).unwrap().style.style = Style {
+        mask: None,
         rules: vec![kind_rule(
             "a",
             Color::rgb(0, 0, 200),
@@ -1272,6 +1276,7 @@ fn a_tapered_tributary_joins_a_wider_river_with_no_step() {
     );
     let (main_w, trib_w, start) = (4.0, 2.0, 0.25);
     doc.entry_mut(id).unwrap().style.style = Style {
+        mask: None,
         rules: vec![
             kind_rule("main", Color::rgb(0, 0, 200), main_w, StrokeKind::Solid),
             kind_rule(
@@ -1327,6 +1332,7 @@ fn each_stroke_kind_draws_in_a_frame_and_in_pdf() {
         ("taper", [0, 0, 200], StrokeKind::taper()),
     ];
     let style = |kinds: &[(&str, [u8; 3], StrokeKind)]| Style {
+        mask: None,
         rules: kinds
             .iter()
             .map(|(k, [r, g, b], s)| kind_rule(k, Color::rgb(*r, *g, *b), 4.0, *s))
@@ -1383,6 +1389,7 @@ fn a_translucent_taper_or_brush_applies_its_alpha_once() {
             kind_rule("taper", color, 4.0, StrokeKind::taper()),
             kind_rule("brush", color, 4.0, StrokeKind::Brush),
         ],
+        mask: None,
     };
     let mut pipeline = Pipeline::new();
     let page = doc.project.atlas.pages[0].id;
@@ -1439,6 +1446,7 @@ fn square(lon0: f64, lat0: f64, lon1: f64, lat1: f64) -> String {
 
 fn style_of(symbolizer: Symbolizer) -> Style {
     Style {
+        mask: None,
         rules: vec![Rule::new("Symbols", vec![symbolizer])],
     }
 }
@@ -1597,7 +1605,10 @@ fn a_scatter_fill_draws_symbols_that_do_not_overlap() {
     }
     // The instances merge into a few items.
     let mut empty = doc.clone();
-    empty.entry_mut(id).unwrap().style.style = Style { rules: vec![] };
+    empty.entry_mut(id).unwrap().style.style = Style {
+        mask: None,
+        rules: vec![],
+    };
     let items = c.list.items.len() - compose(&empty, &mut p).list.items.len();
     assert!(items * 20 < n, "{items} items for {n} symbols");
 }
@@ -2256,9 +2267,11 @@ fn the_legend_lists_the_visible_rules_with_their_symbols() {
     let mut swamp = fill("Swamp", Color::rgb(90, 90, 40));
     swamp.max_scale = Some(1000.0);
     doc.entry_mut(land).unwrap().style.style = Style {
+        mask: None,
         rules: vec![fill("Forest", green), fill("Desert", tan), swamp],
     };
     doc.entry_mut(rivers).unwrap().style.style = Style {
+        mask: None,
         rules: vec![Rule::new(
             "Default",
             vec![Symbolizer::Stroke(StrokeSymbolizer::constant(
@@ -2844,4 +2857,381 @@ fn a_solid_square_marker_fills_a_square() {
     let b = path.bounding_box();
     assert!((b.width() - 40.0).abs() < 1e-6 && (b.height() - 40.0).abs() < 1e-6);
     assert!((b.center() - center).hypot() < 1e-6);
+}
+
+const MASKED_FILL: Color = Color::rgb(200, 10, 10);
+const MASKED_STROKE: Color = Color::rgb(10, 200, 10);
+
+/// A document with a layer for each GeoJSON geometry, with no labels and
+/// no graticule. Each layer has a red fill and a green stroke.
+fn shapes(geometries: &[&str]) -> (Document, Vec<vale_store::LayerId>) {
+    let mut doc = Document::empty();
+    doc.frame.labels = false;
+    doc.frame.graticule = false;
+    let ids = geometries
+        .iter()
+        .map(|g| {
+            let imported = vale_import::geojson::read_str("shape", g).unwrap();
+            let id = doc.add_imported(imported, None)[0];
+            let style = &mut doc.entry_mut(id).unwrap().style;
+            style.set_fill(Some(MASKED_FILL));
+            style.set_stroke(Some(Stroke::solid(MASKED_STROKE, 2.0)));
+            id
+        })
+        .collect();
+    (doc, ids)
+}
+
+/// The square from `(x0, y0)` to `(x1, y1)` as a GeoJSON polygon.
+fn square_json(x0: f64, y0: f64, x1: f64, y1: f64) -> String {
+    format!(
+        r#"{{"type":"Polygon","coordinates":[[[{x0},{y0}],[{x1},{y0}],[{x1},{y1}],[{x0},{y1}],[{x0},{y0}]]]}}"#
+    )
+}
+
+/// The square from `(x0, y0)` to `(x1, y1)` as a GeoJSON polygon with a
+/// vertex at each degree, so that its great-circle edges stay near the
+/// parallels.
+fn dense_square_json(x0: f64, y0: f64, x1: f64, y1: f64) -> String {
+    let steps = |a: f64, b: f64| {
+        let n = (b - a).abs().ceil() as usize;
+        (0..n).map(move |k| a + (b - a) * k as f64 / n as f64)
+    };
+    let mut ring: Vec<[f64; 2]> = Vec::new();
+    ring.extend(steps(x0, x1).map(|x| [x, y0]));
+    ring.extend(steps(y0, y1).map(|y| [x1, y]));
+    ring.extend(steps(x1, x0).map(|x| [x, y1]));
+    ring.extend(steps(y1, y0).map(|y| [x0, y]));
+    ring.push(ring[0]);
+    let points: Vec<String> = ring
+        .iter()
+        .map(|p| format!("[{},{}]", p[0], p[1]))
+        .collect();
+    format!(
+        r#"{{"type":"Polygon","coordinates":[[{}]]}}"#,
+        points.join(",")
+    )
+}
+
+/// The points of each subpath of a path.
+fn poly_points(path: &kurbo::BezPath) -> Vec<Vec<Point>> {
+    let mut out: Vec<Vec<Point>> = Vec::new();
+    for el in path.elements() {
+        match *el {
+            kurbo::PathEl::MoveTo(p) => out.push(vec![p]),
+            kurbo::PathEl::LineTo(p) => out.last_mut().unwrap().push(p),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// The subpaths of the fills and the strokes in the colors of `shapes`.
+fn masked_paths(items: &[Item]) -> (Vec<Vec<Point>>, Vec<Vec<Point>>) {
+    let (mut fills, mut strokes) = (Vec::new(), Vec::new());
+    for item in items {
+        match item {
+            Item::Fill { path, color, .. } if *color == MASKED_FILL => {
+                fills.extend(poly_points(path))
+            }
+            Item::Stroke { path, color, .. } if *color == MASKED_STROKE => {
+                strokes.extend(poly_points(path))
+            }
+            _ => {}
+        }
+    }
+    (fills, strokes)
+}
+
+/// The longitude and latitude of each point of the paths of a compose.
+fn to_lonlat(
+    doc: &Document,
+    pipeline: &mut Pipeline,
+    paths: &[Vec<Point>],
+) -> Vec<Vec<vale_sphere::LonLat>> {
+    (paths.iter())
+        .map(|p| {
+            (p.iter())
+                .map(|q| pipeline.page_to_lonlat(doc, SIZE, *q).unwrap().unwrap())
+                .collect()
+        })
+        .collect()
+}
+
+/// The longitudes of the paths, from the least to the most.
+fn lon_range(paths: &[Vec<vale_sphere::LonLat>]) -> (f64, f64) {
+    let lons = paths.iter().flatten().map(|p| p[0]);
+    lons.fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), x| {
+        (a.min(x), b.max(x))
+    })
+}
+
+/// No step of a stroke goes along the meridian `lon`.
+fn assert_no_step_along(strokes: &[Vec<vale_sphere::LonLat>], lon: f64) {
+    for s in strokes {
+        for w in s.windows(2) {
+            let on = |p: vale_sphere::LonLat| (p[0] - lon).abs() < 0.05;
+            assert!(
+                !(on(w[0]) && on(w[1]) && (w[0][1] - w[1][1]).abs() > 0.05),
+                "a stroke goes along the edge of the mask: {w:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_polygon_mask_cuts_the_fill_and_the_stroke_of_a_polygon() {
+    let (mut doc, ids) = shapes(&[
+        &square_json(0.0, 0.0, 40.0, 40.0),
+        &square_json(-10.0, -10.0, 20.0, 50.0),
+    ]);
+    let (layer, mask) = (ids[0], ids[1]);
+    doc.set_visible(mask, false);
+    let mut pipeline = Pipeline::new();
+    let whole = masked_paths(&compose(&doc, &mut pipeline).list.items);
+    let (_, east) = lon_range(&to_lonlat(&doc, &mut pipeline, &whole.0));
+    assert!((east - 40.0).abs() < 0.1, "{east}");
+
+    doc.entry_mut(layer).unwrap().style.style.mask = Some(Mask::Polygons { layer: mask });
+    let (fills, strokes) = masked_paths(&compose(&doc, &mut pipeline).list.items);
+    let (fills, strokes) = (
+        to_lonlat(&doc, &mut pipeline, &fills),
+        to_lonlat(&doc, &mut pipeline, &strokes),
+    );
+    let (west, east) = lon_range(&fills);
+    assert!(west > -0.1 && (east - 20.0).abs() < 0.1, "{west} {east}");
+    let (west, east) = lon_range(&strokes);
+    assert!(west > -0.1 && (east - 20.0).abs() < 0.1, "{west} {east}");
+    assert_no_step_along(&strokes, 20.0);
+}
+
+#[test]
+fn a_mask_cuts_the_stroke_of_a_line() {
+    let line = r#"{"type":"LineString","coordinates":[[-40,10],[40,10]]}"#;
+    let (mut doc, ids) = shapes(&[line, &square_json(-10.0, -10.0, 20.0, 50.0)]);
+    doc.set_visible(ids[1], false);
+    doc.entry_mut(ids[0]).unwrap().style.style.mask = Some(Mask::Polygons { layer: ids[1] });
+    let mut pipeline = Pipeline::new();
+    let (_, strokes) = masked_paths(&compose(&doc, &mut pipeline).list.items);
+    let (west, east) = lon_range(&to_lonlat(&doc, &mut pipeline, &strokes));
+    assert!(
+        (west + 10.0).abs() < 0.1 && (east - 20.0).abs() < 0.1,
+        "{west} {east}"
+    );
+}
+
+/// The box around the points of paths.
+fn path_box(paths: &[Vec<Point>]) -> kurbo::Rect {
+    let mut points = paths.iter().flatten();
+    let first = *points.next().expect("a point");
+    points.fold(kurbo::Rect::from_points(first, first), |r, p| {
+        r.union_pt(*p)
+    })
+}
+
+#[test]
+fn a_mask_cuts_a_polygon_in_a_map_frame() {
+    let (mut doc, ids) = shapes(&[
+        &square_json(0.0, 0.0, 40.0, 40.0),
+        &square_json(-10.0, -10.0, 20.0, 50.0),
+    ]);
+    doc.set_visible(ids[1], false);
+    let map = doc.project.atlas.maps[0].id;
+    doc.set_shown(map, ids[1], false);
+    let mut pipeline = Pipeline::new();
+    let page = doc.project.atlas.pages[0].id;
+    let frame = frame_on(&mut doc, &mut pipeline, page);
+    let whole = masked_paths(&compose_frame(&doc, &mut pipeline, frame));
+    doc.entry_mut(ids[0]).unwrap().style.style.mask = Some(Mask::Polygons { layer: ids[1] });
+    let (fills, strokes) = masked_paths(&compose_frame(&doc, &mut pipeline, frame));
+    let (before, after) = (path_box(&whole.0), path_box(&fills));
+    let ratio = after.width() / before.width();
+    assert!((0.4..0.6).contains(&ratio), "{ratio}");
+    assert!((after.x0 - before.x0).abs() < 0.5);
+    let stroke = path_box(&strokes);
+    assert!((stroke.x1 - after.x1).abs() < 0.5);
+    // No step of the stroke goes along the cut.
+    for s in &strokes {
+        for w in s.windows(2) {
+            let on = |p: Point| (p.x - stroke.x1).abs() < 0.2;
+            assert!(
+                !(on(w[0]) && on(w[1]) && (w[0].y - w[1].y).abs() > 0.2),
+                "{w:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_pdf_has_the_masked_fill_and_stroke_as_paths_that_follow_the_coast() {
+    // A hidden polygon within 60 degrees of 0 degrees east, 0 degrees
+    // north, and a polygon over its edge with it as its mask.
+    let ring: Vec<String> = (0..=360)
+        .map(|i| {
+            let (b, r) = (-(i as f64).to_radians(), 60f64.to_radians());
+            let lat = (r.sin() * b.cos()).asin().to_degrees();
+            let lon = (b.sin() * r.sin()).atan2(r.cos()).to_degrees();
+            format!("[{lon},{lat}]")
+        })
+        .collect();
+    let circle = format!(
+        r#"{{"type":"Polygon","coordinates":[[{}]]}}"#,
+        ring.join(",")
+    );
+    let (mut doc, ids) = shapes(&[&dense_square_json(-80.0, -20.0, 80.0, 20.0), &circle]);
+    let (id, mask) = (ids[0], ids[1]);
+    doc.entry_mut(id).unwrap().style.style.mask = Some(Mask::Polygons { layer: mask });
+    let center = vale_app::globe::math::lonlat_to_dir(0.0, 0.0);
+
+    let map = doc.first_map();
+    doc.set_visible(mask, false);
+    doc.set_shown(map, mask, false);
+    let mut pipeline = Pipeline::new();
+    let page = doc.project.atlas.pages[0].id;
+    frame_on(&mut doc, &mut pipeline, page);
+    let page = doc.project.atlas.pages[0].clone();
+    let mut f = fonts().unwrap();
+    let list = pipeline
+        .compose_page(&doc, &page, &mut f, Quality::Final)
+        .unwrap();
+    assert!(!(list.items.iter()).any(|i| matches!(i, Item::Rasterize { .. } | Item::Image { .. })));
+    let (fills, strokes) = masked_paths(&list.items);
+    assert!(!fills.is_empty() && !strokes.is_empty());
+
+    // Each point is inside the mask, and the cut is on its edge.
+    let record = page.frames[0].clone();
+    let projection = pipeline.projection(&doc, map).unwrap();
+    let target = FrameTarget {
+        origin: Point::ZERO,
+        pts_per_mm: PT_PER_MM,
+    };
+    let vt = frame_transform(projection, &record, target);
+    let from_center = |q: &Point| {
+        let [lon, lat] = projection.inverse(vt.from_page(*q)).unwrap();
+        let d = vale_app::globe::math::lonlat_to_dir(lon, lat);
+        vale_app::globe::math::angle(d, center).to_degrees()
+    };
+    // The fill follows the edge, and the stroke stops at the edge four times.
+    for (paths, on_edge) in [(&fills, 10), (&strokes, 4)] {
+        let far: Vec<f64> = paths.iter().flatten().map(from_center).collect();
+        assert!(far.iter().all(|&a| a < 60.1), "{far:?}");
+        let n = far.iter().filter(|&&a| (a - 60.0).abs() < 0.1).count();
+        assert!(n >= on_edge, "{n}");
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("masked.pdf");
+    vale_app::atlas_export::export_pdf(&doc, vec![page], &path).unwrap();
+    let pdf = String::from_utf8_lossy(&std::fs::read(&path).unwrap()).into_owned();
+    assert!(!pdf.contains("/Subtype/Image"));
+}
+
+/// A document with two polygon layers side by side, each with a fill and a
+/// stroke. The first layer has a raster mask.
+fn masked_doc() -> (Document, vale_store::LayerId) {
+    let polygon = |x0: f64, x1: f64| {
+        format!(
+            r#"{{"type":"FeatureCollection","features":[{{"type":"Feature","properties":{{}},"geometry":{{"type":"Polygon","coordinates":[[[{x0},-30],[{x1},-30],[{x1},30],[{x0},30],[{x0},-30]]]}}}}]}}"#
+        )
+    };
+    let mut doc = Document::empty();
+    doc.frame.labels = false;
+    doc.frame.graticule = false;
+    let a = vale_import::geojson::read_str("a", &polygon(-60.0, -5.0)).unwrap();
+    let b = vale_import::geojson::read_str("b", &polygon(5.0, 60.0)).unwrap();
+    let a = doc.add_imported(a, None)[0];
+    let b = doc.add_imported(b, None)[0];
+    let style = |fill: Color, stroke: Color| Style {
+        mask: None,
+        rules: vec![Rule::new(
+            "Default",
+            vec![
+                Symbolizer::Fill {
+                    color: Property::constant(fill),
+                },
+                Symbolizer::Stroke(StrokeSymbolizer::constant(Stroke::solid(stroke, 2.0))),
+            ],
+        )],
+    };
+    doc.entry_mut(a).unwrap().style.style = Style {
+        mask: Some(Mask::Raster {
+            layer: b,
+            min: Some(0.0),
+            max: None,
+        }),
+        ..style(MASKED_FILL, MASKED_STROKE)
+    };
+    doc.entry_mut(b).unwrap().style.style = style(OTHER_FILL, Color::rgb(0, 0, 100));
+    (doc, a)
+}
+
+const OTHER_FILL: Color = Color::rgb(0, 0, 200);
+
+fn item_color(item: &Item) -> Option<Color> {
+    match item {
+        Item::Fill { color, .. } | Item::Stroke { color, .. } => Some(*color),
+        _ => None,
+    }
+}
+
+#[test]
+fn a_page_mask_clips_the_fills_and_the_strokes_of_its_layer() {
+    use vale_app::mask::PageMask;
+    let (mut doc, a) = masked_doc();
+    let mut pipeline = Pipeline::new();
+    let page = doc.project.atlas.pages[0].id;
+    let frame = frame_on(&mut doc, &mut pipeline, page);
+    let masked = |c: Option<Color>| c == Some(MASKED_FILL) || c == Some(MASKED_STROKE);
+
+    // With no page mask yet, the masked layer draws no fill and no stroke.
+    let unmasked = compose_frame_full(&doc, &mut pipeline, frame).list;
+    assert!(!unmasked.items.iter().any(|i| masked(item_color(i))));
+    assert!(
+        unmasked
+            .items
+            .iter()
+            .any(|i| item_color(i) == Some(OTHER_FILL))
+    );
+
+    let square = vec![
+        Point::new(0.0, 0.0),
+        Point::new(150.0, 0.0),
+        Point::new(150.0, 150.0),
+        Point::new(0.0, 150.0),
+    ];
+    pipeline.set_page_mask(frame, a, Some(PageMask::new(vec![square])));
+    let list = compose_frame_full(&doc, &mut pipeline, frame).list;
+    let clips: Vec<usize> = (list.items.iter().enumerate())
+        .filter(|(_, i)| {
+            matches!(
+                i,
+                Item::PushClip {
+                    rule: FillRule::NonZero,
+                    ..
+                }
+            )
+        })
+        .map(|(k, _)| k)
+        .collect();
+    assert_eq!(clips.len(), 1);
+    let start = clips[0];
+    let end = start
+        + (list.items[start..].iter())
+            .position(|i| matches!(i, Item::PopClip))
+            .unwrap();
+    let inside = &list.items[start + 1..end];
+    assert!(inside.iter().any(|i| matches!(i, Item::Fill { .. })));
+    assert!(inside.iter().any(|i| matches!(i, Item::Stroke { .. })));
+    assert!(inside.iter().all(|i| masked(item_color(i))));
+    let outside: Vec<&Item> = (list.items[..start].iter())
+        .chain(&list.items[end..])
+        .collect();
+    assert!(outside.iter().all(|i| !masked(item_color(i))));
+    assert!(outside.iter().any(|i| item_color(i) == Some(OTHER_FILL)));
+
+    // The PDF has one more nonzero clip path than with no mask.
+    let pdf = vale_render::render_pdf(&list).unwrap();
+    let before = vale_render::render_pdf(&unmasked).unwrap();
+    assert_eq!(masked::pdf_clips(&pdf).0, masked::pdf_clips(&before).0 + 1);
+    assert_eq!(masked::pdf_clips(&pdf).1, masked::pdf_clips(&before).1);
 }

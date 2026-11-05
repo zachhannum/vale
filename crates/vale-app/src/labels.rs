@@ -16,7 +16,8 @@ use vale_style::{
     LeaderStyle, TextCase,
 };
 
-use crate::pipeline::{LabelSummary, PageLayer, PlacedSymbol, Quality, UnplacedInfo};
+use crate::atlas::FrameTarget;
+use crate::pipeline::{FrameMasks, LabelSummary, PageLayer, PlacedSymbol, Quality, UnplacedInfo};
 
 const MAX_FEATURES: usize = 3000;
 
@@ -25,6 +26,25 @@ const MAX_SOFT: usize = 20_000;
 
 /// The cost of a label over one scatter symbol.
 const SCATTER_COST: f64 = 0.5;
+
+/// Keeps the part of each polygon of a raster-masked layer inside its page
+/// mask. A layer whose page mask is not ready keeps no polygon.
+pub fn clip_to_masks(layers: &mut [PageLayer<'_>], masks: &FrameMasks, target: FrameTarget) {
+    for pl in layers.iter_mut() {
+        if pl.kind != GeometryKind::Polygon {
+            continue;
+        }
+        let Some(mask) = masks.get(&pl.layer.id) else {
+            continue;
+        };
+        for f in &mut pl.features {
+            f.rings = match mask {
+                Some(mask) => mask.clip(&f.rings, f.bbox, target),
+                None => Vec::new(),
+            };
+        }
+    }
+}
 
 /// Places labels for the visible layers.
 ///

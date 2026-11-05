@@ -3,7 +3,7 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use anyhow::anyhow;
 use kurbo::{Affine, BezPath, Circle, Point, Rect, Shape};
@@ -13,12 +13,15 @@ use vale_render::{DisplayList, FillRule, Item, Symbol, Symbols, stroke, symbol_i
 use vale_sphere::{
     ClipRect, LonLat, Projection, ProjectionSpec, auto_interval, graticule, graticule_in, wrap180,
 };
-use vale_store::{FrameRecord, Geometry, GeometryKind, Layer, LayerId, MapId, PageRecord, Value};
+use vale_store::{
+    FrameId, FrameRecord, Geometry, GeometryKind, Layer, LayerId, MapId, PageRecord, Value,
+};
 use vale_style::expr::Context;
-use vale_style::{Extent, Hatch, MarkerShape, Paint, Stroke, StrokeKind, scale_denominator};
+use vale_style::{Extent, Hatch, MarkerShape, Mask, Paint, Stroke, StrokeKind, scale_denominator};
 
 use crate::atlas::{self, FrameTarget, PT_PER_MM};
 use crate::document::{Document, LayerEntry};
+use crate::mask::{MaskCache, MaskedFeature, MaskedLayer, PageMask};
 use crate::scatter::{self, ScatterCache, ScatterFill};
 use crate::view::{View, ViewTransform};
 use crate::{edge_labels, frame_border, furniture, labels, pick};
@@ -140,7 +143,9 @@ struct Cache {
     projection: Projection,
     outline: Vec<Point>,
     bounds: Rect,
-    layers: HashMap<LayerId, Vec<Option<ProjFeature>>>,
+    /// The projected features of each layer, with the generation of the
+    /// cut of a masked layer.
+    layers: HashMap<LayerId, (Option<u64>, Vec<Option<ProjFeature>>)>,
     /// The graticule lines over the whole sphere, by interval. Only intervals of 1° or more.
     graticules: HashMap<u64, Vec<Vec<Point>>>,
     /// The graticule lines of the last window, for an interval under 1°.
@@ -163,7 +168,14 @@ pub struct Pipeline {
     /// The most recently used cache first.
     caches: Vec<Cache>,
     scatter: ScatterCache,
+    masks: MaskCache,
+    /// The raster masks of the layers in the map frames.
+    page_masks: HashMap<(FrameId, LayerId), Arc<PageMask>>,
 }
+
+/// The raster-masked layers of a frame, with their page masks. `None`: the
+/// mask is not ready yet.
+pub type FrameMasks = HashMap<LayerId, Option<Arc<PageMask>>>;
 
 /// The fonts that ship with the app.
 pub fn fonts() -> anyhow::Result<Fonts> {
@@ -207,6 +219,26 @@ fn project_feature(projection: &Projection, geometry: &Geometry) -> Option<ProjF
     }
     bbox.map(|bbox| ProjFeature {
         points,
+        lines,
+        rings,
+        bbox,
+    })
+}
+
+/// The geometry of the part of a feature inside its mask.
+fn project_masked(projection: &Projection, part: &MaskedFeature) -> Option<ProjFeature> {
+    let rings: Vec<Vec<Point>> = (part.polygons.iter())
+        .flat_map(|p| projection.project_polygon(p))
+        .collect();
+    let lines: Vec<Vec<Point>> = (part.lines.iter())
+        .flat_map(|l| projection.project_line(l))
+        .collect();
+    let mut bbox = None;
+    for p in lines.iter().chain(&rings).flatten() {
+        extend_bbox(&mut bbox, *p);
+    }
+    bbox.map(|bbox| ProjFeature {
+        points: Vec::new(),
         lines,
         rings,
         bbox,
@@ -275,7 +307,8 @@ fn build_page_layers<'a>(
     let page = area.inflate(8.0, 8.0);
     let mut out = Vec::new();
     for entry in ids.iter().filter_map(|id| doc.map_entry(map, *id)) {
-        let (Some(layer), Some(feats)) = (doc.layer(entry.layer), cache.layers.get(&entry.layer))
+        let (Some(layer), Some((_, feats))) =
+            (doc.layer(entry.layer), cache.layers.get(&entry.layer))
         else {
             continue;
         };
@@ -1046,6 +1079,7 @@ fn draw_map<'a>(
     selection: Option<Selection>,
     scatter: &mut ScatterCache,
     symbol_scale: SymbolScale,
+    masks: Option<(&FrameMasks, FrameTarget)>,
 ) -> DrawnMap<'a> {
     let style = &doc.frame.style;
 
@@ -1086,8 +1120,35 @@ fn draw_map<'a>(
     };
     for pl in &page_layers {
         sd.layer_count = 0;
+        // The page mask clips the fills and the strokes of a line or polygon
+        // layer. A layer whose page mask is not ready draws none of them.
+        let mask = match masks {
+            Some((masks, target)) if pl.kind != GeometryKind::Point => masks
+                .get(&pl.layer.id)
+                .map(|m| m.as_ref().map(|m| m.path(target))),
+            _ => None,
+        };
+        let clip_at = list.items.len();
+        let clipped = match mask {
+            Some(None) => continue,
+            Some(Some(path)) => {
+                list.push(Item::PushClip {
+                    path,
+                    rule: FillRule::NonZero,
+                });
+                true
+            }
+            None => false,
+        };
         for batch in batches(pl) {
             draw_batch(list, pl, &batch, &mut sd);
+        }
+        if clipped {
+            if list.items.len() == clip_at + 1 {
+                list.items.pop();
+            } else {
+                list.push(Item::PopClip);
+            }
         }
     }
     let symbols = sd.placed;
@@ -1177,6 +1238,48 @@ impl Pipeline {
             cache.layers.remove(&id);
         }
         self.scatter.forget(id);
+        self.masks.forget(id);
+    }
+
+    /// Sets the raster mask of layer `layer` in frame `frame`, from the
+    /// view of the frame. `None` removes it.
+    pub fn set_page_mask(&mut self, frame: FrameId, layer: LayerId, mask: Option<PageMask>) {
+        match mask {
+            Some(mask) => {
+                self.page_masks.insert((frame, layer), Arc::new(mask));
+            }
+            None => {
+                self.page_masks.remove(&(frame, layer));
+            }
+        }
+    }
+
+    /// The raster mask of layer `layer` in frame `frame`.
+    pub fn page_mask(&self, frame: FrameId, layer: LayerId) -> Option<&Arc<PageMask>> {
+        self.page_masks.get(&(frame, layer))
+    }
+
+    /// Removes the raster masks of each layer in each frame.
+    pub fn clear_page_masks(&mut self) {
+        self.page_masks.clear();
+    }
+
+    /// The layers of `ids` with a raster mask in the style of the map of
+    /// `frame`, with their page masks.
+    pub fn frame_masks(&self, doc: &Document, frame: &FrameRecord, ids: &[LayerId]) -> FrameMasks {
+        (ids.iter())
+            .filter(|id| {
+                doc.map_entry(Some(frame.map), **id)
+                    .is_some_and(|e| matches!(e.style.style.mask, Some(Mask::Raster { .. })))
+            })
+            .map(|id| (*id, self.page_masks.get(&(frame.id, *id)).cloned()))
+            .collect()
+    }
+
+    /// The parts of the features of layer `id` inside the mask of its
+    /// style. `None`: the layer draws whole.
+    pub fn masked(&mut self, doc: &Document, id: LayerId) -> Option<Arc<MaskedLayer>> {
+        self.masks.layer(doc, id)
     }
 
     /// The scatters that the pipeline keeps.
@@ -1234,19 +1337,26 @@ impl Pipeline {
         }
         let exists = |id: LayerId| doc.project.layers().iter().any(|l| l.id == id);
         self.scatter.retain(exists);
+        self.masks.retain(exists);
         let cache = &mut self.caches[0];
         cache.layers.retain(|id, _| exists(*id));
         for id in ids {
-            if cache.layers.contains_key(id) {
+            let masked = self.masks.layer(doc, *id);
+            let generation = masked.as_ref().map(|m| m.generation);
+            if cache.layers.get(id).is_some_and(|l| l.0 == generation) {
                 continue;
             }
             if let Some(layer) = doc.layer(*id) {
-                let feats = layer
-                    .features
-                    .iter()
-                    .map(|f| project_feature(&cache.projection, &f.geometry))
+                let feats = (layer.features.iter().enumerate())
+                    .map(|(i, f)| {
+                        let part = masked.as_ref().and_then(|m| m.features.get(i)?.as_ref());
+                        match part {
+                            Some(part) => project_masked(&cache.projection, part),
+                            None => project_feature(&cache.projection, &f.geometry),
+                        }
+                    })
                     .collect();
-                cache.layers.insert(*id, feats);
+                cache.layers.insert(*id, (generation, feats));
             }
         }
         Ok(cache)
@@ -1391,6 +1501,7 @@ impl Pipeline {
             selection,
             &mut self.scatter,
             symbol_scale,
+            None,
         );
 
         // 7 to 9: scale bar, labels.
@@ -1520,6 +1631,7 @@ impl Pipeline {
         part: Rect,
     ) -> anyhow::Result<DisplayList> {
         let ids = drawn_layers(doc, Some(frame.map));
+        let masks = self.frame_masks(doc, frame, &ids);
         let cache = self.ensure(doc, frame.map, &ids)?;
         let vt = atlas::frame_transform(&cache.projection, frame, target);
         let step = atlas::graticule_interval(&cache.projection, frame);
@@ -1549,6 +1661,7 @@ impl Pipeline {
             None,
             &mut self.scatter,
             symbol_scale,
+            Some((&masks, target)),
         );
         Ok(list)
     }
@@ -1599,6 +1712,7 @@ impl Pipeline {
         water: bool,
     ) -> anyhow::Result<Composed> {
         let ids = drawn_layers(doc, Some(frame.map));
+        let masks = self.frame_masks(doc, frame, &ids);
         let cache = self.ensure(doc, frame.map, &ids)?;
         let vt = atlas::frame_transform(&cache.projection, frame, target);
         let area = frame_area(frame, target).intersect(part);
@@ -1621,7 +1735,7 @@ impl Pipeline {
             nominal: frame.scale,
             unit: target.pts_per_mm / PT_PER_MM,
         };
-        let drawn = draw_map(
+        let mut drawn = draw_map(
             &mut list,
             doc,
             Some(frame.map),
@@ -1635,6 +1749,7 @@ impl Pipeline {
             selection,
             &mut self.scatter,
             symbol_scale,
+            Some((&masks, target)),
         );
         let edge = if step.is_some() {
             edge_labels::edge_labels(&cache.projection, frame, target, fonts)
@@ -1646,7 +1761,7 @@ impl Pipeline {
             // The labels come from the whole frame, so that each part of the
             // frame shows the same labels.
             let full = frame_area(frame, target);
-            let whole = (area != full).then(|| {
+            let mut whole = (area != full).then(|| {
                 draw_map(
                     &mut DisplayList::new(full.x1, full.y1),
                     doc,
@@ -1661,9 +1776,11 @@ impl Pipeline {
                     None,
                     &mut self.scatter,
                     symbol_scale,
+                    Some((&masks, target)),
                 )
             });
-            let labeled = whole.as_ref().unwrap_or(&drawn);
+            let labeled = whole.as_mut().unwrap_or(&mut drawn);
+            labels::clip_to_masks(&mut labeled.layers, &masks, target);
             let classes: Vec<_> = (labeled.layers.iter())
                 .map(|pl| doc.label_classes(Some(frame.map), pl.layer.id))
                 .collect();
