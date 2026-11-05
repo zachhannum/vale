@@ -45,9 +45,7 @@ fn color_at(doc: &Document, at: [f64; 2]) -> Option<[u8; 3]> {
 
 fn compose(doc: &Document, pipeline: &mut Pipeline) -> vale_app::pipeline::Composed {
     let mut f = fonts().unwrap();
-    pipeline
-        .compose(doc, SIZE, &mut f, Quality::Final, None)
-        .unwrap()
+    pipeline.compose(doc, SIZE, &mut f, Quality::Final).unwrap()
 }
 
 fn strokes(c: &vale_app::pipeline::Composed) -> usize {
@@ -383,7 +381,7 @@ fn compose_frame(doc: &Document, pipeline: &mut Pipeline, id: FrameId) -> Vec<It
     };
     let mut f = fonts().unwrap();
     let composed = pipeline
-        .compose_frame(doc, page, frame, target, &mut f, Quality::Final, None)
+        .compose_frame(doc, page, frame, target, &mut f, Quality::Final)
         .unwrap();
     composed.list.items
 }
@@ -402,7 +400,7 @@ fn compose_frame_full(
     };
     let mut f = fonts().unwrap();
     pipeline
-        .compose_frame(doc, page, frame, target, &mut f, Quality::Final, None)
+        .compose_frame(doc, page, frame, target, &mut f, Quality::Final)
         .unwrap()
 }
 
@@ -1701,7 +1699,7 @@ fn a_scatter_is_the_same_in_each_target_of_a_frame() {
             pts_per_mm,
         };
         pipeline
-            .compose_frame(&doc, page, frame, target, &mut f, Quality::Final, None)
+            .compose_frame(&doc, page, frame, target, &mut f, Quality::Final)
             .unwrap()
     };
     let pdf = compose_in(PT_PER_MM);
@@ -1791,7 +1789,7 @@ fn assert_edge_labels(doc: &Document, pipeline: &mut Pipeline, id: FrameId, what
         .page(doc.project.atlas.page_of_frame(id).unwrap())
         .unwrap();
     let composed = pipeline
-        .compose_frame(doc, page, &frame, target, &mut f, Quality::Final, None)
+        .compose_frame(doc, page, &frame, target, &mut f, Quality::Final)
         .unwrap();
     let texts: Vec<&str> = (composed.list.items.iter())
         .filter_map(|i| match i {

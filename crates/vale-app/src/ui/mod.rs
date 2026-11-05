@@ -30,7 +30,7 @@ use crate::globe::{Globe, Look, START_ELEVATION, StackItem, Tool, brush};
 use crate::globe::{LineStroke, polygon, reshape};
 use crate::image_layer::{ImageImport, ImageTiles, ImportStep};
 use crate::measure::{self, Measure};
-use crate::pipeline::{Composed, Pipeline, Selection};
+use crate::pipeline::{Composed, Pipeline};
 use crate::projects::{self, Location, Locations};
 use crate::raster_style;
 use crate::resume::{self, Resume};
@@ -441,8 +441,6 @@ pub struct AppState {
     pub composed: Option<Composed>,
     /// Size of the canvas of the atlas in points.
     pub canvas_size: (f64, f64),
-    /// The selected feature of a map.
-    pub selection: Option<Selection>,
     /// The Atlas workspace.
     pub atlas: atlas::AtlasState,
     /// The count of the changes of the contents of the maps.
@@ -625,7 +623,6 @@ impl AppState {
             font_dialog: None,
             composed: None,
             canvas_size: (0.0, 0.0),
-            selection: None,
             atlas: atlas::AtlasState::default(),
             map_generation: 0,
             selected_layer: None,
@@ -2098,10 +2095,6 @@ impl AppState {
         match result.and_then(|_| self.restore_rasters()) {
             Ok(()) => {
                 self.history += 1;
-                let gone = |id| self.doc.layer(id).is_none();
-                if self.selection.is_some_and(|s| gone(s.layer)) {
-                    self.selection = None;
-                }
                 self.sync_globe();
                 // A layer can come back with other features under its ID.
                 self.pipeline = Pipeline::new();
@@ -2412,7 +2405,6 @@ impl AppState {
         self.doc.frame.view = None;
         self.saved_edits = self.edits();
         self.history += 1;
-        self.selection = None;
         self.feature_selection.clear();
         self.selection_form = None;
         self.region = None;

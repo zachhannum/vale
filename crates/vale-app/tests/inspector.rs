@@ -88,7 +88,6 @@ fn empty_states() {
     h.state_mut().atlas.selection = AtlasSelection::Page;
     h.run_steps(2);
     assert!(h.query_by_label("Select a layer in the list.").is_some());
-    assert!(h.query_by_label("Click a feature on the map.").is_some());
     assert!(h.query_by_label("Unplaced labels").is_some());
 }
 
@@ -273,26 +272,15 @@ fn style_change_reaches_the_pixels() {
 }
 
 #[test]
-fn click_identifies_a_feature() {
+fn a_frame_tool_click_on_a_feature_selects_only_the_frame() {
     let mut h = harness();
-    let places = id_of(&h, "Places");
+    assert_eq!(h.state().atlas.tool, vale_app::ui::atlas::AtlasTool::Frame);
     let tokyo = screen_pos(&mut h, [139.75, 35.68]);
     click_at(&mut h, tokyo);
     h.run_steps(3);
     let s = h.state();
-    let sel = s.selection.expect("Tokyo is selected");
-    assert_eq!(sel.layer, places);
-    assert_eq!(s.selected_layer, Some(LayerRef::Vector(places)));
-    assert!(h.query_all_by_label("Tokyo").count() >= 1);
-    assert!(h.query_by_label("Clear selection").is_some());
-    let list = &h.state().composed.as_ref().unwrap().list;
-    let found = format!("{:?}", list.items).contains("r: 230, g: 70, b: 30");
-    assert!(found, "no selection stroke in the display list");
-
-    let ocean = screen_pos(&mut h, [-20.0, -30.0]);
-    click_at(&mut h, ocean);
-    h.run_steps(3);
-    assert_eq!(h.state().selection, None);
+    assert!(s.feature_selection.is_empty());
+    assert!(matches!(s.atlas.selection, AtlasSelection::Frame(_)));
 }
 
 #[test]
@@ -312,7 +300,6 @@ fn unplaced_summary() {
 #[test]
 #[ignore = "gpu"]
 fn inspector_screenshots() {
-    use vale_app::pipeline::Selection;
     let mut state = AppState::new(Document::sample()).unwrap();
     state.workspace = Workspace::Atlas;
     atlas::add_frame(&mut state).unwrap();
@@ -325,10 +312,6 @@ fn inspector_screenshots() {
         .unwrap()
         .id;
     state.selected_layer = Some(LayerRef::Vector(places));
-    state.selection = Some(Selection {
-        layer: places,
-        feature: 0,
-    });
     state
         .doc
         .entry_mut(places)

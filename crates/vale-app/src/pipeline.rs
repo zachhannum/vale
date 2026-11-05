@@ -855,8 +855,6 @@ fn push_stroke(list: &mut DisplayList, path: BezPath, stroke: &Stroke, round: bo
     }
 }
 
-const SELECTION: vale_render::Color = vale_render::Color::rgb(230, 70, 30);
-
 /// An opaque fill, for a mask.
 pub const PAPER: vale_render::Color = vale_render::Color::rgb(255, 255, 255);
 
@@ -1073,7 +1071,7 @@ struct SymbolScale {
 }
 
 /// Draws a map in `area`: the background if it has one, the water, the
-/// layers, the graticule, the outline, and the selection.
+/// layers, the graticule, and the outline.
 #[allow(clippy::too_many_arguments)]
 fn draw_map<'a>(
     list: &mut DisplayList,
@@ -1086,7 +1084,6 @@ fn draw_map<'a>(
     water: bool,
     ids: &[LayerId],
     graticule: Option<(&[Vec<Point>], Stroke)>,
-    selection: Option<Selection>,
     scatter: &mut ScatterCache,
     symbol_scale: SymbolScale,
     masks: Option<(&FrameMasks, FrameTarget)>,
@@ -1193,42 +1190,6 @@ fn draw_map<'a>(
         width: style.outline.width,
         round: false,
     });
-
-    // 6: selection.
-    if let Some(sel) = selection
-        && let Some(pl) = page_layers.iter().find(|pl| pl.layer.id == sel.layer)
-        && let Some(f) = pl.features.iter().find(|f| f.index == sel.feature)
-    {
-        let extent = pl.extent(f.index);
-        let width = extent.stroke_width;
-        let item = match pl.kind {
-            GeometryKind::Point => {
-                let mut path = BezPath::new();
-                for p in &f.points {
-                    path.extend(Circle::new(*p, extent.marker_radius + 3.0).to_path(0.1));
-                }
-                Item::Stroke {
-                    path,
-                    color: SELECTION,
-                    width: 2.0,
-                    round: true,
-                }
-            }
-            GeometryKind::Line => Item::Stroke {
-                path: polylines_path(&f.lines, false),
-                color: SELECTION,
-                width: width + 2.0,
-                round: true,
-            },
-            GeometryKind::Polygon => Item::Stroke {
-                path: polylines_path(&f.lines, false),
-                color: SELECTION,
-                width: 2.0,
-                round: false,
-            },
-        };
-        list.push(item);
-    }
 
     DrawnMap {
         layers: page_layers,
@@ -1456,27 +1417,6 @@ impl Pipeline {
         Ok(pick::pick(&layers, at))
     }
 
-    /// The feature of a frame under the target point `at`. A point outside
-    /// the shape of the frame picks nothing.
-    pub fn pick_frame(
-        &mut self,
-        doc: &Document,
-        frame: &FrameRecord,
-        target: FrameTarget,
-        at: Point,
-    ) -> anyhow::Result<Option<Selection>> {
-        if !atlas::contains(&frame.shape, target.from_target(at)) {
-            return Ok(None);
-        }
-        let ids = drawn_layers(doc, Some(frame.map));
-        let cache = self.ensure(doc, frame.map, Some(frame.map), &ids)?;
-        let vt = atlas::frame_transform(&cache.projection, frame, target);
-        let scale = scale_denominator(km_per_point(cache, &vt) * 1000.0);
-        let area = frame_area(frame, target);
-        let layers = build_page_layers(doc, Some(frame.map), cache, &vt, area, &ids, scale);
-        Ok(pick::pick(&layers, at))
-    }
-
     /// The map of the document at the size of a window, with a scale bar.
     pub fn compose(
         &mut self,
@@ -1484,7 +1424,6 @@ impl Pipeline {
         size: (f64, f64),
         fonts: &mut Fonts,
         quality: Quality,
-        selection: Option<Selection>,
     ) -> anyhow::Result<Composed> {
         let view = self.resolve_view(doc, size)?;
         let vt = ViewTransform::new(view, size.0, size.1);
@@ -1517,7 +1456,6 @@ impl Pipeline {
             true,
             &ids,
             graticule,
-            selection,
             &mut self.scatter,
             symbol_scale,
             None,
@@ -1570,13 +1508,12 @@ impl Pipeline {
         target: FrameTarget,
         fonts: &mut Fonts,
         quality: Quality,
-        selection: Option<Selection>,
     ) -> anyhow::Result<Composed> {
         let page_box = Rect::from_points(
             target.to_target(Point::ZERO),
             target.to_target(Point::new(page.width_mm, page.height_mm)),
         );
-        self.compose_frame_part(doc, frame, target, page_box, fonts, quality, selection)
+        self.compose_frame_part(doc, frame, target, page_box, fonts, quality)
     }
 
     /// The parallels that the labeler gets for a map frame, in target points.
@@ -1607,9 +1544,8 @@ impl Pipeline {
         part: Rect,
         fonts: &mut Fonts,
         quality: Quality,
-        selection: Option<Selection>,
     ) -> anyhow::Result<Composed> {
-        self.compose_frame_inner(doc, frame, target, part, fonts, quality, selection, true)
+        self.compose_frame_inner(doc, frame, target, part, fonts, quality, true)
     }
 
     /// The water of a map frame, inside its shape. The raster layers of the
@@ -1677,7 +1613,6 @@ impl Pipeline {
             true,
             &ids,
             graticule,
-            None,
             &mut self.scatter,
             symbol_scale,
             Some((&masks, target)),
@@ -1713,9 +1648,8 @@ impl Pipeline {
         part: Rect,
         fonts: &mut Fonts,
         quality: Quality,
-        selection: Option<Selection>,
     ) -> anyhow::Result<Composed> {
-        self.compose_frame_inner(doc, frame, target, part, fonts, quality, selection, false)
+        self.compose_frame_inner(doc, frame, target, part, fonts, quality, false)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1727,7 +1661,6 @@ impl Pipeline {
         part: Rect,
         fonts: &mut Fonts,
         quality: Quality,
-        selection: Option<Selection>,
         water: bool,
     ) -> anyhow::Result<Composed> {
         let ids = drawn_layers(doc, Some(frame.map));
@@ -1765,7 +1698,6 @@ impl Pipeline {
             water,
             &ids,
             graticule,
-            selection,
             &mut self.scatter,
             symbol_scale,
             Some((&masks, target)),
@@ -1791,7 +1723,6 @@ impl Pipeline {
                     false,
                     false,
                     &ids,
-                    None,
                     None,
                     &mut self.scatter,
                     symbol_scale,
@@ -1873,7 +1804,7 @@ impl Pipeline {
             rule: FillRule::NonZero,
         });
         for frame in &page.frames {
-            let composed = self.compose_frame(doc, page, frame, target, fonts, quality, None)?;
+            let composed = self.compose_frame(doc, page, frame, target, fonts, quality)?;
             list.items.extend(composed.list.items);
         }
         for rec in &page.furniture {

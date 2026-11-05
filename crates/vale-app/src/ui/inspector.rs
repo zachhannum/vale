@@ -1,5 +1,4 @@
-//! The inspector of the right dock: layer style, feature information, and
-//! unplaced labels.
+//! The inspector of the right dock: layer style and unplaced labels.
 
 use eframe::egui;
 use vale_store::{Field, FieldType, GeometryKind, LayerId, Value};
@@ -11,7 +10,6 @@ const MAX_UNPLACED: usize = 200;
 
 pub fn contents(ui: &mut egui::Ui, state: &mut AppState) {
     layer_section(ui, state);
-    feature_section(ui, state);
     unplaced_section(ui, state);
 }
 
@@ -67,9 +65,6 @@ fn layer_section(ui: &mut egui::Ui, state: &mut AppState) {
         if ui.button("Delete layer").clicked() {
             state.doc.remove_layer(info.id);
             state.select(None);
-            if state.selection.is_some_and(|s| s.layer == info.id) {
-                state.selection = None;
-            }
             state.touch();
         }
     });
@@ -285,39 +280,6 @@ fn fields_section(ui: &mut egui::Ui, state: &mut AppState, id: LayerId) {
             });
             ui.data_mut(|d| d.insert_temp(key, (name, kind)));
         });
-}
-
-fn feature_section(ui: &mut egui::Ui, state: &mut AppState) {
-    ui.separator();
-    ui.heading("Feature");
-    let Some(sel) = state.selection else {
-        ui.label("Click a feature on the map.");
-        ui.add_space(6.0);
-        return;
-    };
-    let Some(layer) = state.doc.layer(sel.layer) else {
-        ui.label("Click a feature on the map.");
-        return;
-    };
-    ui.strong(&layer.name);
-    ui.label(format!("Feature {}", sel.feature));
-    if let Some(feature) = layer.features.get(sel.feature) {
-        egui::Grid::new("attributes")
-            .num_columns(2)
-            .striped(true)
-            .show(ui, |ui| {
-                for (name, value) in &feature.attributes {
-                    ui.label(name);
-                    ui.add(egui::Label::new(value.label().unwrap_or_default()).wrap());
-                    ui.end_row();
-                }
-            });
-    }
-    if ui.button("Clear selection").clicked() {
-        state.selection = None;
-        state.touch();
-    }
-    ui.add_space(6.0);
 }
 
 fn unplaced_section(ui: &mut egui::Ui, state: &AppState) {

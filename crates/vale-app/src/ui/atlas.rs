@@ -17,9 +17,9 @@ use std::sync::Arc;
 
 use vale_store::RasterId;
 
+use super::AppState;
 use super::map_texture::{self, MapRenderer, MapTexture};
 use super::pad::theme;
-use super::{AppState, LayerRef};
 use crate::atlas::{self as math, FrameTarget, Handle, PT_PER_MM, PagePreset, Vertex};
 use crate::document::Document;
 use crate::globe::backdrop::{Canvas, REDUCTION, Scene, SceneCallback};
@@ -2185,8 +2185,7 @@ fn vertex_tap(state: &mut AppState, page: &PageRecord, place: PagePlace, pos: Po
     }
 }
 
-/// A tap selects a frame, the page, or nothing. A tap on a frame also
-/// selects the feature below it.
+/// A tap selects a frame, the page, or nothing.
 fn tap(state: &mut AppState, page: &PageRecord, place: PagePlace, pos: Pos2) {
     if state.atlas.tool == AtlasTool::Select {
         features::tap(state, page, place, pos);
@@ -2206,35 +2205,11 @@ fn tap(state: &mut AppState, page: &PageRecord, place: PagePlace, pos: Pos2) {
         state.atlas.selection = AtlasSelection::Item(id);
         return;
     }
-    let picked = match frame_at(page, at) {
-        Some(id) => {
-            state.atlas.selection = AtlasSelection::Frame(id);
-            let frame = page.frames.iter().find(|f| f.id == id).cloned();
-            let q = Point::new(f64::from(pos.x), f64::from(pos.y));
-            frame.and_then(|f| {
-                let target = place.target();
-                state
-                    .pipeline
-                    .pick_frame(&state.doc, &f, target, q)
-                    .ok()
-                    .flatten()
-            })
-        }
-        None if place.rect.contains(pos) => {
-            state.atlas.selection = AtlasSelection::Page;
-            None
-        }
-        None => {
-            state.atlas.selection = AtlasSelection::None;
-            None
-        }
+    state.atlas.selection = match frame_at(page, at) {
+        Some(id) => AtlasSelection::Frame(id),
+        None if place.rect.contains(pos) => AtlasSelection::Page,
+        None => AtlasSelection::None,
     };
-    if picked != state.selection {
-        state.selection = picked;
-        if let Some(sel) = picked {
-            state.select(Some(LayerRef::Vector(sel.layer)));
-        }
-    }
 }
 
 /// The raster layers that a map shows and that the globe draws, from the
@@ -2392,7 +2367,6 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
             &frame.border,
             page.paper,
             ppp.to_bits(),
-            state.selection,
             layered,
             state.atlas.raster_masks.number(frame.id),
         ));
@@ -2927,7 +2901,6 @@ fn compose(
         f64::from(shown.width()) / zoom,
         f64::from(shown.height()) / zoom,
     );
-    let selection = state.selection;
     // A frame with raster layers has the water below them and the rest
     // above them. The GPU draws them between the two.
     let composed = if layered {
@@ -2938,7 +2911,6 @@ fn compose(
             part,
             &mut state.fonts,
             quality,
-            selection,
         )
     } else {
         state.pipeline.compose_frame_part(
@@ -2948,7 +2920,6 @@ fn compose(
             part,
             &mut state.fonts,
             quality,
-            selection,
         )
     };
     state.atlas.composes += 1;

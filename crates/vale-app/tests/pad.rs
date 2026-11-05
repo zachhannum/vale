@@ -7539,7 +7539,7 @@ fn a_rename_of_the_label_field_keeps_the_labels() {
     let placed = |doc: &Document| {
         let mut fonts = fonts().unwrap();
         let mut pipeline = Pipeline::new();
-        let composed = pipeline.compose(doc, (1280.0, 800.0), &mut fonts, Quality::Final, None);
+        let composed = pipeline.compose(doc, (1280.0, 800.0), &mut fonts, Quality::Final);
         composed.unwrap().labels.placed
     };
     let mut h = pad(BOARDS[0]);

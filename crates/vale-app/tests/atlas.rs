@@ -1708,7 +1708,7 @@ fn strokes(h: &mut Pad, index: usize, rgba: [u8; 4], line: f64) -> usize {
     let s = h.state_mut();
     let composed = s
         .pipeline
-        .compose_frame(&s.doc, &page, &f, target, &mut fonts, Quality::Final, None)
+        .compose_frame(&s.doc, &page, &f, target, &mut fonts, Quality::Final)
         .unwrap();
     let [r, g, b, a] = rgba;
     let color = vale_render::Color::rgba(r, g, b, a);
@@ -2527,7 +2527,7 @@ fn flat_strokes(h: &mut Pad, rgba: [u8; 4], line: f64) -> usize {
     let s = h.state_mut();
     let composed = s
         .pipeline
-        .compose(&s.doc, (1200.0, 800.0), &mut fonts, Quality::Final, None)
+        .compose(&s.doc, (1200.0, 800.0), &mut fonts, Quality::Final)
         .unwrap();
     let [r, g, b, a] = rgba;
     let color = vale_render::Color::rgba(r, g, b, a);
@@ -3293,7 +3293,7 @@ fn frame_items(h: &mut Pad, index: usize) -> Vec<Item> {
     let s = h.state_mut();
     let composed = s
         .pipeline
-        .compose_frame(&s.doc, &page, &f, target, &mut fonts, Quality::Final, None)
+        .compose_frame(&s.doc, &page, &f, target, &mut fonts, Quality::Final)
         .unwrap();
     composed.list.items
 }
