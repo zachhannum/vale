@@ -428,6 +428,18 @@ fn atlas_buttons(ui: &mut egui::Ui, state: &mut AppState) {
             atlas::deselect(state);
         }
     }
+    let tool = state.atlas.tool;
+    let moving = matches!(tool, atlas::AtlasTool::Select | atlas::AtlasTool::Move);
+    if moving && atlas::has_selection(state) {
+        if tool == atlas::AtlasTool::Select
+            && ui.button(select::DELETE).on_hover_text("Delete").clicked()
+        {
+            atlas::delete_selection(state);
+        }
+        if ui.button(DESELECT).on_hover_text("Esc").clicked() {
+            atlas::clear_selection(state);
+        }
+    }
     if measuring {
         snap_controls(ui, state, &[]);
         path_buttons(ui, state);

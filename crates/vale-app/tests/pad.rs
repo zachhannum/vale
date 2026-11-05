@@ -9512,6 +9512,48 @@ fn the_vertex_cell_and_card_fit_in_the_atlas_on_each_screen() {
     }
 }
 
+#[test]
+fn the_select_strip_fits_in_the_atlas_on_each_screen() {
+    use vale_app::ui::atlas::{AtlasSelection, AtlasTool};
+    use vale_app::ui::pad::DESELECT;
+    use vale_app::ui::pad::atlas::SNAP_TO_LAYOUT;
+    use vale_app::ui::select::DELETE;
+    for (size, safe) in measure_screens() {
+        let what = format!("Atlas {size:?}");
+        let mut h = safe_pad(size, safe);
+        h.state_mut().workspace = Workspace::Atlas;
+        vale_app::ui::atlas::add_frame(h.state_mut());
+        h.run_steps(3);
+        assert_eq!(h.state().atlas.tool, AtlasTool::Select, "{what}");
+        let names = [SNAP_TO_LAYOUT, DELETE, DESELECT];
+        let cells = names.map(|name| control(&h, name).unwrap_or_else(|| panic!("{what}: {name}")));
+        for pair in cells.windows(2) {
+            assert!(pair[0].bottom() <= pair[1].top(), "{what}");
+        }
+        let card = cells[0].union(cells[2]);
+        let r = h.state().pad.rects.unwrap();
+        let mut cards = vec![r.workspace, r.actions, r.tools];
+        cards.extend(r.view);
+        cards.extend(h.state().atlas.panel_rect);
+        for other in cards {
+            assert!(!card.intersects(other), "{what}: {card:?} {other:?}");
+        }
+        for c in &h.state().pad.controls {
+            let r = c.rect;
+            assert!(
+                r.width() >= 44.0 && r.height() >= 44.0,
+                "{what}: {}",
+                c.name
+            );
+        }
+        check_safe(&h, size, safe, &what);
+        tap(&mut h, DELETE);
+        assert_eq!(h.state().atlas.selection, AtlasSelection::None, "{what}");
+        assert!(control(&h, DELETE).is_none(), "{what}");
+        assert!(control(&h, DESELECT).is_none(), "{what}");
+    }
+}
+
 /// The features of `select_pad`.
 struct Picks {
     point: FeatureRef,

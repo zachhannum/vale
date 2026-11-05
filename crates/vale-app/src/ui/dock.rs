@@ -16,13 +16,13 @@ use super::atlas::{self, AtlasSelection, EdgeSet, FrameTab};
 use super::pad::atlas::{
     ADD_HOLE, ADD_PAGE, AUTO_INTERVAL, AZIMUTH, BORDER, BORDER_COLOR, BORDER_DISTANCE,
     BORDER_STROKE, BORDER_STYLE, BORDER_STYLES, BORDER_WIDTH, CENTER_LATITUDE, CENTER_LONGITUDE,
-    CENTER_ON_FRAME, DELETE_FRAME, DELETE_PAGE, DELETE_PROJECTION, FIRST_PARALLEL, FRAME_TABS,
-    GRATICULE_COLOR, GRATICULE_WIDTH, GRID_COLOR, GRID_SPACING, HEIGHT, INTERVAL, LABEL_FORMAT,
-    LABEL_FORMATS, LATITUDE, LAYOUT_GRID, LONGITUDE, MAP_NAME, MAP_STYLE_HINT, NEATLINE,
-    NEATLINE_COLOR, NEATLINE_WIDTH, OBLIQUE, ORIENTATIONS, PAGE_NAME, PAPER_COLOR, POLYGON,
-    PROJECTION_NAME, RECTANGLE, REFERENCE_GRID, REMOVE_OVERRIDES, ROTATION, SAVE_PROJECTION, SCALE,
-    SECOND_COLOR, SECOND_PARALLEL, SHAPE, SIZE, STROKE_COLOR, STROKE_WIDTH, UNIT_NAMES, WIDTH,
-    custom_row, length_text, unit_name,
+    CENTER_ON_FRAME, DELETE_PAGE, DELETE_PROJECTION, FIRST_PARALLEL, FRAME_TABS, GRATICULE_COLOR,
+    GRATICULE_WIDTH, GRID_COLOR, GRID_SPACING, HEIGHT, INTERVAL, LABEL_FORMAT, LABEL_FORMATS,
+    LATITUDE, LAYOUT_GRID, LONGITUDE, MAP_NAME, MAP_STYLE_HINT, NEATLINE, NEATLINE_COLOR,
+    NEATLINE_WIDTH, OBLIQUE, ORIENTATIONS, PAGE_NAME, PAPER_COLOR, POLYGON, PROJECTION_NAME,
+    RECTANGLE, REFERENCE_GRID, REMOVE_OVERRIDES, ROTATION, SAVE_PROJECTION, SCALE, SECOND_COLOR,
+    SECOND_PARALLEL, SHAPE, SIZE, STROKE_COLOR, STROKE_WIDTH, UNIT_NAMES, WIDTH, custom_row,
+    length_text, unit_name,
 };
 use super::pad::atlas::{
     BORDER_GAP, DISTANCE_BY_SIDE, GRID_COLUMN_NAMES, GRID_COLUMNS, SIDE_DISTANCES,
@@ -191,10 +191,6 @@ fn frame_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
         border_rows(ui, state, frame);
     }
     grid_rows(ui, state, frame);
-    ui.add_space(4.0);
-    if ui.button(DELETE_FRAME).clicked() {
-        atlas::delete_frame(state);
-    }
 }
 
 /// The interval, the color, the width, and the edge labels of the graticule
@@ -1250,10 +1246,6 @@ fn item_panel(ui: &mut egui::Ui, state: &mut AppState, rec: &vale_store::Furnitu
                     text_grid(ui, state, id, TextPart::Letter, &n.letter_style);
                 });
         }
-    }
-    ui.add_space(6.0);
-    if ui.button(item::delete_name(kind)).clicked() {
-        atlas::delete_item(state);
     }
     ui.add_space(6.0);
 }

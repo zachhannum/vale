@@ -1740,20 +1740,27 @@ fn input(ui: &egui::Ui, state: &mut AppState, resp: &egui::Response, place: Page
     let typing = ui.ctx().memory(|m| m.focused().is_some());
     let delete =
         ui.input(|i| i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace));
-    if delete && !typing && state.atlas.tool == AtlasTool::Select {
-        if state.atlas.frame().is_some() {
-            delete_frame(state);
-        } else if state.atlas.item().is_some() {
-            delete_item(state);
+    let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
+    match state.atlas.tool {
+        _ if typing => {}
+        AtlasTool::Select => {
+            if delete {
+                delete_selection(state);
+            }
+            if escape {
+                clear_selection(state);
+            }
         }
-    }
-    if !typing && state.atlas.tool == AtlasTool::Vertex {
-        if delete {
-            delete_vertices(state);
+        AtlasTool::Move if escape => clear_selection(state),
+        AtlasTool::Vertex => {
+            if delete {
+                delete_vertices(state);
+            }
+            if escape {
+                deselect(state);
+            }
         }
-        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-            deselect(state);
-        }
+        _ => {}
     }
 }
 
@@ -1780,6 +1787,26 @@ pub fn deselect(state: &mut AppState) {
         state.atlas.selection = AtlasSelection::None;
     } else {
         state.atlas.vertices.clear();
+    }
+}
+
+/// True if a frame or an item of furniture is selected.
+pub fn has_selection(state: &AppState) -> bool {
+    state.atlas.frame().is_some() || state.atlas.item().is_some()
+}
+
+/// Clears the selection and the selected vertices.
+pub fn clear_selection(state: &mut AppState) {
+    state.atlas.selection = AtlasSelection::None;
+    state.atlas.vertices.clear();
+}
+
+/// Deletes the selected frame or the selected item of furniture.
+pub fn delete_selection(state: &mut AppState) {
+    if state.atlas.frame().is_some() {
+        delete_frame(state);
+    } else {
+        delete_item(state);
     }
 }
 

@@ -21,7 +21,7 @@ use vale_app::ui::atlas::{AtlasSelection, AtlasTool, FrameTab};
 use vale_app::ui::map_texture::MapRenderer;
 use vale_app::ui::pad::atlas::{
     ADD, ADD_HOLE, ADD_PAGE, AUTO_INTERVAL, BORDER, BORDER_DISTANCE, BORDER_STROKE, BORDER_STYLES,
-    BORDER_WIDTH, CENTER_ON_FRAME, DELETE_FRAME, DELETE_PAGE, DELETE_PROJECTION, EXPORT_ATLAS_PDF,
+    BORDER_WIDTH, CENTER_ON_FRAME, DELETE_PAGE, DELETE_PROJECTION, EXPORT_ATLAS_PDF,
     EXPORT_PAGE_PDF, EXPORT_PAGE_PNG, FIRST_PARALLEL, FRAME_TABS, GRATICULE_COLOR, GRATICULE_WIDTH,
     HEIGHT, INTERVAL, LABEL_FORMATS, MAP_FRAME, MAP_NAME, NEATLINE, NEATLINE_COLOR, NEATLINE_WIDTH,
     NEXT_PAGE, OBLIQUE, PAPER_COLOR, POLYGON, PREVIOUS_PAGE, PROJECTION, REFERENCE_GRID,
@@ -37,7 +37,7 @@ use vale_app::ui::pad::edge_labels::{
 };
 use vale_app::ui::pad::furniture::{
     self as item, ALIGNMENTS, COLOR as ITEM_COLOR, ENTRIES, ENTRY_NAME, ITEM_TEXT,
-    MAP_FRAME as ITEM_MAP_FRAME, RESET_ENTRIES, STYLE as ITEM_STYLE, delete_name, entry_names,
+    MAP_FRAME as ITEM_MAP_FRAME, RESET_ENTRIES, STYLE as ITEM_STYLE, entry_names,
 };
 use vale_app::ui::pad::labels::{
     ADD_CLASS, BUFFER, CASE, COLOR, CURVE_LIMIT, DELETE_CLASS, DUPLICATE_DISTANCE,
@@ -56,6 +56,7 @@ use vale_app::ui::pad::{
     CLEAR_PATH, DELETE_VERTEX, DESELECT, GRATICULE, MEASURE, Panel, SNAP, SNAP_DISTANCE,
     SNAP_EDGES, SNAP_VERTICES, SNAPPING, readout_line,
 };
+use vale_app::ui::select::DELETE as DELETE_SELECTION;
 use vale_app::ui::{Action, AppState, ExportFormat, Layout, Screen, Workspace, draw};
 use vale_labeler::{Placement, PolygonMode};
 use vale_render::Item;
@@ -1030,9 +1031,8 @@ fn the_tabs_of_a_frame_work_with_a_finger() {
         h.state_mut().atlas.selection = AtlasSelection::Frame(inset);
         h.state_mut().atlas.tab = FrameTab::Frame;
         h.run_steps(3);
-        scroll_to(&mut h, DELETE_FRAME);
-        assert!(control(&h, DELETE_FRAME).is_some(), "{size:?}");
-        check_controls(&h, "bottom of the frame tab");
+        assert!(control(&h, DELETE_SELECTION).is_some(), "{size:?}");
+        check_controls(&h, "context strip of the frame");
     }
 }
 
@@ -1252,7 +1252,7 @@ fn the_panel_of_the_page_adds_a_page_and_deletes_the_open_page() {
 }
 
 #[test]
-fn the_frame_tab_deletes_the_frame_and_an_undo_brings_it_back() {
+fn the_context_strip_deletes_the_frame_and_undo_brings_it_back() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("project.gpkg");
     let mut s = state();
@@ -1265,8 +1265,10 @@ fn the_frame_tab_deletes_the_frame_and_an_undo_brings_it_back() {
     let inset = frame(&h, 1);
     assert_eq!(h.state().atlas.selection, AtlasSelection::Frame(inset.id));
 
-    scroll_to(&mut h, DELETE_FRAME);
-    tap(&mut h, DELETE_FRAME);
+    assert!(control(&h, SNAP_TO_LAYOUT).is_some());
+    assert!(control(&h, DESELECT).is_some());
+    screenshot::save(&mut h, "pad-atlas-select-strip");
+    tap(&mut h, DELETE_SELECTION);
     let page = open_page(&h);
     assert_eq!(page.frames.len(), 1);
     assert!(page.frames.iter().all(|f| f.id != inset.id));
@@ -1274,13 +1276,57 @@ fn the_frame_tab_deletes_the_frame_and_an_undo_brings_it_back() {
     assert!(h.state().atlas.vertices.is_empty());
     assert!(!h.state().atlas.has_image(inset.id));
     assert_eq!(h.state().atlas.panel_rect, None);
-    assert!(control(&h, DELETE_FRAME).is_none());
+    assert!(control(&h, DELETE_SELECTION).is_none());
+    assert!(control(&h, DESELECT).is_none());
 
     h.state_mut().save_waiting().unwrap();
     tap(&mut h, "Undo");
     let page = open_page(&h);
     assert_eq!(page.frames.len(), 2);
     assert_eq!(page.frames[1], inset);
+}
+
+#[test]
+fn deselect_clears_the_atlas_selection() {
+    let mut h = inset_pad(BOARDS[0]);
+    let inset = frame(&h, 1).id;
+    assert_eq!(h.state().atlas.tool, AtlasTool::Select);
+    // Deselect in the context strip clears the selected frame.
+    tap(&mut h, DESELECT);
+    assert_eq!(h.state().atlas.selection, AtlasSelection::None);
+    assert!(control(&h, DESELECT).is_none());
+    assert!(control(&h, DELETE_SELECTION).is_none());
+    assert_eq!(open_page(&h).frames.len(), 2);
+    // It clears a selected item of furniture.
+    add_item(&mut h, ItemKind::NorthArrow);
+    assert!(matches!(h.state().atlas.selection, AtlasSelection::Item(_)));
+    assert!(control(&h, SNAP_TO_LAYOUT).is_none());
+    tap(&mut h, DESELECT);
+    assert_eq!(h.state().atlas.selection, AtlasSelection::None);
+    assert_eq!(open_page(&h).furniture.len(), 1);
+    // Esc clears the selection on the desktop.
+    h.state_mut().atlas.selection = AtlasSelection::Frame(inset);
+    h.run_steps(2);
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+    assert_eq!(h.state().atlas.selection, AtlasSelection::None);
+}
+
+#[test]
+fn the_move_tool_strip_has_deselect() {
+    let mut h = inset_pad(BOARDS[0]);
+    let inset = frame(&h, 1).id;
+    tap(&mut h, "Move");
+    assert_eq!(h.state().atlas.tool, AtlasTool::Move);
+    assert_eq!(h.state().atlas.selection, AtlasSelection::Frame(inset));
+    assert!(control(&h, DESELECT).is_some());
+    for name in [SNAP_TO_LAYOUT, DELETE_SELECTION, DELETE_VERTEX] {
+        assert!(control(&h, name).is_none(), "{name}");
+    }
+    tap(&mut h, DESELECT);
+    assert_eq!(h.state().atlas.selection, AtlasSelection::None);
+    assert!(control(&h, DESELECT).is_none());
+    assert_eq!(open_page(&h).frames.len(), 2);
 }
 
 #[test]
@@ -1459,14 +1505,12 @@ fn the_frame_tab_renames_the_map_of_the_frame() {
 #[test]
 fn deleting_a_frame_deletes_its_map_but_the_last_map_stays() {
     let mut h = inset_pad(BOARDS[0]);
-    scroll_to(&mut h, DELETE_FRAME);
-    tap(&mut h, DELETE_FRAME);
+    tap(&mut h, DELETE_SELECTION);
     assert_eq!(map_names(&h), ["Map"]);
     let first = h.state().doc.project.atlas.pages[0].frames[0].id;
     h.state_mut().atlas.selection = AtlasSelection::Frame(first);
     h.run_steps(2);
-    scroll_to(&mut h, DELETE_FRAME);
-    tap(&mut h, DELETE_FRAME);
+    tap(&mut h, DELETE_SELECTION);
     assert_eq!(map_names(&h), ["Map"]);
     // The next frame takes the map that no frame shows.
     add_frame(&mut h);
@@ -1932,6 +1976,7 @@ fn the_neatline_controls_work_with_a_finger() {
         scroll_to(&mut h, &hue);
         check_controls(&h, "neatline color");
         let before = frame(&h, 1).neatline.color;
+        scroll_up_to(&mut h, &shade);
         let square = control(&h, &shade).unwrap();
         tap_with(&mut h, square.right_top() + vec2(-4.0, 4.0), Input::Finger);
         assert_ne!(frame(&h, 1).neatline.color, before, "{size:?}");
@@ -5183,12 +5228,11 @@ fn the_add_button_adds_each_item_of_furniture() {
         assert!(h.state().atlas.has_item_image(rec.id), "{kind:?}");
         // The panel of the item opens.
         assert!(h.state().atlas.panel_rect.is_some(), "{kind:?}");
-        scroll_to(&mut h, delete_name(kind));
-        assert!(control(&h, delete_name(kind)).is_some(), "{kind:?}");
+        assert!(control(&h, DELETE_SELECTION).is_some(), "{kind:?}");
         check_controls(&h, kind.name());
     }
-    // A delete takes the item away.
-    tap(&mut h, delete_name(ItemKind::NorthArrow));
+    // Delete in the context strip takes the item away.
+    tap(&mut h, DELETE_SELECTION);
     assert_eq!(open_page(&h).furniture.len(), 3);
     assert_eq!(h.state().atlas.selection, AtlasSelection::None);
 }
@@ -5333,8 +5377,7 @@ fn deleting_a_frame_relinks_its_items() {
 
     h.state_mut().atlas.selection = AtlasSelection::Frame(main);
     h.run_steps(2);
-    scroll_to(&mut h, DELETE_FRAME);
-    tap(&mut h, DELETE_FRAME);
+    tap(&mut h, DELETE_SELECTION);
     assert_eq!(open_page(&h).frames.len(), 1);
     assert_eq!(item(&h, 0).item.frame(), Some(inset));
     assert_eq!(item(&h, 1).item.frame(), Some(inset));
@@ -5342,8 +5385,7 @@ fn deleting_a_frame_relinks_its_items() {
 
     h.state_mut().atlas.selection = AtlasSelection::Frame(inset);
     h.run_steps(2);
-    scroll_to(&mut h, DELETE_FRAME);
-    tap(&mut h, DELETE_FRAME);
+    tap(&mut h, DELETE_SELECTION);
     assert_eq!(item(&h, 0).item.frame(), None);
     assert_eq!(item(&h, 1).item.frame(), None);
     assert_eq!(open_page(&h).furniture.len(), 3);
@@ -5581,7 +5623,7 @@ fn every_page_of_the_scale_bar_panel_works_with_a_finger() {
         assert!(control(&h, &field(item::BAR_HEIGHT)).is_none(), "{what}");
         assert!(control(&h, item::LINE_COLOR).is_some());
         back(&mut h);
-        tap_row(&mut h, item::delete_name(ItemKind::ScaleBar));
+        tap(&mut h, DELETE_SELECTION);
         assert!(open_page(&h).furniture.is_empty());
     }
 }

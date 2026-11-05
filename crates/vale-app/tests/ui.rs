@@ -10,8 +10,7 @@ use vale_app::projects::Locations;
 use vale_app::session::Session;
 use vale_app::ui::atlas::{AtlasSelection, AtlasTool, FrameTab};
 use vale_app::ui::pad::atlas::{
-    ADD_PAGE, CENTER_ON_FRAME, DELETE_FRAME, FRAME_TABS, MAP_NAME, NEXT_PAGE, PAGE_NAME,
-    PREVIOUS_PAGE, SCALE,
+    ADD_PAGE, CENTER_ON_FRAME, FRAME_TABS, MAP_NAME, NEXT_PAGE, PAGE_NAME, PREVIOUS_PAGE, SCALE,
 };
 use vale_app::ui::pad::{DELETE_VERTEX, DESELECT};
 use vale_app::ui::pad::{SCULPT, TERRAIN};
@@ -1269,17 +1268,26 @@ fn the_wheel_zooms_the_page_and_with_the_move_tool_the_map_of_the_selected_frame
 }
 
 #[test]
-fn the_dock_deletes_the_selected_frame() {
+fn the_tool_bar_deletes_and_deselects_the_selection() {
+    use vale_app::ui::select::DELETE;
     let mut h = harness();
     let frame = h.state().doc.project.atlas.pages[0].frames[0].id;
+    assert!(h.query_by_label(DELETE).is_none());
     h.state_mut().atlas.selection = AtlasSelection::Frame(frame);
     h.run_steps(3);
-    h.get_by_label(DELETE_FRAME).click();
+    h.get_by_label(DESELECT).click();
+    h.run_steps(3);
+    assert_eq!(h.state().atlas.selection, AtlasSelection::None);
+    assert!(h.query_by_label(DESELECT).is_none());
+    h.state_mut().atlas.selection = AtlasSelection::Frame(frame);
+    h.run_steps(3);
+    h.get_by_label(DELETE).click();
     h.run_steps(3);
     assert!(h.state().doc.project.atlas.frame(frame).is_none());
     assert_eq!(h.state().atlas.selection, AtlasSelection::None);
     assert!(!h.state().atlas.has_image(frame));
-    assert!(h.query_by_label(DELETE_FRAME).is_none());
+    assert!(h.query_by_label(DELETE).is_none());
+    assert!(h.query_by_label("Delete frame").is_none());
 }
 
 #[test]
