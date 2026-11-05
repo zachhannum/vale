@@ -11347,3 +11347,253 @@ fn the_sheet_stays_in_its_place_during_a_drag() {
         touch(&mut h, egui::TouchPhase::End, from, None);
     }
 }
+
+/// The iPhone layout in portrait, on a device with no pen.
+fn phone(gpu: bool) -> Pad {
+    let ((width, height), safe) = IPHONES[0];
+    let size = (width as f32, height as f32);
+    let mut h = if gpu {
+        gpu_pad(size)
+    } else {
+        safe_pad(size, safe)
+    };
+    h.state_mut().globe.nav.no_pen = true;
+    h
+}
+
+/// A touch of finger `id`, with no force, in the next frame. The first
+/// finger is also the pointer. The events of one frame stay in that frame.
+fn finger(h: &mut Pad, id: u64, phase: egui::TouchPhase, pos: Pos2) {
+    let events = &mut h.input_mut().events;
+    events.push(egui::Event::Touch {
+        device_id: egui::TouchDeviceId(0),
+        id: egui::TouchId(id),
+        phase,
+        pos,
+        force: None,
+    });
+    if id != 1 {
+        return;
+    }
+    events.push(egui::Event::PointerMoved(pos));
+    if phase != egui::TouchPhase::Move {
+        events.push(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: phase == egui::TouchPhase::Start,
+            modifiers: egui::Modifiers::NONE,
+        });
+    }
+    if phase == egui::TouchPhase::End {
+        events.push(egui::Event::PointerGone);
+    }
+}
+
+/// Two fingers come down left and right of the middle of the canvas, with
+/// `gap` frames between them, move apart to twice the distance, and lift.
+fn pinch(h: &mut Pad, gap: usize) {
+    use egui::TouchPhase::{End, Move, Start};
+    let c = h.state().globe.rect.center();
+    let at = |id: u64, apart: f32| c + vec2(if id == 1 { -apart } else { apart }, 0.0);
+    finger(h, 1, Start, at(1, 40.0));
+    for _ in 0..gap {
+        h.step();
+    }
+    finger(h, 2, Start, at(2, 40.0));
+    h.step();
+    for i in 1..=6 {
+        for id in [1, 2] {
+            finger(h, id, Move, at(id, 40.0 + 40.0 * i as f32 / 6.0));
+        }
+        h.step();
+    }
+    for id in [1, 2] {
+        finger(h, id, End, at(id, 80.0));
+    }
+    h.run_steps(3);
+}
+
+/// A phone with the line tool on a new line layer, or the point tool on a
+/// new point layer.
+fn phone_with(gpu: bool, kind: GeometryKind) -> (Pad, vale_store::LayerId) {
+    let mut h = phone(gpu);
+    let id = h.state_mut().doc.add_layer(kind);
+    h.state_mut().select(Some(LayerRef::Vector(id)));
+    h.state_mut().globe.tool = match kind {
+        GeometryKind::Point => Tool::Point,
+        _ => Tool::Line,
+    };
+    h.run_steps(2);
+    (h, id)
+}
+
+#[test]
+fn one_finger_draws_a_line_and_places_a_point_on_a_phone() {
+    let (mut h, lines) = phone_with(false, GeometryKind::Line);
+    assert!(h.state().globe.lining());
+    let view = h.state().globe.view;
+    let c = h.state().globe.rect.center();
+    drag(&mut h, c - vec2(60.0, 0.0), c + vec2(60.0, 40.0), None);
+    assert_eq!(line_features(&h, lines).len(), 1);
+    assert_eq!(h.state().globe.view, view);
+
+    let (mut h, points) = phone_with(false, GeometryKind::Point);
+    assert!(h.state().globe.placing());
+    let c = h.state().globe.rect.center();
+    touch(&mut h, egui::TouchPhase::Start, c, None);
+    h.step();
+    touch(&mut h, egui::TouchPhase::End, c, None);
+    h.run_steps(3);
+    assert_eq!(line_features(&h, points).len(), 1);
+    assert_eq!(h.state().globe.view, view);
+}
+
+#[test]
+fn two_fingers_zoom_the_globe_on_a_phone_and_do_not_draw() {
+    // The second finger comes in the same frame, and while the first can
+    // still be a gesture.
+    for gap in [0, 1] {
+        let (mut h, lines) = phone_with(false, GeometryKind::Line);
+        let zoom = h.state().globe.view.zoom;
+        pinch(&mut h, gap);
+        let after = h.state().globe.view.zoom;
+        assert!((after / zoom - 2.0).abs() < 0.05, "gap {gap}: {after}");
+        assert!(line_features(&h, lines).is_empty(), "gap {gap}");
+        assert!(!h.state().globe.nav.active(), "gap {gap}");
+    }
+}
+
+#[test]
+fn a_second_finger_ends_the_stroke_of_the_first_and_zooms() {
+    use egui::TouchPhase::{End, Move, Start};
+    let (mut h, lines) = phone_with(false, GeometryKind::Line);
+    let zoom = h.state().globe.view.zoom;
+    let c = h.state().globe.rect.center();
+    finger(&mut h, 1, Start, c - vec2(80.0, 0.0));
+    h.step();
+    finger(&mut h, 1, Move, c - vec2(40.0, 0.0));
+    h.step();
+    finger(&mut h, 2, Start, c + vec2(40.0, 0.0));
+    h.step();
+    finger(&mut h, 1, Move, c - vec2(80.0, 0.0));
+    finger(&mut h, 2, Move, c + vec2(80.0, 0.0));
+    h.step();
+    for id in [1, 2] {
+        finger(&mut h, id, End, c);
+    }
+    h.run_steps(3);
+    let features = line_features(&h, lines);
+    assert_eq!(features.len(), 1);
+    let after = h.state().globe.view.zoom;
+    assert!((after / zoom - 2.0).abs() < 0.05, "{after}");
+}
+
+#[test]
+fn a_tap_of_two_or_three_fingers_is_undo_or_redo_on_a_phone() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, lines) = phone_with(false, GeometryKind::Line);
+    let state = h.state_mut();
+    state.session = Some(Session::open(&dir.path().join("w.gpkg"), &mut state.doc).unwrap());
+    state.save_waiting().unwrap();
+    h.run_steps(2);
+    let c = h.state().globe.rect.center();
+    drag(&mut h, c - vec2(60.0, 0.0), c + vec2(60.0, 40.0), None);
+    for _ in 0..3 {
+        step_and_save(&mut h, false);
+    }
+    let view = h.state().globe.view;
+    assert_eq!(line_features(&h, lines).len(), 1);
+    tap_fingers(&mut h, 2);
+    assert!(line_features(&h, lines).is_empty());
+    tap_fingers(&mut h, 3);
+    assert_eq!(line_features(&h, lines).len(), 1);
+    assert_eq!(h.state().globe.view, view);
+}
+
+#[test]
+fn one_finger_turns_the_globe_with_move_on_a_phone_and_with_the_line_tool_on_an_ipad() {
+    let mut h = phone(false);
+    h.state_mut().globe.tool = Tool::Navigate;
+    h.run_steps(2);
+    let view = h.state().globe.view;
+    let c = h.state().globe.rect.center();
+    drag(&mut h, c - vec2(60.0, 0.0), c + vec2(60.0, 40.0), None);
+    assert_ne!(h.state().globe.view, view);
+
+    let (mut h, lines) = phone_with(false, GeometryKind::Line);
+    h.state_mut().globe.nav.no_pen = false;
+    let view = h.state().globe.view;
+    drag(&mut h, c - vec2(60.0, 0.0), c + vec2(60.0, 40.0), None);
+    assert!(line_features(&h, lines).is_empty());
+    assert_ne!(h.state().globe.view, view);
+    // The pen draws.
+    drag(&mut h, c - vec2(60.0, 0.0), c + vec2(60.0, 40.0), Some(0.5));
+    assert_eq!(line_features(&h, lines).len(), 1);
+}
+
+#[test]
+#[ignore = "gpu"]
+fn one_finger_paints_with_no_pressure_on_a_phone() {
+    let _gpu = one_gpu_test();
+    let mut h = phone(true);
+    h.state_mut().globe.tool = Tool::Brush;
+    h.run_steps(2);
+    let view = h.state().globe.view;
+    let before = middle_level(&h);
+    let c = h.state().globe.rect.center();
+    drag(&mut h, c - vec2(40.0, 0.0), c + vec2(40.0, 0.0), None);
+    settle(&mut h);
+    let level = middle_level(&h);
+    assert!(level > before, "{level} after {before}");
+    assert_eq!(h.state().globe.view, view);
+    // A finger with a force paints as one with no force.
+    tap_fingers(&mut h, 2);
+    settle(&mut h);
+    assert_eq!(middle_level(&h), before);
+    drag(&mut h, c - vec2(40.0, 0.0), c + vec2(40.0, 0.0), Some(0.05));
+    settle(&mut h);
+    assert_eq!(middle_level(&h), level);
+    assert_eq!(h.state().globe.pen.stats.force, None);
+    assert_eq!(h.state().globe.view, view);
+}
+
+#[test]
+#[ignore = "gpu"]
+fn two_fingers_zoom_the_globe_with_the_brush_on_a_phone_and_do_not_paint() {
+    let _gpu = one_gpu_test();
+    let mut h = phone(true);
+    h.state_mut().globe.tool = Tool::Brush;
+    h.run_steps(2);
+    let before = middle_level(&h);
+    assert!(!h.state().globe.can_undo());
+    for gap in [0, 1] {
+        let zoom = h.state().globe.view.zoom;
+        pinch(&mut h, gap);
+        settle(&mut h);
+        assert!(!h.state().globe.can_undo(), "gap {gap}");
+        let after = h.state().globe.view.zoom;
+        assert!((after / zoom - 2.0).abs() < 0.05, "gap {gap}: {after}");
+        assert_eq!(middle_level(&h), before, "gap {gap}");
+    }
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_tap_of_two_or_three_fingers_is_undo_or_redo_of_a_finger_stroke() {
+    let _gpu = one_gpu_test();
+    let mut h = phone(true);
+    h.state_mut().globe.tool = Tool::Brush;
+    h.run_steps(2);
+    let before = middle_level(&h);
+    let c = h.state().globe.rect.center();
+    drag(&mut h, c - vec2(40.0, 0.0), c + vec2(40.0, 0.0), None);
+    settle(&mut h);
+    let level = middle_level(&h);
+    assert!(level > before);
+    tap_fingers(&mut h, 2);
+    settle(&mut h);
+    assert_eq!(middle_level(&h), before);
+    tap_fingers(&mut h, 3);
+    settle(&mut h);
+    assert_eq!(middle_level(&h), level);
+}
