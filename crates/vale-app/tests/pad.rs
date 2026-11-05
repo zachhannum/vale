@@ -349,7 +349,20 @@ fn check_controls(h: &Pad, what: &str) {
     let in_edit = controls
         .iter()
         .any(|c| c.name == vale_app::ui::pad::widgets::COPY);
-    let popup = in_edit
+    // The rows of the open menu of the values of a field.
+    let choice_rows: Vec<String> = (h.state().selection_form.as_ref())
+        .and_then(|form| {
+            let open = form.open.as_ref()?;
+            let i = form.fields.iter().position(|f| &f.name == open)?;
+            let rows = form.choices[i].iter();
+            Some(
+                rows.map(|c| vale_app::ui::pad::widgets::choice_row_name(open, c))
+                    .collect(),
+            )
+        })
+        .unwrap_or_default();
+    let popup = !choice_rows.is_empty()
+        || in_edit
         || in_menu
         || in_modes
         || in_add
@@ -400,7 +413,8 @@ fn check_controls(h: &Pad, what: &str) {
                     && (name.starts_with(vale_app::ui::pad::raster::COLOR) || raster_stop(name));
                 menu || kind || modes || add || stop || (in_menu && name == "Projection")
             };
-            // The edit menu of a field covers the controls below it.
+            // The edit menu and the menu of the values of a field cover the
+            // controls below them.
             let edit = |c: &vale_app::ui::pad::widgets::Control| {
                 use vale_app::ui::pad::widgets::{COPY, PASTE};
                 c.name == COPY || c.name == PASTE
@@ -409,7 +423,9 @@ fn check_controls(h: &Pad, what: &str) {
             // slider, and it takes the touches there.
             let field = |a: &str, b: &str| b.strip_suffix(" value") == Some(a);
             let own = field(&a.name, &b.name) || field(&b.name, &a.name);
-            let covered = own || popup && (row(a) != row(b) || edit(a) != edit(b));
+            let choice = |c: &vale_app::ui::pad::widgets::Control| choice_rows.contains(&c.name);
+            let covered =
+                own || popup && (row(a) != row(b) || edit(a) != edit(b) || choice(a) != choice(b));
             let free = !a.rect.shrink(0.5).intersects(b.rect.shrink(0.5));
             assert!(free || covered, "{what}: {name} and {} overlap", b.name);
         }
@@ -5524,6 +5540,7 @@ fn a_long_press_on_a_field_opens_copy_and_paste_with_no_keyboard() {
     long_press(&mut h, &hex);
     assert!(no_keyboard(&h));
     assert!(control(&h, COPY).is_some());
+    screenshot::save(&mut h, "pad-edit-menu");
     check_controls(&h, "the edit menu of a field");
     tap(&mut h, COPY);
     assert!(control(&h, COPY).is_none());
@@ -10392,6 +10409,84 @@ fn with_one_feature_the_inspector_edits_each_attribute_in_one_undo_step() {
     assert_eq!(attributes(&h)["name"], Value::Null);
     let form = h.state().selection_form.as_ref().unwrap();
     assert_eq!(form.fields[0].text, "");
+}
+
+/// Adds point features far from the picks, with these names.
+fn add_named_points(h: &mut Pad, id: vale_store::LayerId, names: &[&str]) {
+    use vale_store::{Feature, Geometry, Value};
+    for (i, name) in names.iter().enumerate() {
+        let at = [40.0 + i as f64, -40.0];
+        let attributes = [("name".to_owned(), Value::Text((*name).into()))];
+        let feature = Feature::new(Geometry::Points(vec![at]), attributes.into());
+        assert!(h.state_mut().doc.project.add_feature(id, feature));
+    }
+    h.state_mut().save_waiting().unwrap();
+    h.run_steps(2);
+}
+
+#[test]
+fn a_field_lists_the_values_of_the_layer_and_a_tap_on_a_value_is_one_undo_step() {
+    use vale_store::Value;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
+    let id = picks.point.layer;
+    add_named_points(&mut h, id, &["small", "large", "Medium", "small"]);
+    tap(&mut h, select::ATTRIBUTES);
+    let at = screen_at(&h, 0.0, 0.0);
+    finger_tap_at(&mut h, at);
+    let form = h.state().selection_form.as_ref().expect("no form");
+    assert_eq!(form.choices[0], ["large", "Medium", "small"]);
+    let button = vale_app::ui::pad::widgets::choices_name("name");
+    assert!(control(&h, &button).is_some());
+    assert!(control(&h, "name: small").is_none());
+    // The menu opens below the field.
+    tap(&mut h, &button);
+    let field = control(&h, "name").unwrap();
+    let rows = ["name: large", "name: Medium", "name: small"].map(|r| control(&h, r).unwrap());
+    assert!(rows.windows(2).all(|w| w[0].top() < w[1].top()));
+    assert!(rows[0].top() >= field.bottom());
+    check_controls(&h, "the list of values");
+    assert_eq!(toggled(&h, "name: Medium"), Some(false));
+    let saved = saves(&h);
+    tap(&mut h, "name: Medium");
+    let name = |h: &Pad| {
+        let features = line_features(h, id);
+        let feature = features.iter().find(|f| f.uuid() == picks.point.uuid);
+        feature.unwrap().attributes["name"].clone()
+    };
+    assert_eq!(name(&h), Value::Text("Medium".into()));
+    assert_eq!(saves(&h), saved + 1);
+    assert!(control(&h, "name: small").is_none());
+    // The mark shows the current value.
+    tap(&mut h, &button);
+    assert_eq!(toggled(&h, "name: Medium"), Some(true));
+    assert_eq!(toggled(&h, "name: small"), Some(false));
+    screenshot::save(&mut h, "pad-field-values");
+    // A tap outside the menu closes it.
+    tap(&mut h, "name");
+    assert!(control(&h, "name: small").is_none());
+    assert!(h.state().selection_form.as_ref().unwrap().open.is_none());
+    h.state_mut().undo();
+    h.run_steps(2);
+    assert_eq!(name(&h), Value::Null);
+}
+
+#[test]
+fn a_field_with_no_values_or_with_too_many_values_has_no_list() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
+    tap(&mut h, select::ATTRIBUTES);
+    let at = screen_at(&h, 0.0, 0.0);
+    finger_tap_at(&mut h, at);
+    let button = vale_app::ui::pad::widgets::choices_name("name");
+    assert!(control(&h, "name").is_some());
+    assert!(control(&h, &button).is_none());
+    let names: Vec<String> = (0..=select::CHOICES).map(|i| format!("Town {i}")).collect();
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    add_named_points(&mut h, picks.point.layer, &names);
+    finger_tap_at(&mut h, at);
+    assert!(h.state().selection_form.as_ref().unwrap().choices[0].is_empty());
+    assert!(control(&h, &button).is_none());
 }
 
 #[test]
