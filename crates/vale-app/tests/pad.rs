@@ -1185,7 +1185,7 @@ fn you_make_rename_hide_and_delete_a_layer() {
         tap(&mut h, "Show Coast");
         assert!(h.state().doc.visible(id));
 
-        swipe(&mut h, "Coast", -70.0);
+        swipe(&mut h, "Coast", -120.0);
         tap(&mut h, "Delete Coast");
         assert_eq!(
             layer_names(&h),
@@ -1548,7 +1548,7 @@ fn swipe(h: &mut Pad, name: &str, dx: f32) {
 
 /// A swipe that opens a row, and a tap on its Delete button.
 fn swipe_and_delete(h: &mut Pad, name: &str) {
-    swipe(h, name, -70.0);
+    swipe(h, name, -120.0);
     tap(h, &format!("Delete {name}"));
 }
 
@@ -1560,10 +1560,10 @@ fn a_swipe_shows_delete_a_tap_deletes_and_undo_brings_it_back() {
         let mut h = saved_pad(size, dir.path());
         tap(&mut h, "Layers");
         assert!(control(&h, "Delete Rivers").is_none(), "{what}");
-        swipe(&mut h, "Rivers", -70.0);
+        swipe(&mut h, "Rivers", -120.0);
         let rivers = vector(&h, "Rivers");
         let open = h.state().pad.swipe.unwrap();
-        assert_eq!((open.layer, open.moving), (rivers, false), "{what}");
+        assert_eq!((open.row, open.moving), (rivers, false), "{what}");
         let delete = control(&h, "Delete Rivers").unwrap_or_else(|| panic!("{what}"));
         assert!(delete.width() >= 88.0 - 0.5, "{what}: {delete:?}");
         // The eye and the arrow of the open row take no touch.
@@ -1586,7 +1586,11 @@ fn a_swipe_shows_delete_a_tap_deletes_and_undo_brings_it_back() {
         swipe(&mut h, "Height", -0.9 * width);
         assert_eq!(layer_names(&h), ["Height", "Land", "Rivers", "Places"]);
         let open = h.state().pad.swipe.unwrap();
-        assert_eq!(open.offset, -88.0, "{what}");
+        assert_eq!(
+            open.offset,
+            -vale_app::ui::pad::widgets::RENAME_WIDTH,
+            "{what}"
+        );
         tap(&mut h, "Delete Height");
         assert!(h.state().doc.project.rasters().is_empty(), "{what}");
         assert_eq!(layer_names(&h), ["Land", "Rivers", "Places"], "{what}");
@@ -1612,18 +1616,18 @@ fn a_short_swipe_snaps_shut() {
 
         // A tap on the body of an open row shuts it, and a press elsewhere
         // shuts it.
-        swipe(&mut h, "Land", -70.0);
+        swipe(&mut h, "Land", -120.0);
         assert!(h.state().pad.swipe.is_some(), "{what}");
         tap(&mut h, "Layer Land");
         assert_eq!(h.state().pad.swipe, None, "{what}");
-        swipe(&mut h, "Land", -70.0);
+        swipe(&mut h, "Land", -120.0);
         tap(&mut h, "Layer Places");
         assert_eq!(h.state().pad.swipe, None, "{what}");
         assert!(control(&h, "Hide Land").is_some(), "{what}");
         // Only one row is open.
-        swipe(&mut h, "Land", -70.0);
-        swipe(&mut h, "Places", -70.0);
-        let open = h.state().pad.swipe.map(|s| s.layer);
+        swipe(&mut h, "Land", -120.0);
+        swipe(&mut h, "Places", -120.0);
+        let open = h.state().pad.swipe.map(|s| s.row);
         assert_eq!(open, Some(vector(&h, "Places")), "{what}");
         assert!(control(&h, "Delete Land").is_none(), "{what}");
         assert_eq!(layer_names(&h).len(), 4, "{what}");
@@ -11855,4 +11859,46 @@ fn a_tap_of_two_or_three_fingers_is_undo_or_redo_of_a_finger_stroke() {
     tap_fingers(&mut h, 3);
     settle(&mut h);
     assert_eq!(middle_level(&h), level);
+}
+
+#[test]
+fn a_swipe_renames_a_layer_in_the_list() {
+    use vale_app::ui::pad::widgets::RENAME;
+    for size in [BOARDS[0], BOARDS[3]] {
+        let what = format!("{size:?}");
+        let mut h = pad(size);
+        tap(&mut h, "Layers");
+        swipe(&mut h, "Rivers", -120.0);
+        assert!(control(&h, "Delete Rivers").is_some(), "{what}");
+        if size == BOARDS[0] {
+            screenshot::save(&mut h, "pad-layer-swipe");
+        }
+        tap(&mut h, &format!("{RENAME} Rivers"));
+        assert!(control(&h, LAYER_NAME).is_some(), "{what}");
+        check_controls(&h, &what);
+        if size == BOARDS[0] {
+            screenshot::save(&mut h, "pad-layer-rename");
+        }
+        // The name changes when the field loses the focus.
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+        h.run_steps(1);
+        h.event(egui::Event::Text("Streams".to_owned()));
+        h.run_steps(1);
+        assert!(layer_names(&h).contains(&"Rivers".to_string()), "{what}");
+        h.key_press(egui::Key::Enter);
+        h.run_steps(2);
+        assert!(control(&h, LAYER_NAME).is_none(), "{what}");
+        assert!(layer_names(&h).contains(&"Streams".to_string()), "{what}");
+
+        // An empty name keeps the old name.
+        swipe(&mut h, "Streams", -120.0);
+        tap(&mut h, &format!("{RENAME} Streams"));
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+        h.run_steps(1);
+        h.key_press(egui::Key::Backspace);
+        h.run_steps(1);
+        h.key_press(egui::Key::Enter);
+        h.run_steps(2);
+        assert!(layer_names(&h).contains(&"Streams".to_string()), "{what}");
+    }
 }

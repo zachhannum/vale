@@ -419,6 +419,8 @@ pub struct LayerRow {
     pub open: bool,
     /// A tap on the Delete button of an open row.
     pub delete: bool,
+    /// A tap on the Rename button of an open row.
+    pub rename: bool,
 }
 
 /// The width of the Delete button of an open row of the layer list.
@@ -434,10 +436,11 @@ pub fn delete_name(name: &str) -> String {
 /// panel of the layer. `visible` is `None` for a layer with no eye. A row
 /// that is not `live` takes no touch. A `lifted` row covers the rows below it.
 /// A negative `shift` moves the row to the left and shows the Delete button
-/// behind it. The eye and the arrow take touch only at a shift of zero.
+/// behind it. The eye and the arrow take touch only at a shift of zero. A
+/// `note` shows in gray at the right of the name.
 #[allow(clippy::too_many_arguments)]
 pub fn layer_row(
-    ui: &egui::Ui,
+    ui: &mut egui::Ui,
     controls: &mut Controls,
     rect: Rect,
     icon: Icon,
@@ -447,6 +450,7 @@ pub fn layer_row(
     live: bool,
     lifted: bool,
     shift: f32,
+    note: Option<&str>,
 ) -> LayerRow {
     let edge = rect.right() + 8.0;
     let open_rect = Rect::from_center_size(
@@ -474,32 +478,9 @@ pub fn layer_row(
         )
     });
     let highlight = rect.expand2(vec2(8.0, -HIGHLIGHT_INSET));
-    let mut delete = false;
-    if shift < 0.0 {
-        let back = Rect::from_x_y_ranges(reveal.x_range(), highlight.y_range());
-        let painter = ui.painter().with_clip_rect(ui.clip_rect().intersect(back));
-        painter.rect_filled(back, 5.0, theme::WARN);
-        let at = pos2(edge - DELETE_WIDTH / 2.0, rect.center().y);
-        painter.text(
-            at,
-            Align2::CENTER_CENTER,
-            "Delete",
-            theme::body(),
-            theme::CANVAS,
-        );
-        if live && -shift >= DELETE_WIDTH - 0.5 {
-            let area = Rect::from_min_max(
-                pos2(reveal.left(), rect.center().y - TOUCH / 2.0),
-                pos2(edge, rect.center().y + TOUCH / 2.0),
-            );
-            delete = tap_area(ui, controls, area, &delete_name(name), true).clicked();
-        }
-    }
-    // The row slides over the Delete button.
-    let row_clip = Rect::from_x_y_ranges(highlight.left()..=edge + shift, rect.y_range());
-    let painter = ui
-        .painter()
-        .with_clip_rect(ui.clip_rect().intersect(row_clip));
+    let delete = delete_behind(ui, controls, rect, name, live, shift);
+    let rename = live && rename_behind(ui, controls, rect, name, shift);
+    let painter = sliding_painter(ui, rect, shift);
     let moved = vec2(shift, 0.0);
     let highlight = highlight.translate(moved);
     if lifted {
@@ -508,17 +489,33 @@ pub fn layer_row(
     if selected || lifted || body.as_ref().is_some_and(|b| b.is_pointer_button_down_on()) {
         painter.rect_filled(highlight, 5.0, theme::raise());
     }
-    let kind = Rect::from_center_size(
-        pos2(rect.left() + 10.0 + shift, rect.center().y),
-        vec2(18.0, 18.0),
-    );
+    // The icon and the name stay in place while a swipe opens the row, and
+    // the row slides over its buttons.
+    let kind = Rect::from_center_size(pos2(rect.left() + 10.0, rect.center().y), vec2(18.0, 18.0));
     icons::paint(&painter, kind, icon, 18.0, theme::MUTE);
     let shown = visible != Some(false);
+    let mut name_right = body_right - 4.0;
+    if let Some(note) = note {
+        let width = text_width(ui, note, theme::body());
+        let place = Rect::from_min_max(
+            pos2(name_right - width - 2.0, rect.top()),
+            pos2(name_right, rect.bottom()),
+        );
+        name_right = place.left() - 8.0;
+        // The note is a label, so a screen reader and a test can read it.
+        let text = egui::RichText::new(note)
+            .font(theme::body())
+            .color(theme::MUTE);
+        let layout = egui::Layout::right_to_left(egui::Align::Center);
+        let builder = egui::UiBuilder::new().max_rect(place).layout(layout);
+        let mut child = ui.new_child(builder);
+        child.set_clip_rect(painter.clip_rect());
+        child.add(egui::Label::new(text).selectable(false));
+    }
     let clip = Rect::from_min_max(
         pos2(rect.left() + 28.0, rect.top()),
-        pos2(body_right - 4.0, rect.bottom()),
-    )
-    .translate(moved);
+        pos2(name_right, rect.bottom()),
+    );
     painter
         .with_clip_rect(painter.clip_rect().intersect(clip))
         .text(
@@ -539,31 +536,189 @@ pub fn layer_row(
         }
         open =
             icon_button_at(ui, controls, open_rect, &open_name, Icon::Open, false, true).clicked();
-    } else {
+    } else if shift == 0.0 {
         if visible.is_some() {
-            icons::paint(
-                &painter,
-                eye_rect.translate(moved),
-                eye_icon,
-                ICON,
-                theme::MUTE,
-            );
+            icons::paint(&painter, eye_rect, eye_icon, ICON, theme::MUTE);
         }
-        icons::paint(
-            &painter,
-            open_rect.translate(moved),
-            Icon::Open,
-            ICON,
-            theme::MUTE,
-        );
+        icons::paint(&painter, open_rect, Icon::Open, ICON, theme::MUTE);
     }
     LayerRow {
+        rename,
         body,
         eye,
         open,
         delete,
     }
 }
+
+/// The Delete button behind a row that a swipe moves `shift` to the left.
+/// The button takes touch when the row is `live` and fully open. Returns
+/// true if the button was tapped.
+fn delete_behind(
+    ui: &egui::Ui,
+    controls: &mut Controls,
+    rect: Rect,
+    name: &str,
+    live: bool,
+    shift: f32,
+) -> bool {
+    if shift >= 0.0 {
+        return false;
+    }
+    let edge = rect.right() + 8.0;
+    let highlight = rect.expand2(vec2(8.0, -HIGHLIGHT_INSET));
+    let reveal = Rect::from_min_max(pos2(edge + shift, rect.top()), pos2(edge, rect.bottom()));
+    let back = Rect::from_x_y_ranges(reveal.x_range(), highlight.y_range());
+    let painter = ui.painter().with_clip_rect(ui.clip_rect().intersect(back));
+    painter.rect_filled(back, 5.0, theme::WARN);
+    let at = pos2(edge - DELETE_WIDTH / 2.0, rect.center().y);
+    painter.text(
+        at,
+        Align2::CENTER_CENTER,
+        "Delete",
+        theme::body(),
+        theme::CANVAS,
+    );
+    if !live || -shift < DELETE_WIDTH - 0.5 {
+        return false;
+    }
+    let area = Rect::from_min_max(
+        pos2(
+            reveal.left().max(edge - DELETE_WIDTH),
+            rect.center().y - TOUCH / 2.0,
+        ),
+        pos2(edge, rect.center().y + TOUCH / 2.0),
+    );
+    tap_area(ui, controls, area, &delete_name(name), true).clicked()
+}
+
+/// The Rename button to the left of the Delete button of a row that a swipe
+/// moves `shift` to the left. Returns true if the user taps it.
+fn rename_behind(
+    ui: &egui::Ui,
+    controls: &mut Controls,
+    rect: Rect,
+    name: &str,
+    shift: f32,
+) -> bool {
+    let edge = rect.right() + 8.0;
+    if shift > -DELETE_WIDTH {
+        return false;
+    }
+    let highlight = rect.expand2(vec2(8.0, -HIGHLIGHT_INSET));
+    let left = edge + shift;
+    let place = Rect::from_x_y_ranges(left..=edge - DELETE_WIDTH, highlight.y_range());
+    let painter = ui.painter().with_clip_rect(ui.clip_rect().intersect(place));
+    painter.rect_filled(place, 5.0, theme::MUTE);
+    let at = pos2(edge - 1.5 * DELETE_WIDTH, rect.center().y);
+    painter.text(
+        at,
+        Align2::CENTER_CENTER,
+        RENAME,
+        theme::body(),
+        theme::CANVAS,
+    );
+    if -shift < 2.0 * DELETE_WIDTH - 0.5 {
+        return false;
+    }
+    let area = Rect::from_min_max(
+        pos2(left, rect.center().y - TOUCH / 2.0),
+        pos2(edge - DELETE_WIDTH, rect.center().y + TOUCH / 2.0),
+    );
+    tap_area(ui, controls, area, &format!("{RENAME} {name}"), true).clicked()
+}
+
+pub const RENAME: &str = "Rename";
+
+/// The painter of a row that a swipe moves `shift` to the left. The row
+/// slides over its Delete button.
+fn sliding_painter(ui: &egui::Ui, rect: Rect, shift: f32) -> egui::Painter {
+    let left = rect.left() - 8.0;
+    let clip = Rect::from_x_y_ranges(left..=rect.right() + 8.0 + shift, rect.y_range());
+    ui.painter().with_clip_rect(ui.clip_rect().intersect(clip))
+}
+
+/// What the user did with a row that a swipe opens.
+pub struct SwipeRow {
+    /// The row without its Delete button.
+    pub body: Response,
+    /// A tap on the Delete button of an open row.
+    pub delete: bool,
+    /// A tap on the Rename button of an open row.
+    pub rename: bool,
+}
+
+/// A row of a list of choices at a given place, with a check at the left
+/// of the chosen row. A negative `shift` moves the row to the left and shows
+/// the Delete button behind it, as in the layer list, and a Rename button to
+/// its left for a row that the swipe opens by [`RENAME_WIDTH`].
+pub fn swipe_option_row(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    rect: Rect,
+    name: &str,
+    title: &str,
+    on: bool,
+    shift: f32,
+) -> SwipeRow {
+    let edge = rect.right() + 8.0;
+    let end = rect.right();
+    let right = (edge + shift).max(rect.left() + TOUCH).min(end);
+    let body_rect = Rect::from_min_max(rect.min, pos2(right, rect.bottom()));
+    let body = hit(
+        ui,
+        controls,
+        body_rect,
+        name,
+        Sense::click_and_drag(),
+        true,
+        Some(on),
+    );
+    let delete = delete_behind(ui, controls, rect, title, true, shift);
+    let rename = rename_behind(ui, controls, rect, title, shift);
+    let painter = sliding_painter(ui, rect, shift);
+    let moved = vec2(shift, 0.0);
+    if on || body.is_pointer_button_down_on() {
+        let highlight = rect.expand2(vec2(8.0, -HIGHLIGHT_INSET)).translate(moved);
+        painter.rect_filled(highlight, 5.0, theme::raise());
+    }
+    let mark = Rect::from_center_size(pos2(rect.left() + 18.0, rect.center().y), vec2(18.0, 18.0));
+    // The check and the title slide only as far as the left edge of the row,
+    // so that a wide swipe keeps the title in sight.
+    let content = vec2(shift.max(8.0 - (mark.left() - rect.left())), 0.0);
+    if on {
+        icons::paint(
+            &painter,
+            mark.translate(content),
+            Icon::Tick,
+            18.0,
+            theme::ACCENT,
+        );
+    }
+    let color = if on { theme::TEXT } else { theme::MUTE };
+    let clip = Rect::from_min_max(
+        pos2(rect.left() + 38.0, rect.top()),
+        pos2(end - 4.0, rect.bottom()),
+    )
+    .translate(content);
+    painter
+        .with_clip_rect(painter.clip_rect().intersect(clip))
+        .text(
+            clip.left_center(),
+            Align2::LEFT_CENTER,
+            title,
+            theme::body(),
+            color,
+        );
+    SwipeRow {
+        body,
+        delete,
+        rename,
+    }
+}
+
+/// The swipe of a row with a Rename button and a Delete button.
+pub const RENAME_WIDTH: f32 = 2.0 * DELETE_WIDTH;
 
 /// The name of the eye of a layer that is on or off.
 pub fn eye_name(name: &str, shown: bool) -> String {
@@ -1161,6 +1316,17 @@ pub fn field_at(
         None => {}
     }
     resp
+}
+
+/// Gives a field of `field_at` the focus and selects all of its text, so
+/// that the first key replaces the text.
+pub fn focus_all(ui: &egui::Ui, field: &Response, text: &str) {
+    use egui::text::{CCursor, CCursorRange};
+    field.request_focus();
+    let mut edit = egui::TextEdit::load_state(ui.ctx(), field.id).unwrap_or_default();
+    let all = CCursorRange::two(CCursor::new(0), CCursor::new(text.chars().count()));
+    edit.cursor.set_char_range(Some(all));
+    edit.store(ui.ctx(), field.id);
 }
 
 /// The names of the items of the edit menu of a field.

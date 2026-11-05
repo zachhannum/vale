@@ -1,6 +1,8 @@
 //! The document: project, map frame, and layer entries.
 
 use std::borrow::Cow;
+use std::collections::{BTreeMap, BTreeSet};
+use std::mem::take;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -9,9 +11,10 @@ use vale_import::geojson::{self, Imported};
 use vale_render::{Symbol, Symbols};
 use vale_sphere::ProjectionSpec;
 use vale_store::{
-    Field, FieldType, GeometryKind, Layer, LayerId, MapId, Project, ProjectionPreset, Units, World,
+    Field, FieldType, GeometryKind, Layer, LayerId, MapId, MapRecord, MapStyleId, MapStyleRecord,
+    Project, ProjectionPreset, Units, World,
 };
-use vale_style::{Color, LabelClass, LayerStyle, MapStyle, Overrides, Stroke};
+use vale_style::{Color, LabelClass, LayerStyle, MapStyle, Stroke};
 
 use crate::view::View;
 use crate::world;
@@ -314,12 +317,15 @@ impl Document {
 
     /// The layers whose label font is missing, with the warning of each.
     /// The fonts are the fonts of the label styles and of the label classes
-    /// of each map. `families` are the families that the labels can use.
+    /// of each map and each map style. `families` are the families that the
+    /// labels can use.
     pub fn missing_fonts(&self, families: &[String]) -> Vec<(LayerId, String)> {
+        let atlas = &self.project.atlas;
         (self.frame.entries.iter())
             .filter_map(|e| {
-                let stored = (self.project.atlas.maps.iter())
-                    .filter_map(|m| m.labels.get(&e.layer))
+                let maps = atlas.maps.iter().map(|m| &m.labels);
+                let stored = (maps.chain(atlas.map_styles.iter().map(|s| &s.labels)))
+                    .filter_map(|labels| labels.get(&e.layer))
                     .filter_map(|t| vale_style::classes_from_json(t).ok())
                     .flatten()
                     .map(|c| c.font);
@@ -528,11 +534,36 @@ impl Document {
         true
     }
 
-    /// The style overrides of a layer in a map.
-    pub fn overrides(&self, map: MapId, layer: LayerId) -> Overrides {
-        let map = self.project.atlas.map(map);
-        let text = map.and_then(|m| m.overrides.get(&layer));
-        text.map(|t| Overrides::from_json(t)).unwrap_or_default()
+    /// Gives each map with no map style and each map style a copy of the
+    /// globe style of each layer that it has no style for, and turns the
+    /// style overrides of an older file into styles. Returns `true` if the
+    /// project changed.
+    pub fn fill_map_styles(&mut self) -> bool {
+        let layers = crate::map_styles::needed(&self.project);
+        if layers.is_empty() {
+            return false;
+        }
+        let globe: Vec<_> = (layers.into_iter())
+            .filter_map(|id| Some((id, self.layer_style(id)?.to_json())))
+            .collect();
+        crate::map_styles::fill_with(&mut self.project, &globe)
+    }
+
+    /// The stored style of a layer in a target, as JSON. A map with no entry
+    /// gives the entry of its map style.
+    fn style_text(&self, target: Target, layer: LayerId) -> Option<&String> {
+        let atlas = &self.project.atlas;
+        match target {
+            Target::Map(m) => atlas.style_text(m, layer),
+            Target::Style(s) => atlas.map_style(s)?.styles.get(&layer),
+        }
+    }
+
+    /// True if a map links to a map style and holds its own style for a
+    /// layer.
+    pub fn own_style(&self, map: MapId, layer: LayerId) -> bool {
+        let record = self.project.atlas.map(map);
+        record.is_some_and(|m| m.style.is_some() && m.styles.contains_key(&layer))
     }
 
     /// The label classes of a layer in a map. A map with no classes for the
@@ -540,57 +571,113 @@ impl Document {
     /// the label style of the layer. The priority of that class is the place
     /// of the layer in the draw order.
     pub fn label_classes(&self, map: Option<MapId>, layer: LayerId) -> Vec<LabelClass> {
-        let stored = map
-            .and_then(|m| self.project.atlas.map(m))
-            .and_then(|m| m.labels.get(&layer))
+        match map {
+            Some(map) => self.label_classes_in(Target::Map(map), layer),
+            None => self.default_classes(layer, self.layer_style(layer)),
+        }
+    }
+
+    /// The label classes of a layer in a target. A map gives the classes
+    /// that it draws. A target with no classes for the layer gives the class
+    /// of the label style of the layer in the target.
+    pub fn label_classes_in(&self, target: impl Into<Target>, layer: LayerId) -> Vec<LabelClass> {
+        let target = target.into();
+        let stored = self
+            .label_text(target, layer)
             .and_then(|t| vale_style::classes_from_json(t).ok());
         if let Some(classes) = stored {
             return classes;
         }
+        self.default_classes(layer, self.map_style(target, layer))
+    }
+
+    /// The stored label classes of a layer in a target, as JSON. A map
+    /// with no entry gives the entry of its map style.
+    fn label_text(&self, target: Target, layer: LayerId) -> Option<&String> {
+        let atlas = &self.project.atlas;
+        match target {
+            Target::Map(m) => atlas.label_text(m, layer),
+            Target::Style(s) => atlas.map_style(s)?.labels.get(&layer),
+        }
+    }
+
+    /// The class of a label style, with the place of the layer in the draw
+    /// order as its priority.
+    fn default_classes(&self, layer: LayerId, style: Option<LayerStyle>) -> Vec<LabelClass> {
         let Some(position) = self.frame.entries.iter().position(|e| e.layer == layer) else {
             return Vec::new();
         };
-        let (Some(l), Some(entry)) = (self.layer(layer), self.map_entry(map, layer)) else {
+        let (Some(l), Some(style)) = (self.layer(layer), style) else {
             return Vec::new();
         };
         let Some(kind) = l.geometry() else {
             return Vec::new();
         };
-        LabelClass::from_style(&l.name, &entry.style.label, kind, position as i32)
+        LabelClass::from_style(&l.name, &style.label, kind, position as i32)
             .into_iter()
             .collect()
     }
 
-    /// Stores the label classes of a layer in a map. Returns false if nothing
+    /// Stores the label classes of a layer in a target. In a map that links
+    /// to a map style, the classes become the own classes of the map, unless
+    /// they are the classes of the map style. Returns false if nothing
     /// changed.
     pub fn set_label_classes(
         &mut self,
-        map: MapId,
+        target: impl Into<Target>,
         layer: LayerId,
         classes: &[LabelClass],
     ) -> bool {
-        let Some(map) = self.project.atlas.map_mut(map) else {
+        let target = target.into();
+        let shared = self.linked_style(target);
+        let same = shared.is_some_and(|s| self.label_classes_in(s, layer) == classes);
+        let Some((_, _, labels)) = self.parts_mut(target) else {
             return false;
         };
-        let text = vale_style::classes_to_json(classes);
-        if map.labels.get(&layer) == Some(&text) {
-            return false;
-        }
-        map.labels.insert(layer, text);
-        true
+        put_own(labels, layer, vale_style::classes_to_json(classes), same)
     }
 
-    /// The layer with the style of a map. `None` is the style of the layer.
+    /// The map style of a map, as a target. `None` for a map style, and for
+    /// a map with no map style.
+    fn linked_style(&self, target: Target) -> Option<Target> {
+        let Target::Map(map) = target else {
+            return None;
+        };
+        Some(Target::Style(self.project.atlas.map(map)?.style?))
+    }
+
+    /// The hidden layers, the layer styles, and the label classes of a
+    /// target.
+    fn parts_mut(&mut self, target: Target) -> Option<Parts<'_>> {
+        let atlas = &mut self.project.atlas;
+        match target {
+            Target::Map(m) => {
+                let m = atlas.map_mut(m)?;
+                Some((&mut m.hidden, &mut m.styles, &mut m.labels))
+            }
+            Target::Style(s) => {
+                let s = atlas.map_style_mut(s)?;
+                Some((&mut s.hidden, &mut s.styles, &mut s.labels))
+            }
+        }
+    }
+
+    /// The layer with the style of a map. `None` is the globe style.
     pub fn map_entry(&self, map: Option<MapId>, layer: LayerId) -> Option<Cow<'_, LayerEntry>> {
         let entry = self.entry(layer)?;
-        let overrides = map.map(|m| self.overrides(m, layer)).unwrap_or_default();
-        if overrides.is_empty() {
-            return Some(Cow::Borrowed(entry));
-        }
-        Some(Cow::Owned(LayerEntry {
-            layer,
-            style: entry.style.with_overrides(&overrides),
-        }))
+        let style = map.and_then(|m| self.parsed_style(Target::Map(m), layer));
+        Some(match style {
+            Some(style) => Cow::Owned(LayerEntry { layer, style }),
+            None => Cow::Borrowed(entry),
+        })
+    }
+
+    /// The stored style of a layer in a target, if it parses.
+    fn parsed_style(&self, target: Target, layer: LayerId) -> Option<LayerStyle> {
+        let text = self.style_text(target, layer)?;
+        LayerStyle::from_json(text)
+            .inspect_err(|e| eprintln!("The style of layer {layer:?} in a map is not valid: {e}"))
+            .ok()
     }
 
     /// The style of a layer: the style of its entry, or the stored style of
@@ -602,60 +689,453 @@ impl Document {
         }
     }
 
-    /// The style of a layer in a map.
-    pub fn map_style(&self, map: MapId, layer: LayerId) -> Option<LayerStyle> {
-        let base = self.layer_style(layer)?;
-        Some(base.with_overrides(&self.overrides(map, layer)))
+    /// The style of a layer in a target. A map gives the style that it
+    /// draws. A target with no style for the layer gives the globe style.
+    pub fn map_style(&self, target: impl Into<Target>, layer: LayerId) -> Option<LayerStyle> {
+        self.layer(layer)?;
+        (self.parsed_style(target.into(), layer)).or_else(|| self.layer_style(layer))
     }
 
-    /// Makes `edited` the style of a layer in a map, as overrides of the
-    /// style of the layer. Each override of the map stays. Returns false if
-    /// nothing changed.
-    pub fn set_map_style(&mut self, map: MapId, layer: LayerId, edited: &LayerStyle) -> bool {
-        let Some(base) = self.layer_style(layer) else {
-            return false;
-        };
-        let new = self.overrides(map, layer).merged(&base, edited);
-        self.put_overrides(map, layer, &new)
-    }
-
-    /// Removes the style overrides of a layer in a map. Returns false if
-    /// nothing changed.
-    pub fn clear_overrides(&mut self, map: MapId, layer: LayerId) -> bool {
-        self.put_overrides(map, layer, &Overrides::default())
-    }
-
-    fn put_overrides(&mut self, map: MapId, layer: LayerId, new: &Overrides) -> bool {
-        let Some(map) = self.project.atlas.map_mut(map) else {
-            return false;
-        };
-        let old = map.overrides.get(&layer);
-        let text = (!new.is_empty()).then(|| new.to_json());
-        if old == text.as_ref() {
+    /// Makes `edited` the style of a layer in a target. In a map that links
+    /// to a map style, the style becomes the own style of the map, unless it
+    /// is the style of the map style. Returns false if nothing changed.
+    pub fn set_map_style(
+        &mut self,
+        target: impl Into<Target>,
+        layer: LayerId,
+        edited: &LayerStyle,
+    ) -> bool {
+        if self.layer(layer).is_none() {
             return false;
         }
-        match text {
-            Some(text) => map.overrides.insert(layer, text),
-            None => map.overrides.remove(&layer),
+        let target = target.into();
+        let text = edited.to_json();
+        let shared = self.linked_style(target);
+        let same = shared.is_some_and(|s| self.style_text(s, layer) == Some(&text));
+        let Some((_, styles, _)) = self.parts_mut(target) else {
+            return false;
         };
+        put_own(styles, layer, text, same)
+    }
+
+    /// Removes the own style, switch, and label classes of a layer in a map
+    /// that links to a map style, so that the layer looks as in the map
+    /// style. Returns false if nothing changed.
+    pub fn reset_layer_to_map_style(&mut self, map: MapId, layer: LayerId) -> bool {
+        let record = self.project.atlas.map_mut(map);
+        let Some(record) = record.filter(|m| m.style.is_some()) else {
+            return false;
+        };
+        let style = record.styles.remove(&layer).is_some();
+        let labels = record.labels.remove(&layer).is_some();
+        let hidden = record.hidden.remove(&layer);
+        let shown = record.shown.remove(&layer);
+        style || labels || hidden || shown
+    }
+
+    /// Makes a copy of the globe style the style of a layer in a target.
+    /// Returns false if nothing changed.
+    pub fn copy_globe_style(&mut self, target: impl Into<Target>, layer: LayerId) -> bool {
+        let target = target.into();
+        let Some(globe) = self.layer_style(layer) else {
+            return false;
+        };
+        self.set_map_style(target, layer, &globe)
+    }
+
+    /// True if a target shows a layer.
+    pub fn shown(&self, target: impl Into<Target>, layer: LayerId) -> bool {
+        let atlas = &self.project.atlas;
+        match target.into() {
+            Target::Map(m) => atlas.map(m).is_some() && atlas.shows(m, layer),
+            Target::Style(s) => atlas
+                .map_style(s)
+                .is_some_and(|s| !s.hidden.contains(&layer)),
+        }
+    }
+
+    /// Shows or hides a layer in a target. A map with a map style holds
+    /// only the switches that differ from its map style. Returns false if
+    /// nothing changed.
+    pub fn set_shown(&mut self, target: impl Into<Target>, layer: LayerId, on: bool) -> bool {
+        match target.into() {
+            Target::Style(s) => {
+                let Some(style) = self.project.atlas.map_style_mut(s) else {
+                    return false;
+                };
+                set_member(&mut style.hidden, layer, !on)
+            }
+            Target::Map(m) => {
+                let atlas = &mut self.project.atlas;
+                let style_on = (atlas.style_of(m)).is_none_or(|s| !s.hidden.contains(&layer));
+                let Some(map) = atlas.map_mut(m) else {
+                    return false;
+                };
+                let own = on != style_on;
+                let hidden = set_member(&mut map.hidden, layer, own && !on);
+                let shown = set_member(&mut map.shown, layer, own && on);
+                hidden || shown
+            }
+        }
+    }
+
+    /// A map with the settings that it draws as its own settings, and with
+    /// no map style.
+    pub fn resolved_map(&self, map: MapId) -> Option<MapRecord> {
+        let atlas = &self.project.atlas;
+        let record = atlas.map(map)?;
+        let mut out = record.clone();
+        out.style = None;
+        out.shown.clear();
+        out.styles = (self.project.layers().iter())
+            .filter_map(|l| {
+                let text = match atlas.style_text(map, l.id) {
+                    Some(text) => text.clone(),
+                    None => self.layer_style(l.id)?.to_json(),
+                };
+                Some((l.id, text))
+            })
+            .collect();
+        out.legacy_overrides.clear();
+        let Some(style) = atlas.style_of(map) else {
+            return Some(out);
+        };
+        let switches = (record.hidden.iter())
+            .chain(&record.shown)
+            .chain(&style.hidden);
+        out.hidden = switches
+            .copied()
+            .filter(|&l| !atlas.shows(map, l))
+            .collect();
+        out.labels = (record.labels.keys())
+            .chain(style.labels.keys())
+            .filter_map(|&l| Some((l, atlas.label_text(map, l)?.clone())))
+            .collect();
+        Some(out)
+    }
+
+    /// Moves the settings that a map draws into a new map style with a
+    /// free name, and links the map to it. The map keeps no settings of its
+    /// own.
+    pub fn save_as_map_style(&mut self, map: MapId) -> Option<MapStyleId> {
+        let resolved = self.resolved_map(map)?;
+        let atlas = &mut self.project.atlas;
+        let id = atlas.add_map_style(MapStyleRecord {
+            id: MapStyleId(0),
+            name: String::new(),
+            hidden: resolved.hidden,
+            styles: resolved.styles,
+            labels: resolved.labels,
+        });
+        let record = atlas.map_mut(map)?;
+        record.style = Some(id);
+        record.hidden.clear();
+        record.shown.clear();
+        record.styles.clear();
+        record.labels.clear();
+        Some(id)
+    }
+
+    /// Links a map to a map style, and the map drops its own switches,
+    /// styles, and label classes. `None` unlinks the map, and the map keeps
+    /// the settings that it draws. Returns false if nothing changed.
+    pub fn link_map_style(&mut self, map: MapId, style: Option<MapStyleId>) -> bool {
+        let atlas = &self.project.atlas;
+        let Some(record) = atlas.map(map) else {
+            return false;
+        };
+        if record.style == style || style.is_some_and(|s| atlas.map_style(s).is_none()) {
+            return false;
+        }
+        let new = match style {
+            Some(s) => MapRecord {
+                style: Some(s),
+                hidden: BTreeSet::new(),
+                shown: BTreeSet::new(),
+                styles: BTreeMap::new(),
+                legacy_overrides: BTreeMap::new(),
+                labels: BTreeMap::new(),
+                ..record.clone()
+            },
+            None => match self.resolved_map(map) {
+                Some(resolved) => resolved,
+                None => return false,
+            },
+        };
+        if let Some(record) = self.project.atlas.map_mut(map) {
+            *record = new;
+        }
         true
     }
 
-    /// True if a map shows a layer.
-    pub fn shown(&self, map: MapId, layer: LayerId) -> bool {
-        let map = self.project.atlas.map(map);
-        map.is_some_and(|m| !m.hidden.contains(&layer))
+    /// Deletes a map style. Each map with the map style keeps the settings
+    /// that it draws. Returns false if the project has no such map style.
+    pub fn delete_map_style(&mut self, id: MapStyleId) -> bool {
+        if self.project.atlas.map_style(id).is_none() {
+            return false;
+        }
+        let linked: Vec<MapId> = (self.project.atlas.maps.iter())
+            .filter(|m| m.style == Some(id))
+            .map(|m| m.id)
+            .collect();
+        for map in linked {
+            self.link_map_style(map, None);
+        }
+        self.project.atlas.remove_map_style(id);
+        true
     }
 
-    /// Shows or hides a layer in a map. Returns false if nothing changed.
-    pub fn set_shown(&mut self, map: MapId, layer: LayerId, on: bool) -> bool {
-        let Some(map) = self.project.atlas.map_mut(map) else {
+    /// The layers for which a map that links to a map style has its own
+    /// style, switch, or label classes. A map with no map style has none.
+    pub fn local_changes(&self, map: MapId) -> BTreeSet<LayerId> {
+        let Some(m) = self.project.atlas.map(map).filter(|m| m.style.is_some()) else {
+            return BTreeSet::new();
+        };
+        (m.styles.keys().chain(m.labels.keys()))
+            .chain(m.hidden.iter().chain(&m.shown))
+            .copied()
+            .collect()
+    }
+
+    /// Moves the own styles, switches, and label classes of a map into its
+    /// map style, so that each map with the map style gets them. Returns
+    /// false if nothing changed.
+    pub fn update_map_style(&mut self, map: MapId) -> bool {
+        if self.local_changes(map).is_empty() {
+            return false;
+        }
+        let atlas = &mut self.project.atlas;
+        let Some(record) = atlas.map_mut(map) else {
             return false;
         };
-        if on {
-            map.hidden.remove(&layer)
-        } else {
-            map.hidden.insert(layer)
+        let linked = record.style;
+        let (hidden, shown) = (take(&mut record.hidden), take(&mut record.shown));
+        let (styles, labels) = (take(&mut record.styles), take(&mut record.labels));
+        let Some(style) = linked.and_then(|s| atlas.map_style_mut(s)) else {
+            return false;
+        };
+        style.hidden.extend(hidden);
+        style.hidden.retain(|l| !shown.contains(l));
+        style.styles.extend(styles);
+        style.labels.extend(labels);
+        true
+    }
+
+    /// Removes the own styles, switches, and label classes of a map that
+    /// links to a map style. Returns false if nothing changed.
+    pub fn reset_to_map_style(&mut self, map: MapId) -> bool {
+        if self.local_changes(map).is_empty() {
+            return false;
         }
+        let Some(record) = self.project.atlas.map_mut(map) else {
+            return false;
+        };
+        record.hidden.clear();
+        record.shown.clear();
+        record.styles.clear();
+        record.labels.clear();
+        true
+    }
+
+    /// Renames a map style. The name has no spaces at its ends, and it is
+    /// not empty and not the name of another map style. Returns false if
+    /// nothing changed.
+    pub fn rename_map_style(&mut self, id: MapStyleId, name: &str) -> bool {
+        let name = name.trim();
+        let atlas = &mut self.project.atlas;
+        if name.is_empty() || atlas.map_styles.iter().any(|s| s.name == name) {
+            return false;
+        }
+        let Some(style) = atlas.map_style_mut(id) else {
+            return false;
+        };
+        style.name = name.to_string();
+        true
+    }
+}
+
+/// The settings of a map or a map style that a map can change.
+type Parts<'a> = (
+    &'a mut BTreeSet<LayerId>,
+    &'a mut BTreeMap<LayerId, String>,
+    &'a mut BTreeMap<LayerId, String>,
+);
+
+/// Stores `text` as the own entry of a layer. With `shared`, the text is
+/// the entry of the map style, and the own entry goes. Returns false if
+/// nothing changed.
+fn put_own(
+    own: &mut BTreeMap<LayerId, String>,
+    layer: LayerId,
+    text: String,
+    shared: bool,
+) -> bool {
+    if shared {
+        return own.remove(&layer).is_some();
+    }
+    if own.get(&layer) == Some(&text) {
+        return false;
+    }
+    own.insert(layer, text);
+    true
+}
+
+/// Puts `item` in `set` or takes it out. Returns false if nothing changed.
+fn set_member(set: &mut BTreeSet<LayerId>, item: LayerId, member: bool) -> bool {
+    if member {
+        set.insert(item)
+    } else {
+        set.remove(&item)
+    }
+}
+
+/// The map or the map style whose settings an edit changes. A read of a map
+/// gives the settings that the map draws.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Target {
+    Map(MapId),
+    Style(MapStyleId),
+}
+
+impl From<MapId> for Target {
+    fn from(map: MapId) -> Target {
+        Target::Map(map)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_resolved_map_agrees_with_the_settings_that_the_map_draws() {
+        let mut doc = Document::sample();
+        let map = doc.project.atlas.maps[0].id;
+        let layers: Vec<LayerId> = doc.frame.entries.iter().map(|e| e.layer).collect();
+        let (a, b, c) = (layers[0], layers[1], layers[2]);
+        let style = doc.save_as_map_style(map).unwrap();
+        let s = Target::Style(style);
+        assert!(doc.set_shown(s, a, false));
+        assert!(doc.set_shown(s, b, false));
+        assert!(doc.set_shown(map, b, true));
+        assert!(doc.set_shown(map, c, false));
+        let mut wide = doc.map_style(s, a).unwrap();
+        wide.label.size = 31.0;
+        assert!(doc.set_map_style(s, a, &wide));
+        let mut wider = doc.map_style(map, b).unwrap();
+        wider.label.size = 41.0;
+        assert!(doc.set_map_style(map, b, &wider));
+        let mut classes = doc.label_classes(Some(map), c);
+        classes.clear();
+        assert!(doc.set_label_classes(s, c, &classes));
+
+        let resolved = doc.resolved_map(map).unwrap();
+        assert_eq!(resolved.style, None);
+        assert!(resolved.shown.is_empty());
+        let before: Vec<_> = (layers.iter())
+            .map(|&l| {
+                let classes = doc.label_classes(Some(map), l);
+                (doc.shown(map, l), doc.map_style(map, l), classes)
+            })
+            .collect();
+        doc.project.atlas.maps[0] = resolved;
+        let after: Vec<_> = (layers.iter())
+            .map(|&l| {
+                let classes = doc.label_classes(Some(map), l);
+                (doc.shown(map, l), doc.map_style(map, l), classes)
+            })
+            .collect();
+        assert_eq!(before, after);
+        assert!(!after[0].0 && after[1].0 && !after[2].0);
+        assert!(after[2].2.is_empty());
+    }
+
+    /// A sample with a second map, both maps linked to one map style.
+    fn two_linked() -> (Document, MapId, MapId, MapStyleId, Vec<LayerId>) {
+        let mut doc = Document::sample();
+        let a = doc.project.atlas.maps[0].id;
+        let b = doc.project.atlas.add_map();
+        doc.fill_map_styles();
+        let style = doc.save_as_map_style(a).unwrap();
+        assert!(doc.link_map_style(b, Some(style)));
+        let layers = doc.frame.entries.iter().map(|e| e.layer).collect();
+        (doc, a, b, style, layers)
+    }
+
+    #[test]
+    fn update_map_style_moves_the_local_changes_into_the_map_style() {
+        let (mut doc, a, b, style, layers) = two_linked();
+        let (l0, l1) = (layers[0], layers[1]);
+        assert!(doc.local_changes(a).is_empty());
+        assert!(!doc.update_map_style(a));
+        let mut wide = doc.map_style(a, l0).unwrap();
+        wide.label.size = 33.0;
+        assert!(doc.set_map_style(a, l0, &wide));
+        assert!(doc.set_shown(a, l1, false));
+        let mut classes = doc.label_classes(Some(a), l1);
+        classes.clear();
+        assert!(doc.set_label_classes(a, l1, &classes));
+        assert_eq!(doc.local_changes(a), BTreeSet::from([l0, l1]));
+        assert!(doc.local_changes(b).is_empty());
+        assert_ne!(doc.map_style(b, l0), Some(wide.clone()));
+
+        assert!(doc.update_map_style(a));
+        assert!(doc.local_changes(a).is_empty());
+        for map in [a, b] {
+            assert_eq!(doc.map_style(map, l0), Some(wide.clone()));
+            assert!(!doc.shown(map, l1));
+            assert!(doc.label_classes(Some(map), l1).is_empty());
+        }
+        assert_eq!(doc.map_style(Target::Style(style), l0), Some(wide));
+
+        // A switch back on moves too.
+        assert!(doc.set_shown(b, l1, true));
+        assert!(doc.update_map_style(b));
+        assert!(doc.shown(a, l1));
+        assert!(doc.local_changes(b).is_empty());
+    }
+
+    #[test]
+    fn reset_to_map_style_drops_the_local_changes() {
+        let (mut doc, a, _, style, layers) = two_linked();
+        let l0 = layers[0];
+        let before = doc.map_style(a, l0);
+        assert!(!doc.reset_to_map_style(a));
+        let mut wide = before.clone().unwrap();
+        wide.label.size = 33.0;
+        assert!(doc.set_map_style(a, l0, &wide));
+        assert!(doc.set_shown(a, l0, false));
+        assert!(doc.reset_to_map_style(a));
+        assert!(doc.local_changes(a).is_empty());
+        assert_eq!(doc.map_style(a, l0), before);
+        assert!(doc.shown(a, l0));
+        assert_eq!(doc.map_style(Target::Style(style), l0), before);
+
+        // A reset of one layer keeps the local changes of the others.
+        let l1 = layers[1];
+        assert!(doc.set_map_style(a, l0, &wide));
+        assert!(doc.set_shown(a, l0, false));
+        assert!(doc.set_shown(a, l1, false));
+        assert!(doc.reset_layer_to_map_style(a, l0));
+        assert!(!doc.reset_layer_to_map_style(a, l0));
+        assert_eq!(doc.local_changes(a), BTreeSet::from([l1]));
+        assert_eq!(doc.map_style(a, l0), before);
+        assert!(doc.shown(a, l0));
+    }
+
+    #[test]
+    fn a_style_equal_to_the_map_style_is_no_local_change() {
+        let (mut doc, a, _, _, layers) = two_linked();
+        let l0 = layers[0];
+        let shared = doc.map_style(a, l0).unwrap();
+        assert!(!doc.set_map_style(a, l0, &shared));
+        let mut wide = shared.clone();
+        wide.label.size = 33.0;
+        assert!(doc.set_map_style(a, l0, &wide));
+        assert!(doc.set_map_style(a, l0, &shared));
+        assert!(doc.local_changes(a).is_empty());
+        let classes = doc.label_classes(Some(a), l0);
+        assert!(!doc.set_label_classes(a, l0, &classes));
+        assert!(doc.local_changes(a).is_empty());
     }
 }

@@ -170,24 +170,27 @@ pub fn load_image_styles(p: &mut Project) {
     }
 }
 
-/// The raster looks and the image looks that a map overrides.
+/// The raster looks and the image looks of a map that differ from the globe.
 pub type MapLooks = (Vec<(RasterId, RasterLook)>, Vec<(ImageId, Look)>);
 
-/// The looks of the raster layers and the image layers whose style a map
-/// overrides.
+/// The looks of the raster layers and the image layers whose style in a
+/// map differs from the record of the raster or the image.
 pub fn map_looks(doc: &Document, map: MapId) -> MapLooks {
     let (mut rasters, mut images) = (Vec::new(), Vec::new());
-    let Some(record) = doc.project.atlas.map(map) else {
-        return (rasters, images);
-    };
-    for &layer in record.overrides.keys() {
-        let (Some(l), Some(style)) = (doc.project.layer(layer), doc.map_style(map, layer)) else {
+    for l in doc.project.layers() {
+        if l.raster().is_none() && l.image().is_none() {
+            continue;
+        }
+        let Some(style) = doc.map_style(map, l.id) else {
             continue;
         };
         if let (Some(raster), Some(s)) = (l.raster(), style.raster_symbolizer()) {
             let Some(base) = doc.project.raster(raster) else {
                 continue;
             };
+            if symbolizer_of(base) == *s {
+                continue;
+            }
             // The bands keep the range of the raster.
             let bands = (s.stops != base.stops || s.colors != base.colors).then(|| {
                 let mut r = base.clone();
@@ -210,6 +213,12 @@ pub fn map_looks(doc: &Document, map: MapId) -> MapLooks {
             };
             rasters.push((raster, look));
         } else if let (Some(image), Some(s)) = (l.image(), style.image_symbolizer()) {
+            let Some(base) = doc.project.image(image) else {
+                continue;
+            };
+            if base.opacity == s.opacity && base.blend == s.blend {
+                continue;
+            }
             let look = Look {
                 opacity: s.opacity,
                 blend: s.blend,

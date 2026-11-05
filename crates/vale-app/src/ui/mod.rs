@@ -10,14 +10,14 @@ use eframe::egui;
 use vale_labeler::Fonts;
 use vale_sphere::LonLat;
 use vale_store::{
-    BlendMode, Feature, GeometryKind, ImageId, Layer, LayerId, LayerKind, MapId, Project, Raster,
-    RasterDisplay, RasterId, Rgb, StoreError, World,
+    BlendMode, Feature, GeometryKind, ImageId, Layer, LayerId, LayerKind, MapId, MapStyleId,
+    Project, Raster, RasterDisplay, RasterId, Rgb, StoreError, World,
 };
 use vale_style::LabelClass;
 use vale_terrain::{Bands, Heightmap, Mode};
 
 use crate::atlas_export::{ExportStep, PdfExport, RASTER_PIXEL_RATIO};
-use crate::document::Document;
+use crate::document::{Document, Target};
 use crate::files::{Availability, ExportEvent, Files, PlainFiles, SystemEvents};
 use crate::globe::combine::{PolygonMode, StrokeArea};
 use crate::globe::fit;
@@ -333,9 +333,12 @@ pub fn is_height(raster: &Raster) -> bool {
 /// layer of the project.
 fn save_session(
     session: &mut Session,
-    project: &mut Project,
+    doc: &mut Document,
     globe: &mut Globe,
 ) -> Result<(), StoreError> {
+    // A new map and a new layer get their styles in the same undo step.
+    doc.fill_map_styles();
+    let project = &mut doc.project;
     globe.sync_maps();
     sync_reduced(project, globe);
     session.flush(project, &mut globe.raster_maps())?;
@@ -1045,7 +1048,7 @@ impl AppState {
         if self.globe.busy() {
             return;
         }
-        if let Err(e) = save_session(session, &mut self.doc.project, &mut self.globe) {
+        if let Err(e) = save_session(session, &mut self.doc, &mut self.globe) {
             self.status = format!("Could not save project: {e}");
         }
     }
@@ -1411,11 +1414,40 @@ impl AppState {
         self.touch();
     }
 
-    /// Turns a layer on or off in a map, as one undo step. The eye of the
-    /// World workspace keeps its state.
+    /// Moves the settings of a map into a new map style, as one undo step.
+    pub fn save_as_map_style(&mut self, map: MapId) -> Option<MapStyleId> {
+        self.save_edit();
+        let id = self.doc.save_as_map_style(map)?;
+        self.touch();
+        self.save_edit();
+        Some(id)
+    }
+
+    /// Links a map to a map style, or unlinks it with `None`, as one undo
+    /// step.
+    pub fn set_map_style_link(&mut self, map: MapId, style: Option<MapStyleId>) {
+        self.save_edit();
+        if self.doc.link_map_style(map, style) {
+            self.touch();
+            self.save_edit();
+        }
+    }
+
+    /// Deletes a map style, as one undo step. Each of its maps keeps its
+    /// look.
+    pub fn delete_map_style(&mut self, id: MapStyleId) {
+        self.save_edit();
+        if self.doc.delete_map_style(id) {
+            self.touch();
+            self.save_edit();
+        }
+    }
+
+    /// Turns a layer on or off in a map, as one undo step.
+    /// The eye of the World workspace keeps its state.
     pub fn set_map_shown(&mut self, map: MapId, layer: LayerId, on: bool) {
         self.save_edit();
-        if self.doc.set_shown(map, layer, on) {
+        if self.doc.set_shown(Target::Map(map), layer, on) {
             self.touch();
             self.save_edit();
         }
@@ -1423,25 +1455,25 @@ impl AppState {
 
     /// Runs `edit`, which edits the style of `layer` in the panel of the
     /// Layers tab of a frame of `map`. During `edit`, the layer has the style
-    /// of the map, `pad.page` is the page of that panel, and the rules cannot
-    /// be added, moved, or deleted. A change becomes the overrides of the
-    /// map, and the style of the layer stays.
+    /// of the map, and `pad.page` is the page of that panel. A change goes to
+    /// the map, and the globe style stays.
     pub fn edit_map_style(&mut self, map: MapId, layer: LayerId, edit: impl FnOnce(&mut AppState)) {
         let world_page = std::mem::replace(&mut self.pad.page, self.atlas.layer_page);
-        self.pad.rules_fixed = true;
+        let target = Target::Map(map);
         let base = self.doc.entry(layer).map(|e| e.style.clone());
-        let shown = base.as_ref().and_then(|_| self.doc.map_style(map, layer));
+        let shown = base
+            .as_ref()
+            .and_then(|_| self.doc.map_style(target, layer));
         if let (Some(shown), Some(entry)) = (&shown, self.doc.entry_mut(layer)) {
             entry.style = shown.clone();
         }
         edit(self);
         if let (Some(base), Some(shown), Some(entry)) = (base, shown, self.doc.entry_mut(layer)) {
             let edited = std::mem::replace(&mut entry.style, base);
-            if edited != shown && self.doc.set_map_style(map, layer, &edited) {
+            if edited != shown && self.doc.set_map_style(target, layer, &edited) {
                 self.touch();
             }
         }
-        self.pad.rules_fixed = false;
         self.atlas.layer_page = std::mem::replace(&mut self.pad.page, world_page);
     }
 
@@ -1449,7 +1481,7 @@ impl AppState {
     /// in the panel of the Layers tab of a frame of `map`. During `edit`,
     /// `pad.page` is the page of that panel, and the raster record and the
     /// bands of the globe hold the style of the map. The base comes back
-    /// after `edit`, and a change becomes the overrides of the map.
+    /// after `edit`, and a change goes to the map.
     pub fn edit_map_raster(
         &mut self,
         map: MapId,
@@ -1484,7 +1516,8 @@ impl AppState {
         let Some(base) = self.doc.project.raster(id).map(symbolizer_of) else {
             return;
         };
-        let style = self.doc.map_style(map, layer);
+        let target = Target::Map(map);
+        let style = self.doc.map_style(target, layer);
         let Some(mut shown) = style.as_ref().and_then(|s| s.raster_symbolizer()).cloned() else {
             return;
         };
@@ -1515,7 +1548,7 @@ impl AppState {
         if edited != shown {
             if let Some(mut style) = style {
                 style.set_raster_symbolizer(edited);
-                if self.doc.set_map_style(map, layer, &style) {
+                if self.doc.set_map_style(target, layer, &style) {
                     self.touch();
                 }
             }
@@ -1527,7 +1560,7 @@ impl AppState {
     /// layer, or in the style of `map`.
     pub fn look(&self, map: Option<MapId>, layer: LayerId) -> Option<Look> {
         let style = match map {
-            Some(map) => self.doc.map_style(map, layer)?,
+            Some(map) => self.doc.map_style(Target::Map(map), layer)?,
             None => self.doc.layer_style(layer)?,
         };
         if let Some(r) = style.raster_symbolizer() {
@@ -1545,8 +1578,8 @@ impl AppState {
         })
     }
 
-    /// Sets the look of a raster layer or an image layer: in the style of
-    /// the layer, or as overrides of `map`.
+    /// Sets the look of a raster layer or an image layer: in the globe
+    /// style, or in the style of `map`.
     pub fn set_look(&mut self, map: Option<MapId>, layer: LayerId, look: Look) {
         let Some(l) = self.doc.project.layer(layer) else {
             return;
@@ -1576,7 +1609,8 @@ impl AppState {
             }
             return;
         };
-        let Some(mut style) = self.doc.map_style(map, layer) else {
+        let target = Target::Map(map);
+        let Some(mut style) = self.doc.map_style(target, layer) else {
             return;
         };
         let symbolizers = style
@@ -1600,7 +1634,7 @@ impl AppState {
                 _ => {}
             }
         }
-        if self.doc.set_map_style(map, layer, &style) {
+        if self.doc.set_map_style(target, layer, &style) {
             self.touch();
         }
     }
@@ -1611,7 +1645,7 @@ impl AppState {
         match target {
             FontTarget::Layer(id) => Some(self.doc.entry(id)?.style.label.font.clone()),
             FontTarget::Class(map, layer, i) => {
-                let classes = self.doc.label_classes(Some(map), layer);
+                let classes = self.doc.label_classes_in(Target::Map(map), layer);
                 Some(classes.get(i)?.font.clone())
             }
             FontTarget::Edge(id, set) => {
@@ -1645,13 +1679,14 @@ impl AppState {
         i: usize,
         edit: impl FnOnce(&mut LabelClass),
     ) -> bool {
-        let mut classes = self.doc.label_classes(Some(map), layer);
+        let target = Target::Map(map);
+        let mut classes = self.doc.label_classes_in(target, layer);
         let Some(class) = classes.get_mut(i) else {
             return false;
         };
         let before = class.clone();
         edit(class);
-        if *class == before || !self.doc.set_label_classes(map, layer, &classes) {
+        if *class == before || !self.doc.set_label_classes(target, layer, &classes) {
             return false;
         }
         self.touch();
@@ -1680,8 +1715,9 @@ impl AppState {
         let (layer, kind) = (layers.iter().find(|(_, k)| *k == GeometryKind::Point))
             .or_else(|| layers.first())
             .copied()?;
+        let target = Target::Map(map);
         let taken: Vec<String> = (layers.iter())
-            .flat_map(|(l, _)| self.doc.label_classes(Some(map), *l))
+            .flat_map(|(l, _)| self.doc.label_classes_in(target, *l))
             .map(|c| c.name)
             .collect();
         let name = (1..)
@@ -1691,10 +1727,10 @@ impl AppState {
         let priority = (self.doc.frame.entries.iter())
             .position(|e| e.layer == layer)
             .unwrap_or(0) as i32;
-        let mut classes = self.doc.label_classes(Some(map), layer);
+        let mut classes = self.doc.label_classes_in(target, layer);
         classes.push(LabelClass::new(&name, kind, priority)?);
         self.save_edit();
-        self.doc.set_label_classes(map, layer, &classes);
+        self.doc.set_label_classes(target, layer, &classes);
         self.touch();
         self.save_edit();
         Some((layer, classes.len() - 1))
@@ -1703,13 +1739,14 @@ impl AppState {
     /// Deletes class `i` of `layer` in `map`, as one undo step. With no
     /// class left, the layer has no labels in the map.
     pub fn delete_label_class(&mut self, map: MapId, layer: LayerId, i: usize) {
-        let mut classes = self.doc.label_classes(Some(map), layer);
+        let target = Target::Map(map);
+        let mut classes = self.doc.label_classes_in(target, layer);
         if i >= classes.len() {
             return;
         }
         classes.remove(i);
         self.save_edit();
-        if self.doc.set_label_classes(map, layer, &classes) {
+        if self.doc.set_label_classes(target, layer, &classes) {
             self.touch();
             self.save_edit();
         }
@@ -1731,7 +1768,8 @@ impl AppState {
         }
         let kind = self.doc.layer(to)?.geometry()?;
         let placement = vale_style::LabelPlacement::default_for(kind)?;
-        let mut from = self.doc.label_classes(Some(map), layer);
+        let target = Target::Map(map);
+        let mut from = self.doc.label_classes_in(target, layer);
         if i >= from.len() {
             return None;
         }
@@ -1740,11 +1778,11 @@ impl AppState {
             class.placement = placement;
             class.curve_limit = vale_style::curve_limit_for(placement);
         }
-        let mut classes = self.doc.label_classes(Some(map), to);
+        let mut classes = self.doc.label_classes_in(target, to);
         classes.push(class);
         self.save_edit();
-        self.doc.set_label_classes(map, layer, &from);
-        self.doc.set_label_classes(map, to, &classes);
+        self.doc.set_label_classes(target, layer, &from);
+        self.doc.set_label_classes(target, to, &classes);
         self.touch();
         self.save_edit();
         Some(classes.len() - 1)
@@ -1763,9 +1801,10 @@ impl AppState {
     /// priorities keep the order of `label_layers`, then the order of the
     /// classes of the layer.
     pub fn label_class_list(&self, map: MapId) -> Vec<(LayerId, usize, LabelClass)> {
+        let target = Target::Map(map);
         let mut list: Vec<(LayerId, usize, LabelClass)> = (self.label_layers().into_iter())
             .flat_map(|(layer, _)| {
-                let classes = self.doc.label_classes(Some(map), layer);
+                let classes = self.doc.label_classes_in(target, layer);
                 classes
                     .into_iter()
                     .enumerate()
@@ -1781,6 +1820,7 @@ impl AppState {
     /// new order. A layer whose priorities change stores its classes in the
     /// map.
     pub fn reorder_label_classes(&mut self, map: MapId, from: usize, to: usize) {
+        let target = Target::Map(map);
         let mut list = self.label_class_list(map);
         if from >= list.len() || to >= list.len() || from == to {
             return;
@@ -1794,7 +1834,7 @@ impl AppState {
             let at = match layers.iter().position(|(l, _, _)| *l == layer) {
                 Some(at) => at,
                 None => {
-                    let classes = self.doc.label_classes(Some(map), layer);
+                    let classes = self.doc.label_classes_in(target, layer);
                     layers.push((layer, classes, false));
                     layers.len() - 1
                 }
@@ -1811,7 +1851,7 @@ impl AppState {
         self.save_edit();
         let mut any = false;
         for (layer, classes, changed) in layers {
-            any |= changed && self.doc.set_label_classes(map, layer, &classes);
+            any |= changed && self.doc.set_label_classes(target, layer, &classes);
         }
         if any {
             self.touch();
@@ -1819,12 +1859,64 @@ impl AppState {
         }
     }
 
-    /// Removes the style overrides of a layer in a map, as one undo step.
-    pub fn clear_overrides(&mut self, map: MapId, layer: LayerId) {
+    /// Removes the local changes of a layer in a map that links to a map
+    /// style, as one undo step.
+    pub fn reset_layer_to_map_style(&mut self, map: MapId, layer: LayerId) {
         self.save_edit();
-        if self.doc.clear_overrides(map, layer) {
+        if self.doc.reset_layer_to_map_style(map, layer) {
             self.touch();
             self.save_edit();
+        }
+    }
+
+    /// Moves the local changes of a map into its map style, as one undo
+    /// step.
+    pub fn update_map_style(&mut self, map: MapId) {
+        self.save_edit();
+        if self.doc.update_map_style(map) {
+            self.touch();
+            self.save_edit();
+        }
+    }
+
+    /// Removes the local changes of a map, as one undo step.
+    pub fn reset_to_map_style(&mut self, map: MapId) {
+        self.save_edit();
+        if self.doc.reset_to_map_style(map) {
+            self.touch();
+            self.save_edit();
+        }
+    }
+
+    /// Makes a copy of the globe style the style of a layer in the target
+    /// of a map, as one undo step.
+    pub fn copy_globe_style(&mut self, map: MapId, layer: LayerId) {
+        self.sync_raster_style(layer);
+        self.save_edit();
+        if self.doc.copy_globe_style(Target::Map(map), layer) {
+            self.touch();
+            self.save_edit();
+        }
+    }
+
+    /// True if the style of a layer in a map differs from the
+    /// globe style.
+    pub fn differs_from_globe(&self, map: MapId, layer: LayerId) -> bool {
+        self.doc.map_style(Target::Map(map), layer) != self.doc.layer_style(layer)
+    }
+
+    /// Puts the live bands of a raster layer into its record and its style.
+    fn sync_raster_style(&mut self, layer: LayerId) {
+        let Some(id) = self.doc.project.layer(layer).and_then(|l| l.raster()) else {
+            return;
+        };
+        let Some(bands) = self.globe.bands_mut(id).map(|b| b.clone()) else {
+            return;
+        };
+        if let Some(record) = self.doc.project.raster_mut(id) {
+            record.stops = session::record_stops(bands.stops());
+            record.colors = bands.colors().to_vec();
+            raster_style::store_raster_styles(&mut self.doc.project);
         }
     }
 
@@ -2022,16 +2114,17 @@ impl AppState {
         let hold = hold || self.new_feature.is_some();
         let resume_wait = self.resume_tick(hold, now);
         self.doc.store_styles();
+        self.doc.fill_map_styles();
         let edits = self.edits();
         let session = self.session.as_mut()?;
         let saves = session.saves();
         let globe = &mut self.globe;
-        let project = &mut self.doc.project;
         let result = if edits != self.saved_edits {
             // The edit is one undo step, with no part of the next stroke.
             self.saved_edits = edits;
-            save_session(session, project, globe).map(|()| None)
+            save_session(session, &mut self.doc, globe).map(|()| None)
         } else {
+            let project = &mut self.doc.project;
             let hold = hold || globe.busy();
             sync_reduced(project, globe);
             session.tick(project, &mut globe.raster_maps(), hold, now)
@@ -2088,7 +2181,7 @@ impl AppState {
             return Ok(());
         }
         self.saved_edits = edits;
-        let saved = save_session(session, &mut self.doc.project, globe);
+        let saved = save_session(session, &mut self.doc, globe);
         // The system can stop the app in the background, so the project
         // file gets the working copy now.
         let saved = saved.and_then(|()| self.write_back());
@@ -2239,7 +2332,7 @@ impl AppState {
         if globe.busy() {
             globe.map.cancel_stroke();
         }
-        let saved = save_session(session, &mut self.doc.project, globe);
+        let saved = save_session(session, &mut self.doc, globe);
         match saved.and_then(|()| self.write_back()) {
             Ok(()) => true,
             Err(e) => {
@@ -2911,7 +3004,7 @@ impl AppState {
             return;
         };
         self.saved_edits = edits;
-        match save_session(session, &mut self.doc.project, &mut self.globe) {
+        match save_session(session, &mut self.doc, &mut self.globe) {
             Ok(()) => self.saved_at = Some(std::time::Instant::now()),
             Err(e) => {
                 self.save_failed = true;
@@ -3714,6 +3807,8 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         queue.take();
     }
     state.globe.stats.tick(std::time::Instant::now());
+    // A new map and a new layer get their styles before the panels show them.
+    state.doc.fill_map_styles();
     state.poll_import();
     state.poll_probe(false);
     if state.raster_probe.is_some() {

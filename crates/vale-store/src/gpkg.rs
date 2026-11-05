@@ -22,8 +22,8 @@ use rusqlite::{Connection, ErrorCode, OpenFlags, Transaction, params, params_fro
 
 use crate::atlas::{
     self, Atlas, Border, CoordFormat, EdgeLabels, FrameId, FrameRecord, FrameShape, Furniture,
-    FurnitureId, FurnitureRecord, Graticule, LayoutGrid, MapId, MapRecord, Neatline, PageId,
-    PageRecord, PageUnits, ProjectionPreset,
+    FurnitureId, FurnitureRecord, Graticule, LayoutGrid, MapId, MapRecord, MapStyleId,
+    MapStyleRecord, Neatline, PageId, PageRecord, PageUnits, ProjectionPreset,
 };
 use crate::image_tile::image_levels;
 use crate::tile::{self, TILE_SIZE};
@@ -35,7 +35,7 @@ use crate::{
 };
 
 /// The version of the `vale_` tables that this code writes.
-pub const FORMAT_VERSION: u32 = 34;
+pub const FORMAT_VERSION: u32 = 35;
 
 /// One step for each format version. Step `n` changes a file of version `n`
 /// to version `n + 1`. A new version adds a step and never changes an old one.
@@ -74,6 +74,7 @@ const MIGRATIONS: &[fn(&Transaction) -> rusqlite::Result<()>] = &[
     v32,
     v33,
     v34,
+    v35,
 ];
 
 /// `GPKG` in ASCII.
@@ -1189,6 +1190,65 @@ fn v34(tx: &Transaction) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// The map styles, the map style of each map, the layers that a map shows
+/// although its map style hides them, and the style of each layer in a map.
+/// An older file has no map styles and keeps the style overrides of its maps
+/// in `vale_map_style`. A file with an older version number can already have
+/// the tables.
+fn v35(tx: &Transaction) -> rusqlite::Result<()> {
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS vale_shared_style (
+           id INTEGER PRIMARY KEY,
+           position INTEGER NOT NULL UNIQUE,
+           name TEXT NOT NULL);
+         CREATE TABLE IF NOT EXISTS vale_shared_style_hidden (
+           style_id INTEGER NOT NULL REFERENCES vale_shared_style(id),
+           layer_id INTEGER NOT NULL,
+           PRIMARY KEY (style_id, layer_id));
+         CREATE TABLE IF NOT EXISTS vale_shared_style_layer (
+           style_id INTEGER NOT NULL REFERENCES vale_shared_style(id),
+           layer_id INTEGER NOT NULL,
+           style TEXT NOT NULL,
+           PRIMARY KEY (style_id, layer_id));
+         CREATE TABLE IF NOT EXISTS vale_shared_style_label (
+           style_id INTEGER NOT NULL REFERENCES vale_shared_style(id),
+           layer_id INTEGER NOT NULL,
+           classes TEXT NOT NULL,
+           PRIMARY KEY (style_id, layer_id));
+         CREATE TABLE IF NOT EXISTS vale_map_shown (
+           map_id INTEGER NOT NULL REFERENCES vale_map(id),
+           layer_id INTEGER NOT NULL,
+           PRIMARY KEY (map_id, layer_id));
+         CREATE TABLE IF NOT EXISTS vale_map_layer_style (
+           map_id INTEGER NOT NULL REFERENCES vale_map(id),
+           layer_id INTEGER NOT NULL,
+           style TEXT NOT NULL,
+           PRIMARY KEY (map_id, layer_id));
+         INSERT OR IGNORE INTO vale_meta (key, value) VALUES ('next_map_style_id', '0');
+         INSERT OR IGNORE INTO gpkg_contents (table_name, data_type, identifier)
+           VALUES ('vale_shared_style', 'vale', 'vale_shared_style'),
+                  ('vale_shared_style_hidden', 'vale', 'vale_shared_style_hidden'),
+                  ('vale_shared_style_layer', 'vale', 'vale_shared_style_layer'),
+                  ('vale_shared_style_label', 'vale', 'vale_shared_style_label'),
+                  ('vale_map_shown', 'vale', 'vale_map_shown'),
+                  ('vale_map_layer_style', 'vale', 'vale_map_layer_style');
+         INSERT INTO gpkg_extensions
+           SELECT c.table_name, NULL, 'vale_project', 'Records of the Vale app', 'read-write'
+           FROM gpkg_contents c
+           WHERE c.table_name IN ('vale_shared_style', 'vale_shared_style_hidden',
+               'vale_shared_style_layer', 'vale_shared_style_label', 'vale_map_shown',
+               'vale_map_layer_style')
+             AND NOT EXISTS (SELECT 1 FROM gpkg_extensions e
+               WHERE e.table_name = c.table_name AND e.extension_name = 'vale_project');",
+    )?;
+    let sql = "SELECT count(*) FROM pragma_table_info('vale_map') WHERE name = 'shared_style_id'";
+    let count: i64 = tx.query_row(sql, [], |r| r.get(0))?;
+    if count == 0 {
+        tx.execute_batch("ALTER TABLE vale_map ADD COLUMN shared_style_id INTEGER")?;
+    }
+    Ok(())
+}
+
 /// The point symbols that the user adds. An older file has none.
 fn v27(tx: &Transaction) -> rusqlite::Result<()> {
     tx.execute_batch(
@@ -1683,7 +1743,9 @@ fn write_edit(
     if old.is_none_or(|old| !same_base(old, project)) {
         write_base(tx, project)?;
     }
-    write_atlas(tx, project)?;
+    if old.is_none_or(|old| old.atlas != project.atlas) {
+        write_atlas(tx, project)?;
+    }
     if old.is_none_or(|old| old.symbols != project.symbols) {
         write_symbols(tx, project)?;
     }
@@ -1757,9 +1819,10 @@ fn write_base(tx: &Transaction, project: &Project) -> Result<(), StoreError> {
     Ok(())
 }
 
-/// Writes the maps, the pages, the frames, and the furniture. A map does not
-/// keep the hidden ID, the overrides, or the label classes of a layer that
-/// the project does not have. An item of furniture keeps its frame only if
+/// Writes the map styles, the maps, the pages, the frames, and the furniture.
+/// A map or a map style does not keep the hidden ID, the shown ID, the
+/// style, the style overrides, or the label classes of a layer that the
+/// project does not have. A map keeps its map style only if the atlas has it. An item of furniture keeps its frame only if
 /// the frame is on its page.
 fn write_atlas(tx: &Transaction, project: &Project) -> Result<(), StoreError> {
     let atlas = &project.atlas;
@@ -1768,34 +1831,74 @@ fn write_atlas(tx: &Transaction, project: &Project) -> Result<(), StoreError> {
          DELETE FROM vale_frame;
          DELETE FROM vale_map_hidden;
          DELETE FROM vale_map_style;
+         DELETE FROM vale_map_layer_style;
          DELETE FROM vale_map_label;
+         DELETE FROM vale_map_shown;
          DELETE FROM vale_page;
          DELETE FROM vale_map;
+         DELETE FROM vale_shared_style_hidden;
+         DELETE FROM vale_shared_style_layer;
+         DELETE FROM vale_shared_style_label;
+         DELETE FROM vale_shared_style;
          DELETE FROM vale_projection;",
     )?;
+    let has = |id: &LayerId| project.layer(*id).is_some();
+    let mut shared =
+        tx.prepare("INSERT INTO vale_shared_style (id, position, name) VALUES (?1, ?2, ?3)")?;
+    let mut hidden =
+        tx.prepare("INSERT INTO vale_shared_style_hidden (style_id, layer_id) VALUES (?1, ?2)")?;
+    let mut style = tx.prepare(
+        "INSERT INTO vale_shared_style_layer (style_id, layer_id, style) VALUES (?1, ?2, ?3)",
+    )?;
+    let mut label = tx.prepare(
+        "INSERT INTO vale_shared_style_label (style_id, layer_id, classes) VALUES (?1, ?2, ?3)",
+    )?;
+    for (position, s) in atlas.map_styles.iter().enumerate() {
+        shared.execute(params![s.id.0, position, s.name])?;
+        for layer in s.hidden.iter().filter(|id| has(id)) {
+            hidden.execute(params![s.id.0, layer.0])?;
+        }
+        for (layer, text) in s.styles.iter().filter(|(id, _)| has(id)) {
+            style.execute(params![s.id.0, layer.0, text])?;
+        }
+        for (layer, text) in s.labels.iter().filter(|(id, _)| has(id)) {
+            label.execute(params![s.id.0, layer.0, text])?;
+        }
+    }
     let mut preset =
         tx.prepare("INSERT INTO vale_projection (position, name, projection) VALUES (?1, ?2, ?3)")?;
     for (position, p) in atlas.presets.iter().enumerate() {
         preset.execute(params![position, p.name, p.projection])?;
     }
     let mut map = tx.prepare(
-        "INSERT INTO vale_map (id, position, name, projection)
-         VALUES (?1, ?2, ?3, ?4)",
+        "INSERT INTO vale_map (id, position, name, projection, shared_style_id)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
     )?;
+    let mut shown = tx.prepare("INSERT INTO vale_map_shown (map_id, layer_id) VALUES (?1, ?2)")?;
     let mut hidden =
         tx.prepare("INSERT INTO vale_map_hidden (map_id, layer_id) VALUES (?1, ?2)")?;
-    let mut style =
+    let mut style = tx.prepare(
+        "INSERT INTO vale_map_layer_style (map_id, layer_id, style) VALUES (?1, ?2, ?3)",
+    )?;
+    let mut legacy =
         tx.prepare("INSERT INTO vale_map_style (map_id, layer_id, overrides) VALUES (?1, ?2, ?3)")?;
     let mut label =
         tx.prepare("INSERT INTO vale_map_label (map_id, layer_id, classes) VALUES (?1, ?2, ?3)")?;
     for (position, m) in atlas.maps.iter().enumerate() {
-        map.execute(params![m.id.0, position, m.name, m.projection])?;
+        let link = m.style.filter(|id| atlas.map_style(*id).is_some());
+        let link = link.map(|id| id.0);
+        map.execute(params![m.id.0, position, m.name, m.projection, link])?;
         for layer in m.hidden.iter().filter(|id| project.layer(**id).is_some()) {
             hidden.execute(params![m.id.0, layer.0])?;
         }
-        let overrides = m.overrides.iter();
-        for (layer, text) in overrides.filter(|(id, _)| project.layer(**id).is_some()) {
+        for layer in m.shown.iter().filter(|id| has(id)) {
+            shown.execute(params![m.id.0, layer.0])?;
+        }
+        for (layer, text) in m.styles.iter().filter(|(id, _)| has(id)) {
             style.execute(params![m.id.0, layer.0, text])?;
+        }
+        for (layer, text) in m.legacy_overrides.iter().filter(|(id, _)| has(id)) {
+            legacy.execute(params![m.id.0, layer.0, text])?;
         }
         let labels = m.labels.iter();
         for (layer, text) in labels.filter(|(id, _)| project.layer(**id).is_some()) {
@@ -1876,6 +1979,7 @@ fn write_atlas(tx: &Transaction, project: &Project) -> Result<(), StoreError> {
     let mut meta = tx.prepare("INSERT OR REPLACE INTO vale_meta (key, value) VALUES (?1, ?2)")?;
     for (key, n) in [
         ("next_map_id", atlas.next_map_id),
+        ("next_map_style_id", atlas.next_map_style_id),
         ("next_page_id", atlas.next_page_id),
         ("next_frame_id", atlas.next_frame_id),
         ("next_furniture_id", atlas.next_furniture_id),
@@ -2735,9 +2839,11 @@ fn load_atlas(conn: &Connection, units: Units) -> Result<Atlas, StoreError> {
     let default = Atlas::new(units);
     let mut atlas = Atlas {
         maps: Vec::new(),
+        map_styles: Vec::new(),
         presets: Vec::new(),
         pages: Vec::new(),
         next_map_id: counter(conn, "next_map_id")?,
+        next_map_style_id: counter(conn, "next_map_style_id")?,
         next_page_id: counter(conn, "next_page_id")?,
         next_frame_id: counter(conn, "next_frame_id")?,
         next_furniture_id: counter(conn, "next_furniture_id")?,
@@ -2747,17 +2853,70 @@ fn load_atlas(conn: &Connection, units: Units) -> Result<Atlas, StoreError> {
         atlas.grid =
             LayoutGrid::from_json(&text).ok_or_else(|| corrupt(format!("layout grid {text:?}")))?;
     }
-    let mut rows = conn.prepare("SELECT id, name, projection FROM vale_map ORDER BY position")?;
+    let mut rows = conn.prepare("SELECT id, name FROM vale_shared_style ORDER BY position")?;
     let mut rows = rows.query([])?;
     while let Some(r) = rows.next()? {
-        atlas.maps.push(MapRecord {
-            id: MapId(r.get(0)?),
+        atlas.map_styles.push(MapStyleRecord {
+            id: MapStyleId(r.get(0)?),
             name: r.get(1)?,
-            projection: r.get(2)?,
             hidden: BTreeSet::new(),
-            overrides: BTreeMap::new(),
+            styles: BTreeMap::new(),
             labels: BTreeMap::new(),
         });
+    }
+    let mut rows = conn.prepare("SELECT style_id, layer_id FROM vale_shared_style_hidden")?;
+    let mut rows = rows.query([])?;
+    while let Some(r) = rows.next()? {
+        let id = MapStyleId(r.get(0)?);
+        let style = atlas.map_style_mut(id);
+        let style = style.ok_or_else(|| corrupt(format!("hidden layers of map style {}", id.0)))?;
+        style.hidden.insert(LayerId(r.get(1)?));
+    }
+    let mut rows = conn.prepare("SELECT style_id, layer_id, style FROM vale_shared_style_layer")?;
+    let mut rows = rows.query([])?;
+    while let Some(r) = rows.next()? {
+        let id = MapStyleId(r.get(0)?);
+        let style = atlas.map_style_mut(id);
+        let style = style.ok_or_else(|| corrupt(format!("layer styles of map style {}", id.0)))?;
+        style.styles.insert(LayerId(r.get(1)?), r.get(2)?);
+    }
+    let mut rows =
+        conn.prepare("SELECT style_id, layer_id, classes FROM vale_shared_style_label")?;
+    let mut rows = rows.query([])?;
+    while let Some(r) = rows.next()? {
+        let id = MapStyleId(r.get(0)?);
+        let style = atlas.map_style_mut(id);
+        let style = style.ok_or_else(|| corrupt(format!("label classes of map style {}", id.0)))?;
+        style.labels.insert(LayerId(r.get(1)?), r.get(2)?);
+    }
+    let mut rows = conn
+        .prepare("SELECT id, name, projection, shared_style_id FROM vale_map ORDER BY position")?;
+    let mut rows = rows.query([])?;
+    while let Some(r) = rows.next()? {
+        let id = MapId(r.get(0)?);
+        let style = r.get::<_, Option<u32>>(3)?.map(MapStyleId);
+        if style.is_some_and(|s| atlas.map_style(s).is_none()) {
+            return Err(corrupt(format!("map style of map {}", id.0)));
+        }
+        atlas.maps.push(MapRecord {
+            id,
+            name: r.get(1)?,
+            projection: r.get(2)?,
+            style,
+            hidden: BTreeSet::new(),
+            shown: BTreeSet::new(),
+            styles: BTreeMap::new(),
+            legacy_overrides: BTreeMap::new(),
+            labels: BTreeMap::new(),
+        });
+    }
+    let mut rows = conn.prepare("SELECT map_id, layer_id FROM vale_map_shown")?;
+    let mut rows = rows.query([])?;
+    while let Some(r) = rows.next()? {
+        let id = MapId(r.get(0)?);
+        let map = atlas.map_mut(id);
+        let map = map.ok_or_else(|| corrupt(format!("shown layers of map {}", id.0)))?;
+        map.shown.insert(LayerId(r.get(1)?));
     }
     let mut rows =
         conn.prepare("SELECT name, projection FROM vale_projection ORDER BY position")?;
@@ -2782,7 +2941,15 @@ fn load_atlas(conn: &Connection, units: Units) -> Result<Atlas, StoreError> {
         let id = MapId(r.get(0)?);
         let map = atlas.map_mut(id);
         let map = map.ok_or_else(|| corrupt(format!("style overrides of map {}", id.0)))?;
-        map.overrides.insert(LayerId(r.get(1)?), r.get(2)?);
+        map.legacy_overrides.insert(LayerId(r.get(1)?), r.get(2)?);
+    }
+    let mut rows = conn.prepare("SELECT map_id, layer_id, style FROM vale_map_layer_style")?;
+    let mut rows = rows.query([])?;
+    while let Some(r) = rows.next()? {
+        let id = MapId(r.get(0)?);
+        let map = atlas.map_mut(id);
+        let map = map.ok_or_else(|| corrupt(format!("layer styles of map {}", id.0)))?;
+        map.styles.insert(LayerId(r.get(1)?), r.get(2)?);
     }
     let mut rows = conn.prepare("SELECT map_id, layer_id, classes FROM vale_map_label")?;
     let mut rows = rows.query([])?;
@@ -3327,12 +3494,18 @@ mod tests {
                 "vale_map",
                 "vale_map_hidden",
                 "vale_map_label",
+                "vale_map_layer_style",
+                "vale_map_shown",
                 "vale_map_style",
                 "vale_meta",
                 "vale_page",
                 "vale_projection",
                 "vale_raster",
                 "vale_raster_tile",
+                "vale_shared_style",
+                "vale_shared_style_hidden",
+                "vale_shared_style_label",
+                "vale_shared_style_layer",
                 "vale_symbol",
                 "vale_thumbnail",
                 "vale_undo_record",
@@ -3533,8 +3706,8 @@ mod tests {
         // A second map uses the custom projection.
         let copy = atlas.add_map();
         atlas.map_mut(copy).unwrap().projection = atlas.presets[0].projection.clone();
-        let size = r#"{"/label/size":20.0}"#.to_string();
-        atlas.map_mut(copy).unwrap().overrides.insert(towns, size);
+        let style = r#"{"rules":[]}"#.to_string();
+        atlas.map_mut(copy).unwrap().styles.insert(towns, style);
         atlas.add_map();
         let first = atlas.pages[0].id;
         let second = atlas.add_page(Some(first), 420.0, 297.0, PageUnits::In);
@@ -3984,20 +4157,57 @@ mod tests {
     }
 
     #[test]
-    fn the_file_does_not_keep_the_overrides_of_a_missing_layer() {
+    fn the_file_does_not_keep_the_styles_of_a_missing_layer() {
         let dir = tempfile::tempdir().unwrap();
         let mut project = Project::new(World::default());
         let towns = project.add_layer("Towns".into(), GeometryKind::Point, None, vec![]);
-        let overrides = &mut project.atlas.maps[0].overrides;
-        overrides.insert(towns, "{}".into());
-        overrides.insert(LayerId(99), "{}".into());
+        let map = &mut project.atlas.maps[0];
+        for set in [&mut map.styles, &mut map.legacy_overrides] {
+            set.insert(towns, "{}".into());
+            set.insert(LayerId(99), "{}".into());
+        }
         drop(ProjectFile::create(&path(&dir), &project).unwrap());
         let (_, loaded) = ProjectFile::open(&path(&dir)).unwrap();
-        let keys: Vec<_> = loaded.atlas.maps[0].overrides.keys().copied().collect();
-        assert_eq!(keys, [towns]);
+        let map = &loaded.atlas.maps[0];
+        assert_eq!(map.styles.keys().collect::<Vec<_>>(), [&towns]);
+        assert_eq!(map.legacy_overrides.keys().collect::<Vec<_>>(), [&towns]);
 
         project.remove_layer(towns);
-        assert!(!project.atlas.maps[0].overrides.contains_key(&towns));
+        assert!(!project.atlas.maps[0].styles.contains_key(&towns));
+    }
+
+    #[test]
+    fn the_style_overrides_of_an_older_file_stay_until_the_app_clears_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World::default());
+        let towns = project.add_layer("Towns".into(), GeometryKind::Point, None, vec![]);
+        let size = r#"{"/label/size":20.0}"#.to_string();
+        project.atlas.maps[0]
+            .legacy_overrides
+            .insert(towns, size.clone());
+        drop(ProjectFile::create(&path(&dir), &project).unwrap());
+
+        // A save that does not change the atlas keeps the row.
+        let (mut file, mut loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(loaded.atlas.maps[0].legacy_overrides[&towns], size);
+        loaded.world.name = "Other".into();
+        file.save(&loaded).unwrap();
+        drop(file);
+        let (mut file, mut loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(loaded.atlas.maps[0].legacy_overrides[&towns], size);
+
+        loaded.atlas.maps[0].legacy_overrides.clear();
+        loaded.atlas.maps[0].styles.insert(towns, "{}".into());
+        file.save(&loaded).unwrap();
+        drop(file);
+        let (_, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert!(loaded.atlas.maps[0].legacy_overrides.is_empty());
+        assert_eq!(loaded.atlas.maps[0].styles[&towns], "{}");
+        let conn = Connection::open(path(&dir)).unwrap();
+        let rows: i64 = conn
+            .query_row("SELECT count(*) FROM vale_map_style", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 0);
     }
 
     #[test]
@@ -4023,6 +4233,126 @@ mod tests {
         assert_eq!(file.project().atlas.maps, before.atlas.maps);
         assert!(file.redo().unwrap().is_some());
         assert_eq!(file.project().atlas.maps, project.atlas.maps);
+    }
+
+    /// A project with two layers, and a map style that the first map links.
+    fn styled_project() -> (Project, MapStyleId, [LayerId; 2]) {
+        let mut project = Project::new(World::default());
+        let towns = project.add_layer("Towns".into(), GeometryKind::Point, None, vec![]);
+        let roads = project.add_layer("Roads".into(), GeometryKind::Line, None, vec![]);
+        project.atlas.add_map_style(MapStyleRecord {
+            id: MapStyleId(0),
+            name: "Unused".into(),
+            hidden: BTreeSet::new(),
+            styles: BTreeMap::new(),
+            labels: BTreeMap::new(),
+        });
+        let id = project.atlas.add_map_style(MapStyleRecord {
+            id: MapStyleId(0),
+            name: "Coast".into(),
+            hidden: [towns, roads].into(),
+            styles: [(roads, r#"{"rules":[]}"#.into())].into(),
+            labels: [(towns, r#"[{"name":"Capitals"}]"#.into())].into(),
+        });
+        let map = &mut project.atlas.maps[0];
+        map.style = Some(id);
+        map.shown.insert(towns);
+        map.styles
+            .insert(towns, r#"{"rules":[{"name":"Towns"}]}"#.into());
+        (project, id, [towns, roads])
+    }
+
+    #[test]
+    fn the_file_keeps_the_map_styles_and_the_shown_layers() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World::default());
+        project.add_layer("Towns".into(), GeometryKind::Point, None, vec![]);
+        project.add_layer("Roads".into(), GeometryKind::Line, None, vec![]);
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        let before = project.clone();
+        let (styled, _, _) = styled_project();
+        project.atlas = styled.atlas;
+        project.atlas.add_map();
+        file.save(&project).unwrap();
+        drop(file);
+
+        let (mut file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(loaded.atlas, project.atlas);
+        assert!(file.undo().unwrap().is_some());
+        assert_eq!(file.project().atlas.maps, before.atlas.maps);
+        assert!(file.project().atlas.map_styles.is_empty());
+        assert!(file.redo().unwrap().is_some());
+        assert_eq!(file.project().atlas.maps, project.atlas.maps);
+        assert_eq!(file.project().atlas.map_styles, project.atlas.map_styles);
+    }
+
+    #[test]
+    fn the_file_does_not_keep_a_map_style_row_of_a_missing_layer() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut project, id, [towns, roads]) = styled_project();
+        let gone = LayerId(99);
+        let style = project.atlas.map_style_mut(id).unwrap();
+        style.hidden.insert(gone);
+        style.styles.insert(gone, "{}".into());
+        style.labels.insert(gone, "[]".into());
+        project.atlas.maps[0].shown.insert(gone);
+        let missing = project.atlas.add_map();
+        project.atlas.map_mut(missing).unwrap().style = Some(MapStyleId(42));
+        drop(ProjectFile::create(&path(&dir), &project).unwrap());
+
+        let (_, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        let style = loaded.atlas.map_style(id).unwrap();
+        assert_eq!(style.hidden, [towns, roads].into());
+        assert_eq!(style.styles.keys().collect::<Vec<_>>(), [&roads]);
+        assert_eq!(style.labels.keys().collect::<Vec<_>>(), [&towns]);
+        assert_eq!(loaded.atlas.maps[0].shown, [towns].into());
+        assert_eq!(loaded.atlas.map(missing).unwrap().style, None);
+    }
+
+    #[test]
+    fn a_file_of_version_34_has_no_map_styles() {
+        let dir = tempfile::tempdir().unwrap();
+        let (project, _, [towns, _]) = styled_project();
+        drop(ProjectFile::create(&path(&dir), &project).unwrap());
+        let conn = Connection::open(path(&dir)).unwrap();
+        let tables = [
+            "vale_shared_style_hidden",
+            "vale_shared_style_layer",
+            "vale_shared_style_label",
+            "vale_shared_style",
+            "vale_map_shown",
+            "vale_map_layer_style",
+        ];
+        for table in tables {
+            conn.execute_batch(&format!(
+                "DROP TABLE {table};
+                 DELETE FROM gpkg_extensions WHERE table_name = '{table}';
+                 DELETE FROM gpkg_contents WHERE table_name = '{table}';"
+            ))
+            .unwrap();
+        }
+        conn.execute_batch(
+            "ALTER TABLE vale_map DROP COLUMN shared_style_id;
+             DELETE FROM vale_meta WHERE key = 'next_map_style_id';",
+        )
+        .unwrap();
+        let size = r#"{"/label/size":9.0}"#;
+        conn.execute(
+            "INSERT INTO vale_map_style (map_id, layer_id, overrides) VALUES (0, ?1, ?2)",
+            params![towns.0, size],
+        )
+        .unwrap();
+        drop(conn);
+        set_format_version(&dir, 34);
+
+        let (file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(format_version(&file.conn).unwrap(), FORMAT_VERSION);
+        assert!(loaded.atlas.map_styles.is_empty());
+        let maps = &loaded.atlas.maps;
+        assert!(maps.iter().all(|m| m.style.is_none() && m.shown.is_empty()));
+        assert!(maps.iter().all(|m| m.styles.is_empty()));
+        assert_eq!(maps[0].legacy_overrides, [(towns, size.to_string())].into());
+        assert_eq!(loaded.atlas.next_map_style_id, 0);
     }
 
     #[test]
@@ -4206,7 +4536,13 @@ mod tests {
 
         let (file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
         assert_eq!(format_version(&file.conn).unwrap(), FORMAT_VERSION);
-        assert!(loaded.atlas.maps.iter().all(|m| m.overrides.is_empty()));
+        assert!(
+            loaded
+                .atlas
+                .maps
+                .iter()
+                .all(|m| m.legacy_overrides.is_empty())
+        );
     }
 
     #[test]
@@ -4725,7 +5061,7 @@ mod tests {
         assert_eq!(tiles_of(&file, project.raster(id).unwrap()), []);
         drop(file);
         let bytes = std::fs::metadata(path(&dir)).unwrap().len();
-        assert!(bytes < 212 * 1024, "{bytes} bytes");
+        assert!(bytes < 288 * 1024, "{bytes} bytes");
 
         // A tile of flat ground adds little.
         let (mut file, project) = ProjectFile::open(&path(&dir)).unwrap();

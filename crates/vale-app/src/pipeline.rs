@@ -144,8 +144,9 @@ struct Cache {
     outline: Vec<Point>,
     bounds: Rect,
     /// The projected features of each layer, with the generation of the
-    /// cut of a masked layer.
-    layers: HashMap<LayerId, (Option<u64>, Vec<Option<ProjFeature>>)>,
+    /// cut of a masked layer. A layer with a mask in some maps has more
+    /// than one cut. The cut of the last `ensure` is first.
+    layers: HashMap<LayerId, Vec<ProjLayer>>,
     /// The graticule lines over the whole sphere, by interval. Only intervals of 1° or more.
     graticules: HashMap<u64, Vec<Vec<Point>>>,
     /// The graticule lines of the last window, for an interval under 1°.
@@ -160,8 +161,16 @@ struct WindowGraticule {
     lines: Vec<Vec<Point>>,
 }
 
+/// The projected features of a layer, with the generation of its cut.
+/// `None`: the layer draws whole.
+type ProjLayer = (Option<u64>, Vec<Option<ProjFeature>>);
+
 /// The most caches that a pipeline keeps.
 const MAX_CACHES: usize = 3;
+
+/// The most cuts of one layer that a cache keeps. Each map can have its own
+/// mask for a layer.
+const MAX_CUTS: usize = 4;
 
 #[derive(Default)]
 pub struct Pipeline {
@@ -294,7 +303,7 @@ fn drawn_layers(doc: &Document, map: Option<MapId>) -> Vec<LayerId> {
 }
 
 /// The features of the layers that meet `area`, in page space, with the
-/// style overrides of `map`.
+/// styles of `map`.
 fn build_page_layers<'a>(
     doc: &'a Document,
     map: Option<MapId>,
@@ -307,9 +316,10 @@ fn build_page_layers<'a>(
     let page = area.inflate(8.0, 8.0);
     let mut out = Vec::new();
     for entry in ids.iter().filter_map(|id| doc.map_entry(map, *id)) {
-        let (Some(layer), Some((_, feats))) =
-            (doc.layer(entry.layer), cache.layers.get(&entry.layer))
-        else {
+        let (Some(layer), Some((_, feats))) = (
+            doc.layer(entry.layer),
+            cache.layers.get(&entry.layer).and_then(|c| c.first()),
+        ) else {
             continue;
         };
         // A raster layer is not on the map.
@@ -1279,7 +1289,8 @@ impl Pipeline {
     /// The parts of the features of layer `id` inside the mask of its
     /// style. `None`: the layer draws whole.
     pub fn masked(&mut self, doc: &Document, id: LayerId) -> Option<Arc<MaskedLayer>> {
-        self.masks.layer(doc, id)
+        let mask = doc.entry(id).and_then(|e| e.style.style.mask);
+        self.masks.layer(doc, id, mask)
     }
 
     /// The scatters that the pipeline keeps.
@@ -1297,11 +1308,13 @@ impl Pipeline {
     }
 
     /// Brings the projection of a map and the projected geometry of the
-    /// layers `ids` up to date with the document.
+    /// layers `ids` up to date with the document. The masks are the masks
+    /// of the styles of `styled`, and `None` is the globe styles.
     fn ensure(
         &mut self,
         doc: &Document,
         map: MapId,
+        styled: Option<MapId>,
         ids: &[LayerId],
     ) -> anyhow::Result<&mut Cache> {
         let spec = doc.projection(map);
@@ -1341,9 +1354,13 @@ impl Pipeline {
         let cache = &mut self.caches[0];
         cache.layers.retain(|id, _| exists(*id));
         for id in ids {
-            let masked = self.masks.layer(doc, *id);
+            let mask = doc.map_entry(styled, *id).and_then(|e| e.style.style.mask);
+            let masked = self.masks.layer(doc, *id, mask);
             let generation = masked.as_ref().map(|m| m.generation);
-            if cache.layers.get(id).is_some_and(|l| l.0 == generation) {
+            let cuts = cache.layers.entry(*id).or_default();
+            if let Some(i) = cuts.iter().position(|c| c.0 == generation) {
+                let cut = cuts.remove(i);
+                cuts.insert(0, cut);
                 continue;
             }
             if let Some(layer) = doc.layer(*id) {
@@ -1356,7 +1373,9 @@ impl Pipeline {
                         }
                     })
                     .collect();
-                cache.layers.insert(*id, (generation, feats));
+                let cuts = cache.layers.entry(*id).or_default();
+                cuts.insert(0, (generation, feats));
+                cuts.truncate(MAX_CUTS);
             }
         }
         Ok(cache)
@@ -1366,29 +1385,29 @@ impl Pipeline {
         if let Some(v) = doc.frame.view {
             return Ok(v);
         }
-        let cache = self.ensure(doc, doc.first_map(), &drawn_layers(doc, None))?;
+        let cache = self.ensure(doc, doc.first_map(), None, &drawn_layers(doc, None))?;
         Ok(View::fit(cache.bounds, size.0, size.1, 24.0))
     }
 
     pub fn fit_scale(&mut self, doc: &Document, size: (f64, f64)) -> anyhow::Result<f64> {
-        let cache = self.ensure(doc, doc.first_map(), &drawn_layers(doc, None))?;
+        let cache = self.ensure(doc, doc.first_map(), None, &drawn_layers(doc, None))?;
         Ok(View::fit(cache.bounds, size.0, size.1, 24.0).scale)
     }
 
     /// The projected bounds of the projection of the first map, in meters.
     pub fn projection_bounds(&mut self, doc: &Document) -> anyhow::Result<Rect> {
-        Ok(self.ensure(doc, doc.first_map(), &[])?.bounds)
+        Ok(self.ensure(doc, doc.first_map(), None, &[])?.bounds)
     }
 
     /// The projection of a map.
     pub fn projection(&mut self, doc: &Document, map: MapId) -> anyhow::Result<&Projection> {
-        Ok(&self.ensure(doc, map, &[])?.projection)
+        Ok(&self.ensure(doc, map, None, &[])?.projection)
     }
 
     /// The projected position of a place, in meters. `None` when it is not visible.
     pub fn project_lonlat(&mut self, doc: &Document, p: LonLat) -> anyhow::Result<Option<Point>> {
         Ok(self
-            .ensure(doc, doc.first_map(), &[])?
+            .ensure(doc, doc.first_map(), None, &[])?
             .projection
             .forward(p))
     }
@@ -1402,7 +1421,7 @@ impl Pipeline {
         let view = self.resolve_view(doc, size)?;
         let vt = ViewTransform::new(view, size.0, size.1);
         Ok(self
-            .ensure(doc, doc.first_map(), &[])?
+            .ensure(doc, doc.first_map(), None, &[])?
             .projection
             .forward(p)
             .map(|q| vt.to_page(q)))
@@ -1417,7 +1436,7 @@ impl Pipeline {
         let view = self.resolve_view(doc, size)?;
         let vt = ViewTransform::new(view, size.0, size.1);
         Ok(self
-            .ensure(doc, doc.first_map(), &[])?
+            .ensure(doc, doc.first_map(), None, &[])?
             .projection
             .inverse(vt.from_page(q)))
     }
@@ -1431,7 +1450,7 @@ impl Pipeline {
         let view = self.resolve_view(doc, size)?;
         let vt = ViewTransform::new(view, size.0, size.1);
         let ids = drawn_layers(doc, None);
-        let cache = self.ensure(doc, doc.first_map(), &ids)?;
+        let cache = self.ensure(doc, doc.first_map(), None, &ids)?;
         let scale = scale_denominator(km_per_point(cache, &vt) * 1000.0);
         let layers = build_page_layers(doc, None, cache, &vt, vt.page_rect(), &ids, scale);
         Ok(pick::pick(&layers, at))
@@ -1450,7 +1469,7 @@ impl Pipeline {
             return Ok(None);
         }
         let ids = drawn_layers(doc, Some(frame.map));
-        let cache = self.ensure(doc, frame.map, &ids)?;
+        let cache = self.ensure(doc, frame.map, Some(frame.map), &ids)?;
         let vt = atlas::frame_transform(&cache.projection, frame, target);
         let scale = scale_denominator(km_per_point(cache, &vt) * 1000.0);
         let area = frame_area(frame, target);
@@ -1473,7 +1492,7 @@ impl Pipeline {
         let radius_m = doc.project.world.radius_km * 1000.0;
         let step = graticule_step(doc.frame.graticule, &view, radius_m);
         let ids = drawn_layers(doc, None);
-        let cache = self.ensure(doc, doc.first_map(), &ids)?;
+        let cache = self.ensure(doc, doc.first_map(), None, &ids)?;
         let center_lon = cache.center_lon(&vt);
         cache.ensure_graticule(step, &vt, page, center_lon);
         let cache = &self.caches[0];
@@ -1568,7 +1587,7 @@ impl Pipeline {
         target: FrameTarget,
     ) -> anyhow::Result<Vec<Vec<Point>>> {
         let ids = drawn_layers(doc, Some(frame.map));
-        let cache = self.ensure(doc, frame.map, &ids)?;
+        let cache = self.ensure(doc, frame.map, Some(frame.map), &ids)?;
         let vt = atlas::frame_transform(&cache.projection, frame, target);
         let classes: Vec<_> = (ids.iter())
             .map(|id| doc.label_classes(Some(frame.map), *id))
@@ -1603,7 +1622,7 @@ impl Pipeline {
         part: Rect,
     ) -> anyhow::Result<DisplayList> {
         let ids = drawn_layers(doc, Some(frame.map));
-        let cache = self.ensure(doc, frame.map, &ids)?;
+        let cache = self.ensure(doc, frame.map, Some(frame.map), &ids)?;
         let vt = atlas::frame_transform(&cache.projection, frame, target);
         let outline = polylines_path([&map_pts(&vt, &cache.outline)], true);
         let mut list = DisplayList::new(part.x1, part.y1);
@@ -1632,7 +1651,7 @@ impl Pipeline {
     ) -> anyhow::Result<DisplayList> {
         let ids = drawn_layers(doc, Some(frame.map));
         let masks = self.frame_masks(doc, frame, &ids);
-        let cache = self.ensure(doc, frame.map, &ids)?;
+        let cache = self.ensure(doc, frame.map, Some(frame.map), &ids)?;
         let vt = atlas::frame_transform(&cache.projection, frame, target);
         let step = atlas::graticule_interval(&cache.projection, frame);
         cache.ensure_graticule(step, &vt, part, frame.center[0]);
@@ -1713,7 +1732,7 @@ impl Pipeline {
     ) -> anyhow::Result<Composed> {
         let ids = drawn_layers(doc, Some(frame.map));
         let masks = self.frame_masks(doc, frame, &ids);
-        let cache = self.ensure(doc, frame.map, &ids)?;
+        let cache = self.ensure(doc, frame.map, Some(frame.map), &ids)?;
         let vt = atlas::frame_transform(&cache.projection, frame, target);
         let area = frame_area(frame, target).intersect(part);
         let step = atlas::graticule_interval(&cache.projection, frame);

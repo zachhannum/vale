@@ -16,13 +16,14 @@ use super::atlas::{self, AtlasSelection, EdgeSet, FrameTab};
 use super::pad::atlas::{
     ADD_HOLE, ADD_PAGE, AUTO_INTERVAL, AZIMUTH, BORDER, BORDER_COLOR, BORDER_DISTANCE,
     BORDER_STROKE, BORDER_STYLE, BORDER_STYLES, BORDER_WIDTH, CENTER_LATITUDE, CENTER_LONGITUDE,
-    CENTER_ON_FRAME, DELETE_PAGE, DELETE_PROJECTION, FIRST_PARALLEL, FRAME_TABS, GRATICULE_COLOR,
-    GRATICULE_WIDTH, GRID_COLOR, GRID_SPACING, HEIGHT, INTERVAL, LABEL_FORMAT, LABEL_FORMATS,
-    LATITUDE, LAYOUT_GRID, LONGITUDE, MAP_NAME, MAP_STYLE_HINT, NEATLINE, NEATLINE_COLOR,
-    NEATLINE_WIDTH, OBLIQUE, ORIENTATIONS, PAGE_NAME, PAPER_COLOR, POLYGON, PROJECTION_NAME,
-    RECTANGLE, REFERENCE_GRID, REMOVE_OVERRIDES, ROTATION, SAVE_PROJECTION, SCALE, SECOND_COLOR,
-    SECOND_PARALLEL, SHAPE, SIZE, STROKE_COLOR, STROKE_WIDTH, UNIT_NAMES, WIDTH, custom_row,
-    length_text, unit_name,
+    CENTER_ON_FRAME, COPY_GLOBE_STYLE, DELETE_MAP_STYLE, DELETE_PAGE, DELETE_PROJECTION, EDITED,
+    FIRST_PARALLEL, FRAME_TABS, GRATICULE_COLOR, GRATICULE_WIDTH, GRID_COLOR, GRID_SPACING, HEIGHT,
+    INTERVAL, LABEL_FORMAT, LABEL_FORMATS, LATITUDE, LAYOUT_GRID, LONGITUDE, MAP_NAME, MAP_STYLE,
+    MAP_STYLE_NAME, NEATLINE, NEATLINE_COLOR, NEATLINE_WIDTH, NO_MAP_STYLE, OBLIQUE, ORIENTATIONS,
+    PAGE_NAME, PAPER_COLOR, POLYGON, PROJECTION_NAME, RECTANGLE, REFERENCE_GRID,
+    RESET_TO_MAP_STYLE, ROTATION, SAVE_AS_MAP_STYLE, SAVE_PROJECTION, SCALE, SECOND_COLOR,
+    SECOND_PARALLEL, SHAPE, SIZE, STROKE_COLOR, STROKE_WIDTH, UNIT_NAMES, UPDATE_MAP_STYLE, WIDTH,
+    custom_row, edited_value, length_text, unit_name,
 };
 use super::pad::atlas::{
     BORDER_GAP, DISTANCE_BY_SIDE, GRID_COLUMN_NAMES, GRID_COLUMNS, SIDE_DISTANCES,
@@ -128,6 +129,7 @@ fn frame_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
             atlas::rename_map(state, id, &name);
         }
     });
+    map_style_controls(ui, state, frame.map);
     let polygon = matches!(frame.shape, FrameShape::Polygon(_));
     ui.horizontal(|ui| {
         ui.label(SHAPE);
@@ -523,7 +525,78 @@ fn grid_rows(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
 /// A switch for each layer, which turns the layer on or off in the
 /// map of the frame, and the style of the chosen vector layer, for all maps
 /// or for the map of the frame.
+/// The map style of a map: a menu of the map styles, the name field and
+/// the delete button of a linked map style, the button that saves the map
+/// as a new map style, and the buttons of a map with local changes.
+fn map_style_controls(ui: &mut egui::Ui, state: &mut AppState, map: vale_store::MapId) {
+    let doc_atlas = &state.doc.project.atlas;
+    let linked = doc_atlas.map(map).and_then(|m| m.style);
+    let styles: Vec<_> = (doc_atlas.map_styles.iter())
+        .map(|s| (s.id, s.name.clone()))
+        .collect();
+    let current = linked.and_then(|id| styles.iter().find(|s| s.0 == id).map(|s| s.1.clone()));
+    let edited = !state.doc.local_changes(map).is_empty();
+    let shown = match &current {
+        Some(name) if edited => edited_value(name),
+        Some(name) => name.clone(),
+        None => NO_MAP_STYLE.to_owned(),
+    };
+    ui.horizontal(|ui| {
+        ui.label(MAP_STYLE);
+        let mut chosen = linked;
+        egui::ComboBox::from_id_salt("atlas-map-style")
+            .selected_text(shown)
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut chosen, None, NO_MAP_STYLE);
+                for (id, name) in &styles {
+                    ui.selectable_value(&mut chosen, Some(*id), name);
+                }
+            });
+        if chosen != linked {
+            state.set_map_style_link(map, chosen);
+        }
+    });
+    if let (Some(style), Some(name)) = (linked, current) {
+        ui.horizontal(|ui| {
+            ui.label("Name");
+            let mut text = match &state.atlas.map_style_name {
+                Some((of, text)) if *of == style => text.clone(),
+                _ => name.clone(),
+            };
+            let field = ui.add(egui::TextEdit::singleline(&mut text).desired_width(160.0));
+            named(&field, egui::WidgetType::TextEdit, MAP_STYLE_NAME);
+            if field.changed() {
+                atlas::rename_map_style(state, style, &text);
+                state.atlas.map_style_name = Some((style, text));
+            }
+        });
+    }
+    if edited {
+        ui.horizontal(|ui| {
+            if ui.button(UPDATE_MAP_STYLE).clicked() {
+                state.update_map_style(map);
+            }
+            if ui.button(RESET_TO_MAP_STYLE).clicked() {
+                state.reset_to_map_style(map);
+            }
+        });
+    }
+    ui.horizontal(|ui| {
+        if ui.button(SAVE_AS_MAP_STYLE).clicked() {
+            state.save_as_map_style(map);
+            state.atlas.map_style_name = None;
+        }
+        if let Some(style) = linked
+            && ui.button(DELETE_MAP_STYLE).clicked()
+        {
+            state.delete_map_style(style);
+            state.atlas.map_style_name = None;
+        }
+    });
+}
+
 fn layers_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
+    let edited = state.doc.local_changes(frame.map);
     let rows: Vec<_> = (state.doc.project.layers().iter().rev())
         .map(|l| (l.id, l.name.clone()))
         .collect();
@@ -540,13 +613,15 @@ fn layers_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
             if ui.selectable_label(open == Some(layer), "Style").clicked() {
                 state.atlas.layer = (open != Some(layer)).then_some((frame.id, layer));
             }
+            if edited.contains(&layer) {
+                ui.weak(EDITED);
+            }
         });
     }
     let Some(layer) = state.atlas.open_layer() else {
         return;
     };
     ui.separator();
-    ui.weak(MAP_STYLE_HINT);
     let Some(kind) = state.doc.layer(layer).and_then(|l| l.geometry()) else {
         look_controls(ui, state, frame, layer);
         return;
@@ -555,30 +630,50 @@ fn layers_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
         .doc
         .layer(layer)
         .map_or(Vec::new(), |l| l.fields.clone());
+    let target = frame.map;
+    state.open_ramps();
+    let ramps = state.ramps.list().to_vec();
     let symbols = state.doc.symbols().clone();
     let mut library = style_editor::Library {
         symbols: &symbols,
         note: state.symbol_note.as_ref(),
         actions: &mut state.actions,
     };
-    let Some(mut style) = state.doc.map_style(frame.map, layer) else {
+    let Some(mut style) = state.doc.map_style(target, layer) else {
         return;
     };
-    if style_editor::rules(ui, layer, &mut style, kind, &fields, &mut library)
-        && state.doc.set_map_style(frame.map, layer, &style)
-    {
+    let mut changed = style_editor::rules(ui, layer, &mut style, kind, &fields, &mut library);
+    if kind != vale_store::GeometryKind::Point {
+        let (mut masks, polygons) = super::pad::rules::mask_choices(&state.doc, layer);
+        masks.extend(polygons);
+        ui.add_space(4.0);
+        changed |= style_editor::mask_rows(ui, layer, &mut style.style.mask, &masks);
+    }
+    let classes = style_editor::classify(ui, layer, &fields, &ramps, &mut library);
+    if changed && state.doc.set_map_style(target, layer, &style) {
         state.touch();
     }
-    remove_overrides(ui, state, frame, layer);
+    if let Some(request) = classes {
+        state.edit_map_style(frame.map, layer, |state| {
+            super::pad::classify::apply(state, layer, &request);
+        });
+    }
+    style_source(ui, state, frame, layer);
 }
 
-fn remove_overrides(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord, layer: LayerId) {
-    let any = !state.doc.overrides(frame.map, layer).is_empty();
+/// The buttons that set the style of a layer in a map from its map style
+/// or from the globe style.
+fn style_source(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord, layer: LayerId) {
+    let edited = state.doc.local_changes(frame.map).contains(&layer);
+    if edited && ui.button(RESET_TO_MAP_STYLE).clicked() {
+        state.reset_layer_to_map_style(frame.map, layer);
+    }
+    let differs = state.differs_from_globe(frame.map, layer);
     if ui
-        .add_enabled(any, egui::Button::new(REMOVE_OVERRIDES))
+        .add_enabled(differs, egui::Button::new(COPY_GLOBE_STYLE))
         .clicked()
     {
-        state.clear_overrides(frame.map, layer);
+        state.copy_globe_style(frame.map, layer);
     }
 }
 
@@ -620,7 +715,7 @@ fn look_controls(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord, l
     if look != old {
         state.set_look(scope, layer, look);
     }
-    remove_overrides(ui, state, frame, layer);
+    style_source(ui, state, frame, layer);
 }
 
 fn display_name(d: RasterDisplay) -> &'static str {
@@ -884,7 +979,8 @@ fn labels_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
     let Some(kind) = state.doc.layer(layer).and_then(|l| l.geometry()) else {
         return;
     };
-    let Some(mut class) = state.doc.label_classes(Some(map), layer).get(i).cloned() else {
+    let classes = state.doc.label_classes_in(map, layer);
+    let Some(mut class) = classes.get(i).cloned() else {
         state.atlas.label = None;
         return;
     };

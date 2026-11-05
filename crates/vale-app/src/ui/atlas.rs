@@ -9,8 +9,8 @@ use kurbo::{Point, Vec2};
 use vale_sphere::{Projection, ProjectionKind, ProjectionSpec};
 use vale_store::{
     Border, BorderStyle, CoordFormat, EdgeLabels, FrameId, FrameRecord, FrameShape, Furniture,
-    FurnitureId, FurnitureRecord, FurnitureText, Graticule, LayerId, LegendItem, MapId, Neatline,
-    NorthArrowItem, PageId, PageRecord, PageUnits, Rgb, Rgba, ScaleBarItem, TextItem,
+    FurnitureId, FurnitureRecord, FurnitureText, Graticule, LayerId, LegendItem, MapId, MapStyleId,
+    Neatline, NorthArrowItem, PageId, PageRecord, PageUnits, Rgb, Rgba, ScaleBarItem, TextItem,
 };
 
 use std::sync::Arc;
@@ -632,6 +632,13 @@ pub struct AtlasState {
     pub label: Option<(FrameId, LayerId, usize)>,
     /// The page of the panel of `label`.
     pub label_page: Option<ClassPage>,
+    /// The frame whose Map style page the Frame tab shows.
+    pub map_styles: Option<FrameId>,
+    /// The map style row of the Map style page that a finger swiped.
+    pub map_style_swipe: Option<crate::ui::pad::Swipe<MapStyleId>>,
+    /// The map style that the user renames on the Map style page, and the
+    /// text of its name field.
+    pub map_style_name: Option<(MapStyleId, String)>,
     /// The segment of the panel of `label`.
     pub label_segment: ClassSegment,
     /// The color of the label class whose color picker is open.
@@ -725,6 +732,14 @@ impl AtlasState {
         }
     }
 
+    /// The frame whose Map style page the Frame tab shows.
+    pub fn open_map_styles(&self) -> Option<FrameId> {
+        match (self.selection, self.tab, self.map_styles) {
+            (AtlasSelection::Frame(f), FrameTab::Frame, Some(of)) if f == of => Some(f),
+            _ => None,
+        }
+    }
+
     /// The frame whose Grid labels page the Frame tab shows.
     pub fn open_grid(&self) -> Option<FrameId> {
         match (self.selection, self.tab, self.grid) {
@@ -797,6 +812,9 @@ impl Default for AtlasState {
             layer_page: None,
             label: None,
             label_page: None,
+            map_styles: None,
+            map_style_swipe: None,
+            map_style_name: None,
             label_segment: ClassSegment::Text,
             label_color: None,
             label_color_shown: false,
@@ -3653,6 +3671,12 @@ pub fn rename_map(state: &mut AppState, id: FrameId, name: &str) {
     if let Some(record) = atlas.map_mut(map) {
         record.name = name.to_string();
     }
+}
+
+/// Renames a map style. Returns false if the name is empty or the name of
+/// another map style.
+pub fn rename_map_style(state: &mut AppState, id: MapStyleId, name: &str) -> bool {
+    state.doc.rename_map_style(id, name)
 }
 
 /// The canvas of the desktop layout, in the space between the panels. The

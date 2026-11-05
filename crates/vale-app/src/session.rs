@@ -190,12 +190,15 @@ impl Session {
             doc.set_project(file.project().clone());
         }
         // The raster records take the colors of the styles. An older file
-        // gets a style for each raster layer, with no undo step. Its undo
-        // log goes, because its steps have no colors in the styles.
+        // gets a style for each raster layer, and each map of an older file
+        // gets a style for each layer, with no undo step. Its undo log goes,
+        // because its steps have no colors in the styles and no styles in
+        // the maps.
         let mut project = file.project().clone();
         load_raster_styles(&mut project);
         load_image_styles(&mut project);
         let migrated = raster_style::migrate(&mut project);
+        let migrated = crate::map_styles::fill(&mut project) || migrated;
         if migrated || project != *file.project() {
             file.save_base(&project)?;
             doc.set_project(file.project().clone());
@@ -540,6 +543,7 @@ impl Session {
         doc.set_project(self.file.project().clone());
         load_raster_styles(&mut doc.project);
         load_image_styles(&mut doc.project);
+        crate::map_styles::fill(&mut doc.project);
         let project = &doc.project;
         for (id, map) in maps.iter_mut() {
             if let Some(raster) = record(project, *id, map) {
@@ -582,8 +586,10 @@ impl Session {
         self.file.undo_limit()
     }
 
-    /// Updates the record of each raster from its heightmap, and the style
-    /// of each raster layer from its record. Returns `true`
+    /// Updates the record of each raster from its heightmap, the style of
+    /// each raster layer from its record, and the styles of the maps. Each
+    /// saved state has a style for each layer in each map with no map style
+    /// and in each map style. Returns `true`
     /// if the file does not hold the project or a heightmap.
     fn changed(&self, project: &mut Project, maps: &Maps) -> bool {
         let mut painted = false;
@@ -598,6 +604,7 @@ impl Session {
         // A change of the colors and the change of the style are one save.
         store_raster_styles(project);
         store_image_styles(project);
+        crate::map_styles::fill(project);
         painted || project != self.file.project()
     }
 }

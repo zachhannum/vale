@@ -5119,9 +5119,9 @@ pub struct FrameDraw {
     pub shown: Vec<RasterId>,
     /// The image layers that the map shows.
     pub images: Vec<ImageId>,
-    /// The raster layers whose look the map overrides.
+    /// The raster layers whose look in the map differs from the globe.
     pub raster_looks: Vec<(RasterId, RasterLook)>,
-    /// The image layers whose look the map overrides.
+    /// The image layers whose look in the map differs from the globe.
     pub image_looks: Vec<(ImageId, Look)>,
 }
 

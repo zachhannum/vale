@@ -64,6 +64,24 @@ fn click_at(h: &mut Harness<'static, AppState>, pos: egui::Pos2) {
     h.step();
 }
 
+/// Copies the globe style of a layer into each map, because a change of the
+/// globe style does not change a map.
+fn copy_globe_style(h: &mut Harness<'static, AppState>, layer: LayerId) {
+    let maps: Vec<_> = h
+        .state()
+        .doc
+        .project
+        .atlas
+        .maps
+        .iter()
+        .map(|m| m.id)
+        .collect();
+    for map in maps {
+        h.state_mut().copy_globe_style(map, layer);
+    }
+    h.run_steps(2);
+}
+
 #[test]
 fn empty_states() {
     let mut h = harness();
@@ -92,6 +110,7 @@ fn places_controls_and_labels_switch() {
     let before = h.state().composed.as_ref().unwrap().labels.placed;
     h.get_by_label("Show labels").click();
     h.run_steps(2);
+    copy_globe_style(&mut h, places);
     let s = h.state();
     assert!(!s.doc.entry(places).unwrap().style.label.enabled);
     assert!(s.composed.as_ref().unwrap().labels.placed < before);
@@ -345,6 +364,7 @@ fn the_font_dialog_searches_and_sets_the_font_of_the_labels() {
     assert!(h.query_by_label("Noto Sans").is_none());
     h.get_by_label("Silkscreen").click();
     h.run_steps(3);
+    copy_globe_style(&mut h, places);
     let s = h.state();
     assert!(s.font_dialog.is_none());
     let label = &s.doc.entry(places).unwrap().style.label;
