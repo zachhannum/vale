@@ -1318,6 +1318,17 @@ pub fn field_at(
     resp
 }
 
+/// Gives a field of `field_at` the focus and selects all of its text, so
+/// that the first key replaces the text.
+pub fn focus_all(ui: &egui::Ui, field: &Response, text: &str) {
+    use egui::text::{CCursor, CCursorRange};
+    field.request_focus();
+    let mut edit = egui::TextEdit::load_state(ui.ctx(), field.id).unwrap_or_default();
+    let all = CCursorRange::two(CCursor::new(0), CCursor::new(text.chars().count()));
+    edit.cursor.set_char_range(Some(all));
+    edit.store(ui.ctx(), field.id);
+}
+
 /// The names of the items of the edit menu of a field.
 pub const COPY: &str = "Copy";
 pub const PASTE: &str = "Paste";

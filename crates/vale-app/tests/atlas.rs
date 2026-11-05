@@ -7448,6 +7448,9 @@ fn the_map_style_page_renames_a_map_style_and_a_swipe_deletes_it() {
     assert!(control(&h, MAP_STYLE_NAME).is_none());
     find(&mut h, SAVE_AS_MAP_STYLE);
     tap(&mut h, SAVE_AS_MAP_STYLE);
+    // Return keeps the name that the new map style gets.
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
     let style = linked(&h, inset).unwrap();
     h.state_mut().set_map_style_link(main, Some(style));
     h.run_steps(2);
@@ -7879,6 +7882,9 @@ fn the_name_of_a_map_style_takes_one_key_at_a_time() {
     map_style_page_of(&mut h, 1);
     find(&mut h, SAVE_AS_MAP_STYLE);
     tap(&mut h, SAVE_AS_MAP_STYLE);
+    // Return keeps the name that the new map style gets.
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
     let style = linked(&h, inset).unwrap();
     let name = |h: &Pad| {
         h.state()
@@ -7910,4 +7916,26 @@ fn the_name_of_a_map_style_takes_one_key_at_a_time() {
     h.key_press(egui::Key::Enter);
     h.run_steps(2);
     assert_eq!(name(&h), "Coast");
+}
+
+#[test]
+fn save_as_map_style_asks_for_the_name() {
+    let mut h = styled_pad();
+    let inset = frame(&h, 1).map;
+    map_style_page_of(&mut h, 1);
+    find(&mut h, SAVE_AS_MAP_STYLE);
+    tap(&mut h, SAVE_AS_MAP_STYLE);
+    let style = linked(&h, inset).unwrap();
+    // The row of the new map style is its name field, with the name
+    // selected, so the first key replaces it.
+    assert!(control(&h, MAP_STYLE_NAME).is_some());
+    h.run_steps(1);
+    h.event(egui::Event::Text("Coast".to_owned()));
+    h.run_steps(1);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    assert!(control(&h, MAP_STYLE_NAME).is_none());
+    let name = &h.state().doc.project.atlas.map_style(style).unwrap().name;
+    assert_eq!(name, "Coast");
+    assert!(control(&h, &map_style_row("Coast")).is_some());
 }

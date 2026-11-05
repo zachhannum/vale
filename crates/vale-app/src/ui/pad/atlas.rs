@@ -1164,7 +1164,7 @@ fn map_style_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Contro
                 let text = state.atlas.map_style_name.take().map(|r| r.1);
                 atlas::rename_map_style(state, style, &text.unwrap_or_default());
             } else if !field.has_focus() {
-                field.request_focus();
+                widgets::focus_all(ui, &field, name);
             }
             continue;
         }
@@ -1213,8 +1213,11 @@ fn map_style_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Contro
     ui.add_space(14.0);
     if widgets::button_row(ui, controls, SAVE_AS_MAP_STYLE, true).clicked() {
         state.atlas.map_style_swipe = None;
-        state.atlas.map_style_name = None;
-        state.save_as_map_style(map);
+        // The row of the new map style is its name field.
+        let made = state.save_as_map_style(map);
+        let name =
+            made.and_then(|id| Some((id, state.doc.project.atlas.map_style(id)?.name.clone())));
+        state.atlas.map_style_name = name;
     }
 }
 

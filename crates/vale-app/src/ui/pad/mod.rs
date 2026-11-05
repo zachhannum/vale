@@ -2497,7 +2497,7 @@ fn swipe_rows(
                 let text = state.pad.rename.take().map(|r| r.1);
                 state.doc.rename_layer(id, &text.unwrap_or_default());
             } else if !field.has_focus() {
-                field.request_focus();
+                widgets::focus_all(ui, &field, &row.name);
             }
             continue;
         }
