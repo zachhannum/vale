@@ -534,7 +534,13 @@ pub fn hillshade_body(
     }
 
     let open = state.pad.style.shade_color == Some(id);
-    let row = widgets::color_row(ui, controls, HILLSHADE_COLOR, hillshade.color, open);
+    let row = widgets::color_row(
+        ui,
+        controls,
+        HILLSHADE_COLOR,
+        widgets::opaque(hillshade.color),
+        open,
+    );
     if row.clicked() {
         state.pad.style.shade_color = (!open).then_some(id);
         if open {
@@ -1199,11 +1205,16 @@ mod tests {
     #[test]
     fn a_hex_code_gives_its_color() {
         use super::widgets::{hex_text, parse_hex};
-        assert_eq!(parse_hex("#1A2b3C"), Some([0x1a, 0x2b, 0x3c]));
-        assert_eq!(parse_hex(" ff0000 "), Some([255, 0, 0]));
-        assert_eq!(parse_hex("ff00"), None);
-        assert_eq!(parse_hex("gg0000"), None);
-        assert_eq!(parse_hex("ÿÿÿ"), None);
-        assert_eq!(hex_text([1, 171, 255]), "01ABFF");
+        assert_eq!(parse_hex("#1A2b3C", false), Some([0x1a, 0x2b, 0x3c, 255]));
+        assert_eq!(parse_hex(" ff0000 ", false), Some([255, 0, 0, 255]));
+        assert_eq!(parse_hex("ff00", true), None);
+        assert_eq!(parse_hex("gg0000", true), None);
+        assert_eq!(parse_hex("ÿÿÿ", true), None);
+        assert_eq!(hex_text([1, 171, 255, 255]), "01ABFF");
+        // Eight digits give the alpha, if the picker has an opacity strip.
+        assert_eq!(parse_hex("ff000080", true), Some([255, 0, 0, 0x80]));
+        assert_eq!(parse_hex("ff0000", true), Some([255, 0, 0, 255]));
+        assert_eq!(parse_hex("ff000080", false), None);
+        assert_eq!(hex_text([255, 0, 0, 0x80]), "FF000080");
     }
 }
