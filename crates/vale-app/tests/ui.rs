@@ -1740,6 +1740,42 @@ fn on_the_desktop_command_i_shows_and_hides_the_inspector() {
     assert!(h.state().show_attributes);
 }
 
+#[test]
+fn on_the_desktop_a_field_lists_the_values_of_the_layer() {
+    use vale_app::globe::select::FeatureRef;
+    use vale_app::ui::pad::widgets::choices_name;
+    use vale_store::{Field, FieldType, Value};
+    let mut h = globe_harness();
+    h.state_mut().show_attributes = true;
+    let layers = h.state().doc.project.layers();
+    let places = layers.iter().find(|l| l.name == "Places").unwrap();
+    let id = places.id;
+    let uuids: Vec<_> = places.features.iter().take(3).map(|f| f.uuid()).collect();
+    let project = &mut h.state_mut().doc.project;
+    assert!(project.add_field(id, Field::new("size", FieldType::Text)));
+    for (uuid, size) in uuids[1..].iter().zip(["small", "large"]) {
+        let value = Value::Text(size.into());
+        assert!(project.set_attributes(id, *uuid, [("size".to_owned(), value)]));
+    }
+    let uuid = uuids[0];
+    h.state_mut()
+        .select(Some(vale_app::ui::pad::LayerRef::Vector(id)));
+    h.state_mut().feature_selection = vec![FeatureRef { layer: id, uuid }];
+    h.run_steps(2);
+    let form = h.state().selection_form.as_ref().expect("no form");
+    assert_eq!(form.choices.last().unwrap(), &["large", "small"]);
+    h.get_by_label(&choices_name("size")).click();
+    h.run_steps(2);
+    h.get_by_label("small").click();
+    h.run_steps(2);
+    let size = |h: &Harness<'static, AppState>| {
+        let layer = h.state().doc.project.layer(id).unwrap();
+        let feature = layer.features.iter().find(|f| f.uuid() == uuid).unwrap();
+        feature.attributes["size"].clone()
+    };
+    assert_eq!(size(&h), Value::Text("small".into()));
+}
+
 /// A mouse stroke through places, with keys held during the stroke.
 fn mouse_way(h: &mut Harness<'static, AppState>, way: &[[f64; 2]], keys: egui::Modifiers) {
     use vale_app::globe::math::lonlat_to_dir;

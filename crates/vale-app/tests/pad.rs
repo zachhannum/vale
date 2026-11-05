@@ -10297,6 +10297,80 @@ fn with_one_feature_the_inspector_edits_each_attribute_in_one_undo_step() {
     assert_eq!(form.fields[0].text, "");
 }
 
+/// Adds point features far from the picks, with these names.
+fn add_named_points(h: &mut Pad, id: vale_store::LayerId, names: &[&str]) {
+    use vale_store::{Feature, Geometry, Value};
+    for (i, name) in names.iter().enumerate() {
+        let at = [40.0 + i as f64, -40.0];
+        let attributes = [("name".to_owned(), Value::Text((*name).into()))];
+        let feature = Feature::new(Geometry::Points(vec![at]), attributes.into());
+        assert!(h.state_mut().doc.project.add_feature(id, feature));
+    }
+    h.state_mut().save_waiting().unwrap();
+    h.run_steps(2);
+}
+
+#[test]
+fn a_field_lists_the_values_of_the_layer_and_a_tap_on_a_value_is_one_undo_step() {
+    use vale_store::Value;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
+    let id = picks.point.layer;
+    add_named_points(&mut h, id, &["small", "large", "Medium", "small"]);
+    tap(&mut h, select::ATTRIBUTES);
+    let at = screen_at(&h, 0.0, 0.0);
+    finger_tap_at(&mut h, at);
+    let form = h.state().selection_form.as_ref().expect("no form");
+    assert_eq!(form.choices[0], ["large", "Medium", "small"]);
+    let button = vale_app::ui::pad::widgets::choices_name("name");
+    assert!(control(&h, &button).is_some());
+    assert!(control(&h, "name: small").is_none());
+    // The list opens below the field, in the panel.
+    tap(&mut h, &button);
+    let field = control(&h, "name").unwrap();
+    let rows = ["name: large", "name: Medium", "name: small"].map(|r| control(&h, r).unwrap());
+    assert!(rows.windows(2).all(|w| w[0].top() < w[1].top()));
+    assert!(rows[0].top() >= field.bottom());
+    check_controls(&h, "the list of values");
+    screenshot::save(&mut h, "pad-field-values");
+    assert_eq!(toggled(&h, "name: Medium"), Some(false));
+    let saved = saves(&h);
+    tap(&mut h, "name: Medium");
+    let name = |h: &Pad| {
+        let features = line_features(h, id);
+        let feature = features.iter().find(|f| f.uuid() == picks.point.uuid);
+        feature.unwrap().attributes["name"].clone()
+    };
+    assert_eq!(name(&h), Value::Text("Medium".into()));
+    assert_eq!(saves(&h), saved + 1);
+    assert!(control(&h, "name: small").is_none());
+    // The mark shows the current value.
+    tap(&mut h, &button);
+    assert_eq!(toggled(&h, "name: Medium"), Some(true));
+    assert_eq!(toggled(&h, "name: small"), Some(false));
+    h.state_mut().undo();
+    h.run_steps(2);
+    assert_eq!(name(&h), Value::Null);
+}
+
+#[test]
+fn a_field_with_no_values_or_with_too_many_values_has_no_list() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
+    tap(&mut h, select::ATTRIBUTES);
+    let at = screen_at(&h, 0.0, 0.0);
+    finger_tap_at(&mut h, at);
+    let button = vale_app::ui::pad::widgets::choices_name("name");
+    assert!(control(&h, "name").is_some());
+    assert!(control(&h, &button).is_none());
+    let names: Vec<String> = (0..=select::CHOICES).map(|i| format!("Town {i}")).collect();
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    add_named_points(&mut h, picks.point.layer, &names);
+    finger_tap_at(&mut h, at);
+    assert!(h.state().selection_form.as_ref().unwrap().choices[0].is_empty());
+    assert!(control(&h, &button).is_none());
+}
+
 #[test]
 fn the_inspector_shows_the_count_of_a_selection_and_an_empty_state() {
     let dir = tempfile::tempdir().unwrap();
