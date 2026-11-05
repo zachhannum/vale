@@ -568,7 +568,8 @@ These rules apply to the layout:
 - No control is in the top 24 points or in the bottom 20 points, because the system uses those bands. If the safe area of the device is larger, the layout uses the safe area.
 - A panel stays open while you paint. Its close button closes it, and the button that opened it closes it.
 - At a width of 1,000 points or more, the workspace switch shows all workspaces. Below 1,000 points, it is one menu button, and the Toolbox button is a row of that menu.
-- Below 600 points, the view switch is in the workspace menu, and a panel is a sheet at the bottom. You can pull the sheet down to its title row. One sheet shows at a time.
+- Below 600 points, the view switch is in the workspace menu, and a panel is a sheet at the bottom. The sheet opens at about half the height of a phone, 452 points. You pull it up to the full height, below the top row, or down to its title row. One sheet shows at a time.
+- Below 600 points, the tool strip is a row at the bottom, above the bottom band, and the context strip is a row above it. The readout is above the context strip. Each slider of the row is horizontal, with its name and its value above the track. The two sliders are 140 points long, and Deselect makes them 112 points long. A shorter context strip is at the right, so the Brush button is above the right end of the tool strip. An open sheet covers the rows, and a sheet at its title row has the rows above it. The list of a cell opens above the cell. If the cells do not fit in the row, the row scrolls.
 - If the Brush panel and the right panel do not fit side by side, one panel shows at a time.
 - The two sliders are 140 points high. In a short window they become shorter, down to 110 points, which fits an iPad that is 744 points high. In a window that is shorter than that, the card holds the Brush button alone, and the Brush panel holds the two sliders. If the tool strip and the Brush button do not fit, the tool strip scrolls.
 - The tool strip has six cells: Sculpt, Terrain, Vector, Select, Move, and Measure. The strip has the same cells for each layer selection.
@@ -600,10 +601,9 @@ The core crates have no UI dependency, so both platforms share them. The shell i
 
 The iPhone layout is the compact layout of the iPad, below 600 points, with these changes:
 
-- The tool strip is a column at the left edge, as on the iPad, with the card below it.
+- In portrait, the tool strip and the context strip are rows at the bottom, as in the compact layout of the iPad.
 - The phone has no pen. With a brush tool, one finger paints, and two fingers turn and zoom the globe. With Move, one finger turns the globe.
 - The Brush panel has no pressure settings.
-- A sheet opens at half height. You pull it up to the full height, or down to its title row.
 - In the Atlas workspace, the page controls are below the top row.
 - The inspector is a sheet. A new point stays above the sheet and above the keyboard of the system.
 - In landscape, the card holds the Brush button alone, at the right of the strip. The width is 600 points or more, so the view switch is in the top row, and a panel floats at the right.
