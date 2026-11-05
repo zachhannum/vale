@@ -138,6 +138,56 @@ fn pipeline(
     })
 }
 
+/// The pipelines of `GpuPyramid` and the bind group layouts that its bind
+/// groups share with them. One set serves each pyramid of a device.
+#[derive(Clone)]
+pub struct PyramidPipelines {
+    layout: wgpu::BindGroupLayout,
+    source_layout: wgpu::BindGroupLayout,
+    build_layout: wgpu::BindGroupLayout,
+    from_tiles: wgpu::RenderPipeline,
+    from_level: wgpu::RenderPipeline,
+}
+
+impl PyramidPipelines {
+    pub fn new(device: &wgpu::Device) -> PyramidPipelines {
+        let source_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("pyramid source"),
+            entries: &[texture_entry(0, wgpu::ShaderStages::FRAGMENT)],
+        });
+        let build_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("pyramid build"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: true,
+                    min_binding_size: NonZeroU64::new(size_of::<Build>() as u64),
+                },
+                count: None,
+            }],
+        });
+        let from_tiles = pipeline(
+            device,
+            &format!("{TILES_WGSL}\n{FROM_TILES_WGSL}\n{BUILD_WGSL}"),
+            &[&build_layout, &tiles_layout(device)],
+        );
+        let from_level = pipeline(
+            device,
+            &format!("{FROM_LEVEL_WGSL}\n{BUILD_WGSL}"),
+            &[&build_layout, &source_layout],
+        );
+        PyramidPipelines {
+            layout: pyramid_layout(device),
+            source_layout,
+            build_layout,
+            from_tiles,
+            from_level,
+        }
+    }
+}
+
 /// The levels of a map from 1 to `max_level(face_size)`, in one texture.
 ///
 /// The texture starts with all faces dirty. `update` makes the dirty parts
@@ -161,6 +211,15 @@ pub struct GpuPyramid {
 impl GpuPyramid {
     /// The levels of a map of `face_size` by `face_size` texels on each face.
     pub fn new(device: &wgpu::Device, face_size: u32) -> GpuPyramid {
+        GpuPyramid::with_pipelines(device, face_size, &PyramidPipelines::new(device))
+    }
+
+    /// The levels of a map, with pipelines that exist. It compiles no shader.
+    pub fn with_pipelines(
+        device: &wgpu::Device,
+        face_size: u32,
+        pipelines: &PyramidPipelines,
+    ) -> GpuPyramid {
         let levels = max_level(face_size);
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("pyramid"),
@@ -178,14 +237,13 @@ impl GpuPyramid {
                 | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
-        let layout = pyramid_layout(device);
         let all = texture.create_view(&wgpu::TextureViewDescriptor {
             dimension: Some(wgpu::TextureViewDimension::D2Array),
             ..Default::default()
         });
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("pyramid"),
-            layout: &layout,
+            layout: &pipelines.layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
                 resource: wgpu::BindingResource::TextureView(&all),
@@ -205,10 +263,6 @@ impl GpuPyramid {
                 }));
             }
         }
-        let source_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("pyramid source"),
-            entries: &[texture_entry(0, wgpu::ShaderStages::FRAGMENT)],
-        });
         let sources = (2..=levels)
             .map(|k| {
                 let view = texture.create_view(&wgpu::TextureViewDescriptor {
@@ -219,7 +273,7 @@ impl GpuPyramid {
                 });
                 device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("pyramid source"),
-                    layout: &source_layout,
+                    layout: &pipelines.source_layout,
                     entries: &[wgpu::BindGroupEntry {
                         binding: 0,
                         resource: wgpu::BindingResource::TextureView(&view),
@@ -228,19 +282,6 @@ impl GpuPyramid {
             })
             .collect();
 
-        let build_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("pyramid build"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: true,
-                    min_binding_size: NonZeroU64::new(size_of::<Build>() as u64),
-                },
-                count: None,
-            }],
-        });
         let passes = (levels as usize * FACES).max(1);
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("pyramid build"),
@@ -266,7 +307,7 @@ impl GpuPyramid {
         uniforms.unmap();
         let build = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("pyramid build"),
-            layout: &build_layout,
+            layout: &pipelines.build_layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
                 resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
@@ -277,16 +318,6 @@ impl GpuPyramid {
             }],
         });
 
-        let from_tiles = pipeline(
-            device,
-            &format!("{TILES_WGSL}\n{FROM_TILES_WGSL}\n{BUILD_WGSL}"),
-            &[&build_layout, &tiles_layout(device)],
-        );
-        let from_level = pipeline(
-            device,
-            &format!("{FROM_LEVEL_WGSL}\n{BUILD_WGSL}"),
-            &[&build_layout, &source_layout],
-        );
         let pyramid = GpuPyramid {
             face_size,
             levels,
@@ -295,8 +326,8 @@ impl GpuPyramid {
             targets,
             sources,
             build,
-            from_tiles,
-            from_level,
+            from_tiles: pipelines.from_tiles.clone(),
+            from_level: pipelines.from_level.clone(),
             dirty: Mutex::new([None; FACES]),
         };
         pyramid.mark_all();
