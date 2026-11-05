@@ -21,7 +21,9 @@ use crate::ui::atlas::{self, AtlasSelection, AtlasTool, ClassColor, FrameTab};
 use crate::ui::{Action, AppState, ExportFormat, Workspace};
 use crate::ui::{region, select};
 
-pub const SELECT: &str = "Select";
+/// The name of the cell of the Frame tool. Its label is "Frame", as the
+/// label of the Frame tab.
+pub const FRAME_TOOL: &str = "Frame tool";
 pub const VERTEX: &str = "Vertex";
 pub const MOVE: &str = "Move";
 pub const PREVIOUS_PAGE: &str = "Previous page";
@@ -462,7 +464,7 @@ fn top_row(
 }
 
 /// The context strip: the card below the tool strip while a frame or an
-/// item of furniture is selected. With the Select tool, it holds the
+/// item of furniture is selected. With the Frame tool, it holds the
 /// switch that snaps a frame to the layout of the page, "Delete selection",
 /// and Deselect. With the Vertex tool, it holds the switch, "Delete
 /// vertex", and Deselect. With the Move tool, it holds Deselect. With no
@@ -480,7 +482,7 @@ fn frame_card(
     let framed = state.atlas.frame().is_some();
     let cells = match tool {
         AtlasTool::Vertex if framed => 3,
-        AtlasTool::Select if atlas::has_selection(state) => 2 + usize::from(framed),
+        AtlasTool::Frame if atlas::has_selection(state) => 2 + usize::from(framed),
         AtlasTool::Move if atlas::has_selection(state) => 1,
         _ => return,
     };
@@ -535,7 +537,7 @@ fn frame_card(
                     {
                         atlas::delete_vertices(state);
                     }
-                } else if tool == AtlasTool::Select {
+                } else if tool == AtlasTool::Frame {
                     let name = select::DELETE;
                     if widgets::tool_cell(ui, controls, name, "Delete", Icon::Trash, false, true)
                         .clicked()
@@ -576,14 +578,19 @@ fn tool_strip(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
         |ui| {
             let mut ui = super::padded(ui);
             let mut cells = |ui: &mut egui::Ui| {
-                for (name, icon, tool) in [
-                    (SELECT, Icon::Select, AtlasTool::Select),
-                    (VERTEX, Icon::Vertex, AtlasTool::Vertex),
-                    (MOVE, Icon::Move, AtlasTool::Move),
-                    (super::MEASURE, Icon::Measure, AtlasTool::Measure),
+                for (name, label, icon, tool) in [
+                    (FRAME_TOOL, "Frame", Icon::Frame, AtlasTool::Frame),
+                    (VERTEX, VERTEX, Icon::Vertex, AtlasTool::Vertex),
+                    (MOVE, MOVE, Icon::Move, AtlasTool::Move),
+                    (
+                        super::MEASURE,
+                        super::MEASURE,
+                        Icon::Measure,
+                        AtlasTool::Measure,
+                    ),
                 ] {
                     let active = state.atlas.tool == tool;
-                    if widgets::tool_cell(ui, controls, name, name, icon, active, true).clicked() {
+                    if widgets::tool_cell(ui, controls, name, label, icon, active, true).clicked() {
                         state.atlas.tool = tool;
                     }
                 }

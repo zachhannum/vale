@@ -73,6 +73,9 @@ pub const POLYGON_TOOL: &str = "Polygon";
 pub const POINT_TOOL: &str = "Point";
 /// The button of the Measure tool.
 pub const MEASURE_TOOL: &str = "Measure";
+/// The button of the Atlas tool bar that chooses the Frame tool. Its text
+/// is "Frame", as the text of the Frame tab.
+pub const FRAME_TOOL: &str = "Frame tool";
 /// The button of the Atlas tool bar that chooses the Vertex tool.
 pub const VERTEX_TOOL: &str = "Vertex";
 /// The slider of the smoothing of the line tool.
@@ -389,7 +392,7 @@ fn atlas_buttons(ui: &mut egui::Ui, state: &mut AppState) {
     });
     let editing = matches!(state.atlas.selection, atlas::AtlasSelection::Frame(_));
     let vertexing = state.atlas.tool == atlas::AtlasTool::Vertex;
-    if editing && (vertexing || state.atlas.tool == atlas::AtlasTool::Select) {
+    if editing && (vertexing || state.atlas.tool == atlas::AtlasTool::Frame) {
         let snap = ui.selectable_label(state.atlas.snap, SNAP_TO_LAYOUT);
         if snap.clicked() {
             state.atlas.snap = !state.atlas.snap;
@@ -400,12 +403,20 @@ fn atlas_buttons(ui: &mut egui::Ui, state: &mut AppState) {
         atlas::edit_grid(state, |g| g.on = !on);
     }
     ui.separator();
+    let framing = state.atlas.tool == atlas::AtlasTool::Frame;
+    let frame = ui.selectable_label(framing, "Frame");
+    frame.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, framing, FRAME_TOOL)
+    });
+    if frame.on_hover_text("F").clicked() {
+        state.atlas.tool = atlas::AtlasTool::Frame;
+    }
     let vertex = ui
         .selectable_label(vertexing, VERTEX_TOOL)
         .on_hover_text("A");
     if vertex.clicked() {
         state.atlas.tool = if vertexing {
-            atlas::AtlasTool::Select
+            atlas::AtlasTool::Frame
         } else {
             atlas::AtlasTool::Vertex
         };
@@ -429,9 +440,9 @@ fn atlas_buttons(ui: &mut egui::Ui, state: &mut AppState) {
         }
     }
     let tool = state.atlas.tool;
-    let moving = matches!(tool, atlas::AtlasTool::Select | atlas::AtlasTool::Move);
+    let moving = matches!(tool, atlas::AtlasTool::Frame | atlas::AtlasTool::Move);
     if moving && atlas::has_selection(state) {
-        if tool == atlas::AtlasTool::Select
+        if tool == atlas::AtlasTool::Frame
             && ui.button(select::DELETE).on_hover_text("Delete").clicked()
         {
             atlas::delete_selection(state);

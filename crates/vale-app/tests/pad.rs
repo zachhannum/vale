@@ -9414,7 +9414,7 @@ fn the_measure_cell_and_card_fit_in_the_atlas_on_each_screen() {
         vale_app::ui::atlas::add_frame(h.state_mut());
         h.run_steps(3);
         let strip = h.state().pad.rects.unwrap().tools;
-        let names = ["Select", "Vertex", "Move", MEASURE];
+        let names = ["Frame tool", "Vertex", "Move", MEASURE];
         for name in names {
             scroll_strip_to(&mut h, name);
             let cell = control(&h, name).unwrap_or_else(|| panic!("{what}: {name}"));
@@ -9428,7 +9428,7 @@ fn the_measure_cell_and_card_fit_in_the_atlas_on_each_screen() {
         assert!(h.state().measuring(), "{what}");
         assert_eq!(h.state().atlas.tool, AtlasTool::Measure, "{what}");
         assert_eq!(toggled(&h, MEASURE), Some(true), "{what}");
-        for name in ["Select", "Vertex", "Move"] {
+        for name in ["Frame tool", "Vertex", "Move"] {
             assert_ne!(toggled(&h, name), Some(true), "{what}: {name}");
         }
         assert!(!readout_line(h.state()).starts_with("Length"), "{what}");
@@ -9476,9 +9476,9 @@ fn the_measure_cell_and_card_fit_in_the_atlas_on_each_screen() {
                 &format!("{what} with the snapping settings"),
             );
         }
-        // Select leaves the tool.
-        tap(&mut h, "Select");
-        assert_eq!(h.state().atlas.tool, AtlasTool::Select, "{what}");
+        // Frame leaves the tool.
+        tap(&mut h, "Frame tool");
+        assert_eq!(h.state().atlas.tool, AtlasTool::Frame, "{what}");
     }
 }
 
@@ -9534,7 +9534,7 @@ fn the_vertex_cell_and_card_fit_in_the_atlas_on_each_screen() {
 }
 
 #[test]
-fn the_select_strip_fits_in_the_atlas_on_each_screen() {
+fn the_frame_strip_fits_in_the_atlas_on_each_screen() {
     use vale_app::ui::atlas::{AtlasSelection, AtlasTool};
     use vale_app::ui::pad::DESELECT;
     use vale_app::ui::pad::atlas::SNAP_TO_LAYOUT;
@@ -9545,7 +9545,7 @@ fn the_select_strip_fits_in_the_atlas_on_each_screen() {
         h.state_mut().workspace = Workspace::Atlas;
         vale_app::ui::atlas::add_frame(h.state_mut());
         h.run_steps(3);
-        assert_eq!(h.state().atlas.tool, AtlasTool::Select, "{what}");
+        assert_eq!(h.state().atlas.tool, AtlasTool::Frame, "{what}");
         let names = [SNAP_TO_LAYOUT, DELETE, DESELECT];
         let cells = names.map(|name| control(&h, name).unwrap_or_else(|| panic!("{what}: {name}")));
         for pair in cells.windows(2) {

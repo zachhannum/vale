@@ -291,9 +291,9 @@ impl ItemPage {
 /// The tool of a pen, a finger, and the mouse on the page.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub enum AtlasTool {
-    /// A tap selects, and a drag moves a frame or a handle.
+    /// A tap selects a frame or an item, and a drag moves it or a handle.
     #[default]
-    Select,
+    Frame,
     /// A tap on a frame shows its vertices. A tap and a box select vertices,
     /// a drag of a handle moves them, and a tap on an edge adds a vertex.
     Vertex,
@@ -790,7 +790,7 @@ impl Default for AtlasState {
             page: PageId(0),
             selection: AtlasSelection::None,
             vertices: Vec::new(),
-            tool: AtlasTool::Select,
+            tool: AtlasTool::Frame,
             tab: FrameTab::Frame,
             sizes: false,
             kinds: false,
@@ -1765,7 +1765,7 @@ fn input(ui: &egui::Ui, state: &mut AppState, resp: &egui::Response, place: Page
     let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
     match state.atlas.tool {
         _ if typing => {}
-        AtlasTool::Select => {
+        AtlasTool::Frame => {
             if delete {
                 delete_selection(state);
             }
@@ -1919,7 +1919,7 @@ fn start_drag(
                 Pointer::Pen | Pointer::Mouse => Drag::Box(pos),
             }
         }
-        AtlasTool::Select => {
+        AtlasTool::Frame => {
             if let (Some(id), Some((handle, center))) = (state.atlas.item(), handle_at(state, pos))
             {
                 return match handle {
@@ -2166,7 +2166,7 @@ fn tap(state: &mut AppState, page: &PageRecord, place: PagePlace, pos: Pos2) {
         vertex_tap(state, page, place, pos);
         return;
     }
-    if state.atlas.tool == AtlasTool::Select && handle_at(state, pos).is_some() {
+    if state.atlas.tool == AtlasTool::Frame && handle_at(state, pos).is_some() {
         return;
     }
     let at = place.to_mm(pos);
@@ -3680,15 +3680,15 @@ pub fn rename_map_style(state: &mut AppState, id: MapStyleId, name: &str) -> boo
 }
 
 /// The canvas of the desktop layout, in the space between the panels. The
-/// keys V, A, and H choose the Select tool, the Vertex tool, and the Move
+/// keys F, A, and H choose the Frame tool, the Vertex tool, and the Move
 /// tool.
 pub fn desktop(ui: &mut egui::Ui, state: &mut AppState) {
     let typing = ui.ctx().memory(|m| m.focused().is_some());
     if !typing {
         let key = |k| ui.input(|i| i.key_pressed(k));
-        let (v, a, h) = (key(egui::Key::V), key(egui::Key::A), key(egui::Key::H));
-        if v {
-            state.atlas.tool = AtlasTool::Select;
+        let (f, a, h) = (key(egui::Key::F), key(egui::Key::A), key(egui::Key::H));
+        if f {
+            state.atlas.tool = AtlasTool::Frame;
         }
         if a {
             state.atlas.tool = AtlasTool::Vertex;

@@ -698,7 +698,7 @@ fn a_polygon_frame_moves_and_scales_with_a_finger_a_pen_and_a_mouse() {
 }
 
 #[test]
-fn the_select_tool_shows_no_vertex_handles() {
+fn the_frame_tool_shows_no_vertex_handles() {
     let mut h = inset_pad(BOARDS[0]);
     tap(&mut h, POLYGON);
     let handles = &h.state().atlas.handles;
@@ -1111,7 +1111,7 @@ fn a_pinch_on_the_paper_zooms_and_moves_the_page_and_not_the_maps() {
 fn a_drag_on_the_paper_moves_the_page() {
     let mut h = inset_pad(BOARDS[0]);
     let maps_before = maps(&h);
-    for tool in ["Move", "Select"] {
+    for tool in ["Move", "Frame tool"] {
         tap(&mut h, tool);
         for input in INPUTS {
             let before = place(&h);
@@ -1137,9 +1137,9 @@ fn a_drag_on_the_paper_moves_the_page() {
 }
 
 #[test]
-fn with_the_select_tool_a_pinch_and_the_wheel_in_the_selected_frame_zoom_the_page() {
+fn with_the_frame_tool_a_pinch_and_the_wheel_in_the_selected_frame_zoom_the_page() {
     let mut h = inset_pad(BOARDS[0]);
-    assert_eq!(h.state().atlas.tool, AtlasTool::Select);
+    assert_eq!(h.state().atlas.tool, AtlasTool::Frame);
     let (before, maps_before) = (place(&h), maps(&h));
     let scale = frame(&h, 1).scale;
     let at = middle(&h, 1);
@@ -1309,7 +1309,7 @@ fn the_context_strip_deletes_the_frame_and_undo_brings_it_back() {
 fn deselect_clears_the_atlas_selection() {
     let mut h = inset_pad(BOARDS[0]);
     let inset = frame(&h, 1).id;
-    assert_eq!(h.state().atlas.tool, AtlasTool::Select);
+    assert_eq!(h.state().atlas.tool, AtlasTool::Frame);
     // Deselect in the context strip clears the selected frame.
     tap(&mut h, DESELECT);
     assert_eq!(h.state().atlas.selection, AtlasSelection::None);
@@ -1370,7 +1370,7 @@ fn the_page_controls_go_to_the_previous_page_and_the_next_page() {
     assert_eq!(h.state().atlas.page, second);
     for size in BOARDS {
         let h = pad_with(state(), size);
-        for name in [ADD, "Select", "Move"] {
+        for name in [ADD, "Frame tool", "Move"] {
             assert!(control(&h, name).is_some(), "{size:?}: {name}");
         }
         check_controls(&h, "top row");
@@ -3152,9 +3152,9 @@ fn the_path_is_not_saved_and_a_page_change_or_a_tool_change_clears_it() {
     tap(&mut h, PREVIOUS_PAGE);
     taps(&mut h);
     // A cell of the tool strip leaves the Measure tool and clears the path.
-    assert_ne!(toggled(&h, "Select"), Some(true));
-    tap(&mut h, "Select");
-    assert_eq!(h.state().atlas.tool, AtlasTool::Select);
+    assert_ne!(toggled(&h, "Frame tool"), Some(true));
+    tap(&mut h, "Frame tool");
+    assert_eq!(h.state().atlas.tool, AtlasTool::Frame);
     assert!(h.state().measure.is_empty());
     // The Measure cell chooses the tool again, and Move leaves it.
     tap(&mut h, MEASURE);
@@ -3240,7 +3240,7 @@ fn undo_and_redo_act_on_the_path_in_the_atlas_and_not_on_the_page() {
     assert_eq!(open_page(&h).frames, frames);
     assert_eq!(undo_log(&h), log);
     // After the Measure tool, undo takes away the frame.
-    tap(&mut h, "Select");
+    tap(&mut h, "Frame tool");
     tap(&mut h, "Undo");
     assert!(open_page(&h).frames.is_empty());
 }
@@ -6274,13 +6274,13 @@ fn the_snap_switch_turns_snapping_off_with_a_finger() {
     tap(&mut h, SNAP_TO_LAYOUT);
     assert!(h.state().atlas.snap);
 
-    // The switch shows only while the Select tool or the Vertex tool edits a
+    // The switch shows only while the Frame tool or the Vertex tool edits a
     // frame.
     tap(&mut h, "Move");
     assert!(control(&h, SNAP_TO_LAYOUT).is_none());
     tap(&mut h, VERTEX);
     assert!(control(&h, SNAP_TO_LAYOUT).is_some());
-    tap(&mut h, "Select");
+    tap(&mut h, "Frame tool");
     assert!(control(&h, SNAP_TO_LAYOUT).is_some());
     h.state_mut().atlas.selection = AtlasSelection::Page;
     h.run_steps(2);
@@ -6486,7 +6486,7 @@ fn taps_select_a_vertex_and_clear_the_vertices_and_then_the_frame() {
     tap_with(&mut h, at, Input::Finger);
     let at = handle(&h, Handle::Vertex((0, 0)));
     tap_with(&mut h, at, Input::Finger);
-    tap(&mut h, "Select");
+    tap(&mut h, "Frame tool");
     assert!(selected_vertices(&h).is_empty());
     assert_eq!(h.state().atlas.selection, AtlasSelection::Frame(inset));
 }

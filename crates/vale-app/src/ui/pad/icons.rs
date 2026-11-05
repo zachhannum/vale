@@ -57,6 +57,8 @@ pub enum Icon {
     /// The layout grid of the pages.
     LayoutGrid,
     Select,
+    /// A rectangle with a square handle at each corner.
+    Frame,
     Reshape,
     /// A polygon with a plus sign.
     PolygonAdd,
@@ -133,6 +135,7 @@ impl Icon {
             Icon::LayoutGrid => "M4 4h16v16h-16zM4 9.33h16M4 14.67h16M9.33 4v16M14.67 4v16",
             Icon::Grip => "M5 8h14M5 12h14M5 16h14",
             Icon::Select => "M5 3l14 8-6 2-2 6z",
+            Icon::Frame => "M6 6h12v12H6zM3 3h4v4H3zM17 3h4v4h-4zM3 17h4v4H3zM17 17h4v4h-4z",
             // A square with its top side redrawn as a curve.
             Icon::Reshape => "M6 8v12h12V8M6 8c2-6 10-6 12 0",
             Icon::PolygonAdd => "M3 8l7-4 5 5-2 7-8-1zM19 13v8M15 17h8",
@@ -455,6 +458,7 @@ mod tests {
             Icon::LayoutGrid,
             Icon::Delete,
             Icon::Select,
+            Icon::Frame,
             Icon::Reshape,
             Icon::PolygonAdd,
             Icon::PolygonSubtract,

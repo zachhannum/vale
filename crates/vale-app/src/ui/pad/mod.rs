@@ -852,7 +852,7 @@ fn top_row(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
 }
 
 /// Chooses the Measure tool, or goes back from it to Move on the globe and
-/// to Select in the Atlas.
+/// to Frame in the Atlas.
 pub fn toggle_measure(state: &mut AppState) {
     let measuring = state.measuring();
     match state.workspace {
@@ -865,7 +865,7 @@ pub fn toggle_measure(state: &mut AppState) {
         }
         Workspace::Atlas => {
             state.atlas.tool = if measuring {
-                AtlasTool::Select
+                AtlasTool::Frame
             } else {
                 AtlasTool::Measure
             };

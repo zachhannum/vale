@@ -1247,7 +1247,7 @@ fn the_wheel_zooms_the_page_and_with_the_move_tool_the_map_of_the_selected_frame
     assert!(after.to_mm(pos).distance(mm) < 0.5);
     let page = vale_app::ui::atlas::open_page(h.state());
     assert_eq!(page.frames[0], frame);
-    // With the Select tool, the wheel in the selected frame zooms the page.
+    // With the Frame tool, the wheel in the selected frame zooms the page.
     h.state_mut().atlas.selection = AtlasSelection::Frame(frame.id);
     h.run_steps(3);
     let before = h.state().atlas.place.unwrap();
@@ -1347,24 +1347,24 @@ fn the_a_key_chooses_the_vertex_tool() {
     h.key_press(egui::Key::A);
     h.run_steps(2);
     assert_eq!(h.state().atlas.tool, AtlasTool::Vertex);
-    h.key_press(egui::Key::V);
+    h.key_press(egui::Key::F);
     h.run_steps(2);
-    assert_eq!(h.state().atlas.tool, AtlasTool::Select);
+    assert_eq!(h.state().atlas.tool, AtlasTool::Frame);
     h.get_by_label(VERTEX_TOOL).click();
     h.run_steps(2);
     assert_eq!(h.state().atlas.tool, AtlasTool::Vertex);
 }
 
 #[test]
-fn the_keys_v_and_h_choose_the_tools() {
+fn the_keys_f_and_h_choose_the_tools() {
     let mut h = harness();
     h.run_steps(3);
     h.key_press(egui::Key::H);
     h.run_steps(2);
     assert_eq!(h.state().atlas.tool, AtlasTool::Move);
-    h.key_press(egui::Key::V);
+    h.key_press(egui::Key::F);
     h.run_steps(2);
-    assert_eq!(h.state().atlas.tool, AtlasTool::Select);
+    assert_eq!(h.state().atlas.tool, AtlasTool::Frame);
 }
 
 #[test]
@@ -1688,10 +1688,10 @@ fn the_toolbar_and_the_keys_work_the_measure_tool_in_the_atlas() {
     assert!(h.state().measure.is_empty());
     assert_eq!(open_page_frames(&h), page.frames);
 
-    // V leaves the tool, and M chooses it.
-    h.key_press(egui::Key::V);
+    // F leaves the tool, and M chooses it.
+    h.key_press(egui::Key::F);
     h.run_steps(2);
-    assert_eq!(h.state().atlas.tool, AtlasTool::Select);
+    assert_eq!(h.state().atlas.tool, AtlasTool::Frame);
     h.key_press(egui::Key::M);
     h.run_steps(2);
     assert_eq!(h.state().atlas.tool, AtlasTool::Measure);
