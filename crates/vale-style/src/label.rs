@@ -271,8 +271,6 @@ pub struct LeaderStyle {
     /// `None` uses the color of the text.
     pub color: Option<Color>,
     pub width: f64,
-    /// From 0 to 1, times the opacity of the text.
-    pub opacity: f64,
     pub dashed: bool,
     pub dash: f64,
     pub dash_gap: f64,
@@ -297,7 +295,6 @@ impl Default for LeaderStyle {
             show: true,
             color: None,
             width: 0.75,
-            opacity: 1.0,
             dashed: false,
             dash: 3.0,
             dash_gap: 2.0,
@@ -318,7 +315,6 @@ impl LeaderStyle {
             "show": self.show,
             "color": self.color.map(|c| c.to_hex()),
             "width": self.width,
-            "opacity": self.opacity,
             "dashed": self.dashed,
             "dash": self.dash,
             "dash_gap": self.dash_gap,
@@ -347,7 +343,6 @@ impl LeaderStyle {
             show: flag("show", d.show),
             color: color("color"),
             width: number("width", d.width),
-            opacity: number("opacity", d.opacity),
             dashed: flag("dashed", d.dashed),
             dash: number("dash", d.dash),
             dash_gap: number("dash_gap", d.dash_gap),
@@ -468,8 +463,6 @@ pub struct LabelClass {
     pub case: TextCase,
     /// A fraction of `size`. 0.05 adds 5 % of the size between letters.
     pub letter_spacing: f64,
-    /// The opacity of the text, from 0 to 1.
-    pub opacity: f64,
     pub halo: bool,
     pub halo_color: Color,
     /// Points.
@@ -552,7 +545,6 @@ impl LabelClass {
             weight: 400.0,
             case: TextCase::Normal,
             letter_spacing: letter_spacing_for(kind, style.size),
-            opacity: 1.0,
             halo: true,
             halo_color: HALO_COLOR,
             halo_width: HALO_WIDTH,
@@ -575,7 +567,6 @@ impl LabelClass {
             weight: 400.0,
             case: TextCase::Normal,
             letter_spacing: 0.0,
-            opacity: 1.0,
             halo: true,
             halo_color: HALO_COLOR,
             halo_width: HALO_WIDTH,
@@ -635,7 +626,6 @@ impl LabelClass {
                 TextCase::Normal
             },
             letter_spacing: letter_spacing_for(kind, size),
-            opacity: 1.0,
             halo: true,
             halo_color: HALO_COLOR,
             halo_width: HALO_WIDTH,
@@ -663,7 +653,6 @@ pub fn classes_to_json(classes: &[LabelClass]) -> String {
                 "weight": c.weight,
                 "case": c.case.id(),
                 "letter_spacing": c.letter_spacing,
-                "opacity": c.opacity,
                 "halo": c.halo,
                 "halo_color": c.halo_color.to_hex(),
                 "halo_width": c.halo_width,
@@ -783,7 +772,7 @@ fn read_class(j: &Json) -> Result<LabelClass, StyleError> {
         .unwrap_or(0);
     let number = |key: &str, fallback: f64| m.get(key).and_then(Json::as_f64).unwrap_or(fallback);
     let flag = |key: &str, fallback: bool| m.get(key).and_then(Json::as_bool).unwrap_or(fallback);
-    Ok(LabelClass {
+    let mut class = LabelClass {
         name: text(m, "name").unwrap_or_default(),
         text: text(m, "text").unwrap_or_default(),
         filter: text(m, "filter").unwrap_or_default(),
@@ -797,7 +786,6 @@ fn read_class(j: &Json) -> Result<LabelClass, StyleError> {
             .and_then(TextCase::from_id)
             .unwrap_or(TextCase::Normal),
         letter_spacing: number("letter_spacing", 0.0),
-        opacity: number("opacity", 1.0),
         halo: flag("halo", true),
         halo_color: m
             .get("halo_color")
@@ -834,7 +822,43 @@ fn read_class(j: &Json) -> Result<LabelClass, StyleError> {
         buffer: number("buffer", BUFFER),
         remove_duplicates: flag("remove_duplicates", true),
         duplicate_distance: number("duplicate_distance", DUPLICATE_DISTANCE),
-    })
+    };
+    fold_opacity(&mut class, m);
+    Ok(class)
+}
+
+/// Older files have an `opacity` from 0 to 1 in a class and in its leader.
+/// The class opacity goes into the alpha of `color` and `halo_color`. The
+/// leader opacity times the class opacity goes into the alpha of the leader
+/// colors. A leader color that is `None` and has a leader opacity other than 1
+/// becomes the old text color or halo color with that product in its alpha.
+/// Alpha is rounded.
+fn fold_opacity(class: &mut LabelClass, m: &Map<String, Json>) {
+    let opacity = |m: Option<&Map<String, Json>>| {
+        m.and_then(|m| m.get("opacity"))
+            .and_then(Json::as_f64)
+            .filter(|o| !o.is_nan())
+            .map_or(1.0, |o| o.clamp(0.0, 1.0))
+    };
+    let text = opacity(Some(m));
+    let leader = opacity(m.get("leader").and_then(Json::as_object));
+    let both = text * leader;
+    let (color, halo_color) = (class.color, class.halo_color);
+    class.color = fade(color, text);
+    class.halo_color = fade(halo_color, text);
+    let l = &mut class.leader;
+    if leader != 1.0 {
+        l.color = Some(l.color.unwrap_or(color));
+        l.halo_color = Some(l.halo_color.unwrap_or(halo_color));
+    }
+    l.color = l.color.map(|c| fade(c, both));
+    l.halo_color = l.halo_color.map(|c| fade(c, both));
+}
+
+/// `color` with its alpha times `opacity`, from 0 to 1.
+fn fade(color: Color, opacity: f64) -> Color {
+    let a = (f64::from(color.a) * opacity).round().clamp(0.0, 255.0) as u8;
+    Color { a, ..color }
 }
 
 #[cfg(test)]
@@ -865,7 +889,6 @@ mod tests {
         a.weight = 700.0;
         a.case = TextCase::AllSmallCaps;
         a.letter_spacing = 0.05;
-        a.opacity = 0.75;
         a.halo = false;
         a.halo_color = Color::rgba(0, 0, 0, 100);
         a.halo_width = 1.5;
@@ -916,9 +939,8 @@ mod tests {
         h.min_area = 120.0;
         h.leader = LeaderStyle {
             show: false,
-            color: Some(Color::rgb(200, 10, 20)),
+            color: Some(Color::rgba(200, 10, 20, 90)),
             width: 1.5,
-            opacity: 0.5,
             dashed: true,
             dash: 5.0,
             dash_gap: 3.0,
@@ -946,7 +968,6 @@ mod tests {
         assert_eq!(read[0].weight, 400.0);
         assert_eq!(read[0].case, TextCase::Normal);
         assert_eq!(read[0].letter_spacing, 0.0);
-        assert_eq!(read[0].opacity, 1.0);
         assert_eq!(read[0].placement, LabelPlacement::OnLine);
         assert_eq!(read[0].offset, 4.0);
         assert_eq!(read[0].positions, PositionRank::defaults());
@@ -987,6 +1008,60 @@ mod tests {
     }
 
     #[test]
+    fn colors_with_alpha_survive_json() {
+        let mut c = LabelClass::new("Towns", GeometryKind::Polygon, 0).unwrap();
+        c.color = Color::rgba(1, 2, 3, 64);
+        c.halo_color = Color::rgba(4, 5, 6, 0);
+        c.leader.color = Some(Color::rgba(7, 8, 9, 200));
+        c.leader.halo_color = Some(Color::rgba(10, 11, 12, 1));
+        let text = classes_to_json(std::slice::from_ref(&c));
+        assert!(!text.contains("opacity"));
+        assert_eq!(classes_from_json(&text).unwrap(), vec![c]);
+    }
+
+    #[test]
+    fn an_old_class_opacity_goes_into_the_alpha() {
+        let old = r##"{"version":1,"classes":[{"color":"#102030","halo_color":"#ffffffd9","opacity":0.5,"placement":"around"}]}"##;
+        let c = &classes_from_json(old).unwrap()[0];
+        assert_eq!(c.color, Color::rgba(0x10, 0x20, 0x30, 128));
+        assert_eq!(c.halo_color, Color::rgba(255, 255, 255, 109));
+        assert_eq!(c.leader.color, None);
+        assert_eq!(c.leader.halo_color, None);
+        let old =
+            r##"{"version":1,"classes":[{"color":"#102030","opacity":7,"placement":"around"}]}"##;
+        assert_eq!(classes_from_json(old).unwrap()[0].color.a, 255);
+    }
+
+    #[test]
+    fn an_old_leader_opacity_keeps_the_drawn_alpha() {
+        // The old rule: the alpha of the leader color, or of the text color,
+        // times the leader opacity times the class opacity.
+        let old = r##"{"version":1,"classes":[{"color":"#10203080","halo_color":"#ffffffd9","opacity":0.5,"placement":"best_fit","leader":{"opacity":0.4}}]}"##;
+        let c = &classes_from_json(old).unwrap()[0];
+        let drawn = |a: u8| (f64::from(a) * 0.4 * 0.5).round() as u8;
+        assert_eq!(
+            c.leader.color,
+            Some(Color::rgba(0x10, 0x20, 0x30, drawn(0x80)))
+        );
+        assert_eq!(
+            c.leader.halo_color,
+            Some(Color::rgba(255, 255, 255, drawn(0xd9)))
+        );
+        assert_eq!(c.color.a, 64);
+
+        let old = r##"{"version":1,"classes":[{"color":"#102030","opacity":0.5,"placement":"best_fit","leader":{"opacity":0.5,"color":"#c80a14"}}]}"##;
+        let c = &classes_from_json(old).unwrap()[0];
+        assert_eq!(c.leader.color, Some(Color::rgba(200, 10, 20, 64)));
+        assert_eq!(c.leader.halo_color, Some(Color::rgba(255, 255, 255, 54)));
+
+        // With a leader opacity of 1, a leader color of `None` uses the text
+        // color, which has the class opacity already.
+        let old = r##"{"version":1,"classes":[{"color":"#102030","opacity":0.5,"placement":"best_fit","leader":{"opacity":1}}]}"##;
+        let c = &classes_from_json(old).unwrap()[0];
+        assert_eq!((c.leader.color, c.leader.halo_color), (None, None));
+    }
+
+    #[test]
     fn the_default_class_reproduces_the_label_style() {
         let c = LabelClass::from_style("Default", &style("name"), GeometryKind::Point, 5).unwrap();
         assert_eq!(c.name, "Default");
@@ -999,7 +1074,6 @@ mod tests {
         assert_eq!(c.weight, 400.0);
         assert_eq!(c.case, TextCase::Normal);
         assert_eq!(c.letter_spacing, 0.0);
-        assert_eq!(c.opacity, 1.0);
         assert!(c.halo);
         assert_eq!(c.halo_color, Color::rgba(255, 255, 255, 217));
         assert_eq!(c.halo_width, 2.2);
