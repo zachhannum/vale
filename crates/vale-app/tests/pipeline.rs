@@ -204,6 +204,7 @@ fn one_layer_of_each_kind() {
             Item::Glyphs(_) => "glyphs".to_string(),
             Item::Image { .. } => "image".to_string(),
             Item::Rasterize { .. } => "rasterize".to_string(),
+            Item::Layer { .. } => "layer".to_string(),
             Item::PushClip { .. } => "push clip".to_string(),
             Item::PopClip => "pop clip".to_string(),
         })
@@ -238,6 +239,7 @@ fn describe(item: &Item) -> String {
         Item::Glyphs(_) => "glyphs".to_string(),
         Item::Image { .. } => "image".to_string(),
         Item::Rasterize { .. } => "rasterize".to_string(),
+        Item::Layer { alpha, .. } => format!("layer {alpha}"),
         Item::PushClip { rule, .. } => format!("push clip {rule:?}"),
         Item::PopClip => "pop clip".to_string(),
     }
@@ -1363,6 +1365,56 @@ fn each_stroke_kind_draws_in_a_frame_and_in_pdf() {
     doc.entry_mut(id).unwrap().style.style = style(&no_brush);
     let list = compose_frame_full(&doc, &mut pipeline, frame).list;
     assert!(!images(&list), "a vector stroke became an image");
+}
+
+#[test]
+fn a_translucent_taper_or_brush_applies_its_alpha_once() {
+    let cross_a = [[-40.0, -20.0], [40.0, 20.0]];
+    let cross_b = [[-40.0, 20.0], [40.0, -20.0]];
+    let (mut doc, id) = lines_at(&[
+        ("taper", &cross_a),
+        ("taper", &cross_b),
+        ("brush", &cross_a),
+        ("brush", &cross_b),
+    ]);
+    let color = Color::rgba(0, 0, 200, 128);
+    doc.entry_mut(id).unwrap().style.style = Style {
+        rules: vec![
+            kind_rule("taper", color, 4.0, StrokeKind::taper()),
+            kind_rule("brush", color, 4.0, StrokeKind::Brush),
+        ],
+    };
+    let mut pipeline = Pipeline::new();
+    let page = doc.project.atlas.pages[0].id;
+    let frame = frame_on(&mut doc, &mut pipeline, page);
+    let list = compose_frame_full(&doc, &mut pipeline, frame).list;
+    // The two crossing tapers are one fill, so the crossing is not darker.
+    let tapers = list
+        .items
+        .iter()
+        .filter(|i| matches!(i, Item::Fill { color: c, .. } if *c == color))
+        .count();
+    assert_eq!(tapers, 1);
+    // The dabs of the brush are in one layer with the alpha of the color.
+    let layers: Vec<_> = list
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            Item::Rasterize { items, .. } => Some(items),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(layers.len(), 1);
+    let [Item::Layer { alpha, items }] = layers[0].as_slice() else {
+        panic!("{:?}", layers[0].iter().map(describe).collect::<Vec<_>>());
+    };
+    assert!((alpha - 128.0 / 255.0).abs() < 1e-6);
+    assert!(items.len() > 10);
+    assert!(
+        items
+            .iter()
+            .any(|i| matches!(i, Item::Fill { color, .. } if color.a > 128))
+    );
 }
 
 /// A document with one layer of the GeoJSON features `features`.

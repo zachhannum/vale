@@ -577,10 +577,15 @@ fn draw_batch(list: &mut DisplayList, pl: &PageLayer<'_>, batch: &Batch, sd: &mu
                     push_stroke(list, polylines_path(&parts, false), &stroke, false);
                 }
                 StrokeKind::Taper { start } if line => {
+                    // One fill for the batch, so that the alpha does not build up where two lines overlap.
+                    let mut path = BezPath::new();
                     for f in features().filter(|f| !f.lines.is_empty()) {
                         let pieces = stroke::taper(&f.lines, start * stroke.width, stroke.width);
+                        path.extend(stroke::taper_path(&pieces));
+                    }
+                    if !path.elements().is_empty() {
                         list.push(Item::Fill {
-                            path: stroke::taper_path(&pieces),
+                            path,
                             color: stroke.color,
                             rule: FillRule::NonZero,
                         });
@@ -594,8 +599,9 @@ fn draw_batch(list: &mut DisplayList, pl: &PageLayer<'_>, batch: &Batch, sd: &mu
                             let circle = Circle::new(d.center, d.radius);
                             let b = circle.bounding_box();
                             bounds = Some(bounds.map_or(b, |r| r.union(b)));
+                            // The dabs build up at full alpha, and the layer applies the alpha of the color once.
                             let mut color = stroke.color;
-                            color.a = (f32::from(color.a) * d.alpha).round() as u8;
+                            color.a = (255.0 * d.alpha).round() as u8;
                             items.push(Item::Fill {
                                 path: circle.to_path(0.1),
                                 color,
@@ -604,6 +610,15 @@ fn draw_batch(list: &mut DisplayList, pl: &PageLayer<'_>, batch: &Batch, sd: &mu
                         }
                     }
                     if let Some(bounds) = bounds {
+                        let alpha = stroke.color.a;
+                        let items = if alpha == 255 {
+                            items
+                        } else {
+                            vec![Item::Layer {
+                                alpha: f32::from(alpha) / 255.0,
+                                items,
+                            }]
+                        };
                         list.push(Item::Rasterize { bounds, items });
                     }
                 }
