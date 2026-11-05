@@ -5353,6 +5353,27 @@ fn the_hex_keypad_sets_the_color_of_a_stop_and_the_card_stays_in_place() {
 }
 
 #[test]
+fn a_band_color_and_the_shade_color_stay_opaque() {
+    use vale_app::ui::pad::raster::COLOR;
+    let mut h = painted_pad(BOARDS[1]);
+    open_height(&mut h);
+    open_stops(&mut h);
+    let sea = h.state().globe.map.bands.sea().unwrap();
+    show_stop(&mut h, sea);
+    tap_handle(&mut h, sea);
+    assert!(control(&h, &format!("{COLOR} hue")).is_some());
+    assert!(control(&h, &format!("{COLOR} opacity")).is_none());
+    // A code with an alpha does not change an opaque color.
+    let hex = format!("{COLOR} hex");
+    type_keys(&mut h, &hex, "00FF0080");
+    assert_eq!(h.state().globe.map.bands.colors()[sea], [0, 255, 0]);
+
+    let (h, _) = eyedropper_page();
+    assert!(control(&h, "Shade color hue").is_some());
+    assert!(control(&h, "Shade color opacity").is_none());
+}
+
+#[test]
 fn a_long_press_on_a_field_opens_copy_and_paste_with_no_keyboard() {
     let _clipboard = one_clipboard_test();
     use vale_app::ui::pad::raster::COLOR;
@@ -5364,7 +5385,9 @@ fn a_long_press_on_a_field_opens_copy_and_paste_with_no_keyboard() {
     show_stop(&mut h, sea);
     tap_handle(&mut h, sea);
     let hex = format!("{COLOR} hex");
-    let code = vale_app::ui::pad::widgets::hex_text(h.state().globe.map.bands.colors()[sea]);
+    let code = vale_app::ui::pad::widgets::hex_text(vale_app::ui::pad::widgets::opaque(
+        h.state().globe.map.bands.colors()[sea],
+    ));
     long_press(&mut h, &hex);
     assert!(no_keyboard(&h));
     assert!(control(&h, COPY).is_some());
@@ -7833,6 +7856,65 @@ fn a_rule_page_sets_the_stroke_and_the_fill() {
         tap(&mut h, FILL);
         assert!(rule(&h).fill().is_some(), "{what}");
     }
+}
+
+#[test]
+fn the_opacity_strip_sets_the_alpha_of_a_fill() {
+    use vale_app::ui::pad::rules::FILL_COLOR;
+    let mut h = pad(BOARDS[1]);
+    let land = vector(&h, "Land");
+    let fill = |h: &Pad| rules(h, land)[0].fill().unwrap();
+    open_rule(&mut h, "Land", "Default");
+    scroll_to_control(&mut h, FILL_COLOR);
+    tap(&mut h, FILL_COLOR);
+    let before = fill(&h);
+    assert_eq!(before.a, 255);
+    let strip = format!("{FILL_COLOR} opacity");
+    scroll_to_control(&mut h, &strip);
+    let rect = control(&h, &strip).unwrap();
+    finger_tap(
+        &mut h,
+        pos2(rect.left() + rect.width() / 4.0, rect.center().y),
+    );
+    let after = fill(&h);
+    assert!((i32::from(after.a) - 64).abs() <= 2, "{after:?}");
+    assert_eq!((after.r, after.g, after.b), (before.r, before.g, before.b));
+    // The hue strip keeps the alpha.
+    let hue = control(&h, &format!("{FILL_COLOR} hue")).unwrap();
+    finger_tap(&mut h, pos2(hue.left() + hue.width() / 3.0, hue.center().y));
+    let hued = fill(&h);
+    assert_ne!((hued.r, hued.g, hued.b), (after.r, after.g, after.b));
+    assert_eq!(hued.a, after.a);
+    screenshot::save(&mut h, "pad-color-opacity");
+}
+
+#[test]
+fn the_hex_field_of_a_color_with_alpha_takes_eight_digits() {
+    let _clipboard = one_clipboard_test();
+    use vale_app::ui::pad::rules::STROKE_COLOR;
+    use vale_app::ui::pad::widgets::COPY;
+    use vale_style::Color;
+    let mut h = pad(BOARDS[1]);
+    let land = vector(&h, "Land");
+    let stroke = |h: &Pad| rules(h, land)[0].stroke().unwrap().color;
+    open_rule(&mut h, "Land", "Default");
+    scroll_to_control(&mut h, STROKE_COLOR);
+    tap(&mut h, STROKE_COLOR);
+    let hex = format!("{STROKE_COLOR} hex");
+    let shown = |h: &mut Pad| {
+        scroll_to_control(h, &hex);
+        long_press(h, &hex);
+        tap(h, COPY);
+        vale_app::clipboard::get()
+    };
+    type_scrolled_keys(&mut h, &hex, "C0402080");
+    assert_eq!(stroke(&h), Color::rgba(0xc0, 0x40, 0x20, 0x80));
+    // The field shows the code with its alpha.
+    assert_eq!(shown(&mut h).as_deref(), Some("C0402080"));
+    // Six digits give an opaque color, and the field shows six digits.
+    type_scrolled_keys(&mut h, &hex, "102030");
+    assert_eq!(stroke(&h), Color::rgb(0x10, 0x20, 0x30));
+    assert_eq!(shown(&mut h).as_deref(), Some("102030"));
 }
 
 #[test]
