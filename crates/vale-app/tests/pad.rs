@@ -11292,3 +11292,47 @@ fn on_an_iphone_the_brush_sheet_has_no_pressure_settings() {
         assert!(!c.name.to_lowercase().contains("pressure"), "{}", c.name);
     }
 }
+
+#[test]
+#[ignore = "gpu"]
+fn the_sheet_stays_in_its_place_during_a_drag() {
+    let _gpu = one_gpu_test();
+    let ((w, hgt), [top, right, bottom, left]) = IPHONES[0];
+    let insets = egui::epaint::MarginF32 {
+        left,
+        right,
+        top,
+        bottom,
+    };
+    // A drag from the grabber, from the title row, and from the list.
+    for start in [8.0, 26.0, 120.0] {
+        let mut state = state();
+        state.globe.set_face_size(64);
+        state.add_height();
+        state.pad.open(Panel::Layers);
+        let setup = egui_kittest::wgpu::default_wgpu_setup();
+        let mut h = headless::ui_harness(state, (w, hgt), 1.0, setup);
+        h.input_mut().safe_area_insets = Some(egui::SafeAreaInsets(insets));
+        h.run_steps(4);
+        let sheet = panel(&h, Panel::Layers).unwrap();
+        let from = pos2(150.0, sheet.top() + start);
+        let steps = (0..=20).map(|i| -10.0 * i as f32);
+        let path: Vec<f32> = steps
+            .chain((0..=40).map(|i| -200.0 + 10.0 * i as f32))
+            .collect();
+        touch(&mut h, egui::TouchPhase::Start, from, None);
+        for dy in path {
+            touch(&mut h, egui::TouchPhase::Move, from + vec2(0.0, dy), None);
+            h.step();
+            let sheet = h.state().pad.rects.unwrap().sheet.unwrap();
+            let close = control(&h, "Close Layers").unwrap();
+            let what = format!("from {start}, at {dy}");
+            assert_eq!(close.top(), sheet.top() + 4.0, "{what}");
+            let card = h.ctx.memory(|m| m.area_rect(egui::Id::new("pad-sheet")));
+            if let Some(card) = card {
+                assert_eq!(card.bottom(), 852.0, "{what}");
+            }
+        }
+        touch(&mut h, egui::TouchPhase::End, from, None);
+    }
+}
