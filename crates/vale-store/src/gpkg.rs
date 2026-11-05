@@ -3568,7 +3568,7 @@ mod tests {
             graticule: Graticule {
                 on: false,
                 interval: Some(7.5),
-                color: [0x12, 0x34, 0xab],
+                color: [0x12, 0x34, 0xab, 0x80],
                 width: 1.25,
                 format: CoordFormat::Decimal,
                 meridians: EdgeLabels {
@@ -3580,10 +3580,9 @@ mod tests {
                     weight: 700.0,
                     italic: true,
                     size: 9.5,
-                    color: [1, 2, 3],
-                    opacity: 0.5,
+                    color: [1, 2, 3, 128],
                     halo: true,
-                    halo_color: [4, 5, 6],
+                    halo_color: [4, 5, 6, 128],
                     halo_width: 1.5,
                     outside: true,
                     edges: Edges {
@@ -3599,19 +3598,19 @@ mod tests {
             },
             neatline: Neatline {
                 on: false,
-                color: [0xaa, 0x10, 0x20],
+                color: [0xaa, 0x10, 0x20, 0x40],
                 width: 3.5,
             },
             border: Border {
                 on: true,
                 style: atlas::BorderStyle::Graduated,
-                color: [9, 8, 7],
-                color2: [6, 5, 4],
+                color: [9, 8, 7, 200],
+                color2: [6, 5, 4, 255],
                 width_mm: 2.5,
                 distances_mm: [-12.5, 4.0, 4.0, 4.0],
                 gap_mm: 2.5,
                 stroke: true,
-                stroke_color: [3, 2, 1],
+                stroke_color: [3, 2, 1, 100],
                 stroke_width: 1.5,
                 grid: true,
                 grid_text: atlas::FurnitureText {
@@ -3676,7 +3675,7 @@ mod tests {
         let arrow = NorthArrowItem {
             frame: Some(frame),
             hide_if_varies: false,
-            color: [0xc0, 0x10, 0x10],
+            color: [0xc0, 0x10, 0x10, 0xff],
             ..NorthArrowItem::default()
         };
         for (rect, item) in [
@@ -3759,6 +3758,22 @@ mod tests {
 
         let (mut file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
         assert_eq!(loaded.atlas, project.atlas);
+        // A color with alpha has 8 hex digits, and an opaque color has 6.
+        let colors: Vec<(String, String)> = (file.conn)
+            .prepare("SELECT graticule_color, border_color FROM vale_frame ORDER BY id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(
+            colors.contains(&("1234ab80".into(), "aa102040".into())),
+            "{colors:?}"
+        );
+        assert!(
+            colors.contains(&("96a5af".into(), "2b2b2b".into())),
+            "{colors:?}"
+        );
         assert!(file.undo().unwrap().is_some());
         assert_eq!(file.project().atlas.maps, before.atlas.maps);
         assert_eq!(file.project().atlas.pages, before.atlas.pages);

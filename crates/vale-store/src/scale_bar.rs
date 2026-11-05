@@ -522,14 +522,14 @@ mod tests {
             bar_height: 2.5,
             fill1: FillPattern {
                 kind: FillKind::Hatch,
-                color: [1, 2, 3],
-                background: Some([11, 12, 13]),
+                color: [1, 2, 3, 4],
+                background: Some([11, 12, 13, 14]),
                 angle: 30.0,
                 spacing: 1.2,
                 line_width: 0.25,
             },
-            fill2: FillPattern::solid([4, 5, 6]),
-            outline: [7, 8, 9],
+            fill2: FillPattern::solid([4, 5, 6, 255]),
+            outline: [7, 8, 9, 10],
             line_width: 0.8,
             mark_frequency: TickFrequency::EndsAndZero,
             mark_position: ScalePosition::Center,
@@ -551,12 +551,11 @@ mod tests {
                 weight: 600.0,
                 italic: true,
                 size: 6.5,
-                color: [10, 20, 30],
+                color: [10, 20, 30, 128],
                 case: TextCase::AllSmallCaps,
                 letter_spacing: 0.1,
-                opacity: 0.5,
                 halo: true,
-                halo_color: [200, 210, 220],
+                halo_color: [200, 210, 220, 128],
                 halo_width: 2.5,
             },
             unit_style: FurnitureText {
@@ -587,7 +586,7 @@ mod tests {
             r##"{"font": null, "weight": 400, "italic": false, "size": 9, "color": "102030"}"##;
         let bar = ScaleBarItem::from_json(old).unwrap();
         let style = FurnitureText {
-            color: [0x10, 0x20, 0x30],
+            color: [0x10, 0x20, 0x30, 0xff],
             ..FurnitureText::sized(9.0)
         };
         assert_eq!(bar.number_style, style);
@@ -597,7 +596,7 @@ mod tests {
         // A fill that is a color is a solid fill.
         let old = r#"{"fill1": "102030", "fill2": "ffffff"}"#;
         let bar = ScaleBarItem::from_json(old).unwrap();
-        assert_eq!(bar.fill1, FillPattern::solid([0x10, 0x20, 0x30]));
+        assert_eq!(bar.fill1, FillPattern::solid([0x10, 0x20, 0x30, 0xff]));
         assert_eq!(bar.fill2, ScaleBarItem::default().fill2);
         for bad in [
             r#"{"divisions": 0}"#,

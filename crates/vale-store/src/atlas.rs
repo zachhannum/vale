@@ -196,6 +196,10 @@ impl LayoutGrid {
         let mut g = LayoutGrid::default();
         read_flag(&map, "on", &mut g.on)?;
         read_number(&map, "spacing", &mut g.spacing_mm)?;
+        if map.contains_key("opacity") {
+            // The default color of an old grid is opaque.
+            g.color[3] = 255;
+        }
         read_rgba(&map, "color", &mut g.color)?;
         read_old_opacity(&map, &mut [&mut g.color])?;
         (g.spacing_mm > 0.0).then_some(g)
@@ -1496,10 +1500,9 @@ mod tests {
             weight: 600.0,
             italic: true,
             size: 8.5,
-            color: [10, 20, 30],
-            opacity: 0.75,
+            color: [10, 20, 30, 191],
             halo: true,
-            halo_color: [200, 210, 220],
+            halo_color: [200, 210, 220, 255],
             halo_width: 1.5,
             outside: true,
             edges: Edges {
@@ -1512,7 +1515,12 @@ mod tests {
             orientation: EdgeOrientation::Horizontal,
             ..EdgeLabels::default()
         };
-        assert_eq!(EdgeLabels::from_json(&set.to_json()), Some(set));
+        // A color with alpha is 8 hex digits, and an opaque color is 6.
+        let json = set.to_json();
+        assert!(json.contains(r#""color":"0a141ebf""#), "{json}");
+        assert!(json.contains(r#""halo_color":"c8d2dc""#), "{json}");
+        assert!(!json.contains("opacity"), "{json}");
+        assert_eq!(EdgeLabels::from_json(&json), Some(set));
         assert_eq!(EdgeLabels::from_json("{}"), Some(EdgeLabels::default()));
         let unknown = EdgeLabels::from_json(r#"{"size": 9, "future": 1}"#).unwrap();
         assert_eq!(unknown.size, 9.0);
@@ -1702,12 +1710,11 @@ mod tests {
             weight: 700.0,
             italic: true,
             size: 14.5,
-            color: [10, 20, 30],
+            color: [10, 20, 30, 153],
             case: TextCase::SmallCaps,
             letter_spacing: 0.08,
-            opacity: 0.6,
             halo: true,
-            halo_color: [250, 240, 230],
+            halo_color: [250, 240, 230, 153],
             halo_width: 2.5,
         }
     }
@@ -1762,7 +1769,7 @@ mod tests {
         let arrow = NorthArrowItem {
             frame,
             hide_if_varies: false,
-            color: [200, 0, 0],
+            color: [200, 0, 0, 64],
             letter_style: styled(),
         };
         round_trip(Furniture::NorthArrow(arrow), frame);
@@ -1786,7 +1793,7 @@ mod tests {
         let old = r##"{"title": "Key", "size": 6, "weight": 400, "color": "102030"}"##;
         let legend = LegendItem::from_json(old).unwrap();
         let style = FurnitureText {
-            color: [0x10, 0x20, 0x30],
+            color: [0x10, 0x20, 0x30, 0xff],
             ..FurnitureText::sized(6.0)
         };
         assert_eq!(legend.title_style, style);
@@ -1822,6 +1829,49 @@ mod tests {
             let none = TextItem::from_json(bad).is_none() || LegendItem::from_json(bad).is_none();
             assert!(none, "{bad}");
         }
+    }
+
+    #[test]
+    fn an_old_opacity_multiplies_the_alpha() {
+        // 255 × 0.5 = 127.5, which rounds up to 128.
+        let old = r#"{"color": "102030", "halo_color": "ffffff", "opacity": 0.5}"#;
+        let labels = EdgeLabels::from_json(old).unwrap();
+        assert_eq!(labels.color, [0x10, 0x20, 0x30, 128]);
+        assert_eq!(labels.halo_color, [0xff, 0xff, 0xff, 128]);
+        let text = TextItem::from_json(old).unwrap().style;
+        assert_eq!(text.color, [0x10, 0x20, 0x30, 128]);
+        assert_eq!(text.halo_color, [0xff, 0xff, 0xff, 128]);
+        let legend = r#"{"title_style": {"color": "102030", "opacity": 0.5}}"#;
+        let legend = LegendItem::from_json(legend).unwrap();
+        assert_eq!(legend.title_style.color, [0x10, 0x20, 0x30, 128]);
+        assert_eq!(legend.entry_style, LegendItem::default().entry_style);
+        let grid = r#"{"on": true, "spacing": 5, "color": "102030", "opacity": 0.5}"#;
+        let grid = LayoutGrid::from_json(grid).unwrap();
+        assert_eq!(grid.color, [0x10, 0x20, 0x30, 128]);
+        // The old default grid is the new default grid.
+        let grid = LayoutGrid::from_json(r#"{"opacity": 0.35}"#).unwrap();
+        assert_eq!(grid, LayoutGrid::default());
+        for bad in [r#"{"opacity": -0.1}"#, r#"{"opacity": 1.5}"#] {
+            assert_eq!(LayoutGrid::from_json(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_color_reads_with_or_without_alpha() {
+        let grid = LayoutGrid::from_json(r#"{"color": "102030"}"#).unwrap();
+        assert_eq!(grid.color, [0x10, 0x20, 0x30, 0xff]);
+        let grid = LayoutGrid::from_json(r#"{"color": "10203040"}"#).unwrap();
+        assert_eq!(grid.color, [0x10, 0x20, 0x30, 0x40]);
+        for bad in ["1020304", "102030405", "1020304g", "+1020304"] {
+            let text = format!(r#"{{"color": "{bad}"}}"#);
+            assert_eq!(LayoutGrid::from_json(&text), None, "{bad}");
+        }
+        let grid = LayoutGrid {
+            color: [1, 2, 3, 4],
+            ..LayoutGrid::default()
+        };
+        assert!(grid.to_json().contains(r#""color":"01020304""#));
+        assert_eq!(LayoutGrid::from_json(&grid.to_json()), Some(grid));
     }
 
     #[test]
