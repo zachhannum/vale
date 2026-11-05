@@ -928,6 +928,72 @@ pub fn text_field(
     )
 }
 
+/// The name of the button of a `choice_field`.
+pub fn choices_name(name: &str) -> String {
+    format!("{name} values")
+}
+
+/// A `text_field` with a button at its right end that opens and closes a
+/// list of values. Returns the response of the field and true for a tap on
+/// the button. `open`: the list is open.
+pub fn choice_field(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    name: &str,
+    text: &mut String,
+    valid: bool,
+    open: bool,
+) -> (Response, bool) {
+    let row = form_row(ui, name);
+    let button = Rect::from_min_size(pos2(row.right() - TOUCH, row.top()), vec2(TOUCH, TOUCH));
+    let field = Rect::from_min_max(row.min, pos2(button.left() - 6.0, row.bottom()));
+    let resp = field_at(ui, controls, field, name, None, text, valid, theme::body());
+    let tap = hit(
+        ui,
+        controls,
+        button,
+        &choices_name(name),
+        Sense::click(),
+        true,
+        Some(open),
+    );
+    fill(ui, button, &tap, open);
+    let chevron = Rect::from_center_size(button.center(), vec2(18.0, 18.0));
+    icons::paint(ui.painter(), chevron, Icon::Down, 18.0, theme::MUTE);
+    (resp, tap.clicked())
+}
+
+/// A row of the list of a `choice_field`, at the left edge of the fields
+/// of the form. The row that is `on` has a mark. `name` is the name of the
+/// control.
+pub fn pick_row(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    name: &str,
+    text: &str,
+    on: bool,
+) -> Response {
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), Sense::hover());
+    let row = Rect::from_min_max(pos2(rect.left() + FORM_LABEL, rect.top()), rect.max);
+    let resp = hit(ui, controls, row, name, Sense::click(), true, Some(on));
+    if resp.is_pointer_button_down_on() {
+        let back = row.shrink2(vec2(0.0, HIGHLIGHT_INSET));
+        ui.painter()
+            .rect_filled(back, theme::CONTROL_RADIUS, theme::raise());
+    }
+    let at = pos2(row.left() + 12.0, row.center().y);
+    ui.painter()
+        .text(at, Align2::LEFT_CENTER, text, theme::body(), theme::TEXT);
+    if on {
+        let mark = Rect::from_center_size(
+            pos2(row.right() - TOUCH / 2.0, row.center().y),
+            vec2(18.0, 18.0),
+        );
+        icons::paint(ui.painter(), mark, Icon::Tick, 18.0, theme::ACCENT);
+    }
+    resp
+}
+
 /// A field for more than one line of text, as wide as the row and `lines`
 /// lines high.
 pub fn text_area(

@@ -5,7 +5,7 @@
 use std::collections::HashSet;
 
 use eframe::egui::{self, Pos2};
-use vale_store::{Geometry, Layer, LayerId, Uuid};
+use vale_store::{Geometry, Layer, LayerId, Uuid, Value};
 
 use super::AppState;
 use super::new_feature::{FormField, can_take_focus};
@@ -40,6 +40,9 @@ const INSPECTOR: &str = "attributes";
 /// its first frame, the tap that selects the feature takes the focus from
 /// the field.
 const FOCUS_FRAMES: u8 = 3;
+/// The largest number of different values that the list of a field shows.
+/// A field with more values has no list.
+pub const CHOICES: usize = 50;
 /// The radius of the handle at each end of a selected line.
 const END: f32 = 5.0;
 
@@ -60,6 +63,10 @@ pub enum SelectDrag {
 pub struct SelectionForm {
     pub feature: FeatureRef,
     pub fields: Vec<FormField>,
+    /// The values of each field in the features of the layer.
+    pub choices: Vec<Vec<String>>,
+    /// The field with the open list of values.
+    pub open: Option<String>,
     /// The undo count when the fields took their values.
     history: u64,
     /// The field that takes the focus when the form shows, and the number
@@ -377,9 +384,12 @@ impl AppState {
                 }
                 _ => None,
             };
+            let choices = layer.fields.iter().map(|f| choices(layer, &f.name));
             Some(SelectionForm {
                 feature: f,
                 fields: fields.collect(),
+                choices: choices.collect(),
+                open: None,
                 history: self.history,
                 focus,
             })
@@ -420,6 +430,32 @@ impl AppState {
             project.set_attributes(f.layer, f.uuid, changed)
         });
     }
+}
+
+/// The values of a field in the features of a layer, each one time and in
+/// order. A field with more than `CHOICES` values gives none.
+pub fn choices(layer: &Layer, name: &str) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut values = Vec::new();
+    for value in layer.features.iter().filter_map(|f| f.attributes.get(name)) {
+        let Some(label) = value.label().filter(|l| !l.trim().is_empty()) else {
+            continue;
+        };
+        if seen.insert(label) {
+            if seen.len() > CHOICES {
+                return Vec::new();
+            }
+            values.push(value);
+        }
+    }
+    values.sort_by(|a, b| match (a, b) {
+        (Value::Number(a), Value::Number(b)) => a.total_cmp(b),
+        (Value::Text(a), Value::Text(b)) => {
+            (a.to_lowercase().cmp(&b.to_lowercase())).then_with(|| a.cmp(b))
+        }
+        _ => a.label().cmp(&b.label()),
+    });
+    values.iter().filter_map(|v| v.label()).collect()
 }
 
 /// The highlight of the selection and of the drag of the Select tool. The
@@ -523,6 +559,39 @@ fn read_field(
     }
 }
 
+/// Puts a value of the list of a field in the field. The change is one
+/// undo step.
+fn pick(text: &mut String, choice: &str, outcome: &mut Outcome, name: &str) {
+    choice.clone_into(text);
+    outcome.commit = true;
+    outcome.edited = Some(name.to_owned());
+}
+
+/// The menu of the values of a field on the desktop.
+fn values_box(
+    ui: &mut egui::Ui,
+    name: &str,
+    text: &mut String,
+    choices: &[String],
+    outcome: &mut Outcome,
+) {
+    let label = widgets::choices_name(name);
+    let resp = egui::ComboBox::from_id_salt((INSPECTOR, name, "values"))
+        .selected_text("")
+        .width(0.0)
+        .show_ui(ui, |ui| {
+            for choice in choices {
+                let on = text.trim() == choice;
+                if ui.selectable_label(on, choice).clicked() {
+                    pick(text, choice, outcome, name);
+                }
+            }
+        })
+        .response;
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, &label));
+    resp.on_hover_text(label);
+}
+
 /// What the inspector does after its frame.
 #[derive(Default)]
 struct Outcome {
@@ -572,15 +641,36 @@ pub fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
                 ui.label(egui::RichText::new(NO_FIELDS).color(theme::MUTE));
             }
             let names: Vec<String> = form.fields.iter().map(|f| f.name.clone()).collect();
-            let focus = &mut form.focus;
+            let (focus, open) = (&mut form.focus, &mut form.open);
             for (i, field) in form.fields.iter_mut().enumerate() {
                 let valid = field.valid();
                 let (name, text) = (&field.name, &mut field.text);
-                let resp = widgets::text_field(ui, controls, name, name, None, text, valid);
+                let choices = &form.choices[i];
+                let resp = if choices.is_empty() {
+                    widgets::text_field(ui, controls, name, name, None, text, valid)
+                } else {
+                    let shown = open.as_ref() == Some(name);
+                    let (resp, tap) = widgets::choice_field(ui, controls, name, text, valid, shown);
+                    if tap {
+                        *open = (!shown).then(|| name.clone());
+                    }
+                    resp
+                };
                 if resp.gained_focus() {
                     resp.scroll_to_me(None);
                 }
                 read_field(&resp, focus, &mut outcome, name, names.get(i + 1));
+                if open.as_ref() != Some(name) {
+                    continue;
+                }
+                for choice in choices {
+                    let on = text.trim() == choice;
+                    let row = format!("{name}: {choice}");
+                    if widgets::pick_row(ui, controls, &row, choice, on).clicked() {
+                        pick(text, choice, &mut outcome, name);
+                        *open = None;
+                    }
+                }
             }
         }
         None => {
@@ -710,10 +800,21 @@ pub fn desktop(ui: &mut egui::Ui, state: &mut AppState) {
                             for (i, field) in form.fields.iter_mut().enumerate() {
                                 ui.label(&field.name);
                                 let color = (!field.valid()).then(|| ui.visuals().warn_fg_color);
-                                let edit = egui::TextEdit::singleline(&mut field.text)
-                                    .id(egui::Id::new((INSPECTOR, &field.name)))
-                                    .text_color_opt(color);
-                                let resp = ui.add(edit);
+                                let choices = &form.choices[i];
+                                let resp = ui
+                                    .horizontal(|ui| {
+                                        let (name, text) = (&field.name, &mut field.text);
+                                        let edit = egui::TextEdit::singleline(text)
+                                            .id(egui::Id::new((INSPECTOR, name)))
+                                            .text_color_opt(color);
+                                        let resp = ui.add(edit);
+                                        if choices.is_empty() {
+                                            return resp;
+                                        }
+                                        values_box(ui, name, text, choices, &mut outcome);
+                                        resp
+                                    })
+                                    .inner;
                                 let (name, next) = (&field.name, names.get(i + 1));
                                 read_field(&resp, focus, &mut outcome, name, next);
                                 ui.end_row();
