@@ -313,3 +313,57 @@ pub fn pdf_clips(pdf: &[u8]) -> (usize, usize) {
     let count = |op: &str| words.iter().filter(|w| **w == op).count();
     (count("W"), count("W*"))
 }
+
+/// Adds a hidden line layer with `stroke`, a line that crosses itself near
+/// the crater of `raster_masked`, and a mask of each value of `raster`.
+pub fn masked_line(
+    state: &mut AppState,
+    raster: vale_store::RasterId,
+    stroke: Stroke,
+) -> RasterMasked {
+    let text = r#"{"type":"LineString","coordinates":[[-20,0],[40,40],[40,0],[-20,40]]}"#;
+    let doc = &mut state.doc;
+    let layer = doc.add_imported(geojson::read_str("line", text).unwrap(), None)[0];
+    let of = |l: &&vale_store::Layer| l.kind == vale_store::LayerKind::Raster(raster);
+    let raster = doc.project.layers().iter().find(of).unwrap().id;
+    doc.entry_mut(layer).unwrap().style.set_stroke(Some(stroke));
+    doc.set_visible(layer, false);
+    state.sync_globe();
+    RasterMasked { layer, raster }
+}
+
+/// Sets the mask of `found.layer` to each value of its raster, or to none.
+pub fn set_full_mask(state: &mut AppState, found: &RasterMasked, on: bool) {
+    let mask = on.then_some(vale_style::Mask::Raster {
+        layer: found.raster,
+        min: None,
+        max: None,
+    });
+    state.doc.entry_mut(found.layer).unwrap().style.style.mask = mask;
+    state.sync_globe();
+}
+
+/// The pixels where `a` and `b` differ by more than `tolerance` in a
+/// channel, and the pixels where `a` differs from `ground`, which is the
+/// image with no line.
+pub fn differences(
+    ground: &image::RgbaImage,
+    a: &image::RgbaImage,
+    b: &image::RgbaImage,
+    tolerance: i32,
+) -> (usize, usize) {
+    let far = |p: &image::Rgba<u8>, q: &image::Rgba<u8>| {
+        (0..3).any(|k| (i32::from(p.0[k]) - i32::from(q.0[k])).abs() > tolerance)
+    };
+    let mut drawn = 0;
+    let mut wrong = 0;
+    for ((g, p), q) in ground.pixels().zip(a.pixels()).zip(b.pixels()) {
+        if far(g, p) {
+            drawn += 1;
+        }
+        if far(p, q) {
+            wrong += 1;
+        }
+    }
+    (wrong, drawn)
+}

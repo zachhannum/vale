@@ -32,7 +32,7 @@ use vale_app::ui::panels::{BASIN_OUTLINE_HINT, BASIN_RIVER_HINT, CLEAR_OUTLINE};
 use vale_app::ui::{AppState, LayerRef, RasterSpec, Workspace, draw};
 use vale_import::geojson;
 use vale_store::{RasterDisplay, RasterId};
-use vale_style::{Color, Stroke};
+use vale_style::{Color, Stroke, StrokeKind};
 use vale_terrain::{
     Bands, ChannelCut, ChannelMap, CoarseHeights, FlowMap, Limits, Mode, Rain, StopLine,
     WindowHeights, channel_map, level_to_meters, meters_to_level, window_channels,
@@ -8422,4 +8422,49 @@ fn a_hidden_raster_layer_masks_a_fill_on_the_globe() {
         agreement.compared > 50_000 && agreement.land > 10_000 && agreement.wrong == 0,
         "{agreement:?}"
     );
+}
+
+/// The canvas with no line, with the line of `masked_line` and no mask, and
+/// with the line and a mask of each value.
+fn line_images(stroke: Stroke) -> [image::RgbaImage; 3] {
+    let (mut h, id, found) = masked_crater();
+    // The line crosses itself over the crater, where the rivers would make a
+    // lake that the mask leaves out.
+    h.state_mut().set_raster_rivers(id, false);
+    masked::show(h.state_mut(), found.layer, false);
+    let line = masked::masked_line(h.state_mut(), id, stroke);
+    let ground = canvas_image(&mut h);
+    masked::show(h.state_mut(), line.layer, true);
+    let plain = canvas_image(&mut h);
+    masked::set_full_mask(h.state_mut(), &line, true);
+    let masked = canvas_image(&mut h);
+    [ground, plain, masked]
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_translucent_stroke_of_a_masked_layer_is_one_group() {
+    let _gpu = one_gpu_test();
+    let stroke = Stroke::solid(Color::rgba(200, 10, 10, 110), 6.0);
+    let [ground, plain, masked] = line_images(stroke);
+    masked::save_images("mask-translucent", &plain, &masked);
+    // Where the line crosses itself, a group shows no darker than along the
+    // line, as without the mask.
+    let (wrong, drawn) = masked::differences(&ground, &plain, &masked, 8);
+    assert!(drawn > 1000 && wrong * 1000 < drawn, "{wrong} of {drawn}");
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_tapered_stroke_of_a_masked_layer_has_round_pieces() {
+    let _gpu = one_gpu_test();
+    let stroke = Stroke {
+        color: Color::rgb(200, 10, 10),
+        width: 8.0,
+        kind: StrokeKind::Taper { start: 0.2 },
+    };
+    let [ground, plain, masked] = line_images(stroke);
+    masked::save_images("mask-taper", &plain, &masked);
+    let (wrong, drawn) = masked::differences(&ground, &plain, &masked, 40);
+    assert!(drawn > 1000 && wrong * 100 < drawn, "{wrong} of {drawn}");
 }

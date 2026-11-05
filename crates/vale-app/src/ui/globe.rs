@@ -789,17 +789,25 @@ fn opaque(c: vale_style::Color) -> (egui::Color32, f32) {
     )
 }
 
+/// A shape that a raster mask cuts.
+pub enum Cut {
+    Shape(egui::Shape),
+    /// The opaque shapes of a translucent stroke, which draw as one group
+    /// with the alpha.
+    Group(f32, Vec<egui::Shape>),
+}
+
 /// The shapes of a vector layer on their way to the painter, in draw order.
 /// The symbols wait in one mesh, and the translucent strokes of one paint
 /// wait in one group, until a shape of another kind comes. With a cut, the
-/// fills and the strokes go to the list of shapes that a raster mask cuts,
-/// and a translucent stroke goes there shape by shape.
+/// fills, the strokes, and the groups go to the list of shapes that a raster
+/// mask cuts.
 struct Sink<'a> {
     painter: &'a egui::Painter,
     /// The format of the render target. `None`: no wgpu renderer, and a
     /// translucent stroke goes to the painter shape by shape.
     format: Option<egui_wgpu::wgpu::TextureFormat>,
-    cut: Option<&'a mut Vec<egui::Shape>>,
+    cut: Option<&'a mut Vec<Cut>>,
     symbols: egui::Mesh,
     /// The paint of the open group, its alpha, and its opaque shapes.
     group: Option<(vale_style::Stroke, f32, Vec<egui::Shape>)>,
@@ -809,7 +817,7 @@ impl<'a> Sink<'a> {
     fn new(
         painter: &'a egui::Painter,
         format: Option<egui_wgpu::wgpu::TextureFormat>,
-        cut: Option<&'a mut Vec<egui::Shape>>,
+        cut: Option<&'a mut Vec<Cut>>,
     ) -> Self {
         Sink {
             painter,
@@ -825,9 +833,14 @@ impl<'a> Sink<'a> {
         if !self.symbols.is_empty() {
             self.painter.add(std::mem::take(&mut self.symbols));
         }
-        if let Some((_, alpha, shapes)) = self.group.take()
-            && let Some(format) = self.format
-        {
+        if let Some((_, alpha, shapes)) = self.group.take() {
+            if let Some(cut) = &mut self.cut {
+                cut.push(Cut::Group(alpha, shapes));
+                return;
+            }
+            let Some(format) = self.format else {
+                return;
+            };
             let painter = self.painter;
             let shape = stroke_group::group_shape(
                 painter.ctx(),
@@ -852,7 +865,7 @@ impl<'a> Sink<'a> {
     fn add(&mut self, shape: impl Into<egui::Shape>) {
         self.flush();
         match &mut self.cut {
-            Some(cut) => cut.push(shape.into()),
+            Some(cut) => cut.push(Cut::Shape(shape.into())),
             None => {
                 self.painter.add(shape);
             }
@@ -878,23 +891,12 @@ impl<'a> Sink<'a> {
         if alpha >= 1.0 {
             self.flush();
             match &mut self.cut {
-                Some(cut) => cut.extend(shapes),
+                Some(cut) => cut.extend(shapes.into_iter().map(Cut::Shape)),
                 None => self.painter.extend(shapes),
             }
             return;
         }
-        if self.cut.is_some() {
-            self.flush();
-            let cut = self.cut.as_mut().expect("the sink has a cut");
-            cut.extend(shapes.into_iter().map(|mut shape| {
-                egui::epaint::shape_transform::adjust_colors(&mut shape, move |c| {
-                    *c = c.gamma_multiply(alpha);
-                });
-                shape
-            }));
-            return;
-        }
-        if self.format.is_none() {
+        if self.format.is_none() && self.cut.is_none() {
             self.flush();
             let mut painter = self.painter.clone();
             painter.multiply_opacity(alpha);
@@ -1116,7 +1118,7 @@ pub fn vector_layer(
 pub fn vector_layer_cut(
     painter: &egui::Painter,
     format: Option<egui_wgpu::wgpu::TextureFormat>,
-    cut: Option<&mut Vec<egui::Shape>>,
+    cut: Option<&mut Vec<Cut>>,
     rect: egui::Rect,
     doc: &Document,
     view: &GlobeView,
@@ -1363,7 +1365,7 @@ pub fn flat_vector_layer(
 pub fn flat_vector_layer_cut(
     painter: &egui::Painter,
     format: Option<egui_wgpu::wgpu::TextureFormat>,
-    cut: Option<&mut Vec<egui::Shape>>,
+    cut: Option<&mut Vec<Cut>>,
     rect: egui::Rect,
     doc: &Document,
     flat: &FlatView,
@@ -1644,24 +1646,39 @@ fn raster_masks(doc: &Document, globe: &Globe) -> Vec<(LayerId, RasterMask)> {
         .collect()
 }
 
-/// The meshes of `shapes`, each with its clip rectangle, in points.
-fn tessellate(
+/// The meshes of `cuts` in their order, each with the clip rectangle `clip`
+/// in points and its alpha. The meshes read no texture, so a disc is a
+/// polygon and not a picture of the font atlas.
+pub fn tessellate(
     ctx: &egui::Context,
     clip: egui::Rect,
-    shapes: Vec<egui::Shape>,
-) -> Vec<(egui::Rect, egui::Mesh)> {
-    let clipped = (shapes.into_iter())
-        .map(|shape| egui::epaint::ClippedShape {
-            clip_rect: clip,
-            shape,
-        })
-        .collect();
-    (ctx.tessellate(clipped, ctx.pixels_per_point()).into_iter())
-        .filter_map(|p| match p.primitive {
-            egui::epaint::Primitive::Mesh(mesh) => Some((p.clip_rect, mesh)),
-            egui::epaint::Primitive::Callback(_) => None,
-        })
-        .collect()
+    cuts: Vec<Cut>,
+) -> Vec<(egui::Rect, egui::Mesh, f32)> {
+    let ppp = ctx.pixels_per_point();
+    let options = ctx.tessellation_options(|o| *o);
+    let mut out = Vec::new();
+    let mut shapes = Vec::new();
+    let push = |out: &mut Vec<_>, shapes: Vec<egui::Shape>, alpha| {
+        let mesh = stroke_group::tessellate(shapes, ppp, options, clip);
+        if !mesh.is_empty() {
+            out.push((clip, mesh, alpha));
+        }
+    };
+    for cut in cuts {
+        match cut {
+            Cut::Shape(shape) => shapes.push(shape),
+            Cut::Group(alpha, group) => {
+                if !shapes.is_empty() {
+                    push(&mut out, std::mem::take(&mut shapes), 1.0);
+                }
+                push(&mut out, group, alpha);
+            }
+        }
+    }
+    if !shapes.is_empty() {
+        push(&mut out, shapes, 1.0);
+    }
+    out
 }
 
 /// Paints the globe into `rect`. A change of the state before this call

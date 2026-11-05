@@ -578,11 +578,11 @@ pub struct MaskedPass {
 
 impl MaskedPass {
     /// The callback that draws the meshes `meshes`, each with its clip
-    /// rectangle in points, cut to the mask.
+    /// rectangle in points and its alpha, cut to the mask.
     pub fn callback(
         self,
         pixels_per_point: f32,
-        meshes: Vec<(Rect, eframe::egui::Mesh)>,
+        meshes: Vec<(Rect, eframe::egui::Mesh, f32)>,
     ) -> GlobeCallback {
         let mut group = self.group;
         group.vector = Some(VectorShapes {

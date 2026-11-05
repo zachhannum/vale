@@ -273,6 +273,7 @@ struct Layouts {
     with_image: wgpu::PipelineLayout,
     composite: wgpu::PipelineLayout,
     vector: wgpu::BindGroupLayout,
+    vector_group: wgpu::BindGroupLayout,
 }
 
 /// The passes of the masks.
@@ -281,6 +282,9 @@ struct Masks {
     cover: [wgpu::RenderPipeline; 2],
     /// Draws the meshes of egui shapes into the target of a group.
     vector: wgpu::RenderPipeline,
+    /// Puts the opaque shapes of a translucent stroke on the target of a
+    /// group with the alpha of the stroke.
+    vector_group: wgpu::RenderPipeline,
 }
 
 const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 2] =
@@ -523,6 +527,7 @@ impl Layouts {
                 cover("flat range cover", "vs_flat", "fs_flat_range_cover", true),
             ],
             vector: vector_pipeline(&self.device, self.format, &self.vector),
+            vector_group: vector_group_pipeline(&self.device, self.format, &self.vector_group),
         }
     }
 }
@@ -553,6 +558,10 @@ struct Resources {
     /// meshes of egui shapes in the target of a group.
     masks: Compiled<Masks>,
     vector_layout: wgpu::BindGroupLayout,
+    vector_group_layout: wgpu::BindGroupLayout,
+    /// The target of the opaque shapes of a translucent stroke in a group,
+    /// with its size in pixels.
+    vector_scratch: Option<([u32; 2], wgpu::TextureView)>,
     composite_layout: wgpu::BindGroupLayout,
     meshes: Vec<GpuMesh>,
     no_backdrop: wgpu::TextureView,
@@ -691,6 +700,7 @@ impl Resources {
             ..Default::default()
         });
         let vector_layout = vector_layout(device);
+        let vector_group_layout = vector_group_layout(device);
         let group_entry = |binding, ty| wgpu::BindGroupLayoutEntry {
             binding,
             visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
@@ -734,6 +744,7 @@ impl Resources {
             with_image,
             composite,
             vector: vector_layout.clone(),
+            vector_group: vector_group_layout.clone(),
         };
         link.ready.store(false, Ordering::Relaxed);
         let (core_layouts, ready) = (layouts.clone(), SetOnDrop(link.ready.clone()));
@@ -772,6 +783,8 @@ impl Resources {
             images: HashMap::new(),
             masks: Compiled::lazy(move || mask_layouts.masks()),
             vector_layout,
+            vector_group_layout,
+            vector_scratch: None,
             composite_layout,
             meshes: Vec::new(),
             no_backdrop: empty_float("no backdrop", device),
@@ -1295,6 +1308,115 @@ fn vector_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
     })
 }
 
+/// The layout of the group of the pass that puts the opaque shapes of a
+/// translucent stroke on a target.
+fn vector_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("vector group"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+        ],
+    })
+}
+
+/// The blend of egui: the colors are multiplied by their alpha.
+const EGUI_BLEND: wgpu::BlendState = wgpu::BlendState {
+    color: wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::One,
+        dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+        operation: wgpu::BlendOperation::Add,
+    },
+    alpha: wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::OneMinusDstAlpha,
+        dst_factor: wgpu::BlendFactor::One,
+        operation: wgpu::BlendOperation::Add,
+    },
+};
+
+/// A pass of the vector shapes on `view`.
+fn vector_pass<'a>(
+    encoder: &'a mut wgpu::CommandEncoder,
+    view: &wgpu::TextureView,
+    load: wgpu::LoadOp<wgpu::Color>,
+) -> wgpu::RenderPass<'a> {
+    encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("vector"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view,
+            depth_slice: None,
+            resolve_target: None,
+            ops: wgpu::Operations {
+                load,
+                store: wgpu::StoreOp::Store,
+            },
+        })],
+        ..Default::default()
+    })
+}
+
+/// The pipeline that puts the opaque shapes of a translucent stroke on a
+/// target of `format`, with the alpha of the stroke.
+fn vector_group_pipeline(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    layout: &wgpu::BindGroupLayout,
+) -> wgpu::RenderPipeline {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("vector group"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("vector_group.wgsl").into()),
+    });
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("vector group"),
+        bind_group_layouts: &[Some(layout)],
+        immediate_size: 0,
+    });
+    let descriptor = wgpu::RenderPipelineDescriptor {
+        label: Some("vector group"),
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_group"),
+            buffers: &[],
+            compilation_options: Default::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_group"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(EGUI_BLEND),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: Default::default(),
+        }),
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview_mask: None,
+        cache: None,
+    };
+    render_pipeline(device, &descriptor)
+}
+
 /// The pipeline that draws the meshes of egui shapes into a target of
 /// `format`, as egui draws them.
 fn vector_pipeline(
@@ -1331,21 +1453,9 @@ fn vector_pipeline(
             } else {
                 "fs_vector_gamma"
             }),
-            // The blend of egui.
             targets: &[Some(wgpu::ColorTargetState {
                 format,
-                blend: Some(wgpu::BlendState {
-                    color: wgpu::BlendComponent {
-                        src_factor: wgpu::BlendFactor::One,
-                        dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
-                        operation: wgpu::BlendOperation::Add,
-                    },
-                    alpha: wgpu::BlendComponent {
-                        src_factor: wgpu::BlendFactor::OneMinusDstAlpha,
-                        dst_factor: wgpu::BlendFactor::One,
-                        operation: wgpu::BlendOperation::Add,
-                    },
-                }),
+                blend: Some(EGUI_BLEND),
                 write_mask: wgpu::ColorWrites::ALL,
             })],
             compilation_options: Default::default(),
@@ -1410,10 +1520,13 @@ pub struct Group {
     pub capture: Option<Arc<Capture>>,
 }
 
-/// The meshes of egui shapes, each with its clip rectangle, in points.
+/// The meshes of egui shapes in draw order, each with its clip rectangle in
+/// points and its alpha. A mesh with an alpha below 1 holds the opaque
+/// shapes of a translucent stroke, and it draws as one group with that
+/// alpha, so the overlaps of the shapes get the alpha only once.
 pub struct VectorShapes {
     pub pixels_per_point: f32,
-    pub meshes: Vec<(egui::Rect, egui::Mesh)>,
+    pub meshes: Vec<(egui::Rect, egui::Mesh, f32)>,
 }
 
 /// Premultiplied pixels copied from a group target, row by row. The capture
@@ -1847,10 +1960,11 @@ impl Resources {
         readback
     }
 
-    /// Draws the meshes of egui shapes into the view `layers` of a target
-    /// of `size` pixels.
+    /// Draws the meshes of `shapes` on `layers`, a target of `size` pixels,
+    /// in their order. A mesh with an alpha below 1 goes to a target of its
+    /// own first, and then to `layers` with that alpha.
     fn draw_vector(
-        &self,
+        &mut self,
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
         layers: &wgpu::TextureView,
@@ -1861,23 +1975,25 @@ impl Resources {
         let Some(masks) = self.masks.get() else {
             return;
         };
+        let (vector, vector_group) = (masks.vector.clone(), masks.vector_group.clone());
         let ppp = shapes.pixels_per_point;
         let (mut vertices, mut indices) = (Vec::new(), Vec::new());
-        // The first index, the count of indices, and the scissor of each
-        // mesh.
+        // The first index, the count of indices, the scissor, and the alpha
+        // of each mesh.
         let mut runs = Vec::new();
-        for (clip, mesh) in &shapes.meshes {
+        for (clip, mesh, alpha) in &shapes.meshes {
             let px = |v: f32, side: u32| (v * ppp).round().clamp(0.0, side as f32) as u32;
             let (x0, y0) = (px(clip.min.x, size[0]), px(clip.min.y, size[1]));
             let (x1, y1) = (px(clip.max.x, size[0]), px(clip.max.y, size[1]));
-            if x1 <= x0 || y1 <= y0 || mesh.indices.is_empty() {
+            if x1 <= x0 || y1 <= y0 || mesh.indices.is_empty() || *alpha <= 0.0 {
                 continue;
             }
             let base = vertices.len() as u32;
             let first = indices.len() as u32;
             vertices.extend_from_slice(&mesh.vertices);
             indices.extend(mesh.indices.iter().map(|i| i + base));
-            runs.push((first, mesh.indices.len() as u32, [x0, y0, x1 - x0, y1 - y0]));
+            let scissor = [x0, y0, x1 - x0, y1 - y0];
+            runs.push((first, mesh.indices.len() as u32, scissor, *alpha));
         }
         if runs.is_empty() {
             return;
@@ -1913,27 +2029,95 @@ impl Resources {
                 resource: locals.as_entire_binding(),
             }],
         });
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("vector"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: layers,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            ..Default::default()
-        });
-        pass.set_pipeline(&masks.vector);
-        pass.set_bind_group(0, &bind, &[]);
-        pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-        pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-        for (first, count, [x, y, w, h]) in runs {
+        if runs.iter().any(|r| r.3 < 1.0) {
+            self.ensure_vector_scratch(device, size);
+        }
+        let scratch = self.vector_scratch.as_ref().map(|(_, view)| view.clone());
+        let mut i = 0;
+        while i < runs.len() {
+            let (first, count, [x, y, w, h], alpha) = runs[i];
+            if alpha >= 1.0 {
+                // The run of opaque meshes up to the next group.
+                let mut pass = vector_pass(encoder, layers, wgpu::LoadOp::Load);
+                pass.set_pipeline(&vector);
+                pass.set_bind_group(0, &bind, &[]);
+                pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+                pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                while let Some(&(first, count, [x, y, w, h], alpha)) = runs.get(i)
+                    && alpha >= 1.0
+                {
+                    pass.set_scissor_rect(x, y, w, h);
+                    pass.draw_indexed(first..first + count, 0, 0..1);
+                    i += 1;
+                }
+                continue;
+            }
+            i += 1;
+            let Some(scratch) = &scratch else {
+                continue;
+            };
+            let clear = wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT);
+            let mut pass = vector_pass(encoder, scratch, clear);
+            pass.set_pipeline(&vector);
+            pass.set_bind_group(0, &bind, &[]);
+            pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+            pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
             pass.set_scissor_rect(x, y, w, h);
             pass.draw_indexed(first..first + count, 0, 0..1);
+            drop(pass);
+            let params = buffer(
+                "vector group",
+                bytemuck::bytes_of(&[alpha, 0.0, 0.0, 0.0]),
+                wgpu::BufferUsages::UNIFORM,
+            );
+            let group_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("vector group"),
+                layout: &self.vector_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: params.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(scratch),
+                    },
+                ],
+            });
+            let mut pass = vector_pass(encoder, layers, wgpu::LoadOp::Load);
+            pass.set_pipeline(&vector_group);
+            pass.set_bind_group(0, &group_bind, &[]);
+            pass.set_scissor_rect(x, y, w, h);
+            pass.draw(0..3, 0..1);
         }
+    }
+
+    /// Makes the target of the opaque shapes of a translucent stroke in a
+    /// group exactly `size` pixels large.
+    fn ensure_vector_scratch(&mut self, device: &wgpu::Device, size: [u32; 2]) {
+        if self
+            .vector_scratch
+            .as_ref()
+            .is_some_and(|(s, _)| *s == size)
+        {
+            return;
+        }
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("vector group"),
+            size: wgpu::Extent3d {
+                width: size[0],
+                height: size[1],
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: self.format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        self.vector_scratch = Some((size, view));
     }
 
     /// Draws the cover of the value range of a raster mask into the cover
