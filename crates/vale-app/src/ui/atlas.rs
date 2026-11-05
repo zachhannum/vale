@@ -673,8 +673,12 @@ pub struct AtlasState {
     pub grid_page: Option<GridPage>,
     /// The panel shows the distance of each side of the border.
     pub border_sides: bool,
-    /// The panel of this selection and tab showed in the last frame.
-    pub(crate) shown: Option<(AtlasSelection, FrameTab)>,
+    /// The panel of this selection and tab showed in the last frame, and
+    /// whether it was the inspector.
+    pub(crate) shown: Option<(AtlasSelection, FrameTab, bool)>,
+    /// The panel place shows the inspector of the feature selection in
+    /// place of the panel of the selected frame.
+    pub attributes: bool,
     /// The page of the panel of the selected item of furniture.
     pub item_page: Option<ItemPage>,
     /// The thumbnails of the kinds of scale bar in the style gallery: the
@@ -727,6 +731,12 @@ pub struct AtlasState {
 }
 
 impl AtlasState {
+    /// True if the panel place shows the inspector: the Select tool has a
+    /// feature selection, and the user did not go back to the frame.
+    pub fn shows_attributes(&self, features: usize) -> bool {
+        self.tool == AtlasTool::Select && self.attributes && features > 0
+    }
+
     /// The layer whose panel the Layers tab of the selected frame shows.
     pub fn open_layer(&self) -> Option<LayerId> {
         match (self.selection, self.tab, self.layer) {
@@ -835,6 +845,7 @@ impl Default for AtlasState {
             grid_page: None,
             border_sides: false,
             shown: None,
+            attributes: false,
             item_page: None,
             bar_previews: HashMap::new(),
             entry_name: String::new(),

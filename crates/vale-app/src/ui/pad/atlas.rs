@@ -57,6 +57,7 @@ pub fn map_style_row(name: &str) -> String {
     format!("Map style {name}")
 }
 pub const COPY_GLOBE_STYLE: &str = "Copy globe style";
+pub const ATTRIBUTES_HINT: &str = "Changes apply to all maps.";
 pub const SHAPE: &str = "Shape";
 pub const RECTANGLE: &str = "Rectangle";
 pub const POLYGON: &str = "Polygon";
@@ -211,6 +212,12 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     // While the Measure tool is the tool, the Brush panel of its snapping
     // settings is the panel, and the panel of the selection does not show.
     let measuring = state.measuring();
+    // Back from the table goes to the page of the layer, not to the
+    // inspector.
+    if super::table::showing(state) {
+        state.atlas.attributes = false;
+    }
+    let attributes = shows_attributes(state);
     let input = Input {
         screen,
         bands: geometry::Bands::new(screen, ctx.content_rect()),
@@ -219,7 +226,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         panel: if measuring {
             state.pad.brush
         } else {
-            state.atlas.selection != AtlasSelection::None
+            state.atlas.selection != AtlasSelection::None || attributes
         },
         sheet_offset: state.pad.sheet_offset,
         cells: if measuring {
@@ -238,6 +245,10 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     if !measuring {
         rects.brush = None;
     }
+    super::table::check(state);
+    super::table::widen(state, &mut rects);
+    state.sync_selection_form(attributes);
+    crate::ui::select::drop_focus(&ctx, state);
     state.pad.sheet_offset = input
         .sheet_offset
         .clamp(-rects.sheet_rise, rects.sheet_travel);
@@ -254,8 +265,8 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     state.pad.menu_rect = None;
     state.atlas.panel_rect = None;
     let shown = match state.atlas.selection {
-        AtlasSelection::None => None,
-        selection => Some((selection, state.atlas.tab)),
+        AtlasSelection::None if !attributes => None,
+        selection => Some((selection, state.atlas.tab, attributes)),
     };
     if state.atlas.shown != shown {
         widgets::close_keypad(&ctx);
@@ -273,6 +284,8 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         if state.pad.brush {
             super::show_panel(&ctx, state, &mut controls, &rects, super::Panel::Brush);
         }
+    } else if attributes {
+        attributes_panel(&ctx, state, &mut controls, &rects);
     } else if state.atlas.selection != AtlasSelection::None {
         selection_panel(&ctx, state, &mut controls, &rects);
     }
@@ -747,6 +760,58 @@ fn workspace_menu(
 }
 
 /// The panel of the selected frame or of the open page.
+/// True if the panel place shows the inspector of the feature selection. An
+/// open attribute table wins.
+fn shows_attributes(state: &AppState) -> bool {
+    let table =
+        state.atlas.open_layer().is_some() && state.atlas.layer_page == Some(super::Page::Table);
+    !table && (state.atlas).shows_attributes(state.feature_selection.len())
+}
+
+/// The inspector of the feature selection, in the panel place. Back goes to
+/// the panel of the selected frame.
+fn attributes_panel(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    controls: &mut Controls,
+    rects: &Rects,
+) {
+    let atlas = &state.doc.project.atlas;
+    let frame = state.atlas.frame().and_then(|id| atlas.frame(id));
+    let map = frame.and_then(|f| atlas.map(f.map)).map(|m| m.name.clone());
+    let layer = (state.feature_selection.first())
+        .and_then(|f| state.doc.layer(f.layer))
+        .map_or_else(String::new, |l| l.name.clone());
+    let head = CardTitle {
+        title: crate::ui::select::ATTRIBUTES,
+        back: map.as_deref(),
+        action: None,
+    };
+    let card = Card {
+        key: "pad-atlas-attributes",
+        place: (rects.right_panel, panel_width(ctx)),
+        head,
+        scroll: egui::scroll_area::ScrollSource::default(),
+    };
+    let on_title = |state: &mut AppState, row: &widgets::TitleRow| {
+        if row.back {
+            state.atlas.attributes = false;
+        }
+        if row.close {
+            state.atlas.attributes = false;
+            state.atlas.selection = AtlasSelection::None;
+        }
+    };
+    let top = |ui: &mut egui::Ui, _: &mut AppState, _: &mut Controls| {
+        ui.label(egui::RichText::new(&layer).strong());
+        ui.label(egui::RichText::new(ATTRIBUTES_HINT).color(theme::MUTE));
+        ui.add_space(4.0);
+    };
+    let body = crate::ui::select::body;
+    let rect = show_card(ctx, state, controls, rects, card, on_title, top, body);
+    state.atlas.panel_rect = Some(rect);
+}
+
 fn selection_panel(
     ctx: &egui::Context,
     state: &mut AppState,
@@ -1544,6 +1609,7 @@ fn layer_panel(
         Some(Page::Classify | Page::Ramps | Page::RampLabels(_) | Page::Mask) => {
             state.atlas.layer_page
         }
+        Some(Page::Table) => state.atlas.layer_page,
         _ => None,
     };
     state.atlas.layer_page = page;
@@ -1582,6 +1648,7 @@ fn layer_panel(
             super::raster::LABELS,
             super::raster::COLOR_RAMPS,
         ),
+        Some(Page::Table) => ("pad-atlas-table", super::table::TITLE, name.as_str()),
         Some(_) => ("pad-atlas-rule", rule_name.as_str(), name.as_str()),
         None => ("pad-atlas-layer", name.as_str(), FRAME_TABS[2]),
     };
@@ -1590,9 +1657,11 @@ fn layer_panel(
         back: Some(back),
         action: None,
     };
+    // The panel is wider while it shows the table.
+    let right = rects.screen.right() - rects.bands.right - MARGIN;
     let card = Card {
         key,
-        place: (rects.right_panel, panel_width(ctx)),
+        place: (rects.right_panel, right - rects.right_panel.x),
         head,
         scroll: egui::scroll_area::ScrollSource::default(),
     };
@@ -1620,7 +1689,20 @@ fn layer_panel(
             state.atlas.vertices.clear();
         }
     };
+    let table = page == Some(Page::Table);
+    // The table fills the page, and its rows have their own scroll. The
+    // attributes are not a part of the style of the map.
+    let top = |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| {
+        if table {
+            let size = ui.available_size();
+            ui.allocate_ui(size, |ui| super::table::page(ui, state, controls));
+        }
+    };
+    let features = state.doc.layer(layer)?.features.len().to_string();
     let body = |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| {
+        if table {
+            return;
+        }
         state.edit_map_style(map, layer, |state| match page {
             Some(Page::Rule(i)) => super::rules::rule_body(ui, state, controls, layer, i),
             Some(Page::Condition(i)) => {
@@ -1646,9 +1728,12 @@ fn layer_panel(
         });
         if page.is_none() {
             style_source_rows(ui, state, controls, map, layer);
+            ui.add_space(8.0);
+            if widgets::open_row(ui, controls, super::table::FEATURES, &features).clicked() {
+                state.open_table(layer);
+            }
         }
     };
-    let top = |_: &mut egui::Ui, _: &mut AppState, _: &mut Controls| {};
     Some(show_card(
         ctx, state, controls, rects, card, on_title, top, body,
     ))

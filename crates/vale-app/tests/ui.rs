@@ -2159,3 +2159,41 @@ fn the_edit_menu_merges_the_selected_features_into_the_feature_that_you_choose()
     let want = Geometry::Points(vec![[1.0, 2.0], [3.0, 4.0]]);
     assert_eq!(layer.features[0].geometry, want);
 }
+
+#[test]
+fn with_the_select_tool_the_dock_shows_the_inspector_and_opens_the_table() {
+    use vale_app::globe::select::FeatureRef;
+    use vale_app::ui::LayerRef;
+    use vale_app::ui::pad::atlas::ATTRIBUTES_HINT;
+    use vale_app::ui::table::OPEN_TABLE;
+    let mut h = harness();
+    h.run_steps(3);
+    let s = h.state_mut();
+    let layer = (s.doc.project.layers().iter())
+        .find(|l| l.geometry().is_some() && !l.features.is_empty() && !l.fields.is_empty())
+        .unwrap();
+    let found = FeatureRef {
+        layer: layer.id,
+        uuid: layer.features[0].uuid(),
+    };
+    let (name, field) = (layer.name.clone(), layer.fields[0].name.clone());
+    s.select(Some(LayerRef::Vector(found.layer)));
+    s.atlas.tool = AtlasTool::Select;
+    let frame = vale_app::ui::atlas::open_page(s).frames[0].id;
+    s.atlas.selection = AtlasSelection::Frame(frame);
+    s.set_feature_selection(vec![found]);
+    h.run_steps(3);
+    assert!(h.query_by_label(ATTRIBUTES_HINT).is_some());
+    assert_eq!(h.state().selection_form.as_ref().unwrap().feature, found);
+    assert!(h.query_all_by_label(&field).count() >= 1);
+    assert!(h.query_all_by_label(&name).count() >= 1);
+    // The Layers tab of the frame opens the table of the layer.
+    h.state_mut().atlas.tab = vale_app::ui::atlas::FrameTab::Layers;
+    h.state_mut().atlas.layer = Some((frame, found.layer));
+    h.run_steps(2);
+    h.get_by_label(OPEN_TABLE).click();
+    h.run_steps(3);
+    let table = h.state().table.as_ref().unwrap();
+    assert_eq!(table.layer, found.layer);
+    assert!(h.state().table_selection().contains(&found.uuid));
+}

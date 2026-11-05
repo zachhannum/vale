@@ -340,9 +340,10 @@ impl AppState {
     pub fn sync_selection_form(&mut self, shown: bool) {
         self.inspector_shown = shown;
         // A change of the tool ends the run of edits.
-        if !shown || self.attribute_tool != self.globe.tool {
+        let tool = (self.workspace, self.globe.tool, self.atlas.tool);
+        if !shown || self.attribute_tool != tool {
             self.attribute_focus = None;
-            self.attribute_tool = self.globe.tool;
+            self.attribute_tool = tool;
         }
         let one = match self.feature_selection.as_slice() {
             [one] if shown => Some(*one),
@@ -686,7 +687,8 @@ pub fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
         }
     }
     ui.add_space(8.0);
-    outcome.show = widgets::button_row(ui, controls, SHOW_IN_TABLE, true).clicked();
+    let can_show = state.can_show_in_table();
+    outcome.show = widgets::button_row(ui, controls, SHOW_IN_TABLE, can_show).clicked();
     state.finish_inspector(form, outcome);
 }
 
@@ -776,9 +778,6 @@ pub fn desktop(ui: &mut egui::Ui, state: &mut AppState) {
     if !state.show_attributes {
         return;
     }
-    let mut form = state.selection_form.take();
-    let mut outcome = Outcome::default();
-    let count = state.feature_selection.len();
     let mut focus_new = state.tools.focus_new;
     egui::Panel::right(INSPECTOR)
         .default_size(260.0)
@@ -790,48 +789,59 @@ pub fn desktop(ui: &mut egui::Ui, state: &mut AppState) {
                 });
             });
             ui.separator();
-            if count == 0 {
-                ui.weak(NO_SELECTION);
-                return;
-            }
-            match form.as_mut() {
-                Some(form) => {
-                    if form.fields.is_empty() {
-                        ui.weak(NO_FIELDS);
-                    }
-                    let names: Vec<String> = form.fields.iter().map(|f| f.name.clone()).collect();
-                    let focus = &mut form.focus;
-                    egui::Grid::new("attribute-fields")
-                        .num_columns(2)
-                        .show(ui, |ui| {
-                            for (i, field) in form.fields.iter_mut().enumerate() {
-                                ui.label(&field.name);
-                                let color = (!field.valid()).then(|| ui.visuals().warn_fg_color);
-                                let choices = &form.choices[i];
-                                let resp = ui
-                                    .horizontal(|ui| {
-                                        let (name, text) = (&field.name, &mut field.text);
-                                        let edit = egui::TextEdit::singleline(text)
-                                            .id(egui::Id::new((INSPECTOR, name)))
-                                            .text_color_opt(color);
-                                        let resp = ui.add(edit);
-                                        if choices.is_empty() {
-                                            return resp;
-                                        }
-                                        values_box(ui, name, text, choices, &mut outcome);
-                                        resp
-                                    })
-                                    .inner;
-                                let (name, next) = (&field.name, names.get(i + 1));
-                                read_field(&resp, focus, &mut outcome, name, next);
-                                ui.end_row();
-                            }
-                        });
-                }
-                None => drop(ui.label(title(count))),
-            }
-            outcome.show = ui.button(SHOW_IN_TABLE).clicked();
+            desktop_body(ui, state);
         });
     state.tools.focus_new = focus_new;
+}
+
+/// The fields of the desktop inspector, and "Show in table".
+pub fn desktop_body(ui: &mut egui::Ui, state: &mut AppState) {
+    let count = state.feature_selection.len();
+    if count == 0 {
+        ui.weak(NO_SELECTION);
+        return;
+    }
+    let mut form = state.selection_form.take();
+    let mut outcome = Outcome::default();
+    match form.as_mut() {
+        Some(form) => {
+            if form.fields.is_empty() {
+                ui.weak(NO_FIELDS);
+            }
+            let names: Vec<String> = form.fields.iter().map(|f| f.name.clone()).collect();
+            let focus = &mut form.focus;
+            egui::Grid::new("attribute-fields")
+                .num_columns(2)
+                .show(ui, |ui| {
+                    for (i, field) in form.fields.iter_mut().enumerate() {
+                        ui.label(&field.name);
+                        let color = (!field.valid()).then(|| ui.visuals().warn_fg_color);
+                        let choices = &form.choices[i];
+                        let resp = ui
+                            .horizontal(|ui| {
+                                let (name, text) = (&field.name, &mut field.text);
+                                let edit = egui::TextEdit::singleline(text)
+                                    .id(egui::Id::new((INSPECTOR, name)))
+                                    .text_color_opt(color);
+                                let resp = ui.add(edit);
+                                if choices.is_empty() {
+                                    return resp;
+                                }
+                                values_box(ui, name, text, choices, &mut outcome);
+                                resp
+                            })
+                            .inner;
+                        let (name, next) = (&field.name, names.get(i + 1));
+                        read_field(&resp, focus, &mut outcome, name, next);
+                        ui.end_row();
+                    }
+                });
+        }
+        None => drop(ui.label(title(count))),
+    }
+    let can_show = state.can_show_in_table();
+    outcome.show = ui
+        .add_enabled(can_show, egui::Button::new(SHOW_IN_TABLE))
+        .clicked();
     state.finish_inspector(form, outcome);
 }

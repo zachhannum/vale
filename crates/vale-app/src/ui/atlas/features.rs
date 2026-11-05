@@ -120,6 +120,7 @@ pub(crate) fn tap(state: &mut AppState, page: &PageRecord, place: PagePlace, pos
         },
     );
     state.set_feature_selection(hit.into_iter().collect());
+    state.atlas.attributes = !state.feature_selection.is_empty();
 }
 
 /// A box of the Select tool from `start`. It selects the features that the
@@ -149,6 +150,7 @@ pub(crate) fn select_box(
         state.atlas.selection = AtlasSelection::Frame(id);
     }
     state.set_feature_selection(found);
+    state.atlas.attributes = !state.feature_selection.is_empty();
 }
 
 /// The selection on the screen, in each frame whose map shows its layer,

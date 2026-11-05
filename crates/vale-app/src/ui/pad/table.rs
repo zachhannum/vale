@@ -9,12 +9,12 @@ use super::geometry::{GAP, PAD, Rects, TOUCH};
 use super::theme;
 use super::widgets::{self, Controls, HIGHLIGHT_INSET, PANEL_ROW};
 use super::{LayerRef, Page, Panel};
-use crate::ui::AppState;
 use crate::ui::new_feature::{can_take_focus, keyboard_top};
 use crate::ui::table::{
     ALL, CellTap, FILTER, SELECTED, cell_name, cell_text, column_width, count_text, empty_text,
     focus_all, paint_arrow, sort_name,
 };
+use crate::ui::{AppState, Workspace};
 
 /// The title of the page.
 pub const TITLE: &str = "Attribute table";
@@ -26,11 +26,16 @@ pub const ROW_HEIGHT: f32 = TOUCH;
 const WIDTH: f32 = 480.0;
 const CELL_PAD: f32 = 12.0;
 
-/// True if the Layers panel shows the table of the layer of the table.
+/// True if the Layers panel, or the Layers tab of a frame in the Atlas,
+/// shows the table of the layer of the table.
 pub fn showing(state: &AppState) -> bool {
     let Some(table) = &state.table else {
         return false;
     };
+    if state.workspace == Workspace::Atlas {
+        return state.atlas.open_layer() == Some(table.layer)
+            && state.atlas.layer_page == Some(Page::Table);
+    }
     state.pad.right == Some(Panel::Layers)
         && state.pad.page == Some(Page::Table)
         && state.pad.layer == Some(LayerRef::Vector(table.layer))
@@ -49,8 +54,8 @@ pub fn widen(state: &AppState, rects: &mut Rects) {
     if rects.sheet.is_some() || !showing(state) {
         return;
     }
-    let normal = super::geometry::RIGHT_PANEL_WIDTH;
-    let right = rects.right_panel.x + normal;
+    let right = rects.screen.right() - rects.bands.right - super::geometry::MARGIN;
+    let normal = right - rects.right_panel.x;
     let room = right - rects.brush_panel.x;
     let width = WIDTH.min(room).max(normal);
     rects.right_panel.x = right - width;

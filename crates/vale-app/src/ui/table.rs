@@ -1,11 +1,11 @@
-//! The attribute table of the world workspace: the state of the table, the
+//! The attribute table of the vector layers: the state of the table, the
 //! edits of its cells, and the dock of the desktop layout. The project does
 //! not save the state.
 
 use std::collections::HashSet;
 
 use eframe::egui;
-use vale_store::{FieldType, LayerId, Uuid, Value};
+use vale_store::{FieldType, FrameId, FrameRecord, LayerId, Uuid, Value};
 
 use super::AppState;
 use super::new_feature::FormField;
@@ -122,6 +122,12 @@ impl AppState {
         if self.doc.layer(layer).is_none() {
             return;
         }
+        let pad_atlas =
+            self.layout == super::Layout::Pad && self.workspace == super::Workspace::Atlas;
+        let frame = self.table_frame(layer);
+        if pad_atlas && frame.is_none() {
+            return;
+        }
         if self.selected_vector() != Some(layer) {
             self.select(Some(super::LayerRef::Vector(layer)));
         }
@@ -130,12 +136,41 @@ impl AppState {
         table.seen = self.feature_selection.clone();
         self.table = Some(table);
         // In the iPad layout, the table is a page of the layer in the
-        // Layers panel.
-        if self.layout == super::Layout::Pad {
+        // Layers panel, or in the Layers tab of a frame in the Atlas.
+        if let (true, Some(frame)) = (pad_atlas, frame) {
+            let atlas = &mut self.atlas;
+            atlas.selection = super::atlas::AtlasSelection::Frame(frame);
+            atlas.tab = super::atlas::FrameTab::Layers;
+            atlas.layer = Some((frame, layer));
+            atlas.layer_page = Some(super::pad::Page::Table);
+            atlas.attributes = false;
+        } else if self.layout == super::Layout::Pad {
             self.pad.right = Some(super::pad::Panel::Layers);
             self.pad.layer = Some(super::LayerRef::Vector(layer));
             self.pad.page = Some(super::pad::Page::Table);
         }
+    }
+
+    /// The frame whose Layers tab shows the table of `layer` in the Atlas:
+    /// the selected frame, or else the top frame of the page whose map
+    /// shows the layer.
+    fn table_frame(&self, layer: LayerId) -> Option<FrameId> {
+        if let Some(frame) = self.atlas.frame() {
+            return Some(frame);
+        }
+        let page = super::atlas::open_page(self);
+        let shows = |f: &&FrameRecord| self.doc.shown(f.map, layer);
+        page.frames.iter().rev().find(shows).map(|f| f.id)
+    }
+
+    /// True if "Show in table" can open the table of the selection.
+    pub fn can_show_in_table(&self) -> bool {
+        let Some(f) = self.feature_selection.first() else {
+            return false;
+        };
+        self.layout != super::Layout::Pad
+            || self.workspace != super::Workspace::Atlas
+            || self.table_frame(f.layer).is_some()
     }
 
     pub fn close_table(&mut self) {

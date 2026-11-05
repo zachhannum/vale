@@ -1,6 +1,6 @@
-//! The right dock of the desktop Atlas workspace: the panel of the selected
-//! frame or of the open page, and the inspector of the layers. The dock
-//! shows only with a selection.
+//! The right dock of the desktop Atlas workspace: the inspector of the
+//! feature selection, the panel of the selected frame or of the open page,
+//! and the inspector of the layers. The dock shows only with a selection.
 
 use eframe::egui;
 use vale_sphere::{INTERVALS, ProjectionKind, interval_text};
@@ -12,18 +12,18 @@ use vale_store::{
 use super::elevation::{DISPLAYS, blend_label};
 use super::pad::raster::{BLEND, SHOW_AS};
 
-use super::atlas::{self, AtlasSelection, EdgeSet, FrameTab};
+use super::atlas::{self, AtlasSelection, AtlasTool, EdgeSet, FrameTab};
 use super::pad::atlas::{
-    ADD_HOLE, ADD_PAGE, AUTO_INTERVAL, AZIMUTH, BORDER, BORDER_COLOR, BORDER_DISTANCE,
-    BORDER_STROKE, BORDER_STYLE, BORDER_STYLES, BORDER_WIDTH, CENTER_LATITUDE, CENTER_LONGITUDE,
-    CENTER_ON_FRAME, COPY_GLOBE_STYLE, DELETE_MAP_STYLE, DELETE_PAGE, DELETE_PROJECTION, EDITED,
-    FIRST_PARALLEL, FRAME_TABS, GRATICULE_COLOR, GRATICULE_WIDTH, GRID_COLOR, GRID_SPACING, HEIGHT,
-    INTERVAL, LABEL_FORMAT, LABEL_FORMATS, LATITUDE, LAYOUT_GRID, LONGITUDE, MAP_NAME, MAP_STYLE,
-    MAP_STYLE_NAME, NEATLINE, NEATLINE_COLOR, NEATLINE_WIDTH, NO_MAP_STYLE, OBLIQUE, ORIENTATIONS,
-    PAGE_NAME, PAPER_COLOR, POLYGON, PROJECTION_NAME, RECTANGLE, REFERENCE_GRID,
-    RESET_TO_MAP_STYLE, ROTATION, SAVE_AS_MAP_STYLE, SAVE_PROJECTION, SCALE, SECOND_COLOR,
-    SECOND_PARALLEL, SHAPE, SIZE, STROKE_COLOR, STROKE_WIDTH, UNIT_NAMES, UPDATE_MAP_STYLE, WIDTH,
-    custom_row, edited_value, length_text, unit_name,
+    ADD_HOLE, ADD_PAGE, ATTRIBUTES_HINT, AUTO_INTERVAL, AZIMUTH, BORDER, BORDER_COLOR,
+    BORDER_DISTANCE, BORDER_STROKE, BORDER_STYLE, BORDER_STYLES, BORDER_WIDTH, CENTER_LATITUDE,
+    CENTER_LONGITUDE, CENTER_ON_FRAME, COPY_GLOBE_STYLE, DELETE_MAP_STYLE, DELETE_PAGE,
+    DELETE_PROJECTION, EDITED, FIRST_PARALLEL, FRAME_TABS, GRATICULE_COLOR, GRATICULE_WIDTH,
+    GRID_COLOR, GRID_SPACING, HEIGHT, INTERVAL, LABEL_FORMAT, LABEL_FORMATS, LATITUDE, LAYOUT_GRID,
+    LONGITUDE, MAP_NAME, MAP_STYLE, MAP_STYLE_NAME, NEATLINE, NEATLINE_COLOR, NEATLINE_WIDTH,
+    NO_MAP_STYLE, OBLIQUE, ORIENTATIONS, PAGE_NAME, PAPER_COLOR, POLYGON, PROJECTION_NAME,
+    RECTANGLE, REFERENCE_GRID, RESET_TO_MAP_STYLE, ROTATION, SAVE_AS_MAP_STYLE, SAVE_PROJECTION,
+    SCALE, SECOND_COLOR, SECOND_PARALLEL, SHAPE, SIZE, STROKE_COLOR, STROKE_WIDTH, UNIT_NAMES,
+    UPDATE_MAP_STYLE, WIDTH, custom_row, edited_value, length_text, unit_name,
 };
 use super::pad::atlas::{
     BORDER_GAP, DISTANCE_BY_SIDE, GRID_COLUMN_NAMES, GRID_COLUMNS, SIDE_DISTANCES,
@@ -35,12 +35,22 @@ use super::pad::{GRATICULE, NO_LAYERS};
 use super::{AppState, inspector, number, style_editor};
 use crate::atlas::{self as math, PAGE_PRESETS};
 
-/// True if the dock shows: a frame, the page, or a layer is selected.
+/// True if the dock shows: a frame, the page, a layer, or a feature is
+/// selected.
 pub fn shown(state: &AppState) -> bool {
-    state.atlas.selection != AtlasSelection::None || state.selected_vector().is_some()
+    state.atlas.selection != AtlasSelection::None
+        || state.selected_vector().is_some()
+        || attributes_shown(state)
+}
+
+/// True if the dock shows the inspector of the feature selection.
+fn attributes_shown(state: &AppState) -> bool {
+    state.atlas.tool == AtlasTool::Select && !state.feature_selection.is_empty()
 }
 
 pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
+    state.sync_selection_form(attributes_shown(state));
+    super::select::drop_focus(ui.ctx(), state);
     if !shown(state) {
         return;
     }
@@ -49,6 +59,10 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         .show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.set_width(ui.available_width());
+                if attributes_shown(state) {
+                    attributes(ui, state);
+                    ui.separator();
+                }
                 match state.atlas.selection {
                     AtlasSelection::Frame(id) => {
                         if let Some(frame) = state.doc.project.atlas.frame(id).cloned() {
@@ -71,6 +85,19 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
                 inspector::contents(ui, state);
             });
         });
+}
+
+/// The inspector of the feature selection, with the name of its layer.
+fn attributes(ui: &mut egui::Ui, state: &mut AppState) {
+    ui.heading(super::select::ATTRIBUTES);
+    let layer = (state.feature_selection.first()).and_then(|f| state.doc.layer(f.layer));
+    if let Some(layer) = layer {
+        ui.strong(&layer.name);
+    }
+    ui.weak(ATTRIBUTES_HINT);
+    ui.add_space(4.0);
+    super::select::desktop_body(ui, state);
+    ui.add_space(6.0);
 }
 
 /// Gives a widget a name for a screen reader and for a test.
@@ -607,8 +634,17 @@ fn layers_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
     for (layer, name) in rows {
         ui.horizontal(|ui| {
             let mut shown = state.doc.shown(frame.map, layer);
-            if ui.checkbox(&mut shown, &name).changed() {
+            let check = ui.checkbox(&mut shown, &name);
+            if check.changed() {
                 state.set_map_shown(frame.map, layer, shown);
+            }
+            if state.doc.entry(layer).is_some() {
+                check.context_menu(|ui| {
+                    if ui.button(super::table::OPEN_TABLE).clicked() {
+                        state.open_table(layer);
+                        ui.close();
+                    }
+                });
             }
             if ui.selectable_label(open == Some(layer), "Style").clicked() {
                 if open != Some(layer) {
@@ -662,6 +698,9 @@ fn layers_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
         });
     }
     style_source(ui, state, frame, layer);
+    if ui.button(super::table::OPEN_TABLE).clicked() {
+        state.open_table(layer);
+    }
 }
 
 /// The buttons that set the style of a layer in a map from its map style

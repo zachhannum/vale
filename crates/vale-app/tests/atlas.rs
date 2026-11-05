@@ -7944,9 +7944,19 @@ fn save_as_map_style_asks_for_the_name() {
 /// a town at the middle of the inset. The layer is the selected layer, and
 /// the Select tool is the tool.
 fn towns_pad(size: (f32, f32)) -> (Pad, Pos2, vale_app::globe::select::FeatureRef) {
+    towns_pad_with(state(), size)
+}
+
+/// `towns_pad` from a state, for example a state with a session.
+fn towns_pad_with(
+    state: AppState,
+    size: (f32, f32),
+) -> (Pad, Pos2, vale_app::globe::select::FeatureRef) {
     use vale_app::globe::select::FeatureRef;
     use vale_app::ui::LayerRef;
-    let mut h = inset_pad(size);
+    let mut h = pad_with(state, size);
+    add_frame(&mut h);
+    add_frame(&mut h);
     let at = middle(&h, 1);
     let lonlat = place_at(&mut h, 1, at);
     let s = h.state_mut();
@@ -8172,4 +8182,119 @@ fn the_frame_tool_does_not_box_select_features() {
     let off = margin(&h);
     drag(&mut h, off, at + vec2(10.0, 10.0), Input::Pen);
     assert!(h.state().feature_selection.is_empty());
+}
+
+/// The value of the field `name` of a feature, as text.
+fn attribute(h: &Pad, f: vale_app::globe::select::FeatureRef, name: &str) -> String {
+    let layer = h.state().doc.layer(f.layer).unwrap();
+    let feature = layer.features.iter().find(|x| x.uuid() == f.uuid).unwrap();
+    let value = feature.attributes.get(name).and_then(|v| v.label());
+    value.unwrap_or_default()
+}
+
+#[test]
+fn a_tap_of_the_select_tool_shows_the_inspector_of_the_feature() {
+    use vale_app::ui::pad::atlas::ATTRIBUTES_HINT;
+    let (mut h, at, town) = towns_pad(BOARDS[0]);
+    tap_with(&mut h, at, Input::Finger);
+    assert_eq!(h.state().feature_selection, vec![town]);
+    let layer = h.state().doc.layer(town.layer).unwrap().name.clone();
+    assert!(h.query_by_label(ATTRIBUTES_HINT).is_some());
+    assert!(h.query_all_by_label(&layer).count() >= 1);
+    assert!(control(&h, "name").is_some());
+    assert!(control(&h, FRAME_TABS[0]).is_none());
+    // Back goes to the panel of the frame, with its tabs.
+    let map = map_of(&h, 1);
+    tap(&mut h, &format!("Back to {map}"));
+    assert!(control(&h, "name").is_none());
+    assert!(control(&h, FRAME_TABS[0]).is_some());
+    assert_eq!(h.state().feature_selection, vec![town]);
+}
+
+#[test]
+fn an_attribute_edit_in_the_atlas_is_one_undo_step_and_redraws_the_frames() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = state();
+    s.session = Some(Session::open(&dir.path().join("project.gpkg"), &mut s.doc).unwrap());
+    let (mut h, at, town) = towns_pad_with(s, BOARDS[0]);
+    h.state_mut().save_waiting().unwrap();
+    tap_with(&mut h, at, Input::Finger);
+    let generation = h.state().map_generation;
+    type_text(&mut h, "name", "Avalon");
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    assert_eq!(attribute(&h, town, "name"), "Avalon");
+    assert_ne!(h.state().map_generation, generation);
+    h.state_mut().save_waiting().unwrap();
+    h.state_mut().undo();
+    h.run_steps(2);
+    assert_eq!(attribute(&h, town, "name"), "");
+}
+
+#[test]
+fn the_selection_of_the_atlas_shows_in_the_inspector_of_the_world() {
+    let (mut h, at, town) = towns_pad(BOARDS[0]);
+    tap_with(&mut h, at, Input::Finger);
+    let form = h.state().selection_form.as_ref().unwrap();
+    assert_eq!(form.feature, town);
+    h.state_mut().workspace = Workspace::Globe;
+    h.run_steps(3);
+    assert_eq!(h.state().feature_selection, vec![town]);
+    tap(&mut h, vale_app::ui::select::ATTRIBUTES);
+    let form = h.state().selection_form.as_ref().unwrap();
+    assert_eq!(form.feature, town);
+    assert!(control(&h, "name").is_some());
+}
+
+#[test]
+fn the_features_row_of_the_layers_tab_opens_the_attribute_table() {
+    use vale_app::ui::pad::Page;
+    use vale_app::ui::pad::table::FEATURES;
+    use vale_app::ui::table::cell_name;
+    let (mut h, at, town) = towns_pad(BOARDS[0]);
+    let other = add_town(&mut h, town.layer, 1, at + vec2(30.0, 20.0));
+    tap(&mut h, FRAME_TOOL);
+    let inset = middle(&h, 1);
+    tap_with(&mut h, inset, Input::Finger);
+    tap(&mut h, FRAME_TABS[2]);
+    let name = h.state().doc.layer(town.layer).unwrap().name.clone();
+    tap(&mut h, &format!("Layer {name}"));
+    tap(&mut h, FEATURES);
+    assert_eq!(h.state().atlas.layer_page, Some(Page::Table));
+    assert_eq!(h.state().table.as_ref().unwrap().layer, town.layer);
+    // A tap on a row selects its feature, and the frames show it.
+    tap(&mut h, &cell_name("name", town.uuid));
+    assert_eq!(h.state().feature_selection, vec![town]);
+    // The table follows a selection that the table did not make.
+    h.state_mut().set_feature_selection(vec![other]);
+    h.run_steps(2);
+    let seen = h.state().table_selection();
+    assert!(seen.contains(&other.uuid) && !seen.contains(&town.uuid));
+    // Back goes to the page of the layer, and the table closes.
+    tap(&mut h, &format!("Back to {name}"));
+    assert_eq!(h.state().atlas.layer_page, None);
+    assert!(h.state().table.is_none());
+    assert!(control(&h, FEATURES).is_some());
+}
+
+#[test]
+fn show_in_table_opens_the_table_in_the_layers_tab_of_the_frame() {
+    use vale_app::ui::pad::Page;
+    use vale_app::ui::table::SHOW_IN_TABLE;
+    let (mut h, at, town) = towns_pad(BOARDS[0]);
+    let lonlat = place_at(&mut h, 1, at);
+    tap_with(&mut h, at, Input::Finger);
+    tap(&mut h, SHOW_IN_TABLE);
+    let s = h.state();
+    assert_eq!(s.atlas.tab, FrameTab::Layers);
+    assert_eq!(s.atlas.layer_page, Some(Page::Table));
+    assert_eq!(s.atlas.open_layer(), Some(town.layer));
+    assert_eq!(s.table.as_ref().unwrap().layer, town.layer);
+    assert!(!s.atlas.attributes);
+    // A tap on the town keeps the table.
+    let at = pos_of(&mut h, 1, lonlat);
+    tap_with(&mut h, at, Input::Finger);
+    assert_eq!(h.state().feature_selection, vec![town]);
+    assert_eq!(h.state().atlas.layer_page, Some(Page::Table));
+    assert!(h.state().table.is_some());
 }

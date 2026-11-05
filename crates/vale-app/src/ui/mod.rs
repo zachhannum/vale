@@ -508,9 +508,9 @@ pub struct AppState {
     /// The field of the inspector that the user edited last, and the
     /// feature that it had the focus in last.
     pub attribute_focus: Option<(crate::globe::select::FeatureRef, String)>,
-    /// The tool of the last frame, which ends the run of edits when it
-    /// changes.
-    attribute_tool: crate::globe::Tool,
+    /// The workspace and the tool of the last frame. A change ends the run
+    /// of edits.
+    attribute_tool: (Workspace, crate::globe::Tool, atlas::AtlasTool),
     /// The field of the inspector that the user edited last, and its layer.
     last_field: Option<(LayerId, String)>,
     /// A new feature takes the focus away from the field that has it.
@@ -3884,6 +3884,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
                 panels::left(ui, state);
                 dock::draw(ui, state);
                 panels::status(ui, state);
+                table::desktop(ui, state);
                 atlas::desktop(ui, state);
             }
         }

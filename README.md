@@ -76,7 +76,8 @@ Click "Atlas" in the tool bar to open the pages of the atlas. On iPad, tap "Atla
 - In the Labels tab, tap "Add class" to add a label class to the map of the frame. A class has a text expression, a filter, a font, a size, a color, a halo, a priority, and a placement. Each frame of that map shows the change, and the other maps keep their classes.
 - Tick a layer in the left panel to show it in the map. Click "Edit" on a layer to select it. The inspector then shows its name and its style.
 - In the label controls of a point layer or a line layer, click the font to search the fonts of the system and select one. On iPad, open the layer and tap "Font" to open the font picker of iPadOS.
-- Click a feature in a frame to see its attributes. The inspector lists the labels that did not fit.
+- With the Select tool, the inspector shows the attributes of the selected feature. An edit changes each map. The row Features of a vector layer in the Layers tab opens the attribute table, and so does "Open attribute table" on the desktop.
+- The inspector lists the labels that did not fit.
 - Export the open page to PNG or PDF, or export all pages to one PDF. A PDF keeps text selectable. The app shows the page progress, and Cancel export stops the work.
 
 ## Open your own data
