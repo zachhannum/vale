@@ -598,45 +598,53 @@ pub(super) fn history_input(ui: &egui::Ui, nav: &mut Nav) -> Option<bool> {
     }
 }
 
-/// Paints a marker at `pos`. The stroke is outside the fill, as in the pipeline.
-fn paint_marker(
+/// Paints a marker at each of `points`: the fills, then the hatches, then the
+/// strokes, as the page draws them. The stroke is outside the fill, as in the
+/// pipeline.
+fn paint_markers(
     sink: &mut Sink<'_>,
-    pos: egui::Pos2,
+    points: &[egui::Pos2],
     radius: f64,
     shape: MarkerShape,
     fill: Option<vale_style::Color>,
     hatch: Option<Hatch>,
     stroke: Option<vale_style::Stroke>,
 ) {
-    if radius <= 0.0 {
+    if radius <= 0.0 || points.is_empty() {
         return;
     }
     let to_pos = |p: &kurbo::Point| egui::pos2(p.x as f32, p.y as f32);
-    let center = kurbo::Point::new(f64::from(pos.x), f64::from(pos.y));
-    let outline = pipeline::marker_outline(shape, center, radius);
+    let center = |pos: egui::Pos2| kurbo::Point::new(f64::from(pos.x), f64::from(pos.y));
+    let outline = |pos| pipeline::marker_outline(shape, center(pos), radius);
     match (fill, hatch) {
         (Some(c), None) if shape == MarkerShape::Circle => {
-            sink.add(egui::Shape::circle_filled(pos, radius as f32, color(c)));
+            for &pos in points {
+                sink.add(egui::Shape::circle_filled(pos, radius as f32, color(c)));
+            }
         }
         (Some(c), None) => {
             // Each shape is star-shaped around its center, so a fan from the center fills it.
-            let mut mesh = egui::Mesh::default();
             let c = color(c);
-            mesh.colored_vertex(pos, c);
-            for p in &outline {
-                mesh.colored_vertex(to_pos(p), c);
+            for &pos in points {
+                let mut mesh = egui::Mesh::default();
+                mesh.colored_vertex(pos, c);
+                let outline = outline(pos);
+                for p in &outline {
+                    mesh.colored_vertex(to_pos(p), c);
+                }
+                let n = outline.len() as u32;
+                for i in 0..n {
+                    mesh.add_triangle(0, 1 + i, 1 + (i + 1) % n);
+                }
+                sink.add(mesh);
             }
-            let n = outline.len() as u32;
-            for i in 0..n {
-                mesh.add_triangle(0, 1 + i, 1 + (i + 1) % n);
-            }
-            sink.add(mesh);
         }
         (Some(c), Some(h)) => {
             let (opaque, alpha) = opaque(c);
             let line = egui::Stroke::new(h.line_width as f32, opaque);
-            let shapes = pipeline::marker_hatch(&outline, &h, center)
-                .into_iter()
+            let shapes = points
+                .iter()
+                .flat_map(|&pos| pipeline::marker_hatch(&outline(pos), &h, center(pos)))
                 .map(|(a, b)| egui::Shape::line_segment([to_pos(&a), to_pos(&b)], line))
                 .collect();
             let paint = vale_style::Stroke::solid(c, h.line_width);
@@ -647,13 +655,19 @@ fn paint_marker(
     if let Some(s) = stroke {
         let (opaque, alpha) = opaque(s.color);
         let line = egui::Stroke::new(s.width as f32, opaque);
-        let shape = if shape == MarkerShape::Circle {
-            egui::Shape::circle_stroke(pos, (radius + s.width / 2.0) as f32, line)
-        } else {
-            let ring = offset_ring(&outline, s.width / 2.0);
-            egui::epaint::PathShape::closed_line(ring.iter().map(to_pos).collect(), line).into()
-        };
-        sink.stroke(s, (vec![shape], alpha));
+        let shapes = points
+            .iter()
+            .map(|&pos| {
+                if shape == MarkerShape::Circle {
+                    egui::Shape::circle_stroke(pos, (radius + s.width / 2.0) as f32, line)
+                } else {
+                    let ring = offset_ring(&outline(pos), s.width / 2.0);
+                    let ring = ring.iter().map(to_pos).collect();
+                    egui::epaint::PathShape::closed_line(ring, line).into()
+                }
+            })
+            .collect();
+        sink.stroke(s, (shapes, alpha));
     }
 }
 
@@ -710,6 +724,13 @@ impl<'a> Sink<'a> {
         }
     }
 
+    /// Sends the open group to the painter, if there is one.
+    fn end_group(&mut self) {
+        if self.group.is_some() {
+            self.flush();
+        }
+    }
+
     fn add(&mut self, shape: impl Into<egui::Shape>) {
         self.flush();
         self.painter.add(shape);
@@ -717,9 +738,7 @@ impl<'a> Sink<'a> {
 
     /// The mesh of the waiting symbols.
     fn symbols(&mut self) -> &mut egui::Mesh {
-        if self.group.is_some() {
-            self.flush();
-        }
+        self.end_group();
         &mut self.symbols
     }
 
@@ -913,8 +932,24 @@ fn lonlat(dir: V3) -> LonLat {
     [lon, lat]
 }
 
-/// Draws one vector layer over the globe. The symbols go to one mesh, which
-/// goes to the painter before the next shape that is not a symbol.
+/// A feature of a vector layer on the screen.
+enum OnScreen {
+    /// The points on the near side of the globe.
+    Points(Vec<egui::Pos2>),
+    /// The parts of the lines, as `vector::stroke_shapes` takes them.
+    Lines(Vec<Vec<(kurbo::Point, f64)>>),
+    /// The parts of the polygons, and their triangles, made at the first fill.
+    Polygons(
+        Vec<vector::Clipped>,
+        Vec<Option<(Vec<vector::P2>, Vec<u32>)>>,
+    ),
+}
+
+/// Draws one vector layer over the globe, in the draw order of the page:
+/// rule by rule and symbolizer by symbolizer, and the features of one paint
+/// together. The symbols go to one mesh, which goes to the painter before the
+/// next shape that is not a symbol. The translucent strokes of one paint go
+/// to one group.
 fn vector_layer(
     painter: &egui::Painter,
     format: Option<egui_wgpu::wgpu::TextureFormat>,
@@ -939,6 +974,40 @@ fn vector_layer(
         let q = to_screen(p);
         kurbo::Point::new(f64::from(q.x), f64::from(q.y))
     };
+    let on_screen = |geometry: &Geometry| match geometry {
+        Geometry::Points(points) => OnScreen::Points(
+            points
+                .iter()
+                .filter_map(|p| view.project(rect, lonlat_to_dir(p[0], p[1])))
+                .collect(),
+        ),
+        Geometry::Lines(lines) => OnScreen::Lines(
+            lines
+                .iter()
+                .flat_map(|line| vector::clip_line_measured(&view.rot, &vector::line(line), step))
+                .map(|part| part.iter().map(|(p, f)| (point(p), *f)).collect())
+                .collect(),
+        ),
+        Geometry::Polygons(polygons) => {
+            let clipped: Vec<_> = polygons
+                .iter()
+                .filter_map(|polygon| {
+                    let rings: Vec<_> = polygon
+                        .iter()
+                        .enumerate()
+                        .map(|(i, ring)| vector::ring(ring, i > 0))
+                        .collect();
+                    if rings.first().is_none_or(|outer| outer.is_empty()) {
+                        return None;
+                    }
+                    let rings: Vec<_> = rings.into_iter().filter(|r| !r.is_empty()).collect();
+                    Some(vector::clip_polygon(&view.rot, &rings, step))
+                })
+                .collect();
+            let triangles = vec![None; clipped.len()];
+            OnScreen::Polygons(clipped, triangles)
+        }
+    };
     let symbols = doc.symbols();
     let mut places = None;
     let mut sink = Sink::new(painter, format);
@@ -947,184 +1016,136 @@ fn vector_layer(
         let Some(layer) = doc.layer(entry.layer).filter(|l| l.visible) else {
             continue;
         };
-        let style = &entry.style.style;
-        let constant = style.constant_paints(scale);
-        let mut paints = Vec::new();
-        let mut count = 0;
-        for (index, feature) in layer.features.iter().enumerate() {
-            let paints = match &constant {
-                Some(c) => c.as_slice(),
-                None => {
-                    paints.clear();
-                    let ctx = Context {
-                        attributes: &feature.attributes,
-                        scale,
-                        geometry: feature.geometry.kind(),
-                    };
-                    style.paints(&ctx, &mut paints);
-                    paints.as_slice()
-                }
-            };
-            if paints.is_empty() {
-                continue;
-            }
-            let strokes = paints.iter().filter_map(|p| match p {
-                StylePaint::Stroke(s) => Some(*s),
-                _ => None,
+        let features = &layer.features;
+        let batches =
+            pipeline::style_batches(&entry.style.style, scale, features.len(), |i| Context {
+                attributes: &features[i].attributes,
+                scale,
+                geometry: features[i].geometry.kind(),
             });
-            let seed = index as u64;
-            match &feature.geometry {
-                Geometry::Points(points) => {
-                    for p in points {
-                        let Some(pos) = view.project(rect, lonlat_to_dir(p[0], p[1])) else {
+        let mut screens: Vec<Option<OnScreen>> = features.iter().map(|_| None).collect();
+        let mut count = 0;
+        for batch in &batches {
+            let paint = &batch.paint;
+            for &index in &batch.features {
+                let feature = &features[index];
+                let screen = screens[index].get_or_insert_with(|| on_screen(&feature.geometry));
+                let seed = index as u64;
+                match (screen, paint) {
+                    (OnScreen::Points(_), StylePaint::Marker { .. }) => {}
+                    (
+                        OnScreen::Points(points),
+                        StylePaint::Symbol {
+                            symbol,
+                            size,
+                            rotation,
+                            tint,
+                        },
+                    ) if *size > 0.0 => {
+                        let size = *size as f32;
+                        for &pos in points.iter().filter(|p| rect.expand(size).contains(**p)) {
+                            match symbols.get(symbol) {
+                                Some(s) => SymbolMesh::of(s).append(
+                                    sink.symbols(),
+                                    pos,
+                                    size,
+                                    *rotation as f32,
+                                    *tint,
+                                ),
+                                None => append_missing(sink.symbols(), pos, size, *tint),
+                            }
+                        }
+                    }
+                    (OnScreen::Lines(parts), StylePaint::Stroke(stroke)) if !parts.is_empty() => {
+                        sink.stroke(*stroke, vector::stroke_shapes(parts, stroke, seed));
+                    }
+                    (OnScreen::Polygons(clipped, triangles), StylePaint::Fill(c)) => {
+                        for (part, triangles) in clipped.iter().zip(triangles) {
+                            let (points, indices) =
+                                triangles.get_or_insert_with(|| vector::triangulate(&part.loops));
+                            let vertices = points
+                                .iter()
+                                .map(|p| egui::epaint::Vertex {
+                                    pos: to_screen(p),
+                                    uv: egui::epaint::WHITE_UV,
+                                    color: color(*c),
+                                })
+                                .collect();
+                            sink.add(egui::Mesh {
+                                indices: indices.clone(),
+                                vertices,
+                                ..Default::default()
+                            });
+                        }
+                    }
+                    (OnScreen::Polygons(clipped, _), StylePaint::Stroke(stroke)) => {
+                        let mut stroke = *stroke;
+                        // A polygon outline has no start and no end to taper.
+                        if matches!(stroke.kind, StrokeKind::Taper { .. }) {
+                            stroke.kind = StrokeKind::Solid;
+                        }
+                        for part in clipped.iter() {
+                            let outlines: Vec<_> = part
+                                .outlines
+                                .iter()
+                                .map(|o| o.iter().map(|p| (point(p), 0.0)).collect())
+                                .collect();
+                            let shapes = vector::stroke_shapes(&outlines, &stroke, seed);
+                            sink.stroke(stroke, shapes);
+                        }
+                    }
+                    (OnScreen::Polygons(..), StylePaint::Scatter { symbol, tint, .. }) => {
+                        let Some(fill) = ScatterFill::of(paint) else {
                             continue;
                         };
-                        for paint in paints {
-                            match paint {
-                                StylePaint::Marker {
-                                    radius,
-                                    shape,
-                                    fill,
-                                    hatch,
-                                    stroke,
-                                } => {
-                                    paint_marker(
-                                        &mut sink, pos, *radius, *shape, *fill, *hatch, *stroke,
-                                    );
+                        let places = places.get_or_insert_with(|| view_places(view, rect));
+                        let mut on_globe = GlobeScatter {
+                            cache: scatter,
+                            view,
+                            rect,
+                            radius_m,
+                            places,
+                            count,
+                        };
+                        let instances = on_globe.instances(entry.layer, index, feature, &fill);
+                        count = on_globe.count;
+                        let mesh = symbols.get(symbol).map(SymbolMesh::of);
+                        for i in instances {
+                            match &mesh {
+                                Some(m) => {
+                                    m.append(sink.symbols(), i.pos, i.size, i.rotation, *tint)
                                 }
-                                StylePaint::Symbol {
-                                    symbol,
-                                    size,
-                                    rotation,
-                                    tint,
-                                } if *size > 0.0 => {
-                                    let size = *size as f32;
-                                    if rect.expand(size).contains(pos) {
-                                        match symbols.get(symbol) {
-                                            Some(s) => SymbolMesh::of(s).append(
-                                                sink.symbols(),
-                                                pos,
-                                                size,
-                                                *rotation as f32,
-                                                *tint,
-                                            ),
-                                            None => {
-                                                append_missing(sink.symbols(), pos, size, *tint)
-                                            }
-                                        }
-                                    }
-                                }
-                                _ => {}
+                                None => append_missing(sink.symbols(), i.pos, i.size, *tint),
                             }
                         }
                     }
-                }
-                Geometry::Lines(lines) => {
-                    let parts: Vec<_> = lines
-                        .iter()
-                        .flat_map(|line| {
-                            vector::clip_line_measured(&view.rot, &vector::line(line), step)
-                        })
-                        .map(|part| part.iter().map(|(p, f)| (point(p), *f)).collect())
-                        .collect();
-                    if !parts.is_empty() {
-                        for stroke in strokes.clone() {
-                            sink.stroke(stroke, vector::stroke_shapes(&parts, &stroke, seed));
-                        }
-                    }
-                }
-                Geometry::Polygons(polygons) => {
-                    let clipped: Vec<_> = polygons
-                        .iter()
-                        .filter_map(|polygon| {
-                            let rings: Vec<_> = polygon
-                                .iter()
-                                .enumerate()
-                                .map(|(i, ring)| vector::ring(ring, i > 0))
-                                .collect();
-                            if rings.first().is_none_or(|outer| outer.is_empty()) {
-                                return None;
-                            }
-                            let rings: Vec<_> =
-                                rings.into_iter().filter(|r| !r.is_empty()).collect();
-                            Some(vector::clip_polygon(&view.rot, &rings, step))
-                        })
-                        .collect();
-                    let mut triangles = vec![None; clipped.len()];
-                    for paint in paints {
-                        match paint {
-                            StylePaint::Fill(c) => {
-                                for (part, triangles) in clipped.iter().zip(&mut triangles) {
-                                    let (points, indices) = triangles
-                                        .get_or_insert_with(|| vector::triangulate(&part.loops));
-                                    let vertices = points
-                                        .iter()
-                                        .map(|p| egui::epaint::Vertex {
-                                            pos: to_screen(p),
-                                            uv: egui::epaint::WHITE_UV,
-                                            color: color(*c),
-                                        })
-                                        .collect();
-                                    sink.add(egui::Mesh {
-                                        indices: indices.clone(),
-                                        vertices,
-                                        ..Default::default()
-                                    });
-                                }
-                            }
-                            StylePaint::Stroke(stroke) => {
-                                let mut stroke = *stroke;
-                                // A polygon outline has no start and no end to taper.
-                                if matches!(stroke.kind, StrokeKind::Taper { .. }) {
-                                    stroke.kind = StrokeKind::Solid;
-                                }
-                                for part in &clipped {
-                                    let outlines: Vec<_> = part
-                                        .outlines
-                                        .iter()
-                                        .map(|o| o.iter().map(|p| (point(p), 0.0)).collect())
-                                        .collect();
-                                    let shapes = vector::stroke_shapes(&outlines, &stroke, seed);
-                                    sink.stroke(stroke, shapes);
-                                }
-                            }
-                            StylePaint::Scatter { symbol, tint, .. } => {
-                                let Some(fill) = ScatterFill::of(paint) else {
-                                    continue;
-                                };
-                                let places = places.get_or_insert_with(|| view_places(view, rect));
-                                let mut on_globe = GlobeScatter {
-                                    cache: scatter,
-                                    view,
-                                    rect,
-                                    radius_m,
-                                    places,
-                                    count,
-                                };
-                                let instances =
-                                    on_globe.instances(entry.layer, index, feature, &fill);
-                                count = on_globe.count;
-                                let mesh = symbols.get(symbol).map(SymbolMesh::of);
-                                for i in instances {
-                                    match &mesh {
-                                        Some(m) => m.append(
-                                            sink.symbols(),
-                                            i.pos,
-                                            i.size,
-                                            i.rotation,
-                                            *tint,
-                                        ),
-                                        None => {
-                                            append_missing(sink.symbols(), i.pos, i.size, *tint)
-                                        }
-                                    }
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
+                    _ => {}
                 }
             }
+            // The markers of a paint draw as on the page: the fills of all
+            // points, then their hatches, then their strokes.
+            if let StylePaint::Marker {
+                radius,
+                shape,
+                fill,
+                hatch,
+                stroke,
+            } = paint
+            {
+                let points: Vec<egui::Pos2> = batch
+                    .features
+                    .iter()
+                    .filter_map(|&i| match &screens[i] {
+                        Some(OnScreen::Points(points)) => Some(points),
+                        _ => None,
+                    })
+                    .flatten()
+                    .copied()
+                    .collect();
+                paint_markers(&mut sink, &points, *radius, *shape, *fill, *hatch, *stroke);
+            }
+            // Two batches with the same paint are two layers on the page too.
+            sink.end_group();
         }
     }
     sink.flush();
@@ -1415,17 +1436,34 @@ mod tests {
     use super::*;
     use vale_style::{Color, Stroke};
 
+    const FORMAT: Option<egui_wgpu::wgpu::TextureFormat> =
+        Some(egui_wgpu::wgpu::TextureFormat::Rgba8Unorm);
+
     /// The shapes that `vector_layer` gives for a line layer with `stroke`.
     fn line_shapes(
         stroke: Stroke,
         format: Option<egui_wgpu::wgpu::TextureFormat>,
     ) -> Vec<egui::Shape> {
-        let mut doc = Document::empty();
         let text = r#"{"type":"MultiLineString","coordinates":[[[-30,0],[0,0],[0,30]],[[10,-10],[30,-10]]]}"#;
-        let id = doc.add_imported(vale_import::geojson::read_str("lines", text).unwrap(), None)[0];
-        let style = &mut doc.entry_mut(id).unwrap().style;
-        style.set_fill(None);
-        style.set_stroke(Some(stroke));
+        layer_shapes(text, format, |style| {
+            style.set_fill(None);
+            style.set_stroke(Some(stroke));
+        })
+    }
+
+    /// The shapes that `vector_layer` gives for the GeoJSON `text` with the
+    /// style that `set` makes.
+    fn layer_shapes(
+        text: &str,
+        format: Option<egui_wgpu::wgpu::TextureFormat>,
+        set: impl FnOnce(&mut vale_style::LayerStyle),
+    ) -> Vec<egui::Shape> {
+        let mut doc = Document::empty();
+        let id = doc.add_imported(
+            vale_import::geojson::read_str("shapes", text).unwrap(),
+            None,
+        )[0];
+        set(&mut doc.entry_mut(id).unwrap().style);
         let view = GlobeView::centered(0.0, 0.0);
         let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 400.0));
         let mut scatter = ScatterCache::default();
@@ -1440,13 +1478,7 @@ mod tests {
 
     #[test]
     fn a_translucent_stroke_goes_to_one_group_and_an_opaque_stroke_goes_directly() {
-        let format = Some(egui_wgpu::wgpu::TextureFormat::Rgba8Unorm);
-        let callbacks = |shapes: &[egui::Shape]| {
-            shapes
-                .iter()
-                .filter(|s| matches!(s, egui::Shape::Callback(_)))
-                .count()
-        };
+        let format = FORMAT;
         let translucent = Stroke::solid(Color::rgba(0, 0, 255, 128), 6.0);
         let shapes = line_shapes(translucent, format);
         // Both lines share the paint, so they share one group.
@@ -1467,5 +1499,101 @@ mod tests {
                 egui::epaint::ColorMode::Solid(c) if c.a() == 128
             )
         )));
+    }
+
+    /// Three squares in a row, each one a feature.
+    const SQUARES: &str = r#"{"type":"FeatureCollection","features":[
+        {"type":"Feature","properties":{},"geometry":{"type":"Polygon","coordinates":[[[-30,-5],[-20,-5],[-20,5],[-30,5],[-30,-5]]]}},
+        {"type":"Feature","properties":{},"geometry":{"type":"Polygon","coordinates":[[[-5,-5],[5,-5],[5,5],[-5,5],[-5,-5]]]}},
+        {"type":"Feature","properties":{},"geometry":{"type":"Polygon","coordinates":[[[20,-5],[30,-5],[30,5],[20,5],[20,-5]]]}}
+    ]}"#;
+
+    fn callbacks(shapes: &[egui::Shape]) -> usize {
+        shapes
+            .iter()
+            .filter(|s| matches!(s, egui::Shape::Callback(_)))
+            .count()
+    }
+
+    #[test]
+    fn the_translucent_strokes_of_a_polygon_layer_go_to_one_group_after_the_fills() {
+        let shapes = layer_shapes(SQUARES, FORMAT, |style| {
+            style.set_fill(Some(Color::rgb(255, 0, 0)));
+            style.set_stroke(Some(Stroke::solid(Color::rgba(0, 0, 255, 128), 4.0)));
+        });
+        assert_eq!(shapes.len(), 4, "{shapes:?}");
+        assert!(
+            shapes[..3]
+                .iter()
+                .all(|s| matches!(s, egui::Shape::Mesh(_)))
+        );
+        assert!(matches!(shapes[3], egui::Shape::Callback(_)));
+    }
+
+    #[test]
+    fn the_globe_draws_the_fills_of_a_layer_before_its_strokes() {
+        let shapes = layer_shapes(SQUARES, FORMAT, |style| {
+            style.set_fill(Some(Color::rgb(255, 0, 0)));
+            style.set_stroke(Some(Stroke::solid(Color::rgb(0, 0, 255), 4.0)));
+        });
+        let kinds: Vec<_> = shapes
+            .iter()
+            .map(|s| match s {
+                egui::Shape::Mesh(_) => "fill",
+                egui::Shape::Path(_) => "stroke",
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            ["fill", "fill", "fill", "stroke", "stroke", "stroke"]
+        );
+    }
+
+    #[test]
+    fn the_translucent_hatches_and_strokes_of_markers_go_to_one_group_each() {
+        use vale_style::expr::Property;
+        use vale_style::{Hatch, MarkerShape, Rule, StrokeSymbolizer, Style, Symbolizer};
+        let text = r#"{"type":"FeatureCollection","features":[
+            {"type":"Feature","properties":{},"geometry":{"type":"Point","coordinates":[-20,0]}},
+            {"type":"Feature","properties":{},"geometry":{"type":"MultiPoint","coordinates":[[0,0],[20,0]]}}
+        ]}"#;
+        let marker = |fill, stroke| {
+            layer_shapes(text, FORMAT, |style| {
+                style.style = Style {
+                    rules: vec![Rule::new(
+                        "markers",
+                        vec![Symbolizer::Marker {
+                            radius: Property::constant(10.0),
+                            shape: MarkerShape::Square,
+                            fill: Some(Property::constant(fill)),
+                            hatch: Some(Hatch {
+                                cross: true,
+                                angle: 45.0,
+                                spacing: 3.0,
+                                line_width: 1.0,
+                            }),
+                            stroke: Some(StrokeSymbolizer::constant(Stroke::solid(stroke, 2.0))),
+                        }],
+                    )],
+                };
+            })
+        };
+        let translucent = marker(Color::rgba(255, 0, 0, 128), Color::rgba(0, 0, 255, 128));
+        assert_eq!(translucent.len(), 2, "{translucent:?}");
+        assert_eq!(callbacks(&translucent), 2);
+        // Opaque markers draw all hatch lines, then the three strokes.
+        let opaque = marker(Color::rgb(255, 0, 0), Color::rgb(0, 0, 255));
+        assert_eq!(callbacks(&opaque), 0);
+        let strokes = opaque
+            .iter()
+            .rposition(|s| !matches!(s, egui::Shape::Path(p) if p.closed))
+            .unwrap();
+        assert_eq!(opaque.len() - strokes - 1, 3);
+        assert!(
+            opaque[..=strokes]
+                .iter()
+                .all(|s| matches!(s, egui::Shape::LineSegment { .. }))
+        );
     }
 }
