@@ -1101,6 +1101,7 @@ pub(super) fn map_style_panel(
         if row.back {
             state.atlas.map_styles = None;
             state.atlas.map_style_swipe = None;
+            state.atlas.map_style_name = None;
         }
         if row.close {
             state.atlas.selection = AtlasSelection::None;
@@ -1148,6 +1149,25 @@ fn map_style_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Contro
     }
     for (i, (style, name)) in styles.iter().enumerate() {
         let style = *style;
+        if let Some((_, text)) = state.atlas.map_style_name.as_mut().filter(|r| r.0 == style) {
+            // The row is the name field while the user renames the map
+            // style. The name changes when the field loses the focus.
+            let taken = (styles.iter()).any(|(id, n)| *id != style && n == text.trim());
+            let valid = !text.trim().is_empty() && !taken;
+            let field = ui
+                .push_id(("map style", style.0), |ui| {
+                    let (rect, font) = (place(i + 1), theme::body());
+                    widgets::field_at(ui, controls, rect, MAP_STYLE_NAME, None, text, valid, font)
+                })
+                .inner;
+            if field.lost_focus() {
+                let text = state.atlas.map_style_name.take().map(|r| r.1);
+                atlas::rename_map_style(state, style, &text.unwrap_or_default());
+            } else if !field.has_focus() {
+                field.request_focus();
+            }
+            continue;
+        }
         let open = state.atlas.map_style_swipe.filter(|s| s.row == style);
         let shift = swipe::shift(ui, state.atlas.map_style_swipe, style);
         let on = linked == Some(style);
@@ -1163,7 +1183,19 @@ fn map_style_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Contro
             state.delete_map_style(style);
             continue;
         }
-        if swipe::drag(ui, &mut state.atlas.map_style_swipe, style, &row.body) {
+        if row.rename {
+            state.atlas.map_style_swipe = None;
+            state.atlas.map_style_name = Some((style, name.clone()));
+            continue;
+        }
+        let width = widgets::RENAME_WIDTH;
+        if swipe::drag_by(
+            ui,
+            &mut state.atlas.map_style_swipe,
+            style,
+            &row.body,
+            width,
+        ) {
             continue;
         }
         if row.body.dragged() {
@@ -1178,22 +1210,7 @@ fn map_style_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Contro
             }
         }
     }
-    ui.add_space(8.0);
-    let current = linked.and_then(|id| styles.iter().find(|s| s.0 == id));
-    if let Some((style, name)) = current.cloned() {
-        let mut text = match &state.atlas.map_style_name {
-            Some((of, text)) if *of == style => text.clone(),
-            _ => name.clone(),
-        };
-        let valid = text.trim() == name;
-        let field =
-            widgets::text_field(ui, controls, MAP_STYLE_NAME, "Name", None, &mut text, valid);
-        if field.changed() {
-            atlas::rename_map_style(state, style, &text);
-            state.atlas.map_style_name = Some((style, text));
-        }
-    }
-    ui.add_space(6.0);
+    ui.add_space(14.0);
     if widgets::button_row(ui, controls, SAVE_AS_MAP_STYLE, true).clicked() {
         state.atlas.map_style_swipe = None;
         state.atlas.map_style_name = None;

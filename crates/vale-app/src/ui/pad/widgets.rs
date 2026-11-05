@@ -595,11 +595,52 @@ fn delete_behind(
         return false;
     }
     let area = Rect::from_min_max(
-        pos2(reveal.left(), rect.center().y - TOUCH / 2.0),
+        pos2(
+            reveal.left().max(edge - DELETE_WIDTH),
+            rect.center().y - TOUCH / 2.0,
+        ),
         pos2(edge, rect.center().y + TOUCH / 2.0),
     );
     tap_area(ui, controls, area, &delete_name(name), true).clicked()
 }
+
+/// The Rename button to the left of the Delete button of a row that a swipe
+/// moves `shift` to the left. Returns true if the user taps it.
+fn rename_behind(
+    ui: &egui::Ui,
+    controls: &mut Controls,
+    rect: Rect,
+    name: &str,
+    shift: f32,
+) -> bool {
+    let edge = rect.right() + 8.0;
+    if shift > -DELETE_WIDTH {
+        return false;
+    }
+    let highlight = rect.expand2(vec2(8.0, -HIGHLIGHT_INSET));
+    let left = edge + shift;
+    let place = Rect::from_x_y_ranges(left..=edge - DELETE_WIDTH, highlight.y_range());
+    let painter = ui.painter().with_clip_rect(ui.clip_rect().intersect(place));
+    painter.rect_filled(place, 5.0, theme::MUTE);
+    let at = pos2(edge - 1.5 * DELETE_WIDTH, rect.center().y);
+    painter.text(
+        at,
+        Align2::CENTER_CENTER,
+        RENAME,
+        theme::body(),
+        theme::CANVAS,
+    );
+    if -shift < 2.0 * DELETE_WIDTH - 0.5 {
+        return false;
+    }
+    let area = Rect::from_min_max(
+        pos2(left, rect.center().y - TOUCH / 2.0),
+        pos2(edge - DELETE_WIDTH, rect.center().y + TOUCH / 2.0),
+    );
+    tap_area(ui, controls, area, &format!("{RENAME} {name}"), true).clicked()
+}
+
+pub const RENAME: &str = "Rename";
 
 /// The painter of a row that a swipe moves `shift` to the left. The row
 /// slides over its Delete button.
@@ -615,13 +656,16 @@ pub struct SwipeRow {
     pub body: Response,
     /// A tap on the Delete button of an open row.
     pub delete: bool,
+    /// A tap on the Rename button of an open row.
+    pub rename: bool,
 }
 
 /// A row of a list of choices at a given place, with a check at the left
 /// of the chosen row. A negative `shift` moves the row to the left and shows
-/// the Delete button behind it, as in the layer list.
+/// the Delete button behind it, as in the layer list, and a Rename button to
+/// its left for a row that the swipe opens by [`RENAME_WIDTH`].
 pub fn swipe_option_row(
-    ui: &egui::Ui,
+    ui: &mut egui::Ui,
     controls: &mut Controls,
     rect: Rect,
     name: &str,
@@ -630,7 +674,8 @@ pub fn swipe_option_row(
     shift: f32,
 ) -> SwipeRow {
     let edge = rect.right() + 8.0;
-    let right = (edge + shift).max(rect.left() + TOUCH).min(rect.right());
+    let end = rect.right();
+    let right = (edge + shift).max(rect.left() + TOUCH).min(end);
     let body_rect = Rect::from_min_max(rect.min, pos2(right, rect.bottom()));
     let body = hit(
         ui,
@@ -642,6 +687,7 @@ pub fn swipe_option_row(
         Some(on),
     );
     let delete = delete_behind(ui, controls, rect, title, true, shift);
+    let rename = rename_behind(ui, controls, rect, title, shift);
     let painter = sliding_painter(ui, rect, shift);
     let moved = vec2(shift, 0.0);
     if on || body.is_pointer_button_down_on() {
@@ -649,10 +695,13 @@ pub fn swipe_option_row(
         painter.rect_filled(highlight, 5.0, theme::raise());
     }
     let mark = Rect::from_center_size(pos2(rect.left() + 18.0, rect.center().y), vec2(18.0, 18.0));
+    // The check and the title slide only as far as the left edge of the row,
+    // so that a wide swipe keeps the title in sight.
+    let content = vec2(shift.max(8.0 - (mark.left() - rect.left())), 0.0);
     if on {
         icons::paint(
             &painter,
-            mark.translate(moved),
+            mark.translate(content),
             Icon::Tick,
             18.0,
             theme::ACCENT,
@@ -661,9 +710,9 @@ pub fn swipe_option_row(
     let color = if on { theme::TEXT } else { theme::MUTE };
     let clip = Rect::from_min_max(
         pos2(rect.left() + 38.0, rect.top()),
-        pos2(rect.right() - 4.0, rect.bottom()),
+        pos2(end - 4.0, rect.bottom()),
     )
-    .translate(moved);
+    .translate(content);
     painter
         .with_clip_rect(painter.clip_rect().intersect(clip))
         .text(
@@ -673,8 +722,15 @@ pub fn swipe_option_row(
             theme::body(),
             color,
         );
-    SwipeRow { body, delete }
+    SwipeRow {
+        body,
+        delete,
+        rename,
+    }
 }
+
+/// The swipe of a row with a Rename button and a Delete button.
+pub const RENAME_WIDTH: f32 = 2.0 * DELETE_WIDTH;
 
 /// The name of the eye of a layer that is on or off.
 pub fn eye_name(name: &str, shown: bool) -> String {

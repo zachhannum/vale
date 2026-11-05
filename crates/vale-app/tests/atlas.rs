@@ -7452,8 +7452,16 @@ fn the_map_style_page_renames_a_map_style_and_a_swipe_deletes_it() {
     h.state_mut().set_map_style_link(main, Some(style));
     h.run_steps(2);
 
-    find(&mut h, MAP_STYLE_NAME);
-    type_text(&mut h, MAP_STYLE_NAME, "Coast");
+    let first = h
+        .state()
+        .doc
+        .project
+        .atlas
+        .map_style(style)
+        .unwrap()
+        .name
+        .clone();
+    rename_by_swipe(&mut h, &first, "Coast");
     let name = |h: &Pad| {
         h.state()
             .doc
@@ -7465,10 +7473,10 @@ fn the_map_style_page_renames_a_map_style_and_a_swipe_deletes_it() {
             .clone()
     };
     assert_eq!(name(&h), "Coast");
-    // An empty name does not rename the map style.
-    type_text(&mut h, MAP_STYLE_NAME, "");
+    // An empty name keeps the old name.
+    rename_by_swipe(&mut h, "Coast", "");
     assert_eq!(name(&h), "Coast");
-    type_text(&mut h, MAP_STYLE_NAME, "Coast map");
+    rename_by_swipe(&mut h, "Coast", "Coast map");
     assert_eq!(name(&h), "Coast map");
 
     // A swipe shows the Delete button of the row, and a tap deletes the map
@@ -7480,7 +7488,7 @@ fn the_map_style_page_renames_a_map_style_and_a_swipe_deletes_it() {
     swipe_row(&mut h, &row, -30.0);
     assert_eq!(h.state().atlas.map_style_swipe, None);
     assert!(control(&h, "Delete Coast map").is_none());
-    swipe_row(&mut h, &row, -70.0);
+    swipe_row(&mut h, &row, -120.0);
     let open = h.state().atlas.map_style_swipe.unwrap();
     assert_eq!((open.row, open.moving), (style, false));
     assert_eq!(linked(&h, inset), Some(style));
@@ -7558,9 +7566,21 @@ fn the_map_style_controls_work_with_a_finger() {
         if size == BOARDS[0] {
             screenshot::save(&mut h, "pad-atlas-map-styles");
         }
-        swipe_row(&mut h, &row, -70.0);
+        swipe_row(&mut h, &row, -120.0);
         assert!(control(&h, "Delete Map style").is_some(), "{what}");
+        assert!(control(&h, "Rename Map style").is_some(), "{what}");
         check_controls(&h, &format!("{what}: open row"));
+        if size == BOARDS[0] {
+            screenshot::save(&mut h, "pad-atlas-map-style-swipe");
+        }
+        tap(&mut h, "Rename Map style");
+        assert!(control(&h, MAP_STYLE_NAME).is_some(), "{what}");
+        check_controls(&h, &format!("{what}: rename"));
+        if size == BOARDS[0] {
+            screenshot::save(&mut h, "pad-atlas-map-style-rename");
+        }
+        h.key_press(egui::Key::Enter);
+        h.run_steps(2);
         find(&mut h, SAVE_AS_MAP_STYLE);
         check_controls(&h, &format!("{what}: map style buttons"));
         tap(&mut h, &format!("Back to {}", FRAME_TABS[0]));
@@ -7828,4 +7848,66 @@ fn classify_in_a_frame_changes_only_that_map() {
     assert_eq!(places_rule_names(&h, Some(maps[2])), made);
     assert_eq!(places_rule_names(&h, Some(maps[0])), globe);
     assert_eq!(places_rule_names(&h, None), globe);
+}
+
+/// Renames a map style on the Map style page: a swipe on its row, a tap on
+/// Rename, the new text, and Return.
+fn rename_by_swipe(h: &mut Pad, name: &str, text: &str) {
+    use vale_app::ui::pad::widgets::RENAME;
+    let row = map_style_row(name);
+    find(h, &row);
+    swipe_row(h, &row, -120.0);
+    tap(h, &format!("{RENAME} {name}"));
+    assert!(control(h, MAP_STYLE_NAME).is_some());
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::A);
+    h.run_steps(1);
+    match text {
+        "" => h.key_press(egui::Key::Backspace),
+        text => h.event(egui::Event::Text(text.to_owned())),
+    }
+    h.run_steps(1);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    assert!(control(h, MAP_STYLE_NAME).is_none());
+}
+
+#[test]
+fn the_name_of_a_map_style_takes_one_key_at_a_time() {
+    use vale_app::ui::pad::widgets::RENAME;
+    let mut h = styled_pad();
+    let inset = frame(&h, 1).map;
+    map_style_page_of(&mut h, 1);
+    find(&mut h, SAVE_AS_MAP_STYLE);
+    tap(&mut h, SAVE_AS_MAP_STYLE);
+    let style = linked(&h, inset).unwrap();
+    let name = |h: &Pad| {
+        h.state()
+            .doc
+            .project
+            .atlas
+            .map_style(style)
+            .unwrap()
+            .name
+            .clone()
+    };
+    let before = name(&h);
+    let row = map_style_row(&before);
+    find(&mut h, &row);
+    swipe_row(&mut h, &row, -120.0);
+    tap(&mut h, &format!("{RENAME} {before}"));
+    h.key_press(egui::Key::End);
+    h.run_steps(1);
+    for _ in 0..before.chars().count() {
+        h.key_press(egui::Key::Backspace);
+        h.run_steps(1);
+    }
+    // The name changes when the field loses the focus.
+    for c in "Coast".chars() {
+        h.event(egui::Event::Text(c.to_string()));
+        h.run_steps(1);
+    }
+    assert_eq!(name(&h), before);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    assert_eq!(name(&h), "Coast");
 }

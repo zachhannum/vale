@@ -1,5 +1,5 @@
-//! The swipe of a row of a list to the left, which shows the Delete button
-//! of the row.
+//! The swipe of a row of a list to the left, which shows the buttons behind
+//! the row.
 
 use std::hash::Hash;
 
@@ -65,6 +65,17 @@ pub fn drag<K: Copy + PartialEq>(
     row: K,
     body: &Response,
 ) -> bool {
+    drag_by(ui, swipe, row, body, widgets::DELETE_WIDTH)
+}
+
+/// [`drag`] for a row whose buttons are `width` wide.
+pub fn drag_by<K: Copy + PartialEq>(
+    ui: &egui::Ui,
+    swipe: &mut Option<Swipe<K>>,
+    row: K,
+    body: &Response,
+    width: f32,
+) -> bool {
     let moved = ui.input(|i| Some(i.pointer.interact_pos()? - i.pointer.press_origin()?));
     if body.drag_started() {
         let d = moved.unwrap_or_default();
@@ -81,13 +92,13 @@ pub fn drag<K: Copy + PartialEq>(
     };
     if body.dragged() {
         let dx = moved.map_or(0.0, |d| d.x);
-        open.offset = (open.base + dx).clamp(-widgets::DELETE_WIDTH, 0.0);
+        open.offset = (open.base + dx).clamp(-width, 0.0);
         *swipe = Some(open);
     } else {
         // The finger is up: the row opens or shuts.
-        let opened = open.offset < -widgets::DELETE_WIDTH / 2.0;
+        let opened = open.offset < -width / 2.0;
         *swipe = opened.then_some(Swipe {
-            offset: -widgets::DELETE_WIDTH,
+            offset: -width,
             moving: false,
             ..open
         });

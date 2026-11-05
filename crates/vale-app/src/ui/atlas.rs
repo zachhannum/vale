@@ -636,7 +636,8 @@ pub struct AtlasState {
     pub map_styles: Option<FrameId>,
     /// The map style row of the Map style page that a finger swiped.
     pub map_style_swipe: Option<crate::ui::pad::Swipe<MapStyleId>>,
-    /// The text of the name field of a map style while the user types it.
+    /// The map style that the user renames on the Map style page, and the
+    /// text of its name field.
     pub map_style_name: Option<(MapStyleId, String)>,
     /// The segment of the panel of `label`.
     pub label_segment: ClassSegment,
