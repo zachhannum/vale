@@ -15,7 +15,7 @@ pub use label::{
 };
 pub use overrides::Overrides;
 pub use rule::{
-    Extent, Hatch, ImageSymbolizer, METERS_PER_POINT, MarkerShape, Paint, PointSymbolizer,
+    Extent, Hatch, ImageSymbolizer, METERS_PER_POINT, MarkerShape, Mask, Paint, PointSymbolizer,
     RasterSymbolizer, Rule, ScatterSymbolizer, StrokeSymbolizer, Style, Symbolizer, extent_of,
     scale_denominator,
 };
@@ -186,6 +186,7 @@ impl LayerStyle {
         LayerStyle {
             style: Style {
                 rules: vec![Rule::new("Default", symbolizers)],
+                mask: None,
             },
             label,
         }
@@ -201,6 +202,7 @@ impl LayerStyle {
         LayerStyle {
             style: Style {
                 rules: vec![Rule::new(name, vec![symbolizer])],
+                mask: None,
             },
             label: LabelStyle {
                 enabled: false,
@@ -468,6 +470,7 @@ mod tests {
     fn move_rule_swaps_with_a_neighbor() {
         let mut st = Style {
             rules: ["a", "b", "c"].map(|n| Rule::new(n, Vec::new())).to_vec(),
+            mask: None,
         };
         assert_eq!(st.move_rule(0, true), 0);
         assert_eq!(st.move_rule(2, false), 2);

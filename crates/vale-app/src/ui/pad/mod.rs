@@ -385,6 +385,8 @@ pub enum Page {
     Classify,
     /// The labels of the colors of the ramp with this index.
     RampLabels(usize),
+    /// The mask of the style of the layer.
+    Mask,
 }
 
 /// The state of the iPad layout.
@@ -1587,7 +1589,14 @@ pub(super) fn show_panel(
         (Some(LayerRef::Image(_)), Some(Page::Blend)) => true,
         (
             Some(LayerRef::Vector(_)),
-            Some(Page::NewField | Page::Table | Page::Classify | Page::Ramps | Page::RampLabels(_)),
+            Some(
+                Page::NewField
+                | Page::Table
+                | Page::Classify
+                | Page::Ramps
+                | Page::RampLabels(_)
+                | Page::Mask,
+            ),
         ) => true,
         (Some(LayerRef::Vector(_)), Some(Page::Field(i))) => i < field_count,
         (
@@ -1655,6 +1664,9 @@ pub(super) fn show_panel(
         }
         (Panel::Layers, Some(LayerRef::Vector(_))) if page == Some(Page::Classify) => {
             ("pad-classify", classify::TITLE, Some(name))
+        }
+        (Panel::Layers, Some(LayerRef::Vector(_))) if page == Some(Page::Mask) => {
+            ("pad-mask", rules::MASK, Some(name))
         }
         (Panel::Layers, Some(LayerRef::Vector(_))) if page == Some(Page::NewField) => {
             ("pad-new-field", fields::NEW_FIELD, Some(name))
@@ -1794,6 +1806,7 @@ pub(super) fn show_panel(
                     raster::ramps_body(ui, state, controls, raster::RampUser::Classify(id))
                 }
                 Some(Page::RampLabels(i)) => raster::labels_body(ui, state, controls, i),
+                Some(Page::Mask) => rules::mask_body(ui, state, controls, id),
                 Some(Page::Table) => {}
                 _ => vector_body(ui, state, controls, id),
             },

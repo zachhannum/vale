@@ -27,7 +27,8 @@ use crate::globe::flat::FlatMesh;
 use crate::globe::gpu::Mask;
 use crate::globe::nav::Nav;
 use crate::globe::select::Pointer;
-use crate::globe::{FrameDraw, FramePlace};
+use crate::globe::{FrameDraw, FramePlace, RasterMask};
+use crate::mask::frame::frame_raster_masks;
 use crate::page_snap;
 use crate::pipeline::{Pipeline, Quality};
 use crate::region::{Region, RegionKind, fit, suggest};
@@ -689,6 +690,8 @@ pub struct AtlasState {
     /// what it shows, and the mask.
     masks: HashMap<FrameId, (u64, Arc<Mask>)>,
     mask_count: u64,
+    /// The raster masks of the layers in the frames of the page.
+    raster_masks: super::frame_masks::FrameMasks,
     /// The meshes of the projections of the maps, on a sphere of radius 1.
     meshes: Vec<(ProjectionSpec, Arc<FlatMesh>)>,
     drag: Option<Drag>,
@@ -821,6 +824,7 @@ impl Default for AtlasState {
             painted: HashMap::new(),
             masks: HashMap::new(),
             mask_count: 0,
+            raster_masks: Default::default(),
             meshes: Vec::new(),
             snap: true,
             suggestion: None,
@@ -2312,9 +2316,13 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
     if state.globe.advance(std::time::Instant::now()) {
         ctx.request_repaint();
     }
+    if state.atlas.raster_masks.poll(&mut state.pipeline) {
+        ctx.request_repaint();
+    }
     let radius = state.doc.project.world.radius_km * 1000.0;
     let mut placed: Vec<Placed> = Vec::new();
     let mut draws: Vec<FrameDraw> = Vec::new();
+    let mut masked: Vec<MaskedFrame> = Vec::new();
     let mut spilled = false;
     for frame in &page.frames {
         let Some(map) = state.doc.project.atlas.map(frame.map) else {
@@ -2324,6 +2332,9 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
         let images = map_images(state, frame.map);
         let (raster_looks, image_looks) = crate::raster_style::map_looks(&state.doc, frame.map);
         let layered = !rasters.is_empty() || !images.is_empty();
+        let masks: Vec<_> = (frame_raster_masks(&state.doc, frame).into_iter())
+            .filter(|(_, mask)| state.globe.holds(mask.raster))
+            .collect();
         let content = hash_of((
             map,
             state.map_generation,
@@ -2335,6 +2346,7 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
             ppp.to_bits(),
             state.selection,
             layered,
+            state.atlas.raster_masks.number(frame.id),
         ));
         // Only the part of the frame on the canvas has a texture.
         // The neatline reaches out of the shape by half its width, and a sharp
@@ -2408,7 +2420,7 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
             spilled = true;
             ctx.request_repaint();
         }
-        if layered {
+        if layered || !masks.is_empty() {
             let spec = state.doc.projection(frame.map);
             let rect = pixel_rect(shown, ppp);
             let mesh = mesh_of(state, spec);
@@ -2418,7 +2430,7 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
                 let center = vt.origin;
                 let units = vt.view.scale * radius;
                 let scale = frame.scale;
-                draws.push(FrameDraw {
+                let draw = FrameDraw {
                     id: frame.id.0,
                     place: FramePlace {
                         center: [
@@ -2441,7 +2453,13 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
                     images,
                     raster_looks,
                     image_looks,
-                });
+                };
+                if !masks.is_empty() {
+                    masked.push((frame.clone(), draw.clone(), masks));
+                }
+                if layered {
+                    draws.push(draw);
+                }
             }
         }
         let inside = shape_triangles(frame, place);
@@ -2469,6 +2487,7 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
         let painted = state.globe.paint_frames(canvas, draws);
         painted.unwrap_or_default().into_iter().collect()
     };
+    capture_masks(state, &painter, (canvas, target, area), masked, moving);
     if let Some(format) = state.globe.backdrop() {
         let mut items = Vec::new();
         for p in &placed {
@@ -2525,6 +2544,79 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
             .map(|image| paint_image(&painter, image, &p.fixed, (&[], p.shown)));
         state.atlas.painted.insert(p.id, [map, spill, decor]);
     }
+}
+
+/// A frame with raster masks, with its draw and its masks.
+type MaskedFrame = (FrameRecord, FrameDraw, Vec<(LayerId, RasterMask)>);
+
+/// Starts the captures of the raster masks of the frames of the page whose
+/// keys changed. While a gesture moves the page, each frame keeps its masks.
+fn capture_masks(
+    state: &mut AppState,
+    painter: &egui::Painter,
+    (canvas, target, area): (Canvas, FrameTarget, Rect),
+    masked: Vec<MaskedFrame>,
+    moving: bool,
+) {
+    let ppp = f64::from(canvas.pixels_per_point);
+    let mut keep = std::collections::HashSet::new();
+    let mut rasters = Vec::new();
+    for (frame, draw, masks) in masked {
+        for (index, (layer, mask)) in masks.iter().enumerate() {
+            keep.insert((frame.id, *layer));
+            rasters.push(mask.raster);
+            let key = mask_key(state, &frame, &draw, mask);
+            let wants = state.atlas.raster_masks.wants(frame.id, *layer, key);
+            if moving || !wants || !state.globe.mask_ready(&draw, mask) {
+                continue;
+            }
+            let index = index as u16;
+            let Some((callback, receiver)) =
+                state.globe.capture_frame_mask(canvas, &draw, mask, index)
+            else {
+                continue;
+            };
+            // The pixels of the capture start at the corner of its rectangle
+            // on the screen.
+            let [x, y, ..] = draw.rect;
+            let at = FrameTarget {
+                origin: Point::new(
+                    target.origin.x * ppp - f64::from(x),
+                    target.origin.y * ppp - f64::from(y),
+                ),
+                pts_per_mm: target.pts_per_mm * ppp,
+            };
+            (state.atlas.raster_masks).start(frame.id, *layer, key, receiver, at);
+            painter.add(eframe::egui_wgpu::Callback::new_paint_callback(
+                area, callback,
+            ));
+            painter.ctx().request_repaint();
+        }
+    }
+    state.set_screen_mask_rasters(rasters);
+    (state.atlas.raster_masks).retain(&mut state.pipeline, |f, l| keep.contains(&(f, l)));
+}
+
+/// What the capture of a raster mask in a frame comes from.
+fn mask_key(state: &AppState, frame: &FrameRecord, draw: &FrameDraw, mask: &RasterMask) -> u64 {
+    let doc = &state.doc;
+    let mut layers = doc.project.layers().iter();
+    let layer = layers
+        .find(|l| l.raster() == Some(mask.raster))
+        .map(|l| l.id);
+    let style = layer.and_then(|l| doc.map_style(frame.map, l));
+    let look = style.as_ref().and_then(|s| s.raster_symbolizer());
+    let shown = layer.is_some_and(|l| doc.shown(frame.map, l));
+    let [.., w, h] = draw.rect;
+    hash_of((
+        (&frame.shape, frame.center, frame.scale, frame.rotation),
+        doc.projection(frame.map),
+        (w, h, draw.place.pixels_per_page_point.to_bits()),
+        draw.place.center.map(|c| (c * 4.0).round() as i32),
+        (mask, look, shown),
+        state.globe.raster_edits(mask.raster),
+        state.globe.frame_details_ready(draw.id),
+    ))
 }
 
 /// A view that follows the page and the shape of a frame, but not the

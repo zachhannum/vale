@@ -10,13 +10,14 @@ use kurbo::{Point, Rect, Shape};
 use vale_labeler::Fonts;
 use vale_render::{DisplayList, FillRule, Item, PdfDocument};
 use vale_sphere::Projection;
-use vale_store::{FrameRecord, ImageId, PageRecord, RasterId};
+use vale_store::{FrameRecord, ImageId, LayerId, PageRecord, RasterId};
 
 use crate::atlas::{self, FrameTarget, PT_PER_MM};
 use crate::document::Document;
 use crate::globe::flat::FlatMesh;
 use crate::globe::gpu::{Captured, Mask};
-use crate::globe::{FrameDraw, FramePlace};
+use crate::globe::{FrameDraw, FramePlace, RasterMask};
+use crate::mask::frame::{cover_mask, frame_raster_masks};
 use crate::pipeline::{Pipeline, Quality, paper_color};
 use crate::raster_style;
 use crate::{furniture, headless};
@@ -48,12 +49,24 @@ struct PendingCapture {
     /// The premultiplied pixels of the whole frame, with the strips that
     /// the GPU drew.
     rgba: Vec<u8>,
+    /// The frame shows raster layers or image layers.
+    layered: bool,
+    /// The layers with a raster mask, with the cover of the mask in the
+    /// whole frame, one byte for each pixel.
+    masks: Vec<(LayerId, RasterMask, Vec<u8>)>,
     frame: FrameRecord,
     target: FrameTarget,
     part: Rect,
     image_rect: Rect,
-    receiver: Option<mpsc::Receiver<Result<Captured, String>>>,
+    /// Page millimeters to the pixels of the raster image.
+    pixels: FrameTarget,
+    /// The capture of the strip, then the capture of the cover of each
+    /// mask, with what arrived. `None` is a mask with no cover.
+    receivers: Option<Vec<Receiver>>,
 }
+
+/// A capture that the GPU makes, and its result once it arrives.
+type Receiver = Option<(mpsc::Receiver<Result<Captured, String>>, Option<Captured>)>;
 
 /// The next action of a PDF export.
 pub enum ExportStep {
@@ -77,6 +90,8 @@ pub struct PdfExport {
     pipeline: Pipeline,
     fonts: Fonts,
     output: Option<Output>,
+    /// The raster masks of a frame with no raster layers get a capture.
+    gpu: bool,
 }
 
 enum Output {
@@ -110,6 +125,7 @@ impl PdfExport {
             pipeline: Pipeline::new(),
             fonts,
             output: Some(output),
+            gpu: true,
         })
     }
 
@@ -131,17 +147,31 @@ impl PdfExport {
         };
         let rows = pending.draw.rect[3];
         let half = rows.div_ceil(2).max(MIN_STRIP_ROWS);
-        if pending.receiver.is_some() || half >= rows {
+        if pending.receivers.is_some() || half >= rows {
             return false;
         }
         pending.draw = strip(&pending.whole, pending.row, half);
         true
     }
 
-    /// Gives the pending raster capture its result channel.
-    pub fn set_capture_receiver(&mut self, receiver: mpsc::Receiver<Result<Captured, String>>) {
+    /// The raster masks of the frame of the pending capture. Each needs a
+    /// capture of its cover in the strip, from `Globe::capture_frame_mask`.
+    pub fn capture_masks(&self) -> Vec<RasterMask> {
+        let masks = self.pending.iter().flat_map(|p| &p.masks);
+        masks.map(|(_, mask, _)| *mask).collect()
+    }
+
+    /// Gives the pending raster capture its result channel, and the channel
+    /// of the cover of each mask of `capture_masks`. A mask with no channel
+    /// has no cover, and its layer draws no fills and no strokes.
+    pub fn set_capture_receiver(
+        &mut self,
+        receiver: mpsc::Receiver<Result<Captured, String>>,
+        masks: Vec<Option<mpsc::Receiver<Result<Captured, String>>>>,
+    ) {
         if let Some(pending) = &mut self.pending {
-            pending.receiver = Some(receiver);
+            let all = std::iter::once(Some(receiver)).chain(masks);
+            pending.receivers = Some(all.map(|r| r.map(|r| (r, None))).collect());
         }
     }
 
@@ -205,11 +235,6 @@ impl PdfExport {
             origin: Point::ZERO,
             pts_per_mm: PT_PER_MM,
         };
-        let under = self
-            .pipeline
-            .compose_frame_under(&self.doc, frame, page_target, image_rect)?;
-        self.list.as_mut().unwrap().items.extend(under.items);
-
         let capture_target = FrameTarget {
             origin: Point::new(-point_min.x, -point_min.y),
             pts_per_mm: PT_PER_MM,
@@ -236,6 +261,8 @@ impl PdfExport {
                 .collect(),
         });
         let shown = self.shown_rasters(frame);
+        let images = self.shown_images(frame);
+        let layered = !shown.is_empty() || !images.is_empty();
         let (raster_looks, image_looks) = raster_style::map_looks(&self.doc, frame.map);
         let draw = FrameDraw {
             id: next_draw_id(),
@@ -257,36 +284,61 @@ impl PdfExport {
             mesh: Arc::new(FlatMesh::new(&unit_projection)),
             mask: Some(mask),
             shown,
-            images: self.shown_images(frame),
+            images,
             raster_looks,
             image_looks,
         };
+        let pixel_count = size[0] as usize * size[1] as usize;
+        let masks = match self.gpu {
+            true => frame_raster_masks(&self.doc, frame),
+            false => Vec::new(),
+        };
         Ok(PendingCapture {
-            rgba: vec![0; size[0] as usize * size[1] as usize * 4],
+            rgba: vec![0; pixel_count * 4],
             row: 0,
             whole: draw.clone(),
             draw,
+            layered,
+            masks: (masks.into_iter())
+                .map(|(layer, mask)| (layer, mask, vec![0; pixel_count]))
+                .collect(),
             frame: frame.clone(),
             target: page_target,
             part: image_rect,
             image_rect,
-            receiver: None,
+            pixels: FrameTarget {
+                origin: Point::new(
+                    -point_min.x * RASTER_PIXEL_RATIO,
+                    -point_min.y * RASTER_PIXEL_RATIO,
+                ),
+                pts_per_mm: PT_PER_MM * RASTER_PIXEL_RATIO,
+            },
+            receivers: None,
         })
     }
 
-    /// Puts the pixels of a strip into the pixels of the frame. Returns
-    /// `true` when the frame has each strip.
-    fn take_strip(&mut self, captured: Captured) -> anyhow::Result<bool> {
+    /// Puts the pixels of a strip, and the covers of the masks in it, into
+    /// the pixels of the frame. Returns `true` when the frame has each
+    /// strip.
+    fn take_strip(&mut self, captured: Vec<Option<Captured>>) -> anyhow::Result<bool> {
         let pending = self.pending.as_mut().expect("a capture is pending");
         let [.., width, height] = pending.whole.rect;
         let rows = pending.draw.rect[3];
-        if captured.size != [width, rows] {
-            anyhow::bail!("the raster capture has the wrong size");
+        let mut captured = captured.into_iter();
+        let covers = pending.masks.iter_mut().map(|(_, _, cover)| (cover, 1));
+        let outs = std::iter::once((&mut pending.rgba, 4)).chain(covers);
+        for (out, bytes) in outs {
+            let Some(strip) = captured.next().flatten() else {
+                continue;
+            };
+            if strip.size != [width, rows] || strip.rgba.len() != (width * rows * bytes) as usize {
+                anyhow::bail!("the raster capture has the wrong size");
+            }
+            let start = (pending.row * width * bytes) as usize;
+            out[start..start + strip.rgba.len()].copy_from_slice(&strip.rgba);
         }
-        let start = pending.row as usize * width as usize * 4;
-        pending.rgba[start..start + captured.rgba.len()].copy_from_slice(&captured.rgba);
         pending.row += rows;
-        pending.receiver = None;
+        pending.receivers = None;
         if pending.row >= height {
             return Ok(true);
         }
@@ -296,6 +348,39 @@ impl PdfExport {
 
     fn finish_capture(&mut self) -> anyhow::Result<()> {
         let mut pending = self.pending.take().expect("a capture is pending");
+        let [.., width, height] = pending.whole.rect;
+        let frame = pending.frame.id;
+        for (layer, _, cover) in &pending.masks {
+            let mask = cover_mask(cover, width as usize, height as usize, pending.pixels);
+            self.pipeline.set_page_mask(frame, *layer, Some(mask));
+        }
+        let under = self.pipeline.compose_frame_under(
+            &self.doc,
+            &pending.frame,
+            pending.target,
+            pending.image_rect,
+        )?;
+        self.list.as_mut().unwrap().items.extend(under.items);
+        if pending.layered {
+            self.push_image(&mut pending)?;
+        }
+        let over = self.pipeline.compose_frame_over(
+            &self.doc,
+            &pending.frame,
+            pending.target,
+            pending.part,
+            &mut self.fonts,
+            Quality::Final,
+            None,
+        )?;
+        self.list.as_mut().unwrap().items.extend(over.list.items);
+        self.pipeline.clear_page_masks();
+        self.frame += 1;
+        Ok(())
+    }
+
+    /// Puts the pixels of the raster layers of a frame on the page.
+    fn push_image(&mut self, pending: &mut PendingCapture) -> anyhow::Result<()> {
         let [.., width, height] = pending.whole.rect;
         let mut rgba = std::mem::take(&mut pending.rgba);
         for pixel in rgba.as_chunks_mut::<4>().0 {
@@ -316,17 +401,6 @@ impl PdfExport {
             rect: pending.image_rect,
             interpolate: true,
         });
-        let over = self.pipeline.compose_frame_over(
-            &self.doc,
-            &pending.frame,
-            pending.target,
-            pending.part,
-            &mut self.fonts,
-            Quality::Final,
-            None,
-        )?;
-        self.list.as_mut().unwrap().items.extend(over.list.items);
-        self.frame += 1;
         Ok(())
     }
 
@@ -335,23 +409,30 @@ impl PdfExport {
     pub fn step(&mut self) -> ExportStep {
         let result = (|| -> anyhow::Result<ExportStep> {
             if let Some(pending) = &mut self.pending {
-                let Some(receiver) = &pending.receiver else {
+                let Some(receivers) = &mut pending.receivers else {
                     return Ok(ExportStep::Capture(pending.draw.clone()));
                 };
-                match receiver.try_recv() {
-                    Ok(Ok(captured)) => {
-                        if !self.take_strip(captured)? {
-                            let draw = self.pending.as_ref().unwrap().draw.clone();
-                            return Ok(ExportStep::Capture(draw));
-                        }
-                        self.finish_capture()?;
+                for (receiver, got) in receivers.iter_mut().flatten() {
+                    if got.is_some() {
+                        continue;
                     }
-                    Ok(Err(error)) => anyhow::bail!(error),
-                    Err(mpsc::TryRecvError::Empty) => return Ok(ExportStep::More),
-                    Err(mpsc::TryRecvError::Disconnected) => {
-                        anyhow::bail!("the raster capture stopped")
+                    match receiver.try_recv() {
+                        Ok(Ok(captured)) => *got = Some(captured),
+                        Ok(Err(error)) => anyhow::bail!(error),
+                        Err(mpsc::TryRecvError::Empty) => return Ok(ExportStep::More),
+                        Err(mpsc::TryRecvError::Disconnected) => {
+                            anyhow::bail!("the raster capture stopped")
+                        }
                     }
                 }
+                let captured = (receivers.drain(..))
+                    .map(|r| r.and_then(|(_, got)| got))
+                    .collect();
+                if !self.take_strip(captured)? {
+                    let draw = self.pending.as_ref().unwrap().draw.clone();
+                    return Ok(ExportStep::Capture(draw));
+                }
+                self.finish_capture()?;
             }
 
             if self.list.is_none() {
@@ -363,8 +444,10 @@ impl PdfExport {
                 let page_rect = Rect::new(0.0, 0.0, page.width_mm, page.height_mm);
                 let bbox = atlas::shape_bbox(&frame.shape).intersect(page_rect);
                 let raster_area = bbox.width() > 0.0 && bbox.height() > 0.0;
-                let layered =
-                    !self.shown_rasters(frame).is_empty() || !self.shown_images(frame).is_empty();
+                let masked = self.gpu && !frame_raster_masks(&self.doc, frame).is_empty();
+                let layered = !self.shown_rasters(frame).is_empty()
+                    || !self.shown_images(frame).is_empty()
+                    || masked;
                 if !layered || !raster_area {
                     let target = FrameTarget {
                         origin: Point::ZERO,
@@ -467,6 +550,7 @@ fn strip(whole: &FrameDraw, row: u32, rows: u32) -> FrameDraw {
 /// Writes vector pages as one PDF without a window.
 pub fn export_pdf(doc: &Document, pages: Vec<PageRecord>, path: &Path) -> anyhow::Result<()> {
     let mut job = PdfExport::new(doc.clone(), path.to_path_buf(), pages)?;
+    job.gpu = false;
     loop {
         match job.step() {
             ExportStep::More => {}
@@ -479,6 +563,7 @@ pub fn export_pdf(doc: &Document, pages: Vec<PageRecord>, path: &Path) -> anyhow
 /// Writes one vector page to a PNG or PDF without a window.
 pub fn export_page(doc: &Document, page: PageRecord, path: &Path) -> anyhow::Result<()> {
     let mut job = PdfExport::new(doc.clone(), path.to_path_buf(), vec![page])?;
+    job.gpu = false;
     loop {
         match job.step() {
             ExportStep::More => {}

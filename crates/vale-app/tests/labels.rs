@@ -524,6 +524,7 @@ fn labels_avoid_point_symbols() {
     let entry = doc.entry_mut(castles).unwrap();
     entry.style.label.enabled = false;
     entry.style.style = Style {
+        mask: None,
         rules: vec![Rule::new(
             "Castle",
             vec![Symbolizer::Symbol(PointSymbolizer::constant(
@@ -554,6 +555,7 @@ fn labels_avoid_point_symbols() {
         ],
     );
     doc.entry_mut(forest).unwrap().style.style = Style {
+        mask: None,
         rules: vec![Rule::new(
             "Trees",
             vec![Symbolizer::Scatter(ScatterSymbolizer::new(
@@ -589,6 +591,7 @@ fn places_frame(edit: impl FnOnce(&mut vale_style::LabelClass)) -> (Document, Co
     let places = layer_id(&doc, "Places");
     common::add_symbols(&mut doc, &["castle"]);
     doc.entry_mut(places).unwrap().style.style = Style {
+        mask: None,
         rules: vec![Rule::new(
             "Castle",
             vec![Symbolizer::Symbol(PointSymbolizer::constant("castle", 6.0))],
@@ -954,4 +957,112 @@ fn a_label_avoids_a_symbol_outside_the_part() {
             assert!(!label.overlaps(*castle), "{label:?} {castle:?}");
         }
     }
+}
+
+/// A document with a polygon from 80° W to 80° E, with a label class, and
+/// a hidden polygon layer west of 0°.
+fn half_land() -> (Document, LayerId, LayerId) {
+    let mut doc = Document::empty();
+    let map = doc.first_map();
+    let land = add_layer(
+        &mut doc,
+        "Lands",
+        &[r#"{"type":"Feature","properties":{"name":"Half Land"},"geometry":{"type":"Polygon","coordinates":[[[-80,-30],[80,-30],[80,30],[-80,30],[-80,-30]]]}}"#
+            .to_string()],
+    );
+    let mask = add_layer(
+        &mut doc,
+        "Mask",
+        // The small square in the east makes the data, and thus the frame,
+        // even about 0 degrees.
+        &[r#"{"type":"Feature","properties":{},"geometry":{"type":"MultiPolygon","coordinates":[[[[-100,-50],[0,-50],[0,50],[-100,50],[-100,-50]]],[[[99,0],[100,0],[100,1],[99,1],[99,0]]]]}}"#
+            .to_string()],
+    );
+    doc.set_visible(mask, false);
+    doc.set_shown(map, mask, false);
+    doc.set_label_classes(map, mask, &[]);
+    let mut class = vale_style::LabelClass::new("Lands", GeometryKind::Polygon, 0).unwrap();
+    class.placement = vale_style::LabelPlacement::Horizontal;
+    assert!(doc.set_label_classes(map, land, &[class]));
+    (doc, land, mask)
+}
+
+/// The origins of the glyphs of the label of `half_land`.
+fn half_land_glyphs(c: &Composed) -> Vec<Point> {
+    (c.list.items.iter())
+        .filter_map(|i| match i {
+            Item::Glyphs(g) if g.text.to_uppercase() == "HALF LAND" => Some(g),
+            _ => None,
+        })
+        .flat_map(|g| g.glyphs.iter().map(|(_, t)| Point::ZERO + t.translation()))
+        .collect()
+}
+
+/// Each point is west of 0° and east of 80° W, in the first frame.
+fn assert_west_half(doc: &Document, p: &mut Pipeline, points: &[Point]) {
+    let record = doc.project.atlas.pages[0].frames[0].clone();
+    let projection = p.projection(doc, doc.first_map()).unwrap();
+    let target = FrameTarget {
+        origin: Point::ZERO,
+        pts_per_mm: PT_PER_MM,
+    };
+    let vt = vale_app::atlas::frame_transform(projection, &record, target);
+    for o in points {
+        let [lon, _] = projection.inverse(vt.from_page(*o)).unwrap();
+        assert!(lon > -80.0 && lon < 0.0, "{lon}");
+    }
+}
+
+#[test]
+fn a_masked_polygon_places_its_label_inside_the_mask() {
+    let (mut doc, land, mask) = half_land();
+    let mut p = Pipeline::new();
+    doc.entry_mut(land).unwrap().style.style.mask =
+        Some(vale_style::Mask::Polygons { layer: mask });
+    let (c, _) = first_map_frame(&mut doc, &mut p);
+    let origins = half_land_glyphs(&c);
+    assert!(!origins.is_empty(), "{:?}", c.labels.unplaced);
+    // Each glyph is west of 0 degrees, over the part of the polygon inside
+    // the mask. With no mask, the label is across 0 degrees.
+    assert_west_half(&doc, &mut p, &origins);
+}
+
+#[test]
+fn a_polygon_half_outside_a_page_mask_places_its_label_inside_the_mask() {
+    use vale_app::mask::PageMask;
+    let (mut doc, land, mask) = half_land();
+    let mut p = Pipeline::new();
+    doc.entry_mut(land).unwrap().style.style.mask = Some(vale_style::Mask::Raster {
+        layer: mask,
+        min: Some(0.0),
+        max: None,
+    });
+    // With no page mask yet, the polygon has no label.
+    let (c, _) = first_map_frame(&mut doc, &mut p);
+    assert!(half_land_glyphs(&c).is_empty());
+
+    // A page mask west of 0 degrees.
+    let record = doc.project.atlas.pages[0].frames[0].clone();
+    let projection = p.projection(&doc, doc.first_map()).unwrap();
+    let vt = vale_app::atlas::frame_transform(projection, &record, FrameTarget::MM);
+    let x = vt.to_page(projection.forward([0.0, 0.0]).unwrap()).x;
+    let west = vec![
+        Point::new(-1000.0, -1000.0),
+        Point::new(x, -1000.0),
+        Point::new(x, 1000.0),
+        Point::new(-1000.0, 1000.0),
+    ];
+    p.set_page_mask(record.id, land, Some(PageMask::new(vec![west])));
+    let page = &doc.project.atlas.pages[0];
+    let mut f = fonts().unwrap();
+    let target = FrameTarget {
+        origin: Point::ZERO,
+        pts_per_mm: PT_PER_MM,
+    };
+    let c = p
+        .compose_frame(&doc, page, &record, target, &mut f, Quality::Final, None)
+        .unwrap();
+    let origins = half_land_glyphs(&c);
+    assert!(!origins.is_empty(), "{:?}", c.labels.unplaced);
+    assert_west_half(&doc, &mut p, &origins);
 }

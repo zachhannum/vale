@@ -2,6 +2,7 @@
 
 mod images;
 mod lines;
+mod masked;
 
 use eframe::egui::{self, Pos2, Vec2};
 use egui_kittest::Harness;
@@ -21,9 +22,15 @@ use vale_terrain::{Mode, meters_to_level};
 
 type App = Harness<'static, AppState>;
 
+/// The sample world with its vector layers hidden, so that each place of the
+/// map shows the heightmap.
 fn state() -> AppState {
     let mut state = AppState::new(Document::sample()).unwrap();
     state.headless = true;
+    let ids: Vec<_> = state.doc.project.layers().iter().map(|l| l.id).collect();
+    for id in ids {
+        state.doc.set_visible(id, false);
+    }
     state
 }
 
@@ -771,4 +778,115 @@ fn the_opacity_and_the_blend_mode_apply_to_an_image_layer_in_the_flat_view() {
     h.state_mut().set_image_blend(id, BlendMode::Screen);
     let image = canvas_image(&mut h);
     near(rgb(&h, &image, east), [255, g, g], "screen");
+}
+
+#[test]
+fn the_flat_view_draws_a_masked_polygon_only_inside_the_mask() {
+    let (doc, id) = masked::masked_square();
+    let mut flat = FlatView::default();
+    flat.look_at(20.0, 20.0);
+    flat.zoom = 4.0;
+    let rect = egui::Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 800.0));
+    let mut pipeline = vale_app::pipeline::Pipeline::new();
+    let (fills, strokes) = masked::painted(|painter| {
+        vale_app::ui::globe::flat_vector_layer(painter, None, rect, &doc, &flat, id, &mut pipeline);
+    });
+    assert!(!fills.is_empty() && !strokes.is_empty());
+    masked::assert_masked(&fills, &strokes, |p| flat.unproject(rect, p));
+}
+
+/// The flat view of the crater of `set_crater` at zoom 4, in two bands with
+/// rivers, with the hidden polygon layer of `masked::raster_masked` over it.
+fn masked_flat() -> (App, vale_store::RasterId, masked::RasterMasked) {
+    let mut h = flat_harness();
+    show_as(h.state_mut(), RasterDisplay::Bands);
+    let id = h.state().globe.raster().unwrap();
+    let globe = &mut h.state_mut().globe;
+    two_bands(globe.bands_mut(id).unwrap(), [40, 40, 40], [150, 140, 120]);
+    globe.preview.panel = true;
+    globe.tool = Tool::Navigate;
+    globe.flat.zoom = 4.0;
+    set_crater(&mut globe.map, lonlat_to_dir(0.0, 0.0), 800.0);
+    let found = masked::raster_masked(h.state_mut(), id);
+    for _ in 0..4000 {
+        h.step();
+        if !h.state().globe.rivers_pending() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    (h, id, found)
+}
+
+/// The canvas image with the polygon layer hidden, and then with it shown.
+fn mask_images(h: &mut App, layer: vale_store::LayerId) -> (image::RgbaImage, image::RgbaImage) {
+    masked::show(h.state_mut(), layer, false);
+    let plain = canvas_image(h);
+    masked::show(h.state_mut(), layer, true);
+    let masked = canvas_image(h);
+    (plain, masked)
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_raster_mask_cuts_a_fill_to_the_land_and_the_lakes_of_the_flat_view() {
+    let _gpu = one_gpu_test();
+    let (mut h, id, found) = masked_flat();
+    // A line at a stop that no height crosses makes the flat view draw the
+    // band edges from the cut heights.
+    let bands = h.state_mut().globe.bands_mut(id).unwrap();
+    let (sea, land) = ([40, 40, 40], [150, 140, 120]);
+    lines::set_stops(bands, true, &[0.0, 5000.0], &[sea, land, land]);
+    let top = bands
+        .stops()
+        .iter()
+        .position(|s| s.value == 5000.0)
+        .unwrap();
+    let line = vale_terrain::StopLine {
+        on: true,
+        weight: 3.0,
+        color: [0; 3],
+        ..Default::default()
+    };
+    assert!(bands.set_line(top, line));
+    let (plain, masked) = mask_images(&mut h, found.layer);
+    masked::save_images("mask-flat", &plain, &masked);
+    let globe = &h.state().globe;
+    let agreement = masked::agreement(&plain, &masked, masked::inside_polygon(globe));
+    assert!(
+        agreement.compared > 50_000 && agreement.land > 5_000 && agreement.wrong == 0,
+        "{agreement:?}"
+    );
+    let (wet, red) = masked::lake_red(globe, &plain, &masked);
+    assert!(wet > 50 && red == 0, "{red} of {wet}");
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_hidden_raster_layer_masks_a_fill_in_the_flat_view_at_its_smoothing() {
+    let _gpu = one_gpu_test();
+    let (mut h, id, found) = masked_flat();
+    h.state_mut().set_raster_rivers(id, false);
+    masked::ripple(&mut h.state_mut().globe.map);
+    let sharp = canvas_image(&mut h);
+    let state = h.state_mut();
+    assert!(state.set_raster_smoothing(id, true));
+    assert!(state.set_raster_feature_size(id, 24.0));
+    h.step();
+    assert!(h.state().globe.smoothing_level(id) >= 1.0);
+    masked::show(h.state_mut(), found.layer, false);
+    let plain = canvas_image(&mut h);
+    masked::show(h.state_mut(), found.raster, false);
+    masked::show(h.state_mut(), found.layer, true);
+    let masked = canvas_image(&mut h);
+    masked::save_images("mask-flat-hidden", &plain, &masked);
+    let inside = masked::inside_polygon(&h.state().globe);
+    let agreement = masked::agreement(&plain, &masked, &inside);
+    assert!(
+        agreement.compared > 50_000 && agreement.land > 10_000 && agreement.wrong == 0,
+        "{agreement:?}"
+    );
+    // The smoothing moves the coast.
+    let moved = masked::agreement(&sharp, &masked, &inside);
+    assert!(moved.wrong > 200, "{moved:?}");
 }

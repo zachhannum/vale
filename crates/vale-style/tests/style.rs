@@ -1,11 +1,11 @@
 use std::collections::BTreeMap;
 
-use vale_store::GeometryKind;
+use vale_store::{GeometryKind, LayerId};
 use vale_style::expr::{Context, Filter, Property, Value};
 use vale_style::{
-    Color, Extent, Hatch, ImageSymbolizer, LayerStyle, MarkerShape, Paint, PointSymbolizer, Rule,
-    STYLE_VERSION, ScatterSymbolizer, Stroke, StrokeKind, StrokeSymbolizer, Style, StyleError,
-    Symbolizer, extent_of, scale_denominator,
+    Color, Extent, Hatch, ImageSymbolizer, LayerStyle, MarkerShape, Mask, Paint, PointSymbolizer,
+    Rule, STYLE_VERSION, ScatterSymbolizer, Stroke, StrokeKind, StrokeSymbolizer, Style,
+    StyleError, Symbolizer, extent_of, scale_denominator,
 };
 
 fn river(kind: &str, flow: f64) -> BTreeMap<String, Value> {
@@ -41,6 +41,7 @@ fn two_rules() -> Style {
     minor.max_scale = Some(1_000_000.0);
     Style {
         rules: vec![major, minor],
+        mask: None,
     }
 }
 
@@ -75,6 +76,7 @@ fn rules_draw_by_filter_and_scale_range() {
 #[test]
 fn each_matching_rule_draws_in_list_order() {
     let mut style = Style {
+        mask: None,
         rules: vec![
             Rule::new("Casing", vec![stroke(RED, 3.0)]),
             Rule::new("Core", vec![stroke(BLUE, 1.0)]),
@@ -157,7 +159,7 @@ fn the_json_has_a_version() {
     let json = LayerStyle::default_for(GeometryKind::Line, 0, &[]).to_json();
     let root: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(root["version"], STYLE_VERSION);
-    assert_eq!(STYLE_VERSION, 5);
+    assert_eq!(STYLE_VERSION, 6);
 }
 
 #[test]
@@ -186,6 +188,50 @@ fn json_round_trips() {
 }
 
 #[test]
+fn a_mask_round_trips() {
+    let mut style = LayerStyle::default_for(GeometryKind::Polygon, 0, &[]);
+    for mask in [
+        Mask::land(LayerId(3)),
+        Mask::Raster {
+            layer: LayerId(4),
+            min: None,
+            max: Some(-20.0),
+        },
+        Mask::Polygons { layer: LayerId(7) },
+    ] {
+        style.style.mask = Some(mask);
+        let back = LayerStyle::from_json(&style.to_json()).unwrap();
+        assert_eq!(back.style.mask, Some(mask));
+    }
+}
+
+#[test]
+fn a_style_of_version_5_has_no_mask() {
+    let mut root: serde_json::Value =
+        serde_json::from_str(&LayerStyle::default_for(GeometryKind::Polygon, 0, &[]).to_json())
+            .unwrap();
+    root["version"] = 5.into();
+    let style = LayerStyle::from_json(&root.to_string()).unwrap();
+    assert_eq!(style.style.mask, None);
+}
+
+#[test]
+fn a_raster_mask_holds_its_range() {
+    let land = Mask::land(LayerId(1));
+    assert!(land.contains(0.0));
+    assert!(land.contains(4000.0));
+    assert!(!land.contains(-0.5));
+    let shelf = Mask::Raster {
+        layer: LayerId(1),
+        min: Some(-200.0),
+        max: Some(0.0),
+    };
+    assert!(shelf.contains(-200.0));
+    assert!(!shelf.contains(0.0));
+    assert!(!Mask::Polygons { layer: LayerId(1) }.contains(0.0));
+}
+
+#[test]
 fn a_wrong_expression_stays_in_the_json() {
     let mut style = width_from_flow();
     style.style.rules[0].filter = Filter::new("flow >");
@@ -204,11 +250,11 @@ fn json_errors() {
         root.to_string()
     };
     let newer = edit(&|m| {
-        m.insert("version".into(), 6.into());
+        m.insert("version".into(), 7.into());
     });
     assert_eq!(
         LayerStyle::from_json(&newer),
-        Err(StyleError::Version(Some(6)))
+        Err(StyleError::Version(Some(7)))
     );
     let none = edit(&|m| {
         m.remove("version");
@@ -426,7 +472,7 @@ fn solid_json_is_unchanged() {
     let json = line_with(StrokeKind::Solid).to_json();
     let expected = concat!(
         r##"{"label":{"color":"#2864a0","enabled":false,"field":null,"font":null,"italic":true,"priority_field":null,"size":11.0},"##,
-        r##""rules":[{"filter":"","name":"Default","symbolizers":[{"color":"#0000ff","type":"stroke","width":2.0}]}],"version":5}"##,
+        r##""rules":[{"filter":"","name":"Default","symbolizers":[{"color":"#0000ff","type":"stroke","width":2.0}]}],"version":6}"##,
     );
     assert_eq!(json, expected);
 }

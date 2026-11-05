@@ -1,22 +1,24 @@
 //! The Style section of the panel of a vector layer: the list of the rules,
 //! and the page of a rule with its filter, its scale range, its stroke, its
-//! fill, its point symbol, and its scatter, and the page of the symbols.
+//! fill, its point symbol, and its scatter, the page of the symbols, and the
+//! page of the mask.
 
 use eframe::egui;
 use vale_render::Symbols;
 use vale_store::{Field, FieldType, FillKind, GeometryKind, LayerId};
 use vale_style::expr::{Filter, Property, field_ref};
 use vale_style::{
-    Color, Hatch, LayerStyle, MarkerShape, PointSymbolizer, Rule, ScatterSymbolizer, Stroke,
+    Color, Hatch, LayerStyle, MarkerShape, Mask, PointSymbolizer, Rule, ScatterSymbolizer, Stroke,
     StrokeKind, Symbolizer,
 };
 
 use super::classify::CLASSIFY;
 use super::furniture::{ANGLE, LINE_COLOR, LINE_WIDTH, fill_kind_rows};
 use super::number::Number;
-use super::raster::heading;
+use super::raster::{self, heading};
 use super::widgets::{self, Controls, Keys, PANEL_ROW};
 use super::{Page, filter, theme};
+use crate::document::Document;
 use crate::globe::symbol::paint_symbol;
 use crate::ui::{Action, AppState};
 
@@ -86,6 +88,18 @@ pub const ROTATION_VARIATION: &str = "Rotation variation";
 pub const MOVE_UP: &str = "Move rule up";
 pub const MOVE_DOWN: &str = "Move rule down";
 pub const DELETE_RULE: &str = "Delete rule";
+/// The row of the mask of a layer, and the title of its page.
+pub const MASK: &str = "Mask";
+/// The row of the mask page and the text of the Mask row with no mask.
+pub const NO_MASK: &str = "None";
+pub const RASTER_LAYERS: &str = "Raster layers";
+pub const POLYGON_LAYERS: &str = "Polygon layers";
+pub const MASK_MIN: &str = "Minimum";
+pub const MASK_MAX: &str = "Maximum";
+/// The text below the range of a raster mask when the minimum is not below the maximum.
+pub const BAD_MASK_RANGE: &str = "Minimum must be less than maximum.";
+/// The hint of the mask page.
+pub const MASK_HINT: &str = "The fill and the stroke draw only inside the mask.";
 /// The range of the width slider, in points. The slider has a log scale.
 pub const WIDTHS: (f64, f64) = (0.1, 20.0);
 /// The range of the dash and gap sliders, in points. The sliders have a log scale.
@@ -173,6 +187,139 @@ pub fn section(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
     if widgets::button_row(ui, controls, CLASSIFY, !state.pad.rules_fixed).clicked() {
         state.pad.page = Some(Page::Classify);
     }
+    // A map does not override the mask.
+    if kind != GeometryKind::Point && !state.pad.rules_fixed {
+        let text = mask_text(state, id);
+        if widgets::open_row(ui, controls, MASK, &text).clicked() {
+            state.pad.page = Some(Page::Mask);
+        }
+    }
+}
+
+/// The text of the Mask row: the name of the layer of the mask, or "None".
+fn mask_text(state: &AppState, id: LayerId) -> String {
+    let mask = state.doc.entry(id).and_then(|e| e.style.style.mask);
+    mask.and_then(|m| state.doc.layer(m.layer()))
+        .map_or(NO_MASK.to_owned(), |l| l.name.clone())
+}
+
+/// The layers that can be the mask of layer `id`: the raster layers, and the polygon layers other than `id`, each with its name and the mask that a tap on it sets. The mask of a height layer is its land.
+pub fn mask_choices(doc: &Document, id: LayerId) -> (Vec<MaskChoice>, Vec<MaskChoice>) {
+    let mut rasters = Vec::new();
+    let mut polygons = Vec::new();
+    for layer in doc.project.layers() {
+        if let Some(rid) = layer.raster() {
+            let height = doc.project.raster(rid).is_some_and(crate::ui::is_height);
+            let mask = if height {
+                Mask::land(layer.id)
+            } else {
+                Mask::Raster {
+                    layer: layer.id,
+                    min: None,
+                    max: None,
+                }
+            };
+            rasters.push((layer.name.clone(), mask));
+        } else if layer.geometry() == Some(GeometryKind::Polygon) && layer.id != id {
+            polygons.push((layer.name.clone(), Mask::Polygons { layer: layer.id }));
+        }
+    }
+    (rasters, polygons)
+}
+
+/// The name of a layer, and the mask that a tap on it sets.
+pub type MaskChoice = (String, Mask);
+
+/// Sets the mask of layer `id`.
+fn set_mask(state: &mut AppState, id: LayerId, mask: Option<Mask>) {
+    if let Some(entry) = state.doc.entry_mut(id)
+        && entry.style.style.mask != mask
+    {
+        entry.style.style.mask = mask;
+        state.touch();
+    }
+}
+
+/// The mask page of layer `id`: "None", a row for each raster layer and for each other polygon layer, and the range of a raster mask.
+pub fn mask_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id: LayerId) {
+    let Some(entry) = state.doc.entry(id) else {
+        return;
+    };
+    let current = entry.style.style.mask;
+    let (rasters, polygons) = mask_choices(&state.doc, id);
+    ui.spacing_mut().item_spacing.y = 0.0;
+    ui.add_space(8.0);
+    if widgets::option_row(ui, controls, NO_MASK, NO_MASK, &[], current.is_none()).clicked() {
+        set_mask(state, id, None);
+    }
+    for (title, list) in [(RASTER_LAYERS, rasters), (POLYGON_LAYERS, polygons)] {
+        if list.is_empty() {
+            continue;
+        }
+        heading(ui, title);
+        for (name, mask) in list {
+            let on = current.is_some_and(|m| m.layer() == mask.layer());
+            if widgets::option_row(ui, controls, &name, &name, &[], on).clicked() && !on {
+                set_mask(state, id, Some(mask));
+            }
+        }
+    }
+    if let Some(Mask::Raster { layer, min, max }) = current {
+        let mut range = (min, max);
+        heading(ui, "Range");
+        if range_rows(ui, controls, &mut range) {
+            let mask = Mask::Raster {
+                layer,
+                min: range.0,
+                max: range.1,
+            };
+            set_mask(state, id, Some(mask));
+        }
+    }
+    ui.add_space(8.0);
+    raster::note(ui, MASK_HINT);
+}
+
+/// The minimum and the maximum of a raster mask. A blank field has no limit. True if a value changed.
+fn range_rows(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    range: &mut (Option<f64>, Option<f64>),
+) -> bool {
+    let none = |text: &str| text.trim().is_empty() || text == NO_LIMIT;
+    let valid = |text: &str| none(text) || raster::parse_value(text).is_some();
+    let before = *range;
+    for (name, value) in [(MASK_MIN, &mut range.0), (MASK_MAX, &mut range.1)] {
+        let shown = value.map_or(NO_LIMIT.to_owned(), value_text);
+        let typed = widgets::key_field(ui, controls, name, name, "", &shown, Keys::Number, valid);
+        if let Some(text) = typed {
+            if none(&text) {
+                *value = None;
+            } else if let Some(v) = raster::parse_value(&text) {
+                *value = Some(v);
+            }
+        }
+    }
+    let open = widgets::keypad_field(ui.ctx());
+    if open
+        .as_deref()
+        .is_some_and(|f| f == MASK_MIN || f == MASK_MAX)
+    {
+        ui.add_space(4.0);
+        widgets::keypad(ui, controls, KEYPAD);
+    }
+    if let (Some(min), Some(max)) = *range
+        && min >= max
+    {
+        widgets::form_note(ui, BAD_MASK_RANGE, 20.0);
+    }
+    *range != before
+}
+
+/// A value of a raster mask with no needless decimals.
+fn value_text(v: f64) -> String {
+    let text = format!("{v:.3}");
+    text.trim_end_matches('0').trim_end_matches('.').to_owned()
 }
 
 /// The filter text of the row of a rule.

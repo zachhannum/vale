@@ -11309,6 +11309,73 @@ fn the_smallest_lake_slider_sets_the_size_of_the_smallest_lake() {
     }
 }
 
+#[test]
+fn the_mask_page_sets_and_clears_the_mask_of_a_layer() {
+    use vale_app::ui::pad::rules::{MASK, MASK_MAX, NO_MASK};
+    use vale_style::Mask;
+    for size in [BOARDS[0], BOARDS[3]] {
+        let what = format!("{size:?}");
+        let dir = tempfile::tempdir().unwrap();
+        let mut h = saved_pad(size, dir.path());
+        let rivers = vector(&h, "Rivers");
+        let height = vector(&h, "Height");
+        let land = vector(&h, "Land");
+        let mask = |h: &Pad| h.state().doc.entry(rivers).unwrap().style.style.mask;
+        tap(&mut h, "Layers");
+        tap(&mut h, "Open Rivers");
+        scroll_to_control(&mut h, MASK);
+        tap(&mut h, MASK);
+        assert_eq!(h.state().pad.page, Some(Page::Mask), "{what}");
+
+        // A tap on the height layer sets its land.
+        tap(&mut h, "Height");
+        save_frames(&mut h);
+        assert_eq!(mask(&h), Some(Mask::land(height)), "{what}");
+        type_scrolled_keys(&mut h, MASK_MAX, "500");
+        save_frames(&mut h);
+        let shore = Mask::Raster {
+            layer: height,
+            min: Some(0.0),
+            max: Some(500.0),
+        };
+        assert_eq!(mask(&h), Some(shore), "{what}");
+
+        scroll_to_control(&mut h, "Land");
+        tap(&mut h, "Land");
+        save_frames(&mut h);
+        assert_eq!(mask(&h), Some(Mask::Polygons { layer: land }), "{what}");
+        scroll_to_control(&mut h, NO_MASK);
+        tap(&mut h, NO_MASK);
+        save_frames(&mut h);
+        assert_eq!(mask(&h), None, "{what}");
+
+        tap(&mut h, "Undo");
+        assert_eq!(mask(&h), Some(Mask::Polygons { layer: land }), "{what}");
+    }
+}
+
+#[test]
+fn a_point_layer_has_no_mask_row() {
+    use vale_app::ui::pad::rules::{ADD_RULE, MASK};
+    let mut h = pad(BOARDS[0]);
+    tap(&mut h, "Layers");
+    tap(&mut h, "Open Places");
+    scroll_to_control(&mut h, ADD_RULE);
+    assert!(control(&h, MASK).is_none());
+}
+
+#[test]
+fn removing_a_layer_removes_the_masks_that_name_it() {
+    use vale_style::Mask;
+    let mut h = pad(BOARDS[0]);
+    let rivers = vector(&h, "Rivers");
+    let land = vector(&h, "Land");
+    let doc = &mut h.state_mut().doc;
+    doc.entry_mut(rivers).unwrap().style.style.mask = Some(Mask::Polygons { layer: land });
+    assert!(doc.remove_layer(land));
+    assert_eq!(doc.entry(rivers).unwrap().style.style.mask, None);
+}
+
 /// The layout of an iPhone 16 in portrait, with a height layer.
 fn phone_pad() -> Pad {
     let ((w, h), safe) = IPHONES[0];

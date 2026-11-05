@@ -73,6 +73,9 @@ struct Uniforms {
     // The cosine and the sine of the turn of the flat map, clockwise on the
     // screen, and the blend mode of the layer as a number of `BlendMode`.
     turn: vec4<f32>,
+    // The value range of a raster mask, from 0 to 1: the lower limit, the
+    // upper limit, then 1 for each limit that the range has.
+    range: vec4<f32>,
     // The bands, from the lowest to the highest.
     bands: array<Band, 32>,
     // The lines of the stops, from the lowest stop to the highest. There is
@@ -275,19 +278,25 @@ fn band_color(i: i32, h: f32, mode: i32) -> vec3<f32> {
     return mix(band.solid.rgb, band.top.rgb, clamp(t, 0.0, 1.0));
 }
 
+// The part of a pixel above the limit `at`. `width` is the change of the
+// height across one pixel. It makes the limit one pixel soft, with the
+// limit in the middle.
+fn over_limit(h: f32, width: f32, at: f32) -> f32 {
+    // Flat ground at the limit is in the upper band.
+    var over = select(0.0, 1.0, h >= at);
+    if width > 1e-6 {
+        over = clamp((h - at) / width + 0.5, 0.0, 1.0);
+    }
+    return over;
+}
+
 // The color of a height. `width` is the change of the height across one
-// pixel. It makes a band limit one pixel soft, with the limit in the middle.
+// pixel.
 fn tint(h: f32, width: f32, mode: i32) -> vec3<f32> {
     var color = band_color(0, h, mode);
     let count = i32(u.params.w);
     for (var i = 1; i < count; i++) {
-        let at = u.bands[i].bottom.a;
-        // Flat ground at the limit is in the upper band.
-        var over = select(0.0, 1.0, h >= at);
-        if width > 1e-6 {
-            over = clamp((h - at) / width + 0.5, 0.0, 1.0);
-        }
-        color = mix(color, band_color(i, h, mode), over);
+        color = mix(color, band_color(i, h, mode), over_limit(h, width, u.bands[i].bottom.a));
     }
     return color;
 }
@@ -337,6 +346,23 @@ fn soft_light(b: vec3<f32>, s: vec3<f32>) -> vec3<f32> {
     return select(light, dark, s <= vec3<f32>(0.5));
 }
 
+// The part of a pixel above the sea level.
+fn land_part(h: f32, width: f32) -> f32 {
+    return clamp((h - u.flat.x) / max(width, 1e-6) + 1.0, 0.0, 1.0);
+}
+
+// The part of a pixel that a lake covers. The ground below the lake level
+// is water, with a soft shore of one pixel. A layer with no channel map has
+// no lakes.
+fn lake_part(h: f32, width: f32, d: vec3<f32>) -> f32 {
+    if u.flat.y <= 0.5 {
+        return 0.0;
+    }
+    let level = lake_level(d);
+    let lake = clamp((level - h) / max(width, 1e-6) + 0.5, 0.0, 1.0);
+    return select(0.0, lake * land_part(h, width), level > 0.0);
+}
+
 // The color of a layer in a world direction: the tint of the height, the
 // hillshade, the rivers and the lakes, and the lines of the stops. `width` is the change of the height
 // across one pixel. `pixel` is the angle that one pixel covers there.
@@ -357,12 +383,8 @@ fn ground(h: f32, width: f32, d: vec3<f32>, pixel: f32, frag: vec2<f32>) -> vec3
     }
     if u.flat.y > 0.5 {
         // A river stops at the coast.
-        let land = clamp((h - u.flat.x) / max(width, 1e-6) + 1.0, 0.0, 1.0);
-        // The ground below the lake level is water, with a soft shore of
-        // one pixel. A river line stops at the shore.
-        let level = lake_level(d);
-        var lake = clamp((level - h) / max(width, 1e-6) + 0.5, 0.0, 1.0);
-        lake = select(0.0, lake * land, level > 0.0);
+        let land = land_part(h, width);
+        let lake = lake_part(h, width, d);
         color = mix(color, RIVER_COLOR, 0.9 * land * river(d, pixel) * (1.0 - lake));
         color = mix(color, RIVER_COLOR, 0.9 * lake);
     }

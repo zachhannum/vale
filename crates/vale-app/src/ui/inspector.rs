@@ -80,6 +80,8 @@ fn layer_section(ui: &mut egui::Ui, state: &mut AppState) {
         .doc
         .layer(info.id)
         .map_or(Vec::new(), |l| l.fields.clone());
+    let (mut masks, polygons) = super::pad::rules::mask_choices(&state.doc, info.id);
+    masks.extend(polygons);
     let symbols = state.doc.symbols().clone();
     state.open_ramps();
     let ramps = state.ramps.list().to_vec();
@@ -96,6 +98,10 @@ fn layer_section(ui: &mut egui::Ui, state: &mut AppState) {
         actions: &mut state.actions,
     };
     let mut changed = style_editor::rules(ui, info.id, style, info.kind, &fields, &mut library);
+    if info.kind != GeometryKind::Point {
+        ui.add_space(4.0);
+        changed |= style_editor::mask_rows(ui, info.id, &mut style.style.mask, &masks);
+    }
     let classes = style_editor::classify(ui, info.id, &fields, &ramps, &mut library);
 
     ui.add_space(4.0);

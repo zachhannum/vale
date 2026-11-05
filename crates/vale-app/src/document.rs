@@ -356,9 +356,14 @@ impl Document {
         Ok(self.add_imported(imported, Some(path)))
     }
 
-    /// Removes the entry and the layer.
+    /// Removes the entry and the layer, and each mask of the layer.
     pub fn remove_layer(&mut self, id: LayerId) -> bool {
         self.frame.entries.retain(|e| e.layer != id);
+        for entry in &mut self.frame.entries {
+            if entry.style.style.mask.is_some_and(|m| m.layer() == id) {
+                entry.style.style.mask = None;
+            }
+        }
         self.project.remove_layer(id).is_some()
     }
 
