@@ -603,6 +603,7 @@ The iPhone layout is the compact layout of the iPad, below 600 points, with thes
 
 - In portrait, the tool strip and the context strip are rows at the bottom, as in the compact layout of the iPad.
 - The phone has no pen. With a brush tool, one finger paints, and two fingers turn and zoom the globe. With Move, one finger turns the globe.
+- A finger of a brush tool, the line tool, the polygon tool, or the point tool starts its stroke when it moves 10 points, when it holds for 0.3 seconds, or when it lifts. A second finger before that, or during the stroke, ends the stroke, and the two fingers turn and zoom the globe. The stroke has no pressure, and a touch with a force is also a finger.
 - The Brush panel has no pressure settings.
 - In the Atlas workspace, the page controls are below the top row.
 - The inspector is a sheet. A new point stays above the sheet and above the keyboard of the system.
