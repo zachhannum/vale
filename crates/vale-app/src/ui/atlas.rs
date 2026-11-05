@@ -35,6 +35,7 @@ use crate::region::{Region, RegionKind, fit, suggest};
 use crate::view::{View, ViewTransform};
 
 pub mod measure;
+mod shown;
 
 /// The side of the square that takes the touch of a handle.
 pub const HANDLE_TARGET: f32 = 44.0;

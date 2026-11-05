@@ -161,13 +161,15 @@ impl Shape {
         dir.is_some_and(|d| self.polygons.iter().any(|rings| vector::contains(rings, d)))
     }
 
-    fn meets(&self, globe: &Globe, rect: Rect) -> bool {
+    /// True if the shape meets a box. `center` is the place at the center
+    /// of the box, for the inside test.
+    fn meets(&self, rect: Rect, center: Option<V3>) -> bool {
         self.points.iter().any(|(_, p)| rect.contains(*p))
             || self
                 .lines
                 .iter()
                 .any(|run| run.windows(2).any(|w| crosses(rect, w[0], w[1])))
-            || self.inside(globe.unproject(rect.center()))
+            || self.inside(center)
     }
 }
 
@@ -192,27 +194,48 @@ fn segments_cross(a: Pos2, b: Pos2, c: Pos2, d: Pos2) -> bool {
     d1 * d2 <= 0.0 && d3 * d4 <= 0.0
 }
 
+/// The shapes on the globe of the features of the visible layers, in the
+/// draw order, top first.
+fn shapes(globe: &Globe, layers: &[&Layer]) -> Vec<(FeatureRef, Shape)> {
+    let visible = layers.iter().filter(|l| l.visible);
+    visible
+        .flat_map(|layer| {
+            layer.features.iter().map(|feature| {
+                let found = FeatureRef {
+                    layer: layer.id,
+                    uuid: feature.uuid(),
+                };
+                (found, shape(globe, &feature.geometry))
+            })
+        })
+        .collect()
+}
+
 /// The feature that a tap at `at` hits. The layers are in the draw order,
 /// top first. The nearest point or line in reach wins. Else the top polygon
 /// under the tap wins.
 pub fn hit(globe: &Globe, layers: &[&Layer], at: Pos2, reach: f32) -> Option<FeatureRef> {
-    let dir = globe.unproject(at);
+    hit_shapes(&shapes(globe, layers), at, globe.unproject(at), reach)
+}
+
+/// The feature of `shapes` that a tap at `at` hits, in the order of
+/// `shapes`, top first. `dir` is the place under the tap, for the inside
+/// test.
+pub fn hit_shapes(
+    shapes: &[(FeatureRef, Shape)],
+    at: Pos2,
+    dir: Option<V3>,
+    reach: f32,
+) -> Option<FeatureRef> {
     let mut nearest: Option<(f32, FeatureRef)> = None;
     let mut under = None;
-    for layer in layers.iter().filter(|l| l.visible) {
-        for feature in &layer.features {
-            let shape = shape(globe, &feature.geometry);
-            let found = FeatureRef {
-                layer: layer.id,
-                uuid: feature.uuid(),
-            };
-            let d = shape.distance(at);
-            if d <= reach && nearest.is_none_or(|(best, _)| d < best) {
-                nearest = Some((d, found));
-            }
-            if under.is_none() && shape.inside(dir) {
-                under = Some(found);
-            }
+    for (found, shape) in shapes {
+        let d = shape.distance(at);
+        if d <= reach && nearest.is_none_or(|(best, _)| d < best) {
+            nearest = Some((d, *found));
+        }
+        if under.is_none() && shape.inside(dir) {
+            under = Some(*found);
         }
     }
     nearest.map(|(_, f)| f).or(under)
@@ -220,18 +243,18 @@ pub fn hit(globe: &Globe, layers: &[&Layer], at: Pos2, reach: f32) -> Option<Fea
 
 /// The features that a box meets, in the draw order, top first.
 pub fn in_box(globe: &Globe, layers: &[&Layer], rect: Rect) -> Vec<FeatureRef> {
-    let mut out = Vec::new();
-    for layer in layers.iter().filter(|l| l.visible) {
-        for feature in &layer.features {
-            if shape(globe, &feature.geometry).meets(globe, rect) {
-                out.push(FeatureRef {
-                    layer: layer.id,
-                    uuid: feature.uuid(),
-                });
-            }
-        }
-    }
-    out
+    box_shapes(&shapes(globe, layers), rect, globe.unproject(rect.center()))
+}
+
+/// The features of `shapes` that a box meets, in the order of `shapes`.
+/// `center` is the place at the center of the box.
+pub fn box_shapes(
+    shapes: &[(FeatureRef, Shape)],
+    rect: Rect,
+    center: Option<V3>,
+) -> Vec<FeatureRef> {
+    let meets = shapes.iter().filter(|(_, shape)| shape.meets(rect, center));
+    meets.map(|(found, _)| *found).collect()
 }
 
 /// The index of the vertex of a point feature in reach of `at`.
