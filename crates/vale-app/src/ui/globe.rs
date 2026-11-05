@@ -18,6 +18,7 @@ use crate::globe::math::{angle, dir_to_lonlat, lonlat_to_dir};
 use crate::globe::nav::{Nav, Painting, Tap, on_canvas};
 use crate::globe::select::Pointer;
 use crate::globe::snap::Highlight;
+use crate::globe::stroke_group;
 use crate::globe::symbol::{GlobeScatter, SymbolMesh, append_missing, view_places};
 use crate::globe::vector;
 use crate::globe::view::GlobeView;
@@ -599,7 +600,7 @@ pub(super) fn history_input(ui: &egui::Ui, nav: &mut Nav) -> Option<bool> {
 
 /// Paints a marker at `pos`. The stroke is outside the fill, as in the pipeline.
 fn paint_marker(
-    painter: &egui::Painter,
+    sink: &mut Sink<'_>,
     pos: egui::Pos2,
     radius: f64,
     shape: MarkerShape,
@@ -615,7 +616,7 @@ fn paint_marker(
     let outline = pipeline::marker_outline(shape, center, radius);
     match (fill, hatch) {
         (Some(c), None) if shape == MarkerShape::Circle => {
-            painter.circle_filled(pos, radius as f32, color(c));
+            sink.add(egui::Shape::circle_filled(pos, radius as f32, color(c)));
         }
         (Some(c), None) => {
             // Each shape is star-shaped around its center, so a fan from the center fills it.
@@ -629,26 +630,120 @@ fn paint_marker(
             for i in 0..n {
                 mesh.add_triangle(0, 1 + i, 1 + (i + 1) % n);
             }
-            painter.add(mesh);
+            sink.add(mesh);
         }
         (Some(c), Some(h)) => {
-            let line = egui::Stroke::new(h.line_width as f32, color(c));
-            for (a, b) in pipeline::marker_hatch(&outline, &h, center) {
-                painter.line_segment([to_pos(&a), to_pos(&b)], line);
-            }
+            let (opaque, alpha) = opaque(c);
+            let line = egui::Stroke::new(h.line_width as f32, opaque);
+            let shapes = pipeline::marker_hatch(&outline, &h, center)
+                .into_iter()
+                .map(|(a, b)| egui::Shape::line_segment([to_pos(&a), to_pos(&b)], line))
+                .collect();
+            let paint = vale_style::Stroke::solid(c, h.line_width);
+            sink.stroke(paint, (shapes, alpha));
         }
         (None, _) => {}
     }
     if let Some(s) = stroke {
-        let line = egui::Stroke::new(s.width as f32, color(s.color));
-        if shape == MarkerShape::Circle {
-            painter.circle_stroke(pos, (radius + s.width / 2.0) as f32, line);
+        let (opaque, alpha) = opaque(s.color);
+        let line = egui::Stroke::new(s.width as f32, opaque);
+        let shape = if shape == MarkerShape::Circle {
+            egui::Shape::circle_stroke(pos, (radius + s.width / 2.0) as f32, line)
         } else {
             let ring = offset_ring(&outline, s.width / 2.0);
-            painter.add(egui::epaint::PathShape::closed_line(
-                ring.iter().map(to_pos).collect(),
-                line,
-            ));
+            egui::epaint::PathShape::closed_line(ring.iter().map(to_pos).collect(), line).into()
+        };
+        sink.stroke(s, (vec![shape], alpha));
+    }
+}
+
+/// The color `c` with full alpha, and the alpha of `c` from 0 to 1.
+fn opaque(c: vale_style::Color) -> (egui::Color32, f32) {
+    (
+        egui::Color32::from_rgb(c.r, c.g, c.b),
+        f32::from(c.a) / 255.0,
+    )
+}
+
+/// The shapes of a vector layer on their way to the painter, in draw order.
+/// The symbols wait in one mesh, and the translucent strokes of one paint
+/// wait in one group, until a shape of another kind comes.
+struct Sink<'a> {
+    painter: &'a egui::Painter,
+    /// The format of the render target. `None`: no wgpu renderer, and a
+    /// translucent stroke goes to the painter shape by shape.
+    format: Option<egui_wgpu::wgpu::TextureFormat>,
+    symbols: egui::Mesh,
+    /// The paint of the open group, its alpha, and its opaque shapes.
+    group: Option<(vale_style::Stroke, f32, Vec<egui::Shape>)>,
+}
+
+impl<'a> Sink<'a> {
+    fn new(painter: &'a egui::Painter, format: Option<egui_wgpu::wgpu::TextureFormat>) -> Self {
+        Sink {
+            painter,
+            format,
+            symbols: egui::Mesh::default(),
+            group: None,
+        }
+    }
+
+    /// Sends the waiting symbols or the open group to the painter.
+    fn flush(&mut self) {
+        if !self.symbols.is_empty() {
+            self.painter.add(std::mem::take(&mut self.symbols));
+        }
+        if let Some((_, alpha, shapes)) = self.group.take()
+            && let Some(format) = self.format
+        {
+            let painter = self.painter;
+            let shape = stroke_group::group_shape(
+                painter.ctx(),
+                format,
+                shapes,
+                alpha,
+                painter.clip_rect(),
+            );
+            if let Some(shape) = shape {
+                painter.add(shape);
+            }
+        }
+    }
+
+    fn add(&mut self, shape: impl Into<egui::Shape>) {
+        self.flush();
+        self.painter.add(shape);
+    }
+
+    /// The mesh of the waiting symbols.
+    fn symbols(&mut self) -> &mut egui::Mesh {
+        if self.group.is_some() {
+            self.flush();
+        }
+        &mut self.symbols
+    }
+
+    /// Paints the shapes of a stroke with the paint `paint`, as
+    /// `vector::stroke_shapes` gives them.
+    fn stroke(&mut self, paint: vale_style::Stroke, (shapes, alpha): (Vec<egui::Shape>, f32)) {
+        if alpha >= 1.0 {
+            self.flush();
+            self.painter.extend(shapes);
+            return;
+        }
+        if self.format.is_none() {
+            self.flush();
+            let mut painter = self.painter.clone();
+            painter.multiply_opacity(alpha);
+            painter.extend(shapes);
+            return;
+        }
+        match &mut self.group {
+            Some((open, _, group)) if *open == paint => group.extend(shapes),
+            _ => {
+                self.flush();
+                self.group = Some((paint, alpha, shapes));
+            }
         }
     }
 }
@@ -822,6 +917,7 @@ fn lonlat(dir: V3) -> LonLat {
 /// goes to the painter before the next shape that is not a symbol.
 fn vector_layer(
     painter: &egui::Painter,
+    format: Option<egui_wgpu::wgpu::TextureFormat>,
     rect: egui::Rect,
     doc: &Document,
     view: &GlobeView,
@@ -845,12 +941,7 @@ fn vector_layer(
     };
     let symbols = doc.symbols();
     let mut places = None;
-    let mut pending = egui::Mesh::default();
-    let flush = |pending: &mut egui::Mesh| {
-        if !pending.is_empty() {
-            painter.add(std::mem::take(pending));
-        }
-    };
+    let mut sink = Sink::new(painter, format);
     let entries = doc.frame.entries.iter().filter(|e| e.layer == id);
     for entry in entries {
         let Some(layer) = doc.layer(entry.layer).filter(|l| l.visible) else {
@@ -897,9 +988,8 @@ fn vector_layer(
                                     hatch,
                                     stroke,
                                 } => {
-                                    flush(&mut pending);
                                     paint_marker(
-                                        painter, pos, *radius, *shape, *fill, *hatch, *stroke,
+                                        &mut sink, pos, *radius, *shape, *fill, *hatch, *stroke,
                                     );
                                 }
                                 StylePaint::Symbol {
@@ -912,13 +1002,15 @@ fn vector_layer(
                                     if rect.expand(size).contains(pos) {
                                         match symbols.get(symbol) {
                                             Some(s) => SymbolMesh::of(s).append(
-                                                &mut pending,
+                                                sink.symbols(),
                                                 pos,
                                                 size,
                                                 *rotation as f32,
                                                 *tint,
                                             ),
-                                            None => append_missing(&mut pending, pos, size, *tint),
+                                            None => {
+                                                append_missing(sink.symbols(), pos, size, *tint)
+                                            }
                                         }
                                     }
                                 }
@@ -937,8 +1029,7 @@ fn vector_layer(
                         .collect();
                     if !parts.is_empty() {
                         for stroke in strokes.clone() {
-                            flush(&mut pending);
-                            painter.extend(vector::stroke_shapes(&parts, &stroke, seed));
+                            sink.stroke(stroke, vector::stroke_shapes(&parts, &stroke, seed));
                         }
                     }
                 }
@@ -963,7 +1054,6 @@ fn vector_layer(
                     for paint in paints {
                         match paint {
                             StylePaint::Fill(c) => {
-                                flush(&mut pending);
                                 for (part, triangles) in clipped.iter().zip(&mut triangles) {
                                     let (points, indices) = triangles
                                         .get_or_insert_with(|| vector::triangulate(&part.loops));
@@ -975,7 +1065,7 @@ fn vector_layer(
                                             color: color(*c),
                                         })
                                         .collect();
-                                    painter.add(egui::Mesh {
+                                    sink.add(egui::Mesh {
                                         indices: indices.clone(),
                                         vertices,
                                         ..Default::default()
@@ -983,7 +1073,6 @@ fn vector_layer(
                                 }
                             }
                             StylePaint::Stroke(stroke) => {
-                                flush(&mut pending);
                                 let mut stroke = *stroke;
                                 // A polygon outline has no start and no end to taper.
                                 if matches!(stroke.kind, StrokeKind::Taper { .. }) {
@@ -995,7 +1084,8 @@ fn vector_layer(
                                         .iter()
                                         .map(|o| o.iter().map(|p| (point(p), 0.0)).collect())
                                         .collect();
-                                    painter.extend(vector::stroke_shapes(&outlines, &stroke, seed));
+                                    let shapes = vector::stroke_shapes(&outlines, &stroke, seed);
+                                    sink.stroke(stroke, shapes);
                                 }
                             }
                             StylePaint::Scatter { symbol, tint, .. } => {
@@ -1017,10 +1107,16 @@ fn vector_layer(
                                 let mesh = symbols.get(symbol).map(SymbolMesh::of);
                                 for i in instances {
                                     match &mesh {
-                                        Some(m) => {
-                                            m.append(&mut pending, i.pos, i.size, i.rotation, *tint)
+                                        Some(m) => m.append(
+                                            sink.symbols(),
+                                            i.pos,
+                                            i.size,
+                                            i.rotation,
+                                            *tint,
+                                        ),
+                                        None => {
+                                            append_missing(sink.symbols(), i.pos, i.size, *tint)
                                         }
-                                        None => append_missing(&mut pending, i.pos, i.size, *tint),
                                     }
                                 }
                             }
@@ -1031,7 +1127,7 @@ fn vector_layer(
             }
         }
     }
-    flush(&mut pending);
+    sink.flush();
 }
 
 /// Draws the globe in the free space of `ui` and reads its input. `cards`:
@@ -1193,7 +1289,7 @@ pub(super) fn paint_canvas(
                         painter.add(egui_wgpu::Callback::new_paint_callback(rect, callback));
                     }
                     Paint::Vector(id) if globe_view => {
-                        vector_layer(&painter, rect, doc, &globe.view, id, scatter);
+                        vector_layer(&painter, globe.format, rect, doc, &globe.view, id, scatter);
                     }
                     Paint::Vector(_) => {}
                 }
