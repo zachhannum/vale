@@ -2169,7 +2169,7 @@ fn opacity_strip(
         egui::Stroke::new(1.0, Color32::BLACK),
         egui::StrokeKind::Outside,
     );
-    let percent = format!("{} %", (a as f32 / 2.55).round());
+    let percent = format!("{}%", (a as f32 / 2.55).round());
     painter.text(
         label.right_center(),
         Align2::RIGHT_CENTER,
