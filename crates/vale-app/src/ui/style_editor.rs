@@ -6,7 +6,7 @@ use eframe::egui;
 use vale_render::Symbols;
 use vale_store::{Field, FieldType, FillKind, GeometryKind, LayerId};
 use vale_style::expr::{Expr, Filter, Property, field_ref};
-use vale_style::{Color, Hatch, LayerStyle, MarkerShape, Rule, Stroke, StrokeKind};
+use vale_style::{Color, Hatch, LayerStyle, MarkerShape, Mask, Rule, Stroke, StrokeKind};
 
 use super::pad::classify::{
     BAD_EXPRESSION, CLASS_COUNT, CLASSIFY, COLOR_RAMP, FIELD, METHOD, REPLACE_RULES, REVERSE,
@@ -21,10 +21,11 @@ use super::pad::rules::{
     STROKE, STROKE_WIDTH, TAPER, TAPER_START, parse_scale, scale_text,
 };
 use super::pad::rules::{
-    ADD_SYMBOL, CIRCLE_SIZES, COLOR, MARKER, MARKER_SHAPE, MAX_SPACING, NO_FIELD, NO_SYMBOL_LIST,
-    POINT_SIZES, ROTATION, ROTATION_FIELD, ROTATION_VARIATION, SCATTER, SCATTER_SIZES, SHAPE, SIZE,
-    SIZE_FIELD, SIZE_VARIATION, SPACING, SVG_SYMBOL, SYMBOL, TINT, marker_radius, new_tint,
-    numeric_fields, pick_symbol, property_field, to_circle, with_field,
+    ADD_SYMBOL, BAD_MASK_RANGE, CIRCLE_SIZES, COLOR, MARKER, MARKER_SHAPE, MASK, MASK_MAX,
+    MASK_MIN, MAX_SPACING, NO_FIELD, NO_MASK, NO_SYMBOL_LIST, POINT_SIZES, ROTATION,
+    ROTATION_FIELD, ROTATION_VARIATION, SCATTER, SCATTER_SIZES, SHAPE, SIZE, SIZE_FIELD,
+    SIZE_VARIATION, SPACING, SVG_SYMBOL, SYMBOL, TINT, marker_radius, new_tint, numeric_fields,
+    pick_symbol, property_field, to_circle, with_field,
 };
 use super::{Action, Note, number};
 use crate::classify::{self, Method, Step};
@@ -110,6 +111,68 @@ pub fn rules(
         }
     }
     changed
+}
+
+/// The mask of a style: a choice of "None" or a layer of `choices`, and the range of a raster mask. A blank limit has no limit. Returns true if the user changed the mask.
+pub fn mask_rows(
+    ui: &mut egui::Ui,
+    id: LayerId,
+    mask: &mut Option<Mask>,
+    choices: &[(String, Mask)],
+) -> bool {
+    let before = *mask;
+    let name = mask
+        .and_then(|m| choices.iter().find(|(_, c)| c.layer() == m.layer()))
+        .map_or(NO_MASK, |(n, _)| n.as_str());
+    ui.horizontal(|ui| {
+        ui.label(MASK);
+        egui::ComboBox::from_id_salt(("style-mask", id.0))
+            .selected_text(name)
+            .show_ui(ui, |ui| {
+                if ui.selectable_label(mask.is_none(), NO_MASK).clicked() {
+                    *mask = None;
+                }
+                for (n, choice) in choices {
+                    let on = mask.is_some_and(|m| m.layer() == choice.layer());
+                    if ui.selectable_label(on, n).clicked() && !on {
+                        *mask = Some(*choice);
+                    }
+                }
+            });
+    });
+    if let Some(Mask::Raster { min, max, .. }) = mask {
+        for (label, value) in [(MASK_MIN, min), (MASK_MAX, max)] {
+            ui.horizontal(|ui| {
+                ui.label(label);
+                let key = egui::Id::new(("style-mask", id.0, label));
+                let shown = value.map_or(String::new(), |v| v.to_string());
+                let mut text: String = ui.data(|d| d.get_temp(key)).unwrap_or(shown);
+                let resp = ui.add(egui::TextEdit::singleline(&mut text).desired_width(80.0));
+                if resp.changed() {
+                    if text.trim().is_empty() {
+                        *value = None;
+                    } else if let Some(v) = super::pad::raster::parse_value(&text) {
+                        *value = Some(v);
+                    }
+                }
+                if resp.has_focus() {
+                    ui.data_mut(|d| d.insert_temp(key, text));
+                } else {
+                    ui.data_mut(|d| d.remove::<String>(key));
+                }
+            });
+        }
+        if let Some(Mask::Raster {
+            min: Some(min),
+            max: Some(max),
+            ..
+        }) = mask
+            && min >= max
+        {
+            ui.weak(BAD_MASK_RANGE);
+        }
+    }
+    *mask != before
 }
 
 /// The choice of a shape or an SVG symbol, the shape and the size of a marker, and the

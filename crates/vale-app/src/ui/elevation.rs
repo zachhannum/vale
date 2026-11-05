@@ -123,6 +123,8 @@ fn vector_style(ui: &mut egui::Ui, state: &mut AppState, id: LayerId) {
     };
     let fields = layer.fields.clone();
     ui.label(pad::rules::STYLE);
+    let (mut masks, polygons) = pad::rules::mask_choices(&state.doc, id);
+    masks.extend(polygons);
     let symbols = state.doc.symbols().clone();
     state.open_ramps();
     let ramps = state.ramps.list().to_vec();
@@ -138,7 +140,11 @@ fn vector_style(ui: &mut egui::Ui, state: &mut AppState, id: LayerId) {
     let scroll = egui::ScrollArea::vertical();
     let (changed, request) = scroll
         .show(ui, |ui| {
-            let changed = style_editor::rules(ui, id, style, kind, &fields, &mut library);
+            let mut changed = style_editor::rules(ui, id, style, kind, &fields, &mut library);
+            if kind != vale_store::GeometryKind::Point {
+                ui.add_space(4.0);
+                changed |= style_editor::mask_rows(ui, id, &mut style.style.mask, &masks);
+            }
             (
                 changed,
                 style_editor::classify(ui, id, &fields, &ramps, &mut library),
