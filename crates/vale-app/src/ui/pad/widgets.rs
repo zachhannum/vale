@@ -61,9 +61,11 @@ pub fn card(
         // A drag on the card goes to its controls, and the card stays in
         // its place.
         .movable(false)
-        .constrain(false)
-        // A sheet goes past the safe area, to the bottom of the screen.
+        // A sheet paints past the safe area, to the bottom of the screen.
+        // `constrain_to` also turns on the constraint, which moves the card
+        // by the change of its size during a drag of the sheet.
         .constrain_to(ctx.viewport_rect())
+        .constrain(false)
         .fade_in(false)
         .sizing_pass(false)
         .show(ctx, |ui| {

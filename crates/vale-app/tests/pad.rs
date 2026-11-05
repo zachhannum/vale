@@ -11322,7 +11322,18 @@ fn the_sheet_stays_in_its_place_during_a_drag() {
             .collect();
         touch(&mut h, egui::TouchPhase::Start, from, None);
         for dy in path {
-            touch(&mut h, egui::TouchPhase::Move, from + vec2(0.0, dy), None);
+            // One frame for each move, as on a device. `touch` queues two
+            // events, which the harness runs as two frames.
+            let pos = from + vec2(0.0, dy);
+            let events = &mut h.input_mut().events;
+            events.push(egui::Event::Touch {
+                device_id: egui::TouchDeviceId(0),
+                id: egui::TouchId(1),
+                phase: egui::TouchPhase::Move,
+                pos,
+                force: None,
+            });
+            events.push(egui::Event::PointerMoved(pos));
             h.step();
             let sheet = h.state().pad.rects.unwrap().sheet.unwrap();
             let close = control(&h, "Close Layers").unwrap();
