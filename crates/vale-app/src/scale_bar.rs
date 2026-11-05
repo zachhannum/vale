@@ -10,7 +10,7 @@ use vale_store::{
 };
 
 use crate::atlas::PT_PER_MM;
-use crate::furniture::{PAD, Painted, TextInk, rgb};
+use crate::furniture::{PAD, Painted, TextInk, rgba};
 
 /// The largest of 1, 2, 2.5, and 5 times a power of ten that is at most
 /// `v`. `None` if `v` is not a positive number.
@@ -181,9 +181,9 @@ pub fn hatch_lines(rect: Rect, angle: f64, spacing: f64) -> Vec<(Point, Point)> 
 /// points to a page point: the solid color, or the background and the
 /// lines of a hatch.
 pub fn fill_items(rect: Rect, f: &FillPattern, unit: f64) -> Vec<Item> {
-    let solid = |color: [u8; 3]| Item::Fill {
+    let solid = |color: [u8; 4]| Item::Fill {
         path: rect.to_path(0.1),
-        color: rgb(color),
+        color: rgba(color),
         rule: FillRule::NonZero,
     };
     let angles: &[f64] = match f.kind {
@@ -203,7 +203,7 @@ pub fn fill_items(rect: Rect, f: &FillPattern, unit: f64) -> Vec<Item> {
     if !path.is_empty() {
         out.push(Item::Stroke {
             path,
-            color: rgb(f.color),
+            color: rgba(f.color),
             width: f.line_width * unit,
             round: false,
         });
@@ -361,7 +361,7 @@ fn layout(
     let line_kind = bar.kind == ScaleBarKind::Line;
     let h = if line_kind { 0.0 } else { bar.bar_height * mm };
     let width = bar.line_width * unit;
-    let ink = rgb(bar.outline);
+    let ink = rgba(bar.outline);
     let b = f64::from(u8::from(bar.before_zero));
     let mut out = Layout {
         fills: Vec::new(),
@@ -878,7 +878,7 @@ mod tests {
         let one = fill_items(cell, &hatch(FillKind::Hatch), 1.0);
         assert_eq!((fills(&one), angles(&one)), (0, vec![45.0]));
         let cross = FillPattern {
-            background: Some([255, 255, 0]),
+            background: Some([255, 255, 0, 255]),
             ..hatch(FillKind::CrossHatch)
         };
         let cross = fill_items(cell, &cross, 1.0);
@@ -1195,7 +1195,7 @@ mod tests {
             unit_style: FurnitureText {
                 case: TextCase::Upper,
                 halo: true,
-                halo_color: [1, 2, 3],
+                halo_color: [1, 2, 3, 255],
                 ..FurnitureText::sized(8.0)
             },
             unit_label_style: vale_store::UnitLabelStyle::Abbreviation,

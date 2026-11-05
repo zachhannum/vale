@@ -1499,8 +1499,8 @@ impl Pipeline {
         let step = atlas::graticule_interval(&cache.projection, frame);
         cache.ensure_graticule(step, &vt, part, frame.center[0]);
         let cache = &self.caches[0];
-        let [r, g, b] = frame.graticule.color;
-        let stroke = Stroke::solid(vale_render::Color::rgb(r, g, b), frame.graticule.width);
+        let [r, g, b, a] = frame.graticule.color;
+        let stroke = Stroke::solid(vale_render::Color::rgba(r, g, b, a), frame.graticule.width);
         let graticule = step
             .and_then(|s| cache.graticule_lines(s))
             .map(|lines| (lines, stroke));
@@ -1579,8 +1579,8 @@ impl Pipeline {
         let step = atlas::graticule_interval(&cache.projection, frame);
         cache.ensure_graticule(step, &vt, area, frame.center[0]);
         let cache = &self.caches[0];
-        let [r, g, b] = frame.graticule.color;
-        let stroke = Stroke::solid(vale_render::Color::rgb(r, g, b), frame.graticule.width);
+        let [r, g, b, a] = frame.graticule.color;
+        let stroke = Stroke::solid(vale_render::Color::rgba(r, g, b, a), frame.graticule.width);
         let graticule = step
             .and_then(|s| cache.graticule_lines(s))
             .map(|lines| (lines, stroke));
@@ -1667,10 +1667,10 @@ impl Pipeline {
         list.items.extend(edge_labels::items(&edge, false));
         list.push(Item::PopClip);
         if frame.neatline.on {
-            let [r, g, b] = frame.neatline.color;
+            let [r, g, b, a] = frame.neatline.color;
             list.push(Item::Stroke {
                 path: shape_path(&frame.shape.rings(), target),
-                color: vale_render::Color::rgb(r, g, b),
+                color: vale_render::Color::rgba(r, g, b, a),
                 width: frame.neatline.width,
                 round: false,
             });

@@ -168,14 +168,14 @@ pub fn edge_labels(
             continue;
         }
         let to = Affine::translate(origin.to_vec2()) * Affine::rotate(u.y.atan2(u.x));
-        let text_color = color(set.color, set.opacity);
+        let text_color = color(set.color);
         let Some(line) = furniture::glyph_line(&text, &style, text_color, to, true, fonts) else {
             continue;
         };
         let glyphs = line.glyphs;
         let halo = set.halo.then(|| Item::Stroke {
             path: line.outlines,
-            color: color(set.halo_color, set.opacity),
+            color: color(set.halo_color),
             width: set.halo_width * unit,
             round: true,
         });
@@ -242,8 +242,8 @@ fn text_style(set: &EdgeLabels, unit: f64, fonts: &mut Fonts) -> TextStyle {
     }
 }
 
-fn color([r, g, b]: [u8; 3], opacity: f64) -> Color {
-    Color::rgba(r, g, b, (opacity.clamp(0.0, 1.0) * 255.0).round() as u8)
+fn color([r, g, b, a]: [u8; 4]) -> Color {
+    Color::rgba(r, g, b, a)
 }
 
 /// The origin, the direction, and the corners of the box of a text with its
