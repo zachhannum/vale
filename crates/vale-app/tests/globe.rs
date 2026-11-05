@@ -2,6 +2,7 @@ mod common;
 
 mod images;
 mod lines;
+mod masked;
 
 use clap::Parser;
 use eframe::egui::{self, Pos2, Vec2};
@@ -14,6 +15,7 @@ use lines::{
     grey_bands, hide_rivers, measure_line, measure_stops, set_coast_line, set_heights,
     set_top_line, show_as, two_bands,
 };
+use masked::{assert_masked, masked_square, painted};
 use vale_app::cli::{Args, apply_globe, apply_globe_view};
 use vale_app::document::Document;
 use vale_app::globe::brush::slerp;
@@ -487,6 +489,7 @@ fn a_hatched_square_marker_on_the_globe_has_lines_and_gaps() {
             .add_imported(geojson::read_str(shape.id(), &text).unwrap(), None)[0];
         let hatch = (shape == MarkerShape::Square).then_some(hatch);
         state.doc.entry_mut(id).unwrap().style.style = Style {
+            mask: None,
             rules: vec![Rule::new(
                 shape.label(),
                 vec![Symbolizer::Marker {
@@ -7877,6 +7880,7 @@ fn symbol_world() -> (Document, vale_store::LayerId, vale_store::LayerId) {
         color: Property::constant(Color::rgb(200, 230, 180)),
     };
     doc.entry_mut(forest).unwrap().style.style = Style {
+        mask: None,
         rules: vec![Rule::new(
             "Forest",
             vec![fill, Symbolizer::Scatter(scatter)],
@@ -7885,6 +7889,7 @@ fn symbol_world() -> (Document, vale_store::LayerId, vale_store::LayerId) {
     let castles = r#"{"type":"MultiPoint","coordinates":[[14,0],[-14,0]]}"#;
     let castles = doc.add_imported(geojson::read_str("castles", castles).unwrap(), None)[0];
     doc.entry_mut(castles).unwrap().style.style = Style {
+        mask: None,
         rules: vec![Rule::new(
             "Castles",
             vec![Symbolizer::Symbol(PointSymbolizer {
@@ -8296,4 +8301,125 @@ fn the_smallest_lake_slider_hides_a_smaller_lake() {
     h.state_mut().globe.preview.lake_km2 = 2000.0;
     settle_rivers(&mut h);
     assert!(h.state().globe.channels().unwrap().has_lakes());
+}
+
+#[test]
+fn the_globe_draws_a_masked_polygon_only_inside_the_mask() {
+    let (doc, id) = masked_square();
+    let view = GlobeView::centered(20.0, 20.0);
+    let rect = egui::Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 800.0));
+    let mut pipeline = vale_app::pipeline::Pipeline::new();
+    let (fills, strokes) = painted(|painter| {
+        vale_app::ui::globe::vector_layer(painter, None, rect, &doc, &view, id, &mut pipeline);
+    });
+    assert!(!fills.is_empty() && !strokes.is_empty());
+    assert_masked(&fills, &strokes, |p| view.unproject(rect, p));
+}
+
+/// The colors of the sea band and of the land band of a masked crater.
+const MASK_SEA: [u8; 3] = [40, 40, 40];
+const MASK_LAND: [u8; 3] = [150, 140, 120];
+
+/// The crater of `crater_harness` at zoom 2, with the hidden polygon layer
+/// of `raster_masked` over it.
+fn masked_crater() -> (Harness<'static, AppState>, RasterId, masked::RasterMasked) {
+    let crater = lonlat_to_dir(10.0, 20.0);
+    let mut h = crater_harness(BRUSH_FACE_SIZE, crater, 2.0);
+    let id = brush_layer(&h);
+    let found = masked::raster_masked(h.state_mut(), id);
+    h.run_steps(2);
+    (h, id, found)
+}
+
+/// The canvas image with the polygon layer hidden, and then with it shown.
+fn mask_images(
+    h: &mut Harness<'static, AppState>,
+    layer: vale_store::LayerId,
+) -> (image::RgbaImage, image::RgbaImage) {
+    masked::show(h.state_mut(), layer, false);
+    let plain = canvas_image(h);
+    masked::show(h.state_mut(), layer, true);
+    let masked = canvas_image(h);
+    (plain, masked)
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_raster_mask_cuts_a_fill_to_the_land_and_the_lakes_that_the_globe_draws() {
+    let _gpu = one_gpu_test();
+    let (mut h, id, found) = masked_crater();
+    // A line at a stop that no height crosses makes the globe draw the band
+    // edges from the cut heights.
+    let bands = h.state_mut().globe.bands_mut(id).unwrap();
+    lines::set_stops(
+        bands,
+        true,
+        &[0.0, 5000.0],
+        &[MASK_SEA, MASK_LAND, MASK_LAND],
+    );
+    let top = bands
+        .stops()
+        .iter()
+        .position(|s| s.value == 5000.0)
+        .unwrap();
+    let line = StopLine {
+        on: true,
+        weight: LINE_WEIGHT,
+        color: [0; 3],
+        ..StopLine::default()
+    };
+    assert!(bands.set_line(top, line));
+    let (plain, masked) = mask_images(&mut h, found.layer);
+    masked::save_images("mask-globe", &plain, &masked);
+    let globe = &h.state().globe;
+    let agreement = masked::agreement(&plain, &masked, masked::inside_polygon(globe));
+    assert!(
+        agreement.compared > 50_000 && agreement.land > 10_000 && agreement.wrong == 0,
+        "{agreement:?}"
+    );
+    let (wet, red) = masked::lake_red(globe, &plain, &masked);
+    assert!(wet > 100 && red == 0, "{red} of {wet}");
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_raster_mask_follows_the_smoothed_coast_on_the_globe() {
+    let _gpu = one_gpu_test();
+    let (mut h, id, found) = masked_crater();
+    h.state_mut().set_raster_rivers(id, false);
+    masked::ripple(&mut h.state_mut().globe.map);
+    let sharp = canvas_image(&mut h);
+    set_smoothing(&mut h, id, true, 24.0);
+    assert!(h.state().globe.smoothing_level(id) >= 1.0);
+    let (plain, masked) = mask_images(&mut h, found.layer);
+    masked::save_images("mask-globe-smooth", &plain, &masked);
+    let inside = masked::inside_polygon(&h.state().globe);
+    let agreement = masked::agreement(&plain, &masked, &inside);
+    assert!(
+        agreement.compared > 50_000 && agreement.land > 10_000 && agreement.wrong == 0,
+        "{agreement:?}"
+    );
+    // The smoothing moves the coast.
+    let moved = masked::agreement(&sharp, &masked, &inside);
+    assert!(moved.wrong > 200, "{moved:?}");
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_hidden_raster_layer_masks_a_fill_on_the_globe() {
+    let _gpu = one_gpu_test();
+    let (mut h, id, found) = masked_crater();
+    h.state_mut().set_raster_rivers(id, false);
+    masked::show(h.state_mut(), found.layer, false);
+    let plain = canvas_image(&mut h);
+    masked::show(h.state_mut(), found.raster, false);
+    masked::show(h.state_mut(), found.layer, true);
+    let masked = canvas_image(&mut h);
+    masked::save_images("mask-globe-hidden", &plain, &masked);
+    let inside = masked::inside_polygon(&h.state().globe);
+    let agreement = masked::agreement(&plain, &masked, inside);
+    assert!(
+        agreement.compared > 50_000 && agreement.land > 10_000 && agreement.wrong == 0,
+        "{agreement:?}"
+    );
 }

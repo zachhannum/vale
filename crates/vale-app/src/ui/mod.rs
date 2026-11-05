@@ -43,6 +43,7 @@ pub mod browser;
 pub mod dock;
 pub mod elevation;
 pub mod font_dialog;
+pub mod frame_masks;
 pub mod globe;
 pub mod gradient;
 pub mod inspector;
@@ -536,6 +537,7 @@ pub struct AppState {
     pub actions: Vec<Action>,
     /// True: no timers, and each compose is final.
     pub headless: bool,
+    /// The threads that make the regions of the raster masks.
     /// False: the tool bar has no buttons for GeoJSON files and for exports.
     pub file_buttons: bool,
     pub frames: u64,
@@ -558,6 +560,9 @@ pub struct AppState {
     /// The map frame or the strip of a map frame that the PDF export draws
     /// next.
     export_frame: Option<crate::globe::FrameDraw>,
+    /// The raster layers of the masks of the map frames on the screen, and
+    /// of the frame that the PDF export draws.
+    mask_rasters: (Vec<vale_store::RasterId>, Vec<vale_store::RasterId>),
     /// The UI frames in which the PDF export waited for the tiles of a map
     /// frame.
     pub export_waits: u64,
@@ -670,6 +675,7 @@ impl AppState {
             detail_reader: None,
             screen_frames: (0, Vec::new()),
             export_frame: None,
+            mask_rasters: (Vec::new(), Vec::new()),
             export_waits: 0,
             export_strips: 0,
             opening: None,
@@ -3101,6 +3107,28 @@ impl AppState {
         self.screen_frames = (self.frames, screen);
     }
 
+    /// Tells the globe the raster layers of the masks of the map frames on
+    /// the screen, so that the GPU has their texels.
+    pub fn set_screen_mask_rasters(&mut self, rasters: Vec<vale_store::RasterId>) {
+        self.mask_rasters.0 = rasters;
+        self.send_mask_rasters();
+    }
+
+    /// Ends the frame of the PDF export.
+    fn end_export_frame(&mut self) {
+        self.export_frame = None;
+        if !self.mask_rasters.1.is_empty() {
+            self.mask_rasters.1.clear();
+            self.send_mask_rasters();
+        }
+    }
+
+    fn send_mask_rasters(&mut self) {
+        let (screen, export) = &self.mask_rasters;
+        let all = screen.iter().chain(export).copied().collect();
+        self.globe.set_frame_mask_rasters(all);
+    }
+
     fn want_with_export(&mut self, screen: &[crate::globe::FrameDraw]) {
         let mut frames = screen.to_vec();
         frames.extend(self.export_frame.clone());
@@ -3278,7 +3306,7 @@ impl AppState {
             }
             ExportStep::Capture(draw) => {
                 let Some(ui) = ui else {
-                    self.export_frame = None;
+                    self.end_export_frame();
                     self.status = "A raster layer needs a GPU for export".to_string();
                     return;
                 };
@@ -3299,7 +3327,20 @@ impl AppState {
                     self.atlas_export = Some(job);
                     return;
                 }
-                if !self.globe.frame_ready(&draw) {
+                // The GPU keeps a copy of the raster layer of each mask. A
+                // mask of a raster layer that the globe does not hold has no
+                // cover.
+                let masks = job.capture_masks();
+                let rasters: Vec<_> = masks.iter().map(|m| m.raster).collect();
+                if rasters != self.mask_rasters.1 {
+                    self.mask_rasters.1 = rasters;
+                    self.send_mask_rasters();
+                }
+                let held = |m: &crate::globe::RasterMask| self.globe.holds(m.raster);
+                let masks_ready = (masks.iter())
+                    .filter(|m| held(m))
+                    .all(|m| self.globe.mask_ready(&draw, m));
+                if !self.globe.frame_ready(&draw) || !masks_ready {
                     self.export_waits += 1;
                     self.atlas_export = Some(job);
                     return;
@@ -3308,30 +3349,47 @@ impl AppState {
                     background: egui::Color32::TRANSPARENT,
                     pixels_per_point: RASTER_PIXEL_RATIO as f32,
                 };
+                let mut callbacks = Vec::new();
+                let mut covers = Vec::new();
+                for (index, mask) in masks.iter().enumerate() {
+                    let capture = match self.globe.holds(mask.raster) {
+                        true => self
+                            .globe
+                            .capture_frame_mask(canvas, &draw, mask, index as u16),
+                        false => None,
+                    };
+                    covers.push(capture.map(|(callback, receiver)| {
+                        callbacks.push(callback);
+                        receiver
+                    }));
+                }
                 let Some((callback, receiver)) = self.globe.capture_frame(canvas, draw) else {
-                    self.export_frame = None;
+                    self.end_export_frame();
                     self.status = "The GPU is not ready for raster export".to_string();
                     return;
                 };
-                job.set_capture_receiver(receiver);
+                callbacks.push(callback);
+                job.set_capture_receiver(receiver, covers);
                 self.export_strips += 1;
-                ui.painter()
-                    .add(eframe::egui_wgpu::Callback::new_paint_callback(
-                        ui.max_rect(),
-                        callback,
-                    ));
+                for callback in callbacks {
+                    ui.painter()
+                        .add(eframe::egui_wgpu::Callback::new_paint_callback(
+                            ui.max_rect(),
+                            callback,
+                        ));
+                }
                 self.atlas_export = Some(job);
                 self.status = self.atlas_export_progress().unwrap_or_default();
             }
             ExportStep::Done(Ok(path)) => {
-                self.export_frame = None;
+                self.end_export_frame();
                 self.status = format!("Exported {}", path.display());
                 if self.share_exports {
                     self.share = Some(path);
                 }
             }
             ExportStep::Done(Err(error)) => {
-                self.export_frame = None;
+                self.end_export_frame();
                 self.status = format!("{error:#}");
             }
         }
@@ -3342,7 +3400,7 @@ impl AppState {
         let Some(job) = self.atlas_export.take() else {
             return;
         };
-        self.export_frame = None;
+        self.end_export_frame();
         self.status = format!("Canceled export of {}", file_name(job.path()));
     }
 

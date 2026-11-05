@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
+use eframe::egui;
 use eframe::egui_wgpu::{self, wgpu};
 
 use std::collections::HashMap;
@@ -65,6 +66,9 @@ pub struct Uniforms {
     /// The cosine and the sine of the turn of the flat map, and the number
     /// of the blend mode of the layer.
     pub turn: [f32; 4],
+    /// The value range of a raster mask, from 0 to 1: the lower limit, the
+    /// upper limit, then 1 for each limit that the range has.
+    pub range: [f32; 4],
     pub bands: [BandUniform; MAX_BANDS],
     pub lines: [LineUniform; MAX_BANDS + 1],
 }
@@ -268,6 +272,15 @@ struct Layouts {
     no_tiles: wgpu::PipelineLayout,
     with_image: wgpu::PipelineLayout,
     composite: wgpu::PipelineLayout,
+    vector: wgpu::BindGroupLayout,
+}
+
+/// The passes of the masks.
+struct Masks {
+    /// The value range of a raster mask, on the globe and in the flat view.
+    cover: [wgpu::RenderPipeline; 2],
+    /// Draws the meshes of egui shapes into the target of a group.
+    vector: wgpu::RenderPipeline,
 }
 
 const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 2] =
@@ -468,6 +481,50 @@ impl Layouts {
             ),
         ]
     }
+
+    fn masks(&self) -> Masks {
+        let shader = self.shader();
+        let cover = |label, vertex, fragment, flat: bool| {
+            let buffers = [Some(vertex_layout())];
+            let buffers: &[Option<wgpu::VertexBufferLayout<'_>>] =
+                if flat { &buffers } else { &[] };
+            render_pipeline(
+                &self.device,
+                &wgpu::RenderPipelineDescriptor {
+                    label: Some(label),
+                    layout: Some(&self.with_tiles),
+                    vertex: wgpu::VertexState {
+                        module: &shader,
+                        entry_point: Some(vertex),
+                        buffers,
+                        compilation_options: Default::default(),
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &shader,
+                        entry_point: Some(fragment),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format: COVER,
+                            blend: None,
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                        compilation_options: Default::default(),
+                    }),
+                    primitive: wgpu::PrimitiveState::default(),
+                    depth_stencil: None,
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview_mask: None,
+                    cache: None,
+                },
+            )
+        };
+        Masks {
+            cover: [
+                cover("range cover", "vs_main", "fs_range_cover", false),
+                cover("flat range cover", "vs_flat", "fs_flat_range_cover", true),
+            ],
+            vector: vector_pipeline(&self.device, self.format, &self.vector),
+        }
+    }
 }
 
 /// Sets a flag when it drops, also in a panic.
@@ -492,6 +549,10 @@ struct Resources {
     image_sampler: wgpu::Sampler,
     /// The copies of the images that the globe draws.
     images: HashMap<ImageKey, GpuImage>,
+    /// The passes of a mask: the value range of a raster mask, and the
+    /// meshes of egui shapes in the target of a group.
+    masks: Compiled<Masks>,
+    vector_layout: wgpu::BindGroupLayout,
     composite_layout: wgpu::BindGroupLayout,
     meshes: Vec<GpuMesh>,
     no_backdrop: wgpu::TextureView,
@@ -629,6 +690,7 @@ impl Resources {
             mipmap_filter: wgpu::MipmapFilterMode::Linear,
             ..Default::default()
         });
+        let vector_layout = vector_layout(device);
         let group_entry = |binding, ty| wgpu::BindGroupLayoutEntry {
             binding,
             visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
@@ -671,6 +733,7 @@ impl Resources {
             no_tiles,
             with_image,
             composite,
+            vector: vector_layout.clone(),
         };
         link.ready.store(false, Ordering::Relaxed);
         let (core_layouts, ready) = (layouts.clone(), SetOnDrop(link.ready.clone()));
@@ -678,7 +741,7 @@ impl Resources {
             let _ready = ready;
             core_layouts.core()
         });
-        let blend_layouts = layouts.clone();
+        let (blend_layouts, mask_layouts) = (layouts.clone(), layouts.clone());
         let empty = |label, layers, dimension| {
             let texture = device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
@@ -707,6 +770,8 @@ impl Resources {
             image_layout,
             image_sampler,
             images: HashMap::new(),
+            masks: Compiled::lazy(move || mask_layouts.masks()),
+            vector_layout,
             composite_layout,
             meshes: Vec::new(),
             no_backdrop: empty_float("no backdrop", device),
@@ -1064,7 +1129,9 @@ impl Resources {
 
     /// Encodes the passes of the lines of the stops of a layer pass, for a
     /// render target of `size` pixels. Returns the radius of their search,
-    /// or `None` when the pass draws no lines.
+    /// or `None` when the pass draws no lines. `lines`: the passes find the
+    /// lines, and not only the heights and the cut heights.
+    #[allow(clippy::too_many_arguments)]
     fn encode_edges(
         &mut self,
         device: &wgpu::Device,
@@ -1073,6 +1140,7 @@ impl Resources {
         target: TargetId,
         size: [u32; 2],
         view: &View,
+        lines: bool,
     ) -> Option<u32> {
         let Pass::Layer(layer) = draw.pass else {
             return None;
@@ -1117,12 +1185,13 @@ impl Resources {
             draw.source,
             self.version,
         );
-        (key, size, area.map(f32::to_bits), radius).hash(&mut hasher);
+        (key, size, area.map(f32::to_bits), radius, lines).hash(&mut hasher);
         let extent = edges::Extent {
             size,
             area,
             radius,
             inputs: hasher.finish(),
+            lines,
         };
         self.edges
             .encode(device, encoder, (target, layer), extent, groups, mesh);
@@ -1204,6 +1273,92 @@ impl Resources {
     }
 }
 
+/// The format of the cover of a raster mask.
+const COVER: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
+/// The number of the mask of a target that has the cover of a raster mask.
+const COVER_MASK: u64 = u64::MAX;
+
+/// The layout of the group of the vector pipeline.
+fn vector_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("vector"),
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::VERTEX,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        }],
+    })
+}
+
+/// The pipeline that draws the meshes of egui shapes into a target of
+/// `format`, as egui draws them.
+fn vector_pipeline(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    layout: &wgpu::BindGroupLayout,
+) -> wgpu::RenderPipeline {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("vector"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("vector.wgsl").into()),
+    });
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("vector"),
+        bind_group_layouts: &[Some(layout)],
+        immediate_size: 0,
+    });
+    let descriptor = wgpu::RenderPipelineDescriptor {
+        label: Some("vector"),
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_vector"),
+            buffers: &[Some(wgpu::VertexBufferLayout {
+                array_stride: size_of::<egui::epaint::Vertex>() as u64,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Uint32],
+            })],
+            compilation_options: Default::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some(if format.is_srgb() {
+                "fs_vector_linear"
+            } else {
+                "fs_vector_gamma"
+            }),
+            // The blend of egui.
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(wgpu::BlendState {
+                    color: wgpu::BlendComponent {
+                        src_factor: wgpu::BlendFactor::One,
+                        dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                        operation: wgpu::BlendOperation::Add,
+                    },
+                    alpha: wgpu::BlendComponent {
+                        src_factor: wgpu::BlendFactor::OneMinusDstAlpha,
+                        dst_factor: wgpu::BlendFactor::One,
+                        operation: wgpu::BlendOperation::Add,
+                    },
+                }),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: Default::default(),
+        }),
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview_mask: None,
+        cache: None,
+    };
+    render_pipeline(device, &descriptor)
+}
+
 /// A texture of 1 by 1 pixels for a binding that a pass does not read.
 fn empty_float(label: &str, device: &wgpu::Device) -> wgpu::TextureView {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -1245,12 +1400,25 @@ pub struct Group {
     /// A shape that cuts the pixels. The mask has the size of the target.
     pub mask: Option<Arc<Mask>>,
     pub draws: Vec<Draw>,
+    /// The shapes of a vector layer, after the passes.
+    pub vector: Option<VectorShapes>,
+    /// The pass of a raster layer whose value range cuts the pixels, with
+    /// the range in its uniforms. It takes the place of `mask`.
+    pub cover: Option<Draw>,
     /// A one-time copy of the target. A captured group does not paint on the
     /// screen.
     pub capture: Option<Arc<Capture>>,
 }
 
-/// Premultiplied pixels copied from a group target, row by row.
+/// The meshes of egui shapes, each with its clip rectangle, in points.
+pub struct VectorShapes {
+    pub pixels_per_point: f32,
+    pub meshes: Vec<(egui::Rect, egui::Mesh)>,
+}
+
+/// Premultiplied pixels copied from a group target, row by row. The capture
+/// of a group with the cover of a raster mask holds the cover, one byte for
+/// each pixel.
 pub struct Captured {
     pub size: [u32; 2],
     pub rgba: Vec<u8>,
@@ -1280,6 +1448,8 @@ struct CaptureReadback {
     row: u32,
     size: [u32; 2],
     format: wgpu::TextureFormat,
+    /// The bytes of one pixel.
+    pixel: u32,
 }
 
 impl CaptureReadback {
@@ -1292,6 +1462,7 @@ impl CaptureReadback {
             row,
             size,
             format,
+            pixel,
         } = self;
         buffer.map_async(wgpu::MapMode::Read, .., move |result| {
             let result = result.map_err(|error| format!("GPU readback failed: {error:?}"));
@@ -1300,16 +1471,19 @@ impl CaptureReadback {
                     .slice(..)
                     .get_mapped_range()
                     .expect("capture is mapped");
-                let mut rgba = Vec::with_capacity(size[0] as usize * size[1] as usize * 4);
+                let width = (size[0] * pixel) as usize;
+                let mut rgba = Vec::with_capacity(width * size[1] as usize);
                 for source in bytes.chunks(row as usize) {
-                    rgba.extend_from_slice(&source[..size[0] as usize * 4]);
+                    rgba.extend_from_slice(&source[..width]);
                 }
                 drop(bytes);
                 mapped.unmap();
-                if matches!(
-                    format,
-                    wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb
-                ) {
+                if pixel == 4
+                    && matches!(
+                        format,
+                        wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb
+                    )
+                {
                     for pixel in rgba.as_chunks_mut::<4>().0 {
                         pixel.swap(0, 2);
                     }
@@ -1340,6 +1514,8 @@ struct Offscreen {
     place: wgpu::Buffer,
     /// The number of the mask on the GPU, and its view.
     mask: Option<(u64, wgpu::TextureView)>,
+    /// The cover of a raster mask, which the GPU draws.
+    cover: Option<(wgpu::Texture, wgpu::TextureView)>,
     bind: Option<wgpu::BindGroup>,
     used: Instant,
 }
@@ -1419,27 +1595,56 @@ impl Resources {
             below,
             place,
             mask: None,
+            cover: None,
             bind: None,
             used: now,
         };
         self.targets.insert(id, target);
     }
 
-    /// Makes the mask of a target the mask `mask`, or none.
+    /// Makes the mask of a target the mask `mask`, the cover of the target
+    /// with `cover`, or none.
     fn set_mask(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         id: TargetId,
         mask: Option<&Mask>,
+        cover: bool,
     ) {
         let Some(target) = self.targets.get_mut(&id) else {
             return;
         };
         let have = target.mask.as_ref().map(|(number, _)| *number);
-        if have == mask.map(|m| m.id) && target.bind.is_some() {
+        let want = if cover {
+            Some(COVER_MASK)
+        } else {
+            mask.map(|m| m.id)
+        };
+        if have == want && target.bind.is_some() {
             return;
         }
+        target.cover = cover.then(|| {
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("group cover"),
+                size: wgpu::Extent3d {
+                    width: target.size[0],
+                    height: target.size[1],
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: COVER,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&Default::default());
+            (texture, view)
+        });
+        let mask = mask.filter(|_| !cover);
         target.mask = mask.map(|mask| {
             let texture = device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("group mask"),
@@ -1467,6 +1672,9 @@ impl Resources {
             );
             (mask.id, texture.create_view(&Default::default()))
         });
+        if let Some((_, view)) = &target.cover {
+            target.mask = Some((COVER_MASK, view.clone()));
+        }
         let mask_view = target.mask.as_ref().map_or(&self.no_mask, |(_, v)| v);
         target.bind = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("group"),
@@ -1507,7 +1715,8 @@ impl Resources {
             None => View::Globe,
         };
         self.ensure_offscreen(device, group.target, size);
-        self.set_mask(device, queue, group.target, group.mask.as_deref());
+        let cover = group.cover.is_some();
+        self.set_mask(device, queue, group.target, group.mask.as_deref(), cover);
         let target = &self.targets[&group.target];
         let place = [
             rect[0] as f32,
@@ -1528,6 +1737,7 @@ impl Resources {
             depth_or_array_layers: 1,
         };
         let copy = (target.layers.clone(), target.below.clone());
+        let cover_texture = target.cover.as_ref().map(|(texture, _)| texture.clone());
         let format = target.format;
         let mut load = wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT);
         // A group with no pass leaves an empty target.
@@ -1545,6 +1755,11 @@ impl Resources {
             ..Default::default()
         }));
         load = wgpu::LoadOp::Load;
+        // A masked group draws nothing until the passes of the masks are
+        // ready.
+        if (group.vector.is_some() || group.cover.is_some()) && self.masks.get().is_none() {
+            return None;
+        }
         for draw in &group.draws {
             let mut draw = *draw;
             draw.uniforms.screen = [size[0] as f32, size[1] as f32, 0.0, 0.0];
@@ -1554,7 +1769,7 @@ impl Resources {
             // the passes of the lines and the layer pass read the second
             // write, with the radius.
             self.write(device, queue, &draw, group.target, false, below());
-            let radius = self.encode_edges(device, encoder, &draw, group.target, size, &view);
+            let radius = self.encode_edges(device, encoder, &draw, group.target, size, &view, true);
             if let Some(radius) = radius {
                 draw.uniforms.edges = [1.0, radius as f32, 0.0, 0.0];
                 self.write(device, queue, &draw, group.target, false, below());
@@ -1581,11 +1796,22 @@ impl Resources {
             });
             self.draw(&mut pass, &draw, group.target, false, &view, size);
         }
+        if let Some(shapes) = &group.vector {
+            self.draw_vector(device, encoder, &layers, size, shapes);
+        }
+        if let Some(cover) = &group.cover {
+            self.render_cover(device, queue, encoder, cover, group.target, size, &view);
+        }
         let mut readback = None;
         if let Some(capture) = &group.capture
             && !capture.started.swap(true, Ordering::Relaxed)
         {
-            let row = (size[0] * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+            // A group with a cover gives the cover.
+            let (source, pixel) = match &cover_texture {
+                Some(texture) => (texture, 1),
+                None => (&copy.0, 4),
+            };
+            let row = (size[0] * pixel).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
             let buffer = Arc::new(device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("group capture"),
                 size: u64::from(row * size[1]),
@@ -1593,7 +1819,7 @@ impl Resources {
                 mapped_at_creation: false,
             }));
             encoder.copy_texture_to_buffer(
-                copy.0.as_image_copy(),
+                source.as_image_copy(),
                 wgpu::TexelCopyBufferInfo {
                     buffer: &buffer,
                     layout: wgpu::TexelCopyBufferLayout {
@@ -1615,9 +1841,175 @@ impl Resources {
                 row,
                 size,
                 format,
+                pixel,
             });
         }
         readback
+    }
+
+    /// Draws the meshes of egui shapes into the view `layers` of a target
+    /// of `size` pixels.
+    fn draw_vector(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        layers: &wgpu::TextureView,
+        size: [u32; 2],
+        shapes: &VectorShapes,
+    ) {
+        use wgpu::util::DeviceExt;
+        let Some(masks) = self.masks.get() else {
+            return;
+        };
+        let ppp = shapes.pixels_per_point;
+        let (mut vertices, mut indices) = (Vec::new(), Vec::new());
+        // The first index, the count of indices, and the scissor of each
+        // mesh.
+        let mut runs = Vec::new();
+        for (clip, mesh) in &shapes.meshes {
+            let px = |v: f32, side: u32| (v * ppp).round().clamp(0.0, side as f32) as u32;
+            let (x0, y0) = (px(clip.min.x, size[0]), px(clip.min.y, size[1]));
+            let (x1, y1) = (px(clip.max.x, size[0]), px(clip.max.y, size[1]));
+            if x1 <= x0 || y1 <= y0 || mesh.indices.is_empty() {
+                continue;
+            }
+            let base = vertices.len() as u32;
+            let first = indices.len() as u32;
+            vertices.extend_from_slice(&mesh.vertices);
+            indices.extend(mesh.indices.iter().map(|i| i + base));
+            runs.push((first, mesh.indices.len() as u32, [x0, y0, x1 - x0, y1 - y0]));
+        }
+        if runs.is_empty() {
+            return;
+        }
+        let buffer = |label, contents: &[u8], usage| {
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some(label),
+                contents,
+                usage,
+            })
+        };
+        let vertex_buffer = buffer(
+            "vector vertices",
+            bytemuck::cast_slice(&vertices),
+            wgpu::BufferUsages::VERTEX,
+        );
+        let index_buffer = buffer(
+            "vector indices",
+            bytemuck::cast_slice(&indices),
+            wgpu::BufferUsages::INDEX,
+        );
+        let locals = [size[0] as f32 / ppp, size[1] as f32 / ppp, 0.0, 0.0];
+        let locals = buffer(
+            "vector locals",
+            bytemuck::bytes_of(&locals),
+            wgpu::BufferUsages::UNIFORM,
+        );
+        let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("vector"),
+            layout: &self.vector_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: locals.as_entire_binding(),
+            }],
+        });
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("vector"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: layers,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            ..Default::default()
+        });
+        pass.set_pipeline(&masks.vector);
+        pass.set_bind_group(0, &bind, &[]);
+        pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+        pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+        for (first, count, [x, y, w, h]) in runs {
+            pass.set_scissor_rect(x, y, w, h);
+            pass.draw_indexed(first..first + count, 0, 0..1);
+        }
+    }
+
+    /// Draws the cover of the value range of a raster mask into the cover
+    /// of a target of `size` pixels, from the heights of the layer pass
+    /// `cover`.
+    #[allow(clippy::too_many_arguments)]
+    fn render_cover(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        cover: &Draw,
+        target: TargetId,
+        size: [u32; 2],
+        view: &View,
+    ) {
+        let mut draw = *cover;
+        draw.uniforms.screen = [size[0] as f32, size[1] as f32, 0.0, 0.0];
+        self.write(device, queue, &draw, target, false, None);
+        // The layer pass of a layer with lines draws its band edges from the
+        // cut heights.
+        if let Some(radius) = self.encode_edges(device, encoder, &draw, target, size, view, false) {
+            draw.uniforms.edges = [1.0, radius as f32, 0.0, 0.0];
+            self.write(device, queue, &draw, target, false, None);
+        }
+        let Some(out) = self
+            .targets
+            .get(&target)
+            .and_then(|t| t.cover.as_ref())
+            .map(|(_, v)| v.clone())
+        else {
+            return;
+        };
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("range cover"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &out,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            ..Default::default()
+        });
+        let Pass::Layer(layer) = draw.pass else {
+            return;
+        };
+        let Some(masks) = self.masks.get() else {
+            return;
+        };
+        let Some((tiles, levels)) = self.layer_groups(&draw) else {
+            return;
+        };
+        let Some(slot) = self.slots.get(&(target, draw.pass, false)) else {
+            return;
+        };
+        pass.set_bind_group(0, &slot.bind_group, &[]);
+        pass.set_bind_group(1, &tiles, &[]);
+        pass.set_bind_group(2, &levels, &[]);
+        pass.set_bind_group(3, self.edges.group((target, layer)), &[]);
+        match view {
+            View::Globe => {
+                pass.set_pipeline(&masks.cover[0]);
+                pass.draw(0..3, 0..1);
+            }
+            View::Flat(Some(mesh)) => {
+                pass.set_pipeline(&masks.cover[1]);
+                pass.set_viewport(0.0, 0.0, size[0] as f32, size[1] as f32, 0.0, 1.0);
+                pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+                pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..mesh.count, 0, 0..1);
+            }
+            View::Flat(None) => {}
+        }
     }
 
     /// Puts the target of a group on the screen.
@@ -2442,7 +2834,7 @@ impl egui_wgpu::CallbackTrait for GlobeCallback {
                 // second write, with the radius.
                 res.write(device, queue, &draw, CANVAS, false, None);
                 if let Some(radius) =
-                    res.encode_edges(device, egui_encoder, &draw, CANVAS, size, &view)
+                    res.encode_edges(device, egui_encoder, &draw, CANVAS, size, &view, true)
                 {
                     draw.uniforms.edges = [1.0, radius as f32, 0.0, 0.0];
                     res.write(device, queue, &draw, CANVAS, false, None);

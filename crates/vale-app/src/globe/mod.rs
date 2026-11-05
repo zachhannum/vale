@@ -34,6 +34,7 @@ pub mod gpu;
 pub mod image;
 pub mod import;
 pub mod line;
+pub mod mask;
 pub mod math;
 pub mod merge;
 pub mod nav;
@@ -68,6 +69,7 @@ use flat::FlatView;
 use gpu::{
     Capture, Captured, Changes, Draw, Event, Frame, GlobeCallback, Group, ImageKey, Job as GpuJob,
     LayerKey, LineOp, Link, MapKey, MapKind, Mask, Op, Pass, TargetId, Uniforms, Uploads,
+    VectorShapes,
 };
 use import::{ImportResult, Job, Source, Step};
 use line::LineSettings;
@@ -548,6 +550,50 @@ pub enum Paint {
     Callback(GlobeCallback),
     /// The shapes of a vector layer.
     Vector(LayerId),
+    /// A vector layer with a raster mask: its fills and its strokes go
+    /// through the GPU, which cuts them to the pixels inside the value range
+    /// of the raster. Its other shapes go above them.
+    Masked(LayerId, MaskedPass),
+}
+
+/// The mask of a vector layer from the values of a raster layer: the
+/// pixels where the raster layer has a value from `min` up to `max`, in the
+/// units of the raster. `None` is no limit.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RasterMask {
+    pub raster: RasterId,
+    pub min: Option<f64>,
+    pub max: Option<f64>,
+    /// How the raster layer smooths its values. The mask of a hidden
+    /// raster layer follows it.
+    pub smoothing: Smoothing,
+}
+
+/// The passes of a vector layer with a raster mask, which wait for the
+/// shapes of the layer.
+pub struct MaskedPass {
+    frame: Arc<Frame>,
+    group: Box<Group>,
+}
+
+impl MaskedPass {
+    /// The callback that draws the meshes `meshes`, each with its clip
+    /// rectangle in points, cut to the mask.
+    pub fn callback(
+        self,
+        pixels_per_point: f32,
+        meshes: Vec<(Rect, eframe::egui::Mesh)>,
+    ) -> GlobeCallback {
+        let mut group = self.group;
+        group.vector = Some(VectorShapes {
+            pixels_per_point,
+            meshes,
+        });
+        GlobeCallback {
+            frame: self.frame,
+            job: GpuJob::Group(group),
+        }
+    }
 }
 
 /// The reduced copy of a raster layer on the GPU. The globe draws it.
@@ -861,6 +907,10 @@ pub struct Globe {
     /// The visible layers in draw order, from the bottom. `None`: the globe
     /// draws `map` as one layer.
     stack: Option<Vec<StackItem>>,
+    /// The vector layers with a raster mask.
+    raster_masks: Vec<(LayerId, RasterMask)>,
+    /// The raster layers of the masks of the map frames.
+    frame_mask_rasters: Vec<RasterId>,
     /// The raster layer that the brush paints after the stroke or the
     /// import that runs.
     pending: Option<Option<RasterId>>,
@@ -1046,6 +1096,8 @@ impl Globe {
             layers: Vec::new(),
             images: Vec::new(),
             stack: None,
+            raster_masks: Vec::new(),
+            frame_mask_rasters: Vec::new(),
             pending: None,
             generations: 0,
             full: None,
@@ -1580,6 +1632,52 @@ impl Globe {
         self.stack.as_deref()
     }
 
+    /// Sets the vector layers with a raster mask. The GPU keeps a copy of
+    /// each raster layer of a mask, also of a hidden one.
+    pub fn set_raster_masks(&mut self, masks: Vec<(LayerId, RasterMask)>) {
+        if masks == self.raster_masks {
+            return;
+        }
+        let rasters = |masks: &[(LayerId, RasterMask)]| {
+            let mut ids: Vec<RasterId> = masks.iter().map(|(_, m)| m.raster).collect();
+            ids.sort();
+            ids.dedup();
+            ids
+        };
+        let same = rasters(&masks) == rasters(&self.raster_masks);
+        self.raster_masks = masks;
+        if !same {
+            self.display_cap = self.first_cap();
+            self.sync_copies();
+        }
+    }
+
+    /// Sets the raster layers of the masks of the map frames. The GPU keeps
+    /// a copy of each, also of a hidden one.
+    pub fn set_frame_mask_rasters(&mut self, mut rasters: Vec<RasterId>) {
+        rasters.sort();
+        rasters.dedup();
+        if rasters == self.frame_mask_rasters {
+            return;
+        }
+        self.frame_mask_rasters = rasters;
+        self.display_cap = self.first_cap();
+        self.sync_copies();
+    }
+
+    /// The globe draws the raster layer, or a mask reads it.
+    fn copied(&self, id: RasterId) -> bool {
+        self.visible(id)
+            || self.raster_masks.iter().any(|(_, m)| m.raster == id)
+            || self.frame_mask_rasters.contains(&id)
+    }
+
+    /// The number of the texels of a raster layer, which changes with each
+    /// change of a texel.
+    pub fn raster_edits(&self, id: RasterId) -> Option<u64> {
+        self.layer(id).map(|layer| layer.edits)
+    }
+
     /// True if the list of `set_stack` has the raster layer.
     fn visible(&self, id: RasterId) -> bool {
         let stack = self.stack.iter().flatten();
@@ -1599,7 +1697,7 @@ impl Globe {
     /// The largest face size of a reduced copy by the estimate of the
     /// memory of the visible layers.
     fn first_cap(&self) -> u32 {
-        let sizes = self.layers.iter().filter(|layer| self.visible(layer.id));
+        let sizes = self.layers.iter().filter(|layer| self.copied(layer.id));
         let sizes: Vec<(u32, usize)> = sizes
             .map(|layer| layer.display(&self.map))
             .map(|map| (map.face_size() as u32, map.allocated_tiles()))
@@ -1620,7 +1718,7 @@ impl Globe {
             let id = self.layers[at].id;
             let map = self.layers[at].display(&self.map);
             // With no renderer, no layer has a copy.
-            let size = (self.format.is_some() && self.visible(id))
+            let size = (self.format.is_some() && self.copied(id))
                 .then(|| reduced_face_size(map.face_size() as u32, cap));
             let layer = &self.layers[at];
             let old = layer.copy.as_ref().map(|copy| copy.key.face_size);
@@ -3989,6 +4087,7 @@ impl Globe {
                 let blend = layer.map_or(0, |layer| layer.blend.index());
                 [cos as f32, sin as f32, blend as f32, 0.0]
             },
+            range: [0.0; 4],
             bands,
             lines,
         }
@@ -4243,6 +4342,8 @@ impl Globe {
                     mask: frame.mask,
                     draws: group,
                     capture: None,
+                    vector: None,
+                    cover: None,
                 },
             ));
         }
@@ -4286,6 +4387,117 @@ impl Globe {
             mask: frame.mask,
             draws,
             capture: Some(capture),
+            vector: None,
+            cover: None,
+        };
+        let gpu = self.gpu_frame(format, smooth_full, &river_layers, None);
+        let callback = GlobeCallback {
+            frame: gpu,
+            job: GpuJob::Group(Box::new(group)),
+        };
+        Some((callback, receiver))
+    }
+
+    /// True if the GPU has all that the mask of `mask` in a map frame
+    /// needs: the texels of its raster layer, and the detail maps of the
+    /// frame if the frame shows the layer.
+    pub fn mask_ready(&self, frame: &FrameDraw, mask: &RasterMask) -> bool {
+        let id = mask.raster;
+        let copy = self.layer(id).and_then(|layer| layer.copy.as_ref());
+        let texels = match self.draws_full(id) {
+            true => !self.uploading(),
+            false => copy.is_some_and(|copy| copy.loaded),
+        };
+        let details = !frame.shown.contains(&id) || self.details.ready(frame.id);
+        self.format.is_some() && texels && details
+    }
+
+    /// Makes a callback that draws and returns the cover of the raster mask
+    /// `mask` in a map frame: for each pixel of the frame, the part inside
+    /// the value range, from 0 to 255, at the band edges that the frame
+    /// draws. The mask reads the raster layer with its look in the map of
+    /// the frame. A frame draws no lakes. Masks of one frame need different
+    /// numbers `index`. The callback does not paint on the screen. `None`
+    /// with no wgpu renderer, or while the GPU does not have the raster
+    /// layer.
+    pub fn capture_frame_mask(
+        &mut self,
+        canvas: Canvas,
+        frame: &FrameDraw,
+        mask: &RasterMask,
+        index: u16,
+    ) -> Option<(GlobeCallback, mpsc::Receiver<Result<Captured, String>>)> {
+        let format = self.format?;
+        self.queue_changes();
+        let river_layers = self.send_rivers();
+        let id = mask.raster;
+        let (key, map) = self.source(id).zip(self.display_map(id))?;
+        let stack = self.stack.as_deref().unwrap_or_default();
+        let look = stack.iter().find_map(|item| match *item {
+            StackItem::Raster {
+                id: of,
+                display,
+                smoothing,
+                lines,
+                ..
+            } if of == id => Some((display, smoothing, lines)),
+            _ => None,
+        });
+        // A raster layer that the frame does not draw has no lines.
+        let shown = frame.shown.contains(&id);
+        let (mut display, mut smoothing, mut lines) = match look {
+            Some(look) if shown => look,
+            _ => (RasterDisplay::Bands, mask.smoothing, false),
+        };
+        let mut bands = &map.bands;
+        if let Some((_, look)) = frame.raster_looks.iter().find(|(r, _)| *r == id) {
+            smoothing = look.smoothing;
+            if shown {
+                display = look.look.display;
+                lines = look.lines;
+            }
+            if let Some(b) = &look.bands {
+                bands = b;
+            }
+        }
+        let key = self.details.source(frame.id, id).unwrap_or(key);
+        let smooth_full = Some(key) == self.full;
+        let layer = LayerDraw {
+            key,
+            bands,
+            opacity: 1.0,
+            display,
+            smoothing,
+            hillshade: Hillshade::default(),
+            rivers: None,
+            window: false,
+            lines,
+            blend: BlendMode::Normal,
+        };
+        let [.., w, h] = frame.rect;
+        let mut uniforms = self.uniforms(canvas, Some(&layer), false, false, Some(&frame.place));
+        uniforms.range = mask_range(bands, mask);
+        let cover = Draw {
+            pass: Pass::Layer(key.layer),
+            source: Some(key),
+            image: None,
+            rivers: false,
+            lines: lines
+                && display == RasterDisplay::Bands
+                && bands.stops().iter().any(|stop| stop.line.on),
+            clip: [0.0, 0.0, w as f32, h as f32],
+            uniforms,
+        };
+        let (capture, receiver) = Capture::new();
+        let group = Group {
+            target: MASK_CAPTURE_TARGET + (u64::from(index) << 32) + u64::from(frame.id),
+            place: Some([0, 0, w, h]),
+            mesh: Some(frame.mesh.clone()),
+            mask: None,
+            draws: Vec::new(),
+            capture: Some(capture),
+            vector: None,
+            cover: Some(cover),
         };
         let gpu = self.gpu_frame(format, smooth_full, &river_layers, None);
         let callback = GlobeCallback {
@@ -4471,6 +4683,47 @@ impl Globe {
         self.details.budget = budget;
     }
 
+    /// The layer of a raster mask, as the canvas draws its raster layer: with
+    /// the look of the raster layer in the list `stack`, or with no lines
+    /// and no rivers for a hidden raster layer. `None` while the GPU does
+    /// not have the raster layer.
+    fn mask_draw(
+        &self,
+        stack: &[StackItem],
+        mask: &RasterMask,
+        rivers: &impl Fn(LayerKey, RasterDisplay, bool) -> Option<usize>,
+    ) -> Option<(LayerDraw<'_>, RasterMask)> {
+        let (key, map) = self
+            .source(mask.raster)
+            .zip(self.display_map(mask.raster))?;
+        let shown = stack.iter().find_map(|item| match *item {
+            StackItem::Raster {
+                id,
+                display,
+                smoothing,
+                rivers,
+                lines,
+                ..
+            } if id == mask.raster => Some((display, smoothing, rivers, lines)),
+            _ => None,
+        });
+        let (display, smoothing, on, lines) =
+            shown.unwrap_or((RasterDisplay::Bands, mask.smoothing, false, false));
+        let draw = LayerDraw {
+            key,
+            bands: &map.bands,
+            opacity: 1.0,
+            display,
+            smoothing,
+            hillshade: Hillshade::default(),
+            rivers: rivers(key.layer, display, on),
+            window: key.kind == MapKind::Full,
+            lines,
+            blend: BlendMode::Normal,
+        };
+        Some((draw, *mask))
+    }
+
     /// The things that the canvas paints in this frame, from the bottom, or
     /// `None` with no wgpu renderer.
     ///
@@ -4490,11 +4743,14 @@ impl Globe {
             found.map(|(_, size)| *size).filter(|_| shown)
         };
 
-        // Each layer of the list, with the heightmap of a raster layer.
+        // Each layer of the list, with the heightmap of a raster layer. A
+        // vector layer with a raster mask has the layer of the mask, or
+        // `None` while the GPU does not have it.
         enum Item<'a> {
             Raster(LayerDraw<'a>),
             Image(ImageDraw),
             Vector(LayerId),
+            Masked(LayerId, Option<(LayerDraw<'a>, RasterMask)>),
         }
         let mut items: Vec<Item> = Vec::new();
         match &self.stack {
@@ -4517,7 +4773,15 @@ impl Globe {
             Some(stack) => {
                 for item in stack {
                     match *item {
-                        StackItem::Vector(id) => items.push(Item::Vector(id)),
+                        StackItem::Vector(id) => {
+                            let mask = self.raster_masks.iter().find(|(of, _)| *of == id);
+                            items.push(match mask {
+                                Some((_, mask)) => {
+                                    Item::Masked(id, self.mask_draw(stack, mask, &rivers))
+                                }
+                                None => Item::Vector(id),
+                            });
+                        }
                         StackItem::Image { id, opacity, blend } => {
                             if let Some(key) = self.image_source(id) {
                                 let opacity = opacity.clamp(0.0, 1.0);
@@ -4565,9 +4829,10 @@ impl Globe {
             .iter()
             .rposition(|i| matches!(i, Item::Raster(..) | Item::Image(..)));
 
-        let smooth_full = items
-            .iter()
-            .any(|item| matches!(item, Item::Raster(layer) if Some(layer.key) == self.full));
+        let smooth_full = items.iter().any(|item| match item {
+            Item::Raster(layer) | Item::Masked(_, Some((layer, _))) => Some(layer.key) == self.full,
+            _ => false,
+        });
         let flat_mesh = (self.world_view == WorldView::Flat).then(|| self.flat.mesh());
         let frame = self.gpu_frame(format, smooth_full, &river_layers, flat_mesh.clone());
         let draw_job = |draw| GpuJob::Draw(Box::new(draw));
@@ -4612,7 +4877,7 @@ impl Globe {
                 },
             }),
             Item::Image(image) => Some(self.image_pass(canvas, image, clip, small, None)),
-            Item::Vector(_) => None,
+            Item::Vector(_) | Item::Masked(..) => None,
         };
 
         let mut out = Vec::new();
@@ -4639,6 +4904,7 @@ impl Globe {
         // reads the pixels below the layer.
         let mut run: Vec<Draw> = Vec::new();
         let mut groups = 0;
+        let mut masked = 0;
         let mut flush = |run: &mut Vec<Draw>, out: &mut Vec<Paint>| {
             let draws = std::mem::take(run);
             if draws.iter().all(|draw| draw.uniforms.turn[2] < 1.0) {
@@ -4653,6 +4919,8 @@ impl Globe {
                 mask: None,
                 draws,
                 capture: None,
+                vector: None,
+                cover: None,
             };
             out.push(callback(GpuJob::Group(Box::new(group))));
         };
@@ -4669,6 +4937,34 @@ impl Globe {
                     flush(&mut run, &mut out);
                     out.push(Paint::Vector(*id));
                 }
+                // The layer does not draw until the GPU has its mask.
+                Item::Masked(_, None) => {}
+                Item::Masked(id, Some((draw, mask))) => {
+                    flush(&mut run, &mut out);
+                    masked += 1;
+                    let Some(mut cover) = layer(&Item::Raster(*draw), false) else {
+                        continue;
+                    };
+                    cover.uniforms.range = mask_range(draw.bands, mask);
+                    let group = Group {
+                        target: MASK_TARGET + masked,
+                        place: None,
+                        mesh: flat_mesh.clone(),
+                        mask: None,
+                        draws: Vec::new(),
+                        capture: None,
+                        vector: None,
+                        cover: Some(cover),
+                    };
+                    let frame = frame.clone();
+                    out.push(Paint::Masked(
+                        *id,
+                        MaskedPass {
+                            frame,
+                            group: Box::new(group),
+                        },
+                    ));
+                }
                 Item::Raster(..) | Item::Image(..) => {
                     run.extend(layer(item, false));
                     if top == Some(at) {
@@ -4681,6 +4977,21 @@ impl Globe {
         flush(&mut run, &mut out);
         Some(out)
     }
+}
+
+/// The value range of a raster mask for the shader: the limits as levels
+/// over the highest level, then 1 for each limit inside the range of the
+/// bands.
+fn mask_range(bands: &Bands, mask: &RasterMask) -> [f32; 4] {
+    let level = |v: f64| f32::from(bands.level(v)) / 65535.0;
+    let min = mask.min.filter(|&v| v > bands.min());
+    let max = mask.max.filter(|&v| v < bands.max());
+    [
+        min.map_or(0.0, level),
+        max.map_or(1.0, level),
+        if min.is_some() { 1.0 } else { 0.0 },
+        if max.is_some() { 1.0 } else { 0.0 },
+    ]
 }
 
 /// The opacity of a layer for the test of what it hides. A layer that
@@ -4788,6 +5099,10 @@ fn point_scale(pixels_per_point: f32, frame: Option<&FramePlace>, small: bool) -
 /// the groups of the canvas.
 pub const FRAME_TARGET: TargetId = 1 << 32;
 const CAPTURE_TARGET: TargetId = 1 << 48;
+/// The first target of the captures of the raster masks of the map frames.
+const MASK_CAPTURE_TARGET: TargetId = 1 << 52;
+/// The first target of the vector layers with a raster mask.
+const MASK_TARGET: TargetId = 1 << 40;
 
 /// A map frame to draw.
 #[derive(Clone)]

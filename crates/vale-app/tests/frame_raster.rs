@@ -1,6 +1,8 @@
 //! Raster layers in the map frames of the Atlas workspace.
 
 mod images;
+mod lines;
+mod masked;
 mod striped;
 
 use eframe::egui::{Pos2, pos2};
@@ -544,4 +546,247 @@ fn an_export_over_the_detail_budget_draws_in_strips_with_no_seam() {
             assert!(high >= 80 && low >= 80, "row {y}: {a:?}");
         }
     }
+}
+
+/// The name of the polygon of `masked_atlas` across the coast.
+const COAST: &str = "Coast";
+/// The color of the label of `masked_atlas`.
+fn label_blue(p: &image::Rgba<u8>) -> bool {
+    let [r, g, b, _] = p.0;
+    b > 150 && r < 90 && g < 90
+}
+
+/// An atlas page with a frame over the island of `lines::set_crater`, in
+/// two bands with smoothing on, and its pit below the sea level. A polygon
+/// layer with the mask of the land has a polygon half over the sea north of
+/// the island, with a blue label, and a polygon around the pit.
+fn masked_atlas() -> (App, RasterId, vale_store::LayerId) {
+    use vale_terrain::math::lonlat_to_dir;
+    let mut state = AppState::new(Document::empty()).unwrap();
+    state.headless = true;
+    state.set_layout(Layout::Pad);
+    state.workspace = Workspace::Atlas;
+    vale_app::ui::atlas::add_frame(&mut state).expect("a page takes a frame");
+    state.globe.set_face_size(256);
+    let height = state.add_height();
+    state.set_raster_display(height, RasterDisplay::Bands);
+    state.set_raster_rivers(height, false);
+    state.set_raster_hillshade(height, false);
+    assert!(state.set_raster_smoothing(height, true));
+    state.set_raster_feature_size(height, 4.0);
+    let globe = &mut state.globe;
+    lines::two_bands(
+        globe.bands_mut(height).unwrap(),
+        [40, 40, 40],
+        [150, 140, 120],
+    );
+    let map = globe.raster_map_mut(height).unwrap();
+    lines::set_crater(map, lonlat_to_dir(0.0, 0.0), 1500.0);
+    masked::ripple(map);
+
+    let text = r#"{"type":"FeatureCollection","features":[
+        {"type":"Feature","properties":{"name":"Coast"},"geometry":{"type":"Polygon","coordinates":[[[-12,6],[12,6],[12,30],[-12,30],[-12,6]]]}},
+        {"type":"Feature","properties":{},"geometry":{"type":"Polygon","coordinates":[[[-8,-5],[8,-5],[8,4],[-8,4],[-8,-5]]]}}]}"#;
+    let doc = &mut state.doc;
+    let layer = doc.add_imported(vale_import::geojson::read_str("land", text).unwrap(), None)[0];
+    let raster = doc.project.raster_layer(height).unwrap().id;
+    let style = &mut doc.entry_mut(layer).unwrap().style;
+    style.set_fill(Some(masked::MASK_FILL));
+    style.set_stroke(None);
+    style.style.mask = Some(vale_style::Mask::Raster {
+        layer: raster,
+        min: Some(0.0),
+        max: None,
+    });
+    let page = vale_app::ui::atlas::open_page(&state).clone();
+    let frame = &page.frames[0];
+    let mut class =
+        vale_style::LabelClass::new("Coast", vale_store::GeometryKind::Polygon, 0).unwrap();
+    class.placement = vale_style::LabelPlacement::Horizontal;
+    class.color = vale_style::Color::rgb(0, 0, 255);
+    class.halo = false;
+    class.size = 14.0;
+    assert!(state.doc.set_label_classes(frame.map, layer, &[class]));
+    let record = state.doc.project.atlas.frame_mut(frame.id).unwrap();
+    record.center = [0.0, 8.0];
+    record.scale = 4.0e7;
+    record.graticule.on = false;
+    state.sync_globe();
+    state.touch();
+    let setup = egui_kittest::wgpu::default_wgpu_setup();
+    let mut h = headless::ui_harness(state, (1194.0, 834.0), 1.0, setup);
+    h.set_render_every_step(true);
+    h.run_steps(4);
+    (h, height, layer)
+}
+
+/// The rings of the page mask of `layer` in the open frame, once the
+/// capture is done.
+fn settled_mask(h: &mut App, layer: vale_store::LayerId) -> Vec<Vec<Point>> {
+    let frame = open_frame(h).id;
+    for _ in 0..200 {
+        h.run_steps(1);
+        let state = h.state();
+        if state.pipeline.page_mask(frame, layer).is_some() && !state.globe.details_loading() {
+            break;
+        }
+    }
+    // A capture after the last change of the frame.
+    h.run_steps(6);
+    let mask = h.state().pipeline.page_mask(frame, layer);
+    mask.expect("the frame has a mask").rings().to_vec()
+}
+
+/// True if a page point in millimeters is inside the rings of a mask.
+fn in_mask(rings: &[Vec<Point>], p: Point) -> bool {
+    let mut path = kurbo::BezPath::new();
+    for r in rings {
+        path.move_to(r[0]);
+        r[1..].iter().for_each(|q| path.line_to(*q));
+        path.close_path();
+    }
+    kurbo::Shape::winding(&path, p) != 0
+}
+
+/// The page point of a longitude and a latitude in the open frame.
+fn page_point(h: &mut App, lon: f64, lat: f64) -> Point {
+    let frame = open_frame(h);
+    let state = h.state_mut();
+    let projection = state.pipeline.projection(&state.doc, frame.map).unwrap();
+    let vt = vale_app::atlas::frame_transform(projection, &frame, vale_app::atlas::FrameTarget::MM);
+    vt.to_page(projection.forward([lon, lat]).unwrap())
+}
+
+/// Hides a layer in the map of the open frame.
+fn hide_in_frame(h: &mut App, layer: vale_store::LayerId) {
+    let map = open_frame(h).map;
+    assert!(h.state_mut().doc.set_shown(map, layer, false));
+    h.state_mut().touch();
+    h.run_steps(4);
+}
+
+/// The part of the open frame away from its edges, in page millimeters.
+fn frame_inside(h: &App) -> kurbo::Rect {
+    vale_app::atlas::shape_bbox(&open_frame(h).shape).inset(-3.0)
+}
+
+#[test]
+#[ignore = "gpu"]
+fn the_mask_of_a_frame_follows_the_coast_that_the_frame_draws() {
+    let _gpu = one_gpu_test();
+    let (mut h, _, layer) = masked_atlas();
+    let rings = settled_mask(&mut h, layer);
+    let inside = frame_inside(&h);
+    // The pit below the sea level is outside the mask, and the land around
+    // it is inside.
+    let (pit, land) = (page_point(&mut h, 0.0, 0.0), page_point(&mut h, 6.0, 0.0));
+    assert!(!in_mask(&rings, pit) && in_mask(&rings, land));
+
+    h.remove_cursor();
+    let shown = h.render().unwrap();
+    hide_in_frame(&mut h, layer);
+    let plain = h.render().unwrap();
+    assert!(!plain.pixels().any(masked::red));
+    masked::save_images("mask-frame", &plain, &shown);
+    let place = h.state().atlas.place.unwrap();
+    let ppp = h.ctx.pixels_per_point();
+    let mut checked = 0;
+    for p in rings.iter().flatten().filter(|p| inside.contains(**p)) {
+        let at = place.to_screen(*p) * ppp;
+        // The pixels with a center at most 1.5 pixels from the point.
+        let near = (-2..=2).flat_map(|dy| (-2..=2).map(move |dx| (dx, dy)));
+        let kinds: Vec<masked::Ground> = near
+            .map(|(dx, dy)| {
+                pos2(
+                    at.x.floor() + dx as f32 + 0.5,
+                    at.y.floor() + dy as f32 + 0.5,
+                )
+            })
+            .filter(|c| c.distance(at) <= 1.5)
+            .map(|c| masked::ground(plain.get_pixel(c.x as u32, c.y as u32)))
+            .collect();
+        assert!(
+            kinds.iter().any(|k| *k != kinds[0]),
+            "no coast at {at:?}: {kinds:?}"
+        );
+        checked += 1;
+    }
+    assert!(checked > 100, "{checked}");
+}
+
+/// Exports the open page to a PDF through the export job of the app.
+fn export_pdf(h: &mut App, path: &std::path::Path) -> Vec<u8> {
+    h.state_mut().headless = false;
+    h.state_mut()
+        .run_action(Action::ExportAtlas(path.to_path_buf()));
+    let start = std::time::Instant::now();
+    while h.state().atlas_export.is_some() {
+        assert!(start.elapsed().as_secs() < 600, "the export did not end");
+        h.run_steps(1);
+    }
+    let status = &h.state().status;
+    assert!(status.starts_with("Exported"), "{status}");
+    std::fs::read(path).unwrap()
+}
+
+#[test]
+#[ignore = "gpu"]
+fn an_export_clips_a_masked_layer_to_the_coast_of_its_raster_image() {
+    let _gpu = one_gpu_test();
+    let (mut h, _, layer) = masked_atlas();
+    settled_mask(&mut h, layer);
+    let dir = tempfile::tempdir().unwrap();
+    let pdf = export_pdf(&mut h, &dir.path().join("atlas.pdf"));
+    let (nonzero, _) = masked::pdf_clips(&pdf);
+    assert!(nonzero >= 1, "{nonzero}");
+    let raw = String::from_utf8_lossy(&pdf);
+    assert_eq!(raw.matches("/Subtype/Image").count(), 1);
+
+    // The fill of the PNG export is on the land of its raster image, and
+    // the label is on the land.
+    let masked_png = export_png(&mut h, &dir.path().join("masked.png"));
+    hide_in_frame(&mut h, layer);
+    let plain = export_png(&mut h, &dir.path().join("plain.png"));
+    masked::save_images("mask-export", &plain, &masked_png);
+    let inside = frame_inside(&h);
+    let polygons = [
+        kurbo::Rect::from_points(
+            page_point(&mut h, -11.0, 7.0),
+            page_point(&mut h, 11.0, 29.0),
+        ),
+        kurbo::Rect::from_points(page_point(&mut h, -7.0, -4.0), page_point(&mut h, 7.0, 3.0)),
+    ];
+    let pixel_mm = |x: u32, y: u32| {
+        let e = EXPORT_PIXELS_PER_MM;
+        Point::new((f64::from(x) + 0.5) / e, (f64::from(y) + 0.5) / e)
+    };
+    let keep = |x: u32, y: u32| {
+        let p = pixel_mm(x, y);
+        inside.contains(p) && polygons.iter().any(|r| r.contains(p))
+    };
+    let labels: Vec<(u32, u32)> = (masked_png.enumerate_pixels())
+        .filter(|(_, _, p)| label_blue(p))
+        .map(|(x, y, _)| (x, y))
+        .collect();
+    let off_label = |x: u32, y: u32| {
+        keep(x, y)
+            && !labels
+                .iter()
+                .any(|&(a, b)| a.abs_diff(x) <= 3 && b.abs_diff(y) <= 3)
+    };
+    let agreement = masked::agreement(&plain, &masked_png, off_label);
+    assert!(
+        agreement.compared > 20_000 && agreement.land > 5_000 && agreement.wrong == 0,
+        "{agreement:?}"
+    );
+    // The label of the polygon across the coast is on its land.
+    let coast = polygons[0];
+    let on_coast: Vec<_> = (labels.iter())
+        .filter(|&&(x, y)| coast.contains(pixel_mm(x, y)))
+        .collect();
+    assert!(on_coast.len() > 30, "{} pixels of {COAST}", on_coast.len());
+    let sea = (on_coast.iter())
+        .filter(|&&&(x, y)| masked::ground(plain.get_pixel(x, y)) == masked::Ground::Sea)
+        .count();
+    assert_eq!(sea, 0, "{sea} label pixels on the sea");
 }

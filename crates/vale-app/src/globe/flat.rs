@@ -185,7 +185,13 @@ impl FlatView {
         )
     }
 
-    fn screen(&self, rect: Rect, point: Point) -> Pos2 {
+    /// The projection on a sphere of radius 1.
+    pub fn projection(&self) -> &Projection {
+        &self.projection
+    }
+
+    /// The screen position of a point of the projection.
+    pub fn screen(&self, rect: Rect, point: Point) -> Pos2 {
         let (s, c) = (self.scale(rect), rect.center());
         Pos2::new(
             c.x + ((point.x - self.center.x) * s) as f32,

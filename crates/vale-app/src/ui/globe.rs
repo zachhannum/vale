@@ -13,6 +13,7 @@ use vale_terrain::Mode;
 use crate::document::Document;
 use crate::globe::backdrop::Canvas;
 use crate::globe::brush::{FIXED_FLOW, Sample, pen_flow, slerp};
+use crate::globe::flat::FlatView;
 use crate::globe::math::V3;
 use crate::globe::math::{angle, dir_to_lonlat, lonlat_to_dir};
 use crate::globe::nav::{Nav, Painting, TAP_SECONDS, TAP_SLOP, Tap, on_canvas};
@@ -22,10 +23,12 @@ use crate::globe::stroke_group;
 use crate::globe::symbol::{GlobeScatter, SymbolMesh, append_missing, view_places};
 use crate::globe::vector;
 use crate::globe::view::GlobeView;
-use crate::globe::{FingerPress, Globe, Paint, WorldView};
+use crate::globe::{FingerPress, Globe, Paint, RasterMask, WorldView};
+use crate::mask::MaskedFeature;
 use crate::measure::{DENSIFY_DEG, MOUSE, Measure, TapPress};
 use crate::pen::{PenEvent, PenPhase, QUEUE_PEN};
-use crate::scatter::{ScatterCache, ScatterFill};
+use crate::pipeline::Pipeline;
+use crate::scatter::ScatterFill;
 use crate::ui::pad::theme;
 use vale_render::hatch::offset_ring;
 use vale_sphere::LonLat;
@@ -788,22 +791,30 @@ fn opaque(c: vale_style::Color) -> (egui::Color32, f32) {
 
 /// The shapes of a vector layer on their way to the painter, in draw order.
 /// The symbols wait in one mesh, and the translucent strokes of one paint
-/// wait in one group, until a shape of another kind comes.
+/// wait in one group, until a shape of another kind comes. With a cut, the
+/// fills and the strokes go to the list of shapes that a raster mask cuts,
+/// and a translucent stroke goes there shape by shape.
 struct Sink<'a> {
     painter: &'a egui::Painter,
     /// The format of the render target. `None`: no wgpu renderer, and a
     /// translucent stroke goes to the painter shape by shape.
     format: Option<egui_wgpu::wgpu::TextureFormat>,
+    cut: Option<&'a mut Vec<egui::Shape>>,
     symbols: egui::Mesh,
     /// The paint of the open group, its alpha, and its opaque shapes.
     group: Option<(vale_style::Stroke, f32, Vec<egui::Shape>)>,
 }
 
 impl<'a> Sink<'a> {
-    fn new(painter: &'a egui::Painter, format: Option<egui_wgpu::wgpu::TextureFormat>) -> Self {
+    fn new(
+        painter: &'a egui::Painter,
+        format: Option<egui_wgpu::wgpu::TextureFormat>,
+        cut: Option<&'a mut Vec<egui::Shape>>,
+    ) -> Self {
         Sink {
             painter,
             format,
+            cut,
             symbols: egui::Mesh::default(),
             group: None,
         }
@@ -840,7 +851,19 @@ impl<'a> Sink<'a> {
 
     fn add(&mut self, shape: impl Into<egui::Shape>) {
         self.flush();
-        self.painter.add(shape);
+        match &mut self.cut {
+            Some(cut) => cut.push(shape.into()),
+            None => {
+                self.painter.add(shape);
+            }
+        }
+    }
+
+    /// Sends the shapes that `paint` gives to the painter, also with a cut.
+    fn uncut(&mut self, paint: impl FnOnce(&mut Self)) {
+        let cut = self.cut.take();
+        paint(self);
+        self.cut = cut;
     }
 
     /// The mesh of the waiting symbols.
@@ -854,7 +877,21 @@ impl<'a> Sink<'a> {
     fn stroke(&mut self, paint: vale_style::Stroke, (shapes, alpha): (Vec<egui::Shape>, f32)) {
         if alpha >= 1.0 {
             self.flush();
-            self.painter.extend(shapes);
+            match &mut self.cut {
+                Some(cut) => cut.extend(shapes),
+                None => self.painter.extend(shapes),
+            }
+            return;
+        }
+        if self.cut.is_some() {
+            self.flush();
+            let cut = self.cut.as_mut().expect("the sink has a cut");
+            cut.extend(shapes.into_iter().map(|mut shape| {
+                egui::epaint::shape_transform::adjust_colors(&mut shape, move |c| {
+                    *c = c.gamma_multiply(alpha);
+                });
+                shape
+            }));
             return;
         }
         if self.format.is_none() {
@@ -1045,10 +1082,12 @@ enum OnScreen {
     Points(Vec<egui::Pos2>),
     /// The parts of the lines, as `vector::stroke_shapes` takes them.
     Lines(Vec<Vec<(kurbo::Point, f64)>>),
-    /// The parts of the polygons, and their triangles, made at the first fill.
+    /// The parts of the polygons, their triangles, made at the first fill,
+    /// and the outline of a masked polygon: its own outline cut by the mask.
     Polygons(
         Vec<vector::Clipped>,
         Vec<Option<(Vec<vector::P2>, Vec<u32>)>>,
+        Option<Vec<Vec<(kurbo::Point, f64)>>>,
     ),
 }
 
@@ -1056,16 +1095,36 @@ enum OnScreen {
 /// rule by rule and symbolizer by symbolizer, and the features of one paint
 /// together. The symbols go to one mesh, which goes to the painter before the
 /// next shape that is not a symbol. The translucent strokes of one paint go
-/// to one group.
-fn vector_layer(
+/// to one group. A layer with a mask draws the parts of its features inside
+/// the mask.
+pub fn vector_layer(
     painter: &egui::Painter,
     format: Option<egui_wgpu::wgpu::TextureFormat>,
     rect: egui::Rect,
     doc: &Document,
     view: &GlobeView,
     id: LayerId,
-    scatter: &mut ScatterCache,
+    pipeline: &mut Pipeline,
 ) {
+    vector_layer_cut(painter, format, None, rect, doc, view, id, pipeline);
+}
+
+/// Draws one vector layer over the globe, as `vector_layer`. With `cut`,
+/// the fills and the strokes go to `cut`, and the other shapes go to the
+/// painter.
+#[expect(clippy::too_many_arguments)]
+pub fn vector_layer_cut(
+    painter: &egui::Painter,
+    format: Option<egui_wgpu::wgpu::TextureFormat>,
+    cut: Option<&mut Vec<egui::Shape>>,
+    rect: egui::Rect,
+    doc: &Document,
+    view: &GlobeView,
+    id: LayerId,
+    pipeline: &mut Pipeline,
+) {
+    let masked = pipeline.masked(doc, id);
+    let scatter = pipeline.scatter_cache_mut();
     let radius = view.radius(rect);
     let radius_m = doc.project.world.radius_km * 1000.0;
     let scale = scale_denominator(radius_m / radius);
@@ -1081,7 +1140,7 @@ fn vector_layer(
         let q = to_screen(p);
         kurbo::Point::new(f64::from(q.x), f64::from(q.y))
     };
-    let on_screen = |geometry: &Geometry| match geometry {
+    let on_screen = |geometry: &Geometry, part: Option<&MaskedFeature>| match geometry {
         Geometry::Points(points) => OnScreen::Points(
             points
                 .iter()
@@ -1089,14 +1148,15 @@ fn vector_layer(
                 .collect(),
         ),
         Geometry::Lines(lines) => OnScreen::Lines(
-            lines
+            part.map_or(lines, |p| &p.lines)
                 .iter()
                 .flat_map(|line| vector::clip_line_measured(&view.rot, &vector::line(line), step))
                 .map(|part| part.iter().map(|(p, f)| (point(p), *f)).collect())
                 .collect(),
         ),
         Geometry::Polygons(polygons) => {
-            let clipped: Vec<_> = polygons
+            let clipped: Vec<_> = part
+                .map_or(polygons, |p| &p.polygons)
                 .iter()
                 .filter_map(|polygon| {
                     let rings: Vec<_> = polygon
@@ -1112,12 +1172,18 @@ fn vector_layer(
                 })
                 .collect();
             let triangles = vec![None; clipped.len()];
-            OnScreen::Polygons(clipped, triangles)
+            let outlines = part.map(|part| {
+                (part.lines.iter())
+                    .flat_map(|line| vector::clip_line(&view.rot, &vector::line(line), step))
+                    .map(|o| o.iter().map(|p| (point(p), 0.0)).collect())
+                    .collect()
+            });
+            OnScreen::Polygons(clipped, triangles, outlines)
         }
     };
     let symbols = doc.symbols();
     let mut places = None;
-    let mut sink = Sink::new(painter, format);
+    let mut sink = Sink::new(painter, format, cut);
     let entries = doc.frame.entries.iter().filter(|e| e.layer == id);
     for entry in entries {
         let Some(layer) = doc.layer(entry.layer).filter(|l| l.visible) else {
@@ -1136,7 +1202,9 @@ fn vector_layer(
             let paint = &batch.paint;
             for &index in &batch.features {
                 let feature = &features[index];
-                let screen = screens[index].get_or_insert_with(|| on_screen(&feature.geometry));
+                let part = (masked.as_ref()).and_then(|m| m.features.get(index)?.as_ref());
+                let screen =
+                    screens[index].get_or_insert_with(|| on_screen(&feature.geometry, part));
                 let seed = index as u64;
                 match (screen, paint) {
                     (OnScreen::Points(_), StylePaint::Marker { .. }) => {}
@@ -1166,7 +1234,7 @@ fn vector_layer(
                     (OnScreen::Lines(parts), StylePaint::Stroke(stroke)) if !parts.is_empty() => {
                         sink.stroke(*stroke, vector::stroke_shapes(parts, stroke, seed));
                     }
-                    (OnScreen::Polygons(clipped, triangles), StylePaint::Fill(c)) => {
+                    (OnScreen::Polygons(clipped, triangles, _), StylePaint::Fill(c)) => {
                         for (part, triangles) in clipped.iter().zip(triangles) {
                             let (points, indices) =
                                 triangles.get_or_insert_with(|| vector::triangulate(&part.loops));
@@ -1185,11 +1253,15 @@ fn vector_layer(
                             });
                         }
                     }
-                    (OnScreen::Polygons(clipped, _), StylePaint::Stroke(stroke)) => {
+                    (OnScreen::Polygons(clipped, _, outlines), StylePaint::Stroke(stroke)) => {
                         let mut stroke = *stroke;
                         // A polygon outline has no start and no end to taper.
                         if matches!(stroke.kind, StrokeKind::Taper { .. }) {
                             stroke.kind = StrokeKind::Solid;
+                        }
+                        if let Some(outlines) = outlines {
+                            sink.stroke(stroke, vector::stroke_shapes(outlines, &stroke, seed));
+                            continue;
                         }
                         for part in clipped.iter() {
                             let outlines: Vec<_> = part
@@ -1249,11 +1321,167 @@ fn vector_layer(
                     .flatten()
                     .copied()
                     .collect();
-                paint_markers(&mut sink, &points, *radius, *shape, *fill, *hatch, *stroke);
+                // A mask does not cut the points.
+                sink.uncut(|sink| {
+                    paint_markers(sink, &points, *radius, *shape, *fill, *hatch, *stroke);
+                });
             }
             // Two batches with the same paint are two layers on the page too.
             sink.end_group();
         }
+    }
+    sink.flush();
+}
+
+/// The geometry of a feature in the flat view: the rings of the fill, the
+/// outline, and the triangles of the fill, made at the first fill.
+struct FlatScreen {
+    fill: Option<Vec<Vec<vector::P2>>>,
+    outline: Vec<Vec<(kurbo::Point, f64)>>,
+    triangles: Option<(Vec<vector::P2>, Vec<u32>)>,
+}
+
+/// Draws the fills and the strokes of one vector layer over the flat view,
+/// in the draw order of `vector_layer`. The points, the symbols, and the
+/// scatter fills do not draw there. A layer with a mask draws the parts of
+/// its features inside the mask.
+pub fn flat_vector_layer(
+    painter: &egui::Painter,
+    format: Option<egui_wgpu::wgpu::TextureFormat>,
+    rect: egui::Rect,
+    doc: &Document,
+    flat: &FlatView,
+    id: LayerId,
+    pipeline: &mut Pipeline,
+) {
+    flat_vector_layer_cut(painter, format, None, rect, doc, flat, id, pipeline);
+}
+
+/// Draws one vector layer over the flat view, as `flat_vector_layer`. With
+/// `cut`, the shapes go to `cut`.
+#[expect(clippy::too_many_arguments)]
+pub fn flat_vector_layer_cut(
+    painter: &egui::Painter,
+    format: Option<egui_wgpu::wgpu::TextureFormat>,
+    cut: Option<&mut Vec<egui::Shape>>,
+    rect: egui::Rect,
+    doc: &Document,
+    flat: &FlatView,
+    id: LayerId,
+    pipeline: &mut Pipeline,
+) {
+    let (Some(entry), Some(layer)) = (doc.entry(id), doc.layer(id).filter(|l| l.visible)) else {
+        return;
+    };
+    let masked = pipeline.masked(doc, id);
+    let projection = flat.projection();
+    let radius_m = doc.project.world.radius_km * 1000.0;
+    let scale = scale_denominator(radius_m / flat.scale(rect));
+    let to_screen = |p: &vale_sphere::Point| flat.screen(rect, *p);
+    let measured = |lines: Vec<Vec<vale_sphere::Point>>| -> Vec<Vec<(kurbo::Point, f64)>> {
+        (lines.into_iter())
+            .map(|line| {
+                let length: f64 = line.windows(2).map(|w| w[0].distance(w[1])).sum();
+                let mut along = 0.0;
+                (0..line.len())
+                    .map(|i| {
+                        if i > 0 {
+                            along += line[i - 1].distance(line[i]);
+                        }
+                        let q = to_screen(&line[i]);
+                        let f = if length > 0.0 { along / length } else { 0.0 };
+                        (kurbo::Point::new(f64::from(q.x), f64::from(q.y)), f)
+                    })
+                    .collect()
+            })
+            .collect()
+    };
+    let on_screen = |geometry: &Geometry, part: Option<&MaskedFeature>| match geometry {
+        Geometry::Points(_) => None,
+        Geometry::Lines(lines) => {
+            let lines = part.map_or(lines, |p| &p.lines);
+            let outline = (lines.iter())
+                .flat_map(|l| projection.project_line(l))
+                .collect();
+            Some(FlatScreen {
+                fill: None,
+                outline: measured(outline),
+                triangles: None,
+            })
+        }
+        Geometry::Polygons(polygons) => {
+            let rings: Vec<Vec<vector::P2>> = (part.map_or(polygons, |p| &p.polygons).iter())
+                .flat_map(|p| projection.project_polygon(p))
+                .map(|r| r.iter().map(|p| [p.x, p.y]).collect())
+                .collect();
+            // The outline of a masked polygon is its own outline cut by the
+            // mask.
+            let outline: Vec<_> = match part {
+                Some(p) => (p.lines.iter())
+                    .flat_map(|l| projection.project_line(l))
+                    .collect(),
+                None => (polygons.iter())
+                    .flat_map(|p| projection.project_outline_of(p))
+                    .collect(),
+            };
+            Some(FlatScreen {
+                fill: Some(rings),
+                outline: measured(outline),
+                triangles: None,
+            })
+        }
+    };
+    let features = &layer.features;
+    let batches = pipeline::style_batches(&entry.style.style, scale, features.len(), |i| Context {
+        attributes: &features[i].attributes,
+        scale,
+        geometry: features[i].geometry.kind(),
+    });
+    let mut screens: Vec<Option<Option<FlatScreen>>> = features.iter().map(|_| None).collect();
+    let mut sink = Sink::new(painter, format, cut);
+    for batch in &batches {
+        for &index in &batch.features {
+            let feature = &features[index];
+            let part = (masked.as_ref()).and_then(|m| m.features.get(index)?.as_ref());
+            let screen = screens[index].get_or_insert_with(|| on_screen(&feature.geometry, part));
+            let Some(screen) = screen else {
+                continue;
+            };
+            let seed = index as u64;
+            match &batch.paint {
+                StylePaint::Fill(c) => {
+                    let Some(rings) = &screen.fill else { continue };
+                    let (points, indices) = screen.triangles.get_or_insert_with(|| {
+                        vector::triangulate(&vector::even_odd_loops(rings.clone()))
+                    });
+                    let vertices = (points.iter())
+                        .map(|p| egui::epaint::Vertex {
+                            pos: to_screen(&vale_sphere::Point::new(p[0], p[1])),
+                            uv: egui::epaint::WHITE_UV,
+                            color: color(*c),
+                        })
+                        .collect();
+                    sink.add(egui::Mesh {
+                        indices: indices.clone(),
+                        vertices,
+                        ..Default::default()
+                    });
+                }
+                StylePaint::Stroke(stroke) if !screen.outline.is_empty() => {
+                    let mut stroke = *stroke;
+                    // A polygon outline has no start and no end to taper.
+                    if screen.fill.is_some() && matches!(stroke.kind, StrokeKind::Taper { .. }) {
+                        stroke.kind = StrokeKind::Solid;
+                    }
+                    sink.stroke(
+                        stroke,
+                        vector::stroke_shapes(&screen.outline, &stroke, seed),
+                    );
+                }
+                _ => {}
+            }
+        }
+        sink.end_group();
     }
     sink.flush();
 }
@@ -1384,6 +1612,58 @@ pub(super) fn canvas_input(
     Some(rect)
 }
 
+/// The raster mask of each vector layer whose mask is a raster layer that
+/// the globe holds.
+fn raster_masks(doc: &Document, globe: &Globe) -> Vec<(LayerId, RasterMask)> {
+    let project = &doc.project;
+    let layers = project.layers();
+    let raster_of = |id: LayerId| {
+        layers
+            .iter()
+            .find(|l| l.id == id)
+            .and_then(|l| match l.kind {
+                vale_store::LayerKind::Raster(raster) => Some(raster),
+                _ => None,
+            })
+    };
+    (doc.frame.entries.iter())
+        .filter_map(|entry| {
+            let vale_style::Mask::Raster { layer, min, max } = entry.style.style.mask? else {
+                return None;
+            };
+            let raster = raster_of(layer).filter(|&r| globe.holds(r))?;
+            let smoothing = project.raster(raster)?.smoothing;
+            let mask = RasterMask {
+                raster,
+                min,
+                max,
+                smoothing,
+            };
+            Some((entry.layer, mask))
+        })
+        .collect()
+}
+
+/// The meshes of `shapes`, each with its clip rectangle, in points.
+fn tessellate(
+    ctx: &egui::Context,
+    clip: egui::Rect,
+    shapes: Vec<egui::Shape>,
+) -> Vec<(egui::Rect, egui::Mesh)> {
+    let clipped = (shapes.into_iter())
+        .map(|shape| egui::epaint::ClippedShape {
+            clip_rect: clip,
+            shape,
+        })
+        .collect();
+    (ctx.tessellate(clipped, ctx.pixels_per_point()).into_iter())
+        .filter_map(|p| match p.primitive {
+            egui::epaint::Primitive::Mesh(mesh) => Some((p.clip_rect, mesh)),
+            egui::epaint::Primitive::Callback(_) => None,
+        })
+        .collect()
+}
+
 /// Paints the globe into `rect`. A change of the state before this call
 /// shows in the same frame.
 pub(super) fn paint_canvas(
@@ -1399,16 +1679,17 @@ pub(super) fn paint_canvas(
     let more = globe.advance(Instant::now());
     let pixels_per_point = ui.ctx().pixels_per_point();
     // The passes of the raster layers and the shapes of the vector layers
-    // go to the painter in the draw order. The flat view draws no vector
-    // layer.
+    // go to the painter in the draw order.
     let globe_view = globe.world_view == WorldView::Globe;
     let canvas = Canvas {
         background,
         pixels_per_point,
     };
     let doc = &state.doc;
-    let scatter = state.pipeline.scatter_cache_mut();
-    scatter.retain(|id| doc.layer(id).is_some());
+    let pipeline = &mut state.pipeline;
+    (pipeline.scatter_cache_mut()).retain(|id| doc.layer(id).is_some());
+    globe.set_raster_masks(raster_masks(doc, globe));
+    let format = globe.format;
     match globe.paint(canvas, cards && globe.blur) {
         Some(paints) => {
             for paint in paints {
@@ -1417,9 +1698,31 @@ pub(super) fn paint_canvas(
                         painter.add(egui_wgpu::Callback::new_paint_callback(rect, callback));
                     }
                     Paint::Vector(id) if globe_view => {
-                        vector_layer(&painter, globe.format, rect, doc, &globe.view, id, scatter);
+                        vector_layer(&painter, format, rect, doc, &globe.view, id, pipeline);
                     }
-                    Paint::Vector(_) => {}
+                    Paint::Vector(id) => {
+                        let flat = &globe.flat;
+                        flat_vector_layer(&painter, format, rect, doc, flat, id, pipeline);
+                    }
+                    Paint::Masked(id, pass) => {
+                        // The cut shapes go below the other shapes of the
+                        // layer.
+                        let slot = painter.add(egui::Shape::Noop);
+                        let mut shapes = Vec::new();
+                        let cut = Some(&mut shapes);
+                        let (view, flat) = (&globe.view, &globe.flat);
+                        if globe_view {
+                            vector_layer_cut(&painter, format, cut, rect, doc, view, id, pipeline);
+                        } else {
+                            flat_vector_layer_cut(
+                                &painter, format, cut, rect, doc, flat, id, pipeline,
+                            );
+                        }
+                        let meshes = tessellate(ui.ctx(), painter.clip_rect(), shapes);
+                        let callback = pass.callback(pixels_per_point, meshes);
+                        let callback = egui_wgpu::Callback::new_paint_callback(rect, callback);
+                        painter.set(slot, callback);
+                    }
                 }
             }
         }
@@ -1573,11 +1876,11 @@ mod tests {
         set(&mut doc.entry_mut(id).unwrap().style);
         let view = GlobeView::centered(0.0, 0.0);
         let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 400.0));
-        let mut scatter = ScatterCache::default();
+        let mut pipeline = Pipeline::new();
         let ctx = egui::Context::default();
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
             let painter = ui.ctx().layer_painter(egui::LayerId::background());
-            vector_layer(&painter, format, rect, &doc, &view, id, &mut scatter);
+            vector_layer(&painter, format, rect, &doc, &view, id, &mut pipeline);
         });
         output.textures_delta.clear();
         output.shapes.into_iter().map(|s| s.shape).collect()
@@ -1683,6 +1986,7 @@ mod tests {
                             stroke: Some(StrokeSymbolizer::constant(Stroke::solid(stroke, 2.0))),
                         }],
                     )],
+                    mask: None,
                 };
             })
         };

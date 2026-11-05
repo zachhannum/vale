@@ -275,20 +275,37 @@ fn edge_toward(c: f32, q: f32, at: f32, side: bool) -> f32 {
     return clamp((at - c) / (q - c), 0.0, 1.0);
 }
 
-// The tint of a pixel from the cut heights. Each band edge is the line
-// where the height between the pixel centers crosses the limit, and it is
-// one pixel soft. `h` and `width` give the tint where there is no cut
-// height.
+// The part of a pixel above the limit `at`, from its cut height `c`, the
+// cut heights `around` it, and their range. The band edge is the line where
+// the height between the pixel centers crosses the limit, and it is one
+// pixel soft.
+fn limit_cover(c: f32, around: vec4<f32>, range: vec2<f32>, at: f32) -> f32 {
+    if at <= range.x {
+        return 1.0;
+    }
+    if at > range.y {
+        return 0.0;
+    }
+    // A height at the limit is in the upper band.
+    let side = c >= at;
+    let tx = min(edge_toward(c, around.y, at, side), edge_toward(c, around.x, at, side));
+    let ty = min(edge_toward(c, around.w, at, side), edge_toward(c, around.z, at, side));
+    // The distance to the line through the two crossings.
+    var d = min(tx, ty);
+    if tx < 1e8 && ty < 1e8 {
+        d = tx * ty / max(sqrt(tx * tx + ty * ty), 1e-9);
+    }
+    return select(clamp(0.5 - d, 0.0, 1.0), clamp(0.5 + d, 0.0, 1.0), side);
+}
+
+// The tint of a pixel from the cut heights. `h` and `width` give the tint
+// where there is no cut height.
 fn tint_screen(p: vec2<i32>, h: f32, width: f32, mode: i32) -> vec3<f32> {
     let c = clean_px(p);
     if c < 0.0 {
         return tint(h, width, mode);
     }
     let around = clean_around(p);
-    let right = around.x;
-    let left = around.y;
-    let down = around.z;
-    let up = around.w;
     let range = edge_range(c, around);
     let count = i32(u.params.w);
     // The pixel and its neighbors are at or above each limit below
@@ -304,19 +321,64 @@ fn tint_screen(p: vec2<i32>, h: f32, width: f32, mode: i32) -> vec3<f32> {
         if at > range.y {
             break;
         }
-        // A height at the limit is in the upper band.
-        let side = c >= at;
-        let tx = min(edge_toward(c, left, at, side), edge_toward(c, right, at, side));
-        let ty = min(edge_toward(c, up, at, side), edge_toward(c, down, at, side));
-        // The distance to the line through the two crossings.
-        var d = min(tx, ty);
-        if tx < 1e8 && ty < 1e8 {
-            d = tx * ty / max(sqrt(tx * tx + ty * ty), 1e-9);
-        }
-        let over = select(clamp(0.5 - d, 0.0, 1.0), clamp(0.5 + d, 0.0, 1.0), side);
-        color = mix(color, band_color(i, c, mode), over);
+        color = mix(color, band_color(i, c, mode), limit_cover(c, around, range, at));
     }
     return color;
+}
+
+// The part of a pixel above the limit `at`, with the band edge that the
+// layer pass draws: from the cut heights when the passes of the heights
+// ran, and else from `h` and `width`.
+fn over_edge(p: vec2<i32>, h: f32, width: f32, at: f32) -> f32 {
+    var c = -1.0;
+    if u.edges.x > 0.5 {
+        c = clean_px(p);
+    }
+    if c < 0.0 {
+        return over_limit(h, width, at);
+    }
+    let around = clean_around(p);
+    return limit_cover(c, around, edge_range(c, around), at);
+}
+
+// The part of a pixel inside the value range of a raster mask. A lake that
+// the layer draws is outside the range.
+fn range_cover(p: vec2<i32>, h: f32, width: f32, d: vec3<f32>) -> f32 {
+    var cover = 1.0;
+    if u.range.z > 0.5 {
+        cover = over_edge(p, h, width, u.range.x);
+    }
+    if u.range.w > 0.5 {
+        cover *= 1.0 - over_edge(p, h, width, u.range.y);
+    }
+    return cover * (1.0 - lake_part(h, width, d));
+}
+
+@fragment
+fn fs_range_cover(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
+    let at = disk(frag);
+    if at.cover <= 0.0 {
+        discard;
+    }
+    var h = edge_shown(frag.xy);
+    if h.x < 0.0 {
+        h = disk_height(at);
+    }
+    let p = vec2<i32>(floor(frag.xy));
+    return vec4<f32>(range_cover(p, h.x, h.y, at.d), 0.0, 0.0, 1.0);
+}
+
+@fragment
+fn fs_flat_range_cover(in: FlatVertex) -> @location(0) vec4<f32> {
+    let d = normalize(in.dir);
+    let dx = dpdx(d);
+    let dy = dpdy(d);
+    var h = edge_shown(in.position.xy);
+    if h.x < 0.0 {
+        h = flat_height(d, dx, dy);
+    }
+    let p = vec2<i32>(floor(in.position.xy));
+    return vec4<f32>(range_cover(p, h.x, h.y, d), 0.0, 0.0, 1.0);
 }
 
 // The place where the height crosses `at` on the edge from `pa` to `pb`.

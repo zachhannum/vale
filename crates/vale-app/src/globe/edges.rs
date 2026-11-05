@@ -186,6 +186,9 @@ pub struct Extent {
     /// A hash of all that the passes read. The passes do not run again
     /// while it stays the same.
     pub inputs: u64,
+    /// The passes find the lines. `false`: only the passes of the heights
+    /// and of the cut heights run.
+    pub lines: bool,
 }
 
 /// The bind groups of the layer pass that the passes of the heights read.
@@ -445,6 +448,7 @@ impl Edges {
             area,
             radius,
             inputs,
+            lines,
         } = extent;
         let size = size.map(|s| s.max(1));
         if !self.scratch.contains_key(&size) {
@@ -561,6 +565,9 @@ impl Edges {
             pass.set_bind_group(0, groups.uniforms, &[]);
             pass.set_bind_group(3, &target.read_raw, &[]);
             pass.draw(0..3, 0..1);
+        }
+        if !lines {
+            return;
         }
         {
             let mut pass = begin(encoder, "edge seeds", &[attachment(&scratch.seeds, empty)]);
