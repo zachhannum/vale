@@ -7639,3 +7639,66 @@ fn a_rule_added_moved_and_deleted_in_a_frame_changes_only_that_map() {
         assert_eq!(own_rivers(h, Target::Map(maps[2])), None, "{what}");
     });
 }
+
+/// The names of the rules of Places in a map, or in the globe style.
+fn places_rule_names(h: &Pad, map: Option<MapId>) -> Vec<String> {
+    let places = layer_id(h, "Places");
+    let doc = &h.state().doc;
+    let style = match map {
+        Some(map) => doc.map_style(map, places).unwrap(),
+        None => doc.layer_style(places).unwrap(),
+    };
+    style.style.rules.iter().map(|r| r.name.clone()).collect()
+}
+
+/// Classifies Places by its population in the panel of the selected frame,
+/// with quantiles.
+fn classify_places_in_frame(h: &mut Pad) {
+    use vale_app::ui::pad::classify::{CLASSIFY, EXPRESSION, REPLACE_RULES};
+    tap(h, FRAME_TABS[2]);
+    scroll_to(h, "Open Places");
+    tap(h, "Open Places");
+    scroll_to(h, CLASSIFY);
+    tap(h, CLASSIFY);
+    assert_eq!(
+        h.state().atlas.layer_page,
+        Some(vale_app::ui::pad::Page::Classify)
+    );
+    check_controls(h, "classify in a frame");
+    scroll_to(h, EXPRESSION);
+    type_text(h, EXPRESSION, "pop_max");
+    scroll_to(h, "Quantiles");
+    tap(h, "Quantiles");
+    scroll_to(h, REPLACE_RULES);
+    tap(h, REPLACE_RULES);
+    assert_eq!(h.state().atlas.layer_page, None);
+}
+
+#[test]
+fn classify_in_a_frame_changes_only_that_map() {
+    let mut h = inset_pad(BOARDS[0]);
+    let (main, inset) = (frame(&h, 0).map, frame(&h, 1).map);
+    let globe = places_rule_names(&h, None);
+    classify_places_in_frame(&mut h);
+    let made = places_rule_names(&h, Some(inset));
+    assert!((2..=5).contains(&made.len()), "{made:?}");
+    assert_ne!(made, globe);
+    assert_eq!(places_rule_names(&h, None), globe);
+    assert_eq!(places_rule_names(&h, Some(main)), globe);
+
+    // With the map style, each map of the map style changes, and a map
+    // with no map style stays.
+    let mut h = inset_pad(BOARDS[0]);
+    add_frame(&mut h);
+    let maps = [0, 1, 2].map(|i| frame(&h, i).map);
+    let style = h.state_mut().save_as_map_style(maps[1]).unwrap();
+    h.state_mut().set_map_style_link(maps[2], Some(style));
+    h.state_mut().atlas.selection = AtlasSelection::Frame(frame(&h, 1).id);
+    h.run_steps(2);
+    classify_places_in_frame(&mut h);
+    let made = places_rule_names(&h, Some(maps[1]));
+    assert_ne!(made, globe);
+    assert_eq!(places_rule_names(&h, Some(maps[2])), made);
+    assert_eq!(places_rule_names(&h, Some(maps[0])), globe);
+    assert_eq!(places_rule_names(&h, None), globe);
+}

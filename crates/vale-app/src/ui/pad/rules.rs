@@ -184,7 +184,7 @@ pub fn section(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
         state.pad.page = Some(Page::Rule(i));
         state.touch();
     }
-    if widgets::button_row(ui, controls, CLASSIFY, !state.pad.in_frame).clicked() {
+    if widgets::button_row(ui, controls, CLASSIFY, true).clicked() {
         state.pad.page = Some(Page::Classify);
     }
     // A map does not override the mask.

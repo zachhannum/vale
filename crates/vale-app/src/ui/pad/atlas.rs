@@ -1428,6 +1428,7 @@ fn layer_panel(
             | Page::MarkerShape(_)
             | Page::MarkerFill(_),
         ) => state.atlas.layer_page,
+        Some(Page::Classify | Page::Ramps | Page::RampLabels(_)) => state.atlas.layer_page,
         _ => None,
     };
     state.atlas.layer_page = page;
@@ -1454,6 +1455,17 @@ fn layer_panel(
             &*rule_name,
         ),
         Some(Page::MarkerFill(_)) => ("pad-atlas-marker-fill", super::rules::FILL, &*rule_name),
+        Some(Page::Classify) => ("pad-atlas-classify", super::classify::TITLE, name.as_str()),
+        Some(Page::Ramps) => (
+            "pad-atlas-classify-ramps",
+            super::raster::COLOR_RAMPS,
+            super::classify::TITLE,
+        ),
+        Some(Page::RampLabels(_)) => (
+            "pad-atlas-classify-ramp-labels",
+            super::raster::LABELS,
+            super::raster::COLOR_RAMPS,
+        ),
         Some(_) => ("pad-atlas-rule", rule_name.as_str(), name.as_str()),
         None => ("pad-atlas-layer", name.as_str(), FRAME_TABS[2]),
     };
@@ -1477,6 +1489,8 @@ fn layer_panel(
                     | Page::MarkerShape(i)
                     | Page::MarkerFill(i),
                 ) => Some(Page::Rule(i)),
+                Some(Page::Ramps) => Some(Page::Classify),
+                Some(Page::RampLabels(_)) => Some(Page::Ramps),
                 Some(_) => None,
                 None => {
                     state.atlas.layer = None;
@@ -1503,6 +1517,14 @@ fn layer_panel(
             Some(Page::MarkerFill(i)) => {
                 super::rules::marker_fill_body(ui, state, controls, layer, i);
             }
+            Some(Page::Classify) => super::classify::body(ui, state, controls, layer),
+            Some(Page::Ramps) => super::raster::ramps_body(
+                ui,
+                state,
+                controls,
+                super::raster::RampUser::Classify(layer),
+            ),
+            Some(Page::RampLabels(i)) => super::raster::labels_body(ui, state, controls, i),
             _ => super::rules::section(ui, state, controls, layer),
         });
         if page.is_none() {
@@ -1613,16 +1635,19 @@ fn raster_panel(
     raster: RasterId,
 ) -> Option<Rect> {
     use super::Page;
-    use super::raster::{BLEND, COLOR_RAMPS, COLOR_STOPS, HILLSHADE};
+    use super::raster::{BLEND, COLOR_RAMPS, COLOR_STOPS, HILLSHADE, LABELS};
     let map = state.doc.project.atlas.frame(id)?.map;
     let name = state.doc.layer(layer)?.name.clone();
-    let page = state
-        .atlas
-        .layer_page
-        .filter(|p| matches!(p, Page::Stops | Page::Ramps | Page::Hillshade | Page::Blend));
+    let page = state.atlas.layer_page.filter(|p| {
+        matches!(
+            p,
+            Page::Stops | Page::Ramps | Page::RampLabels(_) | Page::Hillshade | Page::Blend
+        )
+    });
     state.atlas.layer_page = page;
     let (key, title, back) = match page {
         Some(Page::Ramps) => ("pad-atlas-ramps", COLOR_RAMPS, COLOR_STOPS),
+        Some(Page::RampLabels(_)) => ("pad-atlas-ramp-labels", LABELS, COLOR_RAMPS),
         Some(Page::Stops) => ("pad-atlas-stops", COLOR_STOPS, name.as_str()),
         Some(Page::Hillshade) => ("pad-atlas-hillshade", HILLSHADE, name.as_str()),
         Some(_) => ("pad-atlas-blend", BLEND, name.as_str()),
@@ -1643,6 +1668,7 @@ fn raster_panel(
         if row.back {
             state.atlas.layer_page = match page {
                 Some(Page::Ramps) => Some(Page::Stops),
+                Some(Page::RampLabels(_)) => Some(Page::Ramps),
                 Some(_) => None,
                 None => {
                     state.atlas.layer = None;
@@ -1665,6 +1691,7 @@ fn raster_panel(
                 controls,
                 super::raster::RampUser::Raster(raster),
             ),
+            Some(Page::RampLabels(i)) => super::raster::labels_body(ui, state, controls, i),
             Some(Page::Hillshade) => {
                 super::raster::hillshade_body(ui, state, controls, raster);
             }

@@ -634,6 +634,8 @@ fn layers_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
         .layer(layer)
         .map_or(Vec::new(), |l| l.fields.clone());
     let target = state.target(frame.map);
+    state.open_ramps();
+    let ramps = state.ramps.list().to_vec();
     let symbols = state.doc.symbols().clone();
     let mut library = style_editor::Library {
         symbols: &symbols,
@@ -643,10 +645,15 @@ fn layers_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
     let Some(mut style) = state.doc.map_style(target, layer) else {
         return;
     };
-    if style_editor::rules(ui, layer, &mut style, kind, &fields, &mut library)
-        && state.doc.set_map_style(target, layer, &style)
-    {
+    let changed = style_editor::rules(ui, layer, &mut style, kind, &fields, &mut library);
+    let classes = style_editor::classify(ui, layer, &fields, &ramps, &mut library);
+    if changed && state.doc.set_map_style(target, layer, &style) {
         state.touch();
+    }
+    if let Some(request) = classes {
+        state.edit_map_style(frame.map, layer, |state| {
+            super::pad::classify::apply(state, layer, &request);
+        });
     }
     style_source(ui, state, frame, layer);
 }
