@@ -1563,7 +1563,7 @@ fn a_swipe_shows_delete_a_tap_deletes_and_undo_brings_it_back() {
         swipe(&mut h, "Rivers", -70.0);
         let rivers = vector(&h, "Rivers");
         let open = h.state().pad.swipe.unwrap();
-        assert_eq!((open.layer, open.moving), (rivers, false), "{what}");
+        assert_eq!((open.row, open.moving), (rivers, false), "{what}");
         let delete = control(&h, "Delete Rivers").unwrap_or_else(|| panic!("{what}"));
         assert!(delete.width() >= 88.0 - 0.5, "{what}: {delete:?}");
         // The eye and the arrow of the open row take no touch.
@@ -1623,7 +1623,7 @@ fn a_short_swipe_snaps_shut() {
         // Only one row is open.
         swipe(&mut h, "Land", -70.0);
         swipe(&mut h, "Places", -70.0);
-        let open = h.state().pad.swipe.map(|s| s.layer);
+        let open = h.state().pad.swipe.map(|s| s.row);
         assert_eq!(open, Some(vector(&h, "Places")), "{what}");
         assert!(control(&h, "Delete Land").is_none(), "{what}");
         assert_eq!(layer_names(&h).len(), 4, "{what}");

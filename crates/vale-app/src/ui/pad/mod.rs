@@ -44,6 +44,7 @@ pub mod labels;
 pub mod number;
 pub mod raster;
 pub mod rules;
+pub mod swipe;
 pub mod table;
 pub mod text_style;
 pub mod theme;
@@ -314,21 +315,9 @@ pub const HOLD_TIME: f64 = 0.4;
 /// The largest distance that a finger moves during the hold, in points.
 pub(crate) const HOLD_SLOP: f32 = 6.0;
 
-/// The time that a row takes to snap open or shut, in seconds.
-const SNAP_TIME: f32 = 0.15;
-
 /// A row of the layer list that a finger moved to the left, to show its
 /// Delete button.
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub struct Swipe {
-    pub layer: LayerId,
-    /// The distance of the row from its place, zero or less.
-    pub offset: f32,
-    /// The offset at the start of the drag.
-    base: f32,
-    /// The row moves with the finger. `false`: the row stays open.
-    pub moving: bool,
-}
+pub type Swipe<K = LayerId> = swipe::Swipe<K>;
 
 /// A row of the layer list that moves with a finger.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -2455,14 +2444,14 @@ fn layer_list(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
         let on = selected == Some(row.layer);
         let (icon, name, visible) = (row.icon, &row.name, Some(row.visible));
         widgets::layer_row(
-            ui, controls, rect, icon, name, visible, on, false, false, 0.0,
+            ui, controls, rect, icon, name, visible, on, false, false, 0.0, None,
         );
     }
     let row = &rows[from];
     let (icon, name, visible) = (row.icon, &row.name, Some(row.visible));
     let rect = slot(top);
     widgets::layer_row(
-        ui, controls, rect, icon, name, visible, true, false, true, 0.0,
+        ui, controls, rect, icon, name, visible, true, false, true, 0.0, None,
     );
     if !down {
         state.pad.reorder = None;
@@ -2486,29 +2475,19 @@ fn swipe_rows(
         Rect::from_min_size(pos2(area.left(), top), vec2(area.width(), PANEL_ROW))
     };
     let selected = state.selected_layer;
-    // A press outside the open row closes it.
-    if let Some(swipe) = state.pad.swipe {
-        let at = rows.iter().position(|row| row.id == swipe.layer);
-        let press = ui.input(|i| i.pointer.any_pressed().then(|| i.pointer.press_origin()));
-        let inside = |p: Pos2| at.is_some_and(|i| place(i).expand2(vec2(8.0, 0.0)).contains(p));
-        if at.is_none() || press.is_some_and(|p| !p.is_some_and(inside)) {
-            state.pad.swipe = None;
-        }
-    }
-    let moved = ui.input(|i| Some(i.pointer.interact_pos()? - i.pointer.press_origin()?));
+    swipe::shut_outside(ui, &mut state.pad.swipe, |layer| {
+        rows.iter().position(|row| row.id == layer).map(place)
+    });
     for (i, row) in rows.iter().enumerate() {
         let (id, rect) = (row.id, place(i));
         let on = selected == Some(row.layer);
         let (icon, name, visible) = (row.icon, &row.name, Some(row.visible));
-        let swipe = state.pad.swipe.filter(|s| s.layer == id);
-        let (target, moving) = swipe.map_or((0.0, false), |s| (s.offset, s.moving));
-        let time = if moving { 0.0 } else { SNAP_TIME };
-        let anim = ui.id().with(("swipe", id.0));
-        let shift = ui.ctx().animate_value_with_time(anim, target, time);
+        let open = state.pad.swipe.filter(|s| s.row == id);
+        let shift = swipe::shift(ui, state.pad.swipe, id);
         let out = ui
             .push_id(id.0, |ui| {
                 widgets::layer_row(
-                    ui, controls, rect, icon, name, visible, on, true, false, shift,
+                    ui, controls, rect, icon, name, visible, on, true, false, shift, None,
                 )
             })
             .inner;
@@ -2526,41 +2505,14 @@ fn swipe_rows(
             state.pad.swipe = None;
         }
         let Some(body) = out.body else { continue };
-        if body.drag_started() {
-            let d = moved.unwrap_or_default();
-            state.pad.swipe = (d.x.abs() > d.y.abs()).then(|| {
-                let base = swipe.map_or(0.0, |s| s.offset);
-                Swipe {
-                    layer: id,
-                    offset: base,
-                    base,
-                    moving: true,
-                }
-            });
-        }
-        let swiping = state.pad.swipe.filter(|s| s.layer == id && s.moving);
-        if let Some(mut swipe) = swiping {
-            if body.dragged() {
-                let dx = moved.map_or(0.0, |d| d.x);
-                swipe.offset = (swipe.base + dx).clamp(-widgets::DELETE_WIDTH, 0.0);
-                state.pad.swipe = Some(swipe);
-            } else {
-                // The finger is up: the row opens or shuts.
-                let open = swipe.offset < -widgets::DELETE_WIDTH / 2.0;
-                state.pad.swipe = open.then_some(Swipe {
-                    offset: -widgets::DELETE_WIDTH,
-                    moving: false,
-                    ..swipe
-                });
-            }
-            ui.ctx().request_repaint();
+        if swipe::drag(ui, &mut state.pad.swipe, id, &body) {
             continue;
         }
         if body.dragged() {
             ui.scroll_with_delta(vec2(0.0, body.drag_delta().y));
         }
         if body.clicked() {
-            if swipe.is_some() {
+            if open.is_some() {
                 state.pad.swipe = None;
             } else {
                 state.select(Some(row.layer));

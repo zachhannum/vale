@@ -2,6 +2,7 @@
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
+use std::mem::take;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -617,23 +618,32 @@ impl Document {
             .collect()
     }
 
-    /// Stores the label classes of a layer in a target. Returns false if
-    /// nothing changed.
+    /// Stores the label classes of a layer in a target. In a map that links
+    /// to a map style, the classes become the own classes of the map, unless
+    /// they are the classes of the map style. Returns false if nothing
+    /// changed.
     pub fn set_label_classes(
         &mut self,
         target: impl Into<Target>,
         layer: LayerId,
         classes: &[LabelClass],
     ) -> bool {
-        let Some((_, _, labels)) = self.parts_mut(target.into()) else {
+        let target = target.into();
+        let shared = self.linked_style(target);
+        let same = shared.is_some_and(|s| self.label_classes_in(s, layer) == classes);
+        let Some((_, _, labels)) = self.parts_mut(target) else {
             return false;
         };
-        let text = vale_style::classes_to_json(classes);
-        if labels.get(&layer) == Some(&text) {
-            return false;
-        }
-        labels.insert(layer, text);
-        true
+        put_own(labels, layer, vale_style::classes_to_json(classes), same)
+    }
+
+    /// The map style of a map, as a target. `None` for a map style, and for
+    /// a map with no map style.
+    fn linked_style(&self, target: Target) -> Option<Target> {
+        let Target::Map(map) = target else {
+            return None;
+        };
+        Some(Target::Style(self.project.atlas.map(map)?.style?))
     }
 
     /// The hidden layers, the layer styles, and the label classes of a
@@ -687,8 +697,8 @@ impl Document {
     }
 
     /// Makes `edited` the style of a layer in a target. In a map that links
-    /// to a map style, the style becomes the own style of the map. Returns
-    /// false if nothing changed.
+    /// to a map style, the style becomes the own style of the map, unless it
+    /// is the style of the map style. Returns false if nothing changed.
     pub fn set_map_style(
         &mut self,
         target: impl Into<Target>,
@@ -698,26 +708,29 @@ impl Document {
         if self.layer(layer).is_none() {
             return false;
         }
-        let Some((_, styles, _)) = self.parts_mut(target.into()) else {
+        let target = target.into();
+        let text = edited.to_json();
+        let shared = self.linked_style(target);
+        let same = shared.is_some_and(|s| self.style_text(s, layer) == Some(&text));
+        let Some((_, styles, _)) = self.parts_mut(target) else {
             return false;
         };
-        let text = edited.to_json();
-        if styles.get(&layer) == Some(&text) {
-            return false;
-        }
-        styles.insert(layer, text);
-        true
+        put_own(styles, layer, text, same)
     }
 
-    /// Removes the own style of a layer in a map that links to a map style,
-    /// so that the map draws the style of the map style. Returns false if
-    /// nothing changed.
-    pub fn use_map_style(&mut self, map: MapId, layer: LayerId) -> bool {
+    /// Removes the own style, switch, and label classes of a layer in a map
+    /// that links to a map style, so that the layer looks as in the map
+    /// style. Returns false if nothing changed.
+    pub fn reset_layer_to_map_style(&mut self, map: MapId, layer: LayerId) -> bool {
         let record = self.project.atlas.map_mut(map);
         let Some(record) = record.filter(|m| m.style.is_some()) else {
             return false;
         };
-        record.styles.remove(&layer).is_some()
+        let style = record.styles.remove(&layer).is_some();
+        let labels = record.labels.remove(&layer).is_some();
+        let hidden = record.hidden.remove(&layer);
+        let shown = record.shown.remove(&layer);
+        style || labels || hidden || shown
     }
 
     /// Makes a copy of the globe style the style of a layer in a target.
@@ -872,6 +885,58 @@ impl Document {
         true
     }
 
+    /// The layers for which a map that links to a map style has its own
+    /// style, switch, or label classes. A map with no map style has none.
+    pub fn local_changes(&self, map: MapId) -> BTreeSet<LayerId> {
+        let Some(m) = self.project.atlas.map(map).filter(|m| m.style.is_some()) else {
+            return BTreeSet::new();
+        };
+        (m.styles.keys().chain(m.labels.keys()))
+            .chain(m.hidden.iter().chain(&m.shown))
+            .copied()
+            .collect()
+    }
+
+    /// Moves the own styles, switches, and label classes of a map into its
+    /// map style, so that each map with the map style gets them. Returns
+    /// false if nothing changed.
+    pub fn update_map_style(&mut self, map: MapId) -> bool {
+        if self.local_changes(map).is_empty() {
+            return false;
+        }
+        let atlas = &mut self.project.atlas;
+        let Some(record) = atlas.map_mut(map) else {
+            return false;
+        };
+        let linked = record.style;
+        let (hidden, shown) = (take(&mut record.hidden), take(&mut record.shown));
+        let (styles, labels) = (take(&mut record.styles), take(&mut record.labels));
+        let Some(style) = linked.and_then(|s| atlas.map_style_mut(s)) else {
+            return false;
+        };
+        style.hidden.extend(hidden);
+        style.hidden.retain(|l| !shown.contains(l));
+        style.styles.extend(styles);
+        style.labels.extend(labels);
+        true
+    }
+
+    /// Removes the own styles, switches, and label classes of a map that
+    /// links to a map style. Returns false if nothing changed.
+    pub fn reset_to_map_style(&mut self, map: MapId) -> bool {
+        if self.local_changes(map).is_empty() {
+            return false;
+        }
+        let Some(record) = self.project.atlas.map_mut(map) else {
+            return false;
+        };
+        record.hidden.clear();
+        record.shown.clear();
+        record.styles.clear();
+        record.labels.clear();
+        true
+    }
+
     /// Renames a map style. The name has no spaces at its ends, and it is
     /// not empty and not the name of another map style. Returns false if
     /// nothing changed.
@@ -895,6 +960,25 @@ type Parts<'a> = (
     &'a mut BTreeMap<LayerId, String>,
     &'a mut BTreeMap<LayerId, String>,
 );
+
+/// Stores `text` as the own entry of a layer. With `shared`, the text is
+/// the entry of the map style, and the own entry goes. Returns false if
+/// nothing changed.
+fn put_own(
+    own: &mut BTreeMap<LayerId, String>,
+    layer: LayerId,
+    text: String,
+    shared: bool,
+) -> bool {
+    if shared {
+        return own.remove(&layer).is_some();
+    }
+    if own.get(&layer) == Some(&text) {
+        return false;
+    }
+    own.insert(layer, text);
+    true
+}
 
 /// Puts `item` in `set` or takes it out. Returns false if nothing changed.
 fn set_member(set: &mut BTreeSet<LayerId>, item: LayerId, member: bool) -> bool {
@@ -964,5 +1048,94 @@ mod tests {
         assert_eq!(before, after);
         assert!(!after[0].0 && after[1].0 && !after[2].0);
         assert!(after[2].2.is_empty());
+    }
+
+    /// A sample with a second map, both maps linked to one map style.
+    fn two_linked() -> (Document, MapId, MapId, MapStyleId, Vec<LayerId>) {
+        let mut doc = Document::sample();
+        let a = doc.project.atlas.maps[0].id;
+        let b = doc.project.atlas.add_map();
+        doc.fill_map_styles();
+        let style = doc.save_as_map_style(a).unwrap();
+        assert!(doc.link_map_style(b, Some(style)));
+        let layers = doc.frame.entries.iter().map(|e| e.layer).collect();
+        (doc, a, b, style, layers)
+    }
+
+    #[test]
+    fn update_map_style_moves_the_local_changes_into_the_map_style() {
+        let (mut doc, a, b, style, layers) = two_linked();
+        let (l0, l1) = (layers[0], layers[1]);
+        assert!(doc.local_changes(a).is_empty());
+        assert!(!doc.update_map_style(a));
+        let mut wide = doc.map_style(a, l0).unwrap();
+        wide.label.size = 33.0;
+        assert!(doc.set_map_style(a, l0, &wide));
+        assert!(doc.set_shown(a, l1, false));
+        let mut classes = doc.label_classes(Some(a), l1);
+        classes.clear();
+        assert!(doc.set_label_classes(a, l1, &classes));
+        assert_eq!(doc.local_changes(a), BTreeSet::from([l0, l1]));
+        assert!(doc.local_changes(b).is_empty());
+        assert_ne!(doc.map_style(b, l0), Some(wide.clone()));
+
+        assert!(doc.update_map_style(a));
+        assert!(doc.local_changes(a).is_empty());
+        for map in [a, b] {
+            assert_eq!(doc.map_style(map, l0), Some(wide.clone()));
+            assert!(!doc.shown(map, l1));
+            assert!(doc.label_classes(Some(map), l1).is_empty());
+        }
+        assert_eq!(doc.map_style(Target::Style(style), l0), Some(wide));
+
+        // A switch back on moves too.
+        assert!(doc.set_shown(b, l1, true));
+        assert!(doc.update_map_style(b));
+        assert!(doc.shown(a, l1));
+        assert!(doc.local_changes(b).is_empty());
+    }
+
+    #[test]
+    fn reset_to_map_style_drops_the_local_changes() {
+        let (mut doc, a, _, style, layers) = two_linked();
+        let l0 = layers[0];
+        let before = doc.map_style(a, l0);
+        assert!(!doc.reset_to_map_style(a));
+        let mut wide = before.clone().unwrap();
+        wide.label.size = 33.0;
+        assert!(doc.set_map_style(a, l0, &wide));
+        assert!(doc.set_shown(a, l0, false));
+        assert!(doc.reset_to_map_style(a));
+        assert!(doc.local_changes(a).is_empty());
+        assert_eq!(doc.map_style(a, l0), before);
+        assert!(doc.shown(a, l0));
+        assert_eq!(doc.map_style(Target::Style(style), l0), before);
+
+        // A reset of one layer keeps the local changes of the others.
+        let l1 = layers[1];
+        assert!(doc.set_map_style(a, l0, &wide));
+        assert!(doc.set_shown(a, l0, false));
+        assert!(doc.set_shown(a, l1, false));
+        assert!(doc.reset_layer_to_map_style(a, l0));
+        assert!(!doc.reset_layer_to_map_style(a, l0));
+        assert_eq!(doc.local_changes(a), BTreeSet::from([l1]));
+        assert_eq!(doc.map_style(a, l0), before);
+        assert!(doc.shown(a, l0));
+    }
+
+    #[test]
+    fn a_style_equal_to_the_map_style_is_no_local_change() {
+        let (mut doc, a, _, _, layers) = two_linked();
+        let l0 = layers[0];
+        let shared = doc.map_style(a, l0).unwrap();
+        assert!(!doc.set_map_style(a, l0, &shared));
+        let mut wide = shared.clone();
+        wide.label.size = 33.0;
+        assert!(doc.set_map_style(a, l0, &wide));
+        assert!(doc.set_map_style(a, l0, &shared));
+        assert!(doc.local_changes(a).is_empty());
+        let classes = doc.label_classes(Some(a), l0);
+        assert!(!doc.set_label_classes(a, l0, &classes));
+        assert!(doc.local_changes(a).is_empty());
     }
 }

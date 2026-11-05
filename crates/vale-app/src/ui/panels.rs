@@ -1303,7 +1303,7 @@ fn layers_section(ui: &mut egui::Ui, state: &mut AppState) {
         let selected = state.selected_vector() == Some(id);
         ui.horizontal(|ui| {
             let map = atlas::selected_map(state);
-            let mut visible = state.doc.shown(state.target(map), id);
+            let mut visible = state.doc.shown(map, id);
             let text = if selected {
                 egui::RichText::new(name).strong()
             } else {
@@ -1343,7 +1343,7 @@ fn layers_section(ui: &mut egui::Ui, state: &mut AppState) {
         .map(|l| (l.id, l.name.clone()))
         .collect();
     for (id, name) in rasters {
-        let mut on = state.doc.shown(state.target(map), id);
+        let mut on = state.doc.shown(map, id);
         let resp = ui.checkbox(&mut on, name.as_str());
         named(
             &resp,
@@ -1351,7 +1351,7 @@ fn layers_section(ui: &mut egui::Ui, state: &mut AppState) {
             on,
             format!("Show {name} in map"),
         );
-        if resp.changed() && state.doc.set_shown(state.target(map), id, on) {
+        if resp.changed() && state.doc.set_shown(map, id, on) {
             state.touch();
         }
     }

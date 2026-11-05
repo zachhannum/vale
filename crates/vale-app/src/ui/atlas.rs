@@ -632,10 +632,10 @@ pub struct AtlasState {
     pub label: Option<(FrameId, LayerId, usize)>,
     /// The page of the panel of `label`.
     pub label_page: Option<ClassPage>,
-    /// An edit of a map with a map style changes the map style.
-    pub to_style: bool,
-    /// The list of the map styles in the Frame tab is open.
-    pub map_styles_open: bool,
+    /// The frame whose Map style page the Frame tab shows.
+    pub map_styles: Option<FrameId>,
+    /// The map style row of the Map style page that a finger swiped.
+    pub map_style_swipe: Option<crate::ui::pad::Swipe<MapStyleId>>,
     /// The text of the name field of a map style while the user types it.
     pub map_style_name: Option<(MapStyleId, String)>,
     /// The segment of the panel of `label`.
@@ -731,6 +731,14 @@ impl AtlasState {
         }
     }
 
+    /// The frame whose Map style page the Frame tab shows.
+    pub fn open_map_styles(&self) -> Option<FrameId> {
+        match (self.selection, self.tab, self.map_styles) {
+            (AtlasSelection::Frame(f), FrameTab::Frame, Some(of)) if f == of => Some(f),
+            _ => None,
+        }
+    }
+
     /// The frame whose Grid labels page the Frame tab shows.
     pub fn open_grid(&self) -> Option<FrameId> {
         match (self.selection, self.tab, self.grid) {
@@ -803,8 +811,8 @@ impl Default for AtlasState {
             layer_page: None,
             label: None,
             label_page: None,
-            to_style: true,
-            map_styles_open: false,
+            map_styles: None,
+            map_style_swipe: None,
             map_style_name: None,
             label_segment: ClassSegment::Text,
             label_color: None,

@@ -189,7 +189,7 @@ pub(super) fn open_class(state: &mut AppState) -> Option<(MapId, LayerId, usize)
     });
     let found = map.filter(|m| {
         let fits = state.doc.layer(layer).and_then(|l| l.geometry()).is_some();
-        fits && i < state.doc.label_classes_in(state.target(*m), layer).len()
+        fits && i < state.doc.label_classes(Some(*m), layer).len()
     });
     match found {
         Some(map) => Some((map, layer, i)),
@@ -216,7 +216,6 @@ pub(super) fn tab(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Contro
         return;
     };
     ui.spacing_mut().item_spacing.y = 0.0;
-    super::atlas::apply_to(ui, state, controls, map);
     if state.label_layers().is_empty() {
         state.atlas.label_drag = None;
         hint(ui, NO_LABEL_LAYERS);
@@ -376,11 +375,7 @@ pub(super) fn class_panel(
 ) -> Option<Rect> {
     let (map, layer, i) = open_class(state)?;
     let kind = state.doc.layer(layer)?.geometry()?;
-    let class = state
-        .doc
-        .label_classes_in(state.target(map), layer)
-        .get(i)?
-        .clone();
+    let class = state.doc.label_classes(Some(map), layer).get(i)?.clone();
     let page = state.atlas.label_page;
     let (key, title, back) = match page {
         Some(ClassPage::Layer) => ("pad-atlas-class-layer", LAYER, class.name.as_str()),
