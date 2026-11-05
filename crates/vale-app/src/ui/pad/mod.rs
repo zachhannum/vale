@@ -584,6 +584,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         strip: has_strip(&state.globe),
         extra: extra_cells(state),
         tools: TOOLS,
+        row: false,
     };
     // The Brush panel holds the settings of the context strip.
     if !has_strip(&state.globe) && card_cells(&state.globe) == 0 || state.globe.selecting() {
@@ -594,7 +595,9 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     if rects.one_panel && state.pad.brush && state.pad.right.is_some() {
         state.pad.right = None;
     }
-    state.pad.sheet_offset = input.sheet_offset.clamp(0.0, rects.sheet_travel);
+    state.pad.sheet_offset = input
+        .sheet_offset
+        .clamp(-rects.sheet_rise, rects.sheet_travel);
 
     let mut controls = std::mem::take(&mut state.pad.controls);
     controls.clear();

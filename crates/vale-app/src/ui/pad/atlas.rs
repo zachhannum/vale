@@ -211,6 +211,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         strip: false,
         extra: 0,
         tools: TOOL_CELLS,
+        row: false,
     };
     let mut rects = geometry::layout(&input);
     rects.actions.min.x = rects.actions.max.x - ACTIONS_WIDTH;
@@ -218,7 +219,9 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     if !measuring {
         rects.brush = None;
     }
-    state.pad.sheet_offset = input.sheet_offset.clamp(0.0, rects.sheet_travel);
+    state.pad.sheet_offset = input
+        .sheet_offset
+        .clamp(-rects.sheet_rise, rects.sheet_travel);
     // The compact layout has no room in the top row, so the page card is at
     // the right of the tool strip.
     let page_card = rects.view.unwrap_or_else(|| {
