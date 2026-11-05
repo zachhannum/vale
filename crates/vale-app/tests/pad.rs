@@ -4245,6 +4245,17 @@ fn the_five_iphone_screens_render_at_393_by_852() {
         image
             .save(format!("../../target/app/test-{name}.png"))
             .unwrap();
+        // An open sheet goes to the bottom of the screen, below the safe
+        // area.
+        if state.pad.rects.unwrap().sheet.is_some() {
+            let x = 196;
+            let above = image.get_pixel(x, 852 - bottom as u32 - 6);
+            let below = image.get_pixel(x, 851);
+            assert_eq!(
+                above, below,
+                "{name}: the sheet stops above the bottom band"
+            );
+        }
         let (width, height) = (size.0 as f32, size.1 as f32);
         for c in &state.pad.controls {
             let r = c.rect;

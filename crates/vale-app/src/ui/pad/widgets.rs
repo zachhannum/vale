@@ -59,6 +59,8 @@ pub fn card(
         .order(order)
         .fixed_pos(rect.min)
         .constrain(false)
+        // A sheet goes past the safe area, to the bottom of the screen.
+        .constrain_to(ctx.viewport_rect())
         .fade_in(false)
         .sizing_pass(false)
         .show(ctx, |ui| {
