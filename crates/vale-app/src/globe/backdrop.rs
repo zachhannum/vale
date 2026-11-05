@@ -5,6 +5,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use eframe::egui;
 use eframe::egui_wgpu::{self, wgpu};
 
+use super::compile::{Compiled, render_pipeline};
+
 /// The standard deviation of the blur, in points.
 pub const BLUR_POINTS: f32 = 20.0;
 /// The blurred copy has one pixel for this many pixels of the canvas, on
@@ -69,13 +71,20 @@ struct Targets {
     from_blur: wgpu::BindGroup,
 }
 
+/// The pipelines of the backdrop.
+struct Pipelines {
+    blur: wgpu::RenderPipeline,
+    blit: wgpu::RenderPipeline,
+    card: wgpu::RenderPipeline,
+}
+
 pub struct Backdrop {
     pub format: wgpu::TextureFormat,
     layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
-    blur: wgpu::RenderPipeline,
-    blit: wgpu::RenderPipeline,
-    card: wgpu::RenderPipeline,
+    /// A worker compiles them when a card first needs them. Until then,
+    /// the cards show no blur.
+    pipelines: Compiled<Pipelines>,
     /// The picture of a canvas that the CPU drew: its key, and the bind
     /// group that reads it.
     scene: Option<(u64, wgpu::BindGroup)>,
@@ -87,12 +96,74 @@ pub struct Backdrop {
     card_buffer: wgpu::Buffer,
 }
 
-impl Backdrop {
-    pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Backdrop {
+impl Pipelines {
+    fn new(
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        format: wgpu::TextureFormat,
+    ) -> Pipelines {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("backdrop"),
             source: wgpu::ShaderSource::Wgsl(include_str!("backdrop.wgsl").into()),
         });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("backdrop"),
+            bind_group_layouts: &[Some(layout)],
+            immediate_size: 0,
+        });
+        let instance = wgpu::VertexBufferLayout {
+            array_stride: size_of::<Instance>() as u64,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4],
+        };
+        let pipeline =
+            |label, vertex, fragment, blend, buffers: &[Option<wgpu::VertexBufferLayout>]| {
+                render_pipeline(
+                    device,
+                    &wgpu::RenderPipelineDescriptor {
+                        label: Some(label),
+                        layout: Some(&pipeline_layout),
+                        vertex: wgpu::VertexState {
+                            module: &shader,
+                            entry_point: Some(vertex),
+                            buffers,
+                            compilation_options: Default::default(),
+                        },
+                        fragment: Some(wgpu::FragmentState {
+                            module: &shader,
+                            entry_point: Some(fragment),
+                            targets: &[Some(wgpu::ColorTargetState {
+                                format,
+                                blend,
+                                write_mask: wgpu::ColorWrites::ALL,
+                            })],
+                            compilation_options: Default::default(),
+                        }),
+                        primitive: wgpu::PrimitiveState::default(),
+                        depth_stencil: None,
+                        multisample: wgpu::MultisampleState::default(),
+                        multiview_mask: None,
+                        cache: None,
+                    },
+                )
+            };
+        let over = Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING);
+        Pipelines {
+            blur: pipeline("backdrop blur", "vs_full", "fs_blur", None, &[]),
+            blit: pipeline("backdrop blit", "vs_full", "fs_blit", None, &[]),
+            card: pipeline(
+                "backdrop card",
+                "vs_card",
+                "fs_card",
+                over,
+                &[Some(instance)],
+            ),
+        }
+    }
+}
+
+impl Backdrop {
+    pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Backdrop {
         let entry = |binding, ty| wgpu::BindGroupLayoutEntry {
             binding,
             visibility: wgpu::ShaderStages::FRAGMENT,
@@ -124,45 +195,6 @@ impl Backdrop {
                 ),
             ],
         });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("backdrop"),
-            bind_group_layouts: &[Some(&layout)],
-            immediate_size: 0,
-        });
-        let instance = wgpu::VertexBufferLayout {
-            array_stride: size_of::<Instance>() as u64,
-            step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4],
-        };
-        let pipeline =
-            |label, vertex, fragment, blend, buffers: &[Option<wgpu::VertexBufferLayout>]| {
-                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                    label: Some(label),
-                    layout: Some(&pipeline_layout),
-                    vertex: wgpu::VertexState {
-                        module: &shader,
-                        entry_point: Some(vertex),
-                        buffers,
-                        compilation_options: Default::default(),
-                    },
-                    fragment: Some(wgpu::FragmentState {
-                        module: &shader,
-                        entry_point: Some(fragment),
-                        targets: &[Some(wgpu::ColorTargetState {
-                            format,
-                            blend,
-                            write_mask: wgpu::ColorWrites::ALL,
-                        })],
-                        compilation_options: Default::default(),
-                    }),
-                    primitive: wgpu::PrimitiveState::default(),
-                    depth_stencil: None,
-                    multisample: wgpu::MultisampleState::default(),
-                    multiview_mask: None,
-                    cache: None,
-                })
-            };
-        let over = Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING);
         let globals = [0, 1, 2].map(|_| {
             device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("backdrop globals"),
@@ -171,18 +203,13 @@ impl Backdrop {
                 mapped_at_creation: false,
             })
         });
+        let (worker_device, worker_layout) = (device.clone(), layout.clone());
+        let pipelines =
+            Compiled::lazy(move || Pipelines::new(&worker_device, &worker_layout, format));
         Backdrop {
             format,
-            blur: pipeline("backdrop blur", "vs_full", "fs_blur", None, &[]),
-            blit: pipeline("backdrop blit", "vs_full", "fs_blit", None, &[]),
+            pipelines,
             scene: None,
-            card: pipeline(
-                "backdrop card",
-                "vs_card",
-                "fs_card",
-                over,
-                &[Some(instance)],
-            ),
             sampler: device.create_sampler(&wgpu::SamplerDescriptor {
                 label: Some("backdrop"),
                 mag_filter: wgpu::FilterMode::Linear,
@@ -330,6 +357,9 @@ impl Backdrop {
         canvas: &Canvas,
         draw: impl FnOnce(&mut wgpu::RenderPass<'_>),
     ) {
+        let Some(pipelines) = self.pipelines.get() else {
+            return;
+        };
         let size = size.map(|s| s.max(1));
         if self.targets.as_ref().is_none_or(|t| t.size != size) {
             self.targets = Some(self.targets(device, size));
@@ -371,8 +401,8 @@ impl Backdrop {
         draw(&mut pass(&targets.small[0], clear));
         let black = wgpu::LoadOp::Clear(wgpu::Color::BLACK);
         let steps = [
-            (&self.blur, &targets.passes[0], &targets.small[1]),
-            (&self.blur, &targets.passes[1], &targets.small[0]),
+            (&pipelines.blur, &targets.passes[0], &targets.small[1]),
+            (&pipelines.blur, &targets.passes[1], &targets.small[0]),
         ];
         for (pipeline, bind_group, view) in steps {
             let mut pass = pass(view, black);
@@ -416,8 +446,8 @@ impl egui_wgpu::CallbackTrait for SceneCallback {
             .filter(|b| b.format == self.format)
             .unwrap_or_else(|| Backdrop::new(device, self.format));
         backdrop.set_scene(device, queue, &self.scene);
-        if let Some((_, bind_group)) = backdrop.scene.clone() {
-            let pipeline = backdrop.blit.clone();
+        let blit = backdrop.pipelines.get().map(|p| p.blit.clone());
+        if let (Some((_, bind_group)), Some(pipeline)) = (backdrop.scene.clone(), blit) {
             let size = screen_descriptor.size_in_pixels;
             backdrop.render(device, queue, egui_encoder, size, &self.canvas, |pass| {
                 pass.set_pipeline(&pipeline);
@@ -523,7 +553,10 @@ impl egui_wgpu::CallbackTrait for CardCallback {
         let Some((backdrop, targets)) = targets.filter(|_| index != u32::MAX) else {
             return;
         };
-        pass.set_pipeline(&backdrop.card);
+        let Some(pipelines) = backdrop.pipelines.get() else {
+            return;
+        };
+        pass.set_pipeline(&pipelines.card);
         pass.set_bind_group(0, &targets.from_blur, &[]);
         pass.set_vertex_buffer(0, backdrop.card_buffer.slice(..));
         pass.draw(0..3, index..index + 1);

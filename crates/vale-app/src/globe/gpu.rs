@@ -14,12 +14,13 @@ use std::collections::HashMap;
 use vale_store::{ImageId, RasterId};
 use vale_terrain::{
     ChannelMap, ChannelWindow, ErodeStep, FACES, FIELD_WGSL, GpuHeightmap, GpuPyramid, GpuTiles,
-    Heightmap, MAX_BANDS, RangePlan, Readback, RidgePlan, StampPlan, TILES_WGSL, TexelRect,
-    pyramid_layout, tiles_layout,
+    Heightmap, MAX_BANDS, PyramidPipelines, RangePlan, Readback, RidgePlan, StampPipeline,
+    StampPlan, TILES_WGSL, TexelRect, pyramid_layout, tiles_layout,
 };
 
 use super::backdrop::{Backdrop, Canvas, REDUCTION};
-use super::edges::{self, Edges};
+use super::compile::{Compiled, render_pipeline};
+use super::edges::{self, EdgePipelines, Edges};
 use super::flat::{FlatMesh, Vertex};
 use super::preview::{BandUniform, LineUniform};
 
@@ -239,27 +240,259 @@ struct GpuImage {
     bind_group: wgpu::BindGroup,
 }
 
+/// The pipelines that a project needs before it opens.
+struct Core {
+    pipeline: wgpu::RenderPipeline,
+    flat_pipeline: wgpu::RenderPipeline,
+    /// Puts an offscreen target on the screen.
+    composite: wgpu::RenderPipeline,
+    /// The passes that read no heightmap: the ground and the graticule, on
+    /// the globe and in the flat view, and the edge of the globe.
+    plain: [wgpu::RenderPipeline; 5],
+    edges: EdgePipelines,
+    pyramid: PyramidPipelines,
+    stamp: StampPipeline,
+}
+
+/// The bind group layouts and the pipeline layouts that the pipelines take.
+/// The UI thread makes them, and the workers take copies.
+#[derive(Clone)]
+struct Layouts {
+    device: wgpu::Device,
+    format: wgpu::TextureFormat,
+    globe: wgpu::BindGroupLayout,
+    tiles: wgpu::BindGroupLayout,
+    levels: wgpu::BindGroupLayout,
+    edges: wgpu::BindGroupLayout,
+    with_tiles: wgpu::PipelineLayout,
+    no_tiles: wgpu::PipelineLayout,
+    with_image: wgpu::PipelineLayout,
+    composite: wgpu::PipelineLayout,
+}
+
+const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 2] =
+    wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x3];
+
+/// The layout of a vertex of the mesh of the flat view.
+fn vertex_layout() -> wgpu::VertexBufferLayout<'static> {
+    wgpu::VertexBufferLayout {
+        array_stride: size_of::<Vertex>() as u64,
+        step_mode: wgpu::VertexStepMode::Vertex,
+        attributes: &VERTEX_ATTRIBUTES,
+    }
+}
+
+impl Layouts {
+    /// The module of `globe.wgsl`, with `edges.wgsl` and `image.wgsl`.
+    fn shader(&self) -> wgpu::ShaderModule {
+        self.device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("globe"),
+                source: wgpu::ShaderSource::Wgsl(
+                    format!(
+                        "{TILES_WGSL}\n{FIELD_WGSL}\n{}\n{}\n{}",
+                        include_str!("globe.wgsl"),
+                        include_str!("edges.wgsl"),
+                        include_str!("image.wgsl")
+                    )
+                    .into(),
+                ),
+            })
+    }
+
+    /// A pipeline of `shader`. `flat`: it draws the mesh of the flat view.
+    /// `replace`: it writes its color with no blend.
+    #[expect(clippy::too_many_arguments)]
+    fn pipeline(
+        &self,
+        shader: &wgpu::ShaderModule,
+        label: &str,
+        layout: &wgpu::PipelineLayout,
+        vertex: &str,
+        fragment: &str,
+        flat: bool,
+        replace: bool,
+    ) -> wgpu::RenderPipeline {
+        let buffers = [Some(vertex_layout())];
+        let buffers: &[Option<wgpu::VertexBufferLayout<'_>>] = if flat { &buffers } else { &[] };
+        render_pipeline(
+            &self.device,
+            &wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(layout),
+                vertex: wgpu::VertexState {
+                    module: shader,
+                    entry_point: Some(vertex),
+                    buffers,
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: shader,
+                    entry_point: Some(fragment),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: self.format,
+                        blend: (!replace).then_some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: Default::default(),
+                }),
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            },
+        )
+    }
+
+    fn core(&self) -> Core {
+        let shader = self.shader();
+        let (with_tiles, no_tiles) = (&self.with_tiles, &self.no_tiles);
+        let pipeline = |label, layout, vertex, fragment, flat| {
+            self.pipeline(&shader, label, layout, vertex, fragment, flat, false)
+        };
+        Core {
+            pipeline: pipeline("globe", with_tiles, "vs_main", "fs_main", false),
+            flat_pipeline: pipeline("flat", with_tiles, "vs_flat", "fs_flat", true),
+            composite: self.composite(),
+            plain: [
+                pipeline("ground", no_tiles, "vs_main", "fs_ground", false),
+                pipeline("graticule", no_tiles, "vs_main", "fs_graticule", false),
+                pipeline("flat ground", no_tiles, "vs_flat", "fs_flat_ground", true),
+                pipeline(
+                    "flat graticule",
+                    no_tiles,
+                    "vs_flat",
+                    "fs_flat_graticule",
+                    true,
+                ),
+                pipeline("rim", no_tiles, "vs_main", "fs_rim", false),
+            ],
+            edges: EdgePipelines::new(
+                &self.device,
+                &shader,
+                [&self.globe, &self.tiles, &self.levels],
+                &self.edges,
+                vertex_layout(),
+            ),
+            pyramid: PyramidPipelines::new(&self.device),
+            stamp: StampPipeline::new(&self.device),
+        }
+    }
+
+    fn composite(&self) -> wgpu::RenderPipeline {
+        let shader = self
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("group"),
+                source: wgpu::ShaderSource::Wgsl(include_str!("group.wgsl").into()),
+            });
+        render_pipeline(
+            &self.device,
+            &wgpu::RenderPipelineDescriptor {
+                label: Some("group"),
+                layout: Some(&self.composite),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_group"),
+                    buffers: &[],
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs_group"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: self.format,
+                        blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: Default::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleStrip,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            },
+        )
+    }
+
+    /// The layer passes that mix with the backdrop, on the globe and in the
+    /// flat view.
+    fn blends(&self) -> [wgpu::RenderPipeline; 2] {
+        let shader = self.shader();
+        let layout = &self.with_tiles;
+        [
+            self.pipeline(
+                &shader,
+                "globe blend",
+                layout,
+                "vs_main",
+                "fs_main_blend",
+                false,
+                true,
+            ),
+            self.pipeline(
+                &shader,
+                "flat blend",
+                layout,
+                "vs_flat",
+                "fs_flat_blend",
+                true,
+                true,
+            ),
+        ]
+    }
+
+    /// The passes of the image layers: on the globe and in the flat view,
+    /// each with no blend and with a blend.
+    fn images(&self) -> [wgpu::RenderPipeline; 4] {
+        let shader = self.shader();
+        let layout = &self.with_image;
+        let pipeline = |label, vertex, fragment, flat, replace| {
+            self.pipeline(&shader, label, layout, vertex, fragment, flat, replace)
+        };
+        [
+            pipeline("image", "vs_main", "fs_image", false, false),
+            pipeline("image blend", "vs_main", "fs_image_blend", false, true),
+            pipeline("flat image", "vs_flat", "fs_flat_image", true, false),
+            pipeline(
+                "flat image blend",
+                "vs_flat",
+                "fs_flat_image_blend",
+                true,
+                true,
+            ),
+        ]
+    }
+}
+
+/// Sets a flag when it drops, also in a panic.
+struct SetOnDrop(Arc<AtomicBool>);
+
+impl Drop for SetOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
+
 struct Resources {
     format: wgpu::TextureFormat,
     layout: wgpu::BindGroupLayout,
-    /// The passes of the image layers: on the globe and in the flat view,
-    /// each with no blend and with a blend.
-    image_pipelines: [wgpu::RenderPipeline; 4],
+    /// Workers compile the pipelines. The core starts at once, and each
+    /// other set starts when a pass first needs it. A pass whose pipeline
+    /// is not ready draws nothing.
+    core: Compiled<Core>,
+    blends: Compiled<[wgpu::RenderPipeline; 2]>,
+    image_pipelines: Compiled<[wgpu::RenderPipeline; 4]>,
     image_layout: wgpu::BindGroupLayout,
     image_sampler: wgpu::Sampler,
     /// The copies of the images that the globe draws.
     images: HashMap<ImageKey, GpuImage>,
-    pipeline: wgpu::RenderPipeline,
-    flat_pipeline: wgpu::RenderPipeline,
-    /// The layer passes that mix with the backdrop.
-    blend_pipeline: wgpu::RenderPipeline,
-    flat_blend_pipeline: wgpu::RenderPipeline,
-    /// Puts an offscreen target on the screen.
-    composite: wgpu::RenderPipeline,
     composite_layout: wgpu::BindGroupLayout,
-    /// The passes that read no heightmap: the ground and the graticule, on
-    /// the globe and in the flat view, and the edge of the globe.
-    plain: [wgpu::RenderPipeline; 5],
     meshes: Vec<GpuMesh>,
     no_backdrop: wgpu::TextureView,
     no_mask: wgpu::TextureView,
@@ -280,12 +513,13 @@ struct Resources {
     details: HashMap<MapKey, GpuTiles>,
     /// The smooth levels of each heightmap that the globe draws.
     pyramids: HashMap<MapKey, GpuPyramid>,
-    /// The smooth levels of a detail map, which reads none.
-    no_levels: GpuPyramid,
+    /// The smooth levels of a detail map, which reads none. It comes with
+    /// the core pipelines.
+    no_levels: Option<GpuPyramid>,
     /// The channel map of each visible height layer.
     channels: HashMap<LayerKey, Channels>,
     channel_count: u64,
-    /// The lines of the stops.
+    /// The textures of the lines of the stops.
     edges: Edges,
     /// The count of the changes of the heightmaps on the GPU and of the
     /// mesh of the flat view.
@@ -299,19 +533,9 @@ const FLAT: usize = 2;
 const RIM: usize = 4;
 
 impl Resources {
-    fn new(device: &wgpu::Device, format: wgpu::TextureFormat, busy: &Arc<Busy>) -> Resources {
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("globe"),
-            source: wgpu::ShaderSource::Wgsl(
-                format!(
-                    "{TILES_WGSL}\n{FIELD_WGSL}\n{}\n{}\n{}",
-                    include_str!("globe.wgsl"),
-                    include_str!("edges.wgsl"),
-                    include_str!("image.wgsl")
-                )
-                .into(),
-            ),
-        });
+    /// Makes the resources and starts the compile of the core pipelines.
+    /// The flag `ready` of the link is set when the compile ends.
+    fn new(device: &wgpu::Device, format: wgpu::TextureFormat, link: &Link) -> Resources {
         let texture = |binding, view_dimension| wgpu::BindGroupLayoutEntry {
             binding,
             visibility: wgpu::ShaderStages::FRAGMENT,
@@ -351,19 +575,7 @@ impl Resources {
         });
         let tiles = tiles_layout(device);
         let levels = pyramid_layout(device);
-        let vertex_layout = wgpu::VertexBufferLayout {
-            array_stride: size_of::<Vertex>() as u64,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x3],
-        };
-        let edges = Edges::new(
-            device,
-            &shader,
-            &layout,
-            &tiles,
-            &levels,
-            vertex_layout.clone(),
-        );
+        let edges = Edges::new(device);
         let with_tiles = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("globe"),
             bind_group_layouts: &[
@@ -417,40 +629,6 @@ impl Resources {
             mipmap_filter: wgpu::MipmapFilterMode::Linear,
             ..Default::default()
         });
-        let pipeline = |label, layout, vertex, fragment, flat: bool, replace: bool| {
-            let buffers = [Some(vertex_layout.clone())];
-            let buffers: &[Option<wgpu::VertexBufferLayout<'_>>] =
-                if flat { &buffers } else { &[] };
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(label),
-                layout: Some(layout),
-                vertex: wgpu::VertexState {
-                    module: &shader,
-                    entry_point: Some(vertex),
-                    buffers,
-                    compilation_options: Default::default(),
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: &shader,
-                    entry_point: Some(fragment),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format,
-                        blend: (!replace).then_some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                    compilation_options: Default::default(),
-                }),
-                primitive: wgpu::PrimitiveState::default(),
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
-                multiview_mask: None,
-                cache: None,
-            })
-        };
-        let group_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("group"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("group.wgsl").into()),
-        });
         let group_entry = |binding, ty| wgpu::BindGroupLayoutEntry {
             binding,
             visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
@@ -477,40 +655,30 @@ impl Resources {
                 group_entry(2, group_texture),
             ],
         });
-        let composite_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("group"),
-                bind_group_layouts: &[Some(&composite_layout)],
-                immediate_size: 0,
-            });
-        let composite = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let composite = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("group"),
-            layout: Some(&composite_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &group_shader,
-                entry_point: Some("vs_group"),
-                buffers: &[],
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &group_shader,
-                entry_point: Some("fs_group"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: Default::default(),
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleStrip,
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
+            bind_group_layouts: &[Some(&composite_layout)],
+            immediate_size: 0,
         });
+        let layouts = Layouts {
+            device: device.clone(),
+            format,
+            globe: layout.clone(),
+            tiles,
+            levels,
+            edges: edges.layout().clone(),
+            with_tiles,
+            no_tiles,
+            with_image,
+            composite,
+        };
+        link.ready.store(false, Ordering::Relaxed);
+        let (core_layouts, ready) = (layouts.clone(), SetOnDrop(link.ready.clone()));
+        let core = Compiled::start(move || {
+            let _ready = ready;
+            core_layouts.core()
+        });
+        let blend_layouts = layouts.clone();
         let empty = |label, layers, dimension| {
             let texture = device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
@@ -533,84 +701,13 @@ impl Resources {
         };
         Resources {
             format,
-            image_pipelines: [
-                pipeline("image", &with_image, "vs_main", "fs_image", false, false),
-                pipeline(
-                    "image blend",
-                    &with_image,
-                    "vs_main",
-                    "fs_image_blend",
-                    false,
-                    true,
-                ),
-                pipeline(
-                    "flat image",
-                    &with_image,
-                    "vs_flat",
-                    "fs_flat_image",
-                    true,
-                    false,
-                ),
-                pipeline(
-                    "flat image blend",
-                    &with_image,
-                    "vs_flat",
-                    "fs_flat_image_blend",
-                    true,
-                    true,
-                ),
-            ],
+            core,
+            blends: Compiled::lazy(move || blend_layouts.blends()),
+            image_pipelines: Compiled::lazy(move || layouts.images()),
             image_layout,
             image_sampler,
             images: HashMap::new(),
-            flat_pipeline: pipeline("flat", &with_tiles, "vs_flat", "fs_flat", true, false),
-            pipeline: pipeline("globe", &with_tiles, "vs_main", "fs_main", false, false),
-            blend_pipeline: pipeline(
-                "globe blend",
-                &with_tiles,
-                "vs_main",
-                "fs_main_blend",
-                false,
-                true,
-            ),
-            flat_blend_pipeline: pipeline(
-                "flat blend",
-                &with_tiles,
-                "vs_flat",
-                "fs_flat_blend",
-                true,
-                true,
-            ),
-            composite,
             composite_layout,
-            plain: [
-                pipeline("ground", &no_tiles, "vs_main", "fs_ground", false, false),
-                pipeline(
-                    "graticule",
-                    &no_tiles,
-                    "vs_main",
-                    "fs_graticule",
-                    false,
-                    false,
-                ),
-                pipeline(
-                    "flat ground",
-                    &no_tiles,
-                    "vs_flat",
-                    "fs_flat_ground",
-                    true,
-                    false,
-                ),
-                pipeline(
-                    "flat graticule",
-                    &no_tiles,
-                    "vs_flat",
-                    "fs_flat_graticule",
-                    true,
-                    false,
-                ),
-                pipeline("rim", &no_tiles, "vs_main", "fs_rim", false, false),
-            ],
             meshes: Vec::new(),
             no_backdrop: empty_float("no backdrop", device),
             no_mask: empty_float("no mask", device),
@@ -628,27 +725,35 @@ impl Resources {
             copies: HashMap::new(),
             details: HashMap::new(),
             pyramids: HashMap::new(),
-            no_levels: GpuPyramid::new(device, 1),
+            no_levels: None,
             channels: HashMap::new(),
             channel_count: 0,
             edges,
             version: 0,
-            _poller: Poller::new(device.clone(), busy.clone()),
+            _poller: Poller::new(device.clone(), link.busy.clone()),
         }
     }
 
     /// Makes the heightmaps on the GPU those of the frame. A heightmap with
-    /// another key goes away, and a new one starts with no texels.
+    /// another key goes away, and a new one starts with no texels. The core
+    /// pipelines are ready.
     fn sync(&mut self, device: &wgpu::Device, frame: &Frame) {
+        let core = self.core.get().expect("the caller waits for the core");
+        let (pyramid, stamp) = (core.pyramid.clone(), core.stamp.clone());
+        self.no_levels
+            .get_or_insert_with(|| GpuPyramid::with_pipelines(device, 1, &pyramid));
         let before = (self.copies.len(), self.pyramids.len());
         let mut changed = false;
         if self.full.as_ref().map(|(key, _)| *key) != frame.full {
             changed = true;
             // The old heightmap goes away before the new one takes memory.
             self.full = None;
-            self.full = frame
-                .full
-                .map(|key| (key, GpuHeightmap::new(device, key.face_size)));
+            self.full = frame.full.map(|key| {
+                (
+                    key,
+                    GpuHeightmap::with_pipeline(device, key.face_size, &stamp),
+                )
+            });
         }
         self.copies.retain(|key, _| frame.copies.contains(key));
         changed |= self.copies.len() != before.0;
@@ -675,7 +780,7 @@ impl Resources {
         for key in full.iter().chain(&frame.copies) {
             self.pyramids.entry(*key).or_insert_with(|| {
                 changed = true;
-                GpuPyramid::new(device, key.face_size)
+                GpuPyramid::with_pipelines(device, key.face_size, &pyramid)
             });
         }
         if changed {
@@ -948,7 +1053,7 @@ impl Resources {
         let source = draw.source?;
         if let MapKind::Detail { .. } = source.kind {
             let tiles = self.details.get(&source)?.tiles();
-            return Some((tiles, self.no_levels.bind_group().clone()));
+            return Some((tiles, self.no_levels.as_ref()?.bind_group().clone()));
         }
         let tiles = match &self.full {
             Some((key, heights)) if source == *key => heights.tiles(),
@@ -993,6 +1098,7 @@ impl Resources {
             uniforms: &uniforms,
             tiles: &tiles,
             levels: &levels,
+            pipelines: &self.core.get()?.edges,
         };
         // The canvas, and on the globe the box around its disk.
         let mut area = draw.clip;
@@ -1038,6 +1144,9 @@ impl Resources {
         let Some(slot) = self.slots.get(&(target, draw.pass, small)) else {
             return;
         };
+        let Some(core) = self.core.get() else {
+            return;
+        };
         let blend = draw.uniforms.turn[2] >= 1.0;
         let kind = match draw.pass {
             Pass::Ground => Some(GROUND),
@@ -1049,13 +1158,18 @@ impl Resources {
         if flat && kind == Some(RIM) {
             return;
         }
+        let blends = || self.blends.get().map(|[globe, flat]| (globe, flat));
         let pipeline = match kind {
-            Some(RIM) => &self.plain[RIM],
-            Some(kind) => &self.plain[kind + if flat { FLAT } else { 0 }],
-            None if flat && blend => &self.flat_blend_pipeline,
-            None if flat => &self.flat_pipeline,
-            None if blend => &self.blend_pipeline,
-            None => &self.pipeline,
+            Some(RIM) => &core.plain[RIM],
+            Some(kind) => &core.plain[kind + if flat { FLAT } else { 0 }],
+            None if blend && matches!(draw.pass, Pass::Layer(_)) => {
+                let Some((globe, flat_blend)) = blends() else {
+                    return;
+                };
+                if flat { flat_blend } else { globe }
+            }
+            None if flat => &core.flat_pipeline,
+            None => &core.pipeline,
         };
         let mut pipeline = pipeline;
         if let Pass::Layer(layer) = draw.pass {
@@ -1071,7 +1185,10 @@ impl Resources {
                 return;
             };
             pass.set_bind_group(1, &image.bind_group, &[]);
-            pipeline = &self.image_pipelines[usize::from(flat) * 2 + usize::from(blend)];
+            let Some(pipelines) = self.image_pipelines.get() else {
+                return;
+            };
+            pipeline = &pipelines[usize::from(flat) * 2 + usize::from(blend)];
         }
         pass.set_bind_group(0, &slot.bind_group, &[]);
         pass.set_pipeline(pipeline);
@@ -1508,8 +1625,11 @@ impl Resources {
         let Some(bind) = self.targets.get(&id).and_then(|t| t.bind.as_ref()) else {
             return;
         };
+        let Some(core) = self.core.get() else {
+            return;
+        };
         pass.set_viewport(0.0, 0.0, screen[0] as f32, screen[1] as f32, 0.0, 1.0);
-        pass.set_pipeline(&self.composite);
+        pass.set_pipeline(&core.composite);
         pass.set_bind_group(0, bind, &[]);
         pass.draw(0..4, 0..1);
     }
@@ -1703,6 +1823,9 @@ pub struct Link {
     images: Arc<Mutex<Vec<ImageUpload>>>,
     events: mpsc::Sender<Event>,
     pub busy: Arc<Busy>,
+    /// True when the core pipelines of the globe are ready, or when their
+    /// compile failed.
+    ready: Arc<AtomicBool>,
     /// The memory of the reduced copies on the GPU, with the epoch of the
     /// frame that the GPU prepared last.
     copy_bytes: Arc<Mutex<(u64, u64, u64)>>,
@@ -1716,9 +1839,15 @@ impl Link {
             images: Arc::default(),
             events,
             busy: Arc::default(),
+            ready: Arc::default(),
             copy_bytes: Arc::default(),
         };
         (link, receiver)
+    }
+
+    /// True when the core pipelines of the globe are ready.
+    pub fn ready(&self) -> bool {
+        self.ready.load(Ordering::Relaxed)
     }
 
     pub fn push(&self, map: MapKey, op: Op) {
@@ -2291,10 +2420,13 @@ impl egui_wgpu::CallbackTrait for GlobeCallback {
             .get::<Resources>()
             .is_none_or(|r| r.format != frame.format);
         if stale {
-            let busy = &frame.link.busy;
-            resources.insert(Resources::new(device, frame.format, busy));
+            resources.insert(Resources::new(device, frame.format, &frame.link));
         }
         let res: &mut Resources = resources.get_mut().expect("inserted above");
+        // The changes wait in the queue until the core pipelines are ready.
+        if res.core.get().is_none() {
+            return Vec::new();
+        }
         run_ops(device, queue, res, frame);
         if let Some(mesh) = &frame.flat {
             res.ensure_mesh(device, mesh);
@@ -2371,6 +2503,23 @@ impl egui_wgpu::CallbackTrait for GlobeCallback {
             Job::Group(_) => {}
             Job::Backdrop(..) => {}
         }
+    }
+}
+
+/// Starts the compile of the core pipelines of the globe on a worker
+/// thread, before the first frame of a globe needs them.
+pub fn start(render_state: &egui_wgpu::RenderState, link: &Link) {
+    let format = render_state.target_format;
+    let mut renderer = render_state.renderer.write();
+    let resources = &mut renderer.callback_resources;
+    if resources
+        .get::<Resources>()
+        .is_none_or(|r| r.format != format)
+    {
+        let res = Resources::new(&render_state.device, format, link);
+        // An offscreen render waits here, so that no compile outlives it.
+        let _ = res.core.get();
+        resources.insert(res);
     }
 }
 

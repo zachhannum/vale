@@ -23,7 +23,7 @@ use crate::heightmap::{
 use crate::line::{LINE_SEGMENTS, LinePlan, REACH};
 use crate::range::RangePlan;
 use crate::ridge::RidgePlan;
-use crate::tiles::{Pool, TILES_WGSL};
+use crate::tiles::{Pool, TILES_WGSL, tiles_layout};
 
 /// The number of face passes in one batch. One group of stamps takes one pass
 /// for each face that it touches.
@@ -428,6 +428,122 @@ fn texels(texture: &wgpu::Texture, x: usize, y: usize, z: u32) -> wgpu::TexelCop
     }
 }
 
+/// The stamp pipeline of `GpuHeightmap` and the bind group layouts that it
+/// was made with. One serves each heightmap of a device.
+#[derive(Clone)]
+pub struct StampPipeline {
+    layout: wgpu::BindGroupLayout,
+    tiles_layout: wgpu::BindGroupLayout,
+    pipeline: wgpu::RenderPipeline,
+}
+
+impl StampPipeline {
+    pub fn new(device: &wgpu::Device) -> StampPipeline {
+        let uniform_size = NonZeroU64::new(size_of::<Uniforms>() as u64);
+        let ridge_size = NonZeroU64::new(size_of::<RidgeUniforms>() as u64);
+        let texture_entry = |binding, view_dimension| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Uint,
+                view_dimension,
+                multisampled: false,
+            },
+            count: None,
+        };
+        let storage_entry = |binding| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        };
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("stamp"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: true,
+                        min_binding_size: uniform_size,
+                    },
+                    count: None,
+                },
+                texture_entry(1, wgpu::TextureViewDimension::D2Array),
+                texture_entry(2, wgpu::TextureViewDimension::D2),
+                texture_entry(3, wgpu::TextureViewDimension::D2Array),
+                texture_entry(4, wgpu::TextureViewDimension::D2),
+                texture_entry(5, wgpu::TextureViewDimension::D2Array),
+                texture_entry(6, wgpu::TextureViewDimension::D2),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 7,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: true,
+                        min_binding_size: ridge_size,
+                    },
+                    count: None,
+                },
+                storage_entry(8),
+                storage_entry(9),
+                storage_entry(10),
+                storage_entry(11),
+                storage_entry(12),
+                storage_entry(13),
+            ],
+        });
+        let tiles_layout = tiles_layout(device);
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("stamp"),
+            source: wgpu::ShaderSource::Wgsl(
+                format!("{TILES_WGSL}\n{}", include_str!("stamp.wgsl")).into(),
+            ),
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("stamp"),
+            bind_group_layouts: &[Some(&layout), Some(&tiles_layout)],
+            immediate_size: 0,
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("stamp"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: FORMAT,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        StampPipeline {
+            layout,
+            tiles_layout,
+            pipeline,
+        }
+    }
+}
+
 impl GpuHeightmap {
     /// Makes a heightmap with `face_size` by `face_size` texels on each
     /// face, all at level 0. No tile has memory. The channel map has no
@@ -436,9 +552,35 @@ impl GpuHeightmap {
         GpuHeightmap::with_tile_size(device, face_size, TILE_SIZE)
     }
 
+    /// The same as `new`, with a stamp pipeline that exists. It compiles no
+    /// shader.
+    pub fn with_pipeline(
+        device: &wgpu::Device,
+        face_size: u32,
+        pipeline: &StampPipeline,
+    ) -> GpuHeightmap {
+        GpuHeightmap::build(device, face_size, TILE_SIZE, pipeline)
+    }
+
     /// The same as `new`, with `tile` by `tile` texels in a tile.
     pub fn with_tile_size(device: &wgpu::Device, face_size: u32, tile: usize) -> GpuHeightmap {
-        let pool = Pool::new(device, face_size as usize, tile, 0, 1);
+        GpuHeightmap::build(device, face_size, tile, &StampPipeline::new(device))
+    }
+
+    fn build(
+        device: &wgpu::Device,
+        face_size: u32,
+        tile: usize,
+        pipeline: &StampPipeline,
+    ) -> GpuHeightmap {
+        let pool = Pool::with_layout(
+            device,
+            face_size as usize,
+            tile,
+            0,
+            1,
+            pipeline.tiles_layout.clone(),
+        );
         let tiles_layout = pool.layout().clone();
         // A new texture holds zeros, and a river size of 0 is no river.
         let channel_size = ChannelMap::size_for(face_size as usize) as u32;
@@ -520,7 +662,6 @@ impl GpuHeightmap {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let uniform_size = NonZeroU64::new(u64::from(uniform_size));
         let ridge_size = size_of::<RidgeUniforms>() as u32;
         let ridge_slot_size =
             ridge_size.next_multiple_of(device.limits().min_uniform_buffer_offset_alignment);
@@ -530,67 +671,9 @@ impl GpuHeightmap {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let ridge_size = NonZeroU64::new(u64::from(ridge_size));
 
-        let texture_entry = |binding, view_dimension| wgpu::BindGroupLayoutEntry {
-            binding,
-            visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Texture {
-                sample_type: wgpu::TextureSampleType::Uint,
-                view_dimension,
-                multisampled: false,
-            },
-            count: None,
-        };
-        let storage_entry = |binding| wgpu::BindGroupLayoutEntry {
-            binding,
-            visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Storage { read_only: true },
-                has_dynamic_offset: false,
-                min_binding_size: None,
-            },
-            count: None,
-        };
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("stamp"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: true,
-                        min_binding_size: uniform_size,
-                    },
-                    count: None,
-                },
-                texture_entry(1, wgpu::TextureViewDimension::D2Array),
-                texture_entry(2, wgpu::TextureViewDimension::D2),
-                texture_entry(3, wgpu::TextureViewDimension::D2Array),
-                texture_entry(4, wgpu::TextureViewDimension::D2),
-                texture_entry(5, wgpu::TextureViewDimension::D2Array),
-                texture_entry(6, wgpu::TextureViewDimension::D2),
-                wgpu::BindGroupLayoutEntry {
-                    binding: 7,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: true,
-                        min_binding_size: ridge_size,
-                    },
-                    count: None,
-                },
-                storage_entry(8),
-                storage_entry(9),
-                storage_entry(10),
-                storage_entry(11),
-                storage_entry(12),
-                storage_entry(13),
-            ],
-        });
         let bind_parts = BindParts {
-            layout,
+            layout: pipeline.layout.clone(),
             uniforms,
             ridge_uniforms,
             views: [
@@ -610,43 +693,6 @@ impl GpuHeightmap {
             sides: [0; 3],
         };
 
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("stamp"),
-            source: wgpu::ShaderSource::Wgsl(
-                format!("{TILES_WGSL}\n{}", include_str!("stamp.wgsl")).into(),
-            ),
-        });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("stamp"),
-            bind_group_layouts: &[Some(&bind_parts.layout), Some(&tiles_layout)],
-            immediate_size: 0,
-        });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("stamp"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                buffers: &[],
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: FORMAT,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: Default::default(),
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
-
         GpuHeightmap {
             device: device.clone(),
             face_size,
@@ -665,7 +711,7 @@ impl GpuHeightmap {
             window_fills,
             drops,
             window_drops,
-            pipeline,
+            pipeline: pipeline.pipeline.clone(),
             uniforms: bind_parts.uniforms.clone(),
             ridge_uniforms: bind_parts.ridge_uniforms.clone(),
             bind_parts,

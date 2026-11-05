@@ -172,6 +172,19 @@ impl Pool {
     /// A pool of `levels` levels with no memory in each tile. Each texel
     /// reads as `base`.
     pub fn new(device: &wgpu::Device, n: usize, tile: usize, base: u16, levels: usize) -> Pool {
+        Pool::with_layout(device, n, tile, base, levels, tiles_layout(device))
+    }
+
+    /// The same as `new`, with a bind group for `layout`, which is a
+    /// `tiles_layout`.
+    pub fn with_layout(
+        device: &wgpu::Device,
+        n: usize,
+        tile: usize,
+        base: u16,
+        levels: usize,
+        layout: wgpu::BindGroupLayout,
+    ) -> Pool {
         assert!(levels >= 1, "a pool has one level at least");
         let per_side = n.div_ceil(tile);
         let tiles: u32 = (0..levels)
@@ -218,7 +231,6 @@ impl Pool {
             wgpu::TextureUsages::TEXTURE_BINDING,
         ));
 
-        let layout = tiles_layout(device);
         let bind_group = bind(device, &layout, &uniforms, &table_view, &[], &no_chunk);
 
         Pool {

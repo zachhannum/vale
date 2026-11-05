@@ -51,7 +51,7 @@ pub use flow::{
     WindowHeights, channel_map, window_channels,
 };
 #[cfg(feature = "gpu")]
-pub use gpu::{GROUP_STAMPS, GpuHeightmap, RIDGE_SLOTS, Readback, STAMP_SLOTS};
+pub use gpu::{GROUP_STAMPS, GpuHeightmap, RIDGE_SLOTS, Readback, STAMP_SLOTS, StampPipeline};
 pub use heightmap::{
     Heightmap, Limits, MAX_BRUSH_RADIUS, Mode, NOISE_OCTAVES, NOISE_RELIEF_M, Stamp, StampPlan,
     TILE_SIZE, TexelRect, UNDO_MEMORY_LIMIT, talus_levels,
@@ -59,7 +59,7 @@ pub use heightmap::{
 pub use lake::LAKE_MIN_AREA;
 pub use line::{LINE_SEGMENTS, LINE_SPACING, LinePlan, LineSegment, StrokeLine};
 #[cfg(feature = "gpu")]
-pub use pyramid::{FIELD_WGSL, GpuPyramid, pyramid_layout};
+pub use pyramid::{FIELD_WGSL, GpuPyramid, PyramidPipelines, pyramid_layout};
 pub use rain::Rain;
 pub use range::{RANGE_ERODE_RATE, RANGE_STEPS, RangeLine, RangePlan, RangeSpec, erode_range};
 pub use reduce::{reduced_bytes, reduced_cap, reduced_face_size, reduction_factor};
@@ -71,3 +71,11 @@ pub use smooth::{
 pub use swatch::swatches;
 #[cfg(feature = "gpu")]
 pub use tiles::{GpuTiles, TILES_WGSL, tiles_layout};
+
+// A worker thread makes the pipelines, and the main thread uses them.
+#[cfg(feature = "gpu")]
+const _: fn() = || {
+    fn send_sync<T: Send + Sync>() {}
+    send_sync::<PyramidPipelines>();
+    send_sync::<StampPipeline>();
+};

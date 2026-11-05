@@ -197,6 +197,7 @@ pub fn ui_harness_on(
     render_state: eframe::egui_wgpu::RenderState,
 ) -> egui_kittest::Harness<'static, crate::ui::AppState> {
     state.headless = true;
+    crate::globe::compile::wait_in_frames();
     // The rivers of a change show in the next frame, so an image does not
     // depend on the time.
     state.globe.set_rivers_sync(true);

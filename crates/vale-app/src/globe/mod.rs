@@ -23,6 +23,7 @@ pub mod backdrop;
 pub mod basin;
 pub mod brush;
 pub mod combine;
+pub mod compile;
 pub mod detail;
 pub mod edges;
 pub mod erode;
@@ -1660,6 +1661,12 @@ impl Globe {
         Some(copy.key.face_size)
     }
 
+    /// True when the globe has no renderer, or when the core pipelines of
+    /// its renderer are ready.
+    pub fn pipelines_ready(&self) -> bool {
+        self.format.is_none() || self.link.ready()
+    }
+
     /// True while a visible raster layer waits for the texels of its
     /// reduced copy.
     pub fn loading(&self) -> bool {
@@ -1805,6 +1812,7 @@ impl Globe {
     /// than the largest texture of the device.
     pub fn attach(&mut self, render_state: &egui_wgpu::RenderState) {
         self.format = Some(render_state.target_format);
+        gpu::start(render_state, &self.link);
         let info = render_state.adapter.get_info();
         self.stats.adapter = format!("{} ({:?})", info.name, info.backend);
         let limit = render_state.device.limits().max_texture_dimension_2d as usize;
@@ -2990,7 +2998,8 @@ impl Globe {
         self.send_stamps(now);
         // A held stroke with no work in progress needs no frames.
         let busy = (self.busy() && !self.held_idle()) || self.loading() || self.details_loading();
-        zooming || in_flight || busy || self.rivers.pending() || self.export.is_some()
+        let compiling = compile::compiling();
+        zooming || in_flight || busy || compiling || self.rivers.pending() || self.export.is_some()
     }
 
     fn read_events(&mut self) {
