@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use vale_store::{
-    ImageId, Project, ProjectFile, Raster, RasterId, Restored, SaveStats, StoreError, TileChanges,
-    TileKey, TileReader,
+    ImageId, Project, ProjectFile, Raster, RasterId, Restored, SaveStats, StepSelection,
+    StoreError, TileChanges, TileKey, TileReader,
 };
 use vale_terrain::{Bands, FACES, Heightmap, Stop, StopLine, reduced_face_size};
 
@@ -132,6 +132,11 @@ pub struct Session {
     /// The tiles that the last undo or redo put back in the file for the
     /// raster layers with no heightmap in its `maps`.
     pub last_restored: Vec<(RasterId, TileKey)>,
+    /// The selection from before and from after the change that waits.
+    step_selection: Option<(StepSelection, StepSelection)>,
+    /// The selection that the last undo or redo put back. `None`: the step
+    /// had no selection.
+    pub restored_selection: Option<StepSelection>,
 }
 
 impl Session {
@@ -217,6 +222,8 @@ impl Session {
             last_save: SaveStats::default(),
             saves: 0,
             last_restored: Vec::new(),
+            step_selection: None,
+            restored_selection: None,
         })
     }
 
@@ -452,6 +459,12 @@ impl Session {
         Ok(None)
     }
 
+    /// Sets the selection from before and from after the change that waits.
+    /// The next undo step keeps it.
+    pub fn set_step_selection(&mut self, before: StepSelection, after: StepSelection) {
+        self.step_selection = Some((before, after));
+    }
+
     /// Saves a change now, as one undo step.
     pub fn flush(&mut self, project: &mut Project, maps: &mut Maps) -> Result<(), StoreError> {
         self.changed_at = None;
@@ -470,7 +483,8 @@ impl Session {
                 changes.push(tile_changes(raster, map, new));
             }
         }
-        self.last_save = self.file.save_tiles(project, &changes)?;
+        let selection = self.step_selection.as_ref().map(|(b, a)| (b, a));
+        self.last_save = self.file.save_step(project, &changes, selection)?;
         drop(changes);
         self.saves += 1;
         self.thumbnail_stale = true;
@@ -515,6 +529,7 @@ impl Session {
         self.flush(&mut doc.project, maps)?;
         self.mark_changed();
         self.last_restored.clear();
+        self.restored_selection = None;
         match self.file.undo()? {
             Some(restored) => self.apply(restored, doc, maps).map(|()| true),
             None => Ok(false),
@@ -526,6 +541,7 @@ impl Session {
         self.flush(&mut doc.project, maps)?;
         self.mark_changed();
         self.last_restored.clear();
+        self.restored_selection = None;
         match self.file.redo()? {
             Some(restored) => self.apply(restored, doc, maps).map(|()| true),
             None => Ok(false),
@@ -540,6 +556,7 @@ impl Session {
         doc: &mut Document,
         maps: &mut Maps,
     ) -> Result<(), StoreError> {
+        self.restored_selection = restored.selection;
         doc.set_project(self.file.project().clone());
         load_raster_styles(&mut doc.project);
         load_image_styles(&mut doc.project);
