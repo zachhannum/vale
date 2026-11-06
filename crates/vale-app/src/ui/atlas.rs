@@ -338,6 +338,10 @@ pub enum ClassPage {
     Zones,
     /// The start and the style of the leader line of a label outside its polygon.
     LeaderLine,
+    /// A new part of the text.
+    AddPart,
+    /// The part of the text with this index.
+    Part(usize),
 }
 
 /// A segment of the panel of a label class.
@@ -663,6 +667,8 @@ pub struct AtlasState {
     pub label_drag: Option<ClassDrag>,
     /// The position that a finger drags on the Positions page.
     pub position_drag: Option<ClassDrag>,
+    /// The part of the text that a finger drags in the Text segment.
+    pub part_drag: Option<ClassDrag>,
     /// The frame whose Edge labels page the Frame tab shows.
     pub edge: Option<FrameId>,
     /// The set of edge labels that the page shows.
@@ -833,6 +839,7 @@ impl Default for AtlasState {
             label_draft: Default::default(),
             label_drag: None,
             position_drag: None,
+            part_drag: None,
             edge: None,
             edge_set: EdgeSet::Meridians,
             edge_styles: false,

@@ -3359,6 +3359,7 @@ fn the_labels_tab_makes_a_label_class() {
     assert_eq!(list[1].name, "Class 1");
 
     type_text(&mut h, TEXT, "upper(name)");
+    scroll_to(&mut h, FONT);
     tap(&mut h, FONT);
     let target = FontTarget::Class(map, places, 1);
     assert!(h.state().actions.contains(&Action::PickFont(target)));
@@ -3457,6 +3458,7 @@ fn the_size_stepper_of_a_class_moves_one_step_and_a_typed_size_stays_in_the_rang
     let size = |h: &Pad| classes(h, map, "Places")[0].size;
     tap(&mut h, "Places");
     let before = size(&h);
+    scroll_to(&mut h, &format!("Increase {LABEL_SIZE}"));
     step(&mut h, LABEL_SIZE, true);
     assert_eq!(size(&h), before + 1.0);
     step(&mut h, LABEL_SIZE, false);
@@ -3472,6 +3474,7 @@ fn a_change_of_a_class_places_the_labels_again_while_you_edit() {
     let mut h = labels_pad(BOARDS[0]);
     let map = frame(&h, 0).map;
     tap(&mut h, "Places");
+    scroll_to(&mut h, &format!("Increase {LABEL_SIZE}"));
     let composes = h.state().atlas.composes;
     // A hold on the plus button of the size repeats.
     let plus = control(&h, &format!("Increase {LABEL_SIZE}"))
@@ -3682,6 +3685,7 @@ fn the_style_row_lists_the_faces_of_the_family() {
     let mut h = labels_pad(BOARDS[0]);
     let map = frame(&h, 0).map;
     tap(&mut h, "Places");
+    scroll_to(&mut h, STYLE);
     tap(&mut h, STYLE);
     let faces = h.state_mut().fonts.faces("Noto Sans");
     assert!(faces.len() >= 2, "{faces:?}");
@@ -3828,6 +3832,93 @@ fn the_filter_of_a_class_has_the_condition_builder() {
     scroll_to(&mut h, &first);
     tap(&mut h, &first);
     assert_eq!(classes(&h, map, "Places")[0].filter, "");
+}
+
+#[test]
+fn the_text_of_a_class_has_the_text_builder() {
+    use vale_app::ui::atlas::ClassPage;
+    use vale_app::ui::pad::label_parts::{
+        ADD_PART, NO_ROUNDING, PART, PREFIX, REMOVE_PART, REORDER_PART, TEXT as TEXT_CHIP,
+    };
+    let mut h = labels_pad(BOARDS[0]);
+    let map = frame(&h, 0).map;
+    let places = layer_id(&h, "Places");
+    let text = |h: &Pad| classes(h, map, "Places")[0].text.clone();
+    let page = |h: &Pad| h.state().atlas.label_page;
+    tap(&mut h, "Places");
+    assert_eq!(text(&h), "name");
+    check_controls(&h, "the Text segment with the text builder");
+
+    // "Add part" adds a field part.
+    scroll_to(&mut h, ADD_PART);
+    tap(&mut h, ADD_PART);
+    assert_eq!(page(&h), Some(ClassPage::AddPart));
+    check_controls(&h, "the page of a new part");
+    scroll_to(&mut h, "pop_max");
+    tap(&mut h, "pop_max");
+    assert_eq!(page(&h), None);
+    assert_eq!(text(&h), "concat(name, pop_max)");
+
+    // A field part with a prefix, rounded to one decimal place.
+    let second = format!("{PART} 2");
+    scroll_to(&mut h, &second);
+    tap(&mut h, &second);
+    assert_eq!(page(&h), Some(ClassPage::Part(1)));
+    check_controls(&h, "the page of a number field part");
+    type_text(&mut h, PREFIX, "Pop ");
+    assert_eq!(text(&h), "concat(name, 'Pop ' || pop_max)");
+    scroll_to(&mut h, "1");
+    tap(&mut h, "1");
+    assert_eq!(text(&h), "concat(name, 'Pop ' || round(pop_max, 1))");
+    tap(&mut h, NO_ROUNDING);
+    assert_eq!(text(&h), "concat(name, 'Pop ' || pop_max)");
+    tap(&mut h, "Back to Places");
+
+    // A text part opens its page.
+    scroll_to(&mut h, ADD_PART);
+    tap(&mut h, ADD_PART);
+    tap(&mut h, TEXT_CHIP);
+    assert_eq!(page(&h), Some(ClassPage::Part(2)));
+    check_controls(&h, "the page of a text part");
+    type_text(&mut h, TEXT_CHIP, " people");
+    assert_eq!(text(&h), "concat(name, 'Pop ' || pop_max, ' people')");
+    tap(&mut h, "Back to Places");
+    assert_eq!(page(&h), None);
+
+    // The remove button and the handle change the parts.
+    let first = format!("{REMOVE_PART} 1");
+    scroll_to(&mut h, &first);
+    tap(&mut h, &first);
+    assert_eq!(text(&h), "concat('Pop ' || pop_max, ' people')");
+    let handle = format!("{REORDER_PART} 2");
+    scroll_to(&mut h, &handle);
+    let from = control(&h, &handle).unwrap().center();
+    let to = from - vec2(0.0, 60.0);
+    drag_steps(&mut h, from, to, Input::Finger, 8);
+    release(&mut h, to, Input::Finger);
+    assert_eq!(text(&h), "concat(' people', 'Pop ' || pop_max)");
+
+    // Text that the builder cannot read is one raw part, and stays as it is.
+    let raw = "if(pop_max > 1000000, upper(name), name)";
+    h.state_mut()
+        .edit_label_class(map, places, 0, |c| c.text = raw.into());
+    h.run_steps(3);
+    assert_eq!(text(&h), raw);
+    let one = format!("{PART} 1");
+    assert!(control(&h, &one).is_some());
+    assert!(control(&h, &second).is_none());
+    tap(&mut h, &one);
+    assert_eq!(page(&h), None);
+    assert_eq!(text(&h), raw);
+    scroll_to(&mut h, ADD_PART);
+    tap(&mut h, ADD_PART);
+    scroll_to(&mut h, "name");
+    tap(&mut h, "name");
+    assert_eq!(text(&h), format!("concat({raw}, name)"));
+    let remove = format!("{REMOVE_PART} 2");
+    scroll_to(&mut h, &remove);
+    tap(&mut h, &remove);
+    assert_eq!(text(&h), raw);
 }
 
 #[test]

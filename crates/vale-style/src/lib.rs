@@ -80,8 +80,8 @@ impl Stroke {
 #[derive(Clone, Debug, PartialEq)]
 pub struct LabelStyle {
     pub enabled: bool,
-    /// The attribute that gives the text.
-    pub field: Option<String>,
+    /// The text expression. Empty text gives no labels.
+    pub text: String,
     /// A numeric attribute. Higher is placed first.
     pub priority_field: Option<String>,
     /// Points.
@@ -129,13 +129,12 @@ fn stroke(color: Color, width: f64) -> Symbolizer {
 }
 
 impl LayerStyle {
-    /// Replaces the field `old` with `new` in the rules, the label field, and the priority field.
+    /// Replaces the field `old` with `new` in the rules, the label text, and the priority field.
     pub fn rename_field(&mut self, old: &str, new: &str) {
         self.style.rename_field(old, new);
-        for field in [&mut self.label.field, &mut self.label.priority_field] {
-            if field.as_deref() == Some(old) {
-                *field = Some(new.to_owned());
-            }
+        self.label.text = expr::rename_field(&self.label.text, old, new);
+        if self.label.priority_field.as_deref() == Some(old) {
+            self.label.priority_field = Some(new.to_owned());
         }
     }
 
@@ -143,6 +142,7 @@ impl LayerStyle {
     pub fn default_for(kind: GeometryKind, ordinal: usize, fields: &[String]) -> Self {
         let field = guess_label_field(fields);
         let on = field.is_some();
+        let text = field.as_deref().map(expr::field_ref).unwrap_or_default();
         let (symbolizers, label) = match kind {
             GeometryKind::Polygon => (
                 vec![
@@ -151,7 +151,7 @@ impl LayerStyle {
                 ],
                 LabelStyle {
                     enabled: false,
-                    field,
+                    text: text.clone(),
                     priority_field: None,
                     size: 11.0,
                     color: Color::rgb(40, 40, 40),
@@ -163,7 +163,7 @@ impl LayerStyle {
                 vec![stroke(pick(&LINE_STROKES, ordinal), 1.2)],
                 LabelStyle {
                     enabled: on,
-                    field,
+                    text: text.clone(),
                     priority_field: None,
                     size: 11.0,
                     color: Color::rgb(40, 100, 160),
@@ -184,7 +184,7 @@ impl LayerStyle {
                 }],
                 LabelStyle {
                     enabled: on,
-                    field,
+                    text,
                     priority_field: None,
                     size: 11.0,
                     color: Color::rgb(30, 30, 30),
@@ -216,7 +216,7 @@ impl LayerStyle {
             },
             label: LabelStyle {
                 enabled: false,
-                field: None,
+                text: String::new(),
                 priority_field: None,
                 size: 11.0,
                 color: Color::rgb(40, 40, 40),
@@ -459,7 +459,7 @@ mod tests {
     fn point_labels() {
         let on = LayerStyle::default_for(GeometryKind::Point, 0, &s(&["name"]));
         assert!(on.label.enabled);
-        assert_eq!(on.label.field.as_deref(), Some("name"));
+        assert_eq!(on.label.text, "name");
         let off = LayerStyle::default_for(GeometryKind::Point, 0, &s(&["pop"]));
         assert!(!off.label.enabled);
     }
@@ -468,7 +468,7 @@ mod tests {
     fn polygon_and_line_defaults() {
         let p = LayerStyle::default_for(GeometryKind::Polygon, 0, &s(&["name"]));
         assert!(!p.label.enabled);
-        assert!(p.label.field.is_some());
+        assert_eq!(p.label.text, "name");
         let l = LayerStyle::default_for(GeometryKind::Line, 0, &s(&["name"]));
         assert!(l.label.enabled);
         assert!(l.label.italic);

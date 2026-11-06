@@ -24,7 +24,7 @@ pub const FIELDS: &str = "Fields";
 pub const FUNCTIONS_MENU: &str = "Functions";
 
 /// The map scale of the preview.
-const PREVIEW_SCALE: f64 = 1_000_000.0;
+pub const PREVIEW_SCALE: f64 = 1_000_000.0;
 
 /// What the result of an expression is.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]

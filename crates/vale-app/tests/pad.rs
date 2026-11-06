@@ -7018,7 +7018,7 @@ fn a_new_point_layer_has_a_name_field_and_return_ends_the_edit() {
     // The layer labels its points with the name.
     let entry = h.state().doc.frame.entries.iter().find(|e| e.layer == id);
     let label = &entry.unwrap().style.label;
-    assert_eq!(label.field.as_deref(), Some("name"));
+    assert_eq!(label.text, "name");
     assert!(label.enabled);
     tap(&mut h, select::ATTRIBUTES);
     let center = h.state().globe.rect.center();
@@ -7452,6 +7452,7 @@ fn you_add_rename_and_remove_a_field_and_the_file_has_the_same_fields() {
     h.state_mut().save_waiting().unwrap();
     let saved = saves(&h);
 
+    scroll_to_control(&mut h, ADD_FIELD);
     tap(&mut h, ADD_FIELD);
     assert_eq!(h.state().pad.page, Some(Page::NewField));
     assert!(control(&h, &format!("Close {NEW_FIELD}")).is_some());
@@ -7482,6 +7483,7 @@ fn you_add_rename_and_remove_a_field_and_the_file_has_the_same_fields() {
     tap(&mut h, "Back to Points 1");
 
     // Return in the name adds the field.
+    scroll_to_control(&mut h, ADD_FIELD);
     tap(&mut h, ADD_FIELD);
     h.event(egui::Event::Text("height".into()));
     h.run_steps(2);
@@ -7563,7 +7565,7 @@ fn a_rename_of_the_label_field_keeps_the_labels() {
     let doc = &h.state().doc;
     assert!(doc.layer(places).unwrap().field("title").is_some());
     let label = &doc.entry(places).unwrap().style.label;
-    assert_eq!(label.field.as_deref(), Some("title"));
+    assert_eq!(label.text, "title");
     assert_eq!(placed(doc), before);
     // A rename of the priority field keeps it too.
     let doc = &mut h.state_mut().doc;
@@ -9260,6 +9262,43 @@ fn the_layers_panel_shows_why_an_image_layer_did_not_import() {
 }
 
 #[test]
+fn the_layer_panel_edits_the_label_text_with_the_builder() {
+    use vale_app::ui::pad::label_parts::{ADD_PART, LABEL_TEXT, PART, PREFIX};
+    let text = |h: &Pad, id| h.state().doc.entry(id).unwrap().style.label.text.clone();
+    for size in [BOARDS[0], BOARDS[3]] {
+        let what = format!("{size:?}");
+        let mut h = pad(size);
+        let places = vector(&h, "Places");
+        tap(&mut h, "Layers");
+        tap(&mut h, "Open Places");
+        scroll_to_control(&mut h, LABEL_TEXT);
+        tap(&mut h, LABEL_TEXT);
+        assert_eq!(h.state().pad.page, Some(Page::LabelText), "{what}");
+        assert!(control(&h, &format!("{PART} 1")).is_some(), "{what}");
+        check_controls(&h, &format!("{what} on the Label text page"));
+        scroll_to_control(&mut h, ADD_PART);
+        tap(&mut h, ADD_PART);
+        assert_eq!(h.state().pad.page, Some(Page::AddPart), "{what}");
+        check_controls(&h, &format!("{what} on the page of a new part"));
+        scroll_to_control(&mut h, "adm0name");
+        tap(&mut h, "adm0name");
+        assert_eq!(h.state().pad.page, Some(Page::LabelText), "{what}");
+        assert_eq!(text(&h, places), "concat(name, adm0name)", "{what}");
+        let second = format!("{PART} 2");
+        scroll_to_control(&mut h, &second);
+        tap(&mut h, &second);
+        assert_eq!(h.state().pad.page, Some(Page::Part(1)), "{what}");
+        check_controls(&h, &format!("{what} on the page of a part"));
+        type_text(&mut h, PREFIX, ", ");
+        assert_eq!(text(&h, places), "concat(name, ', ' || adm0name)", "{what}");
+        tap(&mut h, &format!("Back to {LABEL_TEXT}"));
+        assert_eq!(h.state().pad.page, Some(Page::LabelText), "{what}");
+        tap(&mut h, "Back to Places");
+        assert_eq!(h.state().pad.page, None, "{what}");
+    }
+}
+
+#[test]
 fn the_font_row_asks_for_the_font_picker() {
     use vale_app::ui::pad::fonts::FONT;
     let font = |h: &Pad, id| h.state().doc.entry(id).unwrap().style.label.font.clone();
@@ -10350,7 +10389,7 @@ fn merge_joins_two_provinces_into_the_feature_that_you_choose_in_one_undo_step()
             let value = Value::Text(name.into());
             assert_eq!(project.set_attribute_of(id, &one, "name", &value), 1);
         }
-        state.doc.entry_mut(id).unwrap().style.label.field = Some("name".into());
+        state.doc.entry_mut(id).unwrap().style.label.text = "'Isle ' || name".into();
         state.save_waiting().unwrap();
         uuid
     };
@@ -10367,15 +10406,16 @@ fn merge_joins_two_provinces_into_the_feature_that_you_choose_in_one_undo_step()
     assert_eq!(selection(&h).len(), 2);
     assert!(!disabled(&h, select::MERGE));
     tap(&mut h, select::MERGE);
-    // The list names each feature by the label field, the largest first.
-    let (big_row, small_row) = (control(&h, "Big").unwrap(), control(&h, "Small").unwrap());
+    // The list names each feature by the label text, the largest first.
+    let big_row = control(&h, "Isle Big").unwrap();
+    let small_row = control(&h, "Isle Small").unwrap();
     assert!(big_row.top() < small_row.top());
     let card = h.state().pad.rects.unwrap().brush.unwrap();
     assert!(big_row.left() > card.right());
     check_controls(&h, "the list of Merge");
     screenshot::save(&mut h, "pad-merge");
     let saved = saves(&h);
-    tap(&mut h, "Small");
+    tap(&mut h, "Isle Small");
     assert_eq!(saves(&h), saved + 1);
     assert!(!h.state().merging);
     let features = line_features(&h, id);

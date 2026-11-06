@@ -103,8 +103,23 @@ fn rivers_off_is_upright() {
 fn other_label_field() {
     let mut doc = Document::sample();
     let id = layer_id(&doc, "Places");
-    doc.entry_mut(id).unwrap().style.label.field = Some("adm0name".into());
+    doc.entry_mut(id).unwrap().style.label.text = "adm0name".into();
     assert!(texts(&compose(&doc)).iter().any(|t| t == "Japan"));
+}
+
+#[test]
+fn a_label_text_expression_gives_the_labels() {
+    let mut doc = Document::sample();
+    let id = layer_id(&doc, "Places");
+    let label = &mut doc.entry_mut(id).unwrap().style.label;
+    label.text = "concat(name, ' in ' || adm0name)".into();
+    assert!(texts(&compose(&doc)).iter().any(|t| t == "Tokyo in Japan"));
+    // The prefix and the suffix of a field with no value do not show.
+    let label = &mut doc.entry_mut(id).unwrap().style.label;
+    label.text = "concat(name, ' (' || no_field || ')')".into();
+    let texts = texts(&compose(&doc));
+    assert!(texts.iter().any(|t| t == "Tokyo"));
+    assert!(texts.iter().all(|t| !t.contains('(')));
 }
 
 #[test]
