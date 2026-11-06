@@ -27,7 +27,7 @@ use crate::atlas::{
 };
 use crate::image_tile::image_levels;
 use crate::tile::{self, TILE_SIZE};
-use crate::undo::{self, UNDO_LIMIT};
+use crate::undo::{self, StepSelection, UNDO_LIMIT};
 use crate::{
     BlendMode, Feature, Field, FieldType, Geometry, GeometryKind, Hillshade, Image, ImageId, Layer,
     LayerId, LayerKind, LonLat, Project, Raster, RasterDisplay, RasterId, Rgb, Rgba, Smoothing,
@@ -35,7 +35,7 @@ use crate::{
 };
 
 /// The version of the `vale_` tables that this code writes.
-pub const FORMAT_VERSION: u32 = 35;
+pub const FORMAT_VERSION: u32 = 36;
 
 /// One step for each format version. Step `n` changes a file of version `n`
 /// to version `n + 1`. A new version adds a step and never changes an old one.
@@ -75,6 +75,7 @@ const MIGRATIONS: &[fn(&Transaction) -> rusqlite::Result<()>] = &[
     v33,
     v34,
     v35,
+    undo::v36,
 ];
 
 /// `GPKG` in ASCII.
@@ -183,6 +184,9 @@ pub struct SaveStats {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Restored {
     pub tiles: Vec<(RasterId, TileKey)>,
+    /// The selection from before the step after an undo, and from after it
+    /// after a redo.
+    pub selection: Option<StepSelection>,
 }
 
 /// A small picture of the world, for a list of projects.
@@ -514,8 +518,20 @@ impl ProjectFile {
         project: &Project,
         changes: &[TileChanges],
     ) -> Result<SaveStats, StoreError> {
+        self.save_step(project, changes, None)
+    }
+
+    /// `save_tiles`, and the step keeps the selection from before and from
+    /// after the edit.
+    pub fn save_step(
+        &mut self,
+        project: &Project,
+        changes: &[TileChanges],
+        selection: Option<(&StepSelection, &StepSelection)>,
+    ) -> Result<SaveStats, StoreError> {
         let tx = self.conn.transaction()?;
-        let stats = write_edit(&tx, Some(&self.project), project, changes, self.undo_limit)?;
+        let old = Some((&self.project, selection));
+        let stats = write_edit(&tx, old, project, changes, self.undo_limit)?;
         tx.commit()?;
         self.project = project.clone();
         self.read_log()?;
@@ -562,13 +578,14 @@ impl ProjectFile {
         let project = undo::swap_records(&tx, step, &self.project)?;
         write_records(&tx, &project)?;
         let tiles = undo::swap_tiles(&tx, step)?;
+        let selection = undo::selection(&tx, step, redo)?;
         remove_rasters(&tx, &project)?;
         remove_images(&tx, &project)?;
         undo::moved(&tx, step, !redo, self.undo_limit)?;
         tx.commit()?;
         self.project = project;
         self.read_log()?;
-        Ok(Some(Restored { tiles }))
+        Ok(Some(Restored { tiles, selection }))
     }
 
     /// The size of the undo log, in bytes of compressed images.
@@ -1723,19 +1740,20 @@ fn quote(identifier: &str) -> String {
 /// gets an undo step.
 fn write_edit(
     tx: &Transaction,
-    old: Option<&Project>,
+    old: Option<(&Project, Option<(&StepSelection, &StepSelection)>)>,
     project: &Project,
     changes: &[TileChanges],
     undo_limit: u64,
 ) -> Result<SaveStats, StoreError> {
     let step = match old {
-        Some(old) => {
-            let step = undo::begin(tx)?;
+        Some((old, selection)) => {
+            let step = undo::begin(tx, selection)?;
             undo::keep_records(tx, step, old, project)?;
             Some(step)
         }
         None => None,
     };
+    let old = old.map(|(old, _)| old);
     let mut stats = SaveStats {
         tiles_deleted: remove_old_tiles(tx, project, step)?,
         tiles_written: 0,
@@ -6816,6 +6834,85 @@ mod tests {
         assert!(file.project() == &project);
     }
 
+    fn selection_of(feature: &Feature, layer: LayerId, frame: u32) -> StepSelection {
+        StepSelection {
+            features: vec![(layer, feature.uuid)],
+            key: Some((layer, feature.uuid)),
+            frame: Some(FrameId(frame)),
+            item: None,
+        }
+    }
+
+    #[test]
+    fn an_undo_gives_the_selection_from_before_the_step_and_a_redo_from_after() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut project, _, _) = rasters();
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        let places = project.layers()[2].id;
+        let before = selection_of(&project.layers[2].features[1], places, 0);
+        let after = StepSelection {
+            item: Some(FurnitureId(3)),
+            ..StepSelection::default()
+        };
+        project.layers[2].features.remove(1);
+        file.save_step(&project, &[], Some((&before, &after)))
+            .unwrap();
+        drop(file);
+
+        let (mut file, _) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(file.undo().unwrap().unwrap().selection, Some(before));
+        drop(file);
+        let (mut file, _) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(file.redo().unwrap().unwrap().selection, Some(after));
+    }
+
+    #[test]
+    fn a_step_with_no_selection_or_a_damaged_one_gives_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut file, _) = three_edits(&dir);
+        assert_eq!(file.undo().unwrap().unwrap().selection, None);
+        let step: i64 = file
+            .conn
+            .query_row(
+                "SELECT MAX(id) FROM vale_undo_step WHERE redo = 0",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let mut damaged = selection_of(
+            &Feature::new(Geometry::Points(vec![]), attributes(&[])),
+            LayerId(1),
+            2,
+        )
+        .encode();
+        damaged.push(0);
+        file.conn
+            .execute(
+                "UPDATE vale_undo_step SET before_selection = ?2 WHERE id = ?1",
+                params![step, damaged],
+            )
+            .unwrap();
+        assert_eq!(file.undo().unwrap().unwrap().selection, None);
+    }
+
+    #[test]
+    fn a_step_of_a_file_of_version_35_has_no_selection() {
+        let dir = tempfile::tempdir().unwrap();
+        drop(three_edits(&dir));
+        let conn = Connection::open(path(&dir)).unwrap();
+        conn.execute_batch(
+            "ALTER TABLE vale_undo_step DROP COLUMN before_selection;
+             ALTER TABLE vale_undo_step DROP COLUMN after_selection;",
+        )
+        .unwrap();
+        drop(conn);
+        set_format_version(&dir, 35);
+
+        let (mut file, _) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(format_version(&file.conn).unwrap(), FORMAT_VERSION);
+        assert_eq!(file.undo().unwrap().unwrap().selection, None);
+    }
+
     #[test]
     fn undo_works_after_a_close_and_an_open() {
         let dir = tempfile::tempdir().unwrap();
@@ -6960,7 +7057,14 @@ mod tests {
         let stroke: Vec<_> = (0..40).map(|i| (key(3, i, 0), noise(i))).collect();
         let tx = file.conn.transaction().unwrap();
         let changes = [put(RasterId(0), &stroke, vec![key(0, 0, 0)])];
-        write_edit(&tx, Some(&file.project), &project, &changes, UNDO_LIMIT).unwrap();
+        write_edit(
+            &tx,
+            Some((&file.project, None)),
+            &project,
+            &changes,
+            UNDO_LIMIT,
+        )
+        .unwrap();
 
         let stopped = tempfile::tempdir().unwrap();
         let journal = |dir: &tempfile::TempDir| dir.path().join("world.gpkg-journal");

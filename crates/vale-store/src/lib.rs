@@ -31,7 +31,7 @@ pub use scale_bar::{
     UnitLabelStyle, UnitPosition,
 };
 pub use tile::TILE_SIZE;
-pub use undo::UNDO_LIMIT;
+pub use undo::{StepSelection, UNDO_LIMIT};
 
 /// A color as red, green, and blue.
 pub type Rgb = [u8; 3];
