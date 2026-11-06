@@ -21,6 +21,12 @@ const TOLERANCE: u16 = 1;
 /// stamps before it, so a difference of one step can grow to two.
 const SMOOTH_TOLERANCE: u16 = 2;
 
+/// The same for shape stamps. A difference of one step at the lowest texel
+/// or at the highest texel near a texel moves its curve by up to 3 steps
+/// where the curve is steep, and each stamp reads the results of the stamps
+/// before it.
+const SHAPE_TOLERANCE: u16 = 4;
+
 /// The same for a stroke of raise or lower stamps. Each stamp rounds its
 /// result, and the next stamp adds to it, so the differences of the stamps
 /// that touch one texel can add. In the strokes of this file, up to 90
@@ -224,17 +230,19 @@ fn hills(n: usize) -> Heightmap {
     map
 }
 
-const MODES: [Mode; 5] = [
+const MODES: [Mode; 6] = [
     Mode::Raise,
     Mode::Lower,
     Mode::Smooth,
     Mode::Flatten,
     Mode::Terrace,
+    Mode::Shape,
 ];
 
 fn tolerance(mode: Mode) -> u16 {
     match mode {
         Mode::Smooth => SMOOTH_TOLERANCE,
+        Mode::Shape => SHAPE_TOLERANCE,
         _ => TOLERANCE,
     }
 }
@@ -248,7 +256,8 @@ fn stamp(center: V3, radius: f64, hardness: f64, mode: Mode) -> Stamp {
         mode,
         // The flatten target, or the terrace step. The hills cross sea level.
         level: if mode == Mode::Terrace { 1500 } else { 52000 },
-        strength: 3000.0,
+        // The shape of the shape mode is toward old land.
+        strength: if mode == Mode::Shape { -0.7 } else { 3000.0 },
         lower: 3000.0,
         talus: 0.0,
         scale: 0.1,

@@ -940,11 +940,11 @@ impl GpuHeightmap {
             let same = plans.iter().take_while(|plan| plan.stamp.mode == mode);
             return same.count();
         }
-        // A smooth stamp, a weather stamp, a warp stamp, or a push stamp
-        // reads the results of the stamp before it on other texels. The other
-        // modes read one texel.
+        // A smooth stamp, a shape stamp, a weather stamp, a warp stamp, or a
+        // push stamp reads the results of the stamp before it on other
+        // texels. The other modes read one texel.
         let most = match mode {
-            Mode::Smooth | Mode::Weather | Mode::Warp | Mode::Push => 1,
+            Mode::Smooth | Mode::Shape | Mode::Weather | Mode::Warp | Mode::Push => 1,
             _ => GROUP_STAMPS,
         };
         // The values of each slot go to the GPU at the submit, so each pass
@@ -1007,6 +1007,7 @@ impl GpuHeightmap {
                     Mode::Push => 12,
                     Mode::Noise => 13,
                     Mode::Terrace => 14,
+                    Mode::Shape => 15,
                 },
                 reach: first.reach as i32,
                 size: self.face_size as i32,
