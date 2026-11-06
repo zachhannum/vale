@@ -34,11 +34,13 @@ pub enum PolygonMode {
     Subtract,
 }
 
-/// The closed area of a stroke.
+/// The closed area of a stroke, or the area of a stored polygon that cuts
+/// other polygons.
 pub struct StrokeArea {
     rings: Vec<Vec<PathVertex>>,
-    dirs: Vec<Vec<V3>>,
-    /// The closed path of the stroke, in the order of the pen.
+    area: Feature,
+    /// The closed path of the stroke, in the order of the pen. For a stored
+    /// polygon, the vertices of its outlines.
     path: Vec<V3>,
     /// A box around the path.
     bounds: Bounds,
@@ -66,22 +68,47 @@ impl StrokeArea {
         if rings.is_empty() {
             return None;
         }
-        let dirs = rings.iter().map(|r| dirs(r)).collect();
+        // Each ring of a stroke is an area of its own.
+        let area = Feature(rings.iter().map(|r| vec![dirs(r)]).collect());
         let path = super::polygon::dirs(&closed);
         let bounds = boxed(path.iter().copied(), REACH / scale);
         Some(StrokeArea {
             rings,
-            dirs,
+            area,
             path,
             bounds,
             min_area,
         })
     }
 
+    /// The area of a stored polygon, for Cut out. The outlines of the
+    /// polygon keep their stored vertices, so a cut follows them exactly.
+    /// A geometry that is not a polygon, or whose rings do not join, gives
+    /// `None`.
+    pub fn of_polygons(geometry: &Geometry, scale: f64) -> Option<Self> {
+        let Geometry::Polygons(polygons) = geometry else {
+            return None;
+        };
+        let rings: Vec<Vec<PathVertex>> = outlines(polygons)?
+            .into_iter()
+            .map(|o| o.ring)
+            .collect();
+        let path: Vec<V3> = rings.iter().flat_map(|r| dirs(r)).collect();
+        if path.is_empty() {
+            return None;
+        }
+        let bounds = boxed(path.iter().copied(), REACH / scale);
+        Some(StrokeArea {
+            rings,
+            area: Feature::new(polygons),
+            path,
+            bounds,
+            min_area: MIN_AREA / (scale * scale),
+        })
+    }
+
     fn holds(&self, p: V3) -> bool {
-        self.dirs
-            .iter()
-            .any(|r| vector::contains(std::slice::from_ref(r), p))
+        self.area.holds(p)
     }
 
     /// The geometry can overlap the area of the stroke. The test is quick,
@@ -435,6 +462,79 @@ mod tests {
         assert!(inside(&q, [0.0, 72.0]));
         assert!(inside(&q, [0.0, 89.0]));
         assert!(!inside(&q, [90.0, 72.0]));
+    }
+
+    fn cutter(g: &Geometry) -> StrokeArea {
+        StrokeArea::of_polygons(g, SCALE).expect("a cutter")
+    }
+
+    #[test]
+    fn a_polygon_cuts_a_hole_with_its_own_vertices() {
+        let lake = Geometry::Polygons(vec![vec![box_way(3.0, 3.0, 7.0, 7.0)]]);
+        let c = cutter(&lake);
+        assert!(c.near(&square()));
+        let p = polygons(&c.subtract(&square()).expect("a change").expect("an area"));
+        assert_valid(&p);
+        assert_eq!(p.len(), 1);
+        assert_eq!(p[0].len(), 2);
+        assert!(!inside(&p, [5.0, 5.0]));
+        assert!(inside(&p, [1.0, 5.0]));
+        for corner in [[3.0, 3.0], [7.0, 3.0], [7.0, 7.0], [3.0, 7.0]] {
+            assert!(p[0][1].contains(&corner), "{corner:?}");
+        }
+    }
+
+    #[test]
+    fn a_polygon_with_a_hole_leaves_an_island() {
+        let ring = Geometry::Polygons(vec![vec![
+            box_way(2.0, 2.0, 8.0, 8.0),
+            box_way(4.0, 4.0, 6.0, 6.0),
+        ]]);
+        let p = polygons(&cutter(&ring).subtract(&square()).expect("a change").expect("an area"));
+        assert_valid(&p);
+        assert_eq!(p.len(), 2);
+        assert!(inside(&p, [5.0, 5.0]));
+        assert!(inside(&p, [1.0, 5.0]));
+        assert!(!inside(&p, [3.0, 5.0]));
+    }
+
+    #[test]
+    fn a_polygon_over_the_whole_polygon_leaves_nothing() {
+        let sea = Geometry::Polygons(vec![vec![box_way(-2.0, -2.0, 12.0, 12.0)]]);
+        assert!(matches!(cutter(&sea).subtract(&square()), Some(None)));
+        let away = Geometry::Polygons(vec![vec![box_way(20.0, 2.0, 25.0, 8.0)]]);
+        assert!(!cutter(&away).near(&square()));
+        assert!(cutter(&away).subtract(&square()).is_none());
+        assert!(StrokeArea::of_polygons(&Geometry::Lines(vec![]), SCALE).is_none());
+    }
+
+    #[test]
+    fn a_polygon_cuts_across_the_180_degree_meridian() {
+        let forest = stored(&box_way(170.0, -10.0, 190.0, 10.0));
+        let lake = stored(&box_way(175.0, -3.0, 185.0, 3.0));
+        let c = cutter(&lake);
+        assert!(c.near(&forest));
+        let p = polygons(&c.subtract(&forest).expect("a change").expect("an area"));
+        assert_valid(&p);
+        assert!(!inside(&p, [179.0, 0.0]));
+        assert!(!inside(&p, [-179.0, 0.0]));
+        assert!(inside(&p, [179.0, 6.0]));
+        assert!(inside(&p, [-179.0, -6.0]));
+    }
+
+    #[test]
+    fn a_polygon_cuts_around_a_pole() {
+        let cap = stored(&[[0.0, 75.0], [120.0, 75.0], [240.0, 75.0], [360.0, 75.0]]);
+        let ice = stored(&[[0.0, 85.0], [120.0, 85.0], [240.0, 85.0], [360.0, 85.0]]);
+        let c = cutter(&ice);
+        assert!(c.near(&cap));
+        let p = polygons(&c.subtract(&cap).expect("a change").expect("an area"));
+        assert_valid(&p);
+        assert!(!inside(&p, [30.0, 89.0]));
+        assert!(inside(&p, [30.0, 80.0]));
+        assert!(inside(&p, [-150.0, 80.0]));
+        // The cap cuts the ring of land away, and the ice cap stays.
+        assert!(matches!(cutter(&cap).subtract(&ice), Some(None)));
     }
 
     #[test]
