@@ -277,6 +277,8 @@ The app has two answers. A regional source with partial extents draws over the w
 
 The world view is a globe that you rotate, in the orthographic projection. You draw on it directly. All drawing tools work in sphere coordinates, so the same tools also work in a map of any projection. A switch shows the world as a flat map, and the same tools work there.
 
+The globe keeps the shapes of each vector layer between frames. It makes them again only after a change to the view, to the layer, or to its style. A feature, a line, or a polygon that is all on the far side or all off the screen is left out.
+
 This removes the main pain of the old workflow. You no longer paint on an equirectangular image, where shapes stretch toward the poles. You no longer paint in several projections and join the parts.
 
 ### Heightmap
