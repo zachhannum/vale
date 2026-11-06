@@ -19,7 +19,7 @@ use vale_terrain::{
     StampPlan, TILES_WGSL, TexelRect, pyramid_layout, tiles_layout,
 };
 
-use super::backdrop::{Backdrop, Canvas, REDUCTION};
+use super::backdrop::{self, Backdrop, Canvas, REDUCTION};
 use super::compile::{Compiled, render_pipeline};
 use super::edges::{self, EdgePipelines, Edges};
 use super::flat::{FlatMesh, Vertex};
@@ -2618,12 +2618,20 @@ pub struct Draw {
 pub enum Job {
     /// Draws one pass on the screen.
     Draw(Box<Draw>),
-    /// Draws the passes into the small target of the blurred copy that the
-    /// cards show, and blurs it. It draws nothing on the screen.
-    Backdrop(Canvas, Vec<Draw>),
+    /// Draws the passes and the shapes into the small target of the blurred
+    /// copy that the cards show, and blurs it. It draws nothing on the
+    /// screen.
+    Backdrop(Canvas, Vec<BackdropStep>),
     /// Draws the passes into a target of their own, and puts it on the
     /// screen.
     Group(Box<Group>),
+}
+
+/// One step of the blurred copy, in draw order.
+pub enum BackdropStep {
+    Draw(Box<Draw>),
+    /// The shapes of a vector layer, at the size of the blurred copy.
+    Shapes(VectorShapes),
 }
 
 /// One callback of a frame of the globe. egui calls it inside its own
@@ -3036,23 +3044,44 @@ impl egui_wgpu::CallbackTrait for GlobeCallback {
             Job::Group(group) => {
                 let _ = res.render_group(device, queue, egui_encoder, size, group);
             }
-            Job::Backdrop(canvas, draws) => {
+            Job::Backdrop(canvas, steps) => {
                 let small = size.map(|s| s.max(1).div_ceil(REDUCTION));
-                for draw in draws {
-                    let mut draw = *draw;
-                    draw.uniforms.screen = [small[0] as f32, small[1] as f32, 0.0, 0.0];
-                    res.write(device, queue, &draw, CANVAS, true, None);
+                let screen = [small[0] as f32, small[1] as f32, 0.0, 0.0];
+                for step in steps {
+                    if let BackdropStep::Draw(draw) = step {
+                        let mut draw = **draw;
+                        draw.uniforms.screen = screen;
+                        res.write(device, queue, &draw, CANVAS, true, None);
+                    }
                 }
                 let kept = resources.remove::<Backdrop>();
                 let mut backdrop = kept
                     .filter(|b| b.format == frame.format)
                     .unwrap_or_else(|| Backdrop::new(device, frame.format));
-                let res: &Resources = resources.get().expect("inserted above");
-                backdrop.render(device, queue, egui_encoder, size, canvas, |pass| {
-                    for draw in draws {
-                        res.draw(pass, draw, CANVAS, true, &view, small);
-                    }
-                });
+                let res: &mut Resources = resources.get_mut().expect("inserted above");
+                backdrop.render(
+                    device,
+                    queue,
+                    egui_encoder,
+                    size,
+                    canvas,
+                    |encoder, target| {
+                        let mut i = 0;
+                        while i < steps.len() {
+                            if let BackdropStep::Shapes(shapes) = &steps[i] {
+                                res.draw_vector(device, encoder, target, small, shapes);
+                                i += 1;
+                                continue;
+                            }
+                            // The run of passes up to the next shapes.
+                            let mut pass = backdrop::load_pass(encoder, target);
+                            while let Some(BackdropStep::Draw(draw)) = steps.get(i) {
+                                res.draw(&mut pass, draw, CANVAS, true, &view, small);
+                                i += 1;
+                            }
+                        }
+                    },
+                );
                 resources.insert(backdrop);
             }
         }

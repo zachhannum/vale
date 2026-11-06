@@ -3335,12 +3335,20 @@ fn settle(h: &mut Pad) {
     panic!("the stroke did not end");
 }
 
-/// A harness with the Brush and Layers panels open, in greyscale, and with a
-/// globe that covers the screen. `level` gives the level at a longitude in
-/// degrees.
+/// A harness with the Brush and Layers panels open, in greyscale, with no
+/// visible vector layer, and with a globe that covers the screen. `level`
+/// gives the level at a longitude in degrees.
 fn blur_pad(level: impl Fn(f64) -> u16) -> Pad {
     let mut h = gpu_pad(BOARDS[0]);
     let state = h.state_mut();
+    let layers: Vec<_> = state.doc.project.layers().iter().map(|l| l.id).collect();
+    for id in layers {
+        let raster = matches!(
+            state.doc.project.layer(id).unwrap().kind,
+            LayerKind::Raster(_)
+        );
+        state.set_layer_visible(id, raster);
+    }
     state.pad.open(Panel::Brush);
     state.pad.open(Panel::Layers);
     show_as(state, RasterDisplay::Grey);
@@ -3411,6 +3419,54 @@ fn each_card_shows_the_blurred_canvas_and_the_blur_follows_the_globe() {
             "{card:?}"
         );
     }
+}
+
+#[test]
+#[ignore = "gpu"]
+fn the_blur_behind_a_card_shows_the_visible_vector_layers_in_the_draw_order() {
+    use vale_store::{Feature, Geometry};
+    let _gpu = one_gpu_test();
+    let mut h = blur_pad(|_| 0);
+    // A red polygon covers the side of the globe that faces the view.
+    let state = h.state_mut();
+    let polygon = state.doc.add_layer(GeometryKind::Polygon);
+    let ring = vec![[-80.0, -70.0], [80.0, -70.0], [80.0, 70.0], [-80.0, 70.0]];
+    let feature = Feature::new(Geometry::Polygons(vec![vec![ring]]), Default::default());
+    assert!(state.doc.project.add_feature(polygon, feature));
+    let style = &mut state.doc.entry_mut(polygon).unwrap().style;
+    style.set_fill(Some(vale_style::Color::rgb(255, 0, 0)));
+    state.touch();
+    h.run_steps(2);
+    let cards = cards(&h);
+    // The red values below the cards, with the polygon shown and hidden.
+    let reds = |h: &mut Pad, shown: bool| {
+        h.state_mut().set_layer_visible(polygon, shown);
+        h.run_steps(2);
+        let image = h.render().unwrap();
+        let rows: Vec<_> = cards.iter().map(|card| card_row(&image, *card)).collect();
+        rows.concat()
+    };
+    let (red, plain) = (reds(&mut h, true), reds(&mut h, false));
+    let width = red.len() as i32;
+    assert!(difference(&red, &plain) > width * 20);
+    assert!(red.iter().zip(&plain).all(|(r, p)| r >= p));
+
+    // The flat view has the polygon in the blur too. The polygon is below
+    // a smaller part of the cards there.
+    h.state_mut().globe.world_view = WorldView::Flat;
+    let (red, plain) = (reds(&mut h, true), reds(&mut h, false));
+    assert!(difference(&red, &plain) > width * 2);
+    h.state_mut().globe.world_view = WorldView::Globe;
+
+    // A raster layer above the polygon hides it.
+    let raster = (h.state().doc.project.layers().iter())
+        .find(|l| matches!(l.kind, LayerKind::Raster(_)))
+        .unwrap()
+        .id;
+    let top = h.state().doc.project.layers().len() - 1;
+    assert!(h.state_mut().move_layer(raster, top));
+    let (red, plain) = (reds(&mut h, true), reds(&mut h, false));
+    assert!(difference(&red, &plain) <= width);
 }
 
 /// The contrast ratio of two colors, as WCAG defines it.

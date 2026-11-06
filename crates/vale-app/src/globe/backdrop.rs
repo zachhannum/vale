@@ -346,8 +346,8 @@ impl Backdrop {
     }
 
     /// Draws the canvas at the reduced size and blurs it. `draw` draws the
-    /// canvas into a target of that size. The passes run before the pass of
-    /// egui.
+    /// canvas into the target of that size, which holds the background. The
+    /// passes run before the pass of egui.
     pub fn render(
         &mut self,
         device: &wgpu::Device,
@@ -355,7 +355,7 @@ impl Backdrop {
         encoder: &mut wgpu::CommandEncoder,
         size: [u32; 2],
         canvas: &Canvas,
-        draw: impl FnOnce(&mut wgpu::RenderPass<'_>),
+        draw: impl FnOnce(&mut wgpu::CommandEncoder, &wgpu::TextureView),
     ) {
         let Some(pipelines) = self.pipelines.get() else {
             return;
@@ -380,37 +380,49 @@ impl Backdrop {
             queue.write_buffer(buffer, 0, bytemuck::bytes_of(&globals));
         }
 
-        let mut pass = |view: &wgpu::TextureView, load| {
-            encoder
-                .begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("backdrop"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view,
-                        depth_slice: None,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load,
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    ..Default::default()
-                })
-                .forget_lifetime()
-        };
         let clear = wgpu::LoadOp::Clear(clear_color(self.format, canvas.background));
-        draw(&mut pass(&targets.small[0], clear));
+        drop(target_pass(encoder, &targets.small[0], clear));
+        draw(encoder, &targets.small[0]);
         let black = wgpu::LoadOp::Clear(wgpu::Color::BLACK);
         let steps = [
             (&pipelines.blur, &targets.passes[0], &targets.small[1]),
             (&pipelines.blur, &targets.passes[1], &targets.small[0]),
         ];
         for (pipeline, bind_group, view) in steps {
-            let mut pass = pass(view, black);
+            let mut pass = target_pass(encoder, view, black);
             pass.set_pipeline(pipeline);
             pass.set_bind_group(0, bind_group, &[]);
             pass.draw(0..3, 0..1);
         }
     }
+}
+
+/// A pass that draws over the pixels of `target`.
+pub fn load_pass<'a>(
+    encoder: &'a mut wgpu::CommandEncoder,
+    target: &wgpu::TextureView,
+) -> wgpu::RenderPass<'a> {
+    target_pass(encoder, target, wgpu::LoadOp::Load)
+}
+
+fn target_pass<'a>(
+    encoder: &'a mut wgpu::CommandEncoder,
+    target: &wgpu::TextureView,
+    load: wgpu::LoadOp<wgpu::Color>,
+) -> wgpu::RenderPass<'a> {
+    encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("backdrop"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: target,
+            depth_slice: None,
+            resolve_target: None,
+            ops: wgpu::Operations {
+                load,
+                store: wgpu::StoreOp::Store,
+            },
+        })],
+        ..Default::default()
+    })
 }
 
 /// A picture of a canvas that the CPU drew, at the reduced size of the
@@ -449,11 +461,19 @@ impl egui_wgpu::CallbackTrait for SceneCallback {
         let blit = backdrop.pipelines.get().map(|p| p.blit.clone());
         if let (Some((_, bind_group)), Some(pipeline)) = (backdrop.scene.clone(), blit) {
             let size = screen_descriptor.size_in_pixels;
-            backdrop.render(device, queue, egui_encoder, size, &self.canvas, |pass| {
-                pass.set_pipeline(&pipeline);
-                pass.set_bind_group(0, &bind_group, &[]);
-                pass.draw(0..3, 0..1);
-            });
+            backdrop.render(
+                device,
+                queue,
+                egui_encoder,
+                size,
+                &self.canvas,
+                |encoder, target| {
+                    let mut pass = load_pass(encoder, target);
+                    pass.set_pipeline(&pipeline);
+                    pass.set_bind_group(0, &bind_group, &[]);
+                    pass.draw(0..3, 0..1);
+                },
+            );
         }
         resources.insert(backdrop);
         Vec::new()

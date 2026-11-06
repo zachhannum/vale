@@ -68,9 +68,9 @@ use erode::{Eroder, Ground, Lift, brush_window, erode_window, near_side, range_w
 use export::ExportResult;
 use flat::FlatView;
 use gpu::{
-    Capture, Captured, Changes, Draw, Event, Frame, GlobeCallback, Group, ImageKey, Job as GpuJob,
-    LayerKey, LineOp, Link, MapKey, MapKind, Mask, Op, Pass, TargetId, Uniforms, Uploads,
-    VectorShapes,
+    BackdropStep, Capture, Captured, Changes, Draw, Event, Frame, GlobeCallback, Group, ImageKey,
+    Job as GpuJob, LayerKey, LineOp, Link, MapKey, MapKind, Mask, Op, Pass, TargetId, Uniforms,
+    Uploads, VectorShapes,
 };
 use import::{ImportResult, Job, Source, Step};
 use line::LineSettings;
@@ -545,12 +545,22 @@ pub enum StackItem {
     Vector(LayerId),
 }
 
+/// One visible layer of the picture of the globe.
+pub enum PictureLayer<'a> {
+    /// The heightmap and the opacity of a raster layer.
+    Raster(&'a Heightmap, f32),
+    Vector(LayerId),
+}
+
 /// One thing that the canvas paints for the globe, from the bottom.
 pub enum Paint {
     /// A pass of the GPU.
     Callback(GlobeCallback),
     /// The shapes of a vector layer.
     Vector(LayerId),
+    /// The blurred copy that the cards show, which waits for the shapes of
+    /// the vector layers. It draws nothing on the screen.
+    Backdrop(BackdropPass),
     /// A vector layer with a raster mask: its fills and its strokes go
     /// through the GPU, which cuts them to the pixels inside the value range
     /// of the raster. Its other shapes go above them.
@@ -593,6 +603,47 @@ impl MaskedPass {
         GlobeCallback {
             frame: self.frame,
             job: GpuJob::Group(group),
+        }
+    }
+}
+
+/// The passes of the blurred copy, which wait for the shapes of the
+/// vector layers.
+pub struct BackdropPass {
+    frame: Arc<Frame>,
+    canvas: Canvas,
+    steps: Vec<BlurStep>,
+}
+
+/// One step of the blurred copy, in draw order.
+enum BlurStep {
+    Draw(Box<Draw>),
+    Vector(LayerId),
+}
+
+impl BackdropPass {
+    /// The callback that draws the passes and, in their place, the meshes
+    /// that `meshes` gives for each vector layer, each with its clip
+    /// rectangle in points and its alpha. The meshes have the size of the
+    /// blurred copy: `pixels_per_point` is that of the screen divided by
+    /// `backdrop::REDUCTION`.
+    pub fn callback(
+        self,
+        pixels_per_point: f32,
+        mut meshes: impl FnMut(LayerId) -> Vec<(Rect, eframe::egui::Mesh, f32)>,
+    ) -> GlobeCallback {
+        let steps = (self.steps.into_iter())
+            .map(|step| match step {
+                BlurStep::Draw(draw) => BackdropStep::Draw(draw),
+                BlurStep::Vector(id) => BackdropStep::Shapes(VectorShapes {
+                    pixels_per_point,
+                    meshes: meshes(id),
+                }),
+            })
+            .collect();
+        GlobeCallback {
+            frame: self.frame,
+            job: GpuJob::Backdrop(self.canvas, steps),
         }
     }
 }
@@ -1572,15 +1623,18 @@ impl Globe {
         shown.into_iter().chain(others).collect()
     }
 
-    /// The heightmap of the picture and the opacity of each visible raster
-    /// layer, from the bottom.
-    pub fn picture(&self) -> Vec<(&Heightmap, f32)> {
+    /// The visible layers of the picture, from the bottom: the heightmap
+    /// and the opacity of each raster layer, and each vector layer.
+    pub fn picture(&self) -> Vec<PictureLayer<'_>> {
         let Some(stack) = &self.stack else {
-            return vec![(&self.map, 1.0)];
+            return vec![PictureLayer::Raster(&self.map, 1.0)];
         };
         let layer = |item: &StackItem| match *item {
-            StackItem::Raster { id, opacity, .. } => Some((self.display_map(id)?, opacity)),
-            StackItem::Vector(_) | StackItem::Image { .. } => None,
+            StackItem::Raster { id, opacity, .. } => {
+                Some(PictureLayer::Raster(self.display_map(id)?, opacity))
+            }
+            StackItem::Vector(id) => Some(PictureLayer::Vector(id)),
+            StackItem::Image { .. } => None,
         };
         stack.iter().filter_map(layer).collect()
     }
@@ -5002,12 +5056,23 @@ impl Globe {
         let mut out = Vec::new();
         let drawn = &items[start.unwrap_or(0)..];
         if blur {
-            // The blurred copy has no vector layers and no graticule.
+            // The blurred copy has no graticule.
             let ground = start.is_none().then(|| plain(Pass::Ground, false, true));
-            let layers = drawn.iter().filter_map(|item| layer(item, true));
+            let step = |draw| BlurStep::Draw(Box::new(draw));
+            let layers = drawn.iter().filter_map(|item| match item {
+                Item::Vector(id) | Item::Masked(id, _) => Some(BlurStep::Vector(*id)),
+                item => layer(item, true).map(step),
+            });
             let rim = plain(Pass::Rim, false, true);
-            let draws = ground.into_iter().chain(layers).chain([rim]).collect();
-            out.push(callback(GpuJob::Backdrop(canvas, draws)));
+            let steps = (ground.into_iter().map(step))
+                .chain(layers)
+                .chain([step(rim)])
+                .collect();
+            out.push(Paint::Backdrop(BackdropPass {
+                frame: frame.clone(),
+                canvas,
+                steps,
+            }));
         }
         let graticule = self.preview.graticule;
         // The graticule, and then the soft edge of the globe.
