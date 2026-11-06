@@ -689,18 +689,8 @@ pub fn paint(painter: &egui::Painter, state: &AppState) {
             continue;
         };
         let shape = select::shape(globe, &feature.geometry);
-        // The key has a wide outline, in white under the accent color.
         if state.key_feature() == Some(*f) {
-            let under = egui::Stroke::new(8.0, egui::Color32::WHITE);
-            let over = egui::Stroke::new(5.0, theme::ACCENT);
-            for run in &shape.lines {
-                painter.line(run.clone(), under);
-                painter.line(run.clone(), over);
-            }
-            for (_, pos) in &shape.points {
-                painter.circle_stroke(*pos, 11.0, under);
-                painter.circle_stroke(*pos, 11.0, over);
-            }
+            paint_key(painter, &shape);
         }
         paint_shape(painter, shape);
     }
@@ -717,6 +707,21 @@ pub fn paint(painter: &egui::Painter, state: &AppState) {
             }
         }
         _ => {}
+    }
+}
+
+/// Draws the key feature under its selection: a wide outline in the accent
+/// color, on white.
+pub fn paint_key(painter: &egui::Painter, shape: &Shape) {
+    let under = egui::Stroke::new(8.0, egui::Color32::WHITE);
+    let over = egui::Stroke::new(5.0, theme::ACCENT);
+    for run in &shape.lines {
+        painter.line(run.clone(), under);
+        painter.line(run.clone(), over);
+    }
+    for (_, pos) in &shape.points {
+        painter.circle_stroke(*pos, 11.0, under);
+        painter.circle_stroke(*pos, 11.0, over);
     }
 }
 
