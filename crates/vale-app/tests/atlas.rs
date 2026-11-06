@@ -2360,6 +2360,16 @@ fn the_texture_of_a_frame_is_on_whole_pixels() {
 }
 
 #[test]
+fn the_page_starts_on_a_whole_pixel() {
+    let mut h = inset_pad(BOARDS[0]);
+    h.state_mut().atlas.view.zoom = 1.37;
+    h.state_mut().atlas.view.offset = vec2(13.3, -7.9);
+    h.run_steps(2);
+    let min = place(&h).rect.min;
+    assert_eq!(min, min.round(), "{min:?}");
+}
+
+#[test]
 fn the_texture_of_a_frame_holds_the_whole_neatline() {
     let mut h = inset_pad(BOARDS[0]);
     let id = frame(&h, 1).id;

@@ -453,6 +453,17 @@ impl PagePlace {
         }
     }
 
+    /// The place moved so that the top-left corner of the page is on a
+    /// whole pixel, with `pixels_per_point` pixels in one point of the
+    /// screen. The tiles of the frames then land on whole pixels.
+    pub fn snapped(self, pixels_per_point: f32) -> PagePlace {
+        let min = (self.rect.min.to_vec2() * pixels_per_point).round() / pixels_per_point;
+        PagePlace {
+            rect: Rect::from_min_size(min.to_pos2(), self.rect.size()),
+            ..self
+        }
+    }
+
     /// Pixels of the screen in one point of the page, with
     /// `pixels_per_point` pixels in one point of the screen.
     pub fn pixels_per_page_point(&self, pixels_per_point: f32) -> f32 {
@@ -1605,7 +1616,8 @@ pub fn canvas(ui: &mut egui::Ui, state: &mut AppState, area: Rect, free: Rect, b
     }
     let fit = PagePlace::fit(open_page(state), free);
     state.atlas.fit = Some((fit, area));
-    let place = fit.viewed(state.atlas.view);
+    let ppp = ui.ctx().pixels_per_point();
+    let place = fit.viewed(state.atlas.view).snapped(ppp);
     state.atlas.place = Some(place);
     super::globe::measure_keys(ui, state);
     input(ui, state, &resp, place);
@@ -1616,7 +1628,7 @@ pub fn canvas(ui: &mut egui::Ui, state: &mut AppState, area: Rect, free: Rect, b
         None => {}
     }
     sync(state);
-    let place = PagePlace::fit(open_page(state), free).viewed(state.atlas.view);
+    let place = (PagePlace::fit(open_page(state), free).viewed(state.atlas.view)).snapped(ppp);
     state.atlas.place = Some(place);
 
     let painter = ui.painter_at(area);
