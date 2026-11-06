@@ -8336,13 +8336,13 @@ fn the_selection_of_the_atlas_shows_in_the_inspector_of_the_world() {
     tap_with(&mut h, at, Input::Finger);
     tap(&mut h, vale_app::ui::select::ATTRIBUTES);
     let form = h.state().selection_form.as_ref().unwrap();
-    assert_eq!(form.feature, town);
+    assert_eq!(form.features, [town]);
     // The inspector is one inspector: it stays open in the World workspace.
     h.state_mut().workspace = Workspace::Globe;
     h.run_steps(3);
     assert_eq!(h.state().feature_selection, vec![town]);
     let form = h.state().selection_form.as_ref().unwrap();
-    assert_eq!(form.feature, town);
+    assert_eq!(form.features, [town]);
     assert!(control(&h, "name").is_some());
 }
 

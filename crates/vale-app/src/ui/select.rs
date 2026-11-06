@@ -59,9 +59,9 @@ pub enum SelectDrag {
     },
 }
 
-/// The fields of the one selected feature.
+/// The fields of the selected features of one layer.
 pub struct SelectionForm {
-    pub feature: FeatureRef,
+    pub features: Vec<FeatureRef>,
     pub fields: Vec<FormField>,
     /// The values of each field in the features of the layer.
     pub choices: Vec<Vec<String>>,
@@ -104,6 +104,9 @@ pub enum Selectable {
     /// The checked vector layers.
     Layers(BTreeSet<LayerId>),
 }
+
+/// The hint of a field whose value differs between the selected features.
+pub const MIXED: &str = "Mixed";
 
 impl AppState {
     /// The active layer, if it is a visible vector layer.
@@ -452,8 +455,9 @@ impl AppState {
         }
     }
 
-    /// Opens the form of the one selected feature, or closes it. `shown`:
-    /// the inspector shows.
+    /// Opens the form of the selected features, or closes it. The form
+    /// shows when all of the features are in one layer. `shown`: the
+    /// inspector shows.
     pub fn sync_selection_form(&mut self, shown: bool) {
         self.inspector_shown = shown;
         // A change of the tool ends the run of edits.
@@ -462,14 +466,16 @@ impl AppState {
             self.attribute_focus = None;
             self.attribute_tool = tool;
         }
-        let one = match self.feature_selection.as_slice() {
-            [one] if shown => Some(*one),
-            _ => None,
+        let refs = match self.feature_selection.as_slice() {
+            [first, rest @ ..] if shown && rest.iter().all(|f| f.layer == first.layer) => {
+                self.feature_selection.clone()
+            }
+            _ => Vec::new(),
         };
         let fresh = self
             .selection_form
             .as_ref()
-            .is_some_and(|form| Some(form.feature) == one && form.history == self.history);
+            .is_some_and(|form| form.features == refs && form.history == self.history);
         if fresh {
             return;
         }
@@ -480,28 +486,49 @@ impl AppState {
         {
             self.commit_selection_form();
         }
-        self.selection_form = one.and_then(|f| {
-            let layer = self.doc.layer(f.layer)?;
-            let feature = layer.features.iter().find(|x| x.uuid() == f.uuid)?;
+        self.selection_form = refs.first().and_then(|first| {
+            let layer = self.doc.layer(first.layer)?;
+            let uuids: HashSet<Uuid> = refs.iter().map(|f| f.uuid).collect();
+            let features: Vec<_> = (layer.features.iter())
+                .filter(|x| uuids.contains(&x.uuid()))
+                .collect();
+            if features.is_empty() {
+                return None;
+            }
+            // A field whose value differs between the features is empty,
+            // and an edit gives each feature the new value.
             let fields = layer.fields.iter().map(|field| {
-                let value = feature.attributes.get(&field.name);
-                FormField::new(field, value.and_then(|v| v.label()).unwrap_or_default())
+                let mut labels = features.iter().map(|x| {
+                    (x.attributes.get(&field.name))
+                        .and_then(|v| v.label())
+                        .unwrap_or_default()
+                });
+                let text = labels.next().unwrap_or_default();
+                let mixed = labels.any(|label| label != text);
+                let mut form = FormField::new(field, if mixed { String::new() } else { text });
+                form.mixed = mixed;
+                form
             });
             // With "Focus new features", a new feature takes the focus in the
             // field that was edited last in its layer, or in the first field.
             // The field that was edited last takes the focus in the form of
             // the next feature of its layer that the Select tool selects.
-            let new = self.new_feature.as_ref().is_some_and(|n| n.feature == f);
+            let one = match refs.as_slice() {
+                [one] => Some(*one),
+                _ => None,
+            };
+            let new =
+                one.is_some_and(|f| self.new_feature.as_ref().is_some_and(|n| n.feature == f));
             let known = |name: &String| layer.fields.iter().any(|field| &field.name == name);
             let last =
-                (self.last_field.as_ref()).filter(|(id, name)| *id == f.layer && known(name));
-            let focus = match &mut self.attribute_focus {
+                (self.last_field.as_ref()).filter(|(id, name)| *id == first.layer && known(name));
+            let focus = match (&mut self.attribute_focus, one) {
                 _ if new && self.tools.focus_new => last
                     .map(|(_, name)| name.clone())
                     .or_else(|| layer.fields.first().map(|field| field.name.clone()))
                     .map(|name| (name, FOCUS_FRAMES)),
                 _ if new => None,
-                Some((last, name)) if last.layer == f.layer && *last != f => {
+                (Some((last, name)), Some(f)) if last.layer == f.layer && *last != f => {
                     *last = f;
                     Some((name.clone(), FOCUS_FRAMES))
                 }
@@ -509,7 +536,7 @@ impl AppState {
             };
             let choices = layer.fields.iter().map(|f| choices(layer, &f.name));
             Some(SelectionForm {
-                feature: f,
+                features: refs.clone(),
                 fields: fields.collect(),
                 choices: choices.collect(),
                 open: None,
@@ -519,38 +546,55 @@ impl AppState {
         });
     }
 
-    /// Puts each changed value of the form in its feature. The change is
-    /// one undo step, or a part of the undo step of a new feature.
+    /// Puts each changed value of the form in each selected feature. The
+    /// change is one undo step, or a part of the undo step of a new feature.
+    /// A mixed field changes nothing.
     pub fn commit_selection_form(&mut self) {
         let Some(form) = &self.selection_form else {
             return;
         };
-        let f = form.feature;
-        let Some(feature) = self
-            .doc
-            .layer(f.layer)
-            .and_then(|l| l.features.iter().find(|x| x.uuid() == f.uuid))
-        else {
+        let Some(&first) = form.features.first() else {
             return;
         };
+        let id = first.layer;
+        let Some(layer) = self.doc.layer(id) else {
+            return;
+        };
+        let uuids: HashSet<Uuid> = form.features.iter().map(|f| f.uuid).collect();
+        let features: Vec<_> = (layer.features.iter())
+            .filter(|x| uuids.contains(&x.uuid()))
+            .collect();
         let changed: Vec<_> = form
             .fields
             .iter()
-            .filter(|field| field.valid())
+            .filter(|field| field.valid() && !field.mixed)
             .map(|field| (field.name.clone(), field.value()))
-            .filter(|(name, value)| feature.attributes.get(name) != Some(value))
+            .filter(|(name, value)| {
+                features
+                    .iter()
+                    .any(|x| x.attributes.get(name) != Some(value))
+            })
             .collect();
         if changed.is_empty() {
             return;
         }
-        if self.new_feature.as_ref().is_some_and(|n| n.feature == f) {
-            self.doc.project.set_attributes(f.layer, f.uuid, changed);
-            self.pipeline.forget(f.layer);
+        let new = form.features.len() == 1
+            && self
+                .new_feature
+                .as_ref()
+                .is_some_and(|n| n.feature == first);
+        if new {
+            self.doc.project.set_attributes(id, first.uuid, changed);
+            self.pipeline.forget(id);
             self.touch();
             return;
         }
-        self.edit_attributes(f.layer, |project| {
-            project.set_attributes(f.layer, f.uuid, changed)
+        self.edit_attributes(id, |project| {
+            let mut any = false;
+            for (name, value) in &changed {
+                any |= project.set_attribute_of(id, &uuids, name, value) > 0;
+            }
+            any
         });
     }
 }
@@ -736,8 +780,11 @@ struct Outcome {
 impl AppState {
     fn finish_inspector(&mut self, form: Option<SelectionForm>, outcome: Outcome) {
         if let (Some(name), Some(form)) = (outcome.edited, &form) {
-            self.last_field = Some((form.feature.layer, name.clone()));
-            self.attribute_focus = Some((form.feature, name));
+            self.last_field = Some((form.features[0].layer, name.clone()));
+            self.attribute_focus = match form.features[..] {
+                [one] => Some((one, name)),
+                _ => None,
+            };
         }
         self.selection_form = form;
         if outcome.commit {
@@ -752,9 +799,10 @@ impl AppState {
     }
 }
 
-/// The body of the Attributes panel of the iPad layout. With one selected
-/// feature, it has a field for each attribute. With more than one, it
-/// shows the count.
+/// The body of the Attributes panel of the iPad layout. It has a field for
+/// each attribute of the selected features, and with more than one feature
+/// it also shows the count. With features of more than one layer, it shows
+/// the count of each layer.
 pub fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
     let count = state.feature_selection.len();
     if count == 0 {
@@ -766,6 +814,10 @@ pub fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
     let mut outcome = Outcome::default();
     match form.as_mut() {
         Some(form) => {
+            if count > 1 {
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new(title(count)).color(theme::MUTE));
+            }
             if form.fields.is_empty() {
                 ui.add_space(4.0);
                 ui.label(egui::RichText::new(NO_FIELDS).color(theme::MUTE));
@@ -796,6 +848,12 @@ pub fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
                     resp.scroll_to_me(None);
                 }
                 read_field(&resp, focus, &mut outcome, name, names.get(i + 1));
+                field.mixed &= outcome.edited.as_ref() != Some(&field.name);
+                if field.mixed && field.text.is_empty() {
+                    let at = resp.rect.left_center();
+                    let font = theme::body();
+                    (ui.painter()).text(at, egui::Align2::LEFT_CENTER, MIXED, font, theme::MUTE);
+                }
             }
         }
         None => {
@@ -975,6 +1033,9 @@ pub fn desktop_body(ui: &mut egui::Ui, state: &mut AppState) {
     let mut outcome = Outcome::default();
     match form.as_mut() {
         Some(form) => {
+            if count > 1 {
+                ui.label(title(count));
+            }
             if form.fields.is_empty() {
                 ui.weak(NO_FIELDS);
             }
@@ -990,8 +1051,10 @@ pub fn desktop_body(ui: &mut egui::Ui, state: &mut AppState) {
                         let resp = ui
                             .horizontal(|ui| {
                                 let (name, text) = (&field.name, &mut field.text);
+                                let hint = if field.mixed { MIXED } else { "" };
                                 let edit = egui::TextEdit::singleline(text)
                                     .id(egui::Id::new((INSPECTOR, name)))
+                                    .hint_text(hint)
                                     .text_color_opt(color);
                                 let resp = ui.add(edit);
                                 if choices.is_empty() {
@@ -1003,6 +1066,7 @@ pub fn desktop_body(ui: &mut egui::Ui, state: &mut AppState) {
                             .inner;
                         let (name, next) = (&field.name, names.get(i + 1));
                         read_field(&resp, focus, &mut outcome, name, next);
+                        field.mixed &= outcome.edited.as_ref() != Some(name);
                         ui.end_row();
                     }
                 });

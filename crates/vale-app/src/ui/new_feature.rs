@@ -20,6 +20,9 @@ pub struct FormField {
     pub name: String,
     kind: FieldType,
     pub text: String,
+    /// The selected features have different values, and the user did not
+    /// edit the field.
+    pub mixed: bool,
 }
 
 impl FormField {
@@ -29,6 +32,7 @@ impl FormField {
             name: field.name.clone(),
             kind: field.kind,
             text,
+            mixed: false,
         }
     }
 
