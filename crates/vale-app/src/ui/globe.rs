@@ -19,7 +19,7 @@ use crate::globe::math::V3;
 use crate::globe::math::{angle, dir_to_lonlat, lonlat_to_dir};
 use crate::globe::nav::{Nav, Painting, TAP_SECONDS, TAP_SLOP, Tap, on_canvas};
 use crate::globe::select::Pointer;
-use crate::globe::shapes::{Directions, DrawKey, OnScreen, Out, ViewKey};
+use crate::globe::shapes::{self, Directions, DrawKey, OnScreen, Out, ViewKey};
 use crate::globe::snap::Highlight;
 use crate::globe::stroke_group;
 use crate::globe::symbol::{GlobeScatter, SymbolMesh, append_missing, view_places};
@@ -1134,6 +1134,20 @@ pub fn vector_layer(
     vector_layer_cut(painter, format, None, rect, doc, view, id, pipeline);
 }
 
+/// A part of the work of a draw: the cut of one polygon of a feature, and
+/// the rest of a feature.
+enum Job {
+    Polygon(usize, usize),
+    Feature(usize),
+}
+
+/// The result of a `Job`. The parts on the screen of a polygon feature
+/// come without the polygons.
+enum Done {
+    Polygon(vector::Clipped, Option<(Vec<vector::P2>, Vec<u32>)>),
+    Feature(OnScreen),
+}
+
 /// Draws one vector layer over the globe, as `vector_layer`. With `cut`,
 /// the fills and the strokes go to `cut`, and the other shapes go to the
 /// painter. The layer keeps its shapes between frames, and a draw with no
@@ -1161,7 +1175,7 @@ pub fn vector_layer_cut(
     let entries: Vec<_> = (doc.frame.entries.iter())
         .filter(|e| e.layer == id && layer.visible)
         .collect();
-    let batches = (entries.iter())
+    let batches: Vec<_> = (entries.iter())
         .map(|entry| {
             pipeline::style_batches(&entry.style.style, scale, features.len(), |i| Context {
                 attributes: &features[i].attributes,
@@ -1170,10 +1184,17 @@ pub fn vector_layer_cut(
             })
         })
         .collect();
+    let margin = (batches.iter().flatten())
+        .map(|batch: &pipeline::Batch| {
+            let extent = vale_style::extent_of(std::slice::from_ref(&batch.paint));
+            (extent.stroke_width + extent.marker_radius) as f32 + 2.0
+        })
+        .fold(0.0, f32::max);
     let view_key = ViewKey {
         view: *view,
         rect,
         pixels_per_point,
+        margin,
     };
     let key = DrawKey {
         view: view_key,
@@ -1202,56 +1223,120 @@ pub fn vector_layer_cut(
         let q = to_screen(p);
         kurbo::Point::new(f64::from(q.x), f64::from(q.y))
     };
+    // The screen in disc space, for the fills.
+    let shown = rect.expand(1.0);
+    let to_disc = |q: egui::Pos2| {
+        [
+            f64::from(q.x - center.x) / radius,
+            f64::from(center.y - q.y) / radius,
+        ]
+    };
+    let (min, max) = (to_disc(shown.left_bottom()), to_disc(shown.right_top()));
     let measured = |lines: &[Vec<V3>]| -> Vec<Vec<(kurbo::Point, f64)>> {
         (lines.iter())
             .flat_map(|line| vector::clip_line_measured(&view.rot, line, step))
             .map(|part| part.iter().map(|(p, f)| (point(p), *f)).collect())
             .collect()
     };
-    let on_screen = |directions: &Directions| match directions {
-        Directions::Points(points) => OnScreen::Points(
-            points
-                .iter()
-                .filter_map(|d| view.project(rect, *d))
-                .collect(),
-        ),
-        Directions::Lines(lines) => OnScreen::Lines(measured(lines)),
-        Directions::Polygons(polygons, outlines) => {
-            let clipped: Vec<_> = (polygons.iter())
-                .map(|rings| vector::clip_polygon(&view.rot, rings, step))
-                .collect();
-            let triangles = vec![None; clipped.len()];
-            let outlines = outlines.as_ref().map(|lines| {
-                (lines.iter())
-                    .flat_map(|line| vector::clip_line(&view.rot, line, step))
-                    .map(|o| o.iter().map(|p| (point(p), 0.0)).collect())
-                    .collect()
-            });
-            OnScreen::Polygons(clipped, triangles, outlines)
-        }
-    };
     let symbols = doc.symbols();
     let mut places = None;
     let mut sink = Sink::new(format, key.cut);
     let (dirs, screens) = shapes.view(view_key, work);
+    // The parts on the screen that the draw needs and the view does not
+    // keep yet, and the polygons that it fills.
+    let mut needed = vec![false; dirs.len()];
+    let mut filled = vec![false; dirs.len()];
+    for batch in key.batches.iter().flatten() {
+        let fill = matches!(batch.paint, StylePaint::Fill(_));
+        for &i in &batch.features {
+            if screens[i].is_none() && view_key.shows(&dirs[i].cap) {
+                needed[i] = true;
+                filled[i] |= fill;
+            }
+        }
+    }
+    let mut jobs = Vec::new();
+    for (i, feature) in dirs.iter().enumerate().filter(|(i, _)| needed[*i]) {
+        if let Directions::Polygons(polygons, _) = &feature.directions {
+            let shown = (0..polygons.len()).filter(|&k| view_key.shows(&feature.parts[k]));
+            jobs.extend(shown.map(|k| Job::Polygon(i, k)));
+        }
+        jobs.push(Job::Feature(i));
+    }
+    let cost = |job: &Job| match *job {
+        Job::Polygon(i, k) => match &dirs[i].directions {
+            Directions::Polygons(polygons, _) => polygons[k].iter().map(Vec::len).sum(),
+            _ => 0,
+        },
+        Job::Feature(i) => match &dirs[i].directions {
+            Directions::Points(points) => points.len(),
+            Directions::Lines(lines) => lines.iter().map(Vec::len).sum(),
+            Directions::Polygons(_, outlines) => outlines.iter().flatten().map(Vec::len).sum(),
+        },
+    };
+    let done = shapes::par_map(&jobs, cost, |job| match *job {
+        Job::Polygon(i, k) => {
+            let Directions::Polygons(polygons, _) = &dirs[i].directions else {
+                unreachable!()
+            };
+            let clipped = vector::clip_polygon(&view.rot, &polygons[k], step);
+            let triangles = (filled[i])
+                .then(|| vector::triangulate(&vector::clip_loops(&clipped.loops, min, max)));
+            Done::Polygon(clipped, triangles)
+        }
+        Job::Feature(i) => Done::Feature(match &dirs[i].directions {
+            Directions::Points(points) => OnScreen::Points(
+                (points.iter())
+                    .filter_map(|d| view.project(rect, *d))
+                    .collect(),
+            ),
+            Directions::Lines(lines) => {
+                let shown: Vec<_> = (lines.iter().zip(&dirs[i].parts))
+                    .filter(|(_, cap)| view_key.shows(cap))
+                    .map(|(line, _)| line.clone())
+                    .collect();
+                OnScreen::Lines(measured(&shown))
+            }
+            Directions::Polygons(_, outlines) => {
+                let outlines = outlines.as_ref().map(|lines| {
+                    (lines.iter())
+                        .flat_map(|line| vector::clip_line(&view.rot, line, step))
+                        .map(|o| o.iter().map(|p| (point(p), 0.0)).collect())
+                        .collect()
+                });
+                OnScreen::Polygons(Vec::new(), Vec::new(), outlines)
+            }
+        }),
+    });
+    let mut parts = (Vec::new(), Vec::new());
+    for (job, done) in jobs.iter().zip(done) {
+        match (job, done) {
+            (_, Done::Polygon(clipped, triangles)) => {
+                parts.0.push(clipped);
+                parts.1.push(triangles);
+            }
+            (Job::Feature(i), Done::Feature(mut screen)) => {
+                if let OnScreen::Polygons(clipped, triangles, _) = &mut screen {
+                    (*clipped, *triangles) = std::mem::take(&mut parts);
+                }
+                work.clipped += 1;
+                screens[*i] = Some(screen);
+            }
+            _ => {}
+        }
+    }
     for (entry, batches) in entries.iter().zip(&key.batches) {
         let mut count = 0;
         for batch in batches {
             let paint = &batch.paint;
-            let extent = vale_style::extent_of(std::slice::from_ref(paint));
-            let margin = (extent.stroke_width + extent.marker_radius) as f32 + 2.0;
             for &index in &batch.features {
                 let feature = &features[index];
-                let hidden = dirs[index]
-                    .cap
-                    .is_some_and(|cap| cap.hidden(view, rect, margin));
-                if hidden {
+                if !view_key.shows(&dirs[index].cap) {
                     continue;
                 }
-                let screen = screens[index].get_or_insert_with(|| {
-                    work.clipped += 1;
-                    on_screen(&dirs[index].directions)
-                });
+                let Some(screen) = &mut screens[index] else {
+                    continue;
+                };
                 let seed = index as u64;
                 match (screen, paint) {
                     (OnScreen::Points(_), StylePaint::Marker { .. }) => {}
@@ -1283,8 +1368,9 @@ pub fn vector_layer_cut(
                     }
                     (OnScreen::Polygons(clipped, triangles, _), StylePaint::Fill(c)) => {
                         for (part, triangles) in clipped.iter().zip(triangles) {
-                            let (points, indices) =
-                                triangles.get_or_insert_with(|| vector::triangulate(&part.loops));
+                            let (points, indices) = triangles.get_or_insert_with(|| {
+                                vector::triangulate(&vector::clip_loops(&part.loops, min, max))
+                            });
                             let vertices = points
                                 .iter()
                                 .map(|p| egui::epaint::Vertex {

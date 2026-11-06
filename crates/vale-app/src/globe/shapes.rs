@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::f64::consts::FRAC_PI_2;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use eframe::{egui, egui_wgpu};
 use vale_store::{Geometry, Layer, LayerId};
@@ -17,9 +18,8 @@ use crate::mask::{MaskedFeature, MaskedLayer};
 use crate::pipeline::Batch;
 use crate::ui::globe::Cut;
 
-/// The number of views and of draws that each layer keeps. The canvas and
-/// a blurred copy of it can draw a layer in one frame.
-const KEEP: usize = 3;
+/// The number of views and of draws that each layer keeps.
+const KEEP: usize = 2;
 
 /// The positions of a feature as directions.
 pub enum Directions {
@@ -30,8 +30,8 @@ pub enum Directions {
     Polygons(Vec<Vec<Vec<V3>>>, Option<Vec<Vec<V3>>>),
 }
 
-/// A cap of the sphere that holds a feature: all its positions, its edges,
-/// and the inside of its polygons.
+/// A cap of the sphere that holds a feature or a part of it: all its
+/// positions, its edges, and the inside of its polygons.
 #[derive(Clone, Copy, Debug)]
 pub struct Cap {
     pub center: V3,
@@ -69,11 +69,13 @@ impl Cap {
     }
 }
 
-/// A feature of a vector layer as directions, with its cap.
+/// A feature of a vector layer as directions, with its caps. `None`: no
+/// cap holds the feature or the part, and it draws in each view.
 pub struct Feature {
     pub directions: Directions,
-    /// `None`: no cap holds the feature, and it draws in each view.
     pub cap: Option<Cap>,
+    /// The cap of each line or each polygon.
+    pub parts: Vec<Option<Cap>>,
 }
 
 impl Feature {
@@ -86,6 +88,7 @@ impl Feature {
                 Feature {
                     directions: Directions::Points(dirs),
                     cap,
+                    parts: Vec::new(),
                 }
             }
             Geometry::Lines(lines) => {
@@ -95,9 +98,13 @@ impl Feature {
                     .map(|l| dirs(l))
                     .collect();
                 let cap = Cap::around(lines.iter().flatten().copied());
+                let parts = (lines.iter())
+                    .map(|l| Cap::around(l.iter().copied()))
+                    .collect();
                 Feature {
                     directions: Directions::Lines(lines),
                     cap,
+                    parts,
                 }
             }
             Geometry::Polygons(polygons) => {
@@ -118,13 +125,20 @@ impl Feature {
                     .copied();
                 // A ring splits the sphere in two. The side that holds the
                 // far point of the cap is outside the cap.
-                let cap = Cap::around(points).filter(|cap| {
-                    let far = scale(cap.center, -1.0);
-                    !polygons.iter().any(|rings| vector::contains(rings, far))
-                });
+                let holds = |cap: &Cap, rings: &[Vec<V3>]| {
+                    !vector::contains(rings, scale(cap.center, -1.0))
+                };
+                let cap = Cap::around(points)
+                    .filter(|cap| polygons.iter().all(|rings| holds(cap, rings)));
+                let parts = (polygons.iter())
+                    .map(|rings| {
+                        Cap::around(rings.iter().flatten().copied()).filter(|cap| holds(cap, rings))
+                    })
+                    .collect();
                 Feature {
                     directions: Directions::Polygons(polygons, outlines),
                     cap,
+                    parts,
                 }
             }
         }
@@ -152,6 +166,16 @@ pub struct ViewKey {
     pub view: GlobeView,
     pub rect: egui::Rect,
     pub pixels_per_point: f32,
+    /// How far the paints of the layer reach out from the geometry, in
+    /// points. A part that is farther off the screen is not on it.
+    pub margin: f32,
+}
+
+impl ViewKey {
+    /// `cap` is `None` or shows in the view.
+    pub fn shows(&self, cap: &Option<Cap>) -> bool {
+        cap.is_none_or(|cap| !cap.hidden(&self.view, self.rect, self.margin))
+    }
 }
 
 /// What the shapes of a draw depend on, other than the features.
@@ -305,4 +329,44 @@ impl ShapeCache {
     pub fn work(&self, id: LayerId) -> Work {
         self.work.get(&id).copied().unwrap_or_default()
     }
+}
+
+/// `f` of each item, in the order of `items`, on all cores. `cost` is the
+/// work of an item. A small total of work stays on this thread.
+pub fn par_map<T: Sync, R: Send>(
+    items: &[T],
+    cost: impl Fn(&T) -> usize,
+    f: impl Fn(&T) -> R + Sync,
+) -> Vec<R> {
+    const SMALL: usize = 20_000;
+    let total: usize = items.iter().map(&cost).sum();
+    let threads = std::thread::available_parallelism()
+        .map_or(1, |n| n.get())
+        .min(items.len());
+    if total < SMALL || threads < 2 {
+        return items.iter().map(f).collect();
+    }
+    // The largest items go first, so that no thread waits for one large
+    // item at the end.
+    let mut order: Vec<usize> = (0..items.len()).collect();
+    order.sort_by_key(|&i| std::cmp::Reverse(cost(&items[i])));
+    let next = AtomicUsize::new(0);
+    let work = || {
+        let mut mine = Vec::new();
+        while let Some(&i) = order.get(next.fetch_add(1, Ordering::Relaxed)) {
+            mine.push((i, f(&items[i])));
+        }
+        mine
+    };
+    let done: Vec<Vec<(usize, R)>> = std::thread::scope(|s| {
+        let handles: Vec<_> = (0..threads).map(|_| s.spawn(work)).collect();
+        (handles.into_iter())
+            .map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e)))
+            .collect()
+    });
+    let mut out: Vec<Option<R>> = items.iter().map(|_| None).collect();
+    for (i, r) in done.into_iter().flatten() {
+        out[i] = Some(r);
+    }
+    out.into_iter().flatten().collect()
 }
