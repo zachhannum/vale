@@ -5491,6 +5491,8 @@ fn a_layer_that_is_not_selected_uses_the_reduced_size() {
     assert_eq!(globe.display_face_size(small), None);
     assert!(globe.draws_full(large) && !globe.draws_full(other));
     assert_eq!(globe.map.face_size(), 4096);
+    // At the whole view, the copy has a texel for each pixel.
+    assert_eq!(globe.view_detail_level(other), None);
     // The picture is that of the top layer, from its reduced copy.
     assert!(is_grey(middle(&mut h), HIGH));
     h.state_mut().set_raster_visible(other, false);
@@ -5500,6 +5502,53 @@ fn a_layer_that_is_not_selected_uses_the_reduced_size() {
     h.run_steps(2);
     assert_eq!(h.state().globe.display_face_size(small), Some(1024));
     assert!(!h.state().globe.draws_full(small));
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_layer_that_is_not_selected_shows_its_full_detail_when_the_view_zooms_in() {
+    let _gpu = one_gpu_test();
+    use vale_app::globe::WorldView;
+    for world_view in [WorldView::Globe, WorldView::Flat] {
+        let (mut h, _) = layers_harness(&[]);
+        let selected = plain_layer(h.state_mut(), "Selected", LAYER_FACE_SIZE);
+        let fine = plain_layer(h.state_mut(), "Fine", 4096);
+        let state = h.state_mut();
+        // Columns of one texel, LOW and HIGH in turn, at the middle of face
+        // 0. The copy of 2,048 texels has their mean.
+        let map = state.globe.raster_map_mut(fine).unwrap();
+        for y in 1792..2304 {
+            for x in 1792..2304 {
+                map.set(0, x, y, if x % 2 == 0 { LOW } else { HIGH });
+            }
+        }
+        state.select(Some(LayerRef::Raster(selected)));
+        h.run_steps(3);
+        assert!(!h.state().globe.draws_full(fine));
+        assert!(is_grey(middle(&mut h), LOW / 2 + HIGH / 2));
+
+        let globe = &mut h.state_mut().globe;
+        globe.world_view = world_view;
+        globe.view.zoom = vale_app::globe::view::ZOOM_MAX;
+        globe.flat.zoom = vale_app::globe::flat::ZOOM_MAX;
+        for _ in 0..20 {
+            h.run_steps(1);
+            if h.state().globe.view_details_ready() {
+                break;
+            }
+        }
+        let globe = &h.state().globe;
+        assert_eq!(globe.view_detail_level(fine), Some(0), "{world_view:?}");
+        assert!(globe.view_details_ready(), "{world_view:?}");
+        let img = canvas_image(&mut h);
+        let y = img.height() / 2;
+        let row: Vec<u8> = (img.width() / 2 - 20..img.width() / 2 + 20)
+            .map(|x| img.get_pixel(x, y).0[0])
+            .collect();
+        // A texel is 2.5 pixels wide or more, and the filter softens it.
+        let (least, most) = (row.iter().min().unwrap(), row.iter().max().unwrap());
+        assert!(most - least >= 90, "{world_view:?} {row:?}");
+    }
 }
 
 #[test]

@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Instant;
 
-use eframe::egui::{Pos2, Rect};
+use eframe::egui::{Pos2, Rect, Vec2};
 use eframe::egui_wgpu::{self, wgpu};
 use vale_store::{
     BlendMode, Hillshade, ImageId, LayerId, LonLat, RasterDisplay, RasterId, Smoothing, Uuid,
@@ -1058,8 +1058,23 @@ pub struct Globe {
     /// globe draws, made when `shown_field` asks for them. A change of a
     /// heightmap removes them.
     fields: Mutex<Vec<(MapKey, Arc<Pyramid>)>>,
-    /// The detail maps of the raster layers in the map frames.
+    /// The detail maps of the raster layers in the map frames and in the
+    /// view.
     details: detail::Details,
+    /// The grid of the view, for the place of the view that made it.
+    view_grid: Option<(ViewPlace, Arc<detail::Grid>)>,
+}
+
+/// The place of the view on the screen, for the grid of the view.
+#[derive(Clone, Copy, PartialEq)]
+struct ViewPlace {
+    world_view: WorldView,
+    globe: GlobeView,
+    flat_center: vale_sphere::Point,
+    flat_zoom: f64,
+    spec: vale_sphere::ProjectionSpec,
+    rect: Rect,
+    pixels_per_point: f32,
 }
 
 /// What the snap targets of the color stops of a raster layer come from.
@@ -1168,6 +1183,7 @@ impl Globe {
             memory_undo: true,
             fields: Mutex::default(),
             details: detail::Details::default(),
+            view_grid: None,
         };
         globe.begin_full();
         globe
@@ -4522,7 +4538,7 @@ impl Globe {
     /// frames need, and a tile from the main memory arrives with no texels.
     pub fn want_frames(&mut self, frames: &[FrameDraw]) {
         let mut shown = Vec::new();
-        for (at, frame) in frames.iter().enumerate() {
+        for frame in frames {
             for &id in &frame.shown {
                 let Some(layer) = self.layer(id).filter(|_| self.visible(id)) else {
                     continue;
@@ -4539,7 +4555,7 @@ impl Globe {
                     false => 0.0,
                 };
                 shown.push(detail::Shown {
-                    frame: at,
+                    frame: frame.id,
                     raster: id,
                     full_face,
                     copy_face: self.copy_face(id),
@@ -4551,9 +4567,85 @@ impl Globe {
         }
         let link = self.format.map(|_| &self.link);
         self.details
-            .want(frames, &shown, link, &mut self.generations);
+            .want_frames(frames, &shown, link, &mut self.generations);
+        self.load_memory_tiles();
+    }
 
-        // The tiles from the main memory.
+    /// Finds the tiles of the detail maps that the view needs, as
+    /// `want_frames` does for the map frames: for each raster layer that
+    /// the view draws, under the part of the world that shows, at the level
+    /// with one texel or more in each pixel of the screen.
+    pub fn want_view(&mut self, pixels_per_point: f32) {
+        let Some(stack) = self.stack.as_deref() else {
+            return;
+        };
+        // The view draws from the top raster layer that hides each layer
+        // below it, as `paint` does.
+        let opaque = |item: &StackItem| match *item {
+            StackItem::Raster {
+                id, opacity, blend, ..
+            } => {
+                let drawn = self.layer(id).is_some() && self.visible(id);
+                drawn && opacity >= 1.0 && blend == BlendMode::Normal
+            }
+            _ => false,
+        };
+        let start = stack.iter().rposition(opaque).unwrap_or(0);
+        let mut shown = Vec::new();
+        for item in &stack[start..] {
+            let StackItem::Raster { id, smoothing, .. } = *item else {
+                continue;
+            };
+            let Some(layer) = self.layer(id).filter(|_| self.visible(id)) else {
+                continue;
+            };
+            let full_face = layer.face_size as u32;
+            shown.push(detail::Shown {
+                frame: detail::VIEW,
+                raster: id,
+                full_face,
+                copy_face: self.copy_face(id),
+                base: layer.display(&self.map).base(),
+                edits: layer.edits,
+                lod: self.level_of(smoothing, full_face),
+            });
+        }
+        let grid = self.view_grid(pixels_per_point);
+        let link = self.format.map(|_| &self.link);
+        self.details
+            .want_view(grid, &shown, link, &mut self.generations);
+        self.load_memory_tiles();
+    }
+
+    /// The grid of the view, from the last call if the view did not move.
+    fn view_grid(&mut self, pixels_per_point: f32) -> Arc<detail::Grid> {
+        let place = ViewPlace {
+            world_view: self.world_view,
+            globe: self.view,
+            flat_center: self.flat.center,
+            flat_zoom: self.flat.zoom,
+            spec: self.flat.mesh().spec,
+            rect: self.rect,
+            pixels_per_point,
+        };
+        if let Some((_, grid)) = self.view_grid.as_ref().filter(|(p, _)| *p == place) {
+            return grid.clone();
+        }
+        let size = self.rect.size() * pixels_per_point;
+        let size = [size.x.max(1.0) as u32, size.y.max(1.0) as u32];
+        let min = self.rect.min;
+        let grid = Arc::new(detail::Grid::from_fn(size, |x, y| {
+            let at = Vec2::new(x as f32, y as f32) / pixels_per_point;
+            self.unproject(min + at)
+        }));
+        self.view_grid = Some((place, grid.clone()));
+        grid
+    }
+
+    /// Gives the detail maps the tiles that they need from the main memory,
+    /// for a limited time.
+    fn load_memory_tiles(&mut self) {
+        let link = self.format.map(|_| &self.link);
         let start = Instant::now();
         let gpu = self.format.is_some();
         for req in self.details.missing() {
@@ -4573,6 +4665,31 @@ impl Globe {
     pub fn details_loading(&self) -> bool {
         self.details.loading()
             && (self.details.in_flight() > 0 || !self.details.missing().is_empty())
+    }
+
+    /// The heightmap on the GPU that the view draws a raster layer from: a
+    /// detail map when the view needs finer texels than `source` has and
+    /// the detail map is ready, or else `source`.
+    fn view_source(&self, id: RasterId) -> Option<MapKey> {
+        self.details.source(detail::VIEW, id).or(self.source(id))
+    }
+
+    /// The level of the whole heightmap that the view reads a raster layer
+    /// at, by the last `want_view`. `None`: the view reads `source`.
+    pub fn view_detail_level(&self, id: RasterId) -> Option<u32> {
+        self.details.level(detail::VIEW, id)
+    }
+
+    /// True if the GPU has each tile of the detail maps that the view of
+    /// the last `want_view` needs.
+    pub fn view_details_ready(&self) -> bool {
+        self.details.ready(detail::VIEW)
+    }
+
+    /// True if the view of the last `want_view` reads each raster layer at
+    /// the level that its pixels need.
+    pub fn view_fits(&self) -> bool {
+        self.details.fits(detail::VIEW)
     }
 
     /// The face size of the copy that a frame reads a raster layer from
@@ -4734,6 +4851,7 @@ impl Globe {
     /// above the top raster layer. With `blur`, the first item draws the
     /// raster layers into the blurred copy that the cards show.
     pub fn paint(&mut self, canvas: Canvas, blur: bool) -> Option<Vec<Paint>> {
+        self.want_view(canvas.pixels_per_point);
         let format = self.format?;
         self.queue_changes();
         let river_layers = self.send_rivers();
@@ -4802,7 +4920,7 @@ impl Globe {
                             lines,
                             blend,
                         } => {
-                            let source = self.source(id).zip(self.display_map(id));
+                            let source = self.view_source(id).zip(self.display_map(id));
                             if let Some((key, map)) = source {
                                 items.push(Item::Raster(LayerDraw {
                                     key,
