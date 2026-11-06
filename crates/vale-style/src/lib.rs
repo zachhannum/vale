@@ -129,6 +129,16 @@ fn stroke(color: Color, width: f64) -> Symbolizer {
 }
 
 impl LayerStyle {
+    /// Replaces the field `old` with `new` in the rules, the label field, and the priority field.
+    pub fn rename_field(&mut self, old: &str, new: &str) {
+        self.style.rename_field(old, new);
+        for field in [&mut self.label.field, &mut self.label.priority_field] {
+            if field.as_deref() == Some(old) {
+                *field = Some(new.to_owned());
+            }
+        }
+    }
+
     /// The style of a new layer: one rule with constant symbolizers. `ordinal` picks a color and wraps around.
     pub fn default_for(kind: GeometryKind, ordinal: usize, fields: &[String]) -> Self {
         let field = guess_label_field(fields);

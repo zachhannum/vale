@@ -523,6 +523,15 @@ pub struct LabelClass {
 }
 
 impl LabelClass {
+    /// Replaces the field `old` with `new` in the text, the filter, and the priority field.
+    pub fn rename_field(&mut self, old: &str, new: &str) {
+        self.text = crate::expr::rename_field(&self.text, old, new);
+        self.filter = crate::expr::rename_field(&self.filter, old, new);
+        if self.priority_field.as_deref() == Some(old) {
+            self.priority_field = Some(new.to_owned());
+        }
+    }
+
     /// The class that gives the labels of `style`. `None` if the labels are off, there is no field, or the feature type has no placements.
     pub fn from_style(
         name: &str,
