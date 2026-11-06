@@ -10941,6 +10941,44 @@ fn a_held_finger_adds_a_second_tap_makes_the_key_and_subtract_cuts_in_one_undo_s
 }
 
 #[test]
+fn undo_of_subtract_selects_the_key_and_the_cut_polygon_again() {
+    use vale_app::ui::select::{SUBTRACT, Selectable};
+    use vale_store::{Feature, Geometry};
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
+    let country = picks.polygon;
+    let state = h.state_mut();
+    let water = state.doc.add_layer(GeometryKind::Polygon);
+    let lake = vec![vec![
+        [-4.0, -21.0],
+        [4.0, -21.0],
+        [4.0, -16.0],
+        [-4.0, -16.0],
+    ]];
+    let lake = Feature::new(Geometry::Polygons(vec![lake]), Default::default());
+    let uuid = lake.uuid();
+    assert!(state.doc.project.add_feature(water, lake));
+    let lake = FeatureRef { layer: water, uuid };
+    state.selectable = Selectable::Layers([country.layer, water].into());
+    state.set_feature_selection(vec![country, lake]);
+    state.key = Some(lake);
+    step_and_save(&mut h, false);
+    // The styles of the new layer wait for their save.
+    h.state_mut().save_waiting().unwrap();
+    let before = geometry_of(&h, country);
+    tap(&mut h, SUBTRACT);
+    step_and_save(&mut h, false);
+    assert_ne!(geometry_of(&h, country), before);
+    h.state_mut().set_feature_selection(Vec::new());
+    step_and_save(&mut h, false);
+    tap(&mut h, "Undo");
+    step_and_save(&mut h, false);
+    assert_eq!(geometry_of(&h, country), before);
+    assert_eq!(selection(&h), [country, lake]);
+    assert_eq!(h.state().key_feature(), Some(lake));
+}
+
+#[test]
 fn split_cuts_a_line_into_two_lines_at_the_crossing() {
     let dir = tempfile::tempdir().unwrap();
     let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
