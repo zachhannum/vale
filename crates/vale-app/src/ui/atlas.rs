@@ -1034,17 +1034,17 @@ pub fn selected_map(state: &AppState) -> MapId {
     frame.map_or_else(|| state.doc.first_map(), |f| f.map)
 }
 
-/// True while the Layers tab of the selected frame or the list of the map
+/// True while the panel of the selected frame or the list of the map
 /// frames shows.
-pub fn layers_open(state: &AppState) -> bool {
-    state.atlas.frames || (state.atlas.frame().is_some() && state.atlas.tab == FrameTab::Layers)
+pub fn maps_open(state: &AppState) -> bool {
+    state.atlas.frames || state.atlas.frame().is_some()
 }
 
-/// The Layers button. With a frame selected, it opens the Layers tab of the
-/// frame. With no frame selected, it opens the list of the map frames of
-/// the page. While either shows, it closes it.
-pub fn toggle_layers(state: &mut AppState) {
-    let open = layers_open(state);
+/// The Maps button. With no frame selected, it opens the list of the map
+/// frames of the page. While the panel of a frame or the list shows, it
+/// closes it.
+pub fn toggle_maps(state: &mut AppState) {
+    let open = maps_open(state);
     let a = &mut state.atlas;
     if open {
         a.frames = false;
@@ -1054,19 +1054,14 @@ pub fn toggle_layers(state: &mut AppState) {
         }
         return;
     }
-    if a.frame().is_some() {
-        a.tab = FrameTab::Layers;
-    } else {
-        a.selection = AtlasSelection::None;
-        a.frames = true;
-    }
+    a.selection = AtlasSelection::None;
+    a.frames = true;
 }
 
-/// Selects a frame of the list of the map frames and opens its Layers tab.
-pub fn open_frame_layers(state: &mut AppState, id: FrameId) {
+/// Selects a frame of the list of the map frames, so its panel opens.
+pub fn open_frame(state: &mut AppState, id: FrameId) {
     let a = &mut state.atlas;
     a.selection = AtlasSelection::Frame(id);
-    a.tab = FrameTab::Layers;
     a.frames = false;
 }
 

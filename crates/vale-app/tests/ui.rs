@@ -2242,15 +2242,15 @@ fn the_desktop_tool_bars_have_the_selectable_menu_with_the_select_tool() {
 }
 
 #[test]
-fn the_map_layers_button_of_the_desktop_opens_the_layers_tab_of_a_frame() {
+fn the_maps_button_of_the_desktop_shows_the_panel_of_a_frame() {
     use vale_app::ui::atlas::{self, AtlasSelection, FrameTab};
-    use vale_app::ui::pad::atlas::{MAP_LAYERS, NO_FRAMES};
+    use vale_app::ui::pad::atlas::{MAPS, NO_FRAMES};
     let mut h = harness();
     h.state_mut().atlas.selection = AtlasSelection::None;
     h.run_steps(3);
     // With no frame on the page, the menu says how to add one.
     if atlas::frame_names(h.state()).is_empty() {
-        h.get_by_label(MAP_LAYERS).click();
+        h.get_by_label(MAPS).click();
         h.run_steps(2);
         assert!(h.query_by_label(NO_FRAMES).is_some());
         h.key_press(egui::Key::Escape);
@@ -2260,22 +2260,18 @@ fn the_map_layers_button_of_the_desktop_opens_the_layers_tab_of_a_frame() {
     atlas::add_frame(h.state_mut());
     h.state_mut().atlas.selection = AtlasSelection::None;
     h.run_steps(3);
-    // With no frame selected, the menu lists the frames.
-    h.get_by_label(MAP_LAYERS).click();
+    // With no frame selected, the menu lists the frames, and the panel
+    // opens on the tab that it had.
+    h.state_mut().atlas.tab = FrameTab::Labels;
+    h.get_by_label(MAPS).click();
     h.run_steps(2);
     let names = atlas::frame_names(h.state());
     h.get_by_label(&names[1].1).click();
     h.run_steps(2);
     assert_eq!(h.state().atlas.selection, AtlasSelection::Frame(names[1].0));
-    assert_eq!(h.state().atlas.tab, FrameTab::Layers);
-    // With a frame selected, the button opens the Layers tab, and a second
-    // click closes the panel.
-    h.state_mut().atlas.tab = FrameTab::Frame;
-    h.run_steps(2);
-    h.get_by_label(MAP_LAYERS).click();
-    h.run_steps(2);
-    assert_eq!(h.state().atlas.tab, FrameTab::Layers);
-    h.get_by_label(MAP_LAYERS).click();
+    assert_eq!(h.state().atlas.tab, FrameTab::Labels);
+    // With a frame selected, a click closes the panel.
+    h.get_by_label(MAPS).click();
     h.run_steps(2);
     assert_eq!(h.state().atlas.selection, AtlasSelection::None);
 }

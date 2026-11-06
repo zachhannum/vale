@@ -29,6 +29,8 @@ pub enum Icon {
     Undo,
     Redo,
     Layers,
+    /// A folded map.
+    Map,
     Toolbox,
     /// A sheet with the lines of a form.
     Attributes,
@@ -108,6 +110,7 @@ impl Icon {
             Icon::Undo => "M8 5L3 10l5 5M3 10h11c3.04 0 5.5 2.46 5.5 5.5s-2.46 5.5-5.5 5.5h-3",
             Icon::Redo => "M16 5l5 5-5 5M21 10H10c-3.04 0-5.5 2.46-5.5 5.5s2.46 5.5 5.5 5.5h3",
             Icon::Layers => "M12 4l9 5-9 5-9-5zM3 14l9 5 9-5",
+            Icon::Map => "M3 6l6-2 6 2 6-2v14l-6 2-6-2-6 2zM9 4v14M15 6v14",
             Icon::Toolbox => "M4 9h16v10H4zM9 9V6h6v3M4 14h16",
             Icon::Attributes => "M5 3h14v18H5zM8 8h8M8 12h8M8 16h5",
             Icon::Trash => "M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6",
@@ -434,6 +437,7 @@ mod tests {
             Icon::Undo,
             Icon::Redo,
             Icon::Layers,
+            Icon::Map,
             Icon::Toolbox,
             Icon::Attributes,
             Icon::Trash,

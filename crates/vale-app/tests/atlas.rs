@@ -23,9 +23,9 @@ use vale_app::ui::pad::atlas::{
     ADD, ADD_HOLE, ADD_PAGE, AUTO_INTERVAL, BORDER, BORDER_DISTANCE, BORDER_STROKE, BORDER_STYLES,
     BORDER_WIDTH, CENTER_ON_FRAME, COPY_GLOBE_STYLE, DELETE_PAGE, DELETE_PROJECTION,
     EXPORT_ATLAS_PDF, EXPORT_PAGE_PDF, EXPORT_PAGE_PNG, FIRST_PARALLEL, FRAME_TABS, FRAME_TOOL,
-    GRATICULE_COLOR, GRATICULE_WIDTH, HEIGHT, INTERVAL, LABEL_FORMATS, MAP_FRAME, MAP_LAYERS,
-    MAP_NAME, NEATLINE, NEATLINE_COLOR, NEATLINE_WIDTH, NEXT_PAGE, NO_FRAMES, OBLIQUE, PAPER_COLOR,
-    POLYGON, PREVIOUS_PAGE, PROJECTION, REFERENCE_GRID, SAVE_PROJECTION, SCALE, SECOND_COLOR, SIZE,
+    GRATICULE_COLOR, GRATICULE_WIDTH, HEIGHT, INTERVAL, LABEL_FORMATS, MAP_FRAME, MAP_NAME, MAPS,
+    NEATLINE, NEATLINE_COLOR, NEATLINE_WIDTH, NEXT_PAGE, NO_FRAMES, OBLIQUE, PAPER_COLOR, POLYGON,
+    PREVIOUS_PAGE, PROJECTION, REFERENCE_GRID, SAVE_PROJECTION, SCALE, SECOND_COLOR, SIZE,
     STROKE_COLOR, STROKE_WIDTH as BORDER_STROKE_WIDTH, VERTEX, WIDTH, custom_row, page_title,
     readout_text,
 };
@@ -1381,7 +1381,7 @@ fn the_page_controls_go_to_the_previous_page_and_the_next_page() {
     assert_eq!(h.state().atlas.page, second);
     for size in BOARDS {
         let h = pad_with(state(), size);
-        for name in [MAP_LAYERS, "Frame tool", "Move"] {
+        for name in [MAPS, "Frame tool", "Move"] {
             assert!(control(&h, name).is_some(), "{size:?}: {name}");
         }
         check_controls(&h, "top row");
@@ -6388,7 +6388,7 @@ fn the_top_row_ends_with_add_and_has_no_grid_button() {
         }
         assert!(control(&h, SHOW_GRID).is_none(), "{size:?}");
         let x = |name: &str| control(&h, name).map(|r| r.left());
-        let layers = x(MAP_LAYERS).unwrap_or_else(|| panic!("{size:?}"));
+        let layers = x(MAPS).unwrap_or_else(|| panic!("{size:?}"));
         let attributes = x(vale_app::ui::select::ATTRIBUTES).unwrap_or_else(|| panic!("{size:?}"));
         assert!(layers < attributes, "{size:?}");
         // On a phone, Add is a row of the workspace menu.
@@ -8542,27 +8542,29 @@ fn the_attributes_button_and_the_inspector_fit_in_the_atlas_on_each_screen() {
 }
 
 #[test]
-fn the_layers_button_opens_the_layers_tab_of_the_selected_frame() {
+fn the_maps_button_is_on_while_the_panel_of_a_frame_shows_and_closes_it() {
     let mut h = inset_pad(BOARDS[0]);
     let id = frame(&h, 1).id;
     assert_eq!(h.state().atlas.selection, AtlasSelection::Frame(id));
-    assert_eq!(h.state().atlas.tab, FrameTab::Frame);
-    tap(&mut h, MAP_LAYERS);
-    assert_eq!(h.state().atlas.selection, AtlasSelection::Frame(id));
-    assert_eq!(h.state().atlas.tab, FrameTab::Layers);
-    assert!(!h.state().atlas.frames);
-    // A second tap closes the panel.
-    tap(&mut h, MAP_LAYERS);
+    for tab in [FrameTab::Frame, FrameTab::Projection, FrameTab::Labels] {
+        h.state_mut().atlas.tab = tab;
+        h.run_steps(2);
+        assert_eq!(toggled(&h, MAPS), Some(true), "{tab:?}");
+    }
+    // A tap closes the panel.
+    tap(&mut h, MAPS);
     assert_eq!(h.state().atlas.selection, AtlasSelection::None);
     assert!(h.state().atlas.panel_rect.is_none());
+    assert_ne!(toggled(&h, MAPS), Some(true));
 }
 
 #[test]
-fn with_no_frame_selected_the_layers_button_lists_the_map_frames() {
+fn with_no_frame_selected_the_maps_button_lists_the_map_frames() {
     let mut h = inset_pad(BOARDS[0]);
+    h.state_mut().atlas.tab = FrameTab::Projection;
     h.state_mut().atlas.selection = AtlasSelection::Page;
     h.run_steps(2);
-    tap(&mut h, MAP_LAYERS);
+    tap(&mut h, MAPS);
     assert!(h.state().atlas.frames);
     assert_eq!(h.state().atlas.selection, AtlasSelection::None);
     assert!(h.state().atlas.panel_rect.is_some());
@@ -8574,14 +8576,15 @@ fn with_no_frame_selected_the_layers_button_lists_the_map_frames() {
     }
     tap(&mut h, &names[0].1);
     assert_eq!(h.state().atlas.selection, AtlasSelection::Frame(names[0].0));
-    assert_eq!(h.state().atlas.tab, FrameTab::Layers);
+    // The panel opens on the tab that it had.
+    assert_eq!(h.state().atlas.tab, FrameTab::Projection);
     assert!(!h.state().atlas.frames);
     // The list closes with a second tap of the button.
     h.state_mut().atlas.selection = AtlasSelection::None;
     h.run_steps(2);
-    tap(&mut h, MAP_LAYERS);
+    tap(&mut h, MAPS);
     assert!(h.state().atlas.frames);
-    tap(&mut h, MAP_LAYERS);
+    tap(&mut h, MAPS);
     assert!(!h.state().atlas.frames);
     assert!(h.state().atlas.panel_rect.is_none());
 }
@@ -8590,7 +8593,7 @@ fn with_no_frame_selected_the_layers_button_lists_the_map_frames() {
 fn the_list_of_the_map_frames_of_an_empty_page_says_how_to_add_one() {
     let mut h = pad();
     assert!(atlas::frame_names(h.state()).is_empty());
-    tap(&mut h, MAP_LAYERS);
+    tap(&mut h, MAPS);
     assert!(h.state().atlas.frames);
     assert!(h.query_by_label(NO_FRAMES).is_some());
     // A new frame shows its own panel in place of the list.
@@ -8599,7 +8602,7 @@ fn the_list_of_the_map_frames_of_an_empty_page_says_how_to_add_one() {
 }
 
 #[test]
-fn the_inspector_and_the_layers_share_the_panel_place() {
+fn the_inspector_and_the_maps_share_the_panel_place() {
     use vale_app::ui::pad::Panel;
     use vale_app::ui::select::ATTRIBUTES;
     let mut h = inset_pad(BOARDS[0]);
@@ -8607,46 +8610,48 @@ fn the_inspector_and_the_layers_share_the_panel_place() {
     h.run_steps(2);
     tap(&mut h, ATTRIBUTES);
     assert!(h.state().pad.is_open(Panel::Attributes));
-    tap(&mut h, MAP_LAYERS);
+    tap(&mut h, MAPS);
     assert!(!h.state().pad.is_open(Panel::Attributes));
     assert!(h.state().atlas.frames);
     tap(&mut h, ATTRIBUTES);
     assert!(h.state().pad.is_open(Panel::Attributes));
     assert!(!h.state().atlas.frames);
-    // With a frame on its Layers tab under the inspector, the button shows
-    // the tab again. With the Select tool, the inspector stays open over a
+    // With the panel of a frame under the inspector, the button shows the
+    // panel again. With the Select tool, the inspector stays open over a
     // selected frame.
     h.state_mut().atlas.tool = AtlasTool::Select;
+    h.state_mut().atlas.tab = FrameTab::Labels;
     let id = frame(&h, 0).id;
-    atlas::open_frame_layers(h.state_mut(), id);
+    atlas::open_frame(h.state_mut(), id);
     h.run_steps(2);
     assert!(h.state().pad.is_open(Panel::Attributes));
-    tap(&mut h, MAP_LAYERS);
+    tap(&mut h, MAPS);
     assert!(!h.state().pad.is_open(Panel::Attributes));
     assert_eq!(h.state().atlas.selection, AtlasSelection::Frame(id));
-    assert_eq!(h.state().atlas.tab, FrameTab::Layers);
+    assert_eq!(h.state().atlas.tab, FrameTab::Labels);
 }
 
 #[test]
-fn the_layers_button_and_the_list_of_the_frames_fit_on_each_screen() {
+fn the_maps_button_and_the_list_of_the_frames_fit_on_each_screen() {
     let phones = [(393.0, 852.0), (852.0, 393.0)];
     for size in BOARDS.into_iter().chain(phones) {
         let what = format!("{size:?}");
         let mut h = inset_pad(size);
         h.state_mut().atlas.selection = AtlasSelection::None;
         h.run_steps(2);
-        let button = control(&h, MAP_LAYERS).unwrap_or_else(|| panic!("{what}"));
+        let button = control(&h, MAPS).unwrap_or_else(|| panic!("{what}"));
         check_controls(&h, &what);
         for c in &h.state().pad.controls {
-            if c.name != MAP_LAYERS {
+            if c.name != MAPS {
                 assert!(!c.rect.intersects(button.shrink(1.0)), "{what}: {}", c.name);
             }
         }
-        tap(&mut h, MAP_LAYERS);
+        tap(&mut h, MAPS);
         check_controls(&h, &format!("{what}: list"));
         let names = atlas::frame_names(h.state());
         tap(&mut h, &names[1].1);
-        assert_eq!(h.state().atlas.tab, FrameTab::Layers, "{what}");
-        check_controls(&h, &format!("{what}: tab"));
+        let selected = AtlasSelection::Frame(names[1].0);
+        assert_eq!(h.state().atlas.selection, selected, "{what}");
+        check_controls(&h, &format!("{what}: panel"));
     }
 }

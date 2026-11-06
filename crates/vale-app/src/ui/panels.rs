@@ -6,7 +6,7 @@ use vale_store::{GeometryKind, RasterId, World};
 
 use super::number;
 use super::pad::atlas::{
-    LAYOUT_GRID, MAP_LAYERS, NEXT_PAGE, NO_FRAMES, PREVIOUS_PAGE, SNAP_TO_LAYOUT, page_title,
+    LAYOUT_GRID, MAPS, NEXT_PAGE, NO_FRAMES, PREVIOUS_PAGE, SNAP_TO_LAYOUT, page_title,
 };
 use super::raster_form::RasterForm;
 use super::world_form::{self, WorldForm};
@@ -409,24 +409,21 @@ fn atlas_buttons(ui: &mut egui::Ui, state: &mut AppState) {
     if ui.selectable_label(on, LAYOUT_GRID).clicked() {
         atlas::edit_grid(state, |g| g.on = !on);
     }
-    // With a frame selected, Map layers opens its Layers tab. With none, it
+    // With a frame selected, Maps shows and hides its panel. With none, it
     // lists the map frames of the page.
     if state.atlas.frame().is_some() {
-        if ui
-            .selectable_label(atlas::layers_open(state), MAP_LAYERS)
-            .clicked()
-        {
-            atlas::toggle_layers(state);
+        if ui.selectable_label(atlas::maps_open(state), MAPS).clicked() {
+            atlas::toggle_maps(state);
         }
     } else {
-        ui.menu_button(MAP_LAYERS, |ui| {
+        ui.menu_button(MAPS, |ui| {
             let frames = atlas::frame_names(state);
             if frames.is_empty() {
                 ui.weak(NO_FRAMES);
             }
             for (id, name) in frames {
                 if ui.button(name).clicked() {
-                    atlas::open_frame_layers(state, id);
+                    atlas::open_frame(state, id);
                     ui.close();
                 }
             }

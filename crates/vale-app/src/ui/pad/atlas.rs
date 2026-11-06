@@ -108,9 +108,8 @@ pub const SHOW_GRID: &str = "Show layout grid";
 pub const GRID: &str = "Grid";
 /// The Layers button of the top row. It opens the Layers tab of the
 /// selected frame, or the list of the map frames.
-pub const MAP_LAYERS: &str = "Map layers";
-pub const MAP_FRAMES: &str = "Map frames";
-pub const NO_FRAMES: &str = "Add a map frame to see its layers.";
+pub const MAPS: &str = "Maps";
+pub const NO_FRAMES: &str = "Add a map frame to see it here.";
 pub const GRID_SPACING: &str = "Grid spacing";
 pub const GRID_COLOR: &str = "Grid color";
 pub const CENTER_ON_FRAME: &str = "Center on frame";
@@ -488,17 +487,15 @@ fn top_row(
             }
             divider(ui, card.left() + PAD + 2.0 * step + 4.5, card);
             let mut x = 2.0 * step + 9.0 + PAD;
-            // The inspector and the layers share the panel place.
+            // The inspector and the panel of a frame share the panel place.
             let inspecting = state.pad.is_open(super::Panel::Attributes);
-            let layers = at(x);
+            let maps = at(x);
             x += step;
-            let open = atlas::layers_open(state) && !inspecting;
-            if widgets::icon_button_at(ui, controls, layers, MAP_LAYERS, Icon::Layers, open, true)
-                .clicked()
-            {
+            let open = atlas::maps_open(state) && !inspecting;
+            if widgets::icon_button_at(ui, controls, maps, MAPS, Icon::Map, open, true).clicked() {
                 state.pad.close(super::Panel::Attributes);
-                if !(inspecting && atlas::layers_open(state)) {
-                    atlas::toggle_layers(state);
+                if !(inspecting && atlas::maps_open(state)) {
+                    atlas::toggle_maps(state);
                 }
             }
             let inspector = at(x);
@@ -862,7 +859,7 @@ fn workspace_menu(
 /// and opens its Layers tab.
 fn frames_panel(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
     let head = CardTitle {
-        title: MAP_FRAMES,
+        title: MAPS,
         back: None,
         action: None,
     };
@@ -886,7 +883,7 @@ fn frames_panel(ctx: &egui::Context, state: &mut AppState, controls: &mut Contro
         }
         for (id, name) in frames {
             if widgets::open_row(ui, controls, &name, "").clicked() {
-                atlas::open_frame_layers(state, id);
+                atlas::open_frame(state, id);
             }
         }
     };
