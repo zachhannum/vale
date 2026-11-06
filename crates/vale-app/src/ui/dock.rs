@@ -1,6 +1,6 @@
-//! The right dock of the desktop Atlas workspace: the panel of the selected
-//! frame or of the open page, and the inspector of the layers. The dock
-//! shows only with a selection.
+//! The right dock of the desktop Atlas workspace: the inspector of the
+//! feature selection, the panel of the selected frame or of the open page,
+//! and the inspector of the layers. The dock shows only with a selection.
 
 use eframe::egui;
 use vale_sphere::{INTERVALS, ProjectionKind, interval_text};
@@ -607,10 +607,22 @@ fn layers_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
     for (layer, name) in rows {
         ui.horizontal(|ui| {
             let mut shown = state.doc.shown(frame.map, layer);
-            if ui.checkbox(&mut shown, &name).changed() {
+            let check = ui.checkbox(&mut shown, &name);
+            if check.changed() {
                 state.set_map_shown(frame.map, layer, shown);
             }
+            if state.doc.entry(layer).is_some() {
+                check.context_menu(|ui| {
+                    if ui.button(super::table::OPEN_TABLE).clicked() {
+                        state.open_table(layer);
+                        ui.close();
+                    }
+                });
+            }
             if ui.selectable_label(open == Some(layer), "Style").clicked() {
+                if open != Some(layer) {
+                    state.select_vector(layer);
+                }
                 state.atlas.layer = (open != Some(layer)).then_some((frame.id, layer));
             }
             if edited.contains(&layer) {
@@ -659,6 +671,9 @@ fn layers_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
         });
     }
     style_source(ui, state, frame, layer);
+    if ui.button(super::table::OPEN_TABLE).clicked() {
+        state.open_table(layer);
+    }
 }
 
 /// The buttons that set the style of a layer in a map from its map style

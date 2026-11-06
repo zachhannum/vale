@@ -1723,7 +1723,7 @@ fn an_added_svg_is_saved_in_the_project() {
     };
     let mut fonts = vale_app::pipeline::fonts().unwrap();
     let c = vale_app::pipeline::Pipeline::new()
-        .compose(&doc, (800.0, 600.0), &mut fonts, Quality::Final, None)
+        .compose(&doc, (800.0, 600.0), &mut fonts, Quality::Final)
         .unwrap();
     assert_eq!(c.symbols.len(), 1);
     let purple = c.list.items.iter().any(|i| {

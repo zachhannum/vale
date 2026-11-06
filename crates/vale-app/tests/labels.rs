@@ -17,9 +17,7 @@ const REGULAR_LEN: usize = include_bytes!("../../../assets/fonts/NotoSans-Regula
 
 fn compose_with(doc: &Document, quality: Quality) -> Composed {
     let mut f = fonts().unwrap();
-    Pipeline::new()
-        .compose(doc, SIZE, &mut f, quality, None)
-        .unwrap()
+    Pipeline::new().compose(doc, SIZE, &mut f, quality).unwrap()
 }
 
 fn compose(doc: &Document) -> Composed {
@@ -117,8 +115,8 @@ fn quality_and_determinism() {
     let a = compose_with(&doc, Quality::Final);
     let mut f = fonts().unwrap();
     let mut p = Pipeline::new();
-    let b = p.compose(&doc, SIZE, &mut f, Quality::Final, None).unwrap();
-    let c = p.compose(&doc, SIZE, &mut f, Quality::Final, None).unwrap();
+    let b = p.compose(&doc, SIZE, &mut f, Quality::Final).unwrap();
+    let c = p.compose(&doc, SIZE, &mut f, Quality::Final).unwrap();
     assert_eq!(b.list, c.list);
     assert!(a.labels.placed > 0);
 }
@@ -130,7 +128,7 @@ fn zoomed() {
     let mut p = Pipeline::new();
     apply_view(&args, &mut doc, &mut p, SIZE).unwrap();
     let mut f = fonts().unwrap();
-    let c = p.compose(&doc, SIZE, &mut f, Quality::Final, None).unwrap();
+    let c = p.compose(&doc, SIZE, &mut f, Quality::Final).unwrap();
     assert!(c.labels.placed >= 10, "placed {}", c.labels.placed);
     let page = Rect::new(0.0, 0.0, SIZE.0, SIZE.1);
     for i in &c.list.items {
@@ -503,7 +501,7 @@ fn halos(c: &Composed) -> Vec<Rect> {
 
 fn compose_in(doc: &Document, p: &mut Pipeline) -> Composed {
     let mut f = fonts().unwrap();
-    p.compose(doc, SIZE, &mut f, Quality::Final, None).unwrap()
+    p.compose(doc, SIZE, &mut f, Quality::Final).unwrap()
 }
 
 #[test]
@@ -634,7 +632,6 @@ fn first_map_frame(doc: &mut Document, p: &mut Pipeline) -> (Composed, Rect) {
             target,
             &mut f,
             Quality::Final,
-            None,
         )
         .unwrap();
     let vale_store::FrameShape::Rectangle([x0, y0, x1, y1]) = record.shape else {
@@ -908,7 +905,7 @@ fn compose_part(doc: &Document, origin: Point, part: Rect) -> Composed {
     };
     let mut f = fonts().unwrap();
     Pipeline::new()
-        .compose_frame_part(doc, frame, target, part, &mut f, Quality::Final, None)
+        .compose_frame_part(doc, frame, target, part, &mut f, Quality::Final)
         .unwrap()
 }
 
@@ -1060,7 +1057,7 @@ fn a_polygon_half_outside_a_page_mask_places_its_label_inside_the_mask() {
         pts_per_mm: PT_PER_MM,
     };
     let c = p
-        .compose_frame(&doc, page, &record, target, &mut f, Quality::Final, None)
+        .compose_frame(&doc, page, &record, target, &mut f, Quality::Final)
         .unwrap();
     let origins = half_land_glyphs(&c);
     assert!(!origins.is_empty(), "{:?}", c.labels.unplaced);

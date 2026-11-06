@@ -7539,7 +7539,7 @@ fn a_rename_of_the_label_field_keeps_the_labels() {
     let placed = |doc: &Document| {
         let mut fonts = fonts().unwrap();
         let mut pipeline = Pipeline::new();
-        let composed = pipeline.compose(doc, (1280.0, 800.0), &mut fonts, Quality::Final, None);
+        let composed = pipeline.compose(doc, (1280.0, 800.0), &mut fonts, Quality::Final);
         composed.unwrap().labels.placed
     };
     let mut h = pad(BOARDS[0]);
@@ -9414,13 +9414,15 @@ fn the_measure_cell_and_card_fit_in_the_atlas_on_each_screen() {
         vale_app::ui::atlas::add_frame(h.state_mut());
         h.run_steps(3);
         let strip = h.state().pad.rects.unwrap().tools;
-        let names = ["Select", "Vertex", "Move", MEASURE];
+        let names = ["Frame tool", "Select", "Vertex", "Move", MEASURE];
         for name in names {
             scroll_strip_to(&mut h, name);
             let cell = control(&h, name).unwrap_or_else(|| panic!("{what}: {name}"));
             assert!(strip.contains_rect(cell), "{what}: {name}");
         }
-        let cells = names.map(|name| control(&h, name).unwrap());
+        // On a short screen, the strip scrolls, and only some cells show.
+        let cells: Vec<_> = names.iter().filter_map(|name| control(&h, name)).collect();
+        assert!(cells.len() > 1, "{what}");
         for pair in cells.windows(2) {
             assert!(pair[0].bottom() <= pair[1].top(), "{what}");
         }
@@ -9428,7 +9430,7 @@ fn the_measure_cell_and_card_fit_in_the_atlas_on_each_screen() {
         assert!(h.state().measuring(), "{what}");
         assert_eq!(h.state().atlas.tool, AtlasTool::Measure, "{what}");
         assert_eq!(toggled(&h, MEASURE), Some(true), "{what}");
-        for name in ["Select", "Vertex", "Move"] {
+        for name in ["Frame tool", "Select", "Vertex", "Move"] {
             assert_ne!(toggled(&h, name), Some(true), "{what}: {name}");
         }
         assert!(!readout_line(h.state()).starts_with("Length"), "{what}");
@@ -9476,16 +9478,17 @@ fn the_measure_cell_and_card_fit_in_the_atlas_on_each_screen() {
                 &format!("{what} with the snapping settings"),
             );
         }
-        // Select leaves the tool.
-        tap(&mut h, "Select");
-        assert_eq!(h.state().atlas.tool, AtlasTool::Select, "{what}");
+        // Frame leaves the tool.
+        scroll_strip_to(&mut h, "Frame tool");
+        tap(&mut h, "Frame tool");
+        assert_eq!(h.state().atlas.tool, AtlasTool::Frame, "{what}");
     }
 }
 
 #[test]
 fn the_vertex_cell_and_card_fit_in_the_atlas_on_each_screen() {
     use vale_app::ui::atlas::AtlasTool;
-    use vale_app::ui::pad::atlas::{SNAP_TO_LAYOUT, VERTEX};
+    use vale_app::ui::pad::atlas::{GRID, SNAP_TO_LAYOUT, VERTEX};
     use vale_app::ui::pad::{DELETE_VERTEX, DESELECT};
     for (size, safe) in measure_screens() {
         let what = format!("Atlas {size:?}");
@@ -9499,12 +9502,12 @@ fn the_vertex_cell_and_card_fit_in_the_atlas_on_each_screen() {
         assert_eq!(toggled(&h, VERTEX), Some(true), "{what}");
         h.state_mut().atlas.vertices = vec![(0, 0)];
         h.run_steps(2);
-        let names = [SNAP_TO_LAYOUT, DELETE_VERTEX, DESELECT];
+        let names = [SNAP_TO_LAYOUT, GRID, DELETE_VERTEX, DESELECT];
         let cells = names.map(|name| control(&h, name).unwrap_or_else(|| panic!("{what}: {name}")));
         for pair in cells.windows(2) {
             assert!(pair[0].bottom() <= pair[1].top(), "{what}");
         }
-        let card = cells[0].union(cells[2]);
+        let card = cells[0].union(cells[3]);
         let r = h.state().pad.rects.unwrap();
         let mut cards = vec![r.workspace, r.actions, r.tools];
         cards.extend(r.view);
@@ -9534,10 +9537,10 @@ fn the_vertex_cell_and_card_fit_in_the_atlas_on_each_screen() {
 }
 
 #[test]
-fn the_select_strip_fits_in_the_atlas_on_each_screen() {
+fn the_frame_strip_fits_in_the_atlas_on_each_screen() {
     use vale_app::ui::atlas::{AtlasSelection, AtlasTool};
     use vale_app::ui::pad::DESELECT;
-    use vale_app::ui::pad::atlas::SNAP_TO_LAYOUT;
+    use vale_app::ui::pad::atlas::{GRID, SNAP_TO_LAYOUT};
     use vale_app::ui::select::DELETE;
     for (size, safe) in measure_screens() {
         let what = format!("Atlas {size:?}");
@@ -9545,13 +9548,13 @@ fn the_select_strip_fits_in_the_atlas_on_each_screen() {
         h.state_mut().workspace = Workspace::Atlas;
         vale_app::ui::atlas::add_frame(h.state_mut());
         h.run_steps(3);
-        assert_eq!(h.state().atlas.tool, AtlasTool::Select, "{what}");
-        let names = [SNAP_TO_LAYOUT, DELETE, DESELECT];
+        assert_eq!(h.state().atlas.tool, AtlasTool::Frame, "{what}");
+        let names = [SNAP_TO_LAYOUT, GRID, DELETE, DESELECT];
         let cells = names.map(|name| control(&h, name).unwrap_or_else(|| panic!("{what}: {name}")));
         for pair in cells.windows(2) {
             assert!(pair[0].bottom() <= pair[1].top(), "{what}");
         }
-        let card = cells[0].union(cells[2]);
+        let card = cells[0].union(cells[3]);
         let r = h.state().pad.rects.unwrap();
         let mut cards = vec![r.workspace, r.actions, r.tools];
         cards.extend(r.view);
@@ -11900,5 +11903,42 @@ fn a_swipe_renames_a_layer_in_the_list() {
         h.key_press(egui::Key::Enter);
         h.run_steps(2);
         assert!(layer_names(&h).contains(&"Streams".to_string()), "{what}");
+    }
+}
+
+#[test]
+fn the_selectable_cell_and_list_fit_in_the_world_on_each_screen() {
+    use vale_app::ui::pad::selectable::{
+        ACTIVE_LAYER, DESELECT_ALL, SELECT_ALL, SELECTABLE, layer_row_name,
+    };
+    for (size, safe) in measure_screens() {
+        let what = format!("{size:?}");
+        let mut h = safe_pad(size, safe);
+        let rivers = vector(&h, "Rivers");
+        h.state_mut().select(Some(LayerRef::Vector(rivers)));
+        h.state_mut().globe.tool = Tool::Select;
+        h.run_steps(2);
+        assert!(control(&h, SELECTABLE).is_some(), "{what}");
+        check_controls(&h, &what);
+        check_safe(&h, size, safe, &what);
+        tap(&mut h, SELECTABLE);
+        assert!(h.state().pad.selectable, "{what}");
+        let row = layer_row_name("Rivers");
+        for name in [ACTIVE_LAYER, SELECT_ALL, DESELECT_ALL] {
+            let rect = control(&h, name).unwrap_or_else(|| panic!("{what}: {name}"));
+            assert!(rect.height() >= 44.0, "{what}: {name}");
+        }
+        check_safe(&h, size, safe, &what);
+        if control(&h, &row).is_some() {
+            tap(&mut h, &row);
+            assert!(h.state().selectable_checked(rivers), "{what}");
+            assert!(h.state().pad.selectable, "{what}");
+        }
+        tap(&mut h, ACTIVE_LAYER);
+        assert_eq!(
+            h.state().selectable,
+            vale_app::ui::select::Selectable::Active,
+            "{what}"
+        );
     }
 }

@@ -17,9 +17,9 @@ use std::sync::Arc;
 
 use vale_store::RasterId;
 
+use super::AppState;
 use super::map_texture::{self, MapRenderer, MapTexture};
 use super::pad::theme;
-use super::{AppState, LayerRef};
 use crate::atlas::{self as math, FrameTarget, Handle, PT_PER_MM, PagePreset, Vertex};
 use crate::document::Document;
 use crate::globe::backdrop::{Canvas, REDUCTION, Scene, SceneCallback};
@@ -34,7 +34,9 @@ use crate::pipeline::{Pipeline, Quality};
 use crate::region::{Region, RegionKind, fit, suggest};
 use crate::view::{View, ViewTransform};
 
+pub mod features;
 pub mod measure;
+mod shown;
 
 /// The side of the square that takes the touch of a handle.
 pub const HANDLE_TARGET: f32 = 44.0;
@@ -291,8 +293,11 @@ impl ItemPage {
 /// The tool of a pen, a finger, and the mouse on the page.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub enum AtlasTool {
-    /// A tap selects, and a drag moves a frame or a handle.
+    /// A tap selects a frame or an item, and a drag moves it or a handle.
     #[default]
+    Frame,
+    /// A tap in a frame selects the feature of the selected vector layer
+    /// under it, and a pen or the mouse selects the features in a box.
     Select,
     /// A tap on a frame shows its vertices. A tap and a box select vertices,
     /// a drag of a handle moves them, and a tap on an edge adds a vertex.
@@ -595,6 +600,9 @@ pub struct AtlasState {
     pub preset_name: String,
     /// The Add menu is open.
     pub add: bool,
+    /// The list of the map frames of the open page shows, from the Layers
+    /// button with no frame selected.
+    pub frames: bool,
     /// The Add menu in the last frame.
     pub add_rect: Option<Rect>,
     /// The panel of the selection in the last frame.
@@ -668,8 +676,9 @@ pub struct AtlasState {
     pub grid_page: Option<GridPage>,
     /// The panel shows the distance of each side of the border.
     pub border_sides: bool,
-    /// The panel of this selection and tab showed in the last frame.
-    pub(crate) shown: Option<(AtlasSelection, FrameTab)>,
+    /// The panel of this selection and tab showed in the last frame, and
+    /// whether it was the inspector.
+    pub(crate) shown: Option<(AtlasSelection, FrameTab, bool)>,
     /// The page of the panel of the selected item of furniture.
     pub item_page: Option<ItemPage>,
     /// The thumbnails of the kinds of scale bar in the style gallery: the
@@ -790,7 +799,7 @@ impl Default for AtlasState {
             page: PageId(0),
             selection: AtlasSelection::None,
             vertices: Vec::new(),
-            tool: AtlasTool::Select,
+            tool: AtlasTool::Frame,
             tab: FrameTab::Frame,
             sizes: false,
             kinds: false,
@@ -800,6 +809,7 @@ impl Default for AtlasState {
             neatline_shown: false,
             preset_name: String::new(),
             add: false,
+            frames: false,
             add_rect: None,
             panel_rect: None,
             place: None,
@@ -932,6 +942,8 @@ struct ItemImage {
 /// Makes the open page, the selection, and the selected vertices valid for
 /// the atlas of the document and the tool.
 pub fn sync(state: &mut AppState) {
+    let layers = state.selectable_layers();
+    state.prune_feature_selection_to(&layers);
     let atlas = &state.doc.project.atlas;
     let a = &mut state.atlas;
     if atlas.page(a.page).is_none() {
@@ -953,6 +965,14 @@ pub fn sync(state: &mut AppState) {
     }
     if a.item().is_none() {
         a.item_page = None;
+    }
+    // The Select tool selects a frame or nothing.
+    if a.tool == AtlasTool::Select && a.frame().is_none() {
+        a.selection = AtlasSelection::None;
+    }
+    // A selection shows its own panel in place of the list of the frames.
+    if a.selection != AtlasSelection::None {
+        a.frames = false;
     }
     let rings = frame.map(|f| f.shape.rings()).unwrap_or_default();
     let vertex_ok = |&(r, i): &Vertex| rings.get(r).is_some_and(|ring| i < ring.len());
@@ -1012,6 +1032,37 @@ pub fn selected_map(state: &AppState) -> MapId {
     let frame = state.atlas.frame();
     let frame = frame.and_then(|id| state.doc.project.atlas.frame(id));
     frame.map_or_else(|| state.doc.first_map(), |f| f.map)
+}
+
+/// True while the panel of the selected frame or the list of the map
+/// frames shows.
+pub fn maps_open(state: &AppState) -> bool {
+    state.atlas.frames || state.atlas.frame().is_some()
+}
+
+/// The Maps button. With no frame selected, it opens the list of the map
+/// frames of the page. While the panel of a frame or the list shows, it
+/// closes it.
+pub fn toggle_maps(state: &mut AppState) {
+    let open = maps_open(state);
+    let a = &mut state.atlas;
+    if open {
+        a.frames = false;
+        if a.frame().is_some() {
+            a.selection = AtlasSelection::None;
+            a.vertices.clear();
+        }
+        return;
+    }
+    a.selection = AtlasSelection::None;
+    a.frames = true;
+}
+
+/// Selects a frame of the list of the map frames, so its panel opens.
+pub fn open_frame(state: &mut AppState, id: FrameId) {
+    let a = &mut state.atlas;
+    a.selection = AtlasSelection::Frame(id);
+    a.frames = false;
 }
 
 /// Adds a frame to the open page and selects it. The frame shows a new
@@ -1574,6 +1625,7 @@ pub fn canvas(ui: &mut egui::Ui, state: &mut AppState, area: Rect, free: Rect, b
     items(ui, state, place, area);
     layout_grid(ui, state, place, area);
     selection(ui, state, place);
+    features::paint(ui, state, place, area);
     guides(ui, state, place, area);
     measure::overlay(ui, state, place, area);
 }
@@ -1734,11 +1786,12 @@ fn input(ui: &egui::Ui, state: &mut AppState, resp: &egui::Response, place: Page
     }
     if resp.drag_stopped() || !any_down || state.atlas.drag.is_none() {
         if let Some(Drag::Box(start)) = state.atlas.drag {
-            select_box(
-                state,
-                place,
-                Rect::from_two_pos(start, state.atlas.drag_last),
-            );
+            let rect = Rect::from_two_pos(start, state.atlas.drag_last);
+            if state.atlas.tool == AtlasTool::Select {
+                features::select_box(state, &page, place, start, rect);
+            } else {
+                select_box(state, place, rect);
+            }
         }
         state.atlas.drag = None;
         state.atlas.guides.clear();
@@ -1765,7 +1818,7 @@ fn input(ui: &egui::Ui, state: &mut AppState, resp: &egui::Response, place: Page
     let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
     match state.atlas.tool {
         _ if typing => {}
-        AtlasTool::Select => {
+        AtlasTool::Frame => {
             if delete {
                 delete_selection(state);
             }
@@ -1774,6 +1827,9 @@ fn input(ui: &egui::Ui, state: &mut AppState, resp: &egui::Response, place: Page
             }
         }
         AtlasTool::Move if escape => clear_selection(state),
+        // Delete and Backspace do nothing, because the Atlas workspace does
+        // not edit the features.
+        AtlasTool::Select if escape => deselect(state),
         AtlasTool::Vertex => {
             if delete {
                 delete_vertices(state);
@@ -1803,9 +1859,16 @@ fn select_box(state: &mut AppState, place: PagePlace, rect: Rect) {
     state.atlas.vertices = inside.collect();
 }
 
-/// Clears the selected vertices, or else the selection.
+/// Clears the selected vertices, or else the selection. With the Select
+/// tool, it clears the selected features, or else the selected frame.
 pub fn deselect(state: &mut AppState) {
-    if state.atlas.vertices.is_empty() {
+    if state.atlas.tool == AtlasTool::Select {
+        if state.feature_selection.is_empty() {
+            state.atlas.selection = AtlasSelection::None;
+        } else {
+            state.set_feature_selection(Vec::new());
+        }
+    } else if state.atlas.vertices.is_empty() {
         state.atlas.selection = AtlasSelection::None;
     } else {
         state.atlas.vertices.clear();
@@ -1904,6 +1967,10 @@ fn start_drag(
             None => Drag::Page,
         },
         AtlasTool::Measure => Drag::Page,
+        AtlasTool::Select => match state.atlas.pointer {
+            Pointer::Finger => Drag::Page,
+            Pointer::Pen | Pointer::Mouse => Drag::Box(pos),
+        },
         AtlasTool::Vertex => {
             let grabbed = handle_at(state, pos);
             if let (Some(id), Some((Handle::Vertex(v), center))) = (state.atlas.frame(), grabbed) {
@@ -1919,7 +1986,7 @@ fn start_drag(
                 Pointer::Pen | Pointer::Mouse => Drag::Box(pos),
             }
         }
-        AtlasTool::Select => {
+        AtlasTool::Frame => {
             if let (Some(id), Some((handle, center))) = (state.atlas.item(), handle_at(state, pos))
             {
                 return match handle {
@@ -2159,14 +2226,17 @@ fn vertex_tap(state: &mut AppState, page: &PageRecord, place: PagePlace, pos: Po
     }
 }
 
-/// A tap selects a frame, the page, or nothing. A tap on a frame also
-/// selects the feature below it.
+/// A tap selects a frame, the page, or nothing.
 fn tap(state: &mut AppState, page: &PageRecord, place: PagePlace, pos: Pos2) {
+    if state.atlas.tool == AtlasTool::Select {
+        features::tap(state, page, place, pos);
+        return;
+    }
     if state.atlas.tool == AtlasTool::Vertex {
         vertex_tap(state, page, place, pos);
         return;
     }
-    if state.atlas.tool == AtlasTool::Select && handle_at(state, pos).is_some() {
+    if state.atlas.tool == AtlasTool::Frame && handle_at(state, pos).is_some() {
         return;
     }
     let at = place.to_mm(pos);
@@ -2176,35 +2246,11 @@ fn tap(state: &mut AppState, page: &PageRecord, place: PagePlace, pos: Pos2) {
         state.atlas.selection = AtlasSelection::Item(id);
         return;
     }
-    let picked = match frame_at(page, at) {
-        Some(id) => {
-            state.atlas.selection = AtlasSelection::Frame(id);
-            let frame = page.frames.iter().find(|f| f.id == id).cloned();
-            let q = Point::new(f64::from(pos.x), f64::from(pos.y));
-            frame.and_then(|f| {
-                let target = place.target();
-                state
-                    .pipeline
-                    .pick_frame(&state.doc, &f, target, q)
-                    .ok()
-                    .flatten()
-            })
-        }
-        None if place.rect.contains(pos) => {
-            state.atlas.selection = AtlasSelection::Page;
-            None
-        }
-        None => {
-            state.atlas.selection = AtlasSelection::None;
-            None
-        }
+    state.atlas.selection = match frame_at(page, at) {
+        Some(id) => AtlasSelection::Frame(id),
+        None if place.rect.contains(pos) => AtlasSelection::Page,
+        None => AtlasSelection::None,
     };
-    if picked != state.selection {
-        state.selection = picked;
-        if let Some(sel) = picked {
-            state.select(Some(LayerRef::Vector(sel.layer)));
-        }
-    }
 }
 
 /// The raster layers that a map shows and that the globe draws, from the
@@ -2362,7 +2408,6 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
             &frame.border,
             page.paper,
             ppp.to_bits(),
-            state.selection,
             layered,
             state.atlas.raster_masks.number(frame.id),
         ));
@@ -2897,7 +2942,6 @@ fn compose(
         f64::from(shown.width()) / zoom,
         f64::from(shown.height()) / zoom,
     );
-    let selection = state.selection;
     // A frame with raster layers has the water below them and the rest
     // above them. The GPU draws them between the two.
     let composed = if layered {
@@ -2908,7 +2952,6 @@ fn compose(
             part,
             &mut state.fonts,
             quality,
-            selection,
         )
     } else {
         state.pipeline.compose_frame_part(
@@ -2918,7 +2961,6 @@ fn compose(
             part,
             &mut state.fonts,
             quality,
-            selection,
         )
     };
     state.atlas.composes += 1;
@@ -3291,10 +3333,11 @@ fn selection(ui: &egui::Ui, state: &mut AppState, place: PagePlace) {
             }
             let dark = egui::Stroke::new(1.5, Color32::from_rgb(11, 31, 26));
             let mut handles = Vec::new();
-            let shown = if state.atlas.tool == AtlasTool::Vertex {
-                math::vertex_handles(&frame.shape)
-            } else {
-                math::handles(&frame.shape)
+            // The frame of the Select tool shows no handles.
+            let shown = match state.atlas.tool {
+                AtlasTool::Select => Vec::new(),
+                AtlasTool::Vertex => math::vertex_handles(&frame.shape),
+                _ => math::handles(&frame.shape),
             };
             for (handle, p) in shown {
                 let center = place.to_screen(p);
@@ -3680,14 +3723,17 @@ pub fn rename_map_style(state: &mut AppState, id: MapStyleId, name: &str) -> boo
 }
 
 /// The canvas of the desktop layout, in the space between the panels. The
-/// keys V, A, and H choose the Select tool, the Vertex tool, and the Move
-/// tool.
+/// keys F, V, A, and H choose the Frame tool, the Select tool, the Vertex
+/// tool, and the Move tool.
 pub fn desktop(ui: &mut egui::Ui, state: &mut AppState) {
     let typing = ui.ctx().memory(|m| m.focused().is_some());
     if !typing {
         let key = |k| ui.input(|i| i.key_pressed(k));
-        let (v, a, h) = (key(egui::Key::V), key(egui::Key::A), key(egui::Key::H));
-        if v {
+        let (f, a, h) = (key(egui::Key::F), key(egui::Key::A), key(egui::Key::H));
+        if f {
+            state.atlas.tool = AtlasTool::Frame;
+        }
+        if key(egui::Key::V) {
             state.atlas.tool = AtlasTool::Select;
         }
         if a {

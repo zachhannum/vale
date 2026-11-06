@@ -371,7 +371,6 @@ impl PdfExport {
             pending.part,
             &mut self.fonts,
             Quality::Final,
-            None,
         )?;
         self.list.as_mut().unwrap().items.extend(over.list.items);
         self.pipeline.clear_page_masks();
@@ -466,7 +465,6 @@ impl PdfExport {
                         part,
                         &mut self.fonts,
                         Quality::Final,
-                        None,
                     )?;
                     self.list
                         .as_mut()

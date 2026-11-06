@@ -24,7 +24,7 @@ pub const MEASURE_CELLS: usize = 3;
 /// The number of cells of the card of the Vertex tool.
 pub const VERTEX_CELLS: usize = 5;
 /// The number of cells of the card of the Select tool.
-pub const SELECT_CELLS: usize = 2;
+pub const SELECT_CELLS: usize = 3;
 /// The height of one of the two sliders at the left edge.
 pub const SLIDER: f32 = 140.0;
 /// Below this height, a slider at the left edge is too short to use.

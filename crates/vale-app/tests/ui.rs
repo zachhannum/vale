@@ -1247,7 +1247,7 @@ fn the_wheel_zooms_the_page_and_with_the_move_tool_the_map_of_the_selected_frame
     assert!(after.to_mm(pos).distance(mm) < 0.5);
     let page = vale_app::ui::atlas::open_page(h.state());
     assert_eq!(page.frames[0], frame);
-    // With the Select tool, the wheel in the selected frame zooms the page.
+    // With the Frame tool, the wheel in the selected frame zooms the page.
     h.state_mut().atlas.selection = AtlasSelection::Frame(frame.id);
     h.run_steps(3);
     let before = h.state().atlas.place.unwrap();
@@ -1347,24 +1347,73 @@ fn the_a_key_chooses_the_vertex_tool() {
     h.key_press(egui::Key::A);
     h.run_steps(2);
     assert_eq!(h.state().atlas.tool, AtlasTool::Vertex);
-    h.key_press(egui::Key::V);
+    h.key_press(egui::Key::F);
     h.run_steps(2);
-    assert_eq!(h.state().atlas.tool, AtlasTool::Select);
+    assert_eq!(h.state().atlas.tool, AtlasTool::Frame);
     h.get_by_label(VERTEX_TOOL).click();
     h.run_steps(2);
     assert_eq!(h.state().atlas.tool, AtlasTool::Vertex);
 }
 
 #[test]
-fn the_keys_v_and_h_choose_the_tools() {
+fn the_keys_f_and_h_choose_the_tools() {
     let mut h = harness();
     h.run_steps(3);
     h.key_press(egui::Key::H);
     h.run_steps(2);
     assert_eq!(h.state().atlas.tool, AtlasTool::Move);
+    h.key_press(egui::Key::F);
+    h.run_steps(2);
+    assert_eq!(h.state().atlas.tool, AtlasTool::Frame);
+}
+
+#[test]
+fn the_v_key_and_the_select_button_choose_the_select_tool() {
+    let mut h = harness();
+    h.run_steps(3);
     h.key_press(egui::Key::V);
     h.run_steps(2);
     assert_eq!(h.state().atlas.tool, AtlasTool::Select);
+    h.key_press(egui::Key::F);
+    h.run_steps(2);
+    assert_eq!(h.state().atlas.tool, AtlasTool::Frame);
+    h.get_by_label("Select").click();
+    h.run_steps(2);
+    assert_eq!(h.state().atlas.tool, AtlasTool::Select);
+}
+
+#[test]
+fn with_the_select_tool_esc_clears_the_features_and_then_the_frame() {
+    use vale_app::globe::select::FeatureRef;
+    use vale_app::ui::LayerRef;
+    let mut h = harness();
+    h.run_steps(3);
+    let s = h.state_mut();
+    let layer = (s.doc.project.layers().iter())
+        .find(|l| l.geometry().is_some() && !l.features.is_empty())
+        .unwrap();
+    let found = FeatureRef {
+        layer: layer.id,
+        uuid: layer.features[0].uuid(),
+    };
+    s.select(Some(LayerRef::Vector(found.layer)));
+    s.atlas.tool = AtlasTool::Select;
+    let frame = vale_app::ui::atlas::open_page(s).frames[0].id;
+    s.atlas.selection = AtlasSelection::Frame(frame);
+    s.set_feature_selection(vec![found]);
+    h.run_steps(2);
+    h.key_press(egui::Key::Delete);
+    h.run_steps(2);
+    assert_eq!(h.state().feature_selection, vec![found]);
+    assert_eq!(h.state().atlas.selection, AtlasSelection::Frame(frame));
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+    assert!(h.state().feature_selection.is_empty());
+    assert_eq!(h.state().atlas.selection, AtlasSelection::Frame(frame));
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+    assert_eq!(h.state().atlas.selection, AtlasSelection::None);
+    assert_eq!(vale_app::ui::atlas::open_page(h.state()).frames.len(), 1);
 }
 
 #[test]
@@ -1688,10 +1737,10 @@ fn the_toolbar_and_the_keys_work_the_measure_tool_in_the_atlas() {
     assert!(h.state().measure.is_empty());
     assert_eq!(open_page_frames(&h), page.frames);
 
-    // V leaves the tool, and M chooses it.
-    h.key_press(egui::Key::V);
+    // F leaves the tool, and M chooses it.
+    h.key_press(egui::Key::F);
     h.run_steps(2);
-    assert_eq!(h.state().atlas.tool, AtlasTool::Select);
+    assert_eq!(h.state().atlas.tool, AtlasTool::Frame);
     h.key_press(egui::Key::M);
     h.run_steps(2);
     assert_eq!(h.state().atlas.tool, AtlasTool::Measure);
@@ -2109,4 +2158,120 @@ fn the_edit_menu_merges_the_selected_features_into_the_feature_that_you_choose()
     assert_eq!(layer.features[0].uuid(), picks[1].uuid);
     let want = Geometry::Points(vec![[1.0, 2.0], [3.0, 4.0]]);
     assert_eq!(layer.features[0].geometry, want);
+}
+
+#[test]
+fn command_i_shows_the_inspector_in_the_atlas_and_the_dock_opens_the_table() {
+    use vale_app::globe::select::FeatureRef;
+    use vale_app::ui::LayerRef;
+    use vale_app::ui::select::ATTRIBUTES;
+    use vale_app::ui::table::OPEN_TABLE;
+    let mut h = harness();
+    h.run_steps(3);
+    let s = h.state_mut();
+    let layer = (s.doc.project.layers().iter())
+        .find(|l| l.geometry().is_some() && !l.features.is_empty() && !l.fields.is_empty())
+        .unwrap();
+    let found = FeatureRef {
+        layer: layer.id,
+        uuid: layer.features[0].uuid(),
+    };
+    let field = layer.fields[0].name.clone();
+    s.select(Some(LayerRef::Vector(found.layer)));
+    s.atlas.tool = AtlasTool::Select;
+    let frame = vale_app::ui::atlas::open_page(s).frames[0].id;
+    s.atlas.selection = AtlasSelection::Frame(frame);
+    s.set_feature_selection(vec![found]);
+    h.run_steps(3);
+    // A selection does not show the inspector.
+    assert!(h.query_by_label(ATTRIBUTES).is_none());
+    assert!(!h.state().show_attributes);
+    // ⌘I shows the inspector of the World workspace, and hides it again.
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::I);
+    h.run_steps(3);
+    assert!(h.state().show_attributes);
+    assert!(h.query_by_label(ATTRIBUTES).is_some());
+    assert_eq!(h.state().selection_form.as_ref().unwrap().feature, found);
+    assert!(h.query_all_by_label(&field).count() >= 1);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::I);
+    h.run_steps(3);
+    assert!(h.query_by_label(ATTRIBUTES).is_none());
+    // The Layers tab of the frame opens the table of the layer.
+    h.state_mut().atlas.tab = vale_app::ui::atlas::FrameTab::Layers;
+    h.state_mut().atlas.layer = Some((frame, found.layer));
+    h.run_steps(2);
+    h.get_by_label(OPEN_TABLE).click();
+    h.run_steps(3);
+    let table = h.state().table.as_ref().unwrap();
+    assert_eq!(table.layer, found.layer);
+    assert!(h.state().table_selection().contains(&found.uuid));
+}
+
+#[test]
+fn the_desktop_tool_bars_have_the_selectable_menu_with_the_select_tool() {
+    use vale_app::ui::pad::selectable::{
+        ACTIVE_LAYER, DESELECT_ALL, SELECT_ALL, SELECTABLE, layer_row_name,
+    };
+    use vale_app::ui::select::Selectable;
+    let mut atlas = harness();
+    atlas.run_steps(3);
+    let mut globe = globe_harness();
+    for (what, h) in [("atlas", &mut atlas), ("globe", &mut globe)] {
+        assert!(h.query_by_label(SELECTABLE).is_none(), "{what}");
+        h.key_press(egui::Key::V);
+        h.run_steps(2);
+        h.get_by_label(SELECTABLE).click();
+        h.run_steps(2);
+        for name in [ACTIVE_LAYER, SELECT_ALL, DESELECT_ALL] {
+            assert!(h.query_by_label(name).is_some(), "{what}: {name}");
+        }
+        h.get_by_label(DESELECT_ALL).click();
+        h.run_steps(2);
+        assert!(h.state().selectable_layers().is_empty(), "{what}");
+        let places = (h.state().doc.project.layers().iter())
+            .find(|l| l.name == "Places")
+            .map(|l| l.id)
+            .unwrap();
+        h.get_by_label(&layer_row_name("Places")).click();
+        h.run_steps(2);
+        assert!(h.state().selectable_checked(places), "{what}");
+        h.get_by_label(ACTIVE_LAYER).click();
+        h.run_steps(2);
+        assert_eq!(h.state().selectable, Selectable::Active, "{what}");
+    }
+}
+
+#[test]
+fn the_maps_button_of_the_desktop_shows_the_panel_of_a_frame() {
+    use vale_app::ui::atlas::{self, AtlasSelection, FrameTab};
+    use vale_app::ui::pad::atlas::{MAPS, NO_FRAMES};
+    let mut h = harness();
+    h.state_mut().atlas.selection = AtlasSelection::None;
+    h.run_steps(3);
+    // With no frame on the page, the menu says how to add one.
+    if atlas::frame_names(h.state()).is_empty() {
+        h.get_by_label(MAPS).click();
+        h.run_steps(2);
+        assert!(h.query_by_label(NO_FRAMES).is_some());
+        h.key_press(egui::Key::Escape);
+        h.run_steps(2);
+    }
+    atlas::add_frame(h.state_mut());
+    atlas::add_frame(h.state_mut());
+    h.state_mut().atlas.selection = AtlasSelection::None;
+    h.run_steps(3);
+    // With no frame selected, the menu lists the frames, and the panel
+    // opens on the tab that it had.
+    h.state_mut().atlas.tab = FrameTab::Labels;
+    h.get_by_label(MAPS).click();
+    h.run_steps(2);
+    let names = atlas::frame_names(h.state());
+    h.get_by_label(&names[1].1).click();
+    h.run_steps(2);
+    assert_eq!(h.state().atlas.selection, AtlasSelection::Frame(names[1].0));
+    assert_eq!(h.state().atlas.tab, FrameTab::Labels);
+    // With a frame selected, a click closes the panel.
+    h.get_by_label(MAPS).click();
+    h.run_steps(2);
+    assert_eq!(h.state().atlas.selection, AtlasSelection::None);
 }

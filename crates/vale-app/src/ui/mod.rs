@@ -30,7 +30,7 @@ use crate::globe::{Globe, Look, START_ELEVATION, StackItem, Tool, brush};
 use crate::globe::{LineStroke, polygon, reshape};
 use crate::image_layer::{ImageImport, ImageTiles, ImportStep};
 use crate::measure::{self, Measure};
-use crate::pipeline::{Composed, Pipeline, Selection};
+use crate::pipeline::{Composed, Pipeline};
 use crate::projects::{self, Location, Locations};
 use crate::raster_style;
 use crate::resume::{self, Resume};
@@ -441,8 +441,6 @@ pub struct AppState {
     pub composed: Option<Composed>,
     /// Size of the canvas of the atlas in points.
     pub canvas_size: (f64, f64),
-    /// The selected feature of a map.
-    pub selection: Option<Selection>,
     /// The Atlas workspace.
     pub atlas: atlas::AtlasState,
     /// The count of the changes of the contents of the maps.
@@ -493,6 +491,8 @@ pub struct AppState {
     /// The features that the Select tool selected, in the order of the
     /// selection.
     pub feature_selection: Vec<crate::globe::select::FeatureRef>,
+    /// The layers that the Select tool selects in.
+    pub selectable: select::Selectable,
     /// The list of Merge shows, which asks which feature keeps its
     /// attributes.
     pub merging: bool,
@@ -510,9 +510,9 @@ pub struct AppState {
     /// The field of the inspector that the user edited last, and the
     /// feature that it had the focus in last.
     pub attribute_focus: Option<(crate::globe::select::FeatureRef, String)>,
-    /// The tool of the last frame, which ends the run of edits when it
-    /// changes.
-    attribute_tool: crate::globe::Tool,
+    /// The workspace and the tool of the last frame. A change ends the run
+    /// of edits.
+    attribute_tool: (Workspace, crate::globe::Tool, atlas::AtlasTool),
     /// The field of the inspector that the user edited last, and its layer.
     last_field: Option<(LayerId, String)>,
     /// A new feature takes the focus away from the field that has it.
@@ -625,7 +625,6 @@ impl AppState {
             font_dialog: None,
             composed: None,
             canvas_size: (0.0, 0.0),
-            selection: None,
             atlas: atlas::AtlasState::default(),
             map_generation: 0,
             selected_layer: None,
@@ -648,6 +647,7 @@ impl AppState {
             world_form: None,
             new_feature: None,
             feature_selection: Vec::new(),
+            selectable: select::Selectable::Active,
             merging: false,
             select_drag: None,
             vertex_selection: Vec::new(),
@@ -743,6 +743,17 @@ impl AppState {
     pub fn select(&mut self, layer: Option<LayerRef>) {
         self.selected_layer = layer;
         self.sync_globe();
+    }
+
+    /// Selects a layer if it is a vector layer.
+    pub fn select_vector(&mut self, layer: LayerId) {
+        let vector = self
+            .doc
+            .layer(layer)
+            .is_some_and(|l| l.geometry().is_some());
+        if vector && self.selected_vector() != Some(layer) {
+            self.select(Some(LayerRef::Vector(layer)));
+        }
     }
 
     /// Gives the globe the visible layers of the project in the draw order,
@@ -2087,10 +2098,6 @@ impl AppState {
         match result.and_then(|_| self.restore_rasters()) {
             Ok(()) => {
                 self.history += 1;
-                let gone = |id| self.doc.layer(id).is_none();
-                if self.selection.is_some_and(|s| gone(s.layer)) {
-                    self.selection = None;
-                }
                 self.sync_globe();
                 // A layer can come back with other features under its ID.
                 self.pipeline = Pipeline::new();
@@ -2401,8 +2408,8 @@ impl AppState {
         self.doc.frame.view = None;
         self.saved_edits = self.edits();
         self.history += 1;
-        self.selection = None;
         self.feature_selection.clear();
+        self.selectable = select::Selectable::Active;
         self.selection_form = None;
         self.region = None;
         self.globe.region = false;
@@ -3879,8 +3886,10 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
             }
             Workspace::Atlas => {
                 panels::left(ui, state);
+                select::desktop(ui, state);
                 dock::draw(ui, state);
                 panels::status(ui, state);
+                table::desktop(ui, state);
                 atlas::desktop(ui, state);
             }
         }

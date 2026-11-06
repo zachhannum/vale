@@ -2,7 +2,7 @@
 //! move of a point, the delete, and the inspector that edits the attributes
 //! of the selection.
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 
 use eframe::egui::{self, Pos2};
 use vale_store::{Geometry, Layer, LayerId, Uuid, Value};
@@ -13,7 +13,7 @@ use super::pad::theme;
 use super::pad::widgets::{self, Controls};
 use super::table::SHOW_IN_TABLE;
 use crate::globe::math::{V3, dir_to_lonlat};
-use crate::globe::select::{self, FeatureRef, SelectEvent};
+use crate::globe::select::{self, FeatureRef, SelectEvent, Shape};
 
 /// The name of the Select tool.
 pub const TOOL: &str = "Select";
@@ -86,16 +86,112 @@ pub fn title(count: usize) -> String {
     format!("{count} features")
 }
 
+/// The line of the inspector for the selected features of one layer, in a
+/// selection of features of more than one layer.
+pub fn layer_count(name: &str, count: usize) -> String {
+    match count {
+        1 => format!("{name}: 1 feature"),
+        _ => format!("{name}: {count} features"),
+    }
+}
+
+/// The layers that the Select tool selects in.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum Selectable {
+    /// The active layer.
+    #[default]
+    Active,
+    /// The checked vector layers.
+    Layers(BTreeSet<LayerId>),
+}
+
 impl AppState {
-    /// The layer that the Select tool selects in: the selected vector
-    /// layer, if it is visible.
+    /// The active layer, if it is a visible vector layer.
     pub(super) fn select_layer(&self) -> Option<&Layer> {
         let id = self.selected_vector()?;
         self.doc.layer(id).filter(|l| l.visible)
     }
 
+    /// The vector layers that the Select tool selects in, top first. The
+    /// list has hidden layers too.
+    pub fn selectable_layers(&self) -> Vec<LayerId> {
+        match &self.selectable {
+            Selectable::Active => (self.selected_vector())
+                .filter(|&id| self.doc.layer(id).is_some())
+                .into_iter()
+                .collect(),
+            Selectable::Layers(set) => (self.doc.project.layers().iter().rev())
+                .filter(|l| l.geometry().is_some() && set.contains(&l.id))
+                .map(|l| l.id)
+                .collect(),
+        }
+    }
+
+    /// True if `layer` is a checked layer of the selectable layers.
+    pub fn selectable_checked(&self, layer: LayerId) -> bool {
+        matches!(&self.selectable, Selectable::Layers(set) if set.contains(&layer))
+    }
+
+    /// The Select tool selects in the active layer.
+    pub fn set_selectable_active(&mut self) {
+        self.selectable = Selectable::Active;
+    }
+
+    /// Checks `layer`, or clears its check. A check while the tool selects
+    /// in the active layer starts a set with `layer` alone.
+    pub fn toggle_selectable(&mut self, layer: LayerId) {
+        let mut set = match &self.selectable {
+            Selectable::Layers(set) => set.clone(),
+            Selectable::Active => BTreeSet::new(),
+        };
+        if !set.remove(&layer) {
+            set.insert(layer);
+        }
+        self.selectable = Selectable::Layers(set);
+    }
+
+    /// Checks each vector layer.
+    pub fn select_all_layers(&mut self) {
+        let layers = self.doc.project.layers().iter();
+        let all = layers.filter(|l| l.geometry().is_some()).map(|l| l.id);
+        self.selectable = Selectable::Layers(all.collect());
+    }
+
+    /// Clears the check of each layer, so no layer is selectable.
+    pub fn deselect_all_layers(&mut self) {
+        self.selectable = Selectable::Layers(BTreeSet::new());
+    }
+
+    /// The visible selectable layers, top first.
     fn select_layers(&self) -> Vec<&Layer> {
-        self.select_layer().into_iter().collect()
+        (self.selectable_layers().into_iter())
+            .filter_map(|id| self.doc.layer(id))
+            .filter(|l| l.visible)
+            .collect()
+    }
+
+    /// The selected features of each layer, top first.
+    pub fn selection_counts(&self) -> Vec<(LayerId, usize)> {
+        (self.doc.project.layers().iter().rev())
+            .map(|l| {
+                let n = self.feature_selection.iter().filter(|f| f.layer == l.id);
+                (l.id, n.count())
+            })
+            .filter(|&(_, n)| n > 0)
+            .collect()
+    }
+
+    /// The lines of the inspector for a selection of features of more than
+    /// one layer, or nothing for a selection in one layer.
+    pub fn mixed_lines(&self) -> Vec<String> {
+        let counts = self.selection_counts();
+        if counts.len() < 2 {
+            return Vec::new();
+        }
+        let name = |id| self.doc.layer(id).map_or("", |l| l.name.as_str());
+        (counts.into_iter())
+            .map(|(id, n)| layer_count(name(id), n))
+            .collect()
     }
 
     /// Reads the taps and the drags of the Select tool.
@@ -172,17 +268,29 @@ impl AppState {
             }
             self.feature_selection = selection;
         }
+        // A selection in one layer makes that layer the active layer.
+        let mut layers = self.feature_selection.iter().map(|f| f.layer);
+        if let Some(first) = layers.next()
+            && layers.all(|l| l == first)
+        {
+            self.select_vector(first);
+        }
     }
 
-    /// Keeps only the selected features that still exist in the layer of
-    /// the Select tool.
+    /// Keeps only the selected features that still exist in the visible
+    /// selectable layers.
     fn prune_feature_selection(&mut self) {
+        let layers: Vec<LayerId> = self.select_layers().iter().map(|l| l.id).collect();
+        self.prune_feature_selection_to(&layers);
+    }
+
+    /// Keeps only the selected features that still exist in `layers`.
+    pub(super) fn prune_feature_selection_to(&mut self, layers: &[LayerId]) {
         if self.feature_selection.is_empty() {
             return;
         }
-        let live: HashSet<(LayerId, Uuid)> = self
-            .select_layer()
-            .into_iter()
+        let live: HashSet<(LayerId, Uuid)> = (layers.iter())
+            .filter_map(|&id| self.doc.layer(id))
             .flat_map(|l| l.features.iter().map(|f| (l.id, f.uuid())))
             .collect();
         self.feature_selection
@@ -214,21 +322,35 @@ impl AppState {
         }
     }
 
-    /// Deletes the selected features in one undo step.
+    /// Deletes the selected features of each layer in one undo step.
     pub fn delete_selection(&mut self) {
-        let Some(id) = self.feature_selection.first().map(|f| f.layer) else {
+        if self.feature_selection.is_empty() {
             return;
-        };
+        }
         self.commit_selection_form();
         self.selection_form = None;
         self.attribute_focus = None;
         self.commit_new_feature();
         self.save_edit();
         let selection = std::mem::take(&mut self.feature_selection);
-        let uuids: Vec<Uuid> = selection.iter().map(|f| f.uuid).collect();
-        if self.doc.project.remove_features(id, &uuids) > 0 {
-            self.end_vector_edit(id);
+        let layers: BTreeSet<LayerId> = selection.iter().map(|f| f.layer).collect();
+        let mut changed = Vec::new();
+        for id in layers {
+            let uuids: Vec<Uuid> = (selection.iter())
+                .filter(|f| f.layer == id)
+                .map(|f| f.uuid)
+                .collect();
+            if self.doc.project.remove_features(id, &uuids) > 0 {
+                changed.push(id);
+            }
         }
+        let Some((&last, others)) = changed.split_last() else {
+            return;
+        };
+        for &id in others {
+            self.pipeline.forget(id);
+        }
+        self.end_vector_edit(last);
     }
 
     /// Two or more features of one layer are selected.
@@ -335,9 +457,10 @@ impl AppState {
     pub fn sync_selection_form(&mut self, shown: bool) {
         self.inspector_shown = shown;
         // A change of the tool ends the run of edits.
-        if !shown || self.attribute_tool != self.globe.tool {
+        let tool = (self.workspace, self.globe.tool, self.atlas.tool);
+        if !shown || self.attribute_tool != tool {
             self.attribute_focus = None;
-            self.attribute_tool = self.globe.tool;
+            self.attribute_tool = tool;
         }
         let one = match self.feature_selection.as_slice() {
             [one] if shown => Some(*one),
@@ -463,8 +586,6 @@ pub fn choices(layer: &Layer, name: &str) -> Vec<String> {
 pub fn paint(painter: &egui::Painter, state: &AppState) {
     let globe = &state.globe;
     let ring = egui::Stroke::new(2.0, theme::ACCENT);
-    let line = egui::Stroke::new(3.0, theme::ACCENT);
-    let dark = egui::Stroke::new(1.5, egui::Color32::from_rgb(11, 31, 26));
     for f in &state.feature_selection {
         let Some(layer) = state.doc.layer(f.layer) else {
             continue;
@@ -472,18 +593,7 @@ pub fn paint(painter: &egui::Painter, state: &AppState) {
         let Some(feature) = layer.features.iter().find(|x| x.uuid() == f.uuid) else {
             continue;
         };
-        let shape = select::shape(globe, &feature.geometry);
-        for (_, pos) in &shape.points {
-            painter.circle_stroke(*pos, 9.0, ring);
-        }
-        for run in shape.lines {
-            painter.line(run, line);
-        }
-        // The ends of a line show as handles, so that the cut of a split
-        // shows between two selected lines.
-        for pos in shape.ends {
-            painter.circle(pos, END, theme::ACCENT, dark);
-        }
+        paint_shape(painter, select::shape(globe, &feature.geometry));
     }
     match state.select_drag {
         Some(SelectDrag::Box { start, end }) => {
@@ -498,6 +608,26 @@ pub fn paint(painter: &egui::Painter, state: &AppState) {
             }
         }
         _ => {}
+    }
+}
+
+/// Draws a selected feature in the accent color: a ring around each point,
+/// a wide line on each line and each outline, and a handle at each end of a
+/// line.
+pub fn paint_shape(painter: &egui::Painter, shape: Shape) {
+    let ring = egui::Stroke::new(2.0, theme::ACCENT);
+    let line = egui::Stroke::new(3.0, theme::ACCENT);
+    let dark = egui::Stroke::new(1.5, egui::Color32::from_rgb(11, 31, 26));
+    for (_, pos) in &shape.points {
+        painter.circle_stroke(*pos, 9.0, ring);
+    }
+    for run in shape.lines {
+        painter.line(run, line);
+    }
+    // The ends of a line show as handles, so that the cut of a split shows
+    // between two selected lines.
+    for pos in shape.ends {
+        painter.circle(pos, END, theme::ACCENT, dark);
     }
 }
 
@@ -670,11 +800,18 @@ pub fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
         }
         None => {
             ui.add_space(4.0);
-            ui.label(egui::RichText::new(title(count)).color(theme::MUTE));
+            let mixed = state.mixed_lines();
+            if mixed.is_empty() {
+                ui.label(egui::RichText::new(title(count)).color(theme::MUTE));
+            }
+            for line in mixed {
+                ui.label(egui::RichText::new(line).color(theme::MUTE));
+            }
         }
     }
     ui.add_space(8.0);
-    outcome.show = widgets::button_row(ui, controls, SHOW_IN_TABLE, true).clicked();
+    let can_show = state.can_show_in_table();
+    outcome.show = widgets::button_row(ui, controls, SHOW_IN_TABLE, can_show).clicked();
     state.finish_inspector(form, outcome);
 }
 
@@ -757,6 +894,53 @@ pub fn edit_menu(ui: &mut egui::Ui, state: &mut AppState) {
     }
 }
 
+/// The Selectable menu of the desktop tool bar, with the rows of the
+/// Selectable list of the iPad. The menu stays open while you check layers.
+pub fn selectable_menu(ui: &mut egui::Ui, state: &mut AppState) {
+    use super::pad::selectable::{
+        ACTIVE_LAYER, DESELECT_ALL, NO_LAYER, SELECT_ALL, SELECTABLE, layer_row_name,
+    };
+    let stay = egui::containers::menu::MenuConfig::new()
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
+    let menu = egui::containers::menu::MenuButton::new(SELECTABLE).config(stay);
+    menu.ui(ui, |ui| {
+        let active = (state.selected_vector())
+            .and_then(|id| state.doc.layer(id))
+            .map_or(NO_LAYER, |l| l.name.as_str())
+            .to_owned();
+        let on = matches!(state.selectable, Selectable::Active);
+        let row = ui.selectable_label(on, format!("{ACTIVE_LAYER}: {active}"));
+        row.widget_info(|| {
+            egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, on, ACTIVE_LAYER)
+        });
+        if row.clicked() {
+            state.set_selectable_active();
+        }
+        if ui.button(SELECT_ALL).clicked() {
+            state.select_all_layers();
+        }
+        if ui.button(DESELECT_ALL).clicked() {
+            state.deselect_all_layers();
+        }
+        ui.separator();
+        let layers: Vec<_> = (state.doc.project.layers().iter().rev())
+            .filter(|l| l.geometry().is_some())
+            .map(|l| (l.id, l.name.clone()))
+            .collect();
+        for (id, name) in layers {
+            let mut checked = state.selectable_checked(id);
+            let row = ui.checkbox(&mut checked, &name);
+            let row_name = layer_row_name(&name);
+            row.widget_info(|| {
+                egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, checked, &row_name)
+            });
+            if row.clicked() {
+                state.toggle_selectable(id);
+            }
+        }
+    });
+}
+
 /// The inspector of the desktop layout: a panel at the right.
 pub fn desktop(ui: &mut egui::Ui, state: &mut AppState) {
     state.sync_selection_form(state.show_attributes);
@@ -764,9 +948,6 @@ pub fn desktop(ui: &mut egui::Ui, state: &mut AppState) {
     if !state.show_attributes {
         return;
     }
-    let mut form = state.selection_form.take();
-    let mut outcome = Outcome::default();
-    let count = state.feature_selection.len();
     let mut focus_new = state.tools.focus_new;
     egui::Panel::right(INSPECTOR)
         .default_size(260.0)
@@ -778,48 +959,67 @@ pub fn desktop(ui: &mut egui::Ui, state: &mut AppState) {
                 });
             });
             ui.separator();
-            if count == 0 {
-                ui.weak(NO_SELECTION);
-                return;
-            }
-            match form.as_mut() {
-                Some(form) => {
-                    if form.fields.is_empty() {
-                        ui.weak(NO_FIELDS);
-                    }
-                    let names: Vec<String> = form.fields.iter().map(|f| f.name.clone()).collect();
-                    let focus = &mut form.focus;
-                    egui::Grid::new("attribute-fields")
-                        .num_columns(2)
-                        .show(ui, |ui| {
-                            for (i, field) in form.fields.iter_mut().enumerate() {
-                                ui.label(&field.name);
-                                let color = (!field.valid()).then(|| ui.visuals().warn_fg_color);
-                                let choices = &form.choices[i];
-                                let resp = ui
-                                    .horizontal(|ui| {
-                                        let (name, text) = (&field.name, &mut field.text);
-                                        let edit = egui::TextEdit::singleline(text)
-                                            .id(egui::Id::new((INSPECTOR, name)))
-                                            .text_color_opt(color);
-                                        let resp = ui.add(edit);
-                                        if choices.is_empty() {
-                                            return resp;
-                                        }
-                                        values_box(ui, name, text, choices, &mut outcome);
-                                        resp
-                                    })
-                                    .inner;
-                                let (name, next) = (&field.name, names.get(i + 1));
-                                read_field(&resp, focus, &mut outcome, name, next);
-                                ui.end_row();
-                            }
-                        });
-                }
-                None => drop(ui.label(title(count))),
-            }
-            outcome.show = ui.button(SHOW_IN_TABLE).clicked();
+            desktop_body(ui, state);
         });
     state.tools.focus_new = focus_new;
+}
+
+/// The fields of the desktop inspector, and "Show in table".
+pub fn desktop_body(ui: &mut egui::Ui, state: &mut AppState) {
+    let count = state.feature_selection.len();
+    if count == 0 {
+        ui.weak(NO_SELECTION);
+        return;
+    }
+    let mut form = state.selection_form.take();
+    let mut outcome = Outcome::default();
+    match form.as_mut() {
+        Some(form) => {
+            if form.fields.is_empty() {
+                ui.weak(NO_FIELDS);
+            }
+            let names: Vec<String> = form.fields.iter().map(|f| f.name.clone()).collect();
+            let focus = &mut form.focus;
+            egui::Grid::new("attribute-fields")
+                .num_columns(2)
+                .show(ui, |ui| {
+                    for (i, field) in form.fields.iter_mut().enumerate() {
+                        ui.label(&field.name);
+                        let color = (!field.valid()).then(|| ui.visuals().warn_fg_color);
+                        let choices = &form.choices[i];
+                        let resp = ui
+                            .horizontal(|ui| {
+                                let (name, text) = (&field.name, &mut field.text);
+                                let edit = egui::TextEdit::singleline(text)
+                                    .id(egui::Id::new((INSPECTOR, name)))
+                                    .text_color_opt(color);
+                                let resp = ui.add(edit);
+                                if choices.is_empty() {
+                                    return resp;
+                                }
+                                values_box(ui, name, text, choices, &mut outcome);
+                                resp
+                            })
+                            .inner;
+                        let (name, next) = (&field.name, names.get(i + 1));
+                        read_field(&resp, focus, &mut outcome, name, next);
+                        ui.end_row();
+                    }
+                });
+        }
+        None => {
+            let mixed = state.mixed_lines();
+            if mixed.is_empty() {
+                ui.label(title(count));
+            }
+            for line in mixed {
+                ui.label(line);
+            }
+        }
+    }
+    let can_show = state.can_show_in_table();
+    outcome.show = ui
+        .add_enabled(can_show, egui::Button::new(SHOW_IN_TABLE))
+        .clicked();
     state.finish_inspector(form, outcome);
 }

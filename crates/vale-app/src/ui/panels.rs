@@ -5,7 +5,9 @@ use vale_sphere::{ProjectionKind, ProjectionSpec};
 use vale_store::{GeometryKind, RasterId, World};
 
 use super::number;
-use super::pad::atlas::{LAYOUT_GRID, NEXT_PAGE, PREVIOUS_PAGE, SNAP_TO_LAYOUT, page_title};
+use super::pad::atlas::{
+    LAYOUT_GRID, MAPS, NEXT_PAGE, NO_FRAMES, PREVIOUS_PAGE, SNAP_TO_LAYOUT, page_title,
+};
 use super::raster_form::RasterForm;
 use super::world_form::{self, WorldForm};
 use super::{
@@ -73,6 +75,9 @@ pub const POLYGON_TOOL: &str = "Polygon";
 pub const POINT_TOOL: &str = "Point";
 /// The button of the Measure tool.
 pub const MEASURE_TOOL: &str = "Measure";
+/// The button of the Atlas tool bar that chooses the Frame tool. Its text
+/// is "Frame", as the text of the Frame tab.
+pub const FRAME_TOOL: &str = "Frame tool";
 /// The button of the Atlas tool bar that chooses the Vertex tool.
 pub const VERTEX_TOOL: &str = "Vertex";
 /// The slider of the smoothing of the line tool.
@@ -226,6 +231,9 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                 if state.globe.measuring() {
                     path_buttons(ui, state);
                 }
+                if state.globe.selecting() {
+                    select::selectable_menu(ui, state);
+                }
                 if !state.feature_selection.is_empty() && ui.button(DESELECT).clicked() {
                     state.set_feature_selection(Vec::new());
                 }
@@ -286,6 +294,8 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
             if state.workspace != Workspace::Atlas {
                 return;
             }
+            ui.separator();
+            select::view_menu(ui, state);
             ui.separator();
             atlas_buttons(ui, state);
             if !state.file_buttons {
@@ -389,7 +399,7 @@ fn atlas_buttons(ui: &mut egui::Ui, state: &mut AppState) {
     });
     let editing = matches!(state.atlas.selection, atlas::AtlasSelection::Frame(_));
     let vertexing = state.atlas.tool == atlas::AtlasTool::Vertex;
-    if editing && (vertexing || state.atlas.tool == atlas::AtlasTool::Select) {
+    if editing && (vertexing || state.atlas.tool == atlas::AtlasTool::Frame) {
         let snap = ui.selectable_label(state.atlas.snap, SNAP_TO_LAYOUT);
         if snap.clicked() {
             state.atlas.snap = !state.atlas.snap;
@@ -399,13 +409,49 @@ fn atlas_buttons(ui: &mut egui::Ui, state: &mut AppState) {
     if ui.selectable_label(on, LAYOUT_GRID).clicked() {
         atlas::edit_grid(state, |g| g.on = !on);
     }
+    // With a frame selected, Maps shows and hides its panel. With none, it
+    // lists the map frames of the page.
+    if state.atlas.frame().is_some() {
+        if ui.selectable_label(atlas::maps_open(state), MAPS).clicked() {
+            atlas::toggle_maps(state);
+        }
+    } else {
+        ui.menu_button(MAPS, |ui| {
+            let frames = atlas::frame_names(state);
+            if frames.is_empty() {
+                ui.weak(NO_FRAMES);
+            }
+            for (id, name) in frames {
+                if ui.button(name).clicked() {
+                    atlas::open_frame(state, id);
+                    ui.close();
+                }
+            }
+        });
+    }
     ui.separator();
+    let framing = state.atlas.tool == atlas::AtlasTool::Frame;
+    let frame = ui.selectable_label(framing, "Frame");
+    frame.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, framing, FRAME_TOOL)
+    });
+    if frame.on_hover_text("F").clicked() {
+        state.atlas.tool = atlas::AtlasTool::Frame;
+    }
+    let selecting = state.atlas.tool == atlas::AtlasTool::Select;
+    if ui
+        .selectable_label(selecting, select::TOOL)
+        .on_hover_text("V")
+        .clicked()
+    {
+        state.atlas.tool = atlas::AtlasTool::Select;
+    }
     let vertex = ui
         .selectable_label(vertexing, VERTEX_TOOL)
         .on_hover_text("A");
     if vertex.clicked() {
         state.atlas.tool = if vertexing {
-            atlas::AtlasTool::Select
+            atlas::AtlasTool::Frame
         } else {
             atlas::AtlasTool::Vertex
         };
@@ -429,9 +475,9 @@ fn atlas_buttons(ui: &mut egui::Ui, state: &mut AppState) {
         }
     }
     let tool = state.atlas.tool;
-    let moving = matches!(tool, atlas::AtlasTool::Select | atlas::AtlasTool::Move);
+    let moving = matches!(tool, atlas::AtlasTool::Frame | atlas::AtlasTool::Move);
     if moving && atlas::has_selection(state) {
-        if tool == atlas::AtlasTool::Select
+        if tool == atlas::AtlasTool::Frame
             && ui.button(select::DELETE).on_hover_text("Delete").clicked()
         {
             atlas::delete_selection(state);
@@ -439,6 +485,13 @@ fn atlas_buttons(ui: &mut egui::Ui, state: &mut AppState) {
         if ui.button(DESELECT).on_hover_text("Esc").clicked() {
             atlas::clear_selection(state);
         }
+    }
+    if selecting {
+        select::selectable_menu(ui, state);
+    }
+    let selected = atlas::has_selection(state) || !state.feature_selection.is_empty();
+    if selecting && selected && ui.button(DESELECT).on_hover_text("Esc").clicked() {
+        atlas::deselect(state);
     }
     if measuring {
         snap_controls(ui, state, &[]);

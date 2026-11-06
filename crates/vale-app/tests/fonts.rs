@@ -25,7 +25,7 @@ fn with_silkscreen() -> Fonts {
 
 fn compose(doc: &Document, fonts: &mut Fonts) -> Composed {
     Pipeline::new()
-        .compose(doc, SIZE, fonts, Quality::Final, None)
+        .compose(doc, SIZE, fonts, Quality::Final)
         .unwrap()
 }
 
