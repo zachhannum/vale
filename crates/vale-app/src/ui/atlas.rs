@@ -720,6 +720,12 @@ pub struct AtlasState {
     /// More than one finger touched the screen since the first finger came
     /// down. A drag of one finger then does nothing.
     fingers: bool,
+    /// The touches of the Select tool, for a finger that holds still as
+    /// Shift.
+    press: crate::globe::select::SelectPress,
+    /// A finger held as Shift since all touches were up. Its release is
+    /// not a tap.
+    chorded: bool,
     /// The time of the last wheel zoom.
     wheel_at: Option<f64>,
     /// The time and the place of the last tap.
@@ -864,6 +870,8 @@ impl Default for AtlasState {
             pointer: Pointer::Mouse,
             pinch: None,
             fingers: false,
+            press: Default::default(),
+            chorded: false,
             wheel_at: None,
             last_tap: None,
             nav: Nav::default(),
@@ -1668,6 +1676,55 @@ fn input(ui: &egui::Ui, state: &mut AppState, resp: &egui::Response, place: Page
     });
     let mut fingers = ui.input(|i| i.multi_touch());
     let touches = fingers.is_some();
+    // With the Select tool, a finger that holds still acts as Shift for the
+    // taps of the pen and of the other fingers, and the fingers do not
+    // pinch.
+    if state.atlas.tool == AtlasTool::Select {
+        let press = &mut state.atlas.press;
+        press.time = now;
+        ui.input(|i| {
+            for event in &i.events {
+                let egui::Event::Touch {
+                    id,
+                    phase,
+                    pos,
+                    force,
+                    ..
+                } = event
+                else {
+                    continue;
+                };
+                let pointer = match force {
+                    Some(_) => Pointer::Pen,
+                    None => Pointer::Finger,
+                };
+                match phase {
+                    egui::TouchPhase::Start if resp.rect.contains(*pos) => {
+                        press.down(id.0, *pos, pointer)
+                    }
+                    egui::TouchPhase::Start => {}
+                    egui::TouchPhase::Move => press.moved(id.0, *pos),
+                    egui::TouchPhase::End => press.up(id.0, *pos),
+                    egui::TouchPhase::Cancel => press.cancel(id.0),
+                }
+            }
+        });
+        if press.held().is_some() {
+            state.atlas.chorded = true;
+        }
+        let events = std::mem::take(&mut state.atlas.press.events);
+        for event in events {
+            if let crate::globe::select::SelectEvent::Tap { pos, add: true, .. } = event {
+                features::tap(state, &page, place, pos, true);
+            }
+        }
+    }
+    if state.atlas.chorded {
+        fingers = None;
+        if !any_down && !ui.input(|i| i.any_touches()) {
+            state.atlas.chorded = false;
+        }
+    }
     // A second finger on the canvas during the drag of a vertex locks the
     // angle of its edges, and it does not pinch.
     let vertex_drag = matches!(
@@ -1788,7 +1845,8 @@ fn input(ui: &egui::Ui, state: &mut AppState, resp: &egui::Response, place: Page
         if let Some(Drag::Box(start)) = state.atlas.drag {
             let rect = Rect::from_two_pos(start, state.atlas.drag_last);
             if state.atlas.tool == AtlasTool::Select {
-                features::select_box(state, &page, place, start, rect);
+                let add = shift || state.select_add;
+                features::select_box(state, &page, place, start, rect, add);
             } else {
                 select_box(state, place, rect);
             }
@@ -1801,11 +1859,12 @@ fn input(ui: &egui::Ui, state: &mut AppState, resp: &egui::Response, place: Page
     if state.atlas.tool == AtlasTool::Measure {
         measure::input(ui, state, resp, &page, place);
     } else if resp.clicked()
+        && !state.atlas.chorded
         && let Some(pos) = resp.interact_pointer_pos()
     {
         let last = state.atlas.last_tap.replace((now, pos));
         let again = last.is_some_and(|(t, p)| now - t < DOUBLE_TAP && p.distance(pos) < 12.0);
-        tap(state, &page, place, pos);
+        tap(state, &page, place, pos, shift);
         if again && !place.rect.contains(pos) {
             state.atlas.view = PageView::default();
             state.atlas.last_tap = None;
@@ -2226,10 +2285,12 @@ fn vertex_tap(state: &mut AppState, page: &PageRecord, place: PagePlace, pos: Po
     }
 }
 
-/// A tap selects a frame, the page, or nothing.
-fn tap(state: &mut AppState, page: &PageRecord, place: PagePlace, pos: Pos2) {
+/// A tap selects a frame, the page, or nothing. With the Select tool and
+/// Shift, it adds a feature to the selection or takes it out.
+fn tap(state: &mut AppState, page: &PageRecord, place: PagePlace, pos: Pos2, shift: bool) {
     if state.atlas.tool == AtlasTool::Select {
-        features::tap(state, page, place, pos);
+        let add = shift || state.select_add;
+        features::tap(state, page, place, pos, add);
         return;
     }
     if state.atlas.tool == AtlasTool::Vertex {

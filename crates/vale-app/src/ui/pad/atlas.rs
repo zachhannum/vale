@@ -553,7 +553,7 @@ fn frame_card(
         AtlasTool::Vertex | AtlasTool::Frame => 2 + 2 * usize::from(acts),
         AtlasTool::Move if atlas::has_selection(state) => 1,
         AtlasTool::Select => {
-            1 + usize::from(atlas::has_selection(state) || !state.feature_selection.is_empty())
+            2 + usize::from(atlas::has_selection(state) || !state.feature_selection.is_empty())
         }
         _ => {
             state.pad.selectable = false;
@@ -623,7 +623,13 @@ fn frame_card(
                 }
                 if tool == AtlasTool::Select {
                     selectable_cell = Some(super::selectable::cell(ui, state, controls));
-                    if cells < 2 {
+                    let (name, add) = (select::ADD_TO_SELECTION, state.select_add);
+                    if widgets::tool_cell(ui, controls, name, "Add", Icon::Plus, add, true)
+                        .clicked()
+                    {
+                        state.select_add = !add;
+                    }
+                    if cells < 3 {
                         return;
                     }
                 }

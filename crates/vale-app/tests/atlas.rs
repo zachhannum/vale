@@ -8095,6 +8095,46 @@ fn with_the_select_tool_a_tap_selects_the_feature_in_reach_and_its_frame() {
 }
 
 #[test]
+fn with_the_select_tool_a_held_finger_or_shift_adds_and_a_second_tap_makes_the_key() {
+    use vale_app::ui::select::ADD_TO_SELECTION;
+    let (mut h, at, town) = towns_pad(BOARDS[0]);
+    let other_at = at + vec2(30.0, 20.0);
+    let other = add_town(&mut h, town.layer, 1, other_at);
+    tap_with(&mut h, at, Input::Finger);
+    h.run_steps(2);
+    assert_eq!(h.state().feature_selection, [town]);
+    // A finger holds still off the page, and the pen taps the other town.
+    // The release of the held finger is not a tap.
+    let held = margin(&h);
+    touch(&mut h, 1, egui::TouchPhase::Start, held, None);
+    h.run_steps(40);
+    touch(&mut h, 2, egui::TouchPhase::Start, other_at, Some(0.5));
+    h.step();
+    touch(&mut h, 2, egui::TouchPhase::End, other_at, Some(0.5));
+    h.run_steps(2);
+    touch(&mut h, 1, egui::TouchPhase::End, held, None);
+    h.run_steps(3);
+    assert_eq!(h.state().feature_selection, [town, other]);
+    // A second tap makes the key.
+    tap_with(&mut h, at, Input::Pen);
+    h.run_steps(2);
+    assert_eq!(h.state().feature_selection, [town, other]);
+    assert_eq!(h.state().key_feature(), Some(town));
+    // Shift with the mouse takes the other town out.
+    h.event(egui::Event::ModifiersChanged(egui::Modifiers::SHIFT));
+    tap_with(&mut h, other_at, Input::Mouse);
+    h.event(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+    h.run_steps(2);
+    assert_eq!(h.state().feature_selection, [town]);
+    assert_eq!(h.state().key_feature(), None);
+    // With Add, a tap adds.
+    tap(&mut h, ADD_TO_SELECTION);
+    tap_with(&mut h, other_at, Input::Finger);
+    h.run_steps(2);
+    assert_eq!(h.state().feature_selection, [town, other]);
+}
+
+#[test]
 fn with_the_select_tool_a_layer_that_the_map_hides_has_no_hit() {
     let (mut h, at, town) = towns_pad(BOARDS[0]);
     let map = frame(&h, 1).map;
@@ -8207,11 +8247,14 @@ fn the_selection_of_the_atlas_is_the_selection_of_the_world() {
 }
 
 #[test]
-fn with_the_select_tool_the_context_strip_has_deselect_only() {
+fn with_the_select_tool_the_context_strip_has_add_and_deselect_and_no_edits() {
+    use vale_app::ui::select::{ADD_TO_SELECTION, SUBTRACT};
     let (mut h, at, town) = towns_pad(BOARDS[0]);
     tap_with(&mut h, at, Input::Finger);
-    assert!(control(&h, DESELECT).is_some());
-    for name in [SNAP_TO_LAYOUT, DELETE_SELECTION, DELETE_VERTEX] {
+    for name in [ADD_TO_SELECTION, DESELECT] {
+        assert!(h.query_by_label(name).is_some(), "{name}");
+    }
+    for name in [SNAP_TO_LAYOUT, DELETE_SELECTION, DELETE_VERTEX, SUBTRACT] {
         assert!(control(&h, name).is_none(), "{name}");
     }
     let frames = open_page(&h).frames.len();
@@ -8515,6 +8558,10 @@ fn the_selectable_cell_and_list_fit_in_the_atlas_on_each_screen() {
         let row = control(&h, ACTIVE_LAYER).unwrap_or_else(|| panic!("{what}"));
         assert!(screen.contains_rect(row), "{what}");
         assert!(!row.intersects(cell), "{what}");
+        screenshot::save(
+            &mut h,
+            &format!("pad-atlas-selectable-{}x{}", size.0, size.1),
+        );
     }
 }
 

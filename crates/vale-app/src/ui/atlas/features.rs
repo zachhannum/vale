@@ -99,13 +99,17 @@ fn dir_at(shown: &Shown, pos: Pos2) -> Option<crate::globe::math::V3> {
     shown.place_at(pos).map(|p| lonlat_to_dir(p[0], p[1]))
 }
 
-/// A tap of the Select tool. A tap in a frame selects the frame and the
-/// feature under the tap in the map of the frame, or no feature. A tap
-/// outside the frames clears the selection.
-pub(crate) fn tap(state: &mut AppState, page: &PageRecord, place: PagePlace, pos: Pos2) {
+/// A tap of the Select tool. A tap in a frame selects the frame and acts
+/// on the feature under the tap in the map of the frame, as a tap on the
+/// globe does. With `add`, it adds the feature or takes it out. A tap
+/// outside the frames clears the selection, and with `add` it does
+/// nothing.
+pub(crate) fn tap(state: &mut AppState, page: &PageRecord, place: PagePlace, pos: Pos2, add: bool) {
     let Some(id) = frame_at(page, place.to_mm(pos)) else {
-        state.atlas.selection = AtlasSelection::None;
-        state.set_feature_selection(Vec::new());
+        if !add {
+            state.atlas.selection = AtlasSelection::None;
+            state.set_feature_selection(Vec::new());
+        }
         return;
     };
     state.atlas.selection = AtlasSelection::Frame(id);
@@ -124,18 +128,19 @@ pub(crate) fn tap(state: &mut AppState, page: &PageRecord, place: PagePlace, pos
             }
         },
     );
-    state.set_feature_selection(hit.into_iter().collect());
+    state.select_tap(hit, add);
 }
 
 /// A box of the Select tool from `start`. It selects the features that the
-/// box meets in each frame. The frame under `start` becomes the selected
-/// frame.
+/// box meets in each frame, and with `add` it adds them to the selection.
+/// The frame under `start` becomes the selected frame.
 pub(crate) fn select_box(
     state: &mut AppState,
     page: &PageRecord,
     place: PagePlace,
     start: Pos2,
     rect: Rect,
+    add: bool,
 ) {
     let center = rect.center();
     let mut found = Vec::new();
@@ -155,14 +160,25 @@ pub(crate) fn select_box(
     if let Some(id) = frame_at(page, place.to_mm(start)) {
         state.atlas.selection = AtlasSelection::Frame(id);
     }
+    if add {
+        let mut all = state.feature_selection.clone();
+        found.retain(|f| !all.contains(f));
+        all.extend(found);
+        found = all;
+    }
     state.set_feature_selection(found);
 }
 
 /// The selection on the screen, in each frame whose map shows its layer,
 /// cut at the frames.
 pub fn highlight(state: &mut AppState, place: PagePlace) -> Shape {
-    let mut out = Shape::default();
     let selected: HashSet<FeatureRef> = state.feature_selection.iter().copied().collect();
+    highlight_of(state, place, selected)
+}
+
+/// The shapes of `selected` on the screen, cut at the frames.
+fn highlight_of(state: &mut AppState, place: PagePlace, selected: HashSet<FeatureRef>) -> Shape {
+    let mut out = Shape::default();
     if selected.is_empty() {
         return out;
     }
@@ -186,6 +202,9 @@ pub(crate) fn paint(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area:
     if state.atlas.tool != AtlasTool::Select {
         return;
     }
+    let painter = ui.painter_at(area);
+    let key = state.key_feature().into_iter().collect();
+    crate::ui::select::paint_key(&painter, &highlight_of(state, place, key));
     let shape = highlight(state, place);
-    crate::ui::select::paint_shape(&ui.painter_at(area), shape);
+    crate::ui::select::paint_shape(&painter, shape);
 }

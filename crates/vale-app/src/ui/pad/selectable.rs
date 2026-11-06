@@ -91,10 +91,16 @@ pub(super) fn menu(
             .max(left_edge);
         Rect::from_min_size(pos2(left, cell.top() - 8.0 - height), vec2(width, height))
     } else {
+        // The list is at the right of its cell, or else at the left.
         let height = full.min(bottom - top);
-        let left = (cell.right() + 2.0 * PAD + 8.0)
-            .min(right_edge - width)
-            .max(left_edge);
+        let gap = 2.0 * PAD + 8.0;
+        let right = cell.right() + gap;
+        let left_of = cell.left() - gap - width;
+        let left = if right + width > right_edge && left_of >= left_edge {
+            left_of
+        } else {
+            right.min(right_edge - width).max(left_edge)
+        };
         let y = cell.top().min(bottom - height).max(top);
         Rect::from_min_size(pos2(left, y), vec2(width, height))
     };

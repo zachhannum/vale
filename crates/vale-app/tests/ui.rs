@@ -2064,6 +2064,138 @@ fn the_tool_bar_has_split_for_line_and_polygon_layers() {
     assert_eq!(layer.features.len(), 2);
 }
 
+/// A click with Shift at a screen position.
+fn shift_click_at(h: &mut Harness<'static, AppState>, pos: egui::Pos2) {
+    h.event(egui::Event::ModifiersChanged(egui::Modifiers::SHIFT));
+    click_at(h, pos);
+    h.event(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+    h.run_steps(1);
+}
+
+#[test]
+fn shift_adds_a_click_on_a_selected_feature_makes_the_key_and_subtract_uses_it() {
+    use vale_app::globe::Tool;
+    use vale_app::globe::math::lonlat_to_dir;
+    use vale_app::globe::select::FeatureRef;
+    use vale_app::globe::view::GlobeView;
+    use vale_app::ui::select::{SUBTRACT, Selectable};
+    use vale_store::{Feature, Geometry, GeometryKind, LonLat};
+    let square = |x0: f64, y0: f64, x1: f64, y1: f64| {
+        Geometry::Polygons(vec![vec![vec![
+            [x0, y0],
+            [x1, y0],
+            [x1, y1],
+            [x0, y1],
+            [x0, y0],
+        ]]])
+    };
+    let inside = |g: &Geometry, p: LonLat| {
+        let Geometry::Polygons(polys) = g else {
+            return false;
+        };
+        let dir = lonlat_to_dir(p[0], p[1]);
+        polys.iter().any(|poly| {
+            let rings: Vec<Vec<_>> = (poly.iter().enumerate())
+                .map(|(i, r)| vale_app::globe::vector::ring(r, i > 0))
+                .collect();
+            vale_app::globe::vector::contains(&rings, dir)
+        })
+    };
+    let mut doc = Document::sample();
+    let land = doc.add_layer(GeometryKind::Polygon);
+    let add = |doc: &mut Document, layer, g: Geometry| {
+        let f = Feature::new(g, Default::default());
+        let r = FeatureRef {
+            layer,
+            uuid: f.uuid(),
+        };
+        assert!(doc.project.add_feature(layer, f));
+        r
+    };
+    let country = add(&mut doc, land, square(-10.0, -10.0, 10.0, 10.0));
+    let bay = add(&mut doc, land, square(8.0, -2.0, 14.0, 2.0));
+    let islet = add(&mut doc, land, square(1.0, 1.0, 2.0, 2.0));
+    // A marsh under the lake that is not selected.
+    let marsh = add(&mut doc, land, square(-4.0, -1.0, -2.0, 1.0));
+    let water = doc.add_layer(GeometryKind::Polygon);
+    let lake = add(&mut doc, water, square(-3.0, -3.0, 3.0, 3.0));
+    let mut state = AppState::new(doc).unwrap();
+    state.headless = true;
+    state.select(Some(LayerRef::Vector(land)));
+    state.selectable = Selectable::Layers([land, water].into());
+    state.globe.view = GlobeView::centered(0.0, 0.0);
+    state.globe.tool = Tool::Select;
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(SIZE.0 as f32, SIZE.1 as f32))
+        .with_pixels_per_point(1.0)
+        .build_ui_state(|ui, state: &mut AppState| draw(ui, state), state);
+    h.run_steps(3);
+    let at = |h: &Harness<'static, AppState>, p: LonLat| {
+        h.state().globe.project(lonlat_to_dir(p[0], p[1])).unwrap()
+    };
+    let geometry = |h: &Harness<'static, AppState>, f: FeatureRef| {
+        let layer = h.state().doc.project.layer(f.layer).unwrap();
+        let x = layer.features.iter().find(|x| x.uuid() == f.uuid);
+        x.map(|x| x.geometry.clone())
+    };
+    let pos = at(&h, [-6.0, 6.0]);
+    click_at(&mut h, pos);
+    assert_eq!(h.state().feature_selection, [country]);
+    // Shift adds and takes out, and Shift on empty ground does nothing.
+    let pos = at(&h, [0.0, -2.0]);
+    shift_click_at(&mut h, pos);
+    let pos = at(&h, [12.0, 0.0]);
+    shift_click_at(&mut h, pos);
+    assert_eq!(h.state().feature_selection, [country, lake, bay]);
+    shift_click_at(&mut h, pos);
+    let pos = at(&h, [40.0, 40.0]);
+    shift_click_at(&mut h, pos);
+    assert_eq!(h.state().feature_selection, [country, lake]);
+    assert_eq!(h.state().key_feature(), None);
+    assert!(!h.state().can_subtract());
+    // A click on a selected feature makes it the key, and the selection
+    // stays.
+    let pos = at(&h, [0.0, -2.0]);
+    click_at(&mut h, pos);
+    assert_eq!(h.state().feature_selection, [country, lake]);
+    assert_eq!(h.state().key_feature(), Some(lake));
+    // The islet under the lake is selected too, and the marsh is not.
+    h.state_mut()
+        .set_feature_selection(vec![country, lake, islet]);
+    h.get_by_label("Edit").click();
+    h.run_steps(2);
+    h.get_by_label(SUBTRACT).click();
+    h.run_steps(3);
+    let cut = geometry(&h, country).unwrap();
+    assert!(!inside(&cut, [0.0, 0.0]));
+    assert!(inside(&cut, [-6.0, 0.0]));
+    assert!(geometry(&h, islet).is_none());
+    assert_eq!(geometry(&h, lake), Some(square(-3.0, -3.0, 3.0, 3.0)));
+    assert_eq!(geometry(&h, marsh), Some(square(-4.0, -1.0, -2.0, 1.0)));
+    assert_eq!(h.state().feature_selection, [country, lake]);
+    // The bay of the same layer cuts the country. A click on empty ground
+    // clears the selection first.
+    let pos = at(&h, [40.0, 40.0]);
+    click_at(&mut h, pos);
+    assert!(h.state().feature_selection.is_empty());
+    let pos = at(&h, [-6.0, 6.0]);
+    click_at(&mut h, pos);
+    let pos = at(&h, [12.0, 0.0]);
+    shift_click_at(&mut h, pos);
+    click_at(&mut h, pos);
+    assert_eq!(h.state().key_feature(), Some(bay));
+    h.state_mut().subtract_selection();
+    let cut = geometry(&h, country).unwrap();
+    assert!(!inside(&cut, [9.0, 0.0]));
+    assert!(inside(&cut, [9.0, 5.0]));
+    assert_eq!(geometry(&h, bay), Some(square(8.0, -2.0, 14.0, 2.0)));
+    // A click on a feature that is not selected replaces the selection.
+    let pos = at(&h, [0.0, -2.0]);
+    click_at(&mut h, pos);
+    assert_eq!(h.state().feature_selection, [lake]);
+    assert_eq!(h.state().key_feature(), None);
+}
+
 #[test]
 fn the_tool_bar_has_vertex_and_the_keys_edit_vertices() {
     use vale_app::globe::Tool;

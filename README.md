@@ -203,7 +203,7 @@ The job `testflight` in `.github/workflows/ios.yml` does the work, with `scripts
 - Label fallbacks, leader lines, and manual label changes.
 - The overview of the pages, page templates, and SVG export.
 - Tissot circles.
-- Editing tools other than the line tool, the polygon tool, the point tool, the Select tool, reshape, split, merge, Vertex, and the attribute table.
+- Editing tools other than the line tool, the polygon tool, the point tool, the Select tool, reshape, split, Subtract, merge, Vertex, and the attribute table.
 
 ## The labeler demo
 

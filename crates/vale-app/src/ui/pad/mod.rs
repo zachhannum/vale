@@ -1482,9 +1482,15 @@ fn vertex_cells(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls
     brush_button(ui, state, controls, rects);
 }
 
-/// The cells of the card of the Select tool after Selectable: Delete
-/// selection, Merge, and Deselect. Returns the place of the Merge cell.
+/// The cells of the card of the Select tool after Selectable: Add, Delete
+/// selection, Merge, Subtract, and Deselect. Returns the place of the Merge
+/// cell.
 fn select_cells(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) -> Option<Rect> {
+    let add = state.select_add;
+    let name = select::ADD_TO_SELECTION;
+    if widgets::tool_cell(ui, controls, name, "Add", Icon::Plus, add, true).clicked() {
+        state.select_add = !add;
+    }
     let (name, any) = (select::DELETE, !state.feature_selection.is_empty());
     if widgets::tool_cell(ui, controls, name, "Delete", Icon::Trash, false, any).clicked() {
         state.delete_selection();
@@ -1497,6 +1503,10 @@ fn select_cells(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls
         } else {
             state.start_merge();
         }
+    }
+    let (name, can) = (select::SUBTRACT, state.can_subtract());
+    if widgets::tool_cell(ui, controls, name, name, Icon::Subtract, false, can).clicked() {
+        state.subtract_selection();
     }
     deselect_cell(ui, state, controls);
     Some(merge.rect)

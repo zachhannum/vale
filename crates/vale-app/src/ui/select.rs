@@ -21,6 +21,11 @@ pub const TOOL: &str = "Select";
 pub const DELETE: &str = "Delete selection";
 /// The command that merges the selected features into one feature.
 pub const MERGE: &str = "Merge…";
+/// The command that cuts the key polygon out of the other selected
+/// polygons.
+pub const SUBTRACT: &str = "Subtract";
+/// The switch that makes each tap and each box add to the selection.
+pub const ADD_TO_SELECTION: &str = "Add to selection";
 /// The title of the list of Merge.
 pub const MERGE_TITLE: &str = "Keep attributes of";
 /// The name of the inspector, and of the button that opens it.
@@ -49,8 +54,9 @@ const END: f32 = 5.0;
 /// A drag of the Select tool.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum SelectDrag {
-    /// A box from `start` to `end`, in screen points.
-    Box { start: Pos2, end: Pos2 },
+    /// A box from `start` to `end`, in screen points. With `add`, the box
+    /// adds to the selection.
+    Box { start: Pos2, end: Pos2, add: bool },
     /// A move of one vertex of a point feature to `to`.
     Move {
         feature: FeatureRef,
@@ -207,12 +213,12 @@ impl AppState {
         }
         for event in events {
             match event {
-                SelectEvent::Tap { pos, pointer } => {
+                SelectEvent::Tap { pos, pointer, add } => {
                     let layers = self.select_layers();
                     let hit = select::hit(&self.globe, &layers, pos, pointer.reach());
-                    self.set_feature_selection(hit.into_iter().collect());
+                    self.select_tap(hit, add || self.select_add);
                 }
-                SelectEvent::DragStart { pos, pointer } => {
+                SelectEvent::DragStart { pos, pointer, add } => {
                     let reach = pointer.reach();
                     let moving = self.feature_selection.iter().find_map(|f| {
                         let layer = self.doc.layer(f.layer)?;
@@ -228,6 +234,7 @@ impl AppState {
                         None => SelectDrag::Box {
                             start: pos,
                             end: pos,
+                            add: add || self.select_add,
                         },
                     });
                 }
@@ -235,9 +242,16 @@ impl AppState {
                 SelectEvent::DragEnd { pos } => {
                     self.select_drag_to(pos);
                     match self.select_drag.take() {
-                        Some(SelectDrag::Box { start, end }) => {
+                        Some(SelectDrag::Box { start, end, add }) => {
                             let rect = select::drag_rect(start, end);
-                            let found = select::in_box(&self.globe, &self.select_layers(), rect);
+                            let mut found =
+                                select::in_box(&self.globe, &self.select_layers(), rect);
+                            if add {
+                                let mut all = self.feature_selection.clone();
+                                found.retain(|f| !all.contains(f));
+                                all.extend(found);
+                                found = all;
+                            }
                             self.set_feature_selection(found);
                         }
                         Some(SelectDrag::Move {
@@ -251,6 +265,37 @@ impl AppState {
                 SelectEvent::Cancel => self.select_drag = None,
             }
         }
+    }
+
+    /// A tap of the Select tool on `hit`. With `add`, the tap adds the
+    /// feature or takes it out. Else a tap on one of two or more selected
+    /// features makes it the key, and another tap replaces the selection.
+    pub(super) fn select_tap(&mut self, hit: Option<FeatureRef>, add: bool) {
+        let selected = hit.filter(|h| self.feature_selection.contains(h));
+        match hit {
+            Some(h) if add => {
+                let mut all = self.feature_selection.clone();
+                if selected.is_some() {
+                    all.retain(|f| *f != h);
+                } else {
+                    all.push(h);
+                }
+                self.set_feature_selection(all);
+            }
+            Some(h) if selected.is_some() && self.feature_selection.len() > 1 => {
+                self.key = Some(h);
+            }
+            Some(h) => self.set_feature_selection(vec![h]),
+            None if add => {}
+            None => self.set_feature_selection(Vec::new()),
+        }
+    }
+
+    /// The key feature: the feature of two or more selected features that
+    /// a second tap chose.
+    pub fn key_feature(&self) -> Option<FeatureRef> {
+        self.key
+            .filter(|k| self.feature_selection.len() > 1 && self.feature_selection.contains(k))
     }
 
     fn select_drag_to(&mut self, pos: Pos2) {
@@ -270,6 +315,12 @@ impl AppState {
                 self.attribute_focus = None;
             }
             self.feature_selection = selection;
+        }
+        if self
+            .key
+            .is_some_and(|k| !self.feature_selection.contains(&k))
+        {
+            self.key = None;
         }
         // A selection in one layer makes that layer the active layer.
         let mut layers = self.feature_selection.iter().map(|f| f.layer);
@@ -637,10 +688,14 @@ pub fn paint(painter: &egui::Painter, state: &AppState) {
         let Some(feature) = layer.features.iter().find(|x| x.uuid() == f.uuid) else {
             continue;
         };
-        paint_shape(painter, select::shape(globe, &feature.geometry));
+        let shape = select::shape(globe, &feature.geometry);
+        if state.key_feature() == Some(*f) {
+            paint_key(painter, &shape);
+        }
+        paint_shape(painter, shape);
     }
     match state.select_drag {
-        Some(SelectDrag::Box { start, end }) => {
+        Some(SelectDrag::Box { start, end, .. }) => {
             let rect = select::drag_rect(start, end);
             let fill = theme::ACCENT.gamma_multiply(0.15);
             painter.rect(rect, 0.0, fill, ring, egui::StrokeKind::Inside);
@@ -652,6 +707,21 @@ pub fn paint(painter: &egui::Painter, state: &AppState) {
             }
         }
         _ => {}
+    }
+}
+
+/// Draws the key feature under its selection: a wide outline in the accent
+/// color, on white.
+pub fn paint_key(painter: &egui::Painter, shape: &Shape) {
+    let under = egui::Stroke::new(8.0, egui::Color32::WHITE);
+    let over = egui::Stroke::new(5.0, theme::ACCENT);
+    for run in &shape.lines {
+        painter.line(run.clone(), under);
+        painter.line(run.clone(), over);
+    }
+    for (_, pos) in &shape.points {
+        painter.circle_stroke(*pos, 11.0, under);
+        painter.circle_stroke(*pos, 11.0, over);
     }
 }
 
@@ -908,7 +978,8 @@ pub fn view_menu(ui: &mut egui::Ui, state: &mut AppState) {
     });
 }
 
-/// The Edit menu of the desktop tool bar: Delete selection and Merge.
+/// The Edit menu of the desktop tool bar: Delete selection, Merge, and
+/// Subtract.
 /// "Merge…" opens a window with a button for each selected feature, and a
 /// click on a button merges the selection into that feature. Features with
 /// the same attributes merge with no window.
@@ -924,6 +995,13 @@ pub fn edit_menu(ui: &mut egui::Ui, state: &mut AppState) {
             .clicked()
         {
             state.start_merge();
+            ui.close();
+        }
+        if ui
+            .add_enabled(state.can_subtract(), egui::Button::new(SUBTRACT))
+            .clicked()
+        {
+            state.subtract_selection();
             ui.close();
         }
     });
