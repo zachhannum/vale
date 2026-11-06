@@ -89,10 +89,7 @@ impl StrokeArea {
         let Geometry::Polygons(polygons) = geometry else {
             return None;
         };
-        let rings: Vec<Vec<PathVertex>> = outlines(polygons)?
-            .into_iter()
-            .map(|o| o.ring)
-            .collect();
+        let rings: Vec<Vec<PathVertex>> = outlines(polygons)?.into_iter().map(|o| o.ring).collect();
         let path: Vec<V3> = rings.iter().flat_map(|r| dirs(r)).collect();
         if path.is_empty() {
             return None;
@@ -490,7 +487,12 @@ mod tests {
             box_way(2.0, 2.0, 8.0, 8.0),
             box_way(4.0, 4.0, 6.0, 6.0),
         ]]);
-        let p = polygons(&cutter(&ring).subtract(&square()).expect("a change").expect("an area"));
+        let p = polygons(
+            &cutter(&ring)
+                .subtract(&square())
+                .expect("a change")
+                .expect("an area"),
+        );
         assert_valid(&p);
         assert_eq!(p.len(), 2);
         assert!(inside(&p, [5.0, 5.0]));

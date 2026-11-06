@@ -407,7 +407,8 @@ fn measure_input(
 }
 
 /// Reads the pen, the touches, and the mouse for the Select tool. A pen
-/// and the mouse belong to the tool, and fingers still move the view.
+/// and the mouse belong to the tool, and fingers still move the view. A
+/// finger that holds still as Shift does not move the view.
 fn select_input(
     ui: &egui::Ui,
     rect: egui::Rect,
@@ -418,6 +419,7 @@ fn select_input(
 ) -> Painting {
     let on = |pos| on_canvas(ui, rect, pos);
     let press = &mut globe.select_press;
+    press.time = ui.input(|i| i.time);
     for (pos, event) in queue {
         match event.phase {
             PenPhase::Down if on(*pos) => press.down(QUEUE_PEN, *pos, Pointer::Pen),
@@ -457,8 +459,8 @@ fn select_input(
             egui::TouchPhase::Start => {}
         }
     }
-    // The first touch is also the egui pointer. A drag with Shift turns the
-    // view.
+    // The first touch is also the egui pointer. A click with Shift adds to
+    // the selection, and a drag with Shift turns the view.
     if !touched && !globe.nav.touching() {
         let (pos, pressed, released, shift) = ui.input(|i| {
             let p = &i.pointer;
@@ -467,8 +469,12 @@ fn select_input(
         });
         match pos {
             Some(pos) => {
-                if pressed && !shift && resp.contains_pointer() {
-                    press.down(MOUSE, pos, Pointer::Mouse);
+                if pressed && resp.contains_pointer() {
+                    if shift {
+                        press.shift_down(MOUSE, pos);
+                    } else {
+                        press.down(MOUSE, pos, Pointer::Mouse);
+                    }
                 }
                 press.moved(MOUSE, pos);
                 if released {
@@ -481,11 +487,15 @@ fn select_input(
     }
     let hover = globe.pen.hover.filter(|pos| on(*pos));
     globe.input.pos = resp.hover_pos().or(hover);
+    let held = globe.select_press.held();
+    if let Some(id) = held {
+        globe.nav.forget(id);
+    }
     Painting {
         pen: true,
         mouse: globe.select_press.mouse(),
-        finger: None,
-        fingers: false,
+        finger: held,
+        fingers: held.is_some(),
     }
 }
 

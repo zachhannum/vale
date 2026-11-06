@@ -278,14 +278,18 @@ pub fn drag_rect(a: Pos2, b: Pos2) -> Rect {
 /// What a press of the Select tool did.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum SelectEvent {
+    /// With `add`, the tap adds a feature to the selection or takes it out.
     Tap {
         pos: Pos2,
         pointer: Pointer,
+        add: bool,
     },
     /// A pen or the mouse moved past the slop. `pos` is where it went down.
+    /// With `add`, a box adds to the selection.
     DragStart {
         pos: Pos2,
         pointer: Pointer,
+        add: bool,
     },
     Drag {
         pos: Pos2,
@@ -297,27 +301,61 @@ pub enum SelectEvent {
     Cancel,
 }
 
+/// The time in seconds that a finger stays still before it acts as Shift.
+pub const HOLD_SECONDS: f64 = 0.3;
+
 #[derive(Debug)]
 struct Press {
     id: u64,
     start: Pos2,
+    /// The time when the press started.
+    since: f64,
     pointer: Pointer,
     dragging: bool,
     broken: bool,
+    add: bool,
+    /// A press of the mouse with Shift. It taps, and a drag of it is left
+    /// to the view.
+    tap_only: bool,
+}
+
+/// A finger that is held still and acts as Shift.
+#[derive(Debug)]
+struct Held {
+    id: u64,
+    start: Pos2,
 }
 
 /// One press of the Select tool. A tap of any pointer selects. A drag of a
 /// pen or the mouse is a box or a move, and a drag of a finger is left to
-/// the view. A second finger ends the press. A finger while a pen is down
-/// is a palm.
+/// the view. A finger that holds still for `HOLD_SECONDS` acts as Shift
+/// for the next presses, until it moves or lifts. Another second finger
+/// ends the press. A finger while a pen is down is a palm.
 #[derive(Debug, Default)]
 pub struct SelectPress {
     press: Option<Press>,
+    held: Option<Held>,
+    /// The time of the input, in seconds. The canvas sets it.
+    pub time: f64,
     pub events: Vec<SelectEvent>,
 }
 
 impl SelectPress {
     pub fn down(&mut self, id: u64, pos: Pos2, pointer: Pointer) {
+        let time = self.time;
+        let holds = |p: &Press| {
+            p.pointer == Pointer::Finger
+                && !p.dragging
+                && !p.broken
+                && time - p.since >= HOLD_SECONDS
+        };
+        if let Some(p) = self.press.take_if(|p| holds(p)) {
+            self.held = Some(Held {
+                id: p.id,
+                start: p.start,
+            });
+        }
+        let add = self.held.is_some();
         match &mut self.press {
             Some(p) if p.pointer == Pointer::Pen && pointer == Pointer::Finger => {}
             Some(p) => {
@@ -330,26 +368,45 @@ impl SelectPress {
                 self.press = Some(Press {
                     id,
                     start: pos,
+                    since: time,
                     pointer,
                     dragging: false,
                     broken: false,
+                    add,
+                    tap_only: false,
                 });
             }
         }
     }
 
+    /// A press of the mouse with Shift. A click adds to the selection or
+    /// takes out, and a drag is left to the view.
+    pub fn shift_down(&mut self, id: u64, pos: Pos2) {
+        self.down(id, pos, Pointer::Mouse);
+        if let Some(p) = self.press.as_mut().filter(|p| p.id == id) {
+            p.add = true;
+            p.tap_only = true;
+        }
+    }
+
     pub fn moved(&mut self, id: u64, pos: Pos2) {
+        if let Some(h) = self.held.as_ref().filter(|h| h.id == id)
+            && h.start.distance(pos) > TAP_SLOP
+        {
+            self.held = None;
+        }
         let Some(p) = self.press.as_mut().filter(|p| p.id == id && !p.broken) else {
             return;
         };
         if !p.dragging && p.start.distance(pos) > TAP_SLOP {
-            if p.pointer == Pointer::Finger {
+            if p.pointer == Pointer::Finger || p.tap_only {
                 p.broken = true;
                 return;
             }
             p.dragging = true;
-            let (pos, pointer) = (p.start, p.pointer);
-            self.events.push(SelectEvent::DragStart { pos, pointer });
+            let (pos, pointer, add) = (p.start, p.pointer, p.add);
+            self.events
+                .push(SelectEvent::DragStart { pos, pointer, add });
         }
         if p.dragging {
             self.events.push(SelectEvent::Drag { pos });
@@ -357,6 +414,10 @@ impl SelectPress {
     }
 
     pub fn up(&mut self, id: u64, pos: Pos2) {
+        if self.held.as_ref().is_some_and(|h| h.id == id) {
+            self.held = None;
+            return;
+        }
         self.moved(id, pos);
         let Some(p) = self.press.take_if(|p| p.id == id) else {
             return;
@@ -367,11 +428,15 @@ impl SelectPress {
             (false, false) => self.events.push(SelectEvent::Tap {
                 pos,
                 pointer: p.pointer,
+                add: p.add,
             }),
         }
     }
 
     pub fn cancel(&mut self, id: u64) {
+        if self.held.as_ref().is_some_and(|h| h.id == id) {
+            self.held = None;
+        }
         if let Some(p) = self.press.take_if(|p| p.id == id)
             && p.dragging
             && !p.broken
@@ -384,11 +449,16 @@ impl SelectPress {
         self.press.is_some()
     }
 
-    /// True while the mouse makes a press.
+    /// True while the mouse makes a press that is not left to the view.
     pub fn mouse(&self) -> bool {
         self.press
             .as_ref()
-            .is_some_and(|p| p.pointer == Pointer::Mouse)
+            .is_some_and(|p| p.pointer == Pointer::Mouse && !p.tap_only)
+    }
+
+    /// The finger that is held still and acts as Shift.
+    pub fn held(&self) -> Option<u64> {
+        self.held.as_ref().map(|h| h.id)
     }
 }
 
@@ -545,6 +615,7 @@ mod tests {
         let tap = SelectEvent::Tap {
             pos: a,
             pointer: Pointer::Finger,
+            add: false,
         };
         assert_eq!(std::mem::take(&mut press.events), [tap]);
         // A finger drag is left to the view.
@@ -560,10 +631,103 @@ mod tests {
         let start = SelectEvent::DragStart {
             pos: a,
             pointer: Pointer::Pen,
+            add: false,
         };
         let drag = SelectEvent::Drag { pos: b };
         let end = SelectEvent::DragEnd { pos: b };
         assert_eq!(press.events, [start, drag, drag, end]);
         assert!(!press.is_down());
+    }
+
+    #[test]
+    fn a_finger_held_still_makes_the_next_presses_add() {
+        let mut press = SelectPress::default();
+        let (a, b, c) = (
+            Pos2::new(10.0, 10.0),
+            Pos2::new(200.0, 10.0),
+            Pos2::new(300.0, 90.0),
+        );
+        press.down(1, a, Pointer::Finger);
+        press.time = HOLD_SECONDS;
+        // A pen taps, then a finger taps, while the first finger holds.
+        press.down(2, b, Pointer::Pen);
+        assert_eq!(press.held(), Some(1));
+        press.up(2, b);
+        press.time += 0.5;
+        press.down(3, c, Pointer::Finger);
+        press.up(3, c);
+        let tap = |pos, pointer| SelectEvent::Tap {
+            pos,
+            pointer,
+            add: true,
+        };
+        assert_eq!(
+            std::mem::take(&mut press.events),
+            [tap(b, Pointer::Pen), tap(c, Pointer::Finger)]
+        );
+        // A box of the pen adds too.
+        press.down(2, b, Pointer::Pen);
+        press.moved(2, c);
+        press.up(2, c);
+        assert!(matches!(
+            press.events[0],
+            SelectEvent::DragStart { add: true, .. }
+        ));
+        press.events.clear();
+        // The held finger lifts with no tap, and the next tap replaces.
+        press.up(1, a);
+        assert!(press.events.is_empty());
+        press.down(2, b, Pointer::Pen);
+        press.up(2, b);
+        assert_eq!(
+            press.events,
+            [SelectEvent::Tap {
+                pos: b,
+                pointer: Pointer::Pen,
+                add: false
+            }]
+        );
+    }
+
+    #[test]
+    fn a_quick_second_finger_or_a_moved_finger_does_not_hold() {
+        let mut press = SelectPress::default();
+        let (a, b) = (Pos2::new(10.0, 10.0), Pos2::new(200.0, 10.0));
+        // Two fingers at once can be the tap of an undo.
+        press.down(1, a, Pointer::Finger);
+        press.time = 0.1;
+        press.down(2, b, Pointer::Finger);
+        press.up(2, b);
+        press.up(1, a);
+        assert_eq!(press.held(), None);
+        assert!(press.events.is_empty());
+        // A finger that moves past the slop stops to hold.
+        press.down(1, a, Pointer::Finger);
+        press.time += HOLD_SECONDS;
+        press.down(2, b, Pointer::Pen);
+        press.up(2, b);
+        press.moved(1, a + Vec2::new(30.0, 0.0));
+        assert_eq!(press.held(), None);
+    }
+
+    #[test]
+    fn a_shift_click_adds_and_a_shift_drag_is_left_to_the_view() {
+        let mut press = SelectPress::default();
+        let (a, b) = (Pos2::new(10.0, 10.0), Pos2::new(200.0, 10.0));
+        press.shift_down(9, a);
+        assert!(!press.mouse());
+        press.up(9, a);
+        assert_eq!(
+            std::mem::take(&mut press.events),
+            [SelectEvent::Tap {
+                pos: a,
+                pointer: Pointer::Mouse,
+                add: true
+            }]
+        );
+        press.shift_down(9, a);
+        press.moved(9, b);
+        press.up(9, b);
+        assert!(press.events.is_empty());
     }
 }

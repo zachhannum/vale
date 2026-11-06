@@ -10860,6 +10860,72 @@ fn split_cuts_each_feature_that_the_stroke_crosses_in_one_undo_step() {
 }
 
 #[test]
+fn a_held_finger_adds_a_second_tap_makes_the_key_and_cut_out_cuts_in_one_undo_step() {
+    use vale_app::ui::select::{ADD_TO_SELECTION, CUT_OUT, Selectable};
+    use vale_store::{Feature, Geometry};
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
+    let country = picks.polygon;
+    let state = h.state_mut();
+    let water = state.doc.add_layer(GeometryKind::Polygon);
+    let lake = vec![vec![
+        [-4.0, -21.0],
+        [4.0, -21.0],
+        [4.0, -16.0],
+        [-4.0, -16.0],
+    ]];
+    let lake = Feature::new(Geometry::Polygons(vec![lake]), Default::default());
+    let uuid = lake.uuid();
+    assert!(state.doc.project.add_feature(water, lake));
+    let lake = FeatureRef { layer: water, uuid };
+    state.selectable = Selectable::Layers([country.layer, water].into());
+    state.save_waiting().unwrap();
+    step_and_save(&mut h, false);
+    let on_lake = screen_at(&h, 0.0, -18.0);
+    let pos = screen_at(&h, -8.0, -14.0);
+    finger_tap_at(&mut h, pos);
+    assert_eq!(selection(&h), [country]);
+    assert!(disabled(&h, CUT_OUT));
+    // A finger holds still, and a tap of the pen adds the lake.
+    let held = screen_at(&h, 40.0, 30.0);
+    finger(&mut h, 7, egui::TouchPhase::Start, held);
+    h.run_steps(40);
+    pen_tap_at(&mut h, on_lake);
+    finger(&mut h, 7, egui::TouchPhase::End, held);
+    h.run_steps(3);
+    assert_eq!(selection(&h), [country, lake]);
+    assert_eq!(h.state().key_feature(), None);
+    // A second tap on the lake makes it the key.
+    pen_tap_at(&mut h, on_lake);
+    assert_eq!(selection(&h), [country, lake]);
+    assert_eq!(h.state().key_feature(), Some(lake));
+    assert!(!disabled(&h, CUT_OUT));
+    screenshot::save(&mut h, "pad-select-key");
+    let before = geometry_of(&h, country);
+    let lake_before = geometry_of(&h, lake);
+    let saved = saves(&h);
+    tap(&mut h, CUT_OUT);
+    for _ in 0..3 {
+        step_and_save(&mut h, false);
+    }
+    assert_eq!(saves(&h), saved + 1);
+    let after = geometry_of(&h, country);
+    assert!(!inside_polygon(&after, 0.0, -18.0));
+    assert!(inside_polygon(&after, -8.0, -18.0));
+    assert_eq!(geometry_of(&h, lake), lake_before);
+    tap(&mut h, "Undo");
+    assert_eq!(geometry_of(&h, country), before);
+    tap(&mut h, "Redo");
+    assert_eq!(geometry_of(&h, country), after);
+    // With Add, a tap takes a selected feature out.
+    tap(&mut h, ADD_TO_SELECTION);
+    assert!(h.state().select_add);
+    finger_tap_at(&mut h, on_lake);
+    assert_eq!(selection(&h), [country]);
+    assert_eq!(h.state().key_feature(), None);
+}
+
+#[test]
 fn split_cuts_a_line_into_two_lines_at_the_crossing() {
     let dir = tempfile::tempdir().unwrap();
     let (mut h, picks) = select_pad(WorldView::Globe, dir.path());

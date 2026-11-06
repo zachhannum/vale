@@ -491,6 +491,12 @@ pub struct AppState {
     /// The features that the Select tool selected, in the order of the
     /// selection.
     pub feature_selection: Vec<crate::globe::select::FeatureRef>,
+    /// The key feature of the selection. `key_feature` gives it while it is
+    /// one of two or more selected features.
+    pub key: Option<crate::globe::select::FeatureRef>,
+    /// Add of the Select tool: each tap and each box adds to the selection
+    /// or takes out, as with Shift.
+    pub select_add: bool,
     /// The layers that the Select tool selects in.
     pub selectable: select::Selectable,
     /// The list of Merge shows, which asks which feature keeps its
@@ -647,6 +653,8 @@ impl AppState {
             world_form: None,
             new_feature: None,
             feature_selection: Vec::new(),
+            key: None,
+            select_add: false,
             selectable: select::Selectable::Active,
             merging: false,
             select_drag: None,
@@ -2983,6 +2991,89 @@ impl AppState {
             self.pipeline.forget(id);
             self.touch();
         }
+    }
+
+    /// The selected polygon that Cut out cuts with, and the other selected
+    /// polygons. Cut out needs a key polygon and another selected polygon.
+    fn cut_parts(
+        &self,
+    ) -> Option<(
+        crate::globe::select::FeatureRef,
+        Vec<crate::globe::select::FeatureRef>,
+    )> {
+        let polygon = |f: &crate::globe::select::FeatureRef| {
+            let layer = self.doc.layer(f.layer);
+            let feature = layer.and_then(|l| l.features.iter().find(|x| x.uuid() == f.uuid));
+            feature.is_some_and(|x| matches!(x.geometry, vale_store::Geometry::Polygons(_)))
+        };
+        let key = self.key_feature().filter(polygon)?;
+        let others: Vec<crate::globe::select::FeatureRef> = (self.feature_selection.iter())
+            .filter(|f| **f != key && polygon(f))
+            .copied()
+            .collect();
+        (!others.is_empty()).then_some((key, others))
+    }
+
+    /// True if Cut out can cut: the key of the selection is a polygon, and
+    /// another polygon is selected.
+    pub fn can_cut_out(&self) -> bool {
+        self.cut_parts().is_some()
+    }
+
+    /// Cuts the key polygon out of the other selected polygons, in any
+    /// layer. The key does not change. A polygon that the cut covers goes
+    /// away. The cut is one undo step.
+    pub fn cut_out(&mut self) {
+        let Some((key, others)) = self.cut_parts() else {
+            return;
+        };
+        let geometry = (self.doc.layer(key.layer))
+            .and_then(|l| l.features.iter().find(|f| f.uuid() == key.uuid))
+            .map(|f| &f.geometry);
+        let Some(area) = geometry.and_then(|g| StrokeArea::of_polygons(g, self.globe.radius()))
+        else {
+            return;
+        };
+        let mut set = Vec::new();
+        let mut removed = Vec::new();
+        for f in others {
+            let feature = (self.doc.layer(f.layer))
+                .and_then(|l| l.features.iter().find(|x| x.uuid() == f.uuid));
+            let Some(feature) = feature.filter(|x| area.near(&x.geometry)) else {
+                continue;
+            };
+            match area.subtract(&feature.geometry) {
+                Some(Some(g)) => set.push((f, g)),
+                Some(None) => removed.push(f),
+                None => {}
+            }
+        }
+        let project = &mut self.doc.project;
+        let mut layers = Vec::new();
+        for (f, g) in set {
+            if project.set_geometry(f.layer, f.uuid, g) {
+                layers.push(f.layer);
+            }
+        }
+        let mut gone = removed.clone();
+        gone.sort_by_key(|f| f.layer);
+        for chunk in gone.chunk_by(|a, b| a.layer == b.layer) {
+            let uuids: Vec<_> = chunk.iter().map(|f| f.uuid).collect();
+            if project.remove_features(chunk[0].layer, &uuids) > 0 {
+                layers.push(chunk[0].layer);
+            }
+        }
+        if layers.is_empty() {
+            return;
+        }
+        self.feature_selection.retain(|f| !removed.contains(f));
+        self.line_edits += 1;
+        layers.sort();
+        layers.dedup();
+        for id in layers {
+            self.pipeline.forget(id);
+        }
+        self.touch();
     }
 
     /// Changes the attribute schema of a vector layer. The undo step of a
