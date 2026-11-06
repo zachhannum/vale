@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::Cursor;
 use std::num::NonZeroUsize;
+use std::sync::Arc;
 
 use kurbo::{Affine, BezPath, Cap, Join, Rect, Shape, Stroke};
 use vello::peniko::{
@@ -16,6 +17,7 @@ use vello::{AaConfig, AaSupport, RenderParams, Renderer, RendererOptions, Scene}
 use vello_cpu::Pixmap;
 
 use crate::list::{Color, DisplayList, FillRule, Item, RenderError};
+use crate::prepared::{Node, PreparedList, visible};
 use crate::raster::{Rgba, glyph_run_outline, pixel_size};
 
 /// The format of a target. Its pixels are premultiplied sRGB values.
@@ -156,9 +158,14 @@ impl GpuRenderer {
         scale: f64,
     ) -> Result<wgpu::Texture, RenderError> {
         let (w, h) = pixel_size(list, scale)?;
-        Ok(device.create_texture(&wgpu::TextureDescriptor {
+        Ok(Self::target_sized(device, w.into(), h.into()))
+    }
+
+    /// A target of `width` by `height` pixels.
+    pub fn target_sized(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Texture {
+        device.create_texture(&wgpu::TextureDescriptor {
             label: Some("vale-render target"),
-            size: extent(w.into(), h.into()),
+            size: extent(width, height),
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -167,7 +174,7 @@ impl GpuRenderer {
                 | wgpu::TextureUsages::TEXTURE_BINDING
                 | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
-        }))
+        })
     }
 
     /// Draws the list at `scale` pixels per point to `target`, in premultiplied pixels, and
@@ -196,7 +203,46 @@ impl GpuRenderer {
         encoder.items(&list.items)?;
         let scenes = encoder.finish();
         self.images.sweep();
+        self.draw(device, queue, &scenes, target)
+    }
 
+    /// Draws the part of the list that falls in `target`, where the page point `p` lands on
+    /// the pixel `transform * p`, and returns the number of batches. Only the nodes that touch
+    /// the target are encoded, and only the size of the target has a limit. The images of the
+    /// list are decoded already, so this neither uses nor sweeps the image cache of `render`.
+    pub fn render_region(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        list: &PreparedList,
+        transform: Affine,
+        target: &wgpu::Texture,
+    ) -> Result<usize, RenderError> {
+        let (w, h) = (target.width(), target.height());
+        if target.format() != TARGET_FORMAT {
+            return Err(RenderError::Gpu("the target has the wrong format".into()));
+        }
+        let mut encoder = Encoder::new(
+            transform,
+            Rect::new(0.0, 0.0, f64::from(w), f64::from(h)),
+            self.limits,
+            &mut self.images,
+        );
+        encoder.nodes(&list.nodes);
+        let scenes = encoder.finish();
+        self.draw(device, queue, &scenes, target)
+    }
+
+    /// Draws each scene to the scratch texture and adds it over `target`, which the first
+    /// scene clears. Returns the number of scenes.
+    fn draw(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        scenes: &[Scene],
+        target: &wgpu::Texture,
+    ) -> Result<usize, RenderError> {
+        let (w, h) = (target.width(), target.height());
         let scratch = match self.scratch.take() {
             Some(t) if (t.width(), t.height()) == (w, h) => t,
             _ => device.create_texture(&wgpu::TextureDescriptor {
@@ -334,6 +380,27 @@ fn fill_rule(rule: FillRule) -> Fill {
     }
 }
 
+/// The pixels of a decoded image, shared with the image.
+struct PixmapBytes(Arc<Pixmap>);
+
+impl AsRef<[u8]> for PixmapBytes {
+    fn as_ref(&self) -> &[u8] {
+        self.0.data_as_u8_slice()
+    }
+}
+
+/// The image for one draw. Each draw gets a new blob, for the reason that `Images` gives, but
+/// the blob shares the pixels.
+fn image_data(pixmap: &Arc<Pixmap>) -> ImageData {
+    ImageData {
+        data: Blob::new(Arc::new(PixmapBytes(pixmap.clone()))),
+        format: ImageFormat::Rgba8,
+        alpha_type: ImageAlphaType::AlphaPremultiplied,
+        width: pixmap.width().into(),
+        height: pixmap.height().into(),
+    }
+}
+
 /// The decoded images of the last render, by the hash of the PNG. Vello 0.11 can lose an image
 /// that stays in its atlas from one render to the next, so each draw gives the pixels a new blob.
 #[derive(Default)]
@@ -454,36 +521,86 @@ impl<'a> Encoder<'a> {
         }
     }
 
+    fn fill(&mut self, path: &BezPath, color: Color, rule: Fill) {
+        self.scene.fill(rule, self.base, paint(color), None, path);
+        self.cover(path.bounding_box());
+    }
+
+    fn stroke(&mut self, path: &BezPath, color: Color, width: f64, round: bool) {
+        let mut stroke = Stroke::new(width);
+        if round {
+            stroke = stroke.with_join(Join::Round).with_caps(Cap::Round);
+        }
+        self.scene
+            .stroke(&stroke, self.base, paint(color), None, path);
+        let half = width / 2.0;
+        self.cover(path.bounding_box().inflate(half, half));
+    }
+
+    /// Draws the image in the page-space rectangle `rect`, which has an area.
+    fn image(&mut self, image: ImageData, rect: Rect, interpolate: bool) {
+        let (iw, ih) = (f64::from(image.width), f64::from(image.height));
+        let transform = self.base
+            * Affine::translate((rect.x0, rect.y0))
+            * Affine::scale_non_uniform(rect.width() / iw, rect.height() / ih);
+        let brush = ImageBrush {
+            image,
+            sampler: ImageSampler {
+                quality: if interpolate {
+                    ImageQuality::Medium
+                } else {
+                    ImageQuality::Low
+                },
+                ..Default::default()
+            },
+        };
+        self.scene.draw_image(&brush, transform);
+        self.cover(rect);
+    }
+
+    fn push_layer(&mut self, alpha: f32) {
+        self.scene.push_layer(
+            Fill::NonZero,
+            Mix::Normal,
+            alpha.clamp(0.0, 1.0),
+            Affine::IDENTITY,
+            &self.viewport,
+        );
+        self.cover(self.base.inverse().transform_rect_bbox(self.viewport));
+        self.layers += 1;
+    }
+
+    fn pop_layer(&mut self) {
+        self.layers -= 1;
+        self.scene.pop_layer();
+    }
+
+    fn push_clip(&mut self, path: &'a BezPath, rule: FillRule) {
+        let fill = fill_rule(rule);
+        self.scene.push_clip_layer(fill, self.base, path);
+        self.clips.push((path, fill));
+        self.cover(path.bounding_box());
+    }
+
+    fn pop_clip(&mut self) {
+        self.scene.pop_layer();
+        self.clips.pop();
+    }
+
     /// Adds the items, and closes the clips that they leave open.
     fn items(&mut self, items: &'a [Item]) -> Result<(), RenderError> {
         let floor = self.clips.len();
         for item in items {
             match item {
-                Item::Fill { path, color, rule } => {
-                    self.scene
-                        .fill(fill_rule(*rule), self.base, paint(*color), None, path);
-                    self.cover(path.bounding_box());
-                }
+                Item::Fill { path, color, rule } => self.fill(path, *color, fill_rule(*rule)),
                 Item::Stroke {
                     path,
                     color,
                     width,
                     round,
-                } => {
-                    let mut stroke = Stroke::new(*width);
-                    if *round {
-                        stroke = stroke.with_join(Join::Round).with_caps(Cap::Round);
-                    }
-                    self.scene
-                        .stroke(&stroke, self.base, paint(*color), None, path);
-                    let half = width / 2.0;
-                    self.cover(path.bounding_box().inflate(half, half));
-                }
+                } => self.stroke(path, *color, *width, *round),
                 Item::Glyphs(run) => {
-                    let path = glyph_run_outline(run);
-                    self.scene
-                        .fill(Fill::NonZero, self.base, paint(run.color), None, &path);
-                    self.cover(path.bounding_box());
+                    self.fill(&glyph_run_outline(run), run.color, Fill::NonZero);
                 }
                 Item::Image {
                     png,
@@ -491,63 +608,77 @@ impl<'a> Encoder<'a> {
                     interpolate,
                 } => {
                     let image = self.images.get(png)?;
-                    if !(rect.width() > 0.0 && rect.height() > 0.0) {
-                        continue;
+                    if rect.width() > 0.0 && rect.height() > 0.0 {
+                        self.image(image, *rect, *interpolate);
                     }
-                    let (iw, ih) = (f64::from(image.width), f64::from(image.height));
-                    let transform = self.base
-                        * Affine::translate((rect.x0, rect.y0))
-                        * Affine::scale_non_uniform(rect.width() / iw, rect.height() / ih);
-                    let brush = ImageBrush {
-                        image,
-                        sampler: ImageSampler {
-                            quality: if *interpolate {
-                                ImageQuality::Medium
-                            } else {
-                                ImageQuality::Low
-                            },
-                            ..Default::default()
-                        },
-                    };
-                    self.scene.draw_image(&brush, transform);
-                    self.cover(*rect);
                 }
                 Item::Rasterize { items, .. } => self.items(items)?,
                 Item::Layer { alpha, items } => {
-                    self.scene.push_layer(
-                        Fill::NonZero,
-                        Mix::Normal,
-                        alpha.clamp(0.0, 1.0),
-                        Affine::IDENTITY,
-                        &self.viewport,
-                    );
-                    self.cover(self.base.inverse().transform_rect_bbox(self.viewport));
-                    self.layers += 1;
+                    self.push_layer(*alpha);
                     let result = self.items(items);
-                    self.layers -= 1;
-                    self.scene.pop_layer();
+                    self.pop_layer();
                     result?;
                 }
-                Item::PushClip { path, rule } => {
-                    let fill = fill_rule(*rule);
-                    self.scene.push_clip_layer(fill, self.base, path);
-                    self.clips.push((path, fill));
-                    self.cover(path.bounding_box());
-                }
+                Item::PushClip { path, rule } => self.push_clip(path, *rule),
                 Item::PopClip => {
                     if self.clips.len() > floor {
-                        self.scene.pop_layer();
-                        self.clips.pop();
+                        self.pop_clip();
                     }
                 }
             }
             self.check();
         }
         while self.clips.len() > floor {
-            self.scene.pop_layer();
-            self.clips.pop();
+            self.pop_clip();
         }
         Ok(())
+    }
+
+    /// Adds the nodes that touch the viewport.
+    fn nodes(&mut self, nodes: &'a [Node]) {
+        let (w, h) = (self.viewport.width(), self.viewport.height());
+        for node in nodes {
+            if !visible(self.base, node.bbox(), w, h) {
+                continue;
+            }
+            match node {
+                Node::Fill {
+                    path, color, rule, ..
+                } => self.fill(path, *color, fill_rule(*rule)),
+                Node::Stroke {
+                    path,
+                    color,
+                    width,
+                    round,
+                    ..
+                } => self.stroke(path, *color, *width, *round),
+                Node::Glyphs { path, color, .. } => self.fill(path, *color, Fill::NonZero),
+                Node::Image {
+                    pixmap,
+                    rect,
+                    interpolate,
+                } => self.image(image_data(pixmap), *rect, *interpolate),
+                Node::Clip {
+                    path,
+                    rule,
+                    children,
+                    ..
+                } => {
+                    self.push_clip(path, *rule);
+                    self.nodes(children);
+                    self.pop_clip();
+                }
+                Node::Layer {
+                    alpha, children, ..
+                } => {
+                    self.push_layer(*alpha);
+                    self.nodes(children);
+                    self.pop_layer();
+                }
+                Node::Rasterize { children, .. } => self.nodes(children),
+            }
+            self.check();
+        }
     }
 
     fn finish(mut self) -> Vec<Scene> {

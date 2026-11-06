@@ -8,8 +8,8 @@ use vale_labeler::{
 };
 use vale_render::gpu::{GpuRenderer, Limits, read_rgba};
 use vale_render::{
-    BezPath, Color, DisplayList, FillRule, GlyphRun, Item, Point, Rect, RenderError, Rgba,
-    render_png, render_rgba,
+    Affine, BezPath, Color, DisplayList, FillRule, GlyphRun, Item, Point, PreparedList, Rect,
+    RenderError, Rgba, render_png, render_region, render_rgba,
 };
 
 struct Gpu {
@@ -321,4 +321,34 @@ fn a_layer_applies_its_alpha_once() {
         let (most, _) = compare(&gpu, &render_rgba(&list, 1.0).unwrap(), 0);
         assert!(most <= 2, "a channel differs by {most}");
     }
+}
+
+#[test]
+#[ignore = "gpu"]
+fn gpu_region_pixels_match_cpu_region_pixels() {
+    let gpu = gpu();
+    let list = PreparedList::new(&sampler()).unwrap();
+    let mut renderer = gpu.renderer.lock().unwrap();
+    // Two regions at 2.5 pixels per point, the second with small batches. The image and the
+    // glyph run are in both.
+    let transform = Affine::translate((-300.0, -120.0)) * Affine::scale(2.5);
+    let target = GpuRenderer::target_sized(&gpu.device, 200, 130);
+    let (cpu, _) = render_region(&list, transform, 200, 130).unwrap();
+    for limits in [
+        Limits::default(),
+        Limits {
+            tiles: 64,
+            ..Limits::default()
+        },
+    ] {
+        renderer.set_limits(limits);
+        let batches = renderer
+            .render_region(&gpu.device, &gpu.queue, &list, transform, &target)
+            .unwrap();
+        let region = read_rgba(&gpu.device, &gpu.queue, &target).unwrap();
+        let (most, over) = compare(&cpu, &region, 8);
+        eprintln!("{batches} batches: largest difference {most}, {over:.5} over 8");
+        assert!(over < 0.01, "{over} of the channels differ");
+    }
+    renderer.set_limits(Limits::default());
 }
