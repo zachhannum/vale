@@ -2427,6 +2427,53 @@ fn shape_mask(
     Some(mask)
 }
 
+/// The margin of the texture of a frame past each side of the canvas while a
+/// gesture moves the page, as a part of the size of the canvas.
+const MOTION_MARGIN: f32 = 0.25;
+
+/// Whether the textures of a frame cover `shown` in the view `vt`. Either
+/// the map texture with the water below it, or the spill, covers the map.
+/// The decorations must cover it too.
+fn covered(
+    state: &AppState,
+    id: FrameId,
+    content: u64,
+    (vt, target): (ViewTransform, FrameTarget),
+    shown: Rect,
+) -> bool {
+    let a = &state.atlas;
+    let holds = |image: Option<&FrameImage>, vt: &ViewTransform| {
+        image.is_none_or(|image| image_covers(image, vt, shown))
+    };
+    let map = a
+        .images
+        .get(&id)
+        .is_some_and(|i| image_covers(i, &vt, shown))
+        && holds(a.unders.get(&id), &vt);
+    let spill =
+        (a.spills.get(&id)).is_some_and(|s| s.content == content && image_covers(s, &vt, shown));
+    (map || spill) && holds(a.decors.get(&id), &fixed_view(vt, target))
+}
+
+/// Whether `image`, moved to the view `vt`, covers the screen rectangle
+/// `rect`.
+fn image_covers(image: &FrameImage, vt: &ViewTransform, rect: Rect) -> bool {
+    let back = |p: Pos2| {
+        let q = image
+            .vt
+            .to_page(vt.from_page(Point::new(f64::from(p.x), f64::from(p.y))));
+        pos2(q.x as f32, q.y as f32)
+    };
+    let within = image.rect.expand(0.5);
+    let corners = [
+        rect.left_top(),
+        rect.right_top(),
+        rect.right_bottom(),
+        rect.left_bottom(),
+    ];
+    corners.into_iter().all(|c| within.contains(back(c)))
+}
+
 /// Composes the frames that changed and paints each frame of the page.
 fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
     let page = open_page(state).clone();
@@ -2510,7 +2557,9 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
         let fresh = match state.atlas.images.get(&frame.id) {
             None => false,
             Some(image) if image.content != content => false,
-            Some(image) if image.place != place_key || !image.settled => moving,
+            Some(image) if image.place != place_key || !image.settled => {
+                moving && covered(state, frame.id, content, (vt, target), shown)
+            }
             Some(_) => true,
         };
         if !fresh {
@@ -2521,7 +2570,18 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
             };
             let keys = (content, place_key);
             let primary = primary == Some(frame.id);
-            let at = (place, shown);
+            // While a gesture moves the page, the texture reaches past the
+            // canvas, so that the next frames can reuse it.
+            let drawn = if moving {
+                let margin = MOTION_MARGIN * area.size();
+                let outer = place
+                    .rect_to_screen(math::shape_bbox(&frame.shape))
+                    .expand(reach);
+                snap(outer.intersect(area.expand2(margin)), ppp)
+            } else {
+                shown
+            };
+            let at = (place, drawn);
             compose(
                 &ctx,
                 state,

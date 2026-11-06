@@ -1082,6 +1082,30 @@ fn the_maps_stay_still_during_a_drag_and_compose_after_it() {
     assert_eq!(h.state().atlas.composes, composes + 1);
 }
 
+#[test]
+fn a_drag_of_the_page_shows_the_parts_of_a_map_that_come_into_view() {
+    let mut h = inset_pad(BOARDS[0]);
+    let id = frame(&h, 0).id;
+    let at = margin(&h);
+    pinch(&mut h, at, 100.0, 400.0, 0.0, Vec2::ZERO);
+    h.run_steps(4);
+    let rest = h.state().atlas.texture_rect(id).unwrap();
+    let shape = place(&h).rect_to_screen(shape_bbox(&frame(&h, 0).shape));
+    assert!(!rest.contains_rect(shape), "{rest:?} {shape:?}");
+    tap(&mut h, "Move");
+    let composes = h.state().atlas.composes;
+    let from = margin(&h);
+    let to = from - vec2(300.0, 200.0);
+    drag_steps(&mut h, from, to, Input::Finger, 10);
+    // The map covers the part of the canvas that it covered at rest.
+    let [map, ..] = h.state().atlas.painted_rects(id);
+    let map = map.unwrap();
+    assert!(map.expand(1.0).contains_rect(rest), "{map:?} {rest:?}");
+    let during = h.state().atlas.composes - composes;
+    assert!((1..10).contains(&during), "{during}");
+    release(&mut h, to, Input::Finger);
+}
+
 /// The center, the scale, the rotation, and the shape of each frame of the
 /// open page.
 fn maps(h: &Pad) -> Vec<String> {
