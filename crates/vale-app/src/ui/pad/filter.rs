@@ -7,6 +7,7 @@ use eframe::egui::{self, Align2, Rect, Sense, pos2, vec2};
 use vale_store::{FieldType, LayerId, Value};
 use vale_style::expr::{Filter, field_ref};
 
+use super::expression;
 use super::geometry::TOUCH;
 use super::icons::Icon;
 use super::raster::heading;
@@ -14,6 +15,7 @@ use super::widgets::{self, Controls, Keys, PANEL_ROW};
 use super::{Page, theme};
 use crate::classify::number_text;
 use crate::ui::AppState;
+use crate::ui::expr_help::{ExprHelp, ExprKind};
 
 /// The row of the rule page that opens the page of a new condition, the
 /// title of that page, and its button.
@@ -188,7 +190,8 @@ pub fn rows(
     current: &str,
     typed: &mut String,
 ) -> Option<String> {
-    let (out, add) = list(ui, controls, current, typed, NO_CONDITION);
+    let help = ExprHelp::for_layer(state, id);
+    let (out, add) = list(ui, controls, current, typed, NO_CONDITION, &help);
     if add {
         state.pad.rules.draft = Draft::new((id, i));
         state.pad.page = Some(Page::Condition(i));
@@ -198,14 +201,16 @@ pub fn rows(
 
 /// A filter as rows: a row for each condition, the row "Add condition", and
 /// the Expression field with the whole filter. `none` is the text while the
-/// filter has no condition. Returns the new filter text when the user
-/// changes it, and true when the user taps "Add condition".
+/// filter has no condition. `help` is the help of the Expression field.
+/// Returns the new filter text when the user changes it, and true when the
+/// user taps "Add condition".
 pub fn list(
     ui: &mut egui::Ui,
     controls: &mut Controls,
     current: &str,
     typed: &mut String,
     none: &str,
+    help: &ExprHelp,
 ) -> (Option<String>, bool) {
     heading(ui, super::rules::FILTER);
     let mut parts = conditions(current);
@@ -226,17 +231,13 @@ pub fn list(
     let add = widgets::open_row(ui, controls, ADD_CONDITION, "").clicked();
 
     // The whole filter as text, for a filter that conditions cannot give.
-    let valid = Filter::new(typed).error().is_none();
     let name = super::rules::EXPRESSION;
-    let field = widgets::text_field(ui, controls, name, name, None, typed, valid);
+    let field = expression::field(ui, controls, name, typed, help, ExprKind::Filter);
     if field.changed() {
         out = Some(typed.clone());
     } else if !field.has_focus() {
         // The field shows the filter again after an undo or a new condition.
         *typed = out.clone().unwrap_or_else(|| current.to_owned());
-    }
-    if !valid {
-        widgets::form_note(ui, super::rules::BAD_FILTER, 20.0);
     }
     (out, add)
 }

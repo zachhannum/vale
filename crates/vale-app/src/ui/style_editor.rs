@@ -5,20 +5,20 @@
 use eframe::egui;
 use vale_render::Symbols;
 use vale_store::{Field, FieldType, FillKind, GeometryKind, LayerId};
-use vale_style::expr::{Expr, Filter, Property, field_ref};
+use vale_style::expr::{Filter, Property, field_ref};
 use vale_style::{Color, Hatch, LayerStyle, MarkerShape, Mask, Rule, Stroke, StrokeKind};
 
+use super::expr_help::{self, ExprHelp, ExprKind};
 use super::pad::classify::{
-    BAD_EXPRESSION, CLASS_COUNT, CLASSIFY, COLOR_RAMP, FIELD, METHOD, REPLACE_RULES, REVERSE,
-    Request,
+    CLASS_COUNT, CLASSIFY, COLOR_RAMP, FIELD, METHOD, REPLACE_RULES, REVERSE, Request,
 };
 use super::pad::filter::{self, ADD_CONDITION, REMOVE_CONDITION};
 use super::pad::furniture::{ANGLE, LINE_COLOR, LINE_WIDTH};
 use super::pad::raster::IMPORT_RAMP;
 use super::pad::rules::{
-    ADD_RULE, ALL_FEATURES, BAD_FILTER, BAD_RANGE, BRUSH, DASH, DASHED, DASHES, DELETE_RULE,
-    EXPRESSION, FILL, FILTER, GAP, LINE, MAX_SCALE, MIN_SCALE, MOVE_DOWN, MOVE_UP, NO_LIMIT, SOLID,
-    STROKE, STROKE_WIDTH, TAPER, TAPER_START, parse_scale, scale_text,
+    ADD_RULE, ALL_FEATURES, BAD_RANGE, BRUSH, DASH, DASHED, DASHES, DELETE_RULE, EXPRESSION, FILL,
+    FILTER, GAP, LINE, MAX_SCALE, MIN_SCALE, MOVE_DOWN, MOVE_UP, NO_LIMIT, SOLID, STROKE,
+    STROKE_WIDTH, TAPER, TAPER_START, parse_scale, scale_text,
 };
 use super::pad::rules::{
     ADD_SYMBOL, BAD_MASK_RANGE, CIRCLE_SIZES, COLOR, MARKER, MARKER_SHAPE, MASK, MASK_MAX,
@@ -33,11 +33,12 @@ use crate::globe::symbol::paint_symbol;
 use crate::ramps::Ramp;
 
 /// The symbols that the editor lists, the text of the last addition of a
-/// symbol, and the actions of the app.
+/// symbol, the actions of the app, and the help of the expression fields.
 pub struct Library<'a> {
     pub symbols: &'a Symbols,
     pub note: Option<&'a Note>,
     pub actions: &'a mut Vec<Action>,
+    pub help: &'a ExprHelp,
 }
 
 /// The editor of the rules of the style of layer `id`. Returns true if the
@@ -96,7 +97,7 @@ pub fn rules(
     if let Some(rule) = style.style.rules.get_mut(at) {
         ui.separator();
         let salt = key.with(at);
-        changed |= filter_rows(ui, rule, fields, salt);
+        changed |= filter_rows(ui, rule, fields, library.help, salt);
         changed |= scale_rows(ui, rule, salt);
         let numbers = numeric_fields(fields);
         if kind == GeometryKind::Point {
@@ -439,7 +440,13 @@ fn tint_row(ui: &mut egui::Ui, tint: &mut Option<Property<Color>>) {
 
 /// The conditions of the filter, each with a button that removes it, the
 /// controls of a new condition, and the text of the whole filter.
-fn filter_rows(ui: &mut egui::Ui, rule: &mut Rule, fields: &[Field], salt: egui::Id) -> bool {
+fn filter_rows(
+    ui: &mut egui::Ui,
+    rule: &mut Rule,
+    fields: &[Field],
+    help: &ExprHelp,
+    salt: egui::Id,
+) -> bool {
     let current = rule
         .filter
         .source()
@@ -531,23 +538,24 @@ fn filter_rows(ui: &mut egui::Ui, rule: &mut Rule, fields: &[Field], salt: egui:
     let mut text = out.clone().unwrap_or(current);
     ui.horizontal(|ui| {
         ui.label(EXPRESSION);
+        let id = salt.with("filter");
         let edit = egui::TextEdit::singleline(&mut text)
+            .id(id)
+            .font(egui::TextStyle::Monospace)
             .hint_text(ALL_FEATURES)
             .desired_width(150.0);
         let field = ui.add(edit);
         field.widget_info(|| {
             egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, EXPRESSION)
         });
-        if field.changed() {
+        if field.changed() | expr_help::insert_menu(ui, help, id, &mut text) {
             out = Some(text.clone());
         }
     });
+    expr_help::desktop_line(ui, help, &text, ExprKind::Filter);
     let changed = out.is_some();
     if let Some(text) = out {
         rule.filter = Filter::new(&text);
-    }
-    if rule.filter.error().is_some() {
-        ui.colored_label(ui.visuals().warn_fg_color, BAD_FILTER);
     }
     changed
 }
@@ -823,11 +831,16 @@ pub fn classify(
             });
             ui.horizontal(|ui| {
                 ui.label(EXPRESSION);
-                ui.text_edit_singleline(&mut text);
+                let field = key.with("expression");
+                let edit = egui::TextEdit::singleline(&mut text)
+                    .id(field)
+                    .font(egui::TextStyle::Monospace);
+                ui.add(edit).widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, EXPRESSION)
+                });
+                expr_help::insert_menu(ui, library.help, field, &mut text);
             });
-            if !text.trim().is_empty() && Expr::parse(&text).is_err() {
-                ui.label(BAD_EXPRESSION);
-            }
+            expr_help::desktop_line(ui, library.help, &text, ExprKind::Value);
             ui.horizontal(|ui| {
                 ui.label(METHOD);
                 egui::ComboBox::from_id_salt(("classify-method", id.0))

@@ -1490,6 +1490,41 @@ fn the_style_editor_opens_from_layers_on_the_globe_and_the_flat_view() {
 }
 
 #[test]
+fn a_desktop_expression_field_shows_the_result_and_inserts_from_its_menu() {
+    use vale_app::ui::expr_help::{FUNCTIONS_MENU, INSERT, MATCHES};
+    use vale_app::ui::pad::rules::EXPRESSION;
+    let mut h = globe_harness();
+    h.get_by_label(LAYERS_MENU).click();
+    h.run_steps(2);
+    h.get_by_label("Open Rivers").click();
+    h.run_steps(2);
+    let rivers = h.state().selected_vector().unwrap();
+    let filter = |h: &Harness<'static, AppState>| {
+        let rule = &h.state().doc.entry(rivers).unwrap().style.style.rules[0];
+        rule.filter.source().map(|s| s.text().to_owned())
+    };
+    let layer = h.state().doc.layer(rivers).unwrap();
+    let first = layer.features[0].attributes["scalerank"].label().unwrap();
+
+    type_in(&mut h, EXPRESSION, &format!("scalerank = {first}"));
+    assert!(h.query_by_label(MATCHES).is_some());
+    type_in(&mut h, EXPRESSION, "shout(name)");
+    assert!(h.query_by_label("Unknown function 'shout'.").is_some());
+
+    // The menu inserts at the cursor, at the end of the typed text.
+    type_in(&mut h, EXPRESSION, "scalerank = ");
+    h.get_by_label(INSERT).click();
+    h.run_steps(2);
+    // The button of a submenu has an arrow after its name.
+    h.get_by_label_contains(FUNCTIONS_MENU).click();
+    h.run_steps(2);
+    h.get_by_label("round(x, digits)").click();
+    h.run_steps(3);
+    let text = "scalerank = round(x, digits)";
+    assert_eq!(filter(&h).as_deref(), Some(text));
+}
+
+#[test]
 fn the_desktop_form_makes_a_raster_layer_from_an_image_file() {
     use vale_app::ui::raster_form::{self, RasterForm};
     let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))

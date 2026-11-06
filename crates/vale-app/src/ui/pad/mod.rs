@@ -32,6 +32,7 @@ pub mod atlas;
 pub mod browser;
 pub mod classify;
 pub mod edge_labels;
+pub mod expression;
 pub mod eyedropper;
 pub mod fields;
 pub mod filter;

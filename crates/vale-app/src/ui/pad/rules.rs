@@ -30,8 +30,6 @@ pub const ALL_FEATURES: &str = "All features";
 pub const FILTER: &str = "Filter";
 /// The field of the whole filter as text.
 pub const EXPRESSION: &str = "Expression";
-/// The text below a filter that does not parse.
-pub const BAD_FILTER: &str = "Not a valid filter.";
 pub const MIN_SCALE: &str = "Min scale";
 pub const MAX_SCALE: &str = "Max scale";
 /// The text of a scale field with no limit.
