@@ -233,6 +233,81 @@ fn delete_selection_deletes_a_mixed_selection_in_one_undo_step() {
     assert_eq!((count(&h, towns.layer), count(&h, wells.layer)), (1, 1));
 }
 
+/// Runs a frame and the save of the frame, as the app does.
+fn frame_and_save(h: &mut Pad) {
+    h.run_steps(1);
+    h.state_mut().save_tick(false, std::time::Instant::now());
+}
+
+#[test]
+fn undo_of_delete_selection_selects_the_features_again_and_redo_does_not() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness();
+    let (towns, wells, at) = two_layers(&mut h);
+    let state = h.state_mut();
+    state.session = Some(Session::open(&dir.path().join("w.gpkg"), &mut state.doc).unwrap());
+    state.save_waiting().unwrap();
+    h.state_mut().select_all_layers();
+    pen_box(&mut h, at - vec2(30.0, 30.0), at + vec2(30.0, 30.0));
+    frame_and_save(&mut h);
+    let mut selected = h.state().feature_selection.clone();
+    selected.sort_by_key(|f| f.layer.0);
+    assert_eq!(selected, [towns, wells]);
+    h.state_mut().delete_selection();
+    frame_and_save(&mut h);
+    assert!(h.state().feature_selection.is_empty());
+    h.state_mut().undo();
+    frame_and_save(&mut h);
+    let mut restored = h.state().feature_selection.clone();
+    restored.sort_by_key(|f| f.layer.0);
+    assert_eq!(restored, selected);
+    h.state_mut().redo();
+    frame_and_save(&mut h);
+    assert!(h.state().feature_selection.is_empty());
+}
+
+#[test]
+fn a_selection_change_is_not_an_undo_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness();
+    let (towns, wells, _) = two_layers(&mut h);
+    let state = h.state_mut();
+    state.session = Some(Session::open(&dir.path().join("w.gpkg"), &mut state.doc).unwrap());
+    state.save_waiting().unwrap();
+    h.state_mut().select_all_layers();
+    h.state_mut().set_feature_selection(vec![towns]);
+    frame_and_save(&mut h);
+    h.state_mut().delete_selection();
+    frame_and_save(&mut h);
+    h.state_mut().set_feature_selection(vec![wells]);
+    frame_and_save(&mut h);
+    // The undo undoes the delete, and the selection of Wells makes no step.
+    h.state_mut().undo();
+    frame_and_save(&mut h);
+    assert!(h.state().doc.layer(towns.layer).unwrap().features.len() == 1);
+    assert_eq!(h.state().feature_selection, [towns]);
+    assert!(!h.state().can_undo());
+}
+
+#[test]
+fn a_restored_selection_leaves_out_what_is_not_there() {
+    use vale_store::{FrameId, StepSelection};
+    let mut h = harness();
+    let (towns, wells, _) = two_layers(&mut h);
+    let gone = Feature::new(Geometry::Points(vec![[0.0, 0.0]]), Default::default());
+    let gone = (towns.layer, gone.uuid());
+    let pair = |f: FeatureRef| (f.layer, f.uuid);
+    h.state_mut().restore_selection(&StepSelection {
+        features: vec![pair(towns), gone, pair(wells)],
+        key: Some(gone),
+        frame: Some(FrameId(99)),
+        item: None,
+    });
+    assert_eq!(h.state().feature_selection, [towns, wells]);
+    assert_eq!(h.state().key_feature(), None);
+    assert_eq!(h.state().atlas.frame(), None);
+}
+
 #[test]
 fn merge_is_off_for_a_mixed_selection() {
     let mut h = harness();

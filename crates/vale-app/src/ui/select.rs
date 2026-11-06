@@ -5,9 +5,10 @@
 use std::collections::{BTreeSet, HashSet};
 
 use eframe::egui::{self, Pos2};
-use vale_store::{Geometry, Layer, LayerId, Uuid, Value};
+use vale_store::{Geometry, Layer, LayerId, StepSelection, Uuid, Value};
 
 use super::AppState;
+use super::atlas::AtlasSelection;
 use super::new_feature::{FormField, can_take_focus};
 use super::pad::theme;
 use super::pad::widgets::{self, Controls};
@@ -328,6 +329,50 @@ impl AppState {
             && layers.all(|l| l == first)
         {
             self.select_vector(first);
+        }
+    }
+
+    /// The selection that an undo step keeps.
+    pub(super) fn step_selection(&self) -> StepSelection {
+        let pair = |f: &FeatureRef| (f.layer, f.uuid);
+        StepSelection {
+            features: self.feature_selection.iter().map(pair).collect(),
+            key: self.key_feature().as_ref().map(pair),
+            frame: self.atlas.frame(),
+            item: self.atlas.item(),
+        }
+    }
+
+    /// Puts back the selection of an undo step. It leaves out each feature
+    /// that is not in the project, and a frame or an item that is not on
+    /// the open page.
+    pub fn restore_selection(&mut self, selection: &StepSelection) {
+        let live: HashSet<(LayerId, Uuid)> = (self.doc.project.layers().iter())
+            .flat_map(|l| l.features.iter().map(|f| (l.id, f.uuid())))
+            .collect();
+        let features = (selection.features.iter())
+            .filter(|f| live.contains(f))
+            .map(|&(layer, uuid)| FeatureRef { layer, uuid })
+            .collect();
+        self.set_feature_selection(features);
+        self.key = (selection.key)
+            .map(|(layer, uuid)| FeatureRef { layer, uuid })
+            .filter(|k| self.feature_selection.contains(k));
+
+        let page = self.doc.project.atlas.page(self.atlas.page);
+        let frame = (selection.frame)
+            .filter(|&id| page.is_some_and(|p| p.frames.iter().any(|f| f.id == id)));
+        let item = (selection.item)
+            .filter(|&id| page.is_some_and(|p| p.furniture.iter().any(|f| f.id == id)));
+        let atlas = match (frame, item) {
+            (Some(id), _) => AtlasSelection::Frame(id),
+            (None, Some(id)) => AtlasSelection::Item(id),
+            (None, None) if self.atlas.selection == AtlasSelection::Page => AtlasSelection::Page,
+            (None, None) => AtlasSelection::None,
+        };
+        if atlas != self.atlas.selection {
+            self.atlas.selection = atlas;
+            self.atlas.vertices.clear();
         }
     }
 

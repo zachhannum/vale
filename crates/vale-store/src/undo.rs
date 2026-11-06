@@ -91,10 +91,128 @@ pub(crate) const KEEP_OLD_TILE: &str = "INSERT OR IGNORE INTO vale_undo_tile
      SELECT ?1, raster_id, level, face, tile_column, tile_row, data FROM vale_raster_tile
      WHERE raster_id = ?2 AND level = ?3 AND face = ?4 AND tile_column = ?5 AND tile_row = ?6";
 
-/// Starts a step and returns its ID.
-pub(crate) fn begin(tx: &Transaction) -> Result<i64, StoreError> {
-    tx.execute("INSERT INTO vale_undo_step (redo, bytes) VALUES (0, 0)", [])?;
+/// The selection of the app from before or from after a step. It is not a
+/// record, so an undo does not swap it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct StepSelection {
+    pub features: Vec<(LayerId, Uuid)>,
+    pub key: Option<(LayerId, Uuid)>,
+    pub frame: Option<FrameId>,
+    pub item: Option<FurnitureId>,
+}
+
+/// The version byte of an encoded selection.
+const SELECTION_VERSION: u8 = 1;
+
+impl StepSelection {
+    pub(crate) fn encode(&self) -> Vec<u8> {
+        fn put_feature(out: &mut Vec<u8>, (layer, uuid): &(LayerId, Uuid)) {
+            put_u32(out, layer.0 as usize);
+            out.extend_from_slice(uuid.as_bytes());
+        }
+        let mut out = vec![SELECTION_VERSION];
+        put_u32(&mut out, self.features.len());
+        for feature in &self.features {
+            put_feature(&mut out, feature);
+        }
+        out.push(self.key.is_some().into());
+        if let Some(key) = &self.key {
+            put_feature(&mut out, key);
+        }
+        for id in [self.frame.map(|f| f.0), self.item.map(|i| i.0)] {
+            out.push(id.is_some().into());
+            if let Some(id) = id {
+                put_u32(&mut out, id as usize);
+            }
+        }
+        out
+    }
+
+    /// `None` if the blob is not a selection of this version.
+    fn decode(blob: &[u8]) -> Option<Self> {
+        fn feature(r: &mut Reader) -> Option<(LayerId, Uuid)> {
+            Some((LayerId(r.u32()?), Uuid::from_bytes(r.take()?)))
+        }
+        fn some(r: &mut Reader) -> Option<bool> {
+            match r.take::<1>()? {
+                [0] => Some(false),
+                [1] => Some(true),
+                _ => None,
+            }
+        }
+        let r = &mut Reader(blob);
+        (r.take::<1>()? == [SELECTION_VERSION]).then_some(())?;
+        let n = r.u32()? as usize;
+        // Each feature takes 20 bytes.
+        (n <= r.0.len() / 20).then_some(())?;
+        let features = (0..n).map(|_| feature(r)).collect::<Option<_>>()?;
+        let key = if some(r)? { Some(feature(r)?) } else { None };
+        let frame = if some(r)? {
+            Some(FrameId(r.u32()?))
+        } else {
+            None
+        };
+        let item = if some(r)? {
+            Some(FurnitureId(r.u32()?))
+        } else {
+            None
+        };
+        r.0.is_empty().then_some(Self {
+            features,
+            key,
+            frame,
+            item,
+        })
+    }
+}
+
+/// Adds the columns of the selection from before and from after a step.
+/// A step of an older file has no selection.
+pub(crate) fn v36(tx: &Transaction) -> rusqlite::Result<()> {
+    for column in ["before_selection", "after_selection"] {
+        let count: i64 = tx.query_row(
+            "SELECT count(*) FROM pragma_table_info('vale_undo_step') WHERE name = ?1",
+            [column],
+            |r| r.get(0),
+        )?;
+        if count == 0 {
+            tx.execute_batch(&format!(
+                "ALTER TABLE vale_undo_step ADD COLUMN {column} BLOB"
+            ))?;
+        }
+    }
+    Ok(())
+}
+
+/// Starts a step with the selection from before and from after it, and
+/// returns its ID.
+pub(crate) fn begin(
+    tx: &Transaction,
+    selection: Option<(&StepSelection, &StepSelection)>,
+) -> Result<i64, StoreError> {
+    let (before, after) = selection.map(|(b, a)| (b.encode(), a.encode())).unzip();
+    tx.execute(
+        "INSERT INTO vale_undo_step (redo, bytes, before_selection, after_selection)
+         VALUES (0, 0, ?1, ?2)",
+        params![before, after],
+    )?;
     Ok(tx.last_insert_rowid())
+}
+
+/// The selection from before a step, or with `redo`, from after it. `None`
+/// if the step has no selection or a damaged one.
+pub(crate) fn selection(
+    tx: &Transaction,
+    step: i64,
+    redo: bool,
+) -> Result<Option<StepSelection>, StoreError> {
+    let sql = if redo {
+        "SELECT after_selection FROM vale_undo_step WHERE id = ?1"
+    } else {
+        "SELECT before_selection FROM vale_undo_step WHERE id = ?1"
+    };
+    let blob: Option<Vec<u8>> = tx.query_row(sql, [step], |r| r.get(0))?;
+    Ok(blob.and_then(|b| StepSelection::decode(&b)))
 }
 
 /// Keeps the image of each record of `old` that is not the same in `new`.

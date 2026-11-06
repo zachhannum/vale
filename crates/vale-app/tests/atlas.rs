@@ -1318,6 +1318,28 @@ fn the_context_strip_deletes_the_frame_and_undo_brings_it_back() {
 }
 
 #[test]
+fn undo_of_a_frame_delete_selects_the_frame_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let mut s = state();
+    s.session = Some(Session::open(&path, &mut s.doc).unwrap());
+    let mut h = pad_with(s, BOARDS[0]);
+    add_frame(&mut h);
+    add_frame(&mut h);
+    let inset = frame(&h, 1);
+    h.state_mut().save_waiting().unwrap();
+    assert_eq!(h.state().atlas.selection, AtlasSelection::Frame(inset.id));
+    tap(&mut h, DELETE_SELECTION);
+    h.state_mut().save_waiting().unwrap();
+    assert_eq!(h.state().atlas.selection, AtlasSelection::None);
+    tap(&mut h, "Undo");
+    assert_eq!(open_page(&h).frames.len(), 2);
+    assert_eq!(h.state().atlas.selection, AtlasSelection::Frame(inset.id));
+    tap(&mut h, "Redo");
+    assert_eq!(h.state().atlas.selection, AtlasSelection::None);
+}
+
+#[test]
 fn deselect_clears_the_atlas_selection() {
     let mut h = inset_pad(BOARDS[0]);
     let inset = frame(&h, 1).id;

@@ -11,7 +11,7 @@ use vale_labeler::Fonts;
 use vale_sphere::LonLat;
 use vale_store::{
     BlendMode, Feature, GeometryKind, ImageId, Layer, LayerId, LayerKind, MapId, MapStyleId,
-    Project, Raster, RasterDisplay, RasterId, Rgb, StoreError, World,
+    Project, Raster, RasterDisplay, RasterId, Rgb, StepSelection, StoreError, World,
 };
 use vale_style::LabelClass;
 use vale_terrain::{Bands, Heightmap, Mode};
@@ -581,6 +581,8 @@ pub struct AppState {
     opening: Option<Opening>,
     /// The edit count at the last save.
     saved_edits: u64,
+    /// The selection from before the change that waits for its save.
+    selection_before: StepSelection,
     /// The number of edits of the line, polygon, and point tools.
     line_edits: u64,
     /// The count of the undo steps, the redo steps, and the worlds that open.
@@ -691,6 +693,7 @@ impl AppState {
             export_strips: 0,
             opening: None,
             saved_edits: 0,
+            selection_before: StepSelection::default(),
             line_edits: 0,
             history: 0,
             targets_key: None,
@@ -1061,14 +1064,25 @@ impl AppState {
     /// Saves each change that waits, so that the next change is its own
     /// undo step. A stroke that still waits for its texels saves at its end.
     fn save_edit(&mut self) {
-        let Some(session) = &mut self.session else {
-            return;
-        };
         if self.globe.busy() {
             return;
         }
-        if let Err(e) = save_session(session, &mut self.doc, &mut self.globe) {
-            self.status = format!("Could not save project: {e}");
+        self.pass_step_selection();
+        let Some(session) = &mut self.session else {
+            return;
+        };
+        match save_session(session, &mut self.doc, &mut self.globe) {
+            Ok(()) => self.selection_before = self.step_selection(),
+            Err(e) => self.status = format!("Could not save project: {e}"),
+        }
+    }
+
+    /// Gives the session the selection from before and from after the
+    /// change that waits, for its undo step.
+    fn pass_step_selection(&mut self) {
+        let after = self.step_selection();
+        if let Some(session) = &mut self.session {
+            session.set_step_selection(self.selection_before.clone(), after);
         }
     }
 
@@ -2087,6 +2101,7 @@ impl AppState {
             self.globe.undo();
             return;
         }
+        self.pass_step_selection();
         let file_log = self.file_log();
         let Some(session) = self.session.as_mut().filter(|_| file_log) else {
             if redo {
@@ -2103,9 +2118,14 @@ impl AppState {
         } else {
             session.undo(&mut self.doc, maps)
         };
+        let restored = session.restored_selection.take();
         match result.and_then(|_| self.restore_rasters()) {
             Ok(()) => {
                 self.history += 1;
+                if let Some(selection) = &restored {
+                    self.restore_selection(selection);
+                }
+                self.selection_before = self.step_selection();
                 self.sync_globe();
                 // A layer can come back with other features under its ID.
                 self.pipeline = Pipeline::new();
@@ -2131,6 +2151,7 @@ impl AppState {
         self.doc.store_styles();
         self.doc.fill_map_styles();
         let edits = self.edits();
+        self.pass_step_selection();
         let session = self.session.as_mut()?;
         let saves = session.saves();
         let globe = &mut self.globe;
@@ -2154,6 +2175,10 @@ impl AppState {
             result => result,
         };
         self.save_failed = result.is_err();
+        // The next change starts from the selection of this frame.
+        if self.session.as_ref().is_some_and(|s| !s.waits()) {
+            self.selection_before = self.step_selection();
+        }
         let wait = match result {
             Ok(wait) => wait,
             Err(e) => {
@@ -2188,6 +2213,7 @@ impl AppState {
     pub fn save_waiting(&mut self) -> Result<(), StoreError> {
         self.save_resume();
         let edits = self.edits();
+        self.pass_step_selection();
         let Some(session) = &mut self.session else {
             return Ok(());
         };
@@ -2199,6 +2225,9 @@ impl AppState {
         let saved = save_session(session, &mut self.doc, globe);
         // The system can stop the app in the background, so the project
         // file gets the working copy now.
+        if saved.is_ok() {
+            self.selection_before = self.step_selection();
+        }
         let saved = saved.and_then(|()| self.write_back());
         self.save_failed = saved.is_err();
         saved
@@ -2338,6 +2367,7 @@ impl AppState {
     /// stays open.
     pub fn save_now(&mut self) -> bool {
         self.commit_new_feature();
+        self.pass_step_selection();
         let Some(session) = &mut self.session else {
             return true;
         };
@@ -3098,12 +3128,16 @@ impl AppState {
         self.line_edits += 1;
         // The next edit must not join this undo step.
         let edits = self.edits();
+        self.pass_step_selection();
         let Some(session) = self.session.as_mut() else {
             return;
         };
         self.saved_edits = edits;
         match save_session(session, &mut self.doc, &mut self.globe) {
-            Ok(()) => self.saved_at = Some(std::time::Instant::now()),
+            Ok(()) => {
+                self.saved_at = Some(std::time::Instant::now());
+                self.selection_before = self.step_selection();
+            }
             Err(e) => {
                 self.save_failed = true;
                 self.status = format!("Could not save project: {e}");
