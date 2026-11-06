@@ -6987,7 +6987,10 @@ fn with_the_inspector_open_a_new_point_is_the_selection_with_no_keyboard() {
     let fields = h.state().doc.project.layer(places).unwrap().field_names();
     assert!(!fields.is_empty());
     assert_eq!(form_fields(&h), fields);
-    assert_eq!(h.state().selection_form.as_ref().unwrap().feature.uuid, new);
+    assert_eq!(
+        h.state().selection_form.as_ref().unwrap().features[0].uuid,
+        new
+    );
     // No card opens over the canvas. The inspector is the only panel.
     let panels: Vec<Panel> = h.state().pad.panels.iter().map(|(p, _)| *p).collect();
     assert_eq!(panels, [Panel::Attributes]);
@@ -7299,7 +7302,7 @@ fn a_new_line_takes_its_name_in_the_inspector_in_one_undo_step() {
         uuid: lines.last().unwrap().uuid(),
     };
     assert_eq!(selection(&h), [new]);
-    assert_eq!(h.state().selection_form.as_ref().unwrap().feature, new);
+    assert_eq!(h.state().selection_form.as_ref().unwrap().features, [new]);
     assert!(h.state().new_feature.is_some());
     assert_eq!(saves(&h), saved);
     assert!(no_keyboard(&h));
@@ -7351,7 +7354,10 @@ fn a_stroke_that_extends_a_line_does_not_change_the_selection_or_the_inspector()
     };
     assert_ne!(line(&extended), line(&lines));
     assert_eq!(selection(&h), [second]);
-    assert_eq!(h.state().selection_form.as_ref().unwrap().feature, second);
+    assert_eq!(
+        h.state().selection_form.as_ref().unwrap().features,
+        [second]
+    );
     assert!(h.state().new_feature.is_none());
 }
 
@@ -10334,8 +10340,8 @@ fn the_attributes_button_opens_and_closes_the_inspector_and_it_stays_open_in_eac
     finger_tap_at(&mut h, at);
     assert!(open(&h));
     assert_eq!(
-        h.state().selection_form.as_ref().unwrap().feature,
-        picks.point
+        h.state().selection_form.as_ref().unwrap().features,
+        [picks.point]
     );
     // Draw: the line tool draws a line.
     select_layer(&mut h, picks.line.layer);
@@ -10377,7 +10383,7 @@ fn with_one_feature_the_inspector_edits_each_attribute_in_one_undo_step() {
     finger_tap_at(&mut h, at);
     // A new point layer has a name field.
     let form = h.state().selection_form.as_ref().expect("no form");
-    assert_eq!(form.feature, picks.point);
+    assert_eq!(form.features, [picks.point]);
     let names: Vec<_> = form.fields.iter().map(|f| f.name.as_str()).collect();
     assert_eq!(names, ["name", "people"]);
     let saved = saves(&h);
@@ -10505,12 +10511,75 @@ fn the_inspector_shows_the_count_of_a_selection_and_an_empty_state() {
     let (from, to) = (screen_at(&h, -3.0, 14.0), screen_at(&h, 3.0, -3.0));
     drag(&mut h, from, to, Some(0.5));
     assert_eq!(selection(&h).len(), 2);
-    assert!(h.state().selection_form.is_none());
     assert!(h.query_by_label(&select::title(2)).is_some());
     assert!(h.query_by_label(select::NO_SELECTION).is_none());
-    assert!(control(&h, "name").is_none());
+    assert!(control(&h, "name").is_some());
     tap(&mut h, DESELECT);
     assert!(h.query_by_label(select::NO_SELECTION).is_some());
+}
+
+#[test]
+fn with_many_features_an_edit_of_a_field_sets_it_in_each_feature_in_one_undo_step() {
+    use vale_store::{Field, FieldType, Value};
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
+    let id = picks.point.layer;
+    let project = &mut h.state_mut().doc.project;
+    assert!(project.add_field(id, Field::new("size", FieldType::Text)));
+    for (f, name) in [(picks.point, "Avalon"), (picks.second, "Brook")] {
+        let values = [
+            ("name".to_owned(), Value::Text(name.into())),
+            ("size".to_owned(), Value::Text("small".into())),
+        ];
+        assert!(project.set_attributes(id, f.uuid, values));
+    }
+    h.state_mut().save_waiting().unwrap();
+    tap(&mut h, select::ATTRIBUTES);
+    let (from, to) = (screen_at(&h, -3.0, 14.0), screen_at(&h, 3.0, -3.0));
+    drag(&mut h, from, to, Some(0.5));
+    assert_eq!(selection(&h).len(), 2);
+    // A field with different values is empty and shows "Mixed".
+    let form = h.state().selection_form.as_ref().expect("no form");
+    assert_eq!(form.features.len(), 2);
+    assert_eq!(
+        (form.fields[0].text.as_str(), form.fields[0].mixed),
+        ("", true)
+    );
+    assert_eq!(
+        (form.fields[1].text.as_str(), form.fields[1].mixed),
+        ("small", false)
+    );
+    let mixed = painted_shapes(&h).iter().any(|shape| match shape {
+        egui::Shape::Text(text) => text.galley.text() == select::MIXED,
+        _ => false,
+    });
+    assert!(mixed);
+    screenshot::save(&mut h, "pad-mixed-field");
+    let values = |h: &Pad, name: &str| -> Vec<Value> {
+        let features = line_features(h, id);
+        [picks.point, picks.second]
+            .iter()
+            .map(|f| features.iter().find(|x| x.uuid() == f.uuid).unwrap())
+            .map(|x| x.attributes[name].clone())
+            .collect()
+    };
+    // A mixed field that loses the focus with no edit changes nothing.
+    let saved = saves(&h);
+    tap(&mut h, "name");
+    tap(&mut h, "size");
+    assert_eq!(saves(&h), saved);
+    let names = [Value::Text("Avalon".into()), Value::Text("Brook".into())];
+    assert_eq!(values(&h, "name"), names);
+    tap(&mut h, "name");
+    h.event(egui::Event::Text("Camelot".into()));
+    h.run_steps(2);
+    tap(&mut h, "size");
+    assert_eq!(saves(&h), saved + 1);
+    assert_eq!(values(&h, "name"), vec![Value::Text("Camelot".into()); 2]);
+    assert_eq!(values(&h, "size"), vec![Value::Text("small".into()); 2]);
+    h.state_mut().undo();
+    h.run_steps(2);
+    assert_eq!(values(&h, "name"), names);
 }
 
 #[test]

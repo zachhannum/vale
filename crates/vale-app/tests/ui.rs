@@ -1871,6 +1871,40 @@ fn on_the_desktop_a_field_lists_the_values_of_the_layer() {
     assert_eq!(size(&h), Value::Text("small".into()));
 }
 
+#[test]
+fn on_the_desktop_an_edit_of_a_field_sets_it_in_each_selected_feature() {
+    use vale_app::globe::select::FeatureRef;
+    use vale_app::ui::select::title;
+    use vale_store::Value;
+    let mut h = globe_harness();
+    h.state_mut().show_attributes = true;
+    let layers = h.state().doc.project.layers();
+    let places = layers.iter().find(|l| l.name == "Places").unwrap();
+    let id = places.id;
+    let uuids: Vec<_> = places.features.iter().take(3).map(|f| f.uuid()).collect();
+    h.state_mut()
+        .select(Some(vale_app::ui::pad::LayerRef::Vector(id)));
+    h.state_mut().feature_selection = (uuids.iter())
+        .map(|&uuid| FeatureRef { layer: id, uuid })
+        .collect();
+    h.run_steps(2);
+    assert!(h.query_by_label(&title(3)).is_some());
+    let form = h.state().selection_form.as_ref().expect("no form");
+    let i = form.fields.iter().position(|f| f.name == "name").unwrap();
+    assert!(form.fields[i].mixed);
+    let form = h.state_mut().selection_form.as_mut().unwrap();
+    form.fields[i].text = "Camelot".into();
+    form.fields[i].mixed = false;
+    h.state_mut().commit_selection_form();
+    h.run_steps(2);
+    let layer = h.state().doc.project.layer(id).unwrap();
+    let named = (layer.features.iter())
+        .filter(|f| uuids.contains(&f.uuid()))
+        .filter(|f| f.attributes["name"] == Value::Text("Camelot".into()))
+        .count();
+    assert_eq!(named, 3);
+}
+
 /// A mouse stroke through places, with keys held during the stroke.
 fn mouse_way(h: &mut Harness<'static, AppState>, way: &[[f64; 2]], keys: egui::Modifiers) {
     use vale_app::globe::math::lonlat_to_dir;
@@ -2191,7 +2225,7 @@ fn command_i_shows_the_inspector_in_the_atlas_and_the_dock_opens_the_table() {
     h.run_steps(3);
     assert!(h.state().show_attributes);
     assert!(h.query_by_label(ATTRIBUTES).is_some());
-    assert_eq!(h.state().selection_form.as_ref().unwrap().feature, found);
+    assert_eq!(h.state().selection_form.as_ref().unwrap().features, [found]);
     assert!(h.query_all_by_label(&field).count() >= 1);
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::I);
     h.run_steps(3);
