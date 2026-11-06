@@ -104,6 +104,8 @@ pub const PAPER_COLOR: &str = "Paper color";
 pub const SNAP_TO_LAYOUT: &str = "Snap to layout";
 pub const LAYOUT_GRID: &str = "Layout grid";
 pub const SHOW_GRID: &str = "Show layout grid";
+/// The switch of the layout grid in the context strip.
+pub const GRID: &str = "Grid";
 /// The Layers button of the top row. It opens the Layers tab of the
 /// selected frame, or the list of the map frames.
 pub const MAP_LAYERS: &str = "Map layers";
@@ -142,7 +144,7 @@ pub const CANCEL_EXPORT: &str = "Cancel export";
 /// The width of the actions card in the wide layout: six buttons and a
 /// divider. Each narrower layout moves one more button into the workspace
 /// menu.
-const ACTIONS_WIDTH: f32 = 6.0 * TOUCH + 6.0 * PAD + 9.0 + 2.0 * PAD;
+const ACTIONS_WIDTH: f32 = 5.0 * TOUCH + 5.0 * PAD + 9.0 + 2.0 * PAD;
 const ADD_WIDTH: f32 = 220.0;
 const TOOL_CELLS: usize = 5;
 /// The smallest space at each side of the text of a tab.
@@ -244,12 +246,10 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         row: false,
     };
     let mut rects = geometry::layout(&input);
-    // Below 1,000 points, the switch of the layout grid is in the
-    // workspace menu, and on a compact screen the Add button is there too.
+    // On a compact screen, the Add button is in the workspace menu.
     let hidden = match class {
-        WidthClass::Wide => 0.0,
-        WidthClass::Medium => 1.0,
-        WidthClass::Compact => 2.0,
+        WidthClass::Compact => 1.0,
+        _ => 0.0,
     };
     rects.actions.min.x = rects.actions.max.x - ACTIONS_WIDTH + hidden * (TOUCH + PAD);
     rects.right_panel.x += geometry::RIGHT_PANEL_WIDTH - panel_width(&ctx);
@@ -488,25 +488,6 @@ fn top_row(
             }
             divider(ui, card.left() + PAD + 2.0 * step + 4.5, card);
             let mut x = 2.0 * step + 9.0 + PAD;
-            if rects.class == WidthClass::Wide {
-                let grid = at(x);
-                x += step;
-                let on = state.doc.project.atlas.grid.on;
-                let icon = Icon::LayoutGrid;
-                if widgets::icon_button_at(ui, controls, grid, SHOW_GRID, icon, on, true).clicked()
-                {
-                    atlas::edit_grid(state, |g| g.on = !on);
-                }
-            }
-            if rects.class != WidthClass::Compact {
-                let open = state.atlas.add;
-                let add = at(x);
-                x += step;
-                if widgets::icon_button_at(ui, controls, add, ADD, Icon::Plus, open, true).clicked()
-                {
-                    state.atlas.add = !open;
-                }
-            }
             // The inspector and the layers share the panel place.
             let inspecting = state.pad.is_open(super::Panel::Attributes);
             let layers = at(x);
@@ -533,18 +514,27 @@ fn top_row(
                     state.atlas.frames = false;
                 }
             }
+            if rects.class != WidthClass::Compact {
+                let open = state.atlas.add;
+                let add = at(x + step);
+                if widgets::icon_button_at(ui, controls, add, ADD, Icon::Plus, open, true).clicked()
+                {
+                    state.atlas.add = !open;
+                }
+            }
         },
     );
 }
 
 /// The context strip: the card below the tool strip while a frame, an item
 /// of furniture, or a feature is selected. With the Frame tool, it holds
-/// the switch that snaps a frame to the layout of the page, "Delete
-/// selection", and Deselect. With the Vertex tool, it holds the switch,
-/// "Delete vertex", and Deselect. With the Select tool and the Move tool,
+/// the switch that snaps a frame to the layout of the page, the switch of
+/// the layout grid, "Delete selection", and Deselect. With the Vertex tool,
+/// it holds the two switches, "Delete vertex", and Deselect. With the Select tool and the Move tool,
 /// it holds Deselect. With no
 /// room below the strip, it goes to the right of the strip, below the page
-/// card if the page card is there. It ends above the sheet, and it scrolls
+/// card if the page card is there, or at the right of the page card if the
+/// room below it is too short. It ends above the sheet, and it scrolls
 /// if it is too long.
 fn frame_card(
     ctx: &egui::Context,
@@ -556,8 +546,8 @@ fn frame_card(
     let tool = state.atlas.tool;
     let framed = state.atlas.frame().is_some();
     let cells = match tool {
-        AtlasTool::Vertex if framed => 3,
-        AtlasTool::Frame if atlas::has_selection(state) => 2 + usize::from(framed),
+        AtlasTool::Vertex if framed => 4,
+        AtlasTool::Frame if atlas::has_selection(state) => 3 + usize::from(framed),
         AtlasTool::Move if atlas::has_selection(state) => 1,
         AtlasTool::Select => {
             1 + usize::from(atlas::has_selection(state) || !state.feature_selection.is_empty())
@@ -572,11 +562,21 @@ fn frame_card(
     let limit = rects.sheet.map_or(rects.panel_bottom, |s| s.top() - GAP);
     let below = pos2(rects.tools.left(), rects.tools.bottom() + GAP);
     let min = if rects.tool_cells < TOOL_CELLS || below.y + size.y > limit {
-        let top = match rects.view {
-            None => page_card.bottom() + GAP,
-            Some(_) => rects.tools.top(),
-        };
-        pos2(rects.tools.right() + GAP, top)
+        match rects.view {
+            // On a phone, the strip goes below the page card, or at the
+            // right of the page card if it is too long for the room below.
+            None => {
+                let under = pos2(rects.tools.right() + GAP, page_card.bottom() + GAP);
+                let beside = pos2(page_card.right() + GAP, page_card.top());
+                let fits_beside = beside.x + size.x <= rects.screen.right() - GAP;
+                if under.y + size.y > limit && fits_beside {
+                    beside
+                } else {
+                    under
+                }
+            }
+            Some(_) => pos2(rects.tools.right() + GAP, rects.tools.top()),
+        }
     } else {
         below
     };
@@ -611,6 +611,13 @@ fn frame_card(
                     .clicked()
                 {
                     state.atlas.snap = !on;
+                }
+                let on = state.doc.project.atlas.grid.on;
+                if matches!(tool, AtlasTool::Frame | AtlasTool::Vertex)
+                    && widgets::tool_cell(ui, controls, GRID, GRID, Icon::LayoutGrid, on, true)
+                        .clicked()
+                {
+                    atlas::edit_grid(state, |g| g.on = !on);
                 }
                 if tool == AtlasTool::Select {
                     selectable_cell = Some(super::selectable::cell(ui, state, controls));

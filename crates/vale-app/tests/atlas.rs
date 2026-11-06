@@ -34,7 +34,9 @@ use vale_app::ui::pad::atlas::{
     EDITED, MAP_STYLE, MAP_STYLE_NAME, NO_MAP_STYLE_ROW, RESET_TO_MAP_STYLE, SAVE_AS_MAP_STYLE,
     UPDATE_MAP_STYLE, map_style_row,
 };
-use vale_app::ui::pad::atlas::{GRID_COLOR, GRID_SPACING, LAYOUT_GRID, SHOW_GRID, SNAP_TO_LAYOUT};
+use vale_app::ui::pad::atlas::{
+    GRID, GRID_COLOR, GRID_SPACING, LAYOUT_GRID, SHOW_GRID, SNAP_TO_LAYOUT,
+};
 use vale_app::ui::pad::edge_labels::{
     EDGE_LABELS, HALO as EDGE_HALO, HALO_WIDTH as EDGE_HALO_WIDTH, OFFSET as EDGE_OFFSET,
     ORIENTATIONS, PLACES, SETS, SHOW_LABELS, SIDES, SIZE as EDGE_SIZE, STYLE as EDGE_STYLE,
@@ -1294,8 +1296,9 @@ fn the_context_strip_deletes_the_frame_and_undo_brings_it_back() {
     assert_eq!(h.state().atlas.selection, AtlasSelection::Frame(inset.id));
 
     assert!(control(&h, SNAP_TO_LAYOUT).is_some());
+    assert!(control(&h, GRID).is_some());
     assert!(control(&h, DESELECT).is_some());
-    screenshot::save(&mut h, "pad-atlas-select-strip");
+    screenshot::save(&mut h, "pad-atlas-frame-strip");
     tap(&mut h, DELETE_SELECTION);
     let page = open_page(&h);
     assert_eq!(page.frames.len(), 1);
@@ -6340,9 +6343,9 @@ fn frames_snap_to_the_layout_grid_of_the_page_panel() {
 }
 
 #[test]
-fn the_grid_button_of_the_top_row_shows_the_layout_grid() {
-    for size in BOARDS.into_iter().chain([(393.0, 852.0)]) {
-        let mut h = pad_with(state(), size);
+fn the_top_row_ends_with_add_and_has_no_grid_button() {
+    for size in BOARDS.into_iter().chain([(393.0, 852.0), (852.0, 393.0)]) {
+        let h = pad_with(state(), size);
         check_controls(&h, "top row");
         // The buttons of the top row do not overlap.
         let controls = h.state().pad.controls.clone();
@@ -6358,16 +6361,43 @@ fn the_grid_button_of_the_top_row_shows_the_layout_grid() {
                 );
             }
         }
-        // Below 1,000 points, the switch is a row of the workspace menu.
-        let narrow = size.0 < 1000.0;
-        for on in [true, false] {
-            if narrow {
-                assert!(control(&h, SHOW_GRID).is_none(), "{size:?}");
-                tap(&mut h, "Workspace");
-            }
+        assert!(control(&h, SHOW_GRID).is_none(), "{size:?}");
+        let x = |name: &str| control(&h, name).map(|r| r.left());
+        let layers = x(MAP_LAYERS).unwrap_or_else(|| panic!("{size:?}"));
+        let attributes = x(vale_app::ui::select::ATTRIBUTES).unwrap_or_else(|| panic!("{size:?}"));
+        assert!(layers < attributes, "{size:?}");
+        // On a phone, Add is a row of the workspace menu.
+        let compact = size.0 < 600.0;
+        match x(ADD) {
+            Some(add) => assert!(!compact && attributes < add, "{size:?}"),
+            None => assert!(compact, "{size:?}"),
+        }
+    }
+}
+
+#[test]
+fn the_grid_switch_is_in_the_workspace_menu_and_in_the_frame_and_vertex_strips() {
+    for size in BOARDS.into_iter().chain([(393.0, 852.0)]) {
+        let mut h = pad_with(state(), size);
+        // Only the narrow layouts have the workspace menu.
+        let menu = control(&h, "Workspace").is_some();
+        assert_eq!(menu, size.0 < 1000.0, "{size:?}");
+        for on in [true, false].into_iter().filter(|_| menu) {
+            tap(&mut h, "Workspace");
             tap(&mut h, SHOW_GRID);
             assert_eq!(h.state().doc.project.atlas.grid.on, on, "{size:?}");
         }
+        add_frame(&mut h);
+        assert!(control(&h, GRID).is_some(), "{size:?}");
+        tap(&mut h, GRID);
+        assert!(h.state().doc.project.atlas.grid.on, "{size:?}");
+        assert_eq!(toggled(&h, GRID), Some(true), "{size:?}");
+        tap(&mut h, VERTEX);
+        tap(&mut h, GRID);
+        assert!(!h.state().doc.project.atlas.grid.on, "{size:?}");
+        // The Select tool has no switch of the grid.
+        tap(&mut h, SELECT_TOOL);
+        assert!(control(&h, GRID).is_none(), "{size:?}");
     }
 }
 

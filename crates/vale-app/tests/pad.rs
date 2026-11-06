@@ -9488,7 +9488,7 @@ fn the_measure_cell_and_card_fit_in_the_atlas_on_each_screen() {
 #[test]
 fn the_vertex_cell_and_card_fit_in_the_atlas_on_each_screen() {
     use vale_app::ui::atlas::AtlasTool;
-    use vale_app::ui::pad::atlas::{SNAP_TO_LAYOUT, VERTEX};
+    use vale_app::ui::pad::atlas::{GRID, SNAP_TO_LAYOUT, VERTEX};
     use vale_app::ui::pad::{DELETE_VERTEX, DESELECT};
     for (size, safe) in measure_screens() {
         let what = format!("Atlas {size:?}");
@@ -9502,12 +9502,12 @@ fn the_vertex_cell_and_card_fit_in_the_atlas_on_each_screen() {
         assert_eq!(toggled(&h, VERTEX), Some(true), "{what}");
         h.state_mut().atlas.vertices = vec![(0, 0)];
         h.run_steps(2);
-        let names = [SNAP_TO_LAYOUT, DELETE_VERTEX, DESELECT];
+        let names = [SNAP_TO_LAYOUT, GRID, DELETE_VERTEX, DESELECT];
         let cells = names.map(|name| control(&h, name).unwrap_or_else(|| panic!("{what}: {name}")));
         for pair in cells.windows(2) {
             assert!(pair[0].bottom() <= pair[1].top(), "{what}");
         }
-        let card = cells[0].union(cells[2]);
+        let card = cells[0].union(cells[3]);
         let r = h.state().pad.rects.unwrap();
         let mut cards = vec![r.workspace, r.actions, r.tools];
         cards.extend(r.view);
@@ -9540,7 +9540,7 @@ fn the_vertex_cell_and_card_fit_in_the_atlas_on_each_screen() {
 fn the_frame_strip_fits_in_the_atlas_on_each_screen() {
     use vale_app::ui::atlas::{AtlasSelection, AtlasTool};
     use vale_app::ui::pad::DESELECT;
-    use vale_app::ui::pad::atlas::SNAP_TO_LAYOUT;
+    use vale_app::ui::pad::atlas::{GRID, SNAP_TO_LAYOUT};
     use vale_app::ui::select::DELETE;
     for (size, safe) in measure_screens() {
         let what = format!("Atlas {size:?}");
@@ -9549,12 +9549,12 @@ fn the_frame_strip_fits_in_the_atlas_on_each_screen() {
         vale_app::ui::atlas::add_frame(h.state_mut());
         h.run_steps(3);
         assert_eq!(h.state().atlas.tool, AtlasTool::Frame, "{what}");
-        let names = [SNAP_TO_LAYOUT, DELETE, DESELECT];
+        let names = [SNAP_TO_LAYOUT, GRID, DELETE, DESELECT];
         let cells = names.map(|name| control(&h, name).unwrap_or_else(|| panic!("{what}: {name}")));
         for pair in cells.windows(2) {
             assert!(pair[0].bottom() <= pair[1].top(), "{what}");
         }
-        let card = cells[0].union(cells[2]);
+        let card = cells[0].union(cells[3]);
         let r = h.state().pad.rects.unwrap();
         let mut cards = vec![r.workspace, r.actions, r.tools];
         cards.extend(r.view);
