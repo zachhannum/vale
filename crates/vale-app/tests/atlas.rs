@@ -2449,6 +2449,28 @@ fn a_tap_of_two_fingers_undoes_and_a_tap_of_three_redoes_in_the_atlas() {
     assert_eq!(open_page(&h).frames.len(), 2);
 }
 
+#[test]
+fn a_region_of_a_list_draws_again_to_the_texture_of_the_same_size() {
+    use kurbo::Shape;
+    use vale_app::ui::map_texture::draw_region;
+    let ctx = egui::Context::default();
+    let mut list = vale_render::DisplayList::new(1000.0, 1000.0);
+    list.push(Item::Fill {
+        path: kurbo::Rect::new(600.0, 600.0, 700.0, 700.0).to_path(0.1),
+        color: vale_render::Color::rgba(255, 0, 0, 255),
+        rule: vale_render::FillRule::NonZero,
+    });
+    let list = vale_render::PreparedList::new(&list).unwrap();
+    let at = kurbo::Affine::translate((-512.0, -512.0));
+    let first = draw_region(&ctx, None, None, &list, at, [64, 64]).unwrap();
+    assert_eq!(first.size(), [64, 64]);
+    let id = first.id();
+    let again = draw_region(&ctx, None, Some(first), &list, at, [64, 64]).unwrap();
+    assert_eq!(again.id(), id);
+    let other = draw_region(&ctx, None, Some(again), &list, at, [32, 32]).unwrap();
+    assert_ne!(other.id(), id);
+}
+
 /// The red values of a row of pixels near the bottom of a card, inside its
 /// round corners.
 fn card_row(image: &image::RgbaImage, card: Rect) -> Vec<i32> {

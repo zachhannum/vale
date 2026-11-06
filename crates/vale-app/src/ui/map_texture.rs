@@ -7,7 +7,7 @@ use eframe::egui;
 use eframe::egui::mutex::RwLock;
 use eframe::egui_wgpu::{self, wgpu};
 use vale_render::gpu::GpuRenderer;
-use vale_render::{DisplayList, Rgba};
+use vale_render::{DisplayList, PreparedList, Rgba};
 
 /// The GPU renderer of the display lists, on the device of egui.
 pub struct MapRenderer {
@@ -115,6 +115,53 @@ pub fn draw(
         .render(&r.device, &r.queue, list, scale, &texture.texture)
         .map_err(|e| format!("{e}"))?;
     Ok((MapTexture::Gpu(texture), None))
+}
+
+/// Draws the part of a prepared list that falls in `size` pixels, where the page point `p` lands
+/// on the pixel `transform * p`. Draws to `old` when it has that size, so that the GPU registers
+/// no new texture with egui, or else to a new texture.
+pub fn draw_region(
+    ctx: &egui::Context,
+    renderer: Option<&mut MapRenderer>,
+    old: Option<MapTexture>,
+    list: &PreparedList,
+    transform: kurbo::Affine,
+    [w, h]: [u32; 2],
+) -> Result<MapTexture, String> {
+    let Some(r) = renderer else {
+        let (img, _) =
+            vale_render::render_region(list, transform, w, h).map_err(|e| format!("{e}"))?;
+        let image = egui::ColorImage::from_rgba_premultiplied([img.width, img.height], &img.data);
+        let options = egui::TextureOptions::LINEAR;
+        let texture = match old {
+            Some(MapTexture::Cpu(mut t)) if t.size() == [img.width, img.height] => {
+                t.set(image, options);
+                t
+            }
+            _ => ctx.load_texture("frame-tile", image, options),
+        };
+        return Ok(MapTexture::Cpu(texture));
+    };
+    let texture = match old {
+        Some(MapTexture::Gpu(t)) if (t.texture.width(), t.texture.height()) == (w, h) => t,
+        _ => {
+            let texture = GpuRenderer::target_sized(&r.device, w, h);
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            let id =
+                r.egui
+                    .write()
+                    .register_native_texture(&r.device, &view, wgpu::FilterMode::Linear);
+            GpuTexture {
+                texture,
+                id,
+                egui: r.egui.clone(),
+            }
+        }
+    };
+    r.renderer
+        .render_region(&r.device, &r.queue, list, transform, &texture.texture)
+        .map_err(|e| format!("{e}"))?;
+    Ok(MapTexture::Gpu(texture))
 }
 
 fn extent(w: u16, h: u16) -> wgpu::Extent3d {
