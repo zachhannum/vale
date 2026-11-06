@@ -5,10 +5,12 @@
 use std::collections::{BTreeSet, HashSet};
 
 use eframe::egui::{self, Pos2};
-use vale_store::{Geometry, Layer, LayerId, StepSelection, Uuid, Value};
+use vale_store::{Geometry, GeometryKind, Layer, LayerId, StepSelection, Uuid, Value};
+use vale_style::expr::{Context, Expr};
 
 use super::AppState;
 use super::atlas::AtlasSelection;
+use super::expr_help::PREVIEW_SCALE;
 use super::new_feature::{FormField, can_take_focus};
 use super::pad::theme;
 use super::pad::widgets::{self, Controls};
@@ -460,7 +462,7 @@ impl AppState {
     }
 
     /// The selected features that Merge lists, the largest first, each with
-    /// its name. The name is the value of the label field of the layer, or
+    /// its name. The name is the label text of the layer for the feature, or
     /// else "Feature" and the place in the list.
     pub fn merge_choices(&self) -> Vec<(Uuid, String)> {
         if !self.can_merge() {
@@ -470,14 +472,21 @@ impl AppState {
         let Some(layer) = self.doc.layer(id) else {
             return Vec::new();
         };
-        let field = (self.doc.entry(id)).and_then(|e| e.style.label.field.clone());
+        let text = (self.doc.entry(id)).and_then(|e| Expr::parse(&e.style.label.text).ok());
+        let geometry = layer.geometry().unwrap_or(GeometryKind::Point);
         let mut features: Vec<_> = (layer.features.iter())
             .filter(|f| self.feature_selection.iter().any(|s| s.uuid == f.uuid()))
             .map(|f| (crate::globe::merge::size(&f.geometry), f))
             .collect();
         features.sort_by(|a, b| b.0.total_cmp(&a.0));
         let name = |i: usize, f: &vale_store::Feature| {
-            let value = field.as_ref().and_then(|n| f.attributes.get(n));
+            let value = text.as_ref().map(|e| {
+                e.eval(&Context {
+                    attributes: &f.attributes,
+                    scale: PREVIEW_SCALE,
+                    geometry,
+                })
+            });
             let label = value
                 .and_then(|v| v.label())
                 .filter(|s| !s.trim().is_empty());

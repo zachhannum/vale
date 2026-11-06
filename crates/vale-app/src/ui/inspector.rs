@@ -3,6 +3,7 @@
 use eframe::egui;
 use vale_store::{Field, FieldType, GeometryKind, LayerId, Value};
 
+use super::pad::label_parts::LABEL_TEXT;
 use super::{AppState, style_editor};
 use crate::fonts::DEFAULT_FAMILY;
 
@@ -105,18 +106,20 @@ fn layer_section(ui: &mut egui::Ui, state: &mut AppState) {
     let label = &mut style.label;
     changed |= ui.checkbox(&mut label.enabled, "Show labels").changed();
     ui.horizontal(|ui| {
-        ui.label("Label field");
-        egui::ComboBox::from_id_salt("label_field")
-            .selected_text(label.field.as_deref().unwrap_or("None"))
-            .width(130.0)
-            .show_ui(ui, |ui| {
-                for f in &info.fields {
-                    changed |= ui
-                        .selectable_value(&mut label.field, Some(f.clone()), f)
-                        .changed();
-                }
-            });
+        ui.label(LABEL_TEXT);
+        let id = egui::Id::new(("label-text", info.id.0));
+        let edit = egui::TextEdit::singleline(&mut label.text)
+            .id(id)
+            .font(egui::TextStyle::Monospace)
+            .desired_width(130.0);
+        let field = ui.add(edit);
+        field.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, LABEL_TEXT)
+        });
+        changed |= field.changed();
+        changed |= super::expr_help::insert_menu(ui, &help, id, &mut label.text);
     });
+    super::expr_help::desktop_line(ui, &help, &label.text, super::expr_help::ExprKind::Text);
     ui.horizontal(|ui| {
         ui.label("Priority field");
         egui::ComboBox::from_id_salt("priority_field")

@@ -7,14 +7,14 @@ use std::fmt;
 use serde_json::{Map, Value as Json, json};
 use vale_store::{BlendMode, Hillshade, LayerId, RasterDisplay, Rgb, Smoothing, Stop, StopLine};
 
-use crate::expr::{Filter, FromValue, Property};
+use crate::expr::{Filter, FromValue, Property, field_ref};
 use crate::{
     Color, Hatch, ImageSymbolizer, LabelStyle, LayerStyle, MarkerShape, Mask, PointSymbolizer,
     RasterSymbolizer, Rule, ScatterSymbolizer, StrokeKind, StrokeSymbolizer, Style, Symbolizer,
 };
 
 /// The version of the style JSON that this build writes. It reads this version and each earlier version.
-pub const STYLE_VERSION: u64 = 6;
+pub const STYLE_VERSION: u64 = 7;
 
 /// Why a style JSON did not load.
 #[derive(Clone, Debug, PartialEq)]
@@ -53,7 +53,7 @@ impl LayerStyle {
         let l = &self.label;
         let label = json!({
             "enabled": l.enabled,
-            "field": l.field,
+            "text": l.text,
             "priority_field": l.priority_field,
             "size": l.size,
             "color": l.color.to_hex(),
@@ -404,13 +404,23 @@ fn read_label(m: &Map<String, Json>) -> Result<LabelStyle, StyleError> {
         .ok_or_else(|| invalid("the label has no valid color"))?;
     Ok(LabelStyle {
         enabled: m.get("enabled").and_then(Json::as_bool).unwrap_or(false),
-        field: optional_text(m, "field"),
+        text: label_text(m),
         priority_field: optional_text(m, "priority_field"),
         size: m.get("size").and_then(Json::as_f64).unwrap_or(11.0),
         color,
         italic: m.get("italic").and_then(Json::as_bool).unwrap_or(false),
         font: optional_text(m, "font"),
     })
+}
+
+/// The label text. Before version 7, the label has a field in place of a text.
+fn label_text(m: &Map<String, Json>) -> String {
+    if let Some(text) = optional_text(m, "text") {
+        return text;
+    }
+    optional_text(m, "field")
+        .map(|f| field_ref(&f))
+        .unwrap_or_default()
 }
 
 fn rgb_json(c: Rgb) -> Json {

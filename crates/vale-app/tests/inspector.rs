@@ -7,6 +7,7 @@ use egui_kittest::kittest::{NodeT, Queryable};
 use vale_app::document::Document;
 use vale_app::headless;
 use vale_app::ui::atlas::{self, AtlasSelection};
+use vale_app::ui::pad::label_parts::LABEL_TEXT;
 use vale_app::ui::{AppState, LayerRef, Workspace, draw};
 use vale_render::Color;
 use vale_store::LayerId;
@@ -105,7 +106,10 @@ fn places_controls_and_labels_switch() {
         )
         .is_some()
     );
-    assert!(h.query_by_label("Label field").is_some());
+    assert!(
+        h.query_by_role_and_label(egui::accesskit::Role::TextInput, LABEL_TEXT)
+            .is_some()
+    );
     let before = h.state().composed.as_ref().unwrap().labels.placed;
     h.get_by_label("Show labels").click();
     h.run_steps(2);
@@ -113,6 +117,29 @@ fn places_controls_and_labels_switch() {
     let s = h.state();
     assert!(!s.doc.entry(places).unwrap().style.label.enabled);
     assert!(s.composed.as_ref().unwrap().labels.placed < before);
+}
+
+#[test]
+fn the_label_text_field_edits_the_label_text() {
+    let mut h = harness();
+    let places = id_of(&h, "Places");
+    h.state_mut()
+        .doc
+        .entry_mut(places)
+        .unwrap()
+        .style
+        .label
+        .text = String::new();
+    h.state_mut().selected_layer = Some(LayerRef::Vector(places));
+    h.run_steps(2);
+    let input = egui::accesskit::Role::TextInput;
+    h.get_by_role_and_label(input, LABEL_TEXT).focus();
+    h.run_steps(2);
+    h.get_by_role_and_label(input, LABEL_TEXT)
+        .type_text("upper(name)");
+    h.run_steps(2);
+    let label = &h.state().doc.entry(places).unwrap().style.label;
+    assert_eq!(label.text, "upper(name)");
 }
 
 #[test]

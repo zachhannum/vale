@@ -164,3 +164,49 @@ fn open_missing_changes_nothing() {
     assert!(d.open_geojson(Path::new("/no/such/file.geojson")).is_err());
     assert_eq!(d, before);
 }
+
+#[test]
+fn a_field_rename_changes_each_expression_of_the_layer() {
+    use vale_app::document::Target;
+    use vale_style::LabelClass;
+    use vale_style::expr::Filter;
+    let mut d = Document::sample();
+    let places = (d.project.layers().iter())
+        .find(|l| l.name == "Places")
+        .unwrap()
+        .id;
+    let style = &mut d.entry_mut(places).unwrap().style;
+    style.style.rules[0].filter = Filter::new("pop_max > 10");
+    style.label.text = "concat(name, ' ' || pop_max)".into();
+    let globe = style.clone();
+
+    // A map style, with a style and a label class of the layer.
+    let first = d.project.atlas.add_map();
+    let mut class = LabelClass::new("Big", GeometryKind::Point, 0).unwrap();
+    class.text = "upper(name)".into();
+    class.filter = "pop_max > 5".into();
+    assert!(d.set_label_classes(first, places, std::slice::from_ref(&class)));
+    let record = d.project.atlas.map_mut(first).unwrap();
+    record.styles.insert(places, globe.to_json());
+    let shared = d.save_as_map_style(first).unwrap();
+    // A map with its own label class.
+    let second = d.project.atlas.add_map();
+    class.text = "name || ' ' || pop_max".into();
+    assert!(d.set_label_classes(second, places, &[class]));
+
+    assert!(d.rename_field(places, "pop_max", "people"));
+    assert!(d.rename_field(places, "name", "title"));
+    let style = &d.entry(places).unwrap().style;
+    let filter =
+        |s: &vale_style::LayerStyle| s.style.rules[0].filter.source().unwrap().text().to_owned();
+    assert_eq!(filter(style), "people > 10");
+    assert_eq!(style.label.text, "concat(title, ' ' || people)");
+    assert_eq!(style.label.priority_field.as_deref(), Some("people"));
+    let in_style = d.map_style(Target::Style(shared), places).unwrap();
+    assert_eq!(filter(&in_style), "people > 10");
+    let classes = d.label_classes_in(Target::Style(shared), places);
+    assert_eq!(classes[0].text, "upper(title)");
+    assert_eq!(classes[0].filter, "people > 5");
+    let classes = d.label_classes(Some(second), places);
+    assert_eq!(classes[0].text, "title || ' ' || people");
+}
