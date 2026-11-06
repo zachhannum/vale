@@ -93,6 +93,20 @@ impl ParseError {
             "^".repeat(width)
         )
     }
+
+    /// The message as a sentence for the UI, without the position.
+    pub fn short(&self) -> String {
+        let mut chars = self.message.chars();
+        let mut text: String = chars
+            .next()
+            .map(|c| c.to_uppercase().collect())
+            .unwrap_or_default();
+        text.extend(chars);
+        if !text.ends_with('.') {
+            text.push('.');
+        }
+        text
+    }
 }
 
 impl fmt::Display for ParseError {
