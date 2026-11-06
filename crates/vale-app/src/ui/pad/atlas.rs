@@ -545,9 +545,15 @@ fn frame_card(
 ) {
     let tool = state.atlas.tool;
     let framed = state.atlas.frame().is_some();
+    // Snap and Grid always show with the Frame tool and the Vertex tool.
+    // Delete and Deselect show while they have something to act on.
+    let acts = match tool {
+        AtlasTool::Vertex => framed,
+        AtlasTool::Frame => atlas::has_selection(state),
+        _ => false,
+    };
     let cells = match tool {
-        AtlasTool::Vertex if framed => 4,
-        AtlasTool::Frame if atlas::has_selection(state) => 3 + usize::from(framed),
+        AtlasTool::Vertex | AtlasTool::Frame => 2 + 2 * usize::from(acts),
         AtlasTool::Move if atlas::has_selection(state) => 1,
         AtlasTool::Select => {
             1 + usize::from(atlas::has_selection(state) || !state.feature_selection.is_empty())
@@ -597,8 +603,7 @@ fn frame_card(
             let mut cells = |ui: &mut egui::Ui| {
                 let on = state.atlas.snap;
                 let label = super::SNAP;
-                if framed
-                    && matches!(tool, AtlasTool::Frame | AtlasTool::Vertex)
+                if matches!(tool, AtlasTool::Frame | AtlasTool::Vertex)
                     && widgets::tool_cell(
                         ui,
                         controls,
@@ -624,6 +629,9 @@ fn frame_card(
                     if cells < 2 {
                         return;
                     }
+                }
+                if matches!(tool, AtlasTool::Frame | AtlasTool::Vertex) && !acts {
+                    return;
                 }
                 if tool == AtlasTool::Vertex {
                     let (name, can) = (super::DELETE_VERTEX, atlas::can_delete_vertices(state));

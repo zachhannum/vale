@@ -1331,7 +1331,6 @@ fn deselect_clears_the_atlas_selection() {
     // It clears a selected item of furniture.
     add_item(&mut h, ItemKind::NorthArrow);
     assert!(matches!(h.state().atlas.selection, AtlasSelection::Item(_)));
-    assert!(control(&h, SNAP_TO_LAYOUT).is_none());
     tap(&mut h, DESELECT);
     assert_eq!(h.state().atlas.selection, AtlasSelection::None);
     assert_eq!(open_page(&h).furniture.len(), 1);
@@ -6286,8 +6285,8 @@ fn the_snap_switch_turns_snapping_off_with_a_finger() {
     tap(&mut h, SNAP_TO_LAYOUT);
     assert!(h.state().atlas.snap);
 
-    // The switch shows only while the Frame tool or the Vertex tool edits a
-    // frame.
+    // The switch shows with the Frame tool and the Vertex tool, also with no
+    // selection.
     tap(&mut h, "Move");
     assert!(control(&h, SNAP_TO_LAYOUT).is_none());
     tap(&mut h, VERTEX);
@@ -6296,7 +6295,33 @@ fn the_snap_switch_turns_snapping_off_with_a_finger() {
     assert!(control(&h, SNAP_TO_LAYOUT).is_some());
     h.state_mut().atlas.selection = AtlasSelection::Page;
     h.run_steps(2);
-    assert!(control(&h, SNAP_TO_LAYOUT).is_none());
+    assert!(control(&h, SNAP_TO_LAYOUT).is_some());
+}
+
+#[test]
+fn snap_and_grid_show_with_no_selection_in_the_frame_and_vertex_tools() {
+    for size in BOARDS.into_iter().chain([(393.0, 852.0), (852.0, 393.0)]) {
+        let what = format!("{size:?}");
+        let mut h = inset_pad(size);
+        for tool in ["Frame tool", VERTEX] {
+            tap(&mut h, tool);
+            h.state_mut().atlas.selection = AtlasSelection::None;
+            h.run_steps(3);
+            for name in [SNAP_TO_LAYOUT, GRID] {
+                assert!(control(&h, name).is_some(), "{what}: {tool}: {name}");
+            }
+            for name in [DESELECT, DELETE_SELECTION, DELETE_VERTEX] {
+                assert!(control(&h, name).is_none(), "{what}: {tool}: {name}");
+            }
+            check_controls(&h, &format!("{what}: {tool}"));
+            let on = h.state().atlas.snap;
+            tap(&mut h, SNAP_TO_LAYOUT);
+            assert_eq!(h.state().atlas.snap, !on, "{what}: {tool}");
+            let grid = h.state().doc.project.atlas.grid.on;
+            tap(&mut h, GRID);
+            assert_eq!(h.state().doc.project.atlas.grid.on, !grid, "{what}: {tool}");
+        }
+    }
 }
 
 #[test]
