@@ -3886,6 +3886,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
             }
             Workspace::Atlas => {
                 panels::left(ui, state);
+                select::desktop(ui, state);
                 dock::draw(ui, state);
                 panels::status(ui, state);
                 table::desktop(ui, state);

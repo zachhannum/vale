@@ -6349,10 +6349,16 @@ fn the_grid_button_of_the_top_row_shows_the_layout_grid() {
                 );
             }
         }
-        tap(&mut h, SHOW_GRID);
-        assert!(h.state().doc.project.atlas.grid.on, "{size:?}");
-        tap(&mut h, SHOW_GRID);
-        assert!(!h.state().doc.project.atlas.grid.on, "{size:?}");
+        // On a phone, the switch is a row of the workspace menu.
+        let phone = size.0 < 700.0;
+        for on in [true, false] {
+            if phone {
+                assert!(control(&h, SHOW_GRID).is_none(), "{size:?}");
+                tap(&mut h, "Workspace");
+            }
+            tap(&mut h, SHOW_GRID);
+            assert_eq!(h.state().doc.project.atlas.grid.on, on, "{size:?}");
+        }
     }
 }
 
@@ -8193,22 +8199,50 @@ fn attribute(h: &Pad, f: vale_app::globe::select::FeatureRef, name: &str) -> Str
 }
 
 #[test]
-fn a_tap_of_the_select_tool_shows_the_inspector_of_the_feature() {
-    use vale_app::ui::pad::atlas::ATTRIBUTES_HINT;
+fn the_attributes_button_opens_the_inspector_of_the_world_in_the_atlas() {
+    use vale_app::ui::pad::Panel;
+    use vale_app::ui::select::{ATTRIBUTES, FOCUS_NEW, NO_SELECTION};
     let (mut h, at, town) = towns_pad(BOARDS[0]);
+    // A selection does not open the inspector.
     tap_with(&mut h, at, Input::Finger);
     assert_eq!(h.state().feature_selection, vec![town]);
-    let layer = h.state().doc.layer(town.layer).unwrap().name.clone();
-    assert!(h.query_by_label(ATTRIBUTES_HINT).is_some());
-    assert!(h.query_all_by_label(&layer).count() >= 1);
-    assert!(control(&h, "name").is_some());
-    assert!(control(&h, FRAME_TABS[0]).is_none());
-    // Back goes to the panel of the frame, with its tabs.
-    let map = map_of(&h, 1);
-    tap(&mut h, &format!("Back to {map}"));
     assert!(control(&h, "name").is_none());
     assert!(control(&h, FRAME_TABS[0]).is_some());
-    assert_eq!(h.state().feature_selection, vec![town]);
+    // The Attributes button opens the inspector in the panel place, with
+    // the title row of the World workspace and no line above the fields.
+    tap(&mut h, ATTRIBUTES);
+    assert!(h.state().pad.is_open(Panel::Attributes));
+    assert!(control(&h, "name").is_some());
+    assert!(control(&h, FOCUS_NEW).is_some());
+    assert!(control(&h, FRAME_TABS[0]).is_none());
+    let layer = h.state().doc.layer(town.layer).unwrap().name.clone();
+    assert!(h.query_by_label(&layer).is_none());
+    // It follows the selection, and it shows the empty state.
+    h.state_mut().set_feature_selection(Vec::new());
+    h.run_steps(2);
+    assert!(h.query_by_label(NO_SELECTION).is_some());
+    // A second tap closes it, and the panel of the frame shows again.
+    tap(&mut h, ATTRIBUTES);
+    assert!(!h.state().pad.is_open(Panel::Attributes));
+    assert!(control(&h, FRAME_TABS[0]).is_some());
+}
+
+#[test]
+fn a_frame_that_the_frame_tool_selects_closes_the_inspector() {
+    use vale_app::ui::pad::Panel;
+    let (mut h, at, _) = towns_pad(BOARDS[0]);
+    tap_with(&mut h, at, Input::Finger);
+    tap(&mut h, vale_app::ui::select::ATTRIBUTES);
+    // The Select tool keeps the inspector open.
+    let main = middle(&h, 0);
+    tap_with(&mut h, main, Input::Finger);
+    assert!(h.state().pad.is_open(Panel::Attributes));
+    tap(&mut h, FRAME_TOOL);
+    assert!(h.state().pad.is_open(Panel::Attributes));
+    let inset = middle(&h, 1);
+    tap_with(&mut h, inset, Input::Finger);
+    assert!(!h.state().pad.is_open(Panel::Attributes));
+    assert!(control(&h, FRAME_TABS[0]).is_some());
 }
 
 #[test]
@@ -8219,6 +8253,7 @@ fn an_attribute_edit_in_the_atlas_is_one_undo_step_and_redraws_the_frames() {
     let (mut h, at, town) = towns_pad_with(s, BOARDS[0]);
     h.state_mut().save_waiting().unwrap();
     tap_with(&mut h, at, Input::Finger);
+    tap(&mut h, vale_app::ui::select::ATTRIBUTES);
     let generation = h.state().map_generation;
     type_text(&mut h, "name", "Avalon");
     h.key_press(egui::Key::Enter);
@@ -8235,12 +8270,13 @@ fn an_attribute_edit_in_the_atlas_is_one_undo_step_and_redraws_the_frames() {
 fn the_selection_of_the_atlas_shows_in_the_inspector_of_the_world() {
     let (mut h, at, town) = towns_pad(BOARDS[0]);
     tap_with(&mut h, at, Input::Finger);
+    tap(&mut h, vale_app::ui::select::ATTRIBUTES);
     let form = h.state().selection_form.as_ref().unwrap();
     assert_eq!(form.feature, town);
+    // The inspector is one inspector: it stays open in the World workspace.
     h.state_mut().workspace = Workspace::Globe;
     h.run_steps(3);
     assert_eq!(h.state().feature_selection, vec![town]);
-    tap(&mut h, vale_app::ui::select::ATTRIBUTES);
     let form = h.state().selection_form.as_ref().unwrap();
     assert_eq!(form.feature, town);
     assert!(control(&h, "name").is_some());
@@ -8284,13 +8320,14 @@ fn show_in_table_opens_the_table_in_the_layers_tab_of_the_frame() {
     let (mut h, at, town) = towns_pad(BOARDS[0]);
     let lonlat = place_at(&mut h, 1, at);
     tap_with(&mut h, at, Input::Finger);
+    tap(&mut h, vale_app::ui::select::ATTRIBUTES);
     tap(&mut h, SHOW_IN_TABLE);
     let s = h.state();
     assert_eq!(s.atlas.tab, FrameTab::Layers);
     assert_eq!(s.atlas.layer_page, Some(Page::Table));
     assert_eq!(s.atlas.open_layer(), Some(town.layer));
     assert_eq!(s.table.as_ref().unwrap().layer, town.layer);
-    assert!(!s.atlas.attributes);
+    assert!(!s.pad.is_open(vale_app::ui::pad::Panel::Attributes));
     // A tap on the town keeps the table.
     let at = pos_of(&mut h, 1, lonlat);
     tap_with(&mut h, at, Input::Finger);
@@ -8414,5 +8451,28 @@ fn the_selectable_cell_and_list_fit_in_the_atlas_on_each_screen() {
         let row = control(&h, ACTIVE_LAYER).unwrap_or_else(|| panic!("{what}"));
         assert!(screen.contains_rect(row), "{what}");
         assert!(!row.intersects(cell), "{what}");
+    }
+}
+
+#[test]
+fn the_attributes_button_and_the_inspector_fit_in_the_atlas_on_each_screen() {
+    use vale_app::ui::select::ATTRIBUTES;
+    let phones = [(393.0, 852.0), (852.0, 393.0)];
+    for size in BOARDS.into_iter().chain(phones) {
+        let what = format!("{size:?}");
+        let (mut h, _, town) = towns_pad(size);
+        h.state_mut().set_feature_selection(vec![town]);
+        h.run_steps(2);
+        let button = control(&h, ATTRIBUTES).unwrap_or_else(|| panic!("{what}"));
+        check_controls(&h, &what);
+        // No other control of the top row overlaps the button.
+        for c in &h.state().pad.controls {
+            if c.name != ATTRIBUTES {
+                assert!(!c.rect.intersects(button.shrink(1.0)), "{what}: {}", c.name);
+            }
+        }
+        tap(&mut h, ATTRIBUTES);
+        assert!(control(&h, "name").is_some(), "{what}");
+        check_controls(&h, &what);
     }
 }

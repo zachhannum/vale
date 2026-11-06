@@ -2161,10 +2161,10 @@ fn the_edit_menu_merges_the_selected_features_into_the_feature_that_you_choose()
 }
 
 #[test]
-fn with_the_select_tool_the_dock_shows_the_inspector_and_opens_the_table() {
+fn command_i_shows_the_inspector_in_the_atlas_and_the_dock_opens_the_table() {
     use vale_app::globe::select::FeatureRef;
     use vale_app::ui::LayerRef;
-    use vale_app::ui::pad::atlas::ATTRIBUTES_HINT;
+    use vale_app::ui::select::ATTRIBUTES;
     use vale_app::ui::table::OPEN_TABLE;
     let mut h = harness();
     h.run_steps(3);
@@ -2176,17 +2176,26 @@ fn with_the_select_tool_the_dock_shows_the_inspector_and_opens_the_table() {
         layer: layer.id,
         uuid: layer.features[0].uuid(),
     };
-    let (name, field) = (layer.name.clone(), layer.fields[0].name.clone());
+    let field = layer.fields[0].name.clone();
     s.select(Some(LayerRef::Vector(found.layer)));
     s.atlas.tool = AtlasTool::Select;
     let frame = vale_app::ui::atlas::open_page(s).frames[0].id;
     s.atlas.selection = AtlasSelection::Frame(frame);
     s.set_feature_selection(vec![found]);
     h.run_steps(3);
-    assert!(h.query_by_label(ATTRIBUTES_HINT).is_some());
+    // A selection does not show the inspector.
+    assert!(h.query_by_label(ATTRIBUTES).is_none());
+    assert!(!h.state().show_attributes);
+    // ⌘I shows the inspector of the World workspace, and hides it again.
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::I);
+    h.run_steps(3);
+    assert!(h.state().show_attributes);
+    assert!(h.query_by_label(ATTRIBUTES).is_some());
     assert_eq!(h.state().selection_form.as_ref().unwrap().feature, found);
     assert!(h.query_all_by_label(&field).count() >= 1);
-    assert!(h.query_all_by_label(&name).count() >= 1);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::I);
+    h.run_steps(3);
+    assert!(h.query_by_label(ATTRIBUTES).is_none());
     // The Layers tab of the frame opens the table of the layer.
     h.state_mut().atlas.tab = vale_app::ui::atlas::FrameTab::Layers;
     h.state_mut().atlas.layer = Some((frame, found.layer));

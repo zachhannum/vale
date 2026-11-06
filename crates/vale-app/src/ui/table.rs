@@ -143,7 +143,10 @@ impl AppState {
             atlas.tab = super::atlas::FrameTab::Layers;
             atlas.layer = Some((frame, layer));
             atlas.layer_page = Some(super::pad::Page::Table);
-            atlas.attributes = false;
+            // The frame panel shows the table, so the inspector closes.
+            if self.pad.is_open(super::pad::Panel::Attributes) {
+                self.pad.close(super::pad::Panel::Attributes);
+            }
         } else if self.layout == super::Layout::Pad {
             self.pad.right = Some(super::pad::Panel::Layers);
             self.pad.layer = Some(super::LayerRef::Vector(layer));

@@ -293,6 +293,8 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                 return;
             }
             ui.separator();
+            select::view_menu(ui, state);
+            ui.separator();
             atlas_buttons(ui, state);
             if !state.file_buttons {
                 return;

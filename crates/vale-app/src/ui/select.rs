@@ -181,14 +181,6 @@ impl AppState {
             .collect()
     }
 
-    /// The name of the layer of a selection in one layer.
-    pub fn selection_layer_name(&self) -> Option<String> {
-        let [(id, _)] = self.selection_counts()[..] else {
-            return None;
-        };
-        self.doc.layer(id).map(|l| l.name.clone())
-    }
-
     /// The lines of the inspector for a selection of features of more than
     /// one layer, or nothing for a selection in one layer.
     pub fn mixed_lines(&self) -> Vec<String> {

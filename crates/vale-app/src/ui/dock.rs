@@ -12,18 +12,18 @@ use vale_store::{
 use super::elevation::{DISPLAYS, blend_label};
 use super::pad::raster::{BLEND, SHOW_AS};
 
-use super::atlas::{self, AtlasSelection, AtlasTool, EdgeSet, FrameTab};
+use super::atlas::{self, AtlasSelection, EdgeSet, FrameTab};
 use super::pad::atlas::{
-    ADD_HOLE, ADD_PAGE, ATTRIBUTES_HINT, AUTO_INTERVAL, AZIMUTH, BORDER, BORDER_COLOR,
-    BORDER_DISTANCE, BORDER_STROKE, BORDER_STYLE, BORDER_STYLES, BORDER_WIDTH, CENTER_LATITUDE,
-    CENTER_LONGITUDE, CENTER_ON_FRAME, COPY_GLOBE_STYLE, DELETE_MAP_STYLE, DELETE_PAGE,
-    DELETE_PROJECTION, EDITED, FIRST_PARALLEL, FRAME_TABS, GRATICULE_COLOR, GRATICULE_WIDTH,
-    GRID_COLOR, GRID_SPACING, HEIGHT, INTERVAL, LABEL_FORMAT, LABEL_FORMATS, LATITUDE, LAYOUT_GRID,
-    LONGITUDE, MAP_NAME, MAP_STYLE, MAP_STYLE_NAME, NEATLINE, NEATLINE_COLOR, NEATLINE_WIDTH,
-    NO_MAP_STYLE, OBLIQUE, ORIENTATIONS, PAGE_NAME, PAPER_COLOR, POLYGON, PROJECTION_NAME,
-    RECTANGLE, REFERENCE_GRID, RESET_TO_MAP_STYLE, ROTATION, SAVE_AS_MAP_STYLE, SAVE_PROJECTION,
-    SCALE, SECOND_COLOR, SECOND_PARALLEL, SHAPE, SIZE, STROKE_COLOR, STROKE_WIDTH, UNIT_NAMES,
-    UPDATE_MAP_STYLE, WIDTH, custom_row, edited_value, length_text, unit_name,
+    ADD_HOLE, ADD_PAGE, AUTO_INTERVAL, AZIMUTH, BORDER, BORDER_COLOR, BORDER_DISTANCE,
+    BORDER_STROKE, BORDER_STYLE, BORDER_STYLES, BORDER_WIDTH, CENTER_LATITUDE, CENTER_LONGITUDE,
+    CENTER_ON_FRAME, COPY_GLOBE_STYLE, DELETE_MAP_STYLE, DELETE_PAGE, DELETE_PROJECTION, EDITED,
+    FIRST_PARALLEL, FRAME_TABS, GRATICULE_COLOR, GRATICULE_WIDTH, GRID_COLOR, GRID_SPACING, HEIGHT,
+    INTERVAL, LABEL_FORMAT, LABEL_FORMATS, LATITUDE, LAYOUT_GRID, LONGITUDE, MAP_NAME, MAP_STYLE,
+    MAP_STYLE_NAME, NEATLINE, NEATLINE_COLOR, NEATLINE_WIDTH, NO_MAP_STYLE, OBLIQUE, ORIENTATIONS,
+    PAGE_NAME, PAPER_COLOR, POLYGON, PROJECTION_NAME, RECTANGLE, REFERENCE_GRID,
+    RESET_TO_MAP_STYLE, ROTATION, SAVE_AS_MAP_STYLE, SAVE_PROJECTION, SCALE, SECOND_COLOR,
+    SECOND_PARALLEL, SHAPE, SIZE, STROKE_COLOR, STROKE_WIDTH, UNIT_NAMES, UPDATE_MAP_STYLE, WIDTH,
+    custom_row, edited_value, length_text, unit_name,
 };
 use super::pad::atlas::{
     BORDER_GAP, DISTANCE_BY_SIDE, GRID_COLUMN_NAMES, GRID_COLUMNS, SIDE_DISTANCES,
@@ -35,22 +35,12 @@ use super::pad::{GRATICULE, NO_LAYERS};
 use super::{AppState, inspector, number, style_editor};
 use crate::atlas::{self as math, PAGE_PRESETS};
 
-/// True if the dock shows: a frame, the page, a layer, or a feature is
-/// selected.
+/// True if the dock shows: a frame, the page, or a layer is selected.
 pub fn shown(state: &AppState) -> bool {
-    state.atlas.selection != AtlasSelection::None
-        || state.selected_vector().is_some()
-        || attributes_shown(state)
-}
-
-/// True if the dock shows the inspector of the feature selection.
-fn attributes_shown(state: &AppState) -> bool {
-    state.atlas.tool == AtlasTool::Select && !state.feature_selection.is_empty()
+    state.atlas.selection != AtlasSelection::None || state.selected_vector().is_some()
 }
 
 pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
-    state.sync_selection_form(attributes_shown(state));
-    super::select::drop_focus(ui.ctx(), state);
     if !shown(state) {
         return;
     }
@@ -59,10 +49,6 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         .show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                if attributes_shown(state) {
-                    attributes(ui, state);
-                    ui.separator();
-                }
                 match state.atlas.selection {
                     AtlasSelection::Frame(id) => {
                         if let Some(frame) = state.doc.project.atlas.frame(id).cloned() {
@@ -85,18 +71,6 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
                 inspector::contents(ui, state);
             });
         });
-}
-
-/// The inspector of the feature selection, with the name of its layer.
-fn attributes(ui: &mut egui::Ui, state: &mut AppState) {
-    ui.heading(super::select::ATTRIBUTES);
-    if let Some(name) = state.selection_layer_name() {
-        ui.strong(name);
-    }
-    ui.weak(ATTRIBUTES_HINT);
-    ui.add_space(4.0);
-    super::select::desktop_body(ui, state);
-    ui.add_space(6.0);
 }
 
 /// Gives a widget a name for a screen reader and for a test.
