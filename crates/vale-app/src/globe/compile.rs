@@ -12,6 +12,9 @@ use eframe::egui_wgpu::wgpu;
 /// The count of the compiles that run.
 static RUNNING: AtomicUsize = AtomicUsize::new(0);
 
+/// The messages of the compiles that failed.
+static FAILED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
 /// True: `Compiled::get` waits for the worker. Only offscreen renders set
 /// it, so that each of their frames draws all passes.
 static WAIT: AtomicBool = AtomicBool::new(false);
@@ -25,6 +28,12 @@ thread_local! {
 /// renders call it.
 pub fn wait_in_frames() {
     WAIT.store(true, Ordering::Relaxed);
+}
+
+/// The messages of the compiles that failed, such as a pipeline that the
+/// GPU does not take.
+pub fn failures() -> Vec<String> {
+    FAILED.lock().map(|f| f.clone()).unwrap_or_default()
 }
 
 /// True while a worker compiles.
@@ -80,7 +89,16 @@ impl<T: Send + Sync + 'static> Compiled<T> {
         let cell = self.cell.clone();
         RUNNING.fetch_add(1, Ordering::Relaxed);
         let run = move || {
-            let value = catch_unwind(AssertUnwindSafe(make)).ok();
+            let value = catch_unwind(AssertUnwindSafe(make))
+                .map_err(|panic| {
+                    let text = (panic.downcast_ref::<String>().cloned())
+                        .or_else(|| panic.downcast_ref::<&str>().map(|s| s.to_string()))
+                        .unwrap_or_else(|| "no message".to_string());
+                    if let Ok(mut failed) = FAILED.lock() {
+                        failed.push(text);
+                    }
+                })
+                .ok();
             let _ = cell.set(value);
             RUNNING.fetch_sub(1, Ordering::Relaxed);
         };
@@ -126,9 +144,10 @@ mod tests {
     }
 
     #[test]
-    fn a_panic_of_the_worker_gives_no_value() {
+    fn a_panic_of_the_worker_gives_no_value_and_a_message() {
         let compiled: Compiled<u32> = Compiled::start(|| panic!("no compile"));
         assert_eq!(compiled.wait(), None);
         assert!(compiled.done());
+        assert!(failures().iter().any(|text| text == "no compile"));
     }
 }

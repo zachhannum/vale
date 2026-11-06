@@ -280,7 +280,12 @@ struct Layouts {
 struct Masks {
     /// The value range of a raster mask, on the globe and in the flat view.
     cover: [wgpu::RenderPipeline; 2],
-    /// Draws the meshes of egui shapes into the target of a group.
+}
+
+/// The pipelines of the meshes of egui shapes. The blurred copy uses them
+/// too, so they compile apart from the masks.
+struct Vectors {
+    /// Draws the meshes of egui shapes into a target.
     vector: wgpu::RenderPipeline,
     /// Puts the opaque shapes of a translucent stroke on the target of a
     /// group with the alpha of the stroke.
@@ -526,6 +531,11 @@ impl Layouts {
                 cover("range cover", "vs_main", "fs_range_cover", false),
                 cover("flat range cover", "vs_flat", "fs_flat_range_cover", true),
             ],
+        }
+    }
+
+    fn vectors(&self) -> Vectors {
+        Vectors {
             vector: vector_pipeline(&self.device, self.format, &self.vector),
             vector_group: vector_group_pipeline(&self.device, self.format, &self.vector_group),
         }
@@ -554,9 +564,9 @@ struct Resources {
     image_sampler: wgpu::Sampler,
     /// The copies of the images that the globe draws.
     images: HashMap<ImageKey, GpuImage>,
-    /// The passes of a mask: the value range of a raster mask, and the
-    /// meshes of egui shapes in the target of a group.
+    /// The passes of the value range of a raster mask.
     masks: Compiled<Masks>,
+    vectors: Compiled<Vectors>,
     vector_layout: wgpu::BindGroupLayout,
     vector_group_layout: wgpu::BindGroupLayout,
     /// The target of the opaque shapes of a translucent stroke in a group,
@@ -753,6 +763,7 @@ impl Resources {
             core_layouts.core()
         });
         let (blend_layouts, mask_layouts) = (layouts.clone(), layouts.clone());
+        let vector_layouts = layouts.clone();
         let empty = |label, layers, dimension| {
             let texture = device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
@@ -782,6 +793,7 @@ impl Resources {
             image_sampler,
             images: HashMap::new(),
             masks: Compiled::lazy(move || mask_layouts.masks()),
+            vectors: Compiled::lazy(move || vector_layouts.vectors()),
             vector_layout,
             vector_group_layout,
             vector_scratch: None,
@@ -1870,7 +1882,8 @@ impl Resources {
         load = wgpu::LoadOp::Load;
         // A masked group draws nothing until the passes of the masks are
         // ready.
-        if (group.vector.is_some() || group.cover.is_some()) && self.masks.get().is_none() {
+        let masks = group.cover.is_some() && self.masks.get().is_none();
+        if masks || (group.vector.is_some() && self.vectors.get().is_none()) {
             return None;
         }
         for draw in &group.draws {
@@ -1972,10 +1985,10 @@ impl Resources {
         shapes: &VectorShapes,
     ) {
         use wgpu::util::DeviceExt;
-        let Some(masks) = self.masks.get() else {
+        let Some(vectors) = self.vectors.get() else {
             return;
         };
-        let (vector, vector_group) = (masks.vector.clone(), masks.vector_group.clone());
+        let (vector, vector_group) = (vectors.vector.clone(), vectors.vector_group.clone());
         let ppp = shapes.pixels_per_point;
         let (mut vertices, mut indices) = (Vec::new(), Vec::new());
         // The first index, the count of indices, the scissor, and the alpha
