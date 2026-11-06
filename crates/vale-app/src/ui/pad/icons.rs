@@ -12,6 +12,8 @@ pub enum Icon {
     Flatten,
     /// A profile of flat steps with steep sides.
     Terrace,
+    /// A hill with a convex slope and a concave slope.
+    Shape,
     Carve,
     Ridge,
     Deposit,
@@ -91,6 +93,7 @@ impl Icon {
             Icon::Smooth => "M3 12c3-4 6-4 9 0s6 4 9 0",
             Icon::Flatten => "M4 12h16",
             Icon::Terrace => "M2 19h5l1.5-5h5l1.5-5h7",
+            Icon::Shape => "M3 19C3 11 6 6 12 6c1 7 4 13 9 13",
             Icon::Carve => "M3 7c4 0 5 9 9 9s5-9 9-9M12 16v5",
             Icon::Ridge => "M3 9c2 0 3 8 5 8l4-11 4 11c2 0 3-8 5-8",
             Icon::Deposit => "M3 7c4 0 5 12 9 12s5-12 9-12M6.5 13h11M9 16.5h6",
@@ -424,6 +427,7 @@ mod tests {
             Icon::Smooth,
             Icon::Flatten,
             Icon::Terrace,
+            Icon::Shape,
             Icon::Carve,
             Icon::Ridge,
             Icon::Deposit,

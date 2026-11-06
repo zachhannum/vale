@@ -38,6 +38,15 @@ pub enum Mode {
     /// texel does not cross sea level, and a texel below sea level stays
     /// below it.
     Terrace,
+    /// Moves each texel toward a curve between the lowest level and the
+    /// highest level near it. The texels near it are a grid of 9 by 9 that
+    /// reaches half the brush radius on each side. `shape_level` gives the
+    /// curve. `Stamp::strength` is the shape,
+    /// from -1 for old land to 1 for young land. Toward old land, the curve
+    /// raises the middle of each slope, and toward young land, it lowers it.
+    /// The lowest texel and the highest texel stay. A texel does not cross
+    /// sea level.
+    Shape,
     /// Cuts a channel along each river of the channel lines, with the width
     /// and the floodplain of `Stamp::channel`. The bed of a channel is
     /// `Stamp::strength` below the floodplain level for the largest rivers,
@@ -156,7 +165,9 @@ pub struct Stamp {
     pub level: u16,
     /// The largest change of the raise and lower modes, in 16-bit steps. In
     /// the noise mode, the largest rise. In the warp mode, the largest offset
-    /// as an angle, in radians.
+    /// as an angle, in radians. In the shape mode, the shape from -1 to 1.
+    /// `stamp_plan` changes it to the bend of the curve, `SHAPE_BEND` to the
+    /// power of the shape.
     pub strength: f64,
     /// The largest drop of the noise mode, in 16-bit steps.
     pub lower: f64,
@@ -1011,9 +1022,15 @@ impl Heightmap {
                 _ => stamp.strength,
             };
             (strength, scale)
+        } else if stamp.mode == Mode::Shape {
+            // The shader gets the same 32-bit bend.
+            let bend = SHAPE_BEND.powf(stamp.strength.clamp(-1.0, 1.0));
+            (f64::from(bend as f32), stamp.scale)
         } else {
             (stamp.strength, stamp.scale)
         };
+        // The shape mode reads the texels in half the radius.
+        let reach = if stamp.mode == Mode::Shape { 0.5 } else { 0.25 };
         StampPlan {
             stamp: Stamp {
                 radius,
@@ -1023,7 +1040,7 @@ impl Heightmap {
                 ..*stamp
             },
             rects: std::array::from_fn(|face| brush_rect(self.n, face, stamp.center, radius)),
-            reach: ((radius / (FRAC_PI_2 / self.n as f64)) * 0.25).max(1.0) as usize,
+            reach: ((radius / (FRAC_PI_2 / self.n as f64)) * reach).max(1.0) as usize,
         }
     }
 
@@ -1055,11 +1072,12 @@ impl Heightmap {
     fn stamp_face(&mut self, face: usize, rect: TexelRect, stamp: &Stamp, reach: usize) -> usize {
         let (t, base) = (self.tile, self.base);
         let falloff = Falloff::new(face, stamp);
-        // The smooth mode reads neighbors, so it needs the values from before.
+        // The smooth mode and the shape mode read neighbors, so they need the
+        // values from before.
         // Near a face edge, the neighbors are on the next face.
         let (bx, by) = (rect.x0 as i64 - reach as i64, rect.y0 as i64 - reach as i64);
         let (bw, bh) = (rect.x1 - rect.x0 + 2 * reach, rect.y1 - rect.y0 + 2 * reach);
-        let before = if stamp.mode == Mode::Smooth {
+        let before = if matches!(stamp.mode, Mode::Smooth | Mode::Shape) {
             self.read_past_edges(face, bx, by, bw, bh)
         } else {
             Vec::new()
@@ -1163,6 +1181,23 @@ impl Heightmap {
                                 old + (terrace_level(old, sea, stamp.level) - old) * amount.min(1.0)
                             }
                             Mode::Erode | Mode::OceanRidge | Mode::Range | Mode::Basin => continue,
+                            Mode::Shape => {
+                                // The place of the texel in `before`.
+                                let (x, y) = (x - rect.x0 + reach, y - rect.y0 + reach);
+                                let r = reach as i64;
+                                let (mut low, mut high) = (old, old);
+                                for j in -4..=4 {
+                                    for i in -4..=4 {
+                                        let xi = (x as i64 + i * r / 4) as usize;
+                                        let yj = (y as i64 + j * r / 4) as usize;
+                                        let level = old_at(xi, yj);
+                                        low = low.min(level);
+                                        high = high.max(level);
+                                    }
+                                }
+                                let target = shape_level(old, low, high, stamp.strength, sea);
+                                old + (target - old) * amount.min(1.0)
+                            }
                             Mode::Noise => {
                                 let p = face_dir(face, fu, fv);
                                 let value = fractal(p, stamp, octaves);
@@ -1555,6 +1590,28 @@ pub(crate) fn noise3(p: V3, seed: u32) -> V3 {
     let along_x = |dy: u32, dz: u32| between(corner(0, dy, dz), corner(1, dy, dz), tx);
     let along_y = |dz: u32| between(along_x(0, dz), along_x(1, dz), ty);
     between(along_y(0), along_y(1), tz)
+}
+
+/// The bend of the shape mode at a shape of -1 or 1.
+pub const SHAPE_BEND: f64 = 4.0;
+
+/// The target of the shape mode for a texel at `old`, with `low` and `high`
+/// the lowest level and the highest level near it. The curve goes from `low`
+/// to `high`. A bend below 1 raises its middle, and a bend above 1 lowers it.
+/// The slope of the curve is the inverse of the bend at `low` and the bend at
+/// `high`. The target is on the side of sea level of `old`.
+pub(crate) fn shape_level(old: f64, low: f64, high: f64, bend: f64, sea: f64) -> f64 {
+    let span = high - low;
+    if span <= 0.0 {
+        return old;
+    }
+    let t = (old - low) / span;
+    let target = low + span * t / (t + bend * (1.0 - t));
+    if old < sea {
+        target.min(sea - 1.0)
+    } else {
+        target.max(sea)
+    }
 }
 
 /// The step level of the terrace mode that is nearest to `old`. The step
@@ -5308,5 +5365,203 @@ mod tests {
         assert_eq!(terrace_level(sea - 1.0, sea, 1000), sea - 1.0);
         assert_eq!(terrace_level(sea + 400.0, sea, 1000), sea);
         assert_eq!(terrace_level(sea - 600.0, sea, 1000), sea - 1000.0);
+    }
+
+    /// A face of 64 texels with ridges along y. Each row has sharp crests
+    /// at each multiple of 16 and valleys between them, with straight slopes.
+    fn shape_ridges() -> (Heightmap, f64) {
+        let sea = f64::from(meters_to_level(SEA_LEVEL));
+        let mut map = Heightmap::with_tile_size(64, 16, sea as u16);
+        let row: Vec<u16> = (0..64)
+            .map(|x: i64| (sea + 1000.0 + 125.0 * ((x % 16) - 8).abs() as f64) as u16)
+            .collect();
+        map.store_rect(0, face_rect(64), &row.repeat(64));
+        (map, sea)
+    }
+
+    fn shape(shape: f64) -> Stamp {
+        Stamp {
+            mode: Mode::Shape,
+            strength: shape,
+            ..raise([1.0, 0.0, 0.0], 0.3)
+        }
+    }
+
+    /// A stroke at full strength: stamps that apply the curve about once.
+    fn shape_stroke(map: &mut Heightmap, stamp: &Stamp) {
+        for _ in 0..8 {
+            map.stamp(&Stamp {
+                flow: 0.12,
+                ..*stamp
+            });
+        }
+    }
+
+    /// The height of the middle of the slope from the crest at x = 32 to
+    /// the valley at x = 40, above the straight line between them.
+    fn bulge(map: &Heightmap) -> f64 {
+        let at = |x| f64::from(map.get(0, x, 32));
+        at(36) - 0.5 * (at(32) + at(40))
+    }
+
+    #[test]
+    fn shape_toward_old_makes_a_slope_convex_and_toward_young_concave() {
+        let (flat, _) = shape_ridges();
+        assert_eq!(bulge(&flat), 0.0);
+        for (value, sign) in [(-1.0, 1.0), (-0.5, 1.0), (0.5, -1.0), (1.0, -1.0)] {
+            let (mut map, _) = shape_ridges();
+            shape_stroke(&mut map, &shape(value));
+            let bulge = bulge(&map);
+            assert!(bulge * sign > 100.0, "shape {value}: {bulge}");
+            // Each texel of the slope is on the same side of the line.
+            let at = |x| f64::from(map.get(0, x, 32));
+            for x in 33..40 {
+                let line = at(32) + (at(40) - at(32)) * (x - 32) as f64 / 8.0;
+                let above = at(x) - line;
+                assert!(above * sign > 0.0, "shape {value}, texel {x}: {above}");
+            }
+        }
+        // A shape of zero keeps the straight slopes.
+        let (mut map, _) = shape_ridges();
+        map.stamp(&shape(0.0));
+        assert!(all_levels(&map) == all_levels(&flat));
+    }
+
+    #[test]
+    fn shape_keeps_the_crests_and_the_valley_floors() {
+        for value in [-1.0, 1.0] {
+            let (mut map, _) = shape_ridges();
+            let before = all_levels(&map);
+            shape_stroke(&mut map, &shape(value));
+            let after = all_levels(&map);
+            let changed = before.iter().zip(&after).filter(|(a, b)| a != b).count();
+            assert!(changed > 300, "{changed}");
+            for x in [16, 24, 32, 40, 48] {
+                for y in 24..40 {
+                    assert_eq!(
+                        map.get(0, x, y),
+                        before[y as usize * 64 + x as usize],
+                        "{x}, {y}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn shape_does_not_move_a_texel_across_sea_level() {
+        let sea = f64::from(meters_to_level(SEA_LEVEL));
+        // Ridges that cross sea level, so that the curve of a texel crosses it.
+        for value in [-1.0, 1.0] {
+            let mut map = Heightmap::with_tile_size(64, 16, sea as u16);
+            let row: Vec<u16> = (0..64)
+                .map(|x: i64| (sea - 500.0 + 125.0 * ((x % 16) - 8).abs() as f64) as u16)
+                .collect();
+            map.store_rect(0, face_rect(64), &row.repeat(64));
+            let before = all_levels(&map);
+            shape_stroke(&mut map, &shape(value));
+            let after = all_levels(&map);
+            let mut moved = 0;
+            for (&old, &new) in before.iter().zip(&after) {
+                let (old, new) = (f64::from(old), f64::from(new));
+                assert_eq!(new < sea, old < sea, "shape {value}: {old} went to {new}");
+                moved += usize::from(old != new);
+            }
+            assert!(moved > 300, "{moved}");
+        }
+        assert_eq!(
+            shape_level(sea - 10.0, sea - 100.0, sea + 100.0, 0.25, sea),
+            sea - 1.0
+        );
+        assert_eq!(
+            shape_level(sea + 10.0, sea - 100.0, sea + 100.0, 4.0, sea),
+            sea
+        );
+    }
+
+    #[test]
+    fn shape_leaves_the_receivers_of_the_rivers() {
+        // Ridges along the columns of face 0, with a valley on each 12th
+        // column. The valleys fall to the sea in the south, so the rivers run
+        // along them, and each slope falls along the rows.
+        let n = 256;
+        let sea = f64::from(meters_to_level(SEA_LEVEL));
+        let map = ground(n, |face, x, y, p| {
+            if face != 0 || p[0] < 0.5 {
+                return (sea - 1000.0) as u16;
+            }
+            let ridges = 500.0 * ((x as i64 % 12) - 6).abs() as f64;
+            (sea + 200.0 + ridges + 10.0 * y as f64) as u16
+        });
+        let before = FlowMap::new(&CoarseHeights::new(&map));
+        let before_levels = all_levels(&map);
+        let m = CoarseHeights::size_for(n);
+        for value in [-1.0, 1.0] {
+            let mut map = map.snapshot();
+            shape_stroke(
+                &mut map,
+                &Stamp {
+                    radius: 0.25,
+                    ..shape(value)
+                },
+            );
+            let after_levels = all_levels(&map);
+            let changed = before_levels.iter().zip(&after_levels);
+            let changed = changed.filter(|(a, b)| a != b).count();
+            assert!(changed > 5000, "{changed}");
+            let after = FlowMap::new(&CoarseHeights::new(&map));
+            // The cells near the brush center.
+            let near = |x: usize| (x as f64 + 0.5 - 0.5 * m as f64).abs() < 0.08 * m as f64;
+            let mut rivers = 0;
+            for y in (0..m).filter(|&y| near(y)) {
+                for x in (0..m).filter(|&x| near(x) && before.is_river(0, x, y)) {
+                    let receiver = before.receiver(0, x, y);
+                    assert_eq!(after.receiver(0, x, y), receiver, "shape {value}, {x}, {y}");
+                    rivers += 1;
+                }
+            }
+            assert!(rivers > 20, "{rivers}");
+        }
+    }
+
+    #[test]
+    fn shape_leaves_no_seam_at_a_face_edge() {
+        let n = 256;
+        for value in [-1.0, 1.0] {
+            let mut map = smooth_ground(n);
+            let before = all_levels(&map);
+            // Face 0 and face 2 meet at longitude 45.
+            for i in 0..16 {
+                map.stamp(&Stamp {
+                    center: lonlat_to_dir(41.0 + 0.5 * f64::from(i), 2.0),
+                    radius: 0.15,
+                    ..shape(value)
+                });
+            }
+            let after = all_levels(&map);
+            for m in (118..150).step_by(4) {
+                let changed =
+                    [(m + 1) * n - 1, (2 * n + n - 1) * n + m].map(|i| after[i] != before[i]);
+                assert!(changed[0] && changed[1], "{m}");
+                assert_no_seam(&map, 0, m);
+            }
+        }
+    }
+
+    #[test]
+    fn one_undo_step_takes_back_a_shape_stroke() {
+        let (mut map, _) = shape_ridges();
+        let before = all_levels(&map);
+        map.begin_stroke();
+        for i in 0..8 {
+            map.stamp(&Stamp {
+                center: lonlat_to_dir(-4.0 + f64::from(i), 0.0),
+                ..shape(-1.0)
+            });
+        }
+        assert!(map.end_stroke());
+        assert!(all_levels(&map) != before);
+        assert!(map.undo());
+        assert!(all_levels(&map) == before);
     }
 }

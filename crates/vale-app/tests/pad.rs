@@ -2303,6 +2303,21 @@ fn the_terrace_mode_is_in_the_terrain_cell_and_has_a_step() {
 }
 
 #[test]
+fn the_shape_mode_is_in_the_terrain_cell_and_has_a_shape() {
+    let mut h = pad(BOARDS[0]);
+    tap(&mut h, "Brush settings");
+    assert!(control(&h, "Brush shape").is_none());
+    open_group(&mut h, group_of("Shape"));
+    screenshot::save(&mut h, "pad-terrain-modes");
+    tap(&mut h, "Shape");
+    assert_eq!(h.state().globe.brush.mode, Mode::Shape);
+    assert!(control(&h, "Brush shape").is_some());
+    assert!(control(&h, "Brush strength").is_none());
+    check_controls(&h, "the Shape mode");
+    screenshot::save(&mut h, "pad-shape");
+}
+
+#[test]
 fn the_brush_panel_of_the_push_mode_has_no_strength() {
     let mut h = pad(BOARDS[0]);
     tap(&mut h, "Brush settings");

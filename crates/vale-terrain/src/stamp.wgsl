@@ -108,6 +108,7 @@ const RANGE = 11u;
 const PUSH = 12u;
 const NOISE = 13u;
 const TERRACE = 14u;
+const SHAPE = 15u;
 
 // The same number as `WARP_MARGIN` in `heightmap.rs`.
 const WARP_MARGIN = 3.0;
@@ -2197,6 +2198,32 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<u32> {
                     nearest = min(nearest, sea - 1.0);
                 }
                 change = (nearest - old) * min(amount, 1.0);
+            }
+            case SHAPE {
+                // The same samples and curve as `shape_level`. The strength
+                // is the bend.
+                let r = group.reach;
+                var low = old;
+                var high = old;
+                for (var j = -4; j <= 4; j++) {
+                    for (var i = -4; i <= 4; i++) {
+                        let level = level_before(at + vec2<i32>(i * r / 4, j * r / 4));
+                        low = min(low, level);
+                        high = max(high, level);
+                    }
+                }
+                let span = high - low;
+                if span > 0.0 {
+                    let t = (old - low) / span;
+                    var curve = low + span * t / (t + stamp.strength * (1.0 - t));
+                    let sea = f32(group.sea);
+                    if old < sea {
+                        curve = min(curve, sea - 1.0);
+                    } else {
+                        curve = max(curve, sea);
+                    }
+                    change = (curve - old) * min(amount, 1.0);
+                }
             }
             default {
                 change = (stamp.level - old) * min(amount, 1.0);
