@@ -2993,9 +2993,9 @@ impl AppState {
         }
     }
 
-    /// The selected polygon that Cut out cuts with, and the other selected
-    /// polygons. Cut out needs a key polygon and another selected polygon.
-    fn cut_parts(
+    /// The selected polygon that Subtract cuts with, and the other selected
+    /// polygons. Subtract needs a key polygon and another selected polygon.
+    fn subtract_parts(
         &self,
     ) -> Option<(
         crate::globe::select::FeatureRef,
@@ -3014,17 +3014,17 @@ impl AppState {
         (!others.is_empty()).then_some((key, others))
     }
 
-    /// True if Cut out can cut: the key of the selection is a polygon, and
+    /// True if Subtract can cut: the key of the selection is a polygon, and
     /// another polygon is selected.
-    pub fn can_cut_out(&self) -> bool {
-        self.cut_parts().is_some()
+    pub fn can_subtract(&self) -> bool {
+        self.subtract_parts().is_some()
     }
 
     /// Cuts the key polygon out of the other selected polygons, in any
     /// layer. The key does not change. A polygon that the cut covers goes
     /// away. The cut is one undo step.
-    pub fn cut_out(&mut self) {
-        let Some((key, others)) = self.cut_parts() else {
+    pub fn subtract_selection(&mut self) {
+        let Some((key, others)) = self.subtract_parts() else {
             return;
         };
         let geometry = (self.doc.layer(key.layer))

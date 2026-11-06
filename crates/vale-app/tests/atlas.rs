@@ -8096,7 +8096,7 @@ fn with_the_select_tool_a_tap_selects_the_feature_in_reach_and_its_frame() {
 
 #[test]
 fn with_the_select_tool_a_held_finger_or_shift_adds_and_a_second_tap_makes_the_key() {
-    use vale_app::ui::select::{ADD_TO_SELECTION, CUT_OUT};
+    use vale_app::ui::select::ADD_TO_SELECTION;
     let (mut h, at, town) = towns_pad(BOARDS[0]);
     let other_at = at + vec2(30.0, 20.0);
     let other = add_town(&mut h, town.layer, 1, other_at);
@@ -8120,8 +8120,6 @@ fn with_the_select_tool_a_held_finger_or_shift_adds_and_a_second_tap_makes_the_k
     h.run_steps(2);
     assert_eq!(h.state().feature_selection, [town, other]);
     assert_eq!(h.state().key_feature(), Some(town));
-    // Cut out needs polygons.
-    assert!(is_disabled(&h, CUT_OUT));
     // Shift with the mouse takes the other town out.
     h.event(egui::Event::ModifiersChanged(egui::Modifiers::SHIFT));
     tap_with(&mut h, other_at, Input::Mouse);
@@ -8249,14 +8247,14 @@ fn the_selection_of_the_atlas_is_the_selection_of_the_world() {
 }
 
 #[test]
-fn with_the_select_tool_the_context_strip_has_add_cut_out_and_deselect_and_no_delete() {
-    use vale_app::ui::select::{ADD_TO_SELECTION, CUT_OUT};
+fn with_the_select_tool_the_context_strip_has_add_and_deselect_and_no_edits() {
+    use vale_app::ui::select::{ADD_TO_SELECTION, SUBTRACT};
     let (mut h, at, town) = towns_pad(BOARDS[0]);
     tap_with(&mut h, at, Input::Finger);
-    for name in [ADD_TO_SELECTION, CUT_OUT, DESELECT] {
+    for name in [ADD_TO_SELECTION, DESELECT] {
         assert!(h.query_by_label(name).is_some(), "{name}");
     }
-    for name in [SNAP_TO_LAYOUT, DELETE_SELECTION, DELETE_VERTEX] {
+    for name in [SNAP_TO_LAYOUT, DELETE_SELECTION, DELETE_VERTEX, SUBTRACT] {
         assert!(control(&h, name).is_none(), "{name}");
     }
     let frames = open_page(&h).frames.len();

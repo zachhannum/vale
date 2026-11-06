@@ -23,7 +23,7 @@ pub const DELETE: &str = "Delete selection";
 pub const MERGE: &str = "Merge…";
 /// The command that cuts the key polygon out of the other selected
 /// polygons.
-pub const CUT_OUT: &str = "Cut out";
+pub const SUBTRACT: &str = "Subtract";
 /// The switch that makes each tap and each box add to the selection.
 pub const ADD_TO_SELECTION: &str = "Add to selection";
 /// The title of the list of Merge.
@@ -979,7 +979,7 @@ pub fn view_menu(ui: &mut egui::Ui, state: &mut AppState) {
 }
 
 /// The Edit menu of the desktop tool bar: Delete selection, Merge, and
-/// Cut out.
+/// Subtract.
 /// "Merge…" opens a window with a button for each selected feature, and a
 /// click on a button merges the selection into that feature. Features with
 /// the same attributes merge with no window.
@@ -998,10 +998,10 @@ pub fn edit_menu(ui: &mut egui::Ui, state: &mut AppState) {
             ui.close();
         }
         if ui
-            .add_enabled(state.can_cut_out(), egui::Button::new(CUT_OUT))
+            .add_enabled(state.can_subtract(), egui::Button::new(SUBTRACT))
             .clicked()
         {
-            state.cut_out();
+            state.subtract_selection();
             ui.close();
         }
     });

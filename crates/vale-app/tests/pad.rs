@@ -10860,8 +10860,8 @@ fn split_cuts_each_feature_that_the_stroke_crosses_in_one_undo_step() {
 }
 
 #[test]
-fn a_held_finger_adds_a_second_tap_makes_the_key_and_cut_out_cuts_in_one_undo_step() {
-    use vale_app::ui::select::{ADD_TO_SELECTION, CUT_OUT, Selectable};
+fn a_held_finger_adds_a_second_tap_makes_the_key_and_subtract_cuts_in_one_undo_step() {
+    use vale_app::ui::select::{ADD_TO_SELECTION, SUBTRACT, Selectable};
     use vale_store::{Feature, Geometry};
     let dir = tempfile::tempdir().unwrap();
     let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
@@ -10885,7 +10885,7 @@ fn a_held_finger_adds_a_second_tap_makes_the_key_and_cut_out_cuts_in_one_undo_st
     let pos = screen_at(&h, -8.0, -14.0);
     finger_tap_at(&mut h, pos);
     assert_eq!(selection(&h), [country]);
-    assert!(disabled(&h, CUT_OUT));
+    assert!(disabled(&h, SUBTRACT));
     // A finger holds still, and a tap of the pen adds the lake.
     let held = screen_at(&h, 40.0, 30.0);
     finger(&mut h, 7, egui::TouchPhase::Start, held);
@@ -10899,12 +10899,12 @@ fn a_held_finger_adds_a_second_tap_makes_the_key_and_cut_out_cuts_in_one_undo_st
     pen_tap_at(&mut h, on_lake);
     assert_eq!(selection(&h), [country, lake]);
     assert_eq!(h.state().key_feature(), Some(lake));
-    assert!(!disabled(&h, CUT_OUT));
+    assert!(!disabled(&h, SUBTRACT));
     screenshot::save(&mut h, "pad-select-key");
     let before = geometry_of(&h, country);
     let lake_before = geometry_of(&h, lake);
     let saved = saves(&h);
-    tap(&mut h, CUT_OUT);
+    tap(&mut h, SUBTRACT);
     for _ in 0..3 {
         step_and_save(&mut h, false);
     }

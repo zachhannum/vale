@@ -81,7 +81,7 @@ impl StrokeArea {
         })
     }
 
-    /// The area of a stored polygon, for Cut out. The outlines of the
+    /// The area of a stored polygon, for Subtract. The outlines of the
     /// polygon keep their stored vertices, so a cut follows them exactly.
     /// A geometry that is not a polygon, or whose rings do not join, gives
     /// `None`.

@@ -2073,12 +2073,12 @@ fn shift_click_at(h: &mut Harness<'static, AppState>, pos: egui::Pos2) {
 }
 
 #[test]
-fn shift_adds_a_click_on_a_selected_feature_makes_the_key_and_cut_out_uses_it() {
+fn shift_adds_a_click_on_a_selected_feature_makes_the_key_and_subtract_uses_it() {
     use vale_app::globe::Tool;
     use vale_app::globe::math::lonlat_to_dir;
     use vale_app::globe::select::FeatureRef;
     use vale_app::globe::view::GlobeView;
-    use vale_app::ui::select::{CUT_OUT, Selectable};
+    use vale_app::ui::select::{SUBTRACT, Selectable};
     use vale_store::{Feature, Geometry, GeometryKind, LonLat};
     let square = |x0: f64, y0: f64, x1: f64, y1: f64| {
         Geometry::Polygons(vec![vec![vec![
@@ -2152,7 +2152,7 @@ fn shift_adds_a_click_on_a_selected_feature_makes_the_key_and_cut_out_uses_it() 
     shift_click_at(&mut h, pos);
     assert_eq!(h.state().feature_selection, [country, lake]);
     assert_eq!(h.state().key_feature(), None);
-    assert!(!h.state().can_cut_out());
+    assert!(!h.state().can_subtract());
     // A click on a selected feature makes it the key, and the selection
     // stays.
     let pos = at(&h, [0.0, -2.0]);
@@ -2164,7 +2164,7 @@ fn shift_adds_a_click_on_a_selected_feature_makes_the_key_and_cut_out_uses_it() 
         .set_feature_selection(vec![country, lake, islet]);
     h.get_by_label("Edit").click();
     h.run_steps(2);
-    h.get_by_label(CUT_OUT).click();
+    h.get_by_label(SUBTRACT).click();
     h.run_steps(3);
     let cut = geometry(&h, country).unwrap();
     assert!(!inside(&cut, [0.0, 0.0]));
@@ -2184,7 +2184,7 @@ fn shift_adds_a_click_on_a_selected_feature_makes_the_key_and_cut_out_uses_it() 
     shift_click_at(&mut h, pos);
     click_at(&mut h, pos);
     assert_eq!(h.state().key_feature(), Some(bay));
-    h.state_mut().cut_out();
+    h.state_mut().subtract_selection();
     let cut = geometry(&h, country).unwrap();
     assert!(!inside(&cut, [9.0, 0.0]));
     assert!(inside(&cut, [9.0, 5.0]));
