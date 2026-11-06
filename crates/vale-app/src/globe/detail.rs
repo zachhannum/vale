@@ -1409,7 +1409,7 @@ mod tests {
         let top = RasterId(8);
         assert!(globe.add_raster(top, Heightmap::new(FACE, 2000), true));
         let mut stack = globe.stack.clone().unwrap();
-        let mut item = stack[0].clone();
+        let mut item = stack[0];
         if let StackItem::Raster { id, .. } = &mut item {
             *id = top;
         }
