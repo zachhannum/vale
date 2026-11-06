@@ -21,6 +21,7 @@ use vale_style::{Extent, Hatch, MarkerShape, Mask, Paint, Stroke, StrokeKind, sc
 
 use crate::atlas::{self, FrameTarget, PT_PER_MM};
 use crate::document::{Document, LayerEntry};
+use crate::globe::shapes::ShapeCache;
 use crate::mask::{MaskCache, MaskedFeature, MaskedLayer, PageMask};
 use crate::scatter::{self, ScatterCache, ScatterFill};
 use crate::view::{View, ViewTransform};
@@ -178,6 +179,7 @@ pub struct Pipeline {
     caches: Vec<Cache>,
     scatter: ScatterCache,
     masks: MaskCache,
+    globe: ShapeCache,
     /// The raster masks of the layers in the map frames.
     page_masks: HashMap<(FrameId, LayerId), Arc<PageMask>>,
 }
@@ -355,6 +357,7 @@ fn km_per_point(cache: &Cache, vt: &ViewTransform) -> f64 {
 }
 
 /// The features of a layer that one paint draws. `order` is the index of the rule and the index of the symbolizer.
+#[derive(PartialEq)]
 pub(crate) struct Batch {
     pub order: (usize, usize),
     pub paint: Paint,
@@ -1210,6 +1213,7 @@ impl Pipeline {
         }
         self.scatter.forget(id);
         self.masks.forget(id);
+        self.globe.forget(id);
     }
 
     /// Sets the raster mask of layer `layer` in frame `frame`, from the
@@ -1261,6 +1265,16 @@ impl Pipeline {
 
     pub fn scatter_cache_mut(&mut self) -> &mut ScatterCache {
         &mut self.scatter
+    }
+
+    /// The shapes of the vector layers that the globe keeps.
+    pub fn globe_shapes(&self) -> &ShapeCache {
+        &self.globe
+    }
+
+    /// The scatters and the shapes of the globe.
+    pub fn globe_caches_mut(&mut self) -> (&mut ScatterCache, &mut ShapeCache) {
+        (&mut self.scatter, &mut self.globe)
     }
 
     /// The number of projections that the pipeline keeps.

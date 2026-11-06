@@ -44,6 +44,7 @@ pub mod region;
 pub mod reshape;
 pub mod rivers;
 pub mod select;
+pub mod shapes;
 pub mod snap;
 pub mod split;
 pub mod stats;

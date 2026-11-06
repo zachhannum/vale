@@ -1,5 +1,6 @@
 //! The globe canvas.
 
+use std::sync::Arc;
 use std::time::Instant;
 
 use eframe::egui;
@@ -18,6 +19,7 @@ use crate::globe::math::V3;
 use crate::globe::math::{angle, dir_to_lonlat, lonlat_to_dir};
 use crate::globe::nav::{Nav, Painting, TAP_SECONDS, TAP_SLOP, Tap, on_canvas};
 use crate::globe::select::Pointer;
+use crate::globe::shapes::{self, Directions, DrawKey, OnScreen, Out, ViewKey};
 use crate::globe::snap::Highlight;
 use crate::globe::stroke_group;
 use crate::globe::symbol::{GlobeScatter, SymbolMesh, append_missing, view_places};
@@ -722,7 +724,7 @@ pub(super) fn history_input(ui: &egui::Ui, nav: &mut Nav) -> Option<bool> {
 /// strokes, as the page draws them. The stroke is outside the fill, as in the
 /// pipeline.
 fn paint_markers(
-    sink: &mut Sink<'_>,
+    sink: &mut Sink,
     points: &[egui::Pos2],
     radius: f64,
     shape: MarkerShape,
@@ -800,6 +802,7 @@ fn opaque(c: vale_style::Color) -> (egui::Color32, f32) {
 }
 
 /// A shape that a raster mask cuts.
+#[derive(Clone)]
 pub enum Cut {
     Shape(egui::Shape),
     /// The opaque shapes of a translucent stroke, which draw as one group
@@ -811,61 +814,46 @@ pub enum Cut {
 /// The symbols wait in one mesh, and the translucent strokes of one paint
 /// wait in one group, until a shape of another kind comes. With a cut, the
 /// fills, the strokes, and the groups go to the list of shapes that a raster
-/// mask cuts.
-struct Sink<'a> {
-    painter: &'a egui::Painter,
+/// mask cuts. The sink keeps the shapes, and `paint` sends them on.
+struct Sink {
     /// The format of the render target. `None`: no wgpu renderer, and a
     /// translucent stroke goes to the painter shape by shape.
     format: Option<egui_wgpu::wgpu::TextureFormat>,
-    cut: Option<&'a mut Vec<Cut>>,
+    /// The shapes go to a cut.
+    cut: bool,
     symbols: egui::Mesh,
     /// The paint of the open group, its alpha, and its opaque shapes.
     group: Option<(vale_style::Stroke, f32, Vec<egui::Shape>)>,
+    out: Vec<Out>,
 }
 
-impl<'a> Sink<'a> {
-    fn new(
-        painter: &'a egui::Painter,
-        format: Option<egui_wgpu::wgpu::TextureFormat>,
-        cut: Option<&'a mut Vec<Cut>>,
-    ) -> Self {
+impl Sink {
+    fn new(format: Option<egui_wgpu::wgpu::TextureFormat>, cut: bool) -> Self {
         Sink {
-            painter,
             format,
             cut,
             symbols: egui::Mesh::default(),
             group: None,
+            out: Vec::new(),
         }
     }
 
-    /// Sends the waiting symbols or the open group to the painter.
+    /// Sends the waiting symbols or the open group on.
     fn flush(&mut self) {
         if !self.symbols.is_empty() {
-            self.painter.add(std::mem::take(&mut self.symbols));
+            let symbols = std::mem::take(&mut self.symbols);
+            self.out.push(Out::Shape(symbols.into()));
         }
         if let Some((_, alpha, shapes)) = self.group.take() {
-            if let Some(cut) = &mut self.cut {
-                cut.push(Cut::Group(alpha, shapes));
-                return;
-            }
-            let Some(format) = self.format else {
-                return;
-            };
-            let painter = self.painter;
-            let shape = stroke_group::group_shape(
-                painter.ctx(),
-                format,
-                shapes,
-                alpha,
-                painter.clip_rect(),
-            );
-            if let Some(shape) = shape {
-                painter.add(shape);
+            if self.cut {
+                self.out.push(Out::Cut(Cut::Group(alpha, shapes)));
+            } else if self.format.is_some() {
+                self.out.push(Out::Group(alpha, shapes));
             }
         }
     }
 
-    /// Sends the open group to the painter, if there is one.
+    /// Sends the open group on, if there is one.
     fn end_group(&mut self) {
         if self.group.is_some() {
             self.flush();
@@ -874,18 +862,18 @@ impl<'a> Sink<'a> {
 
     fn add(&mut self, shape: impl Into<egui::Shape>) {
         self.flush();
-        match &mut self.cut {
-            Some(cut) => cut.push(Cut::Shape(shape.into())),
-            None => {
-                self.painter.add(shape);
-            }
-        }
+        let shape = shape.into();
+        self.out.push(match self.cut {
+            true => Out::Cut(Cut::Shape(shape)),
+            false => Out::Shape(shape),
+        });
     }
 
     /// Sends the shapes that `paint` gives to the painter, also with a cut.
     fn uncut(&mut self, paint: impl FnOnce(&mut Self)) {
-        let cut = self.cut.take();
+        let cut = std::mem::replace(&mut self.cut, false);
         paint(self);
+        self.flush();
         self.cut = cut;
     }
 
@@ -900,17 +888,16 @@ impl<'a> Sink<'a> {
     fn stroke(&mut self, paint: vale_style::Stroke, (shapes, alpha): (Vec<egui::Shape>, f32)) {
         if alpha >= 1.0 {
             self.flush();
-            match &mut self.cut {
-                Some(cut) => cut.extend(shapes.into_iter().map(Cut::Shape)),
-                None => self.painter.extend(shapes),
-            }
+            let cut = self.cut;
+            self.out.extend(shapes.into_iter().map(|shape| match cut {
+                true => Out::Cut(Cut::Shape(shape)),
+                false => Out::Shape(shape),
+            }));
             return;
         }
-        if self.format.is_none() && self.cut.is_none() {
+        if self.format.is_none() && !self.cut {
             self.flush();
-            let mut painter = self.painter.clone();
-            painter.multiply_opacity(alpha);
-            painter.extend(shapes);
+            self.out.push(Out::Faded(alpha, shapes));
             return;
         }
         match &mut self.group {
@@ -918,6 +905,47 @@ impl<'a> Sink<'a> {
             _ => {
                 self.flush();
                 self.group = Some((paint, alpha, shapes));
+            }
+        }
+    }
+
+    /// The shapes, in draw order.
+    fn finish(mut self) -> Vec<Out> {
+        self.flush();
+        self.out
+    }
+}
+
+/// Sends the shapes of a sink to the painter and to the cut.
+fn paint_out(
+    painter: &egui::Painter,
+    format: Option<egui_wgpu::wgpu::TextureFormat>,
+    mut cut: Option<&mut Vec<Cut>>,
+    out: &[Out],
+) {
+    for out in out {
+        match out {
+            Out::Shape(shape) => {
+                painter.add(shape.clone());
+            }
+            Out::Faded(alpha, shapes) => {
+                let mut painter = painter.clone();
+                painter.multiply_opacity(*alpha);
+                painter.extend(shapes.iter().cloned());
+            }
+            Out::Group(alpha, shapes) => {
+                let Some(format) = format else { continue };
+                let clip = painter.clip_rect();
+                let shapes = shapes.clone();
+                let shape = stroke_group::group_shape(painter.ctx(), format, shapes, *alpha, clip);
+                if let Some(shape) = shape {
+                    painter.add(shape);
+                }
+            }
+            Out::Cut(shape) => {
+                if let Some(cut) = &mut cut {
+                    cut.push(shape.clone());
+                }
             }
         }
     }
@@ -1088,21 +1116,6 @@ fn lonlat(dir: V3) -> LonLat {
     [lon, lat]
 }
 
-/// A feature of a vector layer on the screen.
-enum OnScreen {
-    /// The points on the near side of the globe.
-    Points(Vec<egui::Pos2>),
-    /// The parts of the lines, as `vector::stroke_shapes` takes them.
-    Lines(Vec<Vec<(kurbo::Point, f64)>>),
-    /// The parts of the polygons, their triangles, made at the first fill,
-    /// and the outline of a masked polygon: its own outline cut by the mask.
-    Polygons(
-        Vec<vector::Clipped>,
-        Vec<Option<(Vec<vector::P2>, Vec<u32>)>>,
-        Option<Vec<Vec<(kurbo::Point, f64)>>>,
-    ),
-}
-
 /// Draws one vector layer over the globe, in the draw order of the page:
 /// rule by rule and symbolizer by symbolizer, and the features of one paint
 /// together. The symbols go to one mesh, which goes to the painter before the
@@ -1121,9 +1134,24 @@ pub fn vector_layer(
     vector_layer_cut(painter, format, None, rect, doc, view, id, pipeline);
 }
 
+/// A part of the work of a draw: the cut of one polygon of a feature, and
+/// the rest of a feature.
+enum Job {
+    Polygon(usize, usize),
+    Feature(usize),
+}
+
+/// The result of a `Job`. The parts on the screen of a polygon feature
+/// come without the polygons.
+enum Done {
+    Polygon(vector::Clipped, Option<(Vec<vector::P2>, Vec<u32>)>),
+    Feature(OnScreen),
+}
+
 /// Draws one vector layer over the globe, as `vector_layer`. With `cut`,
 /// the fills and the strokes go to `cut`, and the other shapes go to the
-/// painter.
+/// painter. The layer keeps its shapes between frames, and a draw with no
+/// change to the view, the layer, or its style sends the kept shapes again.
 #[expect(clippy::too_many_arguments)]
 pub fn vector_layer_cut(
     painter: &egui::Painter,
@@ -1135,12 +1163,55 @@ pub fn vector_layer_cut(
     id: LayerId,
     pipeline: &mut Pipeline,
 ) {
+    let Some(layer) = doc.layer(id) else {
+        return;
+    };
     let masked = pipeline.masked(doc, id);
-    let scatter = pipeline.scatter_cache_mut();
     let radius = view.radius(rect);
     let radius_m = doc.project.world.radius_km * 1000.0;
     let scale = scale_denominator(radius_m / radius);
-    let step = vector::step(radius * f64::from(painter.ctx().pixels_per_point()));
+    let pixels_per_point = painter.ctx().pixels_per_point();
+    let features = &layer.features;
+    let entries: Vec<_> = (doc.frame.entries.iter())
+        .filter(|e| e.layer == id && layer.visible)
+        .collect();
+    let batches: Vec<_> = (entries.iter())
+        .map(|entry| {
+            pipeline::style_batches(&entry.style.style, scale, features.len(), |i| Context {
+                attributes: &features[i].attributes,
+                scale,
+                geometry: features[i].geometry.kind(),
+            })
+        })
+        .collect();
+    let margin = (batches.iter().flatten())
+        .map(|batch: &pipeline::Batch| {
+            let extent = vale_style::extent_of(std::slice::from_ref(&batch.paint));
+            (extent.stroke_width + extent.marker_radius) as f32 + 2.0
+        })
+        .fold(0.0, f32::max);
+    let view_key = ViewKey {
+        view: *view,
+        rect,
+        pixels_per_point,
+        margin,
+    };
+    let key = DrawKey {
+        view: view_key,
+        clip: painter.clip_rect(),
+        batches,
+        symbols: Arc::as_ptr(doc.symbols()) as usize,
+        format,
+        cut: cut.is_some(),
+    };
+    let (scatter, cache) = pipeline.globe_caches_mut();
+    let (shapes, work) = cache.layer(layer, masked.as_ref());
+    if let Some(out) = shapes.drawn(&key) {
+        paint_out(painter, format, cut, out);
+        return;
+    }
+    work.draws += 1;
+    let step = vector::step(radius * f64::from(pixels_per_point));
     let center = rect.center();
     let to_screen = |p: &vector::P2| {
         egui::pos2(
@@ -1152,71 +1223,120 @@ pub fn vector_layer_cut(
         let q = to_screen(p);
         kurbo::Point::new(f64::from(q.x), f64::from(q.y))
     };
-    let on_screen = |geometry: &Geometry, part: Option<&MaskedFeature>| match geometry {
-        Geometry::Points(points) => OnScreen::Points(
-            points
-                .iter()
-                .filter_map(|p| view.project(rect, lonlat_to_dir(p[0], p[1])))
-                .collect(),
-        ),
-        Geometry::Lines(lines) => OnScreen::Lines(
-            part.map_or(lines, |p| &p.lines)
-                .iter()
-                .flat_map(|line| vector::clip_line_measured(&view.rot, &vector::line(line), step))
-                .map(|part| part.iter().map(|(p, f)| (point(p), *f)).collect())
-                .collect(),
-        ),
-        Geometry::Polygons(polygons) => {
-            let clipped: Vec<_> = part
-                .map_or(polygons, |p| &p.polygons)
-                .iter()
-                .filter_map(|polygon| {
-                    let rings: Vec<_> = polygon
-                        .iter()
-                        .enumerate()
-                        .map(|(i, ring)| vector::ring(ring, i > 0))
-                        .collect();
-                    if rings.first().is_none_or(|outer| outer.is_empty()) {
-                        return None;
-                    }
-                    let rings: Vec<_> = rings.into_iter().filter(|r| !r.is_empty()).collect();
-                    Some(vector::clip_polygon(&view.rot, &rings, step))
-                })
-                .collect();
-            let triangles = vec![None; clipped.len()];
-            let outlines = part.map(|part| {
-                (part.lines.iter())
-                    .flat_map(|line| vector::clip_line(&view.rot, &vector::line(line), step))
-                    .map(|o| o.iter().map(|p| (point(p), 0.0)).collect())
-                    .collect()
-            });
-            OnScreen::Polygons(clipped, triangles, outlines)
-        }
+    // The screen in disc space, for the fills.
+    let shown = rect.expand(1.0);
+    let to_disc = |q: egui::Pos2| {
+        [
+            f64::from(q.x - center.x) / radius,
+            f64::from(center.y - q.y) / radius,
+        ]
+    };
+    let (min, max) = (to_disc(shown.left_bottom()), to_disc(shown.right_top()));
+    let measured = |lines: &[Vec<V3>]| -> Vec<Vec<(kurbo::Point, f64)>> {
+        (lines.iter())
+            .flat_map(|line| vector::clip_line_measured(&view.rot, line, step))
+            .map(|part| part.iter().map(|(p, f)| (point(p), *f)).collect())
+            .collect()
     };
     let symbols = doc.symbols();
     let mut places = None;
-    let mut sink = Sink::new(painter, format, cut);
-    let entries = doc.frame.entries.iter().filter(|e| e.layer == id);
-    for entry in entries {
-        let Some(layer) = doc.layer(entry.layer).filter(|l| l.visible) else {
-            continue;
-        };
-        let features = &layer.features;
-        let batches =
-            pipeline::style_batches(&entry.style.style, scale, features.len(), |i| Context {
-                attributes: &features[i].attributes,
-                scale,
-                geometry: features[i].geometry.kind(),
-            });
-        let mut screens: Vec<Option<OnScreen>> = features.iter().map(|_| None).collect();
+    let mut sink = Sink::new(format, key.cut);
+    let (dirs, screens) = shapes.view(view_key, work);
+    // The parts on the screen that the draw needs and the view does not
+    // keep yet, and the polygons that it fills.
+    let mut needed = vec![false; dirs.len()];
+    let mut filled = vec![false; dirs.len()];
+    for batch in key.batches.iter().flatten() {
+        let fill = matches!(batch.paint, StylePaint::Fill(_));
+        for &i in &batch.features {
+            if screens[i].is_none() && view_key.shows(&dirs[i].cap) {
+                needed[i] = true;
+                filled[i] |= fill;
+            }
+        }
+    }
+    let mut jobs = Vec::new();
+    for (i, feature) in dirs.iter().enumerate().filter(|(i, _)| needed[*i]) {
+        if let Directions::Polygons(polygons, _) = &feature.directions {
+            let shown = (0..polygons.len()).filter(|&k| view_key.shows(&feature.parts[k]));
+            jobs.extend(shown.map(|k| Job::Polygon(i, k)));
+        }
+        jobs.push(Job::Feature(i));
+    }
+    let cost = |job: &Job| match *job {
+        Job::Polygon(i, k) => match &dirs[i].directions {
+            Directions::Polygons(polygons, _) => polygons[k].iter().map(Vec::len).sum(),
+            _ => 0,
+        },
+        Job::Feature(i) => match &dirs[i].directions {
+            Directions::Points(points) => points.len(),
+            Directions::Lines(lines) => lines.iter().map(Vec::len).sum(),
+            Directions::Polygons(_, outlines) => outlines.iter().flatten().map(Vec::len).sum(),
+        },
+    };
+    let done = shapes::par_map(&jobs, cost, |job| match *job {
+        Job::Polygon(i, k) => {
+            let Directions::Polygons(polygons, _) = &dirs[i].directions else {
+                unreachable!()
+            };
+            let clipped = vector::clip_polygon(&view.rot, &polygons[k], step);
+            let triangles = (filled[i])
+                .then(|| vector::triangulate(&vector::clip_loops(&clipped.loops, min, max)));
+            Done::Polygon(clipped, triangles)
+        }
+        Job::Feature(i) => Done::Feature(match &dirs[i].directions {
+            Directions::Points(points) => OnScreen::Points(
+                (points.iter())
+                    .filter_map(|d| view.project(rect, *d))
+                    .collect(),
+            ),
+            Directions::Lines(lines) => {
+                let shown: Vec<_> = (lines.iter().zip(&dirs[i].parts))
+                    .filter(|(_, cap)| view_key.shows(cap))
+                    .map(|(line, _)| line.clone())
+                    .collect();
+                OnScreen::Lines(measured(&shown))
+            }
+            Directions::Polygons(_, outlines) => {
+                let outlines = outlines.as_ref().map(|lines| {
+                    (lines.iter())
+                        .flat_map(|line| vector::clip_line(&view.rot, line, step))
+                        .map(|o| o.iter().map(|p| (point(p), 0.0)).collect())
+                        .collect()
+                });
+                OnScreen::Polygons(Vec::new(), Vec::new(), outlines)
+            }
+        }),
+    });
+    let mut parts = (Vec::new(), Vec::new());
+    for (job, done) in jobs.iter().zip(done) {
+        match (job, done) {
+            (_, Done::Polygon(clipped, triangles)) => {
+                parts.0.push(clipped);
+                parts.1.push(triangles);
+            }
+            (Job::Feature(i), Done::Feature(mut screen)) => {
+                if let OnScreen::Polygons(clipped, triangles, _) = &mut screen {
+                    (*clipped, *triangles) = std::mem::take(&mut parts);
+                }
+                work.clipped += 1;
+                screens[*i] = Some(screen);
+            }
+            _ => {}
+        }
+    }
+    for (entry, batches) in entries.iter().zip(&key.batches) {
         let mut count = 0;
-        for batch in &batches {
+        for batch in batches {
             let paint = &batch.paint;
             for &index in &batch.features {
                 let feature = &features[index];
-                let part = (masked.as_ref()).and_then(|m| m.features.get(index)?.as_ref());
-                let screen =
-                    screens[index].get_or_insert_with(|| on_screen(&feature.geometry, part));
+                if !view_key.shows(&dirs[index].cap) {
+                    continue;
+                }
+                let Some(screen) = &mut screens[index] else {
+                    continue;
+                };
                 let seed = index as u64;
                 match (screen, paint) {
                     (OnScreen::Points(_), StylePaint::Marker { .. }) => {}
@@ -1248,8 +1368,9 @@ pub fn vector_layer_cut(
                     }
                     (OnScreen::Polygons(clipped, triangles, _), StylePaint::Fill(c)) => {
                         for (part, triangles) in clipped.iter().zip(triangles) {
-                            let (points, indices) =
-                                triangles.get_or_insert_with(|| vector::triangulate(&part.loops));
+                            let (points, indices) = triangles.get_or_insert_with(|| {
+                                vector::triangulate(&vector::clip_loops(&part.loops, min, max))
+                            });
                             let vertices = points
                                 .iter()
                                 .map(|p| egui::epaint::Vertex {
@@ -1342,7 +1463,9 @@ pub fn vector_layer_cut(
             sink.end_group();
         }
     }
-    sink.flush();
+    let out = sink.finish();
+    paint_out(painter, format, cut, &out);
+    shapes.keep(key, out);
 }
 
 /// The geometry of a feature in the flat view: the rings of the fill, the
@@ -1450,7 +1573,7 @@ pub fn flat_vector_layer_cut(
         geometry: features[i].geometry.kind(),
     });
     let mut screens: Vec<Option<Option<FlatScreen>>> = features.iter().map(|_| None).collect();
-    let mut sink = Sink::new(painter, format, cut);
+    let mut sink = Sink::new(format, cut.is_some());
     for batch in &batches {
         for &index in &batch.features {
             let feature = &features[index];
@@ -1495,7 +1618,7 @@ pub fn flat_vector_layer_cut(
         }
         sink.end_group();
     }
-    sink.flush();
+    paint_out(painter, format, cut, &sink.finish());
 }
 
 /// Draws the globe in the free space of `ui` and reads its input. `cards`:

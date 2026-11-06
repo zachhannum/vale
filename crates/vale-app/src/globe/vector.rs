@@ -509,6 +509,52 @@ pub fn even_odd_loops(rings: Vec<Vec<P2>>) -> Vec<Vec<P2>> {
     rings
 }
 
+/// The parts of the closed paths `loops` inside the rectangle from `min` to
+/// `max`, for the fill. A path keeps its direction. A part of a path can go
+/// along the edge of the rectangle.
+pub fn clip_loops(loops: &[Vec<P2>], min: P2, max: P2) -> Vec<Vec<P2>> {
+    let inside = |p: &P2| (0..2).all(|k| p[k] >= min[k] && p[k] <= max[k]);
+    if loops.iter().flatten().all(inside) {
+        return loops.to_vec();
+    }
+    // Each side of the rectangle as an axis, a bound, and the side of the
+    // bound that stays.
+    let sides = [
+        (0, min[0], true),
+        (0, max[0], false),
+        (1, min[1], true),
+        (1, max[1], false),
+    ];
+    let mut out = Vec::new();
+    for path in loops {
+        let mut cur = path.clone();
+        for &(k, bound, above) in &sides {
+            let keep = |p: &P2| if above { p[k] >= bound } else { p[k] <= bound };
+            let mut next = Vec::with_capacity(cur.len());
+            for i in 0..cur.len() {
+                let (a, b) = (cur[i], cur[(i + 1) % cur.len()]);
+                if keep(&a) {
+                    next.push(a);
+                }
+                if keep(&a) != keep(&b) {
+                    let t = (bound - a[k]) / (b[k] - a[k]);
+                    let mut p = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+                    p[k] = bound;
+                    next.push(p);
+                }
+            }
+            cur = next;
+            if cur.is_empty() {
+                break;
+            }
+        }
+        if cur.len() >= 3 {
+            out.push(cur);
+        }
+    }
+    out
+}
+
 /// Triangles that cover the fill of `Clipped::loops`: the points, and three
 /// indexes for each triangle.
 pub fn triangulate(loops: &[Vec<P2>]) -> (Vec<P2>, Vec<u32>) {
@@ -554,6 +600,57 @@ mod tests {
     use crate::globe::view::GlobeView;
 
     const STEP: f64 = 0.05;
+
+    #[test]
+    fn a_loop_cut_at_a_rectangle_keeps_its_area_inside() {
+        // A U shape that leaves the rectangle and comes back, with a hole.
+        let u = vec![
+            [0.0, 0.0],
+            [3.0, 0.0],
+            [3.0, 3.0],
+            [2.0, 3.0],
+            [2.0, 1.0],
+            [1.0, 1.0],
+            [1.0, 3.0],
+            [0.0, 3.0],
+        ];
+        let hole = vec![[0.25, 0.25], [0.25, 0.75], [2.75, 0.75], [2.75, 0.25]];
+        let loops = clip_loops(&[u, hole], [-1.0, -1.0], [2.5, 2.0]);
+        assert_eq!(loops.len(), 2);
+        let (points, indices) = triangulate(&loops);
+        let area: f64 = (indices.chunks(3))
+            .map(|t| {
+                area2(&[
+                    points[t[0] as usize],
+                    points[t[1] as usize],
+                    points[t[2] as usize],
+                ])
+            })
+            .sum::<f64>()
+            / 2.0;
+        // The U inside x ≤ 2.5 and y ≤ 2 is 2.5 · 2 − 1 · 1, and the hole
+        // inside x ≤ 2.5 is 2.25 · 0.5.
+        assert!((area - (4.0 - 1.125)).abs() < 1e-9, "{area}");
+        let points = loops.iter().flatten();
+        assert!(points.clone().all(|p| p[0] <= 2.5 && p[1] <= 2.0));
+    }
+
+    #[test]
+    fn a_loop_inside_the_rectangle_does_not_change() {
+        let square = vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+        assert_eq!(
+            clip_loops(std::slice::from_ref(&square), [-1.0, -1.0], [2.0, 2.0]),
+            [square]
+        );
+        assert!(
+            clip_loops(
+                &[vec![[5.0, 5.0], [6.0, 5.0], [6.0, 6.0]]],
+                [0.0; 2],
+                [1.0; 2]
+            )
+            .is_empty()
+        );
+    }
 
     #[test]
     fn an_even_odd_ring_inside_another_is_a_hole() {
