@@ -16,7 +16,7 @@ use crate::measure::TAP_SLOP;
 const SAMPLE: f64 = 0.0175;
 
 /// One feature of one layer.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct FeatureRef {
     pub layer: LayerId,
     pub uuid: Uuid,

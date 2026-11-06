@@ -1,11 +1,11 @@
 //! The Select tool of the Atlas workspace. It selects the features of the
-//! selected vector layer in the maps of the frames of the open page. The
+//! selectable layers in the maps of the frames of the open page. The
 //! selection is the selection of the World workspace.
 
 use std::collections::HashSet;
 
 use eframe::egui::{self, Pos2, Rect};
-use vale_store::{Geometry, PageRecord, Uuid};
+use vale_store::{Geometry, LayerId, PageRecord};
 
 use super::shown::{Shown, each_frame};
 use super::{AppState, AtlasSelection, AtlasTool, PagePlace, frame_at, open_page};
@@ -50,45 +50,48 @@ fn shape(shown: &Shown, geometry: &Geometry) -> Shape {
     out
 }
 
-/// Calls `f` with each frame of the page whose map shows the selected
-/// vector layer, and with the shapes in that frame of the features of the
-/// layer that `keep` keeps, top first.
+/// Calls `f` with each frame of the page, and with the shapes in that frame
+/// of the features of `layers` that its map shows and that `keep` keeps.
+/// The layers are in the draw order, top first, and so are the shapes.
 fn each_shapes(
     state: &mut AppState,
     page: &PageRecord,
     place: PagePlace,
-    keep: impl Fn(Uuid) -> bool,
+    layers: &[LayerId],
+    keep: impl Fn(FeatureRef) -> bool,
     mut f: impl FnMut(&Shown, Vec<(FeatureRef, Shape)>),
 ) {
-    let Some(layer) = state.selected_vector() else {
-        return;
-    };
-    let Some(record) = state.doc.layer(layer) else {
-        return;
-    };
-    let features: Vec<_> = (record.features.iter())
-        .filter(|feature| keep(feature.uuid()))
-        .map(|feature| {
+    let mut features = Vec::new();
+    for &layer in layers {
+        let Some(record) = state.doc.layer(layer) else {
+            continue;
+        };
+        for feature in &record.features {
             let found = FeatureRef {
                 layer,
                 uuid: feature.uuid(),
             };
-            (found, feature.geometry.clone())
-        })
-        .collect();
+            if keep(found) {
+                features.push((found, feature.geometry.clone()));
+            }
+        }
+    }
     if features.is_empty() {
         return;
     }
-    let maps: HashSet<_> = (page.frames.iter())
-        .map(|frame| frame.map)
-        .filter(|map| state.doc.shown(*map, layer))
+    let shown: HashSet<_> = (page.frames.iter())
+        .flat_map(|frame| layers.iter().map(move |&layer| (frame.map, layer)))
+        .filter(|&(map, layer)| state.doc.shown(map, layer))
         .collect();
-    each_frame(state, page, place, |shown| {
-        if !maps.contains(&shown.frame.map) {
-            return;
+    each_frame(state, page, place, |frame| {
+        let map = frame.frame.map;
+        let shapes: Vec<_> = (features.iter())
+            .filter(|(r, _)| shown.contains(&(map, r.layer)))
+            .map(|(r, g)| (*r, shape(frame, g)))
+            .collect();
+        if !shapes.is_empty() {
+            f(frame, shapes);
         }
-        let shapes = features.iter().map(|(r, g)| (*r, shape(shown, g)));
-        f(shown, shapes.collect());
     });
 }
 
@@ -108,10 +111,12 @@ pub(crate) fn tap(state: &mut AppState, page: &PageRecord, place: PagePlace, pos
     state.atlas.selection = AtlasSelection::Frame(id);
     let reach = state.atlas.pointer.reach();
     let mut hit = None;
+    let layers = state.selectable_layers();
     each_shapes(
         state,
         page,
         place,
+        &layers,
         |_| true,
         |shown, shapes| {
             if shown.frame.id == id {
@@ -136,14 +141,16 @@ pub(crate) fn select_box(
     let center = rect.center();
     let mut found = Vec::new();
     let mut seen = HashSet::new();
+    let layers = state.selectable_layers();
     each_shapes(
         state,
         page,
         place,
+        &layers,
         |_| true,
         |shown, shapes| {
             let met = select::box_shapes(&shapes, rect, dir_at(shown, center));
-            found.extend(met.into_iter().filter(|f| seen.insert(f.uuid)));
+            found.extend(met.into_iter().filter(|f| seen.insert(*f)));
         },
     );
     if let Some(id) = frame_at(page, place.to_mm(start)) {
@@ -157,13 +164,16 @@ pub(crate) fn select_box(
 /// cut at the frames.
 pub fn highlight(state: &mut AppState, place: PagePlace) -> Shape {
     let mut out = Shape::default();
-    let selected: HashSet<Uuid> = state.feature_selection.iter().map(|f| f.uuid).collect();
+    let selected: HashSet<FeatureRef> = state.feature_selection.iter().copied().collect();
     if selected.is_empty() {
         return out;
     }
     let page = open_page(state).clone();
-    let keep = |uuid| selected.contains(&uuid);
-    each_shapes(state, &page, place, keep, |_, shapes| {
+    let layers: Vec<LayerId> = (state.selection_counts().into_iter())
+        .map(|(id, _)| id)
+        .collect();
+    let keep = |f| selected.contains(&f);
+    each_shapes(state, &page, place, &layers, keep, |_, shapes| {
         for (_, shape) in shapes {
             out.points.extend(shape.points);
             out.lines.extend(shape.lines);

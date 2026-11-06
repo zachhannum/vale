@@ -132,7 +132,7 @@ impl AppState {
             self.select(Some(super::LayerRef::Vector(layer)));
         }
         let mut table = TableState::new(layer);
-        table.scroll_to = self.feature_selection.first().map(|f| f.uuid);
+        table.scroll_to = self.first_selected_in(layer);
         table.seen = self.feature_selection.clone();
         self.table = Some(table);
         // In the iPad layout, the table is a page of the layer in the
@@ -149,6 +149,12 @@ impl AppState {
             self.pad.layer = Some(super::LayerRef::Vector(layer));
             self.pad.page = Some(super::pad::Page::Table);
         }
+    }
+
+    /// The first selected feature of `layer`.
+    fn first_selected_in(&self, layer: LayerId) -> Option<Uuid> {
+        let mut selection = self.feature_selection.iter();
+        selection.find(|f| f.layer == layer).map(|f| f.uuid)
     }
 
     /// The frame whose Layers tab shows the table of `layer` in the Atlas:
@@ -211,7 +217,8 @@ impl AppState {
             return;
         };
         if table.seen != selection {
-            table.scroll_to = selection.first().map(|f| f.uuid);
+            let first = selection.iter().find(|f| f.layer == table.layer);
+            table.scroll_to = first.map(|f| f.uuid);
             table.seen = selection.clone();
             let gone = table
                 .edit

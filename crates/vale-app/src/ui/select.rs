@@ -2,7 +2,7 @@
 //! move of a point, the delete, and the inspector that edits the attributes
 //! of the selection.
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 
 use eframe::egui::{self, Pos2};
 use vale_store::{Geometry, Layer, LayerId, Uuid, Value};
@@ -86,16 +86,120 @@ pub fn title(count: usize) -> String {
     format!("{count} features")
 }
 
+/// The line of the inspector for the selected features of one layer, in a
+/// selection of features of more than one layer.
+pub fn layer_count(name: &str, count: usize) -> String {
+    match count {
+        1 => format!("{name}: 1 feature"),
+        _ => format!("{name}: {count} features"),
+    }
+}
+
+/// The layers that the Select tool selects in.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum Selectable {
+    /// The active layer.
+    #[default]
+    Active,
+    /// The checked vector layers.
+    Layers(BTreeSet<LayerId>),
+}
+
 impl AppState {
-    /// The layer that the Select tool selects in: the selected vector
-    /// layer, if it is visible.
+    /// The active layer, if it is a visible vector layer.
     pub(super) fn select_layer(&self) -> Option<&Layer> {
         let id = self.selected_vector()?;
         self.doc.layer(id).filter(|l| l.visible)
     }
 
+    /// The vector layers that the Select tool selects in, top first. The
+    /// list has hidden layers too.
+    pub fn selectable_layers(&self) -> Vec<LayerId> {
+        match &self.selectable {
+            Selectable::Active => (self.selected_vector())
+                .filter(|&id| self.doc.layer(id).is_some())
+                .into_iter()
+                .collect(),
+            Selectable::Layers(set) => (self.doc.project.layers().iter().rev())
+                .filter(|l| l.geometry().is_some() && set.contains(&l.id))
+                .map(|l| l.id)
+                .collect(),
+        }
+    }
+
+    /// True if `layer` is a checked layer of the selectable layers.
+    pub fn selectable_checked(&self, layer: LayerId) -> bool {
+        matches!(&self.selectable, Selectable::Layers(set) if set.contains(&layer))
+    }
+
+    /// The Select tool selects in the active layer.
+    pub fn set_selectable_active(&mut self) {
+        self.selectable = Selectable::Active;
+    }
+
+    /// Checks `layer`, or clears its check. A check while the tool selects
+    /// in the active layer starts a set with `layer` alone.
+    pub fn toggle_selectable(&mut self, layer: LayerId) {
+        let mut set = match &self.selectable {
+            Selectable::Layers(set) => set.clone(),
+            Selectable::Active => BTreeSet::new(),
+        };
+        if !set.remove(&layer) {
+            set.insert(layer);
+        }
+        self.selectable = Selectable::Layers(set);
+    }
+
+    /// Checks each vector layer.
+    pub fn select_all_layers(&mut self) {
+        let layers = self.doc.project.layers().iter();
+        let all = layers.filter(|l| l.geometry().is_some()).map(|l| l.id);
+        self.selectable = Selectable::Layers(all.collect());
+    }
+
+    /// Clears the check of each layer, so no layer is selectable.
+    pub fn deselect_all_layers(&mut self) {
+        self.selectable = Selectable::Layers(BTreeSet::new());
+    }
+
+    /// The visible selectable layers, top first.
     fn select_layers(&self) -> Vec<&Layer> {
-        self.select_layer().into_iter().collect()
+        (self.selectable_layers().into_iter())
+            .filter_map(|id| self.doc.layer(id))
+            .filter(|l| l.visible)
+            .collect()
+    }
+
+    /// The selected features of each layer, top first.
+    pub fn selection_counts(&self) -> Vec<(LayerId, usize)> {
+        (self.doc.project.layers().iter().rev())
+            .map(|l| {
+                let n = self.feature_selection.iter().filter(|f| f.layer == l.id);
+                (l.id, n.count())
+            })
+            .filter(|&(_, n)| n > 0)
+            .collect()
+    }
+
+    /// The name of the layer of a selection in one layer.
+    pub fn selection_layer_name(&self) -> Option<String> {
+        let [(id, _)] = self.selection_counts()[..] else {
+            return None;
+        };
+        self.doc.layer(id).map(|l| l.name.clone())
+    }
+
+    /// The lines of the inspector for a selection of features of more than
+    /// one layer, or nothing for a selection in one layer.
+    pub fn mixed_lines(&self) -> Vec<String> {
+        let counts = self.selection_counts();
+        if counts.len() < 2 {
+            return Vec::new();
+        }
+        let name = |id| self.doc.layer(id).map_or("", |l| l.name.as_str());
+        (counts.into_iter())
+            .map(|(id, n)| layer_count(name(id), n))
+            .collect()
     }
 
     /// Reads the taps and the drags of the Select tool.
@@ -172,22 +276,29 @@ impl AppState {
             }
             self.feature_selection = selection;
         }
+        // A selection in one layer makes that layer the active layer.
+        let mut layers = self.feature_selection.iter().map(|f| f.layer);
+        if let Some(first) = layers.next()
+            && layers.all(|l| l == first)
+        {
+            self.select_vector(first);
+        }
     }
 
-    /// Keeps only the selected features that still exist in the layer of
-    /// the Select tool.
+    /// Keeps only the selected features that still exist in the visible
+    /// selectable layers.
     fn prune_feature_selection(&mut self) {
-        self.prune_feature_selection_to(self.select_layer().map(|l| l.id));
+        let layers: Vec<LayerId> = self.select_layers().iter().map(|l| l.id).collect();
+        self.prune_feature_selection_to(&layers);
     }
 
-    /// Keeps only the selected features that still exist in `layer`.
-    pub(super) fn prune_feature_selection_to(&mut self, layer: Option<LayerId>) {
+    /// Keeps only the selected features that still exist in `layers`.
+    pub(super) fn prune_feature_selection_to(&mut self, layers: &[LayerId]) {
         if self.feature_selection.is_empty() {
             return;
         }
-        let live: HashSet<(LayerId, Uuid)> = layer
-            .and_then(|id| self.doc.layer(id))
-            .into_iter()
+        let live: HashSet<(LayerId, Uuid)> = (layers.iter())
+            .filter_map(|&id| self.doc.layer(id))
             .flat_map(|l| l.features.iter().map(|f| (l.id, f.uuid())))
             .collect();
         self.feature_selection
@@ -219,21 +330,35 @@ impl AppState {
         }
     }
 
-    /// Deletes the selected features in one undo step.
+    /// Deletes the selected features of each layer in one undo step.
     pub fn delete_selection(&mut self) {
-        let Some(id) = self.feature_selection.first().map(|f| f.layer) else {
+        if self.feature_selection.is_empty() {
             return;
-        };
+        }
         self.commit_selection_form();
         self.selection_form = None;
         self.attribute_focus = None;
         self.commit_new_feature();
         self.save_edit();
         let selection = std::mem::take(&mut self.feature_selection);
-        let uuids: Vec<Uuid> = selection.iter().map(|f| f.uuid).collect();
-        if self.doc.project.remove_features(id, &uuids) > 0 {
-            self.end_vector_edit(id);
+        let layers: BTreeSet<LayerId> = selection.iter().map(|f| f.layer).collect();
+        let mut changed = Vec::new();
+        for id in layers {
+            let uuids: Vec<Uuid> = (selection.iter())
+                .filter(|f| f.layer == id)
+                .map(|f| f.uuid)
+                .collect();
+            if self.doc.project.remove_features(id, &uuids) > 0 {
+                changed.push(id);
+            }
         }
+        let Some((&last, others)) = changed.split_last() else {
+            return;
+        };
+        for &id in others {
+            self.pipeline.forget(id);
+        }
+        self.end_vector_edit(last);
     }
 
     /// Two or more features of one layer are selected.
@@ -683,7 +808,13 @@ pub fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
         }
         None => {
             ui.add_space(4.0);
-            ui.label(egui::RichText::new(title(count)).color(theme::MUTE));
+            let mixed = state.mixed_lines();
+            if mixed.is_empty() {
+                ui.label(egui::RichText::new(title(count)).color(theme::MUTE));
+            }
+            for line in mixed {
+                ui.label(egui::RichText::new(line).color(theme::MUTE));
+            }
         }
     }
     ui.add_space(8.0);
@@ -837,7 +968,15 @@ pub fn desktop_body(ui: &mut egui::Ui, state: &mut AppState) {
                     }
                 });
         }
-        None => drop(ui.label(title(count))),
+        None => {
+            let mixed = state.mixed_lines();
+            if mixed.is_empty() {
+                ui.label(title(count));
+            }
+            for line in mixed {
+                ui.label(line);
+            }
+        }
     }
     let can_show = state.can_show_in_table();
     outcome.show = ui

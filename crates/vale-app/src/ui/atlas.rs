@@ -948,7 +948,8 @@ struct ItemImage {
 /// Makes the open page, the selection, and the selected vertices valid for
 /// the atlas of the document and the tool.
 pub fn sync(state: &mut AppState) {
-    state.prune_feature_selection_to(state.selected_vector());
+    let layers = state.selectable_layers();
+    state.prune_feature_selection_to(&layers);
     let atlas = &state.doc.project.atlas;
     let a = &mut state.atlas;
     if atlas.page(a.page).is_none() {

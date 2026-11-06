@@ -8298,3 +8298,65 @@ fn show_in_table_opens_the_table_in_the_layers_tab_of_the_frame() {
     assert_eq!(h.state().atlas.layer_page, Some(Page::Table));
     assert!(h.state().table.is_some());
 }
+
+/// `towns_pad` with a second point layer, Wells, above Towns, and a well
+/// 30 points right of the town. Towns stays the active layer.
+fn wells_pad() -> (
+    Pad,
+    Pos2,
+    vale_app::globe::select::FeatureRef,
+    vale_app::globe::select::FeatureRef,
+) {
+    let (mut h, at, town) = towns_pad(BOARDS[0]);
+    let wells = h.state_mut().doc.add_layer(GeometryKind::Point);
+    let well = add_town(&mut h, wells, 1, at + vec2(30.0, 0.0));
+    assert_eq!(h.state().selected_vector(), Some(town.layer));
+    (h, at, town, well)
+}
+
+#[test]
+fn by_default_the_atlas_select_tool_selects_in_the_active_layer() {
+    let (mut h, at, town, well) = wells_pad();
+    tap_with(&mut h, at + vec2(30.0, 0.0), Input::Finger);
+    assert!(h.state().feature_selection.is_empty());
+    tap_with(&mut h, at, Input::Finger);
+    assert_eq!(h.state().feature_selection, vec![town]);
+    let _ = well;
+}
+
+#[test]
+fn with_checked_layers_the_atlas_select_tool_selects_in_each_checked_layer() {
+    let (mut h, at, town, well) = wells_pad();
+    h.state_mut().toggle_selectable(town.layer);
+    h.state_mut().toggle_selectable(well.layer);
+    tap_with(&mut h, at + vec2(30.0, 0.0), Input::Finger);
+    assert_eq!(h.state().feature_selection, vec![well]);
+    // A selection in one layer makes that layer the active layer.
+    assert_eq!(h.state().selected_vector(), Some(well.layer));
+    let place = place(&h);
+    let one = atlas::features::highlight(h.state_mut(), place)
+        .points
+        .len();
+    assert!(one > 0);
+    drag(
+        &mut h,
+        at - vec2(15.0, 15.0),
+        at + vec2(45.0, 15.0),
+        Input::Pen,
+    );
+    let mut selected = h.state().feature_selection.clone();
+    selected.sort_by_key(|f| (f.layer, f.uuid));
+    let mut both = vec![town, well];
+    both.sort_by_key(|f| (f.layer, f.uuid));
+    assert_eq!(selected, both);
+    assert_eq!(h.state().selected_vector(), Some(well.layer));
+    // The highlight shows the features of both layers.
+    let shown = atlas::features::highlight(h.state_mut(), place);
+    assert_eq!(shown.points.len(), 2 * one);
+    // A layer that the map hides has no hit.
+    let map = frame(&h, 1).map;
+    h.state_mut().set_map_shown(map, well.layer, false);
+    h.run_steps(2);
+    tap_with(&mut h, at + vec2(30.0, 0.0), Input::Finger);
+    assert!(h.state().feature_selection.is_empty());
+}

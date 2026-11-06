@@ -90,9 +90,8 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
 /// The inspector of the feature selection, with the name of its layer.
 fn attributes(ui: &mut egui::Ui, state: &mut AppState) {
     ui.heading(super::select::ATTRIBUTES);
-    let layer = (state.feature_selection.first()).and_then(|f| state.doc.layer(f.layer));
-    if let Some(layer) = layer {
-        ui.strong(&layer.name);
+    if let Some(name) = state.selection_layer_name() {
+        ui.strong(name);
     }
     ui.weak(ATTRIBUTES_HINT);
     ui.add_space(4.0);

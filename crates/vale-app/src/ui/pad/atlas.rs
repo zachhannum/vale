@@ -779,9 +779,7 @@ fn attributes_panel(
     let atlas = &state.doc.project.atlas;
     let frame = state.atlas.frame().and_then(|id| atlas.frame(id));
     let map = frame.and_then(|f| atlas.map(f.map)).map(|m| m.name.clone());
-    let layer = (state.feature_selection.first())
-        .and_then(|f| state.doc.layer(f.layer))
-        .map_or_else(String::new, |l| l.name.clone());
+    let layer = state.selection_layer_name();
     let head = CardTitle {
         title: crate::ui::select::ATTRIBUTES,
         back: map.as_deref(),
@@ -803,7 +801,9 @@ fn attributes_panel(
         }
     };
     let top = |ui: &mut egui::Ui, _: &mut AppState, _: &mut Controls| {
-        ui.label(egui::RichText::new(&layer).strong());
+        if let Some(layer) = &layer {
+            ui.label(egui::RichText::new(layer).strong());
+        }
         ui.label(egui::RichText::new(ATTRIBUTES_HINT).color(theme::MUTE));
         ui.add_space(4.0);
     };

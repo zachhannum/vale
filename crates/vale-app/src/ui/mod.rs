@@ -491,6 +491,8 @@ pub struct AppState {
     /// The features that the Select tool selected, in the order of the
     /// selection.
     pub feature_selection: Vec<crate::globe::select::FeatureRef>,
+    /// The layers that the Select tool selects in.
+    pub selectable: select::Selectable,
     /// The list of Merge shows, which asks which feature keeps its
     /// attributes.
     pub merging: bool,
@@ -645,6 +647,7 @@ impl AppState {
             world_form: None,
             new_feature: None,
             feature_selection: Vec::new(),
+            selectable: select::Selectable::Active,
             merging: false,
             select_drag: None,
             vertex_selection: Vec::new(),
@@ -2406,6 +2409,7 @@ impl AppState {
         self.saved_edits = self.edits();
         self.history += 1;
         self.feature_selection.clear();
+        self.selectable = select::Selectable::Active;
         self.selection_form = None;
         self.region = None;
         self.globe.region = false;
