@@ -18,22 +18,54 @@ pub use functions::{FUNCTIONS, Function};
 use parser::Node;
 
 /// The words of the syntax that a plain field name cannot be.
-const KEYWORDS: [&str; 15] = [
-    "and", "or", "not", "in", "is", "null", "true", "false", "like", "between", "case", "when",
-    "then", "else", "end",
+const KEYWORDS: [&str; 16] = [
+    "and", "or", "not", "in", "is", "null", "true", "false", "like", "ilike", "between", "case",
+    "when", "then", "else", "end",
 ];
+
+fn is_keyword(name: &str) -> bool {
+    KEYWORDS.iter().any(|k| k.eq_ignore_ascii_case(name))
+}
 
 /// A field name as an expression writes it: plain, or in double quotes.
 pub fn field_ref(name: &str) -> String {
     let mut chars = name.chars();
     let plain = chars.next().is_some_and(|c| c.is_alphabetic() || c == '_')
         && chars.all(|c| c.is_alphanumeric() || c == '_')
-        && !KEYWORDS.iter().any(|k| k.eq_ignore_ascii_case(name));
+        && !is_keyword(name);
     if plain {
         name.to_owned()
     } else {
         format!("\"{}\"", name.replace('"', "\"\""))
     }
+}
+
+/// The text of an expression with each reference to the field `old` replaced by `new`. Text that does not lex stays as it is.
+pub fn rename_field(text: &str, old: &str, new: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let Ok(tokens) = lexer::lex(&chars) else {
+        return text.to_owned();
+    };
+    let mut out = String::with_capacity(text.len());
+    let mut copied = 0;
+    for (i, t) in tokens.iter().enumerate() {
+        let hit = match &t.tok {
+            lexer::Tok::Quoted(name) => name == old,
+            lexer::Tok::Name(name) => {
+                name == old
+                    && !is_keyword(name)
+                    && tokens.get(i + 1).map(|n| &n.tok) != Some(&lexer::Tok::LParen)
+            }
+            _ => false,
+        };
+        if hit {
+            out.extend(&chars[copied..t.start]);
+            out.push_str(&field_ref(new));
+            copied = t.end;
+        }
+    }
+    out.extend(&chars[copied..]);
+    out
 }
 
 /// The attributes of one feature, by field name.
@@ -205,6 +237,13 @@ impl Source {
     pub fn error(&self) -> Option<&ParseError> {
         self.parsed.as_ref().err()
     }
+
+    pub fn rename_field(&mut self, old: &str, new: &str) {
+        let text = rename_field(&self.text, old, new);
+        if text != self.text {
+            *self = Source::new(text);
+        }
+    }
 }
 
 /// A filter of a rule. A blank filter matches each feature, and a wrong filter matches none.
@@ -235,6 +274,12 @@ impl Filter {
 
     pub fn error(&self) -> Option<&ParseError> {
         self.source.as_ref().and_then(Source::error)
+    }
+
+    pub fn rename_field(&mut self, old: &str, new: &str) {
+        if let Some(s) = &mut self.source {
+            s.rename_field(old, new);
+        }
     }
 
     /// True if the result is `true`. Null and all other values do not match.
@@ -314,6 +359,12 @@ impl<T: FromValue + Clone> Property<T> {
 
     pub fn error(&self) -> Option<&ParseError> {
         self.source.as_ref().and_then(Source::error)
+    }
+
+    pub fn rename_field(&mut self, old: &str, new: &str) {
+        if let Some(s) = &mut self.source {
+            s.rename_field(old, new);
+        }
     }
 
     pub fn eval(&self, ctx: &Context) -> T {

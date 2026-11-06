@@ -934,3 +934,41 @@ fn the_marker_fill_kind_changes_the_fill_and_the_hatch() {
     lines.set_marker_fill_kind(FillKind::Hatch);
     assert!(lines.symbolizers.is_empty());
 }
+
+#[test]
+fn label_class_rename_changes_text_filter_and_priority() {
+    let mut c = vale_style::LabelClass::new("Cities", GeometryKind::Point, 0).unwrap();
+    c.text = "concat(name, ' ' || pop)".to_owned();
+    c.filter = "pop > 1000".to_owned();
+    c.priority_field = Some("pop".to_owned());
+    c.rename_field("pop", "people");
+    assert_eq!(c.text, "concat(name, ' ' || people)");
+    assert_eq!(c.filter, "people > 1000");
+    assert_eq!(c.priority_field.as_deref(), Some("people"));
+}
+
+#[test]
+fn layer_style_rename_changes_rules_and_label() {
+    let fields = vec!["name".to_owned()];
+    let mut s = LayerStyle::default_for(GeometryKind::Point, 0, &fields);
+    s.label.priority_field = Some("pop".to_owned());
+    let rule = &mut s.style.rules[0];
+    rule.filter = Filter::new("pop > 10");
+    rule.symbolizers.push(Symbolizer::Marker {
+        radius: Property::expression("sqrt(pop)", 2.0),
+        shape: MarkerShape::Circle,
+        fill: None,
+        hatch: None,
+        stroke: None,
+    });
+    s.rename_field("pop", "people");
+    s.rename_field("name", "title");
+    let rule = &s.style.rules[0];
+    assert_eq!(rule.filter.source().unwrap().text(), "people > 10");
+    let Some(Symbolizer::Marker { radius, .. }) = rule.symbolizers.last() else {
+        panic!("not a marker");
+    };
+    assert_eq!(radius.source().unwrap().text(), "sqrt(people)");
+    assert_eq!(s.label.priority_field.as_deref(), Some("people"));
+    assert_eq!(s.label.field.as_deref(), Some("title"));
+}

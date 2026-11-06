@@ -397,6 +397,11 @@ impl StrokeSymbolizer {
     }
 
     /// The stroke from the fallbacks.
+    pub fn rename_field(&mut self, old: &str, new: &str) {
+        self.color.rename_field(old, new);
+        self.width.rename_field(old, new);
+    }
+
     pub fn fallback(&self) -> Stroke {
         Stroke {
             color: self.color.fallback,
@@ -411,6 +416,43 @@ impl StrokeSymbolizer {
 }
 
 impl Symbolizer {
+    /// Replaces the field `old` with `new` in each expression.
+    pub fn rename_field(&mut self, old: &str, new: &str) {
+        match self {
+            Symbolizer::Fill { color } => color.rename_field(old, new),
+            Symbolizer::Stroke(s) => s.rename_field(old, new),
+            Symbolizer::Marker {
+                radius,
+                fill,
+                stroke,
+                ..
+            } => {
+                radius.rename_field(old, new);
+                if let Some(f) = fill {
+                    f.rename_field(old, new);
+                }
+                if let Some(s) = stroke {
+                    s.rename_field(old, new);
+                }
+            }
+            Symbolizer::Symbol(s) => {
+                s.size.rename_field(old, new);
+                s.rotation.rename_field(old, new);
+                if let Some(t) = &mut s.tint {
+                    t.rename_field(old, new);
+                }
+            }
+            Symbolizer::Scatter(s) => {
+                s.size.rename_field(old, new);
+                s.spacing.rename_field(old, new);
+                if let Some(t) = &mut s.tint {
+                    t.rename_field(old, new);
+                }
+            }
+            Symbolizer::Raster(_) | Symbolizer::Image(_) => {}
+        }
+    }
+
     /// The paint for the feature of `ctx`. A raster symbolizer and an image symbolizer have none.
     pub fn resolve(&self, ctx: &Context) -> Option<Paint> {
         Some(match self {
@@ -522,6 +564,14 @@ impl Rule {
     }
 
     /// True if the rule draws at the scale denominator `scale`.
+    /// Replaces the field `old` with `new` in the filter and in each symbolizer.
+    pub fn rename_field(&mut self, old: &str, new: &str) {
+        self.filter.rename_field(old, new);
+        for s in &mut self.symbolizers {
+            s.rename_field(old, new);
+        }
+    }
+
     pub fn in_scale(&self, scale: f64) -> bool {
         self.min_scale.is_none_or(|min| scale >= min)
             && self.max_scale.is_none_or(|max| scale < max)
@@ -754,6 +804,13 @@ impl Rule {
 }
 
 impl Style {
+    /// Replaces the field `old` with `new` in each rule.
+    pub fn rename_field(&mut self, old: &str, new: &str) {
+        for r in &mut self.rules {
+            r.rename_field(old, new);
+        }
+    }
+
     /// The first name "Rule N" that no rule has, from N = 1.
     pub fn unique_name(&self) -> String {
         (1..)

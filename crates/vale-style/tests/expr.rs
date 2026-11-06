@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use vale_store::GeometryKind;
 use vale_style::Color;
-use vale_style::expr::{Context, Expr, FUNCTIONS, Filter, Property, Value};
+use vale_style::expr::{Context, Expr, FUNCTIONS, Filter, Property, Value, rename_field};
 
 fn city() -> BTreeMap<String, Value> {
     let mut a = BTreeMap::new();
@@ -363,4 +363,44 @@ fn each_function_is_documented() {
 fn short_error_is_a_sentence() {
     let err = Expr::parse("shout(name)").unwrap_err();
     assert_eq!(err.short(), "Unknown function 'shout'.");
+}
+
+#[test]
+fn rename_bare_name() {
+    assert_eq!(
+        rename_field("pop > 10 and kind = 'pop'", "pop", "people"),
+        "people > 10 and kind = 'pop'"
+    );
+}
+
+#[test]
+fn rename_quoted_name() {
+    assert_eq!(
+        rename_field("\"old name\" || \"pop\"", "old name", "former"),
+        "former || \"pop\""
+    );
+}
+
+#[test]
+fn rename_to_name_with_space_quotes_it() {
+    assert_eq!(
+        rename_field("concat(name,  ' ')", "name", "full name"),
+        "concat(\"full name\",  ' ')"
+    );
+}
+
+#[test]
+fn rename_skips_function_with_same_name() {
+    assert_eq!(rename_field("round(round)", "round", "r"), "round(r)");
+}
+
+#[test]
+fn rename_skips_text_and_keywords() {
+    assert_eq!(rename_field("'name' || name", "name", "n"), "'name' || n");
+    assert_eq!(rename_field("a is null", "null", "n"), "a is null");
+}
+
+#[test]
+fn rename_keeps_text_that_does_not_lex() {
+    assert_eq!(rename_field("name || 'open", "name", "n"), "name || 'open");
 }
