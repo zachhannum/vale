@@ -358,3 +358,9 @@ fn each_function_is_documented() {
         );
     }
 }
+
+#[test]
+fn short_error_is_a_sentence() {
+    let err = Expr::parse("shout(name)").unwrap_err();
+    assert_eq!(err.short(), "Unknown function 'shout'.");
+}
