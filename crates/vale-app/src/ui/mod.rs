@@ -42,6 +42,7 @@ pub mod atlas;
 pub mod browser;
 pub mod dock;
 pub mod elevation;
+pub mod expr_help;
 pub mod font_dialog;
 pub mod frame_masks;
 pub mod globe;

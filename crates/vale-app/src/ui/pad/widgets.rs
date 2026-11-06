@@ -1963,6 +1963,51 @@ pub fn chips(
     chosen
 }
 
+/// One row of chips that scrolls sideways, as wide as the form. Each chip
+/// is a pair of a control name and a text. Returns the chip that the user
+/// tapped.
+pub fn chip_row(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    id: egui::Id,
+    chips: &[(String, String)],
+) -> Option<usize> {
+    let mut chosen = None;
+    egui::ScrollArea::horizontal()
+        .id_salt(id)
+        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+        .show(ui, |ui| {
+            let mut at = ui.cursor().min;
+            for (index, (name, text)) in chips.iter().enumerate() {
+                let wide = text_width(ui, text, theme::body()) + 2.0 * CHIP_PAD;
+                let rect = Rect::from_min_size(at, vec2(wide.max(TOUCH), TOUCH));
+                at.x = rect.right();
+                let resp = hit(ui, controls, rect, name, Sense::click(), true, None);
+                let back = rect.shrink(HIGHLIGHT_INSET);
+                let fill = if resp.is_pointer_button_down_on() {
+                    theme::raise()
+                } else {
+                    theme::track()
+                };
+                ui.painter().rect_filled(back, theme::CONTROL_RADIUS, fill);
+                let painter = ui.painter();
+                painter.text(
+                    rect.center(),
+                    Align2::CENTER_CENTER,
+                    text,
+                    theme::body(),
+                    theme::TEXT,
+                );
+                if resp.clicked() {
+                    chosen = Some(index);
+                }
+            }
+            let left = ui.cursor().left();
+            ui.allocate_exact_size(vec2(at.x - left, TOUCH), Sense::hover());
+        });
+    chosen
+}
+
 /// The smallest width of a tile of a tile grid.
 pub const TILE: f32 = 76.0;
 /// The space between two tiles.

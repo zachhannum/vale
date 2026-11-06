@@ -80,6 +80,7 @@ fn layer_section(ui: &mut egui::Ui, state: &mut AppState) {
     let symbols = state.doc.symbols().clone();
     state.open_ramps();
     let ramps = state.ramps.list().to_vec();
+    let help = super::expr_help::ExprHelp::for_layer(state, info.id);
     let font_warning = (state.doc.entry(info.id))
         .and_then(|e| crate::fonts::missing(e.style.label.font.as_deref(), &state.font_families));
     let mut pick_font = false;
@@ -91,6 +92,7 @@ fn layer_section(ui: &mut egui::Ui, state: &mut AppState) {
         symbols: &symbols,
         note: state.symbol_note.as_ref(),
         actions: &mut state.actions,
+        help: &help,
     };
     let mut changed = style_editor::rules(ui, info.id, style, info.kind, &fields, &mut library);
     if info.kind != GeometryKind::Point {

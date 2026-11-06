@@ -13,6 +13,7 @@ use super::elevation::{DISPLAYS, blend_label};
 use super::pad::raster::{BLEND, SHOW_AS};
 
 use super::atlas::{self, AtlasSelection, EdgeSet, FrameTab};
+use super::expr_help::{self, ExprKind};
 use super::pad::atlas::{
     ADD_HOLE, ADD_PAGE, AUTO_INTERVAL, AZIMUTH, BORDER, BORDER_COLOR, BORDER_DISTANCE,
     BORDER_STROKE, BORDER_STYLE, BORDER_STYLES, BORDER_WIDTH, CENTER_LATITUDE, CENTER_LONGITUDE,
@@ -646,10 +647,12 @@ fn layers_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
     state.open_ramps();
     let ramps = state.ramps.list().to_vec();
     let symbols = state.doc.symbols().clone();
+    let help = expr_help::ExprHelp::for_layer(state, layer);
     let mut library = style_editor::Library {
         symbols: &symbols,
         note: state.symbol_note.as_ref(),
         actions: &mut state.actions,
+        help: &help,
     };
     let Some(mut style) = state.doc.map_style(target, layer) else {
         return;
@@ -1005,14 +1008,24 @@ fn labels_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
         ui.label("Name");
         ui.text_edit_singleline(&mut class.name);
     });
-    ui.horizontal(|ui| {
-        ui.label("Text");
-        ui.text_edit_singleline(&mut class.text);
-    });
-    ui.horizontal(|ui| {
-        ui.label("Filter");
-        ui.text_edit_singleline(&mut class.filter);
-    });
+    let help = expr_help::ExprHelp::for_layer(state, layer);
+    let salt = egui::Id::new(("label-class", layer.0, i));
+    for (name, text, kind) in [
+        ("Text", &mut class.text, ExprKind::Text),
+        ("Filter", &mut class.filter, ExprKind::Filter),
+    ] {
+        ui.horizontal(|ui| {
+            ui.label(name);
+            let id = salt.with(name);
+            let edit = egui::TextEdit::singleline(text)
+                .id(id)
+                .font(egui::TextStyle::Monospace);
+            ui.add(edit)
+                .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, name));
+            expr_help::insert_menu(ui, &help, id, text);
+        });
+        expr_help::desktop_line(ui, &help, text, kind);
+    }
     let family = crate::fonts::family(class.font.as_deref(), &mut state.fonts).to_owned();
     let mut faces = state.fonts.faces(&family);
     if faces.is_empty() {

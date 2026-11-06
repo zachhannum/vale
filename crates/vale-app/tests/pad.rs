@@ -7896,7 +7896,7 @@ fn the_style_section_adds_moves_and_deletes_rules() {
 #[test]
 fn a_rule_page_sets_the_filter_and_the_scale_range() {
     use vale_app::ui::pad::filter::{ADD_CONDITION, NO_CONDITION, REMOVE_CONDITION, VALUE};
-    use vale_app::ui::pad::rules::{BAD_FILTER, BAD_RANGE, EXPRESSION, MAX_SCALE, MIN_SCALE};
+    use vale_app::ui::pad::rules::{BAD_RANGE, EXPRESSION, MAX_SCALE, MIN_SCALE};
     for size in [BOARDS[1], BOARDS[3]] {
         let what = format!("{size:?}");
         let mut h = pad(size);
@@ -7948,10 +7948,10 @@ fn a_rule_page_sets_the_filter_and_the_scale_range() {
 
         // The expression field takes any filter, and warns about a wrong one.
         type_text(&mut h, EXPRESSION, "scalerank < 5 and");
-        assert!(rule(&h).filter.error().is_some(), "{what}");
-        assert!(h.query_by_label(BAD_FILTER).is_some(), "{what}");
+        let message = rule(&h).filter.error().unwrap().short();
+        assert!(h.query_by_label(&message).is_some(), "{what}");
         type_text(&mut h, EXPRESSION, "scalerank < 5");
-        assert!(h.query_by_label(BAD_FILTER).is_none(), "{what}");
+        assert!(h.query_by_label(&message).is_none(), "{what}");
 
         scroll_to_control(&mut h, MIN_SCALE);
         type_scrolled_keys(&mut h, MIN_SCALE, "50000");
@@ -7967,6 +7967,143 @@ fn a_rule_page_sets_the_filter_and_the_scale_range() {
         assert!(rule(&h).in_scale(100_000.0), "{what}");
         assert!(!rule(&h).in_scale(10_000.0), "{what}");
     }
+}
+
+/// Scrolls the row of the chips of an expression field sideways until the
+/// chip `name` shows.
+fn scroll_chips_to(h: &mut Pad, name: &str) {
+    for _ in 0..80 {
+        if control(h, name).is_some_and(|r| r.width() >= 44.0) {
+            return;
+        }
+        // The functions are in the lower row of the chips.
+        let label = name.trim_start_matches("Insert ");
+        let call = vale_style::expr::FUNCTIONS.iter().any(|f| f.name == label);
+        let controls = &h.state().pad.controls;
+        let chips = controls.iter().filter(|c| c.name.starts_with("Insert "));
+        let y = |c: &&vale_app::ui::pad::widgets::Control| c.rect.center().y;
+        let chip = if call {
+            chips.max_by(|a, b| y(a).total_cmp(&y(b)))
+        } else {
+            chips.min_by(|a, b| y(a).total_cmp(&y(b)))
+        };
+        let from = chip.expect("no chips").rect.center();
+        drag(h, from, from - vec2(250.0, 0.0), None);
+    }
+    panic!("no chip `{name}`");
+}
+
+/// The text of the filter of the first rule of a layer.
+fn filter_text(h: &Pad, id: vale_store::LayerId) -> Option<String> {
+    let rule = rules(h, id)[0].clone();
+    rule.filter.source().map(|s| s.text().to_owned())
+}
+
+#[test]
+fn the_chips_of_an_expression_field_show_only_while_it_has_the_focus() {
+    use vale_app::ui::pad::expression::chip_name;
+    use vale_app::ui::pad::rules::EXPRESSION;
+    for size in [BOARDS[0], BOARDS[3]] {
+        let what = format!("{size:?}");
+        let mut h = pad(size);
+        let rivers = vector(&h, "Rivers");
+        assert!(
+            h.state_mut()
+                .doc
+                .rename_field(rivers, "featurecla", "feature class")
+        );
+        h.run_steps(2);
+        open_rule(&mut h, "Rivers", "Default");
+        scroll_to_control(&mut h, EXPRESSION);
+        let field_chip = chip_name("feature class");
+        assert!(control(&h, &field_chip).is_none(), "{what}");
+
+        tap(&mut h, EXPRESSION);
+        scroll_to_control(&mut h, &field_chip);
+        assert!(control(&h, &field_chip).is_some(), "{what}");
+        check_controls(&h, &format!("{what} with the chips of an expression"));
+
+        h.key_press(egui::Key::Enter);
+        h.run_steps(3);
+        assert!(control(&h, &field_chip).is_none(), "{what}");
+    }
+}
+
+#[test]
+fn a_chip_inserts_a_field_or_a_function_at_the_cursor() {
+    use vale_app::ui::pad::expression::chip_name;
+    use vale_app::ui::pad::rules::EXPRESSION;
+    for size in [BOARDS[0], BOARDS[3]] {
+        let what = format!("{size:?}");
+        let mut h = pad(size);
+        let rivers = vector(&h, "Rivers");
+        assert!(
+            h.state_mut()
+                .doc
+                .rename_field(rivers, "featurecla", "feature class")
+        );
+        h.run_steps(2);
+        open_rule(&mut h, "Rivers", "Default");
+        scroll_to_control(&mut h, EXPRESSION);
+        type_text(&mut h, EXPRESSION, "scalerank = ");
+
+        // The fields come first. A field chip inserts the name in quotes,
+        // and the field keeps the focus and the chips.
+        let field_chip = chip_name("feature class");
+        scroll_to_control(&mut h, &field_chip);
+        tap(&mut h, &field_chip);
+        let text = "scalerank = \"feature class\"";
+        assert_eq!(filter_text(&h, rivers).as_deref(), Some(text), "{what}");
+        assert!(control(&h, &field_chip).is_some(), "{what}");
+
+        // A function chip inserts the signature and selects the first
+        // argument, so that the next text replaces it.
+        h.event(egui::Event::Text(" + ".to_owned()));
+        h.run_steps(2);
+        let round = chip_name("round");
+        scroll_chips_to(&mut h, &round);
+        tap(&mut h, &round);
+        let text = "scalerank = \"feature class\" + round(x, digits)";
+        assert_eq!(filter_text(&h, rivers).as_deref(), Some(text), "{what}");
+        h.event(egui::Event::Text("scalerank".to_owned()));
+        h.run_steps(2);
+        let text = "scalerank = \"feature class\" + round(scalerank, digits)";
+        assert_eq!(filter_text(&h, rivers).as_deref(), Some(text), "{what}");
+    }
+}
+
+#[test]
+fn the_line_of_an_expression_field_shows_the_result_or_the_error() {
+    use vale_app::ui::expr_help::{MATCHES, NO_MATCH};
+    use vale_app::ui::pad::rules::EXPRESSION;
+    let mut h = pad(BOARDS[0]);
+    let rivers = vector(&h, "Rivers");
+    let layer = h.state().doc.layer(rivers).unwrap();
+    let rank = |i: usize| layer.features[i].attributes["scalerank"].clone();
+    let first = rank(0);
+    let other = (1..layer.features.len())
+        .find(|&i| rank(i) != first)
+        .unwrap();
+    let other = FeatureRef {
+        layer: rivers,
+        uuid: layer.features[other].uuid(),
+    };
+    let first = first.label().unwrap();
+    open_rule(&mut h, "Rivers", "Default");
+    scroll_to_control(&mut h, EXPRESSION);
+
+    // With no selection, the line shows the result for the first feature.
+    type_text(&mut h, EXPRESSION, &format!("scalerank = {first}"));
+    assert!(h.query_by_label(MATCHES).is_some());
+    // The selected feature of the layer comes first.
+    h.state_mut().feature_selection = vec![other];
+    h.run_steps(2);
+    assert!(h.query_by_label(NO_MATCH).is_some());
+    assert!(h.query_by_label(MATCHES).is_none());
+
+    type_text(&mut h, EXPRESSION, "shout(name)");
+    assert!(h.query_by_label("Unknown function 'shout'.").is_some());
+    assert!(h.query_by_label(NO_MATCH).is_none());
 }
 
 #[test]

@@ -9,6 +9,7 @@ use super::geometry::{GAP, PAD, Rects, TOUCH};
 use super::theme;
 use super::widgets::{self, Controls, HIGHLIGHT_INSET, PANEL_ROW};
 use super::{LayerRef, Page, Panel};
+use crate::ui::expr_help::{ExprHelp, ExprKind};
 use crate::ui::new_feature::{can_take_focus, keyboard_top};
 use crate::ui::table::{
     ALL, CellTap, FILTER, SELECTED, cell_name, cell_text, column_width, count_text, empty_text,
@@ -81,6 +82,10 @@ pub fn page(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
     let selection = state.table_selection();
     let screen = ui.ctx().content_rect();
     let focus = can_take_focus(ui.ctx());
+    let help = match &state.table {
+        Some(table) => ExprHelp::for_layer(state, table.layer),
+        None => return,
+    };
     let Some(table) = state.table.as_mut() else {
         return;
     };
@@ -121,6 +126,7 @@ pub fn page(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
         let painter = ui.painter();
         painter.text(at, Align2::LEFT_CENTER, FILTER, theme::body(), theme::MUTE);
     }
+    super::expression::line(ui, &help, filter, ExprKind::Filter);
     ui.add_space(6.0);
 
     let widths: Vec<f32> = layer
