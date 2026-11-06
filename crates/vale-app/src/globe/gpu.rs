@@ -150,9 +150,9 @@ pub enum MapKind {
     Full,
     /// The reduced copy that the globe draws.
     Copy,
-    /// The detail map of the map frames: levels 0 and 1 of a reduced copy
-    /// at `level` of the whole heightmap, in the tiles that the frames
-    /// show. It has no other levels.
+    /// The detail map of the map frames and the view: levels 0 and 1 of a
+    /// reduced copy at `level` of the whole heightmap, in the tiles that
+    /// the frames and the view show. It has no other levels.
     Detail { level: u32 },
 }
 
