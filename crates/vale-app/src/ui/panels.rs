@@ -812,6 +812,7 @@ pub(super) fn debug_controls(ui: &mut egui::Ui, state: &mut AppState) {
     ui.label(globe.stats.gpu_line());
     ui.label(globe.stats.frame_time_line());
     ui.checkbox(&mut globe.blur, "Blur behind the cards");
+    ui.label(crate::globe::gpu::vector_report());
     for text in crate::globe::compile::failures() {
         let text: String = text.chars().take(400).collect();
         ui.label(format!("Compile failed: {text}"));
