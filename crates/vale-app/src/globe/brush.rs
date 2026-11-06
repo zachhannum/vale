@@ -33,6 +33,8 @@ pub const NOISE_GRAIN: std::ops::RangeInclusive<f64> = 0.0..=9.0;
 pub const TALUS_DEG: std::ops::RangeInclusive<f64> = 0.02..=20.0;
 /// The limits of the step of the terrace mode, in meters.
 pub const TERRACE_STEP_M: std::ops::RangeInclusive<f64> = 10.0..=3000.0;
+/// The limits of the shape of the shape mode, from old land to young land.
+pub const SHAPE: std::ops::RangeInclusive<f64> = -1.0..=1.0;
 /// The limits of the strength of the warp mode, in kilometers.
 pub const WARP_KM: std::ops::RangeInclusive<f64> = 1.0..=500.0;
 /// The limits of the scale of the warp mode, in kilometers.
@@ -97,6 +99,9 @@ pub struct BrushSettings {
     pub flatten_level: Option<u16>,
     /// The height between two step levels of the terrace mode, in meters.
     pub terrace_step_m: f64,
+    /// The shape of the shape mode, from -1 for old land with convex slopes
+    /// to 1 for young land with concave slopes.
+    pub shape: f64,
     /// The steepest slope that the weather mode leaves, in degrees.
     pub talus_deg: f64,
     /// The strength of the erosion of the uplift mode, from 0 to 1. At 0,
@@ -168,6 +173,7 @@ impl Default for BrushSettings {
             noise_lower_m: 1500.0,
             flatten_level: None,
             terrace_step_m: 200.0,
+            shape: -0.5,
             talus_deg: 0.5,
             erosion: 0.5,
             warp_km: 50.0,
@@ -194,6 +200,18 @@ impl Default for BrushSettings {
     }
 }
 
+/// The text of a shape setting of the shape mode.
+pub fn shape_text(shape: f64) -> String {
+    let percent = (shape.abs() * 100.0).round();
+    if percent == 0.0 {
+        "Straight".to_owned()
+    } else if shape < 0.0 {
+        format!("Old {percent}%")
+    } else {
+        format!("Young {percent}%")
+    }
+}
+
 /// True if a brush mode needs heights in meters: it follows the rivers, the
 /// slope of the ground, or sea level. A raster layer of another unit does not have
 /// the mode.
@@ -201,7 +219,17 @@ pub fn needs_height(mode: Mode) -> bool {
     use Mode::*;
     matches!(
         mode,
-        Carve | Ridge | Deposit | Erode | Weather | Uplift | OceanRidge | Range | Basin | Terrace
+        Carve
+            | Ridge
+            | Deposit
+            | Erode
+            | Weather
+            | Uplift
+            | OceanRidge
+            | Range
+            | Basin
+            | Terrace
+            | Shape
     )
 }
 
@@ -480,6 +508,9 @@ impl Tip<'_> {
                 }
                 // These modes move toward a target, so each stamp does less.
                 Mode::Smooth | Mode::Flatten | Mode::Terrace | Mode::Deposit => flow * 0.3,
+                // The curve of the shape mode moves with the ground, so the
+                // stamps of one stroke apply it about once.
+                Mode::Shape => flow * STAMP_SPACING,
             },
             mode: self.brush.mode,
             level: match self.brush.mode {
@@ -488,15 +519,16 @@ impl Tip<'_> {
                     .clamp(1.0, 65535.0) as u16,
                 _ => self.level,
             },
-            strength: STAMP_SPACING / span
-                * match self.brush.mode {
-                    Mode::Uplift => {
-                        self.brush.strength_m
-                            * (1.0 + UPLIFT_GAIN * self.brush.erosion.clamp(0.0, 1.0))
-                    }
-                    Mode::Noise => self.brush.noise_raise_m,
-                    _ => self.brush.strength_m,
-                },
+            strength: match self.brush.mode {
+                Mode::Shape => self.brush.shape.clamp(-1.0, 1.0),
+                Mode::Uplift => {
+                    STAMP_SPACING / span
+                        * self.brush.strength_m
+                        * (1.0 + UPLIFT_GAIN * self.brush.erosion.clamp(0.0, 1.0))
+                }
+                Mode::Noise => STAMP_SPACING / span * self.brush.noise_raise_m,
+                _ => STAMP_SPACING / span * self.brush.strength_m,
+            },
             lower: self.brush.noise_lower_m * STAMP_SPACING / span,
             // `set_world` sets the slope, the warp strength, the scale, the
             // seed, and the channel, which follow the world.
@@ -678,7 +710,7 @@ pub fn plan_texels(plan: &StampPlan) -> u64 {
 /// The cost of a stamp, where `GROUP_STAMPS` is the cost of one pass.
 fn stamp_cost(plan: &StampPlan) -> usize {
     match plan.stamp.mode {
-        Mode::Smooth | Mode::Weather | Mode::Warp | Mode::Push => GROUP_STAMPS,
+        Mode::Smooth | Mode::Shape | Mode::Weather | Mode::Warp | Mode::Push => GROUP_STAMPS,
         Mode::Raise
         | Mode::Lower
         | Mode::Flatten
@@ -830,6 +862,31 @@ mod tests {
         assert!((step - 300.0).abs() < 0.1, "{step}");
         assert_eq!(out[0].flow, 0.3);
         assert!(needs_height(Mode::Terrace));
+    }
+
+    #[test]
+    fn a_shape_stamp_has_the_shape_and_a_small_flow() {
+        let brush = BrushSettings {
+            mode: Mode::Shape,
+            shape: 0.75,
+            ..BrushSettings::default()
+        };
+        let mut out = Vec::new();
+        Stroke::default().add_sample(&brush, 1024, sample(0.0, 0.1), |_| 7, &mut out);
+        assert_eq!(out[0].strength, 0.75);
+        assert!(
+            (out[0].flow - STAMP_SPACING).abs() < 1e-12,
+            "{}",
+            out[0].flow
+        );
+        assert!(needs_height(Mode::Shape));
+    }
+
+    #[test]
+    fn the_shape_text_names_the_age_of_the_land() {
+        assert_eq!(shape_text(-0.5), "Old 50%");
+        assert_eq!(shape_text(1.0), "Young 100%");
+        assert_eq!(shape_text(0.001), "Straight");
     }
 
     #[test]

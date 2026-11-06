@@ -2075,6 +2075,20 @@ fn the_brush_panel_has_the_terrace_mode_with_a_step() {
 }
 
 #[test]
+fn the_brush_panel_has_the_shape_mode_with_a_shape() {
+    let mut h = harness();
+    h.state_mut().globe.tool = Tool::Brush;
+    h.run_steps(2);
+    // The mode button has the name of the mode, and so does the slider.
+    assert_eq!(h.query_all_by_label("Shape").count(), 1);
+    h.get_by_label("Shape").click();
+    h.run_steps(2);
+    assert_eq!(h.state().globe.brush.mode, Mode::Shape);
+    assert!(h.query_all_by_label("Shape").count() >= 2);
+    assert!(h.query_all_by_label("Strength").next().is_none());
+}
+
+#[test]
 #[ignore = "gpu"]
 fn deposit_raises_low_ground_to_the_fill_level_and_leaves_the_sea() {
     let _gpu = one_gpu_test();
