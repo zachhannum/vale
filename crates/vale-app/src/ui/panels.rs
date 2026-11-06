@@ -5,7 +5,9 @@ use vale_sphere::{ProjectionKind, ProjectionSpec};
 use vale_store::{GeometryKind, RasterId, World};
 
 use super::number;
-use super::pad::atlas::{LAYOUT_GRID, NEXT_PAGE, PREVIOUS_PAGE, SNAP_TO_LAYOUT, page_title};
+use super::pad::atlas::{
+    LAYOUT_GRID, MAP_LAYERS, NEXT_PAGE, NO_FRAMES, PREVIOUS_PAGE, SNAP_TO_LAYOUT, page_title,
+};
 use super::raster_form::RasterForm;
 use super::world_form::{self, WorldForm};
 use super::{
@@ -406,6 +408,29 @@ fn atlas_buttons(ui: &mut egui::Ui, state: &mut AppState) {
     let on = state.doc.project.atlas.grid.on;
     if ui.selectable_label(on, LAYOUT_GRID).clicked() {
         atlas::edit_grid(state, |g| g.on = !on);
+    }
+    // With a frame selected, Map layers opens its Layers tab. With none, it
+    // lists the map frames of the page.
+    if state.atlas.frame().is_some() {
+        if ui
+            .selectable_label(atlas::layers_open(state), MAP_LAYERS)
+            .clicked()
+        {
+            atlas::toggle_layers(state);
+        }
+    } else {
+        ui.menu_button(MAP_LAYERS, |ui| {
+            let frames = atlas::frame_names(state);
+            if frames.is_empty() {
+                ui.weak(NO_FRAMES);
+            }
+            for (id, name) in frames {
+                if ui.button(name).clicked() {
+                    atlas::open_frame_layers(state, id);
+                    ui.close();
+                }
+            }
+        });
     }
     ui.separator();
     let framing = state.atlas.tool == atlas::AtlasTool::Frame;

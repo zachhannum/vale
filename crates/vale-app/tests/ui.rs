@@ -2240,3 +2240,42 @@ fn the_desktop_tool_bars_have_the_selectable_menu_with_the_select_tool() {
         assert_eq!(h.state().selectable, Selectable::Active, "{what}");
     }
 }
+
+#[test]
+fn the_map_layers_button_of_the_desktop_opens_the_layers_tab_of_a_frame() {
+    use vale_app::ui::atlas::{self, AtlasSelection, FrameTab};
+    use vale_app::ui::pad::atlas::{MAP_LAYERS, NO_FRAMES};
+    let mut h = harness();
+    h.state_mut().atlas.selection = AtlasSelection::None;
+    h.run_steps(3);
+    // With no frame on the page, the menu says how to add one.
+    if atlas::frame_names(h.state()).is_empty() {
+        h.get_by_label(MAP_LAYERS).click();
+        h.run_steps(2);
+        assert!(h.query_by_label(NO_FRAMES).is_some());
+        h.key_press(egui::Key::Escape);
+        h.run_steps(2);
+    }
+    atlas::add_frame(h.state_mut());
+    atlas::add_frame(h.state_mut());
+    h.state_mut().atlas.selection = AtlasSelection::None;
+    h.run_steps(3);
+    // With no frame selected, the menu lists the frames.
+    h.get_by_label(MAP_LAYERS).click();
+    h.run_steps(2);
+    let names = atlas::frame_names(h.state());
+    h.get_by_label(&names[1].1).click();
+    h.run_steps(2);
+    assert_eq!(h.state().atlas.selection, AtlasSelection::Frame(names[1].0));
+    assert_eq!(h.state().atlas.tab, FrameTab::Layers);
+    // With a frame selected, the button opens the Layers tab, and a second
+    // click closes the panel.
+    h.state_mut().atlas.tab = FrameTab::Frame;
+    h.run_steps(2);
+    h.get_by_label(MAP_LAYERS).click();
+    h.run_steps(2);
+    assert_eq!(h.state().atlas.tab, FrameTab::Layers);
+    h.get_by_label(MAP_LAYERS).click();
+    h.run_steps(2);
+    assert_eq!(h.state().atlas.selection, AtlasSelection::None);
+}

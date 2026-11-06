@@ -600,6 +600,9 @@ pub struct AtlasState {
     pub preset_name: String,
     /// The Add menu is open.
     pub add: bool,
+    /// The list of the map frames of the open page shows, from the Layers
+    /// button with no frame selected.
+    pub frames: bool,
     /// The Add menu in the last frame.
     pub add_rect: Option<Rect>,
     /// The panel of the selection in the last frame.
@@ -806,6 +809,7 @@ impl Default for AtlasState {
             neatline_shown: false,
             preset_name: String::new(),
             add: false,
+            frames: false,
             add_rect: None,
             panel_rect: None,
             place: None,
@@ -966,6 +970,10 @@ pub fn sync(state: &mut AppState) {
     if a.tool == AtlasTool::Select && a.frame().is_none() {
         a.selection = AtlasSelection::None;
     }
+    // A selection shows its own panel in place of the list of the frames.
+    if a.selection != AtlasSelection::None {
+        a.frames = false;
+    }
     let rings = frame.map(|f| f.shape.rings()).unwrap_or_default();
     let vertex_ok = |&(r, i): &Vertex| rings.get(r).is_some_and(|ring| i < ring.len());
     if a.tool == AtlasTool::Vertex {
@@ -1024,6 +1032,42 @@ pub fn selected_map(state: &AppState) -> MapId {
     let frame = state.atlas.frame();
     let frame = frame.and_then(|id| state.doc.project.atlas.frame(id));
     frame.map_or_else(|| state.doc.first_map(), |f| f.map)
+}
+
+/// True while the Layers tab of the selected frame or the list of the map
+/// frames shows.
+pub fn layers_open(state: &AppState) -> bool {
+    state.atlas.frames || (state.atlas.frame().is_some() && state.atlas.tab == FrameTab::Layers)
+}
+
+/// The Layers button. With a frame selected, it opens the Layers tab of the
+/// frame. With no frame selected, it opens the list of the map frames of
+/// the page. While either shows, it closes it.
+pub fn toggle_layers(state: &mut AppState) {
+    let open = layers_open(state);
+    let a = &mut state.atlas;
+    if open {
+        a.frames = false;
+        if a.frame().is_some() {
+            a.selection = AtlasSelection::None;
+            a.vertices.clear();
+        }
+        return;
+    }
+    if a.frame().is_some() {
+        a.tab = FrameTab::Layers;
+    } else {
+        a.selection = AtlasSelection::None;
+        a.frames = true;
+    }
+}
+
+/// Selects a frame of the list of the map frames and opens its Layers tab.
+pub fn open_frame_layers(state: &mut AppState, id: FrameId) {
+    let a = &mut state.atlas;
+    a.selection = AtlasSelection::Frame(id);
+    a.tab = FrameTab::Layers;
+    a.frames = false;
 }
 
 /// Adds a frame to the open page and selects it. The frame shows a new

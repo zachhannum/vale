@@ -104,6 +104,11 @@ pub const PAPER_COLOR: &str = "Paper color";
 pub const SNAP_TO_LAYOUT: &str = "Snap to layout";
 pub const LAYOUT_GRID: &str = "Layout grid";
 pub const SHOW_GRID: &str = "Show layout grid";
+/// The Layers button of the top row. It opens the Layers tab of the
+/// selected frame, or the list of the map frames.
+pub const MAP_LAYERS: &str = "Map layers";
+pub const MAP_FRAMES: &str = "Map frames";
+pub const NO_FRAMES: &str = "Add a map frame to see its layers.";
 pub const GRID_SPACING: &str = "Grid spacing";
 pub const GRID_COLOR: &str = "Grid color";
 pub const CENTER_ON_FRAME: &str = "Center on frame";
@@ -134,8 +139,10 @@ pub const EXPORT_PAGE_PDF: &str = "Export page PDF…";
 pub const EXPORT_ATLAS_PDF: &str = "Export atlas PDF…";
 pub const CANCEL_EXPORT: &str = "Cancel export";
 
-/// The width of the actions card: four buttons and a divider.
-const ACTIONS_WIDTH: f32 = 5.0 * TOUCH + 5.0 * PAD + 9.0 + 2.0 * PAD;
+/// The width of the actions card in the wide layout: six buttons and a
+/// divider. Each narrower layout moves one more button into the workspace
+/// menu.
+const ACTIONS_WIDTH: f32 = 6.0 * TOUCH + 6.0 * PAD + 9.0 + 2.0 * PAD;
 const ADD_WIDTH: f32 = 220.0;
 const TOOL_CELLS: usize = 5;
 /// The smallest space at each side of the text of a tab.
@@ -223,7 +230,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         panel: if measuring {
             state.pad.brush
         } else {
-            state.atlas.selection != AtlasSelection::None || attributes
+            state.atlas.selection != AtlasSelection::None || attributes || state.atlas.frames
         },
         sheet_offset: state.pad.sheet_offset,
         cells: if measuring {
@@ -237,12 +244,14 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         row: false,
     };
     let mut rects = geometry::layout(&input);
-    // On a compact screen, the switch of the layout grid is in the
-    // workspace menu.
-    rects.actions.min.x = rects.actions.max.x - ACTIONS_WIDTH;
-    if class == WidthClass::Compact {
-        rects.actions.min.x += TOUCH + PAD;
-    }
+    // Below 1,000 points, the switch of the layout grid is in the
+    // workspace menu, and on a compact screen the Add button is there too.
+    let hidden = match class {
+        WidthClass::Wide => 0.0,
+        WidthClass::Medium => 1.0,
+        WidthClass::Compact => 2.0,
+    };
+    rects.actions.min.x = rects.actions.max.x - ACTIONS_WIDTH + hidden * (TOUCH + PAD);
     rects.right_panel.x += geometry::RIGHT_PANEL_WIDTH - panel_width(&ctx);
     if !measuring {
         rects.brush = None;
@@ -267,7 +276,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     state.pad.menu_rect = None;
     state.atlas.panel_rect = None;
     let shown = match state.atlas.selection {
-        AtlasSelection::None if !attributes => None,
+        AtlasSelection::None if !attributes && !state.atlas.frames => None,
         selection => Some((selection, state.atlas.tab, attributes)),
     };
     // A frame, a page, or an item that a tool other than Select selects
@@ -304,6 +313,8 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         state.atlas.panel_rect = state.pad.panels.last().map(|&(_, rect)| rect);
     } else if state.atlas.selection != AtlasSelection::None {
         selection_panel(&ctx, state, &mut controls, &rects);
+    } else if state.atlas.frames {
+        frames_panel(&ctx, state, &mut controls, &rects);
     }
     graticule_color_frame(&ctx, state);
     neatline_color_frame(&ctx, state);
@@ -477,7 +488,7 @@ fn top_row(
             }
             divider(ui, card.left() + PAD + 2.0 * step + 4.5, card);
             let mut x = 2.0 * step + 9.0 + PAD;
-            if rects.class != WidthClass::Compact {
+            if rects.class == WidthClass::Wide {
                 let grid = at(x);
                 x += step;
                 let on = state.doc.project.atlas.grid.on;
@@ -487,11 +498,27 @@ fn top_row(
                     atlas::edit_grid(state, |g| g.on = !on);
                 }
             }
-            let open = state.atlas.add;
-            let add = at(x);
+            if rects.class != WidthClass::Compact {
+                let open = state.atlas.add;
+                let add = at(x);
+                x += step;
+                if widgets::icon_button_at(ui, controls, add, ADD, Icon::Plus, open, true).clicked()
+                {
+                    state.atlas.add = !open;
+                }
+            }
+            // The inspector and the layers share the panel place.
+            let inspecting = state.pad.is_open(super::Panel::Attributes);
+            let layers = at(x);
             x += step;
-            if widgets::icon_button_at(ui, controls, add, ADD, Icon::Plus, open, true).clicked() {
-                state.atlas.add = !open;
+            let open = atlas::layers_open(state) && !inspecting;
+            if widgets::icon_button_at(ui, controls, layers, MAP_LAYERS, Icon::Layers, open, true)
+                .clicked()
+            {
+                state.pad.close(super::Panel::Attributes);
+                if !(inspecting && atlas::layers_open(state)) {
+                    atlas::toggle_layers(state);
+                }
             }
             let inspector = at(x);
             let name = crate::ui::select::ATTRIBUTES;
@@ -503,6 +530,7 @@ fn top_row(
                     state.pad.close(super::Panel::Attributes);
                 } else {
                     state.pad.open(super::Panel::Attributes);
+                    state.atlas.frames = false;
                 }
             }
         },
@@ -779,8 +807,8 @@ fn workspace_menu(
     rects: &Rects,
 ) {
     let compact = rects.class == WidthClass::Compact;
-    let rows = if compact { 4.0 } else { 2.0 };
-    let rules = if compact { 1.0 } else { 0.0 };
+    let rows = if compact { 5.0 } else { 3.0 };
+    let rules = 1.0;
     let size = vec2(
         geometry::MENU_WIDTH,
         10.0 + rows * PANEL_ROW + rules * 13.0 + 10.0,
@@ -798,19 +826,57 @@ fn workspace_menu(
         if widgets::text_row(ui, controls, WORKSPACES[1], 0.0, true, true).clicked() {
             state.pad.menu = false;
         }
-        if compact {
-            rule(ui);
-            if widgets::text_row(ui, controls, WORLDS_ROW, 0.0, false, true).clicked() {
-                state.pad.menu = false;
-                toggle_worlds(state);
-            }
-            let on = state.doc.project.atlas.grid.on;
-            if widgets::text_row(ui, controls, SHOW_GRID, 0.0, on, true).clicked() {
-                state.pad.menu = false;
-                atlas::edit_grid(state, |g| g.on = !on);
-            }
+        rule(ui);
+        if compact && widgets::text_row(ui, controls, WORLDS_ROW, 0.0, false, true).clicked() {
+            state.pad.menu = false;
+            toggle_worlds(state);
+        }
+        let on = state.doc.project.atlas.grid.on;
+        if widgets::text_row(ui, controls, SHOW_GRID, 0.0, on, true).clicked() {
+            state.pad.menu = false;
+            atlas::edit_grid(state, |g| g.on = !on);
+        }
+        if compact && widgets::text_row(ui, controls, ADD, 0.0, false, true).clicked() {
+            state.pad.menu = false;
+            state.atlas.add = true;
         }
     });
+}
+
+/// The list of the map frames of the open page. A row selects its frame
+/// and opens its Layers tab.
+fn frames_panel(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
+    let head = CardTitle {
+        title: MAP_FRAMES,
+        back: None,
+        action: None,
+    };
+    let card = Card {
+        key: "pad-atlas-frames",
+        place: (rects.right_panel, panel_width(ctx)),
+        head,
+        scroll: egui::scroll_area::ScrollSource::default(),
+    };
+    let on_title = |state: &mut AppState, row: &widgets::TitleRow| {
+        if row.close {
+            state.atlas.frames = false;
+        }
+    };
+    let top = |_: &mut egui::Ui, _: &mut AppState, _: &mut Controls| {};
+    let body = |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| {
+        let frames = atlas::frame_names(state);
+        if frames.is_empty() {
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new(NO_FRAMES).color(theme::MUTE));
+        }
+        for (id, name) in frames {
+            if widgets::open_row(ui, controls, &name, "").clicked() {
+                atlas::open_frame_layers(state, id);
+            }
+        }
+    };
+    let rect = show_card(ctx, state, controls, rects, card, on_title, top, body);
+    state.atlas.panel_rect = Some(rect);
 }
 
 /// The panel of the selected frame or of the open page.
