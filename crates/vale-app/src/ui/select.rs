@@ -902,6 +902,53 @@ pub fn edit_menu(ui: &mut egui::Ui, state: &mut AppState) {
     }
 }
 
+/// The Selectable menu of the desktop tool bar, with the rows of the
+/// Selectable list of the iPad. The menu stays open while you check layers.
+pub fn selectable_menu(ui: &mut egui::Ui, state: &mut AppState) {
+    use super::pad::selectable::{
+        ACTIVE_LAYER, DESELECT_ALL, NO_LAYER, SELECT_ALL, SELECTABLE, layer_row_name,
+    };
+    let stay = egui::containers::menu::MenuConfig::new()
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
+    let menu = egui::containers::menu::MenuButton::new(SELECTABLE).config(stay);
+    menu.ui(ui, |ui| {
+        let active = (state.selected_vector())
+            .and_then(|id| state.doc.layer(id))
+            .map_or(NO_LAYER, |l| l.name.as_str())
+            .to_owned();
+        let on = matches!(state.selectable, Selectable::Active);
+        let row = ui.selectable_label(on, format!("{ACTIVE_LAYER}: {active}"));
+        row.widget_info(|| {
+            egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, on, ACTIVE_LAYER)
+        });
+        if row.clicked() {
+            state.set_selectable_active();
+        }
+        if ui.button(SELECT_ALL).clicked() {
+            state.select_all_layers();
+        }
+        if ui.button(DESELECT_ALL).clicked() {
+            state.deselect_all_layers();
+        }
+        ui.separator();
+        let layers: Vec<_> = (state.doc.project.layers().iter().rev())
+            .filter(|l| l.geometry().is_some())
+            .map(|l| (l.id, l.name.clone()))
+            .collect();
+        for (id, name) in layers {
+            let mut checked = state.selectable_checked(id);
+            let row = ui.checkbox(&mut checked, &name);
+            let row_name = layer_row_name(&name);
+            row.widget_info(|| {
+                egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, checked, &row_name)
+            });
+            if row.clicked() {
+                state.toggle_selectable(id);
+            }
+        }
+    });
+}
+
 /// The inspector of the desktop layout: a panel at the right.
 pub fn desktop(ui: &mut egui::Ui, state: &mut AppState) {
     state.sync_selection_form(state.show_attributes);

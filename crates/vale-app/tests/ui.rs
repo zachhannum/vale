@@ -2197,3 +2197,37 @@ fn with_the_select_tool_the_dock_shows_the_inspector_and_opens_the_table() {
     assert_eq!(table.layer, found.layer);
     assert!(h.state().table_selection().contains(&found.uuid));
 }
+
+#[test]
+fn the_desktop_tool_bars_have_the_selectable_menu_with_the_select_tool() {
+    use vale_app::ui::pad::selectable::{
+        ACTIVE_LAYER, DESELECT_ALL, SELECT_ALL, SELECTABLE, layer_row_name,
+    };
+    use vale_app::ui::select::Selectable;
+    let mut atlas = harness();
+    atlas.run_steps(3);
+    let mut globe = globe_harness();
+    for (what, h) in [("atlas", &mut atlas), ("globe", &mut globe)] {
+        assert!(h.query_by_label(SELECTABLE).is_none(), "{what}");
+        h.key_press(egui::Key::V);
+        h.run_steps(2);
+        h.get_by_label(SELECTABLE).click();
+        h.run_steps(2);
+        for name in [ACTIVE_LAYER, SELECT_ALL, DESELECT_ALL] {
+            assert!(h.query_by_label(name).is_some(), "{what}: {name}");
+        }
+        h.get_by_label(DESELECT_ALL).click();
+        h.run_steps(2);
+        assert!(h.state().selectable_layers().is_empty(), "{what}");
+        let places = (h.state().doc.project.layers().iter())
+            .find(|l| l.name == "Places")
+            .map(|l| l.id)
+            .unwrap();
+        h.get_by_label(&layer_row_name("Places")).click();
+        h.run_steps(2);
+        assert!(h.state().selectable_checked(places), "{what}");
+        h.get_by_label(ACTIVE_LAYER).click();
+        h.run_steps(2);
+        assert_eq!(h.state().selectable, Selectable::Active, "{what}");
+    }
+}

@@ -11905,3 +11905,40 @@ fn a_swipe_renames_a_layer_in_the_list() {
         assert!(layer_names(&h).contains(&"Streams".to_string()), "{what}");
     }
 }
+
+#[test]
+fn the_selectable_cell_and_list_fit_in_the_world_on_each_screen() {
+    use vale_app::ui::pad::selectable::{
+        ACTIVE_LAYER, DESELECT_ALL, SELECT_ALL, SELECTABLE, layer_row_name,
+    };
+    for (size, safe) in measure_screens() {
+        let what = format!("{size:?}");
+        let mut h = safe_pad(size, safe);
+        let rivers = vector(&h, "Rivers");
+        h.state_mut().select(Some(LayerRef::Vector(rivers)));
+        h.state_mut().globe.tool = Tool::Select;
+        h.run_steps(2);
+        assert!(control(&h, SELECTABLE).is_some(), "{what}");
+        check_controls(&h, &what);
+        check_safe(&h, size, safe, &what);
+        tap(&mut h, SELECTABLE);
+        assert!(h.state().pad.selectable, "{what}");
+        let row = layer_row_name("Rivers");
+        for name in [ACTIVE_LAYER, SELECT_ALL, DESELECT_ALL] {
+            let rect = control(&h, name).unwrap_or_else(|| panic!("{what}: {name}"));
+            assert!(rect.height() >= 44.0, "{what}: {name}");
+        }
+        check_safe(&h, size, safe, &what);
+        if control(&h, &row).is_some() {
+            tap(&mut h, &row);
+            assert!(h.state().selectable_checked(rivers), "{what}");
+            assert!(h.state().pad.selectable, "{what}");
+        }
+        tap(&mut h, ACTIVE_LAYER);
+        assert_eq!(
+            h.state().selectable,
+            vale_app::ui::select::Selectable::Active,
+            "{what}"
+        );
+    }
+}

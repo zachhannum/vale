@@ -8360,3 +8360,59 @@ fn with_checked_layers_the_atlas_select_tool_selects_in_each_checked_layer() {
     tap_with(&mut h, at + vec2(30.0, 0.0), Input::Finger);
     assert!(h.state().feature_selection.is_empty());
 }
+
+#[test]
+fn the_selectable_list_of_the_select_tool_chooses_the_layers() {
+    use vale_app::ui::pad::selectable::{
+        ACTIVE_LAYER, DESELECT_ALL, SELECT_ALL, SELECTABLE, layer_row_name,
+    };
+    use vale_app::ui::select::Selectable;
+    let (mut h, at, town) = towns_pad(BOARDS[0]);
+    tap(&mut h, SELECTABLE);
+    assert!(h.state().pad.selectable);
+    let name = h.state().doc.layer(town.layer).unwrap().name.clone();
+    let row = layer_row_name(&name);
+    for name in [ACTIVE_LAYER, SELECT_ALL, DESELECT_ALL, row.as_str()] {
+        let rect = control(&h, name).unwrap_or_else(|| panic!("no row {name}"));
+        assert!(rect.height() >= 44.0, "{name}");
+    }
+    tap(&mut h, DESELECT_ALL);
+    assert!(h.state().selectable_layers().is_empty());
+    assert!(h.state().pad.selectable, "the list stays open");
+    // A tap outside the list closes it.
+    tap_with(&mut h, at, Input::Finger);
+    assert!(!h.state().pad.selectable);
+    tap_with(&mut h, at, Input::Finger);
+    assert!(h.state().feature_selection.is_empty());
+    tap(&mut h, SELECTABLE);
+    tap(&mut h, &row);
+    assert!(h.state().selectable_checked(town.layer));
+    screenshot::save(&mut h, "pad-atlas-selectable");
+    tap_with(&mut h, at, Input::Finger);
+    tap_with(&mut h, at, Input::Finger);
+    assert_eq!(h.state().feature_selection, vec![town]);
+    tap(&mut h, SELECTABLE);
+    tap(&mut h, ACTIVE_LAYER);
+    assert_eq!(h.state().selectable, Selectable::Active);
+    tap(&mut h, SELECT_ALL);
+    assert!(h.state().selectable_checked(town.layer));
+}
+
+#[test]
+fn the_selectable_cell_and_list_fit_in_the_atlas_on_each_screen() {
+    use vale_app::ui::pad::selectable::{ACTIVE_LAYER, SELECTABLE};
+    let phones = [(393.0, 852.0), (852.0, 393.0)];
+    for size in BOARDS.into_iter().chain(phones) {
+        let what = format!("{size:?}");
+        let (mut h, _, _) = towns_pad(size);
+        let screen = Rect::from_min_size(Pos2::ZERO, size.into());
+        let cell = control(&h, SELECTABLE).unwrap_or_else(|| panic!("{what}"));
+        assert!(screen.contains_rect(cell), "{what}");
+        check_controls(&h, &what);
+        tap(&mut h, SELECTABLE);
+        assert!(h.state().pad.selectable, "{what}");
+        let row = control(&h, ACTIVE_LAYER).unwrap_or_else(|| panic!("{what}"));
+        assert!(screen.contains_rect(row), "{what}");
+        assert!(!row.intersects(cell), "{what}");
+    }
+}

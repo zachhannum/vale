@@ -498,11 +498,15 @@ fn frame_card(
         AtlasTool::Vertex if framed => 3,
         AtlasTool::Frame if atlas::has_selection(state) => 2 + usize::from(framed),
         AtlasTool::Move if atlas::has_selection(state) => 1,
-        AtlasTool::Select if atlas::has_selection(state) || !state.feature_selection.is_empty() => {
-            1
+        AtlasTool::Select => {
+            1 + usize::from(atlas::has_selection(state) || !state.feature_selection.is_empty())
         }
-        _ => return,
+        _ => {
+            state.pad.selectable = false;
+            return;
+        }
     };
+    let mut selectable_cell = None;
     let mut size = vec2(rects.tools.width(), geometry::strip_height(cells));
     let limit = rects.sheet.map_or(rects.panel_bottom, |s| s.top() - GAP);
     let below = pos2(rects.tools.left(), rects.tools.bottom() + GAP);
@@ -547,6 +551,12 @@ fn frame_card(
                 {
                     state.atlas.snap = !on;
                 }
+                if tool == AtlasTool::Select {
+                    selectable_cell = Some(super::selectable::cell(ui, state, controls));
+                    if cells < 2 {
+                        return;
+                    }
+                }
                 if tool == AtlasTool::Vertex {
                     let (name, can) = (super::DELETE_VERTEX, atlas::can_delete_vertices(state));
                     if widgets::tool_cell(ui, controls, name, "Delete", Icon::Delete, false, can)
@@ -581,6 +591,12 @@ fn frame_card(
             }
         },
     );
+    match selectable_cell {
+        Some(cell) if state.pad.selectable => {
+            super::selectable::menu(ctx, state, controls, rects, cell);
+        }
+        _ => state.pad.selectable = false,
+    }
 }
 
 fn tool_strip(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {

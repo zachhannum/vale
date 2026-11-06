@@ -44,6 +44,7 @@ pub mod labels;
 pub mod number;
 pub mod raster;
 pub mod rules;
+pub mod selectable;
 pub mod swipe;
 pub mod table;
 pub mod text_style;
@@ -426,6 +427,8 @@ pub struct PadState {
     pub worlds_rect: Option<Rect>,
     /// The cells with a flyout, and the open flyout.
     pub flyouts: Flyouts,
+    /// The list of the Selectable cell of the Select tool is open.
+    pub selectable: bool,
     /// The last mode that was chosen in each group, by `ModeGroup::ALL`.
     /// `None`: the first mode of the group.
     group_modes: [Option<Mode>; 2],
@@ -1293,6 +1296,7 @@ pub(super) fn cell_card(
         return;
     };
     let mut merge_cell = None;
+    let mut selectable_cell = None;
     widgets::card(
         ctx,
         state.globe.backdrop(),
@@ -1317,6 +1321,7 @@ pub(super) fn cell_card(
                 if vertexing {
                     vertex_cells(ui, state, controls, rects);
                 } else if selecting {
+                    selectable_cell = Some(selectable::cell(ui, state, controls));
                     merge_cell = select_cells(ui, state, controls);
                 } else {
                     measure_cells(ui, state, controls, rects);
@@ -1334,6 +1339,10 @@ pub(super) fn cell_card(
     match merge_cell {
         Some(cell) if state.merging => merge_menu(ctx, state, controls, rects, cell),
         _ => state.merging = false,
+    }
+    match selectable_cell {
+        Some(cell) if state.pad.selectable => selectable::menu(ctx, state, controls, rects, cell),
+        _ => state.pad.selectable = false,
     }
 }
 
@@ -1473,8 +1482,8 @@ fn vertex_cells(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls
     brush_button(ui, state, controls, rects);
 }
 
-/// The cells of the card of the Select tool: Delete selection, Merge, and
-/// Deselect. Returns the place of the Merge cell.
+/// The cells of the card of the Select tool after Selectable: Delete
+/// selection, Merge, and Deselect. Returns the place of the Merge cell.
 fn select_cells(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) -> Option<Rect> {
     let (name, any) = (select::DELETE, !state.feature_selection.is_empty());
     if widgets::tool_cell(ui, controls, name, "Delete", Icon::Trash, false, any).clicked() {

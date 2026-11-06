@@ -229,6 +229,9 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                 if state.globe.measuring() {
                     path_buttons(ui, state);
                 }
+                if state.globe.selecting() {
+                    select::selectable_menu(ui, state);
+                }
                 if !state.feature_selection.is_empty() && ui.button(DESELECT).clicked() {
                     state.set_feature_selection(Vec::new());
                 }
@@ -458,6 +461,9 @@ fn atlas_buttons(ui: &mut egui::Ui, state: &mut AppState) {
         if ui.button(DESELECT).on_hover_text("Esc").clicked() {
             atlas::clear_selection(state);
         }
+    }
+    if selecting {
+        select::selectable_menu(ui, state);
     }
     let selected = atlas::has_selection(state) || !state.feature_selection.is_empty();
     if selecting && selected && ui.button(DESELECT).on_hover_text("Esc").clicked() {
