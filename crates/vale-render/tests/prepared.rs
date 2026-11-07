@@ -254,6 +254,26 @@ fn a_region_skips_the_items_outside_it() {
 }
 
 #[test]
+fn a_region_inside_a_stroked_rectangle_skips_the_stroke() {
+    let mut list = DisplayList::new(1000.0, 1000.0);
+    list.push(Item::Stroke {
+        path: rect_path(0.0, 0.0, 1000.0, 1000.0),
+        color: Color::rgb(0, 0, 0),
+        width: 4.0,
+        round: false,
+    });
+    let prepared = PreparedList::new(&list).unwrap();
+    let middle = Affine::translate((-400.0, -400.0));
+    assert_eq!(prepared.visible_count(middle, 200, 200), 0);
+    let (region, drawn) = render_region(&prepared, middle, 200, 200).unwrap();
+    assert_eq!(drawn, 0);
+    assert!(region.data.iter().all(|&c| c == 0));
+    // A region on the edge draws the stroke.
+    let edge = Affine::translate((-400.0, 100.0));
+    assert_eq!(prepared.visible_count(edge, 200, 200), 1);
+}
+
+#[test]
 fn a_culled_clip_skips_its_items() {
     let mut list = DisplayList::new(1000.0, 1000.0);
     list.push(Item::PushClip {

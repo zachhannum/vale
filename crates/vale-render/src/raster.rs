@@ -9,7 +9,7 @@ use vello_cpu::peniko::{Fill, ImageQuality, ImageSampler};
 use vello_cpu::{Image, ImageSource, Level, Pixmap, RenderContext, RenderSettings, Resources};
 
 use crate::list::{Color, DisplayList, FillRule, GlyphRun, Item, RenderError};
-use crate::prepared::{Node, PreparedList, visible};
+use crate::prepared::{Node, PreparedList};
 
 /// The largest side of a raster page, in pixels.
 const MAX_SIDE: f64 = 16384.0;
@@ -158,7 +158,7 @@ fn draw_items(ctx: &mut RenderContext, items: &[Item], base: Affine) -> Result<(
 fn draw_nodes(ctx: &mut RenderContext, nodes: &[Node], base: Affine, w: f64, h: f64) -> usize {
     let mut drawn = 0;
     for node in nodes {
-        if !visible(base, node.bbox(), w, h) {
+        if !node.visible(base, w, h) {
             continue;
         }
         match node {

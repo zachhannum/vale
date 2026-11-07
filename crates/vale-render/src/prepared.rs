@@ -32,6 +32,9 @@ pub(crate) enum Node {
         width: f64,
         round: bool,
         bbox: Rect,
+        /// The boxes of runs of segments of a long path. A region that misses each of them
+        /// draws nothing of the stroke.
+        pieces: Vec<Rect>,
     },
     /// The outlines of a glyph run, filled with the nonzero rule.
     Glyphs {
@@ -61,6 +64,19 @@ pub(crate) enum Node {
 }
 
 impl Node {
+    /// Whether the node touches a region of `w` by `h` pixels under `transform`.
+    pub(crate) fn visible(&self, transform: Affine, w: f64, h: f64) -> bool {
+        if !visible(transform, self.bbox(), w, h) {
+            return false;
+        }
+        match self {
+            Node::Stroke { pieces, .. } if !pieces.is_empty() => {
+                pieces.iter().any(|p| visible(transform, *p, w, h))
+            }
+            _ => true,
+        }
+    }
+
     pub(crate) fn bbox(&self) -> Rect {
         match self {
             Node::Fill { bbox, .. }
@@ -119,7 +135,7 @@ impl PreparedList {
         fn count(nodes: &[Node], transform: Affine, w: f64, h: f64) -> usize {
             nodes
                 .iter()
-                .filter(|n| visible(transform, n.bbox(), w, h))
+                .filter(|n| n.visible(transform, w, h))
                 .map(|n| match n {
                     Node::Clip { children, .. }
                     | Node::Layer { children, .. }
@@ -145,9 +161,40 @@ fn union(nodes: &[Node]) -> Option<Rect> {
 /// The page-space box of a stroke. A miter join with the limit 4 reaches out by twice the
 /// width, and a butt cap by half the width.
 fn stroke_bbox(path: &BezPath, width: f64, round: bool) -> Rect {
-    let reach = if round { width / 2.0 } else { 2.0 * width };
-    let reach = reach.abs() * 1.01;
+    let reach = stroke_reach(width, round);
     path.bounding_box().inflate(reach, reach)
+}
+
+fn stroke_reach(width: f64, round: bool) -> f64 {
+    let reach = if round { width / 2.0 } else { 2.0 * width };
+    reach.abs() * 1.01
+}
+
+/// The most pieces of a stroke.
+const MOST_PIECES: usize = 64;
+
+/// The boxes of runs of segments of a path, at most `MOST_PIECES`, each grown by the reach
+/// of the stroke. A path of one segment has no pieces.
+fn stroke_pieces(path: &BezPath, width: f64, round: bool) -> Vec<Rect> {
+    let reach = stroke_reach(width, round);
+    let run_length = path.segments().count().div_ceil(MOST_PIECES).max(1);
+    let mut pieces = Vec::new();
+    let mut run: Option<Rect> = None;
+    let mut count = 0;
+    for segment in path.segments() {
+        let b = segment.bounding_box();
+        run = Some(run.map_or(b, |r| r.union(b)));
+        count += 1;
+        if count == run_length {
+            pieces.extend(run.take().map(|r| r.inflate(reach, reach)));
+            count = 0;
+        }
+    }
+    pieces.extend(run.map(|r| r.inflate(reach, reach)));
+    if pieces.len() < 2 {
+        pieces.clear();
+    }
+    pieces
 }
 
 /// A clip with its path and the nodes in it.
@@ -192,6 +239,7 @@ fn build(items: &[Item]) -> Result<Vec<Node>, RenderError> {
                 width: *width,
                 round: *round,
                 bbox: stroke_bbox(path, *width, *round),
+                pieces: stroke_pieces(path, *width, *round),
             }),
             Item::Glyphs(run) => {
                 let path = glyph_run_outline(run);

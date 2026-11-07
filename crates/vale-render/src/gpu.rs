@@ -17,7 +17,7 @@ use vello::{AaConfig, AaSupport, RenderParams, Renderer, RendererOptions, Scene}
 use vello_cpu::Pixmap;
 
 use crate::list::{Color, DisplayList, FillRule, Item, RenderError};
-use crate::prepared::{Node, PreparedList, visible};
+use crate::prepared::{Node, PreparedList};
 use crate::raster::{Rgba, glyph_run_outline, pixel_size};
 
 /// The format of a target. Its pixels are premultiplied sRGB values.
@@ -638,7 +638,7 @@ impl<'a> Encoder<'a> {
     fn nodes(&mut self, nodes: &'a [Node]) {
         let (w, h) = (self.viewport.width(), self.viewport.height());
         for node in nodes {
-            if !visible(self.base, node.bbox(), w, h) {
+            if !node.visible(self.base, w, h) {
                 continue;
             }
             match node {
