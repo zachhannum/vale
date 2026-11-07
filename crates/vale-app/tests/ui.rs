@@ -1,3 +1,5 @@
+mod screenshot;
+
 use std::path::Path;
 
 use eframe::egui;
@@ -1445,43 +1447,57 @@ fn the_desktop_frame_tab_renames_the_map_of_the_frame() {
     assert_eq!(atlas.map(map).unwrap().name, "Dravenhold");
 }
 
+/// Clicks the filter of the selected rule, which opens or closes its
+/// popover.
+fn click_filter(h: &mut Harness<'static, AppState>) {
+    use vale_app::ui::pad::rules::FILTER;
+    h.get_by_role_and_label(egui::accesskit::Role::Button, FILTER)
+        .click();
+    h.run_steps(3);
+}
+
+/// Opens the style editor of Rivers in the desktop layout.
+fn open_rivers(h: &mut Harness<'static, AppState>) -> vale_store::LayerId {
+    h.get_by_label(LAYERS_MENU).click();
+    h.run_steps(2);
+    h.get_by_label("Open Rivers").click();
+    h.run_steps(2);
+    h.state().selected_vector().unwrap()
+}
+
 #[test]
 fn the_style_editor_opens_from_layers_on_the_globe_and_the_flat_view() {
     use vale_app::globe::WorldView;
-    use vale_app::ui::pad::filter::{ADD_CONDITION, REMOVE_CONDITION, VALUE};
+    use vale_app::ui::pad::filter::{ADD_CONDITION, REMOVE_CONDITION, VIEWS};
     use vale_app::ui::pad::rules::{ADD_RULE, EXPRESSION, MIN_SCALE};
     for view in [WorldView::Globe, WorldView::Flat] {
         let mut h = globe_harness();
         h.state_mut().globe.world_view = view;
         h.run_steps(2);
-        h.get_by_label(LAYERS_MENU).click();
-        h.run_steps(2);
-        h.get_by_label("Open Rivers").click();
-        h.run_steps(2);
-        let rivers = h.state().selected_vector().unwrap();
+        let rivers = open_rivers(&mut h);
         assert!(h.state().globe.preview.panel, "{view:?}");
         h.get_by_label(ADD_RULE).click();
         h.run_steps(2);
         let rules = &h.state().doc.entry(rivers).unwrap().style.style.rules;
         assert_eq!(rules.len(), 2, "{view:?}");
-        // The new rule is the selected rule. The first field is the field
-        // of a new condition.
+        // The new rule is the selected rule. Its filter opens in a popover.
         let filter = |h: &Harness<'static, AppState>| {
             let rule = &h.state().doc.entry(rivers).unwrap().style.style.rules[1];
             rule.filter.source().map(|s| s.text().to_owned())
         };
-        type_in(&mut h, VALUE, "River");
+        click_filter(&mut h);
         h.get_by_label(ADD_CONDITION).click();
         h.run_steps(2);
-        assert_eq!(
-            filter(&h).as_deref(),
-            Some("featurecla = 'River'"),
-            "{view:?}"
-        );
+        let text = filter(&h).unwrap_or_default();
+        assert!(text.starts_with("featurecla = '"), "{view:?}: {text}");
         h.get_by_label(&format!("{REMOVE_CONDITION} 1")).click();
         h.run_steps(2);
         assert_eq!(filter(&h), None, "{view:?}");
+        h.get_by_label(VIEWS[1]).click();
+        h.run_steps(2);
         type_in(&mut h, EXPRESSION, "scalerank < 3");
+        h.key_press(egui::Key::Escape);
+        h.run_steps(2);
         type_in(&mut h, MIN_SCALE, "25000");
         assert_eq!(filter(&h).as_deref(), Some("scalerank < 3"), "{view:?}");
         let rule = &h.state().doc.entry(rivers).unwrap().style.style.rules[1];
@@ -1490,15 +1506,42 @@ fn the_style_editor_opens_from_layers_on_the_globe_and_the_flat_view() {
 }
 
 #[test]
-fn a_desktop_expression_field_shows_the_result_and_inserts_from_its_menu() {
-    use vale_app::ui::expr_help::{FUNCTIONS_MENU, INSERT, MATCHES};
-    use vale_app::ui::pad::rules::EXPRESSION;
+fn short_filter_shows_inline() {
+    use vale_app::ui::pad::filter::{ADD_CONDITION, matches_text};
     let mut h = globe_harness();
-    h.get_by_label(LAYERS_MENU).click();
+    let rivers = open_rivers(&mut h);
+    h.state_mut()
+        .doc
+        .entry_mut(rivers)
+        .unwrap()
+        .style
+        .style
+        .rules[0]
+        .filter = vale_style::expr::Filter::new("scalerank < 3");
+    h.run_steps(3);
+    let layer = h.state().doc.layer(rivers).unwrap();
+    let all = layer.features.len();
+    let n = vale_app::ui::expr_help::count_matches(layer, "scalerank < 3").unwrap();
+    assert!(h.query_by_label(&matches_text(n, all)).is_some());
+    assert!(h.query_by_label(ADD_CONDITION).is_none());
+    screenshot::save(&mut h, "desktop-filter-inline");
+    click_filter(&mut h);
+    assert!(h.query_by_label(ADD_CONDITION).is_some());
+    h.run_steps(1);
+    screenshot::save(&mut h, "desktop-filter-popover");
+    h.key_press(egui::Key::Escape);
     h.run_steps(2);
-    h.get_by_label("Open Rivers").click();
-    h.run_steps(2);
-    let rivers = h.state().selected_vector().unwrap();
+    assert!(h.query_by_label(ADD_CONDITION).is_none());
+}
+
+#[test]
+fn a_desktop_expression_field_shows_the_result_and_inserts_from_its_menu() {
+    use vale_app::ui::expr_field::completion_name;
+    use vale_app::ui::expr_help::{FUNCTIONS_MENU, INSERT, MATCHES};
+    use vale_app::ui::pad::classify::{CLASSIFY, EXPRESSION, REPLACE_RULES};
+    use vale_app::ui::pad::filter::VIEWS;
+    let mut h = globe_harness();
+    let rivers = open_rivers(&mut h);
     let filter = |h: &Harness<'static, AppState>| {
         let rule = &h.state().doc.entry(rivers).unwrap().style.style.rules[0];
         rule.filter.source().map(|s| s.text().to_owned())
@@ -1506,22 +1549,47 @@ fn a_desktop_expression_field_shows_the_result_and_inserts_from_its_menu() {
     let layer = h.state().doc.layer(rivers).unwrap();
     let first = layer.features[0].attributes["scalerank"].label().unwrap();
 
+    // The code of a filter shows the result and the message of the parser.
+    click_filter(&mut h);
+    h.get_by_label(VIEWS[1]).click();
+    h.run_steps(2);
     type_in(&mut h, EXPRESSION, &format!("scalerank = {first}"));
-    assert!(h.query_by_label(MATCHES).is_some());
+    assert!(h.query_all_by_label(MATCHES).next().is_some());
     type_in(&mut h, EXPRESSION, "shout(name)");
-    assert!(h.query_by_label("Unknown function 'shout'.").is_some());
+    let unknown = "Unknown function 'shout'.";
+    assert!(h.query_all_by_label(unknown).next().is_some());
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+    assert_eq!(filter(&h).as_deref(), Some("shout(name)"));
 
-    // The menu inserts at the cursor, at the end of the typed text.
-    type_in(&mut h, EXPRESSION, "scalerank = ");
+    // A typed word in a value opens the completion, and Return inserts.
+    h.get_by_label_contains(CLASSIFY).click();
+    h.run_steps(2);
+    let input = egui::accesskit::Role::TextInput;
+    h.get_by_role_and_label(input, EXPRESSION).click();
+    h.run_steps(2);
+    h.event(egui::Event::Text("scal".into()));
+    h.run_steps(2);
+    assert!(h.query_by_label(&completion_name("scalerank")).is_some());
+    h.run_steps(1);
+    screenshot::save(&mut h, "desktop-value-completion");
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    assert!(h.query_by_label(&completion_name("scalerank")).is_none());
+    // The Insert menu puts the selection in the first slot of a function.
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.run_steps(1);
     h.get_by_label(INSERT).click();
     h.run_steps(2);
     // The button of a submenu has an arrow after its name.
     h.get_by_label_contains(FUNCTIONS_MENU).click();
     h.run_steps(2);
-    h.get_by_label("round(x, digits)").click();
+    h.get_by_label("abs(x)").click();
     h.run_steps(3);
-    let text = "scalerank = round(x, digits)";
-    assert_eq!(filter(&h).as_deref(), Some(text));
+    h.get_by_label(REPLACE_RULES).click();
+    h.run_steps(3);
+    let text = filter(&h).unwrap();
+    assert!(text.starts_with("abs(scalerank) < "), "{text}");
 }
 
 #[test]

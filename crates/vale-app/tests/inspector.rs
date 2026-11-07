@@ -119,27 +119,101 @@ fn places_controls_and_labels_switch() {
     assert!(s.composed.as_ref().unwrap().labels.placed < before);
 }
 
-#[test]
-fn the_label_text_field_edits_the_label_text() {
-    let mut h = harness();
-    let places = id_of(&h, "Places");
+/// Selects Places with label text `text`, and clicks the label text field
+/// at its right end, which puts the caret at the end.
+fn focus_label_text(h: &mut Harness<'static, AppState>, text: &str) -> LayerId {
+    let places = id_of(h, "Places");
     h.state_mut()
         .doc
         .entry_mut(places)
         .unwrap()
         .style
         .label
-        .text = String::new();
+        .text = text.into();
     h.state_mut().selected_layer = Some(LayerRef::Vector(places));
     h.run_steps(2);
     let input = egui::accesskit::Role::TextInput;
-    h.get_by_role_and_label(input, LABEL_TEXT).focus();
+    let field = h.get_by_role_and_label(input, LABEL_TEXT).rect();
+    let at = egui::pos2(field.right() - 4.0, field.center().y);
+    click_at(h, at);
     h.run_steps(2);
-    h.get_by_role_and_label(input, LABEL_TEXT)
-        .type_text("upper(name)");
+    places
+}
+
+fn label_text(h: &Harness<'static, AppState>, id: LayerId) -> String {
+    h.state().doc.entry(id).unwrap().style.label.text.clone()
+}
+
+fn type_chars(h: &mut Harness<'static, AppState>, text: &str) {
+    h.event(egui::Event::Text(text.into()));
     h.run_steps(2);
-    let label = &h.state().doc.entry(places).unwrap().style.label;
-    assert_eq!(label.text, "upper(name)");
+}
+
+#[test]
+fn the_label_text_field_keeps_typed_text() {
+    let mut h = harness();
+    let places = focus_label_text(&mut h, "");
+    type_chars(&mut h, "Pop ");
+    assert_eq!(label_text(&h, places), "'Pop '");
+}
+
+#[test]
+fn brace_opens_field_completion() {
+    use vale_app::ui::expr_field::completion_name;
+    let mut h = harness();
+    focus_label_text(&mut h, "name");
+    assert!(h.query_by_label(&completion_name("name")).is_none());
+    type_chars(&mut h, " {na");
+    assert!(h.query_by_label(&completion_name("name")).is_some());
+    assert!(h.query_by_label(&completion_name("adm0name")).is_none());
+    h.run_steps(1);
+    screenshot::save(&mut h, "inspector-completion");
+}
+
+#[test]
+fn return_inserts_completion() {
+    use vale_app::ui::expr_field::completion_name;
+    let mut h = harness();
+    let places = focus_label_text(&mut h, "");
+    type_chars(&mut h, "{na");
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    assert_eq!(label_text(&h, places), "name");
+    // Down moves the highlight to the second field.
+    type_chars(&mut h, " {na");
+    h.key_press(egui::Key::ArrowDown);
+    h.run_steps(2);
+    assert!(h.query_by_label(&completion_name("namealt")).is_some());
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    assert_eq!(label_text(&h, places), "concat(name, ' ', namealt)");
+}
+
+#[test]
+fn escape_keeps_typed_text() {
+    use vale_app::ui::expr_field::completion_name;
+    let mut h = harness();
+    let places = focus_label_text(&mut h, "");
+    type_chars(&mut h, "{na");
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+    assert!(h.query_by_label(&completion_name("name")).is_none());
+    assert_eq!(label_text(&h, places), "'{na'");
+    // The field keeps the focus.
+    type_chars(&mut h, "!");
+    assert_eq!(label_text(&h, places), "'{na!'");
+}
+
+#[test]
+fn backspace_selects_a_chip_then_deletes_it() {
+    let mut h = harness();
+    let places = focus_label_text(&mut h, "name");
+    h.key_press(egui::Key::Backspace);
+    h.run_steps(2);
+    assert_eq!(label_text(&h, places), "name");
+    h.key_press(egui::Key::Backspace);
+    h.run_steps(2);
+    assert_eq!(label_text(&h, places), "");
 }
 
 #[test]

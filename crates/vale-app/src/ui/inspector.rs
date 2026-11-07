@@ -82,6 +82,8 @@ fn layer_section(ui: &mut egui::Ui, state: &mut AppState) {
     state.open_ramps();
     let ramps = state.ramps.list().to_vec();
     let help = super::expr_help::ExprHelp::for_layer(state, info.id);
+    let rules = (state.doc.entry(info.id)).map_or(Vec::new(), |e| e.style.style.rules.clone());
+    let counts = style_editor::filter_counts(state, info.id, &rules);
     let font_warning = (state.doc.entry(info.id))
         .and_then(|e| crate::fonts::missing(e.style.label.font.as_deref(), &state.font_families));
     let mut pick_font = false;
@@ -94,6 +96,7 @@ fn layer_section(ui: &mut egui::Ui, state: &mut AppState) {
         note: state.symbol_note.as_ref(),
         actions: &mut state.actions,
         help: &help,
+        counts: &counts,
     };
     let mut changed = style_editor::rules(ui, info.id, style, info.kind, &fields, &mut library);
     if info.kind != GeometryKind::Point {
@@ -105,21 +108,10 @@ fn layer_section(ui: &mut egui::Ui, state: &mut AppState) {
     ui.add_space(4.0);
     let label = &mut style.label;
     changed |= ui.checkbox(&mut label.enabled, "Show labels").changed();
-    ui.horizontal(|ui| {
-        ui.label(LABEL_TEXT);
-        let id = egui::Id::new(("label-text", info.id.0));
-        let edit = egui::TextEdit::singleline(&mut label.text)
-            .id(id)
-            .font(egui::TextStyle::Monospace)
-            .desired_width(130.0);
-        let field = ui.add(edit);
-        field.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, LABEL_TEXT)
-        });
-        changed |= field.changed();
-        changed |= super::expr_help::insert_menu(ui, &help, id, &mut label.text);
+    ui.push_id(("label-text", info.id.0), |ui| {
+        let names = (LABEL_TEXT, LABEL_TEXT);
+        changed |= super::expr_field::label_text(ui, names, &mut label.text, &help);
     });
-    super::expr_help::desktop_line(ui, &help, &label.text, super::expr_help::ExprKind::Text);
     ui.horizontal(|ui| {
         ui.label("Priority field");
         egui::ComboBox::from_id_salt("priority_field")

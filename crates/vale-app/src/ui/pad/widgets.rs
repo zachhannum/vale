@@ -1375,6 +1375,12 @@ pub fn field_at(
         .text_color(color)
         .vertical_align(egui::Align::Center);
     let mut resp = ui.put(inner, edit);
+    let shown = text.clone();
+    resp.widget_info(|| {
+        let mut info = egui::WidgetInfo::text_edit(true, &shown, &shown, "");
+        info.label = Some(name.to_owned());
+        info
+    });
     push(ui, controls, field, name);
     if resp.long_touched() {
         resp.surrender_focus();

@@ -4,15 +4,16 @@
 
 use eframe::egui;
 use vale_render::Symbols;
-use vale_store::{Field, FieldType, FillKind, GeometryKind, LayerId};
+use vale_store::{Field, FillKind, GeometryKind, LayerId};
 use vale_style::expr::{Filter, Property, field_ref};
 use vale_style::{Color, Hatch, LayerStyle, MarkerShape, Mask, Rule, Stroke, StrokeKind};
 
-use super::expr_help::{self, ExprHelp, ExprKind};
+use super::expr_field;
+use super::expr_help::{self, ExprHelp};
 use super::pad::classify::{
     CLASS_COUNT, CLASSIFY, COLOR_RAMP, FIELD, METHOD, REPLACE_RULES, REVERSE, Request,
 };
-use super::pad::filter::{self, ADD_CONDITION, REMOVE_CONDITION};
+use super::pad::filter;
 use super::pad::furniture::{ANGLE, LINE_COLOR, LINE_WIDTH};
 use super::pad::raster::IMPORT_RAMP;
 use super::pad::rules::{
@@ -39,6 +40,24 @@ pub struct Library<'a> {
     pub note: Option<&'a Note>,
     pub actions: &'a mut Vec<Action>,
     pub help: &'a ExprHelp,
+    /// The match counts of the filters of the rules, by filter text.
+    pub counts: &'a std::collections::HashMap<String, Option<(usize, usize)>>,
+}
+
+/// The match counts of `rules` of layer `id`, for the `counts` of a
+/// `Library`.
+pub fn filter_counts(
+    state: &super::AppState,
+    id: LayerId,
+    rules: &[Rule],
+) -> std::collections::HashMap<String, Option<(usize, usize)>> {
+    (rules.iter())
+        .filter_map(|r| r.filter.source().map(|s| s.text().to_owned()))
+        .map(|t| {
+            let count = expr_help::matches(state, id, &t);
+            (t, count)
+        })
+        .collect()
 }
 
 /// The editor of the rules of the style of layer `id`. Returns true if the
@@ -97,7 +116,7 @@ pub fn rules(
     if let Some(rule) = style.style.rules.get_mut(at) {
         ui.separator();
         let salt = key.with(at);
-        changed |= filter_rows(ui, rule, fields, library.help, salt);
+        changed |= filter_rows(ui, rule, library, salt);
         changed |= scale_rows(ui, rule, salt);
         let numbers = numeric_fields(fields);
         if kind == GeometryKind::Point {
@@ -438,123 +457,21 @@ fn tint_row(ui: &mut egui::Ui, tint: &mut Option<Property<Color>>) {
     });
 }
 
-/// The conditions of the filter, each with a button that removes it, the
-/// controls of a new condition, and the text of the whole filter.
-fn filter_rows(
-    ui: &mut egui::Ui,
-    rule: &mut Rule,
-    fields: &[Field],
-    help: &ExprHelp,
-    salt: egui::Id,
-) -> bool {
-    let current = rule
+/// The filter of the rule as a line of tokens. A click opens the
+/// conditions in a popover.
+fn filter_rows(ui: &mut egui::Ui, rule: &mut Rule, library: &Library, salt: egui::Id) -> bool {
+    let mut text = rule
         .filter
         .source()
         .map_or(String::new(), |s| s.text().to_owned());
-    let mut parts = filter::conditions(&current);
-    let mut out = None;
-    ui.label(FILTER);
-    if parts.is_empty() {
-        ui.weak(filter::NO_CONDITION);
-    }
-    let mut remove = None;
-    for (n, part) in parts.iter().enumerate() {
-        ui.horizontal(|ui| {
-            let name = format!("{REMOVE_CONDITION} {}", n + 1);
-            let button = ui.small_button("×");
-            button.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &name));
-            if button.clicked() {
-                remove = Some(n);
-            }
-            ui.monospace(part);
-        });
-    }
-    if let Some(n) = remove {
-        parts.remove(n);
-        out = Some(filter::join(&parts));
-    }
-
-    // The new condition: a field, an operator, and a value.
-    let key = salt.with("condition");
-    let (mut field, mut op, mut value): (usize, usize, String) =
-        ui.data(|d| d.get_temp(key)).unwrap_or_default();
-    field = field.min(fields.len().saturating_sub(1));
-    if let Some(f) = fields.get(field) {
-        let number = matches!(f.kind, FieldType::Integer | FieldType::Real);
-        let count = if number { filter::OPERATORS.len() } else { 2 };
-        op = op.min(count - 1);
-        ui.horizontal(|ui| {
-            egui::ComboBox::from_id_salt(key.with("field"))
-                .selected_text(&f.name)
-                .width(110.0)
-                .show_ui(ui, |ui| {
-                    for (i, f) in fields.iter().enumerate() {
-                        ui.selectable_value(&mut field, i, &f.name);
-                    }
-                });
-            egui::ComboBox::from_id_salt(key.with("op"))
-                .selected_text(filter::OPERATORS[op].0)
-                .width(40.0)
-                .show_ui(ui, |ui| {
-                    for (i, (label, _)) in filter::OPERATORS[..count].iter().enumerate() {
-                        ui.selectable_value(&mut op, i, *label);
-                    }
-                });
-        });
-        ui.horizontal(|ui| {
-            match f.kind {
-                FieldType::Bool => {
-                    for choice in [filter::TRUE, filter::FALSE] {
-                        if ui.selectable_label(value == choice, choice).clicked() {
-                            value = choice.to_owned();
-                        }
-                    }
-                }
-                _ => {
-                    let edit = egui::TextEdit::singleline(&mut value)
-                        .hint_text(filter::VALUE)
-                        .desired_width(110.0);
-                    let resp = ui.add(edit);
-                    resp.widget_info(|| {
-                        egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, filter::VALUE)
-                    });
-                }
-            }
-            let made = filter::condition(&f.name, f.kind, op, &value);
-            if ui
-                .add_enabled(made.is_some(), egui::Button::new(ADD_CONDITION))
-                .clicked()
-                && let Some(made) = made
-            {
-                parts.push(made);
-                out = Some(filter::join(&parts));
-                value.clear();
-            }
-        });
-    }
-    ui.data_mut(|d| d.insert_temp(key, (field, op, value)));
-
-    // The whole filter as text.
-    let mut text = out.clone().unwrap_or(current);
-    ui.horizontal(|ui| {
-        ui.label(EXPRESSION);
-        let id = salt.with("filter");
-        let edit = egui::TextEdit::singleline(&mut text)
-            .id(id)
-            .font(egui::TextStyle::Monospace)
-            .hint_text(ALL_FEATURES)
-            .desired_width(150.0);
-        let field = ui.add(edit);
-        field.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, EXPRESSION)
-        });
-        if field.changed() | expr_help::insert_menu(ui, help, id, &mut text) {
-            out = Some(text.clone());
-        }
-    });
-    expr_help::desktop_line(ui, help, &text, ExprKind::Filter);
-    let changed = out.is_some();
-    if let Some(text) = out {
+    let count = library.counts.get(&text).copied().flatten();
+    let changed = ui
+        .push_id(salt.with("filter"), |ui| {
+            let none = filter::NO_CONDITION;
+            expr_field::filter(ui, FILTER, &mut text, library.help, count, none)
+        })
+        .inner;
+    if changed {
         rule.filter = Filter::new(&text);
     }
     changed
@@ -829,18 +746,7 @@ pub fn classify(
                         }
                     });
             });
-            ui.horizontal(|ui| {
-                ui.label(EXPRESSION);
-                let field = key.with("expression");
-                let edit = egui::TextEdit::singleline(&mut text)
-                    .id(field)
-                    .font(egui::TextStyle::Monospace);
-                ui.add(edit).widget_info(|| {
-                    egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, EXPRESSION)
-                });
-                expr_help::insert_menu(ui, library.help, field, &mut text);
-            });
-            expr_help::desktop_line(ui, library.help, &text, ExprKind::Value);
+            expr_field::value(ui, (EXPRESSION, EXPRESSION), &mut text, library.help);
             ui.horizontal(|ui| {
                 ui.label(METHOD);
                 egui::ComboBox::from_id_salt(("classify-method", id.0))
