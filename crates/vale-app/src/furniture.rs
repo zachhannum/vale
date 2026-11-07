@@ -1,4 +1,4 @@
-//! Map furniture: text, legends, scale bars, and north arrows.
+//! Map furniture: text, legends, scale bars, north arrows, and scale text.
 
 use kurbo::{Affine, BezPath, Point, Rect, Shape, Vec2};
 use vale_labeler::{
@@ -9,7 +9,7 @@ use vale_render::{Color, DisplayList, FillRule, GlyphRun, Item, Rgba};
 use vale_sphere::{LonLat, Projection, distance_km};
 use vale_store::{
     FrameRecord, Furniture, FurnitureRecord, FurnitureText, LayerId, LegendItem, NorthArrowItem,
-    TextAlign, TextCase, TextItem, Units,
+    PageUnits, ScaleFormat, ScaleTextItem, TextAlign, TextCase, TextItem, Units,
 };
 
 use crate::atlas::{self, FrameTarget, PT_PER_MM, frame_transform};
@@ -401,7 +401,54 @@ pub fn items(
             None => placeholder(),
         },
         Furniture::Legend(item) => legend_items(doc, projection, frame, item, rect, unit, fonts),
+        Furniture::ScaleText(item) => match scale_at_center(projection, frame, world.radius_km) {
+            Some(km_per_mm) => {
+                let text = TextItem {
+                    text: scale_text(item, km_per_mm, world.units),
+                    style: item.style.clone(),
+                    align: item.align,
+                };
+                text_items(&text, rect, unit, fonts)
+            }
+            None => placeholder(),
+        },
     }
+}
+
+/// The text of scale text for a scale of `km_per_mm` ground kilometers per
+/// page millimeter. The numbers have three significant digits.
+pub fn scale_text(item: &ScaleTextItem, km_per_mm: f64, units: Units) -> String {
+    match item.format {
+        ScaleFormat::Fraction => {
+            const MM_PER_KM: f64 = 1e6;
+            let n = significant(km_per_mm * MM_PER_KM).round().max(1.0);
+            format!("1:{}", world::grouped(n as u64))
+        }
+        ScaleFormat::Relative => {
+            let (page_mm, page_symbol) = match item.page_unit {
+                PageUnits::Mm => (10.0, "cm"),
+                PageUnits::In => (25.4, "in"),
+            };
+            let km = km_per_mm * page_mm;
+            let (unit_km, symbol) = world::unit_for(km, units);
+            let value = significant(km / unit_km);
+            let value = if value >= 100.0 {
+                world::grouped(value as u64)
+            } else {
+                world::three_significant(value)
+            };
+            format!("1 {page_symbol} = {value} {symbol}")
+        }
+    }
+}
+
+/// `v` rounded to three significant digits.
+fn significant(v: f64) -> f64 {
+    if !(v.is_finite() && v > 0.0) {
+        return 0.0;
+    }
+    let step = 10f64.powi(v.log10().floor() as i32 - 2);
+    (v / step).round() * step
 }
 
 /// An item of furniture as a list in page points, and the box in page
@@ -746,6 +793,26 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn scale_text_has_three_significant_digits() {
+        let fraction = ScaleTextItem::default();
+        assert_eq!(scale_text(&fraction, 25.034, Units::Metric), "1:25,000,000");
+        assert_eq!(scale_text(&fraction, 0.0123456, Units::Metric), "1:12,300");
+        assert_eq!(scale_text(&fraction, 1e-9, Units::Metric), "1:1");
+        let relative = |page_unit| ScaleTextItem {
+            format: ScaleFormat::Relative,
+            page_unit,
+            ..ScaleTextItem::default()
+        };
+        let cm = relative(PageUnits::Mm);
+        assert_eq!(scale_text(&cm, 25.034, Units::Metric), "1 cm = 250 km");
+        assert_eq!(scale_text(&cm, 123.456, Units::Metric), "1 cm = 1,230 km");
+        assert_eq!(scale_text(&cm, 0.01, Units::Metric), "1 cm = 100 m");
+        let inch = relative(PageUnits::In);
+        let km = 40.0 * world::large_unit(Units::Imperial).0 / 25.4;
+        assert_eq!(scale_text(&inch, km, Units::Imperial), "1 in = 40.0 mi");
     }
 
     #[test]

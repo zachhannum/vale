@@ -1365,6 +1365,53 @@ fn item_panel(ui: &mut egui::Ui, state: &mut AppState, rec: &vale_store::Furnitu
                     text_grid(ui, state, id, TextPart::Letter, &n.letter_style);
                 });
         }
+        Furniture::ScaleText(t) => {
+            use vale_store::{PageUnits, ScaleFormat};
+            let set = |state: &mut AppState, f: &dyn Fn(&mut vale_store::ScaleTextItem)| {
+                atlas::item_step(state, id, |r| match &mut r.item {
+                    Furniture::ScaleText(t) => {
+                        f(t);
+                        true
+                    }
+                    _ => false,
+                });
+            };
+            ui.horizontal(|ui| {
+                ui.label(item::FORMAT);
+                for format in ScaleFormat::ALL {
+                    if ui
+                        .selectable_label(t.format == format, format.name())
+                        .clicked()
+                    {
+                        set(state, &|t| t.format = format);
+                    }
+                }
+            });
+            if t.format == ScaleFormat::Relative {
+                ui.horizontal(|ui| {
+                    ui.label(item::PAGE_UNIT);
+                    for (unit, name) in PageUnits::ALL.into_iter().zip(item::PAGE_UNITS) {
+                        if ui.selectable_label(t.page_unit == unit, name).clicked() {
+                            set(state, &|t| t.page_unit = unit);
+                        }
+                    }
+                });
+            }
+            text_grid(ui, state, id, TextPart::Text, &t.style);
+            ui.horizontal(|ui| {
+                ui.label(item::ALIGNMENT);
+                let aligns = [
+                    vale_store::TextAlign::Left,
+                    vale_store::TextAlign::Center,
+                    vale_store::TextAlign::Right,
+                ];
+                for (align, name) in aligns.into_iter().zip(item::ALIGNMENTS) {
+                    if ui.selectable_label(t.align == align, name).clicked() {
+                        set(state, &|t| t.align = align);
+                    }
+                }
+            });
+        }
     }
     ui.add_space(6.0);
 }

@@ -5,8 +5,8 @@ use eframe::egui::{self, Align2, Rect, Sense, pos2, vec2};
 use vale_labeler::Face;
 use vale_store::{
     DivisionSpacing, FillKind, FillPattern, Furniture, FurnitureId, FurnitureRecord, FurnitureText,
-    LayerId, ScaleBarItem, ScaleBarKind, ScaleFit, ScalePosition, ScaleUnit, TextAlign,
-    TickFrequency, UnitLabelStyle, UnitPosition,
+    LayerId, PageUnits, ScaleBarItem, ScaleBarKind, ScaleFit, ScaleFormat, ScalePosition,
+    ScaleUnit, TextAlign, TickFrequency, UnitLabelStyle, UnitPosition,
 };
 
 use super::atlas::panel_width;
@@ -48,6 +48,10 @@ pub const ENTRY_NAME: &str = "Entry name";
 pub const TEXT: &str = "Text";
 pub const ARROW_COLOR: &str = "Arrow color";
 pub const HIDE_VARIES: &str = "Hide where north varies";
+pub const FORMAT: &str = "Format";
+pub const PAGE_UNIT: &str = "Page unit";
+/// The choices of the page unit, in the order of `PageUnits::ALL`.
+pub const PAGE_UNITS: [&str; 2] = ["Centimeters", "Inches"];
 /// The heading of the Text section of a north arrow.
 pub const LETTER: &str = "Letter";
 pub const NONE: &str = "None";
@@ -88,6 +92,7 @@ fn key_of(kind: ItemKind) -> &'static str {
         ItemKind::Legend => "pad-atlas-legend",
         ItemKind::ScaleBar => "pad-atlas-scale-bar",
         ItemKind::NorthArrow => "pad-atlas-north-arrow",
+        ItemKind::ScaleText => "pad-atlas-scale-text",
     }
 }
 
@@ -312,6 +317,44 @@ fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, rec: &
                 TextPart::Letter,
                 &item.letter_style,
             );
+        }
+        Furniture::ScaleText(item) => {
+            frame_row(ui, state, controls, rec);
+            let formats = ScaleFormat::ALL.map(ScaleFormat::name);
+            let active = ScaleFormat::ALL.iter().position(|f| *f == item.format);
+            if let Some(i) = widgets::choice_row(ui, controls, FORMAT, &formats, active) {
+                atlas::item_step(state, id, |r| match &mut r.item {
+                    Furniture::ScaleText(t) => {
+                        t.format = ScaleFormat::ALL[i];
+                        true
+                    }
+                    _ => false,
+                });
+            }
+            if item.format == ScaleFormat::Relative {
+                let active = PageUnits::ALL.iter().position(|u| *u == item.page_unit);
+                if let Some(i) = widgets::choice_row(ui, controls, PAGE_UNIT, &PAGE_UNITS, active) {
+                    atlas::item_step(state, id, |r| match &mut r.item {
+                        Furniture::ScaleText(t) => {
+                            t.page_unit = PageUnits::ALL[i];
+                            true
+                        }
+                        _ => false,
+                    });
+                }
+            }
+            ui.add_space(6.0);
+            text_rows(ui, state, controls, id, TextPart::Text, &item.style);
+            let active = ALIGNS.iter().position(|a| *a == item.align);
+            if let Some(i) = widgets::choice_row(ui, controls, ALIGNMENT, &ALIGNMENTS, active) {
+                atlas::item_step(state, id, |r| match &mut r.item {
+                    Furniture::ScaleText(t) => {
+                        t.align = ALIGNS[i];
+                        true
+                    }
+                    _ => false,
+                });
+            }
         }
     }
 }

@@ -70,7 +70,8 @@ use vale_sphere::measure::{path_length, ring_area};
 use vale_sphere::{ProjectionKind, ProjectionSpec};
 use vale_store::{
     CoordFormat, EdgeOrientation, Feature, FrameRecord, FrameShape, Furniture, FurnitureRecord,
-    Geometry, GeometryKind, LayerId, MapId, PageUnits, Project, ProjectFile, TextAlign, World,
+    Geometry, GeometryKind, LayerId, MapId, PageUnits, Project, ProjectFile, ScaleFormat,
+    TextAlign, World,
 };
 
 type Pad = Harness<'static, AppState>;
@@ -5745,7 +5746,7 @@ fn the_add_button_adds_each_item_of_furniture() {
     }
     // Delete in the context strip takes the item away.
     tap(&mut h, DELETE_SELECTION);
-    assert_eq!(open_page(&h).furniture.len(), 3);
+    assert_eq!(open_page(&h).furniture.len(), ItemKind::ALL.len() - 1);
     assert_eq!(h.state().atlas.selection, AtlasSelection::None);
 }
 
@@ -5839,6 +5840,29 @@ fn a_new_item_links_to_the_largest_frame() {
     // Text has no frame.
     add_item(&mut h, ItemKind::Text);
     assert_eq!(item(&h, 2).item.frame(), None);
+}
+
+#[test]
+fn the_scale_text_panel_sets_the_format_the_page_unit_and_the_alignment() {
+    let mut h = pad();
+    add_frame(&mut h);
+    add_item(&mut h, ItemKind::ScaleText);
+    let scale_text = |h: &Pad| match &item(h, 0).item {
+        Furniture::ScaleText(t) => t.clone(),
+        _ => panic!("not scale text"),
+    };
+    assert_eq!(scale_text(&h).format, ScaleFormat::Fraction);
+    assert!(control(&h, item::PAGE_UNIT).is_none());
+    check_controls(&h, "scale text panel");
+
+    tap(&mut h, ScaleFormat::Relative.name());
+    assert_eq!(scale_text(&h).format, ScaleFormat::Relative);
+    check_controls(&h, "relative scale text");
+    tap(&mut h, item::PAGE_UNITS[1]);
+    assert_eq!(scale_text(&h).page_unit, PageUnits::In);
+    tap(&mut h, ALIGNMENTS[2]);
+    assert_eq!(scale_text(&h).align, TextAlign::Right);
+    assert!(h.state().atlas.has_item_image(item(&h, 0).id));
 }
 
 #[test]

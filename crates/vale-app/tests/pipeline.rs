@@ -19,7 +19,8 @@ use vale_sphere::{ProjectionKind, ProjectionSpec};
 use vale_store::{
     CoordFormat, EdgeOrientation, FrameId, FrameShape, Furniture, FurnitureId, FurnitureText,
     LegendEntry, LegendItem, NorthArrowItem, PageId, PageUnits, ScaleBarItem, ScaleBarKind,
-    ScaleFit, ScalePosition, ScaleUnit, TextCase, TextItem, TickFrequency,
+    ScaleFit, ScaleFormat, ScalePosition, ScaleTextItem, ScaleUnit, TextCase, TextItem,
+    TickFrequency,
 };
 use vale_style::expr::{Filter, Property};
 use vale_style::{
@@ -2449,6 +2450,91 @@ fn mockup_bar() -> ScaleBarItem {
 }
 
 #[test]
+fn scale_text_is_true_for_any_radius_and_follows_the_frame() {
+    for radius in [1737.4, 6371.0, 100_000.0] {
+        let (mut doc, _) = furniture_doc(&[]);
+        doc.project.world.radius_km = radius;
+        let map = doc.first_map();
+        doc.set_projection(
+            map,
+            ProjectionSpec::new(ProjectionKind::Equirectangular, 0.0, 0.0),
+        );
+        let mut pipeline = Pipeline::new();
+        let frame = first_frame(&mut doc, &mut pipeline);
+        let record = doc.project.atlas.frame_mut(frame).unwrap();
+        record.center = [0.0, 0.0];
+        record.scale = 5e6;
+        let fraction = ScaleTextItem {
+            frame: Some(frame),
+            ..ScaleTextItem::default()
+        };
+        let relative = ScaleTextItem {
+            format: ScaleFormat::Relative,
+            ..fraction.clone()
+        };
+        let a = add_item(
+            &mut doc,
+            [20.0, 150.0, 90.0, 160.0],
+            Furniture::ScaleText(fraction),
+        );
+        let b = add_item(
+            &mut doc,
+            [20.0, 165.0, 90.0, 175.0],
+            Furniture::ScaleText(relative),
+        );
+        let text = |doc: &Document, pipeline: &mut Pipeline, id| {
+            texts(&furniture_items(doc, pipeline, id, Purpose::Export)).join(" ")
+        };
+        // On the equator of an equirectangular map, 1 mm at 1:5,000,000 is
+        // 5 km on the ground, at each radius.
+        assert_eq!(text(&doc, &mut pipeline, a), "1:5,000,000", "{radius}");
+        assert_eq!(text(&doc, &mut pipeline, b), "1 cm = 50.0 km", "{radius}");
+
+        doc.project.atlas.frame_mut(frame).unwrap().scale = 2.5e7;
+        assert_eq!(text(&doc, &mut pipeline, a), "1:25,000,000", "{radius}");
+        assert_eq!(text(&doc, &mut pipeline, b), "1 cm = 250 km", "{radius}");
+    }
+}
+
+#[test]
+fn scale_text_agrees_with_the_scale_bar_of_its_frame() {
+    let (mut doc, _) = furniture_doc(&[]);
+    let mut pipeline = Pipeline::new();
+    let frame = first_frame(&mut doc, &mut pipeline);
+    let record = doc.project.atlas.frame_mut(frame).unwrap();
+    record.center = [30.0, 40.0];
+    record.scale = 1.234e7;
+    let item = ScaleTextItem {
+        frame: Some(frame),
+        ..ScaleTextItem::default()
+    };
+    let id = add_item(
+        &mut doc,
+        [20.0, 150.0, 90.0, 160.0],
+        Furniture::ScaleText(item),
+    );
+    let shown = texts(&furniture_items(&doc, &mut pipeline, id, Purpose::Export)).join(" ");
+    let n: f64 = shown
+        .strip_prefix("1:")
+        .unwrap()
+        .replace(',', "")
+        .parse()
+        .unwrap();
+
+    // The scale bar measures the same scale at the center of the frame.
+    let map = doc.project.atlas.frame(frame).unwrap().map;
+    let record = doc.project.atlas.frame(frame).unwrap().clone();
+    let projection = pipeline.projection(&doc, map).unwrap();
+    let radius = doc.project.world.radius_km;
+    let km_per_mm = furniture::scale_at_center(projection, &record, radius).unwrap();
+    let measured = km_per_mm * 1e6;
+    assert!(
+        (n - measured).abs() <= 0.005 * measured,
+        "{shown} {measured}"
+    );
+}
+
+#[test]
 fn the_scale_bar_of_the_mockup_has_its_numbers() {
     let mut f = fonts().unwrap();
     // 1:3,500,000 is 3.5 km to a millimeter.
@@ -2668,6 +2754,14 @@ fn furniture_stays_vector_and_text_in_pdf() {
             &mut doc,
             [200.0, 20.0, 230.0, 50.0],
             Furniture::NorthArrow(arrow),
+        ),
+        add_item(
+            &mut doc,
+            [20.0, 175.0, 90.0, 185.0],
+            Furniture::ScaleText(ScaleTextItem {
+                frame: Some(frame),
+                ..ScaleTextItem::default()
+            }),
         ),
     ];
     let mut all = Vec::new();

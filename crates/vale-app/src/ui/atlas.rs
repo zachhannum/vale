@@ -10,7 +10,8 @@ use vale_sphere::{Projection, ProjectionKind, ProjectionSpec};
 use vale_store::{
     Border, BorderStyle, CoordFormat, EdgeLabels, FrameId, FrameRecord, FrameShape, Furniture,
     FurnitureId, FurnitureRecord, FurnitureText, Graticule, LayerId, LegendItem, MapId, MapStyleId,
-    Neatline, NorthArrowItem, PageId, PageRecord, PageUnits, Rgb, Rgba, ScaleBarItem, TextItem,
+    Neatline, NorthArrowItem, PageId, PageRecord, PageUnits, Rgb, Rgba, ScaleBarItem,
+    ScaleTextItem, TextItem,
 };
 
 use std::sync::Arc;
@@ -81,14 +82,16 @@ pub enum ItemKind {
     Legend,
     ScaleBar,
     NorthArrow,
+    ScaleText,
 }
 
 impl ItemKind {
-    pub const ALL: [ItemKind; 4] = [
+    pub const ALL: [ItemKind; 5] = [
         ItemKind::Text,
         ItemKind::Legend,
         ItemKind::ScaleBar,
         ItemKind::NorthArrow,
+        ItemKind::ScaleText,
     ];
 
     pub fn of(item: &Furniture) -> ItemKind {
@@ -97,6 +100,7 @@ impl ItemKind {
             Furniture::Legend(_) => ItemKind::Legend,
             Furniture::ScaleBar(_) => ItemKind::ScaleBar,
             Furniture::NorthArrow(_) => ItemKind::NorthArrow,
+            Furniture::ScaleText(_) => ItemKind::ScaleText,
         }
     }
 
@@ -107,6 +111,7 @@ impl ItemKind {
             ItemKind::Legend => "Legend",
             ItemKind::ScaleBar => "Scale bar",
             ItemKind::NorthArrow => "North arrow",
+            ItemKind::ScaleText => "Scale text",
         }
     }
 
@@ -117,6 +122,7 @@ impl ItemKind {
             ItemKind::Legend => (50.0, 40.0),
             ItemKind::ScaleBar => (60.0, 12.0),
             ItemKind::NorthArrow => (12.0, 18.0),
+            ItemKind::ScaleText => (50.0, 8.0),
         }
     }
 }
@@ -124,7 +130,7 @@ impl ItemKind {
 /// A part of an item of furniture with its own text style.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum TextPart {
-    /// The text of a text item.
+    /// The text of a text item or of scale text.
     Text,
     /// The title of a legend.
     Title,
@@ -143,6 +149,7 @@ impl TextPart {
     pub fn of(self, item: &Furniture) -> Option<&FurnitureText> {
         match (self, item) {
             (TextPart::Text, Furniture::Text(i)) => Some(&i.style),
+            (TextPart::Text, Furniture::ScaleText(i)) => Some(&i.style),
             (TextPart::Title, Furniture::Legend(i)) => Some(&i.title_style),
             (TextPart::Entries, Furniture::Legend(i)) => Some(&i.entry_style),
             (TextPart::Numbers, Furniture::ScaleBar(i)) => Some(&i.number_style),
@@ -155,6 +162,7 @@ impl TextPart {
     pub fn of_mut(self, item: &mut Furniture) -> Option<&mut FurnitureText> {
         match (self, item) {
             (TextPart::Text, Furniture::Text(i)) => Some(&mut i.style),
+            (TextPart::Text, Furniture::ScaleText(i)) => Some(&mut i.style),
             (TextPart::Title, Furniture::Legend(i)) => Some(&mut i.title_style),
             (TextPart::Entries, Furniture::Legend(i)) => Some(&mut i.entry_style),
             (TextPart::Numbers, Furniture::ScaleBar(i)) => Some(&mut i.number_style),
@@ -1137,8 +1145,8 @@ pub fn edit_frame(
 }
 
 /// Adds an item of furniture to the open page, inside the margin of the
-/// page, and selects it. A legend, a scale bar, and a north arrow link to
-/// the largest frame of the page.
+/// page, and selects it. A legend, a scale bar, a north arrow, and scale
+/// text link to the largest frame of the page.
 pub fn add_item(state: &mut AppState, kind: ItemKind) -> Option<FurnitureId> {
     let page = open_page(state);
     let frame = largest_frame(page);
@@ -1173,6 +1181,15 @@ pub fn add_item(state: &mut AppState, kind: ItemKind) -> Option<FurnitureId> {
                 ..NorthArrowItem::default()
             };
             (right, bottom, Furniture::NorthArrow(item))
+        }
+        ItemKind::ScaleText => {
+            let item = ScaleTextItem {
+                frame,
+                page_unit: page.units,
+                ..ScaleTextItem::default()
+            };
+            let center = (page.width_mm - w) / 2.0;
+            (center, bottom, Furniture::ScaleText(item))
         }
     };
     let page = page.id;
