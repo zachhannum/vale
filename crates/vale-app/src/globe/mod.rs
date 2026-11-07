@@ -545,6 +545,13 @@ pub enum StackItem {
     Vector(LayerId),
 }
 
+/// One visible layer of the picture of the globe.
+pub enum PictureLayer<'a> {
+    /// The heightmap and the opacity of a raster layer.
+    Raster(&'a Heightmap, f32),
+    Vector(LayerId),
+}
+
 /// One thing that the canvas paints for the globe, from the bottom.
 pub enum Paint {
     /// A pass of the GPU.
@@ -1572,15 +1579,18 @@ impl Globe {
         shown.into_iter().chain(others).collect()
     }
 
-    /// The heightmap of the picture and the opacity of each visible raster
-    /// layer, from the bottom.
-    pub fn picture(&self) -> Vec<(&Heightmap, f32)> {
+    /// The visible layers of the picture, from the bottom: the heightmap
+    /// and the opacity of each raster layer, and each vector layer.
+    pub fn picture(&self) -> Vec<PictureLayer<'_>> {
         let Some(stack) = &self.stack else {
-            return vec![(&self.map, 1.0)];
+            return vec![PictureLayer::Raster(&self.map, 1.0)];
         };
         let layer = |item: &StackItem| match *item {
-            StackItem::Raster { id, opacity, .. } => Some((self.display_map(id)?, opacity)),
-            StackItem::Vector(_) | StackItem::Image { .. } => None,
+            StackItem::Raster { id, opacity, .. } => {
+                Some(PictureLayer::Raster(self.display_map(id)?, opacity))
+            }
+            StackItem::Vector(id) => Some(PictureLayer::Vector(id)),
+            StackItem::Image { .. } => None,
         };
         stack.iter().filter_map(layer).collect()
     }

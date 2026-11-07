@@ -27,7 +27,7 @@ use crate::globe::math::lonlat_to_dir;
 use crate::globe::snap::{LayerTargets, Targets};
 use crate::globe::split::SplitStroke;
 use crate::globe::{Globe, Look, START_ELEVATION, StackItem, Tool, brush};
-use crate::globe::{LineStroke, polygon, reshape};
+use crate::globe::{LineStroke, PictureLayer, polygon, reshape, thumbnail};
 use crate::image_layer::{ImageImport, ImageTiles, ImportStep};
 use crate::measure::{self, Measure};
 use crate::pipeline::{Composed, Pipeline};
@@ -336,6 +336,7 @@ fn save_session(
     session: &mut Session,
     doc: &mut Document,
     globe: &mut Globe,
+    pipeline: &mut Pipeline,
 ) -> Result<(), StoreError> {
     // A new map and a new layer get their styles in the same undo step.
     doc.fill_map_styles();
@@ -345,7 +346,19 @@ fn save_session(
     session.flush(project, &mut globe.raster_maps())?;
     let held = |raster: &Raster| globe.holds(raster.id);
     if project.rasters().iter().all(held) {
-        session.save_thumbnail(&globe.picture(), &globe.view)?;
+        let view = globe.view;
+        let layers = || {
+            let size = thumbnail::SIZE;
+            let layer = |layer| match layer {
+                PictureLayer::Raster(map, opacity) => thumbnail::Layer::Raster(map, opacity),
+                PictureLayer::Vector(id) => {
+                    let meshes = self::globe::picture_meshes(doc, &view, id, size, pipeline);
+                    thumbnail::Layer::Vector(meshes)
+                }
+            };
+            globe.picture().into_iter().map(layer).collect()
+        };
+        session.save_thumbnail(layers, &view)?;
     }
     Ok(())
 }
@@ -1083,7 +1096,7 @@ impl AppState {
         let Some(session) = &mut self.session else {
             return;
         };
-        match save_session(session, &mut self.doc, &mut self.globe) {
+        match save_session(session, &mut self.doc, &mut self.globe, &mut self.pipeline) {
             Ok(()) => self.selection_before = self.step_selection(),
             Err(e) => self.status = format!("Could not save project: {e}"),
         }
@@ -2170,7 +2183,7 @@ impl AppState {
         let result = if edits != self.saved_edits {
             // The edit is one undo step, with no part of the next stroke.
             self.saved_edits = edits;
-            save_session(session, &mut self.doc, globe).map(|()| None)
+            save_session(session, &mut self.doc, globe, &mut self.pipeline).map(|()| None)
         } else {
             let project = &mut self.doc.project;
             let hold = hold || globe.busy();
@@ -2234,7 +2247,7 @@ impl AppState {
             return Ok(());
         }
         self.saved_edits = edits;
-        let saved = save_session(session, &mut self.doc, globe);
+        let saved = save_session(session, &mut self.doc, globe, &mut self.pipeline);
         // The system can stop the app in the background, so the project
         // file gets the working copy now.
         if saved.is_ok() {
@@ -2389,7 +2402,7 @@ impl AppState {
         if globe.busy() {
             globe.map.cancel_stroke();
         }
-        let saved = save_session(session, &mut self.doc, globe);
+        let saved = save_session(session, &mut self.doc, globe, &mut self.pipeline);
         match saved.and_then(|()| self.write_back()) {
             Ok(()) => true,
             Err(e) => {
@@ -3166,7 +3179,7 @@ impl AppState {
             return;
         };
         self.saved_edits = edits;
-        match save_session(session, &mut self.doc, &mut self.globe) {
+        match save_session(session, &mut self.doc, &mut self.globe, &mut self.pipeline) {
             Ok(()) => {
                 self.saved_at = Some(std::time::Instant::now());
                 self.selection_before = self.step_selection();
