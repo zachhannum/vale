@@ -283,6 +283,46 @@ impl<P: Clone> Field<P> {
         self.sel = Selection::range(path, a, a + 1);
     }
 
+    /// The selected nodes.
+    pub fn selected_nodes(&self) -> Vec<Node<P>> {
+        let (path, a, b) = self.sel.span();
+        let list = self.list(path).unwrap_or(&[]);
+        list[a.min(list.len())..b.min(list.len())].to_vec()
+    }
+
+    /// Moves the node at `from` to the place `to`, and selects it. A place
+    /// in the node itself, or at either side of it, does not move it.
+    /// Returns true if the nodes changed.
+    pub fn move_node(&mut self, from: &[usize], to: &Caret) -> bool {
+        let Some((&k, parent)) = from.split_last() else {
+            return false;
+        };
+        let inside = to.path.starts_with(from);
+        let same = to.path == parent && (to.index == k || to.index == k + 1);
+        if inside || same || self.node(from).is_none() || !self.stops().contains(to) {
+            return false;
+        }
+        let Some(list) = self.list_mut(parent) else {
+            return false;
+        };
+        let node = list.remove(k);
+        // The removed node shifts the places after it in its list.
+        let mut dest = to.clone();
+        let n = parent.len();
+        if dest.path.len() > n && dest.path[..n] == *parent && dest.path[n] > k {
+            dest.path[n] -= 1;
+        } else if dest.path == parent && dest.index > k {
+            dest.index -= 1;
+        }
+        let Some(list) = self.list_mut(&dest.path) else {
+            return false;
+        };
+        let at = dest.index.min(list.len());
+        list.insert(at, node);
+        self.sel = Selection::range(dest.path, at, at + 1);
+        true
+    }
+
     /// Calls `f` on each box, from the inside out.
     pub fn each_box(&mut self, f: &mut dyn FnMut(&mut Boxed<P>)) {
         fn walk<P>(nodes: &mut [Node<P>], f: &mut dyn FnMut(&mut Boxed<P>)) {

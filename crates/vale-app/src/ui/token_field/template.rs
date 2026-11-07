@@ -3,7 +3,7 @@
 
 use vale_style::expr::editor::{Case, Empty, FieldFormat, Piece, Template};
 
-use super::{BoxKind, Boxed, Caret, ChipKind, Field, Glyph, Look, Node, Selection};
+use super::{BoxKind, Boxed, Caret, ChipKind, Field, Glyph, Look, Node, Selection, Token};
 use crate::ui::expr_help::ExprHelp;
 
 /// The most chars of the label of an expression chip.
@@ -148,6 +148,12 @@ pub fn pieces_of(nodes: &[Node<Piece>]) -> Vec<Piece> {
 /// The template of a field.
 pub fn template_of(field: &Field<Piece>) -> Template {
     Template::new(pieces_of(&field.nodes))
+}
+
+impl Token for Piece {
+    fn text(nodes: &[Node<Piece>]) -> String {
+        Template::new(pieces_of(nodes)).to_text()
+    }
 }
 
 /// The tag of a group: the fields that it needs.
@@ -328,5 +334,67 @@ mod tests {
         }
         assert!(seen.contains(&Caret::new(vec![1], 1)));
         assert_eq!(seen.last(), Some(&Caret::new(Vec::new(), 2)));
+    }
+
+    fn chip_index(f: &Field<Piece>, name: &str) -> usize {
+        (f.nodes.iter())
+            .position(|n| matches!(n, Node::Chip(c) if c.look.label == name))
+            .unwrap()
+    }
+
+    #[test]
+    fn move_node_moves_a_chip_and_selects_it() {
+        let mut f = field("concat(name, ' ', round(pop, 1))");
+        let pop = chip_index(&f, "pop");
+        assert!(f.move_node(&[pop], &Caret::new(Vec::new(), 0)));
+        assert_eq!(text(&f), "concat(round(pop, 1), name, ' ')");
+        assert_eq!(f.sel, Selection::range(Vec::new(), 0, 1));
+        // A place at either side of the chip does not move it.
+        assert!(!f.move_node(&[0], &Caret::new(Vec::new(), 1)));
+        let end = f.nodes.len();
+        assert!(f.move_node(&[0], &Caret::new(Vec::new(), end)));
+        assert_eq!(text(&f), "concat(name, ' ', round(pop, 1))");
+    }
+
+    #[test]
+    fn move_node_goes_into_a_group_but_not_into_itself() {
+        let mut f = field("concat(name, 'Pop ' || pop)");
+        let group = f.nodes.iter().position(|n| n.as_box().is_some()).unwrap();
+        assert!(!f.move_node(&[group], &Caret::new(vec![group], 0)));
+        assert!(f.move_node(&[0], &Caret::new(vec![group], 0)));
+        relabel(&mut f);
+        assert_eq!(text(&f), "name || 'Pop ' || pop");
+        assert_eq!(f.sel, Selection::range(vec![group - 1], 0, 1));
+        // And out of the group again, after it.
+        assert!(f.move_node(&[0, 0], &Caret::new(Vec::new(), 1)));
+        assert_eq!(text(&f), "concat('Pop ' || pop, name)");
+    }
+
+    #[test]
+    fn copy_paste_keeps_chip_format() {
+        let ctx = eframe::egui::Context::default();
+        let mut f = field("concat('Pop ', round(pop, 1))");
+        f.sel = Selection::range(Vec::new(), 0, 5);
+        assert!(super::super::copy(&ctx, &f));
+        let copied = Template::new(pieces_of(&f.selected_nodes())).to_text();
+        assert_eq!(copied, "concat('Pop ', round(pop, 1))");
+        let mut g = field("name");
+        g.sel = Selection::at(Caret::new(Vec::new(), 0));
+        assert!(super::super::paste(&ctx, &mut g, &copied));
+        assert_eq!(text(&g), "concat('Pop ', round(pop, 1), name)");
+        // Text from another app is not read as a template.
+        assert!(!super::super::paste(&ctx, &mut g, "upper(name)"));
+    }
+
+    #[test]
+    fn cut_removes_chip_and_puts_text_on_clipboard() {
+        let ctx = eframe::egui::Context::default();
+        let mut f = field("concat(name, ' ', round(pop, 1))");
+        let pop = chip_index(&f, "pop");
+        f.select_node(&[pop]);
+        assert!(super::super::cut(&ctx, &mut f));
+        assert_eq!(text(&f), "concat(name, ' ')");
+        assert!(super::super::paste(&ctx, &mut f, "round(pop, 1)"));
+        assert_eq!(text(&f), "concat(name, ' ', round(pop, 1))");
     }
 }

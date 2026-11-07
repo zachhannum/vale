@@ -7,7 +7,7 @@
 use vale_style::expr::editor::{Formula, Op, Seq, Tok};
 use vale_style::expr::{FUNCTIONS, Function};
 
-use super::{BoxKind, Boxed, Caret, Chip, ChipKind, Field, Glyph, Look, Node, Selection};
+use super::{BoxKind, Boxed, Caret, Chip, ChipKind, Field, Glyph, Look, Node, Selection, Token};
 use crate::classify::number_text;
 use crate::ui::expr_help::ExprHelp;
 
@@ -195,6 +195,21 @@ pub fn text_of(nodes: &[Node<Tok>]) -> String {
     }
     flush(&mut run, &mut parts);
     parts.join(" ")
+}
+
+impl Token for Tok {
+    fn text(nodes: &[Node<Tok>]) -> String {
+        text_of(nodes)
+    }
+}
+
+/// Puts `text` in place of the selection, read as a value. Text that does
+/// not parse becomes a code chip.
+pub fn paste(field: &mut Field<Tok>, text: &str, help: &ExprHelp) {
+    if field.sel.is_empty() {
+        commit(field, help);
+    }
+    field.replace(nodes_of(&Formula::from_text(text.trim()).seq, help));
 }
 
 fn box_text(b: &Boxed<Tok>) -> String {
@@ -666,5 +681,36 @@ mod tests {
         let found = completions(&pending(&f), &help());
         pick(&mut f, &found[0], &help());
         assert_eq!(f.sel.head, Caret::new(vec![0, 0], 0));
+    }
+
+    #[test]
+    fn paste_text_in_value_slot_makes_tokens() {
+        let mut f = Field::default();
+        insert_function(&mut f, function_named("round").unwrap());
+        assert_eq!(f.sel.head, Caret::new(vec![0, 0], 0));
+        paste(&mut f, "pop * 2", &help());
+        assert_eq!(text_of(&f.nodes), "round(pop * 2)");
+        let Node::Box(b) = &f.nodes[0] else {
+            panic!("no block");
+        };
+        let slot = b.children[0].as_box().unwrap();
+        assert!(slot.children.iter().all(|n| matches!(n, Node::Chip(_))));
+        // Text that does not parse is a code chip.
+        let mut f = Field::default();
+        paste(&mut f, "pop +* )", &help());
+        assert!(
+            f.nodes
+                .iter()
+                .any(|n| matches!(n, Node::Chip(c) if c.look.kind == ChipKind::Code))
+        );
+    }
+
+    #[test]
+    fn a_chip_moves_into_a_slot() {
+        let mut f = field_of(&Formula::from_text("pop + round(name)"), &help());
+        assert!(f.move_node(&[0], &Caret::new(vec![2, 1], 0)));
+        assert_eq!(text_of(&f.nodes), "+ round(name, pop)");
+        // A block does not go into its own slot.
+        assert!(!f.move_node(&[1], &Caret::new(vec![1, 0], 0)));
     }
 }

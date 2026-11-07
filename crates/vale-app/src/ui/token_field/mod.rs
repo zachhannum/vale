@@ -9,6 +9,7 @@
 //! a model into nodes, and the nodes back into the model.
 
 mod caret;
+mod clip;
 pub mod formula;
 mod layout;
 pub mod paint;
@@ -16,6 +17,7 @@ pub mod template;
 mod widget;
 
 pub use caret::{Caret, Dir, Selection};
+pub use clip::{Token, copy, cut, paste};
 pub use layout::{Layout, Metrics, Placed, PlacedKind, chip_parts, layout};
 pub use widget::{Options, Output, keep_focus, show};
 
