@@ -3,7 +3,6 @@
 use serde_json::{Map, Value as Json, json};
 use vale_store::GeometryKind;
 
-use crate::expr::field_ref;
 use crate::{Color, LabelStyle, StyleError};
 
 /// The version of the label class JSON that this build writes.
@@ -523,20 +522,28 @@ pub struct LabelClass {
 }
 
 impl LabelClass {
-    /// The class that gives the labels of `style`. `None` if the labels are off, there is no field, or the feature type has no placements.
+    /// Replaces the field `old` with `new` in the text, the filter, and the priority field.
+    pub fn rename_field(&mut self, old: &str, new: &str) {
+        self.text = crate::expr::rename_field(&self.text, old, new);
+        self.filter = crate::expr::rename_field(&self.filter, old, new);
+        if self.priority_field.as_deref() == Some(old) {
+            self.priority_field = Some(new.to_owned());
+        }
+    }
+
+    /// The class that gives the labels of `style`. `None` if the labels are off, the text is blank, or the feature type has no placements.
     pub fn from_style(
         name: &str,
         style: &LabelStyle,
         kind: GeometryKind,
         priority: i32,
     ) -> Option<LabelClass> {
-        if !style.enabled {
+        if !style.enabled || style.text.trim().is_empty() {
             return None;
         }
-        let field = style.field.as_deref()?;
         Some(LabelClass {
             name: name.to_owned(),
-            text: field_ref(field),
+            text: style.text.clone(),
             filter: String::new(),
             font: style.font.clone(),
             size: style.size,
@@ -864,11 +871,12 @@ fn fade(color: Color, opacity: f64) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::expr::field_ref;
 
     fn style(field: &str) -> LabelStyle {
         LabelStyle {
             enabled: true,
-            field: Some(field.to_owned()),
+            text: field_ref(field),
             priority_field: Some("pop".to_owned()),
             size: 13.0,
             color: Color::rgb(10, 20, 30),
@@ -1118,7 +1126,7 @@ mod tests {
             None
         );
         let mut none = style("name");
-        none.field = None;
+        none.text = " ".into();
         assert_eq!(
             LabelClass::from_style("D", &none, GeometryKind::Point, 0),
             None

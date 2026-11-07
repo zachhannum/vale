@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use vale_store::GeometryKind;
 use vale_style::Color;
-use vale_style::expr::{Context, Expr, FUNCTIONS, Filter, Property, Value};
+use vale_style::expr::{Context, Expr, FUNCTIONS, Filter, Property, Value, rename_field};
 
 fn city() -> BTreeMap<String, Value> {
     let mut a = BTreeMap::new();
@@ -356,5 +356,136 @@ fn each_function_is_documented() {
             "{} is not in docs/EXPRESSIONS.md",
             f.signature
         );
+    }
+}
+
+#[test]
+fn short_error_is_a_sentence() {
+    let err = Expr::parse("shout(name)").unwrap_err();
+    assert_eq!(err.short(), "Unknown function 'shout'.");
+}
+
+#[test]
+fn rename_bare_name() {
+    assert_eq!(
+        rename_field("pop > 10 and kind = 'pop'", "pop", "people"),
+        "people > 10 and kind = 'pop'"
+    );
+}
+
+#[test]
+fn rename_quoted_name() {
+    assert_eq!(
+        rename_field("\"old name\" || \"pop\"", "old name", "former"),
+        "former || \"pop\""
+    );
+}
+
+#[test]
+fn rename_to_name_with_space_quotes_it() {
+    assert_eq!(
+        rename_field("concat(name,  ' ')", "name", "full name"),
+        "concat(\"full name\",  ' ')"
+    );
+}
+
+#[test]
+fn rename_skips_function_with_same_name() {
+    assert_eq!(rename_field("round(round)", "round", "r"), "round(r)");
+}
+
+#[test]
+fn rename_skips_text_and_keywords() {
+    assert_eq!(rename_field("'name' || name", "name", "n"), "'name' || n");
+    assert_eq!(rename_field("a is null", "null", "n"), "a is null");
+}
+
+#[test]
+fn rename_keeps_text_that_does_not_lex() {
+    assert_eq!(rename_field("name || 'open", "name", "n"), "name || 'open");
+}
+
+#[test]
+fn format_number_groups_and_rounds() {
+    assert_eq!(eval("format_number(1234567.891, 2)"), t("1,234,567.89"));
+    assert_eq!(eval("format_number(population)"), t("72,000"));
+    assert_eq!(eval("format_number(1234.5)"), t("1,235"));
+    assert_eq!(eval("format_number(-1234.5)"), t("-1,235"));
+    assert_eq!(eval("format_number(0.5, 0)"), t("1"));
+    assert_eq!(eval("format_number(12.3, 3)"), t("12.300"));
+    assert_eq!(eval("format_number(999.996, 2)"), t("1,000.00"));
+    assert_eq!(eval("format_number(-0.001, 2)"), t("0.00"));
+    assert_eq!(eval("format_number(123, -2)"), t("123"));
+    assert_eq!(eval("format_number(1.5, 40)"), t("1.500000000000000"));
+    assert_eq!(eval("format_number(name, 2)"), Value::Null);
+    assert_eq!(eval("format_number(note, 2)"), Value::Null);
+    assert_eq!(eval("format_number(1, 'x')"), Value::Null);
+}
+
+#[test]
+fn each_function_has_a_category_and_a_hint() {
+    use vale_style::expr::Category;
+    let find = |name: &str| FUNCTIONS.iter().find(|f| f.name == name).unwrap();
+    assert_eq!(find("round").category, Category::Math);
+    assert_eq!(find("upper").category, Category::Text);
+    assert_eq!(find("if").category, Category::Logic);
+    assert_eq!(find("format_number").category, Category::Convert);
+    assert_eq!(find("round").hint, "Round to decimal places");
+    for f in FUNCTIONS {
+        assert!(!f.hint.is_empty() && !f.hint.ends_with('.'), "{}", f.name);
+    }
+}
+
+#[test]
+fn between_is_inclusive() {
+    assert_eq!(eval("population between 72000 and 80000"), b(true));
+    assert_eq!(eval("population BETWEEN 1000 AND 72000"), b(true));
+    assert_eq!(eval("population between 72001 and 80000"), b(false));
+    assert_eq!(eval("population not between 72001 and 80000"), b(true));
+    assert_eq!(eval("name between 'R' and 'S'"), b(true));
+    assert_eq!(eval("flow between 1 + 1 and 4 and capital"), b(true));
+    assert_eq!(eval("note between 1 and 2"), Value::Null);
+    assert_eq!(eval("name between 1 and 2"), Value::Null);
+    assert!(Expr::parse("x between 1").is_err());
+    assert!(Expr::parse("between > 1").is_err());
+    assert_eq!(
+        Expr::parse("x between 1 and 2").unwrap().fields(),
+        vec!["x".to_string()]
+    );
+}
+
+#[test]
+fn lenient_parse_reads_holes() {
+    let printed = |s: &str| Expr::parse_lenient(s).unwrap().to_string();
+    assert_eq!(printed(""), "");
+    assert_eq!(printed("if( , 12, 10)"), "if(, 12, 10)");
+    assert_eq!(printed("if(a,,)"), "if(a, , )");
+    assert_eq!(printed("round()"), "round()");
+    assert_eq!(printed("clamp(1)"), "clamp(1, , )");
+    assert_eq!(printed("a +"), "a + ");
+    assert_eq!(printed("* 2"), " * 2");
+    assert_eq!(printed("and b"), " and b");
+    assert_eq!(printed("x in ()"), "x in ()");
+    assert_eq!(printed("x between 1 and"), "x between 1 and ");
+    assert_eq!(printed("a = 1"), "a = 1");
+    assert!(Expr::parse_lenient("shout(1)").is_err());
+    assert!(Expr::parse_lenient("(a").is_err());
+    assert_eq!(eval("1"), n(1.0));
+    let attrs = city();
+    let ctx = Context {
+        attributes: &attrs,
+        scale: 1.0,
+        geometry: GeometryKind::Point,
+    };
+    assert_eq!(
+        Expr::parse_lenient("coalesce(, 3)").unwrap().eval(&ctx),
+        n(3.0)
+    );
+}
+
+#[test]
+fn strict_parse_has_no_holes() {
+    for text in ["", "if( , 12, 10)", "round()", "a +", "x in ()", "* 2"] {
+        assert!(Expr::parse(text).is_err(), "{text}");
     }
 }

@@ -13,6 +13,8 @@ use super::elevation::{DISPLAYS, blend_label};
 use super::pad::raster::{BLEND, SHOW_AS};
 
 use super::atlas::{self, AtlasSelection, EdgeSet, FrameTab};
+use super::expr_field;
+use super::expr_help;
 use super::pad::atlas::{
     ADD_HOLE, ADD_PAGE, AUTO_INTERVAL, AZIMUTH, BORDER, BORDER_COLOR, BORDER_DISTANCE,
     BORDER_STROKE, BORDER_STYLE, BORDER_STYLES, BORDER_WIDTH, CENTER_LATITUDE, CENTER_LONGITUDE,
@@ -646,13 +648,17 @@ fn layers_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
     state.open_ramps();
     let ramps = state.ramps.list().to_vec();
     let symbols = state.doc.symbols().clone();
+    let help = expr_help::ExprHelp::for_layer(state, layer);
+    let Some(mut style) = state.doc.map_style(target, layer) else {
+        return;
+    };
+    let counts = style_editor::filter_counts(state, layer, &style.style.rules);
     let mut library = style_editor::Library {
         symbols: &symbols,
         note: state.symbol_note.as_ref(),
         actions: &mut state.actions,
-    };
-    let Some(mut style) = state.doc.map_style(target, layer) else {
-        return;
+        help: &help,
+        counts: &counts,
     };
     let mut changed = style_editor::rules(ui, layer, &mut style, kind, &fields, &mut library);
     if kind != vale_store::GeometryKind::Point {
@@ -1005,13 +1011,15 @@ fn labels_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
         ui.label("Name");
         ui.text_edit_singleline(&mut class.name);
     });
-    ui.horizontal(|ui| {
-        ui.label("Text");
-        ui.text_edit_singleline(&mut class.text);
-    });
-    ui.horizontal(|ui| {
-        ui.label("Filter");
-        ui.text_edit_singleline(&mut class.filter);
+    let help = expr_help::ExprHelp::for_layer(state, layer);
+    let salt = egui::Id::new(("label-class", layer.0, i));
+    let count = expr_help::matches(state, layer, &class.filter);
+    ui.push_id(salt, |ui| {
+        let text = super::pad::labels::TEXT;
+        expr_field::label_text(ui, (text, text), &mut class.text, &help);
+        let none = super::pad::filter::NO_CLASS_CONDITION;
+        let filter = super::pad::rules::FILTER;
+        expr_field::filter(ui, filter, &mut class.filter, &help, count, none);
     });
     let family = crate::fonts::family(class.font.as_deref(), &mut state.fonts).to_owned();
     let mut faces = state.fonts.faces(&family);

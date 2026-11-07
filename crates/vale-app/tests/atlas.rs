@@ -1759,6 +1759,19 @@ fn map_of(h: &Pad, index: usize) -> String {
     h.state().doc.project.atlas.map(map).unwrap().name.clone()
 }
 
+/// Types an expression in place of the text of a label class, in the
+/// Code view of the text.
+fn type_code(h: &mut Pad, text: &str) {
+    use vale_app::ui::pad::label_text::CODE;
+    let field = format!("{TEXT} code");
+    if control(h, &field).is_none() {
+        nudge_up_to(h, CODE);
+        scroll_to(h, CODE);
+        tap(h, CODE);
+    }
+    type_text(h, &field, text);
+}
+
 /// Types a text in place of the text of a field.
 fn type_text(h: &mut Pad, name: &str, text: &str) {
     tap(h, name);
@@ -3692,7 +3705,8 @@ fn the_labels_tab_makes_a_label_class() {
     assert_eq!(list[0].name, "Places");
     assert_eq!(list[1].name, "Class 1");
 
-    type_text(&mut h, TEXT, "upper(name)");
+    type_code(&mut h, "upper(name)");
+    scroll_to(&mut h, FONT);
     tap(&mut h, FONT);
     let target = FontTarget::Class(map, places, 1);
     assert!(h.state().actions.contains(&Action::PickFont(target)));
@@ -3791,6 +3805,7 @@ fn the_size_stepper_of_a_class_moves_one_step_and_a_typed_size_stays_in_the_rang
     let size = |h: &Pad| classes(h, map, "Places")[0].size;
     tap(&mut h, "Places");
     let before = size(&h);
+    scroll_to(&mut h, &format!("Increase {LABEL_SIZE}"));
     step(&mut h, LABEL_SIZE, true);
     assert_eq!(size(&h), before + 1.0);
     step(&mut h, LABEL_SIZE, false);
@@ -3806,6 +3821,7 @@ fn a_change_of_a_class_places_the_labels_again_while_you_edit() {
     let mut h = labels_pad(BOARDS[0]);
     let map = frame(&h, 0).map;
     tap(&mut h, "Places");
+    scroll_to(&mut h, &format!("Increase {LABEL_SIZE}"));
     let composes = h.state().atlas.composes;
     // A hold on the plus button of the size repeats.
     let plus = control(&h, &format!("Increase {LABEL_SIZE}"))
@@ -3824,7 +3840,7 @@ fn a_change_of_a_class_places_the_labels_again_while_you_edit() {
 
     // One edit of the text, and the field keeps the focus.
     let composes = h.state().atlas.composes;
-    type_text(&mut h, TEXT, "upper(name)");
+    type_code(&mut h, "upper(name)");
     assert_eq!(classes(&h, map, "Places")[0].text, "upper(name)");
     assert!(h.state().atlas.composes > composes);
     let texts = place_texts(&mut h, 0);
@@ -3833,8 +3849,8 @@ fn a_change_of_a_class_places_the_labels_again_while_you_edit() {
         "{texts:?}"
     );
     // A text that is not an expression waits and keeps the labels.
-    type_text(&mut h, TEXT, "upper(");
-    assert!(control(&h, TEXT).is_some());
+    type_code(&mut h, "upper(");
+    assert!(control(&h, &format!("{TEXT} code")).is_some());
     assert_eq!(classes(&h, map, "Places")[0].text, "upper(name)");
 }
 
@@ -3844,7 +3860,7 @@ fn two_maps_label_one_layer_with_their_own_classes() {
     let (main, inset) = (frame(&h, 0).map, frame(&h, 1).map);
     tap(&mut h, FRAME_TABS[3]);
     tap(&mut h, "Places");
-    type_text(&mut h, TEXT, "upper(name)");
+    type_code(&mut h, "upper(name)");
     assert_eq!(classes(&h, inset, "Places")[0].text, "upper(name)");
     assert_eq!(classes(&h, main, "Places")[0].text, "name");
     assert!(
@@ -3873,7 +3889,7 @@ fn each_frame_of_a_map_places_labels_with_its_classes() {
     h.run_steps(2);
     tap(&mut h, FRAME_TABS[3]);
     tap(&mut h, "Places");
-    type_text(&mut h, TEXT, "upper(name)");
+    type_code(&mut h, "upper(name)");
     for index in 0..2 {
         let texts = place_texts(&mut h, index);
         assert!(!texts.is_empty(), "frame {index}");
@@ -3884,7 +3900,7 @@ fn each_frame_of_a_map_places_labels_with_its_classes() {
 #[test]
 fn the_controls_of_the_labels_tab_work_with_a_finger() {
     use vale_app::ui::atlas::ClassSegment;
-    use vale_app::ui::pad::filter::{ADD_CONDITION, VALUE};
+    use vale_app::ui::pad::filter::ADD_CONDITION;
     use vale_style::LabelPlacement;
     for size in BOARDS {
         let what = format!("{size:?}");
@@ -3906,18 +3922,17 @@ fn the_controls_of_the_labels_tab_work_with_a_finger() {
 
         scroll_to(&mut h, ADD_CONDITION);
         tap(&mut h, ADD_CONDITION);
-        check_controls(&h, &format!("{what}: condition page"));
-        scroll_to(&mut h, "scalerank");
-        tap(&mut h, "scalerank");
-        check_controls(&h, &format!("{what}: condition operators"));
-        scroll_to(&mut h, VALUE);
-        tap(&mut h, VALUE);
-        scroll_to(&mut h, &format!("{VALUE} Done"));
+        check_controls(&h, &format!("{what}: condition"));
+        scroll_to(&mut h, "Field 1");
+        tap(&mut h, "Field 1");
+        check_controls(&h, &format!("{what}: field menu"));
+        pick_in_menu(&mut h, "scalerank");
+        scroll_to(&mut h, "Value 1");
+        tap(&mut h, "Value 1");
+        scroll_to(&mut h, "Value 1 Done");
         check_controls(&h, &format!("{what}: condition keypad"));
-        tap(&mut h, &format!("{VALUE} 2"));
-        tap(&mut h, &format!("{VALUE} Done"));
-        scroll_to(&mut h, ADD_CONDITION);
-        tap(&mut h, ADD_CONDITION);
+        tap(&mut h, "Value 1 2");
+        tap(&mut h, "Value 1 Done");
         assert_eq!(classes(&h, map, "Places")[1].filter, "scalerank = 2");
 
         scroll_to(&mut h, STYLE);
@@ -4016,6 +4031,7 @@ fn the_style_row_lists_the_faces_of_the_family() {
     let mut h = labels_pad(BOARDS[0]);
     let map = frame(&h, 0).map;
     tap(&mut h, "Places");
+    scroll_to(&mut h, STYLE);
     tap(&mut h, STYLE);
     let faces = h.state_mut().fonts.faces("Noto Sans");
     assert!(faces.len() >= 2, "{faces:?}");
@@ -4119,10 +4135,21 @@ fn the_alpha_of_the_text_color_reaches_the_label() {
     assert!(halo_strokes(&mut h, 0, halo, 2.2) >= places.len());
 }
 
+/// Taps the row `choice` of the open menu of a filter, after a search for
+/// it if the menu has a search field.
+fn pick_in_menu(h: &mut Pad, choice: &str) {
+    use vale_app::ui::pad::filter::{SEARCH_FIELDS, SEARCH_VALUES};
+    for search in [SEARCH_FIELDS, SEARCH_VALUES] {
+        if control(h, choice).is_none() && control(h, search).is_some() {
+            type_text(h, search, choice);
+        }
+    }
+    tap(h, choice);
+}
+
 #[test]
 fn the_filter_of_a_class_has_the_condition_builder() {
-    use vale_app::ui::atlas::ClassPage;
-    use vale_app::ui::pad::filter::{ADD_CONDITION, NO_CLASS_CONDITION, REMOVE_CONDITION};
+    use vale_app::ui::pad::filter::{ADD_CONDITION, NO_CLASS_CONDITION, REMOVE_CONDITION, VIEWS};
     use vale_app::ui::pad::rules::EXPRESSION;
     use vale_store::Value;
     let mut h = labels_pad(BOARDS[0]);
@@ -4131,14 +4158,12 @@ fn the_filter_of_a_class_has_the_condition_builder() {
     assert!(h.query_by_label(NO_CLASS_CONDITION).is_some());
     scroll_to(&mut h, ADD_CONDITION);
     tap(&mut h, ADD_CONDITION);
-    assert_eq!(h.state().atlas.label_page, Some(ClassPage::Condition));
-    scroll_to(&mut h, "featurecla");
-    tap(&mut h, "featurecla");
-    scroll_to(&mut h, "Admin-1 capital");
-    tap(&mut h, "Admin-1 capital");
-    scroll_to(&mut h, ADD_CONDITION);
-    tap(&mut h, ADD_CONDITION);
-    assert_eq!(h.state().atlas.label_page, None);
+    scroll_to(&mut h, "Field 1");
+    tap(&mut h, "Field 1");
+    pick_in_menu(&mut h, "featurecla");
+    scroll_to(&mut h, "Value 1");
+    tap(&mut h, "Value 1");
+    pick_in_menu(&mut h, "Admin-1 capital");
     let text = "featurecla = 'Admin-1 capital'";
     assert_eq!(classes(&h, map, "Places")[0].filter, text);
     assert!(control(&h, &format!("{REMOVE_CONDITION} 1")).is_some());
@@ -4155,13 +4180,60 @@ fn the_filter_of_a_class_has_the_condition_builder() {
         assert!(names.contains(t), "{t}");
     }
 
-    // The Expression field holds the whole filter.
+    // Code holds the whole filter.
+    // A tap on the title of the panel closes the menu of the values.
+    let card = h.state().atlas.panel_rect.unwrap();
+    tap_with(&mut h, card.center_top() + vec2(0.0, 26.0), Input::Finger);
+    scroll_to(&mut h, VIEWS[1]);
+    tap(&mut h, VIEWS[1]);
     type_text(&mut h, EXPRESSION, "scalerank < 1");
     assert_eq!(classes(&h, map, "Places")[0].filter, "scalerank < 1");
+    tap(&mut h, VIEWS[0]);
     let first = format!("{REMOVE_CONDITION} 1");
     scroll_to(&mut h, &first);
     tap(&mut h, &first);
     assert_eq!(classes(&h, map, "Places")[0].filter, "");
+}
+
+#[test]
+fn the_text_of_a_class_has_the_token_field() {
+    use vale_app::ui::new_feature::keyboard_top;
+    use vale_app::ui::pad::label_text::{BAR, insert_name};
+    let mut h = labels_pad(BOARDS[0]);
+    let map = frame(&h, 0).map;
+    let places = layer_id(&h, "Places");
+    let text = |h: &Pad| classes(h, map, "Places")[0].text.clone();
+    tap(&mut h, "Places");
+    assert_eq!(text(&h), "name");
+    check_controls(&h, "the Text segment with the token field");
+
+    // The bar inserts a field at the caret, after the field "name".
+    scroll_to(&mut h, TEXT);
+    tap(&mut h, TEXT);
+    let chip = insert_name("pop_max");
+    for _ in 0..8 {
+        if control(&h, &chip).is_some_and(|r| r.width() >= 40.0) {
+            break;
+        }
+        let screen = h.state().pad.rects.unwrap().screen;
+        let from = pos2(screen.right() - 30.0, keyboard_top(screen) - BAR / 2.0);
+        let to = from - vec2(screen.width() / 2.0, 0.0);
+        drag_steps(&mut h, from, to, Input::Finger, 6);
+        release(&mut h, to, Input::Finger);
+    }
+    tap(&mut h, &chip);
+    assert_eq!(text(&h), "concat(name, pop_max)");
+
+    // Text that the field cannot read as fields stays as it is until the
+    // user edits it.
+    let raw = "if(pop_max > 1000000, upper(name), name)";
+    h.state_mut()
+        .edit_label_class(map, places, 0, |c| c.text = raw.into());
+    h.run_steps(3);
+    assert_eq!(text(&h), raw);
+    h.event(egui::Event::Text(" x".into()));
+    h.run_steps(2);
+    assert_eq!(text(&h), format!("concat({raw}, ' x')"));
 }
 
 #[test]
@@ -4246,7 +4318,7 @@ fn the_label_classes_of_each_map_survive_a_close_and_an_open() {
     let (main, inset) = (frame(&h, 0).map, frame(&h, 1).map);
     tap(&mut h, FRAME_TABS[3]);
     tap(&mut h, ADD_CLASS);
-    type_text(&mut h, TEXT, "upper(name)");
+    type_code(&mut h, "upper(name)");
     scroll_to(&mut h, HALO);
     tap(&mut h, HALO);
     let saved = classes(&h, inset, "Places");
@@ -5537,7 +5609,7 @@ fn the_conflict_options_reach_the_labeler() {
     // Each place has the same text.
     tap(&mut h, SEGMENTS[0].0);
     scroll_up_to(&mut h, TEXT);
-    type_text(&mut h, TEXT, "'Town'");
+    type_code(&mut h, "'Town'");
     assert_eq!(classes(&h, map, "Places")[0].text, "'Town'");
     tap(&mut h, SEGMENTS[2].0);
     set_number(&mut h, DUPLICATE_DISTANCE, "3000");

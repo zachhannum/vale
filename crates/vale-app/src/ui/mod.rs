@@ -42,6 +42,8 @@ pub mod atlas;
 pub mod browser;
 pub mod dock;
 pub mod elevation;
+pub mod expr_field;
+pub mod expr_help;
 pub mod font_dialog;
 pub mod frame_masks;
 pub mod frame_tiles;
@@ -58,6 +60,7 @@ pub mod region;
 pub mod select;
 pub mod style_editor;
 pub mod table;
+pub mod token_field;
 pub mod vertex;
 pub mod world_form;
 
@@ -459,6 +462,9 @@ pub struct AppState {
     pub atlas: atlas::AtlasState,
     /// The count of the changes of the contents of the maps.
     pub map_generation: u64,
+    /// The values and the match counts of the layers for the expression
+    /// fields.
+    pub help_cache: expr_help::HelpCache,
     /// The layer that the tools work on. The brush paints a selected raster
     /// layer that is visible.
     pub selected_layer: Option<LayerRef>,
@@ -660,6 +666,7 @@ impl AppState {
             canvas_size: (0.0, 0.0),
             atlas: atlas::AtlasState::default(),
             map_generation: 0,
+            help_cache: Default::default(),
             selected_layer: None,
             cursor_lonlat: None,
             cursor_value: None,

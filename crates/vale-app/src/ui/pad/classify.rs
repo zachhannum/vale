@@ -10,10 +10,12 @@ use super::Page;
 use super::number::Number;
 use super::raster::{heading, note, ramp_row};
 use super::rules::{CIRCLE_SIZES, WIDTHS};
+use super::value;
 use super::widgets::{self, Controls};
 use crate::classify::{self, Method, Step};
 use crate::ramps::Ramp;
 use crate::ui::AppState;
+use crate::ui::expr_help::{self, ExprHelp};
 
 /// The title of the form, and the button of the Style section that opens it.
 pub const TITLE: &str = "Classify";
@@ -22,7 +24,6 @@ pub const CLASSIFY: &str = "Classify…";
 pub const FIELD: &str = "Field";
 /// The field of the expression that gives the values.
 pub const EXPRESSION: &str = "Expression";
-pub const BAD_EXPRESSION: &str = "Not a valid expression.";
 pub const METHOD: &str = "Method";
 pub const CLASS_COUNT: &str = "Classes";
 pub const COLOR_RAMP: &str = "Color ramp";
@@ -118,18 +119,18 @@ pub fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id
     if let Some(chosen) = widgets::chips(ui, controls, &names, active) {
         draft.text = refs[chosen].clone();
     }
-    let valid = draft.text.trim().is_empty() || Expr::parse(&draft.text).is_ok();
-    widgets::text_field(
+    let help = ExprHelp::for_layer(state, id);
+    let range = expr_help::range(state, id, &draft.text);
+    let edit = value::editor(
         ui,
         controls,
         EXPRESSION,
-        EXPRESSION,
-        None,
-        &mut draft.text,
-        valid,
+        &draft.text,
+        &help,
+        range.as_deref(),
     );
-    if !valid {
-        widgets::form_note(ui, BAD_EXPRESSION, 20.0);
+    if let Some(text) = edit.text {
+        draft.text = text;
     }
 
     let fresh = matches!(&draft.values, Some((t, g, _)) if *t == draft.text && *g == generation);

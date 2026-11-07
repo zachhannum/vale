@@ -2,10 +2,12 @@
 //!
 //! `docs/EXPRESSIONS.md` has the grammar and the functions.
 
+pub mod editor;
 mod eval;
 mod functions;
 mod lexer;
 mod parser;
+mod print;
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -14,26 +16,58 @@ use vale_render::Color;
 use vale_store::GeometryKind;
 pub use vale_store::Value;
 
-pub use functions::{FUNCTIONS, Function};
-use parser::Node;
+pub use functions::{Category, FUNCTIONS, Function};
+use parser::{Node, Spans};
 
 /// The words of the syntax that a plain field name cannot be.
-const KEYWORDS: [&str; 15] = [
-    "and", "or", "not", "in", "is", "null", "true", "false", "like", "between", "case", "when",
-    "then", "else", "end",
+const KEYWORDS: [&str; 16] = [
+    "and", "or", "not", "in", "is", "null", "true", "false", "like", "ilike", "between", "case",
+    "when", "then", "else", "end",
 ];
+
+fn is_keyword(name: &str) -> bool {
+    KEYWORDS.iter().any(|k| k.eq_ignore_ascii_case(name))
+}
 
 /// A field name as an expression writes it: plain, or in double quotes.
 pub fn field_ref(name: &str) -> String {
     let mut chars = name.chars();
     let plain = chars.next().is_some_and(|c| c.is_alphabetic() || c == '_')
         && chars.all(|c| c.is_alphanumeric() || c == '_')
-        && !KEYWORDS.iter().any(|k| k.eq_ignore_ascii_case(name));
+        && !is_keyword(name);
     if plain {
         name.to_owned()
     } else {
         format!("\"{}\"", name.replace('"', "\"\""))
     }
+}
+
+/// The text of an expression with each reference to the field `old` replaced by `new`. Text that does not lex stays as it is.
+pub fn rename_field(text: &str, old: &str, new: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let Ok(tokens) = lexer::lex(&chars) else {
+        return text.to_owned();
+    };
+    let mut out = String::with_capacity(text.len());
+    let mut copied = 0;
+    for (i, t) in tokens.iter().enumerate() {
+        let hit = match &t.tok {
+            lexer::Tok::Quoted(name) => name == old,
+            lexer::Tok::Name(name) => {
+                name == old
+                    && !is_keyword(name)
+                    && tokens.get(i + 1).map(|n| &n.tok) != Some(&lexer::Tok::LParen)
+            }
+            _ => false,
+        };
+        if hit {
+            out.extend(&chars[copied..t.start]);
+            out.push_str(&field_ref(new));
+            copied = t.end;
+        }
+    }
+    out.extend(&chars[copied..]);
+    out
 }
 
 /// The attributes of one feature, by field name.
@@ -93,6 +127,20 @@ impl ParseError {
             "^".repeat(width)
         )
     }
+
+    /// The message as a sentence for the UI, without the position.
+    pub fn short(&self) -> String {
+        let mut chars = self.message.chars();
+        let mut text: String = chars
+            .next()
+            .map(|c| c.to_uppercase().collect())
+            .unwrap_or_default();
+        text.extend(chars);
+        if !text.ends_with('.') {
+            text.push('.');
+        }
+        text
+    }
 }
 
 impl fmt::Display for ParseError {
@@ -103,15 +151,21 @@ impl fmt::Display for ParseError {
 
 impl std::error::Error for ParseError {}
 
-/// A parsed expression.
-#[derive(Clone)]
+/// A parsed expression. Two expressions are equal when their syntax trees are equal. Display writes the canonical text.
+#[derive(Clone, PartialEq)]
 pub struct Expr {
     root: Node,
 }
 
 impl fmt::Debug for Expr {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.write_str("Expr")
+        write!(f, "Expr({self})")
+    }
+}
+
+impl fmt::Display for Expr {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str(&print::print(&self.root))
     }
 }
 
@@ -121,6 +175,11 @@ impl Expr {
         let tokens = lexer::lex(&chars)?;
         let root = parser::Parser::new(&chars, tokens).parse()?;
         Ok(Expr { root })
+    }
+
+    /// Parses text that can have empty places, for an editor. An empty text, an empty argument, a missing argument, and a missing operand are holes. A hole writes as nothing and evaluates to null.
+    pub fn parse_lenient(source: &str) -> Result<Expr, ParseError> {
+        parse_spanned(source, true).map(|(root, _)| Expr { root })
     }
 
     pub fn eval(&self, ctx: &Context) -> Value {
@@ -137,10 +196,22 @@ impl Expr {
     }
 }
 
+/// The tree of the text and the span of each node.
+fn parse_spanned(source: &str, lenient: bool) -> Result<(Node, Spans), ParseError> {
+    let chars: Vec<char> = source.chars().collect();
+    let tokens = lexer::lex(&chars)?;
+    let parser = parser::Parser::new(&chars, tokens);
+    if lenient {
+        parser.lenient().parse_spanned()
+    } else {
+        parser.parse_spanned()
+    }
+}
+
 fn collect_fields(node: &Node, out: &mut Vec<String>) {
     match node {
         Node::Field(name) => out.push(name.clone()),
-        Node::Lit(_) | Node::Var(_) => {}
+        Node::Lit(_) | Node::Var(_) | Node::Hole => {}
         Node::Not(a) | Node::Neg(a) | Node::IsNull { value: a, .. } => collect_fields(a, out),
         Node::Binary(_, a, b)
         | Node::Like {
@@ -155,7 +226,83 @@ fn collect_fields(node: &Node, out: &mut Vec<String>) {
             collect_fields(value, out);
             list.iter().for_each(|n| collect_fields(n, out));
         }
+        Node::Between {
+            value, low, high, ..
+        } => {
+            collect_fields(value, out);
+            collect_fields(low, out);
+            collect_fields(high, out);
+        }
         Node::Call(_, args) => args.iter().for_each(|n| collect_fields(n, out)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The text of each span of the tree, children before parents.
+    fn span_texts(source: &str) -> Vec<String> {
+        fn walk(s: &Spans, chars: &[char], out: &mut Vec<String>) {
+            s.kids.iter().for_each(|k| walk(k, chars, out));
+            out.push(chars[s.span.clone()].iter().collect());
+        }
+        let (_, spans) = parse_spanned(source, true).unwrap();
+        let chars: Vec<char> = source.chars().collect();
+        let mut out = Vec::new();
+        walk(&spans, &chars, &mut out);
+        out
+    }
+
+    #[test]
+    fn spans_cover_each_node() {
+        assert_eq!(
+            span_texts("round(pop / 1000, 1) * 2"),
+            [
+                "pop",
+                "1000",
+                "pop / 1000",
+                "1",
+                "round(pop / 1000, 1)",
+                "2",
+                "round(pop / 1000, 1) * 2"
+            ]
+        );
+        assert_eq!(
+            span_texts("not (a) or x between -1 and 'é'"),
+            [
+                "a",
+                "not (a)",
+                "x",
+                "1",
+                "-1",
+                "'é'",
+                "x between -1 and 'é'",
+                "not (a) or x between -1 and 'é'"
+            ]
+        );
+        assert_eq!(
+            span_texts("k in (1, 2) and n is null"),
+            [
+                "k",
+                "1",
+                "2",
+                "k in (1, 2)",
+                "n",
+                "n is null",
+                "k in (1, 2) and n is null"
+            ]
+        );
+        assert_eq!(span_texts("if(, 1, 2)"), ["", "1", "2", "if(, 1, 2)"]);
+        assert_eq!(span_texts("a + "), ["a", "", "a + "]);
+    }
+
+    #[test]
+    fn holes_have_empty_spans_at_their_place() {
+        let (_, spans) = parse_spanned("if( , 12, 10)", true).unwrap();
+        assert_eq!(spans.kids[0].span, 4..4);
+        let (_, spans) = parse_spanned("round()", true).unwrap();
+        assert_eq!(spans.kids[0].span, 6..6);
     }
 }
 
@@ -191,6 +338,13 @@ impl Source {
     pub fn error(&self) -> Option<&ParseError> {
         self.parsed.as_ref().err()
     }
+
+    pub fn rename_field(&mut self, old: &str, new: &str) {
+        let text = rename_field(&self.text, old, new);
+        if text != self.text {
+            *self = Source::new(text);
+        }
+    }
 }
 
 /// A filter of a rule. A blank filter matches each feature, and a wrong filter matches none.
@@ -221,6 +375,12 @@ impl Filter {
 
     pub fn error(&self) -> Option<&ParseError> {
         self.source.as_ref().and_then(Source::error)
+    }
+
+    pub fn rename_field(&mut self, old: &str, new: &str) {
+        if let Some(s) = &mut self.source {
+            s.rename_field(old, new);
+        }
     }
 
     /// True if the result is `true`. Null and all other values do not match.
@@ -300,6 +460,12 @@ impl<T: FromValue + Clone> Property<T> {
 
     pub fn error(&self) -> Option<&ParseError> {
         self.source.as_ref().and_then(Source::error)
+    }
+
+    pub fn rename_field(&mut self, old: &str, new: &str) {
+        if let Some(s) = &mut self.source {
+            s.rename_field(old, new);
+        }
     }
 
     pub fn eval(&self, ctx: &Context) -> T {

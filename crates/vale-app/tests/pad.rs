@@ -416,8 +416,8 @@ fn check_controls(h: &Pad, what: &str) {
             // The edit menu and the menu of the values of a field cover the
             // controls below them.
             let edit = |c: &vale_app::ui::pad::widgets::Control| {
-                use vale_app::ui::pad::widgets::{COPY, PASTE};
-                c.name == COPY || c.name == PASTE
+                use vale_app::ui::pad::widgets::{COPY, CUT, PASTE};
+                c.name == CUT || c.name == COPY || c.name == PASTE
             };
             // The value field of a vertical slider is at the top of the
             // slider, and it takes the touches there.
@@ -7150,7 +7150,7 @@ fn a_new_point_layer_has_a_name_field_and_return_ends_the_edit() {
     // The layer labels its points with the name.
     let entry = h.state().doc.frame.entries.iter().find(|e| e.layer == id);
     let label = &entry.unwrap().style.label;
-    assert_eq!(label.field.as_deref(), Some("name"));
+    assert_eq!(label.text, "name");
     assert!(label.enabled);
     tap(&mut h, select::ATTRIBUTES);
     let center = h.state().globe.rect.center();
@@ -7584,6 +7584,7 @@ fn you_add_rename_and_remove_a_field_and_the_file_has_the_same_fields() {
     h.state_mut().save_waiting().unwrap();
     let saved = saves(&h);
 
+    scroll_to_control(&mut h, ADD_FIELD);
     tap(&mut h, ADD_FIELD);
     assert_eq!(h.state().pad.page, Some(Page::NewField));
     assert!(control(&h, &format!("Close {NEW_FIELD}")).is_some());
@@ -7614,6 +7615,7 @@ fn you_add_rename_and_remove_a_field_and_the_file_has_the_same_fields() {
     tap(&mut h, "Back to Points 1");
 
     // Return in the name adds the field.
+    scroll_to_control(&mut h, ADD_FIELD);
     tap(&mut h, ADD_FIELD);
     h.event(egui::Event::Text("height".into()));
     h.run_steps(2);
@@ -7695,7 +7697,7 @@ fn a_rename_of_the_label_field_keeps_the_labels() {
     let doc = &h.state().doc;
     assert!(doc.layer(places).unwrap().field("title").is_some());
     let label = &doc.entry(places).unwrap().style.label;
-    assert_eq!(label.field.as_deref(), Some("title"));
+    assert_eq!(label.text, "title");
     assert_eq!(placed(doc), before);
     // A rename of the priority field keeps it too.
     let doc = &mut h.state_mut().doc;
@@ -7821,7 +7823,6 @@ fn open_classify(h: &mut Pad, layer: &str) {
 #[test]
 fn classify_makes_quantile_rules_in_one_undo_step() {
     use vale_app::ui::pad::classify::{EXPRESSION, REPLACE_RULES};
-    use vale_app::ui::pad::filter::conditions;
     let dir = tempfile::tempdir().unwrap();
     let mut h = saved_pad(BOARDS[0], dir.path());
     let places = vector(&h, "Places");
@@ -7858,7 +7859,13 @@ fn classify_makes_quantile_rules_in_one_undo_step() {
 
     // The rule page of a middle class shows its two conditions.
     let middle = made[1].name.clone();
-    assert_eq!(conditions(&texts[1]).len(), 2, "{texts:?}");
+    assert_eq!(
+        vale_style::expr::editor::Conditions::from_text(&texts[1])
+            .items
+            .len(),
+        2,
+        "{texts:?}"
+    );
     scroll_to_control(&mut h, &middle);
     tap(&mut h, &middle);
     assert_eq!(h.state().pad.page, Some(Page::Rule(1)));
@@ -7869,6 +7876,209 @@ fn classify_makes_quantile_rules_in_one_undo_step() {
 
     tap(&mut h, "Undo");
     assert_eq!(rules(&h, places), before);
+}
+
+#[test]
+fn value_preview_shows_range() {
+    use vale_app::ui::expr_help::{range_text, value_range};
+    use vale_app::ui::pad::classify::EXPRESSION;
+    let mut h = pad(BOARDS[0]);
+    let places = vector(&h, "Places");
+    open_classify(&mut h, "Places");
+    scroll_to_control(&mut h, EXPRESSION);
+    type_text(&mut h, EXPRESSION, "pop_max / 1000");
+    let layer = h.state().doc.layer(places).unwrap();
+    let range = value_range(layer, "pop_max / 1000").unwrap();
+    assert_eq!(range.count, layer.features.len());
+    assert!(range.min < range.max);
+    let line = range_text(&range);
+    assert!(h.query_by_label(&line).is_some(), "{line}");
+    // The cache computes the range once for the text.
+    let computed = h.state().help_cache.computed();
+    h.run_steps(3);
+    assert_eq!(h.state().help_cache.computed(), computed);
+}
+
+#[test]
+fn classify_value_editor_wraps_the_value_from_the_tray() {
+    use vale_app::ui::pad::classify::{EXPRESSION, REPLACE_RULES};
+    use vale_app::ui::pad::value::{FUNCTIONS_TAB, SEARCH, insert_name};
+    let mut h = pad(BOARDS[0]);
+    let places = vector(&h, "Places");
+    open_classify(&mut h, "Places");
+    scroll_to_control(&mut h, EXPRESSION);
+    type_text(&mut h, EXPRESSION, "pop_max ");
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.run_steps(1);
+    scroll_to_control(&mut h, FUNCTIONS_TAB);
+    tap(&mut h, FUNCTIONS_TAB);
+    type_text(&mut h, SEARCH[1], "round");
+    let round = insert_name("round");
+    scroll_to_control(&mut h, &round);
+    tap(&mut h, &round);
+    screenshot::save(&mut h, "pad-value-tray");
+    scroll_to_control(&mut h, "Quantiles");
+    tap(&mut h, "Quantiles");
+    scroll_to_control(&mut h, REPLACE_RULES);
+    tap(&mut h, REPLACE_RULES);
+    let first = rules(&h, places)[0]
+        .filter
+        .source()
+        .unwrap()
+        .text()
+        .to_owned();
+    assert!(first.starts_with("round(pop_max) < "), "{first}");
+}
+
+/// Classifies Places by its value with Quantiles, and returns the filter
+/// of the first rule.
+fn classify_first_filter(h: &mut Pad) -> String {
+    use vale_app::ui::pad::classify::REPLACE_RULES;
+    let places = vector(h, "Places");
+    scroll_to_control(h, "Quantiles");
+    tap(h, "Quantiles");
+    scroll_to_control(h, REPLACE_RULES);
+    tap(h, REPLACE_RULES);
+    rules(h, places)[0]
+        .filter
+        .source()
+        .unwrap()
+        .text()
+        .to_owned()
+}
+
+#[test]
+fn add_case_writes_nested_if() {
+    use vale_app::ui::pad::cases::ADD_CASE;
+    use vale_app::ui::pad::classify::EXPRESSION;
+    let mut h = pad(BOARDS[0]);
+    open_classify(&mut h, "Places");
+    scroll_to_control(&mut h, EXPRESSION);
+    type_text(&mut h, EXPRESSION, "if(scalerank < 3, 18, 10)");
+    // The nested ifs show as a Cases block.
+    scroll_to_control(&mut h, ADD_CASE);
+    assert!(control(&h, "Case 1 Field 1").is_some());
+    assert!(control(&h, "Otherwise result").is_some());
+    tap(&mut h, ADD_CASE);
+    screenshot::save(&mut h, "pad-value-cases");
+    assert!(control(&h, "Case 2 Field 1").is_some());
+    let first = classify_first_filter(&mut h);
+    assert!(first.contains("if(scalerank < 3, 18, if("), "{first}");
+    assert!(first.contains(", 10, 10))"), "{first}");
+}
+
+#[test]
+fn a_missing_condition_shows_its_message() {
+    use vale_app::ui::pad::classify::EXPRESSION;
+    let mut h = pad(BOARDS[0]);
+    open_classify(&mut h, "Places");
+    scroll_to_control(&mut h, EXPRESSION);
+    let text = "if(, 12, 10)";
+    type_text(&mut h, EXPRESSION, text);
+    // Blocks name the part in words.
+    let message = "The first case needs a condition.";
+    scroll_to(&mut h, message);
+    assert!(h.query_by_label(message).is_some(), "{message}");
+    assert!(control(&h, "Case 1 condition 1").is_some());
+    screenshot::save(&mut h, "pad-value-cases-error");
+    // Code keeps the text of the parser.
+    let [_, code] = vale_app::ui::pad::value::view_names(EXPRESSION);
+    scroll_to_control(&mut h, &code);
+    tap(&mut h, &code);
+    let short = vale_style::expr::Expr::parse(text).unwrap_err().short();
+    assert!(h.query_by_label(&short).is_some(), "{short}");
+}
+
+/// The width of the Layers panel.
+fn layers_width(h: &Pad) -> f32 {
+    panel(h, Panel::Layers).unwrap().width()
+}
+
+#[test]
+fn expression_page_widens_panel() {
+    use vale_app::ui::pad::expression::PANEL_WIDTH;
+    for size in [BOARDS[0], BOARDS[1]] {
+        let what = format!("{size:?}");
+        let mut h = pad(size);
+        tap(&mut h, "Layers");
+        tap(&mut h, "Open Places");
+        let normal = layers_width(&h);
+        assert!(normal < PANEL_WIDTH, "{what}");
+        open_classify_page(&mut h);
+        assert_eq!(layers_width(&h), PANEL_WIDTH, "{what}");
+        check_controls(&h, &what);
+        tap(&mut h, "Back to Places");
+        assert_eq!(layers_width(&h), normal, "{what}");
+    }
+    // A sheet keeps its width.
+    let mut h = pad(BOARDS[3]);
+    tap(&mut h, "Layers");
+    tap(&mut h, "Open Places");
+    let normal = layers_width(&h);
+    open_classify_page(&mut h);
+    assert_eq!(layers_width(&h), normal);
+}
+
+/// Opens the Classify page from the open panel of a layer.
+fn open_classify_page(h: &mut Pad) {
+    use vale_app::ui::pad::classify::CLASSIFY;
+    scroll_to_control(h, CLASSIFY);
+    tap(h, CLASSIFY);
+    assert_eq!(h.state().pad.page, Some(Page::Classify));
+}
+
+#[test]
+fn value_bar_inserts_field() {
+    use vale_app::ui::pad::classify::EXPRESSION;
+    use vale_app::ui::pad::value::{FUNCTIONS_TAB, OPERATORS_TAB, bar_name, insert_name};
+    use vale_app::ui::token_field::formula::op_label;
+    use vale_style::expr::editor::Op;
+    for size in [BOARDS[0], BOARDS[3]] {
+        let what = format!("{size:?}");
+        let mut h = pad(size);
+        open_classify(&mut h, "Places");
+        scroll_to_control(&mut h, EXPRESSION);
+        type_text(&mut h, EXPRESSION, "pop_max ");
+        tap_bar(&mut h, &bar_name(OPERATORS_TAB));
+        tap_bar(&mut h, &bar_name(&insert_name(op_label(Op::Div))));
+        tap_bar(&mut h, &bar_name(FUNCTIONS_TAB));
+        // The typed word filters the functions.
+        h.event(egui::Event::Text(" ab".into()));
+        h.run_steps(2);
+        assert!(
+            control(&h, &bar_name(&insert_name("round"))).is_none(),
+            "{what}"
+        );
+        tap_bar(&mut h, &bar_name(&insert_name("abs")));
+        tap_bar(&mut h, &bar_name("Fields"));
+        h.event(egui::Event::Text("scale".into()));
+        h.run_steps(2);
+        tap_bar(&mut h, &bar_name(&insert_name("scalerank")));
+        screenshot::save(&mut h, &format!("pad-value-bar-{}", size.0));
+        let first = classify_first_filter(&mut h);
+        assert!(
+            first.starts_with("(pop_max / abs(scalerank)) < "),
+            "{what}: {first}"
+        );
+    }
+}
+
+#[test]
+fn a_code_chip_opens_code() {
+    use vale_app::ui::pad::classify::EXPRESSION;
+    use vale_app::ui::pad::value::{CODE_CHIP, view_names};
+    let mut h = pad(BOARDS[0]);
+    open_classify(&mut h, "Places");
+    let [blocks, code] = view_names(EXPRESSION);
+    let text_field = format!("{EXPRESSION} text");
+    scroll_to_control(&mut h, &code);
+    tap(&mut h, &code);
+    type_text(&mut h, &text_field, "round(pop_max) + )");
+    tap(&mut h, &blocks);
+    let chip = format!("{CODE_CHIP} 1");
+    scroll_to_control(&mut h, &chip);
+    tap(&mut h, &chip);
+    assert!(control(&h, &text_field).is_some());
 }
 
 #[test]
@@ -8027,8 +8237,8 @@ fn the_style_section_adds_moves_and_deletes_rules() {
 
 #[test]
 fn a_rule_page_sets_the_filter_and_the_scale_range() {
-    use vale_app::ui::pad::filter::{ADD_CONDITION, NO_CONDITION, REMOVE_CONDITION, VALUE};
-    use vale_app::ui::pad::rules::{BAD_FILTER, BAD_RANGE, EXPRESSION, MAX_SCALE, MIN_SCALE};
+    use vale_app::ui::pad::filter::{NO_CONDITION, REMOVE_CONDITION, VIEWS};
+    use vale_app::ui::pad::rules::{BAD_RANGE, EXPRESSION, MAX_SCALE, MIN_SCALE};
     for size in [BOARDS[1], BOARDS[3]] {
         let what = format!("{size:?}");
         let mut h = pad(size);
@@ -8041,32 +8251,17 @@ fn a_rule_page_sets_the_filter_and_the_scale_range() {
         open_rule(&mut h, "Rivers", "Default");
 
         assert!(h.query_by_label(NO_CONDITION).is_some(), "{what}");
-        // A condition on a number: a field chip, an operator chip, and the
-        // keypad.
-        scroll_to_control(&mut h, ADD_CONDITION);
-        tap(&mut h, ADD_CONDITION);
-        assert_eq!(h.state().pad.page, Some(Page::Condition(0)), "{what}");
-        check_controls(&h, &format!("{what} on the page of a new condition"));
-        scroll_to_control(&mut h, "scalerank");
-        tap(&mut h, "scalerank");
-        scroll_to_control(&mut h, "<");
-        tap(&mut h, "<");
-        type_scrolled_keys(&mut h, VALUE, "5");
-        check_controls(&h, &format!("{what} with the keypad of a value"));
-        scroll_to_control(&mut h, ADD_CONDITION);
-        tap(&mut h, ADD_CONDITION);
-        assert_eq!(h.state().pad.page, Some(Page::Rule(0)), "{what}");
+        // A condition on a number: the field menu, the comparison menu, and
+        // the keypad.
+        add_condition(&mut h, 1, "scalerank");
+        pick(&mut h, "Comparison 1", "is less than");
+        check_controls(&h, &format!("{what} with a condition"));
+        type_scrolled_keys(&mut h, "Value 1", "5");
         assert_eq!(filter(&h).as_deref(), Some("scalerank < 5"), "{what}");
 
-        // A condition on a text: a chip of a common value.
-        scroll_to_control(&mut h, ADD_CONDITION);
-        tap(&mut h, ADD_CONDITION);
-        scroll_to_control(&mut h, "featurecla");
-        tap(&mut h, "featurecla");
-        scroll_to_control(&mut h, "River");
-        tap(&mut h, "River");
-        scroll_to_control(&mut h, ADD_CONDITION);
-        tap(&mut h, ADD_CONDITION);
+        // A condition on a text: a value of the layer from the menu.
+        add_condition(&mut h, 2, "featurecla");
+        pick(&mut h, "Value 2", "River");
         let text = "scalerank < 5 and featurecla = 'River'";
         assert_eq!(filter(&h).as_deref(), Some(text), "{what}");
         assert!(rule(&h).filter.error().is_none(), "{what}");
@@ -8078,12 +8273,14 @@ fn a_rule_page_sets_the_filter_and_the_scale_range() {
         let text = "featurecla = 'River'";
         assert_eq!(filter(&h).as_deref(), Some(text), "{what}");
 
-        // The expression field takes any filter, and warns about a wrong one.
+        // Code takes any filter, and warns about a wrong one.
+        scroll_to_control(&mut h, VIEWS[1]);
+        tap(&mut h, VIEWS[1]);
         type_text(&mut h, EXPRESSION, "scalerank < 5 and");
-        assert!(rule(&h).filter.error().is_some(), "{what}");
-        assert!(h.query_by_label(BAD_FILTER).is_some(), "{what}");
+        let message = rule(&h).filter.error().unwrap().short();
+        assert!(h.query_by_label(&message).is_some(), "{what}");
         type_text(&mut h, EXPRESSION, "scalerank < 5");
-        assert!(h.query_by_label(BAD_FILTER).is_none(), "{what}");
+        assert!(h.query_by_label(&message).is_none(), "{what}");
 
         scroll_to_control(&mut h, MIN_SCALE);
         type_scrolled_keys(&mut h, MIN_SCALE, "50000");
@@ -8099,6 +8296,206 @@ fn a_rule_page_sets_the_filter_and_the_scale_range() {
         assert!(rule(&h).in_scale(100_000.0), "{what}");
         assert!(!rule(&h).in_scale(10_000.0), "{what}");
     }
+}
+
+/// Taps the control `menu`, and then the row `choice` of its menu.
+fn pick(h: &mut Pad, menu: &str, choice: &str) {
+    use vale_app::ui::pad::filter::{SEARCH_FIELDS, SEARCH_VALUES};
+    scroll_to_control(h, menu);
+    tap(h, menu);
+    // A long menu has a search field.
+    for search in [SEARCH_FIELDS, SEARCH_VALUES] {
+        if control(h, choice).is_none() && control(h, search).is_some() {
+            type_text(h, search, choice);
+        }
+    }
+    assert!(control(h, choice).is_some(), "no `{choice}` in `{menu}`");
+    tap(h, choice);
+}
+
+/// Adds condition `n` of a filter, on field `field`.
+fn add_condition(h: &mut Pad, n: usize, field: &str) {
+    use vale_app::ui::pad::filter::ADD_CONDITION;
+    scroll_to_control(h, ADD_CONDITION);
+    tap(h, ADD_CONDITION);
+    pick(h, &format!("Field {n}"), field);
+}
+
+/// Sets the filter of the first rule of layer `id`.
+fn set_filter(h: &mut Pad, id: vale_store::LayerId, text: &str) {
+    let entry = h.state_mut().doc.entry_mut(id).unwrap();
+    entry.style.style.rules[0].filter = vale_style::expr::Filter::new(text);
+    h.run_steps(2);
+}
+
+#[test]
+fn match_any_writes_or() {
+    use vale_app::ui::pad::filter::{ANY, MATCH};
+    let mut h = pad(BOARDS[0]);
+    let rivers = vector(&h, "Rivers");
+    open_rule(&mut h, "Rivers", "Default");
+    add_condition(&mut h, 1, "scalerank");
+    add_condition(&mut h, 2, "featurecla");
+    let text = filter_text(&h, rivers).unwrap();
+    assert!(text.contains(" and "), "{text}");
+    pick(&mut h, MATCH, ANY);
+    let text = filter_text(&h, rivers).unwrap();
+    assert!(text.starts_with("scalerank = 0 or featurecla = "), "{text}");
+    screenshot::save(&mut h, "pad-filter-conditions");
+}
+
+#[test]
+fn comparison_menu_follows_field_type() {
+    for size in [BOARDS[0], BOARDS[3]] {
+        let what = format!("{size:?}");
+        let mut h = pad(size);
+        open_rule(&mut h, "Rivers", "Default");
+        add_condition(&mut h, 1, "scalerank");
+        scroll_to_control(&mut h, "Comparison 1");
+        tap(&mut h, "Comparison 1");
+        assert!(control(&h, "is greater than").is_some(), "{what}");
+        assert!(control(&h, "is between").is_some(), "{what}");
+        assert!(control(&h, "contains").is_none(), "{what}");
+        tap(&mut h, "Comparison 1");
+        assert!(control(&h, "is greater than").is_none(), "{what}");
+
+        pick(&mut h, "Field 1", "featurecla");
+        scroll_to_control(&mut h, "Comparison 1");
+        tap(&mut h, "Comparison 1");
+        assert!(control(&h, "contains").is_some(), "{what}");
+        assert!(control(&h, "starts with").is_some(), "{what}");
+        assert!(control(&h, "is greater than").is_none(), "{what}");
+    }
+}
+
+#[test]
+fn text_value_menu_lists_layer_values() {
+    use vale_app::ui::pad::filter::{SEARCH_VALUES, use_value};
+    let mut h = pad(BOARDS[0]);
+    let rivers = vector(&h, "Rivers");
+    open_rule(&mut h, "Rivers", "Default");
+    add_condition(&mut h, 1, "featurecla");
+    scroll_to_control(&mut h, "Value 1");
+    tap(&mut h, "Value 1");
+    assert!(control(&h, "River").is_some());
+    assert!(control(&h, SEARCH_VALUES).is_some());
+    // The search keeps the values that hold the text, and offers the text.
+    type_text(&mut h, SEARCH_VALUES, "lake c");
+    assert!(control(&h, "River").is_none());
+    let typed = use_value("lake c");
+    assert!(control(&h, &typed).is_some());
+    tap(&mut h, &typed);
+    let text = filter_text(&h, rivers);
+    assert_eq!(text.as_deref(), Some("featurecla = 'lake c'"));
+}
+
+#[test]
+fn add_group_nests_conditions() {
+    use vale_app::ui::pad::filter::{ADD_CONDITION, ADD_GROUP, ANY_OF, REMOVE_CONDITION};
+    let mut h = pad(BOARDS[0]);
+    let rivers = vector(&h, "Rivers");
+    open_rule(&mut h, "Rivers", "Default");
+    add_condition(&mut h, 1, "scalerank");
+    scroll_to_control(&mut h, ADD_GROUP);
+    tap(&mut h, ADD_GROUP);
+    assert!(h.query_by_label(ANY_OF).is_some() || control(&h, "Match 2").is_some());
+    let in_group = format!("{ADD_CONDITION} 2");
+    scroll_to_control(&mut h, &in_group);
+    tap(&mut h, &in_group);
+    pick(&mut h, "Field 2.2", "featurecla");
+    let text = filter_text(&h, rivers).unwrap();
+    assert!(text.starts_with("scalerank = 0 and ("), "{text}");
+    assert!(text.contains(" or featurecla = "), "{text}");
+    screenshot::save(&mut h, "pad-filter-group");
+    let inner = format!("{REMOVE_CONDITION} 2.1");
+    scroll_to_control(&mut h, &inner);
+    tap(&mut h, &inner);
+    let text = filter_text(&h, rivers).unwrap();
+    assert!(
+        text.starts_with("scalerank = 0 and featurecla = "),
+        "{text}"
+    );
+}
+
+#[test]
+fn filter_shows_match_count() {
+    use vale_app::ui::expr_help::count_matches;
+    use vale_app::ui::pad::filter::matches_text;
+    let mut h = pad(BOARDS[0]);
+    let rivers = vector(&h, "Rivers");
+    let layer = h.state().doc.layer(rivers).unwrap();
+    let first = layer.features[0].attributes["scalerank"].label().unwrap();
+    let text = format!("scalerank = {first}");
+    let n = count_matches(layer, &text).unwrap();
+    let m = layer.features.len();
+    assert!(n > 0 && n <= m);
+    set_filter(&mut h, rivers, &text);
+    open_rule(&mut h, "Rivers", "Default");
+    scroll_to(&mut h, &matches_text(n, m));
+    assert!(h.query_by_label(&matches_text(n, m)).is_some());
+}
+
+#[test]
+fn code_only_filter_opens_in_code() {
+    use vale_app::ui::pad::filter::{ADD_CONDITION, CODE_ROW, VIEWS};
+    use vale_app::ui::pad::rules::EXPRESSION;
+    let mut h = pad(BOARDS[0]);
+    let rivers = vector(&h, "Rivers");
+    set_filter(&mut h, rivers, "upper(name) = 'X'");
+    open_rule(&mut h, "Rivers", "Default");
+    scroll_to_control(&mut h, EXPRESSION);
+    assert!(control(&h, EXPRESSION).is_some());
+    assert!(control(&h, ADD_CONDITION).is_none());
+    // In Blocks, the text that is not a condition is a row that opens Code.
+    tap(&mut h, VIEWS[0]);
+    set_filter(&mut h, rivers, "scalerank < 5 and upper(name) = 'X'");
+    let row = format!("{CODE_ROW} 2");
+    scroll_to_control(&mut h, &row);
+    tap(&mut h, &row);
+    assert!(control(&h, EXPRESSION).is_some());
+}
+
+/// The text of the filter of the first rule of a layer.
+fn filter_text(h: &Pad, id: vale_store::LayerId) -> Option<String> {
+    let rule = rules(h, id)[0].clone();
+    rule.filter.source().map(|s| s.text().to_owned())
+}
+
+#[test]
+fn the_line_of_an_expression_field_shows_the_result_or_the_error() {
+    use vale_app::ui::expr_help::{MATCHES, NO_MATCH};
+    use vale_app::ui::pad::filter::VIEWS;
+    use vale_app::ui::pad::rules::EXPRESSION;
+    let mut h = pad(BOARDS[0]);
+    let rivers = vector(&h, "Rivers");
+    let layer = h.state().doc.layer(rivers).unwrap();
+    let rank = |i: usize| layer.features[i].attributes["scalerank"].clone();
+    let first = rank(0);
+    let other = (1..layer.features.len())
+        .find(|&i| rank(i) != first)
+        .unwrap();
+    let other = FeatureRef {
+        layer: rivers,
+        uuid: layer.features[other].uuid(),
+    };
+    let first = first.label().unwrap();
+    open_rule(&mut h, "Rivers", "Default");
+    scroll_to_control(&mut h, VIEWS[1]);
+    tap(&mut h, VIEWS[1]);
+    scroll_to_control(&mut h, EXPRESSION);
+
+    // With no selection, the line shows the result for the first feature.
+    type_text(&mut h, EXPRESSION, &format!("scalerank = {first}"));
+    assert!(h.query_by_label(MATCHES).is_some());
+    // The selected feature of the layer comes first.
+    h.state_mut().feature_selection = vec![other];
+    h.run_steps(2);
+    assert!(h.query_by_label(NO_MATCH).is_some());
+    assert!(h.query_by_label(MATCHES).is_none());
+
+    type_text(&mut h, EXPRESSION, "shout(name)");
+    assert!(h.query_by_label("Unknown function 'shout'.").is_some());
+    assert!(h.query_by_label(NO_MATCH).is_none());
 }
 
 #[test]
@@ -9254,6 +9651,507 @@ fn the_layers_panel_shows_why_an_image_layer_did_not_import() {
     assert!(h.query_by_label_contains("notes").is_some());
 }
 
+/// The label text of layer `id`.
+fn label_text(h: &Pad, id: vale_store::LayerId) -> String {
+    h.state().doc.entry(id).unwrap().style.label.text.clone()
+}
+
+/// Opens the Label text page of Places, and gives the token field the
+/// focus with a tap at its bottom right, away from the chips.
+fn open_label_text(h: &mut Pad) -> vale_store::LayerId {
+    use vale_app::ui::pad::label_text::LABEL_TEXT;
+    let places = vector(h, "Places");
+    tap(h, "Layers");
+    tap(h, "Open Places");
+    scroll_to_control(h, LABEL_TEXT);
+    tap(h, LABEL_TEXT);
+    assert_eq!(h.state().pad.page, Some(Page::LabelText));
+    check_controls(h, "the Label text page");
+    let at = control(h, LABEL_TEXT).unwrap().right_bottom() - vec2(16.0, 8.0);
+    touch(h, egui::TouchPhase::Start, at, None);
+    h.step();
+    touch(h, egui::TouchPhase::End, at, None);
+    h.run_steps(3);
+    places
+}
+
+/// Taps the control `name` of the bar above the keyboard, and scrolls the
+/// bar to it first.
+fn tap_bar(h: &mut Pad, name: &str) {
+    use vale_app::ui::new_feature::keyboard_top;
+    use vale_app::ui::pad::label_text::BAR;
+    for i in 0..16 {
+        if control(h, name).is_some_and(|r| r.width() >= 40.0) {
+            break;
+        }
+        let screen = h.state().pad.rects.unwrap().screen;
+        let y = keyboard_top(screen) - BAR / 2.0;
+        // Forward first, and then back.
+        let by = vec2(screen.width() * 0.5, 0.0);
+        let (from, to) = match i < 8 {
+            true => (
+                pos2(screen.right() - 30.0, y),
+                pos2(screen.right() - 30.0, y) - by,
+            ),
+            false => (
+                pos2(screen.left() + 30.0, y),
+                pos2(screen.left() + 30.0, y) + by,
+            ),
+        };
+        drag(h, from, to, None);
+    }
+    tap(h, name);
+}
+
+#[test]
+fn bar_inserts_field_chip() {
+    use vale_app::ui::pad::label_text::{GROUP, LINE_BREAK, insert_name};
+    for size in [BOARDS[0], BOARDS[3]] {
+        let what = format!("{size:?}");
+        let mut h = pad(size);
+        let places = open_label_text(&mut h);
+        assert_eq!(label_text(&h, places), "name", "{what}");
+        assert!(control(&h, GROUP).is_some(), "{what}");
+        assert!(control(&h, LINE_BREAK).is_some(), "{what}");
+        tap_bar(&mut h, &insert_name("adm0name"));
+        assert_eq!(label_text(&h, places), "concat(name, adm0name)", "{what}");
+        screenshot::save(&mut h, &format!("pad-label-text-bar-{}", size.0));
+        tap(&mut h, "Back to Places");
+        assert_eq!(h.state().pad.page, None, "{what}");
+    }
+}
+
+#[test]
+fn typed_text_stays_text() {
+    let mut h = pad(BOARDS[0]);
+    let places = open_label_text(&mut h);
+    h.event(egui::Event::Text(" km".into()));
+    h.run_steps(2);
+    assert_eq!(label_text(&h, places), "concat(name, ' km')");
+    // A word that is the name of a field stays text.
+    h.event(egui::Event::Text(" name".into()));
+    h.run_steps(2);
+    assert_eq!(label_text(&h, places), "concat(name, ' km name')");
+}
+
+#[test]
+fn group_writes_optional_text() {
+    use vale_app::ui::pad::label_text::{GROUP, LINE_BREAK, insert_name};
+    let mut h = pad(BOARDS[0]);
+    let places = open_label_text(&mut h);
+    tap_bar(&mut h, LINE_BREAK);
+    assert_eq!(label_text(&h, places), "concat(name, '\n')");
+    h.event(egui::Event::Text("Pop ".into()));
+    h.run_steps(2);
+    tap_bar(&mut h, &insert_name("pop_max"));
+    tap_bar(&mut h, GROUP);
+    assert_eq!(
+        label_text(&h, places),
+        "concat(name, '\n', 'Pop ' || pop_max)"
+    );
+    screenshot::save(&mut h, "pad-label-text-group");
+}
+
+#[test]
+fn label_preview_has_no_marker() {
+    fn visit(shape: &egui::Shape, out: &mut Vec<egui::Shape>) {
+        match shape {
+            egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| visit(s, out)),
+            s => out.push(s.clone()),
+        }
+    }
+    let mut h = pad(BOARDS[0]);
+    open_label_text(&mut h);
+    let area = h.get_by_label("Vatican City").rect();
+    let mut shapes = Vec::new();
+    for clipped in &h.output().shapes {
+        visit(&clipped.shape, &mut shapes);
+    }
+    let inside = |s: &egui::Shape| area.intersects(s.visual_bounding_rect());
+    let circles = (shapes.iter()).filter(|s| inside(s) && matches!(s, egui::Shape::Circle(_)));
+    assert_eq!(circles.count(), 0);
+    // The label is a picture in the look of the labels.
+    let picture = (shapes.iter()).filter(|s| inside(s)).any(|s| match s {
+        egui::Shape::Mesh(m) => m.texture_id != egui::TextureId::default(),
+        _ => false,
+    });
+    assert!(picture);
+    screenshot::save(&mut h, "pad-label-preview");
+}
+
+#[test]
+fn manual_label_text_boxes() {
+    use vale_app::ui::pad::label_text::LABEL_TEXT;
+    let text = "concat(upper(name), '\n', 'Pop ' || round(pop_max / 1000, 1) || ' k', ' ', \
+                'Rank ' || scalerank, ' ', max(abs(pop_min - pop_max), 2 * scalerank))";
+    for size in [BOARDS[0], BOARDS[3]] {
+        let mut h = pad(size);
+        let places = vector(&h, "Places");
+        h.state_mut()
+            .doc
+            .entry_mut(places)
+            .unwrap()
+            .style
+            .label
+            .text = text.into();
+        tap(&mut h, "Layers");
+        tap(&mut h, "Open Places");
+        scroll_to_control(&mut h, LABEL_TEXT);
+        tap(&mut h, LABEL_TEXT);
+        h.run_steps(2);
+        screenshot::save(&mut h, &format!("pad-label-text-boxes-{}", size.0));
+    }
+}
+
+#[test]
+fn manual_value_boxes() {
+    use vale_app::ui::pad::classify::EXPRESSION;
+    let text = "max(abs(pop_min - pop_max), round(scalerank / 2, 1), floor(abs(pop_other))) ";
+    for size in [BOARDS[0], BOARDS[3]] {
+        let mut h = pad(size);
+        open_classify(&mut h, "Places");
+        scroll_to_control(&mut h, EXPRESSION);
+        type_text(&mut h, EXPRESSION, text);
+        screenshot::save(&mut h, &format!("pad-value-boxes-focus-{}", size.0));
+        // A tap on the title of the field takes the focus away.
+        let at = control(&h, EXPRESSION).unwrap().left_top() - vec2(0.0, 24.0);
+        touch(&mut h, egui::TouchPhase::Start, at, None);
+        h.step();
+        touch(&mut h, egui::TouchPhase::End, at, None);
+        h.run_steps(3);
+        screenshot::save(&mut h, &format!("pad-value-boxes-{}", size.0));
+    }
+}
+
+#[test]
+fn blocks_and_code_edit_one_text() {
+    use vale_app::ui::pad::label_text::{BLOCKS, CODE, LABEL_TEXT};
+    let mut h = pad(BOARDS[0]);
+    let places = vector(&h, "Places");
+    // Text in a form that Blocks would write in another way.
+    let odd = "concat(name,'  x')";
+    h.state_mut()
+        .doc
+        .entry_mut(places)
+        .unwrap()
+        .style
+        .label
+        .text = odd.into();
+    open_label_text(&mut h);
+    // Blocks do not write text that the user does not edit.
+    h.key_press(egui::Key::ArrowLeft);
+    h.run_steps(2);
+    assert_eq!(label_text(&h, places), odd);
+    tap(&mut h, CODE);
+    let code = format!("{LABEL_TEXT} code");
+    assert!(control(&h, &code).is_some());
+    type_text(&mut h, &code, "upper(name)");
+    assert_eq!(label_text(&h, places), "upper(name)");
+    tap(&mut h, BLOCKS);
+    assert!(control(&h, &code).is_none());
+    tap(&mut h, LABEL_TEXT);
+    h.event(egui::Event::Text("!".into()));
+    h.run_steps(2);
+    assert_eq!(label_text(&h, places), "concat(upper(name), '!')");
+}
+
+/// Opens the Label text page of Places with label text `text`, and taps
+/// the first chip of the field, which opens its popover.
+fn open_chip(h: &mut Pad, text: &str) -> vale_store::LayerId {
+    use vale_app::ui::pad::label_text::LABEL_TEXT;
+    let places = vector(h, "Places");
+    h.state_mut()
+        .doc
+        .entry_mut(places)
+        .unwrap()
+        .style
+        .label
+        .text = text.into();
+    open_label_text(h);
+    let field = control(h, LABEL_TEXT).unwrap();
+    let pos = field.min + vec2(12.0 + 24.0, 12.0 + 16.0);
+    touch(h, egui::TouchPhase::Start, pos, None);
+    h.step();
+    touch(h, egui::TouchPhase::End, pos, None);
+    h.run_steps(3);
+    places
+}
+
+/// Opens the Label text page of Places with label text `text`, and gives
+/// the field the focus.
+fn open_label(h: &mut Pad, text: &str) -> vale_store::LayerId {
+    let places = vector(h, "Places");
+    h.state_mut()
+        .doc
+        .entry_mut(places)
+        .unwrap()
+        .style
+        .label
+        .text = text.into();
+    open_label_text(h);
+    places
+}
+
+/// The layout of the label text field with text `text`, on the screen.
+fn label_layout(h: &Pad, text: &str) -> vale_app::ui::token_field::Layout {
+    use vale_app::ui::expr_help::ExprHelp;
+    use vale_app::ui::pad::label_text::LABEL_TEXT;
+    use vale_app::ui::token_field::{Metrics, layout, template};
+    use vale_style::expr::editor::Template;
+    let rect = control(h, LABEL_TEXT).unwrap();
+    let m = Metrics::pad();
+    let field = template::field_of(&Template::from_text(text), &ExprHelp::empty());
+    let mut measure = |s: &str, font: &egui::FontId| {
+        h.ctx
+            .fonts_mut(|f| s.chars().map(|c| f.glyph_width(font, c)).sum::<f32>())
+    };
+    let mut lay = layout(&field.nodes, &m, rect.width() - 2.0 * m.pad.x, &mut measure);
+    lay.translate((rect.min + m.pad).to_vec2());
+    lay
+}
+
+/// The middle of the caret at `index` of the list at `path`.
+fn stop(lay: &vale_app::ui::token_field::Layout, path: &[usize], index: usize) -> Pos2 {
+    use vale_app::ui::token_field::Caret;
+    let caret = Caret::new(path.to_vec(), index);
+    lay.caret_rect(&caret).unwrap().center()
+}
+
+/// Holds a finger still at `from` for a long press, drags it to `to`, and
+/// lifts it. `shot` names a picture of the drag before the lift.
+fn long_press_drag(h: &mut Pad, from: Pos2, to: Pos2, shot: Option<&str>) {
+    touch(h, egui::TouchPhase::Start, from, None);
+    h.step();
+    h.step();
+    for i in 1..=6 {
+        let at = from.lerp(to, i as f32 / 6.0);
+        touch(h, egui::TouchPhase::Move, at, None);
+        h.step();
+    }
+    if let Some(name) = shot {
+        screenshot::save(h, name);
+    }
+    touch(h, egui::TouchPhase::End, to, None);
+    h.run_steps(3);
+}
+
+#[test]
+fn long_press_drags_chip_to_new_place() {
+    use vale_app::ui::pad::chip_popover::DECIMAL_PLACES;
+    let mut h = pad(BOARDS[0]);
+    let text = "concat(name, ' ', round(pop_max, 1))";
+    let places = open_label(&mut h, text);
+    let lay = label_layout(&h, text);
+    let pop = lay.rect_of(&[2]).unwrap().center();
+    long_press_drag(&mut h, pop, stop(&lay, &[], 0), Some("pad-label-text-drag"));
+    assert_eq!(
+        label_text(&h, places),
+        "concat(round(pop_max, 1), name, ' ')"
+    );
+    // The long press does not open the popover, and the keyboard stays.
+    assert!(control(&h, &format!("Increase {DECIMAL_PLACES}")).is_none());
+    assert!(h.output().platform_output.ime.is_some());
+}
+
+#[test]
+fn drag_into_group_moves_chip_inside() {
+    let mut h = pad(BOARDS[0]);
+    let text = "concat(name, 'Pop ' || pop_max)";
+    let places = open_label(&mut h, text);
+    let lay = label_layout(&h, text);
+    let name = lay.rect_of(&[0]).unwrap().center();
+    long_press_drag(&mut h, name, stop(&lay, &[1], 0), None);
+    assert_eq!(label_text(&h, places), "name || 'Pop ' || pop_max");
+}
+
+#[test]
+fn drag_moves_a_group_by_its_frame() {
+    let mut h = pad(BOARDS[0]);
+    let text = "concat(name, 'Pop ' || pop_max)";
+    let places = open_label(&mut h, text);
+    let lay = label_layout(&h, text);
+    let frame = lay.rect_of(&[1]).unwrap();
+    let edge = pos2(frame.right() - 2.0, frame.center().y);
+    long_press_drag(&mut h, edge, stop(&lay, &[], 0), None);
+    assert_eq!(label_text(&h, places), "concat('Pop ' || pop_max, name)");
+}
+
+#[test]
+fn drag_cancels_outside_field() {
+    use vale_app::ui::pad::label_text::LABEL_TEXT;
+    let mut h = pad(BOARDS[0]);
+    let text = "concat(name, ' ', pop_max)";
+    let places = open_label(&mut h, text);
+    let lay = label_layout(&h, text);
+    let pop = lay.rect_of(&[2]).unwrap().center();
+    let below = control(&h, LABEL_TEXT).unwrap().center_bottom() + vec2(0.0, 80.0);
+    long_press_drag(&mut h, pop, below, None);
+    assert_eq!(label_text(&h, places), text);
+}
+
+#[test]
+fn tap_still_opens_popover() {
+    use vale_app::ui::pad::chip_popover::DECIMAL_PLACES;
+    let mut h = pad(BOARDS[0]);
+    let text = "concat(name, ' ', pop_max)";
+    let places = open_label(&mut h, text);
+    let lay = label_layout(&h, text);
+    let pop = lay.rect_of(&[2]).unwrap().center();
+    touch(&mut h, egui::TouchPhase::Start, pop, None);
+    h.step();
+    touch(&mut h, egui::TouchPhase::End, pop, None);
+    h.run_steps(3);
+    assert!(control(&h, &format!("Increase {DECIMAL_PLACES}")).is_some());
+    assert_eq!(label_text(&h, places), text);
+}
+
+/// Scrolls the open popover until its control `name` shows, and taps it.
+fn tap_in_popover(h: &mut Pad, name: &str) {
+    use vale_app::ui::pad::popover;
+    for _ in 0..10 {
+        let card = popover::rect(&h.ctx).expect("a popover");
+        if control(h, name).is_some_and(|r| card.contains_rect(r)) {
+            break;
+        }
+        let from = card.center_bottom() - vec2(0.0, 30.0);
+        drag(h, from, from - vec2(0.0, 100.0), None);
+    }
+    tap(h, name);
+}
+
+#[test]
+fn copy_field_and_paste_keep_chip_format() {
+    use vale_app::ui::pad::chip_popover::{COPY_FIELD, CUT_FIELD};
+    use vale_app::ui::pad::widgets::PASTE;
+    let _clipboard = one_clipboard_test();
+    let mut h = pad(BOARDS[0]);
+    let text = "concat(round(pop_max, 1), ' ', name)";
+    let places = open_label(&mut h, text);
+    let lay = label_layout(&h, text);
+    let pop = lay.rect_of(&[0]).unwrap().center();
+    touch(&mut h, egui::TouchPhase::Start, pop, None);
+    h.step();
+    touch(&mut h, egui::TouchPhase::End, pop, None);
+    h.run_steps(3);
+    tap_in_popover(&mut h, COPY_FIELD);
+    assert_eq!(
+        vale_app::clipboard::get().as_deref(),
+        Some("round(pop_max, 1)")
+    );
+    // A long press in empty space at the end opens the edit menu.
+    let end = stop(&lay, &[], 3) + vec2(60.0, 0.0);
+    touch(&mut h, egui::TouchPhase::Start, end, None);
+    h.run_steps(3);
+    touch(&mut h, egui::TouchPhase::End, end, None);
+    h.run_steps(3);
+    tap(&mut h, PASTE);
+    assert_eq!(
+        label_text(&h, places),
+        "concat(round(pop_max, 1), ' ', name, round(pop_max, 1))"
+    );
+    // Cut field takes the chip away, and the clipboard keeps its text.
+    touch(&mut h, egui::TouchPhase::Start, pop, None);
+    h.step();
+    touch(&mut h, egui::TouchPhase::End, pop, None);
+    h.run_steps(3);
+    tap(&mut h, CUT_FIELD);
+    assert_eq!(
+        label_text(&h, places),
+        "concat(' ', name, round(pop_max, 1))"
+    );
+    assert_eq!(
+        vale_app::clipboard::get().as_deref(),
+        Some("round(pop_max, 1)")
+    );
+}
+
+#[test]
+fn tap_on_expression_chip_opens_edit_menu() {
+    use vale_app::ui::pad::widgets::CUT;
+    let _clipboard = one_clipboard_test();
+    let mut h = pad(BOARDS[0]);
+    let text = "concat(name, pop_max * 2, pop_max)";
+    let places = open_label(&mut h, text);
+    let lay = label_layout(&h, text);
+    let brk = lay.rect_of(&[1]).unwrap().center();
+    touch(&mut h, egui::TouchPhase::Start, brk, None);
+    h.step();
+    touch(&mut h, egui::TouchPhase::End, brk, None);
+    h.run_steps(3);
+    tap(&mut h, CUT);
+    assert_eq!(label_text(&h, places), "concat(name, pop_max)");
+}
+
+#[test]
+fn decimal_places_write_round() {
+    use vale_app::ui::pad::chip_popover::DECIMAL_PLACES;
+    let mut h = pad(BOARDS[0]);
+    let places = open_chip(&mut h, "pop_max");
+    let plus = format!("Increase {DECIMAL_PLACES}");
+    tap(&mut h, &plus);
+    assert_eq!(label_text(&h, places), "round(pop_max)");
+    tap(&mut h, &plus);
+    assert_eq!(label_text(&h, places), "round(pop_max, 1)");
+    screenshot::save(&mut h, "pad-label-text-popover");
+    tap(&mut h, &format!("Decrease {DECIMAL_PLACES}"));
+    tap(&mut h, &format!("Decrease {DECIMAL_PLACES}"));
+    assert_eq!(label_text(&h, places), "pop_max");
+}
+
+#[test]
+fn label_field_and_popover_stay_above_bar() {
+    use vale_app::ui::pad::chip_popover::DECIMAL_PLACES;
+    use vale_app::ui::pad::label_text::{LABEL_TEXT, bar_top};
+    for size in [BOARDS[0], BOARDS[3]] {
+        let what = format!("{size:?}");
+        let mut h = pad(size);
+        open_chip(&mut h, "pop_max");
+        let floor = bar_top(&h.ctx);
+        let field = control(&h, LABEL_TEXT).unwrap();
+        assert!(field.bottom() <= floor, "{what}: {field:?} {floor}");
+        let plus = control(&h, &format!("Increase {DECIMAL_PLACES}"));
+        assert!(plus.unwrap().bottom() <= floor, "{what}");
+    }
+}
+
+#[test]
+fn thousands_separator_writes_format_number() {
+    use vale_app::ui::pad::chip_popover::THOUSANDS;
+    let mut h = pad(BOARDS[0]);
+    let places = open_chip(&mut h, "pop_max");
+    tap(&mut h, THOUSANDS);
+    assert_eq!(label_text(&h, places), "format_number(pop_max, 0)");
+}
+
+#[test]
+fn case_writes_upper() {
+    use vale_app::ui::pad::chip_popover::CASES;
+    let mut h = pad(BOARDS[0]);
+    let places = open_chip(&mut h, "concat(name, ' x')");
+    tap(&mut h, CASES[1]);
+    assert_eq!(label_text(&h, places), "concat(upper(name), ' x')");
+}
+
+#[test]
+fn when_empty_uses_another_field() {
+    use vale_app::ui::pad::chip_popover::{WHEN_EMPTY, use_field};
+    let mut h = pad(BOARDS[0]);
+    let places = open_chip(&mut h, "name");
+    tap(&mut h, WHEN_EMPTY);
+    tap_in_popover(&mut h, &use_field("adm0name"));
+    assert_eq!(label_text(&h, places), "coalesce(name, adm0name)");
+}
+
+#[test]
+fn remove_field_deletes_chip() {
+    use vale_app::ui::pad::chip_popover::REMOVE_FIELD;
+    let mut h = pad(BOARDS[0]);
+    let places = open_chip(&mut h, "concat(name, ' x')");
+    tap_in_popover(&mut h, REMOVE_FIELD);
+    assert_eq!(label_text(&h, places), "' x'");
+    assert!(control(&h, REMOVE_FIELD).is_none());
+}
+
 #[test]
 fn the_font_row_asks_for_the_font_picker() {
     use vale_app::ui::pad::fonts::FONT;
@@ -10345,7 +11243,7 @@ fn merge_joins_two_provinces_into_the_feature_that_you_choose_in_one_undo_step()
             let value = Value::Text(name.into());
             assert_eq!(project.set_attribute_of(id, &one, "name", &value), 1);
         }
-        state.doc.entry_mut(id).unwrap().style.label.field = Some("name".into());
+        state.doc.entry_mut(id).unwrap().style.label.text = "'Isle ' || name".into();
         state.save_waiting().unwrap();
         uuid
     };
@@ -10362,15 +11260,16 @@ fn merge_joins_two_provinces_into_the_feature_that_you_choose_in_one_undo_step()
     assert_eq!(selection(&h).len(), 2);
     assert!(!disabled(&h, select::MERGE));
     tap(&mut h, select::MERGE);
-    // The list names each feature by the label field, the largest first.
-    let (big_row, small_row) = (control(&h, "Big").unwrap(), control(&h, "Small").unwrap());
+    // The list names each feature by the label text, the largest first.
+    let big_row = control(&h, "Isle Big").unwrap();
+    let small_row = control(&h, "Isle Small").unwrap();
     assert!(big_row.top() < small_row.top());
     let card = h.state().pad.rects.unwrap().brush.unwrap();
     assert!(big_row.left() > card.right());
     check_controls(&h, "the list of Merge");
     screenshot::save(&mut h, "pad-merge");
     let saved = saves(&h);
-    tap(&mut h, "Small");
+    tap(&mut h, "Isle Small");
     assert_eq!(saves(&h), saved + 1);
     assert!(!h.state().merging);
     let features = line_features(&h, id);

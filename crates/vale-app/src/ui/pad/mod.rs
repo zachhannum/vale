@@ -30,8 +30,11 @@ use crate::world;
 
 pub mod atlas;
 pub mod browser;
+pub mod cases;
+pub mod chip_popover;
 pub mod classify;
 pub mod edge_labels;
+pub mod expression;
 pub mod eyedropper;
 pub mod fields;
 pub mod filter;
@@ -41,8 +44,10 @@ pub mod furniture;
 pub mod geometry;
 pub mod grid_labels;
 pub mod icons;
+pub mod label_text;
 pub mod labels;
 pub mod number;
+pub mod popover;
 pub mod raster;
 pub mod rules;
 pub mod selectable;
@@ -50,6 +55,7 @@ pub mod swipe;
 pub mod table;
 pub mod text_style;
 pub mod theme;
+pub mod value;
 pub mod widgets;
 
 use flyout::{Choice, Flyout, Flyouts};
@@ -363,8 +369,6 @@ pub enum Page {
     NewField,
     /// The rule with this index.
     Rule(usize),
-    /// The new condition of the filter of the rule with this index.
-    Condition(usize),
     /// The symbols that the rule with this index can pick.
     Symbols(usize),
     /// The shapes of the marker of the rule with this index.
@@ -379,6 +383,8 @@ pub enum Page {
     RampLabels(usize),
     /// The mask of the style of the layer.
     Mask,
+    /// The label text of the layer.
+    LabelText,
 }
 
 /// The state of the iPad layout.
@@ -623,6 +629,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     rects = geometry::layout(&input);
     table::check(state);
     table::widen(state, &mut rects);
+    expression::widen(state, &mut rects);
     state.sync_selection_form(state.pad.is_open(Panel::Attributes));
     select::drop_focus(&ctx, state);
     for panel in [
@@ -1578,13 +1585,9 @@ pub(super) fn show_panel(
     };
     let rule_count = rules.map_or(0, Vec::len);
     let rule_name = match state.pad.page {
-        Some(
-            Page::Rule(i)
-            | Page::Condition(i)
-            | Page::Symbols(i)
-            | Page::MarkerShape(i)
-            | Page::MarkerFill(i),
-        ) => rules.and_then(|r| r.get(i)).map(|r| r.name.clone()),
+        Some(Page::Rule(i) | Page::Symbols(i) | Page::MarkerShape(i) | Page::MarkerFill(i)) => {
+            rules.and_then(|r| r.get(i)).map(|r| r.name.clone())
+        }
         _ => None,
     };
     if name.is_none() {
@@ -1605,19 +1608,14 @@ pub(super) fn show_panel(
                 | Page::Classify
                 | Page::Ramps
                 | Page::RampLabels(_)
-                | Page::Mask,
+                | Page::Mask
+                | Page::LabelText,
             ),
         ) => true,
         (Some(LayerRef::Vector(_)), Some(Page::Field(i))) => i < field_count,
         (
             Some(LayerRef::Vector(_)),
-            Some(
-                Page::Rule(i)
-                | Page::Condition(i)
-                | Page::Symbols(i)
-                | Page::MarkerShape(i)
-                | Page::MarkerFill(i),
-            ),
+            Some(Page::Rule(i) | Page::Symbols(i) | Page::MarkerShape(i) | Page::MarkerFill(i)),
         ) => i < rule_count,
         _ => false,
     };
@@ -1678,6 +1676,9 @@ pub(super) fn show_panel(
         (Panel::Layers, Some(LayerRef::Vector(_))) if page == Some(Page::Mask) => {
             ("pad-mask", rules::MASK, Some(name))
         }
+        (Panel::Layers, Some(LayerRef::Vector(_))) if page == Some(Page::LabelText) => {
+            ("pad-label-text", label_text::LABEL_TEXT, Some(name))
+        }
         (Panel::Layers, Some(LayerRef::Vector(_))) if page == Some(Page::NewField) => {
             ("pad-new-field", fields::NEW_FIELD, Some(name))
         }
@@ -1686,9 +1687,6 @@ pub(super) fn show_panel(
             field_name.as_deref().unwrap_or_default(),
             Some(name),
         ),
-        (Panel::Layers, Some(LayerRef::Vector(_))) if matches!(page, Some(Page::Condition(_))) => {
-            ("pad-condition", filter::ADD_CONDITION, rule_name.as_deref())
-        }
         (Panel::Layers, Some(LayerRef::Vector(_))) if matches!(page, Some(Page::Symbols(_))) => {
             ("pad-symbols", rules::SYMBOLS, rule_name.as_deref())
         }
@@ -1762,12 +1760,8 @@ pub(super) fn show_panel(
             state.pad.page = Some(if vector { Page::Classify } else { Page::Stops });
         } else if row.back && matches!(page, Some(Page::RampLabels(_))) {
             state.pad.page = Some(Page::Ramps);
-        } else if let (
-            true,
-            Some(
-                Page::Condition(i) | Page::Symbols(i) | Page::MarkerShape(i) | Page::MarkerFill(i),
-            ),
-        ) = (row.back, page)
+        } else if let (true, Some(Page::Symbols(i) | Page::MarkerShape(i) | Page::MarkerFill(i))) =
+            (row.back, page)
         {
             state.pad.page = Some(Page::Rule(i));
         } else if row.back && page.is_some() {
@@ -1807,7 +1801,6 @@ pub(super) fn show_panel(
                     fields::field_body(ui, state, controls, id, i);
                 }
                 Some(Page::Rule(i)) => rules::rule_body(ui, state, controls, id, i),
-                Some(Page::Condition(i)) => filter::condition_body(ui, state, controls, id, i),
                 Some(Page::Symbols(i)) => rules::symbols_body(ui, state, controls, id, i),
                 Some(Page::MarkerShape(i)) => rules::shape_body(ui, state, controls, id, i),
                 Some(Page::MarkerFill(i)) => rules::marker_fill_body(ui, state, controls, id, i),
@@ -1817,6 +1810,7 @@ pub(super) fn show_panel(
                 }
                 Some(Page::RampLabels(i)) => raster::labels_body(ui, state, controls, i),
                 Some(Page::Mask) => rules::mask_body(ui, state, controls, id),
+                Some(Page::LabelText) => fonts::text_body(ui, state, controls, id),
                 Some(Page::Table) => {}
                 _ => vector_body(ui, state, controls, id),
             },
@@ -1911,7 +1905,12 @@ fn show_card(
         }
         let row = widgets::title_row_with(ui, controls, head.title, head.back, sheet, head.action);
         on_title(state, &row);
+        let low = sheet && state.pad.sheet_offset > -rects.sheet_rise + 0.5;
+        ctx.data_mut(|d| d.insert_temp(low_id(), low));
         if sheet {
+            if take_raise(ctx) {
+                state.pad.sheet_offset = -rects.sheet_rise;
+            }
             sheet_drag(ui, &mut state.pad, &row.bar, rects);
             if state.pad.sheet_offset >= rects.sheet_travel {
                 return;
@@ -1953,6 +1952,29 @@ fn show_card(
             .insert(key, ROW + fixed + out.content_size.y);
     });
     rect
+}
+
+fn raise_id() -> egui::Id {
+    egui::Id::new("pad-raise-sheet")
+}
+
+/// The panel is a sheet below its full height.
+fn low_id() -> egui::Id {
+    egui::Id::new("pad-sheet-low")
+}
+
+/// Raises the sheet to its full height in the next frame, for a field that
+/// is under the keyboard. Returns true if the sheet was below its full
+/// height.
+pub fn raise_sheet(ctx: &egui::Context) -> bool {
+    ctx.data_mut(|d| d.insert_temp(raise_id(), true));
+    ctx.request_repaint();
+    ctx.data(|d| d.get_temp(low_id())).unwrap_or(false)
+}
+
+fn take_raise(ctx: &egui::Context) -> bool {
+    ctx.data_mut(|d| d.remove_temp::<bool>(raise_id()))
+        .unwrap_or(false)
 }
 
 /// Moves the sheet with a drag on its title row. At the end of the drag, the

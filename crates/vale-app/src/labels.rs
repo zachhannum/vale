@@ -46,6 +46,21 @@ pub fn clip_to_masks(layers: &mut [PageLayer<'_>], masks: &FrameMasks, target: F
     }
 }
 
+/// The labeler style of the text of class `c`.
+pub fn text_style(c: &StyleClass, fonts: &mut Fonts) -> TextStyle {
+    TextStyle {
+        weight: c.weight,
+        italic: c.italic,
+        letter_spacing: c.letter_spacing * c.size,
+        caps: match c.case {
+            TextCase::SmallCaps => Caps::Small,
+            TextCase::AllSmallCaps => Caps::AllSmall,
+            _ => Caps::Normal,
+        },
+        ..TextStyle::new(crate::fonts::family(c.font.as_deref(), fonts), c.size)
+    }
+}
+
 /// Places labels for the visible layers.
 ///
 /// `layers` runs from the bottom of the drawing to the top. `classes` holds the label classes of
@@ -83,17 +98,7 @@ pub fn place(
             let class = label_classes.len();
             label_classes.push(LabelClass {
                 name: c.name.clone(),
-                style: TextStyle {
-                    weight: c.weight,
-                    italic: c.italic,
-                    letter_spacing: c.letter_spacing * c.size,
-                    caps: match c.case {
-                        TextCase::SmallCaps => Caps::Small,
-                        TextCase::AllSmallCaps => Caps::AllSmall,
-                        _ => Caps::Normal,
-                    },
-                    ..TextStyle::new(crate::fonts::family(c.font.as_deref(), fonts), c.size)
-                },
+                style: text_style(c, fonts),
                 priority: c.priority,
                 margin: c.buffer,
                 placement: placement(c, pl.kind),

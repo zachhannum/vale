@@ -116,7 +116,7 @@ pub(super) fn hit(
 
 /// Adds a control to the list, unless a scroll area cuts it to less than
 /// the touch size.
-fn push(ui: &egui::Ui, controls: &mut Controls, rect: Rect, name: &str) {
+pub(crate) fn push(ui: &egui::Ui, controls: &mut Controls, rect: Rect, name: &str) {
     let whole = rect;
     let rect = rect.intersect(ui.clip_rect());
     let cut = |whole: f32, part: f32| part < TOUCH.min(whole);
@@ -203,6 +203,79 @@ pub fn segments(
         );
         if resp.clicked() && !on {
             chosen = Some(index);
+        }
+    }
+    chosen
+}
+
+/// The font of a small segmented control.
+fn small_segment_font() -> egui::FontId {
+    egui::FontId::proportional(13.0)
+}
+
+/// The padding of the track of a small segmented control.
+const SMALL_TRACK_PAD: f32 = 3.0;
+
+/// The width of a small segmented control with these labels.
+pub fn small_segments_width(ui: &egui::Ui, labels: &[&str]) -> f32 {
+    let widths = labels
+        .iter()
+        .map(|label| text_width(ui, label, small_segment_font()) + 24.0);
+    widths.sum::<f32>() + 2.0 * SMALL_TRACK_PAD
+}
+
+/// A small segmented control on a dark track, for a choice in a row or a
+/// title. The track is `rect`, and each item takes a touch of at least the
+/// touch size. Returns the item that the user chose.
+pub fn small_segments(
+    ui: &egui::Ui,
+    controls: &mut Controls,
+    rect: Rect,
+    labels: &[&str],
+    active: usize,
+) -> Option<usize> {
+    small_segments_named(ui, controls, rect, (labels, labels), active)
+}
+
+/// A small segmented control whose items have the control names `names`.
+pub fn small_segments_named(
+    ui: &egui::Ui,
+    controls: &mut Controls,
+    rect: Rect,
+    (labels, names): (&[&str], &[&str]),
+    active: usize,
+) -> Option<usize> {
+    let painter = ui.painter();
+    painter.rect_filled(rect, theme::CONTROL_RADIUS, Color32::from_black_alpha(77));
+    let inner = rect.shrink(SMALL_TRACK_PAD);
+    let total: f32 = labels
+        .iter()
+        .map(|l| text_width(ui, l, small_segment_font()) + 24.0)
+        .sum();
+    let scale = inner.width() / total.max(1.0);
+    let mut left = inner.left();
+    let mut chosen = None;
+    for (i, label) in labels.iter().enumerate() {
+        let w = (text_width(ui, label, small_segment_font()) + 24.0) * scale;
+        let item = Rect::from_min_size(pos2(left, inner.top()), vec2(w, inner.height()));
+        left += w;
+        let touch = Rect::from_center_size(item.center(), vec2(w, item.height().max(TOUCH)));
+        let on = i == active;
+        let name = names.get(i).unwrap_or(label);
+        let resp = hit(ui, controls, touch, name, Sense::click(), true, Some(on));
+        if on || resp.is_pointer_button_down_on() {
+            ui.painter().rect_filled(item, 8.0, theme::raise());
+        }
+        let color = if on { theme::TEXT } else { theme::MUTE };
+        ui.painter().text(
+            item.center(),
+            Align2::CENTER_CENTER,
+            *label,
+            small_segment_font(),
+            color,
+        );
+        if resp.clicked() && !on {
+            chosen = Some(i);
         }
     }
     chosen
@@ -1307,6 +1380,12 @@ pub fn field_at(
         .text_color(color)
         .vertical_align(egui::Align::Center);
     let mut resp = ui.put(inner, edit);
+    let shown = text.clone();
+    resp.widget_info(|| {
+        let mut info = egui::WidgetInfo::text_edit(true, &shown, &shown, "");
+        info.label = Some(name.to_owned());
+        info
+    });
     push(ui, controls, field, name);
     if resp.long_touched() {
         resp.surrender_focus();
@@ -1318,7 +1397,7 @@ pub fn field_at(
             *text = pasted.trim().to_owned();
             resp.mark_changed();
         }
-        None => {}
+        Some(EditAction::Cut) | None => {}
     }
     resp
 }
@@ -1335,6 +1414,7 @@ pub fn focus_all(ui: &egui::Ui, field: &Response, text: &str) {
 }
 
 /// The names of the items of the edit menu of a field.
+pub const CUT: &str = "Cut";
 pub const COPY: &str = "Copy";
 pub const PASTE: &str = "Paste";
 /// The width of an item of the edit menu.
@@ -1343,7 +1423,8 @@ const EDIT_ITEM: f32 = 88.0;
 const EDIT_GAP: f32 = 6.0;
 
 /// The item of the edit menu that the user tapped.
-enum EditAction {
+pub enum EditAction {
+    Cut,
     Copy,
     Paste(String),
 }
@@ -1360,9 +1441,20 @@ fn edit_menu_id() -> egui::Id {
 }
 
 /// Opens the edit menu of a field after a long press.
-fn open_edit_menu(ctx: &egui::Context, field: egui::Id, rect: Rect) {
+pub fn open_edit_menu(ctx: &egui::Context, field: egui::Id, rect: Rect) {
     let menu = EditMenu { field, rect };
     ctx.data_mut(|data| data.insert_temp(edit_menu_id(), menu));
+}
+
+/// Closes the edit menu.
+pub fn close_edit_menu(ctx: &egui::Context) {
+    ctx.data_mut(|data| data.remove::<EditMenu>(edit_menu_id()));
+}
+
+/// True if the edit menu of field `field` is open.
+pub fn edit_menu_open(ctx: &egui::Context, field: egui::Id) -> bool {
+    let menu: Option<EditMenu> = ctx.data(|data| data.get_temp(edit_menu_id()));
+    menu.is_some_and(|menu| menu.field == field)
 }
 
 /// The open edit menu in the last frame. A press on it does not close the
@@ -1381,12 +1473,24 @@ fn edit_menu(
     field_id: egui::Id,
     field: Rect,
 ) -> Option<EditAction> {
+    edit_menu_items(ui, controls, field_id, field, &[COPY, PASTE])
+}
+
+/// The edit menu of a field with `items`, a list of `CUT`, `COPY`, and
+/// `PASTE`, above `field` or below it at the top of the screen.
+pub fn edit_menu_items(
+    ui: &egui::Ui,
+    controls: &mut Controls,
+    field_id: egui::Id,
+    field: Rect,
+    items: &[&str],
+) -> Option<EditAction> {
     let ctx = ui.ctx();
     let menu: EditMenu = ctx.data(|data| data.get_temp(edit_menu_id()))?;
     if menu.field != field_id {
         return None;
     }
-    let size = vec2(2.0 * EDIT_ITEM, TOUCH);
+    let size = vec2(items.len() as f32 * EDIT_ITEM, TOUCH);
     let screen = ctx.viewport_rect();
     let x =
         (field.center().x - size.x / 2.0).clamp(screen.left() + PAD, screen.right() - PAD - size.x);
@@ -1419,12 +1523,14 @@ fn edit_menu(
         radius,
         |ui| {
             ui.painter().rect_filled(rect, radius, theme::menu());
-            let x = rect.center().x;
-            let divider = [pos2(x, rect.top() + 10.0), pos2(x, rect.bottom() - 10.0)];
-            ui.painter()
-                .line_segment(divider, egui::Stroke::new(1.0, theme::divider()));
-            let items = [(COPY, true), (PASTE, can_paste)];
-            for (i, (item, enabled)) in items.into_iter().enumerate() {
+            for i in 1..items.len() {
+                let x = rect.left() + i as f32 * EDIT_ITEM;
+                let divider = [pos2(x, rect.top() + 10.0), pos2(x, rect.bottom() - 10.0)];
+                ui.painter()
+                    .line_segment(divider, egui::Stroke::new(1.0, theme::divider()));
+            }
+            for (i, &item) in items.iter().enumerate() {
+                let enabled = item != PASTE || can_paste;
                 let at = Rect::from_min_size(
                     pos2(rect.left() + i as f32 * EDIT_ITEM, rect.top()),
                     vec2(EDIT_ITEM, TOUCH),
@@ -1440,8 +1546,9 @@ fn edit_menu(
                     color,
                 );
                 if resp.clicked() {
-                    action = Some(match i {
-                        0 => EditAction::Copy,
+                    action = Some(match item {
+                        CUT => EditAction::Cut,
+                        COPY => EditAction::Copy,
                         _ => match crate::clipboard::get() {
                             Some(text) => EditAction::Paste(text),
                             None => continue,
@@ -1653,8 +1760,6 @@ pub fn key_field(
     keys: Keys,
     valid: impl Fn(&str) -> bool,
 ) -> Option<String> {
-    let ctx = ui.ctx().clone();
-    let id = ui.id().with(name);
     let (field, right) = match keys {
         Keys::Hex => (form_row(ui, label), false),
         Keys::Number => {
@@ -1670,6 +1775,34 @@ pub fn key_field(
             (field, true)
         }
     };
+    key_field_at(
+        ui,
+        controls,
+        (field, right),
+        name,
+        suffix,
+        shown,
+        keys,
+        valid,
+    )
+}
+
+/// The field of `key_field` at `field`, with no row. With `right`, the
+/// number is at the right of the field, with `suffix` after it, and the
+/// field has a fill only while its keypad is open.
+#[allow(clippy::too_many_arguments)]
+pub fn key_field_at(
+    ui: &egui::Ui,
+    controls: &mut Controls,
+    (field, right): (Rect, bool),
+    name: &str,
+    suffix: &str,
+    shown: &str,
+    keys: Keys,
+    valid: impl Fn(&str) -> bool,
+) -> Option<String> {
+    let ctx = ui.ctx().clone();
+    let id = ui.id().with(name);
     let resp = hit(ui, controls, field, name, Sense::click(), true, None);
     let mut edit = key_edit(&ctx).filter(|edit| edit.field == id);
     if resp.long_touched() {
@@ -1707,7 +1840,7 @@ pub fn key_field(
             }
             out = Some(text);
         }
-        None => {}
+        Some(EditAction::Cut) | None => {}
     }
     if let Some(edit) = edit.as_mut().filter(|edit| edit.changed) {
         edit.changed = false;
@@ -1965,6 +2098,51 @@ pub fn chips(
             chosen = Some(index);
         }
     }
+    chosen
+}
+
+/// One row of chips that scrolls sideways, as wide as the form. Each chip
+/// is a pair of a control name and a text. Returns the chip that the user
+/// tapped.
+pub fn chip_row(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    id: egui::Id,
+    chips: &[(String, String)],
+) -> Option<usize> {
+    let mut chosen = None;
+    egui::ScrollArea::horizontal()
+        .id_salt(id)
+        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+        .show(ui, |ui| {
+            let mut at = ui.cursor().min;
+            for (index, (name, text)) in chips.iter().enumerate() {
+                let wide = text_width(ui, text, theme::body()) + 2.0 * CHIP_PAD;
+                let rect = Rect::from_min_size(at, vec2(wide.max(TOUCH), TOUCH));
+                at.x = rect.right();
+                let resp = hit(ui, controls, rect, name, Sense::click(), true, None);
+                let back = rect.shrink(HIGHLIGHT_INSET);
+                let fill = if resp.is_pointer_button_down_on() {
+                    theme::raise()
+                } else {
+                    theme::track()
+                };
+                ui.painter().rect_filled(back, theme::CONTROL_RADIUS, fill);
+                let painter = ui.painter();
+                painter.text(
+                    rect.center(),
+                    Align2::CENTER_CENTER,
+                    text,
+                    theme::body(),
+                    theme::TEXT,
+                );
+                if resp.clicked() {
+                    chosen = Some(index);
+                }
+            }
+            let left = ui.cursor().left();
+            ui.allocate_exact_size(vec2(at.x - left, TOUCH), Sense::hover());
+        });
     chosen
 }
 

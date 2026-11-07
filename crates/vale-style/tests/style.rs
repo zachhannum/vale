@@ -159,7 +159,7 @@ fn the_json_has_a_version() {
     let json = LayerStyle::default_for(GeometryKind::Line, 0, &[]).to_json();
     let root: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(root["version"], STYLE_VERSION);
-    assert_eq!(STYLE_VERSION, 6);
+    assert_eq!(STYLE_VERSION, 7);
 }
 
 #[test]
@@ -250,11 +250,11 @@ fn json_errors() {
         root.to_string()
     };
     let newer = edit(&|m| {
-        m.insert("version".into(), 7.into());
+        m.insert("version".into(), 8.into());
     });
     assert_eq!(
         LayerStyle::from_json(&newer),
-        Err(StyleError::Version(Some(7)))
+        Err(StyleError::Version(Some(8)))
     );
     let none = edit(&|m| {
         m.remove("version");
@@ -471,8 +471,8 @@ fn solid_json_is_unchanged() {
     assert_eq!(Stroke::solid(BLUE, 2.0).kind, StrokeKind::default());
     let json = line_with(StrokeKind::Solid).to_json();
     let expected = concat!(
-        r##"{"label":{"color":"#2864a0","enabled":false,"field":null,"font":null,"italic":true,"priority_field":null,"size":11.0},"##,
-        r##""rules":[{"filter":"","name":"Default","symbolizers":[{"color":"#0000ff","type":"stroke","width":2.0}]}],"version":6}"##,
+        r##"{"label":{"color":"#2864a0","enabled":false,"font":null,"italic":true,"priority_field":null,"size":11.0,"text":""},"##,
+        r##""rules":[{"filter":"","name":"Default","symbolizers":[{"color":"#0000ff","type":"stroke","width":2.0}]}],"version":7}"##,
     );
     assert_eq!(json, expected);
 }
@@ -933,4 +933,66 @@ fn the_marker_fill_kind_changes_the_fill_and_the_hatch() {
     assert_eq!(lines.marker_fill_kind(), None);
     lines.set_marker_fill_kind(FillKind::Hatch);
     assert!(lines.symbolizers.is_empty());
+}
+
+#[test]
+fn label_class_rename_changes_text_filter_and_priority() {
+    let mut c = vale_style::LabelClass::new("Cities", GeometryKind::Point, 0).unwrap();
+    c.text = "concat(name, ' ' || pop)".to_owned();
+    c.filter = "pop > 1000".to_owned();
+    c.priority_field = Some("pop".to_owned());
+    c.rename_field("pop", "people");
+    assert_eq!(c.text, "concat(name, ' ' || people)");
+    assert_eq!(c.filter, "people > 1000");
+    assert_eq!(c.priority_field.as_deref(), Some("people"));
+}
+
+#[test]
+fn layer_style_rename_changes_rules_and_label() {
+    let fields = vec!["name".to_owned()];
+    let mut s = LayerStyle::default_for(GeometryKind::Point, 0, &fields);
+    s.label.priority_field = Some("pop".to_owned());
+    s.label.text = "concat(name, ' ' || pop)".to_owned();
+    let rule = &mut s.style.rules[0];
+    rule.filter = Filter::new("pop > 10");
+    rule.symbolizers.push(Symbolizer::Marker {
+        radius: Property::expression("sqrt(pop)", 2.0),
+        shape: MarkerShape::Circle,
+        fill: None,
+        hatch: None,
+        stroke: None,
+    });
+    s.rename_field("pop", "people");
+    s.rename_field("name", "title");
+    let rule = &s.style.rules[0];
+    assert_eq!(rule.filter.source().unwrap().text(), "people > 10");
+    let Some(Symbolizer::Marker { radius, .. }) = rule.symbolizers.last() else {
+        panic!("not a marker");
+    };
+    assert_eq!(radius.source().unwrap().text(), "sqrt(people)");
+    assert_eq!(s.label.priority_field.as_deref(), Some("people"));
+    assert_eq!(s.label.text, "concat(title, ' ' || people)");
+}
+
+#[test]
+fn a_version_6_label_field_reads_as_text() {
+    let v6 = concat!(
+        r##"{"label":{"color":"#2864a0","enabled":true,"field":"Name 2","italic":true,"priority_field":null,"size":11.0},"##,
+        r##""rules":[{"filter":"","name":"Default","symbolizers":[{"color":"#0000ff","type":"stroke","width":2.0}]}],"version":6}"##,
+    );
+    let style = LayerStyle::from_json(v6).unwrap();
+    assert_eq!(style.label.text, "\"Name 2\"");
+    let plain = LayerStyle::from_json(&v6.replace("Name 2", "name")).unwrap();
+    assert_eq!(plain.label.text, "name");
+    let none = LayerStyle::from_json(&v6.replace("\"Name 2\"", "null")).unwrap();
+    assert_eq!(none.label.text, "");
+}
+
+#[test]
+fn label_text_round_trips() {
+    let mut s = LayerStyle::default_for(GeometryKind::Point, 0, &[]);
+    s.label.text = "concat(name, ' (' || round(elevation) || ' m)')".to_owned();
+    let json = s.to_json();
+    assert!(json.contains("\"version\":7"));
+    assert_eq!(LayerStyle::from_json(&json).unwrap(), s);
 }

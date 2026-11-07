@@ -58,6 +58,8 @@ struct ValeApp {
     font_picker: Option<crate::font_picker::FontPicker>,
     #[cfg(target_os = "ios")]
     _lifecycle: Option<crate::lifecycle::Observer>,
+    #[cfg(target_os = "ios")]
+    _keyboard: Option<crate::keyboard::uikit::Observer>,
 }
 
 impl eframe::App for ValeApp {
@@ -417,6 +419,8 @@ pub fn run_window(
         font_picker: None,
         #[cfg(target_os = "ios")]
         _lifecycle: None,
+        #[cfg(target_os = "ios")]
+        _keyboard: None,
     };
     eframe::run_native(
         "Vale",
@@ -454,6 +458,9 @@ pub fn run_window(
                     let queue = crate::pen::PenQueue::default();
                     app.state.borrow_mut().globe.pen.queue = Some(queue.clone());
                     crate::pen::uikit::install(handle.ui_view, cc.egui_ctx.clone(), queue);
+                    let ctx = cc.egui_ctx.clone();
+                    let wake = Box::new(move || ctx.request_repaint());
+                    app._keyboard = crate::keyboard::uikit::Observer::new(handle.ui_view, wake);
                     let (picked, ctx) = (app.picked.clone(), cc.egui_ctx.clone());
                     let exports = app.exports.clone();
                     app.picker = handle.ui_view_controller.and_then(|controller| {
