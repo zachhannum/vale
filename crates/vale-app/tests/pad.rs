@@ -4420,6 +4420,114 @@ fn the_five_iphone_screens_render_at_393_by_852() {
     }
 }
 
+/// The phone with the screen of a mockup of the atlas, the attribute
+/// table, the form of a new point, or the start screen.
+fn phone_screen(name: &str, dir: &std::path::Path) -> Pad {
+    let ((width, height), [top, right, bottom, left]) = IPHONES[0];
+    let mut state = state();
+    state.globe.set_face_size(64);
+    let setup = egui_kittest::wgpu::default_wgpu_setup();
+    let mut h = headless::ui_harness(state, (width, height), 1.0, setup);
+    let insets = egui::epaint::MarginF32 {
+        left,
+        right,
+        top,
+        bottom,
+    };
+    h.input_mut().safe_area_insets = Some(egui::SafeAreaInsets(insets));
+    h.run_steps(3);
+    h.state_mut().add_height();
+    h.run_steps(2);
+    match name {
+        "PhoneAtlas" | "PhoneAtlasFrame" => {
+            let state = h.state_mut();
+            state.workspace = Workspace::Atlas;
+            vale_app::ui::atlas::add_frame(state).unwrap();
+            if name == "PhoneAtlas" {
+                vale_app::ui::atlas::clear_selection(state);
+            }
+        }
+        "PhoneData" => {
+            let places = vector(&h, "Places");
+            h.state_mut().open_table(places);
+        }
+        "PhonePoint" => {
+            let places = vector(&h, "Places");
+            h.state_mut().select(Some(LayerRef::Vector(places)));
+            h.run_steps(2);
+            quick_tap(&mut h, VECTOR);
+            h.state_mut().globe.snap.on = false;
+            tap(&mut h, select::ATTRIBUTES);
+            h.state_mut().pad.sheet_offset = h.state().pad.rects.unwrap().sheet_travel;
+            h.run_steps(2);
+            let screen = h.state().pad.rects.unwrap().screen;
+            pen_tap_at(&mut h, screen.center());
+            let fields = h.state().doc.project.layer(places).unwrap().field_names();
+            tap(&mut h, &fields[0]);
+        }
+        "PhoneStart" => {
+            for world in ["Kareth", "Isles of Morrow", "The Sundering", "Tidewater"] {
+                let path = vale_app::session::new_project_path(dir, world);
+                let world = World {
+                    name: world.to_string(),
+                    ..World::default()
+                };
+                let project = vale_store::Project::new(world);
+                vale_store::ProjectFile::create(&path, &project).unwrap();
+            }
+            let state = h.state_mut();
+            state.projects = Locations::single(dir);
+            state.show_projects();
+        }
+        _ => unreachable!("{name}"),
+    }
+    h.run_steps(3);
+    h
+}
+
+#[test]
+#[ignore = "gpu"]
+fn the_atlas_the_table_the_point_card_and_the_start_screen_render_at_393_by_852() {
+    let _gpu = one_gpu_test();
+    std::fs::create_dir_all("../../target/app").unwrap();
+    let (_, [top, right, bottom, left]) = IPHONES[0];
+    for name in [
+        "PhoneAtlas",
+        "PhoneAtlasFrame",
+        "PhoneData",
+        "PhonePoint",
+        "PhoneStart",
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut h = phone_screen(name, dir.path());
+        // The globe goes to the GPU in parts. Each render sends one part.
+        let mut image = h.render().unwrap();
+        for _ in 0..10_000 {
+            let globe = &h.state().globe;
+            if !globe.busy() && !globe.loading() {
+                break;
+            }
+            h.step();
+            image = h.render().unwrap();
+        }
+        assert_eq!(image.dimensions(), (393, 852), "{name}");
+        image
+            .save(format!("../../target/app/test-{name}.png"))
+            .unwrap();
+        if name == "PhoneStart" {
+            continue;
+        }
+        for c in &h.state().pad.controls {
+            let r = c.rect;
+            let inside = r.top() >= top
+                && r.bottom() <= 852.0 - bottom
+                && r.left() >= left
+                && r.right() <= 393.0 - right;
+            assert!(inside, "{name}: {} is {r:?}", c.name);
+        }
+    }
+}
+
 #[test]
 fn the_readout_shows_the_place_and_the_elevation() {
     assert_eq!(
@@ -7495,8 +7603,7 @@ fn a_stroke_that_extends_a_line_does_not_change_the_selection_or_the_inspector()
 
 #[test]
 fn a_new_point_is_not_under_the_inspector_or_the_keyboard() {
-    let phone = (393.0, 852.0);
-    for size in [BOARDS[0], BOARDS[1], phone] {
+    for size in [BOARDS[0], BOARDS[1]] {
         let what = format!("{size:?}");
         let mut h = pad(size);
         let id = new_point_layer(&mut h);
@@ -7508,28 +7615,112 @@ fn a_new_point_is_not_under_the_inspector_or_the_keyboard() {
         tap(&mut h, select::FOCUS_NEW);
         // A point low on the screen is under the keyboard. A point next to
         // the panel is too near it.
-        let sheet = h.state().pad.rects.unwrap().sheet.is_some();
-        let near = if sheet {
-            pos2(rect.center().x, inspector.top() - 6.0)
-        } else {
-            pos2(inspector.left() - 6.0, rect.center().y)
-        };
-        // On a phone, the sheet covers the place of the keyboard.
+        let near = pos2(inspector.left() - 6.0, rect.center().y);
         let low = pos2(rect.center().x, keyboard + 20.0);
-        let taps = if sheet { vec![near] } else { vec![low, near] };
-        for at in taps {
+        for at in [low, near] {
             pen_tap_at(&mut h, at);
             h.run_steps(2);
-            let point = match &line_features(&h, id).last().unwrap().geometry {
-                vale_store::Geometry::Points(points) => points[0],
-                _ => panic!("not a point"),
-            };
-            let dir = vale_app::globe::math::lonlat_to_dir(point[0], point[1]);
-            let pos = h.state().globe.project(dir).unwrap();
+            let pos = last_point(&h, id);
             assert!(!inspector.expand(20.0).contains(pos), "{what}: {pos:?}");
             assert!(pos.y < keyboard, "{what}: {pos:?}");
         }
     }
+}
+
+/// The place of the last point of a layer on the screen.
+fn last_point(h: &Pad, id: vale_store::LayerId) -> Pos2 {
+    let point = match &line_features(h, id).last().unwrap().geometry {
+        vale_store::Geometry::Points(points) => points[0],
+        _ => panic!("not a point"),
+    };
+    let dir = vale_app::globe::math::lonlat_to_dir(point[0], point[1]);
+    h.state()
+        .globe
+        .project(dir)
+        .expect("the point does not show")
+}
+
+#[test]
+fn on_an_iphone_a_new_point_has_a_card_below_the_top_row_and_stays_above_the_keyboard() {
+    use vale_app::ui::pad::geometry::{GAP, MARGIN};
+    use vale_app::ui::pad::point_card::{ADD, CANCEL};
+    let mut h = phone_pad();
+    let places = vector(&h, "Places");
+    h.state_mut().select(Some(LayerRef::Vector(places)));
+    h.run_steps(2);
+    quick_tap(&mut h, VECTOR);
+    assert_eq!(h.state().globe.tool, Tool::Point);
+    h.state_mut().globe.snap.on = false;
+    tap(&mut h, select::ATTRIBUTES);
+    assert!(h.state().pad.rects.unwrap().sheet.is_some());
+    let fields = h.state().doc.project.layer(places).unwrap().field_names();
+    let screen = h.state().pad.rects.unwrap().screen;
+    let keyboard = vale_app::ui::new_feature::keyboard_top(screen);
+    assert_eq!(keyboard, 852.0 - vale_app::ui::new_feature::PHONE_KEYBOARD);
+
+    // The sheet at its title row leaves the globe free.
+    h.state_mut().pad.sheet_offset = h.state().pad.rects.unwrap().sheet_travel;
+    h.run_steps(2);
+
+    // A point low on the screen, where the keyboard comes up. The card of
+    // the point is directly below the top row, at the full width inside the
+    // margins, and the sheet closes.
+    let before = line_features(&h, places).len();
+    let low = pos2(screen.center().x, keyboard + 60.0);
+    pen_tap_at(&mut h, low);
+    assert_eq!(line_features(&h, places).len(), before + 1);
+    let rects = h.state().pad.rects.unwrap();
+    assert_eq!(rects.sheet, None);
+    let card = panel(&h, Panel::Attributes).expect("no card");
+    assert_eq!(card.top(), rects.workspace.bottom() + GAP);
+    assert_eq!(card.left(), screen.left() + MARGIN);
+    assert_eq!(card.right(), screen.right() - MARGIN);
+    assert!(card.bottom() < keyboard - 48.0, "{card:?}");
+    for name in [ADD, CANCEL, fields[0].as_str()] {
+        let rect = control(&h, name).unwrap_or_else(|| panic!("no control `{name}`"));
+        assert!(card.contains_rect(rect), "{name}");
+    }
+    assert!(control(&h, vale_app::ui::table::SHOW_IN_TABLE).is_none());
+    check_controls(&h, "point card");
+    // With no keyboard, the point keeps its place.
+    assert!(no_keyboard(&h));
+    assert!((last_point(&h, places) - low).length() < 2.0);
+    // A field takes the keyboard, and the point moves between the card and
+    // the keyboard.
+    tap(&mut h, &fields[0]);
+    assert!(!no_keyboard(&h));
+    let pos = last_point(&h, places);
+    assert!(pos.y > card.bottom() && pos.y < keyboard, "{pos:?}");
+    screenshot::save(&mut h, "phone-point-card");
+    // Cancel removes the point.
+    tap(&mut h, CANCEL);
+    assert_eq!(line_features(&h, places).len(), before);
+    assert!(h.state().new_feature.is_none());
+    assert!(no_keyboard(&h));
+
+    // With "Focus new features", the keyboard comes up with the card. A
+    // point under the place of the card moves below the card.
+    h.state_mut().tools.focus_new = true;
+    let high = pos2(screen.center().x, card.center().y);
+    pen_tap_at(&mut h, high);
+    h.run_steps(2);
+    assert!(!no_keyboard(&h));
+    let card = panel(&h, Panel::Attributes).expect("no card");
+    let pos = last_point(&h, places);
+    assert!(
+        pos.y > card.bottom() && pos.y < keyboard,
+        "{pos:?} {card:?}"
+    );
+    type_in_focus(&mut h, "Ferrow");
+    tap(&mut h, ADD);
+    assert!(h.state().new_feature.is_none());
+    let feature = line_features(&h, places).pop().unwrap();
+    assert_eq!(line_features(&h, places).len(), before + 1);
+    let name = feature.attributes[&fields[0]].label().unwrap_or_default();
+    assert!(name.ends_with("Ferrow"), "{name}");
+    // The sheet of the inspector shows its title row only.
+    let rects = h.state().pad.rects.unwrap();
+    assert_eq!(h.state().pad.sheet_offset, rects.sheet_travel);
 }
 
 #[test]
@@ -10440,6 +10631,11 @@ fn the_brush_button_of_the_measure_card_opens_the_snapping_settings() {
     }
 }
 
+/// Two cells of a strip are in order: in a column, or in a row.
+fn in_order(a: Rect, b: Rect) -> bool {
+    a.bottom() <= b.top() || a.right() <= b.left()
+}
+
 #[test]
 fn the_measure_cell_and_card_fit_in_the_atlas_on_each_screen() {
     use vale_app::ui::atlas::AtlasTool;
@@ -10449,6 +10645,7 @@ fn the_measure_cell_and_card_fit_in_the_atlas_on_each_screen() {
         h.state_mut().workspace = Workspace::Atlas;
         vale_app::ui::atlas::add_frame(h.state_mut());
         h.run_steps(3);
+        lower_sheet(&mut h);
         let strip = h.state().pad.rects.unwrap().tools;
         let names = ["Frame tool", "Select", "Vertex", "Move", MEASURE];
         for name in names {
@@ -10460,7 +10657,7 @@ fn the_measure_cell_and_card_fit_in_the_atlas_on_each_screen() {
         let cells: Vec<_> = names.iter().filter_map(|name| control(&h, name)).collect();
         assert!(cells.len() > 1, "{what}");
         for pair in cells.windows(2) {
-            assert!(pair[0].bottom() <= pair[1].top(), "{what}");
+            assert!(in_order(pair[0], pair[1]), "{what}");
         }
         tap(&mut h, MEASURE);
         assert!(h.state().measuring(), "{what}");
@@ -10515,6 +10712,7 @@ fn the_measure_cell_and_card_fit_in_the_atlas_on_each_screen() {
             );
         }
         // Frame leaves the tool.
+        lower_sheet(&mut h);
         scroll_strip_to(&mut h, "Frame tool");
         tap(&mut h, "Frame tool");
         assert_eq!(h.state().atlas.tool, AtlasTool::Frame, "{what}");
@@ -10532,16 +10730,18 @@ fn the_vertex_cell_and_card_fit_in_the_atlas_on_each_screen() {
         h.state_mut().workspace = Workspace::Atlas;
         vale_app::ui::atlas::add_frame(h.state_mut());
         h.run_steps(3);
+        lower_sheet(&mut h);
         scroll_strip_to(&mut h, VERTEX);
         tap(&mut h, VERTEX);
         assert_eq!(h.state().atlas.tool, AtlasTool::Vertex, "{what}");
         assert_eq!(toggled(&h, VERTEX), Some(true), "{what}");
         h.state_mut().atlas.vertices = vec![(0, 0)];
         h.run_steps(2);
+        lower_sheet(&mut h);
         let names = [SNAP_TO_LAYOUT, GRID, DELETE_VERTEX, DESELECT];
         let cells = names.map(|name| control(&h, name).unwrap_or_else(|| panic!("{what}: {name}")));
         for pair in cells.windows(2) {
-            assert!(pair[0].bottom() <= pair[1].top(), "{what}");
+            assert!(in_order(pair[0], pair[1]), "{what}");
         }
         let card = cells[0].union(cells[3]);
         let r = h.state().pad.rects.unwrap();
@@ -10584,11 +10784,12 @@ fn the_frame_strip_fits_in_the_atlas_on_each_screen() {
         h.state_mut().workspace = Workspace::Atlas;
         vale_app::ui::atlas::add_frame(h.state_mut());
         h.run_steps(3);
+        lower_sheet(&mut h);
         assert_eq!(h.state().atlas.tool, AtlasTool::Frame, "{what}");
         let names = [SNAP_TO_LAYOUT, GRID, DELETE, DESELECT];
         let cells = names.map(|name| control(&h, name).unwrap_or_else(|| panic!("{what}: {name}")));
         for pair in cells.windows(2) {
-            assert!(pair[0].bottom() <= pair[1].top(), "{what}");
+            assert!(in_order(pair[0], pair[1]), "{what}");
         }
         let card = cells[0].union(cells[3]);
         let r = h.state().pad.rects.unwrap();

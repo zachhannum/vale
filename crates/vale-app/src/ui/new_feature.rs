@@ -5,7 +5,7 @@ use eframe::egui::{self, Rect, pos2};
 use vale_store::{Feature, Field, FieldType, Geometry, GeometryKind, Value};
 
 use super::pad::Panel;
-use super::pad::geometry::Rects;
+use super::pad::geometry::{Rects, WidthClass};
 use super::{AppState, Workspace};
 use crate::globe::PlacedPoint;
 use crate::globe::math::{V3, dir_to_lonlat};
@@ -57,9 +57,20 @@ impl FormField {
 /// that the inspector gives it are one undo step.
 pub struct NewFeature {
     pub feature: FeatureRef,
-    /// The new point, until the globe turns it out from under the inspector
-    /// and the keyboard.
-    show: Option<V3>,
+    /// The new point. A new line or polygon has none.
+    point: Option<V3>,
+    /// The globe turns the point out from under the inspector and the
+    /// keyboard in the next frame.
+    show: bool,
+    /// The keyboard was up in the last frame.
+    keyboard: bool,
+}
+
+impl NewFeature {
+    /// True if the new feature is a point.
+    pub fn is_point(&self) -> bool {
+        self.point.is_some()
+    }
 }
 
 impl AppState {
@@ -99,8 +110,8 @@ impl AppState {
 
     /// Holds the undo step of a new feature open while the inspector takes
     /// its values. Returns false if the inspector is closed or the layer has
-    /// no fields. `show`: the new point.
-    pub(super) fn start_new_feature(&mut self, feature: FeatureRef, show: Option<V3>) -> bool {
+    /// no fields. `point`: the new point.
+    pub(super) fn start_new_feature(&mut self, feature: FeatureRef, point: Option<V3>) -> bool {
         self.drop_focus = true;
         let fields = self
             .doc
@@ -109,8 +120,28 @@ impl AppState {
         if !self.inspector_shown || !fields {
             return false;
         }
-        self.new_feature = Some(NewFeature { feature, show });
+        self.new_feature = Some(NewFeature {
+            feature,
+            point,
+            show: true,
+            keyboard: false,
+        });
         true
+    }
+
+    /// Removes the new feature and ends its undo step. The step then has no
+    /// change.
+    pub fn cancel_new_feature(&mut self) {
+        let Some(new) = self.new_feature.take() else {
+            return;
+        };
+        self.selection_form = None;
+        self.attribute_focus = None;
+        self.drop_focus = true;
+        self.set_feature_selection(Vec::new());
+        let FeatureRef { layer, uuid } = new.feature;
+        self.doc.project.remove_features(layer, &[uuid]);
+        self.end_vector_edit(layer);
     }
 
     /// Ends the undo step of the new feature if the inspector no longer
@@ -148,11 +179,20 @@ pub fn can_take_focus(ctx: &egui::Context) -> bool {
     !ctx.input(|i| i.pointer.any_down() || i.pointer.any_released())
 }
 
-/// The top of the on-screen keyboard of an iPad. Without a report of the
-/// system, this is the top of a keyboard with its row of suggestions.
+/// The height of the keyboard of the system on a phone in portrait, with
+/// its row of suggestions and the bottom band.
+pub const PHONE_KEYBOARD: f32 = 336.0;
+
+/// The top of the on-screen keyboard of the system. Without a report of the
+/// system, this is the top of a keyboard with its row of suggestions: on a
+/// compact screen, a phone keyboard of `PHONE_KEYBOARD` points, and on a
+/// wider screen, an iPad keyboard.
 pub fn keyboard_top(screen: Rect) -> f32 {
     if let Some(cover) = crate::keyboard::cover() {
         return (screen.bottom() - cover).max(screen.top());
+    }
+    if WidthClass::of(screen.width()) == WidthClass::Compact {
+        return screen.bottom() - PHONE_KEYBOARD;
     }
     let part = if screen.width() > screen.height() {
         0.45
@@ -162,21 +202,38 @@ pub fn keyboard_top(screen: Rect) -> f32 {
     screen.top() + part * screen.height()
 }
 
+/// True if the form of the new point is a card below the top row, in
+/// place of the sheet of the inspector. This is so on a compact screen.
+pub fn point_card(state: &AppState, class: WidthClass) -> bool {
+    class == WidthClass::Compact
+        && !state.pad.brush
+        && state.pad.right == Some(Panel::Attributes)
+        && state.new_feature.as_ref().is_some_and(NewFeature::is_point)
+}
+
 /// Turns the globe so that the new point is not under the inspector of the
-/// iPad layout. If a field takes the focus, the point is also above the
-/// keyboard.
-pub fn keep_in_view(state: &mut AppState, rects: &Rects) {
-    let Some(dir) = state.new_feature.as_mut().and_then(|new| new.show.take()) else {
+/// iPad layout. A field that has the keyboard puts the keyboard of the
+/// system at `keyboard_top`, and the point is also above the keyboard. When
+/// the keyboard comes up, the point moves again.
+pub fn keep_in_view(ctx: &egui::Context, state: &mut AppState, rects: &Rects) {
+    let keyboard = ctx.egui_wants_keyboard_input()
+        || (state.selection_form.as_ref()).is_some_and(|f| f.takes_focus());
+    let card = point_card(state, rects.class);
+    let Some(new) = state.new_feature.as_mut() else {
         return;
     };
+    let Some(dir) = new.point else {
+        return;
+    };
+    new.show |= keyboard && !new.keyboard;
+    new.keyboard = keyboard;
+    if !std::mem::take(&mut new.show) {
+        return;
+    }
     let Some(pos) = state.globe.project(dir) else {
         return;
     };
     let screen = rects.screen;
-    let keyboard = state
-        .selection_form
-        .as_ref()
-        .is_some_and(|f| f.takes_focus());
     let bottom = if keyboard {
         keyboard_top(screen)
     } else {
@@ -186,7 +243,9 @@ pub fn keep_in_view(state: &mut AppState, rects: &Rects) {
     let mut free = Rect::from_min_max(top_left, pos2(screen.right(), bottom));
     let panels = &state.pad.panels;
     if let Some((_, panel)) = panels.iter().find(|(p, _)| *p == Panel::Attributes) {
-        if rects.sheet.is_some() {
+        if card {
+            free.min.y = free.min.y.max(panel.bottom());
+        } else if rects.sheet.is_some() {
             free.max.y = free.max.y.min(panel.top());
         } else {
             free.max.x = free.max.x.min(panel.left());

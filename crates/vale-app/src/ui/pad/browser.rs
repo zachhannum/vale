@@ -1,6 +1,6 @@
 //! The start screen in the iPad layout: a grid of cards, one for each
 //! project. A tap on a card opens the world. The button at the corner of a
-//! card opens the menu of its actions.
+//! card, or a long press on the card, opens the menu of its actions.
 
 use std::sync::Arc;
 
@@ -9,7 +9,7 @@ use eframe::egui::{self, Align2, FontId, Order, Rect, pos2, vec2};
 use super::geometry::{self, Bands, GAP, Input, MARGIN, PAD, ROW, TOUCH};
 use super::icons::Icon;
 use super::widgets::{self, BODY_PAD, Controls, PANEL_ROW};
-use super::{rule, theme};
+use super::{HOLD_SLOP, HOLD_TIME, rule, theme};
 use crate::files::Availability;
 use crate::projects::Entry;
 use crate::ui::browser::{
@@ -236,12 +236,23 @@ fn card(
     let active = menu_open.is_some_and(|menu| menu.path == entry.path);
     let name = actions_name(&entry.name);
     let actions = widgets::icon_button_at(ui, controls, button, &name, Icon::More, active, true);
-    if actions.clicked() {
+    let held = state.browser.held.as_ref() == Some(&entry.path);
+    let tapped = open.clicked() && !held;
+    if held && !ui.input(|i| i.pointer.any_down()) {
+        state.browser.held = None;
+    }
+    if !held && open.is_pointer_button_down_on() && long_press(ui) {
+        state.browser.held = Some(entry.path.clone());
+        state.browser.menu = Some(ActionsMenu {
+            path: entry.path.clone(),
+            button: rect,
+        });
+    } else if actions.clicked() {
         state.browser.menu = Some(ActionsMenu {
             path: entry.path.clone(),
             button,
         });
-    } else if open.clicked() {
+    } else if tapped {
         match &entry.error {
             // The card has no room for the whole error.
             Some(error) => {
@@ -250,6 +261,32 @@ fn card(
             }
             None => open_entry(state, entry),
         }
+    }
+}
+
+/// True when the press of the pointer held still for the hold time. Before
+/// that, asks for a frame at the end of the hold time.
+fn long_press(ui: &egui::Ui) -> bool {
+    let press = ui.input(|i| {
+        // The frame of the release still has the press.
+        if !i.pointer.primary_down() {
+            return None;
+        }
+        let (start, origin) = (i.pointer.press_start_time()?, i.pointer.press_origin()?);
+        let pos = i.pointer.interact_pos()?;
+        Some((i.time - start, origin.distance(pos)))
+    });
+    match press {
+        Some((held, moved)) if moved <= HOLD_SLOP && held >= HOLD_TIME => {
+            ui.ctx().request_repaint();
+            true
+        }
+        Some((held, moved)) if moved <= HOLD_SLOP => {
+            let wait = std::time::Duration::from_secs_f64(HOLD_TIME - held);
+            ui.ctx().request_repaint_after(wait);
+            false
+        }
+        _ => false,
     }
 }
 
@@ -284,7 +321,7 @@ fn card_above(ctx: &egui::Context, id: &str, rect: Rect, add_contents: impl FnOn
     ctx.move_to_top(egui::LayerId::new(Order::Foreground, egui::Id::new(id)));
 }
 
-/// The menu of the actions of one project, next to its button.
+/// The menu of the actions of one project, below its button or its card.
 fn actions_menu(
     ctx: &egui::Context,
     state: &mut AppState,
@@ -304,8 +341,8 @@ fn actions_menu(
     let rows = if readable { 3.0 } else { 1.0 };
     let rule_height = if readable { 13.0 } else { 0.0 };
     let size = vec2(MENU_WIDTH, 10.0 + rows * PANEL_ROW + rule_height + 10.0);
-    // The menu opens below the button, or above it near the bottom of the
-    // screen.
+    // The menu opens below the button or the card, or above it near the
+    // bottom of the screen.
     let lowest = screen.bottom() - bands.bottom - MARGIN - size.y;
     let top = if menu.button.bottom() + 4.0 <= lowest {
         menu.button.bottom() + 4.0

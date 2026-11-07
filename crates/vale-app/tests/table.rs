@@ -440,6 +440,78 @@ fn the_controls_of_the_table_are_touch_size_and_a_drag_scrolls_it() {
     assert!(h.state().feature_selection.is_empty());
 }
 
+/// An iPhone 16 in portrait, with its safe area.
+fn phone() -> Pad {
+    let mut h = harness((393.0, 852.0), Layout::Pad);
+    let insets = egui::epaint::MarginF32 {
+        left: 0.0,
+        right: 0.0,
+        top: 59.0,
+        bottom: 34.0,
+    };
+    h.input_mut().safe_area_insets = Some(egui::SafeAreaInsets(insets));
+    h.run_steps(3);
+    h
+}
+
+/// A drag of a finger from `from` by `by`, in eight moves.
+fn drag(h: &mut Pad, from: Pos2, by: egui::Vec2) {
+    touch(h, egui::TouchPhase::Start, from);
+    h.step();
+    for i in 1..=8 {
+        touch(h, egui::TouchPhase::Move, from + by * (i as f32 / 8.0));
+        h.step();
+    }
+    touch(h, egui::TouchPhase::End, from + by);
+    h.run_steps(3);
+}
+
+#[test]
+fn on_an_iphone_the_table_is_a_sheet_that_scrolls_sideways_with_its_header() {
+    let mut h = phone();
+    let (id, uuids) = towns(&mut h, 200, 0);
+    let project = &mut h.state_mut().doc.project;
+    for name in ["kind", "region", "notes"] {
+        project.add_field(id, Field::new(name, FieldType::Text));
+    }
+    h.state_mut().open_table(id);
+    h.run_steps(3);
+    let rects = h.state().pad.rects.unwrap();
+    let sheet = rects.sheet.expect("no sheet");
+    assert_eq!(table_rect(&h), sheet);
+
+    // The first column shows, and the last column is out of the sheet at
+    // the right.
+    let (name, notes) = (sort_name("name"), sort_name("notes"));
+    let cell = |h: &Pad, field: &str, i: usize| control(h, &cell_name(field, uuids[i]));
+    let header = control(&h, &name).expect("no header of the first column");
+    assert_eq!(cell(&h, "name", 2).expect("no cell").left(), header.left());
+    assert!(control(&h, &notes).is_none());
+    assert!(cell(&h, "notes", 2).is_none());
+
+    // A drag to the left on the rows moves the rows and the header, and
+    // selects no row.
+    let from = cell(&h, "name", 2).unwrap().center();
+    drag(&mut h, from, vec2(-600.0, 0.0));
+    assert!(h.state().feature_selection.is_empty());
+    assert!(control(&h, &name).is_none());
+    let moved = control(&h, &notes).expect("no header of the last column");
+    let width = vale_app::ui::table::column_width(FieldType::Text);
+    assert!(moved.width() >= width, "{moved:?}");
+    assert!(moved.right() <= sheet.right(), "{moved:?}");
+    let row = cell(&h, "notes", 2).expect("no cell of the last column");
+    assert_eq!((row.left(), row.width()), (moved.left(), moved.width()));
+    // The header stays at the top of the rows.
+    assert_eq!(moved.top(), header.top());
+
+    // A drag up still scrolls the rows, and the columns keep their place.
+    let from = cell(&h, "notes", 3).unwrap().center();
+    drag(&mut h, from, vec2(0.0, -200.0));
+    assert!(cell(&h, "notes", 0).is_none());
+    assert!(cell(&h, "notes", 10).is_some());
+    assert_eq!(control(&h, &notes).unwrap(), moved);
+}
+
 #[test]
 #[ignore = "gpu"]
 fn manual_the_attribute_table() {

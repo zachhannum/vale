@@ -140,13 +140,16 @@ pub fn open_entry(state: &mut AppState, entry: &Entry) {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ActionsMenu {
     pub path: PathBuf,
-    /// The button that opened the menu.
+    /// The button that opened the menu, or the card of a long press.
     pub button: egui::Rect,
 }
 
 #[derive(Default)]
 pub struct BrowserState {
     pub menu: Option<ActionsMenu>,
+    /// The project of the card whose long press opened the menu, until the
+    /// finger lifts. The end of that press does not open the project.
+    pub held: Option<PathBuf>,
     /// The projects of the folder at the last read.
     pub entries: Vec<Entry>,
     /// The pictures of the entries that the screen showed.
