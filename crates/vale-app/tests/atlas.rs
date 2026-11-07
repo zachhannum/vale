@@ -9262,3 +9262,47 @@ fn the_handles_of_a_frame_are_44_points_apart_at_each_zoom_of_the_page() {
     );
     assert_eq!((after.x0, after.y0), (before.x0, before.y0));
 }
+
+/// The layer of a new color key on a page with one frame. `hide` hides
+/// these layers in the map of the frame first.
+fn new_key_layer(s: &mut AppState, hide: &[vale_store::LayerId]) -> Option<vale_store::LayerId> {
+    atlas::add_frame(s);
+    let page = &s.doc.project.atlas.pages[0];
+    let map = page.frames[0].map;
+    for layer in hide {
+        assert!(s.doc.set_shown(map, *layer, false));
+    }
+    let id = atlas::add_item(s, ItemKind::ColorKey).unwrap();
+    match &s.doc.project.atlas.furniture(id).unwrap().item {
+        vale_store::Furniture::ColorKey(key) => key.layer,
+        other => panic!("{other:?}"),
+    }
+}
+
+/// Adds a raster layer and returns the ID of its layer.
+fn add_raster_layer(s: &mut AppState, name: &str, unit: &str) -> vale_store::LayerId {
+    let p = &mut s.doc.project;
+    let raster = p.add_raster(name.to_string(), 64, unit.to_string(), -100.0, 100.0);
+    p.raster_layer(raster).unwrap().id
+}
+
+#[test]
+fn a_new_color_key_takes_the_height_layer_of_its_frame() {
+    let mut s = state();
+    let height = add_raster_layer(&mut s, "Height", "m");
+    add_raster_layer(&mut s, "Rain", "mm");
+    assert_eq!(new_key_layer(&mut s, &[]), Some(height));
+}
+
+#[test]
+fn a_new_color_key_takes_the_top_raster_layer() {
+    let mut s = state();
+    add_raster_layer(&mut s, "Rain", "mm");
+    let heat = add_raster_layer(&mut s, "Heat", "°C");
+    assert_eq!(new_key_layer(&mut s, &[]), Some(heat));
+    // A layer that the map hides does not count.
+    let mut s = state();
+    let height = add_raster_layer(&mut s, "Height", "m");
+    let rain = add_raster_layer(&mut s, "Rain", "mm");
+    assert_eq!(new_key_layer(&mut s, &[height]), Some(rain));
+}

@@ -17,9 +17,10 @@ use vale_app::scale_bar;
 use vale_render::{FillRule, Item, render_pixmap, render_rgba};
 use vale_sphere::{ProjectionKind, ProjectionSpec};
 use vale_store::{
-    CoordFormat, EdgeOrientation, FrameId, FrameShape, Furniture, FurnitureId, FurnitureText,
-    LegendEntry, LegendItem, NorthArrowItem, PageId, PageUnits, ScaleBarItem, ScaleBarKind,
-    ScaleFit, ScalePosition, ScaleUnit, TextCase, TextItem, TickFrequency,
+    ColorKeyItem, CoordFormat, EdgeOrientation, FrameId, FrameShape, Furniture, FurnitureId,
+    FurnitureText, KeyLayout, LegendEntry, LegendItem, NorthArrowItem, PageId, PageUnits,
+    RasterDisplay, ScaleBarItem, ScaleBarKind, ScaleFit, ScalePosition, ScaleUnit, SecondUnit,
+    TextCase, TextItem, TickFrequency,
 };
 use vale_style::expr::{Filter, Property};
 use vale_style::{
@@ -2652,6 +2653,12 @@ fn furniture_stays_vector_and_text_in_pdf() {
         hide_if_varies: false,
         ..NorthArrowItem::default()
     };
+    let raster = (doc.project).add_raster("Height".to_string(), 64, "m".to_string(), -50.0, 50.0);
+    let key = ColorKeyItem {
+        frame: Some(frame),
+        layer: Some(doc.project.raster_layer(raster).unwrap().id),
+        ..ColorKeyItem::default()
+    };
     let ids = [
         add_item(&mut doc, [20.0, 20.0, 120.0, 40.0], Furniture::Text(text)),
         add_item(
@@ -2668,6 +2675,11 @@ fn furniture_stays_vector_and_text_in_pdf() {
             &mut doc,
             [200.0, 20.0, 230.0, 50.0],
             Furniture::NorthArrow(arrow),
+        ),
+        add_item(
+            &mut doc,
+            [130.0, 150.0, 230.0, 170.0],
+            Furniture::ColorKey(key),
         ),
     ];
     let mut all = Vec::new();
@@ -2695,6 +2707,10 @@ fn furniture_stays_vector_and_text_in_pdf() {
         all.iter().map(describe).collect::<Vec<_>>()
     );
 
+    // The export of a raster layer needs a GPU, so the PDF leaves it out.
+    let map = doc.project.atlas.frame(frame).unwrap().map;
+    let height = doc.project.raster_layer(raster).unwrap().id;
+    assert!(doc.set_shown(map, height, false));
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("page.pdf");
     vale_app::atlas_export::export_pdf(&doc, vec![page], &path).unwrap();
@@ -3233,4 +3249,414 @@ fn a_page_mask_clips_the_fills_and_the_strokes_of_its_layer() {
     let before = vale_render::render_pdf(&unmasked).unwrap();
     assert_eq!(masked::pdf_clips(&pdf).0, masked::pdf_clips(&before).0 + 1);
     assert_eq!(masked::pdf_clips(&pdf).1, masked::pdf_clips(&before).1);
+}
+
+/// A document with one raster layer of `unit` with bands at `stops`, the
+/// first and last of which are the ends of its range, and with `names`.
+/// Returns the document, the pipeline, a frame of its map, and the layer.
+fn key_doc(
+    unit: &str,
+    stops: &[f64],
+    names: &[&str],
+) -> (Document, Pipeline, FrameId, vale_store::LayerId) {
+    let (mut doc, _) = furniture_doc(&[]);
+    let (min, max) = (stops[0], stops[stops.len() - 1]);
+    let raster = (doc.project).add_raster("Key".to_string(), 64, unit.to_string(), min, max);
+    let record = doc.project.raster_mut(raster).unwrap();
+    record.stops = (stops.iter())
+        .map(|&value| vale_store::Stop {
+            value,
+            line: vale_store::StopLine::default(),
+        })
+        .collect();
+    record.colors = (0..stops.len() - 1)
+        .map(|i| [(40 * i % 256) as u8, 120, (200 - 20 * i % 200) as u8])
+        .collect();
+    record.names = names.iter().map(|n| n.to_string()).collect();
+    let layer = doc.project.raster_layer(raster).unwrap().id;
+    let mut pipeline = Pipeline::new();
+    let frame = first_frame(&mut doc, &mut pipeline);
+    (doc, pipeline, frame, layer)
+}
+
+/// The stops of a height layer from 6,000 m below sea level to 6,000 m
+/// above it.
+const HEIGHT_STOPS: [f64; 7] = [-6000.0, -4000.0, -200.0, 0.0, 200.0, 1000.0, 6000.0];
+/// The stops of a precipitation layer in millimeters.
+const RAIN_STOPS: [f64; 6] = [0.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0];
+
+/// Adds a color key to page 0 and returns its items.
+fn key_items(doc: &mut Document, pipeline: &mut Pipeline, key: ColorKeyItem) -> Vec<Item> {
+    let id = add_item(doc, [20.0, 20.0, 160.0, 70.0], Furniture::ColorKey(key));
+    furniture_items(doc, pipeline, id, Purpose::Export)
+}
+
+/// The x of the start of each run of glyphs, by its text.
+fn run_x(items: &[Item], text: &str) -> Vec<f64> {
+    (items.iter())
+        .filter_map(|i| match i {
+            Item::Glyphs(run) if run.text == text => Some(run.glyphs[0].1.translation().x),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The boxes of the fills of `items`.
+fn fill_boxes(items: &[Item]) -> Vec<kurbo::Rect> {
+    (items.iter())
+        .filter_map(|i| match i {
+            Item::Fill { path, .. } => Some(path.bounding_box()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn strip(frame: FrameId, layer: vale_store::LayerId) -> ColorKeyItem {
+    ColorKeyItem {
+        frame: Some(frame),
+        layer: Some(layer),
+        ..ColorKeyItem::default()
+    }
+}
+
+#[test]
+fn the_strip_labels_inner_lines_and_closed_ends() {
+    let (mut doc, mut pipeline, frame, layer) = key_doc("m", &HEIGHT_STOPS, &[]);
+    let key = ColorKeyItem {
+        split_at_sea_level: false,
+        ..strip(frame, layer)
+    };
+    let items = key_items(&mut doc, &mut pipeline, key);
+    // Both ends are open, so each value is at a line between two boxes.
+    assert_eq!(
+        texts(&items),
+        ["-4,000", "-200", "0", "200", "1,000", "meters"]
+    );
+    let boxes = fill_boxes(&items);
+    assert_eq!(boxes.len(), 6);
+    for b in &boxes {
+        assert!((b.width() - boxes[0].width()).abs() < 1e-6, "{boxes:?}");
+        assert!((b.y0 - boxes[0].y0).abs() < 1e-6, "{boxes:?}");
+    }
+    for w in boxes.windows(2) {
+        assert!((w[0].x1 - w[1].x0).abs() < 1e-6, "{boxes:?}");
+    }
+    // A value is centered on its line.
+    let zero = run_x(&items, "0")[0];
+    let mut f = fonts().unwrap();
+    let style = vale_labeler::TextStyle::new(vale_app::fonts::DEFAULT_FAMILY, 8.0);
+    let half = f.measure("0", &style).advance / 2.0;
+    assert!(
+        (zero + half - boxes[3].x0).abs() < 0.5,
+        "{zero} {:?}",
+        boxes[3]
+    );
+
+    // With a closed end, the end has a value too.
+    let (mut doc, mut pipeline, frame, layer) = key_doc("m", &HEIGHT_STOPS, &[]);
+    let items = key_items(&mut doc, &mut pipeline, strip(frame, layer));
+    assert_eq!(
+        texts(&items),
+        ["4,000", "200", "0", "meters", "0", "200", "1,000", "meters"]
+    );
+}
+
+#[test]
+fn the_split_strip_puts_the_unit_at_the_open_end() {
+    let (mut doc, mut pipeline, frame, layer) = key_doc("m", &HEIGHT_STOPS, &[]);
+    let items = key_items(&mut doc, &mut pipeline, strip(frame, layer));
+    let boxes = fill_boxes(&items);
+    // The sea row is above the land row, and both start at the left.
+    assert_eq!(boxes.len(), 6);
+    assert!(boxes[0].y1 < boxes[3].y0, "{boxes:?}");
+    assert!((boxes[0].x0 - boxes[3].x0).abs() < 1e-6, "{boxes:?}");
+    // The deepest band is at the left of the sea row, so its open end is
+    // at the left, and the unit is left of the value next to it.
+    let units = run_x(&items, "meters");
+    assert!(units[0] < run_x(&items, "4,000")[0], "{units:?}");
+    // The land row is open at the right.
+    assert!(units[1] > run_x(&items, "1,000")[0], "{units:?}");
+}
+
+#[test]
+fn the_second_unit_rounds_to_the_primary_decimals() {
+    let (mut doc, mut pipeline, frame, layer) = key_doc("m", &HEIGHT_STOPS, &[]);
+    let feet = SecondUnit {
+        name: "feet".to_string(),
+        factor: 3.28084,
+        offset: 0.0,
+    };
+    let key = ColorKeyItem {
+        second_unit: Some(feet),
+        ..strip(frame, layer)
+    };
+    let items = key_items(&mut doc, &mut pipeline, key);
+    assert_eq!(
+        texts(&items),
+        [
+            "4,000", "200", "0", "meters", "13,123", "656", "0", "feet", "0", "200", "1,000",
+            "meters", "0", "656", "3,281", "feet",
+        ]
+    );
+    // A value with decimals keeps them in the second unit.
+    let (mut doc, mut pipeline, frame, layer) = key_doc("mm", &[0.0, 12.5, 250.0, 4000.0], &[]);
+    let inches = SecondUnit {
+        name: "in".to_string(),
+        factor: 0.0393701,
+        offset: 0.0,
+    };
+    let key = ColorKeyItem {
+        second_unit: Some(inches),
+        ..strip(frame, layer)
+    };
+    let items = key_items(&mut doc, &mut pipeline, key);
+    assert_eq!(
+        texts(&items),
+        ["12.5", "250", "millimeters", "0.5", "10", "in"]
+    );
+}
+
+#[test]
+fn the_list_key_shows_names_or_ranges() {
+    let (mut doc, mut pipeline, frame, layer) =
+        key_doc("mm", &RAIN_STOPS, &["", "", "", "", "Very wet"]);
+    let mut key = ColorKeyItem {
+        layout: KeyLayout::List,
+        title: "Annual precipitation in mm".to_string(),
+        ..strip(frame, layer)
+    };
+    let rename = LegendEntry {
+        name: Some("Dry".to_string()),
+        hidden: false,
+    };
+    key.bands.insert("250".to_string(), rename);
+    let items = key_items(&mut doc, &mut pipeline, key);
+    assert_eq!(
+        texts(&items),
+        [
+            "Annual precipitation in mm",
+            "Very wet",
+            "1,000–2,000",
+            "500–1,000",
+            "Dry",
+            "Under 250",
+        ]
+    );
+    // The boxes are in a column with space between them.
+    let boxes = fill_boxes(&items);
+    assert_eq!(boxes.len(), 5);
+    for w in boxes.windows(2) {
+        assert!(w[1].y0 > w[0].y1 + 1.0, "{boxes:?}");
+        assert!((w[1].x0 - w[0].x0).abs() < 1e-6, "{boxes:?}");
+    }
+}
+
+#[test]
+fn names_in_boxes_draws_the_band_name_inside() {
+    let (mut doc, mut pipeline, frame, layer) =
+        key_doc("", &[0.0, 10.0, 20.0, 30.0], &["1-A", "1", "2-a"]);
+    let mut key = ColorKeyItem {
+        layout: KeyLayout::List,
+        names_in_boxes: true,
+        ..strip(frame, layer)
+    };
+    let rename = LegendEntry {
+        name: Some("Intermediate".to_string()),
+        hidden: false,
+    };
+    key.bands.insert("1".to_string(), rename);
+    let items = key_items(&mut doc, &mut pipeline, key);
+    assert_eq!(
+        texts(&items),
+        ["2-a", "Over 20", "1", "Intermediate", "1-A", "Under 10"]
+    );
+    let boxes = fill_boxes(&items);
+    let inside = run_x(&items, "1")[0];
+    assert!(
+        boxes[1].x0 < inside && inside < boxes[1].x1,
+        "{inside} {boxes:?}"
+    );
+    assert!(run_x(&items, "Intermediate")[0] > boxes[1].x1);
+}
+
+#[test]
+fn hidden_bands_are_skipped() {
+    let hide = || {
+        let mut bands = std::collections::BTreeMap::new();
+        let hidden = LegendEntry {
+            name: None,
+            hidden: true,
+        };
+        bands.insert("1,000".to_string(), hidden);
+        bands
+    };
+    let (mut doc, mut pipeline, frame, layer) = key_doc("mm", &RAIN_STOPS, &[]);
+    let key = ColorKeyItem {
+        bands: hide(),
+        ..strip(frame, layer)
+    };
+    let items = key_items(&mut doc, &mut pipeline, key);
+    assert_eq!(texts(&items), ["250", "500", "2,000", "millimeters"]);
+    assert_eq!(fill_boxes(&items).len(), 4);
+
+    let (mut doc, mut pipeline, frame, layer) = key_doc("mm", &RAIN_STOPS, &[]);
+    let key = ColorKeyItem {
+        layout: KeyLayout::List,
+        bands: hide(),
+        ..strip(frame, layer)
+    };
+    let items = key_items(&mut doc, &mut pipeline, key);
+    assert_eq!(
+        texts(&items),
+        ["Over 2,000", "500–1,000", "250–500", "Under 250"]
+    );
+}
+
+#[test]
+fn a_key_whose_frame_hides_its_layer_draws_nothing() {
+    let (mut doc, mut pipeline, frame, layer) = key_doc("mm", &RAIN_STOPS, &[]);
+    let map = doc.project.atlas.frame(frame).unwrap().map;
+    assert!(doc.set_shown(map, layer, false));
+    let id = add_item(
+        &mut doc,
+        [20.0, 20.0, 160.0, 70.0],
+        Furniture::ColorKey(strip(frame, layer)),
+    );
+    assert!(furniture_items(&doc, &mut pipeline, id, Purpose::Export).is_empty());
+    let screen = furniture_items(&doc, &mut pipeline, id, Purpose::Screen);
+    assert!(matches!(screen[..], [Item::Stroke { .. }]));
+    // A key with no layer draws nothing either.
+    let key = ColorKeyItem {
+        layer: None,
+        ..strip(frame, layer)
+    };
+    assert!(key_items(&mut doc, &mut pipeline, key).is_empty());
+}
+
+#[test]
+fn the_gradient_and_grey_keys_label_their_stops() {
+    let (mut doc, mut pipeline, frame, layer) = key_doc("mm", &RAIN_STOPS, &[]);
+    let raster = doc.project.layer(layer).unwrap().raster().unwrap();
+    doc.project
+        .set_raster_display(raster, RasterDisplay::Gradient);
+    let items = key_items(&mut doc, &mut pipeline, strip(frame, layer));
+    assert_eq!(
+        texts(&items),
+        ["250", "500", "1,000", "2,000", "millimeters"]
+    );
+    // Each box is a run of colors.
+    let colors: std::collections::HashSet<_> = (items.iter())
+        .filter_map(|i| match i {
+            Item::Fill { color, .. } => Some(format!("{color:?}")),
+            _ => None,
+        })
+        .collect();
+    assert!(colors.len() > 20, "{}", colors.len());
+
+    doc.project.set_raster_display(raster, RasterDisplay::Grey);
+    let items = key_items(&mut doc, &mut pipeline, strip(frame, layer));
+    assert_eq!(texts(&items), ["0", "4,000", "millimeters"]);
+}
+
+/// Saves a height strip, a precipitation list, and a list with codes to
+/// `target/app/colorkeys.png` for a person to look at.
+#[test]
+#[ignore = "manual"]
+fn manual_color_key_pictures() {
+    if std::env::var_os("VALE_SCREENSHOTS").is_none() {
+        return;
+    }
+    let hex = |h: u32| [(h >> 16) as u8, (h >> 8) as u8, h as u8];
+    let height = [
+        -6000.0, -4000.0, -3000.0, -2000.0, -1000.0, -200.0, -100.0, 0.0, 100.0, 200.0, 300.0,
+        500.0, 700.0, 1000.0, 1500.0, 2000.0, 2500.0, 3000.0, 6000.0,
+    ];
+    let height_colors = [
+        0xd8e8e4, 0xcce4e0, 0xbfe0dc, 0xb0d8d6, 0x70b8c8, 0x66b0c4, 0x5aa8c0, 0x9fd0a8, 0xcfe2a8,
+        0xe6e8b8, 0xf0e8a4, 0xecc8a8, 0xe4b4a0, 0xd8a098, 0xcc8088, 0xc06070, 0xb44858, 0xa83848,
+    ];
+    let rain = [0.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0];
+    let rain_colors = [0xf2ecd0, 0xd8ccaa, 0xb8d0a0, 0x80b890, 0x4a7a5a];
+    let codes = [0.0, 10.0, 20.0, 30.0, 40.0];
+    let code_colors = [0xe07860, 0x9cc888, 0x68a868, 0x50905a];
+    let make = |unit: &str, stops: &[f64], colors: &[u32], names: &[&str]| {
+        let (mut doc, pipeline, frame, layer) = key_doc(unit, stops, names);
+        let raster = doc.project.layer(layer).unwrap().raster().unwrap();
+        doc.project.raster_mut(raster).unwrap().colors = colors.iter().map(|c| hex(*c)).collect();
+        (doc, pipeline, frame, layer)
+    };
+    let feet = SecondUnit {
+        name: "feet".to_string(),
+        factor: 3.28084,
+        offset: 0.0,
+    };
+    let mut items = Vec::new();
+    let mut draw = |(mut doc, mut pipeline, frame, layer): (Document, Pipeline, FrameId, _),
+                    rect: [f64; 4],
+                    key: fn(FrameId, vale_store::LayerId) -> ColorKeyItem,
+                    feet: Option<SecondUnit>| {
+        let key = ColorKeyItem {
+            second_unit: feet,
+            ..key(frame, layer)
+        };
+        let id = add_item(&mut doc, rect, Furniture::ColorKey(key));
+        items.extend(furniture_items(&doc, &mut pipeline, id, Purpose::Export));
+    };
+    draw(
+        make("m", &height, &height_colors, &[]),
+        [5.0, 5.0, 205.0, 40.0],
+        strip,
+        Some(feet),
+    );
+    draw(
+        make("mm", &rain, &rain_colors, &[]),
+        [5.0, 45.0, 95.0, 110.0],
+        |frame, layer| ColorKeyItem {
+            layout: KeyLayout::List,
+            title: "Annual precipitation in mm".to_string(),
+            ..strip(frame, layer)
+        },
+        None,
+    );
+    draw(
+        make("", &codes, &code_colors, &["1-A", "1", "1-a", "2-a"]),
+        [105.0, 45.0, 205.0, 110.0],
+        |frame, layer| {
+            let mut key = ColorKeyItem {
+                layout: KeyLayout::List,
+                names_in_boxes: true,
+                title: "Equatorial climates".to_string(),
+                ..strip(frame, layer)
+            };
+            for (band, text) in [
+                ("1-A", "Dry (subequatorial)"),
+                ("1", "Intermediate"),
+                ("1-a", "Very wet"),
+                ("2-a", "Wet"),
+            ] {
+                let entry = LegendEntry {
+                    name: Some(text.to_string()),
+                    hidden: false,
+                };
+                key.bands.insert(band.to_string(), entry);
+            }
+            key
+        },
+        None,
+    );
+    let (w, h) = (210.0 * PT_PER_MM, 115.0 * PT_PER_MM);
+    let mut list = vale_render::DisplayList::new(w, h);
+    list.items.push(Item::Fill {
+        path: kurbo::Rect::new(0.0, 0.0, w, h).to_path(0.1),
+        color: Color::rgb(250, 246, 232),
+        rule: FillRule::NonZero,
+    });
+    list.items.extend(items);
+    let px = render_rgba(&list, 4.0).unwrap();
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/app/colorkeys.png");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    image::RgbaImage::from_raw(px.width as u32, px.height as u32, px.data)
+        .unwrap()
+        .save(path)
+        .unwrap();
 }

@@ -149,6 +149,8 @@ impl TextPart {
             (TextPart::Text, Furniture::Text(i)) => Some(&i.style),
             (TextPart::Title, Furniture::Legend(i)) => Some(&i.title_style),
             (TextPart::Entries, Furniture::Legend(i)) => Some(&i.entry_style),
+            (TextPart::Title, Furniture::ColorKey(i)) => Some(&i.title_style),
+            (TextPart::Entries, Furniture::ColorKey(i)) => Some(&i.value_style),
             (TextPart::Numbers, Furniture::ScaleBar(i)) => Some(&i.number_style),
             (TextPart::Units, Furniture::ScaleBar(i)) => Some(&i.unit_style),
             (TextPart::Letter, Furniture::NorthArrow(i)) => Some(&i.letter_style),
@@ -161,6 +163,8 @@ impl TextPart {
             (TextPart::Text, Furniture::Text(i)) => Some(&mut i.style),
             (TextPart::Title, Furniture::Legend(i)) => Some(&mut i.title_style),
             (TextPart::Entries, Furniture::Legend(i)) => Some(&mut i.entry_style),
+            (TextPart::Title, Furniture::ColorKey(i)) => Some(&mut i.title_style),
+            (TextPart::Entries, Furniture::ColorKey(i)) => Some(&mut i.value_style),
             (TextPart::Numbers, Furniture::ScaleBar(i)) => Some(&mut i.number_style),
             (TextPart::Units, Furniture::ScaleBar(i)) => Some(&mut i.unit_style),
             (TextPart::Letter, Furniture::NorthArrow(i)) => Some(&mut i.letter_style),
@@ -1141,8 +1145,8 @@ pub fn edit_frame(
 }
 
 /// Adds an item of furniture to the open page, inside the margin of the
-/// page, and selects it. A legend, a scale bar, and a north arrow link to
-/// the largest frame of the page.
+/// page, and selects it. A legend, a color key, a scale bar, and a north
+/// arrow link to the largest frame of the page.
 pub fn add_item(state: &mut AppState, kind: ItemKind) -> Option<FurnitureId> {
     let page = open_page(state);
     let frame = largest_frame(page);
@@ -1181,6 +1185,7 @@ pub fn add_item(state: &mut AppState, kind: ItemKind) -> Option<FurnitureId> {
         ItemKind::ColorKey => {
             let item = vale_store::ColorKeyItem {
                 frame,
+                layer: frame.and_then(|f| default_key_layer(&state.doc, f)),
                 ..vale_store::ColorKeyItem::default()
             };
             (left, bottom, Furniture::ColorKey(item))
@@ -1193,6 +1198,18 @@ pub fn add_item(state: &mut AppState, kind: ItemKind) -> Option<FurnitureId> {
     state.atlas.vertices.clear();
     state.atlas.item_page = None;
     Some(id)
+}
+
+/// The layer of a new color key of a frame: the height layer that the map
+/// of the frame shows, or else the top raster layer that it shows.
+pub fn default_key_layer(doc: &Document, frame: FrameId) -> Option<LayerId> {
+    let map = doc.project.atlas.frame(frame)?.map;
+    let shown: Vec<_> = (doc.project.layers().iter().rev())
+        .filter(|l| doc.shown(map, l.id))
+        .filter_map(|l| Some((l.id, doc.project.raster(l.raster()?)?)))
+        .collect();
+    let height = shown.iter().find(|(_, r)| crate::ui::is_height(r));
+    height.or(shown.first()).map(|(id, _)| *id)
 }
 
 /// The frame of a page with the largest area.
@@ -2924,8 +2941,14 @@ fn items(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
         let atlas = &state.doc.project.atlas;
         let frame = rec.item.frame().and_then(|f| atlas.frame(f));
         let map = frame.and_then(|f| atlas.map(f.map));
+        // A color key follows the style and the range of its layer.
+        let key = match (&rec.item, frame) {
+            (Furniture::ColorKey(k), Some(f)) => crate::color_key::data(&state.doc, f, k),
+            _ => None,
+        };
         let content = hash_of((
             &rec.item,
+            key,
             mm.width().to_bits(),
             mm.height().to_bits(),
             frame,
