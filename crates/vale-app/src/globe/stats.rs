@@ -76,6 +76,7 @@ fn mode_name(mode: Mode) -> &'static str {
         Mode::Terrace => "terrace",
         Mode::Shape => "shape",
         Mode::Carve => "carve",
+        Mode::Glacial => "glacial",
         Mode::Ridge => "ridge",
         Mode::Deposit => "deposit",
         Mode::Erode => "erode",

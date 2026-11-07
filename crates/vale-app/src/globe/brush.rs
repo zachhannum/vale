@@ -220,6 +220,7 @@ pub fn needs_height(mode: Mode) -> bool {
     matches!(
         mode,
         Carve
+            | Glacial
             | Ridge
             | Deposit
             | Erode
@@ -495,6 +496,7 @@ impl Tip<'_> {
                 Mode::Raise
                 | Mode::Lower
                 | Mode::Carve
+                | Mode::Glacial
                 | Mode::Ridge
                 | Mode::Erode
                 | Mode::Weather
@@ -716,6 +718,7 @@ fn stamp_cost(plan: &StampPlan) -> usize {
         | Mode::Flatten
         | Mode::Terrace
         | Mode::Carve
+        | Mode::Glacial
         | Mode::Ridge
         | Mode::Deposit
         | Mode::Erode
