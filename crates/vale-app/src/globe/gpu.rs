@@ -1532,18 +1532,6 @@ pub struct Group {
     pub capture: Option<Arc<Capture>>,
 }
 
-/// The last call of `Resources::draw_vector`, for the debug controls.
-static VECTOR_REPORT: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
-
-/// What the last pass of vector shapes drew, for the debug controls.
-pub fn vector_report() -> String {
-    let report = VECTOR_REPORT.lock().map(|r| r.clone()).unwrap_or_default();
-    if report.is_empty() {
-        return "Vector pass: not run".to_string();
-    }
-    report
-}
-
 /// The meshes of egui shapes in draw order, each with its clip rectangle in
 /// points and its alpha. A mesh with an alpha below 1 holds the opaque
 /// shapes of a translucent stroke, and it draws as one group with that
@@ -1997,37 +1985,11 @@ impl Resources {
         shapes: &VectorShapes,
     ) {
         use wgpu::util::DeviceExt;
-        let report = |text: String| {
-            if let Ok(mut last) = VECTOR_REPORT.lock() {
-                *last = text;
-            }
-        };
         let Some(vectors) = self.vectors.get() else {
-            report(format!(
-                "Vector pass: no pipelines, {} meshes",
-                shapes.meshes.len()
-            ));
             return;
         };
         let (vector, vector_group) = (vectors.vector.clone(), vectors.vector_group.clone());
         let ppp = shapes.pixels_per_point;
-        let first = shapes.meshes.first();
-        report(format!(
-            "Vector pass: {} meshes, {} triangles, target {}x{} {:?}, {ppp:.3} px/pt, clip {:?}, vertex {:?}",
-            shapes.meshes.len(),
-            shapes
-                .meshes
-                .iter()
-                .map(|(_, m, _)| m.indices.len() / 3)
-                .sum::<usize>(),
-            size[0],
-            size[1],
-            self.format,
-            first.map(|(clip, _, _)| *clip),
-            first
-                .and_then(|(_, m, _)| m.vertices.first())
-                .map(|v| (v.pos, v.color)),
-        ));
         let (mut vertices, mut indices) = (Vec::new(), Vec::new());
         // The first index, the count of indices, the scissor, and the alpha
         // of each mesh.
