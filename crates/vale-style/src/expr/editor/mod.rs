@@ -4,11 +4,14 @@
 //!
 //! A path addresses one node of a model. It is a list of child indices from the root, and the empty path is the root. In a list (the pieces of a template or a group, the conditions of a group, the tokens of a sequence), the index picks an item. In a function call, the index picks an argument. In a Cases block with `n` cases, index `2k` picks the condition of case `k`, index `2k + 1` its value, and index `2n` the otherwise value. In parentheses, index 0 picks the inner sequence. An expression piece of a template has the tokens of its sequence as children.
 //!
+//! Text that does not parse splits at its separators: the arguments of a `concat` or the operands of `||` in a template, `and` and `or` in conditions, and the arguments of a call in a value. Each part that parses becomes model nodes, and each other part becomes code.
+//!
 //! A model that comes from text keeps the span of each node in the text, in chars. A model that you change keeps the old spans until you read it again.
 
 mod cond;
 mod seq;
 mod template;
+mod tolerant;
 
 use std::ops::Range;
 

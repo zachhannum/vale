@@ -9,7 +9,7 @@ use super::super::functions::Function;
 use super::super::parser::{BinOp, Node, Spans};
 use super::super::print::{self, NOT, UNARY, literal, operand_prec, prec, quote};
 use super::cond::{Cond, cond_of};
-use super::{SpanMap, read};
+use super::{SpanMap, read, tolerant};
 
 /// An operator token.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -154,10 +154,7 @@ impl Formula {
         let mut spans = SpanMap::default();
         let seq = match read(text) {
             Some((node, sp)) => seq_of(&node, &sp, &mut Vec::new(), &mut spans),
-            None => {
-                spans.add(&[], 0..text.chars().count());
-                Seq(vec![Tok::Code(text.to_owned())])
-            }
+            None => tolerant::formula(text, &mut spans),
         };
         Formula { seq, spans }
     }

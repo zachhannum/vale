@@ -8,7 +8,7 @@ use super::super::field_ref;
 use super::super::functions::number_text;
 use super::super::parser::{BinOp, Node, Spans};
 use super::super::print::{self, AND, OR, literal, quote};
-use super::{SpanMap, read, wrap_code};
+use super::{SpanMap, read, tolerant, wrap_code};
 
 /// The comparison of a condition.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -123,17 +123,17 @@ impl Conditions {
 
     pub fn from_text(text: &str) -> Self {
         let mut spans = SpanMap::default();
-        let (all, items) = match read(text) {
-            Some((node, sp)) => {
-                spans.add(&[], sp.span.clone());
-                match cond_of(&node, &sp, &mut Vec::new(), &mut spans) {
-                    Cond::Group { all, items } => (all, items),
-                    c => (true, vec![c]),
+        let cond = match read(text) {
+            Some((node, sp)) => cond_of(&node, &sp, &mut Vec::new(), &mut spans),
+            None => tolerant::condition(text, &mut spans),
+        };
+        let (all, items) = match cond {
+            Cond::Group { all, items } => (all, items),
+            c => {
+                if let Some(s) = spans.get(&[]) {
+                    spans.add(&[0], s);
                 }
-            }
-            None => {
-                spans.add(&[], 0..text.chars().count());
-                (true, vec![Cond::Code(text.to_owned())])
+                (true, vec![c])
             }
         };
         Conditions { all, items, spans }

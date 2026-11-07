@@ -555,3 +555,131 @@ fn template_pieces_keep_their_spans() {
     assert_eq!(span_text(&[4]), "'x' || pop");
     assert_eq!(span_text(&[4, 1]), "pop");
 }
+
+#[test]
+fn text_that_does_not_lex_is_one_code() {
+    let t = Template::from_text("concat(name, 'open");
+    assert_eq!(t.pieces, vec![Piece::Code("concat(name, 'open".into())]);
+    let c = Conditions::from_text("a = 'open");
+    assert_eq!(c.items, vec![Cond::Code("a = 'open".into())]);
+    let v = Formula::from_text("1 ! 2");
+    assert_eq!(v.seq, Seq(vec![Tok::Code("1 ! 2".into())]));
+}
+
+#[test]
+fn template_keeps_the_good_arguments() {
+    let t = Template::from_text("concat(name, shout(x), 'Pop ' || pop, pop 2)");
+    assert_eq!(
+        t.pieces,
+        vec![
+            field("name", FieldFormat::default()),
+            Piece::Code("shout(x)".into()),
+            Piece::Group(vec![text("Pop "), field("pop", FieldFormat::default())]),
+            Piece::Code("pop 2".into()),
+        ]
+    );
+    assert_eq!(t.to_text(), "concat(name, shout(x), 'Pop ' || pop, pop 2)");
+    let t = Template::from_text("'Pop ' || shout(pop)");
+    assert_eq!(
+        t.pieces,
+        vec![Piece::Group(vec![
+            text("Pop "),
+            Piece::Code("shout(pop)".into())
+        ])]
+    );
+}
+
+#[test]
+fn conditions_keep_the_good_parts() {
+    let c = Conditions::from_text("type = 'City' and shout(x) and pop between 1 and 2");
+    assert!(c.all);
+    assert_eq!(
+        c.items,
+        vec![
+            rule("type", CmpOp::Is, vec![t("City")]),
+            Cond::Code("shout(x)".into()),
+            rule("pop", CmpOp::Between, vec![n(1.0), n(2.0)]),
+        ]
+    );
+    let c = Conditions::from_text("a or b = = 1 and c");
+    assert!(!c.all);
+    assert_eq!(
+        c.items,
+        vec![
+            rule("a", CmpOp::Is, vec![Value::Bool(true)]),
+            Cond::Group {
+                all: true,
+                items: vec![
+                    Cond::Code("b = = 1".into()),
+                    rule("c", CmpOp::Is, vec![Value::Bool(true)])
+                ],
+            },
+        ]
+    );
+}
+
+#[test]
+fn values_keep_the_good_arguments() {
+    let v = Formula::from_text("1 + clamp(4, (2");
+    assert_eq!(
+        v.seq,
+        Seq(vec![
+            Tok::Num(1.0),
+            Tok::Op(Op::Add),
+            Tok::Code("clamp(4, (2".into())
+        ])
+    );
+    let v = Formula::from_text("clamp(4, shout(pop), 2 +* 1) * 2");
+    assert_eq!(
+        v.seq,
+        Seq(vec![
+            Tok::Call {
+                f: f("clamp"),
+                args: vec![
+                    Seq(vec![Tok::Num(4.0)]),
+                    Seq(vec![Tok::Code("shout(pop)".into())]),
+                    Seq(vec![
+                        Tok::Num(2.0),
+                        Tok::Op(Op::Add),
+                        Tok::Op(Op::Mul),
+                        Tok::Num(1.0)
+                    ]),
+                ],
+            },
+            Tok::Op(Op::Mul),
+            Tok::Num(2.0),
+        ])
+    );
+    assert_eq!(v.to_text(), "clamp(4, shout(pop), 2 + * 1) * 2");
+}
+
+#[test]
+fn errors_map_to_their_node() {
+    let text = "concat(name, 'Pop ' || , elev)";
+    let err = Expr::parse(text).unwrap_err();
+    let t = Template::from_text(text);
+    assert_eq!(t.path_at(err.start), Some(vec![1, 1]));
+    assert!(matches!(&t.pieces[1], Piece::Group(items) if items[1] == Piece::Expr(Seq(vec![]))));
+    let text = "type = 'City' and pop >= ";
+    let err = Expr::parse(text).unwrap_err();
+    let c = Conditions::from_text(text);
+    assert_eq!(c.path_at(err.start), Some(vec![1]));
+    let text = "a = 1";
+    assert_eq!(Conditions::from_text(text).span(&[0]), Some(0..5));
+    let text = "clamp(4, shout(pop), 2)";
+    let err = Expr::parse(text).unwrap_err();
+    assert_eq!(
+        Formula::from_text(text).path_at(err.start),
+        Some(vec![0, 1, 0])
+    );
+}
+
+#[test]
+fn every_model_round_trips_every_corpus() {
+    let corpus = FILTERS.iter().chain(VALUES).chain(TEMPLATES);
+    for text in corpus.filter(|t| !t.contains("= true") && !t.contains("= false")) {
+        round_trip(text, filter_trip);
+        round_trip(text, value_trip);
+        round_trip(text, template_trip);
+    }
+}

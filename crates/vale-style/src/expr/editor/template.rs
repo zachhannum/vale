@@ -9,7 +9,7 @@ use super::super::parser::{BinOp, Node, Spans};
 use super::super::print::{CONCAT, quote};
 use super::cond::operands;
 use super::seq::{Seq, seq_of};
-use super::{SpanMap, read, wrap_code};
+use super::{SpanMap, read, tolerant, wrap_code};
 
 /// The most decimal places of a field format.
 const MAX_PLACES: i32 = 15;
@@ -58,7 +58,7 @@ pub enum Piece {
     },
     /// Pieces that show only when each of them has a value. It writes a chain of `||`.
     Group(Vec<Piece>),
-    /// An expression that is not one of the other pieces.
+    /// An expression that is not one of the other pieces. An empty expression is a hole.
     Expr(Seq),
     /// Expression text that does not parse.
     Code(String),
@@ -87,6 +87,7 @@ impl Template {
                 spans.add(&[], sp.span.clone());
                 let mut path = Vec::new();
                 match &node {
+                    Node::Hole => {}
                     Node::Call(f, args) if f.name == "concat" && args.len() > 1 => {
                         for (a, s) in args.iter().zip(&sp.kids) {
                             pieces_of(a, s, &mut pieces, &mut path, &mut spans);
@@ -95,11 +96,7 @@ impl Template {
                     _ => pieces_of(&node, &sp, &mut pieces, &mut path, &mut spans),
                 }
             }
-            None => {
-                spans.add(&[], 0..text.chars().count());
-                spans.add(&[0], 0..text.chars().count());
-                pieces.push(Piece::Code(text.to_owned()));
-            }
+            None => pieces = tolerant::template(text, &mut spans),
         }
         Template { pieces, spans }
     }
@@ -126,7 +123,7 @@ impl Template {
 }
 
 /// Adds the pieces of a node to `list`. `path` is the path of the list.
-fn pieces_of(
+pub(super) fn pieces_of(
     node: &Node,
     sp: &Spans,
     list: &mut Vec<Piece>,
@@ -135,7 +132,6 @@ fn pieces_of(
 ) {
     path.push(list.len());
     match node {
-        Node::Hole => {}
         Node::Lit(Value::Text(s)) => {
             for (i, line) in s.split('\n').enumerate() {
                 if i > 0 {
