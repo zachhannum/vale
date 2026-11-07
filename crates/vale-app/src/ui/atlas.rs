@@ -331,8 +331,6 @@ pub enum ClassPage {
     Style,
     /// The cases of the text.
     Case,
-    /// A new condition of the filter.
-    Condition,
     /// The ranked positions of a point class.
     Positions,
     /// The ranked zones inside and outside the polygons of a polygon class.
@@ -612,12 +610,6 @@ pub struct AtlasState {
     pub label_color: Option<ClassColor>,
     /// The color picker of the label class showed in this frame.
     pub(crate) label_color_shown: bool,
-    /// The text of the Text field of the label class while it has the focus.
-    pub label_text: String,
-    /// The text of the Expression field of the filter of the label class.
-    pub label_filter: String,
-    /// The condition of the page of a new condition of the label class.
-    pub label_draft: super::pad::filter::Draft,
     /// The label class that a finger drags in the Labels tab.
     pub label_drag: Option<ClassDrag>,
     /// The position that a finger drags on the Positions page.
@@ -818,9 +810,6 @@ impl Default for AtlasState {
             label_segment: ClassSegment::Text,
             label_color: None,
             label_color_shown: false,
-            label_text: String::new(),
-            label_filter: String::new(),
-            label_draft: Default::default(),
             label_drag: None,
             position_drag: None,
             edge: None,

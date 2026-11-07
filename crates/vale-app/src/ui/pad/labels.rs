@@ -5,19 +5,21 @@
 use eframe::egui::{self, Align2, Rect, pos2, vec2};
 use vale_labeler::Face;
 use vale_store::{FrameId, FurnitureText, GeometryKind, LayerId, MapId};
-use vale_style::expr::{Expr, Filter};
+use vale_style::expr::Filter;
 use vale_style::{LabelClass, LabelPlacement, LabelPosition};
 
 use super::atlas::{FRAME_TABS, named_tabs, panel_width};
 use super::filter;
 use super::geometry::{Rects, TOUCH};
 use super::icons::{self, Icon};
+use super::label_text;
 use super::number::Number;
 use super::text_style::{self, TextEdit, TextEvent, TextSpec};
 use super::widgets::{self, Controls, PANEL_ROW};
 use super::{Card, CardTitle, show_card, theme};
 use crate::fonts;
 use crate::ui::atlas::{AtlasSelection, ClassColor, ClassDrag, ClassPage, ClassSegment};
+use crate::ui::expr_help::{self, ExprHelp};
 use crate::ui::{Action, AppState, FontTarget};
 
 pub const ADD_CLASS: &str = "Add class";
@@ -119,7 +121,6 @@ pub const MOVE_DOWN: &str = "Move down";
 /// The start of the name of the handle of a row of the class list. The
 /// name of the class follows.
 pub const REORDER: &str = "Reorder";
-pub const BAD_TEXT: &str = "Not a valid expression.";
 /// The smallest and the largest size of a label, in points.
 pub const SIZES: (f64, f64) = (4.0, 72.0);
 /// The smallest and the largest letter spacing, as fractions of the size.
@@ -382,11 +383,6 @@ pub(super) fn class_panel(
         Some(ClassPage::Placement) => ("pad-atlas-placement", PLACEMENT, &*class.name),
         Some(ClassPage::Style) => ("pad-atlas-class-style", STYLE, &*class.name),
         Some(ClassPage::Case) => ("pad-atlas-class-case", CASE, &*class.name),
-        Some(ClassPage::Condition) => (
-            "pad-atlas-class-condition",
-            filter::ADD_CONDITION,
-            &*class.name,
-        ),
         Some(ClassPage::Positions) => ("pad-atlas-positions", POSITIONS, &*class.name),
         Some(ClassPage::Zones) => ("pad-atlas-zones", ZONES, &*class.name),
         Some(ClassPage::LeaderLine) => ("pad-atlas-leader", LEADER_LINE, &*class.name),
@@ -397,9 +393,14 @@ pub(super) fn class_panel(
         back: Some(back),
         action: None,
     };
+    let text = page.is_none() && state.atlas.label_segment == ClassSegment::Text;
+    let place = match text {
+        true => super::expression::wide_place(rects, panel_width(ctx)),
+        false => (rects.right_panel, panel_width(ctx)),
+    };
     let card = Card {
         key,
-        place: (rects.right_panel, panel_width(ctx)),
+        place,
         head,
         // The panel stays still while a finger drags a position.
         scroll: match state.atlas.position_drag {
@@ -433,7 +434,6 @@ pub(super) fn class_panel(
             Some(ClassPage::Placement) => placement_page(ui, state, controls, at, kind, &class),
             Some(ClassPage::Style) => style_page(ui, state, controls, at, &class),
             Some(ClassPage::Case) => case_page(ui, state, controls, at, &class),
-            Some(ClassPage::Condition) => condition_page(ui, state, controls, at, &class),
             Some(ClassPage::Positions) => positions_page(ui, state, controls, at, &class),
             Some(ClassPage::Zones) => zones_page(ui, state, controls, at, &class),
             Some(ClassPage::LeaderLine) => leader_page(ui, state, controls, at, &class),
@@ -475,36 +475,8 @@ fn segments(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
 /// and the place of the class in the classes of the layer.
 type ClassAt = (FrameId, MapId, LayerId, usize);
 
-/// True if a text is a label expression. Empty text gives no label.
-fn text_ok(text: &str) -> bool {
-    text.trim().is_empty() || Expr::parse(text).is_ok()
-}
-
 fn filter_ok(text: &str) -> bool {
     Filter::new(text).error().is_none()
-}
-
-/// A field of an expression of a class. While the field has the focus, it
-/// keeps the typed text, and each valid text goes to the class at once.
-/// Returns the valid text that the user typed.
-fn expression_field(
-    ui: &mut egui::Ui,
-    controls: &mut Controls,
-    name: &str,
-    typed: &mut String,
-    current: &str,
-    ok: fn(&str) -> bool,
-    bad: &str,
-) -> Option<String> {
-    let focused = ui.memory(|m| m.has_focus(ui.id().with(name)));
-    if !focused {
-        *typed = current.to_owned();
-    }
-    let field = widgets::code_field(ui, controls, name, name, typed, ok(typed));
-    if !ok(typed) {
-        widgets::form_note(ui, bad, 20.0);
-    }
-    (field.changed() && ok(typed)).then(|| typed.clone())
 }
 
 /// A color row of a class and its color picker while it is open, with an
@@ -596,37 +568,32 @@ fn text_segment(
         state.atlas.label_page = Some(ClassPage::Layer);
     }
 
-    let mut typed = std::mem::take(&mut state.atlas.label_text);
-    let text = expression_field(
-        ui,
-        controls,
-        TEXT,
-        &mut typed,
-        &class.text,
-        text_ok,
-        BAD_TEXT,
-    );
-    state.atlas.label_text = typed;
-    if let Some(text) = text {
-        state.edit_label_class(map, layer, i, |c| c.text = text);
+    let help = ExprHelp::for_layer(state, layer);
+    let names = (TEXT, TEXT);
+    let mut look = label_text::Look {
+        class,
+        fonts: &mut state.fonts,
+    };
+    let edit = label_text::editor(ui, controls, names, &class.text, &help, &mut look);
+    if let Some(text) = edit.text {
+        if edit.step {
+            state.label_class_step(map, layer, i, |c| c.text = text);
+        } else {
+            state.edit_label_class(map, layer, i, |c| c.text = text);
+        }
     }
 
     ui.add_space(6.0);
-    let mut typed = std::mem::take(&mut state.atlas.label_filter);
     let none = filter::NO_CLASS_CONDITION;
-    let (changed, add) = filter::list(ui, controls, &class.filter, &mut typed, none);
-    let typing = ui.memory(|m| m.has_focus(ui.id().with(super::rules::EXPRESSION)));
-    state.atlas.label_filter = typed;
-    if let Some(text) = changed.filter(|t| filter_ok(t)) {
-        if typing {
-            state.edit_label_class(map, layer, i, |c| c.filter = text);
-        } else {
+    let count = expr_help::matches(state, layer, &class.filter);
+    let salt = (map, layer, i);
+    let edit = filter::editor(ui, controls, salt, &class.filter, &help, count, none);
+    if let Some(text) = edit.text.filter(|t| filter_ok(t)) {
+        if edit.step {
             state.label_class_step(map, layer, i, |c| c.filter = text);
+        } else {
+            state.edit_label_class(map, layer, i, |c| c.filter = text);
         }
-    }
-    if add {
-        state.atlas.label_draft = filter::Draft::new((layer, i));
-        state.atlas.label_page = Some(ClassPage::Condition);
     }
     ui.add_space(6.0);
 
@@ -1233,24 +1200,6 @@ fn case_page(
 ) {
     if let Some(case) = text_style::case_rows(ui, controls, class.case) {
         state.label_class_step(map, layer, i, |c| c.case = case);
-        state.atlas.label_page = None;
-    }
-}
-
-/// The page of a new condition of the filter of the class.
-fn condition_page(
-    ui: &mut egui::Ui,
-    state: &mut AppState,
-    controls: &mut Controls,
-    (_, map, layer, i): ClassAt,
-    class: &LabelClass,
-) {
-    let mut draft = std::mem::take(&mut state.atlas.label_draft);
-    let made = filter::new_condition(ui, state, controls, (layer, i), &mut draft);
-    state.atlas.label_draft = draft;
-    if let Some(condition) = made {
-        let text = filter::with_condition(&class.filter, condition);
-        state.label_class_step(map, layer, i, |c| c.filter = text);
         state.atlas.label_page = None;
     }
 }

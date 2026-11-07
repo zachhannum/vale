@@ -1,20 +1,24 @@
 //! The labels section of the panel of a vector layer.
 
 use eframe::egui;
-use vale_store::LayerId;
+use vale_store::{GeometryKind, LayerId};
+use vale_style::{LabelClass, LabelStyle};
 
+use super::Page;
+use super::label_text::{self, LABEL_TEXT};
 use super::note_text;
 use super::raster::heading;
 use super::widgets::{self, Controls};
 use crate::fonts::{self, DEFAULT_FAMILY};
+use crate::ui::expr_help::ExprHelp;
 use crate::ui::{Action, AppState, FontTarget, Note};
 
 pub const LABELS: &str = "Labels";
 /// The row that opens the font picker.
 pub const FONT: &str = "Font";
 
-/// The labels section: the font of the labels, and a warning if the device
-/// has no such font.
+/// The labels section: the row that opens the label text, the font of the
+/// labels, and a warning if the device has no such font.
 pub fn section(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id: LayerId) {
     let Some(entry) = state.doc.entry(id) else {
         return;
@@ -23,9 +27,70 @@ pub fn section(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
     let family = label.font.as_deref().unwrap_or(DEFAULT_FAMILY).to_string();
     let warning = fonts::missing(label.font.as_deref(), &state.font_families);
     let mut warning = warning.map(|t| Note::new(t, true, None));
+    let text = short(&label.text);
     heading(ui, LABELS);
+    if widgets::open_row(ui, controls, LABEL_TEXT, &text).clicked() {
+        state.pad.page = Some(Page::LabelText);
+    }
     if widgets::open_row(ui, controls, FONT, &family).clicked() {
         state.actions.push(Action::PickFont(FontTarget::Layer(id)));
     }
     note_text(ui, None, &mut warning, None);
+}
+
+/// The most characters of the label text in its row.
+const SHORT: usize = 16;
+
+/// The label text in its row, cut short with an ellipsis.
+fn short(text: &str) -> String {
+    if text.chars().count() <= SHORT {
+        return text.to_owned();
+    }
+    let mut out: String = text.chars().take(SHORT - 1).collect();
+    out.push('…');
+    out
+}
+
+/// Sets the label text of layer `id`.
+fn set_text(state: &mut AppState, id: LayerId, text: String) {
+    if let Some(entry) = state.doc.entry_mut(id)
+        && entry.style.label.text != text
+    {
+        entry.style.label.text = text;
+        state.touch();
+    }
+}
+
+/// The Label text page of layer `id`.
+pub fn text_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id: LayerId) {
+    let Some(entry) = state.doc.entry(id) else {
+        return;
+    };
+    let current = entry.style.label.text.clone();
+    let class = layer_class(state, id);
+    let help = ExprHelp::for_layer(state, id);
+    let mut look = label_text::Look {
+        class: &class,
+        fonts: &mut state.fonts,
+    };
+    let edit = label_text::editor(ui, controls, ("", LABEL_TEXT), &current, &help, &mut look);
+    if let Some(text) = edit.text {
+        set_text(state, id, text);
+    }
+}
+
+/// The label class of the labels of layer `id` on the globe.
+fn layer_class(state: &AppState, id: LayerId) -> LabelClass {
+    let entry = state.doc.entry(id);
+    let kind = (state.doc.layer(id)).and_then(|l| l.geometry());
+    let class = entry.zip(kind).and_then(|(e, kind)| {
+        let style = LabelStyle {
+            enabled: true,
+            text: "x".into(),
+            ..e.style.label.clone()
+        };
+        LabelClass::from_style("", &style, kind, 0)
+    });
+    let point = || LabelClass::new("", GeometryKind::Point, 0);
+    (class.or_else(point)).expect("a class of point labels")
 }

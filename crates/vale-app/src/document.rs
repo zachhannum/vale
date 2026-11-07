@@ -159,7 +159,7 @@ impl Document {
         let s = &mut doc.entry_mut(rivers).unwrap().style;
         s.set_stroke(Some(Stroke::solid(Color::rgb(90, 150, 200), 1.2)));
         s.label.enabled = true;
-        s.label.field = Some("name".to_string());
+        s.label.text = "name".to_string();
         s.label.size = 11.0;
         s.label.italic = true;
         s.label.color = Color::rgb(40, 100, 160);
@@ -169,7 +169,7 @@ impl Document {
         s.set_stroke(Some(Stroke::solid(Color::rgb(255, 255, 255), 1.0)));
         s.set_point_radius(2.5);
         s.label.enabled = true;
-        s.label.field = Some("name".to_string());
+        s.label.text = "name".to_string();
         s.label.priority_field = Some("pop_max".to_string());
         s.label.size = 11.0;
         s.label.italic = false;
@@ -419,18 +419,34 @@ impl Document {
         !name.is_empty() && self.project.rename_layer(id, name.to_string())
     }
 
-    /// Gives a field of a vector layer a new name. The label field and the
-    /// priority field of the style keep the field.
+    /// Gives a field of a vector layer a new name. Each expression of the
+    /// layer keeps the field: in the globe style, and in the styles and the
+    /// label classes of the maps and the map styles.
     pub fn rename_field(&mut self, id: LayerId, old: &str, new: &str) -> bool {
         if !self.project.rename_field(id, old, new) {
             return false;
         }
         if let Some(entry) = self.entry_mut(id) {
-            let label = &mut entry.style.label;
-            for field in [&mut label.field, &mut label.priority_field] {
-                if field.as_deref() == Some(old) {
-                    *field = Some(new.to_string());
-                }
+            entry.style.rename_field(old, new);
+        }
+        let atlas = &mut self.project.atlas;
+        let maps = atlas
+            .maps
+            .iter_mut()
+            .map(|m| (&mut m.styles, &mut m.labels));
+        let shared = (atlas.map_styles.iter_mut()).map(|s| (&mut s.styles, &mut s.labels));
+        for (styles, labels) in maps.chain(shared) {
+            if let Some(text) = styles.get_mut(&id)
+                && let Ok(mut style) = LayerStyle::from_json(text)
+            {
+                style.rename_field(old, new);
+                *text = style.to_json();
+            }
+            if let Some(text) = labels.get_mut(&id)
+                && let Ok(mut classes) = vale_style::classes_from_json(text)
+            {
+                classes.iter_mut().for_each(|c| c.rename_field(old, new));
+                *text = vale_style::classes_to_json(&classes);
             }
         }
         true

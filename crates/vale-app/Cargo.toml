@@ -84,6 +84,8 @@ objc2-ui-kit = { version = "0.3.2", default-features = false, features = [
     "UIApplication",
     "UIPasteboard",
     "UIDevice",
+    "UIGeometry",
+    "UIWindow",
 ] }
 objc2-uniform-type-identifiers = { version = "0.3.2", default-features = false, features = [
     "std",

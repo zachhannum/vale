@@ -148,9 +148,12 @@ pub fn can_take_focus(ctx: &egui::Context) -> bool {
     !ctx.input(|i| i.pointer.any_down() || i.pointer.any_released())
 }
 
-/// The top of the on-screen keyboard of an iPad. The app does not know the
-/// keyboard, so this is the top of a keyboard with its row of suggestions.
+/// The top of the on-screen keyboard of an iPad. Without a report of the
+/// system, this is the top of a keyboard with its row of suggestions.
 pub fn keyboard_top(screen: Rect) -> f32 {
+    if let Some(cover) = crate::keyboard::cover() {
+        return (screen.bottom() - cover).max(screen.top());
+    }
     let part = if screen.width() > screen.height() {
         0.45
     } else {
@@ -194,4 +197,29 @@ pub fn keep_in_view(state: &mut AppState, rects: &Rects) {
         return;
     }
     state.globe.move_place(pos, free.clamp(pos));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use eframe::egui::{Pos2, vec2};
+
+    #[test]
+    fn keyboard_top_uses_reported_frame() {
+        let screen = Rect::from_min_size(Pos2::ZERO, vec2(1366.0, 1024.0));
+        crate::keyboard::set_cover(None);
+        let guess = keyboard_top(screen);
+        assert!(guess > screen.top() && guess < screen.bottom());
+        // The on-screen keyboard.
+        crate::keyboard::set_cover(Some(398.0));
+        assert_eq!(keyboard_top(screen), 1024.0 - 398.0);
+        // The shortcut bar of a hardware keyboard.
+        crate::keyboard::set_cover(Some(55.0));
+        assert_eq!(keyboard_top(screen), 1024.0 - 55.0);
+        // No keyboard.
+        crate::keyboard::set_cover(Some(0.0));
+        assert_eq!(keyboard_top(screen), screen.bottom());
+        crate::keyboard::set_cover(None);
+        assert_eq!(keyboard_top(screen), guess);
+    }
 }

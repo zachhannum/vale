@@ -8,6 +8,7 @@ use eframe::egui;
 use vale_store::{FieldType, FrameId, FrameRecord, LayerId, Uuid, Value};
 
 use super::AppState;
+use super::expr_help::{self, ExprHelp, ExprKind};
 use super::new_feature::FormField;
 use crate::globe::select::FeatureRef;
 use crate::table::{RowKey, Rows, Sort};
@@ -490,6 +491,10 @@ fn desktop_table(ui: &mut egui::Ui, state: &mut AppState) {
         return;
     };
     let selection = state.table_selection();
+    let help = match &state.table {
+        Some(table) => ExprHelp::for_layer(state, table.layer),
+        None => return,
+    };
     let Some(table) = state.table.as_mut() else {
         return;
     };
@@ -511,18 +516,22 @@ fn desktop_table(ui: &mut egui::Ui, state: &mut AppState) {
         ui.separator();
         ui.label(FILTER);
         let color = table.rows.error().map(|_| ui.visuals().warn_fg_color);
+        let id = egui::Id::new(("table", FILTER));
         let edit = egui::TextEdit::singleline(&mut table.filter)
-            .id(egui::Id::new(("table", FILTER)))
+            .id(id)
+            .font(egui::TextStyle::Monospace)
             .hint_text("name = 'Ardent'")
             .text_color_opt(color)
             .desired_width(220.0);
         ui.add(edit);
+        expr_help::insert_menu(ui, &help, id, &mut table.filter);
         ui.selectable_value(&mut table.selected_only, false, ALL);
         ui.selectable_value(&mut table.selected_only, true, SELECTED);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             close = ui.button("Close").clicked();
         });
     });
+    expr_help::desktop_line(ui, &help, &table.filter, ExprKind::Filter);
     ui.separator();
     let row_h = 22.0;
     let widths: Vec<f32> = layer.fields.iter().map(|f| column_width(f.kind)).collect();

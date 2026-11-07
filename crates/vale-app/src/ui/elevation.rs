@@ -128,6 +128,9 @@ fn vector_style(ui: &mut egui::Ui, state: &mut AppState, id: LayerId) {
     let symbols = state.doc.symbols().clone();
     state.open_ramps();
     let ramps = state.ramps.list().to_vec();
+    let help = super::expr_help::ExprHelp::for_layer(state, id);
+    let rules = (state.doc.entry(id)).map_or(Vec::new(), |e| e.style.style.rules.clone());
+    let counts = style_editor::filter_counts(state, id, &rules);
     let Some(entry) = state.doc.entry_mut(id) else {
         return;
     };
@@ -136,6 +139,8 @@ fn vector_style(ui: &mut egui::Ui, state: &mut AppState, id: LayerId) {
         symbols: &symbols,
         note: state.symbol_note.as_ref(),
         actions: &mut state.actions,
+        help: &help,
+        counts: &counts,
     };
     let scroll = egui::ScrollArea::vertical();
     let (changed, request) = scroll

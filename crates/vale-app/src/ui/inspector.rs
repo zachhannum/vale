@@ -3,6 +3,7 @@
 use eframe::egui;
 use vale_store::{Field, FieldType, GeometryKind, LayerId, Value};
 
+use super::pad::label_text::LABEL_TEXT;
 use super::{AppState, style_editor};
 use crate::fonts::DEFAULT_FAMILY;
 
@@ -80,6 +81,9 @@ fn layer_section(ui: &mut egui::Ui, state: &mut AppState) {
     let symbols = state.doc.symbols().clone();
     state.open_ramps();
     let ramps = state.ramps.list().to_vec();
+    let help = super::expr_help::ExprHelp::for_layer(state, info.id);
+    let rules = (state.doc.entry(info.id)).map_or(Vec::new(), |e| e.style.style.rules.clone());
+    let counts = style_editor::filter_counts(state, info.id, &rules);
     let font_warning = (state.doc.entry(info.id))
         .and_then(|e| crate::fonts::missing(e.style.label.font.as_deref(), &state.font_families));
     let mut pick_font = false;
@@ -91,6 +95,8 @@ fn layer_section(ui: &mut egui::Ui, state: &mut AppState) {
         symbols: &symbols,
         note: state.symbol_note.as_ref(),
         actions: &mut state.actions,
+        help: &help,
+        counts: &counts,
     };
     let mut changed = style_editor::rules(ui, info.id, style, info.kind, &fields, &mut library);
     if info.kind != GeometryKind::Point {
@@ -102,18 +108,9 @@ fn layer_section(ui: &mut egui::Ui, state: &mut AppState) {
     ui.add_space(4.0);
     let label = &mut style.label;
     changed |= ui.checkbox(&mut label.enabled, "Show labels").changed();
-    ui.horizontal(|ui| {
-        ui.label("Label field");
-        egui::ComboBox::from_id_salt("label_field")
-            .selected_text(label.field.as_deref().unwrap_or("None"))
-            .width(130.0)
-            .show_ui(ui, |ui| {
-                for f in &info.fields {
-                    changed |= ui
-                        .selectable_value(&mut label.field, Some(f.clone()), f)
-                        .changed();
-                }
-            });
+    ui.push_id(("label-text", info.id.0), |ui| {
+        let names = (LABEL_TEXT, LABEL_TEXT);
+        changed |= super::expr_field::label_text(ui, names, &mut label.text, &help);
     });
     ui.horizontal(|ui| {
         ui.label("Priority field");
