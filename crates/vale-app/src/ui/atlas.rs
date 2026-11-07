@@ -2531,7 +2531,10 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
     };
     let renderer = state.map_renderer.as_mut();
     let cap = state.atlas.tile_cap;
-    match state.atlas.tiles.fill(&ctx, renderer, screen, &placed, cap) {
+    // Tests render a fixed number of tiles in each pass, so that they do
+    // not depend on the time.
+    let timed = !state.headless;
+    match (state.atlas.tiles).fill(&ctx, renderer, screen, &placed, cap, timed) {
         Ok(true) => ctx.request_repaint(),
         Ok(false) => {}
         Err(e) => state.status = e,

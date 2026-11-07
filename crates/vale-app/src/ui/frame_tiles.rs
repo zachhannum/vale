@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32, Pos2, Rect, pos2, vec2};
 use kurbo::{Affine, Point};
@@ -22,6 +23,11 @@ pub const TILE: u32 = 512;
 const REST_RENDERS: usize = 8;
 /// The tile renders in one pass of the UI while a gesture moves the page.
 const GESTURE_RENDERS: usize = 2;
+/// The time of the tile renders in one pass of the UI at rest. The first render of a pass
+/// always runs.
+const REST_TIME: Duration = Duration::from_millis(6);
+/// The time of the tile renders in one pass of the UI while a gesture moves the page.
+const GESTURE_TIME: Duration = Duration::from_millis(3);
 /// The free textures that wait for a tile.
 const POOL: usize = 16;
 /// The longest side of the reduced copy of a list for the blurred backdrop, in pixels.
@@ -539,13 +545,18 @@ impl Tiles {
         screen: Screen,
         shown: &[Shown],
         cap: usize,
+        timed: bool,
     ) -> Result<bool, String> {
         self.tick += 1;
         let tick = self.tick;
-        let mut budget = if screen.moving {
-            GESTURE_RENDERS
+        let (renders, time) = if screen.moving {
+            (GESTURE_RENDERS, GESTURE_TIME)
         } else {
-            REST_RENDERS
+            (REST_RENDERS, REST_TIME)
+        };
+        let mut budget = Budget {
+            renders,
+            until: timed.then(|| Instant::now() + time),
         };
         let mut more = false;
         let s = screen.scale.to_bits();
@@ -636,7 +647,7 @@ impl Tiles {
         renderer: Option<&mut MapRenderer>,
         id: FrameId,
         key: TileKey,
-        budget: &mut usize,
+        budget: &mut Budget,
     ) -> Result<bool, String> {
         let Some(set) = self.frames.get_mut(&id) else {
             return Ok(true);
@@ -654,10 +665,10 @@ impl Tiles {
             set.tiles.insert(key, tile);
             return Ok(true);
         }
-        if *budget == 0 {
+        if budget.renders == 0 {
             return Ok(false);
         }
-        *budget -= 1;
+        budget.renders -= 1;
         self.renders += 1;
         let old = self.pool.pop();
         let drawn = map_texture::draw_region(ctx, renderer, old, list, transform, [TILE, TILE]);
@@ -672,6 +683,9 @@ impl Tiles {
                 used: tick,
             },
         );
+        if budget.until.is_some_and(|t| Instant::now() >= t) {
+            budget.renders = 0;
+        }
         result
     }
 
@@ -849,6 +863,13 @@ impl Tiles {
             self.free(tile);
         }
     }
+}
+
+/// The tile renders that a pass of the UI has left: a number, and with a time, the end of
+/// the time.
+struct Budget {
+    renders: usize,
+    until: Option<Instant>,
 }
 
 /// A tile that the last pass of the UI did not draw.
