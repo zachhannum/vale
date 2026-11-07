@@ -3616,7 +3616,7 @@ impl AppState {
                     self.atlas_export = Some(job);
                     return;
                 }
-                let canvas = crate::globe::backdrop::Canvas {
+                let canvas = crate::globe::Canvas {
                     background: egui::Color32::TRANSPARENT,
                     pixels_per_point: RASTER_PIXEL_RATIO as f32,
                 };

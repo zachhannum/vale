@@ -12,7 +12,7 @@ use vale_store::Geometry;
 use vale_terrain::Mode;
 
 use crate::document::Document;
-use crate::globe::backdrop::Canvas;
+use crate::globe::Canvas;
 use crate::globe::brush::{FIXED_FLOW, Sample, pen_flow, slerp};
 use crate::globe::flat::FlatView;
 use crate::globe::math::V3;
@@ -48,7 +48,7 @@ const FLAT_STEP: f64 = std::f64::consts::PI / 180.0;
 pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     egui::CentralPanel::default()
         .frame(egui::Frame::NONE)
-        .show(ui, |ui| canvas(ui, state, BACKGROUND, false));
+        .show(ui, |ui| canvas(ui, state, BACKGROUND));
 }
 
 /// Starts a stroke, or starts to pick the flatten level.
@@ -1668,16 +1668,10 @@ fn flat_pixel(flat: &FlatView, rect: egui::Rect, pixels_per_point: f32) -> Optio
     .reduce(f64::min)
 }
 
-/// Draws the globe in the free space of `ui` and reads its input. `cards`:
-/// floating cards cover the canvas, and they can show a blurred copy of it.
-pub(super) fn canvas(
-    ui: &mut egui::Ui,
-    state: &mut AppState,
-    background: egui::Color32,
-    cards: bool,
-) {
+/// Draws the globe in the free space of `ui` and reads its input.
+pub(super) fn canvas(ui: &mut egui::Ui, state: &mut AppState, background: egui::Color32) {
     if let Some(rect) = canvas_input(ui, state, background) {
-        paint_canvas(ui, state, rect, background, cards);
+        paint_canvas(ui, state, rect, background);
         held_buttons(ui, state, rect);
     }
 }
@@ -1910,7 +1904,6 @@ pub(super) fn paint_canvas(
     state: &mut AppState,
     rect: egui::Rect,
     background: egui::Color32,
-    cards: bool,
 ) {
     let painter = egui::Painter::new(ui.ctx().clone(), ui.layer_id(), rect);
     let layer = state.selected_vector();
@@ -1930,7 +1923,7 @@ pub(super) fn paint_canvas(
     (pipeline.lod_mut()).retain(|id| doc.layer(id).is_some());
     globe.set_raster_masks(raster_masks(doc, globe));
     let format = globe.format;
-    match globe.paint(canvas, cards && globe.blur) {
+    match globe.paint(canvas) {
         Some(paints) => {
             for paint in paints {
                 match paint {

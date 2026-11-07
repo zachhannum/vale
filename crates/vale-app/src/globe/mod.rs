@@ -59,7 +59,6 @@ pub mod view;
 pub mod zoom_test;
 
 use crate::pen::Pen;
-use backdrop::Canvas;
 use basin::Basiner;
 use brush::{Backlog, BrushSettings, STAMP_SPACING, Sample, Stroke, plan_texels, set_world};
 use combine::PolygonMode;
@@ -84,6 +83,14 @@ use stops::StopTargets;
 use stroke_test::StrokeTest;
 use view::{Camera, GlobeView};
 use zoom_test::ZoomTest;
+
+/// What the canvas gives for the passes of one frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Canvas {
+    /// The color of the canvas where the globe is not.
+    pub background: eframe::egui::Color32,
+    pub pixels_per_point: f32,
+}
 
 /// Texels on one edge of a cube face. The GPU texture holds six full faces.
 pub const FACE_SIZE: usize = 1024;
@@ -3973,14 +3980,12 @@ impl Globe {
     }
 
     /// The uniforms of one pass. `layer` is the raster layer of a layer
-    /// pass. `small`: the pass draws into the small target of the blurred
-    /// copy.
+    /// pass.
     fn uniforms(
         &self,
         canvas: Canvas,
         layer: Option<&LayerDraw>,
         graticule: bool,
-        small: bool,
         frame: Option<&FramePlace>,
     ) -> Uniforms {
         let row = |r: V3| [r[0] as f32, r[1] as f32, r[2] as f32, 0.0];
@@ -3995,9 +4000,8 @@ impl Globe {
             }
         };
         let pixels_per_point = canvas.pixels_per_point;
-        let scale = point_scale(pixels_per_point, frame, small);
-        // The blurred copy has no rivers.
-        let rivers = layer.and_then(|layer| layer.rivers).filter(|_| !small);
+        let scale = point_scale(pixels_per_point, frame);
+        let rivers = layer.and_then(|layer| layer.rivers);
         let sea = layer.map_or(0.0, |layer| {
             f32::from(layer.bands.level(SEA_LEVEL)) / 65535.0
         });
@@ -4309,32 +4313,26 @@ impl Globe {
                     && layer.display == RasterDisplay::Bands
                     && layer.bands.stops().iter().any(|stop| stop.line.on),
                 clip,
-                uniforms: self.uniforms(canvas, Some(layer), false, false, place),
+                uniforms: self.uniforms(canvas, Some(layer), false, place),
             },
-            FrameLayer::Image(image) => self.image_pass(canvas, image, clip, false, place),
+            FrameLayer::Image(image) => self.image_pass(canvas, image, clip, place),
         };
         shown[start..].iter().map(pass).collect()
     }
 
-    /// The pass of an image layer. `small`: the pass draws into the small
-    /// target of the blurred copy, which mixes nothing.
+    /// The pass of an image layer.
     fn image_pass(
         &self,
         canvas: Canvas,
         image: &ImageDraw,
         clip: [f32; 4],
-        small: bool,
         frame: Option<&FramePlace>,
     ) -> Draw {
-        let mut uniforms = self.uniforms(canvas, None, false, small, frame);
+        let mut uniforms = self.uniforms(canvas, None, false, frame);
         let key = image.key;
         uniforms.params = [key.width as f32, key.mips as f32, 0.0, 0.0];
         uniforms.layer[0] = image.opacity;
-        uniforms.turn[2] = if small {
-            0.0
-        } else {
-            image.blend.index() as f32
-        };
+        uniforms.turn[2] = image.blend.index() as f32;
         Draw {
             pass: Pass::Image(key.image),
             source: None,
@@ -4507,7 +4505,7 @@ impl Globe {
             blend: BlendMode::Normal,
         };
         let [.., w, h] = frame.rect;
-        let mut uniforms = self.uniforms(canvas, Some(&layer), false, false, Some(&frame.place));
+        let mut uniforms = self.uniforms(canvas, Some(&layer), false, Some(&frame.place));
         uniforms.range = mask_range(bands, mask);
         let cover = Draw {
             pass: Pass::Layer(key.layer),
@@ -4864,9 +4862,8 @@ impl Globe {
     /// vector layers, in the draw order. It starts at the top raster layer
     /// that hides each layer below it. With no such layer, it starts with
     /// the plain ground. The graticule and the soft edge of the globe are
-    /// above the top raster layer. With `blur`, the first item draws the
-    /// raster layers into the blurred copy that the cards show.
-    pub fn paint(&mut self, canvas: Canvas, blur: bool) -> Option<Vec<Paint>> {
+    /// above the top raster layer.
+    pub fn paint(&mut self, canvas: Canvas) -> Option<Vec<Paint>> {
         self.want_view(canvas.pixels_per_point);
         let format = self.format?;
         self.queue_changes();
@@ -4980,57 +4977,37 @@ impl Globe {
             let r = self.rect * canvas.pixels_per_point;
             [r.min.x, r.min.y, r.max.x, r.max.y]
         };
-        let plain = |pass, graticule, small| Draw {
+        let plain = |pass, graticule| Draw {
             pass,
             source: None,
             image: None,
             rivers: false,
             lines: false,
             clip,
-            uniforms: self.uniforms(canvas, None, graticule, small, None),
+            uniforms: self.uniforms(canvas, None, graticule, None),
         };
-        let layer = |item: &Item, small: bool| match item {
+        let layer = |item: &Item| match item {
             Item::Raster(layer) => Some(Draw {
                 pass: Pass::Layer(layer.key.layer),
                 source: Some(layer.key),
                 image: None,
-                rivers: layer.rivers.is_some() && !small,
-                // The blurred copy has no lines of the stops.
-                lines: !small
-                    && layer.lines
+                rivers: layer.rivers.is_some(),
+                lines: layer.lines
                     && layer.display == RasterDisplay::Bands
                     && layer.bands.stops().iter().any(|stop| stop.line.on),
                 clip,
-                uniforms: {
-                    let mut uniforms = self.uniforms(canvas, Some(layer), false, small, None);
-                    // The blurred copy mixes nothing.
-                    if small {
-                        uniforms.turn[2] = 0.0;
-                    }
-                    uniforms
-                },
+                uniforms: self.uniforms(canvas, Some(layer), false, None),
             }),
-            Item::Image(image) => Some(self.image_pass(canvas, image, clip, small, None)),
+            Item::Image(image) => Some(self.image_pass(canvas, image, clip, None)),
             Item::Vector(_) | Item::Masked(..) => None,
         };
 
         let mut out = Vec::new();
-        let drawn = &items[start.unwrap_or(0)..];
-        if blur {
-            // The blurred copy has no vector layers and no graticule.
-            let ground = start.is_none().then(|| plain(Pass::Ground, false, true));
-            let layers = drawn.iter().filter_map(|item| layer(item, true));
-            let rim = plain(Pass::Rim, false, true);
-            let draws = ground.into_iter().chain(layers).chain([rim]).collect();
-            out.push(callback(GpuJob::Backdrop(canvas, draws)));
-        }
         let graticule = self.preview.graticule;
         // The graticule, and then the soft edge of the globe.
         let over = || {
-            let graticule = graticule.then(|| plain(Pass::Graticule, true, false));
-            let passes = graticule
-                .into_iter()
-                .chain([plain(Pass::Rim, false, false)]);
+            let graticule = graticule.then(|| plain(Pass::Graticule, true));
+            let passes = graticule.into_iter().chain([plain(Pass::Rim, false)]);
             passes.map(|draw| callback(draw_job(draw)))
         };
         // The passes of the raster layers between two vector layers. A run
@@ -5059,7 +5036,7 @@ impl Globe {
             out.push(callback(GpuJob::Group(Box::new(group))));
         };
         if start.is_none() {
-            run.push(plain(Pass::Ground, false, false));
+            run.push(plain(Pass::Ground, false));
         }
         if top.is_none() {
             flush(&mut run, &mut out);
@@ -5076,7 +5053,7 @@ impl Globe {
                 Item::Masked(id, Some((draw, mask))) => {
                     flush(&mut run, &mut out);
                     masked += 1;
-                    let Some(mut cover) = layer(&Item::Raster(*draw), false) else {
+                    let Some(mut cover) = layer(&Item::Raster(*draw)) else {
                         continue;
                     };
                     cover.uniforms.range = mask_range(draw.bands, mask);
@@ -5100,7 +5077,7 @@ impl Globe {
                     ));
                 }
                 Item::Raster(..) | Item::Image(..) => {
-                    run.extend(layer(item, false));
+                    run.extend(layer(item));
                     if top == Some(at) {
                         flush(&mut run, &mut out);
                         out.extend(over());
@@ -5220,13 +5197,8 @@ pub struct FramePlace {
 
 /// Pixels in one point of a width, with `pixels_per_point` pixels in one
 /// point of the screen. A map frame draws a width in points of the page.
-/// `small`: the pass draws into the small target of the blurred copy.
-fn point_scale(pixels_per_point: f32, frame: Option<&FramePlace>, small: bool) -> f32 {
-    let point = frame.map_or(pixels_per_point, |frame| frame.pixels_per_page_point);
-    match small {
-        true => point / backdrop::REDUCTION as f32,
-        false => point,
-    }
+fn point_scale(pixels_per_point: f32, frame: Option<&FramePlace>) -> f32 {
+    frame.map_or(pixels_per_point, |frame| frame.pixels_per_page_point)
 }
 
 /// The first number of a target of a map frame. The numbers below it are for
@@ -5333,11 +5305,9 @@ mod tests {
             points_per_radian: 1.0,
             pixels_per_page_point,
         };
-        assert_eq!(point_scale(2.0, None, false), 2.0);
-        assert_eq!(point_scale(2.0, Some(&frame(0.5)), false), 0.5);
-        assert_eq!(point_scale(2.0, Some(&frame(3.0)), false), 3.0);
-        let small = 3.0 / backdrop::REDUCTION as f32;
-        assert_eq!(point_scale(2.0, Some(&frame(3.0)), true), small);
+        assert_eq!(point_scale(2.0, None), 2.0);
+        assert_eq!(point_scale(2.0, Some(&frame(0.5))), 0.5);
+        assert_eq!(point_scale(2.0, Some(&frame(3.0))), 3.0);
     }
     use snap::LayerTargets;
     use snap::tests::{layer, pen};
