@@ -1319,6 +1319,23 @@ fn a_change_of_the_content_of_a_frame_renders_its_tiles_again() {
 }
 
 #[test]
+fn a_quick_run_of_changes_shows_the_old_tiles_and_not_the_overview() {
+    let mut h = zoomed_pad(3.0);
+    let id = frame(&h, 0).id;
+    for i in 0..12u8 {
+        atlas::set_graticule_color(h.state_mut(), id, [255, 20 * i, 0, 255]);
+        h.step();
+        let painted = h.state().atlas.frame_paint(id).unwrap();
+        assert_eq!(painted.overview, 0, "step {i}: {painted:?}");
+        assert_eq!(painted.blank, 0, "step {i}");
+    }
+    settle(&mut h);
+    let painted = h.state().atlas.frame_paint(id).unwrap();
+    assert_eq!(painted.previous, 0);
+    assert_eq!(painted.overview, 0);
+}
+
+#[test]
 fn a_pass_of_the_ui_renders_eight_tiles_at_most() {
     let mut h = zoomed_pad(3.0);
     let id = frame(&h, 0).id;
