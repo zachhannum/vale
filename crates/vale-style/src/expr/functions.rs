@@ -17,6 +17,19 @@ pub struct Function {
     pub(super) call: fn(&[Value]) -> Value,
 }
 
+impl Function {
+    /// The name of argument `i`, from the signature. An argument after the named ones takes the last name.
+    pub fn slot(&self, i: usize) -> &'static str {
+        let inner =
+            self.signature[self.signature.find('(').map_or(0, |p| p + 1)..].trim_end_matches(')');
+        let names: Vec<&'static str> = inner
+            .split(", ")
+            .filter(|n| !n.is_empty() && *n != "...")
+            .collect();
+        names.get(i).or(names.last()).copied().unwrap_or("")
+    }
+}
+
 /// A group of functions in the UI.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Category {

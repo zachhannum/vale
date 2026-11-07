@@ -1,7 +1,7 @@
 use vale_store::FieldType;
-use vale_style::expr::Expr;
 use vale_style::expr::Value;
-use vale_style::expr::editor::{CmpOp, Cond, Conditions, ops_for};
+use vale_style::expr::editor::{CmpOp, Cond, Conditions, Formula, Op, Seq, Tok, ops_for};
+use vale_style::expr::{Expr, FUNCTIONS};
 
 fn tree(text: &str) -> Expr {
     Expr::parse(text).unwrap_or_else(|e| panic!("{text}: {e}"))
@@ -218,4 +218,154 @@ fn comparisons_follow_the_field_type() {
     assert_eq!(CmpOp::Between.value_count(), Some(2));
     assert_eq!(CmpOp::OneOf.value_count(), None);
     assert_eq!(CmpOp::Empty.value_count(), Some(0));
+}
+
+const VALUES: &[&str] = &[
+    "clamp(4, round(pop / 1000, 1) * 0.5, 22)",
+    "(a + b) * c",
+    "a - (b - c)",
+    "a - b - c",
+    "-a * b",
+    "-(a * b)",
+    "a - -5",
+    "-5 * x",
+    "- -5",
+    "-0",
+    "x * -1.5",
+    "not capital",
+    "not (a or b)",
+    "a = 1 or b",
+    "(a || b) = c",
+    "a || (b || c)",
+    "if(capital, 18, if(pop >= 10000, 14, if(port, 12, 10)))",
+    "if(capital, 18, 10) * 2",
+    "if(if(a, b, c), 1, 2)",
+    "coalesce(if(a, 1, 2), 3)",
+    "x is null",
+    "(x is null) || 'a'",
+    "@scale / 1000",
+    "null",
+    "'it''s' || \"old name\"",
+    "true",
+    "concat(a, b, c)",
+    "if(type = 'City' and pop > 3, 'big', 'small')",
+    "1e300",
+];
+
+fn value_trip(text: &str) -> String {
+    Formula::from_text(text).to_text()
+}
+
+#[test]
+fn values_round_trip() {
+    for text in VALUES {
+        round_trip(text, value_trip);
+    }
+}
+
+fn f(name: &str) -> &'static vale_style::expr::Function {
+    FUNCTIONS.iter().find(|f| f.name == name).unwrap()
+}
+
+#[test]
+fn value_reads_blocks_and_operators() {
+    let v = Formula::from_text("clamp(4, round(pop / 1000, 1) * 0.5, 22)");
+    let round = Tok::Call {
+        f: f("round"),
+        args: vec![
+            Seq(vec![
+                Tok::Field("pop".into()),
+                Tok::Op(Op::Div),
+                Tok::Num(1000.0),
+            ]),
+            Seq(vec![Tok::Num(1.0)]),
+        ],
+    };
+    assert_eq!(
+        v.seq,
+        Seq(vec![Tok::Call {
+            f: f("clamp"),
+            args: vec![
+                Seq(vec![Tok::Num(4.0)]),
+                Seq(vec![round, Tok::Op(Op::Mul), Tok::Num(0.5)]),
+                Seq(vec![Tok::Num(22.0)]),
+            ],
+        }])
+    );
+    let v = Formula::from_text("(a + b) * -2");
+    assert_eq!(
+        v.seq,
+        Seq(vec![
+            Tok::Paren(Seq(vec![
+                Tok::Field("a".into()),
+                Tok::Op(Op::Add),
+                Tok::Field("b".into())
+            ])),
+            Tok::Op(Op::Mul),
+            Tok::Num(-2.0),
+        ])
+    );
+    assert_eq!(
+        Formula::from_text("@scale").seq,
+        Seq(vec![Tok::Code("@scale".into())])
+    );
+    assert!(Formula::from_text("").seq.is_hole());
+}
+
+#[test]
+fn nested_ifs_read_as_cases() {
+    let v = Formula::from_text("if(capital, 18, if(pop >= 10000, 14, if( , 12, 10)))");
+    let Tok::Cases { cases, otherwise } = &v.seq.0[0] else {
+        panic!("{:?}", v.seq);
+    };
+    assert_eq!(cases.len(), 3);
+    assert_eq!(
+        cases[0].0,
+        rule("capital", CmpOp::Is, vec![Value::Bool(true)])
+    );
+    assert_eq!(cases[1].0, rule("pop", CmpOp::Ge, vec![n(10000.0)]));
+    assert_eq!(cases[2].0, Cond::hole());
+    assert_eq!(cases[2].1, Seq(vec![Tok::Num(12.0)]));
+    assert_eq!(*otherwise, Seq(vec![Tok::Num(10.0)]));
+    assert_eq!(
+        v.to_text(),
+        "if(capital, 18, if(pop >= 10000, 14, if(, 12, 10)))"
+    );
+    let one = Tok::Cases {
+        cases: vec![],
+        otherwise: Seq(vec![Tok::Num(1.0)]),
+    };
+    assert_eq!(one.to_text(), "1");
+}
+
+#[test]
+fn slots_are_named_by_the_signature() {
+    assert_eq!(f("round").slot(0), "x");
+    assert_eq!(f("round").slot(1), "digits");
+    assert_eq!(f("clamp").slot(2), "high");
+    assert_eq!(f("coalesce").slot(5), "b");
+}
+
+#[test]
+fn paths_address_tokens_slots_and_cases() {
+    let text = "clamp(4, round(pop / 1000, 1) * 0.5, 22)";
+    let v = Formula::from_text(text);
+    let span_text = |path: &[usize]| {
+        let s = v.span(path).unwrap();
+        text.chars().skip(s.start).take(s.len()).collect::<String>()
+    };
+    assert_eq!(span_text(&[]), text);
+    assert_eq!(span_text(&[0, 1]), "round(pop / 1000, 1) * 0.5");
+    assert_eq!(span_text(&[0, 1, 0]), "round(pop / 1000, 1)");
+    assert_eq!(span_text(&[0, 1, 0, 0, 2]), "1000");
+    assert_eq!(span_text(&[0, 1, 2]), "0.5");
+    let pos = text.find("1000").unwrap() + 1;
+    assert_eq!(v.path_at(pos), Some(vec![0, 1, 0, 0, 2]));
+
+    let text = "if(capital, 18, if( , 12, 10))";
+    let v = Formula::from_text(text);
+    assert_eq!(v.span(&[0, 0]), Some(3..10));
+    assert_eq!(v.span(&[0, 4]), Some(26..28));
+    let err = Expr::parse(text).unwrap_err();
+    assert_eq!(v.path_at(err.start), Some(vec![0, 2]));
 }

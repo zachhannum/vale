@@ -7,10 +7,12 @@
 //! A model that comes from text keeps the span of each node in the text, in chars. A model that you change keeps the old spans until you read it again.
 
 mod cond;
+mod seq;
 
 use std::ops::Range;
 
 pub use cond::{CmpOp, Cond, Conditions, ops_for};
+pub use seq::{Formula, Op, Seq, Tok};
 
 use super::parser::Node;
 use super::print::prec;
