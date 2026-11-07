@@ -18,6 +18,7 @@ pub fn symbolizer_of(r: &Raster) -> RasterSymbolizer {
         blend: r.blend,
         stops: r.stops.clone(),
         colors: r.colors.clone(),
+        names: r.names.clone(),
         lines: r.lines,
         smoothing: r.smoothing,
         hillshade: r.hillshade,
