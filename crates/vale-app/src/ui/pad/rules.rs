@@ -20,6 +20,7 @@ use super::widgets::{self, Controls, Keys, PANEL_ROW};
 use super::{Page, filter, theme};
 use crate::document::Document;
 use crate::globe::symbol::paint_symbol;
+use crate::ui::expr_help::{self, ExprHelp};
 use crate::ui::{Action, AppState};
 
 /// The heading of the section.
@@ -138,16 +139,12 @@ enum Part {
 /// The state of the Style section of a vector layer.
 #[derive(Default)]
 pub struct RulesState {
-    /// The text of the filter field while the user types.
-    filter: Option<(LayerId, usize, String)>,
     /// The color that the color picker edits.
     picker: Option<(LayerId, usize, Part)>,
     /// The picker showed in this frame.
     shown: bool,
     /// The field row that shows the chips of the fields.
     field: Option<(LayerId, usize, &'static str)>,
-    /// The condition of the page of a new condition.
-    pub(super) draft: filter::Draft,
     /// The Classify form.
     pub(super) classify: super::classify::Draft,
 }
@@ -399,7 +396,7 @@ pub fn rule_body(
     }
 }
 
-/// The conditions of the filter, and the text of the whole filter.
+/// The filter as conditions, and as text in Code.
 fn filter_rows(
     ui: &mut egui::Ui,
     state: &mut AppState,
@@ -411,14 +408,13 @@ fn filter_rows(
         .filter
         .source()
         .map_or(String::new(), |s| s.text().to_owned());
-    let mut typed = match state.pad.rules.filter.take() {
-        Some((layer, at, text)) if layer == id && at == i => text,
-        _ => current.clone(),
-    };
-    if let Some(text) = filter::rows(ui, state, controls, (id, i), &current, &mut typed) {
+    let help = ExprHelp::for_layer(state, id);
+    let count = expr_help::matches(state, id, &current);
+    let none = filter::NO_CONDITION;
+    let edit = filter::editor(ui, controls, (id, i), &current, &help, count, none);
+    if let Some(text) = edit.text {
         rule.filter = Filter::new(&text);
     }
-    state.pad.rules.filter = Some((id, i, typed));
 }
 
 /// The fields of the scale range, the keypad of the field that the user

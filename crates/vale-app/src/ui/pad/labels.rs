@@ -19,7 +19,7 @@ use super::widgets::{self, Controls, PANEL_ROW};
 use super::{Card, CardTitle, show_card, theme};
 use crate::fonts;
 use crate::ui::atlas::{AtlasSelection, ClassColor, ClassDrag, ClassPage, ClassSegment};
-use crate::ui::expr_help::ExprHelp;
+use crate::ui::expr_help::{self, ExprHelp};
 use crate::ui::{Action, AppState, FontTarget};
 
 pub const ADD_CLASS: &str = "Add class";
@@ -383,11 +383,6 @@ pub(super) fn class_panel(
         Some(ClassPage::Placement) => ("pad-atlas-placement", PLACEMENT, &*class.name),
         Some(ClassPage::Style) => ("pad-atlas-class-style", STYLE, &*class.name),
         Some(ClassPage::Case) => ("pad-atlas-class-case", CASE, &*class.name),
-        Some(ClassPage::Condition) => (
-            "pad-atlas-class-condition",
-            filter::ADD_CONDITION,
-            &*class.name,
-        ),
         Some(ClassPage::Positions) => ("pad-atlas-positions", POSITIONS, &*class.name),
         Some(ClassPage::Zones) => ("pad-atlas-zones", ZONES, &*class.name),
         Some(ClassPage::LeaderLine) => ("pad-atlas-leader", LEADER_LINE, &*class.name),
@@ -434,7 +429,6 @@ pub(super) fn class_panel(
             Some(ClassPage::Placement) => placement_page(ui, state, controls, at, kind, &class),
             Some(ClassPage::Style) => style_page(ui, state, controls, at, &class),
             Some(ClassPage::Case) => case_page(ui, state, controls, at, &class),
-            Some(ClassPage::Condition) => condition_page(ui, state, controls, at, &class),
             Some(ClassPage::Positions) => positions_page(ui, state, controls, at, &class),
             Some(ClassPage::Zones) => zones_page(ui, state, controls, at, &class),
             Some(ClassPage::LeaderLine) => leader_page(ui, state, controls, at, &class),
@@ -581,21 +575,16 @@ fn text_segment(
     }
 
     ui.add_space(6.0);
-    let mut typed = std::mem::take(&mut state.atlas.label_filter);
     let none = filter::NO_CLASS_CONDITION;
-    let (changed, add) = filter::list(ui, controls, &class.filter, &mut typed, none, &help);
-    let typing = ui.memory(|m| m.has_focus(ui.id().with(super::rules::EXPRESSION)));
-    state.atlas.label_filter = typed;
-    if let Some(text) = changed.filter(|t| filter_ok(t)) {
-        if typing {
-            state.edit_label_class(map, layer, i, |c| c.filter = text);
-        } else {
+    let count = expr_help::matches(state, layer, &class.filter);
+    let salt = (map, layer, i);
+    let edit = filter::editor(ui, controls, salt, &class.filter, &help, count, none);
+    if let Some(text) = edit.text.filter(|t| filter_ok(t)) {
+        if edit.step {
             state.label_class_step(map, layer, i, |c| c.filter = text);
+        } else {
+            state.edit_label_class(map, layer, i, |c| c.filter = text);
         }
-    }
-    if add {
-        state.atlas.label_draft = filter::Draft::new((layer, i));
-        state.atlas.label_page = Some(ClassPage::Condition);
     }
     ui.add_space(6.0);
 
@@ -1202,24 +1191,6 @@ fn case_page(
 ) {
     if let Some(case) = text_style::case_rows(ui, controls, class.case) {
         state.label_class_step(map, layer, i, |c| c.case = case);
-        state.atlas.label_page = None;
-    }
-}
-
-/// The page of a new condition of the filter of the class.
-fn condition_page(
-    ui: &mut egui::Ui,
-    state: &mut AppState,
-    controls: &mut Controls,
-    (_, map, layer, i): ClassAt,
-    class: &LabelClass,
-) {
-    let mut draft = std::mem::take(&mut state.atlas.label_draft);
-    let made = filter::new_condition(ui, state, controls, (layer, i), &mut draft);
-    state.atlas.label_draft = draft;
-    if let Some(condition) = made {
-        let text = filter::with_condition(&class.filter, condition);
-        state.label_class_step(map, layer, i, |c| c.filter = text);
         state.atlas.label_page = None;
     }
 }

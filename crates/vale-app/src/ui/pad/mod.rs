@@ -367,8 +367,6 @@ pub enum Page {
     NewField,
     /// The rule with this index.
     Rule(usize),
-    /// The new condition of the filter of the rule with this index.
-    Condition(usize),
     /// The symbols that the rule with this index can pick.
     Symbols(usize),
     /// The shapes of the marker of the rule with this index.
@@ -1584,13 +1582,9 @@ pub(super) fn show_panel(
     };
     let rule_count = rules.map_or(0, Vec::len);
     let rule_name = match state.pad.page {
-        Some(
-            Page::Rule(i)
-            | Page::Condition(i)
-            | Page::Symbols(i)
-            | Page::MarkerShape(i)
-            | Page::MarkerFill(i),
-        ) => rules.and_then(|r| r.get(i)).map(|r| r.name.clone()),
+        Some(Page::Rule(i) | Page::Symbols(i) | Page::MarkerShape(i) | Page::MarkerFill(i)) => {
+            rules.and_then(|r| r.get(i)).map(|r| r.name.clone())
+        }
         _ => None,
     };
     if name.is_none() {
@@ -1618,13 +1612,7 @@ pub(super) fn show_panel(
         (Some(LayerRef::Vector(_)), Some(Page::Field(i))) => i < field_count,
         (
             Some(LayerRef::Vector(_)),
-            Some(
-                Page::Rule(i)
-                | Page::Condition(i)
-                | Page::Symbols(i)
-                | Page::MarkerShape(i)
-                | Page::MarkerFill(i),
-            ),
+            Some(Page::Rule(i) | Page::Symbols(i) | Page::MarkerShape(i) | Page::MarkerFill(i)),
         ) => i < rule_count,
         _ => false,
     };
@@ -1696,9 +1684,6 @@ pub(super) fn show_panel(
             field_name.as_deref().unwrap_or_default(),
             Some(name),
         ),
-        (Panel::Layers, Some(LayerRef::Vector(_))) if matches!(page, Some(Page::Condition(_))) => {
-            ("pad-condition", filter::ADD_CONDITION, rule_name.as_deref())
-        }
         (Panel::Layers, Some(LayerRef::Vector(_))) if matches!(page, Some(Page::Symbols(_))) => {
             ("pad-symbols", rules::SYMBOLS, rule_name.as_deref())
         }
@@ -1772,12 +1757,8 @@ pub(super) fn show_panel(
             state.pad.page = Some(if vector { Page::Classify } else { Page::Stops });
         } else if row.back && matches!(page, Some(Page::RampLabels(_))) {
             state.pad.page = Some(Page::Ramps);
-        } else if let (
-            true,
-            Some(
-                Page::Condition(i) | Page::Symbols(i) | Page::MarkerShape(i) | Page::MarkerFill(i),
-            ),
-        ) = (row.back, page)
+        } else if let (true, Some(Page::Symbols(i) | Page::MarkerShape(i) | Page::MarkerFill(i))) =
+            (row.back, page)
         {
             state.pad.page = Some(Page::Rule(i));
         } else if row.back && page.is_some() {
@@ -1817,7 +1798,6 @@ pub(super) fn show_panel(
                     fields::field_body(ui, state, controls, id, i);
                 }
                 Some(Page::Rule(i)) => rules::rule_body(ui, state, controls, id, i),
-                Some(Page::Condition(i)) => filter::condition_body(ui, state, controls, id, i),
                 Some(Page::Symbols(i)) => rules::symbols_body(ui, state, controls, id, i),
                 Some(Page::MarkerShape(i)) => rules::shape_body(ui, state, controls, id, i),
                 Some(Page::MarkerFill(i)) => rules::marker_fill_body(ui, state, controls, id, i),

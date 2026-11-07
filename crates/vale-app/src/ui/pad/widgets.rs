@@ -229,6 +229,17 @@ pub fn small_segments(
     labels: &[&str],
     active: usize,
 ) -> Option<usize> {
+    small_segments_named(ui, controls, rect, (labels, labels), active)
+}
+
+/// A small segmented control whose items have the control names `names`.
+pub fn small_segments_named(
+    ui: &egui::Ui,
+    controls: &mut Controls,
+    rect: Rect,
+    (labels, names): (&[&str], &[&str]),
+    active: usize,
+) -> Option<usize> {
     let painter = ui.painter();
     painter.rect_filled(rect, theme::CONTROL_RADIUS, Color32::from_black_alpha(77));
     let inner = rect.shrink(SMALL_TRACK_PAD);
@@ -245,7 +256,8 @@ pub fn small_segments(
         left += w;
         let touch = Rect::from_center_size(item.center(), vec2(w, item.height().max(TOUCH)));
         let on = i == active;
-        let resp = hit(ui, controls, touch, label, Sense::click(), true, Some(on));
+        let name = names.get(i).unwrap_or(label);
+        let resp = hit(ui, controls, touch, name, Sense::click(), true, Some(on));
         if on || resp.is_pointer_button_down_on() {
             ui.painter().rect_filled(item, 8.0, theme::raise());
         }
@@ -1709,8 +1721,6 @@ pub fn key_field(
     keys: Keys,
     valid: impl Fn(&str) -> bool,
 ) -> Option<String> {
-    let ctx = ui.ctx().clone();
-    let id = ui.id().with(name);
     let (field, right) = match keys {
         Keys::Hex => (form_row(ui, label), false),
         Keys::Number => {
@@ -1726,6 +1736,34 @@ pub fn key_field(
             (field, true)
         }
     };
+    key_field_at(
+        ui,
+        controls,
+        (field, right),
+        name,
+        suffix,
+        shown,
+        keys,
+        valid,
+    )
+}
+
+/// The field of `key_field` at `field`, with no row. With `right`, the
+/// number is at the right of the field, with `suffix` after it, and the
+/// field has a fill only while its keypad is open.
+#[allow(clippy::too_many_arguments)]
+pub fn key_field_at(
+    ui: &egui::Ui,
+    controls: &mut Controls,
+    (field, right): (Rect, bool),
+    name: &str,
+    suffix: &str,
+    shown: &str,
+    keys: Keys,
+    valid: impl Fn(&str) -> bool,
+) -> Option<String> {
+    let ctx = ui.ctx().clone();
+    let id = ui.id().with(name);
     let resp = hit(ui, controls, field, name, Sense::click(), true, None);
     let mut edit = key_edit(&ctx).filter(|edit| edit.field == id);
     if resp.long_touched() {

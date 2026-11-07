@@ -7912,7 +7912,7 @@ fn the_style_section_adds_moves_and_deletes_rules() {
 
 #[test]
 fn a_rule_page_sets_the_filter_and_the_scale_range() {
-    use vale_app::ui::pad::filter::{ADD_CONDITION, NO_CONDITION, REMOVE_CONDITION, VALUE};
+    use vale_app::ui::pad::filter::{NO_CONDITION, REMOVE_CONDITION, VIEWS};
     use vale_app::ui::pad::rules::{BAD_RANGE, EXPRESSION, MAX_SCALE, MIN_SCALE};
     for size in [BOARDS[1], BOARDS[3]] {
         let what = format!("{size:?}");
@@ -7926,32 +7926,17 @@ fn a_rule_page_sets_the_filter_and_the_scale_range() {
         open_rule(&mut h, "Rivers", "Default");
 
         assert!(h.query_by_label(NO_CONDITION).is_some(), "{what}");
-        // A condition on a number: a field chip, an operator chip, and the
-        // keypad.
-        scroll_to_control(&mut h, ADD_CONDITION);
-        tap(&mut h, ADD_CONDITION);
-        assert_eq!(h.state().pad.page, Some(Page::Condition(0)), "{what}");
-        check_controls(&h, &format!("{what} on the page of a new condition"));
-        scroll_to_control(&mut h, "scalerank");
-        tap(&mut h, "scalerank");
-        scroll_to_control(&mut h, "<");
-        tap(&mut h, "<");
-        type_scrolled_keys(&mut h, VALUE, "5");
-        check_controls(&h, &format!("{what} with the keypad of a value"));
-        scroll_to_control(&mut h, ADD_CONDITION);
-        tap(&mut h, ADD_CONDITION);
-        assert_eq!(h.state().pad.page, Some(Page::Rule(0)), "{what}");
+        // A condition on a number: the field menu, the comparison menu, and
+        // the keypad.
+        add_condition(&mut h, 1, "scalerank");
+        pick(&mut h, "Comparison 1", "is less than");
+        check_controls(&h, &format!("{what} with a condition"));
+        type_scrolled_keys(&mut h, "Value 1", "5");
         assert_eq!(filter(&h).as_deref(), Some("scalerank < 5"), "{what}");
 
-        // A condition on a text: a chip of a common value.
-        scroll_to_control(&mut h, ADD_CONDITION);
-        tap(&mut h, ADD_CONDITION);
-        scroll_to_control(&mut h, "featurecla");
-        tap(&mut h, "featurecla");
-        scroll_to_control(&mut h, "River");
-        tap(&mut h, "River");
-        scroll_to_control(&mut h, ADD_CONDITION);
-        tap(&mut h, ADD_CONDITION);
+        // A condition on a text: a value of the layer from the menu.
+        add_condition(&mut h, 2, "featurecla");
+        pick(&mut h, "Value 2", "River");
         let text = "scalerank < 5 and featurecla = 'River'";
         assert_eq!(filter(&h).as_deref(), Some(text), "{what}");
         assert!(rule(&h).filter.error().is_none(), "{what}");
@@ -7963,7 +7948,9 @@ fn a_rule_page_sets_the_filter_and_the_scale_range() {
         let text = "featurecla = 'River'";
         assert_eq!(filter(&h).as_deref(), Some(text), "{what}");
 
-        // The expression field takes any filter, and warns about a wrong one.
+        // Code takes any filter, and warns about a wrong one.
+        scroll_to_control(&mut h, VIEWS[1]);
+        tap(&mut h, VIEWS[1]);
         type_text(&mut h, EXPRESSION, "scalerank < 5 and");
         let message = rule(&h).filter.error().unwrap().short();
         assert!(h.query_by_label(&message).is_some(), "{what}");
@@ -7986,28 +7973,161 @@ fn a_rule_page_sets_the_filter_and_the_scale_range() {
     }
 }
 
-/// Scrolls the row of the chips of an expression field sideways until the
-/// chip `name` shows.
-fn scroll_chips_to(h: &mut Pad, name: &str) {
-    for _ in 0..80 {
-        if control(h, name).is_some_and(|r| r.width() >= 44.0) {
-            return;
+/// Taps the control `menu`, and then the row `choice` of its menu.
+fn pick(h: &mut Pad, menu: &str, choice: &str) {
+    use vale_app::ui::pad::filter::{SEARCH_FIELDS, SEARCH_VALUES};
+    scroll_to_control(h, menu);
+    tap(h, menu);
+    // A long menu has a search field.
+    for search in [SEARCH_FIELDS, SEARCH_VALUES] {
+        if control(h, choice).is_none() && control(h, search).is_some() {
+            type_text(h, search, choice);
         }
-        // The functions are in the lower row of the chips.
-        let label = name.trim_start_matches("Insert ");
-        let call = vale_style::expr::FUNCTIONS.iter().any(|f| f.name == label);
-        let controls = &h.state().pad.controls;
-        let chips = controls.iter().filter(|c| c.name.starts_with("Insert "));
-        let y = |c: &&vale_app::ui::pad::widgets::Control| c.rect.center().y;
-        let chip = if call {
-            chips.max_by(|a, b| y(a).total_cmp(&y(b)))
-        } else {
-            chips.min_by(|a, b| y(a).total_cmp(&y(b)))
-        };
-        let from = chip.expect("no chips").rect.center();
-        drag(h, from, from - vec2(250.0, 0.0), None);
     }
-    panic!("no chip `{name}`");
+    assert!(control(h, choice).is_some(), "no `{choice}` in `{menu}`");
+    tap(h, choice);
+}
+
+/// Adds condition `n` of a filter, on field `field`.
+fn add_condition(h: &mut Pad, n: usize, field: &str) {
+    use vale_app::ui::pad::filter::ADD_CONDITION;
+    scroll_to_control(h, ADD_CONDITION);
+    tap(h, ADD_CONDITION);
+    pick(h, &format!("Field {n}"), field);
+}
+
+/// Sets the filter of the first rule of layer `id`.
+fn set_filter(h: &mut Pad, id: vale_store::LayerId, text: &str) {
+    let entry = h.state_mut().doc.entry_mut(id).unwrap();
+    entry.style.style.rules[0].filter = vale_style::expr::Filter::new(text);
+    h.run_steps(2);
+}
+
+#[test]
+fn match_any_writes_or() {
+    use vale_app::ui::pad::filter::{ANY, MATCH};
+    let mut h = pad(BOARDS[0]);
+    let rivers = vector(&h, "Rivers");
+    open_rule(&mut h, "Rivers", "Default");
+    add_condition(&mut h, 1, "scalerank");
+    add_condition(&mut h, 2, "featurecla");
+    let text = filter_text(&h, rivers).unwrap();
+    assert!(text.contains(" and "), "{text}");
+    pick(&mut h, MATCH, ANY);
+    let text = filter_text(&h, rivers).unwrap();
+    assert!(text.starts_with("scalerank = 0 or featurecla = "), "{text}");
+    screenshot::save(&mut h, "pad-filter-conditions");
+}
+
+#[test]
+fn comparison_menu_follows_field_type() {
+    for size in [BOARDS[0], BOARDS[3]] {
+        let what = format!("{size:?}");
+        let mut h = pad(size);
+        open_rule(&mut h, "Rivers", "Default");
+        add_condition(&mut h, 1, "scalerank");
+        scroll_to_control(&mut h, "Comparison 1");
+        tap(&mut h, "Comparison 1");
+        assert!(control(&h, "is greater than").is_some(), "{what}");
+        assert!(control(&h, "is between").is_some(), "{what}");
+        assert!(control(&h, "contains").is_none(), "{what}");
+        tap(&mut h, "Comparison 1");
+        assert!(control(&h, "is greater than").is_none(), "{what}");
+
+        pick(&mut h, "Field 1", "featurecla");
+        scroll_to_control(&mut h, "Comparison 1");
+        tap(&mut h, "Comparison 1");
+        assert!(control(&h, "contains").is_some(), "{what}");
+        assert!(control(&h, "starts with").is_some(), "{what}");
+        assert!(control(&h, "is greater than").is_none(), "{what}");
+    }
+}
+
+#[test]
+fn text_value_menu_lists_layer_values() {
+    use vale_app::ui::pad::filter::{SEARCH_VALUES, use_value};
+    let mut h = pad(BOARDS[0]);
+    let rivers = vector(&h, "Rivers");
+    open_rule(&mut h, "Rivers", "Default");
+    add_condition(&mut h, 1, "featurecla");
+    scroll_to_control(&mut h, "Value 1");
+    tap(&mut h, "Value 1");
+    assert!(control(&h, "River").is_some());
+    assert!(control(&h, SEARCH_VALUES).is_some());
+    // The search keeps the values that hold the text, and offers the text.
+    type_text(&mut h, SEARCH_VALUES, "lake c");
+    assert!(control(&h, "River").is_none());
+    let typed = use_value("lake c");
+    assert!(control(&h, &typed).is_some());
+    tap(&mut h, &typed);
+    let text = filter_text(&h, rivers);
+    assert_eq!(text.as_deref(), Some("featurecla = 'lake c'"));
+}
+
+#[test]
+fn add_group_nests_conditions() {
+    use vale_app::ui::pad::filter::{ADD_CONDITION, ADD_GROUP, ANY_OF, REMOVE_CONDITION};
+    let mut h = pad(BOARDS[0]);
+    let rivers = vector(&h, "Rivers");
+    open_rule(&mut h, "Rivers", "Default");
+    add_condition(&mut h, 1, "scalerank");
+    scroll_to_control(&mut h, ADD_GROUP);
+    tap(&mut h, ADD_GROUP);
+    assert!(h.query_by_label(ANY_OF).is_some() || control(&h, "Match 2").is_some());
+    let in_group = format!("{ADD_CONDITION} 2");
+    scroll_to_control(&mut h, &in_group);
+    tap(&mut h, &in_group);
+    pick(&mut h, "Field 2.2", "featurecla");
+    let text = filter_text(&h, rivers).unwrap();
+    assert!(text.starts_with("scalerank = 0 and ("), "{text}");
+    assert!(text.contains(" or featurecla = "), "{text}");
+    screenshot::save(&mut h, "pad-filter-group");
+    let inner = format!("{REMOVE_CONDITION} 2.1");
+    scroll_to_control(&mut h, &inner);
+    tap(&mut h, &inner);
+    let text = filter_text(&h, rivers).unwrap();
+    assert!(
+        text.starts_with("scalerank = 0 and featurecla = "),
+        "{text}"
+    );
+}
+
+#[test]
+fn filter_shows_match_count() {
+    use vale_app::ui::expr_help::count_matches;
+    use vale_app::ui::pad::filter::matches_text;
+    let mut h = pad(BOARDS[0]);
+    let rivers = vector(&h, "Rivers");
+    let layer = h.state().doc.layer(rivers).unwrap();
+    let first = layer.features[0].attributes["scalerank"].label().unwrap();
+    let text = format!("scalerank = {first}");
+    let n = count_matches(layer, &text).unwrap();
+    let m = layer.features.len();
+    assert!(n > 0 && n <= m);
+    set_filter(&mut h, rivers, &text);
+    open_rule(&mut h, "Rivers", "Default");
+    scroll_to(&mut h, &matches_text(n, m));
+    assert!(h.query_by_label(&matches_text(n, m)).is_some());
+}
+
+#[test]
+fn code_only_filter_opens_in_code() {
+    use vale_app::ui::pad::filter::{ADD_CONDITION, CODE_ROW, VIEWS};
+    use vale_app::ui::pad::rules::EXPRESSION;
+    let mut h = pad(BOARDS[0]);
+    let rivers = vector(&h, "Rivers");
+    set_filter(&mut h, rivers, "upper(name) = 'X'");
+    open_rule(&mut h, "Rivers", "Default");
+    scroll_to_control(&mut h, EXPRESSION);
+    assert!(control(&h, EXPRESSION).is_some());
+    assert!(control(&h, ADD_CONDITION).is_none());
+    // In Blocks, the text that is not a condition is a row that opens Code.
+    tap(&mut h, VIEWS[0]);
+    set_filter(&mut h, rivers, "scalerank < 5 and upper(name) = 'X'");
+    let row = format!("{CODE_ROW} 2");
+    scroll_to_control(&mut h, &row);
+    tap(&mut h, &row);
+    assert!(control(&h, EXPRESSION).is_some());
 }
 
 /// The text of the filter of the first rule of a layer.
@@ -8017,81 +8137,9 @@ fn filter_text(h: &Pad, id: vale_store::LayerId) -> Option<String> {
 }
 
 #[test]
-fn the_chips_of_an_expression_field_show_only_while_it_has_the_focus() {
-    use vale_app::ui::pad::expression::chip_name;
-    use vale_app::ui::pad::rules::EXPRESSION;
-    for size in [BOARDS[0], BOARDS[3]] {
-        let what = format!("{size:?}");
-        let mut h = pad(size);
-        let rivers = vector(&h, "Rivers");
-        assert!(
-            h.state_mut()
-                .doc
-                .rename_field(rivers, "featurecla", "feature class")
-        );
-        h.run_steps(2);
-        open_rule(&mut h, "Rivers", "Default");
-        scroll_to_control(&mut h, EXPRESSION);
-        let field_chip = chip_name("feature class");
-        assert!(control(&h, &field_chip).is_none(), "{what}");
-
-        tap(&mut h, EXPRESSION);
-        scroll_to_control(&mut h, &field_chip);
-        assert!(control(&h, &field_chip).is_some(), "{what}");
-        check_controls(&h, &format!("{what} with the chips of an expression"));
-
-        h.key_press(egui::Key::Enter);
-        h.run_steps(3);
-        assert!(control(&h, &field_chip).is_none(), "{what}");
-    }
-}
-
-#[test]
-fn a_chip_inserts_a_field_or_a_function_at_the_cursor() {
-    use vale_app::ui::pad::expression::chip_name;
-    use vale_app::ui::pad::rules::EXPRESSION;
-    for size in [BOARDS[0], BOARDS[3]] {
-        let what = format!("{size:?}");
-        let mut h = pad(size);
-        let rivers = vector(&h, "Rivers");
-        assert!(
-            h.state_mut()
-                .doc
-                .rename_field(rivers, "featurecla", "feature class")
-        );
-        h.run_steps(2);
-        open_rule(&mut h, "Rivers", "Default");
-        scroll_to_control(&mut h, EXPRESSION);
-        type_text(&mut h, EXPRESSION, "scalerank = ");
-
-        // The fields come first. A field chip inserts the name in quotes,
-        // and the field keeps the focus and the chips.
-        let field_chip = chip_name("feature class");
-        scroll_to_control(&mut h, &field_chip);
-        tap(&mut h, &field_chip);
-        let text = "scalerank = \"feature class\"";
-        assert_eq!(filter_text(&h, rivers).as_deref(), Some(text), "{what}");
-        assert!(control(&h, &field_chip).is_some(), "{what}");
-
-        // A function chip inserts the signature and selects the first
-        // argument, so that the next text replaces it.
-        h.event(egui::Event::Text(" + ".to_owned()));
-        h.run_steps(2);
-        let round = chip_name("round");
-        scroll_chips_to(&mut h, &round);
-        tap(&mut h, &round);
-        let text = "scalerank = \"feature class\" + round(x, digits)";
-        assert_eq!(filter_text(&h, rivers).as_deref(), Some(text), "{what}");
-        h.event(egui::Event::Text("scalerank".to_owned()));
-        h.run_steps(2);
-        let text = "scalerank = \"feature class\" + round(scalerank, digits)";
-        assert_eq!(filter_text(&h, rivers).as_deref(), Some(text), "{what}");
-    }
-}
-
-#[test]
 fn the_line_of_an_expression_field_shows_the_result_or_the_error() {
     use vale_app::ui::expr_help::{MATCHES, NO_MATCH};
+    use vale_app::ui::pad::filter::VIEWS;
     use vale_app::ui::pad::rules::EXPRESSION;
     let mut h = pad(BOARDS[0]);
     let rivers = vector(&h, "Rivers");
@@ -8107,6 +8155,8 @@ fn the_line_of_an_expression_field_shows_the_result_or_the_error() {
     };
     let first = first.label().unwrap();
     open_rule(&mut h, "Rivers", "Default");
+    scroll_to_control(&mut h, VIEWS[1]);
+    tap(&mut h, VIEWS[1]);
     scroll_to_control(&mut h, EXPRESSION);
 
     // With no selection, the line shows the result for the first feature.

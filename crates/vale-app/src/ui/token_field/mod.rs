@@ -15,7 +15,7 @@ pub mod template;
 mod widget;
 
 pub use caret::{Caret, Dir, Selection};
-pub use layout::{Layout, Metrics, Placed, PlacedKind, layout};
+pub use layout::{Layout, Metrics, Placed, PlacedKind, chip_parts, layout};
 pub use widget::{Options, Output, keep_focus, show};
 
 /// The color family of a chip.

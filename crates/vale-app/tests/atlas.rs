@@ -3855,7 +3855,7 @@ fn each_frame_of_a_map_places_labels_with_its_classes() {
 #[test]
 fn the_controls_of_the_labels_tab_work_with_a_finger() {
     use vale_app::ui::atlas::ClassSegment;
-    use vale_app::ui::pad::filter::{ADD_CONDITION, VALUE};
+    use vale_app::ui::pad::filter::ADD_CONDITION;
     use vale_style::LabelPlacement;
     for size in BOARDS {
         let what = format!("{size:?}");
@@ -3877,18 +3877,17 @@ fn the_controls_of_the_labels_tab_work_with_a_finger() {
 
         scroll_to(&mut h, ADD_CONDITION);
         tap(&mut h, ADD_CONDITION);
-        check_controls(&h, &format!("{what}: condition page"));
-        scroll_to(&mut h, "scalerank");
-        tap(&mut h, "scalerank");
-        check_controls(&h, &format!("{what}: condition operators"));
-        scroll_to(&mut h, VALUE);
-        tap(&mut h, VALUE);
-        scroll_to(&mut h, &format!("{VALUE} Done"));
+        check_controls(&h, &format!("{what}: condition"));
+        scroll_to(&mut h, "Field 1");
+        tap(&mut h, "Field 1");
+        check_controls(&h, &format!("{what}: field menu"));
+        pick_in_menu(&mut h, "scalerank");
+        scroll_to(&mut h, "Value 1");
+        tap(&mut h, "Value 1");
+        scroll_to(&mut h, "Value 1 Done");
         check_controls(&h, &format!("{what}: condition keypad"));
-        tap(&mut h, &format!("{VALUE} 2"));
-        tap(&mut h, &format!("{VALUE} Done"));
-        scroll_to(&mut h, ADD_CONDITION);
-        tap(&mut h, ADD_CONDITION);
+        tap(&mut h, "Value 1 2");
+        tap(&mut h, "Value 1 Done");
         assert_eq!(classes(&h, map, "Places")[1].filter, "scalerank = 2");
 
         scroll_to(&mut h, STYLE);
@@ -4091,10 +4090,21 @@ fn the_alpha_of_the_text_color_reaches_the_label() {
     assert!(halo_strokes(&mut h, 0, halo, 2.2) >= places.len());
 }
 
+/// Taps the row `choice` of the open menu of a filter, after a search for
+/// it if the menu has a search field.
+fn pick_in_menu(h: &mut Pad, choice: &str) {
+    use vale_app::ui::pad::filter::{SEARCH_FIELDS, SEARCH_VALUES};
+    for search in [SEARCH_FIELDS, SEARCH_VALUES] {
+        if control(h, choice).is_none() && control(h, search).is_some() {
+            type_text(h, search, choice);
+        }
+    }
+    tap(h, choice);
+}
+
 #[test]
 fn the_filter_of_a_class_has_the_condition_builder() {
-    use vale_app::ui::atlas::ClassPage;
-    use vale_app::ui::pad::filter::{ADD_CONDITION, NO_CLASS_CONDITION, REMOVE_CONDITION};
+    use vale_app::ui::pad::filter::{ADD_CONDITION, NO_CLASS_CONDITION, REMOVE_CONDITION, VIEWS};
     use vale_app::ui::pad::rules::EXPRESSION;
     use vale_store::Value;
     let mut h = labels_pad(BOARDS[0]);
@@ -4103,14 +4113,12 @@ fn the_filter_of_a_class_has_the_condition_builder() {
     assert!(h.query_by_label(NO_CLASS_CONDITION).is_some());
     scroll_to(&mut h, ADD_CONDITION);
     tap(&mut h, ADD_CONDITION);
-    assert_eq!(h.state().atlas.label_page, Some(ClassPage::Condition));
-    scroll_to(&mut h, "featurecla");
-    tap(&mut h, "featurecla");
-    scroll_to(&mut h, "Admin-1 capital");
-    tap(&mut h, "Admin-1 capital");
-    scroll_to(&mut h, ADD_CONDITION);
-    tap(&mut h, ADD_CONDITION);
-    assert_eq!(h.state().atlas.label_page, None);
+    scroll_to(&mut h, "Field 1");
+    tap(&mut h, "Field 1");
+    pick_in_menu(&mut h, "featurecla");
+    scroll_to(&mut h, "Value 1");
+    tap(&mut h, "Value 1");
+    pick_in_menu(&mut h, "Admin-1 capital");
     let text = "featurecla = 'Admin-1 capital'";
     assert_eq!(classes(&h, map, "Places")[0].filter, text);
     assert!(control(&h, &format!("{REMOVE_CONDITION} 1")).is_some());
@@ -4127,9 +4135,12 @@ fn the_filter_of_a_class_has_the_condition_builder() {
         assert!(names.contains(t), "{t}");
     }
 
-    // The Expression field holds the whole filter.
+    // Code holds the whole filter.
+    scroll_to(&mut h, VIEWS[1]);
+    tap(&mut h, VIEWS[1]);
     type_text(&mut h, EXPRESSION, "scalerank < 1");
     assert_eq!(classes(&h, map, "Places")[0].filter, "scalerank < 1");
+    tap(&mut h, VIEWS[0]);
     let first = format!("{REMOVE_CONDITION} 1");
     scroll_to(&mut h, &first);
     tap(&mut h, &first);
