@@ -1546,6 +1546,11 @@ mod tests {
                 frame: Some(linked),
                 ..NorthArrowItem::default()
             }),
+            Furniture::ScaleText(crate::ScaleTextItem {
+                frame: Some(linked),
+                format: crate::ScaleFormat::Relative,
+                ..crate::ScaleTextItem::default()
+            }),
         ];
         for (i, item) in items.into_iter().enumerate() {
             let rect = [i as f64, 2.0, 30.5, 40.0];

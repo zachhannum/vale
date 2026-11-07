@@ -17,8 +17,8 @@ pub use atlas::{
     Atlas, Border, BorderStyle, CoordFormat, EdgeLabels, EdgeOrientation, Edges, FrameId,
     FrameRecord, FrameShape, Furniture, FurnitureId, FurnitureRecord, FurnitureText, Graticule,
     GridColumns, LayoutGrid, LegendEntry, LegendItem, MapId, MapRecord, MapStyleId, MapStyleRecord,
-    Neatline, NorthArrowItem, PageId, PageRecord, PageUnits, ProjectionPreset, TextAlign, TextCase,
-    TextItem, title_case,
+    Neatline, NorthArrowItem, PageId, PageRecord, PageUnits, ProjectionPreset, ScaleFormat,
+    ScaleTextItem, TextAlign, TextCase, TextItem, title_case,
 };
 pub use fill::{FillKind, FillPattern};
 pub use gpkg::{

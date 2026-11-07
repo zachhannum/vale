@@ -650,8 +650,8 @@ impl Default for Graticule {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct FurnitureId(pub u32);
 
-/// An item of furniture on a page: text, a legend, a scale bar, or a north
-/// arrow.
+/// An item of furniture on a page: text, a legend, a scale bar, a north
+/// arrow, or scale text.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FurnitureRecord {
     pub id: FurnitureId,
@@ -667,6 +667,7 @@ pub enum Furniture {
     Legend(LegendItem),
     ScaleBar(ScaleBarItem),
     NorthArrow(NorthArrowItem),
+    ScaleText(ScaleTextItem),
 }
 
 /// The text style of a part of an item of furniture. It has the text
@@ -824,6 +825,53 @@ pub struct NorthArrowItem {
     pub letter_style: FurnitureText,
 }
 
+/// The scale of a frame as text.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScaleTextItem {
+    /// `None`: the text has no frame.
+    pub frame: Option<FrameId>,
+    pub format: ScaleFormat,
+    /// The page unit of [`ScaleFormat::Relative`]: centimeters for
+    /// [`PageUnits::Mm`], and inches for [`PageUnits::In`].
+    pub page_unit: PageUnits,
+    pub style: FurnitureText,
+    pub align: TextAlign,
+}
+
+/// How scale text shows the scale.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub enum ScaleFormat {
+    /// "1:25,000,000".
+    #[default]
+    Fraction,
+    /// "1 cm = 250 km".
+    Relative,
+}
+
+impl ScaleFormat {
+    pub const ALL: [ScaleFormat; 2] = [ScaleFormat::Fraction, ScaleFormat::Relative];
+
+    /// The name in a project file.
+    pub fn id(self) -> &'static str {
+        match self {
+            ScaleFormat::Fraction => "fraction",
+            ScaleFormat::Relative => "relative",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<ScaleFormat> {
+        ScaleFormat::ALL.into_iter().find(|f| f.id() == id)
+    }
+
+    /// The UI text.
+    pub fn name(self) -> &'static str {
+        match self {
+            ScaleFormat::Fraction => "Fraction",
+            ScaleFormat::Relative => "Relative",
+        }
+    }
+}
+
 impl Furniture {
     /// The name of the kind in a project file.
     pub fn kind_id(&self) -> &'static str {
@@ -832,16 +880,18 @@ impl Furniture {
             Furniture::Legend(_) => "legend",
             Furniture::ScaleBar(_) => "scale_bar",
             Furniture::NorthArrow(_) => "north_arrow",
+            Furniture::ScaleText(_) => "scale_text",
         }
     }
 
-    /// The frame of a legend, a scale bar, or a north arrow.
+    /// The frame of a legend, a scale bar, a north arrow, or scale text.
     pub fn frame(&self) -> Option<FrameId> {
         match self {
             Furniture::Text(_) => None,
             Furniture::Legend(i) => i.frame,
             Furniture::ScaleBar(i) => i.frame,
             Furniture::NorthArrow(i) => i.frame,
+            Furniture::ScaleText(i) => i.frame,
         }
     }
 
@@ -852,6 +902,7 @@ impl Furniture {
             Furniture::Legend(i) => i.frame = frame,
             Furniture::ScaleBar(i) => i.frame = frame,
             Furniture::NorthArrow(i) => i.frame = frame,
+            Furniture::ScaleText(i) => i.frame = frame,
         }
     }
 
@@ -863,6 +914,7 @@ impl Furniture {
             Furniture::Legend(i) => i.to_json(),
             Furniture::ScaleBar(i) => i.to_json(),
             Furniture::NorthArrow(i) => i.to_json(),
+            Furniture::ScaleText(i) => i.to_json(),
         }
     }
 
@@ -874,6 +926,7 @@ impl Furniture {
             "legend" => Furniture::Legend(LegendItem::from_json(text)?),
             "scale_bar" => Furniture::ScaleBar(ScaleBarItem::from_json(text)?),
             "north_arrow" => Furniture::NorthArrow(NorthArrowItem::from_json(text)?),
+            "scale_text" => Furniture::ScaleText(ScaleTextItem::from_json(text)?),
             _ => return None,
         };
         item.set_frame(frame);
@@ -1175,6 +1228,48 @@ impl Default for NorthArrowItem {
                 weight: 600.0,
                 ..FurnitureText::sized(9.0)
             },
+        }
+    }
+}
+
+impl ScaleTextItem {
+    /// The item with no frame as JSON text, for a project file.
+    pub fn to_json(&self) -> String {
+        let mut map = JsonMap::new();
+        map.insert("format".into(), self.format.id().into());
+        map.insert("page_unit".into(), self.page_unit.id().into());
+        self.style.put(&mut map);
+        map.insert("align".into(), self.align.id().into());
+        serde_json::Value::Object(map).to_string()
+    }
+
+    /// Reads [`ScaleTextItem::to_json`]. A missing key gets its default,
+    /// and an unknown key is ignored. `None` if a value is bad.
+    pub fn from_json(text: &str) -> Option<ScaleTextItem> {
+        let map = json_object(text)?;
+        let mut item = ScaleTextItem::default();
+        if let Some(v) = map.get("format") {
+            item.format = ScaleFormat::from_id(v.as_str()?)?;
+        }
+        if let Some(v) = map.get("page_unit") {
+            item.page_unit = PageUnits::from_id(v.as_str()?)?;
+        }
+        item.style = item.style.read(&map)?;
+        if let Some(v) = map.get("align") {
+            item.align = TextAlign::from_id(v.as_str()?)?;
+        }
+        Some(item)
+    }
+}
+
+impl Default for ScaleTextItem {
+    fn default() -> Self {
+        ScaleTextItem {
+            frame: None,
+            format: ScaleFormat::Fraction,
+            page_unit: PageUnits::Mm,
+            style: FurnitureText::default(),
+            align: TextAlign::Left,
         }
     }
 }
@@ -1956,6 +2051,14 @@ mod tests {
             letter_style: styled(),
         };
         round_trip(Furniture::NorthArrow(arrow), frame);
+        let scale = ScaleTextItem {
+            frame,
+            format: ScaleFormat::Relative,
+            page_unit: PageUnits::In,
+            style: styled(),
+            align: TextAlign::Right,
+        };
+        round_trip(Furniture::ScaleText(scale), frame);
         assert_eq!(Furniture::from_json("compass", "{}", None), None);
     }
 
@@ -1971,6 +2074,11 @@ mod tests {
         let arrow = NorthArrowItem::from_json("{}").unwrap();
         assert_eq!(arrow, NorthArrowItem::default());
         assert!(arrow.hide_if_varies);
+        assert_eq!(
+            ScaleTextItem::from_json("{}"),
+            Some(ScaleTextItem::default())
+        );
+        assert_eq!(ScaleTextItem::from_json(r#"{"format": "words"}"#), None);
         // The text keys of an older legend are the style of its title and
         // its entries.
         let old = r##"{"title": "Key", "size": 6, "weight": 400, "color": "102030"}"##;

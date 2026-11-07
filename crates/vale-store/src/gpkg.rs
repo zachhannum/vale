@@ -35,7 +35,7 @@ use crate::{
 };
 
 /// The version of the `vale_` tables that this code writes.
-pub const FORMAT_VERSION: u32 = 36;
+pub const FORMAT_VERSION: u32 = 37;
 
 /// One step for each format version. Step `n` changes a file of version `n`
 /// to version `n + 1`. A new version adds a step and never changes an old one.
@@ -76,6 +76,7 @@ const MIGRATIONS: &[fn(&Transaction) -> rusqlite::Result<()>] = &[
     v34,
     v35,
     undo::v36,
+    v37,
 ];
 
 /// `GPKG` in ASCII.
@@ -1188,6 +1189,30 @@ fn v33(tx: &Transaction) -> rusqlite::Result<()> {
            WHERE c.table_name = 'vale_furniture'
              AND NOT EXISTS (SELECT 1 FROM gpkg_extensions e
                WHERE e.table_name = c.table_name AND e.extension_name = 'vale_project');",
+    )
+}
+
+/// Scale text, a kind of furniture. The table is made again, because a
+/// CHECK constraint does not change in place.
+fn v37(tx: &Transaction) -> rusqlite::Result<()> {
+    tx.execute_batch(
+        "CREATE TABLE vale_furniture_v37 (
+           id INTEGER PRIMARY KEY,
+           page_id INTEGER NOT NULL REFERENCES vale_page(id),
+           position INTEGER NOT NULL,
+           kind TEXT NOT NULL
+             CHECK (kind IN ('text', 'legend', 'scale_bar', 'north_arrow', 'scale_text')),
+           x0 REAL NOT NULL,
+           y0 REAL NOT NULL,
+           x1 REAL NOT NULL,
+           y1 REAL NOT NULL,
+           frame_id INTEGER,
+           props TEXT NOT NULL,
+           UNIQUE (page_id, position));
+         INSERT INTO vale_furniture_v37 SELECT
+           id, page_id, position, kind, x0, y0, x1, y1, frame_id, props FROM vale_furniture;
+         DROP TABLE vale_furniture;
+         ALTER TABLE vale_furniture_v37 RENAME TO vale_furniture;",
     )
 }
 
@@ -3817,10 +3842,12 @@ mod tests {
     }
 
     /// Puts a frame and one item of each kind of furniture on the first page.
-    /// The legend, the scale bar, and the north arrow link to the frame.
+    /// The legend, the scale bar, the north arrow, and the scale text link
+    /// to the frame.
     fn furniture_edit(project: &mut Project) -> FrameId {
         use crate::atlas::{
-            LegendEntry, LegendItem, NorthArrowItem, ScaleBarItem, TextAlign, TextItem,
+            LegendEntry, LegendItem, NorthArrowItem, ScaleBarItem, ScaleFormat, ScaleTextItem,
+            TextAlign, TextItem,
         };
         let towns = project.layers()[0].id;
         let atlas = &mut project.atlas;
@@ -3869,11 +3896,19 @@ mod tests {
             color: [0xc0, 0x10, 0x10, 0xff],
             ..NorthArrowItem::default()
         };
+        let scale = ScaleTextItem {
+            frame: Some(frame),
+            format: ScaleFormat::Relative,
+            page_unit: crate::PageUnits::In,
+            align: TextAlign::Center,
+            ..ScaleTextItem::default()
+        };
         for (rect, item) in [
             ([20.0, 5.0, 180.0, 15.0], Furniture::Text(title)),
             ([210.0, 20.0, 280.0, 90.0], Furniture::Legend(legend)),
             ([210.0, 100.0, 280.0, 110.0], Furniture::ScaleBar(bar)),
             ([260.0, 120.0, 280.0, 145.5], Furniture::NorthArrow(arrow)),
+            ([210.0, 150.0, 280.0, 158.0], Furniture::ScaleText(scale)),
         ] {
             atlas.add_furniture(page, rect, item).unwrap();
         }
@@ -3894,9 +3929,13 @@ mod tests {
         assert_eq!(loaded.atlas, project.atlas);
         let furniture = &loaded.atlas.pages[0].furniture;
         let kinds: Vec<_> = furniture.iter().map(|f| f.item.kind_id()).collect();
-        assert_eq!(kinds, ["text", "legend", "scale_bar", "north_arrow"]);
+        assert_eq!(
+            kinds,
+            ["text", "legend", "scale_bar", "north_arrow", "scale_text"]
+        );
         let frames: Vec<_> = furniture.iter().map(|f| f.item.frame()).collect();
-        assert_eq!(frames, [None, Some(frame), Some(frame), Some(frame)]);
+        let f = Some(frame);
+        assert_eq!(frames, [None, f, f, f, f]);
         let Furniture::Legend(legend) = &furniture[1].item else {
             panic!("not a legend");
         };
@@ -3922,7 +3961,7 @@ mod tests {
         drop(file);
         let (_, loaded) = ProjectFile::open(&path(&dir)).unwrap();
         let furniture = &loaded.atlas.pages[0].furniture;
-        assert_eq!(furniture.len(), 4);
+        assert_eq!(furniture.len(), 5);
         assert!(furniture.iter().all(|f| f.item.frame().is_none()));
 
         // A row with the ID of a frame that the file does not have.
@@ -4487,6 +4526,53 @@ mod tests {
         assert_eq!(format_version(&file.conn).unwrap(), FORMAT_VERSION);
         assert!(loaded.atlas.pages.iter().all(|p| p.furniture.is_empty()));
         assert_eq!(loaded.atlas, Atlas::new(Units::Metric));
+    }
+
+    #[test]
+    fn a_file_of_version_36_keeps_its_furniture_and_takes_scale_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World::default());
+        project.add_layer("Towns".into(), GeometryKind::Point, None, vec![]);
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        furniture_edit(&mut project);
+        let page = &mut project.atlas.pages[0];
+        page.furniture.retain(|f| f.item.kind_id() != "scale_text");
+        file.save(&project).unwrap();
+        drop(file);
+        // The table of version 36 does not allow scale text.
+        let conn = Connection::open(path(&dir)).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE old AS SELECT * FROM vale_furniture;
+             DROP TABLE vale_furniture;
+             CREATE TABLE vale_furniture (
+               id INTEGER PRIMARY KEY,
+               page_id INTEGER NOT NULL REFERENCES vale_page(id),
+               position INTEGER NOT NULL,
+               kind TEXT NOT NULL
+                 CHECK (kind IN ('text', 'legend', 'scale_bar', 'north_arrow')),
+               x0 REAL NOT NULL,
+               y0 REAL NOT NULL,
+               x1 REAL NOT NULL,
+               y1 REAL NOT NULL,
+               frame_id INTEGER,
+               props TEXT NOT NULL,
+               UNIQUE (page_id, position));
+             INSERT INTO vale_furniture SELECT * FROM old;
+             DROP TABLE old;",
+        )
+        .unwrap();
+        drop(conn);
+        set_format_version(&dir, 36);
+
+        let (mut file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(format_version(&file.conn).unwrap(), FORMAT_VERSION);
+        assert_eq!(loaded.atlas, project.atlas);
+        let mut next = loaded.clone();
+        furniture_edit(&mut next);
+        file.save(&next).unwrap();
+        drop(file);
+        let (_, again) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(again.atlas, next.atlas);
     }
 
     #[test]
