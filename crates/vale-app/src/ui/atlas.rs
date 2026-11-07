@@ -2691,7 +2691,7 @@ fn build_lists(
 type MaskedFrame = (FrameRecord, MaskCapture, Vec<(LayerId, RasterMask, u64)>);
 
 /// The largest side of the capture of a raster mask, in pixels.
-const MASK_PIXELS: f64 = 4096.0;
+const MASK_PIXELS: f64 = 2048.0;
 
 /// The pixels around the box of a frame in the capture of a mask.
 const MASK_MARGIN: f64 = 2.0;
