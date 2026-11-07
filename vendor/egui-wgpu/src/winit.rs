@@ -634,9 +634,10 @@ impl Painter {
             // Backdrop hooks read the frame, and screenshots copy it, so in both cases the
             // frame is drawn into an offscreen texture and then drawn onto the surface.
             let offscreen = capture
-                || renderer
+                || (renderer
                     .callback_resources
-                    .contains::<crate::BackdropHooks>();
+                    .contains::<crate::BackdropHooks>()
+                    && crate::backdrop::has_marker(clipped_primitives));
 
             let target_texture = if offscreen {
                 let capture_state = self.screen_capture_state.get_or_insert_with(|| {

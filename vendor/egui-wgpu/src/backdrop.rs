@@ -119,6 +119,14 @@ impl Renderer {
     }
 }
 
+/// Whether the paint jobs hold a [`BackdropLevel`] marker.
+pub(crate) fn has_marker(paint_jobs: &[epaint::ClippedPrimitive]) -> bool {
+    paint_jobs.iter().any(|job| {
+        matches!(&job.primitive, epaint::Primitive::Callback(callback)
+            if callback.callback.is::<BackdropLevel>())
+    })
+}
+
 /// The indices of the markers that split the passes.
 fn backdrop_splits(paint_jobs: &[epaint::ClippedPrimitive]) -> Vec<usize> {
     let mut splits = Vec::new();
