@@ -120,3 +120,58 @@ fn a_bow_tie_crosses_itself() {
     assert!(ring_crosses_itself(&bow));
     assert!(!ring_crosses_itself(&square));
 }
+
+fn near(a: [f64; 2], b: [f64; 2]) -> bool {
+    (a[0] - b[0]).abs() < 1e-9 && (a[1] - b[1]).abs() < 1e-9
+}
+
+#[test]
+fn the_center_of_the_octant_is_on_its_axis_of_symmetry() {
+    let ccw = [[0.0, 0.0], [90.0, 0.0], [0.0, 90.0]];
+    let cw = [[0.0, 0.0], [0.0, 90.0], [90.0, 0.0]];
+    // The octant has a moment of pi / 4 on each axis.
+    let lat = (1.0 / 3.0_f64.sqrt()).asin().to_degrees();
+    for ring in [ccw, cw] {
+        let c = area_center(&[vec![ring.to_vec()]]).unwrap();
+        assert!(near(c, [45.0, lat]), "{c:?}");
+    }
+}
+
+#[test]
+fn a_cap_with_a_hole_off_center_moves_its_center_away_from_the_hole() {
+    let square = |lon: f64, lat: f64, d: f64| {
+        vec![
+            [lon - d, lat - d],
+            [lon + d, lat - d],
+            [lon + d, lat + d],
+            [lon - d, lat + d],
+        ]
+    };
+    let c = area_center(&[vec![square(170.0, 0.0, 20.0)]]).unwrap();
+    assert!(near(c, [170.0, 0.0]), "{c:?}");
+    let c = area_center(&[vec![square(170.0, 0.0, 20.0), square(180.0, 0.0, 5.0)]]).unwrap();
+    assert!(c[0] < 170.0 && c[1].abs() < 1e-9, "{c:?}");
+}
+
+#[test]
+fn the_center_of_a_line_weighs_each_arc_by_its_length() {
+    let c = line_center(&[vec![[0.0, 0.0], [90.0, 0.0]]]).unwrap();
+    assert!(near(c, [45.0, 0.0]), "{c:?}");
+    // A short part on the far side moves the center a little.
+    let c = line_center(&[
+        vec![[0.0, 0.0], [90.0, 0.0]],
+        vec![[180.0, 0.0], [181.0, 0.0]],
+    ])
+    .unwrap();
+    assert!(c[0] > 45.0 && c[0] < 50.0, "{c:?}");
+    assert!(line_center(&[vec![[3.0, 4.0]]]).is_none());
+}
+
+#[test]
+fn the_center_of_points_is_their_mean_direction() {
+    let c = point_center(&[[10.0, 20.0]]).unwrap();
+    assert!(near(c, [10.0, 20.0]), "{c:?}");
+    let c = point_center(&[[-10.0, 0.0], [10.0, 0.0]]).unwrap();
+    assert!(near(c, [0.0, 0.0]), "{c:?}");
+    assert!(point_center(&[[0.0, 0.0], [180.0, 0.0]]).is_none());
+}
