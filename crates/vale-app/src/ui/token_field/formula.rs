@@ -216,11 +216,6 @@ fn box_text(b: &Boxed<Tok>) -> String {
     }
 }
 
-/// The value of a field.
-pub fn formula_of(field: &Field<Tok>) -> Formula {
-    Formula::from_text(&text_of(&field.nodes))
-}
-
 /// The run of chars before the caret: the list, and the range of the run.
 fn run_range(field: &Field<Tok>) -> (Vec<usize>, usize, usize) {
     let Caret { path, index } = field.sel.head.clone();

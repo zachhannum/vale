@@ -7,7 +7,6 @@
 use eframe::egui::{self, Align2, Color32, Rect, Sense, Shape, Stroke, pos2, vec2};
 use vale_store::{FieldType, Value};
 use vale_style::expr::editor::{CmpOp, Cond, Conditions, ops_for};
-use vale_style::expr::field_ref;
 
 use super::expression;
 use super::geometry::TOUCH;
@@ -66,20 +65,6 @@ pub const AND: &str = "and";
 /// The text of a value that is not set.
 const NO_VALUE: &str = "Value";
 
-/// The operators of the desktop filter editor, and the operators that they
-/// write.
-pub const OPERATORS: [(&str, &str); 6] = [
-    ("=", "="),
-    ("≠", "!="),
-    ("<", "<"),
-    ("≤", "<="),
-    (">", ">"),
-    ("≥", ">="),
-];
-/// The values of a true or false field in the desktop filter editor.
-pub const TRUE: &str = "True";
-pub const FALSE: &str = "False";
-
 /// The most rows of the menu of text values.
 const MENU_VALUES: usize = 60;
 /// The height of a control in a condition row.
@@ -106,79 +91,6 @@ pub fn matches_text(n: usize, m: usize) -> String {
 pub fn number(path: &[usize]) -> String {
     let parts: Vec<String> = path.iter().map(|i| (i + 1).to_string()).collect();
     parts.join(".")
-}
-
-/// A condition as the desktop filter editor writes it: the field, the
-/// operator with this index in `OPERATORS`, and the value. A true or false
-/// value is `TRUE` or `FALSE`. `None` if the value does not fit the kind of
-/// the field.
-pub fn condition(field: &str, kind: FieldType, operator: usize, value: &str) -> Option<String> {
-    let op = OPERATORS.get(operator)?.1;
-    let value = match kind {
-        FieldType::Integer | FieldType::Real => number_text(super::raster::parse_value(value)?),
-        FieldType::Bool => match value {
-            TRUE => "true".to_owned(),
-            FALSE => "false".to_owned(),
-            _ => return None,
-        },
-        FieldType::Text => format!("'{}'", value.replace('\'', "''")),
-    };
-    Some(format!("{} {op} {value}", field_ref(field)))
-}
-
-/// The parts of a filter that `and` joins at the top level. A filter with
-/// an `or` at the top level is one part in brackets. A blank filter has no
-/// part.
-pub fn conditions(text: &str) -> Vec<String> {
-    let chars: Vec<char> = text.chars().collect();
-    let mut parts = Vec::new();
-    let (mut depth, mut quote, mut start, mut i) = (0i32, None, 0, 0);
-    let word_at = |i: usize, word: &str| {
-        let n = word.len();
-        let before = i == 0 || !is_name_char(chars[i - 1]);
-        let after = chars.get(i + n).is_none_or(|c| !is_name_char(*c));
-        let same = chars.len() >= i + n
-            && chars[i..i + n]
-                .iter()
-                .collect::<String>()
-                .eq_ignore_ascii_case(word);
-        before && after && same
-    };
-    while i < chars.len() {
-        let c = chars[i];
-        match quote {
-            Some(q) if c == q => quote = None,
-            Some(_) => {}
-            None if c == '\'' || c == '"' => quote = Some(c),
-            None if c == '(' => depth += 1,
-            None if c == ')' => depth -= 1,
-            None if depth == 0 && word_at(i, "or") => {
-                return vec![format!("({})", text.trim())];
-            }
-            None if depth == 0 && word_at(i, "and") => {
-                parts.push(chars[start..i].iter().collect::<String>());
-                start = i + 3;
-                i += 2;
-            }
-            None => {}
-        }
-        i += 1;
-    }
-    parts.push(chars[start..].iter().collect());
-    parts
-        .into_iter()
-        .map(|p| p.trim().to_owned())
-        .filter(|p| !p.is_empty())
-        .collect()
-}
-
-fn is_name_char(c: char) -> bool {
-    c.is_alphanumeric() || c == '_'
-}
-
-/// The filter text of these conditions.
-pub fn join(parts: &[String]) -> String {
-    parts.join(" and ")
 }
 
 /// What the user did in the editor in one frame.
@@ -1305,27 +1217,6 @@ pub fn apply(items: &mut Vec<Cond>, act: Act, help: &ExprHelp) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn conditions_split_at_the_top_level_and() {
-        assert!(conditions("  ").is_empty());
-        assert_eq!(
-            conditions("a < 5 AND name = 'x and y' and (b or c)"),
-            ["a < 5", "name = 'x and y'", "(b or c)"]
-        );
-        assert_eq!(conditions("a or b and c"), ["(a or b and c)"]);
-        assert_eq!(conditions("brand = 1"), ["brand = 1"]);
-        assert_eq!(join(&conditions("a and  b")), "a and b");
-    }
-
-    #[test]
-    fn the_desktop_condition_writes_the_filter_syntax() {
-        let text = condition("scalerank", FieldType::Real, 3, "5");
-        assert_eq!(text.as_deref(), Some("scalerank <= 5"));
-        assert_eq!(condition("scalerank", FieldType::Real, 3, "x"), None);
-        let text = condition("name en", FieldType::Text, 1, "O'Hare").unwrap();
-        assert_eq!(text, "\"name en\" != 'O''Hare'");
-    }
 
     #[test]
     fn a_new_field_keeps_the_comparison_that_fits() {

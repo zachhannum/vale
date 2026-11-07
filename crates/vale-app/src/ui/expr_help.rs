@@ -383,11 +383,6 @@ impl ExprHelp {
         self.values.texts.get(name).map_or(&[], Vec::as_slice)
     }
 
-    /// The count of the features of the layer.
-    pub fn feature_count(&self) -> usize {
-        self.values.features
-    }
-
     /// The value of expression `text` for the feature of the preview.
     /// `None` if the text does not parse or the layer has no features.
     pub fn eval(&self, text: &str) -> Option<Value> {

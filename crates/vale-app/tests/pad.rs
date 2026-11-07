@@ -7706,7 +7706,6 @@ fn open_classify(h: &mut Pad, layer: &str) {
 #[test]
 fn classify_makes_quantile_rules_in_one_undo_step() {
     use vale_app::ui::pad::classify::{EXPRESSION, REPLACE_RULES};
-    use vale_app::ui::pad::filter::conditions;
     let dir = tempfile::tempdir().unwrap();
     let mut h = saved_pad(BOARDS[0], dir.path());
     let places = vector(&h, "Places");
@@ -7743,7 +7742,13 @@ fn classify_makes_quantile_rules_in_one_undo_step() {
 
     // The rule page of a middle class shows its two conditions.
     let middle = made[1].name.clone();
-    assert_eq!(conditions(&texts[1]).len(), 2, "{texts:?}");
+    assert_eq!(
+        vale_style::expr::editor::Conditions::from_text(&texts[1])
+            .items
+            .len(),
+        2,
+        "{texts:?}"
+    );
     scroll_to_control(&mut h, &middle);
     tap(&mut h, &middle);
     assert_eq!(h.state().pad.page, Some(Page::Rule(1)));

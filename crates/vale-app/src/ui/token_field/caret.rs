@@ -15,13 +15,6 @@ impl Caret {
     pub fn new(path: Vec<usize>, index: usize) -> Self {
         Caret { path, index }
     }
-
-    /// The path of the node after the caret.
-    pub fn node_path(&self) -> Vec<usize> {
-        let mut p = self.path.clone();
-        p.push(self.index);
-        p
-    }
 }
 
 /// A range of nodes in one list. The anchor stays, and the head moves.

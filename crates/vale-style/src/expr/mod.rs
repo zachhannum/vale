@@ -7,7 +7,6 @@ mod eval;
 mod functions;
 mod lexer;
 mod parser;
-mod parts;
 mod print;
 
 use std::collections::BTreeMap;
@@ -19,7 +18,6 @@ pub use vale_store::Value;
 
 pub use functions::{Category, FUNCTIONS, Function};
 use parser::{Node, Spans};
-pub use parts::{TextPart, join, split};
 
 /// The words of the syntax that a plain field name cannot be.
 const KEYWORDS: [&str; 16] = [
