@@ -4420,6 +4420,114 @@ fn the_five_iphone_screens_render_at_393_by_852() {
     }
 }
 
+/// The phone with the screen of a mockup of the atlas, the attribute
+/// table, the form of a new point, or the start screen.
+fn phone_screen(name: &str, dir: &std::path::Path) -> Pad {
+    let ((width, height), [top, right, bottom, left]) = IPHONES[0];
+    let mut state = state();
+    state.globe.set_face_size(64);
+    let setup = egui_kittest::wgpu::default_wgpu_setup();
+    let mut h = headless::ui_harness(state, (width, height), 1.0, setup);
+    let insets = egui::epaint::MarginF32 {
+        left,
+        right,
+        top,
+        bottom,
+    };
+    h.input_mut().safe_area_insets = Some(egui::SafeAreaInsets(insets));
+    h.run_steps(3);
+    h.state_mut().add_height();
+    h.run_steps(2);
+    match name {
+        "PhoneAtlas" | "PhoneAtlasFrame" => {
+            let state = h.state_mut();
+            state.workspace = Workspace::Atlas;
+            vale_app::ui::atlas::add_frame(state).unwrap();
+            if name == "PhoneAtlas" {
+                vale_app::ui::atlas::clear_selection(state);
+            }
+        }
+        "PhoneData" => {
+            let places = vector(&h, "Places");
+            h.state_mut().open_table(places);
+        }
+        "PhonePoint" => {
+            let places = vector(&h, "Places");
+            h.state_mut().select(Some(LayerRef::Vector(places)));
+            h.run_steps(2);
+            quick_tap(&mut h, VECTOR);
+            h.state_mut().globe.snap.on = false;
+            tap(&mut h, select::ATTRIBUTES);
+            h.state_mut().pad.sheet_offset = h.state().pad.rects.unwrap().sheet_travel;
+            h.run_steps(2);
+            let screen = h.state().pad.rects.unwrap().screen;
+            pen_tap_at(&mut h, screen.center());
+            let fields = h.state().doc.project.layer(places).unwrap().field_names();
+            tap(&mut h, &fields[0]);
+        }
+        "PhoneStart" => {
+            for world in ["Kareth", "Isles of Morrow", "The Sundering", "Tidewater"] {
+                let path = vale_app::session::new_project_path(dir, world);
+                let world = World {
+                    name: world.to_string(),
+                    ..World::default()
+                };
+                let project = vale_store::Project::new(world);
+                vale_store::ProjectFile::create(&path, &project).unwrap();
+            }
+            let state = h.state_mut();
+            state.projects = Locations::single(dir);
+            state.show_projects();
+        }
+        _ => unreachable!("{name}"),
+    }
+    h.run_steps(3);
+    h
+}
+
+#[test]
+#[ignore = "gpu"]
+fn the_atlas_the_table_the_point_card_and_the_start_screen_render_at_393_by_852() {
+    let _gpu = one_gpu_test();
+    std::fs::create_dir_all("../../target/app").unwrap();
+    let (_, [top, right, bottom, left]) = IPHONES[0];
+    for name in [
+        "PhoneAtlas",
+        "PhoneAtlasFrame",
+        "PhoneData",
+        "PhonePoint",
+        "PhoneStart",
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut h = phone_screen(name, dir.path());
+        // The globe goes to the GPU in parts. Each render sends one part.
+        let mut image = h.render().unwrap();
+        for _ in 0..10_000 {
+            let globe = &h.state().globe;
+            if !globe.busy() && !globe.loading() {
+                break;
+            }
+            h.step();
+            image = h.render().unwrap();
+        }
+        assert_eq!(image.dimensions(), (393, 852), "{name}");
+        image
+            .save(format!("../../target/app/test-{name}.png"))
+            .unwrap();
+        if name == "PhoneStart" {
+            continue;
+        }
+        for c in &h.state().pad.controls {
+            let r = c.rect;
+            let inside = r.top() >= top
+                && r.bottom() <= 852.0 - bottom
+                && r.left() >= left
+                && r.right() <= 393.0 - right;
+            assert!(inside, "{name}: {} is {r:?}", c.name);
+        }
+    }
+}
+
 #[test]
 fn the_readout_shows_the_place_and_the_elevation() {
     assert_eq!(

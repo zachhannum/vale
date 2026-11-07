@@ -358,7 +358,14 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         WidthClass::Wide => rects.right_panel.x - GAP,
         _ => screen.right() - rects.bands.right - MARGIN,
     };
-    let free = Rect::from_min_max(pos2(left, top), pos2(right, rects.panel_bottom));
+    let mut free = Rect::from_min_max(pos2(left, top), pos2(right, rects.panel_bottom));
+    // In the row layout, the page is at the top of the space, so a sheet
+    // covers only its lower part.
+    if rects.row {
+        let page = atlas::open_page(state);
+        let height = free.width() * (page.height_mm / page.width_mm) as f32;
+        free.max.y = free.max.y.min(free.top() + height);
+    }
     ui.scope_builder(egui::UiBuilder::new().max_rect(screen), |ui| {
         ui.set_clip_rect(screen);
         atlas::canvas(ui, state, screen, free, theme::CANVAS);
