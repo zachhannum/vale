@@ -28,6 +28,25 @@ fn rect_id() -> egui::Id {
     egui::Id::new("pad-popover-rect")
 }
 
+fn floor_id() -> egui::Id {
+    egui::Id::new("pad-popover-floor")
+}
+
+/// Keeps popovers above `y` in this frame and the next, for a bar above the
+/// keyboard.
+pub fn set_floor(ctx: &egui::Context, y: f32) {
+    let pass = ctx.cumulative_pass_nr();
+    ctx.data_mut(|d| d.insert_temp(floor_id(), (pass, y)));
+}
+
+/// The bottom of the space of a popover.
+fn floor(ctx: &egui::Context, screen: Rect) -> f32 {
+    let set: Option<(u64, f32)> = ctx.data(|d| d.get_temp(floor_id()));
+    let pass = ctx.cumulative_pass_nr();
+    set.filter(|(p, _)| p + 1 >= pass)
+        .map_or(screen.bottom(), |(_, y)| y.min(screen.bottom()))
+}
+
 /// The padding at the left and the right of the rows of a popover.
 pub const PAD: f32 = 16.0;
 
@@ -41,7 +60,8 @@ pub fn rect(ctx: &egui::Context) -> Option<Rect> {
 
 /// The popover `key` of `width` under `anchor`, or above it if the screen
 /// has no room below it. The contents decide the height. A press in the
-/// popover keeps the focus of a token field.
+/// popover keeps the focus of a token field. The popover stays above the
+/// floor of `set_floor`, and it draws above the bar of the keyboard.
 pub fn show(
     ctx: &egui::Context,
     key: &str,
@@ -52,7 +72,8 @@ pub fn show(
     let id = egui::Id::new(key);
     let height: f32 = ctx.data(|d| d.get_temp(id.with("height"))).unwrap_or(240.0);
     let screen = ctx.viewport_rect();
-    let room_below = screen.bottom() - MARGIN - (anchor.bottom() + ARROW);
+    let bottom = floor(ctx, screen);
+    let room_below = bottom - MARGIN - (anchor.bottom() + ARROW);
     let room_above = anchor.top() - ARROW - (screen.top() + MARGIN);
     let below = room_below >= height || room_below >= room_above;
     let x = (anchor.center().x - ARROW_LEFT).clamp(
@@ -64,6 +85,8 @@ pub fn show(
     } else {
         anchor.top() - ARROW - height
     };
+    // A popover that does not fit covers its control, and not the floor.
+    let y = y.min(bottom - MARGIN - height).max(screen.top() + MARGIN);
     let rect = Rect::from_min_size(pos2(x, y), vec2(width, height));
     let pressed = ctx.input(|i| i.pointer.press_origin().filter(|_| i.pointer.any_pressed()));
     let closed = pressed.is_some_and(|p| !rect.contains(p) && !anchor.contains(p));
@@ -72,7 +95,7 @@ pub fn show(
     ctx.data_mut(|d| d.insert_temp(rect_id(), (pass, rect)));
 
     egui::Area::new(id)
-        .order(egui::Order::Foreground)
+        .order(egui::Order::Tooltip)
         .fixed_pos(rect.min)
         .movable(false)
         .constrain(false)

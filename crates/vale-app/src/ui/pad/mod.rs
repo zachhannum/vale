@@ -1923,6 +1923,9 @@ fn show_card(
         let row = widgets::title_row_with(ui, controls, head.title, head.back, sheet, head.action);
         on_title(state, &row);
         if sheet {
+            if take_raise(ctx) {
+                state.pad.sheet_offset = -rects.sheet_rise;
+            }
             sheet_drag(ui, &mut state.pad, &row.bar, rects);
             if state.pad.sheet_offset >= rects.sheet_travel {
                 return;
@@ -1964,6 +1967,22 @@ fn show_card(
             .insert(key, ROW + fixed + out.content_size.y);
     });
     rect
+}
+
+fn raise_id() -> egui::Id {
+    egui::Id::new("pad-raise-sheet")
+}
+
+/// Raises the sheet to its full height in the next frame, for a field that
+/// is under the keyboard.
+pub fn raise_sheet(ctx: &egui::Context) {
+    ctx.data_mut(|d| d.insert_temp(raise_id(), true));
+    ctx.request_repaint();
+}
+
+fn take_raise(ctx: &egui::Context) -> bool {
+    ctx.data_mut(|d| d.remove_temp::<bool>(raise_id()))
+        .unwrap_or(false)
 }
 
 /// Moves the sheet with a drag on its title row. At the end of the drag, the

@@ -40,6 +40,8 @@ pub const WRAP_HINT: &str = "Select a field to wrap it in a function.";
 pub const BAR: f32 = 60.0;
 /// The least height of the token field.
 const FIELD_HEIGHT: f32 = 120.0;
+/// The space between a focused field and the bar above the keyboard.
+const GAP: f32 = 8.0;
 /// The height of the row of the title and the views.
 const HEAD: f32 = 48.0;
 
@@ -137,12 +139,17 @@ pub fn editor(
         }
         expression::line(ui, help, &st.typed, ExprKind::Text);
     } else {
+        let floor = bar_top(ui.ctx());
+        let focused = ui.memory(|m| m.has_focus(field_id));
         let opts = Options {
             literal: true,
             enter_breaks: true,
-            min_height: FIELD_HEIGHT,
+            min_height: field_height(ui, focused.then_some(floor)),
         };
         let out = token_field::show(ui, controls, name, &mut st.field, &Metrics::pad(), &opts);
+        if out.focused {
+            keep_above(ui, out.response.rect, floor);
+        }
         if out.changed {
             edit.text = Some(write(&mut st));
             edit.step = out.step;
@@ -162,6 +169,35 @@ pub fn editor(
     preview(ui, help, shown);
     ui.data_mut(|d| d.insert_temp(id, st));
     edit
+}
+
+/// The top of the bar above the keyboard.
+pub fn bar_top(ctx: &egui::Context) -> f32 {
+    keyboard_top(ctx.viewport_rect()) - BAR
+}
+
+/// The least height of a token field at the cursor of `ui`. While the
+/// keyboard shows, the field is lower so that it ends above the bar, at
+/// `floor`, but it keeps the height of one line.
+pub fn field_height(ui: &egui::Ui, floor: Option<f32>) -> f32 {
+    let line = Metrics::pad().chip + 2.0 * Metrics::pad().pad.y;
+    match floor {
+        Some(floor) => (floor - GAP - ui.cursor().top()).clamp(line, FIELD_HEIGHT),
+        None => FIELD_HEIGHT,
+    }
+}
+
+/// Scrolls the panel so that a focused field at `rect` ends above the bar
+/// at `floor`. The space after the field lets the panel scroll. A sheet
+/// rises to its full height.
+pub fn keep_above(ui: &mut egui::Ui, rect: Rect, floor: f32) {
+    let over = rect.bottom() - (floor - GAP);
+    if over > 0.5 {
+        super::raise_sheet(ui.ctx());
+        let screen = ui.ctx().viewport_rect();
+        ui.add_space(screen.bottom() - floor);
+        ui.scroll_with_delta(vec2(0.0, -over));
+    }
 }
 
 /// The text of the field, which the field now shows.
@@ -344,6 +380,7 @@ fn bar(
         pos2(screen.right(), bottom),
     );
     token_field::keep_focus(&ctx, rect);
+    popover::set_floor(&ctx, rect.top());
     let mut changed = None;
     egui::Area::new(egui::Id::new("pad-label-bar"))
         .order(egui::Order::Foreground)

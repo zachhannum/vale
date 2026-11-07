@@ -9444,6 +9444,22 @@ fn decimal_places_write_round() {
 }
 
 #[test]
+fn label_field_and_popover_stay_above_bar() {
+    use vale_app::ui::pad::chip_popover::DECIMAL_PLACES;
+    use vale_app::ui::pad::label_text::{LABEL_TEXT, bar_top};
+    for size in [BOARDS[0], BOARDS[3]] {
+        let what = format!("{size:?}");
+        let mut h = pad(size);
+        open_chip(&mut h, "pop_max");
+        let floor = bar_top(&h.ctx);
+        let field = control(&h, LABEL_TEXT).unwrap();
+        assert!(field.bottom() <= floor, "{what}: {field:?} {floor}");
+        let plus = control(&h, &format!("Increase {DECIMAL_PLACES}"));
+        assert!(plus.unwrap().bottom() <= floor, "{what}");
+    }
+}
+
+#[test]
 fn thousands_separator_writes_format_number() {
     use vale_app::ui::pad::chip_popover::THOUSANDS;
     let mut h = pad(BOARDS[0]);
