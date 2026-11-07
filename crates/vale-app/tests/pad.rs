@@ -145,6 +145,21 @@ fn drag(h: &mut Pad, from: Pos2, to: Pos2, force: Option<f32>) {
     h.run_steps(3);
 }
 
+/// The row of a mode in the open flyout. Drags scroll the flyout until the
+/// row is in it.
+fn flyout_row(h: &mut Pad, name: &str) -> Option<Rect> {
+    for _ in 0..4 {
+        let modes = h.state().pad.flyouts.rect?;
+        let row = control(h, name).filter(|row| modes.contains_rect(*row));
+        if row.is_some() {
+            return row;
+        }
+        let from = pos2(modes.center().x, modes.bottom() - 30.0);
+        drag(h, from, from - vec2(0.0, 200.0), None);
+    }
+    None
+}
+
 /// Pulls an open sheet that covers the tool strip down to its title row.
 fn lower_sheet(h: &mut Pad) {
     let rects = h.state().pad.rects.unwrap();
@@ -475,10 +490,9 @@ fn each_control_is_large_and_is_outside_the_system_bands() {
         check_controls(&h, &format!("{size:?} with the sheet at its title row"));
         for group in ModeGroup::ALL {
             open_group(&mut h, group);
-            let modes = h.state().pad.flyouts.rect.unwrap();
             for (name, ..) in group.modes() {
-                let row = control(&h, name).unwrap_or_else(|| panic!("{size:?}: {name}"));
-                assert!(modes.contains_rect(row), "{size:?}: {name}");
+                let row = flyout_row(&mut h, name);
+                assert!(row.is_some(), "{size:?}: {name}");
             }
             let what = format!("{size:?} with the {} modes", group.name());
             check_controls(&h, &what);
@@ -3167,6 +3181,7 @@ fn the_brush_panel_has_the_channel_rows_of_the_carve_and_erode_modes() {
     for (mode, rows) in [
         ("Lower", [false, false]),
         ("Carve", [true, true]),
+        ("Glacial", [true, false]),
         ("Erode", [true, false]),
         ("Range", [false, false]),
         ("Basin", [true, false]),
@@ -3201,6 +3216,31 @@ fn the_brush_panel_has_the_channel_rows_of_the_carve_and_erode_modes() {
     choose_mode(&mut h, "Erode");
     assert!((h.state().globe.brush.channel_km - 10.0).abs() < 1e-6);
     check_controls(&h, "the Erode mode");
+}
+
+#[test]
+fn the_brush_panel_has_the_depth_row_of_the_glacial_mode() {
+    let depth = "Brush depth";
+    let mut h = pad(BOARDS[0]);
+    tap(&mut h, "Brush settings");
+    assert!(row_of(&h, depth).is_none());
+    // The Terrain cell has the Glacial mode.
+    choose_mode(&mut h, "Glacial");
+    assert_eq!(h.state().globe.brush.mode, Mode::Glacial);
+    assert!(row_of(&h, depth).is_some());
+    check_controls(&h, "the Glacial mode");
+    // The depth goes in steps of 50 m from 0 to 2000 m.
+    assert_eq!(h.state().globe.brush.glacial_depth_m, 500.0);
+    step(&mut h, depth, true);
+    assert_eq!(h.state().globe.brush.glacial_depth_m, 550.0);
+    type_value(&mut h, depth, "9999");
+    assert_eq!(h.state().globe.brush.glacial_depth_m, 2000.0);
+    type_value(&mut h, depth, "-10");
+    assert_eq!(h.state().globe.brush.glacial_depth_m, 0.0);
+    type_value(&mut h, depth, "820");
+    assert_eq!(h.state().globe.brush.glacial_depth_m, 800.0);
+    choose_mode(&mut h, "Carve");
+    assert!(row_of(&h, depth).is_none());
 }
 
 /// Writes an image of the brush panel in the ocean ridge mode, for a person

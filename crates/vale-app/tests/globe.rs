@@ -2219,6 +2219,7 @@ fn the_brush_panel_has_the_channel_width_and_the_floodplain_of_the_carve_mode() 
     for (mode, rows) in [
         ("Raise", [false, false]),
         ("Carve", [true, true]),
+        ("Glacial", [true, false]),
         ("Erode", [true, false]),
         ("Uplift", [false, false]),
     ] {
@@ -2239,6 +2240,32 @@ fn the_brush_panel_has_the_channel_width_and_the_floodplain_of_the_carve_mode() 
     let shape = brush.channel_shape(1000.0);
     assert!((shape.width - 0.002).abs() < 1e-12, "{shape:?}");
     assert!((shape.floodplain - 0.025).abs() < 1e-12, "{shape:?}");
+}
+
+#[test]
+fn the_brush_panel_has_the_depth_of_the_glacial_mode() {
+    use vale_app::globe::brush::Stroke;
+    let mut h = harness();
+    h.state_mut().globe.tool = Tool::Brush;
+    h.run_steps(2);
+    assert!(h.query_all_by_label("Depth").next().is_none());
+    h.get_by_label("Glacial").click();
+    h.run_steps(2);
+    assert_eq!(h.state().globe.brush.mode, Mode::Glacial);
+    assert_eq!(h.state().globe.brush.glacial_depth_m, 500.0);
+    set_slider(&mut h, "Depth", 1200.0);
+    assert_eq!(h.state().globe.brush.glacial_depth_m, 1200.0);
+    // The stamps get the depth in 16-bit levels.
+    let globe = &h.state().globe;
+    let (brush, n) = (globe.brush, globe.map.face_size());
+    let mut stamps = Vec::new();
+    Stroke::default().add_sample(&brush, n, ridge_samples()[0], |_| 0, &mut stamps);
+    let span = (vale_terrain::ELEV_MAX - vale_terrain::ELEV_MIN) / 65535.0;
+    let depth = f64::from(stamps[0].level) * span;
+    assert!((depth - 1200.0).abs() < span, "{depth}");
+    h.get_by_label("Carve").click();
+    h.run_steps(2);
+    assert!(h.query_all_by_label("Depth").next().is_none());
 }
 
 #[test]
