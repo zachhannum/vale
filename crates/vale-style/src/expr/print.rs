@@ -50,7 +50,7 @@ pub(super) fn prec(node: &Node) -> u8 {
     match node {
         Node::Binary(op, ..) => op_prec(*op),
         Node::Not(_) => NOT,
-        Node::IsNull { .. } | Node::In { .. } | Node::Like { .. } => COMPARE,
+        Node::IsNull { .. } | Node::In { .. } | Node::Like { .. } | Node::Between { .. } => COMPARE,
         Node::Neg(_) => UNARY,
         Node::Lit(Value::Number(n)) if n.is_sign_negative() => UNARY,
         _ => PRIMARY,
@@ -130,6 +130,22 @@ fn write(node: &Node, out: &mut String) {
             out.push_str(if *negated { " not " } else { " " });
             out.push_str(if *ignore_case { "ilike " } else { "like " });
             write_at(pattern, CONCAT, out);
+        }
+        Node::Between {
+            value,
+            low,
+            high,
+            negated,
+        } => {
+            write_at(value, CONCAT, out);
+            out.push_str(if *negated {
+                " not between "
+            } else {
+                " between "
+            });
+            write_at(low, CONCAT, out);
+            out.push_str(" and ");
+            write_at(high, CONCAT, out);
         }
         Node::Call(f, args) => {
             out.push_str(f.name);

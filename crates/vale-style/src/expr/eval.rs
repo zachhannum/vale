@@ -60,6 +60,20 @@ pub(super) fn eval(node: &Node, ctx: &Context) -> Value {
             }
             _ => Value::Null,
         },
+        Node::Between {
+            value,
+            low,
+            high,
+            negated,
+        } => {
+            let v = eval(value, ctx);
+            match (compare(&v, &eval(low, ctx)), compare(&v, &eval(high, ctx))) {
+                (Some(lo), Some(hi)) => {
+                    Value::Bool((lo != Ordering::Less && hi != Ordering::Greater) != *negated)
+                }
+                _ => Value::Null,
+            }
+        }
         Node::Call(f, args) => {
             let args: Vec<Value> = args.iter().map(|a| eval(a, ctx)).collect();
             (f.call)(&args)

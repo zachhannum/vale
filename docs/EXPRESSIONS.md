@@ -36,6 +36,7 @@ The table starts with the operators that bind most loosely.
 | `=`, `!=`, `<>`, `<`, `<=`, `>`, `>=` | A comparison of two numbers, two texts, or two true or false values |
 | `a is null`, `a is not null` | True if the value is null, or not null |
 | `a in (x, y, ...)`, `a not in (...)` | True if `a` is equal to one of the items |
+| `a between x and y`, `a not between x and y` | True if `a` is at least `x` and at most `y` |
 | `a like 'pattern'`, `a not like 'pattern'` | Text match. `%` matches any run of characters, and `_` matches one character. Case matters. |
 | `a ilike 'pattern'` | The same as `like`, but case does not matter |
 | `a \|\| b` | The two values joined as text |
@@ -100,7 +101,8 @@ not        = "not" not | comparison ;
 comparison = concat [ compare-op concat
                     | "is" [ "not" ] "null"
                     | [ "not" ] "in" "(" expression { "," expression } ")"
-                    | [ "not" ] ( "like" | "ilike" ) concat ] ;
+                    | [ "not" ] ( "like" | "ilike" ) concat
+                    | [ "not" ] "between" concat "and" concat ] ;
 compare-op = "=" | "!=" | "<>" | "<" | "<=" | ">" | ">=" ;
 concat     = sum { "||" sum } ;
 sum        = term { ( "+" | "-" ) term } ;
@@ -117,4 +119,4 @@ exponent   = ( "e" | "E" ) [ "+" | "-" ] digits ;
 name       = ( letter | "_" ) { letter | digit | "_" } ;
 ```
 
-A name that is a keyword (`and`, `or`, `not`, `is`, `in`, `like`, `ilike`, `true`, `false`, `null`) is not a field. Put such a field name in double quotes.
+A name that is a keyword (`and`, `or`, `not`, `is`, `in`, `like`, `ilike`, `between`, `true`, `false`, `null`) is not a field. Put such a field name in double quotes.

@@ -435,3 +435,21 @@ fn each_function_has_a_category_and_a_hint() {
         assert!(!f.hint.is_empty() && !f.hint.ends_with('.'), "{}", f.name);
     }
 }
+
+#[test]
+fn between_is_inclusive() {
+    assert_eq!(eval("population between 72000 and 80000"), b(true));
+    assert_eq!(eval("population BETWEEN 1000 AND 72000"), b(true));
+    assert_eq!(eval("population between 72001 and 80000"), b(false));
+    assert_eq!(eval("population not between 72001 and 80000"), b(true));
+    assert_eq!(eval("name between 'R' and 'S'"), b(true));
+    assert_eq!(eval("flow between 1 + 1 and 4 and capital"), b(true));
+    assert_eq!(eval("note between 1 and 2"), Value::Null);
+    assert_eq!(eval("name between 1 and 2"), Value::Null);
+    assert!(Expr::parse("x between 1").is_err());
+    assert!(Expr::parse("between > 1").is_err());
+    assert_eq!(
+        Expr::parse("x between 1 and 2").unwrap().fields(),
+        vec!["x".to_string()]
+    );
+}

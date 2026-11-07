@@ -56,6 +56,12 @@ pub(super) enum Node {
         ignore_case: bool,
         negated: bool,
     },
+    Between {
+        value: Box<Node>,
+        low: Box<Node>,
+        high: Box<Node>,
+        negated: bool,
+    },
     Call(&'static Function, Vec<Node>),
 }
 
@@ -212,7 +218,7 @@ impl<'a> Parser<'a> {
             });
         }
         let negated = self.at_keyword("not")
-            && ["in", "like", "ilike"]
+            && ["in", "like", "ilike", "between"]
                 .iter()
                 .any(|kw| self.keyword_at(self.pos + 1, kw));
         if negated {
@@ -223,6 +229,19 @@ impl<'a> Parser<'a> {
             return Ok(Node::In {
                 value: Box::new(left),
                 list,
+                negated,
+            });
+        }
+        if self.eat_keyword("between") {
+            let low = self.concat()?;
+            if !self.eat_keyword("and") {
+                return Err(self.error_here("expected 'and' after the low value of 'between'"));
+            }
+            let high = self.concat()?;
+            return Ok(Node::Between {
+                value: Box::new(left),
+                low: Box::new(low),
+                high: Box::new(high),
                 negated,
             });
         }
@@ -391,14 +410,15 @@ impl<'a> Parser<'a> {
                     "true" => Ok(Node::Lit(Value::Bool(true))),
                     "false" => Ok(Node::Lit(Value::Bool(false))),
                     "null" => Ok(Node::Lit(Value::Null)),
-                    kw @ ("and" | "or" | "not" | "is" | "in" | "like" | "ilike") => Err(self
-                        .error(
+                    kw @ ("and" | "or" | "not" | "is" | "in" | "like" | "ilike" | "between") => {
+                        Err(self.error(
                             t.start,
                             t.end,
                             format!(
                                 "'{kw}' is a keyword. Put a field with this name in double quotes"
                             ),
-                        )),
+                        ))
+                    }
                     _ => Ok(Node::Field(name)),
                 }
             }

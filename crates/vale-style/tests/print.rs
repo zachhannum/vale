@@ -106,3 +106,20 @@ fn fields_and_text_are_quoted() {
     assert_eq!(print("1.50"), "1.5");
     assert_eq!(print("2.0"), "2");
 }
+
+#[test]
+fn between_round_trips() {
+    assert_eq!(print("x BETWEEN 1 AND 2"), "x between 1 and 2");
+    assert_eq!(
+        print("x not between a + 1 and b"),
+        "x not between a + 1 and b"
+    );
+    assert_eq!(
+        print("x between (a and b) and c"),
+        "x between (a and b) and c"
+    );
+    assert_eq!(
+        print("(x between 1 and 2) and y"),
+        "x between 1 and 2 and y"
+    );
+}

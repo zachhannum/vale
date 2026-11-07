@@ -210,6 +210,13 @@ fn collect_fields(node: &Node, out: &mut Vec<String>) {
             collect_fields(value, out);
             list.iter().for_each(|n| collect_fields(n, out));
         }
+        Node::Between {
+            value, low, high, ..
+        } => {
+            collect_fields(value, out);
+            collect_fields(low, out);
+            collect_fields(high, out);
+        }
         Node::Call(_, args) => args.iter().for_each(|n| collect_fields(n, out)),
     }
 }
