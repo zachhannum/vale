@@ -446,6 +446,161 @@ fn the_ipad_start_screen_has_touch_size_controls() {
     }
 }
 
+/// The size of an iPhone 16 in portrait, and its safe area: the top, the
+/// right, the bottom, and the left.
+const PHONE: (f32, f32) = (393.0, 852.0);
+const PHONE_SAFE: [f32; 4] = [59.0, 0.0, 34.0, 0.0];
+
+/// The start screen of the iPad layout on a phone in portrait, with its safe
+/// area. The harness gives one event to each frame, so a frame is 1/60 of a
+/// second, and a tap is shorter than a long press.
+fn phone(dir: &Path) -> App {
+    let mut state = AppState::new(Document::empty()).unwrap();
+    state.headless = true;
+    state.set_layout(Layout::Pad);
+    state.globe.set_face_size(256);
+    state.projects = Locations::single(dir);
+    state.show_projects();
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(PHONE.0, PHONE.1))
+        .with_pixels_per_point(1.0)
+        .with_step_dt(1.0 / 60.0)
+        .build_ui_state(|ui, state: &mut AppState| draw(ui, state), state);
+    let [top, right, bottom, left] = PHONE_SAFE;
+    let insets = egui::epaint::MarginF32 {
+        left,
+        right,
+        top,
+        bottom,
+    };
+    h.input_mut().safe_area_insets = Some(egui::SafeAreaInsets(insets));
+    run(&mut h);
+    h
+}
+
+/// The part of the phone screen inside the safe area.
+fn phone_safe() -> egui::Rect {
+    let [top, right, bottom, left] = PHONE_SAFE;
+    egui::Rect::from_min_max(
+        egui::pos2(left, top),
+        egui::pos2(PHONE.0 - right, PHONE.1 - bottom),
+    )
+}
+
+/// The place of the control with this name.
+fn control_rect(h: &App, name: &str) -> Option<egui::Rect> {
+    let controls = &h.state().pad.controls;
+    controls.iter().find(|c| c.name == name).map(|c| c.rect)
+}
+
+/// A finger that goes down or up at this place.
+fn finger(h: &mut App, phase: egui::TouchPhase, pos: egui::Pos2) {
+    h.event(egui::Event::Touch {
+        device_id: egui::TouchDeviceId(0),
+        id: egui::TouchId(1),
+        phase,
+        pos,
+        force: None,
+    });
+    h.event(egui::Event::PointerMoved(pos));
+    h.event(egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed: phase == egui::TouchPhase::Start,
+        modifiers: egui::Modifiers::NONE,
+    });
+    if phase == egui::TouchPhase::End {
+        h.event(egui::Event::PointerGone);
+    }
+}
+
+/// The count of the different values, with a tolerance of 1 point.
+fn distinct(mut values: Vec<f32>) -> usize {
+    values.sort_by(f32::total_cmp);
+    values.dedup_by(|a, b| (*a - *b).abs() < 1.0);
+    values.len()
+}
+
+#[test]
+fn the_phone_start_screen_shows_the_projects_in_two_columns() {
+    let dir = tempfile::tempdir().unwrap();
+    let names = ["Aurelia", "Borea", "Cassia", "Dorne"];
+    for name in names {
+        create(dir.path(), name);
+    }
+    let h = phone(dir.path());
+    let cards: Vec<_> = names
+        .iter()
+        .map(|name| control_rect(&h, &pad_browser::open_name(name)).unwrap())
+        .collect();
+    assert_eq!(distinct(cards.iter().map(|c| c.left()).collect()), 2);
+    assert_eq!(distinct(cards.iter().map(|c| c.top()).collect()), 2);
+    let safe = phone_safe();
+    for control in &h.state().pad.controls {
+        let rect = control.rect;
+        assert!(
+            rect.width() >= TOUCH && rect.height() >= TOUCH,
+            "{control:?}"
+        );
+        assert!(safe.contains_rect(rect), "{control:?}");
+    }
+}
+
+#[test]
+fn a_long_press_on_a_card_opens_its_menu_and_a_tap_opens_the_project() {
+    let dir = tempfile::tempdir().unwrap();
+    let names = ["Aurelia", "Borea", "Cassia", "Dorne"];
+    for name in names {
+        create(dir.path(), name);
+    }
+    // A card in the top row and a card in the bottom row.
+    for name in ["Aurelia", "Dorne"] {
+        let mut h = phone(dir.path());
+        let card = control_rect(&h, &pad_browser::open_name(name)).unwrap();
+        finger(&mut h, egui::TouchPhase::Start, card.center());
+        h.run_steps(10);
+        assert_eq!(h.state().browser.menu, None);
+        for _ in 0..60 {
+            h.step();
+            if h.state().browser.menu.is_some() {
+                break;
+            }
+        }
+        let menu = h.state().browser.menu.clone().expect("the menu opens");
+        let entry = h.state().browser.entries.iter().find(|e| e.name == name);
+        assert_eq!(menu.path, entry.unwrap().path);
+        // The end of the hold does not open the project.
+        finger(&mut h, egui::TouchPhase::End, card.center());
+        run(&mut h);
+        assert_eq!(h.state().screen, Screen::Browser);
+        assert!(h.state().browser.menu.is_some());
+
+        // The menu is below the card, inside the safe area, with touch-size
+        // rows.
+        let safe = phone_safe();
+        for row in [pad_browser::RENAME, pad_browser::COPY, pad_browser::DELETE] {
+            let rect = control_rect(&h, row).unwrap();
+            assert!(rect.width() >= TOUCH && rect.height() >= TOUCH, "{row}");
+            assert!(safe.contains_rect(rect), "{row} at {rect:?}");
+            assert!(rect.top() > card.bottom(), "{row} at {rect:?}, {card:?}");
+        }
+        click(&mut h, pad_browser::RENAME);
+        assert_eq!(h.state().browser.menu, None);
+        let dialog = &h.state().browser.dialog;
+        assert!(matches!(dialog, Some(Dialog::Rename { .. })));
+    }
+
+    // A tap opens the project.
+    let mut h = phone(dir.path());
+    let card = control_rect(&h, &pad_browser::open_name("Borea")).unwrap();
+    finger(&mut h, egui::TouchPhase::Start, card.center());
+    finger(&mut h, egui::TouchPhase::End, card.center());
+    run(&mut h);
+    assert_eq!(h.state().browser.menu, None);
+    assert_eq!(h.state().screen, Screen::Editor);
+    assert_eq!(h.state().doc.project.world.name, "Borea");
+}
+
 #[test]
 fn the_file_menu_has_the_actions_and_the_recent_list() {
     let dir = tempfile::tempdir().unwrap();
