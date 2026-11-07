@@ -11,7 +11,30 @@ pub struct Function {
     /// `None` for no limit.
     pub max_args: Option<usize>,
     pub summary: &'static str,
+    pub category: Category,
+    /// One short line for the list of functions in the UI.
+    pub hint: &'static str,
     pub(super) call: fn(&[Value]) -> Value,
+}
+
+/// A group of functions in the UI.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Category {
+    Math,
+    Text,
+    Logic,
+    Convert,
+}
+
+impl Category {
+    pub fn name(self) -> &'static str {
+        match self {
+            Category::Math => "Math",
+            Category::Text => "Text",
+            Category::Logic => "Logic",
+            Category::Convert => "Convert",
+        }
+    }
 }
 
 /// Two functions are equal when their names are equal.
@@ -35,6 +58,8 @@ pub static FUNCTIONS: &[Function] = &[
         min_args: 3,
         max_args: Some(3),
         summary: "`a` if the condition is true, else `b`",
+        category: Category::Logic,
+        hint: "Choose by a condition",
         call: |a| {
             if truthy(&a[0]) {
                 a[1].clone()
@@ -49,6 +74,8 @@ pub static FUNCTIONS: &[Function] = &[
         min_args: 1,
         max_args: None,
         summary: "The first value that is not null",
+        category: Category::Logic,
+        hint: "First value that is not empty",
         call: |a| {
             a.iter()
                 .find(|v| **v != Value::Null)
@@ -62,6 +89,8 @@ pub static FUNCTIONS: &[Function] = &[
         min_args: 1,
         max_args: Some(1),
         summary: "The text in lower case",
+        category: Category::Text,
+        hint: "Text in lower case",
         call: |a| map_text(&a[0], |s| s.to_lowercase()),
     },
     Function {
@@ -70,6 +99,8 @@ pub static FUNCTIONS: &[Function] = &[
         min_args: 1,
         max_args: Some(1),
         summary: "The text in upper case",
+        category: Category::Text,
+        hint: "Text in upper case",
         call: |a| map_text(&a[0], |s| s.to_uppercase()),
     },
     Function {
@@ -78,6 +109,8 @@ pub static FUNCTIONS: &[Function] = &[
         min_args: 1,
         max_args: Some(1),
         summary: "The text with an upper-case first letter in each word",
+        category: Category::Text,
+        hint: "Capital first letter in each word",
         call: |a| map_text(&a[0], title_case),
     },
     Function {
@@ -86,6 +119,8 @@ pub static FUNCTIONS: &[Function] = &[
         min_args: 1,
         max_args: Some(1),
         summary: "The text without spaces at the start and the end",
+        category: Category::Text,
+        hint: "Remove spaces at the ends",
         call: |a| map_text(&a[0], |s| s.trim().to_string()),
     },
     Function {
@@ -94,6 +129,8 @@ pub static FUNCTIONS: &[Function] = &[
         min_args: 1,
         max_args: Some(1),
         summary: "The number of characters in the text",
+        category: Category::Text,
+        hint: "Number of characters",
         call: |a| match &a[0] {
             Value::Text(s) => Value::Number(s.chars().count() as f64),
             _ => Value::Null,
@@ -105,6 +142,8 @@ pub static FUNCTIONS: &[Function] = &[
         min_args: 2,
         max_args: Some(3),
         summary: "Part of the text. The first character is 1, and a negative start counts from the end. Without a length, the part goes to the end",
+        category: Category::Text,
+        hint: "Part of a text",
         call: substr,
     },
     Function {
@@ -113,6 +152,8 @@ pub static FUNCTIONS: &[Function] = &[
         min_args: 2,
         max_args: Some(2),
         summary: "The first `n` characters",
+        category: Category::Text,
+        hint: "First characters",
         call: |a| match (&a[0], count(&a[1])) {
             (Value::Text(s), Some(n)) => Value::Text(s.chars().take(n).collect()),
             _ => Value::Null,
@@ -124,6 +165,8 @@ pub static FUNCTIONS: &[Function] = &[
         min_args: 2,
         max_args: Some(2),
         summary: "The last `n` characters",
+        category: Category::Text,
+        hint: "Last characters",
         call: |a| match (&a[0], count(&a[1])) {
             (Value::Text(s), Some(n)) => {
                 let len = s.chars().count();
@@ -138,6 +181,8 @@ pub static FUNCTIONS: &[Function] = &[
         min_args: 3,
         max_args: Some(3),
         summary: "The text with each `find` replaced by `with`",
+        category: Category::Text,
+        hint: "Replace part of a text",
         call: |a| match (&a[0], &a[1], &a[2]) {
             (Value::Text(s), Value::Text(f), Value::Text(w)) if !f.is_empty() => {
                 Value::Text(s.replace(f.as_str(), w))
@@ -152,6 +197,8 @@ pub static FUNCTIONS: &[Function] = &[
         min_args: 1,
         max_args: None,
         summary: "The values joined as text. Null values are skipped",
+        category: Category::Text,
+        hint: "Join values as text",
         call: |a| Value::Text(a.iter().filter_map(text_of).collect()),
     },
     Function {
@@ -160,6 +207,8 @@ pub static FUNCTIONS: &[Function] = &[
         min_args: 1,
         max_args: Some(1),
         summary: "The value as text. A whole number has no decimal point",
+        category: Category::Convert,
+        hint: "Value as text",
         call: |a| text_of(&a[0]).map_or(Value::Null, Value::Text),
     },
     Function {
@@ -168,6 +217,8 @@ pub static FUNCTIONS: &[Function] = &[
         min_args: 1,
         max_args: Some(1),
         summary: "The value as a number, or null if the text is not a number. `true` is 1 and `false` is 0",
+        category: Category::Convert,
+        hint: "Value as a number",
         call: |a| match &a[0] {
             Value::Number(n) => Value::Number(*n),
             Value::Bool(b) => Value::Number(if *b { 1.0 } else { 0.0 }),
@@ -181,11 +232,33 @@ pub static FUNCTIONS: &[Function] = &[
         },
     },
     Function {
+        name: "format_number",
+        signature: "format_number(x, places)",
+        min_args: 1,
+        max_args: Some(2),
+        summary: "`x` as text with `places` decimal places, 0 if not given, and a comma between each three digits of the whole part",
+        category: Category::Convert,
+        hint: "Number with thousands separators",
+        call: |a| {
+            let places = match a.get(1) {
+                None => 0,
+                Some(Value::Number(p)) if p.is_finite() => p.round().clamp(0.0, 15.0) as usize,
+                Some(_) => return Value::Null,
+            };
+            match a[0] {
+                Value::Number(x) if x.is_finite() => Value::Text(grouped(x, places)),
+                _ => Value::Null,
+            }
+        },
+    },
+    Function {
         name: "round",
         signature: "round(x, digits)",
         min_args: 1,
         max_args: Some(2),
         summary: "`x` rounded to `digits` decimal places, 0 if not given",
+        category: Category::Math,
+        hint: "Round to decimal places",
         call: |a| {
             let digits = match a.get(1) {
                 None => 0.0,
@@ -202,6 +275,8 @@ pub static FUNCTIONS: &[Function] = &[
         min_args: 1,
         max_args: Some(1),
         summary: "The largest whole number not above `x`",
+        category: Category::Math,
+        hint: "Round down",
         call: |a| number(&a[0], f64::floor),
     },
     Function {
@@ -210,6 +285,8 @@ pub static FUNCTIONS: &[Function] = &[
         min_args: 1,
         max_args: Some(1),
         summary: "The smallest whole number not below `x`",
+        category: Category::Math,
+        hint: "Round up",
         call: |a| number(&a[0], f64::ceil),
     },
     Function {
@@ -218,6 +295,8 @@ pub static FUNCTIONS: &[Function] = &[
         min_args: 1,
         max_args: Some(1),
         summary: "The absolute value of `x`",
+        category: Category::Math,
+        hint: "Value without a sign",
         call: |a| number(&a[0], f64::abs),
     },
     Function {
@@ -226,6 +305,8 @@ pub static FUNCTIONS: &[Function] = &[
         min_args: 1,
         max_args: None,
         summary: "The smallest number. Values that are not numbers are skipped",
+        category: Category::Math,
+        hint: "Smallest number",
         call: |a| fold_numbers(a, f64::min),
     },
     Function {
@@ -234,6 +315,8 @@ pub static FUNCTIONS: &[Function] = &[
         min_args: 1,
         max_args: None,
         summary: "The largest number. Values that are not numbers are skipped",
+        category: Category::Math,
+        hint: "Largest number",
         call: |a| fold_numbers(a, f64::max),
     },
     Function {
@@ -242,6 +325,8 @@ pub static FUNCTIONS: &[Function] = &[
         min_args: 3,
         max_args: Some(3),
         summary: "`x`, but not below `low` and not above `high`",
+        category: Category::Math,
+        hint: "Keep a number in a range",
         call: |a| match (&a[0], &a[1], &a[2]) {
             (Value::Number(lo), Value::Number(x), Value::Number(hi)) => {
                 Value::Number(x.max(*lo).min(*hi))
@@ -278,6 +363,29 @@ pub(super) fn number_text(n: f64) -> String {
     } else {
         format!("{n}")
     }
+}
+
+/// The number rounded half away from zero to `places`, with a comma between each three digits of the whole part.
+fn grouped(x: f64, places: usize) -> String {
+    let f = 10f64.powi(places as i32);
+    let mut r = (x * f).round() / f;
+    if !r.is_finite() {
+        r = x;
+    }
+    let digits = format!("{:.places$}", r.abs());
+    let (whole, fraction) = digits.split_at(digits.find('.').unwrap_or(digits.len()));
+    let mut out = String::new();
+    if r < 0.0 {
+        out.push('-');
+    }
+    for (i, c) in whole.chars().enumerate() {
+        if i > 0 && (whole.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out.push_str(fraction);
+    out
 }
 
 fn map_text(v: &Value, f: impl Fn(&str) -> String) -> Value {

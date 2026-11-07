@@ -404,3 +404,34 @@ fn rename_skips_text_and_keywords() {
 fn rename_keeps_text_that_does_not_lex() {
     assert_eq!(rename_field("name || 'open", "name", "n"), "name || 'open");
 }
+
+#[test]
+fn format_number_groups_and_rounds() {
+    assert_eq!(eval("format_number(1234567.891, 2)"), t("1,234,567.89"));
+    assert_eq!(eval("format_number(population)"), t("72,000"));
+    assert_eq!(eval("format_number(1234.5)"), t("1,235"));
+    assert_eq!(eval("format_number(-1234.5)"), t("-1,235"));
+    assert_eq!(eval("format_number(0.5, 0)"), t("1"));
+    assert_eq!(eval("format_number(12.3, 3)"), t("12.300"));
+    assert_eq!(eval("format_number(999.996, 2)"), t("1,000.00"));
+    assert_eq!(eval("format_number(-0.001, 2)"), t("0.00"));
+    assert_eq!(eval("format_number(123, -2)"), t("123"));
+    assert_eq!(eval("format_number(1.5, 40)"), t("1.500000000000000"));
+    assert_eq!(eval("format_number(name, 2)"), Value::Null);
+    assert_eq!(eval("format_number(note, 2)"), Value::Null);
+    assert_eq!(eval("format_number(1, 'x')"), Value::Null);
+}
+
+#[test]
+fn each_function_has_a_category_and_a_hint() {
+    use vale_style::expr::Category;
+    let find = |name: &str| FUNCTIONS.iter().find(|f| f.name == name).unwrap();
+    assert_eq!(find("round").category, Category::Math);
+    assert_eq!(find("upper").category, Category::Text);
+    assert_eq!(find("if").category, Category::Logic);
+    assert_eq!(find("format_number").category, Category::Convert);
+    assert_eq!(find("round").hint, "Round to decimal places");
+    for f in FUNCTIONS {
+        assert!(!f.hint.is_empty() && !f.hint.ends_with('.'), "{}", f.name);
+    }
+}

@@ -16,7 +16,7 @@ use vale_render::Color;
 use vale_store::GeometryKind;
 pub use vale_store::Value;
 
-pub use functions::{FUNCTIONS, Function};
+pub use functions::{Category, FUNCTIONS, Function};
 use parser::Node;
 pub use parts::{TextPart, join, split};
 

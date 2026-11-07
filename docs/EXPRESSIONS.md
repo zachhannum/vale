@@ -75,6 +75,7 @@ A filter matches a feature only if the result is `true`. The `if` function also 
 | `concat(a, b, ...)` | The values joined as text. Null values are skipped. |
 | `to_text(value)` | The value as text. A whole number has no decimal point, so `to_text(5)` gives `'5'`. |
 | `to_number(value)` | The value as a number, or null if the text is not a number. `true` is 1 and `false` is 0. |
+| `format_number(x, places)` | `x` as text with `places` decimal places, 0 if not given, and a comma between each three digits of the whole part. A half rounds away from zero, so `format_number(-1234.5)` gives `'-1,235'`. The places go from 0 to 15. |
 | `round(x, digits)` | `x` rounded to `digits` decimal places, 0 if not given |
 | `floor(x)` | The largest whole number not above `x` |
 | `ceil(x)` | The smallest whole number not below `x` |
