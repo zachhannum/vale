@@ -10,7 +10,7 @@
 
 mod caret;
 mod layout;
-mod paint;
+pub mod paint;
 pub mod template;
 mod widget;
 

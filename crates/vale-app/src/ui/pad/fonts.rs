@@ -2,10 +2,9 @@
 
 use eframe::egui;
 use vale_store::LayerId;
-use vale_style::expr::{TextPart, split};
 
 use super::Page;
-use super::label_parts::{self, LABEL_TEXT};
+use super::label_text::{self, LABEL_TEXT};
 use super::note_text;
 use super::raster::heading;
 use super::widgets::{self, Controls};
@@ -61,75 +60,15 @@ fn set_text(state: &mut AppState, id: LayerId, text: String) {
     }
 }
 
-/// The Label text page of layer `id`: the text builder.
+/// The Label text page of layer `id`.
 pub fn text_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id: LayerId) {
     let Some(entry) = state.doc.entry(id) else {
         return;
     };
     let current = entry.style.label.text.clone();
     let help = ExprHelp::for_layer(state, id);
-    let mut typed = std::mem::take(&mut state.pad.label_text);
-    let drag = &mut state.pad.part_drag;
-    let built = label_parts::list(ui, controls, LABEL_TEXT, &current, &mut typed, drag, &help);
-    state.pad.label_text = typed;
-    if let Some(text) = built.text {
-        set_text(state, id, text);
-    }
-    if let Some(n) = built.open {
-        state.pad.page = Some(Page::Part(n));
-    }
-    if built.add {
-        state.pad.page = Some(Page::AddPart);
-    }
-}
-
-/// The page of a new part of the label text of layer `id`. A text part
-/// opens its page.
-pub fn add_part_body(
-    ui: &mut egui::Ui,
-    state: &mut AppState,
-    controls: &mut Controls,
-    id: LayerId,
-) {
-    let (Some(layer), Some(entry)) = (state.doc.layer(id), state.doc.entry(id)) else {
-        return;
-    };
-    let fields = label_parts::fields_of(layer);
-    let current = entry.style.label.text.clone();
-    let Some(part) = label_parts::add_page(ui, controls, &fields) else {
-        return;
-    };
-    let text_part = matches!(part, TextPart::Text(_));
-    let (text, n) = label_parts::append(&current, part);
-    set_text(state, id, text);
-    state.pad.page = Some(if text_part {
-        Page::Part(n)
-    } else {
-        Page::LabelText
-    });
-}
-
-/// The page of part `n` of the label text of layer `id`.
-pub fn part_body(
-    ui: &mut egui::Ui,
-    state: &mut AppState,
-    controls: &mut Controls,
-    id: LayerId,
-    n: usize,
-) {
-    let Some(entry) = state.doc.entry(id) else {
-        return;
-    };
-    let current = entry.style.label.text.clone();
-    let parts = split(&current);
-    let Some(part) = parts.get(n) else {
-        return;
-    };
-    let number = super::labels::number_field(state, id, part);
-    let help = ExprHelp::for_layer(state, id);
-    if let Some((part, _)) = label_parts::part_page(ui, controls, part, number, &help)
-        && let Some(text) = label_parts::replace(&current, n, part)
-    {
+    let edit = label_text::editor(ui, controls, ("", LABEL_TEXT), &current, &help);
+    if let Some(text) = edit.text {
         set_text(state, id, text);
     }
 }

@@ -7,7 +7,7 @@ use egui_kittest::kittest::{NodeT, Queryable};
 use vale_app::document::Document;
 use vale_app::headless;
 use vale_app::ui::atlas::{self, AtlasSelection};
-use vale_app::ui::pad::label_parts::LABEL_TEXT;
+use vale_app::ui::pad::label_text::LABEL_TEXT;
 use vale_app::ui::{AppState, LayerRef, Workspace, draw};
 use vale_render::Color;
 use vale_store::LayerId;

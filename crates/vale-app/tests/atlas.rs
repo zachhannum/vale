@@ -1759,6 +1759,19 @@ fn map_of(h: &Pad, index: usize) -> String {
     h.state().doc.project.atlas.map(map).unwrap().name.clone()
 }
 
+/// Types an expression in place of the text of a label class, in the
+/// Code view of the text.
+fn type_code(h: &mut Pad, text: &str) {
+    use vale_app::ui::pad::label_text::CODE;
+    let field = format!("{TEXT} code");
+    if control(h, &field).is_none() {
+        nudge_up_to(h, CODE);
+        scroll_to(h, CODE);
+        tap(h, CODE);
+    }
+    type_text(h, &field, text);
+}
+
 /// Types a text in place of the text of a field.
 fn type_text(h: &mut Pad, name: &str, text: &str) {
     tap(h, name);
@@ -3647,7 +3660,7 @@ fn the_labels_tab_makes_a_label_class() {
     assert_eq!(list[0].name, "Places");
     assert_eq!(list[1].name, "Class 1");
 
-    type_text(&mut h, TEXT, "upper(name)");
+    type_code(&mut h, "upper(name)");
     scroll_to(&mut h, FONT);
     tap(&mut h, FONT);
     let target = FontTarget::Class(map, places, 1);
@@ -3782,7 +3795,7 @@ fn a_change_of_a_class_places_the_labels_again_while_you_edit() {
 
     // One edit of the text, and the field keeps the focus.
     let composes = h.state().atlas.composes;
-    type_text(&mut h, TEXT, "upper(name)");
+    type_code(&mut h, "upper(name)");
     assert_eq!(classes(&h, map, "Places")[0].text, "upper(name)");
     assert!(h.state().atlas.composes > composes);
     let texts = place_texts(&mut h, 0);
@@ -3791,8 +3804,8 @@ fn a_change_of_a_class_places_the_labels_again_while_you_edit() {
         "{texts:?}"
     );
     // A text that is not an expression waits and keeps the labels.
-    type_text(&mut h, TEXT, "upper(");
-    assert!(control(&h, TEXT).is_some());
+    type_code(&mut h, "upper(");
+    assert!(control(&h, &format!("{TEXT} code")).is_some());
     assert_eq!(classes(&h, map, "Places")[0].text, "upper(name)");
 }
 
@@ -3802,7 +3815,7 @@ fn two_maps_label_one_layer_with_their_own_classes() {
     let (main, inset) = (frame(&h, 0).map, frame(&h, 1).map);
     tap(&mut h, FRAME_TABS[3]);
     tap(&mut h, "Places");
-    type_text(&mut h, TEXT, "upper(name)");
+    type_code(&mut h, "upper(name)");
     assert_eq!(classes(&h, inset, "Places")[0].text, "upper(name)");
     assert_eq!(classes(&h, main, "Places")[0].text, "name");
     assert!(
@@ -3831,7 +3844,7 @@ fn each_frame_of_a_map_places_labels_with_its_classes() {
     h.run_steps(2);
     tap(&mut h, FRAME_TABS[3]);
     tap(&mut h, "Places");
-    type_text(&mut h, TEXT, "upper(name)");
+    type_code(&mut h, "upper(name)");
     for index in 0..2 {
         let texts = place_texts(&mut h, index);
         assert!(!texts.is_empty(), "frame {index}");
@@ -4124,90 +4137,44 @@ fn the_filter_of_a_class_has_the_condition_builder() {
 }
 
 #[test]
-fn the_text_of_a_class_has_the_text_builder() {
-    use vale_app::ui::atlas::ClassPage;
-    use vale_app::ui::pad::label_parts::{
-        ADD_PART, NO_ROUNDING, PART, PREFIX, REMOVE_PART, REORDER_PART, TEXT as TEXT_CHIP,
-    };
+fn the_text_of_a_class_has_the_token_field() {
+    use vale_app::ui::new_feature::keyboard_top;
+    use vale_app::ui::pad::label_text::{BAR, insert_name};
     let mut h = labels_pad(BOARDS[0]);
     let map = frame(&h, 0).map;
     let places = layer_id(&h, "Places");
     let text = |h: &Pad| classes(h, map, "Places")[0].text.clone();
-    let page = |h: &Pad| h.state().atlas.label_page;
     tap(&mut h, "Places");
     assert_eq!(text(&h), "name");
-    check_controls(&h, "the Text segment with the text builder");
+    check_controls(&h, "the Text segment with the token field");
 
-    // "Add part" adds a field part.
-    scroll_to(&mut h, ADD_PART);
-    tap(&mut h, ADD_PART);
-    assert_eq!(page(&h), Some(ClassPage::AddPart));
-    check_controls(&h, "the page of a new part");
-    scroll_to(&mut h, "pop_max");
-    tap(&mut h, "pop_max");
-    assert_eq!(page(&h), None);
+    // The bar inserts a field at the caret, after the field "name".
+    scroll_to(&mut h, TEXT);
+    tap(&mut h, TEXT);
+    let chip = insert_name("pop_max");
+    for _ in 0..8 {
+        if control(&h, &chip).is_some_and(|r| r.width() >= 40.0) {
+            break;
+        }
+        let screen = h.state().pad.rects.unwrap().screen;
+        let from = pos2(screen.right() - 30.0, keyboard_top(screen) - BAR / 2.0);
+        let to = from - vec2(screen.width() / 2.0, 0.0);
+        drag_steps(&mut h, from, to, Input::Finger, 6);
+        release(&mut h, to, Input::Finger);
+    }
+    tap(&mut h, &chip);
     assert_eq!(text(&h), "concat(name, pop_max)");
 
-    // A field part with a prefix, rounded to one decimal place.
-    let second = format!("{PART} 2");
-    scroll_to(&mut h, &second);
-    tap(&mut h, &second);
-    assert_eq!(page(&h), Some(ClassPage::Part(1)));
-    check_controls(&h, "the page of a number field part");
-    type_text(&mut h, PREFIX, "Pop ");
-    assert_eq!(text(&h), "concat(name, 'Pop ' || pop_max)");
-    scroll_to(&mut h, "1");
-    tap(&mut h, "1");
-    assert_eq!(text(&h), "concat(name, 'Pop ' || round(pop_max, 1))");
-    tap(&mut h, NO_ROUNDING);
-    assert_eq!(text(&h), "concat(name, 'Pop ' || pop_max)");
-    tap(&mut h, "Back to Places");
-
-    // A text part opens its page.
-    scroll_to(&mut h, ADD_PART);
-    tap(&mut h, ADD_PART);
-    tap(&mut h, TEXT_CHIP);
-    assert_eq!(page(&h), Some(ClassPage::Part(2)));
-    check_controls(&h, "the page of a text part");
-    type_text(&mut h, TEXT_CHIP, " people");
-    assert_eq!(text(&h), "concat(name, 'Pop ' || pop_max, ' people')");
-    tap(&mut h, "Back to Places");
-    assert_eq!(page(&h), None);
-
-    // The remove button and the handle change the parts.
-    let first = format!("{REMOVE_PART} 1");
-    scroll_to(&mut h, &first);
-    tap(&mut h, &first);
-    assert_eq!(text(&h), "concat('Pop ' || pop_max, ' people')");
-    let handle = format!("{REORDER_PART} 2");
-    scroll_to(&mut h, &handle);
-    let from = control(&h, &handle).unwrap().center();
-    let to = from - vec2(0.0, 60.0);
-    drag_steps(&mut h, from, to, Input::Finger, 8);
-    release(&mut h, to, Input::Finger);
-    assert_eq!(text(&h), "concat(' people', 'Pop ' || pop_max)");
-
-    // Text that the builder cannot read is one raw part, and stays as it is.
+    // Text that the field cannot read as fields stays as it is until the
+    // user edits it.
     let raw = "if(pop_max > 1000000, upper(name), name)";
     h.state_mut()
         .edit_label_class(map, places, 0, |c| c.text = raw.into());
     h.run_steps(3);
     assert_eq!(text(&h), raw);
-    let one = format!("{PART} 1");
-    assert!(control(&h, &one).is_some());
-    assert!(control(&h, &second).is_none());
-    tap(&mut h, &one);
-    assert_eq!(page(&h), None);
-    assert_eq!(text(&h), raw);
-    scroll_to(&mut h, ADD_PART);
-    tap(&mut h, ADD_PART);
-    scroll_to(&mut h, "name");
-    tap(&mut h, "name");
-    assert_eq!(text(&h), format!("concat({raw}, name)"));
-    let remove = format!("{REMOVE_PART} 2");
-    scroll_to(&mut h, &remove);
-    tap(&mut h, &remove);
-    assert_eq!(text(&h), raw);
+    h.event(egui::Event::Text(" x".into()));
+    h.run_steps(2);
+    assert_eq!(text(&h), format!("concat({raw}, ' x')"));
 }
 
 #[test]
@@ -4292,7 +4259,7 @@ fn the_label_classes_of_each_map_survive_a_close_and_an_open() {
     let (main, inset) = (frame(&h, 0).map, frame(&h, 1).map);
     tap(&mut h, FRAME_TABS[3]);
     tap(&mut h, ADD_CLASS);
-    type_text(&mut h, TEXT, "upper(name)");
+    type_code(&mut h, "upper(name)");
     scroll_to(&mut h, HALO);
     tap(&mut h, HALO);
     let saved = classes(&h, inset, "Places");
@@ -5583,7 +5550,7 @@ fn the_conflict_options_reach_the_labeler() {
     // Each place has the same text.
     tap(&mut h, SEGMENTS[0].0);
     scroll_up_to(&mut h, TEXT);
-    type_text(&mut h, TEXT, "'Town'");
+    type_code(&mut h, "'Town'");
     assert_eq!(classes(&h, map, "Places")[0].text, "'Town'");
     tap(&mut h, SEGMENTS[2].0);
     set_number(&mut h, DUPLICATE_DISTANCE, "3000");

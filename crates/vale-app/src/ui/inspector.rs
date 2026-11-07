@@ -3,7 +3,7 @@
 use eframe::egui;
 use vale_store::{Field, FieldType, GeometryKind, LayerId, Value};
 
-use super::pad::label_parts::LABEL_TEXT;
+use super::pad::label_text::LABEL_TEXT;
 use super::{AppState, style_editor};
 use crate::fonts::DEFAULT_FAMILY;
 

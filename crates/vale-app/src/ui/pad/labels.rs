@@ -12,7 +12,7 @@ use super::atlas::{FRAME_TABS, named_tabs, panel_width};
 use super::filter;
 use super::geometry::{Rects, TOUCH};
 use super::icons::{self, Icon};
-use super::label_parts;
+use super::label_text;
 use super::number::Number;
 use super::text_style::{self, TextEdit, TextEvent, TextSpec};
 use super::widgets::{self, Controls, PANEL_ROW};
@@ -377,21 +377,8 @@ pub(super) fn class_panel(
     let (map, layer, i) = open_class(state)?;
     let kind = state.doc.layer(layer)?.geometry()?;
     let class = state.doc.label_classes(Some(map), layer).get(i)?.clone();
-    let mut page = state.atlas.label_page;
-    let parts = vale_style::expr::split(&class.text);
-    if let Some(ClassPage::Part(n)) = page
-        && n >= parts.len()
-    {
-        page = None;
-        state.atlas.label_page = None;
-    }
+    let page = state.atlas.label_page;
     let (key, title, back) = match page {
-        Some(ClassPage::AddPart) => ("pad-atlas-add-part", label_parts::ADD_PART, &*class.name),
-        Some(ClassPage::Part(n)) => (
-            "pad-atlas-part",
-            label_parts::part_title(&parts[n]),
-            &*class.name,
-        ),
         Some(ClassPage::Layer) => ("pad-atlas-class-layer", LAYER, class.name.as_str()),
         Some(ClassPage::Placement) => ("pad-atlas-placement", PLACEMENT, &*class.name),
         Some(ClassPage::Style) => ("pad-atlas-class-style", STYLE, &*class.name),
@@ -451,8 +438,6 @@ pub(super) fn class_panel(
             Some(ClassPage::Positions) => positions_page(ui, state, controls, at, &class),
             Some(ClassPage::Zones) => zones_page(ui, state, controls, at, &class),
             Some(ClassPage::LeaderLine) => leader_page(ui, state, controls, at, &class),
-            Some(ClassPage::AddPart) => add_part_page(ui, state, controls, at, &class),
-            Some(ClassPage::Part(n)) => part_page(ui, state, controls, at, &class, n),
             None => {
                 match segment {
                     ClassSegment::Text => text_segment(ui, state, controls, at, &class),
@@ -585,22 +570,14 @@ fn text_segment(
     }
 
     let help = ExprHelp::for_layer(state, layer);
-    let mut typed = std::mem::take(&mut state.atlas.label_text);
-    let drag = &mut state.atlas.part_drag;
-    let built = label_parts::list(ui, controls, TEXT, &class.text, &mut typed, drag, &help);
-    state.atlas.label_text = typed;
-    if let Some(text) = built.text {
-        if built.typed {
-            state.edit_label_class(map, layer, i, |c| c.text = text);
-        } else {
+    let names = (TEXT, TEXT);
+    let edit = label_text::editor(ui, controls, names, &class.text, &help);
+    if let Some(text) = edit.text {
+        if edit.step {
             state.label_class_step(map, layer, i, |c| c.text = text);
+        } else {
+            state.edit_label_class(map, layer, i, |c| c.text = text);
         }
-    }
-    if let Some(n) = built.open {
-        state.atlas.label_page = Some(ClassPage::Part(n));
-    }
-    if built.add {
-        state.atlas.label_page = Some(ClassPage::AddPart);
     }
 
     ui.add_space(6.0);
@@ -648,66 +625,6 @@ fn text_segment(
         }
         None => {}
     }
-}
-
-/// The page of a new part of the text of a class. A text part opens its
-/// page.
-fn add_part_page(
-    ui: &mut egui::Ui,
-    state: &mut AppState,
-    controls: &mut Controls,
-    (_, map, layer, i): ClassAt,
-    class: &LabelClass,
-) {
-    let fields = state.doc.layer(layer).map(label_parts::fields_of);
-    let Some(part) = label_parts::add_page(ui, controls, &fields.unwrap_or_default()) else {
-        return;
-    };
-    let text_part = matches!(part, vale_style::expr::TextPart::Text(_));
-    let (text, n) = label_parts::append(&class.text, part);
-    state.label_class_step(map, layer, i, |c| c.text = text);
-    state.atlas.label_page = text_part.then_some(ClassPage::Part(n));
-}
-
-/// The page of part `n` of the text of a class.
-fn part_page(
-    ui: &mut egui::Ui,
-    state: &mut AppState,
-    controls: &mut Controls,
-    (_, map, layer, i): ClassAt,
-    class: &LabelClass,
-    n: usize,
-) {
-    let parts = vale_style::expr::split(&class.text);
-    let Some(part) = parts.get(n) else {
-        return;
-    };
-    let number = number_field(state, layer, part);
-    let help = ExprHelp::for_layer(state, layer);
-    let Some((part, step)) = label_parts::part_page(ui, controls, part, number, &help) else {
-        return;
-    };
-    let Some(text) = label_parts::replace(&class.text, n, part) else {
-        return;
-    };
-    if step {
-        state.label_class_step(map, layer, i, |c| c.text = text);
-    } else {
-        state.edit_label_class(map, layer, i, |c| c.text = text);
-    }
-}
-
-/// True if `part` is a field part of a number field of `layer`.
-pub(super) fn number_field(
-    state: &AppState,
-    layer: LayerId,
-    part: &vale_style::expr::TextPart,
-) -> bool {
-    let vale_style::expr::TextPart::Field { name, .. } = part else {
-        return false;
-    };
-    let fields = state.doc.layer(layer).map(label_parts::fields_of);
-    (fields.unwrap_or_default().iter()).any(|(f, number)| f == name && *number)
 }
 
 /// The text settings of a class as a text style.

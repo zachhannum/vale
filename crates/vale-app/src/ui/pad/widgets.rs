@@ -203,6 +203,67 @@ pub fn segments(
     chosen
 }
 
+/// The font of a small segmented control.
+fn small_segment_font() -> egui::FontId {
+    egui::FontId::proportional(13.0)
+}
+
+/// The padding of the track of a small segmented control.
+const SMALL_TRACK_PAD: f32 = 3.0;
+
+/// The width of a small segmented control with these labels.
+pub fn small_segments_width(ui: &egui::Ui, labels: &[&str]) -> f32 {
+    let widths = labels
+        .iter()
+        .map(|label| text_width(ui, label, small_segment_font()) + 24.0);
+    widths.sum::<f32>() + 2.0 * SMALL_TRACK_PAD
+}
+
+/// A small segmented control on a dark track, for a choice in a row or a
+/// title. The track is `rect`, and each item takes a touch of at least the
+/// touch size. Returns the item that the user chose.
+pub fn small_segments(
+    ui: &egui::Ui,
+    controls: &mut Controls,
+    rect: Rect,
+    labels: &[&str],
+    active: usize,
+) -> Option<usize> {
+    let painter = ui.painter();
+    painter.rect_filled(rect, theme::CONTROL_RADIUS, Color32::from_black_alpha(77));
+    let inner = rect.shrink(SMALL_TRACK_PAD);
+    let total: f32 = labels
+        .iter()
+        .map(|l| text_width(ui, l, small_segment_font()) + 24.0)
+        .sum();
+    let scale = inner.width() / total.max(1.0);
+    let mut left = inner.left();
+    let mut chosen = None;
+    for (i, label) in labels.iter().enumerate() {
+        let w = (text_width(ui, label, small_segment_font()) + 24.0) * scale;
+        let item = Rect::from_min_size(pos2(left, inner.top()), vec2(w, inner.height()));
+        left += w;
+        let touch = Rect::from_center_size(item.center(), vec2(w, item.height().max(TOUCH)));
+        let on = i == active;
+        let resp = hit(ui, controls, touch, label, Sense::click(), true, Some(on));
+        if on || resp.is_pointer_button_down_on() {
+            ui.painter().rect_filled(item, 8.0, theme::raise());
+        }
+        let color = if on { theme::TEXT } else { theme::MUTE };
+        ui.painter().text(
+            item.center(),
+            Align2::CENTER_CENTER,
+            *label,
+            small_segment_font(),
+            color,
+        );
+        if resp.clicked() && !on {
+            chosen = Some(i);
+        }
+    }
+    chosen
+}
+
 /// The width of a menu button with this text.
 pub fn menu_button_width(ui: &egui::Ui, text: &str) -> f32 {
     18.0 + text_width(ui, text, theme::body()) + 6.0 + 18.0 + 12.0

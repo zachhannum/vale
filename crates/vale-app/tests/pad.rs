@@ -9276,41 +9276,132 @@ fn the_layers_panel_shows_why_an_image_layer_did_not_import() {
     assert!(h.query_by_label_contains("notes").is_some());
 }
 
+/// The label text of layer `id`.
+fn label_text(h: &Pad, id: vale_store::LayerId) -> String {
+    h.state().doc.entry(id).unwrap().style.label.text.clone()
+}
+
+/// Opens the Label text page of Places, and gives the token field the
+/// focus with a tap at its middle.
+fn open_label_text(h: &mut Pad) -> vale_store::LayerId {
+    use vale_app::ui::pad::label_text::LABEL_TEXT;
+    let places = vector(h, "Places");
+    tap(h, "Layers");
+    tap(h, "Open Places");
+    scroll_to_control(h, LABEL_TEXT);
+    tap(h, LABEL_TEXT);
+    assert_eq!(h.state().pad.page, Some(Page::LabelText));
+    check_controls(h, "the Label text page");
+    tap(h, LABEL_TEXT);
+    places
+}
+
+/// Taps the control `name` of the bar above the keyboard, and scrolls the
+/// bar to it first.
+fn tap_bar(h: &mut Pad, name: &str) {
+    use vale_app::ui::new_feature::keyboard_top;
+    use vale_app::ui::pad::label_text::BAR;
+    for i in 0..16 {
+        if control(h, name).is_some_and(|r| r.width() >= 40.0) {
+            break;
+        }
+        let screen = h.state().pad.rects.unwrap().screen;
+        let y = keyboard_top(screen) - BAR / 2.0;
+        // Forward first, and then back.
+        let by = vec2(screen.width() * 0.5, 0.0);
+        let (from, to) = match i < 8 {
+            true => (
+                pos2(screen.right() - 30.0, y),
+                pos2(screen.right() - 30.0, y) - by,
+            ),
+            false => (
+                pos2(screen.left() + 30.0, y),
+                pos2(screen.left() + 30.0, y) + by,
+            ),
+        };
+        drag(h, from, to, None);
+    }
+    tap(h, name);
+}
+
 #[test]
-fn the_layer_panel_edits_the_label_text_with_the_builder() {
-    use vale_app::ui::pad::label_parts::{ADD_PART, LABEL_TEXT, PART, PREFIX};
-    let text = |h: &Pad, id| h.state().doc.entry(id).unwrap().style.label.text.clone();
+fn bar_inserts_field_chip() {
+    use vale_app::ui::pad::label_text::{GROUP, LINE_BREAK, insert_name};
     for size in [BOARDS[0], BOARDS[3]] {
         let what = format!("{size:?}");
         let mut h = pad(size);
-        let places = vector(&h, "Places");
-        tap(&mut h, "Layers");
-        tap(&mut h, "Open Places");
-        scroll_to_control(&mut h, LABEL_TEXT);
-        tap(&mut h, LABEL_TEXT);
-        assert_eq!(h.state().pad.page, Some(Page::LabelText), "{what}");
-        assert!(control(&h, &format!("{PART} 1")).is_some(), "{what}");
-        check_controls(&h, &format!("{what} on the Label text page"));
-        scroll_to_control(&mut h, ADD_PART);
-        tap(&mut h, ADD_PART);
-        assert_eq!(h.state().pad.page, Some(Page::AddPart), "{what}");
-        check_controls(&h, &format!("{what} on the page of a new part"));
-        scroll_to_control(&mut h, "adm0name");
-        tap(&mut h, "adm0name");
-        assert_eq!(h.state().pad.page, Some(Page::LabelText), "{what}");
-        assert_eq!(text(&h, places), "concat(name, adm0name)", "{what}");
-        let second = format!("{PART} 2");
-        scroll_to_control(&mut h, &second);
-        tap(&mut h, &second);
-        assert_eq!(h.state().pad.page, Some(Page::Part(1)), "{what}");
-        check_controls(&h, &format!("{what} on the page of a part"));
-        type_text(&mut h, PREFIX, ", ");
-        assert_eq!(text(&h, places), "concat(name, ', ' || adm0name)", "{what}");
-        tap(&mut h, &format!("Back to {LABEL_TEXT}"));
-        assert_eq!(h.state().pad.page, Some(Page::LabelText), "{what}");
+        let places = open_label_text(&mut h);
+        assert_eq!(label_text(&h, places), "name", "{what}");
+        assert!(control(&h, GROUP).is_some(), "{what}");
+        assert!(control(&h, LINE_BREAK).is_some(), "{what}");
+        tap_bar(&mut h, &insert_name("adm0name"));
+        assert_eq!(label_text(&h, places), "concat(name, adm0name)", "{what}");
+        screenshot::save(&mut h, &format!("pad-label-text-bar-{}", size.0));
         tap(&mut h, "Back to Places");
         assert_eq!(h.state().pad.page, None, "{what}");
     }
+}
+
+#[test]
+fn typed_text_stays_text() {
+    let mut h = pad(BOARDS[0]);
+    let places = open_label_text(&mut h);
+    h.event(egui::Event::Text(" km".into()));
+    h.run_steps(2);
+    assert_eq!(label_text(&h, places), "concat(name, ' km')");
+    // A word that is the name of a field stays text.
+    h.event(egui::Event::Text(" name".into()));
+    h.run_steps(2);
+    assert_eq!(label_text(&h, places), "concat(name, ' km name')");
+}
+
+#[test]
+fn group_writes_optional_text() {
+    use vale_app::ui::pad::label_text::{GROUP, LINE_BREAK, insert_name};
+    let mut h = pad(BOARDS[0]);
+    let places = open_label_text(&mut h);
+    tap_bar(&mut h, LINE_BREAK);
+    assert_eq!(label_text(&h, places), "concat(name, '\n')");
+    h.event(egui::Event::Text("Pop ".into()));
+    h.run_steps(2);
+    tap_bar(&mut h, &insert_name("pop_max"));
+    tap_bar(&mut h, GROUP);
+    assert_eq!(
+        label_text(&h, places),
+        "concat(name, '\n', 'Pop ' || pop_max)"
+    );
+}
+
+#[test]
+fn blocks_and_code_edit_one_text() {
+    use vale_app::ui::pad::label_text::{BLOCKS, CODE, LABEL_TEXT};
+    let mut h = pad(BOARDS[0]);
+    let places = vector(&h, "Places");
+    // Text in a form that Blocks would write in another way.
+    let odd = "concat(name,'  x')";
+    h.state_mut()
+        .doc
+        .entry_mut(places)
+        .unwrap()
+        .style
+        .label
+        .text = odd.into();
+    open_label_text(&mut h);
+    // Blocks do not write text that the user does not edit.
+    h.key_press(egui::Key::ArrowLeft);
+    h.run_steps(2);
+    assert_eq!(label_text(&h, places), odd);
+    tap(&mut h, CODE);
+    let code = format!("{LABEL_TEXT} code");
+    assert!(control(&h, &code).is_some());
+    type_text(&mut h, &code, "upper(name)");
+    assert_eq!(label_text(&h, places), "upper(name)");
+    tap(&mut h, BLOCKS);
+    assert!(control(&h, &code).is_none());
+    tap(&mut h, LABEL_TEXT);
+    h.event(egui::Event::Text("!".into()));
+    h.run_steps(2);
+    assert_eq!(label_text(&h, places), "concat(upper(name), '!')");
 }
 
 #[test]

@@ -6,7 +6,6 @@ use std::collections::HashMap;
 use eframe::egui::{self, Order, Pos2, Rect, pos2, vec2};
 use vale_sphere::{LonLat, ProjectionKind, ProjectionSpec};
 use vale_store::{GeometryKind, ImageId, Layer, LayerId, LayerKind, RasterId};
-use vale_style::expr::split;
 use vale_terrain::Mode;
 
 pub use super::LayerRef;
@@ -43,7 +42,7 @@ pub mod furniture;
 pub mod geometry;
 pub mod grid_labels;
 pub mod icons;
-pub mod label_parts;
+pub mod label_text;
 pub mod labels;
 pub mod number;
 pub mod raster;
@@ -382,12 +381,8 @@ pub enum Page {
     RampLabels(usize),
     /// The mask of the style of the layer.
     Mask,
-    /// The label text of the layer, with its text builder.
+    /// The label text of the layer.
     LabelText,
-    /// The page of a new part of the label text.
-    AddPart,
-    /// The part of the label text with this index.
-    Part(usize),
 }
 
 /// The state of the iPad layout.
@@ -466,11 +461,6 @@ pub struct PadState {
     pub style: raster::StyleState,
     /// The Style section of the panel of a vector layer.
     pub rules: rules::RulesState,
-    /// The text of the Label text field of a vector layer while it has the
-    /// focus.
-    pub label_text: String,
-    /// The part of the label text of a vector layer that a finger drags.
-    pub part_drag: Option<crate::ui::atlas::ClassDrag>,
 }
 
 impl PadState {
@@ -1601,15 +1591,6 @@ pub(super) fn show_panel(
         ) => rules.and_then(|r| r.get(i)).map(|r| r.name.clone()),
         _ => None,
     };
-    let parts = match state.pad.layer {
-        Some(LayerRef::Vector(id)) => state.doc.entry(id).map(|e| split(&e.style.label.text)),
-        _ => None,
-    }
-    .unwrap_or_default();
-    let part_name = match state.pad.page {
-        Some(Page::Part(i)) => parts.get(i).map(|p| label_parts::part_title(p).to_owned()),
-        _ => None,
-    };
     if name.is_none() {
         state.pad.layer = None;
     }
@@ -1629,12 +1610,10 @@ pub(super) fn show_panel(
                 | Page::Ramps
                 | Page::RampLabels(_)
                 | Page::Mask
-                | Page::LabelText
-                | Page::AddPart,
+                | Page::LabelText,
             ),
         ) => true,
         (Some(LayerRef::Vector(_)), Some(Page::Field(i))) => i < field_count,
-        (Some(LayerRef::Vector(_)), Some(Page::Part(i))) => i < parts.len(),
         (
             Some(LayerRef::Vector(_)),
             Some(
@@ -1705,18 +1684,8 @@ pub(super) fn show_panel(
             ("pad-mask", rules::MASK, Some(name))
         }
         (Panel::Layers, Some(LayerRef::Vector(_))) if page == Some(Page::LabelText) => {
-            ("pad-label-text", label_parts::LABEL_TEXT, Some(name))
+            ("pad-label-text", label_text::LABEL_TEXT, Some(name))
         }
-        (Panel::Layers, Some(LayerRef::Vector(_))) if page == Some(Page::AddPart) => (
-            "pad-add-part",
-            label_parts::ADD_PART,
-            Some(label_parts::LABEL_TEXT),
-        ),
-        (Panel::Layers, Some(LayerRef::Vector(_))) if matches!(page, Some(Page::Part(_))) => (
-            "pad-part",
-            part_name.as_deref().unwrap_or_default(),
-            Some(label_parts::LABEL_TEXT),
-        ),
         (Panel::Layers, Some(LayerRef::Vector(_))) if page == Some(Page::NewField) => {
             ("pad-new-field", fields::NEW_FIELD, Some(name))
         }
@@ -1801,8 +1770,6 @@ pub(super) fn show_panel(
             state.pad.page = Some(if vector { Page::Classify } else { Page::Stops });
         } else if row.back && matches!(page, Some(Page::RampLabels(_))) {
             state.pad.page = Some(Page::Ramps);
-        } else if row.back && matches!(page, Some(Page::AddPart | Page::Part(_))) {
-            state.pad.page = Some(Page::LabelText);
         } else if let (
             true,
             Some(
@@ -1859,8 +1826,6 @@ pub(super) fn show_panel(
                 Some(Page::RampLabels(i)) => raster::labels_body(ui, state, controls, i),
                 Some(Page::Mask) => rules::mask_body(ui, state, controls, id),
                 Some(Page::LabelText) => fonts::text_body(ui, state, controls, id),
-                Some(Page::AddPart) => fonts::add_part_body(ui, state, controls, id),
-                Some(Page::Part(n)) => fonts::part_body(ui, state, controls, id, n),
                 Some(Page::Table) => {}
                 _ => vector_body(ui, state, controls, id),
             },
