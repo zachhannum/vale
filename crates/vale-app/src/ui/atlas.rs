@@ -28,7 +28,7 @@ use crate::globe::flat::FlatMesh;
 use crate::globe::gpu::Mask;
 use crate::globe::nav::Nav;
 use crate::globe::select::Pointer;
-use crate::globe::{FrameDraw, FramePlace, RasterMask};
+use crate::globe::{FrameDraw, FramePlace, RasterLook, RasterMask};
 use crate::mask::frame::frame_raster_masks;
 use crate::page_snap;
 use crate::pipeline::{Pipeline, Quality};
@@ -2472,17 +2472,33 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
             let primary = primary == Some(frame.id);
             build_lists(state, frame, keys, reach, in_page, (primary, layered));
         }
-        if layered || !masks.is_empty() {
-            let spec = state.doc.projection(frame.map);
-            let rect = pixel_rect(shown, ppp);
-            let mesh = mesh_of(state, spec);
-            let mask = shape_mask(state, frame, place, rect, ppp);
-            if let Some(mesh) = mesh {
+        let spec = state.doc.projection(frame.map);
+        let mesh = if layered || !masks.is_empty() {
+            mesh_of(state, spec)
+        } else {
+            None
+        };
+        if let Some(mesh) = mesh {
+            if !masks.is_empty() {
+                let looks = (rasters.clone(), raster_looks.clone());
+                let needed = place.pixels_per_page_point(ppp);
+                let capture = mask_capture(state, frame, in_page, mesh.clone(), looks, needed);
+                let masks = (masks.into_iter())
+                    .map(|(layer, mask)| {
+                        let key = mask_key(state, frame, &mask);
+                        (layer, mask, key)
+                    })
+                    .collect();
+                masked.push((frame.clone(), capture, masks));
+            }
+            if layered {
+                let rect = pixel_rect(shown, ppp);
+                let mask = shape_mask(state, frame, place, rect, ppp);
                 let [x, y, ..] = rect;
                 let center = vt.origin;
                 let units = vt.view.scale * radius;
                 let scale = frame.scale;
-                let draw = FrameDraw {
+                draws.push(FrameDraw {
                     id: frame.id.0,
                     place: FramePlace {
                         center: [
@@ -2505,13 +2521,7 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
                     images,
                     raster_looks,
                     image_looks,
-                };
-                if !masks.is_empty() {
-                    masked.push((frame.clone(), draw.clone(), masks));
-                }
-                if layered {
-                    draws.push(draw);
-                }
+                });
             }
         }
         let inside = shape_triangles(frame, place);
@@ -2551,8 +2561,20 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
         background: paper(&page),
         pixels_per_point: ppp,
     };
-    // The tiles of the detail maps arrive while the frames ask for them.
-    state.want_frames(draws.clone());
+    // The tiles of the detail maps arrive while the frames ask for them. A
+    // capture of a mask asks for its tiles while it waits.
+    let mut wanted = draws.clone();
+    if !moving {
+        let waits = |(frame, capture, masks): &&MaskedFrame| {
+            let wants = |(layer, _, key): &(LayerId, RasterMask, u64)| {
+                (state.atlas.raster_masks).wants(frame.id, *layer, *key, capture.scale)
+            };
+            masks.iter().any(wants)
+        };
+        let waiting = masked.iter().filter(waits);
+        wanted.extend(waiting.map(|(_, capture, _)| capture.draw.clone()));
+    }
+    state.want_frames(wanted);
     if state.globe.details_loading() {
         ctx.request_repaint();
     }
@@ -2562,7 +2584,7 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
         let painted = state.globe.paint_frames(canvas, draws);
         painted.unwrap_or_default().into_iter().collect()
     };
-    capture_masks(state, &painter, (canvas, target, area), masked, moving);
+    capture_masks(state, &painter, (canvas, area), masked, moving);
     if let Some(format) = state.globe.backdrop() {
         let items: Vec<_> = (placed.iter())
             .flat_map(|s| state.atlas.tiles.thumbs(screen, s))
@@ -2664,27 +2686,105 @@ fn build_lists(
     }
 }
 
-/// A frame with raster masks, with its draw and its masks.
-type MaskedFrame = (FrameRecord, FrameDraw, Vec<(LayerId, RasterMask)>);
+/// A frame with raster masks, with the capture of its masks, and each mask
+/// with its key.
+type MaskedFrame = (FrameRecord, MaskCapture, Vec<(LayerId, RasterMask, u64)>);
+
+/// The largest side of the capture of a raster mask, in pixels.
+const MASK_PIXELS: f64 = 4096.0;
+
+/// The pixels around the box of a frame in the capture of a mask.
+const MASK_MARGIN: f64 = 2.0;
+
+/// The draws of the captures of the masks have this bit in their numbers.
+const MASK_DRAW: u32 = 1 << 30;
+
+/// A draw of a whole frame for the captures of its raster masks, in page
+/// space at a scale of its own.
+struct MaskCapture {
+    draw: FrameDraw,
+    /// Pixels in one page point.
+    scale: f32,
+    /// Page millimeters to the pixels of the capture.
+    at: FrameTarget,
+}
+
+/// The draw of the captures of the masks of `frame`. `vt` is the view of
+/// the map in page points. The scale is the power of 2 at or above
+/// `needed` pixels in one page point, and the capture has at most
+/// `MASK_PIXELS` on a side.
+fn mask_capture(
+    state: &AppState,
+    frame: &FrameRecord,
+    vt: ViewTransform,
+    mesh: Arc<FlatMesh>,
+    (shown, raster_looks): (Vec<RasterId>, Vec<(RasterId, RasterLook)>),
+    needed: f32,
+) -> MaskCapture {
+    let b = math::shape_bbox(&frame.shape);
+    let bounds = kurbo::Rect::new(b.x0, b.y0, b.x1, b.y1).scale_from_origin(PT_PER_MM);
+    let largest = (state.globe.max_face_size() as f64).min(MASK_PIXELS);
+    let side = bounds.width().max(bounds.height()).max(1.0);
+    let cap = (largest - 2.0 * MASK_MARGIN - 2.0) / side;
+    let pow2 = 2f64.powf(f64::from(needed).log2().ceil());
+    let scale = pow2.min(cap);
+    let x0 = (bounds.x0 * scale).floor() - MASK_MARGIN;
+    let y0 = (bounds.y0 * scale).floor() - MASK_MARGIN;
+    let x1 = (bounds.x1 * scale).ceil() + MASK_MARGIN;
+    let y1 = (bounds.y1 * scale).ceil() + MASK_MARGIN;
+    let radius = state.doc.project.world.radius_km * 1000.0;
+    let draw = FrameDraw {
+        id: frame.id.0 | MASK_DRAW,
+        place: FramePlace {
+            center: [
+                (vt.origin.x * scale - x0) as f32,
+                (vt.origin.y * scale - y0) as f32,
+            ],
+            map_center: [
+                (vt.view.center.x / radius) as f32,
+                (vt.view.center.y / radius) as f32,
+            ],
+            units_to_pixels: (vt.view.scale * radius * scale) as f32,
+            rotation: vt.view.rotation,
+            points_per_radian: radius * PT_PER_MM * 1000.0 / frame.scale,
+            pixels_per_page_point: scale as f32,
+        },
+        rect: [0, 0, (x1 - x0) as u32, (y1 - y0) as u32],
+        mesh,
+        mask: None,
+        shown,
+        images: Vec::new(),
+        raster_looks,
+        image_looks: Vec::new(),
+    };
+    MaskCapture {
+        draw,
+        scale: scale as f32,
+        at: FrameTarget {
+            origin: Point::new(-x0, -y0),
+            pts_per_mm: PT_PER_MM * scale,
+        },
+    }
+}
 
 /// Starts the captures of the raster masks of the frames of the page whose
-/// keys changed. While a gesture moves the page, each frame keeps its masks.
+/// keys changed or that need a finer scale. While a gesture moves the page,
+/// each frame keeps its masks.
 fn capture_masks(
     state: &mut AppState,
     painter: &egui::Painter,
-    (canvas, target, area): (Canvas, FrameTarget, Rect),
+    (canvas, area): (Canvas, Rect),
     masked: Vec<MaskedFrame>,
     moving: bool,
 ) {
-    let ppp = f64::from(canvas.pixels_per_point);
     let mut keep = std::collections::HashSet::new();
     let mut rasters = Vec::new();
-    for (frame, draw, masks) in masked {
-        for (index, (layer, mask)) in masks.iter().enumerate() {
+    for (frame, capture, masks) in masked {
+        let MaskCapture { draw, scale, at } = capture;
+        for (index, (layer, mask, key)) in masks.iter().enumerate() {
             keep.insert((frame.id, *layer));
             rasters.push(mask.raster);
-            let key = mask_key(state, &frame, &draw, mask);
-            let wants = state.atlas.raster_masks.wants(frame.id, *layer, key);
+            let wants = (state.atlas.raster_masks).wants(frame.id, *layer, *key, scale);
             if moving || !wants || !state.globe.mask_ready(&draw, mask) {
                 continue;
             }
@@ -2694,17 +2794,7 @@ fn capture_masks(
             else {
                 continue;
             };
-            // The pixels of the capture start at the corner of its rectangle
-            // on the screen.
-            let [x, y, ..] = draw.rect;
-            let at = FrameTarget {
-                origin: Point::new(
-                    target.origin.x * ppp - f64::from(x),
-                    target.origin.y * ppp - f64::from(y),
-                ),
-                pts_per_mm: target.pts_per_mm * ppp,
-            };
-            (state.atlas.raster_masks).start(frame.id, *layer, key, receiver, at);
+            (state.atlas.raster_masks).start(frame.id, *layer, (*key, scale), receiver, at);
             painter.add(eframe::egui_wgpu::Callback::new_paint_callback(
                 area, callback,
             ));
@@ -2715,8 +2805,9 @@ fn capture_masks(
     (state.atlas.raster_masks).retain(&mut state.pipeline, |f, l| keep.contains(&(f, l)));
 }
 
-/// What the capture of a raster mask in a frame comes from.
-fn mask_key(state: &AppState, frame: &FrameRecord, draw: &FrameDraw, mask: &RasterMask) -> u64 {
+/// What the capture of a raster mask in a frame comes from, other than its
+/// scale.
+fn mask_key(state: &AppState, frame: &FrameRecord, mask: &RasterMask) -> u64 {
     let doc = &state.doc;
     let mut layers = doc.project.layers().iter();
     let layer = layers
@@ -2725,15 +2816,11 @@ fn mask_key(state: &AppState, frame: &FrameRecord, draw: &FrameDraw, mask: &Rast
     let style = layer.and_then(|l| doc.map_style(frame.map, l));
     let look = style.as_ref().and_then(|s| s.raster_symbolizer());
     let shown = layer.is_some_and(|l| doc.shown(frame.map, l));
-    let [.., w, h] = draw.rect;
     hash_of((
         (&frame.shape, frame.center, frame.scale, frame.rotation),
         doc.projection(frame.map),
-        (w, h, draw.place.pixels_per_page_point.to_bits()),
-        draw.place.center.map(|c| (c * 4.0).round() as i32),
         (mask, look, shown),
         state.globe.raster_edits(mask.raster),
-        state.globe.frame_details_ready(draw.id),
     ))
 }
 
