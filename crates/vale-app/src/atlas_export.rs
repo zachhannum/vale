@@ -18,7 +18,7 @@ use crate::globe::flat::FlatMesh;
 use crate::globe::gpu::{Captured, Mask};
 use crate::globe::{FrameDraw, FramePlace, RasterMask};
 use crate::mask::frame::{cover_mask, frame_raster_masks};
-use crate::pipeline::{Pipeline, Quality, paper_color};
+use crate::pipeline::{FrameDetail, Pipeline, Quality, paper_color};
 use crate::raster_style;
 use crate::{furniture, headless};
 
@@ -371,6 +371,7 @@ impl PdfExport {
             pending.part,
             &mut self.fonts,
             Quality::Final,
+            FrameDetail::Full,
         )?;
         self.list.as_mut().unwrap().items.extend(over.list.items);
         self.pipeline.clear_page_masks();
@@ -465,6 +466,7 @@ impl PdfExport {
                         part,
                         &mut self.fonts,
                         Quality::Final,
+                        FrameDetail::Full,
                     )?;
                     self.list
                         .as_mut()

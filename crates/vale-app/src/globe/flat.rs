@@ -177,7 +177,8 @@ impl FlatView {
         (self.bounds.width() * self.scale(rect)) as f32
     }
 
-    fn point_at(&self, rect: Rect, pos: Pos2) -> Point {
+    /// The point of the projection at a screen position.
+    pub fn point_at(&self, rect: Rect, pos: Pos2) -> Point {
         let (s, d) = (self.scale(rect), pos - rect.center());
         Point::new(
             self.center.x + f64::from(d.x) / s,

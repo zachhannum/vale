@@ -1,42 +1,31 @@
 //! The Measure tool in the map frames of the open page. The path is on the
 //! world, so each frame of the page shows the part of the path in its map.
 
-use std::sync::Arc;
-
 use eframe::egui::{self, Color32, Pos2, Rect};
 use kurbo::Point;
 use vale_sphere::LonLat;
 use vale_sphere::measure::densify_great_circle;
-use vale_store::{MapId, PageRecord};
+use vale_store::{LayerId, MapId, PageRecord};
 
 use super::shown::each_frame;
 use super::{AppState, PagePlace, frame_at, math, open_page};
 use crate::globe::brush::slerp;
 use crate::globe::math::{dir_to_lonlat, lonlat_to_dir};
 use crate::globe::nav::on_canvas;
-use crate::globe::snap::{LayerTargets, Targets};
+use crate::globe::snap::Targets;
 use crate::measure::{DENSIFY_DEG, MeasurePoint, close_reach};
 use crate::ui::globe::press_input;
 use crate::ui::pad::theme;
 
 /// The snap targets of the vector layers that a map shows.
 fn map_targets(state: &mut AppState, map: MapId) -> Option<Targets> {
-    let mut targets = Vec::new();
-    for layer in state.doc.project.layers() {
-        if layer.geometry().is_none() || !state.doc.shown(map, layer.id) {
-            continue;
-        }
-        let print = LayerTargets::fingerprint(layer);
-        let built = match state.layer_targets.get(&layer.id) {
-            Some((old, built)) if *old == print => built.clone(),
-            _ => {
-                let built = Arc::new(LayerTargets::build(layer.id, layer));
-                state.layer_targets.insert(layer.id, (print, built.clone()));
-                built
-            }
-        };
-        targets.push(built);
-    }
+    let layers = state.doc.project.layers().iter();
+    let shown = layers.filter(|l| l.geometry().is_some() && state.doc.shown(map, l.id));
+    let ids: Vec<LayerId> = shown.map(|l| l.id).collect();
+    let targets: Vec<_> = ids
+        .into_iter()
+        .filter_map(|id| state.layer_targets(id))
+        .collect();
     (!targets.is_empty()).then(|| Targets::new(targets, Vec::new()))
 }
 

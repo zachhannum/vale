@@ -283,6 +283,18 @@ The globe keeps the shapes of each vector layer between frames. It makes them ag
 
 This removes the main pain of the old workflow. You no longer paint on an equirectangular image, where shapes stretch toward the poles. You no longer paint in several projections and join the parts.
 
+### Levels of a vector layer
+
+A large vector layer has simplified copies at four levels. On an Earth-size world, the levels are 1 km, 4 km, 16 km, and 64 km. A level is an angle, so a world of another size uses the same copies.
+
+The simplification keeps the shared edges of polygons. It splits the boundaries of the layer into arcs between the points where three or more features meet. It simplifies each arc one time, and each feature that has the arc gets the same points. Where two simplified lines cross, it puts back points until no lines cross. A feature that is smaller than a level is not in the copy of that level.
+
+The globe and the flat view draw the coarsest level that is finer than one pixel. A map frame on the screen keeps its display lists at each zoom of the page, so it draws the coarsest level that is finer than one pixel at the highest zoom. If that level is not ready, the views draw the next finer level that is ready, or the full geometry. A map frame composes its lists again when a level is ready.
+
+The copies of each layer build on a worker thread, after the first draw of the layer. An edit builds the copies of only that layer again, after the edit stops. A layer with fewer than 20,000 points has no copies.
+
+Edits, snapping, the attribute table, pick, and the export use the full geometry. A layer with a mask draws its full geometry.
+
 ### Heightmap
 
 A heightmap is a raster layer of values with meters as its unit. A world can have other raster layers of values, for example precipitation. Each one has the same store, brush, and preview. A new world has no raster layer.

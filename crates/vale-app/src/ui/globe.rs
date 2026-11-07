@@ -26,6 +26,7 @@ use crate::globe::symbol::{GlobeScatter, SymbolMesh, append_missing, view_places
 use crate::globe::vector;
 use crate::globe::view::GlobeView;
 use crate::globe::{FingerPress, Globe, Paint, RasterMask, WorldView};
+use crate::lod;
 use crate::mask::MaskedFeature;
 use crate::measure::{DENSIFY_DEG, MOUSE, Measure, TapPress};
 use crate::pen::{PenEvent, PenPhase, QUEUE_PEN};
@@ -1204,8 +1205,13 @@ pub fn vector_layer_cut(
         format,
         cut: cut.is_some(),
     };
+    // One pixel at the center of the globe, in radians.
+    let pixel = 1.0 / (radius * f64::from(pixels_per_point));
+    let detail = (masked.is_none())
+        .then(|| pipeline.lod_mut().level(layer, pixel))
+        .flatten();
     let (scatter, cache) = pipeline.globe_caches_mut();
-    let (shapes, work) = cache.layer(layer, masked.as_ref());
+    let (shapes, work) = cache.layer(layer, masked.as_ref(), detail.as_ref());
     if let Some(out) = shapes.drawn(&key) {
         paint_out(painter, format, cut, out);
         return;
@@ -1512,6 +1518,12 @@ pub fn flat_vector_layer_cut(
     let projection = flat.projection();
     let radius_m = doc.project.world.radius_km * 1000.0;
     let scale = scale_denominator(radius_m / flat.scale(rect));
+    let detail = (masked.is_none())
+        .then(|| {
+            let pixel = flat_pixel(flat, rect, painter.ctx().pixels_per_point())?;
+            pipeline.lod_mut().level(layer, pixel)
+        })
+        .flatten();
     let to_screen = |p: &vale_sphere::Point| flat.screen(rect, *p);
     let measured = |lines: Vec<Vec<vale_sphere::Point>>| -> Vec<Vec<(kurbo::Point, f64)>> {
         (lines.into_iter())
@@ -1578,7 +1590,10 @@ pub fn flat_vector_layer_cut(
         for &index in &batch.features {
             let feature = &features[index];
             let part = (masked.as_ref()).and_then(|m| m.features.get(index)?.as_ref());
-            let screen = screens[index].get_or_insert_with(|| on_screen(&feature.geometry, part));
+            let screen = screens[index].get_or_insert_with(|| {
+                lod::geometry(detail.as_deref(), index, &feature.geometry)
+                    .and_then(|g| on_screen(g, part))
+            });
             let Some(screen) = screen else {
                 continue;
             };
@@ -1619,6 +1634,22 @@ pub fn flat_vector_layer_cut(
         sink.end_group();
     }
     paint_out(painter, format, cut, &sink.finish());
+}
+
+/// The smallest pixel of the flat view in radians, from the center, the
+/// corners, and the middles of the edges of `rect`. `None`: the full
+/// geometry.
+fn flat_pixel(flat: &FlatView, rect: egui::Rect, pixels_per_point: f32) -> Option<f64> {
+    let pixels = flat.scale(rect) * f64::from(pixels_per_point);
+    let projection = flat.projection();
+    let samples = [0.0, 0.5, 1.0]
+        .into_iter()
+        .flat_map(|x| [0.0, 0.5, 1.0].map(|y| rect.lerp_inside(egui::vec2(x, y))));
+    (samples.filter_map(|pos| {
+        let [lon, lat] = projection.inverse(flat.point_at(rect, pos))?;
+        lod::projected_pixel(projection, [lon, lat], pixels)
+    }))
+    .reduce(f64::min)
 }
 
 /// Draws the globe in the free space of `ui` and reads its input. `cards`:
@@ -1838,6 +1869,7 @@ pub(super) fn paint_canvas(
     let doc = &state.doc;
     let pipeline = &mut state.pipeline;
     (pipeline.scatter_cache_mut()).retain(|id| doc.layer(id).is_some());
+    (pipeline.lod_mut()).retain(|id| doc.layer(id).is_some());
     globe.set_raster_masks(raster_masks(doc, globe));
     let format = globe.format;
     match globe.paint(canvas, cards && globe.blur) {
