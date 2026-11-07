@@ -152,6 +152,12 @@ struct UniformBuffer {
     predictable_texture_filtering: u32,
 }
 
+/// The index and vertex slices of the meshes that are not drawn yet.
+pub(crate) struct BufferCursor<'a> {
+    index: core::slice::Iter<'a, Range<usize>>,
+    vertex: core::slice::Iter<'a, Range<usize>>,
+}
+
 struct SlicedBuffer {
     buffer: wgpu::Buffer,
     slices: Vec<Range<usize>>,
@@ -484,6 +490,27 @@ impl Renderer {
     ) {
         profiling::function_scope!();
 
+        let mut cursor = self.buffer_cursor();
+        self.render_jobs(render_pass, paint_jobs, screen_descriptor, &mut cursor);
+    }
+
+    /// The start of the index and vertex slices that [`Self::update_buffers`] wrote.
+    pub(crate) fn buffer_cursor(&self) -> BufferCursor<'_> {
+        BufferCursor {
+            index: self.index_buffer.slices.iter(),
+            vertex: self.vertex_buffer.slices.iter(),
+        }
+    }
+
+    /// Draws `paint_jobs` in `render_pass`. `cursor` gives the buffer slices of the
+    /// first mesh in `paint_jobs` and moves past the meshes that it draws.
+    pub(crate) fn render_jobs(
+        &self,
+        render_pass: &mut wgpu::RenderPass<'static>,
+        paint_jobs: &[epaint::ClippedPrimitive],
+        screen_descriptor: &ScreenDescriptor,
+        cursor: &mut BufferCursor<'_>,
+    ) {
         let pixels_per_point = screen_descriptor.pixels_per_point;
         let size_in_pixels = screen_descriptor.size_in_pixels;
 
@@ -491,8 +518,8 @@ impl Renderer {
         // run.
         let mut needs_reset = true;
 
-        let mut index_buffer_slices = self.index_buffer.slices.iter();
-        let mut vertex_buffer_slices = self.vertex_buffer.slices.iter();
+        let index_buffer_slices = &mut cursor.index;
+        let vertex_buffer_slices = &mut cursor.vertex;
 
         for epaint::ClippedPrimitive {
             clip_rect,
@@ -951,7 +978,7 @@ impl Renderer {
                     Primitive::Callback(callback) => {
                         if let Some(c) = callback.callback.downcast_ref::<Callback>() {
                             callbacks.push(c.0.as_ref());
-                        } else {
+                        } else if !callback.callback.is::<crate::BackdropLevel>() {
                             log::warn!("Unknown paint callback: expected `egui_wgpu::Callback`");
                         }
                         acc

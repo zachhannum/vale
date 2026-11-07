@@ -23,6 +23,10 @@ mod renderer;
 
 mod setup;
 
+/// Splits of the render pass of a frame at markers, for a hook that reads the frame.
+mod backdrop;
+
+pub use backdrop::{BackdropHook, BackdropHooks, BackdropLevel, BackdropTarget};
 pub use renderer::*;
 pub use setup::{
     EguiDisplayHandle, NativeAdapterSelectorMethod, WgpuSetup, WgpuSetupCreateNew,
