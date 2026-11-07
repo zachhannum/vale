@@ -117,12 +117,18 @@ impl CaptureState {
         output_frame: &wgpu::SurfaceTexture,
         encoder: &mut wgpu::CommandEncoder,
     ) -> wgpu::Buffer {
-        debug_assert_eq!(
-            self.texture.size(),
-            output_frame.texture.size(),
-            "Texture sizes must match, `CaptureState::update` was probably not called"
-        );
+        let buffer = self.copy_to_buffer(device, encoder);
+        self.blit_to_surface(output_frame, encoder);
+        buffer
+    }
 
+    /// Copies the [`CaptureState`] texture to a new buffer.
+    /// Pass the returned buffer to [`CaptureState::read_screen_rgba`] to read the data back to the cpu.
+    pub fn copy_to_buffer(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+    ) -> wgpu::Buffer {
         // It would be more efficient to reuse the Buffer, e.g. via some kind of ring buffer, but
         // for most screenshot use cases this should be fine. When taking many screenshots (e.g. for a video)
         // it might make sense to revisit this and implement a more efficient solution.
@@ -134,7 +140,7 @@ impl CaptureState {
             mapped_at_creation: false,
         });
         let padding = self.padding;
-        let tex = &mut self.texture;
+        let tex = &self.texture;
 
         let tex_extent = tex.size();
 
@@ -149,6 +155,21 @@ impl CaptureState {
                 },
             },
             tex_extent,
+        );
+
+        buffer
+    }
+
+    /// Draws the [`CaptureState`] texture onto the surface texture.
+    pub fn blit_to_surface(
+        &self,
+        output_frame: &wgpu::SurfaceTexture,
+        encoder: &mut wgpu::CommandEncoder,
+    ) {
+        debug_assert_eq!(
+            self.texture.size(),
+            output_frame.texture.size(),
+            "Texture sizes must match, `CaptureState::update` was probably not called"
         );
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -171,8 +192,6 @@ impl CaptureState {
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.bind_group, &[]);
         pass.draw(0..3, 0..1);
-
-        buffer
     }
 
     /// Handles copying from the [`CaptureState`] texture to the surface texture and the cpu

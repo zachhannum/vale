@@ -631,7 +631,14 @@ impl Painter {
         {
             let renderer = render_state.renderer.read();
 
-            let target_texture = if capture {
+            // Backdrop hooks read the frame, and screenshots copy it, so in both cases the
+            // frame is drawn into an offscreen texture and then drawn onto the surface.
+            let offscreen = capture
+                || renderer
+                    .callback_resources
+                    .contains::<crate::BackdropHooks>();
+
+            let target_texture = if offscreen {
                 let capture_state = self.screen_capture_state.get_or_insert_with(|| {
                     CaptureState::new(&render_state.device, &output_frame.texture)
                 });
@@ -650,69 +657,36 @@ impl Painter {
                     (texture_view, Some(&target_view))
                 });
 
-            let render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("egui_render"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view,
-                    resolve_target,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: clear_color[0] as f64,
-                            g: clear_color[1] as f64,
-                            b: clear_color[2] as f64,
-                            a: clear_color[3] as f64,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                    depth_slice: None,
-                })],
-                depth_stencil_attachment: self.depth_texture_view.get(&viewport_id).map(|view| {
-                    wgpu::RenderPassDepthStencilAttachment {
-                        view,
-                        depth_ops: self
-                            .options
-                            .depth_stencil_format
-                            .is_some_and(|depth_stencil_format| {
-                                depth_stencil_format.has_depth_aspect()
-                            })
-                            .then_some(wgpu::Operations {
-                                load: wgpu::LoadOp::Clear(1.0),
-                                // It is very unlikely that the depth buffer is needed after egui finished rendering
-                                // so no need to store it. (this can improve performance on tiling GPUs like mobile chips or Apple Silicon)
-                                store: wgpu::StoreOp::Discard,
-                            }),
-                        stencil_ops: self
-                            .options
-                            .depth_stencil_format
-                            .is_some_and(|depth_stencil_format| {
-                                depth_stencil_format.has_stencil_aspect()
-                            })
-                            .then_some(wgpu::Operations {
-                                load: wgpu::LoadOp::Clear(0),
-                                store: wgpu::StoreOp::Discard,
-                            }),
-                    }
+            let target = crate::BackdropTarget {
+                view,
+                resolve_target,
+                load: wgpu::LoadOp::Clear(wgpu::Color {
+                    r: clear_color[0] as f64,
+                    g: clear_color[1] as f64,
+                    b: clear_color[2] as f64,
+                    a: clear_color[3] as f64,
                 }),
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
+                depth_stencil: self
+                    .depth_texture_view
+                    .get(&viewport_id)
+                    .zip(self.options.depth_stencil_format),
+            };
 
-            // Forgetting the pass' lifetime means that we are no longer compile-time protected from
-            // runtime errors caused by accessing the parent encoder before the render pass is dropped.
-            // Since we don't pass it on to the renderer, we should be perfectly safe against this mistake here!
-            renderer.render(
-                &mut render_pass.forget_lifetime(),
+            renderer.render_with_backdrops(
+                &render_state.device,
+                &render_state.queue,
+                &mut encoder,
+                &target,
                 clipped_primitives,
                 &screen_descriptor,
             );
 
-            if capture && let Some(capture_state) = &mut self.screen_capture_state {
-                capture_buffer = Some(capture_state.copy_textures(
-                    &render_state.device,
-                    &output_frame,
-                    &mut encoder,
-                ));
+            if offscreen && let Some(capture_state) = &self.screen_capture_state {
+                if capture {
+                    capture_buffer =
+                        Some(capture_state.copy_to_buffer(&render_state.device, &mut encoder));
+                }
+                capture_state.blit_to_surface(&output_frame, &mut encoder);
             }
         }
 
