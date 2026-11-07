@@ -6476,6 +6476,7 @@ fn manual_the_pad_atlas_renders_furniture() {
         atlas::add_item(s, ItemKind::ScaleBar);
         atlas::add_item(s, ItemKind::NorthArrow);
         atlas::add_item(s, ItemKind::Legend);
+        atlas::add_item(s, ItemKind::ScaleText);
         Ok(())
     };
     std::fs::create_dir_all("../../target/app").unwrap();
@@ -6483,9 +6484,11 @@ fn manual_the_pad_atlas_renders_furniture() {
         .unwrap_or_else(|e| panic!("{e}"));
     img.save("../../target/app/pad-atlas-furniture.png")
         .unwrap();
-    // The panel of a text item, and the sheet of a north arrow on a phone.
+    // The panels of a text item and of scale text, and the sheet of a
+    // north arrow on a phone.
     for (kind, size, name) in [
         (ItemKind::Text, (834.0, 1194.0), "text"),
+        (ItemKind::ScaleText, (834.0, 1194.0), "scale-text"),
         (ItemKind::NorthArrow, (393.0, 852.0), "phone"),
     ] {
         let prepare = |s: &mut AppState| {

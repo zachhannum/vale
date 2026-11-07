@@ -1186,6 +1186,7 @@ pub fn add_item(state: &mut AppState, kind: ItemKind) -> Option<FurnitureId> {
             let item = ScaleTextItem {
                 frame,
                 page_unit: page.units,
+                align: vale_store::TextAlign::Center,
                 ..ScaleTextItem::default()
             };
             let center = (page.width_mm - w) / 2.0;
