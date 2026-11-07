@@ -223,6 +223,9 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     // panel place with the panel of the selection, and it wins while it is
     // open.
     let attributes = !measuring && state.pad.is_open(super::Panel::Attributes);
+    // On a compact screen, the tool strip and the context strip are rows at
+    // the bottom, as in the globe workspace.
+    let row = class == WidthClass::Compact;
     let input = Input {
         screen,
         bands: geometry::Bands::new(screen, ctx.content_rect()),
@@ -240,9 +243,13 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
             0
         },
         strip: false,
-        extra: 0,
+        extra: if row && !measuring {
+            context_cells(state)
+        } else {
+            0
+        },
         tools: TOOL_CELLS,
-        row: false,
+        row,
     };
     let mut rects = geometry::layout(&input);
     // On a compact screen, the Add button is in the workspace menu.
@@ -252,7 +259,8 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     };
     rects.actions.min.x = rects.actions.max.x - ACTIONS_WIDTH + hidden * (TOUCH + PAD);
     rects.right_panel.x += geometry::RIGHT_PANEL_WIDTH - panel_width(&ctx);
-    if !measuring {
+    // In the row layout, `brush` is the place of the context strip.
+    if !measuring && !row {
         rects.brush = None;
     }
     super::table::check(state);
@@ -262,10 +270,11 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     state.pad.sheet_offset = input
         .sheet_offset
         .clamp(-rects.sheet_rise, rects.sheet_travel);
-    // The compact layout has no room in the top row, so the page card is at
-    // the right of the tool strip.
+    // The compact layout has no room in the top row, so the page card is
+    // below the top row, in the middle.
     let page_card = rects.view.unwrap_or_else(|| {
-        let min = pos2(rects.tools.right() + GAP, rects.tools.top());
+        let middle = (rects.workspace.left() + rects.actions.right()) / 2.0;
+        let min = pos2(middle - page_width / 2.0, rects.column_top);
         Rect::from_min_size(min, vec2(page_width, ROW))
     });
 
@@ -301,7 +310,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
 
     top_row(&ctx, state, &mut controls, &rects, page_card);
     tool_strip(&ctx, state, &mut controls, &rects);
-    frame_card(&ctx, state, &mut controls, &rects, page_card);
+    frame_card(&ctx, state, &mut controls, &rects);
     if measuring {
         super::cell_card(&ctx, state, &mut controls, &rects);
         if state.pad.brush {
@@ -337,7 +346,10 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
 
     // The page fits the space between the cards. In the wide layout, the
     // panel has its own place at the right.
-    let left = rects.tools.right() + GAP;
+    let left = match rects.row {
+        true => rects.workspace.left(),
+        false => rects.tools.right() + GAP,
+    };
     let top = match rects.view {
         Some(_) => rects.tools.top(),
         None => page_card.bottom() + GAP,
@@ -527,76 +539,40 @@ fn top_row(
 /// of furniture, or a feature is selected. With the Frame tool, it holds
 /// the switch that snaps a frame to the layout of the page, the switch of
 /// the layout grid, "Delete selection", and Deselect. With the Vertex tool,
-/// it holds the two switches, "Delete vertex", and Deselect. With the Select tool and the Move tool,
-/// it holds Deselect. With no
-/// room below the strip, it goes to the right of the strip, below the page
-/// card if the page card is there, or at the right of the page card if the
-/// room below it is too short. It ends above the sheet, and it scrolls
-/// if it is too long.
-fn frame_card(
-    ctx: &egui::Context,
-    state: &mut AppState,
-    controls: &mut Controls,
-    rects: &Rects,
-    page_card: Rect,
-) {
+/// it holds the two switches, "Delete vertex", and Deselect. With the
+/// Select tool and the Move tool, it holds Deselect. On a compact screen,
+/// it is the row above the tool strip. It scrolls if it is too long.
+fn frame_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
     let tool = state.atlas.tool;
-    let framed = state.atlas.frame().is_some();
-    // Snap and Grid always show with the Frame tool and the Vertex tool.
-    // Delete and Deselect show while they have something to act on.
-    let acts = match tool {
-        AtlasTool::Vertex => framed,
-        AtlasTool::Frame => atlas::has_selection(state),
-        _ => false,
-    };
-    let cells = match tool {
-        AtlasTool::Vertex | AtlasTool::Frame => 2 + 2 * usize::from(acts),
-        AtlasTool::Move if atlas::has_selection(state) => 1,
-        AtlasTool::Select => {
-            2 + usize::from(atlas::has_selection(state) || !state.feature_selection.is_empty())
-        }
-        _ => {
+    let acts = context_acts(state);
+    let cells = context_cells(state);
+    if cells == 0 {
+        state.pad.selectable = false;
+        return;
+    }
+    let mut selectable_cell = None;
+    let place = if rects.row {
+        // In the row layout, the strip is the row above the tool strip. An
+        // open sheet covers it.
+        let Some(place) = rects.brush else {
             state.pad.selectable = false;
             return;
-        }
-    };
-    let mut selectable_cell = None;
-    let mut size = vec2(rects.tools.width(), geometry::strip_height(cells));
-    let limit = rects.sheet.map_or(rects.panel_bottom, |s| s.top() - GAP);
-    let below = pos2(rects.tools.left(), rects.tools.bottom() + GAP);
-    let min = if rects.tool_cells < TOOL_CELLS || below.y + size.y > limit {
-        match rects.view {
-            // On a phone, the strip goes below the page card, or at the
-            // right of the page card if it is too long for the room below.
-            None => {
-                let under = pos2(rects.tools.right() + GAP, page_card.bottom() + GAP);
-                let beside = pos2(page_card.right() + GAP, page_card.top());
-                let fits_beside = beside.x + size.x <= rects.screen.right() - GAP;
-                if under.y + size.y > limit && fits_beside {
-                    beside
-                } else {
-                    under
-                }
-            }
-            Some(_) => pos2(rects.tools.right() + GAP, rects.tools.top()),
-        }
+        };
+        place
     } else {
-        below
+        column_place(rects, cells)
     };
-    let room = limit - min.y;
-    let scroll = size.y > room;
-    if scroll {
-        size.y = room.max(geometry::strip_height(1));
-    }
+    // In the row layout, the strip holds all its cells.
+    let scroll = !rects.row && place.height() < geometry::strip_height(cells);
     widgets::card(
         ctx,
         state.globe.backdrop(),
         "pad-frame-card",
-        Rect::from_min_size(min, size),
+        place,
         Order::Middle,
         theme::CARD_RADIUS.into(),
         |ui| {
-            let mut ui = super::padded(ui);
+            let mut ui = super::padded_in(ui, rects.row);
             let mut cells = |ui: &mut egui::Ui| {
                 let on = state.atlas.snap;
                 let label = super::SNAP;
@@ -678,7 +654,52 @@ fn frame_card(
     }
 }
 
+/// The place of the context strip in the column layout: below the tool
+/// strip, or at the right of the strip if the room below is too short. It
+/// ends above the panel line, and it is shorter if it is too long.
+fn column_place(rects: &Rects, cells: usize) -> Rect {
+    let mut size = vec2(rects.tools.width(), geometry::strip_height(cells));
+    let below = pos2(rects.tools.left(), rects.tools.bottom() + GAP);
+    let min = if rects.tool_cells < TOOL_CELLS || below.y + size.y > rects.panel_bottom {
+        pos2(rects.tools.right() + GAP, rects.tools.top())
+    } else {
+        below
+    };
+    let room = rects.panel_bottom - min.y;
+    if size.y > room {
+        size.y = room.max(geometry::strip_height(1));
+    }
+    Rect::from_min_size(min, size)
+}
+
+/// Delete and Deselect show in the context strip of the Frame tool and the
+/// Vertex tool while they have something to act on.
+fn context_acts(state: &AppState) -> bool {
+    match state.atlas.tool {
+        AtlasTool::Vertex => state.atlas.frame().is_some(),
+        AtlasTool::Frame => atlas::has_selection(state),
+        _ => false,
+    }
+}
+
+/// The number of cells of the context strip. Zero: the tool has no context
+/// strip. Snap and Grid always show with the Frame tool and the Vertex tool.
+fn context_cells(state: &AppState) -> usize {
+    match state.atlas.tool {
+        AtlasTool::Vertex | AtlasTool::Frame => 2 + 2 * usize::from(context_acts(state)),
+        AtlasTool::Move if atlas::has_selection(state) => 1,
+        AtlasTool::Select => {
+            2 + usize::from(atlas::has_selection(state) || !state.feature_selection.is_empty())
+        }
+        _ => 0,
+    }
+}
+
 fn tool_strip(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
+    // An open sheet covers the row of the strip.
+    if rects.tool_cells == 0 {
+        return;
+    }
     let radius = theme::CARD_RADIUS.into();
     widgets::card(
         ctx,
@@ -688,7 +709,7 @@ fn tool_strip(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
         Order::Middle,
         radius,
         |ui| {
-            let mut ui = super::padded(ui);
+            let mut ui = super::padded_in(ui, rects.row);
             let mut cells = |ui: &mut egui::Ui| {
                 for (name, label, icon, tool) in [
                     (FRAME_TOOL, "Frame", Icon::Frame, AtlasTool::Frame),
@@ -709,7 +730,7 @@ fn tool_strip(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
                 }
             };
             if rects.tool_cells < TOOL_CELLS {
-                egui::ScrollArea::vertical()
+                egui::ScrollArea::new([rects.row, !rects.row])
                     .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
                     .show(&mut ui, cells);
             } else {
@@ -736,7 +757,7 @@ fn readout(ctx: &egui::Context, ui: &egui::Ui, state: &AppState, rects: &Rects) 
         0.0
     };
     let size = vec2(lead + galley.size().x.ceil() + 24.0, band.height());
-    let rect = if rects.class == WidthClass::Compact {
+    let rect = if rects.class == WidthClass::Compact && !rects.row {
         Rect::from_min_size(band.min, size)
     } else {
         Rect::from_center_size(band.center(), size)

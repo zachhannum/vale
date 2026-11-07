@@ -205,8 +205,23 @@ fn double_tap(h: &mut Pad, pos: Pos2, input: Input) {
     h.run_steps(3);
 }
 
-/// A tap of a finger on the middle of a control.
+/// Pulls an open sheet of the row layout down to its title row, so the
+/// tool strip and the context strip show above it.
+fn lower_sheet(h: &mut Pad) {
+    let rects = h.state().pad.rects.unwrap();
+    if rects.row && rects.sheet.is_some() {
+        h.state_mut().pad.sheet_offset = rects.sheet_travel;
+        h.run_steps(2);
+    }
+}
+
+/// A tap of a finger on the middle of a control. If an open sheet covers
+/// the control, the sheet goes down to its title row first, as a user
+/// pulls it.
 fn tap(h: &mut Pad, name: &str) {
+    if control(h, name).is_none() {
+        lower_sheet(h);
+    }
     let rect = control(h, name).unwrap_or_else(|| panic!("no control `{name}`"));
     tap_with(h, rect.center(), Input::Finger);
 }
@@ -1061,6 +1076,7 @@ fn the_tabs_of_a_frame_work_with_a_finger() {
         h.state_mut().atlas.selection = AtlasSelection::Frame(inset);
         h.state_mut().atlas.tab = FrameTab::Frame;
         h.run_steps(3);
+        lower_sheet(&mut h);
         assert!(control(&h, DELETE_SELECTION).is_some(), "{size:?}");
         check_controls(&h, "context strip of the frame");
     }
@@ -6819,6 +6835,8 @@ fn the_grid_switch_is_in_the_workspace_menu_and_in_the_frame_and_vertex_strips()
             assert_eq!(h.state().doc.project.atlas.grid.on, on, "{size:?}");
         }
         add_frame(&mut h);
+        // On a compact screen, the sheet of the frame covers the strips.
+        lower_sheet(&mut h);
         assert!(control(&h, GRID).is_some(), "{size:?}");
         tap(&mut h, GRID);
         assert!(h.state().doc.project.atlas.grid.on, "{size:?}");
@@ -9107,4 +9125,112 @@ fn the_maps_button_and_the_list_of_the_frames_fit_on_each_screen() {
         assert_eq!(h.state().atlas.selection, selected, "{what}");
         check_controls(&h, &format!("{what}: panel"));
     }
+}
+
+/// An iPhone 16 in portrait, and its safe area: top, right, bottom, left.
+const IPHONE: ((f32, f32), [f32; 4]) = ((393.0, 852.0), [59.0, 0.0, 34.0, 0.0]);
+
+fn iphone_pad() -> Pad {
+    let (size, [top, right, bottom, left]) = IPHONE;
+    let mut h = pad_with(state(), size);
+    let insets = egui::epaint::MarginF32 {
+        left,
+        right,
+        top,
+        bottom,
+    };
+    h.input_mut().safe_area_insets = Some(egui::SafeAreaInsets(insets));
+    h.run_steps(3);
+    h
+}
+
+#[test]
+fn on_an_iphone_the_page_card_is_below_the_top_row_and_the_tools_are_a_row_at_the_bottom() {
+    let mut h = iphone_pad();
+    let ((width, height), [_, _, bottom, _]) = IPHONE;
+    // The middle page of three, so both page buttons are on.
+    atlas::add_page(h.state_mut());
+    atlas::add_page(h.state_mut());
+    atlas::go_to_page(h.state_mut(), -1);
+    h.state_mut().atlas.selection = AtlasSelection::None;
+    h.run_steps(3);
+    assert_eq!(atlas::page_index(h.state()), (1, 3));
+    assert!(h.state().pad.rects.unwrap().row);
+    let top_row = control(&h, "Workspace").unwrap();
+    let previous = control(&h, PREVIOUS_PAGE).unwrap();
+    let next = control(&h, NEXT_PAGE).unwrap();
+    // The page card is below the top row, in the middle of the screen.
+    assert!(previous.top() > top_row.bottom(), "{previous:?}");
+    assert_eq!(previous.top(), next.top());
+    let middle = (previous.left() + next.right()) / 2.0;
+    assert!((middle - width / 2.0).abs() < 1.0, "{middle}");
+    // The tools are one row above the home indicator.
+    let names = [FRAME_TOOL, SELECT_TOOL, VERTEX, "Move", MEASURE];
+    let tools = names.map(|name| control(&h, name).unwrap());
+    for pair in tools.windows(2) {
+        assert_eq!(pair[0].top(), pair[1].top());
+        assert!(pair[0].right() <= pair[1].left(), "{pair:?}");
+    }
+    let foot = height - bottom;
+    assert!(tools[0].bottom() <= foot && tools[0].bottom() > foot - 40.0);
+    let row_middle = (tools[0].left() + tools[4].right()) / 2.0;
+    assert!((row_middle - width / 2.0).abs() < 1.0, "{row_middle}");
+    // The page is between the page card and the tools.
+    let page = place(&h).rect;
+    assert!(page.top() > next.bottom() && page.bottom() < tools[0].top());
+    check_controls(&h, "iphone");
+
+    // A selected frame shows its panel as a sheet, with its tabs.
+    add_frame(&mut h);
+    assert!(matches!(
+        h.state().atlas.selection,
+        AtlasSelection::Frame(_)
+    ));
+    let sheet = h.state().pad.rects.unwrap().sheet.unwrap();
+    assert_eq!((sheet.left(), sheet.right()), (0.0, width));
+    assert_eq!(h.state().atlas.panel_rect, Some(sheet));
+    for tab in FRAME_TABS {
+        assert!(sheet.contains_rect(control(&h, tab).unwrap()), "{tab}");
+    }
+    check_controls(&h, "iphone sheet");
+}
+
+#[test]
+fn the_handles_of_a_frame_are_44_points_apart_at_each_zoom_of_the_page() {
+    let mut h = iphone_pad();
+    add_frame(&mut h);
+    add_frame(&mut h);
+    h.state_mut().atlas.snap = false;
+    // The sheet shows its title row only, so the page is free.
+    h.state_mut().pad.sheet_offset = 10_000.0;
+    let smallest = vale_app::ui::atlas::PAGE_ZOOM.0;
+    for zoom in [smallest, 0.5, 1.0, 2.0, 8.0] {
+        h.state_mut().atlas.view.zoom = zoom;
+        h.state_mut().atlas.view.offset = Vec2::ZERO;
+        h.run_steps(2);
+        let handles = h.state().atlas.handles.clone();
+        assert!(handles.len() >= 4, "{zoom}: {}", handles.len());
+        for (i, (a, ra)) in handles.iter().enumerate() {
+            for (b, rb) in &handles[i + 1..] {
+                let d = ra.center().distance(rb.center());
+                assert!(d >= 44.0 - 1e-3, "{zoom}: {a:?} {b:?} {d}");
+            }
+        }
+    }
+
+    // At the smallest zoom, a drag of a corner moves the corner by the drag,
+    // and not to the place of its handle.
+    h.state_mut().atlas.view.zoom = smallest;
+    h.run_steps(2);
+    let before = shape_bbox(&frame(&h, 1).shape);
+    let at = handle(&h, Handle::Resize(4));
+    let d = vec2(30.0, 20.0);
+    drag(&mut h, at, at + d, Input::Finger);
+    let after = shape_bbox(&frame(&h, 1).shape);
+    let mm = f64::from(d.x) / place(&h).pts_per_mm;
+    assert!(
+        (after.x1 - before.x1 - mm).abs() < 0.5,
+        "{before:?} {after:?}"
+    );
+    assert_eq!((after.x0, after.y0), (before.x0, before.y0));
 }

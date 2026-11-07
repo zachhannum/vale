@@ -930,11 +930,6 @@ fn deselect_cell(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Control
     }
 }
 
-/// The child of a card, inside the padding of the card.
-fn padded(ui: &mut egui::Ui) -> egui::Ui {
-    padded_in(ui, false)
-}
-
 /// The child of a card, inside the padding of the card. In a `row`, the
 /// cells go from left to right.
 fn padded_in(ui: &mut egui::Ui, row: bool) -> egui::Ui {

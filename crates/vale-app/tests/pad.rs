@@ -10523,6 +10523,11 @@ fn the_brush_button_of_the_measure_card_opens_the_snapping_settings() {
     }
 }
 
+/// Two cells of a strip are in order: in a column, or in a row.
+fn in_order(a: Rect, b: Rect) -> bool {
+    a.bottom() <= b.top() || a.right() <= b.left()
+}
+
 #[test]
 fn the_measure_cell_and_card_fit_in_the_atlas_on_each_screen() {
     use vale_app::ui::atlas::AtlasTool;
@@ -10532,6 +10537,7 @@ fn the_measure_cell_and_card_fit_in_the_atlas_on_each_screen() {
         h.state_mut().workspace = Workspace::Atlas;
         vale_app::ui::atlas::add_frame(h.state_mut());
         h.run_steps(3);
+        lower_sheet(&mut h);
         let strip = h.state().pad.rects.unwrap().tools;
         let names = ["Frame tool", "Select", "Vertex", "Move", MEASURE];
         for name in names {
@@ -10543,7 +10549,7 @@ fn the_measure_cell_and_card_fit_in_the_atlas_on_each_screen() {
         let cells: Vec<_> = names.iter().filter_map(|name| control(&h, name)).collect();
         assert!(cells.len() > 1, "{what}");
         for pair in cells.windows(2) {
-            assert!(pair[0].bottom() <= pair[1].top(), "{what}");
+            assert!(in_order(pair[0], pair[1]), "{what}");
         }
         tap(&mut h, MEASURE);
         assert!(h.state().measuring(), "{what}");
@@ -10598,6 +10604,7 @@ fn the_measure_cell_and_card_fit_in_the_atlas_on_each_screen() {
             );
         }
         // Frame leaves the tool.
+        lower_sheet(&mut h);
         scroll_strip_to(&mut h, "Frame tool");
         tap(&mut h, "Frame tool");
         assert_eq!(h.state().atlas.tool, AtlasTool::Frame, "{what}");
@@ -10615,16 +10622,18 @@ fn the_vertex_cell_and_card_fit_in_the_atlas_on_each_screen() {
         h.state_mut().workspace = Workspace::Atlas;
         vale_app::ui::atlas::add_frame(h.state_mut());
         h.run_steps(3);
+        lower_sheet(&mut h);
         scroll_strip_to(&mut h, VERTEX);
         tap(&mut h, VERTEX);
         assert_eq!(h.state().atlas.tool, AtlasTool::Vertex, "{what}");
         assert_eq!(toggled(&h, VERTEX), Some(true), "{what}");
         h.state_mut().atlas.vertices = vec![(0, 0)];
         h.run_steps(2);
+        lower_sheet(&mut h);
         let names = [SNAP_TO_LAYOUT, GRID, DELETE_VERTEX, DESELECT];
         let cells = names.map(|name| control(&h, name).unwrap_or_else(|| panic!("{what}: {name}")));
         for pair in cells.windows(2) {
-            assert!(pair[0].bottom() <= pair[1].top(), "{what}");
+            assert!(in_order(pair[0], pair[1]), "{what}");
         }
         let card = cells[0].union(cells[3]);
         let r = h.state().pad.rects.unwrap();
@@ -10667,11 +10676,12 @@ fn the_frame_strip_fits_in_the_atlas_on_each_screen() {
         h.state_mut().workspace = Workspace::Atlas;
         vale_app::ui::atlas::add_frame(h.state_mut());
         h.run_steps(3);
+        lower_sheet(&mut h);
         assert_eq!(h.state().atlas.tool, AtlasTool::Frame, "{what}");
         let names = [SNAP_TO_LAYOUT, GRID, DELETE, DESELECT];
         let cells = names.map(|name| control(&h, name).unwrap_or_else(|| panic!("{what}: {name}")));
         for pair in cells.windows(2) {
-            assert!(pair[0].bottom() <= pair[1].top(), "{what}");
+            assert!(in_order(pair[0], pair[1]), "{what}");
         }
         let card = cells[0].union(cells[3]);
         let r = h.state().pad.rects.unwrap();
