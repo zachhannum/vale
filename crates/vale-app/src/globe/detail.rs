@@ -15,15 +15,17 @@ use std::collections::HashMap;
 use std::f64::consts::FRAC_PI_2;
 use std::ops::Range;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use vale_sphere::{Point, Projection, ProjectionSpec};
 use vale_store::RasterId;
-use vale_terrain::{FACES, Heightmap, TILE_SIZE, TexelRect, face_of, level_size, warp};
+use vale_terrain::{
+    FACES, Heightmap, TILE_SIZE, TexelRect, face_dir, face_of, level_size, unwarp, warp,
+};
 
 use super::gpu::{LayerKey, Link, MapKey, MapKind, Op};
-use super::math::{V3, add, angle, cross, lonlat_to_dir, normalize, scale};
+use super::math::{V3, add, angle, lonlat_to_dir, normalize, scale};
 use super::{FrameDraw, FramePlace};
 
 /// The memory of the GPU for the detail maps, in bytes.
@@ -182,6 +184,8 @@ pub(super) struct Grid {
     /// Pixels between two points along x and along y.
     step: [f64; 2],
     dirs: Vec<Option<V3>>,
+    /// The results of `tiles`, by face size and margin.
+    tiles: Mutex<HashMap<(u32, bool), Vec<TileKey>>>,
 }
 
 impl Grid {
@@ -221,6 +225,7 @@ impl Grid {
             rows,
             step,
             dirs,
+            tiles: Mutex::default(),
         }
     }
 
@@ -252,27 +257,20 @@ impl Grid {
     /// The tiles of a detail map with a face of `face_size` texels under the
     /// grid, sorted. With `margin`, one tile more on each side.
     fn tiles(&self, face_size: u32, margin: bool) -> Vec<TileKey> {
-        let reach = i32::from(margin);
+        let mut tiles = self.tiles.lock().unwrap_or_else(PoisonError::into_inner);
+        let found = tiles.entry((face_size, margin));
+        found.or_insert_with(|| self.find_tiles(face_size, margin)).clone()
+    }
+
+    fn find_tiles(&self, face_size: u32, margin: bool) -> Vec<TileKey> {
         let tile = tile_size(face_size);
         // The angle of one tile.
         let span = FRAC_PI_2 * tile as f64 / f64::from(face_size);
-        let mut out = Vec::new();
+        let mut out: Vec<TileKey> = Vec::new();
         let mut add_point = |d: V3| {
-            let helper = if d[2].abs() < 0.9 {
-                [0.0, 0.0, 1.0]
-            } else {
-                [1.0, 0.0, 0.0]
-            };
-            let e1 = normalize(cross(d, helper));
-            let e2 = cross(d, e1);
-            for i in -reach..=reach {
-                for j in -reach..=reach {
-                    let offset = add(
-                        scale(e1, f64::from(i) * span),
-                        scale(e2, f64::from(j) * span),
-                    );
-                    out.push(tile_of(normalize(add(d, offset)), face_size, tile));
-                }
+            let key = tile_of(d, face_size, tile);
+            if out.last() != Some(&key) {
+                out.push(key);
             }
         };
         for row in 0..self.rows - 1 {
@@ -304,8 +302,34 @@ impl Grid {
         }
         out.sort_unstable();
         out.dedup();
+        if margin {
+            let mut ring: Vec<TileKey> = (out.iter())
+                .flat_map(|&key| around(key, face_size, tile))
+                .collect();
+            ring.sort_unstable();
+            ring.dedup();
+            out = ring;
+        }
         out
     }
+}
+
+/// A tile and the 8 tiles around it, across the edges of its face.
+fn around(
+    (face, col, row): TileKey,
+    face_size: u32,
+    tile: usize,
+) -> impl Iterator<Item = TileKey> {
+    let side = tile as f64 / f64::from(face_size);
+    // The equal-angle coordinate of the middle of the tile `k` tiles from
+    // the tile `c`. A tile beyond the edge of the face is on the next face.
+    let at = move |c: usize, k: i32| {
+        let s = 2.0 * (c as f64 + 0.5 + f64::from(k)) * side - 1.0;
+        unwarp(s.clamp(-1.5, 1.5))
+    };
+    (-1..=1).flat_map(move |i| {
+        (-1..=1).map(move |j| tile_of(face_dir(face, at(col, i), at(row, j)), face_size, tile))
+    })
 }
 
 /// The tile of a detail map under a direction.
@@ -1445,5 +1469,50 @@ mod tests {
         assert_eq!(globe.details.source(VIEW, RASTER), None);
         give_tiles(&mut globe);
         assert!(globe.details.source(VIEW, RASTER).is_some());
+    }
+
+    #[test]
+    fn the_tiles_around_a_tile_are_the_8_tiles_next_to_it() {
+        // 16 tiles on each side of a face.
+        let (face_size, tile) = (4096, 256);
+        let mut inside: Vec<TileKey> = around((2, 5, 9), face_size, tile).collect();
+        inside.sort_unstable();
+        let mut want = Vec::new();
+        for col in 4..=6 {
+            for row in 8..=10 {
+                want.push((2, col, row));
+            }
+        }
+        assert_eq!(inside, want);
+
+        // At the edge of the face, 3 of the tiles are on the next face.
+        let mut edge: Vec<TileKey> = around((2, 15, 9), face_size, tile).collect();
+        edge.sort_unstable();
+        edge.dedup();
+        assert_eq!(edge.len(), 9, "{edge:?}");
+        assert_eq!(edge.iter().filter(|(f, ..)| *f == 2).count(), 6, "{edge:?}");
+    }
+
+    #[test]
+    fn the_margin_holds_the_tiles_around_the_tiles_under_the_grid() {
+        // A small grid about the middle of face 0.
+        let middle = face_dir(0, 0.0, 0.0);
+        let (u, v) = ([0.0, 1.0, 0.0], [0.0, 0.0, 1.0]);
+        let grid = Grid::from_fn([256, 256], |x, y| {
+            let (a, b) = ((x - 128.0) * 2e-4, (y - 128.0) * 2e-4);
+            Some(normalize(add(middle, add(scale(u, a), scale(v, b)))))
+        });
+        let face_size = 65536;
+        let tiles = grid.tiles(face_size, false);
+        assert!(!tiles.is_empty());
+        let margin = grid.tiles(face_size, true);
+        let mut want: Vec<TileKey> = (tiles.iter())
+            .flat_map(|&t| around(t, face_size, tile_size(face_size)))
+            .collect();
+        want.sort_unstable();
+        want.dedup();
+        assert_eq!(margin, want);
+        assert!(tiles.iter().all(|t| margin.contains(t)));
+        assert!(margin.len() > tiles.len());
     }
 }
