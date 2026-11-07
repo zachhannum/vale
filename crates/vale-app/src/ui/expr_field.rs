@@ -215,6 +215,7 @@ pub fn label_text(
         literal: true,
         enter_breaks: false,
         min_height: 0.0,
+        long_press: false,
     };
     let m = Metrics::desktop();
     let out = token_field::show(ui, &mut Vec::new(), name, &mut st.field, &m, &opts);
@@ -409,12 +410,17 @@ pub fn value(
         literal: false,
         enter_breaks: false,
         min_height: 0.0,
+        long_press: false,
     };
     let m = Metrics::desktop();
     let out = token_field::show(ui, &mut Vec::new(), name, &mut st.field, &m, &opts);
     changed |= out.changed;
     if !out.typed.is_empty() {
         formula::type_text(&mut st.field, &out.typed, help);
+        changed = true;
+    }
+    if !out.pasted.is_empty() {
+        formula::paste(&mut st.field, &out.pasted, help);
         changed = true;
     }
     if open && !changed && out.focused {

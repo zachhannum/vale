@@ -178,6 +178,7 @@ pub fn editor(
             literal: false,
             enter_breaks: false,
             min_height: super::label_text::field_height(ui, focused.then_some(floor)).min(64.0),
+            long_press: true,
         };
         let m = Metrics::pad();
         let out = token_field::show(ui, controls, name, &mut st.field, &m, &opts);
@@ -186,6 +187,10 @@ pub fn editor(
         if !out.typed.is_empty() {
             formula::type_text(&mut st.field, &out.typed, help);
             changed = true;
+        }
+        if !out.pasted.is_empty() {
+            formula::paste(&mut st.field, &out.pasted, help);
+            (changed, step) = (true, true);
         }
         if out.focused {
             if let Some(s) = bar(ui, controls, &mut st, help) {
@@ -226,12 +231,15 @@ pub fn editor(
                 widgets::push(ui, controls, p.rect, &format!("{CODE_CHIP} {code_chips}"));
             }
         }
-        if let Some((path, _)) = &out.tapped
-            && let Some(Node::Chip(c)) = st.field.node(path)
-            && matches!(c.data, Tok::Code(_))
-        {
-            st.code = true;
-            st.typed = current.to_owned();
+        if let Some((path, rect)) = &out.tapped {
+            if let Some(Node::Chip(c)) = st.field.node(path)
+                && matches!(c.data, Tok::Code(_))
+            {
+                st.code = true;
+                st.typed = current.to_owned();
+            } else {
+                token_field::open_menu(ui, name, *rect);
+            }
         }
         let shown = edit_text(&mut st, changed);
         let text = shown.as_deref().unwrap_or(current);

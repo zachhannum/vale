@@ -19,7 +19,7 @@ mod widget;
 pub use caret::{Caret, Dir, Selection};
 pub use clip::{Token, copy, cut, paste};
 pub use layout::{Layout, Metrics, Placed, PlacedKind, chip_parts, layout};
-pub use widget::{Options, Output, keep_focus, show};
+pub use widget::{Options, Output, keep_focus, open_menu, show};
 
 /// The color family of a chip.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]

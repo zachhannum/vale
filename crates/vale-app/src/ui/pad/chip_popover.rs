@@ -1,5 +1,5 @@
 //! The popover of a field chip: the format of the field, the value when the
-//! field is empty, Wrap in function, and Remove field.
+//! field is empty, Wrap in function, Cut, Copy, and Remove field.
 
 use eframe::egui::{self, Align2, Color32, Rect, Sense, pos2, vec2};
 use vale_store::FieldType;
@@ -21,6 +21,8 @@ pub const CASES: [&str; 4] = ["As is", "ABC", "abc", "Abc"];
 pub const TRIM: &str = "Trim spaces";
 pub const WHEN_EMPTY: &str = "When empty";
 pub const WRAP: &str = "Wrap in function…";
+pub const CUT_FIELD: &str = "Cut field";
+pub const COPY_FIELD: &str = "Copy field";
 pub const REMOVE_FIELD: &str = "Remove field";
 /// The choices of When empty.
 pub const NOTHING: &str = "None";
@@ -58,6 +60,8 @@ pub enum Action {
     Format(FieldFormat, bool),
     Page(Page),
     Wrap(&'static Function),
+    Cut,
+    Copy,
     Remove,
 }
 
@@ -301,6 +305,12 @@ fn main_page(
     }
     if action_row(ui, controls, WRAP, theme::ACCENT) {
         out = Some(Action::Page(Page::Wrap));
+    }
+    if action_row(ui, controls, CUT_FIELD, theme::ACCENT) {
+        out = Some(Action::Cut);
+    }
+    if action_row(ui, controls, COPY_FIELD, theme::ACCENT) {
+        out = Some(Action::Copy);
     }
     if action_row(ui, controls, REMOVE_FIELD, BAD) {
         out = Some(Action::Remove);

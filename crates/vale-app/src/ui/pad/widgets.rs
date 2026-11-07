@@ -1392,7 +1392,7 @@ pub fn field_at(
             *text = pasted.trim().to_owned();
             resp.mark_changed();
         }
-        None => {}
+        Some(EditAction::Cut) | None => {}
     }
     resp
 }
@@ -1409,6 +1409,7 @@ pub fn focus_all(ui: &egui::Ui, field: &Response, text: &str) {
 }
 
 /// The names of the items of the edit menu of a field.
+pub const CUT: &str = "Cut";
 pub const COPY: &str = "Copy";
 pub const PASTE: &str = "Paste";
 /// The width of an item of the edit menu.
@@ -1417,7 +1418,8 @@ const EDIT_ITEM: f32 = 88.0;
 const EDIT_GAP: f32 = 6.0;
 
 /// The item of the edit menu that the user tapped.
-enum EditAction {
+pub enum EditAction {
+    Cut,
     Copy,
     Paste(String),
 }
@@ -1434,9 +1436,20 @@ fn edit_menu_id() -> egui::Id {
 }
 
 /// Opens the edit menu of a field after a long press.
-fn open_edit_menu(ctx: &egui::Context, field: egui::Id, rect: Rect) {
+pub fn open_edit_menu(ctx: &egui::Context, field: egui::Id, rect: Rect) {
     let menu = EditMenu { field, rect };
     ctx.data_mut(|data| data.insert_temp(edit_menu_id(), menu));
+}
+
+/// Closes the edit menu.
+pub fn close_edit_menu(ctx: &egui::Context) {
+    ctx.data_mut(|data| data.remove::<EditMenu>(edit_menu_id()));
+}
+
+/// True if the edit menu of field `field` is open.
+pub fn edit_menu_open(ctx: &egui::Context, field: egui::Id) -> bool {
+    let menu: Option<EditMenu> = ctx.data(|data| data.get_temp(edit_menu_id()));
+    menu.is_some_and(|menu| menu.field == field)
 }
 
 /// The open edit menu in the last frame. A press on it does not close the
@@ -1455,12 +1468,24 @@ fn edit_menu(
     field_id: egui::Id,
     field: Rect,
 ) -> Option<EditAction> {
+    edit_menu_items(ui, controls, field_id, field, &[COPY, PASTE])
+}
+
+/// The edit menu of a field with `items`, a list of `CUT`, `COPY`, and
+/// `PASTE`, above `field` or below it at the top of the screen.
+pub fn edit_menu_items(
+    ui: &egui::Ui,
+    controls: &mut Controls,
+    field_id: egui::Id,
+    field: Rect,
+    items: &[&str],
+) -> Option<EditAction> {
     let ctx = ui.ctx();
     let menu: EditMenu = ctx.data(|data| data.get_temp(edit_menu_id()))?;
     if menu.field != field_id {
         return None;
     }
-    let size = vec2(2.0 * EDIT_ITEM, TOUCH);
+    let size = vec2(items.len() as f32 * EDIT_ITEM, TOUCH);
     let screen = ctx.viewport_rect();
     let x =
         (field.center().x - size.x / 2.0).clamp(screen.left() + PAD, screen.right() - PAD - size.x);
@@ -1493,12 +1518,14 @@ fn edit_menu(
         radius,
         |ui| {
             ui.painter().rect_filled(rect, radius, theme::menu());
-            let x = rect.center().x;
-            let divider = [pos2(x, rect.top() + 10.0), pos2(x, rect.bottom() - 10.0)];
-            ui.painter()
-                .line_segment(divider, egui::Stroke::new(1.0, theme::divider()));
-            let items = [(COPY, true), (PASTE, can_paste)];
-            for (i, (item, enabled)) in items.into_iter().enumerate() {
+            for i in 1..items.len() {
+                let x = rect.left() + i as f32 * EDIT_ITEM;
+                let divider = [pos2(x, rect.top() + 10.0), pos2(x, rect.bottom() - 10.0)];
+                ui.painter()
+                    .line_segment(divider, egui::Stroke::new(1.0, theme::divider()));
+            }
+            for (i, &item) in items.iter().enumerate() {
+                let enabled = item != PASTE || can_paste;
                 let at = Rect::from_min_size(
                     pos2(rect.left() + i as f32 * EDIT_ITEM, rect.top()),
                     vec2(EDIT_ITEM, TOUCH),
@@ -1514,8 +1541,9 @@ fn edit_menu(
                     color,
                 );
                 if resp.clicked() {
-                    action = Some(match i {
-                        0 => EditAction::Copy,
+                    action = Some(match item {
+                        CUT => EditAction::Cut,
+                        COPY => EditAction::Copy,
                         _ => match crate::clipboard::get() {
                             Some(text) => EditAction::Paste(text),
                             None => continue,
@@ -1807,7 +1835,7 @@ pub fn key_field_at(
             }
             out = Some(text);
         }
-        None => {}
+        Some(EditAction::Cut) | None => {}
     }
     if let Some(edit) = edit.as_mut().filter(|edit| edit.changed) {
         edit.changed = false;

@@ -145,6 +145,7 @@ pub fn editor(
             literal: true,
             enter_breaks: true,
             min_height: field_height(ui, focused.then_some(floor)),
+            long_press: true,
         };
         let out = token_field::show(ui, controls, name, &mut st.field, &Metrics::pad(), &opts);
         // The field had the focus at the start of the frame, so its height
@@ -162,7 +163,7 @@ pub fn editor(
             edit.text = Some(write(&mut st));
             edit.step = step;
         }
-        if let Some(step) = chip_popover(ui, controls, &mut st, &out, help) {
+        if let Some(step) = chip_popover(ui, controls, &mut st, &out, help, name) {
             edit.text = Some(write(&mut st));
             edit.step = step;
         }
@@ -278,7 +279,17 @@ fn chip_popover(
     st: &mut EditorState,
     out: &token_field::Output,
     help: &ExprHelp,
+    name: &str,
 ) -> Option<bool> {
+    if out.dragging {
+        st.popover = None;
+    }
+    // A chip with no popover opens the edit menu.
+    if let Some((path, rect)) = &out.tapped
+        && selected_field(&st.field).as_ref() != Some(path)
+    {
+        token_field::open_menu(ui, name, *rect);
+    }
     if let Some((path, _)) = &out.tapped
         && selected_field(&st.field).as_ref() == Some(path)
     {
@@ -333,6 +344,17 @@ fn chip_popover(
         Action::Wrap(f) => {
             st.popover = None;
             wrap_in_function(&mut st.field, &path, f).then_some(true)
+        }
+        Action::Cut => {
+            st.popover = None;
+            st.field.select_node(&path);
+            token_field::cut(ui.ctx(), &mut st.field).then_some(true)
+        }
+        Action::Copy => {
+            st.popover = None;
+            st.field.select_node(&path);
+            token_field::copy(ui.ctx(), &st.field);
+            None
         }
         Action::Remove => {
             st.popover = None;

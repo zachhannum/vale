@@ -145,6 +145,12 @@ impl Layout {
     /// The place of the caret nearest to `pos`. A place on the line of
     /// `pos` comes before a place on another line.
     pub fn stop_at(&self, pos: Pos2) -> Option<Caret> {
+        self.stop_near(pos, |_| true)
+    }
+
+    /// The place of the caret nearest to `pos`, of the places that `allow`
+    /// gives.
+    pub fn stop_near(&self, pos: Pos2, allow: impl Fn(&Caret) -> bool) -> Option<Caret> {
         let cost = |r: &Rect| {
             let dy = if pos.y < r.top() {
                 r.top() - pos.y
@@ -154,6 +160,7 @@ impl Layout {
             dy * 8.0 + (pos.x - r.center().x).abs()
         };
         (self.stops.iter())
+            .filter(|(c, _)| allow(c))
             .min_by(|a, b| cost(&a.1).total_cmp(&cost(&b.1)))
             .map(|(c, _)| c.clone())
     }
