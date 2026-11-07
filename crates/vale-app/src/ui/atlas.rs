@@ -18,12 +18,11 @@ use std::sync::Arc;
 use vale_store::RasterId;
 
 use super::AppState;
-use super::frame_tiles::{FrameLists, FramePaint, Layer, Screen, Shown, Spill, Thumb, Tiles};
+use super::frame_tiles::{FrameLists, FramePaint, Layer, Screen, Shown, Spill, Tiles};
 use super::map_texture::{self, MapTexture};
-use super::pad::theme;
 use crate::atlas::{self as math, FrameTarget, Handle, PT_PER_MM, PagePreset, Vertex};
 use crate::document::Document;
-use crate::globe::backdrop::{Canvas, REDUCTION, Scene, SceneCallback};
+use crate::globe::Canvas;
 use crate::globe::flat::FlatMesh;
 use crate::globe::gpu::Mask;
 use crate::globe::nav::Nav;
@@ -657,8 +656,6 @@ pub struct AtlasState {
     /// what it shows, and the mask.
     masks: HashMap<FrameId, (u64, Arc<Mask>)>,
     mask_count: u64,
-    /// The last picture of the canvas for the blurred backdrop.
-    backdrop: Option<Arc<Scene>>,
     /// The raster masks of the layers in the frames of the page.
     raster_masks: super::frame_masks::FrameMasks,
     /// The meshes of the projections of the maps, on a sphere of radius 1.
@@ -839,7 +836,6 @@ impl Default for AtlasState {
             item_images: HashMap::new(),
             masks: HashMap::new(),
             mask_count: 0,
-            backdrop: None,
             raster_masks: Default::default(),
             meshes: Vec::new(),
             snap: true,
@@ -2397,7 +2393,13 @@ fn shape_mask(
     let size = (f64::from(w) / f64::from(ppp), f64::from(h) / f64::from(ppp));
     let list = crate::pipeline::Pipeline::frame_mask(frame, target, size);
     let image = vale_render::render_rgba(&list, f64::from(ppp)).ok()?;
-    let alpha: Vec<u8> = image.data.chunks_exact(4).map(|px| px[3]).collect();
+    let alpha: Vec<u8> = image
+        .data
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|px| px[3])
+        .collect();
     let size = [image.width as u32, image.height as u32];
     state.atlas.mask_count += 1;
     let mask = Arc::new(Mask {
@@ -2670,22 +2672,6 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
         painted.unwrap_or_default().into_iter().collect()
     };
     capture_masks(state, &painter, (canvas, area), masked, moving);
-    if let Some(format) = state.globe.backdrop() {
-        let items: Vec<_> = (placed.iter())
-            .flat_map(|s| state.atlas.tiles.thumbs(screen, s))
-            .collect();
-        let last = state.atlas.backdrop.take();
-        let scene = scene_of(area, place.rect, &items, canvas, last);
-        state.atlas.backdrop = Some(scene.clone());
-        let callback = SceneCallback {
-            format,
-            scene,
-            canvas,
-        };
-        painter.add(eframe::egui_wgpu::Callback::new_paint_callback(
-            area, callback,
-        ));
-    }
     let tiles = &mut state.atlas.tiles;
     tiles.painted.clear();
     for s in &placed {
@@ -2981,95 +2967,6 @@ fn items(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
             painter.image(image.texture.id(), image.rect, uv, Color32::WHITE);
         }
     }
-}
-
-/// Draws the canvas of the atlas at the reduced size of the blurred
-/// backdrop: the background, the page, and the textures of the frames. The
-/// raster layers of a frame are not in it. A picture with the key of `last`
-/// is `last`.
-fn scene_of(
-    area: Rect,
-    page: Rect,
-    items: &[(Arc<Thumb>, Rect)],
-    canvas: Canvas,
-    last: Option<Arc<Scene>>,
-) -> Arc<Scene> {
-    let n = REDUCTION as f32;
-    let k = canvas.pixels_per_point / n;
-    let px = |v: f32| (v * canvas.pixels_per_point).round().max(1.0) as u32;
-    let size = [
-        px(area.width()).div_ceil(REDUCTION),
-        px(area.height()).div_ceil(REDUCTION),
-    ];
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    use std::hash::{Hash, Hasher};
-    (
-        size,
-        area.min.x.to_bits(),
-        area.min.y.to_bits(),
-        k.to_bits(),
-    )
-        .hash(&mut hasher);
-    for r in std::iter::once(&page).chain(items.iter().map(|(_, r)| r)) {
-        [r.min.x, r.min.y, r.max.x, r.max.y]
-            .map(f32::to_bits)
-            .hash(&mut hasher);
-    }
-    for (thumb, _) in items {
-        thumb.serial.hash(&mut hasher);
-    }
-    canvas.background.to_array().hash(&mut hasher);
-    let key = hasher.finish();
-    if let Some(last) = last.filter(|l| l.key == key) {
-        return last;
-    }
-    let [w, h] = size.map(|s| s as usize);
-    let back = theme::CANVAS.to_array();
-    let mut rgba: Vec<u8> = (0..w * h).flat_map(|_| back).collect();
-    // The rectangle in pixels of the scene.
-    let pixels = |r: Rect| {
-        let at = |p: Pos2, up: bool| {
-            let v = (p - area.min) * k;
-            let round = |c: f32| if up { c.ceil() } else { c.floor() };
-            [
-                round(v.x).clamp(0.0, w as f32) as usize,
-                round(v.y).clamp(0.0, h as f32) as usize,
-            ]
-        };
-        (at(r.min, false), at(r.max, true))
-    };
-    let (from, to) = pixels(page);
-    for y in from[1]..to[1] {
-        for x in from[0]..to[0] {
-            let at = (y * w + x) * 4;
-            rgba[at..at + 4].copy_from_slice(&canvas.background.to_array());
-        }
-    }
-    for (thumb, rect) in items {
-        let (from, to) = pixels(*rect);
-        let [tw, th] = thumb.size;
-        let (width, height) = ((to[0] - from[0]).max(1), (to[1] - from[1]).max(1));
-        let columns: Vec<usize> = (from[0]..to[0])
-            .map(|x| ((x - from[0]) * tw / width).min(tw - 1))
-            .collect();
-        for y in from[1]..to[1] {
-            let ty = ((y - from[1]) * th / height).min(th - 1);
-            for (x, tx) in (from[0]..to[0]).zip(&columns) {
-                let t = (ty * tw + tx) * 4;
-                // A clear texel leaves the pixel as it is.
-                if thumb.rgba[t + 3] == 0 {
-                    continue;
-                }
-                let over = 255 - u32::from(thumb.rgba[t + 3]);
-                let at = (y * w + x) * 4;
-                for c in 0..3 {
-                    let v = u32::from(thumb.rgba[t + c]) + u32::from(rgba[at + c]) * over / 255;
-                    rgba[at + c] = v.min(255) as u8;
-                }
-            }
-        }
-    }
-    Arc::new(Scene { key, size, rgba })
 }
 
 /// The resolution of a spill, as a part of the resolution of the screen.
@@ -3889,34 +3786,5 @@ mod tests {
         ])];
         assert!(!covers(&l, kurbo::Rect::new(10.0, 10.0, 90.0, 90.0)));
         assert!(covers(&l, kurbo::Rect::new(10.0, 10.0, 40.0, 90.0)));
-    }
-
-    #[test]
-    fn the_backdrop_draws_the_opaque_texels_of_a_frame_and_keeps_an_unchanged_picture() {
-        let canvas = Canvas {
-            background: Color32::WHITE,
-            pixels_per_point: 1.0,
-        };
-        // A thumb of 2 by 1 texels: red, then clear.
-        let thumb = Arc::new(Thumb {
-            serial: 1,
-            size: [2, 1],
-            rgba: vec![255, 0, 0, 255, 0, 0, 0, 0],
-        });
-        let area = Rect::from_min_size(Pos2::ZERO, vec2(64.0, 64.0));
-        let page = Rect::from_min_size(Pos2::ZERO, vec2(64.0, 64.0));
-        let items = vec![(thumb, Rect::from_min_size(Pos2::ZERO, vec2(32.0, 32.0)))];
-        let scene = scene_of(area, page, &items, canvas, None);
-        let w = scene.size[0] as usize;
-        let pixel = |x: usize, y: usize| &scene.rgba[(y * w + x) * 4..][..3];
-        // The frame covers 8 by 8 pixels of the reduced picture.
-        assert_eq!(pixel(1, 1), [255, 0, 0]);
-        assert_eq!(pixel(6, 1), [255, 255, 255]);
-        assert_eq!(pixel(12, 12), [255, 255, 255]);
-        let again = scene_of(area, page, &items, canvas, Some(scene.clone()));
-        assert!(Arc::ptr_eq(&scene, &again));
-        let moved = Rect::from_min_size(pos2(4.0, 0.0), vec2(64.0, 64.0));
-        let other = scene_of(area, moved, &items, canvas, Some(scene.clone()));
-        assert!(!Arc::ptr_eq(&scene, &other));
     }
 }

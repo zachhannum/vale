@@ -212,9 +212,10 @@ pub fn ui_harness_on(
         )
 }
 
-/// The test renderer of egui_kittest, with one change: the image covers
-/// the whole screen. The image of egui_kittest has the size of the safe
-/// area, and it starts at the top-left corner of the screen.
+/// The test renderer of egui_kittest, with two changes: the image covers
+/// the whole screen, and the render passes split at the backdrop markers.
+/// The image of egui_kittest has the size of the safe area, and it starts at
+/// the top-left corner of the screen.
 #[cfg(not(target_os = "ios"))]
 struct ScreenRenderer {
     inner: egui_kittest::wgpu::WgpuTestRenderer,
@@ -271,27 +272,20 @@ impl egui_kittest::TestRenderer for ScreenRenderer {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: *target_format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            // The hook of the backdrop reads the texture.
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
         let view = texture.create_view(&Default::default());
-        {
-            let mut pass = encoder
-                .begin_render_pass(&wgpu::RenderPassDescriptor {
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &view,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                            store: wgpu::StoreOp::Store,
-                        },
-                        depth_slice: None,
-                    })],
-                    ..Default::default()
-                })
-                .forget_lifetime();
-            renderer.render(&mut pass, &shapes, &screen);
-        }
+        let target = eframe::egui_wgpu::BackdropTarget {
+            view: &view,
+            resolve_target: None,
+            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+            depth_stencil: None,
+        };
+        renderer.render_with_backdrops(device, queue, &mut encoder, &target, &shapes, &screen);
         drop(renderer);
         // Each row of the copy is a multiple of 256 bytes.
         let row = 4 * width;

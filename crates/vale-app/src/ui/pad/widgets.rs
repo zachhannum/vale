@@ -7,7 +7,7 @@ use eframe::egui_wgpu::wgpu;
 use super::geometry::{CELL, PAD, ROW, TOUCH};
 use super::icons::{self, Icon};
 use super::theme;
-use crate::globe::backdrop::card_shape;
+use crate::globe::backdrop::{card_shape, marker};
 
 /// A control that a finger can hit, as the last frame drew it.
 #[derive(Clone, Debug, PartialEq)]
@@ -70,6 +70,11 @@ pub fn card(
         .sizing_pass(false)
         .show(ctx, |ui| {
             let (rect, _) = ui.allocate_exact_size(rect.size(), Sense::click_and_drag());
+            // The blur shows what the frame drew below this order, without
+            // the shadow.
+            if backdrop.is_some() {
+                ui.painter().add(marker(order, rect));
+            }
             ui.painter().add(theme::shadow().as_shape(rect, radius));
             if let Some(format) = backdrop {
                 let shape = card_shape(format, rect, radius, ctx.pixels_per_point());

@@ -1,6 +1,11 @@
 //! The blurred copy of the canvas behind the cards of the iPad layout.
+//!
+//! A card puts a marker in the paint jobs. At the marker, egui ends its
+//! render pass, and the hook shrinks the frame drawn so far to the small
+//! texture and blurs it. Then the cards draw the small texture.
 
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 
 use eframe::egui;
 use eframe::egui_wgpu::{self, wgpu};
@@ -35,35 +40,11 @@ struct Instance {
     radii: [f32; 4],
 }
 
-/// What the canvas gives for the blurred copy of one frame.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Canvas {
-    /// The color of the canvas where the globe is not.
-    pub background: egui::Color32,
-    pub pixels_per_point: f32,
-}
-
-/// The value that clears a texture to a color of egui. egui writes gamma
-/// values to a target that is not sRGB.
-fn clear_color(format: wgpu::TextureFormat, color: egui::Color32) -> wgpu::Color {
-    let [r, g, b, a] = if format.is_srgb() {
-        egui::Rgba::from(color).to_array()
-    } else {
-        color.to_array().map(|c| f32::from(c) / 255.0)
-    };
-    wgpu::Color {
-        r: f64::from(r),
-        g: f64::from(g),
-        b: f64::from(b),
-        a: f64::from(a),
-    }
-}
-
 /// The textures of one screen size.
 struct Targets {
     size: [u32; 2],
     small_size: [u32; 2],
-    /// The reduced canvas, and the target of the first blur pass.
+    /// The reduced frame, and the target of the first blur pass.
     small: [wgpu::TextureView; 2],
     /// The two blur passes. The first reads `small[0]`.
     passes: [wgpu::BindGroup; 2],
@@ -73,27 +54,54 @@ struct Targets {
 
 /// The pipelines of the backdrop.
 struct Pipelines {
+    down: wgpu::RenderPipeline,
     blur: wgpu::RenderPipeline,
-    blit: wgpu::RenderPipeline,
     card: wgpu::RenderPipeline,
 }
 
-pub struct Backdrop {
-    pub format: wgpu::TextureFormat,
+/// What the hook changes in a frame.
+struct State {
+    pixels_per_point: f32,
+    targets: Option<Targets>,
+    /// True when the small texture holds a blur of this frame.
+    captured: bool,
+}
+
+/// The part of the backdrop that the hook and the cards share.
+struct Shared {
+    format: wgpu::TextureFormat,
     layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     /// A worker compiles them when a card first needs them. Until then,
     /// the cards show no blur.
     pipelines: Compiled<Pipelines>,
-    /// The picture of a canvas that the CPU drew: its key, and the bind
-    /// group that reads it.
-    scene: Option<(u64, wgpu::BindGroup)>,
-    /// The values for the cards, and for each of the two blur passes.
+    /// The values for the cards and the shrink, and for each of the two
+    /// blur passes.
     globals: [wgpu::Buffer; 3],
-    targets: Option<Targets>,
+    state: Mutex<State>,
+}
+
+pub struct Backdrop {
+    shared: Arc<Shared>,
     /// The cards of this frame that wait for the upload.
     cards: Vec<Instance>,
     card_buffer: wgpu::Buffer,
+}
+
+/// Blurs the frame at a marker.
+struct Hook(Arc<Shared>);
+
+/// The marker that a card of this order puts before its shapes. The cards
+/// of a higher order show the cards of a lower order in their blur.
+pub fn marker(order: egui::Order, rect: egui::Rect) -> egui::Shape {
+    let level = match order {
+        egui::Order::Background => 0,
+        egui::Order::Middle => 1,
+        egui::Order::Foreground => 2,
+        egui::Order::Tooltip => 3,
+        egui::Order::Debug => 4,
+    };
+    egui_wgpu::BackdropLevel(level).shape(rect)
 }
 
 impl Pipelines {
@@ -149,8 +157,8 @@ impl Pipelines {
             };
         let over = Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING);
         Pipelines {
+            down: pipeline("backdrop down", "vs_full", "fs_down", None, &[]),
             blur: pipeline("backdrop blur", "vs_full", "fs_blur", None, &[]),
-            blit: pipeline("backdrop blit", "vs_full", "fs_blit", None, &[]),
             card: pipeline(
                 "backdrop card",
                 "vs_card",
@@ -206,19 +214,25 @@ impl Backdrop {
         let (worker_device, worker_layout) = (device.clone(), layout.clone());
         let pipelines =
             Compiled::lazy(move || Pipelines::new(&worker_device, &worker_layout, format));
-        Backdrop {
+        let shared = Shared {
             format,
-            pipelines,
-            scene: None,
+            layout,
             sampler: device.create_sampler(&wgpu::SamplerDescriptor {
                 label: Some("backdrop"),
                 mag_filter: wgpu::FilterMode::Linear,
                 min_filter: wgpu::FilterMode::Linear,
                 ..Default::default()
             }),
-            layout,
+            pipelines,
             globals,
-            targets: None,
+            state: Mutex::new(State {
+                pixels_per_point: 1.0,
+                targets: None,
+                captured: false,
+            }),
+        };
+        Backdrop {
+            shared: Arc::new(shared),
             cards: Vec::new(),
             card_buffer: device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("backdrop cards"),
@@ -229,74 +243,48 @@ impl Backdrop {
         }
     }
 
-    /// Uploads a picture of the canvas, unless the key is that of the
-    /// picture that the backdrop holds.
-    fn set_scene(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, scene: &Scene) {
-        if self
-            .scene
-            .as_ref()
-            .is_some_and(|(key, _)| *key == scene.key)
-        {
-            return;
-        }
-        // The bytes are gamma values. A target in sRGB reads them as such.
-        let format = if self.format.is_srgb() {
-            wgpu::TextureFormat::Rgba8UnormSrgb
-        } else {
-            wgpu::TextureFormat::Rgba8Unorm
-        };
-        let extent = wgpu::Extent3d {
-            width: scene.size[0],
-            height: scene.size[1],
-            depth_or_array_layers: 1,
-        };
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("backdrop scene"),
-            size: extent,
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        queue.write_texture(
-            texture.as_image_copy(),
-            &scene.rgba,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(4 * scene.size[0]),
-                rows_per_image: None,
-            },
-            extent,
-        );
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("backdrop scene"),
+    /// The hook that blurs the frame for this backdrop.
+    pub fn hook(&self) -> egui_wgpu::BackdropHooks {
+        egui_wgpu::BackdropHooks(Box::new(Hook(self.shared.clone())))
+    }
+}
+
+impl Shared {
+    fn state(&self) -> std::sync::MutexGuard<'_, State> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn bind(
+        &self,
+        device: &wgpu::Device,
+        globals: usize,
+        view: &wgpu::TextureView,
+    ) -> wgpu::BindGroup {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("backdrop"),
             layout: &self.layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: self.globals[0].as_entire_binding(),
+                    resource: self.globals[globals].as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&view),
+                    resource: wgpu::BindingResource::TextureView(view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: wgpu::BindingResource::Sampler(&self.sampler),
                 },
             ],
-        });
-        self.scene = Some((scene.key, bind_group));
+        })
     }
 
     fn targets(&self, device: &wgpu::Device, size: [u32; 2]) -> Targets {
         let small_size = size.map(|s| s.div_ceil(REDUCTION));
-        let view = |label, [width, height]: [u32; 2]| {
+        let view = |[width, height]: [u32; 2]| {
             let texture = device.create_texture(&wgpu::TextureDescriptor {
-                label: Some(label),
+                label: Some("backdrop blur"),
                 size: wgpu::Extent3d {
                     width,
                     height,
@@ -312,61 +300,41 @@ impl Backdrop {
             });
             texture.create_view(&wgpu::TextureViewDescriptor::default())
         };
-        let bind = |globals: usize, view: &wgpu::TextureView| {
-            device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("backdrop"),
-                layout: &self.layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: self.globals[globals].as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::TextureView(view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::Sampler(&self.sampler),
-                    },
-                ],
-            })
-        };
-        let small = [
-            view("backdrop blur", small_size),
-            view("backdrop blur", small_size),
-        ];
+        let small = [view(small_size), view(small_size)];
         Targets {
             size,
             small_size,
-            passes: [bind(1, &small[0]), bind(2, &small[1])],
-            from_blur: bind(0, &small[0]),
+            passes: [
+                self.bind(device, 1, &small[0]),
+                self.bind(device, 2, &small[1]),
+            ],
+            from_blur: self.bind(device, 0, &small[0]),
             small,
         }
     }
 
-    /// Draws the canvas at the reduced size and blurs it. `draw` draws the
-    /// canvas into a target of that size. The passes run before the pass of
-    /// egui.
-    pub fn render(
-        &mut self,
+    /// Makes the textures for a frame of this size, and writes the values of
+    /// the shader, unless the state has them.
+    fn resize(
+        &self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        encoder: &mut wgpu::CommandEncoder,
+        state: &mut State,
         size: [u32; 2],
-        canvas: &Canvas,
-        draw: impl FnOnce(&mut wgpu::RenderPass<'_>),
+        pixels_per_point: f32,
     ) {
-        let Some(pipelines) = self.pipelines.get() else {
-            return;
-        };
         let size = size.map(|s| s.max(1));
-        if self.targets.as_ref().is_none_or(|t| t.size != size) {
-            self.targets = Some(self.targets(device, size));
+        let same = state.targets.as_ref().is_some_and(|t| t.size == size);
+        if same && state.pixels_per_point == pixels_per_point {
+            return;
         }
-        let targets = self.targets.as_ref().expect("set above");
+        state.pixels_per_point = pixels_per_point;
+        if !same {
+            state.targets = Some(self.targets(device, size));
+        }
+        let targets = state.targets.as_ref().expect("set above");
         let [width, height] = targets.small_size.map(|s| s as f32);
-        let sigma = BLUR_POINTS * canvas.pixels_per_point / REDUCTION as f32;
+        let sigma = BLUR_POINTS * state.pixels_per_point / REDUCTION as f32;
         for (buffer, direction) in self
             .globals
             .iter()
@@ -379,92 +347,51 @@ impl Backdrop {
             };
             queue.write_buffer(buffer, 0, bytemuck::bytes_of(&globals));
         }
+    }
+}
 
-        let mut pass = |view: &wgpu::TextureView, load| {
-            encoder
-                .begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("backdrop"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view,
-                        depth_slice: None,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load,
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    ..Default::default()
-                })
-                .forget_lifetime()
+impl egui_wgpu::BackdropHook for Hook {
+    fn capture(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        frame: &wgpu::TextureView,
+        size: [u32; 2],
+    ) {
+        let shared = &*self.0;
+        let Some(pipelines) = shared.pipelines.get() else {
+            return;
         };
-        let clear = wgpu::LoadOp::Clear(clear_color(self.format, canvas.background));
-        draw(&mut pass(&targets.small[0], clear));
-        let black = wgpu::LoadOp::Clear(wgpu::Color::BLACK);
+        let mut state = shared.state();
+        let pixels_per_point = state.pixels_per_point;
+        shared.resize(device, queue, &mut state, size, pixels_per_point);
+        let targets = state.targets.as_ref().expect("set above");
+        let from_frame = shared.bind(device, 0, frame);
         let steps = [
+            (&pipelines.down, &from_frame, &targets.small[0]),
             (&pipelines.blur, &targets.passes[0], &targets.small[1]),
             (&pipelines.blur, &targets.passes[1], &targets.small[0]),
         ];
         for (pipeline, bind_group, view) in steps {
-            let mut pass = pass(view, black);
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("backdrop"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
             pass.set_pipeline(pipeline);
             pass.set_bind_group(0, bind_group, &[]);
             pass.draw(0..3, 0..1);
         }
-    }
-}
-
-/// A picture of a canvas that the CPU drew, at the reduced size of the
-/// backdrop. The canvas of the atlas has no GPU pass, so the CPU draws it.
-pub struct Scene {
-    /// Names the content. A picture with the same key as the last one is
-    /// not uploaded again.
-    pub key: u64,
-    pub size: [u32; 2],
-    /// Gamma bytes of the colors, with no transparency.
-    pub rgba: Vec<u8>,
-}
-
-/// Draws a picture of the canvas into the blurred copy. egui calls it
-/// before its own render pass.
-pub struct SceneCallback {
-    pub format: wgpu::TextureFormat,
-    pub scene: std::sync::Arc<Scene>,
-    pub canvas: Canvas,
-}
-
-impl egui_wgpu::CallbackTrait for SceneCallback {
-    fn prepare(
-        &self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        screen_descriptor: &egui_wgpu::ScreenDescriptor,
-        egui_encoder: &mut wgpu::CommandEncoder,
-        resources: &mut egui_wgpu::CallbackResources,
-    ) -> Vec<wgpu::CommandBuffer> {
-        let kept = resources.remove::<Backdrop>();
-        let mut backdrop = kept
-            .filter(|b| b.format == self.format)
-            .unwrap_or_else(|| Backdrop::new(device, self.format));
-        backdrop.set_scene(device, queue, &self.scene);
-        let blit = backdrop.pipelines.get().map(|p| p.blit.clone());
-        if let (Some((_, bind_group)), Some(pipeline)) = (backdrop.scene.clone(), blit) {
-            let size = screen_descriptor.size_in_pixels;
-            backdrop.render(device, queue, egui_encoder, size, &self.canvas, |pass| {
-                pass.set_pipeline(&pipeline);
-                pass.set_bind_group(0, &bind_group, &[]);
-                pass.draw(0..3, 0..1);
-            });
-        }
-        resources.insert(backdrop);
-        Vec::new()
-    }
-
-    fn paint(
-        &self,
-        _info: egui::PaintCallbackInfo,
-        _pass: &mut wgpu::RenderPass<'static>,
-        _resources: &egui_wgpu::CallbackResources,
-    ) {
+        state.captured = true;
     }
 }
 
@@ -499,21 +426,35 @@ pub fn card_shape(
 }
 
 impl egui_wgpu::CallbackTrait for CardCallback {
+    /// The first card of a frame sets up the backdrop and its hook, and
+    /// makes the textures for the size of the screen.
     fn prepare(
         &self,
         device: &wgpu::Device,
-        _queue: &wgpu::Queue,
-        _screen_descriptor: &egui_wgpu::ScreenDescriptor,
+        queue: &wgpu::Queue,
+        screen_descriptor: &egui_wgpu::ScreenDescriptor,
         _egui_encoder: &mut wgpu::CommandEncoder,
         resources: &mut egui_wgpu::CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
         let stale = resources
             .get::<Backdrop>()
-            .is_none_or(|b| b.format != self.format);
+            .is_none_or(|b| b.shared.format != self.format);
         if stale {
-            resources.insert(Backdrop::new(device, self.format));
+            let backdrop = Backdrop::new(device, self.format);
+            resources.insert(backdrop.hook());
+            resources.insert(backdrop);
         }
         let backdrop: &mut Backdrop = resources.get_mut().expect("inserted above");
+        if backdrop.cards.is_empty() {
+            let shared = &backdrop.shared;
+            let mut state = shared.state();
+            let (size, pixels_per_point) = (
+                screen_descriptor.size_in_pixels,
+                screen_descriptor.pixels_per_point,
+            );
+            shared.resize(device, queue, &mut state, size, pixels_per_point);
+            state.captured = false;
+        }
         let index = backdrop.cards.len();
         if index < MAX_CARDS {
             backdrop.cards.push(self.place);
@@ -540,6 +481,7 @@ impl egui_wgpu::CallbackTrait for CardCallback {
         Vec::new()
     }
 
+    /// egui calls it after the hook blurred the frame below the card.
     fn paint(
         &self,
         _info: egui::PaintCallbackInfo,
@@ -547,13 +489,15 @@ impl egui_wgpu::CallbackTrait for CardCallback {
         resources: &egui_wgpu::CallbackResources,
     ) {
         let index = self.index.load(Ordering::Relaxed);
-        let targets = resources
-            .get::<Backdrop>()
-            .and_then(|b| Some((b, b.targets.as_ref()?)));
-        let Some((backdrop, targets)) = targets.filter(|_| index != u32::MAX) else {
+        let Some(backdrop) = resources.get::<Backdrop>().filter(|_| index != u32::MAX) else {
             return;
         };
-        let Some(pipelines) = backdrop.pipelines.get() else {
+        let shared = &backdrop.shared;
+        let Some(pipelines) = shared.pipelines.get() else {
+            return;
+        };
+        let state = shared.state();
+        let Some(targets) = state.targets.as_ref().filter(|_| state.captured) else {
             return;
         };
         pass.set_pipeline(&pipelines.card);

@@ -19,7 +19,6 @@ use vale_terrain::{
     StampPlan, TILES_WGSL, TexelRect, pyramid_layout, tiles_layout,
 };
 
-use super::backdrop::{Backdrop, Canvas, REDUCTION};
 use super::compile::{Compiled, render_pipeline};
 use super::edges::{self, EdgePipelines, Edges};
 use super::flat::{FlatMesh, Vertex};
@@ -572,9 +571,8 @@ struct Resources {
     /// Channel textures with no river, for a pass with no rivers.
     no_channels: wgpu::TextureView,
     no_window: wgpu::TextureView,
-    /// The pass and the target of each slot. True: the small target of the
-    /// blurred copy.
-    slots: HashMap<(TargetId, Pass, bool), Slot>,
+    /// The target and the pass of each slot.
+    slots: HashMap<(TargetId, Pass), Slot>,
     /// The heightmap that the brush paints.
     full: Option<(MapKey, GpuHeightmap)>,
     /// The reduced copies that the globe draws.
@@ -880,7 +878,7 @@ impl Resources {
             Pass::Image(id) => frame.images.iter().any(|key| key.image == *id),
             Pass::Ground | Pass::Graticule | Pass::Rim => true,
         };
-        self.slots.retain(|(_, pass, _), _| live(pass));
+        self.slots.retain(|(_, pass), _| live(pass));
         self.edges.retain(|layer| live(&Pass::Layer(*layer)));
         self.channels
             .retain(|layer, _| frame.rivers.contains(layer));
@@ -1047,19 +1045,17 @@ impl Resources {
         bytes.sum()
     }
 
-    /// Writes the uniforms of one pass into the target `target`. `small`: the
-    /// pass draws into the small target of the blurred copy. `backdrop` is the
-    /// number and the view of the texture that holds the layers below.
+    /// Writes the uniforms of one pass into the target `target`. `backdrop`
+    /// is the number and the view of the texture that holds the layers below.
     fn write(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         draw: &Draw,
         target: TargetId,
-        small: bool,
         backdrop: Option<(u64, wgpu::TextureView)>,
     ) {
-        let key = (target, draw.pass, small);
+        let key = (target, draw.pass);
         let number = backdrop.as_ref().map_or(0, |(number, _)| *number);
         // A layer has its channel map. Only the full heightmap has the
         // window of small rivers.
@@ -1160,11 +1156,7 @@ impl Resources {
         };
         let radius = edges::radius(edges::max_half(&draw.uniforms.lines)).filter(|_| draw.lines)?;
         let (tiles, levels) = self.layer_groups(draw)?;
-        let uniforms = self
-            .slots
-            .get(&(target, draw.pass, false))?
-            .bind_group
-            .clone();
+        let uniforms = self.slots.get(&(target, draw.pass))?.bind_group.clone();
         let flat = !matches!(view, View::Globe);
         let mesh = match view {
             View::Globe => None,
@@ -1218,12 +1210,11 @@ impl Resources {
         pass: &mut wgpu::RenderPass<'_>,
         draw: &Draw,
         target: TargetId,
-        small: bool,
         view: &View,
         screen: [u32; 2],
     ) {
         let flat = !matches!(view, View::Globe);
-        let Some(slot) = self.slots.get(&(target, draw.pass, small)) else {
+        let Some(slot) = self.slots.get(&(target, draw.pass)) else {
             return;
         };
         let Some(core) = self.core.get() else {
@@ -1881,11 +1872,11 @@ impl Resources {
             // A write to the queue lands before the passes of the frame, so
             // the passes of the lines and the layer pass read the second
             // write, with the radius.
-            self.write(device, queue, &draw, group.target, false, below());
+            self.write(device, queue, &draw, group.target, below());
             let radius = self.encode_edges(device, encoder, &draw, group.target, size, &view, true);
             if let Some(radius) = radius {
                 draw.uniforms.edges = [1.0, radius as f32, 0.0, 0.0];
-                self.write(device, queue, &draw, group.target, false, below());
+                self.write(device, queue, &draw, group.target, below());
             }
             if blend {
                 encoder.copy_texture_to_texture(
@@ -1907,7 +1898,7 @@ impl Resources {
                 })],
                 ..Default::default()
             });
-            self.draw(&mut pass, &draw, group.target, false, &view, size);
+            self.draw(&mut pass, &draw, group.target, &view, size);
         }
         if let Some(shapes) = &group.vector {
             self.draw_vector(device, encoder, &layers, size, shapes);
@@ -2136,12 +2127,12 @@ impl Resources {
     ) {
         let mut draw = *cover;
         draw.uniforms.screen = [size[0] as f32, size[1] as f32, 0.0, 0.0];
-        self.write(device, queue, &draw, target, false, None);
+        self.write(device, queue, &draw, target, None);
         // The layer pass of a layer with lines draws its band edges from the
         // cut heights.
         if let Some(radius) = self.encode_edges(device, encoder, &draw, target, size, view, false) {
             draw.uniforms.edges = [1.0, radius as f32, 0.0, 0.0];
-            self.write(device, queue, &draw, target, false, None);
+            self.write(device, queue, &draw, target, None);
         }
         let Some(out) = self
             .targets
@@ -2173,7 +2164,7 @@ impl Resources {
         let Some((tiles, levels)) = self.layer_groups(&draw) else {
             return;
         };
-        let Some(slot) = self.slots.get(&(target, draw.pass, false)) else {
+        let Some(slot) = self.slots.get(&(target, draw.pass)) else {
             return;
         };
         pass.set_bind_group(0, &slot.bind_group, &[]);
@@ -2618,9 +2609,6 @@ pub struct Draw {
 pub enum Job {
     /// Draws one pass on the screen.
     Draw(Box<Draw>),
-    /// Draws the passes into the small target of the blurred copy that the
-    /// cards show, and blurs it. It draws nothing on the screen.
-    Backdrop(Canvas, Vec<Draw>),
     /// Draws the passes into a target of their own, and puts it on the
     /// screen.
     Group(Box<Group>),
@@ -3016,12 +3004,12 @@ impl egui_wgpu::CallbackTrait for GlobeCallback {
                 // A write to the queue lands before each pass of the frame,
                 // so the passes of the lines and the layer pass all read the
                 // second write, with the radius.
-                res.write(device, queue, &draw, CANVAS, false, None);
+                res.write(device, queue, &draw, CANVAS, None);
                 if let Some(radius) =
                     res.encode_edges(device, egui_encoder, &draw, CANVAS, size, &view, true)
                 {
                     draw.uniforms.edges = [1.0, radius as f32, 0.0, 0.0];
-                    res.write(device, queue, &draw, CANVAS, false, None);
+                    res.write(device, queue, &draw, CANVAS, None);
                 }
             }
             Job::Group(group) if group.capture.is_some() => {
@@ -3035,25 +3023,6 @@ impl egui_wgpu::CallbackTrait for GlobeCallback {
             }
             Job::Group(group) => {
                 let _ = res.render_group(device, queue, egui_encoder, size, group);
-            }
-            Job::Backdrop(canvas, draws) => {
-                let small = size.map(|s| s.max(1).div_ceil(REDUCTION));
-                for draw in draws {
-                    let mut draw = *draw;
-                    draw.uniforms.screen = [small[0] as f32, small[1] as f32, 0.0, 0.0];
-                    res.write(device, queue, &draw, CANVAS, true, None);
-                }
-                let kept = resources.remove::<Backdrop>();
-                let mut backdrop = kept
-                    .filter(|b| b.format == frame.format)
-                    .unwrap_or_else(|| Backdrop::new(device, frame.format));
-                let res: &Resources = resources.get().expect("inserted above");
-                backdrop.render(device, queue, egui_encoder, size, canvas, |pass| {
-                    for draw in draws {
-                        res.draw(pass, draw, CANVAS, true, &view, small);
-                    }
-                });
-                resources.insert(backdrop);
             }
         }
         Vec::new()
@@ -3071,13 +3040,12 @@ impl egui_wgpu::CallbackTrait for GlobeCallback {
         match &self.job {
             Job::Draw(draw) => {
                 let view = res.view_of(self.frame.flat.as_deref());
-                res.draw(render_pass, draw, CANVAS, false, &view, info.screen_size_px);
+                res.draw(render_pass, draw, CANVAS, &view, info.screen_size_px);
             }
             Job::Group(group) if group.capture.is_none() => {
                 res.composite(render_pass, group.target, info.screen_size_px)
             }
             Job::Group(_) => {}
-            Job::Backdrop(..) => {}
         }
     }
 }

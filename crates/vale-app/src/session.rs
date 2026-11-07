@@ -273,17 +273,17 @@ impl Session {
     }
 
     /// Writes the picture of the globe for the list of projects, if the
-    /// file changed after the last picture. `layers` has the heightmap and
-    /// the opacity of each visible raster layer, from the bottom.
-    pub fn save_thumbnail(
+    /// file changed after the last picture. `layers` gives the visible
+    /// layers, from the bottom, for a picture of `thumbnail::SIZE` pixels.
+    pub fn save_thumbnail<'a>(
         &mut self,
-        layers: &[(&Heightmap, f32)],
+        layers: impl FnOnce() -> Vec<thumbnail::Layer<'a>>,
         view: &GlobeView,
     ) -> Result<(), StoreError> {
         if !self.thumbnail_stale {
             return Ok(());
         }
-        let picture = thumbnail::render(layers, view, thumbnail::SIZE);
+        let picture = thumbnail::render(&layers(), view, thumbnail::SIZE);
         self.file.set_thumbnail(&picture)?;
         self.thumbnail_stale = false;
         self.mark_changed();

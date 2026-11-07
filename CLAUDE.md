@@ -55,7 +55,7 @@ The phase table in `docs/DESIGN.md` gives the order of the work after that. When
 
 ## Rules
 
-- The project is one Rust workspace. Put each crate in `crates/`, and give each crate a `vale-` prefix.
+- The project is one Rust workspace. Put each crate in `crates/`, and give each crate a `vale-` prefix. A patched copy of a third-party crate keeps its name and goes in `vendor/`, with a README that lists the change.
 - `vale-labeler` must not depend on any other Vale crate. It takes page-space geometry and returns placed text.
 - The labeling engine is a clean-room design. Use published research and the public Esri documentation only. Do not read or decompile Esri code.
 - The license is `MIT OR Apache-2.0` for all crates.
