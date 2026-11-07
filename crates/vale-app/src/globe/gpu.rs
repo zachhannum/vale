@@ -1532,16 +1532,35 @@ pub struct Group {
     pub capture: Option<Arc<Capture>>,
 }
 
-/// The last call of `Resources::draw_vector`, for the debug controls.
-static VECTOR_REPORT: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+/// The last calls of `Resources::draw_vector` for the two last target
+/// sizes, for the debug controls.
+static VECTOR_REPORT: std::sync::Mutex<Vec<([u32; 2], String)>> = std::sync::Mutex::new(Vec::new());
 
-/// What the last pass of vector shapes drew, for the debug controls.
-pub fn vector_report() -> String {
-    let report = VECTOR_REPORT.lock().map(|r| r.clone()).unwrap_or_default();
-    if report.is_empty() {
-        return "Vector pass: not run".to_string();
+/// The last call of `Resources::render_cover`, for the debug controls.
+static COVER_REPORT: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+fn cover_report(text: &str) {
+    if let Ok(mut last) = COVER_REPORT.lock() {
+        *last = text.to_string();
     }
-    report
+}
+
+/// What the last passes of vector shapes and of the cover of a mask drew,
+/// for the debug controls.
+pub fn vector_report() -> String {
+    let mut lines: Vec<String> = (VECTOR_REPORT.lock().map(|r| r.clone()).unwrap_or_default())
+        .into_iter()
+        .map(|(_, text)| text)
+        .collect();
+    if lines.is_empty() {
+        lines.push("Vector pass: not run".to_string());
+    }
+    let cover = COVER_REPORT.lock().map(|r| r.clone()).unwrap_or_default();
+    lines.push(match cover.is_empty() {
+        true => "Cover pass: not run".to_string(),
+        false => format!("Cover pass: {cover}"),
+    });
+    lines.join("\n")
 }
 
 /// The meshes of egui shapes in draw order, each with its clip rectangle in
@@ -1999,7 +2018,9 @@ impl Resources {
         use wgpu::util::DeviceExt;
         let report = |text: String| {
             if let Ok(mut last) = VECTOR_REPORT.lock() {
-                *last = text;
+                last.retain(|(of, _)| *of != size);
+                last.insert(0, (size, text));
+                last.truncate(2);
             }
         };
         let Some(vectors) = self.vectors.get() else {
@@ -2200,6 +2221,7 @@ impl Resources {
             .and_then(|t| t.cover.as_ref())
             .map(|(_, v)| v.clone())
         else {
+            cover_report("no cover target");
             return;
         };
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -2216,15 +2238,19 @@ impl Resources {
             ..Default::default()
         });
         let Pass::Layer(layer) = draw.pass else {
+            cover_report("not a layer pass");
             return;
         };
         let Some(masks) = self.masks.get() else {
+            cover_report("no pipelines");
             return;
         };
         let Some((tiles, levels)) = self.layer_groups(&draw) else {
+            cover_report(&format!("no tiles for {:?}", draw.source));
             return;
         };
         let Some(slot) = self.slots.get(&(target, draw.pass, false)) else {
+            cover_report("no slot");
             return;
         };
         pass.set_bind_group(0, &slot.bind_group, &[]);
@@ -2233,17 +2259,19 @@ impl Resources {
         pass.set_bind_group(3, self.edges.group((target, layer)), &[]);
         match view {
             View::Globe => {
+                cover_report(&format!("drawn on the globe, {}x{}", size[0], size[1]));
                 pass.set_pipeline(&masks.cover[0]);
                 pass.draw(0..3, 0..1);
             }
             View::Flat(Some(mesh)) => {
+                cover_report(&format!("drawn on the flat view, {}x{}", size[0], size[1]));
                 pass.set_pipeline(&masks.cover[1]);
                 pass.set_viewport(0.0, 0.0, size[0] as f32, size[1] as f32, 0.0, 1.0);
                 pass.set_vertex_buffer(0, mesh.vertices.slice(..));
                 pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..mesh.count, 0, 0..1);
             }
-            View::Flat(None) => {}
+            View::Flat(None) => cover_report("flat view with no mesh"),
         }
     }
 
