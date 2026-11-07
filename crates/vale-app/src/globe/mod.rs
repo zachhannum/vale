@@ -2138,6 +2138,11 @@ impl Globe {
         self.join_targets();
     }
 
+    /// The snap targets of the visible vector layers.
+    pub fn vector_targets(&self) -> Option<&Arc<Targets>> {
+        self.vectors.as_ref()
+    }
+
     /// Makes the snap targets of the color stops again where a raster layer
     /// changed. Each raster layer that the globe draws in the Bands display
     /// has targets while a tool that edits a vector layer is the tool.

@@ -433,3 +433,32 @@ fn manual_lod_frame_time() {
         );
     }
 }
+
+/// The snap targets of the visible layer `id`.
+fn layer_targets(state: &AppState, id: LayerId) -> std::sync::Arc<LayerTargets> {
+    let targets = state.globe.vector_targets().unwrap();
+    let layer = targets.layers().iter().find(|t| t.layer() == id);
+    layer.unwrap().clone()
+}
+
+#[test]
+fn a_show_keeps_the_snap_targets_of_the_layer() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut state, a, b) = app(dir.path());
+    state.refresh_targets();
+    let before = layer_targets(&state, a);
+    state.set_layer_visible(a, false);
+    state.refresh_targets();
+    state.set_layer_visible(a, true);
+    state.refresh_targets();
+    assert!(std::sync::Arc::ptr_eq(&before, &layer_targets(&state, a)));
+
+    // An edit builds the targets of only that layer again.
+    let (kept, edited) = (layer_targets(&state, a), layer_targets(&state, b));
+    let uuid = state.doc.layer(b).unwrap().features[0].uuid();
+    state.set_feature_selection(vec![FeatureRef { layer: b, uuid }]);
+    state.delete_selection();
+    state.refresh_targets();
+    assert!(std::sync::Arc::ptr_eq(&kept, &layer_targets(&state, a)));
+    assert!(!std::sync::Arc::ptr_eq(&edited, &layer_targets(&state, b)));
+}

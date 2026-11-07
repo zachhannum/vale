@@ -591,9 +591,10 @@ pub struct AppState {
     /// The key of the snap targets of the globe. The targets change when it
     /// changes.
     targets_key: Option<TargetsKey>,
-    /// The snap targets of each visible vector layer, with the fingerprint
-    /// of the layer.
-    layer_targets: HashMap<LayerId, (u64, Arc<LayerTargets>)>,
+    /// The snap targets of each vector layer that was visible, with the
+    /// stamp and the fingerprint of the layer at the build. A hidden layer
+    /// keeps its targets for the next show.
+    layer_targets: HashMap<LayerId, (TargetsStamp, u64, Arc<LayerTargets>)>,
     /// The time of the last save, for the save mark.
     saved_at: Option<Instant>,
     /// The last save failed.
@@ -615,6 +616,16 @@ struct TargetsKey {
     layers: Vec<(LayerId, usize)>,
     edits: u64,
     history: u64,
+}
+
+/// The edits, the undo steps, and the count of the features of a layer.
+/// Each edit of a layer changes one of them, so a layer with the same stamp
+/// has the same targets.
+#[derive(Clone, Copy, PartialEq)]
+struct TargetsStamp {
+    edits: u64,
+    history: u64,
+    features: usize,
 }
 
 impl AppState {
@@ -2768,20 +2779,41 @@ impl AppState {
         if self.targets_key.as_ref() == Some(&key) {
             return;
         }
-        let mut cache = std::mem::take(&mut self.layer_targets);
-        let mut targets = Vec::new();
-        for layer in vectors {
-            let print = LayerTargets::fingerprint(layer);
-            let built = match cache.remove(&layer.id) {
-                Some((old, built)) if old == print => built,
-                _ => Arc::new(LayerTargets::build(layer.id, layer)),
-            };
-            targets.push(built.clone());
-            self.layer_targets.insert(layer.id, (print, built));
-        }
+        let ids: Vec<LayerId> = vectors.iter().map(|l| l.id).collect();
+        let project = &self.doc.project;
+        (self.layer_targets).retain(|id, _| project.layer(*id).is_some());
+        let targets: Vec<_> = ids
+            .into_iter()
+            .filter_map(|id| self.layer_targets(id))
+            .collect();
         let targets = (!targets.is_empty()).then(|| Arc::new(Targets::new(targets, Vec::new())));
         self.globe.set_targets(targets);
         self.targets_key = Some(key);
+    }
+
+    /// The snap targets of layer `id`, kept or new. A layer with the same
+    /// stamp keeps its targets with no hash of its features.
+    pub(crate) fn layer_targets(&mut self, id: LayerId) -> Option<Arc<LayerTargets>> {
+        let layer = self.doc.project.layer(id)?;
+        let stamp = TargetsStamp {
+            edits: self.edits(),
+            history: self.history,
+            features: layer.features.len(),
+        };
+        let entry = match self.layer_targets.remove(&id) {
+            Some((old, print, built)) if old == stamp => (stamp, print, built),
+            kept => {
+                let print = LayerTargets::fingerprint(layer);
+                let built = match kept {
+                    Some((_, old, built)) if old == print => built,
+                    _ => Arc::new(LayerTargets::build(id, layer)),
+                };
+                (stamp, print, built)
+            }
+        };
+        let built = entry.2.clone();
+        self.layer_targets.insert(id, entry);
+        Some(built)
     }
 
     /// True if the tool of the open workspace is the Measure tool.
