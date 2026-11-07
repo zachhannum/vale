@@ -182,7 +182,7 @@ pub fn insert_field(field: &mut Field<Piece>, name: &str, help: &ExprHelp) {
     field.replace(vec![field_node(name, FieldFormat::default(), help)]);
 }
 
-/// Puts the selection in a group. With no selection, the group takes the
+/// Puts the selection in a group, and puts the caret after it. With no selection, the group takes the
 /// field next to the caret, the text before it back to the start of its
 /// line, and the text after it to the end of its line, but no text that
 /// touches another chip. Returns false if there is nothing to group.
@@ -237,6 +237,9 @@ pub fn group(field: &mut Field<Piece>) -> bool {
         children,
         data: None,
     });
+    // The caret goes after the new group.
+    let (path, _, end) = field.sel.span();
+    field.sel = Selection::at(Caret::new(path.to_vec(), end));
     true
 }
 

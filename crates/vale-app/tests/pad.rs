@@ -9370,6 +9370,7 @@ fn group_writes_optional_text() {
         label_text(&h, places),
         "concat(name, '\n', 'Pop ' || pop_max)"
     );
+    screenshot::save(&mut h, "pad-label-text-group");
 }
 
 #[test]
