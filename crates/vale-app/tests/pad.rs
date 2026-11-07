@@ -9540,7 +9540,7 @@ fn label_text(h: &Pad, id: vale_store::LayerId) -> String {
 }
 
 /// Opens the Label text page of Places, and gives the token field the
-/// focus with a tap at its middle.
+/// focus with a tap at its bottom right, away from the chips.
 fn open_label_text(h: &mut Pad) -> vale_store::LayerId {
     use vale_app::ui::pad::label_text::LABEL_TEXT;
     let places = vector(h, "Places");
@@ -9550,7 +9550,11 @@ fn open_label_text(h: &mut Pad) -> vale_store::LayerId {
     tap(h, LABEL_TEXT);
     assert_eq!(h.state().pad.page, Some(Page::LabelText));
     check_controls(h, "the Label text page");
-    tap(h, LABEL_TEXT);
+    let at = control(h, LABEL_TEXT).unwrap().right_bottom() - vec2(16.0, 8.0);
+    touch(h, egui::TouchPhase::Start, at, None);
+    h.step();
+    touch(h, egui::TouchPhase::End, at, None);
+    h.run_steps(3);
     places
 }
 
@@ -9629,6 +9633,50 @@ fn group_writes_optional_text() {
         "concat(name, '\n', 'Pop ' || pop_max)"
     );
     screenshot::save(&mut h, "pad-label-text-group");
+}
+
+#[test]
+fn manual_label_text_boxes() {
+    use vale_app::ui::pad::label_text::LABEL_TEXT;
+    let text = "concat(upper(name), '\n', 'Pop ' || round(pop_max / 1000, 1) || ' k', ' ', \
+                'Rank ' || scalerank, ' ', max(abs(pop_min - pop_max), 2 * scalerank))";
+    for size in [BOARDS[0], BOARDS[3]] {
+        let mut h = pad(size);
+        let places = vector(&h, "Places");
+        h.state_mut()
+            .doc
+            .entry_mut(places)
+            .unwrap()
+            .style
+            .label
+            .text = text.into();
+        tap(&mut h, "Layers");
+        tap(&mut h, "Open Places");
+        scroll_to_control(&mut h, LABEL_TEXT);
+        tap(&mut h, LABEL_TEXT);
+        h.run_steps(2);
+        screenshot::save(&mut h, &format!("pad-label-text-boxes-{}", size.0));
+    }
+}
+
+#[test]
+fn manual_value_boxes() {
+    use vale_app::ui::pad::classify::EXPRESSION;
+    let text = "max(abs(pop_min - pop_max), round(scalerank / 2, 1), floor(abs(pop_other))) ";
+    for size in [BOARDS[0], BOARDS[3]] {
+        let mut h = pad(size);
+        open_classify(&mut h, "Places");
+        scroll_to_control(&mut h, EXPRESSION);
+        type_text(&mut h, EXPRESSION, text);
+        screenshot::save(&mut h, &format!("pad-value-boxes-focus-{}", size.0));
+        // A tap on the title of the field takes the focus away.
+        let at = control(&h, EXPRESSION).unwrap().left_top() - vec2(0.0, 24.0);
+        touch(&mut h, egui::TouchPhase::Start, at, None);
+        h.step();
+        touch(&mut h, egui::TouchPhase::End, at, None);
+        h.run_steps(3);
+        screenshot::save(&mut h, &format!("pad-value-boxes-{}", size.0));
+    }
 }
 
 #[test]

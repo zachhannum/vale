@@ -3,7 +3,8 @@
 use eframe::egui::{self, Align2, Color32, Pos2, Rect, Shape, Stroke, pos2, vec2};
 
 use super::layout::{
-    Layout, Metrics, PlacedKind, SLOT_NAME_GAP, chip_parts, glyph_text, shows_name,
+    Layout, Metrics, PlacedKind, SLOT_NAME_GAP, TAG_PAD, chip_parts, glyph_text, shows_name,
+    tag_rect,
 };
 use super::{BoxKind, ChipKind, Field, Glyph, Node};
 use crate::ui::pad::icons::{self, Icon};
@@ -26,6 +27,8 @@ const ON_ACCENT: Color32 = Color32::from_rgb(11, 20, 18);
 pub const GLYPH_FILL: Color32 = rgba(69, 196, 168, 61);
 /// The fill of a field.
 pub const FIELD_FILL: Color32 = rgba(0, 0, 0, 97);
+/// The fill of a group tag: the look of the field fill over a panel.
+const TAG_FILL: Color32 = Color32::from_rgb(29, 32, 36);
 
 /// The fill, the border, and the text of a chip of a kind.
 fn colors(kind: ChipKind) -> (Color32, Color32, Color32) {
@@ -259,13 +262,12 @@ fn paint_frame(
             dashed(painter, rect, m.radius + 3.0, Stroke::new(1.5, color));
             if !label.is_empty() {
                 let galley = painter.layout_no_wrap(label.to_owned(), m.small.clone(), theme::MUTE);
-                let h = galley.size().y + 4.0;
-                let tag = Rect::from_min_size(
-                    pos2(rect.left() + 10.0, rect.top() - h / 2.0),
-                    vec2(galley.size().x + 12.0, h),
-                );
-                painter.rect_filled(tag, 5.0, Color32::from_rgb(29, 32, 36));
-                painter.galley(tag.min + vec2(6.0, 2.0), galley, theme::MUTE);
+                let tag = tag_rect(rect, galley.size().x, m);
+                // The fill of the field behind the tag makes a gap in the
+                // frame line.
+                painter.rect_filled(tag, 5.0, TAG_FILL);
+                let at = pos2(tag.left() + TAG_PAD, tag.center().y - galley.size().y / 2.0);
+                painter.galley(at, galley, theme::MUTE);
             }
         }
         BoxKind::Block => {

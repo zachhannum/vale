@@ -84,6 +84,35 @@ impl Metrics {
 /// The space between the name of a slot and its frame.
 pub const SLOT_NAME_GAP: f32 = 5.0;
 
+/// The space between the left of a group frame and its tag.
+const TAG_INSET: f32 = 10.0;
+/// The padding of a group tag at its left and its right.
+pub const TAG_PAD: f32 = 6.0;
+/// The space between a group tag and the content of the group.
+const TAG_GAP: f32 = 3.0;
+
+impl Metrics {
+    /// The height of a group tag.
+    pub fn tag_height(&self) -> f32 {
+        self.small.size + 6.0
+    }
+}
+
+/// The tag of a group with frame `frame` and a tag text of width `text`.
+/// The tag sits on the top line of the frame.
+pub fn tag_rect(frame: Rect, text: f32, m: &Metrics) -> Rect {
+    let h = m.tag_height();
+    Rect::from_min_size(
+        pos2(frame.left() + TAG_INSET, frame.top() - h / 2.0),
+        vec2(text + 2.0 * TAG_PAD, h),
+    )
+}
+
+/// True if box `b` shows a tag on its frame.
+pub fn has_tag<P>(b: &Boxed<P>) -> bool {
+    b.kind == BoxKind::Group && !b.label.is_empty()
+}
+
 /// True if the slot `b` with index `i` in its block shows the name of its
 /// argument before its frame: a slot after the first, with nodes.
 pub fn shows_name<P>(b: &Boxed<P>, i: usize) -> bool {
@@ -314,6 +343,18 @@ impl Flow<'_, '_> {
             BoxKind::Block => (self.measure)(&b.label, &m.font) + m.chip_gap,
             _ => 0.0,
         };
+        // A tag takes half its height above the frame, and half inside.
+        let (above, top, tag_w) = if has_tag(b) {
+            let half = m.tag_height() / 2.0;
+            let text = (self.measure)(&b.label, &m.small);
+            (
+                half,
+                vert.max(half + TAG_GAP),
+                text + 2.0 * (TAG_PAD + TAG_INSET),
+            )
+        } else {
+            (0.0, vert, 0.0)
+        };
         let inner_width = (width - left - right - title).max(m.chip);
         let mut inner = self.list(&b.children, path, inner_width);
         if b.children.is_empty() {
@@ -328,27 +369,26 @@ impl Flow<'_, '_> {
             Some(&i) if shows_name(b, i) => (self.measure)(&b.label, &m.small) + SLOT_NAME_GAP,
             _ => 0.0,
         };
-        let offset = vec2(name + left + title, vert);
-        let size = vec2(
-            left + title + inner.size.x + right,
-            inner.size.y.max(m.chip) + 2.0 * vert,
+        let frame = vec2(
+            (left + title + inner.size.x + right).max(tag_w),
+            inner.size.y.max(m.chip) + top + vert,
         );
         unit.placed.push(Placed {
             path: path.clone(),
-            rect: Rect::from_min_size(pos2(name, 0.0), size),
+            rect: Rect::from_min_size(pos2(name, above), frame),
             kind: PlacedKind::Frame,
         });
-        let size = size + vec2(name, 0.0);
         // The children are centered in the frame when the frame is taller.
-        let dy = (size.y - 2.0 * vert - inner.size.y).max(0.0) / 2.0;
+        let dy = (frame.y - top - vert - inner.size.y).max(0.0) / 2.0;
+        let offset = vec2(name + left + title, above + top + dy);
         for mut p in inner.placed {
-            p.rect = p.rect.translate(offset + vec2(0.0, dy));
+            p.rect = p.rect.translate(offset);
             unit.placed.push(p);
         }
         for (p, r) in inner.ends {
-            unit.ends.push((p, r.translate(offset + vec2(0.0, dy))));
+            unit.ends.push((p, r.translate(offset)));
         }
-        unit.size = size;
+        unit.size = frame + vec2(name, above);
     }
 
     fn lines<P>(
@@ -490,5 +530,147 @@ pub fn layout<P>(nodes: &[Node<P>], m: &Metrics, width: f32, measure: &mut Measu
         placed: flowed.placed,
         size: flowed.size,
         stops,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::token_field::{Chip, ChipKind};
+
+    fn chip(label: &str) -> Node<()> {
+        Node::Chip(Chip {
+            look: Look {
+                kind: ChipKind::Field,
+                glyph: Some(Glyph::Text),
+                label: label.into(),
+                badge: None,
+            },
+            data: (),
+        })
+    }
+
+    fn boxed(kind: BoxKind, label: &str, children: Vec<Node<()>>) -> Node<()> {
+        Node::Box(Boxed {
+            kind,
+            label: label.into(),
+            children,
+            data: None,
+        })
+    }
+
+    fn text(s: &str) -> Vec<Node<()>> {
+        s.chars().map(Node::Char).collect()
+    }
+
+    /// A box of each kind, nested, in lines that wrap.
+    fn nodes() -> Vec<Node<()>> {
+        let slot = |label: &str, children| boxed(BoxKind::Slot, label, children);
+        let inner = boxed(
+            BoxKind::Block,
+            "abs",
+            vec![slot("x", vec![chip("pop_min")])],
+        );
+        let block = boxed(
+            BoxKind::Block,
+            "max",
+            vec![
+                slot("a", vec![inner]),
+                slot("b", vec![chip("scalerank"), chip("rank")]),
+            ],
+        );
+        let mut group = text("Pop ");
+        group.push(chip("pop_max"));
+        group.extend(text(" people"));
+        let mut nodes = vec![chip("name"), Node::Break];
+        nodes.push(boxed(BoxKind::Group, "If pop_max", group));
+        nodes.extend(text(" and "));
+        nodes.push(block);
+        nodes.push(boxed(BoxKind::Group, "If name", vec![chip("name")]));
+        nodes
+    }
+
+    fn contains(outer: Rect, inner: Rect) -> bool {
+        outer.expand(0.01).contains_rect(inner)
+    }
+
+    #[test]
+    fn boxes_do_not_overlap_their_contents() {
+        let field = nodes();
+        let m = Metrics::pad();
+        let mut measure = |s: &str, f: &FontId| s.chars().count() as f32 * f.size * 0.55;
+        for width in [900.0, 300.0, 160.0] {
+            let lay = layout(&field, &m, width, &mut measure);
+            let node = |path: &[usize]| {
+                let mut list = &field;
+                let mut node = None;
+                for &i in path {
+                    let n = &list[i];
+                    node = Some(n);
+                    if let Node::Box(b) = n {
+                        list = &b.children;
+                    }
+                }
+                node.unwrap()
+            };
+            for frame in lay.placed.iter().filter(|p| p.kind == PlacedKind::Frame) {
+                let Node::Box(b) = node(&frame.path) else {
+                    panic!("a frame of a box");
+                };
+                let (left, right, vert) = match b.kind {
+                    BoxKind::Slot => (4.0, 4.0, 0.0),
+                    _ => m.box_pad,
+                };
+                let mut content = frame.rect;
+                content.min.x += left;
+                content.max.x -= right;
+                content.min.y += vert;
+                content.max.y -= vert;
+                let tag = has_tag(b).then(|| {
+                    let w = measure(&b.label, &m.small);
+                    tag_rect(frame.rect, w, &m)
+                });
+                let children = lay
+                    .placed
+                    .iter()
+                    .filter(|p| p.path.len() > frame.path.len() && p.path.starts_with(&frame.path));
+                for child in children {
+                    assert!(
+                        contains(content, child.rect),
+                        "{width}: {:?} at {:?} is outside {:?} of {:?}",
+                        child.kind,
+                        child.rect,
+                        content,
+                        frame.path
+                    );
+                    if let Some(tag) = tag {
+                        assert!(
+                            !tag.intersects(child.rect),
+                            "{width}: the tag {tag:?} covers {:?}",
+                            child.rect
+                        );
+                    }
+                }
+                if let Some(tag) = tag {
+                    assert!(tag.top() >= -0.01, "{width}: the tag is above the field");
+                    assert!(tag.right() <= frame.rect.right(), "{width}");
+                }
+            }
+            // Two atoms of the root list on different lines do not overlap.
+            let atoms: Vec<&Placed> = lay.placed.iter().filter(|p| p.path.len() == 1).collect();
+            for (i, a) in atoms.iter().enumerate() {
+                for b in &atoms[i + 1..] {
+                    let a_box = a.rect.expand(-0.01);
+                    assert!(
+                        !a_box.intersects(b.rect),
+                        "{width}: {:?} {:?} and {:?} {:?} overlap",
+                        a.path,
+                        a.rect,
+                        b.path,
+                        b.rect
+                    );
+                }
+            }
+        }
     }
 }

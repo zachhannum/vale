@@ -136,7 +136,8 @@ fn grab_at<P: Clone>(lay: &Layout, field: &Field<P>, pos: Pos2, m: &Metrics) -> 
     if let Some(p) = (lay.placed.iter().rev()).find(|p| atom(&p.kind) && p.rect.contains(pos)) {
         return Some(p.path.clone());
     }
-    let tag = vec2(0.0, m.line_gap / 2.0);
+    // The tag of a group sits on the top line of its frame.
+    let tag = vec2(0.0, m.tag_height() / 2.0);
     let frame = (lay.placed.iter().rev())
         .filter(|p| p.kind == PlacedKind::Frame)
         .find(|p| p.rect.expand2(tag).contains(pos))?;
