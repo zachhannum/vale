@@ -7,9 +7,9 @@ use std::f64::consts::PI;
 
 use crate::frame::LonLat;
 
-type V3 = [f64; 3];
+pub(crate) type V3 = [f64; 3];
 
-fn vec(p: LonLat) -> V3 {
+pub(crate) fn vec(p: LonLat) -> V3 {
     let (lon, lat) = (p[0].to_radians(), p[1].to_radians());
     [lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin()]
 }
@@ -24,11 +24,11 @@ fn lonlat(v: V3) -> LonLat {
     [lon, lat]
 }
 
-fn dot(a: V3, b: V3) -> f64 {
+pub(crate) fn dot(a: V3, b: V3) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
-fn cross(a: V3, b: V3) -> V3 {
+pub(crate) fn cross(a: V3, b: V3) -> V3 {
     [
         a[1] * b[2] - a[2] * b[1],
         a[2] * b[0] - a[0] * b[2],
@@ -36,7 +36,7 @@ fn cross(a: V3, b: V3) -> V3 {
     ]
 }
 
-fn norm(a: V3) -> f64 {
+pub(crate) fn norm(a: V3) -> f64 {
     dot(a, a).sqrt()
 }
 
@@ -130,7 +130,7 @@ fn on_arc(p: V3, a: V3, b: V3, n: V3) -> bool {
     dot(cross(a, p), n) >= 0.0 && dot(cross(p, b), n) >= 0.0
 }
 
-fn arcs_cross(a: V3, b: V3, c: V3, d: V3) -> bool {
+pub(crate) fn arcs_cross(a: V3, b: V3, c: V3, d: V3) -> bool {
     let (n1, n2) = (cross(a, b), cross(c, d));
     let t = cross(n1, n2);
     if norm(t) < 1e-12 {
