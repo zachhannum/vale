@@ -289,7 +289,7 @@ A large vector layer has simplified copies at four levels. On an Earth-size worl
 
 The simplification keeps the shared edges of polygons. It splits the boundaries of the layer into arcs between the points where three or more features meet. It simplifies each arc one time, and each feature that has the arc gets the same points. Where two simplified lines cross, it puts back points until no lines cross. A feature that is smaller than a level is not in the copy of that level.
 
-The globe, the flat view, and the map frames on the screen draw the coarsest level that is finer than one pixel. If that level is not ready, they draw the next finer level that is ready, or the full geometry.
+The globe and the flat view draw the coarsest level that is finer than one pixel. A map frame on the screen keeps its display lists at each zoom of the page, so it draws the coarsest level that is finer than one pixel at the highest zoom. If that level is not ready, the views draw the next finer level that is ready, or the full geometry. A map frame composes its lists again when a level is ready.
 
 The copies of each layer build on a worker thread, after the first draw of the layer. An edit builds the copies of only that layer again, after the edit stops. A layer with fewer than 20,000 points has no copies.
 

@@ -2638,7 +2638,7 @@ const PAGE_POINTS: FrameTarget = FrameTarget {
 
 /// Composes the display lists of a frame in page points, over its box and
 /// `reach` page points around it. `vt` is the view of the map in page
-/// points.
+/// points, and `detail` is the geometry of its vector layers.
 fn build_lists(
     state: &mut AppState,
     frame: &FrameRecord,
