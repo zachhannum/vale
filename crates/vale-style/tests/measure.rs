@@ -126,15 +126,17 @@ fn the_position_is_the_center_of_the_feature() {
     let line = Geometry::Lines(vec![vec![[0.0, 0.0], [40.0, 0.0]]]);
     assert!(close(number("@lon", &line, EARTH), 20.0, 1e-9));
     assert!(number("@lat", &line, EARTH).abs() < 1e-9);
-    let square = polygon(vec![vec![
-        [-5.0, 45.0],
-        [5.0, 45.0],
-        [5.0, 55.0],
-        [-5.0, 55.0],
-    ]]);
-    assert!(number("@lon", &square, EARTH).abs() < 1e-9);
-    let lat = number("@lat", &square, EARTH);
-    assert!(lat > 50.0 && lat < 50.5, "{lat}");
+    // The exact center of a box between two meridians and two parallels.
+    let (half, lat) = (10f64.to_radians(), [40f64.to_radians(), 60f64.to_radians()]);
+    let x = 2.0
+        * half.sin()
+        * ((lat[1] - lat[0]) / 2.0 + ((2.0 * lat[1]).sin() - (2.0 * lat[0]).sin()) / 4.0);
+    let z = 2.0 * half * (lat[1].sin().powi(2) - lat[0].sin().powi(2)) / 2.0;
+    let exact = z.atan2(x).to_degrees();
+    let shape = lat_lon_box([-10.0, 10.0], [40.0, 60.0]);
+    assert!(number("@lon", &shape, EARTH).abs() < 1e-9);
+    let lat = number("@lat", &shape, EARTH);
+    assert!((lat - exact).abs() < 1e-4, "{lat} {exact}");
 }
 
 #[test]
