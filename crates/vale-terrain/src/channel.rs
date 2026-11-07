@@ -6,6 +6,9 @@
 //! area. A large river on a low slope also gets a flat floodplain beside the
 //! channel.
 //!
+//! The Glacial mode cuts a wide valley along the same rivers, with a flat
+//! floor and steep sides.
+//!
 //! Each river node gives one curve of two straight pieces. A grid of bins
 //! lists the curves near each bin, so a texel tests only a few curves.
 
@@ -39,6 +42,17 @@ pub const PLAIN_AREAS_KM2: (f64, f64) = (1.0e5, 1.0e6);
 /// A river has a full floodplain up to the first slope, and no floodplain
 /// from the second slope, in meters for each meter.
 pub const PLAIN_SLOPES: (f64, f64) = (2.0e-4, 1.0e-3);
+
+/// The width of a glacial valley over the width of the channel of the same
+/// river.
+pub const VALLEY_WIDTH_FACTOR: f64 = 10.0;
+
+/// The part of the half-width of a glacial valley that is flat floor.
+pub const VALLEY_FLOOR_PART: f64 = 0.4;
+
+/// The height of the side of a glacial valley at its edge, over the height of
+/// the river level above the floor.
+pub const VALLEY_WALL_RISE: f64 = 2.0;
 
 /// The radius of the world of `ChannelShape::default`, in kilometers.
 const DEFAULT_WORLD_KM: f64 = 6371.0;
@@ -254,6 +268,67 @@ impl ChannelCut {
     }
 }
 
+/// The values of one Glacial stamp that the valleys need.
+#[derive(Clone, Copy, Debug)]
+pub struct GlacialCut {
+    pub shape: ChannelShape,
+    /// The depth of the floor below the river level for the largest rivers,
+    /// in 16-bit steps.
+    pub strength: f64,
+    /// The depth of the floor below sea level at the coast, in 16-bit steps.
+    pub depth: f64,
+    /// The level of the sea.
+    pub sea: f64,
+    /// The angle of one texel step of the heightmap, in radians.
+    pub texel: f64,
+}
+
+impl GlacialCut {
+    /// The half-width of the valley for a drained area. It is half a texel
+    /// at least.
+    pub fn half_width(&self, area: f64) -> f64 {
+        (0.5 * VALLEY_WIDTH_FACTOR * self.shape.width_at(area)).max(0.5 * self.texel)
+    }
+
+    /// The level of the valley floor at a river level and a channel size.
+    /// The floor is `strength` times the size below the river level. A floor
+    /// below sea level goes to `depth` below sea level at most, where the
+    /// river level is sea level.
+    pub fn floor(&self, level: f64, size: f64) -> f64 {
+        let drop = self.strength * size;
+        let land = level - drop;
+        if drop <= 0.0 {
+            return level;
+        }
+        if land >= self.sea {
+            return land;
+        }
+        self.sea - self.depth * ((self.sea - land) / drop).min(1.0)
+    }
+
+    /// The level of a texel at `old` after the cut of the valley of one
+    /// curve. The target is the floor out to `VALLEY_FLOOR_PART` of the
+    /// half-width. Past it, the target goes up with the square of the
+    /// distance, to `VALLEY_WALL_RISE` times the height of the river level
+    /// above the floor at the half-width. A stamp lowers the texel by
+    /// `amount` times that height at most, and the change goes down to 0
+    /// over one texel past the half-width.
+    pub fn valley(&self, curve: &ChannelCurve, p: V3, old: f64, amount: f64) -> f64 {
+        let (distance, [level, area, _]) = curve.nearest(p);
+        let half = self.half_width(area);
+        let floor = self.floor(level, channel_size(area));
+        let s = distance / half;
+        let target = if s <= VALLEY_FLOOR_PART {
+            floor
+        } else {
+            let t = ((s - VALLEY_FLOOR_PART) / (1.0 - VALLEY_FLOOR_PART)).min(1.0);
+            floor + VALLEY_WALL_RISE * (level - floor) * t * t
+        };
+        let weight = 1.0 - ((distance - half) / self.texel).clamp(0.0, 1.0);
+        toward(old, target, amount * (level - floor) * weight)
+    }
+}
+
 /// The bins of the curves.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Bins {
@@ -289,13 +364,16 @@ pub struct ChannelBuffers {
     pub index: Vec<u32>,
 }
 
-/// The largest reach of the cut of a curve past its line, in radians, at
-/// the largest settings. It does not hold the texel ramps.
+/// The largest reach of the cut of a curve or of its glacial valley past its
+/// line, in radians, at the largest settings. It does not hold the texel
+/// ramps.
 fn reach(curve: &ChannelCurve, world_km: f64) -> f64 {
     let largest = ChannelShape::new(CHANNEL_WIDTHS_KM.1, FLOODPLAINS_KM.1, world_km);
     (0..3)
         .map(|i| {
-            0.5 * largest.width_at(curve.areas[i]) + 0.5 * curve.plains[i] * largest.floodplain
+            let width = 0.5 * largest.width_at(curve.areas[i]);
+            let channel = width + 0.5 * curve.plains[i] * largest.floodplain;
+            channel.max(VALLEY_WIDTH_FACTOR * width)
         })
         .fold(0.0, f64::max)
 }
@@ -466,6 +544,16 @@ impl ChannelLines {
         }
     }
 
+    /// The new level of a texel at `old` in `bin` after a Glacial stamp with
+    /// an effect of `amount`. `p` is the direction of the texel. The lowest
+    /// result of the valleys wins.
+    pub fn glacial(&self, bin: usize, p: V3, old: f64, amount: f64, cut: &GlacialCut) -> f64 {
+        let each = self
+            .near(bin)
+            .map(|curve| cut.valley(curve, p, old, amount));
+        each.fold(old, f64::min)
+    }
+
     /// The drop of the erode brush at a texel in `bin` from the channels of
     /// the curves. The level of a curve of the erode brush is its drop. The
     /// largest drop of a channel times its weight wins. `cut` gives the
@@ -615,6 +703,98 @@ mod tests {
         let (d, _) = curve.nearest(lonlat_to_dir(0.25, 0.01));
         assert!((d - 0.01f64.to_radians()).abs() < 1e-6, "{d}");
         assert!(angle(curve.points[0], curve.points[2]) > 0.0);
+    }
+
+    fn glacial_cut(depth: f64) -> GlacialCut {
+        GlacialCut {
+            shape: ChannelShape::default(),
+            strength: 1000.0,
+            depth,
+            sea: 32768.0,
+            texel: 1.0e-5,
+        }
+    }
+
+    /// A straight river along the equator at a level and a drained area.
+    fn straight(level: f64, area: f64) -> ChannelCurve {
+        ChannelCurve {
+            points: [-1.0, 0.0, 1.0].map(|lon| lonlat_to_dir(lon, 0.0)),
+            levels: [level; 3],
+            areas: [area; 3],
+            plains: [0.0; 3],
+        }
+    }
+
+    /// The level after 100 full Glacial stamps at an angle from the river,
+    /// for ground at `old`.
+    fn valley_at(cut: &GlacialCut, curve: &ChannelCurve, radians: f64, old: f64) -> f64 {
+        let p = lonlat_to_dir(0.0, radians.to_degrees());
+        (0..100).fold(old, |level, _| cut.valley(curve, p, level, 1.0))
+    }
+
+    #[test]
+    fn glacial_valley_of_a_larger_river_is_wider() {
+        let cut = glacial_cut(0.0);
+        let (small, large) = (km2(1.0e4), km2(1.0e6));
+        let ratio = cut.half_width(large) / cut.half_width(small);
+        assert!((ratio - 10.0).abs() < 1e-9, "{ratio}");
+        // Half of the default channel width times the factor.
+        let km = cut.half_width(large) * EARTH_KM;
+        assert!((km - 0.5 * VALLEY_WIDTH_FACTOR * CHANNEL_WIDTH_KM).abs() < 1e-9);
+        // A place beside the large river is in its valley, and the same
+        // place beside the small river is not.
+        let beside = 0.5 * cut.half_width(large);
+        let old = 50000.0;
+        assert!(valley_at(&cut, &straight(40000.0, large), beside, old) < old);
+        assert_eq!(valley_at(&cut, &straight(40000.0, small), beside, old), old);
+    }
+
+    #[test]
+    fn glacial_profile_is_flat_then_steep() {
+        let cut = glacial_cut(0.0);
+        let curve = straight(40000.0, km2(1.0e6));
+        let half = cut.half_width(km2(1.0e6));
+        let old = 60000.0;
+        let drop = 1000.0 * channel_size(km2(1.0e6));
+        let floor = cut.floor(40000.0, channel_size(km2(1.0e6)));
+        assert_eq!(floor, 40000.0 - drop);
+        let profile: Vec<f64> = (0..=20)
+            .map(|i| valley_at(&cut, &curve, half * f64::from(i) / 20.0, old))
+            .collect();
+        for (i, level) in profile.iter().enumerate() {
+            if i <= 7 {
+                assert_eq!(*level, floor, "{i}");
+            }
+        }
+        // Each step of the side rises more than the step before it.
+        for i in 9..20 {
+            let (a, b) = (profile[i] - profile[i - 1], profile[i + 1] - profile[i]);
+            assert!(b > a && a > 0.0, "{i} {profile:?}");
+        }
+        assert!((profile[20] - (floor + VALLEY_WALL_RISE * drop)).abs() < 1.0);
+        // Past the half-width and one texel, the ground stays.
+        assert_eq!(valley_at(&cut, &curve, half + 2.0 * cut.texel, old), old);
+        // Ground below the target stays, and one stamp lowers the ground by
+        // the height of the river above the floor at most.
+        assert_eq!(valley_at(&cut, &curve, 0.0, 38000.0), 38000.0);
+        assert_eq!(cut.valley(&curve, curve.points[1], old, 1.0), old - drop);
+    }
+
+    #[test]
+    fn glacial_floor_goes_below_sea_level_by_the_depth_at_the_coast() {
+        let sea = 32768.0;
+        for depth in [0.0, 300.0] {
+            let cut = glacial_cut(depth);
+            // Far above the sea, the floor is the strength below the river.
+            assert_eq!(cut.floor(sea + 5000.0, 1.0), sea + 4000.0);
+            // At the coast, the floor is the depth below the sea.
+            assert_eq!(cut.floor(sea, 1.0), sea - depth);
+            assert_eq!(cut.floor(sea, 0.25), sea - depth);
+            // Between them, it goes down to the sea and then to the depth.
+            let mid = cut.floor(sea + 500.0, 1.0);
+            assert_eq!(mid, sea - 0.5 * depth);
+            assert!(mid <= sea);
+        }
     }
 
     #[test]
