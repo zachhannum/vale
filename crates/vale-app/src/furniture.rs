@@ -401,6 +401,7 @@ pub fn items(
             None => placeholder(),
         },
         Furniture::Legend(item) => legend_items(doc, projection, frame, item, rect, unit, fonts),
+        Furniture::ColorKey(_) => Vec::new(),
     }
 }
 

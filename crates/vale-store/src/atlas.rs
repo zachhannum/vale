@@ -650,8 +650,8 @@ impl Default for Graticule {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct FurnitureId(pub u32);
 
-/// An item of furniture on a page: text, a legend, a scale bar, or a north
-/// arrow.
+/// An item of furniture on a page: text, a legend, a scale bar, a north
+/// arrow, or a color key.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FurnitureRecord {
     pub id: FurnitureId,
@@ -667,6 +667,7 @@ pub enum Furniture {
     Legend(LegendItem),
     ScaleBar(ScaleBarItem),
     NorthArrow(NorthArrowItem),
+    ColorKey(ColorKeyItem),
 }
 
 /// The text style of a part of an item of furniture. It has the text
@@ -811,6 +812,81 @@ pub struct LegendEntry {
     pub hidden: bool,
 }
 
+/// A key of the color bands of one raster layer of the map of a frame.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ColorKeyItem {
+    /// `None`: the key has no frame.
+    pub frame: Option<FrameId>,
+    /// `None`: the key has no layer.
+    pub layer: Option<LayerId>,
+    pub layout: KeyLayout,
+    /// A strip of a height layer has a row for the sea and a row for the
+    /// land.
+    pub split_at_sea_level: bool,
+    /// The values of a strip in a second unit, below the strip.
+    pub second_unit: Option<SecondUnit>,
+    /// A list shows the name of each band inside its box.
+    pub names_in_boxes: bool,
+    /// An empty title does not show.
+    pub title: String,
+    pub title_style: FurnitureText,
+    pub value_style: FurnitureText,
+    /// The changes to the bands, keyed by the name of the band, or by the
+    /// value of its lower edge for a band with no name. A band with no
+    /// change has no key.
+    pub bands: BTreeMap<String, LegendEntry>,
+}
+
+/// The layout of a color key.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub enum KeyLayout {
+    /// Boxes of equal width in a row, with the values at their edges.
+    #[default]
+    Strip,
+    /// One box for each band in a column, with its text to the right.
+    List,
+}
+
+impl KeyLayout {
+    pub const ALL: [KeyLayout; 2] = [KeyLayout::Strip, KeyLayout::List];
+
+    /// The UI text.
+    pub fn name(self) -> &'static str {
+        match self {
+            KeyLayout::Strip => "Strip",
+            KeyLayout::List => "List",
+        }
+    }
+
+    /// The name in a project file.
+    pub fn id(self) -> &'static str {
+        match self {
+            KeyLayout::Strip => "strip",
+            KeyLayout::List => "list",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<KeyLayout> {
+        KeyLayout::ALL.into_iter().find(|l| l.id() == id)
+    }
+}
+
+/// A second unit of the values of a color key. A value `v` is
+/// `v * factor + offset` in this unit.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SecondUnit {
+    pub name: String,
+    pub factor: f64,
+    pub offset: f64,
+}
+
+impl SecondUnit {
+    /// `v` in this unit.
+    pub fn convert(&self, v: f64) -> f64 {
+        v * self.factor + self.offset
+    }
+}
+
 /// A north arrow that points to the north of a frame.
 #[derive(Clone, Debug, PartialEq)]
 pub struct NorthArrowItem {
@@ -832,16 +908,18 @@ impl Furniture {
             Furniture::Legend(_) => "legend",
             Furniture::ScaleBar(_) => "scale_bar",
             Furniture::NorthArrow(_) => "north_arrow",
+            Furniture::ColorKey(_) => "color_key",
         }
     }
 
-    /// The frame of a legend, a scale bar, or a north arrow.
+    /// The frame of a legend, a scale bar, a north arrow, or a color key.
     pub fn frame(&self) -> Option<FrameId> {
         match self {
             Furniture::Text(_) => None,
             Furniture::Legend(i) => i.frame,
             Furniture::ScaleBar(i) => i.frame,
             Furniture::NorthArrow(i) => i.frame,
+            Furniture::ColorKey(i) => i.frame,
         }
     }
 
@@ -852,6 +930,7 @@ impl Furniture {
             Furniture::Legend(i) => i.frame = frame,
             Furniture::ScaleBar(i) => i.frame = frame,
             Furniture::NorthArrow(i) => i.frame = frame,
+            Furniture::ColorKey(i) => i.frame = frame,
         }
     }
 
@@ -863,6 +942,7 @@ impl Furniture {
             Furniture::Legend(i) => i.to_json(),
             Furniture::ScaleBar(i) => i.to_json(),
             Furniture::NorthArrow(i) => i.to_json(),
+            Furniture::ColorKey(i) => i.to_json(),
         }
     }
 
@@ -874,6 +954,7 @@ impl Furniture {
             "legend" => Furniture::Legend(LegendItem::from_json(text)?),
             "scale_bar" => Furniture::ScaleBar(ScaleBarItem::from_json(text)?),
             "north_arrow" => Furniture::NorthArrow(NorthArrowItem::from_json(text)?),
+            "color_key" => Furniture::ColorKey(ColorKeyItem::from_json(text)?),
             _ => return None,
         };
         item.set_frame(frame);
@@ -1138,6 +1219,100 @@ impl Default for LegendItem {
             },
             entry_style: FurnitureText::default(),
             entries: BTreeMap::new(),
+        }
+    }
+}
+
+impl ColorKeyItem {
+    /// The item with no frame as JSON text, for a project file. The bands
+    /// are a list of objects with the keys `key`, `name`, and `hidden`.
+    pub fn to_json(&self) -> String {
+        let mut map = JsonMap::new();
+        map.insert("layer".into(), serde_json::json!(self.layer.map(|l| l.0)));
+        map.insert("layout".into(), self.layout.id().into());
+        map.insert("split".into(), self.split_at_sea_level.into());
+        let unit = self
+            .second_unit
+            .as_ref()
+            .map(|u| serde_json::json!({"name": u.name, "factor": u.factor, "offset": u.offset}));
+        map.insert("second_unit".into(), serde_json::json!(unit));
+        map.insert("names_in_boxes".into(), self.names_in_boxes.into());
+        map.insert("title".into(), self.title.clone().into());
+        map.insert("title_style".into(), self.title_style.value());
+        map.insert("value_style".into(), self.value_style.value());
+        let bands = self
+            .bands
+            .iter()
+            .map(|(key, e)| serde_json::json!({"key": key, "name": e.name, "hidden": e.hidden}));
+        map.insert("bands".into(), bands.collect());
+        serde_json::Value::Object(map).to_string()
+    }
+
+    /// Reads [`ColorKeyItem::to_json`]. A missing key gets its default, and
+    /// an unknown key is ignored. `None` if a value is bad.
+    pub fn from_json(text: &str) -> Option<ColorKeyItem> {
+        let map = json_object(text)?;
+        let mut item = ColorKeyItem::default();
+        match map.get("layer") {
+            None | Some(serde_json::Value::Null) => {}
+            Some(v) => item.layer = Some(LayerId(u32::try_from(v.as_u64()?).ok()?)),
+        }
+        if let Some(v) = map.get("layout") {
+            item.layout = KeyLayout::from_id(v.as_str()?)?;
+        }
+        read_flag(&map, "split", &mut item.split_at_sea_level)?;
+        match map.get("second_unit") {
+            None | Some(serde_json::Value::Null) => {}
+            Some(v) => {
+                let v = v.as_object()?;
+                let mut unit = SecondUnit {
+                    name: String::new(),
+                    factor: 1.0,
+                    offset: 0.0,
+                };
+                read_string(v, "name", &mut unit.name)?;
+                read_number(v, "factor", &mut unit.factor)?;
+                read_number(v, "offset", &mut unit.offset)?;
+                item.second_unit = Some(unit);
+            }
+        }
+        read_flag(&map, "names_in_boxes", &mut item.names_in_boxes)?;
+        read_string(&map, "title", &mut item.title)?;
+        item.title_style = item.title_style.read_key(&map, "title_style")?;
+        item.value_style = item.value_style.read_key(&map, "value_style")?;
+        if let Some(bands) = map.get("bands") {
+            for band in bands.as_array()? {
+                let band = band.as_object()?;
+                let key = band.get("key")?.as_str()?.to_string();
+                let mut e = LegendEntry::default();
+                match band.get("name") {
+                    None | Some(serde_json::Value::Null) => {}
+                    Some(v) => e.name = Some(v.as_str()?.to_string()),
+                }
+                read_flag(band, "hidden", &mut e.hidden)?;
+                item.bands.insert(key, e);
+            }
+        }
+        Some(item)
+    }
+}
+
+impl Default for ColorKeyItem {
+    fn default() -> Self {
+        ColorKeyItem {
+            frame: None,
+            layer: None,
+            layout: KeyLayout::Strip,
+            split_at_sea_level: true,
+            second_unit: None,
+            names_in_boxes: false,
+            title: String::new(),
+            title_style: FurnitureText {
+                weight: 700.0,
+                ..FurnitureText::sized(11.0)
+            },
+            value_style: FurnitureText::sized(8.0),
+            bands: BTreeMap::new(),
         }
     }
 }
@@ -1956,6 +2131,39 @@ mod tests {
             letter_style: styled(),
         };
         round_trip(Furniture::NorthArrow(arrow), frame);
+        let mut bands = BTreeMap::new();
+        let renamed = LegendEntry {
+            name: Some("Lowland".into()),
+            hidden: false,
+        };
+        bands.insert("Cfb".into(), renamed);
+        let hidden = LegendEntry {
+            name: None,
+            hidden: true,
+        };
+        bands.insert("-200".into(), hidden);
+        for unit in [
+            None,
+            Some(SecondUnit {
+                name: "feet".into(),
+                factor: 3.28084,
+                offset: 0.0,
+            }),
+        ] {
+            let key = ColorKeyItem {
+                frame,
+                layer: Some(LayerId(5)),
+                layout: KeyLayout::List,
+                split_at_sea_level: false,
+                second_unit: unit,
+                names_in_boxes: true,
+                title: "Height".into(),
+                title_style: styled(),
+                value_style: FurnitureText::sized(6.0),
+                bands: bands.clone(),
+            };
+            round_trip(Furniture::ColorKey(key), frame);
+        }
         assert_eq!(Furniture::from_json("compass", "{}", None), None);
     }
 
@@ -1971,6 +2179,11 @@ mod tests {
         let arrow = NorthArrowItem::from_json("{}").unwrap();
         assert_eq!(arrow, NorthArrowItem::default());
         assert!(arrow.hide_if_varies);
+        let key = ColorKeyItem::from_json("{}").unwrap();
+        assert_eq!(key, ColorKeyItem::default());
+        assert_eq!((key.layer, key.layout), (None, KeyLayout::Strip));
+        assert!(key.split_at_sea_level && key.second_unit.is_none());
+        assert_eq!(ColorKeyItem::from_json(r#"{"layout": "grid"}"#), None);
         // The text keys of an older legend are the style of its title and
         // its entries.
         let old = r##"{"title": "Key", "size": 6, "weight": 400, "color": "102030"}"##;

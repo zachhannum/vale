@@ -35,7 +35,7 @@ use crate::{
 };
 
 /// The version of the `vale_` tables that this code writes.
-pub const FORMAT_VERSION: u32 = 36;
+pub const FORMAT_VERSION: u32 = 37;
 
 /// One step for each format version. Step `n` changes a file of version `n`
 /// to version `n + 1`. A new version adds a step and never changes an old one.
@@ -76,6 +76,7 @@ const MIGRATIONS: &[fn(&Transaction) -> rusqlite::Result<()>] = &[
     v34,
     v35,
     undo::v36,
+    v37,
 ];
 
 /// `GPKG` in ASCII.
@@ -1266,6 +1267,35 @@ fn v35(tx: &Transaction) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// The color keys of the pages and the names of the bands of a raster. An
+/// older raster has no band names.
+fn v37(tx: &Transaction) -> rusqlite::Result<()> {
+    tx.execute_batch(
+        "CREATE TABLE vale_furniture_v37 (
+           id INTEGER PRIMARY KEY,
+           page_id INTEGER NOT NULL REFERENCES vale_page(id),
+           position INTEGER NOT NULL,
+           kind TEXT NOT NULL
+             CHECK (kind IN ('text', 'legend', 'scale_bar', 'north_arrow', 'color_key')),
+           x0 REAL NOT NULL,
+           y0 REAL NOT NULL,
+           x1 REAL NOT NULL,
+           y1 REAL NOT NULL,
+           frame_id INTEGER,
+           props TEXT NOT NULL,
+           UNIQUE (page_id, position));
+         INSERT INTO vale_furniture_v37 SELECT * FROM vale_furniture;
+         DROP TABLE vale_furniture;
+         ALTER TABLE vale_furniture_v37 RENAME TO vale_furniture;",
+    )?;
+    let sql = "SELECT count(*) FROM pragma_table_info('vale_raster') WHERE name = 'names'";
+    let count: i64 = tx.query_row(sql, [], |r| r.get(0))?;
+    if count == 0 {
+        tx.execute_batch("ALTER TABLE vale_raster ADD COLUMN names TEXT NOT NULL DEFAULT ''")?;
+    }
+    Ok(())
+}
+
 /// The point symbols that the user adds. An older file has none.
 fn v27(tx: &Transaction) -> rusqlite::Result<()> {
     tx.execute_batch(
@@ -2418,6 +2448,24 @@ fn parse_stops(text: &str) -> Vec<Stop> {
     }
 }
 
+/// The band names as a JSON list. No names give an empty text.
+fn names_text(names: &[String]) -> String {
+    if names.is_empty() {
+        String::new()
+    } else {
+        serde_json::json!(names).to_string()
+    }
+}
+
+/// The band names of [`names_text`]. Names that are not valid, or not one
+/// for each of `bands`, give no names.
+fn parse_names(text: &str, bands: usize) -> Vec<String> {
+    serde_json::from_str::<Vec<String>>(text)
+        .ok()
+        .filter(|n| n.len() == bands)
+        .unwrap_or_default()
+}
+
 /// The stops and the band colors of a raster. Colors that are not valid, or
 /// not one fewer than the stops, give no stops and no colors.
 fn parse_bands(stops: &str, colors: &str) -> (Vec<Stop>, Vec<Rgb>) {
@@ -2476,9 +2524,10 @@ fn write_rasters(tx: &Transaction, project: &Project) -> Result<(), StoreError> 
             "INSERT INTO vale_raster (id, face_size, unit, value_min, value_max, base,
                opacity, display, stops, colors, smooth, feature_size, hillshade,
                hillshade_opacity, hillshade_highlights, hillshade_azimuth,
-               hillshade_altitude, hillshade_exaggeration, hillshade_color, rivers, lines, blend)
+               hillshade_altitude, hillshade_exaggeration, hillshade_color, rivers, lines, blend,
+               names)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
-               ?16, ?17, ?18, ?19, ?20, ?21, ?22)
+               ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)
              ON CONFLICT (id) DO UPDATE SET
                face_size = excluded.face_size, unit = excluded.unit,
                value_min = excluded.value_min, value_max = excluded.value_max,
@@ -2495,7 +2544,7 @@ fn write_rasters(tx: &Transaction, project: &Project) -> Result<(), StoreError> 
                hillshade_exaggeration = excluded.hillshade_exaggeration,
                hillshade_color = excluded.hillshade_color,
                rivers = excluded.rivers, lines = excluded.lines,
-               blend = excluded.blend",
+               blend = excluded.blend, names = excluded.names",
             params![
                 r.id.0,
                 r.face_size,
@@ -2519,6 +2568,7 @@ fn write_rasters(tx: &Transaction, project: &Project) -> Result<(), StoreError> 
                 r.rivers,
                 r.lines,
                 r.blend.id(),
+                names_text(&r.names),
             ],
         )?;
     }
@@ -2649,7 +2699,7 @@ fn load_rasters(conn: &Connection) -> Result<Vec<Raster>, StoreError> {
         "SELECT id, face_size, unit, value_min, value_max, base, opacity, display, stops,
            colors, smooth, feature_size, hillshade, hillshade_opacity,
            hillshade_highlights, hillshade_azimuth, hillshade_altitude,
-           hillshade_exaggeration, hillshade_color, rivers, lines, blend
+           hillshade_exaggeration, hillshade_color, rivers, lines, blend, names
          FROM vale_raster ORDER BY id",
     )?;
     let mut rows = rows.query([])?;
@@ -2660,6 +2710,7 @@ fn load_rasters(conn: &Connection) -> Result<Vec<Raster>, StoreError> {
         let (face_size, base): (i64, i64) = (r.get(1)?, r.get(5)?);
         let text = |i: usize| r.get::<_, String>(i);
         let (stops, colors) = parse_bands(&text(8)?, &text(9)?);
+        let names = parse_names(&text(22)?, colors.len());
         rasters.push(Raster {
             id: RasterId(id),
             opacity: clamp_opacity(r.get::<_, f64>(6)? as f32),
@@ -2674,6 +2725,7 @@ fn load_rasters(conn: &Connection) -> Result<Vec<Raster>, StoreError> {
             base: u16::try_from(base).map_err(|_| bad("base"))?,
             stops,
             colors,
+            names,
             smoothing: Smoothing {
                 on: r.get::<_, i64>(10)? != 0,
                 feature_size: clamp_feature_size(r.get::<_, f64>(11)? as f32),
@@ -3820,7 +3872,8 @@ mod tests {
     /// The legend, the scale bar, and the north arrow link to the frame.
     fn furniture_edit(project: &mut Project) -> FrameId {
         use crate::atlas::{
-            LegendEntry, LegendItem, NorthArrowItem, ScaleBarItem, TextAlign, TextItem,
+            ColorKeyItem, KeyLayout, LegendEntry, LegendItem, NorthArrowItem, ScaleBarItem,
+            SecondUnit, TextAlign, TextItem,
         };
         let towns = project.layers()[0].id;
         let atlas = &mut project.atlas;
@@ -3869,11 +3922,31 @@ mod tests {
             color: [0xc0, 0x10, 0x10, 0xff],
             ..NorthArrowItem::default()
         };
+        let mut key = ColorKeyItem {
+            frame: Some(frame),
+            layer: Some(towns),
+            layout: KeyLayout::List,
+            second_unit: Some(SecondUnit {
+                name: "feet".into(),
+                factor: 3.28084,
+                offset: 0.0,
+            }),
+            title: "Height".into(),
+            ..ColorKeyItem::default()
+        };
+        key.bands.insert(
+            "1000".into(),
+            LegendEntry {
+                name: None,
+                hidden: true,
+            },
+        );
         for (rect, item) in [
             ([20.0, 5.0, 180.0, 15.0], Furniture::Text(title)),
             ([210.0, 20.0, 280.0, 90.0], Furniture::Legend(legend)),
             ([210.0, 100.0, 280.0, 110.0], Furniture::ScaleBar(bar)),
             ([260.0, 120.0, 280.0, 145.5], Furniture::NorthArrow(arrow)),
+            ([20.0, 160.0, 120.0, 180.0], Furniture::ColorKey(key)),
         ] {
             atlas.add_furniture(page, rect, item).unwrap();
         }
@@ -3894,9 +3967,11 @@ mod tests {
         assert_eq!(loaded.atlas, project.atlas);
         let furniture = &loaded.atlas.pages[0].furniture;
         let kinds: Vec<_> = furniture.iter().map(|f| f.item.kind_id()).collect();
-        assert_eq!(kinds, ["text", "legend", "scale_bar", "north_arrow"]);
+        let want = ["text", "legend", "scale_bar", "north_arrow", "color_key"];
+        assert_eq!(kinds, want);
         let frames: Vec<_> = furniture.iter().map(|f| f.item.frame()).collect();
-        assert_eq!(frames, [None, Some(frame), Some(frame), Some(frame)]);
+        let linked = Some(frame);
+        assert_eq!(frames, [None, linked, linked, linked, linked]);
         let Furniture::Legend(legend) = &furniture[1].item else {
             panic!("not a legend");
         };
@@ -3922,7 +3997,7 @@ mod tests {
         drop(file);
         let (_, loaded) = ProjectFile::open(&path(&dir)).unwrap();
         let furniture = &loaded.atlas.pages[0].furniture;
-        assert_eq!(furniture.len(), 4);
+        assert_eq!(furniture.len(), 5);
         assert!(furniture.iter().all(|f| f.item.frame().is_none()));
 
         // A row with the ID of a frame that the file does not have.
@@ -4490,6 +4565,64 @@ mod tests {
     }
 
     #[test]
+    fn a_file_of_version_36_opens_and_takes_a_color_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut project, height, _) = rasters();
+        project.raster_mut(height).unwrap().names.clear();
+        project.add_layer("Towns".into(), GeometryKind::Point, None, vec![]);
+        drop(ProjectFile::create(&path(&dir), &project).unwrap());
+        let conn = Connection::open(path(&dir)).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE vale_furniture_v36 (
+               id INTEGER PRIMARY KEY,
+               page_id INTEGER NOT NULL REFERENCES vale_page(id),
+               position INTEGER NOT NULL,
+               kind TEXT NOT NULL
+                 CHECK (kind IN ('text', 'legend', 'scale_bar', 'north_arrow')),
+               x0 REAL NOT NULL,
+               y0 REAL NOT NULL,
+               x1 REAL NOT NULL,
+               y1 REAL NOT NULL,
+               frame_id INTEGER,
+               props TEXT NOT NULL,
+               UNIQUE (page_id, position));
+             DROP TABLE vale_furniture;
+             ALTER TABLE vale_furniture_v36 RENAME TO vale_furniture;
+             ALTER TABLE vale_raster DROP COLUMN names;",
+        )
+        .unwrap();
+        drop(conn);
+        set_format_version(&dir, 36);
+
+        let (mut file, mut loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(format_version(&file.conn).unwrap(), FORMAT_VERSION);
+        assert_eq!(loaded, project);
+        furniture_edit(&mut loaded);
+        file.save(&loaded).unwrap();
+        drop(file);
+        let (_, again) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(again.atlas, loaded.atlas);
+    }
+
+    #[test]
+    fn the_band_names_of_a_raster_survive_a_close_and_an_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let (project, height, rain) = rasters();
+        drop(ProjectFile::create(&path(&dir), &project).unwrap());
+        let (_, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        let names = &loaded.raster(height).unwrap().names;
+        assert_eq!(names, &["Deep", "Low, \"wet\""]);
+        assert!(loaded.raster(rain).unwrap().names.is_empty());
+        // Names that are not one for each band are dropped.
+        let conn = Connection::open(path(&dir)).unwrap();
+        let sql = "UPDATE vale_raster SET names = '[\"Deep\"]' WHERE id = ?1";
+        conn.execute(sql, [height.0]).unwrap();
+        drop(conn);
+        let (_, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert!(loaded.raster(height).unwrap().names.is_empty());
+    }
+
+    #[test]
     fn a_file_of_version_33_has_white_paper_and_no_frame_border() {
         let dir = tempfile::tempdir().unwrap();
         let mut project = Project::new(World::default());
@@ -4876,6 +5009,7 @@ mod tests {
                 stop(1234.5678),
             ],
             colors: vec![[0, 1, 2], [250, 128, 7]],
+            names: vec!["Deep".into(), "Low, \"wet\"".into()],
             smoothing: Smoothing::default(),
             hillshade: Hillshade::default(),
             rivers: true,
@@ -5335,7 +5469,8 @@ mod tests {
                 "hillshade_color",
                 "rivers",
                 "lines",
-                "blend"
+                "blend",
+                "names"
             ]
         );
 

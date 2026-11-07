@@ -88,6 +88,7 @@ fn key_of(kind: ItemKind) -> &'static str {
         ItemKind::Legend => "pad-atlas-legend",
         ItemKind::ScaleBar => "pad-atlas-scale-bar",
         ItemKind::NorthArrow => "pad-atlas-north-arrow",
+        ItemKind::ColorKey => "pad-atlas-color-key",
     }
 }
 
@@ -274,6 +275,7 @@ fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, rec: &
                 }
             }
         }
+        Furniture::ColorKey(_) => frame_row(ui, state, controls, rec),
         Furniture::NorthArrow(item) => {
             frame_row(ui, state, controls, rec);
             let c = rgba_rows(

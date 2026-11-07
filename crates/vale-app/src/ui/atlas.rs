@@ -81,6 +81,7 @@ pub enum ItemKind {
     Legend,
     ScaleBar,
     NorthArrow,
+    ColorKey,
 }
 
 impl ItemKind {
@@ -97,6 +98,7 @@ impl ItemKind {
             Furniture::Legend(_) => ItemKind::Legend,
             Furniture::ScaleBar(_) => ItemKind::ScaleBar,
             Furniture::NorthArrow(_) => ItemKind::NorthArrow,
+            Furniture::ColorKey(_) => ItemKind::ColorKey,
         }
     }
 
@@ -107,6 +109,7 @@ impl ItemKind {
             ItemKind::Legend => "Legend",
             ItemKind::ScaleBar => "Scale bar",
             ItemKind::NorthArrow => "North arrow",
+            ItemKind::ColorKey => "Color key",
         }
     }
 
@@ -117,6 +120,7 @@ impl ItemKind {
             ItemKind::Legend => (50.0, 40.0),
             ItemKind::ScaleBar => (60.0, 12.0),
             ItemKind::NorthArrow => (12.0, 18.0),
+            ItemKind::ColorKey => (70.0, 22.0),
         }
     }
 }
@@ -1173,6 +1177,13 @@ pub fn add_item(state: &mut AppState, kind: ItemKind) -> Option<FurnitureId> {
                 ..NorthArrowItem::default()
             };
             (right, bottom, Furniture::NorthArrow(item))
+        }
+        ItemKind::ColorKey => {
+            let item = vale_store::ColorKeyItem {
+                frame,
+                ..vale_store::ColorKeyItem::default()
+            };
+            (left, bottom, Furniture::ColorKey(item))
         }
     };
     let page = page.id;

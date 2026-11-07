@@ -465,6 +465,7 @@ mod tests {
             base: 0,
             stops: Vec::new(),
             colors: Vec::new(),
+            names: Vec::new(),
             opacity: 1.0,
             blend: vale_store::BlendMode::Normal,
         };

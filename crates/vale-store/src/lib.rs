@@ -14,11 +14,11 @@ mod tile;
 mod undo;
 
 pub use atlas::{
-    Atlas, Border, BorderStyle, CoordFormat, EdgeLabels, EdgeOrientation, Edges, FrameId,
-    FrameRecord, FrameShape, Furniture, FurnitureId, FurnitureRecord, FurnitureText, Graticule,
-    GridColumns, LayoutGrid, LegendEntry, LegendItem, MapId, MapRecord, MapStyleId, MapStyleRecord,
-    Neatline, NorthArrowItem, PageId, PageRecord, PageUnits, ProjectionPreset, TextAlign, TextCase,
-    TextItem, title_case,
+    Atlas, Border, BorderStyle, ColorKeyItem, CoordFormat, EdgeLabels, EdgeOrientation, Edges,
+    FrameId, FrameRecord, FrameShape, Furniture, FurnitureId, FurnitureRecord, FurnitureText,
+    Graticule, GridColumns, KeyLayout, LayoutGrid, LegendEntry, LegendItem, MapId, MapRecord,
+    MapStyleId, MapStyleRecord, Neatline, NorthArrowItem, PageId, PageRecord, PageUnits,
+    ProjectionPreset, SecondUnit, TextAlign, TextCase, TextItem, title_case,
 };
 pub use fill::{FillKind, FillPattern};
 pub use gpkg::{
@@ -461,6 +461,9 @@ pub struct Raster {
     /// fewer than stops. Band `i` runs from stop `i` to stop `i + 1`. A copy
     /// of the style of the layer.
     pub colors: Vec<Rgb>,
+    /// The name of each band, from the lowest band up, or none. A copy of
+    /// the style of the layer.
+    pub names: Vec<String>,
     /// How the globe smooths the values by the scale.
     pub smoothing: Smoothing,
     /// The shade of the slopes over the colors.
@@ -865,6 +868,7 @@ impl Project {
             base: 0,
             stops: Vec::new(),
             colors: Vec::new(),
+            names: Vec::new(),
             smoothing: Smoothing::default(),
             hillshade: Hillshade::default(),
             rivers: true,
@@ -1019,12 +1023,17 @@ impl Project {
             .is_some()
     }
 
-    /// Sets the stops and the band colors of a raster.
+    /// Sets the stops and the band colors of a raster. The band names stay
+    /// if the number of bands stays.
     pub fn set_raster_stops(&mut self, id: RasterId, stops: Vec<Stop>, colors: Vec<Rgb>) -> bool {
-        let raster = self.raster_mut(id);
-        raster
-            .map(|r| (r.stops, r.colors) = (stops, colors))
-            .is_some()
+        let Some(r) = self.raster_mut(id) else {
+            return false;
+        };
+        if r.names.len() != colors.len() {
+            r.names.clear();
+        }
+        (r.stops, r.colors) = (stops, colors);
+        true
     }
 
     /// Sets the unit of the values of a raster.

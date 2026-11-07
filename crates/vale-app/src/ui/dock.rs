@@ -1333,6 +1333,7 @@ fn item_panel(ui: &mut egui::Ui, state: &mut AppState, rec: &vale_store::Furnitu
                 });
         }
         Furniture::ScaleBar(bar) => bar_sections(ui, state, id, bar),
+        Furniture::ColorKey(_) => {}
         Furniture::NorthArrow(n) => {
             ui.horizontal(|ui| {
                 ui.label(item::ARROW_COLOR);
