@@ -1198,6 +1198,8 @@ pub fn vector_layer_cut(
                 attributes: &features[i].attributes,
                 scale,
                 geometry: features[i].geometry.kind(),
+                shape: Some(&features[i].geometry),
+                radius_km: doc.project.world.radius_km,
             })
         })
         .collect();
@@ -1532,8 +1534,8 @@ pub fn flat_vector_layer_cut(
     };
     let masked = pipeline.masked(doc, id);
     let projection = flat.projection();
-    let radius_m = doc.project.world.radius_km * 1000.0;
-    let scale = scale_denominator(radius_m / flat.scale(rect));
+    let radius_km = doc.project.world.radius_km;
+    let scale = scale_denominator(radius_km * 1000.0 / flat.scale(rect));
     let detail = (masked.is_none())
         .then(|| {
             let pixel = flat_pixel(flat, rect, painter.ctx().pixels_per_point())?;
@@ -1599,6 +1601,8 @@ pub fn flat_vector_layer_cut(
         attributes: &features[i].attributes,
         scale,
         geometry: features[i].geometry.kind(),
+        shape: Some(&features[i].geometry),
+        radius_km,
     });
     let mut screens: Vec<Option<Option<FlatScreen>>> = features.iter().map(|_| None).collect();
     let mut sink = Sink::new(format, cut.is_some());

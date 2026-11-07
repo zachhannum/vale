@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use eframe::egui;
 use eframe::egui::text::{CCursor, CCursorRange};
-use vale_store::{FieldType, GeometryKind, Layer, LayerId, Value};
+use vale_store::{FieldType, Geometry, GeometryKind, Layer, LayerId, Value};
 use vale_style::expr::{Context, Expr, FUNCTIONS, field_ref};
 
 use super::AppState;
@@ -71,6 +71,9 @@ pub struct ExprHelp {
     /// True if the feature of the preview is a selected feature.
     selected: bool,
     geometry: GeometryKind,
+    /// The geometry of the feature of the preview, for the measures.
+    shape: Option<Geometry>,
+    radius_km: f64,
     values: Arc<LayerValues>,
 }
 
@@ -108,9 +111,9 @@ impl LayerValues {
     }
 }
 
-/// The count of the features of `layer` that filter `text` matches.
-/// `None` if the text does not parse.
-pub fn count_matches(layer: &Layer, text: &str) -> Option<usize> {
+/// The count of the features of `layer` that filter `text` matches, on a
+/// world of radius `radius_km`. `None` if the text does not parse.
+pub fn count_matches(layer: &Layer, radius_km: f64, text: &str) -> Option<usize> {
     if text.trim().is_empty() {
         return Some(layer.features.len());
     }
@@ -122,6 +125,8 @@ pub fn count_matches(layer: &Layer, text: &str) -> Option<usize> {
                 attributes: &f.attributes,
                 scale: PREVIEW_SCALE,
                 geometry,
+                shape: Some(&f.geometry),
+                radius_km,
             };
             expr.eval(&ctx) == Value::Bool(true)
         })
@@ -143,9 +148,10 @@ pub struct ValueRange {
     pub bins: Vec<usize>,
 }
 
-/// The range of the numbers that value `text` gives across `layer`. `None`
-/// if the text does not parse or gives no number.
-pub fn value_range(layer: &Layer, text: &str) -> Option<ValueRange> {
+/// The range of the numbers that value `text` gives across `layer`, on a
+/// world of radius `radius_km`. `None` if the text does not parse or gives
+/// no number.
+pub fn value_range(layer: &Layer, radius_km: f64, text: &str) -> Option<ValueRange> {
     let expr = Expr::parse(text).ok()?;
     let geometry = layer.geometry().unwrap_or(GeometryKind::Point);
     let numbers: Vec<f64> = (layer.features.iter())
@@ -154,6 +160,8 @@ pub fn value_range(layer: &Layer, text: &str) -> Option<ValueRange> {
                 attributes: &f.attributes,
                 scale: PREVIEW_SCALE,
                 geometry,
+                shape: Some(&f.geometry),
+                radius_km,
             };
             match expr.eval(&ctx) {
                 Value::Number(n) if n.is_finite() => Some(n),
@@ -224,6 +232,8 @@ const MAX_COUNTS: usize = 32;
 struct CacheEntry {
     key: LayerKey,
     values: Arc<LayerValues>,
+    /// The radius of the world of `counts` and `ranges`.
+    radius_km: f64,
     counts: HashMap<String, Option<usize>>,
     ranges: HashMap<String, Option<Arc<ValueRange>>>,
 }
@@ -242,6 +252,7 @@ impl HelpCache {
         &self,
         layer: &Layer,
         generation: u64,
+        radius_km: Option<f64>,
         f: impl FnOnce(&mut CacheEntry, &Self) -> T,
     ) -> T {
         let key = LayerKey::of(layer, generation);
@@ -252,12 +263,20 @@ impl HelpCache {
             let entry = CacheEntry {
                 key,
                 values: Arc::new(LayerValues::of(layer)),
+                radius_km: radius_km.unwrap_or_default(),
                 counts: HashMap::new(),
                 ranges: HashMap::new(),
             };
             layers.insert(layer.id, entry);
         }
-        f(layers.get_mut(&layer.id).expect("inserted"), self)
+        let entry = layers.get_mut(&layer.id).expect("inserted");
+        // The values do not depend on the radius.
+        if radius_km.is_some_and(|r| r != entry.radius_km) {
+            entry.radius_km = radius_km.unwrap_or_default();
+            entry.counts.clear();
+            entry.ranges.clear();
+        }
+        f(entry, self)
     }
 
     fn count_one(&self) {
@@ -266,12 +285,18 @@ impl HelpCache {
 
     /// The values of the features of `layer`.
     pub fn values(&self, layer: &Layer, generation: u64) -> Arc<LayerValues> {
-        self.entry(layer, generation, |e, _| e.values.clone())
+        self.entry(layer, generation, None, |e, _| e.values.clone())
     }
 
     /// The count of the features of `layer` that filter `text` matches.
-    pub fn matches(&self, layer: &Layer, generation: u64, text: &str) -> Option<usize> {
-        self.entry(layer, generation, |e, cache| {
+    pub fn matches(
+        &self,
+        layer: &Layer,
+        generation: u64,
+        radius_km: f64,
+        text: &str,
+    ) -> Option<usize> {
+        self.entry(layer, generation, Some(radius_km), |e, cache| {
             if let Some(count) = e.counts.get(text) {
                 return *count;
             }
@@ -279,15 +304,21 @@ impl HelpCache {
             if e.counts.len() >= MAX_COUNTS {
                 e.counts.clear();
             }
-            let count = count_matches(layer, text);
+            let count = count_matches(layer, radius_km, text);
             e.counts.insert(text.to_owned(), count);
             count
         })
     }
 
     /// The range of the numbers that value `text` gives across `layer`.
-    pub fn range(&self, layer: &Layer, generation: u64, text: &str) -> Option<Arc<ValueRange>> {
-        self.entry(layer, generation, |e, cache| {
+    pub fn range(
+        &self,
+        layer: &Layer,
+        generation: u64,
+        radius_km: f64,
+        text: &str,
+    ) -> Option<Arc<ValueRange>> {
+        self.entry(layer, generation, Some(radius_km), |e, cache| {
             if let Some(range) = e.ranges.get(text) {
                 return range.clone();
             }
@@ -295,7 +326,7 @@ impl HelpCache {
             if e.ranges.len() >= MAX_COUNTS {
                 e.ranges.clear();
             }
-            let range = value_range(layer, text).map(Arc::new);
+            let range = value_range(layer, radius_km, text).map(Arc::new);
             e.ranges.insert(text.to_owned(), range.clone());
             range
         })
@@ -311,14 +342,16 @@ impl HelpCache {
 /// and the count of its features. `None` if the text does not parse.
 pub fn matches(state: &AppState, id: LayerId, text: &str) -> Option<(usize, usize)> {
     let layer = state.doc.layer(id)?;
-    let count = (state.help_cache).matches(layer, state.map_generation, text)?;
+    let radius_km = state.doc.project.world.radius_km;
+    let count = (state.help_cache).matches(layer, state.map_generation, radius_km, text)?;
     Some((count, layer.features.len()))
 }
 
 /// The range of the numbers that value `text` gives across layer `id`.
 pub fn range(state: &AppState, id: LayerId, text: &str) -> Option<Arc<ValueRange>> {
     let layer = state.doc.layer(id)?;
-    (state.help_cache).range(layer, state.map_generation, text)
+    let radius_km = state.doc.project.world.radius_km;
+    (state.help_cache).range(layer, state.map_generation, radius_km, text)
 }
 
 impl ExprHelp {
@@ -340,6 +373,8 @@ impl ExprHelp {
             sample: sample.map(|f| f.attributes.clone()),
             selected: selected.is_some(),
             geometry: layer.geometry().unwrap_or(GeometryKind::Point),
+            shape: sample.map(|f| f.geometry.clone()),
+            radius_km: state.doc.project.world.radius_km,
             values: state.help_cache.values(layer, state.map_generation),
         }
     }
@@ -352,6 +387,8 @@ impl ExprHelp {
             sample: None,
             selected: false,
             geometry: GeometryKind::Point,
+            shape: None,
+            radius_km: 0.0,
             values: Arc::default(),
         }
     }
@@ -392,6 +429,8 @@ impl ExprHelp {
             attributes,
             scale: PREVIEW_SCALE,
             geometry: self.geometry,
+            shape: self.shape.as_ref(),
+            radius_km: self.radius_km,
         }))
     }
 
@@ -425,6 +464,8 @@ impl ExprHelp {
             attributes,
             scale: PREVIEW_SCALE,
             geometry: self.geometry,
+            shape: self.shape.as_ref(),
+            radius_km: self.radius_km,
         });
         let text = match kind {
             ExprKind::Filter if value == Value::Bool(true) => MATCHES.to_owned(),
@@ -532,6 +573,8 @@ pub fn desktop_line(ui: &mut egui::Ui, help: &ExprHelp, text: &str, kind: ExprKi
 mod tests {
     use super::*;
 
+    const R: f64 = 6371.0;
+
     fn help(attributes: &[(&str, Value)]) -> ExprHelp {
         let sample = attributes
             .iter()
@@ -543,6 +586,8 @@ mod tests {
             sample: Some(sample),
             selected: false,
             geometry: GeometryKind::Point,
+            shape: None,
+            radius_km: 0.0,
             values: Arc::default(),
         }
     }
@@ -598,20 +643,20 @@ mod tests {
     #[test]
     fn help_counts_matching_features() {
         let layer = towns();
-        assert_eq!(count_matches(&layer, "pop > 100"), Some(2));
-        assert_eq!(count_matches(&layer, ""), Some(3));
-        assert_eq!(count_matches(&layer, "pop >"), None);
+        assert_eq!(count_matches(&layer, R, "pop > 100"), Some(2));
+        assert_eq!(count_matches(&layer, R, ""), Some(3));
+        assert_eq!(count_matches(&layer, R, "pop >"), None);
         let cache = HelpCache::default();
-        assert_eq!(cache.matches(&layer, 0, "pop > 100"), Some(2));
+        assert_eq!(cache.matches(&layer, 0, R, "pop > 100"), Some(2));
         let computed = cache.computed();
         // The same text and the same layer do not compute again.
         for _ in 0..3 {
-            assert_eq!(cache.matches(&layer, 0, "pop > 100"), Some(2));
+            assert_eq!(cache.matches(&layer, 0, R, "pop > 100"), Some(2));
             cache.values(&layer, 0);
         }
         assert_eq!(cache.computed(), computed);
         // A change of the maps computes again.
-        assert_eq!(cache.matches(&layer, 1, "name = 'Bree'"), Some(1));
+        assert_eq!(cache.matches(&layer, 1, R, "name = 'Bree'"), Some(1));
         assert!(cache.computed() > computed);
     }
 

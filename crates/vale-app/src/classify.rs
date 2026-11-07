@@ -58,8 +58,9 @@ const OTHER_COLOR: Color = Color::rgb(180, 180, 180);
 /// gives evenly spaced values of the sorted set.
 const JENKS_VALUES: usize = 1000;
 
-/// The value of an expression for each feature of a layer.
-pub fn values(layer: &Layer, expr: &Expr) -> Vec<Value> {
+/// The value of an expression for each feature of a layer, on a world of
+/// radius `radius_km`.
+pub fn values(layer: &Layer, expr: &Expr, radius_km: f64) -> Vec<Value> {
     layer
         .features
         .iter()
@@ -68,6 +69,8 @@ pub fn values(layer: &Layer, expr: &Expr) -> Vec<Value> {
                 attributes: &f.attributes,
                 scale: 0.0,
                 geometry: f.geometry.kind(),
+                shape: Some(&f.geometry),
+                radius_km,
             })
         })
         .collect()
@@ -495,13 +498,14 @@ pub fn number_text(value: f64) -> String {
 /// feature has a value.
 pub fn classes_of(
     layer: &Layer,
+    radius_km: f64,
     text: &str,
     method: Method,
     n: usize,
     ramp: Option<&Ramp>,
 ) -> Option<Vec<Class>> {
     let expr = Expr::parse(text).ok()?;
-    let all = values(layer, &expr);
+    let all = values(layer, &expr, radius_km);
     let left = left_side(text);
     let classes = match numbers(&all) {
         Some((sorted, nulls)) => number_classes(&left, &breaks(&sorted, method, n), nulls > 0),
@@ -778,6 +782,8 @@ mod tests {
                 attributes: &a,
                 scale: 0.0,
                 geometry: GeometryKind::Polygon,
+                shape: None,
+                radius_km: 0.0,
             };
             assert_eq!(other.matches(&ctx), inside, "{v:?}");
         }

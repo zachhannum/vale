@@ -556,6 +556,41 @@ fn a_frame_draws_the_layers_that_its_map_shows() {
 }
 
 #[test]
+fn an_area_filter_picks_the_large_polygon_in_a_frame() {
+    // A square of 20°, about 1,900,000 square miles, and a square of 1°
+    // at 30°, 0°, about 4,800 square miles.
+    let text = r#"{"type": "FeatureCollection", "features": [
+      {"type": "Feature", "properties": {}, "geometry": {"type": "Polygon",
+        "coordinates": [[[-10, -10], [10, -10], [10, 10], [-10, 10], [-10, -10]]]}},
+      {"type": "Feature", "properties": {}, "geometry": {"type": "Polygon",
+        "coordinates": [[[30, 0], [31, 0], [31, 1], [30, 1], [30, 0]]]}}
+    ]}"#;
+    let mut doc = Document::empty();
+    let imported = vale_import::geojson::read_str("areas", text).unwrap();
+    let layer = doc.add_imported(imported, None)[0];
+    let mut pipeline = Pipeline::new();
+    let page = doc.project.atlas.pages[0].id;
+    let id = frame_on(&mut doc, &mut pipeline, page);
+    doc.project.atlas.frame_mut(id).unwrap().graticule.on = false;
+    let red = Color::rgb(200, 0, 0);
+    let mut red_box = |doc: &mut Document, filter: &str| {
+        let rule = &mut doc.entry_mut(layer).unwrap().style.style.rules[0];
+        rule.filter = Filter::new(filter);
+        rule.set_fill(Some(red));
+        let items = compose_frame(doc, &mut pipeline, id);
+        let boxes = items.iter().filter_map(|i| match i {
+            Item::Fill { path, color, .. } if *color == red => Some(path.bounding_box()),
+            _ => None,
+        });
+        boxes.reduce(|a, b| a.union(b)).expect("a red fill")
+    };
+    let large = red_box(&mut doc, "area('mi2') > 10000");
+    let small = red_box(&mut doc, "area('mi2') <= 10000");
+    assert!(large.x1 < small.x0, "{large:?} {small:?}");
+    assert!(large.width() > 5.0 * small.width(), "{large:?} {small:?}");
+}
+
+#[test]
 fn frames_on_two_pages_share_one_projection() {
     let mut doc = plain();
     let mut pipeline = Pipeline::new();

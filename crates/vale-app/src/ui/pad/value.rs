@@ -431,6 +431,14 @@ fn has_chars(nodes: &[Node<Tok>]) -> bool {
 const BAR_GAP: f32 = 2.0;
 /// The most height of the rows of the tray.
 const TRAY_HEIGHT: f32 = 300.0;
+/// The groups of the Functions tab of the tray, in order.
+const TRAY_CATEGORIES: [Category; 5] = [
+    Category::Math,
+    Category::Text,
+    Category::Logic,
+    Category::Convert,
+    Category::Geometry,
+];
 
 /// The preview: the value for the feature of the help, the feature, a
 /// histogram of the values across the layer with a line at the value, and
@@ -634,12 +642,7 @@ fn tray(
             }
         }
         1 => {
-            for category in [
-                Category::Math,
-                Category::Text,
-                Category::Logic,
-                Category::Convert,
-            ] {
+            for category in TRAY_CATEGORIES {
                 let functions: Vec<_> = (FUNCTIONS.iter())
                     .filter(|f| f.category == category && f.name.contains(&needle))
                     .collect();
@@ -774,6 +777,13 @@ fn op_button(ui: &egui::Ui, controls: &mut Controls, rect: Rect, name: &str, lab
 mod tests {
     use super::*;
     use crate::ui::token_field::ChipKind;
+
+    #[test]
+    fn the_tray_lists_each_function() {
+        for f in FUNCTIONS {
+            assert!(TRAY_CATEGORIES.contains(&f.category), "{}", f.name);
+        }
+    }
 
     #[test]
     fn missing_condition_marks_slot() {

@@ -63,21 +63,21 @@ pub struct PageLayer<'a> {
     pub features: Vec<PageFeature>,
     /// The scale denominator of the view.
     pub scale: f64,
+    /// The radius of the world, in kilometers.
+    pub radius_km: f64,
 }
 
 impl PageLayer<'_> {
     /// The style context of feature `index` of `layer.features`.
     pub fn context(&self, index: usize) -> Context<'_> {
         static NONE: BTreeMap<String, Value> = BTreeMap::new();
-        let attributes = self
-            .layer
-            .features
-            .get(index)
-            .map_or(&NONE, |f| &f.attributes);
+        let feature = self.layer.features.get(index);
         Context {
-            attributes,
+            attributes: feature.map_or(&NONE, |f| &f.attributes),
             scale: self.scale,
             geometry: self.kind,
+            shape: feature.map(|f| &f.geometry),
+            radius_km: self.radius_km,
         }
     }
 
@@ -353,6 +353,7 @@ fn build_page_layers<'a>(
             kind,
             features,
             scale,
+            radius_km: doc.project.world.radius_km,
         });
     }
     out
@@ -1973,6 +1974,7 @@ pub(crate) fn swatch(
         kind,
         features: vec![feature],
         scale: 0.0,
+        radius_km: doc.project.world.radius_km,
     };
     let vt = ViewTransform::new(
         View {

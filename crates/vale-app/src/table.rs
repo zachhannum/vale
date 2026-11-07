@@ -22,6 +22,8 @@ pub struct Sort {
 pub struct RowKey {
     pub layer: LayerId,
     pub revision: (u64, u64),
+    /// The radius of the world in kilometers, for the measures of a filter.
+    pub radius_km: f64,
     pub len: usize,
     pub sort: Option<Sort>,
     pub filter: String,
@@ -46,7 +48,13 @@ impl Rows {
                 .selected
                 .as_ref()
                 .map(|s| s.iter().copied().collect::<HashSet<_>>());
-            self.rows = build(layer, key.sort.as_ref(), &filter, selected.as_ref());
+            self.rows = build(
+                layer,
+                key.radius_km,
+                key.sort.as_ref(),
+                &filter,
+                selected.as_ref(),
+            );
             self.key = Some(key);
             self.rebuilds += 1;
         }
@@ -70,9 +78,11 @@ impl Rows {
 
 /// The indices of the features that match the filter and, if there is a
 /// set, are in the set, in the order of the sort. A wrong filter matches
-/// no feature. The scale of the filter is 0.
+/// no feature. The scale of the filter is 0, and the world has radius
+/// `radius_km`.
 pub fn build(
     layer: &Layer,
+    radius_km: f64,
     sort: Option<&Sort>,
     filter: &Filter,
     selected: Option<&HashSet<Uuid>>,
@@ -87,6 +97,8 @@ pub fn build(
                 attributes: &f.attributes,
                 scale: 0.0,
                 geometry: f.geometry.kind(),
+                shape: Some(&f.geometry),
+                radius_km,
             })
         })
         .map(|(i, _)| i)
@@ -150,6 +162,8 @@ mod tests {
     use std::collections::BTreeMap;
     use vale_store::{Feature, Field, FieldType, Geometry, GeometryKind, Project, World};
 
+    const R: f64 = 6371.0;
+
     fn layer() -> (Project, LayerId) {
         let mut p = Project::new(World::default());
         let id = p.add_layer("Places".into(), GeometryKind::Point, None, vec![]);
@@ -195,13 +209,13 @@ mod tests {
         let (p, id) = layer();
         let l = p.layer(id).unwrap();
         let all = Filter::all();
-        let up = build(l, sort("name", true).as_ref(), &all, None);
+        let up = build(l, R, sort("name", true).as_ref(), &all, None);
         assert_eq!(names(l, &up), ["Ardent", "castellane", "hartle", "Zell"]);
-        let down = build(l, sort("rank", false).as_ref(), &all, None);
+        let down = build(l, R, sort("rank", false).as_ref(), &all, None);
         assert_eq!(names(l, &down), ["hartle", "Zell", "Ardent", "castellane"]);
-        let up = build(l, sort("rank", true).as_ref(), &all, None);
+        let up = build(l, R, sort("rank", true).as_ref(), &all, None);
         assert_eq!(names(l, &up), ["Ardent", "Zell", "hartle", "castellane"]);
-        assert_eq!(build(l, None, &all, None), [0, 1, 2, 3]);
+        assert_eq!(build(l, R, None, &all, None), [0, 1, 2, 3]);
     }
 
     #[test]
@@ -209,11 +223,11 @@ mod tests {
         let (p, id) = layer();
         let l = p.layer(id).unwrap();
         let filter = Filter::new("rank >= 2");
-        assert_eq!(build(l, None, &filter, None), [0, 3]);
+        assert_eq!(build(l, R, None, &filter, None), [0, 3]);
         let selected = HashSet::from([l.features[0].uuid(), l.features[1].uuid()]);
-        assert_eq!(build(l, None, &Filter::all(), Some(&selected)), [0, 1]);
-        assert_eq!(build(l, None, &filter, Some(&selected)), [0]);
-        assert!(build(l, None, &Filter::new("rank >="), None).is_empty());
+        assert_eq!(build(l, R, None, &Filter::all(), Some(&selected)), [0, 1]);
+        assert_eq!(build(l, R, None, &filter, Some(&selected)), [0]);
+        assert!(build(l, R, None, &Filter::new("rank >="), None).is_empty());
     }
 
     #[test]
@@ -223,6 +237,7 @@ mod tests {
         let key = RowKey {
             layer: id,
             revision: (0, 0),
+            radius_km: R,
             len: l.features.len(),
             sort: None,
             filter: String::new(),
@@ -264,6 +279,7 @@ mod tests {
         let start = std::time::Instant::now();
         let rows = build(
             l,
+            R,
             sort("name", true).as_ref(),
             &Filter::new("rank > 2"),
             None,

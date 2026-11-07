@@ -1592,7 +1592,12 @@ fn short_filter_shows_inline() {
     h.run_steps(3);
     let layer = h.state().doc.layer(rivers).unwrap();
     let all = layer.features.len();
-    let n = vale_app::ui::expr_help::count_matches(layer, "scalerank < 3").unwrap();
+    let n = vale_app::ui::expr_help::count_matches(
+        layer,
+        h.state().doc.project.world.radius_km,
+        "scalerank < 3",
+    )
+    .unwrap();
     assert!(h.query_by_label(&matches_text(n, all)).is_some());
     assert!(h.query_by_label(ADD_CONDITION).is_none());
     screenshot::save(&mut h, "desktop-filter-inline");

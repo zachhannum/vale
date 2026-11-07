@@ -8412,7 +8412,12 @@ fn value_preview_shows_range() {
     scroll_to_control(&mut h, EXPRESSION);
     type_text(&mut h, EXPRESSION, "pop_max / 1000");
     let layer = h.state().doc.layer(places).unwrap();
-    let range = value_range(layer, "pop_max / 1000").unwrap();
+    let range = value_range(
+        layer,
+        h.state().doc.project.world.radius_km,
+        "pop_max / 1000",
+    )
+    .unwrap();
     assert_eq!(range.count, layer.features.len());
     assert!(range.min < range.max);
     let line = range_text(&range);
@@ -8452,6 +8457,31 @@ fn classify_value_editor_wraps_the_value_from_the_tray() {
         .text()
         .to_owned();
     assert!(first.starts_with("round(pop_max) < "), "{first}");
+}
+
+#[test]
+fn the_value_bar_inserts_area_and_classify_uses_the_areas() {
+    use vale_app::ui::pad::classify::{EXPRESSION, REPLACE_RULES};
+    use vale_app::ui::pad::value::{FUNCTIONS_TAB, bar_name, insert_name};
+    let mut h = pad(BOARDS[0]);
+    let land = vector(&h, "Land");
+    open_classify(&mut h, "Land");
+    scroll_to_control(&mut h, EXPRESSION);
+    // The typed word filters the functions, and the pick takes its place.
+    type_text(&mut h, EXPRESSION, "are");
+    tap_bar(&mut h, &bar_name(FUNCTIONS_TAB));
+    tap_bar(&mut h, &bar_name(&insert_name("area")));
+    scroll_to_control(&mut h, "Quantiles");
+    tap(&mut h, "Quantiles");
+    scroll_to_control(&mut h, REPLACE_RULES);
+    tap(&mut h, REPLACE_RULES);
+    let first = rules(&h, land)[0]
+        .filter
+        .source()
+        .unwrap()
+        .text()
+        .to_owned();
+    assert!(first.starts_with("area() < "), "{first}");
 }
 
 /// Classifies Places by its value with Quantiles, and returns the filter
@@ -8950,7 +8980,7 @@ fn filter_shows_match_count() {
     let layer = h.state().doc.layer(rivers).unwrap();
     let first = layer.features[0].attributes["scalerank"].label().unwrap();
     let text = format!("scalerank = {first}");
-    let n = count_matches(layer, &text).unwrap();
+    let n = count_matches(layer, h.state().doc.project.world.radius_km, &text).unwrap();
     let m = layer.features.len();
     assert!(n > 0 && n <= m);
     set_filter(&mut h, rivers, &text);
