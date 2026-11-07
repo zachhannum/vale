@@ -9636,6 +9636,33 @@ fn group_writes_optional_text() {
 }
 
 #[test]
+fn label_preview_has_no_marker() {
+    fn visit(shape: &egui::Shape, out: &mut Vec<egui::Shape>) {
+        match shape {
+            egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| visit(s, out)),
+            s => out.push(s.clone()),
+        }
+    }
+    let mut h = pad(BOARDS[0]);
+    open_label_text(&mut h);
+    let area = h.get_by_label("Vatican City").rect();
+    let mut shapes = Vec::new();
+    for clipped in &h.output().shapes {
+        visit(&clipped.shape, &mut shapes);
+    }
+    let inside = |s: &egui::Shape| area.intersects(s.visual_bounding_rect());
+    let circles = (shapes.iter()).filter(|s| inside(s) && matches!(s, egui::Shape::Circle(_)));
+    assert_eq!(circles.count(), 0);
+    // The label is a picture in the look of the labels.
+    let picture = (shapes.iter()).filter(|s| inside(s)).any(|s| match s {
+        egui::Shape::Mesh(m) => m.texture_id != egui::TextureId::default(),
+        _ => false,
+    });
+    assert!(picture);
+    screenshot::save(&mut h, "pad-label-preview");
+}
+
+#[test]
 fn manual_label_text_boxes() {
     use vale_app::ui::pad::label_text::LABEL_TEXT;
     let text = "concat(upper(name), '\n', 'Pop ' || round(pop_max / 1000, 1) || ' k', ' ', \

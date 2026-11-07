@@ -570,7 +570,11 @@ fn text_segment(
 
     let help = ExprHelp::for_layer(state, layer);
     let names = (TEXT, TEXT);
-    let edit = label_text::editor(ui, controls, names, &class.text, &help);
+    let mut look = label_text::Look {
+        class,
+        fonts: &mut state.fonts,
+    };
+    let edit = label_text::editor(ui, controls, names, &class.text, &help, &mut look);
     if let Some(text) = edit.text {
         if edit.step {
             state.label_class_step(map, layer, i, |c| c.text = text);

@@ -1,7 +1,8 @@
 //! The labels section of the panel of a vector layer.
 
 use eframe::egui;
-use vale_store::LayerId;
+use vale_store::{GeometryKind, LayerId};
+use vale_style::{LabelClass, LabelStyle};
 
 use super::Page;
 use super::label_text::{self, LABEL_TEXT};
@@ -66,9 +67,30 @@ pub fn text_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Control
         return;
     };
     let current = entry.style.label.text.clone();
+    let class = layer_class(state, id);
     let help = ExprHelp::for_layer(state, id);
-    let edit = label_text::editor(ui, controls, ("", LABEL_TEXT), &current, &help);
+    let mut look = label_text::Look {
+        class: &class,
+        fonts: &mut state.fonts,
+    };
+    let edit = label_text::editor(ui, controls, ("", LABEL_TEXT), &current, &help, &mut look);
     if let Some(text) = edit.text {
         set_text(state, id, text);
     }
+}
+
+/// The label class of the labels of layer `id` on the globe.
+fn layer_class(state: &AppState, id: LayerId) -> LabelClass {
+    let entry = state.doc.entry(id);
+    let kind = (state.doc.layer(id)).and_then(|l| l.geometry());
+    let class = entry.zip(kind).and_then(|(e, kind)| {
+        let style = LabelStyle {
+            enabled: true,
+            text: "x".into(),
+            ..e.style.label.clone()
+        };
+        LabelClass::from_style("", &style, kind, 0)
+    });
+    let point = || LabelClass::new("", GeometryKind::Point, 0);
+    (class.or_else(point)).expect("a class of point labels")
 }

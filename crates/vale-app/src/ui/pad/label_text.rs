@@ -4,6 +4,9 @@
 //! Blocks, so text that the user does not edit stays as it is.
 
 use eframe::egui::{self, Align2, Color32, Rect, Sense, Stroke, pos2, vec2};
+use vale_labeler::Fonts;
+use vale_render::{DisplayList, Item};
+use vale_style::LabelClass;
 use vale_style::expr::editor::{Empty, Piece, Seq, Template, Tok};
 use vale_style::expr::{FUNCTIONS, Function};
 
@@ -13,6 +16,8 @@ use super::geometry::TOUCH;
 use super::popover;
 use super::theme;
 use super::widgets::{self, Controls};
+use crate::furniture::glyph_line;
+use crate::labels;
 use crate::ui::expr_help::{ExprHelp, ExprKind, NO_LABEL};
 use crate::ui::new_feature::keyboard_top;
 use crate::ui::token_field::paint::{FUNCTION_TEXT, paint_break, paint_glyph};
@@ -50,6 +55,13 @@ pub fn insert_name(label: &str) -> String {
     expression::chip_name(label)
 }
 
+/// The look of the labels whose text the editor edits: their label class,
+/// and the fonts of the map.
+pub struct Look<'a> {
+    pub class: &'a LabelClass,
+    pub fonts: &'a mut Fonts,
+}
+
 /// What the user did in the editor in one frame.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Edit {
@@ -75,14 +87,15 @@ struct EditorState {
     empty_text: String,
 }
 
-/// The editor of label text `current` under `heading`. The token field has
-/// the control name `name`.
+/// The editor of label text `current` under `heading`, with a preview in
+/// the look `look`. The token field has the control name `name`.
 pub fn editor(
     ui: &mut egui::Ui,
     controls: &mut Controls,
     (heading, name): (&str, &str),
     current: &str,
     help: &ExprHelp,
+    look: &mut Look,
 ) -> Edit {
     let id = ui.id().with((name, "label-text"));
     let mut st: EditorState = ui.data(|d| d.get_temp(id)).unwrap_or_default();
@@ -169,7 +182,7 @@ pub fn editor(
         }
     }
     let shown = edit.text.as_deref().unwrap_or(current);
-    preview(ui, help, shown);
+    preview(ui, help, shown, look);
     ui.data_mut(|d| d.insert_temp(id, st));
     edit
 }
@@ -221,52 +234,180 @@ fn write(st: &mut EditorState) -> String {
     text
 }
 
+/// The least and the most size of the text of the preview, in points. The
+/// preview shows a small label larger, so that it is easy to read.
+const PREVIEW_SIZE: (f64, f64) = (17.0, 32.0);
+/// The fill of the preview: the paper of a map.
+const PAPER: Color32 = Color32::from_rgb(240, 236, 226);
+
+/// The items of label `label` in the look of `class`, with the top left of
+/// the label at the origin, and the size of the label. The preview size of
+/// the text is between the bounds of `PREVIEW_SIZE`, and the label is at
+/// most `width` wide.
+pub fn preview_items(
+    label: &str,
+    class: &LabelClass,
+    fonts: &mut Fonts,
+    width: f64,
+) -> (Vec<Item>, egui::Vec2) {
+    let lines: Vec<String> = label.lines().map(|l| class.case.apply(l)).collect();
+    let size = class.size.clamp(PREVIEW_SIZE.0, PREVIEW_SIZE.1);
+    let scaled = |k: f64| {
+        let mut c = class.clone();
+        c.size = size * k;
+        if class.size > 0.0 {
+            c.halo_width = class.halo_width * c.size / class.size;
+        }
+        c
+    };
+    let halo = |c: &LabelClass| if c.halo { c.halo_width.max(0.0) } else { 0.0 };
+    let widest = |c: &LabelClass, fonts: &mut Fonts| {
+        let style = labels::text_style(c, fonts);
+        let w = (lines.iter())
+            .map(|l| fonts.measure(l, &style).advance)
+            .fold(0.0, f64::max);
+        w + halo(c)
+    };
+    let mut c = scaled(1.0);
+    let w = widest(&c, fonts);
+    if w > width && w > 0.0 {
+        c = scaled(width / w);
+    }
+    let style = labels::text_style(&c, fonts);
+    let metrics = fonts.measure("Hg", &style);
+    let edge = halo(&c) / 2.0;
+    let line_h = 1.2 * (metrics.ascent + metrics.descent);
+    let advances: Vec<f64> = (lines.iter())
+        .map(|l| fonts.measure(l, &style).advance)
+        .collect();
+    let full = advances.iter().copied().fold(0.0, f64::max) + 2.0 * edge;
+    let mut halos = Vec::new();
+    let mut glyphs = Vec::new();
+    for (i, (line, advance)) in lines.iter().zip(&advances).enumerate() {
+        let x = (full - advance) / 2.0;
+        let y = edge + metrics.ascent + i as f64 * line_h;
+        let to = kurbo::Affine::translate((x, y));
+        let Some(g) = glyph_line(line, &style, c.color, to, c.halo, fonts) else {
+            continue;
+        };
+        if c.halo {
+            halos.push(Item::Stroke {
+                path: g.outlines,
+                color: c.halo_color,
+                width: c.halo_width,
+                round: true,
+            });
+        }
+        glyphs.extend(g.glyphs);
+    }
+    halos.extend(glyphs);
+    let height =
+        (lines.len().max(1) as f64 - 1.0) * line_h + metrics.ascent + metrics.descent + 2.0 * edge;
+    (halos, vec2(full as f32, height as f32))
+}
+
+/// The preview of the label as a texture: the key of what it shows, the
+/// texture, and its size in points.
+#[derive(Clone)]
+struct PreviewTexture {
+    key: u64,
+    texture: egui::TextureHandle,
+    size: egui::Vec2,
+}
+
+/// The texture of the label `label` in the look of `look`, at most `width`
+/// wide. The texture is drawn again only when the label, the look, the
+/// width, or the scale changes.
+fn preview_texture(
+    ui: &egui::Ui,
+    look: &mut Look,
+    label: &str,
+    width: f32,
+) -> Option<PreviewTexture> {
+    use std::hash::{Hash, Hasher};
+    let ppp = ui.ctx().pixels_per_point();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    (
+        label,
+        format!("{:?}", look.class),
+        width.to_bits(),
+        ppp.to_bits(),
+    )
+        .hash(&mut hasher);
+    let key = hasher.finish();
+    let id = ui.id().with("label-preview-texture");
+    if let Some(t) = ui.data(|d| d.get_temp::<PreviewTexture>(id))
+        && t.key == key
+    {
+        return Some(t);
+    }
+    let (items, size) = preview_items(label, look.class, look.fonts, f64::from(width));
+    if size.x < 1.0 || size.y < 1.0 {
+        return None;
+    }
+    let mut list = DisplayList::new(f64::from(size.x), f64::from(size.y));
+    list.items = items;
+    let rgba = vale_render::raster::render_rgba(&list, f64::from(ppp)).ok()?;
+    let image = egui::ColorImage::from_rgba_premultiplied([rgba.width, rgba.height], &rgba.data);
+    let texture = ui
+        .ctx()
+        .load_texture("label-preview", image, egui::TextureOptions::LINEAR);
+    let t = PreviewTexture { key, texture, size };
+    ui.data_mut(|d| d.insert_temp(id, t.clone()));
+    Some(t)
+}
+
 /// The preview of the label for the feature of the help: the label text in
-/// the look of a label, and the feature that it comes from.
-fn preview(ui: &mut egui::Ui, help: &ExprHelp, text: &str) {
+/// the look of the labels on the map, and a caption with the feature that
+/// it comes from.
+fn preview(ui: &mut egui::Ui, help: &ExprHelp, text: &str, look: &mut Look) {
     if !help.has_sample() || text.trim().is_empty() {
         return;
     }
     let Some(value) = help.eval(text) else {
         return;
     };
-    let label = value.label().unwrap_or_else(|| NO_LABEL.to_owned());
-    let lines: Vec<&str> = label.lines().collect();
-    let font = egui::FontId::proportional(17.0);
-    let line_h = 21.0;
+    let label = value.label();
     ui.add_space(12.0);
-    let h = (lines.len() as f32 * line_h + 24.0).max(56.0);
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::hover());
+    let width = ui.available_width();
+    let texture = (label.as_deref()).and_then(|l| preview_texture(ui, look, l, width - 24.0));
+    let h = texture.as_ref().map_or(0.0, |t| t.size.y + 24.0).max(56.0);
+    let (rect, _) = ui.allocate_exact_size(vec2(width, h), Sense::hover());
     let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 12.0, Color32::from_white_alpha(13));
-    let ink = Color32::from_rgb(243, 239, 230);
-    let dot = pos2(rect.left() + 16.0, rect.center().y);
-    painter.circle(dot, 4.0, ink, Stroke::new(2.0, Color32::BLACK));
+    painter.rect_filled(rect, 12.0, PAPER);
+    match &texture {
+        Some(t) => {
+            let image = Rect::from_center_size(rect.center(), t.size);
+            let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+            painter.image(t.texture.id(), image, uv, Color32::WHITE);
+        }
+        None => {
+            painter.text(
+                rect.center(),
+                Align2::CENTER_CENTER,
+                NO_LABEL,
+                theme::body(),
+                Color32::from_gray(120),
+            );
+        }
+    }
+    let shown = label.unwrap_or_else(|| NO_LABEL.to_owned());
+    let resp = ui.interact(rect, ui.id().with("label-preview"), Sense::hover());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, &shown));
     let source = if help.sample_is_selected() {
         SELECTED_FEATURE
     } else {
         FIRST_FEATURE
     };
-    let src = painter.text(
-        pos2(rect.right() - 12.0, rect.center().y),
-        Align2::RIGHT_CENTER,
+    ui.add_space(6.0);
+    let (row, _) = ui.allocate_exact_size(vec2(width, 18.0), Sense::hover());
+    ui.painter().text(
+        pos2(row.left() + 4.0, row.center().y),
+        Align2::LEFT_CENTER,
         source,
         theme::small(),
         theme::MUTE,
     );
-    let mid = (rect.left() + 28.0 + src.left() - 12.0) / 2.0;
-    let top = rect.center().y - lines.len() as f32 * line_h / 2.0;
-    for (i, line) in lines.iter().enumerate() {
-        let at = pos2(mid, top + (i as f32 + 0.5) * line_h);
-        for (dx, dy) in [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)] {
-            let halo = Color32::from_black_alpha(200);
-            let at = at + vec2(dx, dy);
-            painter.text(at, Align2::CENTER_CENTER, *line, font.clone(), halo);
-        }
-        painter.text(at, Align2::CENTER_CENTER, *line, font.clone(), ink);
-    }
-    let resp = ui.interact(rect, ui.id().with("label-preview"), Sense::hover());
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, &label));
 }
 
 /// Opens the popover of a field chip after a tap on the chip, and shows
@@ -637,4 +778,64 @@ fn function_chips(
         }
     }
     chosen
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vale_store::GeometryKind;
+    use vale_style::{Color, TextCase};
+
+    fn runs(items: &[Item]) -> Vec<&vale_render::GlyphRun> {
+        (items.iter())
+            .filter_map(|i| match i {
+                Item::Glyphs(run) => Some(run),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn label_preview_uses_label_style() {
+        let mut fonts = crate::fonts::bundled().unwrap();
+        let mut class = LabelClass::new("", GeometryKind::Line, 0).unwrap();
+        class.size = 5.0;
+        class.color = Color::rgb(30, 80, 200);
+        class.halo_color = Color::rgb(250, 240, 10);
+        class.case = TextCase::Upper;
+        class.italic = false;
+        let (items, size) = preview_items("Merital R.", &class, &mut fonts, 400.0);
+        let glyphs = runs(&items);
+        assert!(!glyphs.is_empty());
+        for run in &glyphs {
+            assert_eq!(run.color, class.color);
+            assert_eq!(run.text, "MERITAL R.");
+            // A small label shows at the least size of the preview.
+            assert_eq!(run.font_size, PREVIEW_SIZE.0 as f32);
+        }
+        let halo = items.iter().find_map(|i| match i {
+            Item::Stroke { color, width, .. } => Some((*color, *width)),
+            _ => None,
+        });
+        let (color, width) = halo.expect("a halo");
+        assert_eq!(color, class.halo_color);
+        assert!((width - class.halo_width * PREVIEW_SIZE.0 / 5.0).abs() < 1e-9);
+        assert!(size.x > 0.0 && size.y > 0.0);
+
+        // The italic face of the font.
+        let upright = glyphs[0].font.clone();
+        class.italic = true;
+        let (items, _) = preview_items("Merital R.", &class, &mut fonts, 400.0);
+        let len = |f: &vale_labeler::FontData| f.data.as_ref().len();
+        assert_ne!(len(&runs(&items)[0].font), len(&upright));
+
+        // The letter spacing makes the label wider.
+        class.letter_spacing = 0.15;
+        let (_, spaced) = preview_items("Merital R.", &class, &mut fonts, 400.0);
+        assert!(spaced.x > size.x + 10.0);
+
+        // A label that is too wide gets smaller.
+        let (_, narrow) = preview_items("Merital R.", &class, &mut fonts, 60.0);
+        assert!(narrow.x <= 60.5, "{narrow:?}");
+    }
 }

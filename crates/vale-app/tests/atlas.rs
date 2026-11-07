@@ -4136,6 +4136,9 @@ fn the_filter_of_a_class_has_the_condition_builder() {
     }
 
     // Code holds the whole filter.
+    // A tap on the title of the panel closes the menu of the values.
+    let card = h.state().atlas.panel_rect.unwrap();
+    tap_with(&mut h, card.center_top() + vec2(0.0, 26.0), Input::Finger);
     scroll_to(&mut h, VIEWS[1]);
     tap(&mut h, VIEWS[1]);
     type_text(&mut h, EXPRESSION, "scalerank < 1");
