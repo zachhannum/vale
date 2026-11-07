@@ -8,7 +8,7 @@ use vale_style::{ImageSymbolizer, LayerStyle, RasterSymbolizer, Symbolizer, styl
 
 use crate::document::Document;
 use crate::globe::{Look, RasterLook};
-use crate::session::{bands_of, record_stops};
+use crate::session::{bands_of, put_bands, record_stops};
 
 /// The colors of a raster record.
 pub fn symbolizer_of(r: &Raster) -> RasterSymbolizer {
@@ -34,6 +34,7 @@ pub fn apply_symbolizer(record: &mut Raster, s: &RasterSymbolizer, all: bool) {
     record.blend = s.blend;
     record.stops.clone_from(&s.stops);
     record.colors.clone_from(&s.colors);
+    record.names.clone_from(&s.names);
     if all {
         record.lines = s.lines;
         record.smoothing = s.smoothing;
@@ -105,9 +106,9 @@ pub fn migrate(p: &mut Project) -> bool {
         };
         let bands = bands_of(record);
         let stops = record_stops(bands.stops());
-        if record.stops != stops || record.colors != bands.colors() {
-            record.stops = stops;
-            record.colors = bands.colors().to_vec();
+        if record.stops != stops || record.colors != bands.colors() || record.names != bands.names()
+        {
+            put_bands(record, &bands);
             changed = true;
         }
     }
@@ -197,6 +198,7 @@ pub fn map_looks(doc: &Document, map: MapId) -> MapLooks {
                 let mut r = base.clone();
                 r.stops.clone_from(&s.stops);
                 r.colors.clone_from(&s.colors);
+                r.names.clone_from(&s.names);
                 bands_of(&r)
             });
             let mut hillshade = s.hillshade;

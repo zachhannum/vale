@@ -770,7 +770,7 @@ fn record_bands(raster: &Raster) -> Option<Bands> {
     let (min, max) = (raster.value_min, raster.value_max);
     let sea = crate::ui::is_height(raster);
     let (stops, colors) = stops_of(raster);
-    Bands::from_range_parts(min, max, sea, &stops, colors)
+    Bands::from_range_parts(min, max, sea, &stops, colors).map(|b| b.with_names(&raster.names))
 }
 
 /// The bands of a raster record. A record with no stops gets the stops that
@@ -816,6 +816,17 @@ pub fn sync_record(raster: &mut Raster, map: &Heightmap) {
     if raster.colors != map.bands.colors() {
         raster.colors = map.bands.colors().to_vec();
     }
+    if raster.names != map.bands.names() {
+        raster.names = map.bands.names().to_vec();
+    }
+}
+
+/// Puts the stops, the band colors, and the band names of `bands` into a
+/// raster record.
+pub fn put_bands(raster: &mut Raster, bands: &Bands) {
+    raster.stops = record_stops(bands.stops());
+    raster.colors = bands.colors().to_vec();
+    raster.names = bands.names().to_vec();
 }
 
 /// The stops of a raster record for these stops of bands.

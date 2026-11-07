@@ -364,6 +364,90 @@ fn undo_restores_a_band_color() {
 }
 
 #[test]
+fn band_names_survive_a_save_an_undo_and_a_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let (mut session, mut doc, mut map) = start(&path);
+    paint(&mut map, 45.0, 35.3, 0.2);
+    session
+        .flush(&mut doc.project, &mut maps(&mut map))
+        .unwrap();
+    assert!(map.bands.set_name(2, "Lowland"));
+    session
+        .flush(&mut doc.project, &mut maps(&mut map))
+        .unwrap();
+    let names = |path: &std::path::Path| {
+        let project = ProjectFile::open(path).unwrap().1;
+        let style = raster_colors(&project, HEIGHT).names;
+        assert_eq!(project.rasters()[0].names, style);
+        style
+    };
+    assert_eq!(names(&path)[2], "Lowland");
+
+    assert!(session.undo(&mut doc, &mut maps(&mut map)).unwrap());
+    assert_eq!(map.bands.name(2), "");
+    assert!(names(&path).is_empty());
+    assert!(session.redo(&mut doc, &mut maps(&mut map)).unwrap());
+    assert_eq!(map.bands.name(2), "Lowland");
+    assert_eq!(raster_colors(&doc.project, HEIGHT).names[2], "Lowland");
+    drop(session);
+
+    let (_session, doc, loaded) = reopen(&path);
+    assert_eq!(loaded.bands.name(2), "Lowland");
+    assert_eq!(doc.project.rasters()[0].names[2], "Lowland");
+}
+
+#[test]
+fn opening_a_file_with_band_names_does_not_save() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let (mut session, mut doc, mut map) = start(&path);
+    assert!(map.bands.set_name(1, "Shelf"));
+    session
+        .flush(&mut doc.project, &mut maps(&mut map))
+        .unwrap();
+    assert!(session.can_undo());
+    drop(session);
+
+    // A save on open would start a new undo log.
+    let (session, _, loaded) = reopen(&path);
+    assert_eq!(loaded.bands.name(1), "Shelf");
+    assert!(session.can_undo());
+}
+
+#[test]
+fn applying_a_labeled_ramp_names_the_bands() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let mut state = AppState::new(Document::empty()).unwrap();
+    state.headless = true;
+    state.session = Some(Session::open(&path, &mut state.doc).unwrap());
+    let climate = RasterSpec {
+        name: "Climate".to_string(),
+        unit: "class".to_string(),
+        min: 0.0,
+        max: 300.0,
+        face_size: 128,
+    };
+    let climate = state.add_raster(climate).unwrap();
+    let ramps = state.ramps.list();
+    let at = ramps
+        .iter()
+        .position(|r| r.name == "Köppen climate")
+        .unwrap();
+    let labels = ramps[at].labels.clone();
+    state
+        .apply_ramp(climate, at, false, vale_terrain::Part::All)
+        .unwrap();
+    assert_eq!(state.globe.bands_mut(climate).unwrap().names(), labels);
+
+    state.save_waiting().unwrap();
+    let (_, stored) = ProjectFile::open(&path).unwrap();
+    assert_eq!(stored.raster(climate).unwrap().names, labels);
+    assert_eq!(raster_colors(&stored, climate).names, labels);
+}
+
+#[test]
 fn a_save_after_one_stroke_writes_only_the_changed_tiles() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("project.gpkg");
