@@ -805,3 +805,70 @@ fn an_export_clips_a_masked_layer_to_the_coast_of_its_raster_image() {
         .count();
     assert_eq!(sea, 0, "{sea} label pixels on the sea");
 }
+
+/// The page mask of `layer` in the open frame.
+fn mask_of(h: &App, layer: vale_store::LayerId) -> std::sync::Arc<vale_app::mask::PageMask> {
+    let frame = open_frame(h).id;
+    let mask = h.state().pipeline.page_mask(frame, layer).cloned();
+    mask.expect("the frame has a mask")
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_page_pan_or_zoom_out_does_not_capture_the_mask_again() {
+    let _gpu = one_gpu_test();
+    let (mut h, _, layer) = masked_atlas();
+    settled_mask(&mut h, layer);
+    let mask = mask_of(&h, layer);
+    let (composes, renders) = (h.state().atlas.composes, h.state().atlas.tile_renders());
+    for step in 0..4 {
+        h.state_mut().atlas.view.offset += eframe::egui::vec2(40.0, -25.0);
+        h.run_steps(30);
+        assert!(
+            std::sync::Arc::ptr_eq(&mask, &mask_of(&h, layer)),
+            "pan {step}"
+        );
+    }
+    assert_eq!(h.state().atlas.composes, composes);
+    assert_eq!(h.state().atlas.tile_renders(), renders);
+
+    h.state_mut().atlas.view.zoom *= 0.7;
+    h.run_steps(30);
+    assert!(std::sync::Arc::ptr_eq(&mask, &mask_of(&h, layer)));
+    assert_eq!(h.state().atlas.composes, composes);
+
+    // A zoom in past the scale of the capture captures the mask one time.
+    h.state_mut().atlas.view.zoom *= 3.0;
+    settled_mask(&mut h, layer);
+    h.run_steps(30);
+    assert!(!std::sync::Arc::ptr_eq(&mask, &mask_of(&h, layer)));
+    assert_eq!(h.state().atlas.composes, composes + 1);
+}
+
+#[test]
+#[ignore = "gpu"]
+fn the_mask_covers_the_part_of_the_frame_that_was_off_screen_at_its_capture() {
+    let _gpu = one_gpu_test();
+    let (mut h, _, layer) = masked_atlas();
+    let (pit, land) = (page_point(&mut h, 0.0, 0.0), page_point(&mut h, 6.0, 0.0));
+    // The frame is larger than the screen, and the land is right of it.
+    let width = h.ctx.content_rect().width();
+    h.state_mut().atlas.view.zoom = 4.0;
+    h.run_steps(4);
+    let x = screen(&h, land).x;
+    h.state_mut().atlas.view.offset.x += 1.3 * width - x;
+    let rings = settled_mask(&mut h, layer);
+    assert!(screen(&h, land).x > width);
+    assert!(in_mask(&rings, land) && !in_mask(&rings, pit));
+
+    // A pan shows the land with the mask of the capture.
+    let mask = mask_of(&h, layer);
+    let x = screen(&h, land).x;
+    h.state_mut().atlas.view.offset.x += 0.5 * width - x;
+    h.run_steps(30);
+    assert!(std::sync::Arc::ptr_eq(&mask, &mask_of(&h, layer)));
+    let at = screen(&h, land);
+    h.remove_cursor();
+    let image = h.render().unwrap();
+    assert!(masked::red(image.get_pixel(at.x as u32, at.y as u32)));
+}
