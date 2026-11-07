@@ -3229,6 +3229,34 @@ fn raster_style(h: &Pad, map: Option<MapId>, layer: LayerId) -> vale_style::Rast
 }
 
 #[test]
+fn a_band_name_in_a_map_is_a_local_change() {
+    use vale_app::ui::gradient::band_row;
+    use vale_app::ui::pad::raster::{BAND_NAME, COLOR_STOPS};
+    let mut h = inset_pad(BOARDS[0]);
+    let (main, inset) = (frame(&h, 0).map, frame(&h, 1).map);
+    let height = h.state_mut().add_height();
+    let layer = h.state().doc.project.raster_layer(height).unwrap();
+    let (layer, name) = (layer.id, layer.name.clone());
+    h.run_steps(2);
+    tap(&mut h, FRAME_TABS[2]);
+    let open = format!("Open {name}");
+    scroll_to(&mut h, &open);
+    tap(&mut h, &open);
+    scroll_to(&mut h, COLOR_STOPS);
+    tap(&mut h, COLOR_STOPS);
+    scroll_to(&mut h, &band_row(1));
+    tap(&mut h, &band_row(1));
+    type_text(&mut h, BAND_NAME, "Shelf");
+
+    assert_eq!(raster_style(&h, Some(inset), layer).names[1], "Shelf");
+    assert!(raster_style(&h, Some(main), layer).names.is_empty());
+    assert!(raster_style(&h, None, layer).names.is_empty());
+    let record = h.state().doc.project.raster(height).unwrap();
+    assert!(record.names.is_empty());
+    assert_eq!(h.state_mut().globe.bands_mut(height).unwrap().name(1), "");
+}
+
+#[test]
 fn the_raster_panel_changes_a_band_color_and_the_hillshade_in_this_map_only() {
     use vale_app::ui::gradient::band_row;
     use vale_app::ui::pad::Page;

@@ -25,6 +25,8 @@ pub const FILL_COLOR: &str = "Fill";
 pub const LINE_COLOR: &str = "Line";
 /// The name of the color picker of the selected band.
 pub const COLOR: &str = "Color";
+/// The name of the field of the band name in the card of a band.
+pub const BAND_NAME: &str = "Band name";
 /// The switch, the weight, and the color source of the line at the lower
 /// edge of the selected band, and the amount of the darker color.
 pub const LINE: &str = "Stop line";
@@ -677,9 +679,9 @@ pub fn band_card(
     let lowest = index == 0;
     let fixed = state.globe.bands_mut(id).is_some_and(|b| b.fixed(index));
     let rows = match (lowest, fixed) {
-        (true, _) => 0.0,
-        (false, true) => 6.0,
-        (false, false) => 7.0,
+        (true, _) => 1.0,
+        (false, true) => 7.0,
+        (false, false) => 8.0,
     };
     let guess = PANEL_ROW * rows + 196.0 + 16.0;
     let height = state.pad.style.height.unwrap_or(guess) + 2.0 * CARD_PAD;
@@ -726,6 +728,11 @@ pub fn band_card(
             ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
             let start = ui.cursor().top();
 
+            let mut name = bands.name(index).to_owned();
+            let field = widgets::text_field(ui, controls, BAND_NAME, "Name", None, &mut name, true);
+            if field.changed() {
+                bands.set_name(index, &name);
+            }
             let mut line = bands.stops()[index].line;
             let mut changed = false;
             if !lowest {

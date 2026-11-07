@@ -583,9 +583,10 @@ fn stop_list(ui: &mut egui::Ui, bands: &Bands, selected: &mut Option<usize>, uni
     });
 }
 
-/// The controls of the selected band, as on the card of a band: its color,
-/// the value of its lower edge, the line at that edge, and the button that
-/// removes that stop. The lowest band has only its color.
+/// The controls of the selected band, as on the card of a band: its name,
+/// its color, the value of its lower edge, the line at that edge, and the
+/// button that removes that stop. The lowest band has only its name and its
+/// color.
 fn selected_stop(ui: &mut egui::Ui, bands: &mut Bands, selected: &mut Option<usize>, unit: &str) {
     let span = bands.max() - bands.min();
     let Some(index) = selected.filter(|i| *i < bands.colors().len()) else {
@@ -604,6 +605,17 @@ fn selected_stop(ui: &mut egui::Ui, bands: &mut Bands, selected: &mut Option<usi
         });
         if button.changed() {
             bands.set_color(index, color);
+        }
+        let mut name = bands.name(index).to_owned();
+        let edit = egui::TextEdit::singleline(&mut name)
+            .hint_text("Name")
+            .desired_width(120.0);
+        let field = ui.add(edit);
+        field.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, pad::raster::BAND_NAME)
+        });
+        if field.changed() {
+            bands.set_name(index, &name);
         }
         if lowest {
             return;
