@@ -98,13 +98,15 @@ fn number_at(v: f64, decimals: usize) -> String {
 }
 
 /// The range of band `index` of `count` bands in a list. The lowest band
-/// and the highest band are open.
+/// and the highest band are open. A range with a negative end uses "to".
 pub fn range_text(index: usize, count: usize, min: f64, max: f64) -> String {
     let (lo, hi) = (number_text(min), number_text(max));
     if count > 1 && index == 0 {
         format!("Under {hi}")
     } else if count > 1 && index + 1 == count {
         format!("Over {lo}")
+    } else if min < 0.0 || max < 0.0 {
+        format!("{lo} to {hi}")
     } else {
         format!("{lo}–{hi}")
     }
@@ -608,6 +610,7 @@ mod tests {
         assert_eq!(range_text(1, 3, 250.0, 500.0), "250–500");
         assert_eq!(range_text(2, 3, 2000.0, 4000.0), "Over 2,000");
         assert_eq!(range_text(0, 1, 0.0, 10.0), "0–10");
+        assert_eq!(range_text(1, 3, -50.0, -25.0), "-50 to -25");
     }
 
     #[test]
