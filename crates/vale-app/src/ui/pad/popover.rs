@@ -3,6 +3,7 @@
 
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Shape, Stroke, pos2, vec2};
 
+use super::geometry::Bands;
 use super::theme;
 use crate::ui::token_field;
 
@@ -58,10 +59,42 @@ pub fn rect(ctx: &egui::Context) -> Option<Rect> {
     shown.filter(|(p, _)| p + 1 >= pass).map(|(_, r)| r)
 }
 
+/// The card of a popover of `size` at `anchor`, inside the visible area
+/// from `top` to `bottom`, and true if it is under the anchor. The card is
+/// under the anchor if it fits there, or else above it if it fits there, or
+/// else on the side with more room. A card that is higher than the area
+/// gets the height of the area, and its contents scroll.
+pub fn place(
+    anchor: Rect,
+    size: egui::Vec2,
+    screen: Rect,
+    (top, bottom): (f32, f32),
+) -> (Rect, bool) {
+    let (top, bottom) = (top + MARGIN, (bottom - MARGIN).max(top + MARGIN));
+    let room_below = bottom - (anchor.bottom() + ARROW);
+    let room_above = anchor.top() - ARROW - top;
+    let below = room_below >= size.y || (room_above < size.y && room_below >= room_above);
+    let height = size.y.min(bottom - top);
+    let x = (anchor.center().x - ARROW_LEFT).clamp(
+        screen.left() + MARGIN,
+        (screen.right() - MARGIN - size.x).max(screen.left()),
+    );
+    let y = if below {
+        anchor.bottom() + ARROW
+    } else {
+        anchor.top() - ARROW - height
+    };
+    // A popover that does not fit covers its control, and not the floor.
+    let y = y.min(bottom - height).max(top);
+    (Rect::from_min_size(pos2(x, y), vec2(size.x, height)), below)
+}
+
 /// The popover `key` of `width` under `anchor`, or above it if the screen
-/// has no room below it. The contents decide the height. A press in the
-/// popover keeps the focus of a token field. The popover stays above the
-/// floor of `set_floor`, and it draws above the bar of the keyboard.
+/// has no room below it. The contents decide the height, and they scroll
+/// if the visible area is too low for them. A press in the popover keeps
+/// the focus of a token field. The popover stays below the top safe area
+/// and above the floor of `set_floor`, and it draws above the bar of the
+/// keyboard.
 pub fn show(
     ctx: &egui::Context,
     key: &str,
@@ -72,22 +105,9 @@ pub fn show(
     let id = egui::Id::new(key);
     let height: f32 = ctx.data(|d| d.get_temp(id.with("height"))).unwrap_or(240.0);
     let screen = ctx.viewport_rect();
-    let bottom = floor(ctx, screen);
-    let room_below = bottom - MARGIN - (anchor.bottom() + ARROW);
-    let room_above = anchor.top() - ARROW - (screen.top() + MARGIN);
-    let below = room_below >= height || room_below >= room_above;
-    let x = (anchor.center().x - ARROW_LEFT).clamp(
-        screen.left() + MARGIN,
-        (screen.right() - MARGIN - width).max(screen.left()),
-    );
-    let y = if below {
-        anchor.bottom() + ARROW
-    } else {
-        anchor.top() - ARROW - height
-    };
-    // A popover that does not fit covers its control, and not the floor.
-    let y = y.min(bottom - MARGIN - height).max(screen.top() + MARGIN);
-    let rect = Rect::from_min_size(pos2(x, y), vec2(width, height));
+    let top = screen.top() + Bands::new(screen, ctx.content_rect()).top;
+    let area = (top, floor(ctx, screen));
+    let (rect, below) = place(anchor, vec2(width, height), screen, area);
     let pressed = ctx.input(|i| i.pointer.press_origin().filter(|_| i.pointer.any_pressed()));
     let closed = pressed.is_some_and(|p| !rect.contains(p) && !anchor.contains(p));
     token_field::keep_focus(ctx, rect);
@@ -131,8 +151,16 @@ pub fn show(
             let mut inner = ui.new_child(egui::UiBuilder::new().max_rect(rows).layout(layout));
             theme::apply(&mut inner);
             inner.spacing_mut().item_spacing.y = 0.0;
-            add_contents(&mut inner);
-            let used = inner.min_rect().height().max(48.0);
+            let mut used = 0.0f32;
+            egui::ScrollArea::vertical()
+                .id_salt(id.with("scroll"))
+                .max_height(rows.height())
+                .auto_shrink([false, true])
+                .show(&mut inner, |ui| {
+                    add_contents(ui);
+                    used = ui.min_rect().height();
+                });
+            let used = used.max(48.0);
             if (used - height).abs() > 0.5 {
                 ctx.data_mut(|d| d.insert_temp(id.with("height"), used));
                 ctx.request_repaint();
@@ -148,4 +176,43 @@ pub fn divider(ui: &egui::Ui) {
     let line = [Pos2::new(rect.left(), y), Pos2::new(rect.right(), y)];
     ui.painter()
         .line_segment(line, Stroke::new(1.0, theme::divider()));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn popover_stays_inside_visible_area() {
+        let screen = Rect::from_min_size(Pos2::ZERO, vec2(1366.0, 1024.0));
+        // The top safe area and the top of the bar above the keyboard.
+        let (top, bottom) = (24.0, 500.0);
+        let inside =
+            |r: Rect| r.top() >= top + MARGIN - 0.01 && r.bottom() <= bottom - MARGIN + 0.01;
+        let size = vec2(340.0, 300.0);
+
+        // Near the top, the popover opens under the chip.
+        let chip = Rect::from_min_size(pos2(900.0, 40.0), vec2(80.0, 32.0));
+        let (rect, below) = place(chip, size, screen, (top, bottom));
+        assert!(below && inside(rect), "{rect:?}");
+        assert!(rect.top() >= chip.bottom());
+
+        // Near the bar, it opens above the chip.
+        let chip = Rect::from_min_size(pos2(900.0, 440.0), vec2(80.0, 32.0));
+        let (rect, below) = place(chip, size, screen, (top, bottom));
+        assert!(!below && inside(rect), "{rect:?}");
+        assert!(rect.bottom() <= chip.top());
+
+        // A popover that fits on neither side stays inside, and gets the
+        // height of the area at most.
+        let chip = Rect::from_min_size(pos2(900.0, 250.0), vec2(80.0, 32.0));
+        for size in [vec2(340.0, 400.0), vec2(340.0, 900.0)] {
+            let (rect, _) = place(chip, size, screen, (top, bottom));
+            assert!(inside(rect), "{size:?}: {rect:?}");
+            assert!(rect.height() <= bottom - top - 2.0 * MARGIN + 0.01);
+        }
+        // A popover that fits stays its own height.
+        let (rect, _) = place(chip, vec2(340.0, 120.0), screen, (top, bottom));
+        assert_eq!(rect.height(), 120.0);
+    }
 }

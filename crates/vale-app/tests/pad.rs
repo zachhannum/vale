@@ -9888,6 +9888,20 @@ fn tap_still_opens_popover() {
     assert_eq!(label_text(&h, places), text);
 }
 
+/// Scrolls the open popover until its control `name` shows, and taps it.
+fn tap_in_popover(h: &mut Pad, name: &str) {
+    use vale_app::ui::pad::popover;
+    for _ in 0..10 {
+        let card = popover::rect(&h.ctx).expect("a popover");
+        if control(h, name).is_some_and(|r| card.contains_rect(r)) {
+            break;
+        }
+        let from = card.center_bottom() - vec2(0.0, 30.0);
+        drag(h, from, from - vec2(0.0, 100.0), None);
+    }
+    tap(h, name);
+}
+
 #[test]
 fn copy_field_and_paste_keep_chip_format() {
     use vale_app::ui::pad::chip_popover::{COPY_FIELD, CUT_FIELD};
@@ -9902,7 +9916,7 @@ fn copy_field_and_paste_keep_chip_format() {
     h.step();
     touch(&mut h, egui::TouchPhase::End, pop, None);
     h.run_steps(3);
-    tap(&mut h, COPY_FIELD);
+    tap_in_popover(&mut h, COPY_FIELD);
     assert_eq!(
         vale_app::clipboard::get().as_deref(),
         Some("round(pop_max, 1)")
@@ -10007,7 +10021,7 @@ fn when_empty_uses_another_field() {
     let mut h = pad(BOARDS[0]);
     let places = open_chip(&mut h, "name");
     tap(&mut h, WHEN_EMPTY);
-    tap(&mut h, &use_field("adm0name"));
+    tap_in_popover(&mut h, &use_field("adm0name"));
     assert_eq!(label_text(&h, places), "coalesce(name, adm0name)");
 }
 
@@ -10016,7 +10030,7 @@ fn remove_field_deletes_chip() {
     use vale_app::ui::pad::chip_popover::REMOVE_FIELD;
     let mut h = pad(BOARDS[0]);
     let places = open_chip(&mut h, "concat(name, ' x')");
-    tap(&mut h, REMOVE_FIELD);
+    tap_in_popover(&mut h, REMOVE_FIELD);
     assert_eq!(label_text(&h, places), "' x'");
     assert!(control(&h, REMOVE_FIELD).is_none());
 }
