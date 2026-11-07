@@ -145,89 +145,88 @@ pub fn page(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
         ui.allocate_space(ui.available_size());
     } else {
         let mut drawn = false;
-        egui::ScrollArea::horizontal()
-            .id_salt("table-h")
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
-                header_row(ui, controls, layer, table, &widths, total, &mut act);
-                let top = ui.cursor().top();
-                // A row shows if it is in the view, and above the keyboard
-                // while a cell has the keyboard.
-                let mut bottom = ui.clip_rect().bottom();
-                if table.edit.is_some() {
-                    bottom = bottom.min(keyboard_top(screen) - GAP);
+        // The rows scroll in both directions, and the header moves sideways
+        // with them. A drag of a finger on the rows scrolls them.
+        let (head, _) =
+            ui.allocate_exact_size(vec2(body.width(), ROW_HEIGHT), egui::Sense::hover());
+        let top = ui.cursor().top();
+        // A row shows if it is in the view, and above the keyboard while a
+        // cell has the keyboard.
+        let mut bottom = ui.clip_rect().bottom().min(body.bottom());
+        if table.edit.is_some() {
+            bottom = bottom.min(keyboard_top(screen) - GAP);
+        }
+        let mut area = egui::ScrollArea::both()
+            .id_salt("table-rows")
+            .auto_shrink([false, false]);
+        let target = table
+            .scroll_to
+            .and_then(|uuid| rows.iter().position(|&i| layer.features[i].uuid() == uuid));
+        if let Some(i) = target {
+            let view = (bottom - top).max(ROW_HEIGHT);
+            let y = i as f32 * ROW_HEIGHT;
+            let offset = table.offset;
+            // The table scrolls only as far as it must.
+            let shown = y >= offset && y + ROW_HEIGHT <= offset + view;
+            if !shown {
+                let to = if y < offset { y } else { y + ROW_HEIGHT - view };
+                area = area.vertical_scroll_offset(to.max(0.0));
+            }
+        }
+        let out = area.show_rows(ui, ROW_HEIGHT, rows.len(), |ui, range| {
+            ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
+            for &i in &rows[range] {
+                let feature = &layer.features[i];
+                let uuid = feature.uuid();
+                let size = vec2(total, ROW_HEIGHT);
+                let (row, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+                if selection.contains(&uuid) {
+                    let tint = theme::ACCENT.gamma_multiply(0.22);
+                    let back = row.shrink2(vec2(0.0, HIGHLIGHT_INSET));
+                    ui.painter().rect_filled(back, theme::CONTROL_RADIUS, tint);
                 }
-                let mut area = egui::ScrollArea::vertical()
-                    .id_salt("table-v")
-                    .auto_shrink([false, false]);
-                let target = table
-                    .scroll_to
-                    .and_then(|uuid| rows.iter().position(|&i| layer.features[i].uuid() == uuid));
-                if let Some(i) = target {
-                    let view = (bottom - top).max(ROW_HEIGHT);
-                    let y = i as f32 * ROW_HEIGHT;
-                    let offset = table.offset;
-                    // The table scrolls only as far as it must.
-                    let shown = y >= offset && y + ROW_HEIGHT <= offset + view;
-                    if !shown {
-                        let to = if y < offset { y } else { y + ROW_HEIGHT - view };
-                        area = area.vertical_scroll_offset(to.max(0.0));
+                let mut left = row.left();
+                for (field, &w) in layer.fields.iter().zip(&widths) {
+                    let cell = Rect::from_min_size(pos2(left, row.top()), vec2(w, ROW_HEIGHT));
+                    left += w;
+                    let name = cell_name(&field.name, uuid);
+                    let edit = table
+                        .edit
+                        .as_mut()
+                        .filter(|e| e.feature == uuid && e.field.name == field.name);
+                    if let Some(edit) = edit {
+                        drawn = true;
+                        let valid = edit.field.valid();
+                        let text = &mut edit.field.text;
+                        let font = font(field.kind);
+                        let resp =
+                            widgets::field_at(ui, controls, cell, &name, None, text, valid, font);
+                        if edit.focus && focus {
+                            focus_all(&resp, &edit.field.text);
+                            edit.focus = false;
+                        }
+                        if resp.lost_focus() {
+                            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                                act.cancel = true;
+                            } else {
+                                act.commit = true;
+                            }
+                        }
+                        continue;
                     }
+                    if widgets::tap_area(ui, controls, cell, &name, true).clicked() {
+                        act.tap = Some((uuid, field.name.clone()));
+                    }
+                    let text = cell_text(feature.attributes.get(&field.name));
+                    paint_cell(ui, cell, field.kind, &text);
                 }
-                let out = area.show_rows(ui, ROW_HEIGHT, rows.len(), |ui, range| {
-                    ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
-                    for &i in &rows[range] {
-                        let feature = &layer.features[i];
-                        let uuid = feature.uuid();
-                        let size = vec2(total, ROW_HEIGHT);
-                        let (row, _) = ui.allocate_exact_size(size, egui::Sense::hover());
-                        if selection.contains(&uuid) {
-                            let tint = theme::ACCENT.gamma_multiply(0.22);
-                            let back = row.shrink2(vec2(0.0, HIGHLIGHT_INSET));
-                            ui.painter().rect_filled(back, theme::CONTROL_RADIUS, tint);
-                        }
-                        let mut left = row.left();
-                        for (field, &w) in layer.fields.iter().zip(&widths) {
-                            let cell =
-                                Rect::from_min_size(pos2(left, row.top()), vec2(w, ROW_HEIGHT));
-                            left += w;
-                            let name = cell_name(&field.name, uuid);
-                            let edit = table
-                                .edit
-                                .as_mut()
-                                .filter(|e| e.feature == uuid && e.field.name == field.name);
-                            if let Some(edit) = edit {
-                                drawn = true;
-                                let valid = edit.field.valid();
-                                let text = &mut edit.field.text;
-                                let font = font(field.kind);
-                                let resp = widgets::field_at(
-                                    ui, controls, cell, &name, None, text, valid, font,
-                                );
-                                if edit.focus && focus {
-                                    focus_all(&resp, &edit.field.text);
-                                    edit.focus = false;
-                                }
-                                if resp.lost_focus() {
-                                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                                        act.cancel = true;
-                                    } else {
-                                        act.commit = true;
-                                    }
-                                }
-                                continue;
-                            }
-                            if widgets::tap_area(ui, controls, cell, &name, true).clicked() {
-                                act.tap = Some((uuid, field.name.clone()));
-                            }
-                            let text = cell_text(feature.attributes.get(&field.name));
-                            paint_cell(ui, cell, field.kind, &text);
-                        }
-                    }
-                });
-                table.offset = out.state.offset.y;
-            });
+            }
+        });
+        table.offset = out.state.offset.y;
+        let shift = vec2(-out.state.offset.x, 0.0);
+        let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(head.translate(shift)));
+        ui.set_clip_rect(head.intersect(ui.clip_rect()));
+        header_row(&mut ui, controls, layer, table, &widths, total, &mut act);
         // An edit whose row scrolled out of the view ends.
         if !drawn && table.edit.as_ref().is_some_and(|e| !e.focus) {
             act.commit = true;
