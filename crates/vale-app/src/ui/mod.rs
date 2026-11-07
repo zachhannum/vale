@@ -447,6 +447,9 @@ pub struct AppState {
     pub atlas: atlas::AtlasState,
     /// The count of the changes of the contents of the maps.
     pub map_generation: u64,
+    /// The values and the match counts of the layers for the expression
+    /// fields.
+    pub help_cache: expr_help::HelpCache,
     /// The layer that the tools work on. The brush paints a selected raster
     /// layer that is visible.
     pub selected_layer: Option<LayerRef>,
@@ -648,6 +651,7 @@ impl AppState {
             canvas_size: (0.0, 0.0),
             atlas: atlas::AtlasState::default(),
             map_generation: 0,
+            help_cache: Default::default(),
             selected_layer: None,
             cursor_lonlat: None,
             cursor_value: None,
