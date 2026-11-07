@@ -1,6 +1,9 @@
 use vale_store::FieldType;
 use vale_style::expr::Value;
-use vale_style::expr::editor::{CmpOp, Cond, Conditions, Formula, Op, Seq, Tok, ops_for};
+use vale_style::expr::editor::{
+    Case, CmpOp, Cond, Conditions, Empty, FieldFormat, Formula, Op, Piece, Seq, Template, Tok,
+    ops_for,
+};
 use vale_style::expr::{Expr, FUNCTIONS};
 
 fn tree(text: &str) -> Expr {
@@ -368,4 +371,187 @@ fn paths_address_tokens_slots_and_cases() {
     assert_eq!(v.span(&[0, 4]), Some(26..28));
     let err = Expr::parse(text).unwrap_err();
     assert_eq!(v.path_at(err.start), Some(vec![0, 2]));
+}
+
+const TEMPLATES: &[&str] = &[
+    "name",
+    "'Pop ' || pop",
+    "concat(name, '\n', 'Pop ' || format_number(pop, 0), ' · ', round(elev) || ' m')",
+    "concat(name, '\nline')",
+    "concat('a', 'b')",
+    "concat('a\n', 'b')",
+    "concat('', '')",
+    "'two\nlines'",
+    "'\n'",
+    "''",
+    "concat(x)",
+    "concat('x\ny')",
+    "coalesce(upper(trim(name_local)), name)",
+    "coalesce(name_local, 'Unnamed')",
+    "title(name)",
+    "lower(name) || upper(kind)",
+    "round(pop, 2)",
+    "round(pop, -2)",
+    "round(pop, 0)",
+    "format_number(pop, 2)",
+    "format_number(pop)",
+    "upper(coalesce(name, 'x'))",
+    "trim(upper(name))",
+    "coalesce(name, 1)",
+    "'a' || ('b' || c)",
+    "('a' || b) || c",
+    "(x = 1) || 'a'",
+    "'a' || (x = 1)",
+    "x + 1 || 'a'",
+    "if(capital, upper(name), name) || ' (' || to_text(population) || ')'",
+    "concat(name, if(capital, ' ★', ''))",
+    "pop * 2",
+    "concat(a || b, c)",
+];
+
+fn template_trip(text: &str) -> String {
+    Template::from_text(text).to_text()
+}
+
+#[test]
+fn templates_round_trip() {
+    for text in TEMPLATES {
+        round_trip(text, template_trip);
+    }
+}
+
+fn field(name: &str, format: FieldFormat) -> Piece {
+    Piece::Field {
+        name: name.into(),
+        format,
+    }
+}
+
+fn text(s: &str) -> Piece {
+    Piece::Text(s.into())
+}
+
+#[test]
+fn template_reads_text_fields_and_groups() {
+    let t = Template::from_text(
+        "concat(name, '\n', 'Pop ' || format_number(pop, 0), ' · ', round(elev) || ' m')",
+    );
+    assert_eq!(
+        t.pieces,
+        vec![
+            field("name", FieldFormat::default()),
+            text(""),
+            Piece::LineBreak,
+            text(""),
+            Piece::Group(vec![
+                text("Pop "),
+                field(
+                    "pop",
+                    FieldFormat {
+                        places: Some(0),
+                        thousands: true,
+                        ..Default::default()
+                    }
+                ),
+            ]),
+            text(" · "),
+            Piece::Group(vec![
+                field(
+                    "elev",
+                    FieldFormat {
+                        places: Some(0),
+                        ..Default::default()
+                    }
+                ),
+                text(" m"),
+            ]),
+        ]
+    );
+    assert!(Template::from_text("").pieces.is_empty());
+    assert!(matches!(
+        &Template::from_text("pop * 2").pieces[..],
+        [Piece::Expr(_)]
+    ));
+    assert!(matches!(
+        &Template::from_text("round(pop, 0)").pieces[..],
+        [Piece::Expr(_)]
+    ));
+    assert!(matches!(
+        &Template::from_text("trim(upper(name))").pieces[..],
+        [Piece::Expr(_)]
+    ));
+}
+
+#[test]
+fn field_formats_peel_from_the_outside() {
+    let t = Template::from_text("coalesce(upper(trim(round(name_local, -2))), name)");
+    assert_eq!(
+        t.pieces,
+        vec![field(
+            "name_local",
+            FieldFormat {
+                places: Some(-2),
+                thousands: false,
+                case: Case::Upper,
+                trim: true,
+                empty: Empty::Field("name".into()),
+            }
+        )]
+    );
+    let t = Template::from_text("coalesce(title(n), 'None')");
+    assert_eq!(
+        t.pieces,
+        vec![field(
+            "n",
+            FieldFormat {
+                case: Case::Title,
+                empty: Empty::Text("None".into()),
+                ..Default::default()
+            }
+        )]
+    );
+}
+
+#[test]
+fn template_writes_pieces() {
+    let t = Template::new(vec![
+        field("name", FieldFormat::default()),
+        Piece::LineBreak,
+        text("it's"),
+        text("x"),
+        Piece::Group(vec![
+            text("Pop "),
+            field(
+                "pop",
+                FieldFormat {
+                    places: Some(1),
+                    thousands: true,
+                    case: Case::Lower,
+                    trim: true,
+                    empty: Empty::Text("?".into()),
+                },
+            ),
+        ]),
+    ]);
+    assert_eq!(
+        t.to_text(),
+        "concat(name, '\nit''s', 'x', 'Pop ' || coalesce(lower(trim(format_number(pop, 1))), '?'))"
+    );
+    assert_eq!(Template::new(vec![]).to_text(), "");
+    assert_eq!(Template::new(vec![text("a")]).to_text(), "'a'");
+}
+
+#[test]
+fn template_pieces_keep_their_spans() {
+    let src = "concat(name, 'a\nb', 'x' || pop)";
+    let t = Template::from_text(src);
+    let span_text = |path: &[usize]| {
+        let s = t.span(path).unwrap();
+        src.chars().skip(s.start).take(s.len()).collect::<String>()
+    };
+    assert_eq!(span_text(&[0]), "name");
+    assert_eq!(span_text(&[1]), "'a\nb'");
+    assert_eq!(span_text(&[2]), "'a\nb'");
+    assert_eq!(span_text(&[4]), "'x' || pop");
+    assert_eq!(span_text(&[4, 1]), "pop");
 }

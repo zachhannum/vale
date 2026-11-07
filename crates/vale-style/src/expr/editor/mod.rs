@@ -8,11 +8,13 @@
 
 mod cond;
 mod seq;
+mod template;
 
 use std::ops::Range;
 
 pub use cond::{CmpOp, Cond, Conditions, ops_for};
 pub use seq::{Formula, Op, Seq, Tok};
+pub use template::{Case, Empty, FieldFormat, Piece, Template};
 
 use super::parser::Node;
 use super::print::prec;
