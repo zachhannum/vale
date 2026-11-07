@@ -833,7 +833,7 @@ impl Default for AtlasState {
             entry_name: String::new(),
             handles_of: None,
             tiles: Tiles::default(),
-            tile_cap: if cfg!(target_os = "ios") { 96 } else { 256 },
+            tile_cap: if cfg!(target_os = "ios") { 256 } else { 512 },
             item_images: HashMap::new(),
             masks: HashMap::new(),
             mask_count: 0,

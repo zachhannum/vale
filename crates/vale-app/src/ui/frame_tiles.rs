@@ -34,6 +34,8 @@ const POOL: usize = 16;
 const THUMB_SIDE: f64 = 256.0;
 /// The most tiles of a lower or a higher scale that draw one square.
 const MOST_FALLBACK: usize = 64;
+/// The longest side of the overview of a list, in pixels.
+const OVERVIEW_SIDE: f64 = 1024.0;
 
 /// A display list of a frame.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -329,6 +331,15 @@ struct FrameTiles {
     /// The tiles of the last lists. They show in the squares that the new tiles do not fill
     /// yet.
     previous: Option<Box<FrameTiles>>,
+    /// One texture of each whole list at a low scale. It shows in the squares that no tile
+    /// fills, and no eviction removes it.
+    overviews: HashMap<Layer, Overview>,
+}
+
+/// A texture of a whole list, and the page points that it covers.
+struct Overview {
+    texture: MapTexture,
+    rect: kurbo::Rect,
 }
 
 impl FrameTiles {
@@ -515,6 +526,7 @@ impl Tiles {
             spilled: false,
             complete: false,
             previous,
+            overviews: HashMap::new(),
         };
         self.frames.insert(id, tiles);
     }
@@ -537,7 +549,8 @@ impl Tiles {
     /// Renders the missing tiles of the frames on the canvas, from the middle of each frame out:
     /// at rest at the scale of the screen, and then a ring of tiles around them while fewer than
     /// `cap` tiles with a texture are in use. During a gesture, only the squares that no tile of
-    /// another scale fills render. Returns true when tiles on the canvas are still missing.
+    /// another scale fills render, and then the ring. The overview of each list renders first.
+    /// Returns true when tiles on the canvas are still missing.
     pub fn fill(
         &mut self,
         ctx: &egui::Context,
@@ -561,10 +574,17 @@ impl Tiles {
         let mut more = false;
         let s = screen.scale.to_bits();
         for ring in [false, true] {
-            if ring && (screen.moving || more) {
+            if ring && more {
                 break;
             }
             for f in shown {
+                if !ring {
+                    for layer in LAYERS {
+                        if !self.overview(ctx, renderer.as_deref_mut(), f.id, layer, &mut budget)? {
+                            more = true;
+                        }
+                    }
+                }
                 let Some(set) = self.frames.get(&f.id) else {
                     continue;
                 };
@@ -637,6 +657,48 @@ impl Tiles {
                 .count()
         };
         self.frames.values().map(live).sum()
+    }
+
+    /// Renders the overview of a layer of a frame when it has none and the budget allows a
+    /// render. Returns false when the overview is still missing.
+    fn overview(
+        &mut self,
+        ctx: &egui::Context,
+        renderer: Option<&mut MapRenderer>,
+        id: FrameId,
+        layer: Layer,
+        budget: &mut Budget,
+    ) -> Result<bool, String> {
+        let Some(set) = self.frames.get_mut(&id) else {
+            return Ok(true);
+        };
+        if set.overviews.contains_key(&layer) {
+            return Ok(true);
+        }
+        let Some(list) = set.lists.list(layer) else {
+            return Ok(true);
+        };
+        if budget.renders == 0 {
+            return Ok(false);
+        }
+        budget.renders -= 1;
+        let b = set.lists.bounds;
+        let scale = OVERVIEW_SIDE / b.width().max(b.height()).max(1.0);
+        let size = |v: f64| ((v * scale).ceil() as u32).max(1);
+        let (w, h) = (size(b.width()), size(b.height()));
+        let transform = Affine::translate((-b.x0 * scale, -b.y0 * scale)) * Affine::scale(scale);
+        let texture = map_texture::draw_region(ctx, renderer, None, list, transform, [w, h])?;
+        let rect = kurbo::Rect::new(
+            b.x0,
+            b.y0,
+            b.x0 + f64::from(w) / scale,
+            b.y0 + f64::from(h) / scale,
+        );
+        set.overviews.insert(layer, Overview { texture, rect });
+        if budget.until.is_some_and(|t| Instant::now() >= t) {
+            budget.renders = 0;
+        }
+        Ok(true)
     }
 
     /// Renders one tile, when the budget allows a render. A tile with nothing in it needs no
@@ -736,6 +798,7 @@ impl Tiles {
                 .collect();
             record.empty += empty.len();
             let mut blank = empty.len();
+            let mut still = empty.clone();
             if !empty.is_empty()
                 && let Some(prev) = set.previous.as_deref_mut()
                 && prev.lists.list(layer).is_some()
@@ -764,8 +827,37 @@ impl Tiles {
                     })
                     .collect();
                 blank = pplan.iter().filter(|(_, c)| c.is_none()).count();
+                still = if pat.moved.is_none() && at.moved.is_none() {
+                    (pplan.iter())
+                        .filter(|(_, c)| c.is_none())
+                        .map(|(slot, _)| *slot)
+                        .collect()
+                } else {
+                    Vec::new()
+                };
                 let shown = paint_plan(prev, layer, &pplan, &pat, f, painter, tick, record);
                 record.previous += shown;
+            }
+            if !still.is_empty()
+                && let Some(o) = set.overviews.get(&layer)
+            {
+                let inside: &[[Pos2; 3]] = if layer == Layer::Decor {
+                    &[]
+                } else {
+                    &f.inside
+                };
+                let mut mesh = egui::Mesh::with_texture(o.texture.id());
+                for slot in &still {
+                    add_quad(&mut mesh, &at, o.rect, *slot, inside);
+                }
+                if layer == Layer::Map {
+                    union(
+                        &mut record.map,
+                        mesh.calc_bounds().intersect(painter.clip_rect()),
+                    );
+                }
+                painter.add(mesh);
+                blank = 0;
             }
             if layer == Layer::Map {
                 record.blank += blank;

@@ -1219,6 +1219,31 @@ fn the_tiles_that_a_long_pan_leaves_behind_go() {
 }
 
 #[test]
+fn a_fast_two_finger_pan_shows_no_blank_square() {
+    let mut h = zoomed_pad(4.0);
+    h.state_mut().atlas.tile_cap = 30;
+    let id = frame(&h, 0).id;
+    let (a, b) = (pos2(500.0, 500.0), pos2(700.0, 500.0));
+    touch(&mut h, 1, egui::TouchPhase::Start, a, None);
+    h.step();
+    touch(&mut h, 2, egui::TouchPhase::Start, b, None);
+    h.step();
+    for i in 1..=30 {
+        let d = -vec2(40.0, 25.0) * i as f32;
+        touch(&mut h, 1, egui::TouchPhase::Move, a + d, None);
+        touch(&mut h, 2, egui::TouchPhase::Move, b + d, None);
+        h.step();
+        let painted = h.state().atlas.frame_paint(id).unwrap();
+        assert_eq!(painted.blank, 0, "step {i}: {painted:?}");
+    }
+    let d = -vec2(40.0, 25.0) * 30.0;
+    touch(&mut h, 2, egui::TouchPhase::End, b + d, None);
+    h.step();
+    touch(&mut h, 1, egui::TouchPhase::End, a + d, None);
+    h.step();
+}
+
+#[test]
 fn a_zoom_of_the_page_draws_scaled_tiles_and_then_sharp_ones() {
     let mut h = inset_pad(BOARDS[0]);
     let id = frame(&h, 0).id;
@@ -1284,8 +1309,9 @@ fn a_pass_of_the_ui_renders_eight_tiles_at_most() {
     let renders = h.state().atlas.tile_renders();
     atlas::set_graticule_color(h.state_mut(), id, [0, 0, 255, 255]);
     h.step();
+    // The overviews of the new lists take a part of the eight renders.
     let first = h.state().atlas.tile_renders() - renders;
-    assert_eq!(first, 8);
+    assert!((1..8).contains(&first), "{first}");
     assert!(h.ctx.has_requested_repaint());
     h.step();
     assert!(h.state().atlas.tile_renders() > renders + first);
