@@ -47,6 +47,10 @@ pub const PLAIN_SLOPES: (f64, f64) = (2.0e-4, 1.0e-3);
 /// river.
 pub const VALLEY_WIDTH_FACTOR: f64 = 10.0;
 
+/// The largest width of a glacial valley at the reference area, in
+/// kilometers. The bins of the curves hold valleys up to this width.
+pub const VALLEY_MAX_KM: f64 = 30.0;
+
 /// The part of the half-width of a glacial valley that is flat floor.
 pub const VALLEY_FLOOR_PART: f64 = 0.4;
 
@@ -283,11 +287,18 @@ pub struct GlacialCut {
     pub texel: f64,
 }
 
+/// The largest half-width of a glacial valley for a drained area, in
+/// radians. It is the same on each size of world.
+fn largest_valley(area: f64) -> f64 {
+    0.5 * VALLEY_MAX_KM * (area.max(0.0) / REFERENCE_AREA_KM2).sqrt()
+}
+
 impl GlacialCut {
-    /// The half-width of the valley for a drained area. It is half a texel
-    /// at least.
+    /// The half-width of the valley for a drained area. It is
+    /// `largest_valley` at most and half a texel at least.
     pub fn half_width(&self, area: f64) -> f64 {
-        (0.5 * VALLEY_WIDTH_FACTOR * self.shape.width_at(area)).max(0.5 * self.texel)
+        let half = 0.5 * VALLEY_WIDTH_FACTOR * self.shape.width_at(area);
+        half.min(largest_valley(area)).max(0.5 * self.texel)
     }
 
     /// The level of the valley floor at a river level and a channel size.
@@ -373,7 +384,7 @@ fn reach(curve: &ChannelCurve, world_km: f64) -> f64 {
         .map(|i| {
             let width = 0.5 * largest.width_at(curve.areas[i]);
             let channel = width + 0.5 * curve.plains[i] * largest.floodplain;
-            channel.max(VALLEY_WIDTH_FACTOR * width)
+            channel.max(largest_valley(curve.areas[i]))
         })
         .fold(0.0, f64::max)
 }
@@ -747,6 +758,13 @@ mod tests {
         let old = 50000.0;
         assert!(valley_at(&cut, &straight(40000.0, large), beside, old) < old);
         assert_eq!(valley_at(&cut, &straight(40000.0, small), beside, old), old);
+        // A wider channel gives a wider valley, up to the largest width.
+        let wide = GlacialCut {
+            shape: ChannelShape::new(CHANNEL_WIDTHS_KM.1, 0.0, EARTH_KM),
+            ..cut
+        };
+        let km = wide.half_width(large) * EARTH_KM;
+        assert!((km - 0.5 * VALLEY_MAX_KM).abs() < 1e-9, "{km}");
     }
 
     #[test]

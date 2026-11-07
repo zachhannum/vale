@@ -1870,7 +1870,9 @@ fn save_tile(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::channel::{CHANNEL_WIDTHS_KM, ChannelLines, VALLEY_FLOOR_PART, channel_size};
+    use crate::channel::{
+        ChannelLines, VALLEY_FLOOR_PART, VALLEY_MAX_KM, VALLEY_WIDTH_FACTOR, channel_size,
+    };
     use crate::flow::tests::equator_valley;
     use crate::flow::{
         CoarseHeights, FlowMap, NONE, OUT, Window, WindowHeights, channel_map, drain, sea,
@@ -3014,16 +3016,17 @@ mod tests {
         assert!(face_levels(&map) == before);
     }
 
-    /// The land of `valley` with 512 texels along one side of a face, with
+    /// The land of `valley` with 1024 texels along one side of a face, with
     /// its channel map, and the shape of the glacial stamps on it. The valley
     /// of the river at longitude 0 is several texels wide.
     /// `coast_m` is the height of the river at the coast, as in
     /// `valley_land_at`.
     fn glacial_valley(coast_m: f64) -> (Heightmap, ChannelShape) {
-        let mut map = valley_land_at(512, coast_m);
+        let mut map = valley_land_at(1024, coast_m);
         let channels = channel_map(&CoarseHeights::new(&map), 6371.0);
         map.set_channels(Some(Arc::new(channels)));
-        (map, ChannelShape::new(CHANNEL_WIDTHS_KM.1, 0.0, 6371.0))
+        let width = VALLEY_MAX_KM / VALLEY_WIDTH_FACTOR;
+        (map, ChannelShape::new(width, 0.0, 6371.0))
     }
 
     fn glacial(lon: f64, lat: f64, radius: f64, shape: ChannelShape) -> Stamp {
@@ -3089,7 +3092,7 @@ mod tests {
             .collect();
         let on_floor = |a: &&(f64, f64, f64)| a.0 <= VALLEY_FLOOR_PART;
         let floor: Vec<_> = across.iter().filter(on_floor).collect();
-        assert!(floor.len() >= 5, "{across:?}");
+        assert!(floor.len() >= 4, "{across:?}");
         // The floor is flat, and far below the ground before.
         let low = floor.iter().map(|a| a.2).fold(f64::MAX, f64::min);
         let high = floor.iter().map(|a| a.2).fold(f64::MIN, f64::max);

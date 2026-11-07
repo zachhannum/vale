@@ -37,8 +37,8 @@ pub use basin::{BASIN_DENSITY_KM, BasinCut, BasinLine, BasinSpec, basin};
 pub use channel::{
     CHANNEL_WIDTH_KM, CHANNEL_WIDTHS_KM, CURVE_FLOATS, ChannelBuffers, ChannelCurve, ChannelCut,
     ChannelLines, ChannelPlace, ChannelShape, FLOODPLAIN_KM, FLOODPLAINS_KM, GlacialCut,
-    PLAIN_AREAS_KM2, PLAIN_SLOPES, REFERENCE_AREA_KM2, VALLEY_FLOOR_PART, VALLEY_WALL_RISE,
-    VALLEY_WIDTH_FACTOR, WINDOW_BIN_CELLS, channel_size,
+    PLAIN_AREAS_KM2, PLAIN_SLOPES, REFERENCE_AREA_KM2, VALLEY_FLOOR_PART, VALLEY_MAX_KM,
+    VALLEY_WALL_RISE, VALLEY_WIDTH_FACTOR, WINDOW_BIN_CELLS, channel_size,
 };
 pub use cube::{
     ELEV_MAX, ELEV_MIN, FACES, FaceSizeValues, face_dir, face_of, face_size_values,
