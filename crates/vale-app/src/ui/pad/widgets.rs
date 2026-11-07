@@ -111,7 +111,7 @@ pub(super) fn hit(
 
 /// Adds a control to the list, unless a scroll area cuts it to less than
 /// the touch size.
-fn push(ui: &egui::Ui, controls: &mut Controls, rect: Rect, name: &str) {
+pub(crate) fn push(ui: &egui::Ui, controls: &mut Controls, rect: Rect, name: &str) {
     let whole = rect;
     let rect = rect.intersect(ui.clip_rect());
     let cut = |whole: f32, part: f32| part < TOUCH.min(whole);

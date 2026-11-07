@@ -59,6 +59,7 @@ pub mod region;
 pub mod select;
 pub mod style_editor;
 pub mod table;
+pub mod token_field;
 pub mod vertex;
 pub mod world_form;
 
