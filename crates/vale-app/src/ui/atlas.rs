@@ -1455,7 +1455,8 @@ fn frame_at(page: &PageRecord, p: Point) -> Option<FrameId> {
 }
 
 /// The handle of the selected frame whose touch area holds a screen
-/// position. The nearest handle wins.
+/// position, and the true screen position of the handle. The nearest handle
+/// wins.
 fn handle_at(state: &AppState, pos: Pos2) -> Option<(Handle, Pos2)> {
     if state.atlas.handles_of != Some(state.atlas.selection) {
         return None;
@@ -1479,7 +1480,7 @@ fn handle_at(state: &AppState, pos: Pos2) -> Option<(Handle, Pos2)> {
         let (da, db) = (a.center().distance(pos), b.center().distance(pos));
         da.total_cmp(&db)
     });
-    best.map(|(h, r)| (*h, r.center()))
+    best.map(|(h, r)| (*h, handle_point(state, *h).unwrap_or(r.center())))
 }
 
 /// The selected frame if it is the top frame at a screen position.
@@ -3103,8 +3104,7 @@ fn selection(ui: &egui::Ui, state: &mut AppState, place: PagePlace) {
             }
             let dark = egui::Stroke::new(1.5, Color32::from_rgb(11, 31, 26));
             let shape = FrameShape::Rectangle(rec.rect);
-            for (handle, p) in math::handles(&shape) {
-                let center = place.to_screen(p);
+            for (handle, center) in resize_handles(&shape, place) {
                 painter.circle(center, HANDLE_RADIUS, ACCENT, dark);
                 let size = vec2(HANDLE_TARGET, HANDLE_TARGET);
                 let touch = Rect::from_center_size(center, size);
@@ -3135,11 +3135,13 @@ fn selection(ui: &egui::Ui, state: &mut AppState, place: PagePlace) {
             // The frame of the Select tool shows no handles.
             let shown = match state.atlas.tool {
                 AtlasTool::Select => Vec::new(),
-                AtlasTool::Vertex => math::vertex_handles(&frame.shape),
-                _ => math::handles(&frame.shape),
+                AtlasTool::Vertex => math::vertex_handles(&frame.shape)
+                    .into_iter()
+                    .map(|(handle, p)| (handle, place.to_screen(p)))
+                    .collect(),
+                _ => resize_handles(&frame.shape, place),
             };
-            for (handle, p) in shown {
-                let center = place.to_screen(p);
+            for (handle, center) in shown {
                 let on = matches!(handle, Handle::Vertex(v) if state.atlas.vertices.contains(&v));
                 if on {
                     painter.circle(center, HANDLE_RADIUS + 2.0, Color32::WHITE, stroke);
@@ -3152,6 +3154,51 @@ fn selection(ui: &egui::Ui, state: &mut AppState, place: PagePlace) {
             state.atlas.handles = handles;
         }
     }
+}
+
+/// The resize handles of a shape on the screen. Two handles are never
+/// closer than `HANDLE_TARGET`. A box narrower than two targets has no
+/// handles at the middle of its top and bottom edges, and a box shorter than
+/// two targets has none at the middle of its left and right edges. A box
+/// smaller than one target has its handles on a box of that size around its
+/// center.
+fn resize_handles(shape: &FrameShape, place: PagePlace) -> Vec<(Handle, Pos2)> {
+    let all: Vec<_> = (math::handles(shape).into_iter())
+        .map(|(handle, p)| (handle, place.to_screen(p)))
+        .collect();
+    let rect = Rect::from_two_pos(all[0].1, all[4].1);
+    let center = rect.center();
+    let size = rect.size();
+    let grow = vec2(
+        HANDLE_TARGET.max(size.x) / size.x.max(f32::EPSILON),
+        HANDLE_TARGET.max(size.y) / size.y.max(f32::EPSILON),
+    );
+    let narrow = size.x < 2.0 * HANDLE_TARGET;
+    let short = size.y < 2.0 * HANDLE_TARGET;
+    all.into_iter()
+        .filter(|(handle, _)| match handle {
+            Handle::Resize(1 | 5) => !narrow,
+            Handle::Resize(3 | 7) => !short,
+            _ => true,
+        })
+        .map(|(handle, p)| (handle, center + (p - center) * grow))
+        .collect()
+}
+
+/// The true screen position of a resize handle of the selection. A handle
+/// of a small box shows away from this position.
+fn handle_point(state: &AppState, handle: Handle) -> Option<Pos2> {
+    let Handle::Resize(i) = handle else {
+        return None;
+    };
+    let atlas = &state.doc.project.atlas;
+    let shape = match state.atlas.selection {
+        AtlasSelection::Frame(id) => atlas.frame(id)?.shape.clone(),
+        AtlasSelection::Item(id) => FrameShape::Rectangle(atlas.furniture(id)?.rect),
+        _ => return None,
+    };
+    let point = math::handles(&shape).get(i)?.1;
+    Some(state.atlas.place?.to_screen(point))
 }
 
 /// Makes the shape of a frame a polygon or a rectangle.
