@@ -7,6 +7,7 @@ mod functions;
 mod lexer;
 mod parser;
 mod parts;
+mod print;
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -151,15 +152,21 @@ impl fmt::Display for ParseError {
 
 impl std::error::Error for ParseError {}
 
-/// A parsed expression.
-#[derive(Clone)]
+/// A parsed expression. Two expressions are equal when their syntax trees are equal. Display writes the canonical text.
+#[derive(Clone, PartialEq)]
 pub struct Expr {
     root: Node,
 }
 
 impl fmt::Debug for Expr {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.write_str("Expr")
+        write!(f, "Expr({self})")
+    }
+}
+
+impl fmt::Display for Expr {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str(&print::print(&self.root))
     }
 }
 

@@ -33,7 +33,7 @@ pub(super) enum Var {
     Geometry,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub(super) enum Node {
     Lit(Value),
     Field(String),

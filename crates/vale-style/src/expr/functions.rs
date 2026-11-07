@@ -14,6 +14,19 @@ pub struct Function {
     pub(super) call: fn(&[Value]) -> Value,
 }
 
+/// Two functions are equal when their names are equal.
+impl PartialEq for Function {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+    }
+}
+
+impl std::fmt::Debug for Function {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str(self.name)
+    }
+}
+
 /// All functions, by name.
 pub static FUNCTIONS: &[Function] = &[
     Function {
@@ -253,12 +266,13 @@ pub(super) fn text_of(v: &Value) -> Option<String> {
     match v {
         Value::Null => None,
         Value::Bool(b) => Some(b.to_string()),
-        Value::Number(n) => Some(format_number(*n)),
+        Value::Number(n) => Some(number_text(*n)),
         Value::Text(s) => Some(s.clone()),
     }
 }
 
-fn format_number(n: f64) -> String {
+/// A number as an expression writes it. A whole number has no decimal point.
+pub(super) fn number_text(n: f64) -> String {
     if n.fract() == 0.0 && n.abs() < 1e15 {
         format!("{}", n as i64)
     } else {
