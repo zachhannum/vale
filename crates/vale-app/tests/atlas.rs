@@ -2770,6 +2770,51 @@ fn the_cards_of_the_atlas_show_the_blurred_page() {
     assert!(difference > width * 2, "{difference}");
 }
 
+#[test]
+#[ignore = "gpu"]
+fn the_blur_behind_a_card_shows_the_raster_layers_of_a_frame() {
+    let _gpu = one_gpu_test();
+    // A black height layer in a frame on a white page.
+    let mut state = AppState::new(Document::empty()).unwrap();
+    state.headless = true;
+    state.set_layout(Layout::Pad);
+    state.workspace = Workspace::Atlas;
+    atlas::add_frame(&mut state).expect("a page takes a frame");
+    state.globe.set_face_size(128);
+    let height = state.add_height();
+    state.set_raster_display(height, vale_store::RasterDisplay::Grey);
+    state.globe.raster_map_mut(height).unwrap().fill(0);
+    let setup = egui_kittest::wgpu::default_wgpu_setup();
+    let mut h = vale_app::headless::ui_harness(state, (1194.0, 834.0), 1.0, setup);
+    h.set_render_every_step(true);
+    h.run_steps(4);
+    // The middle of the frame is below the card of the workspace switch.
+    let card = h.state().pad.rects.unwrap().workspace;
+    let frame = atlas::open_page(h.state()).frames[0].clone();
+    let middle = h
+        .state()
+        .atlas
+        .place
+        .unwrap()
+        .to_screen(anchor(&frame.shape));
+    h.state_mut().atlas.view.offset += card.center() - middle;
+    h.run_steps(4);
+    let row = |h: &mut Pad| {
+        h.remove_cursor();
+        h.run_steps(2);
+        card_row(&h.render().unwrap(), card)
+    };
+    let shown = row(&mut h);
+    let layer = h.state().doc.project.raster_layer(height).unwrap().id;
+    assert!(h.state_mut().doc.set_shown(frame.map, layer, false));
+    h.state_mut().touch();
+    let hidden = row(&mut h);
+    let width = shown.len() as i32;
+    let difference: i32 = shown.iter().zip(&hidden).map(|(a, b)| (a - b).abs()).sum();
+    assert!(difference > width * 20, "{difference}");
+    assert!(shown.iter().zip(&hidden).all(|(s, h)| s <= h));
+}
+
 /// The width of the stroke of the first rule of Rivers: in the style of the
 /// layer, or in the style of a map.
 fn rivers_width(h: &Pad, map: Option<MapId>) -> f64 {

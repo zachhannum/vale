@@ -242,6 +242,53 @@ fn the_picture_shows_the_painted_world() {
 }
 
 #[test]
+fn the_picture_shows_the_visible_vector_layers() {
+    use vale_store::{Feature, Geometry, GeometryKind};
+    let middle = |path: &std::path::Path| {
+        let picture = vale_store::summary(path).unwrap().thumbnail.unwrap();
+        let at = ((picture.height / 2 * picture.width + picture.width / 2) * 4) as usize;
+        [picture.rgba[at], picture.rgba[at + 1], picture.rgba[at + 2]]
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = app(dir.path(), Layout::Desktop);
+    new_world(&mut h, "Aurelia");
+    let path = open_path(&h);
+    let state = h.state_mut();
+    state.add_height();
+    state.globe.view = vale_app::globe::view::GlobeView::centered(0.0, 0.0);
+    let layers: Vec<_> = state.doc.project.layers().iter().map(|l| l.id).collect();
+    for id in layers {
+        state.set_layer_visible(id, false);
+    }
+    state.show_projects();
+    let plain = middle(&path);
+
+    // A red polygon covers the middle of the globe.
+    h.state_mut().run_action(Action::OpenWorld(path.clone()));
+    let state = h.state_mut();
+    let polygon = state.doc.add_layer(GeometryKind::Polygon);
+    let ring = vec![[-30.0, -30.0], [30.0, -30.0], [30.0, 30.0], [-30.0, 30.0]];
+    let feature = Feature::new(Geometry::Polygons(vec![vec![ring]]), Default::default());
+    assert!(state.doc.project.add_feature(polygon, feature));
+    let style = &mut state.doc.entry_mut(polygon).unwrap().style;
+    style.set_fill(Some(vale_style::Color::rgb(255, 0, 0)));
+    state.sync_globe();
+    state.show_projects();
+    let [r, g, b] = middle(&path);
+    assert!(r > 150 && g < 30 && b < 30, "{:?}", [r, g, b]);
+
+    // A hidden layer is not in the picture.
+    h.state_mut().run_action(Action::OpenWorld(path.clone()));
+    let polygon = (h.state().doc.project.layers().iter())
+        .find(|l| l.kind == vale_store::LayerKind::Vector(GeometryKind::Polygon))
+        .unwrap()
+        .id;
+    h.state_mut().set_layer_visible(polygon, false);
+    h.state_mut().show_projects();
+    assert_eq!(middle(&path), plain);
+}
+
+#[test]
 fn new_open_rename_copy_and_delete_work_in_both_layouts() {
     for layout in [Layout::Desktop, Layout::Pad] {
         let dir = tempfile::tempdir().unwrap();

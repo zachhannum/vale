@@ -1,5 +1,6 @@
 // The blurred copy of the canvas that a card of the iPad layout shows. The
-// canvas is drawn into a texture at a reduced size, and two passes blur it.
+// frame drawn so far shrinks into a texture at a reduced size, and two passes
+// blur it.
 
 struct Globals {
     // The left and the top of the canvas on the screen, then its width and
@@ -58,10 +59,18 @@ fn fs_blur(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     return sum / total;
 }
 
-// The picture of the canvas that the CPU drew, at the reduced size.
+// One pixel of the reduced copy: the mean of the 4 by 4 pixels of the frame
+// that it covers. Each bilinear tap reads 2 by 2 pixels.
 @fragment
-fn fs_blit(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
-    return textureSampleLevel(source, bilinear, frag.xy / g.small.xy, 0.0);
+fn fs_down(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
+    let size = vec2<f32>(textureDimensions(source));
+    let center = frag.xy * g.blur.y;
+    var sum = vec4<f32>(0.0);
+    for (var i = 0; i < 4; i += 1) {
+        let offset = vec2<f32>(f32(i & 1) * 2.0 - 1.0, f32(i >> 1u) * 2.0 - 1.0);
+        sum += textureSampleLevel(source, bilinear, (center + offset) / size, 0.0);
+    }
+    return sum * 0.25;
 }
 
 struct CardVertex {

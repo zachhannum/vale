@@ -12,7 +12,7 @@ use vale_store::Geometry;
 use vale_terrain::Mode;
 
 use crate::document::Document;
-use crate::globe::backdrop::Canvas;
+use crate::globe::Canvas;
 use crate::globe::brush::{FIXED_FLOW, Sample, pen_flow, slerp};
 use crate::globe::flat::FlatView;
 use crate::globe::math::V3;
@@ -48,7 +48,7 @@ const FLAT_STEP: f64 = std::f64::consts::PI / 180.0;
 pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     egui::CentralPanel::default()
         .frame(egui::Frame::NONE)
-        .show(ui, |ui| canvas(ui, state, BACKGROUND, false));
+        .show(ui, |ui| canvas(ui, state, BACKGROUND));
 }
 
 /// Starts a stroke, or starts to pick the flatten level.
@@ -917,14 +917,27 @@ impl Sink {
     }
 }
 
-/// Sends the shapes of a sink to the painter and to the cut.
+/// Sends the shapes of a sink to the painter and to the cut. With `tee`, a
+/// copy of each shape for the painter goes to `tee`, except the symbols.
 fn paint_out(
     painter: &egui::Painter,
     format: Option<egui_wgpu::wgpu::TextureFormat>,
     mut cut: Option<&mut Vec<Cut>>,
+    mut tee: Option<&mut Vec<Cut>>,
     out: &[Out],
 ) {
     for out in out {
+        if let Some(tee) = &mut tee {
+            match out {
+                Out::Shape(egui::Shape::Mesh(mesh))
+                    if mesh.texture_id != egui::TextureId::default() => {}
+                Out::Shape(shape) => tee.push(Cut::Shape(shape.clone())),
+                Out::Faded(alpha, shapes) | Out::Group(alpha, shapes) => {
+                    tee.push(Cut::Group(*alpha, shapes.clone()));
+                }
+                Out::Cut(_) => {}
+            }
+        }
         match out {
             Out::Shape(shape) => {
                 painter.add(shape.clone());
@@ -1132,7 +1145,7 @@ pub fn vector_layer(
     id: LayerId,
     pipeline: &mut Pipeline,
 ) {
-    vector_layer_cut(painter, format, None, rect, doc, view, id, pipeline);
+    vector_layer_cut(painter, format, None, None, rect, doc, view, id, pipeline);
 }
 
 /// A part of the work of a draw: the cut of one polygon of a feature, and
@@ -1151,13 +1164,16 @@ enum Done {
 
 /// Draws one vector layer over the globe, as `vector_layer`. With `cut`,
 /// the fills and the strokes go to `cut`, and the other shapes go to the
-/// painter. The layer keeps its shapes between frames, and a draw with no
-/// change to the view, the layer, or its style sends the kept shapes again.
+/// painter. With `tee`, a copy of the shapes for the painter goes to `tee`,
+/// except the symbols. The layer keeps its shapes between frames, and a draw
+/// with no change to the view, the layer, or its style sends the kept shapes
+/// again.
 #[expect(clippy::too_many_arguments)]
 pub fn vector_layer_cut(
     painter: &egui::Painter,
     format: Option<egui_wgpu::wgpu::TextureFormat>,
     cut: Option<&mut Vec<Cut>>,
+    tee: Option<&mut Vec<Cut>>,
     rect: egui::Rect,
     doc: &Document,
     view: &GlobeView,
@@ -1213,7 +1229,7 @@ pub fn vector_layer_cut(
     let (scatter, cache) = pipeline.globe_caches_mut();
     let (shapes, work) = cache.layer(layer, masked.as_ref(), detail.as_ref());
     if let Some(out) = shapes.drawn(&key) {
-        paint_out(painter, format, cut, out);
+        paint_out(painter, format, cut, tee, out);
         return;
     }
     work.draws += 1;
@@ -1470,7 +1486,7 @@ pub fn vector_layer_cut(
         }
     }
     let out = sink.finish();
-    paint_out(painter, format, cut, &out);
+    paint_out(painter, format, cut, tee, &out);
     shapes.keep(key, out);
 }
 
@@ -1633,7 +1649,7 @@ pub fn flat_vector_layer_cut(
         }
         sink.end_group();
     }
-    paint_out(painter, format, cut, &sink.finish());
+    paint_out(painter, format, cut, None, &sink.finish());
 }
 
 /// The smallest pixel of the flat view in radians, from the center, the
@@ -1652,16 +1668,10 @@ fn flat_pixel(flat: &FlatView, rect: egui::Rect, pixels_per_point: f32) -> Optio
     .reduce(f64::min)
 }
 
-/// Draws the globe in the free space of `ui` and reads its input. `cards`:
-/// floating cards cover the canvas, and they can show a blurred copy of it.
-pub(super) fn canvas(
-    ui: &mut egui::Ui,
-    state: &mut AppState,
-    background: egui::Color32,
-    cards: bool,
-) {
+/// Draws the globe in the free space of `ui` and reads its input.
+pub(super) fn canvas(ui: &mut egui::Ui, state: &mut AppState, background: egui::Color32) {
     if let Some(rect) = canvas_input(ui, state, background) {
-        paint_canvas(ui, state, rect, background, cards);
+        paint_canvas(ui, state, rect, background);
         held_buttons(ui, state, rect);
     }
 }
@@ -1818,8 +1828,50 @@ pub fn tessellate(
     clip: egui::Rect,
     cuts: Vec<Cut>,
 ) -> Vec<(egui::Rect, egui::Mesh, f32)> {
-    let ppp = ctx.pixels_per_point();
     let options = ctx.tessellation_options(|o| *o);
+    tessellate_at(ctx.pixels_per_point(), options, clip, cuts)
+}
+
+/// The meshes of the shapes of the vector layer `id` for the picture of
+/// the globe of `size` by `size` pixels, at zoom 1. A mesh is in the pixels
+/// of the picture, and it has no symbols. A group gets its alpha in the
+/// colors of its vertices, so the overlaps of its shapes get the alpha twice.
+pub fn picture_meshes(
+    doc: &Document,
+    view: &GlobeView,
+    id: LayerId,
+    size: u32,
+    pipeline: &mut Pipeline,
+) -> Vec<egui::Mesh> {
+    let view = GlobeView { zoom: 1.0, ..*view };
+    let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::splat(size as f32));
+    let mut painter =
+        egui::Painter::new(egui::Context::default(), egui::LayerId::background(), rect);
+    painter.set_invisible();
+    let mut shapes = Vec::new();
+    let tee = Some(&mut shapes);
+    vector_layer_cut(&painter, None, None, tee, rect, doc, &view, id, pipeline);
+    let options = egui::epaint::TessellationOptions::default();
+    (tessellate_at(1.0, options, rect, shapes).into_iter())
+        .map(|(_, mut mesh, alpha)| {
+            if alpha < 1.0 {
+                for vertex in &mut mesh.vertices {
+                    vertex.color = vertex.color.gamma_multiply(alpha);
+                }
+            }
+            mesh
+        })
+        .collect()
+}
+
+/// The meshes of `cuts`, as `tessellate` makes them, at `ppp` pixels for
+/// each point.
+fn tessellate_at(
+    ppp: f32,
+    options: egui::epaint::TessellationOptions,
+    clip: egui::Rect,
+    cuts: Vec<Cut>,
+) -> Vec<(egui::Rect, egui::Mesh, f32)> {
     let mut out = Vec::new();
     let mut shapes = Vec::new();
     let push = |out: &mut Vec<_>, shapes: Vec<egui::Shape>, alpha| {
@@ -1852,7 +1904,6 @@ pub(super) fn paint_canvas(
     state: &mut AppState,
     rect: egui::Rect,
     background: egui::Color32,
-    cards: bool,
 ) {
     let painter = egui::Painter::new(ui.ctx().clone(), ui.layer_id(), rect);
     let layer = state.selected_vector();
@@ -1872,7 +1923,7 @@ pub(super) fn paint_canvas(
     (pipeline.lod_mut()).retain(|id| doc.layer(id).is_some());
     globe.set_raster_masks(raster_masks(doc, globe));
     let format = globe.format;
-    match globe.paint(canvas, cards && globe.blur) {
+    match globe.paint(canvas) {
         Some(paints) => {
             for paint in paints {
                 match paint {
@@ -1894,7 +1945,9 @@ pub(super) fn paint_canvas(
                         let cut = Some(&mut shapes);
                         let (view, flat) = (&globe.view, &globe.flat);
                         if globe_view {
-                            vector_layer_cut(&painter, format, cut, rect, doc, view, id, pipeline);
+                            vector_layer_cut(
+                                &painter, format, cut, None, rect, doc, view, id, pipeline,
+                            );
                         } else {
                             flat_vector_layer_cut(
                                 &painter, format, cut, rect, doc, flat, id, pipeline,

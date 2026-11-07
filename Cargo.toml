@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
+exclude = ["vendor"]
 
 [workspace.package]
 version = "0.1.0"
@@ -81,3 +82,6 @@ opt-level = 2
 
 [profile.dev.package.vale-labeler]
 opt-level = 2
+
+[patch.crates-io]
+egui-wgpu = { path = "vendor/egui-wgpu" }

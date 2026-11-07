@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::ops::Range;
-use std::sync::{Arc, OnceLock};
+
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32, Pos2, Rect, pos2, vec2};
@@ -30,8 +30,6 @@ const REST_TIME: Duration = Duration::from_millis(6);
 const GESTURE_TIME: Duration = Duration::from_millis(3);
 /// The free textures that wait for a tile.
 const POOL: usize = 16;
-/// The longest side of the reduced copy of a list for the blurred backdrop, in pixels.
-const THUMB_SIDE: f64 = 256.0;
 /// The most tiles of a lower or a higher scale that draw one square.
 const MOST_FALLBACK: usize = 64;
 /// The longest side of the overview of a list, in pixels.
@@ -131,25 +129,6 @@ struct Tile {
     used: u64,
 }
 
-/// A texture of a frame at the reduced size of the blurred backdrop, in premultiplied bytes.
-pub struct Thumb {
-    pub serial: u64,
-    pub size: [usize; 2],
-    pub rgba: Vec<u8>,
-}
-
-impl Thumb {
-    fn new(img: &vale_render::Rgba) -> Thumb {
-        static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let serial = SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        Thumb {
-            serial,
-            size: [img.width, img.height],
-            rgba: img.data.clone(),
-        }
-    }
-}
-
 /// The map of a frame in a margin around its shape, at a lower resolution. It fills the shape
 /// while a gesture moves the map.
 pub struct Spill {
@@ -171,7 +150,6 @@ pub struct FrameLists {
     pub bounds: kurbo::Rect,
     /// The view of the map in page points.
     vt: ViewTransform,
-    thumbs: OnceLock<[Option<Arc<Thumb>>; 3]>,
 }
 
 impl FrameLists {
@@ -196,7 +174,6 @@ impl FrameLists {
             decor: prepare(decor)?,
             bounds,
             vt,
-            thumbs: OnceLock::new(),
         })
     }
 
@@ -206,23 +183,6 @@ impl FrameLists {
             Layer::Map => Some(&self.map),
             Layer::Decor => self.decor.as_ref(),
         }
-    }
-
-    /// The reduced copies of the lists, for the blurred backdrop.
-    fn thumbs(&self) -> &[Option<Arc<Thumb>>; 3] {
-        self.thumbs.get_or_init(|| {
-            let b = self.bounds;
-            let t = THUMB_SIDE / b.width().max(b.height()).max(1e-6);
-            let (w, h) = ((b.width() * t).ceil(), (b.height() * t).ceil());
-            let at = Affine::scale(t) * Affine::translate((-b.x0, -b.y0));
-            LAYERS.map(|layer| {
-                let list = self.list(layer)?;
-                let (img, _) =
-                    vale_render::render_region(list, at, w.max(1.0) as u32, h.max(1.0) as u32)
-                        .ok()?;
-                Some(Arc::new(Thumb::new(&img)))
-            })
-        })
     }
 }
 
@@ -876,24 +836,6 @@ impl Tiles {
         if !empty && let Some(previous) = set.previous.take() {
             self.recycle(*previous);
         }
-    }
-
-    /// The reduced copies of the lists of a frame for the blurred backdrop, with their places on
-    /// the screen.
-    pub fn thumbs(&self, screen: Screen, f: &Shown) -> Vec<(Arc<Thumb>, Rect)> {
-        let Some(set) = self.frames.get(&f.id) else {
-            return Vec::new();
-        };
-        let thumbs = set.lists.thumbs();
-        let mut out = Vec::new();
-        for (layer, thumb) in LAYERS.into_iter().zip(thumbs) {
-            if let Some(thumb) = thumb {
-                let at = set.placement(layer, &f.vt, screen);
-                let rect = at.screen_box(set.lists.bounds).intersect(f.shown);
-                out.push((thumb.clone(), rect));
-            }
-        }
-        out
     }
 
     /// Frees the tiles that no pass of the UI drew for the longest time, until no more than

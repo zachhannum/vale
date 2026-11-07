@@ -8,7 +8,7 @@ use eframe::egui::{self, Align2, Color32, Order, Pos2, Rect, Sense, pos2, vec2};
 use super::geometry::{CELL, PAD, TOUCH};
 use super::theme;
 use super::widgets::{self, Controls, KEYPAD, KeyEdit, Keys, PANEL_ROW, TICK_NAMES, fade, hit};
-use crate::globe::backdrop::card_shape;
+use crate::globe::backdrop::{card_shape, marker};
 
 /// The height of a track, of a value box, and of a stepper.
 const HEIGHT: f32 = 36.0;
@@ -798,7 +798,7 @@ impl<'a> Number<'a> {
         let size = vec2(4.0 * TOUCH * 1.25, KEYPAD) + vec2(2.0 * PAD, 2.0 * PAD);
         let id = format!("{} keypad", self.name);
         let own = egui::LayerId::new(Order::Foreground, egui::Id::new(&id));
-        let (card, clear) = place(
+        let card = place(
             ctx,
             anchor,
             ui.clip_rect(),
@@ -806,7 +806,7 @@ impl<'a> Number<'a> {
             anchor.top() - PAD,
             Some(own),
         );
-        let backdrop = clear.then(|| widgets::backdrop(ctx)).flatten();
+        let backdrop = widgets::backdrop(ctx);
         let radius = theme::CARD_RADIUS.into();
         widgets::card(ctx, backdrop, &id, card, Order::Foreground, radius, |ui| {
             let inner = ui.max_rect().shrink(PAD);
@@ -838,10 +838,13 @@ impl<'a> Number<'a> {
             text.size().y + note_size.y + 2.0 + 16.0,
         );
         let top = anchor.center().y - size.y / 2.0;
-        let (rect, clear) = place(ctx, anchor, ui.clip_rect(), size, top, None);
+        let rect = place(ctx, anchor, ui.clip_rect(), size, top, None);
         let radius = theme::CONTROL_RADIUS;
+        let backdrop = widgets::backdrop(ctx);
+        if backdrop.is_some() {
+            painter.add(marker(Order::Tooltip, rect));
+        }
         painter.add(theme::shadow().as_shape(rect, radius));
-        let backdrop = clear.then(|| widgets::backdrop(ctx)).flatten();
         if let Some(format) = backdrop {
             let corner = egui::CornerRadius::from(radius);
             painter.add(card_shape(format, rect, corner, ctx.pixels_per_point()));
@@ -932,9 +935,8 @@ fn dragging(ui: &egui::Ui, resp: &egui::Response) -> Option<Drag> {
 /// The place of a card of `size` next to `panel`, the panel or the card
 /// that holds `anchor`, with its top at `top`, over the globe. The place is
 /// at the right of the panel, past any other panel there, then at the
-/// left, then above the panel. True with a place over the globe only. With
-/// no such place, the card is below `anchor`, over the panel. `own` is the
-/// layer of the card itself.
+/// left, then above the panel. With no such place, the card is below
+/// `anchor`, over the panel. `own` is the layer of the card itself.
 fn place(
     ctx: &egui::Context,
     anchor: Rect,
@@ -942,7 +944,7 @@ fn place(
     size: egui::Vec2,
     top: f32,
     own: Option<egui::LayerId>,
-) -> (Rect, bool) {
+) -> Rect {
     let screen = ctx.content_rect().shrink(8.0);
     let fits = |rect: Rect| screen.contains_rect(rect);
     let top = top.clamp(screen.top(), (screen.bottom() - size.y).max(screen.top()));
@@ -954,7 +956,7 @@ fn place(
             break;
         }
         match panel_under(ctx, rect, own) {
-            None => return (rect, true),
+            None => return rect,
             Some(other) => x = other.right() + GAP,
         }
     }
@@ -966,7 +968,7 @@ fn place(
             break;
         }
         match panel_under(ctx, rect, own) {
-            None => return (rect, true),
+            None => return rect,
             Some(other) => right = other.left() - GAP,
         }
     }
@@ -980,12 +982,12 @@ fn place(
             break;
         }
         match panel_under(ctx, rect, own) {
-            None => return (rect, true),
+            None => return rect,
             Some(other) => bottom = other.top() - GAP,
         }
     }
     let below = Rect::from_min_size(pos2(anchor.right() - size.x, anchor.bottom() + 4.0), size);
-    (keep_in(below, screen), false)
+    keep_in(below, screen)
 }
 
 /// The rectangle of a panel or a card below a part of `rect`, if there is

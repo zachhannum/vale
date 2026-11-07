@@ -685,7 +685,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     raster_form::pad(&ctx, state, &mut controls, &rects);
     super::region::pad(&ctx, state, &mut controls, &rects);
     if let Some(rect) = canvas.inner {
-        globe::paint_canvas(ui, state, rect, theme::CANVAS, true);
+        globe::paint_canvas(ui, state, rect, theme::CANVAS);
     }
 
     state.pad.controls = controls;
