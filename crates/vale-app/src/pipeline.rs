@@ -22,6 +22,7 @@ use vale_style::{Extent, Hatch, MarkerShape, Mask, Paint, Stroke, StrokeKind, sc
 use crate::atlas::{self, FrameTarget, PT_PER_MM};
 use crate::document::{Document, LayerEntry};
 use crate::globe::shapes::ShapeCache;
+use crate::lod::{self, LodCache};
 use crate::mask::{MaskCache, MaskedFeature, MaskedLayer, PageMask};
 use crate::scatter::{self, ScatterCache, ScatterFill};
 use crate::view::{View, ViewTransform};
@@ -162,9 +163,9 @@ struct WindowGraticule {
     lines: Vec<Vec<Point>>,
 }
 
-/// The projected features of a layer, with the generation of its cut.
-/// `None`: the layer draws whole.
-type ProjLayer = (Option<u64>, Vec<Option<ProjFeature>>);
+/// The projected features of a layer, with the generation of its cut and
+/// the key of its level of detail. `None`: the layer draws whole.
+type ProjLayer = ((Option<u64>, usize), Vec<Option<ProjFeature>>);
 
 /// The most caches that a pipeline keeps.
 const MAX_CACHES: usize = 3;
@@ -180,6 +181,7 @@ pub struct Pipeline {
     scatter: ScatterCache,
     masks: MaskCache,
     globe: ShapeCache,
+    lod: LodCache,
     /// The raster masks of the layers in the map frames.
     page_masks: HashMap<(FrameId, LayerId), Arc<PageMask>>,
 }
@@ -187,6 +189,16 @@ pub struct Pipeline {
 /// The raster-masked layers of a frame, with their page masks. `None`: the
 /// mask is not ready yet.
 pub type FrameMasks = HashMap<LayerId, Option<Arc<PageMask>>>;
+
+/// The geometry that a map frame draws.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum FrameDetail {
+    /// The full geometry of each layer, for export and pick.
+    Full,
+    /// The level of detail of each layer for the pixels of a screen, with
+    /// the number of pixels in one point of the target.
+    Screen(f64),
+}
 
 /// The fonts that ship with the app.
 pub fn fonts() -> anyhow::Result<Fonts> {
@@ -1214,6 +1226,33 @@ impl Pipeline {
         self.scatter.forget(id);
         self.masks.forget(id);
         self.globe.forget(id);
+        self.lod.forget(id);
+    }
+
+    /// A pipeline with no kept geometry, that keeps the levels of detail.
+    /// Each layer compares its levels with its geometry at the next use.
+    pub fn reset(&mut self) {
+        let mut lod = std::mem::take(&mut self.lod);
+        lod.uncheck();
+        *self = Pipeline {
+            lod,
+            ..Pipeline::default()
+        };
+    }
+
+    /// The levels of detail of the vector layers.
+    pub fn lod(&self) -> &LodCache {
+        &self.lod
+    }
+
+    pub fn lod_mut(&mut self) -> &mut LodCache {
+        &mut self.lod
+    }
+
+    /// Takes the levels of detail that are ready. `block`: waits for each
+    /// running build. True while a build runs or waits.
+    pub fn poll_lod(&mut self, block: bool) -> bool {
+        self.lod.poll(block)
     }
 
     /// Sets the raster mask of layer `layer` in frame `frame`, from the
@@ -1284,13 +1323,16 @@ impl Pipeline {
 
     /// Brings the projection of a map and the projected geometry of the
     /// layers `ids` up to date with the document. The masks are the masks
-    /// of the styles of `styled`, and `None` is the globe styles.
+    /// of the styles of `styled`, and `None` is the globe styles. With
+    /// `pixel`, the size of a pixel in radians, an unmasked layer has the
+    /// geometry of its level of detail for that pixel.
     fn ensure(
         &mut self,
         doc: &Document,
         map: MapId,
         styled: Option<MapId>,
         ids: &[LayerId],
+        pixel: Option<f64>,
     ) -> anyhow::Result<&mut Cache> {
         let spec = doc.projection(map);
         let radius_m = doc.project.world.radius_km * 1000.0;
@@ -1331,7 +1373,14 @@ impl Pipeline {
         for id in ids {
             let mask = doc.map_entry(styled, *id).and_then(|e| e.style.style.mask);
             let masked = self.masks.layer(doc, *id, mask);
-            let generation = masked.as_ref().map(|m| m.generation);
+            let detail = match (pixel, &masked) {
+                (Some(pixel), None) => doc.layer(*id).and_then(|l| self.lod.level(l, pixel)),
+                _ => None,
+            };
+            let generation = (
+                masked.as_ref().map(|m| m.generation),
+                lod::key(detail.as_ref()),
+            );
             let cuts = cache.layers.entry(*id).or_default();
             if let Some(i) = cuts.iter().position(|c| c.0 == generation) {
                 let cut = cuts.remove(i);
@@ -1344,7 +1393,8 @@ impl Pipeline {
                         let part = masked.as_ref().and_then(|m| m.features.get(i)?.as_ref());
                         match part {
                             Some(part) => project_masked(&cache.projection, part),
-                            None => project_feature(&cache.projection, &f.geometry),
+                            None => lod::geometry(detail.as_deref(), i, &f.geometry)
+                                .and_then(|g| project_feature(&cache.projection, g)),
                         }
                     })
                     .collect();
@@ -1360,29 +1410,29 @@ impl Pipeline {
         if let Some(v) = doc.frame.view {
             return Ok(v);
         }
-        let cache = self.ensure(doc, doc.first_map(), None, &drawn_layers(doc, None))?;
+        let cache = self.ensure(doc, doc.first_map(), None, &drawn_layers(doc, None), None)?;
         Ok(View::fit(cache.bounds, size.0, size.1, 24.0))
     }
 
     pub fn fit_scale(&mut self, doc: &Document, size: (f64, f64)) -> anyhow::Result<f64> {
-        let cache = self.ensure(doc, doc.first_map(), None, &drawn_layers(doc, None))?;
+        let cache = self.ensure(doc, doc.first_map(), None, &drawn_layers(doc, None), None)?;
         Ok(View::fit(cache.bounds, size.0, size.1, 24.0).scale)
     }
 
     /// The projected bounds of the projection of the first map, in meters.
     pub fn projection_bounds(&mut self, doc: &Document) -> anyhow::Result<Rect> {
-        Ok(self.ensure(doc, doc.first_map(), None, &[])?.bounds)
+        Ok(self.ensure(doc, doc.first_map(), None, &[], None)?.bounds)
     }
 
     /// The projection of a map.
     pub fn projection(&mut self, doc: &Document, map: MapId) -> anyhow::Result<&Projection> {
-        Ok(&self.ensure(doc, map, None, &[])?.projection)
+        Ok(&self.ensure(doc, map, None, &[], None)?.projection)
     }
 
     /// The projected position of a place, in meters. `None` when it is not visible.
     pub fn project_lonlat(&mut self, doc: &Document, p: LonLat) -> anyhow::Result<Option<Point>> {
         Ok(self
-            .ensure(doc, doc.first_map(), None, &[])?
+            .ensure(doc, doc.first_map(), None, &[], None)?
             .projection
             .forward(p))
     }
@@ -1396,7 +1446,7 @@ impl Pipeline {
         let view = self.resolve_view(doc, size)?;
         let vt = ViewTransform::new(view, size.0, size.1);
         Ok(self
-            .ensure(doc, doc.first_map(), None, &[])?
+            .ensure(doc, doc.first_map(), None, &[], None)?
             .projection
             .forward(p)
             .map(|q| vt.to_page(q)))
@@ -1411,7 +1461,7 @@ impl Pipeline {
         let view = self.resolve_view(doc, size)?;
         let vt = ViewTransform::new(view, size.0, size.1);
         Ok(self
-            .ensure(doc, doc.first_map(), None, &[])?
+            .ensure(doc, doc.first_map(), None, &[], None)?
             .projection
             .inverse(vt.from_page(q)))
     }
@@ -1425,7 +1475,7 @@ impl Pipeline {
         let view = self.resolve_view(doc, size)?;
         let vt = ViewTransform::new(view, size.0, size.1);
         let ids = drawn_layers(doc, None);
-        let cache = self.ensure(doc, doc.first_map(), None, &ids)?;
+        let cache = self.ensure(doc, doc.first_map(), None, &ids, None)?;
         let scale = scale_denominator(km_per_point(cache, &vt) * 1000.0);
         let layers = build_page_layers(doc, None, cache, &vt, vt.page_rect(), &ids, scale);
         Ok(pick::pick(&layers, at))
@@ -1445,7 +1495,7 @@ impl Pipeline {
         let radius_m = doc.project.world.radius_km * 1000.0;
         let step = graticule_step(doc.frame.graticule, &view, radius_m);
         let ids = drawn_layers(doc, None);
-        let cache = self.ensure(doc, doc.first_map(), None, &ids)?;
+        let cache = self.ensure(doc, doc.first_map(), None, &ids, None)?;
         let center_lon = cache.center_lon(&vt);
         cache.ensure_graticule(step, &vt, page, center_lon);
         let cache = &self.caches[0];
@@ -1527,7 +1577,36 @@ impl Pipeline {
             target.to_target(Point::ZERO),
             target.to_target(Point::new(page.width_mm, page.height_mm)),
         );
-        self.compose_frame_part(doc, frame, target, page_box, fonts, quality)
+        self.compose_frame_part(
+            doc,
+            frame,
+            target,
+            page_box,
+            fonts,
+            quality,
+            FrameDetail::Full,
+        )
+    }
+
+    /// The size of a pixel in radians at the center of a map frame, for
+    /// `detail`. `None`: the full geometry.
+    fn frame_pixel(
+        &mut self,
+        doc: &Document,
+        frame: &FrameRecord,
+        target: FrameTarget,
+        detail: FrameDetail,
+    ) -> anyhow::Result<Option<f64>> {
+        let FrameDetail::Screen(pixels_per_point) = detail else {
+            return Ok(None);
+        };
+        let cache = self.ensure(doc, frame.map, Some(frame.map), &[], None)?;
+        let vt = atlas::frame_transform(&cache.projection, frame, target);
+        let center = (cache.projection)
+            .inverse(vt.view.center)
+            .unwrap_or(frame.center);
+        let pixels = vt.view.scale * pixels_per_point;
+        Ok(lod::projected_pixel(&cache.projection, center, pixels))
     }
 
     /// The parallels that the labeler gets for a map frame, in target points.
@@ -1538,7 +1617,7 @@ impl Pipeline {
         target: FrameTarget,
     ) -> anyhow::Result<Vec<Vec<Point>>> {
         let ids = drawn_layers(doc, Some(frame.map));
-        let cache = self.ensure(doc, frame.map, Some(frame.map), &ids)?;
+        let cache = self.ensure(doc, frame.map, Some(frame.map), &ids, None)?;
         let vt = atlas::frame_transform(&cache.projection, frame, target);
         let classes: Vec<_> = (ids.iter())
             .map(|id| doc.label_classes(Some(frame.map), *id))
@@ -1558,8 +1637,9 @@ impl Pipeline {
         part: Rect,
         fonts: &mut Fonts,
         quality: Quality,
+        detail: FrameDetail,
     ) -> anyhow::Result<Composed> {
-        self.compose_frame_inner(doc, frame, target, part, fonts, quality, true)
+        self.compose_frame_inner(doc, frame, target, part, fonts, quality, detail, true)
     }
 
     /// The water of a map frame, inside its shape. The raster layers of the
@@ -1572,7 +1652,7 @@ impl Pipeline {
         part: Rect,
     ) -> anyhow::Result<DisplayList> {
         let ids = drawn_layers(doc, Some(frame.map));
-        let cache = self.ensure(doc, frame.map, Some(frame.map), &ids)?;
+        let cache = self.ensure(doc, frame.map, Some(frame.map), &ids, None)?;
         let vt = atlas::frame_transform(&cache.projection, frame, target);
         let outline = polylines_path([&map_pts(&vt, &cache.outline)], true);
         let mut list = DisplayList::new(part.x1, part.y1);
@@ -1598,10 +1678,12 @@ impl Pipeline {
         frame: &FrameRecord,
         target: FrameTarget,
         part: Rect,
+        detail: FrameDetail,
     ) -> anyhow::Result<DisplayList> {
         let ids = drawn_layers(doc, Some(frame.map));
         let masks = self.frame_masks(doc, frame, &ids);
-        let cache = self.ensure(doc, frame.map, Some(frame.map), &ids)?;
+        let pixel = self.frame_pixel(doc, frame, target, detail)?;
+        let cache = self.ensure(doc, frame.map, Some(frame.map), &ids, pixel)?;
         let vt = atlas::frame_transform(&cache.projection, frame, target);
         let step = atlas::graticule_interval(&cache.projection, frame);
         cache.ensure_graticule(step, &vt, part, frame.center[0]);
@@ -1662,8 +1744,9 @@ impl Pipeline {
         part: Rect,
         fonts: &mut Fonts,
         quality: Quality,
+        detail: FrameDetail,
     ) -> anyhow::Result<Composed> {
-        self.compose_frame_inner(doc, frame, target, part, fonts, quality, false)
+        self.compose_frame_inner(doc, frame, target, part, fonts, quality, detail, false)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1675,11 +1758,13 @@ impl Pipeline {
         part: Rect,
         fonts: &mut Fonts,
         quality: Quality,
+        detail: FrameDetail,
         water: bool,
     ) -> anyhow::Result<Composed> {
         let ids = drawn_layers(doc, Some(frame.map));
         let masks = self.frame_masks(doc, frame, &ids);
-        let cache = self.ensure(doc, frame.map, Some(frame.map), &ids)?;
+        let pixel = self.frame_pixel(doc, frame, target, detail)?;
+        let cache = self.ensure(doc, frame.map, Some(frame.map), &ids, pixel)?;
         let vt = atlas::frame_transform(&cache.projection, frame, target);
         let area = frame_area(frame, target).intersect(part);
         let step = atlas::graticule_interval(&cache.projection, frame);

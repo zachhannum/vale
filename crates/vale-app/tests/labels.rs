@@ -7,7 +7,9 @@ use vale_app::cli::{Args, apply_view};
 use vale_app::document::{Document, LayerEntry};
 use vale_app::furniture::{nice, scale_bar};
 use vale_app::pick::pick;
-use vale_app::pipeline::{Composed, PageFeature, PageLayer, Pipeline, Quality, Selection, fonts};
+use vale_app::pipeline::{
+    Composed, FrameDetail, PageFeature, PageLayer, Pipeline, Quality, Selection, fonts,
+};
 use vale_render::Item;
 use vale_store::{Feature, Geometry, GeometryKind, LayerId, Units, Value};
 use vale_style::{LayerStyle, PointSymbolizer, Rule, ScatterSymbolizer, Style, Symbolizer};
@@ -905,7 +907,15 @@ fn compose_part(doc: &Document, origin: Point, part: Rect) -> Composed {
     };
     let mut f = fonts().unwrap();
     Pipeline::new()
-        .compose_frame_part(doc, frame, target, part, &mut f, Quality::Final)
+        .compose_frame_part(
+            doc,
+            frame,
+            target,
+            part,
+            &mut f,
+            Quality::Final,
+            FrameDetail::Full,
+        )
         .unwrap()
 }
 

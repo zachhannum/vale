@@ -31,7 +31,7 @@ use crate::globe::select::Pointer;
 use crate::globe::{FrameDraw, FramePlace, RasterLook, RasterMask};
 use crate::mask::frame::frame_raster_masks;
 use crate::page_snap;
-use crate::pipeline::{Pipeline, Quality};
+use crate::pipeline::{FrameDetail, Pipeline, Quality};
 use crate::region::{Region, RegionKind, fit, suggest};
 use crate::view::ViewTransform;
 
@@ -2431,6 +2431,7 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
             ppp.to_bits(),
             layered,
             state.atlas.raster_masks.number(frame.id),
+            state.pipeline.lod().arrived(),
         ));
         // The neatline reaches out of the shape by half its width, and a
         // sharp corner reaches further. The edge labels outside the shape
@@ -2470,7 +2471,20 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
         if rebuild {
             let keys = (content, geometry);
             let primary = primary == Some(frame.id);
-            build_lists(state, frame, keys, reach, in_page, (primary, layered));
+            // The lists stay at each zoom, so the vector layers have the
+            // level for the highest zoom of the page.
+            let fit = place.pts_per_mm / state.atlas.view.zoom;
+            let finest = f64::from(ppp) * fit * PAGE_ZOOM.1 / PT_PER_MM;
+            let detail = FrameDetail::Screen(finest);
+            build_lists(
+                state,
+                frame,
+                keys,
+                reach,
+                in_page,
+                detail,
+                (primary, layered),
+            );
         }
         let spec = state.doc.projection(frame.map);
         let mesh = if layered || !masks.is_empty() {
@@ -2631,6 +2645,7 @@ fn build_lists(
     keys: (u64, u64),
     reach: f64,
     vt: ViewTransform,
+    detail: FrameDetail,
     (primary, layered): (bool, bool),
 ) {
     let b = math::shape_bbox(&frame.shape);
@@ -2640,9 +2655,11 @@ fn build_lists(
     // above them. The GPU draws them between the two.
     let (doc, fonts) = (&state.doc, &mut state.fonts);
     let composed = if layered {
-        (state.pipeline).compose_frame_over(doc, frame, PAGE_POINTS, bounds, fonts, Quality::Final)
+        let quality = Quality::Final;
+        (state.pipeline).compose_frame_over(doc, frame, PAGE_POINTS, bounds, fonts, quality, detail)
     } else {
-        (state.pipeline).compose_frame_part(doc, frame, PAGE_POINTS, bounds, fonts, Quality::Final)
+        let quality = Quality::Final;
+        (state.pipeline).compose_frame_part(doc, frame, PAGE_POINTS, bounds, fonts, quality, detail)
     };
     state.atlas.composes += 1;
     let composed = match composed {
@@ -2989,9 +3006,13 @@ fn compose_spill(ctx: &egui::Context, state: &mut AppState, frame: &FrameRecord,
         pts_per_mm: PT_PER_MM,
     };
     let part = kurbo::Rect::from_origin_size(Point::ZERO, rect.size());
-    let list = state
-        .pipeline
-        .compose_frame_spill(&state.doc, frame, target, part);
+    let list = state.pipeline.compose_frame_spill(
+        &state.doc,
+        frame,
+        target,
+        part,
+        FrameDetail::Screen(scale),
+    );
     let drawn = list.map_err(|e| format!("{e:#}")).and_then(|list| {
         let name = || format!("spill-{}", frame.id.0);
         let renderer = state.map_renderer.as_mut();

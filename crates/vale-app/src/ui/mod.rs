@@ -2129,7 +2129,7 @@ impl AppState {
                 self.selection_before = self.step_selection();
                 self.sync_globe();
                 // A layer can come back with other features under its ID.
-                self.pipeline = Pipeline::new();
+                self.pipeline.reset();
                 self.touch();
             }
             Err(e) => {
@@ -3962,6 +3962,9 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     }
     state.pump_images(state.headless);
     state.pump_details(state.headless);
+    if state.pipeline.poll_lod(state.headless) {
+        ui.ctx().request_repaint_after(LOAD_POLL);
+    }
     if state.poll_open() {
         draw_opening(ui, state);
         ui.ctx().request_repaint_after(LOAD_POLL);

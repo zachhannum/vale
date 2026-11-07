@@ -14,6 +14,7 @@ use vale_store::{Geometry, Layer, LayerId};
 use super::math::{V3, add, angle, length, lonlat_to_dir, scale};
 use super::vector;
 use super::view::GlobeView;
+use crate::lod::{self, Detail};
 use crate::mask::{MaskedFeature, MaskedLayer};
 use crate::pipeline::Batch;
 use crate::ui::globe::Cut;
@@ -79,8 +80,19 @@ pub struct Feature {
 }
 
 impl Feature {
-    fn new(geometry: &Geometry, part: Option<&MaskedFeature>) -> Feature {
+    /// `None`: a feature that the level of detail leaves out.
+    fn new(geometry: Option<&Geometry>, part: Option<&MaskedFeature>) -> Feature {
         let dirs = |line: &[[f64; 2]]| vector::line(line);
+        let Some(geometry) = geometry else {
+            return Feature {
+                directions: Directions::Points(Vec::new()),
+                cap: Some(Cap {
+                    center: [0.0, 0.0, 1.0],
+                    radius: 0.0,
+                }),
+                parts: Vec::new(),
+            };
+        };
         match geometry {
             Geometry::Points(points) => {
                 let dirs: Vec<V3> = points.iter().map(|p| lonlat_to_dir(p[0], p[1])).collect();
@@ -209,14 +221,16 @@ struct Source {
     features: usize,
     address: usize,
     mask: Option<u64>,
+    detail: usize,
 }
 
 impl Source {
-    fn of(layer: &Layer, masked: Option<&MaskedLayer>) -> Source {
+    fn of(layer: &Layer, masked: Option<&MaskedLayer>, detail: Option<&Arc<Detail>>) -> Source {
         Source {
             features: layer.features.len(),
             address: layer.features.as_ptr() as usize,
             mask: masked.map(|m| m.generation),
+            detail: lod::key(detail),
         }
     }
 }
@@ -287,13 +301,16 @@ pub struct ShapeCache {
 }
 
 impl ShapeCache {
-    /// The kept shapes of `layer`, with directions that are up to date.
+    /// The kept shapes of `layer`, with directions that are up to date. A
+    /// layer with no mask has the geometry of `detail`.
     pub fn layer(
         &mut self,
         layer: &Layer,
         masked: Option<&Arc<MaskedLayer>>,
+        detail: Option<&Arc<Detail>>,
     ) -> (&mut LayerShapes, &mut Work) {
-        let source = Source::of(layer, masked.map(Arc::as_ref));
+        let detail = detail.filter(|_| masked.is_none());
+        let source = Source::of(layer, masked.map(Arc::as_ref), detail);
         let work = self.work.entry(layer.id).or_default();
         let shapes = self.layers.entry(layer.id).or_insert_with(|| LayerShapes {
             source,
@@ -307,7 +324,8 @@ impl ShapeCache {
             shapes.features = (layer.features.iter().enumerate())
                 .map(|(i, f)| {
                     let part = masked.and_then(|m| m.features.get(i)?.as_ref());
-                    Feature::new(&f.geometry, part)
+                    let geometry = lod::geometry(detail.map(Arc::as_ref), i, &f.geometry);
+                    Feature::new(geometry, part)
                 })
                 .collect();
             shapes.views.clear();
