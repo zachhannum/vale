@@ -147,7 +147,9 @@ pub fn editor(
             min_height: field_height(ui, focused.then_some(floor)),
         };
         let out = token_field::show(ui, controls, name, &mut st.field, &Metrics::pad(), &opts);
-        if out.focused {
+        // The field had the focus at the start of the frame, so its height
+        // already keeps it above the bar.
+        if out.focused && focused {
             keep_above(ui, out.response.rect, floor);
         }
         if out.changed {
@@ -192,11 +194,21 @@ pub fn field_height(ui: &egui::Ui, floor: Option<f32>) -> f32 {
 /// rises to its full height.
 pub fn keep_above(ui: &mut egui::Ui, rect: Rect, floor: f32) {
     let over = rect.bottom() - (floor - GAP);
-    if over > 0.5 {
-        super::raise_sheet(ui.ctx());
+    // The space stays while the field ends at the floor, so that the panel
+    // does not scroll back.
+    if over > -1.0 {
         let screen = ui.ctx().viewport_rect();
         ui.add_space(screen.bottom() - floor);
-        ui.scroll_with_delta(vec2(0.0, -over));
+    }
+    // A sheet that rises moves the field, so the panel scrolls only after
+    // the rise.
+    if over > 0.5 && !super::raise_sheet(ui.ctx()) {
+        // A target and not a delta, so that a second pass of the frame
+        // does not scroll again.
+        let below = ui.clip_rect().bottom() - (floor - GAP);
+        let target = Rect::from_min_max(rect.min, pos2(rect.right(), rect.bottom() + below));
+        let none = egui::style::ScrollAnimation::none();
+        ui.scroll_to_rect_animation(target, Some(egui::Align::BOTTOM), none);
     }
 }
 
@@ -372,6 +384,46 @@ fn bar(
     st: &mut EditorState,
     help: &ExprHelp,
 ) -> Option<bool> {
+    let mut changed = None;
+    bar_area(ui, "pad-label-bar", |ui| {
+        let tabs = [FIELDS, FUNCTIONS_TAB];
+        let w = widgets::small_segments_width(ui, &tabs);
+        let (seg, _) = ui.allocate_exact_size(vec2(w, 38.0), Sense::hover());
+        let active = usize::from(st.functions);
+        if let Some(i) = widgets::small_segments(ui, controls, seg, &tabs, active) {
+            st.functions = i == 1;
+        }
+        let text = (ui.painter()).layout_no_wrap(GROUP.into(), theme::body(), theme::MUTE);
+        let w = 30.0 + text.size().x;
+        let (group, _) = ui.allocate_exact_size(vec2(w, TOUCH), Sense::hover());
+        if bar_button(ui, controls, group, GROUP, None) && template::group(&mut st.field) {
+            changed = Some(true);
+        }
+        let (brk, _) = ui.allocate_exact_size(vec2(TOUCH, TOUCH), Sense::hover());
+        if bar_button(ui, controls, brk, LINE_BREAK, Some(())) {
+            st.field.replace(vec![Node::Break]);
+            changed = Some(true);
+        }
+        bar_divider(ui);
+        if st.functions {
+            if let Some(f) = function_chips(ui, controls, &st.field) {
+                let path = selected_field(&st.field).expect("a selected field");
+                if wrap_in_function(&mut st.field, &path, f) {
+                    changed = Some(true);
+                }
+            }
+        } else if let Some(name) = field_chips(ui, controls, help, ("", insert_name)) {
+            template::insert_field(&mut st.field, &name, help);
+            changed = Some(true);
+        }
+    });
+    changed
+}
+
+/// The bar above the keyboard, with the items that `add` adds from left to
+/// right. The bar scrolls sideways when the screen is too narrow for its
+/// items. A press on the bar keeps the focus of the field.
+pub fn bar_area(ui: &egui::Ui, id: &str, add: impl FnOnce(&mut egui::Ui)) {
     let ctx = ui.ctx().clone();
     let screen = ctx.viewport_rect();
     let bottom = keyboard_top(screen);
@@ -381,8 +433,7 @@ fn bar(
     );
     token_field::keep_focus(&ctx, rect);
     popover::set_floor(&ctx, rect.top());
-    let mut changed = None;
-    egui::Area::new(egui::Id::new("pad-label-bar"))
+    egui::Area::new(egui::Id::new(id))
         .order(egui::Order::Foreground)
         .fixed_pos(rect.min)
         .movable(false)
@@ -395,8 +446,6 @@ fn bar(
             painter.rect_filled(rect, 0.0, Color32::from_rgb(28, 31, 35));
             let top = [rect.left_top(), rect.right_top()];
             painter.line_segment(top, Stroke::new(1.0, Color32::from_rgb(42, 46, 51)));
-            // The bar scrolls sideways when the screen is too narrow for
-            // its chips.
             let inner = rect.shrink2(vec2(12.0, 0.0));
             let mut child = ui.new_child(
                 egui::UiBuilder::new()
@@ -404,51 +453,22 @@ fn bar(
                     .layout(egui::Layout::left_to_right(egui::Align::Center)),
             );
             egui::ScrollArea::horizontal()
-                .id_salt("pad-label-bar-chips")
+                .id_salt((id, "chips"))
                 .show(&mut child, |ui| {
                     ui.spacing_mut().item_spacing.x = 8.0;
                     ui.set_min_height(inner.height());
-                    let tabs = [FIELDS, FUNCTIONS_TAB];
-                    let w = widgets::small_segments_width(ui, &tabs);
-                    let (seg, _) = ui.allocate_exact_size(vec2(w, 38.0), Sense::hover());
-                    let active = usize::from(st.functions);
-                    if let Some(i) = widgets::small_segments(ui, controls, seg, &tabs, active) {
-                        st.functions = i == 1;
-                    }
-                    let text =
-                        ui.painter()
-                            .layout_no_wrap(GROUP.into(), theme::body(), theme::MUTE);
-                    let w = 30.0 + text.size().x;
-                    let (group, _) = ui.allocate_exact_size(vec2(w, TOUCH), Sense::hover());
-                    if bar_button(ui, controls, group, GROUP, None)
-                        && template::group(&mut st.field)
-                    {
-                        changed = Some(true);
-                    }
-                    let (brk, _) = ui.allocate_exact_size(vec2(TOUCH, TOUCH), Sense::hover());
-                    if bar_button(ui, controls, brk, LINE_BREAK, Some(())) {
-                        st.field.replace(vec![Node::Break]);
-                        changed = Some(true);
-                    }
-                    let (line, _) = ui.allocate_exact_size(vec2(9.0, 28.0), Sense::hover());
-                    ui.painter().line_segment(
-                        [line.center_top(), line.center_bottom()],
-                        Stroke::new(1.0, theme::divider()),
-                    );
-                    if st.functions {
-                        if let Some(f) = function_chips(ui, controls, &st.field) {
-                            let path = selected_field(&st.field).expect("a selected field");
-                            if wrap_in_function(&mut st.field, &path, f) {
-                                changed = Some(true);
-                            }
-                        }
-                    } else if let Some(name) = field_chips(ui, controls, help) {
-                        template::insert_field(&mut st.field, &name, help);
-                        changed = Some(true);
-                    }
+                    add(ui);
                 });
         });
-    changed
+}
+
+/// A thin line between two parts of the bar.
+pub fn bar_divider(ui: &mut egui::Ui) {
+    let (line, _) = ui.allocate_exact_size(vec2(9.0, 28.0), Sense::hover());
+    ui.painter().line_segment(
+        [line.center_top(), line.center_bottom()],
+        Stroke::new(1.0, theme::divider()),
+    );
 }
 
 /// A button of the bar with a text, or with the line break arrow.
@@ -483,7 +503,7 @@ fn bar_button(
 
 /// A chip of the bar: an optional type glyph, a name, and a note in small
 /// text. Returns true when the user taps it.
-fn bar_chip(
+pub fn bar_chip(
     ui: &mut egui::Ui,
     controls: &mut Controls,
     name: &str,
@@ -509,7 +529,7 @@ fn bar_chip(
         8.0 + width_of(note, note_font.clone())
     };
     let w = lead + width_of(label.0, theme::body()) + note_w + 14.0;
-    let (rect, _) = ui.allocate_exact_size(vec2(w, TOUCH), Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(vec2(w.max(TOUCH), TOUCH), Sense::hover());
     let resp = widgets::hit(ui, controls, rect, name, Sense::click(), true, None);
     let fill = if resp.is_pointer_button_down_on() {
         Color32::from_white_alpha(56)
@@ -528,7 +548,7 @@ fn bar_chip(
             false,
         );
     }
-    let at = pos2(rect.left() + lead, y);
+    let at = pos2(rect.left() + lead + (rect.width() - w) / 2.0, y);
     let r = painter.text(at, Align2::LEFT_CENTER, label.0, theme::body(), label.1);
     if !note.is_empty() {
         let at = pos2(r.right() + 8.0, y);
@@ -541,12 +561,22 @@ fn bar_chip(
 const SAMPLE: usize = 16;
 
 /// The chips of the fields, each with its value in the feature of the
-/// preview. Returns the field that the user tapped.
-fn field_chips(ui: &mut egui::Ui, controls: &mut Controls, help: &ExprHelp) -> Option<String> {
+/// preview, for the fields whose names hold `needle` in lowercase. `name`
+/// gives the control name of the chip of a field. Returns the field that
+/// the user tapped.
+pub fn field_chips(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    help: &ExprHelp,
+    (needle, name): (&str, impl Fn(&str) -> String),
+) -> Option<String> {
     let mut chosen = None;
-    for (name, kind) in help.fields.iter().zip(&help.types) {
+    for (field, kind) in help.fields.iter().zip(&help.types) {
+        if !field.to_lowercase().contains(needle) {
+            continue;
+        }
         let sample = help
-            .sample(name)
+            .sample(field)
             .and_then(|v| v.label())
             .unwrap_or_default();
         let sample = match sample.chars().count() > SAMPLE {
@@ -554,9 +584,9 @@ fn field_chips(ui: &mut egui::Ui, controls: &mut Controls, help: &ExprHelp) -> O
             false => sample,
         };
         let glyph = Some(Glyph::of(*kind));
-        let label = (name.as_str(), theme::TEXT);
-        if bar_chip(ui, controls, &insert_name(name), glyph, label, &sample) {
-            chosen = Some(name.clone());
+        let label = (field.as_str(), theme::TEXT);
+        if bar_chip(ui, controls, &name(field), glyph, label, &sample) {
+            chosen = Some(field.clone());
         }
     }
     chosen

@@ -7,13 +7,16 @@
 use eframe::egui::{self, Align2, Color32, Rect, Sense, Stroke, pos2, vec2};
 use vale_store::Value;
 use vale_style::expr::editor::{Cond, Formula, Seq, Tok};
-use vale_style::expr::{Category, Expr, FUNCTIONS};
+use vale_style::expr::{Category, Expr, FUNCTIONS, Function};
 
 use super::cases::{self, CasesEdit, CasesState};
 use super::expression;
 use super::filter::{self, search_field};
 use super::geometry::TOUCH;
-use super::label_text::{BLOCKS, CODE, FIRST_FEATURE, SELECTED_FEATURE, bar_top, keep_above};
+use super::label_text::{
+    BLOCKS, CODE, FIRST_FEATURE, SELECTED_FEATURE, bar_area, bar_chip, bar_divider, bar_top,
+    field_chips, keep_above,
+};
 use super::theme;
 use super::widgets::{self, Controls, PANEL_ROW};
 use crate::ui::expr_help::{ExprHelp, ExprKind, NO_VALUE, ValueRange, range_text};
@@ -40,6 +43,13 @@ pub fn insert_name(label: &str) -> String {
     expression::chip_name(label)
 }
 
+/// The control name of the item `label` of the bar above the keyboard,
+/// such as a tab or `insert_name("pop")`. The tray has items with the same
+/// labels.
+pub fn bar_name(label: &str) -> String {
+    format!("{label} in bar")
+}
+
 /// The names of the segments Blocks and Code of the editor `name`.
 pub fn view_names(name: &str) -> [String; 2] {
     [format!("{name} blocks"), format!("{name} code")]
@@ -63,6 +73,8 @@ struct EditorState {
     code: bool,
     typed: String,
     tab: usize,
+    /// The tab of the bar above the keyboard.
+    bar_tab: usize,
     search: String,
     tray: bool,
     /// The tray in the last frame.
@@ -176,7 +188,10 @@ pub fn editor(
             changed = true;
         }
         if out.focused {
-            keep_above(ui, out.response.rect, floor);
+            if let Some(s) = bar(ui, controls, &mut st, help) {
+                changed = true;
+                step |= s;
+            }
             let (tab, enter) = ui.input_mut(|i| {
                 let tab = i.consume_key(egui::Modifiers::NONE, egui::Key::Tab);
                 (tab, i.consume_key(egui::Modifiers::NONE, egui::Key::Enter))
@@ -249,6 +264,12 @@ pub fn editor(
             edit.text = edit_text(&mut st, true);
             edit.step |= step;
         }
+        // After the tray, so that the scroll goes to the panel and not to
+        // the rows of the tray. The field had the focus at the start of the
+        // frame, so its height already keeps it above the bar.
+        if out.focused && focused {
+            keep_above(ui, out.response.rect, floor);
+        }
     }
     ui.data_mut(|d| d.insert_temp(id, st));
     edit
@@ -269,10 +290,89 @@ pub fn error_at(text: &str) -> Option<(Vec<usize>, String)> {
         return None;
     }
     let e = Expr::parse(text).err()?;
-    let path = Formula::from_text(text)
-        .path_at(e.start)
-        .unwrap_or_default();
-    Some((path, e.short()))
+    let formula = Formula::from_text(text);
+    let path = formula.path_at(e.start).unwrap_or_default();
+    let message = hole_message(&formula.seq, &path).unwrap_or_else(|| e.short());
+    Some((path, message))
+}
+
+/// The message for an empty slot or an empty case at `path` of `seq`, which
+/// names the part in words. `None` if the node at the path is not empty.
+fn hole_message(seq: &Seq, path: &[usize]) -> Option<String> {
+    let (&i, rest) = path.split_first()?;
+    let needs = |f: &Function, slot: usize| {
+        format!("The {} function needs {}.", f.name, slot_noun(f.slot(slot)))
+    };
+    let tok = seq.0.get(i)?;
+    let Some((&child, rest)) = rest.split_first() else {
+        // A call with an empty slot or too few arguments.
+        return match tok {
+            Tok::Call { f, args } => (args.iter().position(|a| a.0.is_empty()))
+                .or((args.len() < f.min_args).then_some(args.len()))
+                .map(|slot| needs(f, slot)),
+            _ => None,
+        };
+    };
+    match tok {
+        Tok::Call { f, args } => {
+            let slot = args.get(child)?;
+            match rest.is_empty() {
+                true if slot.0.is_empty() => Some(needs(f, child)),
+                true => None,
+                false => hole_message(slot, rest),
+            }
+        }
+        Tok::Cases { cases, otherwise } => {
+            let n = cases.len();
+            let (part, seq) = match child {
+                c if c == 2 * n => (None, otherwise),
+                c if c % 2 == 0 => {
+                    let cond = &cases.get(c / 2)?.0;
+                    let empty = matches!(cond, Cond::Group { items, .. } if items.is_empty());
+                    return (rest.is_empty() && empty)
+                        .then(|| format!("The {} case needs a condition.", ordinal(c / 2)));
+                }
+                c => (Some(c / 2), &cases.get(c / 2)?.1),
+            };
+            match rest.is_empty() {
+                true if seq.0.is_empty() => Some(match part {
+                    Some(k) => format!("The {} case needs a value.", ordinal(k)),
+                    None => "Otherwise needs a value.".to_owned(),
+                }),
+                true => None,
+                false => hole_message(seq, rest),
+            }
+        }
+        Tok::Paren(inner) if child == 0 => match rest.is_empty() {
+            true => inner
+                .0
+                .is_empty()
+                .then(|| "The parentheses need a value.".to_owned()),
+            false => hole_message(inner, rest),
+        },
+        _ => None,
+    }
+}
+
+/// The name of a slot as the object of "needs".
+fn slot_noun(slot: &str) -> String {
+    match slot {
+        "text" => slot.to_owned(),
+        "condition" | "value" | "start" | "length" => format!("a {slot}"),
+        _ => format!("a value for {slot}"),
+    }
+}
+
+/// The ordinal word of index `i` from 0: "first" for 0.
+fn ordinal(i: usize) -> String {
+    const WORDS: [&str; 10] = [
+        "first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth",
+        "tenth",
+    ];
+    match WORDS.get(i) {
+        Some(w) => (*w).to_owned(),
+        None => format!("number {}", i + 1),
+    }
 }
 
 /// A red frame around the node of the field at model path `path`: the
@@ -403,6 +503,72 @@ fn preview(ui: &mut egui::Ui, help: &ExprHelp, text: &str, range: Option<&ValueR
     });
 }
 
+/// The bar above the keyboard: the tabs Fields, Functions, and Operators,
+/// and a chip for each item of the tab. The word that the user types
+/// filters the fields and the functions. Returns `Some` after a change,
+/// with true for one step.
+fn bar(
+    ui: &egui::Ui,
+    controls: &mut Controls,
+    st: &mut EditorState,
+    help: &ExprHelp,
+) -> Option<bool> {
+    let needle = formula::pending(&st.field).trim().to_lowercase();
+    let mut out = None;
+    bar_area(ui, "pad-value-bar", |ui| {
+        let tabs = [FIELDS, FUNCTIONS_TAB, OPERATORS_TAB];
+        let names = tabs.map(bar_name);
+        let names = [names[0].as_str(), names[1].as_str(), names[2].as_str()];
+        let w = widgets::small_segments_width(ui, &tabs);
+        let (seg, _) = ui.allocate_exact_size(vec2(w, 38.0), Sense::hover());
+        let named = (&tabs[..], &names[..]);
+        if let Some(i) = widgets::small_segments_named(ui, controls, seg, named, st.bar_tab) {
+            st.bar_tab = i;
+        }
+        bar_divider(ui);
+        match st.bar_tab {
+            0 => {
+                let name = |f: &str| bar_name(&insert_name(f));
+                if let Some(field) = field_chips(ui, controls, help, (&needle, name)) {
+                    formula::pick(&mut st.field, &Completion::Field(field), help);
+                    out = Some(true);
+                }
+            }
+            1 => {
+                for f in FUNCTIONS.iter().filter(|f| f.name.contains(&needle)) {
+                    let label = (f.name, FUNCTION_TEXT);
+                    let name = bar_name(&insert_name(f.name));
+                    if bar_chip(ui, controls, &name, None, label, f.hint) {
+                        insert_function(st, f, help);
+                        out = Some(true);
+                    }
+                }
+            }
+            _ => {
+                for op in OPERATORS {
+                    let label = op_label(op);
+                    let name = bar_name(&insert_name(label));
+                    if bar_chip(ui, controls, &name, None, (label, theme::TEXT), "") {
+                        formula::insert_op(&mut st.field, op, help);
+                        out = Some(true);
+                    }
+                }
+            }
+        }
+    });
+    out
+}
+
+/// Puts function `f` in the field: in place of the typed word, or around
+/// the selection.
+fn insert_function(st: &mut EditorState, f: &'static Function, help: &ExprHelp) {
+    if st.field.sel.is_empty() && !formula::pending(&st.field).is_empty() {
+        formula::pick(&mut st.field, &Completion::Function(f), help);
+    } else {
+        formula::insert_function(&mut st.field, f);
+    }
+}
+
 /// The tray: the tabs Fields, Functions, and Operators, a search field, and
 /// the rows of the tab. A tap on a row puts it in the field. While the
 /// search field is empty, the word that the user types filters the rows. Returns
@@ -433,7 +599,10 @@ fn tray(
     let mut out = None;
     let scroll = egui::ScrollArea::vertical()
         .id_salt("value-tray")
-        .max_height(TRAY_HEIGHT);
+        .max_height(TRAY_HEIGHT)
+        // The panel scrolls, so the tray takes its height also at the
+        // bottom of the panel.
+        .min_scrolled_height(TRAY_HEIGHT);
     scroll.show(ui, |ui| match st.tab {
         0 => {
             for (name, kind) in help.fields.iter().zip(&help.types) {
@@ -495,11 +664,7 @@ fn tray(
                 for f in functions {
                     let label = (f.signature, FUNCTION_TEXT);
                     if tray_row(ui, controls, &insert_name(f.name), None, label, f.hint) {
-                        if st.field.sel.is_empty() && !formula::pending(&st.field).is_empty() {
-                            formula::pick(&mut st.field, &Completion::Function(f), help);
-                        } else {
-                            formula::insert_function(&mut st.field, f);
-                        }
+                        insert_function(st, f, help);
                         out = Some(true);
                     }
                 }
@@ -612,6 +777,29 @@ mod tests {
         let (path, _) = error_at("clamp(1, , 3)").unwrap();
         assert_eq!(path, [0, 1]);
         assert_eq!(error_at("clamp(1, 2, 3)"), None);
+    }
+
+    #[test]
+    fn hole_error_names_the_slot() {
+        let message = |t: &str| error_at(t).unwrap().1;
+        assert_eq!(message("if(, 12, 10)"), "The first case needs a condition.");
+        assert_eq!(
+            message("if(a, 1, if(b, 2, if(, 3, 4)))"),
+            "The third case needs a condition."
+        );
+        assert_eq!(message("if(a, , 4)"), "The first case needs a value.");
+        assert_eq!(message("if(a, 1, )"), "Otherwise needs a value.");
+        assert_eq!(
+            message("clamp(1, , 3)"),
+            "The clamp function needs a value for x."
+        );
+        assert_eq!(
+            message("round(upper(), 1)"),
+            "The upper function needs text."
+        );
+        // Other errors keep the text of the parser.
+        let short = Expr::parse("1 +").unwrap_err().short();
+        assert_eq!(message("1 +"), short);
     }
 
     #[test]

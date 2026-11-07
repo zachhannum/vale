@@ -629,6 +629,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     rects = geometry::layout(&input);
     table::check(state);
     table::widen(state, &mut rects);
+    expression::widen(state, &mut rects);
     state.sync_selection_form(state.pad.is_open(Panel::Attributes));
     select::drop_focus(&ctx, state);
     for panel in [
@@ -1904,6 +1905,8 @@ fn show_card(
         }
         let row = widgets::title_row_with(ui, controls, head.title, head.back, sheet, head.action);
         on_title(state, &row);
+        let low = sheet && state.pad.sheet_offset > -rects.sheet_rise + 0.5;
+        ctx.data_mut(|d| d.insert_temp(low_id(), low));
         if sheet {
             if take_raise(ctx) {
                 state.pad.sheet_offset = -rects.sheet_rise;
@@ -1955,11 +1958,18 @@ fn raise_id() -> egui::Id {
     egui::Id::new("pad-raise-sheet")
 }
 
+/// The panel is a sheet below its full height.
+fn low_id() -> egui::Id {
+    egui::Id::new("pad-sheet-low")
+}
+
 /// Raises the sheet to its full height in the next frame, for a field that
-/// is under the keyboard.
-pub fn raise_sheet(ctx: &egui::Context) {
+/// is under the keyboard. Returns true if the sheet was below its full
+/// height.
+pub fn raise_sheet(ctx: &egui::Context) -> bool {
     ctx.data_mut(|d| d.insert_temp(raise_id(), true));
     ctx.request_repaint();
+    ctx.data(|d| d.get_temp(low_id())).unwrap_or(false)
 }
 
 fn take_raise(ctx: &egui::Context) -> bool {

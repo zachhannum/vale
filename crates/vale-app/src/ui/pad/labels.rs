@@ -393,9 +393,14 @@ pub(super) fn class_panel(
         back: Some(back),
         action: None,
     };
+    let text = page.is_none() && state.atlas.label_segment == ClassSegment::Text;
+    let place = match text {
+        true => super::expression::wide_place(rects, panel_width(ctx)),
+        false => (rects.right_panel, panel_width(ctx)),
+    };
     let card = Card {
         key,
-        place: (rects.right_panel, panel_width(ctx)),
+        place,
         head,
         // The panel stays still while a finger drags a position.
         scroll: match state.atlas.position_drag {

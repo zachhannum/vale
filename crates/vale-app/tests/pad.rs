@@ -7853,11 +7853,92 @@ fn a_missing_condition_shows_its_message() {
     scroll_to_control(&mut h, EXPRESSION);
     let text = "if(, 12, 10)";
     type_text(&mut h, EXPRESSION, text);
-    let message = vale_style::expr::Expr::parse(text).unwrap_err().short();
-    scroll_to(&mut h, &message);
-    assert!(h.query_by_label(&message).is_some(), "{message}");
+    // Blocks name the part in words.
+    let message = "The first case needs a condition.";
+    scroll_to(&mut h, message);
+    assert!(h.query_by_label(message).is_some(), "{message}");
     assert!(control(&h, "Case 1 condition 1").is_some());
     screenshot::save(&mut h, "pad-value-cases-error");
+    // Code keeps the text of the parser.
+    let [_, code] = vale_app::ui::pad::value::view_names(EXPRESSION);
+    scroll_to_control(&mut h, &code);
+    tap(&mut h, &code);
+    let short = vale_style::expr::Expr::parse(text).unwrap_err().short();
+    assert!(h.query_by_label(&short).is_some(), "{short}");
+}
+
+/// The width of the Layers panel.
+fn layers_width(h: &Pad) -> f32 {
+    panel(h, Panel::Layers).unwrap().width()
+}
+
+#[test]
+fn expression_page_widens_panel() {
+    use vale_app::ui::pad::expression::PANEL_WIDTH;
+    for size in [BOARDS[0], BOARDS[1]] {
+        let what = format!("{size:?}");
+        let mut h = pad(size);
+        tap(&mut h, "Layers");
+        tap(&mut h, "Open Places");
+        let normal = layers_width(&h);
+        assert!(normal < PANEL_WIDTH, "{what}");
+        open_classify_page(&mut h);
+        assert_eq!(layers_width(&h), PANEL_WIDTH, "{what}");
+        check_controls(&h, &what);
+        tap(&mut h, "Back to Places");
+        assert_eq!(layers_width(&h), normal, "{what}");
+    }
+    // A sheet keeps its width.
+    let mut h = pad(BOARDS[3]);
+    tap(&mut h, "Layers");
+    tap(&mut h, "Open Places");
+    let normal = layers_width(&h);
+    open_classify_page(&mut h);
+    assert_eq!(layers_width(&h), normal);
+}
+
+/// Opens the Classify page from the open panel of a layer.
+fn open_classify_page(h: &mut Pad) {
+    use vale_app::ui::pad::classify::CLASSIFY;
+    scroll_to_control(h, CLASSIFY);
+    tap(h, CLASSIFY);
+    assert_eq!(h.state().pad.page, Some(Page::Classify));
+}
+
+#[test]
+fn value_bar_inserts_field() {
+    use vale_app::ui::pad::classify::EXPRESSION;
+    use vale_app::ui::pad::value::{FUNCTIONS_TAB, OPERATORS_TAB, bar_name, insert_name};
+    use vale_app::ui::token_field::formula::op_label;
+    use vale_style::expr::editor::Op;
+    for size in [BOARDS[0], BOARDS[3]] {
+        let what = format!("{size:?}");
+        let mut h = pad(size);
+        open_classify(&mut h, "Places");
+        scroll_to_control(&mut h, EXPRESSION);
+        type_text(&mut h, EXPRESSION, "pop_max ");
+        tap_bar(&mut h, &bar_name(OPERATORS_TAB));
+        tap_bar(&mut h, &bar_name(&insert_name(op_label(Op::Div))));
+        tap_bar(&mut h, &bar_name(FUNCTIONS_TAB));
+        // The typed word filters the functions.
+        h.event(egui::Event::Text(" ab".into()));
+        h.run_steps(2);
+        assert!(
+            control(&h, &bar_name(&insert_name("round"))).is_none(),
+            "{what}"
+        );
+        tap_bar(&mut h, &bar_name(&insert_name("abs")));
+        tap_bar(&mut h, &bar_name("Fields"));
+        h.event(egui::Event::Text("scale".into()));
+        h.run_steps(2);
+        tap_bar(&mut h, &bar_name(&insert_name("scalerank")));
+        screenshot::save(&mut h, &format!("pad-value-bar-{}", size.0));
+        let first = classify_first_filter(&mut h);
+        assert!(
+            first.starts_with("(pop_max / abs(scalerank)) < "),
+            "{what}: {first}"
+        );
+    }
 }
 
 #[test]
