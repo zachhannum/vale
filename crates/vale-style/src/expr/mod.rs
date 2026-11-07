@@ -17,7 +17,7 @@ use vale_store::GeometryKind;
 pub use vale_store::Value;
 
 pub use functions::{Category, FUNCTIONS, Function};
-use parser::Node;
+use parser::{Node, Spans};
 pub use parts::{TextPart, join, split};
 
 /// The words of the syntax that a plain field name cannot be.
@@ -178,6 +178,11 @@ impl Expr {
         Ok(Expr { root })
     }
 
+    /// Parses text that can have empty places, for an editor. An empty text, an empty argument, a missing argument, and a missing operand are holes. A hole writes as nothing and evaluates to null.
+    pub fn parse_lenient(source: &str) -> Result<Expr, ParseError> {
+        parse_spanned(source, true).map(|(root, _)| Expr { root })
+    }
+
     pub fn eval(&self, ctx: &Context) -> Value {
         eval::eval(&self.root, ctx)
     }
@@ -192,10 +197,22 @@ impl Expr {
     }
 }
 
+/// The tree of the text and the span of each node.
+fn parse_spanned(source: &str, lenient: bool) -> Result<(Node, Spans), ParseError> {
+    let chars: Vec<char> = source.chars().collect();
+    let tokens = lexer::lex(&chars)?;
+    let parser = parser::Parser::new(&chars, tokens);
+    if lenient {
+        parser.lenient().parse_spanned()
+    } else {
+        parser.parse_spanned()
+    }
+}
+
 fn collect_fields(node: &Node, out: &mut Vec<String>) {
     match node {
         Node::Field(name) => out.push(name.clone()),
-        Node::Lit(_) | Node::Var(_) => {}
+        Node::Lit(_) | Node::Var(_) | Node::Hole => {}
         Node::Not(a) | Node::Neg(a) | Node::IsNull { value: a, .. } => collect_fields(a, out),
         Node::Binary(_, a, b)
         | Node::Like {
@@ -218,6 +235,75 @@ fn collect_fields(node: &Node, out: &mut Vec<String>) {
             collect_fields(high, out);
         }
         Node::Call(_, args) => args.iter().for_each(|n| collect_fields(n, out)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The text of each span of the tree, children before parents.
+    fn span_texts(source: &str) -> Vec<String> {
+        fn walk(s: &Spans, chars: &[char], out: &mut Vec<String>) {
+            s.kids.iter().for_each(|k| walk(k, chars, out));
+            out.push(chars[s.span.clone()].iter().collect());
+        }
+        let (_, spans) = parse_spanned(source, true).unwrap();
+        let chars: Vec<char> = source.chars().collect();
+        let mut out = Vec::new();
+        walk(&spans, &chars, &mut out);
+        out
+    }
+
+    #[test]
+    fn spans_cover_each_node() {
+        assert_eq!(
+            span_texts("round(pop / 1000, 1) * 2"),
+            [
+                "pop",
+                "1000",
+                "pop / 1000",
+                "1",
+                "round(pop / 1000, 1)",
+                "2",
+                "round(pop / 1000, 1) * 2"
+            ]
+        );
+        assert_eq!(
+            span_texts("not (a) or x between -1 and 'é'"),
+            [
+                "a",
+                "not (a)",
+                "x",
+                "1",
+                "-1",
+                "'é'",
+                "x between -1 and 'é'",
+                "not (a) or x between -1 and 'é'"
+            ]
+        );
+        assert_eq!(
+            span_texts("k in (1, 2) and n is null"),
+            [
+                "k",
+                "1",
+                "2",
+                "k in (1, 2)",
+                "n",
+                "n is null",
+                "k in (1, 2) and n is null"
+            ]
+        );
+        assert_eq!(span_texts("if(, 1, 2)"), ["", "1", "2", "if(, 1, 2)"]);
+        assert_eq!(span_texts("a + "), ["a", "", "a + "]);
+    }
+
+    #[test]
+    fn holes_have_empty_spans_at_their_place() {
+        let (_, spans) = parse_spanned("if( , 12, 10)", true).unwrap();
+        assert_eq!(spans.kids[0].span, 4..4);
+        let (_, spans) = parse_spanned("round()", true).unwrap();
+        assert_eq!(spans.kids[0].span, 6..6);
     }
 }
 

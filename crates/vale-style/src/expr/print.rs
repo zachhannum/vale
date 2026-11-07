@@ -88,6 +88,7 @@ fn write_at(node: &Node, min: u8, out: &mut String) {
 fn write(node: &Node, out: &mut String) {
     match node {
         Node::Lit(v) => out.push_str(&literal(v)),
+        Node::Hole => {}
         Node::Field(name) => out.push_str(&field_ref(name)),
         Node::Var(Var::Scale) => out.push_str("@scale"),
         Node::Var(Var::Geometry) => out.push_str("@geometry"),

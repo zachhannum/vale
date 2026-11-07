@@ -453,3 +453,39 @@ fn between_is_inclusive() {
         vec!["x".to_string()]
     );
 }
+
+#[test]
+fn lenient_parse_reads_holes() {
+    let printed = |s: &str| Expr::parse_lenient(s).unwrap().to_string();
+    assert_eq!(printed(""), "");
+    assert_eq!(printed("if( , 12, 10)"), "if(, 12, 10)");
+    assert_eq!(printed("if(a,,)"), "if(a, , )");
+    assert_eq!(printed("round()"), "round()");
+    assert_eq!(printed("clamp(1)"), "clamp(1, , )");
+    assert_eq!(printed("a +"), "a + ");
+    assert_eq!(printed("* 2"), " * 2");
+    assert_eq!(printed("and b"), " and b");
+    assert_eq!(printed("x in ()"), "x in ()");
+    assert_eq!(printed("x between 1 and"), "x between 1 and ");
+    assert_eq!(printed("a = 1"), "a = 1");
+    assert!(Expr::parse_lenient("shout(1)").is_err());
+    assert!(Expr::parse_lenient("(a").is_err());
+    assert_eq!(eval("1"), n(1.0));
+    let attrs = city();
+    let ctx = Context {
+        attributes: &attrs,
+        scale: 1.0,
+        geometry: GeometryKind::Point,
+    };
+    assert_eq!(
+        Expr::parse_lenient("coalesce(, 3)").unwrap().eval(&ctx),
+        n(3.0)
+    );
+}
+
+#[test]
+fn strict_parse_has_no_holes() {
+    for text in ["", "if( , 12, 10)", "round()", "a +", "x in ()", "* 2"] {
+        assert!(Expr::parse(text).is_err(), "{text}");
+    }
+}

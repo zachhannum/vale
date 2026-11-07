@@ -11,6 +11,7 @@ use super::parser::{BinOp, Node, Var};
 pub(super) fn eval(node: &Node, ctx: &Context) -> Value {
     match node {
         Node::Lit(v) => v.clone(),
+        Node::Hole => Value::Null,
         Node::Field(name) => ctx.attributes.get(name).cloned().unwrap_or(Value::Null),
         Node::Var(Var::Scale) => finite(ctx.scale),
         Node::Var(Var::Geometry) => Value::Text(ctx.geometry.name().to_string()),

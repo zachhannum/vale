@@ -1,5 +1,7 @@
 //! Builds the syntax tree from the tokens.
 
+use std::ops::Range;
+
 use vale_store::Value;
 
 use super::ParseError;
@@ -63,6 +65,56 @@ pub(super) enum Node {
         negated: bool,
     },
     Call(&'static Function, Vec<Node>),
+    /// An empty place where a value belongs. Only a lenient parse makes it.
+    Hole,
+}
+
+impl Node {
+    /// The child nodes, in the order of the text.
+    pub fn children(&self) -> Vec<&Node> {
+        match self {
+            Node::Lit(_) | Node::Field(_) | Node::Var(_) | Node::Hole => Vec::new(),
+            Node::Not(a) | Node::Neg(a) | Node::IsNull { value: a, .. } => vec![a],
+            Node::Binary(_, a, b)
+            | Node::Like {
+                value: a,
+                pattern: b,
+                ..
+            } => vec![a, b],
+            Node::Between {
+                value, low, high, ..
+            } => vec![value, low, high],
+            Node::In { value, list, .. } => {
+                let mut out = vec![&**value];
+                out.extend(list);
+                out
+            }
+            Node::Call(_, args) => args.iter().collect(),
+        }
+    }
+}
+
+/// The span of a node in the source, in chars, and the spans of its children. The span of a node in parentheses leaves out the parentheses. A hole has an empty span at the place where the value belongs.
+#[derive(Clone, Debug)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(super) struct Spans {
+    pub span: Range<usize>,
+    pub kids: Vec<Spans>,
+}
+
+impl Spans {
+    /// The tree for `node` from its spans in the order that the parser makes the nodes, children before parents.
+    fn build(node: &Node, spans: &mut impl Iterator<Item = Range<usize>>) -> Spans {
+        let kids = node
+            .children()
+            .into_iter()
+            .map(|n| Spans::build(n, spans))
+            .collect();
+        Spans {
+            span: spans.next().unwrap_or(0..0),
+            kids,
+        }
+    }
 }
 
 pub(super) struct Parser<'a> {
@@ -70,6 +122,9 @@ pub(super) struct Parser<'a> {
     tokens: Vec<Token>,
     pos: usize,
     depth: usize,
+    lenient: bool,
+    /// The span of each node, in the order that the nodes are made.
+    spans: Vec<Range<usize>>,
 }
 
 impl<'a> Parser<'a> {
@@ -79,19 +134,34 @@ impl<'a> Parser<'a> {
             tokens,
             pos: 0,
             depth: 0,
+            lenient: false,
+            spans: Vec::new(),
         }
     }
 
+    /// A parser that reads an empty argument or a missing operand as a hole.
+    pub fn lenient(mut self) -> Self {
+        self.lenient = true;
+        self
+    }
+
     /// Parses the whole text.
-    pub fn parse(mut self) -> Result<Node, ParseError> {
-        if self.peek().tok == Tok::End {
+    pub fn parse(self) -> Result<Node, ParseError> {
+        self.parse_spanned().map(|(node, _)| node)
+    }
+
+    /// Parses the whole text, and gives the span of each node.
+    pub fn parse_spanned(mut self) -> Result<(Node, Spans), ParseError> {
+        let node = if self.peek().tok == Tok::End && !self.lenient {
             return Err(self.error_here("the expression is empty"));
-        }
-        let node = self.expr()?;
+        } else {
+            self.expr()?
+        };
         if self.peek().tok != Tok::End {
             return Err(self.error_here("expected an operator or the end of the expression"));
         }
-        Ok(node)
+        let spans = Spans::build(&node, &mut std::mem::take(&mut self.spans).into_iter());
+        Ok((node, spans))
     }
 
     fn peek(&self) -> &Token {
@@ -104,6 +174,29 @@ impl<'a> Parser<'a> {
             self.pos += 1;
         }
         t
+    }
+
+    /// The start of the next token.
+    fn here(&self) -> usize {
+        self.peek().start
+    }
+
+    /// Records the span of a new node from `start` to the end of the last token or the last hole.
+    fn made(&mut self, start: usize, node: Node) -> Node {
+        let token_end = if self.pos == 0 {
+            start
+        } else {
+            self.tokens[self.pos - 1].end
+        };
+        let hole_end = self.spans.last().map_or(start, |s| s.end);
+        let end = token_end.max(hole_end).max(start);
+        self.spans.push(start..end);
+        node
+    }
+
+    fn hole(&mut self, at: usize) -> Node {
+        self.spans.push(at..at);
+        Node::Hole
     }
 
     fn error(&self, start: usize, end: usize, msg: impl Into<String>) -> ParseError {
@@ -159,11 +252,15 @@ impl<'a> Parser<'a> {
 
     fn or(&mut self) -> Result<Node, ParseError> {
         let base = self.depth;
+        let start = self.here();
         let mut left = self.and()?;
         while self.eat_keyword("or") {
             self.enter()?;
             let right = self.and()?;
-            left = Node::Binary(BinOp::Or, Box::new(left), Box::new(right));
+            left = self.made(
+                start,
+                Node::Binary(BinOp::Or, Box::new(left), Box::new(right)),
+            );
         }
         self.depth = base;
         Ok(left)
@@ -171,27 +268,34 @@ impl<'a> Parser<'a> {
 
     fn and(&mut self) -> Result<Node, ParseError> {
         let base = self.depth;
+        let start = self.here();
         let mut left = self.not()?;
         while self.eat_keyword("and") {
             self.enter()?;
             let right = self.not()?;
-            left = Node::Binary(BinOp::And, Box::new(left), Box::new(right));
+            left = self.made(
+                start,
+                Node::Binary(BinOp::And, Box::new(left), Box::new(right)),
+            );
         }
         self.depth = base;
         Ok(left)
     }
 
     fn not(&mut self) -> Result<Node, ParseError> {
+        let start = self.here();
         if self.eat_keyword("not") {
             self.enter()?;
             let inner = self.not();
             self.depth -= 1;
-            return Ok(Node::Not(Box::new(inner?)));
+            let node = Node::Not(Box::new(inner?));
+            return Ok(self.made(start, node));
         }
         self.comparison()
     }
 
     fn comparison(&mut self) -> Result<Node, ParseError> {
+        let start = self.here();
         let left = self.concat()?;
         let op = match &self.peek().tok {
             Tok::Op("=") => Some(BinOp::Eq),
@@ -205,17 +309,18 @@ impl<'a> Parser<'a> {
         if let Some(op) = op {
             self.next();
             let right = self.concat()?;
-            return Ok(Node::Binary(op, Box::new(left), Box::new(right)));
+            return Ok(self.made(start, Node::Binary(op, Box::new(left), Box::new(right))));
         }
         if self.eat_keyword("is") {
             let negated = self.eat_keyword("not");
             if !self.eat_keyword("null") {
                 return Err(self.error_here("expected 'null' after 'is'"));
             }
-            return Ok(Node::IsNull {
+            let node = Node::IsNull {
                 value: Box::new(left),
                 negated,
-            });
+            };
+            return Ok(self.made(start, node));
         }
         let negated = self.at_keyword("not")
             && ["in", "like", "ilike", "between"]
@@ -226,11 +331,12 @@ impl<'a> Parser<'a> {
         }
         if self.eat_keyword("in") {
             let list = self.list()?;
-            return Ok(Node::In {
+            let node = Node::In {
                 value: Box::new(left),
                 list,
                 negated,
-            });
+            };
+            return Ok(self.made(start, node));
         }
         if self.eat_keyword("between") {
             let low = self.concat()?;
@@ -238,22 +344,24 @@ impl<'a> Parser<'a> {
                 return Err(self.error_here("expected 'and' after the low value of 'between'"));
             }
             let high = self.concat()?;
-            return Ok(Node::Between {
+            let node = Node::Between {
                 value: Box::new(left),
                 low: Box::new(low),
                 high: Box::new(high),
                 negated,
-            });
+            };
+            return Ok(self.made(start, node));
         }
         for (kw, ignore_case) in [("like", false), ("ilike", true)] {
             if self.eat_keyword(kw) {
                 let pattern = self.concat()?;
-                return Ok(Node::Like {
+                let node = Node::Like {
                     value: Box::new(left),
                     pattern: Box::new(pattern),
                     ignore_case,
                     negated,
-                });
+                };
+                return Ok(self.made(start, node));
             }
         }
         Ok(left)
@@ -265,9 +373,13 @@ impl<'a> Parser<'a> {
             return Err(self.error_here("expected '(' after 'in'"));
         }
         self.next();
-        let items = self.args()?;
+        let mut items = self.args()?;
         if items.is_empty() {
-            return Err(self.error_here("the list is empty"));
+            if !self.lenient {
+                return Err(self.error_here("the list is empty"));
+            }
+            let at = self.tokens[self.pos - 1].start;
+            items.push(self.hole(at));
         }
         Ok(items)
     }
@@ -296,12 +408,16 @@ impl<'a> Parser<'a> {
 
     fn concat(&mut self) -> Result<Node, ParseError> {
         let base = self.depth;
+        let start = self.here();
         let mut left = self.sum()?;
         while self.at_op("||") {
             self.next();
             self.enter()?;
             let right = self.sum()?;
-            left = Node::Binary(BinOp::Concat, Box::new(left), Box::new(right));
+            left = self.made(
+                start,
+                Node::Binary(BinOp::Concat, Box::new(left), Box::new(right)),
+            );
         }
         self.depth = base;
         Ok(left)
@@ -309,6 +425,7 @@ impl<'a> Parser<'a> {
 
     fn sum(&mut self) -> Result<Node, ParseError> {
         let base = self.depth;
+        let start = self.here();
         let mut left = self.term()?;
         loop {
             let op = match self.peek().tok {
@@ -322,12 +439,13 @@ impl<'a> Parser<'a> {
             self.next();
             self.enter()?;
             let right = self.term()?;
-            left = Node::Binary(op, Box::new(left), Box::new(right));
+            left = self.made(start, Node::Binary(op, Box::new(left), Box::new(right)));
         }
     }
 
     fn term(&mut self) -> Result<Node, ParseError> {
         let base = self.depth;
+        let start = self.here();
         let mut left = self.unary()?;
         loop {
             let op = match self.peek().tok {
@@ -342,12 +460,13 @@ impl<'a> Parser<'a> {
             self.next();
             self.enter()?;
             let right = self.unary()?;
-            left = Node::Binary(op, Box::new(left), Box::new(right));
+            left = self.made(start, Node::Binary(op, Box::new(left), Box::new(right)));
         }
     }
 
     fn unary(&mut self) -> Result<Node, ParseError> {
         if self.at_op("-") || self.at_op("+") {
+            let start = self.here();
             let neg = self.at_op("-");
             self.next();
             self.enter()?;
@@ -355,7 +474,7 @@ impl<'a> Parser<'a> {
             self.depth -= 1;
             let inner = inner?;
             return Ok(if neg {
-                Node::Neg(Box::new(inner))
+                self.made(start, Node::Neg(Box::new(inner)))
             } else {
                 inner
             });
@@ -363,33 +482,53 @@ impl<'a> Parser<'a> {
         self.primary()
     }
 
+    /// True if the next token cannot start a value but can follow one, so that a lenient parse reads a hole before it.
+    fn at_hole(&self) -> bool {
+        match &self.peek().tok {
+            Tok::End | Tok::Comma | Tok::RParen | Tok::Op(_) => true,
+            Tok::Name(_) => {
+                ["and", "or", "is", "in", "like", "ilike", "between"]
+                    .iter()
+                    .any(|kw| self.at_keyword(kw))
+                    && self.tokens[self.pos + 1].tok != Tok::LParen
+            }
+            _ => false,
+        }
+    }
+
     fn primary(&mut self) -> Result<Node, ParseError> {
+        if self.lenient && self.at_hole() {
+            let at = self.here();
+            return Ok(self.hole(at));
+        }
         let t = self.peek().clone();
-        match t.tok {
+        let node = match t.tok {
             Tok::Number(n) => {
                 self.next();
-                Ok(Node::Lit(Value::Number(n)))
+                Node::Lit(Value::Number(n))
             }
             Tok::Str(s) => {
                 self.next();
-                Ok(Node::Lit(Value::Text(s)))
+                Node::Lit(Value::Text(s))
             }
             Tok::Quoted(name) => {
                 self.next();
-                Ok(Node::Field(name))
+                Node::Field(name)
             }
             Tok::Var(name) => {
                 self.next();
                 match name.to_ascii_lowercase().as_str() {
-                    "scale" => Ok(Node::Var(Var::Scale)),
-                    "geometry" => Ok(Node::Var(Var::Geometry)),
-                    _ => Err(self.error(
-                        t.start,
-                        t.end,
-                        format!(
-                            "unknown variable '@{name}'. The variables are @scale and @geometry"
-                        ),
-                    )),
+                    "scale" => Node::Var(Var::Scale),
+                    "geometry" => Node::Var(Var::Geometry),
+                    _ => {
+                        return Err(self.error(
+                            t.start,
+                            t.end,
+                            format!(
+                                "unknown variable '@{name}'. The variables are @scale and @geometry"
+                            ),
+                        ));
+                    }
                 }
             }
             Tok::LParen => {
@@ -399,7 +538,7 @@ impl<'a> Parser<'a> {
                     return Err(self.error_here("expected ')'"));
                 }
                 self.next();
-                Ok(inner)
+                return Ok(inner);
             }
             Tok::Name(name) => {
                 self.next();
@@ -407,24 +546,25 @@ impl<'a> Parser<'a> {
                     return self.call(&name, t.start, t.end);
                 }
                 match name.to_ascii_lowercase().as_str() {
-                    "true" => Ok(Node::Lit(Value::Bool(true))),
-                    "false" => Ok(Node::Lit(Value::Bool(false))),
-                    "null" => Ok(Node::Lit(Value::Null)),
+                    "true" => Node::Lit(Value::Bool(true)),
+                    "false" => Node::Lit(Value::Bool(false)),
+                    "null" => Node::Lit(Value::Null),
                     kw @ ("and" | "or" | "not" | "is" | "in" | "like" | "ilike" | "between") => {
-                        Err(self.error(
+                        return Err(self.error(
                             t.start,
                             t.end,
                             format!(
                                 "'{kw}' is a keyword. Put a field with this name in double quotes"
                             ),
-                        ))
+                        ));
                     }
-                    _ => Ok(Node::Field(name)),
+                    _ => Node::Field(name),
                 }
             }
-            Tok::End => Err(self.error_here("the expression ends too early")),
-            _ => Err(self.error_here("expected a value")),
-        }
+            Tok::End => return Err(self.error_here("the expression ends too early")),
+            _ => return Err(self.error_here("expected a value")),
+        };
+        Ok(self.made(t.start, node))
     }
 
     fn call(&mut self, name: &str, start: usize, end: usize) -> Result<Node, ParseError> {
@@ -432,7 +572,13 @@ impl<'a> Parser<'a> {
             return Err(self.error(start, end, format!("unknown function '{name}'")));
         };
         self.next();
-        let args = self.args()?;
+        let mut args = self.args()?;
+        if self.lenient {
+            let at = self.tokens[self.pos - 1].start;
+            while args.len() < f.min_args {
+                args.push(self.hole(at));
+            }
+        }
         let n = args.len();
         if n < f.min_args || f.max_args.is_some_and(|max| n > max) {
             let want = match f.max_args {
@@ -447,6 +593,6 @@ impl<'a> Parser<'a> {
                 format!("'{}' takes {want} argument{s}, not {n}", f.name),
             ));
         }
-        Ok(Node::Call(f, args))
+        Ok(self.made(start, Node::Call(f, args)))
     }
 }
