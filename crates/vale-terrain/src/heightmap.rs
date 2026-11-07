@@ -56,7 +56,8 @@ pub enum Mode {
     Carve,
     /// Cuts a glacial valley along each river of the channel lines, with a
     /// flat floor and steep sides. The valley is `VALLEY_WIDTH_FACTOR` times
-    /// as wide as the channel of `Stamp::channel`. The floor is
+    /// as wide as the channel of `Stamp::channel`, and `VALLEY_MAX_KM` wide
+    /// at most at the reference area. The floor is
     /// `Stamp::strength` below the river level for the largest rivers, and a
     /// quarter of that for the smallest. A floor below sea level goes to
     /// `Stamp::level` below sea level at most, at the coast. The mode only
