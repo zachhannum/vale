@@ -928,6 +928,17 @@ impl AppState {
 /// it also shows the count. With features of more than one layer, it shows
 /// the count of each layer.
 pub fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
+    form_body(ui, state, controls, true);
+}
+
+/// The fields of the card of a new point on a compact screen. The card has
+/// no "Show in table" button.
+pub fn new_point_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
+    form_body(ui, state, controls, false);
+}
+
+/// The body of the inspector, with the "Show in table" button if `table`.
+fn form_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, table: bool) {
     let count = state.feature_selection.len();
     if count == 0 {
         ui.add_space(4.0);
@@ -991,9 +1002,11 @@ pub fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
             }
         }
     }
-    ui.add_space(8.0);
-    let can_show = state.can_show_in_table();
-    outcome.show = widgets::button_row(ui, controls, SHOW_IN_TABLE, can_show).clicked();
+    if table {
+        ui.add_space(8.0);
+        let can_show = state.can_show_in_table();
+        outcome.show = widgets::button_row(ui, controls, SHOW_IN_TABLE, can_show).clicked();
+    }
     state.finish_inspector(form, outcome);
 }
 

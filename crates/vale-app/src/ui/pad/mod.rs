@@ -47,6 +47,7 @@ pub mod icons;
 pub mod label_text;
 pub mod labels;
 pub mod number;
+pub mod point_card;
 pub mod popover;
 pub mod raster;
 pub mod rules;
@@ -580,7 +581,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         view_width: widgets::segments_width(ui, &VIEWS)
             + OPTIONS_LEAD
             + if flat { 3.0 * TOUCH + 9.0 + PAD } else { 0.0 },
-        panel: state.pad.brush || state.pad.right.is_some(),
+        panel: has_sheet(state, class),
         sheet_offset: state.pad.sheet_offset,
         cells: card_cells(&state.globe),
         strip: has_strip(&state.globe),
@@ -591,7 +592,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     // The Brush panel holds the settings of the context strip.
     if !has_strip(&state.globe) && card_cells(&state.globe) == 0 || state.globe.selecting() {
         state.pad.brush = false;
-        input.panel = state.pad.right.is_some();
+        input.panel = has_sheet(state, class);
     }
     let mut rects = geometry::layout(&input);
     if rects.one_panel && state.pad.brush && state.pad.right.is_some() {
@@ -623,7 +624,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     tool_strip(&ctx, state, &mut controls, &rects);
     brush_card(&ctx, state, &mut controls, &rects);
     // A button above can open or close a panel. The panels use the new state.
-    input.panel = state.pad.brush || state.pad.right.is_some();
+    input.panel = has_sheet(state, class);
     input.cells = card_cells(&state.globe);
     input.sheet_offset = state.pad.sheet_offset;
     rects = geometry::layout(&input);
@@ -642,7 +643,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
             show_panel(&ctx, state, &mut controls, &rects, panel);
         }
     }
-    super::new_feature::keep_in_view(state, &rects);
+    super::new_feature::keep_in_view(&ctx, state, &rects);
     expire_notes(&ctx, state);
     raster::band_card(&ctx, state, &mut controls, &rects);
     raster::shade_color_frame(&ctx, state);
@@ -697,6 +698,13 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
 
     state.pad.controls = controls;
     state.pad.rects = Some(rects);
+}
+
+/// True if a panel is open. On a compact screen, a panel is a sheet, and
+/// the card of a new point takes the place of the sheet of the inspector.
+fn has_sheet(state: &AppState, class: WidthClass) -> bool {
+    let open = state.pad.brush || state.pad.right.is_some();
+    open && !super::new_feature::point_card(state, class)
 }
 
 fn top_row(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
@@ -1571,6 +1579,11 @@ pub(super) fn show_panel(
     rects: &Rects,
     panel: Panel,
 ) {
+    if panel == Panel::Attributes && super::new_feature::point_card(state, rects.class) {
+        let rect = point_card::show(ctx, state, controls, rects);
+        state.pad.panels.push((panel, rect));
+        return;
+    }
     let shown = state.pad.layer.and_then(|layer| state.layer_of(layer));
     let name = shown.map(|layer| layer.name.clone());
     let field_count = shown.map_or(0, |layer| layer.fields.len());

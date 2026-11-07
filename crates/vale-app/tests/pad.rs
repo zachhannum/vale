@@ -7495,8 +7495,7 @@ fn a_stroke_that_extends_a_line_does_not_change_the_selection_or_the_inspector()
 
 #[test]
 fn a_new_point_is_not_under_the_inspector_or_the_keyboard() {
-    let phone = (393.0, 852.0);
-    for size in [BOARDS[0], BOARDS[1], phone] {
+    for size in [BOARDS[0], BOARDS[1]] {
         let what = format!("{size:?}");
         let mut h = pad(size);
         let id = new_point_layer(&mut h);
@@ -7508,28 +7507,112 @@ fn a_new_point_is_not_under_the_inspector_or_the_keyboard() {
         tap(&mut h, select::FOCUS_NEW);
         // A point low on the screen is under the keyboard. A point next to
         // the panel is too near it.
-        let sheet = h.state().pad.rects.unwrap().sheet.is_some();
-        let near = if sheet {
-            pos2(rect.center().x, inspector.top() - 6.0)
-        } else {
-            pos2(inspector.left() - 6.0, rect.center().y)
-        };
-        // On a phone, the sheet covers the place of the keyboard.
+        let near = pos2(inspector.left() - 6.0, rect.center().y);
         let low = pos2(rect.center().x, keyboard + 20.0);
-        let taps = if sheet { vec![near] } else { vec![low, near] };
-        for at in taps {
+        for at in [low, near] {
             pen_tap_at(&mut h, at);
             h.run_steps(2);
-            let point = match &line_features(&h, id).last().unwrap().geometry {
-                vale_store::Geometry::Points(points) => points[0],
-                _ => panic!("not a point"),
-            };
-            let dir = vale_app::globe::math::lonlat_to_dir(point[0], point[1]);
-            let pos = h.state().globe.project(dir).unwrap();
+            let pos = last_point(&h, id);
             assert!(!inspector.expand(20.0).contains(pos), "{what}: {pos:?}");
             assert!(pos.y < keyboard, "{what}: {pos:?}");
         }
     }
+}
+
+/// The place of the last point of a layer on the screen.
+fn last_point(h: &Pad, id: vale_store::LayerId) -> Pos2 {
+    let point = match &line_features(h, id).last().unwrap().geometry {
+        vale_store::Geometry::Points(points) => points[0],
+        _ => panic!("not a point"),
+    };
+    let dir = vale_app::globe::math::lonlat_to_dir(point[0], point[1]);
+    h.state()
+        .globe
+        .project(dir)
+        .expect("the point does not show")
+}
+
+#[test]
+fn on_an_iphone_a_new_point_has_a_card_below_the_top_row_and_stays_above_the_keyboard() {
+    use vale_app::ui::pad::geometry::{GAP, MARGIN};
+    use vale_app::ui::pad::point_card::{ADD, CANCEL};
+    let mut h = phone_pad();
+    let places = vector(&h, "Places");
+    h.state_mut().select(Some(LayerRef::Vector(places)));
+    h.run_steps(2);
+    quick_tap(&mut h, VECTOR);
+    assert_eq!(h.state().globe.tool, Tool::Point);
+    h.state_mut().globe.snap.on = false;
+    tap(&mut h, select::ATTRIBUTES);
+    assert!(h.state().pad.rects.unwrap().sheet.is_some());
+    let fields = h.state().doc.project.layer(places).unwrap().field_names();
+    let screen = h.state().pad.rects.unwrap().screen;
+    let keyboard = vale_app::ui::new_feature::keyboard_top(screen);
+    assert_eq!(keyboard, 852.0 - vale_app::ui::new_feature::PHONE_KEYBOARD);
+
+    // The sheet at its title row leaves the globe free.
+    h.state_mut().pad.sheet_offset = h.state().pad.rects.unwrap().sheet_travel;
+    h.run_steps(2);
+
+    // A point low on the screen, where the keyboard comes up. The card of
+    // the point is directly below the top row, at the full width inside the
+    // margins, and the sheet closes.
+    let before = line_features(&h, places).len();
+    let low = pos2(screen.center().x, keyboard + 60.0);
+    pen_tap_at(&mut h, low);
+    assert_eq!(line_features(&h, places).len(), before + 1);
+    let rects = h.state().pad.rects.unwrap();
+    assert_eq!(rects.sheet, None);
+    let card = panel(&h, Panel::Attributes).expect("no card");
+    assert_eq!(card.top(), rects.workspace.bottom() + GAP);
+    assert_eq!(card.left(), screen.left() + MARGIN);
+    assert_eq!(card.right(), screen.right() - MARGIN);
+    assert!(card.bottom() < keyboard - 48.0, "{card:?}");
+    for name in [ADD, CANCEL, fields[0].as_str()] {
+        let rect = control(&h, name).unwrap_or_else(|| panic!("no control `{name}`"));
+        assert!(card.contains_rect(rect), "{name}");
+    }
+    assert!(control(&h, vale_app::ui::table::SHOW_IN_TABLE).is_none());
+    check_controls(&h, "point card");
+    // With no keyboard, the point keeps its place.
+    assert!(no_keyboard(&h));
+    assert!((last_point(&h, places) - low).length() < 2.0);
+    // A field takes the keyboard, and the point moves between the card and
+    // the keyboard.
+    tap(&mut h, &fields[0]);
+    assert!(!no_keyboard(&h));
+    let pos = last_point(&h, places);
+    assert!(pos.y > card.bottom() && pos.y < keyboard, "{pos:?}");
+    screenshot::save(&mut h, "phone-point-card");
+    // Cancel removes the point.
+    tap(&mut h, CANCEL);
+    assert_eq!(line_features(&h, places).len(), before);
+    assert!(h.state().new_feature.is_none());
+    assert!(no_keyboard(&h));
+
+    // With "Focus new features", the keyboard comes up with the card. A
+    // point under the place of the card moves below the card.
+    h.state_mut().tools.focus_new = true;
+    let high = pos2(screen.center().x, card.center().y);
+    pen_tap_at(&mut h, high);
+    h.run_steps(2);
+    assert!(!no_keyboard(&h));
+    let card = panel(&h, Panel::Attributes).expect("no card");
+    let pos = last_point(&h, places);
+    assert!(
+        pos.y > card.bottom() && pos.y < keyboard,
+        "{pos:?} {card:?}"
+    );
+    type_in_focus(&mut h, "Ferrow");
+    tap(&mut h, ADD);
+    assert!(h.state().new_feature.is_none());
+    let feature = line_features(&h, places).pop().unwrap();
+    assert_eq!(line_features(&h, places).len(), before + 1);
+    let name = feature.attributes[&fields[0]].label().unwrap_or_default();
+    assert!(name.ends_with("Ferrow"), "{name}");
+    // The sheet of the inspector shows its title row only.
+    let rects = h.state().pad.rects.unwrap();
+    assert_eq!(h.state().pad.sheet_offset, rects.sheet_travel);
 }
 
 #[test]
