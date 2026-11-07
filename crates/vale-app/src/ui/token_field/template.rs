@@ -301,6 +301,20 @@ mod tests {
     }
 
     #[test]
+    fn the_badge_shows_the_format() {
+        let format = |text: &str| match &Template::from_text(text).pieces[0] {
+            Piece::Field { format, .. } => format.clone(),
+            p => panic!("{p:?}"),
+        };
+        assert_eq!(badge(&format("pop")), None);
+        assert_eq!(badge(&format("round(pop)")).as_deref(), Some("0 dp"));
+        let thousands = badge(&format("format_number(pop, 0)"));
+        assert_eq!(thousands.as_deref(), Some("1,234"));
+        let text = badge(&format("coalesce(upper(name), alt)"));
+        assert_eq!(text.as_deref(), Some("ABC · or alt"));
+    }
+
+    #[test]
     fn the_caret_walks_into_groups() {
         let mut f = field("concat('a', 'b' || x)");
         f.sel = Selection::at(Caret::new(Vec::new(), 0));

@@ -4,11 +4,13 @@
 //! Blocks, so text that the user does not edit stays as it is.
 
 use eframe::egui::{self, Align2, Color32, Rect, Sense, Stroke, pos2, vec2};
-use vale_style::expr::editor::{Piece, Seq, Template, Tok};
+use vale_style::expr::editor::{Empty, Piece, Seq, Template, Tok};
 use vale_style::expr::{FUNCTIONS, Function};
 
+use super::chip_popover::{self, Action, Page};
 use super::expression;
 use super::geometry::TOUCH;
+use super::popover;
 use super::theme;
 use super::widgets::{self, Controls};
 use crate::ui::expr_help::{ExprHelp, ExprKind, NO_LABEL};
@@ -65,6 +67,10 @@ struct EditorState {
     /// The text of the Code field while it has the focus.
     typed: String,
     functions: bool,
+    /// The field chip whose popover is open, and the page of the popover.
+    popover: Option<(Vec<usize>, Page)>,
+    /// The text of the field of Text… in the popover.
+    empty_text: String,
 }
 
 /// The editor of label text `current` under `heading`. The token field has
@@ -147,6 +153,10 @@ pub fn editor(
             edit.text = Some(write(&mut st));
             edit.step = step;
         }
+        if let Some(step) = chip_popover(ui, controls, &mut st, &out, help) {
+            edit.text = Some(write(&mut st));
+            edit.step = step;
+        }
     }
     let shown = edit.text.as_deref().unwrap_or(current);
     preview(ui, help, shown);
@@ -208,6 +218,81 @@ fn preview(ui: &mut egui::Ui, help: &ExprHelp, text: &str) {
     }
     let resp = ui.interact(rect, ui.id().with("label-preview"), Sense::hover());
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, &label));
+}
+
+/// Opens the popover of a field chip after a tap on the chip, and shows
+/// it. A second tap on the chip, a press outside the popover, and a move of
+/// the selection away from the chip close it. Returns `Some` after a
+/// change, with true for one step.
+fn chip_popover(
+    ui: &egui::Ui,
+    controls: &mut Controls,
+    st: &mut EditorState,
+    out: &token_field::Output,
+    help: &ExprHelp,
+) -> Option<bool> {
+    if let Some((path, _)) = &out.tapped
+        && selected_field(&st.field).as_ref() == Some(path)
+    {
+        let again = st.popover.as_ref().is_some_and(|(p, _)| p == path);
+        st.popover = (!again).then(|| (path.clone(), Page::Main));
+        if let Some(Node::Chip(c)) = st.field.node(path)
+            && let Piece::Field { format, .. } = &c.data
+            && let Empty::Text(t) = &format.empty
+        {
+            st.empty_text = t.clone();
+        }
+    }
+    let (path, page) = st.popover.clone()?;
+    if selected_field(&st.field).as_ref() != Some(&path) {
+        st.popover = None;
+        return None;
+    }
+    let anchor = out.layout.rect_of(&path)?;
+    let Some(Node::Chip(chip)) = st.field.node(&path) else {
+        return None;
+    };
+    let Piece::Field { name, format } = chip.data.clone() else {
+        return None;
+    };
+    let chip = chip_popover::Chip {
+        name: &name,
+        format: &format,
+        in_group: path.len() > 1,
+    };
+    let mut action = None;
+    let shown = popover::show(ui.ctx(), "pad-chip-popover", anchor, 340.0, |ui| {
+        action = chip_popover::contents(ui, controls, page, &chip, help, &mut st.empty_text);
+    });
+    if shown.closed && out.tapped.is_none() {
+        st.popover = None;
+    }
+    match action? {
+        Action::Page(page) => {
+            st.popover = Some((path, page));
+            None
+        }
+        Action::Format(format, step) => {
+            if let Some(Node::Chip(c)) = st.field.node_mut(&path) {
+                c.look = template::field_look(&name, &format, help);
+                c.data = Piece::Field {
+                    name: name.clone(),
+                    format,
+                };
+            }
+            Some(step)
+        }
+        Action::Wrap(f) => {
+            st.popover = None;
+            wrap_in_function(&mut st.field, &path, f).then_some(true)
+        }
+        Action::Remove => {
+            st.popover = None;
+            st.field.select_node(&path);
+            st.field.replace(Vec::new());
+            Some(true)
+        }
+    }
 }
 
 /// The field chip of the selection, and its index in its list.

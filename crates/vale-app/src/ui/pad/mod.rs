@@ -30,6 +30,7 @@ use crate::world;
 
 pub mod atlas;
 pub mod browser;
+pub mod chip_popover;
 pub mod classify;
 pub mod edge_labels;
 pub mod expression;
@@ -45,6 +46,7 @@ pub mod icons;
 pub mod label_text;
 pub mod labels;
 pub mod number;
+pub mod popover;
 pub mod raster;
 pub mod rules;
 pub mod selectable;

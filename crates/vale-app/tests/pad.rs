@@ -9404,6 +9404,82 @@ fn blocks_and_code_edit_one_text() {
     assert_eq!(label_text(&h, places), "concat(upper(name), '!')");
 }
 
+/// Opens the Label text page of Places with label text `text`, and taps
+/// the first chip of the field, which opens its popover.
+fn open_chip(h: &mut Pad, text: &str) -> vale_store::LayerId {
+    use vale_app::ui::pad::label_text::LABEL_TEXT;
+    let places = vector(h, "Places");
+    h.state_mut()
+        .doc
+        .entry_mut(places)
+        .unwrap()
+        .style
+        .label
+        .text = text.into();
+    open_label_text(h);
+    let field = control(h, LABEL_TEXT).unwrap();
+    let pos = field.min + vec2(12.0 + 24.0, 12.0 + 16.0);
+    touch(h, egui::TouchPhase::Start, pos, None);
+    h.step();
+    touch(h, egui::TouchPhase::End, pos, None);
+    h.run_steps(3);
+    places
+}
+
+#[test]
+fn decimal_places_write_round() {
+    use vale_app::ui::pad::chip_popover::DECIMAL_PLACES;
+    let mut h = pad(BOARDS[0]);
+    let places = open_chip(&mut h, "pop_max");
+    let plus = format!("Increase {DECIMAL_PLACES}");
+    tap(&mut h, &plus);
+    assert_eq!(label_text(&h, places), "round(pop_max)");
+    tap(&mut h, &plus);
+    assert_eq!(label_text(&h, places), "round(pop_max, 1)");
+    screenshot::save(&mut h, "pad-label-text-popover");
+    tap(&mut h, &format!("Decrease {DECIMAL_PLACES}"));
+    tap(&mut h, &format!("Decrease {DECIMAL_PLACES}"));
+    assert_eq!(label_text(&h, places), "pop_max");
+}
+
+#[test]
+fn thousands_separator_writes_format_number() {
+    use vale_app::ui::pad::chip_popover::THOUSANDS;
+    let mut h = pad(BOARDS[0]);
+    let places = open_chip(&mut h, "pop_max");
+    tap(&mut h, THOUSANDS);
+    assert_eq!(label_text(&h, places), "format_number(pop_max, 0)");
+}
+
+#[test]
+fn case_writes_upper() {
+    use vale_app::ui::pad::chip_popover::CASES;
+    let mut h = pad(BOARDS[0]);
+    let places = open_chip(&mut h, "concat(name, ' x')");
+    tap(&mut h, CASES[1]);
+    assert_eq!(label_text(&h, places), "concat(upper(name), ' x')");
+}
+
+#[test]
+fn when_empty_uses_another_field() {
+    use vale_app::ui::pad::chip_popover::{WHEN_EMPTY, use_field};
+    let mut h = pad(BOARDS[0]);
+    let places = open_chip(&mut h, "name");
+    tap(&mut h, WHEN_EMPTY);
+    tap(&mut h, &use_field("adm0name"));
+    assert_eq!(label_text(&h, places), "coalesce(name, adm0name)");
+}
+
+#[test]
+fn remove_field_deletes_chip() {
+    use vale_app::ui::pad::chip_popover::REMOVE_FIELD;
+    let mut h = pad(BOARDS[0]);
+    let places = open_chip(&mut h, "concat(name, ' x')");
+    tap(&mut h, REMOVE_FIELD);
+    assert_eq!(label_text(&h, places), "' x'");
+    assert!(control(&h, REMOVE_FIELD).is_none());
+}
+
 #[test]
 fn the_font_row_asks_for_the_font_picker() {
     use vale_app::ui::pad::fonts::FONT;
