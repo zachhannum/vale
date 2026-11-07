@@ -1,12 +1,12 @@
-//! The panels of the items of furniture of a page: text, a legend, a scale
-//! bar, and a north arrow.
+//! The panels of the items of furniture of a page: text, a legend, a color
+//! key, a scale bar, and a north arrow.
 
 use eframe::egui::{self, Align2, Rect, Sense, pos2, vec2};
 use vale_labeler::Face;
 use vale_store::{
-    DivisionSpacing, FillKind, FillPattern, Furniture, FurnitureId, FurnitureRecord, FurnitureText,
-    LayerId, ScaleBarItem, ScaleBarKind, ScaleFit, ScalePosition, ScaleUnit, TextAlign,
-    TickFrequency, UnitLabelStyle, UnitPosition,
+    ColorKeyItem, DivisionSpacing, FillKind, FillPattern, Furniture, FurnitureId, FurnitureRecord,
+    FurnitureText, KeyLayout, LayerId, ScaleBarItem, ScaleBarKind, ScaleFit, ScalePosition,
+    ScaleUnit, SecondUnit, TextAlign, TickFrequency, UnitLabelStyle, UnitPosition,
 };
 
 use super::atlas::panel_width;
@@ -46,6 +46,23 @@ pub const ENTRY: &str = "Entry";
 pub const ENTRY_NAME: &str = "Entry name";
 /// The heading of the Text section on a page with other rows.
 pub const TEXT: &str = "Text";
+pub const KEY_LAYER: &str = "Layer";
+pub const NO_RASTERS: &str = "The map shows no raster layers.";
+pub const LAYER_HIDDEN: &str = "The map frame does not show this layer.";
+pub const KEY_LAYOUT: &str = "Layout";
+/// The names of [`KeyLayout::ALL`].
+pub const KEY_LAYOUTS: [&str; 2] = ["Strip", "List"];
+pub const SPLIT: &str = "Split at sea level";
+pub const SECOND_UNIT: &str = "Second unit";
+pub const CUSTOM: &str = "Custom";
+pub const UNIT_NAME: &str = "Unit name";
+pub const FACTOR: &str = "Factor";
+pub const OFFSET: &str = "Offset";
+pub const NAMES_IN_BOXES: &str = "Names in boxes";
+pub const BANDS: &str = "Bands";
+pub const RESET_BANDS: &str = "Reset bands";
+pub const BAND: &str = "Band";
+pub const KEY_BAND_NAME: &str = "Key band name";
 pub const ARROW_COLOR: &str = "Arrow color";
 pub const HIDE_VARIES: &str = "Hide where north varies";
 /// The heading of the Text section of a north arrow.
@@ -110,6 +127,9 @@ fn page_key(page: &ItemPage) -> &'static str {
         },
         ItemPage::Pick(_) => "pad-atlas-bar-pick",
         ItemPage::Fill(_) => "pad-atlas-bar-fill",
+        ItemPage::KeyLayer => "pad-atlas-key-layer",
+        ItemPage::KeyUnit => "pad-atlas-key-unit",
+        ItemPage::Band(_) => "pad-atlas-key-band",
     }
 }
 
@@ -121,12 +141,16 @@ fn page_title(page: Option<&ItemPage>, kind: ItemKind) -> &'static str {
         Some(ItemPage::Face(_)) => STYLE,
         Some(ItemPage::Case(_)) => CASE,
         Some(ItemPage::Text(TextPart::Title)) => TITLE,
+        Some(ItemPage::Text(_)) if kind == ItemKind::ColorKey => BANDS,
         Some(ItemPage::Text(_)) => ENTRIES,
         Some(ItemPage::Entry(..)) => ENTRY,
         Some(ItemPage::Bar(p)) => p.name(),
         Some(ItemPage::Pick(p)) => p.name(),
         Some(ItemPage::Fill(false)) => FILL_1,
         Some(ItemPage::Fill(true)) => FILL_2,
+        Some(ItemPage::KeyLayer) => KEY_LAYER,
+        Some(ItemPage::KeyUnit) => SECOND_UNIT,
+        Some(ItemPage::Band(_)) => BAND,
     }
 }
 
@@ -207,6 +231,21 @@ pub fn panel(
                     fill_page(ui, state, controls, rec.id, bar, second);
                 }
             }
+            Some(ItemPage::KeyLayer) => {
+                if let Furniture::ColorKey(key) = &rec.item {
+                    key_layer_page(ui, state, controls, rec.id, key);
+                }
+            }
+            Some(ItemPage::KeyUnit) => {
+                if let Furniture::ColorKey(key) = &rec.item {
+                    key_unit_page(ui, state, controls, rec.id, key);
+                }
+            }
+            Some(ItemPage::Band(band)) => {
+                if let Furniture::ColorKey(key) = &rec.item {
+                    band_page(ui, state, controls, rec.id, key, band);
+                }
+            }
         }
     };
     Some(show_card(
@@ -275,7 +314,7 @@ fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, rec: &
                 }
             }
         }
-        Furniture::ColorKey(_) => frame_row(ui, state, controls, rec),
+        Furniture::ColorKey(key) => key_body(ui, state, controls, rec, key),
         Furniture::NorthArrow(item) => {
             frame_row(ui, state, controls, rec);
             let c = rgba_rows(
@@ -419,8 +458,17 @@ fn frame_page(
     for (frame, name) in names {
         let on = rec.item.frame() == Some(frame);
         if widgets::option_row(ui, controls, &name, &name, &[], on).clicked() {
+            // A key that the new frame does not show takes a layer that it
+            // shows.
+            let layers = atlas::key_layers(&state.doc, frame);
+            let layer = atlas::default_key_layer(&state.doc, frame);
             atlas::item_step(state, rec.id, |r| {
                 r.item.set_frame(Some(frame));
+                if let Furniture::ColorKey(k) = &mut r.item
+                    && !k.layer.is_some_and(|l| layers.contains(&l))
+                {
+                    k.layer = layer;
+                }
                 true
             });
             go(ui, state, None);
@@ -478,8 +526,10 @@ fn legend_page(
     rec: &FurnitureRecord,
     part: TextPart,
 ) {
-    let Furniture::Legend(item) = &rec.item else {
-        return;
+    let item = match &rec.item {
+        Furniture::Legend(item) => item,
+        Furniture::ColorKey(key) => return key_text_page(ui, state, controls, rec.id, key, part),
+        _ => return,
     };
     let id = rec.id;
     if part == TextPart::Title {
@@ -550,34 +600,46 @@ fn entry_rows(
     }
     let labels: Vec<String> = rows.iter().map(|r| r.label.clone()).collect();
     for (row, name) in rows.iter().zip(entry_names(&labels)) {
-        let (rect, _) =
-            ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), Sense::hover());
-        let center = pos2(rect.right() + 8.0 - TOUCH / 2.0, rect.center().y);
-        let eye = Rect::from_center_size(center, vec2(TOUCH, TOUCH));
-        let text = Rect::from_min_max(rect.min, pos2(eye.left() - 4.0, rect.max.y));
-        let tap = widgets::tap_area(ui, controls, text, &name, true);
-        let painter = ui.painter().with_clip_rect(ui.clip_rect().intersect(text));
-        let color = widgets::fade(theme::TEXT, !row.hidden);
-        painter.text(
-            text.left_center(),
-            Align2::LEFT_CENTER,
-            &row.label,
-            theme::body(),
-            color,
-        );
-        let icon = if row.hidden { Icon::EyeOff } else { Icon::Eye };
-        let eye_name = widgets::eye_name(&name, !row.hidden);
-        let eye = widgets::icon_button_at(ui, controls, eye, &eye_name, icon, false, true);
+        let (tap, eye) = eye_row(ui, controls, &name, &row.label, row.hidden);
         let key = (row.layer, row.rule.clone());
-        if eye.clicked() {
+        if eye {
             let hidden = !row.hidden;
             atlas::edit_entry(state, rec.id, key.clone(), |e| e.hidden = hidden);
         }
-        if tap.clicked() {
+        if tap {
             state.atlas.entry_name = row.label.clone();
             go(ui, state, Some(ItemPage::Entry(key.0, key.1)));
         }
     }
+}
+
+/// A row with a text that opens a page and an eye at the right. Gives
+/// whether the text and the eye were tapped.
+fn eye_row(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    name: &str,
+    label: &str,
+    hidden: bool,
+) -> (bool, bool) {
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), Sense::hover());
+    let center = pos2(rect.right() + 8.0 - TOUCH / 2.0, rect.center().y);
+    let eye = Rect::from_center_size(center, vec2(TOUCH, TOUCH));
+    let text = Rect::from_min_max(rect.min, pos2(eye.left() - 4.0, rect.max.y));
+    let tap = widgets::tap_area(ui, controls, text, name, true);
+    let painter = ui.painter().with_clip_rect(ui.clip_rect().intersect(text));
+    let color = widgets::fade(theme::TEXT, !hidden);
+    painter.text(
+        text.left_center(),
+        Align2::LEFT_CENTER,
+        label,
+        theme::body(),
+        color,
+    );
+    let icon = if hidden { Icon::EyeOff } else { Icon::Eye };
+    let eye_name = widgets::eye_name(name, !hidden);
+    let eye = widgets::icon_button_at(ui, controls, eye, &eye_name, icon, false, true);
+    (tap.clicked(), eye.clicked())
 }
 
 /// The page of the name of an entry of a legend. An empty name, or the
@@ -605,6 +667,284 @@ fn entry_page(
         let typed = text.trim();
         let name = (!typed.is_empty() && typed != default).then(|| typed.to_string());
         atlas::edit_entry(state, rec.id, key, |e| e.name = name);
+    }
+    state.atlas.entry_name = text;
+}
+
+/// The name of a layer, or "None".
+pub(crate) fn layer_name(state: &AppState, layer: Option<LayerId>) -> String {
+    let layer = layer.and_then(|l| state.doc.project.layer(l));
+    layer.map_or_else(|| NONE.to_string(), |l| l.name.clone())
+}
+
+/// The unit of the raster of a layer, or "".
+pub(crate) fn layer_unit(state: &AppState, layer: Option<LayerId>) -> String {
+    let p = &state.doc.project;
+    let raster = layer.and_then(|l| p.layer(l)).and_then(|l| l.raster());
+    raster
+        .and_then(|r| p.raster(r))
+        .map_or_else(String::new, |r| r.unit.clone())
+}
+
+/// `text` with its first letter in upper case.
+pub(crate) fn sentence_case(text: &str) -> String {
+    let mut chars = text.chars();
+    chars
+        .next()
+        .map_or_else(String::new, |c| c.to_uppercase().chain(chars).collect())
+}
+
+/// The top page of the panel of a color key.
+fn key_body(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    rec: &FurnitureRecord,
+    key: &ColorKeyItem,
+) {
+    let id = rec.id;
+    frame_row(ui, state, controls, rec);
+    let layer = fit(ui, KEY_LAYER, &layer_name(state, key.layer));
+    if widgets::open_row(ui, controls, KEY_LAYER, &layer).clicked() {
+        go(ui, state, Some(ItemPage::KeyLayer));
+    }
+    if key.frame.is_some() && atlas::key_data(state, key).is_none() {
+        hint(ui, LAYER_HIDDEN);
+    }
+    let all = KeyLayout::ALL;
+    let active = all.iter().position(|l| *l == key.layout);
+    if let Some(i) = widgets::choice_row(ui, controls, KEY_LAYOUT, &KEY_LAYOUTS, active) {
+        atlas::edit_key(state, id, true, |k| k.layout = all[i]);
+    }
+    match key.layout {
+        KeyLayout::Strip => {
+            let split = ColorKeyItem {
+                split_at_sea_level: true,
+                ..key.clone()
+            };
+            let can_split = atlas::key_data(state, &split).is_some_and(|d| d.sea.is_some());
+            let mut on = key.split_at_sea_level;
+            if can_split && widgets::switch_row(ui, controls, SPLIT, SPLIT, &mut on) {
+                atlas::edit_key(state, id, true, |k| k.split_at_sea_level = on);
+            }
+            let unit = match &key.second_unit {
+                None => NONE.to_string(),
+                Some(u) if u.name.is_empty() => CUSTOM.to_string(),
+                Some(u) => sentence_case(&u.name),
+            };
+            if widgets::open_row(ui, controls, SECOND_UNIT, &unit).clicked() {
+                go(ui, state, Some(ItemPage::KeyUnit));
+            }
+        }
+        KeyLayout::List => {
+            let mut on = key.names_in_boxes;
+            if widgets::switch_row(ui, controls, NAMES_IN_BOXES, NAMES_IN_BOXES, &mut on) {
+                atlas::edit_key(state, id, true, |k| k.names_in_boxes = on);
+            }
+        }
+    }
+    let title = fit(ui, TITLE, &key.title);
+    if widgets::open_row(ui, controls, TITLE, &title).clicked() {
+        go(ui, state, Some(ItemPage::Text(TextPart::Title)));
+    }
+    if widgets::open_row(ui, controls, BANDS, "").clicked() {
+        go(ui, state, Some(ItemPage::Text(TextPart::Entries)));
+    }
+}
+
+/// The raster layers that the frame of a key shows. A tap sets the layer
+/// and goes back.
+fn key_layer_page(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    id: FurnitureId,
+    key: &ColorKeyItem,
+) {
+    let Some(frame) = key.frame else {
+        hint(ui, NO_FRAMES);
+        return;
+    };
+    let layers = atlas::key_layers(&state.doc, frame);
+    if layers.is_empty() {
+        hint(ui, NO_RASTERS);
+        return;
+    }
+    for layer in layers {
+        let name = layer_name(state, Some(layer));
+        let unit = layer_unit(state, Some(layer));
+        let lines: Vec<String> = (!unit.is_empty()).then_some(unit).into_iter().collect();
+        let on = key.layer == Some(layer);
+        let row = ui.push_id(("key-layer", layer.0), |ui| {
+            widgets::option_row(ui, controls, &name, &name, &lines, on)
+        });
+        if row.inner.clicked() {
+            atlas::edit_key(state, id, true, |k| k.layer = Some(layer));
+            go(ui, state, None);
+        }
+    }
+}
+
+/// The second unit of a key: none, the common unit of the layer unit, or
+/// a custom unit with its name, factor, and offset.
+fn key_unit_page(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    id: FurnitureId,
+    key: &ColorKeyItem,
+) {
+    let preset = crate::color_key::preset_unit(&layer_unit(state, key.layer));
+    let current = key.second_unit.clone();
+    if widgets::option_row(ui, controls, NONE, NONE, &[], current.is_none()).clicked() {
+        atlas::edit_key(state, id, true, |k| k.second_unit = None);
+        go(ui, state, None);
+    }
+    if let Some(p) = &preset {
+        let title = sentence_case(&p.name);
+        let on = current.as_ref() == Some(p);
+        if widgets::option_row(ui, controls, &title, &title, &[], on).clicked() {
+            let p = p.clone();
+            atlas::edit_key(state, id, true, |k| k.second_unit = Some(p));
+            go(ui, state, None);
+        }
+    }
+    let custom = current.as_ref().filter(|u| Some(*u) != preset.as_ref());
+    if widgets::option_row(ui, controls, CUSTOM, CUSTOM, &[], custom.is_some()).clicked()
+        && custom.is_none()
+    {
+        let unit = SecondUnit {
+            name: String::new(),
+            factor: 1.0,
+            offset: 0.0,
+        };
+        atlas::edit_key(state, id, true, |k| k.second_unit = Some(unit));
+    }
+    let Some(unit) = custom else {
+        return;
+    };
+    ui.add_space(6.0);
+    let mut name = unit.name.clone();
+    if widgets::text_field(ui, controls, UNIT_NAME, "Name", None, &mut name, true).changed() {
+        atlas::edit_key(state, id, false, |k| {
+            if let Some(u) = &mut k.second_unit {
+                u.name = name;
+            }
+        });
+    }
+    let parse = |t: &str| t.trim().replace(',', "").parse::<f64>().ok();
+    let fields = [(FACTOR, unit.factor, false), (OFFSET, unit.offset, true)];
+    for (field, value, zero) in fields {
+        let valid = |t: &str| parse(t).is_some_and(|v| v.is_finite() && (zero || v != 0.0));
+        let typed = widgets::key_field(
+            ui,
+            controls,
+            field,
+            field,
+            "",
+            &number_text(value),
+            Keys::Number,
+            valid,
+        );
+        if let Some(v) = typed.as_deref().filter(|t| valid(t)).and_then(parse) {
+            atlas::edit_key(state, id, false, |k| {
+                if let Some(u) = &mut k.second_unit {
+                    if zero {
+                        u.offset = v;
+                    } else {
+                        u.factor = v;
+                    }
+                }
+            });
+        }
+        keypad_below(ui, controls, field);
+    }
+}
+
+/// The Title page and the Bands page of a color key.
+fn key_text_page(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    id: FurnitureId,
+    key: &ColorKeyItem,
+    part: TextPart,
+) {
+    if part == TextPart::Title {
+        let mut title = key.title.clone();
+        if widgets::text_field(ui, controls, TITLE, TITLE, None, &mut title, true).changed() {
+            atlas::edit_key(state, id, false, |k| k.title = title);
+        }
+        ui.add_space(6.0);
+        text_rows(ui, state, controls, id, part, &key.title_style);
+        return;
+    }
+    band_rows(ui, state, controls, id, key);
+    ui.add_space(6.0);
+    let reset = widgets::button_row(ui, controls, RESET_BANDS, !key.bands.is_empty());
+    if reset.clicked() {
+        atlas::edit_key(state, id, true, |k| k.bands.clear());
+    }
+    heading(ui, TEXT);
+    text_rows(ui, state, controls, id, part, &key.value_style);
+}
+
+/// One row for each band of a key, from the top band down: a tap on the
+/// text opens the page of its name, and the eye hides or shows the band.
+fn band_rows(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    id: FurnitureId,
+    key: &ColorKeyItem,
+) {
+    let Some(data) = atlas::key_data(state, key) else {
+        let text = if key.frame.is_some() {
+            LAYER_HIDDEN
+        } else {
+            NO_FRAMES
+        };
+        hint(ui, text);
+        return;
+    };
+    let rows: Vec<_> = data.rows.into_iter().rev().collect();
+    let labels: Vec<String> = rows.iter().map(|r| r.label.clone()).collect();
+    for (row, name) in rows.iter().zip(entry_names(&labels)) {
+        let (tap, eye) = eye_row(ui, controls, &name, &row.label, row.hidden);
+        if eye {
+            let hidden = !row.hidden;
+            atlas::edit_band(state, id, row.key.clone(), true, |e| e.hidden = hidden);
+        }
+        if tap {
+            state.atlas.entry_name = row.label.clone();
+            go(ui, state, Some(ItemPage::Band(row.key.clone())));
+        }
+    }
+}
+
+/// The page of the text of a band of a key. An empty text, or the default
+/// text, clears the text of the band.
+fn band_page(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    id: FurnitureId,
+    key: &ColorKeyItem,
+    band: String,
+) {
+    let mut plain = key.clone();
+    if let Some(e) = plain.bands.get_mut(&band) {
+        e.name = None;
+    }
+    let rows = atlas::key_data(state, &plain).map(|d| d.rows);
+    let default = rows.and_then(|rows| rows.into_iter().find(|r| r.key == band));
+    let default = default.map(|r| r.label).unwrap_or_default();
+    let mut text = std::mem::take(&mut state.atlas.entry_name);
+    let changed = widgets::text_field(ui, controls, KEY_BAND_NAME, "Name", None, &mut text, true);
+    if changed.changed() {
+        let typed = text.trim();
+        let name = (!typed.is_empty() && typed != default).then(|| typed.to_string());
+        atlas::edit_band(state, id, band, false, |e| e.name = name);
     }
     state.atlas.entry_name = text;
 }

@@ -85,9 +85,10 @@ pub enum ItemKind {
 }
 
 impl ItemKind {
-    pub const ALL: [ItemKind; 4] = [
+    pub const ALL: [ItemKind; 5] = [
         ItemKind::Text,
         ItemKind::Legend,
+        ItemKind::ColorKey,
         ItemKind::ScaleBar,
         ItemKind::NorthArrow,
     ];
@@ -120,7 +121,7 @@ impl ItemKind {
             ItemKind::Legend => (50.0, 40.0),
             ItemKind::ScaleBar => (60.0, 12.0),
             ItemKind::NorthArrow => (12.0, 18.0),
-            ItemKind::ColorKey => (70.0, 22.0),
+            ItemKind::ColorKey => (90.0, 32.0),
         }
     }
 }
@@ -283,15 +284,25 @@ pub enum ItemPage {
     Pick(BarPick),
     /// The first fill of a scale bar (`false`) or the second fill (`true`).
     Fill(bool),
+    /// The raster layers that a color key can show.
+    KeyLayer,
+    /// The second unit of a color key.
+    KeyUnit,
+    /// The name of a band of a color key, by its key.
+    Band(String),
 }
 
 impl ItemPage {
     /// The page that the Back button goes to. `None`: the top of the panel.
     pub fn parent(&self) -> Option<ItemPage> {
         match self {
-            ItemPage::Frame | ItemPage::Text(_) | ItemPage::Bar(_) => None,
+            ItemPage::Frame
+            | ItemPage::Text(_)
+            | ItemPage::Bar(_)
+            | ItemPage::KeyLayer
+            | ItemPage::KeyUnit => None,
             ItemPage::Face(part) | ItemPage::Case(part) => part.page(),
-            ItemPage::Entry(..) => Some(ItemPage::Text(TextPart::Entries)),
+            ItemPage::Entry(..) | ItemPage::Band(_) => Some(ItemPage::Text(TextPart::Entries)),
             ItemPage::Pick(pick) => Some(ItemPage::Bar(pick.parent())),
             ItemPage::Fill(_) => Some(ItemPage::Bar(BarPage::Bar)),
         }
@@ -1200,16 +1211,30 @@ pub fn add_item(state: &mut AppState, kind: ItemKind) -> Option<FurnitureId> {
     Some(id)
 }
 
+/// The raster layers that the map of a frame shows, from the top layer
+/// down.
+pub fn key_layers(doc: &Document, frame: FrameId) -> Vec<LayerId> {
+    let Some(map) = doc.project.atlas.frame(frame).map(|f| f.map) else {
+        return Vec::new();
+    };
+    (doc.project.layers().iter().rev())
+        .filter(|l| l.raster().is_some() && doc.shown(map, l.id))
+        .map(|l| l.id)
+        .collect()
+}
+
 /// The layer of a new color key of a frame: the height layer that the map
 /// of the frame shows, or else the top raster layer that it shows.
 pub fn default_key_layer(doc: &Document, frame: FrameId) -> Option<LayerId> {
-    let map = doc.project.atlas.frame(frame)?.map;
-    let shown: Vec<_> = (doc.project.layers().iter().rev())
-        .filter(|l| doc.shown(map, l.id))
-        .filter_map(|l| Some((l.id, doc.project.raster(l.raster()?)?)))
-        .collect();
-    let height = shown.iter().find(|(_, r)| crate::ui::is_height(r));
-    height.or(shown.first()).map(|(id, _)| *id)
+    let shown = key_layers(doc, frame);
+    let is_height = |id: &LayerId| {
+        let raster = doc.project.layer(*id).and_then(|l| l.raster());
+        raster
+            .and_then(|r| doc.project.raster(r))
+            .is_some_and(crate::ui::is_height)
+    };
+    let height = shown.iter().copied().find(is_height);
+    height.or(shown.first().copied())
 }
 
 /// The frame of a page with the largest area.
@@ -1419,6 +1444,56 @@ pub fn edit_entry(
         }
         true
     });
+}
+
+/// Changes a color key. With `step`, the change is one undo step.
+pub fn edit_key(
+    state: &mut AppState,
+    id: FurnitureId,
+    step: bool,
+    edit: impl FnOnce(&mut vale_store::ColorKeyItem),
+) {
+    let edit = |rec: &mut FurnitureRecord| match &mut rec.item {
+        Furniture::ColorKey(key) => {
+            edit(key);
+            true
+        }
+        _ => false,
+    };
+    if step {
+        item_step(state, id, edit);
+    } else {
+        edit_item(state, id, edit);
+    }
+}
+
+/// Changes a band of a color key. A band with no change goes away.
+pub fn edit_band(
+    state: &mut AppState,
+    id: FurnitureId,
+    key: String,
+    step: bool,
+    edit: impl FnOnce(&mut vale_store::LegendEntry),
+) {
+    edit_key(state, id, step, |k| {
+        let mut entry = k.bands.get(&key).cloned().unwrap_or_default();
+        edit(&mut entry);
+        if entry == vale_store::LegendEntry::default() {
+            k.bands.remove(&key);
+        } else {
+            k.bands.insert(key, entry);
+        }
+    });
+}
+
+/// The bands of a color key, or `None` if its frame does not show its
+/// layer.
+pub fn key_data(
+    state: &AppState,
+    key: &vale_store::ColorKeyItem,
+) -> Option<crate::color_key::KeyData> {
+    let frame = state.doc.project.atlas.frame(key.frame?)?;
+    crate::color_key::data(&state.doc, frame, key)
 }
 
 /// The rows of a legend, or nothing for a legend with no frame.

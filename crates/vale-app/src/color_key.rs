@@ -5,7 +5,7 @@
 use kurbo::{Affine, Rect, Shape};
 use vale_labeler::Fonts;
 use vale_render::{Color, FillRule, Item};
-use vale_store::{ColorKeyItem, FrameRecord, KeyLayout, RasterDisplay};
+use vale_store::{ColorKeyItem, FrameRecord, KeyLayout, RasterDisplay, SecondUnit};
 use vale_terrain::{Band, Bands, SEA_LEVEL};
 
 use crate::document::Document;
@@ -117,6 +117,22 @@ pub fn unit_word(unit: &str) -> String {
         "mm" => "millimeters".to_string(),
         _ => unit.to_string(),
     }
+}
+
+/// The common second unit of a layer unit: feet for meters, inches for
+/// millimeters, and degrees Fahrenheit for degrees Celsius.
+pub fn preset_unit(unit: &str) -> Option<SecondUnit> {
+    let (name, factor, offset) = match unit {
+        "m" => ("feet", 1.0 / 0.3048, 0.0),
+        "mm" => ("inches", 1.0 / 25.4, 0.0),
+        "°C" => ("°F", 1.8, 32.0),
+        _ => return None,
+    };
+    Some(SecondUnit {
+        name: name.to_string(),
+        factor,
+        offset,
+    })
 }
 
 /// The bands of the layer of a key in the map of its frame. `None` if the
@@ -354,7 +370,7 @@ impl Draw<'_> {
 
     /// The text of a value of a row in the second unit, rounded to the
     /// decimals of the value in the first unit.
-    fn second_text(row: &StripRow, v: f64, unit: &vale_store::SecondUnit) -> String {
+    fn second_text(row: &StripRow, v: f64, unit: &SecondUnit) -> String {
         let places = decimals(v);
         let c = unit.convert(v);
         let c = if row.depth && v <= SEA_LEVEL { -c } else { c };
