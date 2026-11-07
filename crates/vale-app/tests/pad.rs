@@ -7808,6 +7808,76 @@ fn classify_value_editor_wraps_the_value_from_the_tray() {
     assert!(first.starts_with("round(pop_max) < "), "{first}");
 }
 
+/// Classifies Places by its value with Quantiles, and returns the filter
+/// of the first rule.
+fn classify_first_filter(h: &mut Pad) -> String {
+    use vale_app::ui::pad::classify::REPLACE_RULES;
+    let places = vector(h, "Places");
+    scroll_to_control(h, "Quantiles");
+    tap(h, "Quantiles");
+    scroll_to_control(h, REPLACE_RULES);
+    tap(h, REPLACE_RULES);
+    rules(h, places)[0]
+        .filter
+        .source()
+        .unwrap()
+        .text()
+        .to_owned()
+}
+
+#[test]
+fn add_case_writes_nested_if() {
+    use vale_app::ui::pad::cases::ADD_CASE;
+    use vale_app::ui::pad::classify::EXPRESSION;
+    let mut h = pad(BOARDS[0]);
+    open_classify(&mut h, "Places");
+    scroll_to_control(&mut h, EXPRESSION);
+    type_text(&mut h, EXPRESSION, "if(scalerank < 3, 18, 10)");
+    // The nested ifs show as a Cases block.
+    scroll_to_control(&mut h, ADD_CASE);
+    assert!(control(&h, "Case 1 Field 1").is_some());
+    assert!(control(&h, "Otherwise result").is_some());
+    tap(&mut h, ADD_CASE);
+    screenshot::save(&mut h, "pad-value-cases");
+    assert!(control(&h, "Case 2 Field 1").is_some());
+    let first = classify_first_filter(&mut h);
+    assert!(first.contains("if(scalerank < 3, 18, if("), "{first}");
+    assert!(first.contains(", 10, 10))"), "{first}");
+}
+
+#[test]
+fn a_missing_condition_shows_its_message() {
+    use vale_app::ui::pad::classify::EXPRESSION;
+    let mut h = pad(BOARDS[0]);
+    open_classify(&mut h, "Places");
+    scroll_to_control(&mut h, EXPRESSION);
+    let text = "if(, 12, 10)";
+    type_text(&mut h, EXPRESSION, text);
+    let message = vale_style::expr::Expr::parse(text).unwrap_err().short();
+    scroll_to(&mut h, &message);
+    assert!(h.query_by_label(&message).is_some(), "{message}");
+    assert!(control(&h, "Case 1 condition 1").is_some());
+    screenshot::save(&mut h, "pad-value-cases-error");
+}
+
+#[test]
+fn a_code_chip_opens_code() {
+    use vale_app::ui::pad::classify::EXPRESSION;
+    use vale_app::ui::pad::value::{CODE_CHIP, view_names};
+    let mut h = pad(BOARDS[0]);
+    open_classify(&mut h, "Places");
+    let [blocks, code] = view_names(EXPRESSION);
+    let text_field = format!("{EXPRESSION} text");
+    scroll_to_control(&mut h, &code);
+    tap(&mut h, &code);
+    type_text(&mut h, &text_field, "round(pop_max) + )");
+    tap(&mut h, &blocks);
+    let chip = format!("{CODE_CHIP} 1");
+    scroll_to_control(&mut h, &chip);
+    tap(&mut h, &chip);
+    assert!(control(&h, &text_field).is_some());
+}
+
 #[test]
 fn classify_by_text_gives_a_rule_for_each_value_and_other_values() {
     use vale_app::classify::{MAX_CATEGORIES, OTHER_VALUES};

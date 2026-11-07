@@ -30,6 +30,7 @@ use crate::world;
 
 pub mod atlas;
 pub mod browser;
+pub mod cases;
 pub mod chip_popover;
 pub mod classify;
 pub mod edge_labels;

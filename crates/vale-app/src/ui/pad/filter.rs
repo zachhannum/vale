@@ -575,12 +575,66 @@ enum Piece {
     /// The value with this index.
     Value(usize),
     And,
+    /// The place of the caller.
+    Trail,
+}
+
+/// The places of pieces of these widths in lines that wrap at `right`,
+/// from `x0`: the rectangle of each piece from the top left of its row, and
+/// the count of the lines.
+fn flow(widths: &[f32], x0: f32, right: f32) -> (Vec<Rect>, usize) {
+    let mut places = Vec::new();
+    let (mut x, mut line) = (x0, 0usize);
+    for &w in widths {
+        if x + w > right && x > x0 {
+            x = x0;
+            line += 1;
+        }
+        let y = SPACE + line as f32 * (CONTROL + SPACE);
+        places.push(Rect::from_min_size(pos2(x, y), vec2(w, CONTROL)));
+        x += w + SPACE;
+    }
+    (places, line + 1)
+}
+
+/// The height of a row of `lines` lines.
+fn row_height(lines: usize) -> f32 {
+    lines as f32 * (CONTROL + SPACE) + SPACE
+}
+
+/// Paints the lead word of a row, and gives the left of the first piece.
+fn lead_word(ui: &egui::Ui, row: Rect, lead: Option<&str>) -> f32 {
+    if let Some(l) = lead {
+        let at = pos2(row.left() + SPACE, row.top() + SPACE + CONTROL / 2.0);
+        (ui.painter()).text(at, Align2::LEFT_CENTER, l, theme::body(), theme::MUTE);
+    }
+    SPACE + lead.map_or(0.0, |l| text_width(ui, l, theme::body()) + SPACE)
+}
+
+/// The button that removes the condition at `path`, at the top right of
+/// the row.
+fn remove_button(
+    ui: &egui::Ui,
+    controls: &mut Controls,
+    rows: &mut Rows,
+    path: &[usize],
+    row: Rect,
+) {
+    let center = pos2(
+        row.right() - SPACE / 2.0 - TOUCH / 2.0,
+        row.top() + SPACE + CONTROL / 2.0,
+    );
+    let button = Rect::from_center_size(center, vec2(TOUCH, TOUCH));
+    let name = rows.name(REMOVE_CONDITION, path);
+    if widgets::icon_button_at(ui, controls, button, &name, Icon::Close, false, true).clicked() {
+        rows.acts.push(Act::Remove(path.to_vec()));
+    }
 }
 
 /// The row of a rule at `path`: the field chip, the comparison menu, the
 /// values, and the button that removes the rule. `lead` is a word before
-/// the field, such as "When". `trail` is the width of a place at the right
-/// of the row for the caller, before the remove button. Returns the place.
+/// the field, such as "When". `trail` is the width of a place after the
+/// values for the caller, or 0 for none. Returns the place.
 pub fn rule_row(
     ui: &mut egui::Ui,
     controls: &mut Controls,
@@ -612,36 +666,13 @@ pub fn rule_row(
         };
         pieces.push((w, Piece::Value(k)));
     }
-    let width = ui.available_width();
-    let lead_w = lead.map_or(0.0, |l| text_width(ui, l, theme::body()) + SPACE);
-    let right = width - SPACE - TOUCH - trail;
-    // The places of the pieces in lines that wrap.
-    let mut places = Vec::new();
-    let (mut x, mut line) = (SPACE + lead_w, 0usize);
-    for (w, piece) in pieces {
-        if x + w > right && x > SPACE + lead_w {
-            x = SPACE + lead_w;
-            line += 1;
-        }
-        places.push((
-            Rect::from_min_size(pos2(x, 0.0), vec2(w, CONTROL)),
-            line,
-            piece,
-        ));
-        x += w + SPACE;
+    if trail > 0.0 {
+        pieces.push((trail, Piece::Trail));
     }
-    let lines = line + 1;
-    let height = lines as f32 * (CONTROL + SPACE) + SPACE;
-    let (row, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
-    ui.painter()
-        .rect_filled(row, ROW_RADIUS, Color32::from_white_alpha(10));
-    if let Some(l) = lead {
-        let at = pos2(row.left() + SPACE, row.top() + SPACE + CONTROL / 2.0);
-        (ui.painter()).text(at, Align2::LEFT_CENTER, l, theme::body(), theme::MUTE);
-    }
-    for (rect, line, piece) in places {
-        let y = row.top() + SPACE + line as f32 * (CONTROL + SPACE);
-        let rect = rect.translate(vec2(row.left(), y));
+    let widths: Vec<f32> = pieces.iter().map(|(w, _)| *w).collect();
+    let (row, places) = simple_row(ui, lead, &widths);
+    let mut out = Rect::NOTHING;
+    for (rect, (_, piece)) in places.into_iter().zip(pieces) {
         match piece {
             Piece::Field => {
                 if chip_button(ui, controls, rect, &rows.name(FIELD, path), &look) {
@@ -667,32 +698,17 @@ pub fn rule_row(
             Piece::Value(k) => {
                 value_control(ui, controls, rows, path, (kind, op, values, k), rect);
             }
+            Piece::Trail => out = rect,
         }
     }
-    let button = Rect::from_center_size(
-        pos2(
-            row.right() - SPACE / 2.0 - TOUCH / 2.0,
-            row.top() + SPACE + CONTROL / 2.0,
-        ),
-        vec2(TOUCH, TOUCH),
-    );
-    let name = rows.name(REMOVE_CONDITION, path);
-    if widgets::icon_button_at(ui, controls, button, &name, Icon::Close, false, true).clicked() {
-        rows.acts.push(Act::Remove(path.to_vec()));
-    }
+    remove_button(ui, controls, rows, path, row);
     // The keypad of a number value is under the row.
     for k in 0..count {
         if is_number(kind) {
             widgets::keypad_below(ui, controls, &value_name(rows, path, k));
         }
     }
-    Rect::from_min_max(
-        pos2(row.right() - SPACE - TOUCH - trail, row.top()),
-        pos2(
-            row.right() - SPACE - TOUCH,
-            row.top() + SPACE * 2.0 + CONTROL,
-        ),
-    )
+    out
 }
 
 /// The name of value `k` of the rule at `path`.
@@ -761,7 +777,8 @@ fn value_control(
     }
 }
 
-/// The row of an empty condition: a dashed place that takes a rule.
+/// The row of an empty condition: a dashed place that takes a rule, and
+/// the remove button. `lead` and `trail` are as in `rule_row`.
 pub fn hole_row(
     ui: &mut egui::Ui,
     controls: &mut Controls,
@@ -770,43 +787,58 @@ pub fn hole_row(
     lead: Option<&str>,
     trail: f32,
 ) -> Rect {
-    let width = ui.available_width();
-    let (row, _) = ui.allocate_exact_size(vec2(width, CONTROL + 2.0 * SPACE), Sense::hover());
-    ui.painter()
-        .rect_filled(row, ROW_RADIUS, Color32::from_white_alpha(10));
-    let mut x = row.left() + SPACE;
-    if let Some(l) = lead {
-        let at = pos2(x, row.center().y);
-        let r = (ui.painter()).text(at, Align2::LEFT_CENTER, l, theme::body(), theme::MUTE);
-        x = r.right() + SPACE;
-    }
-    let label = HOLE;
-    let w = text_width(ui, label, theme::body()) + 28.0;
-    let place = Rect::from_min_size(pos2(x, row.center().y - 18.0), vec2(w, 36.0));
+    let w = text_width(ui, HOLE, theme::body()) + 28.0;
+    let (row, places) = simple_row(ui, lead, &[w, trail]);
+    let place = places[0].shrink2(vec2(0.0, 4.0));
     let name = rows.name(HOLE, path);
-    let resp = widgets::hit(ui, controls, place, &name, Sense::click(), true, None);
+    let resp = widgets::hit(ui, controls, places[0], &name, Sense::click(), true, None);
     let stroke = Stroke::new(1.5, Color32::from_white_alpha(90));
     crate::ui::token_field::paint::dashed(ui.painter(), place, 8.0, stroke);
-    (ui.painter()).text(
+    let painter = ui.painter();
+    painter.text(
         place.center(),
         Align2::CENTER_CENTER,
-        label,
+        HOLE,
         theme::body(),
         theme::MUTE,
     );
     if resp.clicked() {
         rows.acts.push(Act::Fill(path.to_vec()));
     }
-    Rect::from_min_max(
-        pos2(row.right() - SPACE - TOUCH - trail, row.top()),
-        pos2(row.right() - SPACE - TOUCH, row.bottom()),
-    )
+    remove_button(ui, controls, rows, path, row);
+    places[1]
+}
+
+/// A row with a lead word and pieces of these widths in lines that wrap.
+/// A width of 0 has no place. Returns the row and the place of each piece.
+fn simple_row(ui: &mut egui::Ui, lead: Option<&str>, widths: &[f32]) -> (Rect, Vec<Rect>) {
+    let width = ui.available_width();
+    let x0 = SPACE + lead.map_or(0.0, |l| text_width(ui, l, theme::body()) + SPACE);
+    let kept: Vec<f32> = widths.iter().copied().filter(|w| *w > 0.0).collect();
+    let (places, lines) = flow(&kept, x0, width - SPACE - TOUCH);
+    let (row, _) = ui.allocate_exact_size(vec2(width, row_height(lines)), Sense::hover());
+    ui.painter()
+        .rect_filled(row, ROW_RADIUS, Color32::from_white_alpha(10));
+    lead_word(ui, row, lead);
+    let mut placed = places.into_iter().map(|r| r.translate(row.min.to_vec2()));
+    let out = (widths.iter())
+        .map(|w| {
+            if *w > 0.0 {
+                placed.next().unwrap_or(Rect::NOTHING)
+            } else {
+                Rect::NOTHING
+            }
+        })
+        .collect();
+    (row, out)
 }
 
 /// The text and the start of the name of an empty condition.
 pub const HOLE: &str = "condition";
 
-/// The row of text that is not a condition, in red. A tap opens Code.
+/// The row of text that is not a condition, in red, and the remove
+/// button. A tap on the text opens Code. `lead` and `trail` are as in
+/// `rule_row`.
 pub fn code_row(
     ui: &mut egui::Ui,
     controls: &mut Controls,
@@ -816,36 +848,27 @@ pub fn code_row(
     lead: Option<&str>,
     trail: f32,
 ) -> Rect {
-    let width = ui.available_width();
-    let (row, _) = ui.allocate_exact_size(vec2(width, CONTROL + 2.0 * SPACE), Sense::hover());
+    let most = ui.available_width() - 3.0 * SPACE - TOUCH;
+    let w = (text_width(ui, text, theme::mono()) + 24.0).min(most.max(TOUCH));
+    let (row, places) = simple_row(ui, lead, &[w, trail]);
+    let place = places[0];
     let name = rows.name(CODE_ROW, path);
-    let resp = widgets::hit(ui, controls, row, &name, Sense::click(), true, None);
+    let resp = widgets::hit(ui, controls, place, &name, Sense::click(), true, None);
     ui.painter().rect(
-        row,
-        ROW_RADIUS,
-        Color32::from_rgba_unmultiplied(239, 107, 107, 24),
+        place.shrink2(vec2(0.0, 4.0)),
+        8.0,
+        Color32::from_rgba_unmultiplied(239, 107, 107, 30),
         Stroke::new(1.0, BAD.gamma_multiply(0.6)),
         egui::StrokeKind::Inside,
     );
-    let mut x = row.left() + SPACE;
-    if let Some(l) = lead {
-        let at = pos2(x, row.center().y);
-        let r = (ui.painter()).text(at, Align2::LEFT_CENTER, l, theme::body(), theme::MUTE);
-        x = r.right() + SPACE;
-    }
-    let clip = Rect::from_min_max(
-        pos2(x, row.top()),
-        pos2(row.right() - SPACE - trail, row.bottom()),
-    );
-    let at = pos2(x, row.center().y);
+    let at = pos2(place.left() + 12.0, place.center().y);
+    let clip = place.shrink2(vec2(12.0, 0.0));
     (ui.painter().with_clip_rect(clip)).text(at, Align2::LEFT_CENTER, text, theme::mono(), BAD);
     if resp.clicked() {
         rows.acts.push(Act::OpenCode);
     }
-    Rect::from_min_max(
-        pos2(row.right() - SPACE - trail, row.top()),
-        pos2(row.right() - SPACE, row.bottom()),
-    )
+    remove_button(ui, controls, rows, path, row);
+    places[1]
 }
 
 /// A group: its menu of All of and Any of, its conditions, the rows that

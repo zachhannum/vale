@@ -6,18 +6,19 @@
 
 use eframe::egui::{self, Align2, Color32, Rect, Sense, Stroke, pos2, vec2};
 use vale_store::Value;
-use vale_style::expr::editor::{Formula, Tok};
-use vale_style::expr::{Category, FUNCTIONS};
+use vale_style::expr::editor::{Cond, Formula, Seq, Tok};
+use vale_style::expr::{Category, Expr, FUNCTIONS};
 
+use super::cases::{self, CasesEdit, CasesState};
 use super::expression;
-use super::filter::search_field;
+use super::filter::{self, search_field};
 use super::geometry::TOUCH;
 use super::label_text::{BLOCKS, CODE, FIRST_FEATURE, SELECTED_FEATURE, bar_top, keep_above};
 use super::theme;
 use super::widgets::{self, Controls, PANEL_ROW};
 use crate::ui::expr_help::{ExprHelp, ExprKind, NO_VALUE, ValueRange, range_text};
 use crate::ui::token_field::formula::{self, Completion, OPERATORS, op_label};
-use crate::ui::token_field::paint::{FUNCTION_TEXT, paint_glyph};
+use crate::ui::token_field::paint::{BAD, FUNCTION_TEXT, paint_glyph};
 use crate::ui::token_field::{self, Field, Glyph, Metrics, Node, Options};
 
 /// The tabs of the tray.
@@ -26,6 +27,13 @@ pub const FUNCTIONS_TAB: &str = "Functions";
 pub const OPERATORS_TAB: &str = "Operators";
 /// The search fields of the tabs of the tray.
 pub const SEARCH: [&str; 3] = ["Search fields", "Search functions", "Search operators"];
+
+/// The start of the control name of a chip of text that does not parse.
+/// The number of the chip follows, from 1.
+pub const CODE_CHIP: &str = "Code chip";
+/// The tray row of a Cases block, and its hint.
+pub const CASES_ROW: &str = "Cases";
+pub const CASES_HINT: &str = "Choose a value by conditions";
 
 /// The control name of the tray row that inserts `label`.
 pub fn insert_name(label: &str) -> String {
@@ -59,6 +67,7 @@ struct EditorState {
     tray: bool,
     /// The tray in the last frame.
     tray_rect: Option<Rect>,
+    cases: CasesState,
 }
 
 /// The editor of value `current`, with the control name `name`. `range`
@@ -123,6 +132,34 @@ pub fn editor(
             edit.text = Some(st.typed.clone());
         }
         expression::line(ui, help, &st.typed, ExprKind::Value);
+    } else if let Some((cases, otherwise)) = cases_of(current) {
+        let error = error_at(current);
+        let in_block = (error.as_ref())
+            .and_then(|(p, _)| p.split_first())
+            .filter(|(first, _)| **first == 0)
+            .map(|(_, rest)| rest.to_vec());
+        let parts = (cases.as_slice(), &otherwise);
+        match cases::block(
+            ui,
+            controls,
+            &mut st.cases,
+            parts,
+            help,
+            in_block.as_deref(),
+        ) {
+            Some(CasesEdit::Changed(tok, step)) => {
+                edit.text = Some(tok.to_text());
+                edit.step = step;
+                st.source = None;
+            }
+            Some(CasesEdit::OpenCode) => {
+                st.code = true;
+                st.typed = current.to_owned();
+            }
+            None => {}
+        }
+        error_line(ui, error.as_ref().map(|(_, m)| m.as_str()));
+        preview(ui, help, edit.text.as_deref().unwrap_or(current), range);
     } else {
         let floor = bar_top(ui.ctx());
         let opts = Options {
@@ -164,8 +201,33 @@ pub fn editor(
             let text = formula::text_of(&st.field.nodes);
             st.field = formula::field_of(&Formula::from_text(&text), help);
         }
+        // A tap on a code chip opens Code.
+        let mut code_chips = 0;
+        for p in &out.layout.placed {
+            if let Some(Node::Chip(c)) = st.field.node(&p.path)
+                && matches!(c.data, Tok::Code(_))
+            {
+                code_chips += 1;
+                widgets::push(ui, controls, p.rect, &format!("{CODE_CHIP} {code_chips}"));
+            }
+        }
+        if let Some((path, _)) = &out.tapped
+            && let Some(Node::Chip(c)) = st.field.node(path)
+            && matches!(c.data, Tok::Code(_))
+        {
+            st.code = true;
+            st.typed = current.to_owned();
+        }
         let shown = edit_text(&mut st, changed);
-        preview(ui, help, shown.as_deref().unwrap_or(current), range);
+        let text = shown.as_deref().unwrap_or(current);
+        let error = error_at(text);
+        if let Some((path, _)) = &error
+            && !has_chars(&st.field.nodes)
+        {
+            mark_node(ui, &st.field, &out.layout, path);
+        }
+        error_line(ui, error.as_ref().map(|(_, m)| m.as_str()));
+        preview(ui, help, text, range);
         // The tray shows from a tap on the field until a press outside the
         // field and the tray.
         let press = ui.input(|i| i.pointer.press_origin().filter(|_| i.pointer.any_pressed()));
@@ -190,6 +252,52 @@ pub fn editor(
     }
     ui.data_mut(|d| d.insert_temp(id, st));
     edit
+}
+
+/// The cases of a value that is one Cases block.
+fn cases_of(text: &str) -> Option<(Vec<(Cond, Seq)>, Seq)> {
+    match Formula::from_text(text).seq.0.as_slice() {
+        [Tok::Cases { cases, otherwise }] => Some((cases.clone(), otherwise.clone())),
+        _ => None,
+    }
+}
+
+/// The path of the model node at the parse error of `text`, and the
+/// message of the error. `None` if the text parses.
+pub fn error_at(text: &str) -> Option<(Vec<usize>, String)> {
+    if text.trim().is_empty() {
+        return None;
+    }
+    let e = Expr::parse(text).err()?;
+    let path = Formula::from_text(text)
+        .path_at(e.start)
+        .unwrap_or_default();
+    Some((path, e.short()))
+}
+
+/// A red frame around the node of the field at model path `path`: the
+/// deepest node on the path. The path of a token, a slot, and a token in a
+/// slot is the same in the model and in the field.
+fn mark_node(ui: &egui::Ui, field: &Field<Tok>, layout: &token_field::Layout, path: &[usize]) {
+    let deepest = (1..=path.len())
+        .rev()
+        .map(|n| &path[..n])
+        .find(|p| field.node(p).is_some());
+    let Some(rect) = deepest.and_then(|p| layout.rect_of(p)) else {
+        return;
+    };
+    let stroke = Stroke::new(2.0, BAD);
+    (ui.painter()).rect_stroke(rect.expand(2.0), 9.0, stroke, egui::StrokeKind::Outside);
+}
+
+/// The message of a parse error under the field.
+fn error_line(ui: &mut egui::Ui, message: Option<&str>) {
+    let Some(message) = message else {
+        return;
+    };
+    ui.add_space(4.0);
+    let text = egui::RichText::new(message).font(theme::body()).color(BAD);
+    ui.add(egui::Label::new(text).wrap().selectable(false));
 }
 
 /// The text of the field, which the field now shows, if `changed`.
@@ -366,6 +474,24 @@ fn tray(
                 let at = pos2(head.left() + 4.0, head.bottom() - 6.0);
                 let title = category.name().to_uppercase();
                 (ui.painter()).text(at, Align2::LEFT_BOTTOM, title, theme::small(), theme::MUTE);
+                if category == Category::Logic
+                    && CASES_ROW.to_lowercase().contains(&needle)
+                    && tray_row(
+                        ui,
+                        controls,
+                        &insert_name(CASES_ROW),
+                        None,
+                        (CASES_ROW, FUNCTION_TEXT),
+                        CASES_HINT,
+                    )
+                {
+                    let tok = Tok::Cases {
+                        cases: vec![(filter::new_rule(help), Seq(vec![Tok::Num(0.0)]))],
+                        otherwise: Seq(vec![Tok::Num(0.0)]),
+                    };
+                    st.field.replace(vec![formula::chip(tok, help)]);
+                    out = Some(true);
+                }
                 for f in functions {
                     let label = (f.signature, FUNCTION_TEXT);
                     if tray_row(ui, controls, &insert_name(f.name), None, label, f.hint) {
@@ -469,4 +595,41 @@ fn op_button(ui: &egui::Ui, controls: &mut Controls, rect: Rect, name: &str, lab
         theme::TEXT,
     );
     resp.clicked()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::token_field::ChipKind;
+
+    #[test]
+    fn missing_condition_marks_slot() {
+        // The condition of the first case is empty.
+        let (path, message) = error_at("if(, 12, 10)").unwrap();
+        assert_eq!(path, [0, 0]);
+        assert!(!message.is_empty());
+        // The second slot of a block is empty.
+        let (path, _) = error_at("clamp(1, , 3)").unwrap();
+        assert_eq!(path, [0, 1]);
+        assert_eq!(error_at("clamp(1, 2, 3)"), None);
+    }
+
+    #[test]
+    fn broken_text_shows_code_chip() {
+        let help = ExprHelp::empty();
+        let field = formula::field_of(&Formula::from_text("round(x) + )"), &help);
+        let code = field
+            .nodes
+            .iter()
+            .any(|n| matches!(n, Node::Chip(c) if c.look.kind == ChipKind::Code));
+        assert!(code, "{:?}", field.nodes);
+    }
+
+    #[test]
+    fn nested_ifs_read_as_cases() {
+        let (cases, otherwise) = cases_of("if(a > 1, 18, if(b, 14, 10))").unwrap();
+        assert_eq!(cases.len(), 2);
+        assert_eq!(otherwise.to_text(), "10");
+        assert!(cases_of("if(a > 1, 18, 10) + 1").is_none());
+    }
 }
