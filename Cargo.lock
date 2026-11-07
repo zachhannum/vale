@@ -4082,6 +4082,7 @@ version = "0.1.0"
 dependencies = [
  "serde_json",
  "vale-render",
+ "vale-sphere",
  "vale-store",
 ]
 

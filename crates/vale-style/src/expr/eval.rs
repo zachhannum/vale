@@ -4,9 +4,9 @@ use std::cmp::Ordering;
 
 use vale_store::Value;
 
-use super::Context;
 use super::functions::{finite, text_of};
 use super::parser::{BinOp, Node, Var};
+use super::{Context, measure};
 
 pub(super) fn eval(node: &Node, ctx: &Context) -> Value {
     match node {
@@ -15,6 +15,10 @@ pub(super) fn eval(node: &Node, ctx: &Context) -> Value {
         Node::Field(name) => ctx.attributes.get(name).cloned().unwrap_or(Value::Null),
         Node::Var(Var::Scale) => finite(ctx.scale),
         Node::Var(Var::Geometry) => Value::Text(ctx.geometry.name().to_string()),
+        Node::Var(Var::Lat) => measure::center(ctx).map_or(Value::Null, |c| finite(c[1])),
+        Node::Var(Var::Lon) => measure::center(ctx).map_or(Value::Null, |c| finite(c[0])),
+        Node::Var(Var::Parts) => measure::parts(ctx),
+        Node::Var(Var::Vertices) => measure::vertices(ctx),
         Node::Not(inner) => match eval(inner, ctx) {
             Value::Bool(b) => Value::Bool(!b),
             _ => Value::Null,
@@ -77,7 +81,7 @@ pub(super) fn eval(node: &Node, ctx: &Context) -> Value {
         }
         Node::Call(f, args) => {
             let args: Vec<Value> = args.iter().map(|a| eval(a, ctx)).collect();
-            (f.call)(&args)
+            (f.call)(&args, ctx)
         }
     }
 }

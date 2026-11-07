@@ -20,6 +20,8 @@ fn paints(style: &Style, attrs: &BTreeMap<String, Value>, scale: f64) -> Vec<Pai
         attributes: attrs,
         scale,
         geometry: GeometryKind::Line,
+        shape: None,
+        radius_km: 0.0,
     };
     let mut out = Vec::new();
     style.paints(&ctx, &mut out);
@@ -648,6 +650,8 @@ fn point_paints(symbolizer: Symbolizer, attrs: &BTreeMap<String, Value>) -> Vec<
         attributes: attrs,
         scale: 1.0,
         geometry: GeometryKind::Point,
+        shape: None,
+        radius_km: 0.0,
     };
     let mut out = Vec::new();
     symbol_rule(symbolizer).style.paints(&ctx, &mut out);

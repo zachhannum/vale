@@ -2,6 +2,8 @@
 
 use vale_store::{Value, title_case};
 
+use super::{Context, measure};
+
 /// A function that an expression can call.
 pub struct Function {
     pub name: &'static str,
@@ -14,7 +16,7 @@ pub struct Function {
     pub category: Category,
     /// One short line for the list of functions in the UI.
     pub hint: &'static str,
-    pub(super) call: fn(&[Value]) -> Value,
+    pub(super) call: fn(&[Value], &Context) -> Value,
 }
 
 impl Function {
@@ -37,6 +39,7 @@ pub enum Category {
     Text,
     Logic,
     Convert,
+    Geometry,
 }
 
 impl Category {
@@ -46,6 +49,7 @@ impl Category {
             Category::Text => "Text",
             Category::Logic => "Logic",
             Category::Convert => "Convert",
+            Category::Geometry => "Geometry",
         }
     }
 }
@@ -73,7 +77,7 @@ pub static FUNCTIONS: &[Function] = &[
         summary: "`a` if the condition is true, else `b`",
         category: Category::Logic,
         hint: "Choose by a condition",
-        call: |a| {
+        call: |a, _| {
             if truthy(&a[0]) {
                 a[1].clone()
             } else {
@@ -89,7 +93,7 @@ pub static FUNCTIONS: &[Function] = &[
         summary: "The first value that is not null",
         category: Category::Logic,
         hint: "First value that is not empty",
-        call: |a| {
+        call: |a, _| {
             a.iter()
                 .find(|v| **v != Value::Null)
                 .cloned()
@@ -104,7 +108,7 @@ pub static FUNCTIONS: &[Function] = &[
         summary: "The text in lower case",
         category: Category::Text,
         hint: "Text in lower case",
-        call: |a| map_text(&a[0], |s| s.to_lowercase()),
+        call: |a, _| map_text(&a[0], |s| s.to_lowercase()),
     },
     Function {
         name: "upper",
@@ -114,7 +118,7 @@ pub static FUNCTIONS: &[Function] = &[
         summary: "The text in upper case",
         category: Category::Text,
         hint: "Text in upper case",
-        call: |a| map_text(&a[0], |s| s.to_uppercase()),
+        call: |a, _| map_text(&a[0], |s| s.to_uppercase()),
     },
     Function {
         name: "title",
@@ -124,7 +128,7 @@ pub static FUNCTIONS: &[Function] = &[
         summary: "The text with an upper-case first letter in each word",
         category: Category::Text,
         hint: "Capital first letter in each word",
-        call: |a| map_text(&a[0], title_case),
+        call: |a, _| map_text(&a[0], title_case),
     },
     Function {
         name: "trim",
@@ -134,7 +138,7 @@ pub static FUNCTIONS: &[Function] = &[
         summary: "The text without spaces at the start and the end",
         category: Category::Text,
         hint: "Remove spaces at the ends",
-        call: |a| map_text(&a[0], |s| s.trim().to_string()),
+        call: |a, _| map_text(&a[0], |s| s.trim().to_string()),
     },
     Function {
         name: "length",
@@ -144,7 +148,7 @@ pub static FUNCTIONS: &[Function] = &[
         summary: "The number of characters in the text",
         category: Category::Text,
         hint: "Number of characters",
-        call: |a| match &a[0] {
+        call: |a, _| match &a[0] {
             Value::Text(s) => Value::Number(s.chars().count() as f64),
             _ => Value::Null,
         },
@@ -157,7 +161,7 @@ pub static FUNCTIONS: &[Function] = &[
         summary: "Part of the text. The first character is 1, and a negative start counts from the end. Without a length, the part goes to the end",
         category: Category::Text,
         hint: "Part of a text",
-        call: substr,
+        call: |a, _| substr(a),
     },
     Function {
         name: "left",
@@ -167,7 +171,7 @@ pub static FUNCTIONS: &[Function] = &[
         summary: "The first `n` characters",
         category: Category::Text,
         hint: "First characters",
-        call: |a| match (&a[0], count(&a[1])) {
+        call: |a, _| match (&a[0], count(&a[1])) {
             (Value::Text(s), Some(n)) => Value::Text(s.chars().take(n).collect()),
             _ => Value::Null,
         },
@@ -180,7 +184,7 @@ pub static FUNCTIONS: &[Function] = &[
         summary: "The last `n` characters",
         category: Category::Text,
         hint: "Last characters",
-        call: |a| match (&a[0], count(&a[1])) {
+        call: |a, _| match (&a[0], count(&a[1])) {
             (Value::Text(s), Some(n)) => {
                 let len = s.chars().count();
                 Value::Text(s.chars().skip(len.saturating_sub(n)).collect())
@@ -196,7 +200,7 @@ pub static FUNCTIONS: &[Function] = &[
         summary: "The text with each `find` replaced by `with`",
         category: Category::Text,
         hint: "Replace part of a text",
-        call: |a| match (&a[0], &a[1], &a[2]) {
+        call: |a, _| match (&a[0], &a[1], &a[2]) {
             (Value::Text(s), Value::Text(f), Value::Text(w)) if !f.is_empty() => {
                 Value::Text(s.replace(f.as_str(), w))
             }
@@ -212,7 +216,7 @@ pub static FUNCTIONS: &[Function] = &[
         summary: "The values joined as text. Null values are skipped",
         category: Category::Text,
         hint: "Join values as text",
-        call: |a| Value::Text(a.iter().filter_map(text_of).collect()),
+        call: |a, _| Value::Text(a.iter().filter_map(text_of).collect()),
     },
     Function {
         name: "to_text",
@@ -222,7 +226,7 @@ pub static FUNCTIONS: &[Function] = &[
         summary: "The value as text. A whole number has no decimal point",
         category: Category::Convert,
         hint: "Value as text",
-        call: |a| text_of(&a[0]).map_or(Value::Null, Value::Text),
+        call: |a, _| text_of(&a[0]).map_or(Value::Null, Value::Text),
     },
     Function {
         name: "to_number",
@@ -232,7 +236,7 @@ pub static FUNCTIONS: &[Function] = &[
         summary: "The value as a number, or null if the text is not a number. `true` is 1 and `false` is 0",
         category: Category::Convert,
         hint: "Value as a number",
-        call: |a| match &a[0] {
+        call: |a, _| match &a[0] {
             Value::Number(n) => Value::Number(*n),
             Value::Bool(b) => Value::Number(if *b { 1.0 } else { 0.0 }),
             Value::Text(s) => s
@@ -252,7 +256,7 @@ pub static FUNCTIONS: &[Function] = &[
         summary: "`x` as text with `places` decimal places, 0 if not given, and a comma between each three digits of the whole part",
         category: Category::Convert,
         hint: "Number with thousands separators",
-        call: |a| {
+        call: |a, _| {
             let places = match a.get(1) {
                 None => 0,
                 Some(Value::Number(p)) if p.is_finite() => p.round().clamp(0.0, 15.0) as usize,
@@ -272,7 +276,7 @@ pub static FUNCTIONS: &[Function] = &[
         summary: "`x` rounded to `digits` decimal places, 0 if not given",
         category: Category::Math,
         hint: "Round to decimal places",
-        call: |a| {
+        call: |a, _| {
             let digits = match a.get(1) {
                 None => 0.0,
                 Some(Value::Number(d)) => d.round().clamp(-15.0, 15.0),
@@ -290,7 +294,7 @@ pub static FUNCTIONS: &[Function] = &[
         summary: "The largest whole number not above `x`",
         category: Category::Math,
         hint: "Round down",
-        call: |a| number(&a[0], f64::floor),
+        call: |a, _| number(&a[0], f64::floor),
     },
     Function {
         name: "ceil",
@@ -300,7 +304,7 @@ pub static FUNCTIONS: &[Function] = &[
         summary: "The smallest whole number not below `x`",
         category: Category::Math,
         hint: "Round up",
-        call: |a| number(&a[0], f64::ceil),
+        call: |a, _| number(&a[0], f64::ceil),
     },
     Function {
         name: "abs",
@@ -310,7 +314,7 @@ pub static FUNCTIONS: &[Function] = &[
         summary: "The absolute value of `x`",
         category: Category::Math,
         hint: "Value without a sign",
-        call: |a| number(&a[0], f64::abs),
+        call: |a, _| number(&a[0], f64::abs),
     },
     Function {
         name: "min",
@@ -320,7 +324,7 @@ pub static FUNCTIONS: &[Function] = &[
         summary: "The smallest number. Values that are not numbers are skipped",
         category: Category::Math,
         hint: "Smallest number",
-        call: |a| fold_numbers(a, f64::min),
+        call: |a, _| fold_numbers(a, f64::min),
     },
     Function {
         name: "max",
@@ -330,7 +334,7 @@ pub static FUNCTIONS: &[Function] = &[
         summary: "The largest number. Values that are not numbers are skipped",
         category: Category::Math,
         hint: "Largest number",
-        call: |a| fold_numbers(a, f64::max),
+        call: |a, _| fold_numbers(a, f64::max),
     },
     Function {
         name: "clamp",
@@ -340,12 +344,42 @@ pub static FUNCTIONS: &[Function] = &[
         summary: "`x`, but not below `low` and not above `high`",
         category: Category::Math,
         hint: "Keep a number in a range",
-        call: |a| match (&a[0], &a[1], &a[2]) {
+        call: |a, _| match (&a[0], &a[1], &a[2]) {
             (Value::Number(lo), Value::Number(x), Value::Number(hi)) => {
                 Value::Number(x.max(*lo).min(*hi))
             }
             _ => Value::Null,
         },
+    },
+    Function {
+        name: "area",
+        signature: "area(unit)",
+        min_args: 0,
+        max_args: Some(1),
+        summary: "The area of a polygon. The unit is `'km2'`, `'mi2'`, `'ha'`, or `'acre'`, and `'km2'` if not given.",
+        category: Category::Geometry,
+        hint: "Area of a polygon",
+        call: measure::area,
+    },
+    Function {
+        name: "perimeter",
+        signature: "perimeter(unit)",
+        min_args: 0,
+        max_args: Some(1),
+        summary: "The length of the edge of a polygon. The unit is `'km'`, `'mi'`, or `'m'`, and `'km'` if not given.",
+        category: Category::Geometry,
+        hint: "Length of the edge of a polygon",
+        call: measure::perimeter,
+    },
+    Function {
+        name: "line_length",
+        signature: "line_length(unit)",
+        min_args: 0,
+        max_args: Some(1),
+        summary: "The length of a line, with the units of `perimeter`",
+        category: Category::Geometry,
+        hint: "Length of a line",
+        call: measure::line_length,
     },
 ];
 

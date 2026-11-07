@@ -4,7 +4,7 @@ use vale_store::Value;
 
 use super::field_ref;
 use super::functions::number_text;
-use super::parser::{BinOp, Node, Var};
+use super::parser::{BinOp, Node};
 
 /// The binding strength of each level of the grammar, from loose to tight.
 pub(super) const OR: u8 = 1;
@@ -90,8 +90,10 @@ fn write(node: &Node, out: &mut String) {
         Node::Lit(v) => out.push_str(&literal(v)),
         Node::Hole => {}
         Node::Field(name) => out.push_str(&field_ref(name)),
-        Node::Var(Var::Scale) => out.push_str("@scale"),
-        Node::Var(Var::Geometry) => out.push_str("@geometry"),
+        Node::Var(var) => {
+            out.push('@');
+            out.push_str(var.name());
+        }
         Node::Not(a) => {
             out.push_str("not ");
             write_at(a, NOT, out);

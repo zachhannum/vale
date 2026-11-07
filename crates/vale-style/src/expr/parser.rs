@@ -33,6 +33,33 @@ pub(super) enum BinOp {
 pub(super) enum Var {
     Scale,
     Geometry,
+    Lat,
+    Lon,
+    Parts,
+    Vertices,
+}
+
+impl Var {
+    pub(super) const ALL: [Var; 6] = [
+        Var::Scale,
+        Var::Geometry,
+        Var::Lat,
+        Var::Lon,
+        Var::Parts,
+        Var::Vertices,
+    ];
+
+    /// The name without the `@`.
+    pub(super) fn name(self) -> &'static str {
+        match self {
+            Var::Scale => "scale",
+            Var::Geometry => "geometry",
+            Var::Lat => "lat",
+            Var::Lon => "lon",
+            Var::Parts => "parts",
+            Var::Vertices => "vertices",
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -516,15 +543,20 @@ impl<'a> Parser<'a> {
             }
             Tok::Var(name) => {
                 self.next();
-                match name.to_ascii_lowercase().as_str() {
-                    "scale" => Node::Var(Var::Scale),
-                    "geometry" => Node::Var(Var::Geometry),
-                    _ => {
+                match Var::ALL
+                    .into_iter()
+                    .find(|v| v.name().eq_ignore_ascii_case(&name))
+                {
+                    Some(var) => Node::Var(var),
+                    None => {
+                        let names: Vec<String> =
+                            Var::ALL.iter().map(|v| format!("@{}", v.name())).collect();
                         return Err(self.error(
                             t.start,
                             t.end,
                             format!(
-                                "unknown variable '@{name}'. The variables are @scale and @geometry"
+                                "unknown variable '@{name}'. The variables are {}",
+                                names.join(", ")
                             ),
                         ));
                     }
