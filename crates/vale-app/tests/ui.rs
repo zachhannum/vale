@@ -212,6 +212,60 @@ fn the_desktop_scale_bar_controls_edit_the_bar_and_its_numbers() {
 }
 
 #[test]
+fn the_desktop_color_key_controls_edit_the_key() {
+    use vale_app::ui::atlas::{ItemKind, add_item, key_data};
+    use vale_store::{Furniture, KeyLayout};
+    let mut h = harness();
+    h.run_steps(3);
+    let p = &mut h.state_mut().doc.project;
+    let raster = p.add_raster("Height".to_string(), 64, "m".to_string(), -100.0, 100.0);
+    let layer = p.raster_layer(raster).unwrap().id;
+    let id = add_item(h.state_mut(), ItemKind::ColorKey).unwrap();
+    h.run_steps(3);
+    let key = |h: &Harness<'static, AppState>| match &h
+        .state()
+        .doc
+        .project
+        .atlas
+        .furniture(id)
+        .unwrap()
+        .item
+    {
+        Furniture::ColorKey(k) => k.clone(),
+        _ => panic!("not a color key"),
+    };
+    assert_eq!(key(&h).layer, Some(layer));
+    h.get_by_label("Split at sea level").click();
+    h.run_steps(2);
+    assert!(!key(&h).split_at_sea_level);
+    // The label and the combo box have the name. The combo box is last.
+    h.get_all_by_label("Second unit").last().unwrap().click();
+    h.run_steps(2);
+    h.get_by_label("Feet").click();
+    h.run_steps(2);
+    assert_eq!(key(&h).second_unit.unwrap().name, "feet");
+    let k = key(&h);
+    let top = key_data(h.state(), &k).unwrap().rows.pop().unwrap();
+    h.get_by_label(&format!("Show {}", top.key)).click();
+    h.run_steps(2);
+    assert!(key(&h).bands[&top.key].hidden);
+    h.get_by_label("List").click();
+    h.run_steps(2);
+    assert_eq!(key(&h).layout, KeyLayout::List);
+    h.get_by_label("Names in boxes").click();
+    h.run_steps(2);
+    assert!(key(&h).names_in_boxes);
+    if std::env::var_os("VALE_SCREENSHOTS").is_some() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/app");
+        std::fs::create_dir_all(dir).unwrap();
+        h.render()
+            .unwrap()
+            .save(format!("{dir}/test-desktop-color-key.png"))
+            .unwrap();
+    }
+}
+
+#[test]
 fn land_checkbox_hides_layer() {
     let mut h = harness();
     h.run_steps(3);

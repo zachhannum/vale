@@ -1333,7 +1333,7 @@ fn item_panel(ui: &mut egui::Ui, state: &mut AppState, rec: &vale_store::Furnitu
                 });
         }
         Furniture::ScaleBar(bar) => bar_sections(ui, state, id, bar),
-        Furniture::ColorKey(_) => {}
+        Furniture::ColorKey(k) => key_sections(ui, state, id, k),
         Furniture::NorthArrow(n) => {
             ui.horizontal(|ui| {
                 ui.label(item::ARROW_COLOR);
@@ -1410,6 +1410,205 @@ fn legend_entries(
             _ => false,
         });
     }
+}
+
+/// The controls of a color key.
+fn key_sections(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    id: vale_store::FurnitureId,
+    k: &vale_store::ColorKeyItem,
+) {
+    use super::atlas::TextPart;
+    use super::pad::furniture as item;
+    use vale_store::{KeyLayout, SecondUnit};
+    let layers = k
+        .frame
+        .map_or_else(Vec::new, |f| atlas::key_layers(&state.doc, f));
+    ui.horizontal(|ui| {
+        ui.label(item::KEY_LAYER);
+        let shown = item::layer_name(state, k.layer);
+        let resp = egui::ComboBox::from_id_salt("atlas-key-layer")
+            .selected_text(shown)
+            .show_ui(ui, |ui| {
+                for layer in &layers {
+                    let name = item::layer_name(state, Some(*layer));
+                    if ui.selectable_label(k.layer == Some(*layer), name).clicked() {
+                        let layer = *layer;
+                        atlas::edit_key(state, id, true, |k| k.layer = Some(layer));
+                    }
+                }
+            });
+        named(&resp.response, egui::WidgetType::ComboBox, item::KEY_LAYER);
+    });
+    if k.frame.is_some() && atlas::key_data(state, k).is_none() {
+        ui.weak(item::LAYER_HIDDEN);
+    }
+    ui.horizontal(|ui| {
+        ui.label(item::KEY_LAYOUT);
+        for (layout, name) in KeyLayout::ALL.into_iter().zip(item::KEY_LAYOUTS) {
+            if ui.selectable_label(k.layout == layout, name).clicked() && k.layout != layout {
+                atlas::edit_key(state, id, true, |k| k.layout = layout);
+            }
+        }
+    });
+    match k.layout {
+        KeyLayout::Strip => {
+            let split = vale_store::ColorKeyItem {
+                split_at_sea_level: true,
+                ..k.clone()
+            };
+            if atlas::key_data(state, &split).is_some_and(|d| d.sea.is_some()) {
+                let mut on = k.split_at_sea_level;
+                if ui.checkbox(&mut on, item::SPLIT).changed() {
+                    atlas::edit_key(state, id, true, |k| k.split_at_sea_level = on);
+                }
+            }
+            let preset = crate::color_key::preset_unit(&item::layer_unit(state, k.layer));
+            let custom = k
+                .second_unit
+                .as_ref()
+                .filter(|u| Some(*u) != preset.as_ref());
+            let shown = match (&k.second_unit, custom) {
+                (None, _) => item::NONE.to_string(),
+                (Some(_), Some(_)) => item::CUSTOM.to_string(),
+                (Some(u), None) => item::sentence_case(&u.name),
+            };
+            ui.horizontal(|ui| {
+                ui.label(item::SECOND_UNIT);
+                let mut chosen = None;
+                let resp = egui::ComboBox::from_id_salt("atlas-key-unit")
+                    .selected_text(shown)
+                    .show_ui(ui, |ui| {
+                        if ui
+                            .selectable_label(k.second_unit.is_none(), item::NONE)
+                            .clicked()
+                        {
+                            chosen = Some(None);
+                        }
+                        if let Some(p) = &preset {
+                            let on = k.second_unit.as_ref() == Some(p);
+                            if ui
+                                .selectable_label(on, item::sentence_case(&p.name))
+                                .clicked()
+                            {
+                                chosen = Some(Some(p.clone()));
+                            }
+                        }
+                        if ui
+                            .selectable_label(custom.is_some(), item::CUSTOM)
+                            .clicked()
+                            && custom.is_none()
+                        {
+                            chosen = Some(Some(SecondUnit {
+                                name: String::new(),
+                                factor: 1.0,
+                                offset: 0.0,
+                            }));
+                        }
+                    });
+                named(
+                    &resp.response,
+                    egui::WidgetType::ComboBox,
+                    item::SECOND_UNIT,
+                );
+                if let Some(unit) = chosen {
+                    atlas::edit_key(state, id, true, |k| k.second_unit = unit);
+                }
+            });
+            if let Some(unit) = custom {
+                egui::Grid::new("atlas-key-unit-grid").show(ui, |ui| {
+                    ui.label("Name");
+                    let mut name = unit.name.clone();
+                    let edit = ui.text_edit_singleline(&mut name);
+                    named(&edit, egui::WidgetType::TextEdit, item::UNIT_NAME);
+                    if edit.changed() {
+                        atlas::edit_key(state, id, false, |k| {
+                            if let Some(u) = &mut k.second_unit {
+                                u.name = name;
+                            }
+                        });
+                    }
+                    ui.end_row();
+                    let parse = |t: &str| t.trim().replace(',', "").parse::<f64>().ok();
+                    for (name, value, zero) in [
+                        (item::FACTOR, unit.factor, false),
+                        (item::OFFSET, unit.offset, true),
+                    ] {
+                        ui.label(name);
+                        let typed = field(ui, name, &value.to_string());
+                        let typed = typed.as_deref().and_then(parse);
+                        if let Some(v) = typed.filter(|v| v.is_finite() && (zero || *v != 0.0)) {
+                            atlas::edit_key(state, id, true, |k| {
+                                if let Some(u) = &mut k.second_unit {
+                                    if zero {
+                                        u.offset = v;
+                                    } else {
+                                        u.factor = v;
+                                    }
+                                }
+                            });
+                        }
+                        ui.end_row();
+                    }
+                });
+            }
+        }
+        KeyLayout::List => {
+            let mut on = k.names_in_boxes;
+            if ui.checkbox(&mut on, item::NAMES_IN_BOXES).changed() {
+                atlas::edit_key(state, id, true, |k| k.names_in_boxes = on);
+            }
+        }
+    }
+    egui::CollapsingHeader::new(item::TITLE)
+        .default_open(true)
+        .show(ui, |ui| {
+            let mut title = k.title.clone();
+            let edit = ui.text_edit_singleline(&mut title);
+            named(&edit, egui::WidgetType::TextEdit, item::TITLE);
+            if edit.changed() {
+                atlas::edit_key(state, id, false, |k| k.title = title);
+            }
+            text_grid(ui, state, id, TextPart::Title, &k.title_style);
+        });
+    egui::CollapsingHeader::new(item::BANDS)
+        .default_open(true)
+        .show(ui, |ui| {
+            let rows = atlas::key_data(state, k).map_or_else(Vec::new, |d| d.rows);
+            for row in rows.into_iter().rev() {
+                let name = k.bands.get(&row.key).and_then(|e| e.name.clone());
+                ui.horizontal(|ui| {
+                    let mut shown = !row.hidden;
+                    let check = ui.checkbox(&mut shown, "");
+                    named(
+                        &check,
+                        egui::WidgetType::Checkbox,
+                        &format!("Show {}", row.key),
+                    );
+                    if check.changed() {
+                        atlas::edit_band(state, id, row.key.clone(), true, |e| e.hidden = !shown);
+                    }
+                    let mut text = name.unwrap_or_default();
+                    let edit = ui.add(egui::TextEdit::singleline(&mut text).hint_text(&row.label));
+                    named(
+                        &edit,
+                        egui::WidgetType::TextEdit,
+                        &format!("Band {}", row.key),
+                    );
+                    if edit.changed() {
+                        let typed = text.trim().to_string();
+                        let name = (!typed.is_empty()).then_some(typed);
+                        atlas::edit_band(state, id, row.key, false, |e| e.name = name);
+                    }
+                });
+            }
+            let reset = ui.add_enabled(!k.bands.is_empty(), egui::Button::new(item::RESET_BANDS));
+            if reset.clicked() {
+                atlas::edit_key(state, id, true, |k| k.bands.clear());
+            }
+            text_grid(ui, state, id, TextPart::Entries, &k.value_style);
+        });
 }
 
 /// A combo box row of a grid. Returns the choice that the user made.
