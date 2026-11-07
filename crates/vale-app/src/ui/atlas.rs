@@ -18,7 +18,8 @@ use std::sync::Arc;
 use vale_store::RasterId;
 
 use super::AppState;
-use super::map_texture::{self, MapRenderer, MapTexture};
+use super::frame_tiles::{FrameLists, FramePaint, Layer, Screen, Shown, Spill, Thumb, Tiles};
+use super::map_texture::{self, MapTexture};
 use super::pad::theme;
 use crate::atlas::{self as math, FrameTarget, Handle, PT_PER_MM, PagePreset, Vertex};
 use crate::document::Document;
@@ -27,12 +28,12 @@ use crate::globe::flat::FlatMesh;
 use crate::globe::gpu::Mask;
 use crate::globe::nav::Nav;
 use crate::globe::select::Pointer;
-use crate::globe::{FrameDraw, FramePlace, RasterMask};
+use crate::globe::{FrameDraw, FramePlace, RasterLook, RasterMask};
 use crate::mask::frame::frame_raster_masks;
 use crate::page_snap;
 use crate::pipeline::{Pipeline, Quality};
 use crate::region::{Region, RegionKind, fit, suggest};
-use crate::view::{View, ViewTransform};
+use crate::view::ViewTransform;
 
 pub mod features;
 pub mod measure;
@@ -453,6 +454,17 @@ impl PagePlace {
         }
     }
 
+    /// The place moved so that the top-left corner of the page is on a
+    /// whole pixel, with `pixels_per_point` pixels in one point of the
+    /// screen. The tiles of the frames then land on whole pixels.
+    pub fn snapped(self, pixels_per_point: f32) -> PagePlace {
+        let min = (self.rect.min.to_vec2() * pixels_per_point).round() / pixels_per_point;
+        PagePlace {
+            rect: Rect::from_min_size(min.to_pos2(), self.rect.size()),
+            ..self
+        }
+    }
+
     /// Pixels of the screen in one point of the page, with
     /// `pixels_per_point` pixels in one point of the screen.
     pub fn pixels_per_page_point(&self, pixels_per_point: f32) -> f32 {
@@ -485,59 +497,6 @@ impl PagePlace {
             self.to_screen(Point::new(r.x1, r.y1)),
         )
     }
-}
-
-/// The last compose of a frame.
-/// A texture of a frame at the reduced size of the blurred backdrop, in
-/// premultiplied bytes.
-struct Thumb {
-    serial: u64,
-    size: [usize; 2],
-    rgba: Vec<u8>,
-}
-
-impl Thumb {
-    /// Averages `n` by `n` pixels of a premultiplied image.
-    fn new(img: &vale_render::Rgba, n: usize) -> Thumb {
-        static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let size = [img.width.div_ceil(n), img.height.div_ceil(n)];
-        let mut rgba = vec![0u8; size[0] * size[1] * 4];
-        for y in 0..size[1] {
-            for x in 0..size[0] {
-                let (mut sum, mut count) = ([0u32; 4], 0);
-                for sy in y * n..((y + 1) * n).min(img.height) {
-                    for sx in x * n..((x + 1) * n).min(img.width) {
-                        let at = (sy * img.width + sx) * 4;
-                        for (total, byte) in sum.iter_mut().zip(&img.data[at..at + 4]) {
-                            *total += u32::from(*byte);
-                        }
-                        count += 1;
-                    }
-                }
-                for c in 0..4 {
-                    rgba[(y * size[0] + x) * 4 + c] = (sum[c] / count.max(1)) as u8;
-                }
-            }
-        }
-        let serial = SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        Thumb { serial, size, rgba }
-    }
-}
-
-struct FrameImage {
-    texture: MapTexture,
-    /// A reduced copy for the blurred backdrop of the cards.
-    thumb: Arc<Thumb>,
-    /// The key of what the frame shows.
-    content: u64,
-    /// The key of the place of the frame and of its view.
-    place: u64,
-    /// The view of the frame on the screen at the compose.
-    vt: ViewTransform,
-    /// The texture on the screen at the compose.
-    rect: Rect,
-    /// The compose was at the final quality.
-    settled: bool,
 }
 
 /// What a drag on the page changes.
@@ -688,20 +647,12 @@ pub struct AtlasState {
     pub entry_name: String,
     /// The selection of `handles`.
     handles_of: Option<AtlasSelection>,
-    images: HashMap<FrameId, FrameImage>,
+    /// The display lists of the frames and their tiles.
+    tiles: Tiles,
+    /// The most tiles with a texture.
+    pub tile_cap: usize,
     /// The textures of the items of furniture.
     item_images: HashMap<FurnitureId, ItemImage>,
-    /// The water of the frames that draw raster layers.
-    unders: HashMap<FrameId, FrameImage>,
-    /// The edge labels, the neatline, and the border of the frames. They
-    /// stay in place while a gesture moves the map.
-    decors: HashMap<FrameId, FrameImage>,
-    /// The map of the frames in a margin around their shapes, at a lower
-    /// resolution. It fills the shape while a gesture moves the map.
-    spills: HashMap<FrameId, FrameImage>,
-    /// The screen rectangles of the map, the spill, and the decorations of
-    /// each frame in the last frame.
-    painted: HashMap<FrameId, [Option<Rect>; 3]>,
     /// The shape of each frame as a mask for its raster layers: the key of
     /// what it shows, and the mask.
     masks: HashMap<FrameId, (u64, Arc<Mask>)>,
@@ -782,20 +733,51 @@ impl AtlasState {
         }
     }
 
-    /// The screen rectangle of the texture of each frame.
+    /// The screen rectangle of the map tiles of each frame in the last
+    /// frame, where they are at rest.
     pub fn texture_rects(&self) -> Vec<Rect> {
-        self.images.values().map(|i| i.rect).collect()
+        self.tiles
+            .painted
+            .values()
+            .filter_map(|p| p.texture)
+            .collect()
     }
 
-    /// The screen rectangle of the texture of frame `id`.
+    /// The screen rectangle of the map tiles of frame `id` in the last
+    /// frame, where they are at rest.
     pub fn texture_rect(&self, id: FrameId) -> Option<Rect> {
-        self.images.get(&id).map(|i| i.rect)
+        self.tiles.painted.get(&id).and_then(|p| p.texture)
     }
 
     /// The screen rectangles of the map, the spill, and the decorations of
     /// frame `id` in the last frame.
     pub fn painted_rects(&self, id: FrameId) -> [Option<Rect>; 3] {
-        self.painted.get(&id).copied().unwrap_or_default()
+        let p = self.tiles.painted.get(&id);
+        p.map(|p| [p.map, p.spill, p.decor]).unwrap_or_default()
+    }
+
+    /// What the canvas painted of frame `id` in the last frame.
+    pub fn frame_paint(&self, id: FrameId) -> Option<&FramePaint> {
+        self.tiles.painted.get(&id)
+    }
+
+    /// The number of tiles of the frames that rendered.
+    pub fn tile_renders(&self) -> u64 {
+        self.tiles.renders
+    }
+
+    /// The number of tiles of the frames with a texture.
+    pub fn tile_count(&self) -> usize {
+        self.tiles.textures()
+    }
+
+    /// The screen rectangle that the lists of frame `id` draw in.
+    pub fn list_bounds(&self, id: FrameId) -> Option<Rect> {
+        let (lists, place) = (self.tiles.lists(id)?, self.place?);
+        let zoom = (place.pts_per_mm / PT_PER_MM) as f32;
+        let b = lists.bounds;
+        let at = |x: f64, y: f64| place.rect.min + vec2(x as f32, y as f32) * zoom;
+        Some(Rect::from_min_max(at(b.x0, b.y0), at(b.x1, b.y1)))
     }
 }
 
@@ -850,12 +832,9 @@ impl Default for AtlasState {
             bar_previews: HashMap::new(),
             entry_name: String::new(),
             handles_of: None,
-            images: HashMap::new(),
+            tiles: Tiles::default(),
+            tile_cap: if cfg!(target_os = "ios") { 256 } else { 512 },
             item_images: HashMap::new(),
-            unders: HashMap::new(),
-            decors: HashMap::new(),
-            spills: HashMap::new(),
-            painted: HashMap::new(),
             masks: HashMap::new(),
             mask_count: 0,
             raster_masks: Default::default(),
@@ -881,29 +860,27 @@ impl Default for AtlasState {
 }
 
 impl AtlasState {
-    /// The number of frames with a texture.
+    /// The number of frames with display lists.
     pub fn image_count(&self) -> usize {
-        self.images.len()
+        self.tiles.frame_count()
     }
 
-    /// True if the frame has a texture.
+    /// True if the frame has display lists.
     pub fn has_image(&self, id: FrameId) -> bool {
-        self.images.contains_key(&id)
+        self.tiles.lists(id).is_some()
     }
 
-    /// The size of the texture of a frame, in pixels.
+    /// The size of a texture of a tile of a frame, in pixels.
     pub fn image_size(&self, id: FrameId) -> Option<[usize; 2]> {
-        self.images.get(&id).map(|image| image.texture.size())
+        self.tiles.texture_size(id)
     }
 
-    /// The number of the textures of frames and items that the GPU drew.
+    /// The number of the frames with textures and of the items that the
+    /// GPU drew.
     pub fn gpu_textures(&self) -> usize {
-        let frames = self.images.values().map(|i| &i.texture);
         let items = self.item_images.values().map(|i| &i.texture);
-        frames
-            .chain(items)
-            .filter(|t| matches!(t, MapTexture::Gpu(_)))
-            .count()
+        let items = items.filter(|t| matches!(t, MapTexture::Gpu(_))).count();
+        self.tiles.gpu_frames() + items
     }
 
     /// The selected frame.
@@ -998,9 +975,7 @@ pub fn sync(state: &mut AppState) {
     if !suggested {
         a.suggestion = None;
     }
-    a.images.retain(|id, _| atlas.frame(*id).is_some());
-    a.decors.retain(|id, _| atlas.frame(*id).is_some());
-    a.spills.retain(|id, _| atlas.frame(*id).is_some());
+    a.tiles.retain(|id| atlas.frame(id).is_some());
     a.item_images
         .retain(|id, _| page.furniture.iter().any(|f| f.id == *id));
 }
@@ -1605,7 +1580,8 @@ pub fn canvas(ui: &mut egui::Ui, state: &mut AppState, area: Rect, free: Rect, b
     }
     let fit = PagePlace::fit(open_page(state), free);
     state.atlas.fit = Some((fit, area));
-    let place = fit.viewed(state.atlas.view);
+    let ppp = ui.ctx().pixels_per_point();
+    let place = fit.viewed(state.atlas.view).snapped(ppp);
     state.atlas.place = Some(place);
     super::globe::measure_keys(ui, state);
     input(ui, state, &resp, place);
@@ -1616,7 +1592,7 @@ pub fn canvas(ui: &mut egui::Ui, state: &mut AppState, area: Rect, free: Rect, b
         None => {}
     }
     sync(state);
-    let place = PagePlace::fit(open_page(state), free).viewed(state.atlas.view);
+    let place = (PagePlace::fit(open_page(state), free).viewed(state.atlas.view)).snapped(ppp);
     state.atlas.place = Some(place);
 
     let painter = ui.painter_at(area);
@@ -1970,9 +1946,7 @@ pub fn delete_frame(state: &mut AppState) {
     state.doc.project.atlas.prune_maps();
     state.atlas.selection = AtlasSelection::None;
     state.atlas.vertices.clear();
-    state.atlas.images.remove(&id);
-    state.atlas.decors.remove(&id);
-    state.atlas.spills.remove(&id);
+    state.atlas.tiles.retain(|f| f != id);
 }
 
 /// True if "Delete vertex" can delete the selected vertices: the outer
@@ -2333,20 +2307,6 @@ fn map_images(state: &AppState, map: MapId) -> Vec<vale_store::ImageId> {
         .collect()
 }
 
-/// A frame of the page to draw in this pass.
-struct Placed {
-    id: FrameId,
-    vt: ViewTransform,
-    /// The view of the decorations of the frame.
-    fixed: ViewTransform,
-    shown: Rect,
-    /// The triangles of the shape on the screen. The map does not move out
-    /// of them.
-    inside: Vec<[Pos2; 3]>,
-    /// The frame draws raster layers on the GPU.
-    layered: bool,
-}
-
 /// A rectangle grown to whole physical pixels. A texture on whole pixels
 /// stays sharp, so a line has the same width at each angle.
 fn snap(rect: Rect, ppp: f32) -> Rect {
@@ -2427,7 +2387,8 @@ fn shape_mask(
     Some(mask)
 }
 
-/// Composes the frames that changed and paints each frame of the page.
+/// Composes the display lists of the frames that changed, renders their
+/// missing tiles, and paints each frame of the page.
 fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
     let page = open_page(state).clone();
     let ctx = ui.ctx().clone();
@@ -2445,10 +2406,9 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
         ctx.request_repaint();
     }
     let radius = state.doc.project.world.radius_km * 1000.0;
-    let mut placed: Vec<Placed> = Vec::new();
+    let mut placed: Vec<Shown> = Vec::new();
     let mut draws: Vec<FrameDraw> = Vec::new();
     let mut masked: Vec<MaskedFrame> = Vec::new();
-    let mut spilled = false;
     for frame in &page.frames {
         let Some(map) = state.doc.project.atlas.map(frame.map) else {
             continue;
@@ -2472,10 +2432,9 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
             layered,
             state.atlas.raster_masks.number(frame.id),
         ));
-        // Only the part of the frame on the canvas has a texture.
-        // The neatline reaches out of the shape by half its width, and a sharp
-        // corner reaches further.
-        // The edge labels outside the shape reach further.
+        // The neatline reaches out of the shape by half its width, and a
+        // sharp corner reaches further. The edge labels outside the shape
+        // reach further. The reach is in page points.
         let neatline = if frame.neatline.on {
             frame.neatline.width
         } else {
@@ -2484,77 +2443,62 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
         let labels = crate::edge_labels::outside_reach(frame, &mut state.fonts);
         let band = crate::frame_border::reach(frame);
         let reach = neatline.max(labels).max(band);
-        let reach = (reach * f64::from(place.pts_per_mm) / PT_PER_MM) as f32;
+        let on_screen = (reach * place.pts_per_mm / PT_PER_MM) as f32;
         let shown = snap(
             place
                 .rect_to_screen(math::shape_bbox(&frame.shape))
-                .expand(reach)
+                .expand(on_screen)
                 .intersect(area),
             ppp,
         );
         if !shown.is_positive() {
             continue;
         }
-        let place_key = hash_of((
-            &frame.shape,
-            frame.center,
-            frame.scale,
-            frame.rotation,
-            target,
-            shown,
-        ));
+        let geometry = hash_of((&frame.shape, frame.center, frame.scale, frame.rotation));
         let Ok(projection) = state.pipeline.projection(&state.doc, frame.map) else {
             continue;
         };
         let vt = math::frame_transform(projection, frame, target);
-        let fresh = match state.atlas.images.get(&frame.id) {
-            None => false,
-            Some(image) if image.content != content => false,
-            Some(image) if image.place != place_key || !image.settled => moving,
-            Some(_) => true,
-        };
-        if !fresh {
-            let quality = if moving && !state.headless {
-                Quality::Interactive
-            } else {
-                Quality::Final
-            };
-            let keys = (content, place_key);
+        let in_page = math::frame_transform(projection, frame, PAGE_POINTS);
+        // While a gesture moves a frame or its map, the frame keeps its
+        // lists, and its tiles move with the map.
+        let rebuild = state
+            .atlas
+            .tiles
+            .lists(frame.id)
+            .is_none_or(|l| l.content != content || (l.geometry != geometry && !moving));
+        if rebuild {
+            let keys = (content, geometry);
             let primary = primary == Some(frame.id);
-            let at = (place, shown);
-            compose(
-                &ctx,
-                state,
-                frame,
-                at,
-                vt,
-                keys,
-                quality,
-                (primary, layered),
-            );
+            build_lists(state, frame, keys, reach, in_page, (primary, layered));
         }
-        // One spill each frame, after its frame settles.
-        let spill = state.atlas.spills.get(&frame.id);
-        if fresh
-            && !moving
-            && !spilled
-            && spill.is_none_or(|s| s.content != content || s.place != place_key)
-        {
-            compose_spill(&ctx, state, frame, place, area, vt, (content, place_key));
-            spilled = true;
-            ctx.request_repaint();
-        }
-        if layered || !masks.is_empty() {
-            let spec = state.doc.projection(frame.map);
-            let rect = pixel_rect(shown, ppp);
-            let mesh = mesh_of(state, spec);
-            let mask = shape_mask(state, frame, place, rect, ppp);
-            if let Some(mesh) = mesh {
+        let spec = state.doc.projection(frame.map);
+        let mesh = if layered || !masks.is_empty() {
+            mesh_of(state, spec)
+        } else {
+            None
+        };
+        if let Some(mesh) = mesh {
+            if !masks.is_empty() {
+                let looks = (rasters.clone(), raster_looks.clone());
+                let needed = place.pixels_per_page_point(ppp);
+                let capture = mask_capture(state, frame, in_page, mesh.clone(), looks, needed);
+                let masks = (masks.into_iter())
+                    .map(|(layer, mask)| {
+                        let key = mask_key(state, frame, &mask);
+                        (layer, mask, key)
+                    })
+                    .collect();
+                masked.push((frame.clone(), capture, masks));
+            }
+            if layered {
+                let rect = pixel_rect(shown, ppp);
+                let mask = shape_mask(state, frame, place, rect, ppp);
                 let [x, y, ..] = rect;
                 let center = vt.origin;
                 let units = vt.view.scale * radius;
                 let scale = frame.scale;
-                let draw = FrameDraw {
+                draws.push(FrameDraw {
                     id: frame.id.0,
                     place: FramePlace {
                         center: [
@@ -2577,31 +2521,60 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
                     images,
                     raster_looks,
                     image_looks,
-                };
-                if !masks.is_empty() {
-                    masked.push((frame.clone(), draw.clone(), masks));
-                }
-                if layered {
-                    draws.push(draw);
-                }
+                });
             }
         }
         let inside = shape_triangles(frame, place);
-        placed.push(Placed {
+        let shown = Shown {
             id: frame.id,
-            vt,
-            fixed: fixed_view(vt, target),
+            vt: in_page,
             shown,
             inside,
-            layered,
-        });
+        };
+        placed.push(shown);
+    }
+    let screen = Screen {
+        origin: place.rect.min,
+        zoom: (place.pts_per_mm / PT_PER_MM) as f32,
+        scale: place.pixels_per_page_point(ppp),
+        moving,
+    };
+    let renderer = state.map_renderer.as_mut();
+    let cap = state.atlas.tile_cap;
+    // Tests render a fixed number of tiles in each pass, so that they do
+    // not depend on the time.
+    let timed = !state.headless;
+    match (state.atlas.tiles).fill(&ctx, renderer, screen, &placed, cap, timed) {
+        Ok(true) => ctx.request_repaint(),
+        Ok(false) => {}
+        Err(e) => state.status = e,
+    }
+    // One spill each frame, after the tiles of its frame are ready.
+    if !moving
+        && let Some(s) = placed.iter().find(|s| state.atlas.tiles.wants_spill(s.id))
+        && let Some(frame) = page.frames.iter().find(|f| f.id == s.id)
+    {
+        compose_spill(&ctx, state, frame, screen.scale);
+        ctx.request_repaint();
     }
     let canvas = Canvas {
         background: paper(&page),
         pixels_per_point: ppp,
     };
-    // The tiles of the detail maps arrive while the frames ask for them.
-    state.want_frames(draws.clone());
+    // The tiles of the detail maps arrive while the frames ask for them. A
+    // capture of a mask asks for its tiles while it waits.
+    let mut wanted = draws.clone();
+    if !moving {
+        let waits = |(frame, capture, masks): &&MaskedFrame| {
+            let wants = |(layer, _, key): &(LayerId, RasterMask, u64)| {
+                (state.atlas.raster_masks).wants(frame.id, *layer, *key, capture.scale)
+            };
+            masks.iter().any(wants)
+        };
+        let waiting = masked.iter().filter(waits);
+        wanted.extend(waiting.map(|(_, capture, _)| capture.draw.clone()));
+    }
+    state.want_frames(wanted);
     if state.globe.details_loading() {
         ctx.request_repaint();
     }
@@ -2611,32 +2584,11 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
         let painted = state.globe.paint_frames(canvas, draws);
         painted.unwrap_or_default().into_iter().collect()
     };
-    capture_masks(state, &painter, (canvas, target, area), masked, moving);
+    capture_masks(state, &painter, (canvas, area), masked, moving);
     if let Some(format) = state.globe.backdrop() {
-        let mut items = Vec::new();
-        for p in &placed {
-            let by = p.layered.then(|| state.atlas.unders.get(&p.id)).flatten();
-            let images = [
-                (by, p.vt),
-                (state.atlas.images.get(&p.id), p.vt),
-                (state.atlas.decors.get(&p.id), p.fixed),
-            ];
-            for (image, vt) in images {
-                let Some(image) = image else {
-                    continue;
-                };
-                let corners = [image.rect.min, image.rect.max].map(|c| {
-                    let q = vt.to_page(
-                        image
-                            .vt
-                            .from_page(Point::new(f64::from(c.x), f64::from(c.y))),
-                    );
-                    pos2(q.x as f32, q.y as f32)
-                });
-                let rect = Rect::from_two_pos(corners[0], corners[1]);
-                items.push((image.thumb.clone(), rect.intersect(p.shown)));
-            }
-        }
+        let items: Vec<_> = (placed.iter())
+            .flat_map(|s| state.atlas.tiles.thumbs(screen, s))
+            .collect();
         let scene = scene_of(area, place.rect, &items, canvas);
         let callback = SceneCallback {
             format,
@@ -2647,50 +2599,192 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
             area, callback,
         ));
     }
-    state.atlas.painted.clear();
-    for p in placed {
-        let moved = (state.atlas.images.get(&p.id)).is_some_and(|image| image.vt != p.vt);
-        let spill = (state.atlas.spills.get(&p.id))
-            .filter(|_| moved)
-            .map(|image| paint_image(&painter, image, &p.vt, (&p.inside, p.shown)));
-        let by = p.layered.then(|| state.atlas.unders.get(&p.id)).flatten();
-        if let Some(image) = by {
-            paint_image(&painter, image, &p.vt, (&p.inside, p.shown));
-        }
-        if let Some(callback) = callbacks.remove(&p.id.0) {
+    let tiles = &mut state.atlas.tiles;
+    tiles.painted.clear();
+    for s in &placed {
+        let clipped = painter.with_clip_rect(s.shown);
+        tiles.paint(&clipped, screen, s, &[Layer::Under], true);
+        if let Some(callback) = callbacks.remove(&s.id.0) {
             painter.add(eframe::egui_wgpu::Callback::new_paint_callback(
                 area, callback,
             ));
         }
-        let map = (state.atlas.images.get(&p.id))
-            .map(|image| paint_image(&painter, image, &p.vt, (&p.inside, p.shown)));
-        let decor = (state.atlas.decors.get(&p.id))
-            .map(|image| paint_image(&painter, image, &p.fixed, (&[], p.shown)));
-        state.atlas.painted.insert(p.id, [map, spill, decor]);
+        tiles.paint(&clipped, screen, s, &[Layer::Map, Layer::Decor], false);
+        tiles.finish(s.id);
+    }
+    tiles.evict(state.atlas.tile_cap, screen.scale);
+}
+
+/// The target of the display lists of the frames: page points, with the page
+/// at 0, 0.
+const PAGE_POINTS: FrameTarget = FrameTarget {
+    origin: Point::ZERO,
+    pts_per_mm: PT_PER_MM,
+};
+
+/// Composes the display lists of a frame in page points, over its box and
+/// `reach` page points around it. `vt` is the view of the map in page
+/// points.
+fn build_lists(
+    state: &mut AppState,
+    frame: &FrameRecord,
+    keys: (u64, u64),
+    reach: f64,
+    vt: ViewTransform,
+    (primary, layered): (bool, bool),
+) {
+    let b = math::shape_bbox(&frame.shape);
+    let bounds = kurbo::Rect::new(b.x0, b.y0, b.x1, b.y1).scale_from_origin(PT_PER_MM);
+    let bounds = bounds.inflate(reach, reach);
+    // A frame with raster layers has the water below them and the rest
+    // above them. The GPU draws them between the two.
+    let (doc, fonts) = (&state.doc, &mut state.fonts);
+    let composed = if layered {
+        (state.pipeline).compose_frame_over(doc, frame, PAGE_POINTS, bounds, fonts, Quality::Final)
+    } else {
+        (state.pipeline).compose_frame_part(doc, frame, PAGE_POINTS, bounds, fonts, Quality::Final)
+    };
+    state.atlas.composes += 1;
+    let composed = match composed {
+        Ok(c) => c,
+        Err(e) => {
+            state.status = format!("{e:#}");
+            return;
+        }
+    };
+    let under = if layered {
+        let under = (state.pipeline).compose_frame_under(&state.doc, frame, PAGE_POINTS, bounds);
+        match under {
+            Ok(list) => Some(list),
+            Err(e) => {
+                state.status = format!("{e:#}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let mut map = composed.list.clone();
+    let decor = vale_render::DisplayList {
+        items: map.items.split_off(composed.decor),
+        ..map.clone()
+    };
+    let clips = |item: &vale_render::Item| {
+        matches!(
+            item,
+            vale_render::Item::PushClip { .. } | vale_render::Item::PopClip
+        )
+    };
+    let decor = (!decor.items.iter().all(clips)).then_some(decor);
+    let lists = [under.as_ref(), Some(&map), decor.as_ref()];
+    match FrameLists::new(keys, lists, bounds, vt) {
+        Ok(lists) => state.atlas.tiles.replace(frame.id, lists),
+        Err(e) => state.status = e,
+    }
+    if primary {
+        state.composed = Some(composed);
     }
 }
 
-/// A frame with raster masks, with its draw and its masks.
-type MaskedFrame = (FrameRecord, FrameDraw, Vec<(LayerId, RasterMask)>);
+/// A frame with raster masks, with the capture of its masks, and each mask
+/// with its key.
+type MaskedFrame = (FrameRecord, MaskCapture, Vec<(LayerId, RasterMask, u64)>);
+
+/// The largest side of the capture of a raster mask, in pixels.
+const MASK_PIXELS: f64 = 2048.0;
+
+/// The pixels around the box of a frame in the capture of a mask.
+const MASK_MARGIN: f64 = 2.0;
+
+/// The draws of the captures of the masks have this bit in their numbers.
+const MASK_DRAW: u32 = 1 << 30;
+
+/// A draw of a whole frame for the captures of its raster masks, in page
+/// space at a scale of its own.
+struct MaskCapture {
+    draw: FrameDraw,
+    /// Pixels in one page point.
+    scale: f32,
+    /// Page millimeters to the pixels of the capture.
+    at: FrameTarget,
+}
+
+/// The draw of the captures of the masks of `frame`. `vt` is the view of
+/// the map in page points. The scale is the power of 2 at or above
+/// `needed` pixels in one page point, and the capture has at most
+/// `MASK_PIXELS` on a side.
+fn mask_capture(
+    state: &AppState,
+    frame: &FrameRecord,
+    vt: ViewTransform,
+    mesh: Arc<FlatMesh>,
+    (shown, raster_looks): (Vec<RasterId>, Vec<(RasterId, RasterLook)>),
+    needed: f32,
+) -> MaskCapture {
+    let b = math::shape_bbox(&frame.shape);
+    let bounds = kurbo::Rect::new(b.x0, b.y0, b.x1, b.y1).scale_from_origin(PT_PER_MM);
+    let largest = (state.globe.max_face_size() as f64).min(MASK_PIXELS);
+    let side = bounds.width().max(bounds.height()).max(1.0);
+    let cap = (largest - 2.0 * MASK_MARGIN - 2.0) / side;
+    let pow2 = 2f64.powf(f64::from(needed).log2().ceil());
+    let scale = pow2.min(cap);
+    let x0 = (bounds.x0 * scale).floor() - MASK_MARGIN;
+    let y0 = (bounds.y0 * scale).floor() - MASK_MARGIN;
+    let x1 = (bounds.x1 * scale).ceil() + MASK_MARGIN;
+    let y1 = (bounds.y1 * scale).ceil() + MASK_MARGIN;
+    let radius = state.doc.project.world.radius_km * 1000.0;
+    let draw = FrameDraw {
+        id: frame.id.0 | MASK_DRAW,
+        place: FramePlace {
+            center: [
+                (vt.origin.x * scale - x0) as f32,
+                (vt.origin.y * scale - y0) as f32,
+            ],
+            map_center: [
+                (vt.view.center.x / radius) as f32,
+                (vt.view.center.y / radius) as f32,
+            ],
+            units_to_pixels: (vt.view.scale * radius * scale) as f32,
+            rotation: vt.view.rotation,
+            points_per_radian: radius * PT_PER_MM * 1000.0 / frame.scale,
+            pixels_per_page_point: scale as f32,
+        },
+        rect: [0, 0, (x1 - x0) as u32, (y1 - y0) as u32],
+        mesh,
+        mask: None,
+        shown,
+        images: Vec::new(),
+        raster_looks,
+        image_looks: Vec::new(),
+    };
+    MaskCapture {
+        draw,
+        scale: scale as f32,
+        at: FrameTarget {
+            origin: Point::new(-x0, -y0),
+            pts_per_mm: PT_PER_MM * scale,
+        },
+    }
+}
 
 /// Starts the captures of the raster masks of the frames of the page whose
-/// keys changed. While a gesture moves the page, each frame keeps its masks.
+/// keys changed or that need a finer scale. While a gesture moves the page,
+/// each frame keeps its masks.
 fn capture_masks(
     state: &mut AppState,
     painter: &egui::Painter,
-    (canvas, target, area): (Canvas, FrameTarget, Rect),
+    (canvas, area): (Canvas, Rect),
     masked: Vec<MaskedFrame>,
     moving: bool,
 ) {
-    let ppp = f64::from(canvas.pixels_per_point);
     let mut keep = std::collections::HashSet::new();
     let mut rasters = Vec::new();
-    for (frame, draw, masks) in masked {
-        for (index, (layer, mask)) in masks.iter().enumerate() {
+    for (frame, capture, masks) in masked {
+        let MaskCapture { draw, scale, at } = capture;
+        for (index, (layer, mask, key)) in masks.iter().enumerate() {
             keep.insert((frame.id, *layer));
             rasters.push(mask.raster);
-            let key = mask_key(state, &frame, &draw, mask);
-            let wants = state.atlas.raster_masks.wants(frame.id, *layer, key);
+            let wants = (state.atlas.raster_masks).wants(frame.id, *layer, *key, scale);
             if moving || !wants || !state.globe.mask_ready(&draw, mask) {
                 continue;
             }
@@ -2700,17 +2794,7 @@ fn capture_masks(
             else {
                 continue;
             };
-            // The pixels of the capture start at the corner of its rectangle
-            // on the screen.
-            let [x, y, ..] = draw.rect;
-            let at = FrameTarget {
-                origin: Point::new(
-                    target.origin.x * ppp - f64::from(x),
-                    target.origin.y * ppp - f64::from(y),
-                ),
-                pts_per_mm: target.pts_per_mm * ppp,
-            };
-            (state.atlas.raster_masks).start(frame.id, *layer, key, receiver, at);
+            (state.atlas.raster_masks).start(frame.id, *layer, (*key, scale), receiver, at);
             painter.add(eframe::egui_wgpu::Callback::new_paint_callback(
                 area, callback,
             ));
@@ -2721,8 +2805,9 @@ fn capture_masks(
     (state.atlas.raster_masks).retain(&mut state.pipeline, |f, l| keep.contains(&(f, l)));
 }
 
-/// What the capture of a raster mask in a frame comes from.
-fn mask_key(state: &AppState, frame: &FrameRecord, draw: &FrameDraw, mask: &RasterMask) -> u64 {
+/// What the capture of a raster mask in a frame comes from, other than its
+/// scale.
+fn mask_key(state: &AppState, frame: &FrameRecord, mask: &RasterMask) -> u64 {
     let doc = &state.doc;
     let mut layers = doc.project.layers().iter();
     let layer = layers
@@ -2731,29 +2816,12 @@ fn mask_key(state: &AppState, frame: &FrameRecord, draw: &FrameDraw, mask: &Rast
     let style = layer.and_then(|l| doc.map_style(frame.map, l));
     let look = style.as_ref().and_then(|s| s.raster_symbolizer());
     let shown = layer.is_some_and(|l| doc.shown(frame.map, l));
-    let [.., w, h] = draw.rect;
     hash_of((
         (&frame.shape, frame.center, frame.scale, frame.rotation),
         doc.projection(frame.map),
-        (w, h, draw.place.pixels_per_page_point.to_bits()),
-        draw.place.center.map(|c| (c * 4.0).round() as i32),
         (mask, look, shown),
         state.globe.raster_edits(mask.raster),
-        state.globe.frame_details_ready(draw.id),
     ))
-}
-
-/// A view that follows the page and the shape of a frame, but not the
-/// center, the scale, or the rotation of its map.
-fn fixed_view(vt: ViewTransform, target: FrameTarget) -> ViewTransform {
-    ViewTransform {
-        view: View {
-            center: Point::ZERO,
-            scale: target.pts_per_mm,
-            rotation: 0.0,
-        },
-        ..vt
-    }
 }
 
 /// The largest side of the texture of an item of furniture, in pixels.
@@ -2902,363 +2970,40 @@ fn scene_of(area: Rect, page: Rect, items: &[(Arc<Thumb>, Rect)], canvas: Canvas
 }
 
 /// The resolution of a spill, as a part of the resolution of the screen.
-const SPILL_RESOLUTION: f32 = 0.5;
+const SPILL_RESOLUTION: f64 = 0.5;
+/// The longest side of a spill, in pixels.
+const SPILL_PIXELS: f64 = 4096.0;
 
-/// Composes the spill of a frame: the map in the part of the shape on the
-/// canvas and a margin of half its larger side.
-fn compose_spill(
-    ctx: &egui::Context,
-    state: &mut AppState,
-    frame: &FrameRecord,
-    place: PagePlace,
-    area: Rect,
-    vt: ViewTransform,
-    (content, place_key): (u64, u64),
-) {
-    let ppp = ctx.pixels_per_point() * SPILL_RESOLUTION;
-    let zoom = place.pts_per_mm / PT_PER_MM;
-    let inner = place
-        .rect_to_screen(math::shape_bbox(&frame.shape))
-        .intersect(area);
-    if !inner.is_positive() {
-        return;
-    }
-    let margin = 0.5 * inner.width().max(inner.height());
-    let mut shown = inner.expand(margin);
-    let most = 8192.0 / ppp;
-    shown.max = shown.min + shown.size().min(vec2(most, most));
-    let scale = f64::from(ppp) * zoom;
-    let origin = place.rect.min - shown.min;
+/// Composes the spill of a frame: the map in its box and a margin of half
+/// its larger side, at half of `scale` pixels per page point.
+fn compose_spill(ctx: &egui::Context, state: &mut AppState, frame: &FrameRecord, scale: f32) {
+    let b = math::shape_bbox(&frame.shape);
+    let b = kurbo::Rect::new(b.x0, b.y0, b.x1, b.y1).scale_from_origin(PT_PER_MM);
+    let margin = 0.5 * b.width().max(b.height());
+    let rect = b.inflate(margin, margin);
+    let side = rect.width().max(rect.height()).max(1e-6);
+    let most = SPILL_PIXELS.min(ctx.input(|i| i.max_texture_side) as f64);
+    let scale = (SPILL_RESOLUTION * f64::from(scale)).min((most - 1.0) / side);
     let target = FrameTarget {
-        origin: Point::new(f64::from(origin.x) / zoom, f64::from(origin.y) / zoom),
+        origin: Point::new(-rect.x0, -rect.y0),
         pts_per_mm: PT_PER_MM,
     };
-    let part = kurbo::Rect::new(
-        0.0,
-        0.0,
-        f64::from(shown.width()) / zoom,
-        f64::from(shown.height()) / zoom,
-    );
+    let part = kurbo::Rect::from_origin_size(Point::ZERO, rect.size());
     let list = state
         .pipeline
         .compose_frame_spill(&state.doc, frame, target, part);
     let drawn = list.map_err(|e| format!("{e:#}")).and_then(|list| {
-        let old = state.atlas.spills.remove(&frame.id).map(|s| s.texture);
         let name = || format!("spill-{}", frame.id.0);
         let renderer = state.map_renderer.as_mut();
-        let (texture, img) = map_texture::draw(ctx, renderer, old, name, &list, scale)?;
-        Ok((texture, thumb_of(img.as_ref(), None, &list, scale, true)?))
+        map_texture::draw(ctx, renderer, None, name, &list, scale)
     });
-    let (texture, thumb) = match drawn {
-        Ok(drawn) => drawn,
+    match drawn {
+        Ok((texture, _)) => (state.atlas.tiles).set_spill(frame.id, Some(Spill { texture, rect })),
         Err(e) => {
             state.status = e;
-            return;
-        }
-    };
-    let [w, h] = texture.size();
-    let size = vec2(w as f32, h as f32) / ppp;
-    state.atlas.spills.insert(
-        frame.id,
-        FrameImage {
-            texture,
-            thumb,
-            content,
-            place: place_key,
-            vt,
-            rect: Rect::from_min_size(shown.min, size),
-            settled: true,
-        },
-    );
-}
-
-#[allow(clippy::too_many_arguments)]
-fn compose(
-    ctx: &egui::Context,
-    state: &mut AppState,
-    frame: &FrameRecord,
-    (place, shown): (PagePlace, Rect),
-    vt: ViewTransform,
-    (content, place_key): (u64, u64),
-    quality: Quality,
-    (primary, layered): (bool, bool),
-) {
-    let ppp = ctx.pixels_per_point();
-    let px = |points: f32| ((points * ppp).round() as usize).clamp(1, 8192);
-    let (w, h) = (px(shown.width()), px(shown.height()));
-    // The list is in points of paper, so a width in the style is the width
-    // on the printed page, and the texture is rendered at the scale of the
-    // zoom. It starts at the top-left corner of the part of the frame on the
-    // canvas.
-    let zoom = f64::from(place.pts_per_mm) / PT_PER_MM;
-    let scale = f64::from(ppp) * zoom;
-    let origin = place.rect.min - shown.min;
-    let target = FrameTarget {
-        origin: Point::new(f64::from(origin.x) / zoom, f64::from(origin.y) / zoom),
-        pts_per_mm: PT_PER_MM,
-    };
-    let part = kurbo::Rect::new(
-        0.0,
-        0.0,
-        f64::from(shown.width()) / zoom,
-        f64::from(shown.height()) / zoom,
-    );
-    // A frame with raster layers has the water below them and the rest
-    // above them. The GPU draws them between the two.
-    let composed = if layered {
-        state.pipeline.compose_frame_over(
-            &state.doc,
-            frame,
-            target,
-            part,
-            &mut state.fonts,
-            quality,
-        )
-    } else {
-        state.pipeline.compose_frame_part(
-            &state.doc,
-            frame,
-            target,
-            part,
-            &mut state.fonts,
-            quality,
-        )
-    };
-    state.atlas.composes += 1;
-    let mut composed = match composed {
-        Ok(c) => c,
-        Err(e) => {
-            state.status = format!("{e:#}");
-            return;
-        }
-    };
-    let (width, height) = (w as f64 / scale, h as f64 / scale);
-    composed.list.width = width;
-    composed.list.height = height;
-    let settled = quality == Quality::Final;
-    let keys = (content, place_key);
-    if layered {
-        let under = state
-            .pipeline
-            .compose_frame_under(&state.doc, frame, target, part);
-        match under {
-            Ok(mut list) => {
-                list.width = width;
-                list.height = height;
-                let images = &mut state.atlas.unders;
-                match upload(
-                    ctx,
-                    state.map_renderer.as_mut(),
-                    images,
-                    frame.id,
-                    &list,
-                    scale,
-                    (shown, vt),
-                    keys,
-                    settled,
-                ) {
-                    Ok(()) => {}
-                    Err(e) => state.status = e,
-                }
-            }
-            Err(e) => state.status = format!("{e:#}"),
-        }
-    } else {
-        state.atlas.unders.remove(&frame.id);
-    }
-    let mut map = composed.list.clone();
-    let decor = vale_render::DisplayList {
-        items: map.items.split_off(composed.decor),
-        ..map.clone()
-    };
-    let images = &mut state.atlas.images;
-    if let Err(e) = upload(
-        ctx,
-        state.map_renderer.as_mut(),
-        images,
-        frame.id,
-        &map,
-        scale,
-        (shown, vt),
-        keys,
-        settled,
-    ) {
-        state.status = e;
-        return;
-    }
-    let clips = |item: &vale_render::Item| {
-        matches!(
-            item,
-            vale_render::Item::PushClip { .. } | vale_render::Item::PopClip
-        )
-    };
-    if decor.items.iter().all(clips) {
-        state.atlas.decors.remove(&frame.id);
-    } else {
-        let fixed = fixed_view(vt, place.target());
-        let images = &mut state.atlas.decors;
-        if let Err(e) = upload(
-            ctx,
-            state.map_renderer.as_mut(),
-            images,
-            frame.id,
-            &decor,
-            scale,
-            (shown, fixed),
-            keys,
-            settled,
-        ) {
-            state.status = e;
-            return;
+            state.atlas.tiles.set_spill(frame.id, None);
         }
     }
-    if primary {
-        state.composed = Some(composed);
-    }
-}
-
-/// Renders a list to the texture of a frame in `images`.
-#[allow(clippy::too_many_arguments)]
-fn upload(
-    ctx: &egui::Context,
-    renderer: Option<&mut MapRenderer>,
-    images: &mut HashMap<FrameId, FrameImage>,
-    id: FrameId,
-    list: &vale_render::DisplayList,
-    scale: f64,
-    (shown, vt): (Rect, ViewTransform),
-    (content, place): (u64, u64),
-    settled: bool,
-) -> Result<(), String> {
-    let ppp = ctx.pixels_per_point();
-    let (old, old_thumb) = match images.remove(&id) {
-        Some(old) => (Some(old.texture), Some(old.thumb)),
-        None => (None, None),
-    };
-    let name = || format!("frame-{}", id.0);
-    let (texture, img) = map_texture::draw(ctx, renderer, old, name, list, scale)?;
-    let thumb = thumb_of(img.as_ref(), old_thumb, list, scale, settled)?;
-    let [w, h] = texture.size();
-    let size = vec2(w as f32, h as f32) / ppp;
-    images.insert(
-        id,
-        FrameImage {
-            texture,
-            thumb,
-            content,
-            place,
-            vt,
-            rect: Rect::from_min_size(shown.min, size),
-            settled,
-        },
-    );
-    Ok(())
-}
-
-/// The reduced copy of a texture: from the pixels of the CPU, or after the
-/// GPU, from a render at the reduced size. While the map moves, the GPU
-/// keeps the last copy.
-fn thumb_of(
-    img: Option<&vale_render::Rgba>,
-    old: Option<Arc<Thumb>>,
-    list: &vale_render::DisplayList,
-    scale: f64,
-    settled: bool,
-) -> Result<Arc<Thumb>, String> {
-    if let Some(img) = img {
-        return Ok(Arc::new(Thumb::new(img, REDUCTION as usize)));
-    }
-    if let Some(old) = old.filter(|_| !settled) {
-        return Ok(old);
-    }
-    let small =
-        vale_render::render_rgba(list, scale / f64::from(REDUCTION)).map_err(|e| format!("{e}"))?;
-    Ok(Arc::new(Thumb::new(&small, 1)))
-}
-
-/// Paints the texture of a frame, and returns the screen rectangle of the
-/// painted part. While a gesture moves the map, the texture moves with the
-/// view, and it shows only inside the triangles of `inside`. With no
-/// triangles, the whole texture shows.
-fn paint_image(
-    painter: &egui::Painter,
-    image: &FrameImage,
-    vt: &ViewTransform,
-    (inside, clip): (&[[Pos2; 3]], Rect),
-) -> Rect {
-    let moved = |p: Pos2| {
-        let q = Point::new(f64::from(p.x), f64::from(p.y));
-        let q = vt.to_page(image.vt.from_page(q));
-        pos2(q.x as f32, q.y as f32)
-    };
-    let back = |p: Pos2| {
-        let q = Point::new(f64::from(p.x), f64::from(p.y));
-        let q = image.vt.to_page(vt.from_page(q));
-        pos2(q.x as f32, q.y as f32)
-    };
-    let r = image.rect;
-    let uv = |p: Pos2| {
-        let q = back(p) - r.min;
-        pos2(q.x / r.width(), q.y / r.height())
-    };
-    let quad = [
-        r.left_top(),
-        r.right_top(),
-        r.right_bottom(),
-        r.left_bottom(),
-    ]
-    .map(moved);
-    let mut mesh = egui::Mesh::with_texture(image.texture.id());
-    let mut fan = |points: &[Pos2]| {
-        let base = mesh.vertices.len() as u32;
-        for &pos in points {
-            mesh.vertices.push(egui::epaint::Vertex {
-                pos,
-                uv: uv(pos),
-                color: Color32::WHITE,
-            });
-        }
-        for i in 2..points.len() as u32 {
-            mesh.add_triangle(base, base + i - 1, base + i);
-        }
-    };
-    // At rest, the whole texture shows, with the smooth edge of the shape.
-    if inside.is_empty() || image.vt == *vt {
-        fan(&quad);
-    } else {
-        for triangle in inside {
-            fan(&clip_convex(triangle, &quad));
-        }
-    }
-    let rect = mesh.calc_bounds();
-    painter.with_clip_rect(clip).add(mesh);
-    rect
-}
-
-/// The part of the convex polygon `poly` inside the convex polygon `by`.
-fn clip_convex(poly: &[Pos2], by: &[Pos2]) -> Vec<Pos2> {
-    let cross = |a: Pos2, b: Pos2, p: Pos2| (b - a).x * (p - a).y - (b - a).y * (p - a).x;
-    let n = by.len();
-    let turn = (0..n)
-        .map(|i| cross(by[i], by[(i + 1) % n], by[(i + 2) % n]))
-        .sum::<f32>();
-    let mut out = poly.to_vec();
-    for i in 0..n {
-        let (a, b) = (by[i], by[(i + 1) % n]);
-        let side = |p: Pos2| cross(a, b, p) * turn.signum();
-        let input = std::mem::take(&mut out);
-        for (k, &p) in input.iter().enumerate() {
-            let q = input[(k + 1) % input.len()];
-            let (sp, sq) = (side(p), side(q));
-            if sp >= 0.0 {
-                out.push(p);
-            }
-            if (sp >= 0.0) != (sq >= 0.0) {
-                out.push(p + (q - p) * (sp / (sp - sq)));
-            }
-        }
-    }
-    out
 }
 
 /// The triangles of the shape of a frame on the screen.

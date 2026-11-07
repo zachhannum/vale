@@ -1082,6 +1082,241 @@ fn the_maps_stay_still_during_a_drag_and_compose_after_it() {
     assert_eq!(h.state().atlas.composes, composes + 1);
 }
 
+#[test]
+fn a_drag_of_the_page_shows_the_parts_of_a_map_that_come_into_view() {
+    let mut h = inset_pad(BOARDS[0]);
+    let id = frame(&h, 0).id;
+    let at = margin(&h);
+    pinch(&mut h, at, 100.0, 400.0, 0.0, Vec2::ZERO);
+    settle(&mut h);
+    let [rest, ..] = h.state().atlas.painted_rects(id);
+    let rest = rest.unwrap();
+    let shape = place(&h).rect_to_screen(shape_bbox(&frame(&h, 0).shape));
+    assert!(!rest.contains_rect(shape), "{rest:?} {shape:?}");
+    tap(&mut h, "Move");
+    let composes = h.state().atlas.composes;
+    let renders = h.state().atlas.tile_renders();
+    let from = margin(&h);
+    // The drag goes past the ring of tiles around the canvas.
+    let to = from - vec2(1100.0, 0.0);
+    drag_steps(&mut h, from, to, Input::Finger, 10);
+    // The map covers the part of the canvas that it covered at rest, with
+    // the tiles that it has, at their scales. The lists of the frame stay.
+    let [map, ..] = h.state().atlas.painted_rects(id);
+    let map = map.unwrap();
+    assert!(map.expand(1.0).contains_rect(rest), "{map:?} {rest:?}");
+    assert_eq!(h.state().atlas.frame_paint(id).unwrap().blank, 0);
+    assert_eq!(h.state().atlas.composes, composes);
+    // At rest, the tiles that came into view render at the scale of the
+    // screen.
+    release(&mut h, to, Input::Finger);
+    settle(&mut h);
+    assert!(h.state().atlas.tile_renders() > renders);
+    let scale = place(&h).pixels_per_page_point(1.0);
+    assert_eq!(h.state().atlas.frame_paint(id).unwrap().scales, vec![scale]);
+    assert_eq!(h.state().atlas.composes, composes);
+}
+
+/// Runs the UI until no tile renders in two passes in a row.
+fn settle(h: &mut Pad) {
+    let mut still = 0;
+    for _ in 0..100 {
+        let renders = h.state().atlas.tile_renders();
+        h.step();
+        still = if h.state().atlas.tile_renders() == renders {
+            still + 1
+        } else {
+            0
+        };
+        if still == 2 {
+            return;
+        }
+    }
+    panic!("the tiles do not settle");
+}
+
+/// The atlas with a main frame and an inset frame at 2 pixels in each
+/// point, as on an iPad, and the page zoomed in about its margin.
+fn zoomed_pad(zoom: f32) -> Pad {
+    let mut h = Harness::builder()
+        .with_size(vec2(BOARDS[0].0, BOARDS[0].1))
+        .with_pixels_per_point(2.0)
+        .with_step_dt(0.05)
+        .build_ui_state(|ui, state: &mut AppState| draw(ui, state), state());
+    h.run_steps(3);
+    add_frame(&mut h);
+    add_frame(&mut h);
+    let at = margin(&h);
+    pinch(&mut h, at, 100.0, 100.0 * zoom, 0.0, Vec2::ZERO);
+    settle(&mut h);
+    h
+}
+
+#[test]
+fn a_page_pan_renders_no_tile_again_and_composes_nothing() {
+    let mut h = inset_pad(BOARDS[0]);
+    let at = margin(&h);
+    pinch(&mut h, at, 100.0, 300.0, 0.0, Vec2::ZERO);
+    tap(&mut h, "Move");
+    settle(&mut h);
+    let composes = h.state().atlas.composes;
+    let from = margin(&h);
+    let to = from - vec2(300.0, 200.0);
+    drag(&mut h, from, to, Input::Finger);
+    settle(&mut h);
+    let renders = h.state().atlas.tile_renders();
+    drag(&mut h, to, from, Input::Finger);
+    settle(&mut h);
+    assert_eq!(h.state().atlas.tile_renders(), renders);
+    assert_eq!(h.state().atlas.composes, composes);
+}
+
+#[test]
+fn a_page_pan_renders_only_the_tiles_that_come_into_view() {
+    let mut h = inset_pad(BOARDS[0]);
+    let at = margin(&h);
+    pinch(&mut h, at, 100.0, 400.0, 0.0, Vec2::ZERO);
+    tap(&mut h, "Move");
+    settle(&mut h);
+    let id = frame(&h, 0).id;
+    let rows = u64::from(834 / vale_app::ui::frame_tiles::TILE + 4);
+    let (renders, tiles) = (
+        h.state().atlas.tile_renders(),
+        h.state().atlas.tile_count() as u64,
+    );
+    // A pan of less than a tile moves the ring of tiles around the canvas
+    // by one column at most: the map and the decorations of each row.
+    let from = margin(&h);
+    let to = from - vec2(400.0, 0.0);
+    drag_steps(&mut h, from, to, Input::Finger, 8);
+    let during = h.state().atlas.tile_renders() - renders;
+    release(&mut h, to, Input::Finger);
+    settle(&mut h);
+    let added = h.state().atlas.tile_renders() - renders;
+    assert_eq!(during, 0, "the ring holds the tiles that come into view");
+    assert!(added <= 2 * rows, "{added}");
+    assert!(added < tiles, "{added} {tiles}");
+    assert_eq!(h.state().atlas.frame_paint(id).unwrap().blank, 0);
+}
+
+#[test]
+fn the_tiles_that_a_long_pan_leaves_behind_go() {
+    let mut h = inset_pad(BOARDS[0]);
+    h.state_mut().atlas.tile_cap = 30;
+    let at = margin(&h);
+    pinch(&mut h, at, 100.0, 400.0, 0.0, Vec2::ZERO);
+    settle(&mut h);
+    let id = frame(&h, 0).id;
+    let renders = h.state().atlas.tile_renders();
+    for step in 0..4 {
+        h.state_mut().atlas.view.offset -= vec2(500.0, 0.0);
+        settle(&mut h);
+        let count = h.state().atlas.tile_count();
+        assert!(count <= 30, "step {step}: {count}");
+        assert_eq!(h.state().atlas.frame_paint(id).unwrap().blank, 0);
+    }
+    assert!(h.state().atlas.tile_renders() > renders);
+}
+
+#[test]
+fn a_fast_two_finger_pan_shows_no_blank_square() {
+    let mut h = zoomed_pad(4.0);
+    h.state_mut().atlas.tile_cap = 30;
+    let id = frame(&h, 0).id;
+    let (a, b) = (pos2(500.0, 500.0), pos2(700.0, 500.0));
+    touch(&mut h, 1, egui::TouchPhase::Start, a, None);
+    h.step();
+    touch(&mut h, 2, egui::TouchPhase::Start, b, None);
+    h.step();
+    for i in 1..=30 {
+        let d = -vec2(40.0, 25.0) * i as f32;
+        touch(&mut h, 1, egui::TouchPhase::Move, a + d, None);
+        touch(&mut h, 2, egui::TouchPhase::Move, b + d, None);
+        h.step();
+        let painted = h.state().atlas.frame_paint(id).unwrap();
+        assert_eq!(painted.blank, 0, "step {i}: {painted:?}");
+    }
+    let d = -vec2(40.0, 25.0) * 30.0;
+    touch(&mut h, 2, egui::TouchPhase::End, b + d, None);
+    h.step();
+    touch(&mut h, 1, egui::TouchPhase::End, a + d, None);
+    h.step();
+}
+
+#[test]
+fn a_zoom_of_the_page_draws_scaled_tiles_and_then_sharp_ones() {
+    let mut h = inset_pad(BOARDS[0]);
+    let id = frame(&h, 0).id;
+    settle(&mut h);
+    let rest = place(&h).pixels_per_page_point(1.0);
+    let at = middle(&h, 0);
+    let fingers = |t: f32| {
+        let half = 50.0 + 50.0 * t;
+        (at - vec2(half, 0.0), at + vec2(half, 0.0))
+    };
+    let (a, b) = fingers(0.0);
+    touch(&mut h, 1, egui::TouchPhase::Start, a, None);
+    h.step();
+    touch(&mut h, 2, egui::TouchPhase::Start, b, None);
+    h.step();
+    for i in 1..=6 {
+        let (a, b) = fingers(i as f32 / 6.0);
+        touch(&mut h, 1, egui::TouchPhase::Move, a, None);
+        touch(&mut h, 2, egui::TouchPhase::Move, b, None);
+        h.step();
+        let now = place(&h).pixels_per_page_point(1.0);
+        let painted = h.state().atlas.frame_paint(id).unwrap();
+        assert_eq!(painted.blank, 0, "step {i}");
+        assert!(!painted.scales.contains(&now), "step {i}: {now}");
+    }
+    let zoomed = place(&h).pixels_per_page_point(1.0);
+    assert!(zoomed > 1.5 * rest, "{rest} {zoomed}");
+    let (a, b) = fingers(1.0);
+    touch(&mut h, 2, egui::TouchPhase::End, b, None);
+    h.step();
+    touch(&mut h, 1, egui::TouchPhase::End, a, None);
+    settle(&mut h);
+    let painted = h.state().atlas.frame_paint(id).unwrap();
+    assert_eq!(painted.scales, vec![zoomed]);
+    assert_eq!(painted.blank, 0);
+}
+
+#[test]
+fn a_change_of_the_content_of_a_frame_renders_its_tiles_again() {
+    let mut h = zoomed_pad(3.0);
+    let id = frame(&h, 0).id;
+    let composes = h.state().atlas.composes;
+    let renders = h.state().atlas.tile_renders();
+    atlas::set_graticule_color(h.state_mut(), id, [255, 0, 0, 255]);
+    h.step();
+    assert_eq!(h.state().atlas.composes, composes + 1);
+    // The old tiles show until the new tiles are ready.
+    let painted = h.state().atlas.frame_paint(id).unwrap();
+    assert!(painted.previous > 0, "{painted:?}");
+    assert_eq!(painted.blank, 0);
+    settle(&mut h);
+    let painted = h.state().atlas.frame_paint(id).unwrap();
+    assert_eq!(painted.previous, 0);
+    assert_eq!(painted.blank, 0);
+    assert!(h.state().atlas.tile_renders() > renders + 8);
+    assert_eq!(h.state().atlas.composes, composes + 1);
+}
+
+#[test]
+fn a_pass_of_the_ui_renders_eight_tiles_at_most() {
+    let mut h = zoomed_pad(3.0);
+    let id = frame(&h, 0).id;
+    let renders = h.state().atlas.tile_renders();
+    atlas::set_graticule_color(h.state_mut(), id, [0, 0, 255, 255]);
+    h.step();
+    // The overviews of the new lists take a part of the eight renders.
+    let first = h.state().atlas.tile_renders() - renders;
+    assert!((1..8).contains(&first), "{first}");
+    assert!(h.ctx.has_requested_repaint());
+    h.step();
+    assert!(h.state().atlas.tile_renders() > renders + first);
+}
+
 /// The center, the scale, the rotation, and the shape of each frame of the
 /// open page.
 fn maps(h: &Pad) -> Vec<String> {
@@ -2336,6 +2571,16 @@ fn the_texture_of_a_frame_is_on_whole_pixels() {
 }
 
 #[test]
+fn the_page_starts_on_a_whole_pixel() {
+    let mut h = inset_pad(BOARDS[0]);
+    h.state_mut().atlas.view.zoom = 1.37;
+    h.state_mut().atlas.view.offset = vec2(13.3, -7.9);
+    h.run_steps(2);
+    let min = place(&h).rect.min;
+    assert_eq!(min, min.round(), "{min:?}");
+}
+
+#[test]
 fn the_texture_of_a_frame_holds_the_whole_neatline() {
     let mut h = inset_pad(BOARDS[0]);
     let id = frame(&h, 1).id;
@@ -2350,7 +2595,7 @@ fn the_texture_of_a_frame_holds_the_whole_neatline() {
     let place = h.state().atlas.place.unwrap();
     let bbox = place.rect_to_screen(shape_bbox(&frame(&h, 1).shape));
     let reach = |h: &Pad| {
-        let r = h.state().atlas.texture_rect(id).unwrap();
+        let r = h.state().atlas.list_bounds(id).unwrap();
         bbox.min.x - r.min.x
     };
     // Half the width of the neatline is outside the shape.
@@ -2413,6 +2658,28 @@ fn a_tap_of_two_fingers_undoes_and_a_tap_of_three_redoes_in_the_atlas() {
     assert_eq!(open_page(&h).frames.len(), 1);
     key(&mut h, Modifiers::COMMAND | Modifiers::SHIFT);
     assert_eq!(open_page(&h).frames.len(), 2);
+}
+
+#[test]
+fn a_region_of_a_list_draws_again_to_the_texture_of_the_same_size() {
+    use kurbo::Shape;
+    use vale_app::ui::map_texture::draw_region;
+    let ctx = egui::Context::default();
+    let mut list = vale_render::DisplayList::new(1000.0, 1000.0);
+    list.push(Item::Fill {
+        path: kurbo::Rect::new(600.0, 600.0, 700.0, 700.0).to_path(0.1),
+        color: vale_render::Color::rgba(255, 0, 0, 255),
+        rule: vale_render::FillRule::NonZero,
+    });
+    let list = vale_render::PreparedList::new(&list).unwrap();
+    let at = kurbo::Affine::translate((-512.0, -512.0));
+    let first = draw_region(&ctx, None, None, &list, at, [64, 64]).unwrap();
+    assert_eq!(first.size(), [64, 64]);
+    let id = first.id();
+    let again = draw_region(&ctx, None, Some(first), &list, at, [64, 64]).unwrap();
+    assert_eq!(again.id(), id);
+    let other = draw_region(&ctx, None, Some(again), &list, at, [32, 32]).unwrap();
+    assert_ne!(other.id(), id);
 }
 
 /// The red values of a row of pixels near the bottom of a card, inside its

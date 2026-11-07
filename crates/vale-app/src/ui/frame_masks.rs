@@ -11,7 +11,9 @@ use crate::mask::frame::cover_mask;
 use crate::pipeline::Pipeline;
 
 /// The raster mask of each masked layer of each map frame on the screen,
-/// from the GPU. A mask stays until its new capture arrives.
+/// from the GPU. A capture covers the whole frame at a scale of its own, so
+/// a pan of the page does not change it. A mask stays until its new capture
+/// arrives.
 #[derive(Default)]
 pub struct FrameMasks {
     entries: HashMap<(FrameId, LayerId), Entry>,
@@ -26,10 +28,13 @@ struct Entry {
     pending: Option<Pending>,
     /// The number of the mask that the pipeline has.
     number: u64,
+    /// The pixels in one page point of the mask that the pipeline has.
+    scale: f32,
 }
 
 struct Pending {
     key: u64,
+    scale: f32,
     receiver: mpsc::Receiver<Result<Captured, String>>,
     /// Page millimeters to the pixels of the capture.
     at: FrameTarget,
@@ -64,6 +69,7 @@ impl FrameMasks {
             pipeline.set_page_mask(frame, layer, Some(mask));
             self.count += 1;
             entry.key = pending.key;
+            entry.scale = pending.scale;
             entry.number = self.count;
         }
         waits
@@ -79,25 +85,33 @@ impl FrameMasks {
     }
 
     /// True if the mask of layer `layer` in frame `frame` needs a capture
-    /// for `key`. A mask waits for its capture before it gets another.
-    pub fn wants(&self, frame: FrameId, layer: LayerId, key: u64) -> bool {
+    /// for `key` at `scale` pixels in one page point. A mask with the same
+    /// key and a finer scale needs none. A mask waits for its capture before
+    /// it gets another.
+    pub fn wants(&self, frame: FrameId, layer: LayerId, key: u64, scale: f32) -> bool {
         self.entries
             .get(&(frame, layer))
-            .is_none_or(|e| e.pending.is_none() && e.key != key)
+            .is_none_or(|e| e.pending.is_none() && (e.key != key || e.scale < scale))
     }
 
     /// Waits for the capture of the mask of layer `layer` in frame `frame`
-    /// for `key`. `at` maps page millimeters to the pixels of the capture.
+    /// for `key` at `scale` pixels in one page point. `at` maps page
+    /// millimeters to the pixels of the capture.
     pub fn start(
         &mut self,
         frame: FrameId,
         layer: LayerId,
-        key: u64,
+        (key, scale): (u64, f32),
         receiver: mpsc::Receiver<Result<Captured, String>>,
         at: FrameTarget,
     ) {
         let entry = self.entries.entry((frame, layer)).or_default();
-        entry.pending = Some(Pending { key, receiver, at });
+        entry.pending = Some(Pending {
+            key,
+            scale,
+            receiver,
+            at,
+        });
     }
 
     /// Keeps only the masks that `keep` gives, and removes the others from

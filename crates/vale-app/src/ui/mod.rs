@@ -44,6 +44,7 @@ pub mod dock;
 pub mod elevation;
 pub mod font_dialog;
 pub mod frame_masks;
+pub mod frame_tiles;
 pub mod globe;
 pub mod gradient;
 pub mod inspector;

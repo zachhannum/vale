@@ -9,6 +9,7 @@ use vello_cpu::peniko::{Fill, ImageQuality, ImageSampler};
 use vello_cpu::{Image, ImageSource, Level, Pixmap, RenderContext, RenderSettings, Resources};
 
 use crate::list::{Color, DisplayList, FillRule, GlyphRun, Item, RenderError};
+use crate::prepared::{Node, PreparedList};
 
 /// The largest side of a raster page, in pixels.
 const MAX_SIDE: f64 = 16384.0;
@@ -45,36 +46,78 @@ pub fn glyph_run_outline(run: &GlyphRun) -> BezPath {
     out
 }
 
+fn fill(ctx: &mut RenderContext, path: &BezPath, color: Color, rule: FillRule) {
+    ctx.set_fill_rule(fill_rule(rule));
+    ctx.set_paint(paint(color));
+    ctx.fill_path(path);
+}
+
+fn stroke(ctx: &mut RenderContext, path: &BezPath, color: Color, width: f64, round: bool) {
+    let mut stroke = Stroke::new(width);
+    if round {
+        stroke = stroke.with_join(Join::Round).with_caps(Cap::Round);
+    }
+    ctx.set_stroke(stroke);
+    ctx.set_paint(paint(color));
+    ctx.stroke_path(path);
+}
+
+/// Draws the image in the page-space rectangle `rect`, which has an area.
+fn image(
+    ctx: &mut RenderContext,
+    pixmap: Arc<Pixmap>,
+    rect: Rect,
+    interpolate: bool,
+    base: Affine,
+) {
+    let (iw, ih) = (f64::from(pixmap.width()), f64::from(pixmap.height()));
+    let transform = base
+        * Affine::translate((rect.x0, rect.y0))
+        * Affine::scale_non_uniform(rect.width() / iw, rect.height() / ih);
+    ctx.set_transform(transform);
+    ctx.set_paint(Image {
+        image: ImageSource::Pixmap(pixmap),
+        sampler: ImageSampler {
+            quality: if interpolate {
+                ImageQuality::Medium
+            } else {
+                ImageQuality::Low
+            },
+            ..Default::default()
+        },
+    });
+    ctx.fill_rect(&Rect::new(0.0, 0.0, iw, ih));
+    ctx.set_transform(base);
+}
+
+fn push_clip(ctx: &mut RenderContext, path: &BezPath, rule: FillRule) {
+    ctx.set_fill_rule(fill_rule(rule));
+    ctx.push_clip_path(path);
+}
+
+fn push_layer(ctx: &mut RenderContext, alpha: f32) {
+    ctx.push_opacity_layer(alpha.clamp(0.0, 1.0));
+}
+
+fn pop_layer(ctx: &mut RenderContext, base: Affine) {
+    ctx.pop_layer();
+    ctx.set_transform(base);
+}
+
 /// Draws the items under `base`, and closes the clips that they leave open.
 fn draw_items(ctx: &mut RenderContext, items: &[Item], base: Affine) -> Result<(), RenderError> {
     ctx.set_transform(base);
     let mut clips = 0usize;
     for item in items {
         match item {
-            Item::Fill { path, color, rule } => {
-                ctx.set_fill_rule(fill_rule(*rule));
-                ctx.set_paint(paint(*color));
-                ctx.fill_path(path);
-            }
+            Item::Fill { path, color, rule } => fill(ctx, path, *color, *rule),
             Item::Stroke {
                 path,
                 color,
                 width,
                 round,
-            } => {
-                let mut stroke = Stroke::new(*width);
-                if *round {
-                    stroke = stroke.with_join(Join::Round).with_caps(Cap::Round);
-                }
-                ctx.set_stroke(stroke);
-                ctx.set_paint(paint(*color));
-                ctx.stroke_path(path);
-            }
-            Item::Glyphs(run) => {
-                ctx.set_fill_rule(Fill::NonZero);
-                ctx.set_paint(paint(run.color));
-                ctx.fill_path(&glyph_run_outline(run));
-            }
+            } => stroke(ctx, path, *color, *width, *round),
+            Item::Glyphs(run) => fill(ctx, &glyph_run_outline(run), run.color, FillRule::NonZero),
             Item::Image {
                 png,
                 rect,
@@ -82,38 +125,18 @@ fn draw_items(ctx: &mut RenderContext, items: &[Item], base: Affine) -> Result<(
             } => {
                 let pixmap = Pixmap::from_png(Cursor::new(png))
                     .map_err(|e| RenderError::Png(format!("{e:?}")))?;
-                let (iw, ih) = (f64::from(pixmap.width()), f64::from(pixmap.height()));
-                if !(rect.width() > 0.0 && rect.height() > 0.0) {
-                    continue;
+                if rect.width() > 0.0 && rect.height() > 0.0 {
+                    image(ctx, Arc::new(pixmap), *rect, *interpolate, base);
                 }
-                let transform = base
-                    * Affine::translate((rect.x0, rect.y0))
-                    * Affine::scale_non_uniform(rect.width() / iw, rect.height() / ih);
-                ctx.set_transform(transform);
-                ctx.set_paint(Image {
-                    image: ImageSource::Pixmap(Arc::new(pixmap)),
-                    sampler: ImageSampler {
-                        quality: if *interpolate {
-                            ImageQuality::Medium
-                        } else {
-                            ImageQuality::Low
-                        },
-                        ..Default::default()
-                    },
-                });
-                ctx.fill_rect(&Rect::new(0.0, 0.0, iw, ih));
-                ctx.set_transform(base);
             }
             Item::Rasterize { items, .. } => draw_items(ctx, items, base)?,
             Item::Layer { alpha, items } => {
-                ctx.push_opacity_layer(alpha.clamp(0.0, 1.0));
+                push_layer(ctx, *alpha);
                 draw_items(ctx, items, base)?;
-                ctx.pop_layer();
-                ctx.set_transform(base);
+                pop_layer(ctx, base);
             }
             Item::PushClip { path, rule } => {
-                ctx.set_fill_rule(fill_rule(*rule));
-                ctx.push_clip_path(path);
+                push_clip(ctx, path, *rule);
                 clips += 1;
             }
             Item::PopClip => {
@@ -128,6 +151,102 @@ fn draw_items(ctx: &mut RenderContext, items: &[Item], base: Affine) -> Result<(
         ctx.pop_clip();
     }
     Ok(())
+}
+
+/// Draws the nodes that touch the region of `w` by `h` pixels under `base`, and returns the
+/// number of leaf nodes that it draws.
+fn draw_nodes(ctx: &mut RenderContext, nodes: &[Node], base: Affine, w: f64, h: f64) -> usize {
+    let mut drawn = 0;
+    for node in nodes {
+        if !node.visible(base, w, h) {
+            continue;
+        }
+        match node {
+            Node::Fill {
+                path, color, rule, ..
+            } => fill(ctx, path, *color, *rule),
+            Node::Stroke {
+                path,
+                color,
+                width,
+                round,
+                ..
+            } => stroke(ctx, path, *color, *width, *round),
+            Node::Glyphs { path, color, .. } => fill(ctx, path, *color, FillRule::NonZero),
+            Node::Image {
+                pixmap,
+                rect,
+                interpolate,
+            } => image(ctx, pixmap.clone(), *rect, *interpolate, base),
+            Node::Clip {
+                path,
+                rule,
+                children,
+                ..
+            } => {
+                push_clip(ctx, path, *rule);
+                drawn += draw_nodes(ctx, children, base, w, h);
+                ctx.pop_clip();
+                continue;
+            }
+            Node::Layer {
+                alpha, children, ..
+            } => {
+                push_layer(ctx, *alpha);
+                drawn += draw_nodes(ctx, children, base, w, h);
+                pop_layer(ctx, base);
+                continue;
+            }
+            Node::Rasterize { children, .. } => {
+                drawn += draw_nodes(ctx, children, base, w, h);
+                continue;
+            }
+        }
+        drawn += 1;
+    }
+    drawn
+}
+
+/// Draws the part of the list that falls in an image of `width` by `height` pixels, where the
+/// page point `p` lands on the pixel `transform * p`. Returns the premultiplied pixels and the
+/// number of fills, strokes, glyph runs, and images that it draws. Only the size of the image
+/// has a limit, not the size of the page under the transform.
+pub fn render_region(
+    list: &PreparedList,
+    transform: Affine,
+    width: u32,
+    height: u32,
+) -> Result<(Rgba, usize), RenderError> {
+    if width == 0 || height == 0 {
+        return Err(RenderError::EmptyPage);
+    }
+    let too_large = || RenderError::TooLarge {
+        width: width.into(),
+        height: height.into(),
+    };
+    let w = u16::try_from(width).map_err(|_| too_large())?;
+    let h = u16::try_from(height).map_err(|_| too_large())?;
+    let mut ctx = new_context(w, h);
+    ctx.set_transform(transform);
+    let drawn = draw_nodes(
+        &mut ctx,
+        &list.nodes,
+        transform,
+        width.into(),
+        height.into(),
+    );
+    ctx.flush();
+    let mut pixmap = Pixmap::new(w, h);
+    ctx.render(&mut pixmap, &mut Resources::new());
+    Ok((to_rgba(&pixmap), drawn))
+}
+
+fn to_rgba(pixmap: &Pixmap) -> Rgba {
+    Rgba {
+        width: usize::from(pixmap.width()),
+        height: usize::from(pixmap.height()),
+        data: pixmap.data_as_u8_slice().to_vec(),
+    }
 }
 
 fn new_context(w: u16, h: u16) -> RenderContext {
@@ -206,12 +325,7 @@ pub fn render_pixmap(list: &DisplayList, scale: f64) -> Result<Pixmap, RenderErr
 
 /// Draws the list and returns the premultiplied pixels.
 pub fn render_rgba(list: &DisplayList, scale: f64) -> Result<Rgba, RenderError> {
-    let pixmap = render_pixmap(list, scale)?;
-    Ok(Rgba {
-        width: usize::from(pixmap.width()),
-        height: usize::from(pixmap.height()),
-        data: pixmap.data_as_u8_slice().to_vec(),
-    })
+    Ok(to_rgba(&render_pixmap(list, scale)?))
 }
 
 /// Draws the list and encodes it as a PNG.
