@@ -2352,6 +2352,7 @@ fn mesh_of(state: &mut AppState, spec: ProjectionSpec) -> Option<Arc<FlatMesh>> 
 }
 
 /// The shape of a frame as pixels of coverage, for the target of the frame.
+/// A target inside the shape needs no mask.
 fn shape_mask(
     state: &mut AppState,
     frame: &FrameRecord,
@@ -2360,6 +2361,24 @@ fn shape_mask(
     ppp: f32,
 ) -> Option<Arc<Mask>> {
     let [x, y, w, h] = rect;
+    let to_pixels = |p: &[f64; 2]| {
+        let q = place.to_screen(Point::new(p[0], p[1])) * ppp;
+        Point::new(f64::from(q.x), f64::from(q.y))
+    };
+    let rings: Vec<Vec<Point>> = (frame.shape.rings().iter())
+        .map(|r| r.iter().map(to_pixels).collect())
+        .collect();
+    let target = kurbo::Rect::new(
+        f64::from(x),
+        f64::from(y),
+        f64::from(x + w),
+        f64::from(y + h),
+    );
+    // The antialiased edge of the shape is one pixel wide.
+    if covers(&rings, target.inflate(1.0, 1.0)) {
+        state.atlas.masks.remove(&frame.id);
+        return None;
+    }
     let key = hash_of((&frame.shape, place.target(), rect, ppp.to_bits()));
     if let Some((of, mask)) = state.atlas.masks.get(&frame.id)
         && *of == key
@@ -2385,6 +2404,53 @@ fn shape_mask(
     });
     state.atlas.masks.insert(frame.id, (key, mask.clone()));
     Some(mask)
+}
+
+/// Whether the rings cover the whole rectangle, with the even-odd rule.
+fn covers(rings: &[Vec<Point>], rect: kurbo::Rect) -> bool {
+    let edges = || {
+        let pairs = rings.iter().flat_map(|r| r.iter().zip(r.iter().cycle().skip(1)));
+        pairs.map(|(a, b)| (*a, *b))
+    };
+    // When no edge goes into the rectangle, the rectangle is all inside or
+    // all outside, as its middle is.
+    if edges().any(|(a, b)| segment_touches(a, b, rect)) {
+        return false;
+    }
+    let c = rect.center();
+    let crossings = edges()
+        .filter(|(a, b)| (a.y > c.y) != (b.y > c.y))
+        .filter(|(a, b)| c.x < a.x + (c.y - a.y) / (b.y - a.y) * (b.x - a.x))
+        .count();
+    crossings % 2 == 1
+}
+
+/// Whether a part of the segment from `a` to `b` is in the rectangle.
+fn segment_touches(a: Point, b: Point, rect: kurbo::Rect) -> bool {
+    // The part of the segment `a + t * (b - a)` in the rectangle has `t`
+    // from `t0` to `t1`.
+    let d = b - a;
+    let (mut t0, mut t1) = (0.0f64, 1.0f64);
+    for (p, q) in [
+        (-d.x, a.x - rect.x0),
+        (d.x, rect.x1 - a.x),
+        (-d.y, a.y - rect.y0),
+        (d.y, rect.y1 - a.y),
+    ] {
+        if p == 0.0 {
+            if q < 0.0 {
+                return false;
+            }
+            continue;
+        }
+        let t = q / p;
+        if p < 0.0 {
+            t0 = t0.max(t);
+        } else {
+            t1 = t1.min(t);
+        }
+    }
+    t0 <= t1
 }
 
 /// Composes the display lists of the frames that changed, renders their
@@ -3731,5 +3797,45 @@ pub fn set_border_stroke_width(state: &mut AppState, id: FrameId, width: f64) {
     if width.is_finite() {
         let width = stepped(width, Border::STROKE_WIDTHS, 0.05);
         edit_border(state, id, |b| b.stroke_width = width);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ring(points: &[(f64, f64)]) -> Vec<Point> {
+        points.iter().map(|&(x, y)| Point::new(x, y)).collect()
+    }
+
+    #[test]
+    fn a_shape_covers_a_rectangle_inside_it_only() {
+        let square = vec![ring(&[(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)])];
+        assert!(covers(&square, kurbo::Rect::new(10.0, 10.0, 90.0, 90.0)));
+        // A rectangle across the edge, around the shape, and outside it.
+        assert!(!covers(&square, kurbo::Rect::new(50.0, 50.0, 150.0, 90.0)));
+        assert!(!covers(&square, kurbo::Rect::new(-10.0, -10.0, 110.0, 110.0)));
+        assert!(!covers(&square, kurbo::Rect::new(200.0, 200.0, 300.0, 300.0)));
+    }
+
+    #[test]
+    fn a_hole_or_a_notch_in_a_rectangle_is_not_covered() {
+        let holed = vec![
+            ring(&[(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)]),
+            ring(&[(40.0, 40.0), (60.0, 40.0), (60.0, 60.0), (40.0, 60.0)]),
+        ];
+        assert!(!covers(&holed, kurbo::Rect::new(10.0, 10.0, 90.0, 90.0)));
+        assert!(covers(&holed, kurbo::Rect::new(10.0, 10.0, 30.0, 90.0)));
+        // An L shape: the notch is in the box of the shape.
+        let l = vec![ring(&[
+            (0.0, 0.0),
+            (100.0, 0.0),
+            (100.0, 50.0),
+            (50.0, 50.0),
+            (50.0, 100.0),
+            (0.0, 100.0),
+        ])];
+        assert!(!covers(&l, kurbo::Rect::new(10.0, 10.0, 90.0, 90.0)));
+        assert!(covers(&l, kurbo::Rect::new(10.0, 10.0, 40.0, 90.0)));
     }
 }
