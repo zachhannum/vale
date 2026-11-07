@@ -416,8 +416,8 @@ fn check_controls(h: &Pad, what: &str) {
             // The edit menu and the menu of the values of a field cover the
             // controls below them.
             let edit = |c: &vale_app::ui::pad::widgets::Control| {
-                use vale_app::ui::pad::widgets::{COPY, PASTE};
-                c.name == COPY || c.name == PASTE
+                use vale_app::ui::pad::widgets::{COPY, CUT, PASTE};
+                c.name == CUT || c.name == COPY || c.name == PASTE
             };
             // The value field of a vertical slider is at the top of the
             // slider, and it takes the touches there.
@@ -9683,6 +9683,197 @@ fn open_chip(h: &mut Pad, text: &str) -> vale_store::LayerId {
     touch(h, egui::TouchPhase::End, pos, None);
     h.run_steps(3);
     places
+}
+
+/// Opens the Label text page of Places with label text `text`, and gives
+/// the field the focus.
+fn open_label(h: &mut Pad, text: &str) -> vale_store::LayerId {
+    let places = vector(h, "Places");
+    h.state_mut()
+        .doc
+        .entry_mut(places)
+        .unwrap()
+        .style
+        .label
+        .text = text.into();
+    open_label_text(h);
+    places
+}
+
+/// The layout of the label text field with text `text`, on the screen.
+fn label_layout(h: &Pad, text: &str) -> vale_app::ui::token_field::Layout {
+    use vale_app::ui::expr_help::ExprHelp;
+    use vale_app::ui::pad::label_text::LABEL_TEXT;
+    use vale_app::ui::token_field::{Metrics, layout, template};
+    use vale_style::expr::editor::Template;
+    let rect = control(h, LABEL_TEXT).unwrap();
+    let m = Metrics::pad();
+    let field = template::field_of(&Template::from_text(text), &ExprHelp::empty());
+    let mut measure = |s: &str, font: &egui::FontId| {
+        h.ctx
+            .fonts_mut(|f| s.chars().map(|c| f.glyph_width(font, c)).sum::<f32>())
+    };
+    let mut lay = layout(&field.nodes, &m, rect.width() - 2.0 * m.pad.x, &mut measure);
+    lay.translate((rect.min + m.pad).to_vec2());
+    lay
+}
+
+/// The middle of the caret at `index` of the list at `path`.
+fn stop(lay: &vale_app::ui::token_field::Layout, path: &[usize], index: usize) -> Pos2 {
+    use vale_app::ui::token_field::Caret;
+    let caret = Caret::new(path.to_vec(), index);
+    lay.caret_rect(&caret).unwrap().center()
+}
+
+/// Holds a finger still at `from` for a long press, drags it to `to`, and
+/// lifts it. `shot` names a picture of the drag before the lift.
+fn long_press_drag(h: &mut Pad, from: Pos2, to: Pos2, shot: Option<&str>) {
+    touch(h, egui::TouchPhase::Start, from, None);
+    h.step();
+    h.step();
+    for i in 1..=6 {
+        let at = from.lerp(to, i as f32 / 6.0);
+        touch(h, egui::TouchPhase::Move, at, None);
+        h.step();
+    }
+    if let Some(name) = shot {
+        screenshot::save(h, name);
+    }
+    touch(h, egui::TouchPhase::End, to, None);
+    h.run_steps(3);
+}
+
+#[test]
+fn long_press_drags_chip_to_new_place() {
+    use vale_app::ui::pad::chip_popover::DECIMAL_PLACES;
+    let mut h = pad(BOARDS[0]);
+    let text = "concat(name, ' ', round(pop_max, 1))";
+    let places = open_label(&mut h, text);
+    let lay = label_layout(&h, text);
+    let pop = lay.rect_of(&[2]).unwrap().center();
+    long_press_drag(&mut h, pop, stop(&lay, &[], 0), Some("pad-label-text-drag"));
+    assert_eq!(
+        label_text(&h, places),
+        "concat(round(pop_max, 1), name, ' ')"
+    );
+    // The long press does not open the popover, and the keyboard stays.
+    assert!(control(&h, &format!("Increase {DECIMAL_PLACES}")).is_none());
+    assert!(h.output().platform_output.ime.is_some());
+}
+
+#[test]
+fn drag_into_group_moves_chip_inside() {
+    let mut h = pad(BOARDS[0]);
+    let text = "concat(name, 'Pop ' || pop_max)";
+    let places = open_label(&mut h, text);
+    let lay = label_layout(&h, text);
+    let name = lay.rect_of(&[0]).unwrap().center();
+    long_press_drag(&mut h, name, stop(&lay, &[1], 0), None);
+    assert_eq!(label_text(&h, places), "name || 'Pop ' || pop_max");
+}
+
+#[test]
+fn drag_moves_a_group_by_its_frame() {
+    let mut h = pad(BOARDS[0]);
+    let text = "concat(name, 'Pop ' || pop_max)";
+    let places = open_label(&mut h, text);
+    let lay = label_layout(&h, text);
+    let frame = lay.rect_of(&[1]).unwrap();
+    let edge = pos2(frame.right() - 2.0, frame.center().y);
+    long_press_drag(&mut h, edge, stop(&lay, &[], 0), None);
+    assert_eq!(label_text(&h, places), "concat('Pop ' || pop_max, name)");
+}
+
+#[test]
+fn drag_cancels_outside_field() {
+    use vale_app::ui::pad::label_text::LABEL_TEXT;
+    let mut h = pad(BOARDS[0]);
+    let text = "concat(name, ' ', pop_max)";
+    let places = open_label(&mut h, text);
+    let lay = label_layout(&h, text);
+    let pop = lay.rect_of(&[2]).unwrap().center();
+    let below = control(&h, LABEL_TEXT).unwrap().center_bottom() + vec2(0.0, 80.0);
+    long_press_drag(&mut h, pop, below, None);
+    assert_eq!(label_text(&h, places), text);
+}
+
+#[test]
+fn tap_still_opens_popover() {
+    use vale_app::ui::pad::chip_popover::DECIMAL_PLACES;
+    let mut h = pad(BOARDS[0]);
+    let text = "concat(name, ' ', pop_max)";
+    let places = open_label(&mut h, text);
+    let lay = label_layout(&h, text);
+    let pop = lay.rect_of(&[2]).unwrap().center();
+    touch(&mut h, egui::TouchPhase::Start, pop, None);
+    h.step();
+    touch(&mut h, egui::TouchPhase::End, pop, None);
+    h.run_steps(3);
+    assert!(control(&h, &format!("Increase {DECIMAL_PLACES}")).is_some());
+    assert_eq!(label_text(&h, places), text);
+}
+
+#[test]
+fn copy_field_and_paste_keep_chip_format() {
+    use vale_app::ui::pad::chip_popover::{COPY_FIELD, CUT_FIELD};
+    use vale_app::ui::pad::widgets::PASTE;
+    let _clipboard = one_clipboard_test();
+    let mut h = pad(BOARDS[0]);
+    let text = "concat(round(pop_max, 1), ' ', name)";
+    let places = open_label(&mut h, text);
+    let lay = label_layout(&h, text);
+    let pop = lay.rect_of(&[0]).unwrap().center();
+    touch(&mut h, egui::TouchPhase::Start, pop, None);
+    h.step();
+    touch(&mut h, egui::TouchPhase::End, pop, None);
+    h.run_steps(3);
+    tap(&mut h, COPY_FIELD);
+    assert_eq!(
+        vale_app::clipboard::get().as_deref(),
+        Some("round(pop_max, 1)")
+    );
+    // A long press in empty space at the end opens the edit menu.
+    let end = stop(&lay, &[], 3) + vec2(60.0, 0.0);
+    touch(&mut h, egui::TouchPhase::Start, end, None);
+    h.run_steps(3);
+    touch(&mut h, egui::TouchPhase::End, end, None);
+    h.run_steps(3);
+    tap(&mut h, PASTE);
+    assert_eq!(
+        label_text(&h, places),
+        "concat(round(pop_max, 1), ' ', name, round(pop_max, 1))"
+    );
+    // Cut field takes the chip away, and the clipboard keeps its text.
+    touch(&mut h, egui::TouchPhase::Start, pop, None);
+    h.step();
+    touch(&mut h, egui::TouchPhase::End, pop, None);
+    h.run_steps(3);
+    tap(&mut h, CUT_FIELD);
+    assert_eq!(
+        label_text(&h, places),
+        "concat(' ', name, round(pop_max, 1))"
+    );
+    assert_eq!(
+        vale_app::clipboard::get().as_deref(),
+        Some("round(pop_max, 1)")
+    );
+}
+
+#[test]
+fn tap_on_expression_chip_opens_edit_menu() {
+    use vale_app::ui::pad::widgets::CUT;
+    let _clipboard = one_clipboard_test();
+    let mut h = pad(BOARDS[0]);
+    let text = "concat(name, pop_max * 2, pop_max)";
+    let places = open_label(&mut h, text);
+    let lay = label_layout(&h, text);
+    let brk = lay.rect_of(&[1]).unwrap().center();
+    touch(&mut h, egui::TouchPhase::Start, brk, None);
+    h.step();
+    touch(&mut h, egui::TouchPhase::End, brk, None);
+    h.run_steps(3);
+    tap(&mut h, CUT);
+    assert_eq!(label_text(&h, places), "concat(name, pop_max)");
 }
 
 #[test]
