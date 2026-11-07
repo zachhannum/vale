@@ -2,6 +2,7 @@
 //!
 //! `docs/EXPRESSIONS.md` has the grammar and the functions.
 
+pub mod editor;
 mod eval;
 mod functions;
 mod lexer;

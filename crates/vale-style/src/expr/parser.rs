@@ -96,7 +96,6 @@ impl Node {
 
 /// The span of a node in the source, in chars, and the spans of its children. The span of a node in parentheses leaves out the parentheses. A hole has an empty span at the place where the value belongs.
 #[derive(Clone, Debug)]
-#[cfg_attr(not(test), allow(dead_code))]
 pub(super) struct Spans {
     pub span: Range<usize>,
     pub kids: Vec<Spans>,

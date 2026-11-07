@@ -173,6 +173,7 @@ pub(super) fn literal(v: &Value) -> String {
         Value::Bool(b) => b.to_string(),
         Value::Number(n) if n.is_nan() => "null".into(),
         Value::Number(n) if n.is_infinite() => if *n > 0.0 { "1e999" } else { "-1e999" }.into(),
+        Value::Number(n) if *n == 0.0 && n.is_sign_negative() => "-0".into(),
         Value::Number(n) => number_text(*n),
         Value::Text(s) => quote(s),
     }
