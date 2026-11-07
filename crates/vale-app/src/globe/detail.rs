@@ -15,8 +15,8 @@ use std::collections::HashMap;
 use std::f64::consts::FRAC_PI_2;
 use std::ops::Range;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex, PoisonError};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use vale_sphere::{Point, Projection, ProjectionSpec};
 use vale_store::RasterId;
@@ -259,7 +259,9 @@ impl Grid {
     fn tiles(&self, face_size: u32, margin: bool) -> Vec<TileKey> {
         let mut tiles = self.tiles.lock().unwrap_or_else(PoisonError::into_inner);
         let found = tiles.entry((face_size, margin));
-        found.or_insert_with(|| self.find_tiles(face_size, margin)).clone()
+        found
+            .or_insert_with(|| self.find_tiles(face_size, margin))
+            .clone()
     }
 
     fn find_tiles(&self, face_size: u32, margin: bool) -> Vec<TileKey> {
@@ -315,11 +317,7 @@ impl Grid {
 }
 
 /// A tile and the 8 tiles around it, across the edges of its face.
-fn around(
-    (face, col, row): TileKey,
-    face_size: u32,
-    tile: usize,
-) -> impl Iterator<Item = TileKey> {
+fn around((face, col, row): TileKey, face_size: u32, tile: usize) -> impl Iterator<Item = TileKey> {
     let side = tile as f64 / f64::from(face_size);
     // The equal-angle coordinate of the middle of the tile `k` tiles from
     // the tile `c`. A tile beyond the edge of the face is on the next face.
