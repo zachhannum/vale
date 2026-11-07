@@ -3493,13 +3493,14 @@ impl AppState {
             return Err("Ramp not found.".to_owned());
         };
         let colors = ramp.colors.clone();
+        let labels = ramp.labels.clone();
         let Some(bands) = self.globe.bands_mut(id) else {
             return Err("The layer has no color stops.".to_owned());
         };
         let applied = if keep {
-            bands.stretched_part(&colors, part)
+            bands.stretched_part(&colors, &labels, part)
         } else {
-            bands.painted_part(&colors, part)
+            bands.painted_part(&colors, &labels, part)
         };
         let Some(applied) = applied else {
             let count = colors.len();
