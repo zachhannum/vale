@@ -254,8 +254,13 @@ fn stamp(center: V3, radius: f64, hardness: f64, mode: Mode) -> Stamp {
         hardness,
         flow: 0.8,
         mode,
-        // The flatten target, or the terrace step. The hills cross sea level.
-        level: if mode == Mode::Terrace { 1500 } else { 52000 },
+        // The flatten target, the terrace step, or the glacial depth. The
+        // hills cross sea level.
+        level: match mode {
+            Mode::Terrace => 1500,
+            Mode::Glacial => 2000,
+            _ => 52000,
+        },
         // The shape of the shape mode is toward old land.
         strength: if mode == Mode::Shape { -0.7 } else { 3000.0 },
         lower: 3000.0,
@@ -266,7 +271,12 @@ fn stamp(center: V3, radius: f64, hardness: f64, mode: Mode) -> Stamp {
         ridged: false,
         relief: 0.0,
         grain: 0.0,
-        channel: vale_terrain::ChannelShape::default(),
+        // The glacial valleys are wider than a texel.
+        channel: if mode == Mode::Glacial {
+            ChannelShape::new(CHANNEL_WIDTHS_KM.1, 0.0, 6371.0)
+        } else {
+            ChannelShape::default()
+        },
         invert: false,
         limits: Limits::default(),
     }
@@ -971,6 +981,101 @@ fn upload_channels_reaches_the_shader() {
     assert!(carve() == carved);
 }
 
+/// The end of the largest river of a map at the sea.
+fn mouth(map: &Heightmap) -> V3 {
+    let sea = f64::from(vale_terrain::meters_to_level(vale_terrain::SEA_LEVEL));
+    let lines = map.channels().expect("the map has rivers").lines();
+    let ends = lines.curves().iter().filter(|c| c.levels[2] <= sea);
+    let largest = ends.max_by(|a, b| a.areas[2].total_cmp(&b.areas[2]));
+    largest.expect("a river reaches the sea").points[2]
+}
+
+/// Glacial stamps on `river_land`, and on `coarse_river_land` with the wide
+/// channels of a small world.
+#[test]
+#[ignore = "gpu"]
+fn gpu_glacial_matches_cpu_for_one_stamp() {
+    let places = [
+        ("face center", lonlat_to_dir(1.3, 0.7)),
+        ("face edge", lonlat_to_dir(45.0, 0.0)),
+        ("cube corner", lonlat_to_dir(45.0, 35.264)),
+        ("mouth", mouth(&river_land(256))),
+    ];
+    let mut worst = 0;
+    for (place, center) in places {
+        for radius in [0.06, 0.3] {
+            for hardness in [0.0, 0.95] {
+                let mut cpu = river_land(256);
+                let before = levels(&cpu);
+                let stamp = stamp(center, radius, hardness, Mode::Glacial);
+                let difference = run(&mut cpu, &[stamp]).difference;
+                let name = format!("the {place}, radius {radius}, hardness {hardness}");
+                let changed = changes(&before, &levels(&cpu));
+                assert!(changed > 0, "{name}: no river is in the brush");
+                assert!(
+                    difference <= TOLERANCE,
+                    "{name}: the difference is {difference}"
+                );
+                worst = worst.max(difference);
+            }
+        }
+    }
+    let places = [
+        ("face center", lonlat_to_dir(1.3, 0.7)),
+        ("face edge", lonlat_to_dir(45.0, 0.0)),
+        ("cube corner", lonlat_to_dir(45.0, 35.264)),
+        ("mouth", mouth(&coarse_river_land(SMALL_WORLD_KM))),
+    ];
+    for (place, center) in places {
+        let mut cpu = coarse_river_land(SMALL_WORLD_KM);
+        let before = levels(&cpu);
+        let stamp = Stamp {
+            channel: wide_channels(),
+            ..stamp(center, 0.1, 0.5, Mode::Glacial)
+        };
+        let difference = run(&mut cpu, &[stamp]).difference;
+        let changed = changes(&before, &levels(&cpu));
+        assert!(changed > 0, "wide at the {place}: no river is in the brush");
+        assert!(difference <= TOLERANCE, "wide at the {place}: {difference}");
+        worst = worst.max(difference);
+    }
+    eprintln!("one glacial stamp, largest difference: {worst}");
+}
+
+/// Strokes across a face edge and past a cube corner.
+#[test]
+#[ignore = "gpu"]
+fn gpu_glacial_matches_cpu_for_a_stroke() {
+    let lines = [
+        ("face edge", (31.0, 2.0), (59.0, 5.0)),
+        ("cube corner", (35.0, 25.264), (55.0, 45.264)),
+    ];
+    let mut worst = 0;
+    for (place, from, to) in lines {
+        let stamps = stroke(from, to, 240, 0.05, Mode::Glacial);
+        let mut cpu = river_land(256);
+        let before = levels(&cpu);
+        let GroupRun {
+            groups, difference, ..
+        } = run_groups(&mut cpu, &stamps);
+        assert!(
+            groups.len() <= stamps.len() / GROUP_STAMPS + 2,
+            "stroke at the {place}: the groups are {groups:?}"
+        );
+        let changed = changes(&before, &levels(&cpu));
+        assert!(
+            changed > 200,
+            "stroke at the {place}: {changed} texels changed"
+        );
+        assert!(
+            difference <= ADD_STROKE_TOLERANCE,
+            "stroke at the {place}: the difference is {difference}"
+        );
+        worst = worst.max(difference);
+    }
+    eprintln!("glacial stroke in groups, largest difference: {worst}");
+}
+
 /// The face size of `window_land`. The window of a `GpuHeightmap` is half of
 /// a face wide at this size.
 const WINDOW_FACE: usize = 2 * WINDOW_CELLS;
@@ -1056,6 +1161,22 @@ fn gpu_carve_in_a_window_matches_cpu_for_one_stamp() {
 fn gpu_carve_in_a_window_matches_cpu_past_a_face_edge() {
     let difference = stamp_in_window(Mode::Carve, 53.0, 3.0, 2, 300);
     eprintln!("carve in a window past a face edge, largest difference: {difference}");
+    assert!(difference <= TOLERANCE, "{difference}");
+}
+
+#[test]
+#[ignore = "gpu"]
+fn gpu_glacial_in_a_window_matches_cpu_for_one_stamp() {
+    let difference = stamp_in_window(Mode::Glacial, 30.0, 3.0, 0, 100);
+    eprintln!("glacial in a window, largest difference: {difference}");
+    assert!(difference <= TOLERANCE, "{difference}");
+}
+
+#[test]
+#[ignore = "gpu"]
+fn gpu_glacial_in_a_window_matches_cpu_past_a_face_edge() {
+    let difference = stamp_in_window(Mode::Glacial, 53.0, 3.0, 2, 100);
+    eprintln!("glacial in a window past a face edge, largest difference: {difference}");
     assert!(difference <= TOLERANCE, "{difference}");
 }
 
