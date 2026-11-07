@@ -2,7 +2,9 @@
 
 use eframe::egui::{self, Align2, Color32, Pos2, Rect, Shape, Stroke, pos2, vec2};
 
-use super::layout::{Layout, Metrics, PlacedKind, chip_parts, glyph_text};
+use super::layout::{
+    Layout, Metrics, PlacedKind, SLOT_NAME_GAP, chip_parts, glyph_text, shows_name,
+};
 use super::{BoxKind, ChipKind, Field, Glyph, Node};
 use crate::ui::pad::icons::{self, Icon};
 use crate::ui::pad::theme;
@@ -139,6 +141,12 @@ pub fn paint<P: Clone>(
             }
             PlacedKind::Frame => {
                 if let Some(Node::Box(bx)) = field.node(&p.path) {
+                    if p.path.last().is_some_and(|&i| shows_name(bx, i)) {
+                        let at = pos2(p.rect.left() - SLOT_NAME_GAP, p.rect.center().y);
+                        let font = m.small.clone();
+                        let color = FUNCTION_TEXT.gamma_multiply(0.7);
+                        painter.text(at, Align2::RIGHT_CENTER, &bx.label, font, color);
+                    }
                     paint_frame(
                         painter,
                         p.rect,

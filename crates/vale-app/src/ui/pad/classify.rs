@@ -7,15 +7,15 @@ use vale_style::LayerStyle;
 use vale_style::expr::{Expr, field_ref};
 
 use super::Page;
-use super::expression;
 use super::number::Number;
 use super::raster::{heading, note, ramp_row};
 use super::rules::{CIRCLE_SIZES, WIDTHS};
+use super::value;
 use super::widgets::{self, Controls};
 use crate::classify::{self, Method, Step};
 use crate::ramps::Ramp;
 use crate::ui::AppState;
-use crate::ui::expr_help::{ExprHelp, ExprKind};
+use crate::ui::expr_help::{self, ExprHelp};
 
 /// The title of the form, and the button of the Style section that opens it.
 pub const TITLE: &str = "Classify";
@@ -120,8 +120,18 @@ pub fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id
         draft.text = refs[chosen].clone();
     }
     let help = ExprHelp::for_layer(state, id);
-    let text = &mut draft.text;
-    expression::field(ui, controls, EXPRESSION, text, &help, ExprKind::Value);
+    let range = expr_help::range(state, id, &draft.text);
+    let edit = value::editor(
+        ui,
+        controls,
+        EXPRESSION,
+        &draft.text,
+        &help,
+        range.as_deref(),
+    );
+    if let Some(text) = edit.text {
+        draft.text = text;
+    }
 
     let fresh = matches!(&draft.values, Some((t, g, _)) if *t == draft.text && *g == generation);
     if !fresh && !draft.text.trim().is_empty() {

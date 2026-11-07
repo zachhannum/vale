@@ -129,6 +129,72 @@ pub fn count_matches(layer: &Layer, text: &str) -> Option<usize> {
     Some(count)
 }
 
+/// The count of the bins of the histogram of a value.
+pub const BINS: usize = 12;
+
+/// The numbers that a value gives across the features of a layer.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ValueRange {
+    pub min: f64,
+    pub max: f64,
+    /// The count of the features with a number.
+    pub count: usize,
+    /// The count of the numbers in each of `BINS` equal parts of the range.
+    pub bins: Vec<usize>,
+}
+
+/// The range of the numbers that value `text` gives across `layer`. `None`
+/// if the text does not parse or gives no number.
+pub fn value_range(layer: &Layer, text: &str) -> Option<ValueRange> {
+    let expr = Expr::parse(text).ok()?;
+    let geometry = layer.geometry().unwrap_or(GeometryKind::Point);
+    let numbers: Vec<f64> = (layer.features.iter())
+        .filter_map(|f| {
+            let ctx = Context {
+                attributes: &f.attributes,
+                scale: PREVIEW_SCALE,
+                geometry,
+            };
+            match expr.eval(&ctx) {
+                Value::Number(n) if n.is_finite() => Some(n),
+                _ => None,
+            }
+        })
+        .collect();
+    let min = numbers.iter().copied().reduce(f64::min)?;
+    let max = numbers.iter().copied().reduce(f64::max)?;
+    let mut bins = vec![0; BINS];
+    for n in &numbers {
+        let t = if max > min {
+            (n - min) / (max - min)
+        } else {
+            0.0
+        };
+        bins[((t * BINS as f64) as usize).min(BINS - 1)] += 1;
+    }
+    Some(ValueRange {
+        min,
+        max,
+        count: numbers.len(),
+        bins,
+    })
+}
+
+/// A number of a range in short.
+fn range_number(n: f64) -> String {
+    if n.fract() == 0.0 {
+        crate::classify::number_text(n)
+    } else {
+        format!("{n:.1}")
+    }
+}
+
+/// The line of a range, for example "4.0 to 22.8 across 310 features".
+pub fn range_text(r: &ValueRange) -> String {
+    let (a, b) = (range_number(r.min), range_number(r.max));
+    format!("{a} to {b} across {} features", r.count)
+}
+
 /// What the values and the counts of a layer were computed from: the
 /// count of the changes of the maps, and the features and the fields.
 #[derive(Clone, Debug, PartialEq)]
@@ -159,6 +225,7 @@ struct CacheEntry {
     key: LayerKey,
     values: Arc<LayerValues>,
     counts: HashMap<String, Option<usize>>,
+    ranges: HashMap<String, Option<Arc<ValueRange>>>,
 }
 
 /// The values and the match counts of the layers. A layer computes them
@@ -186,6 +253,7 @@ impl HelpCache {
                 key,
                 values: Arc::new(LayerValues::of(layer)),
                 counts: HashMap::new(),
+                ranges: HashMap::new(),
             };
             layers.insert(layer.id, entry);
         }
@@ -217,6 +285,22 @@ impl HelpCache {
         })
     }
 
+    /// The range of the numbers that value `text` gives across `layer`.
+    pub fn range(&self, layer: &Layer, generation: u64, text: &str) -> Option<Arc<ValueRange>> {
+        self.entry(layer, generation, |e, cache| {
+            if let Some(range) = e.ranges.get(text) {
+                return range.clone();
+            }
+            cache.count_one();
+            if e.ranges.len() >= MAX_COUNTS {
+                e.ranges.clear();
+            }
+            let range = value_range(layer, text).map(Arc::new);
+            e.ranges.insert(text.to_owned(), range.clone());
+            range
+        })
+    }
+
     /// The count of the computations of values and counts.
     pub fn computed(&self) -> usize {
         *self.computed.lock().unwrap_or_else(|e| e.into_inner())
@@ -229,6 +313,12 @@ pub fn matches(state: &AppState, id: LayerId, text: &str) -> Option<(usize, usiz
     let layer = state.doc.layer(id)?;
     let count = (state.help_cache).matches(layer, state.map_generation, text)?;
     Some((count, layer.features.len()))
+}
+
+/// The range of the numbers that value `text` gives across layer `id`.
+pub fn range(state: &AppState, id: LayerId, text: &str) -> Option<Arc<ValueRange>> {
+    let layer = state.doc.layer(id)?;
+    (state.help_cache).range(layer, state.map_generation, text)
 }
 
 impl ExprHelp {

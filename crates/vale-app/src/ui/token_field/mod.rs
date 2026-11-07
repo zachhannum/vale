@@ -9,6 +9,7 @@
 //! a model into nodes, and the nodes back into the model.
 
 mod caret;
+pub mod formula;
 mod layout;
 pub mod paint;
 pub mod template;
@@ -143,7 +144,7 @@ impl<P> Field<P> {
     }
 
     /// The text of the field for a screen reader: the chars, the label of
-    /// each chip, and the children of each box.
+    /// each chip, the children of each box, and the label of an empty slot.
     pub fn plain(&self) -> String {
         fn walk<P>(nodes: &[Node<P>], out: &mut String) {
             for n in nodes {
@@ -151,6 +152,9 @@ impl<P> Field<P> {
                     Node::Char(c) => out.push(*c),
                     Node::Break => out.push('\n'),
                     Node::Chip(c) => out.push_str(&c.look.label),
+                    Node::Box(b) if b.kind == BoxKind::Slot && b.children.is_empty() => {
+                        out.push_str(&b.label);
+                    }
                     Node::Box(b) => walk(&b.children, out),
                 }
             }

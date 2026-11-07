@@ -7757,6 +7757,58 @@ fn classify_makes_quantile_rules_in_one_undo_step() {
 }
 
 #[test]
+fn value_preview_shows_range() {
+    use vale_app::ui::expr_help::{range_text, value_range};
+    use vale_app::ui::pad::classify::EXPRESSION;
+    let mut h = pad(BOARDS[0]);
+    let places = vector(&h, "Places");
+    open_classify(&mut h, "Places");
+    scroll_to_control(&mut h, EXPRESSION);
+    type_text(&mut h, EXPRESSION, "pop_max / 1000");
+    let layer = h.state().doc.layer(places).unwrap();
+    let range = value_range(layer, "pop_max / 1000").unwrap();
+    assert_eq!(range.count, layer.features.len());
+    assert!(range.min < range.max);
+    let line = range_text(&range);
+    assert!(h.query_by_label(&line).is_some(), "{line}");
+    // The cache computes the range once for the text.
+    let computed = h.state().help_cache.computed();
+    h.run_steps(3);
+    assert_eq!(h.state().help_cache.computed(), computed);
+}
+
+#[test]
+fn classify_value_editor_wraps_the_value_from_the_tray() {
+    use vale_app::ui::pad::classify::{EXPRESSION, REPLACE_RULES};
+    use vale_app::ui::pad::value::{FUNCTIONS_TAB, SEARCH, insert_name};
+    let mut h = pad(BOARDS[0]);
+    let places = vector(&h, "Places");
+    open_classify(&mut h, "Places");
+    scroll_to_control(&mut h, EXPRESSION);
+    type_text(&mut h, EXPRESSION, "pop_max ");
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.run_steps(1);
+    scroll_to_control(&mut h, FUNCTIONS_TAB);
+    tap(&mut h, FUNCTIONS_TAB);
+    type_text(&mut h, SEARCH[1], "round");
+    let round = insert_name("round");
+    scroll_to_control(&mut h, &round);
+    tap(&mut h, &round);
+    screenshot::save(&mut h, "pad-value-tray");
+    scroll_to_control(&mut h, "Quantiles");
+    tap(&mut h, "Quantiles");
+    scroll_to_control(&mut h, REPLACE_RULES);
+    tap(&mut h, REPLACE_RULES);
+    let first = rules(&h, places)[0]
+        .filter
+        .source()
+        .unwrap()
+        .text()
+        .to_owned();
+    assert!(first.starts_with("round(pop_max) < "), "{first}");
+}
+
+#[test]
 fn classify_by_text_gives_a_rule_for_each_value_and_other_values() {
     use vale_app::classify::{MAX_CATEGORIES, OTHER_VALUES};
     use vale_app::ui::pad::classify::REPLACE_RULES;

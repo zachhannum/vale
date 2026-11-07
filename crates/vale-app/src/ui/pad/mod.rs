@@ -54,6 +54,7 @@ pub mod swipe;
 pub mod table;
 pub mod text_style;
 pub mod theme;
+pub mod value;
 pub mod widgets;
 
 use flyout::{Choice, Flyout, Flyouts};

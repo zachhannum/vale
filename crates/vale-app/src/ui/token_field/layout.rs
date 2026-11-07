@@ -81,6 +81,15 @@ impl Metrics {
     }
 }
 
+/// The space between the name of a slot and its frame.
+pub const SLOT_NAME_GAP: f32 = 5.0;
+
+/// True if the slot `b` with index `i` in its block shows the name of its
+/// argument before its frame: a slot after the first, with nodes.
+pub fn shows_name<P>(b: &Boxed<P>, i: usize) -> bool {
+    b.kind == BoxKind::Slot && i > 0 && !b.children.is_empty() && !b.label.is_empty()
+}
+
 /// What a placed rectangle shows.
 #[derive(Clone, Debug, PartialEq)]
 pub enum PlacedKind {
@@ -306,16 +315,23 @@ impl Flow<'_, '_> {
                 _ => vec2(m.chip * 0.75, m.chip),
             };
         }
-        let offset = vec2(left + title, vert);
+        // A filled slot after the first shows the name of its argument
+        // before its frame.
+        let name = match path.last() {
+            Some(&i) if shows_name(b, i) => (self.measure)(&b.label, &m.small) + SLOT_NAME_GAP,
+            _ => 0.0,
+        };
+        let offset = vec2(name + left + title, vert);
         let size = vec2(
             left + title + inner.size.x + right,
             inner.size.y.max(m.chip) + 2.0 * vert,
         );
         unit.placed.push(Placed {
             path: path.clone(),
-            rect: Rect::from_min_size(Pos2::ZERO, size),
+            rect: Rect::from_min_size(pos2(name, 0.0), size),
             kind: PlacedKind::Frame,
         });
+        let size = size + vec2(name, 0.0);
         // The children are centered in the frame when the frame is taller.
         let dy = (size.y - 2.0 * vert - inner.size.y).max(0.0) / 2.0;
         for mut p in inner.placed {
