@@ -619,26 +619,38 @@ pub struct BackdropPass {
 enum BlurStep {
     Draw(Box<Draw>),
     Vector(LayerId),
+    /// A vector layer with a raster mask: the group that cuts its fills and
+    /// its strokes to the mask, and then its other shapes.
+    Masked(LayerId, Box<Group>),
 }
 
 impl BackdropPass {
     /// The callback that draws the passes and, in their place, the meshes
     /// that `meshes` gives for each vector layer, each with its clip
-    /// rectangle in points and its alpha. The meshes have the size of the
-    /// blurred copy: `pixels_per_point` is that of the screen divided by
-    /// `backdrop::REDUCTION`.
+    /// rectangle in points and its alpha. `meshes(id, true)` gives the
+    /// shapes of a layer that its raster mask cuts. The meshes have the size
+    /// of the blurred copy: `pixels_per_point` is that of the screen divided
+    /// by `backdrop::REDUCTION`.
     pub fn callback(
         self,
         pixels_per_point: f32,
-        mut meshes: impl FnMut(LayerId) -> Vec<(Rect, eframe::egui::Mesh, f32)>,
+        mut meshes: impl FnMut(LayerId, bool) -> Vec<(Rect, eframe::egui::Mesh, f32)>,
     ) -> GlobeCallback {
+        let mut shapes = |id, cut| VectorShapes {
+            pixels_per_point,
+            meshes: meshes(id, cut),
+        };
         let steps = (self.steps.into_iter())
-            .map(|step| match step {
-                BlurStep::Draw(draw) => BackdropStep::Draw(draw),
-                BlurStep::Vector(id) => BackdropStep::Shapes(VectorShapes {
-                    pixels_per_point,
-                    meshes: meshes(id),
-                }),
+            .flat_map(|step| match step {
+                BlurStep::Draw(draw) => vec![BackdropStep::Draw(draw)],
+                BlurStep::Vector(id) => vec![BackdropStep::Shapes(shapes(id, false))],
+                BlurStep::Masked(id, mut group) => {
+                    group.vector = Some(shapes(id, true));
+                    vec![
+                        BackdropStep::Group(group),
+                        BackdropStep::Shapes(shapes(id, false)),
+                    ]
+                }
             })
             .collect();
         GlobeCallback {
@@ -5059,8 +5071,25 @@ impl Globe {
             // The blurred copy has no graticule.
             let ground = start.is_none().then(|| plain(Pass::Ground, false, true));
             let step = |draw| BlurStep::Draw(Box::new(draw));
+            let mut masked = 0;
             let layers = drawn.iter().filter_map(|item| match item {
-                Item::Vector(id) | Item::Masked(id, _) => Some(BlurStep::Vector(*id)),
+                Item::Vector(id) | Item::Masked(id, None) => Some(BlurStep::Vector(*id)),
+                Item::Masked(id, Some((draw, mask))) => {
+                    let mut cover = layer(&Item::Raster(*draw), true)?;
+                    cover.uniforms.range = mask_range(draw.bands, mask);
+                    masked += 1;
+                    let group = Group {
+                        target: BLUR_MASK_TARGET + masked,
+                        place: None,
+                        mesh: flat_mesh.clone(),
+                        mask: None,
+                        draws: Vec::new(),
+                        capture: None,
+                        vector: None,
+                        cover: Some(cover),
+                    };
+                    Some(BlurStep::Masked(*id, Box::new(group)))
+                }
                 item => layer(item, true).map(step),
             });
             let rim = plain(Pass::Rim, false, true);
@@ -5287,6 +5316,9 @@ const CAPTURE_TARGET: TargetId = 1 << 48;
 const MASK_CAPTURE_TARGET: TargetId = 1 << 52;
 /// The first target of the vector layers with a raster mask.
 const MASK_TARGET: TargetId = 1 << 40;
+/// The first target of the vector layers with a raster mask in the blurred
+/// copy.
+const BLUR_MASK_TARGET: TargetId = 1 << 44;
 
 /// A map frame to draw.
 #[derive(Clone)]

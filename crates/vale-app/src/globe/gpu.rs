@@ -2711,6 +2711,9 @@ pub enum BackdropStep {
     Draw(Box<Draw>),
     /// The shapes of a vector layer, at the size of the blurred copy.
     Shapes(VectorShapes),
+    /// The group of a vector layer with a raster mask, at the size of the
+    /// blurred copy.
+    Group(Box<Group>),
 }
 
 /// One callback of a frame of the globe. egui calls it inside its own
@@ -3147,10 +3150,22 @@ impl egui_wgpu::CallbackTrait for GlobeCallback {
                     |encoder, target| {
                         let mut i = 0;
                         while i < steps.len() {
-                            if let BackdropStep::Shapes(shapes) = &steps[i] {
-                                res.draw_vector(device, encoder, target, small, shapes);
-                                i += 1;
-                                continue;
+                            match &steps[i] {
+                                BackdropStep::Shapes(shapes) => {
+                                    res.draw_vector(device, encoder, target, small, shapes);
+                                    i += 1;
+                                    continue;
+                                }
+                                // A group that waits for its pipelines leaves
+                                // an empty target.
+                                BackdropStep::Group(group) => {
+                                    let _ = res.render_group(device, queue, encoder, small, group);
+                                    let mut pass = backdrop::load_pass(encoder, target);
+                                    res.composite(&mut pass, group.target, small);
+                                    i += 1;
+                                    continue;
+                                }
+                                BackdropStep::Draw(_) => {}
                             }
                             // The run of passes up to the next shapes.
                             let mut pass = backdrop::load_pass(encoder, target);

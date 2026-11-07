@@ -3458,11 +3458,35 @@ fn the_blur_behind_a_card_shows_the_visible_vector_layers_in_the_draw_order() {
     assert!(difference(&red, &plain) > width * 2);
     h.state_mut().globe.world_view = WorldView::Globe;
 
-    // A raster layer above the polygon hides it.
+    // A raster mask cuts the polygon in the blur too. The whole world is
+    // below sea level, so a mask of the sea keeps the polygon, and a mask
+    // of the land leaves nothing.
     let raster = (h.state().doc.project.layers().iter())
         .find(|l| matches!(l.kind, LayerKind::Raster(_)))
         .unwrap()
         .id;
+    let mask = |h: &mut Pad, min, max| {
+        let state = h.state_mut();
+        let style = &mut state.doc.entry_mut(polygon).unwrap().style.style;
+        style.mask = Some(vale_style::Mask::Raster {
+            layer: raster,
+            min,
+            max,
+        });
+        state.sync_globe();
+    };
+    let (red, plain) = (reds(&mut h, true), reds(&mut h, false));
+    mask(&mut h, None, Some(0.0));
+    let sea = reds(&mut h, true);
+    assert!(difference(&sea, &plain) > width * 20);
+    assert!(difference(&sea, &red) <= width * 2);
+    mask(&mut h, Some(0.0), None);
+    assert!(difference(&reds(&mut h, true), &plain) <= width);
+    let state = h.state_mut();
+    state.doc.entry_mut(polygon).unwrap().style.style.mask = None;
+    state.sync_globe();
+
+    // A raster layer above the polygon hides it.
     let top = h.state().doc.project.layers().len() - 1;
     assert!(h.state_mut().move_layer(raster, top));
     let (red, plain) = (reds(&mut h, true), reds(&mut h, false));

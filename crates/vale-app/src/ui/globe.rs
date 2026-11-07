@@ -1915,9 +1915,11 @@ pub(super) fn paint_canvas(
     match globe.paint(canvas, cards && globe.blur) {
         Some(paints) => {
             // The blurred copy and the copies of the shapes of each vector
-            // layer for it.
+            // layer for it: the shapes for the painter, and the shapes that
+            // a raster mask cuts.
             let mut backdrop = None;
             let mut tees: HashMap<LayerId, Vec<Cut>> = HashMap::new();
+            let mut cuts: HashMap<LayerId, Vec<Cut>> = HashMap::new();
             for paint in paints {
                 match paint {
                     Paint::Callback(callback) => {
@@ -1956,6 +1958,9 @@ pub(super) fn paint_canvas(
                                 &painter, format, cut, tee, rect, doc, flat, id, pipeline,
                             );
                         }
+                        if backdrop.is_some() {
+                            cuts.insert(id, shapes.clone());
+                        }
                         let meshes = tessellate(ui.ctx(), painter.clip_rect(), shapes);
                         let callback = pass.callback(pixels_per_point, meshes);
                         let callback = egui_wgpu::Callback::new_paint_callback(rect, callback);
@@ -1967,9 +1972,10 @@ pub(super) fn paint_canvas(
                 let small = pixels_per_point / backdrop::REDUCTION as f32;
                 let options = ui.ctx().tessellation_options(|o| *o);
                 let clip = painter.clip_rect();
-                let callback = pass.callback(small, |id| {
-                    let cuts = tees.remove(&id).unwrap_or_default();
-                    single_meshes(small, options, clip, cuts)
+                let callback = pass.callback(small, |id, cut| {
+                    let from = if cut { &mut cuts } else { &mut tees };
+                    let shapes = from.remove(&id).unwrap_or_default();
+                    single_meshes(small, options, clip, shapes)
                 });
                 painter.set(
                     slot,
