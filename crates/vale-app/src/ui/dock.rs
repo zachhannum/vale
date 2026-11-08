@@ -667,7 +667,8 @@ fn layers_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
         ui.add_space(4.0);
         changed |= style_editor::mask_rows(ui, layer, &mut style.style.mask, &masks);
     }
-    let classes = style_editor::classify(ui, layer, &fields, &ramps, &mut library);
+    let polygon = kind == vale_store::GeometryKind::Polygon;
+    let classes = style_editor::classify(ui, layer, &fields, &ramps, &mut library, polygon);
     if changed && state.doc.set_map_style(target, layer, &style) {
         state.touch();
     }

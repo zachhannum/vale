@@ -11,7 +11,8 @@ use vale_style::{Color, Hatch, LayerStyle, MarkerShape, Mask, Rule, Stroke, Stro
 use super::expr_field;
 use super::expr_help::{self, ExprHelp};
 use super::pad::classify::{
-    CLASS_COUNT, CLASSIFY, COLOR_RAMP, FIELD, METHOD, REPLACE_RULES, REVERSE, Request,
+    CLASS_COUNT, CLASSIFY, COLOR_COUNT, COLOR_RAMP, FIELD, METHOD, NEIGHBORS_DIFFER, REPLACE_RULES,
+    REVERSE, Request,
 };
 use super::pad::filter;
 use super::pad::furniture::{ANGLE, LINE_COLOR, LINE_WIDTH};
@@ -721,13 +722,15 @@ pub fn color_button(ui: &mut egui::Ui, c: &mut Color) -> bool {
 }
 
 /// The Classify section of the desktop layout. It returns a request when
-/// the user clicks "Replace rules".
+/// the user clicks "Replace rules". With `neighbors`, it has the switch
+/// "Neighbors differ".
 pub fn classify(
     ui: &mut egui::Ui,
     id: LayerId,
     fields: &[Field],
     ramps: &[Ramp],
     library: &mut Library,
+    neighbors: bool,
 ) -> Option<Request> {
     let key = egui::Id::new(("classify", id.0));
     let (mut text, mut method, mut classes, mut ramp, mut reverse): (
@@ -743,37 +746,54 @@ pub fn classify(
         0,
         false,
     ));
+    let colors_key = egui::Id::new(("classify-colors", id.0));
+    let (mut differ, mut colors): (bool, usize) = ui
+        .data(|d| d.get_temp(colors_key))
+        .unwrap_or((false, classify::DEFAULT_COLORS));
+    differ &= neighbors;
     let mut out = None;
     egui::CollapsingHeader::new(CLASSIFY)
         .id_salt(key)
         .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(FIELD);
-                egui::ComboBox::from_id_salt(("classify-field", id.0))
-                    .selected_text(text.clone())
-                    .width(130.0)
-                    .show_ui(ui, |ui| {
-                        for f in fields {
-                            let r = field_ref(&f.name);
-                            ui.selectable_value(&mut text, r, &f.name);
-                        }
-                    });
-            });
-            expr_field::value(ui, (EXPRESSION, EXPRESSION), &mut text, library.help);
-            ui.horizontal(|ui| {
-                ui.label(METHOD);
-                egui::ComboBox::from_id_salt(("classify-method", id.0))
-                    .selected_text(Method::ALL[method].label())
-                    .show_ui(ui, |ui| {
-                        for (i, m) in Method::ALL.iter().enumerate() {
-                            ui.selectable_value(&mut method, i, m.label());
-                        }
-                    });
-            });
-            let (min, max) = classify::CLASSES;
-            ui.horizontal(|ui| {
-                ui.label(CLASS_COUNT);
-                ui.add(egui::DragValue::new(&mut classes).range(min..=max));
+            if neighbors {
+                ui.checkbox(&mut differ, NEIGHBORS_DIFFER);
+            }
+            if differ {
+                let (min, max) = classify::COLORS;
+                ui.horizontal(|ui| {
+                    ui.label(COLOR_COUNT);
+                    ui.add(egui::DragValue::new(&mut colors).range(min..=max));
+                });
+            }
+            ui.add_enabled_ui(!differ, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(FIELD);
+                    egui::ComboBox::from_id_salt(("classify-field", id.0))
+                        .selected_text(text.clone())
+                        .width(130.0)
+                        .show_ui(ui, |ui| {
+                            for f in fields {
+                                let r = field_ref(&f.name);
+                                ui.selectable_value(&mut text, r, &f.name);
+                            }
+                        });
+                });
+                expr_field::value(ui, (EXPRESSION, EXPRESSION), &mut text, library.help);
+                ui.horizontal(|ui| {
+                    ui.label(METHOD);
+                    egui::ComboBox::from_id_salt(("classify-method", id.0))
+                        .selected_text(Method::ALL[method].label())
+                        .show_ui(ui, |ui| {
+                            for (i, m) in Method::ALL.iter().enumerate() {
+                                ui.selectable_value(&mut method, i, m.label());
+                            }
+                        });
+                });
+                let (min, max) = classify::CLASSES;
+                ui.horizontal(|ui| {
+                    ui.label(CLASS_COUNT);
+                    ui.add(egui::DragValue::new(&mut classes).range(min..=max));
+                });
             });
             ui.horizontal(|ui| {
                 ui.label(COLOR_RAMP);
@@ -800,9 +820,11 @@ pub fn classify(
                     ramp: r.clone(),
                     reverse,
                     step: Step::None,
+                    neighbors: differ.then_some(colors),
                 });
             }
         });
     ui.data_mut(|d| d.insert_temp(key, (text, method, classes, ramp, reverse)));
+    ui.data_mut(|d| d.insert_temp(colors_key, (differ, colors)));
     out
 }

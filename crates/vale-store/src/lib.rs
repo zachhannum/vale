@@ -1416,6 +1416,29 @@ impl Project {
         changed
     }
 
+    /// Sets one attribute of each feature, in the order of the features, and
+    /// gives false if the layer or the field does not exist or if the count
+    /// of the values is not the count of the features. Each value turns into
+    /// a value of the type of the field.
+    pub fn set_field_values(&mut self, id: LayerId, name: &str, values: &[Value]) -> bool {
+        let Some(layer) = self.layer_mut(id) else {
+            return false;
+        };
+        let Some(field) = layer.fields.iter().find(|f| f.name == name) else {
+            return false;
+        };
+        if values.len() != layer.features.len() {
+            return false;
+        }
+        let kind = field.kind;
+        for (feature, value) in layer.features.iter_mut().zip(values) {
+            feature
+                .attributes
+                .insert(name.to_string(), kind.convert(value));
+        }
+        true
+    }
+
     /// Removes the features with these UUIDs from a vector layer, and gives
     /// the number that it removed.
     pub fn remove_features(&mut self, id: LayerId, uuids: &[Uuid]) -> usize {
@@ -1558,6 +1581,13 @@ mod tests {
             layer.features[1].attributes["mid"],
             Value::Text("true".into())
         );
+
+        let numbers = [1.0, 2.0, 3.0].map(Value::Number);
+        assert!(p.set_field_values(a, "mid", &numbers));
+        let layer = p.layer(a).unwrap();
+        assert_eq!(layer.features[1].attributes["mid"], Value::Text("2".into()));
+        assert!(!p.set_field_values(a, "mid", &numbers[..2]));
+        assert!(!p.set_field_values(a, "beta", &numbers));
 
         assert_eq!(p.remove_features(a, &[uuid, first, Uuid::new_v4()]), 2);
         assert_eq!(p.remove_features(LayerId(99), &[uuid]), 0);

@@ -152,7 +152,14 @@ fn vector_style(ui: &mut egui::Ui, state: &mut AppState, id: LayerId) {
             }
             (
                 changed,
-                style_editor::classify(ui, id, &fields, &ramps, &mut library),
+                style_editor::classify(
+                    ui,
+                    id,
+                    &fields,
+                    &ramps,
+                    &mut library,
+                    kind == vale_store::GeometryKind::Polygon,
+                ),
             )
         })
         .inner;

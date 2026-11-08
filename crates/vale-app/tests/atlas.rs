@@ -8437,6 +8437,100 @@ fn classify_places_in_frame(h: &mut Pad) {
 }
 
 #[test]
+fn classify_in_a_frame_picks_a_ramp_with_a_finger() {
+    use vale_app::ui::pad::Page;
+    use vale_app::ui::pad::classify::CLASSIFY;
+    use vale_app::ui::pad::raster::USE_RAMP;
+    for size in [BOARDS[0], (393.0, 852.0)] {
+        let what = format!("{size:?}");
+        let mut h = inset_pad(size);
+        tap(&mut h, FRAME_TABS[2]);
+        scroll_to(&mut h, "Open Places");
+        tap(&mut h, "Open Places");
+        scroll_to(&mut h, CLASSIFY);
+        tap(&mut h, CLASSIFY);
+        scroll_to(&mut h, "Bold");
+        tap(&mut h, "Bold");
+        assert_eq!(h.state().atlas.layer_page, Some(Page::Ramps), "{what}");
+        scroll_to(&mut h, "Viridis");
+        tap(&mut h, "Viridis");
+        assert!(control(&h, USE_RAMP).is_some(), "{what}");
+        check_controls(&h, &what);
+        tap(&mut h, USE_RAMP);
+        assert_eq!(h.state().atlas.layer_page, Some(Page::Classify), "{what}");
+        assert!(control(&h, "Viridis").is_some(), "{what}");
+        assert!(control(&h, "Bold").is_none(), "{what}");
+    }
+}
+
+#[test]
+fn neighbors_differ_in_a_frame_colors_only_that_map() {
+    use vale_app::ui::pad::Page;
+    use vale_app::ui::pad::classify::{CLASSIFY, NEIGHBORS_DIFFER, REPLACE_RULES};
+    use vale_store::{Feature, Geometry};
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = state();
+    s.session = Some(Session::open(&dir.path().join("w.gpkg"), &mut s.doc).unwrap());
+    // A grid of 3 by 3 squares of 10 degrees.
+    let id = s.doc.add_layer(vale_store::GeometryKind::Polygon);
+    for i in 0..9 {
+        let (x, y) = ((i % 3) as f64 * 10.0, (i / 3) as f64 * 10.0);
+        let ring = vec![[x, y], [x + 10.0, y], [x + 10.0, y + 10.0], [x, y + 10.0]];
+        let feature = Feature::new(Geometry::Polygons(vec![vec![ring]]), Default::default());
+        assert!(s.doc.project.add_feature(id, feature));
+    }
+    let name = s.doc.layer(id).unwrap().name.clone();
+    let mut h = pad_with(s, BOARDS[0]);
+    add_frame(&mut h);
+    h.state_mut().save_waiting().unwrap();
+    let map = frame(&h, 0).map;
+    let rule_names = |h: &Pad, map: Option<MapId>| -> Vec<String> {
+        let doc = &h.state().doc;
+        let style = match map {
+            Some(map) => doc.map_style(map, id).unwrap(),
+            None => doc.layer_style(id).unwrap(),
+        };
+        style.style.rules.iter().map(|r| r.name.clone()).collect()
+    };
+    let before = rule_names(&h, Some(map));
+    let globe = rule_names(&h, None);
+
+    tap(&mut h, FRAME_TABS[2]);
+    scroll_to(&mut h, &format!("Open {name}"));
+    tap(&mut h, &format!("Open {name}"));
+    scroll_to(&mut h, CLASSIFY);
+    tap(&mut h, CLASSIFY);
+    assert_eq!(h.state().atlas.layer_page, Some(Page::Classify));
+    tap(&mut h, NEIGHBORS_DIFFER);
+    check_controls(&h, "neighbors differ in a frame");
+    scroll_to(&mut h, REPLACE_RULES);
+    tap(&mut h, REPLACE_RULES);
+    h.run_steps(3);
+    h.state_mut().save_waiting().unwrap();
+    assert_eq!(h.state().atlas.layer_page, None);
+
+    let made = rule_names(&h, Some(map));
+    assert_eq!(
+        made.first().map(String::as_str),
+        Some("Color 1"),
+        "{made:?}"
+    );
+    assert_eq!(
+        made.last().map(String::as_str),
+        Some(vale_app::classify::OTHER_VALUES)
+    );
+    assert_eq!(rule_names(&h, None), globe);
+    let layer = h.state().doc.layer(id).unwrap();
+    assert!(layer.fields.iter().any(|f| f.name == "color_group"));
+
+    // One undo takes back the rules of the map and the field.
+    tap(&mut h, "Undo");
+    assert_eq!(rule_names(&h, Some(map)), before);
+    let layer = h.state().doc.layer(id).unwrap();
+    assert!(layer.fields.iter().all(|f| f.name != "color_group"));
+}
+
+#[test]
 fn classify_in_a_frame_changes_only_that_map() {
     let mut h = inset_pad(BOARDS[0]);
     let (main, inset) = (frame(&h, 0).map, frame(&h, 1).map);
