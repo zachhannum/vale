@@ -173,6 +173,49 @@ fn the_desktop_page_panel_has_the_paper_color() {
 }
 
 #[test]
+fn the_desktop_insert_menu_adds_page_values_to_a_text_item() {
+    use vale_app::ui::atlas::{ItemKind, add_item};
+    use vale_app::ui::expr_help::{FIELDS, INSERT, PAGE_NUMBER, RELATIVE_SCALE};
+    use vale_app::ui::pad::furniture::MAP_FRAME;
+    use vale_store::Furniture;
+    let mut h = harness();
+    h.run_steps(3);
+    let id = add_item(h.state_mut(), ItemKind::Text).unwrap();
+    h.run_steps(3);
+    let template = |h: &Harness<'static, AppState>| match &h
+        .state()
+        .doc
+        .project
+        .atlas
+        .furniture(id)
+        .unwrap()
+        .item
+    {
+        Furniture::Text(t) => t.template.clone(),
+        _ => panic!("not text"),
+    };
+    let before = template(&h);
+    assert!(h.query_by_label(MAP_FRAME).is_none());
+    h.get_by_label(INSERT).click();
+    h.run_steps(2);
+    // The menu lists the page values, and no fields.
+    assert!(h.query_by_label_contains(FIELDS).is_none());
+    h.get_by_label(PAGE_NUMBER).click();
+    h.run_steps(3);
+    let text = template(&h);
+    assert!(text.contains("page_number()") && text != before, "{text}");
+    assert!(h.query_by_label(MAP_FRAME).is_none());
+    // A frame value shows the frame row.
+    h.get_by_label(INSERT).click();
+    h.run_steps(2);
+    h.get_by_label(RELATIVE_SCALE).click();
+    h.run_steps(3);
+    let text = template(&h);
+    assert!(text.contains("scale('relative', 'cm')"), "{text}");
+    assert!(h.query_by_label(MAP_FRAME).is_some());
+}
+
+#[test]
 fn the_desktop_scale_bar_controls_edit_the_bar_and_its_numbers() {
     use vale_app::ui::atlas::{ItemKind, add_item};
     use vale_store::Furniture;

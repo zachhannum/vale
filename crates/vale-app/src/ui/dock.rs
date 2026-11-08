@@ -1239,6 +1239,27 @@ fn labels_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
 }
 
 /// The panel of an item of furniture.
+/// The row of the frame of an item of furniture.
+fn frame_combo(ui: &mut egui::Ui, state: &mut AppState, rec: &vale_store::FurnitureRecord) {
+    use super::pad::furniture as item;
+    let names = atlas::frame_names(state);
+    let chosen = names.iter().find(|(f, _)| Some(*f) == rec.item.frame());
+    let shown = chosen.map_or(item::NO_FRAME, |(_, n)| n.as_str());
+    ui.horizontal(|ui| {
+        ui.label(item::MAP_FRAME);
+        egui::ComboBox::from_id_salt("atlas-item-frame")
+            .selected_text(shown)
+            .show_ui(ui, |ui| {
+                for (frame, name) in &names {
+                    let on = rec.item.frame() == Some(*frame);
+                    if ui.selectable_label(on, name).clicked() {
+                        atlas::set_item_frame(state, rec.id, Some(*frame));
+                    }
+                }
+            });
+    });
+}
+
 fn item_panel(ui: &mut egui::Ui, state: &mut AppState, rec: &vale_store::FurnitureRecord) {
     use super::atlas::TextPart;
     use super::pad::furniture as item;
@@ -1256,36 +1277,22 @@ fn item_panel(ui: &mut egui::Ui, state: &mut AppState, rec: &vale_store::Furnitu
         });
     }
     if !matches!(rec.item, Furniture::Text(_)) {
-        let names = atlas::frame_names(state);
-        let chosen = names.iter().find(|(f, _)| Some(*f) == rec.item.frame());
-        let shown = chosen.map_or(item::NO_FRAME, |(_, n)| n.as_str());
-        ui.horizontal(|ui| {
-            ui.label(item::MAP_FRAME);
-            egui::ComboBox::from_id_salt("atlas-item-frame")
-                .selected_text(shown)
-                .show_ui(ui, |ui| {
-                    for (frame, name) in &names {
-                        let on = rec.item.frame() == Some(*frame);
-                        if ui.selectable_label(on, name).clicked() {
-                            atlas::set_item_frame(state, id, Some(*frame));
-                        }
-                    }
-                });
-        });
+        frame_combo(ui, state, rec);
     }
     match &rec.item {
         Furniture::Text(t) => {
+            let help = expr_help::ExprHelp::for_text_item(state, id);
             let mut text = t.template.clone();
-            let edit = ui.add(egui::TextEdit::multiline(&mut text).desired_rows(3));
-            named(&edit, egui::WidgetType::TextEdit, item::ITEM_TEXT);
-            if edit.changed() {
-                atlas::edit_item(state, id, |r| match &mut r.item {
-                    Furniture::Text(t) => {
-                        t.template = text;
-                        true
-                    }
-                    _ => false,
-                });
+            let names = (item::TEXT, item::ITEM_TEXT);
+            if expr_field::label_text(ui, names, &mut text, &help) {
+                atlas::set_template(state, id, text);
+            }
+            // The frame row shows while the text uses a frame value.
+            if let Some(now) = state.doc.project.atlas.furniture(id).cloned()
+                && let Furniture::Text(t) = &now.item
+                && crate::furniture::uses_frame(&t.template)
+            {
+                frame_combo(ui, state, &now);
             }
             text_grid(ui, state, id, TextPart::Text, &t.style);
             ui.horizontal(|ui| {
