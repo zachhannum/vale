@@ -1315,7 +1315,10 @@ impl ColorKeyItem {
         read_string(&map, "title", &mut item.title)?;
         item.title_style = item.title_style.read_key(&map, "title_style")?;
         item.value_style = item.value_style.read_key(&map, "value_style")?;
-        item.second_unit_style = item.value_style.clone().read_key(&map, "second_unit_style")?;
+        item.second_unit_style = item
+            .value_style
+            .clone()
+            .read_key(&map, "second_unit_style")?;
         item.box_text_style = item.value_style.clone().read_key(&map, "box_text_style")?;
         read_rgba(&map, "border_color", &mut item.border_color)?;
         read_number(&map, "border_width", &mut item.border_width)?;
@@ -2241,7 +2244,10 @@ mod tests {
         assert_eq!(ColorKeyItem::from_json(r#"{"box_width": -1}"#), None);
         assert_eq!(ColorKeyItem::from_json(r#"{"layout": "grid"}"#), None);
         assert_eq!(ColorKeyItem::from_json(r#"{"border_width": -1}"#), None);
-        assert_eq!((key.border_color, key.border_width), ([70, 70, 70, 200], 0.3));
+        assert_eq!(
+            (key.border_color, key.border_width),
+            ([70, 70, 70, 200], 0.3)
+        );
         // An older key has one text style for the values, the second unit,
         // and the box names.
         let old = r#"{"value_style": {"size": 6}}"#;

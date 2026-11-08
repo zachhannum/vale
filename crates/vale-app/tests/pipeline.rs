@@ -3479,6 +3479,110 @@ fn names_in_boxes_draws_the_band_name_inside() {
     assert!(run_x(&items, "Intermediate")[0] > boxes[1].x1);
 }
 
+/// The color and the font size of the first run of glyphs with `text`.
+fn run_look(items: &[Item], text: &str) -> (vale_render::Color, f32) {
+    (items.iter())
+        .find_map(|i| match i {
+            Item::Glyphs(run) if run.text == text => Some((run.color, run.font_size)),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no run {text}"))
+}
+
+/// The color and the width of each stroke of `items`.
+fn key_strokes(items: &[Item]) -> Vec<(vale_render::Color, f64)> {
+    (items.iter())
+        .filter_map(|i| match i {
+            Item::Stroke { color, width, .. } => Some((*color, *width)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn the_second_unit_and_box_names_use_their_own_styles() {
+    let (mut doc, mut pipeline, frame, layer) = key_doc("m", &HEIGHT_STOPS, &[]);
+    let feet = SecondUnit {
+        name: "feet".to_string(),
+        factor: 3.28084,
+        offset: 0.0,
+    };
+    let blue = FurnitureText {
+        color: [0, 0, 200, 255],
+        ..FurnitureText::sized(12.0)
+    };
+    let key = ColorKeyItem {
+        second_unit: Some(feet),
+        second_unit_style: blue.clone(),
+        ..strip(frame, layer)
+    };
+    let items = key_items(&mut doc, &mut pipeline, key);
+    let (value_color, value_size) = run_look(&items, "200");
+    let (feet_color, feet_size) = run_look(&items, "656");
+    assert_eq!(feet_color, vale_render::Color::rgb(0, 0, 200));
+    assert_ne!(value_color, feet_color);
+    assert!(
+        (feet_size / value_size - 1.5).abs() < 1e-3,
+        "{feet_size} {value_size}"
+    );
+
+    let (mut doc, mut pipeline, frame, layer) =
+        key_doc("", &[0.0, 10.0, 20.0, 30.0], &["1-A", "1", "2-a"]);
+    let key = ColorKeyItem {
+        layout: KeyLayout::List,
+        names_in_boxes: true,
+        box_text_style: blue,
+        ..strip(frame, layer)
+    };
+    let items = key_items(&mut doc, &mut pipeline, key);
+    let (name_color, name_size) = run_look(&items, "1-A");
+    let (label_color, label_size) = run_look(&items, "Under 10");
+    assert_eq!(name_color, vale_render::Color::rgb(0, 0, 200));
+    assert_ne!(label_color, name_color);
+    assert!((name_size / label_size - 1.5).abs() < 1e-3);
+    // The box is wide enough for the larger name.
+    let boxes = fill_boxes(&items);
+    let inside = run_x(&items, "1-A")[0];
+    assert!(boxes[2].x0 < inside, "{inside} {boxes:?}");
+}
+
+#[test]
+fn the_border_takes_its_color_and_width() {
+    let (mut doc, mut pipeline, frame, layer) = key_doc("m", &HEIGHT_STOPS, &[]);
+    let thin = key_items(&mut doc, &mut pipeline, strip(frame, layer));
+    let thin_width = key_strokes(&thin)[0].1;
+    let key = ColorKeyItem {
+        border_color: [255, 255, 255, 255],
+        border_width: 1.2,
+        ..strip(frame, layer)
+    };
+    let items = key_items(&mut doc, &mut pipeline, key);
+    let strokes = key_strokes(&items);
+    assert_eq!(strokes.len(), fill_boxes(&items).len());
+    for (color, width) in strokes {
+        assert_eq!(color, vale_render::Color::rgb(255, 255, 255));
+        assert!(
+            (width / thin_width - 4.0).abs() < 1e-6,
+            "{width} {thin_width}"
+        );
+    }
+}
+
+#[test]
+fn a_border_width_of_zero_draws_no_lines() {
+    for layout in KeyLayout::ALL {
+        let (mut doc, mut pipeline, frame, layer) = key_doc("mm", &RAIN_STOPS, &[]);
+        let key = ColorKeyItem {
+            layout,
+            border_width: 0.0,
+            ..strip(frame, layer)
+        };
+        let items = key_items(&mut doc, &mut pipeline, key);
+        assert!(key_strokes(&items).is_empty(), "{layout:?}");
+        assert!(!fill_boxes(&items).is_empty(), "{layout:?}");
+    }
+}
+
 #[test]
 fn hidden_bands_are_skipped() {
     let hide = || {

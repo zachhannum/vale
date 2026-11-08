@@ -213,8 +213,16 @@ pub fn draw(
         y += step + 0.25 * ink.style.size;
     }
     let ink = TextInk::new(&key.value_style, unit, fonts);
+    let second = TextInk::new(&key.second_unit_style, unit, fonts);
+    let boxed = TextInk::new(&key.box_text_style, unit, fonts);
+    let [r, g, b, a] = key.border_color;
+    let border =
+        (key.border_width > 0.0).then(|| (Color::rgba(r, g, b, a), key.border_width * unit));
     let mut draw = Draw {
         ink,
+        second,
+        boxed,
+        border,
         unit,
         fonts,
         out: &mut out,
@@ -248,11 +256,6 @@ fn rgb([r, g, b]: [u8; 3]) -> Color {
     Color::rgb(r, g, b)
 }
 
-/// The color of the lines around the boxes.
-fn line_color() -> Color {
-    Color::rgba(70, 70, 70, 200)
-}
-
 /// One box of a strip: a band, or the whole range of a grey display.
 struct Segment {
     min: f64,
@@ -278,7 +281,15 @@ struct Edge {
 }
 
 struct Draw<'a> {
+    /// The values, the unit, and the text of a list.
     ink: TextInk,
+    /// The values in the second unit.
+    second: TextInk,
+    /// The band names inside the boxes of a list.
+    boxed: TextInk,
+    /// The color and the width of the lines around the boxes. `None`: no
+    /// lines.
+    border: Option<(Color, f64)>,
     unit: f64,
     fonts: &'a mut Fonts,
     out: &'a mut Vec<Item>,
@@ -402,7 +413,7 @@ impl Draw<'_> {
                 let mut w = self.ink.advance(&Self::value_text(row, v), self.fonts);
                 if let Some(second) = &key.second_unit {
                     let t = Self::second_text(row, v, second);
-                    w = w.max(self.ink.advance(&t, self.fonts));
+                    w = w.max(self.second.advance(&t, self.fonts));
                 }
                 reach = reach.max(w / 2.0);
             }
@@ -418,14 +429,15 @@ impl Draw<'_> {
         let mut left = reach;
         for row in rows.iter().filter(|r| !r.closed_start && r.closed_end) {
             let first = row.segments[0].max;
-            let mut units = vec![(Self::value_text(row, first), data.unit.clone())];
+            let mut units = vec![(false, Self::value_text(row, first), data.unit.clone())];
             if let Some(second) = &key.second_unit {
-                units.push((Self::second_text(row, first, second), second.name.clone()));
+                let text = Self::second_text(row, first, second);
+                units.push((true, text, second.name.clone()));
             }
-            for (text, unit) in units.iter().filter(|(_, u)| !u.is_empty()) {
-                let w = self.ink.advance(text, self.fonts) / 2.0
-                    + space
-                    + self.ink.advance(unit, self.fonts);
+            for (in_second, text, unit) in units.iter().filter(|(_, _, u)| !u.is_empty()) {
+                let ink = if *in_second { &self.second } else { &self.ink };
+                let space = space * ink.style.size / size;
+                let w = ink.advance(text, self.fonts) / 2.0 + space + ink.advance(unit, self.fonts);
                 left = left.max(w - width);
             }
         }
@@ -436,7 +448,11 @@ impl Draw<'_> {
         }
         let mut y = inner.y0;
         for (i, row) in rows.iter().enumerate() {
-            let row_height = step + height + if key.second_unit.is_some() { step } else { 0.0 };
+            let below_step = match key.second_unit {
+                Some(_) => LINE_HEIGHT * self.second.style.size,
+                None => 0.0,
+            };
+            let row_height = step + height + below_step;
             if i > 0 {
                 y += 0.6 * size;
             }
@@ -450,13 +466,13 @@ impl Draw<'_> {
                 .map(|e| Self::value_text(row, e.value))
                 .collect();
             let line = top - 0.25 * size;
-            self.edge_texts(row, &edges, &texts, &data.unit, line);
+            self.edge_texts(false, row, &edges, &texts, &data.unit, line);
             if let Some(second) = &key.second_unit {
                 let texts: Vec<String> = (edges.iter())
                     .map(|e| Self::second_text(row, e.value, second))
                     .collect();
-                let below = baseline(&self.ink, top + height, self.fonts);
-                self.edge_texts(row, &edges, &texts, &second.name, below);
+                let below = baseline(&self.second, top + height, self.fonts);
+                self.edge_texts(true, row, &edges, &texts, &second.name, below);
             }
             y += row_height;
         }
@@ -480,7 +496,7 @@ impl Draw<'_> {
             );
             if let Some(second) = &key.second_unit {
                 let t = Self::second_text(row, e.value, second);
-                widest = widest.max(self.ink.advance(&t, self.fonts));
+                widest = widest.max(self.second.advance(&t, self.fonts));
             }
         }
         let space = 0.6 * self.ink.style.size;
@@ -519,7 +535,6 @@ impl Draw<'_> {
                 }
             }
         }
-        let width_pt = 0.3 * self.unit;
         for k in 0..row.segments.len() {
             let r = Rect::new(
                 x0 + k as f64 * width,
@@ -527,10 +542,17 @@ impl Draw<'_> {
                 x0 + (k + 1) as f64 * width,
                 top + h,
             );
+            self.outline(r);
+        }
+    }
+
+    /// The line around `r`, if the key has lines.
+    fn outline(&mut self, r: Rect) {
+        if let Some((color, width)) = self.border {
             self.out.push(Item::Stroke {
                 path: r.to_path(0.1),
-                color: line_color(),
-                width: width_pt,
+                color,
+                width,
                 round: false,
             });
         }
@@ -550,19 +572,22 @@ impl Draw<'_> {
 
     /// The values of a row at their edges, with the unit word next to the
     /// value nearest an open end: on the open side, or after the last value.
+    /// The text of the second unit if `in_second`.
     fn edge_texts(
         &mut self,
+        in_second: bool,
         row: &StripRow,
         edges: &[Edge],
         texts: &[String],
         unit: &str,
         baseline: f64,
     ) {
-        let space = 0.3 * self.ink.style.size;
+        let ink = if in_second { &self.second } else { &self.ink };
+        let space = 0.3 * ink.style.size;
         for (e, t) in edges.iter().zip(texts) {
-            let w = self.ink.advance(t, self.fonts);
+            let w = ink.advance(t, self.fonts);
             let to = Affine::translate((e.x - w / 2.0, baseline));
-            self.ink.line(t, to, self.fonts, self.text);
+            ink.line(t, to, self.fonts, self.text);
         }
         if unit.is_empty() {
             return;
@@ -570,16 +595,16 @@ impl Draw<'_> {
         let (Some(first), Some(last)) = (edges.first(), edges.last()) else {
             return;
         };
-        let unit_w = self.ink.advance(unit, self.fonts);
+        let unit_w = ink.advance(unit, self.fonts);
         let at = if !row.closed_start && row.closed_end {
-            let w = self.ink.advance(&texts[0], self.fonts);
+            let w = ink.advance(&texts[0], self.fonts);
             first.x - w / 2.0 - space - unit_w
         } else {
-            let w = self.ink.advance(&texts[texts.len() - 1], self.fonts);
+            let w = ink.advance(&texts[texts.len() - 1], self.fonts);
             last.x + w / 2.0 + space
         };
         let to = Affine::translate((at, baseline));
-        self.ink.line(unit, to, self.fonts, self.text);
+        ink.line(unit, to, self.fonts, self.text);
     }
 
     fn list(&mut self, key: &ColorKeyItem, data: &KeyData, inner: Rect) {
@@ -588,7 +613,10 @@ impl Draw<'_> {
         let height = key.box_height.map_or(1.3 * size, |h| h * mm);
         // A row is as tall as its box or its text, whichever is taller, and
         // the box and the text are at its middle.
-        let slot = height.max(LINE_HEIGHT * size);
+        let mut slot = height.max(LINE_HEIGHT * size);
+        if key.names_in_boxes {
+            slot = slot.max(LINE_HEIGHT * self.boxed.style.size);
+        }
         let gap = 0.6 * size;
         let shown: Vec<&KeyRow> = data.rows.iter().rev().filter(|r| !r.hidden).collect();
         let width = match key.box_width {
@@ -596,8 +624,9 @@ impl Draw<'_> {
             None => {
                 let mut width = 2.6 * size;
                 if key.names_in_boxes {
+                    let margin = 0.8 * self.boxed.style.size;
                     for r in &shown {
-                        width = width.max(self.ink.advance(&r.name, self.fonts) + 0.8 * size);
+                        width = width.max(self.boxed.advance(&r.name, self.fonts) + margin);
                     }
                 }
                 width
@@ -622,36 +651,20 @@ impl Draw<'_> {
                 _ => row.band.color,
             };
             self.out.push(fill(r, rgb(color)));
-            self.out.push(Item::Stroke {
-                path: r.to_path(0.1),
-                color: line_color(),
-                width: 0.3 * self.unit,
-                round: false,
-            });
+            self.outline(r);
             let line_top = y + (slot - LINE_HEIGHT * size) / 2.0;
             let base = baseline(&self.ink, line_top, self.fonts);
             if key.names_in_boxes && !row.name.is_empty() {
-                let w = self.ink.advance(&row.name, self.fonts);
-                let (ink_color, halo) = (self.ink.color, self.ink.halo.take());
-                self.ink.color = contrast(color);
+                let w = self.boxed.advance(&row.name, self.fonts);
+                let line_top = y + (slot - LINE_HEIGHT * self.boxed.style.size) / 2.0;
+                let base = baseline(&self.boxed, line_top, self.fonts);
                 let to = Affine::translate((r.center().x - w / 2.0, base));
-                self.ink.line(&row.name, to, self.fonts, self.text);
-                (self.ink.color, self.ink.halo) = (ink_color, halo);
+                self.boxed.line(&row.name, to, self.fonts, self.text);
             }
             let to = Affine::translate((r.x1 + 0.5 * size, base));
             self.ink.line(&row.label, to, self.fonts, self.text);
             y += slot;
         }
-    }
-}
-
-/// Black or white, whichever reads better on `color`.
-fn contrast([r, g, b]: [u8; 3]) -> Color {
-    let luma = 0.299 * f64::from(r) + 0.587 * f64::from(g) + 0.114 * f64::from(b);
-    if luma > 140.0 {
-        Color::rgb(30, 30, 30)
-    } else {
-        Color::rgb(250, 250, 250)
     }
 }
 
