@@ -141,6 +141,12 @@ pub enum TextPart {
     Units,
     /// The letter N of a north arrow.
     Letter,
+    /// The values, the unit, and the text of a list of a color key.
+    Values,
+    /// The values of a color key in its second unit.
+    SecondUnit,
+    /// The band names inside the boxes of a color key.
+    BoxNames,
 }
 
 impl TextPart {
@@ -151,7 +157,9 @@ impl TextPart {
             (TextPart::Title, Furniture::Legend(i)) => Some(&i.title_style),
             (TextPart::Entries, Furniture::Legend(i)) => Some(&i.entry_style),
             (TextPart::Title, Furniture::ColorKey(i)) => Some(&i.title_style),
-            (TextPart::Entries, Furniture::ColorKey(i)) => Some(&i.value_style),
+            (TextPart::Values, Furniture::ColorKey(i)) => Some(&i.value_style),
+            (TextPart::SecondUnit, Furniture::ColorKey(i)) => Some(&i.second_unit_style),
+            (TextPart::BoxNames, Furniture::ColorKey(i)) => Some(&i.box_text_style),
             (TextPart::Numbers, Furniture::ScaleBar(i)) => Some(&i.number_style),
             (TextPart::Units, Furniture::ScaleBar(i)) => Some(&i.unit_style),
             (TextPart::Letter, Furniture::NorthArrow(i)) => Some(&i.letter_style),
@@ -165,7 +173,9 @@ impl TextPart {
             (TextPart::Title, Furniture::Legend(i)) => Some(&mut i.title_style),
             (TextPart::Entries, Furniture::Legend(i)) => Some(&mut i.entry_style),
             (TextPart::Title, Furniture::ColorKey(i)) => Some(&mut i.title_style),
-            (TextPart::Entries, Furniture::ColorKey(i)) => Some(&mut i.value_style),
+            (TextPart::Values, Furniture::ColorKey(i)) => Some(&mut i.value_style),
+            (TextPart::SecondUnit, Furniture::ColorKey(i)) => Some(&mut i.second_unit_style),
+            (TextPart::BoxNames, Furniture::ColorKey(i)) => Some(&mut i.box_text_style),
             (TextPart::Numbers, Furniture::ScaleBar(i)) => Some(&mut i.number_style),
             (TextPart::Units, Furniture::ScaleBar(i)) => Some(&mut i.unit_style),
             (TextPart::Letter, Furniture::NorthArrow(i)) => Some(&mut i.letter_style),
@@ -178,7 +188,11 @@ impl TextPart {
     pub fn page(self) -> Option<ItemPage> {
         match self {
             TextPart::Text | TextPart::Letter => None,
-            TextPart::Title | TextPart::Entries => Some(ItemPage::Text(self)),
+            TextPart::Title
+            | TextPart::Entries
+            | TextPart::Values
+            | TextPart::SecondUnit
+            | TextPart::BoxNames => Some(ItemPage::Text(self)),
             TextPart::Numbers => Some(ItemPage::Bar(BarPage::Numbers)),
             TextPart::Units => Some(ItemPage::Bar(BarPage::Units)),
         }
@@ -290,6 +304,8 @@ pub enum ItemPage {
     KeyUnit,
     /// The name of a band of a color key, by its key.
     Band(String),
+    /// The lines around the boxes of a color key.
+    KeyBorder,
 }
 
 impl ItemPage {
@@ -300,7 +316,8 @@ impl ItemPage {
             | ItemPage::Text(_)
             | ItemPage::Bar(_)
             | ItemPage::KeyLayer
-            | ItemPage::KeyUnit => None,
+            | ItemPage::KeyUnit
+            | ItemPage::KeyBorder => None,
             ItemPage::Face(part) | ItemPage::Case(part) => part.page(),
             ItemPage::Entry(..) | ItemPage::Band(_) => Some(ItemPage::Text(TextPart::Entries)),
             ItemPage::Pick(pick) => Some(ItemPage::Bar(pick.parent())),
@@ -401,6 +418,8 @@ pub enum ClassColor {
     Border(bool),
     /// The stroke of the border of a frame.
     BorderStroke,
+    /// The lines around the boxes of a color key.
+    KeyBorder,
     /// The text of the reference grid of a frame.
     GridText,
     /// The halo of the reference grid of a frame.

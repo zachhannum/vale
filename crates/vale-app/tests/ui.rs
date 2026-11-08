@@ -263,6 +263,15 @@ fn the_desktop_color_key_controls_edit_the_key() {
     );
     type_in(&mut h, "Box width", "Auto");
     assert_eq!(key(&h).box_width, None);
+    // The border width steps, and the text of the box names has its own
+    // section.
+    h.get_by_label("Increase Border width").click();
+    h.run_steps(2);
+    assert!((key(&h).border_width - 0.35).abs() < 1e-9);
+    assert!(h.get_all_by_label("Border color").count() > 1);
+    h.get_by_label("Box names").click();
+    h.run_steps(2);
+    assert!(h.query_by_label("Values").is_some());
     if std::env::var_os("VALE_SCREENSHOTS").is_some() {
         let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/app");
         std::fs::create_dir_all(dir).unwrap();

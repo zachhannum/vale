@@ -3710,7 +3710,7 @@ fn manual_color_key_pictures() {
         make("m", &height, &height_colors, &[]),
         [5.0, 5.0, 205.0, 40.0],
         strip,
-        Some(feet),
+        Some(feet.clone()),
     );
     draw(
         make("mm", &rain, &rain_colors, &[]),
@@ -3758,7 +3758,22 @@ fn manual_color_key_pictures() {
         },
         None,
     );
-    let (w, h) = (210.0 * PT_PER_MM, 155.0 * PT_PER_MM);
+    draw(
+        make("m", &height, &height_colors, &[]),
+        [5.0, 155.0, 205.0, 195.0],
+        |frame, layer| ColorKeyItem {
+            border_color: [255, 255, 255, 255],
+            border_width: 1.0,
+            second_unit_style: FurnitureText {
+                color: [40, 80, 160, 255],
+                italic: true,
+                ..FurnitureText::sized(7.0)
+            },
+            ..strip(frame, layer)
+        },
+        Some(feet.clone()),
+    );
+    let (w, h) = (210.0 * PT_PER_MM, 200.0 * PT_PER_MM);
     let mut list = vale_render::DisplayList::new(w, h);
     list.items.push(Item::Fill {
         path: kurbo::Rect::new(0.0, 0.0, w, h).to_path(0.1),

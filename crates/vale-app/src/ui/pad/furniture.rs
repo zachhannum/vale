@@ -61,6 +61,12 @@ pub const OFFSET: &str = "Offset";
 pub const NAMES_IN_BOXES: &str = "Names in boxes";
 pub const BOX_WIDTH: &str = "Box width";
 pub const BOX_HEIGHT: &str = "Box height";
+pub const BORDER: &str = "Border";
+pub const BORDER_COLOR: &str = "Border color";
+pub const BORDER_WIDTH: &str = "Border width";
+pub const VALUES: &str = "Values";
+pub const SECOND_UNIT_VALUES: &str = "Second unit values";
+pub const BOX_NAMES: &str = "Box names";
 /// The text of a box size that follows the text and the key.
 pub const AUTO: &str = "Auto";
 pub const BANDS: &str = "Bands";
@@ -134,6 +140,7 @@ fn page_key(page: &ItemPage) -> &'static str {
         ItemPage::KeyLayer => "pad-atlas-key-layer",
         ItemPage::KeyUnit => "pad-atlas-key-unit",
         ItemPage::Band(_) => "pad-atlas-key-band",
+        ItemPage::KeyBorder => "pad-atlas-key-border",
     }
 }
 
@@ -145,6 +152,9 @@ fn page_title(page: Option<&ItemPage>, kind: ItemKind) -> &'static str {
         Some(ItemPage::Face(_)) => STYLE,
         Some(ItemPage::Case(_)) => CASE,
         Some(ItemPage::Text(TextPart::Title)) => TITLE,
+        Some(ItemPage::Text(TextPart::Values)) => VALUES,
+        Some(ItemPage::Text(TextPart::SecondUnit)) => SECOND_UNIT_VALUES,
+        Some(ItemPage::Text(TextPart::BoxNames)) => BOX_NAMES,
         Some(ItemPage::Text(_)) if kind == ItemKind::ColorKey => BANDS,
         Some(ItemPage::Text(_)) => ENTRIES,
         Some(ItemPage::Entry(..)) => ENTRY,
@@ -155,6 +165,7 @@ fn page_title(page: Option<&ItemPage>, kind: ItemKind) -> &'static str {
         Some(ItemPage::KeyLayer) => KEY_LAYER,
         Some(ItemPage::KeyUnit) => SECOND_UNIT,
         Some(ItemPage::Band(_)) => BAND,
+        Some(ItemPage::KeyBorder) => BORDER,
     }
 }
 
@@ -248,6 +259,11 @@ pub fn panel(
             Some(ItemPage::Band(band)) => {
                 if let Furniture::ColorKey(key) = &rec.item {
                     band_page(ui, state, controls, rec.id, key, band);
+                }
+            }
+            Some(ItemPage::KeyBorder) => {
+                if let Furniture::ColorKey(key) = &rec.item {
+                    key_border_page(ui, state, controls, rec.id, key);
                 }
             }
         }
@@ -748,12 +764,55 @@ fn key_body(
         }
     }
     box_rows(ui, state, controls, id, key);
+    let border = if key.border_width > 0.0 {
+        format!("{} pt", number_text(key.border_width))
+    } else {
+        NONE.to_string()
+    };
+    if widgets::open_row(ui, controls, BORDER, &border).clicked() {
+        go(ui, state, Some(ItemPage::KeyBorder));
+    }
+    if widgets::open_row(ui, controls, BANDS, "").clicked() {
+        go(ui, state, Some(ItemPage::Text(TextPart::Entries)));
+    }
+    heading(ui, TEXT);
     let title = fit(ui, TITLE, &key.title);
     if widgets::open_row(ui, controls, TITLE, &title).clicked() {
         go(ui, state, Some(ItemPage::Text(TextPart::Title)));
     }
-    if widgets::open_row(ui, controls, BANDS, "").clicked() {
-        go(ui, state, Some(ItemPage::Text(TextPart::Entries)));
+    let mut parts = vec![(VALUES, TextPart::Values)];
+    if key.layout == KeyLayout::Strip && key.second_unit.is_some() {
+        parts.push((SECOND_UNIT_VALUES, TextPart::SecondUnit));
+    }
+    if key.layout == KeyLayout::List && key.names_in_boxes {
+        parts.push((BOX_NAMES, TextPart::BoxNames));
+    }
+    for (name, part) in parts {
+        if widgets::open_row(ui, controls, name, "").clicked() {
+            go(ui, state, Some(ItemPage::Text(part)));
+        }
+    }
+}
+
+/// The color and the width of the lines around the boxes of a key. A width
+/// of 0 draws no lines.
+fn key_border_page(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    id: FurnitureId,
+    key: &ColorKeyItem,
+) {
+    let which = ClassColor::KeyBorder;
+    if let Some(c) = rgba_rows(ui, state, controls, BORDER_COLOR, which, key.border_color) {
+        atlas::edit_key(state, id, false, |k| k.border_color = c);
+    }
+    if let Some(v) = Number::new(BORDER_WIDTH, key.border_width, 0.0..=4.0)
+        .step(0.05)
+        .unit("pt")
+        .stepper(ui, controls)
+    {
+        atlas::edit_key(state, id, false, |k| k.border_width = v.max(0.0));
     }
 }
 
@@ -909,7 +968,7 @@ fn key_unit_page(
     }
 }
 
-/// The Title page and the Bands page of a color key.
+/// The Title page, the Bands page, and the text pages of a color key.
 fn key_text_page(
     ui: &mut egui::Ui,
     state: &mut AppState,
@@ -927,14 +986,21 @@ fn key_text_page(
         text_rows(ui, state, controls, id, part, &key.title_style);
         return;
     }
-    band_rows(ui, state, controls, id, key);
-    ui.add_space(6.0);
-    let reset = widgets::button_row(ui, controls, RESET_BANDS, !key.bands.is_empty());
-    if reset.clicked() {
-        atlas::edit_key(state, id, true, |k| k.bands.clear());
-    }
-    heading(ui, TEXT);
-    text_rows(ui, state, controls, id, part, &key.value_style);
+    let style = match part {
+        TextPart::Values => &key.value_style,
+        TextPart::SecondUnit => &key.second_unit_style,
+        TextPart::BoxNames => &key.box_text_style,
+        _ => {
+            band_rows(ui, state, controls, id, key);
+            ui.add_space(6.0);
+            let reset = widgets::button_row(ui, controls, RESET_BANDS, !key.bands.is_empty());
+            if reset.clicked() {
+                atlas::edit_key(state, id, true, |k| k.bands.clear());
+            }
+            return;
+        }
+    };
+    text_rows(ui, state, controls, id, part, style);
 }
 
 /// One row for each band of a key, from the top band down: a tap on the

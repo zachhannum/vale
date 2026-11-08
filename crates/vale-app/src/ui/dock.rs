@@ -1635,8 +1635,42 @@ fn key_sections(
             if reset.clicked() {
                 atlas::edit_key(state, id, true, |k| k.bands.clear());
             }
-            text_grid(ui, state, id, TextPart::Entries, &k.value_style);
         });
+    egui::CollapsingHeader::new(item::BORDER)
+        .default_open(true)
+        .show(ui, |ui| {
+            egui::Grid::new(("key-border", id.0))
+                .num_columns(2)
+                .show(ui, |ui| {
+                    if let Some(c) = color(ui, item::BORDER_COLOR, k.border_color) {
+                        atlas::edit_key(state, id, false, |k| k.border_color = c);
+                    }
+                    let mut v = k.border_width;
+                    let stepper = number::stepper(item::BORDER_WIDTH, &mut v)
+                        .range(0.0..=4.0)
+                        .step(0.05)
+                        .suffix(" pt");
+                    if stepper.row(ui).changed() {
+                        atlas::edit_key(state, id, false, |k| k.border_width = v.max(0.0));
+                    }
+                });
+        });
+    let mut parts = vec![(item::VALUES, TextPart::Values, &k.value_style)];
+    if k.layout == KeyLayout::Strip && k.second_unit.is_some() {
+        parts.push((
+            item::SECOND_UNIT_VALUES,
+            TextPart::SecondUnit,
+            &k.second_unit_style,
+        ));
+    }
+    if k.layout == KeyLayout::List && k.names_in_boxes {
+        parts.push((item::BOX_NAMES, TextPart::BoxNames, &k.box_text_style));
+    }
+    for (name, part, style) in parts {
+        egui::CollapsingHeader::new(name)
+            .default_open(false)
+            .show(ui, |ui| text_grid(ui, state, id, part, style));
+    }
 }
 
 /// A combo box row of a grid. Returns the choice that the user made.

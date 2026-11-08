@@ -9441,6 +9441,68 @@ fn the_color_key_panel_sets_the_box_size() {
 }
 
 #[test]
+fn the_color_key_panel_sets_the_text_styles_and_the_border() {
+    for size in [BOARDS[0], (393.0, 852.0)] {
+        let what = format!("{size:?}");
+        let (mut h, _, _) = key_pad(state(), size);
+        let id = item(&h, 0).id;
+        // The second unit and the box names have their rows only when they
+        // show.
+        assert!(control(&h, item::SECOND_UNIT_VALUES).is_none(), "{what}");
+        assert!(control(&h, item::BOX_NAMES).is_none(), "{what}");
+        let feet = vale_store::SecondUnit {
+            name: "feet".into(),
+            factor: 3.28084,
+            offset: 0.0,
+        };
+        atlas::edit_key(h.state_mut(), id, true, |k| k.second_unit = Some(feet));
+        h.run_steps(2);
+        check_page(&mut h, &what, "");
+
+        // Each text part opens its own text page.
+        let parts = [
+            (item::VALUES, TextPart::Values),
+            (item::SECOND_UNIT_VALUES, TextPart::SecondUnit),
+        ];
+        for (row, part) in parts {
+            scroll_to(&mut h, row);
+            tap_row(&mut h, row);
+            assert_eq!(
+                h.state().atlas.item_page,
+                Some(ItemPage::Text(part)),
+                "{what}"
+            );
+            check_controls(&h, &what);
+            set_number(&mut h, item::SIZE, "12");
+            tap(&mut h, &format!("Back to {}", ItemKind::ColorKey.name()));
+        }
+        let k = key(&h, 0);
+        assert_eq!((k.value_style.size, k.second_unit_style.size), (12.0, 12.0));
+        assert_eq!(k.box_text_style.size, 8.0, "{what}");
+
+        tap_row(&mut h, item::KEY_LAYOUTS[1]);
+        assert!(control(&h, item::SECOND_UNIT_VALUES).is_none(), "{what}");
+        tap_row(&mut h, item::NAMES_IN_BOXES);
+        scroll_to(&mut h, item::BOX_NAMES);
+        tap_row(&mut h, item::BOX_NAMES);
+        set_number(&mut h, item::SIZE, "10");
+        assert_eq!(key(&h, 0).box_text_style.size, 10.0, "{what}");
+        tap(&mut h, &format!("Back to {}", ItemKind::ColorKey.name()));
+
+        // The border page sets the width, and 0 draws no lines.
+        scroll_to(&mut h, item::BORDER);
+        tap_row(&mut h, item::BORDER);
+        assert_eq!(h.state().atlas.item_page, Some(ItemPage::KeyBorder));
+        check_controls(&h, &what);
+        assert!(control(&h, item::BORDER_COLOR).is_some(), "{what}");
+        set_number(&mut h, item::BORDER_WIDTH, "1.5");
+        assert_eq!(key(&h, 0).border_width, 1.5, "{what}");
+        set_number(&mut h, item::BORDER_WIDTH, "0");
+        assert_eq!(key(&h, 0).border_width, 0.0, "{what}");
+    }
+}
+
+#[test]
 fn the_color_key_panel_hints_when_the_frame_hides_the_layer() {
     let (mut h, height, _) = key_pad(state(), BOARDS[0]);
     assert!(h.query_by_label(item::LAYER_HIDDEN).is_none());
