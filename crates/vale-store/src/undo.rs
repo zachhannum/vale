@@ -1069,6 +1069,10 @@ fn put_raster(out: &mut Vec<u8>, raster: &Raster) {
     out.push(raster.rivers as u8);
     out.push(raster.lines as u8);
     put_bytes(out, raster.blend.id().as_bytes());
+    put_u32(out, raster.names.len());
+    for name in &raster.names {
+        put_bytes(out, name.as_bytes());
+    }
 }
 
 fn put_image(out: &mut Vec<u8>, image: &Image) {
@@ -1221,6 +1225,15 @@ fn raster(r: &mut Reader) -> Option<Raster> {
         true => BlendMode::Normal,
         false => BlendMode::from_id(&string(r)?).unwrap_or_default(),
     };
+    let mut names = Vec::new();
+    if !r.0.is_empty() {
+        names = (0..count(r)?)
+            .map(|_| string(r))
+            .collect::<Option<Vec<_>>>()?;
+    }
+    if names.len() != colors.len() {
+        names.clear();
+    }
     r.0.is_empty().then_some(Raster {
         id,
         opacity,
@@ -1233,6 +1246,7 @@ fn raster(r: &mut Reader) -> Option<Raster> {
         base,
         stops,
         colors,
+        names,
         smoothing,
         hillshade,
         rivers,
@@ -1283,6 +1297,7 @@ fn raster_v13(r: &mut Reader) -> Option<Raster> {
         base,
         stops,
         colors,
+        names: Vec::new(),
         smoothing: smooth,
         hillshade: Hillshade::default(),
         rivers: true,
@@ -1953,6 +1968,9 @@ mod tests {
         let mut out = Vec::new();
         put_raster(&mut out, &rain);
         assert_eq!(raster(&mut Reader(&out)), Some(rain.clone()));
+        // An image of version 36 ends after the blend mode.
+        out.truncate(out.len() - 4);
+        assert_eq!(raster(&mut Reader(&out)), Some(rain.clone()));
         // An image of version 22 ends after the switch of the lines, and it
         // blends as normal.
         out.truncate(out.len() - (4 + rain.blend.id().len()));
@@ -2001,7 +2019,7 @@ mod tests {
         };
         let mut full = Vec::new();
         put_raster(&mut full, &rain);
-        full.truncate(full.len() - 2 - (4 + rain.blend.id().len()));
+        full.truncate(full.len() - 4 - 2 - (4 + rain.blend.id().len()));
         let light = HILLSHADE_LEN - 4 - 2;
         // The image ends after the highlights.
         let out = &full[..full.len() - light];
@@ -2028,8 +2046,38 @@ mod tests {
         put_raster(&mut out, &rain);
         assert_eq!(raster(&mut Reader(&out)).unwrap().colors, rain.colors);
         // An image with a color that ends early is not valid.
-        out.truncate(out.len() - 2 - HILLSHADE_LEN - 5 - 1);
+        out.truncate(out.len() - 4 - 2 - HILLSHADE_LEN - 5 - 1);
         assert_eq!(raster(&mut Reader(&out)), None);
+    }
+
+    #[test]
+    fn an_undo_image_keeps_the_band_names() {
+        let mut rain = rain();
+        rain.colors = vec![[255, 0, 128], [7, 7, 7]];
+        rain.names = vec!["Dry".into(), String::new()];
+        let mut out = Vec::new();
+        put_raster(&mut out, &rain);
+        assert_eq!(raster(&mut Reader(&out)), Some(rain.clone()));
+        // An image with a name that ends early is not valid.
+        out.pop();
+        assert_eq!(raster(&mut Reader(&out)), None);
+    }
+
+    #[test]
+    fn an_older_raster_image_has_no_band_names() {
+        let mut rain = rain();
+        rain.colors = vec![[255, 0, 128], [7, 7, 7]];
+        let mut out = Vec::new();
+        put_raster(&mut out, &rain);
+        out.truncate(out.len() - 4);
+        let old = raster(&mut Reader(&out)).unwrap();
+        assert!(old.names.is_empty());
+        assert_eq!(old.colors, rain.colors);
+        // Names that are not one for each band are dropped.
+        rain.names = vec!["Dry".into()];
+        let mut out = Vec::new();
+        put_raster(&mut out, &rain);
+        assert!(raster(&mut Reader(&out)).unwrap().names.is_empty());
     }
 
     #[test]

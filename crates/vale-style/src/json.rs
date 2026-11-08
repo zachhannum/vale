@@ -470,7 +470,7 @@ fn raster_json(r: &RasterSymbolizer) -> Json {
         .collect();
     let colors: Vec<Json> = r.colors.iter().map(|c| rgb_json(*c)).collect();
     let h = &r.hillshade;
-    json!({
+    let mut out = json!({
         "type": "raster",
         "display": display_name(r.display),
         "opacity": f64::from(r.opacity),
@@ -491,7 +491,11 @@ fn raster_json(r: &RasterSymbolizer) -> Json {
             "exaggeration": f64::from(h.exaggeration),
             "color": rgb_json(h.color),
         },
-    })
+    });
+    if r.names.iter().any(|n| !n.is_empty()) {
+        out["names"] = json!(r.names);
+    }
+    out
 }
 
 /// The smoothing of a raster. A raster of style version 2 has none, and it reads as the default.
@@ -575,6 +579,17 @@ fn read_mix(m: &Map<String, Json>) -> (f32, BlendMode) {
     (opacity, blend)
 }
 
+/// The band names of a raster. Names that are not valid, not one for each
+/// of `bands`, or all empty give no names.
+fn read_names(j: Option<&Json>, bands: usize) -> Vec<String> {
+    let names: Option<Vec<String>> = j
+        .and_then(Json::as_array)
+        .and_then(|a| a.iter().map(|n| n.as_str().map(str::to_owned)).collect());
+    names
+        .filter(|n| n.len() == bands && n.iter().any(|x| !x.is_empty()))
+        .unwrap_or_default()
+}
+
 fn read_raster(m: &Map<String, Json>) -> Result<RasterSymbolizer, StyleError> {
     let display = match m.get("display").and_then(Json::as_str) {
         Some("bands") => RasterDisplay::Bands,
@@ -618,6 +633,7 @@ fn read_raster(m: &Map<String, Json>) -> Result<RasterSymbolizer, StyleError> {
         opacity,
         blend,
         stops,
+        names: read_names(m.get("names"), colors.len()),
         colors,
         lines: m.get("lines").and_then(Json::as_bool).unwrap_or(true),
         smoothing: read_smoothing(m.get("smoothing")),

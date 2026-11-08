@@ -339,6 +339,8 @@ pub struct RasterSymbolizer {
     pub stops: Vec<Stop>,
     /// The color of each band, from the lowest band up. There is one color fewer than stops.
     pub colors: Vec<Rgb>,
+    /// The name of each band, from the lowest band up, or none.
+    pub names: Vec<String>,
     /// The layer draws the lines of the stops.
     pub lines: bool,
     pub smoothing: Smoothing,

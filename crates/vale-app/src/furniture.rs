@@ -1,4 +1,4 @@
-//! Map furniture: text, legends, scale bars, and north arrows.
+//! Map furniture: text, legends, color keys, scale bars, and north arrows.
 
 use kurbo::{Affine, BezPath, Point, Rect, Shape, Vec2};
 use vale_labeler::{
@@ -355,7 +355,8 @@ pub fn rect_of(rec: &FurnitureRecord) -> Rect {
 /// The items of one item of furniture in a target: vector paths and glyphs.
 /// The screen and the export draw the same items, but for an item that
 /// draws nothing in the export the screen draws a faint dashed box: an item
-/// with no frame, and an arrow that hides because north varies.
+/// with no frame, a color key whose frame does not show its layer, and an
+/// arrow that hides because north varies.
 pub fn items(
     pipeline: &mut Pipeline,
     doc: &Document,
@@ -401,6 +402,10 @@ pub fn items(
             None => placeholder(),
         },
         Furniture::Legend(item) => legend_items(doc, projection, frame, item, rect, unit, fonts),
+        Furniture::ColorKey(item) => match crate::color_key::data(doc, frame, item) {
+            Some(data) => crate::color_key::draw(item, &data, rect, unit, fonts),
+            None => placeholder(),
+        },
     }
 }
 

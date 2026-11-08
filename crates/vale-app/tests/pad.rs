@@ -436,6 +436,7 @@ fn check_controls(h: &Pad, what: &str) {
 fn raster_stop(name: &str) -> bool {
     use vale_app::ui::pad::raster;
     [
+        raster::BAND_NAME,
         raster::STOP_VALUE,
         raster::FILL_COLOR,
         raster::LINE_COLOR,
@@ -5465,6 +5466,34 @@ fn the_lowest_band_card_has_no_value_or_line() {
     let after = h.state().globe.map.bands.colors().to_vec();
     assert_ne!(after[0], before[0]);
     assert_eq!(after[1..], before[1..]);
+}
+
+#[test]
+fn the_band_card_renames_the_band() {
+    use vale_app::ui::pad::raster::BAND_NAME;
+    let mut h = painted_pad(BOARDS[1]);
+    let dir = tempfile::tempdir().unwrap();
+    let state = h.state_mut();
+    state.session = Some(Session::open(&dir.path().join("w.gpkg"), &mut state.doc).unwrap());
+    state.save_waiting().unwrap();
+    let height = open_height(&mut h);
+    open_stops(&mut h);
+    let index = h.state().globe.map.bands.sea().unwrap();
+    show_stop(&mut h, index);
+    tap_handle(&mut h, index);
+    assert_eq!(h.state().globe.preview.selected, Some((height, index)));
+    check_controls(&h, "the card with the name field");
+    type_text(&mut h, BAND_NAME, "Lowland");
+    assert_eq!(h.state().globe.map.bands.name(index), "Lowland");
+
+    // The name reaches the record, and an undo takes it away.
+    h.state_mut().save_waiting().unwrap();
+    let names = |h: &Pad| h.state().doc.project.raster(height).unwrap().names.clone();
+    assert_eq!(names(&h)[index], "Lowland");
+    h.state_mut().undo();
+    h.run_steps(2);
+    assert_eq!(h.state().globe.map.bands.name(index), "");
+    assert!(names(&h).is_empty());
 }
 
 #[test]

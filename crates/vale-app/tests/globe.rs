@@ -6509,6 +6509,24 @@ fn the_desktop_panel_sets_the_line_of_the_selected_stop() {
 }
 
 #[test]
+fn the_desktop_band_controls_rename_the_band() {
+    use vale_app::ui::pad::raster::BAND_NAME;
+    let mut h = harness();
+    h.get_by_label(vale_app::ui::elevation::PANEL).click();
+    h.run_steps(2);
+    let id = h.state().shown_raster().unwrap().id;
+    let sea = h.state().globe.map.bands.sea().unwrap();
+    h.state_mut().globe.preview.selected = Some((id, sea));
+    h.run_steps(2);
+    h.get_by_label(BAND_NAME).click();
+    h.run_steps(1);
+    h.event(egui::Event::Text("Lowland".into()));
+    h.run_steps(2);
+    assert_eq!(h.state().globe.map.bands.name(sea), "Lowland");
+    assert_eq!(h.state().globe.map.bands.name(sea + 1), "");
+}
+
+#[test]
 fn the_desktop_list_has_one_row_per_band_with_the_card_controls() {
     use vale_app::ui::elevation::{BAND_COLOR, BAND_VALUE, REMOVE};
     use vale_app::ui::pad::raster::LINE;

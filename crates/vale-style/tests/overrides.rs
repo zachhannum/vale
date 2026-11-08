@@ -93,6 +93,7 @@ fn raster() -> LayerStyle {
         blend: vale_store::BlendMode::Normal,
         stops: stops.to_vec(),
         colors: vec![[10, 10, 10], [200, 200, 200]],
+        names: Vec::new(),
         lines: true,
         smoothing: Default::default(),
         hillshade: Default::default(),

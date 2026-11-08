@@ -81,12 +81,14 @@ pub enum ItemKind {
     Legend,
     ScaleBar,
     NorthArrow,
+    ColorKey,
 }
 
 impl ItemKind {
-    pub const ALL: [ItemKind; 4] = [
+    pub const ALL: [ItemKind; 5] = [
         ItemKind::Text,
         ItemKind::Legend,
+        ItemKind::ColorKey,
         ItemKind::ScaleBar,
         ItemKind::NorthArrow,
     ];
@@ -97,6 +99,7 @@ impl ItemKind {
             Furniture::Legend(_) => ItemKind::Legend,
             Furniture::ScaleBar(_) => ItemKind::ScaleBar,
             Furniture::NorthArrow(_) => ItemKind::NorthArrow,
+            Furniture::ColorKey(_) => ItemKind::ColorKey,
         }
     }
 
@@ -107,6 +110,7 @@ impl ItemKind {
             ItemKind::Legend => "Legend",
             ItemKind::ScaleBar => "Scale bar",
             ItemKind::NorthArrow => "North arrow",
+            ItemKind::ColorKey => "Color key",
         }
     }
 
@@ -117,6 +121,7 @@ impl ItemKind {
             ItemKind::Legend => (50.0, 40.0),
             ItemKind::ScaleBar => (60.0, 12.0),
             ItemKind::NorthArrow => (12.0, 18.0),
+            ItemKind::ColorKey => (90.0, 32.0),
         }
     }
 }
@@ -136,6 +141,12 @@ pub enum TextPart {
     Units,
     /// The letter N of a north arrow.
     Letter,
+    /// The values, the unit, and the text of a list of a color key.
+    Values,
+    /// The values of a color key in its second unit.
+    SecondUnit,
+    /// The band names inside the boxes of a color key.
+    BoxNames,
 }
 
 impl TextPart {
@@ -145,6 +156,10 @@ impl TextPart {
             (TextPart::Text, Furniture::Text(i)) => Some(&i.style),
             (TextPart::Title, Furniture::Legend(i)) => Some(&i.title_style),
             (TextPart::Entries, Furniture::Legend(i)) => Some(&i.entry_style),
+            (TextPart::Title, Furniture::ColorKey(i)) => Some(&i.title_style),
+            (TextPart::Values, Furniture::ColorKey(i)) => Some(&i.value_style),
+            (TextPart::SecondUnit, Furniture::ColorKey(i)) => Some(&i.second_unit_style),
+            (TextPart::BoxNames, Furniture::ColorKey(i)) => Some(&i.box_text_style),
             (TextPart::Numbers, Furniture::ScaleBar(i)) => Some(&i.number_style),
             (TextPart::Units, Furniture::ScaleBar(i)) => Some(&i.unit_style),
             (TextPart::Letter, Furniture::NorthArrow(i)) => Some(&i.letter_style),
@@ -157,6 +172,10 @@ impl TextPart {
             (TextPart::Text, Furniture::Text(i)) => Some(&mut i.style),
             (TextPart::Title, Furniture::Legend(i)) => Some(&mut i.title_style),
             (TextPart::Entries, Furniture::Legend(i)) => Some(&mut i.entry_style),
+            (TextPart::Title, Furniture::ColorKey(i)) => Some(&mut i.title_style),
+            (TextPart::Values, Furniture::ColorKey(i)) => Some(&mut i.value_style),
+            (TextPart::SecondUnit, Furniture::ColorKey(i)) => Some(&mut i.second_unit_style),
+            (TextPart::BoxNames, Furniture::ColorKey(i)) => Some(&mut i.box_text_style),
             (TextPart::Numbers, Furniture::ScaleBar(i)) => Some(&mut i.number_style),
             (TextPart::Units, Furniture::ScaleBar(i)) => Some(&mut i.unit_style),
             (TextPart::Letter, Furniture::NorthArrow(i)) => Some(&mut i.letter_style),
@@ -169,7 +188,11 @@ impl TextPart {
     pub fn page(self) -> Option<ItemPage> {
         match self {
             TextPart::Text | TextPart::Letter => None,
-            TextPart::Title | TextPart::Entries => Some(ItemPage::Text(self)),
+            TextPart::Title
+            | TextPart::Entries
+            | TextPart::Values
+            | TextPart::SecondUnit
+            | TextPart::BoxNames => Some(ItemPage::Text(self)),
             TextPart::Numbers => Some(ItemPage::Bar(BarPage::Numbers)),
             TextPart::Units => Some(ItemPage::Bar(BarPage::Units)),
         }
@@ -275,15 +298,28 @@ pub enum ItemPage {
     Pick(BarPick),
     /// The first fill of a scale bar (`false`) or the second fill (`true`).
     Fill(bool),
+    /// The raster layers that a color key can show.
+    KeyLayer,
+    /// The second unit of a color key.
+    KeyUnit,
+    /// The name of a band of a color key, by its key.
+    Band(String),
+    /// The lines around the boxes of a color key.
+    KeyBorder,
 }
 
 impl ItemPage {
     /// The page that the Back button goes to. `None`: the top of the panel.
     pub fn parent(&self) -> Option<ItemPage> {
         match self {
-            ItemPage::Frame | ItemPage::Text(_) | ItemPage::Bar(_) => None,
+            ItemPage::Frame
+            | ItemPage::Text(_)
+            | ItemPage::Bar(_)
+            | ItemPage::KeyLayer
+            | ItemPage::KeyUnit
+            | ItemPage::KeyBorder => None,
             ItemPage::Face(part) | ItemPage::Case(part) => part.page(),
-            ItemPage::Entry(..) => Some(ItemPage::Text(TextPart::Entries)),
+            ItemPage::Entry(..) | ItemPage::Band(_) => Some(ItemPage::Text(TextPart::Entries)),
             ItemPage::Pick(pick) => Some(ItemPage::Bar(pick.parent())),
             ItemPage::Fill(_) => Some(ItemPage::Bar(BarPage::Bar)),
         }
@@ -382,6 +418,8 @@ pub enum ClassColor {
     Border(bool),
     /// The stroke of the border of a frame.
     BorderStroke,
+    /// The lines around the boxes of a color key.
+    KeyBorder,
     /// The text of the reference grid of a frame.
     GridText,
     /// The halo of the reference grid of a frame.
@@ -515,8 +553,9 @@ enum Drag {
     /// A handle of an item of furniture, with the distance from the pointer
     /// to the handle in millimeters.
     ItemHandle(FurnitureId, usize, Vec2),
-    /// The whole item.
-    Item(FurnitureId),
+    /// The whole item, with the distance from the pointer to the top-left
+    /// corner of its box in millimeters.
+    Item(FurnitureId, Vec2),
     /// A box that selects vertices, from this screen position to the
     /// pointer.
     Box(Pos2),
@@ -897,6 +936,11 @@ impl AtlasState {
         self.item_images.contains_key(&id)
     }
 
+    /// The size of an item in millimeters when its texture was drawn.
+    pub fn item_drawn_size(&self, id: FurnitureId) -> Option<(f64, f64)> {
+        self.item_images.get(&id).map(|i| i.size)
+    }
+
     /// The screen rectangle of the texture of an item.
     pub fn item_rect(&self, id: FurnitureId) -> Option<Rect> {
         self.item_images.get(&id).map(|i| i.rect)
@@ -908,6 +952,10 @@ struct ItemImage {
     texture: MapTexture,
     /// The key of what the item shows.
     content: u64,
+    /// The key of what the item shows, other than the scale of the texture.
+    look: u64,
+    /// The size of the item in millimeters when the texture was drawn.
+    size: (f64, f64),
     /// The texture on the screen at the last paint.
     rect: Rect,
 }
@@ -1137,8 +1185,8 @@ pub fn edit_frame(
 }
 
 /// Adds an item of furniture to the open page, inside the margin of the
-/// page, and selects it. A legend, a scale bar, and a north arrow link to
-/// the largest frame of the page.
+/// page, and selects it. A legend, a color key, a scale bar, and a north
+/// arrow link to the largest frame of the page.
 pub fn add_item(state: &mut AppState, kind: ItemKind) -> Option<FurnitureId> {
     let page = open_page(state);
     let frame = largest_frame(page);
@@ -1174,6 +1222,14 @@ pub fn add_item(state: &mut AppState, kind: ItemKind) -> Option<FurnitureId> {
             };
             (right, bottom, Furniture::NorthArrow(item))
         }
+        ItemKind::ColorKey => {
+            let item = vale_store::ColorKeyItem {
+                frame,
+                layer: frame.and_then(|f| default_key_layer(&state.doc, f)),
+                ..vale_store::ColorKeyItem::default()
+            };
+            (left, bottom, Furniture::ColorKey(item))
+        }
     };
     let page = page.id;
     let rect = [x, y, x + w, y + h];
@@ -1182,6 +1238,32 @@ pub fn add_item(state: &mut AppState, kind: ItemKind) -> Option<FurnitureId> {
     state.atlas.vertices.clear();
     state.atlas.item_page = None;
     Some(id)
+}
+
+/// The raster layers that the map of a frame shows, from the top layer
+/// down.
+pub fn key_layers(doc: &Document, frame: FrameId) -> Vec<LayerId> {
+    let Some(map) = doc.project.atlas.frame(frame).map(|f| f.map) else {
+        return Vec::new();
+    };
+    (doc.project.layers().iter().rev())
+        .filter(|l| l.raster().is_some() && doc.shown(map, l.id))
+        .map(|l| l.id)
+        .collect()
+}
+
+/// The layer of a new color key of a frame: the height layer that the map
+/// of the frame shows, or else the top raster layer that it shows.
+pub fn default_key_layer(doc: &Document, frame: FrameId) -> Option<LayerId> {
+    let shown = key_layers(doc, frame);
+    let is_height = |id: &LayerId| {
+        let raster = doc.project.layer(*id).and_then(|l| l.raster());
+        raster
+            .and_then(|r| doc.project.raster(r))
+            .is_some_and(crate::ui::is_height)
+    };
+    let height = shown.iter().copied().find(is_height);
+    height.or(shown.first().copied())
 }
 
 /// The frame of a page with the largest area.
@@ -1391,6 +1473,56 @@ pub fn edit_entry(
         }
         true
     });
+}
+
+/// Changes a color key. With `step`, the change is one undo step.
+pub fn edit_key(
+    state: &mut AppState,
+    id: FurnitureId,
+    step: bool,
+    edit: impl FnOnce(&mut vale_store::ColorKeyItem),
+) {
+    let edit = |rec: &mut FurnitureRecord| match &mut rec.item {
+        Furniture::ColorKey(key) => {
+            edit(key);
+            true
+        }
+        _ => false,
+    };
+    if step {
+        item_step(state, id, edit);
+    } else {
+        edit_item(state, id, edit);
+    }
+}
+
+/// Changes a band of a color key. A band with no change goes away.
+pub fn edit_band(
+    state: &mut AppState,
+    id: FurnitureId,
+    key: String,
+    step: bool,
+    edit: impl FnOnce(&mut vale_store::LegendEntry),
+) {
+    edit_key(state, id, step, |k| {
+        let mut entry = k.bands.get(&key).cloned().unwrap_or_default();
+        edit(&mut entry);
+        if entry == vale_store::LegendEntry::default() {
+            k.bands.remove(&key);
+        } else {
+            k.bands.insert(key, entry);
+        }
+    });
+}
+
+/// The bands of a color key, or `None` if its frame does not show its
+/// layer.
+pub fn key_data(
+    state: &AppState,
+    key: &vale_store::ColorKeyItem,
+) -> Option<crate::color_key::KeyData> {
+    let frame = state.doc.project.atlas.frame(key.frame?)?;
+    crate::color_key::data(&state.doc, frame, key)
 }
 
 /// The rows of a legend, or nothing for a legend with no frame.
@@ -2016,10 +2148,13 @@ fn start_drag(
                     _ => Drag::Idle,
                 };
             }
-            if let Some(id) = item_at(page, at) {
-                state.atlas.selection = AtlasSelection::Item(id);
+            if let Some(rec) =
+                item_at(page, at).and_then(|id| page.furniture.iter().find(|f| f.id == id))
+            {
+                state.atlas.selection = AtlasSelection::Item(rec.id);
                 state.atlas.vertices.clear();
-                return Drag::Item(id);
+                let grab = crate::furniture::rect_of(rec).origin() - at;
+                return Drag::Item(rec.id, grab);
             }
             if let (Some(id), Some((handle, center))) = (state.atlas.frame(), handle_at(state, pos))
             {
@@ -2041,9 +2176,12 @@ fn start_drag(
     }
 }
 
-/// The snap targets of the open page for a drag of a frame. `None` if
-/// snapping is off.
-fn snap_targets(state: &AppState, moving: FrameId) -> Option<page_snap::Targets> {
+/// The snap targets of the open page for a drag of a frame or an item of
+/// furniture. `None` if snapping is off.
+fn snap_targets(
+    state: &AppState,
+    moving: impl Into<page_snap::Dragged>,
+) -> Option<page_snap::Targets> {
     if !state.atlas.snap {
         return None;
     }
@@ -2187,26 +2325,52 @@ fn drag_to(state: &mut AppState, drag: Drag, place: PagePlace, pos: Pos2, d: Vec
             state.atlas.drag = Some(Drag::Rotate(id, now));
         }
         Drag::ItemHandle(id, i, grab) => {
+            let targets = snap_targets(state, id);
+            let reach = state.globe.snap.distance / place.pts_per_mm;
+            let mut guides = Vec::new();
             edit_item(state, id, |rec| {
                 let mut shape = FrameShape::Rectangle(rec.rect);
-                let done = math::resize(&mut shape, i, at + grab);
+                let mut to = at + grab;
+                if let Some(t) = &targets {
+                    let mut raw = shape.clone();
+                    math::resize(&mut raw, i, to);
+                    let b = math::shape_bbox(&raw);
+                    let (r, g) = page_snap::snap_rect(b, page_snap::Moving::Handle(i), t, reach);
+                    guides = g;
+                    let snapped = FrameShape::Rectangle([r.x0, r.y0, r.x1, r.y1]);
+                    to = math::handles(&snapped)[i].1;
+                }
+                let done = math::resize(&mut shape, i, to);
                 if let FrameShape::Rectangle(r) = shape {
                     rec.rect = r;
                 }
                 done
             });
+            state.atlas.guides = guides;
         }
-        Drag::Item(id) => {
-            if d != Vec2::ZERO {
-                edit_item(state, id, |rec| {
-                    let mut shape = FrameShape::Rectangle(rec.rect);
-                    math::move_shape(&mut shape, d);
-                    if let FrameShape::Rectangle(r) = shape {
-                        rec.rect = r;
+        Drag::Item(id, grab) => {
+            let targets = snap_targets(state, id);
+            let reach = state.globe.snap.distance / place.pts_per_mm;
+            let mut guides = Vec::new();
+            edit_item(state, id, |rec| {
+                let b = crate::furniture::rect_of(rec);
+                let raw = b.with_origin(at + grab);
+                let r = match &targets {
+                    Some(t) => {
+                        let (r, g) = page_snap::snap_rect(raw, page_snap::Moving::Body, t, reach);
+                        guides = g;
+                        r
                     }
-                    true
-                });
-            }
+                    None => raw,
+                };
+                let d = r.origin() - b.origin();
+                if d == Vec2::ZERO {
+                    return false;
+                }
+                rec.rect = [b.x0 + d.x, b.y0 + d.y, b.x1 + d.x, b.y1 + d.y];
+                true
+            });
+            state.atlas.guides = guides;
         }
         Drag::Page | Drag::Box(_) | Drag::Idle => {}
     }
@@ -2913,17 +3077,30 @@ fn items(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
         let atlas = &state.doc.project.atlas;
         let frame = rec.item.frame().and_then(|f| atlas.frame(f));
         let map = frame.and_then(|f| atlas.map(f.map));
-        let content = hash_of((
+        // A color key follows the style and the range of its layer.
+        let key = match (&rec.item, frame) {
+            (Furniture::ColorKey(k), Some(f)) => crate::color_key::data(&state.doc, f, k),
+            _ => None,
+        };
+        let look = hash_of((
             &rec.item,
+            key,
             mm.width().to_bits(),
             mm.height().to_bits(),
             frame,
             map,
             state.map_generation,
-            scale.to_bits(),
         ));
-        let old = state.atlas.item_images.get(&rec.id).map(|i| i.content);
-        if old != Some(content) && !(moving && old.is_some()) {
+        let content = hash_of((look, scale.to_bits()));
+        let old = state
+            .atlas
+            .item_images
+            .get(&rec.id)
+            .map(|i| (i.content, i.look));
+        // While a gesture pans or zooms the page, an item keeps its texture
+        // at the old scale. A change of the item draws it again.
+        let keep = moving && old.is_some_and(|(_, l)| l == look);
+        if old.map(|(c, _)| c) != Some(content) && !keep {
             let (list, _) = crate::furniture::list(
                 &mut state.pipeline,
                 &state.doc,
@@ -2947,6 +3124,8 @@ fn items(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
                 ItemImage {
                     texture,
                     content,
+                    look,
+                    size: (mm.width(), mm.height()),
                     rect,
                 },
             );

@@ -120,6 +120,8 @@ pub struct Bands {
     /// The color of each band, from the lowest band. Band `i` runs from stop
     /// `i` to stop `i + 1`.
     colors: Vec<Rgb>,
+    /// The name of each band, from the lowest band, or none.
+    names: Vec<String>,
     /// The bands have a sea split: sea level is a stop that stays.
     split: bool,
 }
@@ -213,6 +215,7 @@ impl Bands {
             max,
             stops,
             colors: colors.to_vec(),
+            names: Vec::new(),
             split,
         })
     }
@@ -251,6 +254,7 @@ impl Bands {
             max,
             stops,
             colors,
+            names: Vec::new(),
             split,
         }
     }
@@ -316,7 +320,7 @@ impl Bands {
     }
 
     /// Adds a stop, and returns its index. The stop splits a band, and the
-    /// two parts keep the color of the band. Returns `None` if the value is
+    /// two parts keep the color and the name of the band. Returns `None` if the value is
     /// less than `MIN_BAND` from another stop, if it is not finite, or if
     /// the list is full.
     pub fn add(&mut self, value: f64) -> Option<usize> {
@@ -337,6 +341,9 @@ impl Bands {
         };
         self.stops.insert(index, stop);
         self.colors.insert(index, self.colors[index - 1]);
+        if !self.names.is_empty() {
+            self.names.insert(index, self.names[index - 1].clone());
+        }
         Some(index)
     }
 
@@ -357,7 +364,7 @@ impl Bands {
     }
 
     /// Removes a stop. The bands below it and above it join, with the color
-    /// of the band below. Returns `false` for a fixed stop and for an index
+    /// and the name of the band below. Returns `false` for a fixed stop and for an index
     /// out of range.
     pub fn remove(&mut self, index: usize) -> bool {
         if index >= self.stops.len() || self.fixed(index) {
@@ -365,7 +372,60 @@ impl Bands {
         }
         self.stops.remove(index);
         self.colors.remove(index);
+        if !self.names.is_empty() {
+            self.names.remove(index);
+        }
         true
+    }
+
+    /// The name of each band, from the lowest band, or none.
+    pub fn names(&self) -> &[String] {
+        &self.names
+    }
+
+    /// The name of a band. A band with no name, and an index out of range,
+    /// give an empty name.
+    pub fn name(&self, band: usize) -> &str {
+        self.names.get(band).map_or("", String::as_str)
+    }
+
+    /// Sets the name of a band. Returns `false` for an index out of range.
+    pub fn set_name(&mut self, band: usize, name: &str) -> bool {
+        if band >= self.colors.len() {
+            return false;
+        }
+        if self.names.is_empty() {
+            self.names = vec![String::new(); self.colors.len()];
+        }
+        self.names[band] = name.to_owned();
+        self.drop_blank_names();
+        true
+    }
+
+    /// The bands with the names `names`. Names that are not one for each
+    /// band, or that are all empty, give no names.
+    pub fn with_names(mut self, names: &[String]) -> Bands {
+        self.names = if names.len() == self.colors.len() {
+            names.to_vec()
+        } else {
+            Vec::new()
+        };
+        self.drop_blank_names();
+        self
+    }
+
+    fn drop_blank_names(&mut self) {
+        if self.names.iter().all(|n| n.is_empty()) {
+            self.names.clear();
+        }
+    }
+
+    /// The names of the bands as a list with one name for each band.
+    fn padded_names(&self) -> Vec<String> {
+        match self.names.is_empty() {
+            true => vec![String::new(); self.colors.len()],
+            false => self.names.clone(),
+        }
     }
 
     /// Sets the color of a band. Returns `false` for an index out of range.
@@ -449,20 +509,27 @@ impl Bands {
     /// its part of the range. Returns `None` if there are no colors, if there
     /// are too many bands, or if the range has no room for the stops.
     pub fn painted(&self, colors: &[Rgb]) -> Option<Bands> {
-        self.painted_part(colors, self.part(colors))
+        self.painted_part(colors, &[], self.part(colors))
     }
 
     /// `painted` for a part that the user chose. With no sea split, each
-    /// part is all bands.
-    pub fn painted_part(&self, colors: &[Rgb], part: Part) -> Option<Bands> {
+    /// part is all bands. `labels` has one label for each color, or none.
+    /// The new bands of the part take the labels of their colors as their
+    /// names.
+    pub fn painted_part(&self, colors: &[Rgb], labels: &[String], part: Part) -> Option<Bands> {
         let n = colors.len();
         if n == 0 || n > MAX_BANDS {
             return None;
         }
         let part = if self.split { part } else { Part::All };
         if n == self.part_bands(part).len() {
-            return self.stretched_part(colors, part);
+            return self.stretched_part(colors, labels, part);
         }
+        let labels = match labels.len() == n {
+            true => labels.to_vec(),
+            false => vec![String::new(); n],
+        };
+        let names = self.padded_names();
         let fresh = |value: f64| Stop {
             value,
             line: StopLine::default(),
@@ -474,7 +541,7 @@ impl Bands {
         };
         let old = &self.colors;
         let sea = self.sea().unwrap_or_default();
-        let (stops, all): (Vec<Stop>, Vec<Rgb>) = match part {
+        let (stops, all, names): (Vec<Stop>, Vec<Rgb>, Vec<String>) = match part {
             Part::All => {
                 if self.split && n < 2 {
                     return None;
@@ -496,14 +563,16 @@ impl Bands {
                     values.extend(inner(from, to, count));
                     values.push(to);
                 }
-                (values.into_iter().map(fresh).collect(), colors.to_vec())
+                let stops = values.into_iter().map(fresh).collect();
+                (stops, colors.to_vec(), labels)
             }
             Part::Sea => {
                 let stops = std::iter::once(self.stops[0])
                     .chain(inner(self.min, SEA_LEVEL, n).map(fresh))
                     .chain(self.stops[sea..].iter().copied())
                     .collect();
-                (stops, [colors, &old[sea..]].concat())
+                let names = [&labels[..], &names[sea..]].concat();
+                (stops, [colors, &old[sea..]].concat(), names)
             }
             Part::Land => {
                 let stops = self.stops[..=sea]
@@ -512,10 +581,12 @@ impl Bands {
                     .chain(inner(SEA_LEVEL, self.max, n).map(fresh))
                     .chain(self.stops.last().copied())
                     .collect();
-                (stops, [&old[..sea], colors].concat())
+                let names = [&names[..sea], &labels[..]].concat();
+                (stops, [&old[..sea], colors].concat(), names)
             }
         };
         Bands::from_range_parts(self.min, self.max, self.split, &stops, &all)
+            .map(|b| b.with_names(&names))
     }
 
     /// The bands with the same stops, values, and lines, and the colors of
@@ -524,12 +595,14 @@ impl Bands {
     /// repeats, and with fewer bands, a color drops out. The bands of the
     /// other part do not change. Returns `None` if there are no colors.
     pub fn stretched(&self, colors: &[Rgb]) -> Option<Bands> {
-        self.stretched_part(colors, self.part(colors))
+        self.stretched_part(colors, &[], self.part(colors))
     }
 
     /// `stretched` for a part that the user chose. With no sea split, each
-    /// part is all bands.
-    pub fn stretched_part(&self, colors: &[Rgb], part: Part) -> Option<Bands> {
+    /// part is all bands. `labels` has one label for each color, or none.
+    /// If a label is not empty, each band of the part takes the label of
+    /// its color as its name. Otherwise, the bands keep their names.
+    pub fn stretched_part(&self, colors: &[Rgb], labels: &[String], part: Part) -> Option<Bands> {
         let n = colors.len();
         if n == 0 {
             return None;
@@ -537,11 +610,18 @@ impl Bands {
         let part = if self.split { part } else { Part::All };
         let range = self.part_bands(part);
         let m = range.len();
+        let labeled = labels.len() == n && labels.iter().any(|l| !l.is_empty());
         let mut all = self.colors.clone();
+        let mut names = self.padded_names();
         for (k, i) in range.enumerate() {
-            all[i] = colors[(2 * k + 1) * n / (2 * m)];
+            let c = (2 * k + 1) * n / (2 * m);
+            all[i] = colors[c];
+            if labeled {
+                names[i] = labels[c].clone();
+            }
         }
         Bands::from_range_parts(self.min, self.max, self.split, &self.stops, &all)
+            .map(|b| b.with_names(&names))
     }
 
     /// The band at `i`, from stop `i` to stop `i + 1`.
@@ -1262,8 +1342,8 @@ mod tests {
             let part = Part::Land;
             let range = bands.part_bands(part);
             for result in [
-                bands.painted_part(&ramp, part).unwrap(),
-                bands.stretched_part(&ramp, part).unwrap(),
+                bands.painted_part(&ramp, &[], part).unwrap(),
+                bands.stretched_part(&ramp, &[], part).unwrap(),
             ] {
                 assert_eq!(result.colors().len(), result.stops().len() - 1);
                 assert_eq!(band_colors(&result), result.colors());
@@ -1272,7 +1352,7 @@ mod tests {
                 assert_eq!(result.colors()[..sea], bands.colors()[..range.start]);
             }
         }
-        let painted = bands.painted_part(&greys(3), Part::Land).unwrap();
+        let painted = bands.painted_part(&greys(3), &[], Part::Land).unwrap();
         let sea = painted.sea().unwrap();
         assert_eq!(painted.colors()[sea..], greys(3));
     }
@@ -1322,20 +1402,111 @@ mod tests {
         );
     }
 
+    /// The names `names`, as owned strings.
+    fn owned(names: &[&str]) -> Vec<String> {
+        names.iter().map(|n| n.to_string()).collect()
+    }
+
+    #[test]
+    fn a_split_keeps_the_name_on_both_parts() {
+        let mut bands = Bands::with_range(0.0, 100.0, false).unwrap();
+        let n = bands.colors().len();
+        assert!(bands.names().is_empty());
+        assert!(bands.set_name(0, "Low"));
+        assert!(!bands.set_name(n, "Out"));
+        let index = bands.add(bands.stops()[1].value / 2.0).unwrap();
+        assert_eq!(index, 1);
+        assert_eq!(
+            (bands.name(0), bands.name(1), bands.name(2)),
+            ("Low", "Low", "")
+        );
+        assert_eq!(bands.names().len(), bands.colors().len());
+        // A band with no names stays with no names after a split.
+        let mut plain = Bands::with_range(0.0, 100.0, false).unwrap();
+        plain.add(1.0).unwrap();
+        assert!(plain.names().is_empty());
+    }
+
+    #[test]
+    fn a_join_keeps_the_name_of_the_lower_band() {
+        let mut bands = Bands::with_range(0.0, 100.0, false).unwrap();
+        bands.set_name(0, "Low");
+        bands.set_name(1, "High");
+        assert!(bands.remove(1));
+        assert_eq!(bands.name(0), "Low");
+        assert_eq!(bands.names().len(), bands.colors().len());
+        // Names that are all empty are no names.
+        bands.set_name(0, "");
+        assert!(bands.names().is_empty());
+        let wrong = bands.clone().with_names(&owned(&["One"]));
+        assert!(wrong.names().is_empty());
+    }
+
+    #[test]
+    fn a_labeled_ramp_names_the_bands_it_colors() {
+        let plain = Bands::with_range(0.0, 100.0, false).unwrap();
+        let labels = owned(&["Af", "", "Cfb"]);
+        let painted = plain.painted_part(&greys(3), &labels, Part::All).unwrap();
+        assert_eq!(painted.names(), labels);
+        // With the same number of bands, each band takes the label of its
+        // color.
+        let n = plain.colors().len();
+        let many: Vec<String> = (0..n).map(|i| format!("C{i}")).collect();
+        let stretched = plain.stretched_part(&greys(n), &many, Part::All).unwrap();
+        assert_eq!(stretched.names(), many);
+        // With fewer colors than bands, a label repeats.
+        let two = plain
+            .stretched_part(&greys(2), &owned(&["A", "B"]), Part::All)
+            .unwrap();
+        assert_eq!(two.name(0), "A");
+        assert_eq!(two.name(n - 1), "B");
+    }
+
+    #[test]
+    fn an_unlabeled_ramp_keeps_the_names_when_the_stops_stay() {
+        let mut plain = Bands::with_range(0.0, 100.0, false).unwrap();
+        plain.set_name(1, "Mid");
+        let stretched = plain.stretched_part(&greys(2), &[], Part::All).unwrap();
+        assert_eq!(stretched.names(), plain.names());
+        let blank = owned(&["", ""]);
+        let stretched = plain.stretched_part(&greys(2), &blank, Part::All).unwrap();
+        assert_eq!(stretched.names(), plain.names());
+        // New stops give the bands no names.
+        let painted = plain.painted_part(&greys(3), &[], Part::All).unwrap();
+        assert!(painted.names().is_empty());
+    }
+
+    #[test]
+    fn a_land_ramp_keeps_the_sea_names() {
+        let mut bands = Bands::default();
+        let sea = bands.sea().unwrap();
+        bands.set_name(0, "Deep");
+        bands.set_name(sea, "Shore");
+        let labels = owned(&["Plain", "Hill", "Peak"]);
+        let painted = bands.painted_part(&greys(3), &labels, Part::Land).unwrap();
+        assert_eq!(painted.name(0), "Deep");
+        assert_eq!(painted.names()[sea..], labels);
+        let stretched = bands
+            .stretched_part(&greys(3), &labels, Part::Land)
+            .unwrap();
+        assert_eq!(stretched.name(0), "Deep");
+        assert_ne!(stretched.name(sea), "Shore");
+    }
+
     #[test]
     fn a_chosen_part_overrides_the_colors() {
         let bands = Bands::default();
         let sea = bands.sea().unwrap();
         // Grey is a land color, but the user chose the sea.
-        let painted = bands.painted_part(&greys(2), Part::Sea).unwrap();
+        let painted = bands.painted_part(&greys(2), &[], Part::Sea).unwrap();
         assert_eq!(values(&painted)[..3], [ELEV_MIN, ELEV_MIN / 2.0, 0.0]);
         assert_eq!(painted.stops()[3..], bands.stops()[sea + 1..]);
         assert_eq!(band_colors(&painted)[..2], greys(2));
-        let stretched = bands.stretched_part(&greys(2), Part::Sea).unwrap();
+        let stretched = bands.stretched_part(&greys(2), &[], Part::Sea).unwrap();
         assert_eq!(stretched.colors()[sea..], bands.colors()[sea..]);
         // With no sea split, a part is all bands.
         let plain = Bands::with_range(0.0, 100.0, false).unwrap();
-        let all = plain.painted_part(&greys(2), Part::Land).unwrap();
+        let all = plain.painted_part(&greys(2), &[], Part::Land).unwrap();
         assert_eq!(values(&all), [0.0, 50.0, 100.0]);
     }
 

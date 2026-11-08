@@ -3229,6 +3229,34 @@ fn raster_style(h: &Pad, map: Option<MapId>, layer: LayerId) -> vale_style::Rast
 }
 
 #[test]
+fn a_band_name_in_a_map_is_a_local_change() {
+    use vale_app::ui::gradient::band_row;
+    use vale_app::ui::pad::raster::{BAND_NAME, COLOR_STOPS};
+    let mut h = inset_pad(BOARDS[0]);
+    let (main, inset) = (frame(&h, 0).map, frame(&h, 1).map);
+    let height = h.state_mut().add_height();
+    let layer = h.state().doc.project.raster_layer(height).unwrap();
+    let (layer, name) = (layer.id, layer.name.clone());
+    h.run_steps(2);
+    tap(&mut h, FRAME_TABS[2]);
+    let open = format!("Open {name}");
+    scroll_to(&mut h, &open);
+    tap(&mut h, &open);
+    scroll_to(&mut h, COLOR_STOPS);
+    tap(&mut h, COLOR_STOPS);
+    scroll_to(&mut h, &band_row(1));
+    tap(&mut h, &band_row(1));
+    type_text(&mut h, BAND_NAME, "Shelf");
+
+    assert_eq!(raster_style(&h, Some(inset), layer).names[1], "Shelf");
+    assert!(raster_style(&h, Some(main), layer).names.is_empty());
+    assert!(raster_style(&h, None, layer).names.is_empty());
+    let record = h.state().doc.project.raster(height).unwrap();
+    assert!(record.names.is_empty());
+    assert_eq!(h.state_mut().globe.bands_mut(height).unwrap().name(1), "");
+}
+
+#[test]
 fn the_raster_panel_changes_a_band_color_and_the_hillshade_in_this_map_only() {
     use vale_app::ui::gradient::band_row;
     use vale_app::ui::pad::Page;
@@ -5745,7 +5773,7 @@ fn the_add_button_adds_each_item_of_furniture() {
     }
     // Delete in the context strip takes the item away.
     tap(&mut h, DELETE_SELECTION);
-    assert_eq!(open_page(&h).furniture.len(), 3);
+    assert_eq!(open_page(&h).furniture.len(), ItemKind::ALL.len() - 1);
     assert_eq!(h.state().atlas.selection, AtlasSelection::None);
 }
 
@@ -5823,6 +5851,34 @@ fn a_tap_opens_the_panel_of_an_item_and_its_controls_work_with_a_finger() {
 }
 
 #[test]
+fn a_resize_redraws_an_item_while_the_finger_is_down() {
+    let mut h = pad();
+    add_frame(&mut h);
+    add_item(&mut h, ItemKind::Legend);
+    let id = item(&h, 0).id;
+    let corner = handle(&h, Handle::Resize(4));
+    drag_steps(&mut h, corner, corner + vec2(60.0, 40.0), Input::Finger, 6);
+    h.run_steps(2);
+    let r = rect_of(&item(&h, 0));
+    let (w, hh) = h.state().atlas.item_drawn_size(id).unwrap();
+    assert!((w - r.width()).abs() < 1e-9, "{w} {r:?}");
+    assert!((hh - r.height()).abs() < 1e-9, "{hh} {r:?}");
+    // A move keeps the texture, at the same size.
+    release(&mut h, corner + vec2(60.0, 40.0), Input::Finger);
+    let from = item_middle(&h, 0);
+    drag_steps(&mut h, from, from + vec2(30.0, 20.0), Input::Finger, 6);
+    let screen = h.state().atlas.item_rect(id).unwrap();
+    let ppm = h.state().atlas.place.unwrap().pts_per_mm;
+    let outer = r.inflate(
+        vale_app::furniture::RENDER_MARGIN_MM,
+        vale_app::furniture::RENDER_MARGIN_MM,
+    );
+    assert!((f64::from(screen.width()) - outer.width() * ppm).abs() < 0.5);
+    assert!((f64::from(screen.height()) - outer.height() * ppm).abs() < 0.5);
+    release(&mut h, from + vec2(30.0, 20.0), Input::Finger);
+}
+
+#[test]
 fn a_new_item_links_to_the_largest_frame() {
     let mut h = inset_pad(BOARDS[0]);
     let (main, inset) = (frame(&h, 0).id, frame(&h, 1).id);
@@ -5886,6 +5942,7 @@ fn deleting_a_frame_relinks_its_items() {
     let arrow = item(&h, 1).id;
     atlas::set_item_frame(h.state_mut(), arrow, Some(inset));
     add_item(&mut h, ItemKind::Text);
+    add_item(&mut h, ItemKind::ColorKey);
 
     h.state_mut().atlas.selection = AtlasSelection::Frame(main);
     h.run_steps(2);
@@ -5894,13 +5951,15 @@ fn deleting_a_frame_relinks_its_items() {
     assert_eq!(item(&h, 0).item.frame(), Some(inset));
     assert_eq!(item(&h, 1).item.frame(), Some(inset));
     assert_eq!(item(&h, 2).item.frame(), None);
+    assert_eq!(item(&h, 3).item.frame(), Some(inset));
 
     h.state_mut().atlas.selection = AtlasSelection::Frame(inset);
     h.run_steps(2);
     tap(&mut h, DELETE_SELECTION);
     assert_eq!(item(&h, 0).item.frame(), None);
     assert_eq!(item(&h, 1).item.frame(), None);
-    assert_eq!(open_page(&h).furniture.len(), 3);
+    assert_eq!(item(&h, 3).item.frame(), None);
+    assert_eq!(open_page(&h).furniture.len(), 4);
 }
 
 #[test]
@@ -6504,6 +6563,67 @@ fn a_moved_frame_snaps_to_the_page_center_and_shows_a_guide() {
         h.state_mut().undo();
         h.run_steps(2);
     }
+}
+
+/// A page with a frame and a legend, with the legend selected.
+fn item_pad() -> Pad {
+    let mut h = pad();
+    add_frame(&mut h);
+    add_item(&mut h, ItemKind::Legend);
+    h
+}
+
+#[test]
+fn an_item_of_furniture_snaps_when_it_moves() {
+    let mut h = item_pad();
+    for input in INPUTS {
+        let (center, _, _, ppm) = page_metrics(&h);
+        let before = rect_of(&item(&h, 0));
+        // The left edge goes to 3 points right of the page center.
+        let d = (center.x - before.x0) * ppm + 3.0;
+        let from = item_middle(&h, 0);
+        let to = from + vec2(d as f32, -20.0);
+        drag_steps(&mut h, from, to, input, 6);
+        assert!(!h.state().atlas.guides.is_empty(), "{input:?}");
+        release(&mut h, to, input);
+        assert!(h.state().atlas.guides.is_empty(), "{input:?}");
+        let after = rect_of(&item(&h, 0));
+        assert!((after.x0 - center.x).abs() < 1e-9, "{input:?}: {after:?}");
+        assert!((after.width() - before.width()).abs() < 1e-9, "{input:?}");
+        h.state_mut().undo();
+        h.run_steps(2);
+    }
+}
+
+#[test]
+fn an_item_of_furniture_snaps_when_it_resizes() {
+    let mut h = item_pad();
+    let (center, _, _, ppm) = page_metrics(&h);
+    let before = rect_of(&item(&h, 0));
+    // The left edge goes to 4 points right of the page center.
+    let left = handle(&h, Handle::Resize(7));
+    let d = (center.x - before.x0) * ppm + 4.0;
+    drag(&mut h, left, left + vec2(d as f32, 0.0), Input::Pen);
+    let after = rect_of(&item(&h, 0));
+    assert!((after.x0 - center.x).abs() < 1e-9, "{after:?}");
+    assert_eq!(
+        (after.y0, after.x1, after.y1),
+        (before.y0, before.x1, before.y1)
+    );
+}
+
+#[test]
+fn an_item_does_not_snap_with_snapping_off() {
+    let mut h = item_pad();
+    h.state_mut().atlas.snap = false;
+    let (center, _, _, ppm) = page_metrics(&h);
+    let before = rect_of(&item(&h, 0));
+    let d = (center.x - before.x0) * ppm + 3.0;
+    let from = item_middle(&h, 0);
+    drag(&mut h, from, from + vec2(d as f32, -20.0), Input::Finger);
+    let after = rect_of(&item(&h, 0));
+    assert!((after.x0 - center.x - 3.0 / ppm).abs() < 0.1, "{after:?}");
+    assert!(h.state().atlas.guides.is_empty());
 }
 
 #[test]
@@ -9233,4 +9353,340 @@ fn the_handles_of_a_frame_are_44_points_apart_at_each_zoom_of_the_page() {
         "{before:?} {after:?}"
     );
     assert_eq!((after.x0, after.y0), (before.x0, before.y0));
+}
+
+/// The layer of a new color key on a page with one frame. `hide` hides
+/// these layers in the map of the frame first.
+fn new_key_layer(s: &mut AppState, hide: &[vale_store::LayerId]) -> Option<vale_store::LayerId> {
+    atlas::add_frame(s);
+    let page = &s.doc.project.atlas.pages[0];
+    let map = page.frames[0].map;
+    for layer in hide {
+        assert!(s.doc.set_shown(map, *layer, false));
+    }
+    let id = atlas::add_item(s, ItemKind::ColorKey).unwrap();
+    match &s.doc.project.atlas.furniture(id).unwrap().item {
+        vale_store::Furniture::ColorKey(key) => key.layer,
+        other => panic!("{other:?}"),
+    }
+}
+
+/// Adds a raster layer and returns the ID of its layer.
+fn add_raster_layer(s: &mut AppState, name: &str, unit: &str) -> vale_store::LayerId {
+    let p = &mut s.doc.project;
+    let raster = p.add_raster(name.to_string(), 64, unit.to_string(), -100.0, 100.0);
+    p.raster_layer(raster).unwrap().id
+}
+
+#[test]
+fn a_new_color_key_takes_the_height_layer_of_its_frame() {
+    let mut s = state();
+    let height = add_raster_layer(&mut s, "Height", "m");
+    add_raster_layer(&mut s, "Rain", "mm");
+    assert_eq!(new_key_layer(&mut s, &[]), Some(height));
+}
+
+#[test]
+fn a_new_color_key_takes_the_top_raster_layer() {
+    let mut s = state();
+    add_raster_layer(&mut s, "Rain", "mm");
+    let heat = add_raster_layer(&mut s, "Heat", "°C");
+    assert_eq!(new_key_layer(&mut s, &[]), Some(heat));
+    // A layer that the map hides does not count.
+    let mut s = state();
+    let height = add_raster_layer(&mut s, "Height", "m");
+    let rain = add_raster_layer(&mut s, "Rain", "mm");
+    assert_eq!(new_key_layer(&mut s, &[height]), Some(rain));
+}
+
+fn key(h: &Pad, index: usize) -> vale_store::ColorKeyItem {
+    match item(h, index).item {
+        Furniture::ColorKey(k) => k,
+        other => panic!("not a color key: {other:?}"),
+    }
+}
+
+/// A pad with a height layer and a rain layer, a frame, and a color key.
+/// Gives the IDs of the two layers.
+fn key_pad(s: AppState, size: (f32, f32)) -> (Pad, LayerId, LayerId) {
+    let mut s = s;
+    let height = add_raster_layer(&mut s, "Height", "m");
+    let rain = add_raster_layer(&mut s, "Rain", "mm");
+    let mut h = pad_with(s, size);
+    add_frame(&mut h);
+    add_item(&mut h, ItemKind::ColorKey);
+    (h, height, rain)
+}
+
+/// Types `text` on the keypad of the field `name`.
+fn type_keys(h: &mut Pad, name: &str, text: &str) {
+    tap_row(h, name);
+    for c in text.chars() {
+        tap(h, &format!("{name} {c}"));
+    }
+    tap(h, &format!("{name} Done"));
+}
+
+#[test]
+fn the_color_key_panel_changes_frame_layer_layout_and_second_unit() {
+    for size in [BOARDS[0], (393.0, 852.0)] {
+        let what = format!("{size:?}");
+        let (mut h, height, rain) = key_pad(state(), size);
+        assert_eq!(key(&h, 0).layer, Some(height), "{what}");
+        check_page(&mut h, &what, "");
+
+        // The layer page lists the raster layers of the frame.
+        tap_row(&mut h, item::KEY_LAYER);
+        assert_eq!(h.state().atlas.item_page, Some(ItemPage::KeyLayer));
+        check_controls(&h, &what);
+        tap(&mut h, "Rain");
+        assert_eq!(h.state().atlas.item_page, None);
+        assert_eq!(key(&h, 0).layer, Some(rain), "{what}");
+        // A rain layer has no sea level.
+        assert!(control(&h, item::SPLIT).is_none(), "{what}");
+
+        // The layout.
+        tap_row(&mut h, item::KEY_LAYOUTS[1]);
+        assert_eq!(key(&h, 0).layout, vale_store::KeyLayout::List);
+        assert!(control(&h, item::SECOND_UNIT).is_none(), "{what}");
+        tap_row(&mut h, item::NAMES_IN_BOXES);
+        assert!(key(&h, 0).names_in_boxes, "{what}");
+        tap_row(&mut h, item::KEY_LAYOUTS[0]);
+        assert_eq!(key(&h, 0).layout, vale_store::KeyLayout::Strip);
+
+        // A height layer splits at sea level.
+        tap_row(&mut h, item::KEY_LAYER);
+        tap(&mut h, "Height");
+        assert!(key(&h, 0).split_at_sea_level);
+        tap_row(&mut h, item::SPLIT);
+        assert!(!key(&h, 0).split_at_sea_level, "{what}");
+
+        // The second unit: the preset, then a custom unit.
+        tap_row(&mut h, item::SECOND_UNIT);
+        assert_eq!(h.state().atlas.item_page, Some(ItemPage::KeyUnit));
+        check_page(&mut h, &what, "");
+        tap(&mut h, "Feet");
+        assert_eq!(h.state().atlas.item_page, None);
+        let unit = key(&h, 0).second_unit.unwrap();
+        assert_eq!(unit.name, "feet");
+        assert!((unit.factor - 3.28084).abs() < 1e-5, "{unit:?}");
+        tap_row(&mut h, item::SECOND_UNIT);
+        tap(&mut h, item::CUSTOM);
+        check_page(&mut h, &what, "");
+        type_text(&mut h, item::UNIT_NAME, "yards");
+        type_keys(&mut h, item::FACTOR, "1.0936");
+        type_keys(&mut h, item::OFFSET, "5");
+        let unit = key(&h, 0).second_unit.unwrap();
+        assert_eq!(unit.name, "yards", "{what}");
+        assert!((unit.factor - 1.0936).abs() < 1e-9, "{unit:?}");
+        assert!((unit.offset - 5.0).abs() < 1e-9, "{unit:?}");
+        tap(&mut h, item::NONE);
+        assert_eq!(key(&h, 0).second_unit, None);
+    }
+
+    // The frame changes from the panel, and a key that the new frame does
+    // not show takes a layer that it shows.
+    let mut s = state();
+    let height = add_raster_layer(&mut s, "Height", "m");
+    let mut h = pad_with(s, BOARDS[0]);
+    add_frame(&mut h);
+    add_frame(&mut h);
+    let inset = frame(&h, 1);
+    assert!(h.state_mut().doc.set_shown(inset.map, height, false));
+    add_item(&mut h, ItemKind::ColorKey);
+    assert_eq!(key(&h, 0).layer, Some(height));
+    tap(&mut h, ITEM_MAP_FRAME);
+    tap(&mut h, "Map 2");
+    assert_eq!(key(&h, 0).frame, Some(inset.id));
+    assert_eq!(key(&h, 0).layer, None);
+}
+
+#[test]
+fn the_color_key_panel_sets_the_box_size() {
+    for size in [BOARDS[0], (393.0, 852.0)] {
+        let what = format!("{size:?}");
+        let (mut h, _, _) = key_pad(state(), size);
+        let k = key(&h, 0);
+        assert_eq!((k.box_width, k.box_height), (None, None), "{what}");
+        type_keys(&mut h, item::BOX_WIDTH, "6");
+        type_keys(&mut h, item::BOX_HEIGHT, "6");
+        let k = key(&h, 0);
+        assert_eq!(
+            (k.box_width, k.box_height),
+            (Some(6.0), Some(6.0)),
+            "{what}"
+        );
+        check_page(&mut h, &what, "");
+        // The rows show in the list layout too.
+        tap_row(&mut h, item::KEY_LAYOUTS[1]);
+        assert!(control(&h, item::BOX_WIDTH).is_some(), "{what}");
+        // An empty field is Auto.
+        tap_row(&mut h, item::BOX_WIDTH);
+        tap(&mut h, &format!("{} Delete", item::BOX_WIDTH));
+        tap(&mut h, &format!("{} Done", item::BOX_WIDTH));
+        let k = key(&h, 0);
+        assert_eq!((k.box_width, k.box_height), (None, Some(6.0)), "{what}");
+    }
+}
+
+#[test]
+fn the_color_key_panel_sets_the_text_styles_and_the_border() {
+    for size in [BOARDS[0], (393.0, 852.0)] {
+        let what = format!("{size:?}");
+        let (mut h, _, _) = key_pad(state(), size);
+        let id = item(&h, 0).id;
+        // The second unit and the box names have their rows only when they
+        // show.
+        assert!(control(&h, item::SECOND_UNIT_VALUES).is_none(), "{what}");
+        assert!(control(&h, item::BOX_NAMES).is_none(), "{what}");
+        let feet = vale_store::SecondUnit {
+            name: "feet".into(),
+            factor: 3.28084,
+            offset: 0.0,
+        };
+        atlas::edit_key(h.state_mut(), id, true, |k| k.second_unit = Some(feet));
+        h.run_steps(2);
+        check_page(&mut h, &what, "");
+
+        // Each text part opens its own text page.
+        let parts = [
+            (item::VALUES, TextPart::Values),
+            (item::SECOND_UNIT_VALUES, TextPart::SecondUnit),
+        ];
+        for (row, part) in parts {
+            scroll_to(&mut h, row);
+            tap_row(&mut h, row);
+            assert_eq!(
+                h.state().atlas.item_page,
+                Some(ItemPage::Text(part)),
+                "{what}"
+            );
+            check_controls(&h, &what);
+            set_number(&mut h, item::SIZE, "12");
+            tap(&mut h, &format!("Back to {}", ItemKind::ColorKey.name()));
+        }
+        let k = key(&h, 0);
+        assert_eq!((k.value_style.size, k.second_unit_style.size), (12.0, 12.0));
+        assert_eq!(k.box_text_style.size, 8.0, "{what}");
+
+        tap_row(&mut h, item::KEY_LAYOUTS[1]);
+        assert!(control(&h, item::SECOND_UNIT_VALUES).is_none(), "{what}");
+        tap_row(&mut h, item::NAMES_IN_BOXES);
+        scroll_to(&mut h, item::BOX_NAMES);
+        tap_row(&mut h, item::BOX_NAMES);
+        set_number(&mut h, item::SIZE, "10");
+        assert_eq!(key(&h, 0).box_text_style.size, 10.0, "{what}");
+        tap(&mut h, &format!("Back to {}", ItemKind::ColorKey.name()));
+
+        // The border page sets the width, and 0 draws no lines.
+        scroll_to(&mut h, item::BORDER);
+        tap_row(&mut h, item::BORDER);
+        assert_eq!(h.state().atlas.item_page, Some(ItemPage::KeyBorder));
+        check_controls(&h, &what);
+        assert!(control(&h, item::BORDER_COLOR).is_some(), "{what}");
+        set_number(&mut h, item::BORDER_WIDTH, "1.5");
+        assert_eq!(key(&h, 0).border_width, 1.5, "{what}");
+        set_number(&mut h, item::BORDER_WIDTH, "0");
+        assert_eq!(key(&h, 0).border_width, 0.0, "{what}");
+    }
+}
+
+#[test]
+fn the_color_key_panel_hints_when_the_frame_hides_the_layer() {
+    let (mut h, height, _) = key_pad(state(), BOARDS[0]);
+    assert!(h.query_by_label(item::LAYER_HIDDEN).is_none());
+    let map = frame(&h, 0).map;
+    assert!(h.state_mut().doc.set_shown(map, height, false));
+    h.run_steps(2);
+    assert!(h.query_by_label(item::LAYER_HIDDEN).is_some());
+    // The Bands page says so too.
+    tap_row(&mut h, item::BANDS);
+    assert!(h.query_by_label(item::LAYER_HIDDEN).is_some());
+}
+
+#[test]
+fn the_color_key_panel_renames_and_hides_bands() {
+    let (mut h, _, _) = key_pad(state(), BOARDS[0]);
+    let rows = |h: &Pad| {
+        let k = key(h, 0);
+        let rows = atlas::key_data(h.state(), &k).unwrap().rows;
+        rows.into_iter().rev().collect::<Vec<_>>()
+    };
+    let list = rows(&h);
+    assert!(list.len() >= 2, "{list:?}");
+    let labels: Vec<String> = list.iter().map(|r| r.label.clone()).collect();
+    let names = entry_names(&labels);
+    let band = list[0].key.clone();
+
+    tap_row(&mut h, item::BANDS);
+    assert_eq!(
+        h.state().atlas.item_page,
+        Some(ItemPage::Text(TextPart::Entries))
+    );
+    check_controls(&h, "bands page");
+    tap(&mut h, &eye_name(&names[0], true));
+    assert!(key(&h, 0).bands[&band].hidden);
+    assert!(rows(&h)[0].hidden);
+    tap(&mut h, &eye_name(&names[0], false));
+    assert!(!key(&h, 0).bands.contains_key(&band));
+
+    // A tap on the text opens its page, where a new text replaces it.
+    tap(&mut h, &names[0]);
+    assert_eq!(
+        h.state().atlas.item_page,
+        Some(ItemPage::Band(band.clone()))
+    );
+    check_controls(&h, "band page");
+    type_text(&mut h, item::KEY_BAND_NAME, "Peaks");
+    assert_eq!(key(&h, 0).bands[&band].name.as_deref(), Some("Peaks"));
+    assert_eq!(rows(&h)[0].label, "Peaks");
+    tap(&mut h, "Back to Bands");
+    assert_eq!(
+        h.state().atlas.item_page,
+        Some(ItemPage::Text(TextPart::Entries))
+    );
+
+    // Reset bands takes away each change.
+    tap_row(&mut h, item::RESET_BANDS);
+    assert!(key(&h, 0).bands.is_empty());
+}
+
+#[test]
+fn each_change_of_a_color_key_is_one_undo_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let mut s = state();
+    s.session = Some(Session::open(&path, &mut s.doc).unwrap());
+    let (mut h, _, _) = key_pad(s, BOARDS[0]);
+    h.state_mut().save_waiting().unwrap();
+    let before = key(&h, 0);
+
+    tap_row(&mut h, item::KEY_LAYOUTS[1]);
+    assert_eq!(key(&h, 0).layout, vale_store::KeyLayout::List);
+    tap(&mut h, "Undo");
+    assert_eq!(key(&h, 0), before);
+
+    tap_row(&mut h, item::SECOND_UNIT);
+    tap(&mut h, "Feet");
+    assert!(key(&h, 0).second_unit.is_some());
+    tap(&mut h, "Undo");
+    assert_eq!(key(&h, 0), before);
+
+    tap_row(&mut h, item::BANDS);
+    let k = key(&h, 0);
+    let top = atlas::key_data(h.state(), &k).unwrap().rows.pop().unwrap();
+    tap(&mut h, &eye_name(&top.label, true));
+    assert!(key(&h, 0).bands[&top.key].hidden);
+    tap(&mut h, "Undo");
+    assert_eq!(key(&h, 0), before);
+}
+
+#[test]
+fn manual_color_key_panel_pictures() {
+    let (mut h, _, _) = key_pad(state(), BOARDS[0]);
+    tap_row(&mut h, item::SECOND_UNIT);
+    tap(&mut h, "Feet");
+    screenshot::save(&mut h, "colorkey-pad");
+    tap_row(&mut h, item::BANDS);
+    screenshot::save(&mut h, "colorkey-pad-bands");
 }

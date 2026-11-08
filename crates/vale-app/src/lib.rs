@@ -6,6 +6,7 @@ pub mod atlas_export;
 pub mod classify;
 pub mod cli;
 pub mod clipboard;
+pub mod color_key;
 pub mod document;
 pub mod edge_labels;
 pub mod files;

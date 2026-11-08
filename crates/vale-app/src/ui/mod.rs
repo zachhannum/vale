@@ -1574,8 +1574,7 @@ impl AppState {
         let Some(record) = self.doc.project.raster_mut(id) else {
             return;
         };
-        record.stops = session::record_stops(base_bands.stops());
-        record.colors = base_bands.colors().to_vec();
+        session::put_bands(record, &base_bands);
         raster_style::store_raster_styles(&mut self.doc.project);
         let base_text = self.doc.project.layer(layer).and_then(|l| l.style.clone());
         let Some(base) = self.doc.project.raster(id).map(symbolizer_of) else {
@@ -1592,6 +1591,7 @@ impl AppState {
             // The stops of the bands are the stops that an edit compares.
             shown.stops = session::record_stops(bands.stops());
             shown.colors = bands.colors().to_vec();
+            shown.names = bands.names().to_vec();
             if let Some(b) = self.globe.bands_mut(id) {
                 *b = bands;
             }
@@ -1606,6 +1606,7 @@ impl AppState {
         if let Some(bands) = self.globe.bands_mut(id) {
             edited.stops = session::record_stops(bands.stops());
             edited.colors = bands.colors().to_vec();
+            edited.names = bands.names().to_vec();
             *bands = base_bands;
         }
         apply_symbolizer(record, &base, true);
@@ -1979,8 +1980,7 @@ impl AppState {
             return;
         };
         if let Some(record) = self.doc.project.raster_mut(id) {
-            record.stops = session::record_stops(bands.stops());
-            record.colors = bands.colors().to_vec();
+            session::put_bands(record, &bands);
             raster_style::store_raster_styles(&mut self.doc.project);
         }
     }
@@ -3493,13 +3493,14 @@ impl AppState {
             return Err("Ramp not found.".to_owned());
         };
         let colors = ramp.colors.clone();
+        let labels = ramp.labels.clone();
         let Some(bands) = self.globe.bands_mut(id) else {
             return Err("The layer has no color stops.".to_owned());
         };
         let applied = if keep {
-            bands.stretched_part(&colors, part)
+            bands.stretched_part(&colors, &labels, part)
         } else {
-            bands.painted_part(&colors, part)
+            bands.painted_part(&colors, &labels, part)
         };
         let Some(applied) = applied else {
             let count = colors.len();

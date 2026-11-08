@@ -650,8 +650,8 @@ impl Default for Graticule {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct FurnitureId(pub u32);
 
-/// An item of furniture on a page: text, a legend, a scale bar, or a north
-/// arrow.
+/// An item of furniture on a page: text, a legend, a scale bar, a north
+/// arrow, or a color key.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FurnitureRecord {
     pub id: FurnitureId,
@@ -667,6 +667,7 @@ pub enum Furniture {
     Legend(LegendItem),
     ScaleBar(ScaleBarItem),
     NorthArrow(NorthArrowItem),
+    ColorKey(ColorKeyItem),
 }
 
 /// The text style of a part of an item of furniture. It has the text
@@ -811,6 +812,94 @@ pub struct LegendEntry {
     pub hidden: bool,
 }
 
+/// A key of the color bands of one raster layer of the map of a frame.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ColorKeyItem {
+    /// `None`: the key has no frame.
+    pub frame: Option<FrameId>,
+    /// `None`: the key has no layer.
+    pub layer: Option<LayerId>,
+    pub layout: KeyLayout,
+    /// A strip of a height layer has a row for the sea and a row for the
+    /// land.
+    pub split_at_sea_level: bool,
+    /// The values of a strip in a second unit, below the strip.
+    pub second_unit: Option<SecondUnit>,
+    /// A list shows the name of each band inside its box.
+    pub names_in_boxes: bool,
+    /// The size of a box in millimeters. `None`: the size follows the text
+    /// and the width of the key. A strip shrinks a box that does not fit.
+    pub box_width: Option<f64>,
+    pub box_height: Option<f64>,
+    /// An empty title does not show.
+    pub title: String,
+    pub title_style: FurnitureText,
+    /// The text of the values, the unit, and the text of a list.
+    pub value_style: FurnitureText,
+    /// The text of the values in the second unit.
+    pub second_unit_style: FurnitureText,
+    /// The text of the band names inside the boxes of a list.
+    pub box_text_style: FurnitureText,
+    /// The color of the lines around the boxes.
+    pub border_color: Rgba,
+    /// The width of the lines around the boxes in points. 0: no lines.
+    pub border_width: f64,
+    /// The changes to the bands, keyed by the name of the band, or by the
+    /// value of its lower edge for a band with no name. A band with no
+    /// change has no key.
+    pub bands: BTreeMap<String, LegendEntry>,
+}
+
+/// The layout of a color key.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub enum KeyLayout {
+    /// Boxes of equal width in a row, with the values at their edges.
+    #[default]
+    Strip,
+    /// One box for each band in a column, with its text to the right.
+    List,
+}
+
+impl KeyLayout {
+    pub const ALL: [KeyLayout; 2] = [KeyLayout::Strip, KeyLayout::List];
+
+    /// The UI text.
+    pub fn name(self) -> &'static str {
+        match self {
+            KeyLayout::Strip => "Strip",
+            KeyLayout::List => "List",
+        }
+    }
+
+    /// The name in a project file.
+    pub fn id(self) -> &'static str {
+        match self {
+            KeyLayout::Strip => "strip",
+            KeyLayout::List => "list",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<KeyLayout> {
+        KeyLayout::ALL.into_iter().find(|l| l.id() == id)
+    }
+}
+
+/// A second unit of the values of a color key. A value `v` is
+/// `v * factor + offset` in this unit.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SecondUnit {
+    pub name: String,
+    pub factor: f64,
+    pub offset: f64,
+}
+
+impl SecondUnit {
+    /// `v` in this unit.
+    pub fn convert(&self, v: f64) -> f64 {
+        v * self.factor + self.offset
+    }
+}
+
 /// A north arrow that points to the north of a frame.
 #[derive(Clone, Debug, PartialEq)]
 pub struct NorthArrowItem {
@@ -832,16 +921,18 @@ impl Furniture {
             Furniture::Legend(_) => "legend",
             Furniture::ScaleBar(_) => "scale_bar",
             Furniture::NorthArrow(_) => "north_arrow",
+            Furniture::ColorKey(_) => "color_key",
         }
     }
 
-    /// The frame of a legend, a scale bar, or a north arrow.
+    /// The frame of a legend, a scale bar, a north arrow, or a color key.
     pub fn frame(&self) -> Option<FrameId> {
         match self {
             Furniture::Text(_) => None,
             Furniture::Legend(i) => i.frame,
             Furniture::ScaleBar(i) => i.frame,
             Furniture::NorthArrow(i) => i.frame,
+            Furniture::ColorKey(i) => i.frame,
         }
     }
 
@@ -852,6 +943,7 @@ impl Furniture {
             Furniture::Legend(i) => i.frame = frame,
             Furniture::ScaleBar(i) => i.frame = frame,
             Furniture::NorthArrow(i) => i.frame = frame,
+            Furniture::ColorKey(i) => i.frame = frame,
         }
     }
 
@@ -863,6 +955,7 @@ impl Furniture {
             Furniture::Legend(i) => i.to_json(),
             Furniture::ScaleBar(i) => i.to_json(),
             Furniture::NorthArrow(i) => i.to_json(),
+            Furniture::ColorKey(i) => i.to_json(),
         }
     }
 
@@ -874,6 +967,7 @@ impl Furniture {
             "legend" => Furniture::Legend(LegendItem::from_json(text)?),
             "scale_bar" => Furniture::ScaleBar(ScaleBarItem::from_json(text)?),
             "north_arrow" => Furniture::NorthArrow(NorthArrowItem::from_json(text)?),
+            "color_key" => Furniture::ColorKey(ColorKeyItem::from_json(text)?),
             _ => return None,
         };
         item.set_frame(frame);
@@ -925,6 +1019,18 @@ pub(crate) fn read_old_opacity(map: &JsonMap, colors: &mut [&mut Rgba]) -> Optio
         c[3] = (f64::from(c[3]) * opacity).round() as u8;
     }
     Some(())
+}
+
+/// An optional size above zero: `None` for a missing key or `null`, and an
+/// error for a value that is not a number above zero.
+fn read_size(map: &JsonMap, key: &str) -> Option<Option<f64>> {
+    match map.get(key) {
+        None | Some(serde_json::Value::Null) => Some(None),
+        Some(v) => {
+            let v = v.as_f64().filter(|v| v.is_finite() && *v > 0.0)?;
+            Some(Some(v))
+        }
+    }
 }
 
 pub(crate) fn read_string(map: &JsonMap, key: &str, to: &mut String) -> Option<()> {
@@ -1138,6 +1244,126 @@ impl Default for LegendItem {
             },
             entry_style: FurnitureText::default(),
             entries: BTreeMap::new(),
+        }
+    }
+}
+
+impl ColorKeyItem {
+    /// The item with no frame as JSON text, for a project file. The bands
+    /// are a list of objects with the keys `key`, `name`, and `hidden`.
+    pub fn to_json(&self) -> String {
+        let mut map = JsonMap::new();
+        map.insert("layer".into(), serde_json::json!(self.layer.map(|l| l.0)));
+        map.insert("layout".into(), self.layout.id().into());
+        map.insert("split".into(), self.split_at_sea_level.into());
+        let unit = self
+            .second_unit
+            .as_ref()
+            .map(|u| serde_json::json!({"name": u.name, "factor": u.factor, "offset": u.offset}));
+        map.insert("second_unit".into(), serde_json::json!(unit));
+        map.insert("names_in_boxes".into(), self.names_in_boxes.into());
+        map.insert("box_width".into(), serde_json::json!(self.box_width));
+        map.insert("box_height".into(), serde_json::json!(self.box_height));
+        map.insert("title".into(), self.title.clone().into());
+        map.insert("title_style".into(), self.title_style.value());
+        map.insert("value_style".into(), self.value_style.value());
+        map.insert("second_unit_style".into(), self.second_unit_style.value());
+        map.insert("box_text_style".into(), self.box_text_style.value());
+        map.insert("border_color".into(), hex_rgba(self.border_color).into());
+        map.insert("border_width".into(), self.border_width.into());
+        let bands = self
+            .bands
+            .iter()
+            .map(|(key, e)| serde_json::json!({"key": key, "name": e.name, "hidden": e.hidden}));
+        map.insert("bands".into(), bands.collect());
+        serde_json::Value::Object(map).to_string()
+    }
+
+    /// Reads [`ColorKeyItem::to_json`]. A missing key gets its default, and
+    /// an unknown key is ignored. A missing text style of the second unit or
+    /// of the box names is a copy of the value style. `None` if a value is
+    /// bad.
+    pub fn from_json(text: &str) -> Option<ColorKeyItem> {
+        let map = json_object(text)?;
+        let mut item = ColorKeyItem::default();
+        match map.get("layer") {
+            None | Some(serde_json::Value::Null) => {}
+            Some(v) => item.layer = Some(LayerId(u32::try_from(v.as_u64()?).ok()?)),
+        }
+        if let Some(v) = map.get("layout") {
+            item.layout = KeyLayout::from_id(v.as_str()?)?;
+        }
+        read_flag(&map, "split", &mut item.split_at_sea_level)?;
+        match map.get("second_unit") {
+            None | Some(serde_json::Value::Null) => {}
+            Some(v) => {
+                let v = v.as_object()?;
+                let mut unit = SecondUnit {
+                    name: String::new(),
+                    factor: 1.0,
+                    offset: 0.0,
+                };
+                read_string(v, "name", &mut unit.name)?;
+                read_number(v, "factor", &mut unit.factor)?;
+                read_number(v, "offset", &mut unit.offset)?;
+                item.second_unit = Some(unit);
+            }
+        }
+        read_flag(&map, "names_in_boxes", &mut item.names_in_boxes)?;
+        item.box_width = read_size(&map, "box_width")?;
+        item.box_height = read_size(&map, "box_height")?;
+        read_string(&map, "title", &mut item.title)?;
+        item.title_style = item.title_style.read_key(&map, "title_style")?;
+        item.value_style = item.value_style.read_key(&map, "value_style")?;
+        item.second_unit_style = item
+            .value_style
+            .clone()
+            .read_key(&map, "second_unit_style")?;
+        item.box_text_style = item.value_style.clone().read_key(&map, "box_text_style")?;
+        read_rgba(&map, "border_color", &mut item.border_color)?;
+        read_number(&map, "border_width", &mut item.border_width)?;
+        if item.border_width < 0.0 {
+            return None;
+        }
+        if let Some(bands) = map.get("bands") {
+            for band in bands.as_array()? {
+                let band = band.as_object()?;
+                let key = band.get("key")?.as_str()?.to_string();
+                let mut e = LegendEntry::default();
+                match band.get("name") {
+                    None | Some(serde_json::Value::Null) => {}
+                    Some(v) => e.name = Some(v.as_str()?.to_string()),
+                }
+                read_flag(band, "hidden", &mut e.hidden)?;
+                item.bands.insert(key, e);
+            }
+        }
+        Some(item)
+    }
+}
+
+impl Default for ColorKeyItem {
+    fn default() -> Self {
+        ColorKeyItem {
+            frame: None,
+            layer: None,
+            layout: KeyLayout::Strip,
+            split_at_sea_level: true,
+            second_unit: None,
+            names_in_boxes: false,
+            box_width: None,
+            box_height: None,
+            title: String::new(),
+            title_style: FurnitureText {
+                weight: 700.0,
+                ..FurnitureText::sized(11.0)
+            },
+            value_style: FurnitureText::sized(8.0),
+            second_unit_style: FurnitureText::sized(8.0),
+            box_text_style: FurnitureText::sized(8.0),
+            border_color: [70, 70, 70, 200],
+            border_width: 0.3,
+            bands: BTreeMap::new(),
         }
     }
 }
@@ -1956,6 +2182,45 @@ mod tests {
             letter_style: styled(),
         };
         round_trip(Furniture::NorthArrow(arrow), frame);
+        let mut bands = BTreeMap::new();
+        let renamed = LegendEntry {
+            name: Some("Lowland".into()),
+            hidden: false,
+        };
+        bands.insert("Cfb".into(), renamed);
+        let hidden = LegendEntry {
+            name: None,
+            hidden: true,
+        };
+        bands.insert("-200".into(), hidden);
+        for unit in [
+            None,
+            Some(SecondUnit {
+                name: "feet".into(),
+                factor: 3.28084,
+                offset: 0.0,
+            }),
+        ] {
+            let key = ColorKeyItem {
+                frame,
+                layer: Some(LayerId(5)),
+                layout: KeyLayout::List,
+                split_at_sea_level: false,
+                second_unit: unit,
+                names_in_boxes: true,
+                box_width: Some(5.0),
+                box_height: Some(5.0),
+                title: "Height".into(),
+                title_style: styled(),
+                value_style: FurnitureText::sized(6.0),
+                second_unit_style: FurnitureText::sized(5.0),
+                box_text_style: styled(),
+                border_color: [255, 255, 255, 255],
+                border_width: 1.0,
+                bands: bands.clone(),
+            };
+            round_trip(Furniture::ColorKey(key), frame);
+        }
         assert_eq!(Furniture::from_json("compass", "{}", None), None);
     }
 
@@ -1971,6 +2236,25 @@ mod tests {
         let arrow = NorthArrowItem::from_json("{}").unwrap();
         assert_eq!(arrow, NorthArrowItem::default());
         assert!(arrow.hide_if_varies);
+        let key = ColorKeyItem::from_json("{}").unwrap();
+        assert_eq!(key, ColorKeyItem::default());
+        assert_eq!((key.layer, key.layout), (None, KeyLayout::Strip));
+        assert!(key.split_at_sea_level && key.second_unit.is_none());
+        assert_eq!((key.box_width, key.box_height), (None, None));
+        assert_eq!(ColorKeyItem::from_json(r#"{"box_width": -1}"#), None);
+        assert_eq!(ColorKeyItem::from_json(r#"{"layout": "grid"}"#), None);
+        assert_eq!(ColorKeyItem::from_json(r#"{"border_width": -1}"#), None);
+        assert_eq!(
+            (key.border_color, key.border_width),
+            ([70, 70, 70, 200], 0.3)
+        );
+        // An older key has one text style for the values, the second unit,
+        // and the box names.
+        let old = r#"{"value_style": {"size": 6}}"#;
+        let key = ColorKeyItem::from_json(old).unwrap();
+        assert_eq!(key.value_style.size, 6.0);
+        assert_eq!(key.second_unit_style, key.value_style);
+        assert_eq!(key.box_text_style, key.value_style);
         // The text keys of an older legend are the style of its title and
         // its entries.
         let old = r##"{"title": "Key", "size": 6, "weight": 400, "color": "102030"}"##;

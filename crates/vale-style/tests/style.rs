@@ -312,6 +312,7 @@ fn colors() -> vale_style::RasterSymbolizer {
             },
         ],
         colors: vec![[1, 2, 3], [200, 210, 220]],
+        names: Vec::new(),
         lines: false,
         smoothing: vale_store::Smoothing {
             on: false,
@@ -332,6 +333,47 @@ fn a_raster_style_round_trips() {
     let back = LayerStyle::from_json(&style.to_json()).unwrap();
     assert_eq!(back, style);
     assert_eq!(back.raster_symbolizer(), Some(&colors()));
+}
+
+#[test]
+fn raster_band_names_survive_json() {
+    let named = vale_style::RasterSymbolizer {
+        names: vec!["Sea \"deep\"".into(), String::new()],
+        ..colors()
+    };
+    let style = LayerStyle::raster(named.clone());
+    let back = LayerStyle::from_json(&style.to_json()).unwrap();
+    assert_eq!(back.raster_symbolizer(), Some(&named));
+}
+
+#[test]
+fn a_raster_style_without_names_reads_and_writes_unchanged() {
+    let json = LayerStyle::raster(colors()).to_json();
+    assert!(!json.contains("names"));
+    let back = LayerStyle::from_json(&json).unwrap();
+    assert!(back.raster_symbolizer().unwrap().names.is_empty());
+    assert_eq!(back.to_json(), json);
+    // Names that are all empty are no names.
+    let blank = vale_style::RasterSymbolizer {
+        names: vec![String::new(); 2],
+        ..colors()
+    };
+    assert_eq!(LayerStyle::raster(blank).to_json(), json);
+}
+
+#[test]
+fn band_names_of_the_wrong_length_are_dropped() {
+    let named = vale_style::RasterSymbolizer {
+        names: vec!["Sea".into(), "Land".into()],
+        ..colors()
+    };
+    let json = LayerStyle::raster(named).to_json();
+    assert!(json.contains("\"names\":[\"Sea\",\"Land\"]"));
+    for bad in ["[\"Sea\"]", "[\"Sea\",7]", "\"Sea\""] {
+        let text = json.replace("[\"Sea\",\"Land\"]", bad);
+        let back = LayerStyle::from_json(&text).unwrap();
+        assert!(back.raster_symbolizer().unwrap().names.is_empty(), "{bad}");
+    }
 }
 
 #[test]
