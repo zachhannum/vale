@@ -59,6 +59,10 @@ pub const UNIT_NAME: &str = "Unit name";
 pub const FACTOR: &str = "Factor";
 pub const OFFSET: &str = "Offset";
 pub const NAMES_IN_BOXES: &str = "Names in boxes";
+pub const BOX_WIDTH: &str = "Box width";
+pub const BOX_HEIGHT: &str = "Box height";
+/// The text of a box size that follows the text and the key.
+pub const AUTO: &str = "Auto";
 pub const BANDS: &str = "Bands";
 pub const RESET_BANDS: &str = "Reset bands";
 pub const BAND: &str = "Band";
@@ -743,12 +747,56 @@ fn key_body(
             }
         }
     }
+    box_rows(ui, state, controls, id, key);
     let title = fit(ui, TITLE, &key.title);
     if widgets::open_row(ui, controls, TITLE, &title).clicked() {
         go(ui, state, Some(ItemPage::Text(TextPart::Title)));
     }
     if widgets::open_row(ui, controls, BANDS, "").clicked() {
         go(ui, state, Some(ItemPage::Text(TextPart::Entries)));
+    }
+}
+
+/// The width and the height of the boxes of a key. An empty field is
+/// "Auto".
+fn box_rows(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    id: FurnitureId,
+    key: &ColorKeyItem,
+) {
+    let auto = |t: &str| t.trim().is_empty() || t.trim() == AUTO;
+    let valid = |t: &str| auto(t) || parse_value(t).is_some();
+    for (name, value, height) in [
+        (BOX_WIDTH, key.box_width, false),
+        (BOX_HEIGHT, key.box_height, true),
+    ] {
+        let (shown, suffix) = match value {
+            Some(v) => (number_text(v), "mm"),
+            None => (AUTO.to_string(), ""),
+        };
+        let typed = widgets::key_field(
+            ui,
+            controls,
+            name,
+            name,
+            suffix,
+            &shown,
+            Keys::Number,
+            valid,
+        );
+        if let Some(t) = typed.filter(|t| valid(t)) {
+            let v = if auto(&t) { None } else { parse_value(&t) };
+            atlas::edit_key(state, id, false, |k| {
+                if height {
+                    k.box_height = v;
+                } else {
+                    k.box_width = v;
+                }
+            });
+        }
+        keypad_below(ui, controls, name);
     }
 }
 

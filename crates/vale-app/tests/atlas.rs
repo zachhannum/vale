@@ -9413,6 +9413,34 @@ fn the_color_key_panel_changes_frame_layer_layout_and_second_unit() {
 }
 
 #[test]
+fn the_color_key_panel_sets_the_box_size() {
+    for size in [BOARDS[0], (393.0, 852.0)] {
+        let what = format!("{size:?}");
+        let (mut h, _, _) = key_pad(state(), size);
+        let k = key(&h, 0);
+        assert_eq!((k.box_width, k.box_height), (None, None), "{what}");
+        type_keys(&mut h, item::BOX_WIDTH, "6");
+        type_keys(&mut h, item::BOX_HEIGHT, "6");
+        let k = key(&h, 0);
+        assert_eq!(
+            (k.box_width, k.box_height),
+            (Some(6.0), Some(6.0)),
+            "{what}"
+        );
+        check_page(&mut h, &what, "");
+        // The rows show in the list layout too.
+        tap_row(&mut h, item::KEY_LAYOUTS[1]);
+        assert!(control(&h, item::BOX_WIDTH).is_some(), "{what}");
+        // An empty field is Auto.
+        tap_row(&mut h, item::BOX_WIDTH);
+        tap(&mut h, &format!("{} Delete", item::BOX_WIDTH));
+        tap(&mut h, &format!("{} Done", item::BOX_WIDTH));
+        let k = key(&h, 0);
+        assert_eq!((k.box_width, k.box_height), (None, Some(6.0)), "{what}");
+    }
+}
+
+#[test]
 fn the_color_key_panel_hints_when_the_frame_hides_the_layer() {
     let (mut h, height, _) = key_pad(state(), BOARDS[0]);
     assert!(h.query_by_label(item::LAYER_HIDDEN).is_none());

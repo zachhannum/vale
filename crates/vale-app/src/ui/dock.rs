@@ -1561,6 +1561,34 @@ fn key_sections(
             }
         }
     }
+    egui::Grid::new("atlas-key-box-grid").show(ui, |ui| {
+        for (name, value, height) in [
+            (item::BOX_WIDTH, k.box_width, false),
+            (item::BOX_HEIGHT, k.box_height, true),
+        ] {
+            ui.label(format!("{name} (mm)"));
+            let shown = value.map_or_else(|| item::AUTO.to_string(), |v| v.to_string());
+            if let Some(t) = field(ui, name, &shown) {
+                let t = t.trim();
+                let v = if t.is_empty() || t == item::AUTO {
+                    Some(None)
+                } else {
+                    let v = t.replace(',', "").parse::<f64>().ok();
+                    v.filter(|v| v.is_finite() && *v > 0.0).map(Some)
+                };
+                if let Some(v) = v.filter(|v| *v != value) {
+                    atlas::edit_key(state, id, true, |k| {
+                        if height {
+                            k.box_height = v;
+                        } else {
+                            k.box_width = v;
+                        }
+                    });
+                }
+            }
+            ui.end_row();
+        }
+    });
     egui::CollapsingHeader::new(item::TITLE)
         .default_open(true)
         .show(ui, |ui| {

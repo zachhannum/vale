@@ -255,6 +255,14 @@ fn the_desktop_color_key_controls_edit_the_key() {
     h.get_by_label("Names in boxes").click();
     h.run_steps(2);
     assert!(key(&h).names_in_boxes);
+    type_in(&mut h, "Box width", "6");
+    type_in(&mut h, "Box height", "6");
+    assert_eq!(
+        (key(&h).box_width, key(&h).box_height),
+        (Some(6.0), Some(6.0))
+    );
+    type_in(&mut h, "Box width", "Auto");
+    assert_eq!(key(&h).box_width, None);
     if std::env::var_os("VALE_SCREENSHOTS").is_some() {
         let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/app");
         std::fs::create_dir_all(dir).unwrap();
