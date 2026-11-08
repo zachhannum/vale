@@ -20,7 +20,7 @@ use crate::furniture::glyph_line;
 use crate::labels;
 use crate::ui::expr_help::{ExprHelp, ExprKind, NO_LABEL};
 use crate::ui::new_feature::keyboard_top;
-use crate::ui::token_field::paint::{FUNCTION_TEXT, paint_break, paint_glyph};
+use crate::ui::token_field::paint::{FUNCTION_TEXT, VARIABLE_TEXT, paint_break, paint_glyph};
 use crate::ui::token_field::{self, Field, Glyph, Metrics, Node, Options, template};
 
 /// The label text of a layer: the row of the layer panel, the title of its
@@ -549,8 +549,8 @@ pub fn wrap_in_function(field: &mut Field<Piece>, path: &[usize], f: &'static Fu
 }
 
 /// The bar above the keyboard: the Fields and Functions tabs, Group, Line
-/// break, and a chip for each field with its value in the feature of the
-/// preview. Returns `Some` after a change, with true for one step.
+/// break, and a chip for each field and each measure with its value in the
+/// feature of the preview. Returns `Some` after a change, with true for one step.
 fn bar(
     ui: &egui::Ui,
     controls: &mut Controls,
@@ -585,9 +585,16 @@ fn bar(
                     changed = Some(true);
                 }
             }
-        } else if let Some(name) = field_chips(ui, controls, help, ("", insert_name)) {
-            template::insert_field(&mut st.field, &Subject::Field(name), help);
-            changed = Some(true);
+        } else {
+            if let Some(name) = field_chips(ui, controls, help, ("", insert_name)) {
+                template::insert_field(&mut st.field, &Subject::Field(name), help);
+                changed = Some(true);
+            }
+            bar_divider(ui);
+            if let Some((subject, format)) = measure_chips(ui, controls, help) {
+                template::insert_subject(&mut st.field, subject, format, help);
+                changed = Some(true);
+            }
         }
     });
     changed
@@ -752,14 +759,52 @@ pub fn field_chips(
             .sample(field)
             .and_then(|v| v.label())
             .unwrap_or_default();
-        let sample = match sample.chars().count() > SAMPLE {
-            true => format!("{}…", sample.chars().take(SAMPLE - 1).collect::<String>()),
-            false => sample,
-        };
         let glyph = Some(Glyph::of(*kind));
         let label = (field.as_str(), theme::TEXT);
-        if bar_chip(ui, controls, &name(field), glyph, label, &sample) {
+        if bar_chip(ui, controls, &name(field), glyph, label, &short(sample)) {
             chosen = Some(field.clone());
+        }
+    }
+    chosen
+}
+
+/// A sample value in short.
+pub fn short(sample: String) -> String {
+    match sample.chars().count() > SAMPLE {
+        true => format!("{}…", sample.chars().take(SAMPLE - 1).collect::<String>()),
+        false => sample,
+    }
+}
+
+/// The chips of the measures of the layer, each with its value in its
+/// default format for the feature of the preview. Returns the measure that
+/// the user tapped, with its default format.
+fn measure_chips(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    help: &ExprHelp,
+) -> Option<(Subject, FieldFormat)> {
+    let mut chosen = None;
+    for subject in help.measures() {
+        let format = FieldFormat::for_subject(&subject);
+        let piece = Piece::Field {
+            subject: subject.clone(),
+            format: format.clone(),
+        };
+        let text = Template::new(vec![piece]).to_text();
+        let sample = help.eval(&text).and_then(|v| v.label()).unwrap_or_default();
+        let glyph = help.subject_type(&subject).map(Glyph::of);
+        let label = subject.label();
+        let name = insert_name(&label);
+        if bar_chip(
+            ui,
+            controls,
+            &name,
+            glyph,
+            (&label, VARIABLE_TEXT),
+            &short(sample),
+        ) {
+            chosen = Some((subject, format));
         }
     }
     chosen
