@@ -35,6 +35,8 @@ pub enum Mask {
         layer: LayerId,
         min: Option<f64>,
         max: Option<f64>,
+        /// The distance in points that the region grows by. A negative offset shrinks it.
+        offset: f32,
     },
     /// The inside of the polygons of a polygon layer.
     Polygons { layer: LayerId },
@@ -47,6 +49,7 @@ impl Mask {
             layer,
             min: Some(0.0),
             max: None,
+            offset: 0.0,
         }
     }
 

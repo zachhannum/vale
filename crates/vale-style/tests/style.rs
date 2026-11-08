@@ -196,6 +196,7 @@ fn a_mask_round_trips() {
             layer: LayerId(4),
             min: None,
             max: Some(-20.0),
+            offset: -1.5,
         },
         Mask::Polygons { layer: LayerId(7) },
     ] {
@@ -216,6 +217,16 @@ fn a_style_of_version_5_has_no_mask() {
 }
 
 #[test]
+fn a_raster_mask_without_an_offset_has_an_offset_of_0() {
+    let mut style = LayerStyle::default_for(GeometryKind::Polygon, 0, &[]);
+    style.style.mask = Some(Mask::land(LayerId(3)));
+    let json = style.to_json();
+    assert!(!json.contains("offset"));
+    let back = LayerStyle::from_json(&json).unwrap();
+    assert_eq!(back.style.mask, Some(Mask::land(LayerId(3))));
+}
+
+#[test]
 fn a_raster_mask_holds_its_range() {
     let land = Mask::land(LayerId(1));
     assert!(land.contains(0.0));
@@ -225,6 +236,7 @@ fn a_raster_mask_holds_its_range() {
         layer: LayerId(1),
         min: Some(-200.0),
         max: Some(0.0),
+        offset: 0.0,
     };
     assert!(shelf.contains(-200.0));
     assert!(!shelf.contains(0.0));
