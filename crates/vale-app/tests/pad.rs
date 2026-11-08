@@ -8333,6 +8333,95 @@ fn drag_right(h: &mut Pad, name: &str) {
     let from = pos2(slider.left() + 100.0, y);
     drag(h, from, pos2(from.x + 600.0, y), None);
 }
+#[test]
+fn selected_rules_take_one_stroke_and_keep_their_fills() {
+    use vale_app::ui::pad::rules::{
+        DELETE_RULES, EDIT_RULES, SELECT_RULES, STROKE_COLOR, STROKE_WIDTH,
+    };
+    use vale_app::ui::pad::selectable::{DESELECT_ALL, SELECT_ALL};
+    use vale_app::ui::pad::widgets::DONE;
+    use vale_store::GeometryKind;
+    use vale_style::Color;
+    for size in [BOARDS[1], BOARDS[3]] {
+        let what = format!("{size:?}");
+        let dir = tempfile::tempdir().unwrap();
+        let mut h = saved_pad(size, dir.path());
+        let land = vector(&h, "Land");
+        let entry = h.state_mut().doc.entry_mut(land).unwrap();
+        entry.style.add_rule(GeometryKind::Polygon);
+        entry.style.add_rule(GeometryKind::Polygon);
+        let wide = entry.style.style.rules[2].stroke().map(|s| vale_style::Stroke {
+            width: 3.0,
+            ..s
+        });
+        entry.style.style.rules[2].set_stroke(wide);
+        h.state_mut().touch();
+        save_frames(&mut h);
+        let fills: Vec<_> = rules(&h, land).iter().map(|r| r.fill()).collect();
+        let picked = |h: &Pad| h.state().pad.rules.picked(land);
+
+        tap(&mut h, "Layers");
+        tap(&mut h, "Open Land");
+        scroll_to_control(&mut h, SELECT_RULES);
+        tap(&mut h, SELECT_RULES);
+        for row in ["Default", "Rule 2"] {
+            scroll_to_control(&mut h, row);
+            tap(&mut h, row);
+        }
+        assert_eq!(picked(&h), [0, 2], "{what}");
+        scroll_to_control(&mut h, "Default");
+        tap(&mut h, "Default");
+        assert_eq!(picked(&h), [2], "{what}");
+        scroll_to_control(&mut h, SELECT_ALL);
+        tap(&mut h, SELECT_ALL);
+        assert_eq!(picked(&h), [0, 1, 2], "{what}");
+        screenshot::save(&mut h, &format!("pad-select-rules-{}", size.0));
+        scroll_to_control(&mut h, EDIT_RULES);
+        tap(&mut h, EDIT_RULES);
+        assert_eq!(h.state().pad.page, Some(Page::Rules), "{what}");
+
+        scroll_to_control(&mut h, STROKE_COLOR);
+        tap(&mut h, STROKE_COLOR);
+        let hex = format!("{STROKE_COLOR} hex");
+        scroll_to_control(&mut h, &hex);
+        type_scrolled_keys(&mut h, &hex, "C04020");
+        let red = Color::rgb(0xc0, 0x40, 0x20);
+        for rule in rules(&h, land) {
+            assert_eq!(rule.stroke().unwrap().color, red, "{what}");
+        }
+        // The widths are mixed, and a step gives each rule the same width.
+        scrolled_step(&mut h, STROKE_WIDTH, true);
+        let widths: Vec<_> = rules(&h, land)
+            .iter()
+            .map(|r| r.stroke().unwrap().width)
+            .collect();
+        assert!(widths.iter().all(|w| *w == widths[0]), "{what}: {widths:?}");
+        let after: Vec<_> = rules(&h, land).iter().map(|r| r.fill()).collect();
+        assert_eq!(after, fills, "{what}");
+        screenshot::save(&mut h, &format!("pad-edit-rules-{}", size.0));
+
+        tap(&mut h, "Back to Land");
+        assert_eq!(picked(&h), [0, 1, 2], "{what}");
+        scroll_to_control(&mut h, DESELECT_ALL);
+        tap(&mut h, DESELECT_ALL);
+        scroll_to_control(&mut h, "Rule 1");
+        tap(&mut h, "Rule 1");
+        save_frames(&mut h);
+        scroll_to_control(&mut h, DELETE_RULES);
+        tap(&mut h, DELETE_RULES);
+        save_frames(&mut h);
+        assert_eq!(rule_names(&h, land), ["Default", "Rule 2"], "{what}");
+        assert!(h.state().pad.rules.select.is_none(), "{what}");
+        tap(&mut h, "Undo");
+        assert_eq!(rule_names(&h, land), ["Default", "Rule 1", "Rule 2"]);
+
+        scroll_to_control(&mut h, SELECT_RULES);
+        tap(&mut h, SELECT_RULES);
+        scroll_to_control(&mut h, DONE);
+        tap(&mut h, DONE);
+        assert!(h.state().pad.rules.select.is_none(), "{what}");
+    }
+}
 
 /// The rules of the style of a vector layer.
 fn rules(h: &Pad, id: vale_store::LayerId) -> Vec<vale_style::Rule> {

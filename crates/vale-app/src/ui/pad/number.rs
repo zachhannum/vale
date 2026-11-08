@@ -1104,6 +1104,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_mixed_value_shows_mixed() {
+        let n = Number::new("n", 2.0, 0.0..=10.0).unit("pt");
+        assert_eq!(n.value_text(2.0), "2 pt");
+        assert_eq!(n.mixed(true).value_text(2.0), "Mixed");
+    }
+
+    #[test]
     fn a_place_on_the_track_and_its_value_match_on_each_scale() {
         for scale in [Scale::Linear, Scale::Log, Scale::Square] {
             let n = Number::new("n", 0.0, 1.0..=1000.0).scale(scale);

@@ -160,7 +160,7 @@ pub struct RulesState {
     pub(super) classify: super::classify::Draft,
     /// The layer whose rule rows select rules, and the indices of the
     /// selected rules.
-    pub(super) select: Option<(LayerId, Vec<usize>)>,
+    pub select: Option<(LayerId, Vec<usize>)>,
 }
 
 impl RulesState {
