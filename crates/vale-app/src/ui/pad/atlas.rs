@@ -1827,9 +1827,10 @@ fn layer_panel(
             }
         }
     };
-    Some(show_card(
-        ctx, state, controls, rects, card, on_title, top, body,
-    ))
+    let rect = show_card(ctx, state, controls, rects, card, on_title, top, body);
+    // The card of a ramp takes its place from the panel.
+    state.pad.panels.push((super::Panel::Layers, rect));
+    Some(rect)
 }
 
 /// The rows that set the style of a layer in a map from its map style or
@@ -1863,9 +1864,18 @@ fn open_raster(state: &AppState) -> Option<(MapId, LayerId, RasterId)> {
 }
 
 /// The cards of the raster editors of the open raster layer: the band, the
-/// reset, the ramp, and the shade color.
+/// reset, the ramp, and the shade color. For a vector layer, the card of a
+/// ramp of the Classify form.
 fn raster_cards(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
     let Some((map, layer, raster)) = open_raster(state) else {
+        let open = open_layer(state).zip(state.atlas.frame());
+        if let Some((layer, frame)) = open
+            && let Some(map) = state.doc.project.atlas.frame(frame).map(|f| f.map)
+        {
+            state.edit_map_style(map, layer, |state| {
+                super::raster::ramp_card(ctx, state, controls, rects);
+            });
+        }
         return;
     };
     state.edit_map_raster(map, layer, raster, |state| {

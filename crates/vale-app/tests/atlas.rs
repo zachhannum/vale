@@ -8437,6 +8437,47 @@ fn classify_places_in_frame(h: &mut Pad) {
 }
 
 #[test]
+fn classify_in_a_frame_picks_a_ramp_with_a_finger() {
+    use vale_app::ui::pad::Page;
+    use vale_app::ui::pad::classify::{CLASSIFY, NEIGHBORS_DIFFER};
+    use vale_app::ui::pad::raster::USE_RAMP;
+    for size in [BOARDS[0], (393.0, 852.0)] {
+        let what = format!("{size:?}");
+        let mut h = inset_pad(size);
+        tap(&mut h, FRAME_TABS[2]);
+        scroll_to(&mut h, "Open Places");
+        tap(&mut h, "Open Places");
+        scroll_to(&mut h, CLASSIFY);
+        tap(&mut h, CLASSIFY);
+        scroll_to(&mut h, "Bold");
+        tap(&mut h, "Bold");
+        assert_eq!(h.state().atlas.layer_page, Some(Page::Ramps), "{what}");
+        scroll_to(&mut h, "Viridis");
+        tap(&mut h, "Viridis");
+        assert!(control(&h, USE_RAMP).is_some(), "{what}");
+        check_controls(&h, &what);
+        tap(&mut h, USE_RAMP);
+        assert_eq!(h.state().atlas.layer_page, Some(Page::Classify), "{what}");
+        assert!(control(&h, "Viridis").is_some(), "{what}");
+        assert!(control(&h, "Bold").is_none(), "{what}");
+    }
+
+    // The switch changes the data of the layer, so a map frame has no switch.
+    let mut s = state();
+    let id = s.doc.add_layer(vale_store::GeometryKind::Polygon);
+    let name = s.doc.layer(id).unwrap().name.clone();
+    let mut h = pad_with(s, BOARDS[0]);
+    add_frame(&mut h);
+    tap(&mut h, FRAME_TABS[2]);
+    scroll_to(&mut h, &format!("Open {name}"));
+    tap(&mut h, &format!("Open {name}"));
+    scroll_to(&mut h, CLASSIFY);
+    tap(&mut h, CLASSIFY);
+    assert_eq!(h.state().atlas.layer_page, Some(Page::Classify));
+    assert!(control(&h, NEIGHBORS_DIFFER).is_none());
+}
+
+#[test]
 fn classify_in_a_frame_changes_only_that_map() {
     let mut h = inset_pad(BOARDS[0]);
     let (main, inset) = (frame(&h, 0).map, frame(&h, 1).map);
