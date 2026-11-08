@@ -7,11 +7,13 @@ use std::sync::{Arc, Mutex};
 
 use eframe::egui;
 use eframe::egui::text::{CCursor, CCursorRange};
+use vale_store::FurnitureId;
 use vale_store::{FieldType, Geometry, GeometryKind, Layer, LayerId, Value};
 use vale_style::expr::editor::{Subject, measures_for};
-use vale_style::expr::{Context, Expr, field_ref, layer_functions};
+use vale_style::expr::{Context, Expr, PageValues, field_ref, layer_functions};
 
 use super::AppState;
+use crate::furniture::PageSample;
 
 /// The result of a filter for the feature of the preview.
 pub const MATCHES: &str = "Matches";
@@ -28,6 +30,50 @@ pub const FUNCTIONS_MENU: &str = "Functions";
 pub const GEOMETRY_MENU: &str = "Geometry";
 /// The `@` variables, in the value editor.
 pub const VARIABLES_MENU: &str = "Variables";
+
+/// The page values of a text item.
+pub const SCALE: &str = "Scale";
+pub const RELATIVE_SCALE: &str = "Relative scale";
+pub const MAP_NAME: &str = "Map name";
+pub const PAGE_NAME: &str = "Page name";
+pub const PAGE_NUMBER: &str = "Page number";
+pub const PAGE_COUNT: &str = "Page count";
+pub const DATE: &str = "Date";
+
+/// The page values that the iPad bar inserts: the name of each, and its
+/// text.
+pub const PAGE_VALUES: [(&str, &str); 6] = [
+    (SCALE, "scale('fraction')"),
+    (MAP_NAME, "map_name()"),
+    (PAGE_NAME, "page_name()"),
+    (PAGE_NUMBER, "page_number()"),
+    (PAGE_COUNT, "page_count()"),
+    (DATE, "date('long')"),
+];
+
+/// The page values of the desktop Insert menu and completion list: also the
+/// relative scale.
+pub const DESKTOP_PAGE_VALUES: [(&str, &str); 7] = [
+    (SCALE, "scale('fraction')"),
+    (RELATIVE_SCALE, "scale('relative', 'cm')"),
+    (MAP_NAME, "map_name()"),
+    (PAGE_NAME, "page_name()"),
+    (PAGE_NUMBER, "page_number()"),
+    (PAGE_COUNT, "page_count()"),
+    (DATE, "date('long')"),
+];
+
+/// The name of page function `name` in the UI.
+pub fn page_label(name: &str) -> &'static str {
+    match name {
+        "scale" => SCALE,
+        "map_name" => MAP_NAME,
+        "page_name" => PAGE_NAME,
+        "page_number" => PAGE_NUMBER,
+        "page_count" => PAGE_COUNT,
+        _ => DATE,
+    }
+}
 
 /// The map scale of the preview.
 pub const PREVIEW_SCALE: f64 = 1_000_000.0;
@@ -80,6 +126,10 @@ pub struct ExprHelp {
     shape: Option<Geometry>,
     radius_km: f64,
     values: Arc<LayerValues>,
+    /// The page values of a text item. The help of a text item has no
+    /// fields, and it lists the page values in place of the fields and the
+    /// functions.
+    page: Option<PageSample>,
 }
 
 /// The values of the features of a layer.
@@ -383,7 +433,31 @@ impl ExprHelp {
             shape: sample.map(|f| f.geometry.clone()),
             radius_km: state.doc.project.world.radius_km,
             values: state.help_cache.values(layer, state.map_generation),
+            page: None,
         }
+    }
+
+    /// The help for the text of text item `id`, with its page values.
+    pub fn for_text_item(state: &mut AppState, id: FurnitureId) -> Self {
+        let Some(rec) = state.doc.project.atlas.furniture(id) else {
+            return Self::empty();
+        };
+        let today = crate::furniture::today();
+        let sample = crate::furniture::page_sample(&mut state.pipeline, &state.doc, rec, today);
+        Self::for_page(sample)
+    }
+
+    /// The help with the page values of `sample`.
+    pub fn for_page(sample: PageSample) -> Self {
+        ExprHelp {
+            page: Some(sample),
+            ..Self::empty()
+        }
+    }
+
+    /// True if the help is for the text of a text item.
+    pub fn is_page(&self) -> bool {
+        self.page.is_some()
     }
 
     /// No fields and no feature.
@@ -397,7 +471,26 @@ impl ExprHelp {
             shape: None,
             radius_km: 0.0,
             values: Arc::default(),
+            page: None,
         }
+    }
+
+    /// The value of `expr` for the feature of the preview, or for the page
+    /// of a text item.
+    fn value_of(&self, expr: &Expr) -> Option<Value> {
+        static NONE: BTreeMap<String, Value> = BTreeMap::new();
+        let (attributes, page) = match &self.page {
+            Some(p) => (&NONE, Some(p as &dyn PageValues)),
+            None => (self.sample.as_ref()?, None),
+        };
+        Some(expr.eval(&Context {
+            attributes,
+            scale: PREVIEW_SCALE,
+            geometry: self.geometry,
+            shape: self.shape.as_ref(),
+            radius_km: self.radius_km,
+            page,
+        }))
     }
 
     /// The type of field `name`.
@@ -437,23 +530,24 @@ impl ExprHelp {
         self.values.texts.get(name).map_or(&[], Vec::as_slice)
     }
 
-    /// The value of expression `text` for the feature of the preview.
-    /// `None` if the text does not parse or the layer has no features.
+    /// The value of expression `text` for the feature of the preview, or
+    /// for the page of a text item. `None` if the text does not parse or
+    /// the layer has no features.
     pub fn eval(&self, text: &str) -> Option<Value> {
-        let expr = Expr::parse(text).ok()?;
-        let attributes = self.sample.as_ref()?;
-        Some(expr.eval(&Context {
-            attributes,
-            scale: PREVIEW_SCALE,
-            geometry: self.geometry,
-            shape: self.shape.as_ref(),
-            radius_km: self.radius_km,
-            page: None,
-        }))
+        self.value_of(&Expr::parse(text).ok()?)
     }
 
-    /// The fields, and then the functions.
+    /// The fields, and then the functions. For a text item, the page
+    /// values.
     pub fn chips(&self) -> Vec<Chip> {
+        if self.is_page() {
+            let page = DESKTOP_PAGE_VALUES.iter().map(|(label, insert)| Chip {
+                label: (*label).to_owned(),
+                insert: (*insert).to_owned(),
+                call: false,
+            });
+            return page.collect();
+        }
         let fields = self.fields.iter().map(|name| Chip {
             label: name.clone(),
             insert: field_ref(name),
@@ -477,15 +571,7 @@ impl ExprHelp {
             Ok(expr) => expr,
             Err(e) => return Some(Line::Error(e.short())),
         };
-        let attributes = self.sample.as_ref()?;
-        let value = expr.eval(&Context {
-            attributes,
-            scale: PREVIEW_SCALE,
-            geometry: self.geometry,
-            shape: self.shape.as_ref(),
-            radius_km: self.radius_km,
-            page: None,
-        });
+        let value = self.value_of(&expr)?;
         let text = match kind {
             ExprKind::Filter if value == Value::Bool(true) => MATCHES.to_owned(),
             ExprKind::Filter => NO_MATCH.to_owned(),
@@ -547,6 +633,14 @@ pub fn insert_menu(ui: &mut egui::Ui, help: &ExprHelp, id: egui::Id, text: &mut 
     let mut chosen = None;
     ui.menu_button(INSERT, |ui| {
         let chips = help.chips();
+        if help.is_page() {
+            for chip in &chips {
+                if ui.button(&chip.label).clicked() {
+                    chosen = Some(chip.clone());
+                }
+            }
+            return;
+        }
         let (fields, functions) = chips.split_at(help.fields.len());
         ui.add_enabled_ui(!fields.is_empty(), |ui| {
             ui.menu_button(FIELDS, |ui| {
@@ -608,6 +702,7 @@ mod tests {
             shape: None,
             radius_km: 0.0,
             values: Arc::default(),
+            page: None,
         }
     }
 
@@ -707,6 +802,34 @@ mod tests {
         let round = chips.iter().find(|c| c.label == "round").unwrap();
         assert_eq!(round.insert, "round(x, digits)");
         assert!(round.call);
+    }
+
+    #[test]
+    fn a_text_item_lists_the_page_values_and_a_layer_lists_no_page_values() {
+        let layer = help(&[("name", Value::Text("Ardent".into()))]);
+        let chips = layer.chips();
+        assert!(chips.iter().any(|c| c.insert == "name"));
+        let page = |c: &Chip| DESKTOP_PAGE_VALUES.iter().any(|(_, t)| *t == c.insert);
+        assert!(!chips.iter().any(page));
+        assert!(!layer.is_page());
+
+        let item = ExprHelp::for_page(PageSample::default());
+        assert!(item.is_page());
+        assert!(item.fields.is_empty());
+        let chips = item.chips();
+        assert_eq!(chips.len(), DESKTOP_PAGE_VALUES.len());
+        assert!(chips.iter().all(page));
+        assert!(!item.has_sample());
+        let text = "concat('Page ', page_number(), ' of ', page_count())";
+        assert_eq!(item.eval(text), Some(Value::Text("Page 0 of 0".into())));
+        assert_eq!(
+            item.eval("date('iso')"),
+            Some(Value::Text("1970-01-01".into()))
+        );
+        assert_eq!(
+            item.line("date('long')", ExprKind::Text),
+            Some(Line::Preview("January 1, 1970".into()))
+        );
     }
 
     #[test]

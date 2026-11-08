@@ -4,7 +4,13 @@
 use vale_style::expr::editor::{Case, Empty, FieldFormat, Piece, Subject, Template};
 
 use super::{BoxKind, Boxed, Caret, ChipKind, Field, Glyph, Look, Node, Selection, Token};
-use crate::ui::expr_help::ExprHelp;
+use crate::ui::expr_help::{ExprHelp, page_label};
+
+/// The badges of the formats of the page values.
+pub const FRACTION_BADGE: &str = "Fraction";
+pub const RELATIVE_BADGE: &str = "Relative";
+pub const LONG_BADGE: &str = "Long";
+pub const ISO_BADGE: &str = "ISO";
 
 /// The most chars of the label of an expression chip.
 const MAX_LABEL: usize = 24;
@@ -73,6 +79,40 @@ fn short(text: &str) -> String {
     s
 }
 
+/// The badge of a page value: its format, in short.
+pub fn page_badge(name: &str, options: &[String]) -> Option<String> {
+    let option = |i: usize| options.get(i).map_or("", String::as_str);
+    match (name, option(0)) {
+        ("scale", "relative") => {
+            let unit = if option(1).is_empty() {
+                "cm"
+            } else {
+                option(1)
+            };
+            Some(format!("{RELATIVE_BADGE} · {unit}"))
+        }
+        ("scale", _) => Some(FRACTION_BADGE.to_owned()),
+        ("date", "iso") => Some(ISO_BADGE.to_owned()),
+        ("date", _) => Some(LONG_BADGE.to_owned()),
+        _ => None,
+    }
+}
+
+/// The look of the chip of page value `name`: a field chip with the name of
+/// the value in the UI.
+pub fn page_look(name: &str, options: &[String]) -> Look {
+    let glyph = match name {
+        "page_number" | "page_count" => Glyph::Number,
+        _ => Glyph::Text,
+    };
+    Look {
+        kind: ChipKind::Field,
+        glyph: Some(glyph),
+        label: page_label(name).to_owned(),
+        badge: page_badge(name, options),
+    }
+}
+
 /// The node of a field chip.
 pub fn field_node(subject: &Subject, format: FieldFormat, help: &ExprHelp) -> Node<Piece> {
     Node::Chip(super::Chip {
@@ -103,7 +143,11 @@ pub fn nodes_of(pieces: &[Piece], help: &ExprHelp) -> Vec<Node<Piece>> {
                     data: None,
                 }));
             }
-            Piece::Expr(_) | Piece::Page { .. } => out.push(Node::Chip(super::Chip {
+            Piece::Page { name, options } => out.push(Node::Chip(super::Chip {
+                look: page_look(name, options),
+                data: p.clone(),
+            })),
+            Piece::Expr(_) => out.push(Node::Chip(super::Chip {
                 look: Look {
                     kind: ChipKind::Function,
                     glyph: None,
@@ -178,6 +222,7 @@ pub fn group_label(children: &[Node<Piece>]) -> String {
         .filter_map(|n| match n {
             Node::Chip(c) => match &c.data {
                 Piece::Field { subject, .. } => Some(subject.label()),
+                Piece::Page { name, .. } => Some(page_label(name).to_owned()),
                 _ => None,
             },
             _ => None,
@@ -369,6 +414,33 @@ mod tests {
         let format = FieldFormat::for_subject(&s);
         insert_subject(&mut f, s, format, &ExprHelp::empty());
         assert_eq!(text(&f), "format_number(area('km2'), 0)");
+    }
+
+    #[test]
+    fn a_page_value_is_a_field_chip_with_its_name_and_format() {
+        let f = field("concat('Scale ', scale('relative', 'in'), date('iso'), page_number())");
+        let looks: Vec<&Look> = (f.nodes.iter())
+            .filter_map(|n| match n {
+                Node::Chip(c) => Some(&c.look),
+                _ => None,
+            })
+            .collect();
+        assert!(looks.iter().all(|l| l.kind == ChipKind::Field));
+        let shown: Vec<(&str, Option<&str>)> = (looks.iter())
+            .map(|l| (l.label.as_str(), l.badge.as_deref()))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                ("Scale", Some("Relative · in")),
+                ("Date", Some("ISO")),
+                ("Page number", None)
+            ]
+        );
+        assert_eq!(
+            text(&f),
+            "concat('Scale ', scale('relative', 'in'), date('iso'), page_number())"
+        );
     }
 
     #[test]

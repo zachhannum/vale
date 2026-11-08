@@ -430,8 +430,8 @@ fn civil(days: i64) -> (i64, u32, u32) {
 }
 
 /// The values of the page functions for a text item.
-#[derive(Default)]
-struct AtlasValues {
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PageSample {
     page_name: String,
     /// From 1.
     page_number: usize,
@@ -443,11 +443,9 @@ struct AtlasValues {
     units: Units,
     /// Days after 1970-01-01.
     today: i64,
-    /// A frame value was asked for.
-    asked_frame: std::cell::Cell<bool>,
 }
 
-impl vale_style::expr::PageValues for AtlasValues {
+impl vale_style::expr::PageValues for PageSample {
     fn value(&self, name: &str, args: &[vale_style::expr::Value]) -> vale_style::expr::Value {
         use vale_style::expr::Value;
         let arg = |i: usize| match args.get(i) {
@@ -457,21 +455,33 @@ impl vale_style::expr::PageValues for AtlasValues {
         let text = |t: Option<String>| t.map_or(Value::Null, Value::Text);
         match name {
             "scale" => {
-                self.asked_frame.set(true);
                 let unit = if arg(1).is_empty() { "cm" } else { arg(1) };
                 let km = self.km_per_mm;
                 text(km.and_then(|km| scale_value(arg(0), unit, km, self.units)))
             }
-            "map_name" => {
-                self.asked_frame.set(true);
-                text(self.map_name.clone())
-            }
+            "map_name" => text(self.map_name.clone()),
             "page_name" => Value::Text(self.page_name.clone()),
             "page_number" => Value::Number(self.page_number as f64),
             "page_count" => Value::Number(self.page_count as f64),
             "date" => text(date_value(arg(0), self.today)),
             _ => Value::Null,
         }
+    }
+}
+
+/// The page values of a sample, and whether a frame value was asked for.
+#[derive(Default)]
+struct AtlasValues {
+    sample: PageSample,
+    asked_frame: std::cell::Cell<bool>,
+}
+
+impl vale_style::expr::PageValues for AtlasValues {
+    fn value(&self, name: &str, args: &[vale_style::expr::Value]) -> vale_style::expr::Value {
+        if matches!(name, "scale" | "map_name") {
+            self.asked_frame.set(true);
+        }
+        self.sample.value(name, args)
     }
 }
 
@@ -509,6 +519,38 @@ pub fn uses_frame(template: &str) -> bool {
     values.asked_frame.get()
 }
 
+/// The page values of the item `rec` on the day `today`, in days after
+/// 1970-01-01. The frame values come from the frame of the item.
+pub fn page_sample(
+    pipeline: &mut Pipeline,
+    doc: &Document,
+    rec: &FurnitureRecord,
+    today: i64,
+) -> PageSample {
+    let atlas = &doc.project.atlas;
+    let index = (atlas.pages.iter())
+        .position(|p| p.furniture.iter().any(|f| f.id == rec.id))
+        .unwrap_or(0);
+    let world = &doc.project.world;
+    let mut sample = PageSample {
+        page_name: atlas.pages.get(index).map_or(String::new(), |p| {
+            crate::ui::pad::atlas::page_title(index, &p.name)
+        }),
+        page_number: index + 1,
+        page_count: atlas.pages.len(),
+        units: world.units,
+        today,
+        ..PageSample::default()
+    };
+    if let Some(frame) = rec.item.frame().and_then(|id| atlas.frame(id)) {
+        sample.map_name = atlas.map(frame.map).map(|m| m.name.clone());
+        if let Ok(projection) = pipeline.projection(doc, frame.map) {
+            sample.km_per_mm = scale_at_center(projection, frame, world.radius_km);
+        }
+    }
+    sample
+}
+
 /// The text of the text item `rec` on the day `today`, in days after
 /// 1970-01-01.
 pub fn shown_text(
@@ -523,29 +565,12 @@ pub fn shown_text(
             missing_frame: false,
         };
     };
-    let atlas = &doc.project.atlas;
-    let index = (atlas.pages.iter())
-        .position(|p| p.furniture.iter().any(|f| f.id == rec.id))
-        .unwrap_or(0);
-    let world = &doc.project.world;
-    let mut values = AtlasValues {
-        page_name: atlas.pages.get(index).map_or(String::new(), |p| {
-            crate::ui::pad::atlas::page_title(index, &p.name)
-        }),
-        page_number: index + 1,
-        page_count: atlas.pages.len(),
-        units: world.units,
-        today,
+    let values = AtlasValues {
+        sample: page_sample(pipeline, doc, rec, today),
         ..AtlasValues::default()
     };
-    if let Some(frame) = item.frame.and_then(|id| atlas.frame(id)) {
-        values.map_name = atlas.map(frame.map).map(|m| m.name.clone());
-        if let Ok(projection) = pipeline.projection(doc, frame.map) {
-            values.km_per_mm = scale_at_center(projection, frame, world.radius_km);
-        }
-    }
     let text = evaluate(&item.template, &values);
-    let missing_frame = values.asked_frame.get() && values.km_per_mm.is_none();
+    let missing_frame = values.asked_frame.get() && values.sample.km_per_mm.is_none();
     ShownText {
         text,
         missing_frame,
