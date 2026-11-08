@@ -4,7 +4,7 @@
 
 use eframe::egui::{self, Align2, Order, Rect, Sense, pos2, vec2};
 
-use super::geometry::{GAP, MARGIN, PAD, ROW, Rects, TOUCH};
+use super::geometry::{GAP, PAD, ROW, Rects, TOUCH};
 use super::theme;
 use super::widgets::{self, BODY_PAD, Controls, PANEL_ROW};
 use crate::ui::new_feature::keyboard_top;
@@ -46,7 +46,7 @@ pub fn show(
     rects: &Rects,
 ) -> Rect {
     let min = rects.right_panel;
-    let right = rects.screen.right() - rects.bands.right - MARGIN;
+    let right = super::geometry::float_right(rects);
     // Before the first frame of the card, the height comes from the count
     // of the fields.
     let fields = state.selection_form.as_ref().map_or(0, |f| f.fields.len());

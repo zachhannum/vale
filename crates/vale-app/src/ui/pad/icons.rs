@@ -82,6 +82,10 @@ pub enum Icon {
     Grip,
     /// A pipette.
     Eyedropper,
+    /// An open book.
+    Book,
+    /// A window with a column at its right.
+    Dock,
 }
 
 impl Icon {
@@ -139,6 +143,10 @@ impl Icon {
                  M12 3c2.5 2.5 3.5 5.5 3.5 9s-1 6.5-3.5 9c-2.5-2.5-3.5-5.5-3.5-9s1-6.5 3.5-9zM3 12h18"
             }
             Icon::Grid => "M12 3v18M3 12h18",
+            Icon::Book => {
+                "M3 5h6c1.66 0 3 1.34 3 3v12c0-1.1-.9-2-2-2H3zM21 5h-6c-1.66 0-3 1.34-3 3v12c0-1.1.9-2 2-2h7z"
+            }
+            Icon::Dock => "M3 5h18v14H3zM15 5v14M17.5 9h1.5M17.5 12h1.5",
             Icon::LayoutGrid => "M4 4h16v16h-16zM4 9.33h16M4 14.67h16M9.33 4v16M14.67 4v16",
             Icon::Grip => "M5 8h14M5 12h14M5 16h14",
             Icon::Select => "M5 3l14 8-6 2-2 6z",
@@ -482,6 +490,8 @@ mod tests {
             Icon::Shared,
             Icon::Grip,
             Icon::Eyedropper,
+            Icon::Book,
+            Icon::Dock,
         ] {
             let lines = parse(icon.path());
             let circles = icon.circles();

@@ -126,19 +126,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     dialog(&ctx, state, &mut controls, screen, &bands);
     // The form of a new world takes its place from the top row of the
     // workspace.
-    let rects = geometry::layout(&Input {
-        screen,
-        bands,
-        workspace_width: 0.0,
-        view_width: 0.0,
-        panel: false,
-        sheet_offset: 0.0,
-        cells: 0,
-        strip: false,
-        extra: 0,
-        tools: geometry::TOOLS,
-        row: false,
-    });
+    let rects = geometry::layout(&Input::new(screen, bands));
     world_form::pad(&ctx, state, &mut controls, &rects);
     state.pad.controls = controls;
 }

@@ -25,8 +25,7 @@ use vale_app::ui::pad::{
     LayerRef, MEASURE, ModeGroup, NEW_GEOJSON, NEW_HEIGHTMAP, NEW_IMAGE, NEW_RASTER, OPACITY,
     POLYGON, Page, Panel, RECENTER, RESET, SCULPT, SMOOTHING, SNAP, SNAP_DISTANCE, SNAP_EDGES,
     SNAP_VERTICES, SNAPPING, TERRAIN, TERRAIN_BALANCE, TERRAIN_FIT, TERRAIN_FIT_SWITCH, VECTOR,
-    VIEW_OPTIONS, WORLD_PROPERTIES, WORLDS, WORLDS_ROW, brush_size_text, readout_line,
-    readout_text, theme,
+    WORLD_PROPERTIES, WORLDS, WORLDS_ROW, brush_size_text, readout_line, readout_text, theme,
 };
 use vale_app::ui::raster_form::{self, PRESETS, RasterForm, face_size_name};
 use vale_app::ui::select;
@@ -303,7 +302,6 @@ fn cards(h: &Pad) -> Vec<Rect> {
     cards.extend(pad.menu_rect);
     cards.extend(pad.flyouts.rect);
     cards.extend(pad.add_rect);
-    cards.extend(pad.view_options_rect);
     cards
 }
 
@@ -361,14 +359,8 @@ fn check_controls(h: &Pad, what: &str) {
             )
         })
         .unwrap_or_default();
-    let popup = !choice_rows.is_empty()
-        || in_edit
-        || in_menu
-        || in_modes
-        || in_add
-        || in_list
-        || in_stop
-        || h.state().pad.view_options_rect.is_some();
+    let popup =
+        !choice_rows.is_empty() || in_edit || in_menu || in_modes || in_add || in_list || in_stop;
     for (i, a) in controls.iter().enumerate() {
         let (name, rect) = (&a.name, a.rect);
         assert!(
@@ -1150,9 +1142,12 @@ fn you_make_rename_hide_and_delete_a_layer() {
             panel(&h, Panel::Layers).unwrap(),
         );
         if size == BOARDS[0] {
-            // The menu is at the left of the panel, with its top at the top
-            // of the panel.
-            assert_eq!(menu.right_top(), layers.left_top() - vec2(8.0, 0.0));
+            // The menu is at the left of the panel. It does not cover the
+            // view control.
+            assert_eq!(menu.right(), layers.left() - 8.0);
+            assert!(menu.top() >= layers.top());
+            let view = h.state().pad.rects.unwrap().view.unwrap();
+            assert!(!menu.intersects(view), "{menu:?}");
         } else {
             assert!(layers.contains_rect(menu), "{menu:?}");
         }
@@ -2060,9 +2055,9 @@ fn the_tool_strip_has_six_cells_on_each_screen() {
 fn the_small_ipads_show_the_full_sliders_with_a_raster_layer() {
     // The small iPads in landscape have less room for the sliders.
     for (size, slider) in [
-        ((1133.0, 744.0), 110.0),
+        ((1133.0, 744.0), 120.0),
         ((744.0, 1133.0), 140.0),
-        ((1024.0, 768.0), 122.0),
+        ((1024.0, 768.0), 132.0),
         ((768.0, 1024.0), 140.0),
     ] {
         let what = format!("{size:?}");
@@ -3844,7 +3839,14 @@ fn one_tap_switches_the_view_and_the_tool_and_the_panels_stay() {
             (s.globe.tool, s.globe.brush.mode),
             (Tool::Brush, Mode::Lower)
         );
-        assert_eq!(s.pad.panels, panels);
+        // The panels stay open with their sizes. The Brush panel moves
+        // below the view control while the wider view control of the flat
+        // view would cover it.
+        let sizes = |p: &[(Panel, Rect)]| p.iter().map(|(p, r)| (*p, r.size())).collect::<Vec<_>>();
+        assert_eq!(sizes(&s.pad.panels), sizes(&panels));
+        for (_, rect) in &s.pad.panels {
+            assert!(!rect.intersects(s.pad.rects.unwrap().view.unwrap()));
+        }
     }
 }
 
@@ -3887,7 +3889,7 @@ fn the_view_switch_has_the_list_of_the_projections_of_the_flat_view() {
 }
 
 #[test]
-fn the_view_options_menu_has_the_graticule_switch() {
+fn the_view_control_has_the_graticule_button() {
     use vale_app::ui::pad::raster::{self, RIVERS};
     for size in BOARDS {
         let mut h = painted_pad(size);
@@ -3897,50 +3899,27 @@ fn the_view_options_menu_has_the_graticule_switch() {
             h.run_steps(2);
             let rects = h.state().pad.rects.unwrap();
             // The compact layout has the switch in the workspace menu.
-            let open = match rects.view {
+            match rects.view {
                 Some(card) => {
-                    let button = control(&h, VIEW_OPTIONS).unwrap();
+                    let button = control(&h, GRATICULE).unwrap();
                     assert!(card.contains_rect(button), "{what}");
-                    let right = card.right() - 4.0;
-                    assert!((button.right() - right).abs() <= 0.5, "{what}");
                     assert!(card.right() + 12.0 <= rects.actions.left(), "{what}");
-                    VIEW_OPTIONS
                 }
                 None => {
-                    assert!(control(&h, VIEW_OPTIONS).is_none(), "{what}");
-                    "Workspace"
+                    assert!(control(&h, GRATICULE).is_none(), "{what}");
+                    tap(&mut h, "Workspace");
                 }
-            };
-            tap(&mut h, open);
-            if let Some(card) = rects.view {
-                let options = h.state().pad.view_options_rect.unwrap();
-                assert_eq!(options.top(), card.bottom() + 4.0, "{what}");
-                assert!(options.contains_rect(control(&h, GRATICULE).unwrap()));
             }
-            check_controls(&h, &format!("{what} with the view options"));
+            check_controls(&h, &format!("{what} with the graticule"));
             let before = h.state().globe.preview.graticule;
             tap(&mut h, GRATICULE);
             assert_eq!(h.state().globe.preview.graticule, !before, "{what}");
             tap(&mut h, GRATICULE);
             assert_eq!(h.state().globe.preview.graticule, before, "{what}");
-            tap(&mut h, open);
-            let pad = &h.state().pad;
-            assert!(!pad.view_options && !pad.menu, "{what}");
-            assert!(control(&h, GRATICULE).is_none(), "{what}");
-
-            // The view options and the list of the projections exclude each
-            // other, and a press outside closes the view options.
-            if rects.view.is_some() && view == WorldView::Flat {
-                tap(&mut h, VIEW_OPTIONS);
-                tap(&mut h, "Projection");
-                let pad = &h.state().pad;
-                assert!(pad.projections && !pad.view_options, "{what}");
-                tap(&mut h, VIEW_OPTIONS);
-                let pad = &h.state().pad;
-                assert!(!pad.projections && pad.view_options, "{what}");
-                tap(&mut h, "Layers");
-                assert!(!h.state().pad.view_options, "{what}");
-                tap(&mut h, "Layers");
+            if rects.view.is_none() {
+                tap(&mut h, "Workspace");
+                assert!(!h.state().pad.menu, "{what}");
+                assert!(control(&h, GRATICULE).is_none(), "{what}");
             }
         }
 
@@ -3948,7 +3927,9 @@ fn the_view_options_menu_has_the_graticule_switch() {
         open_height(&mut h);
         let mut rivers = control(&h, RIVERS).is_some();
         for _ in 0..8 {
-            assert!(control(&h, GRATICULE).is_none(), "{size:?}");
+            let card = panel(&h, Panel::Layers).unwrap();
+            let graticule = control(&h, GRATICULE);
+            assert!(!graticule.is_some_and(|g| card.intersects(g)), "{size:?}");
             if rivers {
                 break;
             }
@@ -4027,7 +4008,9 @@ fn the_flat_view_has_buttons_that_move_the_center_of_the_projection_and_reset_it
         assert_eq!(reset.left() - recenter.right(), 4.0);
         if rects.view.is_some() {
             let switch = control(&h, "Flat").unwrap();
-            assert!(recenter.left() > control(&h, "Projection").unwrap().right());
+            let graticule = control(&h, GRATICULE).unwrap();
+            assert!(recenter.left() > graticule.right());
+            assert!(control(&h, "Projection").unwrap().left() > reset.right());
             assert!(recenter.left() > switch.right() && recenter.top() == switch.top());
         }
         check_controls(&h, &format!("{size:?} with the center buttons"));
@@ -4054,60 +4037,47 @@ fn the_top_row_and_the_panels_match_the_landscape_board() {
     let mut h = pad(BOARDS[0]);
     let r = h.state().pad.rects.unwrap();
     assert_eq!(r.class, WidthClass::Wide);
-    assert_eq!(r.workspace.min, pos2(16.0, 32.0));
-    assert_eq!(r.workspace.height(), 52.0);
-    // The Worlds button and a line are at the left of the workspaces.
-    assert_eq!(control(&h, WORLDS).unwrap().min, pos2(20.0, 36.0));
-    assert_eq!(control(&h, "World").unwrap().min, pos2(73.0, 36.0));
-    assert!(control(&h, "Atlas").is_some());
-    assert!(control(&h, "Workspace").is_none());
-    assert!(r.view.unwrap().contains_rect(control(&h, "Flat").unwrap()));
-    assert_eq!(r.view.unwrap().center(), pos2(597.0, 58.0));
-    assert!(r.view.unwrap().contains_rect(control(&h, "Globe").unwrap()));
+    // The bar is below the band. The name of the world is right of Back.
     assert_eq!(
-        r.actions,
-        Rect::from_min_size(pos2(921.0, 32.0), vec2(257.0, 52.0))
+        r.bar,
+        Rect::from_min_size(pos2(0.0, 24.0), vec2(1194.0, 44.0))
     );
-    let names = ["Layers", "Toolbox", select::ATTRIBUTES];
+    assert_eq!(control(&h, WORLDS).unwrap().min, pos2(48.0, 24.0));
+    assert_eq!(control(&h, WORLDS).unwrap(), r.workspace);
+    assert!(control(&h, "World").is_some() && control(&h, "Atlas").is_some());
+    assert!(control(&h, "Workspace").is_none());
+    let view = r.view.unwrap();
+    assert!(view.contains_rect(control(&h, "Flat").unwrap()));
+    assert!(view.contains_rect(control(&h, "Globe").unwrap()));
+    assert_eq!(view.center(), pos2(597.0, 102.0));
+    // The panel buttons and the Dock button are at the right end of the bar.
+    let names = ["Layers", select::ATTRIBUTES, "Toolbox", "Dock"];
     let lefts = names.map(|name| control(&h, name).unwrap().left());
-    assert_eq!(lefts, [1034.0, 1082.0, 1130.0]);
+    assert_eq!(lefts, [1005.0, 1049.0, 1093.0, 1146.0]);
     assert_eq!(
         r.tools,
-        Rect::from_min_size(pos2(16.0, 96.0), vec2(64.0, 320.0))
+        Rect::from_min_size(pos2(16.0, 76.0), vec2(64.0, 320.0))
     );
     assert_eq!(
         control(&h, SCULPT).unwrap(),
-        Rect::from_min_size(pos2(20.0, 100.0), vec2(56.0, 52.0))
-    );
-    assert_eq!(
-        control(&h, TERRAIN).unwrap(),
-        Rect::from_min_size(pos2(20.0, 152.0), vec2(56.0, 52.0))
-    );
-    assert_eq!(
-        r.brush.unwrap(),
-        Rect::from_min_size(pos2(16.0, 428.0), vec2(64.0, 340.0))
-    );
-    assert_eq!(
-        control(&h, "Brush settings").unwrap().min,
-        pos2(20.0, 712.0)
+        Rect::from_min_size(pos2(20.0, 80.0), vec2(56.0, 52.0))
     );
 
     tap(&mut h, "Layers");
     tap(&mut h, "Brush settings");
+    // The floating panel is 12 points from the right edge and 8 points
+    // below the bar.
     let layers = panel(&h, Panel::Layers).unwrap();
-    assert_eq!((layers.min, layers.width()), (pos2(858.0, 96.0), 320.0));
+    assert_eq!((layers.min, layers.width()), (pos2(862.0, 76.0), 320.0));
     // The title row, the import row, and the three layers of the sample.
     assert_eq!(layers.height(), 52.0 + 4.0 * 48.0 + 10.0);
-    assert_eq!(
-        control(&h, "Close Layers").unwrap().min,
-        pos2(1130.0, 100.0)
-    );
     let brush = panel(&h, Panel::Brush).unwrap();
-    assert_eq!((brush.min, brush.width()), (pos2(92.0, 96.0), 340.0));
+    assert_eq!(brush.width(), 340.0);
+    assert!(!brush.intersects(view));
     // Toolbox opens in the place of Layers.
     toolbox(&mut h);
     assert_eq!(panel(&h, Panel::Layers), None);
-    assert_eq!(panel(&h, Panel::Toolbox).unwrap().min, pos2(858.0, 96.0));
+    assert_eq!(panel(&h, Panel::Toolbox).unwrap().min, pos2(862.0, 76.0));
     assert!(panel(&h, Panel::Brush).is_some());
 }
 
@@ -4116,36 +4086,26 @@ fn the_top_row_and_the_panels_match_the_portrait_board() {
     let mut h = pad(BOARDS[1]);
     let r = h.state().pad.rects.unwrap();
     assert_eq!(r.class, WidthClass::Medium);
-    assert!(control(&h, "World").is_none());
-    assert_eq!(control(&h, WORLDS).unwrap().min, pos2(20.0, 36.0));
-    let button = control(&h, "Workspace").unwrap();
-    assert_eq!((button.left(), button.right()), (69.0, r.workspace.right()));
-    assert_eq!(
-        (r.workspace.min, r.workspace.height()),
-        (pos2(16.0, 32.0), 52.0)
-    );
-    assert_eq!(r.view.unwrap().center(), pos2(417.0, 58.0));
-    assert!(control(&h, "Globe").is_some());
-    assert_eq!(r.actions.right(), 818.0);
+    // The tabs show their icons, and the bar has no workspace menu and no
+    // Dock button.
+    assert!(control(&h, "World").is_some() && control(&h, "Atlas").is_some());
+    assert!(control(&h, "Workspace").is_none() && control(&h, "Dock").is_none());
+    assert_eq!(control(&h, WORLDS).unwrap().min, pos2(48.0, 24.0));
+    assert_eq!(r.view.unwrap().center().x, 417.0);
+    assert_eq!(r.actions.right(), 830.0);
 
     toolbox(&mut h);
     let toolbox = panel(&h, Panel::Toolbox).unwrap();
-    assert_eq!((toolbox.min, toolbox.width()), (pos2(498.0, 96.0), 320.0));
+    assert_eq!((toolbox.left(), toolbox.width()), (502.0, 320.0));
+    // The panel does not cover the view control.
+    assert!(!toolbox.intersects(r.view.unwrap()));
     tap(&mut h, "Brush settings");
     assert!(h.state().pad.is_open(Panel::Toolbox) && h.state().pad.is_open(Panel::Brush));
 
-    // The menu holds the workspaces. The view switch stays in the top row.
-    tap(&mut h, "Workspace");
-    let menu = h.state().pad.menu_rect.unwrap();
-    assert_eq!((menu.min, menu.width()), (pos2(16.0, 88.0), 240.0));
-    assert!(menu.contains_rect(control(&h, "Atlas").unwrap()));
     tap(&mut h, "Atlas");
     assert_eq!(h.state().workspace, Workspace::Atlas);
-    // The menu of the Atlas workspace goes back to the world.
-    tap(&mut h, "Workspace");
     tap(&mut h, "World");
     assert_eq!(h.state().workspace, Workspace::Globe);
-    assert!(control(&h, "Workspace").is_some());
 }
 
 #[test]
@@ -4256,12 +4216,12 @@ fn the_layout_follows_the_turn_of_the_ipad() {
 #[test]
 fn a_short_window_makes_the_sliders_short_and_then_leaves_them_out() {
     // The sliders fit with less height.
-    let h = pad((1024.0, 784.0));
+    let h = pad((1024.0, 764.0));
     assert_eq!(
         h.state().pad.rects.unwrap().brush_card,
         BrushCard::Full(130.0)
     );
-    check_controls(&h, "784 high");
+    check_controls(&h, "764 high");
 
     let mut h = pad((1024.0, 600.0));
     assert_eq!(h.state().pad.rects.unwrap().brush_card, BrushCard::Button);

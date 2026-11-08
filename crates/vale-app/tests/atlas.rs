@@ -2683,7 +2683,7 @@ fn a_tap_of_two_fingers_undoes_and_a_tap_of_three_redoes_in_the_atlas() {
     h.state_mut().save_waiting().unwrap();
     assert_eq!(open_page(&h).frames.len(), 2);
 
-    let empty = pos2(200.0, 780.0);
+    let empty = pos2(300.0, 780.0);
     fingers_tap(&mut h, 2, empty);
     assert_eq!(open_page(&h).frames.len(), 1);
     fingers_tap(&mut h, 3, empty);
@@ -3623,7 +3623,7 @@ fn undo_and_redo_act_on_the_path_in_the_atlas_and_not_on_the_page() {
     assert_eq!(path(&h), (3, true));
     assert_eq!(undo_able(&h), (true, false));
     // A tap of two fingers reopens the path, and a tap of three closes it.
-    let empty = pos2(200.0, 780.0);
+    let empty = pos2(300.0, 780.0);
     fingers_tap(&mut h, 2, empty);
     assert_eq!(path(&h), (3, false));
     assert_eq!(undo_able(&h), (true, true));
@@ -6927,7 +6927,7 @@ fn frames_snap_to_the_layout_grid_of_the_page_panel() {
 }
 
 #[test]
-fn the_top_row_ends_with_add_and_has_no_grid_button() {
+fn the_top_row_has_add_and_no_grid_button() {
     for size in BOARDS.into_iter().chain([(393.0, 852.0), (852.0, 393.0)]) {
         let h = pad_with(state(), size);
         check_controls(&h, "top row");
@@ -6950,22 +6950,23 @@ fn the_top_row_ends_with_add_and_has_no_grid_button() {
         let layers = x(MAPS).unwrap_or_else(|| panic!("{size:?}"));
         let attributes = x(vale_app::ui::select::ATTRIBUTES).unwrap_or_else(|| panic!("{size:?}"));
         assert!(layers < attributes, "{size:?}");
-        // On a phone, Add is a row of the workspace menu.
+        // On a phone, Add is a row of the workspace menu. From 600 points,
+        // it is in the dock zone of the bar before the panel buttons.
         let compact = size.0 < 600.0;
         match x(ADD) {
-            Some(add) => assert!(!compact && attributes < add, "{size:?}"),
+            Some(add) => assert!(!compact && add < layers, "{size:?}"),
             None => assert!(compact, "{size:?}"),
         }
     }
 }
 
 #[test]
-fn the_grid_switch_is_in_the_workspace_menu_and_in_the_frame_and_vertex_strips() {
+fn the_grid_switch_is_in_the_compact_menu_and_in_the_frame_and_vertex_strips() {
     for size in BOARDS.into_iter().chain([(393.0, 852.0)]) {
         let mut h = pad_with(state(), size);
-        // Only the narrow layouts have the workspace menu.
+        // Only the compact layout has the workspace menu.
         let menu = control(&h, "Workspace").is_some();
-        assert_eq!(menu, size.0 < 1000.0, "{size:?}");
+        assert_eq!(menu, size.0 < 600.0, "{size:?}");
         for on in [true, false].into_iter().filter(|_| menu) {
             tap(&mut h, "Workspace");
             tap(&mut h, SHOW_GRID);

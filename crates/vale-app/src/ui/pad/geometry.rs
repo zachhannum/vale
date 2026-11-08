@@ -47,6 +47,41 @@ pub const ACTIONS_WIDTH: f32 = 5.0 * TOUCH + 5.0 * PAD + 9.0 + 2.0 * PAD;
 /// button.
 pub const NARROW_ACTIONS_WIDTH: f32 = ACTIONS_WIDTH - TOUCH - PAD;
 
+/// The height of the top bar.
+pub const BAR: f32 = 44.0;
+/// The width of the space of a divider in a row of buttons.
+pub const DIVIDER: f32 = 9.0;
+/// The space at each side of the icon and the name of a workspace tab.
+pub const TAB_PAD: f32 = 14.0;
+/// The width of a workspace tab that shows its icon alone.
+pub const TAB_ICON: f32 = 2.0 * TAB_PAD + 22.0;
+/// The name of the world becomes shorter down to this width.
+pub const NAME_MIN: f32 = 80.0;
+/// The space from the bar to a card below it.
+pub const BAR_GAP: f32 = 8.0;
+/// The width of the tool column.
+pub const COLUMN: f32 = 56.0;
+/// The space from the edge of the tool column to its cells.
+pub const COLUMN_INSET: f32 = 6.0;
+/// The side of a cell of the tool column.
+pub const COLUMN_CELL: f32 = 44.0;
+/// The height of the divider between the tools and the controls of the
+/// tool.
+pub const COLUMN_DIVIDER: f32 = 13.0;
+/// The space of a vertical slider of the tool column, above and below its
+/// track, for its value and its name.
+pub const SLIDER_TEXT: f32 = 44.0;
+/// The length of the track of a vertical slider of the tool column.
+pub const TRACK: f32 = 120.0;
+/// Below this length, the sliders go to the Brush panel.
+pub const TRACK_MIN: f32 = 90.0;
+/// The size of the readout at the lower left of the canvas.
+pub const READOUT_SIZE: (f32, f32) = (160.0, 48.0);
+/// The space from the tool column to the readout.
+pub const READOUT_GAP: f32 = 16.0;
+/// The space from the right edge of the canvas to a floating panel.
+pub const FLOAT_MARGIN: f32 = 12.0;
+
 /// The bands at the screen edges that the system uses.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Bands {
@@ -109,6 +144,20 @@ pub enum BrushCard {
     Hidden,
 }
 
+/// The contents of the tool column.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ColumnInput {
+    /// The number of tool cells.
+    pub tools: usize,
+    /// The number of cells of the controls of the tool: switches and
+    /// commands.
+    pub cells: usize,
+    /// The number of vertical sliders.
+    pub sliders: usize,
+    /// The column ends with the Brush button.
+    pub brush_button: bool,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Input {
     pub screen: Rect,
@@ -136,6 +185,44 @@ pub struct Input {
     /// The tool strip and its card are rows at the bottom of a compact
     /// screen.
     pub row: bool,
+    /// The width of the dock. Zero: the dock is closed, or the screen is
+    /// narrower than 1,000 points.
+    pub dock_width: f32,
+    /// The number of panel buttons in the dock zone of the bar.
+    pub dock_buttons: usize,
+    /// The width of the name button of the world at its full length.
+    pub name_width: f32,
+    /// The width of the workspace tabs with their names.
+    pub tabs_width: f32,
+    pub column: ColumnInput,
+}
+
+impl Input {
+    /// The input of a screen with no cards, with the sizes of the bar of
+    /// the World workspace.
+    pub fn new(screen: Rect, bands: Bands) -> Input {
+        Input {
+            screen,
+            bands,
+            workspace_width: 0.0,
+            view_width: 0.0,
+            panel: false,
+            sheet_offset: 0.0,
+            cells: 0,
+            strip: false,
+            extra: 0,
+            tools: TOOLS,
+            row: false,
+            dock_width: 0.0,
+            dock_buttons: 3,
+            name_width: NAME_MIN,
+            tabs_width: 2.0 * TAB_ICON,
+            column: ColumnInput {
+                tools: TOOLS,
+                ..ColumnInput::default()
+            },
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -143,12 +230,51 @@ pub struct Rects {
     pub class: WidthClass,
     pub screen: Rect,
     pub bands: Bands,
+    /// The card of the workspace switch. From 600 points, the name button of
+    /// the world in the bar.
     pub workspace: Rect,
-    /// `None`: the workspace menu holds the views.
+    /// The view control. `None`: the workspace menu holds the views.
     pub view: Option<Rect>,
+    /// The card of the actions. From 600 points, the panel buttons and the
+    /// Dock button in the dock zone of the bar.
     pub actions: Rect,
-    /// The top-left corner of the workspace menu.
+    /// The top-left corner of the workspace menu, or of the menu of the
+    /// worlds.
     pub menu: Pos2,
+    /// The top band of the system. From 600 points, the bar fills it.
+    pub band: Rect,
+    /// The top bar. On a compact screen, the place of the top row.
+    pub bar: Rect,
+    /// Back, at the left end of the bar.
+    pub back: Rect,
+    pub undo: Rect,
+    pub redo: Rect,
+    /// The space below the bar, from the left edge to the dock.
+    pub canvas: Rect,
+    /// The open dock.
+    pub dock: Option<Rect>,
+    /// The right part of the bar that holds the panel buttons. It is above
+    /// the dock while the dock is open.
+    pub dock_zone: Rect,
+    /// The Dock button. Below 1,000 points, the bar has no Dock button.
+    pub dock_button: Option<Rect>,
+    /// The workspace tabs, at the center of the canvas.
+    pub tabs: Rect,
+    /// The tabs show their names.
+    pub tab_names: bool,
+    /// The globe fits this rectangle.
+    pub fit: Rect,
+    /// The page of the atlas fits this rectangle.
+    pub free: Rect,
+    /// The tool column at the left edge. Its height follows its contents,
+    /// down to the space that the screen has.
+    pub column: Rect,
+    /// The height of the contents of the tool column. With a height more
+    /// than the height of `column`, the column scrolls.
+    pub column_content: f32,
+    /// The length of the track of each vertical slider of the column. Zero:
+    /// the Brush panel holds the sliders.
+    pub slider: f32,
     pub tools: Rect,
     /// The number of tool cells that show. With fewer than `Input::tools`, the strip scrolls.
     pub tool_cells: usize,
@@ -182,6 +308,31 @@ pub struct Rects {
     pub readout: Option<Rect>,
 }
 
+/// The right edge of a floating panel at the right.
+pub fn float_right(rects: &Rects) -> f32 {
+    let edge = rects.screen.right() - rects.bands.right;
+    match rects.class {
+        WidthClass::Compact => edge - MARGIN,
+        _ => rects.canvas.right().min(edge) - FLOAT_MARGIN,
+    }
+}
+
+/// The top of a floating panel at the right from `left` to `right`: the top
+/// of the right panel, or below the view control if the panel would cover
+/// it.
+pub fn float_top(rects: &Rects, left: f32, right: f32) -> f32 {
+    match rects.view {
+        Some(view)
+            if rects.class != WidthClass::Compact
+                && left < view.right() + GAP
+                && right > view.left() - GAP =>
+        {
+            rects.right_panel.y.max(view.bottom() + GAP)
+        }
+        _ => rects.right_panel.y,
+    }
+}
+
 /// The height of a card that holds `cells` tool cells.
 pub fn strip_height(cells: usize) -> f32 {
     cells as f32 * CELL.1 + 2.0 * PAD
@@ -192,25 +343,248 @@ pub fn strip_width(cells: usize) -> f32 {
     cells as f32 * CELL.0 + 2.0 * PAD
 }
 
+/// The places of the parts of the bar, the canvas, and the tool column from
+/// 600 points.
+struct Bar {
+    band: Rect,
+    bar: Rect,
+    back: Rect,
+    name: Rect,
+    undo: Rect,
+    redo: Rect,
+    canvas: Rect,
+    dock: Option<Rect>,
+    dock_zone: Rect,
+    actions: Rect,
+    dock_button: Option<Rect>,
+    tabs: Rect,
+    tab_names: bool,
+    view: Rect,
+    fit: Rect,
+    free: Rect,
+    column: Rect,
+    column_content: f32,
+    slider: f32,
+    readout: Rect,
+    right_panel: Pos2,
+}
+
+fn bar_layout(input: &Input, class: WidthClass) -> Bar {
+    let Input { screen, bands, .. } = *input;
+    let band = Rect::from_min_max(screen.min, pos2(screen.right(), screen.top() + bands.top));
+    let bar = Rect::from_min_max(
+        pos2(screen.left(), band.bottom()),
+        pos2(screen.right(), band.bottom() + BAR),
+    );
+    let bottom = screen.bottom() - bands.bottom;
+    let dock_width = if class == WidthClass::Wide {
+        input.dock_width.max(0.0)
+    } else {
+        0.0
+    };
+    let canvas_right = if dock_width > 0.0 {
+        screen.right() - bands.right - dock_width
+    } else {
+        screen.right()
+    };
+    let canvas = Rect::from_min_max(
+        pos2(screen.left(), bar.bottom()),
+        pos2(canvas_right, screen.bottom()),
+    );
+    let dock = (dock_width > 0.0)
+        .then(|| Rect::from_min_max(pos2(canvas_right, bar.bottom()), screen.max));
+
+    // The dock zone: the panel buttons, a divider, and the Dock button.
+    let button = |x: f32| Rect::from_min_size(pos2(x, bar.top()), vec2(TOUCH, BAR));
+    let wide = class == WidthClass::Wide;
+    let buttons_width =
+        input.dock_buttons as f32 * TOUCH + if wide { DIVIDER + TOUCH } else { 0.0 };
+    let right = screen.right() - bands.right - PAD;
+    let actions = Rect::from_min_max(
+        pos2(right - buttons_width, bar.top()),
+        pos2(right, bar.bottom()),
+    );
+    let dock_button = wide.then(|| button(right - TOUCH));
+    let zone_left = match dock {
+        Some(dock) => dock.left().min(actions.left() - PAD),
+        None => actions.left() - PAD,
+    };
+    let dock_zone = Rect::from_min_max(pos2(zone_left, bar.top()), bar.max);
+
+    // The left group: Back, the name of the world, a divider, Undo, and Redo.
+    let back = button(screen.left() + bands.left + PAD);
+    let history = DIVIDER + 2.0 * TOUCH;
+    let center = canvas.center().x;
+    let tabs_at = |width: f32| {
+        Rect::from_min_max(
+            pos2(center - width / 2.0, bar.top()),
+            pos2(center + width / 2.0, bar.bottom()),
+        )
+    };
+    let room = |tabs: Rect| tabs.left() - PAD - history - back.right();
+    let mut tab_names = wide;
+    let mut tabs = tabs_at(if tab_names {
+        input.tabs_width
+    } else {
+        2.0 * TAB_ICON
+    });
+    if tab_names && room(tabs) < NAME_MIN {
+        tab_names = false;
+        tabs = tabs_at(2.0 * TAB_ICON);
+    }
+    let name_width = input.name_width.min(room(tabs)).max(NAME_MIN);
+    let name = Rect::from_min_size(pos2(back.right(), bar.top()), vec2(name_width, BAR));
+    let undo = button(name.right() + DIVIDER);
+    let redo = button(undo.right());
+
+    // The view control, at the top center of the canvas.
+    let view = Rect::from_center_size(
+        pos2(center, bar.bottom() + BAR_GAP + ROW / 2.0),
+        vec2(input.view_width, ROW),
+    );
+    let fit = Rect::from_min_max(
+        pos2(canvas.left(), view.bottom() + BAR_GAP),
+        pos2(canvas.right(), bottom),
+    );
+
+    // The tool column: the tools, a divider, the cells and the sliders of
+    // the tool, and the Brush button.
+    let c = input.column;
+    let top = bar.bottom() + BAR_GAP;
+    let room = bottom - BAR_GAP - top;
+    let context = c.cells > 0 || c.sliders > 0 || c.brush_button;
+    let fixed = 2.0 * COLUMN_INSET
+        + COLUMN_CELL * (c.tools + c.cells + usize::from(c.brush_button)) as f32
+        + if context { COLUMN_DIVIDER } else { 0.0 };
+    let slider = if c.sliders == 0 {
+        0.0
+    } else {
+        let track = ((room - fixed) / c.sliders as f32 - SLIDER_TEXT).min(TRACK);
+        if track >= TRACK_MIN { track } else { 0.0 }
+    };
+    let column_content = fixed
+        + if slider > 0.0 {
+            c.sliders as f32 * (slider + SLIDER_TEXT)
+        } else {
+            0.0
+        };
+    let column = Rect::from_min_size(
+        pos2(screen.left() + bands.left, top),
+        vec2(COLUMN, column_content.min(room)),
+    );
+
+    // The page keeps the same space at the left and at the right, so it is
+    // at the center of the canvas.
+    let side = column.right() + GAP - canvas.left();
+    let free = Rect::from_min_max(
+        pos2(canvas.left() + side, view.bottom() + GAP),
+        pos2(
+            (canvas.right() - side).max(canvas.left() + side),
+            bottom - GAP,
+        ),
+    );
+    let readout = Rect::from_min_max(
+        pos2(
+            column.right() + READOUT_GAP,
+            bottom - BAR_GAP - READOUT_SIZE.1,
+        ),
+        pos2(
+            column.right() + READOUT_GAP + READOUT_SIZE.0,
+            bottom - BAR_GAP,
+        ),
+    );
+    // A floating panel that would cover the view control goes below it.
+    let float_right = canvas.right().min(screen.right() - bands.right);
+    let float_left = float_right - FLOAT_MARGIN - RIGHT_PANEL_WIDTH;
+    let float_top = if float_left < view.right() + GAP {
+        view.bottom() + GAP
+    } else {
+        bar.bottom() + BAR_GAP
+    };
+    let right_panel = pos2(float_left, float_top);
+    Bar {
+        band,
+        bar,
+        back,
+        name,
+        undo,
+        redo,
+        canvas,
+        dock,
+        dock_zone,
+        actions,
+        dock_button,
+        tabs,
+        tab_names,
+        view,
+        fit,
+        free,
+        column,
+        column_content,
+        slider,
+        readout,
+        right_panel,
+    }
+}
+
 pub fn layout(input: &Input) -> Rects {
     let Input { screen, bands, .. } = *input;
     let class = WidthClass::of(screen.width());
     let left = screen.left() + bands.left + MARGIN;
     let right = screen.right() - bands.right - MARGIN;
-    let top = screen.top() + bands.top + 8.0;
     let bottom = screen.bottom() - bands.bottom;
-    let column_top = top + ROW + GAP;
-
-    let workspace = Rect::from_min_size(pos2(left, top), vec2(input.workspace_width, ROW));
-    let actions_width = match class {
-        WidthClass::Wide => ACTIONS_WIDTH,
-        _ => NARROW_ACTIONS_WIDTH,
+    let parts = (class != WidthClass::Compact).then(|| bar_layout(input, class));
+    let top = screen.top() + bands.top + 8.0;
+    let column_top = match &parts {
+        Some(parts) => parts.bar.bottom() + BAR_GAP,
+        None => top + ROW + GAP,
     };
-    let actions = Rect::from_min_max(pos2(right - actions_width, top), pos2(right, top + ROW));
-    let view = (class != WidthClass::Compact).then(|| {
-        let center = pos2(screen.center().x, top + ROW / 2.0);
-        Rect::from_center_size(center, vec2(input.view_width, ROW))
-    });
+
+    let (workspace, actions, view, menu) = match &parts {
+        Some(parts) => (
+            parts.name,
+            parts.actions,
+            Some(parts.view),
+            pos2(parts.name.left(), parts.bar.bottom() + PAD),
+        ),
+        None => {
+            let workspace = Rect::from_min_size(pos2(left, top), vec2(input.workspace_width, ROW));
+            let actions = Rect::from_min_max(
+                pos2(right - NARROW_ACTIONS_WIDTH, top),
+                pos2(right, top + ROW),
+            );
+            (workspace, actions, None, pos2(left, top + ROW + PAD))
+        }
+    };
+    let band = Rect::from_min_max(screen.min, pos2(screen.right(), screen.top() + bands.top));
+    let bar = parts.as_ref().map_or(
+        Rect::from_min_max(pos2(screen.left(), top), pos2(screen.right(), top + ROW)),
+        |p| p.bar,
+    );
+    let extras = |rects: Rects| -> Rects {
+        match &parts {
+            Some(p) => Rects {
+                band: p.band,
+                bar: p.bar,
+                back: p.back,
+                undo: p.undo,
+                redo: p.redo,
+                canvas: p.canvas,
+                dock: p.dock,
+                dock_zone: p.dock_zone,
+                dock_button: p.dock_button,
+                tabs: p.tabs,
+                tab_names: p.tab_names,
+                fit: p.fit,
+                free: p.free,
+                column: p.column,
+                column_content: p.column_content,
+                slider: p.slider,
+                ..rects
+            },
+            None => rects,
+        }
+    };
 
     let (sheet, sheet_travel, sheet_rise) = if class == WidthClass::Compact {
         let full = screen.bottom() - column_top;
@@ -225,6 +599,7 @@ pub fn layout(input: &Input) -> Rects {
         (None, 0.0, 0.0)
     };
     let row = input.row && class == WidthClass::Compact;
+    let blank = Rect::NOTHING;
     if row {
         let rows = Rows {
             input,
@@ -242,7 +617,23 @@ pub fn layout(input: &Input) -> Rects {
             workspace,
             view,
             actions,
-            menu: pos2(left, top + ROW + PAD),
+            menu,
+            band,
+            bar,
+            back: blank,
+            undo: blank,
+            redo: blank,
+            canvas: screen,
+            dock: None,
+            dock_zone: actions,
+            dock_button: None,
+            tabs: blank,
+            tab_names: false,
+            fit: screen,
+            free: screen,
+            column: tools,
+            column_content: tools.height(),
+            slider: 0.0,
             tools,
             tool_cells,
             brush_card,
@@ -261,15 +652,12 @@ pub fn layout(input: &Input) -> Rects {
         };
     }
 
-    let readout = match class {
+    let readout = match (&parts, class) {
         _ if sheet.is_some() => None,
-        WidthClass::Compact => Some(Rect::from_min_max(
+        (Some(parts), _) => Some(parts.readout),
+        _ => Some(Rect::from_min_max(
             pos2(left, bottom - 6.0 - READOUT_HEIGHT),
             pos2(right, bottom - 6.0),
-        )),
-        _ => Some(Rect::from_min_max(
-            pos2(left, bottom - 8.0 - READOUT_HEIGHT),
-            pos2(right, bottom - 8.0),
         )),
     };
 
@@ -350,19 +738,50 @@ pub fn layout(input: &Input) -> Rects {
         brush => (brush, 0),
     };
 
-    let right_panel = pos2(right - RIGHT_PANEL_WIDTH, column_top);
+    // A Brush panel that would cover the view control goes below it.
+    if let Some(view) = view
+        && parts.is_some()
+        && brush_panel.x + BRUSH_PANEL_WIDTH + GAP > view.left()
+        && brush_panel.x < view.right() + GAP
+    {
+        brush_panel.y = brush_panel.y.max(view.bottom() + GAP);
+    }
+    let right_panel = parts
+        .as_ref()
+        .map_or(pos2(right - RIGHT_PANEL_WIDTH, column_top), |p| {
+            p.right_panel
+        });
     let one_panel = class == WidthClass::Compact
         || brush_panel.x + BRUSH_PANEL_WIDTH + PANEL_GAP > right_panel.x;
-    let panel_bottom = readout.map_or(bottom, |r| r.top()) - 8.0;
+    let panel_bottom = match class {
+        WidthClass::Compact => readout.map_or(bottom, |r| r.top()) - 8.0,
+        _ => bottom - 8.0,
+    };
 
-    Rects {
+    extras(Rects {
         class,
         screen,
         bands,
         workspace,
         view,
         actions,
-        menu: pos2(left, top + ROW + PAD),
+        menu,
+        band,
+        bar,
+        back: blank,
+        undo: blank,
+        redo: blank,
+        canvas: screen,
+        dock: None,
+        dock_zone: actions,
+        dock_button: None,
+        tabs: blank,
+        tab_names: false,
+        fit: screen,
+        free: screen,
+        column: tools,
+        column_content: tools.height(),
+        slider: 0.0,
         tools,
         tool_cells,
         brush_card,
@@ -378,7 +797,7 @@ pub fn layout(input: &Input) -> Rects {
         row,
         column_top,
         readout,
-    }
+    })
 }
 
 /// The places of the row layout: the tool strip is a row above the home
@@ -482,6 +901,16 @@ mod tests {
             extra: 0,
             tools: TOOLS,
             row: false,
+            dock_width: 0.0,
+            dock_buttons: 3,
+            name_width: 120.0,
+            tabs_width: 220.0,
+            column: ColumnInput {
+                tools: TOOLS,
+                cells: 0,
+                sliders: 2,
+                brush_button: true,
+            },
         }
     }
 
@@ -523,18 +952,87 @@ mod tests {
     fn the_landscape_board_has_the_measured_places() {
         let r = layout(&board(1194.0, 834.0));
         assert_eq!(r.class, WidthClass::Wide);
-        assert_eq!(r.workspace, rect(16.0, 32.0, 230.0, 52.0));
-        assert_eq!(r.view, Some(rect(527.0, 32.0, 140.0, 52.0)));
-        assert_eq!(r.actions, rect(921.0, 32.0, 257.0, 52.0));
-        assert_eq!(r.tools, rect(16.0, 96.0, 64.0, 320.0));
-        assert_eq!(r.brush_card, BrushCard::Full(140.0));
-        assert_eq!(r.brush, Some(rect(16.0, 428.0, 64.0, 340.0)));
-        assert_eq!(r.brush_panel, pos2(92.0, 96.0));
-        assert_eq!(r.right_panel, pos2(858.0, 96.0));
-        assert!(!r.one_panel);
+        // The bar is below the band of the system and fills the width.
+        assert_eq!(r.band, rect(0.0, 0.0, 1194.0, 24.0));
+        assert_eq!(r.bar, rect(0.0, 24.0, 1194.0, BAR));
+        assert_eq!(r.back, rect(4.0, 24.0, TOUCH, BAR));
+        assert_eq!(r.workspace, rect(48.0, 24.0, 120.0, BAR));
+        assert_eq!(r.undo.left(), r.workspace.right() + DIVIDER);
+        assert_eq!(r.redo.left(), r.undo.right());
+        // Three panel buttons, a divider, and the Dock button.
+        assert_eq!(r.actions, rect(1005.0, 24.0, 185.0, BAR));
+        assert_eq!(r.dock_button, Some(rect(1146.0, 24.0, TOUCH, BAR)));
+        assert_eq!(r.dock, None);
+        assert_eq!(r.canvas, rect(0.0, 68.0, 1194.0, 766.0));
+        assert!(r.tab_names);
+        assert_eq!(r.tabs, rect(487.0, 24.0, 220.0, BAR));
+        assert_eq!(r.view, Some(rect(527.0, 76.0, 140.0, 52.0)));
+        assert_eq!(
+            r.fit,
+            Rect::from_min_max(pos2(0.0, 136.0), pos2(1194.0, 814.0))
+        );
+        // The tool column is at the left edge, 8 points below the bar.
+        assert_eq!(r.column, rect(0.0, 76.0, COLUMN, 661.0));
+        assert_eq!(r.slider, TRACK);
+        assert_eq!(r.column_top, 76.0);
+        assert_eq!(r.readout, Some(rect(72.0, 758.0, 160.0, 48.0)));
+        assert_eq!(r.right_panel, pos2(862.0, 76.0));
+        assert_eq!(r.menu, pos2(48.0, 72.0));
+        assert_eq!(r.panel_bottom, 806.0);
         assert_eq!(r.sheet, None);
-        let readout = r.readout.unwrap();
-        assert_eq!((readout.top(), readout.bottom()), (774.0, 806.0));
+    }
+
+    #[test]
+    fn the_tabs_and_the_view_control_share_the_center_of_the_canvas() {
+        for width in [1194.0, 1366.0, 1024.0] {
+            for dock in [0.0, 320.0, 480.0] {
+                let mut input = board(width, 834.0);
+                input.dock_width = dock;
+                let r = layout(&input);
+                let center = r.canvas.center().x;
+                assert_eq!(r.tabs.center().x, center, "{width} {dock}");
+                assert_eq!(r.view.unwrap().center().x, center, "{width} {dock}");
+                assert_eq!(r.canvas.right(), width - dock, "{width} {dock}");
+                assert_eq!(r.fit.right(), r.canvas.right(), "{width} {dock}");
+                assert!(r.free.right() <= r.canvas.right(), "{width} {dock}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_open_dock_is_below_the_bar_and_its_zone_is_above_it() {
+        let mut input = board(1194.0, 834.0);
+        input.dock_width = 320.0;
+        let r = layout(&input);
+        let dock = r.dock.unwrap();
+        assert_eq!(
+            dock,
+            Rect::from_min_max(pos2(874.0, 68.0), pos2(1194.0, 834.0))
+        );
+        assert_eq!(
+            r.dock_zone,
+            Rect::from_min_max(pos2(874.0, 24.0), pos2(1194.0, 68.0))
+        );
+        assert!(r.actions.left() >= dock.left());
+        assert_eq!(r.right_panel.x, 874.0 - FLOAT_MARGIN - RIGHT_PANEL_WIDTH);
+        // With the dock closed, the dock zone is the right end of the bar.
+        input.dock_width = 0.0;
+        let r = layout(&input);
+        assert_eq!(r.dock_zone.left(), r.actions.left() - PAD);
+        assert_eq!(r.dock_zone.right(), 1194.0);
+    }
+
+    #[test]
+    fn the_globe_and_the_page_fit_below_the_view_control() {
+        for (width, height) in [(1194.0, 834.0), (834.0, 1194.0), (1133.0, 744.0)] {
+            let r = layout(&board(width, height));
+            let view = r.view.unwrap();
+            assert!(r.fit.top() >= view.bottom(), "{width}x{height}");
+            assert!(r.free.top() >= view.bottom(), "{width}x{height}");
+            assert!(r.free.left() >= r.column.right(), "{width}x{height}");
+            assert_eq!(r.free.center().x, r.canvas.center().x, "{width}x{height}");
+            assert_eq!(r.fit.bottom(), height - 20.0, "{width}x{height}");
+        }
     }
 
     #[test]
@@ -542,10 +1040,39 @@ mod tests {
         let r = layout(&board(834.0, 1194.0));
         assert_eq!(r.class, WidthClass::Medium);
         assert_eq!(r.view.unwrap().center().x, 417.0);
-        assert_eq!(r.actions, rect(609.0, 32.0, 209.0, 52.0));
-        assert_eq!(r.right_panel, pos2(498.0, 96.0));
-        assert_eq!(r.brush, Some(rect(16.0, 428.0, 64.0, 340.0)));
-        assert!(!r.one_panel);
+        // Below 1,000 points, the bar has no Dock button and no dock, and
+        // the tabs show their icons alone.
+        assert_eq!(r.dock_button, None);
+        assert_eq!(r.actions, rect(698.0, 24.0, 3.0 * TOUCH, BAR));
+        let mut input = board(834.0, 1194.0);
+        input.dock_width = 320.0;
+        let r = layout(&input);
+        assert_eq!(r.dock, None);
+        assert_eq!(r.canvas.right(), 834.0);
+        assert!(!r.tab_names);
+        assert_eq!(r.tabs, rect(367.0, 24.0, 2.0 * TAB_ICON, BAR));
+        assert_eq!(r.right_panel, pos2(502.0, 76.0));
+    }
+
+    #[test]
+    fn the_name_of_the_world_becomes_shorter_down_to_80_points() {
+        let mut input = board(1000.0, 834.0);
+        input.name_width = 1000.0;
+        let r = layout(&input);
+        assert!(r.tab_names);
+        assert_eq!(r.redo.right() + PAD, r.tabs.left());
+        assert!(r.workspace.width() < 1000.0);
+        // A short name keeps its width, and the name is never narrower than
+        // 80 points.
+        input.name_width = 40.0;
+        assert_eq!(layout(&input).workspace.width(), NAME_MIN);
+        for width in [600.0, 700.0, 999.0] {
+            let mut input = board(width, 834.0);
+            input.name_width = 1000.0;
+            let r = layout(&input);
+            assert!(r.workspace.width() >= NAME_MIN, "{width}");
+            assert!(r.redo.right() <= r.tabs.left(), "{width}");
+        }
     }
 
     #[test]
@@ -703,52 +1230,42 @@ mod tests {
 
     #[test]
     fn a_short_window_makes_the_sliders_short_and_then_leaves_them_out() {
-        let card = |height: f32| layout(&board(1024.0, height)).brush_card;
-        assert_eq!(card(1194.0), BrushCard::Full(140.0));
-        assert_eq!(card(804.0), BrushCard::Full(140.0));
-        assert_eq!(card(784.0), BrushCard::Full(130.0));
-        assert_eq!(card(744.0), BrushCard::Full(110.0));
-        assert_eq!(card(743.0), BrushCard::Button);
-        assert_eq!(card(480.0), BrushCard::Button);
+        let slider = |height: f32| layout(&board(1024.0, height)).slider;
+        assert_eq!(slider(1194.0), TRACK);
+        assert_eq!(slider(834.0), TRACK);
+        assert_eq!(slider(744.0), 109.5);
+        assert_eq!(slider(705.0), TRACK_MIN);
+        // The Brush panel holds the sliders.
+        assert_eq!(slider(704.0), 0.0);
+        let r = layout(&board(1024.0, 704.0));
+        assert_eq!(r.column.height(), r.column_content);
+        // Then the column scrolls.
+        let r = layout(&board(1024.0, 300.0));
+        assert!(r.column_content > r.column.height());
+        assert_eq!(r.column.bottom(), 300.0 - 20.0 - BAR_GAP);
     }
 
     #[test]
-    fn the_small_boards_have_the_full_sliders() {
-        let boards = [
-            (1133.0, 744.0, 110.0),
-            (744.0, 1133.0, SLIDER),
-            (1024.0, 768.0, 122.0),
-        ];
-        for (width, height, slider) in boards {
+    fn the_raise_column_fits_the_small_boards() {
+        for (width, height) in [(1133.0, 744.0), (744.0, 1133.0), (1024.0, 768.0)] {
             let r = layout(&board(width, height));
-            assert_eq!(r.tool_cells, TOOLS, "{width}x{height}");
-            assert_eq!(r.brush_card, BrushCard::Full(slider), "{width}x{height}");
+            assert!(r.slider >= TRACK_MIN, "{width}x{height}");
+            assert_eq!(r.column.height(), r.column_content, "{width}x{height}");
+            assert_eq!(r.column.width(), COLUMN, "{width}x{height}");
         }
     }
 
     #[test]
-    fn a_very_short_window_scrolls_the_tool_strip() {
-        // With no room below the strip, the Brush button goes to its right.
-        let r = layout(&board(1024.0, 464.0));
-        assert_eq!((r.tool_cells, r.brush_card), (TOOLS, BrushCard::Button));
-        let card = r.brush.unwrap();
-        assert_eq!(card.min, pos2(r.tools.right() + GAP, r.tools.top()));
-        assert_eq!(r.brush_panel.x, card.right() + GAP);
-
-        let r = layout(&board(1024.0, 300.0));
-        assert_eq!(r.brush_card, BrushCard::Button);
-        assert!(r.tool_cells < TOOLS);
-        assert!(r.brush.unwrap().bottom() <= 300.0 - 20.0 - MARGIN);
-    }
-
-    #[test]
-    fn the_cards_stay_out_of_the_safe_area() {
+    fn the_bar_and_the_column_stay_out_of_the_safe_area() {
         let mut input = board(1194.0, 834.0);
         let safe = Rect::from_min_max(pos2(30.0, 40.0), pos2(1164.0, 800.0));
         input.bands = Bands::new(input.screen, safe);
         let r = layout(&input);
-        assert_eq!(r.workspace.min, pos2(46.0, 48.0));
-        assert_eq!(r.actions.right(), 1148.0);
+        assert_eq!(r.band, rect(0.0, 0.0, 1194.0, 40.0));
+        assert_eq!(r.bar, rect(0.0, 40.0, 1194.0, BAR));
+        assert_eq!(r.back.left(), 34.0);
+        assert_eq!(r.actions.right(), 1160.0);
+        assert_eq!(r.column.left(), 30.0);
         assert_eq!(r.readout.unwrap().bottom(), 792.0);
     }
 
@@ -775,9 +1292,9 @@ mod tests {
         assert_eq!(card.min, pos2(r.tools.right() + GAP, r.tools.top()));
         assert_eq!(r.brush_panel.x, card.right() + GAP);
         // A short screen scrolls the card.
-        let r = measure(1024.0, 280.0);
+        let r = measure(1024.0, 260.0);
         assert_eq!(r.card_cells, 2);
-        assert!(r.brush.unwrap().bottom() <= 280.0 - 20.0 - MARGIN);
+        assert!(r.brush.unwrap().bottom() <= 260.0 - 20.0 - MARGIN);
         // The card is not the card of the Measure tool for another tool.
         assert_eq!(layout(&board(1194.0, 834.0)).card_cells, 0);
     }

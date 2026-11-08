@@ -55,11 +55,12 @@ pub fn widen(state: &AppState, rects: &mut Rects) {
     if rects.sheet.is_some() || !showing(state) {
         return;
     }
-    let right = rects.screen.right() - rects.bands.right - super::geometry::MARGIN;
+    let right = super::geometry::float_right(rects);
     let normal = right - rects.right_panel.x;
     let room = right - rects.brush_panel.x;
     let width = WIDTH.min(room).max(normal);
     rects.right_panel.x = right - width;
+    rects.right_panel.y = super::geometry::float_top(rects, right - width, right);
 }
 
 /// What the user did in the table in one frame.

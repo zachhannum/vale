@@ -31,6 +31,22 @@ pub fn menu() -> Color32 {
     card(false).to_opaque().blend(raise())
 }
 
+/// The fill of the top bar and of the top band of the system.
+pub fn bar() -> Color32 {
+    Color32::from_rgb(22, 24, 28)
+}
+
+/// The fill of the dock, and of the dock zone of the bar while the dock is
+/// open.
+pub fn dock() -> Color32 {
+    Color32::from_rgb(24, 27, 31)
+}
+
+/// The line at the edge of a docked part.
+pub fn edge() -> Color32 {
+    Color32::from_white_alpha(18)
+}
+
 /// The fill of a selected control.
 pub fn raise() -> Color32 {
     Color32::from_white_alpha(33)

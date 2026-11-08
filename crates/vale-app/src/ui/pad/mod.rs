@@ -29,6 +29,7 @@ use crate::session::{WorldFile, worlds_of};
 use crate::world;
 
 pub mod atlas;
+pub mod bar;
 pub mod browser;
 pub mod cases;
 pub mod chip_popover;
@@ -275,8 +276,6 @@ const SAVE_MARK: f32 = 14.0;
 pub const WORLDS: &str = "Worlds";
 /// The row of the workspace menu that opens the menu of the worlds.
 pub const WORLDS_ROW: &str = "Worlds…";
-/// The width that the Worlds button and its line add to the workspace card.
-const WORLDS_LEAD: f32 = TOUCH + 9.0;
 /// The largest number of worlds that the menu shows with no scroll.
 const WORLD_ROWS: usize = 6;
 /// The name of the row that imports a heightmap into a height layer.
@@ -471,10 +470,6 @@ pub struct PadState {
     pub projections: bool,
     /// The list of the projections in the last frame.
     pub projections_rect: Option<Rect>,
-    /// The view options are open.
-    pub view_options: bool,
-    /// The view options in the last frame.
-    pub view_options_rect: Option<Rect>,
     /// The card of the center of the projection in the last frame.
     pub center_rect: Option<Rect>,
     /// The workspace menu is open.
@@ -566,13 +561,13 @@ pub const RECENTER: &str = "Recenter";
 pub const RESET: &str = "Reset";
 /// The control that opens the list of the projections.
 pub const PROJECTION: &str = "Projection";
-/// The button that opens the view options.
-pub const VIEW_OPTIONS: &str = "View options";
-/// The switch of the view options that shows the graticule.
+/// The button of the view control that shows the graticule, and its row
+/// in the compact menu.
 pub const GRATICULE: &str = "Graticule";
-/// The width that the button of the view options and its line add to the
-/// view card.
-const OPTIONS_LEAD: f32 = TOUCH + 9.0;
+/// The button of the Selection panel of the Atlas workspace.
+pub const SELECTION: &str = "Selection";
+/// The button of the Pages panel of the Atlas workspace.
+pub const PAGES: &str = "Pages";
 const WORLD_VIEWS: [WorldView; 2] = [WorldView::Globe, WorldView::Flat];
 
 /// The text of the position readout.
@@ -613,30 +608,40 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
 
     let class = WidthClass::of(screen.width());
     let flat = state.globe.world_view == WorldView::Flat;
-    // The compact layout has no room for the Worlds button, so the
-    // workspace menu has a row for it.
-    let workspace_width = match class {
-        WidthClass::Wide => WORLDS_LEAD + widgets::segments_width(ui, &WORKSPACES),
-        WidthClass::Medium => WORLDS_LEAD + widgets::menu_button_width(ui, WORKSPACES[0]),
-        WidthClass::Compact => widgets::menu_button_width(ui, WORKSPACES[0]),
-    };
+    let strip = has_strip(&state.globe);
     let mut input = Input {
         screen,
         bands: geometry::Bands::new(screen, ctx.content_rect()),
-        workspace_width,
-        // In the flat view, the card also has the button of the list of
-        // projections, a line, and the Recenter and Reset buttons. The
-        // button of the view options is at the right.
+        // The compact layout has no room for the bar, so the workspace menu
+        // has a row for the worlds.
+        workspace_width: widgets::menu_button_width(ui, WORKSPACES[0]),
+        // The graticule button and its line, and in the flat view a line,
+        // Recenter, Reset, and the button of the list of projections.
         view_width: widgets::segments_width(ui, &VIEWS)
-            + OPTIONS_LEAD
-            + if flat { 3.0 * TOUCH + 9.0 + PAD } else { 0.0 },
+            + 9.0
+            + TOUCH
+            + if flat {
+                9.0 + 3.0 * TOUCH + 2.0 * PAD
+            } else {
+                0.0
+            },
         panel: has_sheet(state, class),
         sheet_offset: state.pad.sheet_offset,
         cells: card_cells(&state.globe),
-        strip: has_strip(&state.globe),
+        strip,
         extra: extra_cells(state),
         tools: TOOLS,
         row: class == WidthClass::Compact,
+        dock_width: bar::dock_width(state, Workspace::Globe),
+        dock_buttons: Panel::order(Workspace::Globe).len(),
+        name_width: bar::name_width(ui, state),
+        tabs_width: bar::tabs_width(ui),
+        column: geometry::ColumnInput {
+            tools: TOOLS,
+            cells: card_cells(&state.globe) + extra_cells(state),
+            sliders: if strip { 2 } else { 0 },
+            brush_button: strip,
+        },
     };
     // The Brush panel holds the settings of the context strip.
     if !has_strip(&state.globe) && card_cells(&state.globe) == 0 || state.globe.selecting() {
@@ -669,7 +674,12 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         flyouts.open = None;
     }
 
-    top_row(&ctx, state, &mut controls, &rects);
+    if class == WidthClass::Compact {
+        top_row(&ctx, state, &mut controls, &rects);
+    } else {
+        world_bar(&ctx, state, &mut controls, &rects);
+        view_control(&ctx, state, &mut controls, &rects);
+    }
     tool_strip(&ctx, state, &mut controls, &rects);
     brush_card(&ctx, state, &mut controls, &rects);
     // A button above can open or close a panel. The panels use the new state.
@@ -712,13 +722,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     } else {
         state.pad.projections = false;
     }
-    state.pad.view_options_rect = None;
-    if state.pad.view_options && rects.view.is_some() {
-        view_options(&ctx, state, &mut controls, &rects);
-    } else {
-        state.pad.view_options = false;
-    }
-    if state.pad.menu && class != WidthClass::Wide {
+    if state.pad.menu && class == WidthClass::Compact {
         menu(&ctx, state, &mut controls, &rects);
     } else {
         state.pad.menu = false;
@@ -756,6 +760,8 @@ fn has_sheet(state: &AppState, class: WidthClass) -> bool {
     open && !super::new_feature::point_card(state, class)
 }
 
+/// The top row of the compact layout: the workspace menu button and the
+/// actions card.
 fn top_row(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
     let radius = theme::CARD_RADIUS.into();
     widgets::card(
@@ -766,102 +772,13 @@ fn top_row(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
         Order::Middle,
         radius,
         |ui| {
-            let card = ui.max_rect();
-            let mut rest = card;
-            if rects.class != WidthClass::Compact {
-                let button = Rect::from_min_size(card.min + vec2(PAD, PAD), vec2(TOUCH, TOUCH));
-                let open = state.pad.worlds.is_some();
-                let worlds =
-                    widgets::icon_button_at(ui, controls, button, WORLDS, Icon::World, open, true);
-                if worlds.clicked() {
-                    toggle_worlds(state);
-                }
-                let divider = pos2(button.right() + 4.5, card.center().y);
-                let line = Rect::from_center_size(divider, vec2(1.0, 24.0));
-                ui.painter().rect_filled(line, 0.0, theme::divider());
-                rest.min.x += WORLDS_LEAD;
-            }
-            let ui = &ui.new_child(egui::UiBuilder::new().max_rect(rest));
-            if rects.class == WidthClass::Wide {
-                let items = [(WORKSPACES[0], true), (WORKSPACES[1], true)];
-                if widgets::segments(ui, controls, &items, 0) == Some(1) {
-                    state.workspace = Workspace::Atlas;
-                }
-            } else {
-                let open = state.pad.menu;
-                if widgets::menu_button(ui, controls, "Workspace", WORKSPACES[0], open).clicked() {
-                    state.pad.menu = !open;
-                    state.pad.worlds = None;
-                }
+            let open = state.pad.menu;
+            if widgets::menu_button(ui, controls, "Workspace", WORKSPACES[0], open).clicked() {
+                state.pad.menu = !open;
+                state.pad.worlds = None;
             }
         },
     );
-    if let Some(view) = rects.view {
-        widgets::card(
-            ctx,
-            state.globe.backdrop(),
-            "pad-view",
-            view,
-            Order::Middle,
-            radius,
-            |ui| {
-                let active = state.globe.world_view as usize;
-                let items = [(VIEWS[0], true), (VIEWS[1], true)];
-                if let Some(chosen) = widgets::segments(ui, controls, &items, active) {
-                    state.globe.world_view = WORLD_VIEWS[chosen];
-                }
-                // From the right: the button of the view options and a line,
-                // and in the flat view Reset, Recenter, a line, and the
-                // button of the list of projections.
-                let card = ui.max_rect();
-                let at = |right: f32| {
-                    let min = pos2(right - TOUCH, card.top() + PAD);
-                    Rect::from_min_size(min, vec2(TOUCH, TOUCH))
-                };
-                let options = at(card.right() - PAD);
-                let divider = pos2(options.left() - 4.5, card.center().y);
-                let line = Rect::from_center_size(divider, vec2(1.0, 24.0));
-                ui.painter().rect_filled(line, 0.0, theme::divider());
-                let open = state.pad.view_options;
-                let button = widgets::icon_button_at(
-                    ui,
-                    controls,
-                    options,
-                    VIEW_OPTIONS,
-                    Icon::Grid,
-                    open,
-                    true,
-                );
-                if button.clicked() {
-                    state.pad.view_options = !open;
-                    state.pad.projections = false;
-                }
-                if state.globe.world_view == WorldView::Flat {
-                    let reset = at(options.left() - 9.0);
-                    let recenter = at(reset.left() - PAD);
-                    let divider = pos2(recenter.left() - 4.5, card.center().y);
-                    let line = Rect::from_center_size(divider, vec2(1.0, 24.0));
-                    ui.painter().rect_filled(line, 0.0, theme::divider());
-                    let open = state.pad.projections;
-                    let list = at(recenter.left() - 9.0);
-                    let button = widgets::icon_button_at(
-                        ui,
-                        controls,
-                        list,
-                        PROJECTION,
-                        Icon::Down,
-                        open,
-                        true,
-                    );
-                    if button.clicked() {
-                        state.pad.projections = !open;
-                        state.pad.view_options = false;
-                    }
-                    center_buttons(ui, state, controls, recenter, reset);
-                }
-            },
-        );
-    }
     widgets::card(
         ctx,
         state.globe.backdrop(),
@@ -898,23 +815,107 @@ fn top_row(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
             let divider = pos2(card.left() + PAD + 2.0 * step + 4.5, card.center().y);
             let line = Rect::from_center_size(divider, vec2(1.0, 24.0));
             ui.painter().rect_filled(line, 0.0, theme::divider());
+            // The Toolbox row is in the workspace menu.
             let mut x = 2.0 * step + 9.0 + PAD;
-            // Below 1,000 points, the Toolbox row is in the workspace menu.
-            let narrow = rects.class != WidthClass::Wide;
-            for (panel, name, icon) in [
-                (Panel::Layers, "Layers", Icon::Layers),
-                (Panel::Toolbox, TOOLBOX, Icon::Toolbox),
-                (Panel::Attributes, select::ATTRIBUTES, Icon::Attributes),
-            ] {
-                if narrow && panel == Panel::Toolbox {
-                    continue;
-                }
+            for panel in [Panel::Layers, Panel::Attributes] {
                 let at = at(x);
                 x += step;
+                let (name, icon) = panel_face(panel);
                 let active = state.pad.is_open(panel);
                 if widgets::icon_button_at(ui, controls, at, name, icon, active, true).clicked() {
                     state.pad.toggle(panel, rects.one_panel);
                 }
+            }
+        },
+    );
+}
+
+/// The control name and the icon of the button of a panel.
+pub(super) fn panel_face(panel: Panel) -> (&'static str, Icon) {
+    match panel {
+        Panel::Brush => ("Brush", Icon::Brush),
+        Panel::Layers => ("Layers", Icon::Layers),
+        Panel::Toolbox => (TOOLBOX, Icon::Toolbox),
+        Panel::Attributes => (select::ATTRIBUTES, Icon::Attributes),
+        Panel::Selection => (SELECTION, Icon::Select),
+        Panel::Pages => (PAGES, Icon::Book),
+        Panel::Maps => (atlas::MAPS, Icon::Map),
+    }
+}
+
+/// The bar of the World workspace, with the buttons of Layers, Attributes,
+/// and Toolbox.
+fn world_bar(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
+    bar::draw(
+        ctx,
+        state,
+        controls,
+        rects,
+        |ui, state, controls, places| {
+            for (&panel, &at) in Panel::order(Workspace::Globe).iter().zip(places) {
+                let (name, icon) = panel_face(panel);
+                let active = state.pad.is_open(panel);
+                if widgets::icon_button_at(ui, controls, at, name, icon, active, true).clicked() {
+                    state.pad.toggle(panel, rects.one_panel);
+                }
+            }
+        },
+    );
+}
+
+/// The view control of the World workspace: Globe and Flat, a divider, and
+/// the graticule button. In the flat view, it also holds the button of the
+/// list of the projections, Recenter, and Reset.
+fn view_control(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
+    let Some(view) = rects.view else {
+        return;
+    };
+    widgets::card(
+        ctx,
+        state.globe.backdrop(),
+        "pad-view",
+        view,
+        Order::Middle,
+        theme::CARD_RADIUS.into(),
+        |ui| {
+            let active = state.globe.world_view as usize;
+            let items = [(VIEWS[0], true), (VIEWS[1], true)];
+            if let Some(chosen) = widgets::segments(ui, controls, &items, active) {
+                state.globe.world_view = WORLD_VIEWS[chosen];
+            }
+            let card = ui.max_rect();
+            let mut x = card.left() + widgets::segments_width(ui, &VIEWS) - PAD;
+            let mut next = |gap: f32| {
+                x += gap;
+                let rect = Rect::from_min_size(pos2(x, card.top() + PAD), vec2(TOUCH, TOUCH));
+                x += TOUCH;
+                rect
+            };
+            let divider = |ui: &egui::Ui, at: Rect| {
+                let center = pos2(at.left() - 4.5, card.center().y);
+                let line = Rect::from_center_size(center, vec2(1.0, 24.0));
+                ui.painter().rect_filled(line, 0.0, theme::divider());
+            };
+            let graticule = next(9.0);
+            divider(ui, graticule);
+            let on = state.globe.preview.graticule;
+            if widgets::icon_button_at(ui, controls, graticule, GRATICULE, Icon::Grid, on, true)
+                .clicked()
+            {
+                state.globe.preview.graticule = !on;
+            }
+            if state.globe.world_view == WorldView::Flat {
+                let recenter = next(9.0);
+                divider(ui, recenter);
+                let reset = next(PAD);
+                let list = next(PAD);
+                let open = state.pad.projections;
+                let button =
+                    widgets::icon_button_at(ui, controls, list, PROJECTION, Icon::Down, open, true);
+                if button.clicked() {
+                    state.pad.projections = !open;
+                }
+                center_buttons(ui, state, controls, recenter, reset);
             }
         },
     );
@@ -1785,7 +1786,7 @@ pub(super) fn show_panel(
     let place = match panel {
         Panel::Brush => (rects.brush_panel, geometry::BRUSH_PANEL_WIDTH),
         _ => {
-            let right = rects.screen.right() - rects.bands.right - geometry::MARGIN;
+            let right = geometry::float_right(rects);
             (rects.right_panel, right - rects.right_panel.x)
         }
     };
@@ -2692,10 +2693,16 @@ fn add_menu(
     let rows = 3 + NEW_LAYERS.len() + usize::from(import);
     let height = 10.0 + 2.0 * MENU_HEADING + rows as f32 * PANEL_ROW + 10.0;
     let size = vec2(ADD_WIDTH, height);
-    let beside = pos2(
+    let mut beside = pos2(
         rects.right_panel.x - geometry::PANEL_GAP - size.x,
         rects.right_panel.y,
     );
+    // The menu does not cover the view control.
+    if let Some(view) = rects.view
+        && Rect::from_min_size(beside, size).intersects(view)
+    {
+        beside.y = view.bottom() + geometry::GAP;
+    }
     let min = if rects.sheet.is_none() && beside.x >= rects.screen.left() + geometry::MARGIN {
         beside
     } else {
@@ -3334,63 +3341,11 @@ fn projections(ctx: &egui::Context, state: &mut AppState, controls: &mut Control
     );
 }
 
-/// The view options: a card below the view switch with the switch of the
-/// graticule.
-fn view_options(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
-    let Some(view) = rects.view else {
-        return;
-    };
-    let size = vec2(geometry::MENU_WIDTH, 10.0 + PANEL_ROW + 10.0);
-    let min = pos2(view.right() - size.x, view.bottom() + PAD);
-    let rect = Rect::from_min_size(min, size);
-    state.pad.view_options_rect = Some(rect);
-    let pressed = ctx.input(|i| {
-        i.pointer
-            .any_pressed()
-            .then(|| i.pointer.interact_pos())
-            .flatten()
-    });
-    if pressed.is_some_and(|pos| !rect.contains(pos) && !view.contains(pos)) {
-        state.pad.view_options = false;
-    }
-    let radius = theme::CARD_RADIUS.into();
-    widgets::card(
-        ctx,
-        None,
-        "pad-view-options",
-        rect,
-        Order::Foreground,
-        radius,
-        |ui| {
-            // The card covers other cards, so its fill is opaque.
-            ui.painter()
-                .rect_filled(rect, radius, theme::card(false).to_opaque());
-            let inner = rect.shrink2(vec2(BODY_PAD, 10.0));
-            let layout = egui::Layout::top_down(egui::Align::Min);
-            let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
-            ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
-            let preview = &mut state.globe.preview;
-            widgets::switch_row(
-                &mut ui,
-                controls,
-                GRATICULE,
-                GRATICULE,
-                &mut preview.graticule,
-            );
-        },
-    );
-}
-
+/// The workspace menu of the compact layout.
 fn menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
-    let compact = rects.class == WidthClass::Compact;
     let flat = state.globe.world_view == WorldView::Flat;
-    let rows = match (compact, flat) {
-        (true, true) => 8.0,
-        (true, false) => 7.0,
-        (false, _) => 3.0,
-    };
-    let rules = if compact { 2.0 } else { 1.0 };
-    let height = 10.0 + rows * PANEL_ROW + rules * 13.0 + 10.0;
+    let rows = if flat { 8.0 } else { 7.0 };
+    let height = 10.0 + rows * PANEL_ROW + 2.0 * 13.0 + 10.0;
     let size = vec2(geometry::MENU_WIDTH, height);
     let rect = Rect::from_min_size(rects.menu, size);
     state.pad.menu_rect = Some(rect);
@@ -3423,7 +3378,7 @@ fn menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rect
             if widgets::text_row(ui, controls, WORKSPACES[0], 0.0, true, true).clicked() {
                 state.pad.menu = false;
             }
-            if compact {
+            {
                 for (label, view) in VIEWS.into_iter().zip(WORLD_VIEWS) {
                     let row = widgets::text_row(ui, controls, label, 16.0, false, true);
                     if state.globe.world_view == view {
@@ -3451,7 +3406,7 @@ fn menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rect
                 state.workspace = Workspace::Atlas;
                 state.pad.menu = false;
             }
-            if compact {
+            {
                 rule(ui);
                 if widgets::text_row(ui, controls, WORLDS_ROW, 0.0, false, true).clicked() {
                     state.pad.menu = false;

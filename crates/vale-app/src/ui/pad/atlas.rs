@@ -14,7 +14,7 @@ use super::icons::Icon;
 use super::number::Number;
 use super::text_style;
 use super::widgets::{self, BODY_PAD, Controls, Keys, PANEL_ROW, keypad_below};
-use super::{Card, CardTitle, GRATICULE, WORKSPACES, WORLDS, WORLDS_LEAD, WORLDS_ROW};
+use super::{Card, CardTitle, GRATICULE, Panel, WORKSPACES, WORLDS_ROW, bar, panel_face};
 use super::{NO_LAYERS, layer_icon, rule, save_mark, show_card, theme, toggle_worlds, worlds_menu};
 use crate::atlas::{self as math, PAGE_PRESETS};
 use crate::ui::atlas::{self, AtlasSelection, AtlasTool, ClassColor, FrameTab};
@@ -210,11 +210,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     let screen = ctx.viewport_rect();
     atlas::sync(state);
     let class = WidthClass::of(screen.width());
-    let workspace_width = match class {
-        WidthClass::Wide => WORLDS_LEAD + widgets::segments_width(ui, &WORKSPACES),
-        WidthClass::Medium => WORLDS_LEAD + widgets::menu_button_width(ui, WORKSPACES[1]),
-        WidthClass::Compact => widgets::menu_button_width(ui, WORKSPACES[1]),
-    };
+    let workspace_width = widgets::menu_button_width(ui, WORKSPACES[1]);
     let page_width = 2.0 * TOUCH + page_text_width(ui, state) + 2.0 * PAD;
     // While the Measure tool is the tool, the Brush panel of its snapping
     // settings is the panel, and the panel of the selection does not show.
@@ -250,14 +246,28 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         },
         tools: TOOL_CELLS,
         row,
+        dock_width: bar::dock_width(state, Workspace::Atlas),
+        // The Add button stays in the bar until the tools add frames and
+        // furniture.
+        dock_buttons: Panel::order(Workspace::Atlas).len() + 1,
+        name_width: bar::name_width(ui, state),
+        tabs_width: bar::tabs_width(ui),
+        column: geometry::ColumnInput {
+            tools: TOOL_CELLS,
+            cells: if measuring {
+                geometry::MEASURE_CELLS
+            } else {
+                context_cells(state)
+            },
+            sliders: 0,
+            brush_button: false,
+        },
     };
     let mut rects = geometry::layout(&input);
     // On a compact screen, the Add button is in the workspace menu.
-    let hidden = match class {
-        WidthClass::Compact => 1.0,
-        _ => 0.0,
-    };
-    rects.actions.min.x = rects.actions.max.x - ACTIONS_WIDTH + hidden * (TOUCH + PAD);
+    if class == WidthClass::Compact {
+        rects.actions.min.x = rects.actions.max.x - ACTIONS_WIDTH + TOUCH + PAD;
+    }
     rects.right_panel.x += geometry::RIGHT_PANEL_WIDTH - panel_width(&ctx);
     // In the row layout, `brush` is the place of the context strip.
     if !measuring && !row {
@@ -308,7 +318,12 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         state.pad.sheet_offset = 0.0;
     }
 
-    top_row(&ctx, state, &mut controls, &rects, page_card);
+    if class == WidthClass::Compact {
+        top_row(&ctx, state, &mut controls, &rects);
+    } else {
+        atlas_bar(&ctx, state, &mut controls, &rects);
+    }
+    page_control(&ctx, state, &mut controls, page_card);
     tool_strip(&ctx, state, &mut controls, &rects);
     frame_card(&ctx, state, &mut controls, &rects);
     if measuring {
@@ -334,7 +349,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     if state.atlas.add {
         add_menu(&ctx, state, &mut controls, &rects);
     }
-    if state.pad.menu && class != WidthClass::Wide {
+    if state.pad.menu && class == WidthClass::Compact {
         workspace_menu(&ctx, state, &mut controls, &rects);
     } else {
         state.pad.menu = false;
@@ -344,21 +359,32 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         worlds_menu(&ctx, state, &mut controls, &rects);
     }
 
-    // The page fits the space between the cards. In the wide layout, the
-    // panel has its own place at the right.
+    // The page fits the space between the cards. From 600 points, it fits
+    // the canvas below the page controls.
     let left = match rects.row {
         true => rects.workspace.left(),
         false => rects.tools.right() + GAP,
     };
-    let top = match rects.view {
-        Some(_) => rects.tools.top(),
-        None => page_card.bottom() + GAP,
+    let right = screen.right() - rects.bands.right - MARGIN;
+    let compact = Rect::from_min_max(
+        pos2(left, page_card.bottom() + GAP),
+        pos2(right, rects.panel_bottom),
+    );
+    // Until the tool column and the dock replace the tool strip and the
+    // panel place at the right, the page keeps clear of them.
+    let mut free = match class {
+        WidthClass::Compact => compact,
+        _ => {
+            let right = match class {
+                WidthClass::Wide => rects.right_panel.x - GAP,
+                _ => rects.free.right(),
+            };
+            Rect::from_min_max(
+                pos2(left.max(rects.free.left()), rects.free.top()),
+                pos2(rects.free.right().min(right), rects.free.bottom()),
+            )
+        }
     };
-    let right = match class {
-        WidthClass::Wide => rects.right_panel.x - GAP,
-        _ => screen.right() - rects.bands.right - MARGIN,
-    };
-    let mut free = Rect::from_min_max(pos2(left, top), pos2(right, rects.panel_bottom));
     // In the row layout, the page is at the top of the space, so a sheet
     // covers only its lower part.
     if rects.row {
@@ -375,11 +401,17 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     state.pad.rects = Some(rects);
 }
 
+/// The space between the name of the page and its size.
+const PAGE_SIZE_GAP: f32 = 8.0;
+
 fn page_text_width(ui: &egui::Ui, state: &AppState) -> f32 {
-    let galley = ui
-        .painter()
-        .layout_no_wrap(page_button_text(state), theme::body(), theme::TEXT);
-    galley.size().x.ceil() + 2.0 * 14.0
+    let width = |text: String| {
+        let galley = ui
+            .painter()
+            .layout_no_wrap(text, theme::body(), theme::TEXT);
+        galley.size().x.ceil()
+    };
+    width(page_button_text(state)) + PAGE_SIZE_GAP + width(page_size_text(state)) + 2.0 * 14.0
 }
 
 fn divider(ui: &egui::Ui, x: f32, card: Rect) {
@@ -387,13 +419,9 @@ fn divider(ui: &egui::Ui, x: f32, card: Rect) {
     ui.painter().rect_filled(line, 0.0, theme::divider());
 }
 
-fn top_row(
-    ctx: &egui::Context,
-    state: &mut AppState,
-    controls: &mut Controls,
-    rects: &Rects,
-    page_card: Rect,
-) {
+/// The top row of the compact layout: the workspace menu button and the
+/// actions card.
+fn top_row(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
     let radius = theme::CARD_RADIUS.into();
     widgets::card(
         ctx,
@@ -403,81 +431,13 @@ fn top_row(
         Order::Middle,
         radius,
         |ui| {
-            let card = ui.max_rect();
-            let mut rest = card;
-            if rects.class != WidthClass::Compact {
-                let button = Rect::from_min_size(card.min + vec2(PAD, PAD), vec2(TOUCH, TOUCH));
-                let open = state.pad.worlds.is_some();
-                let worlds =
-                    widgets::icon_button_at(ui, controls, button, WORLDS, Icon::World, open, true);
-                if worlds.clicked() {
-                    toggle_worlds(state);
-                }
-                divider(ui, button.right() + 4.5, card);
-                rest.min.x += WORLDS_LEAD;
-            }
-            let ui = &ui.new_child(egui::UiBuilder::new().max_rect(rest));
-            if rects.class == WidthClass::Wide {
-                let items = [(WORKSPACES[0], true), (WORKSPACES[1], true)];
-                if widgets::segments(ui, controls, &items, 1) == Some(0) {
-                    state.workspace = Workspace::Globe;
-                }
-            } else {
-                let open = state.pad.menu;
-                if widgets::menu_button(ui, controls, "Workspace", WORKSPACES[1], open).clicked() {
-                    state.pad.menu = !open;
-                    state.pad.worlds = None;
-                }
+            let open = state.pad.menu;
+            if widgets::menu_button(ui, controls, "Workspace", WORKSPACES[1], open).clicked() {
+                state.pad.menu = !open;
+                state.pad.worlds = None;
             }
         },
     );
-
-    let text = page_button_text(state);
-    let (index, count) = atlas::page_index(state);
-    widgets::card(
-        ctx,
-        state.globe.backdrop(),
-        "pad-pages",
-        page_card,
-        Order::Middle,
-        radius,
-        |ui| {
-            let card = ui.max_rect();
-            let at = |x: f32| Rect::from_min_size(pos2(x, card.top() + PAD), vec2(TOUCH, TOUCH));
-            let previous = at(card.left() + PAD);
-            let next = at(card.right() - PAD - TOUCH);
-            let back = widgets::icon_button_at(
-                ui,
-                controls,
-                previous,
-                PREVIOUS_PAGE,
-                Icon::Back,
-                false,
-                index > 0,
-            );
-            if back.clicked() {
-                atlas::go_to_page(state, -1);
-            }
-            let on = index + 1 < count;
-            if widgets::icon_button_at(ui, controls, next, NEXT_PAGE, Icon::Open, false, on)
-                .clicked()
-            {
-                atlas::go_to_page(state, 1);
-            }
-            let middle = Rect::from_min_max(
-                pos2(previous.right(), previous.top()),
-                pos2(next.left(), next.bottom()),
-            );
-            ui.painter().text(
-                middle.center(),
-                Align2::CENTER_CENTER,
-                &text,
-                theme::body(),
-                theme::TEXT,
-            );
-        },
-    );
-
     widgets::card(
         ctx,
         state.globe.backdrop(),
@@ -505,39 +465,155 @@ fn top_row(
                 state.redo();
             }
             divider(ui, card.left() + PAD + 2.0 * step + 4.5, card);
-            let mut x = 2.0 * step + 9.0 + PAD;
-            // The inspector and the panel of a frame share the panel place.
-            let inspecting = state.pad.is_open(super::Panel::Attributes);
-            let maps = at(x);
-            x += step;
-            let open = atlas::maps_open(state) && !inspecting;
-            if widgets::icon_button_at(ui, controls, maps, MAPS, Icon::Map, open, true).clicked() {
-                state.pad.close(super::Panel::Attributes);
-                if !(inspecting && atlas::maps_open(state)) {
-                    atlas::toggle_maps(state);
+            let x = 2.0 * step + 9.0 + PAD;
+            maps_button(ui, state, controls, at(x));
+            attributes_button(ui, state, controls, at(x + step));
+        },
+    );
+}
+
+/// The Maps button: the list of the map frames of the page, or the panel
+/// of the selected frame.
+fn maps_button(ui: &egui::Ui, state: &mut AppState, controls: &mut Controls, at: Rect) {
+    // The inspector and the panel of a frame share the panel place.
+    let inspecting = state.pad.is_open(Panel::Attributes);
+    let open = atlas::maps_open(state) && !inspecting;
+    if widgets::icon_button_at(ui, controls, at, MAPS, Icon::Map, open, true).clicked() {
+        state.pad.close(Panel::Attributes);
+        if !(inspecting && atlas::maps_open(state)) {
+            atlas::toggle_maps(state);
+        }
+    }
+}
+
+fn attributes_button(ui: &egui::Ui, state: &mut AppState, controls: &mut Controls, at: Rect) {
+    let name = crate::ui::select::ATTRIBUTES;
+    let open = state.pad.is_open(Panel::Attributes);
+    if widgets::icon_button_at(ui, controls, at, name, Icon::Attributes, open, true).clicked() {
+        if open {
+            state.pad.close(Panel::Attributes);
+        } else {
+            state.pad.open(Panel::Attributes);
+            state.atlas.frames = false;
+        }
+    }
+}
+
+/// The bar of the Atlas workspace, with the Add button and the buttons of
+/// Selection, Pages, Maps, and Attributes.
+fn atlas_bar(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
+    bar::draw(
+        ctx,
+        state,
+        controls,
+        rects,
+        |ui, state, controls, places| {
+            let Some((&add, places)) = places.split_first() else {
+                return;
+            };
+            let open = state.atlas.add;
+            if widgets::icon_button_at(ui, controls, add, ADD, Icon::Plus, open, true).clicked() {
+                state.atlas.add = !open;
+            }
+            for (&panel, &at) in Panel::order(Workspace::Atlas).iter().zip(places) {
+                match panel {
+                    Panel::Maps => maps_button(ui, state, controls, at),
+                    Panel::Attributes => attributes_button(ui, state, controls, at),
+                    Panel::Selection => {
+                        // The inspector covers the panel of the selection.
+                        let selected = state.atlas.selection != AtlasSelection::None;
+                        let inspecting = state.pad.is_open(Panel::Attributes);
+                        let on = selected && !inspecting;
+                        let (name, icon) = panel_face(panel);
+                        if widgets::icon_button_at(ui, controls, at, name, icon, on, selected)
+                            .clicked()
+                        {
+                            state.pad.close(Panel::Attributes);
+                        }
+                    }
+                    _ => {
+                        let (name, icon) = panel_face(panel);
+                        widgets::icon_button_at(ui, controls, at, name, icon, false, false);
+                    }
                 }
             }
-            let inspector = at(x);
-            let name = crate::ui::select::ATTRIBUTES;
-            let open = state.pad.is_open(super::Panel::Attributes);
-            if widgets::icon_button_at(ui, controls, inspector, name, Icon::Attributes, open, true)
+        },
+    );
+}
+
+/// The size of the open page: the name of its preset and its orientation,
+/// for example "A4 landscape", or its width and height.
+pub fn page_size_text(state: &AppState) -> String {
+    let page = atlas::open_page(state);
+    let (w, h) = (page.width_mm, page.height_mm);
+    match math::preset_of(w, h) {
+        "Custom" => format!(
+            "{} × {} {}",
+            length_text(w, page.units),
+            length_text(h, page.units),
+            unit_name(page.units)
+        ),
+        preset => {
+            let orientation = if w > h { "landscape" } else { "portrait" };
+            format!("{preset} {orientation}")
+        }
+    }
+}
+
+/// The page controls: the previous page, the name of the page with its
+/// size, and the next page.
+fn page_control(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    controls: &mut Controls,
+    page_card: Rect,
+) {
+    let text = page_button_text(state);
+    let size = page_size_text(state);
+    let (index, count) = atlas::page_index(state);
+    widgets::card(
+        ctx,
+        state.globe.backdrop(),
+        "pad-pages",
+        page_card,
+        Order::Middle,
+        theme::CARD_RADIUS.into(),
+        |ui| {
+            let card = ui.max_rect();
+            let at = |x: f32| Rect::from_min_size(pos2(x, card.top() + PAD), vec2(TOUCH, TOUCH));
+            let previous = at(card.left() + PAD);
+            let next = at(card.right() - PAD - TOUCH);
+            let back = widgets::icon_button_at(
+                ui,
+                controls,
+                previous,
+                PREVIOUS_PAGE,
+                Icon::Back,
+                false,
+                index > 0,
+            );
+            if back.clicked() {
+                atlas::go_to_page(state, -1);
+            }
+            let on = index + 1 < count;
+            if widgets::icon_button_at(ui, controls, next, NEXT_PAGE, Icon::Open, false, on)
                 .clicked()
             {
-                if open {
-                    state.pad.close(super::Panel::Attributes);
-                } else {
-                    state.pad.open(super::Panel::Attributes);
-                    state.atlas.frames = false;
-                }
+                atlas::go_to_page(state, 1);
             }
-            if rects.class != WidthClass::Compact {
-                let open = state.atlas.add;
-                let add = at(x + step);
-                if widgets::icon_button_at(ui, controls, add, ADD, Icon::Plus, open, true).clicked()
-                {
-                    state.atlas.add = !open;
-                }
-            }
+            let middle = Rect::from_min_max(
+                pos2(previous.right(), previous.top()),
+                pos2(next.left(), next.bottom()),
+            );
+            let painter = ui.painter();
+            let name = painter.layout_no_wrap(text, theme::body(), theme::TEXT);
+            let size = painter.layout_no_wrap(size, theme::body(), theme::MUTE);
+            let width = name.size().x + PAGE_SIZE_GAP + size.size().x;
+            let left = middle.center().x - width / 2.0;
+            let y = middle.center().y - name.size().y / 2.0;
+            let size_at = pos2(left + name.size().x + PAGE_SIZE_GAP, y);
+            painter.galley(pos2(left, y), name, theme::TEXT);
+            painter.galley(size_at, size, theme::MUTE);
         },
     );
 }
@@ -852,8 +928,7 @@ fn workspace_menu(
     controls: &mut Controls,
     rects: &Rects,
 ) {
-    let compact = rects.class == WidthClass::Compact;
-    let rows = if compact { 5.0 } else { 3.0 };
+    let rows = 5.0;
     let rules = 1.0;
     let size = vec2(
         geometry::MENU_WIDTH,
@@ -873,7 +948,7 @@ fn workspace_menu(
             state.pad.menu = false;
         }
         rule(ui);
-        if compact && widgets::text_row(ui, controls, WORLDS_ROW, 0.0, false, true).clicked() {
+        if widgets::text_row(ui, controls, WORLDS_ROW, 0.0, false, true).clicked() {
             state.pad.menu = false;
             toggle_worlds(state);
         }
@@ -882,7 +957,7 @@ fn workspace_menu(
             state.pad.menu = false;
             atlas::edit_grid(state, |g| g.on = !on);
         }
-        if compact && widgets::text_row(ui, controls, ADD, 0.0, false, true).clicked() {
+        if widgets::text_row(ui, controls, ADD, 0.0, false, true).clicked() {
             state.pad.menu = false;
             state.atlas.add = true;
         }
@@ -1757,7 +1832,7 @@ fn layer_panel(
         action: None,
     };
     // The panel is wider while it shows the table.
-    let right = rects.screen.right() - rects.bands.right - MARGIN;
+    let right = geometry::float_right(rects);
     let card = Card {
         key,
         place: (rects.right_panel, right - rects.right_panel.x),

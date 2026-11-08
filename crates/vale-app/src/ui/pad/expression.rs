@@ -4,7 +4,7 @@
 
 use eframe::egui::{self, Pos2, Sense, vec2};
 
-use super::geometry::{MARGIN, Rects};
+use super::geometry::Rects;
 use super::{LayerRef, Page, Panel, theme};
 use crate::ui::AppState;
 use crate::ui::expr_help::{ExprHelp, ExprKind, Line};
@@ -28,14 +28,15 @@ pub fn showing(state: &AppState) -> bool {
 /// room, and stays clear of the tool strip and of the cards beside it. A
 /// sheet keeps its width.
 pub fn wide_place(rects: &Rects, normal: f32) -> (Pos2, f32) {
-    let right = rects.screen.right() - rects.bands.right - MARGIN;
+    let right = super::geometry::float_right(rects);
     let x = right - normal;
     if rects.sheet.is_some() {
         return (egui::pos2(x, rects.right_panel.y), normal);
     }
     let room = right - rects.brush_panel.x;
     let width = PANEL_WIDTH.min(room).max(normal);
-    (egui::pos2(right - width, rects.right_panel.y), width)
+    let top = super::geometry::float_top(rects, right - width, right);
+    (egui::pos2(right - width, top), width)
 }
 
 /// Makes the right panel wider while it shows an expression editor.
@@ -43,7 +44,7 @@ pub fn widen(state: &AppState, rects: &mut Rects) {
     if !showing(state) {
         return;
     }
-    let right = rects.screen.right() - rects.bands.right - MARGIN;
+    let right = super::geometry::float_right(rects);
     let (at, _) = wide_place(rects, right - rects.right_panel.x);
     rects.right_panel = at;
 }

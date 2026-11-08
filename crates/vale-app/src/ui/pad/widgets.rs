@@ -90,6 +90,40 @@ pub fn card(
         });
 }
 
+/// A docked part, such as the top bar: an opaque area with no blur and no
+/// shadow. `border` is a line of the divider color, for example the edge
+/// of the part at the canvas. A touch on the area does not go to the canvas.
+pub fn opaque_area(
+    ctx: &egui::Context,
+    id: &str,
+    rect: Rect,
+    fill: Color32,
+    border: Option<[Pos2; 2]>,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) {
+    egui::Area::new(egui::Id::new(id))
+        .order(egui::Order::Middle)
+        .fixed_pos(rect.min)
+        .movable(false)
+        .constrain_to(ctx.viewport_rect())
+        .constrain(false)
+        .fade_in(false)
+        .sizing_pass(false)
+        .show(ctx, |ui| {
+            let (rect, _) = ui.allocate_exact_size(rect.size(), Sense::click_and_drag());
+            ui.painter().rect_filled(rect, 0.0, fill);
+            if let Some(line) = border {
+                ui.painter()
+                    .line_segment(line, egui::Stroke::new(1.0, theme::edge()));
+            }
+            let layout = egui::Layout::top_down(egui::Align::Min);
+            let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(layout));
+            ui.set_clip_rect(rect);
+            theme::apply(&mut ui);
+            add_contents(&mut ui);
+        });
+}
+
 /// Makes a rectangle a control. `selected` is the state of a control that
 /// stays on. A control that is not enabled takes no touch. A control is not
 /// in the list while a scroll area cuts it to less than the touch size.
