@@ -7,7 +7,7 @@
 use eframe::egui::{self, Align2, Color32, Rect, Sense, Stroke, pos2, vec2};
 use vale_store::Value;
 use vale_style::expr::editor::{Cond, Formula, Seq, Tok};
-use vale_style::expr::{Category, Expr, FUNCTIONS, Function};
+use vale_style::expr::{Category, Expr, FUNCTIONS, Function, Var};
 
 use super::cases::{self, CasesEdit, CasesState};
 use super::expression;
@@ -21,13 +21,15 @@ use super::theme;
 use super::widgets::{self, Controls, PANEL_ROW};
 use crate::ui::expr_help::{ExprHelp, ExprKind, NO_VALUE, ValueRange, range_text};
 use crate::ui::token_field::formula::{self, Completion, OPERATORS, op_label};
-use crate::ui::token_field::paint::{BAD, FUNCTION_TEXT, paint_glyph};
+use crate::ui::token_field::paint::{BAD, FUNCTION_TEXT, VARIABLE_TEXT, paint_glyph};
 use crate::ui::token_field::{self, Field, Glyph, Metrics, Node, Options};
 
 /// The tabs of the tray.
 pub const FIELDS: &str = "Fields";
 pub const FUNCTIONS_TAB: &str = "Functions";
 pub const OPERATORS_TAB: &str = "Operators";
+/// The heading of the variables in the Fields tab of the tray.
+pub const VARIABLES: &str = crate::ui::expr_help::VARIABLES_MENU;
 /// The search fields of the tabs of the tray.
 pub const SEARCH: [&str; 3] = ["Search fields", "Search functions", "Search operators"];
 
@@ -549,6 +551,20 @@ fn bar(
                     formula::pick(&mut st.field, &Completion::Field(field), help);
                     out = Some(true);
                 }
+                for v in variables(&needle) {
+                    let label = format!("@{}", v.name());
+                    let sample = help
+                        .eval(&label)
+                        .and_then(|x| x.label())
+                        .unwrap_or_default();
+                    let glyph = Some(Glyph::of(v.field_type()));
+                    let name = bar_name(&insert_name(&label));
+                    let note = super::label_text::short(sample);
+                    if bar_chip(ui, controls, &name, glyph, (&label, VARIABLE_TEXT), &note) {
+                        formula::pick(&mut st.field, &Completion::Var(v), help);
+                        out = Some(true);
+                    }
+                }
             }
             1 => {
                 for f in FUNCTIONS.iter().filter(|f| f.name.contains(&needle)) {
@@ -573,6 +589,12 @@ fn bar(
         }
     });
     out
+}
+
+/// The variables whose names hold `needle`, with or without its `@`.
+fn variables(needle: &str) -> impl Iterator<Item = Var> + '_ {
+    let needle = needle.strip_prefix('@').unwrap_or(needle);
+    (Var::ALL.into_iter()).filter(move |v| v.name().contains(needle))
 }
 
 /// Puts function `f` in the field: in place of the typed word, or around
@@ -637,6 +659,26 @@ fn tray(
                 ) {
                     let pick = Completion::Field(name.clone());
                     formula::pick(&mut st.field, &pick, help);
+                    out = Some(true);
+                }
+            }
+            let vars: Vec<Var> = variables(&needle).collect();
+            if !vars.is_empty() {
+                widgets::list_heading(ui, VARIABLES);
+            }
+            for v in vars {
+                let label = format!("@{}", v.name());
+                let glyph = Some(Glyph::of(v.field_type()));
+                let name = insert_name(&label);
+                if tray_row(
+                    ui,
+                    controls,
+                    &name,
+                    glyph,
+                    (&label, VARIABLE_TEXT),
+                    v.hint(),
+                ) {
+                    formula::pick(&mut st.field, &Completion::Var(v), help);
                     out = Some(true);
                 }
             }
@@ -778,6 +820,18 @@ mod tests {
     fn the_tray_lists_each_function() {
         for f in FUNCTIONS {
             assert!(TRAY_CATEGORIES.contains(&f.category), "{}", f.name);
+        }
+    }
+
+    #[test]
+    fn the_tray_lists_each_variable() {
+        let all: Vec<Var> = variables("").collect();
+        assert_eq!(all, Var::ALL);
+        // The search finds a variable with or without its `@`.
+        assert_eq!(variables("@lat").collect::<Vec<_>>(), [Var::Lat]);
+        assert_eq!(variables("vert").collect::<Vec<_>>(), [Var::Vertices]);
+        for v in Var::ALL {
+            assert!(!v.hint().is_empty(), "{v:?}");
         }
     }
 
