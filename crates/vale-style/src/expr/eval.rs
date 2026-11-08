@@ -4,7 +4,7 @@ use std::cmp::Ordering;
 
 use vale_store::Value;
 
-use super::functions::{finite, text_of};
+use super::functions::{Category, finite, text_of};
 use super::parser::{BinOp, Node, Var};
 use super::{Context, measure};
 
@@ -81,6 +81,9 @@ pub(super) fn eval(node: &Node, ctx: &Context) -> Value {
         }
         Node::Call(f, args) => {
             let args: Vec<Value> = args.iter().map(|a| eval(a, ctx)).collect();
+            if f.category == Category::Page {
+                return ctx.page.map_or(Value::Null, |p| p.value(f.name, &args));
+            }
             (f.call)(&args, ctx)
         }
     }

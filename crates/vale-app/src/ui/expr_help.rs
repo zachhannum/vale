@@ -132,6 +132,7 @@ pub fn count_matches(layer: &Layer, radius_km: f64, text: &str) -> Option<usize>
                 geometry,
                 shape: Some(&f.geometry),
                 radius_km,
+                page: None,
             };
             expr.eval(&ctx) == Value::Bool(true)
         })
@@ -167,6 +168,7 @@ pub fn value_range(layer: &Layer, radius_km: f64, text: &str) -> Option<ValueRan
                 geometry,
                 shape: Some(&f.geometry),
                 radius_km,
+                page: None,
             };
             match expr.eval(&ctx) {
                 Value::Number(n) if n.is_finite() => Some(n),
@@ -446,6 +448,7 @@ impl ExprHelp {
             geometry: self.geometry,
             shape: self.shape.as_ref(),
             radius_km: self.radius_km,
+            page: None,
         }))
     }
 
@@ -481,6 +484,7 @@ impl ExprHelp {
             geometry: self.geometry,
             shape: self.shape.as_ref(),
             radius_km: self.radius_km,
+            page: None,
         });
         let text = match kind {
             ExprKind::Filter if value == Value::Bool(true) => MATCHES.to_owned(),

@@ -24,6 +24,7 @@ fn eval_with(src: &str, scale: f64, geometry: GeometryKind) -> Value {
         geometry,
         shape: None,
         radius_km: 0.0,
+        page: None,
     };
     Expr::parse(src)
         .unwrap_or_else(|e| panic!("{src}: {e}"))
@@ -250,6 +251,7 @@ fn wrong_expressions_still_draw() {
         geometry: GeometryKind::Line,
         shape: None,
         radius_km: 0.0,
+        page: None,
     };
 
     let bad = Filter::new("population >");
@@ -329,6 +331,7 @@ fn random_text_does_not_panic() {
         geometry: GeometryKind::Polygon,
         shape: None,
         radius_km: 0.0,
+        page: None,
     };
     let mut seed: u64 = 0x2545_f491_4f6c_dd1d;
     let mut next = || {
@@ -484,6 +487,7 @@ fn lenient_parse_reads_holes() {
         geometry: GeometryKind::Point,
         shape: None,
         radius_km: 0.0,
+        page: None,
     };
     assert_eq!(
         Expr::parse_lenient("coalesce(, 3)").unwrap().eval(&ctx),
@@ -496,4 +500,60 @@ fn strict_parse_has_no_holes() {
     for text in ["", "if( , 12, 10)", "round()", "a +", "x in ()", "* 2"] {
         assert!(Expr::parse(text).is_err(), "{text}");
     }
+}
+
+/// Page values with a fixed scale and page number.
+struct StubPage;
+
+impl vale_style::expr::PageValues for StubPage {
+    fn value(&self, name: &str, args: &[Value]) -> Value {
+        match (name, args) {
+            ("scale", [Value::Text(f)]) if f == "fraction" => Value::Text("1:25,000,000".into()),
+            ("page_number", []) => Value::Number(3.0),
+            _ => Value::Null,
+        }
+    }
+}
+
+#[test]
+fn page_function_reads_the_page() {
+    let attrs = city();
+    let expr = Expr::parse("concat('Scale ', scale('fraction'))").unwrap();
+    let mut ctx = Context {
+        attributes: &attrs,
+        scale: 1.0,
+        geometry: GeometryKind::Point,
+        shape: None,
+        radius_km: 0.0,
+        page: Some(&StubPage),
+    };
+    assert_eq!(expr.eval(&ctx), Value::Text("Scale 1:25,000,000".into()));
+    let number = Expr::parse("page_number() + 1").unwrap();
+    assert_eq!(number.eval(&ctx), Value::Number(4.0));
+    ctx.page = None;
+    assert_eq!(expr.eval(&ctx), Value::Text("Scale ".into()));
+    assert_eq!(number.eval(&ctx), Value::Null);
+}
+
+#[test]
+fn layer_functions_leave_out_the_page_functions() {
+    use vale_style::expr::{Category, layer_functions};
+    let page: Vec<_> = (FUNCTIONS.iter())
+        .filter(|f| f.category == Category::Page)
+        .map(|f| f.name)
+        .collect();
+    assert_eq!(
+        page,
+        [
+            "scale",
+            "map_name",
+            "page_name",
+            "page_number",
+            "page_count",
+            "date"
+        ]
+    );
+    assert!(layer_functions().all(|f| f.category != Category::Page));
+    assert_eq!(layer_functions().count() + page.len(), FUNCTIONS.len());
+    assert_eq!(eval("date('iso')"), Value::Null);
 }

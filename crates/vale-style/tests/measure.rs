@@ -15,6 +15,7 @@ fn ctx<'a>(shape: &'a Geometry, radius_km: f64) -> Context<'a> {
         geometry: shape.kind(),
         shape: Some(shape),
         radius_km,
+        page: None,
     }
 }
 
