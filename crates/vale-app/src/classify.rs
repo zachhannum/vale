@@ -4,8 +4,8 @@
 
 use std::collections::HashMap;
 
-use vale_store::{GeometryKind, Layer, Value};
-use vale_style::expr::{Context, Expr, Filter, Property};
+use vale_store::{FieldType, GeometryKind, Layer, Value};
+use vale_style::expr::{Context, Expr, Filter, Property, field_ref};
 use vale_style::{Color, Rule, Stroke};
 
 use crate::ramps::Ramp;
@@ -47,6 +47,11 @@ pub const MAX_CATEGORIES: usize = 12;
 pub const OTHER_VALUES: &str = "Other values";
 /// The name of the rule of the features with no number.
 pub const NO_VALUE: &str = "No value";
+/// The field that keeps the color of each polygon when neighbors differ.
+pub const COLOR_FIELD: &str = "color_group";
+/// The smallest and the largest number of colors when neighbors differ.
+pub const COLORS: (usize, usize) = (4, 12);
+pub const DEFAULT_COLORS: usize = 5;
 /// The colors of the rules of `OTHER_VALUES` and `NO_VALUE`.
 const OTHER_COLOR: Color = Color::rgb(180, 180, 180);
 /// The largest number of values that natural breaks reads. A larger set
@@ -388,6 +393,34 @@ pub fn category_classes(left: &str, values: &[Value]) -> Vec<Class> {
     out
 }
 
+/// The field of a layer that takes the colors of `neighbors::color`:
+/// `COLOR_FIELD` if the layer has no such field or if it is a field of whole
+/// numbers, or else the first free name with a number after it.
+pub fn color_field(layer: &Layer) -> String {
+    (1..)
+        .map(|i| match i {
+            1 => COLOR_FIELD.to_owned(),
+            _ => format!("{COLOR_FIELD}_{i}"),
+        })
+        .find(|name| match layer.fields.iter().find(|f| f.name == *name) {
+            Some(f) => f.kind == FieldType::Integer,
+            None => layer.name_free(name, None),
+        })
+        .unwrap_or_default()
+}
+
+/// The classes of `count` colors in the field `field`, with the values 1 to
+/// `count`, and the class `OTHER_VALUES` for the features with no color.
+pub fn color_classes(field: &str, count: usize) -> Vec<Class> {
+    let values: Vec<Value> = (1..=count).map(|i| Value::Number(i as f64)).collect();
+    let mut classes = category_classes(&field_ref(field), &values);
+    for (i, class) in classes.iter_mut().filter(|c| !c.extra).enumerate() {
+        class.name = format!("Color {}", i + 1);
+        class.value = None;
+    }
+    classes
+}
+
 /// A value as the filter syntax writes it.
 fn literal(value: &Value) -> String {
     match value {
@@ -690,6 +723,29 @@ mod tests {
         assert_eq!(names, ["< 10", "10 – 20", "≥ 20", NO_VALUE]);
         for f in filters {
             assert!(Filter::new(f).error().is_none(), "{f}");
+        }
+    }
+
+    #[test]
+    fn color_classes_have_a_rule_for_each_color_and_one_for_the_others() {
+        let classes = color_classes("color_group", 3);
+        let names: Vec<&str> = classes.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["Color 1", "Color 2", "Color 3", OTHER_VALUES]);
+        assert_eq!(classes[1].filter, "color_group = 2");
+        let attrs = |v: Value| std::collections::BTreeMap::from([("color_group".to_owned(), v)]);
+        let other = Filter::new(&classes[3].filter);
+        assert!(other.error().is_none());
+        for (v, inside) in [
+            (Value::Null, true),
+            (Value::Number(4.0), true),
+            (Value::Number(2.0), false),
+        ] {
+            let context = Context {
+                attributes: &attrs(v.clone()),
+                scale: 0.0,
+                geometry: GeometryKind::Polygon,
+            };
+            assert_eq!(other.matches(&context), inside, "{v:?}");
         }
     }
 

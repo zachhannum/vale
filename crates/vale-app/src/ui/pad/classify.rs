@@ -2,7 +2,7 @@
 //! with a rule for each class of a field or an expression.
 
 use eframe::egui;
-use vale_store::{GeometryKind, LayerId, Value};
+use vale_store::{Field, FieldType, GeometryKind, LayerId, Value};
 use vale_style::LayerStyle;
 use vale_style::expr::{Expr, field_ref};
 
@@ -35,6 +35,10 @@ pub const VARY_SIZE: &str = "Vary size";
 pub const FROM: &str = "From";
 pub const TO: &str = "To";
 pub const REPLACE_RULES: &str = "Replace rules";
+/// The switch that gives each polygon a color that no neighbor has, and the
+/// number of the colors.
+pub const NEIGHBORS_DIFFER: &str = "Neighbors differ";
+pub const COLOR_COUNT: &str = "Colors";
 /// The note when no feature gives a value.
 pub const NO_VALUES: &str = "No values.";
 
@@ -62,6 +66,8 @@ pub struct Draft {
     /// The index of the ramp that the form shows.
     shown: usize,
     reverse: bool,
+    neighbors: bool,
+    colors: usize,
     step: bool,
     first: f64,
     last: f64,
@@ -81,6 +87,7 @@ impl Draft {
         Draft {
             layer: Some(id),
             classes: classify::DEFAULT_CLASSES,
+            colors: classify::DEFAULT_COLORS,
             first,
             last,
             ..Draft::default()
@@ -108,6 +115,22 @@ pub fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id
     let Some(layer) = state.doc.layer(id) else {
         return;
     };
+
+    if kind == GeometryKind::Polygon {
+        ui.add_space(8.0);
+        widgets::switch_row(
+            ui,
+            controls,
+            NEIGHBORS_DIFFER,
+            NEIGHBORS_DIFFER,
+            &mut draft.neighbors,
+        );
+    }
+    let neighbors = draft.neighbors && kind == GeometryKind::Polygon;
+    if neighbors {
+        neighbors_body(ui, state, controls, id, draft);
+        return;
+    }
 
     heading(ui, FIELD);
     let refs: Vec<String> = layer.fields.iter().map(|f| field_ref(&f.name)).collect();
@@ -255,12 +278,73 @@ pub fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id
             ramp: state.ramps.list()[ramp].clone(),
             reverse: draft.reverse,
             step,
+            neighbors: None,
         };
         if apply(state, id, &request) {
             state.pad.page = None;
         }
     }
     state.pad.rules.classify = draft;
+}
+
+/// The form when neighbors differ: the count of the colors, the color
+/// ramp, and the button that makes the rules.
+fn neighbors_body(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    id: LayerId,
+    mut draft: Draft,
+) {
+    ui.add_space(8.0);
+    let (min, max) = classify::COLORS;
+    let count = Number::new(COLOR_COUNT, draft.colors as f64, min as f64..=max as f64)
+        .step(1.0)
+        .stepper(ui, controls);
+    if let Some(count) = count {
+        draft.colors = (count.round() as usize).clamp(min, max);
+    }
+    let list = state.ramps.list();
+    let ramp = draft
+        .ramp
+        .filter(|r| *r < list.len())
+        .unwrap_or_else(|| default_ramp(list, true));
+    draft.shown = ramp;
+    heading(ui, COLOR_RAMP);
+    if let Some(r) = list.get(ramp)
+        && ramp_row(ui, controls, &r.name, &r.colors, false).clicked()
+    {
+        state.pad.page = Some(Page::Ramps);
+    }
+    ui.add_space(8.0);
+    widgets::switch_row(ui, controls, REVERSE, REVERSE, &mut draft.reverse);
+    ui.add_space(8.0);
+    let field = state
+        .doc
+        .layer(id)
+        .map(classify::color_field)
+        .unwrap_or_default();
+    note(ui, &neighbors_note(&field));
+    if widgets::button_row(ui, controls, REPLACE_RULES, true).clicked() {
+        let request = Request {
+            text: String::new(),
+            method: Method::Quantiles,
+            classes: draft.classes,
+            ramp: state.ramps.list()[ramp].clone(),
+            reverse: draft.reverse,
+            step: Step::None,
+            neighbors: Some(draft.colors),
+        };
+        if apply(state, id, &request) {
+            state.pad.page = None;
+        }
+    }
+    state.pad.rules.classify = draft;
+}
+
+/// The note above the button when neighbors differ.
+pub fn neighbors_note(field: &str) -> String {
+    format!("Saves the colors in the field {field}.")
 }
 
 /// A request to replace the rules of a layer with classes.
@@ -272,6 +356,9 @@ pub struct Request {
     pub ramp: Ramp,
     pub reverse: bool,
     pub step: Step,
+    /// The count of the colors when neighbors differ. `None`: the classes
+    /// come from the values of `text`.
+    pub neighbors: Option<usize>,
 }
 
 /// The index of the ramp of the Classify form of layer `id`.
@@ -315,6 +402,9 @@ pub fn default_ramp(list: &[Ramp], qualitative: bool) -> usize {
 /// the symbolizers of the first rule of the layer. Returns false if the
 /// request gives no class.
 pub fn apply(state: &mut AppState, id: LayerId, request: &Request) -> bool {
+    if let Some(colors) = request.neighbors {
+        return apply_neighbors(state, id, colors, request);
+    }
     let Some(layer) = state.doc.layer(id) else {
         return false;
     };
@@ -345,6 +435,63 @@ pub fn apply(state: &mut AppState, id: LayerId, request: &Request) -> bool {
         classify::make_rules(&template, kind, &classes, &colors, request.step);
     state.touch();
     true
+}
+
+/// Gives each polygon of the layer a color that no neighbor has, saves the
+/// colors in a field, and replaces the rules with a rule for each color, in
+/// one undo step.
+fn apply_neighbors(state: &mut AppState, id: LayerId, colors: usize, request: &Request) -> bool {
+    let Some(layer) = state.doc.layer(id) else {
+        return false;
+    };
+    if layer.geometry() != Some(GeometryKind::Polygon) || layer.features.is_empty() {
+        return false;
+    }
+    let groups = crate::neighbors::color(
+        &crate::neighbors::neighbors(&layer.features),
+        &crate::neighbors::areas(&layer.features),
+        colors,
+    );
+    let count = groups.iter().max().map_or(0, |g| g + 1);
+    let values: Vec<Value> = groups
+        .iter()
+        .map(|g| Value::Number(*g as f64 + 1.0))
+        .collect();
+    let field = classify::color_field(layer);
+    let classes = classify::color_classes(&field, count);
+    let colors = classify::class_colors(&request.ramp, &classes, request.reverse);
+    state.edit_schema(id, |doc| {
+        let has = doc
+            .layer(id)
+            .is_some_and(|l| l.fields.iter().any(|f| f.name == field));
+        if !has
+            && !doc
+                .project
+                .add_field(id, Field::new(field.clone(), FieldType::Integer))
+        {
+            return false;
+        }
+        if !doc.project.set_field_values(id, &field, &values) {
+            return false;
+        }
+        let Some(entry) = doc.entry_mut(id) else {
+            return false;
+        };
+        let template = entry.style.style.rules.first().cloned().unwrap_or_else(|| {
+            LayerStyle::default_for(GeometryKind::Polygon, 0, &[])
+                .style
+                .rules[0]
+                .clone()
+        });
+        entry.style.style.rules = classify::make_rules(
+            &template,
+            GeometryKind::Polygon,
+            &classes,
+            &colors,
+            Step::None,
+        );
+        true
+    })
 }
 
 /// The note above the button: the count of the new rules, and of the rules

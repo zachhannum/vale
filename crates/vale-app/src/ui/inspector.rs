@@ -103,7 +103,8 @@ fn layer_section(ui: &mut egui::Ui, state: &mut AppState) {
         ui.add_space(4.0);
         changed |= style_editor::mask_rows(ui, info.id, &mut style.style.mask, &masks);
     }
-    let classes = style_editor::classify(ui, info.id, &fields, &ramps, &mut library);
+    let polygon = info.kind == GeometryKind::Polygon;
+    let classes = style_editor::classify(ui, info.id, &fields, &ramps, &mut library, polygon);
 
     ui.add_space(4.0);
     let label = &mut style.label;
