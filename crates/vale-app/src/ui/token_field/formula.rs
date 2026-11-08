@@ -5,7 +5,7 @@
 //! text of the field reads the chars as expression text.
 
 use vale_style::expr::editor::{Formula, Op, Seq, Tok};
-use vale_style::expr::{FUNCTIONS, Function};
+use vale_style::expr::{FUNCTIONS, Function, Var};
 
 use super::{BoxKind, Boxed, Caret, Chip, ChipKind, Field, Glyph, Look, Node, Selection, Token};
 use crate::classify::number_text;
@@ -73,6 +73,11 @@ pub fn look_of(tok: &Tok, help: &ExprHelp) -> Look {
             ChipKind::Field,
             name.clone(),
             Some(help.field_type(name).map_or(Glyph::Text, Glyph::of)),
+        ),
+        Tok::Var(v) => (
+            ChipKind::Variable,
+            format!("@{}", v.name()),
+            Some(Glyph::of(v.field_type())),
         ),
         Tok::Num(n) => (ChipKind::Value, number_text(*n), None),
         Tok::Text(s) => (ChipKind::Value, format!("“{s}”"), None),
@@ -269,8 +274,16 @@ pub fn function_named(name: &str) -> Option<&'static Function> {
     FUNCTIONS.iter().find(|f| f.name.eq_ignore_ascii_case(name))
 }
 
+/// The variable that `@name` names, in any case.
+fn var_named(word: &str) -> Option<Var> {
+    let name = word.trim().strip_prefix('@')?;
+    Var::ALL
+        .into_iter()
+        .find(|v| v.name().eq_ignore_ascii_case(name))
+}
+
 /// The nodes of a word: a text in quotes, a number, a yes or no value, a
-/// word operator, a field, or a function. Another word is code.
+/// word operator, a variable, a field, or a function. Another word is code.
 fn word_nodes(word: &str, help: &ExprHelp) -> Vec<Node<Tok>> {
     let w = word.trim();
     if w.is_empty() {
@@ -295,6 +308,9 @@ fn word_nodes(word: &str, help: &ExprHelp) -> Vec<Node<Tok>> {
     };
     if let Some(tok) = tok {
         return vec![chip(tok, help)];
+    }
+    if let Some(v) = var_named(w) {
+        return vec![chip(Tok::Var(v), help)];
     }
     let field = (help.fields.iter().find(|f| *f == w))
         .or_else(|| help.fields.iter().find(|f| f.to_lowercase() == lower));
@@ -546,12 +562,20 @@ pub fn insert_function(field: &mut Field<Tok>, f: &'static Function) {
 pub enum Completion {
     Field(String),
     Function(&'static Function),
+    Var(Var),
 }
 
 /// The fields and the functions whose names start with `word`, fields
-/// first. No completions for a word that is not a name.
+/// first. A word that starts with `@` completes the variables. No
+/// completions for a word that is not a name.
 pub fn completions(word: &str, help: &ExprHelp) -> Vec<Completion> {
     let w = word.trim().to_lowercase();
+    if let Some(rest) = w.strip_prefix('@') {
+        return (Var::ALL.into_iter())
+            .filter(|v| v.name().starts_with(rest))
+            .map(Completion::Var)
+            .collect();
+    }
     let name = w.starts_with(|c: char| c.is_alphabetic() || c == '_');
     if !name {
         return Vec::new();
@@ -571,7 +595,17 @@ pub fn pick(field: &mut Field<Tok>, completion: &Completion, help: &ExprHelp) {
     match completion {
         Completion::Field(name) => insert_field(field, name, help),
         Completion::Function(f) => insert_function(field, f),
+        Completion::Var(v) => insert_var(field, *v, help),
     }
+}
+
+/// Puts variable `v` at the caret, in place of the selection and of the run
+/// of chars before the caret.
+pub fn insert_var(field: &mut Field<Tok>, v: Var, help: &ExprHelp) {
+    if field.sel.is_empty() {
+        take_run(field);
+    }
+    field.replace(vec![chip(Tok::Var(v), help)]);
 }
 
 /// Puts field `name` at the caret, in place of the selection and of the run
@@ -613,6 +647,30 @@ mod tests {
         let f = typed("po");
         assert_eq!(pending(&f), "po");
         assert_eq!(text_of(&f.nodes), "po");
+    }
+
+    #[test]
+    fn typing_at_name_makes_a_variable_chip() {
+        let f = typed("@lat + 1");
+        assert_eq!(text_of(&f.nodes), "@lat + 1");
+        let Node::Chip(c) = &f.nodes[0] else {
+            panic!("no chip");
+        };
+        assert_eq!(c.data, Tok::Var(Var::Lat));
+        assert_eq!(c.look.kind, ChipKind::Variable);
+        assert_eq!(c.look.label, "@lat");
+        // Any case names the variable, and the text writes it in lowercase.
+        let f = typed("@VERTICES ");
+        assert_eq!(text_of(&f.nodes), "@vertices");
+        // An unknown name is code.
+        let f = typed("@nope ");
+        assert!(matches!(&f.nodes[0], Node::Chip(c) if c.look.kind == ChipKind::Code));
+        // A word that starts with `@` completes the variables.
+        let mut f = typed("@ve");
+        let found = completions(&pending(&f), &help());
+        assert_eq!(found, [Completion::Var(Var::Vertices)]);
+        pick(&mut f, &found[0], &help());
+        assert_eq!(text_of(&f.nodes), "@vertices");
     }
 
     #[test]

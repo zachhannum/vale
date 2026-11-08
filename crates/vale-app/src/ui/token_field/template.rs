@@ -1,7 +1,7 @@
 //! A label text template as the nodes of a field: text as chars, fields
 //! as chips, a line break as a chip, and a group as a box.
 
-use vale_style::expr::editor::{Case, Empty, FieldFormat, Piece, Template};
+use vale_style::expr::editor::{Case, Empty, FieldFormat, Piece, Subject, Template};
 
 use super::{BoxKind, Boxed, Caret, ChipKind, Field, Glyph, Look, Node, Selection, Token};
 use crate::ui::expr_help::ExprHelp;
@@ -40,12 +40,26 @@ pub fn badge(format: &FieldFormat) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join(" · "))
 }
 
-/// The look of the chip of field `name`.
-pub fn field_look(name: &str, format: &FieldFormat, help: &ExprHelp) -> Look {
+/// The noun of a subject. A measure adds its unit, for example "Area km²".
+pub fn subject_label(subject: &Subject) -> String {
+    match subject {
+        Subject::Measure(m, u) => {
+            format!("{} {}", m.label(), u.unwrap_or(m.default_unit()).label())
+        }
+        s => s.label(),
+    }
+}
+
+/// The look of the chip of a field, a variable, or a measure.
+pub fn field_look(subject: &Subject, format: &FieldFormat, help: &ExprHelp) -> Look {
+    let kind = match subject {
+        Subject::Field(_) => ChipKind::Field,
+        _ => ChipKind::Variable,
+    };
     Look {
-        kind: ChipKind::Field,
-        glyph: Some(help.field_type(name).map_or(Glyph::Text, Glyph::of)),
-        label: name.to_owned(),
+        kind,
+        glyph: Some(help.subject_type(subject).map_or(Glyph::Text, Glyph::of)),
+        label: subject_label(subject),
         badge: badge(format),
     }
 }
@@ -60,11 +74,11 @@ fn short(text: &str) -> String {
 }
 
 /// The node of a field chip.
-pub fn field_node(name: &str, format: FieldFormat, help: &ExprHelp) -> Node<Piece> {
+pub fn field_node(subject: &Subject, format: FieldFormat, help: &ExprHelp) -> Node<Piece> {
     Node::Chip(super::Chip {
-        look: field_look(name, &format, help),
+        look: field_look(subject, &format, help),
         data: Piece::Field {
-            name: name.to_owned(),
+            subject: subject.clone(),
             format,
         },
     })
@@ -77,7 +91,9 @@ pub fn nodes_of(pieces: &[Piece], help: &ExprHelp) -> Vec<Node<Piece>> {
         match p {
             Piece::Text(s) => out.extend(s.chars().map(Node::Char)),
             Piece::LineBreak => out.push(Node::Break),
-            Piece::Field { name, format } => out.push(field_node(name, format.clone(), help)),
+            Piece::Field { subject, format } => {
+                out.push(field_node(subject, format.clone(), help));
+            }
             Piece::Group(items) => {
                 let children = nodes_of(items, help);
                 out.push(Node::Box(Boxed {
@@ -158,10 +174,10 @@ impl Token for Piece {
 
 /// The tag of a group: the fields that it needs.
 pub fn group_label(children: &[Node<Piece>]) -> String {
-    let names: Vec<&str> = (children.iter())
+    let names: Vec<String> = (children.iter())
         .filter_map(|n| match n {
             Node::Chip(c) => match &c.data {
-                Piece::Field { name, .. } => Some(name.as_str()),
+                Piece::Field { subject, .. } => Some(subject.label()),
                 _ => None,
             },
             _ => None,
@@ -183,9 +199,20 @@ pub fn relabel(field: &mut Field<Piece>) {
     });
 }
 
-/// Puts field `name` at the caret, in place of the selection.
-pub fn insert_field(field: &mut Field<Piece>, name: &str, help: &ExprHelp) {
-    field.replace(vec![field_node(name, FieldFormat::default(), help)]);
+/// Puts a field at the caret, in place of the selection.
+pub fn insert_field(field: &mut Field<Piece>, subject: &Subject, help: &ExprHelp) {
+    insert_subject(field, subject.clone(), FieldFormat::default(), help);
+}
+
+/// Puts a field, a variable, or a measure with `format` at the caret, in
+/// place of the selection.
+pub fn insert_subject(
+    field: &mut Field<Piece>,
+    subject: Subject,
+    format: FieldFormat,
+    help: &ExprHelp,
+) {
+    field.replace(vec![field_node(&subject, format, help)]);
 }
 
 /// Puts the selection in a group, and puts the caret after it. With no selection, the group takes the
@@ -321,6 +348,27 @@ mod tests {
         assert_eq!(thousands.as_deref(), Some("1,234"));
         let text = badge(&format("coalesce(upper(name), alt)"));
         assert_eq!(text.as_deref(), Some("ABC · or alt"));
+    }
+
+    #[test]
+    fn a_measure_chip_shows_its_unit() {
+        use vale_style::expr::{Measure, Unit};
+        let f = field("format_number(area('mi2'), 0)");
+        let Node::Chip(c) = &f.nodes[0] else {
+            panic!("no chip");
+        };
+        assert_eq!(c.look.kind, ChipKind::Variable);
+        assert_eq!(c.look.label, "Area mi²");
+        assert_eq!(c.look.badge.as_deref(), Some("1,234"));
+        // With no unit, the chip shows the default unit.
+        let f = field("area()");
+        assert!(matches!(&f.nodes[0], Node::Chip(c) if c.look.label == "Area km²"));
+        // An inserted measure has its default format.
+        let mut f = field("");
+        let s = Subject::Measure(Measure::Area, Some(Unit::Km2));
+        let format = FieldFormat::for_subject(&s);
+        insert_subject(&mut f, s, format, &ExprHelp::empty());
+        assert_eq!(text(&f), "format_number(area('km2'), 0)");
     }
 
     #[test]

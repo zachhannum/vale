@@ -26,6 +26,8 @@ pub use widget::{Options, Output, keep_focus, open_menu, show};
 pub enum ChipKind {
     Field,
     Function,
+    /// A variable, such as `@lat`, or a measure of the geometry.
+    Variable,
     /// A literal value, such as a number or a text in quotes.
     Value,
     Operator,

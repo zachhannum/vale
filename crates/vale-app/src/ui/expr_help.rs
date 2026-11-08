@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use eframe::egui;
 use eframe::egui::text::{CCursor, CCursorRange};
 use vale_store::{FieldType, Geometry, GeometryKind, Layer, LayerId, Value};
+use vale_style::expr::editor::{Subject, measures_for};
 use vale_style::expr::{Context, Expr, FUNCTIONS, field_ref};
 
 use super::AppState;
@@ -23,6 +24,10 @@ pub const NO_VALUE: &str = "No value";
 pub const INSERT: &str = "Insert";
 pub const FIELDS: &str = "Fields";
 pub const FUNCTIONS_MENU: &str = "Functions";
+/// The measures of the geometry, in the filter field menu and the label text.
+pub const GEOMETRY_MENU: &str = "Geometry";
+/// The `@` variables, in the value editor.
+pub const VARIABLES_MENU: &str = "Variables";
 
 /// The map scale of the preview.
 pub const PREVIEW_SCALE: f64 = 1_000_000.0;
@@ -70,7 +75,7 @@ pub struct ExprHelp {
     sample: Option<BTreeMap<String, Value>>,
     /// True if the feature of the preview is a selected feature.
     selected: bool,
-    geometry: GeometryKind,
+    pub geometry: GeometryKind,
     /// The geometry of the feature of the preview, for the measures.
     shape: Option<Geometry>,
     radius_km: f64,
@@ -397,6 +402,16 @@ impl ExprHelp {
     pub fn field_type(&self, name: &str) -> Option<FieldType> {
         let i = self.fields.iter().position(|f| f == name)?;
         self.types.get(i).copied()
+    }
+
+    /// The type of the value of `subject`.
+    pub fn subject_type(&self, subject: &Subject) -> Option<FieldType> {
+        subject.field_type(|name| self.field_type(name))
+    }
+
+    /// The measures of the geometry of the layer.
+    pub fn measures(&self) -> Vec<Subject> {
+        measures_for(self.geometry)
     }
 
     /// The value of field `name` in the feature of the preview.

@@ -649,11 +649,7 @@ fn tray(
                 if functions.is_empty() {
                     continue;
                 }
-                let (head, _) =
-                    ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::hover());
-                let at = pos2(head.left() + 4.0, head.bottom() - 6.0);
-                let title = category.name().to_uppercase();
-                (ui.painter()).text(at, Align2::LEFT_BOTTOM, title, theme::small(), theme::MUTE);
+                widgets::list_heading(ui, category.name());
                 if category == Category::Logic
                     && CASES_ROW.to_lowercase().contains(&needle)
                     && tray_row(

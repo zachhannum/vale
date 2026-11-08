@@ -7,7 +7,7 @@ use eframe::egui::{self, Align2, Color32, Rect, Sense, Stroke, pos2, vec2};
 use vale_labeler::Fonts;
 use vale_render::{DisplayList, Item};
 use vale_style::LabelClass;
-use vale_style::expr::editor::{Empty, Piece, Seq, Template, Tok};
+use vale_style::expr::editor::{Empty, FieldFormat, Piece, Seq, Subject, Template, Tok};
 use vale_style::expr::{FUNCTIONS, Function};
 
 use super::chip_popover::{self, Action, Page};
@@ -452,11 +452,11 @@ fn chip_popover(
     let Some(Node::Chip(chip)) = st.field.node(&path) else {
         return None;
     };
-    let Piece::Field { name, format } = chip.data.clone() else {
+    let Piece::Field { subject, format } = chip.data.clone() else {
         return None;
     };
     let chip = chip_popover::Chip {
-        name: &name,
+        subject: &subject,
         format: &format,
         in_group: path.len() > 1,
     };
@@ -474,13 +474,15 @@ fn chip_popover(
         }
         Action::Format(format, step) => {
             if let Some(Node::Chip(c)) = st.field.node_mut(&path) {
-                c.look = template::field_look(&name, &format, help);
-                c.data = Piece::Field {
-                    name: name.clone(),
-                    format,
-                };
+                *c = chip_of(subject, format, help);
             }
             Some(step)
+        }
+        Action::Subject(subject) => {
+            if let Some(Node::Chip(c)) = st.field.node_mut(&path) {
+                *c = chip_of(subject, format, help);
+            }
+            Some(true)
         }
         Action::Wrap(f) => {
             st.popover = None;
@@ -503,6 +505,14 @@ fn chip_popover(
             st.field.replace(Vec::new());
             Some(true)
         }
+    }
+}
+
+/// The chip of a field piece.
+fn chip_of(subject: Subject, format: FieldFormat, help: &ExprHelp) -> token_field::Chip<Piece> {
+    token_field::Chip {
+        look: template::field_look(&subject, &format, help),
+        data: Piece::Field { subject, format },
     }
 }
 
@@ -576,7 +586,7 @@ fn bar(
                 }
             }
         } else if let Some(name) = field_chips(ui, controls, help, ("", insert_name)) {
-            template::insert_field(&mut st.field, &name, help);
+            template::insert_field(&mut st.field, &Subject::Field(name), help);
             changed = Some(true);
         }
     });
