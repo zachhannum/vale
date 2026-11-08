@@ -446,12 +446,24 @@ impl Draw<'_> {
         if width <= 0.0 {
             return;
         }
+        let below_step = match key.second_unit {
+            Some(_) => LINE_HEIGHT * self.second.style.size,
+            None => 0.0,
+        };
+        let n = rows.len() as f64;
+        let room = (inner.height() - n * (step + below_step) - (n - 1.0) * 0.6 * size) / n;
+        // A box that shrinks to fit the key keeps the shape that the user set.
+        let height = match (key.box_width, key.box_height) {
+            (Some(w), Some(_)) if room > 0.0 => {
+                let s = (width / (w * mm)).min(room / height).min(1.0);
+                width = w * mm * s;
+                height * s
+            }
+            (None, Some(_)) if room > 0.0 => height.min(room),
+            _ => height,
+        };
         let mut y = inner.y0;
         for (i, row) in rows.iter().enumerate() {
-            let below_step = match key.second_unit {
-                Some(_) => LINE_HEIGHT * self.second.style.size,
-                None => 0.0,
-            };
             let row_height = step + height + below_step;
             if i > 0 {
                 y += 0.6 * size;

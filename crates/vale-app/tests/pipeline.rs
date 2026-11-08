@@ -3810,6 +3810,25 @@ fn square_boxes_make_a_strip_of_squares() {
 }
 
 #[test]
+fn square_boxes_that_shrink_to_fit_stay_square() {
+    let (mut doc, mut pipeline, frame, layer) = key_doc("m", &HEIGHT_STOPS, &[]);
+    let auto = fill_boxes(&key_items(&mut doc, &mut pipeline, strip(frame, layer)));
+    let (mut doc, mut pipeline, frame, layer) = key_doc("m", &HEIGHT_STOPS, &[]);
+    let key = ColorKeyItem {
+        box_width: Some(500.0),
+        box_height: Some(500.0),
+        ..strip(frame, layer)
+    };
+    let boxes = fill_boxes(&key_items(&mut doc, &mut pipeline, key));
+    assert_eq!(boxes.len(), 6, "{boxes:?}");
+    for (b, a) in boxes.iter().zip(&auto) {
+        assert!(b.width() <= a.width() + 1e-6, "{boxes:?}");
+        assert!((b.width() - boxes[0].width()).abs() < 1e-6, "{boxes:?}");
+        assert!((b.width() - b.height()).abs() < 1e-6, "{b:?}");
+    }
+}
+
+#[test]
 fn a_fixed_box_width_shrinks_to_fit_the_key() {
     let (mut doc, mut pipeline, frame, layer) = key_doc("m", &HEIGHT_STOPS, &[]);
     let auto = fill_boxes(&key_items(&mut doc, &mut pipeline, strip(frame, layer)));
