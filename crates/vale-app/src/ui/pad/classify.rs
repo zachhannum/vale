@@ -116,8 +116,7 @@ pub fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id
         return;
     };
 
-    // The switch changes the data of the layer, so a map frame has no switch.
-    let differ = kind == GeometryKind::Polygon && state.workspace == Workspace::Globe;
+    let differ = kind == GeometryKind::Polygon;
     if differ {
         ui.add_space(8.0);
         widgets::switch_row(
@@ -441,7 +440,8 @@ pub fn apply(state: &mut AppState, id: LayerId, request: &Request) -> bool {
 
 /// Gives each polygon of the layer a color that no neighbor has, saves the
 /// colors in a field, and replaces the rules with a rule for each color, in
-/// one undo step.
+/// one undo step. In the atlas, the rules go to the map of the selected
+/// frame, and the field goes to the layer.
 fn apply_neighbors(state: &mut AppState, id: LayerId, colors: usize, request: &Request) -> bool {
     let Some(layer) = state.doc.layer(id) else {
         return false;
@@ -462,6 +462,31 @@ fn apply_neighbors(state: &mut AppState, id: LayerId, colors: usize, request: &R
     let field = classify::color_field(layer);
     let classes = classify::color_classes(&field, count);
     let colors = classify::class_colors(&request.ramp, &classes, request.reverse);
+    // In the atlas, the style of the layer is the style of the map here.
+    let Some(mut style) = state.doc.entry(id).map(|e| e.style.clone()) else {
+        return false;
+    };
+    let template = style.style.rules.first().cloned().unwrap_or_else(|| {
+        LayerStyle::default_for(GeometryKind::Polygon, 0, &[])
+            .style
+            .rules[0]
+            .clone()
+    });
+    style.style.rules = classify::make_rules(
+        &template,
+        GeometryKind::Polygon,
+        &classes,
+        &colors,
+        Step::None,
+    );
+    let map = match state.workspace {
+        Workspace::Atlas => state
+            .atlas
+            .frame()
+            .and_then(|f| state.doc.project.atlas.frame(f))
+            .map(|f| f.map),
+        Workspace::Globe => None,
+    };
     state.edit_schema(id, |doc| {
         let has = doc
             .layer(id)
@@ -476,24 +501,17 @@ fn apply_neighbors(state: &mut AppState, id: LayerId, colors: usize, request: &R
         if !doc.project.set_field_values(id, &field, &values) {
             return false;
         }
+        // The rules join the undo step of the field.
+        if let Some(map) = map {
+            doc.set_map_style(map, id, &style);
+        }
         let Some(entry) = doc.entry_mut(id) else {
             return false;
         };
-        let template = entry.style.style.rules.first().cloned().unwrap_or_else(|| {
-            LayerStyle::default_for(GeometryKind::Polygon, 0, &[])
-                .style
-                .rules[0]
-                .clone()
-        });
-        entry.style.style.rules = classify::make_rules(
-            &template,
-            GeometryKind::Polygon,
-            &classes,
-            &colors,
-            Step::None,
-        );
-        // The rules join the undo step of the field.
-        doc.store_styles();
+        entry.style = style;
+        if map.is_none() {
+            doc.store_styles();
+        }
         true
     })
 }
