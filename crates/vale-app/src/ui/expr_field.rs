@@ -130,18 +130,19 @@ fn escaped(ui: &egui::Ui, field_id: egui::Id, was_open: bool) -> bool {
 /// menu.
 fn heading_row(ui: &mut egui::Ui, heading: &str, items: &[Item]) -> Option<Item> {
     let mut chosen = None;
-    let groups: [(&str, fn(&Item) -> bool); 4] = [
-        (FIELDS, |i| matches!(i, Item::Field(_))),
-        (GEOMETRY_MENU, |i| matches!(i, Item::Measure(_))),
-        (VARIABLES_MENU, |i| matches!(i, Item::Var(_))),
-        (FUNCTIONS_MENU, |i| matches!(i, Item::Function(..))),
-    ];
+    let groups = [FIELDS, GEOMETRY_MENU, VARIABLES_MENU, FUNCTIONS_MENU];
+    let group_of = |i: &Item| match i {
+        Item::Field(_) => 0,
+        Item::Measure(_) => 1,
+        Item::Var(_) => 2,
+        Item::Function(..) => 3,
+    };
     ui.horizontal(|ui| {
         ui.label(heading);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.menu_button(format!("{INSERT} ⏷"), |ui| {
-                for (title, of) in groups {
-                    let group: Vec<&Item> = items.iter().filter(|i| of(i)).collect();
+                for (k, title) in groups.into_iter().enumerate() {
+                    let group: Vec<&Item> = items.iter().filter(|i| group_of(i) == k).collect();
                     if group.is_empty() {
                         continue;
                     }
