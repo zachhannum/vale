@@ -48,6 +48,7 @@ pub const ALL_OF: &str = "All of";
 pub const ANY_OF: &str = "Any of";
 /// The starts of the names of the controls of a condition.
 pub const FIELD: &str = "Field";
+pub const UNIT: &str = "Unit";
 pub const COMPARISON: &str = "Comparison";
 pub const VALUE: &str = "Value";
 pub const SECOND_VALUE: &str = "Second value";
@@ -57,6 +58,8 @@ pub const CODE_ROW: &str = "Code row";
 /// The values of a yes-or-no field.
 pub const YES: &str = "Yes";
 pub const NO: &str = "No";
+/// The heading of the measures in the menu of fields.
+pub const GEOMETRY: &str = crate::ui::expr_help::GEOMETRY_MENU;
 /// The search fields of the menu of text values and of the menu of
 /// fields.
 pub const SEARCH_VALUES: &str = "Search values";
@@ -108,6 +111,8 @@ pub enum Menu {
     /// Match all or Match any, of the list or of a group.
     Match,
     Field,
+    /// The unit of a measure.
+    Unit,
     Comparison,
     /// The value with this index.
     Value(usize),
@@ -477,6 +482,14 @@ fn field_look(subject: &Subject, help: &ExprHelp) -> Look {
     }
 }
 
+/// The unit of a measure. With no unit, the default unit.
+fn unit_of(subject: &Subject) -> Option<Unit> {
+    match subject {
+        Subject::Measure(m, u) => Some(u.unwrap_or(m.default_unit())),
+        _ => None,
+    }
+}
+
 /// True if the field holds numbers.
 fn is_number(t: Option<FieldType>) -> bool {
     matches!(t, Some(FieldType::Integer | FieldType::Real))
@@ -496,6 +509,7 @@ fn value_text(v: &Value) -> String {
 /// One control of a row: its width, and what it is.
 enum Piece {
     Field,
+    Unit,
     Op,
     /// The value with this index.
     Value(usize),
@@ -573,6 +587,10 @@ pub fn rule_row(
     let look = field_look(subject, rows.help);
     let count = op.value_count().unwrap_or(1);
     let mut pieces = vec![(chip_width(ui, &look), Piece::Field)];
+    let unit = unit_of(subject);
+    if let Some(u) = unit {
+        pieces.push((menu_width(ui, u.label()), Piece::Unit));
+    }
     pieces.push((menu_width(ui, op.label()), Piece::Op));
     for k in 0..count {
         if k > 0 {
@@ -604,6 +622,16 @@ pub fn rule_row(
                     rows.toggle(path, Menu::Field);
                 }
                 if rows.is_open(path, &Menu::Field) {
+                    rows.anchor = Some(rect);
+                }
+            }
+            Piece::Unit => {
+                let name = rows.name(UNIT, path);
+                let label = unit.map_or("", Unit::label);
+                if menu_button(ui, controls, rect, &name, label) {
+                    rows.toggle(path, Menu::Unit);
+                }
+                if rows.is_open(path, &Menu::Unit) {
                     rows.anchor = Some(rect);
                 }
             }
@@ -944,6 +972,9 @@ pub fn menu_popover(
                 search_field(ui, controls, SEARCH_FIELDS, search);
                 let needle = search.trim().to_lowercase();
                 let shown = (help.fields.iter()).filter(|f| f.to_lowercase().contains(&needle));
+                let measures: Vec<Subject> = (help.measures().into_iter())
+                    .filter(|m| m.label().to_lowercase().contains(&needle))
+                    .collect();
                 egui::ScrollArea::vertical()
                     .max_height(320.0)
                     .show(ui, |ui| {
@@ -954,7 +985,30 @@ pub fn menu_popover(
                                 acts.push(Act::SetSubject(path.clone(), s));
                             }
                         }
+                        if !measures.is_empty() {
+                            widgets::list_heading(ui, GEOMETRY);
+                        }
+                        for m in measures {
+                            let label = m.label();
+                            let on = m.same_kind(subject);
+                            if widgets::option_row(ui, controls, &label, &label, &[], on).clicked()
+                            {
+                                acts.push(Act::SetSubject(path.clone(), m));
+                            }
+                        }
                     });
+            }
+            (Menu::Unit, Some(Cond::Rule { subject, .. })) => {
+                if let Subject::Measure(m, _) = subject {
+                    let unit = unit_of(subject);
+                    for u in m.units() {
+                        let label = u.label();
+                        let on = unit == Some(*u);
+                        if widgets::option_row(ui, controls, label, label, &[], on).clicked() {
+                            acts.push(Act::SetUnit(path.clone(), *u));
+                        }
+                    }
+                }
             }
             (Menu::Comparison, Some(Cond::Rule { subject, op, .. })) => {
                 let kind = help.subject_type(subject).unwrap_or(FieldType::Text);
@@ -1297,5 +1351,74 @@ mod tests {
         assert!(apply(&mut items, Act::SetSubject(vec![0], b), &help));
         let text = Conditions::new(true, items).to_text();
         assert!(text.starts_with("b is null and "), "{text}");
+    }
+
+    fn polygons() -> ExprHelp {
+        let mut help = ExprHelp::empty();
+        help.fields = vec!["name".into()];
+        help.types = vec![FieldType::Text];
+        help.geometry = vale_store::GeometryKind::Polygon;
+        help
+    }
+
+    #[test]
+    fn a_measure_takes_number_comparisons_and_its_units() {
+        use vale_style::expr::Measure;
+        let help = polygons();
+        let mut items = vec![new_rule(&help)];
+        assert!(matches!(&items[0], Cond::Rule { op: CmpOp::Is, .. }));
+        let area = Subject::Measure(Measure::Area, Some(Unit::Km2));
+        assert!(apply(&mut items, Act::SetSubject(vec![0], area), &help));
+        let Cond::Rule { op, values, .. } = &items[0] else {
+            panic!("{items:?}");
+        };
+        // Is fits a number too, and the text value becomes a number.
+        assert_eq!(*op, CmpOp::Is);
+        assert_eq!(values, &[Value::Number(0.0)]);
+        // A text comparison does not fit a measure.
+        items[0] = new_rule(&help);
+        assert!(apply(
+            &mut items,
+            Act::SetOp(vec![0], CmpOp::Contains),
+            &help
+        ));
+        let area = Subject::Measure(Measure::Area, None);
+        assert!(apply(&mut items, Act::SetSubject(vec![0], area), &help));
+        assert!(matches!(&items[0], Cond::Rule { op: CmpOp::Is, .. }));
+        assert!(apply(&mut items, Act::SetOp(vec![0], CmpOp::Gt), &help));
+        assert!(apply(&mut items, Act::SetUnit(vec![0], Unit::Mi2), &help));
+        // A length unit does not fit an area.
+        assert!(!apply(&mut items, Act::SetUnit(vec![0], Unit::Km), &help));
+        // The same measure from the menu keeps the unit.
+        let again = Subject::Measure(Measure::Area, Some(Unit::Km2));
+        assert!(apply(&mut items, Act::SetSubject(vec![0], again), &help));
+        let text = Conditions::new(true, items.clone()).to_text();
+        assert_eq!(text, "area('mi2') > 0");
+        // A variable takes number comparisons too.
+        let lat = Subject::Var(vale_style::expr::Var::Lat);
+        assert!(apply(&mut items, Act::SetSubject(vec![0], lat), &help));
+        let text = Conditions::new(true, items).to_text();
+        assert_eq!(text, "@lat > 0");
+    }
+
+    #[test]
+    fn a_new_rule_on_a_layer_with_no_fields_uses_a_measure() {
+        use vale_style::expr::Measure;
+        let mut help = polygons();
+        help.fields.clear();
+        help.types.clear();
+        let Cond::Rule {
+            subject, values, ..
+        } = new_rule(&help)
+        else {
+            panic!("no rule");
+        };
+        assert_eq!(subject, Subject::Measure(Measure::Area, Some(Unit::Km2)));
+        assert_eq!(values, [Value::Number(0.0)]);
+        help.geometry = vale_store::GeometryKind::Line;
+        let Cond::Rule { subject, .. } = new_rule(&help) else {
+            panic!("no rule");
+        };
+        assert_eq!(subject, Subject::Measure(Measure::Length, Some(Unit::Km)));
     }
 }
