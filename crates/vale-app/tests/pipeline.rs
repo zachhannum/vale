@@ -3156,6 +3156,7 @@ fn masked_doc() -> (Document, vale_store::LayerId) {
             layer: b,
             min: Some(0.0),
             max: None,
+            offset: 0.0,
         }),
         ..style(MASKED_FILL, MASKED_STROKE)
     };

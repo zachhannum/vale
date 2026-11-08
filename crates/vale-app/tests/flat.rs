@@ -863,6 +863,25 @@ fn a_raster_mask_cuts_a_fill_to_the_land_and_the_lakes_of_the_flat_view() {
 
 #[test]
 #[ignore = "gpu"]
+fn a_raster_mask_offset_moves_the_edge_of_the_fill_in_the_flat_view() {
+    let _gpu = one_gpu_test();
+    let (mut h, id, found) = masked_flat();
+    h.state_mut().set_raster_rivers(id, false);
+    for offset in [0.0, 4.0, -4.0] {
+        masked::set_offset(h.state_mut(), found.layer, offset);
+        let (plain, masked) = mask_images(&mut h, found.layer);
+        masked::save_images(&format!("mask-flat-offset{offset}"), &plain, &masked);
+        let inside = masked::inside_polygon(&h.state().globe);
+        let agreement = masked::offset_agreement(&plain, &masked, inside, offset);
+        assert!(
+            agreement.compared > 50_000 && agreement.land > 5_000 && agreement.wrong == 0,
+            "{offset}: {agreement:?}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "gpu"]
 fn a_hidden_raster_layer_masks_a_fill_in_the_flat_view_at_its_smoothing() {
     let _gpu = one_gpu_test();
     let (mut h, id, found) = masked_flat();

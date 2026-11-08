@@ -365,7 +365,7 @@ fn fs_range_cover(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> 
         h = disk_height(at);
     }
     let p = vec2<i32>(floor(frag.xy));
-    return vec4<f32>(range_cover(p, h.x, h.y, at.d), 0.0, 0.0, 1.0);
+    return vec4<f32>(range_cover(p, h.x, h.y, at.d), at.cover, 0.0, 1.0);
 }
 
 @fragment
@@ -378,7 +378,7 @@ fn fs_flat_range_cover(in: FlatVertex) -> @location(0) vec4<f32> {
         h = flat_height(d, dx, dy);
     }
     let p = vec2<i32>(floor(in.position.xy));
-    return vec4<f32>(range_cover(p, h.x, h.y, d), 0.0, 0.0, 1.0);
+    return vec4<f32>(range_cover(p, h.x, h.y, d), 1.0, 0.0, 1.0);
 }
 
 // The place where the height crosses `at` on the edge from `pa` to `pb`.

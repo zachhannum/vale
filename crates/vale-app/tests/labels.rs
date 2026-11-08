@@ -1058,6 +1058,7 @@ fn a_polygon_half_outside_a_page_mask_places_its_label_inside_the_mask() {
         layer: mask,
         min: Some(0.0),
         max: None,
+        offset: 0.0,
     });
     // With no page mask yet, the polygon has no label.
     let (c, _) = first_map_frame(&mut doc, &mut p);

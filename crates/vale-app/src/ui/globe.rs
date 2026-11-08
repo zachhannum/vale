@@ -1804,7 +1804,13 @@ fn raster_masks(doc: &Document, globe: &Globe) -> Vec<(LayerId, RasterMask)> {
     };
     (doc.frame.entries.iter())
         .filter_map(|entry| {
-            let vale_style::Mask::Raster { layer, min, max } = entry.style.style.mask? else {
+            let vale_style::Mask::Raster {
+                layer,
+                min,
+                max,
+                offset,
+            } = entry.style.style.mask?
+            else {
                 return None;
             };
             let raster = raster_of(layer).filter(|&r| globe.holds(r))?;
@@ -1813,6 +1819,7 @@ fn raster_masks(doc: &Document, globe: &Globe) -> Vec<(LayerId, RasterMask)> {
                 raster,
                 min,
                 max,
+                offset,
                 smoothing,
             };
             Some((entry.layer, mask))

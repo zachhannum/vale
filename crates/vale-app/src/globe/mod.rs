@@ -579,6 +579,9 @@ pub struct RasterMask {
     pub raster: RasterId,
     pub min: Option<f64>,
     pub max: Option<f64>,
+    /// The distance in points that the mask grows by. A negative offset
+    /// shrinks it.
+    pub offset: f32,
     /// How the raster layer smooths its values. The mask of a hidden
     /// raster layer follows it.
     pub smoothing: Smoothing,
@@ -4374,6 +4377,7 @@ impl Globe {
                     capture: None,
                     vector: None,
                     cover: None,
+                    cover_offset: 0.0,
                 },
             ));
         }
@@ -4419,6 +4423,7 @@ impl Globe {
             capture: Some(capture),
             vector: None,
             cover: None,
+            cover_offset: 0.0,
         };
         let gpu = self.gpu_frame(format, smooth_full, &river_layers, None);
         let callback = GlobeCallback {
@@ -4528,6 +4533,7 @@ impl Globe {
             capture: Some(capture),
             vector: None,
             cover: Some(cover),
+            cover_offset: mask.offset * point_scale(canvas.pixels_per_point, Some(&frame.place)),
         };
         let gpu = self.gpu_frame(format, smooth_full, &river_layers, None);
         let callback = GlobeCallback {
@@ -5032,6 +5038,7 @@ impl Globe {
                 capture: None,
                 vector: None,
                 cover: None,
+                cover_offset: 0.0,
             };
             out.push(callback(GpuJob::Group(Box::new(group))));
         };
@@ -5066,6 +5073,7 @@ impl Globe {
                         capture: None,
                         vector: None,
                         cover: Some(cover),
+                        cover_offset: mask.offset * canvas.pixels_per_point,
                     };
                     let frame = frame.clone();
                     out.push(Paint::Masked(

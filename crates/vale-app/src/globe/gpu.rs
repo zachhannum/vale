@@ -277,8 +277,14 @@ struct Layouts {
 
 /// The passes of the masks.
 struct Masks {
-    /// The value range of a raster mask, on the globe and in the flat view.
-    cover: [wgpu::RenderPipeline; 2],
+    /// The value range of a raster mask, on the globe and in the flat view,
+    /// into the cover and then into the cover before its offset.
+    cover: [wgpu::RenderPipeline; 4],
+    /// The layout of the offset passes of a cover.
+    offset_layout: wgpu::BindGroupLayout,
+    /// The passes of the offset of a cover: along the rows, and then along
+    /// the columns into the cover.
+    offset: [wgpu::RenderPipeline; 2],
     /// Draws the meshes of egui shapes into the target of a group.
     vector: wgpu::RenderPipeline,
     /// Puts the opaque shapes of a translucent stroke on the target of a
@@ -487,7 +493,7 @@ impl Layouts {
 
     fn masks(&self) -> Masks {
         let shader = self.shader();
-        let cover = |label, vertex, fragment, flat: bool| {
+        let cover = |label, vertex, fragment, flat: bool, format| {
             let buffers = [Some(vertex_layout())];
             let buffers: &[Option<wgpu::VertexBufferLayout<'_>>] =
                 if flat { &buffers } else { &[] };
@@ -506,7 +512,79 @@ impl Layouts {
                         module: &shader,
                         entry_point: Some(fragment),
                         targets: &[Some(wgpu::ColorTargetState {
-                            format: COVER,
+                            format,
+                            blend: None,
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                        compilation_options: Default::default(),
+                    }),
+                    primitive: wgpu::PrimitiveState::default(),
+                    depth_stencil: None,
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview_mask: None,
+                    cache: None,
+                },
+            )
+        };
+        let texture = |binding| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        };
+        let offset_layout =
+            self.device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("cover offset"),
+                    entries: &[
+                        texture(0),
+                        texture(1),
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 2,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Uniform,
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                    ],
+                });
+        let offset_shader = self
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("cover offset"),
+                source: wgpu::ShaderSource::Wgsl(include_str!("cover_offset.wgsl").into()),
+            });
+        let pipeline_layout = self
+            .device
+            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("cover offset"),
+                bind_group_layouts: &[Some(&offset_layout)],
+                immediate_size: 0,
+            });
+        let offset = |label, fragment, format| {
+            render_pipeline(
+                &self.device,
+                &wgpu::RenderPipelineDescriptor {
+                    label: Some(label),
+                    layout: Some(&pipeline_layout),
+                    vertex: wgpu::VertexState {
+                        module: &offset_shader,
+                        entry_point: Some("vs_full"),
+                        buffers: &[],
+                        compilation_options: Default::default(),
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &offset_shader,
+                        entry_point: Some(fragment),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format,
                             blend: None,
                             write_mask: wgpu::ColorWrites::ALL,
                         })],
@@ -522,9 +600,34 @@ impl Layouts {
         };
         Masks {
             cover: [
-                cover("range cover", "vs_main", "fs_range_cover", false),
-                cover("flat range cover", "vs_flat", "fs_flat_range_cover", true),
+                cover("range cover", "vs_main", "fs_range_cover", false, COVER),
+                cover(
+                    "flat range cover",
+                    "vs_flat",
+                    "fs_flat_range_cover",
+                    true,
+                    COVER,
+                ),
+                cover(
+                    "raw range cover",
+                    "vs_main",
+                    "fs_range_cover",
+                    false,
+                    COVER_RAW,
+                ),
+                cover(
+                    "raw flat range cover",
+                    "vs_flat",
+                    "fs_flat_range_cover",
+                    true,
+                    COVER_RAW,
+                ),
             ],
+            offset: [
+                offset("cover offset rows", "fs_rows", COVER_ROWS),
+                offset("cover offset columns", "fs_columns", COVER),
+            ],
+            offset_layout,
             vector: vector_pipeline(&self.device, self.format, &self.vector),
             vector_group: vector_group_pipeline(&self.device, self.format, &self.vector_group),
         }
@@ -1279,6 +1382,14 @@ impl Resources {
 
 /// The format of the cover of a raster mask.
 const COVER: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
+/// The format of the cover of a raster mask before its offset: the cover,
+/// and the part of the pixel on the ground.
+const COVER_RAW: wgpu::TextureFormat = wgpu::TextureFormat::Rg8Unorm;
+/// The format of the pass of the offset along the rows.
+const COVER_ROWS: wgpu::TextureFormat = wgpu::TextureFormat::Rg16Float;
+/// The largest offset of a cover, in pixels. Each offset pass reads twice
+/// as many pixels for each pixel.
+const MAX_COVER_OFFSET: f32 = 128.0;
 /// The number of the mask of a target that has the cover of a raster mask.
 const COVER_MASK: u64 = u64::MAX;
 
@@ -1506,6 +1617,9 @@ pub struct Group {
     /// The pass of a raster layer whose value range cuts the pixels, with
     /// the range in its uniforms. It takes the place of `mask`.
     pub cover: Option<Draw>,
+    /// The distance in pixels that the cover grows by. A negative offset
+    /// shrinks it.
+    pub cover_offset: f32,
     /// A one-time copy of the target. A captured group does not paint on the
     /// screen.
     pub capture: Option<Arc<Capture>>,
@@ -1606,6 +1720,75 @@ impl CaptureReadback {
 /// that drew it.
 const TARGET_LIFE: Duration = Duration::from_secs(2);
 
+/// The textures and the groups of the offset passes of a cover.
+struct CoverOffset {
+    /// The cover before its offset.
+    raw: wgpu::TextureView,
+    /// The nearest pixel of the region in each row.
+    rows: wgpu::TextureView,
+    uniforms: wgpu::Buffer,
+    groups: [wgpu::BindGroup; 2],
+}
+
+impl CoverOffset {
+    fn new(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, size: [u32; 2]) -> Self {
+        let texture = |label, format| {
+            device
+                .create_texture(&wgpu::TextureDescriptor {
+                    label: Some(label),
+                    size: wgpu::Extent3d {
+                        width: size[0],
+                        height: size[1],
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING
+                        | wgpu::TextureUsages::RENDER_ATTACHMENT,
+                    view_formats: &[],
+                })
+                .create_view(&Default::default())
+        };
+        let raw = texture("raw cover", COVER_RAW);
+        let rows = texture("cover rows", COVER_ROWS);
+        let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("cover offset"),
+            size: 32,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let group = |source: &wgpu::TextureView| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("cover offset"),
+                layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(source),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&raw),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: uniforms.as_entire_binding(),
+                    },
+                ],
+            })
+        };
+        let groups = [group(&raw), group(&rows)];
+        CoverOffset {
+            raw,
+            rows,
+            uniforms,
+            groups,
+        }
+    }
+}
+
 /// The target of a group, and the layers below the pass that is drawn.
 struct Offscreen {
     number: u64,
@@ -1620,6 +1803,8 @@ struct Offscreen {
     mask: Option<(u64, wgpu::TextureView)>,
     /// The cover of a raster mask, which the GPU draws.
     cover: Option<(wgpu::Texture, wgpu::TextureView)>,
+    /// The textures of the offset of the cover, made at the first offset.
+    cover_offset: Option<CoverOffset>,
     bind: Option<wgpu::BindGroup>,
     used: Instant,
 }
@@ -1700,6 +1885,7 @@ impl Resources {
             place,
             mask: None,
             cover: None,
+            cover_offset: None,
             bind: None,
             used: now,
         };
@@ -1904,7 +2090,19 @@ impl Resources {
             self.draw_vector(device, encoder, &layers, size, shapes);
         }
         if let Some(cover) = &group.cover {
-            self.render_cover(device, queue, encoder, cover, group.target, size, &view);
+            let offset = group
+                .cover_offset
+                .clamp(-MAX_COVER_OFFSET, MAX_COVER_OFFSET);
+            self.render_cover(
+                device,
+                queue,
+                encoder,
+                cover,
+                offset,
+                group.target,
+                size,
+                &view,
+            );
         }
         let mut readback = None;
         if let Some(capture) = &group.capture
@@ -2113,7 +2311,7 @@ impl Resources {
 
     /// Draws the cover of the value range of a raster mask into the cover
     /// of a target of `size` pixels, from the heights of the layer pass
-    /// `cover`.
+    /// `cover`, grown by `offset` pixels.
     #[allow(clippy::too_many_arguments)]
     fn render_cover(
         &mut self,
@@ -2121,6 +2319,7 @@ impl Resources {
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         cover: &Draw,
+        offset: f32,
         target: TargetId,
         size: [u32; 2],
         view: &View,
@@ -2142,10 +2341,73 @@ impl Resources {
         else {
             return;
         };
+        let Some(masks) = self.masks.get() else {
+            return;
+        };
+        // An offset draws the cover into a texture of its own, and its passes
+        // draw the cover from it.
+        let raw = (offset != 0.0).then(|| {
+            let t = self.targets.get_mut(&target)?;
+            let size = t.size;
+            let o = (t.cover_offset)
+                .get_or_insert_with(|| CoverOffset::new(device, &masks.offset_layout, size));
+            let reach = offset.abs().ceil() + 1.0;
+            let [left, top, right, bottom] = draw.clip.map(f32::to_bits);
+            let reach = (reach as i32).cast_unsigned();
+            let uniforms = [offset.to_bits(), reach, 0, 0, left, top, right, bottom];
+            queue.write_buffer(&o.uniforms, 0, bytemuck::cast_slice(&uniforms));
+            Some(o.raw.clone())
+        });
+        let raw = raw.flatten();
+        let into = raw.as_ref().unwrap_or(&out);
+        self.draw_cover(encoder, &draw, target, size, view, into, raw.is_some());
+        let (Some(_), Some(o)) = (
+            &raw,
+            self.targets
+                .get(&target)
+                .and_then(|t| t.cover_offset.as_ref()),
+        ) else {
+            return;
+        };
+        for (i, into) in [&o.rows, &out].into_iter().enumerate() {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("cover offset"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: into,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+            pass.set_viewport(0.0, 0.0, size[0] as f32, size[1] as f32, 0.0, 1.0);
+            pass.set_pipeline(&masks.offset[i]);
+            pass.set_bind_group(0, &o.groups[i], &[]);
+            pass.draw(0..3, 0..1);
+        }
+    }
+
+    /// Draws the value range of the raster pass `draw` into `out`: into the
+    /// cover, or with `raw` into the cover before its offset.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_cover(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        draw: &Draw,
+        target: TargetId,
+        size: [u32; 2],
+        view: &View,
+        out: &wgpu::TextureView,
+        raw: bool,
+    ) {
+        let raw = usize::from(raw);
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("range cover"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &out,
+                view: out,
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
@@ -2161,7 +2423,7 @@ impl Resources {
         let Some(masks) = self.masks.get() else {
             return;
         };
-        let Some((tiles, levels)) = self.layer_groups(&draw) else {
+        let Some((tiles, levels)) = self.layer_groups(draw) else {
             return;
         };
         let Some(slot) = self.slots.get(&(target, draw.pass)) else {
@@ -2173,11 +2435,11 @@ impl Resources {
         pass.set_bind_group(3, self.edges.group((target, layer)), &[]);
         match view {
             View::Globe => {
-                pass.set_pipeline(&masks.cover[0]);
+                pass.set_pipeline(&masks.cover[2 * raw]);
                 pass.draw(0..3, 0..1);
             }
             View::Flat(Some(mesh)) => {
-                pass.set_pipeline(&masks.cover[1]);
+                pass.set_pipeline(&masks.cover[2 * raw + 1]);
                 pass.set_viewport(0.0, 0.0, size[0] as f32, size[1] as f32, 0.0, 1.0);
                 pass.set_vertex_buffer(0, mesh.vertices.slice(..));
                 pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
