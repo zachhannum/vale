@@ -199,7 +199,7 @@ fn the_inspector_shows_the_count_of_each_layer_of_a_mixed_selection() {
     let (towns, wells, at) = two_layers(&mut h);
     add_point(&mut h, towns.layer);
     h.state_mut().select_all_layers();
-    h.state_mut().pad.right = Some(Panel::Attributes);
+    h.state_mut().pad.float = Some(Panel::Attributes);
     pen_box(&mut h, at - vec2(30.0, 30.0), at + vec2(30.0, 30.0));
     assert_eq!(h.state().feature_selection.len(), 3);
     assert_eq!(

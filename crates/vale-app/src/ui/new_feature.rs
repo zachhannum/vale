@@ -207,7 +207,7 @@ pub fn keyboard_top(screen: Rect) -> f32 {
 pub fn point_card(state: &AppState, class: WidthClass) -> bool {
     class == WidthClass::Compact
         && !state.pad.brush
-        && state.pad.right == Some(Panel::Attributes)
+        && state.pad.float == Some(Panel::Attributes)
         && state.new_feature.as_ref().is_some_and(NewFeature::is_point)
 }
 

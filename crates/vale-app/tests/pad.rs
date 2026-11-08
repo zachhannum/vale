@@ -310,18 +310,28 @@ fn cards(h: &Pad) -> Vec<Rect> {
     cards
 }
 
+/// The rectangle that the globe fits in: the whole screen in the compact
+/// layout, and the canvas below the view control from 600 points.
+fn globe_fit(h: &Pad, screen: Rect) -> Rect {
+    let rects = h.state().pad.rects.unwrap();
+    match rects.class {
+        WidthClass::Compact => screen,
+        _ => rects.fit,
+    }
+}
+
 #[test]
 fn the_canvas_fills_the_screen_and_the_panels_float_over_it() {
     for size in BOARDS {
         let mut h = pad(size);
         let screen = Rect::from_min_size(Pos2::ZERO, size.into());
-        assert_eq!(h.state().globe.rect, screen, "{size:?}");
+        assert_eq!(h.state().globe.rect, globe_fit(&h, screen), "{size:?}");
         tap(&mut h, "Layers");
         if !h.state().pad.rects.unwrap().one_panel {
             tap(&mut h, "Brush settings");
         }
         assert!(!h.state().pad.panels.is_empty());
-        assert_eq!(h.state().globe.rect, screen, "{size:?}");
+        assert_eq!(h.state().globe.rect, globe_fit(&h, screen), "{size:?}");
         for card in cards(&h) {
             assert!(screen.contains_rect(card), "{size:?}: {card:?}");
         }
@@ -3667,7 +3677,7 @@ fn the_pen_paints_on_the_canvas_and_a_panel_stays_open() {
     assert!(!h.state().pad.is_open(Panel::Brush));
     toolbox(&mut h);
     toolbox(&mut h);
-    assert_eq!(h.state().pad.right, None);
+    assert_eq!(h.state().pad.float, None);
 }
 
 /// A tap of `count` fingers near the middle of the canvas. The first finger
@@ -4276,7 +4286,7 @@ fn the_layout_follows_the_turn_of_the_ipad() {
         h.set_size(size.into());
         h.run_steps(3);
         let screen = Rect::from_min_size(Pos2::ZERO, size.into());
-        assert_eq!(h.state().globe.rect, screen);
+        assert_eq!(h.state().globe.rect, globe_fit(&h, screen));
         check_controls(&h, &format!("turned to {size:?}"));
     }
     // The narrow window has room for one panel.
@@ -4327,7 +4337,7 @@ fn the_cards_stay_out_of_the_safe_area_of_the_device() {
     h.input_mut().safe_area_insets = Some(egui::SafeAreaInsets(insets));
     h.run_steps(3);
     let screen = Rect::from_min_size(Pos2::ZERO, BOARDS[0].into());
-    assert_eq!(h.state().globe.rect, screen);
+    assert_eq!(h.state().globe.rect, globe_fit(&h, screen));
     for c in &h.state().pad.controls {
         assert!(
             c.rect.top() >= 40.0 && c.rect.bottom() <= 834.0 - 34.0,
@@ -6396,6 +6406,8 @@ fn a_line_stroke_is_one_feature_that_undo_removes_and_a_stroke_from_its_end_exte
     let before = line_features(&h, rivers);
     let saved = saves(&h);
 
+    // The ends of the stroke do not snap to the rivers near them.
+    h.state_mut().globe.snap.on = false;
     let center = h.state().globe.rect.center();
     let (from, to) = (center + vec2(-150.0, 40.0), center + vec2(150.0, -40.0));
     line_stroke(&mut h, from, to);
@@ -6415,7 +6427,10 @@ fn a_line_stroke_is_one_feature_that_undo_removes_and_a_stroke_from_its_end_exte
         let dir = vale_app::globe::math::lonlat_to_dir(p[0], p[1]);
         globe.view.project(globe.rect, dir).unwrap()
     });
-    assert!(start.distance(from) < 0.5 && end.distance(to) < 0.5);
+    assert!(
+        start.distance(from) < 0.5 && end.distance(to) < 0.5,
+        "{start:?} {end:?} {from:?} {to:?}"
+    );
     assert_eq!(saves(&h), saved + 1);
 
     tap(&mut h, "Undo");
@@ -7819,7 +7834,7 @@ fn a_new_point_snaps_to_a_vertex() {
     };
     // The towns near the target are far apart at this zoom.
     let view = GlobeView::centered(target[0], target[1]);
-    h.state_mut().globe.view = GlobeView { zoom: 20.0, ..view };
+    h.state_mut().globe.view = GlobeView { zoom: 30.0, ..view };
     h.run_steps(2);
     let dir = vale_app::globe::math::lonlat_to_dir(target[0], target[1]);
     let at = h.state().globe.project(dir).unwrap();
@@ -10643,7 +10658,7 @@ fn the_measure_cell_of_the_tool_strip_opens_the_tool_with_any_layer_on_each_scre
             }
             // A disabled cell is not in the list of the controls, so the
             // path gets three points.
-            let center = pos2(size.0 / 2.0, size.1 / 2.0);
+            let center = h.state().globe.rect.center();
             for offset in [vec2(-50.0, -40.0), vec2(50.0, -40.0), vec2(0.0, 50.0)] {
                 finger_tap(&mut h, center + offset);
             }
@@ -10694,7 +10709,7 @@ fn the_cells_of_the_measure_card_act_on_the_path() {
         let place = readout_text(h.state().cursor_lonlat, value.as_deref());
         assert_eq!(readout_line(h.state()), place, "{what}");
         assert!(disabled(&h, CLEAR_PATH), "{what}");
-        let center = pos2(size.0 / 2.0, size.1 / 2.0);
+        let center = h.state().globe.rect.center();
         for offset in [vec2(-50.0, -40.0), vec2(50.0, -40.0), vec2(0.0, 50.0)] {
             finger_tap(&mut h, center + offset);
         }

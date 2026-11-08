@@ -15,7 +15,7 @@ pub const PANEL_WIDTH: f32 = 460.0;
 /// True if the Layers panel shows a page with an expression editor: the
 /// label text, a rule with its filter, or Classify with its value.
 pub fn showing(state: &AppState) -> bool {
-    state.pad.right == Some(Panel::Layers)
+    state.pad.is_open(Panel::Layers)
         && matches!(state.pad.layer, Some(LayerRef::Vector(_)))
         && matches!(
             state.pad.page,

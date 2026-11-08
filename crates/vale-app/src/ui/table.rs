@@ -149,7 +149,7 @@ impl AppState {
                 self.pad.close(super::pad::Panel::Attributes);
             }
         } else if self.layout == super::Layout::Pad {
-            self.pad.right = Some(super::pad::Panel::Layers);
+            self.pad.open(super::pad::Panel::Layers);
             self.pad.layer = Some(super::LayerRef::Vector(layer));
             self.pad.page = Some(super::pad::Page::Table);
         }

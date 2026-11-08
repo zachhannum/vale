@@ -37,7 +37,7 @@ pub fn showing(state: &AppState) -> bool {
         return state.atlas.open_layer() == Some(table.layer)
             && state.atlas.layer_page == Some(Page::Table);
     }
-    state.pad.right == Some(Panel::Layers)
+    state.pad.is_open(Panel::Layers)
         && state.pad.page == Some(Page::Table)
         && state.pad.layer == Some(LayerRef::Vector(table.layer))
 }

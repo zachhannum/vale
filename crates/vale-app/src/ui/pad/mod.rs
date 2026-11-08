@@ -35,6 +35,7 @@ pub mod cases;
 pub mod chip_popover;
 pub mod classify;
 pub mod column;
+pub mod dock;
 pub mod edge_labels;
 pub mod expression;
 pub mod eyedropper;
@@ -445,10 +446,17 @@ pub struct PadState {
     pub page: Option<Page>,
     /// The texts of the open page of a field.
     field: Option<fields::Draft>,
-    /// The panel at the right: Layers, Toolbox, Attributes, or none.
-    pub right: Option<Panel>,
+    /// The panel that shows as a floating card at the right.
+    pub float: Option<Panel>,
     /// The dock of each workspace.
     pub docks: crate::dock::Docks,
+    /// The dock can show: the window is 1,000 points wide or more. Each
+    /// frame sets it, with `workspace`.
+    pub dockable: bool,
+    /// The workspace of the frame.
+    pub workspace: Workspace,
+    /// The places and the drags of the dock in this frame.
+    pub dock_frame: dock::DockFrame,
     /// The layer that the Layers panel shows. `None`: the panel shows the
     /// list of the layers.
     pub layer: Option<LayerRef>,
@@ -496,6 +504,9 @@ pub struct PadState {
     pub controls: Controls,
     /// The places of the cards in the last frame.
     pub rects: Option<Rects>,
+    /// The space that the globe fits in, from the last frame. `None`: the
+    /// whole canvas.
+    pub fit: Option<Rect>,
     /// The label at the end of the scale bar of the readout in the last
     /// frame.
     pub readout_scale: Option<String>,
@@ -518,41 +529,104 @@ pub struct PadState {
 }
 
 impl PadState {
+    /// Sets the workspace of the frame, and whether the dock can show.
+    pub fn begin_frame(&mut self, workspace: Workspace, dockable: bool) {
+        self.workspace = workspace;
+        self.dockable = dockable;
+    }
+
+    /// The dock of the workspace if it is open and can show.
+    pub fn open_dock(&self) -> Option<&crate::dock::DockState> {
+        let dock = self.docks.get(self.workspace);
+        (self.dockable && dock.open).then_some(dock)
+    }
+
+    /// True if `panel` is in the open dock.
+    pub fn is_docked(&self, panel: Panel) -> bool {
+        self.open_dock().is_some_and(|dock| dock.contains(panel))
+    }
+
+    /// True if the panel shows: in the open dock, or as a floating card.
     pub fn is_open(&self, panel: Panel) -> bool {
         match panel {
             Panel::Brush => self.brush,
-            other => self.right == Some(other),
+            other => self.float == Some(other) || self.is_docked(other),
         }
     }
 
+    /// Shows the panel: in the open dock, or as the floating card.
     pub fn open(&mut self, panel: Panel) {
         match panel {
             Panel::Brush => self.brush = true,
-            other => self.right = Some(other),
+            other if self.open_dock().is_some() => {
+                let workspace = self.workspace;
+                let dock = self.docks.get_mut(workspace);
+                dock.insert(workspace, crate::dock::DockPanel::new(other));
+                if let Some(p) = dock.panels.iter_mut().find(|p| p.panel == other) {
+                    p.folded = false;
+                }
+            }
+            other => self.float = Some(other),
         }
         self.sheet_offset = 0.0;
         self.swipe = None;
     }
 
+    /// Hides the panel. A panel in the open dock leaves the dock.
     pub fn close(&mut self, panel: Panel) {
         match panel {
             Panel::Brush => self.brush = false,
-            _ => self.right = None,
+            other => {
+                if self.float == Some(other) {
+                    self.float = None;
+                }
+                if self.is_docked(other) {
+                    let workspace = self.workspace;
+                    self.docks.get_mut(workspace).remove(other);
+                }
+            }
         }
     }
 
     /// Opens a closed panel and closes an open panel. `one_panel`: the screen
-    /// has room for one panel, so the other panel closes.
+    /// has room for one floating panel, so the other floating panel closes.
     fn toggle(&mut self, panel: Panel, one_panel: bool) {
         if self.is_open(panel) {
             self.close(panel);
             return;
         }
-        if one_panel {
+        if one_panel && (panel == Panel::Brush || self.open_dock().is_none()) {
             self.brush = false;
-            self.right = None;
+            self.float = None;
         }
         self.open(panel);
+    }
+
+    /// Moves `panel` into the dock of the workspace and opens the dock.
+    pub fn dock_panel(&mut self, panel: Panel) {
+        let workspace = self.workspace;
+        let dock = self.docks.get_mut(workspace);
+        dock.insert(workspace, crate::dock::DockPanel::new(panel));
+        if let Some(p) = dock.panels.iter_mut().find(|p| p.panel == panel) {
+            p.folded = false;
+        }
+        dock.open = true;
+        if self.float == Some(panel) {
+            self.float = None;
+        }
+    }
+
+    /// Opens or closes the dock of the workspace. A floating card goes into
+    /// the dock that opens.
+    pub fn toggle_dock(&mut self) {
+        let workspace = self.workspace;
+        if self.docks.get(workspace).open {
+            self.docks.get_mut(workspace).open = false;
+        } else if let Some(panel) = self.float {
+            self.dock_panel(panel);
+        } else {
+            self.docks.get_mut(workspace).open = true;
+        }
     }
 }
 
@@ -606,11 +680,14 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     let ctx = ui.ctx().clone();
     widgets::set_backdrop(&ctx, state.globe.backdrop());
     let screen = ctx.viewport_rect();
+    dock::shortcut(&ctx, state);
     // The globe paints after the panels, so a change in a panel shows in
-    // the same frame.
+    // the same frame. It fits in the space of the last frame beside the
+    // dock and below the view control.
+    let fit = state.pad.fit;
     let canvas = ui.scope_builder(egui::UiBuilder::new().max_rect(screen), |ui| {
         ui.set_clip_rect(screen);
-        globe::canvas_input(ui, state, theme::CANVAS)
+        globe::canvas_input(ui, state, theme::CANVAS, fit)
     });
 
     let class = WidthClass::of(screen.width());
@@ -638,7 +715,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         strip,
         extra: extra_cells(state),
         tools: TOOLS,
-        dock_width: bar::dock_width(state, Workspace::Globe),
+        dock_width: dock::layout_width(&ctx, state),
         dock_buttons: Panel::order(Workspace::Globe).len(),
         name_width: bar::name_width(ui, state),
         tabs_width: bar::tabs_width(ui),
@@ -650,8 +727,8 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         input.panel = has_sheet(state, class);
     }
     let mut rects = geometry::layout(&input);
-    if rects.one_panel && state.pad.brush && state.pad.right.is_some() {
-        state.pad.right = None;
+    if rects.one_panel && state.pad.brush && state.pad.float.is_some() {
+        state.pad.float = None;
     }
     state.pad.sheet_offset = input
         .sheet_offset
@@ -693,7 +770,9 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     input.cells = card_cells(&state.globe);
     input.column = column_input(state);
     input.sheet_offset = state.pad.sheet_offset;
+    input.dock_width = dock::layout_width(&ctx, state);
     rects = geometry::layout(&input);
+    dock::draw(&ctx, state, &mut controls, &rects);
     table::check(state);
     table::widen(state, &mut rects);
     expression::widen(state, &mut rects);
@@ -709,6 +788,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
             show_panel(&ctx, state, &mut controls, &rects, panel);
         }
     }
+    dock::finish(&ctx, state, &mut controls);
     super::new_feature::keep_in_view(&ctx, state, &rects);
     expire_notes(&ctx, state);
     raster::band_card(&ctx, state, &mut controls, &rects);
@@ -756,6 +836,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         globe::paint_canvas(ui, state, rect, theme::CANVAS);
     }
 
+    state.pad.fit = (class != WidthClass::Compact).then_some(rects.fit);
     state.pad.controls = controls;
     state.pad.rects = Some(rects);
 }
@@ -763,7 +844,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
 /// True if a panel is open. On a compact screen, a panel is a sheet, and
 /// the card of a new point takes the place of the sheet of the inspector.
 fn has_sheet(state: &AppState, class: WidthClass) -> bool {
-    let open = state.pad.brush || state.pad.right.is_some();
+    let open = state.pad.brush || state.pad.float.is_some();
     open && !super::new_feature::point_card(state, class)
 }
 
@@ -1965,6 +2046,7 @@ pub(super) fn show_panel(
             ui.allocate_ui(size, |ui| table::page(ui, state, controls));
         }
     };
+    state.pad.dock_frame.placing = Some(panel);
     let rect = show_card(ctx, state, controls, rects, card, on_title, top, body);
     state.pad.panels.push((panel, rect));
 }
@@ -2008,6 +2090,24 @@ fn show_card(
         head,
         scroll,
     } = card;
+    let placing = state.pad.dock_frame.placing.take();
+    let slot = placing.and_then(|p| state.pad.dock_frame.slot(p));
+    let place = match slot {
+        Some(slot) if rects.sheet.is_none() => CardPlace::Docked(slot),
+        _ => CardPlace::Float(min, width),
+    };
+    let (min, width) = match place {
+        CardPlace::Docked(slot) => {
+            return docked_card(
+                ctx, state, controls, slot, key, head, scroll, on_title, top, body,
+            );
+        }
+        CardPlace::Float(min, width) => (min, width),
+    };
+    // A floating card of a panel of the dock zone can go into the dock.
+    let dockable = rects.class == WidthClass::Wide
+        && rects.sheet.is_none()
+        && placing.is_some_and(|p| p != Panel::Brush);
     let (rect, radius) = match rects.sheet {
         Some(sheet) => {
             let r = theme::SHEET_RADIUS as u8;
@@ -2037,8 +2137,23 @@ fn show_card(
             ui.painter()
                 .rect_filled(grabber, 3.0, theme::MUTE.gamma_multiply(0.6));
         }
-        let row = widgets::title_row_with(ui, controls, head.title, head.back, sheet, head.action);
+        let ends = match dockable {
+            true => widgets::TitleEnds::CloseDock,
+            false => widgets::TitleEnds::Close,
+        };
+        let row = widgets::title_row_with(
+            ui,
+            controls,
+            head.title,
+            head.back,
+            sheet,
+            head.action,
+            ends,
+        );
         on_title(state, &row);
+        if let (true, Some(panel)) = (row.dock, placing) {
+            dock_card(state, panel);
+        }
         let low = sheet && state.pad.sheet_offset > -rects.sheet_rise + 0.5;
         ctx.data_mut(|d| d.insert_temp(low_id(), low));
         if sheet {
@@ -2085,6 +2200,99 @@ fn show_card(
             .heights
             .insert(key, ROW + fixed + out.content_size.y);
     });
+    rect
+}
+
+/// Where `show_card` places a panel.
+#[derive(Clone, Copy, Debug)]
+enum CardPlace {
+    /// A floating card, with its top-left corner and its width, or the
+    /// sheet in the compact width.
+    Float(Pos2, f32),
+    /// A slot of the dock.
+    Docked(dock::Slot),
+}
+
+/// Moves the panel of a floating card into the dock, and opens the dock.
+fn dock_card(state: &mut AppState, panel: Panel) {
+    state.pad.dock_panel(panel);
+    if panel == Panel::Maps {
+        state.atlas.frames = false;
+    }
+}
+
+/// Shows a panel in its slot of the dock: the title row with the chevron,
+/// and the body below it, which scrolls. A tap on the title row folds the
+/// panel.
+#[allow(clippy::too_many_arguments)]
+fn docked_card(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    controls: &mut Controls,
+    slot: dock::Slot,
+    key: &'static str,
+    head: CardTitle,
+    scroll: egui::scroll_area::ScrollSource,
+    on_title: impl FnOnce(&mut AppState, &widgets::TitleRow),
+    top: impl FnOnce(&mut egui::Ui, &mut AppState, &mut Controls),
+    body: impl FnOnce(&mut egui::Ui, &mut AppState, &mut Controls),
+) -> Rect {
+    let rect = slot.rect();
+    let Some(clip) = state.pad.dock_frame.rect else {
+        return rect;
+    };
+    state.pad.dock_frame.drawn.push(slot.panel);
+    let id = egui::Id::new(("pad-dock", slot.panel.id()));
+    let mut fold = false;
+    let mut drag = 0.0;
+    dock::piece(ctx, id, rect, clip, |ui| {
+        dock::top_line(ui, rect);
+        ui.spacing_mut().item_spacing.y = 0.0;
+        let name = dock::title_name(slot.panel);
+        let ends = widgets::TitleEnds::Fold {
+            name: &name,
+            folded: slot.body.is_none(),
+        };
+        let row = widgets::title_row_with(
+            ui,
+            controls,
+            head.title,
+            head.back,
+            false,
+            head.action,
+            ends,
+        );
+        fold = row.bar.clicked();
+        drag = row.bar.drag_delta().y;
+        on_title(state, &row);
+        let Some(area) = slot.body else {
+            return;
+        };
+        let margin = egui::Margin::symmetric(BODY_PAD as i8, 0);
+        egui::Frame::NONE.inner_margin(margin).show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 6.0;
+            top(ui, state, controls);
+        });
+        let most = (area.bottom() - ui.cursor().top()).max(0.0);
+        egui::ScrollArea::vertical()
+            .id_salt(key)
+            .scroll_source(scroll)
+            .max_height(most)
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                let margin = egui::Margin {
+                    left: BODY_PAD as i8,
+                    right: BODY_PAD as i8,
+                    top: 0,
+                    bottom: 10,
+                };
+                egui::Frame::NONE.inner_margin(margin).show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 6.0;
+                    body(ui, state, controls);
+                });
+            });
+    });
+    dock::title_input(state, slot.panel, fold, drag);
     rect
 }
 

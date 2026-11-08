@@ -599,10 +599,29 @@ pub fn paint_switch(ui: &egui::Ui, right: Pos2, on: bool) {
 pub struct TitleRow {
     pub close: bool,
     pub back: bool,
+    /// A tap on the Dock button of a floating card.
+    pub dock: bool,
     /// The action button, if the row has one.
     pub action: Option<Response>,
-    /// The row without its buttons. A sheet moves with a drag on it.
+    /// The row without its buttons. A sheet moves with a drag on it, and a
+    /// tap folds a panel of the dock.
     pub bar: Response,
+}
+
+/// The buttons at the ends of a title row.
+pub enum TitleEnds<'a> {
+    /// The close button at the right end.
+    Close,
+    /// The close button, then the Dock button at the right end.
+    CloseDock,
+    /// A panel of the dock: the chevron at the left end and no close
+    /// button. A tap on the row is a control with this name.
+    Fold { name: &'a str, folded: bool },
+}
+
+/// The name of the Dock button of a floating card.
+pub fn dock_name(title: &str) -> String {
+    format!("Dock {title}")
 }
 
 /// The title row of a panel: an optional back button, the title, and the
@@ -614,11 +633,11 @@ pub fn title_row(
     back: Option<&str>,
     drag: bool,
 ) -> TitleRow {
-    title_row_with(ui, controls, title, back, drag, None)
+    title_row_with(ui, controls, title, back, drag, None, TitleEnds::Close)
 }
 
-/// A title row with an action button at the left of the close button.
-/// `action` is the name of the button, its icon, and its state.
+/// A title row with an action button at the left of the buttons at the
+/// right end. `action` is the name of the button, its icon, and its state.
 pub fn title_row_with(
     ui: &mut egui::Ui,
     controls: &mut Controls,
@@ -626,23 +645,44 @@ pub fn title_row_with(
     back: Option<&str>,
     drag: bool,
     action: Option<(&str, Icon, bool)>,
+    ends: TitleEnds,
 ) -> TitleRow {
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::hover());
-    let sense = if drag {
-        Sense::click_and_drag()
-    } else {
-        Sense::hover()
+    let bar = match ends {
+        TitleEnds::Fold { name, folded } => hit(
+            ui,
+            controls,
+            rect,
+            name,
+            Sense::click_and_drag(),
+            true,
+            Some(!folded),
+        ),
+        _ => {
+            let sense = if drag {
+                Sense::click_and_drag()
+            } else {
+                Sense::hover()
+            };
+            ui.interact(rect, ui.id().with(("title", title)), sense)
+        }
     };
-    let bar = ui.interact(rect, ui.id().with(("title", title)), sense);
     let button = |x: f32| Rect::from_min_size(pos2(x, rect.top() + PAD), vec2(TOUCH, TOUCH));
-    let mut text_left = rect.left() + BODY_PAD;
+    let mut left = rect.left();
+    if let TitleEnds::Fold { folded, .. } = ends {
+        let chevron = Rect::from_min_size(pos2(rect.left() + 8.0, rect.top()), vec2(24.0, ROW));
+        let icon = if folded { Icon::Open } else { Icon::Down };
+        icons::paint(ui.painter(), chevron, icon, 18.0, theme::MUTE);
+        left = chevron.right();
+    }
+    let mut text_left = left + if left > rect.left() { 6.0 } else { BODY_PAD };
     let back = back.is_some_and(|parent| {
-        text_left = rect.left() + PAD + TOUCH + 4.0;
+        text_left = left + PAD + TOUCH + 4.0;
         let name = format!("Back to {parent}");
         icon_button_at(
             ui,
             controls,
-            button(rect.left() + PAD),
+            button(left + PAD),
             &name,
             Icon::Back,
             false,
@@ -650,14 +690,26 @@ pub fn title_row_with(
         )
         .clicked()
     });
-    let name = format!("Close {title}");
-    let close_rect = button(rect.right() - PAD - TOUCH);
-    let close = icon_button_at(ui, controls, close_rect, &name, Icon::Close, false, true).clicked();
+    let mut end = rect.right() - PAD;
+    let mut dock = false;
+    if let TitleEnds::CloseDock = ends {
+        let at = button(end - TOUCH);
+        end = at.left();
+        let name = dock_name(title);
+        dock = icon_button_at(ui, controls, at, &name, Icon::Dock, false, true).clicked();
+    }
+    let mut close = false;
+    if !matches!(ends, TitleEnds::Fold { .. }) {
+        let at = button(end - TOUCH);
+        end = at.left();
+        let name = format!("Close {title}");
+        close = icon_button_at(ui, controls, at, &name, Icon::Close, false, true).clicked();
+    }
     let action = action.map(|(name, icon, active)| {
-        let at = close_rect.translate(vec2(-TOUCH, 0.0));
+        let at = button(end - TOUCH);
         icon_button_at(ui, controls, at, name, icon, active, true)
     });
-    let text_right = action.as_ref().map_or(close_rect.left(), |a| a.rect.left());
+    let text_right = action.as_ref().map_or(end, |a| a.rect.left());
     let clip = Rect::from_min_max(pos2(text_left, rect.top()), pos2(text_right, rect.bottom()));
     let at = pos2(text_left, rect.center().y);
     ui.painter().with_clip_rect(clip).text(
@@ -670,6 +722,7 @@ pub fn title_row_with(
     TitleRow {
         close,
         back,
+        dock,
         action,
         bar,
     }

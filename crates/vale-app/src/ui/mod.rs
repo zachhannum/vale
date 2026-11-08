@@ -4054,6 +4054,9 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     state.sync_measure();
     state.check_new_feature();
     if state.layout == Layout::Pad {
+        let wide = pad::geometry::WidthClass::of(ui.ctx().viewport_rect().width())
+            == pad::geometry::WidthClass::Wide;
+        state.pad.begin_frame(state.workspace, wide);
         match state.workspace {
             Workspace::Globe => pad::draw(ui, state),
             Workspace::Atlas => pad::atlas::draw(ui, state),

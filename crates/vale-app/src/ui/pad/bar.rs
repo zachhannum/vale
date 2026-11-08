@@ -47,13 +47,6 @@ pub fn tabs_width(ui: &egui::Ui) -> f32 {
     tab_widths(ui).iter().sum()
 }
 
-/// The width of the dock of `workspace` for the layout: zero while the dock
-/// is closed.
-pub fn dock_width(state: &AppState, workspace: Workspace) -> f32 {
-    let dock = state.pad.docks.get(workspace);
-    if dock.open { dock.width } else { 0.0 }
-}
-
 /// The text that fits in `width`, with an ellipsis if it is shorter.
 fn fit_text(ui: &egui::Ui, text: &str, width: f32) -> String {
     if text_width(ui, text) <= width {
@@ -160,8 +153,7 @@ pub fn draw(
                 );
             }
             if resp.clicked() {
-                let dock = state.pad.docks.get_mut(workspace);
-                dock.open = !dock.open;
+                state.pad.toggle_dock();
             }
         }
     });

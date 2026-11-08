@@ -208,7 +208,10 @@ fn page_button_text(state: &AppState) -> String {
 pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     let ctx = ui.ctx().clone();
     let screen = ctx.viewport_rect();
+    super::dock::shortcut(&ctx, state);
     atlas::sync(state);
+    // The panels of the open dock show in their slots, side by side.
+    let docked = state.pad.open_dock().is_some();
     let class = WidthClass::of(screen.width());
     let workspace_width = widgets::menu_button_width(ui, WORKSPACES[1]);
     let page_width = 2.0 * TOUCH + page_text_width(ui, state) + 2.0 * PAD;
@@ -245,7 +248,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
             0
         },
         tools: TOOL_CELLS,
-        dock_width: bar::dock_width(state, Workspace::Atlas),
+        dock_width: super::dock::layout_width(&ctx, state),
         // The Add button stays in the bar until the tools add frames and
         // furniture.
         dock_buttons: Panel::order(Workspace::Atlas).len() + 1,
@@ -301,6 +304,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     let before = state.atlas.shown.map(|(selection, _, _)| selection);
     let after = shown.map(|(selection, _, _)| selection);
     if attributes
+        && !docked
         && state.atlas.tool != AtlasTool::Select
         && after.is_some_and(|s| s != AtlasSelection::None)
         && before != after
@@ -310,6 +314,11 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     let attributes = state.pad.is_open(super::Panel::Attributes) && !measuring;
     let shown = shown.map(|(selection, tab, _)| (selection, tab, attributes));
     if state.atlas.shown != shown {
+        // A new selection opens its panel in the open dock.
+        let selected = shown.is_some_and(|(s, _, _)| s != AtlasSelection::None);
+        if docked && selected && !state.pad.is_docked(Panel::Selection) {
+            state.pad.open(Panel::Selection);
+        }
         widgets::close_keypad(&ctx);
         state.atlas.shown = shown;
         state.atlas.item_page = None;
@@ -333,18 +342,26 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         tool_column(&ctx, state, &mut controls, &rects);
     }
     state.pad.hold_label = widgets::hold_label(&ctx);
-    if measuring {
-        if state.pad.brush {
-            super::show_panel(&ctx, state, &mut controls, &rects, super::Panel::Brush);
-        }
+    super::dock::draw(&ctx, state, &mut controls, &rects);
+    if measuring && state.pad.brush {
+        super::show_panel(&ctx, state, &mut controls, &rects, super::Panel::Brush);
+    }
+    if docked {
+        docked_panels(&ctx, state, &mut controls, &rects);
+    } else if measuring {
+        // The Brush panel of the Measure tool is the panel.
     } else if attributes {
         super::show_panel(&ctx, state, &mut controls, &rects, super::Panel::Attributes);
         state.atlas.panel_rect = state.pad.panels.last().map(|&(_, rect)| rect);
     } else if state.atlas.selection != AtlasSelection::None {
+        state.pad.dock_frame.placing = Some(Panel::Selection);
         selection_panel(&ctx, state, &mut controls, &rects);
     } else if state.atlas.frames {
+        state.pad.dock_frame.placing = Some(Panel::Maps);
         frames_panel(&ctx, state, &mut controls, &rects);
     }
+    state.pad.dock_frame.placing = None;
+    super::dock::finish(&ctx, state, &mut controls);
     graticule_color_frame(&ctx, state);
     neatline_color_frame(&ctx, state);
     super::labels::color_frame(&ctx, state);
@@ -383,20 +400,19 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         pos2(left, page_card.bottom() + GAP),
         pos2(right, rects.panel_bottom),
     );
-    // Until the tool column and the dock replace the tool strip and the
-    // panel place at the right, the page keeps clear of them.
+    // From 600 points, the page fits right of the tool column and below the
+    // page controls: beside the open dock, or clear of the place of the
+    // floating panel while the dock is closed.
     let mut free = match class {
         WidthClass::Compact => compact,
-        _ => {
-            let right = match class {
-                WidthClass::Wide => rects.right_panel.x - GAP,
-                _ => rects.free.right(),
-            };
-            Rect::from_min_max(
-                pos2(left.max(rects.free.left()), rects.free.top()),
-                pos2(rects.free.right().min(right), rects.free.bottom()),
-            )
-        }
+        WidthClass::Wide if rects.dock.is_none() => Rect::from_min_max(
+            pos2(left.max(rects.free.left()), rects.free.top()),
+            pos2(
+                rects.free.right().min(rects.right_panel.x - GAP),
+                rects.free.bottom(),
+            ),
+        ),
+        _ => rects.free,
     };
     // In the row layout, the page is at the top of the space, so a sheet
     // covers only its lower part.
@@ -529,6 +545,15 @@ fn atlas_bar(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls,
                 state.atlas.add = !open;
             }
             for (&panel, &at) in Panel::order(Workspace::Atlas).iter().zip(places) {
+                // In the open dock, each button adds or removes its panel.
+                if state.pad.open_dock().is_some() {
+                    let (name, icon) = panel_face(panel);
+                    let on = state.pad.is_docked(panel);
+                    if widgets::icon_button_at(ui, controls, at, name, icon, on, true).clicked() {
+                        state.pad.toggle(panel, false);
+                    }
+                    continue;
+                }
                 match panel {
                     Panel::Maps => maps_button(ui, state, controls, at),
                     Panel::Attributes => attributes_button(ui, state, controls, at),
@@ -552,6 +577,34 @@ fn atlas_bar(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls,
             }
         },
     );
+}
+
+/// The panels of the open dock, each in its slot. The Pages panel has no
+/// body yet.
+fn docked_panels(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    controls: &mut Controls,
+    rects: &Rects,
+) {
+    let panels: Vec<Panel> = state.pad.dock_frame.slots.iter().map(|s| s.panel).collect();
+    for panel in panels {
+        match panel {
+            Panel::Selection if state.atlas.selection != AtlasSelection::None => {
+                state.pad.dock_frame.placing = Some(Panel::Selection);
+                selection_panel(ctx, state, controls, rects);
+            }
+            Panel::Maps => {
+                state.pad.dock_frame.placing = Some(Panel::Maps);
+                frames_panel(ctx, state, controls, rects);
+            }
+            Panel::Attributes => {
+                super::show_panel(ctx, state, controls, rects, Panel::Attributes);
+            }
+            _ => {}
+        }
+        state.pad.dock_frame.placing = None;
+    }
 }
 
 /// The size of the open page: the name of its preset and its orientation,
