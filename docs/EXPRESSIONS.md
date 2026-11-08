@@ -109,7 +109,7 @@ concat('Page ', page_number(), ' of ', page_count())
 | `page_name()` | The name of the page |
 | `page_number()` | The number of the page in the atlas. The first page is 1. |
 | `page_count()` | The number of pages in the atlas |
-| `date(format)` | The date of today. With `'long'`, the result is like `8 November 2026`. With `'iso'`, it is like `2026-11-08`. |
+| `date(format)` | The date of today. With `'long'`, the result is like `November 8, 2026`. With `'iso'`, it is like `2026-11-08`. |
 
 ## Errors
 
