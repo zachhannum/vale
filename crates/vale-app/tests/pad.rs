@@ -17,7 +17,10 @@ use vale_app::session::Session;
 use vale_app::ui::gradient::{COLUMN, ColumnParts, GRADIENT, band_row, widest_gap_value};
 use vale_app::ui::pad::eyedropper;
 use vale_app::ui::pad::flyout::Flyout;
-use vale_app::ui::pad::geometry::{BrushCard, TOOLS, WidthClass};
+use vale_app::ui::pad::geometry::{
+    self as geometry, BrushCard, COLUMN_CELL, COLUMN_INSET, SLIDER_TEXT, TOOLS, TRACK, TRACK_MIN,
+    WidthClass,
+};
 use vale_app::ui::pad::number::{LABEL_COLUMN, TRACK_INSET};
 use vale_app::ui::pad::raster;
 use vale_app::ui::pad::{
@@ -288,7 +291,9 @@ fn choose_mode(h: &mut Pad, name: &str) {
 
 /// The place of the draw cell: the third cell of the tool strip.
 fn draw_cell(h: &Pad) -> Rect {
-    control(h, SCULPT).unwrap().translate(vec2(0.0, 2.0 * 52.0))
+    control(h, SCULPT)
+        .unwrap()
+        .translate(vec2(0.0, 2.0 * COLUMN_CELL))
 }
 
 /// The rectangles of all cards on the screen.
@@ -1986,9 +1991,20 @@ fn the_brush_size_uses_the_radius_and_the_units_of_the_world() {
     );
 }
 
+/// The part of the tool strip or of the tool column with the tool cells.
+fn tool_part(h: &Pad) -> Rect {
+    let rects = h.state().pad.rects.unwrap();
+    if rects.row {
+        rects.tools
+    } else {
+        let bottom = rects.column.top() + COLUMN_INSET + rects.tool_cells as f32 * COLUMN_CELL;
+        rects.column.with_max_y(bottom.min(rects.column.bottom()))
+    }
+}
+
 /// The names of the cells of the tool strip that are on, from the top.
 fn strip(h: &Pad) -> Vec<String> {
-    let tools = h.state().pad.rects.unwrap().tools;
+    let tools = tool_part(h);
     let controls = h.state().pad.controls.iter();
     let cells = controls.filter(|c| tools.contains_rect(c.rect));
     cells.map(|c| c.name.clone()).collect()
@@ -2000,19 +2016,20 @@ fn the_tool_strip_has_six_cells_on_each_screen() {
         let what = format!("{size:?}");
         let mut h = safe_pad(size, safe);
         let rects = h.state().pad.rects.unwrap();
-        // The landscape iPhone is too short for six cells, so the strip
-        // scrolls.
-        let full = size.1 > 400.0;
+        // The landscape iPhone is too short for six cells in the row, so
+        // the strip scrolls. The tool column has room for them.
+        let full = size.1 > 400.0 || !rects.row;
         if full {
             assert_eq!(rects.tool_cells, TOOLS, "{what}");
             // On a compact screen, the strip is a row.
-            let length = if rects.row {
-                rects.tools.width()
+            if rects.row {
+                assert_eq!(rects.tools.width(), 6.0 * 56.0 + 8.0, "{what}");
             } else {
-                rects.tools.height()
-            };
-            let cell = if rects.row { 56.0 } else { 52.0 };
-            assert_eq!(length, 6.0 * cell + 8.0, "{what}");
+                assert_eq!(rects.column.width(), geometry::COLUMN, "{what}");
+                assert_eq!(rects.column.left(), safe[3], "{what}");
+                let cell = control(&h, select::TOOL).unwrap();
+                assert_eq!(cell.size(), vec2(COLUMN_CELL, COLUMN_CELL), "{what}");
+            }
         } else {
             assert_eq!(rects.tool_cells, 3, "{what}");
         }
@@ -2053,23 +2070,35 @@ fn the_tool_strip_has_six_cells_on_each_screen() {
 
 #[test]
 fn the_small_ipads_show_the_full_sliders_with_a_raster_layer() {
-    // The small iPads in landscape have less room for the sliders.
+    // The small iPads in landscape have less room for the sliders. In a
+    // 1133 by 744 window, the sliders of the Raise brush are shorter, and
+    // the column fits with no scroll.
     for (size, slider) in [
-        ((1133.0, 744.0), 120.0),
-        ((744.0, 1133.0), 140.0),
-        ((1024.0, 768.0), 132.0),
-        ((768.0, 1024.0), 140.0),
+        ((1133.0, 744.0), 109.5),
+        ((744.0, 1133.0), TRACK),
+        ((1024.0, 768.0), TRACK),
+        ((768.0, 1024.0), TRACK),
     ] {
         let what = format!("{size:?}");
         let h = pad(size);
+        assert_eq!(h.state().globe.brush.mode, Mode::Raise, "{what}");
         let rects = h.state().pad.rects.unwrap();
         assert_eq!(rects.brush_card, BrushCard::Full(slider), "{what}");
-        let card = rects.brush.unwrap();
+        assert!(slider >= TRACK_MIN, "{what}");
+        assert_eq!(rects.column.height(), rects.column_content, "{what}");
+        assert_eq!(rects.brush, None, "{what}");
         for name in ["Size", "Flow", "Brush settings"] {
             let rect = control(&h, name).unwrap_or_else(|| panic!("{what}: {name}"));
-            assert!(card.contains_rect(rect), "{what}: {name}");
+            assert!(rects.column.contains_rect(rect), "{what}: {name}");
         }
-        assert_eq!(control(&h, "Size").unwrap().height(), slider, "{what}");
+        let size_slider = control(&h, "Size").unwrap();
+        assert_eq!(size_slider.height(), slider + SLIDER_TEXT, "{what}");
+        // The Brush button is the last control of the column.
+        let button = control(&h, "Brush settings").unwrap();
+        assert!(
+            button.top() >= control(&h, "Flow").unwrap().bottom(),
+            "{what}"
+        );
         check_controls(&h, &what);
     }
 }
@@ -2639,6 +2668,43 @@ fn a_drag_on_the_size_moves_it_by_the_distance_of_the_drag() {
     let size = h.state().globe.brush.size_points;
     let moved = size_distance(&h, 20.0, size);
     assert!((moved - 30.0).abs() < 1.0, "{size} {moved}");
+}
+
+#[test]
+fn a_drag_on_the_slider_of_the_column_moves_the_size_and_more_slowly_away_from_it() {
+    // The change of a 24 point move up the track of the tool column, on the
+    // track or 200 points at its right.
+    let moved = |aside: f32| {
+        let mut h = pad(BOARDS[0]);
+        h.state_mut().globe.brush.size_points = 8.0;
+        h.run_steps(2);
+        let rects = h.state().pad.rects.unwrap();
+        let slider = control(&h, "Size").unwrap();
+        assert!(rects.column.contains_rect(slider));
+        assert!(slider.top() >= tool_part(&h).bottom());
+        assert_eq!(slider.height(), TRACK + SLIDER_TEXT);
+        let c = slider.center();
+        let start = c - vec2(0.0, 10.0);
+        let side = start + vec2(aside, 0.0);
+        let path = [
+            c,
+            start,
+            side,
+            side - vec2(0.0, 12.0),
+            side - vec2(0.0, 24.0),
+        ];
+        let sizes = sizes_along(&mut h, &path);
+        assert!(sizes[4] > sizes[2], "{sizes:?}");
+        let globe = &h.state().globe;
+        let world_km = h.state().doc.project.world.radius_km;
+        let range = globe.brush.radius_km_range(globe.radius(), world_km);
+        let span = (range.end() / range.start()).ln() as f32;
+        let length = slider.height() - SLIDER_TEXT - 2.0 * TRACK_INSET;
+        (sizes[4] / sizes[2]).ln() / span * length
+    };
+    let (near, far) = (moved(0.0), moved(200.0));
+    assert!((near - 24.0).abs() < 1.0, "{near}");
+    assert!((far - 3.0).abs() < 0.5, "{far}");
 }
 
 #[test]
@@ -4054,13 +4120,16 @@ fn the_top_row_and_the_panels_match_the_landscape_board() {
     let names = ["Layers", select::ATTRIBUTES, "Toolbox", "Dock"];
     let lefts = names.map(|name| control(&h, name).unwrap().left());
     assert_eq!(lefts, [1005.0, 1049.0, 1093.0, 1146.0]);
+    // The tool column is at the left edge, 8 points below the bar, with
+    // icon cells of 44 points.
     assert_eq!(
         r.tools,
-        Rect::from_min_size(pos2(16.0, 76.0), vec2(64.0, 320.0))
+        Rect::from_min_size(pos2(0.0, 76.0), vec2(56.0, 661.0))
     );
+    assert_eq!(r.tools, r.column);
     assert_eq!(
         control(&h, SCULPT).unwrap(),
-        Rect::from_min_size(pos2(20.0, 80.0), vec2(56.0, 52.0))
+        Rect::from_min_size(pos2(6.0, 82.0), vec2(44.0, 44.0))
     );
 
     tap(&mut h, "Layers");
@@ -4073,6 +4142,8 @@ fn the_top_row_and_the_panels_match_the_landscape_board() {
     assert_eq!(layers.height(), 52.0 + 4.0 * 48.0 + 10.0);
     let brush = panel(&h, Panel::Brush).unwrap();
     assert_eq!(brush.width(), 340.0);
+    // The Brush panel is a card next to the column.
+    assert_eq!(brush.min, pos2(r.column.right() + 12.0, 76.0));
     assert!(!brush.intersects(view));
     // Toolbox opens in the place of Layers.
     toolbox(&mut h);
@@ -4219,8 +4290,9 @@ fn a_short_window_makes_the_sliders_short_and_then_leaves_them_out() {
     let h = pad((1024.0, 764.0));
     assert_eq!(
         h.state().pad.rects.unwrap().brush_card,
-        BrushCard::Full(130.0)
+        BrushCard::Full(119.5)
     );
+    assert_eq!(control(&h, "Size").unwrap().height(), 119.5 + SLIDER_TEXT);
     check_controls(&h, "764 high");
 
     let mut h = pad((1024.0, 600.0));
@@ -4231,6 +4303,16 @@ fn a_short_window_makes_the_sliders_short_and_then_leaves_them_out() {
     tap(&mut h, "Brush settings");
     assert!(control(&h, "Brush size").is_some() && control(&h, "Brush flow").is_some());
     check_controls(&h, "600 high with the Brush panel");
+
+    // Then the tool column scrolls to its last control.
+    let mut h = pad((1024.0, 400.0));
+    let rects = h.state().pad.rects.unwrap();
+    assert!(rects.column_content > rects.column.height());
+    assert!(control(&h, "Brush settings").is_none());
+    scroll_strip_to(&mut h, "Brush settings");
+    let button = control(&h, "Brush settings").unwrap();
+    assert!(rects.column.contains_rect(button));
+    check_controls(&h, "400 high");
 }
 
 #[test]
@@ -6402,8 +6484,18 @@ fn the_terrain_fit_controls_are_touch_size_in_each_layout() {
         h.state_mut().select(Some(LayerRef::Vector(lines)));
         h.run_steps(2);
         quick_tap(&mut h, VECTOR);
-        if matches!(h.state().pad.rects.unwrap().brush_card, BrushCard::Full(_)) {
-            for name in [TERRAIN_FIT, SMOOTHING] {
+        let rects = h.state().pad.rects.unwrap();
+        let full = matches!(rects.brush_card, BrushCard::Full(_));
+        // The tool column has the cells of the tool in any height, and the
+        // sliders while they fit.
+        if full || !rects.row {
+            scroll_strip_to(&mut h, TERRAIN_FIT);
+            let names: &[&str] = if full {
+                &[TERRAIN_FIT, SMOOTHING]
+            } else {
+                &[TERRAIN_FIT]
+            };
+            for &name in names {
                 let rect = control(&h, name).unwrap_or_else(|| panic!("{what}: no {name}"));
                 assert!(touch(rect), "{what}: {name} is {rect:?}");
             }
@@ -6416,6 +6508,7 @@ fn the_terrain_fit_controls_are_touch_size_in_each_layout() {
         } else {
             assert!(control(&h, TERRAIN_FIT).is_none(), "{what}");
         }
+        scroll_strip_to(&mut h, "Brush settings");
         tap(&mut h, "Brush settings");
         // The balance slider is disabled while the fit is off.
         assert!(disabled(&h, TERRAIN_BALANCE), "{what}");
@@ -10555,8 +10648,11 @@ fn the_measure_cell_of_the_tool_strip_opens_the_tool_with_any_layer_on_each_scre
                 finger_tap(&mut h, center + offset);
             }
             assert_eq!(h.state().measure.points.len(), 3, "{what}");
-            let card = h.state().pad.rects.unwrap().brush.unwrap();
+            // The cells are on the card of the row, or in the tool column.
+            let rects = h.state().pad.rects.unwrap();
+            let card = rects.brush.unwrap_or(rects.column);
             for name in [SNAP, CLEAR_PATH] {
+                scroll_strip_to(&mut h, name);
                 let rect = control(&h, name).unwrap_or_else(|| panic!("{what}: {name}"));
                 assert!(card.contains_rect(rect), "{what}");
             }
@@ -10622,6 +10718,8 @@ fn the_cells_of_the_measure_card_act_on_the_path() {
         tap(&mut h, "Redo");
         assert!(h.state().measure.closed, "{what}");
         assert!(disabled(&h, "Redo"), "{what}");
+        // On a short screen, the tool column scrolls.
+        scroll_strip_to(&mut h, CLEAR_PATH);
         tap(&mut h, CLEAR_PATH);
         assert!(h.state().measure.is_empty(), "{what}");
         assert!(disabled(&h, CLEAR_PATH), "{what}");
@@ -10629,6 +10727,7 @@ fn the_cells_of_the_measure_card_act_on_the_path() {
         assert!(h.state().measure.closed, "{what}");
 
         let snap = h.state().globe.snap.on;
+        scroll_strip_to(&mut h, SNAP);
         tap(&mut h, SNAP);
         assert_eq!(h.state().globe.snap.on, !snap, "{what}");
         tap(&mut h, SNAP);
@@ -10724,10 +10823,18 @@ fn the_measure_cell_and_card_fit_in_the_atlas_on_each_screen() {
             assert_ne!(toggled(&h, name), Some(true), "{what}: {name}");
         }
         assert!(!readout_line(h.state()).starts_with("Length"), "{what}");
-        let card = h.state().pad.rects.unwrap().brush.unwrap();
+        // In a row, the cells are on the card of the tool. From 600 points,
+        // they are in the tool column, which scrolls on a short screen.
+        let r = h.state().pad.rects.unwrap();
+        let card = r.brush.unwrap_or(r.column);
         // On a short screen, the card scrolls, and the Brush button is
         // below its end.
-        let all = h.state().pad.rects.unwrap().card_cells == 3;
+        let all = if r.row {
+            r.card_cells == 3
+        } else {
+            scroll_strip_to(&mut h, "Brush settings");
+            true
+        };
         let names: &[&str] = if all {
             &[SNAP, "Brush settings"]
         } else {
@@ -10741,7 +10848,10 @@ fn the_measure_cell_and_card_fit_in_the_atlas_on_each_screen() {
         check_safe(&h, size, safe, &what);
         let screen = Rect::from_min_size(Pos2::ZERO, size.into());
         let r = h.state().pad.rects.unwrap();
-        let mut cards = vec![r.workspace, r.actions, r.tools, card];
+        let mut cards = vec![r.workspace, r.actions, r.tools];
+        if r.row {
+            cards.push(card);
+        }
         cards.extend(r.view);
         for (i, a) in cards.iter().enumerate() {
             assert!(screen.contains_rect(*a), "{what}: {a:?}");
@@ -10796,15 +10906,36 @@ fn the_vertex_cell_and_card_fit_in_the_atlas_on_each_screen() {
         h.run_steps(2);
         lower_sheet(&mut h);
         let names = [SNAP_TO_LAYOUT, GRID, DELETE_VERTEX, DESELECT];
-        let cells = names.map(|name| control(&h, name).unwrap_or_else(|| panic!("{what}: {name}")));
-        for pair in cells.windows(2) {
-            assert!(in_order(pair[0], pair[1]), "{what}");
-        }
-        let card = cells[0].union(cells[3]);
+        // On a short screen, the tool column scrolls to each cell.
         let r = h.state().pad.rects.unwrap();
-        let mut cards = vec![r.workspace, r.actions, r.tools];
+        let scrolls = !r.row && r.column_content > r.column.height();
+        let cells = names.map(|name| {
+            if scrolls {
+                scroll_strip_to(&mut h, name);
+            }
+            control(&h, name).unwrap_or_else(|| panic!("{what}: {name}"))
+        });
+        if !scrolls {
+            for pair in cells.windows(2) {
+                assert!(in_order(pair[0], pair[1]), "{what}");
+            }
+        }
+        let card = if scrolls {
+            cells[3]
+        } else {
+            cells[0].union(cells[3])
+        };
+        let mut cards = vec![r.workspace, r.actions];
         cards.extend(r.view);
         cards.extend(h.state().atlas.panel_rect);
+        // From 600 points, the cells are in the tool column, below the
+        // tools.
+        if r.row {
+            cards.push(r.tools);
+        } else {
+            assert!(r.column.contains_rect(card), "{what}: {card:?}");
+            assert!(card.top() >= tool_part(&h).bottom(), "{what}: {card:?}");
+        }
         for other in cards {
             assert!(!card.intersects(other), "{what}: {card:?} {other:?}");
         }
@@ -10844,15 +10975,36 @@ fn the_frame_strip_fits_in_the_atlas_on_each_screen() {
         lower_sheet(&mut h);
         assert_eq!(h.state().atlas.tool, AtlasTool::Frame, "{what}");
         let names = [SNAP_TO_LAYOUT, GRID, DELETE, DESELECT];
-        let cells = names.map(|name| control(&h, name).unwrap_or_else(|| panic!("{what}: {name}")));
-        for pair in cells.windows(2) {
-            assert!(in_order(pair[0], pair[1]), "{what}");
-        }
-        let card = cells[0].union(cells[3]);
+        // On a short screen, the tool column scrolls to each cell.
         let r = h.state().pad.rects.unwrap();
-        let mut cards = vec![r.workspace, r.actions, r.tools];
+        let scrolls = !r.row && r.column_content > r.column.height();
+        let cells = names.map(|name| {
+            if scrolls {
+                scroll_strip_to(&mut h, name);
+            }
+            control(&h, name).unwrap_or_else(|| panic!("{what}: {name}"))
+        });
+        if !scrolls {
+            for pair in cells.windows(2) {
+                assert!(in_order(pair[0], pair[1]), "{what}");
+            }
+        }
+        let card = if scrolls {
+            cells[3]
+        } else {
+            cells[0].union(cells[3])
+        };
+        let mut cards = vec![r.workspace, r.actions];
         cards.extend(r.view);
         cards.extend(h.state().atlas.panel_rect);
+        // From 600 points, the cells are in the tool column, below the
+        // tools.
+        if r.row {
+            cards.push(r.tools);
+        } else {
+            assert!(r.column.contains_rect(card), "{what}: {card:?}");
+            assert!(card.top() >= tool_part(&h).bottom(), "{what}: {card:?}");
+        }
         for other in cards {
             assert!(!card.intersects(other), "{what}: {card:?} {other:?}");
         }
@@ -11123,10 +11275,34 @@ fn the_context_strip_shows_only_the_controls_of_the_tool() {
             let want = shown.contains(&name);
             assert_eq!(control(h, name).is_some(), want, "{what}: {name}");
         }
+        // Each control is in the tool column, below the tools.
+        let column = h.state().pad.rects.unwrap().column;
+        for name in shown {
+            let rect = control(h, name).unwrap();
+            assert!(column.contains_rect(rect), "{what}: {name}");
+            assert!(rect.top() >= tool_part(h).bottom(), "{what}: {name}");
+            assert_eq!(rect.width(), COLUMN_CELL, "{what}: {name}");
+        }
     };
     select_layer(&mut h, picks.polygon.layer);
     assert_eq!(h.state().globe.tool, Tool::Select);
     check(&h, &[], "the Select tool");
+    // The cells of the Select tool are in the tool column, on or off.
+    let column = h.state().pad.rects.unwrap().column;
+    for name in [
+        vale_app::ui::pad::selectable::SELECTABLE,
+        select::ADD_TO_SELECTION,
+        select::DELETE,
+        select::MERGE,
+        select::SUBTRACT,
+    ] {
+        let rect = h.get_by_label(name).rect();
+        assert!(column.contains_rect(rect), "the Select tool: {name}");
+        assert!(
+            rect.top() >= tool_part(&h).bottom(),
+            "the Select tool: {name}"
+        );
+    }
     quick_tap(&mut h, VECTOR);
     let polygon = [SMOOTHING, SNAP, RESHAPE, POLYGON_MODE, "Brush settings"];
     check(&h, &polygon, "the polygon tool");
@@ -11451,9 +11627,12 @@ fn a_selection_opens_no_card_over_the_canvas() {
     assert!(h.state().selection_form.is_none());
     assert!(control(&h, "name").is_none());
     assert!(control(&h, SHOW_IN_TABLE).is_none());
-    // The one control of the selection is in the card below the strip.
-    let card = h.state().pad.rects.unwrap().brush.expect("no card");
-    assert!(card.contains_rect(control(&h, select::DELETE).unwrap()));
+    // The one control of the selection is in the tool column, below the
+    // tools.
+    let column = h.state().pad.rects.unwrap().column;
+    let delete = control(&h, select::DELETE).unwrap();
+    assert!(column.contains_rect(delete));
+    assert!(delete.top() >= tool_part(&h).bottom());
 }
 
 #[test]
@@ -11522,7 +11701,8 @@ fn merge_joins_two_provinces_into_the_feature_that_you_choose_in_one_undo_step()
     let big_row = control(&h, "Isle Big").unwrap();
     let small_row = control(&h, "Isle Small").unwrap();
     assert!(big_row.top() < small_row.top());
-    let card = h.state().pad.rects.unwrap().brush.unwrap();
+    let rects = h.state().pad.rects.unwrap();
+    let card = rects.brush.unwrap_or(rects.column);
     assert!(big_row.left() > card.right());
     check_controls(&h, "the list of Merge");
     screenshot::save(&mut h, "pad-merge");
@@ -13417,6 +13597,7 @@ fn the_selectable_cell_and_list_fit_in_the_world_on_each_screen() {
         h.state_mut().select(Some(LayerRef::Vector(rivers)));
         h.state_mut().globe.tool = Tool::Select;
         h.run_steps(2);
+        scroll_strip_to(&mut h, SELECTABLE);
         assert!(control(&h, SELECTABLE).is_some(), "{what}");
         check_controls(&h, &what);
         check_safe(&h, size, safe, &what);

@@ -3673,10 +3673,13 @@ fn the_measure_card_acts_on_the_path_in_the_atlas() {
         let at = in_box(&h, 0, x, y);
         tap_with(&mut h, at, Input::Finger);
     }
-    let card = h.state().pad.rects.unwrap().brush.unwrap();
+    // The cells are in the tool column, below the tools.
+    let rects = h.state().pad.rects.unwrap();
+    assert_eq!(rects.brush, None);
     for name in [SNAP, CLEAR_PATH, "Brush settings"] {
         let rect = control(&h, name).unwrap_or_else(|| panic!("{name}"));
-        assert!(card.contains_rect(rect), "{name}");
+        assert!(rects.column.contains_rect(rect), "{name}");
+        assert_eq!(rect.size(), vec2(44.0, 44.0), "{name}");
     }
     for name in ["Close path", "Remove point"] {
         assert!(control(&h, name).is_none(), "{name}");
@@ -6857,16 +6860,32 @@ fn the_snap_switch_turns_snapping_off_with_a_finger() {
     assert!(control(&h, SNAP_TO_LAYOUT).is_some());
 }
 
+/// Scrolls the tool column down, and then up, until a cell shows in full.
+/// A strip of a compact screen does not scroll.
+fn scroll_column_to(h: &mut Pad, name: &str) {
+    for i in 0..10 {
+        let rects = h.state().pad.rects.unwrap();
+        if rects.row || control(h, name).is_some_and(|r| rects.column.contains_rect(r)) {
+            return;
+        }
+        let d = if i < 5 { -120.0 } else { 120.0 };
+        let from = rects.column.center() - vec2(0.0, d / 2.0);
+        drag(h, from, from + vec2(0.0, d), Input::Finger);
+    }
+}
+
 #[test]
 fn snap_and_grid_show_with_no_selection_in_the_frame_and_vertex_tools() {
     for size in BOARDS.into_iter().chain([(393.0, 852.0), (852.0, 393.0)]) {
         let what = format!("{size:?}");
         let mut h = inset_pad(size);
         for tool in ["Frame tool", VERTEX] {
+            scroll_column_to(&mut h, tool);
             tap(&mut h, tool);
             h.state_mut().atlas.selection = AtlasSelection::None;
             h.run_steps(3);
             for name in [SNAP_TO_LAYOUT, GRID] {
+                scroll_column_to(&mut h, name);
                 assert!(control(&h, name).is_some(), "{what}: {tool}: {name}");
             }
             for name in [DESELECT, DELETE_SELECTION, DELETE_VERTEX] {
@@ -6874,9 +6893,11 @@ fn snap_and_grid_show_with_no_selection_in_the_frame_and_vertex_tools() {
             }
             check_controls(&h, &format!("{what}: {tool}"));
             let on = h.state().atlas.snap;
+            scroll_column_to(&mut h, SNAP_TO_LAYOUT);
             tap(&mut h, SNAP_TO_LAYOUT);
             assert_eq!(h.state().atlas.snap, !on, "{what}: {tool}");
             let grid = h.state().doc.project.atlas.grid.on;
+            scroll_column_to(&mut h, GRID);
             tap(&mut h, GRID);
             assert_eq!(h.state().doc.project.atlas.grid.on, !grid, "{what}: {tool}");
         }

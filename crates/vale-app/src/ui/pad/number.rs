@@ -13,7 +13,7 @@ use crate::globe::backdrop::{card_shape, marker};
 /// The height of a track, of a value box, and of a stepper.
 const HEIGHT: f32 = 36.0;
 /// The width of a vertical track.
-const COLUMN: f32 = 32.0;
+const COLUMN: f32 = 28.0;
 /// The width of the handle, and its space from the edges of the track.
 const HANDLE: f32 = 10.0;
 const HANDLE_INSET: f32 = 4.0;
@@ -389,12 +389,14 @@ impl<'a> Number<'a> {
         out.filter(|v| *v != self.value)
     }
 
-    /// Adds the slider as a column `height` high, with the value at the top
-    /// and the label at the bottom. Returns the new value when the user
-    /// changes it. The keypad opens at the side of the card.
+    /// Adds the slider as a column `height` high and as wide as the space,
+    /// with the value at the top and the label at the bottom. Returns the
+    /// new value when the user changes it. The keypad opens at the side of
+    /// the card.
     pub fn vertical(self, ui: &mut egui::Ui, controls: &mut Controls, height: f32) -> Option<f64> {
         let enabled = self.enabled;
-        let (rect, _) = ui.allocate_exact_size(vec2(CELL.0, height), Sense::hover());
+        let width = ui.available_width().min(CELL.0);
+        let (rect, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
         let resp = hit(
             ui,
             controls,

@@ -343,7 +343,74 @@ pub fn menu_button(
     resp
 }
 
-/// One cell of the tool strip: an icon with a name below it.
+/// The look of a tool cell.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CellStyle {
+    /// A cell of 56 by 52 points with an icon and a name.
+    #[default]
+    Labeled,
+    /// A cell of 44 by 44 points with an icon alone, as in the tool column.
+    Icon,
+    /// An `Icon` cell of a tool. A hold shows the name of the tool next to
+    /// the cell.
+    Tool,
+}
+
+fn cell_style_id() -> egui::Id {
+    egui::Id::new("pad-cell-style")
+}
+
+fn hold_id() -> egui::Id {
+    egui::Id::new("pad-hold-label")
+}
+
+/// The look of the tool cells that `add_contents` adds.
+pub fn with_cell_style<R>(
+    ui: &mut egui::Ui,
+    style: CellStyle,
+    add_contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    let ctx = ui.ctx().clone();
+    let before = cell_style(&ctx);
+    ctx.data_mut(|d| d.insert_temp(cell_style_id(), style));
+    let out = add_contents(ui);
+    ctx.data_mut(|d| d.insert_temp(cell_style_id(), before));
+    out
+}
+
+/// Sets the look of the tool cells that are added next, up to the end of
+/// `with_cell_style`.
+pub fn set_cell_style(ctx: &egui::Context, style: CellStyle) {
+    ctx.data_mut(|d| d.insert_temp(cell_style_id(), style));
+}
+
+/// The look of the tool cells that are added now.
+pub fn cell_style(ctx: &egui::Context) -> CellStyle {
+    ctx.data(|d| d.get_temp(cell_style_id()))
+        .unwrap_or_default()
+}
+
+/// A held icon cell: its ID, its name, and its place.
+#[derive(Clone, Debug, PartialEq)]
+struct Hold {
+    id: egui::Id,
+    label: String,
+    rect: Rect,
+}
+
+/// The name and the place of the icon cell that a finger holds, if the hold
+/// is long enough to show the name.
+pub fn hold_label(ctx: &egui::Context) -> Option<(String, Rect)> {
+    let hold: Option<Hold> = ctx.data(|d| d.get_temp(hold_id()));
+    let down = ctx.input(|i| i.pointer.any_down());
+    hold.filter(|_| down).map(|h| (h.label, h.rect))
+}
+
+/// A tool cell: a cell with an icon and a name below it, or with the icon
+/// alone in the `CellStyle::Icon` and `CellStyle::Tool` looks. `name` is
+/// the name of the control, and `label` is the text on the cell. In the
+/// `CellStyle::Tool` look, a hold shows `label` in a small label next to the
+/// cell.
 pub fn tool_cell(
     ui: &mut egui::Ui,
     controls: &mut Controls,
@@ -353,7 +420,28 @@ pub fn tool_cell(
     active: bool,
     enabled: bool,
 ) -> Response {
-    let (rect, _) = ui.allocate_exact_size(vec2(CELL.0, CELL.1), Sense::hover());
+    tool_cell_with(ui, controls, name, label, icon, active, enabled, true)
+}
+
+/// A `tool_cell`. `hold`: in the `CellStyle::Tool` look, a hold shows the
+/// name.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn tool_cell_with(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    name: &str,
+    label: &str,
+    icon: Icon,
+    active: bool,
+    enabled: bool,
+    hold: bool,
+) -> Response {
+    let style = cell_style(ui.ctx());
+    let size = match style {
+        CellStyle::Labeled => vec2(CELL.0, CELL.1),
+        CellStyle::Icon | CellStyle::Tool => vec2(TOUCH, TOUCH),
+    };
+    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
     let resp = hit(
         ui,
         controls,
@@ -365,12 +453,76 @@ pub fn tool_cell(
     );
     fill(ui, rect, &resp, active);
     let color = fade(if active { theme::TEXT } else { theme::MUTE }, enabled);
+    if style != CellStyle::Labeled {
+        let icon_rect = Rect::from_center_size(rect.center(), vec2(ICON, ICON));
+        icons::paint(ui.painter(), icon_rect, icon, ICON, color);
+        if hold && style == CellStyle::Tool {
+            hold_name(ui, &resp, label);
+        }
+        return resp;
+    }
     let icon_rect = Rect::from_center_size(rect.center() - vec2(0.0, 7.0), vec2(ICON, ICON));
     icons::paint(ui.painter(), icon_rect, icon, ICON, color);
     let at = pos2(rect.center().x, rect.bottom() - 7.0);
     ui.painter()
         .text(at, Align2::CENTER_BOTTOM, label, theme::small(), color);
     resp
+}
+
+/// Keeps the hold of a tool cell. After a hold of `HOLD_TIME`, the cell is
+/// the held cell until the press ends.
+fn hold_name(ui: &egui::Ui, resp: &Response, label: &str) {
+    let ctx = ui.ctx();
+    let held: Option<Hold> = ctx.data(|d| d.get_temp(hold_id()));
+    if !resp.is_pointer_button_down_on() || held.is_some_and(|h| h.id == resp.id) {
+        return;
+    }
+    let press = ui.input(|i| {
+        let (start, origin) = (i.pointer.press_start_time()?, i.pointer.press_origin()?);
+        let pos = i.pointer.interact_pos()?;
+        Some((i.time - start, origin.distance(pos)))
+    });
+    match press {
+        Some((time, moved)) if moved <= super::HOLD_SLOP && time >= super::HOLD_TIME => {
+            let hold = Hold {
+                id: resp.id,
+                label: label.to_owned(),
+                rect: resp.rect,
+            };
+            ctx.data_mut(|d| d.insert_temp(hold_id(), hold));
+            ctx.request_repaint();
+        }
+        Some((time, moved)) if moved <= super::HOLD_SLOP => {
+            let wait = std::time::Duration::from_secs_f64(super::HOLD_TIME - time);
+            ctx.request_repaint_after(wait);
+        }
+        _ => {}
+    }
+}
+
+/// The small label with the name of a held icon cell, at the right of the
+/// cell, on a blurred card.
+pub fn show_hold_label(ctx: &egui::Context, screen: Rect) {
+    let Some((label, cell)) = hold_label(ctx) else {
+        ctx.data_mut(|d| d.remove::<Hold>(hold_id()));
+        return;
+    };
+    let galley = ctx.fonts_mut(|f| f.layout_no_wrap(label, theme::body(), theme::TEXT));
+    let size = vec2(galley.size().x.ceil() + 24.0, 32.0);
+    let left = (cell.right() + 2.0 * PAD + 8.0).min(screen.right() - size.x);
+    let rect = Rect::from_min_size(pos2(left, cell.center().y - size.y / 2.0), size);
+    card(
+        ctx,
+        backdrop(ctx),
+        "pad-hold-label",
+        rect,
+        egui::Order::Foreground,
+        theme::CONTROL_RADIUS.into(),
+        |ui| {
+            let at = rect.center() - galley.size() / 2.0;
+            ui.painter().galley(at, galley, theme::TEXT);
+        },
+    );
 }
 
 /// The size of the track of a switch.

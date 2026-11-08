@@ -78,7 +78,7 @@ pub fn cell(
     active: bool,
     enabled: bool,
 ) -> bool {
-    let cell = widgets::tool_cell(ui, controls, name, label, icon, active, enabled);
+    let cell = widgets::tool_cell_with(ui, controls, name, label, icon, active, enabled, false);
     flyouts.cells.push((key, cell.rect));
     paint_mark(ui, cell.rect, active, enabled);
     let held = flyouts.held == Some(key);

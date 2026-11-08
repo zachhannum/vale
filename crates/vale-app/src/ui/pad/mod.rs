@@ -34,6 +34,7 @@ pub mod browser;
 pub mod cases;
 pub mod chip_popover;
 pub mod classify;
+pub mod column;
 pub mod edge_labels;
 pub mod expression;
 pub mod eyedropper;
@@ -495,6 +496,12 @@ pub struct PadState {
     pub controls: Controls,
     /// The places of the cards in the last frame.
     pub rects: Option<Rects>,
+    /// The label at the end of the scale bar of the readout in the last
+    /// frame.
+    pub readout_scale: Option<String>,
+    /// The name and the place of the held cell of the tool column in the
+    /// last frame.
+    pub hold_label: Option<(String, Rect)>,
     /// The open panels of the last frame.
     pub panels: Vec<(Panel, Rect)>,
     /// The workspace menu of the last frame.
@@ -631,17 +638,11 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         strip,
         extra: extra_cells(state),
         tools: TOOLS,
-        row: class == WidthClass::Compact,
         dock_width: bar::dock_width(state, Workspace::Globe),
         dock_buttons: Panel::order(Workspace::Globe).len(),
         name_width: bar::name_width(ui, state),
         tabs_width: bar::tabs_width(ui),
-        column: geometry::ColumnInput {
-            tools: TOOLS,
-            cells: card_cells(&state.globe) + extra_cells(state),
-            sliders: if strip { 2 } else { 0 },
-            brush_button: strip,
-        },
+        column: column_input(state),
     };
     // The Brush panel holds the settings of the context strip.
     if !has_strip(&state.globe) && card_cells(&state.globe) == 0 || state.globe.selecting() {
@@ -680,11 +681,17 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         world_bar(&ctx, state, &mut controls, &rects);
         view_control(&ctx, state, &mut controls, &rects);
     }
-    tool_strip(&ctx, state, &mut controls, &rects);
-    brush_card(&ctx, state, &mut controls, &rects);
+    if class == WidthClass::Compact {
+        tool_strip(&ctx, state, &mut controls, &rects);
+        brush_card(&ctx, state, &mut controls, &rects);
+    } else {
+        tool_column(&ctx, state, &mut controls, &rects);
+    }
+    state.pad.hold_label = widgets::hold_label(&ctx);
     // A button above can open or close a panel. The panels use the new state.
     input.panel = has_sheet(state, class);
     input.cells = card_cells(&state.globe);
+    input.column = column_input(state);
     input.sheet_offset = state.pad.sheet_offset;
     rects = geometry::layout(&input);
     table::check(state);
@@ -980,20 +987,17 @@ fn deselect_cell(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Control
     }
 }
 
-/// The child of a card, inside the padding of the card. In a `row`, the
-/// cells go from left to right.
-fn padded_in(ui: &mut egui::Ui, row: bool) -> egui::Ui {
+/// The child of a card of a row, inside the padding of the card. The cells
+/// go from left to right.
+fn padded_in(ui: &mut egui::Ui) -> egui::Ui {
     let rect = ui.max_rect().shrink(PAD);
-    let layout = if row {
-        egui::Layout::left_to_right(egui::Align::Min)
-    } else {
-        egui::Layout::top_down(egui::Align::Min)
-    };
+    let layout = egui::Layout::left_to_right(egui::Align::Min);
     let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(layout));
     ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
     ui
 }
 
+/// The tool strip of a compact screen: a row above the home indicator.
 fn tool_strip(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
     // An open sheet covers the row of the strip.
     if rects.tool_cells == 0 {
@@ -1008,47 +1012,115 @@ fn tool_strip(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
         Order::Middle,
         radius,
         |ui| {
-            let mut ui = padded_in(ui, rects.row);
-            let mut cells = |ui: &mut egui::Ui| {
-                for group in ModeGroup::ALL {
-                    brush_cell(ui, state, controls, group);
-                }
-                vector_cell(ui, state, controls);
-                let globe = &mut state.globe;
-                let (name, active) = (select::TOOL, globe.selecting());
-                if widgets::tool_cell(ui, controls, name, name, Icon::Select, active, true)
-                    .clicked()
-                {
-                    globe.tool = Tool::Select;
-                    state.pad.flyouts.open = None;
-                }
-                let globe = &mut state.globe;
-                let active = !globe.brushing()
-                    && !globe.editing()
-                    && !globe.measuring()
-                    && !globe.selecting();
-                if widgets::tool_cell(ui, controls, "Pan", "Move", Icon::Move, active, true)
-                    .clicked()
-                {
-                    globe.tool = Tool::Navigate;
-                }
-                let active = globe.measuring();
-                let name = MEASURE;
-                if widgets::tool_cell(ui, controls, name, name, Icon::Measure, active, true)
-                    .clicked()
-                {
-                    globe.tool = Tool::Measure;
-                }
-            };
+            let mut ui = padded_in(ui);
             if rects.tool_cells < TOOLS {
-                egui::ScrollArea::new([rects.row, !rects.row])
+                egui::ScrollArea::horizontal()
                     .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-                    .show(&mut ui, cells);
+                    .show(&mut ui, |ui| tool_cells(ui, state, controls));
             } else {
-                cells(&mut ui);
+                tool_cells(&mut ui, state, controls);
             }
         },
     );
+}
+
+/// The cells of the tools: Sculpt, Terrain, Vector, Select, Move, and
+/// Measure.
+fn tool_cells(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
+    for group in ModeGroup::ALL {
+        brush_cell(ui, state, controls, group);
+    }
+    vector_cell(ui, state, controls);
+    let globe = &mut state.globe;
+    let (name, active) = (select::TOOL, globe.selecting());
+    if widgets::tool_cell(ui, controls, name, name, Icon::Select, active, true).clicked() {
+        globe.tool = Tool::Select;
+        state.pad.flyouts.open = None;
+    }
+    let globe = &mut state.globe;
+    let active = !globe.brushing() && !globe.editing() && !globe.measuring() && !globe.selecting();
+    if widgets::tool_cell(ui, controls, "Pan", "Move", Icon::Move, active, true).clicked() {
+        globe.tool = Tool::Navigate;
+    }
+    let active = globe.measuring();
+    let name = MEASURE;
+    if widgets::tool_cell(ui, controls, name, name, Icon::Measure, active, true).clicked() {
+        globe.tool = Tool::Measure;
+    }
+}
+
+/// The contents of the tool column for the tool of the globe.
+fn column_input(state: &AppState) -> geometry::ColumnInput {
+    let globe = &state.globe;
+    let extra = extra_cells(state);
+    let (cells, sliders, brush_button) = if card_cells(globe) > 0 {
+        (card_cells(globe), 0, false)
+    } else if has_strip(globe) {
+        let (cells, sliders) = strip_counts(globe);
+        (cells, sliders, true)
+    } else {
+        (0, 0, false)
+    };
+    geometry::ColumnInput {
+        tools: TOOLS,
+        cells: cells + extra,
+        sliders,
+        brush_button,
+    }
+}
+
+/// The number of cells and of sliders that `strip_controls` adds.
+fn strip_counts(globe: &crate::globe::Globe) -> (usize, usize) {
+    if globe.stroking() || globe.placing() {
+        let cells = 1
+            + usize::from(globe.filling())
+            + usize::from(globe.drawing())
+            + usize::from(globe.lining());
+        (cells, usize::from(globe.stroking()))
+    } else if globe.brushing() {
+        (0, 2)
+    } else {
+        (0, 0)
+    }
+}
+
+/// The tool column: the tool cells, and below a divider the controls of
+/// the tool.
+fn tool_column(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
+    let mut merge_cell = None;
+    let mut selectable_cell = None;
+    let backdrop = state.globe.backdrop();
+    let context = rects.column_content
+        > 2.0 * geometry::COLUMN_INSET + TOOLS as f32 * geometry::COLUMN_CELL + 0.5;
+    column::show(ctx, backdrop, rects, |ui| {
+        tool_cells(ui, state, controls);
+        if !context {
+            return;
+        }
+        column::divider(ui);
+        if state.globe.vertexing() {
+            vertex_cells(ui, state, controls, rects);
+        } else if state.globe.selecting() {
+            selectable_cell = Some(selectable::cell(ui, state, controls));
+            merge_cell = select_cells(ui, state, controls);
+        } else if state.globe.measuring() {
+            measure_cells(ui, state, controls, rects);
+        } else if has_strip(&state.globe) {
+            strip_controls(ui, state, controls, Slide::Column(rects.slider));
+            deselect_cell(ui, state, controls);
+            brush_button(ui, state, controls, rects);
+        } else {
+            deselect_cell(ui, state, controls);
+        }
+    });
+    match merge_cell {
+        Some(cell) if state.merging => merge_menu(ctx, state, controls, rects, cell),
+        _ => state.merging = false,
+    }
+    match selectable_cell {
+        Some(cell) if state.pad.selectable => selectable::menu(ctx, state, controls, rects, cell),
+        _ => state.pad.selectable = false,
+    }
 }
 
 /// A brush cell. It shows the mode of the brush while that mode is in its
@@ -1197,7 +1269,7 @@ fn brush_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
             rect,
             Order::Middle,
             radius,
-            |ui| deselect_cell(&mut padded_in(ui, rects.row), state, controls),
+            |ui| deselect_cell(&mut padded_in(ui), state, controls),
         );
         return;
     }
@@ -1209,145 +1281,142 @@ fn brush_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
         Order::Middle,
         radius,
         |ui| {
-            let mut ui = padded_in(ui, rects.row);
-            // In the row layout, a slider is a row as long as `length`.
-            let row = rects.row;
-            let slide = |number: Number<'_>, ui: &mut egui::Ui, controls: &mut Controls, length| {
-                if row {
-                    number.horizontal(ui, controls, length)
-                } else {
-                    number.vertical(ui, controls, length)
-                }
-            };
-            // Each control shows while the tool can use it.
-            let paint = state.globe.brushing();
-            let line = state.globe.drawing();
-            let stroke = state.globe.stroking();
-            let vector = stroke || state.globe.placing();
+            let mut ui = padded_in(ui);
             if let BrushCard::Full(height) = rects.brush_card {
-                // The tools of a vector layer have the snap button. The line
-                // tool, the polygon tool, and Split also have the smoothing.
-                // The line tool and the polygon tool also have the reshape
-                // button. The line tool also has the terrain fit button, and
-                // the polygon tool has its modes.
-                let fit = state.globe.lining();
-                let fill = state.globe.filling();
-                if vector {
-                    if fill {
-                        let mode = state.globe.line.polygon_mode;
-                        let (label, icon, _) = POLYGON_MODES
-                            .into_iter()
-                            .find(|m| m.2 == mode)
-                            .expect("a mode");
-                        let key = Flyout::PolygonMode;
-                        let flyouts = &mut state.pad.flyouts;
-                        let on = mode != PolygonMode::New;
-                        if flyout::cell(
-                            &mut ui,
-                            controls,
-                            flyouts,
-                            key,
-                            POLYGON_MODE,
-                            label,
-                            icon,
-                            on,
-                            true,
-                        ) {
-                            flyouts.toggle(key);
-                        }
-                    }
-                    if stroke {
-                        let cells = [true, line, fit || fill].iter().filter(|&&c| c).count() as f32;
-                        let cell = if row { CELL.0 } else { CELL.1 };
-                        let length = 2.0 * height - cells * cell;
-                        let smoothing = &mut state.globe.line.smoothing;
-                        let number = percent(SMOOTHING, *smoothing).default(DEFAULT_SMOOTHING);
-                        if let Some(value) = slide(number, &mut ui, controls, length) {
-                            *smoothing = value;
-                        }
-                    }
-                    let snap = &mut state.globe.snap.on;
-                    let cell = widgets::tool_cell(
-                        &mut ui,
-                        controls,
-                        SNAP,
-                        SNAP,
-                        Icon::Magnet,
-                        *snap,
-                        true,
-                    );
-                    if cell.clicked() {
-                        *snap = !*snap;
-                    }
-                    if line {
-                        // Reshape works in the New mode of the polygon tool.
-                        let new = state.globe.line.polygon_mode == PolygonMode::New;
-                        let enabled = !fill || new;
-                        let on = &mut state.globe.line.reshape;
-                        let cell = widgets::tool_cell(
-                            &mut ui,
-                            controls,
-                            RESHAPE,
-                            RESHAPE,
-                            Icon::Reshape,
-                            *on && enabled,
-                            enabled,
-                        );
-                        if cell.clicked() {
-                            *on = !*on;
-                        }
-                    }
-                    if fit {
-                        let terrain = state.globe.fit_layer.is_some();
-                        let on = &mut state.globe.line.fit;
-                        let active = *on && terrain;
-                        let cell = widgets::tool_cell(
-                            &mut ui,
-                            controls,
-                            TERRAIN_FIT,
-                            "Fit",
-                            Icon::Range,
-                            active,
-                            terrain,
-                        );
-                        if cell.clicked() {
-                            *on = !*on;
-                        }
-                    }
-                } else if paint {
-                    // The outline sets the size of a basin, and a basin has no
-                    // flow. The sliders keep their place in the card.
-                    let on = state.globe.brush.mode != Mode::Basin;
-                    brush_size(state, "Size", |n| {
-                        slide(n.enabled(on), &mut ui, controls, height)
-                    });
-                    let flow = &mut state.globe.brush.flow;
-                    let number = Number::new("Flow", *flow, FLOW).percent().enabled(on);
-                    if let Some(value) = slide(number, &mut ui, controls, height) {
-                        *flow = value;
-                    }
-                }
+                strip_controls(&mut ui, state, controls, Slide::Row(height));
             }
             deselect_cell(&mut ui, state, controls);
-            let open = state.pad.brush;
-            let button = widgets::tool_cell(
-                &mut ui,
-                controls,
-                "Brush settings",
-                "Brush",
-                Icon::Brush,
-                open,
-                true,
-            );
-            if button.clicked() {
-                state.pad.toggle(Panel::Brush, rects.one_panel);
-            }
+            brush_button(&mut ui, state, controls, rects);
         },
     );
 }
 
+/// The length of the sliders of the context strip.
+#[derive(Clone, Copy)]
+enum Slide {
+    /// The row of a compact screen, with two sliders of this length.
+    Row(f32),
+    /// The tool column, with tracks of this length. Zero: the Brush panel
+    /// holds the sliders.
+    Column(f32),
+}
+
+/// The controls of the context strip of the brush and of the vector tools.
+/// Each control shows while the tool can use it.
+fn strip_controls(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, slide: Slide) {
+    let height = match slide {
+        Slide::Row(height) => height,
+        Slide::Column(_) => 0.0,
+    };
+    let slide =
+        |number: Number<'_>, ui: &mut egui::Ui, controls: &mut Controls, length: f32| match slide {
+            Slide::Row(_) => number.horizontal(ui, controls, length),
+            Slide::Column(track) if track > 0.0 => {
+                number.vertical(ui, controls, track + geometry::SLIDER_TEXT)
+            }
+            Slide::Column(_) => None,
+        };
+    let paint = state.globe.brushing();
+    let line = state.globe.drawing();
+    let stroke = state.globe.stroking();
+    let vector = stroke || state.globe.placing();
+    // The tools of a vector layer have the snap button. The line
+    // tool, the polygon tool, and Split also have the smoothing.
+    // The line tool and the polygon tool also have the reshape
+    // button. The line tool also has the terrain fit button, and
+    // the polygon tool has its modes.
+    let fit = state.globe.lining();
+    let fill = state.globe.filling();
+    if vector {
+        if fill {
+            let mode = state.globe.line.polygon_mode;
+            let (label, icon, _) = POLYGON_MODES
+                .into_iter()
+                .find(|m| m.2 == mode)
+                .expect("a mode");
+            let key = Flyout::PolygonMode;
+            let flyouts = &mut state.pad.flyouts;
+            let on = mode != PolygonMode::New;
+            if flyout::cell(
+                ui,
+                controls,
+                flyouts,
+                key,
+                POLYGON_MODE,
+                label,
+                icon,
+                on,
+                true,
+            ) {
+                flyouts.toggle(key);
+            }
+        }
+        if stroke {
+            let cells = [true, line, fit || fill].iter().filter(|&&c| c).count() as f32;
+            let length = 2.0 * height - cells * CELL.0;
+            let smoothing = &mut state.globe.line.smoothing;
+            let number = percent(SMOOTHING, *smoothing).default(DEFAULT_SMOOTHING);
+            if let Some(value) = slide(number, ui, controls, length) {
+                *smoothing = value;
+            }
+        }
+        let snap = &mut state.globe.snap.on;
+        let cell = widgets::tool_cell(ui, controls, SNAP, SNAP, Icon::Magnet, *snap, true);
+        if cell.clicked() {
+            *snap = !*snap;
+        }
+        if line {
+            // Reshape works in the New mode of the polygon tool.
+            let new = state.globe.line.polygon_mode == PolygonMode::New;
+            let enabled = !fill || new;
+            let on = &mut state.globe.line.reshape;
+            let cell = widgets::tool_cell(
+                ui,
+                controls,
+                RESHAPE,
+                RESHAPE,
+                Icon::Reshape,
+                *on && enabled,
+                enabled,
+            );
+            if cell.clicked() {
+                *on = !*on;
+            }
+        }
+        if fit {
+            let terrain = state.globe.fit_layer.is_some();
+            let on = &mut state.globe.line.fit;
+            let active = *on && terrain;
+            let cell = widgets::tool_cell(
+                ui,
+                controls,
+                TERRAIN_FIT,
+                "Fit",
+                Icon::Range,
+                active,
+                terrain,
+            );
+            if cell.clicked() {
+                *on = !*on;
+            }
+        }
+    } else if paint {
+        // The outline sets the size of a basin, and a basin has no
+        // flow. The sliders keep their place in the card.
+        let on = state.globe.brush.mode != Mode::Basin;
+        brush_size(state, "Size", |n| {
+            slide(n.enabled(on), ui, controls, height)
+        });
+        let flow = &mut state.globe.brush.flow;
+        let number = Number::new("Flow", *flow, FLOW).percent().enabled(on);
+        if let Some(value) = slide(number, ui, controls, height) {
+            *flow = value;
+        }
+    }
+}
+
 /// The card of cells of the Measure tool, the Vertex tool, or the Select
-/// tool, in the place of the brush card.
+/// tool, in the place of the brush card, on a compact screen.
 pub(super) fn cell_card(
     ctx: &egui::Context,
     state: &mut AppState,
@@ -1367,7 +1436,7 @@ pub(super) fn cell_card(
         Order::Middle,
         theme::CARD_RADIUS.into(),
         |ui| {
-            let mut ui = padded_in(ui, rects.row);
+            let mut ui = padded_in(ui);
             let globe = state.workspace == Workspace::Globe;
             let vertexing = state.globe.vertexing() && globe;
             let selecting = state.globe.selecting() && globe;
@@ -1390,7 +1459,7 @@ pub(super) fn cell_card(
                 }
             };
             if rects.card_cells < all {
-                egui::ScrollArea::new([rects.row, !rects.row])
+                egui::ScrollArea::horizontal()
                     .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
                     .show(&mut ui, cells);
             } else {
@@ -1576,7 +1645,12 @@ fn select_cells(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls
 
 /// The cells of the card of the Measure tool: the snap switch, the Clear
 /// path cell, and the Brush button, which opens the snapping settings.
-fn measure_cells(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
+pub(super) fn measure_cells(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    rects: &Rects,
+) {
     let snap = &mut state.globe.snap.on;
     if widgets::tool_cell(ui, controls, SNAP, SNAP, Icon::Magnet, *snap, true).clicked() {
         *snap = !*snap;
@@ -3027,24 +3101,31 @@ fn toolbox_body(ui: &mut egui::Ui, state: &mut AppState) {
     }
 }
 
-/// The readout: the place and the elevation under the pointer. With a
-/// project file, the save mark is at its left.
-fn readout(ctx: &egui::Context, ui: &egui::Ui, state: &AppState, rects: &Rects) {
+/// The readout: the place and the elevation under the pointer. On a
+/// compact screen, it is a card with the save mark at its left. From 600
+/// points, it is text with a halo and a scale bar at the lower left of the
+/// canvas.
+fn readout(ctx: &egui::Context, ui: &egui::Ui, state: &mut AppState, rects: &Rects) {
+    state.pad.readout_scale = None;
     let Some(band) = rects.readout else {
         return;
     };
     let text = readout_line(state);
+    if rects.class != WidthClass::Compact {
+        let world = &state.doc.project.world;
+        let scale = km_per_point(&state.globe, world.radius_km)
+            .and_then(|km| crate::scale_bar::readout_scale(km, world.units));
+        state.pad.readout_scale = scale.map(|s| s.label());
+        map_readout(ctx, band, text, scale);
+        return;
+    }
     let galley = ui
         .painter()
         .layout_no_wrap(text, theme::mono(), theme::MUTE);
     let mark = state.save_mark(std::time::Instant::now());
     let lead = if mark.is_some() { SAVE_MARK + 8.0 } else { 0.0 };
     let size = vec2(lead + galley.size().x.ceil() + 24.0, band.height());
-    let rect = if rects.class == WidthClass::Compact && !rects.row {
-        Rect::from_min_size(band.min, size)
-    } else {
-        Rect::from_center_size(band.center(), size)
-    };
+    let rect = Rect::from_center_size(band.center(), size);
     let radius = theme::CONTROL_RADIUS.into();
     widgets::card(
         ctx,
@@ -3065,6 +3146,98 @@ fn readout(ctx: &egui::Context, ui: &egui::Ui, state: &AppState, rects: &Rects) 
             ui.painter().galley(at, galley, theme::MUTE);
         },
     );
+}
+
+/// The kilometers in one point at the center of the view. On the flat map,
+/// the distance between two places 40 points apart.
+fn km_per_point(globe: &crate::globe::Globe, world_km: f64) -> Option<f64> {
+    let on_globe = world_km / globe.radius();
+    if globe.world_view == WorldView::Flat {
+        let center = globe.rect.center();
+        let side = vec2(20.0, 0.0);
+        if let (Some(a), Some(b)) = (
+            globe.unproject(center - side),
+            globe.unproject(center + side),
+        ) {
+            let km = crate::globe::math::angle(a, b) * world_km / 40.0;
+            if km.is_finite() && km > 0.0 {
+                return Some(km);
+            }
+        }
+    }
+    (on_globe.is_finite() && on_globe > 0.0).then_some(on_globe)
+}
+
+/// Text with a dark halo, so that it reads over the map.
+fn halo_text(
+    painter: &egui::Painter,
+    at: Pos2,
+    align: egui::Align2,
+    text: &str,
+    font: egui::FontId,
+) {
+    let halo = egui::Color32::from_black_alpha(160);
+    let galley = painter.layout_no_wrap(text.to_owned(), font, theme::TEXT);
+    let at = align.anchor_size(at, galley.size()).min;
+    for (x, y) in [
+        (-1.0, -1.0),
+        (0.0, -1.0),
+        (1.0, -1.0),
+        (-1.0, 0.0),
+        (1.0, 0.0),
+        (-1.0, 1.0),
+        (0.0, 1.0),
+        (1.0, 1.0),
+    ] {
+        painter.galley_with_override_text_color(at + vec2(x, y), galley.clone(), halo);
+    }
+    painter.galley(at, galley, theme::TEXT);
+}
+
+/// The readout from 600 points: the place on the first line, and the scale
+/// bar with four divisions below it, at the lower left of `band`.
+fn map_readout(
+    ctx: &egui::Context,
+    band: Rect,
+    text: String,
+    scale: Option<crate::scale_bar::ReadoutScale>,
+) {
+    let layer = egui::LayerId::new(Order::Middle, egui::Id::new("pad-readout"));
+    let painter = ctx.layer_painter(layer);
+    let label = egui::FontId::monospace(10.0);
+    let bar_height = 4.0;
+    let labels_top = band.bottom() - 12.0;
+    let bar = Rect::from_min_size(
+        pos2(band.left(), labels_top - 3.0 - bar_height),
+        vec2(scale.map_or(0.0, |s| s.length as f32), bar_height),
+    );
+    let place = pos2(band.left(), bar.top() - 5.0);
+    halo_text(
+        &painter,
+        place,
+        egui::Align2::LEFT_BOTTOM,
+        &text,
+        theme::mono(),
+    );
+    let Some(scale) = scale else {
+        return;
+    };
+    painter.rect_filled(bar.expand(1.0), 1.0, egui::Color32::from_black_alpha(160));
+    let part = bar.width() / 4.0;
+    for i in 0..4 {
+        let fill = if i % 2 == 0 {
+            theme::TEXT
+        } else {
+            egui::Color32::from_gray(110)
+        };
+        let x = bar.left() + i as f32 * part;
+        let rect = Rect::from_min_max(pos2(x, bar.top()), pos2(x + part, bar.bottom()));
+        painter.rect_filled(rect, 0.0, fill);
+    }
+    let at = pos2(bar.left(), labels_top);
+    halo_text(&painter, at, egui::Align2::LEFT_TOP, "0", label.clone());
+    let at = pos2(bar.right(), labels_top);
+    halo_text(&painter, at, egui::Align2::RIGHT_TOP, &scale.label(), label);
 }
 
 /// The width of a button of the card of a held stroke, and the least width

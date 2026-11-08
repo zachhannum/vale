@@ -7,12 +7,15 @@ use egui_kittest::kittest::Queryable;
 use vale_app::document::Document;
 use vale_app::globe::WorldView;
 use vale_app::projects::Locations;
+use vale_app::scale_bar::readout_scale;
 use vale_app::session::Session;
 use vale_app::ui::pad::atlas::{NEXT_PAGE, PREVIOUS_PAGE, page_size_text};
 use vale_app::ui::pad::bar::{BACK, DOCK};
+use vale_app::ui::pad::flyout::Flyout;
 use vale_app::ui::pad::geometry::{BAR, TAB_ICON};
 use vale_app::ui::pad::{
-    GRATICULE, PROJECTION, Panel, RECENTER, RESET, SAVE, TOOLBOX, WORLD_PROPERTIES, WORLDS,
+    GRATICULE, ModeGroup, PROJECTION, Panel, RECENTER, RESET, SAVE, SCULPT, TOOLBOX,
+    WORLD_PROPERTIES, WORLDS,
 };
 use vale_app::ui::panels::ALL_WORLDS;
 use vale_app::ui::world_form::NEW_WORLD;
@@ -304,5 +307,99 @@ fn the_dock_zone_holds_the_panel_buttons_and_the_dock_button_from_1000_points() 
         // The Toolbox button opens its panel.
         tap(&mut h, TOOLBOX);
         assert!(h.state().pad.is_open(Panel::Toolbox), "{size:?}");
+    }
+}
+
+/// Holds a finger on a control for `steps` frames of a quarter second, and
+/// keeps it down.
+fn press(h: &mut Pad, name: &str, steps: usize) -> Pos2 {
+    let at = control(h, name)
+        .unwrap_or_else(|| panic!("no control `{name}`"))
+        .center();
+    touch(h, egui::TouchPhase::Start, at);
+    for _ in 0..steps {
+        h.step();
+    }
+    at
+}
+
+#[test]
+fn a_hold_on_a_tool_cell_shows_the_name_of_the_tool() {
+    let mut h = pad(Workspace::Globe, BOARDS[0]);
+    let cell = control(&h, select::TOOL).unwrap();
+    assert!(rects(&h).column.contains_rect(cell));
+    assert_eq!(cell.size(), vec2(44.0, 44.0));
+    // A short press shows no name.
+    let at = press(&mut h, select::TOOL, 1);
+    assert_eq!(h.state().pad.hold_label, None);
+    // A hold of 0.4 seconds shows the name next to the cell.
+    h.step();
+    h.step();
+    let (name, rect) = h.state().pad.hold_label.clone().expect("no label");
+    assert_eq!((name.as_str(), rect), (select::TOOL, cell));
+    let label = h
+        .ctx
+        .memory(|m| m.area_rect(egui::Id::new("pad-hold-label")))
+        .expect("no label card");
+    assert!(label.left() > rects(&h).column.right());
+    assert!(label.top() < cell.center().y && cell.center().y < label.bottom());
+    // The label goes away at the end of the press.
+    touch(&mut h, egui::TouchPhase::End, at);
+    h.run_steps(3);
+    assert_eq!(h.state().pad.hold_label, None);
+    // A hold on a cell of a group opens the list of the group instead.
+    h.state_mut().add_height();
+    h.run_steps(2);
+    let sculpt = control(&h, SCULPT).unwrap();
+    let at = press(&mut h, SCULPT, 3);
+    assert_eq!(h.state().pad.hold_label, None);
+    let flyouts = &h.state().pad.flyouts;
+    assert_eq!(flyouts.open, Some(Flyout::Brush(ModeGroup::Sculpt)));
+    let list = flyouts.rect.expect("no list");
+    assert!(list.left() > rects(&h).column.right());
+    assert!(list.top() <= sculpt.top());
+    touch(&mut h, egui::TouchPhase::End, at);
+    h.run_steps(3);
+}
+
+#[test]
+fn the_readout_is_at_the_lower_left_of_the_canvas_with_a_scale_bar() {
+    for size in BOARDS {
+        let what = format!("{size:?}");
+        let mut h = pad(Workspace::Globe, size);
+        for view in [WorldView::Globe, WorldView::Flat] {
+            h.state_mut().globe.world_view = view;
+            h.run_steps(3);
+            let what = format!("{what} {view:?}");
+            let r = rects(&h);
+            let readout = r.readout.expect("no readout");
+            assert_eq!(readout.left(), r.column.right() + 16.0, "{what}");
+            assert!(readout.bottom() <= size.1 - r.bands.bottom, "{what}");
+            assert!(readout.top() >= r.column.bottom(), "{what}");
+            let label = h.state().pad.readout_scale.clone().expect("no scale bar");
+            let (value, unit) = label.split_once(' ').unwrap();
+            assert_eq!(unit, "km", "{what}: {label}");
+            let value: f64 = value.parse().unwrap();
+            let lead = value / 10f64.powf(value.log10().floor());
+            assert!(
+                [1.0, 2.0, 5.0].iter().any(|m| (lead - m).abs() < 1e-9),
+                "{what}: {label}"
+            );
+            // On the globe, the scale is the scale at its center.
+            if view == WorldView::Globe {
+                let globe = &h.state().globe;
+                let world = &h.state().doc.project.world;
+                let km = world.radius_km / globe.radius();
+                let want = readout_scale(km, world.units).unwrap();
+                assert_eq!(label, want.label(), "{what}");
+                assert!(want.length <= 140.0, "{what}");
+            }
+        }
+    }
+    // The Atlas workspace has no readout.
+    for size in BOARDS {
+        let h = pad(Workspace::Atlas, size);
+        assert_eq!(rects(&h).readout, None, "{size:?}");
+        assert_eq!(h.state().pad.readout_scale, None, "{size:?}");
     }
 }

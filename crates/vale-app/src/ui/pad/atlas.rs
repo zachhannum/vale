@@ -245,7 +245,6 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
             0
         },
         tools: TOOL_CELLS,
-        row,
         dock_width: bar::dock_width(state, Workspace::Atlas),
         // The Add button stays in the bar until the tools add frames and
         // furniture.
@@ -324,10 +323,17 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         atlas_bar(&ctx, state, &mut controls, &rects);
     }
     page_control(&ctx, state, &mut controls, page_card);
-    tool_strip(&ctx, state, &mut controls, &rects);
-    frame_card(&ctx, state, &mut controls, &rects);
+    if row {
+        tool_strip(&ctx, state, &mut controls, &rects);
+        frame_card(&ctx, state, &mut controls, &rects);
+        if measuring {
+            super::cell_card(&ctx, state, &mut controls, &rects);
+        }
+    } else {
+        tool_column(&ctx, state, &mut controls, &rects);
+    }
+    state.pad.hold_label = widgets::hold_label(&ctx);
     if measuring {
-        super::cell_card(&ctx, state, &mut controls, &rects);
         if state.pad.brush {
             super::show_panel(&ctx, state, &mut controls, &rects, super::Panel::Brush);
         }
@@ -344,7 +350,14 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     super::labels::color_frame(&ctx, state);
     super::rules::picker_frame(&ctx, state);
     raster_cards(&ctx, state, &mut controls, &rects);
-    readout(&ctx, ui, state, &rects);
+    // From 600 points, the page controls show the size of the page, and the
+    // readout shows only the result of the Measure tool.
+    if row || state.measure_readout().is_some() {
+        readout(&ctx, ui, state, &rects);
+    } else {
+        rects.readout = None;
+    }
+    state.pad.readout_scale = None;
     state.atlas.add_rect = None;
     if state.atlas.add {
         add_menu(&ctx, state, &mut controls, &rects);
@@ -618,35 +631,19 @@ fn page_control(
     );
 }
 
-/// The context strip: the card below the tool strip while a frame, an item
-/// of furniture, or a feature is selected. With the Frame tool, it holds
-/// the switch that snaps a frame to the layout of the page, the switch of
-/// the layout grid, "Delete selection", and Deselect. With the Vertex tool,
-/// it holds the two switches, "Delete vertex", and Deselect. With the
-/// Select tool and the Move tool, it holds Deselect. On a compact screen,
-/// it is the row above the tool strip. It scrolls if it is too long.
+/// The context strip of a compact screen: the row above the tool strip
+/// while a frame, an item of furniture, or a feature is selected. With the
+/// Frame tool, it holds the switch that snaps a frame to the layout of the
+/// page, the switch of the layout grid, "Delete selection", and Deselect.
+/// With the Vertex tool, it holds the two switches, "Delete vertex", and
+/// Deselect. With the Select tool and the Move tool, it holds Deselect.
 fn frame_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
-    let tool = state.atlas.tool;
-    let acts = context_acts(state);
-    let cells = context_cells(state);
-    if cells == 0 {
+    // An open sheet covers the row.
+    let Some(place) = rects.brush.filter(|_| context_cells(state) > 0) else {
         state.pad.selectable = false;
         return;
-    }
-    let mut selectable_cell = None;
-    let place = if rects.row {
-        // In the row layout, the strip is the row above the tool strip. An
-        // open sheet covers it.
-        let Some(place) = rects.brush else {
-            state.pad.selectable = false;
-            return;
-        };
-        place
-    } else {
-        column_place(rects, cells)
     };
-    // In the row layout, the strip holds all its cells.
-    let scroll = !rects.row && place.height() < geometry::strip_height(cells);
+    let mut selectable_cell = None;
     widgets::card(
         ctx,
         state.globe.backdrop(),
@@ -655,78 +652,8 @@ fn frame_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
         Order::Middle,
         theme::CARD_RADIUS.into(),
         |ui| {
-            let mut ui = super::padded_in(ui, rects.row);
-            let mut cells = |ui: &mut egui::Ui| {
-                let on = state.atlas.snap;
-                let label = super::SNAP;
-                if matches!(tool, AtlasTool::Frame | AtlasTool::Vertex)
-                    && widgets::tool_cell(
-                        ui,
-                        controls,
-                        SNAP_TO_LAYOUT,
-                        label,
-                        Icon::Magnet,
-                        on,
-                        true,
-                    )
-                    .clicked()
-                {
-                    state.atlas.snap = !on;
-                }
-                let on = state.doc.project.atlas.grid.on;
-                if matches!(tool, AtlasTool::Frame | AtlasTool::Vertex)
-                    && widgets::tool_cell(ui, controls, GRID, GRID, Icon::LayoutGrid, on, true)
-                        .clicked()
-                {
-                    atlas::edit_grid(state, |g| g.on = !on);
-                }
-                if tool == AtlasTool::Select {
-                    selectable_cell = Some(super::selectable::cell(ui, state, controls));
-                    let (name, add) = (select::ADD_TO_SELECTION, state.select_add);
-                    if widgets::tool_cell(ui, controls, name, "Add", Icon::Plus, add, true)
-                        .clicked()
-                    {
-                        state.select_add = !add;
-                    }
-                    if cells < 3 {
-                        return;
-                    }
-                }
-                if matches!(tool, AtlasTool::Frame | AtlasTool::Vertex) && !acts {
-                    return;
-                }
-                if tool == AtlasTool::Vertex {
-                    let (name, can) = (super::DELETE_VERTEX, atlas::can_delete_vertices(state));
-                    if widgets::tool_cell(ui, controls, name, "Delete", Icon::Delete, false, can)
-                        .clicked()
-                    {
-                        atlas::delete_vertices(state);
-                    }
-                } else if tool == AtlasTool::Frame {
-                    let name = select::DELETE;
-                    if widgets::tool_cell(ui, controls, name, "Delete", Icon::Trash, false, true)
-                        .clicked()
-                    {
-                        atlas::delete_selection(state);
-                    }
-                }
-                let name = super::DESELECT;
-                if widgets::tool_cell(ui, controls, name, name, Icon::Close, false, true).clicked()
-                {
-                    if matches!(tool, AtlasTool::Vertex | AtlasTool::Select) {
-                        atlas::deselect(state);
-                    } else {
-                        atlas::clear_selection(state);
-                    }
-                }
-            };
-            if scroll {
-                egui::ScrollArea::vertical()
-                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-                    .show(&mut ui, cells);
-            } else {
-                cells(&mut ui);
-            }
+            let mut ui = super::padded_in(ui);
+            selectable_cell = frame_cells(&mut ui, state, controls);
         },
     );
     match selectable_cell {
@@ -737,22 +664,86 @@ fn frame_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
     }
 }
 
-/// The place of the context strip in the column layout: below the tool
-/// strip, or at the right of the strip if the room below is too short. It
-/// ends above the panel line, and it is shorter if it is too long.
-fn column_place(rects: &Rects, cells: usize) -> Rect {
-    let mut size = vec2(rects.tools.width(), geometry::strip_height(cells));
-    let below = pos2(rects.tools.left(), rects.tools.bottom() + GAP);
-    let min = if rects.tool_cells < TOOL_CELLS || below.y + size.y > rects.panel_bottom {
-        pos2(rects.tools.right() + GAP, rects.tools.top())
-    } else {
-        below
-    };
-    let room = rects.panel_bottom - min.y;
-    if size.y > room {
-        size.y = room.max(geometry::strip_height(1));
+/// The tool column from 600 points: the tool cells, and below a divider
+/// the cells of the context strip, or the cells of the Measure tool.
+fn tool_column(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
+    let measuring = state.measuring();
+    let context = measuring || context_cells(state) > 0;
+    let mut selectable_cell = None;
+    let backdrop = state.globe.backdrop();
+    super::column::show(ctx, backdrop, rects, |ui| {
+        tool_cells(ui, state, controls);
+        if !context {
+            return;
+        }
+        super::column::divider(ui);
+        if measuring {
+            super::measure_cells(ui, state, controls, rects);
+        } else {
+            selectable_cell = frame_cells(ui, state, controls);
+        }
+    });
+    match selectable_cell {
+        Some(cell) if state.pad.selectable => {
+            super::selectable::menu(ctx, state, controls, rects, cell);
+        }
+        _ => state.pad.selectable = false,
     }
-    Rect::from_min_size(min, size)
+}
+
+/// The cells of the context strip of the atlas tool. Returns the place of
+/// the Selectable cell.
+fn frame_cells(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) -> Option<Rect> {
+    let tool = state.atlas.tool;
+    let acts = context_acts(state);
+    let cells = context_cells(state);
+    let mut selectable_cell = None;
+    let on = state.atlas.snap;
+    let label = super::SNAP;
+    if matches!(tool, AtlasTool::Frame | AtlasTool::Vertex)
+        && widgets::tool_cell(ui, controls, SNAP_TO_LAYOUT, label, Icon::Magnet, on, true).clicked()
+    {
+        state.atlas.snap = !on;
+    }
+    let on = state.doc.project.atlas.grid.on;
+    if matches!(tool, AtlasTool::Frame | AtlasTool::Vertex)
+        && widgets::tool_cell(ui, controls, GRID, GRID, Icon::LayoutGrid, on, true).clicked()
+    {
+        atlas::edit_grid(state, |g| g.on = !on);
+    }
+    if tool == AtlasTool::Select {
+        selectable_cell = Some(super::selectable::cell(ui, state, controls));
+        let (name, add) = (select::ADD_TO_SELECTION, state.select_add);
+        if widgets::tool_cell(ui, controls, name, "Add", Icon::Plus, add, true).clicked() {
+            state.select_add = !add;
+        }
+        if cells < 3 {
+            return selectable_cell;
+        }
+    }
+    if matches!(tool, AtlasTool::Frame | AtlasTool::Vertex) && !acts {
+        return selectable_cell;
+    }
+    if tool == AtlasTool::Vertex {
+        let (name, can) = (super::DELETE_VERTEX, atlas::can_delete_vertices(state));
+        if widgets::tool_cell(ui, controls, name, "Delete", Icon::Delete, false, can).clicked() {
+            atlas::delete_vertices(state);
+        }
+    } else if tool == AtlasTool::Frame {
+        let name = select::DELETE;
+        if widgets::tool_cell(ui, controls, name, "Delete", Icon::Trash, false, true).clicked() {
+            atlas::delete_selection(state);
+        }
+    }
+    let name = super::DESELECT;
+    if widgets::tool_cell(ui, controls, name, name, Icon::Close, false, true).clicked() {
+        if matches!(tool, AtlasTool::Vertex | AtlasTool::Select) {
+            atlas::deselect(state);
+        } else {
+            atlas::clear_selection(state);
+        }
+    }
+    selectable_cell
 }
 
 /// Delete and Deselect show in the context strip of the Frame tool and the
@@ -778,6 +769,7 @@ fn context_cells(state: &AppState) -> usize {
     }
 }
 
+/// The tool strip of a compact screen: a row above the home indicator.
 fn tool_strip(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
     // An open sheet covers the row of the strip.
     if rects.tool_cells == 0 {
@@ -792,35 +784,37 @@ fn tool_strip(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
         Order::Middle,
         radius,
         |ui| {
-            let mut ui = super::padded_in(ui, rects.row);
-            let mut cells = |ui: &mut egui::Ui| {
-                for (name, label, icon, tool) in [
-                    (FRAME_TOOL, "Frame", Icon::Frame, AtlasTool::Frame),
-                    (select::TOOL, select::TOOL, Icon::Select, AtlasTool::Select),
-                    (VERTEX, VERTEX, Icon::Vertex, AtlasTool::Vertex),
-                    (MOVE, MOVE, Icon::Move, AtlasTool::Move),
-                    (
-                        super::MEASURE,
-                        super::MEASURE,
-                        Icon::Measure,
-                        AtlasTool::Measure,
-                    ),
-                ] {
-                    let active = state.atlas.tool == tool;
-                    if widgets::tool_cell(ui, controls, name, label, icon, active, true).clicked() {
-                        state.atlas.tool = tool;
-                    }
-                }
-            };
+            let mut ui = super::padded_in(ui);
             if rects.tool_cells < TOOL_CELLS {
-                egui::ScrollArea::new([rects.row, !rects.row])
+                egui::ScrollArea::horizontal()
                     .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-                    .show(&mut ui, cells);
+                    .show(&mut ui, |ui| tool_cells(ui, state, controls));
             } else {
-                cells(&mut ui);
+                tool_cells(&mut ui, state, controls);
             }
         },
     );
+}
+
+/// The cells of the tools of the atlas.
+fn tool_cells(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
+    for (name, label, icon, tool) in [
+        (FRAME_TOOL, "Frame", Icon::Frame, AtlasTool::Frame),
+        (select::TOOL, select::TOOL, Icon::Select, AtlasTool::Select),
+        (VERTEX, VERTEX, Icon::Vertex, AtlasTool::Vertex),
+        (MOVE, MOVE, Icon::Move, AtlasTool::Move),
+        (
+            super::MEASURE,
+            super::MEASURE,
+            Icon::Measure,
+            AtlasTool::Measure,
+        ),
+    ] {
+        let active = state.atlas.tool == tool;
+        if widgets::tool_cell(ui, controls, name, label, icon, active, true).clicked() {
+            state.atlas.tool = tool;
+        }
+    }
 }
 
 fn readout(ctx: &egui::Context, ui: &egui::Ui, state: &AppState, rects: &Rects) {

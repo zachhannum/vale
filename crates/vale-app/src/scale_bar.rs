@@ -27,6 +27,58 @@ pub fn nice_division(v: f64) -> Option<f64> {
     )
 }
 
+/// The longest scale bar of the readout of the World workspace, in points.
+pub const READOUT_BAR: f64 = 140.0;
+
+/// The scale bar of the readout: a round distance and its length on screen.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ReadoutScale {
+    /// The distance in `unit`: 1, 2, or 5 times a power of ten.
+    pub value: f64,
+    pub unit: &'static str,
+    /// The length of the bar in points.
+    pub length: f64,
+}
+
+impl ReadoutScale {
+    /// The label at the end of the bar, for example "2000 km".
+    pub fn label(&self) -> String {
+        format!("{} {}", self.value, self.unit)
+    }
+}
+
+/// The scale bar of the readout for a scale of `km_per_pt` kilometers in a
+/// point: the largest round distance whose bar is at most `READOUT_BAR`
+/// points long, in the display units of the world. `None` if the scale is
+/// not a positive number.
+pub fn readout_scale(km_per_pt: f64, units: vale_store::Units) -> Option<ReadoutScale> {
+    if !(km_per_pt.is_finite() && km_per_pt > 0.0) {
+        return None;
+    }
+    let most_km = km_per_pt * READOUT_BAR;
+    let (unit_km, unit) = crate::world::unit_for(most_km, units);
+    let most = most_km / unit_km;
+    let power = most.log10().floor() as i32;
+    // A negative power divides, so that 0.2 has no rounding error.
+    let scaled = |m: f64| {
+        if power >= 0 {
+            m * 10f64.powi(power)
+        } else {
+            m / 10f64.powi(-power)
+        }
+    };
+    let value = [5.0, 2.0, 1.0]
+        .into_iter()
+        .map(scaled)
+        .find(|v| *v <= most * (1.0 + 1e-9))
+        .unwrap_or_else(|| scaled(1.0));
+    Some(ReadoutScale {
+        value,
+        unit,
+        length: value * unit_km / km_per_pt,
+    })
+}
+
 /// One unit of a drawn scale bar.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BarRow {
@@ -754,6 +806,41 @@ pub fn preview_rgba(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_readout_scale_is_a_round_distance_of_at_most_140_points() {
+        use vale_store::Units;
+        // 2000 km in 140 points or less.
+        let s = readout_scale(15.0, Units::Metric).unwrap();
+        assert_eq!((s.value, s.unit), (2000.0, "km"));
+        assert!((s.length - 2000.0 / 15.0).abs() < 1e-9);
+        assert_eq!(s.label(), "2000 km");
+        // Exactly 140 points.
+        let s = readout_scale(1000.0 / 140.0, Units::Metric).unwrap();
+        assert_eq!(s.value, 1000.0);
+        assert!((s.length - 140.0).abs() < 1e-6);
+        // Below one kilometer, the small unit.
+        let s = readout_scale(0.002, Units::Metric).unwrap();
+        assert_eq!((s.value, s.unit), (200.0, "m"));
+        let s = readout_scale(0.00001, Units::Metric).unwrap();
+        assert_eq!(s.label(), "1 m");
+        let s = readout_scale(0.000001, Units::Metric).unwrap();
+        assert_eq!(s.label(), "0.1 m");
+        // Miles.
+        let s = readout_scale(10.0, Units::Imperial).unwrap();
+        assert_eq!((s.value, s.unit), (500.0, "mi"));
+        for km in [0.0001, 0.37, 1.0, 7.3, 15.0, 123.0] {
+            let s = readout_scale(km, Units::Metric).unwrap();
+            assert!(s.length <= 140.0 + 1e-6 && s.length >= 56.0, "{km}: {s:?}");
+            let m = s.value / 10f64.powf(s.value.log10().floor());
+            assert!(
+                [1.0, 2.0, 5.0].iter().any(|r| (m - r).abs() < 1e-9),
+                "{km}: {s:?}"
+            );
+        }
+        assert_eq!(readout_scale(0.0, Units::Metric), None);
+        assert_eq!(readout_scale(f64::NAN, Units::Metric), None);
+    }
     use vale_store::{DivisionSpacing, FurnitureText, TextCase};
 
     fn fonts() -> Fonts {
