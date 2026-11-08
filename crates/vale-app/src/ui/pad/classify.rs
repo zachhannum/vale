@@ -490,6 +490,8 @@ fn apply_neighbors(state: &mut AppState, id: LayerId, colors: usize, request: &R
             &colors,
             Step::None,
         );
+        // The rules join the undo step of the field.
+        doc.store_styles();
         true
     })
 }

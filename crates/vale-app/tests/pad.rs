@@ -8100,6 +8100,73 @@ fn classify_makes_quantile_rules_in_one_undo_step() {
 }
 
 #[test]
+fn classify_colors_neighbors_differently_in_one_undo_step() {
+    use vale_app::ui::pad::classify::{NEIGHBORS_DIFFER, REPLACE_RULES};
+    use vale_store::{Feature, FieldType, Geometry, Value};
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = saved_pad(BOARDS[0], dir.path());
+
+    // A grid of 3 by 3 squares of 10 degrees.
+    let state = h.state_mut();
+    let id = state.doc.add_layer(GeometryKind::Polygon);
+    for i in 0..9 {
+        let (x, y) = ((i % 3) as f64 * 10.0, (i / 3) as f64 * 10.0);
+        let ring = vec![[x, y], [x + 10.0, y], [x + 10.0, y + 10.0], [x, y + 10.0]];
+        let feature = Feature::new(Geometry::Polygons(vec![vec![ring]]), Default::default());
+        assert!(state.doc.project.add_feature(id, feature));
+    }
+    state.touch();
+    save_frames(&mut h);
+    let name = h.state().doc.layer(id).unwrap().name.clone();
+    let before = rules(&h, id);
+
+    open_classify(&mut h, &name);
+    tap(&mut h, NEIGHBORS_DIFFER);
+    scroll_to_control(&mut h, REPLACE_RULES);
+    tap(&mut h, REPLACE_RULES);
+    save_frames(&mut h);
+    assert_eq!(h.state().pad.page, None);
+
+    let layer = h.state().doc.layer(id).unwrap();
+    let field = layer.fields.iter().find(|f| f.name == "color_group");
+    assert_eq!(field.map(|f| f.kind), Some(FieldType::Integer));
+    let colors: Vec<f64> = layer
+        .features
+        .iter()
+        .map(|f| match f.attributes["color_group"] {
+            Value::Number(n) => n,
+            ref v => panic!("{v:?}"),
+        })
+        .collect();
+    // Squares that share an edge differ. The grid needs 2 colors at least.
+    for i in 0..9 {
+        if i % 3 < 2 {
+            assert_ne!(colors[i], colors[i + 1], "{colors:?}");
+        }
+        if i < 6 {
+            assert_ne!(colors[i], colors[i + 3], "{colors:?}");
+        }
+    }
+    let count = colors.iter().fold(0.0_f64, |a, b| a.max(*b)) as usize;
+    let mut expected: Vec<String> = (1..=count).map(|i| format!("Color {i}")).collect();
+    expected.push(vale_app::classify::OTHER_VALUES.to_owned());
+    assert_eq!(rule_names(&h, id), expected);
+    for r in rules(&h, id) {
+        assert!(r.filter.error().is_none(), "{}", r.name);
+    }
+
+    tap(&mut h, "Undo");
+    assert_eq!(rules(&h, id), before);
+    let layer = h.state().doc.layer(id).unwrap();
+    assert!(layer.fields.iter().all(|f| f.name != "color_group"));
+
+    // A point layer has no such switch.
+    let mut h = pad(BOARDS[0]);
+    open_classify(&mut h, "Places");
+    assert!(control(&h, NEIGHBORS_DIFFER).is_none());
+}
+
+#[test]
 fn value_preview_shows_range() {
     use vale_app::ui::expr_help::{range_text, value_range};
     use vale_app::ui::pad::classify::EXPRESSION;
