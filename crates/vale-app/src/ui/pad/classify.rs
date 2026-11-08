@@ -14,8 +14,8 @@ use super::value;
 use super::widgets::{self, Controls};
 use crate::classify::{self, Method, Step};
 use crate::ramps::Ramp;
-use crate::ui::AppState;
 use crate::ui::expr_help::{self, ExprHelp};
+use crate::ui::{AppState, Workspace};
 
 /// The title of the form, and the button of the Style section that opens it.
 pub const TITLE: &str = "Classify";
@@ -116,7 +116,9 @@ pub fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id
         return;
     };
 
-    if kind == GeometryKind::Polygon {
+    // The switch changes the data of the layer, so a map frame has no switch.
+    let differ = kind == GeometryKind::Polygon && state.workspace == Workspace::Globe;
+    if differ {
         ui.add_space(8.0);
         widgets::switch_row(
             ui,
@@ -126,7 +128,7 @@ pub fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id
             &mut draft.neighbors,
         );
     }
-    let neighbors = draft.neighbors && kind == GeometryKind::Polygon;
+    let neighbors = draft.neighbors && differ;
     if neighbors {
         neighbors_body(ui, state, controls, id, draft);
         return;
