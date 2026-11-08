@@ -1511,6 +1511,14 @@ impl Atlas {
         (self.pages.len() > 1).then(|| self.pages.remove(i))
     }
 
+    /// Moves a page to a place in the atlas order. `None`: no such page.
+    pub fn move_page(&mut self, id: PageId, to: usize) -> Option<()> {
+        let page = self.pages.remove(self.page_index(id)?);
+        let to = to.min(self.pages.len());
+        self.pages.insert(to, page);
+        Some(())
+    }
+
     /// The place of a page in the atlas order.
     pub fn page_index(&self, id: PageId) -> Option<usize> {
         self.pages.iter().position(|p| p.id == id)
@@ -2042,6 +2050,21 @@ mod tests {
         atlas.prune_maps();
         assert_eq!(atlas.maps.len(), 1);
         assert_eq!(atlas.maps[0].id, shown);
+    }
+
+    #[test]
+    fn a_page_moves_in_the_atlas_order() {
+        let mut atlas = Atlas::new(Units::Metric);
+        let first = atlas.pages[0].id;
+        let b = atlas.add_page(None, 100.0, 100.0, PageUnits::Mm);
+        let c = atlas.add_page(None, 100.0, 100.0, PageUnits::Mm);
+        assert_eq!(atlas.move_page(c, 0), Some(()));
+        let order: Vec<_> = atlas.pages.iter().map(|p| p.id).collect();
+        assert_eq!(order, [c, first, b]);
+        atlas.move_page(c, 9);
+        let order: Vec<_> = atlas.pages.iter().map(|p| p.id).collect();
+        assert_eq!(order, [first, b, c]);
+        assert_eq!(atlas.move_page(PageId(99), 0), None);
     }
 
     #[test]
