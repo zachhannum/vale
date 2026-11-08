@@ -344,15 +344,62 @@ pub enum Panel {
     Layers,
     Toolbox,
     Attributes,
+    Selection,
+    Pages,
+    Maps,
 }
 
 impl Panel {
+    pub const ALL: [Panel; 7] = [
+        Panel::Brush,
+        Panel::Layers,
+        Panel::Toolbox,
+        Panel::Attributes,
+        Panel::Selection,
+        Panel::Pages,
+        Panel::Maps,
+    ];
+
     fn key(self) -> &'static str {
         match self {
             Panel::Brush => "pad-brush",
             Panel::Layers => "pad-layers",
             Panel::Toolbox => "pad-toolbox",
             Panel::Attributes => "pad-attributes",
+            Panel::Selection => "pad-selection",
+            Panel::Pages => "pad-pages",
+            Panel::Maps => "pad-maps",
+        }
+    }
+
+    /// The name of the panel in the flags and in the state files.
+    pub fn id(self) -> &'static str {
+        match self {
+            Panel::Brush => "brush",
+            Panel::Layers => "layers",
+            Panel::Toolbox => "toolbox",
+            Panel::Attributes => "attributes",
+            Panel::Selection => "selection",
+            Panel::Pages => "pages",
+            Panel::Maps => "maps",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<Panel> {
+        Panel::ALL.into_iter().find(|panel| panel.id() == id)
+    }
+
+    /// The panels of the panel buttons of `workspace`, in the order of the
+    /// buttons.
+    pub fn order(workspace: Workspace) -> &'static [Panel] {
+        match workspace {
+            Workspace::Globe => &[Panel::Layers, Panel::Attributes, Panel::Toolbox],
+            Workspace::Atlas => &[
+                Panel::Selection,
+                Panel::Pages,
+                Panel::Maps,
+                Panel::Attributes,
+            ],
         }
     }
 }
@@ -400,6 +447,8 @@ pub struct PadState {
     field: Option<fields::Draft>,
     /// The panel at the right: Layers, Toolbox, Attributes, or none.
     pub right: Option<Panel>,
+    /// The dock of each workspace.
+    pub docks: crate::dock::Docks,
     /// The layer that the Layers panel shows. `None`: the panel shows the
     /// list of the layers.
     pub layer: Option<LayerRef>,
@@ -1719,6 +1768,7 @@ pub(super) fn show_panel(
         (Panel::Layers, None) => (panel.key(), "Layers", None),
         (Panel::Toolbox, _) => (panel.key(), TOOLBOX, None),
         (Panel::Attributes, _) => (panel.key(), select::ATTRIBUTES, None),
+        (Panel::Selection | Panel::Pages | Panel::Maps, _) => return,
     };
     let list = panel == Panel::Layers && layer.is_none();
     if list && state.pad.reorder.is_none() {
@@ -1825,6 +1875,7 @@ pub(super) fn show_panel(
             (Panel::Layers, None) => layers_body(ui, state, controls),
             (Panel::Toolbox, _) => toolbox_body(ui, state),
             (Panel::Attributes, _) => select::body(ui, state, controls),
+            (Panel::Selection | Panel::Pages | Panel::Maps, _) => {}
         };
     let card = Card {
         key,

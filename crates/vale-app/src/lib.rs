@@ -7,6 +7,7 @@ pub mod classify;
 pub mod cli;
 pub mod clipboard;
 pub mod color_key;
+pub mod dock;
 pub mod document;
 pub mod edge_labels;
 pub mod files;

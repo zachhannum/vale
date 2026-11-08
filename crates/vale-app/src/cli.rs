@@ -6,6 +6,7 @@ use anyhow::{Context, anyhow, bail};
 use clap::Parser;
 use vale_sphere::{ProjectionKind, ProjectionSpec};
 
+use crate::dock;
 use crate::document::Document;
 use crate::globe::Globe;
 use crate::globe::WorldView;
@@ -45,6 +46,10 @@ pub struct Args {
     /// With --layout pad: open this panel. You can give more than one.
     #[arg(long, value_enum, value_name = "PANEL")]
     pub panel: Vec<Panel>,
+    /// With --layout pad: open the dock of the workspace with these panels.
+    /// Each one is `name` or `name:folded`, for example `layers,toolbox:folded`.
+    #[arg(long, value_name = "PANELS", value_delimiter = ',')]
+    pub dock: Vec<dock::Entry>,
     /// With --layout pad: open the flyout of the group of the brush mode.
     #[arg(long)]
     pub brush_modes: bool,
@@ -229,6 +234,13 @@ pub fn parse_measure(s: &str) -> anyhow::Result<Measure> {
         path.close();
     }
     Ok(path)
+}
+
+/// Applies `--dock` to the workspace of the run.
+pub fn apply_dock(args: &Args, state: &mut AppState) {
+    if !args.dock.is_empty() {
+        dock::apply(&mut state.pad.docks, args.workspace, &args.dock);
+    }
 }
 
 /// Applies `--measure` to the open workspace.

@@ -873,6 +873,40 @@ fn choose_mode(h: &mut App, mode: Mode) {
 }
 
 #[test]
+fn the_dock_keeps_its_panels_after_a_restart() {
+    use vale_app::dock::DockPanel;
+    use vale_app::ui::pad::Panel;
+
+    let dir = tempfile::tempdir().unwrap();
+    create(dir.path(), "Aurelia");
+    let mut h = start(dir.path(), Layout::Pad);
+    click(&mut h, "Open Aurelia");
+    let docks = &mut h.state_mut().pad.docks;
+    docks.world.open = true;
+    docks.world.set_width(400.0);
+    let mut toolbox = DockPanel::new(Panel::Toolbox);
+    toolbox.folded = true;
+    docks.world.insert(Workspace::Globe, toolbox);
+    docks
+        .world
+        .insert(Workspace::Globe, DockPanel::new(Panel::Layers));
+    docks
+        .atlas
+        .insert(Workspace::Atlas, DockPanel::new(Panel::Maps));
+    run(&mut h);
+    let saved = h.state().pad.docks.clone();
+
+    // The system stops the app with no exit call.
+    h.state_mut().save_tick(false, Instant::now());
+    drop(h);
+
+    let h = start(dir.path(), Layout::Pad);
+    assert_eq!(h.state().screen, Screen::Editor);
+    assert_eq!(h.state().pad.docks, saved);
+    assert_eq!(h.state().pad.docks.world.width, 400.0);
+}
+
+#[test]
 fn the_pencil_switches_tools_and_each_tool_keeps_its_settings_after_a_restart() {
     let dir = tempfile::tempdir().unwrap();
     create(dir.path(), "Aurelia");

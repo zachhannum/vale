@@ -187,6 +187,29 @@ fn measure_rejects_bad_paths() {
 }
 
 #[test]
+fn the_dock_flag_opens_the_dock_of_the_workspace_with_its_panels() {
+    use vale_app::cli::apply_dock;
+    use vale_app::ui::pad::Panel;
+    use vale_app::ui::{AppState, Workspace};
+
+    let args = parse(&["--layout", "pad", "--dock", "layers,toolbox:folded"]);
+    let mut state = AppState::new(Document::sample()).unwrap();
+    state.workspace = args.workspace;
+    apply_dock(&args, &mut state);
+    let dock = state.pad.docks.get(Workspace::Globe);
+    assert!(dock.open);
+    let panels: Vec<_> = dock.panels.iter().map(|p| (p.panel, p.folded)).collect();
+    assert_eq!(panels, [(Panel::Layers, false), (Panel::Toolbox, true)]);
+    assert!(!state.pad.docks.get(Workspace::Atlas).open);
+
+    let args = parse(&["--workspace", "atlas", "--dock", "pages"]);
+    apply_dock(&args, &mut state);
+    assert!(state.pad.docks.get(Workspace::Atlas).open);
+    assert!(Args::try_parse_from(["vale-app", "--dock", "wheel"]).is_err());
+    assert!(Args::try_parse_from(["vale-app", "--dock", "layers:open"]).is_err());
+}
+
+#[test]
 fn measure_chooses_the_tool_in_the_open_workspace() {
     use vale_app::cli::apply_measure;
     use vale_app::globe::Tool;

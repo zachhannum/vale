@@ -4,7 +4,8 @@ use anyhow::Context;
 use clap::Parser;
 use vale_app::app::run_window;
 use vale_app::cli::{
-    Args, apply_globe, apply_import, apply_measure, apply_view, export_heightmap, parse_pair,
+    Args, apply_dock, apply_globe, apply_import, apply_measure, apply_view, export_heightmap,
+    parse_pair,
 };
 use vale_app::globe::{FACE_SIZE, WINDOW_FACE_SIZE};
 use vale_app::headless;
@@ -63,6 +64,7 @@ fn run() -> anyhow::Result<u8> {
         for panel in &args.panel {
             state.pad.open(*panel);
         }
+        apply_dock(&args, &mut state);
         state.pad.flyouts.open = args
             .brush_modes
             .then(|| Flyout::Brush(ModeGroup::of(state.globe.brush.mode)));

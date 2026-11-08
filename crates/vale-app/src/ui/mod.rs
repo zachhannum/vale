@@ -17,6 +17,7 @@ use vale_style::LabelClass;
 use vale_terrain::{Bands, Heightmap, Mode};
 
 use crate::atlas_export::{ExportStep, PdfExport, RASTER_PIXEL_RATIO};
+use crate::dock::{Docks, read as read_docks, write as write_docks};
 use crate::document::{Document, Target};
 use crate::files::{Availability, ExportEvent, Files, PlainFiles, SystemEvents};
 use crate::globe::combine::{PolygonMode, StrokeArea};
@@ -626,6 +627,8 @@ pub struct AppState {
     pub tools: Tools,
     /// The settings of the tools that the state folder holds.
     tools_saved: Option<String>,
+    /// The docks that the state folder holds.
+    docks_saved: Option<String>,
 }
 
 /// What the snap targets of the globe come from.
@@ -736,6 +739,7 @@ impl AppState {
             resume_at: None,
             tools: Tools::default(),
             tools_saved: None,
+            docks_saved: None,
         };
         state.font_families = state.fonts.families();
         state.set_layout(Layout::default());
@@ -2322,6 +2326,11 @@ impl AppState {
             let _ = tools::write(dir, &tools);
             self.tools_saved = Some(tools);
         }
+        let docks = self.pad.docks.text();
+        if self.docks_saved.as_ref() != Some(&docks) {
+            let _ = write_docks(dir, &docks);
+            self.docks_saved = Some(docks);
+        }
     }
 
     /// The text of the settings of the tools.
@@ -2337,7 +2346,8 @@ impl AppState {
         if hold
             || self.projects.state_dir().is_none()
             || (self.resume.as_ref() == Some(&self.resume_now())
-                && self.tools_saved.as_ref() == Some(&self.tools_now()))
+                && self.tools_saved.as_ref() == Some(&self.tools_now())
+                && self.docks_saved.as_ref() == Some(&self.pad.docks.text()))
         {
             return None;
         }
@@ -2361,6 +2371,10 @@ impl AppState {
             let (brush, line, snap) = (&mut globe.brush, &mut globe.line, &mut globe.snap);
             self.tools.load(&text, brush, line, snap);
             self.tools_saved = Some(text);
+        }
+        if let Some(text) = self.projects.state_dir().and_then(read_docks) {
+            self.pad.docks = Docks::parse(&text);
+            self.docks_saved = Some(text);
         }
         let Some(resume) = self.projects.state_dir().and_then(Resume::read) else {
             return;
