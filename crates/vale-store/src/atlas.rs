@@ -834,7 +834,16 @@ pub struct ColorKeyItem {
     /// An empty title does not show.
     pub title: String,
     pub title_style: FurnitureText,
+    /// The text of the values, the unit, and the text of a list.
     pub value_style: FurnitureText,
+    /// The text of the values in the second unit.
+    pub second_unit_style: FurnitureText,
+    /// The text of the band names inside the boxes of a list.
+    pub box_text_style: FurnitureText,
+    /// The color of the lines around the boxes.
+    pub border_color: Rgba,
+    /// The width of the lines around the boxes in points. 0: no lines.
+    pub border_width: f64,
     /// The changes to the bands, keyed by the name of the band, or by the
     /// value of its lower edge for a band with no name. A band with no
     /// change has no key.
@@ -1258,6 +1267,10 @@ impl ColorKeyItem {
         map.insert("title".into(), self.title.clone().into());
         map.insert("title_style".into(), self.title_style.value());
         map.insert("value_style".into(), self.value_style.value());
+        map.insert("second_unit_style".into(), self.second_unit_style.value());
+        map.insert("box_text_style".into(), self.box_text_style.value());
+        map.insert("border_color".into(), hex_rgba(self.border_color).into());
+        map.insert("border_width".into(), self.border_width.into());
         let bands = self
             .bands
             .iter()
@@ -1267,7 +1280,9 @@ impl ColorKeyItem {
     }
 
     /// Reads [`ColorKeyItem::to_json`]. A missing key gets its default, and
-    /// an unknown key is ignored. `None` if a value is bad.
+    /// an unknown key is ignored. A missing text style of the second unit or
+    /// of the box names is a copy of the value style. `None` if a value is
+    /// bad.
     pub fn from_json(text: &str) -> Option<ColorKeyItem> {
         let map = json_object(text)?;
         let mut item = ColorKeyItem::default();
@@ -1300,6 +1315,13 @@ impl ColorKeyItem {
         read_string(&map, "title", &mut item.title)?;
         item.title_style = item.title_style.read_key(&map, "title_style")?;
         item.value_style = item.value_style.read_key(&map, "value_style")?;
+        item.second_unit_style = item.value_style.clone().read_key(&map, "second_unit_style")?;
+        item.box_text_style = item.value_style.clone().read_key(&map, "box_text_style")?;
+        read_rgba(&map, "border_color", &mut item.border_color)?;
+        read_number(&map, "border_width", &mut item.border_width)?;
+        if item.border_width < 0.0 {
+            return None;
+        }
         if let Some(bands) = map.get("bands") {
             for band in bands.as_array()? {
                 let band = band.as_object()?;
@@ -1334,6 +1356,10 @@ impl Default for ColorKeyItem {
                 ..FurnitureText::sized(11.0)
             },
             value_style: FurnitureText::sized(8.0),
+            second_unit_style: FurnitureText::sized(8.0),
+            box_text_style: FurnitureText::sized(8.0),
+            border_color: [70, 70, 70, 200],
+            border_width: 0.3,
             bands: BTreeMap::new(),
         }
     }
@@ -2184,6 +2210,10 @@ mod tests {
                 title: "Height".into(),
                 title_style: styled(),
                 value_style: FurnitureText::sized(6.0),
+                second_unit_style: FurnitureText::sized(5.0),
+                box_text_style: styled(),
+                border_color: [255, 255, 255, 255],
+                border_width: 1.0,
                 bands: bands.clone(),
             };
             round_trip(Furniture::ColorKey(key), frame);
@@ -2210,6 +2240,15 @@ mod tests {
         assert_eq!((key.box_width, key.box_height), (None, None));
         assert_eq!(ColorKeyItem::from_json(r#"{"box_width": -1}"#), None);
         assert_eq!(ColorKeyItem::from_json(r#"{"layout": "grid"}"#), None);
+        assert_eq!(ColorKeyItem::from_json(r#"{"border_width": -1}"#), None);
+        assert_eq!((key.border_color, key.border_width), ([70, 70, 70, 200], 0.3));
+        // An older key has one text style for the values, the second unit,
+        // and the box names.
+        let old = r#"{"value_style": {"size": 6}}"#;
+        let key = ColorKeyItem::from_json(old).unwrap();
+        assert_eq!(key.value_style.size, 6.0);
+        assert_eq!(key.second_unit_style, key.value_style);
+        assert_eq!(key.box_text_style, key.value_style);
         // The text keys of an older legend are the style of its title and
         // its entries.
         let old = r##"{"title": "Key", "size": 6, "weight": 400, "color": "102030"}"##;
