@@ -4,7 +4,7 @@
 
 use eframe::egui::{self, Align2, Color32, Rect, Sense, pos2, vec2};
 use vale_store::FieldType;
-use vale_style::expr::editor::{Case, Empty, FieldFormat, Subject};
+use vale_style::expr::editor::{Case, Empty, FieldFormat, Piece, Subject, Template};
 use vale_style::expr::{Category, FUNCTIONS, Function};
 
 use super::geometry::TOUCH;
@@ -122,7 +122,15 @@ fn header(ui: &mut egui::Ui, chip: &Chip, help: &ExprHelp) {
     let kind = help.subject_type(chip.subject).map_or("", FieldType::label);
     let sample = match chip.subject {
         Subject::Field(name) => help.sample(name).and_then(|v| v.label()),
-        s => help.eval(&s.to_text()).and_then(|v| v.label()),
+        // A measure shows its value in the format of the chip.
+        s => {
+            let piece = Piece::Field {
+                subject: s.clone(),
+                format: chip.format.clone(),
+            };
+            help.eval(&Template::new(vec![piece]).to_text())
+                .and_then(|v| v.label())
+        }
     };
     let note = match sample {
         Some(s) if !kind.is_empty() => format!("{kind} · {s}"),
