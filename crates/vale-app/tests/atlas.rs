@@ -3027,7 +3027,11 @@ fn selected_rules_of_a_frame_change_in_the_map_only() {
         scroll_to(&mut h, EDIT_RULES);
         check_controls(&h, &format!("{what}: select rules"));
         tap(&mut h, EDIT_RULES);
-        assert_eq!(h.state().atlas.layer_page, Some(vale_app::ui::pad::Page::Rules), "{what}");
+        assert_eq!(
+            h.state().atlas.layer_page,
+            Some(vale_app::ui::pad::Page::Rules),
+            "{what}"
+        );
         check_controls(&h, &format!("{what}: edit rules"));
         let increase = format!("Increase {STROKE_WIDTH}");
         scroll_to(&mut h, &increase);

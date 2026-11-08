@@ -8350,10 +8350,9 @@ fn selected_rules_take_one_stroke_and_keep_their_fills() {
         let entry = h.state_mut().doc.entry_mut(land).unwrap();
         entry.style.add_rule(GeometryKind::Polygon);
         entry.style.add_rule(GeometryKind::Polygon);
-        let wide = entry.style.style.rules[2].stroke().map(|s| vale_style::Stroke {
-            width: 3.0,
-            ..s
-        });
+        let wide = entry.style.style.rules[2]
+            .stroke()
+            .map(|s| vale_style::Stroke { width: 3.0, ..s });
         entry.style.style.rules[2].set_stroke(wide);
         h.state_mut().touch();
         save_frames(&mut h);

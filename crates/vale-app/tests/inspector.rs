@@ -257,6 +257,51 @@ fn the_dock_edits_the_rules_of_a_layer() {
 }
 
 #[test]
+fn the_dock_edits_more_than_one_rule() {
+    use vale_app::ui::pad::rules::{ADD_RULE, DELETE_RULES};
+    let mut h = harness();
+    let land = id_of(&h, "Land");
+    h.state_mut().selected_layer = Some(LayerRef::Vector(land));
+    h.run_steps(2);
+    let rules = |h: &Harness<'static, AppState>| {
+        h.state().doc.entry(land).unwrap().style.style.rules.clone()
+    };
+    for _ in 0..2 {
+        h.get_by_label(ADD_RULE).click();
+        h.run_steps(2);
+    }
+    h.get_by_label("Default").click();
+    h.run_steps(2);
+    h.get_by_label("Rule 2")
+        .click_modifiers(egui::Modifiers::SHIFT);
+    h.run_steps(2);
+    // Three rules are selected, so the editor has no filter.
+    assert!(h.query_by_label(DELETE_RULES).is_some());
+    assert!(h.query_by_label(vale_app::ui::pad::rules::FILTER).is_none());
+    let fills: Vec<_> = rules(&h).iter().map(|r| r.fill()).collect();
+    let increase = format!("Increase {}", vale_app::ui::pad::rules::STROKE_WIDTH);
+    h.get_by_label(&increase).click();
+    h.run_steps(2);
+    let widths: Vec<_> = rules(&h)
+        .iter()
+        .map(|r| r.stroke().unwrap().width)
+        .collect();
+    assert!(widths.iter().all(|w| *w == widths[0]), "{widths:?}");
+    assert_eq!(
+        rules(&h).iter().map(|r| r.fill()).collect::<Vec<_>>(),
+        fills
+    );
+
+    h.get_by_label("Rule 1")
+        .click_modifiers(egui::Modifiers::COMMAND);
+    h.run_steps(2);
+    h.get_by_label(DELETE_RULES).click();
+    h.run_steps(2);
+    let names: Vec<_> = rules(&h).into_iter().map(|r| r.name).collect();
+    assert_eq!(names, ["Rule 1"]);
+}
+
+#[test]
 fn the_dock_sets_a_point_symbol_and_a_scatter() {
     use vale_app::ui::Action;
     use vale_app::ui::pad::rules::{
