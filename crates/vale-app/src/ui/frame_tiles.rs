@@ -373,6 +373,8 @@ pub struct FramePaint {
     pub previous: usize,
     /// The number of squares of the map on the canvas with no tile.
     pub blank: usize,
+    /// The number of squares of the map that the overview fills.
+    pub overview: usize,
     /// The number of squares of all layers that the tiles of the lists do not fill.
     empty: usize,
 }
@@ -466,8 +468,12 @@ impl Tiles {
         let previous = match self.frames.remove(&id) {
             None => None,
             Some(mut old) => {
+                // Tiles that did not fill the frame keep the tiles before them, so that a
+                // quick run of changes does not show the overview.
                 let older = old.previous.take();
-                if old.tiles.values().any(|t| t.texture.is_some()) {
+                let keep_old = old.complete
+                    || (older.is_none() && old.tiles.values().any(|t| t.texture.is_some()));
+                if keep_old {
                     if let Some(older) = older {
                         self.recycle(*older);
                     }
@@ -815,6 +821,7 @@ impl Tiles {
                         &mut record.map,
                         mesh.calc_bounds().intersect(painter.clip_rect()),
                     );
+                    record.overview += still.len();
                 }
                 painter.add(mesh);
                 blank = 0;
