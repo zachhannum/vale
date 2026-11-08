@@ -15,6 +15,7 @@ View the mockups at https://claude.ai/artifact/K7SGPcJf76r1k1HhgvQi8T. The link 
 | `gen/phone.py` | Writes the iPhone screen files. It imports `gen/build.py`. |
 | `gen/coast-scan.jpg` | The sketch image on the screens of a layer from a file. The artifact holds it as an uploaded asset. |
 | `project/` | The published files: screens, `canvas.json`, `vale.css`, and the generated SVG maps. |
+| `pad-layout/` | The iPad layout with the top bar, the tool column, and the dock, as HTML over pictures from the app. It does not need the Claude Design runtime. Its README lists the screens. |
 
 The sample world, Kareth, and all names on the maps are invented for the mockups.
 
