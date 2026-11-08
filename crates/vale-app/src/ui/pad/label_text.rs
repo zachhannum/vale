@@ -8,7 +8,7 @@ use vale_labeler::Fonts;
 use vale_render::{DisplayList, Item};
 use vale_style::LabelClass;
 use vale_style::expr::editor::{Empty, FieldFormat, Piece, Seq, Subject, Template, Tok};
-use vale_style::expr::{FUNCTIONS, Function};
+use vale_style::expr::{Function, layer_functions};
 
 use super::chip_popover::{self, Action, Page};
 use super::expression;
@@ -826,7 +826,7 @@ fn function_chips(
         return None;
     }
     let mut chosen = None;
-    for f in FUNCTIONS {
+    for f in layer_functions() {
         let label = (f.name, FUNCTION_TEXT);
         if bar_chip(ui, controls, &insert_name(f.name), None, label, f.hint) {
             chosen = Some(f);

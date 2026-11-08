@@ -9,7 +9,7 @@ use eframe::egui;
 use eframe::egui::text::{CCursor, CCursorRange};
 use vale_store::{FieldType, Geometry, GeometryKind, Layer, LayerId, Value};
 use vale_style::expr::editor::{Subject, measures_for};
-use vale_style::expr::{Context, Expr, FUNCTIONS, field_ref};
+use vale_style::expr::{Context, Expr, field_ref, layer_functions};
 
 use super::AppState;
 
@@ -459,7 +459,7 @@ impl ExprHelp {
             insert: field_ref(name),
             call: false,
         });
-        let functions = FUNCTIONS.iter().map(|f| Chip {
+        let functions = layer_functions().map(|f| Chip {
             label: f.name.to_owned(),
             insert: f.signature.to_owned(),
             call: true,
@@ -558,7 +558,7 @@ pub fn insert_menu(ui: &mut egui::Ui, help: &ExprHelp, id: egui::Id, text: &mut 
             });
         });
         ui.menu_button(FUNCTIONS_MENU, |ui| {
-            for (chip, f) in functions.iter().zip(FUNCTIONS) {
+            for (chip, f) in functions.iter().zip(layer_functions()) {
                 let button = ui.button(&chip.insert).on_hover_text(f.summary);
                 if button.clicked() {
                     chosen = Some(chip.clone());
@@ -703,7 +703,7 @@ mod tests {
         assert_eq!(chips[0].insert, "\"river name\"");
         assert_eq!(chips[1].insert, "pop");
         assert!(!chips[0].call);
-        assert_eq!(chips.len(), 2 + FUNCTIONS.len());
+        assert_eq!(chips.len(), 2 + layer_functions().count());
         let round = chips.iter().find(|c| c.label == "round").unwrap();
         assert_eq!(round.insert, "round(x, digits)");
         assert!(round.call);

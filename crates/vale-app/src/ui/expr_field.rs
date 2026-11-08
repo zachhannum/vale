@@ -6,7 +6,7 @@ use eframe::egui::{self, Align2, Key, Modifiers, Rect, Sense, Stroke, pos2, vec2
 use vale_store::Value;
 use vale_style::expr::editor::FieldFormat;
 use vale_style::expr::editor::{Formula, Piece, Seq, Subject, Template, Tok};
-use vale_style::expr::{Category, FUNCTIONS, Function, Var};
+use vale_style::expr::{Category, FUNCTIONS, Function, Var, layer_functions};
 
 use super::expr_help::{
     ExprHelp, ExprKind, FIELDS, FUNCTIONS_MENU, GEOMETRY_MENU, INSERT, VARIABLES_MENU, desktop_line,
@@ -398,7 +398,7 @@ pub fn value(
     }
     let mut menu_items: Vec<Item> = help.fields.iter().cloned().map(Item::Field).collect();
     menu_items.extend(Var::ALL.into_iter().map(Item::Var));
-    menu_items.extend(FUNCTIONS.iter().map(|f| Item::Function(f, None)));
+    menu_items.extend(layer_functions().map(|f| Item::Function(f, None)));
     let mut changed = false;
     if let Some(item) = heading_row(ui, heading, &menu_items) {
         match item {
