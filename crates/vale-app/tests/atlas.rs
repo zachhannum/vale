@@ -6122,7 +6122,8 @@ fn a_tap_opens_the_panel_of_an_item_and_its_controls_work_with_a_finger() {
     let Furniture::Text(text) = &item(&h, 0).item else {
         panic!("not text");
     };
-    assert_eq!(text.template, "Vesperan");
+    // Typed text stays text.
+    assert_eq!(text.template, "'Vesperan'");
     h.state_mut().save_waiting().unwrap();
 
     // A drag of a finger moves the item, and a drag of a handle resizes
@@ -6152,6 +6153,158 @@ fn a_tap_opens_the_panel_of_an_item_and_its_controls_work_with_a_finger() {
     assert_eq!(rect_of(&item(&h, 0)), moved);
     tap(&mut h, "Undo");
     assert_eq!(rect_of(&item(&h, 0)), before);
+}
+
+/// The template of the text item `index`.
+fn template(h: &Pad, index: usize) -> String {
+    match &item(h, index).item {
+        Furniture::Text(t) => t.template.clone(),
+        _ => panic!("not text"),
+    }
+}
+
+/// Scrolls the bar above the keyboard until its control `name` shows, and
+/// taps it.
+fn tap_bar(h: &mut Pad, name: &str) {
+    use vale_app::ui::new_feature::keyboard_top;
+    use vale_app::ui::pad::label_text::BAR;
+    for i in 0..16 {
+        if control(h, name).is_some_and(|r| r.width() >= 40.0) {
+            break;
+        }
+        let screen = h.state().pad.rects.unwrap().screen;
+        let y = keyboard_top(screen) - BAR / 2.0;
+        let by = vec2(screen.width() * 0.5, 0.0);
+        let right = pos2(screen.right() - 30.0, y);
+        let (from, to) = if i < 8 {
+            (right, right - by)
+        } else {
+            (right - by, right)
+        };
+        drag_steps(h, from, to, Input::Finger, 6);
+        release(h, to, Input::Finger);
+    }
+    tap(h, name);
+}
+
+/// Taps the chip at `path` of the text field of a text item with the
+/// template `text`.
+fn tap_item_chip(h: &mut Pad, text: &str, path: &[usize]) {
+    use vale_app::ui::expr_help::ExprHelp;
+    use vale_app::ui::token_field::{Metrics, layout, template};
+    use vale_style::expr::editor::Template;
+    let rect = control(h, ITEM_TEXT).unwrap();
+    let m = Metrics::pad();
+    let field = template::field_of(&Template::from_text(text), &ExprHelp::empty());
+    let mut measure = |s: &str, font: &egui::FontId| {
+        h.ctx
+            .fonts_mut(|f| s.chars().map(|c| f.glyph_width(font, c)).sum::<f32>())
+    };
+    let mut lay = layout(&field.nodes, &m, rect.width() - 2.0 * m.pad.x, &mut measure);
+    lay.translate((rect.min + m.pad).to_vec2());
+    let at = lay.rect_of(path).unwrap().center();
+    touch(h, 1, egui::TouchPhase::Start, at, None);
+    h.step();
+    touch(h, 1, egui::TouchPhase::End, at, None);
+    h.run_steps(3);
+}
+
+/// Takes the focus from the text field, so that the keyboard goes.
+fn hide_keyboard(h: &mut Pad) {
+    h.ctx.memory_mut(|m| m.stop_text_input());
+    h.run_steps(2);
+}
+
+/// A pad with a frame and a selected text item.
+fn text_item_pad() -> Pad {
+    let mut h = pad();
+    add_frame(&mut h);
+    add_item(&mut h, ItemKind::Text);
+    let at = item_middle(&h, 0);
+    tap_with(&mut h, at, Input::Finger);
+    assert_eq!(
+        h.state().atlas.selection,
+        AtlasSelection::Item(item(&h, 0).id)
+    );
+    h
+}
+
+#[test]
+fn the_bar_inserts_a_scale_chip_and_its_popover_sets_a_relative_scale_in_inches() {
+    use vale_app::ui::expr_help::SCALE as SCALE_VALUE;
+    use vale_app::ui::pad::chip_popover::{PAGE_UNIT, PAGE_UNITS, SCALE_FORMATS};
+    use vale_app::ui::pad::label_text::insert_name;
+    let mut h = text_item_pad();
+    // The frame row shows only while the text uses a frame value.
+    type_text(&mut h, ITEM_TEXT, "Scale ");
+    assert_eq!(template(&h, 0), "'Scale '");
+    hide_keyboard(&mut h);
+    assert!(control(&h, ITEM_TEXT).is_some());
+    assert!(control(&h, ITEM_MAP_FRAME).is_none());
+    tap(&mut h, ITEM_TEXT);
+    tap_bar(&mut h, &insert_name(SCALE_VALUE));
+    let fraction = "concat('Scale ', scale('fraction'))";
+    assert_eq!(template(&h, 0), fraction);
+    // The frame row is under the field, and shows when the keyboard goes.
+    hide_keyboard(&mut h);
+    assert!(control(&h, ITEM_MAP_FRAME).is_some());
+    check_controls(&h, "text panel with a scale chip");
+
+    // A tap on the chip opens its popover. The page unit shows only for a
+    // relative scale.
+    tap_item_chip(&mut h, fraction, &[6]);
+    assert!(control(&h, SCALE_FORMATS[1]).is_some());
+    assert!(control(&h, PAGE_UNITS[1]).is_none());
+    check_controls(&h, "scale popover");
+    tap(&mut h, SCALE_FORMATS[1]);
+    assert_eq!(template(&h, 0), "concat('Scale ', scale('relative', 'cm'))");
+    assert!(control(&h, PAGE_UNITS[1]).is_some(), "{PAGE_UNIT}");
+    check_controls(&h, "relative scale popover");
+    screenshot::save(&mut h, "pad-atlas-scale-popover");
+    tap(&mut h, PAGE_UNITS[1]);
+    assert_eq!(template(&h, 0), "concat('Scale ', scale('relative', 'in'))");
+    // The text shows the scale of the frame in inches.
+    let rec = item(&h, 0);
+    let state = h.state_mut();
+    let shown = vale_app::furniture::shown_text(&mut state.pipeline, &state.doc, &rec, 0);
+    assert!(shown.text.starts_with("Scale 1 in = "), "{}", shown.text);
+}
+
+#[test]
+fn the_bar_inserts_page_number_and_page_count_and_the_date_chip_switches_to_iso() {
+    use vale_app::ui::expr_help::{DATE, PAGE_COUNT, PAGE_NUMBER};
+    use vale_app::ui::pad::chip_popover::{DATE_FORMATS, REMOVE_VALUE};
+    use vale_app::ui::pad::label_text::insert_name;
+    let mut h = text_item_pad();
+    type_text(&mut h, ITEM_TEXT, "Page ");
+    tap_bar(&mut h, &insert_name(PAGE_NUMBER));
+    h.event(egui::Event::Text(" of ".into()));
+    h.run_steps(2);
+    tap_bar(&mut h, &insert_name(PAGE_COUNT));
+    assert_eq!(
+        template(&h, 0),
+        "concat('Page ', page_number(), ' of ', page_count())"
+    );
+    // Page values are not frame values.
+    hide_keyboard(&mut h);
+    assert!(control(&h, ITEM_TEXT).is_some());
+    assert!(control(&h, ITEM_MAP_FRAME).is_none());
+    tap(&mut h, ITEM_TEXT);
+    tap_bar(&mut h, &insert_name(DATE));
+    screenshot::save(&mut h, "pad-atlas-page-values");
+    let long = "concat('Page ', page_number(), ' of ', page_count(), date('long'))";
+    assert_eq!(template(&h, 0), long);
+    tap_item_chip(&mut h, long, &[11]);
+    check_controls(&h, "date popover");
+    tap(&mut h, DATE_FORMATS[1]);
+    let iso = "concat('Page ', page_number(), ' of ', page_count(), date('iso'))";
+    assert_eq!(template(&h, 0), iso);
+    // Remove value takes the chip away.
+    tap(&mut h, REMOVE_VALUE);
+    assert_eq!(
+        template(&h, 0),
+        "concat('Page ', page_number(), ' of ', page_count())"
+    );
 }
 
 #[test]

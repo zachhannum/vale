@@ -1,7 +1,9 @@
 //! The label text editor: the text template as a token field, the Blocks
 //! and Code views of the one text, the preview of the label, and the bar
 //! above the keyboard. Blocks write the text only when the user edits in
-//! Blocks, so text that the user does not edit stays as it is.
+//! Blocks, so text that the user does not edit stays as it is. The editor
+//! also edits the text of a text item, with page values in place of the
+//! fields and with no preview.
 
 use eframe::egui::{self, Align2, Color32, Rect, Sense, Stroke, pos2, vec2};
 use vale_labeler::Fonts;
@@ -18,7 +20,7 @@ use super::theme;
 use super::widgets::{self, Controls};
 use crate::furniture::glyph_line;
 use crate::labels;
-use crate::ui::expr_help::{ExprHelp, ExprKind, NO_LABEL};
+use crate::ui::expr_help::{ExprHelp, ExprKind, NO_LABEL, PAGE_COUNT, PAGE_NUMBER, PAGE_VALUES};
 use crate::ui::new_feature::keyboard_top;
 use crate::ui::token_field::paint::{FUNCTION_TEXT, VARIABLE_TEXT, paint_break, paint_glyph};
 use crate::ui::token_field::{self, Field, Glyph, Metrics, Node, Options, template};
@@ -95,7 +97,7 @@ pub fn editor(
     (heading, name): (&str, &str),
     current: &str,
     help: &ExprHelp,
-    look: &mut Look,
+    look: Option<&mut Look>,
 ) -> Edit {
     let id = ui.id().with((name, "label-text"));
     let mut st: EditorState = ui.data(|d| d.get_temp(id)).unwrap_or_default();
@@ -182,7 +184,9 @@ pub fn editor(
         }
     }
     let shown = edit.text.as_deref().unwrap_or(current);
-    preview(ui, help, shown, look);
+    if let Some(look) = look {
+        preview(ui, help, shown, look);
+    }
     ui.data_mut(|d| d.insert_temp(id, st));
     edit
 }
@@ -427,12 +431,12 @@ fn chip_popover(
     }
     // A chip with no popover opens the edit menu.
     if let Some((path, rect)) = &out.tapped
-        && selected_field(&st.field).as_ref() != Some(path)
+        && selected_chip(&st.field).as_ref() != Some(path)
     {
         token_field::open_menu(ui, name, *rect);
     }
     if let Some((path, _)) = &out.tapped
-        && selected_field(&st.field).as_ref() == Some(path)
+        && selected_chip(&st.field).as_ref() == Some(path)
     {
         let again = st.popover.as_ref().is_some_and(|(p, _)| p == path);
         st.popover = (!again).then(|| (path.clone(), Page::Main));
@@ -444,7 +448,7 @@ fn chip_popover(
         }
     }
     let (path, page) = st.popover.clone()?;
-    if selected_field(&st.field).as_ref() != Some(&path) {
+    if selected_chip(&st.field).as_ref() != Some(&path) {
         st.popover = None;
         return None;
     }
@@ -452,15 +456,32 @@ fn chip_popover(
     let Some(Node::Chip(chip)) = st.field.node(&path) else {
         return None;
     };
-    let Piece::Field { subject, format } = chip.data.clone() else {
-        return None;
+    let mut action = None;
+    let (subject, format) = match chip.data.clone() {
+        Piece::Field { subject, format } => (subject, format),
+        Piece::Page { name, options } => {
+            let shown = popover::show(ui.ctx(), "pad-chip-popover", anchor, 340.0, |ui| {
+                action = chip_popover::page_contents(ui, controls, (name, &options), help);
+            });
+            if shown.closed && out.tapped.is_none() {
+                st.popover = None;
+            }
+            if let Some(Action::Options(options)) = action {
+                if let Some(Node::Chip(c)) = st.field.node_mut(&path) {
+                    c.look = template::page_look(name, &options);
+                    c.data = Piece::Page { name, options };
+                }
+                return Some(true);
+            }
+            return chip_action(ui, st, &path, action?);
+        }
+        _ => return None,
     };
     let chip = chip_popover::Chip {
         subject: &subject,
         format: &format,
         in_group: path.len() > 1,
     };
-    let mut action = None;
     let shown = popover::show(ui.ctx(), "pad-chip-popover", anchor, 340.0, |ui| {
         action = chip_popover::contents(ui, controls, page, &chip, help, &mut st.empty_text);
     });
@@ -488,23 +509,37 @@ fn chip_popover(
             st.popover = None;
             wrap_in_function(&mut st.field, &path, f).then_some(true)
         }
+        action => chip_action(ui, st, &path, action),
+    }
+}
+
+/// Cut, Copy, or Remove of the chip at `path`. Returns `Some` after a
+/// change, with true for one step.
+fn chip_action(
+    ui: &egui::Ui,
+    st: &mut EditorState,
+    path: &[usize],
+    action: Action,
+) -> Option<bool> {
+    match action {
         Action::Cut => {
             st.popover = None;
-            st.field.select_node(&path);
+            st.field.select_node(path);
             token_field::cut(ui.ctx(), &mut st.field).then_some(true)
         }
         Action::Copy => {
             st.popover = None;
-            st.field.select_node(&path);
+            st.field.select_node(path);
             token_field::copy(ui.ctx(), &st.field);
             None
         }
         Action::Remove => {
             st.popover = None;
-            st.field.select_node(&path);
+            st.field.select_node(path);
             st.field.replace(Vec::new());
             Some(true)
         }
+        _ => None,
     }
 }
 
@@ -520,6 +555,16 @@ fn chip_of(subject: Subject, format: FieldFormat, help: &ExprHelp) -> token_fiel
 fn selected_field(field: &Field<Piece>) -> Option<Vec<usize>> {
     match field.selected_node()? {
         (path, Node::Chip(c)) if matches!(c.data, Piece::Field { .. }) => Some(path),
+        _ => None,
+    }
+}
+
+/// The field chip or the page value of the selection, which has a popover.
+fn selected_chip(field: &Field<Piece>) -> Option<Vec<usize>> {
+    match field.selected_node()? {
+        (path, Node::Chip(c)) if matches!(c.data, Piece::Field { .. } | Piece::Page { .. }) => {
+            Some(path)
+        }
         _ => None,
     }
 }
@@ -558,6 +603,22 @@ fn bar(
     help: &ExprHelp,
 ) -> Option<bool> {
     let mut changed = None;
+    if help.is_page() {
+        bar_area(ui, "pad-label-bar", |ui| {
+            let (brk, _) = ui.allocate_exact_size(vec2(TOUCH, TOUCH), Sense::hover());
+            if bar_button(ui, controls, brk, LINE_BREAK, Some(())) {
+                st.field.replace(vec![Node::Break]);
+                changed = Some(true);
+            }
+            bar_divider(ui);
+            if let Some(text) = page_chips(ui, controls, help) {
+                let nodes = template::nodes_of(&Template::from_text(text).pieces, help);
+                st.field.replace(nodes);
+                changed = Some(true);
+            }
+        });
+        return changed;
+    }
     bar_area(ui, "pad-label-bar", |ui| {
         let tabs = [FIELDS, FUNCTIONS_TAB];
         let w = widgets::small_segments_width(ui, &tabs);
@@ -763,6 +824,32 @@ pub fn field_chips(
         let label = (field.as_str(), theme::TEXT);
         if bar_chip(ui, controls, &name(field), glyph, label, &short(sample)) {
             chosen = Some(field.clone());
+        }
+    }
+    chosen
+}
+
+/// The chips of the page values of a text item, each with its value on the
+/// page. Returns the text of the value that the user tapped.
+fn page_chips(ui: &mut egui::Ui, controls: &mut Controls, help: &ExprHelp) -> Option<&'static str> {
+    let mut chosen = None;
+    for (label, text) in PAGE_VALUES {
+        let sample = help.eval(text).and_then(|v| v.label()).unwrap_or_default();
+        let sample = short(sample);
+        let glyph = match label {
+            PAGE_NUMBER | PAGE_COUNT => Glyph::Number,
+            _ => Glyph::Text,
+        };
+        let shown = (label, theme::TEXT);
+        if bar_chip(
+            ui,
+            controls,
+            &insert_name(label),
+            Some(glyph),
+            shown,
+            &sample,
+        ) {
+            chosen = Some(text);
         }
     }
     chosen

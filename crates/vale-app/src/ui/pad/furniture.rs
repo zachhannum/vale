@@ -11,6 +11,7 @@ use vale_store::{
 
 use super::geometry::TOUCH;
 use super::icons::{self, Icon};
+use super::label_text;
 use super::number::Number;
 use super::raster::heading;
 use super::text_style::{self, TextEvent, TextSpec, rgba_rows};
@@ -18,6 +19,7 @@ use super::widgets::keypad_below;
 use super::widgets::{self, Controls, HIGHLIGHT_INSET, Keys, PANEL_ROW};
 use super::{Head, PageParts, Panel, theme};
 use crate::ui::atlas::{self, BarPage, BarPick, ClassColor, ItemKind, ItemPage, TextPart};
+use crate::ui::expr_help::ExprHelp;
 use crate::ui::{Action, AppState, FontTarget};
 
 pub use super::fonts::FONT;
@@ -259,15 +261,25 @@ fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, rec: &
     let id = rec.id;
     match &rec.item {
         Furniture::Text(item) => {
-            let mut text = item.template.clone();
-            if widgets::text_area(ui, controls, ITEM_TEXT, &mut text, 3).changed() {
-                atlas::edit_item(state, id, |r| match &mut r.item {
-                    Furniture::Text(i) => {
-                        i.template = text;
-                        true
+            let help = ExprHelp::for_text_item(state, id);
+            let names = (TEXT, ITEM_TEXT);
+            let edit = label_text::editor(ui, controls, names, &item.template, &help, None);
+            if let Some(text) = edit.text {
+                if edit.step {
+                    state.save_edit();
+                    if atlas::set_template(state, id, text) {
+                        state.save_edit();
                     }
-                    _ => false,
-                });
+                } else {
+                    atlas::set_template(state, id, text);
+                }
+            }
+            // The frame row shows while the text uses a frame value.
+            if let Some(now) = state.doc.project.atlas.furniture(id).cloned()
+                && let Furniture::Text(t) = &now.item
+                && crate::furniture::uses_frame(&t.template)
+            {
+                frame_row(ui, state, controls, &now);
             }
             ui.add_space(6.0);
             text_rows(ui, state, controls, id, TextPart::Text, &item.style);

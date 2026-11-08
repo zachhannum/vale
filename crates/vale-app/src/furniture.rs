@@ -506,6 +506,8 @@ fn evaluate(template: &str, values: &AtlasValues) -> String {
         attributes: &NONE,
         scale: 0.0,
         geometry: vale_store::GeometryKind::Point,
+        shape: None,
+        radius_km: 0.0,
         page: Some(values),
     };
     expr.eval(&ctx).label().unwrap_or_default()

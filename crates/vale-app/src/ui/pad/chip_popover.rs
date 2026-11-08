@@ -1,6 +1,7 @@
 //! The popover of a field chip: the unit of a measure, the format of the
 //! field, the value when the field is empty, Wrap in function, Cut, Copy,
-//! and Remove field.
+//! and Remove field. The popover of a page value: its format, Cut, Copy,
+//! and Remove value.
 
 use eframe::egui::{self, Align2, Color32, Rect, Sense, pos2, vec2};
 use vale_store::FieldType;
@@ -11,7 +12,7 @@ use super::geometry::TOUCH;
 use super::popover;
 use super::theme;
 use super::widgets::{self, Controls, PANEL_ROW};
-use crate::ui::expr_help::ExprHelp;
+use crate::ui::expr_help::{ExprHelp, page_label};
 use crate::ui::token_field::paint::{BAD, FUNCTION_TEXT};
 
 /// The row of the unit of a measure.
@@ -33,6 +34,15 @@ pub const HIDE_GROUP: &str = "Hide group";
 pub const EMPTY_TEXT: &str = "Text…";
 /// The field of the text when the field is empty.
 pub const EMPTY_TEXT_FIELD: &str = "Text";
+/// The rows of the popover of a page value.
+pub const FORMAT: &str = "Format";
+pub const SCALE_FORMATS: [&str; 2] = ["Fraction", "Relative"];
+pub const PAGE_UNIT: &str = "Page unit";
+pub const PAGE_UNITS: [&str; 2] = ["Centimeters", "Inches"];
+pub const DATE_FORMATS: [&str; 2] = ["Long", "ISO"];
+pub const CUT_VALUE: &str = "Cut value";
+pub const COPY_VALUE: &str = "Copy value";
+pub const REMOVE_VALUE: &str = "Remove value";
 /// The back button of a page of the popover.
 pub const BACK: &str = "Back to field";
 /// The most decimal places that the stepper gives.
@@ -61,6 +71,8 @@ pub enum Page {
 pub enum Action {
     /// A new format, with true for one step and false while typing.
     Format(FieldFormat, bool),
+    /// New options of a page value.
+    Options(Vec<String>),
     Page(Page),
     /// A new subject, such as a measure with another unit.
     Subject(Subject),
@@ -304,17 +316,9 @@ fn main_page(
         }
     }
     if matches!(kind, Some(FieldType::Text) | None) {
-        popover::divider(ui);
-        let (row, _) =
-            ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), Sense::hover());
-        let at = pos2(row.left(), row.center().y);
-        ui.painter()
-            .text(at, Align2::LEFT_CENTER, CASE, theme::body(), theme::TEXT);
-        let w = widgets::small_segments_width(ui, &CASES);
-        let seg = Rect::from_min_size(pos2(row.right() - w, row.center().y - 18.0), vec2(w, 36.0));
         let cases = [Case::AsIs, Case::Upper, Case::Lower, Case::Title];
         let active = cases.iter().position(|c| *c == format.case).unwrap_or(0);
-        if let Some(i) = widgets::small_segments(ui, controls, seg, &CASES, active) {
+        if let Some(i) = segment_row(ui, controls, CASE, &CASES, active) {
             out = Some(Action::Format(
                 FieldFormat {
                     case: cases[i],
@@ -350,6 +354,96 @@ fn main_page(
         out = Some(Action::Copy);
     }
     if action_row(ui, controls, REMOVE_FIELD, BAD) {
+        out = Some(Action::Remove);
+    }
+    out
+}
+
+/// A row with a name and small segments of `choices` at its right.
+fn segment_row(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    label: &str,
+    choices: &[&str],
+    active: usize,
+) -> Option<usize> {
+    popover::divider(ui);
+    let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), Sense::hover());
+    let at = pos2(row.left(), row.center().y);
+    ui.painter()
+        .text(at, Align2::LEFT_CENTER, label, theme::body(), theme::TEXT);
+    let w = widgets::small_segments_width(ui, choices);
+    let seg = Rect::from_min_size(pos2(row.right() - w, row.center().y - 18.0), vec2(w, 36.0));
+    widgets::small_segments(ui, controls, seg, choices, active)
+}
+
+/// The contents of the popover of page value `name` with `options`: the
+/// name and the value of the page, the format of the scale and of the
+/// date, Cut, Copy, and Remove value.
+pub fn page_contents(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    (name, options): (&'static str, &[String]),
+    help: &ExprHelp,
+) -> Option<Action> {
+    let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), Sense::hover());
+    let y = row.center().y + 2.0;
+    let piece = Piece::Page {
+        name,
+        options: options.to_vec(),
+    };
+    let sample = help.eval(&Template::new(vec![piece]).to_text());
+    let painter = ui.painter();
+    let name_font = egui::FontId::proportional(16.0);
+    let at = pos2(row.left(), y);
+    painter.text(
+        at,
+        Align2::LEFT_CENTER,
+        page_label(name),
+        name_font,
+        theme::TEXT,
+    );
+    if let Some(s) = sample.and_then(|v| v.label()) {
+        let at = pos2(row.right(), y);
+        painter.text(at, Align2::RIGHT_CENTER, s, theme::body(), theme::MUTE);
+    }
+    let mut out = None;
+    let option = |i: usize| options.get(i).map_or("", String::as_str);
+    match name {
+        "scale" => {
+            let relative = option(0) == "relative";
+            let active = usize::from(relative);
+            if let Some(i) = segment_row(ui, controls, FORMAT, &SCALE_FORMATS, active) {
+                out = Some(match i {
+                    0 => vec!["fraction".to_owned()],
+                    _ => vec!["relative".to_owned(), "cm".to_owned()],
+                });
+            }
+            if relative {
+                let active = usize::from(option(1) == "in");
+                if let Some(i) = segment_row(ui, controls, PAGE_UNIT, &PAGE_UNITS, active) {
+                    let unit = if i == 0 { "cm" } else { "in" };
+                    out = Some(vec!["relative".to_owned(), unit.to_owned()]);
+                }
+            }
+        }
+        "date" => {
+            let active = usize::from(option(0) == "iso");
+            if let Some(i) = segment_row(ui, controls, FORMAT, &DATE_FORMATS, active) {
+                let format = if i == 0 { "long" } else { "iso" };
+                out = Some(vec![format.to_owned()]);
+            }
+        }
+        _ => {}
+    }
+    let mut out = out.map(Action::Options);
+    if action_row(ui, controls, CUT_VALUE, theme::ACCENT) {
+        out = Some(Action::Cut);
+    }
+    if action_row(ui, controls, COPY_VALUE, theme::ACCENT) {
+        out = Some(Action::Copy);
+    }
+    if action_row(ui, controls, REMOVE_VALUE, BAD) {
         out = Some(Action::Remove);
     }
     out
