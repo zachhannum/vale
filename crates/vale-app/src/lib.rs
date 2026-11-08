@@ -26,6 +26,7 @@ pub mod lod;
 pub mod map_styles;
 pub mod mask;
 pub mod measure;
+pub mod neighbors;
 pub mod page_snap;
 pub mod pen;
 pub mod pick;
