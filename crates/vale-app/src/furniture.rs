@@ -347,6 +347,94 @@ fn text_items(item: &TextItem, text: &str, rect: Rect, unit: f64, fonts: &mut Fo
     out.into_items().collect()
 }
 
+/// The scale of `km_per_mm` ground kilometers per page millimeter as text.
+/// The format `fraction` gives "1:25,000,000". The format `relative` gives
+/// "1 cm = 250 km" for the page unit `cm` and "1 in = 40.0 mi" for `in`. The
+/// numbers have three significant digits. `None` for an unknown format or
+/// unit.
+pub fn scale_value(format: &str, page_unit: &str, km_per_mm: f64, units: Units) -> Option<String> {
+    match format {
+        "fraction" => {
+            const MM_PER_KM: f64 = 1e6;
+            let n = significant(km_per_mm * MM_PER_KM).round().max(1.0);
+            Some(format!("1:{}", world::grouped(n as u64)))
+        }
+        "relative" => {
+            let (page_mm, page_symbol) = match page_unit {
+                "cm" => (10.0, "cm"),
+                "in" => (25.4, "in"),
+                _ => return None,
+            };
+            let km = km_per_mm * page_mm;
+            let (unit_km, symbol) = world::unit_for(km, units);
+            let value = significant(km / unit_km);
+            let value = if value >= 100.0 {
+                world::grouped(value as u64)
+            } else {
+                world::three_significant(value)
+            };
+            Some(format!("1 {page_symbol} = {value} {symbol}"))
+        }
+        _ => None,
+    }
+}
+
+/// `v` rounded to three significant digits.
+fn significant(v: f64) -> f64 {
+    if !(v.is_finite() && v > 0.0) {
+        return 0.0;
+    }
+    let step = 10f64.powi(v.log10().floor() as i32 - 2);
+    (v / step).round() * step
+}
+
+/// The date `days` days after 1970-01-01 as text. The format `long` gives
+/// "November 8, 2026", and the format `iso` gives "2026-11-08". `None` for
+/// an unknown format.
+pub fn date_value(format: &str, days: i64) -> Option<String> {
+    const MONTHS: [&str; 12] = [
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
+    ];
+    let (y, m, d) = civil(days);
+    match format {
+        "long" => Some(format!("{} {d}, {y}", MONTHS[m as usize - 1])),
+        "iso" => Some(format!("{y:04}-{m:02}-{d:02}")),
+        _ => None,
+    }
+}
+
+/// The year, the month, and the day of `days` days after 1970-01-01, in the
+/// Gregorian calendar.
+fn civil(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    (y, m, d)
+}
+
+/// The days from 1970-01-01 to today, in UTC.
+pub fn today() -> i64 {
+    let since = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
+    since.map_or(0, |d| (d.as_secs() / 86_400) as i64)
+}
+
 /// The box of an item in page millimeters.
 pub fn rect_of(rec: &FurnitureRecord) -> Rect {
     let [x0, y0, x1, y1] = rec.rect;
@@ -752,6 +840,32 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn the_scale_value_has_three_significant_digits() {
+        let value = |f, u, km| scale_value(f, u, km, Units::Metric).unwrap();
+        assert_eq!(value("fraction", "", 25.034), "1:25,000,000");
+        assert_eq!(value("fraction", "", 0.012_345_6), "1:12,300");
+        assert_eq!(value("fraction", "", 1e-9), "1:1");
+        assert_eq!(value("relative", "cm", 25.034), "1 cm = 250 km");
+        assert_eq!(value("relative", "cm", 123.456), "1 cm = 1,230 km");
+        assert_eq!(value("relative", "cm", 0.01), "1 cm = 100 m");
+        let km = 40.0 * world::large_unit(Units::Imperial).0 / 25.4;
+        let inch = scale_value("relative", "in", km, Units::Imperial);
+        assert_eq!(inch.as_deref(), Some("1 in = 40.0 mi"));
+        assert_eq!(scale_value("words", "cm", 1.0, Units::Metric), None);
+        assert_eq!(scale_value("relative", "mm", 1.0, Units::Metric), None);
+    }
+
+    #[test]
+    fn the_date_value_has_a_long_and_an_iso_format() {
+        // 2026-11-08 is day 20,765.
+        assert_eq!(date_value("long", 20_765).unwrap(), "November 8, 2026");
+        assert_eq!(date_value("iso", 20_765).unwrap(), "2026-11-08");
+        assert_eq!(date_value("iso", 0).unwrap(), "1970-01-01");
+        assert_eq!(date_value("iso", 11_016).unwrap(), "2000-02-29");
+        assert_eq!(date_value("short", 0), None);
     }
 
     #[test]
