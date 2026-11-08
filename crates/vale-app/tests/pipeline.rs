@@ -2484,6 +2484,97 @@ fn mockup_bar() -> ScaleBarItem {
     }
 }
 
+/// A text item with the template `template` on page 0.
+fn text_with(doc: &mut Document, frame: Option<FrameId>, template: &str) -> FurnitureId {
+    let item = TextItem {
+        frame,
+        template: template.to_string(),
+        ..TextItem::default()
+    };
+    add_item(doc, [20.0, 20.0, 150.0, 40.0], Furniture::Text(item))
+}
+
+fn shown(doc: &Document, pipeline: &mut Pipeline, id: FurnitureId) -> furniture::ShownText {
+    let rec = doc.project.atlas.furniture(id).unwrap();
+    // 2026-11-08.
+    furniture::shown_text(pipeline, doc, rec, 20_765)
+}
+
+#[test]
+fn the_scale_value_is_true_for_any_radius_and_follows_the_frame() {
+    for radius in [1737.4, 6371.0, 100_000.0] {
+        let (mut doc, _) = furniture_doc(&[]);
+        doc.project.world.radius_km = radius;
+        let map = doc.first_map();
+        doc.set_projection(
+            map,
+            ProjectionSpec::new(ProjectionKind::Equirectangular, 0.0, 0.0),
+        );
+        let mut pipeline = Pipeline::new();
+        let frame = first_frame(&mut doc, &mut pipeline);
+        let record = doc.project.atlas.frame_mut(frame).unwrap();
+        record.center = [0.0, 0.0];
+        record.scale = 5e6;
+        let template = "concat('Scale ', scale('fraction'), ' or ', scale('relative', 'cm'))";
+        let id = text_with(&mut doc, Some(frame), template);
+        // On the equator of an equirectangular map, 1 mm at 1:5,000,000 is
+        // 5 km on the ground, at each radius.
+        let text = shown(&doc, &mut pipeline, id).text;
+        assert_eq!(text, "Scale 1:5,000,000 or 1 cm = 50.0 km", "{radius}");
+        doc.project.atlas.frame_mut(frame).unwrap().scale = 2.5e7;
+        let text = shown(&doc, &mut pipeline, id).text;
+        assert_eq!(text, "Scale 1:25,000,000 or 1 cm = 250 km", "{radius}");
+    }
+}
+
+#[test]
+fn dynamic_text_shows_the_values_of_the_page_and_the_frame() {
+    let (mut doc, _) = furniture_doc(&[]);
+    let mut pipeline = Pipeline::new();
+    let frame = first_frame(&mut doc, &mut pipeline);
+    let first = doc.project.atlas.pages[0].id;
+    let second = doc
+        .project
+        .atlas
+        .add_page(Some(first), 297.0, 210.0, PageUnits::Mm);
+    doc.project.atlas.page_mut(second).unwrap().name = "Index".into();
+    let name = doc.project.atlas.maps[0].name.clone();
+    let template = "concat(map_name(), ' / ', page_name(), ' ', page_number(), ' of ', \
+                    page_count(), ' / ', date('long'), ' / ', date('iso'))";
+    let id = text_with(&mut doc, Some(frame), template);
+    let want = format!("{name} / Page 1 1 of 2 / November 8, 2026 / 2026-11-08");
+    assert_eq!(shown(&doc, &mut pipeline, id).text, want);
+
+    // Older text shows the same text.
+    let old = TextItem::from_json(r#"{"text": "It's the North"}"#).unwrap();
+    let old = add_item(&mut doc, [20.0, 50.0, 150.0, 70.0], Furniture::Text(old));
+    assert_eq!(shown(&doc, &mut pipeline, old).text, "It's the North");
+}
+
+#[test]
+fn a_frame_value_with_no_frame_shows_a_dashed_box_on_the_screen_only() {
+    let (mut doc, _) = furniture_doc(&[]);
+    let mut pipeline = Pipeline::new();
+    first_frame(&mut doc, &mut pipeline);
+    let id = text_with(&mut doc, None, "concat('Scale ', scale('fraction'))");
+    let s = shown(&doc, &mut pipeline, id);
+    assert_eq!((s.text.as_str(), s.missing_frame), ("Scale ", true));
+    let strokes = |items: &[Item]| {
+        items
+            .iter()
+            .filter(|i| matches!(i, Item::Stroke { .. }))
+            .count()
+    };
+    let screen = furniture_items(&doc, &mut pipeline, id, Purpose::Screen);
+    let export = furniture_items(&doc, &mut pipeline, id, Purpose::Export);
+    assert!(strokes(&screen) > 0);
+    assert_eq!(strokes(&export), 0);
+    assert_eq!(texts(&export), ["Scale"]);
+    // A page value needs no frame.
+    let page = text_with(&mut doc, None, "page_number()");
+    assert_eq!(shown(&doc, &mut pipeline, page).missing_frame, false);
+}
+
 #[test]
 fn the_scale_bar_of_the_mockup_has_its_numbers() {
     let mut f = fonts().unwrap();
@@ -2670,7 +2761,8 @@ fn furniture_stays_vector_and_text_in_pdf() {
     let mut pipeline = Pipeline::new();
     let frame = first_frame(&mut doc, &mut pipeline);
     let text = TextItem {
-        template: vale_store::text_literal("A world"),
+        frame: Some(frame),
+        template: "concat('Scale ', scale('fraction'), ', page ', page_number())".into(),
         ..TextItem::default()
     };
     let legend = LegendItem {

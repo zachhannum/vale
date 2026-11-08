@@ -6068,9 +6068,7 @@ fn a_new_item_of_furniture_links_to_the_main_frame_and_its_panel_opens() {
         assert!(r.x0 >= 10.0 && r.y0 >= 10.0, "{kind:?}: {r:?}");
         assert!(r.x1 <= page.width_mm - 10.0 + 1e-9, "{kind:?}: {r:?}");
         assert!(r.y1 <= page.height_mm - 10.0 + 1e-9, "{kind:?}: {r:?}");
-        if kind != ItemKind::Text {
-            assert_eq!(rec.item.frame(), Some(main), "{kind:?}");
-        }
+        assert_eq!(rec.item.frame(), Some(main), "{kind:?}");
         assert!(h.state().atlas.has_item_image(rec.id), "{kind:?}");
         // The panel of the item opens.
         assert!(h.state().atlas.panel_rect.is_some(), "{kind:?}");
@@ -6198,9 +6196,21 @@ fn a_new_item_links_to_the_largest_frame() {
     h.run_steps(2);
     add_item(&mut h, ItemKind::ScaleBar);
     assert_eq!(item(&h, 1).item.frame(), Some(inset));
-    // Text has no frame.
     add_item(&mut h, ItemKind::Text);
+    assert_eq!(item(&h, 2).item.frame(), Some(inset));
+
+    // A text with no frame links to the largest frame when its template
+    // starts to use a frame value.
+    let text = item(&h, 2).id;
+    atlas::set_item_frame(h.state_mut(), text, None);
+    atlas::set_template(h.state_mut(), text, "page_number()".into());
     assert_eq!(item(&h, 2).item.frame(), None);
+    atlas::set_template(
+        h.state_mut(),
+        text,
+        "concat('Scale ', scale('fraction'))".into(),
+    );
+    assert_eq!(item(&h, 2).item.frame(), Some(inset));
 }
 
 #[test]
@@ -6256,7 +6266,7 @@ fn deleting_a_frame_relinks_its_items() {
     assert_eq!(open_page(&h).frames.len(), 1);
     assert_eq!(item(&h, 0).item.frame(), Some(inset));
     assert_eq!(item(&h, 1).item.frame(), Some(inset));
-    assert_eq!(item(&h, 2).item.frame(), None);
+    assert_eq!(item(&h, 2).item.frame(), Some(inset));
     assert_eq!(item(&h, 3).item.frame(), Some(inset));
 
     h.state_mut().atlas.selection = AtlasSelection::Frame(inset);
@@ -6264,6 +6274,7 @@ fn deleting_a_frame_relinks_its_items() {
     tap(&mut h, DELETE_SELECTION);
     assert_eq!(item(&h, 0).item.frame(), None);
     assert_eq!(item(&h, 1).item.frame(), None);
+    assert_eq!(item(&h, 2).item.frame(), None);
     assert_eq!(item(&h, 3).item.frame(), None);
     assert_eq!(open_page(&h).furniture.len(), 4);
 }

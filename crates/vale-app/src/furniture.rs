@@ -429,6 +429,129 @@ fn civil(days: i64) -> (i64, u32, u32) {
     (y, m, d)
 }
 
+/// The values of the page functions for a text item.
+#[derive(Default)]
+struct AtlasValues {
+    page_name: String,
+    /// From 1.
+    page_number: usize,
+    page_count: usize,
+    /// The name of the map of the frame. `None`: the item has no frame.
+    map_name: Option<String>,
+    /// Ground kilometers per page millimeter at the center of the frame.
+    km_per_mm: Option<f64>,
+    units: Units,
+    /// Days after 1970-01-01.
+    today: i64,
+    /// A frame value was asked for.
+    asked_frame: std::cell::Cell<bool>,
+}
+
+impl vale_style::expr::PageValues for AtlasValues {
+    fn value(&self, name: &str, args: &[vale_style::expr::Value]) -> vale_style::expr::Value {
+        use vale_style::expr::Value;
+        let arg = |i: usize| match args.get(i) {
+            Some(Value::Text(t)) => t.as_str(),
+            _ => "",
+        };
+        let text = |t: Option<String>| t.map_or(Value::Null, Value::Text);
+        match name {
+            "scale" => {
+                self.asked_frame.set(true);
+                let unit = if arg(1).is_empty() { "cm" } else { arg(1) };
+                let km = self.km_per_mm;
+                text(km.and_then(|km| scale_value(arg(0), unit, km, self.units)))
+            }
+            "map_name" => {
+                self.asked_frame.set(true);
+                text(self.map_name.clone())
+            }
+            "page_name" => Value::Text(self.page_name.clone()),
+            "page_number" => Value::Number(self.page_number as f64),
+            "page_count" => Value::Number(self.page_count as f64),
+            "date" => text(date_value(arg(0), self.today)),
+            _ => Value::Null,
+        }
+    }
+}
+
+/// The text that a text item shows.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ShownText {
+    pub text: String,
+    /// The text uses a frame value, and the item has no frame.
+    pub missing_frame: bool,
+}
+
+/// The template of `values` evaluated. A template that does not parse shows
+/// as its text.
+fn evaluate(template: &str, values: &AtlasValues) -> String {
+    use vale_style::expr::{Context, Expr};
+    static NONE: std::collections::BTreeMap<String, vale_style::expr::Value> =
+        std::collections::BTreeMap::new();
+    let Ok(expr) = Expr::parse_lenient(template) else {
+        return template.to_string();
+    };
+    let ctx = Context {
+        attributes: &NONE,
+        scale: 0.0,
+        geometry: vale_store::GeometryKind::Point,
+        page: Some(values),
+    };
+    expr.eval(&ctx).label().unwrap_or_default()
+}
+
+/// Whether a text template uses a value of a frame: the scale or the map
+/// name.
+pub fn uses_frame(template: &str) -> bool {
+    let values = AtlasValues::default();
+    evaluate(template, &values);
+    values.asked_frame.get()
+}
+
+/// The text of the text item `rec` on the day `today`, in days after
+/// 1970-01-01.
+pub fn shown_text(
+    pipeline: &mut Pipeline,
+    doc: &Document,
+    rec: &FurnitureRecord,
+    today: i64,
+) -> ShownText {
+    let Furniture::Text(item) = &rec.item else {
+        return ShownText {
+            text: String::new(),
+            missing_frame: false,
+        };
+    };
+    let atlas = &doc.project.atlas;
+    let index = (atlas.pages.iter())
+        .position(|p| p.furniture.iter().any(|f| f.id == rec.id))
+        .unwrap_or(0);
+    let world = &doc.project.world;
+    let mut values = AtlasValues {
+        page_name: atlas.pages.get(index).map_or(String::new(), |p| {
+            crate::ui::pad::atlas::page_title(index, &p.name)
+        }),
+        page_number: index + 1,
+        page_count: atlas.pages.len(),
+        units: world.units,
+        today,
+        ..AtlasValues::default()
+    };
+    if let Some(frame) = item.frame.and_then(|id| atlas.frame(id)) {
+        values.map_name = atlas.map(frame.map).map(|m| m.name.clone());
+        if let Ok(projection) = pipeline.projection(doc, frame.map) {
+            values.km_per_mm = scale_at_center(projection, frame, world.radius_km);
+        }
+    }
+    let text = evaluate(&item.template, &values);
+    let missing_frame = values.asked_frame.get() && values.km_per_mm.is_none();
+    ShownText {
+        text,
+        missing_frame,
+    }
+}
+
 /// The days from 1970-01-01 to today, in UTC.
 pub fn today() -> i64 {
     let since = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
@@ -465,7 +588,13 @@ pub fn items(
         Purpose::Export => Vec::new(),
     };
     if let Furniture::Text(item) = &rec.item {
-        return text_items(item, &item.template, rect, unit, fonts);
+        let shown = shown_text(pipeline, doc, rec, today());
+        let mut out = match purpose {
+            Purpose::Screen if shown.missing_frame => placeholder(),
+            _ => Vec::new(),
+        };
+        out.extend(text_items(item, &shown.text, rect, unit, fonts));
+        return out;
     }
     let Some(frame) = (rec.item.frame()).and_then(|id| doc.project.atlas.frame(id)) else {
         return placeholder();

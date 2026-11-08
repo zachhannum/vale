@@ -1191,8 +1191,7 @@ pub fn edit_frame(
 }
 
 /// Adds an item of furniture to the open page, inside the margin of the
-/// page, and selects it. A legend, a color key, a scale bar, and a north
-/// arrow link to the largest frame of the page.
+/// page, and selects it. The item links to the largest frame of the page.
 pub fn add_item(state: &mut AppState, kind: ItemKind) -> Option<FurnitureId> {
     put_item(state, kind, None)
 }
@@ -1231,7 +1230,13 @@ fn put_item(state: &mut AppState, kind: ItemKind, rect: Option<[f64; 4]>) -> Opt
     let (left, top) = (m, m);
     let (right, bottom) = (page.width_mm - m - w, page.height_mm - m - h);
     let (x, y, item) = match kind {
-        ItemKind::Text => (left, top, Furniture::Text(TextItem::default())),
+        ItemKind::Text => {
+            let item = TextItem {
+                frame,
+                ..TextItem::default()
+            };
+            (left, top, Furniture::Text(item))
+        }
         ItemKind::Legend => {
             let item = LegendItem {
                 frame,
@@ -1478,6 +1483,24 @@ pub fn bar_preview(
 }
 
 /// Links an item of furniture to a frame.
+/// Changes the template of a text item. A text with no frame links to the
+/// largest frame of its page when the template starts to use a frame value.
+pub fn set_template(state: &mut AppState, id: FurnitureId, template: String) -> bool {
+    let atlas = &state.doc.project.atlas;
+    let page = atlas.page_of_furniture(id).and_then(|p| atlas.page(p));
+    let largest = page.and_then(largest_frame);
+    edit_item(state, id, |rec| match &mut rec.item {
+        Furniture::Text(t) => {
+            if t.frame.is_none() && crate::furniture::uses_frame(&template) {
+                t.frame = largest;
+            }
+            t.template = template;
+            true
+        }
+        _ => false,
+    })
+}
+
 pub fn set_item_frame(state: &mut AppState, id: FurnitureId, frame: Option<FrameId>) {
     edit_item(state, id, |rec| {
         rec.item.set_frame(frame);
@@ -3156,6 +3179,20 @@ fn items(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
             (Furniture::ColorKey(k), Some(f)) => crate::color_key::data(&state.doc, f, k),
             _ => None,
         };
+        // The page values of a text item.
+        let world = &state.doc.project.world;
+        let pages = (atlas.pages.iter())
+            .map(|p| (p.id, p.name.as_str()))
+            .collect::<Vec<_>>();
+        let page_values = matches!(rec.item, Furniture::Text(_)).then(|| {
+            let units = world.units == vale_store::Units::Metric;
+            (
+                pages,
+                units,
+                world.radius_km.to_bits(),
+                crate::furniture::today(),
+            )
+        });
         let look = hash_of((
             &rec.item,
             key,
@@ -3164,6 +3201,7 @@ fn items(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
             frame,
             map,
             state.map_generation,
+            page_values,
         ));
         let content = hash_of((look, scale.to_bits()));
         let old = state
