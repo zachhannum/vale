@@ -8,6 +8,7 @@ use vale_render::{Color, FillRule, Item};
 use vale_store::{ColorKeyItem, FrameRecord, KeyLayout, RasterDisplay, SecondUnit};
 use vale_terrain::{Band, Bands, SEA_LEVEL};
 
+use crate::atlas::PT_PER_MM;
 use crate::document::Document;
 use crate::furniture::{PAD, Painted, TextInk};
 use crate::raster_style::apply_symbolizer;
@@ -270,6 +271,7 @@ struct StripRow {
 }
 
 /// A value at an edge of a strip, and the x of the edge.
+#[derive(Clone, Copy)]
 struct Edge {
     x: f64,
     value: f64,
@@ -386,7 +388,8 @@ impl Draw<'_> {
         };
         let size = self.ink.style.size;
         let step = LINE_HEIGHT * size;
-        let height = 1.5 * size;
+        let mm = self.unit * PT_PER_MM;
+        let height = key.box_height.map_or(1.5 * size, |h| h * mm);
         // The end labels reach half their width past the ends of the strip.
         let mut reach: f64 = 0.0;
         for row in &rows {
@@ -404,8 +407,30 @@ impl Draw<'_> {
                 reach = reach.max(w / 2.0);
             }
         }
-        let x0 = inner.x0 + reach;
-        let width = (inner.width() - 2.0 * reach).max(0.0) / most as f64;
+        let fill = (inner.width() - 2.0 * reach).max(0.0) / most as f64;
+        let mut width = key.box_width.map_or(fill, |w| (w * mm).min(fill));
+        if width <= 0.0 {
+            return;
+        }
+        // A unit at an open start reaches left of the first value, which is
+        // one box in from the start.
+        let space = 0.3 * size;
+        let mut left = reach;
+        for row in rows.iter().filter(|r| !r.closed_start && r.closed_end) {
+            let first = row.segments[0].max;
+            let mut units = vec![(Self::value_text(row, first), data.unit.clone())];
+            if let Some(second) = &key.second_unit {
+                units.push((Self::second_text(row, first, second), second.name.clone()));
+            }
+            for (text, unit) in units.iter().filter(|(_, u)| !u.is_empty()) {
+                let w = self.ink.advance(text, self.fonts) / 2.0
+                    + space
+                    + self.ink.advance(unit, self.fonts);
+                left = left.max(w - width);
+            }
+        }
+        let x0 = inner.x0 + left;
+        width = width.min((inner.x1 - reach - x0) / most as f64);
         if width <= 0.0 {
             return;
         }
@@ -420,7 +445,7 @@ impl Draw<'_> {
             }
             let top = y + step;
             self.boxes(row, data, x0, top, width, height);
-            let edges = Self::edges(row, x0, width);
+            let edges = self.thinned(key, row, Self::edges(row, x0, width), width);
             let texts: Vec<String> = (edges.iter())
                 .map(|e| Self::value_text(row, e.value))
                 .collect();
@@ -435,6 +460,39 @@ impl Draw<'_> {
             }
             y += row_height;
         }
+    }
+
+    /// The edges of a row whose values fit between their neighbors: every
+    /// edge if the boxes are wide enough, or else every second or third
+    /// edge, counted from a closed end.
+    fn thinned(
+        &mut self,
+        key: &ColorKeyItem,
+        row: &StripRow,
+        edges: Vec<Edge>,
+        width: f64,
+    ) -> Vec<Edge> {
+        let mut widest: f64 = 0.0;
+        for e in &edges {
+            widest = widest.max(
+                self.ink
+                    .advance(&Self::value_text(row, e.value), self.fonts),
+            );
+            if let Some(second) = &key.second_unit {
+                let t = Self::second_text(row, e.value, second);
+                widest = widest.max(self.ink.advance(&t, self.fonts));
+            }
+        }
+        let space = 0.6 * self.ink.style.size;
+        let every = ((widest + space) / width).ceil().max(1.0) as usize;
+        if every == 1 || edges.is_empty() {
+            return edges;
+        }
+        let anchor = if row.closed_start { 0 } else { edges.len() - 1 };
+        (edges.iter().enumerate())
+            .filter(|(i, _)| i.abs_diff(anchor) % every == 0)
+            .map(|(_, e)| *e)
+            .collect()
     }
 
     /// The boxes of a row, and the lines around them.
@@ -526,24 +584,35 @@ impl Draw<'_> {
 
     fn list(&mut self, key: &ColorKeyItem, data: &KeyData, inner: Rect) {
         let size = self.ink.style.size;
-        let height = 1.3 * size;
+        let mm = self.unit * PT_PER_MM;
+        let height = key.box_height.map_or(1.3 * size, |h| h * mm);
+        // A row is as tall as its box or its text, whichever is taller, and
+        // the box and the text are at its middle.
+        let slot = height.max(LINE_HEIGHT * size);
         let gap = 0.6 * size;
         let shown: Vec<&KeyRow> = data.rows.iter().rev().filter(|r| !r.hidden).collect();
-        let mut width = 2.6 * size;
-        if key.names_in_boxes {
-            for r in &shown {
-                width = width.max(self.ink.advance(&r.name, self.fonts) + 0.8 * size);
+        let width = match key.box_width {
+            Some(w) => w * mm,
+            None => {
+                let mut width = 2.6 * size;
+                if key.names_in_boxes {
+                    for r in &shown {
+                        width = width.max(self.ink.advance(&r.name, self.fonts) + 0.8 * size);
+                    }
+                }
+                width
             }
-        }
+        };
         let mut y = inner.y0;
         for (i, row) in shown.iter().enumerate() {
             if i > 0 {
                 y += gap;
             }
-            if y + height > inner.y1 + 1e-9 {
+            if y + slot > inner.y1 + 1e-9 {
                 return;
             }
-            let r = Rect::new(inner.x0, y, inner.x0 + width, y + height);
+            let top = y + (slot - height) / 2.0;
+            let r = Rect::new(inner.x0, top, inner.x0 + width, top + height);
             let color = match data.display {
                 RasterDisplay::Grey => {
                     let mid = (row.band.min + row.band.max) / 2.0;
@@ -559,7 +628,7 @@ impl Draw<'_> {
                 width: 0.3 * self.unit,
                 round: false,
             });
-            let line_top = y + (height - LINE_HEIGHT * size) / 2.0;
+            let line_top = y + (slot - LINE_HEIGHT * size) / 2.0;
             let base = baseline(&self.ink, line_top, self.fonts);
             if key.names_in_boxes && !row.name.is_empty() {
                 let w = self.ink.advance(&row.name, self.fonts);
@@ -571,7 +640,7 @@ impl Draw<'_> {
             }
             let to = Affine::translate((r.x1 + 0.5 * size, base));
             self.ink.line(&row.label, to, self.fonts, self.text);
-            y += height;
+            y += slot;
         }
     }
 }

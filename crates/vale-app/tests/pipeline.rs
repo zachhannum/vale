@@ -3644,7 +3644,17 @@ fn manual_color_key_pictures() {
         },
         None,
     );
-    let (w, h) = (210.0 * PT_PER_MM, 115.0 * PT_PER_MM);
+    draw(
+        make("m", &height, &height_colors, &[]),
+        [5.0, 115.0, 205.0, 150.0],
+        |frame, layer| ColorKeyItem {
+            box_width: Some(7.0),
+            box_height: Some(7.0),
+            ..strip(frame, layer)
+        },
+        None,
+    );
+    let (w, h) = (210.0 * PT_PER_MM, 155.0 * PT_PER_MM);
     let mut list = vale_render::DisplayList::new(w, h);
     list.items.push(Item::Fill {
         path: kurbo::Rect::new(0.0, 0.0, w, h).to_path(0.1),
@@ -3659,4 +3669,78 @@ fn manual_color_key_pictures() {
         .unwrap()
         .save(path)
         .unwrap();
+}
+
+#[test]
+fn square_boxes_make_a_strip_of_squares() {
+    let (mut doc, mut pipeline, frame, layer) = key_doc("m", &HEIGHT_STOPS, &[]);
+    let key = ColorKeyItem {
+        box_width: Some(6.0),
+        box_height: Some(6.0),
+        ..strip(frame, layer)
+    };
+    let items = key_items(&mut doc, &mut pipeline, key);
+    let boxes = fill_boxes(&items);
+    assert_eq!(boxes.len(), 6);
+    for b in &boxes {
+        assert!((b.width() - b.height()).abs() < 1e-6, "{b:?}");
+        assert!((b.width() - boxes[0].width()).abs() < 1e-6, "{boxes:?}");
+    }
+    // The rows start at the same x.
+    assert!((boxes[0].x0 - boxes[3].x0).abs() < 1e-6, "{boxes:?}");
+}
+
+#[test]
+fn a_fixed_box_width_shrinks_to_fit_the_key() {
+    let (mut doc, mut pipeline, frame, layer) = key_doc("m", &HEIGHT_STOPS, &[]);
+    let auto = fill_boxes(&key_items(&mut doc, &mut pipeline, strip(frame, layer)));
+    let (mut doc, mut pipeline, frame, layer) = key_doc("m", &HEIGHT_STOPS, &[]);
+    let key = ColorKeyItem {
+        box_width: Some(500.0),
+        ..strip(frame, layer)
+    };
+    let wide = fill_boxes(&key_items(&mut doc, &mut pipeline, key));
+    assert_eq!(wide, auto);
+    let (mut doc, mut pipeline, frame, layer) = key_doc("m", &HEIGHT_STOPS, &[]);
+    let key = ColorKeyItem {
+        box_width: Some(4.0),
+        ..strip(frame, layer)
+    };
+    let narrow = fill_boxes(&key_items(&mut doc, &mut pipeline, key));
+    assert!(narrow[0].width() < auto[0].width(), "{narrow:?}");
+    // The rows start at the same x, which leaves room for the unit at the
+    // open start of the sea row.
+    assert!(narrow[0].x0 >= auto[0].x0 - 1e-6, "{narrow:?}");
+    assert!((narrow[0].x0 - narrow[3].x0).abs() < 1e-6, "{narrow:?}");
+}
+
+#[test]
+fn the_list_follows_the_box_height() {
+    let (mut doc, mut pipeline, frame, layer) = key_doc("mm", &RAIN_STOPS, &[]);
+    let key = ColorKeyItem {
+        layout: KeyLayout::List,
+        box_width: Some(9.0),
+        box_height: Some(9.0),
+        ..strip(frame, layer)
+    };
+    let items = key_items(&mut doc, &mut pipeline, key);
+    // Five rows of 9 mm do not fit in the 50 mm of the key.
+    let boxes = fill_boxes(&items);
+    assert_eq!(boxes.len(), 4, "{boxes:?}");
+    for b in &boxes {
+        assert!((b.width() - b.height()).abs() < 1e-6, "{b:?}");
+    }
+    for w in boxes.windows(2) {
+        assert!(w[1].y0 > w[0].y1 + 1.0, "{boxes:?}");
+    }
+    // Each text is at the middle of its box.
+    for (b, text) in boxes.iter().zip(["Over 2,000", "1,000–2,000", "500–1,000"]) {
+        let y = (items.iter())
+            .find_map(|i| match i {
+                Item::Glyphs(run) if run.text == text => Some(run.glyphs[0].1.translation().y),
+                _ => None,
+            })
+            .unwrap();
+        assert!(y > b.y0 && y < b.y1, "{text} {y} {b:?}");
+    }
 }
