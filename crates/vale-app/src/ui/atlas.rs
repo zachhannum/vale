@@ -935,6 +935,11 @@ impl AtlasState {
         self.item_images.contains_key(&id)
     }
 
+    /// The size of an item in millimeters when its texture was drawn.
+    pub fn item_drawn_size(&self, id: FurnitureId) -> Option<(f64, f64)> {
+        self.item_images.get(&id).map(|i| i.size)
+    }
+
     /// The screen rectangle of the texture of an item.
     pub fn item_rect(&self, id: FurnitureId) -> Option<Rect> {
         self.item_images.get(&id).map(|i| i.rect)
@@ -946,6 +951,10 @@ struct ItemImage {
     texture: MapTexture,
     /// The key of what the item shows.
     content: u64,
+    /// The key of what the item shows, other than the scale of the texture.
+    look: u64,
+    /// The size of the item in millimeters when the texture was drawn.
+    size: (f64, f64),
     /// The texture on the screen at the last paint.
     rect: Rect,
 }
@@ -3040,7 +3049,7 @@ fn items(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
             (Furniture::ColorKey(k), Some(f)) => crate::color_key::data(&state.doc, f, k),
             _ => None,
         };
-        let content = hash_of((
+        let look = hash_of((
             &rec.item,
             key,
             mm.width().to_bits(),
@@ -3048,10 +3057,17 @@ fn items(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
             frame,
             map,
             state.map_generation,
-            scale.to_bits(),
         ));
-        let old = state.atlas.item_images.get(&rec.id).map(|i| i.content);
-        if old != Some(content) && !(moving && old.is_some()) {
+        let content = hash_of((look, scale.to_bits()));
+        let old = state
+            .atlas
+            .item_images
+            .get(&rec.id)
+            .map(|i| (i.content, i.look));
+        // While a gesture pans or zooms the page, an item keeps its texture
+        // at the old scale. A change of the item draws it again.
+        let keep = moving && old.is_some_and(|(_, l)| l == look);
+        if old.map(|(c, _)| c) != Some(content) && !keep {
             let (list, _) = crate::furniture::list(
                 &mut state.pipeline,
                 &state.doc,
@@ -3075,6 +3091,8 @@ fn items(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
                 ItemImage {
                     texture,
                     content,
+                    look,
+                    size: (mm.width(), mm.height()),
                     rect,
                 },
             );

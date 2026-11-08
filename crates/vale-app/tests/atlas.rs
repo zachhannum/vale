@@ -5851,6 +5851,34 @@ fn a_tap_opens_the_panel_of_an_item_and_its_controls_work_with_a_finger() {
 }
 
 #[test]
+fn a_resize_redraws_an_item_while_the_finger_is_down() {
+    let mut h = pad();
+    add_frame(&mut h);
+    add_item(&mut h, ItemKind::Legend);
+    let id = item(&h, 0).id;
+    let corner = handle(&h, Handle::Resize(4));
+    drag_steps(&mut h, corner, corner + vec2(60.0, 40.0), Input::Finger, 6);
+    h.run_steps(2);
+    let r = rect_of(&item(&h, 0));
+    let (w, hh) = h.state().atlas.item_drawn_size(id).unwrap();
+    assert!((w - r.width()).abs() < 1e-9, "{w} {r:?}");
+    assert!((hh - r.height()).abs() < 1e-9, "{hh} {r:?}");
+    // A move keeps the texture, at the same size.
+    release(&mut h, corner + vec2(60.0, 40.0), Input::Finger);
+    let from = item_middle(&h, 0);
+    drag_steps(&mut h, from, from + vec2(30.0, 20.0), Input::Finger, 6);
+    let screen = h.state().atlas.item_rect(id).unwrap();
+    let ppm = h.state().atlas.place.unwrap().pts_per_mm;
+    let outer = r.inflate(
+        vale_app::furniture::RENDER_MARGIN_MM,
+        vale_app::furniture::RENDER_MARGIN_MM,
+    );
+    assert!((f64::from(screen.width()) - outer.width() * ppm).abs() < 0.5);
+    assert!((f64::from(screen.height()) - outer.height() * ppm).abs() < 0.5);
+    release(&mut h, from + vec2(30.0, 20.0), Input::Finger);
+}
+
+#[test]
 fn a_new_item_links_to_the_largest_frame() {
     let mut h = inset_pad(BOARDS[0]);
     let (main, inset) = (frame(&h, 0).id, frame(&h, 1).id);
