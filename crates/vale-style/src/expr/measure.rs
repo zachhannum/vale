@@ -1,43 +1,140 @@
 //! The measures of the geometry of a feature on the sphere of the world.
 
 use vale_sphere::measure::{area_center, line_center, path_length, point_center, polygon_area};
-use vale_store::{Geometry, Value};
+use vale_store::{Geometry, GeometryKind, Value};
 
 use super::Context;
-use super::functions::finite;
+use super::functions::{self, Function, finite};
 
-/// The number of square kilometers in an area unit.
-fn area_unit(unit: &str) -> Option<f64> {
-    Some(match unit.to_ascii_lowercase().as_str() {
-        "km2" => 1.0,
-        "mi2" => 1.609_344 * 1.609_344,
-        "ha" => 0.01,
-        "acre" => 0.004_046_856_422_4,
-        _ => return None,
-    })
+/// A unit of area or length.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum Unit {
+    Km2,
+    Mi2,
+    Ha,
+    Acre,
+    Km,
+    Mi,
+    M,
 }
 
-/// The number of kilometers in a length unit.
-fn length_unit(unit: &str) -> Option<f64> {
-    Some(match unit.to_ascii_lowercase().as_str() {
-        "km" => 1.0,
-        "mi" => 1.609_344,
-        "m" => 0.001,
-        _ => return None,
-    })
+impl Unit {
+    pub const AREA: [Unit; 4] = [Unit::Km2, Unit::Mi2, Unit::Ha, Unit::Acre];
+    pub const LENGTH: [Unit; 3] = [Unit::Km, Unit::Mi, Unit::M];
+
+    /// The unit argument of a measure function.
+    pub fn code(self) -> &'static str {
+        match self {
+            Unit::Km2 => "km2",
+            Unit::Mi2 => "mi2",
+            Unit::Ha => "ha",
+            Unit::Acre => "acre",
+            Unit::Km => "km",
+            Unit::Mi => "mi",
+            Unit::M => "m",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Unit::Km2 => "km²",
+            Unit::Mi2 => "mi²",
+            Unit::Ha => "ha",
+            Unit::Acre => "acres",
+            Unit::Km => "km",
+            Unit::Mi => "mi",
+            Unit::M => "m",
+        }
+    }
+
+    /// The size of the unit in square kilometers or in kilometers.
+    fn km(self) -> f64 {
+        match self {
+            Unit::Km2 | Unit::Km => 1.0,
+            Unit::Mi2 => 1.609_344 * 1.609_344,
+            Unit::Ha => 0.01,
+            Unit::Acre => 0.004_046_856_422_4,
+            Unit::Mi => 1.609_344,
+            Unit::M => 0.001,
+        }
+    }
+
+    /// The unit of a code, with any case.
+    fn parse(s: &str) -> Option<Unit> {
+        (Unit::AREA.into_iter().chain(Unit::LENGTH)).find(|u| u.code().eq_ignore_ascii_case(s))
+    }
 }
 
-/// The unit argument: its size, the default if not given, or `None` for a wrong unit.
-fn unit(args: &[Value], size: fn(&str) -> Option<f64>, default: &str) -> Option<f64> {
-    match args.first() {
-        None => size(default),
-        Some(Value::Text(u)) => size(u),
-        Some(_) => None,
+/// A measure function of the geometry.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum Measure {
+    Area,
+    Perimeter,
+    Length,
+}
+
+impl Measure {
+    pub const ALL: [Measure; 3] = [Measure::Area, Measure::Perimeter, Measure::Length];
+
+    /// The name of the function.
+    pub fn name(self) -> &'static str {
+        match self {
+            Measure::Area => "area",
+            Measure::Perimeter => "perimeter",
+            Measure::Length => "line_length",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Measure::Area => "Area",
+            Measure::Perimeter => "Perimeter",
+            Measure::Length => "Length",
+        }
+    }
+
+    pub fn units(self) -> &'static [Unit] {
+        match self {
+            Measure::Area => &Unit::AREA,
+            Measure::Perimeter | Measure::Length => &Unit::LENGTH,
+        }
+    }
+
+    /// The unit if the call gives none.
+    pub fn default_unit(self) -> Unit {
+        self.units()[0]
+    }
+
+    /// The kind of geometry that the measure has a value for.
+    pub fn geometry(self) -> GeometryKind {
+        match self {
+            Measure::Area | Measure::Perimeter => GeometryKind::Polygon,
+            Measure::Length => GeometryKind::Line,
+        }
+    }
+
+    /// The measure of a function name, in the case of `name()`.
+    pub fn of_name(name: &str) -> Option<Measure> {
+        Measure::ALL.into_iter().find(|m| m.name() == name)
+    }
+
+    pub fn function(self) -> &'static Function {
+        functions::find(self.name()).expect("each measure is a function")
+    }
+
+    /// The size of the unit argument, the default if not given, or `None` for a wrong unit.
+    fn unit_km(self, args: &[Value]) -> Option<f64> {
+        let unit = match args.first() {
+            None => self.default_unit(),
+            Some(Value::Text(u)) => Unit::parse(u).filter(|u| self.units().contains(u))?,
+            Some(_) => return None,
+        };
+        Some(unit.km())
     }
 }
 
 pub(super) fn area(args: &[Value], ctx: &Context) -> Value {
-    let (Some(Geometry::Polygons(polygons)), Some(k)) = (ctx.shape, unit(args, area_unit, "km2"))
+    let (Some(Geometry::Polygons(polygons)), Some(k)) = (ctx.shape, Measure::Area.unit_km(args))
     else {
         return Value::Null;
     };
@@ -48,7 +145,8 @@ pub(super) fn area(args: &[Value], ctx: &Context) -> Value {
 }
 
 pub(super) fn perimeter(args: &[Value], ctx: &Context) -> Value {
-    let (Some(Geometry::Polygons(polygons)), Some(k)) = (ctx.shape, unit(args, length_unit, "km"))
+    let (Some(Geometry::Polygons(polygons)), Some(k)) =
+        (ctx.shape, Measure::Perimeter.unit_km(args))
     else {
         return Value::Null;
     };
@@ -59,7 +157,7 @@ pub(super) fn perimeter(args: &[Value], ctx: &Context) -> Value {
 }
 
 pub(super) fn line_length(args: &[Value], ctx: &Context) -> Value {
-    let (Some(Geometry::Lines(lines)), Some(k)) = (ctx.shape, unit(args, length_unit, "km")) else {
+    let (Some(Geometry::Lines(lines)), Some(k)) = (ctx.shape, Measure::Length.unit_km(args)) else {
         return Value::Null;
     };
     let km: f64 = (lines.iter())

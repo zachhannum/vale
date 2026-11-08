@@ -18,6 +18,8 @@ pub use vale_store::Value;
 use vale_store::{Geometry, GeometryKind};
 
 pub use functions::{Category, FUNCTIONS, Function};
+pub use measure::{Measure, Unit};
+pub use parser::Var;
 use parser::{Node, Spans};
 
 /// The words of the syntax that a plain field name cannot be.

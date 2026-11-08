@@ -1,6 +1,6 @@
 //! Models of expression text for the chip editor: a label text template, a list of filter conditions, and a value as tokens and blocks.
 //!
-//! Each model reads from text and writes text. For text that parses, the written text parses to the same syntax tree. The one exception is a comparison with `true` or `false`: `f = true` writes as `f`, and `f = false` writes as `not f`.
+//! Each model reads from text and writes text. For text that parses, the written text parses to the same syntax tree. The one exception is a comparison of a field with `true` or `false`: `f = true` writes as `f`, and `f = false` writes as `not f`.
 //!
 //! A path addresses one node of a model. It is a list of child indices from the root, and the empty path is the root. In a list (the pieces of a template or a group, the conditions of a group, the tokens of a sequence), the index picks an item. In a function call, the index picks an argument. In a Cases block with `n` cases, index `2k` picks the condition of case `k`, index `2k + 1` its value, and index `2n` the otherwise value. In parentheses, index 0 picks the inner sequence. An expression piece of a template has the tokens of its sequence as children.
 //!
@@ -10,6 +10,7 @@
 
 mod cond;
 mod seq;
+mod subject;
 mod template;
 mod tolerant;
 
@@ -17,6 +18,7 @@ use std::ops::Range;
 
 pub use cond::{CmpOp, Cond, Conditions, ops_for};
 pub use seq::{Formula, Op, Seq, Tok};
+pub use subject::{Subject, measures_for};
 pub use template::{Case, Empty, FieldFormat, Piece, Template};
 
 use super::parser::Node;

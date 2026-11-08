@@ -4,7 +4,7 @@ use std::ops::Range;
 
 use super::super::functions;
 use super::super::lexer::{self, Tok as Lex, Token};
-use super::super::parser::{Node, Spans};
+use super::super::parser::{Node, Spans, Var};
 use super::cond::{Cond, cond_of};
 use super::seq::{Op, Seq, Tok, seq_of};
 use super::template::{Piece, pieces_of};
@@ -299,7 +299,14 @@ fn tok_at(
             "%" => Tok::Op(Op::Rem),
             _ => Tok::Code(lx.text(i..i + 1)),
         },
-        Lex::Var(_) | Lex::RParen | Lex::Comma | Lex::End => Tok::Code(lx.text(i..i + 1)),
+        Lex::Var(name) => match Var::ALL
+            .into_iter()
+            .find(|v| v.name().eq_ignore_ascii_case(name))
+        {
+            Some(v) => Tok::Var(v),
+            None => Tok::Code(lx.text(i..i + 1)),
+        },
+        Lex::RParen | Lex::Comma | Lex::End => Tok::Code(lx.text(i..i + 1)),
     };
     (tok, i + 1)
 }

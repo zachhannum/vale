@@ -6,7 +6,7 @@ use vale_store::Value;
 
 use super::super::field_ref;
 use super::super::functions::Function;
-use super::super::parser::{BinOp, Node, Spans};
+use super::super::parser::{BinOp, Node, Spans, Var};
 use super::super::print::{self, NOT, UNARY, literal, operand_prec, prec, quote};
 use super::cond::{Cond, cond_of};
 use super::{SpanMap, read, tolerant};
@@ -78,6 +78,7 @@ impl Op {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Tok {
     Field(String),
+    Var(Var),
     Num(f64),
     Text(String),
     Bool(bool),
@@ -101,6 +102,7 @@ impl Tok {
     pub fn to_text(&self) -> String {
         match self {
             Tok::Field(name) => field_ref(name),
+            Tok::Var(v) => format!("@{}", v.name()),
             Tok::Num(n) => literal(&Value::Number(*n)),
             Tok::Text(s) => quote(s),
             Tok::Bool(b) => b.to_string(),
@@ -228,6 +230,7 @@ impl Reader<'_> {
             Node::Lit(Value::Text(s)) => self.push(span, |_, _| Tok::Text(s.clone())),
             Node::Lit(Value::Bool(b)) => self.push(span, |_, _| Tok::Bool(*b)),
             Node::Field(name) => self.push(span, |_, _| Tok::Field(name.clone())),
+            Node::Var(v) => self.push(span, |_, _| Tok::Var(*v)),
             Node::Call(f, args) if f.name == "if" && args.len() == 3 => {
                 self.push(span, |path, spans| cases(node, sp, path, spans))
             }
