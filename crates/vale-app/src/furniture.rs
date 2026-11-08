@@ -319,16 +319,17 @@ pub fn wrap(text: &str, style: &TextStyle, width: f64, fonts: &mut Fonts) -> Vec
     lines
 }
 
-/// The glyphs of a text item in `rect`, in target points. A line that does
-/// not fit above the bottom of `rect` is left out.
-fn text_items(item: &TextItem, rect: Rect, unit: f64, fonts: &mut Fonts) -> Vec<Item> {
+/// The glyphs of `text`, the shown text of a text item, in `rect`, in
+/// target points. A line that does not fit above the bottom of `rect` is
+/// left out.
+fn text_items(item: &TextItem, text: &str, rect: Rect, unit: f64, fonts: &mut Fonts) -> Vec<Item> {
     let ink = TextInk::new(&item.style, unit, fonts);
     let style = &ink.style;
     let metrics = fonts.measure("Hg", style);
     let (ascent, descent) = (metrics.ascent, metrics.descent.abs());
     let step = LINE_HEIGHT * style.size;
     let mut out = Painted::default();
-    let text = item.style.case.apply(&item.text);
+    let text = item.style.case.apply(text);
     for (k, line) in wrap(&text, style, rect.width(), fonts).iter().enumerate() {
         let baseline = rect.y0 + ascent + k as f64 * step;
         if baseline + descent > rect.y1 + 1e-9 {
@@ -376,7 +377,7 @@ pub fn items(
         Purpose::Export => Vec::new(),
     };
     if let Furniture::Text(item) = &rec.item {
-        return text_items(item, rect, unit, fonts);
+        return text_items(item, &item.template, rect, unit, fonts);
     }
     let Some(frame) = (rec.item.frame()).and_then(|id| doc.project.atlas.frame(id)) else {
         return placeholder();
@@ -772,11 +773,11 @@ mod tests {
         let rect = Rect::new(100.0, 50.0, 300.0, 80.0);
         let start = |align: TextAlign, fonts: &mut Fonts| {
             let item = TextItem {
-                text: "Title\nSecond\nThird".to_string(),
                 style: style(10.0),
                 align,
+                ..TextItem::default()
             };
-            lines(&text_items(&item, rect, 1.0, fonts))
+            lines(&text_items(&item, "Title\nSecond\nThird", rect, 1.0, fonts))
         };
         let left = start(TextAlign::Left, &mut fonts);
         // Two lines of 12 points fit in 30 points, and the third does not.

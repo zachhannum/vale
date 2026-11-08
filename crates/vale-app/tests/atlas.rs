@@ -6124,7 +6124,7 @@ fn a_tap_opens_the_panel_of_an_item_and_its_controls_work_with_a_finger() {
     let Furniture::Text(text) = &item(&h, 0).item else {
         panic!("not text");
     };
-    assert_eq!(text.text, "Vesperan");
+    assert_eq!(text.template, "Vesperan");
     h.state_mut().save_waiting().unwrap();
 
     // A drag of a finger moves the item, and a drag of a handle resizes

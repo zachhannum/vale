@@ -783,10 +783,14 @@ pub enum TextAlign {
     Right,
 }
 
-/// A box of free text, for example a title.
+/// A box of text, for example a title. The text is a text template, which
+/// can show values of the page and of a map frame.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TextItem {
-    pub text: String,
+    /// The frame of the frame values. `None`: the text has no frame.
+    pub frame: Option<FrameId>,
+    /// The text template as expression text.
+    pub template: String,
     pub style: FurnitureText,
     pub align: TextAlign,
 }
@@ -925,10 +929,10 @@ impl Furniture {
         }
     }
 
-    /// The frame of a legend, a scale bar, a north arrow, or a color key.
+    /// The frame of the item.
     pub fn frame(&self) -> Option<FrameId> {
         match self {
-            Furniture::Text(_) => None,
+            Furniture::Text(i) => i.frame,
             Furniture::Legend(i) => i.frame,
             Furniture::ScaleBar(i) => i.frame,
             Furniture::NorthArrow(i) => i.frame,
@@ -936,10 +940,9 @@ impl Furniture {
         }
     }
 
-    /// Text has no frame, and it does not change.
     pub fn set_frame(&mut self, frame: Option<FrameId>) {
         match self {
-            Furniture::Text(_) => {}
+            Furniture::Text(i) => i.frame = frame,
             Furniture::Legend(i) => i.frame = frame,
             Furniture::ScaleBar(i) => i.frame = frame,
             Furniture::NorthArrow(i) => i.frame = frame,
@@ -968,6 +971,7 @@ impl Furniture {
             "scale_bar" => Furniture::ScaleBar(ScaleBarItem::from_json(text)?),
             "north_arrow" => Furniture::NorthArrow(NorthArrowItem::from_json(text)?),
             "color_key" => Furniture::ColorKey(ColorKeyItem::from_json(text)?),
+            "scale_text" => Furniture::Text(TextItem::from_scale_text(text)?),
             _ => return None,
         };
         item.set_frame(frame);
@@ -1150,21 +1154,28 @@ impl TextAlign {
 }
 
 impl TextItem {
-    /// The item as JSON text, for a project file.
+    /// The item with no frame as JSON text, for a project file.
     pub fn to_json(&self) -> String {
         let mut map = JsonMap::new();
-        map.insert("text".into(), self.text.clone().into());
+        map.insert("template".into(), self.template.clone().into());
         self.style.put(&mut map);
         map.insert("align".into(), self.align.id().into());
         serde_json::Value::Object(map).to_string()
     }
 
     /// Reads [`TextItem::to_json`]. A missing key gets its default, and an
-    /// unknown key is ignored. `None` if a value is bad.
+    /// unknown key is ignored. `None` if a value is bad. An older item has
+    /// plain text in the key `text`, and its template shows that text.
     pub fn from_json(text: &str) -> Option<TextItem> {
         let map = json_object(text)?;
         let mut item = TextItem::default();
-        read_string(&map, "text", &mut item.text)?;
+        if map.contains_key("template") {
+            read_string(&map, "template", &mut item.template)?;
+        } else if map.contains_key("text") {
+            let mut plain = String::new();
+            read_string(&map, "text", &mut plain)?;
+            item.template = text_literal(&plain);
+        }
         item.style = item.style.read(&map)?;
         if let Some(v) = map.get("align") {
             item.align = TextAlign::from_id(v.as_str()?)?;
@@ -1173,10 +1184,49 @@ impl TextItem {
     }
 }
 
+impl TextItem {
+    /// Reads the scale text of a test build: a text item with a scale
+    /// value. `None` if a value is bad.
+    fn from_scale_text(text: &str) -> Option<TextItem> {
+        let map = json_object(text)?;
+        let mut item = TextItem {
+            template: "scale('fraction')".to_string(),
+            style: FurnitureText::default(),
+            ..TextItem::default()
+        };
+        if let Some(v) = map.get("format") {
+            let unit = match map.get("page_unit") {
+                None => "cm",
+                Some(u) => match u.as_str()? {
+                    "mm" => "cm",
+                    "in" => "in",
+                    _ => return None,
+                },
+            };
+            item.template = match v.as_str()? {
+                "fraction" => "scale('fraction')".to_string(),
+                "relative" => format!("scale('relative', '{unit}')"),
+                _ => return None,
+            };
+        }
+        item.style = item.style.read(&map)?;
+        if let Some(v) = map.get("align") {
+            item.align = TextAlign::from_id(v.as_str()?)?;
+        }
+        Some(item)
+    }
+}
+
+/// `text` as a text literal of an expression.
+pub fn text_literal(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "''"))
+}
+
 impl Default for TextItem {
     fn default() -> Self {
         TextItem {
-            text: "Text".to_string(),
+            frame: None,
+            template: text_literal("Text"),
             style: FurnitureText::sized(18.0),
             align: TextAlign::Left,
         }
@@ -2140,11 +2190,12 @@ mod tests {
         let frame = Some(FrameId(4));
         round_trip(
             Furniture::Text(TextItem {
-                text: "The North".into(),
+                frame,
+                template: "concat('Scale ', scale('fraction'))".into(),
                 style: styled(),
                 align: TextAlign::Center,
             }),
-            None,
+            frame,
         );
         let mut entries = BTreeMap::new();
         let renamed = LegendEntry {
@@ -2225,10 +2276,40 @@ mod tests {
     }
 
     #[test]
+    fn older_text_loads_as_a_template_of_the_same_text() {
+        let old = r#"{"text": "It's\nhere", "align": "right"}"#;
+        let item = TextItem::from_json(old).unwrap();
+        assert_eq!(item.template, "'It''s\nhere'");
+        assert_eq!(item.align, TextAlign::Right);
+        assert_eq!(TextItem::from_json(r#"{"text": 4}"#), None);
+    }
+
+    #[test]
+    fn scale_text_of_a_test_build_loads_as_text_with_a_scale_value() {
+        let frame = Some(FrameId(2));
+        let scale = |json| match Furniture::from_json("scale_text", json, frame) {
+            Some(Furniture::Text(t)) => (t.frame, t.template, t.align),
+            other => panic!("{other:?}"),
+        };
+        let fraction = scale("{}");
+        assert_eq!(
+            fraction,
+            (frame, "scale('fraction')".into(), TextAlign::Left)
+        );
+        let json = r#"{"format": "relative", "page_unit": "in", "align": "center"}"#;
+        let relative = (frame, "scale('relative', 'in')".into(), TextAlign::Center);
+        assert_eq!(scale(json), relative);
+        assert_eq!(
+            Furniture::from_json("scale_text", r#"{"format": "x"}"#, frame),
+            None
+        );
+    }
+
+    #[test]
     fn a_missing_key_of_furniture_gets_its_default() {
         let text = TextItem::from_json("{}").unwrap();
         assert_eq!(text, TextItem::default());
-        assert_eq!((text.text.as_str(), text.style.size), ("Text", 18.0));
+        assert_eq!((text.template.as_str(), text.style.size), ("'Text'", 18.0));
         let legend = LegendItem::from_json(r#"{"future": 1}"#).unwrap();
         assert_eq!(legend, LegendItem::default());
         assert_eq!(legend.title, "Legend");

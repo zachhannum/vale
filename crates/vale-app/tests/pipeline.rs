@@ -2670,7 +2670,7 @@ fn furniture_stays_vector_and_text_in_pdf() {
     let mut pipeline = Pipeline::new();
     let frame = first_frame(&mut doc, &mut pipeline);
     let text = TextItem {
-        text: "A world".to_string(),
+        template: vale_store::text_literal("A world"),
         ..TextItem::default()
     };
     let legend = LegendItem {
@@ -2758,7 +2758,7 @@ fn furniture_stays_vector_and_text_in_pdf() {
 fn an_item_of_furniture_renders_to_an_image() {
     let (mut doc, _) = furniture_doc(&[]);
     let text = TextItem {
-        text: "A world".to_string(),
+        template: vale_store::text_literal("A world"),
         ..TextItem::default()
     };
     let id = add_item(&mut doc, [20.0, 20.0, 120.0, 40.0], Furniture::Text(text));

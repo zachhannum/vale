@@ -1275,13 +1275,13 @@ fn item_panel(ui: &mut egui::Ui, state: &mut AppState, rec: &vale_store::Furnitu
     }
     match &rec.item {
         Furniture::Text(t) => {
-            let mut text = t.text.clone();
+            let mut text = t.template.clone();
             let edit = ui.add(egui::TextEdit::multiline(&mut text).desired_rows(3));
             named(&edit, egui::WidgetType::TextEdit, item::ITEM_TEXT);
             if edit.changed() {
                 atlas::edit_item(state, id, |r| match &mut r.item {
                     Furniture::Text(t) => {
-                        t.text = text;
+                        t.template = text;
                         true
                     }
                     _ => false,

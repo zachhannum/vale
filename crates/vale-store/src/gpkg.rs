@@ -35,7 +35,7 @@ use crate::{
 };
 
 /// The version of the `vale_` tables that this code writes.
-pub const FORMAT_VERSION: u32 = 37;
+pub const FORMAT_VERSION: u32 = 38;
 
 /// One step for each format version. Step `n` changes a file of version `n`
 /// to version `n + 1`. A new version adds a step and never changes an old one.
@@ -77,6 +77,7 @@ const MIGRATIONS: &[fn(&Transaction) -> rusqlite::Result<()>] = &[
     v35,
     undo::v36,
     v37,
+    v38,
 ];
 
 /// `GPKG` in ASCII.
@@ -1287,6 +1288,38 @@ fn v37(tx: &Transaction) -> rusqlite::Result<()> {
          INSERT INTO vale_furniture_v37 SELECT * FROM vale_furniture;
          DROP TABLE vale_furniture;
          ALTER TABLE vale_furniture_v37 RENAME TO vale_furniture;",
+    )?;
+    let sql = "SELECT count(*) FROM pragma_table_info('vale_raster') WHERE name = 'names'";
+    let count: i64 = tx.query_row(sql, [], |r| r.get(0))?;
+    if count == 0 {
+        tx.execute_batch("ALTER TABLE vale_raster ADD COLUMN names TEXT NOT NULL DEFAULT ''")?;
+    }
+    Ok(())
+}
+
+/// The kind `scale_text` of a test build. The table is made again, because
+/// a CHECK constraint does not change in place. The app reads that kind as
+/// text. A file of a test build of version 37 has no band names.
+fn v38(tx: &Transaction) -> rusqlite::Result<()> {
+    tx.execute_batch(
+        "CREATE TABLE vale_furniture_v38 (
+           id INTEGER PRIMARY KEY,
+           page_id INTEGER NOT NULL REFERENCES vale_page(id),
+           position INTEGER NOT NULL,
+           kind TEXT NOT NULL
+             CHECK (kind IN ('text', 'legend', 'scale_bar', 'north_arrow', 'color_key',
+                             'scale_text')),
+           x0 REAL NOT NULL,
+           y0 REAL NOT NULL,
+           x1 REAL NOT NULL,
+           y1 REAL NOT NULL,
+           frame_id INTEGER,
+           props TEXT NOT NULL,
+           UNIQUE (page_id, position));
+         INSERT INTO vale_furniture_v38 SELECT
+           id, page_id, position, kind, x0, y0, x1, y1, frame_id, props FROM vale_furniture;
+         DROP TABLE vale_furniture;
+         ALTER TABLE vale_furniture_v38 RENAME TO vale_furniture;",
     )?;
     let sql = "SELECT count(*) FROM pragma_table_info('vale_raster') WHERE name = 'names'";
     let count: i64 = tx.query_row(sql, [], |r| r.get(0))?;
@@ -3873,7 +3906,7 @@ mod tests {
     fn furniture_edit(project: &mut Project) -> FrameId {
         use crate::atlas::{
             ColorKeyItem, KeyLayout, LegendEntry, LegendItem, NorthArrowItem, ScaleBarItem,
-            SecondUnit, TextAlign, TextItem,
+            SecondUnit, TextAlign, TextItem, text_literal,
         };
         let towns = project.layers()[0].id;
         let atlas = &mut project.atlas;
@@ -3891,7 +3924,8 @@ mod tests {
         };
         let frame = atlas.add_frame(page, frame).unwrap();
         let title = TextItem {
-            text: "The North".into(),
+            frame: Some(frame),
+            template: text_literal("The North"),
             align: TextAlign::Center,
             ..TextItem::default()
         };
@@ -3970,8 +4004,7 @@ mod tests {
         let want = ["text", "legend", "scale_bar", "north_arrow", "color_key"];
         assert_eq!(kinds, want);
         let frames: Vec<_> = furniture.iter().map(|f| f.item.frame()).collect();
-        let linked = Some(frame);
-        assert_eq!(frames, [None, linked, linked, linked, linked]);
+        assert_eq!(frames, [Some(frame); 5]);
         let Furniture::Legend(legend) = &furniture[1].item else {
             panic!("not a legend");
         };
@@ -4598,6 +4631,110 @@ mod tests {
         assert_eq!(format_version(&file.conn).unwrap(), FORMAT_VERSION);
         assert_eq!(loaded, project);
         furniture_edit(&mut loaded);
+        file.save(&loaded).unwrap();
+        drop(file);
+        let (_, again) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(again.atlas, loaded.atlas);
+    }
+
+    #[test]
+    fn a_file_of_version_37_keeps_its_furniture() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World::default());
+        project.add_layer("Towns".into(), GeometryKind::Point, None, vec![]);
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        furniture_edit(&mut project);
+        file.save(&project).unwrap();
+        drop(file);
+        let conn = Connection::open(path(&dir)).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE old AS SELECT * FROM vale_furniture;
+             DROP TABLE vale_furniture;
+             CREATE TABLE vale_furniture (
+               id INTEGER PRIMARY KEY,
+               page_id INTEGER NOT NULL REFERENCES vale_page(id),
+               position INTEGER NOT NULL,
+               kind TEXT NOT NULL
+                 CHECK (kind IN ('text', 'legend', 'scale_bar', 'north_arrow', 'color_key')),
+               x0 REAL NOT NULL,
+               y0 REAL NOT NULL,
+               x1 REAL NOT NULL,
+               y1 REAL NOT NULL,
+               frame_id INTEGER,
+               props TEXT NOT NULL,
+               UNIQUE (page_id, position));
+             INSERT INTO vale_furniture SELECT * FROM old;
+             DROP TABLE old;",
+        )
+        .unwrap();
+        drop(conn);
+        set_format_version(&dir, 37);
+
+        let (file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(format_version(&file.conn).unwrap(), FORMAT_VERSION);
+        assert_eq!(loaded.atlas, project.atlas);
+    }
+
+    #[test]
+    fn a_file_of_a_test_build_of_version_37_opens() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut project, height, _) = rasters();
+        project.raster_mut(height).unwrap().names.clear();
+        project.add_layer("Towns".into(), GeometryKind::Point, None, vec![]);
+        drop(ProjectFile::create(&path(&dir), &project).unwrap());
+        let conn = Connection::open(path(&dir)).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE vale_furniture_v37 (
+               id INTEGER PRIMARY KEY,
+               page_id INTEGER NOT NULL REFERENCES vale_page(id),
+               position INTEGER NOT NULL,
+               kind TEXT NOT NULL
+                 CHECK (kind IN ('text', 'legend', 'scale_bar', 'north_arrow', 'scale_text')),
+               x0 REAL NOT NULL,
+               y0 REAL NOT NULL,
+               x1 REAL NOT NULL,
+               y1 REAL NOT NULL,
+               frame_id INTEGER,
+               props TEXT NOT NULL,
+               UNIQUE (page_id, position));
+             DROP TABLE vale_furniture;
+             ALTER TABLE vale_furniture_v37 RENAME TO vale_furniture;
+             ALTER TABLE vale_raster DROP COLUMN names;",
+        )
+        .unwrap();
+        drop(conn);
+        set_format_version(&dir, 37);
+
+        let (file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(format_version(&file.conn).unwrap(), FORMAT_VERSION);
+        assert_eq!(loaded, project);
+    }
+
+    #[test]
+    fn scale_text_of_a_test_build_loads_as_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World::default());
+        project.add_layer("Towns".into(), GeometryKind::Point, None, vec![]);
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        let frame = furniture_edit(&mut project);
+        file.save(&project).unwrap();
+        drop(file);
+        let conn = Connection::open(path(&dir)).unwrap();
+        conn.execute(
+            "UPDATE vale_furniture SET kind = 'scale_text', props = ?1 WHERE position = 0",
+            [r#"{"format": "relative", "page_unit": "in"}"#],
+        )
+        .unwrap();
+        drop(conn);
+
+        let (mut file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        let rec = &loaded.atlas.pages[0].furniture[0];
+        let Furniture::Text(text) = &rec.item else {
+            panic!("{rec:?}");
+        };
+        assert_eq!(text.template, "scale('relative', 'in')");
+        assert_eq!(text.frame, Some(frame));
+        // A save writes it as text.
         file.save(&loaded).unwrap();
         drop(file);
         let (_, again) = ProjectFile::open(&path(&dir)).unwrap();

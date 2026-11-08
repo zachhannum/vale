@@ -259,11 +259,11 @@ fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, rec: &
     let id = rec.id;
     match &rec.item {
         Furniture::Text(item) => {
-            let mut text = item.text.clone();
+            let mut text = item.template.clone();
             if widgets::text_area(ui, controls, ITEM_TEXT, &mut text, 3).changed() {
                 atlas::edit_item(state, id, |r| match &mut r.item {
                     Furniture::Text(i) => {
-                        i.text = text;
+                        i.template = text;
                         true
                     }
                     _ => false,
