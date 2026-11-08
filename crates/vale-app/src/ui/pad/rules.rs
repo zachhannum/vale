@@ -95,10 +95,13 @@ pub const RASTER_LAYERS: &str = "Raster layers";
 pub const POLYGON_LAYERS: &str = "Polygon layers";
 pub const MASK_MIN: &str = "Minimum";
 pub const MASK_MAX: &str = "Maximum";
+pub const MASK_OFFSET: &str = "Offset";
+/// The limits of the offset of a raster mask, in points.
+pub const MASK_OFFSETS: (f64, f64) = (-20.0, 20.0);
 /// The text below the range of a raster mask when the minimum is not below the maximum.
 pub const BAD_MASK_RANGE: &str = "Minimum must be less than maximum.";
 /// The hint of the mask page.
-pub const MASK_HINT: &str = "The fill and the stroke draw only inside the mask.";
+pub const MASK_HINT: &str = "The fill and the stroke draw only inside the mask. A negative offset clears a line at its edge.";
 /// The range of the width slider, in points. The slider has a log scale.
 pub const WIDTHS: (f64, f64) = (0.1, 20.0);
 /// The range of the dash and gap sliders, in points. The sliders have a log scale.
@@ -211,6 +214,7 @@ pub fn mask_choices(doc: &Document, id: LayerId) -> (Vec<MaskChoice>, Vec<MaskCh
                     layer: layer.id,
                     min: None,
                     max: None,
+                    offset: 0.0,
                 }
             };
             rasters.push((layer.name.clone(), mask));
@@ -223,6 +227,24 @@ pub fn mask_choices(doc: &Document, id: LayerId) -> (Vec<MaskChoice>, Vec<MaskCh
 
 /// The name of a layer, and the mask that a tap on it sets.
 pub type MaskChoice = (String, Mask);
+
+/// The mask `choice` with the offset of the raster mask `current`, so a change of the layer keeps the offset.
+pub fn keep_offset(choice: Mask, current: Option<Mask>) -> Mask {
+    match (choice, current) {
+        (
+            Mask::Raster {
+                layer, min, max, ..
+            },
+            Some(Mask::Raster { offset, .. }),
+        ) => Mask::Raster {
+            layer,
+            min,
+            max,
+            offset,
+        },
+        _ => choice,
+    }
+}
 
 /// Sets the mask of layer `id`.
 fn set_mask(state: &mut AppState, id: LayerId, mask: Option<Mask>) {
@@ -254,11 +276,17 @@ pub fn mask_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Control
         for (name, mask) in list {
             let on = current.is_some_and(|m| m.layer() == mask.layer());
             if widgets::option_row(ui, controls, &name, &name, &[], on).clicked() && !on {
-                set_mask(state, id, Some(mask));
+                set_mask(state, id, Some(keep_offset(mask, current)));
             }
         }
     }
-    if let Some(Mask::Raster { layer, min, max }) = current {
+    if let Some(Mask::Raster {
+        layer,
+        min,
+        max,
+        offset,
+    }) = current
+    {
         let mut range = (min, max);
         heading(ui, "Range");
         if range_rows(ui, controls, &mut range) {
@@ -266,6 +294,21 @@ pub fn mask_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Control
                 layer,
                 min: range.0,
                 max: range.1,
+                offset,
+            };
+            set_mask(state, id, Some(mask));
+        }
+        let (lo, hi) = MASK_OFFSETS;
+        let offset = Number::new(MASK_OFFSET, f64::from(offset), lo..=hi)
+            .step(0.05)
+            .unit("pt")
+            .stepper(ui, controls);
+        if let Some(offset) = offset {
+            let mask = Mask::Raster {
+                layer,
+                min,
+                max,
+                offset: offset as f32,
             };
             set_mask(state, id, Some(mask));
         }

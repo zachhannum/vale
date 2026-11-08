@@ -15,7 +15,13 @@ pub fn frame_raster_masks(doc: &Document, frame: &FrameRecord) -> Vec<(LayerId, 
         .filter(|entry| doc.shown(frame.map, entry.layer))
         .filter_map(|entry| {
             let style = doc.map_entry(Some(frame.map), entry.layer)?;
-            let Mask::Raster { layer, min, max } = style.style.style.mask? else {
+            let Mask::Raster {
+                layer,
+                min,
+                max,
+                offset,
+            } = style.style.style.mask?
+            else {
                 return None;
             };
             let raster = doc.project.layer(layer)?.raster()?;
@@ -23,6 +29,7 @@ pub fn frame_raster_masks(doc: &Document, frame: &FrameRecord) -> Vec<(LayerId, 
                 raster,
                 min,
                 max,
+                offset,
                 smoothing: doc.project.raster(raster)?.smoothing,
             };
             Some((entry.layer, mask))

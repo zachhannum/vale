@@ -133,10 +133,70 @@ pub fn raster_masked(state: &mut AppState, raster: vale_store::RasterId) -> Rast
         layer: raster,
         min: Some(0.0),
         max: None,
+        offset: 0.0,
     });
     doc.set_visible(layer, false);
     state.sync_globe();
     RasterMasked { layer, raster }
+}
+
+/// Sets the offset of the raster mask of `layer` to `offset` points.
+pub fn set_offset(state: &mut AppState, layer: vale_store::LayerId, offset: f32) {
+    let style = &mut state.doc.entry_mut(layer).unwrap().style.style;
+    if let Some(vale_style::Mask::Raster { offset: o, .. }) = &mut style.mask {
+        *o = offset;
+    }
+    state.sync_globe();
+}
+
+/// Compares the red pixels of `masked` with the land pixels of `plain` that
+/// a mask grown by `offset` pixels holds. The distance of a land pixel or a
+/// sea pixel to the coast is the distance to the nearest pixel of another
+/// kind. A pixel within 2 pixels of the edge of the grown mask does not
+/// count, and nor does a pixel near the border of the image, because the
+/// canvas can reach past the image.
+pub fn offset_agreement(
+    plain: &image::RgbaImage,
+    masked: &image::RgbaImage,
+    inside: impl Fn(u32, u32) -> bool,
+    offset: f32,
+) -> Agreement {
+    let (w, h) = plain.dimensions();
+    let reach = offset.abs().ceil() as i64 + 4;
+    let kinds: Vec<Ground> = plain.pixels().map(ground).collect();
+    let mut out = Agreement::default();
+    let border = reach as u32;
+    for y in border..h.saturating_sub(border) {
+        for x in border..w.saturating_sub(border) {
+            let kind = kinds[(y * w + x) as usize];
+            if !matches!(kind, Ground::Sea | Ground::Land) || !inside(x, y) {
+                continue;
+            }
+            let mut near = reach as f32;
+            for dy in -reach..=reach {
+                for dx in -reach..=reach {
+                    let (a, b) = (i64::from(x) + dx, i64::from(y) + dy);
+                    if kinds[(b * i64::from(w) + a) as usize] != kind {
+                        near = near.min(((dx * dx + dy * dy) as f32).sqrt());
+                    }
+                }
+            }
+            // The distance into the land from the coast, which is half a
+            // pixel from the nearest pixel of another kind.
+            let into = if kind == Ground::Land {
+                near - 0.5
+            } else {
+                0.5 - near
+            };
+            if (into + offset).abs() < 2.0 {
+                continue;
+            }
+            out.compared += 1;
+            out.land += usize::from(kind == Ground::Land);
+            out.wrong += usize::from(red(masked.get_pixel(x, y)) != (into + offset > 0.0));
+        }
+    }
+    out
 }
 
 /// Shows or hides a layer.
@@ -338,6 +398,7 @@ pub fn set_full_mask(state: &mut AppState, found: &RasterMasked, on: bool) {
         layer: found.raster,
         min: None,
         max: None,
+        offset: 0.0,
     });
     state.doc.entry_mut(found.layer).unwrap().style.style.mask = mask;
     state.sync_globe();

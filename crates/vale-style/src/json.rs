@@ -92,8 +92,17 @@ impl LayerStyle {
 
 fn mask_json(m: &Mask) -> Json {
     match *m {
-        Mask::Raster { layer, min, max } => {
-            json!({ "kind": "raster", "layer": layer.0, "min": min, "max": max })
+        Mask::Raster {
+            layer,
+            min,
+            max,
+            offset,
+        } => {
+            let mut j = json!({ "kind": "raster", "layer": layer.0, "min": min, "max": max });
+            if offset != 0.0 {
+                j["offset"] = json!(offset);
+            }
+            j
         }
         Mask::Polygons { layer } => json!({ "kind": "polygons", "layer": layer.0 }),
     }
@@ -107,6 +116,7 @@ fn read_mask(j: &Json) -> Option<Mask> {
             layer,
             min: j.get("min").and_then(Json::as_f64),
             max: j.get("max").and_then(Json::as_f64),
+            offset: j.get("offset").and_then(Json::as_f64).unwrap_or(0.0) as f32,
         }),
         "polygons" => Some(Mask::Polygons { layer }),
         _ => None,

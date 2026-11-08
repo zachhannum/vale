@@ -3479,6 +3479,7 @@ fn the_blur_behind_a_card_shows_the_visible_vector_layers_in_the_draw_order() {
             layer: raster,
             min,
             max,
+            offset: 0.0,
         });
         state.sync_globe();
     };
@@ -12723,7 +12724,7 @@ fn the_smallest_lake_slider_sets_the_size_of_the_smallest_lake() {
 
 #[test]
 fn the_mask_page_sets_and_clears_the_mask_of_a_layer() {
-    use vale_app::ui::pad::rules::{MASK, MASK_MAX, NO_MASK};
+    use vale_app::ui::pad::rules::{MASK, MASK_MAX, MASK_OFFSET, NO_MASK};
     use vale_style::Mask;
     for size in [BOARDS[0], BOARDS[3]] {
         let what = format!("{size:?}");
@@ -12749,6 +12750,16 @@ fn the_mask_page_sets_and_clears_the_mask_of_a_layer() {
             layer: height,
             min: Some(0.0),
             max: Some(500.0),
+            offset: 0.0,
+        };
+        assert_eq!(mask(&h), Some(shore), "{what}");
+        set_number(&mut h, MASK_OFFSET, "-1.5");
+        save_frames(&mut h);
+        let shore = Mask::Raster {
+            layer: height,
+            min: Some(0.0),
+            max: Some(500.0),
+            offset: -1.5,
         };
         assert_eq!(mask(&h), Some(shore), "{what}");
 
@@ -12764,6 +12775,33 @@ fn the_mask_page_sets_and_clears_the_mask_of_a_layer() {
         tap(&mut h, "Undo");
         assert_eq!(mask(&h), Some(Mask::Polygons { layer: land }), "{what}");
     }
+}
+
+#[test]
+fn a_new_raster_mask_keeps_the_offset_of_the_raster_mask_before_it() {
+    use vale_app::ui::pad::rules::keep_offset;
+    use vale_store::LayerId;
+    use vale_style::Mask;
+    let before = Mask::Raster {
+        layer: LayerId(1),
+        min: Some(0.0),
+        max: None,
+        offset: -1.0,
+    };
+    let kept = keep_offset(Mask::land(LayerId(2)), Some(before));
+    let want = Mask::Raster {
+        layer: LayerId(2),
+        min: Some(0.0),
+        max: None,
+        offset: -1.0,
+    };
+    assert_eq!(kept, want);
+    let polygons = Mask::Polygons { layer: LayerId(3) };
+    assert_eq!(keep_offset(polygons, Some(before)), polygons);
+    assert_eq!(
+        keep_offset(Mask::land(LayerId(2)), None),
+        Mask::land(LayerId(2))
+    );
 }
 
 #[test]

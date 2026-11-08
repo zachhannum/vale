@@ -612,6 +612,7 @@ fn masked_atlas() -> (App, RasterId, vale_store::LayerId) {
         layer: raster,
         min: Some(0.0),
         max: None,
+        offset: 0.0,
     });
     let page = vale_app::ui::atlas::open_page(&state).clone();
     let frame = &page.frames[0];
@@ -727,6 +728,60 @@ fn the_mask_of_a_frame_follows_the_coast_that_the_frame_draws() {
         checked += 1;
     }
     assert!(checked > 100, "{checked}");
+}
+
+/// The distance from `p` to the nearest edge of the rings of a mask.
+fn to_rings(rings: &[Vec<Point>], p: Point) -> f64 {
+    let edges = rings
+        .iter()
+        .flat_map(|r| r.iter().zip(r.iter().cycle().skip(1)));
+    edges
+        .map(|(a, b)| kurbo::ParamCurveNearest::nearest(&kurbo::Line::new(*a, *b), p, 1e-6))
+        .map(|n| n.distance_sq.sqrt())
+        .fold(f64::INFINITY, f64::min)
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_mask_offset_moves_the_outline_of_a_frame_by_page_points() {
+    let _gpu = one_gpu_test();
+    let (mut h, _, layer) = masked_atlas();
+    let coast = settled_mask(&mut h, layer);
+    let inside = frame_inside(&h);
+    let mm = |points: f32| f64::from(points) * 25.4 / 72.0;
+    for offset in [-4.0, 4.0] {
+        let (frame, map) = (open_frame(&h).id, open_frame(&h).map);
+        let doc = &mut h.state_mut().doc;
+        let mut style = doc.map_style(map, layer).unwrap();
+        if let Some(vale_style::Mask::Raster { offset: o, .. }) = &mut style.style.mask {
+            *o = offset;
+        }
+        assert!(doc.set_map_style(map, layer, &style));
+        h.state_mut().touch();
+        let changed = |h: &App| {
+            let mask = h.state().pipeline.page_mask(frame, layer);
+            mask.is_some_and(|m| m.rings() != coast.as_slice())
+        };
+        for _ in 0..200 {
+            if changed(&h) {
+                break;
+            }
+            h.run_steps(1);
+        }
+        assert!(changed(&h), "{offset}: the mask did not change");
+        let rings = settled_mask(&mut h, layer);
+        let mut checked = 0;
+        for p in rings.iter().flatten().filter(|p| inside.contains(**p)) {
+            let d = to_rings(&coast, *p);
+            assert!(
+                (d - mm(offset.abs())).abs() < 0.3,
+                "{offset}: {d} mm at {p:?}"
+            );
+            assert_eq!(in_mask(&coast, *p), offset < 0.0, "{offset}: {p:?}");
+            checked += 1;
+        }
+        assert!(checked > 100, "{offset}: {checked}");
+    }
 }
 
 /// Exports the open page to a PDF through the export job of the app.

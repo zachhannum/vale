@@ -155,12 +155,15 @@ pub fn mask_rows(
                 for (n, choice) in choices {
                     let on = mask.is_some_and(|m| m.layer() == choice.layer());
                     if ui.selectable_label(on, n).clicked() && !on {
-                        *mask = Some(*choice);
+                        *mask = Some(super::pad::rules::keep_offset(*choice, *mask));
                     }
                 }
             });
     });
-    if let Some(Mask::Raster { min, max, .. }) = mask {
+    if let Some(Mask::Raster {
+        min, max, offset, ..
+    }) = mask
+    {
         for (label, value) in [(MASK_MIN, min), (MASK_MAX, max)] {
             ui.horizontal(|ui| {
                 ui.label(label);
@@ -182,6 +185,16 @@ pub fn mask_rows(
                 }
             });
         }
+        let (lo, hi) = super::pad::rules::MASK_OFFSETS;
+        ui.horizontal(|ui| {
+            ui.label(super::pad::rules::MASK_OFFSET);
+            ui.add(
+                egui::DragValue::new(offset)
+                    .speed(0.05)
+                    .range(lo..=hi)
+                    .suffix(" pt"),
+            );
+        });
         if let Some(Mask::Raster {
             min: Some(min),
             max: Some(max),

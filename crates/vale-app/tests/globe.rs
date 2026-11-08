@@ -8446,6 +8446,25 @@ fn a_raster_mask_cuts_a_fill_to_the_land_and_the_lakes_that_the_globe_draws() {
 
 #[test]
 #[ignore = "gpu"]
+fn a_raster_mask_offset_moves_the_edge_of_the_fill_on_the_globe() {
+    let _gpu = one_gpu_test();
+    let (mut h, id, found) = masked_crater();
+    h.state_mut().set_raster_rivers(id, false);
+    for offset in [0.0, 4.0, -4.0] {
+        masked::set_offset(h.state_mut(), found.layer, offset);
+        let (plain, masked) = mask_images(&mut h, found.layer);
+        masked::save_images(&format!("mask-globe-offset{offset}"), &plain, &masked);
+        let inside = masked::inside_polygon(&h.state().globe);
+        let agreement = masked::offset_agreement(&plain, &masked, inside, offset);
+        assert!(
+            agreement.compared > 50_000 && agreement.land > 10_000 && agreement.wrong == 0,
+            "{offset}: {agreement:?}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "gpu"]
 fn a_raster_mask_follows_the_smoothed_coast_on_the_globe() {
     let _gpu = one_gpu_test();
     let (mut h, id, found) = masked_crater();
