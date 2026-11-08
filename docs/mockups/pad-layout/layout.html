@@ -1,0 +1,311 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<style>
+@font-face { font-family: UI; src: local("Ubuntu Light"), local("Ubuntu-Light"), url(../../../assets/fonts/NotoSans-Regular.ttf); }
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { width: 1194px; height: 834px; background: rgb(15,17,19); color: rgb(231,233,236);
+  font-family: UI, sans-serif; overflow: hidden; position: relative; }
+.glass { background: rgba(22,24,28,.72); backdrop-filter: blur(24px) saturate(1.2); -webkit-backdrop-filter: blur(24px); }
+.bar { position: absolute; left: 0; top: 0; right: 0; height: 44px; z-index: 7; border-bottom: 1px solid rgba(255,255,255,.06); z-index: 5; }
+.grp { position: absolute; top: 0; height: 44px; display: flex; align-items: center; }
+.b { width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; color: rgb(174,181,190); position: relative; }
+.b.on { color: rgb(69,196,168); }
+.b.dim { opacity: .35; }
+.b.tri::after { content: ""; position: absolute; right: 9px; bottom: 10px; border: 2.5px solid transparent;
+  border-right-color: currentColor; border-bottom-color: currentColor; opacity: .8; }
+.sep { width: 1px; height: 20px; background: rgba(255,255,255,.1); margin: 0 6px; }
+.seg { display: flex; height: 44px; align-items: center; }
+.seg div { height: 30px; padding: 0 11px; border-radius: 8px; display: flex; align-items: center; font-size: 15px; color: rgb(174,181,190); }
+.seg div.on { background: rgba(255,255,255,.12); color: rgb(231,233,236); }
+.txt { font-size: 15px; color: rgb(231,233,236); padding: 0 4px; }
+svg.i { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.side { position: absolute; left: 0; width: 50px; border-radius: 0 16px 16px 0; display: flex; flex-direction: column;
+  align-items: center; padding: 10px 0; gap: 6px; z-index: 5; border: 1px solid rgba(255,255,255,.06); border-left: none; }
+.vs { width: 24px; height: 150px; border-radius: 8px; background: rgba(255,255,255,.07); position: relative; overflow: hidden; }
+.vs .f { position: absolute; left: 0; right: 0; bottom: 0; background: rgba(255,255,255,.26); border-top: 2px solid rgba(255,255,255,.9); }
+.mod { width: 26px; height: 26px; border-radius: 8px; border: 1.5px solid rgba(255,255,255,.35); margin: 7px 0; }
+.side .b { width: 44px; height: 44px; }
+.side .b.on { color: rgb(69,196,168); }
+.pop { position: absolute; border-radius: 14px; background: rgba(32,35,40,.82); backdrop-filter: blur(30px) saturate(1.2);
+  -webkit-backdrop-filter: blur(30px); box-shadow: 0 10px 40px rgba(0,0,0,.5); border: 1px solid rgba(255,255,255,.07); z-index: 6; }
+.pop::before { content: ""; position: absolute; top: -8px; left: var(--ax); width: 16px; height: 16px; margin-left: -8px;
+  background: rgba(32,35,40,.95); transform: rotate(45deg); border-left: 1px solid rgba(255,255,255,.07); border-top: 1px solid rgba(255,255,255,.07); border-radius: 3px 0 0 0; }
+.ph { height: 48px; display: flex; align-items: center; padding: 0 4px 0 16px; font-size: 16px; }
+.ph .t { flex: 1; color: rgb(231,233,236); }
+.r { height: 44px; display: flex; align-items: center; padding: 0 4px 0 14px; font-size: 15.5px; }
+.r .n { flex: 1; margin-left: 12px; }
+.r .v { color: rgb(174,181,190); font-size: 15px; }
+.r.sel { background: rgba(69,196,168,.16); }
+.r .ck { color: rgb(69,196,168); }
+.thumb { width: 34px; height: 26px; border-radius: 5px; background: rgba(0,0,0,.3); border: 1px solid rgba(255,255,255,.08); display: flex; align-items: center; justify-content: center; color: rgb(174,181,190); }
+.thumb svg.i { width: 18px; height: 18px; }
+.tabs { margin: 0 12px 8px; height: 32px; border-radius: 9px; background: rgba(0,0,0,.35); display: flex; padding: 2px; }
+.tabs div { flex: 1; border-radius: 7px; display: flex; align-items: center; justify-content: center; font-size: 13.5px; color: rgb(174,181,190); }
+.tabs div.on { background: rgba(255,255,255,.13); color: rgb(231,233,236); }
+.gl { padding: 10px 16px 2px; font-size: 12.5px; color: rgb(140,147,156); text-transform: uppercase; letter-spacing: .04em; }
+.step { display: flex; align-items: center; height: 32px; border-radius: 9px; background: rgba(0,0,0,.35); font-size: 14px; margin-right: 8px; }
+.step span { width: 32px; text-align: center; color: rgb(174,181,190); font-size: 17px; }
+.step b { font-weight: normal; min-width: 76px; text-align: center; }
+.sw { width: 42px; height: 25px; border-radius: 13px; background: rgb(69,196,168); position: relative; margin-right: 10px; }
+.sw::after { content: ""; position: absolute; right: 2.5px; top: 2.5px; width: 20px; height: 20px; border-radius: 10px; background: #fff; }
+.sw.no { background: rgba(255,255,255,.18); } .sw.no::after { right: auto; left: 2.5px; }
+.globe { position: absolute; width: 604px; height: 604px; border-radius: 50%; overflow: hidden;
+  background: url(assets/globe.png) no-repeat; background-size: 1194px 834px; background-position: -294.5px -114.5px; }
+.page { position: absolute; background: #fff; box-shadow: 0 2px 16px rgba(0,0,0,.45); }
+.frame { position: absolute; left: 6%; top: 8%; right: 6%; bottom: 8%; border: 1px solid #333;
+  background: url(assets/map.png) no-repeat; background-size: 100% auto; background-position: 50% 50%; }
+.frame.sel { outline: 2px solid rgb(69,196,168); outline-offset: 2px; }
+.h { position: absolute; width: 11px; height: 11px; background: #fff; border: 2px solid rgb(69,196,168); border-radius: 2px; z-index: 2; }
+.toast { position: absolute; left: 50%; transform: translateX(-50%); top: 58px; padding: 7px 14px; border-radius: 10px; font-size: 14px; z-index: 5; }
+
+.b.on { color: rgb(231,233,236); background: rgba(255,255,255,.13); border-radius: 10px; height: 36px; width: 40px; margin: 0 2px; }
+.ctx { position: absolute; left: 50%; transform: translateX(-50%); bottom: 20px; height: 56px; border-radius: 16px; display: flex;
+  align-items: center; padding: 0 8px; gap: 6px; z-index: 5; border: 1px solid rgba(255,255,255,.06); }
+.chip { height: 40px; padding: 0 10px 0 8px; border-radius: 10px; background: rgba(255,255,255,.08); display: flex; align-items: center; gap: 6px; font-size: 15px; }
+.chip svg.i:last-child { width: 14px; height: 14px; opacity: .7; }
+.hs { width: 140px; padding: 0 6px; }
+.hs .lab { display: flex; justify-content: space-between; font-size: 12.5px; color: rgb(174,181,190); margin-bottom: 4px; }
+.hs .lab b { font-weight: normal; color: rgb(231,233,236); }
+.hs .tr { height: 14px; border-radius: 5px; background: rgba(255,255,255,.08); position: relative; overflow: hidden; }
+.hs .tr div { position: absolute; left: 0; top: 0; bottom: 0; background: rgba(255,255,255,.26); border-right: 2px solid rgba(255,255,255,.9); }
+.vsep { width: 1px; height: 28px; background: rgba(255,255,255,.1); margin: 0 4px; }
+.tg { height: 40px; padding: 0 12px 0 8px; border-radius: 10px; display: flex; align-items: center; gap: 6px; font-size: 14px; color: rgb(174,181,190); }
+.tg.on { background: rgba(69,196,168,.16); color: rgb(69,196,168); }
+.coord { z-index: 6; position: absolute; left: 50%; transform: translateX(-50%); top: 0; height: 44px; display: flex; align-items: center; gap: 14px;
+  font-family: "DejaVu Sans Mono", monospace; font-size: 12.5px; color: rgb(174,181,190); }
+.coord i { font-style: normal; color: rgb(110,117,126); }
+.drop { position: absolute; top: 44px; border-radius: 0 0 14px 14px; background: rgba(28,31,36,.86); backdrop-filter: blur(30px) saturate(1.2);
+  -webkit-backdrop-filter: blur(30px); box-shadow: 0 16px 40px rgba(0,0,0,.45); border: 1px solid rgba(255,255,255,.06); border-top: none; z-index: 4; }
+.pop::before { display: none; }
+.drop .ph { border-bottom: 1px solid rgba(255,255,255,.06); margin-bottom: 4px; }
+
+.col { position: absolute; left: 0; top: 56px; width: 56px; border-radius: 0 16px 16px 0; display: flex; flex-direction: column;
+  align-items: center; padding: 6px 0; gap: 2px; z-index: 5; border: 1px solid rgba(255,255,255,.06); border-left: none; }
+.col .b.on { width: 44px; height: 44px; margin: 0; }
+.col .hr2 { width: 32px; height: 1px; background: rgba(255,255,255,.1); margin: 6px 0; }
+.vsl { display: flex; flex-direction: column; align-items: center; gap: 4px; margin: 2px 0; }
+.vsl .val { font-size: 11.5px; color: rgb(231,233,236); }
+.vsl .nm { font-size: 11px; color: rgb(140,147,156); }
+.vsl .tk { width: 28px; height: 120px; border-radius: 8px; background: rgba(255,255,255,.07); position: relative; overflow: hidden; }
+.vsl .tk div { position: absolute; left: 0; right: 0; bottom: 0; background: rgba(255,255,255,.26); border-top: 2px solid rgba(255,255,255,.9); }
+
+.dock { position: absolute; top: 44px; right: 0; bottom: 0; width: 320px; background: rgb(24,27,31); border-left: 1px solid rgba(255,255,255,.07);
+  z-index: 4; display: flex; flex-direction: column; }
+.pane { display: flex; flex-direction: column; overflow: hidden; }
+.pane .ph { height: 44px; border-bottom: 1px solid rgba(255,255,255,.05); padding-left: 12px; }
+.pane .ph .t { font-size: 15px; }
+.pane .ph .chev { width: 28px; color: rgb(140,147,156); display: flex; }
+.pane .ph .chev svg.i { width: 16px; height: 16px; transform: rotate(90deg); }
+.split { height: 14px; flex: none; display: flex; align-items: center; justify-content: center; border-top: 1px solid rgba(255,255,255,.07);
+  background: rgba(0,0,0,.18); }
+.split div, .grip div { background: rgba(255,255,255,.28); border-radius: 2px; }
+.split div { width: 36px; height: 4px; }
+.grip { position: absolute; top: 50%; left: -9px; width: 17px; border-radius: 9px; background: rgba(40,44,50,.9); border: 1px solid rgba(255,255,255,.1); height: 56px; margin-top: -28px; display: flex; align-items: center; justify-content: center; z-index: 5; }
+.grip div { width: 5px; height: 44px; background: rgba(255,255,255,.42) !important; }
+.fld { padding: 2px 16px 0; }
+.fld .k { font-size: 12.5px; color: rgb(140,147,156); margin: 8px 0 4px; }
+.fld .in { height: 36px; border-radius: 9px; background: rgba(0,0,0,.35); display: flex; align-items: center; padding: 0 12px; font-size: 15px; }
+.sel-ring { position: absolute; width: 22px; height: 22px; border-radius: 50%; border: 2.5px solid rgb(69,196,168); z-index: 3; }
+
+.title { display: flex; align-items: center; gap: 8px; font-size: 16px; color: rgb(231,233,236); padding-right: 6px; }
+.title .dot { width: 6px; height: 6px; border-radius: 3px; background: rgb(140,147,156); }
+.float { right: 12px; top: 52px; }
+.ws { position: absolute; left: 50%; top: 6px; transform: translateX(-50%); height: 32px; border-radius: 9px; background: rgba(255,255,255,.08);
+  display: flex; padding: 2px; z-index: 6; }
+.ws div { width: 92px; border-radius: 7px; display: flex; align-items: center; justify-content: center; font-size: 14.5px; color: rgb(174,181,190); }
+.ws div.on { background: rgba(255,255,255,.2); color: rgb(240,242,245); box-shadow: 0 1px 3px rgba(0,0,0,.3); }
+.vw { position: absolute; top: 54px; transform: translateX(-50%); height: 36px; border-radius: 11px; display: flex; align-items: center;
+  padding: 0 3px; z-index: 4; border: 1px solid rgba(255,255,255,.06); font-size: 13.5px; }
+.vw .seg div { height: 28px; padding: 0 12px; font-size: 13.5px; border-radius: 8px; }
+.vw .b { width: 36px; height: 36px; } .vw .b svg.i { width: 18px; height: 18px; }
+.vw .pg { padding: 0 6px; color: rgb(231,233,236); }
+.mapinfo { position: absolute; bottom: 22px; z-index: 3; font-family: "DejaVu Sans Mono", monospace; font-size: 11.5px; color: rgb(174,181,190); }
+.mapinfo .sb { display: flex; margin: 5px 0 3px; height: 5px; width: 120px; border: 1px solid rgba(231,233,236,.7); }
+.mapinfo .sb div { flex: 1; } .mapinfo .sb div:nth-child(odd) { background: rgba(231,233,236,.7); }
+.mapinfo .ticks { display: flex; justify-content: space-between; width: 128px; font-size: 10.5px; color: rgb(140,147,156); }
+.pane.fold .ph .chev svg.i { transform: rotate(0deg); }
+
+.title .chv svg.i { width: 14px; height: 14px; transform: rotate(90deg); opacity: .7; }
+.title { gap: 4px; }
+.wt { position: absolute; left: var(--cx); top: 0; transform: translateX(-50%); height: 44px; display: flex; z-index: 6; }
+.dz { position: absolute; top: 0; right: 0; width: 320px; height: 44px; border-left: 1px solid rgba(255,255,255,.07); background: rgba(255,255,255,.025); z-index: 5; }
+.wt > div { height: 44px; padding: 0 14px; display: flex; align-items: center; gap: 8px; font-size: 15px; color: rgb(150,157,166); position: relative; }
+.wt > div.on { color: rgb(240,242,245); }
+.wt.a > div.on::after { content: ""; position: absolute; left: 10px; right: 10px; bottom: -1px; height: 2px; border-radius: 1px; background: rgb(69,196,168); }
+.wt.b > div { padding: 0 10px 0 6px; margin: 4px 2px; height: 36px; border-radius: 10px; }
+.wt.b > div.on { background: rgba(255,255,255,.1); }
+.tg-globe { width: 26px; height: 26px; border-radius: 50%; background: url(assets/globe.png) no-repeat; background-size: 51.4px 35.9px;
+  background-position: -12.7px -4.9px; box-shadow: 0 0 0 1px rgba(255,255,255,.15); }
+.tg-page { width: 34px; height: 24px; border-radius: 2px; background: #fff; position: relative; box-shadow: 0 0 0 1px rgba(255,255,255,.15); }
+.tg-page div { position: absolute; left: 3px; top: 3px; right: 3px; bottom: 3px; background: url(assets/map.png) no-repeat 50% 50%/100% auto; border: .5px solid #555; }
+.wt.b > div.on .tg-globe, .wt.b > div.on .tg-page { box-shadow: 0 0 0 1.5px rgb(69,196,168); }
+.wt.b > div:not(.on) .tg-globe, .wt.b > div:not(.on) .tg-page { opacity: .6; }
+.b.dk.on { color: rgb(69,196,168); background: rgba(69,196,168,.14); }
+</style></head>
+<body>
+<script>
+const P = {
+  Projects: "M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z",
+  Grid: "M12 3v18M3 12h18", Undo: "M8 5L3 10l5 5M3 10h11c3.04 0 5.5 2.46 5.5 5.5s-2.46 5.5-5.5 5.5h-3",
+  Redo: "M16 5l5 5-5 5M21 10H10c-3.04 0-5.5 2.46-5.5 5.5s2.46 5.5 5.5 5.5h3",
+  Layers: "M12 4l9 5-9 5-9-5zM3 14l9 5 9-5", Toolbox: "M4 9h16v10H4zM9 9V6h6v3M4 14h16",
+  Attributes: "M5 3h14v18H5zM8 8h8M8 12h8M8 16h5", Map: "M3 6l6-2 6 2 6-2v14l-6 2-6-2-6 2zM9 4v14M15 6v14",
+  Plus: "M12 5v14M5 12h14", Back: "M15 6l-6 6 6 6", Open: "M9 6l6 6-6 6", Tick: "M5 12l5 5 9-10",
+  Raise: "M3 18c4 0 5-11 9-11s5 11 9 11", Lower: "M3 7c4 0 5 11 9 11s5-11 9-11", Smooth: "M3 12c3-4 6-4 9 0s6 4 9 0",
+  Flatten: "M4 12h16", Warp: "M3 7h18M3 16c2-5 4 5 6 0s4-5 6 0s4 5 6 0", Push: "M3 19c3 0 4-8 7-8s4 8 7 8M14 6h7M18 3l3 3-3 3",
+  Noise: "M2 16l3-4 2 3 3-8 2 6 2-3 3 7 2-4 3 3",
+  Carve: "M3 7c4 0 5 9 9 9s5-9 9-9M12 16v5", Line: "M4 18c4-10 8 2 16-12",
+  Select: "M5 3l14 8-6 2-2 6z", Move: "M12 3v18M3 12h18M12 3l-3 3M12 3l3 3M12 21l-3-3M12 21l3-3M3 12l3-3M3 12l3 3M21 12l-3-3M21 12l-3 3",
+  Measure: "M3 17L17 3l4 4L7 21zM7 13l2 2M10 10l3 3M13 7l2 2",
+  Frame: "M6 6h12v12H6zM3 3h4v4H3zM17 3h4v4h-4zM3 17h4v4H3zM17 17h4v4h-4z",
+  Vertex: "M4 18L10 8l10 4M2 16h4v4H2zM8 6h4v4H8zM18 10h4v4h-4z",
+  Magnet: "M5 4h4v8c0 1.66 1.34 3 3 3s3-1.34 3-3V4h4v8c0 3.87-3.13 7-7 7s-7-3.13-7-7zM5 8h4M15 8h4",
+  LayoutGrid: "M4 4h16v16h-16zM4 9.33h16M4 14.67h16M9.33 4v16M14.67 4v16",
+  Eye: "M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z", Polygon: "M5 7l8-3 6 6-3 9-9-1z",
+  Raster: "M4 4h16v16H4zM4 12h16M12 4v16", Inspector: "M4 7h9M17 7h3M4 17h3M11 17h9", World: "M12 3c4.97 0 9 4.03 9 9s-4.03 9-9 9-9-4.03-9-9 4.03-9 9-9zM12 3c2.5 2.5 3.5 5.5 3.5 9s-1 6.5-3.5 9c-2.5-2.5-3.5-5.5-3.5-9s1-6.5 3.5-9zM3 12h18", Dock: "M3 5h18v14H3zM15 5v14M17.5 9h1.5M17.5 12h1.5", TextCursor: "M9 4h6M9 20h6M12 4v16", Legend: "M4 5h4v4H4zM4 15h4v4H4zM11 7h9M11 17h9", Scale: "M3 14h18M3 10v8M12 12v4M21 10v8", North: "M12 3l5 16-5-4-5 4z", Book: "M3 5h6a3 3 0 0 1 3 3v12a2 2 0 0 0-2-2H3zM21 5h-6a3 3 0 0 0-3 3v12a2 2 0 0 1 2-2h7z", Brush: "M5 4v16M12 4v16M19 4v16",
+};
+const C = { Grid: [[12,12,9]], Eye: [[12,12,3]], Point: [[12,12,3]], Inspector: [[15,7,2],[9,17,2]], Brush: [[5,9,2],[12,15,2],[19,8,2]] };
+const ic = n => `<svg class="i" viewBox="0 0 24 24"><path d="${P[n]||""}"/>${(C[n]||[]).map(c=>`<circle cx="${c[0]}" cy="${c[1]}" r="${c[2]}"/>`).join("")}</svg>`;
+const b = (n, cls="") => `<div class="b ${cls}">${ic(n)}</div>`;
+const seg = (items, on) => `<div class="seg">${items.map(t => `<div class="${t===on?"on":""}">${t}</div>`).join("")}</div>`;
+
+const V = "a";
+const furnOpen = location.hash.includes("-add");
+const floatP = location.hash.includes("-float") || location.hash === "#globe-brush";
+const panned = location.hash.includes("-pan");
+const dock = location.hash.replace("-add", "").replace("-pan", "").endsWith("-dock");
+const scene = location.hash.slice(1).replace("-add", "").replace("-float", "").replace("-pan", "").replace("-dock", "");
+const atlas = scene.startsWith("atlas");
+let h = "";
+
+// Top bar: document and view at the left, tools and panels at the right.
+const left = b("Back") + `<div class="title">Earth<div class="chv">${ic("Open")}</div></div>` + `<div class="sep"></div>` + b("Undo") + b("Redo", "dim");
+const tool = { globe: "Move", "globe-brush": "Sculpt", "globe-modes": "Sculpt", atlas: "Select", "atlas-clean": "Select" }[scene];
+const rightG = atlas
+  ? b("Inspector", dock || floatP ? "on" : "") + b("Map") + b("Attributes", dock ? "on" : "")
+  : b("Layers", dock || (floatP && !atlas) ? "on" : "") + b("Attributes", dock ? "on" : "") + b("Toolbox", dock ? "on" : "");
+h += `<div class="bar" style="background:rgb(22,24,28)"><div class="grp" style="left:4px">${left}</div>${dock ? `<div class="dz"></div>` : ""}<div class="grp" style="right:4px;z-index:6">${rightG}<div class="sep"></div>${b("Dock", dock ? "on dk" : "dk")}</div>${V === "b" ? `<div class="wt b"><div class="${atlas?"":"on"}"><div class="tg-globe"></div>World</div><div class="${atlas?"on":""}"><div class="tg-page"><div></div></div>Atlas</div></div>` : `<div class="wt a" style="--cx:${dock ? (56 + 874) / 2 : 597}px"><div class="${atlas?"":"on"}">${ic("World")}World</div><div class="${atlas?"on":""}">${ic("Book")}Atlas</div></div>`}</div>`;
+
+// Sidebar: the controls of the active tool, then undo and redo.
+const brush = scene === "globe-brush" || scene === "globe-modes";
+let side = "";
+if (brush) side = `<div class="vs"><div class="f" style="height:38%"></div></div><div class="mod"></div><div class="vs"><div class="f" style="height:72%"></div></div><div style="height:6px"></div>`;
+if (atlas) side = b("Magnet", "on") + b("LayoutGrid") + `<div style="height:6px"></div>`;
+side += b("Undo") + b("Redo", "dim");
+const sideH = brush ? 20 + 150 + 44 + 150 + 12 + 88 + 30 : atlas ? 20 + 88 + 12 + 88 + 18 : 20 + 88 + 6;
+
+// The context bar: the controls of the active tool, at the bottom center.
+const hs = (n, v, f) => `<div class="hs"><div class="lab">${n}<b>${v}</b></div><div class="tr"><div style="width:${f}%"></div></div></div>`;
+const vsl = (n, v, f) => `<div class="vsl"><div class="val">${v}</div><div class="tk"><div style="height:${f}%"></div></div><div class="nm">${n}</div></div>`;
+let colH = atlas
+  ? b("Frame", "tri" + (furnOpen ? "" : "")) + b("Legend", "tri" + (furnOpen ? " on" : "")) + [["Select","Select"],["Vertex","Vertex"],["Move","Move"],["Measure","Measure"]].map(([n,k]) => b(n, k===tool && !furnOpen ?"on":"")).join("")
+    + `<div class="hr2"></div>` + b("Magnet", "on") + b("LayoutGrid")
+  : b("Raise", (tool==="Sculpt"?"on ":"") + "tri") + b("Carve", "tri") + b("Line", "tri") + b("Select") + b("Move", tool==="Move"?"on":"") + b("Measure");
+if (brush) colH += `<div class="hr2"></div>` + vsl("Size", "120 km", 38) + `<div style="height:6px"></div>` + vsl("Flow", "72 %", 72) + `<div class="hr2"></div>` + b("Brush");
+h += `<div class="col glass">${colH}</div>`;
+
+
+// Canvas.
+if (!atlas) {
+  var gy = 457, gs = 1.21, gx = panned ? 640 : dock ? (56 + 874) / 2 : 597;
+  h += `<div class="globe" style="left:${gx-302}px;top:${gy-302}px;transform:scale(${gs})"></div>`;
+} else {
+  const W = dock ? 760 : 960, H = W * 210 / 297, L = (dock ? (56 + 874) / 2 : 597) - W/2, T = 452 - H/2;
+  h += `<div class="page" style="left:${L}px;top:${T}px;width:${W}px;height:${H}px"><div class="frame ${scene==="atlas"?"sel":""}"></div></div>`;
+  if (scene === "atlas") {
+    const fl = L + W*.06, ft = T + H*.08, fr = L + W*.94, fb = T + H*.92;
+    for (const [x, y] of [[fl,ft],[fr,ft],[fl,fb],[fr,fb],[(fl+fr)/2,ft],[(fl+fr)/2,fb],[fl,(ft+fb)/2],[fr,(ft+fb)/2]])
+      h += `<div class="h" style="left:${x-7.5}px;top:${y-7.5}px"></div>`;
+  }
+}
+
+
+const ccx = dock ? (56 + 874) / 2 : 597;
+h += atlas
+  ? `<div class="vw glass" style="left:${ccx}px">${b("Back")}<div class="pg">Page 1 of 3 <span style="color:rgb(140,147,156);margin-left:6px">A4 landscape</span></div>${b("Open")}</div>`
+  : `<div class="vw glass" style="left:${ccx}px">${seg(["Globe", "Flat"], "Globe")}<div class="sep" style="margin:0 3px"></div>${b("Grid")}</div>`;
+if (!atlas) h += `<div class="mapinfo" style="left:76px"><div>48.86° N  2.35° E</div><div class="sb"><div></div><div></div><div></div><div></div></div><div class="ticks"><span>0</span><span>2000 km</span></div></div>`;
+
+
+
+if (furnOpen) {
+  const m = (n, label, sel) => `<div class="r">${ic(n)}<div class="n">${label}</div>${sel ? `<div class="ck" style="margin-right:10px">${ic("Tick")}</div>` : ""}</div>`;
+  h += `<div class="pop" style="left:64px;top:100px;width:220px;padding:6px 0"><div class="gl" style="padding-top:6px">Furniture</div>
+    ${m("TextCursor", "Text", true)}${m("Legend", "Legend")}${m("Scale", "Scale bar")}${m("North", "North arrow")}</div>`;
+}
+
+if (floatP) {
+  const head = (t, extra) => `<div class="ph"><div class="t">${t}</div>${extra}${b("Dock")}</div>`;
+  if (!atlas) {
+    const lr = (k, name, sel) => `<div class="r ${sel?"sel":""}"><div class="thumb" style="${k==="r"?"background:linear-gradient(135deg,#3b4a5a,#8a9a6a 45%,#b9a37e 70%,#eee)":""}">${k==="r"?"":ic(k)}</div><div class="n">${name}</div>${b("Eye")}</div>`;
+    h += `<div class="pop float" style="width:300px;padding-bottom:6px">${head("Layers", b("Plus"))}${lr("r","Height",true)}${lr("Polygon","Land")}${lr("Line","Rivers")}${lr("Point","Places")}</div>`;
+  } else {
+    const r = (name, ctl) => `<div class="r"><div class="n" style="margin-left:2px">${name}</div>${ctl}</div>`;
+    const step = v => `<div class="step"><span>−</span><b>${v}</b><span>+</span></div>`;
+    h += `<div class="pop float" style="width:320px;padding-bottom:6px">${head("Map frame", "")}
+      <div class="tabs"><div class="on">Frame</div><div>Projection</div><div>Layers</div><div>Labels</div></div>
+      ${r("Map", `<div class="v">World</div>${b("Open")}`)}${r("Scale", step("1 : 60 M"))}${r("Rotation", step("0°"))}
+      <div class="gl">Edges</div>${r("Neatline", `<div class="sw"></div>`)}${r("Border", `<div class="sw no"></div>`)}${r("Edge labels", `<div class="sw"></div>`)}</div>`;
+  }
+}
+// Popovers hang from their buttons.
+const bx = i => 1194 - 4 - 44 * i + 22;   // center of the i-th button from the right, before the separator
+if (false) {
+  const w = 300, x = 1194 - 12 - w;
+  const lr = (k, name, sel) => `<div class="r ${sel?"sel":""}"><div class="thumb" style="${k==="r"?"background:linear-gradient(135deg,#3b4a5a,#8a9a6a 45%,#b9a37e 70%,#eee)":""}">${k==="r"?"":ic(k)}</div><div class="n">${name}</div>${b("Eye")}</div>`;
+  h += `<div class="drop" style="left:${x}px;width:${w}px;padding-bottom:6px">
+    <div class="ph"><div class="t">Layers</div>${b("Plus")}</div>
+    ${lr("r","Height",true)}${lr("Polygon","Land")}${lr("Line","Rivers")}${lr("Point","Places")}</div>`;
+}
+if (scene === "globe-modes") {
+  // The Sculpt button is the eighth from the right, after the separator and the two panel buttons.
+  const w = 210, x = 597 - 268;
+  const m = (n, sel) => `<div class="r">${ic(n)}<div class="n">${n}</div>${sel ? `<div class="ck" style="margin-right:10px">${ic("Tick")}</div>` : ""}</div>`;
+  h += `<div class="pop" style="left:64px;top:56px;width:${w}px;padding:6px 0">
+    <div class="gl" style="padding-top:6px">Sculpt</div>${m("Raise",true)}${m("Lower")}${m("Smooth")}${m("Flatten")}${m("Warp")}${m("Push")}${m("Noise")}</div>`;
+}
+if (scene === "atlas" && !dock) {
+  const w = 320, x = 1194 - 12 - w;
+  const r = (name, ctl) => `<div class="r"><div class="n" style="margin-left:2px">${name}</div>${ctl}</div>`;
+  const step = v => `<div class="step"><span>−</span><b>${v}</b><span>+</span></div>`;
+  h += `<div class="drop" style="left:${x}px;width:${w}px;padding-bottom:6px">
+    <div class="ph"><div class="t">Map frame</div></div>
+    <div class="tabs"><div class="on">Frame</div><div>Layers</div><div>Projection</div><div>Grid</div></div>
+    ${r("Map", `<div class="v">World</div>${b("Open")}`)}
+    ${r("Scale", step("1 : 60 M"))}
+    ${r("Rotation", step("0°"))}
+    <div class="gl">Edges</div>
+    ${r("Neatline", `<div class="sw"></div>`)}
+    ${r("Border", `<div class="sw no"></div>`)}
+    ${r("Edge labels", `<div class="sw"></div>`)}</div>`;
+}
+
+if (dock) {
+  const chev = `<div class="chev">${ic("Open")}</div>`;
+  const lr = (k, name, sel) => `<div class="r ${sel?"sel":""}"><div class="thumb" style="${k==="r"?"background:linear-gradient(135deg,#3b4a5a,#8a9a6a 45%,#b9a37e 70%,#eee)":""}">${k==="r"?"":ic(k)}</div><div class="n">${name}</div>${b("Eye")}</div>`;
+  const layers = (sel) => `<div class="pane" style="flex:none;height:${atlas ? 300 : 262}px"><div class="ph">${chev}<div class="t">Layers</div>${b("Plus")}</div>
+    ${atlas ? "" : lr("r","Height", sel==="Height")}${lr("Polygon","Land")}${lr("Line","Rivers")}${lr("Point","Places", sel==="Places")}${atlas ? `<div class="gl">Map: World</div>` : ""}</div>`;
+  const r = (name, ctl) => `<div class="r"><div class="n" style="margin-left:2px">${name}</div>${ctl}</div>`;
+  const step = v => `<div class="step"><span>−</span><b>${v}</b><span>+</span></div>`;
+  const fld = (k, v) => `<div class="fld"><div class="k">${k}</div><div class="in">${v}</div></div>`;
+  const insp = atlas
+    ? `<div class="pane" style="flex:1"><div class="ph">${chev}<div class="t">Map frame</div></div>
+        <div class="tabs" style="margin-top:8px"><div class="on">Frame</div><div>Projection</div><div>Layers</div><div>Labels</div></div>
+        ${r("Map", `<div class="v">World</div>${b("Open")}`)}${r("Scale", step("1 : 60 M"))}${r("Rotation", step("0°"))}
+        <div class="gl">Edges</div>${r("Neatline", `<div class="sw"></div>`)}${r("Border", `<div class="sw no"></div>`)}${r("Edge labels", `<div class="sw"></div>`)}</div>`
+    : `<div class="pane" style="flex:1"><div class="ph">${chev}<div class="t">Attributes</div><div class="v" style="margin-right:12px;font-size:13px">Places · 1 selected</div></div>
+        ${fld("Name", "Paris")}${fld("Population", "2 102 650")}${fld("Founded", "−250")}
+        ${r("Capital", `<div class="sw"></div>`)}${r("Show label", `<div class="sw"></div>`)}</div>`;
+  const top = atlas ? insp.replace('style="flex:1"', 'style="flex:none;height:420px"') : layers("Places");
+  const pg = (n, sel) => `<div class="r ${sel?"sel":""}"><div class="thumb" style="width:38px;height:27px;background:#fff;padding:3px"><div style="width:100%;height:100%;background:url(assets/map.png) no-repeat 50% 50%/100% auto;border:.5px solid #555"></div></div><div class="n">${n}</div><div class="v" style="margin-right:12px;font-size:13px">A4</div></div>`;
+  const pages = `<div class="pane" style="flex:1"><div class="ph">${chev}<div class="t">Pages</div>${b("Plus")}</div>${pg("Page 1", true)}${pg("Page 2")}${pg("Page 3")}</div>`;
+  const bottom = atlas ? pages : insp;
+  const third = `<div class="pane fold" style="flex:none"><div class="ph" style="border-top:1px solid rgba(255,255,255,.07)">${chev}<div class="t">${atlas ? "Maps" : "Toolbox"}</div></div></div>`;
+  h += `<div class="dock"><div class="grip"><div></div></div>${top}<div class="split"><div></div></div>${bottom}${third}</div>`;
+  if (!atlas) h += `<div class="sel-ring" style="left:${397 + gx - 465}px;top:280px"></div>`;
+}
+function gx_paris() { return (56 + 874) / 2 + (893 - 1000) / 2000 * 1194 * 1.27 * 0.5 * 2 - 11; }
+function gy_paris() { return 439 + (533 - 698) / 1397 * 834 * 1.27 - 11 + 2; }
+document.body.insertAdjacentHTML("beforeend", h);
+</script>
+</body></html>
