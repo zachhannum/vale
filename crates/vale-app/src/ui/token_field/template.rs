@@ -103,11 +103,11 @@ pub fn nodes_of(pieces: &[Piece], help: &ExprHelp) -> Vec<Node<Piece>> {
                     data: None,
                 }));
             }
-            Piece::Expr(seq) => out.push(Node::Chip(super::Chip {
+            Piece::Expr(_) | Piece::Page { .. } => out.push(Node::Chip(super::Chip {
                 look: Look {
                     kind: ChipKind::Function,
                     glyph: None,
-                    label: short(&seq.to_text()),
+                    label: short(&Template::new(vec![p.clone()]).to_text()),
                     badge: None,
                 },
                 data: p.clone(),
