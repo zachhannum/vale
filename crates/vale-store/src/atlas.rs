@@ -827,6 +827,10 @@ pub struct ColorKeyItem {
     pub second_unit: Option<SecondUnit>,
     /// A list shows the name of each band inside its box.
     pub names_in_boxes: bool,
+    /// The size of a box in millimeters. `None`: the size follows the text
+    /// and the width of the key. A strip shrinks a box that does not fit.
+    pub box_width: Option<f64>,
+    pub box_height: Option<f64>,
     /// An empty title does not show.
     pub title: String,
     pub title_style: FurnitureText,
@@ -1006,6 +1010,18 @@ pub(crate) fn read_old_opacity(map: &JsonMap, colors: &mut [&mut Rgba]) -> Optio
         c[3] = (f64::from(c[3]) * opacity).round() as u8;
     }
     Some(())
+}
+
+/// An optional size above zero: `None` for a missing key or `null`, and an
+/// error for a value that is not a number above zero.
+fn read_size(map: &JsonMap, key: &str) -> Option<Option<f64>> {
+    match map.get(key) {
+        None | Some(serde_json::Value::Null) => Some(None),
+        Some(v) => {
+            let v = v.as_f64().filter(|v| v.is_finite() && *v > 0.0)?;
+            Some(Some(v))
+        }
+    }
 }
 
 pub(crate) fn read_string(map: &JsonMap, key: &str, to: &mut String) -> Option<()> {
@@ -1237,6 +1253,8 @@ impl ColorKeyItem {
             .map(|u| serde_json::json!({"name": u.name, "factor": u.factor, "offset": u.offset}));
         map.insert("second_unit".into(), serde_json::json!(unit));
         map.insert("names_in_boxes".into(), self.names_in_boxes.into());
+        map.insert("box_width".into(), serde_json::json!(self.box_width));
+        map.insert("box_height".into(), serde_json::json!(self.box_height));
         map.insert("title".into(), self.title.clone().into());
         map.insert("title_style".into(), self.title_style.value());
         map.insert("value_style".into(), self.value_style.value());
@@ -1277,6 +1295,8 @@ impl ColorKeyItem {
             }
         }
         read_flag(&map, "names_in_boxes", &mut item.names_in_boxes)?;
+        item.box_width = read_size(&map, "box_width")?;
+        item.box_height = read_size(&map, "box_height")?;
         read_string(&map, "title", &mut item.title)?;
         item.title_style = item.title_style.read_key(&map, "title_style")?;
         item.value_style = item.value_style.read_key(&map, "value_style")?;
@@ -1306,6 +1326,8 @@ impl Default for ColorKeyItem {
             split_at_sea_level: true,
             second_unit: None,
             names_in_boxes: false,
+            box_width: None,
+            box_height: None,
             title: String::new(),
             title_style: FurnitureText {
                 weight: 700.0,
@@ -2157,6 +2179,8 @@ mod tests {
                 split_at_sea_level: false,
                 second_unit: unit,
                 names_in_boxes: true,
+                box_width: Some(5.0),
+                box_height: Some(5.0),
                 title: "Height".into(),
                 title_style: styled(),
                 value_style: FurnitureText::sized(6.0),
@@ -2183,6 +2207,8 @@ mod tests {
         assert_eq!(key, ColorKeyItem::default());
         assert_eq!((key.layer, key.layout), (None, KeyLayout::Strip));
         assert!(key.split_at_sea_level && key.second_unit.is_none());
+        assert_eq!((key.box_width, key.box_height), (None, None));
+        assert_eq!(ColorKeyItem::from_json(r#"{"box_width": -1}"#), None);
         assert_eq!(ColorKeyItem::from_json(r#"{"layout": "grid"}"#), None);
         // The text keys of an older legend are the style of its title and
         // its entries.
