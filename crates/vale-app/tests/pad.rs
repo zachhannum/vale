@@ -8618,6 +8618,27 @@ fn value_bar_inserts_field() {
 }
 
 #[test]
+fn the_value_tray_inserts_a_variable() {
+    use vale_app::ui::pad::classify::EXPRESSION;
+    use vale_app::ui::pad::value::{SEARCH, insert_name};
+    let mut h = pad(BOARDS[0]);
+    open_classify(&mut h, "Places");
+    scroll_to_control(&mut h, EXPRESSION);
+    type_text(&mut h, EXPRESSION, "pop_max * ");
+    // The search finds a variable with its `@`.
+    scroll_to_control(&mut h, SEARCH[0]);
+    type_text(&mut h, SEARCH[0], "@la");
+    let lat = insert_name("@lat");
+    scroll_to_control(&mut h, &lat);
+    assert!(control(&h, &insert_name("@lon")).is_none());
+    assert!(control(&h, &insert_name("pop_max")).is_none());
+    tap(&mut h, &lat);
+    screenshot::save(&mut h, "pad-value-tray-variables");
+    let first = classify_first_filter(&mut h);
+    assert!(first.contains("pop_max * @lat"), "{first}");
+}
+
+#[test]
 fn a_code_chip_opens_code() {
     use vale_app::ui::pad::classify::EXPRESSION;
     use vale_app::ui::pad::value::{CODE_CHIP, view_names};
@@ -9007,6 +9028,68 @@ fn code_only_filter_opens_in_code() {
     scroll_to_control(&mut h, &row);
     tap(&mut h, &row);
     assert!(control(&h, EXPRESSION).is_some());
+}
+
+#[test]
+fn a_filter_rule_on_area_takes_a_unit() {
+    for size in [BOARDS[0], BOARDS[3]] {
+        let what = format!("{size:?}");
+        let mut h = pad(size);
+        let land = vector(&h, "Land");
+        open_rule(&mut h, "Land", "Default");
+        add_condition(&mut h, 1, "Area");
+        assert!(control(&h, "Unit 1").is_some(), "{what}");
+        check_controls(&h, &format!("{what} with a measure"));
+        pick(&mut h, "Comparison 1", "is greater than");
+        pick(&mut h, "Unit 1", "mi²");
+        type_scrolled_keys(&mut h, "Value 1", "10000");
+        let text = filter_text(&h, land);
+        assert_eq!(text.as_deref(), Some("area('mi2') > 10000"), "{what}");
+        screenshot::save(&mut h, &format!("pad-filter-measure-{}", size.0));
+    }
+}
+
+#[test]
+fn a_line_layer_offers_length_not_area() {
+    use vale_app::ui::pad::filter::{ADD_CONDITION, SEARCH_FIELDS};
+    for (word, shown) in [("Area", false), ("Perimeter", false), ("Length", true)] {
+        let mut h = pad(BOARDS[0]);
+        let rivers = vector(&h, "Rivers");
+        open_rule(&mut h, "Rivers", "Default");
+        scroll_to_control(&mut h, ADD_CONDITION);
+        tap(&mut h, ADD_CONDITION);
+        scroll_to_control(&mut h, "Field 1");
+        tap(&mut h, "Field 1");
+        type_text(&mut h, SEARCH_FIELDS, word);
+        assert_eq!(control(&h, word).is_some(), shown, "{word}");
+        if shown {
+            tap(&mut h, word);
+            let text = filter_text(&h, rivers);
+            assert_eq!(text.as_deref(), Some("line_length('km') = 0"));
+        }
+    }
+}
+
+#[test]
+fn a_measure_filter_opens_in_blocks() {
+    use vale_app::ui::pad::filter::CODE_ROW;
+    let mut h = pad(BOARDS[0]);
+    let land = vector(&h, "Land");
+    set_filter(&mut h, land, "area('mi2') > 10000 and @vertices >= 5");
+    open_rule(&mut h, "Land", "Default");
+    scroll_to_control(&mut h, "Unit 1");
+    assert!(control(&h, "Unit 1").is_some());
+    assert!(control(&h, "Field 2").is_some());
+    assert!(control(&h, "Unit 2").is_none());
+    assert!(control(&h, &format!("{CODE_ROW} 1")).is_none());
+    assert!(control(&h, &format!("{CODE_ROW} 2")).is_none());
+    // The unit menu changes only the unit.
+    pick(&mut h, "Unit 1", "ha");
+    let text = filter_text(&h, land);
+    assert_eq!(
+        text.as_deref(),
+        Some("area('ha') > 10000 and @vertices >= 5")
+    );
 }
 
 /// The text of the filter of the first rule of a layer.
@@ -10234,7 +10317,7 @@ fn open_label_text(h: &mut Pad) -> vale_store::LayerId {
 fn tap_bar(h: &mut Pad, name: &str) {
     use vale_app::ui::new_feature::keyboard_top;
     use vale_app::ui::pad::label_text::BAR;
-    for i in 0..16 {
+    for i in 0..32 {
         if control(h, name).is_some_and(|r| r.width() >= 40.0) {
             break;
         }
@@ -10242,7 +10325,7 @@ fn tap_bar(h: &mut Pad, name: &str) {
         let y = keyboard_top(screen) - BAR / 2.0;
         // Forward first, and then back.
         let by = vec2(screen.width() * 0.5, 0.0);
-        let (from, to) = match i < 8 {
+        let (from, to) = match i < 16 {
             true => (
                 pos2(screen.right() - 30.0, y),
                 pos2(screen.right() - 30.0, y) - by,
@@ -10273,6 +10356,53 @@ fn bar_inserts_field_chip() {
         tap(&mut h, "Back to Places");
         assert_eq!(h.state().pad.page, None, "{what}");
     }
+}
+
+#[test]
+fn the_label_bar_inserts_length_and_its_popover_sets_the_unit() {
+    use vale_app::ui::pad::chip_popover::UNIT_ROW;
+    use vale_app::ui::pad::label_text::{LABEL_TEXT, insert_name};
+    // Polygon layers have no labels, so the test uses the lines of Rivers.
+    let mut h = pad(BOARDS[0]);
+    let rivers = vector(&h, "Rivers");
+    h.state_mut()
+        .doc
+        .entry_mut(rivers)
+        .unwrap()
+        .style
+        .label
+        .text = String::new();
+    tap(&mut h, "Layers");
+    tap(&mut h, "Open Rivers");
+    scroll_to_control(&mut h, LABEL_TEXT);
+    tap(&mut h, LABEL_TEXT);
+    assert_eq!(h.state().pad.page, Some(Page::LabelText));
+    let at = control(&h, LABEL_TEXT).unwrap().right_bottom() - vec2(16.0, 8.0);
+    touch(&mut h, egui::TouchPhase::Start, at, None);
+    h.step();
+    touch(&mut h, egui::TouchPhase::End, at, None);
+    h.run_steps(3);
+    // A line layer has no Area chip.
+    assert!(control(&h, &insert_name("Area")).is_none());
+    tap_bar(&mut h, &insert_name("Length"));
+    let text = "format_number(line_length('km'), 0)";
+    assert_eq!(label_text(&h, rivers), text);
+    let lay = label_layout(&h, text);
+    let chip = lay.rect_of(&[0]).unwrap().center();
+    touch(&mut h, egui::TouchPhase::Start, chip, None);
+    h.step();
+    touch(&mut h, egui::TouchPhase::End, chip, None);
+    h.run_steps(3);
+    // The Unit row shows each unit of a length.
+    for unit in ["km", "mi", "m"] {
+        assert!(control(&h, unit).is_some(), "{UNIT_ROW}: {unit}");
+    }
+    screenshot::save(&mut h, "pad-label-text-measure");
+    tap(&mut h, "mi");
+    assert_eq!(
+        label_text(&h, rivers),
+        "format_number(line_length('mi'), 0)"
+    );
 }
 
 #[test]

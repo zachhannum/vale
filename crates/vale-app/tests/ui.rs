@@ -1669,6 +1669,35 @@ fn a_desktop_expression_field_shows_the_result_and_inserts_from_its_menu() {
 }
 
 #[test]
+fn a_desktop_label_text_inserts_a_measure_from_its_menu() {
+    use vale_app::ui::expr_help::{GEOMETRY_MENU, INSERT};
+    let mut h = harness();
+    h.run_steps(2);
+    let layers = h.state().doc.project.layers();
+    let rivers = layers.iter().find(|l| l.name == "Rivers").unwrap().id;
+    h.state_mut()
+        .doc
+        .entry_mut(rivers)
+        .unwrap()
+        .style
+        .label
+        .text = String::new();
+    h.state_mut().select(Some(LayerRef::Vector(rivers)));
+    h.run_steps(2);
+    // The label text has the last Insert menu of the inspector.
+    h.query_all_by_label(INSERT).last().unwrap().click();
+    h.run_steps(2);
+    h.get_by_label_contains(GEOMETRY_MENU).click();
+    h.run_steps(2);
+    // A line layer has Length and no Area.
+    assert!(h.query_by_label("Area").is_none());
+    h.get_by_label("Length").click();
+    h.run_steps(3);
+    let text = &h.state().doc.entry(rivers).unwrap().style.label.text;
+    assert_eq!(text, "format_number(line_length('km'), 0)");
+}
+
+#[test]
 fn the_desktop_form_makes_a_raster_layer_from_an_image_file() {
     use vale_app::ui::raster_form::{self, RasterForm};
     let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
