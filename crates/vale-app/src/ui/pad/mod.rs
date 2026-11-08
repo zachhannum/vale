@@ -409,6 +409,8 @@ pub enum Page {
     NewField,
     /// The rule with this index.
     Rule(usize),
+    /// The rules that the Style section selects.
+    Rules,
     /// The symbols that the rule with this index can pick.
     Symbols(usize),
     /// The shapes of the marker of the rule with this index.
@@ -1900,6 +1902,10 @@ pub(super) fn panel_head(state: &mut AppState, panel: Panel) -> Head {
         Some(Page::Rule(i) | Page::Symbols(i) | Page::MarkerShape(i) | Page::MarkerFill(i)) => {
             rules.and_then(|r| r.get(i)).map(|r| r.name.clone())
         }
+        Some(Page::Rules) => match state.pad.layer {
+            Some(LayerRef::Vector(id)) => Some(rules::selection_title(state, id)),
+            _ => None,
+        },
         _ => None,
     };
     if name.is_none() {
@@ -1929,6 +1935,7 @@ pub(super) fn panel_head(state: &mut AppState, panel: Panel) -> Head {
             Some(LayerRef::Vector(_)),
             Some(Page::Rule(i) | Page::Symbols(i) | Page::MarkerShape(i) | Page::MarkerFill(i)),
         ) => i < rule_count,
+        (Some(LayerRef::Vector(id)), Some(Page::Rules)) => !state.pad.rules.picked(id).is_empty(),
         _ => false,
     };
     if panel == Panel::Layers && !fits {
@@ -2008,6 +2015,11 @@ pub(super) fn panel_head(state: &mut AppState, panel: Panel) -> Head {
         (Panel::Layers, Some(LayerRef::Vector(_))) if matches!(page, Some(Page::MarkerFill(_))) => {
             ("pad-marker-fill", rules::FILL, rule_name.as_deref())
         }
+        (Panel::Layers, Some(LayerRef::Vector(_))) if page == Some(Page::Rules) => (
+            "pad-rules",
+            rule_name.as_deref().unwrap_or_default(),
+            Some(name),
+        ),
         (Panel::Layers, Some(LayerRef::Vector(_))) if matches!(page, Some(Page::Rule(_))) => (
             "pad-rule",
             rule_name.as_deref().unwrap_or_default(),
@@ -2141,6 +2153,7 @@ pub(super) fn panel_body(
                 fields::field_body(ui, state, controls, id, i);
             }
             Some(Page::Rule(i)) => rules::rule_body(ui, state, controls, id, i),
+            Some(Page::Rules) => rules::selection_body(ui, state, controls, id),
             Some(Page::Symbols(i)) => rules::symbols_body(ui, state, controls, id, i),
             Some(Page::MarkerShape(i)) => rules::shape_body(ui, state, controls, id, i),
             Some(Page::MarkerFill(i)) => rules::marker_fill_body(ui, state, controls, id, i),

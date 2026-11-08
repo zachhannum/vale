@@ -1081,6 +1081,31 @@ pub fn color_row(
     row
 }
 
+/// A color row for a color that is different in the selected items: an
+/// empty swatch with a slash, and "Mixed" at its left.
+pub fn mixed_color_row(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    name: &str,
+    open: bool,
+) -> Response {
+    let row = text_row(ui, controls, name, 0.0, open, true);
+    let swatch = Rect::from_center_size(
+        pos2(row.rect.right() - SWATCH / 2.0, row.rect.center().y),
+        vec2(SWATCH, SWATCH),
+    );
+    let painter = ui.painter();
+    let stroke = egui::Stroke::new(1.0, theme::divider());
+    painter.rect_stroke(swatch, 6.0, stroke, egui::StrokeKind::Inside);
+    let inset = swatch.shrink(5.0);
+    let slash = egui::Stroke::new(1.5, theme::MUTE);
+    painter.line_segment([inset.left_bottom(), inset.right_top()], slash);
+    let at = pos2(swatch.left() - 10.0, row.rect.center().y);
+    let mixed = crate::ui::select::MIXED;
+    painter.text(at, Align2::RIGHT_CENTER, mixed, theme::body(), theme::MUTE);
+    row
+}
+
 /// An opaque color with the red, green, and blue of `rgb`.
 pub fn opaque(rgb: [u8; 3]) -> [u8; 4] {
     let [r, g, b] = rgb;

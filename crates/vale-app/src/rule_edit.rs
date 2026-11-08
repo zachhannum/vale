@@ -157,7 +157,12 @@ mod tests {
         let wide = rules[2].stroke().map(|s| Stroke { width: 5.0, ..s });
         rules[2].set_stroke(wide);
         let red = Color::rgb(200, 0, 0);
-        assert!(apply(&mut rules, &[0, 1, 2], kind, Change::StrokeColor(red)));
+        assert!(apply(
+            &mut rules,
+            &[0, 1, 2],
+            kind,
+            Change::StrokeColor(red)
+        ));
         for rule in &rules {
             assert_eq!(rule.stroke().map(|s| s.color), Some(red));
         }
@@ -196,7 +201,12 @@ mod tests {
     fn a_dash_changes_only_dashed_strokes() {
         let kind = GeometryKind::Line;
         let mut rules = classes(kind);
-        apply(&mut rules, &[0, 1], kind, Change::LineKind(StrokeKind::dashed()));
+        apply(
+            &mut rules,
+            &[0, 1],
+            kind,
+            Change::LineKind(StrokeKind::dashed()),
+        );
         apply(&mut rules, &[0, 1, 2], kind, Change::Dash(7.0));
         let dash = |r: &Rule| match r.stroke().unwrap().kind {
             StrokeKind::Dashed { dash, .. } => Some(dash),
@@ -217,7 +227,12 @@ mod tests {
         assert_eq!(size(&rules[1]), Some(9.0));
         // A symbol has no fill to color.
         let before = rules[1].clone();
-        apply(&mut rules, &[1], kind, Change::FillColor(Color::rgb(9, 9, 9)));
+        apply(
+            &mut rules,
+            &[1],
+            kind,
+            Change::FillColor(Color::rgb(9, 9, 9)),
+        );
         assert_eq!(rules[1], before);
     }
 

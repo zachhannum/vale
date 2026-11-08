@@ -82,6 +82,7 @@ pub struct Number<'a> {
     ticks: &'a [(f64, &'a str)],
     field: bool,
     keypad: bool,
+    mixed: bool,
 }
 
 impl<'a> Number<'a> {
@@ -105,6 +106,7 @@ impl<'a> Number<'a> {
             ticks: &[],
             field: true,
             keypad: true,
+            mixed: false,
         }
     }
 
@@ -140,6 +142,14 @@ impl<'a> Number<'a> {
     pub fn unit(self, unit: &'a str) -> Self {
         let factor = self.factor;
         self.shown(factor, unit)
+    }
+
+    /// The value is different in the selected items. The value shows
+    /// "Mixed", and a value that the user sets is a change also when it is
+    /// equal to `value`.
+    pub fn mixed(mut self, mixed: bool) -> Self {
+        self.mixed = mixed;
+        self
     }
 
     /// The buttons of a stepper go through 1, 2, 5, 10, 20, and so on.
@@ -285,6 +295,9 @@ impl<'a> Number<'a> {
 
     /// The value on screen with its unit.
     pub fn value_text(&self, value: f64) -> String {
+        if self.mixed {
+            return crate::ui::select::MIXED.to_owned();
+        }
         if let Some(text) = &self.text {
             return text(value);
         }
@@ -566,7 +579,7 @@ impl<'a> Number<'a> {
         let typed = self.field(ui, controls, field, back, value, Look::Segment);
         out = typed.or(out);
         self.keypad_beside(ui, controls, row);
-        out.filter(|v| *v != self.value)
+        out.filter(|v| self.mixed || *v != self.value)
     }
 
     /// The name of the minus button of a stepper.
@@ -712,7 +725,11 @@ impl<'a> Number<'a> {
                     field: id,
                     name: name.clone(),
                     keys: Keys::Number,
-                    text: self.number(value),
+                    text: if self.mixed {
+                        String::new()
+                    } else {
+                        self.number(value)
+                    },
                     fresh: true,
                     changed: false,
                     placed: self.keypad,
