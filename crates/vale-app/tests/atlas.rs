@@ -6565,6 +6565,67 @@ fn a_moved_frame_snaps_to_the_page_center_and_shows_a_guide() {
     }
 }
 
+/// A page with a frame and a legend, with the legend selected.
+fn item_pad() -> Pad {
+    let mut h = pad();
+    add_frame(&mut h);
+    add_item(&mut h, ItemKind::Legend);
+    h
+}
+
+#[test]
+fn an_item_of_furniture_snaps_when_it_moves() {
+    let mut h = item_pad();
+    for input in INPUTS {
+        let (center, _, _, ppm) = page_metrics(&h);
+        let before = rect_of(&item(&h, 0));
+        // The left edge goes to 3 points right of the page center.
+        let d = (center.x - before.x0) * ppm + 3.0;
+        let from = item_middle(&h, 0);
+        let to = from + vec2(d as f32, -20.0);
+        drag_steps(&mut h, from, to, input, 6);
+        assert!(!h.state().atlas.guides.is_empty(), "{input:?}");
+        release(&mut h, to, input);
+        assert!(h.state().atlas.guides.is_empty(), "{input:?}");
+        let after = rect_of(&item(&h, 0));
+        assert!((after.x0 - center.x).abs() < 1e-9, "{input:?}: {after:?}");
+        assert!((after.width() - before.width()).abs() < 1e-9, "{input:?}");
+        h.state_mut().undo();
+        h.run_steps(2);
+    }
+}
+
+#[test]
+fn an_item_of_furniture_snaps_when_it_resizes() {
+    let mut h = item_pad();
+    let (center, _, _, ppm) = page_metrics(&h);
+    let before = rect_of(&item(&h, 0));
+    // The left edge goes to 4 points right of the page center.
+    let left = handle(&h, Handle::Resize(7));
+    let d = (center.x - before.x0) * ppm + 4.0;
+    drag(&mut h, left, left + vec2(d as f32, 0.0), Input::Pen);
+    let after = rect_of(&item(&h, 0));
+    assert!((after.x0 - center.x).abs() < 1e-9, "{after:?}");
+    assert_eq!(
+        (after.y0, after.x1, after.y1),
+        (before.y0, before.x1, before.y1)
+    );
+}
+
+#[test]
+fn an_item_does_not_snap_with_snapping_off() {
+    let mut h = item_pad();
+    h.state_mut().atlas.snap = false;
+    let (center, _, _, ppm) = page_metrics(&h);
+    let before = rect_of(&item(&h, 0));
+    let d = (center.x - before.x0) * ppm + 3.0;
+    let from = item_middle(&h, 0);
+    drag(&mut h, from, from + vec2(d as f32, -20.0), Input::Finger);
+    let after = rect_of(&item(&h, 0));
+    assert!((after.x0 - center.x - 3.0 / ppm).abs() < 0.1, "{after:?}");
+    assert!(h.state().atlas.guides.is_empty());
+}
+
 #[test]
 fn a_moved_frame_snaps_to_the_edges_and_the_center_lines_of_another_frame() {
     let mut h = inset_pad(BOARDS[0]);

@@ -553,8 +553,9 @@ enum Drag {
     /// A handle of an item of furniture, with the distance from the pointer
     /// to the handle in millimeters.
     ItemHandle(FurnitureId, usize, Vec2),
-    /// The whole item.
-    Item(FurnitureId),
+    /// The whole item, with the distance from the pointer to the top-left
+    /// corner of its box in millimeters.
+    Item(FurnitureId, Vec2),
     /// A box that selects vertices, from this screen position to the
     /// pointer.
     Box(Pos2),
@@ -2147,10 +2148,13 @@ fn start_drag(
                     _ => Drag::Idle,
                 };
             }
-            if let Some(id) = item_at(page, at) {
-                state.atlas.selection = AtlasSelection::Item(id);
+            if let Some(rec) =
+                item_at(page, at).and_then(|id| page.furniture.iter().find(|f| f.id == id))
+            {
+                state.atlas.selection = AtlasSelection::Item(rec.id);
                 state.atlas.vertices.clear();
-                return Drag::Item(id);
+                let grab = crate::furniture::rect_of(rec).origin() - at;
+                return Drag::Item(rec.id, grab);
             }
             if let (Some(id), Some((handle, center))) = (state.atlas.frame(), handle_at(state, pos))
             {
@@ -2172,9 +2176,12 @@ fn start_drag(
     }
 }
 
-/// The snap targets of the open page for a drag of a frame. `None` if
-/// snapping is off.
-fn snap_targets(state: &AppState, moving: FrameId) -> Option<page_snap::Targets> {
+/// The snap targets of the open page for a drag of a frame or an item of
+/// furniture. `None` if snapping is off.
+fn snap_targets(
+    state: &AppState,
+    moving: impl Into<page_snap::Dragged>,
+) -> Option<page_snap::Targets> {
     if !state.atlas.snap {
         return None;
     }
@@ -2318,26 +2325,52 @@ fn drag_to(state: &mut AppState, drag: Drag, place: PagePlace, pos: Pos2, d: Vec
             state.atlas.drag = Some(Drag::Rotate(id, now));
         }
         Drag::ItemHandle(id, i, grab) => {
+            let targets = snap_targets(state, id);
+            let reach = state.globe.snap.distance / place.pts_per_mm;
+            let mut guides = Vec::new();
             edit_item(state, id, |rec| {
                 let mut shape = FrameShape::Rectangle(rec.rect);
-                let done = math::resize(&mut shape, i, at + grab);
+                let mut to = at + grab;
+                if let Some(t) = &targets {
+                    let mut raw = shape.clone();
+                    math::resize(&mut raw, i, to);
+                    let b = math::shape_bbox(&raw);
+                    let (r, g) = page_snap::snap_rect(b, page_snap::Moving::Handle(i), t, reach);
+                    guides = g;
+                    let snapped = FrameShape::Rectangle([r.x0, r.y0, r.x1, r.y1]);
+                    to = math::handles(&snapped)[i].1;
+                }
+                let done = math::resize(&mut shape, i, to);
                 if let FrameShape::Rectangle(r) = shape {
                     rec.rect = r;
                 }
                 done
             });
+            state.atlas.guides = guides;
         }
-        Drag::Item(id) => {
-            if d != Vec2::ZERO {
-                edit_item(state, id, |rec| {
-                    let mut shape = FrameShape::Rectangle(rec.rect);
-                    math::move_shape(&mut shape, d);
-                    if let FrameShape::Rectangle(r) = shape {
-                        rec.rect = r;
+        Drag::Item(id, grab) => {
+            let targets = snap_targets(state, id);
+            let reach = state.globe.snap.distance / place.pts_per_mm;
+            let mut guides = Vec::new();
+            edit_item(state, id, |rec| {
+                let b = crate::furniture::rect_of(rec);
+                let raw = b.with_origin(at + grab);
+                let r = match &targets {
+                    Some(t) => {
+                        let (r, g) = page_snap::snap_rect(raw, page_snap::Moving::Body, t, reach);
+                        guides = g;
+                        r
                     }
-                    true
-                });
-            }
+                    None => raw,
+                };
+                let d = r.origin() - b.origin();
+                if d == Vec2::ZERO {
+                    return false;
+                }
+                rec.rect = [b.x0 + d.x, b.y0 + d.y, b.x1 + d.x, b.y1 + d.y];
+                true
+            });
+            state.atlas.guides = guides;
         }
         Drag::Page | Drag::Box(_) | Drag::Idle => {}
     }

@@ -1,10 +1,10 @@
-//! Snapping of map frames to the layout of a page.
+//! Snapping of map frames and furniture to the layout of a page.
 //!
 //! All positions are page millimeters. The reach is the snap distance in
 //! millimeters at the current zoom.
 
 use kurbo::{Point, Rect, Vec2};
-use vale_store::{FrameId, PageRecord};
+use vale_store::{FrameId, FurnitureId, PageRecord};
 
 use crate::atlas::shape_bbox;
 
@@ -25,12 +25,12 @@ pub struct Targets {
     pub xs: Vec<Line>,
     /// The horizontal lines.
     pub ys: Vec<Line>,
-    /// The vertices of the other frames.
+    /// The vertices of the other frames and the corners of the items.
     pub points: Vec<Point>,
     /// The other vertices of the moving frame. A vertex lines up with them,
     /// and it does not snap onto them.
     pub align: Vec<Point>,
-    /// The edges of the other frames.
+    /// The edges of the other frames and items.
     pub segments: Vec<(Point, Point)>,
     /// The spacing of the layout grid, when the grid shows.
     pub grid: Option<f64>,
@@ -55,16 +55,38 @@ pub enum Moving {
     Handle(usize),
 }
 
+/// The frame or the item of furniture that a drag moves. It is not a
+/// target.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Dragged {
+    Frame(FrameId),
+    Item(FurnitureId),
+}
+
+impl From<FrameId> for Dragged {
+    fn from(id: FrameId) -> Self {
+        Dragged::Frame(id)
+    }
+}
+
+impl From<FurnitureId> for Dragged {
+    fn from(id: FurnitureId) -> Self {
+        Dragged::Item(id)
+    }
+}
+
 const SAME: f64 = 1e-6;
 
-/// The targets of a page for a drag of one frame. The margins come from the
-/// page template.
+/// The targets of a page for a drag of one frame or one item of furniture:
+/// the page, the margins, the layout grid, and the other frames and items.
+/// The margins come from the page template.
 pub fn targets(
     page: &PageRecord,
-    moving: FrameId,
+    moving: impl Into<Dragged>,
     margins: Option<Rect>,
     grid: Option<f64>,
 ) -> Targets {
+    let moving = moving.into();
     let (w, h) = (page.width_mm, page.height_mm);
     let mut t = Targets {
         grid: grid.filter(|s| *s > 0.0),
@@ -101,8 +123,19 @@ pub fn targets(
             });
         }
     }
-    for frame in page.frames.iter().filter(|f| f.id != moving) {
-        let b = shape_bbox(&frame.shape);
+    let frames = page
+        .frames
+        .iter()
+        .filter(|f| moving != Dragged::Frame(f.id));
+    let items = (page.furniture.iter()).filter(|i| moving != Dragged::Item(i.id));
+    let rings = frames
+        .map(|f| (shape_bbox(&f.shape), f.shape.rings()))
+        .chain(items.map(|i| {
+            let r = crate::furniture::rect_of(i);
+            let ring = vec![[r.x0, r.y0], [r.x1, r.y0], [r.x1, r.y1], [r.x0, r.y1]];
+            (r, vec![ring])
+        }));
+    for (b, rings) in rings {
         let c = b.center();
         for x in [b.x0, c.x, b.x1] {
             t.xs.push(Line {
@@ -118,7 +151,7 @@ pub fn targets(
                 to: b.x1,
             });
         }
-        for ring in frame.shape.rings() {
+        for ring in rings {
             let ring: Vec<Point> = ring.iter().map(|&[x, y]| Point::new(x, y)).collect();
             for (i, &p) in ring.iter().enumerate() {
                 t.points.push(p);
@@ -493,6 +526,31 @@ mod tests {
             ],
             furniture: Vec::new(),
         }
+    }
+
+    #[test]
+    fn a_moved_rect_snaps_to_an_item_of_furniture() {
+        let mut page = page();
+        let item = |id, rect| vale_store::FurnitureRecord {
+            id: FurnitureId(id),
+            rect,
+            item: vale_store::Furniture::Text(Default::default()),
+        };
+        page.furniture = vec![
+            item(0, [30.0, 160.0, 75.0, 172.0]),
+            item(1, [100.0, 40.0, 140.0, 50.0]),
+        ];
+        // A frame snaps to the edges of an item.
+        let t = targets(&page, FrameId(1), None, None);
+        let r = Rect::new(76.5, 173.5, 96.5, 183.5);
+        let (out, _) = snap_rect(r, Moving::Body, &t, 3.0);
+        assert_eq!(out, Rect::new(75.0, 172.0, 95.0, 182.0));
+        // An item snaps to another item, and not to itself.
+        let t = targets(&page, FurnitureId(1), None, None);
+        let r = Rect::new(31.0, 145.0, 76.0, 158.5);
+        let (out, _) = snap_rect(r, Moving::Body, &t, 3.0);
+        assert_eq!(out, Rect::new(30.0, 146.5, 75.0, 160.0));
+        assert!(!t.xs.iter().any(|l| l.at == 140.0));
     }
 
     #[test]
