@@ -2572,7 +2572,7 @@ fn a_frame_value_with_no_frame_shows_a_dashed_box_on_the_screen_only() {
     assert_eq!(texts(&export), ["Scale"]);
     // A page value needs no frame.
     let page = text_with(&mut doc, None, "page_number()");
-    assert_eq!(shown(&doc, &mut pipeline, page).missing_frame, false);
+    assert!(!shown(&doc, &mut pipeline, page).missing_frame);
 }
 
 #[test]

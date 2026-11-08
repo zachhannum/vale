@@ -1482,7 +1482,6 @@ pub fn bar_preview(
     Some(id)
 }
 
-/// Links an item of furniture to a frame.
 /// Changes the template of a text item. A text with no frame links to the
 /// largest frame of its page when the template starts to use a frame value.
 pub fn set_template(state: &mut AppState, id: FurnitureId, template: String) -> bool {
@@ -1501,6 +1500,7 @@ pub fn set_template(state: &mut AppState, id: FurnitureId, template: String) -> 
     })
 }
 
+/// Links an item of furniture to a frame.
 pub fn set_item_frame(state: &mut AppState, id: FurnitureId, frame: Option<FrameId>) {
     edit_item(state, id, |rec| {
         rec.item.set_frame(frame);
