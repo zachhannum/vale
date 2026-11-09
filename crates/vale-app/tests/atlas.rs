@@ -2993,9 +2993,19 @@ fn the_blur_behind_a_card_shows_the_raster_layers_of_a_frame() {
     assert!(shown.iter().zip(&hidden).all(|(s, h)| s <= h));
 }
 
+/// A long press of a finger on the middle of a control, for one and a half
+/// seconds.
+fn long_press(h: &mut Pad, name: &str) {
+    let rect = control(h, name).unwrap_or_else(|| panic!("no control `{name}`"));
+    touch(h, 1, egui::TouchPhase::Start, rect.center(), None);
+    h.run_steps(30);
+    touch(h, 1, egui::TouchPhase::End, rect.center(), None);
+    h.run_steps(2);
+}
+
 #[test]
 fn selected_rules_of_a_frame_change_in_the_map_only() {
-    use vale_app::ui::pad::rules::{ADD_RULE, EDIT_RULES, SELECT_RULES, STROKE_WIDTH};
+    use vale_app::ui::pad::rules::{ADD_RULE, EDIT_RULES, STROKE_WIDTH};
     use vale_app::ui::pad::selectable::SELECT_ALL;
     for size in [BOARDS[1], BOARDS[3]] {
         let what = format!("{size:?}");
@@ -3020,9 +3030,10 @@ fn selected_rules_of_a_frame_change_in_the_map_only() {
             tap(&mut h, ADD_RULE);
             tap(&mut h, "Back to Rivers");
         }
-        scroll_to(&mut h, SELECT_RULES);
-        tap(&mut h, SELECT_RULES);
-        scroll_to(&mut h, SELECT_ALL);
+        scroll_to(&mut h, "Default");
+        long_press(&mut h, "Default");
+        assert_eq!(h.state().pad.rules.picked(rivers), [0], "{what}");
+        nudge_up_to(&mut h, SELECT_ALL);
         tap(&mut h, SELECT_ALL);
         scroll_to(&mut h, EDIT_RULES);
         check_controls(&h, &format!("{what}: select rules"));

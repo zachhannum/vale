@@ -1161,6 +1161,124 @@ pub fn open_row(ui: &mut egui::Ui, controls: &mut Controls, name: &str, value: &
     resp
 }
 
+/// The size of the selection circle of a row.
+const SELECT_CIRCLE: f32 = 22.0;
+
+/// A row of a list in which the user selects items: a selection circle at
+/// the left, the name, and `value` at the right. The circle is filled and
+/// has a tick when the row is `on`.
+pub fn select_row(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    name: &str,
+    value: &str,
+    on: bool,
+) -> Response {
+    let resp = text_row(ui, controls, name, SELECT_CIRCLE + 12.0, false, true);
+    let row = resp.rect;
+    let circle = Rect::from_center_size(
+        pos2(row.left() + SELECT_CIRCLE / 2.0, row.center().y),
+        vec2(SELECT_CIRCLE, SELECT_CIRCLE),
+    );
+    let painter = ui.painter();
+    if on {
+        painter.circle_filled(circle.center(), SELECT_CIRCLE / 2.0, theme::ACCENT);
+        icons::paint(
+            painter,
+            circle.shrink(3.0),
+            Icon::Tick,
+            SELECT_CIRCLE - 6.0,
+            theme::CANVAS,
+        );
+    } else {
+        let ring = egui::Stroke::new(1.5, theme::MUTE);
+        painter.circle_stroke(circle.center(), SELECT_CIRCLE / 2.0 - 0.75, ring);
+    }
+    if !value.is_empty() {
+        let at = pos2(row.right(), row.center().y);
+        painter.text(at, Align2::RIGHT_CENTER, value, theme::body(), theme::MUTE);
+    }
+    resp
+}
+
+/// The heading of a section with text buttons at its right, as in the
+/// header of an iPadOS list. Returns the index of the tapped button.
+pub fn heading_buttons(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    text: &str,
+    buttons: &[&str],
+) -> Option<usize> {
+    let height = TOUCH.max(40.0);
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
+    let y = rect.bottom() - 8.0;
+    ui.painter().text(
+        pos2(rect.left(), y),
+        Align2::LEFT_BOTTOM,
+        text,
+        theme::title(),
+        theme::TEXT,
+    );
+    let mut right = rect.right();
+    let mut out = None;
+    for (index, name) in buttons.iter().enumerate().rev() {
+        let width = text_width(ui, name, theme::body()) + 16.0;
+        let place = Rect::from_min_max(pos2(right - width, rect.top()), pos2(right, rect.bottom()));
+        let resp = hit(ui, controls, place, name, Sense::click(), true, None);
+        let color = if resp.is_pointer_button_down_on() {
+            theme::ACCENT.gamma_multiply(0.6)
+        } else {
+            theme::ACCENT
+        };
+        let at = pos2(place.right() - 8.0, y);
+        ui.painter()
+            .text(at, Align2::RIGHT_BOTTOM, *name, theme::body(), color);
+        if resp.clicked() {
+            out = Some(index);
+        }
+        right = place.left();
+    }
+    out
+}
+
+/// A row of a panel with buttons side by side, each with its name, its
+/// state, and its fill color. Returns the index of the tapped button.
+pub fn button_bar(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    buttons: &[(&str, bool, Color32)],
+) -> Option<usize> {
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), Sense::hover());
+    let gap = 8.0;
+    let count = buttons.len().max(1) as f32;
+    let width = (rect.width() - gap * (count - 1.0)) / count;
+    let mut out = None;
+    for (index, (name, enabled, fill)) in buttons.iter().enumerate() {
+        let left = rect.left() + index as f32 * (width + gap);
+        let place = Rect::from_min_size(pos2(left, rect.top()), vec2(width, rect.height()));
+        let resp = hit(ui, controls, place, name, Sense::click(), *enabled, None);
+        let color = if resp.is_pointer_button_down_on() {
+            *fill
+        } else {
+            fill.gamma_multiply(0.8)
+        };
+        let back = place.shrink2(vec2(0.0, HIGHLIGHT_INSET));
+        ui.painter()
+            .rect_filled(back, theme::CONTROL_RADIUS, fade(color, *enabled));
+        ui.painter().text(
+            place.center(),
+            Align2::CENTER_CENTER,
+            *name,
+            theme::body(),
+            theme::CANVAS,
+        );
+        if resp.clicked() {
+            out = Some(index);
+        }
+    }
+    out
+}
+
 /// The size of the square of a compass dial.
 const DIAL: f32 = 4.0 * TOUCH;
 

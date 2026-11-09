@@ -8335,9 +8335,7 @@ fn drag_right(h: &mut Pad, name: &str) {
 }
 #[test]
 fn selected_rules_take_one_stroke_and_keep_their_fills() {
-    use vale_app::ui::pad::rules::{
-        DELETE_RULES, EDIT_RULES, SELECT_RULES, STROKE_COLOR, STROKE_WIDTH,
-    };
+    use vale_app::ui::pad::rules::{DELETE_RULES, EDIT_RULES, STROKE_COLOR, STROKE_WIDTH};
     use vale_app::ui::pad::selectable::{DESELECT_ALL, SELECT_ALL};
     use vale_app::ui::pad::widgets::DONE;
     use vale_store::GeometryKind;
@@ -8361,12 +8359,13 @@ fn selected_rules_take_one_stroke_and_keep_their_fills() {
 
         tap(&mut h, "Layers");
         tap(&mut h, "Open Land");
-        scroll_to_control(&mut h, SELECT_RULES);
-        tap(&mut h, SELECT_RULES);
-        for row in ["Default", "Rule 2"] {
-            scroll_to_control(&mut h, row);
-            tap(&mut h, row);
-        }
+        // A long press selects a rule and does not open it.
+        scroll_to_control(&mut h, "Default");
+        long_press(&mut h, "Default");
+        assert_eq!(picked(&h), [0], "{what}");
+        assert_eq!(h.state().pad.page, None, "{what}");
+        scroll_to_control(&mut h, "Rule 2");
+        tap(&mut h, "Rule 2");
         assert_eq!(picked(&h), [0, 2], "{what}");
         scroll_to_control(&mut h, "Default");
         tap(&mut h, "Default");
@@ -8414,11 +8413,16 @@ fn selected_rules_take_one_stroke_and_keep_their_fills() {
         tap(&mut h, "Undo");
         assert_eq!(rule_names(&h, land), ["Default", "Rule 1", "Rule 2"]);
 
-        scroll_to_control(&mut h, SELECT_RULES);
-        tap(&mut h, SELECT_RULES);
+        scroll_to_control(&mut h, "Rule 1");
+        long_press(&mut h, "Rule 1");
+        assert_eq!(picked(&h), [1], "{what}");
         scroll_to_control(&mut h, DONE);
         tap(&mut h, DONE);
         assert!(h.state().pad.rules.select.is_none(), "{what}");
+        // A tap opens the rule again.
+        scroll_to_control(&mut h, "Rule 1");
+        tap(&mut h, "Rule 1");
+        assert_eq!(h.state().pad.page, Some(Page::Rule(1)), "{what}");
     }
 }
 

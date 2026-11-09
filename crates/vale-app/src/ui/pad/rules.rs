@@ -89,7 +89,6 @@ pub const ROTATION_VARIATION: &str = "Rotation variation";
 pub const MOVE_UP: &str = "Move rule up";
 pub const MOVE_DOWN: &str = "Move rule down";
 pub const DELETE_RULE: &str = "Delete rule";
-pub const SELECT_RULES: &str = "Select rules";
 pub const EDIT_RULES: &str = "Edit rules";
 pub const DELETE_RULES: &str = "Delete rules";
 /// The row of the mask of a layer, and the title of its page.
@@ -161,6 +160,9 @@ pub struct RulesState {
     /// The layer whose rule rows select rules, and the indices of the
     /// selected rules.
     pub select: Option<(LayerId, Vec<usize>)>,
+    /// The finger of the long press that started the selection is still
+    /// down, so its release is not a tap.
+    held: bool,
 }
 
 impl RulesState {
@@ -183,7 +185,7 @@ pub fn selection_title(state: &AppState, id: LayerId) -> String {
 
 /// The Style section: a row for each rule, first rule first, and the row
 /// that adds a rule. A later rule draws on top. A tap on a rule opens its
-/// page.
+/// page, and a long press on a rule selects it and starts the selection.
 pub fn section(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id: LayerId) {
     let Some(kind) = state.doc.layer(id).and_then(|l| l.geometry()) else {
         return;
@@ -198,16 +200,24 @@ pub fn section(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
         .iter()
         .map(|r| (r.name.clone(), row_filter(&r.filter)))
         .collect();
-    heading(ui, STYLE);
+    let held = state.pad.rules.held;
+    if held && !ui.input(|i| i.pointer.any_down()) {
+        state.pad.rules.held = false;
+    }
     if let Some((layer, picked)) = &mut state.pad.rules.select {
         picked.retain(|i| *i < rows.len());
         if *layer == id {
-            select_rows(ui, state, controls, id, &rows);
+            select_rows(ui, state, controls, id, &rows, held);
             return;
         }
     }
+    heading(ui, STYLE);
     for (i, (name, filter)) in rows.iter().enumerate() {
-        if widgets::open_row(ui, controls, name, filter).clicked() {
+        let row = widgets::open_row(ui, controls, name, filter);
+        if row.long_touched() {
+            state.pad.rules.select = Some((id, vec![i]));
+            state.pad.rules.held = true;
+        } else if row.clicked() {
             state.pad.page = Some(Page::Rule(i));
         }
     }
@@ -217,9 +227,6 @@ pub fn section(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
         let i = entry.style.add_rule(kind);
         state.pad.page = Some(Page::Rule(i));
         state.touch();
-    }
-    if rows.len() > 1 && widgets::button_row(ui, controls, SELECT_RULES, true).clicked() {
-        state.pad.rules.select = Some((id, Vec::new()));
     }
     if widgets::button_row(ui, controls, CLASSIFY, true).clicked() {
         state.pad.page = Some(Page::Classify);
@@ -232,20 +239,32 @@ pub fn section(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
     }
 }
 
-/// The rule rows with a check on each selected rule, and the buttons that
-/// select all rules, edit them, delete them, and end the selection.
+/// The heading with "Select all" or "Deselect all" and "Done", a row with
+/// a selection circle for each rule, and the buttons that edit and delete
+/// the selected rules. `held`: the release of the finger is not a tap.
 fn select_rows(
     ui: &mut egui::Ui,
     state: &mut AppState,
     controls: &mut Controls,
     id: LayerId,
     rows: &[(String, String)],
+    held: bool,
 ) {
     let mut picked = state.pad.rules.picked(id);
+    let all = picked.len() == rows.len();
+    let toggle = if all { DESELECT_ALL } else { SELECT_ALL };
+    match widgets::heading_buttons(ui, controls, STYLE, &[toggle, widgets::DONE]) {
+        Some(0) if all => picked.clear(),
+        Some(0) => picked = (0..rows.len()).collect(),
+        Some(_) => {
+            state.pad.rules.select = None;
+            return;
+        }
+        None => {}
+    }
     for (i, (name, filter)) in rows.iter().enumerate() {
         let on = picked.contains(&i);
-        let lines = [filter.clone()];
-        if widgets::option_row(ui, controls, name, name, &lines, on).clicked() {
+        if widgets::select_row(ui, controls, name, filter, on).clicked() && !held {
             if on {
                 picked.retain(|p| *p != i);
             } else {
@@ -254,33 +273,25 @@ fn select_rows(
             }
         }
     }
-    let all = picked.len() == rows.len();
-    let toggle = if all { DESELECT_ALL } else { SELECT_ALL };
-    if widgets::button_row(ui, controls, toggle, true).clicked() {
-        picked = if all {
-            Vec::new()
-        } else {
-            (0..rows.len()).collect()
-        };
-    }
     let some = !picked.is_empty();
-    if widgets::button_row(ui, controls, EDIT_RULES, some).clicked() {
-        state.pad.page = Some(Page::Rules);
-    }
-    let delete = widgets::button_row_in(ui, controls, DELETE_RULES, some, theme::WARN);
+    let buttons = [
+        (EDIT_RULES, some, theme::ACCENT),
+        (DELETE_RULES, some, theme::WARN),
+    ];
+    let tapped = widgets::button_bar(ui, controls, &buttons);
     state.pad.rules.select = Some((id, picked.clone()));
-    if delete.clicked()
-        && let Some(entry) = state.doc.entry_mut(id)
-    {
-        for &i in picked.iter().rev() {
-            entry.style.style.rules.remove(i);
+    match tapped {
+        Some(0) => state.pad.page = Some(Page::Rules),
+        Some(_) => {
+            if let Some(entry) = state.doc.entry_mut(id) {
+                for &i in picked.iter().rev() {
+                    entry.style.style.rules.remove(i);
+                }
+                state.pad.rules = RulesState::default();
+                state.touch();
+            }
         }
-        state.pad.rules = RulesState::default();
-        state.touch();
-        return;
-    }
-    if widgets::button_row(ui, controls, widgets::DONE, true).clicked() {
-        state.pad.rules.select = None;
+        None => {}
     }
 }
 
