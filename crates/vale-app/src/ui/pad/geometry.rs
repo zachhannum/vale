@@ -29,8 +29,8 @@ pub const SELECT_CELLS: usize = 5;
 pub const SLIDER: f32 = 140.0;
 /// Below this height, a slider at the left edge is too short to use.
 pub const SLIDER_MIN: f32 = 110.0;
-pub const BRUSH_PANEL_WIDTH: f32 = 340.0;
-pub const RIGHT_PANEL_WIDTH: f32 = 320.0;
+/// The space from the dock to the bottom band.
+pub const DOCK_FOOT: f32 = 8.0;
 pub const MENU_WIDTH: f32 = 240.0;
 /// The width of the menu of the worlds.
 pub const WORLDS_WIDTH: f32 = 300.0;
@@ -138,6 +138,8 @@ pub struct Input {
     /// The tool strip and its card are rows at the bottom of a compact
     /// screen.
     pub row: bool,
+    /// The width of the dock that the user chose.
+    pub dock_width: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -162,14 +164,15 @@ pub struct Rects {
     /// the cells of the tool and the extra cells, the card scrolls. Zero:
     /// the card is not a card of cells.
     pub card_cells: usize,
-    /// The top-left corner of the Brush panel.
-    pub brush_panel: Pos2,
-    /// The top-left corner of the Layers and Toolbox panel.
-    pub right_panel: Pos2,
-    /// A panel does not go below this line.
+    /// The left end of the space at the right of the tool strip and of
+    /// its cards.
+    pub column_right: f32,
+    /// The room of the dock: from the top of the column to the bottom of
+    /// the screen, at the right edge. In the compact width, the room of a
+    /// card at the left.
+    pub dock: Rect,
+    /// A card at the left does not go below this line.
     pub panel_bottom: f32,
-    /// True: the Brush panel and the right panel do not fit side by side.
-    pub one_panel: bool,
     /// The sheet of a compact screen, at its present place.
     pub sheet: Option<Rect>,
     /// The largest `sheet_offset`. At this offset, the sheet shows its title row only.
@@ -282,10 +285,9 @@ pub fn layout(input: &Input) -> Rects {
             brush_card,
             brush,
             card_cells,
-            brush_panel: pos2(left, column_top),
-            right_panel: pos2(left, column_top),
+            column_right: left,
+            dock: Rect::from_min_max(pos2(left, column_top), pos2(right, bottom - DOCK_FOOT)),
             panel_bottom: readout.map_or(bottom, |r| r.top()) - 8.0,
-            one_panel: true,
             sheet,
             sheet_travel,
             sheet_rise,
@@ -387,9 +389,19 @@ pub fn layout(input: &Input) -> Rects {
         brush => (brush, 0),
     };
 
-    let right_panel = pos2(right - RIGHT_PANEL_WIDTH, column_top);
-    let one_panel = class == WidthClass::Compact
-        || brush_panel.x + BRUSH_PANEL_WIDTH + PANEL_GAP > right_panel.x;
+    // The dock touches the right edge, and it leaves the left column free.
+    let most = screen.right() - brush_panel.x;
+    let width = (input.dock_width + bands.right).min(most);
+    let dock = match class {
+        WidthClass::Compact => Rect::from_min_max(
+            pos2((right - input.dock_width).max(brush_panel.x), column_top),
+            pos2(right, bottom - DOCK_FOOT),
+        ),
+        _ => Rect::from_min_max(
+            pos2(screen.right() - width, column_top),
+            pos2(screen.right(), bottom - DOCK_FOOT),
+        ),
+    };
     let panel_bottom = readout.map_or(bottom, |r| r.top()) - 8.0;
 
     Rects {
@@ -405,10 +417,9 @@ pub fn layout(input: &Input) -> Rects {
         brush_card,
         brush,
         card_cells,
-        brush_panel,
-        right_panel,
+        column_right: brush_panel.x,
+        dock,
         panel_bottom,
-        one_panel,
         sheet,
         sheet_travel,
         sheet_rise,
@@ -519,6 +530,7 @@ mod tests {
             extra: 0,
             tools: TOOLS,
             row: false,
+            dock_width: 340.0,
         }
     }
 
@@ -566,9 +578,8 @@ mod tests {
         assert_eq!(r.tools, rect(0.0, 92.0, 60.0, 320.0));
         assert_eq!(r.brush_card, BrushCard::Full(140.0));
         assert_eq!(r.brush, Some(rect(0.0, 424.0, 60.0, 340.0)));
-        assert_eq!(r.brush_panel, pos2(72.0, 92.0));
-        assert_eq!(r.right_panel, pos2(858.0, 92.0));
-        assert!(!r.one_panel);
+        assert_eq!(r.column_right, 72.0);
+        assert_eq!(r.dock, rect(854.0, 92.0, 340.0, 714.0));
         assert_eq!(r.sheet, None);
         let readout = r.readout.unwrap();
         assert_eq!((readout.top(), readout.bottom()), (774.0, 806.0));
@@ -580,9 +591,8 @@ mod tests {
         assert_eq!(r.class, WidthClass::Medium);
         assert_eq!(r.view.unwrap().center().x, 417.0);
         assert_eq!(r.actions, rect(673.0, 28.0, 161.0, 52.0));
-        assert_eq!(r.right_panel, pos2(498.0, 92.0));
+        assert_eq!(r.dock.left(), 494.0);
         assert_eq!(r.brush, Some(rect(0.0, 424.0, 60.0, 340.0)));
-        assert!(!r.one_panel);
     }
 
     #[test]
@@ -597,7 +607,6 @@ mod tests {
             (readout.left(), readout.top(), readout.bottom()),
             (16.0, 776.0, 808.0)
         );
-        assert!(r.one_panel);
     }
 
     #[test]
@@ -649,7 +658,6 @@ mod tests {
         // The readout is above the slider row.
         let readout = r.readout.unwrap();
         assert_eq!((readout.top(), readout.bottom()), (642.0, 674.0));
-        assert!(r.one_panel);
     }
 
     #[test]
@@ -765,7 +773,7 @@ mod tests {
         assert_eq!((r.tool_cells, r.brush_card), (TOOLS, BrushCard::Button));
         let card = r.brush.unwrap();
         assert_eq!(card.min, pos2(r.tools.right() + GAP, r.tools.top()));
-        assert_eq!(r.brush_panel.x, card.right() + GAP);
+        assert_eq!(r.column_right, card.right() + GAP);
 
         let r = layout(&board(1024.0, 300.0));
         assert_eq!(r.brush_card, BrushCard::Button);
@@ -838,7 +846,7 @@ mod tests {
         assert_eq!(r.card_cells, MEASURE_CELLS);
         let card = r.brush.unwrap();
         assert_eq!(card.min, pos2(r.tools.right() + GAP, r.tools.top()));
-        assert_eq!(r.brush_panel.x, card.right() + GAP);
+        assert_eq!(r.column_right, card.right() + GAP);
         // A short screen scrolls the card.
         let r = measure(1024.0, 280.0);
         assert_eq!(r.card_cells, 2);

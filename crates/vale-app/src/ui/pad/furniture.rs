@@ -9,7 +9,6 @@ use vale_store::{
     ScaleUnit, SecondUnit, TextAlign, TickFrequency, UnitLabelStyle, UnitPosition,
 };
 
-use super::atlas::panel_width;
 use super::geometry::{Rects, TOUCH};
 use super::icons::{self, Icon};
 use super::number::Number;
@@ -201,7 +200,7 @@ pub fn panel(
     };
     let card = Card {
         key,
-        place: (rects.right_panel, panel_width(ctx)),
+        place: (rects.dock.min, rects.dock.width()),
         head: CardTitle {
             title,
             back,

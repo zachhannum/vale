@@ -37,7 +37,7 @@ pub fn showing(state: &AppState) -> bool {
         return state.atlas.open_layer() == Some(table.layer)
             && state.atlas.layer_page == Some(Page::Table);
     }
-    state.pad.right == Some(Panel::Layers)
+    state.pad.docks.world.shows(Panel::Layers)
         && state.pad.page == Some(Page::Table)
         && state.pad.layer == Some(LayerRef::Vector(table.layer))
 }
@@ -49,17 +49,11 @@ pub fn check(state: &mut AppState) {
     }
 }
 
-/// Makes the right panel wider while it shows the table. The panel stays
-/// clear of the tool strip and of the cards beside it.
+/// Makes the dock wider while it shows the table.
 pub fn widen(state: &AppState, rects: &mut Rects) {
-    if rects.sheet.is_some() || !showing(state) {
-        return;
+    if rects.class != super::geometry::WidthClass::Compact && showing(state) {
+        rects.dock = super::expression::wider(rects, WIDTH);
     }
-    let right = rects.screen.right() - rects.bands.right - super::geometry::MARGIN;
-    let normal = right - rects.right_panel.x;
-    let room = right - rects.brush_panel.x;
-    let width = WIDTH.min(room).max(normal);
-    rects.right_panel.x = right - width;
 }
 
 /// What the user did in the table in one frame.

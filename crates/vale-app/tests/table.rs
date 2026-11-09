@@ -384,7 +384,7 @@ fn on_ipad_the_table_is_a_wide_right_panel_beside_the_select_card() {
         assert!(h.state().table.as_ref().unwrap().edit.is_some());
         assert_eq!((select_card(&h), table_rect(&h)), (card, table), "{size:?}");
         // The table closes with the panel, and the panel is narrow again.
-        tap(&mut h, "Close Attribute table");
+        tap(&mut h, "Close Layers");
         assert!(h.state().table.is_none());
         open_panel(&mut h, "Layers");
         assert_eq!(table_rect(&h).width(), normal.width());
@@ -514,7 +514,7 @@ fn on_an_iphone_the_table_is_a_sheet_that_scrolls_sideways_with_its_header() {
     let from = cell(&h, "notes", 3).unwrap().center();
     drag(&mut h, from, vec2(0.0, -200.0));
     assert!(cell(&h, "notes", 0).is_none());
-    assert!(cell(&h, "notes", 10).is_some());
+    assert!(cell(&h, "notes", 7).is_some());
     assert_eq!(control(&h, &notes).unwrap(), moved);
 }
 

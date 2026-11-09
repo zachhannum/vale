@@ -4,7 +4,7 @@
 use eframe::egui::{self, Rect};
 use vale_store::{FrameId, FurnitureText};
 
-use super::atlas::{FRAME_TABS, panel_width};
+use super::atlas::FRAME_TABS;
 use super::geometry::Rects;
 use super::text_style::{self, TextEvent, TextSpec};
 use super::widgets::{self, Controls};
@@ -37,7 +37,7 @@ pub fn panel(
     };
     let card = Card {
         key,
-        place: (rects.right_panel, panel_width(ctx)),
+        place: (rects.dock.min, rects.dock.width()),
         head: CardTitle {
             title,
             back: Some(back),

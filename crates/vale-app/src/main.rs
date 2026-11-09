@@ -60,8 +60,15 @@ fn run() -> anyhow::Result<u8> {
         }
         state.workspace = args.workspace;
         state.set_layout(args.layout);
+        state.pad.workspace = args.workspace;
+        for tabs in &args.tabs {
+            state.pad.dock_mut().open_tabs(tabs);
+        }
         for panel in &args.panel {
-            state.pad.open(*panel);
+            state.pad.dock_mut().open_pinned(*panel);
+        }
+        if let Some(width) = args.dock_width {
+            state.pad.dock_mut().set_width(width);
         }
         state.pad.flyouts.open = args
             .brush_modes

@@ -12,6 +12,7 @@ use vale_store::{
 use super::geometry::{self, GAP, Input, MARGIN, PAD, ROW, Rects, TOUCH, WidthClass};
 use super::icons::Icon;
 use super::number::Number;
+use super::panes;
 use super::text_style;
 use super::widgets::{self, BODY_PAD, Controls, Keys, PANEL_ROW, keypad_below};
 use super::{Card, CardTitle, GRATICULE, WORKSPACES, WORLDS, WORLDS_LEAD, WORLDS_ROW};
@@ -160,7 +161,7 @@ fn text_width(ctx: &egui::Context, text: &str) -> f32 {
 pub(super) fn panel_width(ctx: &egui::Context) -> f32 {
     let text: f32 = FRAME_TABS.iter().map(|t| text_width(ctx, t)).sum();
     let tabs = text + 2.0 * TAB_PAD * FRAME_TABS.len() as f32 + 2.0 * PAD;
-    geometry::RIGHT_PANEL_WIDTH.max(tabs + 2.0 * BODY_PAD)
+    panes::WIDTH.max(tabs + 2.0 * BODY_PAD)
 }
 
 /// The name of a page in the top row and in the title of its panel.
@@ -210,6 +211,7 @@ fn page_button_text(state: &AppState) -> String {
 pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     let ctx = ui.ctx().clone();
     let screen = ctx.viewport_rect();
+    state.pad.workspace = Workspace::Atlas;
     atlas::sync(state);
     let class = WidthClass::of(screen.width());
     let workspace_width = match class {
@@ -234,7 +236,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         workspace_width,
         view_width: page_width,
         panel: if measuring {
-            state.pad.brush
+            state.pad.is_open(super::Panel::Brush)
         } else {
             state.atlas.selection != AtlasSelection::None || attributes || state.atlas.frames
         },
@@ -252,13 +254,17 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         },
         tools: TOOL_CELLS,
         row,
+        dock_width: state.pad.docks.atlas.width,
     };
     let mut rects = geometry::layout(&input);
     // On a compact screen, the layout grid and Add are in the workspace menu.
     if class != WidthClass::Compact {
         rects.actions.min.x = rects.actions.max.x - rects.bands.right - ACTIONS_WIDTH;
     }
-    rects.right_panel.x += geometry::RIGHT_PANEL_WIDTH - panel_width(&ctx);
+    // The tabs of the panel of a frame fit in the dock.
+    if class != WidthClass::Compact {
+        rects.dock = super::expression::wider(&rects, panel_width(&ctx));
+    }
     // In the row layout, `brush` is the place of the context strip.
     if !measuring && !row {
         rects.brush = None;
@@ -314,7 +320,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     frame_card(&ctx, state, &mut controls, &rects);
     if measuring {
         super::cell_card(&ctx, state, &mut controls, &rects);
-        if state.pad.brush {
+        if state.pad.is_open(super::Panel::Brush) {
             super::show_panel(&ctx, state, &mut controls, &rects, super::Panel::Brush);
         }
     } else if attributes {
@@ -362,7 +368,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         None => page_card.bottom() + GAP,
     };
     let right = match class {
-        WidthClass::Wide => rects.right_panel.x - GAP,
+        WidthClass::Wide => rects.dock.left() - GAP,
         _ => screen.right() - rects.bands.right - MARGIN,
     };
     let mut free = Rect::from_min_max(pos2(left, top), pos2(right, rects.panel_bottom));
@@ -885,7 +891,7 @@ fn frames_panel(ctx: &egui::Context, state: &mut AppState, controls: &mut Contro
     };
     let card = Card {
         key: "pad-atlas-frames",
-        place: (rects.right_panel, panel_width(ctx)),
+        place: (rects.dock.min, rects.dock.width()),
         head,
         scroll: egui::scroll_area::ScrollSource::default(),
     };
@@ -918,7 +924,7 @@ fn selection_panel(
     controls: &mut Controls,
     rects: &Rects,
 ) {
-    let place = (rects.right_panel, panel_width(ctx));
+    let place = (rects.dock.min, rects.dock.width());
     // A drag of a label class moves the class, and not the panel.
     let scroll = match state.atlas.label_drag {
         Some(_) => egui::scroll_area::ScrollSource::NONE,
@@ -1266,7 +1272,7 @@ pub(super) fn map_style_panel(
     let map = state.doc.project.atlas.frame(id)?.map;
     let card = Card {
         key: "pad-atlas-map-style",
-        place: (rects.right_panel, panel_width(ctx)),
+        place: (rects.dock.min, rects.dock.width()),
         head: CardTitle {
             title: MAP_STYLE,
             back: Some(FRAME_TABS[0]),
@@ -1743,10 +1749,9 @@ fn layer_panel(
         action: None,
     };
     // The panel is wider while it shows the table.
-    let right = rects.screen.right() - rects.bands.right - MARGIN;
     let card = Card {
         key,
-        place: (rects.right_panel, right - rects.right_panel.x),
+        place: (rects.dock.min, rects.dock.width()),
         head,
         scroll: egui::scroll_area::ScrollSource::default(),
     };
@@ -1910,7 +1915,7 @@ fn raster_panel(
     };
     let card = Card {
         key,
-        place: (rects.right_panel, panel_width(ctx)),
+        place: (rects.dock.min, rects.dock.width()),
         head,
         scroll: egui::scroll_area::ScrollSource::default(),
     };
@@ -1999,7 +2004,7 @@ fn look_panel(
     };
     let card = Card {
         key,
-        place: (rects.right_panel, panel_width(ctx)),
+        place: (rects.dock.min, rects.dock.width()),
         head,
         scroll: egui::scroll_area::ScrollSource::default(),
     };

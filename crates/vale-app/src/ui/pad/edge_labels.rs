@@ -5,7 +5,7 @@ use eframe::egui::{self, Rect};
 use vale_labeler::Face;
 use vale_store::{CoordFormat, EdgeLabels, EdgeOrientation, FrameId, Graticule, Rgba};
 
-use super::atlas::{FRAME_TABS, LABEL_FORMAT, LABEL_FORMATS, named_tabs, panel_width};
+use super::atlas::{FRAME_TABS, LABEL_FORMAT, LABEL_FORMATS, named_tabs};
 use super::geometry::Rects;
 use super::labels::{color_rows, faces_of};
 use super::number::Number;
@@ -75,7 +75,7 @@ pub fn panel(
     };
     let card = Card {
         key,
-        place: (rects.right_panel, panel_width(ctx)),
+        place: (rects.dock.min, rects.dock.width()),
         head: CardTitle {
             title,
             back: Some(back),

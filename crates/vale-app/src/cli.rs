@@ -42,9 +42,17 @@ pub struct Args {
     /// The arrangement of the controls. The iPad uses `pad`.
     #[arg(long, value_enum, default_value_t)]
     pub layout: Layout,
-    /// With --layout pad: open this panel. You can give more than one.
+    /// With --layout pad: open this panel in a pinned pane of the dock.
+    /// You can give more than one, and each one gets its own pane.
     #[arg(long, value_enum, value_name = "PANEL")]
     pub panel: Vec<Panel>,
+    /// With --layout pad: open these panels as the tabs of one pinned pane.
+    /// You can give more than one.
+    #[arg(long, value_name = "PANEL,PANEL ...", value_parser = parse_tabs)]
+    pub tabs: Vec<Vec<Panel>>,
+    /// With --layout pad: the width of the dock, in points.
+    #[arg(long, value_name = "POINTS")]
+    pub dock_width: Option<f32>,
     /// With --layout pad: open the flyout of the group of the brush mode.
     #[arg(long)]
     pub brush_modes: bool,
@@ -576,4 +584,12 @@ pub fn apply_globe_view(args: &Args, view: &mut GlobeView) -> anyhow::Result<()>
     }
     view.zoom = args.zoom.clamp(ZOOM_MIN, ZOOM_MAX);
     Ok(())
+}
+
+/// The panels of `--tabs`, such as `layers,toolbox`.
+fn parse_tabs(text: &str) -> Result<Vec<Panel>, String> {
+    use clap::ValueEnum;
+    text.split(',')
+        .map(|name| Panel::from_str(name.trim(), true))
+        .collect()
 }

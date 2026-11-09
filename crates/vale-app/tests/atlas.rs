@@ -9051,9 +9051,12 @@ fn the_selection_of_the_atlas_shows_in_the_inspector_of_the_world() {
     open_panel(&mut h, vale_app::ui::select::ATTRIBUTES);
     let form = h.state().selection_form.as_ref().unwrap();
     assert_eq!(form.features, [town]);
-    // The inspector is one inspector: it stays open in the World workspace.
+    // The selection is one selection: the inspector of the World workspace
+    // shows it too. Each workspace has its own dock.
     h.state_mut().workspace = Workspace::Globe;
     h.run_steps(3);
+    assert!(!h.state().pad.is_open(Panel::Attributes));
+    open_panel(&mut h, vale_app::ui::select::ATTRIBUTES);
     assert_eq!(h.state().feature_selection, vec![town]);
     let form = h.state().selection_form.as_ref().unwrap();
     assert_eq!(form.features, [town]);
@@ -9898,10 +9901,10 @@ fn the_panels_menu_of_the_atlas_opens_the_frame_tabs_the_pages_and_the_maps() {
     tap(&mut h, PANELS);
     assert!(!off(&h).contains(&panels_menu::BRUSH));
     tap_tile(&mut h, panels_menu::BRUSH);
-    assert!(h.state().pad.brush);
+    assert!(h.state().pad.is_open(Panel::Brush));
     tap(&mut h, PANELS);
     tap_tile(&mut h, CLOSE_ALL);
-    assert!(!h.state().pad.brush);
+    assert!(!h.state().pad.is_open(Panel::Brush));
 }
 
 #[test]

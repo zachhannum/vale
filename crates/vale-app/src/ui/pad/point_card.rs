@@ -45,7 +45,7 @@ pub fn show(
     controls: &mut Controls,
     rects: &Rects,
 ) -> Rect {
-    let min = rects.right_panel;
+    let min = rects.dock.min;
     let right = rects.screen.right() - rects.bands.right - MARGIN;
     // Before the first frame of the card, the height comes from the count
     // of the fields.

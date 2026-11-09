@@ -97,6 +97,19 @@ fn the_layout_and_the_panels_come_from_the_flags() {
     assert_eq!(args.workspace, Workspace::Globe);
     assert_eq!(args.layout, Layout::Pad);
     assert_eq!(args.panel, vec![Panel::Brush, Panel::Layers]);
+    assert!(args.tabs.is_empty() && args.dock_width.is_none());
+    let flags = [
+        "--tabs",
+        "layers,toolbox",
+        "--tabs",
+        "brush",
+        "--dock-width",
+        "460",
+    ];
+    let args = Args::parse_from(["vale-app"].into_iter().chain(flags));
+    let tabs = vec![vec![Panel::Layers, Panel::Toolbox], vec![Panel::Brush]];
+    assert_eq!((args.tabs, args.dock_width), (tabs, Some(460.0)));
+    assert!(Args::try_parse_from(["vale-app", "--tabs", "layers,maps"]).is_err());
     assert_eq!(args.world_form, None);
     assert!(!args.brush_modes);
     let args = Args::parse_from(["vale-app", "--layout", "pad", "--brush-modes"]);

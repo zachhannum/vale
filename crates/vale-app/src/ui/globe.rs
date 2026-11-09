@@ -1751,6 +1751,18 @@ pub(super) fn canvas_input(
     state.refresh_vertex_handles();
     let globe = &mut state.globe;
     let painting = brush_input(ui, rect, &resp, globe, now);
+    // A tap on the canvas that does not paint or take a tool closes the
+    // unpinned pane of the iPad layout.
+    let pen = ui.input(|i| {
+        (i.events.iter()).any(|e| matches!(e, egui::Event::Touch { force: Some(_), .. }))
+    });
+    let pad = &mut state.pad;
+    if ui.input(|i| i.pointer.any_pressed()) {
+        pad.canvas_paint = false;
+    }
+    pad.canvas_paint |= pen || painting.pen || painting.mouse || painting.finger.is_some();
+    pad.canvas_tap = resp.clicked() && !pad.canvas_paint;
+    let globe = &mut state.globe;
     match globe.world_view {
         WorldView::Globe => globe.nav.update(ui, rect, &resp, &mut globe.view, painting),
         WorldView::Flat => {

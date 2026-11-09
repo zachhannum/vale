@@ -71,8 +71,9 @@ pub fn world(state: &AppState) -> Vec<Group> {
     let pad = &state.pad;
     let brush =
         (has_strip(&state.globe) || card_cells(&state.globe) > 0) && !state.globe.selecting();
-    let panel = |panel: Panel, name, icon, enabled| {
-        tile(Entry::Panel(panel), name, icon, pad.is_open(panel), enabled)
+    let panel = |panel: Panel, name, icon, enabled| Tile {
+        pinned: enabled && pad.dock().is_pinned(panel),
+        ..tile(Entry::Panel(panel), name, icon, pad.is_open(panel), enabled)
     };
     vec![Group {
         heading: WORLD,
@@ -140,7 +141,7 @@ pub fn atlas(state: &AppState) -> Vec<Group> {
                     Entry::Panel(Panel::Brush),
                     BRUSH,
                     Icon::Brush,
-                    state.pad.brush,
+                    state.pad.is_open(Panel::Brush),
                     measuring,
                 ),
             ],
@@ -149,7 +150,7 @@ pub fn atlas(state: &AppState) -> Vec<Group> {
 }
 
 /// Opens the panel of a tile, or closes it when it is open.
-fn toggle(state: &mut AppState, rects: &Rects, tile: &Tile) {
+fn toggle(state: &mut AppState, tile: &Tile) {
     match (tile.entry, state.workspace) {
         (Entry::Panel(Panel::Attributes), Workspace::Atlas) => {
             if tile.open {
@@ -159,7 +160,7 @@ fn toggle(state: &mut AppState, rects: &Rects, tile: &Tile) {
                 state.atlas.frames = false;
             }
         }
-        (Entry::Panel(panel), _) => state.pad.toggle(panel, rects.one_panel),
+        (Entry::Panel(panel), _) => state.pad.toggle(panel),
         (Entry::Frame(_) | Entry::Pages, _) if tile.open => atlas::clear_selection(state),
         (Entry::Maps, _) if tile.open => state.atlas.frames = false,
         // The panel of the selection and the inspector share the panel
@@ -184,8 +185,7 @@ fn toggle(state: &mut AppState, rects: &Rects, tile: &Tile) {
 
 /// Closes each panel of the workspace.
 fn close_all(state: &mut AppState) {
-    state.pad.brush = false;
-    state.pad.right = None;
+    state.pad.dock_mut().close_all();
     if state.workspace == Workspace::Atlas {
         state.atlas.frames = false;
         if state.atlas.selection != AtlasSelection::None {
@@ -275,15 +275,15 @@ pub fn show(
         },
     );
     if let Some(tile) = chosen {
-        toggle(state, rects, &tile);
+        toggle(state, &tile);
         state.pad.panels_menu = false;
     }
     if close {
         close_all(state);
         state.pad.panels_menu = false;
     }
-    // The panels have no layout to reset yet.
     if reset {
+        state.pad.dock_mut().reset();
         state.pad.panels_menu = false;
     }
 }

@@ -138,6 +138,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         extra: 0,
         tools: geometry::TOOLS,
         row: false,
+        dock_width: super::panes::WIDTH,
     });
     world_form::pad(&ctx, state, &mut controls, &rects);
     state.pad.controls = controls;

@@ -8,7 +8,7 @@ use vale_store::{FrameId, FurnitureText, GeometryKind, LayerId, MapId};
 use vale_style::expr::Filter;
 use vale_style::{LabelClass, LabelPlacement, LabelPosition};
 
-use super::atlas::{FRAME_TABS, named_tabs, panel_width};
+use super::atlas::{FRAME_TABS, named_tabs};
 use super::filter;
 use super::geometry::{Rects, TOUCH};
 use super::icons::{self, Icon};
@@ -395,8 +395,8 @@ pub(super) fn class_panel(
     };
     let text = page.is_none() && state.atlas.label_segment == ClassSegment::Text;
     let place = match text {
-        true => super::expression::wide_place(rects, panel_width(ctx)),
-        false => (rects.right_panel, panel_width(ctx)),
+        true => super::expression::wide_place(rects),
+        false => (rects.dock.min, rects.dock.width()),
     };
     let card = Card {
         key,

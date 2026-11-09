@@ -33,6 +33,7 @@ pub mod browser;
 pub mod cases;
 pub mod chip_popover;
 pub mod classify;
+pub mod dock_ui;
 pub mod edge_labels;
 pub mod expression;
 pub mod eyedropper;
@@ -48,6 +49,7 @@ pub mod label_text;
 pub mod labels;
 pub mod number;
 pub mod panels_menu;
+pub mod panes;
 pub mod point_card;
 pub mod popover;
 pub mod raster;
@@ -392,15 +394,19 @@ pub enum Page {
 /// The state of the iPad layout.
 #[derive(Default)]
 pub struct PadState {
-    /// The Brush panel is open.
-    pub brush: bool,
+    /// The dock of each workspace.
+    pub docks: panes::Docks,
+    /// The workspace of the dock that the methods of the panels use.
+    pub workspace: Workspace,
+    /// What the dock does with a finger in the last frame.
+    pub dock_drag: Option<dock_ui::DockDrag>,
+    /// The dock of the World workspace in the last frame.
+    pub dock_rect: Option<Rect>,
     /// The page of the panel of the layer of `layer` that the Layers panel
     /// shows.
     pub page: Option<Page>,
     /// The texts of the open page of a field.
     field: Option<fields::Draft>,
-    /// The panel at the right: Layers, Toolbox, Attributes, or none.
-    pub right: Option<Panel>,
     /// The layer that the Layers panel shows. `None`: the panel shows the
     /// list of the layers.
     pub layer: Option<LayerRef>,
@@ -456,8 +462,12 @@ pub struct PadState {
     pub controls: Controls,
     /// The places of the cards in the last frame.
     pub rects: Option<Rects>,
-    /// The open panels of the last frame.
+    /// The pane of each open tab of the last frame, by its panel.
     pub panels: Vec<(Panel, Rect)>,
+    /// The canvas had a tap that did not paint, since the last frame.
+    pub canvas_tap: bool,
+    /// A pen or a tool took the touch on the canvas.
+    pub canvas_paint: bool,
     /// The workspace menu of the last frame.
     pub menu_rect: Option<Rect>,
     /// The label and the icon of each brush cell in the last frame, by
@@ -472,47 +482,72 @@ pub struct PadState {
 }
 
 impl PadState {
-    pub fn is_open(&self, panel: Panel) -> bool {
-        match panel {
-            Panel::Brush => self.brush,
-            other => self.right == Some(other),
+    /// The dock of the workspace.
+    pub fn dock(&self) -> &panes::Dock {
+        match self.workspace {
+            Workspace::Globe => &self.docks.world,
+            Workspace::Atlas => &self.docks.atlas,
         }
     }
 
-    pub fn open(&mut self, panel: Panel) {
-        match panel {
-            Panel::Brush => self.brush = true,
-            other => self.right = Some(other),
+    pub fn dock_mut(&mut self) -> &mut panes::Dock {
+        match self.workspace {
+            Workspace::Globe => &mut self.docks.world,
+            Workspace::Atlas => &mut self.docks.atlas,
         }
-        self.sheet_offset = 0.0;
+    }
+
+    /// The panel is a tab of a pane of the dock.
+    pub fn is_open(&self, panel: Panel) -> bool {
+        self.dock().is_open(panel)
+    }
+
+    /// The panel is the open tab of its pane.
+    pub fn shows(&self, panel: Panel) -> bool {
+        self.dock().shows(panel)
+    }
+
+    /// Shows a panel in the dock.
+    pub fn open(&mut self, panel: Panel) {
+        if !self.dock().shows(panel) {
+            self.sheet_offset = 0.0;
+        }
+        self.dock_mut().open(panel);
         self.swipe = None;
     }
 
     pub fn close(&mut self, panel: Panel) {
-        match panel {
-            Panel::Brush => self.brush = false,
-            _ => self.right = None,
+        self.dock_mut().close(panel);
+    }
+
+    /// Closes a panel that shows, and else shows it.
+    pub fn toggle(&mut self, panel: Panel) {
+        if self.shows(panel) {
+            self.close(panel);
+        } else {
+            self.open(panel);
         }
     }
 
-    /// Opens a closed panel and closes an open panel. `one_panel`: the screen
-    /// has room for one panel, so the other panel closes.
-    fn toggle(&mut self, panel: Panel, one_panel: bool) {
-        if self.is_open(panel) {
-            self.close(panel);
-            return;
-        }
-        if one_panel {
-            self.brush = false;
-            self.right = None;
-        }
-        self.open(panel);
+    /// The pane that a sheet shows: the pane of the panel of the last
+    /// focus, or else the last pane.
+    pub fn sheet_pane(&self) -> Option<usize> {
+        let dock = self.dock();
+        let focus = dock.focus.and_then(|f| dock.find(f)).map(|(i, _)| i);
+        focus.or_else(|| dock.panes.len().checked_sub(1))
+    }
+
+    /// The panel that a sheet shows.
+    pub fn sheet_panel(&self) -> Option<Panel> {
+        self.sheet_pane().map(|i| self.dock().panes[i].panel())
     }
 }
 
 pub const WORKSPACES: [&str; 2] = ["World", "Atlas"];
 /// The Toolbox panel and its tile in the Panels menu.
 pub const TOOLBOX: &str = "Toolbox";
+/// The Layers panel and its tile in the Panels menu.
+pub const LAYERS: &str = "Layers";
 /// The button that opens the Panels menu.
 pub const PANELS: &str = "Panels";
 const VIEWS: [&str; 2] = ["Globe", "Flat"];
@@ -559,6 +594,7 @@ pub fn readout_line(state: &AppState) -> String {
 
 pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     let ctx = ui.ctx().clone();
+    state.pad.workspace = Workspace::Globe;
     widgets::set_backdrop(&ctx, state.globe.backdrop());
     let screen = ctx.viewport_rect();
     // The globe paints after the panels, so a change in a panel shows in
@@ -594,16 +630,21 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         extra: extra_cells(state),
         tools: TOOLS,
         row: class == WidthClass::Compact,
+        dock_width: state.pad.docks.world.width,
     };
+    // A tap on the canvas closes the unpinned pane. A tap that closes the
+    // keypad or the keyboard does only that.
+    let typing = widgets::keypad_is_open(&ctx) || ctx.egui_wants_keyboard_input();
+    if std::mem::take(&mut state.pad.canvas_tap) && class != WidthClass::Compact && !typing {
+        state.pad.docks.world.tap_canvas();
+        input.panel = has_sheet(state, class);
+    }
     // The Brush panel holds the settings of the context strip.
     if !has_strip(&state.globe) && card_cells(&state.globe) == 0 || state.globe.selecting() {
-        state.pad.brush = false;
+        state.pad.close(Panel::Brush);
         input.panel = has_sheet(state, class);
     }
     let mut rects = geometry::layout(&input);
-    if rects.one_panel && state.pad.brush && state.pad.right.is_some() {
-        state.pad.right = None;
-    }
     state.pad.sheet_offset = input
         .sheet_offset
         .clamp(-rects.sheet_rise, rects.sheet_travel);
@@ -637,18 +678,9 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     table::check(state);
     table::widen(state, &mut rects);
     expression::widen(state, &mut rects);
-    state.sync_selection_form(state.pad.is_open(Panel::Attributes));
+    state.sync_selection_form(state.pad.shows(Panel::Attributes));
     select::drop_focus(&ctx, state);
-    for panel in [
-        Panel::Brush,
-        Panel::Layers,
-        Panel::Toolbox,
-        Panel::Attributes,
-    ] {
-        if state.pad.is_open(panel) {
-            show_panel(&ctx, state, &mut controls, &rects, panel);
-        }
-    }
+    dock_ui::show(&ctx, state, &mut controls, &rects);
     super::new_feature::keep_in_view(&ctx, state, &rects);
     expire_notes(&ctx, state);
     raster::band_card(&ctx, state, &mut controls, &rects);
@@ -704,6 +736,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     world_form::pad(&ctx, state, &mut controls, &rects);
     raster_form::pad(&ctx, state, &mut controls, &rects);
     super::region::pad(&ctx, state, &mut controls, &rects);
+    dock_ui::handle(&ctx, state, &mut controls, &rects);
     if let Some(rect) = canvas.inner {
         globe::paint_canvas(ui, state, rect, theme::CANVAS);
     }
@@ -715,7 +748,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
 /// True if a panel is open. On a compact screen, a panel is a sheet, and
 /// the card of a new point takes the place of the sheet of the inspector.
 fn has_sheet(state: &AppState, class: WidthClass) -> bool {
-    let open = state.pad.brush || state.pad.right.is_some();
+    let open = !state.pad.dock().panes.is_empty();
     open && !super::new_feature::point_card(state, class)
 }
 
@@ -1287,7 +1320,7 @@ fn brush_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
                 }
             }
             deselect_cell(&mut ui, state, controls);
-            let open = state.pad.brush;
+            let open = state.pad.is_open(Panel::Brush);
             let button = widgets::tool_cell(
                 &mut ui,
                 controls,
@@ -1298,7 +1331,7 @@ fn brush_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
                 true,
             );
             if button.clicked() {
-                state.pad.toggle(Panel::Brush, rects.one_panel);
+                state.pad.toggle(Panel::Brush);
             }
         },
     );
@@ -1338,12 +1371,12 @@ pub(super) fn cell_card(
             let all = own + extra_cells(state);
             let mut cells = |ui: &mut egui::Ui| {
                 if vertexing {
-                    vertex_cells(ui, state, controls, rects);
+                    vertex_cells(ui, state, controls);
                 } else if selecting {
                     selectable_cell = Some(selectable::cell(ui, state, controls));
                     merge_cell = select_cells(ui, state, controls);
                 } else {
-                    measure_cells(ui, state, controls, rects);
+                    measure_cells(ui, state, controls);
                 }
             };
             if rects.card_cells < all {
@@ -1450,7 +1483,7 @@ fn merge_menu(
 /// The cells of the card of the Vertex tool: the snap switch, the switch of
 /// the move of shared vertices, Delete vertex, Smooth vertices, and the
 /// Brush button, which opens the snapping settings.
-fn vertex_cells(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
+fn vertex_cells(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
     let snap = &mut state.globe.snap.on;
     if widgets::tool_cell(ui, controls, SNAP, SNAP, Icon::Magnet, *snap, true).clicked() {
         *snap = !*snap;
@@ -1498,7 +1531,7 @@ fn vertex_cells(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls
         state.smooth_vertices();
     }
     deselect_cell(ui, state, controls);
-    brush_button(ui, state, controls, rects);
+    brush_button(ui, state, controls);
 }
 
 /// The cells of the card of the Select tool after Selectable: Add, Delete
@@ -1533,7 +1566,7 @@ fn select_cells(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls
 
 /// The cells of the card of the Measure tool: the snap switch, the Clear
 /// path cell, and the Brush button, which opens the snapping settings.
-fn measure_cells(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
+fn measure_cells(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
     let snap = &mut state.globe.snap.on;
     if widgets::tool_cell(ui, controls, SNAP, SNAP, Icon::Magnet, *snap, true).clicked() {
         *snap = !*snap;
@@ -1554,12 +1587,12 @@ fn measure_cells(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Control
         path.clear();
     }
     deselect_cell(ui, state, controls);
-    brush_button(ui, state, controls, rects);
+    brush_button(ui, state, controls);
 }
 
 /// The Brush button of a card of cells, which opens the Brush panel.
-fn brush_button(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
-    let open = state.pad.brush;
+fn brush_button(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
+    let open = state.pad.is_open(Panel::Brush);
     let button = widgets::tool_cell(
         ui,
         controls,
@@ -1570,22 +1603,55 @@ fn brush_button(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls
         true,
     );
     if button.clicked() {
-        state.pad.toggle(Panel::Brush, rects.one_panel);
+        state.pad.toggle(Panel::Brush);
     }
 }
 
-pub(super) fn show_panel(
-    ctx: &egui::Context,
-    state: &mut AppState,
-    controls: &mut Controls,
-    rects: &Rects,
-    panel: Panel,
-) {
-    if panel == Panel::Attributes && super::new_feature::point_card(state, rects.class) {
-        let rect = point_card::show(ctx, state, controls, rects);
-        state.pad.panels.push((panel, rect));
-        return;
+/// The title of a panel in its header and in its tile.
+pub fn panel_name(state: &AppState, panel: Panel) -> &'static str {
+    match panel {
+        Panel::Brush if state.measuring() => MEASURE,
+        Panel::Brush if state.globe.lining() => LINE,
+        Panel::Brush if state.globe.filling() => POLYGON,
+        Panel::Brush if state.globe.placing() => POINT,
+        Panel::Brush if state.globe.splitting() => SPLIT,
+        Panel::Brush if state.globe.vertexing() => VERTEX,
+        Panel::Brush => panels_menu::BRUSH,
+        Panel::Layers => LAYERS,
+        Panel::Toolbox => TOOLBOX,
+        Panel::Attributes => select::ATTRIBUTES,
     }
+}
+
+pub fn panel_icon(panel: Panel) -> Icon {
+    match panel {
+        Panel::Brush => Icon::Brush,
+        Panel::Layers => Icon::Layers,
+        Panel::Toolbox => Icon::Toolbox,
+        Panel::Attributes => Icon::Attributes,
+    }
+}
+
+/// The page of a panel that its pane shows, with the parts of its title.
+pub(super) struct Head {
+    /// The name of the page. The pane keeps the height of the page under
+    /// this name.
+    pub key: &'static str,
+    pub panel: Panel,
+    /// The title of the page.
+    pub title: String,
+    /// The name of the page that the back button opens. `None`: the page
+    /// is the first page of the panel.
+    pub back: Option<String>,
+    /// The action button: its name, its icon, and its state.
+    pub action: Option<(&'static str, Icon, bool)>,
+    pub scroll: egui::scroll_area::ScrollSource,
+    layer: Option<LayerRef>,
+    page: Option<Page>,
+}
+
+/// Finds the page that a panel shows, and closes a page that is gone.
+pub(super) fn panel_head(state: &mut AppState, panel: Panel) -> Head {
     let shown = state.pad.layer.and_then(|layer| state.layer_of(layer));
     let name = shown.map(|layer| layer.name.clone());
     let field_count = shown.map_or(0, |layer| layer.fields.len());
@@ -1649,14 +1715,8 @@ pub(super) fn show_panel(
         state.select(layer);
     }
     let name = name.as_deref().unwrap_or_default();
-    let (key, title, back) = match (panel, layer) {
-        (Panel::Brush, _) if state.measuring() => (panel.key(), MEASURE, None),
-        (Panel::Brush, _) if state.globe.lining() => (panel.key(), LINE, None),
-        (Panel::Brush, _) if state.globe.filling() => (panel.key(), POLYGON, None),
-        (Panel::Brush, _) if state.globe.placing() => (panel.key(), POINT, None),
-        (Panel::Brush, _) if state.globe.splitting() => (panel.key(), SPLIT, None),
-        (Panel::Brush, _) if state.globe.vertexing() => (panel.key(), VERTEX, None),
-        (Panel::Brush, _) => (panel.key(), "Brush", None),
+    let (key, title, back): (&'static str, &str, Option<&str>) = match (panel, layer) {
+        (Panel::Brush, _) => (panel.key(), panel_name(state, panel), None),
         (Panel::Layers, Some(LayerRef::Raster(_))) if page == Some(Page::Ramps) => {
             ("pad-ramps", raster::COLOR_RAMPS, Some(raster::COLOR_STOPS))
         }
@@ -1739,112 +1799,161 @@ pub(super) fn show_panel(
         Some(_) => egui::scroll_area::ScrollSource::NONE,
         None => egui::scroll_area::ScrollSource::default(),
     };
-    let place = match panel {
-        Panel::Brush => (rects.brush_panel, geometry::BRUSH_PANEL_WIDTH),
-        _ => {
-            let right = rects.screen.right() - rects.bands.right - geometry::MARGIN;
-            (rects.right_panel, right - rects.right_panel.x)
-        }
-    };
     let action = match panel {
         Panel::Attributes => Some((select::FOCUS_NEW, Icon::TextCursor, state.tools.focus_new)),
         _ => list.then_some((ADD_LAYER, Icon::Plus, state.pad.add)),
     };
-    let head = CardTitle {
-        title,
-        back,
+    Head {
+        key,
+        panel,
+        title: title.to_owned(),
+        back: back.map(str::to_owned),
         action,
+        scroll,
+        layer,
+        page,
+    }
+}
+
+/// Does what the user did with the back button and the action button of
+/// a panel.
+pub(super) fn panel_title(
+    state: &mut AppState,
+    head: &Head,
+    back: bool,
+    action: Option<&egui::Response>,
+) {
+    let (panel, layer, page) = (head.panel, head.layer, head.page);
+    match action {
+        Some(focus) if panel == Panel::Attributes => {
+            if focus.clicked() {
+                state.tools.focus_new = !state.tools.focus_new;
+            }
+        }
+        Some(add) => {
+            state.pad.add_button = Some(add.rect);
+            if add.clicked() {
+                state.pad.add = !state.pad.add;
+            }
+        }
+        None => {}
+    }
+    if back && page == Some(Page::Ramps) {
+        let vector = matches!(layer, Some(LayerRef::Vector(_)));
+        state.pad.page = Some(if vector { Page::Classify } else { Page::Stops });
+    } else if back && matches!(page, Some(Page::RampLabels(_))) {
+        state.pad.page = Some(Page::Ramps);
+    } else if let (true, Some(Page::Symbols(i) | Page::MarkerShape(i) | Page::MarkerFill(i))) =
+        (back, page)
+    {
+        state.pad.page = Some(Page::Rule(i));
+    } else if back && page.is_some() {
+        state.pad.page = None;
+        state.globe.preview.selected = None;
+    } else if back {
+        state.pad.layer = None;
+    }
+}
+
+/// The rows of a panel between its title and its body, which do not
+/// scroll. The table fills the page, and its rows have their own scroll.
+pub(super) fn panel_top(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    head: &Head,
+) {
+    if head.panel == Panel::Layers && head.page == Some(Page::Table) {
+        let size = ui.available_size();
+        ui.allocate_ui(size, |ui| table::page(ui, state, controls));
+    }
+}
+
+/// The body of a panel.
+pub(super) fn panel_body(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    head: &Head,
+) {
+    let (panel, layer, page) = (head.panel, head.layer, head.page);
+    match (panel, layer) {
+        (Panel::Brush, _) => brush_body(ui, state, controls),
+        (Panel::Layers, Some(LayerRef::Raster(id))) => match page {
+            Some(Page::Ramps) => {
+                raster::ramps_body(ui, state, controls, raster::RampUser::Raster(id))
+            }
+            Some(Page::RampLabels(i)) => raster::labels_body(ui, state, controls, i),
+            Some(Page::Stops) => raster::stops_body(ui, state, controls, id),
+            Some(Page::Hillshade) => {
+                raster::hillshade_body(ui, state, controls, id);
+            }
+            Some(Page::Blend) => raster::blend_body(ui, state, controls, id),
+            _ => raster_body(ui, state, controls, id),
+        },
+        (Panel::Layers, Some(LayerRef::Image(id))) => match page {
+            Some(Page::Blend) => raster::image_blend_body(ui, state, controls, id),
+            _ => image_body(ui, state, controls, id),
+        },
+        (Panel::Layers, Some(LayerRef::Vector(id))) => match page {
+            Some(Page::NewField) => {
+                fields::new_field_body(ui, state, controls, id);
+            }
+            Some(Page::Field(i)) => {
+                fields::field_body(ui, state, controls, id, i);
+            }
+            Some(Page::Rule(i)) => rules::rule_body(ui, state, controls, id, i),
+            Some(Page::Symbols(i)) => rules::symbols_body(ui, state, controls, id, i),
+            Some(Page::MarkerShape(i)) => rules::shape_body(ui, state, controls, id, i),
+            Some(Page::MarkerFill(i)) => rules::marker_fill_body(ui, state, controls, id, i),
+            Some(Page::Classify) => classify::body(ui, state, controls, id),
+            Some(Page::Ramps) => {
+                raster::ramps_body(ui, state, controls, raster::RampUser::Classify(id))
+            }
+            Some(Page::RampLabels(i)) => raster::labels_body(ui, state, controls, i),
+            Some(Page::Mask) => rules::mask_body(ui, state, controls, id),
+            Some(Page::LabelText) => fonts::text_body(ui, state, controls, id),
+            Some(Page::Table) => {}
+            _ => vector_body(ui, state, controls, id),
+        },
+        (Panel::Layers, None) => layers_body(ui, state, controls),
+        (Panel::Toolbox, _) => toolbox_body(ui, state),
+        (Panel::Attributes, _) => select::body(ui, state, controls),
+    }
+}
+
+/// Shows a panel as one card at the place of the dock. The Atlas shows its
+/// panels so.
+pub(super) fn show_panel(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    controls: &mut Controls,
+    rects: &Rects,
+    panel: Panel,
+) {
+    let head = panel_head(state, panel);
+    let title = CardTitle {
+        title: &head.title,
+        back: head.back.as_deref(),
+        action: head.action,
+    };
+    let card = Card {
+        key: head.key,
+        place: (rects.dock.min, rects.dock.width()),
+        head: title,
+        scroll: head.scroll,
     };
     let on_title = |state: &mut AppState, row: &widgets::TitleRow| {
-        match &row.action {
-            Some(focus) if panel == Panel::Attributes => {
-                if focus.clicked() {
-                    state.tools.focus_new = !state.tools.focus_new;
-                }
-            }
-            Some(add) => {
-                state.pad.add_button = Some(add.rect);
-                if add.clicked() {
-                    state.pad.add = !state.pad.add;
-                }
-            }
-            None => {}
-        }
-        if row.back && page == Some(Page::Ramps) {
-            let vector = matches!(layer, Some(LayerRef::Vector(_)));
-            state.pad.page = Some(if vector { Page::Classify } else { Page::Stops });
-        } else if row.back && matches!(page, Some(Page::RampLabels(_))) {
-            state.pad.page = Some(Page::Ramps);
-        } else if let (true, Some(Page::Symbols(i) | Page::MarkerShape(i) | Page::MarkerFill(i))) =
-            (row.back, page)
-        {
-            state.pad.page = Some(Page::Rule(i));
-        } else if row.back && page.is_some() {
-            state.pad.page = None;
-            state.globe.preview.selected = None;
-        } else if row.back {
-            state.pad.layer = None;
-        }
+        panel_title(state, &head, row.back, row.action.as_ref());
         if row.close {
             state.pad.close(panel);
         }
     };
-    let body =
-        |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| match (panel, layer) {
-            (Panel::Brush, _) => brush_body(ui, state, controls),
-            (Panel::Layers, Some(LayerRef::Raster(id))) => match page {
-                Some(Page::Ramps) => {
-                    raster::ramps_body(ui, state, controls, raster::RampUser::Raster(id))
-                }
-                Some(Page::RampLabels(i)) => raster::labels_body(ui, state, controls, i),
-                Some(Page::Stops) => raster::stops_body(ui, state, controls, id),
-                Some(Page::Hillshade) => {
-                    raster::hillshade_body(ui, state, controls, id);
-                }
-                Some(Page::Blend) => raster::blend_body(ui, state, controls, id),
-                _ => raster_body(ui, state, controls, id),
-            },
-            (Panel::Layers, Some(LayerRef::Image(id))) => match page {
-                Some(Page::Blend) => raster::image_blend_body(ui, state, controls, id),
-                _ => image_body(ui, state, controls, id),
-            },
-            (Panel::Layers, Some(LayerRef::Vector(id))) => match page {
-                Some(Page::NewField) => {
-                    fields::new_field_body(ui, state, controls, id);
-                }
-                Some(Page::Field(i)) => {
-                    fields::field_body(ui, state, controls, id, i);
-                }
-                Some(Page::Rule(i)) => rules::rule_body(ui, state, controls, id, i),
-                Some(Page::Symbols(i)) => rules::symbols_body(ui, state, controls, id, i),
-                Some(Page::MarkerShape(i)) => rules::shape_body(ui, state, controls, id, i),
-                Some(Page::MarkerFill(i)) => rules::marker_fill_body(ui, state, controls, id, i),
-                Some(Page::Classify) => classify::body(ui, state, controls, id),
-                Some(Page::Ramps) => {
-                    raster::ramps_body(ui, state, controls, raster::RampUser::Classify(id))
-                }
-                Some(Page::RampLabels(i)) => raster::labels_body(ui, state, controls, i),
-                Some(Page::Mask) => rules::mask_body(ui, state, controls, id),
-                Some(Page::LabelText) => fonts::text_body(ui, state, controls, id),
-                Some(Page::Table) => {}
-                _ => vector_body(ui, state, controls, id),
-            },
-            (Panel::Layers, None) => layers_body(ui, state, controls),
-            (Panel::Toolbox, _) => toolbox_body(ui, state),
-            (Panel::Attributes, _) => select::body(ui, state, controls),
-        };
-    let card = Card {
-        key,
-        place,
-        head,
-        scroll,
-    };
-    // The table fills the page, and its rows have their own scroll.
     let top = |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| {
-        if panel == Panel::Layers && page == Some(Page::Table) {
-            let size = ui.available_size();
-            ui.allocate_ui(size, |ui| table::page(ui, state, controls));
-        }
+        panel_top(ui, state, controls, &head);
+    };
+    let body = |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| {
+        panel_body(ui, state, controls, &head);
     };
     let rect = show_card(ctx, state, controls, rects, card, on_title, top, body);
     state.pad.panels.push((panel, rect));
@@ -1901,16 +2010,19 @@ fn show_card(
             (sheet, radius)
         }
         None => {
-            let most = (rects.panel_bottom - min.y).max(ROW);
+            let most = (rects.dock.bottom() - min.y).max(ROW);
             let height = state.pad.heights.get(key).map_or(most, |h| h.min(most));
             let rect = Rect::from_min_size(min, vec2(width, height));
-            (rect, theme::CARD_RADIUS.into())
+            (rect, geometry::edge_radius(rect, rects.screen))
         }
     };
     let sheet = rects.sheet.is_some();
     let id = if sheet { "pad-sheet" } else { key };
     let backdrop = state.globe.backdrop();
+    let inner = geometry::edge_content(rect, rects.screen, rects.bands);
     widgets::card(ctx, backdrop, id, rect, Order::Middle, radius, |ui| {
+        let layout = egui::Layout::top_down(egui::Align::Min);
+        let ui = &mut ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
         ui.spacing_mut().item_spacing.y = 0.0;
         if sheet {
             let grabber =
@@ -2648,9 +2760,10 @@ fn add_menu(
     let rows = 3 + NEW_LAYERS.len() + usize::from(import);
     let height = 10.0 + 2.0 * MENU_HEADING + rows as f32 * PANEL_ROW + 10.0;
     let size = vec2(ADD_WIDTH, height);
+    let pane = state.pad.panels.iter().find(|(p, _)| *p == Panel::Layers);
     let beside = pos2(
-        rects.right_panel.x - geometry::PANEL_GAP - size.x,
-        rects.right_panel.y,
+        rects.dock.left() - geometry::PANEL_GAP - size.x,
+        pane.map_or(rects.dock.top(), |(_, rect)| rect.top()),
     );
     let min = if rects.sheet.is_none() && beside.x >= rects.screen.left() + geometry::MARGIN {
         beside

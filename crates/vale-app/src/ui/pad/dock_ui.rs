@@ -1,0 +1,808 @@
+//! The dock of the World workspace on the screen: the panes in one card on
+//! the right edge. On a compact screen, the pane of the last focus is a
+//! sheet.
+
+use eframe::egui::{self, Align2, Order, Pos2, Rect, Sense, Stroke, pos2, vec2};
+
+use super::geometry::{self, PAD, ROW, Rects, TOUCH, WidthClass};
+use super::icons::{self, Icon};
+use super::panes::{self, BAR, Drop};
+use super::widgets::{self, BODY_PAD, Controls, ICON};
+use super::{Head, Panel, panel_body, panel_head, panel_icon, panel_name, panel_title, panel_top};
+use super::{point_card, theme};
+use crate::ui::AppState;
+
+/// The handle that changes the width of the dock.
+pub const DOCK_WIDTH: &str = "Dock width";
+/// The height of the part of a bar that takes a drag.
+const BAR_TOUCH: f32 = 24.0;
+/// The size of the handle at the left edge of the dock.
+const HANDLE: (f32, f32) = (TOUCH, 64.0);
+/// The padding at each side of the name of a tab.
+const TAB_PAD: f32 = 12.0;
+
+/// What a finger moves in the dock.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum DockDrag {
+    /// The pane with this index, by the empty part of its header.
+    Pane { pane: usize, pos: Pos2 },
+    /// A tab, or a pane with one tab.
+    Tab { panel: Panel, pos: Pos2 },
+    /// The handle of the width.
+    Width,
+}
+
+/// The control name of the empty part of the header of a pane.
+pub fn move_name(name: &str) -> String {
+    format!("Move {name}")
+}
+
+/// The control name of a tab.
+pub fn tab_name(name: &str) -> String {
+    format!("{name} tab")
+}
+
+/// The control name of the Pin button of a pane.
+pub fn pin_name(name: &str) -> String {
+    format!("Pin {name}")
+}
+
+/// The places of a pane in the last frame, for a drop.
+struct Placed {
+    rect: Rect,
+    /// The part of the header that holds the tabs.
+    tabs: Rect,
+    /// The middle of each tab, along the header.
+    centers: Vec<f32>,
+}
+
+/// What a pane shows of its controls.
+#[derive(Clone, Copy, PartialEq)]
+enum Mode {
+    Dock,
+    Sheet,
+}
+
+/// What the user did with the header of a pane.
+struct HeaderOut {
+    close: bool,
+    pin: bool,
+    /// The tab that the user chose.
+    focus: Option<usize>,
+    /// The empty part of the header.
+    bar: Option<egui::Response>,
+    /// A drag of a tab, or of the header, that started or that ended.
+    drag: Option<(DockDrag, DragPhase)>,
+    tabs: Rect,
+    centers: Vec<f32>,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum DragPhase {
+    Moving,
+    Stopped,
+}
+
+pub fn show(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
+    state.pad.dock_rect = None;
+    if state.pad.docks.world.panes.is_empty() {
+        state.pad.dock_drag = None;
+        return;
+    }
+    if rects.class == WidthClass::Compact {
+        state.pad.dock_drag = None;
+        if crate::ui::new_feature::point_card(state, rects.class) {
+            let rect = point_card::show(ctx, state, controls, rects);
+            state.pad.panels.push((Panel::Attributes, rect));
+        } else if let Some(sheet) = rects.sheet {
+            show_sheet(ctx, state, controls, rects, sheet);
+        }
+        return;
+    }
+    show_dock(ctx, state, controls, rects);
+}
+
+fn show_dock(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
+    let room = rects.dock;
+    state.pad.docks.world.keep_in(room.height());
+    let heads: Vec<Head> = (0..state.pad.docks.world.panes.len())
+        .map(|i| {
+            let panel = state.pad.docks.world.panes[i].panel();
+            panel_head(state, panel)
+        })
+        .collect();
+    let wanted: Vec<f32> = (state.pad.docks.world.panes.iter().zip(&heads))
+        .map(|(pane, head)| {
+            let natural = state.pad.heights.get(head.key).copied();
+            pane.height.or(natural).unwrap_or(room.height())
+        })
+        .collect();
+    let heights = panes::fit(&wanted, room.height());
+    let total = heights.iter().sum::<f32>() + BAR * (heights.len() - 1) as f32;
+    let rect = Rect::from_min_size(room.min, vec2(room.width(), total.min(room.height())));
+    let radius = geometry::edge_radius(rect, rects.screen);
+    let names = rect.width() - rects.bands.right >= panes::NAMES_WIDTH;
+    let backdrop = state.globe.backdrop();
+    let mut placed = Vec::new();
+    let mut drag = None;
+    let mut bars = Vec::new();
+    let mut actions: Vec<(usize, HeaderOut)> = Vec::new();
+    widgets::card(
+        ctx,
+        backdrop,
+        "pad-dock",
+        rect,
+        Order::Middle,
+        radius,
+        |ui| {
+            let mut top = rect.top();
+            for (i, head) in heads.iter().enumerate() {
+                let pane_rect =
+                    Rect::from_min_size(pos2(rect.left(), top), vec2(rect.width(), heights[i]));
+                let inner = geometry::edge_content(pane_rect, rects.screen, rects.bands);
+                let mut child = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(inner)
+                        .layout(egui::Layout::top_down(egui::Align::Min))
+                        .id_salt(("pad-pane", i)),
+                );
+                child.set_clip_rect(inner.intersect(rect));
+                let out = pane(&mut child, state, controls, i, head, inner, names);
+                placed.push(Placed {
+                    rect: pane_rect,
+                    tabs: out.tabs,
+                    centers: out.centers.clone(),
+                });
+                state.pad.panels.push((head.panel, pane_rect));
+                if out.drag.is_some() {
+                    drag = out.drag;
+                }
+                actions.push((i, out));
+                top = pane_rect.bottom();
+                if i + 1 < heads.len() {
+                    let bar = Rect::from_min_size(pos2(rect.left(), top), vec2(rect.width(), BAR));
+                    bars.push(bar);
+                    top = bar.bottom();
+                }
+            }
+            // The bars take a drag after the panes, so they win at the edges.
+            for (i, bar) in bars.iter().enumerate() {
+                let line = geometry::edge_content(*bar, rects.screen, rects.bands);
+                ui.painter().hline(
+                    line.x_range(),
+                    bar.center().y,
+                    Stroke::new(1.0, theme::divider()),
+                );
+                let pill = Rect::from_center_size(bar.center(), vec2(36.0, 4.0));
+                let pill = pill.translate(vec2((line.center().x - bar.center().x).round(), 0.0));
+                let touch = Rect::from_center_size(bar.center(), vec2(bar.width(), BAR_TOUCH));
+                let resp = ui.interact(touch, ui.id().with(("pad-bar", i)), Sense::drag());
+                let color = if resp.dragged() {
+                    theme::ACCENT
+                } else {
+                    theme::MUTE.gamma_multiply(0.6)
+                };
+                ui.painter().rect_filled(pill, 2.0, color);
+                if resp.dragged() && resp.drag_delta().y != 0.0 {
+                    state
+                        .pad
+                        .docks
+                        .world
+                        .resize(i, resp.drag_delta().y, &heights);
+                    ctx.request_repaint();
+                }
+            }
+        },
+    );
+    state.pad.dock_rect = Some(rect);
+    for (i, out) in actions.into_iter().rev() {
+        let dock = &mut state.pad.docks.world;
+        if out.close {
+            dock.close_pane(i);
+            continue;
+        }
+        if out.pin {
+            let pinned = dock.panes[i].pinned;
+            dock.pin(i, !pinned);
+        }
+        if let Some(tab) = out.focus {
+            dock.focus(i, tab);
+        }
+    }
+    match drag {
+        Some((drag, DragPhase::Moving)) => {
+            state.pad.dock_drag = Some(drag);
+            paint_drop(ctx, state, rect, &placed, drag);
+            ctx.request_repaint();
+        }
+        Some((drag, DragPhase::Stopped)) => {
+            // The finger is gone at the end of the drag, so the drop is at
+            // its last place.
+            let drag = match (drag, state.pad.dock_drag) {
+                (DockDrag::Pane { pane, .. }, Some(DockDrag::Pane { pos, .. })) => {
+                    DockDrag::Pane { pane, pos }
+                }
+                (DockDrag::Tab { panel, .. }, Some(DockDrag::Tab { pos, .. })) => {
+                    DockDrag::Tab { panel, pos }
+                }
+                (drag, _) => drag,
+            };
+            if let Some(target) = drop_of(&state.pad.docks.world, rect, &placed, drag) {
+                match (drag, target) {
+                    (DockDrag::Pane { pane, .. }, Target::Gap(at)) => {
+                        state.pad.docks.world.move_pane(pane, at);
+                    }
+                    (DockDrag::Tab { panel, .. }, Target::Gap(at)) => {
+                        state.pad.docks.world.move_tab(panel, Drop::Split { at });
+                    }
+                    (DockDrag::Tab { panel, .. }, Target::Tabs(pane, index)) => {
+                        let drop = Drop::Merge { pane, index };
+                        state.pad.docks.world.move_tab(panel, drop);
+                    }
+                    _ => {}
+                }
+            }
+            state.pad.dock_drag = None;
+        }
+        None if state.pad.dock_drag != Some(DockDrag::Width) => state.pad.dock_drag = None,
+        None => {}
+    }
+}
+
+/// Where a drag ends.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Target {
+    /// The place before the pane with this index.
+    Gap(usize),
+    /// The tab row of the pane with this index, before the tab with this
+    /// index.
+    Tabs(usize, usize),
+}
+
+/// The target of a drag at its present place. A drop outside the dock
+/// does nothing.
+fn drop_of(dock: &panes::Dock, rect: Rect, placed: &[Placed], drag: DockDrag) -> Option<Target> {
+    let (pos, from) = match drag {
+        DockDrag::Pane { pane, pos } => (pos, Some(pane)),
+        DockDrag::Tab { panel, pos } => (pos, dock.find(panel).map(|(i, _)| i)),
+        DockDrag::Width => return None,
+    };
+    let area = rect.expand2(vec2(0.0, ROW));
+    if !(area.x_range().contains(pos.x) && area.y_range().contains(pos.y)) {
+        return None;
+    }
+    if let DockDrag::Tab { .. } = drag {
+        for (i, p) in placed.iter().enumerate() {
+            if Some(i) != from && p.tabs.contains(pos) {
+                let index = p.centers.iter().filter(|c| **c < pos.x).count();
+                return Some(Target::Tabs(i, index));
+            }
+        }
+    }
+    let at = placed.iter().filter(|p| p.rect.center().y < pos.y).count();
+    Some(Target::Gap(at))
+}
+
+/// The ghost of the pane or the tab under the finger, and the line or the
+/// outline of its drop target.
+fn paint_drop(
+    ctx: &egui::Context,
+    state: &AppState,
+    rect: Rect,
+    placed: &[Placed],
+    drag: DockDrag,
+) {
+    let (pos, name, icon) = match drag {
+        DockDrag::Pane { pane, pos } => {
+            let panel = state.pad.docks.world.panes[pane].panel();
+            (pos, panel_name(state, panel), panel_icon(panel))
+        }
+        DockDrag::Tab { panel, pos } => (pos, panel_name(state, panel), panel_icon(panel)),
+        DockDrag::Width => return,
+    };
+    let target = drop_of(&state.pad.docks.world, rect, placed, drag);
+    let painter = ctx.layer_painter(egui::LayerId::new(
+        Order::Foreground,
+        "pad-dock-drop".into(),
+    ));
+    match target {
+        Some(Target::Gap(at)) => {
+            let y = match placed.get(at) {
+                Some(p) if at == 0 => p.rect.top() + 2.0,
+                Some(p) => p.rect.top() - BAR / 2.0,
+                None => placed.last().map_or(rect.top(), |p| p.rect.bottom() - 2.0),
+            };
+            let x = rect.x_range().shrink(BODY_PAD);
+            painter.hline(x, y, Stroke::new(3.0, theme::ACCENT));
+        }
+        Some(Target::Tabs(i, _)) => {
+            let tabs = placed[i].tabs;
+            painter.rect_stroke(
+                tabs,
+                theme::CONTROL_RADIUS,
+                Stroke::new(2.0, theme::ACCENT),
+                egui::StrokeKind::Inside,
+            );
+        }
+        None => {}
+    }
+    let ghost = Rect::from_min_size(pos - vec2(40.0, ROW / 2.0), vec2(220.0, ROW));
+    painter.rect_filled(
+        ghost,
+        theme::CARD_RADIUS,
+        theme::card(false).gamma_multiply(0.9),
+    );
+    let icon_rect = Rect::from_center_size(
+        pos2(ghost.left() + BODY_PAD + ICON / 2.0, ghost.center().y),
+        vec2(ICON, ICON),
+    );
+    icons::paint(&painter, icon_rect, icon, ICON, theme::TEXT);
+    let at = pos2(icon_rect.right() + 10.0, ghost.center().y);
+    painter.text(at, Align2::LEFT_CENTER, name, theme::title(), theme::TEXT);
+}
+
+/// The handle at the middle of the left edge of the dock, and the label of
+/// the width during its drag. A card or a menu that covers the place of the
+/// handle hides it.
+pub fn handle(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
+    let Some(dock) = state.pad.dock_rect else {
+        return;
+    };
+    // The handle is outside the dock, so it covers no control of a pane.
+    let rect = Rect::from_min_size(
+        pos2(dock.left() - HANDLE.0, dock.center().y - HANDLE.1 / 2.0),
+        vec2(HANDLE.0, HANDLE.1),
+    );
+    let dragging = state.pad.dock_drag == Some(DockDrag::Width);
+    if !dragging && controls.iter().any(|c| c.rect.intersects(rect)) {
+        return;
+    }
+    let most =
+        (rects.screen.right() - rects.bands.right - rects.column_right).max(panes::MIN_WIDTH);
+    egui::Area::new(egui::Id::new("pad-dock-handle"))
+        .order(Order::Middle)
+        .fixed_pos(rect.min)
+        .movable(false)
+        .constrain(false)
+        .fade_in(false)
+        .show(ctx, |ui| {
+            let (_, _) = ui.allocate_exact_size(rect.size(), Sense::hover());
+            let resp = widgets::drag_area(ui, controls, rect, DOCK_WIDTH);
+            let active = resp.dragged();
+            let pill =
+                Rect::from_center_size(pos2(rect.right() - 6.0, rect.center().y), vec2(5.0, 36.0));
+            let color = if active {
+                theme::ACCENT
+            } else {
+                theme::MUTE.gamma_multiply(0.7)
+            };
+            ui.painter().rect_filled(pill, 3.0, color);
+            let dock = &mut state.pad.docks.world;
+            if active {
+                if resp.drag_delta().x != 0.0 {
+                    dock.set_width(dock.width - resp.drag_delta().x);
+                    dock.width = dock.width.min(most);
+                }
+                state.pad.dock_drag = Some(DockDrag::Width);
+                let text = format!("{} pt", dock.width.round());
+                let painter = ctx.layer_painter(egui::LayerId::new(
+                    Order::Foreground,
+                    "pad-dock-width".into(),
+                ));
+                let galley = painter.layout_no_wrap(text, theme::body(), theme::TEXT);
+                let size = galley.size() + vec2(24.0, 14.0);
+                let label = Rect::from_min_size(
+                    pos2(rect.left() - 8.0 - size.x, rect.center().y - size.y / 2.0),
+                    size,
+                );
+                painter.rect_filled(label, theme::CONTROL_RADIUS, theme::card(false).to_opaque());
+                painter.galley(label.center() - galley.size() / 2.0, galley, theme::TEXT);
+                ctx.request_repaint();
+            } else if state.pad.dock_drag == Some(DockDrag::Width) {
+                state.pad.dock_drag = None;
+            }
+        });
+}
+
+/// The sheet of a compact screen: the pane of the last focus, with its
+/// tabs, and with no pin and no drag of its tabs.
+fn show_sheet(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    controls: &mut Controls,
+    rects: &Rects,
+    rect: Rect,
+) {
+    let Some(i) = state.pad.sheet_pane() else {
+        return;
+    };
+    let panel = state.pad.docks.world.panes[i].panel();
+    let head = panel_head(state, panel);
+    let r = theme::SHEET_RADIUS as u8;
+    let radius = egui::CornerRadius {
+        nw: r,
+        ne: r,
+        sw: 0,
+        se: 0,
+    };
+    let backdrop = state.globe.backdrop();
+    let inner = geometry::edge_content(rect, rects.screen, rects.bands);
+    let mut out = None;
+    widgets::card(
+        ctx,
+        backdrop,
+        "pad-sheet",
+        rect,
+        Order::Middle,
+        radius,
+        |ui| {
+            let grabber =
+                Rect::from_center_size(pos2(rect.center().x, rect.top() + 8.5), vec2(36.0, 5.0));
+            ui.painter()
+                .rect_filled(grabber, 3.0, theme::MUTE.gamma_multiply(0.6));
+            let mut child = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(inner)
+                    .layout(egui::Layout::top_down(egui::Align::Min)),
+            );
+            let body = Rect::from_min_max(
+                inner.min,
+                pos2(inner.right(), rect.bottom() - rects.bands.bottom),
+            );
+            out = Some(pane_in_sheet(
+                &mut child, state, controls, rects, i, &head, body,
+            ));
+        },
+    );
+    state.pad.panels.push((panel, rect));
+    if let Some(out) = out {
+        let dock = &mut state.pad.docks.world;
+        if out.close {
+            dock.close_pane(i);
+        } else if let Some(tab) = out.focus {
+            dock.focus(i, tab);
+        }
+    }
+}
+
+fn pane_in_sheet(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    rects: &Rects,
+    i: usize,
+    head: &Head,
+    body: Rect,
+) -> HeaderOut {
+    ui.spacing_mut().item_spacing.y = 0.0;
+    let header = Rect::from_min_size(body.min, vec2(body.width(), ROW));
+    let out = header_row(ui, state, controls, i, head, header, Mode::Sheet, true);
+    ui.advance_cursor_after_rect(header);
+    let low = state.pad.sheet_offset > -rects.sheet_rise + 0.5;
+    ui.ctx().data_mut(|d| d.insert_temp(super::low_id(), low));
+    if super::take_raise(ui.ctx()) {
+        state.pad.sheet_offset = -rects.sheet_rise;
+    }
+    if let Some(bar) = &out.bar {
+        super::sheet_drag(ui, &mut state.pad, bar, rects);
+    }
+    if state.pad.sheet_offset >= rects.sheet_travel {
+        return out;
+    }
+    contents(ui, state, controls, head, body.bottom());
+    out
+}
+
+/// A pane of the dock: its header, its back row, and its body.
+#[allow(clippy::too_many_arguments)]
+fn pane(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    i: usize,
+    head: &Head,
+    rect: Rect,
+    names: bool,
+) -> HeaderOut {
+    ui.spacing_mut().item_spacing.y = 0.0;
+    let header = Rect::from_min_size(rect.min, vec2(rect.width(), ROW));
+    let out = header_row(ui, state, controls, i, head, header, Mode::Dock, names);
+    ui.advance_cursor_after_rect(header);
+    contents(ui, state, controls, head, rect.bottom());
+    out
+}
+
+/// The back row, the rows that do not scroll, and the body of a pane, down
+/// to `bottom`. Keeps the height of the content.
+fn contents(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    head: &Head,
+    bottom: f32,
+) {
+    let start = ui.cursor().top();
+    if let Some(back) = &head.back {
+        let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::hover());
+        let button =
+            Rect::from_min_size(pos2(row.left() + PAD, row.top() + PAD), vec2(TOUCH, TOUCH));
+        let name = format!("Back to {back}");
+        let tap = widgets::icon_button_at(ui, controls, button, &name, Icon::Back, false, true);
+        let clip = Rect::from_min_max(pos2(button.right() + 4.0, row.top()), row.max);
+        ui.painter()
+            .with_clip_rect(clip.intersect(ui.clip_rect()))
+            .text(
+                pos2(clip.left(), row.center().y),
+                Align2::LEFT_CENTER,
+                &head.title,
+                theme::title(),
+                theme::TEXT,
+            );
+        if tap.clicked() {
+            panel_title(state, head, true, None);
+        }
+    }
+    let margin = egui::Margin::symmetric(BODY_PAD as i8, 0);
+    let top_start = ui.cursor().top();
+    egui::Frame::NONE.inner_margin(margin).show(ui, |ui| {
+        ui.spacing_mut().item_spacing.y = 6.0;
+        ui.set_max_height((bottom - ui.cursor().top()).max(0.0));
+        panel_top(ui, state, controls, head);
+    });
+    let fixed = ui.cursor().top() - top_start;
+    let most = (bottom - ui.cursor().top()).max(0.0);
+    let scroll = match state.pad.dock_drag {
+        Some(_) => egui::scroll_area::ScrollSource::NONE,
+        None => head.scroll,
+    };
+    let out = egui::ScrollArea::vertical()
+        .id_salt(("pad-pane", head.key))
+        .scroll_source(scroll)
+        .max_height(most)
+        .auto_shrink([false, true])
+        .show(ui, |ui| {
+            let margin = egui::Margin {
+                left: BODY_PAD as i8,
+                right: BODY_PAD as i8,
+                top: 0,
+                bottom: 10,
+            };
+            egui::Frame::NONE.inner_margin(margin).show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 6.0;
+                panel_body(ui, state, controls, head);
+            });
+        });
+    let back = top_start - start;
+    state
+        .pad
+        .heights
+        .insert(head.key, ROW + back + fixed + out.content_size.y);
+}
+
+/// The width of a tab, with or without its name.
+fn tab_width(ui: &egui::Ui, name: &str, named: bool) -> f32 {
+    if !named {
+        return TOUCH;
+    }
+    let galley = ui
+        .painter()
+        .layout_no_wrap(name.to_owned(), theme::body(), theme::TEXT);
+    TAB_PAD + ICON + 8.0 + galley.size().x.ceil() + TAB_PAD
+}
+
+/// The header of a pane: the title or the tabs, the action button, the Pin
+/// button, and the Close button.
+#[allow(clippy::too_many_arguments)]
+fn header_row(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    i: usize,
+    head: &Head,
+    rect: Rect,
+    mode: Mode,
+    names: bool,
+) -> HeaderOut {
+    let pane = state.pad.docks.world.panes[i].clone();
+    let name = panel_name(state, pane.panel());
+    let button = |x: f32| Rect::from_min_size(pos2(x, rect.top() + PAD), vec2(TOUCH, TOUCH));
+    let close_rect = button(rect.right() - PAD - TOUCH);
+    let close_name = format!("Close {name}");
+    let close = widgets::icon_button_at(
+        ui,
+        controls,
+        close_rect,
+        &close_name,
+        Icon::Close,
+        false,
+        true,
+    )
+    .clicked();
+    let mut left_of = close_rect.left();
+    let mut pin = false;
+    if mode == Mode::Dock {
+        let pin_rect = button(left_of - TOUCH);
+        left_of = pin_rect.left();
+        let resp = widgets::hit(
+            ui,
+            controls,
+            pin_rect,
+            &pin_name(name),
+            Sense::click(),
+            true,
+            Some(pane.pinned),
+        );
+        let color = if pane.pinned {
+            theme::ACCENT
+        } else {
+            theme::MUTE
+        };
+        if resp.is_pointer_button_down_on() {
+            ui.painter().rect_filled(
+                pin_rect.shrink(widgets::HIGHLIGHT_INSET),
+                theme::CONTROL_RADIUS,
+                theme::raise(),
+            );
+        }
+        icons::paint(ui.painter(), pin_rect, Icon::Pin, ICON, color);
+        pin = resp.clicked();
+    }
+    if let Some((action, icon, active)) = head.action {
+        let at = button(left_of - TOUCH);
+        left_of = at.left();
+        let resp = widgets::icon_button_at(ui, controls, at, action, icon, active, true);
+        panel_title(state, head, false, Some(&resp));
+    }
+    let tabs_area = Rect::from_min_max(
+        pos2(rect.left() + PAD, rect.top()),
+        pos2(left_of, rect.bottom()),
+    );
+    let drag_sense = match mode {
+        Mode::Dock => Sense::click_and_drag(),
+        Mode::Sheet => Sense::click(),
+    };
+    let mut focus = None;
+    let mut drag = None;
+    let mut centers = Vec::new();
+    let mut end = tabs_area.left();
+    let painter = ui
+        .painter()
+        .with_clip_rect(tabs_area.intersect(ui.clip_rect()));
+    if pane.tabs.len() == 1 {
+        let icon = Rect::from_center_size(
+            pos2(rect.left() + BODY_PAD + ICON / 2.0, rect.center().y),
+            vec2(ICON, ICON),
+        );
+        icons::paint(&painter, icon, panel_icon(pane.panel()), ICON, theme::MUTE);
+        let at = pos2(icon.right() + 10.0, rect.center().y);
+        painter.text(at, Align2::LEFT_CENTER, name, theme::title(), theme::TEXT);
+        centers.push(tabs_area.center().x);
+    } else {
+        for (t, panel) in pane.tabs.iter().enumerate() {
+            let tab_label = panel_name(state, *panel);
+            let active = t == pane.active;
+            let width = tab_width(ui, tab_label, active || names);
+            let tab = Rect::from_min_size(pos2(end, rect.top() + PAD), vec2(width, TOUCH));
+            end = tab.right();
+            centers.push(tab.center().x);
+            let resp = widgets::hit(
+                ui,
+                controls,
+                tab.intersect(tabs_area),
+                &tab_name(tab_label),
+                drag_sense,
+                true,
+                Some(active),
+            );
+            if active {
+                painter.rect_filled(
+                    tab.shrink(widgets::HIGHLIGHT_INSET),
+                    theme::CONTROL_RADIUS,
+                    theme::raise(),
+                );
+            }
+            let color = if active { theme::TEXT } else { theme::MUTE };
+            let icon_x = if active || names {
+                tab.left() + TAB_PAD + ICON / 2.0
+            } else {
+                tab.center().x
+            };
+            let icon = Rect::from_center_size(pos2(icon_x, tab.center().y), vec2(ICON, ICON));
+            icons::paint(&painter, icon, panel_icon(*panel), ICON, color);
+            if active || names {
+                let at = pos2(icon.right() + 8.0, tab.center().y);
+                painter.text(at, Align2::LEFT_CENTER, tab_label, theme::body(), color);
+            }
+            if resp.clicked() {
+                focus = Some(t);
+            }
+            drag = drag.or_else(|| {
+                tab_drag(
+                    ui,
+                    &resp,
+                    DockDrag::Tab {
+                        panel: *panel,
+                        pos: Pos2::ZERO,
+                    },
+                )
+            });
+        }
+    }
+    // The empty part of the header. In a pane with one tab, it holds the
+    // title too.
+    let empty = Rect::from_min_max(
+        pos2(end.max(rect.left()), rect.top() + PAD),
+        pos2(left_of, rect.bottom() - PAD),
+    );
+    let empty = if pane.tabs.len() == 1 {
+        Rect::from_min_max(pos2(rect.left(), rect.top() + PAD), empty.max)
+    } else {
+        empty
+    };
+    let bar = (empty.width() >= TOUCH).then(|| {
+        let sense = match mode {
+            Mode::Dock => Sense::drag(),
+            Mode::Sheet => Sense::click_and_drag(),
+        };
+        widgets::hit(ui, controls, empty, &move_name(name), sense, true, None)
+    });
+    if mode == Mode::Dock
+        && let Some(bar) = &bar
+    {
+        let kind = if pane.tabs.len() == 1 {
+            DockDrag::Tab {
+                panel: pane.panel(),
+                pos: Pos2::ZERO,
+            }
+        } else {
+            DockDrag::Pane {
+                pane: i,
+                pos: Pos2::ZERO,
+            }
+        };
+        drag = drag.or_else(|| tab_drag(ui, bar, kind));
+    }
+    let tabs = Rect::from_min_max(
+        tabs_area.min,
+        pos2(
+            end.max(tabs_area.left() + TOUCH).min(left_of),
+            tabs_area.max.y,
+        ),
+    );
+    let tabs = if pane.tabs.len() == 1 {
+        tabs_area
+    } else {
+        tabs
+    };
+    HeaderOut {
+        close,
+        pin,
+        focus,
+        bar,
+        drag,
+        tabs,
+        centers,
+    }
+}
+
+/// The drag of a response, with the place of the finger.
+fn tab_drag(ui: &egui::Ui, resp: &egui::Response, kind: DockDrag) -> Option<(DockDrag, DragPhase)> {
+    let phase = if resp.drag_stopped() {
+        DragPhase::Stopped
+    } else if resp.dragged() {
+        DragPhase::Moving
+    } else {
+        return None;
+    };
+    let pos = ui
+        .ctx()
+        .pointer_interact_pos()
+        .or(resp.interact_pointer_pos())
+        .unwrap_or(resp.rect.center());
+    let kind = match kind {
+        DockDrag::Pane { pane, .. } => DockDrag::Pane { pane, pos },
+        DockDrag::Tab { panel, .. } => DockDrag::Tab { panel, pos },
+        DockDrag::Width => DockDrag::Width,
+    };
+    Some((kind, phase))
+}

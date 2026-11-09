@@ -206,8 +206,7 @@ pub fn keyboard_top(screen: Rect) -> f32 {
 /// place of the sheet of the inspector. This is so on a compact screen.
 pub fn point_card(state: &AppState, class: WidthClass) -> bool {
     class == WidthClass::Compact
-        && !state.pad.brush
-        && state.pad.right == Some(Panel::Attributes)
+        && state.pad.sheet_panel() == Some(Panel::Attributes)
         && state.new_feature.as_ref().is_some_and(NewFeature::is_point)
 }
 

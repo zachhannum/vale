@@ -626,6 +626,8 @@ pub struct AppState {
     pub tools: Tools,
     /// The settings of the tools that the state folder holds.
     tools_saved: Option<String>,
+    /// The text of the docks of the iPad layout in the projects folder.
+    panels_saved: Option<String>,
 }
 
 /// What the snap targets of the globe come from.
@@ -736,6 +738,7 @@ impl AppState {
             resume_at: None,
             tools: Tools::default(),
             tools_saved: None,
+            panels_saved: None,
         };
         state.font_families = state.fonts.families();
         state.set_layout(Layout::default());
@@ -2322,6 +2325,11 @@ impl AppState {
             let _ = tools::write(dir, &tools);
             self.tools_saved = Some(tools);
         }
+        let panels = self.pad.docks.text();
+        if self.panels_saved.as_ref() != Some(&panels) {
+            let _ = pad::panes::write(dir, &panels);
+            self.panels_saved = Some(panels);
+        }
     }
 
     /// The text of the settings of the tools.
@@ -2337,7 +2345,8 @@ impl AppState {
         if hold
             || self.projects.state_dir().is_none()
             || (self.resume.as_ref() == Some(&self.resume_now())
-                && self.tools_saved.as_ref() == Some(&self.tools_now()))
+                && self.tools_saved.as_ref() == Some(&self.tools_now())
+                && self.panels_saved.as_ref() == Some(&self.pad.docks.text()))
         {
             return None;
         }
@@ -2361,6 +2370,10 @@ impl AppState {
             let (brush, line, snap) = (&mut globe.brush, &mut globe.line, &mut globe.snap);
             self.tools.load(&text, brush, line, snap);
             self.tools_saved = Some(text);
+        }
+        if let Some(text) = self.projects.state_dir().and_then(pad::panes::read) {
+            self.pad.docks.load(&text);
+            self.panels_saved = Some(self.pad.docks.text());
         }
         let Some(resume) = self.projects.state_dir().and_then(Resume::read) else {
             return;

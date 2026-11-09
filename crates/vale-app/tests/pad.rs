@@ -25,8 +25,8 @@ use vale_app::ui::pad::{
     LayerRef, MEASURE, ModeGroup, NEW_GEOJSON, NEW_HEIGHTMAP, NEW_IMAGE, NEW_RASTER, OPACITY,
     PANELS, POLYGON, Page, Panel, RECENTER, RESET, SCULPT, SMOOTHING, SNAP, SNAP_DISTANCE,
     SNAP_EDGES, SNAP_VERTICES, SNAPPING, TERRAIN, TERRAIN_BALANCE, TERRAIN_FIT, TERRAIN_FIT_SWITCH,
-    VECTOR, VIEW_OPTIONS, WORLD_PROPERTIES, WORLDS, WORLDS_ROW, brush_size_text, panels_menu,
-    readout_line, readout_text, theme,
+    TOOLBOX, VECTOR, VIEW_OPTIONS, WORLD_PROPERTIES, WORLDS, WORLDS_ROW, brush_size_text,
+    panels_menu, readout_line, readout_text, theme,
 };
 use vale_app::ui::raster_form::{self, PRESETS, RasterForm, face_size_name};
 use vale_app::ui::select;
@@ -316,7 +316,8 @@ fn the_canvas_fills_the_screen_and_the_panels_float_over_it() {
         let screen = Rect::from_min_size(Pos2::ZERO, size.into());
         assert_eq!(h.state().globe.rect, screen, "{size:?}");
         open_panel(&mut h, "Layers");
-        if !h.state().pad.rects.unwrap().one_panel {
+        if h.state().pad.rects.unwrap().class != WidthClass::Compact {
+            tap(&mut h, "Pin Layers");
             tap(&mut h, "Brush settings");
         }
         assert!(!h.state().pad.panels.is_empty());
@@ -515,7 +516,7 @@ fn each_control_is_large_and_is_outside_the_system_bands() {
         // The list of the layers, the menu of the new layers, and the panel
         // of a vector layer.
         let pad = &mut h.state_mut().pad;
-        pad.brush = false;
+        pad.close(Panel::Brush);
         pad.layer = None;
         pad.open(Panel::Layers);
         h.run_steps(2);
@@ -537,7 +538,7 @@ fn each_control_is_large_and_is_outside_the_system_bands() {
         }
         check_controls(&h, &format!("{size:?} with the menu of the new layers"));
         tap(&mut h, "Lines");
-        for name in [LAYER_NAME, "Back to Layers", "Close Lines 1"] {
+        for name in [LAYER_NAME, "Back to Layers", "Close Layers"] {
             assert!(control(&h, name).is_some(), "{size:?}: {name}");
         }
         check_controls(&h, &format!("{size:?} with the panel of a layer"));
@@ -1130,7 +1131,7 @@ fn the_panel_of_a_raster_layer_renames_the_layer_and_a_swipe_deletes_it() {
         check_controls(&h, &format!("{what} with the panel of a raster layer"));
         type_text(&mut h, LAYER_NAME, "Ground");
         assert_eq!(raster_name(&h, height), "Ground");
-        assert!(control(&h, "Close Ground").is_some(), "{what}");
+        assert!(control(&h, "Close Layers").is_some(), "{what}");
         // A blank name changes nothing.
         type_text(&mut h, LAYER_NAME, "  ");
         assert_eq!(raster_name(&h, height), "Ground");
@@ -1192,11 +1193,11 @@ fn you_make_rename_hide_and_delete_a_layer() {
             h.state().doc.layer(id).unwrap().geometry(),
             Some(vale_store::GeometryKind::Polygon)
         );
-        assert!(control(&h, "Close Polygons 1").is_some());
+        assert!(control(&h, "Close Layers").is_some());
 
         type_text(&mut h, LAYER_NAME, "Coast");
         assert_eq!(h.state().doc.layer(id).unwrap().name, "Coast");
-        assert!(control(&h, "Close Coast").is_some());
+        assert!(control(&h, "Close Layers").is_some());
 
         tap(&mut h, "Back to Layers");
         assert_eq!(h.state().pad.layer, None);
@@ -1250,7 +1251,7 @@ fn the_arrow_of_a_row_opens_the_panel_of_the_layer() {
         let open = panel(&h, Panel::Layers).unwrap();
         assert_eq!(open.left_top(), list.left_top(), "{size:?}");
         assert_eq!(open.width(), list.width(), "{size:?}");
-        for name in ["Close Rivers", "Back to Layers", LAYER_NAME] {
+        for name in ["Close Layers", "Back to Layers", LAYER_NAME] {
             assert!(control(&h, name).is_some(), "{size:?}: {name}");
         }
         assert!(control(&h, ADD_LAYER).is_none());
@@ -1259,7 +1260,7 @@ fn the_arrow_of_a_row_opens_the_panel_of_the_layer() {
         let height = h.state().doc.project.rasters()[0].id;
         assert_eq!(h.state().pad.layer, Some(LayerRef::Raster(height)));
         assert_eq!(h.state().selected_layer, Some(LayerRef::Raster(height)));
-        assert!(control(&h, "Close Height").is_some());
+        assert!(control(&h, "Close Layers").is_some());
 
         // The panel of a layer closes when an undo takes the layer away.
         h.state_mut().pad.layer = Some(LayerRef::Vector(rivers));
@@ -2276,11 +2277,11 @@ fn a_hold_or_a_second_tap_on_the_brush_cell_opens_the_flyout() {
     open_panel(&mut h, "Layers");
     assert!(h.state().pad.flyouts.open.is_none() && h.state().pad.is_open(Panel::Layers));
 
-    // The flyout is in front of the Brush panel.
+    // The flyout opens while the Brush panel is open.
     tap(&mut h, "Brush settings");
     open_modes(&mut h);
-    let flyout = h.state().pad.flyouts.rect.unwrap();
-    assert!(flyout.intersects(panel(&h, Panel::Brush).unwrap()));
+    assert!(h.state().pad.flyouts.rect.is_some());
+    assert!(h.state().pad.is_open(Panel::Brush));
 }
 
 #[test]
@@ -3379,8 +3380,8 @@ fn blur_pad_on(size: (f32, f32), level: impl Fn(f64) -> u16) -> Pad {
         );
         state.set_layer_visible(id, raster);
     }
-    state.pad.open(Panel::Brush);
-    state.pad.open(Panel::Layers);
+    state.pad.docks.world.open_pinned(Panel::Brush);
+    state.pad.docks.world.open_pinned(Panel::Layers);
     show_as(state, RasterDisplay::Grey);
     let globe = &mut state.globe;
     globe.preview.graticule = false;
@@ -3526,33 +3527,20 @@ fn the_blur_behind_a_card_shows_the_visible_vector_layers_in_the_draw_order() {
 }
 
 #[test]
-#[ignore = "gpu"]
-fn a_keypad_card_over_a_panel_shows_the_blurred_panel() {
-    let _gpu = one_gpu_test();
-    // In portrait, the keypad of the brush size is over the Brush panel.
-    let mut h = blur_pad_on(BOARDS[1], |_| u16::MAX);
-    tap(&mut h, "Brush size value");
-    h.run_steps(2);
-    let keypad = h
-        .ctx
-        .memory(|m| m.area_rect(egui::Id::new("Brush size keypad")))
-        .unwrap();
-    let panels: Vec<Rect> = h.state().pad.panels.iter().map(|(_, r)| *r).collect();
-    let under = panels
-        .iter()
-        .map(|p| p.intersect(keypad))
-        .find(|r| r.width() > 40.0);
-    let under = under.unwrap_or_else(|| panic!("{keypad:?} over no panel of {panels:?}"));
-    let image = h.render().unwrap();
-    let mean = |row: &[i32]| row.iter().sum::<i32>() / row.len() as i32;
-    let y = keypad.bottom().min(under.bottom()) as u32 - 3;
-    let row: Vec<i32> = (under.left() as u32 + 16..under.right() as u32 - 16)
-        .map(|x| i32::from(image.get_pixel(x, y).0[0]))
-        .collect();
-    // A card of the order `Middle` over the white canvas.
-    let middle = mean(&card_row(&image, h.state().pad.rects.unwrap().workspace));
-    // The keypad shows the darker panel below it, not the canvas.
-    assert!(mean(&row) + 20 < middle, "{} {middle}", mean(&row));
+fn the_keypad_of_the_brush_size_stays_clear_of_the_dock() {
+    let mut h = docked(BOARDS[1], &[&[Panel::Brush], &[Panel::Layers]]);
+    for width in [340.0, 520.0] {
+        h.state_mut().pad.docks.world.width = width;
+        h.run_steps(2);
+        tap(&mut h, "Brush size value");
+        let keypad = h
+            .ctx
+            .memory(|m| m.area_rect(egui::Id::new("Brush size keypad")))
+            .unwrap();
+        let dock = h.state().pad.dock_rect.unwrap();
+        assert!(!keypad.intersects(dock), "{width}: {keypad:?} {dock:?}");
+        tap(&mut h, "Brush size value Done");
+    }
 }
 
 /// The contrast ratio of two colors, as WCAG defines it.
@@ -3599,6 +3587,7 @@ fn the_pen_paints_on_the_canvas_and_a_panel_stays_open() {
     let _gpu = one_gpu_test();
     let mut h = gpu_pad(BOARDS[0]);
     open_panel(&mut h, "Layers");
+    tap(&mut h, "Pin Layers");
     tap(&mut h, "Brush settings");
     let c = h.state().globe.rect.center();
 
@@ -3629,7 +3618,7 @@ fn the_pen_paints_on_the_canvas_and_a_panel_stays_open() {
     assert!(!h.state().pad.is_open(Panel::Brush));
     toolbox(&mut h);
     toolbox(&mut h);
-    assert_eq!(h.state().pad.right, None);
+    assert!(h.state().pad.dock().panes.is_empty());
 }
 
 /// A tap of `count` fingers near the middle of the canvas. The first finger
@@ -3855,6 +3844,7 @@ fn one_tap_switches_the_view_and_the_tool_and_the_panels_stay() {
     let mut h = pad(BOARDS[0]);
     choose_mode(&mut h, "Lower");
     open_panel(&mut h, "Layers");
+    tap(&mut h, "Pin Layers");
     tap(&mut h, "Brush settings");
     let panels = h.state().pad.panels.clone();
     assert_eq!(panels.len(), 2);
@@ -4115,19 +4105,23 @@ fn the_top_row_and_the_panels_match_the_landscape_board() {
     assert_eq!(control(&h, "Brush settings").unwrap().min, pos2(4.0, 708.0));
 
     open_panel(&mut h, "Layers");
+    tap(&mut h, "Pin Layers");
     tap(&mut h, "Brush settings");
+    // The dock is on the right edge, below the top row.
     let layers = panel(&h, Panel::Layers).unwrap();
-    assert_eq!((layers.min, layers.width()), (pos2(858.0, 92.0), 320.0));
-    // The title row, the import row, and the three layers of the sample.
+    assert_eq!((layers.min, layers.width()), (pos2(854.0, 92.0), 340.0));
+    // The header, the import row, and the three layers of the sample.
     assert_eq!(layers.height(), 52.0 + 4.0 * 48.0 + 10.0);
-    assert_eq!(control(&h, "Close Layers").unwrap().min, pos2(1130.0, 96.0));
+    assert_eq!(control(&h, "Close Layers").unwrap().min, pos2(1146.0, 96.0));
+    // The Brush panel is a pane below a bar.
     let brush = panel(&h, Panel::Brush).unwrap();
-    assert_eq!((brush.min, brush.width()), (pos2(72.0, 92.0), 340.0));
-    // Toolbox opens in the place of Layers.
+    assert_eq!(brush.min, pos2(854.0, layers.bottom() + 14.0));
+    assert_eq!(brush.width(), 340.0);
+    // Toolbox opens in the place of the unpinned Brush pane.
     toolbox(&mut h);
-    assert_eq!(panel(&h, Panel::Layers), None);
-    assert_eq!(panel(&h, Panel::Toolbox).unwrap().min, pos2(858.0, 92.0));
-    assert!(panel(&h, Panel::Brush).is_some());
+    assert_eq!(panel(&h, Panel::Brush), None);
+    assert_eq!(panel(&h, Panel::Toolbox).unwrap().min, brush.min);
+    assert!(panel(&h, Panel::Layers).is_some());
 }
 
 #[test]
@@ -4149,7 +4143,8 @@ fn the_top_row_and_the_panels_match_the_portrait_board() {
 
     toolbox(&mut h);
     let toolbox = panel(&h, Panel::Toolbox).unwrap();
-    assert_eq!((toolbox.min, toolbox.width()), (pos2(498.0, 92.0), 320.0));
+    assert_eq!((toolbox.min, toolbox.width()), (pos2(494.0, 92.0), 340.0));
+    tap(&mut h, "Pin Toolbox");
     tap(&mut h, "Brush settings");
     assert!(h.state().pad.is_open(Panel::Toolbox) && h.state().pad.is_open(Panel::Brush));
 
@@ -4617,7 +4612,7 @@ fn the_screenshots_show_the_boards() {
         let mut state = state();
         state.add_height();
         for panel in panels {
-            state.pad.open(*panel);
+            state.pad.docks.world.open_pinned(*panel);
         }
         state.pad.menu = menu;
         if name == "more" {
@@ -4632,7 +4627,13 @@ fn the_screenshots_show_the_boards() {
         // The canvas is behind the cards, and a card is not as dark as the canvas.
         let r = state.pad.rects.unwrap();
         let card = image.get_pixel(r.tools.center().x as u32, r.tools.bottom() as u32 - 3);
-        let canvas = image.get_pixel(size.0 as u32 - 3, 300);
+        // The dock is on the right edge, above the bottom band.
+        let y = if r.sheet.is_some() {
+            300
+        } else {
+            size.1 as u32 - 3
+        };
+        let canvas = image.get_pixel(size.0 as u32 - 3, y);
         assert_eq!(canvas.0, [15, 17, 19, 255], "{name}");
         assert_ne!(card.0, canvas.0, "{name}");
         assert_eq!(state.pad.flyouts.rect.is_some(), name == "more", "{name}");
@@ -5971,7 +5972,7 @@ fn reset_colors_asks_first_and_puts_back_the_default_stops() {
     check_controls(&h, "with the card of the reset");
     let panel = panel(&h, Panel::Layers).unwrap();
     assert!(card.right() < panel.left(), "{card:?}");
-    finger_tap(&mut h, pos2(panel.left() + 6.0, panel.top() + 80.0));
+    finger_tap(&mut h, pos2(panel.left() + 6.0, panel.top() + 130.0));
     assert_eq!(h.state().pad.style.reset_card, None);
     assert_eq!(h.state().globe.map.bands.stops().len(), count + 1);
     // The Reset button of the card puts back the default stops.
@@ -7813,7 +7814,7 @@ fn pad_schema(h: &Pad, id: vale_store::LayerId) -> Vec<(String, vale_store::Fiel
 
 #[test]
 fn you_add_rename_and_remove_a_field_and_the_file_has_the_same_fields() {
-    use vale_app::ui::pad::fields::{ADD, ADD_FIELD, DELETE_FIELD, FIELD_NAME, NEW_FIELD};
+    use vale_app::ui::pad::fields::{ADD, ADD_FIELD, DELETE_FIELD, FIELD_NAME};
     use vale_store::FieldType::{Integer, Text};
     let dir = tempfile::tempdir().unwrap();
     let mut h = saved_pad(BOARDS[0], dir.path());
@@ -7828,7 +7829,7 @@ fn you_add_rename_and_remove_a_field_and_the_file_has_the_same_fields() {
     scroll_to_control(&mut h, ADD_FIELD);
     tap(&mut h, ADD_FIELD);
     assert_eq!(h.state().pad.page, Some(Page::NewField));
-    assert!(control(&h, &format!("Close {NEW_FIELD}")).is_some());
+    assert!(control(&h, "Close Layers").is_some());
     // The name has the focus, so the on-screen keyboard types into it at
     // once.
     h.event(egui::Event::Text("population".into()));
@@ -7852,7 +7853,7 @@ fn you_add_rename_and_remove_a_field_and_the_file_has_the_same_fields() {
     let fields = [("name".to_string(), Text), ("people".to_string(), Integer)];
     assert_eq!(pad_schema(&h, id), fields);
     assert_eq!(saves(&h), saved + 2);
-    assert!(control(&h, "Close people").is_some());
+    assert!(control(&h, "Close Layers").is_some());
     tap(&mut h, "Back to Points 1");
 
     // Return in the name adds the field.
@@ -7991,7 +7992,7 @@ fn scroll_to_control(h: &mut Pad, name: &str) {
             return;
         }
         let card = panel(h, Panel::Layers).unwrap();
-        let from = pos2(card.left() + 6.0, card.top() + 60.0);
+        let from = pos2(card.left() + 6.0, card.top() + 112.0);
         drag(h, from, from + vec2(0.0, 200.0), None);
     }
 }
@@ -9211,7 +9212,7 @@ fn a_rule_page_sets_a_point_symbol() {
                 break;
             }
             let card = panel(&h, Panel::Layers).unwrap();
-            let from = pos2(card.left() + 6.0, card.top() + 60.0);
+            let from = pos2(card.left() + 6.0, card.top() + 112.0);
             drag(&mut h, from, from + vec2(0.0, hidden + 20.0), None);
         }
         let dial = control(&h, ROTATION).unwrap();
@@ -11991,7 +11992,7 @@ fn below_600_points_the_inspector_is_a_sheet() {
             assert_eq!(rect, sheet, "{size:?}");
         } else {
             assert!(rects.sheet.is_none(), "{size:?}");
-            assert_eq!(rect.left(), rects.right_panel.x, "{size:?}");
+            assert_eq!(rect.right(), rects.screen.right(), "{size:?}");
         }
         check_controls(&h, &format!("{size:?}: Attributes"));
     }
@@ -13636,4 +13637,266 @@ fn the_panels_button_opens_a_menu_with_a_tile_for_each_panel() {
         tap(&mut h, PANELS);
         assert!(!h.state().pad.panels_menu, "{size:?}");
     }
+}
+
+/// The panes of the dock of the World workspace, by their tabs.
+fn dock_tabs(h: &Pad) -> Vec<Vec<Panel>> {
+    let panes = &h.state().pad.docks.world.panes;
+    panes.iter().map(|p| p.tabs.clone()).collect()
+}
+
+/// A layout with these pinned panes in the dock.
+fn docked(size: (f32, f32), panes: &[&[Panel]]) -> Pad {
+    let mut h = pad(size);
+    for tabs in panes {
+        h.state_mut().pad.docks.world.open_tabs(tabs);
+    }
+    h.run_steps(3);
+    h
+}
+
+#[test]
+fn two_pinned_panes_stack_with_a_bar_and_the_bar_changes_their_heights() {
+    use vale_app::ui::pad::panes::BAR;
+    let mut h = docked(BOARDS[0], &[&[Panel::Layers], &[Panel::Toolbox]]);
+    let (layers, toolbox) = (
+        panel(&h, Panel::Layers).unwrap(),
+        panel(&h, Panel::Toolbox).unwrap(),
+    );
+    assert_eq!(layers.top(), h.state().pad.rects.unwrap().column_top);
+    assert_eq!(toolbox.top(), layers.bottom() + BAR);
+    assert_eq!((toolbox.left(), toolbox.right()), (layers.left(), 1194.0));
+
+    let bar = pos2(layers.center().x, layers.bottom() + BAR / 2.0);
+    drag(&mut h, bar, bar - vec2(0.0, 60.0), None);
+    let (above, below) = (
+        panel(&h, Panel::Layers).unwrap(),
+        panel(&h, Panel::Toolbox).unwrap(),
+    );
+    assert!(
+        (above.height() - (layers.height() - 60.0)).abs() < 1.0,
+        "{above:?}"
+    );
+    assert!(
+        (below.height() - (toolbox.height() + 60.0)).abs() < 1.0,
+        "{below:?}"
+    );
+    assert_eq!(below.top(), above.bottom() + BAR);
+    let panes = &h.state().pad.docks.world.panes;
+    assert!(panes.iter().all(|p| p.pinned && p.height.is_some()));
+}
+
+#[test]
+fn the_handle_changes_the_width_of_the_dock_and_a_wide_dock_names_each_tab() {
+    use vale_app::ui::pad::dock_ui::{DOCK_WIDTH, tab_name};
+    let mut h = docked(BOARDS[0], &[&[Panel::Layers, Panel::Toolbox]]);
+    let width = |h: &Pad| h.state().pad.docks.world.width;
+    assert_eq!(width(&h), 340.0);
+    assert_eq!(control(&h, &tab_name(TOOLBOX)).unwrap().width(), 44.0);
+
+    // During the drag, the dock shows its width.
+    let handle = control(&h, DOCK_WIDTH).unwrap().center();
+    touch(&mut h, egui::TouchPhase::Start, handle, None);
+    h.step();
+    for i in 1..=6 {
+        let at = handle - vec2(50.0 * i as f32, 0.0);
+        touch(&mut h, egui::TouchPhase::Move, at, None);
+        h.step();
+    }
+    assert!(h.state().pad.dock_drag.is_some());
+    touch(
+        &mut h,
+        egui::TouchPhase::End,
+        handle - vec2(300.0, 0.0),
+        None,
+    );
+    h.run_steps(3);
+    assert_eq!(width(&h), 520.0);
+    assert!(h.state().pad.dock_drag.is_none());
+    assert_eq!(panel(&h, Panel::Layers).unwrap().width(), 520.0);
+    assert!(control(&h, &tab_name(TOOLBOX)).unwrap().width() > 44.0);
+    // A width does not pin a pane.
+    h.state_mut().pad.docks.world.panes[0].pinned = false;
+
+    let handle = control(&h, DOCK_WIDTH).unwrap().center();
+    drag(&mut h, handle, handle + vec2(400.0, 0.0), None);
+    assert_eq!(width(&h), 300.0);
+    assert!(!h.state().pad.docks.world.panes[0].pinned);
+    for (dock, named) in [(419.0, false), (420.0, true)] {
+        h.state_mut().pad.docks.world.width = dock;
+        h.run_steps(2);
+        let tab = control(&h, &tab_name(TOOLBOX)).unwrap();
+        assert_eq!(tab.width() > 44.0, named, "{dock}");
+    }
+}
+
+#[test]
+fn a_tap_on_the_canvas_closes_the_unpinned_pane_and_a_stroke_does_not() {
+    let mut h = pad(BOARDS[0]);
+    open_panel(&mut h, "Layers");
+    assert!(!h.state().pad.docks.world.is_pinned(Panel::Layers));
+    let c = h.state().globe.rect.center();
+    // A pen stroke and a drag of the view keep it open.
+    drag(&mut h, c - vec2(40.0, 0.0), c + vec2(40.0, 0.0), Some(0.5));
+    assert!(h.state().pad.is_open(Panel::Layers));
+    drag(&mut h, c - vec2(40.0, 0.0), c + vec2(40.0, 40.0), None);
+    assert!(h.state().pad.is_open(Panel::Layers));
+    // A tap of a pen paints, so the pane stays.
+    pen_tap_at(&mut h, c);
+    assert!(h.state().pad.is_open(Panel::Layers));
+    let tap_canvas = |h: &mut Pad| {
+        touch(h, egui::TouchPhase::Start, c, None);
+        h.step();
+        touch(h, egui::TouchPhase::End, c, None);
+        h.run_steps(3);
+    };
+    tap_canvas(&mut h);
+    assert!(!h.state().pad.is_open(Panel::Layers));
+    // A pinned pane stays.
+    open_panel(&mut h, "Layers");
+    tap(&mut h, "Pin Layers");
+    tap_canvas(&mut h);
+    assert!(h.state().pad.is_open(Panel::Layers));
+    // A new unpinned pane opens below it, and the tap closes only that one.
+    toolbox(&mut h);
+    assert_eq!(dock_tabs(&h), [[Panel::Layers], [Panel::Toolbox]]);
+    tap_canvas(&mut h);
+    assert_eq!(dock_tabs(&h), [[Panel::Layers]]);
+}
+
+#[test]
+fn a_drag_of_a_header_moves_its_pane() {
+    use vale_app::ui::pad::dock_ui::move_name;
+    let mut h = docked(
+        BOARDS[0],
+        &[&[Panel::Layers, Panel::Toolbox], &[Panel::Attributes]],
+    );
+    // The empty part of a header with tabs moves the pane.
+    let attributes = panel(&h, Panel::Attributes).unwrap();
+    let from = control(&h, &move_name("Layers")).unwrap().center();
+    drag(&mut h, from, pos2(from.x, attributes.bottom() - 4.0), None);
+    let moved = [vec![Panel::Attributes], vec![Panel::Layers, Panel::Toolbox]];
+    assert_eq!(dock_tabs(&h), moved);
+    assert!(h.state().pad.dock_drag.is_none());
+    // A pane with one tab moves by its title, and a drop outside the dock
+    // does nothing.
+    let from = control(&h, &move_name(select::ATTRIBUTES))
+        .unwrap()
+        .center();
+    let canvas = h.state().globe.rect.center();
+    drag(&mut h, from, canvas, None);
+    assert_eq!(dock_tabs(&h), moved);
+    let layers = panel(&h, Panel::Layers).unwrap();
+    drag(&mut h, from, pos2(from.x, layers.bottom() - 4.0), None);
+    let back = [vec![Panel::Layers, Panel::Toolbox], vec![Panel::Attributes]];
+    assert_eq!(dock_tabs(&h), back);
+}
+
+#[test]
+fn a_drag_of_a_tab_adds_it_to_another_pane_or_makes_a_pane_of_it() {
+    use vale_app::ui::pad::dock_ui::tab_name;
+    let mut h = docked(
+        BOARDS[0],
+        &[&[Panel::Layers, Panel::Toolbox], &[Panel::Attributes]],
+    );
+    // Onto the header of another pane: a tab of that pane.
+    let attributes = panel(&h, Panel::Attributes).unwrap();
+    let from = control(&h, &tab_name(TOOLBOX)).unwrap().center();
+    let to = pos2(attributes.left() + 20.0, attributes.top() + 26.0);
+    drag(&mut h, from, to, None);
+    let merged = [vec![Panel::Layers], vec![Panel::Toolbox, Panel::Attributes]];
+    assert_eq!(dock_tabs(&h), merged);
+    assert!(h.state().pad.shows(Panel::Toolbox));
+    // Below the panes: a pane of its own.
+    let from = control(&h, &tab_name(TOOLBOX)).unwrap().center();
+    let dock = h.state().pad.dock_rect.unwrap();
+    drag(&mut h, from, pos2(from.x, dock.bottom() + 10.0), None);
+    let split = [
+        vec![Panel::Layers],
+        vec![Panel::Attributes],
+        vec![Panel::Toolbox],
+    ];
+    assert_eq!(dock_tabs(&h), split);
+    assert!(h.state().pad.docks.world.panes.iter().all(|p| p.pinned));
+}
+
+#[test]
+fn the_dock_ends_8_points_above_the_bottom_band_and_its_panes_scroll() {
+    let size = (1194.0, 600.0);
+    let mut h = docked(
+        size,
+        &[&[Panel::Layers], &[Panel::Toolbox], &[Panel::Attributes]],
+    );
+    let dock = h.state().pad.dock_rect.unwrap();
+    assert_eq!(dock.bottom(), size.1 - BANDS.1 - 8.0);
+    let attributes = panel(&h, Panel::Attributes).unwrap();
+    assert_eq!(attributes.bottom(), dock.bottom());
+    // The Layers pane is shorter than its content, and it scrolls. The
+    // other panes fit, and they keep their heights.
+    let layers = panel(&h, Panel::Layers).unwrap();
+    assert!(layers.height() < 52.0 + 4.0 * 48.0 + 10.0, "{layers:?}");
+    let lowest = |h: &Pad| {
+        let controls = &h.state().pad.controls;
+        let inside = controls.iter().filter(|c| layers.contains_rect(c.rect));
+        inside.map(|c| c.rect.bottom()).fold(0.0, f32::max)
+    };
+    let before = lowest(&h);
+    let from = pos2(layers.left() + 6.0, layers.bottom() - 20.0);
+    drag(&mut h, from, from - vec2(0.0, 100.0), None);
+    assert!(lowest(&h) != before, "{before}");
+    assert_eq!(h.state().pad.dock_rect.unwrap(), dock);
+    // A pane that scrolls is never shorter than its header and two rows.
+    let layers = panel(&h, Panel::Layers).unwrap();
+    assert!(layers.height() >= vale_app::ui::pad::panes::PANE_MIN);
+    check_controls(&h, "a full dock");
+}
+
+#[test]
+fn each_workspace_keeps_its_dock_after_a_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = docked(BOARDS[0], &[&[Panel::Layers, Panel::Toolbox]]);
+    h.state_mut().projects = Locations::single(dir.path());
+    open_panel(&mut h, select::ATTRIBUTES);
+    let docks = &mut h.state_mut().pad.docks;
+    docks.world.width = 460.0;
+    docks.atlas.open_pinned(Panel::Attributes);
+    docks.atlas.width = 380.0;
+    h.state_mut().save_resume();
+
+    let mut next = state();
+    next.projects = Locations::single(dir.path());
+    next.restore();
+    let world = &next.pad.docks.world;
+    // The unpinned pane does not stay.
+    assert_eq!(world.panes.len(), 1);
+    assert_eq!(world.panes[0].tabs, [Panel::Layers, Panel::Toolbox]);
+    assert_eq!(world.width, 460.0);
+    let atlas = &next.pad.docks.atlas;
+    assert_eq!(atlas.panes[0].tabs, [Panel::Attributes]);
+    assert_eq!(atlas.width, 380.0);
+}
+
+#[test]
+fn on_a_phone_a_panel_is_a_sheet_with_its_tabs() {
+    use vale_app::ui::pad::dock_ui::{DOCK_WIDTH, pin_name, tab_name};
+    let mut h = phone_pad();
+    h.state_mut()
+        .pad
+        .docks
+        .world
+        .open_tabs(&[Panel::Layers, Panel::Toolbox]);
+    h.run_steps(3);
+    let sheet = h.state().pad.rects.unwrap().sheet.expect("no sheet");
+    assert_eq!(panel(&h, Panel::Layers), Some(sheet));
+    for name in [tab_name("Layers"), tab_name(TOOLBOX)] {
+        assert!(control(&h, &name).is_some(), "{name}");
+    }
+    assert!(control(&h, &pin_name("Layers")).is_none());
+    assert!(control(&h, DOCK_WIDTH).is_none());
+    tap(&mut h, &tab_name(TOOLBOX));
+    assert_eq!(panel(&h, Panel::Toolbox), Some(sheet));
+    check_controls(&h, "the sheet of the Toolbox tab");
+    tap(&mut h, &format!("Close {TOOLBOX}"));
+    assert!(h.state().pad.docks.world.panes.is_empty());
+    assert!(h.state().pad.rects.unwrap().sheet.is_none());
 }
