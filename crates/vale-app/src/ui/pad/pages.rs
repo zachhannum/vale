@@ -69,7 +69,7 @@ pub fn panel(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls,
     let head = CardTitle {
         title: PAGES,
         back: None,
-        action: Some((ADD_PAGE, Icon::Plus, true)),
+        action: Some((ADD_PAGE, Icon::Plus, false)),
     };
     let scroll = match state.pad.pages.reorder {
         Some(_) => egui::scroll_area::ScrollSource::NONE,

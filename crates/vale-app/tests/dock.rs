@@ -706,6 +706,39 @@ fn a_drag_of_the_bar_between_two_panels_changes_their_heights() {
     drag(&mut h, bar, bar + vec2(0.0, 900.0), None);
     let below = slot(&h, Panel::Toolbox).body.unwrap().height();
     assert!((below - HEIGHT_MIN).abs() < 1.0, "{below}");
+
+    // The touch area of the bar is a touch target high: the bar and a strip
+    // of the title row below it. A drag on the bar itself moves it too.
+    let touch = control(&h, &bar_name(Panel::Layers)).unwrap();
+    let bar = slot(&h, Panel::Layers).bar_below.unwrap();
+    assert_eq!(touch.center().y, bar.center().y);
+    assert!(touch.height() >= 44.0, "{touch:?}");
+    for end in [false, true] {
+        let touch = control(&h, &bar_name(Panel::Layers)).unwrap();
+        let y = if end {
+            touch.bottom() - 2.0
+        } else {
+            touch.top() + 2.0
+        };
+        let layers = slot(&h, Panel::Layers).body.unwrap().height();
+        let from = pos2(touch.center().x, y);
+        drag(&mut h, from, from - vec2(0.0, 40.0), None);
+        let after = slot(&h, Panel::Layers).body.unwrap().height();
+        assert!(
+            (layers - after - 40.0).abs() < 2.0,
+            "{y}: {layers} → {after}"
+        );
+    }
+
+    // A tap on the strip is a tap on the title row: it folds the panel.
+    let touch = control(&h, &bar_name(Panel::Layers)).unwrap();
+    let strip = pos2(touch.center().x, touch.bottom() - 4.0);
+    assert!(slot(&h, Panel::Toolbox).title.contains(strip));
+    tap_touch(&mut h, egui::TouchPhase::Start, strip, None);
+    h.step();
+    tap_touch(&mut h, egui::TouchPhase::End, strip, None);
+    h.run_steps(3);
+    assert_eq!(docked(&h), [(Panel::Layers, false), (Panel::Toolbox, true)]);
 }
 
 #[test]
@@ -1267,4 +1300,182 @@ fn manual_a_panel_moves_in_the_dock() {
     to_pic(&mut h, pos2(from.x, between), "dock-drag-between");
     let onto = title(&h, Panel::Attributes);
     to_pic(&mut h, onto, "dock-drag-stack");
+}
+
+/// A panel of the narrowest dock, and the state that it shows.
+struct Narrow {
+    name: &'static str,
+    workspace: Workspace,
+    panel: Panel,
+    setup: fn(&mut AppState),
+}
+
+fn vector_layer(state: &AppState, name: &str) -> vale_store::LayerId {
+    let layers = state.doc.project.layers();
+    layers.iter().find(|l| l.name == name).unwrap().id
+}
+
+fn open_vector(state: &mut AppState, name: &str, page: Option<vale_app::ui::pad::Page>) {
+    let id = vector_layer(state, name);
+    state.pad.layer = Some(vale_app::ui::LayerRef::Vector(id));
+    state.pad.page = page;
+}
+
+fn open_raster(state: &mut AppState, page: Option<vale_app::ui::pad::Page>) {
+    let id = state.add_height();
+    state.pad.layer = Some(vale_app::ui::LayerRef::Raster(id));
+    state.pad.page = page;
+}
+
+fn select_frame(state: &mut AppState) {
+    use vale_app::ui::atlas;
+    let id = match atlas::frame_names(state).first() {
+        Some(&(id, _)) => id,
+        None => atlas::add_frame(state).unwrap(),
+    };
+    state.atlas.selection = atlas::AtlasSelection::Frame(id);
+}
+
+fn select_item(state: &mut AppState, kind: vale_app::ui::atlas::ItemKind) {
+    vale_app::ui::atlas::add_item(state, kind).unwrap();
+}
+
+fn narrow_panels() -> Vec<Narrow> {
+    use vale_app::ui::atlas::{AtlasSelection, ItemKind};
+    use vale_app::ui::pad::Page;
+    let world = |name, panel, setup| Narrow {
+        name,
+        workspace: Workspace::Globe,
+        panel,
+        setup,
+    };
+    let atlas = |name, panel, setup| Narrow {
+        name,
+        workspace: Workspace::Atlas,
+        panel,
+        setup,
+    };
+    vec![
+        world("layers", Panel::Layers, |_| {}),
+        world("land", Panel::Layers, |s| open_vector(s, "Land", None)),
+        world("rivers", Panel::Layers, |s| open_vector(s, "Rivers", None)),
+        world("places", Panel::Layers, |s| open_vector(s, "Places", None)),
+        world("land-rule", Panel::Layers, |s| {
+            open_vector(s, "Land", Some(Page::Rule(0)))
+        }),
+        world("rivers-rule", Panel::Layers, |s| {
+            open_vector(s, "Rivers", Some(Page::Rule(0)))
+        }),
+        world("places-rule", Panel::Layers, |s| {
+            open_vector(s, "Places", Some(Page::Rule(0)))
+        }),
+        world("places-shape", Panel::Layers, |s| {
+            open_vector(s, "Places", Some(Page::MarkerShape(0)))
+        }),
+        world("places-fill", Panel::Layers, |s| {
+            open_vector(s, "Places", Some(Page::MarkerFill(0)))
+        }),
+        world("places-symbols", Panel::Layers, |s| {
+            open_vector(s, "Places", Some(Page::Symbols(0)))
+        }),
+        world("land-classify", Panel::Layers, |s| {
+            open_vector(s, "Land", Some(Page::Classify))
+        }),
+        world("land-mask", Panel::Layers, |s| {
+            open_vector(s, "Land", Some(Page::Mask))
+        }),
+        world("places-label-text", Panel::Layers, |s| {
+            open_vector(s, "Places", Some(Page::LabelText))
+        }),
+        world("land-new-field", Panel::Layers, |s| {
+            open_vector(s, "Land", Some(Page::NewField))
+        }),
+        world("height", Panel::Layers, |s| open_raster(s, None)),
+        world("height-stops", Panel::Layers, |s| {
+            open_raster(s, Some(Page::Stops))
+        }),
+        world("height-ramps", Panel::Layers, |s| {
+            open_raster(s, Some(Page::Ramps))
+        }),
+        world("height-hillshade", Panel::Layers, |s| {
+            open_raster(s, Some(Page::Hillshade))
+        }),
+        world("height-blend", Panel::Layers, |s| {
+            open_raster(s, Some(Page::Blend))
+        }),
+        world("attributes", Panel::Attributes, |s| {
+            open_vector(s, "Places", None)
+        }),
+        world("toolbox", Panel::Toolbox, |_| {}),
+        atlas("frame", Panel::Frame, select_frame),
+        atlas("projection", Panel::Projection, select_frame),
+        atlas("map-layers", Panel::MapLayers, select_frame),
+        atlas("labels", Panel::Labels, select_frame),
+        atlas("page", Panel::Properties, |s| {
+            s.atlas.selection = AtlasSelection::Page
+        }),
+        atlas("text", Panel::Properties, |s| {
+            select_item(s, ItemKind::Text)
+        }),
+        atlas("legend", Panel::Properties, |s| {
+            select_item(s, ItemKind::Legend)
+        }),
+        atlas("color-key", Panel::Properties, |s| {
+            select_item(s, ItemKind::ColorKey)
+        }),
+        atlas("scale-bar", Panel::Properties, |s| {
+            select_item(s, ItemKind::ScaleBar)
+        }),
+        atlas("north-arrow", Panel::Properties, |s| {
+            select_item(s, ItemKind::NorthArrow)
+        }),
+        atlas("pages", Panel::Pages, |_| {}),
+        atlas("atlas-attributes", Panel::Attributes, |_| {}),
+    ]
+}
+
+#[test]
+fn each_panel_fits_the_narrowest_dock() {
+    for case in narrow_panels() {
+        let mut state = state(case.workspace);
+        (case.setup)(&mut state);
+        let dock = state.pad.docks.get_mut(case.workspace);
+        dock.groups.clear();
+        vale_app::dock::apply(
+            &mut state.pad.docks,
+            case.workspace,
+            &[Entry::new(case.panel)],
+        );
+        state.pad.docks.get_mut(case.workspace).set_width(WIDTH_MIN);
+        let mut h = pad_with(state, BOARDS[0]);
+        let what = case.name;
+        let rect = slot(&h, case.panel).rect();
+        assert_eq!(rect.width(), WIDTH_MIN, "{what}");
+        // Each control and each widget of the panel is inside the panel,
+        // from side to side, and each control keeps the touch size.
+        let inside = |r: Rect| r.left() >= rect.left() - 0.5 && r.right() <= rect.right() + 0.5;
+        let mut count = 0;
+        for c in &h.state().pad.controls {
+            if rect.contains(c.rect.center()) {
+                count += 1;
+                assert!(inside(c.rect), "{what}: {} is {:?}", c.name, c.rect);
+                let size = c.rect.size();
+                assert!(size.min_elem() >= 44.0, "{what}: {} is {size:?}", c.name);
+            }
+        }
+        assert!(count >= 1, "{what}: {count} controls");
+        for node in h.query_all(egui_kittest::kittest::By::new()) {
+            let ak = node.accesskit_node();
+            if ak.bounding_box().is_none() {
+                continue;
+            }
+            let r = node.rect();
+            let named = ak.label().is_some() || ak.value().is_some();
+            if named && r.is_positive() && rect.contains(r.center()) && r.width() < 1000.0 {
+                let label = ak.label().unwrap_or_default();
+                assert!(inside(r), "{what}: {label} is {r:?}");
+            }
+        }
+        screenshot::save(&mut h, &format!("w280-{what}"));
+    }
 }

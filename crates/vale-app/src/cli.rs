@@ -52,6 +52,9 @@ pub struct Args {
     /// or `frame,map-layers,pages:folded`.
     #[arg(long, value_name = "PANELS", value_delimiter = ',')]
     pub dock: Vec<dock::Entry>,
+    /// With --dock: the width of the dock in points, from 280 to 480.
+    #[arg(long, value_name = "PT")]
+    pub dock_width: Option<f32>,
     /// With --layout pad: open the flyout of the group of the brush mode.
     #[arg(long)]
     pub brush_modes: bool,
@@ -249,6 +252,9 @@ pub fn parse_measure(s: &str) -> anyhow::Result<Measure> {
 pub fn apply_dock(args: &Args, state: &mut AppState) {
     if !args.dock.is_empty() {
         dock::apply(&mut state.pad.docks, args.workspace, &args.dock);
+    }
+    if let Some(width) = args.dock_width {
+        state.pad.docks.get_mut(args.workspace).set_width(width);
     }
 }
 

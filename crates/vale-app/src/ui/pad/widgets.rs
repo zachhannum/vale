@@ -631,6 +631,9 @@ pub struct TitleRow {
     /// The row without its buttons. A sheet moves with a drag on it, and a
     /// tap folds a panel of the dock.
     pub bar: Response,
+    /// The strip at the top of the row that is a part of the touch area of
+    /// the bar above a panel of the dock, below the buttons of the row.
+    pub grip: Option<Response>,
 }
 
 /// The buttons at the ends of a title row.
@@ -646,6 +649,8 @@ pub enum TitleEnds<'a> {
         name: &'a str,
         folded: bool,
         icon: Icon,
+        /// The strip of the row that the bar above the panel reaches into.
+        grip: Option<Rect>,
     },
 }
 
@@ -696,6 +701,12 @@ pub fn title_row_with(
             };
             ui.interact(rect, ui.id().with(("title", title)), sense)
         }
+    };
+    let grip = match ends {
+        TitleEnds::Fold {
+            grip: Some(strip), ..
+        } => Some(grip_strip(ui, strip)),
+        _ => None,
     };
     let button = |x: f32| Rect::from_min_size(pos2(x, rect.top() + PAD), vec2(TOUCH, TOUCH));
     let mut left = rect.left();
@@ -757,7 +768,15 @@ pub fn title_row_with(
         dock,
         action,
         bar,
+        grip,
     }
+}
+
+/// The strip of a title row that is a part of the touch area of the bar
+/// above it. The strip takes a tap and a drag, and the buttons of the row
+/// are above it.
+pub fn grip_strip(ui: &egui::Ui, strip: Rect) -> Response {
+    ui.interact(strip, ui.id().with("pad-grip"), Sense::click_and_drag())
 }
 
 /// What the user did with a row of the layer list.
@@ -1402,16 +1421,46 @@ pub fn option_row(
 const FORM_LABEL: f32 = 92.0;
 
 /// One row of a form: the label at the left, and the place of the control
-/// at the right. The controls of all rows have the same left edge.
+/// at the right. The controls of all rows have the same left edge, unless
+/// the label is wider than the column of the labels.
 fn form_row(ui: &mut egui::Ui, label: &str) -> Rect {
+    let left = label_room(ui, label);
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), Sense::hover());
     let at = pos2(rect.left(), rect.center().y);
     ui.painter()
         .text(at, Align2::LEFT_CENTER, label, theme::body(), theme::MUTE);
     Rect::from_min_max(
-        pos2(rect.left() + FORM_LABEL, rect.center().y - TOUCH / 2.0),
+        pos2(rect.left() + left, rect.center().y - TOUCH / 2.0),
         pos2(rect.right(), rect.center().y + TOUCH / 2.0),
     )
+}
+
+/// The space that the label of a form row takes at the left of the row.
+fn label_room(ui: &egui::Ui, label: &str) -> f32 {
+    FORM_LABEL.max(text_width(ui, label, theme::body()) + LABEL_GAP)
+}
+
+/// The smallest space between the label of a row and its control.
+pub const LABEL_GAP: f32 = 12.0;
+
+/// The height of the line of a label above its control, in a row too
+/// narrow for both.
+pub const LABEL_LINE: f32 = 26.0;
+
+/// The line of a label above its control, as wide as the row.
+pub fn label_line(ui: &mut egui::Ui, label: &str, color: Color32) {
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), LABEL_LINE), Sense::hover());
+    let at = pos2(rect.left(), rect.bottom());
+    ui.painter()
+        .text(at, Align2::LEFT_BOTTOM, label, theme::body(), color);
+}
+
+/// A row of a form whose control is as wide as the row, below the label.
+/// Returns the place of the control.
+fn form_row_below(ui: &mut egui::Ui, label: &str) -> Rect {
+    label_line(ui, label, theme::MUTE);
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), Sense::hover());
+    Rect::from_center_size(rect.center(), vec2(rect.width(), TOUCH))
 }
 
 /// A row of a form with a value that the user cannot change.
@@ -2283,6 +2332,9 @@ pub fn keypad_below(ui: &mut egui::Ui, controls: &mut Controls, name: &str) {
     }
 }
 
+/// The smallest space at each end of the text of a choice of `choice_row`.
+const CHOICE_PAD: f32 = 8.0;
+
 /// A row of a form with a segmented control: choices of equal width on one
 /// track. `active` is the choice that is on. Returns the choice that the
 /// user made.
@@ -2293,7 +2345,18 @@ pub fn choice_row(
     choices: &[&str],
     active: Option<usize>,
 ) -> Option<usize> {
-    let field = form_row(ui, label);
+    // Each choice has room for its text and some space at each end, or the
+    // track goes below the label.
+    let n = choices.len().max(1) as f32;
+    let widest = (choices.iter())
+        .map(|c| text_width(ui, c, theme::body()))
+        .fold(0.0, f32::max);
+    let room = ui.available_width() - label_room(ui, label);
+    let field = if room / n >= widest + 2.0 * CHOICE_PAD {
+        form_row(ui, label)
+    } else {
+        form_row_below(ui, label)
+    };
     let track = field.shrink(HIGHLIGHT_INSET);
     ui.painter()
         .rect_filled(track, theme::CONTROL_RADIUS, theme::track());
@@ -2312,6 +2375,7 @@ pub fn choice_row(
         let color = if on { theme::TEXT } else { theme::MUTE };
         let at = rect.center();
         ui.painter()
+            .with_clip_rect(rect.shrink2(vec2(4.0, 0.0)))
             .text(at, Align2::CENTER_CENTER, *choice, theme::body(), color);
         if resp.clicked() && !on {
             chosen = Some(index);

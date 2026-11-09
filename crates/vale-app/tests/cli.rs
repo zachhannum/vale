@@ -227,6 +227,15 @@ fn the_dock_flag_opens_the_dock_of_the_workspace_with_its_panels() {
     );
     assert!(Args::try_parse_from(["vale-app", "--dock", "layers+wheel"]).is_err());
 
+    // `--dock-width` sets the width, within the bounds of the dock.
+    let args = parse(&["--dock", "layers", "--dock-width", "280"]);
+    let mut narrow = AppState::new(Document::sample()).unwrap();
+    apply_dock(&args, &mut narrow);
+    assert_eq!(narrow.pad.docks.get(Workspace::Globe).width, 280.0);
+    let args = parse(&["--dock", "layers", "--dock-width", "100"]);
+    apply_dock(&args, &mut narrow);
+    assert_eq!(narrow.pad.docks.get(Workspace::Globe).width, 280.0);
+
     let dock = "frame,projection,map-layers,labels:folded,properties,pages";
     let args = parse(&["--workspace", "atlas", "--dock", dock]);
     apply_dock(&args, &mut state);

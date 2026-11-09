@@ -2412,6 +2412,7 @@ fn docked_card(
                     body(ui, state, controls);
                 });
             });
+        dock::body_grip(ui, state, slot);
     });
     rect
 }

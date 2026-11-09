@@ -28,6 +28,8 @@ const BUBBLE_WIDTH: f32 = 112.0;
 pub const LABEL_COLUMN: f32 = 96.0;
 /// The width of the value field at the right of a row.
 const VALUE_WIDTH: f32 = 84.0;
+/// The shortest track of a slider with its label beside it.
+const TRACK_MIN: f32 = 100.0;
 /// The distance from the track at which each slower speed starts, and the
 /// speed.
 const SPEEDS: [(f32, f64, &str); 3] = [
@@ -317,14 +319,21 @@ impl<'a> Number<'a> {
         } else {
             TICK_NAMES
         };
-        let size = vec2(ui.available_width(), PANEL_ROW + names);
-        let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
-        let row = rect.with_max_y(rect.top() + PANEL_ROW);
-        let y = row.center().y;
         let text = fade(theme::TEXT, enabled);
         let label = ui
             .painter()
             .layout_no_wrap(self.label.to_owned(), theme::body(), text);
+        // The label goes above a track that would be too short beside it.
+        let beside = (label.size().x + 16.0).max(LABEL_COLUMN);
+        let value = if self.field { VALUE_WIDTH + 8.0 } else { 0.0 };
+        let below = !self.label.is_empty() && ui.available_width() - beside - value < TRACK_MIN;
+        if below {
+            widgets::label_line(ui, self.label, text);
+        }
+        let size = vec2(ui.available_width(), PANEL_ROW + names);
+        let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+        let row = rect.with_max_y(rect.top() + PANEL_ROW);
+        let y = row.center().y;
         let field = if self.field {
             Rect::from_min_max(
                 pos2(row.right() - VALUE_WIDTH, y - TOUCH / 2.0),
@@ -343,10 +352,10 @@ impl<'a> Number<'a> {
             enabled,
             None,
         );
-        let start = if self.label.is_empty() {
+        let start = if self.label.is_empty() || below {
             row.left()
         } else {
-            row.left() + (label.size().x + 16.0).max(LABEL_COLUMN)
+            row.left() + beside
         };
         let end = if self.field {
             field.left() - 8.0
@@ -367,8 +376,10 @@ impl<'a> Number<'a> {
         let held = resp.dragged() || resp.is_pointer_button_down_on();
         paint_track(ui, track, x_of(value), &marks, false, enabled, held);
         let painter = ui.painter();
-        let at = pos2(row.left(), y - label.size().y / 2.0);
-        painter.galley(at, label, text);
+        if !below {
+            let at = pos2(row.left(), y - label.size().y / 2.0);
+            painter.galley(at, label, text);
+        }
         for (tick, name) in self.ticks {
             let active = (tick - value).abs() <= tick.abs() * 1e-9;
             let color = fade(if active { theme::TEXT } else { theme::MUTE }, enabled);
@@ -492,15 +503,23 @@ impl<'a> Number<'a> {
     /// changes it.
     pub fn stepper(self, ui: &mut egui::Ui, controls: &mut Controls) -> Option<f64> {
         let enabled = self.enabled;
+        let text = fade(theme::TEXT, enabled);
+        // The label goes above the stepper in a row too narrow for both.
+        let width = 2.0 * TOUCH + VALUE_WIDTH;
+        let label = widgets::text_width(ui, self.label, theme::body());
+        if label + widgets::LABEL_GAP + width > ui.available_width() {
+            widgets::label_line(ui, self.label, text);
+        }
         let size = vec2(ui.available_width(), PANEL_ROW);
         let (row, _) = ui.allocate_exact_size(size, Sense::hover());
         let y = row.center().y;
-        let text = fade(theme::TEXT, enabled);
-        let at = pos2(row.left(), y);
         let painter = ui.painter();
-        painter.text(at, Align2::LEFT_CENTER, self.label, theme::body(), text);
+        if label + widgets::LABEL_GAP + width <= row.width() {
+            let at = pos2(row.left(), y);
+            painter.text(at, Align2::LEFT_CENTER, self.label, theme::body(), text);
+        }
         let whole = Rect::from_min_max(
-            pos2(row.right() - 2.0 * TOUCH - VALUE_WIDTH, y - HEIGHT / 2.0),
+            pos2(row.right() - width, y - HEIGHT / 2.0),
             pos2(row.right(), y + HEIGHT / 2.0),
         );
         let radius = theme::CONTROL_RADIUS;

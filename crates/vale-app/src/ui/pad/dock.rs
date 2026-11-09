@@ -22,6 +22,9 @@ use crate::ui::AppState;
 pub const TITLE: f32 = ROW;
 /// The height of the bar between two open panels.
 pub const BAR: f32 = 14.0;
+/// The touch area of the bar reaches this far into the body above it and
+/// into the title row below it, so that it is as high as a touch target.
+pub const GRIP_REACH: f32 = (TOUCH - BAR) / 2.0;
 /// A drag of the edge handle this far past the narrowest width closes the
 /// dock, and a drag this far from the right edge opens it.
 pub const EDGE_DRAG: f32 = 40.0;
@@ -412,8 +415,16 @@ pub fn draw(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, 
             let id = egui::Id::new(("pad-dock-bar", slot.group));
             let name = bar_name(slot.panel);
             let mut dy = 0.0;
+            // The touch area of the bar goes on into the panels at each side.
+            let touch = bar.expand2(vec2(0.0, GRIP_REACH)).intersect(content);
+            if touch.height() >= TOUCH {
+                controls.push(widgets::Control {
+                    name: name.clone(),
+                    rect: touch,
+                });
+            }
             piece(ctx, id, bar, content, |ui| {
-                let resp = widgets::hit(ui, controls, bar, &name, Sense::drag(), true, None);
+                let resp = widgets::hit(ui, &mut Vec::new(), bar, &name, Sense::drag(), true, None);
                 if resp.dragged() {
                     dy = resp.drag_delta().y;
                 }
@@ -507,6 +518,13 @@ pub fn head(
     let folded = slot.body.is_none();
     // The actions act on the body, so a folded group has none.
     let action = action.filter(|_| !folded);
+    // The bar above the group, and the strip of the row that its touch area
+    // reaches into.
+    let slots = &state.pad.dock_frame.slots;
+    let above = (slots.iter().position(|s| s.group == slot.group))
+        .and_then(|k| k.checked_sub(1))
+        .filter(|&k| slots[k].bar_below.is_some());
+    let strip = above.map(|_| slot.title.with_max_y(slot.title.top() + GRIP_REACH));
     let panels = match state.pad.docks.get(state.workspace).group_of(slot.panel) {
         Some(group) if group.is_stack() => group.panels.clone(),
         _ => {
@@ -515,16 +533,19 @@ pub fn head(
                 name: &name,
                 folded,
                 icon: panel_face(slot.panel).1,
+                grip: strip,
             };
             let row = widgets::title_row_with(ui, controls, title, back, false, action, ends);
             if grab(ui, state, &row.bar, slot.panel, true) {
                 toggle_fold(state, slot.panel);
             }
+            grip(state, row.grip.as_ref(), above, slot.panel);
             return row;
         }
     };
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::hover());
     let bar = ui.interact(rect, ui.id().with("pad-dock-tabs"), Sense::click_and_drag());
+    let strip = strip.map(|strip| widgets::grip_strip(ui, strip));
     let chevron = Rect::from_min_size(pos2(rect.left() + 8.0, rect.top()), vec2(24.0, ROW));
     let face = if folded { Icon::Open } else { Icon::Down };
     icons::paint(ui.painter(), chevron, face, 18.0, theme::MUTE);
@@ -592,6 +613,7 @@ pub fn head(
     if grab(ui, state, &bar, slot.panel, true) {
         toggle_fold(state, slot.panel);
     }
+    grip(state, strip.as_ref(), above, slot.panel);
     match tapped {
         Some(panel) if panel == slot.panel => toggle_fold(state, panel),
         Some(panel) => {
@@ -606,6 +628,44 @@ pub fn head(
         dock: false,
         action,
         bar,
+        grip: strip,
+    }
+}
+
+/// The strip at the bottom of the body of `slot` that is a part of the
+/// touch area of the bar below it. It is above the body, so a drag there
+/// moves the bar.
+pub fn body_grip(ui: &egui::Ui, state: &mut AppState, slot: Slot) {
+    let (Some(body), Some(_)) = (slot.body, slot.bar_below) else {
+        return;
+    };
+    let strip = body.with_min_y(body.bottom() - GRIP_REACH);
+    let resp = ui.interact(strip, ui.id().with("pad-grip-body"), Sense::drag());
+    if resp.dragged() && state.pad.dock_frame.drag.is_none() {
+        let dy = resp.drag_delta().y;
+        let slots = state.pad.dock_frame.slots.clone();
+        drag_bar(
+            state.pad.docks.get_mut(state.workspace),
+            &slots,
+            slot.group,
+            dy,
+        );
+    }
+}
+
+/// A drag of the strip of a title row moves the bar above it, the group
+/// at `above`, and a tap on it folds the group of `panel`.
+fn grip(state: &mut AppState, strip: Option<&Response>, above: Option<usize>, panel: Panel) {
+    let (Some(strip), Some(i)) = (strip, above) else {
+        return;
+    };
+    if strip.dragged() && state.pad.dock_frame.drag.is_none() {
+        let dy = strip.drag_delta().y;
+        let slots = state.pad.dock_frame.slots.clone();
+        drag_bar(state.pad.docks.get_mut(state.workspace), &slots, i, dy);
+    }
+    if strip.clicked() {
+        toggle_fold(state, panel);
     }
 }
 
@@ -675,6 +735,7 @@ pub fn finish(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
             ui.spacing_mut().item_spacing.y = 0.0;
             let title = panel_face(slot.panel).0;
             head(ui, state, controls, *slot, title, None, None);
+            body_grip(ui, state, *slot);
         });
         state.pad.panels.push((slot.panel, slot.rect()));
     }
@@ -726,10 +787,8 @@ fn drop_marks(ctx: &egui::Context, slots: &[Slot], content: Rect, drag: &PanelDr
         .show(ctx, |ui| {
             let (rect, _) = ui.allocate_exact_size(rect.size(), Sense::hover());
             let radius = egui::CornerRadius::same(theme::CONTROL_RADIUS as u8);
-            widgets::glass(ui.painter(), None, order, rect, radius, true);
-            // The lifted card is opaque, as a lifted row of the layer list.
-            ui.painter()
-                .rect_filled(rect, radius, theme::card(false).to_opaque());
+            let backdrop = widgets::backdrop(ui.ctx());
+            widgets::glass(ui.painter(), backdrop, order, rect, radius, true);
             ui.painter().rect_filled(rect, radius, theme::raise());
             ui.painter().rect_stroke(
                 rect,

@@ -566,11 +566,8 @@ fn check_controls(h: &Pad, what: &str) {
     assert!(controls.len() >= 4, "{what}: {} controls", controls.len());
     for (i, a) in controls.iter().enumerate() {
         let (name, rect) = (&a.name, a.rect);
-        // The bar between two panels of the dock is a thin drag area across
-        // the dock.
-        let bar = (Panel::ALL.iter()).any(|&p| vale_app::ui::pad::dock::bar_name(p) == *name);
         assert!(
-            bar || rect.width() >= 44.0 && rect.height() >= 44.0,
+            rect.width() >= 44.0 && rect.height() >= 44.0,
             "{what}: {name} is {rect:?}"
         );
         assert!(rect.top() >= BANDS.0, "{what}: {name} is in the top band");
