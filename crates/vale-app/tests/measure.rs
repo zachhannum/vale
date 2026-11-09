@@ -193,8 +193,9 @@ fn a_point_snaps_to_a_vertex_only_when_snap_is_on() {
         };
         let state = h.state_mut();
         state.globe.snap.on = on;
+        // The towns near the target are far apart at this zoom.
         let view = GlobeView::centered(target[0], target[1]);
-        state.globe.view = GlobeView { zoom: 20.0, ..view };
+        state.globe.view = GlobeView { zoom: 30.0, ..view };
         h.run_steps(2);
         let at = screen(&h, target) + vec2(1.0, 1.0);
         tap_at(&mut h, at, Some(0.5));
