@@ -77,9 +77,14 @@ fn run() -> anyhow::Result<u8> {
         apply_measure(&args, &mut state)?;
         apply_frame(&args, &mut state)?;
         if args.dock_hidden {
-            // The panes of the selected frame open before the dock collapses.
+            // The Frame panel of the selected frame opens before the dock
+            // collapses.
             if state.atlas.frame().is_some() {
-                state.pad.docks.atlas.open_frames();
+                state
+                    .pad
+                    .docks
+                    .atlas
+                    .follow_frame(vale_app::ui::pad::Panel::Frame);
                 state.pad.atlas_selection = Some(state.atlas.selection);
             }
             state.pad.dock_mut().collapsed = true;

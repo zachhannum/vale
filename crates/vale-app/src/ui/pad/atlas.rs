@@ -107,7 +107,8 @@ pub const LAYOUT_GRID: &str = "Layout grid";
 pub const SHOW_GRID: &str = "Show layout grid";
 /// The switch of the layout grid in the context strip.
 pub const GRID: &str = "Grid";
-/// The Maps panel: the list of the map frames of the open page.
+/// The Maps menu of the desktop layout: the list of the map frames of the
+/// open page.
 pub const MAPS: &str = "Maps";
 pub const NO_FRAMES: &str = "Add a map frame to see it here.";
 pub const GRID_SPACING: &str = "Grid spacing";
@@ -379,27 +380,32 @@ fn column_input(state: &AppState, measuring: bool) -> geometry::ColumnInput {
     }
 }
 
-/// A new selection opens the panels that it needs and closes none: a frame
-/// opens the panels of a frame that are not open, in the arrangement of the
-/// last time, the page opens the Pages panel, and an item opens its panel.
+/// A new selection opens at most one pane and closes none: a frame opens the
+/// Frame panel if no panel of a frame is open, the page opens the Pages
+/// panel, and an item opens the Item panel. A panel that the user closed
+/// does not open. A change of the tab of the frame shows its panel, and a
+/// new frame with a new tab opens the panel of the tab in place of Frame.
 fn follow_selection(state: &mut AppState) {
     let selection = state.atlas.selection;
     let before = state.pad.atlas_selection.replace(selection);
     let dock = &mut state.pad.docks.atlas;
     let frame = matches!(selection, AtlasSelection::Frame(_));
+    let tab = state.atlas.tab;
+    let new_tab = frame && state.pad.atlas_tab.is_some_and(|t| t != tab);
     if before != Some(selection) {
         match selection {
-            AtlasSelection::Frame(_) => dock.open_frames(),
-            AtlasSelection::Page => dock.open(Panel::Pages),
-            AtlasSelection::Item(_) => dock.open(Panel::Item),
+            AtlasSelection::Frame(_) if new_tab && dock.is_open(Panel::from(tab)) => {
+                dock.follow(Panel::from(tab));
+            }
+            AtlasSelection::Frame(_) if new_tab => dock.follow_frame(Panel::from(tab)),
+            AtlasSelection::Frame(_) => dock.follow_frame(Panel::Frame),
+            AtlasSelection::Page => dock.follow(Panel::Pages),
+            AtlasSelection::Item(_) => dock.follow(Panel::Item),
             AtlasSelection::None => {}
         }
         state.pad.sheet_offset = 0.0;
-    }
-    // A change of the tab of the frame shows its panel.
-    let tab = state.atlas.tab;
-    if frame && state.pad.atlas_tab.is_some_and(|t| t != tab) {
-        dock.open(Panel::from(tab));
+    } else if new_tab {
+        dock.follow(Panel::from(tab));
     }
     state.pad.atlas_tab = Some(tab);
 }
@@ -997,20 +1003,6 @@ pub(super) fn head(state: &mut AppState, panel: Panel) -> Option<Head> {
             let (index, _) = atlas::page_index(state);
             head.subtitle = Some(format!("Page {}", index + 1));
             head
-        }
-        Panel::Maps => {
-            let body = |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| {
-                let frames = atlas::frame_names(state);
-                if frames.is_empty() {
-                    muted(ui, NO_FRAMES);
-                }
-                for (id, name) in frames {
-                    if widgets::open_row(ui, controls, &name, "").clicked() {
-                        atlas::open_frame(state, id);
-                    }
-                }
-            };
-            PageParts::new("pad-atlas-frames", MAPS, None).head(panel, no_back, no_rows, body)
         }
         Panel::Item => {
             let item = state.atlas.item();

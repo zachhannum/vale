@@ -357,8 +357,6 @@ pub enum Panel {
     Labels,
     /// The open page of the atlas.
     Pages,
-    /// The list of the map frames of the open page.
-    Maps,
     /// The selected item of the page. It has no tile.
     #[value(skip)]
     Item,
@@ -375,7 +373,6 @@ impl Panel {
             Panel::Projection => "pad-projection",
             Panel::Labels => "pad-labels",
             Panel::Pages => "pad-pages",
-            Panel::Maps => "pad-maps",
             Panel::Item => "pad-item",
         }
     }
@@ -1735,7 +1732,6 @@ pub fn panel_name(state: &AppState, panel: Panel) -> &'static str {
         Panel::Projection => atlas::FRAME_TABS[1],
         Panel::Labels => atlas::FRAME_TABS[3],
         Panel::Pages => panels_menu::PAGES,
-        Panel::Maps => atlas::MAPS,
         Panel::Item => atlas::item_name(state),
     }
 }
@@ -1750,7 +1746,6 @@ pub fn panel_icon(panel: Panel) -> Icon {
         Panel::Projection => Icon::Projection,
         Panel::Labels => Icon::Tag,
         Panel::Pages => Icon::Pages,
-        Panel::Maps => Icon::Map,
         Panel::Item => Icon::Attributes,
     }
 }

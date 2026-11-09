@@ -22,8 +22,11 @@ pub const PANE_MIN: f32 = ROW + 2.0 * 48.0;
 /// The file of the docks in the state folder.
 const FILE: &str = "panels.txt";
 
+/// The names of panels that older files have and the app does not.
+const REMOVED: [&str; 1] = ["maps"];
+
 /// The names of the panels in the file.
-const NAMES: [(Panel, &str); 10] = [
+const NAMES: [(Panel, &str); 9] = [
     (Panel::Brush, "brush"),
     (Panel::Layers, "layers"),
     (Panel::Toolbox, "toolbox"),
@@ -32,7 +35,6 @@ const NAMES: [(Panel, &str); 10] = [
     (Panel::Projection, "projection"),
     (Panel::Labels, "labels"),
     (Panel::Pages, "pages"),
-    (Panel::Maps, "maps"),
     (Panel::Item, "item"),
 ];
 
@@ -44,7 +46,8 @@ pub const FRAME_PANELS: [Panel; 4] = [
     Panel::Labels,
 ];
 
-/// A group of the panels of a frame that open as the tabs of one pane.
+/// A group of the panels of a frame that share one pane. A panel of a frame
+/// that opens goes into the pane of an open panel of its group.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Group {
     pub tabs: Vec<Panel>,
@@ -52,13 +55,15 @@ pub struct Group {
     pub active: usize,
 }
 
-/// The first arrangement of the panels of a frame: one pane with four
-/// tabs.
+/// The first arrangement of the panels of a frame: each panel in a group of
+/// its own.
 pub fn first_arrangement() -> Vec<Group> {
-    vec![Group {
-        tabs: FRAME_PANELS.to_vec(),
-        active: 0,
-    }]
+    (FRAME_PANELS.iter())
+        .map(|p| Group {
+            tabs: vec![*p],
+            active: 0,
+        })
+        .collect()
 }
 
 /// A pane of the dock.
@@ -156,11 +161,13 @@ pub struct Dock {
     pub focus: Option<Panel>,
     /// The height of the room for the panes in the last frame.
     pub room: f32,
-    /// The groups of the panels of a frame that a selected frame opens, in
-    /// the order of the dock. The Atlas workspace uses it.
+    /// The groups of the panels of a frame, in the order of the dock. The
+    /// Atlas workspace uses it.
     pub arrangement: Vec<Group>,
     /// The dock is off the right edge, with its panes as they were.
     pub collapsed: bool,
+    /// The panels that the user closed. A selection does not open them.
+    pub closed: Vec<Panel>,
 }
 
 impl Default for Dock {
@@ -172,6 +179,7 @@ impl Default for Dock {
             room: f32::INFINITY,
             arrangement: first_arrangement(),
             collapsed: false,
+            closed: Vec::new(),
         }
     }
 }
@@ -209,12 +217,35 @@ impl Dock {
         ((self.room + BAR) / (PANE_MIN + BAR)).floor().max(1.0) as usize
     }
 
+    /// Shows a panel at the request of the user, and forgets that the user
+    /// closed it.
+    pub fn open(&mut self, panel: Panel) {
+        self.closed.retain(|p| *p != panel);
+        self.place(panel);
+    }
+
+    /// Shows a panel for a new selection. A closed panel opens only if the
+    /// user did not close it.
+    pub fn follow(&mut self, panel: Panel) {
+        if self.is_open(panel) || !self.closed.contains(&panel) {
+            self.place(panel);
+        }
+    }
+
+    /// Opens a panel of a frame for a selected frame, if no panel of a
+    /// frame is open and the user did not close the panel.
+    pub fn follow_frame(&mut self, panel: Panel) {
+        if !FRAME_PANELS.iter().any(|p| self.is_open(*p)) {
+            self.follow(panel);
+        }
+    }
+
     /// Shows a panel. An open panel becomes the open tab of its pane. A
     /// closed panel of a frame joins the pane of the other panels of its
     /// group. Another closed panel opens in a new pane at the bottom, or,
     /// with no room for a new pane, as a tab of the last pane. A panel that
     /// opens shows the dock.
-    pub fn open(&mut self, panel: Panel) {
+    fn place(&mut self, panel: Panel) {
         self.focus = Some(panel);
         if let Some((i, tab)) = self.find(panel) {
             self.panes[i].active = tab;
@@ -242,31 +273,6 @@ impl Dock {
         }
         self.panes.push(Pane::new(panel));
         self.keep_in(self.room);
-    }
-
-    /// Opens the groups of the panels of a frame that are not open, as
-    /// panes at the bottom, in the order of the arrangement. Each group
-    /// shows its open tab of the last time.
-    pub fn open_frames(&mut self) {
-        let mut first = None;
-        for group in self.arrangement.clone() {
-            let missing: Vec<Panel> = (group.tabs.iter())
-                .filter(|p| !self.is_open(**p))
-                .copied()
-                .collect();
-            if missing.is_empty() {
-                continue;
-            }
-            let shown = group.tabs.get(group.active);
-            let active = (missing.iter()).position(|p| Some(p) == shown).unwrap_or(0);
-            first.get_or_insert(missing[active]);
-            self.panes.push(Pane::with_tabs(missing, active));
-        }
-        if first.is_some() {
-            self.focus = first;
-            self.collapsed = false;
-            self.keep_in(self.room);
-        }
     }
 
     /// Takes the arrangement of the panels of a frame from the panes. A
@@ -317,7 +323,8 @@ impl Dock {
 
     /// Opens a panel in a new pane at the bottom.
     pub fn open_new(&mut self, panel: Panel) {
-        self.close(panel);
+        self.remove(panel);
+        self.closed.retain(|p| *p != panel);
         self.panes.push(Pane::new(panel));
         self.focus = Some(panel);
         self.collapsed = false;
@@ -326,8 +333,9 @@ impl Dock {
     /// Opens the panels as the tabs of one new pane.
     pub fn open_tabs(&mut self, panels: &[Panel]) {
         for panel in panels {
-            self.close(*panel);
+            self.remove(*panel);
         }
+        self.closed.retain(|p| !panels.contains(p));
         let mut tabs = panels.to_vec();
         tabs.dedup();
         if tabs.is_empty() {
@@ -338,27 +346,49 @@ impl Dock {
         self.panes.push(Pane::with_tabs(tabs, 0));
     }
 
+    /// Closes a panel at the request of the user. A selection does not
+    /// open it again.
     pub fn close(&mut self, panel: Panel) {
+        if self.remove(panel) {
+            self.remember(&[panel]);
+        }
+    }
+
+    /// Takes a panel out of its pane. Returns true if it was open.
+    fn remove(&mut self, panel: Panel) -> bool {
         let Some((i, tab)) = self.find(panel) else {
-            return;
+            return false;
         };
         self.remove_tab(i, tab);
         if self.focus == Some(panel) {
             self.focus = self.panes.last().map(Pane::panel);
         }
+        true
     }
 
-    /// Closes the pane with this index.
+    fn remember(&mut self, panels: &[Panel]) {
+        for panel in panels {
+            if !self.closed.contains(panel) {
+                self.closed.push(*panel);
+            }
+        }
+    }
+
+    /// Closes the pane with this index, at the request of the user.
     pub fn close_pane(&mut self, i: usize) {
         if i < self.panes.len() {
             let pane = self.panes.remove(i);
+            self.remember(&pane.tabs);
             if self.focus.is_some_and(|f| pane.tabs.contains(&f)) {
                 self.focus = self.panes.last().map(Pane::panel);
             }
         }
     }
 
+    /// Closes all panes at the request of the user.
     pub fn close_all(&mut self) {
+        let open: Vec<Panel> = self.panes.iter().flat_map(|p| p.tabs.clone()).collect();
+        self.remember(&open);
         self.panes.clear();
         self.focus = None;
     }
@@ -466,9 +496,11 @@ impl Dock {
     }
 
     /// Puts back the first state: no panes, the first width, the first
-    /// arrangement, and the dock on the screen.
+    /// arrangement, the dock on the screen, and no closed panels.
     pub fn reset(&mut self) {
-        self.close_all();
+        self.panes.clear();
+        self.focus = None;
+        self.closed.clear();
         self.width = WIDTH;
         self.collapsed = false;
         if !self.arrangement.is_empty() {
@@ -565,9 +597,9 @@ impl Default for Docks {
 }
 
 impl Docks {
-    /// The text of the file: the width, the panes, and the collapsed state
-    /// of each dock, and the arrangement of the panels of a frame in the
-    /// Atlas.
+    /// The text of the file: the width, the panes, the collapsed state,
+    /// and the closed panels of each dock, and the arrangement of the
+    /// panels of a frame in the Atlas.
     pub fn text(&self) -> String {
         let mut lines = Vec::new();
         for (key, dock) in [("world", &self.world), ("atlas", &self.atlas)] {
@@ -580,6 +612,10 @@ impl Docks {
                 let names: Vec<&str> = pane.tabs.iter().map(|t| name(*t)).collect();
                 let height = pane.height.map_or("auto".to_owned(), |h| h.to_string());
                 lines.push(format!("{key} pane {} {active} {height}", names.join(",")));
+            }
+            if !dock.closed.is_empty() {
+                let names: Vec<&str> = dock.closed.iter().map(|t| name(*t)).collect();
+                lines.push(format!("{key} closed {}", names.join(",")));
             }
         }
         for group in &self.atlas.arrangement {
@@ -606,6 +642,10 @@ impl Docks {
                     }
                 }
                 ["collapsed"] => dock.collapsed = true,
+                ["closed", names] => {
+                    let panels = names.split(',').filter_map(panel);
+                    dock.remember(&panels.collect::<Vec<_>>());
+                }
                 // The fifth field of an older file has no effect.
                 ["pane", tabs, active, height] | ["pane", tabs, active, height, _] => {
                     if let Some(pane) = parse_pane(tabs, active, height)
@@ -631,7 +671,13 @@ impl Docks {
                 })
             })
             .collect();
-        if let Some(groups) = groups {
+        // The first arrangement of an older file is one group of all the
+        // panels of a frame.
+        let old = [Group {
+            tabs: FRAME_PANELS.to_vec(),
+            active: 0,
+        }];
+        if let Some(groups) = groups.filter(|g| g[..] != old) {
             let mut all: Vec<Panel> = groups.iter().flat_map(|g| g.tabs.clone()).collect();
             let count = all.len();
             all.sort_by_key(|p| FRAME_PANELS.iter().position(|f| f == p));
@@ -650,16 +696,37 @@ fn name(panel: Panel) -> &'static str {
         .unwrap_or_default()
 }
 
+/// The panel with this name in the file.
+fn panel(name: &str) -> Option<Panel> {
+    NAMES.iter().find_map(|(p, n)| (*n == name).then_some(*p))
+}
+
+/// A pane of the file. A tab of a panel that the app no longer has drops
+/// out.
 fn parse_pane(tabs: &str, active: &str, height: &str) -> Option<Pane> {
+    let mut active = active.parse::<usize>().ok()?;
+    let names: Vec<&str> = tabs.split(',').collect();
+    if active >= names.len() {
+        return None;
+    }
     let mut panels = Vec::new();
-    for tab in tabs.split(',') {
-        let panel = NAMES.iter().find_map(|(p, n)| (*n == tab).then_some(*p))?;
+    for (i, tab) in names.iter().enumerate() {
+        if REMOVED.contains(tab) {
+            if i < active || (i == active && active > 0) {
+                active -= 1;
+            }
+            continue;
+        }
+        let panel = panel(tab)?;
         if panels.contains(&panel) {
             return None;
         }
         panels.push(panel);
     }
-    let active = active.parse::<usize>().ok().filter(|a| *a < panels.len())?;
+    if panels.is_empty() {
+        return None;
+    }
+    let active = active.min(panels.len() - 1);
     let height = match height {
         "auto" => None,
         h => Some(
@@ -844,7 +911,7 @@ mod tests {
             collapsed: true,
             ..Dock::default()
         };
-        d.open_frames();
+        d.follow_frame(Panel::Frame);
         assert!(!d.collapsed);
     }
 
@@ -932,60 +999,107 @@ mod tests {
     }
 
     #[test]
-    fn a_frame_opens_its_panels_in_the_arrangement_of_the_last_time() {
+    fn a_selected_frame_opens_only_the_frame_panel() {
         let mut d = Dock::default();
-        d.open_frames();
-        assert_eq!(tabs(&d), vec![FRAME_PANELS.to_vec()]);
-        // Labels moves to a pane of its own, and Projection is the open tab.
-        d.move_tab(Panel::Labels, Drop::Split { at: 1 });
-        d.focus(0, 1);
-        d.learn();
-        assert_eq!(d.arrangement.len(), 2);
-        d.close_all();
-        d.learn();
-        assert_eq!(d.arrangement.len(), 2);
-        d.open_frames();
-        assert_eq!(
-            tabs(&d),
-            vec![
-                vec![Panel::Frame, Panel::Projection, Panel::Layers],
-                vec![Panel::Labels]
-            ]
-        );
-        assert!(d.shows(Panel::Projection));
-        // A closed panel stays in its group, and opens with it.
-        d.close(Panel::Layers);
-        d.learn();
-        assert_eq!(
-            d.arrangement[0].tabs,
-            vec![Panel::Frame, Panel::Projection, Panel::Layers]
-        );
-        d.open(Panel::Layers);
-        assert_eq!(
-            tabs(&d)[0],
-            vec![Panel::Frame, Panel::Projection, Panel::Layers]
-        );
-        d.reset();
-        assert_eq!(d.arrangement, first_arrangement());
+        d.follow_frame(Panel::Frame);
+        assert_eq!(tabs(&d), vec![vec![Panel::Frame]]);
+        assert_eq!(d.focus, Some(Panel::Frame));
+        // An open panel of a frame keeps a second pane from opening.
+        d.close(Panel::Frame);
+        d.open(Panel::Labels);
+        d.closed.clear();
+        d.follow_frame(Panel::Frame);
+        assert_eq!(tabs(&d), vec![vec![Panel::Labels]]);
     }
 
     #[test]
-    fn a_frame_opens_only_the_panels_that_are_not_open() {
+    fn a_selection_does_not_open_a_panel_that_the_user_closed() {
         let mut d = Dock::default();
-        d.open_frames();
-        d.open(Panel::Pages);
-        d.close(Panel::Labels);
-        d.open_frames();
-        assert_eq!(
-            tabs(&d),
-            vec![
-                vec![Panel::Frame, Panel::Projection, Panel::Layers],
-                vec![Panel::Pages],
-                vec![Panel::Labels]
-            ]
+        d.follow_frame(Panel::Frame);
+        d.close(Panel::Frame);
+        d.follow_frame(Panel::Frame);
+        assert!(d.panes.is_empty());
+        d.follow(Panel::Pages);
+        d.close_pane(0);
+        d.follow(Panel::Pages);
+        d.follow(Panel::Item);
+        d.close_all();
+        d.follow(Panel::Item);
+        assert!(d.panes.is_empty());
+        assert_eq!(d.closed, vec![Panel::Frame, Panel::Pages, Panel::Item]);
+        // Its tile opens it and forgets that the user closed it.
+        d.open(Panel::Frame);
+        assert_eq!(tabs(&d), vec![vec![Panel::Frame]]);
+        assert_eq!(d.closed, vec![Panel::Pages, Panel::Item]);
+    }
+
+    #[test]
+    fn reset_forgets_the_closed_panels_and_the_arrangement() {
+        let mut d = Dock::default();
+        d.open(Panel::Frame);
+        d.open(Panel::Labels);
+        d.move_tab(Panel::Labels, Drop::Merge { pane: 0, index: 1 });
+        d.learn();
+        assert_eq!(d.arrangement[0].tabs, vec![Panel::Frame, Panel::Labels]);
+        d.close_all();
+        d.reset();
+        assert!(d.closed.is_empty());
+        assert_eq!(d.arrangement, first_arrangement());
+        d.follow_frame(Panel::Frame);
+        assert_eq!(tabs(&d), vec![vec![Panel::Frame]]);
+    }
+
+    #[test]
+    fn a_panel_of_a_frame_opens_in_the_pane_of_its_group() {
+        let mut d = Dock::default();
+        d.open(Panel::Frame);
+        d.open(Panel::Projection);
+        assert_eq!(tabs(&d), vec![vec![Panel::Frame], vec![Panel::Projection]]);
+        // Projection joins Frame as a tab, and Projection is the open tab.
+        d.move_tab(Panel::Projection, Drop::Merge { pane: 0, index: 1 });
+        d.learn();
+        // A closed panel stays in its group, and opens in its pane again.
+        d.close(Panel::Projection);
+        d.learn();
+        assert_eq!(d.arrangement[0].tabs, vec![Panel::Frame, Panel::Projection]);
+        d.open(Panel::Projection);
+        assert_eq!(tabs(&d), vec![vec![Panel::Frame, Panel::Projection]]);
+        // With no panel of its group open, a panel opens in a new pane.
+        d.open(Panel::Labels);
+        assert_eq!(d.panes.len(), 2);
+    }
+
+    #[test]
+    fn the_text_keeps_the_closed_panels() {
+        let mut docks = Docks::default();
+        docks.atlas.open(Panel::Pages);
+        docks.atlas.close(Panel::Pages);
+        docks.atlas.close(Panel::Frame);
+        docks.atlas.open(Panel::Frame);
+        docks.atlas.close(Panel::Frame);
+        docks.world.open(Panel::Brush);
+        docks.world.close_all();
+        let mut back = Docks::default();
+        back.load(&docks.text());
+        assert_eq!(back.atlas.closed, vec![Panel::Pages, Panel::Frame]);
+        assert_eq!(back.world.closed, vec![Panel::Brush]);
+    }
+
+    #[test]
+    fn an_older_file_loads() {
+        let mut docks = Docks::default();
+        docks.load(
+            "atlas width 400\natlas pane frame,maps,labels 2 auto\natlas pane maps 0 auto\n\
+             atlas group frame,projection,layers,labels 0",
         );
-        d.open_frames();
-        assert_eq!(d.panes.len(), 3);
+        assert_eq!(tabs(&docks.atlas), vec![vec![Panel::Frame, Panel::Labels]]);
+        assert!(docks.atlas.shows(Panel::Labels));
+        assert!(docks.atlas.closed.is_empty());
+        // The one group of four tabs of an older file gives way to the first
+        // arrangement.
+        assert_eq!(docks.atlas.arrangement, first_arrangement());
+        docks.load("atlas closed maps,pages");
+        assert_eq!(docks.atlas.closed, vec![Panel::Pages]);
     }
 
     #[test]

@@ -19,9 +19,9 @@ Where the pictures differ from the rules below, they show an earlier state with 
 | `globe-wide` | The handle drags the dock to 460 points wide, and each tab shows its name. |
 | `globe-tabs` | Layers, Toolbox, and Attributes as tabs of one panel, and the Brush panel below it. |
 | `globe-drag` | The Attributes tab moves out of its panel, and the drop targets show. |
-| `atlas-tabs` | A selected frame opens one panel with the tabs Frame, Projection, Layers, and Labels. |
+| `atlas-tabs` | Frame, Projection, Layers, and Labels as tabs of one panel. |
 | `atlas-split` | Frame, Projection, and Layers as tabs of one panel, and Labels below it. |
-| `atlas-empty` | With no frame selected, the pinned frame panels show a hint. |
+| `atlas-empty` | With no frame selected, the open frame panels show a hint. |
 
 ## Chrome
 
@@ -50,7 +50,7 @@ Each pane has a header with the title or the tabs, and the action of its panel. 
 - In a dock 420 points wide or more, each tab shows its icon and its name.
 - A pane stays open until you close it. It keeps its place in the dock, its height, and its tabs. A tap on the canvas closes no pane.
 - A long press on a tab or on the title opens a menu with "Close" and the name of the panel. With more than one tab, the menu also has "Move to new pane".
-- A selection opens the panes that it needs, and it never closes a pane.
+- A selection opens one pane at most, and it never closes a pane. It does not open a panel that you closed, until its tile opens it again.
 - A drag of the empty part of a header moves the pane to another place in the dock.
 - A drag of a tab onto the tab row of another pane adds it as a tab. A drag of a tab to a place in the dock makes it a pane of its own.
 - With no pane open, the dock is not there.
@@ -58,11 +58,11 @@ Each pane has a header with the title or the tabs, and the action of its panel. 
 - A slim tab at the middle of the right edge shows the dock again, with a tap or a drag to the left. A panel that opens also shows the dock.
 - Each workspace keeps its own dock on the device. The project file does not keep it.
 
-The Panels button opens the Panels menu, which has a tile for each panel of the workspace. A tinted tile is an open panel. A tap on a tile opens the panel in the dock or brings it into view, and a tap on an open tile closes it. A tile is off when its panel does nothing in the workspace. Below the tiles, "Hide dock" or "Show dock" collapses or shows the dock. "Close all" closes each panel, and "Reset layout" closes each panel and puts the dock back in its first state.
+The Panels button opens the Panels menu, which has a tile for each panel of the workspace. A tinted tile is an open panel. A tap on a tile opens the panel in the dock or brings it into view, and a tap on an open tile closes it. A tile is off when its panel does nothing in the workspace. Below the tiles, "Hide dock" or "Show dock" collapses or shows the dock. "Close all" closes each panel, and "Reset layout" closes each panel and puts the dock back in its first state. If a frame is selected, Frame then opens.
 
-The Atlas menu has two groups. Selection holds Frame, Projection, Layers, and Labels. Atlas holds Pages, Maps, Attributes, and Brush.
+The Atlas menu has two groups. Selection holds Frame, Projection, Layers, and Labels. Atlas holds Pages, Attributes, and Brush. The frame tiles are always on.
 
-In the Atlas workspace, the panel of a frame is four panels: Frame, Projection, Layers, and Labels. A selected frame opens them in the arrangement of the last time, and the first arrangement is one panel with four tabs. The panels show the selected frame. With no frame selected, each frame panel shows a hint.
+In the Atlas workspace, the panel of a frame is four panels: Frame, Projection, Layers, and Labels. A selected frame opens Frame if no frame panel is open, and the tiles open the others. A frame panel opens as a tab of the panels of its group, or in a new panel. At first each frame panel is a group of its own, and tabs that you merge make a group. The panels show the selected frame. With no frame selected, each frame panel shows a hint.
 
 On a compact screen, a panel is a sheet, and its tabs stay. The sheet has a close button, and a long press on a tab opens the menu with "Close".
 

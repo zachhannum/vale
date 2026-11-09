@@ -82,7 +82,6 @@ pub fn world(state: &AppState) -> Vec<Group> {
 /// The tiles of the Atlas workspace.
 pub fn atlas(state: &AppState) -> Vec<Group> {
     let pad = &state.pad;
-    let frame = state.atlas.frame().is_some();
     let panel = |panel: Panel, name, icon, enabled: bool| {
         tile(panel, name, icon, pad.is_open(panel), enabled)
     };
@@ -91,17 +90,16 @@ pub fn atlas(state: &AppState) -> Vec<Group> {
         Group {
             heading: SELECTION,
             tiles: vec![
-                panel(Panel::Frame, frame_name, Icon::Frame, frame),
-                panel(Panel::Projection, projection, Icon::Projection, frame),
-                panel(Panel::Layers, layers, Icon::Layers, frame),
-                panel(Panel::Labels, labels, Icon::Tag, frame),
+                panel(Panel::Frame, frame_name, Icon::Frame, true),
+                panel(Panel::Projection, projection, Icon::Projection, true),
+                panel(Panel::Layers, layers, Icon::Layers, true),
+                panel(Panel::Labels, labels, Icon::Tag, true),
             ],
         },
         Group {
             heading: ATLAS,
             tiles: vec![
                 panel(Panel::Pages, PAGES, Icon::Pages, true),
-                panel(Panel::Maps, super::atlas::MAPS, Icon::Map, true),
                 panel(
                     Panel::Attributes,
                     select::ATTRIBUTES,
@@ -229,9 +227,9 @@ pub fn show(
     }
     if reset {
         state.pad.dock_mut().reset();
-        // The panels of the selected frame open in the first arrangement.
+        // A selected frame opens its Frame panel.
         if state.workspace == Workspace::Atlas && state.atlas.frame().is_some() {
-            state.pad.dock_mut().open_frames();
+            state.pad.dock_mut().follow_frame(Panel::Frame);
         }
         state.pad.panels_menu = false;
     }
