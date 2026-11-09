@@ -41,11 +41,9 @@ pub const SHEET_HEIGHT: f32 = 452.0;
 /// The space between two cards of the row layout.
 pub const ROW_GAP: f32 = 8.0;
 pub const READOUT_HEIGHT: f32 = 32.0;
-/// The width of the actions bar: five buttons and a divider.
-pub const ACTIONS_WIDTH: f32 = 5.0 * TOUCH + 5.0 * PAD + 9.0 + 2.0 * PAD;
-/// The width of the actions bar below 1,000 points, which has no Toolbox
-/// button.
-pub const NARROW_ACTIONS_WIDTH: f32 = ACTIONS_WIDTH - TOUCH - PAD;
+/// The width of the actions card of the compact layout: Undo, Redo, a
+/// divider, and the Panels button.
+pub const NARROW_ACTIONS_WIDTH: f32 = 3.0 * TOUCH + 3.0 * PAD + 9.0 + 2.0 * PAD;
 
 /// The height of the top bar.
 pub const BAR: f32 = 44.0;
@@ -181,8 +179,6 @@ pub struct Input {
     /// The width of the dock. Zero: the dock is closed, or the screen is
     /// narrower than 1,000 points.
     pub dock_width: f32,
-    /// The number of panel buttons in the dock zone of the bar.
-    pub dock_buttons: usize,
     /// The width of the name button of the world at its full length.
     pub name_width: f32,
     pub column: ColumnInput,
@@ -204,7 +200,6 @@ impl Input {
             extra: 0,
             tools: TOOLS,
             dock_width: 0.0,
-            dock_buttons: 3,
             name_width: NAME_MIN,
             column: ColumnInput {
                 tools: TOOLS,
@@ -380,11 +375,10 @@ fn bar_layout(input: &Input, class: WidthClass) -> Bar {
     let dock = (dock_width > 0.0)
         .then(|| Rect::from_min_max(pos2(canvas_right, bar.bottom()), screen.max));
 
-    // The dock zone: the panel buttons, a divider, and the Dock button.
+    // The dock zone: the Panels button, a divider, and the Dock button.
     let button = |x: f32| Rect::from_min_size(pos2(x, bar.top()), vec2(TOUCH, BAR));
     let wide = class == WidthClass::Wide;
-    let buttons_width =
-        input.dock_buttons as f32 * TOUCH + if wide { DIVIDER + TOUCH } else { 0.0 };
+    let buttons_width = TOUCH + if wide { DIVIDER + TOUCH } else { 0.0 };
     let right = screen.right() - bands.right - PAD;
     let actions = Rect::from_min_max(
         pos2(right - buttons_width, bar.top()),
@@ -790,7 +784,6 @@ mod tests {
             extra: 0,
             tools: TOOLS,
             dock_width: 0.0,
-            dock_buttons: 3,
             name_width: 120.0,
             column: ColumnInput {
                 tools: TOOLS,
@@ -855,8 +848,8 @@ mod tests {
         assert_eq!(r.redo.left(), r.undo.right());
         // The name of the world is at the center of the canvas.
         assert_eq!(r.workspace, rect(537.0, 24.0, 120.0, BAR));
-        // Three panel buttons, a divider, and the Dock button.
-        assert_eq!(r.actions, rect(1005.0, 24.0, 185.0, BAR));
+        // The Panels button, a divider, and the Dock button.
+        assert_eq!(r.actions, rect(1093.0, 24.0, 97.0, BAR));
         assert_eq!(r.dock_button, Some(rect(1146.0, 24.0, TOUCH, BAR)));
         assert_eq!(r.dock, None);
         assert_eq!(r.canvas, rect(0.0, 68.0, 1194.0, 766.0));
@@ -942,7 +935,7 @@ mod tests {
         assert_eq!(r.view.unwrap().center().x, 417.0);
         // Below 1,000 points, the bar has no Dock button and no dock.
         assert_eq!(r.dock_button, None);
-        assert_eq!(r.actions, rect(698.0, 24.0, 3.0 * TOUCH, BAR));
+        assert_eq!(r.actions, rect(786.0, 24.0, TOUCH, BAR));
         let mut input = board(834.0, 1194.0);
         input.dock_width = 320.0;
         let r = layout(&input);

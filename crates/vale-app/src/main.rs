@@ -74,6 +74,14 @@ fn run() -> anyhow::Result<u8> {
         if args.worlds_menu {
             vale_app::ui::pad::toggle_worlds(&mut state);
         }
+        state.pad.panels_menu = args.panels_menu;
+        if args.select_frame {
+            use vale_app::ui::atlas;
+            match atlas::frame_names(&state).first() {
+                Some(&(id, _)) => state.atlas.selection = atlas::AtlasSelection::Frame(id),
+                None => _ = atlas::add_frame(&mut state),
+            }
+        }
         apply_globe(&args, &mut state.globe, face_size)?;
         state.form_face_size = args.face_size.map(|size| size as usize);
         if args.raster_form {

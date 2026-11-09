@@ -47,7 +47,8 @@ pub struct Args {
     #[arg(long, value_enum, value_name = "PANEL")]
     pub panel: Vec<Panel>,
     /// With --layout pad: open the dock of the workspace with these panels.
-    /// Each one is `name` or `name:folded`, for example `layers,toolbox:folded`.
+    /// Each one is `name` or `name:folded`, for example `layers,toolbox:folded`
+    /// or `frame,map-layers,pages:folded`.
     #[arg(long, value_name = "PANELS", value_delimiter = ',')]
     pub dock: Vec<dock::Entry>,
     /// With --layout pad: open the flyout of the group of the brush mode.
@@ -63,6 +64,13 @@ pub struct Args {
     /// With --layout pad: open the menu of the worlds.
     #[arg(long)]
     pub worlds_menu: bool,
+    /// With --layout pad: open the Panels menu.
+    #[arg(long)]
+    pub panels_menu: bool,
+    /// With --workspace atlas: select the first map frame of the open page.
+    /// A page with no map frame gets one.
+    #[arg(long)]
+    pub select_frame: bool,
     /// Open the form of a new raster layer.
     #[arg(long)]
     pub raster_form: bool,

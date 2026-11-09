@@ -27,14 +27,15 @@ pub const ROW_HEIGHT: f32 = TOUCH;
 const WIDTH: f32 = 480.0;
 const CELL_PAD: f32 = 12.0;
 
-/// True if the Layers panel, or the Layers tab of a frame in the Atlas,
-/// shows the table of the layer of the table.
+/// True if the Layers panel of the globe or of a map frame shows the table
+/// of the layer of the table.
 pub fn showing(state: &AppState) -> bool {
     let Some(table) = &state.table else {
         return false;
     };
     if state.workspace == Workspace::Atlas {
-        return state.atlas.open_layer() == Some(table.layer)
+        return state.pad.is_open(Panel::MapLayers)
+            && state.atlas.open_layer() == Some(table.layer)
             && state.atlas.layer_page == Some(Page::Table);
     }
     state.pad.is_open(Panel::Layers)

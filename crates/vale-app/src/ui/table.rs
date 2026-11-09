@@ -137,13 +137,14 @@ impl AppState {
         table.seen = self.feature_selection.clone();
         self.table = Some(table);
         // In the iPad layout, the table is a page of the layer in the
-        // Layers panel, or in the Layers tab of a frame in the Atlas.
+        // Layers panel, or in the Layers panel of a frame in the Atlas.
         if let (true, Some(frame)) = (pad_atlas, frame) {
             let atlas = &mut self.atlas;
             atlas.selection = super::atlas::AtlasSelection::Frame(frame);
             atlas.tab = super::atlas::FrameTab::Layers;
             atlas.layer = Some((frame, layer));
             atlas.layer_page = Some(super::pad::Page::Table);
+            self.pad.open(super::pad::Panel::MapLayers);
             // The frame panel shows the table, so the inspector closes.
             if self.pad.is_open(super::pad::Panel::Attributes) {
                 self.pad.close(super::pad::Panel::Attributes);

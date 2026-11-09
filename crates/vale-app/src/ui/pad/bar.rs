@@ -1,6 +1,6 @@
 //! The top bar of the iPad layout from 600 points: Back, the two workspace
 //! buttons, Undo, and Redo at the left, the name of the world at the center
-//! of the canvas, and the panel buttons and the Dock button in the dock zone.
+//! of the canvas, and the Panels button and the Dock button in the dock zone.
 
 use eframe::egui::{self, Rect, Sense, pos2, vec2};
 
@@ -55,15 +55,8 @@ pub(super) fn fit_text(ui: &egui::Ui, text: &str, width: f32) -> String {
     "…".to_owned()
 }
 
-/// Draws the band and the bar. `panel_buttons` draws the panel buttons of
-/// the workspace at the given places.
-pub fn draw(
-    ctx: &egui::Context,
-    state: &mut AppState,
-    controls: &mut Controls,
-    rects: &Rects,
-    panel_buttons: impl FnOnce(&egui::Ui, &mut AppState, &mut Controls, &[Rect]),
-) {
+/// Draws the band and the bar.
+pub fn draw(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
     let area = rects.band.union(rects.bar);
     let edge = [
         pos2(area.left(), area.bottom() - 0.5),
@@ -109,15 +102,8 @@ pub fn draw(
         }
 
         let actions = rects.actions;
-        let dock = rects.dock_button.map_or(0.0, |_| DIVIDER + TOUCH);
-        let count = ((actions.width() - dock) / TOUCH).round().max(0.0) as usize;
-        let buttons: Vec<Rect> = (0..count)
-            .map(|i| {
-                let min = pos2(actions.left() + i as f32 * TOUCH, actions.top());
-                Rect::from_min_size(min, vec2(TOUCH, actions.height()))
-            })
-            .collect();
-        panel_buttons(ui, state, controls, &buttons);
+        let panels = Rect::from_min_size(actions.min, vec2(TOUCH, actions.height()));
+        super::panels_button(ui, state, controls, panels);
         if let Some(button) = rects.dock_button {
             let line = Rect::from_center_size(
                 pos2(button.left() - DIVIDER / 2.0, rects.bar.center().y),

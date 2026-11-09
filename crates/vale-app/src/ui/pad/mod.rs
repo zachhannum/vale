@@ -339,38 +339,53 @@ pub struct Reorder {
     grab: f32,
 }
 
-/// A panel that a button of the layout opens.
+/// A panel of the layout. The Panels menu lists the panels of the
+/// workspace, and the Brush panel opens from the context strip.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum Panel {
     Brush,
     Layers,
     Toolbox,
     Attributes,
-    Selection,
+    /// The frame of the selected map frame and its map.
+    Frame,
+    /// The projection of the map of the selected map frame.
+    Projection,
+    /// The layers of the map of the selected map frame.
+    MapLayers,
+    /// The label classes of the map of the selected map frame.
+    Labels,
+    /// The open page, or the selected item of furniture.
+    Properties,
     Pages,
-    Maps,
 }
 
 impl Panel {
-    pub const ALL: [Panel; 7] = [
+    pub const ALL: [Panel; 10] = [
         Panel::Brush,
         Panel::Layers,
         Panel::Toolbox,
         Panel::Attributes,
-        Panel::Selection,
+        Panel::Frame,
+        Panel::Projection,
+        Panel::MapLayers,
+        Panel::Labels,
+        Panel::Properties,
         Panel::Pages,
-        Panel::Maps,
     ];
 
-    fn key(self) -> &'static str {
+    pub(super) fn key(self) -> &'static str {
         match self {
             Panel::Brush => "pad-brush",
             Panel::Layers => "pad-layers",
             Panel::Toolbox => "pad-toolbox",
             Panel::Attributes => "pad-attributes",
-            Panel::Selection => "pad-selection",
+            Panel::Frame => "pad-atlas-frame",
+            Panel::Projection => "pad-atlas-projection",
+            Panel::MapLayers => "pad-atlas-layers",
+            Panel::Labels => "pad-atlas-labels",
+            Panel::Properties => "pad-atlas-properties",
             Panel::Pages => "pad-pages",
-            Panel::Maps => "pad-maps",
         }
     }
 
@@ -381,9 +396,12 @@ impl Panel {
             Panel::Layers => "layers",
             Panel::Toolbox => "toolbox",
             Panel::Attributes => "attributes",
-            Panel::Selection => "selection",
+            Panel::Frame => "frame",
+            Panel::Projection => "projection",
+            Panel::MapLayers => "map-layers",
+            Panel::Labels => "labels",
+            Panel::Properties => "properties",
             Panel::Pages => "pages",
-            Panel::Maps => "maps",
         }
     }
 
@@ -391,19 +409,29 @@ impl Panel {
         Panel::ALL.into_iter().find(|panel| panel.id() == id)
     }
 
-    /// The panels of the panel buttons of `workspace`, in the order of the
-    /// buttons.
-    pub fn order(workspace: Workspace) -> &'static [Panel] {
+    /// The panels of `workspace`, in the order of the Panels menu.
+    pub fn of(workspace: Workspace) -> &'static [Panel] {
         match workspace {
             Workspace::Globe => &[Panel::Layers, Panel::Attributes, Panel::Toolbox],
             Workspace::Atlas => &[
-                Panel::Selection,
+                Panel::Frame,
+                Panel::Projection,
+                Panel::MapLayers,
+                Panel::Labels,
+                Panel::Properties,
                 Panel::Pages,
-                Panel::Maps,
                 Panel::Attributes,
             ],
         }
     }
+
+    /// The panels of the Atlas workspace that show the selected map frame.
+    pub const FRAME: [Panel; 4] = [
+        Panel::Frame,
+        Panel::Projection,
+        Panel::MapLayers,
+        Panel::Labels,
+    ];
 }
 
 /// A page of the panel of a layer. A raster layer has the pages of its
@@ -489,6 +517,12 @@ pub struct PadState {
     pub center_rect: Option<Rect>,
     /// The workspace menu is open.
     pub menu: bool,
+    /// The Panels menu is open.
+    pub panels_menu: bool,
+    /// The Panels menu in the last frame.
+    pub panels_rect: Option<Rect>,
+    /// The button of this frame that opens the Panels menu.
+    panels_button: Option<Rect>,
     /// The worlds of the open menu of the worlds. `None`: the menu is closed.
     pub worlds: Option<Vec<WorldFile>>,
     /// The menu of the worlds in the last frame.
@@ -596,7 +630,7 @@ impl PadState {
 
     /// Opens a closed panel and closes an open panel. `one_panel`: the screen
     /// has room for one floating panel, so the other floating panel closes.
-    fn toggle(&mut self, panel: Panel, one_panel: bool) {
+    pub fn toggle(&mut self, panel: Panel, one_panel: bool) {
         if self.is_open(panel) {
             self.close(panel);
             return;
@@ -637,8 +671,7 @@ impl PadState {
 }
 
 pub const WORKSPACES: [&str; 2] = ["World", "Atlas"];
-/// The button that opens the Toolbox panel, and its row in the workspace
-/// menu below 1,000 points.
+/// The Toolbox panel.
 pub const TOOLBOX: &str = "Toolbox";
 const VIEWS: [&str; 2] = ["Globe", "Flat"];
 /// The action that makes the place at the middle of the canvas the center of
@@ -651,10 +684,12 @@ pub const PROJECTION: &str = "Projection";
 /// The button of the view control that shows the graticule, and its row
 /// in the compact menu.
 pub const GRATICULE: &str = "Graticule";
-/// The button of the Selection panel of the Atlas workspace.
-pub const SELECTION: &str = "Selection";
-/// The button of the Pages panel of the Atlas workspace.
+/// The Properties panel of the Atlas workspace.
+pub const PROPERTIES: &str = "Properties";
+/// The Pages panel of the Atlas workspace.
 pub const PAGES: &str = "Pages";
+/// The button of the bar that opens the Panels menu.
+pub const PANELS: &str = "Panels";
 const WORLD_VIEWS: [WorldView; 2] = [WorldView::Globe, WorldView::Flat];
 
 /// The text of the position readout.
@@ -722,7 +757,6 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         extra: extra_cells(state),
         tools: TOOLS,
         dock_width: dock::layout_width(&ctx, state),
-        dock_buttons: Panel::order(Workspace::Globe).len(),
         name_width: bar::name_width(ui, state),
         column: column_input(state),
     };
@@ -834,6 +868,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     if state.pad.worlds.is_some() {
         worlds_menu(&ctx, state, &mut controls, &rects);
     }
+    panels_menu(&ctx, state, &mut controls, &rects);
     world_form::pad(&ctx, state, &mut controls, &rects);
     raster_form::pad(&ctx, state, &mut controls, &rects);
     super::region::pad(&ctx, state, &mut controls, &rects);
@@ -869,6 +904,7 @@ fn top_row(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
             if widgets::menu_button(ui, controls, "Workspace", WORKSPACES[0], open).clicked() {
                 state.pad.menu = !open;
                 state.pad.worlds = None;
+                state.pad.panels_menu = false;
             }
         },
     );
@@ -908,52 +944,139 @@ fn top_row(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
             let divider = pos2(card.left() + PAD + 2.0 * step + 4.5, card.center().y);
             let line = Rect::from_center_size(divider, vec2(1.0, 24.0));
             ui.painter().rect_filled(line, 0.0, theme::divider());
-            // The Toolbox row is in the workspace menu.
-            let mut x = 2.0 * step + 9.0 + PAD;
-            for panel in [Panel::Layers, Panel::Attributes] {
-                let at = at(x);
-                x += step;
-                let (name, icon) = panel_face(panel);
-                let active = state.pad.is_open(panel);
-                if widgets::icon_button_at(ui, controls, at, name, icon, active, true).clicked() {
-                    state.pad.toggle(panel, rects.one_panel);
-                }
-            }
+            panels_button(ui, state, controls, at(2.0 * step + 9.0 + PAD));
         },
     );
 }
 
 /// The control name and the icon of the button of a panel.
-pub(super) fn panel_face(panel: Panel) -> (&'static str, Icon) {
+pub fn panel_face(panel: Panel) -> (&'static str, Icon) {
     match panel {
         Panel::Brush => ("Brush", Icon::Brush),
         Panel::Layers => ("Layers", Icon::Layers),
         Panel::Toolbox => (TOOLBOX, Icon::Toolbox),
         Panel::Attributes => (select::ATTRIBUTES, Icon::Attributes),
-        Panel::Selection => (SELECTION, Icon::Inspector),
+        Panel::Frame => (atlas::FRAME_TABS[0], Icon::Frame),
+        Panel::Projection => (atlas::FRAME_TABS[1], Icon::Projection),
+        Panel::MapLayers => (atlas::FRAME_TABS[2], Icon::Layers),
+        Panel::Labels => (atlas::FRAME_TABS[3], Icon::Labels),
+        Panel::Properties => (PROPERTIES, Icon::Inspector),
         Panel::Pages => (PAGES, Icon::Pages),
-        Panel::Maps => (atlas::MAPS, Icon::Map),
     }
 }
 
-/// The bar of the World workspace, with the buttons of Layers, Attributes,
-/// and Toolbox.
+/// The bar of the World workspace.
 fn world_bar(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
-    bar::draw(
+    bar::draw(ctx, state, controls, rects);
+}
+
+/// The button that opens and closes the Panels menu.
+pub(super) fn panels_button(
+    ui: &egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    at: Rect,
+) {
+    let open = state.pad.panels_menu;
+    if widgets::icon_button_at(ui, controls, at, PANELS, Icon::Panels, open, true).clicked() {
+        state.pad.panels_menu = !open;
+        state.pad.worlds = None;
+        state.pad.menu = false;
+    }
+    state.pad.panels_button = Some(at);
+}
+
+/// The Panels menu: a row for each panel of the workspace, with its icon,
+/// its name, and a tick while it is open. A tap on a row shows or hides the
+/// panel, in the open dock or as the floating card, and closes the menu. A
+/// press outside the menu and its button closes it.
+pub(super) fn panels_menu(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    controls: &mut Controls,
+    rects: &Rects,
+) {
+    state.pad.panels_rect = None;
+    let button = state.pad.panels_button.take();
+    let Some(button) = button.filter(|_| state.pad.panels_menu) else {
+        state.pad.panels_menu = false;
+        return;
+    };
+    let panels = Panel::of(state.workspace);
+    let width = geometry::MENU_WIDTH;
+    // A short screen scrolls the rows.
+    let top = button.bottom() + PAD;
+    let room = rects.screen.bottom() - rects.bands.bottom - geometry::MARGIN - top;
+    let height = (10.0 + panels.len() as f32 * PANEL_ROW + 10.0).min(room);
+    let screen = rects.screen.shrink(geometry::MARGIN);
+    let left =
+        (button.right() - width).clamp(screen.left(), (screen.right() - width).max(screen.left()));
+    let rect = Rect::from_min_size(pos2(left, top), vec2(width, height));
+    state.pad.panels_rect = Some(rect);
+    let pressed = ctx.input(|i| {
+        i.pointer
+            .any_pressed()
+            .then(|| i.pointer.interact_pos())
+            .flatten()
+    });
+    let mut open = !pressed.is_some_and(|pos| !rect.contains(pos) && !button.contains(pos));
+    let mut chosen = None;
+    let radius = theme::CARD_RADIUS.into();
+    let backdrop = state.globe.backdrop();
+    widgets::card(
         ctx,
-        state,
-        controls,
-        rects,
-        |ui, state, controls, places| {
-            for (&panel, &at) in Panel::order(Workspace::Globe).iter().zip(places) {
-                let (name, icon) = panel_face(panel);
-                let active = state.pad.is_open(panel);
-                if widgets::icon_button_at(ui, controls, at, name, icon, active, true).clicked() {
-                    state.pad.toggle(panel, rects.one_panel);
+        backdrop,
+        "pad-panels-menu",
+        rect,
+        Order::Foreground,
+        radius,
+        |ui| {
+            let inner = rect.shrink2(vec2(BODY_PAD, 10.0));
+            let layout = egui::Layout::top_down(egui::Align::Min);
+            let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
+            ui.set_clip_rect(inner);
+            ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+            let scroll = egui::ScrollArea::vertical()
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden);
+            scroll.show(&mut ui, |ui| {
+                for &panel in panels {
+                    let (name, icon) = panel_face(panel);
+                    let on = state.pad.is_open(panel);
+                    let size = vec2(ui.available_width(), PANEL_ROW);
+                    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+                    // The row is checked while its panel is open, and only the
+                    // tick shows it.
+                    let click = egui::Sense::click();
+                    let row = widgets::hit(ui, controls, rect, name, click, true, Some(on));
+                    if row.is_pointer_button_down_on() {
+                        let fill = rect.expand2(vec2(8.0, -widgets::HIGHLIGHT_INSET));
+                        ui.painter().rect_filled(fill, 5.0, theme::raise());
+                    }
+                    let at = pos2(rect.left() + 32.0, rect.center().y);
+                    let (align, font) = (egui::Align2::LEFT_CENTER, theme::body());
+                    ui.painter().text(at, align, name, font, theme::TEXT);
+                    let at = pos2(row.rect.left() + 11.0, row.rect.center().y);
+                    let icon_rect = Rect::from_center_size(at, vec2(widgets::ICON, widgets::ICON));
+                    icons::paint(ui.painter(), icon_rect, icon, widgets::ICON, theme::TEXT);
+                    if on {
+                        let tick = Rect::from_center_size(
+                            pos2(row.rect.right() - TICK / 2.0, row.rect.center().y),
+                            vec2(TICK, TICK),
+                        );
+                        icons::paint(ui.painter(), tick, Icon::Tick, TICK, theme::ACCENT);
+                    }
+                    if row.clicked() {
+                        chosen = Some(panel);
+                    }
                 }
-            }
+            });
         },
     );
+    if let Some(panel) = chosen {
+        state.pad.toggle(panel, rects.one_panel);
+        open = false;
+    }
+    state.pad.panels_menu = open;
 }
 
 /// The view control of the World workspace: Globe and Flat, a divider, and
@@ -1929,7 +2052,7 @@ pub(super) fn show_panel(
         (Panel::Layers, None) => (panel.key(), "Layers", None),
         (Panel::Toolbox, _) => (panel.key(), TOOLBOX, None),
         (Panel::Attributes, _) => (panel.key(), select::ATTRIBUTES, None),
-        (Panel::Selection | Panel::Pages | Panel::Maps, _) => return,
+        (_, _) => return,
     };
     let list = panel == Panel::Layers && layer.is_none();
     if list && state.pad.reorder.is_none() {
@@ -2036,7 +2159,7 @@ pub(super) fn show_panel(
             (Panel::Layers, None) => layers_body(ui, state, controls),
             (Panel::Toolbox, _) => toolbox_body(ui, state),
             (Panel::Attributes, _) => select::body(ui, state, controls),
-            (Panel::Selection | Panel::Pages | Panel::Maps, _) => {}
+            (_, _) => {}
         };
     let card = Card {
         key,
@@ -3724,7 +3847,7 @@ fn projections(ctx: &egui::Context, state: &mut AppState, controls: &mut Control
 /// The workspace menu of the compact layout.
 fn menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
     let flat = state.globe.world_view == WorldView::Flat;
-    let rows = if flat { 8.0 } else { 7.0 };
+    let rows = if flat { 7.0 } else { 6.0 };
     let height = 10.0 + rows * PANEL_ROW + 2.0 * 13.0 + 10.0;
     let size = vec2(geometry::MENU_WIDTH, height);
     let rect = Rect::from_min_size(rects.menu, size);
@@ -3793,10 +3916,6 @@ fn menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rect
                     toggle_worlds(state);
                 }
             }
-            if widgets::text_row(ui, controls, TOOLBOX, 0.0, false, true).clicked() {
-                state.pad.menu = false;
-                state.pad.toggle(Panel::Toolbox, rects.one_panel);
-            }
         },
     );
 }
@@ -3816,6 +3935,7 @@ pub fn toggle_worlds(state: &mut AppState) {
         None => Some(worlds_of(state.projects.paths(state.files.as_ref()))),
     };
     state.pad.menu = false;
+    state.pad.panels_menu = false;
 }
 
 /// The name of a world in a row of a menu, at the length that the row holds.

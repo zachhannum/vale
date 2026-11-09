@@ -18,7 +18,7 @@ use super::text_style::{self, TextEdit, TextEvent, TextSpec};
 use super::widgets::{self, Controls, PANEL_ROW};
 use super::{Card, CardTitle, show_card, theme};
 use crate::fonts;
-use crate::ui::atlas::{AtlasSelection, ClassColor, ClassDrag, ClassPage, ClassSegment};
+use crate::ui::atlas::{ClassColor, ClassDrag, ClassPage, ClassSegment};
 use crate::ui::expr_help::{self, ExprHelp};
 use crate::ui::{Action, AppState, FontTarget};
 
@@ -416,8 +416,7 @@ pub(super) fn class_panel(
             }
         }
         if row.close {
-            state.atlas.selection = AtlasSelection::None;
-            state.atlas.vertices.clear();
+            super::atlas::close_float(state);
         }
     };
     let top = |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| {

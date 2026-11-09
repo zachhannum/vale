@@ -101,6 +101,10 @@ fn the_layout_and_the_panels_come_from_the_flags() {
     assert!(!args.brush_modes);
     let args = Args::parse_from(["vale-app", "--layout", "pad", "--brush-modes"]);
     assert!(args.brush_modes);
+    let args = Args::parse_from(["vale-app", "--layout", "pad", "--panels-menu"]);
+    assert!(args.panels_menu);
+    let args = Args::parse_from(["vale-app", "--workspace", "atlas", "--select-frame"]);
+    assert!(args.select_frame);
     assert!(Args::try_parse_from(["vale-app", "--more-tools"]).is_err());
     let args = Args::parse_from(["vale-app", "--world-form", "new"]);
     assert_eq!(
@@ -202,9 +206,29 @@ fn the_dock_flag_opens_the_dock_of_the_workspace_with_its_panels() {
     assert_eq!(panels, [(Panel::Layers, false), (Panel::Toolbox, true)]);
     assert!(!state.pad.docks.get(Workspace::Atlas).open);
 
-    let args = parse(&["--workspace", "atlas", "--dock", "pages"]);
+    let dock = "frame,projection,map-layers,labels:folded,properties,pages";
+    let args = parse(&["--workspace", "atlas", "--dock", dock]);
     apply_dock(&args, &mut state);
-    assert!(state.pad.docks.get(Workspace::Atlas).open);
+    let dock = state.pad.docks.get(Workspace::Atlas);
+    assert!(dock.open);
+    let panels: Vec<_> = dock.panels.iter().map(|p| (p.panel, p.folded)).collect();
+    assert_eq!(
+        panels,
+        [
+            (Panel::Frame, false),
+            (Panel::Projection, false),
+            (Panel::MapLayers, false),
+            (Panel::Labels, true),
+            (Panel::Properties, false),
+            (Panel::Pages, false),
+        ]
+    );
+    for old in ["selection", "maps"] {
+        assert!(Args::try_parse_from(["vale-app", "--dock", old]).is_err());
+        assert!(Args::try_parse_from(["vale-app", "--panel", old]).is_err());
+    }
+    let args = parse(&["--workspace", "atlas", "--panel", "map-layers"]);
+    assert_eq!(args.panel, [Panel::MapLayers]);
     assert!(Args::try_parse_from(["vale-app", "--dock", "wheel"]).is_err());
     assert!(Args::try_parse_from(["vale-app", "--dock", "layers:open"]).is_err());
 }

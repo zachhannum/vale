@@ -49,7 +49,7 @@ pub struct DockState {
     pub open: bool,
     /// The width, from `WIDTH_MIN` to `WIDTH_MAX`.
     pub width: f32,
-    /// The panels from top to bottom, in the order of the panel buttons.
+    /// The panels from top to bottom, in the order of the user.
     pub panels: Vec<DockPanel>,
 }
 
@@ -72,24 +72,13 @@ impl DockState {
         self.panels.iter().any(|p| p.panel == panel)
     }
 
-    /// Adds `panel` at its place in the order of the panel buttons of
-    /// `workspace`. Returns `false` if the dock has the panel already, or if
-    /// the workspace has no button for the panel.
+    /// Adds `panel` below the other panels. Returns `false` if the dock has
+    /// the panel already, or if `workspace` does not have the panel.
     pub fn insert(&mut self, workspace: Workspace, panel: DockPanel) -> bool {
-        let order = Panel::order(workspace);
-        let Some(rank) = order.iter().position(|p| *p == panel.panel) else {
-            return false;
-        };
-        if self.contains(panel.panel) {
+        if !Panel::of(workspace).contains(&panel.panel) || self.contains(panel.panel) {
             return false;
         }
-        let rank_of = |p: &DockPanel| order.iter().position(|o| *o == p.panel);
-        let at = self
-            .panels
-            .iter()
-            .position(|p| rank_of(p).is_none_or(|r| r > rank))
-            .unwrap_or(self.panels.len());
-        self.panels.insert(at, panel);
+        self.panels.push(panel);
         true
     }
 
@@ -156,7 +145,7 @@ impl Docks {
     }
 
     /// The docks of the text of the file. A bad line or value gets the
-    /// default.
+    /// default, and a panel that the workspace does not have is left out.
     pub fn parse(text: &str) -> Docks {
         let mut docks = Docks::default();
         for line in text.lines() {
@@ -277,7 +266,7 @@ mod tests {
             .insert(Workspace::Atlas, DockPanel::new(Panel::Pages));
         let text = docks.text();
         assert!(
-            text.contains("world.panels layers:240 toolbox:folded:180\n"),
+            text.contains("world.panels toolbox:folded:180 layers:240\n"),
             "{text}"
         );
         assert_eq!(Docks::parse(&text), docks);
@@ -307,7 +296,7 @@ mod tests {
     }
 
     #[test]
-    fn a_panel_goes_in_the_order_of_the_buttons() {
+    fn a_panel_goes_below_the_other_panels() {
         let mut dock = DockState::default();
         let world = Workspace::Globe;
         assert!(dock.insert(world, DockPanel::new(Panel::Toolbox)));
@@ -319,40 +308,60 @@ mod tests {
         );
         assert!(
             !dock.insert(world, DockPanel::new(Panel::Brush)),
-            "no button"
+            "not in the menu"
         );
         assert!(
             !dock.insert(world, DockPanel::new(Panel::Pages)),
             "an atlas panel"
         );
-        let order = [Panel::Layers, Panel::Attributes, Panel::Toolbox];
+        let order = [Panel::Toolbox, Panel::Layers, Panel::Attributes];
         assert_eq!(panels(&dock), order);
 
         let mut dock = DockState::default();
         let atlas = Workspace::Atlas;
-        for panel in [
-            Panel::Attributes,
-            Panel::Pages,
-            Panel::Selection,
-            Panel::Maps,
-        ] {
+        for &panel in Panel::of(atlas).iter().rev() {
             assert!(dock.insert(atlas, DockPanel::new(panel)));
         }
-        assert_eq!(panels(&dock), Panel::order(atlas));
+        assert!(!dock.insert(atlas, DockPanel::new(Panel::Layers)));
+        assert!(!dock.insert(atlas, DockPanel::new(Panel::Toolbox)));
         assert!(dock.remove(Panel::Pages));
         assert!(!dock.remove(Panel::Pages));
         assert_eq!(
             panels(&dock),
-            [Panel::Selection, Panel::Maps, Panel::Attributes]
+            [
+                Panel::Attributes,
+                Panel::Properties,
+                Panel::Labels,
+                Panel::MapLayers,
+                Panel::Projection,
+                Panel::Frame,
+            ]
         );
+    }
+
+    #[test]
+    fn the_order_of_the_file_stays() {
+        let docks = Docks::parse("atlas.panels pages labels:folded frame\n");
+        assert_eq!(
+            panels(&docks.atlas),
+            [Panel::Pages, Panel::Labels, Panel::Frame]
+        );
+        assert!(docks.atlas.panels[1].folded);
+    }
+
+    #[test]
+    fn an_old_panel_is_left_out() {
+        let docks = Docks::parse("atlas.panels selection:240 pages:240 maps:folded:240\n");
+        assert_eq!(panels(&docks.atlas), [Panel::Pages]);
     }
 
     #[test]
     fn an_entry_reads_a_name_and_folded() {
         let entry: Entry = "toolbox:folded".parse().unwrap();
         assert_eq!((entry.panel, entry.folded), (Panel::Toolbox, true));
-        let entry: Entry = "maps".parse().unwrap();
-        assert_eq!((entry.panel, entry.folded), (Panel::Maps, false));
+        let entry: Entry = "map-layers".parse().unwrap();
+        assert_eq!((entry.panel, entry.folded), (Panel::MapLayers, false));
+        assert!("selection".parse::<Entry>().is_err());
         assert!("toolbox:open".parse::<Entry>().is_err());
         assert!("wheel".parse::<Entry>().is_err());
     }

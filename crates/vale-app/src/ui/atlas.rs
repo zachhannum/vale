@@ -721,47 +721,43 @@ pub struct AtlasState {
 }
 
 impl AtlasState {
-    /// The layer whose panel the Layers tab of the selected frame shows.
+    /// The layer whose panel the Layers panel of the selected frame shows.
     pub fn open_layer(&self) -> Option<LayerId> {
-        match (self.selection, self.tab, self.layer) {
-            (AtlasSelection::Frame(f), FrameTab::Layers, Some((of, layer))) if f == of => {
-                Some(layer)
-            }
+        match (self.selection, self.layer) {
+            (AtlasSelection::Frame(f), Some((of, layer))) if f == of => Some(layer),
             _ => None,
         }
     }
 
-    /// The frame whose Map style page the Frame tab shows.
+    /// The frame whose Map style page the Frame panel shows.
     pub fn open_map_styles(&self) -> Option<FrameId> {
-        match (self.selection, self.tab, self.map_styles) {
-            (AtlasSelection::Frame(f), FrameTab::Frame, Some(of)) if f == of => Some(f),
+        match (self.selection, self.map_styles) {
+            (AtlasSelection::Frame(f), Some(of)) if f == of => Some(f),
             _ => None,
         }
     }
 
-    /// The frame whose Grid labels page the Frame tab shows.
+    /// The frame whose Grid labels page the Frame panel shows.
     pub fn open_grid(&self) -> Option<FrameId> {
-        match (self.selection, self.tab, self.grid) {
-            (AtlasSelection::Frame(f), FrameTab::Frame, Some(of)) if f == of => Some(f),
+        match (self.selection, self.grid) {
+            (AtlasSelection::Frame(f), Some(of)) if f == of => Some(f),
             _ => None,
         }
     }
 
-    /// The frame whose Edge labels page the Frame tab shows.
+    /// The frame whose Edge labels page the Frame panel shows.
     pub fn open_edge(&self) -> Option<FrameId> {
-        match (self.selection, self.tab, self.edge) {
-            (AtlasSelection::Frame(f), FrameTab::Frame, Some(of)) if f == of => Some(f),
+        match (self.selection, self.edge) {
+            (AtlasSelection::Frame(f), Some(of)) if f == of => Some(f),
             _ => None,
         }
     }
 
-    /// The label class whose panel the Labels tab of the selected frame
+    /// The label class whose panel the Labels panel of the selected frame
     /// shows.
     pub fn open_class(&self) -> Option<(LayerId, usize)> {
-        match (self.selection, self.tab, self.label) {
-            (AtlasSelection::Frame(f), FrameTab::Labels, Some((of, layer, i))) if f == of => {
-                Some((layer, i))
-            }
+        match (self.selection, self.label) {
+            (AtlasSelection::Frame(f), Some((of, layer, i))) if f == of => Some((layer, i)),
             _ => None,
         }
     }

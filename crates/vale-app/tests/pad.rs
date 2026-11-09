@@ -157,12 +157,8 @@ fn lower_sheet(h: &mut Pad) {
     }
 }
 
-/// Opens or closes the Toolbox panel. Below 1,000 points, its row is in the
-/// workspace menu.
+/// Opens or closes the Toolbox panel from the Panels menu.
 fn toolbox(h: &mut Pad) {
-    if control(h, "Toolbox").is_none() {
-        tap(h, "Workspace");
-    }
     tap(h, "Toolbox");
 }
 
@@ -191,6 +187,14 @@ fn tap_touch(h: &mut Pad, phase: egui::TouchPhase, pos: Pos2, force: Option<f32>
 }
 
 fn tap(h: &mut Pad, name: &str) {
+    // A panel opens and closes from its row of the Panels menu.
+    let workspace = h.state().workspace;
+    let panel = Panel::of(workspace)
+        .iter()
+        .any(|&p| vale_app::ui::pad::panel_face(p).0 == name);
+    if panel && control(h, name).is_none() {
+        tap(h, vale_app::ui::pad::PANELS);
+    }
     let rect = control(h, name).unwrap_or_else(|| panic!("no control `{name}`"));
     let pos = rect.center();
     tap_touch(h, egui::TouchPhase::Start, pos, None);
@@ -368,9 +372,9 @@ fn check_controls(h: &Pad, what: &str) {
     let controls = &h.state().pad.controls;
     // A sheet at half or full height covers the rows of the tool strip.
     let least = if rects.row && rects.sheet.is_some() && rects.tool_cells == 0 {
-        4
+        3
     } else {
-        7
+        6
     };
     assert!(
         controls.len() >= least,
@@ -424,10 +428,8 @@ fn check_controls(h: &Pad, what: &str) {
                 let kind = vale_sphere::ProjectionKind::ALL
                     .iter()
                     .any(|k| k.name() == name);
-                let menu = [
-                    "World", "Globe", "Flat", GRATICULE, "Atlas", WORLDS_ROW, "Toolbox",
-                ]
-                .contains(&name);
+                let menu =
+                    ["World", "Globe", "Flat", GRATICULE, "Atlas", WORLDS_ROW].contains(&name);
                 let modes = in_modes && all_modes().any(|mode| mode == name);
                 let rows = [
                     NEW_RASTER,
@@ -493,9 +495,8 @@ fn each_control_is_large_and_is_outside_the_system_bands() {
             select::ATTRIBUTES,
             "Brush settings",
         ] {
-            if control(&h, name).is_none() {
+            if name == "Brush settings" && control(&h, name).is_none() {
                 // An open sheet covers the Brush button.
-                assert_eq!(name, "Brush settings");
                 tap(&mut h, "Close Attributes");
             }
             tap(&mut h, name);
@@ -4256,10 +4257,10 @@ fn the_top_row_and_the_panels_match_the_landscape_board() {
     assert!(view.contains_rect(control(&h, "Flat").unwrap()));
     assert!(view.contains_rect(control(&h, "Globe").unwrap()));
     assert_eq!(view.center(), pos2(597.0, 102.0));
-    // The panel buttons and the Dock button are at the right end of the bar.
-    let names = ["Layers", select::ATTRIBUTES, "Toolbox", "Dock"];
+    // The Panels button and the Dock button are at the right end of the bar.
+    let names = [vale_app::ui::pad::PANELS, "Dock"];
     let lefts = names.map(|name| control(&h, name).unwrap().left());
-    assert_eq!(lefts, [1005.0, 1049.0, 1093.0, 1146.0]);
+    assert_eq!(lefts, [1093.0, 1146.0]);
     // The tool column is at the left edge, 8 points below the bar, with
     // icon cells of 44 points.
     assert_eq!(
@@ -4341,7 +4342,7 @@ fn the_top_row_and_the_panels_match_the_split_view_boards() {
         let menu = h.state().pad.menu_rect.unwrap();
         assert_eq!(
             menu,
-            Rect::from_min_size(pos2(16.0, 88.0), vec2(240.0, 382.0))
+            Rect::from_min_size(pos2(16.0, 88.0), vec2(240.0, 334.0))
         );
         let tops = ["World", "Globe", "Atlas"].map(|name| control(&h, name).unwrap().top());
         assert_eq!(tops, [98.0, 146.0, 303.0]);
@@ -13779,5 +13780,30 @@ fn the_selectable_cell_and_list_fit_in_the_world_on_each_screen() {
             vale_app::ui::select::Selectable::Active,
             "{what}"
         );
+    }
+}
+
+#[test]
+fn the_compact_layout_opens_the_panels_from_the_panels_menu() {
+    use vale_app::ui::pad::PANELS;
+    for size in [(393.0, 852.0), (597.0, 834.0)] {
+        let mut h = pad(size);
+        let r = h.state().pad.rects.unwrap();
+        let button = control(&h, PANELS).unwrap_or_else(|| panic!("{size:?}"));
+        assert!(r.actions.contains_rect(button), "{size:?}");
+        for name in ["Layers", select::ATTRIBUTES, "Toolbox"] {
+            assert!(control(&h, name).is_none(), "{size:?}: {name}");
+        }
+        tap(&mut h, PANELS);
+        let menu = h.state().pad.panels_rect.unwrap();
+        for name in ["Layers", select::ATTRIBUTES, "Toolbox"] {
+            let row = control(&h, name).unwrap_or_else(|| panic!("{size:?}: {name}"));
+            assert!(menu.contains_rect(row), "{size:?}: {name}");
+        }
+        check_controls(&h, &format!("{size:?} with the Panels menu"));
+        tap(&mut h, "Toolbox");
+        assert!(!h.state().pad.panels_menu);
+        assert_eq!(h.state().pad.float, Some(Panel::Toolbox), "{size:?}");
+        assert!(h.state().pad.rects.unwrap().sheet.is_some(), "{size:?}");
     }
 }

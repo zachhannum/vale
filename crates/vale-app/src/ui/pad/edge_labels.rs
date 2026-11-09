@@ -13,7 +13,7 @@ use super::raster::heading;
 use super::widgets::{self, Controls};
 use super::{Card, CardTitle, show_card};
 use crate::fonts::DEFAULT_FAMILY;
-use crate::ui::atlas::{self, AtlasSelection, ClassColor, EdgeSet};
+use crate::ui::atlas::{self, ClassColor, EdgeSet};
 use crate::ui::{Action, AppState, FontTarget};
 
 pub const EDGE_LABELS: &str = "Edge labels";
@@ -93,8 +93,7 @@ pub fn panel(
             state.atlas.label_color = None;
         }
         if row.close {
-            state.atlas.selection = AtlasSelection::None;
-            state.atlas.vertices.clear();
+            super::atlas::close_float(state);
         }
     };
     let top = |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| {

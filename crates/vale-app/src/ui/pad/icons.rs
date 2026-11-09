@@ -98,6 +98,12 @@ pub enum Icon {
     Inspector,
     /// Two sheets, one in front of the other.
     Pages,
+    /// Three panels, one above the other.
+    Panels,
+    /// An oval map with a meridian and the equator.
+    Projection,
+    /// A capital T.
+    Labels,
 }
 
 impl Icon {
@@ -135,6 +141,12 @@ impl Icon {
             Icon::Attributes => "M5 3h14v18H5zM8 8h8M8 12h8M8 16h5",
             Icon::Inspector => "M4 7h9M17 7h3M4 17h3M11 17h9",
             Icon::Pages => "M8 3h12v15H8zM5 6v15h12",
+            Icon::Panels => "M4 3h16v5H4zM4 10h16v4H4zM4 16h16v5H4z",
+            Icon::Projection => {
+                "M3 12c0-4.4 4-8 9-8s9 3.6 9 8-4 8-9 8-9-3.6-9-8zM12 4v16M3 12h18\
+                 M8 4.8c-1.6 4.5-1.6 9.9 0 14.4M16 4.8c1.6 4.5 1.6 9.9 0 14.4"
+            }
+            Icon::Labels => "M5 7V4h14v3M12 4v16M9 20h6",
             Icon::Trash => "M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6",
             Icon::Brush => "M5 4v16M12 4v16M19 4v16",
             Icon::Close => "M6 6l12 12M18 6L6 18",
@@ -517,6 +529,9 @@ mod tests {
             Icon::ColorKey,
             Icon::Inspector,
             Icon::Pages,
+            Icon::Panels,
+            Icon::Projection,
+            Icon::Labels,
         ] {
             let lines = parse(icon.path());
             let circles = icon.circles();

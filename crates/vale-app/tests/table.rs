@@ -137,6 +137,14 @@ fn tap_at(h: &mut Pad, pos: Pos2) {
 }
 
 fn tap(h: &mut Pad, name: &str) {
+    // A panel opens and closes from its row of the Panels menu.
+    let workspace = h.state().workspace;
+    let panel = vale_app::ui::pad::Panel::of(workspace)
+        .iter()
+        .any(|&p| vale_app::ui::pad::panel_face(p).0 == name);
+    if panel && control(h, name).is_none() {
+        tap(h, vale_app::ui::pad::PANELS);
+    }
     let rect = control(h, name).unwrap_or_else(|| panic!("no control `{name}`"));
     tap_at(h, rect.center());
 }

@@ -18,8 +18,8 @@ use vale_app::ui::pad::flyout::Flyout;
 use vale_app::ui::pad::geometry::BAR;
 use vale_app::ui::pad::widgets::dock_name;
 use vale_app::ui::pad::{
-    ADD_LAYER, CLEAR_PATH, GRATICULE, ModeGroup, PROJECTION, Panel, RECENTER, RESET, SAVE, SCULPT,
-    TOOLBOX, WORLD_PROPERTIES, WORLDS,
+    ADD_LAYER, CLEAR_PATH, GRATICULE, ModeGroup, PANELS, PROJECTION, Panel, RECENTER, RESET, SAVE,
+    SCULPT, TOOLBOX, WORLD_PROPERTIES, WORLDS,
 };
 use vale_app::ui::panels::ALL_WORLDS;
 use vale_app::ui::world_form::NEW_WORLD;
@@ -114,6 +114,22 @@ fn tap(h: &mut Pad, name: &str) {
     tap_touch(h, egui::TouchPhase::Start, rect.center(), None);
     h.step();
     tap_touch(h, egui::TouchPhase::End, rect.center(), None);
+    h.run_steps(3);
+}
+
+/// Taps the row of a panel in the Panels menu.
+fn show(h: &mut Pad, name: &str) {
+    tap(h, PANELS);
+    let menu = h.state().pad.panels_rect.expect("the Panels menu");
+    let controls = &h.state().pad.controls;
+    let row = controls
+        .iter()
+        .find(|c| c.name == name && menu.contains_rect(c.rect))
+        .unwrap_or_else(|| panic!("no row `{name}`"))
+        .rect;
+    tap_touch(h, egui::TouchPhase::Start, row.center(), None);
+    h.step();
+    tap_touch(h, egui::TouchPhase::End, row.center(), None);
     h.run_steps(3);
 }
 
@@ -327,34 +343,31 @@ fn the_view_control_of_the_atlas_holds_the_page_controls() {
 }
 
 #[test]
-fn the_dock_zone_holds_the_panel_buttons_and_the_dock_button_from_1000_points() {
+fn the_dock_zone_holds_the_panels_button_and_the_dock_button_from_1000_points() {
     for size in BOARDS {
         let mut h = pad(Workspace::Globe, size);
         let r = rects(&h);
-        let names = ["Layers", select::ATTRIBUTES, TOOLBOX];
-        let lefts = names.map(|name| {
-            let rect = control(&h, name).unwrap_or_else(|| panic!("{size:?}: no {name}"));
-            assert!(r.dock_zone.contains_rect(rect), "{size:?}: {name}");
-            rect.left()
-        });
-        assert!(lefts.is_sorted(), "{size:?}");
+        let panels = control(&h, PANELS).unwrap_or_else(|| panic!("{size:?}: no Panels"));
+        assert!(r.dock_zone.contains_rect(panels), "{size:?}");
+        for name in ["Layers", select::ATTRIBUTES, TOOLBOX] {
+            assert!(control(&h, name).is_none(), "{size:?}: {name}");
+        }
         // The workspace menu is gone.
         assert!(control(&h, "Workspace").is_none(), "{size:?}");
+        // The Panels menu opens a panel.
+        show(&mut h, TOOLBOX);
+        assert!(h.state().pad.is_open(Panel::Toolbox), "{size:?}");
         if size.0 < 1000.0 {
             assert!(control(&h, DOCK).is_none(), "{size:?}");
             continue;
         }
         let dock = control(&h, DOCK).unwrap();
-        assert!(lefts.iter().all(|&left| left < dock.left()), "{size:?}");
+        assert!(panels.right() < dock.left(), "{size:?}");
         tap(&mut h, DOCK);
         assert!(h.state().pad.docks.get(Workspace::Globe).open);
         assert!(rects(&h).dock.is_some());
         tap(&mut h, DOCK);
         assert!(!h.state().pad.docks.get(Workspace::Globe).open);
-
-        // The Toolbox button opens its panel.
-        tap(&mut h, TOOLBOX);
-        assert!(h.state().pad.is_open(Panel::Toolbox), "{size:?}");
     }
 }
 
@@ -634,13 +647,13 @@ fn the_shortcut_needs_both_keys_and_no_text_field() {
 }
 
 #[test]
-fn the_dock_holds_any_number_of_panels_in_the_order_of_the_buttons() {
+fn the_dock_holds_any_number_of_panels_in_the_order_they_open() {
     let mut h = pad(Workspace::Globe, BOARDS[0]);
     tap(&mut h, DOCK);
     for name in [TOOLBOX, "Layers", select::ATTRIBUTES] {
-        tap(&mut h, name);
+        show(&mut h, name);
     }
-    let order = [Panel::Layers, Panel::Attributes, Panel::Toolbox];
+    let order = [Panel::Toolbox, Panel::Layers, Panel::Attributes];
     assert_eq!(docked(&h), order.map(|p| (p, false)));
     let tops = order.map(|p| slot(&h, p).title.top());
     assert!(tops.is_sorted(), "{tops:?}");
@@ -652,11 +665,11 @@ fn the_dock_holds_any_number_of_panels_in_the_order_of_the_buttons() {
         assert!(control(&h, &title_name(panel)).is_some(), "{panel:?}");
     }
     assert!(control(&h, ADD_LAYER).is_some(), "the + of Layers");
-    // A tap on the button of a panel in the dock removes it.
-    tap(&mut h, select::ATTRIBUTES);
+    // A tap on the row of a panel in the dock removes it.
+    show(&mut h, select::ATTRIBUTES);
     assert_eq!(
         docked(&h),
-        [(Panel::Layers, false), (Panel::Toolbox, false)]
+        [(Panel::Toolbox, false), (Panel::Layers, false)]
     );
     assert!(!h.state().pad.is_open(Panel::Attributes));
 }
@@ -733,10 +746,11 @@ fn the_dock_keeps_its_panels_while_it_is_closed() {
     assert!(h.state().pad.dock_frame.slots.is_empty());
     assert!(!h.state().pad.is_open(Panel::Layers));
     assert!(control(&h, &title_name(Panel::Layers)).is_none());
-    // A panel button shows a floating card, and the dock keeps its place.
-    tap(&mut h, "Layers");
+    // A row of the Panels menu shows a floating card, and the dock keeps its
+    // place.
+    show(&mut h, "Layers");
     assert_eq!(h.state().pad.float, Some(Panel::Layers));
-    tap(&mut h, "Layers");
+    show(&mut h, "Layers");
     tap(&mut h, DOCK);
     let mut after = dock_of(&h, Workspace::Globe).clone();
     after.open = before.open;
@@ -747,9 +761,9 @@ fn the_dock_keeps_its_panels_while_it_is_closed() {
 #[test]
 fn a_closed_dock_shows_one_floating_card_that_stays_open_while_painting() {
     let mut h = pad(Workspace::Globe, BOARDS[0]);
-    tap(&mut h, "Layers");
+    show(&mut h, "Layers");
     assert_eq!(h.state().pad.float, Some(Panel::Layers));
-    tap(&mut h, select::ATTRIBUTES);
+    show(&mut h, select::ATTRIBUTES);
     assert_eq!(h.state().pad.float, Some(Panel::Attributes));
     assert!(!h.state().pad.is_open(Panel::Layers));
     let panels: Vec<_> = h.state().pad.panels.iter().map(|(p, _)| *p).collect();
@@ -765,15 +779,15 @@ fn a_closed_dock_shows_one_floating_card_that_stays_open_while_painting() {
     let c = r.fit.center();
     drag(&mut h, c - vec2(40.0, 0.0), c + vec2(40.0, 0.0), Some(0.5));
     assert_eq!(h.state().pad.float, Some(Panel::Attributes));
-    // Its button closes it.
-    tap(&mut h, select::ATTRIBUTES);
+    // Its row in the Panels menu closes it.
+    show(&mut h, select::ATTRIBUTES);
     assert_eq!(h.state().pad.float, None);
 }
 
 #[test]
 fn the_dock_button_of_a_card_moves_the_panel_into_the_dock() {
     let mut h = pad(Workspace::Globe, BOARDS[0]);
-    tap(&mut h, "Layers");
+    show(&mut h, "Layers");
     tap(&mut h, &dock_name("Layers"));
     assert!(dock_of(&h, Workspace::Globe).open);
     assert_eq!(docked(&h), [(Panel::Layers, false)]);
@@ -795,7 +809,7 @@ fn below_1000_points_each_panel_floats_and_no_dock_button_shows() {
         assert!(rects(&h).dock.is_none(), "{size:?}");
         assert!(h.state().pad.dock_frame.slots.is_empty());
         assert!(!h.state().pad.is_open(Panel::Toolbox));
-        tap(&mut h, "Layers");
+        show(&mut h, "Layers");
         assert_eq!(h.state().pad.float, Some(Panel::Layers), "{size:?}");
         assert!(control(&h, &dock_name("Layers")).is_none(), "{size:?}");
         assert!(control(&h, "Close Layers").is_some(), "{size:?}");
@@ -899,13 +913,119 @@ fn the_dock_flag_shows_the_docked_panels_with_folded_ones() {
 fn the_atlas_panels_go_into_the_dock() {
     let mut h = pad(Workspace::Atlas, BOARDS[0]);
     tap(&mut h, DOCK);
-    tap(&mut h, vale_app::ui::pad::atlas::MAPS);
-    tap(&mut h, select::ATTRIBUTES);
+    show(&mut h, vale_app::ui::pad::PAGES);
+    show(&mut h, select::ATTRIBUTES);
     let dock = dock_of(&h, Workspace::Atlas);
     let panels: Vec<_> = dock.panels.iter().map(|p| p.panel).collect();
-    assert_eq!(panels, [Panel::Maps, Panel::Attributes]);
-    assert!(slot(&h, Panel::Maps).body.is_some());
+    assert_eq!(panels, [Panel::Pages, Panel::Attributes]);
+    assert!(slot(&h, Panel::Pages).body.is_some());
     assert!(slot(&h, Panel::Attributes).body.is_some());
-    assert!(control(&h, &title_name(Panel::Maps)).is_some());
+    assert!(control(&h, &title_name(Panel::Pages)).is_some());
     assert!(control(&h, &title_name(Panel::Attributes)).is_some());
+}
+
+/// The rows of the open Panels menu from the top, and whether each is
+/// checked.
+fn menu_rows(h: &Pad) -> Vec<(String, bool)> {
+    use egui_kittest::kittest::NodeT;
+    let menu = h.state().pad.panels_rect.expect("the Panels menu");
+    let mut rows: Vec<_> = h
+        .state()
+        .pad
+        .controls
+        .iter()
+        // The rows fill the width of the menu.
+        .filter(|c| menu.contains_rect(c.rect) && c.rect.width() > 0.8 * menu.width())
+        .map(|c| (c.rect.top(), c.name.clone()))
+        .collect();
+    rows.sort_by(|a, b| a.0.total_cmp(&b.0));
+    rows.into_iter()
+        .map(|(_, name)| {
+            let node = h
+                .query_all_by_label(&name)
+                .find(|n| menu.contains_rect(n.rect()))
+                .unwrap_or_else(|| panic!("no node `{name}`"));
+            let on = node.accesskit_node().toggled() == Some(egui::accesskit::Toggled::True);
+            (name, on)
+        })
+        .collect()
+}
+
+#[test]
+fn the_panels_menu_lists_the_panels_of_each_workspace_with_a_tick_on_the_open_ones() {
+    use vale_app::ui::pad::panel_face;
+    for workspace in WORKSPACES {
+        let mut h = pad(workspace, BOARDS[0]);
+        let button = control(&h, PANELS).unwrap();
+        tap(&mut h, PANELS);
+        assert!(h.state().pad.panels_menu);
+        let menu = h.state().pad.panels_rect.unwrap();
+        assert_eq!(menu.right(), button.right(), "{workspace:?}");
+        assert!(menu.top() > button.bottom(), "{workspace:?}");
+        let names: Vec<String> = Panel::of(workspace)
+            .iter()
+            .map(|&p| panel_face(p).0.to_owned())
+            .collect();
+        let rows = menu_rows(&h);
+        let shown: Vec<String> = rows.iter().map(|(n, _)| n.clone()).collect();
+        assert_eq!(shown, names, "{workspace:?}");
+        assert!(rows.iter().all(|(_, on)| !on), "{workspace:?}");
+
+        // A tap on a row opens the panel and closes the menu. The row of the
+        // open panel has the tick.
+        // The button closes the menu.
+        tap(&mut h, PANELS);
+        assert!(!h.state().pad.panels_menu, "{workspace:?}");
+        let first = Panel::of(workspace)[0];
+        show(&mut h, &names[0]);
+        assert!(!h.state().pad.panels_menu, "{workspace:?}");
+        assert_eq!(h.state().pad.float, Some(first), "{workspace:?}");
+        tap(&mut h, PANELS);
+        let rows = menu_rows(&h);
+        assert_eq!(rows[0], (names[0].clone(), true), "{workspace:?}");
+        assert!(rows[1..].iter().all(|(_, on)| !on), "{workspace:?}");
+        // A tap outside the menu closes it.
+        let r = rects(&h);
+        let outside = r.fit.left_bottom() + vec2(200.0, -100.0);
+        tap_touch(&mut h, egui::TouchPhase::Start, outside, None);
+        h.step();
+        tap_touch(&mut h, egui::TouchPhase::End, outside, None);
+        h.run_steps(3);
+        assert!(!h.state().pad.panels_menu, "{workspace:?}");
+    }
+}
+
+#[test]
+fn a_row_of_the_panels_menu_toggles_a_floating_card_or_a_docked_panel() {
+    for workspace in WORKSPACES {
+        let [first, second] = [Panel::of(workspace)[0], Panel::of(workspace)[1]];
+        let names = [first, second].map(|p| vale_app::ui::pad::panel_face(p).0);
+        // With the dock closed, there is one floating card.
+        let mut h = pad(workspace, BOARDS[0]);
+        show(&mut h, names[0]);
+        assert_eq!(h.state().pad.float, Some(first), "{workspace:?}");
+        show(&mut h, names[1]);
+        assert_eq!(h.state().pad.float, Some(second), "{workspace:?}");
+        show(&mut h, names[1]);
+        assert_eq!(h.state().pad.float, None, "{workspace:?}");
+
+        // With the dock open, the rows add and remove panels of the dock.
+        tap(&mut h, DOCK);
+        show(&mut h, names[1]);
+        show(&mut h, names[0]);
+        let docked = |h: &Pad| -> Vec<_> {
+            let dock = dock_of(h, workspace);
+            dock.panels.iter().map(|p| (p.panel, p.folded)).collect()
+        };
+        assert_eq!(docked(&h), [(second, false), (first, false)]);
+        assert_eq!(h.state().pad.float, None);
+        show(&mut h, names[1]);
+        assert_eq!(docked(&h), [(first, false)], "{workspace:?}");
+
+        // Below 1,000 points, the panel floats.
+        let mut h = pad(workspace, BOARDS[2]);
+        show(&mut h, names[0]);
+        assert_eq!(h.state().pad.float, Some(first), "{workspace:?}");
+        assert!(h.state().pad.dock_frame.slots.is_empty());
+    }
 }

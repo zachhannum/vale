@@ -18,9 +18,7 @@ use super::text_style::{self, TextEvent, TextSpec, rgba_rows};
 use super::widgets::keypad_below;
 use super::widgets::{self, Controls, HIGHLIGHT_INSET, Keys, PANEL_ROW};
 use super::{Card, CardTitle, show_card, theme};
-use crate::ui::atlas::{
-    self, AtlasSelection, BarPage, BarPick, ClassColor, ItemKind, ItemPage, TextPart,
-};
+use crate::ui::atlas::{self, BarPage, BarPick, ClassColor, ItemKind, ItemPage, TextPart};
 use crate::ui::{Action, AppState, FontTarget};
 
 pub use super::fonts::FONT;
@@ -216,7 +214,7 @@ pub fn panel(
             state.atlas.label_color = None;
         }
         if row.close {
-            state.atlas.selection = AtlasSelection::None;
+            super::atlas::close_float(state);
         }
     };
     let top = |_: &mut egui::Ui, _: &mut AppState, _: &mut Controls| {};

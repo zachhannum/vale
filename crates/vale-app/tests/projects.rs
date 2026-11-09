@@ -892,7 +892,7 @@ fn the_dock_keeps_its_panels_after_a_restart() {
         .insert(Workspace::Globe, DockPanel::new(Panel::Layers));
     docks
         .atlas
-        .insert(Workspace::Atlas, DockPanel::new(Panel::Maps));
+        .insert(Workspace::Atlas, DockPanel::new(Panel::Frame));
     run(&mut h);
     let saved = h.state().pad.docks.clone();
 
