@@ -61,7 +61,7 @@ Click "Atlas" in the tool bar to open the pages of the atlas. On iPad, tap "Atla
 
 - Click "Add map frame" to add a frame to the page. The frame shows the map of the project. On iPad, tap the Add button and then "Map frame".
 - Click a frame to select it. Drag the frame to move it, and drag a handle to resize it. The dock shows the tabs Frame, Projection, and Layers.
-- Click "Maps" in the tool bar to show or hide the panel of the selected frame. With no frame selected, choose a frame in its menu. On iPad, tap the Maps button in the top row. With no frame selected, it lists the map frames of the page.
+- Click "Maps" in the tool bar to show or hide the panel of the selected frame. With no frame selected, choose a frame in its menu. On iPad, a selected frame opens its panes in the dock. The Maps tile of the Panels menu lists the map frames of the page.
 - In the Frame tab, change the shape to a polygon. Drag a vertex to move it, drag the middle of an edge to add a vertex, and double-click a vertex to remove it. "Add hole" adds a hole.
 - With the Move tool, drag in the selected frame to pan its map. The key H selects the Move tool, and F selects the Frame tool. Scroll in the selected frame to zoom its map. On a touch screen, two fingers in the selected frame pan and zoom the map.
 - With the Select tool, tap or click a feature of the selectable layers in a frame to select it, or drag a box with the pen or the mouse. A row of a vector layer in the Layers tab makes that layer the active layer. The key V selects the Select tool. The globe shows the same selection.
@@ -78,7 +78,7 @@ Click "Atlas" in the tool bar to open the pages of the atlas. On iPad, tap "Atla
 - In the Labels tab, tap "Add class" to add a label class to the map of the frame. A class has a text expression, a filter, a font, a size, a color, a halo, a priority, and a placement. Each frame of that map shows the change, and the other maps keep their classes.
 - Tick a layer in the left panel to show it in the map. Click "Edit" on a layer to select it. The inspector then shows its name and its style.
 - In the label controls of a point layer or a line layer, click the font to search the fonts of the system and select one. On iPad, open the layer and tap "Font" to open the font picker of iPadOS.
-- The Attributes button, or ⌘I on the desktop, shows the inspector of the World workspace. An edit changes each map. The row Features of a vector layer in the Layers tab opens the attribute table, and so does "Open attribute table" on the desktop.
+- The Attributes tile of the Panels menu, or the Attributes button and ⌘I on the desktop, shows the inspector of the World workspace. An edit changes each map. The row Features of a vector layer in the Layers tab opens the attribute table, and so does "Open attribute table" on the desktop.
 - The inspector lists the labels that did not fit.
 - Export the open page to PNG or PDF, or export all pages to one PDF. A PDF keeps text selectable. The app shows the page progress, and Cancel export stops the work.
 
