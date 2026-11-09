@@ -30,6 +30,9 @@ fn atlas(level: u16) -> (App, RasterId) {
     state.headless = true;
     state.set_layout(Layout::Pad);
     state.workspace = Workspace::Atlas;
+    // The panels show in the open dock, so that a card does not cover the
+    // frame.
+    state.pad.docks.atlas.open = true;
     vale_app::ui::atlas::add_frame(&mut state).expect("a page takes a frame");
     state.globe.set_face_size(128);
     let height = state.add_height();
@@ -370,6 +373,9 @@ fn a_frame_zoomed_on_an_unselected_layer_draws_full_texels() {
     state.headless = true;
     state.set_layout(Layout::Pad);
     state.workspace = Workspace::Atlas;
+    // The panels show in the open dock, so that a card does not cover the
+    // frame.
+    state.pad.docks.atlas.open = true;
     vale_app::ui::atlas::add_frame(&mut state).expect("a page takes a frame");
     state.globe.set_face_size(8192);
     let height = state.add_height();
@@ -581,6 +587,9 @@ fn masked_atlas() -> (App, RasterId, vale_store::LayerId) {
     state.headless = true;
     state.set_layout(Layout::Pad);
     state.workspace = Workspace::Atlas;
+    // The panels show in the open dock, so that a card does not cover the
+    // frame.
+    state.pad.docks.atlas.open = true;
     vale_app::ui::atlas::add_frame(&mut state).expect("a page takes a frame");
     state.globe.set_face_size(256);
     let height = state.add_height();
