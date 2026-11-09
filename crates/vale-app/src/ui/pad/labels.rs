@@ -10,15 +10,15 @@ use vale_style::{LabelClass, LabelPlacement, LabelPosition};
 
 use super::atlas::{FRAME_TABS, named_tabs};
 use super::filter;
-use super::geometry::{Rects, TOUCH};
+use super::geometry::TOUCH;
 use super::icons::{self, Icon};
 use super::label_text;
 use super::number::Number;
 use super::text_style::{self, TextEdit, TextEvent, TextSpec};
 use super::widgets::{self, Controls, PANEL_ROW};
-use super::{Card, CardTitle, show_card, theme};
+use super::{Head, PageParts, Panel, theme};
 use crate::fonts;
-use crate::ui::atlas::{AtlasSelection, ClassColor, ClassDrag, ClassPage, ClassSegment};
+use crate::ui::atlas::{ClassColor, ClassDrag, ClassPage, ClassSegment};
 use crate::ui::expr_help::{self, ExprHelp};
 use crate::ui::{Action, AppState, FontTarget};
 
@@ -366,14 +366,9 @@ fn class_row(
     out
 }
 
-/// The panel of the open label class of frame `id`, or of one of its pages.
-pub(super) fn class_panel(
-    ctx: &egui::Context,
-    state: &mut AppState,
-    controls: &mut Controls,
-    rects: &Rects,
-    id: FrameId,
-) -> Option<Rect> {
+/// The panel of the open label class of frame `id`, or of one of its pages,
+/// in the pane of the Labels panel.
+pub(super) fn class_head(state: &mut AppState, id: FrameId) -> Option<Head> {
     let (map, layer, i) = open_class(state)?;
     let kind = state.doc.layer(layer)?.geometry()?;
     let class = state.doc.label_classes(Some(map), layer).get(i)?.clone();
@@ -388,45 +383,22 @@ pub(super) fn class_panel(
         Some(ClassPage::LeaderLine) => ("pad-atlas-leader", LEADER_LINE, &*class.name),
         None => ("pad-atlas-class", class.name.as_str(), FRAME_TABS[3]),
     };
-    let head = CardTitle {
-        title,
-        back: Some(back),
-        action: None,
+    let mut parts = PageParts::new(key, title, Some(back));
+    // The panel stays still while a finger drags a position.
+    if state.atlas.position_drag.is_some() {
+        parts.scroll = egui::scroll_area::ScrollSource::NONE;
+    }
+    let back_to = move |state: &mut AppState| match page {
+        Some(_) => state.atlas.label_page = None,
+        None => state.atlas.label = None,
     };
-    let text = page.is_none() && state.atlas.label_segment == ClassSegment::Text;
-    let place = match text {
-        true => super::expression::wide_place(rects),
-        false => (rects.dock.min, rects.dock.width()),
-    };
-    let card = Card {
-        key,
-        place,
-        head,
-        // The panel stays still while a finger drags a position.
-        scroll: match state.atlas.position_drag {
-            Some(_) => egui::scroll_area::ScrollSource::NONE,
-            None => egui::scroll_area::ScrollSource::default(),
-        },
-    };
-    let on_title = |state: &mut AppState, row: &widgets::TitleRow| {
-        if row.back {
-            match page {
-                Some(_) => state.atlas.label_page = None,
-                None => state.atlas.label = None,
-            }
-        }
-        if row.close {
-            state.atlas.selection = AtlasSelection::None;
-            state.atlas.vertices.clear();
-        }
-    };
-    let top = |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| {
+    let top = move |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| {
         if page.is_none() {
             segments(ui, state, controls);
         }
     };
     let segment = state.atlas.label_segment;
-    let body = |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| {
+    let body = move |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| {
         ui.spacing_mut().item_spacing.y = 0.0;
         let at = (id, map, layer, i);
         match page {
@@ -449,9 +421,16 @@ pub(super) fn class_panel(
             }
         }
     };
-    Some(show_card(
-        ctx, state, controls, rects, card, on_title, top, body,
-    ))
+    Some(parts.head(Panel::Labels, back_to, top, body))
+}
+
+/// The text segment of the panel of a label class shows, so the dock is
+/// wider.
+pub(super) fn wide(state: &AppState) -> bool {
+    state.pad.shows(Panel::Labels)
+        && state.atlas.open_class().is_some()
+        && state.atlas.label_page.is_none()
+        && state.atlas.label_segment == ClassSegment::Text
 }
 
 /// The segments at the top of the panel of a class.

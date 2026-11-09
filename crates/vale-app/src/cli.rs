@@ -50,6 +50,10 @@ pub struct Args {
     /// You can give more than one.
     #[arg(long, value_name = "PANEL,PANEL ...", value_parser = parse_tabs)]
     pub tabs: Vec<Vec<Panel>>,
+    /// With --workspace atlas: select the map frame with this number, from
+    /// 1, on the open page. A page with fewer frames gets new frames.
+    #[arg(long, value_name = "N")]
+    pub frame: Option<usize>,
     /// With --layout pad: the width of the dock, in points.
     #[arg(long, value_name = "POINTS")]
     pub dock_width: Option<f32>,
@@ -240,6 +244,25 @@ pub fn parse_measure(s: &str) -> anyhow::Result<Measure> {
         path.close();
     }
     Ok(path)
+}
+
+/// Applies `--frame`: selects the frame with this number on the open page.
+pub fn apply_frame(args: &Args, state: &mut AppState) -> anyhow::Result<()> {
+    use crate::ui::atlas::{self, AtlasSelection};
+    let Some(n) = args.frame else {
+        return Ok(());
+    };
+    if n == 0 {
+        bail!("the first map frame is --frame 1");
+    }
+    while atlas::open_page(state).frames.len() < n {
+        if atlas::add_frame(state).is_none() {
+            bail!("no map frame {n}: {}", state.status);
+        }
+    }
+    let frame = atlas::open_page(state).frames[n - 1].id;
+    state.atlas.selection = AtlasSelection::Frame(frame);
+    Ok(())
 }
 
 /// Applies `--measure` to the open workspace.

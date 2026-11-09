@@ -1,15 +1,14 @@
 //! The Grid labels page of the Frame tab: the text of the labels of the
 //! reference grid of a frame.
 
-use eframe::egui::{self, Rect};
+use eframe::egui;
 use vale_store::{FrameId, FurnitureText};
 
 use super::atlas::FRAME_TABS;
-use super::geometry::Rects;
 use super::text_style::{self, TextEvent, TextSpec};
-use super::widgets::{self, Controls};
-use super::{Card, CardTitle, show_card};
-use crate::ui::atlas::{self, AtlasSelection, ClassColor, GridPage};
+use super::widgets::Controls;
+use super::{Head, PageParts, Panel};
+use crate::ui::atlas::{self, ClassColor, GridPage};
 use crate::ui::{Action, AppState, FontTarget};
 
 pub const GRID_LABELS: &str = "Grid labels";
@@ -21,51 +20,28 @@ pub fn summary(text: &FurnitureText) -> String {
 }
 
 /// The Grid labels page of a frame, or the page of its faces or its cases,
-/// in place of the Frame tab.
-pub fn panel(
-    ctx: &egui::Context,
-    state: &mut AppState,
-    controls: &mut Controls,
-    rects: &Rects,
-    id: FrameId,
-) -> Option<Rect> {
+/// in the pane of the Frame panel.
+pub(super) fn head(state: &mut AppState, id: FrameId) -> Option<Head> {
     state.doc.project.atlas.frame(id)?;
     let (key, title, back) = match state.atlas.grid_page {
         None => ("pad-atlas-grid-labels", GRID_LABELS, FRAME_TABS[0]),
         Some(GridPage::Faces) => ("pad-atlas-grid-faces", "Style", GRID_LABELS),
         Some(GridPage::Cases) => ("pad-atlas-grid-cases", "Case", GRID_LABELS),
     };
-    let card = Card {
-        key,
-        place: (rects.dock.min, rects.dock.width()),
-        head: CardTitle {
-            title,
-            back: Some(back),
-            action: None,
-        },
-        scroll: egui::scroll_area::ScrollSource::default(),
-    };
-    let on_title = |state: &mut AppState, row: &widgets::TitleRow| {
-        if row.back {
-            if state.atlas.grid_page.is_some() {
-                state.atlas.grid_page = None;
-            } else {
-                state.atlas.grid = None;
-            }
-            state.atlas.label_color = None;
+    let back_to = |state: &mut AppState| {
+        if state.atlas.grid_page.is_some() {
+            state.atlas.grid_page = None;
+        } else {
+            state.atlas.grid = None;
         }
-        if row.close {
-            state.atlas.selection = AtlasSelection::None;
-            state.atlas.vertices.clear();
-        }
+        state.atlas.label_color = None;
     };
     let top = |_: &mut egui::Ui, _: &mut AppState, _: &mut Controls| {};
-    let body = |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| {
+    let body = move |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| {
         body(ui, state, controls, id);
     };
-    Some(show_card(
-        ctx, state, controls, rects, card, on_title, top, body,
-    ))
+    let parts = PageParts::new(key, title, Some(back));
+    Some(parts.head(Panel::Frame, back_to, top, body))
 }
 
 fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id: FrameId) {

@@ -595,12 +595,12 @@ pub struct AtlasState {
     pub preset_name: String,
     /// The Add menu is open.
     pub add: bool,
-    /// The list of the map frames of the open page shows, from the Layers
-    /// button with no frame selected.
-    pub frames: bool,
+    /// The panels of a frame of the iPad layout show their pages at the same
+    /// time, so the pages of a tab do not wait for the tab.
+    pub every_tab: bool,
     /// The Add menu in the last frame.
     pub add_rect: Option<Rect>,
-    /// The panel of the selection in the last frame.
+    /// The dock of the iPad layout, or its sheet, in the last frame.
     pub panel_rect: Option<Rect>,
     /// The page on the screen in the last frame.
     pub place: Option<PagePlace>,
@@ -718,36 +718,39 @@ pub struct AtlasState {
 }
 
 impl AtlasState {
+    /// The pages of the tab show.
+    fn on(&self, tab: FrameTab) -> bool {
+        self.every_tab || self.tab == tab
+    }
+
     /// The layer whose panel the Layers tab of the selected frame shows.
     pub fn open_layer(&self) -> Option<LayerId> {
-        match (self.selection, self.tab, self.layer) {
-            (AtlasSelection::Frame(f), FrameTab::Layers, Some((of, layer))) if f == of => {
-                Some(layer)
-            }
+        match (self.selection, self.on(FrameTab::Layers), self.layer) {
+            (AtlasSelection::Frame(f), true, Some((of, layer))) if f == of => Some(layer),
             _ => None,
         }
     }
 
     /// The frame whose Map style page the Frame tab shows.
     pub fn open_map_styles(&self) -> Option<FrameId> {
-        match (self.selection, self.tab, self.map_styles) {
-            (AtlasSelection::Frame(f), FrameTab::Frame, Some(of)) if f == of => Some(f),
+        match (self.selection, self.on(FrameTab::Frame), self.map_styles) {
+            (AtlasSelection::Frame(f), true, Some(of)) if f == of => Some(f),
             _ => None,
         }
     }
 
     /// The frame whose Grid labels page the Frame tab shows.
     pub fn open_grid(&self) -> Option<FrameId> {
-        match (self.selection, self.tab, self.grid) {
-            (AtlasSelection::Frame(f), FrameTab::Frame, Some(of)) if f == of => Some(f),
+        match (self.selection, self.on(FrameTab::Frame), self.grid) {
+            (AtlasSelection::Frame(f), true, Some(of)) if f == of => Some(f),
             _ => None,
         }
     }
 
     /// The frame whose Edge labels page the Frame tab shows.
     pub fn open_edge(&self) -> Option<FrameId> {
-        match (self.selection, self.tab, self.edge) {
-            (AtlasSelection::Frame(f), FrameTab::Frame, Some(of)) if f == of => Some(f),
+        match (self.selection, self.on(FrameTab::Frame), self.edge) {
+            (AtlasSelection::Frame(f), true, Some(of)) if f == of => Some(f),
             _ => None,
         }
     }
@@ -755,10 +758,8 @@ impl AtlasState {
     /// The label class whose panel the Labels tab of the selected frame
     /// shows.
     pub fn open_class(&self) -> Option<(LayerId, usize)> {
-        match (self.selection, self.tab, self.label) {
-            (AtlasSelection::Frame(f), FrameTab::Labels, Some((of, layer, i))) if f == of => {
-                Some((layer, i))
-            }
+        match (self.selection, self.on(FrameTab::Labels), self.label) {
+            (AtlasSelection::Frame(f), true, Some((of, layer, i))) if f == of => Some((layer, i)),
             _ => None,
         }
     }
@@ -827,7 +828,7 @@ impl Default for AtlasState {
             neatline_shown: false,
             preset_name: String::new(),
             add: false,
-            frames: false,
+            every_tab: false,
             add_rect: None,
             panel_rect: None,
             place: None,
@@ -991,10 +992,6 @@ pub fn sync(state: &mut AppState) {
     if a.tool == AtlasTool::Select && a.frame().is_none() {
         a.selection = AtlasSelection::None;
     }
-    // A selection shows its own panel in place of the list of the frames.
-    if a.selection != AtlasSelection::None {
-        a.frames = false;
-    }
     let rings = frame.map(|f| f.shape.rings()).unwrap_or_default();
     let vertex_ok = |&(r, i): &Vertex| rings.get(r).is_some_and(|ring| i < ring.len());
     if a.tool == AtlasTool::Vertex {
@@ -1053,35 +1050,10 @@ pub fn selected_map(state: &AppState) -> MapId {
     frame.map_or_else(|| state.doc.first_map(), |f| f.map)
 }
 
-/// True while the panel of the selected frame or the list of the map
-/// frames shows.
-pub fn maps_open(state: &AppState) -> bool {
-    state.atlas.frames || state.atlas.frame().is_some()
-}
-
-/// The Maps button. With no frame selected, it opens the list of the map
-/// frames of the page. While the panel of a frame or the list shows, it
-/// closes it.
-pub fn toggle_maps(state: &mut AppState) {
-    let open = maps_open(state);
-    let a = &mut state.atlas;
-    if open {
-        a.frames = false;
-        if a.frame().is_some() {
-            a.selection = AtlasSelection::None;
-            a.vertices.clear();
-        }
-        return;
-    }
-    a.selection = AtlasSelection::None;
-    a.frames = true;
-}
-
 /// Selects a frame of the list of the map frames, so its panel opens.
 pub fn open_frame(state: &mut AppState, id: FrameId) {
     let a = &mut state.atlas;
     a.selection = AtlasSelection::Frame(id);
-    a.frames = false;
 }
 
 /// Adds a frame to the open page and selects it. The frame shows a new
@@ -1961,6 +1933,8 @@ fn input(ui: &egui::Ui, state: &mut AppState, resp: &egui::Response, place: Page
     {
         let last = state.atlas.last_tap.replace((now, pos));
         let again = last.is_some_and(|(t, p)| now - t < DOUBLE_TAP && p.distance(pos) < 12.0);
+        // A tap of the Select tool selects features, so the panes stay.
+        state.pad.canvas_tap = state.atlas.tool != AtlasTool::Select;
         tap(state, &page, place, pos, shift);
         if again && !place.rect.contains(pos) {
             state.atlas.view = PageView::default();

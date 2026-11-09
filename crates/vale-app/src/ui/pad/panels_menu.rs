@@ -8,7 +8,6 @@ use super::geometry::{self, PANELS_MENU_WIDTH, Rects};
 use super::icons::{self, Icon};
 use super::widgets::{self, Controls, HIGHLIGHT_INSET, ICON, PANEL_ROW};
 use super::{PANELS, Panel, card_cells, has_strip, theme};
-use crate::ui::atlas::{self, AtlasSelection, FrameTab};
 use crate::ui::{AppState, Workspace, select};
 
 pub const BRUSH: &str = "Brush";
@@ -28,20 +27,10 @@ const TILE: f32 = 78.0;
 /// The height of the heading of a group.
 const HEADING: f32 = 28.0;
 
-/// A panel that a tile of the menu opens.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Entry {
-    Panel(Panel),
-    /// A tab of the panel of the selected frame.
-    Frame(FrameTab),
-    Pages,
-    Maps,
-}
-
 /// A tile of the menu.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Tile {
-    pub entry: Entry,
+    pub entry: Panel,
     pub name: &'static str,
     pub icon: Icon,
     pub open: bool,
@@ -55,7 +44,7 @@ pub struct Group {
     pub tiles: Vec<Tile>,
 }
 
-fn tile(entry: Entry, name: &'static str, icon: Icon, open: bool, enabled: bool) -> Tile {
+fn tile(entry: Panel, name: &'static str, icon: Icon, open: bool, enabled: bool) -> Tile {
     Tile {
         entry,
         name,
@@ -73,7 +62,7 @@ pub fn world(state: &AppState) -> Vec<Group> {
         (has_strip(&state.globe) || card_cells(&state.globe) > 0) && !state.globe.selecting();
     let panel = |panel: Panel, name, icon, enabled| Tile {
         pinned: enabled && pad.dock().is_pinned(panel),
-        ..tile(Entry::Panel(panel), name, icon, pad.is_open(panel), enabled)
+        ..tile(panel, name, icon, pad.is_open(panel), enabled)
     };
     vec![Group {
         heading: WORLD,
@@ -93,105 +82,42 @@ pub fn world(state: &AppState) -> Vec<Group> {
 
 /// The tiles of the Atlas workspace.
 pub fn atlas(state: &AppState) -> Vec<Group> {
-    // While the Measure tool is the tool, its Brush panel is the panel.
-    let measuring = state.measuring();
-    let attributes = !measuring && state.pad.is_open(Panel::Attributes);
-    let shown = !measuring && !attributes;
-    let a = &state.atlas;
-    let frame = !measuring && a.frame().is_some();
-    let tab = |tab: FrameTab, name, icon| {
-        tile(Entry::Frame(tab), name, icon, shown && a.tab == tab, frame)
+    let pad = &state.pad;
+    let frame = state.atlas.frame().is_some();
+    let panel = |panel: Panel, name, icon, enabled: bool| {
+        // A pinned panel of a frame shows its hint with no frame.
+        let enabled = enabled || pad.dock().is_pinned(panel);
+        Tile {
+            pinned: enabled && pad.dock().is_pinned(panel),
+            ..tile(panel, name, icon, pad.is_open(panel), enabled)
+        }
     };
     let [frame_name, projection, layers, labels] = super::atlas::FRAME_TABS;
     vec![
         Group {
             heading: SELECTION,
             tiles: vec![
-                tab(FrameTab::Frame, frame_name, Icon::Frame),
-                tab(FrameTab::Projection, projection, Icon::Projection),
-                tab(FrameTab::Layers, layers, Icon::Layers),
-                tab(FrameTab::Labels, labels, Icon::Tag),
+                panel(Panel::Frame, frame_name, Icon::Frame, frame),
+                panel(Panel::Projection, projection, Icon::Projection, frame),
+                panel(Panel::Layers, layers, Icon::Layers, frame),
+                panel(Panel::Labels, labels, Icon::Tag, frame),
             ],
         },
         Group {
             heading: ATLAS,
             tiles: vec![
-                tile(
-                    Entry::Pages,
-                    PAGES,
-                    Icon::Pages,
-                    shown && a.selection == AtlasSelection::Page,
-                    !measuring,
-                ),
-                tile(
-                    Entry::Maps,
-                    super::atlas::MAPS,
-                    Icon::Map,
-                    shown && a.frames && a.selection == AtlasSelection::None,
-                    !measuring,
-                ),
-                tile(
-                    Entry::Panel(Panel::Attributes),
+                panel(Panel::Pages, PAGES, Icon::Pages, true),
+                panel(Panel::Maps, super::atlas::MAPS, Icon::Map, true),
+                panel(
+                    Panel::Attributes,
                     select::ATTRIBUTES,
                     Icon::Attributes,
-                    attributes,
-                    !measuring,
+                    true,
                 ),
-                tile(
-                    Entry::Panel(Panel::Brush),
-                    BRUSH,
-                    Icon::Brush,
-                    state.pad.is_open(Panel::Brush),
-                    measuring,
-                ),
+                panel(Panel::Brush, BRUSH, Icon::Brush, state.measuring()),
             ],
         },
     ]
-}
-
-/// Opens the panel of a tile, or closes it when it is open.
-fn toggle(state: &mut AppState, tile: &Tile) {
-    match (tile.entry, state.workspace) {
-        (Entry::Panel(Panel::Attributes), Workspace::Atlas) => {
-            if tile.open {
-                state.pad.close(Panel::Attributes);
-            } else {
-                state.pad.open(Panel::Attributes);
-                state.atlas.frames = false;
-            }
-        }
-        (Entry::Panel(panel), _) => state.pad.toggle(panel),
-        (Entry::Frame(_) | Entry::Pages, _) if tile.open => atlas::clear_selection(state),
-        (Entry::Maps, _) if tile.open => state.atlas.frames = false,
-        // The panel of the selection and the inspector share the panel
-        // place, so the inspector closes.
-        (entry, _) => {
-            state.pad.close(Panel::Attributes);
-            state.atlas.frames = false;
-            match entry {
-                Entry::Frame(tab) => state.atlas.tab = tab,
-                Entry::Pages => {
-                    atlas::clear_selection(state);
-                    state.atlas.selection = AtlasSelection::Page;
-                }
-                _ => {
-                    atlas::clear_selection(state);
-                    state.atlas.frames = true;
-                }
-            }
-        }
-    }
-}
-
-/// Closes each panel of the workspace.
-fn close_all(state: &mut AppState) {
-    state.pad.dock_mut().close_all();
-    if state.workspace == Workspace::Atlas {
-        state.atlas.frames = false;
-        if state.atlas.selection != AtlasSelection::None {
-            atlas::clear_selection(state);
-        }
-    }
 }
 
 /// The height of the menu with these groups.
@@ -275,15 +201,19 @@ pub fn show(
         },
     );
     if let Some(tile) = chosen {
-        toggle(state, &tile);
+        state.pad.toggle(tile.entry);
         state.pad.panels_menu = false;
     }
     if close {
-        close_all(state);
+        state.pad.dock_mut().close_all();
         state.pad.panels_menu = false;
     }
     if reset {
         state.pad.dock_mut().reset();
+        // The panels of the selected frame open in the first arrangement.
+        if state.workspace == Workspace::Atlas && state.atlas.frame().is_some() {
+            state.pad.dock_mut().open_frames();
+        }
         state.pad.panels_menu = false;
     }
 }

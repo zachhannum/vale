@@ -1,6 +1,6 @@
 //! The iPad layout of the Atlas workspace: the page on the canvas, the top
-//! row with the page controls, the tool strip, and the panel of the
-//! selection.
+//! row with the page controls, the tool strip, and the panels of the
+//! selection and of the atlas in the dock.
 
 use eframe::egui::{self, Align2, Order, Rect, pos2, vec2};
 use vale_sphere::{INTERVALS, ProjectionKind, interval_text};
@@ -15,10 +15,10 @@ use super::number::Number;
 use super::panes;
 use super::text_style;
 use super::widgets::{self, BODY_PAD, Controls, Keys, PANEL_ROW, keypad_below};
-use super::{Card, CardTitle, GRATICULE, WORKSPACES, WORLDS, WORLDS_LEAD, WORLDS_ROW};
-use super::{NO_LAYERS, layer_icon, rule, save_mark, show_card, theme, toggle_worlds, worlds_menu};
+use super::{GRATICULE, Head, PageParts, Panel, WORKSPACES, WORLDS, WORLDS_LEAD, WORLDS_ROW};
+use super::{NO_LAYERS, layer_icon, rule, save_mark, theme, toggle_worlds, worlds_menu};
 use crate::atlas::{self as math, PAGE_PRESETS};
-use crate::ui::atlas::{self, AtlasSelection, AtlasTool, ClassColor, FrameTab};
+use crate::ui::atlas::{self, AtlasSelection, AtlasTool, ClassColor};
 use crate::ui::{Action, AppState, ExportFormat, Workspace};
 use crate::ui::{region, select};
 
@@ -107,8 +107,7 @@ pub const LAYOUT_GRID: &str = "Layout grid";
 pub const SHOW_GRID: &str = "Show layout grid";
 /// The switch of the layout grid in the context strip.
 pub const GRID: &str = "Grid";
-/// The Layers button of the top row. It opens the Layers tab of the
-/// selected frame, or the list of the map frames.
+/// The Maps panel: the list of the map frames of the open page.
 pub const MAPS: &str = "Maps";
 pub const NO_FRAMES: &str = "Add a map frame to see it here.";
 pub const GRID_SPACING: &str = "Grid spacing";
@@ -155,13 +154,6 @@ pub const TAB_PAD: f32 = 12.0;
 fn text_width(ctx: &egui::Context, text: &str) -> f32 {
     let galley = ctx.fonts_mut(|f| f.layout_no_wrap(text.to_owned(), theme::body(), theme::TEXT));
     galley.size().x.ceil()
-}
-
-/// The width of the panel of the selection. The tabs of a frame fit in it.
-pub(super) fn panel_width(ctx: &egui::Context) -> f32 {
-    let text: f32 = FRAME_TABS.iter().map(|t| text_width(ctx, t)).sum();
-    let tabs = text + 2.0 * TAB_PAD * FRAME_TABS.len() as f32 + 2.0 * PAD;
-    panes::WIDTH.max(tabs + 2.0 * BODY_PAD)
 }
 
 /// The name of a page in the top row and in the title of its panel.
@@ -220,26 +212,26 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         WidthClass::Compact => widgets::menu_button_width(ui, WORKSPACES[1]),
     };
     let page_width = 2.0 * TOUCH + page_text_width(ui, state) + 2.0 * PAD;
-    // While the Measure tool is the tool, the Brush panel of its snapping
-    // settings is the panel, and the panel of the selection does not show.
     let measuring = state.measuring();
-    // The inspector is the inspector of the World workspace. It shares the
-    // panel place with the panel of the selection, and it wins while it is
-    // open.
-    let attributes = !measuring && state.pad.is_open(super::Panel::Attributes);
+    // The Brush panel holds the snapping settings of the Measure tool.
+    if !measuring {
+        state.pad.close(Panel::Brush);
+    }
+    // A tap on the canvas closes the unpinned pane. A tap that changes the
+    // selection opens the panels of the new selection in place of the
+    // panels of the old one.
+    let typing = widgets::keypad_is_open(&ctx) || ctx.egui_wants_keyboard_input();
+    let tap = std::mem::take(&mut state.pad.canvas_tap) && !typing;
+    follow_selection(state, tap && class != WidthClass::Compact);
     // On a compact screen, the tool strip and the context strip are rows at
     // the bottom, as in the globe workspace.
     let row = class == WidthClass::Compact;
-    let input = Input {
+    let mut input = Input {
         screen,
         bands: geometry::Bands::new(screen, ctx.content_rect()),
         workspace_width,
         view_width: page_width,
-        panel: if measuring {
-            state.pad.is_open(super::Panel::Brush)
-        } else {
-            state.atlas.selection != AtlasSelection::None || attributes || state.atlas.frames
-        },
+        panel: !state.pad.dock().panes.is_empty(),
         sheet_offset: state.pad.sheet_offset,
         cells: if measuring {
             geometry::MEASURE_CELLS
@@ -256,23 +248,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         row,
         dock_width: state.pad.docks.atlas.width,
     };
-    let mut rects = geometry::layout(&input);
-    // On a compact screen, the layout grid and Add are in the workspace menu.
-    if class != WidthClass::Compact {
-        rects.actions.min.x = rects.actions.max.x - rects.bands.right - ACTIONS_WIDTH;
-    }
-    // The tabs of the panel of a frame fit in the dock.
-    if class != WidthClass::Compact {
-        rects.dock = super::expression::wider(&rects, panel_width(&ctx));
-    }
-    // In the row layout, `brush` is the place of the context strip.
-    if !measuring && !row {
-        rects.brush = None;
-    }
-    super::table::check(state);
-    super::table::widen(state, &mut rects);
-    state.sync_selection_form(attributes);
-    crate::ui::select::drop_focus(&ctx, state);
+    let mut rects = layout(&input, measuring);
     state.pad.sheet_offset = input
         .sheet_offset
         .clamp(-rects.sheet_rise, rects.sheet_travel);
@@ -290,23 +266,26 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     state.pad.flyouts.begin_frame();
     state.pad.menu_rect = None;
     state.atlas.panel_rect = None;
-    let shown = match state.atlas.selection {
-        AtlasSelection::None if !attributes && !state.atlas.frames => None,
-        selection => Some((selection, state.atlas.tab, attributes)),
-    };
-    // A frame, a page, or an item that a tool other than Select selects
-    // closes the inspector, so that its panel shows.
-    let before = state.atlas.shown.map(|(selection, _, _)| selection);
-    let after = shown.map(|(selection, _, _)| selection);
-    if attributes
-        && state.atlas.tool != AtlasTool::Select
-        && after.is_some_and(|s| s != AtlasSelection::None)
-        && before != after
-    {
-        state.pad.close(super::Panel::Attributes);
+
+    top_row(&ctx, state, &mut controls, &rects, page_card);
+    tool_strip(&ctx, state, &mut controls, &rects);
+    frame_card(&ctx, state, &mut controls, &rects);
+    if measuring {
+        super::cell_card(&ctx, state, &mut controls, &rects);
     }
-    let attributes = state.pad.is_open(super::Panel::Attributes) && !measuring;
-    let shown = shown.map(|(selection, tab, _)| (selection, tab, attributes));
+    // A button above can open or close a panel. The panels use the new
+    // state.
+    input.panel = !state.pad.dock().panes.is_empty();
+    input.sheet_offset = state.pad.sheet_offset;
+    rects = layout(&input, measuring);
+    super::table::check(state);
+    super::table::widen(state, &mut rects);
+    if super::labels::wide(state) && class != WidthClass::Compact {
+        rects.dock = super::expression::wider(&rects, super::expression::PANEL_WIDTH);
+    }
+    state.sync_selection_form(state.pad.shows(Panel::Attributes));
+    crate::ui::select::drop_focus(&ctx, state);
+    let shown = Some((state.atlas.selection, state.atlas.tab, false));
     if state.atlas.shown != shown {
         widgets::close_keypad(&ctx);
         state.atlas.shown = shown;
@@ -314,28 +293,30 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         state.atlas.label_color = None;
         state.pad.sheet_offset = 0.0;
     }
-
-    top_row(&ctx, state, &mut controls, &rects, page_card);
-    tool_strip(&ctx, state, &mut controls, &rects);
-    frame_card(&ctx, state, &mut controls, &rects);
-    if measuring {
-        super::cell_card(&ctx, state, &mut controls, &rects);
-        if state.pad.is_open(super::Panel::Brush) {
-            super::show_panel(&ctx, state, &mut controls, &rects, super::Panel::Brush);
-        }
-    } else if attributes {
-        super::show_panel(&ctx, state, &mut controls, &rects, super::Panel::Attributes);
-        state.atlas.panel_rect = state.pad.panels.last().map(|&(_, rect)| rect);
-    } else if state.atlas.selection != AtlasSelection::None {
-        selection_panel(&ctx, state, &mut controls, &rects);
-    } else if state.atlas.frames {
-        frames_panel(&ctx, state, &mut controls, &rects);
+    state.atlas.every_tab = true;
+    super::dock_ui::show(&ctx, state, &mut controls, &rects);
+    state.pad.docks.atlas.learn();
+    // The panel of the frame that the user chose last is the tab of the
+    // frame. A tab that changed in this frame opens its panel in the next.
+    let focus = state.pad.docks.atlas.focus.and_then(Panel::frame_tab);
+    if let Some(tab) = focus
+        && state.atlas.frame().is_some()
+        && state.pad.atlas_tab == Some(state.atlas.tab)
+    {
+        state.atlas.tab = tab;
+        state.pad.atlas_tab = Some(tab);
     }
+    state.atlas.panel_rect = state
+        .pad
+        .dock_rect
+        .or_else(|| state.pad.panels.first().map(|&(_, rect)| rect));
     graticule_color_frame(&ctx, state);
     neatline_color_frame(&ctx, state);
     super::labels::color_frame(&ctx, state);
     super::rules::picker_frame(&ctx, state);
-    raster_cards(&ctx, state, &mut controls, &rects);
+    if state.pad.shows(Panel::Layers) {
+        raster_cards(&ctx, state, &mut controls, &rects);
+    }
     readout(&ctx, ui, state, &rects);
     super::flyout::tooltip(&ctx, state.globe.backdrop(), &mut state.pad.flyouts, &rects);
     state.pad.panels_menu_rect = None;
@@ -356,9 +337,10 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     if state.pad.worlds.is_some() {
         worlds_menu(&ctx, state, &mut controls, &rects);
     }
+    super::dock_ui::handle(&ctx, state, &mut controls, &rects);
 
     // The page fits the space between the cards. In the wide layout, the
-    // panel has its own place at the right.
+    // dock has its own place at the right.
     let left = match rects.row {
         true => rects.workspace.left(),
         false => rects.tools.right() + GAP,
@@ -386,6 +368,79 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
 
     state.pad.controls = controls;
     state.pad.rects = Some(rects);
+}
+
+fn layout(input: &Input, measuring: bool) -> Rects {
+    let mut rects = geometry::layout(input);
+    // On a compact screen, the layout grid and Add are in the workspace menu.
+    if rects.class != WidthClass::Compact {
+        rects.actions.min.x = rects.actions.max.x - rects.bands.right - ACTIONS_WIDTH;
+    }
+    // In the row layout, `brush` is the place of the context strip.
+    if !measuring && !input.row {
+        rects.brush = None;
+    }
+    rects
+}
+
+/// The panels of the selection follow the selection. A new frame opens the
+/// panels of a frame that are not open, in the arrangement of the last
+/// time, the page opens the Pages panel, and an item opens its panel. The
+/// unpinned panels of the old selection close. With no change, a tap on
+/// the canvas closes the unpinned pane that is not a panel of the
+/// selection.
+fn follow_selection(state: &mut AppState, tap: bool) {
+    use panes::FRAME_PANELS;
+    let selection = state.atlas.selection;
+    let before = state.pad.atlas_selection.replace(selection);
+    let dock = &mut state.pad.docks.atlas;
+    let changed = before != Some(selection);
+    let frame = matches!(selection, AtlasSelection::Frame(_));
+    if changed {
+        match selection {
+            AtlasSelection::Frame(_) => {
+                dock.close_unpinned(&[Panel::Pages, Panel::Item, Panel::Maps]);
+                dock.open_frames();
+            }
+            AtlasSelection::Page => {
+                dock.close_unpinned(&[Panel::Item]);
+                dock.open(Panel::Pages);
+            }
+            AtlasSelection::Item(_) => {
+                dock.close_unpinned(&[Panel::Pages]);
+                dock.open(Panel::Item);
+            }
+            AtlasSelection::None => dock.close_unpinned(&[Panel::Pages]),
+        }
+        state.pad.sheet_offset = 0.0;
+    } else if tap {
+        let keep: &[Panel] = match selection {
+            AtlasSelection::Frame(_) => &FRAME_PANELS,
+            AtlasSelection::Page => &[Panel::Pages],
+            AtlasSelection::Item(_) => &[Panel::Item],
+            AtlasSelection::None => &[],
+        };
+        let close: Vec<Panel> = [Panel::Attributes, Panel::Maps, Panel::Pages, Panel::Brush]
+            .into_iter()
+            .chain(FRAME_PANELS)
+            .filter(|p| !keep.contains(p))
+            .collect();
+        dock.close_unpinned(&close);
+    }
+    // With no frame, the unpinned panels of a frame close, and a pinned one
+    // shows a hint.
+    if !frame {
+        dock.close_unpinned(&FRAME_PANELS);
+    }
+    if !matches!(selection, AtlasSelection::Item(_)) {
+        dock.close(Panel::Item);
+    }
+    // A change of the tab of the frame shows its panel.
+    let tab = state.atlas.tab;
+    if frame && state.pad.atlas_tab.is_some_and(|t| t != tab) {
+        dock.open(Panel::from(tab));
+    }
+    state.pad.atlas_tab = Some(tab);
 }
 
 fn page_text_width(ui: &egui::Ui, state: &AppState) -> f32 {
@@ -881,169 +936,140 @@ fn workspace_menu(
     });
 }
 
-/// The list of the map frames of the open page. A row selects its frame
-/// and opens its Layers tab.
-fn frames_panel(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
-    let head = CardTitle {
-        title: MAPS,
-        back: None,
-        action: None,
+/// The hint of a panel of a frame with no frame selected.
+pub fn frame_hint(panel: Panel) -> &'static str {
+    match panel {
+        Panel::Projection => "Select a map frame to see its projection.",
+        Panel::Layers => "Select a map frame to see its layers.",
+        Panel::Labels => "Select a map frame to see its labels.",
+        _ => "Select a map frame to see its settings.",
+    }
+}
+
+/// The name of the kind of the selected item, the title of the Item pane.
+pub fn item_name(state: &AppState) -> &'static str {
+    let item = state.atlas.item();
+    let rec = item.and_then(|id| state.doc.project.atlas.furniture(id));
+    rec.map_or("Item", |r| atlas::ItemKind::of(&r.item).name())
+}
+
+fn no_back(_: &mut AppState) {}
+
+fn no_rows(_: &mut egui::Ui, _: &mut AppState, _: &mut Controls) {}
+
+fn muted(ui: &mut egui::Ui, text: &str) {
+    ui.add_space(4.0);
+    ui.label(egui::RichText::new(text).color(theme::MUTE));
+}
+
+/// The first page of a panel of a frame: the rows of `rows`.
+fn tab_head(
+    panel: Panel,
+    key: &'static str,
+    id: vale_store::FrameId,
+    rows: fn(&mut egui::Ui, &mut AppState, &mut Controls, vale_store::FrameId),
+) -> Head {
+    let body = move |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| {
+        rows(ui, state, controls, id);
     };
-    let card = Card {
-        key: "pad-atlas-frames",
-        place: (rects.dock.min, rects.dock.width()),
-        head,
-        scroll: egui::scroll_area::ScrollSource::default(),
-    };
-    let on_title = |state: &mut AppState, row: &widgets::TitleRow| {
-        if row.close {
-            state.atlas.frames = false;
-        }
-    };
-    let top = |_: &mut egui::Ui, _: &mut AppState, _: &mut Controls| {};
-    let body = |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| {
-        let frames = atlas::frame_names(state);
-        if frames.is_empty() {
-            ui.add_space(4.0);
-            ui.label(egui::RichText::new(NO_FRAMES).color(theme::MUTE));
-        }
-        for (id, name) in frames {
-            if widgets::open_row(ui, controls, &name, "").clicked() {
-                atlas::open_frame(state, id);
+    PageParts::new(key, frame_title(panel), None).head(panel, no_back, no_rows, body)
+}
+
+fn frame_title(panel: Panel) -> &'static str {
+    match panel {
+        Panel::Projection => FRAME_TABS[1],
+        Panel::Layers => FRAME_TABS[2],
+        Panel::Labels => FRAME_TABS[3],
+        _ => FRAME_TABS[0],
+    }
+}
+
+/// The page that the pane of a panel of the Atlas shows. `None`: the panel
+/// is a panel of the World workspace too.
+pub(super) fn head(state: &mut AppState, panel: Panel) -> Option<Head> {
+    let frame = state.atlas.frame();
+    let frame_head = match (panel, frame) {
+        (Panel::Frame, Some(id)) => {
+            if state.atlas.open_map_styles().is_some() {
+                map_style_head(state, id)
+            } else if state.atlas.open_grid().is_some() {
+                super::grid_labels::head(state, id)
+            } else if state.atlas.open_edge().is_some() {
+                super::edge_labels::head(state, id)
+            } else {
+                Some(tab_head(panel, "pad-atlas-frame", id, frame_tab))
             }
         }
+        (Panel::Projection, Some(id)) => {
+            Some(tab_head(panel, "pad-atlas-projection", id, projection_tab))
+        }
+        (Panel::Layers, Some(id)) => match open_layer(state) {
+            Some(_) => layer_head(state, id),
+            None => Some(tab_head(panel, "pad-atlas-layers", id, layers_tab)),
+        },
+        (Panel::Labels, Some(id)) => match super::labels::open_class(state) {
+            Some(_) => super::labels::class_head(state, id),
+            None => {
+                let mut head = tab_head(panel, "pad-atlas-labels", id, super::labels::tab);
+                // A drag of a label class moves the class, and not the pane.
+                if state.atlas.label_drag.is_some() {
+                    head.scroll = egui::scroll_area::ScrollSource::NONE;
+                }
+                Some(head)
+            }
+        },
+        _ => None,
     };
-    let rect = show_card(ctx, state, controls, rects, card, on_title, top, body);
-    state.atlas.panel_rect = Some(rect);
-}
-
-/// The panel of the selected frame or of the open page.
-fn selection_panel(
-    ctx: &egui::Context,
-    state: &mut AppState,
-    controls: &mut Controls,
-    rects: &Rects,
-) {
-    let place = (rects.dock.min, rects.dock.width());
-    // A drag of a label class moves the class, and not the panel.
-    let scroll = match state.atlas.label_drag {
-        Some(_) => egui::scroll_area::ScrollSource::NONE,
-        None => egui::scroll_area::ScrollSource::default(),
-    };
-    let on_title = |state: &mut AppState, row: &widgets::TitleRow| {
-        if row.close {
-            state.atlas.selection = AtlasSelection::None;
-            state.atlas.vertices.clear();
-        }
-    };
-    let class_open = super::labels::open_class(state).is_some();
-    let rect = match state.atlas.selection {
-        AtlasSelection::None => return,
-        AtlasSelection::Item(id) => {
-            let Some(rect) = super::furniture::panel(ctx, state, controls, rects, id) else {
-                return;
-            };
-            rect
-        }
-        AtlasSelection::Frame(id) if class_open => {
-            let Some(rect) = super::labels::class_panel(ctx, state, controls, rects, id) else {
-                return;
-            };
-            rect
-        }
-        AtlasSelection::Frame(id) if state.atlas.open_map_styles().is_some() => {
-            let Some(rect) = map_style_panel(ctx, state, controls, rects, id) else {
-                return;
-            };
-            rect
-        }
-        AtlasSelection::Frame(id) if state.atlas.open_grid().is_some() => {
-            let Some(rect) = super::grid_labels::panel(ctx, state, controls, rects, id) else {
-                return;
-            };
-            rect
-        }
-        AtlasSelection::Frame(id) if state.atlas.open_edge().is_some() => {
-            let Some(rect) = super::edge_labels::panel(ctx, state, controls, rects, id) else {
-                return;
-            };
-            rect
-        }
-        AtlasSelection::Frame(id) if open_layer(state).is_some() => {
-            let Some(rect) = layer_panel(ctx, state, controls, rects, id) else {
-                return;
-            };
-            rect
-        }
-        AtlasSelection::Frame(id) => {
-            let Some(frame) = state.doc.project.atlas.frame(id) else {
-                return;
-            };
-            let map = state.doc.project.atlas.map(frame.map);
-            let title = map.map_or_else(String::new, |m| m.name.clone());
-            let head = CardTitle {
-                title: &title,
-                back: None,
-                action: None,
-            };
-            let key = match state.atlas.tab {
-                FrameTab::Frame => "pad-atlas-frame",
-                FrameTab::Projection => "pad-atlas-projection",
-                FrameTab::Layers => "pad-atlas-layers",
-                FrameTab::Labels => "pad-atlas-labels",
-            };
-            let card = Card {
-                key,
-                place,
-                head,
-                scroll,
-            };
-            let body =
-                |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| match state
-                    .atlas
-                    .tab
-                {
-                    FrameTab::Frame => frame_tab(ui, state, controls, id),
-                    FrameTab::Projection => projection_tab(ui, state, controls, id),
-                    FrameTab::Layers => layers_tab(ui, state, controls, id),
-                    FrameTab::Labels => super::labels::tab(ui, state, controls, id),
+    let mut head = match panel {
+        Panel::Frame | Panel::Projection | Panel::Layers | Panel::Labels => frame_head
+            .unwrap_or_else(|| {
+                let hint = frame_hint(panel);
+                let body = move |ui: &mut egui::Ui, _: &mut AppState, _: &mut Controls| {
+                    muted(ui, hint);
                 };
-            show_card(
-                ctx, state, controls, rects, card, on_title, frame_tabs, body,
-            )
-        }
-        AtlasSelection::Page => {
+                let parts = PageParts::new("pad-atlas-hint", frame_title(panel), None);
+                parts.head(panel, no_back, no_rows, body)
+            }),
+        Panel::Pages => {
+            let parts = PageParts::new("pad-atlas-page", super::panels_menu::PAGES, None);
+            let mut head = parts.head(panel, no_back, no_rows, page_body);
             let (index, _) = atlas::page_index(state);
-            let title = format!("Page {}", index + 1);
-            let head = CardTitle {
-                title: &title,
-                back: None,
-                action: None,
-            };
-            let card = Card {
-                key: "pad-atlas-page",
-                place,
-                head,
-                scroll,
-            };
-            let top = |_: &mut egui::Ui, _: &mut AppState, _: &mut Controls| {};
-            show_card(ctx, state, controls, rects, card, on_title, top, page_body)
+            head.subtitle = Some(format!("Page {}", index + 1));
+            head
         }
+        Panel::Maps => {
+            let body = |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| {
+                let frames = atlas::frame_names(state);
+                if frames.is_empty() {
+                    muted(ui, NO_FRAMES);
+                }
+                for (id, name) in frames {
+                    if widgets::open_row(ui, controls, &name, "").clicked() {
+                        atlas::open_frame(state, id);
+                    }
+                }
+            };
+            PageParts::new("pad-atlas-frames", MAPS, None).head(panel, no_back, no_rows, body)
+        }
+        Panel::Item => {
+            let item = state.atlas.item();
+            match item.and_then(|id| super::furniture::head(state, id)) {
+                Some(head) => head,
+                None => PageParts::new("pad-atlas-item", item_name(state), None)
+                    .head(panel, no_back, no_rows, no_rows),
+            }
+        }
+        _ => return None,
     };
-    state.atlas.panel_rect = Some(rect);
-}
-
-/// A row of tabs. Each tab is as wide as its text and a padding, and the
-/// tabs share the rest of the row. A tab that is not `enabled` does nothing
-/// yet. Returns the tab that the user chose.
-fn tabs(
-    ui: &mut egui::Ui,
-    controls: &mut Controls,
-    items: &[(&str, bool)],
-    active: usize,
-) -> Option<usize> {
-    let named: Vec<_> = items.iter().map(|&(l, e)| (l, l, e)).collect();
-    named_tabs(ui, controls, &named, active)
+    // The panes of a frame show the name of its map.
+    if let Some(id) = frame
+        && panes::FRAME_PANELS.contains(&panel)
+    {
+        let atlas = &state.doc.project.atlas;
+        let map = atlas.frame(id).and_then(|f| atlas.map(f.map));
+        head.subtitle = map.map(|m| m.name.clone());
+    }
+    Some(head)
 }
 
 /// `tabs` with a name for each tab that differs from its label. Each item is
@@ -1103,25 +1129,6 @@ pub(super) fn named_tabs(
         }
     }
     chosen
-}
-
-/// The tabs of the panel of a frame.
-fn frame_tabs(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
-    let items = [
-        (FRAME_TABS[0], true),
-        (FRAME_TABS[1], true),
-        (FRAME_TABS[2], true),
-        (FRAME_TABS[3], true),
-    ];
-    let active = state.atlas.tab as usize;
-    match tabs(ui, controls, &items, active) {
-        Some(0) => state.atlas.tab = FrameTab::Frame,
-        Some(1) => state.atlas.tab = FrameTab::Projection,
-        Some(2) => state.atlas.tab = FrameTab::Layers,
-        Some(3) => state.atlas.tab = FrameTab::Labels,
-        _ => {}
-    }
-    ui.add_space(6.0);
 }
 
 fn frame_tab(
@@ -1262,42 +1269,18 @@ fn map_style_rows(
 /// check on the map style of the map. A tap links the map style, and a
 /// swipe to the left shows the Delete button of a map style. Below them are
 /// the name of the linked map style and "Save as map style…".
-pub(super) fn map_style_panel(
-    ctx: &egui::Context,
-    state: &mut AppState,
-    controls: &mut Controls,
-    rects: &Rects,
-    id: vale_store::FrameId,
-) -> Option<Rect> {
+pub(super) fn map_style_head(state: &mut AppState, id: vale_store::FrameId) -> Option<Head> {
     let map = state.doc.project.atlas.frame(id)?.map;
-    let card = Card {
-        key: "pad-atlas-map-style",
-        place: (rects.dock.min, rects.dock.width()),
-        head: CardTitle {
-            title: MAP_STYLE,
-            back: Some(FRAME_TABS[0]),
-            action: None,
-        },
-        scroll: egui::scroll_area::ScrollSource::default(),
+    let back_to = |state: &mut AppState| {
+        state.atlas.map_styles = None;
+        state.atlas.map_style_swipe = None;
+        state.atlas.map_style_name = None;
     };
-    let on_title = |state: &mut AppState, row: &widgets::TitleRow| {
-        if row.back {
-            state.atlas.map_styles = None;
-            state.atlas.map_style_swipe = None;
-            state.atlas.map_style_name = None;
-        }
-        if row.close {
-            state.atlas.selection = AtlasSelection::None;
-            state.atlas.vertices.clear();
-        }
-    };
-    let top = |_: &mut egui::Ui, _: &mut AppState, _: &mut Controls| {};
-    let body = |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| {
+    let body = move |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| {
         map_style_body(ui, state, controls, map);
     };
-    Some(show_card(
-        ctx, state, controls, rects, card, on_title, top, body,
-    ))
+    let parts = PageParts::new("pad-atlas-map-style", MAP_STYLE, Some(FRAME_TABS[0]));
+    Some(parts.head(Panel::Frame, back_to, no_rows, body))
 }
 
 fn map_style_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, map: MapId) {
@@ -1679,20 +1662,14 @@ fn open_layer(state: &AppState) -> Option<vale_store::LayerId> {
 /// The panel of a layer in the Layers tab of frame `id`: the switch between
 /// the style of the layer and the style of the map of the frame, and the
 /// style section with its pages.
-fn layer_panel(
-    ctx: &egui::Context,
-    state: &mut AppState,
-    controls: &mut Controls,
-    rects: &Rects,
-    id: vale_store::FrameId,
-) -> Option<Rect> {
+fn layer_head(state: &mut AppState, id: vale_store::FrameId) -> Option<Head> {
     use super::Page;
     let layer = open_layer(state)?;
     if state.doc.entry(layer).is_none() {
         if let Some(raster) = state.doc.layer(layer).and_then(|l| l.raster()) {
-            return raster_panel(ctx, state, controls, rects, id, layer, raster);
+            return raster_head(state, id, layer, raster);
         }
-        return look_panel(ctx, state, controls, rects, id, layer);
+        return look_head(state, id, layer);
     }
     let map = state.doc.project.atlas.frame(id)?.map;
     let name = state.doc.layer(layer)?.name.clone();
@@ -1743,50 +1720,33 @@ fn layer_panel(
         Some(_) => ("pad-atlas-rule", rule_name.as_str(), name.as_str()),
         None => ("pad-atlas-layer", name.as_str(), FRAME_TABS[2]),
     };
-    let head = CardTitle {
-        title,
-        back: Some(back),
-        action: None,
-    };
-    // The panel is wider while it shows the table.
-    let card = Card {
-        key,
-        place: (rects.dock.min, rects.dock.width()),
-        head,
-        scroll: egui::scroll_area::ScrollSource::default(),
-    };
-    let on_title = |state: &mut AppState, row: &widgets::TitleRow| {
-        if row.back {
-            state.atlas.layer_page = match page {
-                Some(Page::Symbols(i) | Page::MarkerShape(i) | Page::MarkerFill(i)) => {
-                    Some(Page::Rule(i))
-                }
-                Some(Page::Ramps) => Some(Page::Classify),
-                Some(Page::RampLabels(_)) => Some(Page::Ramps),
-                Some(_) => None,
-                None => {
-                    state.atlas.layer = None;
-                    None
-                }
-            };
-            state.pad.rules = Default::default();
-        }
-        if row.close {
-            state.atlas.selection = AtlasSelection::None;
-            state.atlas.vertices.clear();
-        }
+    let parts = PageParts::new(key, title, Some(back));
+    let back_to = move |state: &mut AppState| {
+        state.atlas.layer_page = match page {
+            Some(Page::Symbols(i) | Page::MarkerShape(i) | Page::MarkerFill(i)) => {
+                Some(Page::Rule(i))
+            }
+            Some(Page::Ramps) => Some(Page::Classify),
+            Some(Page::RampLabels(_)) => Some(Page::Ramps),
+            Some(_) => None,
+            None => {
+                state.atlas.layer = None;
+                None
+            }
+        };
+        state.pad.rules = Default::default();
     };
     let table = page == Some(Page::Table);
     // The table fills the page, and its rows have their own scroll. The
     // attributes are not a part of the style of the map.
-    let top = |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| {
+    let top = move |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| {
         if table {
             let size = ui.available_size();
             ui.allocate_ui(size, |ui| super::table::page(ui, state, controls));
         }
     };
     let features = state.doc.layer(layer)?.features.len().to_string();
-    let body = |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| {
+    let body = move |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| {
         if table {
             return;
         }
@@ -1818,10 +1778,7 @@ fn layer_panel(
             }
         }
     };
-    let rect = show_card(ctx, state, controls, rects, card, on_title, top, body);
-    // The card of a ramp takes its place from the panel.
-    state.pad.panels.push((super::Panel::Layers, rect));
-    Some(rect)
+    Some(parts.head(Panel::Layers, back_to, top, body))
 }
 
 /// The rows that set the style of a layer in a map from its map style or
@@ -1880,15 +1837,12 @@ fn raster_cards(ctx: &egui::Context, state: &mut AppState, controls: &mut Contro
 /// The panel of a raster layer in the Layers tab of frame `id`: the switch,
 /// the opacity, and the style of the layer, with the pages of the color
 /// stops, the color ramps, the hillshade, and the blend mode.
-fn raster_panel(
-    ctx: &egui::Context,
+fn raster_head(
     state: &mut AppState,
-    controls: &mut Controls,
-    rects: &Rects,
     id: vale_store::FrameId,
     layer: LayerId,
     raster: RasterId,
-) -> Option<Rect> {
+) -> Option<Head> {
     use super::Page;
     use super::raster::{BLEND, COLOR_RAMPS, COLOR_STOPS, HILLSHADE, LABELS};
     let map = state.doc.project.atlas.frame(id)?.map;
@@ -1908,35 +1862,19 @@ fn raster_panel(
         Some(_) => ("pad-atlas-blend", BLEND, name.as_str()),
         None => ("pad-atlas-raster", name.as_str(), FRAME_TABS[2]),
     };
-    let head = CardTitle {
-        title,
-        back: Some(back),
-        action: None,
+    let parts = PageParts::new(key, title, Some(back));
+    let back_to = move |state: &mut AppState| {
+        state.atlas.layer_page = match page {
+            Some(Page::Ramps) => Some(Page::Stops),
+            Some(Page::RampLabels(_)) => Some(Page::Ramps),
+            Some(_) => None,
+            None => {
+                state.atlas.layer = None;
+                None
+            }
+        };
     };
-    let card = Card {
-        key,
-        place: (rects.dock.min, rects.dock.width()),
-        head,
-        scroll: egui::scroll_area::ScrollSource::default(),
-    };
-    let on_title = |state: &mut AppState, row: &widgets::TitleRow| {
-        if row.back {
-            state.atlas.layer_page = match page {
-                Some(Page::Ramps) => Some(Page::Stops),
-                Some(Page::RampLabels(_)) => Some(Page::Ramps),
-                Some(_) => None,
-                None => {
-                    state.atlas.layer = None;
-                    None
-                }
-            };
-        }
-        if row.close {
-            state.atlas.selection = AtlasSelection::None;
-            state.atlas.vertices.clear();
-        }
-    };
-    let body = |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| {
+    let body = move |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| {
         ui.spacing_mut().item_spacing.y = 0.0;
         state.edit_map_raster(map, layer, raster, |state| match state.pad.page {
             Some(Page::Stops) => super::raster::stops_body(ui, state, controls, raster),
@@ -1969,23 +1907,16 @@ fn raster_panel(
             style_source_rows(ui, state, controls, map, layer);
         }
     };
-    let top = |_: &mut egui::Ui, _: &mut AppState, _: &mut Controls| {};
-    let rect = show_card(ctx, state, controls, rects, card, on_title, top, body);
-    // The cards of the editors take their place from the panel.
-    state.pad.panels.push((super::Panel::Layers, rect));
-    Some(rect)
+    Some(parts.head(Panel::Layers, back_to, no_rows, body))
 }
 
 /// The panel of an image layer in the Layers tab of frame `id`: the
 /// switch, the opacity, and the blend mode, with its page.
-fn look_panel(
-    ctx: &egui::Context,
+fn look_head(
     state: &mut AppState,
-    controls: &mut Controls,
-    rects: &Rects,
     id: vale_store::FrameId,
     layer: vale_store::LayerId,
-) -> Option<Rect> {
+) -> Option<Head> {
     use super::Page;
     use super::raster::{BLEND, SHOW_AS, blend_rows};
     let map = state.doc.project.atlas.frame(id)?.map;
@@ -1997,30 +1928,14 @@ fn look_panel(
         Some(_) => ("pad-atlas-blend", BLEND, name.as_str()),
         None => ("pad-atlas-look", name.as_str(), FRAME_TABS[2]),
     };
-    let head = CardTitle {
-        title,
-        back: Some(back),
-        action: None,
-    };
-    let card = Card {
-        key,
-        place: (rects.dock.min, rects.dock.width()),
-        head,
-        scroll: egui::scroll_area::ScrollSource::default(),
-    };
-    let on_title = |state: &mut AppState, row: &widgets::TitleRow| {
-        if row.back {
-            if page.is_none() {
-                state.atlas.layer = None;
-            }
-            state.atlas.layer_page = None;
+    let parts = PageParts::new(key, title, Some(back));
+    let back_to = move |state: &mut AppState| {
+        if page.is_none() {
+            state.atlas.layer = None;
         }
-        if row.close {
-            state.atlas.selection = AtlasSelection::None;
-            state.atlas.vertices.clear();
-        }
+        state.atlas.layer_page = None;
     };
-    let body = |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| {
+    let body = move |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| {
         ui.spacing_mut().item_spacing.y = 0.0;
         let scope = Some(map);
         let Some(mut look) = state.look(scope, layer) else {
@@ -2059,10 +1974,7 @@ fn look_panel(
             style_source_rows(ui, state, controls, map, layer);
         }
     };
-    let top = |_: &mut egui::Ui, _: &mut AppState, _: &mut Controls| {};
-    Some(show_card(
-        ctx, state, controls, rects, card, on_title, top, body,
-    ))
+    Some(parts.head(Panel::Layers, back_to, no_rows, body))
 }
 
 fn projection_tab(

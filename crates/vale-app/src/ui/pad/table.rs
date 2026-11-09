@@ -34,7 +34,8 @@ pub fn showing(state: &AppState) -> bool {
         return false;
     };
     if state.workspace == Workspace::Atlas {
-        return state.atlas.open_layer() == Some(table.layer)
+        return state.pad.docks.atlas.shows(Panel::Layers)
+            && state.atlas.open_layer() == Some(table.layer)
             && state.atlas.layer_page == Some(Page::Table);
     }
     state.pad.docks.world.shows(Panel::Layers)

@@ -4052,6 +4052,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     }
     state.sync_measure();
     state.check_new_feature();
+    state.atlas.every_tab = state.layout == Layout::Pad;
     if state.layout == Layout::Pad {
         match state.workspace {
             Workspace::Globe => pad::draw(ui, state),

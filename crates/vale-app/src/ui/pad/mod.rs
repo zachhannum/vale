@@ -3,13 +3,13 @@
 
 use std::collections::HashMap;
 
-use eframe::egui::{self, Order, Pos2, Rect, pos2, vec2};
+use eframe::egui::{self, Order, Rect, pos2, vec2};
 use vale_sphere::{LonLat, ProjectionKind, ProjectionSpec};
 use vale_store::{GeometryKind, ImageId, Layer, LayerId, LayerKind, RasterId};
 use vale_terrain::Mode;
 
 pub use super::LayerRef;
-use super::atlas::AtlasTool;
+use super::atlas::{AtlasTool, FrameTab};
 use super::raster_form::{self, RasterForm};
 use super::select;
 use super::world_form::{self, WorldForm};
@@ -344,9 +344,24 @@ pub struct Reorder {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum Panel {
     Brush,
+    /// The layers of the world, or in the Atlas the layers of the map of
+    /// the selected frame.
     Layers,
     Toolbox,
     Attributes,
+    /// The settings of the selected frame.
+    Frame,
+    /// The projection of the map of the selected frame.
+    Projection,
+    /// The label classes of the map of the selected frame.
+    Labels,
+    /// The open page of the atlas.
+    Pages,
+    /// The list of the map frames of the open page.
+    Maps,
+    /// The selected item of the page. It has no tile.
+    #[value(skip)]
+    Item,
 }
 
 impl Panel {
@@ -356,6 +371,35 @@ impl Panel {
             Panel::Layers => "pad-layers",
             Panel::Toolbox => "pad-toolbox",
             Panel::Attributes => "pad-attributes",
+            Panel::Frame => "pad-frame",
+            Panel::Projection => "pad-projection",
+            Panel::Labels => "pad-labels",
+            Panel::Pages => "pad-pages",
+            Panel::Maps => "pad-maps",
+            Panel::Item => "pad-item",
+        }
+    }
+
+    /// The tab of the panel of a frame of the desktop layout that holds the
+    /// same rows.
+    pub fn frame_tab(self) -> Option<FrameTab> {
+        match self {
+            Panel::Frame => Some(FrameTab::Frame),
+            Panel::Projection => Some(FrameTab::Projection),
+            Panel::Layers => Some(FrameTab::Layers),
+            Panel::Labels => Some(FrameTab::Labels),
+            _ => None,
+        }
+    }
+}
+
+impl From<FrameTab> for Panel {
+    fn from(tab: FrameTab) -> Panel {
+        match tab {
+            FrameTab::Frame => Panel::Frame,
+            FrameTab::Projection => Panel::Projection,
+            FrameTab::Layers => Panel::Layers,
+            FrameTab::Labels => Panel::Labels,
         }
     }
 }
@@ -400,8 +444,12 @@ pub struct PadState {
     pub workspace: Workspace,
     /// What the dock does with a finger in the last frame.
     pub dock_drag: Option<dock_ui::DockDrag>,
-    /// The dock of the World workspace in the last frame.
+    /// The dock in the last frame.
     pub dock_rect: Option<Rect>,
+    /// The selection of the Atlas in the last frame.
+    pub atlas_selection: Option<crate::ui::atlas::AtlasSelection>,
+    /// The tab of the frame of the Atlas in the last frame.
+    pub atlas_tab: Option<FrameTab>,
     /// The page of the panel of the layer of `layer` that the Layers panel
     /// shows.
     pub page: Option<Page>,
@@ -1620,6 +1668,12 @@ pub fn panel_name(state: &AppState, panel: Panel) -> &'static str {
         Panel::Layers => LAYERS,
         Panel::Toolbox => TOOLBOX,
         Panel::Attributes => select::ATTRIBUTES,
+        Panel::Frame => atlas::FRAME_TABS[0],
+        Panel::Projection => atlas::FRAME_TABS[1],
+        Panel::Labels => atlas::FRAME_TABS[3],
+        Panel::Pages => panels_menu::PAGES,
+        Panel::Maps => atlas::MAPS,
+        Panel::Item => atlas::item_name(state),
     }
 }
 
@@ -1629,6 +1683,70 @@ pub fn panel_icon(panel: Panel) -> Icon {
         Panel::Layers => Icon::Layers,
         Panel::Toolbox => Icon::Toolbox,
         Panel::Attributes => Icon::Attributes,
+        Panel::Frame => Icon::Frame,
+        Panel::Projection => Icon::Projection,
+        Panel::Labels => Icon::Tag,
+        Panel::Pages => Icon::Pages,
+        Panel::Maps => Icon::Map,
+        Panel::Item => Icon::Attributes,
+    }
+}
+
+/// The rows of a page of a panel that the page made itself.
+pub(super) type Rows = Box<dyn FnOnce(&mut egui::Ui, &mut AppState, &mut Controls)>;
+/// What the back button of a page does.
+pub(super) type Back = Box<dyn FnOnce(&mut AppState)>;
+
+/// A page of a panel of the Atlas: what its back button does, its rows that
+/// do not scroll, and its body. Each part runs one time.
+pub(super) struct View {
+    pub back: Option<Back>,
+    pub top: Option<Rows>,
+    pub body: Option<Rows>,
+}
+
+/// The parts of a page of a panel of the Atlas.
+pub(super) struct PageParts {
+    pub key: &'static str,
+    pub title: String,
+    pub back: Option<String>,
+    pub scroll: egui::scroll_area::ScrollSource,
+}
+
+impl PageParts {
+    pub fn new(key: &'static str, title: &str, back: Option<&str>) -> PageParts {
+        PageParts {
+            key,
+            title: title.to_owned(),
+            back: back.map(str::to_owned),
+            scroll: egui::scroll_area::ScrollSource::default(),
+        }
+    }
+
+    /// The head of the page in the pane of `panel`.
+    pub fn head(
+        self,
+        panel: Panel,
+        back: impl FnOnce(&mut AppState) + 'static,
+        top: impl FnOnce(&mut egui::Ui, &mut AppState, &mut Controls) + 'static,
+        body: impl FnOnce(&mut egui::Ui, &mut AppState, &mut Controls) + 'static,
+    ) -> Head {
+        Head {
+            key: self.key,
+            panel,
+            title: self.title,
+            back: self.back,
+            subtitle: None,
+            action: None,
+            scroll: self.scroll,
+            layer: None,
+            page: None,
+            view: Some(View {
+                back: Some(Box::new(back)),
+                top: Some(Box::new(top)),
+                body: Some(Box::new(body)),
+            }),
+        }
     }
 }
 
@@ -1646,12 +1764,22 @@ pub(super) struct Head {
     /// The action button: its name, its icon, and its state.
     pub action: Option<(&'static str, Icon, bool)>,
     pub scroll: egui::scroll_area::ScrollSource,
+    /// The text at the right of the title of a pane with one tab, such as
+    /// the name of the map of the selected frame.
+    pub subtitle: Option<String>,
     layer: Option<LayerRef>,
     page: Option<Page>,
+    /// The parts of a page of a panel of the Atlas.
+    pub view: Option<View>,
 }
 
 /// Finds the page that a panel shows, and closes a page that is gone.
 pub(super) fn panel_head(state: &mut AppState, panel: Panel) -> Head {
+    if state.pad.workspace == Workspace::Atlas
+        && let Some(head) = atlas::head(state, panel)
+    {
+        return head;
+    }
     let shown = state.pad.layer.and_then(|layer| state.layer_of(layer));
     let name = shown.map(|layer| layer.name.clone());
     let field_count = shown.map_or(0, |layer| layer.fields.len());
@@ -1786,6 +1914,7 @@ pub(super) fn panel_head(state: &mut AppState, panel: Panel) -> Head {
         (Panel::Layers, None) => (panel.key(), "Layers", None),
         (Panel::Toolbox, _) => (panel.key(), TOOLBOX, None),
         (Panel::Attributes, _) => (panel.key(), select::ATTRIBUTES, None),
+        (_, _) => (panel.key(), panel_name(state, panel), None),
     };
     let list = panel == Panel::Layers && layer.is_none();
     if list && state.pad.reorder.is_none() {
@@ -1803,15 +1932,21 @@ pub(super) fn panel_head(state: &mut AppState, panel: Panel) -> Head {
         Panel::Attributes => Some((select::FOCUS_NEW, Icon::TextCursor, state.tools.focus_new)),
         _ => list.then_some((ADD_LAYER, Icon::Plus, state.pad.add)),
     };
+    let subtitle = match panel {
+        Panel::Attributes => select::layer_name(state),
+        _ => None,
+    };
     Head {
         key,
         panel,
         title: title.to_owned(),
         back: back.map(str::to_owned),
+        subtitle,
         action,
         scroll,
         layer,
         page,
+        view: None,
     }
 }
 
@@ -1919,166 +2054,8 @@ pub(super) fn panel_body(
         (Panel::Layers, None) => layers_body(ui, state, controls),
         (Panel::Toolbox, _) => toolbox_body(ui, state),
         (Panel::Attributes, _) => select::body(ui, state, controls),
+        _ => {}
     }
-}
-
-/// Shows a panel as one card at the place of the dock. The Atlas shows its
-/// panels so.
-pub(super) fn show_panel(
-    ctx: &egui::Context,
-    state: &mut AppState,
-    controls: &mut Controls,
-    rects: &Rects,
-    panel: Panel,
-) {
-    let head = panel_head(state, panel);
-    let title = CardTitle {
-        title: &head.title,
-        back: head.back.as_deref(),
-        action: head.action,
-    };
-    let card = Card {
-        key: head.key,
-        place: (rects.dock.min, rects.dock.width()),
-        head: title,
-        scroll: head.scroll,
-    };
-    let on_title = |state: &mut AppState, row: &widgets::TitleRow| {
-        panel_title(state, &head, row.back, row.action.as_ref());
-        if row.close {
-            state.pad.close(panel);
-        }
-    };
-    let top = |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| {
-        panel_top(ui, state, controls, &head);
-    };
-    let body = |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| {
-        panel_body(ui, state, controls, &head);
-    };
-    let rect = show_card(ctx, state, controls, rects, card, on_title, top, body);
-    state.pad.panels.push((panel, rect));
-}
-
-/// The title row of a panel: the title, the name of the panel that the back
-/// button opens, and the action button.
-pub struct CardTitle<'a> {
-    pub title: &'a str,
-    pub back: Option<&'a str>,
-    pub action: Option<(&'a str, Icon, bool)>,
-}
-
-/// A panel of `show_card`.
-pub struct Card<'a> {
-    /// The name of the card. The card keeps its height under this name.
-    pub key: &'static str,
-    /// The top-left corner and the width of the card in the normal widths.
-    pub place: (Pos2, f32),
-    pub head: CardTitle<'a>,
-    pub scroll: egui::scroll_area::ScrollSource,
-}
-
-/// Shows a panel: a card in the normal widths, and the sheet at the bottom
-/// in the compact width. `on_title` gets the title row before the body
-/// shows. `top` adds the rows between the title row and the body, which do
-/// not scroll. Returns the rectangle of the panel.
-#[allow(clippy::too_many_arguments)]
-fn show_card(
-    ctx: &egui::Context,
-    state: &mut AppState,
-    controls: &mut Controls,
-    rects: &Rects,
-    card: Card,
-    on_title: impl FnOnce(&mut AppState, &widgets::TitleRow),
-    top: impl FnOnce(&mut egui::Ui, &mut AppState, &mut Controls),
-    body: impl FnOnce(&mut egui::Ui, &mut AppState, &mut Controls),
-) -> Rect {
-    let Card {
-        key,
-        place: (min, width),
-        head,
-        scroll,
-    } = card;
-    let (rect, radius) = match rects.sheet {
-        Some(sheet) => {
-            let r = theme::SHEET_RADIUS as u8;
-            let radius = egui::CornerRadius {
-                nw: r,
-                ne: r,
-                sw: 0,
-                se: 0,
-            };
-            (sheet, radius)
-        }
-        None => {
-            let most = (rects.dock.bottom() - min.y).max(ROW);
-            let height = state.pad.heights.get(key).map_or(most, |h| h.min(most));
-            let rect = Rect::from_min_size(min, vec2(width, height));
-            (rect, geometry::edge_radius(rect, rects.screen))
-        }
-    };
-    let sheet = rects.sheet.is_some();
-    let id = if sheet { "pad-sheet" } else { key };
-    let backdrop = state.globe.backdrop();
-    let inner = geometry::edge_content(rect, rects.screen, rects.bands);
-    widgets::card(ctx, backdrop, id, rect, Order::Middle, radius, |ui| {
-        let layout = egui::Layout::top_down(egui::Align::Min);
-        let ui = &mut ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
-        ui.spacing_mut().item_spacing.y = 0.0;
-        if sheet {
-            let grabber =
-                Rect::from_center_size(pos2(rect.center().x, rect.top() + 8.5), vec2(36.0, 5.0));
-            ui.painter()
-                .rect_filled(grabber, 3.0, theme::MUTE.gamma_multiply(0.6));
-        }
-        let row = widgets::title_row_with(ui, controls, head.title, head.back, sheet, head.action);
-        on_title(state, &row);
-        let low = sheet && state.pad.sheet_offset > -rects.sheet_rise + 0.5;
-        ctx.data_mut(|d| d.insert_temp(low_id(), low));
-        if sheet {
-            if take_raise(ctx) {
-                state.pad.sheet_offset = -rects.sheet_rise;
-            }
-            sheet_drag(ui, &mut state.pad, &row.bar, rects);
-            if state.pad.sheet_offset >= rects.sheet_travel {
-                return;
-            }
-        }
-        let start = ui.cursor().top();
-        let margin = egui::Margin::symmetric(BODY_PAD as i8, 0);
-        egui::Frame::NONE.inner_margin(margin).show(ui, |ui| {
-            ui.spacing_mut().item_spacing.y = 6.0;
-            top(ui, state, controls);
-        });
-        let fixed = ui.cursor().top() - start;
-        let bottom = if sheet {
-            rect.bottom() - rects.bands.bottom
-        } else {
-            rect.bottom()
-        };
-        let most = (bottom - ui.cursor().top()).max(0.0);
-        let out = egui::ScrollArea::vertical()
-            .id_salt(key)
-            .scroll_source(scroll)
-            .max_height(most)
-            .auto_shrink([false, true])
-            .show(ui, |ui| {
-                let margin = egui::Margin {
-                    left: BODY_PAD as i8,
-                    right: BODY_PAD as i8,
-                    top: 0,
-                    bottom: 10,
-                };
-                egui::Frame::NONE.inner_margin(margin).show(ui, |ui| {
-                    ui.spacing_mut().item_spacing.y = 6.0;
-                    body(ui, state, controls);
-                });
-            });
-        state
-            .pad
-            .heights
-            .insert(key, ROW + fixed + out.content_size.y);
-    });
-    rect
 }
 
 fn raise_id() -> egui::Id {

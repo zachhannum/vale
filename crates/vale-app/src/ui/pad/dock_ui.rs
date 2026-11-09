@@ -1,4 +1,4 @@
-//! The dock of the World workspace on the screen: the panes in one card on
+//! The dock of a workspace on the screen: the panes in one card on
 //! the right edge. On a compact screen, the pane of the last focus is a
 //! sheet.
 
@@ -71,6 +71,8 @@ struct HeaderOut {
     focus: Option<usize>,
     /// The empty part of the header.
     bar: Option<egui::Response>,
+    /// The tabs of a sheet, which move the sheet with a drag.
+    tab_drags: Vec<egui::Response>,
     /// A drag of a tab, or of the header, that started or that ended.
     drag: Option<(DockDrag, DragPhase)>,
     tabs: Rect,
@@ -85,7 +87,7 @@ enum DragPhase {
 
 pub fn show(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
     state.pad.dock_rect = None;
-    if state.pad.docks.world.panes.is_empty() {
+    if state.pad.dock().panes.is_empty() {
         state.pad.dock_drag = None;
         return;
     }
@@ -104,14 +106,14 @@ pub fn show(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, 
 
 fn show_dock(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
     let room = rects.dock;
-    state.pad.docks.world.keep_in(room.height());
-    let heads: Vec<Head> = (0..state.pad.docks.world.panes.len())
+    state.pad.dock_mut().keep_in(room.height());
+    let mut heads: Vec<Head> = (0..state.pad.dock().panes.len())
         .map(|i| {
-            let panel = state.pad.docks.world.panes[i].panel();
+            let panel = state.pad.dock().panes[i].panel();
             panel_head(state, panel)
         })
         .collect();
-    let wanted: Vec<f32> = (state.pad.docks.world.panes.iter().zip(&heads))
+    let wanted: Vec<f32> = (state.pad.dock().panes.iter().zip(&heads))
         .map(|(pane, head)| {
             let natural = state.pad.heights.get(head.key).copied();
             pane.height.or(natural).unwrap_or(room.height())
@@ -136,7 +138,8 @@ fn show_dock(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls,
         radius,
         |ui| {
             let mut top = rect.top();
-            for (i, head) in heads.iter().enumerate() {
+            let count = heads.len();
+            for (i, head) in heads.iter_mut().enumerate() {
                 let pane_rect =
                     Rect::from_min_size(pos2(rect.left(), top), vec2(rect.width(), heights[i]));
                 let inner = geometry::edge_content(pane_rect, rects.screen, rects.bands);
@@ -159,7 +162,7 @@ fn show_dock(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls,
                 }
                 actions.push((i, out));
                 top = pane_rect.bottom();
-                if i + 1 < heads.len() {
+                if i + 1 < count {
                     let bar = Rect::from_min_size(pos2(rect.left(), top), vec2(rect.width(), BAR));
                     bars.push(bar);
                     top = bar.bottom();
@@ -184,11 +187,8 @@ fn show_dock(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls,
                 };
                 ui.painter().rect_filled(pill, 2.0, color);
                 if resp.dragged() && resp.drag_delta().y != 0.0 {
-                    state
-                        .pad
-                        .docks
-                        .world
-                        .resize(i, resp.drag_delta().y, &heights);
+                    let delta = resp.drag_delta().y;
+                    state.pad.dock_mut().resize(i, delta, &heights);
                     ctx.request_repaint();
                 }
             }
@@ -196,7 +196,7 @@ fn show_dock(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls,
     );
     state.pad.dock_rect = Some(rect);
     for (i, out) in actions.into_iter().rev() {
-        let dock = &mut state.pad.docks.world;
+        let dock = state.pad.dock_mut();
         if out.close {
             dock.close_pane(i);
             continue;
@@ -227,17 +227,18 @@ fn show_dock(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls,
                 }
                 (drag, _) => drag,
             };
-            if let Some(target) = drop_of(&state.pad.docks.world, rect, &placed, drag) {
+            if let Some(target) = drop_of(state.pad.dock(), rect, &placed, drag) {
+                let dock = state.pad.dock_mut();
                 match (drag, target) {
                     (DockDrag::Pane { pane, .. }, Target::Gap(at)) => {
-                        state.pad.docks.world.move_pane(pane, at);
+                        dock.move_pane(pane, at);
                     }
                     (DockDrag::Tab { panel, .. }, Target::Gap(at)) => {
-                        state.pad.docks.world.move_tab(panel, Drop::Split { at });
+                        dock.move_tab(panel, Drop::Split { at });
                     }
                     (DockDrag::Tab { panel, .. }, Target::Tabs(pane, index)) => {
                         let drop = Drop::Merge { pane, index };
-                        state.pad.docks.world.move_tab(panel, drop);
+                        dock.move_tab(panel, drop);
                     }
                     _ => {}
                 }
@@ -294,13 +295,13 @@ fn paint_drop(
 ) {
     let (pos, name, icon) = match drag {
         DockDrag::Pane { pane, pos } => {
-            let panel = state.pad.docks.world.panes[pane].panel();
+            let panel = state.pad.dock().panes[pane].panel();
             (pos, panel_name(state, panel), panel_icon(panel))
         }
         DockDrag::Tab { panel, pos } => (pos, panel_name(state, panel), panel_icon(panel)),
         DockDrag::Width => return,
     };
-    let target = drop_of(&state.pad.docks.world, rect, placed, drag);
+    let target = drop_of(state.pad.dock(), rect, placed, drag);
     let painter = ctx.layer_painter(egui::LayerId::new(
         Order::Foreground,
         "pad-dock-drop".into(),
@@ -377,14 +378,14 @@ pub fn handle(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
                 theme::MUTE.gamma_multiply(0.7)
             };
             ui.painter().rect_filled(pill, 3.0, color);
-            let dock = &mut state.pad.docks.world;
+            let dock = state.pad.dock_mut();
             if active {
                 if resp.drag_delta().x != 0.0 {
                     dock.set_width(dock.width - resp.drag_delta().x);
                     dock.width = dock.width.min(most);
                 }
-                state.pad.dock_drag = Some(DockDrag::Width);
                 let text = format!("{} pt", dock.width.round());
+                state.pad.dock_drag = Some(DockDrag::Width);
                 let painter = ctx.layer_painter(egui::LayerId::new(
                     Order::Foreground,
                     "pad-dock-width".into(),
@@ -416,8 +417,8 @@ fn show_sheet(
     let Some(i) = state.pad.sheet_pane() else {
         return;
     };
-    let panel = state.pad.docks.world.panes[i].panel();
-    let head = panel_head(state, panel);
+    let panel = state.pad.dock().panes[i].panel();
+    let mut head = panel_head(state, panel);
     let r = theme::SHEET_RADIUS as u8;
     let radius = egui::CornerRadius {
         nw: r,
@@ -450,13 +451,13 @@ fn show_sheet(
                 pos2(inner.right(), rect.bottom() - rects.bands.bottom),
             );
             out = Some(pane_in_sheet(
-                &mut child, state, controls, rects, i, &head, body,
+                &mut child, state, controls, rects, i, &mut head, body,
             ));
         },
     );
     state.pad.panels.push((panel, rect));
     if let Some(out) = out {
-        let dock = &mut state.pad.docks.world;
+        let dock = state.pad.dock_mut();
         if out.close {
             dock.close_pane(i);
         } else if let Some(tab) = out.focus {
@@ -471,7 +472,7 @@ fn pane_in_sheet(
     controls: &mut Controls,
     rects: &Rects,
     i: usize,
-    head: &Head,
+    head: &mut Head,
     body: Rect,
 ) -> HeaderOut {
     ui.spacing_mut().item_spacing.y = 0.0;
@@ -485,6 +486,13 @@ fn pane_in_sheet(
     }
     if let Some(bar) = &out.bar {
         super::sheet_drag(ui, &mut state.pad, bar, rects);
+    }
+    for tab in out
+        .tab_drags
+        .iter()
+        .filter(|t| t.dragged() || t.drag_stopped())
+    {
+        super::sheet_drag(ui, &mut state.pad, tab, rects);
     }
     if state.pad.sheet_offset >= rects.sheet_travel {
         return out;
@@ -500,7 +508,7 @@ fn pane(
     state: &mut AppState,
     controls: &mut Controls,
     i: usize,
-    head: &Head,
+    head: &mut Head,
     rect: Rect,
     names: bool,
 ) -> HeaderOut {
@@ -518,7 +526,7 @@ fn contents(
     ui: &mut egui::Ui,
     state: &mut AppState,
     controls: &mut Controls,
-    head: &Head,
+    head: &mut Head,
     bottom: f32,
 ) {
     let start = ui.cursor().top();
@@ -539,7 +547,10 @@ fn contents(
                 theme::TEXT,
             );
         if tap.clicked() {
-            panel_title(state, head, true, None);
+            match head.view.as_mut().and_then(|v| v.back.take()) {
+                Some(back) => back(state),
+                None => panel_title(state, head, true, None),
+            }
         }
     }
     let margin = egui::Margin::symmetric(BODY_PAD as i8, 0);
@@ -547,7 +558,10 @@ fn contents(
     egui::Frame::NONE.inner_margin(margin).show(ui, |ui| {
         ui.spacing_mut().item_spacing.y = 6.0;
         ui.set_max_height((bottom - ui.cursor().top()).max(0.0));
-        panel_top(ui, state, controls, head);
+        match head.view.as_mut().and_then(|v| v.top.take()) {
+            Some(top) => top(ui, state, controls),
+            None => panel_top(ui, state, controls, head),
+        }
     });
     let fixed = ui.cursor().top() - top_start;
     let most = (bottom - ui.cursor().top()).max(0.0);
@@ -569,7 +583,10 @@ fn contents(
             };
             egui::Frame::NONE.inner_margin(margin).show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 6.0;
-                panel_body(ui, state, controls, head);
+                match head.view.as_mut().and_then(|v| v.body.take()) {
+                    Some(body) => body(ui, state, controls),
+                    None => panel_body(ui, state, controls, head),
+                }
             });
         });
     let back = top_start - start;
@@ -603,7 +620,7 @@ fn header_row(
     mode: Mode,
     names: bool,
 ) -> HeaderOut {
-    let pane = state.pad.docks.world.panes[i].clone();
+    let pane = state.pad.dock().panes[i].clone();
     let name = panel_name(state, pane.panel());
     let button = |x: f32| Rect::from_min_size(pos2(x, rect.top() + PAD), vec2(TOUCH, TOUCH));
     let close_rect = button(rect.right() - PAD - TOUCH);
@@ -657,10 +674,8 @@ fn header_row(
         pos2(rect.left() + PAD, rect.top()),
         pos2(left_of, rect.bottom()),
     );
-    let drag_sense = match mode {
-        Mode::Dock => Sense::click_and_drag(),
-        Mode::Sheet => Sense::click(),
-    };
+    let drag_sense = Sense::click_and_drag();
+    let mut tab_drags = Vec::new();
     let mut focus = None;
     let mut drag = None;
     let mut centers = Vec::new();
@@ -675,13 +690,33 @@ fn header_row(
         );
         icons::paint(&painter, icon, panel_icon(pane.panel()), ICON, theme::MUTE);
         let at = pos2(icon.right() + 10.0, rect.center().y);
-        painter.text(at, Align2::LEFT_CENTER, name, theme::title(), theme::TEXT);
+        let title = painter.text(at, Align2::LEFT_CENTER, name, theme::title(), theme::TEXT);
+        if let Some(subtitle) = &head.subtitle {
+            let at = pos2(left_of - 8.0, rect.center().y);
+            let galley = painter.layout_no_wrap(subtitle.clone(), theme::body(), theme::MUTE);
+            // The subtitle shows only where it does not cover the title.
+            if at.x - galley.size().x > title.right() + 12.0 {
+                let min = pos2(at.x - galley.size().x, at.y - galley.size().y / 2.0);
+                painter.galley(min, galley, theme::MUTE);
+            }
+        }
         centers.push(tabs_area.center().x);
     } else {
+        // Tabs that do not fit drop their names: first the names of the
+        // tabs behind, then the name of the open tab.
+        let labels: Vec<&str> = pane.tabs.iter().map(|p| panel_name(state, *p)).collect();
+        let total = |names: bool, open: bool| -> f32 {
+            (labels.iter().enumerate())
+                .map(|(t, l)| tab_width(ui, l, (t == pane.active && open) || names))
+                .sum()
+        };
+        let names = names && total(true, true) <= tabs_area.width();
+        let open_name = total(names, true) <= tabs_area.width();
         for (t, panel) in pane.tabs.iter().enumerate() {
-            let tab_label = panel_name(state, *panel);
+            let tab_label = labels[t];
             let active = t == pane.active;
-            let width = tab_width(ui, tab_label, active || names);
+            let named = (active && open_name) || names;
+            let width = tab_width(ui, tab_label, named);
             let tab = Rect::from_min_size(pos2(end, rect.top() + PAD), vec2(width, TOUCH));
             end = tab.right();
             centers.push(tab.center().x);
@@ -702,19 +737,23 @@ fn header_row(
                 );
             }
             let color = if active { theme::TEXT } else { theme::MUTE };
-            let icon_x = if active || names {
+            let icon_x = if named {
                 tab.left() + TAB_PAD + ICON / 2.0
             } else {
                 tab.center().x
             };
             let icon = Rect::from_center_size(pos2(icon_x, tab.center().y), vec2(ICON, ICON));
             icons::paint(&painter, icon, panel_icon(*panel), ICON, color);
-            if active || names {
+            if named {
                 let at = pos2(icon.right() + 8.0, tab.center().y);
                 painter.text(at, Align2::LEFT_CENTER, tab_label, theme::body(), color);
             }
             if resp.clicked() {
                 focus = Some(t);
+            }
+            if mode == Mode::Sheet {
+                tab_drags.push(resp);
+                continue;
             }
             drag = drag.or_else(|| {
                 tab_drag(
@@ -779,6 +818,7 @@ fn header_row(
         pin,
         focus,
         bar,
+        tab_drags,
         drag,
         tabs,
         centers,

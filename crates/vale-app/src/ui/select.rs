@@ -927,6 +927,16 @@ impl AppState {
 /// each attribute of the selected features, and with more than one feature
 /// it also shows the count. With features of more than one layer, it shows
 /// the count of each layer.
+/// The name of the layer of the selected features, if they are in one
+/// layer.
+pub fn layer_name(state: &AppState) -> Option<String> {
+    let first = state.feature_selection.first()?.layer;
+    if state.feature_selection.iter().any(|f| f.layer != first) {
+        return None;
+    }
+    state.doc.layer(first).map(|l| l.name.clone())
+}
+
 pub fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
     form_body(ui, state, controls, true);
 }

@@ -4,7 +4,8 @@ use anyhow::Context;
 use clap::Parser;
 use vale_app::app::run_window;
 use vale_app::cli::{
-    Args, apply_globe, apply_import, apply_measure, apply_view, export_heightmap, parse_pair,
+    Args, apply_frame, apply_globe, apply_import, apply_measure, apply_view, export_heightmap,
+    parse_pair,
 };
 use vale_app::globe::{FACE_SIZE, WINDOW_FACE_SIZE};
 use vale_app::headless;
@@ -74,6 +75,7 @@ fn run() -> anyhow::Result<u8> {
             .brush_modes
             .then(|| Flyout::Brush(ModeGroup::of(state.globe.brush.mode)));
         apply_measure(&args, &mut state)?;
+        apply_frame(&args, &mut state)?;
         let world = &state.doc.project.world;
         state.world_form = args.world_form.map(|mode| WorldForm::open(mode, world));
         if args.worlds_menu {
