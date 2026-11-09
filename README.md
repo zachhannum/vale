@@ -59,9 +59,9 @@ The default face size is 8,192 pixels for a height layer and 2,048 pixels for ea
 
 Click "Atlas" in the tool bar to open the pages of the atlas. On iPad, tap "Atlas" in the workspace switch. You can do these things there.
 
-- Click "Add map frame" to add a frame to the page. The frame shows the map of the project. On iPad, tap the Add button and then "Map frame".
+- Click "Add" in the tool bar and then "Map frame" to add a frame to the page. With the Frame tool, drag on the empty paper to draw a frame. The frame shows the map of the project. On iPad, the Frame cell of the tool column holds the Frame tool and "Map from region…".
 - Click a frame to select it. Drag the frame to move it, and drag a handle to resize it. The dock shows the tabs Frame, Projection, and Layers.
-- Click "Maps" in the tool bar to show or hide the panel of the selected frame. With no frame selected, choose a frame in its menu. On iPad, tap the Maps button in the top row. With no frame selected, it lists the map frames of the page.
+- Click "Maps" in the tool bar to show or hide the panel of the selected frame. With no frame selected, choose a frame in its menu. On iPad, tap the Maps button in the top bar. With no frame selected, it lists the map frames of the page.
 - In the Frame tab, change the shape to a polygon. Drag a vertex to move it, drag the middle of an edge to add a vertex, and double-click a vertex to remove it. "Add hole" adds a hole.
 - With the Move tool, drag in the selected frame to pan its map. The key H selects the Move tool, and F selects the Frame tool. Scroll in the selected frame to zoom its map. On a touch screen, two fingers in the selected frame pan and zoom the map.
 - With the Select tool, tap or click a feature of the selectable layers in a frame to select it, or drag a box with the pen or the mouse. A row of a vector layer in the Layers tab makes that layer the active layer. The key V selects the Select tool. The globe shows the same selection.
@@ -71,7 +71,7 @@ Click "Atlas" in the tool bar to open the pages of the atlas. On iPad, tap "Atla
 - Type the scale, the center, and the rotation of a frame in the Frame tab. Select a projection in the Projection tab. Each frame of the map shows the new projection.
 - In the Layers tab, the eye of a layer turns the layer on or off in the map of the frame. Each frame of that map shows the change. The eye in the globe workspace does not change a map.
 - In the Layers tab, open a layer to change its style in the map of the frame. Each frame of that map shows the change. The other maps and the globe keep their styles. The panel has the same style controls as in the World workspace, so you can add, move, and delete a rule there. The panel of a raster layer has the color stops and the hillshade. In a map that links to a map style, a change is a local change of the map, and "Edited" marks the layer. "Reset to map style" removes the local changes of the layer. In the Frame tab, "Update map style" moves the local changes of the map into its map style, and "Reset to map style" removes them. The Map style row opens a page that links a map style, and a swipe to the left on a map style renames or deletes it. "Copy globe style" copies the style of the globe into the map. On the desktop, click "Style" next to a layer.
-- Click the page outside the frames to set the page size and the paper color, to add a page, or to delete the page. The arrows in the tool bar go to the previous page and the next page.
+- Click the page outside the frames to set the page size and the paper color, to add a page, or to delete the page. The arrows in the tool bar go to the previous page and the next page. On iPad, the Pages panel opens, moves, adds, and deletes pages.
 - A frame that you move or resize, and a vertex that you drag, snap to the page edges, the center lines of the page, and the other frames. A vertex also lines up horizontally or vertically with the other vertices of its frame and of the other frames. A magenta guide line shows the snap. Hold Shift, or hold a second finger on the canvas on iPad, to lock an edge of a polygon frame to horizontal, to vertical, or to 45 degrees. While a frame is selected, "Snap to layout" turns snapping off.
 - On iPad, the Grid switch in the context strip of the Frame tool and of the Vertex tool shows the layout grid, also with no selection. Below 1,000 points, the workspace menu also has the row "Show layout grid". On the desktop, "Layout grid" in the tool bar shows it. The page panel sets its spacing, its color, and its opacity. Frames snap to the grid lines while the grid shows. An export leaves the grid out.
 - In the Frame tab, the neatline is the line on the edge of the frame. The border is a band at a set distance from each side of the box of the frame, and a part of a polygon frame can cross it, in one color or in two colors that change at each graticule line. It can have a stroke on its edges and, on a graduated band, at each change of color. Its reference grid puts a label in the band for each interval of the meridians and of the parallels, with letters for the columns and numbers for the rows, or the reverse.
@@ -201,7 +201,7 @@ The job `testflight` in `.github/workflows/ios.yml` does the work, with `scripts
 - The points, the symbols, and the scatter fills in the flat view of the globe workspace.
 - Pattern fills, texture fills, hatch fills, and edge effects. In the style editor, only the size and the rotation of a point symbol can come from a field.
 - Label fallbacks, leader lines, and manual label changes.
-- The overview of the pages, page templates, and SVG export.
+- Page templates and SVG export.
 - Tissot circles.
 - Editing tools other than the line tool, the polygon tool, the point tool, the Select tool, reshape, split, Subtract, merge, Vertex, and the attribute table.
 

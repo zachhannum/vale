@@ -2818,30 +2818,34 @@ fn the_cards_of_the_atlas_show_the_blurred_page() {
     let mut h = vale_app::headless::ui_harness(state(), (1194.0, 834.0), 1.0, setup);
     h.set_render_every_step(true);
     h.run_steps(3);
-    // The left edge of the page goes through the middle of the card of the
-    // workspace switch, and the page reaches above the card.
-    let card = h.state().pad.rects.unwrap().workspace;
-    let rect = h.state().atlas.place.unwrap().rect;
-    let view = &mut h.state_mut().atlas.view;
-    view.offset.x += card.center().x - rect.left();
-    view.offset.y += card.top() - 20.0 - rect.top();
-    h.run_steps(3);
-    let blurred = h.render().unwrap();
-    std::fs::create_dir_all("../../target/app").unwrap();
-    blurred
-        .save("../../target/app/test-atlas-blur.png")
-        .unwrap();
-    h.state_mut().globe.blur = false;
-    h.run_steps(2);
-    let plain = h.render().unwrap();
+    let r = h.state().pad.rects.unwrap();
+    // The view control and the tool column.
+    for card in [r.view.unwrap(), r.column] {
+        // The left edge of the page goes through the middle of the card, and
+        // the page reaches above the card.
+        let rect = h.state().atlas.place.unwrap().rect;
+        let view = &mut h.state_mut().atlas.view;
+        view.offset.x += card.center().x - rect.left();
+        view.offset.y += card.top() - 20.0 - rect.top();
+        h.state_mut().globe.blur = true;
+        h.run_steps(3);
+        let blurred = h.render().unwrap();
+        std::fs::create_dir_all("../../target/app").unwrap();
+        blurred
+            .save("../../target/app/test-atlas-blur.png")
+            .unwrap();
+        h.state_mut().globe.blur = false;
+        h.run_steps(2);
+        let plain = h.render().unwrap();
 
-    let row = card_row(&blurred, card);
-    let width = row.len() as i32;
-    let step = row.windows(2).map(|w| (w[0] - w[1]).abs()).max().unwrap();
-    assert!(step <= 5, "a step of {step}");
-    let sharp = card_row(&plain, card);
-    let difference: i32 = row.iter().zip(&sharp).map(|(a, b)| (a - b).abs()).sum();
-    assert!(difference > width * 2, "{difference}");
+        let row = card_row(&blurred, card);
+        let width = row.len() as i32;
+        let step = row.windows(2).map(|w| (w[0] - w[1]).abs()).max().unwrap();
+        assert!(step <= 5, "{card:?}: a step of {step}");
+        let sharp = card_row(&plain, card);
+        let difference: i32 = row.iter().zip(&sharp).map(|(a, b)| (a - b).abs()).sum();
+        assert!(difference > width * 2, "{card:?}: {difference}");
+    }
 }
 
 #[test]
@@ -2862,8 +2866,8 @@ fn the_blur_behind_a_card_shows_the_raster_layers_of_a_frame() {
     let mut h = vale_app::headless::ui_harness(state, (1194.0, 834.0), 1.0, setup);
     h.set_render_every_step(true);
     h.run_steps(4);
-    // The middle of the frame is below the card of the workspace switch.
-    let card = h.state().pad.rects.unwrap().workspace;
+    // The middle of the frame is below the view control.
+    let card = h.state().pad.rects.unwrap().view.unwrap();
     let frame = atlas::open_page(h.state()).frames[0].clone();
     let middle = h
         .state()

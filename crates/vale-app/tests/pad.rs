@@ -3459,6 +3459,38 @@ fn difference(a: &[i32], b: &[i32]) -> i32 {
     a.iter().zip(b).map(|(a, b)| (a - b).abs()).sum()
 }
 
+/// The cards that show the blurred canvas: the tool column, the view
+/// control, the floating cards, and the list of cells of an open flyout.
+fn glass(h: &Pad) -> Vec<Rect> {
+    let pad = &h.state().pad;
+    let r = pad.rects.unwrap();
+    let mut cards = vec![r.column];
+    if r.class == WidthClass::Compact {
+        cards.extend([r.workspace, r.actions]);
+    }
+    cards.extend(r.view);
+    cards.extend(r.brush);
+    let docked = |rect: &Rect| r.dock.is_some_and(|dock| dock.intersects(*rect));
+    cards.extend(
+        pad.panels
+            .iter()
+            .map(|(_, rect)| *rect)
+            .filter(|rect| !docked(rect)),
+    );
+    cards.extend(pad.flyouts.rect);
+    cards
+}
+
+/// The red values of the pixels of `rect`.
+fn pixels(image: &image::RgbaImage, rect: Rect) -> Vec<i32> {
+    let (x, y) = (rect.left() as u32, rect.top() as u32);
+    let (right, bottom) = (rect.right() as u32, rect.bottom() as u32);
+    (y..bottom.min(image.height()))
+        .flat_map(|y| (x..right.min(image.width())).map(move |x| (x, y)))
+        .map(|(x, y)| i32::from(image.get_pixel(x, y).0[0]))
+        .collect()
+}
+
 #[test]
 #[ignore = "gpu"]
 fn each_card_shows_the_blurred_canvas_and_the_blur_follows_the_globe() {
@@ -3468,8 +3500,16 @@ fn each_card_shows_the_blurred_canvas_and_the_blur_follows_the_globe() {
         0.0 => u16::MAX,
         _ => 0,
     });
-    let cards = cards(&h);
-    assert!(cards.len() >= 7);
+    open_modes(&mut h);
+    h.run_steps(2);
+    let r = h.state().pad.rects.unwrap();
+    let cards = glass(&h);
+    // The tool column, the view control, the Layers card, and the list of
+    // the cells of the flyout.
+    assert!(cards.contains(&r.column));
+    assert!(r.view.is_some_and(|view| cards.contains(&view)));
+    assert!(!h.state().pad.panels.is_empty());
+    assert!(h.state().pad.flyouts.rect.is_some());
     let blurred = h.render().unwrap();
     std::fs::create_dir_all("../../target/app").unwrap();
     blurred.save("../../target/app/test-pad-blur.png").unwrap();
@@ -3502,6 +3542,41 @@ fn each_card_shows_the_blurred_canvas_and_the_blur_follows_the_globe() {
 
 #[test]
 #[ignore = "gpu"]
+fn the_bar_and_the_dock_are_opaque_and_a_card_follows_the_globe() {
+    let _gpu = one_gpu_test();
+    let mut h = blur_pad(|lon| match (lon / 20.0).floor().rem_euclid(2.0) {
+        0.0 => u16::MAX,
+        _ => 0,
+    });
+    // Layers goes into the dock, and the Brush panel floats.
+    h.state_mut().pad.dock_panel(Panel::Layers);
+    h.run_steps(3);
+    let r = h.state().pad.rects.unwrap();
+    let dock = r.dock.expect("the dock is open");
+    let cards = glass(&h);
+    assert!(cards.len() >= 2, "{cards:?}");
+    let before = h.render().unwrap();
+    h.state_mut().globe.view = GlobeView::centered(10.0, 0.0);
+    h.state_mut().globe.view.zoom = 3.0;
+    h.run_steps(2);
+    let after = h.render().unwrap();
+    // The canvas below the cards changes, and the bar and the dock stay the
+    // same.
+    for card in cards {
+        let row = card_row(&before, card);
+        let width = row.len() as i32;
+        assert!(
+            difference(&row, &card_row(&after, card)) > width * 2,
+            "{card:?}"
+        );
+    }
+    for rect in [r.bar, dock] {
+        assert_eq!(pixels(&before, rect), pixels(&after, rect), "{rect:?}");
+    }
+}
+
+#[test]
+#[ignore = "gpu"]
 fn the_blur_behind_a_card_shows_the_visible_vector_layers_in_the_draw_order() {
     use vale_store::{Feature, Geometry};
     let _gpu = one_gpu_test();
@@ -3516,7 +3591,7 @@ fn the_blur_behind_a_card_shows_the_visible_vector_layers_in_the_draw_order() {
     style.set_fill(Some(vale_style::Color::rgb(255, 0, 0)));
     state.touch();
     h.run_steps(2);
-    let cards = cards(&h);
+    let cards = glass(&h);
     // The red values below the cards, with the polygon shown and hidden.
     let reds = |h: &mut Pad, shown: bool| {
         h.state_mut().set_layer_visible(polygon, shown);
@@ -3597,8 +3672,11 @@ fn a_keypad_card_over_a_panel_shows_the_blurred_panel() {
     let row: Vec<i32> = (under.left() as u32 + 16..under.right() as u32 - 16)
         .map(|x| i32::from(image.get_pixel(x, y).0[0]))
         .collect();
-    // A card of the order `Middle` over the white canvas.
-    let middle = mean(&card_row(&image, h.state().pad.rects.unwrap().workspace));
+    // The view control: a card of the order `Middle` over the white canvas.
+    let middle = mean(&card_row(
+        &image,
+        h.state().pad.rects.unwrap().view.unwrap(),
+    ));
     // The keypad shows the darker panel below it, not the canvas.
     assert!(mean(&row) + 20 < middle, "{} {middle}", mean(&row));
 }
@@ -3629,7 +3707,7 @@ fn text_on_a_card_is_easy_to_read_over_a_white_canvas() {
     let c = h.state().globe.rect.center();
     let canvas = image.get_pixel(c.x as u32, c.y as u32).0;
     assert!(canvas[..3].iter().all(|v| *v > 240), "{canvas:?}");
-    for card in cards(&h) {
+    for card in glass(&h) {
         let pixel = image.get_pixel(card.left() as u32 + 16, card.bottom() as u32 - 3);
         let fill = [pixel.0[0], pixel.0[1], pixel.0[2]];
         // The canvas shows through the card.

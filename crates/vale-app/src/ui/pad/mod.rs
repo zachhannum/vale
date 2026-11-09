@@ -931,8 +931,8 @@ pub(super) fn panel_face(panel: Panel) -> (&'static str, Icon) {
         Panel::Layers => ("Layers", Icon::Layers),
         Panel::Toolbox => (TOOLBOX, Icon::Toolbox),
         Panel::Attributes => (select::ATTRIBUTES, Icon::Attributes),
-        Panel::Selection => (SELECTION, Icon::Select),
-        Panel::Pages => (PAGES, Icon::Book),
+        Panel::Selection => (SELECTION, Icon::Inspector),
+        Panel::Pages => (PAGES, Icon::Pages),
         Panel::Maps => (atlas::MAPS, Icon::Map),
     }
 }

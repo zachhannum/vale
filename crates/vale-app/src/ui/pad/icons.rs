@@ -94,6 +94,10 @@ pub enum Icon {
     NorthArrow,
     /// A bar of colors with a scale below it.
     ColorKey,
+    /// Two lines, each with the knob of a slider.
+    Inspector,
+    /// Two sheets, one in front of the other.
+    Pages,
 }
 
 impl Icon {
@@ -129,6 +133,8 @@ impl Icon {
             Icon::Map => "M3 6l6-2 6 2 6-2v14l-6 2-6-2-6 2zM9 4v14M15 6v14",
             Icon::Toolbox => "M4 9h16v10H4zM9 9V6h6v3M4 14h16",
             Icon::Attributes => "M5 3h14v18H5zM8 8h8M8 12h8M8 16h5",
+            Icon::Inspector => "M4 7h9M17 7h3M4 17h3M11 17h9",
+            Icon::Pages => "M8 3h12v15H8zM5 6v15h12",
             Icon::Trash => "M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6",
             Icon::Brush => "M5 4v16M12 4v16M19 4v16",
             Icon::Close => "M6 6l12 12M18 6L6 18",
@@ -197,6 +203,7 @@ impl Icon {
             ],
             Icon::Eye | Icon::EyeOff | Icon::Point => &[(12.0, 12.0, 3.0, false)],
             Icon::Grid => &[(12.0, 12.0, 9.0, false)],
+            Icon::Inspector => &[(15.0, 7.0, 2.0, false), (9.0, 17.0, 2.0, false)],
             Icon::Reshape => &[(6.0, 8.0, 1.5, true), (18.0, 8.0, 1.5, true)],
             Icon::More => &[
                 (5.0, 12.0, 1.5, true),
@@ -508,6 +515,8 @@ mod tests {
             Icon::ScaleBar,
             Icon::NorthArrow,
             Icon::ColorKey,
+            Icon::Inspector,
+            Icon::Pages,
         ] {
             let lines = parse(icon.path());
             let circles = icon.circles();
