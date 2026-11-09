@@ -586,7 +586,20 @@ impl PadState {
         self.open_dock().is_some_and(|dock| dock.contains(panel))
     }
 
-    /// True if the panel shows: in the open dock, or as a floating card.
+    /// True if the body of the panel shows: the active panel of its group
+    /// in the open dock, or the floating card.
+    pub fn shows(&self, panel: Panel) -> bool {
+        match panel {
+            Panel::Brush => self.brush,
+            other => {
+                self.float == Some(other)
+                    || self.open_dock().is_some_and(|dock| dock.is_active(other))
+            }
+        }
+    }
+
+    /// True if the panel is open: in the open dock, or as a floating card.
+    /// A panel of a stack in the dock is open behind its tab.
     pub fn is_open(&self, panel: Panel) -> bool {
         match panel {
             Panel::Brush => self.brush,
@@ -600,11 +613,7 @@ impl PadState {
             Panel::Brush => self.brush = true,
             other if self.open_dock().is_some() => {
                 let workspace = self.workspace;
-                let dock = self.docks.get_mut(workspace);
-                dock.insert(workspace, crate::dock::DockPanel::new(other));
-                if let Some(p) = dock.panels.iter_mut().find(|p| p.panel == other) {
-                    p.folded = false;
-                }
+                self.docks.get_mut(workspace).show(workspace, other);
             }
             other => self.float = Some(other),
         }
@@ -646,10 +655,7 @@ impl PadState {
     pub fn dock_panel(&mut self, panel: Panel) {
         let workspace = self.workspace;
         let dock = self.docks.get_mut(workspace);
-        dock.insert(workspace, crate::dock::DockPanel::new(panel));
-        if let Some(p) = dock.panels.iter_mut().find(|p| p.panel == panel) {
-            p.folded = false;
-        }
+        dock.show(workspace, panel);
         dock.open = true;
         if self.float == Some(panel) {
             self.float = None;
@@ -823,7 +829,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         Panel::Toolbox,
         Panel::Attributes,
     ] {
-        if state.pad.is_open(panel) {
+        if state.pad.shows(panel) {
             show_panel(&ctx, state, &mut controls, &rects, panel);
         }
     }
@@ -2347,8 +2353,7 @@ fn dock_card(state: &mut AppState, panel: Panel) {
 }
 
 /// Shows a panel in its slot of the dock: the title row with the chevron,
-/// and the body below it, which scrolls. A tap on the title row folds the
-/// panel.
+/// or the row of tabs of its stack, and the body below it, which scrolls.
 #[allow(clippy::too_many_arguments)]
 fn docked_card(
     ctx: &egui::Context,
@@ -2368,28 +2373,18 @@ fn docked_card(
     };
     state.pad.dock_frame.drawn.push(slot.panel);
     let id = egui::Id::new(("pad-dock", slot.panel.id()));
-    let mut fold = false;
-    let mut drag = 0.0;
     dock::piece(ctx, id, rect, clip, |ui| {
         dock::top_line(ui, rect);
         ui.spacing_mut().item_spacing.y = 0.0;
-        let name = dock::title_name(slot.panel);
-        let ends = widgets::TitleEnds::Fold {
-            name: &name,
-            folded: slot.body.is_none(),
-            icon: panel_face(slot.panel).1,
-        };
-        let row = widgets::title_row_with(
+        let row = dock::head(
             ui,
+            state,
             controls,
+            slot,
             head.title,
             head.back,
-            false,
             head.action,
-            ends,
         );
-        fold = row.bar.clicked();
-        drag = row.bar.drag_delta().y;
         on_title(state, &row);
         let Some(area) = slot.body else {
             return;
@@ -2418,7 +2413,6 @@ fn docked_card(
                 });
             });
     });
-    dock::title_input(state, slot.panel, fold, drag);
     rect
 }
 

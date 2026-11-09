@@ -46,8 +46,9 @@ pub struct Args {
     /// With --layout pad: open this panel. You can give more than one.
     #[arg(long, value_enum, value_name = "PANEL")]
     pub panel: Vec<Panel>,
-    /// With --layout pad: open the dock of the workspace with these panels.
-    /// Each one is `name` or `name:folded`, for example `layers,toolbox:folded`
+    /// With --layout pad: open the dock of the workspace with these groups.
+    /// Each group is a panel name or a stack of names joined by `+`, then
+    /// `:folded` if folded, for example `layers+attributes,toolbox:folded`
     /// or `frame,map-layers,pages:folded`.
     #[arg(long, value_name = "PANELS", value_delimiter = ',')]
     pub dock: Vec<dock::Entry>,

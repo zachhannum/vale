@@ -1,21 +1,25 @@
 //! The dock of the iPad layout from 1,000 points: a blurred column at the
-//! right edge, from the bar to the bottom edge of the screen. It holds the panels of the workspace from top
-//! to bottom, each with a title row. The open panels share the height, and
-//! a bar with a grip between two open panels moves the line between them.
-//! The edge handle at the left edge changes the width, and a drag of it to
-//! the right edge closes the dock.
+//! right edge, from the bar to the bottom edge of the screen. It holds the
+//! groups of panels of the workspace from top to bottom. A group of one
+//! panel has a title row, and a stack of panels has a row of tabs. The open
+//! groups share the height, and a bar with a grip between two open groups
+//! moves the line between them. A drag of a title row or a tab moves a panel
+//! to another place in the dock, or into a stack. The edge handle at the
+//! left edge changes the width, and a drag of it to the right edge closes
+//! the dock.
 
-use eframe::egui::{self, Rect, Sense, pos2, vec2};
+use eframe::egui::{self, Pos2, Rect, Response, Sense, pos2, vec2};
 
-use super::geometry::{Rects, TOUCH, WidthClass};
+use super::geometry::{PAD, ROW, Rects, TOUCH, WidthClass};
+use super::icons::{self, Icon};
 use super::theme;
 use super::widgets::{self, Controls};
-use super::{Panel, panel_face};
-use crate::dock::{DockState, HEIGHT_MIN, WIDTH_MIN};
+use super::{HOLD_SLOP, HOLD_TIME, Panel, panel_face};
+use crate::dock::{DockState, DropAt, HEIGHT_MIN, WIDTH_MIN};
 use crate::ui::AppState;
 
 /// The height of the title row of a panel.
-pub const TITLE: f32 = TOUCH;
+pub const TITLE: f32 = ROW;
 /// The height of the bar between two open panels.
 pub const BAR: f32 = 14.0;
 /// A drag of the edge handle this far past the narrowest width closes the
@@ -31,22 +35,36 @@ const HANDLE_IN: f32 = 14.0;
 const OPEN_WIDTH: f32 = 32.0;
 /// The time of the move of the dock, in seconds.
 const MOVE_TIME: f32 = 0.25;
+/// The size of the card that follows the finger while a panel moves.
+const GHOST: (f32, f32) = (200.0, 44.0);
+/// A dragged panel this close to the top or the bottom of the dock scrolls
+/// the dock.
+const SCROLL_EDGE: f32 = 40.0;
+/// The distance that the dock scrolls in each frame of a drag at its edge.
+const SCROLL_STEP: f32 = 8.0;
 
 /// The control name of the bar below `panel`.
 pub fn bar_name(panel: Panel) -> String {
     format!("Resize {}", panel_face(panel).0)
 }
 
-/// The control name of the title row of `panel` in the dock. A tap folds
-/// the panel.
+/// The control name of the title row of `panel` in the dock, or of its tab
+/// in a stack. A tap folds the group, and a tap on a tab that is not active
+/// makes its panel active.
 pub fn title_name(panel: Panel) -> String {
     format!("{} panel", panel_face(panel).0)
 }
 
-/// The place of a panel in the dock.
+/// The place of a group in the dock.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Slot {
+    /// The index of the group.
+    pub group: usize,
+    /// The active panel of the group.
     pub panel: Panel,
+    /// The number of panels of the group. A stack has more than one.
+    pub tabs: usize,
+    /// The title row or the row of tabs.
     pub title: Rect,
     /// The body of an open panel. `None`: the panel is folded.
     pub body: Option<Rect>,
@@ -94,31 +112,31 @@ pub fn share(stored: &[f32], room: f32) -> Vec<f32> {
     }
 }
 
-/// True if the panel at `i` has a bar below it: it is open, and an open
-/// panel is below it.
+/// True if the group at `i` has a bar below it: it is open, and an open
+/// group is below it.
 fn has_bar(dock: &DockState, i: usize) -> bool {
-    !dock.panels[i].folded && dock.panels[i + 1..].iter().any(|p| !p.folded)
+    !dock.groups[i].folded && dock.groups[i + 1..].iter().any(|g| !g.folded)
 }
 
-/// The places of the panels of `dock` in `rect`, moved up by `scroll`, and
-/// the height of all panels.
+/// The places of the groups of `dock` in `rect`, moved up by `scroll`, and
+/// the height of all groups.
 pub fn slots(dock: &DockState, rect: Rect, scroll: f32) -> (Vec<Slot>, f32) {
-    let n = dock.panels.len();
+    let n = dock.groups.len();
     let bars = (0..n).filter(|&i| has_bar(dock, i)).count();
     let stored: Vec<f32> = dock
-        .panels
+        .groups
         .iter()
-        .filter(|p| !p.folded)
-        .map(|p| p.height)
+        .filter(|g| !g.folded)
+        .map(|g| g.height)
         .collect();
     let room = rect.height() - TITLE * n as f32 - BAR * bars as f32;
     let mut heights = share(&stored, room).into_iter();
     let mut y = rect.top() - scroll;
     let mut out = Vec::with_capacity(n);
-    for (i, p) in dock.panels.iter().enumerate() {
+    for (i, g) in dock.groups.iter().enumerate() {
         let title = Rect::from_min_size(pos2(rect.left(), y), vec2(rect.width(), TITLE));
         y = title.bottom();
-        let body = (!p.folded).then(|| {
+        let body = (!g.folded).then(|| {
             let h = heights.next().unwrap_or(HEIGHT_MIN);
             let body = Rect::from_min_size(pos2(rect.left(), y), vec2(rect.width(), h));
             y = body.bottom();
@@ -130,7 +148,9 @@ pub fn slots(dock: &DockState, rect: Rect, scroll: f32) -> (Vec<Slot>, f32) {
             bar
         });
         out.push(Slot {
-            panel: p.panel,
+            group: i,
+            panel: g.active_panel(),
+            tabs: g.panels.len(),
             title,
             body,
             bar_below,
@@ -139,27 +159,75 @@ pub fn slots(dock: &DockState, rect: Rect, scroll: f32) -> (Vec<Slot>, f32) {
     (out, y + scroll - rect.top())
 }
 
-/// Moves the line of the bar below the panel at `i` by `dy`. Every open
-/// panel keeps the height that it shows, from `slots`, and the nearest open
-/// panels above and below the bar share the move. Each stays at least
+/// Moves the line of the bar below the group at `i` by `dy`. Every open
+/// group keeps the height that it shows, from `slots`, and the nearest open
+/// groups above and below the bar share the move. Each stays at least
 /// `HEIGHT_MIN` high.
 pub fn drag_bar(dock: &mut DockState, slots: &[Slot], i: usize, dy: f32) {
-    for (p, slot) in dock.panels.iter_mut().zip(slots) {
+    for (g, slot) in dock.groups.iter_mut().zip(slots) {
         if let Some(body) = slot.body {
-            p.height = body.height();
+            g.height = body.height();
         }
     }
-    let above = (0..=i.min(dock.panels.len().saturating_sub(1)))
+    let groups = &mut dock.groups;
+    let above = (0..=i.min(groups.len().saturating_sub(1)))
         .rev()
-        .find(|&k| !dock.panels[k].folded);
-    let below = (i + 1..dock.panels.len()).find(|&k| !dock.panels[k].folded);
+        .find(|&k| !groups[k].folded);
+    let below = (i + 1..groups.len()).find(|&k| !groups[k].folded);
     let (Some(a), Some(b)) = (above, below) else {
         return;
     };
-    let total = dock.panels[a].height + dock.panels[b].height;
-    let top = (dock.panels[a].height + dy).clamp(HEIGHT_MIN, (total - HEIGHT_MIN).max(HEIGHT_MIN));
-    dock.panels[a].height = top;
-    dock.panels[b].height = total - top;
+    let total = groups[a].height + groups[b].height;
+    let top = (groups[a].height + dy).clamp(HEIGHT_MIN, (total - HEIGHT_MIN).max(HEIGHT_MIN));
+    groups[a].height = top;
+    groups[b].height = total - top;
+}
+
+/// A panel that moves with a finger.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PanelDrag {
+    pub panel: Panel,
+    /// The whole group of the panel moves: the drag started on the title
+    /// row of a group of one panel, or on the free part of a row of tabs.
+    pub whole: bool,
+    /// The finger.
+    pub pos: Pos2,
+    /// The place where a drop puts the panel. `None`: the drop changes
+    /// nothing.
+    pub target: Option<DropAt>,
+}
+
+/// The place in the dock where a drop of a dragged panel at `pos` puts it:
+/// on a title row or a row of tabs, a new tab of that group, and elsewhere
+/// a group of its own between the groups. A whole stack goes only between
+/// the groups. `None`: the drop changes nothing.
+pub fn drop_at(dock: &DockState, slots: &[Slot], drag: &PanelDrag, pos: Pos2) -> Option<DropAt> {
+    let source = dock.group_of(drag.panel)?;
+    let stack = drag.whole && source.is_stack();
+    let over = slots.iter().find(|s| s.title.y_range().contains(pos.y));
+    let at = match over {
+        Some(slot) if !stack => DropAt::Stack(slot.group),
+        _ => {
+            let k = slots.iter().filter(|s| s.rect().center().y < pos.y).count();
+            DropAt::Between(slots.get(k).map_or(dock.groups.len(), |s| s.group))
+        }
+    };
+    let ok = match (stack, at) {
+        (true, DropAt::Between(t)) => dock.can_move_group(drag.panel, t),
+        (true, DropAt::Stack(_)) => false,
+        (false, at) => dock.can_drop(drag.panel, at),
+    };
+    ok.then_some(at)
+}
+
+/// The line between the groups that shows a drop at `Between(k)`.
+fn line_y(slots: &[Slot], k: usize) -> Option<f32> {
+    if let Some(slot) = slots.iter().find(|s| s.group == k) {
+        let above = k.checked_sub(1).and_then(|i| slots.get(i)?.bar_below);
+        return Some(above.map_or(slot.title.top(), |bar| bar.center().y));
+    }
+    let last = slots.last()?;
+    (k == last.group + 1).then(|| last.bar_below.unwrap_or(last.rect()).bottom())
 }
 
 /// A drag of an edge handle: the width at its start, and the width that
@@ -190,6 +258,10 @@ pub struct DockFrame {
     pub placing: Option<Panel>,
     /// The panels that showed in their slots in this frame.
     pub drawn: Vec<Panel>,
+    /// The panel that moves with a finger.
+    pub drag: Option<PanelDrag>,
+    /// A panel dropped in this frame, so the release is not a tap.
+    dropped: bool,
 }
 
 impl DockFrame {
@@ -291,18 +363,23 @@ pub fn draw(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, 
     frame.placing = None;
     frame.drawn.clear();
     frame.handle = None;
+    frame.dropped = false;
+    let workspace = state.workspace;
+    let open = state.pad.docks.get(workspace).open;
+    if rects.class != WidthClass::Wide || rects.dock.is_none() || !open {
+        state.pad.dock_frame.drag = None;
+    }
     if rects.class != WidthClass::Wide {
-        frame.edge = None;
+        state.pad.dock_frame.edge = None;
         return;
     }
-    let workspace = state.workspace;
     let Some(area) = rects.dock else {
-        if !state.pad.docks.get(workspace).open {
+        if !open {
             open_handle(ctx, state, rects);
         }
         return;
     };
-    let open = state.pad.docks.get(workspace).open;
+    release(ctx, state);
     // The panels keep the width of the dock while it moves in and out.
     let width = state.pad.docks.get(workspace).width.max(area.width());
     let bottom = rects.screen.bottom() - rects.bands.bottom;
@@ -326,12 +403,13 @@ pub fn draw(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, 
         let (list, _) = slots(dock, content, scroll);
         state.pad.dock_frame.scroll = scroll;
         state.pad.dock_frame.rect = Some(content);
+        follow(ctx, state, &list, content);
         for (i, slot) in list.iter().enumerate() {
             end = slot.bar_below.unwrap_or(slot.rect()).bottom();
             let Some(bar) = slot.bar_below else {
                 continue;
             };
-            let id = egui::Id::new(("pad-dock-bar", slot.panel.id()));
+            let id = egui::Id::new(("pad-dock-bar", slot.group));
             let name = bar_name(slot.panel);
             let mut dy = 0.0;
             piece(ctx, id, bar, content, |ui| {
@@ -364,50 +442,315 @@ pub fn draw(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, 
     }
 }
 
-/// Draws the title row of each panel of the dock that did not show, so
-/// that it can fold, and an empty body.
+/// Drops the dragged panel when the finger leaves the screen: at its
+/// target, or nowhere if the finger left the dock.
+fn release(ctx: &egui::Context, state: &mut AppState) {
+    let Some(drag) = state.pad.dock_frame.drag else {
+        return;
+    };
+    if ctx.input(|i| i.pointer.any_down()) {
+        return;
+    }
+    let dock = state.pad.docks.get_mut(state.workspace);
+    match drag.target {
+        Some(DropAt::Between(t)) if drag.whole => {
+            dock.move_group(drag.panel, t);
+        }
+        Some(at) => {
+            dock.move_panel(drag.panel, at);
+        }
+        None => {}
+    }
+    state.pad.dock_frame.drag = None;
+    state.pad.dock_frame.dropped = true;
+}
+
+/// Moves the dragged panel with the finger, finds its target in `slots`,
+/// and scrolls the dock while the finger is at its top or bottom.
+fn follow(ctx: &egui::Context, state: &mut AppState, slots: &[Slot], content: Rect) {
+    let Some(mut drag) = state.pad.dock_frame.drag else {
+        return;
+    };
+    if let Some(pos) = ctx.input(|i| i.pointer.latest_pos()) {
+        drag.pos = pos;
+    }
+    let dock = state.pad.docks.get(state.workspace);
+    drag.target = content
+        .contains(drag.pos)
+        .then(|| drop_at(dock, slots, &drag, drag.pos))
+        .flatten();
+    if content.x_range().contains(drag.pos.x) {
+        if drag.pos.y < content.top() + SCROLL_EDGE {
+            state.pad.dock_frame.scroll -= SCROLL_STEP;
+        } else if drag.pos.y > content.bottom() - SCROLL_EDGE {
+            state.pad.dock_frame.scroll += SCROLL_STEP;
+        }
+    }
+    state.pad.dock_frame.drag = Some(drag);
+    ctx.request_repaint();
+}
+
+/// The title row of a group in the dock, or its row of tabs. `title`,
+/// `back`, and `action` are those of the active panel, and a folded group
+/// shows no action. A tap folds the
+/// group, a tap on a tab that is not active makes its panel active, and a
+/// drag or a hold starts a move.
+pub fn head(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    slot: Slot,
+    title: &str,
+    back: Option<&str>,
+    action: Option<(&str, Icon, bool)>,
+) -> widgets::TitleRow {
+    let folded = slot.body.is_none();
+    // The actions act on the body, so a folded group has none.
+    let action = action.filter(|_| !folded);
+    let panels = match state.pad.docks.get(state.workspace).group_of(slot.panel) {
+        Some(group) if group.is_stack() => group.panels.clone(),
+        _ => {
+            let name = title_name(slot.panel);
+            let ends = widgets::TitleEnds::Fold {
+                name: &name,
+                folded,
+                icon: panel_face(slot.panel).1,
+            };
+            let row = widgets::title_row_with(ui, controls, title, back, false, action, ends);
+            if grab(ui, state, &row.bar, slot.panel, true) {
+                toggle_fold(state, slot.panel);
+            }
+            return row;
+        }
+    };
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::hover());
+    let bar = ui.interact(rect, ui.id().with("pad-dock-tabs"), Sense::click_and_drag());
+    let chevron = Rect::from_min_size(pos2(rect.left() + 8.0, rect.top()), vec2(24.0, ROW));
+    let face = if folded { Icon::Open } else { Icon::Down };
+    icons::paint(ui.painter(), chevron, face, 18.0, theme::MUTE);
+    let button = |x: f32| Rect::from_min_size(pos2(x, rect.top() + PAD), vec2(TOUCH, TOUCH));
+    let mut end = rect.right() - PAD;
+    let action = action.map(|(name, icon, active)| {
+        let at = button(end - TOUCH);
+        end = at.left();
+        widgets::icon_button_at(ui, controls, at, name, icon, active, true)
+    });
+    let back = back.is_some_and(|parent| {
+        let at = button(end - TOUCH);
+        end = at.left();
+        let name = format!("Back to {parent}");
+        widgets::icon_button_at(ui, controls, at, &name, Icon::Back, false, true).clicked()
+    });
+    // The first icon lines up with the icon of a title row.
+    let left = rect.left() + 28.0;
+    let room = end - left - TOUCH * panels.len() as f32;
+    let width = widgets::text_width(ui, title, theme::title());
+    // The active tab holds the title if it has room for some of it.
+    let extra = (width + 9.0).min(room.max(0.0));
+    let extra = if extra < 48.0 { 0.0 } else { extra };
+    let mut x = left;
+    let mut tapped = None;
+    for &panel in &panels {
+        let active = panel == slot.panel;
+        let w = TOUCH + if active { extra } else { 0.0 };
+        let tab = Rect::from_min_size(pos2(x, rect.top() + PAD), vec2(w, TOUCH));
+        x = tab.right();
+        let name = title_name(panel);
+        let sense = Sense::click_and_drag();
+        let resp = widgets::hit(ui, controls, tab, &name, sense, true, Some(active));
+        if active || resp.is_pointer_button_down_on() {
+            let fill = tab.shrink(widgets::HIGHLIGHT_INSET);
+            ui.painter()
+                .rect_filled(fill, theme::CONTROL_RADIUS, theme::raise());
+        }
+        let color = if active { theme::TEXT } else { theme::MUTE };
+        let icon = Rect::from_min_size(tab.min, vec2(TOUCH, TOUCH));
+        icons::paint(
+            ui.painter(),
+            icon,
+            panel_face(panel).1,
+            widgets::ICON,
+            color,
+        );
+        if active && extra > 0.0 {
+            let clip = Rect::from_min_max(
+                pos2(icon.right() - 2.0, tab.top()),
+                pos2(tab.right() - 7.0, tab.bottom()),
+            );
+            ui.painter().with_clip_rect(clip).text(
+                clip.left_center(),
+                egui::Align2::LEFT_CENTER,
+                title,
+                theme::title(),
+                theme::TEXT,
+            );
+        }
+        if grab(ui, state, &resp, panel, false) {
+            tapped = Some(panel);
+        }
+    }
+    if grab(ui, state, &bar, slot.panel, true) {
+        toggle_fold(state, slot.panel);
+    }
+    match tapped {
+        Some(panel) if panel == slot.panel => toggle_fold(state, panel),
+        Some(panel) => {
+            let workspace = state.workspace;
+            state.pad.docks.get_mut(workspace).show(workspace, panel);
+        }
+        None => {}
+    }
+    widgets::TitleRow {
+        close: false,
+        back,
+        dock: false,
+        action,
+        bar,
+    }
+}
+
+/// Folds or opens the group of `panel`.
+fn toggle_fold(state: &mut AppState, panel: Panel) {
+    let dock = state.pad.docks.get_mut(state.workspace);
+    if let Some((g, _)) = dock.position(panel) {
+        dock.groups[g].folded = !dock.groups[g].folded;
+    }
+}
+
+/// Starts a move of `panel` on a drag or a hold of `resp`, and scrolls the
+/// dock on a scroll over it. Returns true on a tap.
+fn grab(ui: &egui::Ui, state: &mut AppState, resp: &Response, panel: Panel, whole: bool) -> bool {
+    let frame = &mut state.pad.dock_frame;
+    if resp.hovered() {
+        frame.scroll -= ui.input(|i| i.smooth_scroll_delta.y);
+    }
+    if frame.drag.is_some() || frame.dropped {
+        return false;
+    }
+    let held = resp.is_pointer_button_down_on() && !resp.dragged() && {
+        let press = ui.input(|i| {
+            let (start, origin) = (i.pointer.press_start_time()?, i.pointer.press_origin()?);
+            let pos = i.pointer.interact_pos()?;
+            Some((i.time - start, origin.distance(pos)))
+        });
+        match press {
+            Some((held, moved)) if moved <= HOLD_SLOP && held >= HOLD_TIME => true,
+            Some((held, moved)) if moved <= HOLD_SLOP => {
+                let wait = std::time::Duration::from_secs_f64(HOLD_TIME - held);
+                ui.ctx().request_repaint_after(wait);
+                false
+            }
+            _ => false,
+        }
+    };
+    if resp.drag_started() || held {
+        let pos = resp.interact_pointer_pos().unwrap_or(resp.rect.center());
+        frame.drag = Some(PanelDrag {
+            panel,
+            whole,
+            pos,
+            target: None,
+        });
+        ui.ctx().request_repaint();
+        return false;
+    }
+    resp.clicked()
+}
+
+/// Draws the title row of each group of the dock whose panel did not show,
+/// so that it can fold and move, and an empty body. Then draws the panel
+/// that moves with a finger, and where it goes.
 pub fn finish(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls) {
     let Some(content) = state.pad.dock_frame.rect else {
         return;
     };
     let slots = state.pad.dock_frame.slots.clone();
-    for slot in slots {
+    for slot in &slots {
         if state.pad.dock_frame.drawn.contains(&slot.panel) {
             continue;
         }
         let id = egui::Id::new(("pad-dock", slot.panel.id()));
-        let mut fold = false;
-        let mut scroll = 0.0;
         piece(ctx, id, slot.rect(), content, |ui| {
             top_line(ui, slot.rect());
             ui.spacing_mut().item_spacing.y = 0.0;
             let title = panel_face(slot.panel).0;
-            let name = title_name(slot.panel);
-            let ends = widgets::TitleEnds::Fold {
-                name: &name,
-                folded: slot.body.is_none(),
-                icon: panel_face(slot.panel).1,
-            };
-            let row = widgets::title_row_with(ui, controls, title, None, false, None, ends);
-            fold = row.bar.clicked();
-            scroll = row.bar.drag_delta().y;
+            head(ui, state, controls, *slot, title, None, None);
         });
-        title_input(state, slot.panel, fold, scroll);
         state.pad.panels.push((slot.panel, slot.rect()));
+    }
+    if let Some(drag) = state.pad.dock_frame.drag {
+        drop_marks(ctx, &slots, content, &drag);
     }
 }
 
-/// A tap on the title row of a panel of the dock folds or opens it, and a
-/// drag scrolls the dock.
-pub fn title_input(state: &mut AppState, panel: Panel, tap: bool, drag: f32) {
-    let workspace = state.workspace;
-    if tap {
-        let dock = state.pad.docks.get_mut(workspace);
-        if let Some(p) = dock.panels.iter_mut().find(|p| p.panel == panel) {
-            p.folded = !p.folded;
+/// Draws where a drop of `drag` puts the panel, and the lifted card of the
+/// panel above the finger.
+fn drop_marks(ctx: &egui::Context, slots: &[Slot], content: Rect, drag: &PanelDrag) {
+    let order = egui::Order::Foreground;
+    let painter = ctx.layer_painter(egui::LayerId::new(order, egui::Id::new("pad-dock-drop")));
+    let stroke = egui::Stroke::new(2.0, theme::ACCENT);
+    match drag.target {
+        Some(DropAt::Stack(g)) => {
+            if let Some(slot) = slots.iter().find(|s| s.group == g) {
+                let rect = slot.title.shrink(widgets::HIGHLIGHT_INSET);
+                let painter = painter.with_clip_rect(content);
+                painter.rect_stroke(
+                    rect,
+                    theme::CONTROL_RADIUS,
+                    stroke,
+                    egui::StrokeKind::Inside,
+                );
+            }
         }
+        Some(DropAt::Between(k)) => {
+            if let Some(y) = line_y(slots, k) {
+                let y = y.clamp(content.top() + 1.5, content.bottom() - 1.5);
+                let line = Rect::from_min_max(
+                    pos2(content.left() + 8.0, y - 1.5),
+                    pos2(content.right() - 8.0, y + 1.5),
+                );
+                painter.rect_filled(line, 1.5, theme::ACCENT);
+            }
+        }
+        None => {}
     }
-    state.pad.dock_frame.scroll -= drag;
+    let (name, icon) = panel_face(drag.panel);
+    let rect = Rect::from_center_size(drag.pos - vec2(0.0, 30.0), vec2(GHOST.0, GHOST.1));
+    egui::Area::new(egui::Id::new("pad-dock-ghost"))
+        .order(order)
+        .fixed_pos(rect.min)
+        .movable(false)
+        .constrain(false)
+        .fade_in(false)
+        .interactable(false)
+        .show(ctx, |ui| {
+            let (rect, _) = ui.allocate_exact_size(rect.size(), Sense::hover());
+            let radius = egui::CornerRadius::same(theme::CONTROL_RADIUS as u8);
+            widgets::glass(ui.painter(), None, order, rect, radius, true);
+            // The lifted card is opaque, as a lifted row of the layer list.
+            ui.painter()
+                .rect_filled(rect, radius, theme::card(false).to_opaque());
+            ui.painter().rect_filled(rect, radius, theme::raise());
+            ui.painter().rect_stroke(
+                rect,
+                radius,
+                egui::Stroke::new(1.0, theme::divider()),
+                egui::StrokeKind::Inside,
+            );
+            let at = Rect::from_min_size(rect.min, vec2(TOUCH, TOUCH));
+            icons::paint(ui.painter(), at, icon, widgets::ICON, theme::TEXT);
+            let clip = Rect::from_min_max(
+                pos2(at.right() - 4.0, rect.top()),
+                pos2(rect.right() - 10.0, rect.bottom()),
+            );
+            ui.painter().with_clip_rect(clip).text(
+                clip.left_center(),
+                egui::Align2::LEFT_CENTER,
+                name,
+                theme::title(),
+                theme::TEXT,
+            );
+        });
 }
 
 /// The touch area of an edge handle from `left` to `right`, at the middle
@@ -532,6 +875,7 @@ fn open_handle(ctx: &egui::Context, state: &mut AppState, rects: &Rects) {
 mod tests {
     use super::*;
     use crate::dock::DockPanel;
+    use crate::dock::DropAt;
     use crate::ui::Workspace;
 
     fn dock(panels: &[(Panel, bool, f32)]) -> DockState {
@@ -631,6 +975,80 @@ mod tests {
         drag_bar(&mut d, &s, 0, 1000.0);
         let (s, _) = slots(&d, rect(700.0), 0.0);
         assert!((s[2].body.unwrap().height() - HEIGHT_MIN).abs() < 0.01);
+    }
+
+    #[test]
+    fn a_stack_has_one_slot_with_its_active_panel() {
+        let mut d = dock(&[
+            (Panel::Layers, false, 240.0),
+            (Panel::Attributes, false, 240.0),
+            (Panel::Toolbox, false, 240.0),
+        ]);
+        d.move_panel(Panel::Toolbox, DropAt::Stack(0));
+        d.activate(Panel::Layers);
+        let (s, height) = slots(&d, rect(700.0), 0.0);
+        assert_eq!(s.len(), 2);
+        assert_eq!((s[0].group, s[0].panel, s[0].tabs), (0, Panel::Layers, 2));
+        assert_eq!(
+            (s[1].group, s[1].panel, s[1].tabs),
+            (1, Panel::Attributes, 1)
+        );
+        assert!(s[0].bar_below.is_some());
+        let room = 700.0 - 2.0 * TITLE - BAR;
+        let bodies = s[0].body.unwrap().height() + s[1].body.unwrap().height();
+        assert!((bodies - room).abs() < 0.01);
+        assert!((height - 700.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn a_drop_goes_into_a_title_row_or_between_the_groups() {
+        let d = dock(&[
+            (Panel::Layers, false, 240.0),
+            (Panel::Attributes, false, 240.0),
+            (Panel::Toolbox, false, 240.0),
+        ]);
+        let (s, _) = slots(&d, rect(700.0), 0.0);
+        let drag = |panel, whole| PanelDrag {
+            panel,
+            whole,
+            pos: Pos2::ZERO,
+            target: None,
+        };
+        let x = 900.0;
+        let toolbox = drag(Panel::Toolbox, true);
+        let at = |y: f32| drop_at(&d, &s, &toolbox, pos2(x, y));
+        assert_eq!(at(s[0].title.center().y), Some(DropAt::Stack(0)));
+        assert_eq!(at(s[1].title.center().y), Some(DropAt::Stack(1)));
+        assert_eq!(at(s[2].title.center().y), None, "its own title row");
+        assert_eq!(at(s[0].rect().top() + 60.0), Some(DropAt::Between(0)));
+        assert_eq!(
+            at(s[0].bar_below.unwrap().center().y),
+            Some(DropAt::Between(1))
+        );
+        assert_eq!(at(s[2].rect().bottom() - 5.0), None, "its own place");
+        assert_eq!(line_y(&s, 1), Some(s[0].bar_below.unwrap().center().y));
+        assert_eq!(line_y(&s, 0), Some(s[0].title.top()));
+        assert_eq!(line_y(&s, 3), Some(s[2].rect().bottom()));
+
+        // A whole stack goes only between the groups, and a tab of it also
+        // into another group.
+        let mut d = d.clone();
+        d.move_panel(Panel::Attributes, DropAt::Stack(0));
+        let (s, _) = slots(&d, rect(700.0), 0.0);
+        let stack = drag(Panel::Layers, true);
+        let y = s[1].title.center().y;
+        // Above the Toolbox group is just below the stack: its own place.
+        assert_eq!(drop_at(&d, &s, &stack, pos2(x, y)), None);
+        let y = s[1].rect().bottom() - 5.0;
+        assert_eq!(
+            drop_at(&d, &s, &stack, pos2(x, y)),
+            Some(DropAt::Between(2))
+        );
+        let tab = drag(Panel::Attributes, false);
+        let y = s[1].title.center().y;
+        assert_eq!(drop_at(&d, &s, &tab, pos2(x, y)), Some(DropAt::Stack(1)));
+        let y = s[0].title.center().y;
+        assert_eq!(drop_at(&d, &s, &tab, pos2(x, y)), None, "its own stack");
     }
 
     #[test]

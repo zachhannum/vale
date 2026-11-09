@@ -316,8 +316,14 @@ fn show(h: &mut Pad, panel: Panel) {
 /// height of the dock.
 fn solo(h: &mut Pad, panel: Panel) {
     let docks = &mut h.state_mut().pad.docks;
-    if docks.atlas.contains(panel) && docks.atlas.panels.len() > 1 {
-        docks.atlas.panels.retain(|p| p.panel == panel);
+    let others: Vec<Panel> = (docks.atlas.panels().iter())
+        .map(|p| p.panel)
+        .filter(|&p| p != panel)
+        .collect();
+    if docks.atlas.contains(panel) && !others.is_empty() {
+        for other in others {
+            docks.atlas.remove(other);
+        }
         h.run_steps(2);
     }
 }
@@ -9380,10 +9386,7 @@ fn the_panels_button_and_the_inspector_fit_in_the_atlas_on_each_screen() {
 fn docked_state(panels: &[Panel]) -> AppState {
     let mut s = state();
     let entries: Vec<_> = (panels.iter())
-        .map(|&panel| vale_app::dock::Entry {
-            panel,
-            folded: false,
-        })
+        .map(|&panel| vale_app::dock::Entry::new(panel))
         .collect();
     vale_app::dock::apply(&mut s.pad.docks, Workspace::Atlas, &entries);
     s
@@ -9407,7 +9410,7 @@ fn each_panel_of_a_map_frame_follows_the_selected_frame() {
     let drawn = &h.state().pad.dock_frame.drawn;
     assert!(Panel::FRAME.iter().all(|p| drawn.contains(p)), "{drawn:?}");
     // The selection opens no other panel.
-    let docked: Vec<_> = (h.state().pad.docks.atlas.panels.iter())
+    let docked: Vec<_> = (h.state().pad.docks.atlas.panels().iter())
         .map(|p| p.panel)
         .collect();
     assert_eq!(docked, Panel::FRAME);
@@ -9521,7 +9524,7 @@ fn a_selection_opens_its_panel_only_if_no_panel_of_it_is_open() {
     let mut h = pad_with(docked_state(&[Panel::Pages, Panel::Projection]), BOARDS[0]);
     add_frame(&mut h);
     let docked = |h: &Pad| -> Vec<Panel> {
-        (h.state().pad.docks.atlas.panels.iter())
+        (h.state().pad.docks.atlas.panels().iter())
             .map(|p| p.panel)
             .collect()
     };

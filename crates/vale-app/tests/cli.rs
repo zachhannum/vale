@@ -202,16 +202,37 @@ fn the_dock_flag_opens_the_dock_of_the_workspace_with_its_panels() {
     apply_dock(&args, &mut state);
     let dock = state.pad.docks.get(Workspace::Globe);
     assert!(dock.open);
-    let panels: Vec<_> = dock.panels.iter().map(|p| (p.panel, p.folded)).collect();
+    let panels: Vec<_> = dock.panels().iter().map(|p| (p.panel, p.folded)).collect();
     assert_eq!(panels, [(Panel::Layers, false), (Panel::Toolbox, true)]);
     assert!(!state.pad.docks.get(Workspace::Atlas).open);
+
+    // A `+` stacks panels in one group.
+    let args = parse(&[
+        "--layout",
+        "pad",
+        "--dock",
+        "layers+attributes,toolbox:folded",
+    ]);
+    let mut stacked = AppState::new(Document::sample()).unwrap();
+    apply_dock(&args, &mut stacked);
+    let groups: Vec<_> = (stacked.pad.docks.get(Workspace::Globe).groups.iter())
+        .map(|g| (g.panels.clone(), g.folded))
+        .collect();
+    assert_eq!(
+        groups,
+        [
+            (vec![Panel::Layers, Panel::Attributes], false),
+            (vec![Panel::Toolbox], true),
+        ]
+    );
+    assert!(Args::try_parse_from(["vale-app", "--dock", "layers+wheel"]).is_err());
 
     let dock = "frame,projection,map-layers,labels:folded,properties,pages";
     let args = parse(&["--workspace", "atlas", "--dock", dock]);
     apply_dock(&args, &mut state);
     let dock = state.pad.docks.get(Workspace::Atlas);
     assert!(dock.open);
-    let panels: Vec<_> = dock.panels.iter().map(|p| (p.panel, p.folded)).collect();
+    let panels: Vec<_> = dock.panels().iter().map(|p| (p.panel, p.folded)).collect();
     assert_eq!(
         panels,
         [

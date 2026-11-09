@@ -28,7 +28,7 @@ pub const PANEL_ROW: f32 = 48.0;
 /// The padding at the left and the right of the body of a panel.
 pub const BODY_PAD: f32 = 16.0;
 
-fn text_width(ui: &egui::Ui, text: &str, font: egui::FontId) -> f32 {
+pub(super) fn text_width(ui: &egui::Ui, text: &str, font: egui::FontId) -> f32 {
     let galley = ui
         .painter()
         .layout_no_wrap(text.to_owned(), font, theme::TEXT);

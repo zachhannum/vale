@@ -1,6 +1,8 @@
 //! The top bar, the workspace tabs, the view control, the dock, and the
 //! floating panels of the iPad layout from 600 points.
 
+mod screenshot;
+
 use clap::Parser;
 use eframe::egui::{self, Pos2, Rect, pos2, vec2};
 use egui_kittest::Harness;
@@ -540,7 +542,7 @@ fn dock_of(h: &Pad, workspace: Workspace) -> &DockState {
 /// whether each is folded.
 fn docked(h: &Pad) -> Vec<(Panel, bool)> {
     let dock = dock_of(h, Workspace::Globe);
-    dock.panels.iter().map(|p| (p.panel, p.folded)).collect()
+    dock.panels().iter().map(|p| (p.panel, p.folded)).collect()
 }
 
 fn slot(h: &Pad, panel: Panel) -> Slot {
@@ -555,13 +557,7 @@ fn slot(h: &Pad, panel: Panel) -> Slot {
 /// panels in it.
 fn docked_pad(panels: &[Panel]) -> Pad {
     let mut state = state(Workspace::Globe);
-    let entries: Vec<Entry> = panels
-        .iter()
-        .map(|&panel| Entry {
-            panel,
-            folded: false,
-        })
-        .collect();
+    let entries: Vec<Entry> = panels.iter().map(|&panel| Entry::new(panel)).collect();
     vale_app::dock::apply(&mut state.pad.docks, Workspace::Globe, &entries);
     pad_with(state, BOARDS[0])
 }
@@ -702,7 +698,7 @@ fn a_drag_of_the_bar_between_two_panels_changes_their_heights() {
     let below = slot(&h, Panel::Toolbox).body.unwrap().height();
     assert!((toolbox - below - 60.0).abs() < 2.0);
     // The stored heights hold the change, so the file keeps it.
-    let stored = &dock_of(&h, Workspace::Globe).panels;
+    let stored = dock_of(&h, Workspace::Globe).panels();
     assert!((stored[0].height - after).abs() < 2.0);
 
     // Each panel stays at least the smallest height.
@@ -800,10 +796,7 @@ fn the_dock_button_of_a_card_moves_the_panel_into_the_dock() {
 fn below_1000_points_each_panel_floats_and_no_dock_button_shows() {
     for size in [BOARDS[1], BOARDS[2]] {
         let mut state = state(Workspace::Globe);
-        let entries = [Entry {
-            panel: Panel::Toolbox,
-            folded: false,
-        }];
+        let entries = [Entry::new(Panel::Toolbox)];
         vale_app::dock::apply(&mut state.pad.docks, Workspace::Globe, &entries);
         let mut h = pad_with(state, size);
         assert!(rects(&h).dock.is_none(), "{size:?}");
@@ -916,7 +909,7 @@ fn the_atlas_panels_go_into_the_dock() {
     show(&mut h, vale_app::ui::pad::PAGES);
     show(&mut h, select::ATTRIBUTES);
     let dock = dock_of(&h, Workspace::Atlas);
-    let panels: Vec<_> = dock.panels.iter().map(|p| p.panel).collect();
+    let panels: Vec<_> = dock.panels().iter().map(|p| p.panel).collect();
     assert_eq!(panels, [Panel::Pages, Panel::Attributes]);
     assert!(slot(&h, Panel::Pages).body.is_some());
     assert!(slot(&h, Panel::Attributes).body.is_some());
@@ -1015,7 +1008,7 @@ fn a_row_of_the_panels_menu_toggles_a_floating_card_or_a_docked_panel() {
         show(&mut h, names[0]);
         let docked = |h: &Pad| -> Vec<_> {
             let dock = dock_of(h, workspace);
-            dock.panels.iter().map(|p| (p.panel, p.folded)).collect()
+            dock.panels().iter().map(|p| (p.panel, p.folded)).collect()
         };
         assert_eq!(docked(&h), [(second, false), (first, false)]);
         assert_eq!(h.state().pad.float, None);
@@ -1028,4 +1021,250 @@ fn a_row_of_the_panels_menu_toggles_a_floating_card_or_a_docked_panel() {
         assert_eq!(h.state().pad.float, Some(first), "{workspace:?}");
         assert!(h.state().pad.dock_frame.slots.is_empty());
     }
+}
+
+/// The panels of each group of the dock of the World workspace.
+fn groups(h: &Pad) -> Vec<Vec<Panel>> {
+    let dock = dock_of(h, Workspace::Globe);
+    dock.groups.iter().map(|g| g.panels.clone()).collect()
+}
+
+/// The World workspace on a landscape iPad with the dock open and these
+/// groups, each in the syntax of the flag `--dock`.
+fn stacked_pad(entries: &[&str]) -> Pad {
+    let mut state = state(Workspace::Globe);
+    let entries: Vec<Entry> = entries.iter().map(|e| e.parse().unwrap()).collect();
+    vale_app::dock::apply(&mut state.pad.docks, Workspace::Globe, &entries);
+    pad_with(state, BOARDS[0])
+}
+
+fn title(h: &Pad, panel: Panel) -> Pos2 {
+    control(h, &title_name(panel))
+        .unwrap_or_else(|| panic!("no title of {panel:?}"))
+        .center()
+}
+
+#[test]
+fn a_drag_of_a_title_row_between_two_groups_moves_the_panel() {
+    let mut h = docked_pad(&[Panel::Layers, Panel::Attributes, Panel::Toolbox]);
+    tap(&mut h, &title_name(Panel::Toolbox));
+    let from = title(&h, Panel::Toolbox);
+    let to = pos2(from.x, slot(&h, Panel::Attributes).title.top() - 4.0);
+    drag(&mut h, from, to, None);
+    assert_eq!(
+        groups(&h),
+        [
+            vec![Panel::Layers],
+            vec![Panel::Toolbox],
+            vec![Panel::Attributes]
+        ]
+    );
+    assert_eq!(
+        docked(&h),
+        [
+            (Panel::Layers, false),
+            (Panel::Toolbox, true),
+            (Panel::Attributes, false),
+        ],
+        "the group keeps its fold"
+    );
+    let tops = [Panel::Layers, Panel::Toolbox, Panel::Attributes].map(|p| slot(&h, p).title.top());
+    assert!(tops.is_sorted(), "{tops:?}");
+    assert!(h.state().pad.dock_frame.drag.is_none());
+}
+
+#[test]
+fn a_drop_on_a_title_row_stacks_the_panel_as_a_tab() {
+    let mut h = docked_pad(&[Panel::Layers, Panel::Attributes, Panel::Toolbox]);
+    let (from, to) = (title(&h, Panel::Toolbox), title(&h, Panel::Layers));
+    drag(&mut h, from, to, None);
+    assert_eq!(
+        groups(&h),
+        [vec![Panel::Layers, Panel::Toolbox], vec![Panel::Attributes]]
+    );
+    // The new tab is active, and each panel of the stack has a tab.
+    let toolbox = slot(&h, Panel::Toolbox);
+    assert_eq!((toolbox.group, toolbox.tabs), (0, 2));
+    assert!(toolbox.body.is_some());
+    assert!(h.state().pad.dock_frame.slot(Panel::Layers).is_none());
+    let [layers, toolbox] =
+        [Panel::Layers, Panel::Toolbox].map(|p| control(&h, &title_name(p)).unwrap());
+    assert!(
+        layers.right() <= toolbox.left() + 0.5,
+        "{layers:?} {toolbox:?}"
+    );
+    assert!(layers.width() >= 44.0 && layers.height() >= 44.0);
+    assert!(h.state().pad.is_open(Panel::Layers));
+    assert!(!h.state().pad.shows(Panel::Layers));
+    assert!(
+        control(&h, ADD_LAYER).is_none(),
+        "the body of Layers is behind its tab"
+    );
+}
+
+#[test]
+fn a_tap_on_a_tab_shows_its_panel_and_a_tap_on_the_active_tab_folds_the_stack() {
+    let mut h = stacked_pad(&["layers+toolbox", "attributes"]);
+    assert!(control(&h, ADD_LAYER).is_some());
+    tap(&mut h, &title_name(Panel::Toolbox));
+    assert!(dock_of(&h, Workspace::Globe).is_active(Panel::Toolbox));
+    assert!(control(&h, ADD_LAYER).is_none());
+    assert!(slot(&h, Panel::Toolbox).body.is_some());
+    tap(&mut h, &title_name(Panel::Layers));
+    assert!(control(&h, ADD_LAYER).is_some(), "the + of Layers");
+    tap(&mut h, &title_name(Panel::Layers));
+    assert_eq!(slot(&h, Panel::Layers).body, None, "folded");
+    assert!(control(&h, ADD_LAYER).is_none());
+    // A tap on a tab of a folded stack opens it.
+    tap(&mut h, &title_name(Panel::Toolbox));
+    assert!(slot(&h, Panel::Toolbox).body.is_some());
+}
+
+#[test]
+fn a_drag_of_a_tab_out_of_its_stack_makes_a_group() {
+    let mut h = stacked_pad(&["layers+toolbox", "attributes"]);
+    let from = title(&h, Panel::Toolbox);
+    let below = slot(&h, Panel::Attributes).rect().bottom() - 10.0;
+    drag(&mut h, from, pos2(from.x, below), None);
+    assert_eq!(
+        groups(&h),
+        [
+            vec![Panel::Layers],
+            vec![Panel::Attributes],
+            vec![Panel::Toolbox]
+        ]
+    );
+    assert!(
+        slot(&h, Panel::Layers).body.is_some(),
+        "a plain group again"
+    );
+    assert_eq!(slot(&h, Panel::Layers).tabs, 1);
+    assert!(slot(&h, Panel::Toolbox).body.is_some());
+}
+
+#[test]
+fn a_drop_outside_the_dock_changes_nothing() {
+    let mut h = stacked_pad(&["layers+toolbox", "attributes"]);
+    let before = dock_of(&h, Workspace::Globe).clone();
+    let canvas = rects(&h).fit.center();
+    for panel in [Panel::Toolbox, Panel::Attributes] {
+        let from = title(&h, panel);
+        drag(&mut h, from, canvas, None);
+        assert_eq!(*dock_of(&h, Workspace::Globe), before, "{panel:?}");
+    }
+    assert!(h.state().pad.dock_frame.drag.is_none());
+}
+
+#[test]
+fn a_hold_on_a_title_row_lifts_the_panel() {
+    let mut h = docked_pad(&[Panel::Layers, Panel::Toolbox]);
+    let at = title(&h, Panel::Toolbox);
+    touch(&mut h, egui::TouchPhase::Start, at);
+    h.step();
+    assert!(h.state().pad.dock_frame.drag.is_none(), "not at once");
+    for _ in 0..40 {
+        h.step();
+    }
+    let drag = h
+        .state()
+        .pad
+        .dock_frame
+        .drag
+        .expect("a hold lifts the panel");
+    assert_eq!(drag.panel, Panel::Toolbox);
+    touch(&mut h, egui::TouchPhase::End, at);
+    h.run_steps(3);
+    // The release after the hold is not a tap.
+    assert_eq!(
+        docked(&h),
+        [(Panel::Layers, false), (Panel::Toolbox, false)]
+    );
+    assert!(h.state().pad.dock_frame.drag.is_none());
+}
+
+#[test]
+fn the_dock_keeps_its_stacks_after_a_close_and_a_restart() {
+    let mut h = docked_pad(&[Panel::Layers, Panel::Attributes, Panel::Toolbox]);
+    let (from, to) = (title(&h, Panel::Layers), title(&h, Panel::Toolbox));
+    drag(&mut h, from, to, None);
+    tap(&mut h, &title_name(Panel::Toolbox));
+    tap(&mut h, &title_name(Panel::Attributes));
+    let before = dock_of(&h, Workspace::Globe).clone();
+    assert_eq!(
+        groups(&h),
+        [vec![Panel::Attributes], vec![Panel::Toolbox, Panel::Layers]]
+    );
+    tap(&mut h, DOCK);
+    assert!(h.state().pad.dock_frame.slots.is_empty());
+    tap(&mut h, DOCK);
+    assert_eq!(*dock_of(&h, Workspace::Globe), before);
+    assert!(slot(&h, Panel::Toolbox).body.is_some());
+
+    // The file of the docks holds the stacks.
+    let text = h.state().pad.docks.text();
+    let mut state = state(Workspace::Globe);
+    state.pad.docks = vale_app::dock::Docks::parse(&text);
+    let h = pad_with(state, BOARDS[0]);
+    assert_eq!(*dock_of(&h, Workspace::Globe), before);
+    assert_eq!(slot(&h, Panel::Toolbox).tabs, 2);
+    assert_eq!(slot(&h, Panel::Attributes).body, None);
+}
+
+#[test]
+fn the_panels_menu_takes_a_panel_out_of_its_stack_and_adds_it_below() {
+    let mut h = stacked_pad(&["layers+toolbox+attributes"]);
+    show(&mut h, TOOLBOX);
+    assert_eq!(groups(&h), [vec![Panel::Layers, Panel::Attributes]]);
+    show(&mut h, select::ATTRIBUTES);
+    assert_eq!(groups(&h), [vec![Panel::Layers]]);
+    assert_eq!(slot(&h, Panel::Layers).tabs, 1);
+    show(&mut h, TOOLBOX);
+    assert_eq!(groups(&h), [vec![Panel::Layers], vec![Panel::Toolbox]]);
+}
+
+#[test]
+fn the_dock_flag_shows_a_stack() {
+    let args = vale_app::cli::Args::try_parse_from([
+        "vale-app",
+        "--layout",
+        "pad",
+        "--dock",
+        "layers+attributes,toolbox:folded",
+    ])
+    .unwrap();
+    let mut state = state(Workspace::Globe);
+    vale_app::cli::apply_dock(&args, &mut state);
+    let h = pad_with(state, BOARDS[0]);
+    assert_eq!(
+        groups(&h),
+        [vec![Panel::Layers, Panel::Attributes], vec![Panel::Toolbox]]
+    );
+    assert_eq!(slot(&h, Panel::Layers).tabs, 2);
+    assert!(control(&h, ADD_LAYER).is_some());
+    assert!(control(&h, &title_name(Panel::Attributes)).is_some());
+}
+
+#[test]
+#[ignore = "gpu"]
+fn manual_a_panel_moves_in_the_dock() {
+    let mut h = stacked_pad(&["layers+toolbox", "attributes"]);
+    let from = title(&h, Panel::Toolbox);
+    // The finger stays down, so the card of the panel and the mark of its
+    // place show.
+    let to_pic = |h: &mut Pad, to: Pos2, name: &str| {
+        touch(h, egui::TouchPhase::Start, from);
+        h.step();
+        for i in 1..=6 {
+            touch(h, egui::TouchPhase::Move, from.lerp(to, i as f32 / 6.0));
+            h.step();
+        }
+        h.run_steps(2);
+        screenshot::save(h, name);
+        touch(h, egui::TouchPhase::End, rects(h).fit.center());
+        h.run_steps(3);
+    };
+    let between = slot(&h, Panel::Attributes).rect().bottom() - 10.0;
+    to_pic(&mut h, pos2(from.x, between), "dock-drag-between");
+    let onto = title(&h, Panel::Attributes);
+    to_pic(&mut h, onto, "dock-drag-stack");
 }

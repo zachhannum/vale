@@ -874,7 +874,7 @@ fn choose_mode(h: &mut App, mode: Mode) {
 
 #[test]
 fn the_dock_keeps_its_panels_after_a_restart() {
-    use vale_app::dock::DockPanel;
+    use vale_app::dock::{DockPanel, DropAt};
     use vale_app::ui::pad::Panel;
 
     let dir = tempfile::tempdir().unwrap();
@@ -890,6 +890,11 @@ fn the_dock_keeps_its_panels_after_a_restart() {
     docks
         .world
         .insert(Workspace::Globe, DockPanel::new(Panel::Layers));
+    docks
+        .world
+        .insert(Workspace::Globe, DockPanel::new(Panel::Attributes));
+    // A stack keeps its panels and its active tab.
+    assert!(docks.world.move_panel(Panel::Attributes, DropAt::Stack(0)));
     docks
         .atlas
         .insert(Workspace::Atlas, DockPanel::new(Panel::Frame));
