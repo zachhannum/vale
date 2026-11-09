@@ -1,5 +1,5 @@
-//! The dock of the iPad layout from 1,000 points: an opaque column at the
-//! right edge, below the bar. It holds the panels of the workspace from top
+//! The dock of the iPad layout from 1,000 points: a blurred column at the
+//! right edge, from the bar to the bottom edge of the screen. It holds the panels of the workspace from top
 //! to bottom, each with a title row. The open panels share the height, and
 //! a bar with a grip between two open panels moves the line between them.
 //! The edge handle at the left edge changes the width, and a drag of it to
@@ -229,8 +229,9 @@ pub fn layout_width(ctx: &egui::Context, state: &AppState) -> f32 {
     ctx.animate_value_with_time(id, target, time)
 }
 
-/// Shows an opaque part of the dock at `rect`, cut to `clip`, with the
-/// border at the left edge of `clip`.
+/// Shows a blurred part of the dock at `rect`, cut to `clip`, with the
+/// border at the left edge of `clip`. The parts of the dock do not overlap,
+/// so that they look like one blurred area.
 pub fn piece(
     ctx: &egui::Context,
     id: egui::Id,
@@ -242,16 +243,20 @@ pub fn piece(
     if !shown.is_positive() {
         return;
     }
+    let backdrop = widgets::backdrop(ctx);
     egui::Area::new(id)
         .order(egui::Order::Middle)
         .fixed_pos(shown.min)
         .movable(false)
+        // The dock paints past the safe area, to the bottom of the screen.
+        .constrain_to(ctx.viewport_rect())
         .constrain(false)
         .fade_in(false)
         .sizing_pass(false)
         .show(ctx, |ui| {
             let (shown, _) = ui.allocate_exact_size(shown.size(), Sense::click_and_drag());
-            ui.painter().rect_filled(shown, 0.0, theme::dock());
+            let (order, radius) = (egui::Order::Middle, egui::CornerRadius::ZERO);
+            widgets::glass(ui.painter(), backdrop, order, shown, radius, false);
             let x = clip.left() + 0.5;
             ui.painter().line_segment(
                 [pos2(x, shown.top()), pos2(x, shown.bottom())],
@@ -349,8 +354,10 @@ pub fn draw(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, 
         }
         state.pad.dock_frame.slots = list;
     }
-    // The space below the panels.
-    let rest = Rect::from_min_max(pos2(area.left(), end.max(area.top())), area.max);
+    // The space below the panels, and the band of the home indicator below a
+    // dock that scrolls.
+    let top = end.max(area.top()).min(bottom);
+    let rest = Rect::from_min_max(pos2(area.left(), top), area.max);
     piece(ctx, egui::Id::new("pad-dock-rest"), rest, clip, |_| {});
     if open {
         edge_handle(ctx, state, area);
@@ -379,6 +386,7 @@ pub fn finish(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
             let ends = widgets::TitleEnds::Fold {
                 name: &name,
                 folded: slot.body.is_none(),
+                icon: panel_face(slot.panel).1,
             };
             let row = widgets::title_row_with(ui, controls, title, None, false, None, ends);
             fold = row.bar.clicked();
@@ -432,7 +440,7 @@ fn edge_handle(ctx: &egui::Context, state: &mut AppState, area: Rect) {
             let resp = ui.interact(rect, ui.id().with("edge"), Sense::drag());
             let pill = Rect::from_center_size(pos2(area.left(), rect.center().y), vec2(10.0, 52.0));
             let active = resp.dragged();
-            ui.painter().rect_filled(pill, 5.0, theme::bar());
+            ui.painter().rect_filled(pill, 5.0, theme::handle());
             ui.painter().rect_stroke(
                 pill,
                 5.0,

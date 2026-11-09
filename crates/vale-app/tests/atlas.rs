@@ -180,6 +180,29 @@ fn button(h: &mut Pad, pos: Pos2, pressed: bool) {
     });
 }
 
+/// The events of one phase of a tap of the first touch, in one frame. A tap
+/// is then a press and a release one frame apart, shorter than a hold.
+fn tap_touch(h: &mut Pad, phase: egui::TouchPhase, pos: Pos2, force: Option<f32>) {
+    let events = &mut h.input_mut().events;
+    events.push(egui::Event::Touch {
+        device_id: egui::TouchDeviceId(0),
+        id: egui::TouchId(1),
+        phase,
+        pos,
+        force,
+    });
+    events.push(egui::Event::PointerMoved(pos));
+    events.push(egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed: phase == egui::TouchPhase::Start,
+        modifiers: egui::Modifiers::NONE,
+    });
+    if phase == egui::TouchPhase::End {
+        events.push(egui::Event::PointerGone);
+    }
+}
+
 /// A tap at a place.
 fn tap_with(h: &mut Pad, pos: Pos2, input: Input) {
     match input {
@@ -192,9 +215,9 @@ fn tap_with(h: &mut Pad, pos: Pos2, input: Input) {
         }
         _ => {
             let force = matches!(input, Input::Pen).then_some(0.5);
-            touch(h, 1, egui::TouchPhase::Start, pos, force);
+            tap_touch(h, egui::TouchPhase::Start, pos, force);
             h.step();
-            touch(h, 1, egui::TouchPhase::End, pos, force);
+            tap_touch(h, egui::TouchPhase::End, pos, force);
         }
     }
     h.run_steps(3);
@@ -375,7 +398,8 @@ fn middle(h: &Pad, index: usize) -> Pos2 {
 /// Adds a frame at the default place of a new frame.
 fn add_frame(h: &mut Pad) {
     atlas::add_frame(h.state_mut());
-    h.run_steps(2);
+    // The panel of the new frame opens and settles in its place.
+    h.run_steps(4);
 }
 
 /// A finger holds a place until a hold is a hold.
@@ -2819,8 +2843,9 @@ fn the_cards_of_the_atlas_show_the_blurred_page() {
     h.set_render_every_step(true);
     h.run_steps(3);
     let r = h.state().pad.rects.unwrap();
-    // The view control and the tool column.
-    for card in [r.view.unwrap(), r.column] {
+    // The view control, the tool column, and the band above the bar, which
+    // is one blurred area with the bar.
+    for card in [r.view.unwrap(), r.column, r.band] {
         // The left edge of the page goes through the middle of the card, and
         // the page reaches above the card.
         let rect = h.state().atlas.place.unwrap().rect;

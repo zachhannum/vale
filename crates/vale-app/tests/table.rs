@@ -106,10 +106,33 @@ fn touch_with(h: &mut Pad, phase: egui::TouchPhase, pos: Pos2, force: Option<f32
     }
 }
 
+/// The events of one phase of a tap of the first touch, in one frame. A tap
+/// is then a press and a release one frame apart, shorter than a hold.
+fn tap_touch(h: &mut Pad, phase: egui::TouchPhase, pos: Pos2, force: Option<f32>) {
+    let events = &mut h.input_mut().events;
+    events.push(egui::Event::Touch {
+        device_id: egui::TouchDeviceId(0),
+        id: egui::TouchId(1),
+        phase,
+        pos,
+        force,
+    });
+    events.push(egui::Event::PointerMoved(pos));
+    events.push(egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed: phase == egui::TouchPhase::Start,
+        modifiers: egui::Modifiers::NONE,
+    });
+    if phase == egui::TouchPhase::End {
+        events.push(egui::Event::PointerGone);
+    }
+}
+
 fn tap_at(h: &mut Pad, pos: Pos2) {
-    touch(h, egui::TouchPhase::Start, pos);
+    tap_touch(h, egui::TouchPhase::Start, pos, None);
     h.step();
-    touch(h, egui::TouchPhase::End, pos);
+    tap_touch(h, egui::TouchPhase::End, pos, None);
     h.run_steps(3);
 }
 

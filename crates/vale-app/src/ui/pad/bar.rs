@@ -1,10 +1,10 @@
-//! The top bar of the iPad layout from 600 points: Back, the name of the
-//! world, Undo, and Redo at the left, the workspace tabs at the center of the
-//! canvas, and the panel buttons and the Dock button in the dock zone.
+//! The top bar of the iPad layout from 600 points: Back, the two workspace
+//! buttons, Undo, and Redo at the left, the name of the world at the center
+//! of the canvas, and the panel buttons and the Dock button in the dock zone.
 
-use eframe::egui::{self, Align2, Rect, Sense, pos2, vec2};
+use eframe::egui::{self, Rect, Sense, pos2, vec2};
 
-use super::geometry::{DIVIDER, NAME_MIN, Rects, TAB_ICON, TAB_PAD, TOUCH};
+use super::geometry::{DIVIDER, NAME_MIN, Rects, TOUCH};
 use super::icons::{self, Icon};
 use super::widgets::{self, Controls};
 use super::{WORKSPACES, WORLDS, save_mark, theme, toggle_worlds};
@@ -21,8 +21,6 @@ const NAME_PAD: f32 = 8.0;
 const CHEVRON: f32 = 14.0;
 /// The side of the save mark.
 const MARK: f32 = 14.0;
-/// The space between the icon and the name of a tab.
-const TAB_GAP: f32 = 8.0;
 
 fn text_width(ui: &egui::Ui, text: &str) -> f32 {
     let galley = ui
@@ -31,24 +29,18 @@ fn text_width(ui: &egui::Ui, text: &str) -> f32 {
     galley.size().x.ceil()
 }
 
+/// The space of the save mark at each side of the name and the chevron, so
+/// that they stay at the center of the button.
+const MARK_SPACE: f32 = 8.0 + MARK;
+
 /// The width of the name button with the full name of the world.
 pub fn name_width(ui: &egui::Ui, state: &AppState) -> f32 {
     let text = text_width(ui, &state.doc.project.world.name);
-    (2.0 * NAME_PAD + text + 4.0 + CHEVRON + 8.0 + MARK).max(NAME_MIN)
-}
-
-/// The width of each workspace tab with its name.
-fn tab_widths(ui: &egui::Ui) -> [f32; 2] {
-    WORKSPACES.map(|name| TAB_ICON + TAB_GAP + text_width(ui, name))
-}
-
-/// The width of the workspace tabs with their names.
-pub fn tabs_width(ui: &egui::Ui) -> f32 {
-    tab_widths(ui).iter().sum()
+    (2.0 * (NAME_PAD + MARK_SPACE) + text + 4.0 + CHEVRON).max(NAME_MIN)
 }
 
 /// The text that fits in `width`, with an ellipsis if it is shorter.
-fn fit_text(ui: &egui::Ui, text: &str, width: f32) -> String {
+pub(super) fn fit_text(ui: &egui::Ui, text: &str, width: f32) -> String {
     if text_width(ui, text) <= width {
         return text.to_owned();
     }
@@ -77,12 +69,11 @@ pub fn draw(
         pos2(area.left(), area.bottom() - 0.5),
         pos2(area.right(), area.bottom() - 0.5),
     ];
-    widgets::opaque_area(ctx, "pad-bar", area, theme::bar(), Some(edge), |ui| {
+    widgets::docked_area(ctx, "pad-bar", area, Some(edge), |ui| {
         let workspace = state.workspace;
         let open = state.pad.docks.get(workspace).open && rects.dock.is_some();
         if open {
             let zone = rects.dock_zone;
-            ui.painter().rect_filled(zone, 0.0, theme::dock());
             let line = [
                 pos2(zone.left() + 0.5, zone.top()),
                 pos2(zone.left() + 0.5, zone.bottom()),
@@ -97,6 +88,7 @@ pub fn draw(
             state.pad.worlds = None;
             state.actions.push(Action::ShowProjects);
         }
+        workspace_buttons(ui, state, controls, rects);
         name_button(ui, state, controls, rects);
         let line = Rect::from_center_size(
             pos2(rects.undo.left() - DIVIDER / 2.0, rects.bar.center().y),
@@ -115,8 +107,6 @@ pub fn draw(
         {
             state.redo();
         }
-
-        tabs(ui, state, controls, rects);
 
         let actions = rects.actions;
         let dock = rects.dock_button.map_or(0.0, |_| DIVIDER + TOUCH);
@@ -159,8 +149,8 @@ pub fn draw(
     });
 }
 
-/// The name of the world, with a small chevron and the save mark. A tap
-/// opens the menu of the worlds.
+/// The name of the world and a small chevron at the center of the button,
+/// and the save mark at their right. A tap opens the menu of the worlds.
 fn name_button(ui: &egui::Ui, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
     let rect = rects.workspace;
     let open = state.pad.worlds.is_some();
@@ -170,14 +160,14 @@ fn name_button(ui: &egui::Ui, state: &mut AppState, controls: &mut Controls, rec
         ui.painter()
             .rect_filled(fill, theme::CONTROL_RADIUS, theme::raise());
     }
-    let room = rect.width() - 2.0 * NAME_PAD - 4.0 - CHEVRON - 8.0 - MARK;
+    let room = rect.width() - 2.0 * (NAME_PAD + MARK_SPACE) - 4.0 - CHEVRON;
     let text = fit_text(ui, &state.doc.project.world.name, room);
     let galley = ui
         .painter()
         .layout_no_wrap(text, theme::body(), theme::TEXT);
     let width = galley.size().x;
     let at = pos2(
-        rect.left() + NAME_PAD,
+        rect.center().x - (width + 4.0 + CHEVRON) / 2.0,
         rect.center().y - galley.size().y / 2.0,
     );
     ui.painter().galley(at, galley, theme::TEXT);
@@ -197,61 +187,15 @@ fn name_button(ui: &egui::Ui, state: &mut AppState, controls: &mut Controls, rec
     }
 }
 
-/// The workspace tabs. The active tab has the text color and a line in the
-/// accent color on the bottom edge of the bar.
-fn tabs(ui: &egui::Ui, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
-    let widths = if rects.tab_names {
-        tab_widths(ui)
-    } else {
-        [TAB_ICON; 2]
-    };
-    let scale = rects.tabs.width() / widths.iter().sum::<f32>().max(1.0);
-    let mut left = rects.tabs.left();
+/// The two workspace buttons. The button of the open workspace is raised.
+fn workspace_buttons(ui: &egui::Ui, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
     let spaces = [Workspace::Globe, Workspace::Atlas];
     let faces = [Icon::World, Icon::Book];
     for i in 0..2 {
-        let width = widths[i] * scale;
-        let rect =
-            Rect::from_min_size(pos2(left, rects.bar.top()), vec2(width, rects.bar.height()));
-        left += width;
+        let min = pos2(rects.tabs.left() + i as f32 * TOUCH, rects.tabs.top());
+        let rect = Rect::from_min_size(min, vec2(TOUCH, rects.tabs.height()));
         let on = state.workspace == spaces[i];
-        let resp = widgets::hit(
-            ui,
-            controls,
-            rect,
-            WORKSPACES[i],
-            Sense::click(),
-            true,
-            Some(on),
-        );
-        let color = if on { theme::TEXT } else { theme::MUTE };
-        let content = if rects.tab_names {
-            width - 2.0 * TAB_PAD
-        } else {
-            widgets::ICON
-        };
-        let x = rect.center().x - content / 2.0;
-        let icon = Rect::from_min_size(
-            pos2(x, rect.center().y - widgets::ICON / 2.0),
-            vec2(widgets::ICON, widgets::ICON),
-        );
-        icons::paint(ui.painter(), icon, faces[i], widgets::ICON, color);
-        if rects.tab_names {
-            ui.painter().text(
-                pos2(icon.right() + TAB_GAP, rect.center().y),
-                Align2::LEFT_CENTER,
-                WORKSPACES[i],
-                theme::body(),
-                color,
-            );
-        }
-        if on {
-            let line = Rect::from_min_max(
-                pos2(rect.left() + 10.0, rect.bottom() - 2.0),
-                pos2(rect.right() - 10.0, rect.bottom()),
-            );
-            ui.painter().rect_filled(line, 1.0, theme::ACCENT);
-        }
+        let resp = widgets::icon_button_at(ui, controls, rect, WORKSPACES[i], faces[i], on, true);
         if resp.clicked() && !on {
             state.workspace = spaces[i];
             state.pad.worlds = None;

@@ -724,7 +724,6 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         dock_width: dock::layout_width(&ctx, state),
         dock_buttons: Panel::order(Workspace::Globe).len(),
         name_width: bar::name_width(ui, state),
-        tabs_width: bar::tabs_width(ui),
         column: column_input(state),
     };
     // The Brush panel holds the settings of the context strip.
@@ -2255,6 +2254,7 @@ fn docked_card(
         let ends = widgets::TitleEnds::Fold {
             name: &name,
             folded: slot.body.is_none(),
+            icon: panel_face(slot.panel).1,
         };
         let row = widgets::title_row_with(
             ui,
@@ -3327,7 +3327,7 @@ fn readout(ctx: &egui::Context, ui: &egui::Ui, state: &mut AppState, rects: &Rec
         let scale = km_per_point(&state.globe, world.radius_km)
             .and_then(|km| crate::scale_bar::readout_scale(km, world.units));
         state.pad.readout_scale = scale.map(|s| s.label());
-        map_readout(ctx, band, text, scale);
+        map_readout(ctx, state.globe.backdrop(), band, text, scale);
         return;
     }
     let galley = ui
@@ -3379,76 +3379,72 @@ fn km_per_point(globe: &crate::globe::Globe, world_km: f64) -> Option<f64> {
     (on_globe.is_finite() && on_globe > 0.0).then_some(on_globe)
 }
 
-/// Text with a dark halo, so that it reads over the map.
-fn halo_text(
-    painter: &egui::Painter,
-    at: Pos2,
-    align: egui::Align2,
-    text: &str,
-    font: egui::FontId,
-) {
-    let halo = egui::Color32::from_black_alpha(160);
-    let galley = painter.layout_no_wrap(text.to_owned(), font, theme::TEXT);
-    let at = align.anchor_size(at, galley.size()).min;
-    for (x, y) in [
-        (-1.0, -1.0),
-        (0.0, -1.0),
-        (1.0, -1.0),
-        (-1.0, 0.0),
-        (1.0, 0.0),
-        (-1.0, 1.0),
-        (0.0, 1.0),
-        (1.0, 1.0),
-    ] {
-        painter.galley_with_override_text_color(at + vec2(x, y), galley.clone(), halo);
-    }
-    painter.galley(at, galley, theme::TEXT);
-}
+/// The space at the left, the right, and the top of the readout card.
+const READOUT_PAD: f32 = 12.0;
 
-/// The readout from 600 points: the place on the first line, and the scale
-/// bar with four divisions below it, at the lower left of `band`.
+/// The readout from 600 points: a card at the lower left of `band` with the
+/// place on the first line, and the scale bar with four divisions below it.
 fn map_readout(
     ctx: &egui::Context,
+    backdrop: Option<eframe::egui_wgpu::wgpu::TextureFormat>,
     band: Rect,
     text: String,
     scale: Option<crate::scale_bar::ReadoutScale>,
 ) {
-    let layer = egui::LayerId::new(Order::Middle, egui::Id::new("pad-readout"));
-    let painter = ctx.layer_painter(layer);
-    let label = egui::FontId::monospace(10.0);
-    let bar_height = 4.0;
-    let labels_top = band.bottom() - 12.0;
-    let bar = Rect::from_min_size(
-        pos2(band.left(), labels_top - 3.0 - bar_height),
-        vec2(scale.map_or(0.0, |s| s.length as f32), bar_height),
+    let label = theme::small();
+    let (place, end) = ctx.fonts_mut(|f| {
+        let place = f.layout_no_wrap(text, theme::mono(), theme::TEXT);
+        let end = scale.map(|s| f.layout_no_wrap(s.label(), label.clone(), theme::MUTE));
+        (place, end)
+    });
+    let length = scale.map_or(0.0, |s| s.length as f32);
+    // The label of the distance is at the right end of the bar, and it can
+    // reach past it.
+    let reach = end
+        .as_ref()
+        .map_or(0.0, |end| length + (end.size().x / 2.0));
+    let width = place.size().x.max(reach).ceil() + 2.0 * READOUT_PAD;
+    let rect = Rect::from_min_max(
+        pos2(band.left(), band.top()),
+        pos2(band.left() + width.max(band.width()), band.bottom()),
     );
-    let place = pos2(band.left(), bar.top() - 5.0);
-    halo_text(
-        &painter,
-        place,
-        egui::Align2::LEFT_BOTTOM,
-        &text,
-        theme::mono(),
+    let radius = theme::CARD_RADIUS.into();
+    widgets::card(
+        ctx,
+        backdrop,
+        "pad-readout",
+        rect,
+        Order::Middle,
+        radius,
+        |ui| {
+            let painter = ui.painter();
+            let left = rect.left() + READOUT_PAD;
+            painter.galley(pos2(left, rect.top() + 7.0), place, theme::TEXT);
+            let (Some(scale), Some(end)) = (scale, end) else {
+                return;
+            };
+            let bar = Rect::from_min_size(
+                pos2(left, rect.top() + 27.0),
+                vec2(scale.length as f32, 4.0),
+            );
+            let part = bar.width() / 4.0;
+            for i in 0..4 {
+                let fill = if i % 2 == 0 {
+                    theme::TEXT
+                } else {
+                    theme::MUTE.gamma_multiply(0.45)
+                };
+                let x = bar.left() + i as f32 * part;
+                let rect = Rect::from_min_max(pos2(x, bar.top()), pos2(x + part, bar.bottom()));
+                painter.rect_filled(rect, 0.0, fill);
+            }
+            let labels = bar.bottom() + 2.0;
+            let zero = pos2(bar.left(), labels);
+            painter.text(zero, egui::Align2::LEFT_TOP, "0", label, theme::MUTE);
+            let at = pos2(bar.right() - end.size().x / 2.0, labels);
+            painter.galley(at, end, theme::MUTE);
+        },
     );
-    let Some(scale) = scale else {
-        return;
-    };
-    painter.rect_filled(bar.expand(1.0), 1.0, egui::Color32::from_black_alpha(160));
-    let part = bar.width() / 4.0;
-    for i in 0..4 {
-        let fill = if i % 2 == 0 {
-            theme::TEXT
-        } else {
-            egui::Color32::from_gray(110)
-        };
-        let x = bar.left() + i as f32 * part;
-        let rect = Rect::from_min_max(pos2(x, bar.top()), pos2(x + part, bar.bottom()));
-        painter.rect_filled(rect, 0.0, fill);
-    }
-    let at = pos2(bar.left(), labels_top);
-    halo_text(&painter, at, egui::Align2::LEFT_TOP, "0", label.clone());
-    let at = pos2(bar.right(), labels_top);
-    halo_text(&painter, at, egui::Align2::RIGHT_TOP, &scale.label(), label);
 }
 
 /// The width of a button of the card of a held stroke, and the least width
@@ -3823,6 +3819,9 @@ pub fn toggle_worlds(state: &mut AppState) {
 }
 
 /// The name of a world in a row of a menu, at the length that the row holds.
+/// The side of the tick of the open world in the menu of the worlds.
+const TICK: f32 = 18.0;
+
 fn row_name(name: &str) -> String {
     const LENGTH: usize = 26;
     if name.chars().count() <= LENGTH {
@@ -3877,13 +3876,18 @@ fn worlds_menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Control
             let mut rows = |ui: &mut egui::Ui| {
                 for world in &list {
                     let name = row_name(&world.name);
-                    let row = widgets::text_row(ui, controls, &name, 0.0, false, true);
-                    if current.as_ref() == Some(&world.path) {
+                    // Only the row of the open world has the tick, at its
+                    // right end.
+                    let here = current.as_ref() == Some(&world.path);
+                    let room = ui.available_width() - if here { TICK + 8.0 } else { 0.0 };
+                    let text = bar::fit_text(ui, &world.name, room);
+                    let row = widgets::text_row_as(ui, controls, &name, &text, 0.0, false, true);
+                    if here {
                         let tick = Rect::from_center_size(
-                            pos2(row.rect.right() - 14.0, row.rect.center().y),
-                            vec2(18.0, 18.0),
+                            pos2(row.rect.right() - TICK / 2.0, row.rect.center().y),
+                            vec2(TICK, TICK),
                         );
-                        icons::paint(ui.painter(), tick, Icon::Tick, 18.0, theme::ACCENT);
+                        icons::paint(ui.painter(), tick, Icon::Tick, TICK, theme::ACCENT);
                     }
                     if row.clicked() {
                         state.actions.push(Action::OpenWorld(world.path.clone()));

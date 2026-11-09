@@ -10,9 +10,8 @@ use super::widgets::{self, CellStyle};
 
 /// Shows the column card at `rects.column` with the contents that
 /// `add_contents` adds from the top. The contents scroll if they are longer
-/// than the card. The cells have the look of `CellStyle::Tool` down to the
-/// divider, and of `CellStyle::Icon` below it. The name of a held tool cell
-/// shows next to it.
+/// than the card. The cells have the look of `CellStyle::Icon`. The name of
+/// a held cell shows next to it.
 pub fn show(
     ctx: &egui::Context,
     backdrop: Option<wgpu::TextureFormat>,
@@ -41,7 +40,7 @@ pub fn show(
             let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
             ui.set_clip_rect(rect.shrink2(vec2(0.0, COLUMN_INSET)));
             ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
-            widgets::with_cell_style(&mut ui, CellStyle::Tool, |ui| {
+            widgets::with_cell_style(&mut ui, CellStyle::Icon, |ui| {
                 if scroll {
                     egui::ScrollArea::vertical()
                         .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
@@ -55,10 +54,8 @@ pub fn show(
     widgets::show_hold_label(ctx, rects.screen);
 }
 
-/// The line between the tools and the controls of the tool. The cells
-/// below it have the look of `CellStyle::Icon`.
+/// The line between the tools and the controls of the tool.
 pub fn divider(ui: &mut egui::Ui) {
-    widgets::set_cell_style(ui.ctx(), CellStyle::Icon);
     let size = vec2(ui.available_width(), COLUMN_DIVIDER);
     let (rule, _) = ui.allocate_exact_size(size, egui::Sense::hover());
     let line = Rect::from_center_size(rule.center(), vec2(rule.width() - 4.0, 1.0));

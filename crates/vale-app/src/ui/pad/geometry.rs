@@ -51,10 +51,6 @@ pub const NARROW_ACTIONS_WIDTH: f32 = ACTIONS_WIDTH - TOUCH - PAD;
 pub const BAR: f32 = 44.0;
 /// The width of the space of a divider in a row of buttons.
 pub const DIVIDER: f32 = 9.0;
-/// The space at each side of the icon and the name of a workspace tab.
-pub const TAB_PAD: f32 = 14.0;
-/// The width of a workspace tab that shows its icon alone.
-pub const TAB_ICON: f32 = 2.0 * TAB_PAD + 22.0;
 /// The name of the world becomes shorter down to this width.
 pub const NAME_MIN: f32 = 80.0;
 /// The space from the bar to a card below it.
@@ -189,8 +185,6 @@ pub struct Input {
     pub dock_buttons: usize,
     /// The width of the name button of the world at its full length.
     pub name_width: f32,
-    /// The width of the workspace tabs with their names.
-    pub tabs_width: f32,
     pub column: ColumnInput,
 }
 
@@ -212,7 +206,6 @@ impl Input {
             dock_width: 0.0,
             dock_buttons: 3,
             name_width: NAME_MIN,
-            tabs_width: 2.0 * TAB_ICON,
             column: ColumnInput {
                 tools: TOOLS,
                 ..ColumnInput::default()
@@ -227,7 +220,7 @@ pub struct Rects {
     pub screen: Rect,
     pub bands: Bands,
     /// The card of the workspace switch. From 600 points, the name button of
-    /// the world in the bar.
+    /// the world, at the center of the canvas.
     pub workspace: Rect,
     /// The view control. `None`: the workspace menu holds the views.
     pub view: Option<Rect>,
@@ -254,10 +247,8 @@ pub struct Rects {
     pub dock_zone: Rect,
     /// The Dock button. Below 1,000 points, the bar has no Dock button.
     pub dock_button: Option<Rect>,
-    /// The workspace tabs, at the center of the canvas.
+    /// The two workspace buttons, between Back and Undo.
     pub tabs: Rect,
-    /// The tabs show their names.
-    pub tab_names: bool,
     /// The globe fits this rectangle.
     pub fit: Rect,
     /// The page of the atlas fits this rectangle.
@@ -354,7 +345,6 @@ struct Bar {
     actions: Rect,
     dock_button: Option<Rect>,
     tabs: Rect,
-    tab_names: bool,
     view: Rect,
     fit: Rect,
     free: Rect,
@@ -407,31 +397,22 @@ fn bar_layout(input: &Input, class: WidthClass) -> Bar {
     };
     let dock_zone = Rect::from_min_max(pos2(zone_left, bar.top()), bar.max);
 
-    // The left group: Back, the name of the world, a divider, Undo, and Redo.
+    // The left group: Back, the two workspace buttons, a divider, Undo, and
+    // Redo.
     let back = button(screen.left() + bands.left + PAD);
-    let history = DIVIDER + 2.0 * TOUCH;
-    let center = canvas.center().x;
-    let tabs_at = |width: f32| {
-        Rect::from_min_max(
-            pos2(center - width / 2.0, bar.top()),
-            pos2(center + width / 2.0, bar.bottom()),
-        )
-    };
-    let room = |tabs: Rect| tabs.left() - PAD - history - back.right();
-    let mut tab_names = wide;
-    let mut tabs = tabs_at(if tab_names {
-        input.tabs_width
-    } else {
-        2.0 * TAB_ICON
-    });
-    if tab_names && room(tabs) < NAME_MIN {
-        tab_names = false;
-        tabs = tabs_at(2.0 * TAB_ICON);
-    }
-    let name_width = input.name_width.min(room(tabs)).max(NAME_MIN);
-    let name = Rect::from_min_size(pos2(back.right(), bar.top()), vec2(name_width, BAR));
-    let undo = button(name.right() + DIVIDER);
+    let tabs = Rect::from_min_size(pos2(back.right(), bar.top()), vec2(2.0 * TOUCH, BAR));
+    let undo = button(tabs.right() + DIVIDER);
     let redo = button(undo.right());
+
+    // The name of the world, at the center of the canvas. It becomes
+    // shorter down to `NAME_MIN`, and a name that does not fit at the center
+    // moves to the side with more room.
+    let center = canvas.center().x;
+    let (start, end) = (redo.right() + PAD, actions.left() - PAD);
+    let half = (center - start).min(end - center);
+    let name_width = input.name_width.min(2.0 * half).max(NAME_MIN);
+    let name_left = (center - name_width / 2.0).min(end - name_width).max(start);
+    let name = Rect::from_min_size(pos2(name_left, bar.top()), vec2(name_width, BAR));
 
     // The view control, at the top center of the canvas.
     let view = Rect::from_center_size(
@@ -511,7 +492,6 @@ fn bar_layout(input: &Input, class: WidthClass) -> Bar {
         actions,
         dock_button,
         tabs,
-        tab_names,
         view,
         fit,
         free,
@@ -541,7 +521,12 @@ pub fn layout(input: &Input) -> Rects {
             parts.name,
             parts.actions,
             Some(parts.view),
-            pos2(parts.name.left(), parts.bar.bottom() + PAD),
+            pos2(
+                (parts.name.center().x - WORLDS_WIDTH / 2.0)
+                    .min(right - WORLDS_WIDTH)
+                    .max(left),
+                parts.bar.bottom() + PAD,
+            ),
         ),
         None => {
             let workspace = Rect::from_min_size(pos2(left, top), vec2(input.workspace_width, ROW));
@@ -570,7 +555,6 @@ pub fn layout(input: &Input) -> Rects {
                 dock_zone: p.dock_zone,
                 dock_button: p.dock_button,
                 tabs: p.tabs,
-                tab_names: p.tab_names,
                 fit: p.fit,
                 free: p.free,
                 column: p.column,
@@ -624,7 +608,6 @@ pub fn layout(input: &Input) -> Rects {
             dock_zone: actions,
             dock_button: None,
             tabs: blank,
-            tab_names: false,
             fit: screen,
             free: screen,
             column: tools,
@@ -683,7 +666,6 @@ pub fn layout(input: &Input) -> Rects {
         dock_zone: actions,
         dock_button: None,
         tabs: blank,
-        tab_names: false,
         fit: screen,
         free: screen,
         column: tools,
@@ -810,7 +792,6 @@ mod tests {
             dock_width: 0.0,
             dock_buttons: 3,
             name_width: 120.0,
-            tabs_width: 220.0,
             column: ColumnInput {
                 tools: TOOLS,
                 cells: 0,
@@ -869,16 +850,16 @@ mod tests {
         assert_eq!(r.band, rect(0.0, 0.0, 1194.0, 24.0));
         assert_eq!(r.bar, rect(0.0, 24.0, 1194.0, BAR));
         assert_eq!(r.back, rect(4.0, 24.0, TOUCH, BAR));
-        assert_eq!(r.workspace, rect(48.0, 24.0, 120.0, BAR));
-        assert_eq!(r.undo.left(), r.workspace.right() + DIVIDER);
+        assert_eq!(r.tabs, rect(48.0, 24.0, 2.0 * TOUCH, BAR));
+        assert_eq!(r.undo.left(), r.tabs.right() + DIVIDER);
         assert_eq!(r.redo.left(), r.undo.right());
+        // The name of the world is at the center of the canvas.
+        assert_eq!(r.workspace, rect(537.0, 24.0, 120.0, BAR));
         // Three panel buttons, a divider, and the Dock button.
         assert_eq!(r.actions, rect(1005.0, 24.0, 185.0, BAR));
         assert_eq!(r.dock_button, Some(rect(1146.0, 24.0, TOUCH, BAR)));
         assert_eq!(r.dock, None);
         assert_eq!(r.canvas, rect(0.0, 68.0, 1194.0, 766.0));
-        assert!(r.tab_names);
-        assert_eq!(r.tabs, rect(487.0, 24.0, 220.0, BAR));
         assert_eq!(r.view, Some(rect(527.0, 76.0, 140.0, 52.0)));
         assert_eq!(
             r.fit,
@@ -890,20 +871,26 @@ mod tests {
         assert_eq!(r.column_top, 76.0);
         assert_eq!(r.readout, Some(rect(72.0, 758.0, 160.0, 48.0)));
         assert_eq!(r.right_panel, pos2(862.0, 76.0));
-        assert_eq!(r.menu, pos2(48.0, 72.0));
+        assert_eq!(r.menu, pos2(597.0 - WORLDS_WIDTH / 2.0, 72.0));
         assert_eq!(r.panel_bottom, 806.0);
         assert_eq!(r.sheet, None);
     }
 
     #[test]
-    fn the_tabs_and_the_view_control_share_the_center_of_the_canvas() {
+    fn the_name_and_the_view_control_share_the_center_of_the_canvas() {
         for width in [1194.0, 1366.0, 1024.0] {
             for dock in [0.0, 320.0, 480.0] {
                 let mut input = board(width, 834.0);
                 input.dock_width = dock;
                 let r = layout(&input);
                 let center = r.canvas.center().x;
-                assert_eq!(r.tabs.center().x, center, "{width} {dock}");
+                // A name that does not fit at the center moves to the right
+                // of Redo.
+                if center - r.redo.right() - PAD >= r.workspace.width() / 2.0 {
+                    assert_eq!(r.workspace.center().x, center, "{width} {dock}");
+                } else {
+                    assert_eq!(r.workspace.left(), r.redo.right() + PAD, "{width} {dock}");
+                }
                 assert_eq!(r.view.unwrap().center().x, center, "{width} {dock}");
                 assert_eq!(r.canvas.right(), width - dock, "{width} {dock}");
                 assert_eq!(r.fit.right(), r.canvas.right(), "{width} {dock}");
@@ -953,8 +940,7 @@ mod tests {
         let r = layout(&board(834.0, 1194.0));
         assert_eq!(r.class, WidthClass::Medium);
         assert_eq!(r.view.unwrap().center().x, 417.0);
-        // Below 1,000 points, the bar has no Dock button and no dock, and
-        // the tabs show their icons alone.
+        // Below 1,000 points, the bar has no Dock button and no dock.
         assert_eq!(r.dock_button, None);
         assert_eq!(r.actions, rect(698.0, 24.0, 3.0 * TOUCH, BAR));
         let mut input = board(834.0, 1194.0);
@@ -962,8 +948,7 @@ mod tests {
         let r = layout(&input);
         assert_eq!(r.dock, None);
         assert_eq!(r.canvas.right(), 834.0);
-        assert!(!r.tab_names);
-        assert_eq!(r.tabs, rect(367.0, 24.0, 2.0 * TAB_ICON, BAR));
+        assert_eq!(r.workspace.center().x, 417.0);
         assert_eq!(r.right_panel, pos2(502.0, 76.0));
     }
 
@@ -972,19 +957,24 @@ mod tests {
         let mut input = board(1000.0, 834.0);
         input.name_width = 1000.0;
         let r = layout(&input);
-        assert!(r.tab_names);
-        assert_eq!(r.redo.right() + PAD, r.tabs.left());
         assert!(r.workspace.width() < 1000.0);
+        assert!(r.redo.right() < r.workspace.left());
+        assert!(r.workspace.right() < r.actions.left());
+        assert_eq!(r.workspace.center().x, r.canvas.center().x);
         // A short name keeps its width, and the name is never narrower than
         // 80 points.
         input.name_width = 40.0;
         assert_eq!(layout(&input).workspace.width(), NAME_MIN);
         for width in [600.0, 700.0, 999.0] {
-            let mut input = board(width, 834.0);
-            input.name_width = 1000.0;
-            let r = layout(&input);
-            assert!(r.workspace.width() >= NAME_MIN, "{width}");
-            assert!(r.redo.right() <= r.tabs.left(), "{width}");
+            for dock in [0.0, 320.0] {
+                let mut input = board(width, 834.0);
+                input.name_width = 1000.0;
+                input.dock_width = dock;
+                let r = layout(&input);
+                assert!(r.workspace.width() >= NAME_MIN, "{width}");
+                assert!(r.redo.right() <= r.workspace.left(), "{width}");
+                assert!(r.workspace.right() <= r.actions.left(), "{width}");
+            }
         }
     }
 

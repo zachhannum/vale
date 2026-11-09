@@ -4,22 +4,22 @@
 use clap::Parser;
 use eframe::egui::{self, Pos2, Rect, pos2, vec2};
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable;
+use egui_kittest::kittest::{NodeT, Queryable};
 use vale_app::dock::{DockState, Entry, HEIGHT_MIN, WIDTH_DEFAULT, WIDTH_MAX, WIDTH_MIN};
 use vale_app::document::Document;
 use vale_app::globe::WorldView;
 use vale_app::projects::Locations;
 use vale_app::scale_bar::readout_scale;
 use vale_app::session::Session;
-use vale_app::ui::pad::atlas::{NEXT_PAGE, PREVIOUS_PAGE, page_size_text};
+use vale_app::ui::pad::atlas::{NEXT_PAGE, PAGE_BUTTON, PREVIOUS_PAGE};
 use vale_app::ui::pad::bar::{BACK, DOCK};
 use vale_app::ui::pad::dock::{EDGE_DRAG, Slot, bar_name, title_name};
 use vale_app::ui::pad::flyout::Flyout;
-use vale_app::ui::pad::geometry::{BAR, TAB_ICON};
+use vale_app::ui::pad::geometry::BAR;
 use vale_app::ui::pad::widgets::dock_name;
 use vale_app::ui::pad::{
-    ADD_LAYER, GRATICULE, ModeGroup, PROJECTION, Panel, RECENTER, RESET, SAVE, SCULPT, TOOLBOX,
-    WORLD_PROPERTIES, WORLDS,
+    ADD_LAYER, CLEAR_PATH, GRATICULE, ModeGroup, PROJECTION, Panel, RECENTER, RESET, SAVE, SCULPT,
+    TOOLBOX, WORLD_PROPERTIES, WORLDS,
 };
 use vale_app::ui::panels::ALL_WORLDS;
 use vale_app::ui::world_form::NEW_WORLD;
@@ -86,11 +86,34 @@ fn touch(h: &mut Pad, phase: egui::TouchPhase, pos: Pos2) {
     }
 }
 
+/// The events of one phase of a tap of the first touch, in one frame. A tap
+/// is then a press and a release one frame apart, shorter than a hold.
+fn tap_touch(h: &mut Pad, phase: egui::TouchPhase, pos: Pos2, force: Option<f32>) {
+    let events = &mut h.input_mut().events;
+    events.push(egui::Event::Touch {
+        device_id: egui::TouchDeviceId(0),
+        id: egui::TouchId(1),
+        phase,
+        pos,
+        force,
+    });
+    events.push(egui::Event::PointerMoved(pos));
+    events.push(egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed: phase == egui::TouchPhase::Start,
+        modifiers: egui::Modifiers::NONE,
+    });
+    if phase == egui::TouchPhase::End {
+        events.push(egui::Event::PointerGone);
+    }
+}
+
 fn tap(h: &mut Pad, name: &str) {
     let rect = control(h, name).unwrap_or_else(|| panic!("no control `{name}`"));
-    touch(h, egui::TouchPhase::Start, rect.center());
+    tap_touch(h, egui::TouchPhase::Start, rect.center(), None);
     h.step();
-    touch(h, egui::TouchPhase::End, rect.center());
+    tap_touch(h, egui::TouchPhase::End, rect.center(), None);
     h.run_steps(3);
 }
 
@@ -116,7 +139,7 @@ fn the_bar_is_44_points_high_below_the_band_and_fills_the_band() {
             );
             let bar = Rect::from_min_size(egui::pos2(0.0, 24.0), vec2(width, BAR));
             assert_eq!(r.bar, bar, "{what}");
-            // One opaque area covers the band and the bar.
+            // One blurred area covers the band and the bar.
             let area = h.ctx.memory(|m| m.area_rect(egui::Id::new("pad-bar")));
             assert_eq!(area, Some(r.band.union(bar)), "{what}");
             // The band has no controls. The controls of the bar are in it.
@@ -131,9 +154,15 @@ fn the_bar_is_44_points_high_below_the_band_and_fills_the_band() {
                     "{what}: {name}"
                 );
             }
-            // Back, the name, Undo, and Redo are at the left in this order.
-            let lefts = [BACK, WORLDS, "Undo", "Redo"].map(|n| widget(&h, n).left());
+            // Back, the two workspace buttons, Undo, and Redo are at the
+            // left in this order, and the name of the world is at the center
+            // of the canvas, clear of the buttons at both ends.
+            let lefts = [BACK, "World", "Atlas", "Undo", "Redo"].map(|n| widget(&h, n).left());
             assert!(lefts.is_sorted(), "{what}: {lefts:?}");
+            let name = widget(&h, WORLDS);
+            assert_eq!(name.center().x, r.canvas.center().x, "{what}");
+            assert!(widget(&h, "Redo").right() <= name.left(), "{what}");
+            assert!(name.right() <= r.actions.left(), "{what}");
         }
     }
 }
@@ -173,6 +202,7 @@ fn the_name_of_the_world_opens_the_menu_of_the_worlds() {
                 .worlds_rect
                 .unwrap_or_else(|| panic!("{what}"));
             assert!(menu.top() >= name.bottom(), "{what}");
+            assert_eq!(menu.center().x, name.center().x, "{what}");
             let rows = [
                 "Earth (sample)",
                 NEW_WORLD,
@@ -186,6 +216,15 @@ fn the_name_of_the_world_opens_the_menu_of_the_worlds() {
                 rect.top()
             });
             assert!(tops.is_sorted(), "{what}: {tops:?}");
+            // The row of the open world has the width of the other rows: no
+            // row keeps a column for the tick.
+            let world = control(&h, "Earth (sample)").unwrap();
+            let new = control(&h, NEW_WORLD).unwrap();
+            assert_eq!(
+                (world.left(), world.width()),
+                (new.left(), new.width()),
+                "{what}"
+            );
             // A second tap closes the menu.
             tap(&mut h, WORLDS);
             assert!(h.state().pad.worlds.is_none(), "{what}");
@@ -193,41 +232,45 @@ fn the_name_of_the_world_opens_the_menu_of_the_worlds() {
     }
 }
 
+/// The control is on, as the accessibility tree has it.
+fn on(h: &Pad, name: &str) -> bool {
+    let node = h.get_by_label(name);
+    node.accesskit_node().toggled() == Some(egui::accesskit::Toggled::True)
+}
+
 #[test]
-fn the_tabs_switch_the_workspace_and_show_names_from_1000_points() {
+fn the_workspace_buttons_switch_the_workspace() {
     for size in BOARDS {
         let mut h = pad(Workspace::Globe, size);
-        let wide = size.0 >= 1000.0;
-        assert_eq!(rects(&h).tab_names, wide, "{size:?}");
+        let back = widget(&h, BACK);
         for name in ["World", "Atlas"] {
-            let tab = control(&h, name).unwrap();
-            if wide {
-                assert!(tab.width() > TAB_ICON, "{size:?}: {name}");
-            } else {
-                assert_eq!(tab.width(), TAB_ICON, "{size:?}: {name}");
-            }
+            let button = control(&h, name).unwrap();
+            assert_eq!(button.size(), vec2(44.0, 44.0), "{size:?}: {name}");
+            assert!(button.left() >= back.right(), "{size:?}: {name}");
         }
+        // The button of the open workspace is on.
+        assert!(on(&h, "World"), "{size:?}");
+        assert!(!on(&h, "Atlas"), "{size:?}");
         tap(&mut h, "Atlas");
         assert_eq!(h.state().workspace, Workspace::Atlas, "{size:?}");
+        assert!(on(&h, "Atlas"), "{size:?}");
         tap(&mut h, "World");
         assert_eq!(h.state().workspace, Workspace::Globe, "{size:?}");
     }
 }
 
 #[test]
-fn the_tabs_and_the_view_control_share_the_same_center() {
+fn the_name_and_the_view_control_share_the_center_of_the_canvas() {
     for workspace in WORKSPACES {
         for open in [false, true] {
             let mut state = state(workspace);
             state.pad.docks.get_mut(workspace).open = open;
             let h = pad_with(state, BOARDS[0]);
             let what = format!("{workspace:?} open {open}");
-            let tabs = control(&h, "World")
-                .unwrap()
-                .union(control(&h, "Atlas").unwrap());
+            let name = control(&h, WORLDS).unwrap();
             let r = rects(&h);
             let view = r.view.unwrap();
-            assert_eq!(tabs.center().x, view.center().x, "{what}");
+            assert_eq!(name.center().x, view.center().x, "{what}");
             assert_eq!(view.center().x, r.canvas.center().x, "{what}");
             assert_eq!(view.top(), r.bar.bottom() + 8.0, "{what}");
             let right = if open { 1194.0 - 320.0 } else { 1194.0 };
@@ -268,16 +311,17 @@ fn the_view_control_holds_the_views_and_the_graticule() {
 }
 
 #[test]
-fn the_view_control_of_the_atlas_holds_the_page_controls_and_the_size() {
+fn the_view_control_of_the_atlas_holds_the_page_controls() {
     for size in BOARDS {
         let h = pad(Workspace::Atlas, size);
         let view = rects(&h).view.unwrap();
         for name in [PREVIOUS_PAGE, NEXT_PAGE] {
             assert!(view.contains_rect(widget(&h, name)), "{size:?}: {name}");
         }
-        assert_eq!(page_size_text(h.state()), "A4 landscape");
-        // The card has room for the name of the page and its size.
-        assert!(view.width() > 2.0 * 44.0 + 150.0, "{size:?}: {view:?}");
+        // The card has room for the name of the page, and not for its size.
+        let page = control(&h, PAGE_BUTTON).unwrap();
+        assert!(view.contains_rect(page), "{size:?}");
+        assert!(page.width() < 100.0, "{size:?}: {page:?}");
         assert!(control(&h, GRATICULE).is_none(), "{size:?}");
     }
 }
@@ -367,6 +411,30 @@ fn a_hold_on_a_tool_cell_shows_the_name_of_the_tool() {
 }
 
 #[test]
+fn a_hold_on_a_cell_of_the_tool_shows_its_name_and_does_not_run_it() {
+    let mut h = pad(Workspace::Globe, BOARDS[0]);
+    vale_app::ui::pad::toggle_measure(h.state_mut());
+    h.state_mut().measure.add([10.0, 10.0], false);
+    h.state_mut().measure.add([20.0, 10.0], false);
+    h.run_steps(2);
+    let column = rects(&h).column;
+    let cell = control(&h, CLEAR_PATH).expect("no cell");
+    assert!(column.contains_rect(cell));
+    // A hold shows the name next to the cell.
+    let at = press(&mut h, CLEAR_PATH, 3);
+    let (name, rect) = h.state().pad.hold_label.clone().expect("no label");
+    assert_eq!((name.as_str(), rect), ("Clear", cell));
+    // The end of the hold does not clear the path.
+    touch(&mut h, egui::TouchPhase::End, at);
+    h.run_steps(3);
+    assert_eq!(h.state().pad.hold_label, None);
+    assert_eq!(h.state().measure.points.len(), 2);
+    // A tap clears it.
+    tap(&mut h, CLEAR_PATH);
+    assert!(h.state().measure.points.is_empty());
+}
+
+#[test]
 fn the_readout_is_at_the_lower_left_of_the_canvas_with_a_scale_bar() {
     for size in BOARDS {
         let what = format!("{size:?}");
@@ -380,6 +448,13 @@ fn the_readout_is_at_the_lower_left_of_the_canvas_with_a_scale_bar() {
             assert_eq!(readout.left(), r.column.right() + 16.0, "{what}");
             assert!(readout.bottom() <= size.1 - r.bands.bottom, "{what}");
             assert!(readout.top() >= r.column.bottom(), "{what}");
+            // The readout is a card at the lower left of its place.
+            let card = h
+                .ctx
+                .memory(|m| m.area_rect(egui::Id::new("pad-readout")))
+                .expect("no readout card");
+            assert_eq!(card.left_bottom(), readout.left_bottom(), "{what}");
+            assert_eq!(card.height(), readout.height(), "{what}");
             let label = h.state().pad.readout_scale.clone().expect("no scale bar");
             let (value, unit) = label.split_once(' ').unwrap();
             assert_eq!(unit, "km", "{what}: {label}");
@@ -740,9 +815,11 @@ fn the_globe_fits_beside_the_dock_and_below_the_view_control() {
         let dock = r.dock.unwrap();
         assert!(globe.right() <= dock.left());
         assert!((globe.center().x - r.canvas.center().x).abs() < 0.5);
-        // The globe is a circle inside its rectangle.
-        let radius = 0.45 * globe.width().min(globe.height());
-        assert!(globe.center().x + radius <= dock.left());
+        // At the start, the circle of the globe is inside the fit.
+        let radius = h.state().globe.radius() as f32;
+        let circle = Rect::from_center_size(globe.center(), vec2(2.0, 2.0) * radius);
+        assert!(r.fit.contains_rect(circle), "{circle:?} {:?}", r.fit);
+        assert!(circle.right() <= dock.left());
     }
 }
 

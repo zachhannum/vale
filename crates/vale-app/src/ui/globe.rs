@@ -1210,6 +1210,7 @@ pub fn vector_layer_cut(
     let view_key = ViewKey {
         view: *view,
         rect,
+        area: painter.clip_rect(),
         pixels_per_point,
         margin,
     };
@@ -1246,7 +1247,7 @@ pub fn vector_layer_cut(
         kurbo::Point::new(f64::from(q.x), f64::from(q.y))
     };
     // The screen in disc space, for the fills.
-    let shown = rect.expand(1.0);
+    let shown = view_key.area.expand(1.0);
     let to_disc = |q: egui::Pos2| {
         [
             f64::from(q.x - center.x) / radius,
@@ -1372,7 +1373,7 @@ pub fn vector_layer_cut(
                         },
                     ) if *size > 0.0 => {
                         let size = *size as f32;
-                        for &pos in points.iter().filter(|p| rect.expand(size).contains(**p)) {
+                        for &pos in points.iter().filter(|p| shown.expand(size).contains(**p)) {
                             match symbols.get(symbol) {
                                 Some(s) => SymbolMesh::of(s).append(
                                     sink.symbols(),

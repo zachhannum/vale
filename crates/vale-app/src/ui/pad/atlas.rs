@@ -220,6 +220,7 @@ fn page_button_text(state: &AppState) -> String {
 
 pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     let ctx = ui.ctx().clone();
+    widgets::set_backdrop(&ctx, state.globe.backdrop());
     let screen = ctx.viewport_rect();
     super::dock::shortcut(&ctx, state);
     atlas::sync(state);
@@ -265,7 +266,6 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         dock_width: super::dock::layout_width(&ctx, state),
         dock_buttons: Panel::order(Workspace::Atlas).len(),
         name_width: bar::name_width(ui, state),
-        tabs_width: bar::tabs_width(ui),
         column: geometry::ColumnInput {
             tools: TOOL_CELLS,
             cells: if measuring {
@@ -370,8 +370,8 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     super::labels::color_frame(&ctx, state);
     super::rules::picker_frame(&ctx, state);
     raster_cards(&ctx, state, &mut controls, &rects);
-    // From 600 points, the page controls show the size of the page, and the
-    // readout shows only the result of the Measure tool.
+    // From 600 points, the readout shows only the result of the Measure
+    // tool.
     if row || state.measure_readout().is_some() {
         readout(&ctx, ui, state, &rects);
     } else {
@@ -421,17 +421,11 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     state.pad.rects = Some(rects);
 }
 
-/// The space between the name of the page and its size.
-const PAGE_SIZE_GAP: f32 = 8.0;
-
 fn page_text_width(ui: &egui::Ui, state: &AppState) -> f32 {
-    let width = |text: String| {
-        let galley = ui
-            .painter()
-            .layout_no_wrap(text, theme::body(), theme::TEXT);
-        galley.size().x.ceil()
-    };
-    width(page_button_text(state)) + PAGE_SIZE_GAP + width(page_size_text(state)) + 2.0 * 14.0
+    let galley = ui
+        .painter()
+        .layout_no_wrap(page_button_text(state), theme::body(), theme::TEXT);
+    galley.size().x.ceil() + 2.0 * 14.0
 }
 
 fn divider(ui: &egui::Ui, x: f32, card: Rect) {
@@ -569,27 +563,8 @@ fn show_atlas_panel(
     state.pad.dock_frame.placing = None;
 }
 
-/// The size of the open page: the name of its preset and its orientation,
-/// for example "A4 landscape", or its width and height.
-pub fn page_size_text(state: &AppState) -> String {
-    let page = atlas::open_page(state);
-    let (w, h) = (page.width_mm, page.height_mm);
-    match math::preset_of(w, h) {
-        "Custom" => format!(
-            "{} × {} {}",
-            length_text(w, page.units),
-            length_text(h, page.units),
-            unit_name(page.units)
-        ),
-        preset => {
-            let orientation = if w > h { "landscape" } else { "portrait" };
-            format!("{preset} {orientation}")
-        }
-    }
-}
-
-/// The page controls: the previous page, the name of the page with its
-/// size, and the next page.
+/// The page controls: the previous page, the name of the page, and the next
+/// page.
 fn page_control(
     ctx: &egui::Context,
     state: &mut AppState,
@@ -597,7 +572,6 @@ fn page_control(
     page_card: Rect,
 ) {
     let text = page_button_text(state);
-    let size = page_size_text(state);
     let (index, count) = atlas::page_index(state);
     widgets::card(
         ctx,
@@ -638,13 +612,8 @@ fn page_control(
             }
             let painter = ui.painter();
             let name = painter.layout_no_wrap(text, theme::body(), theme::TEXT);
-            let size = painter.layout_no_wrap(size, theme::body(), theme::MUTE);
-            let width = name.size().x + PAGE_SIZE_GAP + size.size().x;
-            let left = middle.center().x - width / 2.0;
-            let y = middle.center().y - name.size().y / 2.0;
-            let size_at = pos2(left + name.size().x + PAGE_SIZE_GAP, y);
-            painter.galley(pos2(left, y), name, theme::TEXT);
-            painter.galley(size_at, size, theme::MUTE);
+            let at = middle.center() - name.size() / 2.0;
+            painter.galley(at, name, theme::TEXT);
         },
     );
 }

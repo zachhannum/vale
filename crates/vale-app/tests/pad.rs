@@ -167,12 +167,35 @@ fn toolbox(h: &mut Pad) {
 }
 
 /// A tap of a finger on the middle of a control.
+/// The events of one phase of a tap of the first touch, in one frame. A tap
+/// is then a press and a release one frame apart, shorter than a hold.
+fn tap_touch(h: &mut Pad, phase: egui::TouchPhase, pos: Pos2, force: Option<f32>) {
+    let events = &mut h.input_mut().events;
+    events.push(egui::Event::Touch {
+        device_id: egui::TouchDeviceId(0),
+        id: egui::TouchId(1),
+        phase,
+        pos,
+        force,
+    });
+    events.push(egui::Event::PointerMoved(pos));
+    events.push(egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed: phase == egui::TouchPhase::Start,
+        modifiers: egui::Modifiers::NONE,
+    });
+    if phase == egui::TouchPhase::End {
+        events.push(egui::Event::PointerGone);
+    }
+}
+
 fn tap(h: &mut Pad, name: &str) {
     let rect = control(h, name).unwrap_or_else(|| panic!("no control `{name}`"));
     let pos = rect.center();
-    touch(h, egui::TouchPhase::Start, pos, None);
+    tap_touch(h, egui::TouchPhase::Start, pos, None);
     h.step();
-    touch(h, egui::TouchPhase::End, pos, None);
+    tap_touch(h, egui::TouchPhase::End, pos, None);
     h.run_steps(3);
 }
 
@@ -3481,16 +3504,6 @@ fn glass(h: &Pad) -> Vec<Rect> {
     cards
 }
 
-/// The red values of the pixels of `rect`.
-fn pixels(image: &image::RgbaImage, rect: Rect) -> Vec<i32> {
-    let (x, y) = (rect.left() as u32, rect.top() as u32);
-    let (right, bottom) = (rect.right() as u32, rect.bottom() as u32);
-    (y..bottom.min(image.height()))
-        .flat_map(|y| (x..right.min(image.width())).map(move |x| (x, y)))
-        .map(|(x, y)| i32::from(image.get_pixel(x, y).0[0]))
-        .collect()
-}
-
 #[test]
 #[ignore = "gpu"]
 fn each_card_shows_the_blurred_canvas_and_the_blur_follows_the_globe() {
@@ -3542,7 +3555,7 @@ fn each_card_shows_the_blurred_canvas_and_the_blur_follows_the_globe() {
 
 #[test]
 #[ignore = "gpu"]
-fn the_bar_and_the_dock_are_opaque_and_a_card_follows_the_globe() {
+fn the_bar_the_dock_and_the_cards_follow_the_globe() {
     let _gpu = one_gpu_test();
     let mut h = blur_pad(|lon| match (lon / 20.0).floor().rem_euclid(2.0) {
         0.0 => u16::MAX,
@@ -3553,15 +3566,18 @@ fn the_bar_and_the_dock_are_opaque_and_a_card_follows_the_globe() {
     h.run_steps(3);
     let r = h.state().pad.rects.unwrap();
     let dock = r.dock.expect("the dock is open");
-    let cards = glass(&h);
+    let mut cards = glass(&h);
     assert!(cards.len() >= 2, "{cards:?}");
+    // The bar and the dock blur the canvas as the cards do. The dock reaches
+    // the bottom edge of the screen.
+    assert_eq!(dock.bottom(), r.screen.bottom());
+    cards.extend([r.band.union(r.bar), dock]);
     let before = h.render().unwrap();
     h.state_mut().globe.view = GlobeView::centered(10.0, 0.0);
     h.state_mut().globe.view.zoom = 3.0;
     h.run_steps(2);
     let after = h.render().unwrap();
-    // The canvas below the cards changes, and the bar and the dock stay the
-    // same.
+    // The canvas below each part changes.
     for card in cards {
         let row = card_row(&before, card);
         let width = row.len() as i32;
@@ -3570,9 +3586,45 @@ fn the_bar_and_the_dock_are_opaque_and_a_card_follows_the_globe() {
             "{card:?}"
         );
     }
-    for rect in [r.bar, dock] {
-        assert_eq!(pixels(&before, rect), pixels(&after, rect), "{rect:?}");
-    }
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_polygon_fills_the_canvas_above_and_below_the_fit_of_the_globe() {
+    use vale_store::{Feature, Geometry};
+    let _gpu = one_gpu_test();
+    let mut h = blur_pad(|_| 0);
+    // A red polygon covers the side of the globe that faces the view, and
+    // the zoomed globe fills the whole canvas.
+    let state = h.state_mut();
+    state.pad.close(Panel::Brush);
+    state.pad.close(Panel::Layers);
+    let polygon = state.doc.add_layer(GeometryKind::Polygon);
+    let ring = vec![[-80.0, -70.0], [80.0, -70.0], [80.0, 70.0], [-80.0, 70.0]];
+    let feature = Feature::new(Geometry::Polygons(vec![vec![ring]]), Default::default());
+    assert!(state.doc.project.add_feature(polygon, feature));
+    let style = &mut state.doc.entry_mut(polygon).unwrap().style;
+    style.set_fill(Some(vale_style::Color::rgb(255, 0, 0)));
+    state.touch();
+    h.run_steps(3);
+    let r = h.state().pad.rects.unwrap();
+    let image = h.render().unwrap();
+    let red = |x: f32, y: f32| {
+        let [r, g, b, _] = image.get_pixel(x as u32, y as u32).0;
+        r > 150 && g < 100 && b < 100
+    };
+    // Points of the canvas with no card: at the right of the view control,
+    // between the bar and the fit, and at the bottom, between the readout and
+    // the right edge.
+    let view = r.view.unwrap();
+    let x = (view.right() + r.canvas.right()) / 2.0;
+    assert!(r.fit.top() > r.bar.bottom() + 20.0, "{r:?}");
+    assert!(red(x, r.fit.center().y), "the polygon is in the fit");
+    assert!(
+        red(x, (r.bar.bottom() + r.fit.top()) / 2.0),
+        "above the fit"
+    );
+    assert!(red(x, r.screen.bottom() - 4.0), "below the fit");
 }
 
 #[test]
@@ -4191,12 +4243,12 @@ fn the_top_row_and_the_panels_match_the_landscape_board() {
     let mut h = pad(BOARDS[0]);
     let r = h.state().pad.rects.unwrap();
     assert_eq!(r.class, WidthClass::Wide);
-    // The bar is below the band. The name of the world is right of Back.
+    // The bar is below the band. The name of the world is at the center.
     assert_eq!(
         r.bar,
         Rect::from_min_size(pos2(0.0, 24.0), vec2(1194.0, 44.0))
     );
-    assert_eq!(control(&h, WORLDS).unwrap().min, pos2(48.0, 24.0));
+    assert_eq!(control(&h, WORLDS).unwrap().center().x, 597.0);
     assert_eq!(control(&h, WORLDS).unwrap(), r.workspace);
     assert!(control(&h, "World").is_some() && control(&h, "Atlas").is_some());
     assert!(control(&h, "Workspace").is_none());
@@ -4245,11 +4297,11 @@ fn the_top_row_and_the_panels_match_the_portrait_board() {
     let mut h = pad(BOARDS[1]);
     let r = h.state().pad.rects.unwrap();
     assert_eq!(r.class, WidthClass::Medium);
-    // The tabs show their icons, and the bar has no workspace menu and no
-    // Dock button.
+    // The bar has the workspace buttons, no workspace menu, and no Dock
+    // button.
     assert!(control(&h, "World").is_some() && control(&h, "Atlas").is_some());
     assert!(control(&h, "Workspace").is_none() && control(&h, "Dock").is_none());
-    assert_eq!(control(&h, WORLDS).unwrap().min, pos2(48.0, 24.0));
+    assert_eq!(control(&h, WORLDS).unwrap().center().x, 417.0);
     assert_eq!(r.view.unwrap().center().x, 417.0);
     assert_eq!(r.actions.right(), 830.0);
 
@@ -7152,9 +7204,9 @@ fn click(h: &mut Pad, name: &str) {
 fn pen_tap(h: &mut Pad, name: &str) {
     let rect = control(h, name).unwrap_or_else(|| panic!("no control `{name}`"));
     let pos = rect.center();
-    touch(h, egui::TouchPhase::Start, pos, Some(0.5));
+    tap_touch(h, egui::TouchPhase::Start, pos, Some(0.5));
     h.step();
-    touch(h, egui::TouchPhase::End, pos, Some(0.5));
+    tap_touch(h, egui::TouchPhase::End, pos, Some(0.5));
     h.run_steps(3);
 }
 
@@ -7331,9 +7383,9 @@ fn with_snapping_off_a_stroke_along_a_river_does_not_trace_it() {
 
 /// A tap of the pen on the canvas.
 fn pen_tap_at(h: &mut Pad, pos: Pos2) {
-    touch(h, egui::TouchPhase::Start, pos, Some(0.5));
+    tap_touch(h, egui::TouchPhase::Start, pos, Some(0.5));
     h.step();
-    touch(h, egui::TouchPhase::End, pos, Some(0.5));
+    tap_touch(h, egui::TouchPhase::End, pos, Some(0.5));
     h.run_steps(3);
 }
 
@@ -13275,7 +13327,10 @@ fn on_an_iphone_the_workspace_menu_holds_the_view_switch() {
 #[test]
 fn on_an_iphone_the_mode_list_opens_above_the_strip() {
     let mut h = phone_pad();
-    tap(&mut h, SCULPT);
+    // A tap chooses the cell, and a tap on the chosen cell opens the list.
+    if !h.state().globe.brushing() {
+        tap(&mut h, SCULPT);
+    }
     tap(&mut h, SCULPT);
     let list = h.state().pad.flyouts.rect.unwrap();
     let strip = h.state().pad.rects.unwrap().tools;

@@ -70,18 +70,7 @@ pub fn card(
         .sizing_pass(false)
         .show(ctx, |ui| {
             let (rect, _) = ui.allocate_exact_size(rect.size(), Sense::click_and_drag());
-            // The blur shows what the frame drew below this order, without
-            // the shadow.
-            if backdrop.is_some() {
-                ui.painter().add(marker(order, rect));
-            }
-            ui.painter().add(theme::shadow().as_shape(rect, radius));
-            if let Some(format) = backdrop {
-                let shape = card_shape(format, rect, radius, ctx.pixels_per_point());
-                ui.painter().add(shape);
-            }
-            ui.painter()
-                .rect_filled(rect, radius, theme::card(backdrop.is_some()));
+            glass(ui.painter(), backdrop, order, rect, radius, true);
             let layout = egui::Layout::top_down(egui::Align::Min);
             let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(layout));
             ui.set_clip_rect(rect);
@@ -90,17 +79,43 @@ pub fn card(
         });
 }
 
-/// A docked part, such as the top bar: an opaque area with no blur and no
-/// shadow. `border` is a line of the divider color, for example the edge
-/// of the part at the canvas. A touch on the area does not go to the canvas.
-pub fn opaque_area(
+/// Paints the blurred canvas and the fill of a card at `rect`: the one
+/// look of each blurred part. `backdrop`: the texture format of the blurred
+/// canvas, or `None` with no blur. The blur shows what the frame drew below
+/// `order`, without the shadow.
+pub fn glass(
+    painter: &egui::Painter,
+    backdrop: Option<wgpu::TextureFormat>,
+    order: egui::Order,
+    rect: Rect,
+    radius: CornerRadius,
+    shadow: bool,
+) {
+    if backdrop.is_some() {
+        painter.add(marker(order, rect));
+    }
+    if shadow {
+        painter.add(theme::shadow().as_shape(rect, radius));
+    }
+    if let Some(format) = backdrop {
+        let ppp = painter.ctx().pixels_per_point();
+        painter.add(card_shape(format, rect, radius, ppp));
+    }
+    painter.rect_filled(rect, radius, theme::card(backdrop.is_some()));
+}
+
+/// A docked part, such as the top bar: a blurred area with no shadow and
+/// no round corners, which can reach past the safe area. `border` is a line
+/// of the divider color, for example the edge of the part at the canvas. A
+/// touch on the area does not go to the canvas.
+pub fn docked_area(
     ctx: &egui::Context,
     id: &str,
     rect: Rect,
-    fill: Color32,
     border: Option<[Pos2; 2]>,
     add_contents: impl FnOnce(&mut egui::Ui),
 ) {
+    let backdrop = backdrop(ctx);
     egui::Area::new(egui::Id::new(id))
         .order(egui::Order::Middle)
         .fixed_pos(rect.min)
@@ -111,7 +126,15 @@ pub fn opaque_area(
         .sizing_pass(false)
         .show(ctx, |ui| {
             let (rect, _) = ui.allocate_exact_size(rect.size(), Sense::click_and_drag());
-            ui.painter().rect_filled(rect, 0.0, fill);
+            let order = egui::Order::Middle;
+            glass(
+                ui.painter(),
+                backdrop,
+                order,
+                rect,
+                CornerRadius::ZERO,
+                false,
+            );
             if let Some(line) = border {
                 ui.painter()
                     .line_segment(line, egui::Stroke::new(1.0, theme::edge()));
@@ -350,10 +373,8 @@ pub enum CellStyle {
     #[default]
     Labeled,
     /// A cell of 44 by 44 points with an icon alone, as in the tool column.
+    /// A hold shows the name next to the cell.
     Icon,
-    /// An `Icon` cell of a tool. A hold shows the name of the tool next to
-    /// the cell.
-    Tool,
 }
 
 fn cell_style_id() -> egui::Id {
@@ -407,10 +428,9 @@ pub fn hold_label(ctx: &egui::Context) -> Option<(String, Rect)> {
 }
 
 /// A tool cell: a cell with an icon and a name below it, or with the icon
-/// alone in the `CellStyle::Icon` and `CellStyle::Tool` looks. `name` is
-/// the name of the control, and `label` is the text on the cell. In the
-/// `CellStyle::Tool` look, a hold shows `label` in a small label next to the
-/// cell.
+/// alone in the `CellStyle::Icon` look. `name` is the name of the control,
+/// and `label` is the text on the cell. In the `CellStyle::Icon` look, a
+/// hold shows `label` in a small label next to the cell.
 pub fn tool_cell(
     ui: &mut egui::Ui,
     controls: &mut Controls,
@@ -423,7 +443,7 @@ pub fn tool_cell(
     tool_cell_with(ui, controls, name, label, icon, active, enabled, true)
 }
 
-/// A `tool_cell`. `hold`: in the `CellStyle::Tool` look, a hold shows the
+/// A `tool_cell`. `hold`: in the `CellStyle::Icon` look, a hold shows the
 /// name.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn tool_cell_with(
@@ -439,10 +459,10 @@ pub(super) fn tool_cell_with(
     let style = cell_style(ui.ctx());
     let size = match style {
         CellStyle::Labeled => vec2(CELL.0, CELL.1),
-        CellStyle::Icon | CellStyle::Tool => vec2(TOUCH, TOUCH),
+        CellStyle::Icon => vec2(TOUCH, TOUCH),
     };
     let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
-    let resp = hit(
+    let mut resp = hit(
         ui,
         controls,
         rect,
@@ -456,8 +476,13 @@ pub(super) fn tool_cell_with(
     if style != CellStyle::Labeled {
         let icon_rect = Rect::from_center_size(rect.center(), vec2(ICON, ICON));
         icons::paint(ui.painter(), icon_rect, icon, ICON, color);
-        if hold && style == CellStyle::Tool {
+        if hold {
             hold_name(ui, &resp, label);
+            // The end of a hold that showed the name is not a tap.
+            let held: Option<Hold> = ui.ctx().data(|d| d.get_temp(hold_id()));
+            if held.is_some_and(|h| h.id == resp.id) {
+                resp.flags.remove(egui::response::Flags::CLICKED);
+            }
         }
         return resp;
     }
@@ -614,9 +639,14 @@ pub enum TitleEnds<'a> {
     Close,
     /// The close button, then the Dock button at the right end.
     CloseDock,
-    /// A panel of the dock: the chevron at the left end and no close
-    /// button. A tap on the row is a control with this name.
-    Fold { name: &'a str, folded: bool },
+    /// A panel of the dock: the chevron and the icon of the panel at the
+    /// left end, and no close button. A tap on the row is a control with
+    /// this name.
+    Fold {
+        name: &'a str,
+        folded: bool,
+        icon: Icon,
+    },
 }
 
 /// The name of the Dock button of a floating card.
@@ -649,7 +679,7 @@ pub fn title_row_with(
 ) -> TitleRow {
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::hover());
     let bar = match ends {
-        TitleEnds::Fold { name, folded } => hit(
+        TitleEnds::Fold { name, folded, .. } => hit(
             ui,
             controls,
             rect,
@@ -669,11 +699,13 @@ pub fn title_row_with(
     };
     let button = |x: f32| Rect::from_min_size(pos2(x, rect.top() + PAD), vec2(TOUCH, TOUCH));
     let mut left = rect.left();
-    if let TitleEnds::Fold { folded, .. } = ends {
+    if let TitleEnds::Fold { folded, icon, .. } = ends {
         let chevron = Rect::from_min_size(pos2(rect.left() + 8.0, rect.top()), vec2(24.0, ROW));
-        let icon = if folded { Icon::Open } else { Icon::Down };
-        icons::paint(ui.painter(), chevron, icon, 18.0, theme::MUTE);
-        left = chevron.right();
+        let face = if folded { Icon::Open } else { Icon::Down };
+        icons::paint(ui.painter(), chevron, face, 18.0, theme::MUTE);
+        let at = Rect::from_min_size(pos2(chevron.right() + 6.0, rect.top()), vec2(ICON, ROW));
+        icons::paint(ui.painter(), at, icon, ICON, theme::MUTE);
+        left = at.right() + 4.0;
     }
     let mut text_left = left + if left > rect.left() { 6.0 } else { BODY_PAD };
     let back = back.is_some_and(|parent| {
