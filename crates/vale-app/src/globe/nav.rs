@@ -355,8 +355,7 @@ impl Nav {
                     ..
                 } => {
                     touched = true;
-                    // The touch area can be larger than the rectangle of the view.
-                    let on_canvas = on_canvas(ui, resp.rect.union(rect), *pos);
+                    let on_canvas = on_canvas(ui, rect, *pos);
                     let pen = force.is_some() && !self.no_pen;
                     self.touch(id.0, *phase, *pos, on_canvas, pen);
                 }

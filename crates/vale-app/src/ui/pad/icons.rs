@@ -86,6 +86,8 @@ pub enum Icon {
     Pin,
     /// A window with a header and a column at the left.
     Panels,
+    /// A window with a column at the right.
+    Dock,
     /// Two sheets, one behind the other.
     Pages,
     /// A price tag.
@@ -159,6 +161,7 @@ impl Icon {
             Icon::Folder => "M3 5h6l2 3h10v11H3z",
             Icon::Pin => "M9 3h6l-1 6 3.5 3.5h-11L10 9zM12 12.5V21",
             Icon::Panels => "M3 4h18v16H3zM3 9h18M10 9v11",
+            Icon::Dock => "M3 4h18v16H3zM14 4v16M16.5 8h2M16.5 11h2",
             Icon::Pages => "M7 3h10v14H7zM4 7v14h10",
             Icon::Tag => "M3 12V4h8l10 10-8 8z",
             Icon::Projection => {
@@ -511,6 +514,7 @@ mod tests {
             Icon::Eyedropper,
             Icon::Pin,
             Icon::Panels,
+            Icon::Dock,
             Icon::Pages,
             Icon::Tag,
             Icon::Projection,

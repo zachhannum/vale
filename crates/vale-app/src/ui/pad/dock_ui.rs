@@ -20,13 +20,15 @@ const BAR_TOUCH: f32 = 24.0;
 const HANDLE: (f32, f32) = (TOUCH, 64.0);
 /// The padding at each side of the name of a tab.
 const TAB_PAD: f32 = 12.0;
-/// The time of the slide of the dock and of the move of the canvas.
+/// The time of the slide of the dock.
 pub const SLIDE_TIME: f32 = 0.25;
 /// A drag of the width handle this far past the narrowest dock collapses
 /// the dock.
 pub const COLLAPSE_DRAG: f32 = 40.0;
 /// The tab at the right edge that shows a collapsed dock.
-pub const SHOW_DOCK: &str = super::panels_menu::SHOW_DOCK;
+pub const SHOW_DOCK: &str = "Show dock";
+/// The text of a drag of the width handle that collapses the dock.
+pub const HIDE_DOCK: &str = "Hide dock";
 /// The touch area of the tab of a collapsed dock.
 const EDGE_TAB: (f32, f32) = (TOUCH, 72.0);
 /// The row of the menu of a tab that moves the tab to a new pane.
@@ -156,27 +158,6 @@ fn slide(ctx: &egui::Context, state: &AppState) -> f32 {
         f32::from(u8::from(collapsed))
     } else {
         t
-    }
-}
-
-/// The width of the dock that the canvas leaves free at the right, in this
-/// frame. Only a wide screen leaves room for the dock. The width moves in
-/// `SLIDE_TIME`, and at once in a run with no window and during a drag of
-/// the width.
-pub fn shown_width(ctx: &egui::Context, state: &AppState, screen: Rect, bands: f32) -> f32 {
-    let dock = state.pad.dock();
-    let wide = WidthClass::of(screen.width()) == WidthClass::Wide;
-    let target = if wide && !dock.panes.is_empty() && !dock.collapsed {
-        dock.width + bands
-    } else {
-        0.0
-    };
-    let id = egui::Id::new(("pad-dock-shown", state.pad.workspace as u8));
-    let value = ctx.animate_value_with_time(id, target, SLIDE_TIME);
-    if state.headless || state.pad.dock_drag == Some(DockDrag::Width) {
-        target
-    } else {
-        value
     }
 }
 
@@ -587,7 +568,7 @@ pub fn handle(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
                 dock.set_width(width);
                 dock.width = dock.width.min(most);
                 let text = if width <= panes::MIN_WIDTH - COLLAPSE_DRAG {
-                    super::panels_menu::HIDE_DOCK.to_owned()
+                    HIDE_DOCK.to_owned()
                 } else {
                     format!("{} pt", dock.width.round())
                 };

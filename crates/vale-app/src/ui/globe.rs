@@ -1210,7 +1210,6 @@ pub fn vector_layer_cut(
     let view_key = ViewKey {
         view: *view,
         rect,
-        area: painter.clip_rect(),
         pixels_per_point,
         margin,
     };
@@ -1247,7 +1246,7 @@ pub fn vector_layer_cut(
         kurbo::Point::new(f64::from(q.x), f64::from(q.y))
     };
     // The screen in disc space, for the fills.
-    let shown = view_key.area.expand(1.0);
+    let shown = rect.expand(1.0);
     let to_disc = |q: egui::Pos2| {
         [
             f64::from(q.x - center.x) / radius,
@@ -1671,7 +1670,7 @@ fn flat_pixel(flat: &FlatView, rect: egui::Rect, pixels_per_point: f32) -> Optio
 
 /// Draws the globe in the free space of `ui` and reads its input.
 pub(super) fn canvas(ui: &mut egui::Ui, state: &mut AppState, background: egui::Color32) {
-    if let Some(rect) = canvas_input(ui, state, background, None) {
+    if let Some(rect) = canvas_input(ui, state, background) {
         paint_canvas(ui, state, rect, background);
         held_buttons(ui, state, rect);
     }
@@ -1722,13 +1721,12 @@ fn held_buttons(ui: &egui::Ui, state: &mut AppState, rect: egui::Rect) {
 }
 
 /// Fills the free space of `ui` with the background and reads the input of
-/// the globe. The globe fits in `fit`, or in the free space. Returns the
-/// rectangle of the canvas, or `None` if it is too small to draw.
+/// the globe. Returns the rectangle of the canvas, or `None` if it is too
+/// small to draw.
 pub(super) fn canvas_input(
     ui: &mut egui::Ui,
     state: &mut AppState,
     background: egui::Color32,
-    fit: Option<egui::Rect>,
 ) -> Option<egui::Rect> {
     let now = Instant::now();
     if state.globe.snapping() && state.globe.line_preview().is_none() {
@@ -1744,20 +1742,15 @@ pub(super) fn canvas_input(
     };
     let rect = ui.available_rect_before_wrap();
     let resp = ui.allocate_rect(rect, egui::Sense::click_and_drag());
-    let area = rect;
-    let rect = fit
-        .map(|fit| fit.intersect(area))
-        .filter(|fit| fit.width() >= 8.0 && fit.height() >= 8.0)
-        .unwrap_or(area);
     globe.rect = rect;
-    let painter = ui.painter_at(area);
-    painter.rect_filled(area, 0.0, background);
-    if area.width() < 8.0 || area.height() < 8.0 {
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 0.0, background);
+    if rect.width() < 8.0 || rect.height() < 8.0 {
         return None;
     }
     state.refresh_vertex_handles();
     let globe = &mut state.globe;
-    let painting = brush_input(ui, area, &resp, globe, now);
+    let painting = brush_input(ui, rect, &resp, globe, now);
     match globe.world_view {
         WorldView::Globe => globe.nav.update(ui, rect, &resp, &mut globe.view, painting),
         WorldView::Flat => {
@@ -1792,7 +1785,7 @@ pub(super) fn canvas_input(
     let map = shown.and_then(|id| globe.display_map(id));
     let value = |(dir, map): (_, &vale_terrain::Heightmap)| map.bands.value(map.sample(dir));
     state.cursor_value = cursor.zip(map).map(value);
-    Some(area)
+    Some(rect)
 }
 
 /// The raster mask of each vector layer whose mask is a raster layer that
@@ -1911,17 +1904,15 @@ fn tessellate_at(
     out
 }
 
-/// Paints the globe into `area`, with the globe at its place in the
-/// rectangle of the globe. A change of the state before this call shows in
-/// the same frame.
+/// Paints the globe into `rect`. A change of the state before this call
+/// shows in the same frame.
 pub(super) fn paint_canvas(
     ui: &egui::Ui,
     state: &mut AppState,
-    area: egui::Rect,
+    rect: egui::Rect,
     background: egui::Color32,
 ) {
-    let rect = state.globe.rect;
-    let painter = egui::Painter::new(ui.ctx().clone(), ui.layer_id(), area);
+    let painter = egui::Painter::new(ui.ctx().clone(), ui.layer_id(), rect);
     let layer = state.selected_vector();
     let globe = &mut state.globe;
     let more = globe.advance(Instant::now());
@@ -1944,7 +1935,7 @@ pub(super) fn paint_canvas(
             for paint in paints {
                 match paint {
                     Paint::Callback(callback) => {
-                        painter.add(egui_wgpu::Callback::new_paint_callback(area, callback));
+                        painter.add(egui_wgpu::Callback::new_paint_callback(rect, callback));
                     }
                     Paint::Vector(id) if globe_view => {
                         vector_layer(&painter, format, rect, doc, &globe.view, id, pipeline);
@@ -1971,7 +1962,7 @@ pub(super) fn paint_canvas(
                         }
                         let meshes = tessellate(ui.ctx(), painter.clip_rect(), shapes);
                         let callback = pass.callback(pixels_per_point, meshes);
-                        let callback = egui_wgpu::Callback::new_paint_callback(area, callback);
+                        let callback = egui_wgpu::Callback::new_paint_callback(rect, callback);
                         painter.set(slot, callback);
                     }
                 }

@@ -1,6 +1,5 @@
-//! The Panels menu: a tile for each panel of the workspace, the row that
-//! hides or shows the dock, and the rows "Close all" and "Reset layout". A
-//! tinted tile is an open panel. A closed tile is off when its panel does
+//! The Panels menu: a tile for each panel of the workspace, and the rows
+//! "Close all" and "Reset layout". A tinted tile is an open panel. A closed tile is off when its panel does
 //! nothing.
 
 use eframe::egui::{self, Align2, Order, Rect, Sense, pos2, vec2};
@@ -15,8 +14,6 @@ pub const BRUSH: &str = "Brush";
 pub const PAGES: &str = "Pages";
 pub const CLOSE_ALL: &str = "Close all";
 pub const RESET_LAYOUT: &str = "Reset layout";
-pub const HIDE_DOCK: &str = "Hide dock";
-pub const SHOW_DOCK: &str = "Show dock";
 pub const WORLD: &str = "World";
 pub const SELECTION: &str = "Selection";
 pub const ATLAS: &str = "Atlas";
@@ -112,9 +109,8 @@ pub fn atlas(state: &AppState) -> Vec<Group> {
     ]
 }
 
-/// The height of the menu with these groups, and with the row of the dock
-/// or without it.
-fn height(groups: &[Group], dock_row: bool) -> f32 {
+/// The height of the menu with these groups.
+fn height(groups: &[Group]) -> f32 {
     let tiles: f32 = groups
         .iter()
         .map(|g| {
@@ -122,8 +118,7 @@ fn height(groups: &[Group], dock_row: bool) -> f32 {
             HEADING + rows * TILE + (rows - 1.0).max(0.0) * TILE_GAP + TILE_GAP
         })
         .sum();
-    let dock_row = if dock_row { PANEL_ROW + TILE_GAP } else { 0.0 };
-    PAD + tiles + dock_row + PANEL_ROW + PAD
+    PAD + tiles + PANEL_ROW + PAD
 }
 
 /// The menu, on the right edge below the top row. A tap outside the menu
@@ -135,12 +130,8 @@ pub fn show(
     rects: &Rects,
     groups: &[Group],
 ) {
-    let dock_row = !state.pad.dock().panes.is_empty();
     let collapsed = state.pad.dock().collapsed;
-    let size = vec2(
-        PANELS_MENU_WIDTH + rects.bands.right,
-        height(groups, dock_row),
-    );
+    let size = vec2(PANELS_MENU_WIDTH + rects.bands.right, height(groups));
     let rect = Rect::from_min_size(pos2(rects.screen.right() - size.x, rects.column_top), size);
     state.pad.panels_menu_rect = Some(rect);
     let button = controls.iter().find(|c| c.name == PANELS).map(|c| c.rect);
@@ -159,7 +150,6 @@ pub fn show(
     let mut chosen = None;
     let mut close = false;
     let mut reset = false;
-    let mut hide = false;
     widgets::card(
         ctx,
         None,
@@ -193,13 +183,6 @@ pub fn show(
                 let rows = group.tiles.len().div_ceil(COLUMNS) as f32;
                 top += rows * TILE + (rows - 1.0).max(0.0) * TILE_GAP + TILE_GAP;
             }
-            if dock_row {
-                let row =
-                    Rect::from_min_size(pos2(inner.left(), top), vec2(inner.width(), PANEL_ROW));
-                let name = if collapsed { SHOW_DOCK } else { HIDE_DOCK };
-                hide = text_button(ui, controls, row, name);
-                top += PANEL_ROW + TILE_GAP;
-            }
             let half = (inner.width() - TILE_GAP) / 2.0;
             let left = Rect::from_min_size(pos2(inner.left(), top), vec2(half, PANEL_ROW));
             let right = left.translate(vec2(half + TILE_GAP, 0.0));
@@ -215,10 +198,6 @@ pub fn show(
         } else {
             state.pad.toggle(tile.entry);
         }
-        state.pad.panels_menu = false;
-    }
-    if hide {
-        state.pad.dock_mut().collapsed = !collapsed;
         state.pad.panels_menu = false;
     }
     if close {

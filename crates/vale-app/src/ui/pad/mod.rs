@@ -596,6 +596,8 @@ pub const TOOLBOX: &str = "Toolbox";
 pub const LAYERS: &str = "Layers";
 /// The button that opens the Panels menu.
 pub const PANELS: &str = "Panels";
+/// The button that hides and shows the dock.
+pub const DOCK: &str = "Dock";
 /// The buttons of the globe and of the flat view, in the readout.
 pub const VIEWS: [&str; 2] = ["Globe", "Flat"];
 /// The action that makes the place at the middle of the canvas the center of
@@ -642,13 +644,11 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     widgets::set_backdrop(&ctx, state.globe.backdrop());
     let screen = ctx.viewport_rect();
     // The globe paints after the panels, so a change in a panel shows in
-    // the same frame. It fits the canvas at the left of the dock.
+    // the same frame. The dock floats over the canvas.
     let bands = geometry::Bands::new(screen, ctx.content_rect());
-    let dock = dock_ui::shown_width(&ctx, state, screen, bands.right);
-    let fit = Rect::from_min_max(screen.min, pos2(screen.right() - dock, screen.bottom()));
     let canvas = ui.scope_builder(egui::UiBuilder::new().max_rect(screen), |ui| {
         ui.set_clip_rect(screen);
-        globe::canvas_input(ui, state, theme::CANVAS, Some(fit))
+        globe::canvas_input(ui, state, theme::CANVAS)
     });
 
     let class = WidthClass::of(screen.width());
@@ -886,9 +886,45 @@ fn top_row(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
             let divider = pos2(card.left() + PAD + 2.0 * step + 4.5, card.center().y);
             let line = Rect::from_center_size(divider, vec2(1.0, 24.0));
             ui.painter().rect_filled(line, 0.0, theme::divider());
-            panels_button(ui, state, controls, at(2.0 * step + 9.0 + PAD));
+            let mut x = 2.0 * step + 9.0 + PAD;
+            if rects.class != WidthClass::Compact {
+                dock_button(ui, state, controls, at(x));
+                x += step;
+            }
+            panels_button(ui, state, controls, at(x));
         },
     );
+}
+
+/// The button that hides and shows the dock. It has the accent color while
+/// the dock shows, and it is off while the dock has no panes.
+pub(super) fn dock_button(
+    ui: &egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    rect: Rect,
+) {
+    let dock = state.pad.dock();
+    let enabled = !dock.panes.is_empty();
+    let shown = enabled && !dock.collapsed;
+    let sense = egui::Sense::click();
+    let resp = widgets::hit(ui, controls, rect, DOCK, sense, enabled, Some(shown));
+    let painter = ui.painter();
+    let inner = rect.shrink(widgets::HIGHLIGHT_INSET);
+    if shown {
+        let fill = theme::ACCENT.gamma_multiply(0.3);
+        painter.rect_filled(inner, theme::CONTROL_RADIUS, fill);
+    }
+    if resp.is_pointer_button_down_on() {
+        painter.rect_filled(inner, theme::CONTROL_RADIUS, theme::raise());
+    }
+    let color = if shown { theme::ACCENT } else { theme::MUTE };
+    let color = widgets::fade(color, enabled);
+    icons::paint(painter, rect, Icon::Dock, widgets::ICON, color);
+    if resp.clicked() {
+        let dock = state.pad.dock_mut();
+        dock.collapsed = !dock.collapsed;
+    }
 }
 
 /// The button that opens the Panels menu.
@@ -3142,11 +3178,9 @@ fn toolbox_body(ui: &mut egui::Ui, state: &mut AppState) {
     }
 }
 
-/// The readout: the place and the elevation under the pointer. With a
-/// project file, the save mark is at its left.
-/// The readout at the lower left of the canvas: the view buttons, and the
-/// place and the scale bar as text with a dark halo. In the row layout,
-/// the buttons are above the text.
+/// The readout at the lower left of the canvas: one card with the view
+/// buttons, and the place and the scale bar at their right. In the row
+/// layout, the text is below the buttons.
 fn readout(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
     state.pad.readout_scale = None;
     state.pad.view_rect = None;
@@ -3154,32 +3188,73 @@ fn readout(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
         return;
     };
     let flat = state.globe.world_view == WorldView::Flat;
-    let view = Rect::from_min_size(band.min, vec2(view_width(flat), ROW));
-    view_card(ctx, state, controls, view);
     let text = readout_line(state);
     let world = &state.doc.project.world;
     let scale = km_per_point(&state.globe, world.radius_km)
         .and_then(|km| crate::scale_bar::readout_scale(km, world.units));
     state.pad.readout_scale = scale.map(|s| s.label());
     let mark = state.save_mark(std::time::Instant::now());
-    let place = readout_place(band, view);
+    let buttons = view_width(flat);
+    let width = readout_width(ctx, &text, scale, mark);
+    let height = geometry::READOUT_HEIGHT;
+    let (rect, place) = if band.height() >= ROW + height {
+        let card = buttons.max(width + 2.0 * READOUT_PAD).min(band.width());
+        let rect = Rect::from_min_size(band.min, vec2(card, band.height()));
+        let top = rect.top() + ROW - PAD;
+        let place = Rect::from_min_size(pos2(rect.left() + READOUT_PAD, top), vec2(width, height));
+        (rect, place)
+    } else {
+        let card = (buttons + PAD + width + READOUT_PAD).min(band.width());
+        let rect = Rect::from_min_size(band.min, vec2(card, ROW));
+        let left = rect.left() + buttons + PAD;
+        let top = rect.center().y - height / 2.0;
+        (
+            rect,
+            Rect::from_min_size(pos2(left, top), vec2(width, height)),
+        )
+    };
+    state.pad.view_rect = Some(rect);
+    let row = Rect::from_min_size(rect.min, vec2(buttons, ROW));
     // A test has no clock, so there the mark does not turn.
-    paint_readout(ctx, place, &text, scale, mark, !state.headless);
+    let turn = !state.headless;
+    widgets::card(
+        ctx,
+        state.globe.backdrop(),
+        "pad-view",
+        rect,
+        Order::Middle,
+        theme::CARD_RADIUS.into(),
+        |ui| {
+            view_buttons(ui, state, controls, row);
+            let place = place.intersect(rect.shrink(PAD));
+            paint_readout(ui, place, &text, scale, mark, turn);
+        },
+    );
 }
 
-/// The place of the text of the readout: at the right of the buttons, or
-/// below them in the row layout.
-pub(super) fn readout_place(band: Rect, buttons: Rect) -> Rect {
-    if band.height() >= ROW + geometry::READOUT_HEIGHT {
-        Rect::from_min_max(pos2(band.left(), buttons.bottom()), band.max)
-    } else {
-        let height = geometry::READOUT_HEIGHT;
-        let top = band.center().y - height / 2.0;
-        Rect::from_min_max(
-            pos2(buttons.right() + 12.0, top),
-            pos2(band.right(), top + height),
-        )
-    }
+/// The space at the sides of the text of the readout in its card.
+pub(super) const READOUT_PAD: f32 = 12.0;
+
+/// The width of the text of the readout: the save mark and the place, or
+/// the scale bar with the label at its end.
+pub(super) fn readout_width(
+    ctx: &egui::Context,
+    text: &str,
+    scale: Option<crate::scale_bar::ReadoutScale>,
+    mark: Option<SaveMark>,
+) -> f32 {
+    let width = |text: String, font| {
+        ctx.fonts_mut(|f| f.layout_no_wrap(text, font, theme::TEXT))
+            .size()
+            .x
+            .ceil()
+    };
+    let lead = if mark.is_some() { SAVE_MARK + 8.0 } else { 0.0 };
+    let line = lead + width(text.to_owned(), theme::mono());
+    let bar = scale.map_or(0.0, |s| {
+        s.length as f32 + (width(s.label(), theme::small()) / 2.0).ceil()
+    });
+    line.max(bar)
 }
 
 /// The width of the view buttons: Globe, Flat, a divider, and Graticule,
@@ -3189,111 +3264,100 @@ fn view_width(flat: bool) -> f32 {
     PAD + 3.0 * TOUCH + DIVIDER + flat + PAD
 }
 
-/// The card of the view buttons of the readout. A hold on a button shows
-/// its name above it.
-fn view_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rect: Rect) {
-    state.pad.view_rect = Some(rect);
+/// The view buttons of the readout in `rect`, a row in its card. A hold on
+/// a button shows its name above it.
+fn view_buttons(ui: &egui::Ui, state: &mut AppState, controls: &mut Controls, rect: Rect) {
     let flat = state.globe.world_view == WorldView::Flat;
-    widgets::card(
-        ctx,
-        state.globe.backdrop(),
-        "pad-view",
-        rect,
-        Order::Middle,
-        theme::CARD_RADIUS.into(),
-        |ui| {
-            // The place of a button after `buttons` buttons and `lines`
-            // dividers.
-            let at = |buttons: f32, lines: f32| {
-                let x = rect.left() + PAD + buttons * TOUCH + lines * DIVIDER;
-                Rect::from_min_size(pos2(x, rect.top() + PAD), vec2(TOUCH, TOUCH))
-            };
-            let divider = |ui: &egui::Ui, buttons: f32, lines: f32| {
-                let x = at(buttons, lines).left() + DIVIDER / 2.0;
-                let line = Rect::from_center_size(pos2(x, rect.center().y), vec2(1.0, 24.0));
-                ui.painter().rect_filled(line, 0.0, theme::divider());
-            };
-            let place = flyout::Place::Above;
-            let views = [(VIEWS[0], Icon::World), (VIEWS[1], Icon::Map)];
-            for (i, ((name, icon), view)) in views.into_iter().zip(WORLD_VIEWS).enumerate() {
-                let flyouts = &mut state.pad.flyouts;
-                let on = state.globe.world_view == view;
-                let at = at(i as f32, 0.0);
-                if flyout::button(
-                    ui,
-                    controls,
-                    flyouts,
-                    at,
-                    (name, name),
-                    icon,
-                    on,
-                    true,
-                    place,
-                ) {
-                    state.globe.world_view = view;
-                }
-            }
-            divider(ui, 2.0, 0.0);
-            let flyouts = &mut state.pad.flyouts;
-            let graticule = &mut state.globe.preview.graticule;
-            let names = (GRATICULE, GRATICULE);
-            let grid = at(2.0, 1.0);
-            if flyout::button(
-                ui,
-                controls,
-                flyouts,
-                grid,
-                names,
-                Icon::Grid,
-                *graticule,
-                true,
-                place,
-            ) {
-                *graticule = !*graticule;
-            }
-            if !flat {
-                return;
-            }
-            divider(ui, 3.0, 1.0);
-            let open = state.pad.projections;
-            let names = (PROJECTION, PROJECTION);
-            let (list, icon) = (at(3.0, 2.0), Icon::Projection);
-            if flyout::button(ui, controls, flyouts, list, names, icon, open, true, place) {
-                state.pad.projections = !open;
-            }
-            let flat = &mut state.globe.flat;
-            let (center, can) = (at(4.0, 2.0), flat.can_center_here());
-            let names = (RECENTER, RECENTER);
-            if flyout::button(
-                ui,
-                controls,
-                flyouts,
-                center,
-                names,
-                Icon::Center,
-                false,
-                can,
-                place,
-            ) {
-                flat.center_here();
-            }
-            let (reset, can) = (at(5.0, 2.0), flat.can_reset());
-            let names = (RESET, RESET);
-            if flyout::button(
-                ui,
-                controls,
-                flyouts,
-                reset,
-                names,
-                Icon::Reset,
-                false,
-                can,
-                place,
-            ) {
-                flat.reset();
-            }
-        },
-    );
+    // The place of a button after `buttons` buttons and `lines`
+    // dividers.
+    let at = |buttons: f32, lines: f32| {
+        let x = rect.left() + PAD + buttons * TOUCH + lines * DIVIDER;
+        Rect::from_min_size(pos2(x, rect.top() + PAD), vec2(TOUCH, TOUCH))
+    };
+    let divider = |ui: &egui::Ui, buttons: f32, lines: f32| {
+        let x = at(buttons, lines).left() + DIVIDER / 2.0;
+        let line = Rect::from_center_size(pos2(x, rect.center().y), vec2(1.0, 24.0));
+        ui.painter().rect_filled(line, 0.0, theme::divider());
+    };
+    let place = flyout::Place::Above;
+    let views = [(VIEWS[0], Icon::World), (VIEWS[1], Icon::Map)];
+    for (i, ((name, icon), view)) in views.into_iter().zip(WORLD_VIEWS).enumerate() {
+        let flyouts = &mut state.pad.flyouts;
+        let on = state.globe.world_view == view;
+        let at = at(i as f32, 0.0);
+        if flyout::button(
+            ui,
+            controls,
+            flyouts,
+            at,
+            (name, name),
+            icon,
+            on,
+            true,
+            place,
+        ) {
+            state.globe.world_view = view;
+        }
+    }
+    divider(ui, 2.0, 0.0);
+    let flyouts = &mut state.pad.flyouts;
+    let graticule = &mut state.globe.preview.graticule;
+    let names = (GRATICULE, GRATICULE);
+    let grid = at(2.0, 1.0);
+    if flyout::button(
+        ui,
+        controls,
+        flyouts,
+        grid,
+        names,
+        Icon::Grid,
+        *graticule,
+        true,
+        place,
+    ) {
+        *graticule = !*graticule;
+    }
+    if !flat {
+        return;
+    }
+    divider(ui, 3.0, 1.0);
+    let open = state.pad.projections;
+    let names = (PROJECTION, PROJECTION);
+    let (list, icon) = (at(3.0, 2.0), Icon::Projection);
+    if flyout::button(ui, controls, flyouts, list, names, icon, open, true, place) {
+        state.pad.projections = !open;
+    }
+    let flat = &mut state.globe.flat;
+    let (center, can) = (at(4.0, 2.0), flat.can_center_here());
+    let names = (RECENTER, RECENTER);
+    if flyout::button(
+        ui,
+        controls,
+        flyouts,
+        center,
+        names,
+        Icon::Center,
+        false,
+        can,
+        place,
+    ) {
+        flat.center_here();
+    }
+    let (reset, can) = (at(5.0, 2.0), flat.can_reset());
+    let names = (RESET, RESET);
+    if flyout::button(
+        ui,
+        controls,
+        flyouts,
+        reset,
+        names,
+        Icon::Reset,
+        false,
+        can,
+        place,
+    ) {
+        flat.reset();
+    }
 }
 
 /// The kilometers in one point at the center of the view. On the flat map,
@@ -3316,114 +3380,64 @@ fn km_per_point(globe: &crate::globe::Globe, world_km: f64) -> Option<f64> {
     (on_globe.is_finite() && on_globe > 0.0).then_some(on_globe)
 }
 
-/// The color of the halo of the text of the readout.
-const HALO: egui::Color32 = egui::Color32::from_rgba_premultiplied(0, 0, 0, 200);
-
-/// Paints `text` with a dark halo, so it shows on each part of the canvas.
-fn halo_text(
-    painter: &egui::Painter,
-    at: egui::Pos2,
-    align: egui::Align2,
-    text: &str,
-    font: egui::FontId,
-    color: egui::Color32,
-) {
-    for (dx, dy) in [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)] {
-        let at = at + vec2(dx, dy);
-        painter.text(at, align, text, font.clone(), HALO);
-    }
-    for (dx, dy) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
-        let at = at + vec2(dx, dy);
-        painter.text(at, align, text, font.clone(), HALO);
-    }
-    painter.text(at, align, text, font, color);
-}
-
-/// The text of the readout in `place`, with no card: the save mark and the
+/// The text of the readout in `place`, in a card: the save mark and the
 /// place on the first line, and with a `scale`, the scale bar with four
 /// divisions and its round distance below it.
 pub(super) fn paint_readout(
-    ctx: &egui::Context,
+    ui: &egui::Ui,
     place: Rect,
     text: &str,
     scale: Option<crate::scale_bar::ReadoutScale>,
     mark: Option<SaveMark>,
     turn: bool,
 ) {
-    egui::Area::new(egui::Id::new("pad-readout"))
-        .order(Order::Middle)
-        .fixed_pos(place.min)
-        .interactable(false)
-        .movable(false)
-        .constrain(false)
-        .fade_in(false)
-        .show(ctx, |ui| {
-            ui.set_clip_rect(place.expand(2.0));
-            let painter = ui.painter();
-            let mut left = place.left();
-            // With no scale bar, the line is at the middle.
-            let line = if scale.is_some() {
-                place.top() + 10.0
-            } else {
-                place.center().y
-            };
-            if let Some(mark) = mark {
-                let center = pos2(left + SAVE_MARK / 2.0, line);
-                let at = Rect::from_center_size(center, vec2(SAVE_MARK, SAVE_MARK));
-                painter.circle_filled(center, SAVE_MARK / 2.0 + 1.0, HALO);
-                save_mark(ui, at, mark, turn);
-                left += SAVE_MARK + 8.0;
-            }
-            let at = pos2(left, line);
-            halo_text(
-                painter,
-                at,
-                egui::Align2::LEFT_CENTER,
-                text,
-                theme::mono(),
-                theme::TEXT,
-            );
-            let Some(scale) = scale else {
-                return;
-            };
-            let bar = Rect::from_min_size(
-                pos2(place.left(), place.top() + 21.0),
-                vec2(scale.length as f32, 4.0),
-            );
-            painter.rect_filled(bar.expand(1.0), 0.0, HALO);
-            let part = bar.width() / 4.0;
-            for i in 0..4 {
-                let fill = if i % 2 == 0 {
-                    theme::TEXT
-                } else {
-                    theme::GROUND
-                };
-                let x = bar.left() + i as f32 * part;
-                let rect = Rect::from_min_max(pos2(x, bar.top()), pos2(x + part, bar.bottom()));
-                painter.rect_filled(rect, 0.0, fill);
-            }
-            let labels = bar.bottom() + 2.0;
-            let font = theme::small();
-            let zero = pos2(bar.left(), labels);
-            halo_text(
-                painter,
-                zero,
-                egui::Align2::LEFT_TOP,
-                "0",
-                font.clone(),
-                theme::MUTE,
-            );
-            let end = pos2(bar.right(), labels);
-            let label = scale.label();
-            halo_text(
-                painter,
-                end,
-                egui::Align2::CENTER_TOP,
-                &label,
-                font,
-                theme::MUTE,
-            );
-        });
+    let painter = ui.painter_at(place.expand(2.0));
+    let mut left = place.left();
+    // With no scale bar, the line is at the middle.
+    let line = if scale.is_some() {
+        place.top() + 10.0
+    } else {
+        place.center().y
+    };
+    if let Some(mark) = mark {
+        let center = pos2(left + SAVE_MARK / 2.0, line);
+        let at = Rect::from_center_size(center, vec2(SAVE_MARK, SAVE_MARK));
+        save_mark(ui, at, mark, turn);
+        left += SAVE_MARK + 8.0;
+    }
+    let at = pos2(left, line);
+    let left_center = egui::Align2::LEFT_CENTER;
+    painter.text(at, left_center, text, theme::mono(), theme::TEXT);
+    let Some(scale) = scale else {
+        return;
+    };
+    let bar = Rect::from_min_size(
+        pos2(place.left(), place.top() + 21.0),
+        vec2(scale.length as f32, 4.0),
+    );
+    let part = bar.width() / 4.0;
+    for i in 0..4 {
+        let fill = if i % 2 == 0 {
+            theme::TEXT
+        } else {
+            theme::track()
+        };
+        let x = bar.left() + i as f32 * part;
+        let rect = Rect::from_min_max(pos2(x, bar.top()), pos2(x + part, bar.bottom()));
+        painter.rect_filled(rect, 0.0, fill);
+    }
+    let labels = bar.bottom() + 2.0;
+    let font = theme::small();
+    let zero = pos2(bar.left(), labels);
+    painter.text(zero, egui::Align2::LEFT_TOP, "0", font.clone(), theme::MUTE);
+    let end = pos2(bar.right(), labels);
+    painter.text(
+        end,
+        egui::Align2::CENTER_TOP,
+        scale.label(),
+        font,
+        theme::MUTE,
+    );
 }
 
 /// The width of a button of the card of a held stroke, and the least width

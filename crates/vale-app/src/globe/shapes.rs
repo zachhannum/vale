@@ -55,15 +55,9 @@ impl Cap {
         (radius < FRAC_PI_2 - 1e-6).then_some(Cap { center, radius })
     }
 
-    /// The cap is all on the far side of the globe of `view` in `rect`, or
-    /// all off `area` by more than `margin` points.
-    pub fn hidden(
-        &self,
-        view: &GlobeView,
-        rect: egui::Rect,
-        area: egui::Rect,
-        margin: f32,
-    ) -> bool {
+    /// The cap is all on the far side of the globe of `view`, or all off
+    /// `rect` by more than `margin` points.
+    pub fn hidden(&self, view: &GlobeView, rect: egui::Rect, margin: f32) -> bool {
         let c = view.rot.mul_vec(self.center);
         if c[2].clamp(-1.0, 1.0).acos() - self.radius > FRAC_PI_2 {
             return true;
@@ -72,7 +66,7 @@ impl Cap {
         let radius = view.radius(rect);
         let reach = (1.0 - self.radius.cos() + self.radius.sin()) * radius + f64::from(margin);
         let pos = view.view_to_screen(rect, c);
-        f64::from(area.distance_to_pos(pos)) > reach
+        f64::from(rect.distance_to_pos(pos)) > reach
     }
 }
 
@@ -182,11 +176,7 @@ pub enum OnScreen {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ViewKey {
     pub view: GlobeView,
-    /// The globe fits this rectangle.
     pub rect: egui::Rect,
-    /// The part of the screen that the layer draws in. It can be larger
-    /// than `rect`.
-    pub area: egui::Rect,
     pub pixels_per_point: f32,
     /// How far the paints of the layer reach out from the geometry, in
     /// points. A part that is farther off the screen is not on it.
@@ -196,7 +186,7 @@ pub struct ViewKey {
 impl ViewKey {
     /// `cap` is `None` or shows in the view.
     pub fn shows(&self, cap: &Option<Cap>) -> bool {
-        cap.is_none_or(|cap| !cap.hidden(&self.view, self.rect, self.area, self.margin))
+        cap.is_none_or(|cap| !cap.hidden(&self.view, self.rect, self.margin))
     }
 }
 

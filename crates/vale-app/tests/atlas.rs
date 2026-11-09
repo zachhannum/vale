@@ -7035,7 +7035,7 @@ fn frames_snap_to_the_layout_grid_of_the_page_panel() {
 
 #[test]
 fn the_top_row_ends_with_the_layout_grid_add_and_the_panels_button() {
-    use vale_app::ui::pad::PANELS;
+    use vale_app::ui::pad::{DOCK, PANELS};
     for size in BOARDS.into_iter().chain([(393.0, 852.0), (852.0, 393.0)]) {
         let h = pad_with(state(), size);
         check_controls(&h, "top row");
@@ -7072,8 +7072,16 @@ fn the_top_row_ends_with_the_layout_grid_add_and_the_panels_button() {
             (Some(grid), Some(add)) => {
                 assert!(!compact, "{size:?}");
                 assert!(redo < grid && grid < add && add < panels, "{size:?}");
+                // The Dock button is between Add and the Panels button.
+                assert!(h.query_by_label(DOCK).is_some(), "{size:?}");
+                if let Some(dock) = x(DOCK) {
+                    assert!(add < dock && dock + 48.0 == panels, "{size:?}");
+                }
             }
-            (None, None) => assert!(compact, "{size:?}"),
+            (None, None) => {
+                assert!(compact, "{size:?}");
+                assert!(h.query_by_label(DOCK).is_none(), "{size:?}");
+            }
             other => panic!("{size:?}: {other:?}"),
         }
     }
@@ -10122,6 +10130,44 @@ fn a_long_press_on_a_tool_of_the_atlas_shows_its_name() {
     // The end of the hold does not choose the tool.
     assert_eq!(h.state().atlas.tool, AtlasTool::Frame);
     assert_eq!(h.state().pad.flyouts.tip, None);
+}
+
+#[test]
+fn the_page_stays_in_place_when_the_dock_shows_and_hides() {
+    use vale_app::ui::pad::DOCK;
+    use vale_app::ui::pad::atlas::OPEN_PAGES;
+    // A compact screen has a sheet in place of the dock.
+    for size in BOARDS.into_iter().filter(|s| s.0 >= 600.0) {
+        let what = format!("{size:?}");
+        let mut h = inset_pad(size);
+        h.state_mut().atlas.selection = AtlasSelection::None;
+        h.state_mut().pad.dock_mut().close_all();
+        h.run_steps(3);
+        let page = place(&h).rect;
+        h.state_mut().pad.dock_mut().open(Panel::Pages);
+        h.run_steps(3);
+        assert!(h.state().pad.dock_rect.is_some(), "{what}");
+        assert_eq!(place(&h).rect, page, "{what}");
+        // The page is at the left of a dock of the default width.
+        let dock = h.state().pad.dock_rect.unwrap();
+        assert_eq!(dock.width(), vale_app::ui::pad::panes::WIDTH, "{what}");
+        assert!(page.right() < dock.left(), "{what}");
+        // A wider dock does not move the page.
+        h.state_mut().pad.dock_mut().set_width(460.0);
+        h.run_steps(3);
+        assert_eq!(place(&h).rect, page, "{what}");
+        // The page pill is not below the dock.
+        let dock = h.state().pad.dock_rect.unwrap();
+        if let Some(pill) = control(&h, OPEN_PAGES) {
+            assert!(!dock.intersects(pill), "{what}");
+        }
+        tap(&mut h, DOCK);
+        assert!(h.state().pad.dock().collapsed, "{what}");
+        assert_eq!(place(&h).rect, page, "{what}");
+        tap(&mut h, DOCK);
+        assert!(!h.state().pad.dock().collapsed, "{what}");
+        assert_eq!(place(&h).rect, page, "{what}");
+    }
 }
 
 #[test]

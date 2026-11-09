@@ -141,12 +141,9 @@ pub const EXPORT_PAGE_PDF: &str = "Export page PDF…";
 pub const EXPORT_ATLAS_PDF: &str = "Export atlas PDF…";
 pub const CANCEL_EXPORT: &str = "Cancel export";
 
-/// The width of the actions card in the wide layout: six buttons and a
-/// divider. Each narrower layout moves one more button into the workspace
-/// menu.
 /// The width of the actions bar: Undo, Redo, the layout grid, Add, the
-/// Panels button, and two dividers.
-const ACTIONS_WIDTH: f32 = 5.0 * TOUCH + 2.0 * 9.0 + 8.0 * PAD;
+/// Dock button, the Panels button, and two dividers.
+const ACTIONS_WIDTH: f32 = 6.0 * TOUCH + 2.0 * 9.0 + 9.0 * PAD;
 const ADD_WIDTH: f32 = 220.0;
 const TOOL_CELLS: usize = 5;
 /// The smallest space at each side of the text of a tab.
@@ -319,10 +316,10 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     }
     super::dock_ui::handle(&ctx, state, &mut controls, &rects);
 
-    // The page fits the space between the cards. In the wide layout, the
-    // dock that shows has its own place at the right.
-    let dock = super::dock_ui::shown_width(&ctx, state, screen, rects.bands.right);
-    let mut free = page_space(&rects, dock);
+    // The page fits the space between the cards. The dock floats over the
+    // canvas, so the page stays in place when the dock shows, hides, or
+    // changes its width.
+    let mut free = page_space(&rects);
     if let Some(pill) = pill {
         free.max.y = free.max.y.min(pill.top() - GAP);
     }
@@ -352,15 +349,18 @@ fn layout(input: &Input) -> Rects {
 }
 
 /// The space between the cards that the page fits in, above the readout.
-/// The space of the page, at the left of the `dock` points of the dock that
-/// show.
-fn page_space(rects: &Rects, dock: f32) -> Rect {
+/// Outside a compact screen, it leaves room for a dock of the default
+/// width, whether the dock shows or not, so the page does not move with
+/// the dock.
+fn page_space(rects: &Rects) -> Rect {
     let left = match rects.row {
         true => rects.screen.left() + rects.bands.left + MARGIN,
         false => rects.tools.right() + GAP,
     };
-    let right =
-        (rects.screen.right() - rects.bands.right - MARGIN).min(rects.screen.right() - dock - GAP);
+    let right = match rects.class {
+        WidthClass::Compact => rects.screen.right() - rects.bands.right - MARGIN,
+        _ => rects.screen.right() - rects.bands.right - panes::WIDTH - GAP,
+    };
     let bottom = rects.readout.map_or(rects.panel_bottom, |r| r.top() - GAP);
     Rect::from_min_max(pos2(left, rects.column_top), pos2(right, bottom))
 }
@@ -460,6 +460,8 @@ fn top_row(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
                 }
                 divider(ui, card.left() + PAD + x + 2.0 * step + 4.5, card);
                 x += 2.0 * step + 9.0 + PAD;
+                super::dock_button(ui, state, controls, at(x));
+                x += step;
             }
             super::panels_button(ui, state, controls, at(x));
         },
@@ -697,8 +699,7 @@ fn page_pill(
     };
     // The pill is in the middle of the part of the page space that a dock
     // over the canvas leaves free.
-    let shown = super::dock_ui::shown_width(ctx, state, rects.screen, rects.bands.right);
-    let mut space = page_space(rects, shown);
+    let mut space = page_space(rects);
     if let Some(dock) = state.pad.dock_rect.filter(|d| d.bottom() > band.top()) {
         space.max.x = space.max.x.min(dock.left() - GAP).max(space.min.x);
     }
@@ -795,13 +796,32 @@ fn readout(ctx: &egui::Context, state: &AppState, rects: &Rects, pill: Option<Re
     if text.is_empty() && mark.is_none() {
         return;
     }
-    // The text ends at the page pill.
-    let buttons = Rect::from_min_size(band.min - vec2(12.0, 0.0), vec2(0.0, ROW));
-    let mut place = super::readout_place(band, buttons);
+    // In the row layout, the card is below the page pill. Otherwise it ends
+    // at the page pill.
+    let height = geometry::READOUT_HEIGHT;
+    let (top, card_height) = if band.height() >= ROW + height {
+        (band.bottom() - height, height)
+    } else {
+        (band.top(), ROW)
+    };
+    let mut right = band.right();
     if let Some(pill) = pill.filter(|_| !rects.row) {
-        place.max.x = place.max.x.min(pill.left() - GAP);
+        right = right.min(pill.left() - GAP);
     }
-    super::paint_readout(ctx, place, &text, None, mark, !state.headless);
+    let width = super::readout_width(ctx, &text, None, mark) + 2.0 * super::READOUT_PAD;
+    let width = width.min(right - band.left()).max(0.0);
+    let rect = Rect::from_min_size(pos2(band.left(), top), vec2(width, card_height));
+    let place = rect.shrink2(vec2(super::READOUT_PAD, 0.0));
+    let turn = !state.headless;
+    widgets::card(
+        ctx,
+        state.globe.backdrop(),
+        "pad-readout",
+        rect,
+        Order::Middle,
+        theme::CARD_RADIUS.into(),
+        |ui| super::paint_readout(ui, place, &text, None, mark, turn),
+    );
 }
 
 /// Closes a menu when a touch starts outside it and outside its button.

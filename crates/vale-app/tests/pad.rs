@@ -320,22 +320,6 @@ fn cards(h: &Pad) -> Vec<Rect> {
     cards
 }
 
-/// The rectangle that the globe fits: the screen, or on a wide screen, the
-/// part at the left of a dock that shows.
-fn globe_fit(h: &Pad) -> Rect {
-    let screen = h.state().pad.rects.unwrap().screen;
-    let dock = &h.state().pad.docks.world;
-    let wide = WidthClass::of(screen.width()) == WidthClass::Wide;
-    if wide && !dock.panes.is_empty() && !dock.collapsed {
-        Rect::from_min_max(
-            screen.min,
-            pos2(screen.right() - dock.width, screen.bottom()),
-        )
-    } else {
-        screen
-    }
-}
-
 #[test]
 fn the_canvas_fills_the_screen_and_the_panels_float_over_it() {
     for size in BOARDS {
@@ -347,12 +331,8 @@ fn the_canvas_fills_the_screen_and_the_panels_float_over_it() {
             tap(&mut h, "Brush settings");
         }
         assert!(!h.state().pad.panels.is_empty());
-        // On a wide screen, the globe moves to the middle of the canvas at
-        // the left of the dock.
-        assert_eq!(h.state().globe.rect, globe_fit(&h), "{size:?}");
-        if size == BOARDS[0] {
-            assert_eq!(h.state().globe.rect.right(), size.0 - 340.0);
-        }
+        // The dock floats over the canvas, so the globe stays in place.
+        assert_eq!(h.state().globe.rect, screen, "{size:?}");
         for card in cards(&h) {
             assert!(screen.contains_rect(card), "{size:?}: {card:?}");
         }
@@ -455,8 +435,6 @@ fn check_controls(h: &Pad, what: &str) {
                     "Brush",
                     panels_menu::CLOSE_ALL,
                     panels_menu::RESET_LAYOUT,
-                    panels_menu::HIDE_DOCK,
-                    panels_menu::SHOW_DOCK,
                 ];
                 let add = add || in_panels && tiles.contains(&name);
                 let pane_menu = in_pane_menu
@@ -4138,9 +4116,9 @@ fn the_top_row_and_the_panels_match_the_landscape_board() {
     assert!(view.contains_rect(control(&h, "Globe").unwrap()));
     assert_eq!(
         r.actions,
-        Rect::from_min_size(pos2(1033.0, 28.0), vec2(161.0, 52.0))
+        Rect::from_min_size(pos2(985.0, 28.0), vec2(209.0, 52.0))
     );
-    // Undo, Redo, a line, and the Panels button.
+    // Undo, Redo, a line, the Dock button, and the Panels button.
     assert_eq!(control(&h, PANELS).unwrap().min, pos2(1146.0, 32.0));
     for name in ["Layers", "Toolbox", select::ATTRIBUTES] {
         assert!(control(&h, name).is_none(), "{name}");
@@ -4313,7 +4291,8 @@ fn the_layout_follows_the_turn_of_the_ipad() {
     for size in [BOARDS[1], BOARDS[3], BOARDS[0]] {
         h.set_size(size.into());
         h.run_steps(3);
-        assert_eq!(h.state().globe.rect, globe_fit(&h));
+        let screen = Rect::from_min_size(Pos2::ZERO, size.into());
+        assert_eq!(h.state().globe.rect, screen);
         check_controls(&h, &format!("turned to {size:?}"));
     }
     assert!(h.state().pad.is_open(Panel::Brush));
@@ -13981,8 +13960,6 @@ fn the_brush_pane_stays_with_a_tool_that_has_no_settings() {
 fn a_drag_of_the_handle_to_the_edge_collapses_the_dock_and_the_edge_tab_shows_it() {
     use vale_app::ui::pad::dock_ui::{DOCK_WIDTH, SHOW_DOCK};
     let mut h = docked(BOARDS[0], &[&[Panel::Layers]]);
-    let open = h.state().globe.rect;
-    assert_eq!(open.right(), 1194.0 - 340.0);
     let handle = control(&h, DOCK_WIDTH).unwrap().center();
     drag(&mut h, handle, pos2(1194.0, handle.y), None);
     let dock = &h.state().pad.docks.world;
@@ -13990,8 +13967,6 @@ fn a_drag_of_the_handle_to_the_edge_collapses_the_dock_and_the_edge_tab_shows_it
     assert_eq!(dock.panes.len(), 1);
     assert!(h.state().pad.panels.is_empty());
     assert!(control(&h, DOCK_WIDTH).is_none());
-    // The globe takes the full width.
-    assert_eq!(h.state().globe.rect.right(), 1194.0);
     check_controls(&h, "a collapsed dock");
     // A tap on the tab at the edge shows the dock.
     let tab = control(&h, SHOW_DOCK).unwrap();
@@ -14000,7 +13975,6 @@ fn a_drag_of_the_handle_to_the_edge_collapses_the_dock_and_the_edge_tab_shows_it
     tap(&mut h, SHOW_DOCK);
     assert!(!h.state().pad.docks.world.collapsed);
     assert!(panel(&h, Panel::Layers).is_some());
-    assert_eq!(h.state().globe.rect, open);
     // A drag of the tab to the left shows it too.
     h.state_mut().pad.docks.world.collapsed = true;
     h.run_steps(3);
@@ -14010,33 +13984,95 @@ fn a_drag_of_the_handle_to_the_edge_collapses_the_dock_and_the_edge_tab_shows_it
 }
 
 #[test]
-fn the_panels_menu_hides_and_shows_the_dock_and_a_panel_shows_it() {
-    use vale_app::ui::pad::panels_menu::{HIDE_DOCK, SHOW_DOCK};
-    let mut h = pad(BOARDS[0]);
-    // An empty dock has no row.
-    tap(&mut h, PANELS);
-    assert!(control(&h, HIDE_DOCK).is_none());
-    tap(&mut h, PANELS);
-    open_panel(&mut h, "Layers");
-    tap(&mut h, PANELS);
-    tap(&mut h, HIDE_DOCK);
-    assert!(h.state().pad.docks.world.collapsed);
-    tap(&mut h, PANELS);
-    tap(&mut h, SHOW_DOCK);
-    assert!(!h.state().pad.docks.world.collapsed);
-    // A panel that opens shows the dock.
-    tap(&mut h, PANELS);
-    tap(&mut h, HIDE_DOCK);
-    toolbox(&mut h);
-    assert!(!h.state().pad.docks.world.collapsed);
-    assert_eq!(dock_tabs(&h), [[Panel::Layers], [Panel::Toolbox]]);
-    // The tile of an open panel of a collapsed dock shows it, and does not
-    // close it.
-    h.state_mut().pad.docks.world.collapsed = true;
-    h.run_steps(2);
-    open_panel(&mut h, "Layers");
-    assert!(!h.state().pad.docks.world.collapsed);
-    assert!(h.state().pad.is_open(Panel::Layers));
+fn the_dock_button_hides_and_shows_the_dock_and_is_off_with_no_panes() {
+    use vale_app::ui::pad::DOCK;
+    use vale_app::ui::pad::dock_ui::{HIDE_DOCK, SHOW_DOCK};
+    for size in [BOARDS[0], BOARDS[1]] {
+        let mut h = pad(size);
+        let what = format!("{size:?}");
+        // With no panes, the button is off.
+        assert!(control(&h, DOCK).is_none(), "{what}");
+        assert!(disabled(&h, DOCK), "{what}");
+        // The Dock button is between Redo and the Panels button. Undo,
+        // Redo, and a line are at its left.
+        let actions = h.state().pad.rects.unwrap().actions;
+        open_panel(&mut h, "Layers");
+        let button = control(&h, DOCK).expect("a Dock button");
+        let panels = control(&h, PANELS).unwrap();
+        assert_eq!(
+            button.left(),
+            actions.left() + 4.0 + 2.0 * 48.0 + 9.0 + 4.0,
+            "{what}"
+        );
+        assert_eq!(button.right() + 4.0, panels.left(), "{what}");
+        assert_eq!(button.size(), vec2(44.0, 44.0), "{what}");
+        assert_eq!(toggled(&h, DOCK), Some(true), "{what}");
+        // The Panels menu has no row of the dock.
+        tap(&mut h, PANELS);
+        assert!(h.state().pad.panels_menu, "{what}");
+        for name in [HIDE_DOCK, SHOW_DOCK] {
+            assert!(control(&h, name).is_none(), "{what}: {name}");
+            assert!(h.query_by_label(name).is_none(), "{what}: {name}");
+        }
+        tap(&mut h, PANELS);
+        // A tap hides the dock, and a second tap shows it.
+        tap(&mut h, DOCK);
+        assert!(h.state().pad.docks.world.collapsed, "{what}");
+        assert_eq!(toggled(&h, DOCK), Some(false), "{what}");
+        assert!(h.state().pad.panels.is_empty(), "{what}");
+        tap(&mut h, DOCK);
+        assert!(!h.state().pad.docks.world.collapsed, "{what}");
+        assert_eq!(toggled(&h, DOCK), Some(true), "{what}");
+        assert!(panel(&h, Panel::Layers).is_some(), "{what}");
+        // A panel that opens shows the dock.
+        tap(&mut h, DOCK);
+        toolbox(&mut h);
+        assert!(!h.state().pad.docks.world.collapsed, "{what}");
+        assert_eq!(dock_tabs(&h), [[Panel::Layers], [Panel::Toolbox]]);
+        // The tile of an open panel of a collapsed dock shows it, and does
+        // not close it.
+        tap(&mut h, DOCK);
+        open_panel(&mut h, "Layers");
+        assert!(!h.state().pad.docks.world.collapsed, "{what}");
+        assert!(h.state().pad.is_open(Panel::Layers), "{what}");
+    }
+    // A phone has no Dock button.
+    let h = phone_pad();
+    assert!(h.query_by_label(DOCK).is_none());
+}
+
+#[test]
+fn the_globe_stays_in_place_when_the_dock_shows_and_hides() {
+    use vale_app::ui::pad::DOCK;
+    for size in BOARDS {
+        for view in WORLD_VIEWS {
+            let mut h = pad(size);
+            let what = format!("{size:?} {view:?}");
+            h.state_mut().globe.world_view = view;
+            h.run_steps(2);
+            let screen = Rect::from_min_size(Pos2::ZERO, size.into());
+            let rect = h.state().globe.rect;
+            assert_eq!(rect, screen, "{what}");
+            let middle = |h: &Pad| {
+                let globe = &h.state().globe;
+                globe.unproject(globe.rect.center())
+            };
+            let center = middle(&h);
+            open_panel(&mut h, "Layers");
+            assert_eq!(h.state().globe.rect, rect, "{what}");
+            assert_eq!(middle(&h), center, "{what}");
+            if WidthClass::of(size.0) == WidthClass::Compact {
+                continue;
+            }
+            tap(&mut h, DOCK);
+            assert!(h.state().pad.docks.world.collapsed, "{what}");
+            assert_eq!(h.state().globe.rect, rect, "{what}");
+            assert_eq!(middle(&h), center, "{what}");
+            tap(&mut h, DOCK);
+            assert_eq!(h.state().globe.rect, rect, "{what}");
+            assert_eq!(middle(&h), center, "{what}");
+        }
+    }
 }
 
 #[test]
@@ -14172,6 +14208,43 @@ fn a_hold_on_a_control_of_the_column_shows_its_name() {
 }
 
 #[test]
+fn the_readout_is_one_card_with_the_view_buttons_the_place_and_the_scale_bar() {
+    use vale_app::ui::pad::geometry::READOUT_HEIGHT;
+    for size in BOARDS.into_iter().chain([(393.0, 852.0)]) {
+        for view in WORLD_VIEWS {
+            let mut h = pad(size);
+            let what = format!("{size:?} {view:?}");
+            h.state_mut().globe.world_view = view;
+            let center = h.state().globe.rect.center();
+            h.event(egui::Event::PointerMoved(center));
+            h.run_steps(2);
+            assert!(h.state().pad.readout_scale.is_some(), "{what}");
+            let rects = h.state().pad.rects.unwrap();
+            let band = rects.readout.unwrap();
+            let card = h.state().pad.view_rect.unwrap();
+            assert!(band.contains_rect(card), "{what}");
+            assert_eq!(card.min, band.min, "{what}");
+            let last = control(&h, GRATICULE).unwrap();
+            let last = control(&h, "Projection").unwrap_or(last);
+            for name in ["Globe", "Flat", GRATICULE] {
+                let button = control(&h, name).unwrap();
+                assert!(card.contains_rect(button), "{what}: {name}");
+                assert_eq!(button.top(), card.top() + 4.0, "{what}: {name}");
+            }
+            if rects.row {
+                // On a phone, the text is below the buttons.
+                assert_eq!(card.height(), 52.0 + READOUT_HEIGHT, "{what}");
+            } else {
+                // The text is at the right of the buttons, in the same card.
+                assert_eq!(card.height(), 52.0, "{what}");
+                assert!(card.right() >= last.right() + 80.0, "{what}");
+            }
+            check_controls(&h, &what);
+        }
+    }
+}
+
+#[test]
 fn the_readout_shows_the_place_and_a_scale_bar_with_a_round_distance() {
     for size in BOARDS {
         let mut h = pad(size);
@@ -14205,7 +14278,7 @@ fn the_readout_shows_the_place_and_a_scale_bar_with_a_round_distance() {
             "{what}: {miles}"
         );
         // The readout is at the lower left of the canvas, at the right of
-        // the tool column, and it has no card.
+        // the tool column.
         let r = h.state().pad.rects.unwrap();
         let readout = r.readout.unwrap();
         if !r.row {

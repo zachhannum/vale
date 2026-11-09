@@ -28,14 +28,14 @@ Where the pictures differ from the rules below, they show an earlier state with 
 The chrome sits on the left edge and the right edge of the screen, so the canvas gets more room. Each part touches its edge with no margin, and only its inner corners are round. The top of the screen has the status bar of the system, so no part touches the top edge. The top row is 4 points below the status bar.
 
 - The world menu is at the left end of the top row. It has the Worlds button, with a folder icon, and the workspace switch: a globe button for World and a book button for Atlas.
-- Undo, Redo, and the Panels button are at the right end of the top row. The Atlas workspace also has the layout grid and Add there.
+- Undo, Redo, the Dock button, and the Panels button are at the right end of the top row. The Atlas workspace also has the layout grid and Add there.
 - The tool column is on the left edge.
 - The dock and the Panels menu are on the right edge.
 - The readout is at the lower left of the canvas, at the right of the tool column.
 
 The tool column is 56 points wide. It holds the tool cells, a divider, and the controls of the active tool. The controls are vertical sliders and cells, and the Brush button is last. Each cell shows an icon only. A long press on a tool or a control shows a tooltip with its name at its right side. The tooltip of a tool with modes also says "Hold to change mode".
 
-The readout has no card. It shows the place and a scale bar, with a dark halo. In the World workspace, a view card at its left holds Globe, Flat, and the graticule, and in the flat view Projection, Recenter, and Reset. In the Atlas workspace, the page pill at the bottom center holds the previous page, the page number, the page size, and the next page.
+The readout is a card with a blur, as the other cards. In the World workspace, it holds Globe, Flat, and the graticule, and in the flat view Projection, Recenter, and Reset. At the right of these buttons, it shows the place and a scale bar. In the Atlas workspace, the page pill at the bottom center holds the previous page, the page number, the page size, and the next page.
 
 ## Dock
 
@@ -54,11 +54,12 @@ Each pane has a header with the title or the tabs, and the action of its panel. 
 - A drag of the empty part of a header moves the pane to another place in the dock.
 - A drag of a tab onto the tab row of another pane adds it as a tab. A drag of a tab to a place in the dock makes it a pane of its own.
 - With no pane open, the dock is not there.
-- The dock can collapse. It slides off the right edge and keeps its layout. A drag of the width handle past the narrowest width collapses it.
+- The dock can collapse. It slides off the right edge and keeps its layout. The Dock button in the top row collapses the dock and shows it again. The button is tinted while the dock shows. A drag of the width handle past the narrowest width also collapses the dock.
+- The dock floats over the canvas. The globe and the page do not move when the dock shows, hides, or changes its width. The page leaves room for a dock of the default width.
 - A slim tab at the middle of the right edge shows the dock again, with a tap or a drag to the left. A panel that opens also shows the dock.
 - Each workspace keeps its own dock on the device. The project file does not keep it.
 
-The Panels button opens the Panels menu, which has a tile for each panel of the workspace. A tinted tile is an open panel. A tap on a tile opens the panel in the dock or brings it into view, and a tap on an open tile closes it. A tile is off when its panel does nothing in the workspace. Below the tiles, "Hide dock" or "Show dock" collapses or shows the dock. "Close all" closes each panel, and "Reset layout" closes each panel and puts the dock back in its first state. If a frame is selected, Frame then opens.
+The Panels button opens the Panels menu, which has a tile for each panel of the workspace. A tinted tile is an open panel. A tap on a tile opens the panel in the dock or brings it into view, and a tap on an open tile closes it. A tile is off when its panel does nothing in the workspace. Below the tiles, "Close all" closes each panel, and "Reset layout" closes each panel and puts the dock back in its first state. If a frame is selected, Frame then opens.
 
 The Atlas menu has two groups. Selection holds Frame, Projection, Layers, and Labels. Atlas holds Pages, Attributes, and Brush. The frame tiles are always on.
 

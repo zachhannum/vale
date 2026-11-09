@@ -59,8 +59,11 @@ pub const TRACK_MIN: f32 = 90.0;
 /// The space from the tool column to the readout.
 pub const READOUT_GAP: f32 = 16.0;
 /// The width of the actions bar of the World workspace: Undo, Redo, a
-/// divider, and the Panels button.
-pub const ACTIONS_WIDTH: f32 = 3.0 * TOUCH + 3.0 * PAD + 9.0 + 2.0 * PAD;
+/// divider, the Dock button, and the Panels button. A compact screen has
+/// no Dock button.
+pub const ACTIONS_WIDTH: f32 = 4.0 * TOUCH + 4.0 * PAD + 9.0 + 2.0 * PAD;
+/// The width of a button in a row of buttons, with its space.
+pub const BUTTON_STEP: f32 = TOUCH + PAD;
 /// The space from the status bar to the top row.
 pub const TOP_GAP: f32 = 4.0;
 /// The width of the Panels menu, without the band at the right edge.
@@ -280,8 +283,12 @@ pub fn layout(input: &Input) -> Rects {
         pos2(edge, top),
         vec2(bands.left + input.workspace_width, ROW),
     );
+    let actions_width = match class {
+        WidthClass::Compact => ACTIONS_WIDTH - BUTTON_STEP,
+        _ => ACTIONS_WIDTH,
+    };
     let actions = Rect::from_min_max(
-        pos2(screen.right() - bands.right - ACTIONS_WIDTH, top),
+        pos2(screen.right() - bands.right - actions_width, top),
         pos2(screen.right(), top + ROW),
     );
 
@@ -569,7 +576,7 @@ mod tests {
         let r = layout(&board(1194.0, 834.0));
         assert_eq!(r.class, WidthClass::Wide);
         assert_eq!(r.workspace, rect(0.0, 28.0, 149.0, 52.0));
-        assert_eq!(r.actions, rect(1033.0, 28.0, 161.0, 52.0));
+        assert_eq!(r.actions, rect(985.0, 28.0, 209.0, 52.0));
         // The tools, the divider, the two sliders, and the Brush button.
         let content = 12.0 + 7.0 * 44.0 + 13.0 + 2.0 * (TRACK + SLIDER_TEXT);
         assert_eq!(r.tools, rect(0.0, 92.0, COLUMN, content));
@@ -585,7 +592,7 @@ mod tests {
     fn the_portrait_board_has_the_measured_places() {
         let r = layout(&board(834.0, 1194.0));
         assert_eq!(r.class, WidthClass::Medium);
-        assert_eq!(r.actions, rect(673.0, 28.0, 161.0, 52.0));
+        assert_eq!(r.actions, rect(625.0, 28.0, 209.0, 52.0));
         assert_eq!(r.dock.left(), 494.0);
         assert_eq!(r.tools.width(), COLUMN);
         assert_eq!(r.brush_card, BrushCard::Full(TRACK));
