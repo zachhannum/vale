@@ -15,8 +15,8 @@ use super::select;
 use super::world_form::{self, WorldForm};
 use super::{Action, AppState, Note, SaveMark, Workspace, globe, is_height, panels};
 use crate::globe::brush::{
-    BASIN_DENSITY, CHANNEL_KM, EROSION, FLOODPLAIN_WIDTH_KM, FLOW, NOISE_GRAIN, NOISE_M,
-    RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM,
+    BASIN_DENSITY, CHANNEL_KM, EROSION, FLOODPLAIN_WIDTH_KM, FLOW, GLACIAL_DEPTH_M, NOISE_GRAIN,
+    NOISE_M, RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM,
     RIDGE_SPREAD_MM, SCALE_KM, SEED, SHAPE, STRENGTH_M, TALUS_DEG, TERRACE_STEP_M, WARP_KM,
     needs_height, shape_text,
 };
@@ -198,8 +198,9 @@ pub const SCULPT_MODES: [(&str, Icon, Mode); 7] = [
     ("Noise", Icon::Noise, Mode::Noise),
 ];
 /// The modes of the Terrain cell.
-pub const TERRAIN_MODES: [(&str, Icon, Mode); 11] = [
+pub const TERRAIN_MODES: [(&str, Icon, Mode); 12] = [
     ("Carve", Icon::Carve, Mode::Carve),
+    ("Glacial", Icon::Glacial, Mode::Glacial),
     ("Ridge", Icon::Ridge, Mode::Ridge),
     ("Deposit", Icon::Deposit, Mode::Deposit),
     ("Terrace", Icon::Terrace, Mode::Terrace),
@@ -2207,7 +2208,10 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
         apply(number.slider(ui, controls), &mut brush.basin_density_km);
         seed_stepper(ui, controls, &mut world.seed);
     }
-    if matches!(brush.mode, Mode::Carve | Mode::Erode | Mode::Basin) {
+    if matches!(
+        brush.mode,
+        Mode::Carve | Mode::Glacial | Mode::Erode | Mode::Basin
+    ) {
         let name = "Brush channel width";
         let number = km(name, "Channel width", brush.channel_km, CHANNEL_KM).nice();
         apply(number.stepper(ui, controls), &mut brush.channel_km);
@@ -2216,6 +2220,13 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
         let value = brush.floodplain_km;
         let number = km("Brush floodplain", "Floodplain", value, FLOODPLAIN_WIDTH_KM).step(1.0);
         apply(number.stepper(ui, controls), &mut brush.floodplain_km);
+    }
+    if brush.mode == Mode::Glacial {
+        let value = brush.glacial_depth_m;
+        let number = meters("Brush depth", "Depth", value, GLACIAL_DEPTH_M)
+            .step(50.0)
+            .default(defaults.glacial_depth_m);
+        apply(number.stepper(ui, controls), &mut brush.glacial_depth_m);
     }
     if matches!(brush.mode, Mode::Uplift | Mode::Range) {
         let number = Number::new("Brush erosion", brush.erosion, EROSION)

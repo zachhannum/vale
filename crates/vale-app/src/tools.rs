@@ -18,12 +18,13 @@ use crate::pen::PenSwitch;
 const TOOLS_FILE: &str = "tools.txt";
 
 /// The brush modes, with their names in the file.
-const MODES: [(Mode, &str); 16] = [
+const MODES: [(Mode, &str); 17] = [
     (Mode::Raise, "raise"),
     (Mode::Lower, "lower"),
     (Mode::Smooth, "smooth"),
     (Mode::Flatten, "flatten"),
     (Mode::Carve, "carve"),
+    (Mode::Glacial, "glacial"),
     (Mode::Ridge, "ridge"),
     (Mode::Deposit, "deposit"),
     (Mode::Erode, "erode"),
@@ -47,7 +48,7 @@ const POLYGON_MODES: [(PolygonMode, &str); 3] = [
 type Field<T> = (&'static str, fn(&mut BrushSettings) -> &mut T);
 
 /// The brush settings that one mode uses and all modes share.
-const FLOATS: [Field<f64>; 19] = [
+const FLOATS: [Field<f64>; 20] = [
     ("noise_raise_m", |b| &mut b.noise_raise_m),
     ("noise_lower_m", |b| &mut b.noise_lower_m),
     ("talus_deg", |b| &mut b.talus_deg),
@@ -65,6 +66,7 @@ const FLOATS: [Field<f64>; 19] = [
     ("basin_density_km", |b| &mut b.basin_density_km),
     ("channel_km", |b| &mut b.channel_km),
     ("floodplain_km", |b| &mut b.floodplain_km),
+    ("glacial_depth_m", |b| &mut b.glacial_depth_m),
     ("floor_m", |b| &mut b.floor_m),
     ("ceiling_m", |b| &mut b.ceiling_m),
 ];
@@ -589,6 +591,9 @@ mod tests {
         globe.brush.hardness = 0.75;
         globe.brush.noise_ridged = true;
         globe.brush.channel_km = 2.5;
+        globe.brush.glacial_depth_m = 1200.0;
+        globe.choose(Choice::Brush(Mode::Glacial));
+        globe.brush.size_points = 60.0;
         globe.choose(Choice::Tool(Tool::Line));
         globe.line.smoothing = 0.1;
         globe.line.fit = true;
@@ -618,6 +623,7 @@ mod tests {
         assert_eq!(next.brush.lock, Some(0.25));
         assert!(next.brush.noise_ridged);
         assert_eq!(next.brush.channel_km, 2.5);
+        assert_eq!(next.brush.glacial_depth_m, 1200.0);
         assert_eq!(next_snap, snap);
         assert!(next.line.fit);
         assert_eq!(next.line.polygon_mode, PolygonMode::Subtract);
@@ -625,6 +631,8 @@ mod tests {
 
         next.choose(Choice::Brush(Mode::Erode));
         assert_eq!((next.brush.size_points, next.brush.hardness), (8.0, 0.75));
+        next.choose(Choice::Brush(Mode::Glacial));
+        assert_eq!(next.brush.size_points, 60.0);
         next.choose(Choice::Tool(Tool::Line));
         assert_eq!(next.line.smoothing, 0.1);
         next.choose(Choice::Tool(Tool::Polygon));

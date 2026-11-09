@@ -109,6 +109,7 @@ const PUSH = 12u;
 const NOISE = 13u;
 const TERRACE = 14u;
 const SHAPE = 15u;
+const GLACIAL = 16u;
 
 // The same number as `WARP_MARGIN` in `heightmap.rs`.
 const WARP_MARGIN = 3.0;
@@ -656,6 +657,65 @@ fn lowered(source: u32, bin: u32, p: vec3<f32>, old: f32, rate: f32, depth: f32)
     }
     if has_plain {
         low = min(low, toward(old, plain.x, plain.y));
+    }
+    return low;
+}
+
+// The same numbers as in `channel.rs`.
+const VALLEY_WIDTH_FACTOR = 10.0;
+const VALLEY_MAX_KM = 30.0;
+const VALLEY_FLOOR_PART = 0.4;
+const VALLEY_WALL_RISE = 2.0;
+const REFERENCE_AREA_KM2 = 1.0e6;
+
+// The half-width of a glacial valley, as in `GlacialCut::half_width`.
+fn valley_half(area: f32) -> f32 {
+    let width = group.channel.x * sqrt(max(area, 0.0) / group.channel.y);
+    let largest = 0.5 * VALLEY_MAX_KM * sqrt(max(area, 0.0) / REFERENCE_AREA_KM2);
+    return max(min(0.5 * VALLEY_WIDTH_FACTOR * width, largest), 0.5 * group.texel);
+}
+
+// The level of the floor of a glacial valley, as in `GlacialCut::floor`.
+fn valley_floor(level: f32, size: f32, strength: f32, depth: f32) -> f32 {
+    let drop = strength * size;
+    let land = level - drop;
+    if drop <= 0.0 {
+        return level;
+    }
+    let sea = f32(group.sea);
+    if land >= sea {
+        return land;
+    }
+    return sea - depth * min((sea - land) / drop, 1.0);
+}
+
+// The level of a texel at `old` after a glacial stamp on the curves of one
+// bin. The steps are those of `ChannelLines::glacial`.
+fn glacial_lowered(
+    source: u32,
+    bin: u32,
+    p: vec3<f32>,
+    old: f32,
+    amount: f32,
+    strength: f32,
+    depth: f32,
+) -> f32 {
+    let count = index_of(source, 0u);
+    let first = index_of(source, 1u + bin);
+    let last = index_of(source, 2u + bin);
+    var low = old;
+    for (var i = first; i < last; i++) {
+        let q = nearest(curve_of(source, index_of(source, 1u + count + i)), p);
+        let half = valley_half(q.z);
+        let bottom = valley_floor(q.y, channel_size(q.z), strength, depth);
+        let s = q.x / half;
+        var goal = bottom;
+        if s > VALLEY_FLOOR_PART {
+            let t = min((s - VALLEY_FLOOR_PART) / (1.0 - VALLEY_FLOOR_PART), 1.0);
+            goal = bottom + VALLEY_WALL_RISE * (q.y - bottom) * t * t;
+        }
+        let weight = 1.0 - clamp((q.x - half) / group.texel, 0.0, 1.0);
+        low = min(low, toward(old, goal, amount * (q.y - bottom) * weight));
     }
     return low;
 }
@@ -2093,7 +2153,7 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<u32> {
     var river = vec2<f32>(0.0);
     var lines = vec3<u32>(0u);
     var p = vec3<f32>(0.0);
-    if group.mode == CARVE {
+    if group.mode == CARVE || group.mode == GLACIAL {
         lines = lines_at(at);
         p = normalize(texel_dir(group.face, at));
     }
@@ -2165,6 +2225,21 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<u32> {
                 if lines.z > 0u {
                     let rate = amount * stamp.strength;
                     change = lowered(lines.x, lines.y, p, old, rate, stamp.strength) - old;
+                }
+            }
+            case GLACIAL {
+                // With no channel near, the level stays.
+                if lines.z > 0u {
+                    let low = glacial_lowered(
+                        lines.x,
+                        lines.y,
+                        p,
+                        old,
+                        amount,
+                        stamp.strength,
+                        stamp.level,
+                    );
+                    change = low - old;
                 }
             }
             case RIDGE {

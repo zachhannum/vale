@@ -999,6 +999,7 @@ impl GpuHeightmap {
                     Mode::Smooth => 2,
                     Mode::Flatten => 3,
                     Mode::Carve => 4,
+                    Mode::Glacial => 16,
                     Mode::Erode | Mode::OceanRidge | Mode::Range | Mode::Basin => 5,
                     Mode::Weather => 6,
                     Mode::Warp => 7,

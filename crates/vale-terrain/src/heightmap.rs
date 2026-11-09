@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use crate::bands::{Bands, SEA_LEVEL};
 use crate::basin::BasinCut;
-use crate::channel::{ChannelCut, ChannelShape};
+use crate::channel::{ChannelCut, ChannelShape, GlacialCut};
 use crate::cube::{ELEV_MAX, ELEV_MIN, FACES, face_dir, face_of, meters_to_level, unwarp, warp};
 use crate::erode::ErodeStep;
 use crate::flow::{ChannelMap, ChannelWindow};
@@ -54,6 +54,15 @@ pub enum Mode {
     /// river on a low slope goes down to the floodplain level. The mode only
     /// lowers the ground, and land does not go below sea level.
     Carve,
+    /// Cuts a glacial valley along each river of the channel lines, with a
+    /// flat floor and steep sides. The valley is `VALLEY_WIDTH_FACTOR` times
+    /// as wide as the channel of `Stamp::channel`, and `VALLEY_MAX_KM` wide
+    /// at most at the reference area. The floor is
+    /// `Stamp::strength` below the river level for the largest rivers, and a
+    /// quarter of that for the smallest. A floor below sea level goes to
+    /// `Stamp::level` below sea level at most, at the coast. The mode only
+    /// lowers the ground.
+    Glacial,
     /// Raises the land by an amount that grows with the distance from the
     /// nearest river of the channel map, up to `RIDGE_REACH`. The ground on a
     /// river and the sea floor do not change.
@@ -161,7 +170,9 @@ pub struct Stamp {
     pub flow: f64,
     pub mode: Mode,
     /// The target of the flatten mode. In the terrace mode, the height
-    /// between two step levels, in 16-bit steps.
+    /// between two step levels, in 16-bit steps. In the glacial mode, the
+    /// depth of the valley floor below sea level at the coast, in 16-bit
+    /// steps.
     pub level: u16,
     /// The largest change of the raise and lower modes, in 16-bit steps. In
     /// the noise mode, the largest rise. In the warp mode, the largest offset
@@ -1093,9 +1104,17 @@ impl Heightmap {
             depth: stamp.strength,
             texel: FRAC_PI_2 / n,
         };
-        // The level of a texel after the cut of the channels. The window
-        // comes first. With no channel map, no river is near.
-        let carve = |x: usize, y: usize, fu: f64, fv: f64, old: f64, rate: f64| {
+        let glacial = GlacialCut {
+            shape: stamp.channel,
+            strength: stamp.strength,
+            depth: f64::from(stamp.level),
+            sea,
+            texel: FRAC_PI_2 / n,
+        };
+        // The channel lines at a texel, its bin, and the direction of the
+        // texel. The window comes first. With no channel map, no river is
+        // near.
+        let lines_at = |x: usize, y: usize, fu: f64, fv: f64| {
             let p = face_dir(face, fu, fv);
             let in_window = window.as_ref().and_then(|channels| {
                 let window = channels.window();
@@ -1109,12 +1128,12 @@ impl Heightmap {
                 }
                 let lines = channels.lines();
                 let bin = lines.window_bin(0.5 * (u + 0.5), 0.5 * (v + 0.5))?;
-                Some(lines.lowered(bin, p, old, rate, &cut))
+                Some((lines, bin, p))
             });
             in_window.or_else(|| {
                 let lines = channels.as_ref()?.lines();
                 let bin = lines.texel_bin(face, x, y, self.n)?;
-                Some(lines.lowered(bin, p, old, rate, &cut))
+                Some((lines, bin, p))
             })
         };
         let octaves = noise_octaves(stamp.scale, self.n);
@@ -1213,10 +1232,17 @@ impl Heightmap {
                             }
                             Mode::Carve => {
                                 let rate = amount * stamp.strength;
-                                let Some(new) = carve(x, y, fu, fv, old, rate) else {
+                                let Some((lines, bin, p)) = lines_at(x, y, fu, fv) else {
                                     continue;
                                 };
+                                let new = lines.lowered(bin, p, old, rate, &cut);
                                 new.round().max(old.min(sea))
+                            }
+                            Mode::Glacial => {
+                                let Some((lines, bin, p)) = lines_at(x, y, fu, fv) else {
+                                    continue;
+                                };
+                                lines.glacial(bin, p, old, amount, &glacial)
                             }
                             Mode::Ridge => {
                                 if old <= sea {
@@ -1845,7 +1871,9 @@ fn save_tile(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::channel::{ChannelLines, channel_size};
+    use crate::channel::{
+        ChannelLines, VALLEY_FLOOR_PART, VALLEY_MAX_KM, VALLEY_WIDTH_FACTOR, channel_size,
+    };
     use crate::flow::tests::equator_valley;
     use crate::flow::{
         CoarseHeights, FlowMap, NONE, OUT, Window, WindowHeights, channel_map, drain, sea,
@@ -2478,13 +2506,19 @@ mod tests {
     /// The land of `valley` with `n` texels along one side of a face, and
     /// with no channel map.
     fn valley_land(n: usize) -> Heightmap {
+        valley_land_at(n, 200.0)
+    }
+
+    /// The land of `valley_land` with the river `coast_m` meters above sea
+    /// level at the coast.
+    fn valley_land_at(n: usize, coast_m: f64) -> Heightmap {
         let mut map = Heightmap::new(n, meters_to_level(-1000.0));
         let data: Vec<u16> = (0..n * n)
             .map(|i| {
                 let (lon, lat) = dir_to_lonlat(map.texel_dir(0, i % n, i / n));
                 let across = (lat - RIVER_LAT).abs();
                 meters_to_level(if lon.abs() < 30.0 && across < 20.0 {
-                    200.0 + 20.0 * (lon + 30.0) + 60.0 * across
+                    coast_m + 20.0 * (lon + 30.0) + 60.0 * across
                 } else {
                     -1000.0
                 })
@@ -2980,6 +3014,196 @@ mod tests {
         map.set_channels(None);
         let before = face_levels(&map);
         assert!(map.stamp(&carve(0.0, RIVER_LAT, 0.05)) > 0);
+        assert!(face_levels(&map) == before);
+    }
+
+    /// The land of `valley` with 1024 texels along one side of a face, with
+    /// its channel map, and the shape of the glacial stamps on it. The valley
+    /// of the river at longitude 0 is several texels wide.
+    /// `coast_m` is the height of the river at the coast, as in
+    /// `valley_land_at`.
+    fn glacial_valley(coast_m: f64) -> (Heightmap, ChannelShape) {
+        let mut map = valley_land_at(1024, coast_m);
+        let channels = channel_map(&CoarseHeights::new(&map), 6371.0);
+        map.set_channels(Some(Arc::new(channels)));
+        let width = VALLEY_MAX_KM / VALLEY_WIDTH_FACTOR;
+        (map, ChannelShape::new(width, 0.0, 6371.0))
+    }
+
+    fn glacial(lon: f64, lat: f64, radius: f64, shape: ChannelShape) -> Stamp {
+        Stamp {
+            channel: shape,
+            ..Stamp {
+                mode: Mode::Glacial,
+                ..carve(lon, lat, radius)
+            }
+        }
+    }
+
+    /// Glacial strokes along the river of `valley`, from `from` to `to`
+    /// degrees of longitude.
+    fn glacial_along(map: &mut Heightmap, from: f64, to: f64, stamp: Stamp, passes: usize) {
+        let steps = ((to - from) / 0.5).round() as i32;
+        for _ in 0..passes {
+            for step in 0..=steps {
+                let lon = from + 0.5 * f64::from(step);
+                map.stamp(&Stamp {
+                    center: lonlat_to_dir(lon, RIVER_LAT),
+                    ..stamp
+                });
+            }
+        }
+    }
+
+    /// The glacial cut of a stamp of `glacial_valley`.
+    fn glacial_cut(map: &Heightmap, stamp: &Stamp) -> GlacialCut {
+        GlacialCut {
+            shape: stamp.channel,
+            strength: stamp.strength,
+            depth: f64::from(stamp.level),
+            sea: f64::from(meters_to_level(SEA_LEVEL)),
+            texel: FRAC_PI_2 / map.face_size() as f64,
+        }
+    }
+
+    #[test]
+    fn glacial_cuts_a_flat_floor_and_steep_sides() {
+        let (mut map, shape) = glacial_valley(200.0);
+        let before = face_levels(&map);
+        let stamp = glacial(0.0, RIVER_LAT, 0.05, shape);
+        glacial_along(&mut map, -3.0, 3.0, stamp, 5);
+        let after = face_levels(&map);
+        let n = map.face_size();
+        let lines = map.channels().unwrap().lines().clone();
+        let main = main_river(&lines, lonlat_to_dir(0.0, RIVER_LAT));
+        let cut = glacial_cut(&map, &stamp);
+        let (column, middle) = {
+            let at = place(&map, 0.0, RIVER_LAT);
+            (at % n, at / n)
+        };
+        // The place of each texel across the river, as a part of the
+        // half-width of the valley, with the levels before and after.
+        let across: Vec<(f64, f64, f64)> = (middle - 15..=middle + 15)
+            .map(|y| {
+                let (d, _, area) = nearest_curve(&lines, map.texel_dir(0, column, y), main);
+                let at = y * n + column;
+                let level = |levels: &[u16]| f64::from(levels[at]);
+                (d / cut.half_width(area), level(&before), level(&after))
+            })
+            .collect();
+        let on_floor = |a: &&(f64, f64, f64)| a.0 <= VALLEY_FLOOR_PART;
+        let floor: Vec<_> = across.iter().filter(on_floor).collect();
+        assert!(floor.len() >= 4, "{across:?}");
+        // The floor is flat, and far below the ground before.
+        let low = floor.iter().map(|a| a.2).fold(f64::MAX, f64::min);
+        let high = floor.iter().map(|a| a.2).fold(f64::MIN, f64::max);
+        assert!(high - low < 50.0, "{across:?}");
+        assert!(floor.iter().all(|a| a.1 - a.2 > 500.0), "{across:?}");
+        // The largest step between two texels on the floor, on the side, or
+        // anywhere before the stamps.
+        let largest = |part: (f64, f64), level: fn(&(f64, f64, f64)) -> f64| {
+            let inside = |w: &&[(f64, f64, f64)]| w.iter().all(|a| a.0 >= part.0 && a.0 <= part.1);
+            let steps = across.windows(2).filter(inside);
+            steps
+                .map(|w| (level(&w[1]) - level(&w[0])).abs())
+                .fold(0.0, f64::max)
+        };
+        let side = largest((VALLEY_FLOOR_PART, 1.0), |a| a.2);
+        assert!(
+            side > 5.0 * largest((0.0, VALLEY_FLOOR_PART), |a| a.2),
+            "{across:?}"
+        );
+        assert!(side > 3.0 * largest((0.0, f64::MAX), |a| a.1), "{across:?}");
+    }
+
+    #[test]
+    fn glacial_does_not_raise_ground() {
+        let (mut map, shape) = glacial_valley(0.0);
+        let before = face_levels(&map);
+        let stamp = Stamp {
+            level: 2000,
+            strength: 3000.0,
+            ..glacial(0.0, RIVER_LAT, 0.05, shape)
+        };
+        glacial_along(&mut map, -31.0, 3.0, stamp, 2);
+        let after = face_levels(&map);
+        assert!(after != before);
+        assert!(after.iter().zip(&before).all(|(new, old)| new <= old));
+    }
+
+    #[test]
+    fn glacial_depth_sets_the_floor_below_sea_level_at_the_coast() {
+        let sea = meters_to_level(SEA_LEVEL);
+        for depth in [0, 600] {
+            let (mut map, shape) = glacial_valley(0.0);
+            let before = face_levels(&map);
+            let stamp = Stamp {
+                level: depth,
+                ..glacial(-29.0, RIVER_LAT, 0.05, shape)
+            };
+            for _ in 0..10 {
+                map.stamp(&stamp);
+            }
+            let after = face_levels(&map);
+            // The river at the coast is near sea level.
+            let at = place(&map, -29.9, RIVER_LAT);
+            assert!(before[at].abs_diff(sea) < 100, "{}", before[at]);
+            let low = after[at];
+            assert!(low.abs_diff(sea - depth) < 60, "{depth} {low}");
+            if depth == 0 {
+                for (new, old) in after.iter().zip(&before) {
+                    assert!(*old < sea || *new >= sea);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn glacial_leaves_the_sea_floor_away_from_the_mouth() {
+        let sea = meters_to_level(SEA_LEVEL);
+        let (mut map, shape) = glacial_valley(0.0);
+        let before = face_levels(&map);
+        // The floor at the coast is below the sea floor, and the brush
+        // covers the sea next to the mouth.
+        let stamp = Stamp {
+            level: 8000,
+            ..glacial(-30.0, RIVER_LAT, 0.1, shape)
+        };
+        for _ in 0..5 {
+            map.stamp(&stamp);
+        }
+        let after = face_levels(&map);
+        let n = map.face_size();
+        let cut = glacial_cut(&map, &stamp);
+        // The end of each river at the sea, and the half-width of its valley
+        // there.
+        let lines = map.channels().unwrap().lines().clone();
+        let mouths: Vec<(V3, f64)> = lines
+            .curves()
+            .iter()
+            .filter(|c| c.levels[2] <= f64::from(sea))
+            .map(|c| (c.points[2], cut.half_width(c.areas[2])))
+            .collect();
+        // Each texel of the sea floor that changes is in the valley of a
+        // river at its mouth.
+        let mut changed = 0;
+        for (i, (new, old)) in after.iter().zip(&before).enumerate() {
+            if *old < sea && new != old {
+                changed += 1;
+                let p = map.texel_dir(0, i % n, i / n);
+                let near = |&(m, half): &(V3, f64)| angle(p, m) <= half + cut.texel;
+                assert!(mouths.iter().any(near), "{i}");
+            }
+        }
+        assert!(changed > 0);
+    }
+
+    #[test]
+    fn glacial_without_channels_changes_nothing() {
+        let (mut map, shape) = glacial_valley(200.0);
+        map.set_channels(None);
+        let before = face_levels(&map);
+        assert!(map.stamp(&glacial(0.0, RIVER_LAT, 0.05, shape)) > 0);
         assert!(face_levels(&map) == before);
     }
 

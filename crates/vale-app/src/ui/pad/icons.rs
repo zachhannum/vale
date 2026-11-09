@@ -15,6 +15,8 @@ pub enum Icon {
     /// A hill with a convex slope and a concave slope.
     Shape,
     Carve,
+    /// A U-shaped valley with a flat floor.
+    Glacial,
     Ridge,
     Deposit,
     Erode,
@@ -95,6 +97,7 @@ impl Icon {
             Icon::Terrace => "M2 19h5l1.5-5h5l1.5-5h7",
             Icon::Shape => "M3 19C3 11 6 6 12 6c1 7 4 13 9 13",
             Icon::Carve => "M3 7c4 0 5 9 9 9s5-9 9-9M12 16v5",
+            Icon::Glacial => "M3 5c0 9 2 13 6 13h6c4 0 6-4 6-13",
             Icon::Ridge => "M3 9c2 0 3 8 5 8l4-11 4 11c2 0 3-8 5-8",
             Icon::Deposit => "M3 7c4 0 5 12 9 12s5-12 9-12M6.5 13h11M9 16.5h6",
             Icon::Erode => "M5 4c0 5 7 5 7 10v7M12 4v10M19 4c0 5-7 5-7 10",
@@ -429,6 +432,7 @@ mod tests {
             Icon::Terrace,
             Icon::Shape,
             Icon::Carve,
+            Icon::Glacial,
             Icon::Ridge,
             Icon::Deposit,
             Icon::Erode,

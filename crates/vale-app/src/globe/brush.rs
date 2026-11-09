@@ -33,6 +33,8 @@ pub const NOISE_GRAIN: std::ops::RangeInclusive<f64> = 0.0..=9.0;
 pub const TALUS_DEG: std::ops::RangeInclusive<f64> = 0.02..=20.0;
 /// The limits of the step of the terrace mode, in meters.
 pub const TERRACE_STEP_M: std::ops::RangeInclusive<f64> = 10.0..=3000.0;
+/// The limits of the depth of the glacial mode, in meters.
+pub const GLACIAL_DEPTH_M: std::ops::RangeInclusive<f64> = 0.0..=2000.0;
 /// The limits of the shape of the shape mode, from old land to young land.
 pub const SHAPE: std::ops::RangeInclusive<f64> = -1.0..=1.0;
 /// The limits of the strength of the warp mode, in kilometers.
@@ -99,6 +101,9 @@ pub struct BrushSettings {
     pub flatten_level: Option<u16>,
     /// The height between two step levels of the terrace mode, in meters.
     pub terrace_step_m: f64,
+    /// How far below sea level the floor of a glacial valley goes at the
+    /// coast, in meters.
+    pub glacial_depth_m: f64,
     /// The shape of the shape mode, from -1 for old land with convex slopes
     /// to 1 for young land with concave slopes.
     pub shape: f64,
@@ -173,6 +178,7 @@ impl Default for BrushSettings {
             noise_lower_m: 1500.0,
             flatten_level: None,
             terrace_step_m: 200.0,
+            glacial_depth_m: 500.0,
             shape: -0.5,
             talus_deg: 0.5,
             erosion: 0.5,
@@ -220,6 +226,7 @@ pub fn needs_height(mode: Mode) -> bool {
     matches!(
         mode,
         Carve
+            | Glacial
             | Ridge
             | Deposit
             | Erode
@@ -495,6 +502,7 @@ impl Tip<'_> {
                 Mode::Raise
                 | Mode::Lower
                 | Mode::Carve
+                | Mode::Glacial
                 | Mode::Ridge
                 | Mode::Erode
                 | Mode::Weather
@@ -517,6 +525,9 @@ impl Tip<'_> {
                 Mode::Terrace => (self.brush.terrace_step_m / span)
                     .round()
                     .clamp(1.0, 65535.0) as u16,
+                Mode::Glacial => (self.brush.glacial_depth_m / span)
+                    .round()
+                    .clamp(0.0, 65535.0) as u16,
                 _ => self.level,
             },
             strength: match self.brush.mode {
@@ -716,6 +727,7 @@ fn stamp_cost(plan: &StampPlan) -> usize {
         | Mode::Flatten
         | Mode::Terrace
         | Mode::Carve
+        | Mode::Glacial
         | Mode::Ridge
         | Mode::Deposit
         | Mode::Erode
@@ -862,6 +874,19 @@ mod tests {
         assert!((step - 300.0).abs() < 0.1, "{step}");
         assert_eq!(out[0].flow, 0.3);
         assert!(needs_height(Mode::Terrace));
+    }
+
+    #[test]
+    fn a_glacial_stamp_has_the_depth_in_levels() {
+        let brush = BrushSettings {
+            mode: Mode::Glacial,
+            glacial_depth_m: 800.0,
+            ..BrushSettings::default()
+        };
+        let mut out = Vec::new();
+        Stroke::default().add_sample(&brush, 1024, sample(0.0, 0.1), |_| 7, &mut out);
+        let depth = f64::from(out[0].level) * (ELEV_MAX - ELEV_MIN) / 65535.0;
+        assert!((depth - 800.0).abs() < 0.1, "{depth}");
     }
 
     #[test]
