@@ -748,6 +748,8 @@ mod tests {
                 attributes: &attrs(v.clone()),
                 scale: 0.0,
                 geometry: GeometryKind::Polygon,
+                shape: None,
+                radius_km: 0.0,
             };
             assert_eq!(other.matches(&context), inside, "{v:?}");
         }
