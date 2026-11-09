@@ -20,14 +20,14 @@ use vale_app::ui::atlas::{self as atlas, BarPage, BarPick, ItemKind, ItemPage, T
 use vale_app::ui::atlas::{AtlasSelection, AtlasTool, FrameTab};
 use vale_app::ui::map_texture::MapRenderer;
 use vale_app::ui::pad::atlas::{
-    ADD, ADD_HOLE, ADD_PAGE, AUTO_INTERVAL, BORDER, BORDER_DISTANCE, BORDER_STROKE, BORDER_STYLES,
+    ADD_HOLE, ADD_PAGE, AUTO_INTERVAL, BORDER, BORDER_DISTANCE, BORDER_STROKE, BORDER_STYLES,
     BORDER_WIDTH, CENTER_ON_FRAME, COPY_GLOBE_STYLE, DELETE_PAGE, DELETE_PROJECTION,
-    EXPORT_ATLAS_PDF, EXPORT_PAGE_PDF, EXPORT_PAGE_PNG, FIRST_PARALLEL, FRAME_TABS, FRAME_TOOL,
-    GRATICULE_COLOR, GRATICULE_WIDTH, HEIGHT, INTERVAL, LABEL_FORMATS, MAP_FRAME, MAP_NAME, MAPS,
-    NEATLINE, NEATLINE_COLOR, NEATLINE_WIDTH, NEXT_PAGE, NO_FRAMES, OBLIQUE, PAPER_COLOR, POLYGON,
-    PREVIOUS_PAGE, PROJECTION, REFERENCE_GRID, SAVE_PROJECTION, SCALE, SECOND_COLOR, SIZE,
-    STROKE_COLOR, STROKE_WIDTH as BORDER_STROKE_WIDTH, VERTEX, WIDTH, custom_row, page_title,
-    readout_text,
+    EXPORT_ATLAS_PDF, EXPORT_PAGE_PDF, EXPORT_PAGE_PNG, FIRST_PARALLEL, FRAME_ROW, FRAME_TABS,
+    FRAME_TOOL, FURNITURE, FURNITURE_KINDS, GRATICULE_COLOR, GRATICULE_WIDTH, HEIGHT, INTERVAL,
+    LABEL_FORMATS, MAP_NAME, MAPS, NEATLINE, NEATLINE_COLOR, NEATLINE_WIDTH, NEXT_PAGE, NO_FRAMES,
+    OBLIQUE, PAPER_COLOR, POLYGON, PREVIOUS_PAGE, PROJECTION, REFERENCE_GRID, SAVE_PROJECTION,
+    SCALE, SECOND_COLOR, SIZE, STROKE_COLOR, STROKE_WIDTH as BORDER_STROKE_WIDTH, VERTEX, WIDTH,
+    custom_row, page_title, readout_text,
 };
 use vale_app::ui::pad::atlas::{BORDER_GAP, DISTANCE_BY_SIDE, GRID_COLUMN_NAMES, SIDE_DISTANCES};
 use vale_app::ui::pad::atlas::{
@@ -99,6 +99,9 @@ fn state() -> AppState {
     state.headless = true;
     state.set_layout(Layout::Pad);
     state.workspace = Workspace::Atlas;
+    // The panels show in the open dock from 1,000 points, so that a card
+    // does not cover the page.
+    state.pad.docks.atlas.open = true;
     state
 }
 
@@ -114,6 +117,26 @@ fn pad_with(state: AppState, (width, height): (f32, f32)) -> Pad {
 
 fn pad() -> Pad {
     pad_with(state(), BOARDS[0])
+}
+
+/// A state with the dock closed, so that each panel is a floating card.
+fn float_state() -> AppState {
+    let mut state = state();
+    state.pad.docks.atlas.open = false;
+    state
+}
+
+/// `pad` with the dock closed.
+fn float_pad() -> Pad {
+    pad_with(float_state(), BOARDS[0])
+}
+
+/// `inset_pad` with the dock closed.
+fn inset_float(size: (f32, f32)) -> Pad {
+    let mut h = pad_with(float_state(), size);
+    add_frame(&mut h);
+    add_frame(&mut h);
+    h
 }
 
 fn control(h: &Pad, name: &str) -> Option<Rect> {
@@ -349,19 +372,30 @@ fn middle(h: &Pad, index: usize) -> Pos2 {
     screen(h, anchor(&frame(h, index).shape))
 }
 
-/// Opens the Add menu. On a compact screen, Add is a row of the workspace
-/// menu.
-fn open_add(h: &mut Pad) {
-    if control(h, ADD).is_none() {
-        tap(h, "Workspace");
-    }
-    tap(h, ADD);
+/// Adds a frame at the default place of a new frame.
+fn add_frame(h: &mut Pad) {
+    atlas::add_frame(h.state_mut());
+    h.run_steps(2);
 }
 
-/// Adds a frame with the Add menu.
-fn add_frame(h: &mut Pad) {
-    open_add(h);
-    tap(h, MAP_FRAME);
+/// A finger holds a place until a hold is a hold.
+fn hold(h: &mut Pad, pos: Pos2) {
+    touch(h, 1, egui::TouchPhase::Start, pos, None);
+    for _ in 0..12 {
+        h.step();
+    }
+    touch(h, 1, egui::TouchPhase::End, pos, None);
+    h.run_steps(2);
+}
+
+/// Chooses a row of the list of a cell of the tools. A hold on the cell
+/// opens the list.
+fn choose(h: &mut Pad, cell: &str, row: &str) {
+    let at = control(h, cell).unwrap_or_else(|| panic!("no cell `{cell}`"));
+    hold(h, at.center());
+    assert!(h.state().pad.flyouts.rect.is_some(), "{cell}");
+    tap(h, row);
+    h.run_steps(2);
 }
 
 /// A page with a main frame and an inset frame. The inset is selected.
@@ -587,22 +621,33 @@ fn a_tap_opens_the_panel_of_a_frame_or_of_the_page() {
     tap_with(&mut h, at, Input::Finger);
     assert_eq!(h.state().atlas.selection, AtlasSelection::Page);
     assert!(h.state().atlas.panel_rect.is_some());
-    scroll_to(&mut h, ADD_PAGE);
-    assert!(control(&h, ADD_PAGE).is_some());
+    scroll_to(&mut h, EXPORT_PAGE_PNG);
+    assert!(control(&h, EXPORT_PAGE_PNG).is_some());
     assert!(control(&h, SCALE).is_none());
 }
 
 #[test]
-fn the_add_button_adds_a_frame_that_shows_the_map_of_the_project() {
+fn a_drag_of_the_frame_tool_on_the_paper_adds_a_frame_that_shows_the_map_of_the_project() {
     let mut h = pad();
-    open_add(&mut h);
-    assert!(h.state().atlas.add_rect.is_some());
-    check_controls(&h, "add menu");
-    tap(&mut h, MAP_FRAME);
-    assert_eq!(h.state().atlas.add_rect, None);
+    choose(&mut h, FRAME_TOOL, FRAME_ROW);
+    check_controls(&h, "frame list");
+    assert_eq!(h.state().atlas.tool, AtlasTool::Frame);
+    let (a, b) = (Point::new(30.0, 40.0), Point::new(150.0, 120.0));
+    let (from, to) = (screen(&h, a), screen(&h, b));
+    drag(&mut h, from, to, Input::Finger);
+    h.run_steps(2);
     let page = open_page(&h);
     assert_eq!(page.frames.len(), 1);
     let f = &page.frames[0];
+    let r = shape_bbox(&f.shape);
+    assert!(
+        (r.x0 - a.x).abs() < 0.5 && (r.y0 - a.y).abs() < 0.5,
+        "{r:?}"
+    );
+    assert!(
+        (r.x1 - b.x).abs() < 0.5 && (r.y1 - b.y).abs() < 0.5,
+        "{r:?}"
+    );
     assert_eq!(f.map, h.state().doc.first_map());
     assert_eq!(h.state().atlas.selection, AtlasSelection::Frame(f.id));
     assert!(h.state().atlas.has_image(f.id));
@@ -1394,7 +1439,12 @@ fn a_drag_on_the_paper_moves_the_page() {
         tap(&mut h, tool);
         for input in INPUTS {
             let before = place(&h);
-            let from = margin(&h);
+            // With the Frame tool, a drag on the paper draws a frame, and a
+            // drag off the paper moves the page.
+            let from = match tool {
+                "Move" => margin(&h),
+                _ => place(&h).rect.left_center() - vec2(20.0, 0.0),
+            };
             drag(&mut h, from, from + vec2(60.0, 30.0), input);
             let moved = place(&h).rect.min - before.rect.min;
             assert!(
@@ -1511,7 +1561,7 @@ fn at_a_page_zoom_of_20_the_texture_of_a_frame_is_no_larger_than_the_canvas() {
 #[test]
 fn each_tab_of_a_frame_is_as_wide_as_its_text_and_a_padding() {
     for size in BOARDS {
-        let h = inset_pad(size);
+        let h = inset_float(size);
         for name in FRAME_TABS {
             let rect = h.get_by_label(name).rect();
             let font = vale_app::ui::pad::theme::body();
@@ -1525,28 +1575,6 @@ fn each_tab_of_a_frame_is_as_wide_as_its_text_and_a_padding() {
             );
         }
     }
-}
-
-#[test]
-fn the_panel_of_the_page_adds_a_page_and_deletes_the_open_page() {
-    let mut h = inset_pad(BOARDS[0]);
-    let at = screen(&h, Point::new(4.0, 50.0));
-    tap_with(&mut h, at, Input::Finger);
-    scroll_to(&mut h, ADD_PAGE);
-    assert!(control(&h, DELETE_PAGE).is_none());
-    tap(&mut h, ADD_PAGE);
-    let atlas = &h.state().doc.project.atlas;
-    assert_eq!(atlas.pages.len(), 2);
-    assert_eq!(h.state().atlas.page, atlas.pages[1].id);
-    assert!(atlas.pages[1].frames.is_empty());
-    assert_eq!(h.state().atlas.selection, AtlasSelection::Page);
-    assert_eq!(readout_text(h.state()), "297 × 210 mm · 2 / 2");
-    scroll_to(&mut h, DELETE_PAGE);
-    tap(&mut h, DELETE_PAGE);
-    let atlas = &h.state().doc.project.atlas;
-    assert_eq!(atlas.pages.len(), 1);
-    assert_eq!(h.state().atlas.page, atlas.pages[0].id);
-    assert_eq!(atlas.pages[0].frames.len(), 2);
 }
 
 #[test]
@@ -1693,8 +1721,8 @@ fn pages_and_frames_survive_a_close_and_an_open() {
     tap(&mut h, ADD_HOLE);
     let at = screen(&h, Point::new(4.0, 50.0));
     tap_with(&mut h, at, Input::Finger);
-    scroll_to(&mut h, ADD_PAGE);
-    tap(&mut h, ADD_PAGE);
+    atlas::add_page(h.state_mut());
+    h.run_steps(2);
     let mut project = h.state().doc.project.clone();
     session.flush(&mut project, &mut []).unwrap();
     drop(session);
@@ -2603,7 +2631,7 @@ fn the_screen_draws_the_line_widths_of_the_page_at_each_zoom() {
 
 #[test]
 fn the_texture_of_a_frame_is_on_whole_pixels() {
-    let mut h = inset_pad(BOARDS[0]);
+    let mut h = inset_float(BOARDS[0]);
     h.state_mut().atlas.view.zoom = 1.37;
     h.state_mut().atlas.view.offset = vec2(13.3, -7.9);
     h.run_steps(3);
@@ -3747,7 +3775,11 @@ fn uppercase(text: &str) -> bool {
 
 /// A pad with one frame and its Labels tab.
 fn labels_pad(size: (f32, f32)) -> Pad {
-    let mut h = pad_with(state(), size);
+    labels_pad_with(state(), size)
+}
+
+fn labels_pad_with(state: AppState, size: (f32, f32)) -> Pad {
+    let mut h = pad_with(state, size);
     add_frame(&mut h);
     tap(&mut h, FRAME_TABS[3]);
     h
@@ -4216,7 +4248,7 @@ fn the_filter_of_a_class_has_the_condition_builder() {
     use vale_app::ui::pad::filter::{ADD_CONDITION, NO_CLASS_CONDITION, REMOVE_CONDITION, VIEWS};
     use vale_app::ui::pad::rules::EXPRESSION;
     use vale_store::Value;
-    let mut h = labels_pad(BOARDS[0]);
+    let mut h = labels_pad_with(float_state(), BOARDS[0]);
     let map = frame(&h, 0).map;
     tap(&mut h, "Places");
     assert!(h.query_by_label(NO_CLASS_CONDITION).is_some());
@@ -5759,19 +5791,19 @@ fn item_middle(h: &Pad, index: usize) -> Pos2 {
     screen(h, rect_of(&item(h, index)).center())
 }
 
+/// Adds an item of furniture at its default place.
 fn add_item(h: &mut Pad, kind: ItemKind) {
-    open_add(h);
-    tap(h, kind.name());
+    atlas::add_item(h.state_mut(), kind);
+    h.run_steps(2);
 }
 
 #[test]
-fn the_add_button_adds_each_item_of_furniture() {
+fn a_new_item_of_furniture_links_to_the_main_frame_and_its_panel_opens() {
     let mut h = pad();
     add_frame(&mut h);
     let main = frame(&h, 0).id;
     for (n, kind) in ItemKind::ALL.into_iter().enumerate() {
         add_item(&mut h, kind);
-        assert_eq!(h.state().atlas.add_rect, None, "{kind:?}");
         let page = open_page(&h);
         assert_eq!(page.furniture.len(), n + 1, "{kind:?}");
         let rec = item(&h, n);
@@ -5792,6 +5824,8 @@ fn the_add_button_adds_each_item_of_furniture() {
         check_controls(&h, kind.name());
     }
     // Delete in the context strip takes the item away.
+    h.state_mut().atlas.tool = AtlasTool::Frame;
+    h.run_steps(2);
     tap(&mut h, DELETE_SELECTION);
     assert_eq!(open_page(&h).furniture.len(), ItemKind::ALL.len() - 1);
     assert_eq!(h.state().atlas.selection, AtlasSelection::None);
@@ -6948,7 +6982,7 @@ fn frames_snap_to_the_layout_grid_of_the_page_panel() {
 }
 
 #[test]
-fn the_top_row_has_add_and_no_grid_button() {
+fn the_top_row_has_no_add_and_no_grid_button() {
     for size in BOARDS.into_iter().chain([(393.0, 852.0), (852.0, 393.0)]) {
         let h = pad_with(state(), size);
         check_controls(&h, "top row");
@@ -6971,13 +7005,8 @@ fn the_top_row_has_add_and_no_grid_button() {
         let layers = x(MAPS).unwrap_or_else(|| panic!("{size:?}"));
         let attributes = x(vale_app::ui::select::ATTRIBUTES).unwrap_or_else(|| panic!("{size:?}"));
         assert!(layers < attributes, "{size:?}");
-        // On a phone, Add is a row of the workspace menu. From 600 points,
-        // it is in the dock zone of the bar before the panel buttons.
-        let compact = size.0 < 600.0;
-        match x(ADD) {
-            Some(add) => assert!(!compact && add < layers, "{size:?}"),
-            None => assert!(compact, "{size:?}"),
-        }
+        // The Atlas workspace has no Add button.
+        assert!(control(&h, "Add").is_none(), "{size:?}");
     }
 }
 
@@ -7420,8 +7449,7 @@ fn a_zoomed_frame_loads_the_tiles_of_a_layer_from_the_project_file() {
 
 /// Starts Map from region with the globe centered on a place.
 fn start_region(h: &mut Pad, lon: f64, lat: f64) {
-    open_add(h);
-    tap(h, vale_app::ui::region::MAP_FROM_REGION);
+    choose(h, FRAME_TOOL, vale_app::ui::region::MAP_FROM_REGION);
     assert_eq!(h.state().workspace, Workspace::Globe);
     h.state_mut().globe.view = vale_app::globe::view::GlobeView::centered(lon, lat);
     h.run_steps(3);
@@ -8998,7 +9026,8 @@ fn the_attributes_button_opens_the_inspector_of_the_world_in_the_atlas() {
     assert!(h.state().pad.is_open(Panel::Attributes));
     assert!(control(&h, "name").is_some());
     assert!(control(&h, FOCUS_NEW).is_some());
-    assert!(control(&h, FRAME_TABS[0]).is_none());
+    // The panel of the frame stays in the dock beside the inspector.
+    assert!(control(&h, FRAME_TABS[0]).is_some());
     let layer = h.state().doc.layer(town.layer).unwrap().name.clone();
     assert!(h.query_by_label(&layer).is_none());
     // It follows the selection, and it shows the empty state.
@@ -9014,7 +9043,7 @@ fn the_attributes_button_opens_the_inspector_of_the_world_in_the_atlas() {
 #[test]
 fn a_frame_that_the_frame_tool_selects_closes_the_inspector() {
     use vale_app::ui::pad::Panel;
-    let (mut h, at, _) = towns_pad(BOARDS[0]);
+    let (mut h, at, _) = towns_pad_with(float_state(), BOARDS[0]);
     tap_with(&mut h, at, Input::Finger);
     tap(&mut h, vale_app::ui::select::ATTRIBUTES);
     // The Select tool keeps the inspector open.
@@ -9052,9 +9081,13 @@ fn an_attribute_edit_in_the_atlas_is_one_undo_step_and_redraws_the_frames() {
 
 #[test]
 fn the_selection_of_the_atlas_shows_in_the_inspector_of_the_world() {
-    let (mut h, at, town) = towns_pad(BOARDS[0]);
+    // The floating card of the inspector is one card for both workspaces.
+    let (mut h, at, town) = towns_pad_with(float_state(), BOARDS[0]);
+    h.state_mut().pad.float = None;
+    h.run_steps(2);
     tap_with(&mut h, at, Input::Finger);
     tap(&mut h, vale_app::ui::select::ATTRIBUTES);
+    h.run_steps(1);
     let form = h.state().selection_form.as_ref().unwrap();
     assert_eq!(form.features, [town]);
     // The inspector is one inspector: it stays open in the World workspace.
@@ -9227,6 +9260,12 @@ fn the_selectable_cell_and_list_fit_in_the_atlas_on_each_screen() {
         let what = format!("{size:?}");
         let (mut h, _, _) = towns_pad(size);
         let screen = Rect::from_min_size(Pos2::ZERO, size.into());
+        // A short window scrolls the tool column.
+        if control(&h, SELECTABLE).is_none() {
+            let column = h.state().pad.rects.unwrap().column;
+            let from = column.center_bottom() - vec2(0.0, 30.0);
+            drag(&mut h, from, from - vec2(0.0, 200.0), Input::Finger);
+        }
         let cell = control(&h, SELECTABLE).unwrap_or_else(|| panic!("{what}"));
         assert!(screen.contains_rect(cell), "{what}");
         check_controls(&h, &what);
@@ -9248,7 +9287,7 @@ fn the_attributes_button_and_the_inspector_fit_in_the_atlas_on_each_screen() {
     let phones = [(393.0, 852.0), (852.0, 393.0)];
     for size in BOARDS.into_iter().chain(phones) {
         let what = format!("{size:?}");
-        let (mut h, _, town) = towns_pad(size);
+        let (mut h, _, town) = towns_pad_with(float_state(), size);
         h.state_mut().set_feature_selection(vec![town]);
         h.run_steps(2);
         let button = control(&h, ATTRIBUTES).unwrap_or_else(|| panic!("{what}"));
@@ -9266,31 +9305,17 @@ fn the_attributes_button_and_the_inspector_fit_in_the_atlas_on_each_screen() {
 }
 
 #[test]
-fn the_maps_button_is_on_while_the_panel_of_a_frame_shows_and_closes_it() {
-    let mut h = inset_pad(BOARDS[0]);
-    let id = frame(&h, 1).id;
-    assert_eq!(h.state().atlas.selection, AtlasSelection::Frame(id));
-    for tab in [FrameTab::Frame, FrameTab::Projection, FrameTab::Labels] {
-        h.state_mut().atlas.tab = tab;
-        h.run_steps(2);
-        assert_eq!(toggled(&h, MAPS), Some(true), "{tab:?}");
-    }
-    // A tap closes the panel.
-    tap(&mut h, MAPS);
-    assert_eq!(h.state().atlas.selection, AtlasSelection::None);
-    assert!(h.state().atlas.panel_rect.is_none());
-    assert_ne!(toggled(&h, MAPS), Some(true));
-}
-
-#[test]
-fn with_no_frame_selected_the_maps_button_lists_the_map_frames() {
-    let mut h = inset_pad(BOARDS[0]);
+fn the_maps_button_shows_the_list_of_the_map_frames_and_a_tap_selects_a_frame() {
+    use vale_app::ui::pad::Panel;
+    let mut h = inset_float(BOARDS[0]);
     h.state_mut().atlas.tab = FrameTab::Projection;
     h.state_mut().atlas.selection = AtlasSelection::Page;
     h.run_steps(2);
     tap(&mut h, MAPS);
-    assert!(h.state().atlas.frames);
-    assert_eq!(h.state().atlas.selection, AtlasSelection::None);
+    assert_eq!(h.state().pad.float, Some(Panel::Maps));
+    assert_eq!(toggled(&h, MAPS), Some(true));
+    // The list leaves the selection.
+    assert_eq!(h.state().atlas.selection, AtlasSelection::Page);
     assert!(h.state().atlas.panel_rect.is_some());
     let names = atlas::frame_names(h.state());
     assert_eq!(names.len(), 2);
@@ -9300,57 +9325,57 @@ fn with_no_frame_selected_the_maps_button_lists_the_map_frames() {
     }
     tap(&mut h, &names[0].1);
     assert_eq!(h.state().atlas.selection, AtlasSelection::Frame(names[0].0));
-    // The panel opens on the tab that it had.
+    // The panel of the frame opens on the tab that it had.
     assert_eq!(h.state().atlas.tab, FrameTab::Projection);
-    assert!(!h.state().atlas.frames);
+    assert_eq!(h.state().pad.float, Some(Panel::Selection));
     // The list closes with a second tap of the button.
-    h.state_mut().atlas.selection = AtlasSelection::None;
-    h.run_steps(2);
     tap(&mut h, MAPS);
-    assert!(h.state().atlas.frames);
+    assert_eq!(h.state().pad.float, Some(Panel::Maps));
     tap(&mut h, MAPS);
-    assert!(!h.state().atlas.frames);
+    assert_eq!(h.state().pad.float, None);
     assert!(h.state().atlas.panel_rect.is_none());
+    assert_eq!(h.state().atlas.selection, AtlasSelection::Frame(names[0].0));
 }
 
 #[test]
 fn the_list_of_the_map_frames_of_an_empty_page_says_how_to_add_one() {
-    let mut h = pad();
+    use vale_app::ui::pad::Panel;
+    let mut h = float_pad();
     assert!(atlas::frame_names(h.state()).is_empty());
     tap(&mut h, MAPS);
-    assert!(h.state().atlas.frames);
+    assert_eq!(h.state().pad.float, Some(Panel::Maps));
     assert!(h.query_by_label(NO_FRAMES).is_some());
     // A new frame shows its own panel in place of the list.
     add_frame(&mut h);
-    assert!(!h.state().atlas.frames);
+    assert_eq!(h.state().pad.float, Some(Panel::Selection));
 }
 
 #[test]
-fn the_inspector_and_the_maps_share_the_panel_place() {
+fn the_inspector_and_the_maps_share_the_place_of_the_floating_card() {
     use vale_app::ui::pad::Panel;
     use vale_app::ui::select::ATTRIBUTES;
-    let mut h = inset_pad(BOARDS[0]);
+    let mut h = inset_float(BOARDS[0]);
     h.state_mut().atlas.selection = AtlasSelection::None;
     h.run_steps(2);
     tap(&mut h, ATTRIBUTES);
     assert!(h.state().pad.is_open(Panel::Attributes));
     tap(&mut h, MAPS);
     assert!(!h.state().pad.is_open(Panel::Attributes));
-    assert!(h.state().atlas.frames);
+    assert!(h.state().pad.is_open(Panel::Maps));
     tap(&mut h, ATTRIBUTES);
     assert!(h.state().pad.is_open(Panel::Attributes));
-    assert!(!h.state().atlas.frames);
-    // With the panel of a frame under the inspector, the button shows the
-    // panel again. With the Select tool, the inspector stays open over a
-    // selected frame.
+    assert!(!h.state().pad.is_open(Panel::Maps));
+    // With the Select tool, the inspector stays open over a selected frame,
+    // and the Selection button shows the panel of the frame.
     h.state_mut().atlas.tool = AtlasTool::Select;
     h.state_mut().atlas.tab = FrameTab::Labels;
     let id = frame(&h, 0).id;
     atlas::open_frame(h.state_mut(), id);
     h.run_steps(2);
     assert!(h.state().pad.is_open(Panel::Attributes));
-    tap(&mut h, MAPS);
+    tap(&mut h, vale_app::ui::pad::SELECTION);
     assert!(!h.state().pad.is_open(Panel::Attributes));
+    assert!(h.state().pad.is_open(Panel::Selection));
     assert_eq!(h.state().atlas.selection, AtlasSelection::Frame(id));
     assert_eq!(h.state().atlas.tab, FrameTab::Labels);
 }
@@ -9360,7 +9385,7 @@ fn the_maps_button_and_the_list_of_the_frames_fit_on_each_screen() {
     let phones = [(393.0, 852.0), (852.0, 393.0)];
     for size in BOARDS.into_iter().chain(phones) {
         let what = format!("{size:?}");
-        let mut h = inset_pad(size);
+        let mut h = inset_float(size);
         h.state_mut().atlas.selection = AtlasSelection::None;
         h.run_steps(2);
         let button = control(&h, MAPS).unwrap_or_else(|| panic!("{what}"));
@@ -9822,4 +9847,352 @@ fn manual_color_key_panel_pictures() {
     screenshot::save(&mut h, "colorkey-pad");
     tap_row(&mut h, item::BANDS);
     screenshot::save(&mut h, "colorkey-pad-bands");
+}
+
+/// True if the control is off and does nothing.
+fn disabled(h: &Pad, name: &str) -> bool {
+    use egui_kittest::kittest::NodeT;
+    let node = h
+        .query_by_label(name)
+        .unwrap_or_else(|| panic!("no `{name}`"));
+    node.accesskit_node().is_disabled()
+}
+
+#[test]
+fn the_atlas_has_no_add_control_in_the_bar_or_in_the_compact_menu() {
+    for size in BOARDS.into_iter().chain([(393.0, 852.0)]) {
+        let mut h = pad_with(state(), size);
+        assert!(control(&h, "Add").is_none(), "{size:?}");
+        if control(&h, "Workspace").is_some() {
+            tap(&mut h, "Workspace");
+            assert!(h.state().pad.menu_rect.is_some(), "{size:?}");
+            assert!(control(&h, "Add").is_none(), "{size:?}");
+        }
+    }
+}
+
+#[test]
+fn the_frame_cell_holds_frame_and_map_from_region() {
+    let mut h = pad();
+    h.state_mut().atlas.tool = AtlasTool::Move;
+    h.run_steps(2);
+    // A tap chooses the Frame tool, and a second tap opens the list.
+    tap(&mut h, FRAME_TOOL);
+    assert_eq!(h.state().atlas.tool, AtlasTool::Frame);
+    assert!(h.state().pad.flyouts.rect.is_none());
+    tap(&mut h, FRAME_TOOL);
+    h.run_steps(2);
+    assert!(h.state().pad.flyouts.rect.is_some());
+    assert!(control(&h, FRAME_ROW).is_some());
+    assert!(control(&h, vale_app::ui::region::MAP_FROM_REGION).is_some());
+    check_controls(&h, "frame list");
+    tap(&mut h, vale_app::ui::region::MAP_FROM_REGION);
+    assert_eq!(h.state().workspace, Workspace::Globe);
+    assert!(h.state().region.is_some());
+}
+
+#[test]
+fn a_tap_off_the_paper_with_the_frame_tool_adds_no_frame_and_a_drag_off_the_paper_pans() {
+    let mut h = pad();
+    let page = h.state().atlas.place.unwrap().rect;
+    let from = page.left_center() - vec2(20.0, 0.0);
+    drag(&mut h, from, from + vec2(0.0, 60.0), Input::Finger);
+    assert!(open_page(&h).frames.is_empty());
+    let moved = h.state().atlas.place.unwrap().rect;
+    assert!((moved.top() - page.top() - 60.0).abs() < 1.0, "{moved:?}");
+    // A short drag on the paper makes a frame of the smallest size.
+    let at = screen(&h, Point::new(50.0, 50.0));
+    drag(&mut h, at, at + vec2(1.0, 6.0), Input::Pen);
+    let r = shape_bbox(&frame(&h, 0).shape);
+    assert!(r.width() >= 5.0 - 1e-9 && r.height() >= 5.0 - 1e-9, "{r:?}");
+}
+
+#[test]
+fn each_furniture_tool_puts_its_item_at_a_tap_and_in_a_drag() {
+    use vale_app::ui::pad::Panel;
+    let mut h = float_pad();
+    add_frame(&mut h);
+    let main = frame(&h, 0).id;
+    for (n, kind) in FURNITURE_KINDS.into_iter().enumerate() {
+        choose(&mut h, FURNITURE, kind.name());
+        assert_eq!(h.state().atlas.tool, AtlasTool::Furniture(kind));
+        // A tap puts the item at its default size with its top-left corner
+        // at the tap.
+        let at = Point::new(40.0, 30.0);
+        let pos = screen(&h, at);
+        tap_with(&mut h, pos, Input::Finger);
+        h.run_steps(2);
+        let rec = item(&h, 2 * n);
+        assert_eq!(ItemKind::of(&rec.item), kind);
+        let r = rect_of(&rec);
+        assert!(
+            (r.x0 - at.x).abs() < 0.5 && (r.y0 - at.y).abs() < 0.5,
+            "{kind:?}: {r:?}"
+        );
+        assert_eq!(h.state().atlas.selection, AtlasSelection::Item(rec.id));
+        assert_eq!(h.state().pad.float, Some(Panel::Selection), "{kind:?}");
+        assert!(h.state().atlas.panel_rect.is_some(), "{kind:?}");
+        if kind != ItemKind::Text {
+            assert_eq!(rec.item.frame(), Some(main), "{kind:?}");
+        }
+        // A drag puts the item in the rectangle of the drag.
+        let (a, b) = (Point::new(150.0, 120.0), Point::new(230.0, 170.0));
+        let (from, to) = (screen(&h, a), screen(&h, b));
+        drag(&mut h, from, to, Input::Pen);
+        let rec = item(&h, 2 * n + 1);
+        assert_eq!(ItemKind::of(&rec.item), kind);
+        let r = rect_of(&rec);
+        assert!(
+            (r.x0 - a.x).abs() < 0.5 && (r.y1 - b.y).abs() < 0.5,
+            "{kind:?}: {r:?}"
+        );
+        assert!(
+            (r.x1 - b.x).abs() < 0.5 && (r.y0 - a.y).abs() < 0.5,
+            "{kind:?}: {r:?}"
+        );
+        assert_eq!(h.state().atlas.selection, AtlasSelection::Item(rec.id));
+        // The tool stays.
+        assert_eq!(h.state().atlas.tool, AtlasTool::Furniture(kind));
+        check_controls(&h, kind.name());
+    }
+}
+
+#[test]
+fn an_item_at_the_edge_of_the_paper_stays_on_the_paper() {
+    let mut h = pad();
+    choose(&mut h, FURNITURE, ItemKind::Legend.name());
+    let page = open_page(&h);
+    let (w, hh) = (page.width_mm, page.height_mm);
+    let pos = screen(&h, Point::new(w - 2.0, hh - 2.0));
+    tap_with(&mut h, pos, Input::Finger);
+    h.run_steps(2);
+    let r = rect_of(&item(&h, 0));
+    assert!(r.x1 <= w + 1e-9 && r.y1 <= hh + 1e-9, "{r:?}");
+}
+
+/// The row of the page at `index` in the Pages panel.
+fn page_row(h: &Pad, index: usize) -> Rect {
+    let page = &h.state().doc.project.atlas.pages[index];
+    let name = vale_app::ui::pad::pages::row_name(index, page);
+    control(h, &name).unwrap_or_else(|| panic!("no row {name}"))
+}
+
+/// A page pad with three pages and the Pages panel as the floating card.
+fn pages_pad() -> Pad {
+    pages_pad_with(float_state())
+}
+
+fn pages_pad_with(state: AppState) -> Pad {
+    let mut h = pad_with(state, BOARDS[0]);
+    atlas::add_page(h.state_mut());
+    atlas::add_page(h.state_mut());
+    h.state_mut().atlas.selection = AtlasSelection::None;
+    h.run_steps(2);
+    tap(&mut h, vale_app::ui::pad::PAGES);
+    h
+}
+
+#[test]
+fn the_pages_panel_opens_a_page_and_adds_a_page_after_the_open_page() {
+    use vale_app::ui::pad::Panel;
+    let mut h = pages_pad();
+    assert_eq!(h.state().pad.float, Some(Panel::Pages));
+    check_controls(&h, "pages");
+    let ids: Vec<_> = (h.state().doc.project.atlas.pages.iter())
+        .map(|p| p.id)
+        .collect();
+    let row = page_row(&h, 0);
+    assert!(row.height() >= 44.0);
+    assert!(h.query_by_label("A4").is_none(), "the size is painted");
+    tap_with(&mut h, row.center(), Input::Finger);
+    h.run_steps(2);
+    assert_eq!(h.state().atlas.page, ids[0]);
+    tap(&mut h, ADD_PAGE);
+    h.run_steps(2);
+    let pages = &h.state().doc.project.atlas.pages;
+    assert_eq!(pages.len(), 4);
+    assert_eq!(pages[0].id, ids[0]);
+    assert_eq!(pages[2].id, ids[1]);
+    assert_eq!(h.state().atlas.page, pages[1].id);
+}
+
+#[test]
+fn a_drag_of_a_row_of_the_pages_panel_moves_the_page_and_undo_moves_it_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let mut s = float_state();
+    s.session = Some(Session::open(&path, &mut s.doc).unwrap());
+    let mut h = pages_pad_with(s);
+    h.state_mut().save_waiting().unwrap();
+    let ids: Vec<_> = (h.state().doc.project.atlas.pages.iter())
+        .map(|p| p.id)
+        .collect();
+    let from = page_row(&h, 0).center();
+    let to = page_row(&h, 2).center();
+    touch(&mut h, 1, egui::TouchPhase::Start, from, None);
+    for _ in 0..12 {
+        h.step();
+    }
+    assert!(h.state().pad.pages.reorder.is_some());
+    for i in 1..=8 {
+        let at = from.lerp(to, i as f32 / 8.0);
+        touch(&mut h, 1, egui::TouchPhase::Move, at, None);
+        h.step();
+    }
+    touch(&mut h, 1, egui::TouchPhase::End, to, None);
+    h.run_steps(3);
+    let order: Vec<_> = (h.state().doc.project.atlas.pages.iter())
+        .map(|p| p.id)
+        .collect();
+    assert_eq!(order, vec![ids[1], ids[2], ids[0]]);
+    h.state_mut().save_waiting().unwrap();
+    h.state_mut().undo();
+    h.run_steps(2);
+    let order: Vec<_> = (h.state().doc.project.atlas.pages.iter())
+        .map(|p| p.id)
+        .collect();
+    assert_eq!(order, ids);
+}
+
+#[test]
+fn a_swipe_on_a_row_of_the_pages_panel_deletes_the_page_but_not_the_last_page() {
+    let mut h = pages_pad();
+    let ids: Vec<_> = (h.state().doc.project.atlas.pages.iter())
+        .map(|p| p.id)
+        .collect();
+    let delete = |h: &Pad, i: usize| {
+        let page = &h.state().doc.project.atlas.pages[i];
+        vale_app::ui::pad::pages::delete_name(i, page)
+    };
+    let swipe = |h: &mut Pad, i: usize| {
+        let row = page_row(h, i);
+        let from = row.right_center() - vec2(10.0, 0.0);
+        drag(h, from, from - vec2(180.0, 0.0), Input::Finger);
+    };
+    swipe(&mut h, 1);
+    let name = delete(&h, 1);
+    assert!(control(&h, &name).is_some(), "{name}");
+    assert!(h.query_by_label(DELETE_PAGE).is_none() || control(&h, DELETE_PAGE).is_none());
+    tap(&mut h, &name);
+    h.run_steps(2);
+    let order: Vec<_> = (h.state().doc.project.atlas.pages.iter())
+        .map(|p| p.id)
+        .collect();
+    assert_eq!(order, vec![ids[0], ids[2]]);
+    swipe(&mut h, 1);
+    let name = delete(&h, 1);
+    tap(&mut h, &name);
+    h.run_steps(2);
+    assert_eq!(h.state().doc.project.atlas.pages.len(), 1);
+    // The last page has no Delete button.
+    swipe(&mut h, 0);
+    assert!(control(&h, &delete(&h, 0)).is_none());
+    assert!(h.state().pad.pages.swipe.is_none());
+    assert_eq!(h.state().doc.project.atlas.pages.len(), 1);
+}
+
+#[test]
+fn a_tap_on_the_name_of_the_page_opens_the_pages_panel() {
+    use vale_app::ui::pad::atlas::PAGE_BUTTON;
+    use vale_app::ui::pad::{PAGES, Panel};
+    for size in [BOARDS[0], (393.0, 852.0)] {
+        let mut h = pad_with(float_state(), size);
+        tap(&mut h, PAGE_BUTTON);
+        h.run_steps(2);
+        assert_eq!(h.state().pad.float, Some(Panel::Pages), "{size:?}");
+        if size.0 >= 600.0 {
+            assert_eq!(toggled(&h, PAGES), Some(true));
+        } else {
+            // On a phone, the Pages panel is a sheet.
+            let rects = h.state().pad.rects.unwrap();
+            assert!(rects.sheet.is_some(), "{size:?}");
+            assert!(control(&h, ADD_PAGE).is_some(), "{size:?}");
+            assert!(page_row(&h, 0).bottom() <= size.1);
+        }
+    }
+}
+
+#[test]
+fn a_selection_opens_the_selection_panel_and_its_button_hides_it_and_keeps_the_selection() {
+    use vale_app::ui::pad::{Panel, SELECTION};
+    let mut h = float_pad();
+    assert!(disabled(&h, SELECTION));
+    assert_eq!(h.state().pad.float, None);
+    add_frame(&mut h);
+    let id = frame(&h, 0).id;
+    assert_eq!(h.state().pad.float, Some(Panel::Selection));
+    assert!(!disabled(&h, SELECTION));
+    assert_eq!(toggled(&h, SELECTION), Some(true));
+    for name in FRAME_TABS {
+        assert!(control(&h, name).is_some(), "{name}");
+    }
+    tap(&mut h, SELECTION);
+    assert_eq!(h.state().pad.float, None);
+    assert!(h.state().atlas.panel_rect.is_none());
+    assert_eq!(h.state().atlas.selection, AtlasSelection::Frame(id));
+    assert_eq!(toggled(&h, SELECTION), Some(false));
+    tap(&mut h, SELECTION);
+    assert_eq!(h.state().pad.float, Some(Panel::Selection));
+    // In the open dock, a selection adds the Selection panel.
+    h.state_mut().atlas.selection = AtlasSelection::None;
+    h.state_mut().pad.docks.atlas.open = true;
+    h.run_steps(2);
+    assert!(disabled(&h, SELECTION));
+    assert!(!h.state().pad.is_docked(Panel::Selection));
+    h.state_mut().atlas.selection = AtlasSelection::Frame(id);
+    h.run_steps(2);
+    assert!(h.state().pad.is_docked(Panel::Selection));
+    for name in FRAME_TABS {
+        assert!(control(&h, name).is_some(), "docked {name}");
+    }
+    // With nothing selected, the panel stays in the dock with a hint.
+    h.state_mut().atlas.selection = AtlasSelection::None;
+    h.run_steps(2);
+    assert!(h.state().pad.is_docked(Panel::Selection));
+    assert!(
+        h.query_by_label(vale_app::ui::pad::atlas::NO_SELECTION)
+            .is_some()
+    );
+}
+
+#[test]
+fn the_page_fits_beside_the_open_dock_and_inside_the_free_canvas() {
+    use vale_app::ui::pad::Panel;
+    let mut h = pad();
+    for open in [false, true, false] {
+        h.state_mut().pad.docks.atlas.open = open;
+        if open {
+            h.state_mut().pad.open(Panel::Pages);
+        } else {
+            h.state_mut().pad.float = Some(Panel::Maps);
+        }
+        h.run_steps(3);
+        let rects = h.state().pad.rects.unwrap();
+        let page = h.state().atlas.place.unwrap().rect;
+        assert!(
+            rects.free.expand(0.5).contains_rect(page),
+            "{open}: {page:?}"
+        );
+        if let Some(dock) = rects.dock {
+            assert!(page.right() <= dock.left(), "{page:?} {dock:?}");
+        }
+        assert_eq!(rects.dock.is_some(), open);
+        // The page fills the width or the height of the free canvas.
+        let fills = (page.width() - rects.free.width()).abs() < 1.0
+            || (page.height() - rects.free.height()).abs() < 1.0;
+        assert!(fills, "{open}: {page:?} {:?}", rects.free);
+    }
+}
+
+#[test]
+fn the_compact_layout_has_the_furniture_cell_in_the_row_of_the_tools() {
+    let mut h = pad_with(state(), (393.0, 852.0));
+    let rects = h.state().pad.rects.unwrap();
+    let cell = control(&h, FURNITURE).expect("a Furniture cell");
+    assert!(rects.tools.contains_rect(cell), "{cell:?}");
+    choose(&mut h, FURNITURE, ItemKind::NorthArrow.name());
+    assert_eq!(
+        h.state().atlas.tool,
+        AtlasTool::Furniture(ItemKind::NorthArrow)
+    );
 }

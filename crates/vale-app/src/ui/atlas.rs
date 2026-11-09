@@ -343,6 +343,10 @@ pub enum AtlasTool {
     /// A tap in a frame adds a point to the path of the Measure tool, and a
     /// drag moves the page.
     Measure,
+    /// A tap on the page puts an item of this kind at its default size,
+    /// with its top-left corner at the tap. A drag on the page puts it in
+    /// the rectangle of the drag.
+    Furniture(ItemKind),
 }
 
 /// A tab of the panel of a frame.
@@ -559,6 +563,9 @@ enum Drag {
     /// A box that selects vertices, from this screen position to the
     /// pointer.
     Box(Pos2),
+    /// A rectangle on the paper for a new frame or a new item of
+    /// furniture, from this screen position to the pointer.
+    Draw(Pos2),
     /// Nothing.
     Idle,
 }
@@ -593,13 +600,9 @@ pub struct AtlasState {
     pub(crate) neatline_shown: bool,
     /// The text of the name field of the custom projections.
     pub preset_name: String,
-    /// The Add menu is open.
-    pub add: bool,
-    /// The list of the map frames of the open page shows, from the Layers
-    /// button with no frame selected.
+    /// The list of the map frames of the open page shows, from the Maps
+    /// button of the desktop layout with no frame selected.
     pub frames: bool,
-    /// The Add menu in the last frame.
-    pub add_rect: Option<Rect>,
     /// The panel of the selection in the last frame.
     pub panel_rect: Option<Rect>,
     /// The page on the screen in the last frame.
@@ -826,9 +829,7 @@ impl Default for AtlasState {
             neatline_color: false,
             neatline_shown: false,
             preset_name: String::new(),
-            add: false,
             frames: false,
-            add_rect: None,
             panel_rect: None,
             place: None,
             view: PageView::default(),
@@ -1092,6 +1093,38 @@ pub fn add_frame(state: &mut AppState) -> Option<FrameId> {
     Some(id)
 }
 
+/// Adds a frame in a rectangle of the open page, in millimeters, and selects
+/// it. The rectangle is cut to the page, and each side is at least
+/// `MIN_SIZE_MM`.
+pub fn add_frame_in(state: &mut AppState, rect: [f64; 4]) -> Option<FrameId> {
+    let rect = page_rect(open_page(state), rect);
+    let (id, _) = place_frame(state, |doc, pipeline, mut frame| {
+        frame.shape = FrameShape::Rectangle(rect);
+        if let Ok(projection) = pipeline.projection(doc, frame.map) {
+            let (w, h) = (rect[2] - rect[0], rect[3] - rect[1]);
+            frame.scale = math::fit_scale(projection.bounds(), w, h);
+        }
+        frame
+    })?;
+    state.atlas.tab = FrameTab::Frame;
+    Some(id)
+}
+
+/// A rectangle in millimeters cut to the page, with each side at least
+/// `MIN_SIZE_MM`.
+fn page_rect(page: &PageRecord, [x0, y0, x1, y1]: [f64; 4]) -> [f64; 4] {
+    let (pw, ph) = (page.width_mm, page.height_mm);
+    let side = |a: f64, b: f64, most: f64| {
+        let (a, b) = (a.min(b).clamp(0.0, most), a.max(b).clamp(0.0, most));
+        let size = (b - a).max(math::MIN_SIZE_MM).min(most);
+        let a = a.min(most - size);
+        (a, a + size)
+    };
+    let (x0, x1) = side(x0, x1, pw);
+    let (y0, y1) = side(y0, y1, ph);
+    [x0, y0, x1, y1]
+}
+
 /// Adds a frame of a new map, or of a map that no frame shows, to the open
 /// page, and selects it. `setup` gives the map its projection and changes
 /// the new frame.
@@ -1188,6 +1221,32 @@ pub fn edit_frame(
 /// page, and selects it. A legend, a color key, a scale bar, and a north
 /// arrow link to the largest frame of the page.
 pub fn add_item(state: &mut AppState, kind: ItemKind) -> Option<FurnitureId> {
+    put_item(state, kind, None)
+}
+
+/// Adds an item of furniture at its default size, with its top-left corner
+/// at `at` on the open page, in millimeters, and selects it. The item stays
+/// on the page.
+pub fn add_item_at(state: &mut AppState, kind: ItemKind, at: [f64; 2]) -> Option<FurnitureId> {
+    let page = open_page(state);
+    let (w, h) = kind.size();
+    let (w, h) = (w.min(page.width_mm), h.min(page.height_mm));
+    let x = at[0].min(page.width_mm - w).max(0.0);
+    let y = at[1].min(page.height_mm - h).max(0.0);
+    put_item(state, kind, Some([x, y, x + w, y + h]))
+}
+
+/// Adds an item of furniture in a rectangle of the open page, in
+/// millimeters, and selects it. The rectangle is cut to the page, and each
+/// side is at least `MIN_SIZE_MM`.
+pub fn add_item_in(state: &mut AppState, kind: ItemKind, rect: [f64; 4]) -> Option<FurnitureId> {
+    let rect = page_rect(open_page(state), rect);
+    put_item(state, kind, Some(rect))
+}
+
+/// Adds an item of furniture in `rect`, or at its default place inside the
+/// margin of the page, and selects it.
+fn put_item(state: &mut AppState, kind: ItemKind, rect: Option<[f64; 4]>) -> Option<FurnitureId> {
     let page = open_page(state);
     let frame = largest_frame(page);
     let m = math::MARGIN_MM;
@@ -1232,7 +1291,7 @@ pub fn add_item(state: &mut AppState, kind: ItemKind) -> Option<FurnitureId> {
         }
     };
     let page = page.id;
-    let rect = [x, y, x + w, y + h];
+    let rect = rect.unwrap_or([x, y, x + w, y + h]);
     let id = state.doc.project.atlas.add_furniture(page, rect, item)?;
     state.atlas.selection = AtlasSelection::Item(id);
     state.atlas.vertices.clear();
@@ -1939,6 +1998,9 @@ fn input(ui: &egui::Ui, state: &mut AppState, resp: &egui::Response, place: Page
         }
     }
     if resp.drag_stopped() || !any_down || state.atlas.drag.is_none() {
+        if let Some(Drag::Draw(start)) = state.atlas.drag {
+            draw_end(state, place, start, state.atlas.drag_last);
+        }
         if let Some(Drag::Box(start)) = state.atlas.drag {
             let rect = Rect::from_two_pos(start, state.atlas.drag_last);
             if state.atlas.tool == AtlasTool::Select {
@@ -1993,6 +2055,22 @@ fn input(ui: &egui::Ui, state: &mut AppState, resp: &egui::Response, place: Page
             if escape {
                 deselect(state);
             }
+        }
+        _ => {}
+    }
+}
+
+/// The end of a drag on the paper: a frame with the Frame tool, or an item
+/// of furniture with the Furniture tool, in the rectangle of the drag.
+fn draw_end(state: &mut AppState, place: PagePlace, start: Pos2, end: Pos2) {
+    let (a, b) = (place.to_mm(start), place.to_mm(end));
+    let rect = [a.x, a.y, b.x, b.y];
+    match state.atlas.tool {
+        AtlasTool::Frame => {
+            add_frame_in(state, rect);
+        }
+        AtlasTool::Furniture(kind) => {
+            add_item_in(state, kind, rect);
         }
         _ => {}
     }
@@ -2170,9 +2248,13 @@ fn start_drag(
                     let corner = corner.map_or(at, |f| math::shape_bbox(&f.shape).origin());
                     Drag::Body(id, corner - at)
                 }
+                // A drag on the empty paper draws a frame.
+                None if place.rect.contains(pos) => Drag::Draw(pos),
                 None => Drag::Page,
             }
         }
+        AtlasTool::Furniture(_) if place.rect.contains(pos) => Drag::Draw(pos),
+        AtlasTool::Furniture(_) => Drag::Page,
     }
 }
 
@@ -2372,7 +2454,7 @@ fn drag_to(state: &mut AppState, drag: Drag, place: PagePlace, pos: Pos2, d: Vec
             });
             state.atlas.guides = guides;
         }
-        Drag::Page | Drag::Box(_) | Drag::Idle => {}
+        Drag::Page | Drag::Box(_) | Drag::Draw(_) | Drag::Idle => {}
     }
 }
 
@@ -2428,6 +2510,12 @@ fn tap(state: &mut AppState, page: &PageRecord, place: PagePlace, pos: Pos2, shi
         return;
     }
     let at = place.to_mm(pos);
+    if let AtlasTool::Furniture(kind) = state.atlas.tool {
+        if place.rect.contains(pos) {
+            add_item_at(state, kind, [at.x, at.y]);
+        }
+        return;
+    }
     state.atlas.vertices.clear();
     state.atlas.sizes = false;
     if let Some(id) = item_at(page, at) {
@@ -3260,7 +3348,7 @@ fn selection(ui: &egui::Ui, state: &mut AppState, place: PagePlace) {
     }
     let painter = ui.painter();
     let stroke = egui::Stroke::new(2.0, ACCENT);
-    if let Some(Drag::Box(start)) = state.atlas.drag {
+    if let Some(Drag::Box(start) | Drag::Draw(start)) = state.atlas.drag {
         let rect = Rect::from_two_pos(start, state.atlas.drag_last);
         let fill = ACCENT.gamma_multiply(0.15);
         painter.rect(rect, 0.0, fill, stroke, egui::StrokeKind::Inside);
@@ -3714,6 +3802,54 @@ pub fn add_page(state: &mut AppState) {
     }
     state.atlas.page = new;
     state.atlas.selection = AtlasSelection::Page;
+}
+
+/// Moves a page to a place in the atlas order.
+pub fn move_page(state: &mut AppState, id: PageId, to: usize) {
+    state.doc.project.atlas.move_page(id, to);
+}
+
+/// Opens a page.
+pub fn open_page_id(state: &mut AppState, id: PageId) {
+    if state.atlas.page == id {
+        return;
+    }
+    state.atlas.page = id;
+    if state.atlas.frame().is_some() || state.atlas.item().is_some() {
+        state.atlas.selection = AtlasSelection::None;
+    }
+    state.atlas.vertices.clear();
+}
+
+/// Deletes a page of the Pages panel. The open page stays open, and if it
+/// is the deleted page, the page before it opens, or else the page after
+/// it. A selected page stays selected. The last page stays.
+pub fn delete_page_id(state: &mut AppState, id: PageId) {
+    let open = state.atlas.page;
+    let selection = state.atlas.selection;
+    state.atlas.page = id;
+    delete_page(state);
+    if open != id && state.doc.project.atlas.page(open).is_some() {
+        state.atlas.page = open;
+    }
+    state.atlas.selection = page_selection(selection, open == state.atlas.page);
+}
+
+/// Adds a page after the open page of the Pages panel, and opens it. A
+/// selected page stays selected.
+pub fn add_page_after(state: &mut AppState) {
+    let selection = state.atlas.selection;
+    add_page(state);
+    state.atlas.selection = page_selection(selection, false);
+}
+
+/// The selection after the Pages panel changes the open page: a frame or an
+/// item of another page is not selected.
+fn page_selection(selection: AtlasSelection, same_page: bool) -> AtlasSelection {
+    match selection {
+        AtlasSelection::Frame(_) | AtlasSelection::Item(_) if !same_page => AtlasSelection::None,
+        other => other,
+    }
 }
 
 /// Deletes the open page and opens the page before it, or else the page

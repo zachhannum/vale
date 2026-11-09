@@ -10897,6 +10897,11 @@ fn the_measure_cell_and_card_fit_in_the_atlas_on_each_screen() {
         lower_sheet(&mut h);
         scroll_strip_to(&mut h, "Frame tool");
         tap(&mut h, "Frame tool");
+        // A tap of this harness is long enough to be a hold, which opens
+        // the list of the Frame cell.
+        if h.state().pad.flyouts.open.is_some() {
+            tap(&mut h, vale_app::ui::pad::atlas::FRAME_ROW);
+        }
         assert_eq!(h.state().atlas.tool, AtlasTool::Frame, "{what}");
     }
 }
@@ -10949,7 +10954,10 @@ fn the_vertex_cell_and_card_fit_in_the_atlas_on_each_screen() {
             cards.push(r.tools);
         } else {
             assert!(r.column.contains_rect(card), "{what}: {card:?}");
-            assert!(card.top() >= tool_part(&h).bottom(), "{what}: {card:?}");
+            // A scrolled column moves the tools up.
+            if !scrolls {
+                assert!(card.top() >= tool_part(&h).bottom(), "{what}: {card:?}");
+            }
         }
         for other in cards {
             assert!(!card.intersects(other), "{what}: {card:?} {other:?}");
@@ -11018,7 +11026,10 @@ fn the_frame_strip_fits_in_the_atlas_on_each_screen() {
             cards.push(r.tools);
         } else {
             assert!(r.column.contains_rect(card), "{what}: {card:?}");
-            assert!(card.top() >= tool_part(&h).bottom(), "{what}: {card:?}");
+            // A scrolled column moves the tools up.
+            if !scrolls {
+                assert!(card.top() >= tool_part(&h).bottom(), "{what}: {card:?}");
+            }
         }
         for other in cards {
             assert!(!card.intersects(other), "{what}: {card:?} {other:?}");

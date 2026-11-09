@@ -86,6 +86,14 @@ pub enum Icon {
     Book,
     /// A window with a column at its right.
     Dock,
+    /// Two swatches with a line of text each.
+    Legend,
+    /// A bar with a tick at each end.
+    ScaleBar,
+    /// An arrow that points up.
+    NorthArrow,
+    /// A bar of colors with a scale below it.
+    ColorKey,
 }
 
 impl Icon {
@@ -147,6 +155,10 @@ impl Icon {
                 "M3 5h6c1.66 0 3 1.34 3 3v12c0-1.1-.9-2-2-2H3zM21 5h-6c-1.66 0-3 1.34-3 3v12c0-1.1.9-2 2-2h7z"
             }
             Icon::Dock => "M3 5h18v14H3zM15 5v14M17.5 9h1.5M17.5 12h1.5",
+            Icon::Legend => "M3 5h5v5H3zM3 14h5v5H3zM11 7.5h10M11 16.5h7",
+            Icon::ScaleBar => "M3 9v6M21 9v6M3 12h18M12 10v4",
+            Icon::NorthArrow => "M6 21l6-18 6 18M8.5 14h7",
+            Icon::ColorKey => "M3 6h18v6H3zM9 6v6M15 6v6M3 16v3M12 16v3M21 16v3",
             Icon::LayoutGrid => "M4 4h16v16h-16zM4 9.33h16M4 14.67h16M9.33 4v16M14.67 4v16",
             Icon::Grip => "M5 8h14M5 12h14M5 16h14",
             Icon::Select => "M5 3l14 8-6 2-2 6z",
@@ -492,6 +504,10 @@ mod tests {
             Icon::Eyedropper,
             Icon::Book,
             Icon::Dock,
+            Icon::Legend,
+            Icon::ScaleBar,
+            Icon::NorthArrow,
+            Icon::ColorKey,
         ] {
             let lines = parse(icon.path());
             let circles = icon.circles();

@@ -50,6 +50,7 @@ pub mod icons;
 pub mod label_text;
 pub mod labels;
 pub mod number;
+pub mod pages;
 pub mod point_card;
 pub mod popover;
 pub mod raster;
@@ -448,6 +449,11 @@ pub struct PadState {
     field: Option<fields::Draft>,
     /// The panel that shows as a floating card at the right.
     pub float: Option<Panel>,
+    /// The last kind of furniture that was chosen in the Furniture cell of
+    /// the atlas.
+    pub furniture: Option<crate::ui::atlas::ItemKind>,
+    /// The Pages panel of the atlas.
+    pub pages: pages::PagesState,
     /// The dock of each workspace.
     pub docks: crate::dock::Docks,
     /// The dock can show: the window is 1,000 points wide or more. Each
@@ -818,7 +824,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         Some(Flyout::Brush(group)) => brush_flyout(&ctx, state, &mut controls, &rects, group),
         Some(Flyout::PolygonMode) => polygon_flyout(&ctx, state, &mut controls, &rects),
         Some(Flyout::Vector) => vector_flyout(&ctx, state, &mut controls, &rects),
-        None => {}
+        _ => {}
     }
     state.pad.add_rect = None;
     match state.pad.add_button {
@@ -2216,9 +2222,6 @@ enum CardPlace {
 /// Moves the panel of a floating card into the dock, and opens the dock.
 fn dock_card(state: &mut AppState, panel: Panel) {
     state.pad.dock_panel(panel);
-    if panel == Panel::Maps {
-        state.atlas.frames = false;
-    }
 }
 
 /// Shows a panel in its slot of the dock: the title row with the chevron,
