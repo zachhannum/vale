@@ -97,11 +97,12 @@ impl Bands {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WidthClass {
-    /// 1,000 points or more. The workspace switch shows all workspaces.
+    /// 1,000 points or more. The globe and the page fit beside the dock.
     Wide,
-    /// From 600 points. The workspace switch is a menu button.
+    /// From 600 points. The dock floats over the canvas.
     Medium,
-    /// Less than 600 points. The menu holds the views, and a panel is a sheet.
+    /// Less than 600 points. The workspace switch is a menu button, and a
+    /// panel is a sheet.
     Compact,
 }
 
