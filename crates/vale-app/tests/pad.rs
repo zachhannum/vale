@@ -23,10 +23,10 @@ use vale_app::ui::pad::raster;
 use vale_app::ui::pad::{
     ADD_LAYER, CLEAR_PATH, DESELECT, EXPORT_GEOTIFF, GRATICULE, IMPORT_HEIGHTMAP, LAYER_NAME, LINE,
     LayerRef, MEASURE, ModeGroup, NEW_GEOJSON, NEW_HEIGHTMAP, NEW_IMAGE, NEW_RASTER, OPACITY,
-    POLYGON, Page, Panel, RECENTER, RESET, SCULPT, SMOOTHING, SNAP, SNAP_DISTANCE, SNAP_EDGES,
-    SNAP_VERTICES, SNAPPING, TERRAIN, TERRAIN_BALANCE, TERRAIN_FIT, TERRAIN_FIT_SWITCH, VECTOR,
-    VIEW_OPTIONS, WORLD_PROPERTIES, WORLDS, WORLDS_ROW, brush_size_text, readout_line,
-    readout_text, theme,
+    PANELS, POLYGON, Page, Panel, RECENTER, RESET, SCULPT, SMOOTHING, SNAP, SNAP_DISTANCE,
+    SNAP_EDGES, SNAP_VERTICES, SNAPPING, TERRAIN, TERRAIN_BALANCE, TERRAIN_FIT, TERRAIN_FIT_SWITCH,
+    VECTOR, VIEW_OPTIONS, WORLD_PROPERTIES, WORLDS, WORLDS_ROW, brush_size_text, panels_menu,
+    readout_line, readout_text, theme,
 };
 use vale_app::ui::raster_form::{self, PRESETS, RasterForm, face_size_name};
 use vale_app::ui::select;
@@ -155,13 +155,15 @@ fn lower_sheet(h: &mut Pad) {
     }
 }
 
-/// Opens or closes the Toolbox panel. Below 1,000 points, its row is in the
-/// workspace menu.
+/// Opens or closes the Toolbox panel.
 fn toolbox(h: &mut Pad) {
-    if control(h, "Toolbox").is_none() {
-        tap(h, "Workspace");
-    }
-    tap(h, "Toolbox");
+    open_panel(h, "Toolbox");
+}
+
+/// Opens or closes a panel with its tile in the Panels menu.
+fn open_panel(h: &mut Pad, name: &str) {
+    tap(h, vale_app::ui::pad::PANELS);
+    tap(h, name);
 }
 
 /// A tap of a finger on the middle of a control.
@@ -313,7 +315,7 @@ fn the_canvas_fills_the_screen_and_the_panels_float_over_it() {
         let mut h = pad(size);
         let screen = Rect::from_min_size(Pos2::ZERO, size.into());
         assert_eq!(h.state().globe.rect, screen, "{size:?}");
-        tap(&mut h, "Layers");
+        open_panel(&mut h, "Layers");
         if !h.state().pad.rects.unwrap().one_panel {
             tap(&mut h, "Brush settings");
         }
@@ -332,9 +334,9 @@ fn check_controls(h: &Pad, what: &str) {
     let controls = &h.state().pad.controls;
     // A sheet at half or full height covers the rows of the tool strip.
     let least = if rects.row && rects.sheet.is_some() && rects.tool_cells == 0 {
-        4
+        3
     } else {
-        7
+        6
     };
     assert!(
         controls.len() >= least,
@@ -344,6 +346,7 @@ fn check_controls(h: &Pad, what: &str) {
     let in_menu = h.state().pad.menu_rect.is_some();
     let in_modes = h.state().pad.flyouts.rect.is_some();
     let in_add = h.state().pad.add_rect.is_some();
+    let in_panels = h.state().pad.panels_menu_rect.is_some();
     let in_list = h.state().pad.projections_rect.is_some();
     let in_stop = h.state().pad.style.card.is_some() || h.state().pad.style.reset_card.is_some();
     let in_edit = controls
@@ -366,6 +369,7 @@ fn check_controls(h: &Pad, what: &str) {
         || in_menu
         || in_modes
         || in_add
+        || in_panels
         || in_list
         || in_stop
         || h.state().pad.view_options_rect.is_some();
@@ -394,10 +398,8 @@ fn check_controls(h: &Pad, what: &str) {
                 let kind = vale_sphere::ProjectionKind::ALL
                     .iter()
                     .any(|k| k.name() == name);
-                let menu = [
-                    "World", "Globe", "Flat", GRATICULE, "Atlas", WORLDS_ROW, "Toolbox",
-                ]
-                .contains(&name);
+                let menu =
+                    ["World", "Globe", "Flat", GRATICULE, "Atlas", WORLDS_ROW].contains(&name);
                 let modes = in_modes && all_modes().any(|mode| mode == name);
                 let rows = [
                     NEW_RASTER,
@@ -409,6 +411,15 @@ fn check_controls(h: &Pad, what: &str) {
                     NEW_HEIGHTMAP,
                 ];
                 let add = in_add && rows.contains(&name);
+                let tiles = [
+                    "Layers",
+                    select::ATTRIBUTES,
+                    "Toolbox",
+                    "Brush",
+                    panels_menu::CLOSE_ALL,
+                    panels_menu::RESET_LAYOUT,
+                ];
+                let add = add || in_panels && tiles.contains(&name);
                 let stop = in_stop
                     && (name.starts_with(vale_app::ui::pad::raster::COLOR) || raster_stop(name));
                 menu || kind || modes || add || stop || (in_menu && name == "Projection")
@@ -463,12 +474,17 @@ fn each_control_is_large_and_is_outside_the_system_bands() {
             select::ATTRIBUTES,
             "Brush settings",
         ] {
-            if control(&h, name).is_none() {
+            let tile = name == "Layers" || name == select::ATTRIBUTES;
+            if !tile && control(&h, name).is_none() {
                 // An open sheet covers the Brush button.
                 assert_eq!(name, "Brush settings");
                 tap(&mut h, "Close Attributes");
             }
-            tap(&mut h, name);
+            if tile {
+                open_panel(&mut h, name);
+            } else {
+                tap(&mut h, name);
+            }
             check_controls(&h, &format!("{size:?} after {name}"));
         }
         lower_sheet(&mut h);
@@ -491,6 +507,10 @@ fn each_control_is_large_and_is_outside_the_system_bands() {
             check_controls(&h, &format!("{size:?} with the menu"));
             h.state_mut().pad.menu = false;
         }
+        tap(&mut h, PANELS);
+        assert!(h.state().pad.panels_menu, "{size:?}");
+        check_controls(&h, &format!("{size:?} with the Panels menu"));
+        h.state_mut().pad.panels_menu = false;
 
         // The list of the layers, the menu of the new layers, and the panel
         // of a vector layer.
@@ -563,7 +583,7 @@ fn the_layers_panel_adds_selects_and_hides_raster_layers() {
             assert!(control(&h, name).is_none(), "{what}: {name}");
         }
         assert!(control(&h, "Pan").is_some(), "{what}");
-        tap(&mut h, "Layers");
+        open_panel(&mut h, "Layers");
         assert!(control(&h, "Layer Height").is_none(), "{what}");
         assert!(control(&h, IMPORT_HEIGHTMAP).is_none(), "{what}");
 
@@ -736,7 +756,7 @@ fn a_new_raster_layer_has_the_picked_face_size() {
         let mut h = empty_pad(size);
         // The face size of `--face-size` is in the list, and it is on.
         h.state_mut().form_face_size = Some(64);
-        tap(&mut h, "Layers");
+        open_panel(&mut h, "Layers");
         open_raster_form(&mut h);
         let form = h.state().raster_form.clone().unwrap();
         assert_eq!(
@@ -790,7 +810,7 @@ fn the_form_offers_four_face_sizes_and_the_preset_gives_the_default() {
     for size in [BOARDS[0], BOARDS[3]] {
         let what = format!("{size:?}");
         let mut h = empty_pad(size);
-        tap(&mut h, "Layers");
+        open_panel(&mut h, "Layers");
         open_raster_form(&mut h);
         // The form opens on the custom preset.
         let form = h.state().raster_form.clone().unwrap();
@@ -842,7 +862,7 @@ fn the_form_offers_four_face_sizes_and_the_preset_gives_the_default() {
 fn each_preset_adds_a_layer_with_its_unit_and_its_range() {
     let mut h = empty_pad(BOARDS[0]);
     h.state_mut().form_face_size = Some(64);
-    tap(&mut h, "Layers");
+    open_panel(&mut h, "Layers");
     let wanted = [
         ("Height", "m", (-6000.0, 6000.0)),
         ("Precipitation", "mm", (0.0, 4000.0)),
@@ -911,7 +931,7 @@ fn the_form_shows_the_values_next_to_each_face_size() {
     for size in [BOARDS[0], BOARDS[3]] {
         let what = format!("{size:?}");
         let mut h = empty_pad(size);
-        tap(&mut h, "Layers");
+        open_panel(&mut h, "Layers");
         open_raster_form(&mut h);
         let card = |h: &Pad, name: &str| control(h, name).unwrap();
         let shows = |h: &Pad, text: &str, row: Rect| {
@@ -947,7 +967,7 @@ fn the_form_adds_a_raster_layer_of_another_unit() {
         let what = format!("{size:?}");
         let mut h = pad(size);
         h.state_mut().form_face_size = Some(64);
-        tap(&mut h, "Layers");
+        open_panel(&mut h, "Layers");
         open_raster_form(&mut h);
         // The form opens on the custom preset, with a plain value.
         let form = h.state().raster_form.clone().unwrap();
@@ -1105,7 +1125,7 @@ fn the_panel_of_a_raster_layer_renames_the_layer_and_a_swipe_deletes_it() {
         state.save_waiting().unwrap();
         h.run_steps(2);
 
-        tap(&mut h, "Layers");
+        open_panel(&mut h, "Layers");
         tap(&mut h, "Open Height");
         check_controls(&h, &format!("{what} with the panel of a raster layer"));
         type_text(&mut h, LAYER_NAME, "Ground");
@@ -1142,7 +1162,7 @@ fn layer_names(h: &Pad) -> Vec<String> {
 fn you_make_rename_hide_and_delete_a_layer() {
     for size in [BOARDS[0], BOARDS[3]] {
         let mut h = pad(size);
-        tap(&mut h, "Layers");
+        open_panel(&mut h, "Layers");
         tap(&mut h, ADD_LAYER);
         assert!(h.state().pad.add);
         let (menu, layers) = (
@@ -1202,7 +1222,7 @@ fn you_make_rename_hide_and_delete_a_layer() {
 #[test]
 fn a_press_outside_closes_the_menu_of_the_new_layers() {
     let mut h = pad(BOARDS[0]);
-    tap(&mut h, "Layers");
+    open_panel(&mut h, "Layers");
     tap(&mut h, ADD_LAYER);
     assert!(h.state().pad.add);
     tap(&mut h, ADD_LAYER);
@@ -1221,7 +1241,7 @@ fn a_press_outside_closes_the_menu_of_the_new_layers() {
 fn the_arrow_of_a_row_opens_the_panel_of_the_layer() {
     for size in BOARDS {
         let mut h = painted_pad(size);
-        tap(&mut h, "Layers");
+        open_panel(&mut h, "Layers");
         let list = panel(&h, Panel::Layers).unwrap();
         let rivers = vector(&h, "Rivers");
         tap(&mut h, "Open Rivers");
@@ -1266,7 +1286,7 @@ fn hold(h: &mut Pad, name: &str) -> Pos2 {
 fn a_hold_and_a_drag_change_the_order() {
     for size in [BOARDS[0], BOARDS[3]] {
         let mut h = pad(size);
-        tap(&mut h, "Layers");
+        open_panel(&mut h, "Layers");
         let land = vector(&h, "Land");
         let places = control(&h, "Layer Places").unwrap().center();
         let from = hold(&mut h, "Layer Land");
@@ -1337,7 +1357,7 @@ fn a_drag_moves_a_raster_row_past_a_vector_row_and_undo_puts_it_back() {
         let what = format!("{size:?}");
         let dir = tempfile::tempdir().unwrap();
         let mut h = saved_pad(size, dir.path());
-        tap(&mut h, "Layers");
+        open_panel(&mut h, "Layers");
         let before = ["Height", "Land", "Rivers", "Places"];
         assert_eq!(layer_names(&h), before, "{what}");
         let height = h.state().doc.project.rasters()[0].id;
@@ -1410,7 +1430,7 @@ fn the_blend_page_sets_the_blend_mode_and_is_one_undo_step() {
         let height = h.state().doc.project.rasters()[0].id;
         let blend = |h: &Pad| h.state().doc.project.raster(height).unwrap().blend;
         assert_eq!(blend(&h), BlendMode::Normal, "{what}");
-        tap(&mut h, "Layers");
+        open_panel(&mut h, "Layers");
         tap(&mut h, "Open Height");
         scroll_to(&mut h, raster::BLEND);
         tap(&mut h, raster::BLEND);
@@ -1451,7 +1471,7 @@ fn the_opacity_slider_changes_the_layer_and_is_one_undo_step() {
         let height = h.state().doc.project.rasters()[0].id;
         let opacity = |h: &Pad| h.state().doc.project.raster(height).unwrap().opacity;
         assert_eq!(opacity(&h), 1.0);
-        tap(&mut h, "Layers");
+        open_panel(&mut h, "Layers");
         tap(&mut h, "Open Height");
         check_controls(&h, &format!("{what} with the opacity slider"));
         let slider = control(&h, OPACITY).unwrap();
@@ -1521,7 +1541,7 @@ fn the_opacity_slider_changes_the_layer_and_is_one_undo_step() {
 #[test]
 fn a_quick_drag_does_not_lift_a_row() {
     let mut h = pad(BOARDS[0]);
-    tap(&mut h, "Layers");
+    open_panel(&mut h, "Layers");
     let from = control(&h, "Layer Land").unwrap().center();
     let to = control(&h, "Layer Places").unwrap().center();
     touch(&mut h, egui::TouchPhase::Start, from, None);
@@ -1559,7 +1579,7 @@ fn a_swipe_shows_delete_a_tap_deletes_and_undo_brings_it_back() {
         let what = format!("{size:?}");
         let dir = tempfile::tempdir().unwrap();
         let mut h = saved_pad(size, dir.path());
-        tap(&mut h, "Layers");
+        open_panel(&mut h, "Layers");
         assert!(control(&h, "Delete Rivers").is_none(), "{what}");
         swipe(&mut h, "Rivers", -120.0);
         let rivers = vector(&h, "Rivers");
@@ -1608,7 +1628,7 @@ fn a_short_swipe_snaps_shut() {
     for size in [BOARDS[0], BOARDS[3]] {
         let what = format!("{size:?}");
         let mut h = pad(size);
-        tap(&mut h, "Layers");
+        open_panel(&mut h, "Layers");
         swipe(&mut h, "Land", -30.0);
         assert_eq!(h.state().pad.swipe, None, "{what}");
         assert!(control(&h, "Delete Land").is_none(), "{what}");
@@ -1642,7 +1662,7 @@ fn a_vertical_drag_on_the_list_scrolls_and_opens_no_row() {
         h.state_mut().doc.add_layer(vale_store::GeometryKind::Line);
     }
     h.run_steps(2);
-    tap(&mut h, "Layers");
+    open_panel(&mut h, "Layers");
     let top = control(&h, "Layer Height").unwrap().center().y;
     let from = control(&h, "Layer Places").unwrap().center();
     drag(&mut h, from, from - vec2(10.0, 150.0), None);
@@ -1673,7 +1693,7 @@ fn the_height_panel_asks_for_a_heightmap_file() {
         let mut h = painted_pad(size);
         // iOS has no file dialog of the desktop.
         h.state_mut().file_buttons = false;
-        tap(&mut h, "Layers");
+        open_panel(&mut h, "Layers");
         tap(&mut h, "Open Height");
         check_controls(&h, &format!("{size:?}"));
         assert!(h.state().actions.is_empty());
@@ -1691,7 +1711,7 @@ fn the_height_panel_shows_the_warning_of_a_wrong_aspect_ratio() {
         // the new layers. The import makes the Height layer and opens its
         // panel.
         let mut h = empty_pad(size);
-        tap(&mut h, "Layers");
+        open_panel(&mut h, "Layers");
         assert!(control(&h, "Open Height").is_none());
         tap(&mut h, ADD_LAYER);
         check_controls(&h, &format!("{size:?} with the import row"));
@@ -1715,7 +1735,7 @@ fn the_height_panel_shows_the_warning_of_a_wrong_aspect_ratio() {
 fn the_import_row_is_off_while_an_import_runs() {
     let path = heightmap_file("pad-busy.png", 512, 256);
     let mut h = painted_pad(BOARDS[0]);
-    tap(&mut h, "Layers");
+    open_panel(&mut h, "Layers");
     tap(&mut h, "Open Height");
     assert!(control(&h, IMPORT_HEIGHTMAP).is_some());
     // The worker gives one face in each frame.
@@ -1752,7 +1772,7 @@ fn the_note_of_an_import_shows_only_in_the_panel_of_its_layer_and_goes_away() {
     };
     h.state_mut().add_raster(rain).unwrap();
     h.run_steps(2);
-    tap(&mut h, "Layers");
+    open_panel(&mut h, "Layers");
     tap(&mut h, "Open Height");
     h.state_mut()
         .run_action(Action::ImportHeightmap(path.clone()));
@@ -1799,7 +1819,7 @@ fn height_pad(size: (f32, f32)) -> Pad {
     h.state_mut().add_height();
     h.state_mut().globe.map.set(0, 0, 0, meters_to_level(100.0));
     h.run_steps(2);
-    tap(&mut h, "Layers");
+    open_panel(&mut h, "Layers");
     tap(&mut h, "Open Height");
     h
 }
@@ -1826,7 +1846,7 @@ fn the_height_panel_asks_for_the_file_of_an_export() {
 fn a_world_with_no_raster_layer_has_no_export_row() {
     for size in BOARDS {
         let mut h = empty_pad(size);
-        tap(&mut h, "Layers");
+        open_panel(&mut h, "Layers");
         assert!(control(&h, IMPORT_HEIGHTMAP).is_none(), "{size:?}");
         assert!(control(&h, EXPORT_GEOTIFF).is_none(), "{size:?}");
         assert!(h.query_by_label(EXPORT_GEOTIFF).is_none(), "{size:?}");
@@ -1918,7 +1938,11 @@ fn a_finger_hits_each_control_at_the_first_try() {
         (select::ATTRIBUTES, Panel::Attributes),
         ("Brush settings", Panel::Brush),
     ] {
-        tap(&mut h, name);
+        if which == Panel::Brush {
+            tap(&mut h, name);
+        } else {
+            open_panel(&mut h, name);
+        }
         assert!(h.state().pad.is_open(which), "{name}");
     }
     assert!(!h.state().pad.is_open(Panel::Layers));
@@ -1942,7 +1966,7 @@ fn a_finger_hits_each_control_at_the_first_try() {
     assert!(h.state().globe.brush.size_points < size);
 
     // The Move tool has no context strip, so the Brush panel closes.
-    tap(&mut h, "Pan");
+    quick_tap(&mut h, "Pan");
     assert_eq!(h.state().globe.tool, Tool::Navigate);
     assert!(control(&h, "Brush settings").is_none());
     assert!(!h.state().pad.is_open(Panel::Brush));
@@ -2016,8 +2040,7 @@ fn the_tool_strip_has_six_cells_on_each_screen() {
             } else {
                 rects.tools.height()
             };
-            let cell = if rects.row { 56.0 } else { 52.0 };
-            assert_eq!(length, 6.0 * cell + 8.0, "{what}");
+            assert_eq!(length, 6.0 * 52.0 + 8.0, "{what}");
         } else {
             assert_eq!(rects.tool_cells, 3, "{what}");
         }
@@ -2060,9 +2083,9 @@ fn the_tool_strip_has_six_cells_on_each_screen() {
 fn the_small_ipads_show_the_full_sliders_with_a_raster_layer() {
     // The small iPads in landscape have less room for the sliders.
     for (size, slider) in [
-        ((1133.0, 744.0), 110.0),
+        ((1133.0, 744.0), 112.0),
         ((744.0, 1133.0), 140.0),
-        ((1024.0, 768.0), 122.0),
+        ((1024.0, 768.0), 124.0),
         ((768.0, 1024.0), 140.0),
     ] {
         let what = format!("{size:?}");
@@ -2083,7 +2106,7 @@ fn the_small_ipads_show_the_full_sliders_with_a_raster_layer() {
 fn a_tap_on_the_brush_cell_chooses_the_brush_in_its_mode() {
     let mut h = pad(BOARDS[0]);
     h.state_mut().globe.brush.mode = Mode::Erode;
-    tap(&mut h, "Pan");
+    quick_tap(&mut h, "Pan");
     assert_eq!(h.state().globe.tool, Tool::Navigate);
     assert_eq!(toggled(&h, TERRAIN), Some(false));
     assert_eq!(face(&h, ModeGroup::Terrain), "Erode");
@@ -2127,7 +2150,7 @@ fn each_brush_cell_remembers_the_last_mode_of_its_group() {
     assert_eq!(h.state().globe.brush.mode, Mode::Erode);
     assert_eq!(face(&h, ModeGroup::Sculpt), "Push");
     // After the Move tool, each cell keeps its mode.
-    tap(&mut h, "Pan");
+    quick_tap(&mut h, "Pan");
     quick_tap(&mut h, SCULPT);
     assert_eq!(h.state().globe.brush.mode, Mode::Push);
 }
@@ -2195,7 +2218,7 @@ fn hold_cell(h: &mut Pad, name: &str) {
 fn a_hold_or_a_second_tap_on_the_brush_cell_opens_the_flyout() {
     let mut h = pad(BOARDS[0]);
     let tools = h.state().pad.rects.unwrap().tools;
-    tap(&mut h, "Pan");
+    quick_tap(&mut h, "Pan");
     // A hold opens the flyout, and the end of the hold is not a tap.
     for group in ModeGroup::ALL {
         let name = group.name();
@@ -2250,7 +2273,7 @@ fn a_hold_or_a_second_tap_on_the_brush_cell_opens_the_flyout() {
         Some(Flyout::Brush(ModeGroup::Terrain))
     );
     // A tap on another control closes it.
-    tap(&mut h, "Layers");
+    open_panel(&mut h, "Layers");
     assert!(h.state().pad.flyouts.open.is_none() && h.state().pad.is_open(Panel::Layers));
 
     // The flyout is in front of the Brush panel.
@@ -2266,7 +2289,7 @@ fn a_mode_of_the_flyout_sets_the_mode_and_the_face_of_the_cell() {
     for group in ModeGroup::ALL {
         for &(name, icon, mode) in group.modes() {
             // A row of the flyout also chooses the brush.
-            tap(&mut h, "Pan");
+            quick_tap(&mut h, "Pan");
             choose_mode(&mut h, name);
             let s = h.state();
             assert_eq!((s.globe.tool, s.globe.brush.mode), (Tool::Brush, mode));
@@ -3230,7 +3253,7 @@ fn screenshot_of_the_ocean_ridge_panel() {
 fn the_globe_does_not_move_when_you_touch_a_card() {
     for size in BOARDS {
         let mut h = pad(size);
-        tap(&mut h, "Layers");
+        open_panel(&mut h, "Layers");
         let before = h.state().globe.view;
         let screen = h.state().globe.rect;
         if control(&h, "Workspace").is_some() {
@@ -3247,7 +3270,7 @@ fn the_globe_does_not_move_when_you_touch_a_card() {
             assert!(h.state().pad.menu);
             tap(&mut h, "Close Layers");
             assert!(!h.state().pad.menu);
-            tap(&mut h, "Layers");
+            open_panel(&mut h, "Layers");
         }
         // The Move tool has no context strip.
         h.state_mut().globe.tool = Tool::Navigate;
@@ -3575,7 +3598,7 @@ fn text_on_a_card_is_easy_to_read_over_a_white_canvas() {
 fn the_pen_paints_on_the_canvas_and_a_panel_stays_open() {
     let _gpu = one_gpu_test();
     let mut h = gpu_pad(BOARDS[0]);
-    tap(&mut h, "Layers");
+    open_panel(&mut h, "Layers");
     tap(&mut h, "Brush settings");
     let c = h.state().globe.rect.center();
 
@@ -3831,7 +3854,7 @@ fn the_undo_button_works_after_the_app_stops_and_starts() {
 fn one_tap_switches_the_view_and_the_tool_and_the_panels_stay() {
     let mut h = pad(BOARDS[0]);
     choose_mode(&mut h, "Lower");
-    tap(&mut h, "Layers");
+    open_panel(&mut h, "Layers");
     tap(&mut h, "Brush settings");
     let panels = h.state().pad.panels.clone();
     assert_eq!(panels.len(), 2);
@@ -3879,7 +3902,7 @@ fn the_view_switch_has_the_list_of_the_projections_of_the_flat_view() {
 
     // A touch off the list closes it, and the globe has no list.
     tap(&mut h, "Projection");
-    tap(&mut h, "Layers");
+    open_panel(&mut h, "Layers");
     assert!(!h.state().pad.projections);
     tap(&mut h, "Projection");
     tap(&mut h, "Globe");
@@ -3938,9 +3961,9 @@ fn the_view_options_menu_has_the_graticule_switch() {
                 tap(&mut h, VIEW_OPTIONS);
                 let pad = &h.state().pad;
                 assert!(!pad.projections && pad.view_options, "{what}");
-                tap(&mut h, "Layers");
+                open_panel(&mut h, "Layers");
                 assert!(!h.state().pad.view_options, "{what}");
-                tap(&mut h, "Layers");
+                open_panel(&mut h, "Layers");
             }
         }
 
@@ -4054,60 +4077,56 @@ fn the_top_row_and_the_panels_match_the_landscape_board() {
     let mut h = pad(BOARDS[0]);
     let r = h.state().pad.rects.unwrap();
     assert_eq!(r.class, WidthClass::Wide);
-    assert_eq!(r.workspace.min, pos2(16.0, 32.0));
+    assert_eq!(r.workspace.min, pos2(0.0, 28.0));
     assert_eq!(r.workspace.height(), 52.0);
     // The Worlds button and a line are at the left of the workspaces.
-    assert_eq!(control(&h, WORLDS).unwrap().min, pos2(20.0, 36.0));
-    assert_eq!(control(&h, "World").unwrap().min, pos2(73.0, 36.0));
+    assert_eq!(control(&h, WORLDS).unwrap().min, pos2(4.0, 32.0));
+    assert_eq!(control(&h, "World").unwrap().min, pos2(57.0, 32.0));
     assert!(control(&h, "Atlas").is_some());
     assert!(control(&h, "Workspace").is_none());
     assert!(r.view.unwrap().contains_rect(control(&h, "Flat").unwrap()));
-    assert_eq!(r.view.unwrap().center(), pos2(597.0, 58.0));
+    assert_eq!(r.view.unwrap().center(), pos2(597.0, 54.0));
     assert!(r.view.unwrap().contains_rect(control(&h, "Globe").unwrap()));
     assert_eq!(
         r.actions,
-        Rect::from_min_size(pos2(921.0, 32.0), vec2(257.0, 52.0))
+        Rect::from_min_size(pos2(1033.0, 28.0), vec2(161.0, 52.0))
     );
-    let names = ["Layers", "Toolbox", select::ATTRIBUTES];
-    let lefts = names.map(|name| control(&h, name).unwrap().left());
-    assert_eq!(lefts, [1034.0, 1082.0, 1130.0]);
+    // Undo, Redo, a line, and the Panels button.
+    assert_eq!(control(&h, PANELS).unwrap().min, pos2(1146.0, 32.0));
+    for name in ["Layers", "Toolbox", select::ATTRIBUTES] {
+        assert!(control(&h, name).is_none(), "{name}");
+    }
     assert_eq!(
         r.tools,
-        Rect::from_min_size(pos2(16.0, 96.0), vec2(64.0, 320.0))
+        Rect::from_min_size(pos2(0.0, 92.0), vec2(60.0, 320.0))
     );
     assert_eq!(
         control(&h, SCULPT).unwrap(),
-        Rect::from_min_size(pos2(20.0, 100.0), vec2(56.0, 52.0))
+        Rect::from_min_size(pos2(4.0, 96.0), vec2(52.0, 52.0))
     );
     assert_eq!(
         control(&h, TERRAIN).unwrap(),
-        Rect::from_min_size(pos2(20.0, 152.0), vec2(56.0, 52.0))
+        Rect::from_min_size(pos2(4.0, 148.0), vec2(52.0, 52.0))
     );
     assert_eq!(
         r.brush.unwrap(),
-        Rect::from_min_size(pos2(16.0, 428.0), vec2(64.0, 340.0))
+        Rect::from_min_size(pos2(0.0, 424.0), vec2(60.0, 340.0))
     );
-    assert_eq!(
-        control(&h, "Brush settings").unwrap().min,
-        pos2(20.0, 712.0)
-    );
+    assert_eq!(control(&h, "Brush settings").unwrap().min, pos2(4.0, 708.0));
 
-    tap(&mut h, "Layers");
+    open_panel(&mut h, "Layers");
     tap(&mut h, "Brush settings");
     let layers = panel(&h, Panel::Layers).unwrap();
-    assert_eq!((layers.min, layers.width()), (pos2(858.0, 96.0), 320.0));
+    assert_eq!((layers.min, layers.width()), (pos2(858.0, 92.0), 320.0));
     // The title row, the import row, and the three layers of the sample.
     assert_eq!(layers.height(), 52.0 + 4.0 * 48.0 + 10.0);
-    assert_eq!(
-        control(&h, "Close Layers").unwrap().min,
-        pos2(1130.0, 100.0)
-    );
+    assert_eq!(control(&h, "Close Layers").unwrap().min, pos2(1130.0, 96.0));
     let brush = panel(&h, Panel::Brush).unwrap();
-    assert_eq!((brush.min, brush.width()), (pos2(92.0, 96.0), 340.0));
+    assert_eq!((brush.min, brush.width()), (pos2(72.0, 92.0), 340.0));
     // Toolbox opens in the place of Layers.
     toolbox(&mut h);
     assert_eq!(panel(&h, Panel::Layers), None);
-    assert_eq!(panel(&h, Panel::Toolbox).unwrap().min, pos2(858.0, 96.0));
+    assert_eq!(panel(&h, Panel::Toolbox).unwrap().min, pos2(858.0, 92.0));
     assert!(panel(&h, Panel::Brush).is_some());
 }
 
@@ -4117,27 +4136,27 @@ fn the_top_row_and_the_panels_match_the_portrait_board() {
     let r = h.state().pad.rects.unwrap();
     assert_eq!(r.class, WidthClass::Medium);
     assert!(control(&h, "World").is_none());
-    assert_eq!(control(&h, WORLDS).unwrap().min, pos2(20.0, 36.0));
+    assert_eq!(control(&h, WORLDS).unwrap().min, pos2(4.0, 32.0));
     let button = control(&h, "Workspace").unwrap();
-    assert_eq!((button.left(), button.right()), (69.0, r.workspace.right()));
+    assert_eq!((button.left(), button.right()), (53.0, r.workspace.right()));
     assert_eq!(
         (r.workspace.min, r.workspace.height()),
-        (pos2(16.0, 32.0), 52.0)
+        (pos2(0.0, 28.0), 52.0)
     );
-    assert_eq!(r.view.unwrap().center(), pos2(417.0, 58.0));
+    assert_eq!(r.view.unwrap().center(), pos2(417.0, 54.0));
     assert!(control(&h, "Globe").is_some());
-    assert_eq!(r.actions.right(), 818.0);
+    assert_eq!(r.actions.right(), 834.0);
 
     toolbox(&mut h);
     let toolbox = panel(&h, Panel::Toolbox).unwrap();
-    assert_eq!((toolbox.min, toolbox.width()), (pos2(498.0, 96.0), 320.0));
+    assert_eq!((toolbox.min, toolbox.width()), (pos2(498.0, 92.0), 320.0));
     tap(&mut h, "Brush settings");
     assert!(h.state().pad.is_open(Panel::Toolbox) && h.state().pad.is_open(Panel::Brush));
 
     // The menu holds the workspaces. The view switch stays in the top row.
     tap(&mut h, "Workspace");
     let menu = h.state().pad.menu_rect.unwrap();
-    assert_eq!((menu.min, menu.width()), (pos2(16.0, 88.0), 240.0));
+    assert_eq!((menu.min, menu.width()), (pos2(16.0, 84.0), 240.0));
     assert!(menu.contains_rect(control(&h, "Atlas").unwrap()));
     tap(&mut h, "Atlas");
     assert_eq!(h.state().workspace, Workspace::Atlas);
@@ -4156,8 +4175,8 @@ fn the_top_row_and_the_panels_match_the_split_view_boards() {
         assert_eq!(r.class, WidthClass::Compact);
         assert_eq!(r.view, None);
         assert!(control(&h, "Globe").is_none());
-        assert_eq!(r.workspace.min, pos2(16.0, 32.0));
-        assert_eq!(r.actions.right(), size.0 - 16.0);
+        assert_eq!(r.workspace.min, pos2(0.0, 28.0));
+        assert_eq!(r.actions.right(), size.0);
         assert!(r.workspace.right() < r.actions.left());
         // The readout is above the card of the tool, and the card is above
         // the row of the strip.
@@ -4170,10 +4189,11 @@ fn the_top_row_and_the_panels_match_the_split_view_boards() {
         let menu = h.state().pad.menu_rect.unwrap();
         assert_eq!(
             menu,
-            Rect::from_min_size(pos2(16.0, 88.0), vec2(240.0, 382.0))
+            Rect::from_min_size(pos2(16.0, 84.0), vec2(240.0, 334.0))
         );
         let tops = ["World", "Globe", "Atlas"].map(|name| control(&h, name).unwrap().top());
-        assert_eq!(tops, [98.0, 146.0, 303.0]);
+        assert_eq!(tops, [94.0, 142.0, 299.0]);
+        assert!(control(&h, "Toolbox").is_none());
         tap(&mut h, "Flat");
         assert!(!h.state().pad.menu);
         assert_eq!(h.state().globe.world_view, WorldView::Flat);
@@ -4191,7 +4211,7 @@ fn the_top_row_and_the_panels_match_the_split_view_boards() {
         assert_eq!(h.state().globe.world_view, WorldView::Globe);
 
         // A panel is a sheet at the bottom, and one sheet shows at a time.
-        tap(&mut h, "Layers");
+        open_panel(&mut h, "Layers");
         let sheet = Rect::from_min_size(pos2(0.0, 382.0), vec2(size.0, 452.0));
         assert_eq!(panel(&h, Panel::Layers), Some(sheet));
         assert_eq!(h.state().pad.rects.unwrap().readout, None);
@@ -4203,7 +4223,7 @@ fn the_top_row_and_the_panels_match_the_split_view_boards() {
 #[test]
 fn you_pull_the_sheet_down_to_its_title_row() {
     let mut h = painted_pad(BOARDS[3]);
-    tap(&mut h, "Layers");
+    open_panel(&mut h, "Layers");
     assert!(control(&h, "Open Height").is_some());
     let bar = pos2(150.0, 408.0);
     drag(&mut h, bar, bar + vec2(0.0, 250.0), None);
@@ -4227,8 +4247,8 @@ fn you_pull_the_sheet_down_to_its_title_row() {
     assert_eq!(panel(&h, Panel::Layers).unwrap().top(), 382.0);
     // A pull up gives the sheet the full height, below the top row.
     drag(&mut h, bar, bar - vec2(0.0, 300.0), None);
-    assert_eq!(panel(&h, Panel::Layers).unwrap().top(), 96.0);
-    let bar = pos2(150.0, 122.0);
+    assert_eq!(panel(&h, Panel::Layers).unwrap().top(), 92.0);
+    let bar = pos2(150.0, 118.0);
     drag(&mut h, bar, bar + vec2(0.0, 200.0), None);
     assert_eq!(panel(&h, Panel::Layers).unwrap().top(), 382.0);
 
@@ -4239,7 +4259,7 @@ fn you_pull_the_sheet_down_to_its_title_row() {
 #[test]
 fn the_layout_follows_the_turn_of_the_ipad() {
     let mut h = pad(BOARDS[0]);
-    tap(&mut h, "Layers");
+    open_panel(&mut h, "Layers");
     tap(&mut h, "Brush settings");
     for size in [BOARDS[1], BOARDS[3], BOARDS[0]] {
         h.set_size(size.into());
@@ -4259,7 +4279,7 @@ fn a_short_window_makes_the_sliders_short_and_then_leaves_them_out() {
     let h = pad((1024.0, 784.0));
     assert_eq!(
         h.state().pad.rects.unwrap().brush_card,
-        BrushCard::Full(130.0)
+        BrushCard::Full(132.0)
     );
     check_controls(&h, "784 high");
 
@@ -4459,7 +4479,7 @@ fn phone_screen(name: &str, dir: &std::path::Path) -> Pad {
             h.run_steps(2);
             quick_tap(&mut h, VECTOR);
             h.state_mut().globe.snap.on = false;
-            tap(&mut h, select::ATTRIBUTES);
+            open_panel(&mut h, select::ATTRIBUTES);
             h.state_mut().pad.sheet_offset = h.state().pad.rects.unwrap().sheet_travel;
             h.run_steps(2);
             let screen = h.state().pad.rects.unwrap().screen;
@@ -4925,7 +4945,7 @@ fn the_properties_of_the_world_apply_at_once_and_a_touch_does_not_reach_the_canv
 
 /// Opens the panel of the height layer, and returns its ID.
 fn open_height(h: &mut Pad) -> RasterId {
-    tap(h, "Layers");
+    open_panel(h, "Layers");
     tap(h, "Open Height");
     h.state().doc.project.rasters()[0].id
 }
@@ -6284,7 +6304,7 @@ fn the_panel_of_a_layer_that_is_not_a_height_layer_changes_its_unit() {
         };
         let rain = h.state_mut().add_raster(spec).unwrap();
         h.run_steps(2);
-        tap(&mut h, "Layers");
+        open_panel(&mut h, "Layers");
         tap(&mut h, "Open Rain");
         check_controls(&h, &format!("{what} in the panel of Rain"));
         let card = panel(&h, Panel::Layers).unwrap();
@@ -7235,7 +7255,7 @@ fn with_the_inspector_open_a_new_point_is_the_selection_with_no_keyboard() {
     assert_eq!(h.state().pad.vector_face, Some(vale_app::ui::pad::POINT));
     quick_tap(&mut h, VECTOR);
     assert_eq!(h.state().globe.tool, Tool::Point);
-    tap(&mut h, select::ATTRIBUTES);
+    open_panel(&mut h, select::ATTRIBUTES);
     let before = line_features(&h, places);
     let center = h.state().globe.rect.center();
     // A finger turns the globe and places no point.
@@ -7271,7 +7291,7 @@ fn with_the_inspector_open_a_new_point_is_the_selection_with_no_keyboard() {
     let form = h.state().selection_form.as_ref().unwrap();
     assert!(form.fields[0].text.ends_with("Avalon"));
     // Another tool ends the edit.
-    tap(&mut h, "Pan");
+    quick_tap(&mut h, "Pan");
     assert!(h.state().new_feature.is_none());
     let feature = line_features(&h, places).pop().unwrap();
     let value = feature.attributes[&fields[0]].label().unwrap_or_default();
@@ -7290,7 +7310,7 @@ fn a_new_point_layer_has_a_name_field_and_return_ends_the_edit() {
     let label = &entry.unwrap().style.label;
     assert_eq!(label.text, "name");
     assert!(label.enabled);
-    tap(&mut h, select::ATTRIBUTES);
+    open_panel(&mut h, select::ATTRIBUTES);
     let center = h.state().globe.rect.center();
     pen_tap_at(&mut h, center);
     assert_eq!(form_fields(&h), ["name"]);
@@ -7361,7 +7381,7 @@ fn a_point_layer_with_no_fields_places_a_point_in_one_undo_step() {
     let mut h = saved_pad(BOARDS[0], dir.path());
     let id = new_point_layer(&mut h);
     h.state_mut().doc.project.remove_field(id, "name");
-    tap(&mut h, select::ATTRIBUTES);
+    open_panel(&mut h, select::ATTRIBUTES);
     for _ in 0..3 {
         step_and_save(&mut h, false);
     }
@@ -7398,7 +7418,7 @@ fn the_inspector_shows_each_field_of_a_new_point_with_its_default() {
         };
         assert!(project.add_field(id, field));
     }
-    tap(&mut h, select::ATTRIBUTES);
+    open_panel(&mut h, select::ATTRIBUTES);
     let center = h.state().globe.rect.center();
     pen_tap_at(&mut h, center);
     assert_eq!(form_fields(&h), ["town", "people", "height", "port"]);
@@ -7434,7 +7454,7 @@ fn a_text_that_is_not_a_value_of_the_field_type_does_not_go_in_the_new_point() {
     let id = new_point_layer(&mut h);
     let field = Field::new("people", FieldType::Integer);
     assert!(h.state_mut().doc.project.add_field(id, field));
-    tap(&mut h, select::ATTRIBUTES);
+    open_panel(&mut h, select::ATTRIBUTES);
     let center = h.state().globe.rect.center();
     pen_tap_at(&mut h, center);
     assert_eq!(form_fields(&h), ["name", "people"]);
@@ -7451,7 +7471,7 @@ fn a_text_that_is_not_a_value_of_the_field_type_does_not_go_in_the_new_point() {
 fn a_name_does_not_give_the_focus_to_the_next_new_point() {
     let mut h = pad(BOARDS[0]);
     let id = new_point_layer(&mut h);
-    tap(&mut h, select::ATTRIBUTES);
+    open_panel(&mut h, select::ATTRIBUTES);
     assert!(!h.state().tools.focus_new);
     let center = h.state().globe.rect.center();
     pen_tap_at(&mut h, center);
@@ -7470,7 +7490,7 @@ fn with_focus_new_features_ten_points_take_ten_taps_and_ten_names_in_ten_undo_st
     let dir = tempfile::tempdir().unwrap();
     let mut h = saved_pad(BOARDS[0], dir.path());
     let id = new_point_layer(&mut h);
-    tap(&mut h, select::ATTRIBUTES);
+    open_panel(&mut h, select::ATTRIBUTES);
     // The toggle is in the title row of the inspector.
     let toggle = control(&h, select::FOCUS_NEW).expect("no toggle");
     let inspector = panel(&h, Panel::Attributes).unwrap();
@@ -7525,7 +7545,7 @@ fn with_focus_new_features_a_new_point_takes_the_focus_in_the_field_edited_last(
     let id = new_point_layer(&mut h);
     let field = Field::new("people", FieldType::Integer);
     assert!(h.state_mut().doc.project.add_field(id, field));
-    tap(&mut h, select::ATTRIBUTES);
+    open_panel(&mut h, select::ATTRIBUTES);
     tap(&mut h, select::FOCUS_NEW);
     let center = h.state().globe.rect.center();
     // The first new point takes the focus in the first field.
@@ -7556,7 +7576,7 @@ fn a_new_line_takes_its_name_in_the_inspector_in_one_undo_step() {
     let field = vale_store::Field::new("given", vale_store::FieldType::Text);
     assert!(h.state_mut().doc.project.add_field(rivers, field));
     h.state_mut().save_waiting().unwrap();
-    tap(&mut h, select::ATTRIBUTES);
+    open_panel(&mut h, select::ATTRIBUTES);
     let saved = saves(&h);
     let before = line_features(&h, rivers);
     let center = h.state().globe.rect.center();
@@ -7598,7 +7618,7 @@ fn a_stroke_that_extends_a_line_does_not_change_the_selection_or_the_inspector()
     let rivers = vector(&h, "Rivers");
     select_layer(&mut h, rivers);
     quick_tap(&mut h, VECTOR);
-    tap(&mut h, select::ATTRIBUTES);
+    open_panel(&mut h, select::ATTRIBUTES);
     let center = h.state().globe.rect.center();
     let end = center + vec2(150.0, -40.0);
     line_stroke(&mut h, center + vec2(-150.0, 40.0), end);
@@ -7637,7 +7657,7 @@ fn a_new_point_is_not_under_the_inspector_or_the_keyboard() {
         let what = format!("{size:?}");
         let mut h = pad(size);
         let id = new_point_layer(&mut h);
-        tap(&mut h, select::ATTRIBUTES);
+        open_panel(&mut h, select::ATTRIBUTES);
         let inspector = panel(&h, Panel::Attributes).expect("no panel");
         let rect = h.state().globe.rect;
         let keyboard = vale_app::ui::new_feature::keyboard_top(rect);
@@ -7681,7 +7701,7 @@ fn on_an_iphone_a_new_point_has_a_card_below_the_top_row_and_stays_above_the_key
     quick_tap(&mut h, VECTOR);
     assert_eq!(h.state().globe.tool, Tool::Point);
     h.state_mut().globe.snap.on = false;
-    tap(&mut h, select::ATTRIBUTES);
+    open_panel(&mut h, select::ATTRIBUTES);
     assert!(h.state().pad.rects.unwrap().sheet.is_some());
     let fields = h.state().doc.project.layer(places).unwrap().field_names();
     let screen = h.state().pad.rects.unwrap().screen;
@@ -7797,7 +7817,7 @@ fn you_add_rename_and_remove_a_field_and_the_file_has_the_same_fields() {
     use vale_store::FieldType::{Integer, Text};
     let dir = tempfile::tempdir().unwrap();
     let mut h = saved_pad(BOARDS[0], dir.path());
-    tap(&mut h, "Layers");
+    open_panel(&mut h, "Layers");
     tap(&mut h, ADD_LAYER);
     tap(&mut h, "Points");
     let id = vector(&h, "Points 1");
@@ -7866,7 +7886,7 @@ fn you_add_rename_and_remove_a_field_and_the_file_has_the_same_fields() {
 fn a_name_that_is_not_free_turns_add_off() {
     use vale_app::ui::pad::fields::{ADD, ADD_FIELD, FIELD_NAME};
     let mut h = pad(BOARDS[0]);
-    tap(&mut h, "Layers");
+    open_panel(&mut h, "Layers");
     tap(&mut h, ADD_LAYER);
     tap(&mut h, "Points");
     let id = vector(&h, "Points 1");
@@ -7908,7 +7928,7 @@ fn a_rename_of_the_label_field_keeps_the_labels() {
     let before = placed(&h.state().doc);
     assert!(before > 0);
     let index = h.state().doc.layer(places).unwrap().field_index("name");
-    tap(&mut h, "Layers");
+    open_panel(&mut h, "Layers");
     h.state_mut().pad.layer = Some(LayerRef::Vector(places));
     h.state_mut().pad.page = Some(Page::Field(index.unwrap()));
     h.run_steps(2);
@@ -7932,7 +7952,7 @@ fn the_pages_of_the_fields_have_large_controls() {
     use vale_app::ui::pad::fields::ADD_FIELD;
     for size in BOARDS {
         let mut h = pad(size);
-        tap(&mut h, "Layers");
+        open_panel(&mut h, "Layers");
         tap(&mut h, ADD_LAYER);
         tap(&mut h, "Points");
         check_controls(&h, &format!("{size:?} on the panel of a point layer"));
@@ -8024,7 +8044,7 @@ fn rule_names(h: &Pad, id: vale_store::LayerId) -> Vec<String> {
 
 /// Opens the panel of a vector layer and the page of its rule `rule`.
 fn open_rule(h: &mut Pad, layer: &str, rule: &str) {
-    tap(h, "Layers");
+    open_panel(h, "Layers");
     tap(h, &format!("Open {layer}"));
     scroll_to_control(h, rule);
     tap(h, rule);
@@ -8034,7 +8054,7 @@ fn open_rule(h: &mut Pad, layer: &str, rule: &str) {
 /// Opens the Classify form of a vector layer.
 fn open_classify(h: &mut Pad, layer: &str) {
     use vale_app::ui::pad::classify::CLASSIFY;
-    tap(h, "Layers");
+    open_panel(h, "Layers");
     tap(h, &format!("Open {layer}"));
     scroll_to_control(h, CLASSIFY);
     tap(h, CLASSIFY);
@@ -8288,7 +8308,7 @@ fn expression_page_widens_panel() {
     for size in [BOARDS[0], BOARDS[1]] {
         let what = format!("{size:?}");
         let mut h = pad(size);
-        tap(&mut h, "Layers");
+        open_panel(&mut h, "Layers");
         tap(&mut h, "Open Places");
         let normal = layers_width(&h);
         assert!(normal < PANEL_WIDTH, "{what}");
@@ -8300,7 +8320,7 @@ fn expression_page_widens_panel() {
     }
     // A sheet keeps its width.
     let mut h = pad(BOARDS[3]);
-    tap(&mut h, "Layers");
+    open_panel(&mut h, "Layers");
     tap(&mut h, "Open Places");
     let normal = layers_width(&h);
     open_classify_page(&mut h);
@@ -8488,7 +8508,7 @@ fn the_style_section_adds_moves_and_deletes_rules() {
         let dir = tempfile::tempdir().unwrap();
         let mut h = saved_pad(size, dir.path());
         let rivers = vector(&h, "Rivers");
-        tap(&mut h, "Layers");
+        open_panel(&mut h, "Layers");
         tap(&mut h, "Open Rivers");
         scroll_to_control(&mut h, ADD_RULE);
         tap(&mut h, ADD_RULE);
@@ -9482,7 +9502,7 @@ fn the_style_editor_opens_on_the_globe_and_the_flat_view_and_fits_a_finger() {
             let mut h = pad(size);
             h.state_mut().globe.world_view = view;
             h.run_steps(2);
-            tap(&mut h, "Layers");
+            open_panel(&mut h, "Layers");
             tap(&mut h, "Open Land");
             scroll_to_control(&mut h, ADD_RULE);
             assert!(control(&h, "Default").is_some(), "{what}");
@@ -9579,7 +9599,7 @@ fn the_form_reads_the_darkest_and_the_brightest_level_of_an_image() {
     for size in [BOARDS[0], BOARDS[3]] {
         let what = format!("{size:?}");
         let mut h = empty_pad(size);
-        tap(&mut h, "Layers");
+        open_panel(&mut h, "Layers");
         form_with_image(
             &mut h,
             "Custom",
@@ -9620,7 +9640,7 @@ fn the_form_reads_the_darkest_and_the_brightest_level_of_an_image() {
 #[test]
 fn an_image_makes_a_layer_of_each_kind_with_its_levels_at_the_ends_of_the_range() {
     let mut h = empty_pad(BOARDS[0]);
-    tap(&mut h, "Layers");
+    open_panel(&mut h, "Layers");
     let path = band_image("kinds.png", 1000, 60000, true);
     for (index, preset) in PRESETS.iter().enumerate() {
         form_with_image(&mut h, preset.name, path.clone());
@@ -9651,7 +9671,7 @@ fn an_image_makes_a_layer_of_each_kind_with_its_levels_at_the_ends_of_the_range(
 #[test]
 fn the_mapped_values_scale_the_levels_of_the_image() {
     let mut h = empty_pad(BOARDS[3]);
-    tap(&mut h, "Layers");
+    open_panel(&mut h, "Layers");
     form_with_image(
         &mut h,
         "Precipitation",
@@ -9693,7 +9713,7 @@ fn a_file_that_is_not_an_image_makes_no_layer() {
     for size in [BOARDS[0], BOARDS[3]] {
         let what = format!("{size:?}");
         let mut h = empty_pad(size);
-        tap(&mut h, "Layers");
+        open_panel(&mut h, "Layers");
         let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../target/app/test-raster-file");
         std::fs::create_dir_all(&dir).unwrap();
@@ -9726,7 +9746,7 @@ fn the_menu_of_the_new_layers_asks_for_the_file_of_an_image_layer() {
     for size in BOARDS {
         let what = format!("{size:?}");
         let mut h = pad(size);
-        tap(&mut h, "Layers");
+        open_panel(&mut h, "Layers");
         tap(&mut h, ADD_LAYER);
         check_controls(&h, &format!("{what} with the menu of the new layers"));
         let row = control(&h, NEW_IMAGE).unwrap_or_else(|| panic!("{what}: no row"));
@@ -9744,7 +9764,7 @@ fn the_menu_of_the_new_layers_imports_a_geojson_file() {
     for size in BOARDS {
         let what = format!("{size:?}");
         let mut h = pad(size);
-        tap(&mut h, "Layers");
+        open_panel(&mut h, "Layers");
         tap(&mut h, ADD_LAYER);
         check_controls(&h, &format!("{what} with the menu of the new layers"));
         let row = control(&h, NEW_GEOJSON).unwrap_or_else(|| panic!("{what}: no row"));
@@ -9759,7 +9779,7 @@ fn the_menu_of_the_new_layers_imports_a_geojson_file() {
 #[test]
 fn the_menu_of_the_new_layers_puts_the_rows_that_read_a_file_under_import() {
     let mut h = empty_pad(BOARDS[0]);
-    tap(&mut h, "Layers");
+    open_panel(&mut h, "Layers");
     tap(&mut h, ADD_LAYER);
     let top = |name: &str| control(&h, name).unwrap_or_else(|| panic!("{name}")).top();
     let heading = |name: &str| h.get_by_label(name).rect().top();
@@ -9784,7 +9804,7 @@ fn a_geojson_file_adds_a_vector_layer_for_each_kind_at_its_longitude_and_latitud
     ]}"#;
     std::fs::write(&file, json).unwrap();
     let mut h = pad(BOARDS[0]);
-    tap(&mut h, "Layers");
+    open_panel(&mut h, "Layers");
     let before = h.state().doc.project.layers().len();
     h.state_mut().run_action(Action::ImportGeoJson(file));
     h.run_steps(2);
@@ -9811,7 +9831,7 @@ fn the_layers_panel_tells_of_a_geojson_file_that_fails() {
     let file = dir.path().join("broken.geojson");
     std::fs::write(&file, "{ not json").unwrap();
     let mut h = pad(BOARDS[0]);
-    tap(&mut h, "Layers");
+    open_panel(&mut h, "Layers");
     let before = h.state().doc.project.layers().len();
     h.state_mut().run_action(Action::ImportGeoJson(file));
     h.run_steps(2);
@@ -9843,7 +9863,7 @@ fn an_image_layer_comes_from_a_png_a_tiff_or_a_psd_with_alpha() {
         images::write_psd(&dir.path().join("plates.psd"), &picture),
     ];
     let mut h = pad(BOARDS[0]);
-    tap(&mut h, "Layers");
+    open_panel(&mut h, "Layers");
     for (at, file) in files.into_iter().enumerate() {
         let what = file.display().to_string();
         h.state_mut().run_action(Action::ImportImageLayer(file));
@@ -9878,7 +9898,7 @@ fn the_panel_of_an_image_layer_works_with_a_finger() {
             .run_action(Action::ImportImageLayer(file.clone()));
         let id = h.state().doc.project.images()[0].id;
         h.state_mut().pad.layer = None;
-        tap(&mut h, "Layers");
+        open_panel(&mut h, "Layers");
         tap(&mut h, "Open plates");
         assert_eq!(h.state().pad.layer, Some(LayerRef::Image(id)), "{what}");
         assert_eq!(h.state().selected_layer, Some(LayerRef::Image(id)));
@@ -9932,7 +9952,7 @@ fn the_layers_panel_shows_why_an_image_layer_did_not_import() {
     let file = dir.path().join("notes.png");
     std::fs::write(&file, b"not an image").unwrap();
     let mut h = pad(BOARDS[0]);
-    tap(&mut h, "Layers");
+    open_panel(&mut h, "Layers");
     h.state_mut().run_action(Action::ImportImageLayer(file));
     h.run_steps(2);
     assert!(h.state().doc.project.images().is_empty());
@@ -9949,7 +9969,7 @@ fn label_text(h: &Pad, id: vale_store::LayerId) -> String {
 fn open_label_text(h: &mut Pad) -> vale_store::LayerId {
     use vale_app::ui::pad::label_text::LABEL_TEXT;
     let places = vector(h, "Places");
-    tap(h, "Layers");
+    open_panel(h, "Layers");
     tap(h, "Open Places");
     scroll_to_control(h, LABEL_TEXT);
     tap(h, LABEL_TEXT);
@@ -10082,7 +10102,7 @@ fn manual_label_text_boxes() {
             .style
             .label
             .text = text.into();
-        tap(&mut h, "Layers");
+        open_panel(&mut h, "Layers");
         tap(&mut h, "Open Places");
         scroll_to_control(&mut h, LABEL_TEXT);
         tap(&mut h, LABEL_TEXT);
@@ -10448,7 +10468,7 @@ fn the_font_row_asks_for_the_font_picker() {
         let what = format!("{size:?}");
         let mut h = pad(size);
         let places = vector(&h, "Places");
-        tap(&mut h, "Layers");
+        open_panel(&mut h, "Layers");
         tap(&mut h, "Open Places");
         scroll_to_control(&mut h, FONT);
         check_controls(&h, &what);
@@ -10540,7 +10560,11 @@ fn scroll_strip_to(h: &mut Pad, name: &str) {
         } else {
             vec2(0.0, d)
         };
-        let from = strip.center() - along / 2.0;
+        // The strip at the left edge holds its cells to the right of the
+        // band of the system.
+        let middle = pos2(strip.right() - strip.height().min(30.0), strip.center().y);
+        let middle = if rects.row { strip.center() } else { middle };
+        let from = middle - along / 2.0;
         drag(h, from, from + along, None);
     }
 }
@@ -10581,7 +10605,7 @@ fn the_measure_cell_of_the_tool_strip_opens_the_tool_with_any_layer_on_each_scre
                 assert!(after, "{what}");
             }
             assert!(!disabled(&h, MEASURE), "{what}");
-            tap(&mut h, MEASURE);
+            quick_tap(&mut h, MEASURE);
             assert!(h.state().globe.measuring(), "{what}");
             assert_eq!(toggled(&h, MEASURE), Some(true), "{what}");
             // No other cell of the tool strip is active.
@@ -10611,7 +10635,7 @@ fn the_measure_cell_of_the_tool_strip_opens_the_tool_with_any_layer_on_each_scre
             }
             // Move leaves the tool and clears the path.
             scroll_strip_to(&mut h, "Pan");
-            tap(&mut h, "Pan");
+            quick_tap(&mut h, "Pan");
             assert!(!h.state().globe.measuring(), "{what}");
             assert_eq!(h.state().globe.tool, Tool::Navigate, "{what}");
             assert!(h.state().measure.is_empty(), "{what}");
@@ -10632,7 +10656,7 @@ fn the_cells_of_the_measure_card_act_on_the_path() {
         h.state_mut().select(None);
         h.run_steps(2);
         scroll_strip_to(&mut h, MEASURE);
-        tap(&mut h, MEASURE);
+        quick_tap(&mut h, MEASURE);
         // With no points, the readout is the readout of the place.
         let value = h.state().readout_value();
         let place = readout_text(h.state().cursor_lonlat, value.as_deref());
@@ -10690,7 +10714,7 @@ fn a_crossing_path_shows_the_perimeter_and_no_area_or_hint() {
     let mut h = safe_pad(BOARDS[0], [0.0; 4]);
     h.state_mut().select(None);
     h.state_mut().globe.snap.on = false;
-    tap(&mut h, MEASURE);
+    quick_tap(&mut h, MEASURE);
     let center = pos2(597.0, 417.0);
     let bow = [
         vec2(-60.0, -60.0),
@@ -10717,7 +10741,7 @@ fn the_brush_button_of_the_measure_card_opens_the_snapping_settings() {
         h.state_mut().select(Some(LayerRef::Vector(points)));
         h.run_steps(2);
         scroll_strip_to(&mut h, MEASURE);
-        tap(&mut h, MEASURE);
+        quick_tap(&mut h, MEASURE);
         tap(&mut h, "Brush settings");
         assert!(h.state().pad.is_open(Panel::Brush), "{what}");
         for name in [SNAPPING, SNAP_VERTICES, SNAP_EDGES, SNAP_DISTANCE] {
@@ -10756,7 +10780,7 @@ fn the_measure_cell_and_card_fit_in_the_atlas_on_each_screen() {
         for pair in cells.windows(2) {
             assert!(in_order(pair[0], pair[1]), "{what}");
         }
-        tap(&mut h, MEASURE);
+        quick_tap(&mut h, MEASURE);
         assert!(h.state().measuring(), "{what}");
         assert_eq!(h.state().atlas.tool, AtlasTool::Measure, "{what}");
         assert_eq!(toggled(&h, MEASURE), Some(true), "{what}");
@@ -10811,7 +10835,7 @@ fn the_measure_cell_and_card_fit_in_the_atlas_on_each_screen() {
         // Frame leaves the tool.
         lower_sheet(&mut h);
         scroll_strip_to(&mut h, "Frame tool");
-        tap(&mut h, "Frame tool");
+        quick_tap(&mut h, "Frame tool");
         assert_eq!(h.state().atlas.tool, AtlasTool::Frame, "{what}");
     }
 }
@@ -10819,7 +10843,7 @@ fn the_measure_cell_and_card_fit_in_the_atlas_on_each_screen() {
 #[test]
 fn the_vertex_cell_and_card_fit_in_the_atlas_on_each_screen() {
     use vale_app::ui::atlas::AtlasTool;
-    use vale_app::ui::pad::atlas::{GRID, SNAP_TO_LAYOUT, VERTEX};
+    use vale_app::ui::pad::atlas::{SNAP_TO_LAYOUT, VERTEX};
     use vale_app::ui::pad::{DELETE_VERTEX, DESELECT};
     for (size, safe) in measure_screens() {
         let what = format!("Atlas {size:?}");
@@ -10829,18 +10853,18 @@ fn the_vertex_cell_and_card_fit_in_the_atlas_on_each_screen() {
         h.run_steps(3);
         lower_sheet(&mut h);
         scroll_strip_to(&mut h, VERTEX);
-        tap(&mut h, VERTEX);
+        quick_tap(&mut h, VERTEX);
         assert_eq!(h.state().atlas.tool, AtlasTool::Vertex, "{what}");
         assert_eq!(toggled(&h, VERTEX), Some(true), "{what}");
         h.state_mut().atlas.vertices = vec![(0, 0)];
         h.run_steps(2);
         lower_sheet(&mut h);
-        let names = [SNAP_TO_LAYOUT, GRID, DELETE_VERTEX, DESELECT];
+        let names = [SNAP_TO_LAYOUT, DELETE_VERTEX, DESELECT];
         let cells = names.map(|name| control(&h, name).unwrap_or_else(|| panic!("{what}: {name}")));
         for pair in cells.windows(2) {
             assert!(in_order(pair[0], pair[1]), "{what}");
         }
-        let card = cells[0].union(cells[3]);
+        let card = cells[0].union(cells[2]);
         let r = h.state().pad.rects.unwrap();
         let mut cards = vec![r.workspace, r.actions, r.tools];
         cards.extend(r.view);
@@ -10873,7 +10897,7 @@ fn the_vertex_cell_and_card_fit_in_the_atlas_on_each_screen() {
 fn the_frame_strip_fits_in_the_atlas_on_each_screen() {
     use vale_app::ui::atlas::{AtlasSelection, AtlasTool};
     use vale_app::ui::pad::DESELECT;
-    use vale_app::ui::pad::atlas::{GRID, SNAP_TO_LAYOUT};
+    use vale_app::ui::pad::atlas::SNAP_TO_LAYOUT;
     use vale_app::ui::select::DELETE;
     for (size, safe) in measure_screens() {
         let what = format!("Atlas {size:?}");
@@ -10883,12 +10907,12 @@ fn the_frame_strip_fits_in_the_atlas_on_each_screen() {
         h.run_steps(3);
         lower_sheet(&mut h);
         assert_eq!(h.state().atlas.tool, AtlasTool::Frame, "{what}");
-        let names = [SNAP_TO_LAYOUT, GRID, DELETE, DESELECT];
+        let names = [SNAP_TO_LAYOUT, DELETE, DESELECT];
         let cells = names.map(|name| control(&h, name).unwrap_or_else(|| panic!("{what}: {name}")));
         for pair in cells.windows(2) {
             assert!(in_order(pair[0], pair[1]), "{what}");
         }
-        let card = cells[0].union(cells[3]);
+        let card = cells[0].union(cells[2]);
         let r = h.state().pad.rects.unwrap();
         let mut cards = vec![r.workspace, r.actions, r.tools];
         cards.extend(r.view);
@@ -10965,7 +10989,7 @@ fn select_pad(view: WorldView, dir: &std::path::Path) -> (Pad, Picks) {
     state.globe.world_view = view;
     state.save_waiting().unwrap();
     h.run_steps(2);
-    tap(&mut h, select::TOOL);
+    quick_tap(&mut h, select::TOOL);
     assert_eq!(h.state().globe.tool, Tool::Select);
     let center = h.state().globe.rect.center();
     let at = screen_at(&h, 0.0, 0.0);
@@ -11183,7 +11207,7 @@ fn the_context_strip_shows_only_the_controls_of_the_tool() {
     quick_tap(&mut h, VECTOR);
     assert!(h.state().globe.placing());
     check(&h, &[SNAP, "Brush settings"], "the point tool");
-    tap(&mut h, "Pan");
+    quick_tap(&mut h, "Pan");
     check(&h, &[], "the Move tool");
 }
 
@@ -11517,7 +11541,7 @@ fn the_select_card_has_delete_selection_and_it_is_off_with_no_selection() {
     h.run_steps(2);
     assert_eq!(line_features(&h, picks.point.layer).len(), 2);
     // The other tools have no Delete selection.
-    tap(&mut h, "Pan");
+    quick_tap(&mut h, "Pan");
     assert!(h.query_by_label(select::DELETE).is_none());
 }
 
@@ -11660,7 +11684,7 @@ fn the_attributes_button_opens_and_closes_the_inspector_and_it_stays_open_in_eac
     let dir = tempfile::tempdir().unwrap();
     let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
     let open = |h: &Pad| panel(h, Panel::Attributes).is_some();
-    tap(&mut h, select::ATTRIBUTES);
+    open_panel(&mut h, select::ATTRIBUTES);
     assert!(open(&h));
     assert!(h.state().pad.is_open(Panel::Attributes));
     check_controls(&h, "the Attributes panel");
@@ -11694,7 +11718,7 @@ fn the_attributes_button_opens_and_closes_the_inspector_and_it_stays_open_in_eac
     assert_eq!(h.state().globe.tool, Tool::Brush);
     drag(&mut h, from, to, Some(0.5));
     assert!(open(&h));
-    tap(&mut h, select::ATTRIBUTES);
+    open_panel(&mut h, select::ATTRIBUTES);
     assert!(!open(&h));
 }
 
@@ -11707,7 +11731,7 @@ fn with_one_feature_the_inspector_edits_each_attribute_in_one_undo_step() {
     let field = Field::new("people", FieldType::Integer);
     assert!(h.state_mut().doc.project.add_field(id, field));
     h.state_mut().save_waiting().unwrap();
-    tap(&mut h, select::ATTRIBUTES);
+    open_panel(&mut h, select::ATTRIBUTES);
     let at = screen_at(&h, 0.0, 0.0);
     finger_tap_at(&mut h, at);
     // A new point layer has a name field.
@@ -11773,7 +11797,7 @@ fn a_field_lists_the_values_of_the_layer_and_a_tap_on_a_value_is_one_undo_step()
     let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
     let id = picks.point.layer;
     add_named_points(&mut h, id, &["small", "large", "Medium", "small"]);
-    tap(&mut h, select::ATTRIBUTES);
+    open_panel(&mut h, select::ATTRIBUTES);
     let at = screen_at(&h, 0.0, 0.0);
     finger_tap_at(&mut h, at);
     let form = h.state().selection_form.as_ref().expect("no form");
@@ -11817,7 +11841,7 @@ fn a_field_lists_the_values_of_the_layer_and_a_tap_on_a_value_is_one_undo_step()
 fn a_field_with_no_values_or_with_too_many_values_has_no_list() {
     let dir = tempfile::tempdir().unwrap();
     let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
-    tap(&mut h, select::ATTRIBUTES);
+    open_panel(&mut h, select::ATTRIBUTES);
     let at = screen_at(&h, 0.0, 0.0);
     finger_tap_at(&mut h, at);
     let button = vale_app::ui::pad::widgets::choices_name("name");
@@ -11835,7 +11859,7 @@ fn a_field_with_no_values_or_with_too_many_values_has_no_list() {
 fn the_inspector_shows_the_count_of_a_selection_and_an_empty_state() {
     let dir = tempfile::tempdir().unwrap();
     let (mut h, _) = select_pad(WorldView::Globe, dir.path());
-    tap(&mut h, select::ATTRIBUTES);
+    open_panel(&mut h, select::ATTRIBUTES);
     assert!(h.query_by_label(select::NO_SELECTION).is_some());
     let (from, to) = (screen_at(&h, -3.0, 14.0), screen_at(&h, 3.0, -3.0));
     drag(&mut h, from, to, Some(0.5));
@@ -11863,7 +11887,7 @@ fn with_many_features_an_edit_of_a_field_sets_it_in_each_feature_in_one_undo_ste
         assert!(project.set_attributes(id, f.uuid, values));
     }
     h.state_mut().save_waiting().unwrap();
-    tap(&mut h, select::ATTRIBUTES);
+    open_panel(&mut h, select::ATTRIBUTES);
     let (from, to) = (screen_at(&h, -3.0, 14.0), screen_at(&h, 3.0, -3.0));
     drag(&mut h, from, to, Some(0.5));
     assert_eq!(selection(&h).len(), 2);
@@ -11917,7 +11941,7 @@ fn after_an_edit_a_tap_on_another_feature_puts_the_focus_in_the_same_field() {
     let dir = tempfile::tempdir().unwrap();
     let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
     let id = picks.point.layer;
-    tap(&mut h, select::ATTRIBUTES);
+    open_panel(&mut h, select::ATTRIBUTES);
     let at = screen_at(&h, 0.0, 0.0);
     pen_tap_at(&mut h, at);
     tap(&mut h, "name");
@@ -11959,7 +11983,7 @@ fn below_600_points_the_inspector_is_a_sheet() {
         let (mut h, _) = select_pad(WorldView::Globe, dir.path());
         h.set_size(vec2(size.0, size.1));
         h.run_steps(3);
-        tap(&mut h, select::ATTRIBUTES);
+        open_panel(&mut h, select::ATTRIBUTES);
         let rects = h.state().pad.rects.unwrap();
         let rect = panel(&h, Panel::Attributes).expect("no panel");
         if size.0 < 600.0 {
@@ -12032,7 +12056,7 @@ fn the_vector_cell_lists_the_tools_of_the_kind_of_the_selected_layer() {
         (picks.polygon.layer, GeometryKind::Polygon),
     ] {
         select_layer(&mut h, layer);
-        tap(&mut h, "Pan");
+        quick_tap(&mut h, "Pan");
         quick_tap(&mut h, VECTOR);
         assert_eq!(h.state().pad.flyouts.open, None, "{kind:?}");
         // A second tap opens the list, with a row for each tool.
@@ -12830,7 +12854,7 @@ fn the_mask_page_sets_and_clears_the_mask_of_a_layer() {
         let height = vector(&h, "Height");
         let land = vector(&h, "Land");
         let mask = |h: &Pad| h.state().doc.entry(rivers).unwrap().style.style.mask;
-        tap(&mut h, "Layers");
+        open_panel(&mut h, "Layers");
         tap(&mut h, "Open Rivers");
         scroll_to_control(&mut h, MASK);
         tap(&mut h, MASK);
@@ -12904,7 +12928,7 @@ fn a_new_raster_mask_keeps_the_offset_of_the_raster_mask_before_it() {
 fn a_point_layer_has_no_mask_row() {
     use vale_app::ui::pad::rules::{ADD_RULE, MASK};
     let mut h = pad(BOARDS[0]);
-    tap(&mut h, "Layers");
+    open_panel(&mut h, "Layers");
     tap(&mut h, "Open Places");
     scroll_to_control(&mut h, ADD_RULE);
     assert!(control(&h, MASK).is_none());
@@ -12966,7 +12990,7 @@ fn on_an_iphone_the_tool_strip_is_a_row_above_the_home_indicator() {
 #[test]
 fn on_an_iphone_the_sliders_and_the_brush_button_are_a_row_above_the_strip() {
     let mut h = phone_pad();
-    tap(&mut h, SCULPT);
+    quick_tap(&mut h, SCULPT);
     let strip = h.state().pad.rects.unwrap().tools;
     let size = control(&h, "Size").unwrap();
     let flow = control(&h, "Flow").unwrap();
@@ -12994,7 +13018,7 @@ fn on_an_iphone_the_sliders_and_the_brush_button_are_a_row_above_the_strip() {
 #[test]
 fn a_drag_along_a_slider_of_the_row_moves_its_value() {
     let mut h = phone_pad();
-    tap(&mut h, SCULPT);
+    quick_tap(&mut h, SCULPT);
     let flow = control(&h, "Flow").unwrap();
     let before = h.state().globe.brush.flow;
     // A tap on the track does not move the value.
@@ -13031,8 +13055,11 @@ fn on_an_iphone_the_workspace_menu_holds_the_view_switch() {
 #[test]
 fn on_an_iphone_the_mode_list_opens_above_the_strip() {
     let mut h = phone_pad();
-    tap(&mut h, SCULPT);
-    tap(&mut h, SCULPT);
+    // A tap chooses the brush, and a tap on the chosen brush opens the list.
+    quick_tap(&mut h, SCULPT);
+    if h.state().pad.flyouts.open.is_none() {
+        quick_tap(&mut h, SCULPT);
+    }
     let list = h.state().pad.flyouts.rect.unwrap();
     let strip = h.state().pad.rects.unwrap().tools;
     assert!(list.bottom() <= strip.top());
@@ -13050,7 +13077,7 @@ fn pull_sheet(h: &mut Pad, panel_kind: Panel, by: f32) {
 #[test]
 fn on_an_iphone_you_pull_the_layers_sheet_to_the_full_height_and_back() {
     let mut h = phone_pad();
-    tap(&mut h, "Layers");
+    open_panel(&mut h, "Layers");
     // The sheet opens at half height, and it covers the rows.
     let half = panel(&h, Panel::Layers).unwrap();
     assert_eq!(half.top(), 400.0);
@@ -13058,7 +13085,7 @@ fn on_an_iphone_you_pull_the_layers_sheet_to_the_full_height_and_back() {
     assert!(h.state().pad.rects.unwrap().readout.is_none());
     pull_sheet(&mut h, Panel::Layers, -200.0);
     let full = panel(&h, Panel::Layers).unwrap();
-    assert_eq!(full.top(), 131.0);
+    assert_eq!(full.top(), 127.0);
     pull_sheet(&mut h, Panel::Layers, 200.0);
     assert_eq!(panel(&h, Panel::Layers).unwrap().top(), 400.0);
     // A layer style opens in the sheet at the same height.
@@ -13075,10 +13102,10 @@ fn on_an_iphone_you_pull_the_layers_sheet_to_the_full_height_and_back() {
 #[test]
 fn on_an_iphone_one_sheet_shows_at_a_time() {
     let mut h = phone_pad();
-    tap(&mut h, SCULPT);
+    quick_tap(&mut h, SCULPT);
     tap(&mut h, "Brush settings");
     assert!(h.state().pad.is_open(Panel::Brush));
-    tap(&mut h, "Layers");
+    open_panel(&mut h, "Layers");
     assert!(h.state().pad.is_open(Panel::Layers));
     assert!(!h.state().pad.is_open(Panel::Brush));
     assert_eq!(h.state().pad.panels.len(), 1);
@@ -13087,10 +13114,10 @@ fn on_an_iphone_one_sheet_shows_at_a_time() {
 #[test]
 fn on_an_iphone_the_brush_sheet_has_no_pressure_settings() {
     let mut h = phone_pad();
-    tap(&mut h, SCULPT);
+    quick_tap(&mut h, SCULPT);
     tap(&mut h, "Brush settings");
     pull_sheet(&mut h, Panel::Brush, -300.0);
-    assert_eq!(panel(&h, Panel::Brush).unwrap().top(), 131.0);
+    assert_eq!(panel(&h, Panel::Brush).unwrap().top(), 127.0);
     let controls = &h.state().pad.controls;
     assert!(controls.iter().any(|c| c.name == "Brush hardness"));
     for c in controls {
@@ -13409,7 +13436,7 @@ fn a_swipe_renames_a_layer_in_the_list() {
     for size in [BOARDS[0], BOARDS[3]] {
         let what = format!("{size:?}");
         let mut h = pad(size);
-        tap(&mut h, "Layers");
+        open_panel(&mut h, "Layers");
         swipe(&mut h, "Rivers", -120.0);
         assert!(control(&h, "Delete Rivers").is_some(), "{what}");
         if size == BOARDS[0] {
@@ -13479,5 +13506,134 @@ fn the_selectable_cell_and_list_fit_in_the_world_on_each_screen() {
             vale_app::ui::select::Selectable::Active,
             "{what}"
         );
+    }
+}
+
+#[test]
+fn a_long_press_shows_the_name_of_a_tool_and_a_longer_hold_opens_its_modes() {
+    use vale_app::ui::pad::flyout::HOLD_HINT;
+    let mut h = pad(BOARDS[0]);
+    quick_tap(&mut h, "Pan");
+    let tools = h.state().pad.rects.unwrap().tools;
+    // The cells show icons only.
+    assert_eq!(control(&h, MEASURE).unwrap().size(), vec2(52.0, 52.0));
+    assert!(h.query_by_label_contains(HOLD_HINT).is_none());
+
+    // A hold on a tool with no modes shows its name. The end of the hold
+    // does not choose the tool.
+    let pos = control(&h, MEASURE).unwrap().center();
+    touch(&mut h, egui::TouchPhase::Start, pos, None);
+    let mut steps = 0;
+    while h.state().pad.flyouts.tip.is_none() && steps < 120 {
+        h.step();
+        steps += 1;
+    }
+    let tip = h.state().pad.flyouts.tip.clone().expect("a tooltip");
+    assert!(steps > 1);
+    assert_eq!((tip.name.as_str(), tip.modes), (MEASURE, false));
+    let card = h.state().pad.flyouts.tip_rect.unwrap();
+    assert!(card.left() > tools.right());
+    assert_eq!(card.center().y, tip.cell.center().y);
+    h.run_steps(60);
+    assert!(h.state().pad.flyouts.tip.is_some());
+    assert_eq!(h.state().pad.flyouts.open, None);
+    touch(&mut h, egui::TouchPhase::End, pos, None);
+    h.run_steps(3);
+    assert_eq!(h.state().globe.tool, Tool::Navigate);
+    assert_eq!(h.state().pad.flyouts.tip, None);
+
+    // A hold on a brush cell shows the mode and the hint. A longer hold
+    // opens the modes and hides the tooltip.
+    let pos = control(&h, TERRAIN).unwrap().center();
+    touch(&mut h, egui::TouchPhase::Start, pos, None);
+    let mut steps = 0;
+    while h.state().pad.flyouts.tip.is_none() && steps < 120 {
+        h.step();
+        steps += 1;
+    }
+    let tip = h.state().pad.flyouts.tip.clone().expect("a tooltip");
+    let face = h.state().pad.brush_faces[1].unwrap().0;
+    assert_eq!((tip.name.as_str(), tip.modes), (face, true));
+    screenshot::save(&mut h, "pad-tooltip");
+    assert_eq!(h.state().pad.flyouts.open, None);
+    let mut more = 0;
+    while h.state().pad.flyouts.open.is_none() && more < 120 {
+        h.step();
+        more += 1;
+    }
+    assert!(more > 1);
+    let terrain = Flyout::Brush(ModeGroup::ALL[1]);
+    assert_eq!(h.state().pad.flyouts.open, Some(terrain));
+    assert_eq!(h.state().pad.flyouts.tip, None);
+    touch(&mut h, egui::TouchPhase::End, pos, None);
+    h.run_steps(3);
+    assert_eq!(h.state().globe.tool, Tool::Navigate);
+    assert_eq!(h.state().pad.flyouts.open, Some(terrain));
+}
+
+#[test]
+fn the_panels_button_opens_a_menu_with_a_tile_for_each_panel() {
+    use vale_app::ui::pad::panels_menu::{self, CLOSE_ALL, RESET_LAYOUT};
+    let open_tiles = |h: &Pad| -> Vec<&'static str> {
+        let groups = panels_menu::world(h.state());
+        let tiles = groups.iter().flat_map(|g| g.tiles.iter());
+        tiles.filter(|t| t.open).map(|t| t.name).collect()
+    };
+    for size in BOARDS {
+        let mut h = pad(size);
+        quick_tap(&mut h, "Pan");
+        tap(&mut h, PANELS);
+        assert!(h.state().pad.panels_menu, "{size:?}");
+        // The menu is on the right edge, below the top row.
+        let menu = h.state().pad.panels_menu_rect.unwrap();
+        let rects = h.state().pad.rects.unwrap();
+        assert_eq!(menu.right(), size.0, "{size:?}");
+        assert!(menu.top() > rects.actions.bottom(), "{size:?}");
+        for name in [
+            "Layers",
+            select::ATTRIBUTES,
+            "Toolbox",
+            CLOSE_ALL,
+            RESET_LAYOUT,
+        ] {
+            let tile = control(&h, name).unwrap_or_else(|| panic!("{size:?}: {name}"));
+            assert!(menu.contains_rect(tile), "{size:?}: {name}");
+        }
+        // The Move tool has no Brush panel, so its tile is off.
+        assert!(control(&h, "Brush").is_none(), "{size:?}");
+        check_controls(&h, &format!("{size:?} with the Panels menu"));
+
+        // A tap on a tile opens its panel and closes the menu. A tap on
+        // the tile of an open panel closes the panel.
+        tap(&mut h, "Layers");
+        assert!(h.state().pad.is_open(Panel::Layers), "{size:?}");
+        assert!(!h.state().pad.panels_menu, "{size:?}");
+        assert_eq!(open_tiles(&h), ["Layers"], "{size:?}");
+        open_panel(&mut h, "Toolbox");
+        assert!(h.state().pad.is_open(Panel::Toolbox), "{size:?}");
+        open_panel(&mut h, "Toolbox");
+        assert!(!h.state().pad.is_open(Panel::Toolbox), "{size:?}");
+
+        // With a brush, the Brush tile opens the Brush panel.
+        quick_tap(&mut h, SCULPT);
+        open_panel(&mut h, "Brush");
+        assert!(h.state().pad.is_open(Panel::Brush), "{size:?}");
+        open_panel(&mut h, select::ATTRIBUTES);
+        assert!(h.state().pad.is_open(Panel::Attributes), "{size:?}");
+
+        // Close all closes each panel.
+        open_panel(&mut h, CLOSE_ALL);
+        assert!(open_tiles(&h).is_empty(), "{size:?}");
+        assert!(h.state().pad.panels.is_empty(), "{size:?}");
+
+        // A tap outside the menu closes it.
+        tap(&mut h, PANELS);
+        let outside = pos2(size.0 / 2.0, menu.bottom() + 40.0);
+        finger_tap(&mut h, outside);
+        assert!(!h.state().pad.panels_menu, "{size:?}");
+        // The Panels button closes the menu too.
+        tap(&mut h, PANELS);
+        tap(&mut h, PANELS);
+        assert!(!h.state().pad.panels_menu, "{size:?}");
     }
 }

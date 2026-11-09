@@ -113,6 +113,12 @@ fn tap_at(h: &mut Pad, pos: Pos2) {
     h.run_steps(3);
 }
 
+/// Opens or closes a panel with its tile in the Panels menu.
+fn open_panel(h: &mut Pad, name: &str) {
+    tap(h, vale_app::ui::pad::PANELS);
+    tap(h, name);
+}
+
 fn tap(h: &mut Pad, name: &str) {
     let rect = control(h, name).unwrap_or_else(|| panic!("no control `{name}`"));
     tap_at(h, rect.center());
@@ -339,7 +345,7 @@ fn the_page_of_a_vector_layer_and_the_selection_card_open_the_table() {
     let mut h = harness(LANDSCAPE, Layout::Pad);
     let (id, uuids) = towns(&mut h, 5, 0);
     let name = h.state().doc.project.layer(id).unwrap().name.clone();
-    tap(&mut h, "Layers");
+    open_panel(&mut h, "Layers");
     tap(&mut h, &format!("Open {name}"));
     tap(&mut h, FEATURES);
     assert_eq!(h.state().table.as_ref().map(|t| t.layer), Some(id));
@@ -351,7 +357,7 @@ fn the_page_of_a_vector_layer_and_the_selection_card_open_the_table() {
 
     let center = select_tool(&mut h);
     tap_at(&mut h, center);
-    tap(&mut h, vale_app::ui::select::ATTRIBUTES);
+    open_panel(&mut h, vale_app::ui::select::ATTRIBUTES);
     tap(&mut h, SHOW_IN_TABLE);
     let table = h.state().table.as_ref().expect("no table");
     assert_eq!(table.layer, id);
@@ -364,7 +370,7 @@ fn on_ipad_the_table_is_a_wide_right_panel_beside_the_select_card() {
         let mut h = harness(size, Layout::Pad);
         let (id, uuids) = towns(&mut h, 5, 0);
         let center = select_tool(&mut h);
-        tap(&mut h, "Layers");
+        open_panel(&mut h, "Layers");
         let normal = table_rect(&h);
         h.state_mut().open_table(id);
         tap_at(&mut h, center);
@@ -380,7 +386,7 @@ fn on_ipad_the_table_is_a_wide_right_panel_beside_the_select_card() {
         // The table closes with the panel, and the panel is narrow again.
         tap(&mut h, "Close Attribute table");
         assert!(h.state().table.is_none());
-        tap(&mut h, "Layers");
+        open_panel(&mut h, "Layers");
         assert_eq!(table_rect(&h).width(), normal.width());
     }
 }

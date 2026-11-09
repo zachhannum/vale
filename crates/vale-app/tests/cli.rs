@@ -101,6 +101,9 @@ fn the_layout_and_the_panels_come_from_the_flags() {
     assert!(!args.brush_modes);
     let args = Args::parse_from(["vale-app", "--layout", "pad", "--brush-modes"]);
     assert!(args.brush_modes);
+    assert!(!args.panels_menu);
+    let args = Args::parse_from(["vale-app", "--layout", "pad", "--panels-menu"]);
+    assert!(args.panels_menu);
     assert!(Args::try_parse_from(["vale-app", "--more-tools"]).is_err());
     let args = Args::parse_from(["vale-app", "--world-form", "new"]);
     assert_eq!(

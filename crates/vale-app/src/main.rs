@@ -72,6 +72,7 @@ fn run() -> anyhow::Result<u8> {
         if args.worlds_menu {
             vale_app::ui::pad::toggle_worlds(&mut state);
         }
+        state.pad.panels_menu = args.panels_menu;
         apply_globe(&args, &mut state.globe, face_size)?;
         state.form_face_size = args.face_size.map(|size| size as usize);
         if args.raster_form {

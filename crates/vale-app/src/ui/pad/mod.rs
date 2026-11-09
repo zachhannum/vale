@@ -47,6 +47,7 @@ pub mod icons;
 pub mod label_text;
 pub mod labels;
 pub mod number;
+pub mod panels_menu;
 pub mod point_card;
 pub mod popover;
 pub mod raster;
@@ -430,6 +431,10 @@ pub struct PadState {
     pub center_rect: Option<Rect>,
     /// The workspace menu is open.
     pub menu: bool,
+    /// The Panels menu is open.
+    pub panels_menu: bool,
+    /// The Panels menu in the last frame.
+    pub panels_menu_rect: Option<Rect>,
     /// The worlds of the open menu of the worlds. `None`: the menu is closed.
     pub worlds: Option<Vec<WorldFile>>,
     /// The menu of the worlds in the last frame.
@@ -506,9 +511,10 @@ impl PadState {
 }
 
 pub const WORKSPACES: [&str; 2] = ["World", "Atlas"];
-/// The button that opens the Toolbox panel, and its row in the workspace
-/// menu below 1,000 points.
+/// The Toolbox panel and its tile in the Panels menu.
 pub const TOOLBOX: &str = "Toolbox";
+/// The button that opens the Panels menu.
+pub const PANELS: &str = "Panels";
 const VIEWS: [&str; 2] = ["Globe", "Flat"];
 /// The action that makes the place at the middle of the canvas the center of
 /// the projection of the flat view.
@@ -674,6 +680,12 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     } else {
         state.pad.menu = false;
     }
+    flyout::tooltip(&ctx, state.globe.backdrop(), &mut state.pad.flyouts, &rects);
+    state.pad.panels_menu_rect = None;
+    if state.pad.panels_menu {
+        let groups = panels_menu::world(state);
+        panels_menu::show(&ctx, state, &mut controls, &rects, &groups);
+    }
     match state.pad.flyouts.open {
         Some(Flyout::Brush(group)) => brush_flyout(&ctx, state, &mut controls, &rects, group),
         Some(Flyout::PolygonMode) => polygon_flyout(&ctx, state, &mut controls, &rects),
@@ -709,13 +721,12 @@ fn has_sheet(state: &AppState, class: WidthClass) -> bool {
 
 fn top_row(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
     let radius = theme::CARD_RADIUS.into();
-    widgets::card(
+    widgets::edge_card(
         ctx,
         state.globe.backdrop(),
         "pad-workspace",
         rects.workspace,
-        Order::Middle,
-        radius,
+        rects,
         |ui| {
             let card = ui.max_rect();
             let mut rest = card;
@@ -813,13 +824,12 @@ fn top_row(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
             },
         );
     }
-    widgets::card(
+    widgets::edge_card(
         ctx,
         state.globe.backdrop(),
         "pad-actions",
         rects.actions,
-        Order::Middle,
-        radius,
+        rects,
         |ui| {
             let card = ui.max_rect();
             let at = |x: f32| {
@@ -849,26 +859,23 @@ fn top_row(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
             let divider = pos2(card.left() + PAD + 2.0 * step + 4.5, card.center().y);
             let line = Rect::from_center_size(divider, vec2(1.0, 24.0));
             ui.painter().rect_filled(line, 0.0, theme::divider());
-            let mut x = 2.0 * step + 9.0 + PAD;
-            // Below 1,000 points, the Toolbox row is in the workspace menu.
-            let narrow = rects.class != WidthClass::Wide;
-            for (panel, name, icon) in [
-                (Panel::Layers, "Layers", Icon::Layers),
-                (Panel::Toolbox, TOOLBOX, Icon::Toolbox),
-                (Panel::Attributes, select::ATTRIBUTES, Icon::Attributes),
-            ] {
-                if narrow && panel == Panel::Toolbox {
-                    continue;
-                }
-                let at = at(x);
-                x += step;
-                let active = state.pad.is_open(panel);
-                if widgets::icon_button_at(ui, controls, at, name, icon, active, true).clicked() {
-                    state.pad.toggle(panel, rects.one_panel);
-                }
-            }
+            panels_button(ui, state, controls, at(2.0 * step + 9.0 + PAD));
         },
     );
+}
+
+/// The button that opens the Panels menu.
+pub(super) fn panels_button(
+    ui: &egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    rect: Rect,
+) {
+    let open = state.pad.panels_menu;
+    let button = widgets::icon_button_at(ui, controls, rect, PANELS, Icon::Panels, open, true);
+    if button.clicked() {
+        state.pad.panels_menu = !open;
+    }
 }
 
 /// Chooses the Measure tool, or goes back from it to Move on the globe and
@@ -949,14 +956,12 @@ fn tool_strip(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
     if rects.tool_cells == 0 {
         return;
     }
-    let radius = theme::CARD_RADIUS.into();
-    widgets::card(
+    widgets::edge_card(
         ctx,
         state.globe.backdrop(),
         "pad-tools",
         rects.tools,
-        Order::Middle,
-        radius,
+        rects,
         |ui| {
             let mut ui = padded_in(ui, rects.row);
             let mut cells = |ui: &mut egui::Ui| {
@@ -964,30 +969,33 @@ fn tool_strip(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
                     brush_cell(ui, state, controls, group);
                 }
                 vector_cell(ui, state, controls);
-                let globe = &mut state.globe;
-                let (name, active) = (select::TOOL, globe.selecting());
-                if widgets::tool_cell(ui, controls, name, name, Icon::Select, active, true)
-                    .clicked()
-                {
-                    globe.tool = Tool::Select;
-                    state.pad.flyouts.open = None;
-                }
-                let globe = &mut state.globe;
-                let active = !globe.brushing()
+                let globe = &state.globe;
+                let pan = !globe.brushing()
                     && !globe.editing()
                     && !globe.measuring()
                     && !globe.selecting();
-                if widgets::tool_cell(ui, controls, "Pan", "Move", Icon::Move, active, true)
-                    .clicked()
-                {
-                    globe.tool = Tool::Navigate;
-                }
-                let active = globe.measuring();
-                let name = MEASURE;
-                if widgets::tool_cell(ui, controls, name, name, Icon::Measure, active, true)
-                    .clicked()
-                {
-                    globe.tool = Tool::Measure;
+                for (name, label, icon, tool, active) in [
+                    (
+                        select::TOOL,
+                        select::TOOL,
+                        Icon::Select,
+                        Tool::Select,
+                        globe.selecting(),
+                    ),
+                    ("Pan", "Move", Icon::Move, Tool::Navigate, pan),
+                    (
+                        MEASURE,
+                        MEASURE,
+                        Icon::Measure,
+                        Tool::Measure,
+                        globe.measuring(),
+                    ),
+                ] {
+                    let flyouts = &mut state.pad.flyouts;
+                    if flyout::tool(ui, controls, flyouts, None, name, label, icon, active, true) {
+                        state.globe.tool = tool;
+                        state.pad.flyouts.open = None;
+                    }
                 }
             };
             if rects.tool_cells < TOOLS {
@@ -1019,8 +1027,16 @@ fn brush_cell(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, 
     let name = group.name();
     let key = Flyout::Brush(group);
     let flyouts = &mut state.pad.flyouts;
-    let tapped = flyout::cell(
-        ui, controls, flyouts, key, name, label, icon, active, enabled,
+    let tapped = flyout::tool(
+        ui,
+        controls,
+        flyouts,
+        Some(key),
+        name,
+        label,
+        icon,
+        active,
+        enabled,
     );
     state.pad.brush_faces[group.index()] = Some((label, icon));
     if tapped {
@@ -1056,7 +1072,7 @@ fn vector_cell(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls)
     let flyouts = &mut state.pad.flyouts;
     state.pad.vector_face = None;
     let Some(kind) = vector_kind(globe) else {
-        widgets::tool_cell(ui, controls, VECTOR, VECTOR, Icon::Line, false, false);
+        widgets::icon_cell(ui, controls, VECTOR, Icon::Line, false, false);
         return;
     };
     let tools = vector_tools(kind);
@@ -1068,15 +1084,10 @@ fn vector_cell(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls)
     let face = current.or(last).unwrap_or(&tools[0]);
     state.pad.vector_face = Some(face.name);
     let active = current.is_some();
-    let tapped = if tools.len() < 2 {
-        let cell = widgets::tool_cell(ui, controls, VECTOR, face.name, face.icon, active, true);
-        cell.clicked()
-    } else {
-        let key = Flyout::Vector;
-        flyout::cell(
-            ui, controls, flyouts, key, VECTOR, face.name, face.icon, active, true,
-        )
-    };
+    let modes = (tools.len() >= 2).then_some(Flyout::Vector);
+    let tapped = flyout::tool(
+        ui, controls, flyouts, modes, VECTOR, face.name, face.icon, active, true,
+    );
     if tapped {
         if active && tools.len() >= 2 {
             flyouts.toggle(Flyout::Vector);
@@ -1137,27 +1148,24 @@ fn brush_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
         cell_card(ctx, state, controls, rects);
         return;
     }
-    let radius = theme::CARD_RADIUS.into();
     // A tool with no context strip has a strip of the extra cells alone.
     if !has_strip(&state.globe) {
-        widgets::card(
+        widgets::edge_card(
             ctx,
             state.globe.backdrop(),
             "pad-brush-card",
             rect,
-            Order::Middle,
-            radius,
+            rects,
             |ui| deselect_cell(&mut padded_in(ui, rects.row), state, controls),
         );
         return;
     }
-    widgets::card(
+    widgets::edge_card(
         ctx,
         state.globe.backdrop(),
         "pad-brush-card",
         rect,
-        Order::Middle,
-        radius,
+        rects,
         |ui| {
             let mut ui = padded_in(ui, rects.row);
             // In the row layout, a slider is a row as long as `length`.
@@ -1309,13 +1317,12 @@ pub(super) fn cell_card(
     };
     let mut merge_cell = None;
     let mut selectable_cell = None;
-    widgets::card(
+    widgets::edge_card(
         ctx,
         state.globe.backdrop(),
         "pad-brush-card",
         rect,
-        Order::Middle,
-        theme::CARD_RADIUS.into(),
+        rects,
         |ui| {
             let mut ui = padded_in(ui, rects.row);
             let globe = state.workspace == Workspace::Globe;
@@ -3334,9 +3341,9 @@ fn menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rect
     let compact = rects.class == WidthClass::Compact;
     let flat = state.globe.world_view == WorldView::Flat;
     let rows = match (compact, flat) {
-        (true, true) => 8.0,
-        (true, false) => 7.0,
-        (false, _) => 3.0,
+        (true, true) => 7.0,
+        (true, false) => 6.0,
+        (false, _) => 2.0,
     };
     let rules = if compact { 2.0 } else { 1.0 };
     let height = 10.0 + rows * PANEL_ROW + rules * 13.0 + 10.0;
@@ -3406,10 +3413,6 @@ fn menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rect
                     state.pad.menu = false;
                     toggle_worlds(state);
                 }
-            }
-            if widgets::text_row(ui, controls, TOOLBOX, 0.0, false, true).clicked() {
-                state.pad.menu = false;
-                state.pad.toggle(Panel::Toolbox, rects.one_panel);
             }
         },
     );

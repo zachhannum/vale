@@ -4,7 +4,7 @@ use eframe::egui::{self, Align2, Color32, CornerRadius, Pos2, Rect, Response, Se
 
 use eframe::egui_wgpu::wgpu;
 
-use super::geometry::{CELL, PAD, ROW, TOUCH};
+use super::geometry::{self, CELL, PAD, ROW, Rects, TOUCH};
 use super::icons::{self, Icon};
 use super::theme;
 use crate::globe::backdrop::{card_shape, marker};
@@ -88,6 +88,26 @@ pub fn card(
             theme::apply(&mut ui);
             add_contents(&mut ui);
         });
+}
+
+/// A card of the chrome. A card that touches a side edge of the screen has
+/// round inner corners only, and its controls leave out the band of the
+/// system at that edge.
+pub fn edge_card(
+    ctx: &egui::Context,
+    backdrop: Option<wgpu::TextureFormat>,
+    id: &str,
+    rect: Rect,
+    rects: &Rects,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) {
+    let radius = geometry::edge_radius(rect, rects.screen);
+    let inner = geometry::edge_content(rect, rects.screen, rects.bands);
+    card(ctx, backdrop, id, rect, egui::Order::Middle, radius, |ui| {
+        let layout = egui::Layout::top_down(egui::Align::Min);
+        let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
+        add_contents(&mut ui);
+    });
 }
 
 /// Makes a rectangle a control. `selected` is the state of a control that
@@ -336,6 +356,31 @@ pub fn tool_cell(
     let at = pos2(rect.center().x, rect.bottom() - 7.0);
     ui.painter()
         .text(at, Align2::CENTER_BOTTOM, label, theme::small(), color);
+    resp
+}
+
+/// One cell of the tool strip: an icon with no name.
+pub fn icon_cell(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    name: &str,
+    icon: Icon,
+    active: bool,
+    enabled: bool,
+) -> Response {
+    let (rect, _) = ui.allocate_exact_size(vec2(CELL.0, CELL.1), Sense::hover());
+    let resp = hit(
+        ui,
+        controls,
+        rect,
+        name,
+        Sense::click(),
+        enabled,
+        Some(active),
+    );
+    fill(ui, rect, &resp, active);
+    let color = fade(if active { theme::TEXT } else { theme::MUTE }, enabled);
+    icons::paint(ui.painter(), rect, icon, ICON, color);
     resp
 }
 

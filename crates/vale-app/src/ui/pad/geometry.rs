@@ -1,6 +1,6 @@
 //! The places of the cards of the iPad layout. All sizes are in points.
 
-use eframe::egui::{Pos2, Rect, pos2, vec2};
+use eframe::egui::{CornerRadius, Pos2, Rect, pos2, vec2};
 
 /// The space from a card to the edge of the screen.
 pub const MARGIN: f32 = 16.0;
@@ -15,7 +15,7 @@ pub const TOUCH: f32 = 44.0;
 /// The height of the top row and of the title row of a panel.
 pub const ROW: f32 = TOUCH + 2.0 * PAD;
 /// The size of one cell of the tool strip.
-pub const CELL: (f32, f32) = (56.0, 52.0);
+pub const CELL: (f32, f32) = (52.0, 52.0);
 /// The cells of the tool strip of the globe: Sculpt, Terrain, Draw, Select,
 /// Move, and Measure.
 pub const TOOLS: usize = 6;
@@ -41,11 +41,13 @@ pub const SHEET_HEIGHT: f32 = 452.0;
 /// The space between two cards of the row layout.
 pub const ROW_GAP: f32 = 8.0;
 pub const READOUT_HEIGHT: f32 = 32.0;
-/// The width of the actions bar: five buttons and a divider.
-pub const ACTIONS_WIDTH: f32 = 5.0 * TOUCH + 5.0 * PAD + 9.0 + 2.0 * PAD;
-/// The width of the actions bar below 1,000 points, which has no Toolbox
-/// button.
-pub const NARROW_ACTIONS_WIDTH: f32 = ACTIONS_WIDTH - TOUCH - PAD;
+/// The width of the actions bar of the World workspace: Undo, Redo, a
+/// divider, and the Panels button.
+pub const ACTIONS_WIDTH: f32 = 3.0 * TOUCH + 3.0 * PAD + 9.0 + 2.0 * PAD;
+/// The space from the status bar to the top row.
+pub const TOP_GAP: f32 = 4.0;
+/// The width of the Panels menu, without the band at the right edge.
+pub const PANELS_MENU_WIDTH: f32 = 360.0;
 
 /// The bands at the screen edges that the system uses.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -182,6 +184,33 @@ pub struct Rects {
     pub readout: Option<Rect>,
 }
 
+/// The corners of a card that touches a side edge of the screen. Only the
+/// inner corners are round.
+pub fn edge_radius(rect: Rect, screen: Rect) -> CornerRadius {
+    let r = crate::ui::pad::theme::CARD_RADIUS as u8;
+    let left = if rect.left() <= screen.left() { 0 } else { r };
+    let right = if rect.right() >= screen.right() { 0 } else { r };
+    CornerRadius {
+        nw: left,
+        sw: left,
+        ne: right,
+        se: right,
+    }
+}
+
+/// The part of a card that holds its controls: a card that touches a side
+/// edge of the screen leaves out the band of the system at that edge.
+pub fn edge_content(rect: Rect, screen: Rect, bands: Bands) -> Rect {
+    let mut inner = rect;
+    if rect.left() <= screen.left() {
+        inner.min.x += bands.left;
+    }
+    if rect.right() >= screen.right() {
+        inner.max.x -= bands.right;
+    }
+    inner
+}
+
 /// The height of a card that holds `cells` tool cells.
 pub fn strip_height(cells: usize) -> f32 {
     cells as f32 * CELL.1 + 2.0 * PAD
@@ -197,16 +226,21 @@ pub fn layout(input: &Input) -> Rects {
     let class = WidthClass::of(screen.width());
     let left = screen.left() + bands.left + MARGIN;
     let right = screen.right() - bands.right - MARGIN;
-    let top = screen.top() + bands.top + 8.0;
+    let top = screen.top() + bands.top + TOP_GAP;
     let bottom = screen.bottom() - bands.bottom;
     let column_top = top + ROW + GAP;
 
-    let workspace = Rect::from_min_size(pos2(left, top), vec2(input.workspace_width, ROW));
-    let actions_width = match class {
-        WidthClass::Wide => ACTIONS_WIDTH,
-        _ => NARROW_ACTIONS_WIDTH,
-    };
-    let actions = Rect::from_min_max(pos2(right - actions_width, top), pos2(right, top + ROW));
+    // The cards at the ends of the top row, the tool strip, and the card
+    // below it touch the side edges of the screen.
+    let edge = screen.left();
+    let workspace = Rect::from_min_size(
+        pos2(edge, top),
+        vec2(bands.left + input.workspace_width, ROW),
+    );
+    let actions = Rect::from_min_max(
+        pos2(screen.right() - bands.right - ACTIONS_WIDTH, top),
+        pos2(screen.right(), top + ROW),
+    );
     let view = (class != WidthClass::Compact).then(|| {
         let center = pos2(screen.center().x, top + ROW / 2.0);
         Rect::from_center_size(center, vec2(input.view_width, ROW))
@@ -304,9 +338,9 @@ pub fn layout(input: &Input) -> Rects {
             ((cells as usize).min(all), BrushCard::Hidden)
         }
     };
-    let width = CELL.0 + 2.0 * PAD;
+    let width = bands.left + CELL.0 + 2.0 * PAD;
     let tools = Rect::from_min_size(
-        pos2(left, column_top),
+        pos2(edge, column_top),
         vec2(width, strip_height(tool_cells)),
     );
     let brush_top = tools.bottom() + GAP;
@@ -314,7 +348,7 @@ pub fn layout(input: &Input) -> Rects {
     let brush_min = if beside {
         brush_panel
     } else {
-        pos2(left, brush_top)
+        pos2(edge, brush_top)
     };
     let brush = match brush_card {
         _ if !input.strip && input.cells == 0 && input.extra == 0 => None,
@@ -326,9 +360,12 @@ pub fn layout(input: &Input) -> Rects {
         BrushCard::Button => Some(button),
         BrushCard::Hidden => None,
     }
-    .map(|height| Rect::from_min_size(brush_min, vec2(width, height)));
-    if beside && brush.is_some() {
-        brush_panel.x += width + GAP;
+    .map(|height| {
+        let w = if beside { CELL.0 + 2.0 * PAD } else { width };
+        Rect::from_min_size(brush_min, vec2(w, height))
+    });
+    if let Some(card) = brush.filter(|_| beside) {
+        brush_panel.x = card.right() + GAP;
     }
 
     // A card of cells goes below the tool strip. With no room there, it
@@ -337,12 +374,12 @@ pub fn layout(input: &Input) -> Rects {
     let (brush, card_cells) = match brush {
         Some(_) if input.cells > 0 && limit - brush_top >= strip_height(all) => {
             let size = vec2(width, strip_height(all));
-            (Some(Rect::from_min_size(pos2(left, brush_top), size)), all)
+            (Some(Rect::from_min_size(pos2(edge, brush_top), size)), all)
         }
         Some(_) if input.cells > 0 => {
             let cells = ((limit - column_top - 2.0 * PAD) / CELL.1).floor();
             let cells = (cells.max(1.0) as usize).min(all);
-            let size = vec2(width, strip_height(cells));
+            let size = vec2(CELL.0 + 2.0 * PAD, strip_height(cells));
             let card = Rect::from_min_size(pos2(tools.right() + GAP, column_top), size);
             brush_panel.x = card.right() + GAP;
             (Some(card), cells)
@@ -523,14 +560,14 @@ mod tests {
     fn the_landscape_board_has_the_measured_places() {
         let r = layout(&board(1194.0, 834.0));
         assert_eq!(r.class, WidthClass::Wide);
-        assert_eq!(r.workspace, rect(16.0, 32.0, 230.0, 52.0));
-        assert_eq!(r.view, Some(rect(527.0, 32.0, 140.0, 52.0)));
-        assert_eq!(r.actions, rect(921.0, 32.0, 257.0, 52.0));
-        assert_eq!(r.tools, rect(16.0, 96.0, 64.0, 320.0));
+        assert_eq!(r.workspace, rect(0.0, 28.0, 230.0, 52.0));
+        assert_eq!(r.view, Some(rect(527.0, 28.0, 140.0, 52.0)));
+        assert_eq!(r.actions, rect(1033.0, 28.0, 161.0, 52.0));
+        assert_eq!(r.tools, rect(0.0, 92.0, 60.0, 320.0));
         assert_eq!(r.brush_card, BrushCard::Full(140.0));
-        assert_eq!(r.brush, Some(rect(16.0, 428.0, 64.0, 340.0)));
-        assert_eq!(r.brush_panel, pos2(92.0, 96.0));
-        assert_eq!(r.right_panel, pos2(858.0, 96.0));
+        assert_eq!(r.brush, Some(rect(0.0, 424.0, 60.0, 340.0)));
+        assert_eq!(r.brush_panel, pos2(72.0, 92.0));
+        assert_eq!(r.right_panel, pos2(858.0, 92.0));
         assert!(!r.one_panel);
         assert_eq!(r.sheet, None);
         let readout = r.readout.unwrap();
@@ -542,9 +579,9 @@ mod tests {
         let r = layout(&board(834.0, 1194.0));
         assert_eq!(r.class, WidthClass::Medium);
         assert_eq!(r.view.unwrap().center().x, 417.0);
-        assert_eq!(r.actions, rect(609.0, 32.0, 209.0, 52.0));
-        assert_eq!(r.right_panel, pos2(498.0, 96.0));
-        assert_eq!(r.brush, Some(rect(16.0, 428.0, 64.0, 340.0)));
+        assert_eq!(r.actions, rect(673.0, 28.0, 161.0, 52.0));
+        assert_eq!(r.right_panel, pos2(498.0, 92.0));
+        assert_eq!(r.brush, Some(rect(0.0, 424.0, 60.0, 340.0)));
         assert!(!r.one_panel);
     }
 
@@ -553,8 +590,8 @@ mod tests {
         let r = layout(&board(597.0, 834.0));
         assert_eq!(r.class, WidthClass::Compact);
         assert_eq!(r.view, None);
-        assert_eq!(r.menu, pos2(16.0, 88.0));
-        assert_eq!(r.brush, Some(rect(16.0, 428.0, 64.0, 340.0)));
+        assert_eq!(r.menu, pos2(16.0, 84.0));
+        assert_eq!(r.brush, Some(rect(0.0, 424.0, 60.0, 340.0)));
         let readout = r.readout.unwrap();
         assert_eq!(
             (readout.left(), readout.top(), readout.bottom()),
@@ -580,7 +617,7 @@ mod tests {
         // The title row is above the bottom band.
         assert_eq!(sheet.top(), 834.0 - 20.0 - 52.0);
         assert_eq!(r.tool_cells, TOOLS);
-        assert_eq!(r.brush_card, BrushCard::Full(131.0));
+        assert_eq!(r.brush_card, BrushCard::Full(133.0));
     }
 
     /// An iPhone 16 in portrait, with its safe area.
@@ -602,13 +639,13 @@ mod tests {
         assert_eq!(r.class, WidthClass::Compact);
         assert!(r.row);
         assert_eq!(r.view, None);
-        assert_eq!(r.workspace.top(), 67.0);
+        assert_eq!(r.workspace.top(), 63.0);
         // The strip is a row above the home indicator.
-        assert_eq!(r.tools, rect(24.5, 750.0, 344.0, 60.0));
+        assert_eq!(r.tools, rect(36.5, 750.0, 320.0, 60.0));
         assert_eq!(r.tool_cells, TOOLS);
         // The two sliders and the Brush button are a row above the strip.
-        assert_eq!(r.brush, Some(rect(24.5, 682.0, 344.0, 60.0)));
-        assert_eq!(r.brush_card, BrushCard::Full(140.0));
+        assert_eq!(r.brush, Some(rect(36.5, 682.0, 320.0, 60.0)));
+        assert_eq!(r.brush_card, BrushCard::Full(130.0));
         // The readout is above the slider row.
         let readout = r.readout.unwrap();
         assert_eq!((readout.top(), readout.bottom()), (642.0, 674.0));
@@ -616,18 +653,13 @@ mod tests {
     }
 
     #[test]
-    fn deselect_makes_the_sliders_of_the_row_shorter() {
+    fn deselect_moves_the_sliders_of_the_row_to_the_brush_panel() {
         let mut input = phone();
         input.extra = 1;
         let r = layout(&input);
-        assert_eq!(r.brush_card, BrushCard::Full(112.0));
-        assert_eq!(r.brush, Some(rect(24.5, 682.0, 344.0, 60.0)));
-        // With a second extra cell, the sliders go to the Brush panel.
-        input.extra = 2;
-        let r = layout(&input);
         assert_eq!(r.brush_card, BrushCard::Button);
         let card = r.brush.unwrap();
-        assert_eq!(card.width(), strip_width(3));
+        assert_eq!(card.width(), strip_width(2));
         assert_eq!(card.right(), r.tools.right());
         // The Move tool has a row of Deselect alone.
         input.strip = false;
@@ -675,11 +707,11 @@ mod tests {
         // The open sheet covers the rows and the readout.
         assert_eq!((r.tool_cells, r.brush, r.readout), (0, None, None));
         // At the full height, the sheet is below the top row.
-        assert_eq!(r.sheet_rise, 269.0);
+        assert_eq!(r.sheet_rise, 273.0);
         input.sheet_offset = -1000.0;
         let r = layout(&input);
         assert_eq!(r.sheet.unwrap().top(), r.column_top);
-        assert_eq!(r.column_top, 131.0);
+        assert_eq!(r.column_top, 127.0);
         // At its title row, the sheet has the rows above it.
         input.sheet_offset = 1000.0;
         let r = layout(&input);
@@ -706,18 +738,18 @@ mod tests {
         let card = |height: f32| layout(&board(1024.0, height)).brush_card;
         assert_eq!(card(1194.0), BrushCard::Full(140.0));
         assert_eq!(card(804.0), BrushCard::Full(140.0));
-        assert_eq!(card(784.0), BrushCard::Full(130.0));
-        assert_eq!(card(744.0), BrushCard::Full(110.0));
-        assert_eq!(card(743.0), BrushCard::Button);
+        assert_eq!(card(784.0), BrushCard::Full(132.0));
+        assert_eq!(card(740.0), BrushCard::Full(110.0));
+        assert_eq!(card(739.0), BrushCard::Button);
         assert_eq!(card(480.0), BrushCard::Button);
     }
 
     #[test]
     fn the_small_boards_have_the_full_sliders() {
         let boards = [
-            (1133.0, 744.0, 110.0),
+            (1133.0, 744.0, 112.0),
             (744.0, 1133.0, SLIDER),
-            (1024.0, 768.0, 122.0),
+            (1024.0, 768.0, 124.0),
         ];
         for (width, height, slider) in boards {
             let r = layout(&board(width, height));
@@ -747,9 +779,42 @@ mod tests {
         let safe = Rect::from_min_max(pos2(30.0, 40.0), pos2(1164.0, 800.0));
         input.bands = Bands::new(input.screen, safe);
         let r = layout(&input);
-        assert_eq!(r.workspace.min, pos2(46.0, 48.0));
-        assert_eq!(r.actions.right(), 1148.0);
+        // The cards at the edges reach the edges, and their controls stay
+        // out of the bands.
+        assert_eq!(r.workspace.min, pos2(0.0, 44.0));
+        assert_eq!(r.actions.right(), 1194.0);
+        let content = |rect| edge_content(rect, r.screen, r.bands);
+        assert_eq!(content(r.workspace).left(), 30.0);
+        assert_eq!(content(r.actions).right(), 1164.0);
+        assert_eq!(content(r.tools).width(), CELL.0 + 2.0 * PAD);
+        assert_eq!(content(r.brush.unwrap()).left(), 30.0);
         assert_eq!(r.readout.unwrap().bottom(), 792.0);
+    }
+
+    #[test]
+    fn the_chrome_touches_the_side_edges_and_sits_4_points_below_the_status_bar() {
+        for (width, height) in [(1194.0, 834.0), (834.0, 1194.0), (597.0, 834.0)] {
+            let r = layout(&board(width, height));
+            let size = format!("{width}x{height}");
+            assert_eq!(r.workspace.top(), Bands::MIN.top + TOP_GAP, "{size}");
+            assert_eq!(r.actions.top(), r.workspace.top(), "{size}");
+            assert_eq!(r.workspace.left(), 0.0, "{size}");
+            assert_eq!(r.actions.right(), width, "{size}");
+            assert_eq!(r.tools.left(), 0.0, "{size}");
+            assert_eq!(r.brush.unwrap().left(), 0.0, "{size}");
+            // Only the inner corners are round.
+            let left = edge_radius(r.tools, r.screen);
+            assert_eq!((left.nw, left.sw), (0, 0), "{size}");
+            assert!(left.ne > 0 && left.se > 0, "{size}");
+            let right = edge_radius(r.actions, r.screen);
+            assert_eq!((right.ne, right.se), (0, 0), "{size}");
+            assert!(right.nw > 0 && right.sw > 0, "{size}");
+            // The center card floats.
+            if let Some(view) = r.view {
+                let radius = edge_radius(view, r.screen);
+                assert!(radius.nw > 0 && radius.ne > 0, "{size}");
+            }
+        }
     }
 
     #[test]
