@@ -446,6 +446,12 @@ pub struct PadState {
     pub dock_drag: Option<dock_ui::DockDrag>,
     /// The dock in the last frame.
     pub dock_rect: Option<Rect>,
+    /// The open menu of a tab.
+    pub pane_menu: Option<dock_ui::PaneMenu>,
+    /// The width of the dock at the start of a drag of the width handle,
+    /// and the width that the drag asks for, which can be below the
+    /// narrowest dock.
+    pub width_drag: Option<(f32, f32)>,
     /// The selection of the Atlas in the last frame.
     pub atlas_selection: Option<crate::ui::atlas::AtlasSelection>,
     /// The tab of the frame of the Atlas in the last frame.
@@ -511,10 +517,6 @@ pub struct PadState {
     pub rects: Option<Rects>,
     /// The pane of each open tab of the last frame, by its panel.
     pub panels: Vec<(Panel, Rect)>,
-    /// The canvas had a tap that did not paint, since the last frame.
-    pub canvas_tap: bool,
-    /// A pen or a tool took the touch on the canvas.
-    pub canvas_paint: bool,
     /// The workspace menu of the last frame.
     pub menu_rect: Option<Rect>,
     /// The label and the icon of each brush cell in the last frame, by
@@ -643,17 +645,20 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     widgets::set_backdrop(&ctx, state.globe.backdrop());
     let screen = ctx.viewport_rect();
     // The globe paints after the panels, so a change in a panel shows in
-    // the same frame.
+    // the same frame. It fits the canvas at the left of the dock.
+    let bands = geometry::Bands::new(screen, ctx.content_rect());
+    let dock = dock_ui::shown_width(&ctx, state, screen, bands.right);
+    let fit = Rect::from_min_max(screen.min, pos2(screen.right() - dock, screen.bottom()));
     let canvas = ui.scope_builder(egui::UiBuilder::new().max_rect(screen), |ui| {
         ui.set_clip_rect(screen);
-        globe::canvas_input(ui, state, theme::CANVAS)
+        globe::canvas_input(ui, state, theme::CANVAS, Some(fit))
     });
 
     let class = WidthClass::of(screen.width());
     let flat = state.globe.world_view == WorldView::Flat;
     let mut input = Input {
         screen,
-        bands: geometry::Bands::new(screen, ctx.content_rect()),
+        bands,
         workspace_width: workspace_width(ui, class, WORKSPACES[0]),
         panel: has_sheet(state, class),
         sheet_offset: state.pad.sheet_offset,
@@ -665,18 +670,6 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         column: column_input(state),
         dock_width: state.pad.docks.world.width,
     };
-    // A tap on the canvas closes the unpinned pane. A tap that closes the
-    // keypad or the keyboard does only that.
-    let typing = widgets::keypad_is_open(&ctx) || ctx.egui_wants_keyboard_input();
-    if std::mem::take(&mut state.pad.canvas_tap) && class != WidthClass::Compact && !typing {
-        state.pad.docks.world.tap_canvas();
-        input.panel = has_sheet(state, class);
-    }
-    // The Brush panel holds the settings of the context strip.
-    if !has_strip(&state.globe) && card_cells(&state.globe) == 0 || state.globe.selecting() {
-        state.pad.close(Panel::Brush);
-        input.panel = has_sheet(state, class);
-    }
     let mut rects = geometry::layout(&input);
     state.pad.sheet_offset = input
         .sheet_offset
@@ -1727,6 +1720,7 @@ fn brush_button(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls
 /// The title of a panel in its header and in its tile.
 pub fn panel_name(state: &AppState, panel: Panel) -> &'static str {
     match panel {
+        Panel::Brush if !brush_settings(state) => panels_menu::BRUSH,
         Panel::Brush if state.measuring() => MEASURE,
         Panel::Brush if state.globe.lining() => LINE,
         Panel::Brush if state.globe.filling() => POLYGON,
@@ -2186,7 +2180,25 @@ fn sheet_drag(ui: &egui::Ui, pad: &mut PadState, bar: &egui::Response, rects: &R
     };
 }
 
+/// The hint of the Brush panel for a tool with no settings.
+pub const NO_SETTINGS: &str = "This tool has no settings.";
+
+/// The tool has settings in the Brush panel.
+pub(super) fn brush_settings(state: &AppState) -> bool {
+    match state.workspace {
+        Workspace::Atlas => state.measuring(),
+        Workspace::Globe => {
+            (has_strip(&state.globe) || card_cells(&state.globe) > 0) && !state.globe.selecting()
+        }
+    }
+}
+
 fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
+    if !brush_settings(state) {
+        ui.add_space(4.0);
+        ui.label(egui::RichText::new(NO_SETTINGS).color(theme::MUTE));
+        return;
+    }
     ui.spacing_mut().item_spacing.y = 0.0;
     let measuring = state.measuring();
     let line = state.globe.drawing();

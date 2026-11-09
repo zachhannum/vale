@@ -367,11 +367,13 @@ fn the_page_of_a_vector_layer_and_the_selection_card_open_the_table() {
 
 #[test]
 fn on_ipad_the_table_is_a_wide_right_panel_beside_the_select_card() {
+    use vale_app::ui::pad::dock_ui::{close_name, move_name};
     for size in [LANDSCAPE, PORTRAIT] {
         let mut h = harness(size, Layout::Pad);
         let (id, uuids) = towns(&mut h, 5, 0);
-        let center = select_tool(&mut h);
+        // The open pane moves the globe, so it opens first.
         open_panel(&mut h, "Layers");
+        let center = select_tool(&mut h);
         let normal = table_rect(&h);
         h.state_mut().open_table(id);
         tap_at(&mut h, center);
@@ -384,8 +386,14 @@ fn on_ipad_the_table_is_a_wide_right_panel_beside_the_select_card() {
         tap(&mut h, &cell_name("rank", uuids[0]));
         assert!(h.state().table.as_ref().unwrap().edit.is_some());
         assert_eq!((select_card(&h), table_rect(&h)), (card, table), "{size:?}");
-        // The table closes with the panel, and the panel is narrow again.
-        tap(&mut h, "Close Layers");
+        // The table closes with the panel, which closes with the menu of its
+        // title, and the panel is narrow again.
+        let title = control(&h, &move_name("Layers")).unwrap().center();
+        touch(&mut h, egui::TouchPhase::Start, title);
+        h.run_steps(4);
+        touch(&mut h, egui::TouchPhase::End, title);
+        h.run_steps(3);
+        tap(&mut h, &close_name("Layers"));
         assert!(h.state().table.is_none());
         open_panel(&mut h, "Layers");
         assert_eq!(table_rect(&h).width(), normal.width());

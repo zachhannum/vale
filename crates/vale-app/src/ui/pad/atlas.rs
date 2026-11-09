@@ -202,16 +202,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     atlas::sync(state);
     let class = WidthClass::of(screen.width());
     let measuring = state.measuring();
-    // The Brush panel holds the snapping settings of the Measure tool.
-    if !measuring {
-        state.pad.close(Panel::Brush);
-    }
-    // A tap on the canvas closes the unpinned pane. A tap that changes the
-    // selection opens the panels of the new selection in place of the
-    // panels of the old one.
-    let typing = widgets::keypad_is_open(&ctx) || ctx.egui_wants_keyboard_input();
-    let tap = std::mem::take(&mut state.pad.canvas_tap) && !typing;
-    follow_selection(state, tap && class != WidthClass::Compact);
+    follow_selection(state);
     // On a compact screen, the tool strip and the context strip are rows at
     // the bottom, as in the globe workspace.
     let row = class == WidthClass::Compact;
@@ -328,8 +319,9 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     super::dock_ui::handle(&ctx, state, &mut controls, &rects);
 
     // The page fits the space between the cards. In the wide layout, the
-    // dock has its own place at the right.
-    let mut free = page_space(&rects);
+    // dock that shows has its own place at the right.
+    let dock = super::dock_ui::shown_width(&ctx, state, screen, rects.bands.right);
+    let mut free = page_space(&rects, dock);
     if let Some(pill) = pill {
         free.max.y = free.max.y.min(pill.top() - GAP);
     }
@@ -359,15 +351,15 @@ fn layout(input: &Input) -> Rects {
 }
 
 /// The space between the cards that the page fits in, above the readout.
-fn page_space(rects: &Rects) -> Rect {
+/// The space of the page, at the left of the `dock` points of the dock that
+/// show.
+fn page_space(rects: &Rects, dock: f32) -> Rect {
     let left = match rects.row {
         true => rects.screen.left() + rects.bands.left + MARGIN,
         false => rects.tools.right() + GAP,
     };
-    let right = match rects.class {
-        WidthClass::Wide => rects.dock.left() - GAP,
-        _ => rects.screen.right() - rects.bands.right - MARGIN,
-    };
+    let right =
+        (rects.screen.right() - rects.bands.right - MARGIN).min(rects.screen.right() - dock - GAP);
     let bottom = rects.readout.map_or(rects.panel_bottom, |r| r.top() - GAP);
     Rect::from_min_max(pos2(left, rects.column_top), pos2(right, bottom))
 }
@@ -387,57 +379,22 @@ fn column_input(state: &AppState, measuring: bool) -> geometry::ColumnInput {
     }
 }
 
-/// The panels of the selection follow the selection. A new frame opens the
-/// panels of a frame that are not open, in the arrangement of the last
-/// time, the page opens the Pages panel, and an item opens its panel. The
-/// unpinned panels of the old selection close. With no change, a tap on
-/// the canvas closes the unpinned pane that is not a panel of the
-/// selection.
-fn follow_selection(state: &mut AppState, tap: bool) {
-    use panes::FRAME_PANELS;
+/// A new selection opens the panels that it needs and closes none: a frame
+/// opens the panels of a frame that are not open, in the arrangement of the
+/// last time, the page opens the Pages panel, and an item opens its panel.
+fn follow_selection(state: &mut AppState) {
     let selection = state.atlas.selection;
     let before = state.pad.atlas_selection.replace(selection);
     let dock = &mut state.pad.docks.atlas;
-    let changed = before != Some(selection);
     let frame = matches!(selection, AtlasSelection::Frame(_));
-    if changed {
+    if before != Some(selection) {
         match selection {
-            AtlasSelection::Frame(_) => {
-                dock.close_unpinned(&[Panel::Pages, Panel::Item, Panel::Maps]);
-                dock.open_frames();
-            }
-            AtlasSelection::Page => {
-                dock.close_unpinned(&[Panel::Item]);
-                dock.open(Panel::Pages);
-            }
-            AtlasSelection::Item(_) => {
-                dock.close_unpinned(&[Panel::Pages]);
-                dock.open(Panel::Item);
-            }
-            AtlasSelection::None => dock.close_unpinned(&[Panel::Pages]),
+            AtlasSelection::Frame(_) => dock.open_frames(),
+            AtlasSelection::Page => dock.open(Panel::Pages),
+            AtlasSelection::Item(_) => dock.open(Panel::Item),
+            AtlasSelection::None => {}
         }
         state.pad.sheet_offset = 0.0;
-    } else if tap {
-        let keep: &[Panel] = match selection {
-            AtlasSelection::Frame(_) => &FRAME_PANELS,
-            AtlasSelection::Page => &[Panel::Pages],
-            AtlasSelection::Item(_) => &[Panel::Item],
-            AtlasSelection::None => &[],
-        };
-        let close: Vec<Panel> = [Panel::Attributes, Panel::Maps, Panel::Pages, Panel::Brush]
-            .into_iter()
-            .chain(FRAME_PANELS)
-            .filter(|p| !keep.contains(p))
-            .collect();
-        dock.close_unpinned(&close);
-    }
-    // With no frame, the unpinned panels of a frame close, and a pinned one
-    // shows a hint.
-    if !frame {
-        dock.close_unpinned(&FRAME_PANELS);
-    }
-    if !matches!(selection, AtlasSelection::Item(_)) {
-        dock.close(Panel::Item);
     }
     // A change of the tab of the frame shows its panel.
     let tab = state.atlas.tab;
@@ -734,7 +691,8 @@ fn page_pill(
     };
     // The pill is in the middle of the part of the page space that a dock
     // over the canvas leaves free.
-    let mut space = page_space(rects);
+    let shown = super::dock_ui::shown_width(ctx, state, rects.screen, rects.bands.right);
+    let mut space = page_space(rects, shown);
     if let Some(dock) = state.pad.dock_rect.filter(|d| d.bottom() > band.top()) {
         space.max.x = space.max.x.min(dock.left() - GAP).max(space.min.x);
     }
@@ -936,6 +894,9 @@ fn workspace_menu(
     });
 }
 
+/// The hint of the Item panel with no item.
+pub const NO_ITEM: &str = "Select an item to see its settings.";
+
 /// The hint of a panel of a frame with no frame selected.
 pub fn frame_hint(panel: Panel) -> &'static str {
     match panel {
@@ -1055,8 +1016,13 @@ pub(super) fn head(state: &mut AppState, panel: Panel) -> Option<Head> {
             let item = state.atlas.item();
             match item.and_then(|id| super::furniture::head(state, id)) {
                 Some(head) => head,
-                None => PageParts::new("pad-atlas-item", item_name(state), None)
-                    .head(panel, no_back, no_rows, no_rows),
+                None => {
+                    let body = |ui: &mut egui::Ui, _: &mut AppState, _: &mut Controls| {
+                        muted(ui, NO_ITEM);
+                    };
+                    PageParts::new("pad-atlas-item", item_name(state), None)
+                        .head(panel, no_back, no_rows, body)
+                }
             }
         }
         _ => return None,

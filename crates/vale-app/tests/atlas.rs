@@ -233,6 +233,49 @@ fn tap(h: &mut Pad, name: &str) {
     tap_with(h, rect.center(), Input::Finger);
 }
 
+/// A tap of a finger on the middle of a control, with each half of the
+/// touch in one frame. A `tap` lasts as long as a long press on a tab.
+fn quick_tap(h: &mut Pad, name: &str) {
+    if control(h, name).is_none() {
+        lower_sheet(h);
+    }
+    let pos = control(h, name)
+        .unwrap_or_else(|| panic!("no control `{name}`"))
+        .center();
+    quick_tap_at(h, pos);
+}
+
+/// A tap of a finger at `pos`, with each half of the touch in one frame.
+fn quick_tap_at(h: &mut Pad, pos: Pos2) {
+    for pressed in [true, false] {
+        let phase = if pressed {
+            egui::TouchPhase::Start
+        } else {
+            egui::TouchPhase::End
+        };
+        let events = &mut h.input_mut().events;
+        events.push(egui::Event::Touch {
+            device_id: egui::TouchDeviceId(0),
+            id: egui::TouchId(1),
+            phase,
+            pos,
+            force: None,
+        });
+        events.push(egui::Event::PointerMoved(pos));
+        events.push(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        });
+        if !pressed {
+            events.push(egui::Event::PointerGone);
+        }
+        h.step();
+    }
+    h.run_steps(3);
+}
+
 /// The name of the value field of a slider or a stepper.
 fn field(name: &str) -> String {
     format!("{name} value")
@@ -578,14 +621,14 @@ fn the_atlas_shows_the_page_with_its_true_proportions() {
 }
 
 #[test]
-fn with_no_selection_no_panel_shows() {
+fn with_no_selection_the_panes_show_no_controls() {
     let mut h = inset_pad(BOARDS[0]);
     assert!(h.state().atlas.panel_rect.is_some());
     // A tap off the page clears the selection.
     let page = h.state().atlas.place.unwrap().rect;
     tap_with(&mut h, page.left_center() - vec2(4.0, 0.0), Input::Finger);
     assert_eq!(h.state().atlas.selection, AtlasSelection::None);
-    assert_eq!(h.state().atlas.panel_rect, None);
+    assert!(h.state().atlas.panel_rect.is_some());
     assert!(control(&h, SCALE).is_none() && control(&h, ADD_PAGE).is_none());
 }
 
@@ -932,7 +975,7 @@ fn a_change_of_the_projection_shows_in_each_frame_of_the_map() {
         .unwrap()
         .map = main;
     h.run_steps(2);
-    tap(&mut h, &tab_name("Projection"));
+    quick_tap(&mut h, &tab_name("Projection"));
     assert_eq!(h.state().atlas.tab, FrameTab::Projection);
     let composes = h.state().atlas.composes;
     tap(&mut h, PROJECTION);
@@ -955,7 +998,7 @@ fn a_frame_changes_the_projection_of_its_own_map_only() {
     let source = frame(&h, 0).map;
     let copy = frame(&h, 1).map;
     h.run_steps(2);
-    tap(&mut h, &tab_name("Projection"));
+    quick_tap(&mut h, &tab_name("Projection"));
     tap(&mut h, PROJECTION);
     tap(&mut h, ProjectionKind::Mercator.name());
     let doc = &h.state().doc;
@@ -968,7 +1011,7 @@ fn the_projection_tab_switches_the_map_through_all_presets() {
     for size in BOARDS {
         let mut h = inset_pad(size);
         let map = frame(&h, 1).map;
-        tap(&mut h, &tab_name("Projection"));
+        quick_tap(&mut h, &tab_name("Projection"));
         for kind in ProjectionKind::ALL {
             scroll_up_to(&mut h, PROJECTION);
             tap(&mut h, PROJECTION);
@@ -990,7 +1033,7 @@ fn the_projection_tab_switches_the_map_through_all_presets() {
 fn a_conic_projection_has_two_parallels_and_an_oblique_aspect_a_tilt() {
     let mut h = inset_pad(BOARDS[0]);
     let map = frame(&h, 1).map;
-    tap(&mut h, &tab_name("Projection"));
+    quick_tap(&mut h, &tab_name("Projection"));
     assert!(control(&h, FIRST_PARALLEL).is_none());
     tap(&mut h, PROJECTION);
     tap(&mut h, ProjectionKind::LambertConformal.name());
@@ -1020,7 +1063,7 @@ fn a_conic_projection_has_two_parallels_and_an_oblique_aspect_a_tilt() {
 fn a_custom_projection_is_saved_in_the_project_and_picked_again() {
     let mut h = inset_pad(BOARDS[0]);
     let map = frame(&h, 1).map;
-    tap(&mut h, &tab_name("Projection"));
+    quick_tap(&mut h, &tab_name("Projection"));
     tap(&mut h, PROJECTION);
     tap(&mut h, ProjectionKind::AlbersEqualArea.name());
     h.run_steps(2);
@@ -1063,7 +1106,7 @@ fn the_tabs_of_a_frame_work_with_a_finger() {
         check_controls(&h, "keypad");
         tap(&mut h, &format!("{SCALE} Done"));
         assert_eq!(frame(&h, 1).scale, 50_000_000.0, "{size:?}");
-        tap(&mut h, &tab_name("Projection"));
+        quick_tap(&mut h, &tab_name("Projection"));
         check_controls(&h, "projection tab");
         tap(&mut h, PROJECTION);
         check_controls(&h, "projection list");
@@ -1601,7 +1644,8 @@ fn the_context_strip_deletes_the_frame_and_undo_brings_it_back() {
     assert_eq!(h.state().atlas.selection, AtlasSelection::None);
     assert!(h.state().atlas.vertices.is_empty());
     assert!(!h.state().atlas.has_image(inset.id));
-    assert_eq!(h.state().atlas.panel_rect, None);
+    // The panes of the frame stay, with their hints.
+    assert!(h.state().pad.is_open(vale_app::ui::pad::Panel::Frame));
     assert!(control(&h, DELETE_SELECTION).is_none());
     assert!(control(&h, DESELECT).is_none());
 
@@ -1916,7 +1960,7 @@ fn the_layers_tab_turns_a_layer_off_in_the_map_of_the_frame_only() {
     for size in BOARDS {
         let mut h = inset_pad(size);
         let (main, inset) = (frame(&h, 0).map, frame(&h, 1).map);
-        tap(&mut h, &tab_name(FRAME_TABS[2]));
+        quick_tap(&mut h, &tab_name(FRAME_TABS[2]));
         assert_eq!(h.state().atlas.tab, FrameTab::Layers);
         check_controls(&h, "layers tab");
         tap(&mut h, &eye_name("Rivers", true));
@@ -1945,7 +1989,7 @@ fn a_change_of_a_switch_shows_in_each_frame_of_the_map() {
         .unwrap()
         .map = main;
     h.run_steps(2);
-    tap(&mut h, &tab_name(FRAME_TABS[2]));
+    quick_tap(&mut h, &tab_name(FRAME_TABS[2]));
     let composes = h.state().atlas.composes;
     tap(&mut h, &eye_name("Land", true));
     assert!(!shows(&h, main, "Land"));
@@ -1971,7 +2015,7 @@ fn the_eye_of_the_world_workspace_does_not_change_a_map() {
     for map in maps {
         assert!(shows(&h, map, "Land"));
     }
-    tap(&mut h, &tab_name(FRAME_TABS[2]));
+    quick_tap(&mut h, &tab_name(FRAME_TABS[2]));
     assert!(control(&h, &eye_name("Land", true)).is_some());
 }
 
@@ -1979,7 +2023,7 @@ fn the_eye_of_the_world_workspace_does_not_change_a_map() {
 fn a_new_layer_is_on_in_each_map() {
     let mut h = inset_pad(BOARDS[0]);
     let inset = frame(&h, 1).map;
-    tap(&mut h, &tab_name(FRAME_TABS[2]));
+    quick_tap(&mut h, &tab_name(FRAME_TABS[2]));
     tap(&mut h, &eye_name("Land", true));
     let added = h.state_mut().doc.add_layer(GeometryKind::Line);
     for map in h.state().doc.project.atlas.maps.iter() {
@@ -1999,7 +2043,7 @@ fn each_change_of_a_switch_is_one_undo_step() {
     add_frame(&mut h);
     h.state_mut().save_waiting().unwrap();
     let map = frame(&h, 0).map;
-    tap(&mut h, &tab_name(FRAME_TABS[2]));
+    quick_tap(&mut h, &tab_name(FRAME_TABS[2]));
     tap(&mut h, &eye_name("Land", true));
     tap(&mut h, &eye_name("Rivers", true));
     assert!(!shows(&h, map, "Land") && !shows(&h, map, "Rivers"));
@@ -2022,7 +2066,7 @@ fn the_switches_of_each_map_survive_a_close_and_an_open() {
     add_frame(&mut h);
     add_frame(&mut h);
     let (main, inset) = (frame(&h, 0).map, frame(&h, 1).map);
-    tap(&mut h, &tab_name(FRAME_TABS[2]));
+    quick_tap(&mut h, &tab_name(FRAME_TABS[2]));
     tap(&mut h, &eye_name("Places", true));
     let mut project = h.state().doc.project.clone();
     session.flush(&mut project, &mut []).unwrap();
@@ -2926,7 +2970,7 @@ fn own_rivers(h: &Pad, target: Target) -> Option<String> {
 /// Opens the page of the first rule of Rivers in the Layers tab of the
 /// selected frame.
 fn open_rivers_rule(h: &mut Pad) {
-    tap(h, &tab_name(FRAME_TABS[2]));
+    quick_tap(h, &tab_name(FRAME_TABS[2]));
     scroll_to(h, "Open Rivers");
     tap(h, "Open Rivers");
     scroll_to(h, "Default");
@@ -2990,7 +3034,7 @@ fn a_change_of_the_globe_style_does_not_change_a_map() {
     }
 
     // Copy globe style copies the globe style into the map of the inset.
-    tap(&mut h, &tab_name(FRAME_TABS[2]));
+    quick_tap(&mut h, &tab_name(FRAME_TABS[2]));
     scroll_to(&mut h, "Open Rivers");
     tap(&mut h, "Open Rivers");
     scroll_to(&mut h, COPY_GLOBE_STYLE);
@@ -3076,7 +3120,7 @@ fn the_style_controls_of_a_frame_work_with_a_finger() {
         let mut h = inset_pad(size);
         let (main, inset) = (frame(&h, 0).map, frame(&h, 1).map);
         let globe = rivers_rules(&h, None);
-        tap(&mut h, &tab_name(FRAME_TABS[2]));
+        quick_tap(&mut h, &tab_name(FRAME_TABS[2]));
         check_controls(&h, &format!("{what}: layers tab"));
         scroll_to(&mut h, "Open Rivers");
         tap(&mut h, "Open Rivers");
@@ -3148,7 +3192,7 @@ fn the_layers_tab_marks_each_layer_with_a_local_change() {
     let style = h.state_mut().save_as_map_style(main).unwrap();
     h.state_mut().set_map_style_link(inset, Some(style));
     h.run_steps(2);
-    tap(&mut h, &tab_name(FRAME_TABS[2]));
+    quick_tap(&mut h, &tab_name(FRAME_TABS[2]));
     assert_eq!(h.query_all_by_label(EDITED).count(), 0);
     open_rivers_rule(&mut h);
     widen(&mut h);
@@ -3229,7 +3273,7 @@ fn the_panel_of_a_raster_layer_changes_its_opacity_and_blend_mode_in_this_map() 
         let layer = h.state().doc.project.raster_layer(height).unwrap();
         let (layer, name) = (layer.id, layer.name.clone());
         h.run_steps(2);
-        tap(&mut h, &tab_name(FRAME_TABS[2]));
+        quick_tap(&mut h, &tab_name(FRAME_TABS[2]));
         let open = format!("Open {name}");
         scroll_to(&mut h, &open);
         tap(&mut h, &open);
@@ -3283,7 +3327,7 @@ fn a_band_name_in_a_map_is_a_local_change() {
     let layer = h.state().doc.project.raster_layer(height).unwrap();
     let (layer, name) = (layer.id, layer.name.clone());
     h.run_steps(2);
-    tap(&mut h, &tab_name(FRAME_TABS[2]));
+    quick_tap(&mut h, &tab_name(FRAME_TABS[2]));
     let open = format!("Open {name}");
     scroll_to(&mut h, &open);
     tap(&mut h, &open);
@@ -3321,7 +3365,7 @@ fn the_raster_panel_changes_a_band_color_and_the_hillshade_in_this_map_only() {
             .unwrap()
             .colors()
             .to_vec();
-        tap(&mut h, &tab_name(FRAME_TABS[2]));
+        quick_tap(&mut h, &tab_name(FRAME_TABS[2]));
         let open = format!("Open {name}");
         scroll_to(&mut h, &open);
         tap(&mut h, &open);
@@ -3775,7 +3819,7 @@ fn uppercase(text: &str) -> bool {
 fn labels_pad(size: (f32, f32)) -> Pad {
     let mut h = pad_with(state(), size);
     add_frame(&mut h);
-    tap(&mut h, &tab_name(FRAME_TABS[3]));
+    quick_tap(&mut h, &tab_name(FRAME_TABS[3]));
     h
 }
 
@@ -3948,7 +3992,7 @@ fn a_change_of_a_class_places_the_labels_again_while_you_edit() {
 fn two_maps_label_one_layer_with_their_own_classes() {
     let mut h = inset_pad(BOARDS[0]);
     let (main, inset) = (frame(&h, 0).map, frame(&h, 1).map);
-    tap(&mut h, &tab_name(FRAME_TABS[3]));
+    quick_tap(&mut h, &tab_name(FRAME_TABS[3]));
     tap(&mut h, "Places");
     type_code(&mut h, "upper(name)");
     assert_eq!(classes(&h, inset, "Places")[0].text, "upper(name)");
@@ -3977,7 +4021,7 @@ fn each_frame_of_a_map_places_labels_with_its_classes() {
     let atlas = &mut h.state_mut().doc.project.atlas;
     atlas.frame_mut(inset).unwrap().map = main;
     h.run_steps(2);
-    tap(&mut h, &tab_name(FRAME_TABS[3]));
+    quick_tap(&mut h, &tab_name(FRAME_TABS[3]));
     tap(&mut h, "Places");
     type_code(&mut h, "upper(name)");
     for index in 0..2 {
@@ -4272,9 +4316,11 @@ fn the_filter_of_a_class_has_the_condition_builder() {
     }
 
     // Code holds the whole filter.
-    // A tap on the title of the panel closes the menu of the values.
+    // A tap on the header of the pane, right of the tabs, closes the menu
+    // of the values.
     let card = h.state().atlas.panel_rect.unwrap();
-    tap_with(&mut h, card.center_top() + vec2(0.0, 26.0), Input::Finger);
+    quick_tap_at(&mut h, card.right_top() + vec2(-24.0, 26.0));
+    assert!(h.state().pad.shows(vale_app::ui::pad::Panel::Labels));
     scroll_to(&mut h, VIEWS[1]);
     tap(&mut h, VIEWS[1]);
     type_text(&mut h, EXPRESSION, "scalerank < 1");
@@ -4337,7 +4383,7 @@ fn the_class_list_is_in_priority_order_and_a_drag_reorders_it() {
     add_frame(&mut h);
     h.state_mut().save_waiting().unwrap();
     let map = frame(&h, 0).map;
-    tap(&mut h, &tab_name(FRAME_TABS[3]));
+    quick_tap(&mut h, &tab_name(FRAME_TABS[3]));
     let order = |h: &Pad| -> Vec<String> {
         (h.state().label_class_list(map).into_iter())
             .map(|(_, _, c)| c.name)
@@ -4407,7 +4453,7 @@ fn the_label_classes_of_each_map_survive_a_close_and_an_open() {
     add_frame(&mut h);
     add_frame(&mut h);
     let (main, inset) = (frame(&h, 0).map, frame(&h, 1).map);
-    tap(&mut h, &tab_name(FRAME_TABS[3]));
+    quick_tap(&mut h, &tab_name(FRAME_TABS[3]));
     tap(&mut h, ADD_CLASS);
     type_code(&mut h, "upper(name)");
     scroll_to(&mut h, HALO);
@@ -4437,7 +4483,7 @@ fn each_change_of_a_class_is_one_undo_step() {
     add_frame(&mut h);
     h.state_mut().save_waiting().unwrap();
     let map = frame(&h, 0).map;
-    tap(&mut h, &tab_name(FRAME_TABS[3]));
+    quick_tap(&mut h, &tab_name(FRAME_TABS[3]));
     tap(&mut h, ADD_CLASS);
     scroll_to(&mut h, HALO);
     tap(&mut h, HALO);
@@ -4910,7 +4956,7 @@ fn each_change_of_a_parallel_switch_is_one_undo_step() {
     h.state_mut().save_waiting().unwrap();
     let map = frame(&h, 0).map;
     let class = |h: &Pad| classes(h, map, "Places")[0].clone();
-    tap(&mut h, &tab_name(FRAME_TABS[3]));
+    quick_tap(&mut h, &tab_name(FRAME_TABS[3]));
     tap(&mut h, "Places");
     tap(&mut h, SEGMENTS[1].0);
     let start = class(&h);
@@ -4940,7 +4986,7 @@ fn the_parallel_options_survive_a_close_and_an_open() {
     let mut h = pad_with(s, BOARDS[0]);
     add_frame(&mut h);
     let map = frame(&h, 0).map;
-    tap(&mut h, &tab_name(FRAME_TABS[3]));
+    quick_tap(&mut h, &tab_name(FRAME_TABS[3]));
     tap(&mut h, "Places");
     tap(&mut h, SEGMENTS[1].0);
     scroll_to(&mut h, FOLLOW_PARALLELS);
@@ -5123,7 +5169,7 @@ fn each_tap_on_a_zone_or_a_polygon_switch_is_one_undo_step() {
     h.state_mut().touch();
     h.state_mut().save_waiting().unwrap();
     let class = |h: &Pad| classes(h, map, "Land")[0].clone();
-    tap(&mut h, &tab_name(FRAME_TABS[3]));
+    quick_tap(&mut h, &tab_name(FRAME_TABS[3]));
     open_land_placement(&mut h);
     let start = class(&h);
     scroll_to(&mut h, ZONES);
@@ -5160,7 +5206,7 @@ fn the_polygon_options_survive_a_close_and_an_open() {
     h.state_mut().doc.set_label_classes(map, land, &[area]);
     h.state_mut().touch();
     h.run_steps(2);
-    tap(&mut h, &tab_name(FRAME_TABS[3]));
+    quick_tap(&mut h, &tab_name(FRAME_TABS[3]));
     open_land_placement(&mut h);
     scroll_to(&mut h, ZONES);
     tap(&mut h, ZONES);
@@ -5581,7 +5627,7 @@ fn each_tap_on_a_leader_switch_is_one_undo_step() {
     h.state_mut().touch();
     h.state_mut().save_waiting().unwrap();
     let leader = |h: &Pad| classes(h, map, "Land")[0].leader;
-    tap(&mut h, &tab_name(FRAME_TABS[3]));
+    quick_tap(&mut h, &tab_name(FRAME_TABS[3]));
     open_land_placement(&mut h);
     scroll_to(&mut h, LEADER_LINE);
     tap(&mut h, LEADER_LINE);
@@ -5618,7 +5664,7 @@ fn the_leader_style_survives_a_close_and_an_open() {
     h.state_mut().doc.set_label_classes(map, land, &[area]);
     h.state_mut().touch();
     h.run_steps(2);
-    tap(&mut h, &tab_name(FRAME_TABS[3]));
+    quick_tap(&mut h, &tab_name(FRAME_TABS[3]));
     open_land_placement(&mut h);
     scroll_to(&mut h, LEADER_LINE);
     tap(&mut h, LEADER_LINE);
@@ -5724,7 +5770,7 @@ fn each_change_of_a_placement_option_is_one_undo_step() {
     h.state_mut().save_waiting().unwrap();
     let map = frame(&h, 0).map;
     let class = |h: &Pad, layer: &str| classes(h, map, layer)[0].clone();
-    tap(&mut h, &tab_name(FRAME_TABS[3]));
+    quick_tap(&mut h, &tab_name(FRAME_TABS[3]));
     tap(&mut h, "Places");
     tap(&mut h, SEGMENTS[1].0);
     let start = class(&h, "Places");
@@ -6097,7 +6143,12 @@ fn tap_row(h: &mut Pad, name: &str) {
 fn panel_labels(h: &Pad) -> Vec<String> {
     use egui::accesskit::Role;
     use egui_kittest::kittest::NodeT;
-    let card = h.state().atlas.panel_rect.unwrap();
+    // The pane of the panel that opened last.
+    let focus = h.state().pad.dock().focus;
+    let pane = (h.state().pad.panels.iter())
+        .find(|(p, _)| Some(*p) == focus)
+        .map(|(_, r)| *r);
+    let card = pane.or(h.state().atlas.panel_rect).unwrap();
     h.query_all_by_role(Role::Label)
         .filter(|n| card.intersects(n.rect()))
         .map(|n| format!("{:?} {:?}", n.accesskit_node().label(), n.value()))
@@ -6897,6 +6948,8 @@ fn snap_shows_with_no_selection_in_the_frame_and_vertex_tools() {
             tap(&mut h, tool);
             h.state_mut().atlas.selection = AtlasSelection::None;
             h.run_steps(3);
+            // The panes of the frame stay, and a sheet goes down.
+            lower_sheet(&mut h);
             scroll_column_to(&mut h, SNAP_TO_LAYOUT);
             assert!(control(&h, SNAP_TO_LAYOUT).is_some(), "{what}: {tool}");
             for name in [DESELECT, DELETE_SELECTION, DELETE_VERTEX] {
@@ -8056,7 +8109,7 @@ fn frame_tab_of(h: &mut Pad, index: usize) {
     let id = frame(h, index).id;
     h.state_mut().atlas.selection = AtlasSelection::Frame(id);
     h.run_steps(2);
-    tap(h, &tab_name(FRAME_TABS[0]));
+    quick_tap(h, &tab_name(FRAME_TABS[0]));
 }
 
 /// Opens the Map style page of frame `index`.
@@ -8261,7 +8314,7 @@ fn the_map_style_controls_work_with_a_finger() {
         tap(&mut h, &format!("Back to {}", FRAME_TABS[0]));
 
         // The Layers tab with the marks of the local changes.
-        tap(&mut h, &tab_name(FRAME_TABS[2]));
+        quick_tap(&mut h, &tab_name(FRAME_TABS[2]));
         assert_eq!(h.query_all_by_label(EDITED).count(), 2, "{what}");
         check_controls(&h, &format!("{what}: layers tab"));
         if size == BOARDS[0] {
@@ -8302,7 +8355,7 @@ fn a_mask_in_a_frame_changes_only_its_map() {
         style.style.mask
     };
     let before = [look(&mut h, 0), look(&mut h, 1)];
-    tap(&mut h, &tab_name(FRAME_TABS[2]));
+    quick_tap(&mut h, &tab_name(FRAME_TABS[2]));
     scroll_to(&mut h, "Open Rivers");
     tap(&mut h, "Open Rivers");
     find(&mut h, MASK);
@@ -8398,7 +8451,7 @@ fn add_move_and_delete(h: &mut Pad, map: MapId, check: &dyn Fn(&Pad, &str)) {
     use vale_app::ui::pad::rules::{ADD_RULE, DELETE_RULE, MOVE_UP};
     let globe = rivers_rule_names(h, None);
     let n = globe.len();
-    tap(h, &tab_name(FRAME_TABS[2]));
+    quick_tap(h, &tab_name(FRAME_TABS[2]));
     scroll_to(h, "Open Rivers");
     tap(h, "Open Rivers");
     scroll_to(h, ADD_RULE);
@@ -8475,7 +8528,7 @@ fn places_rule_names(h: &Pad, map: Option<MapId>) -> Vec<String> {
 /// with quantiles.
 fn classify_places_in_frame(h: &mut Pad) {
     use vale_app::ui::pad::classify::{CLASSIFY, EXPRESSION, REPLACE_RULES};
-    tap(h, &tab_name(FRAME_TABS[2]));
+    quick_tap(h, &tab_name(FRAME_TABS[2]));
     scroll_to(h, "Open Places");
     tap(h, "Open Places");
     scroll_to(h, CLASSIFY);
@@ -8502,7 +8555,7 @@ fn classify_in_a_frame_picks_a_ramp_with_a_finger() {
     for size in [BOARDS[0], (393.0, 852.0)] {
         let what = format!("{size:?}");
         let mut h = inset_pad(size);
-        tap(&mut h, &tab_name(FRAME_TABS[2]));
+        quick_tap(&mut h, &tab_name(FRAME_TABS[2]));
         scroll_to(&mut h, "Open Places");
         tap(&mut h, "Open Places");
         scroll_to(&mut h, CLASSIFY);
@@ -8553,7 +8606,7 @@ fn neighbors_differ_in_a_frame_colors_only_that_map() {
     let before = rule_names(&h, Some(map));
     let globe = rule_names(&h, None);
 
-    tap(&mut h, &tab_name(FRAME_TABS[2]));
+    quick_tap(&mut h, &tab_name(FRAME_TABS[2]));
     scroll_to(&mut h, &format!("Open {name}"));
     tap(&mut h, &format!("Open {name}"));
     scroll_to(&mut h, CLASSIFY);
@@ -8978,7 +9031,7 @@ fn a_row_of_the_layers_tab_selects_its_vector_layer() {
     tap(&mut h, FRAME_TOOL);
     let inset = middle(&h, 1);
     tap_with(&mut h, inset, Input::Finger);
-    tap(&mut h, &tab_name(FRAME_TABS[2]));
+    quick_tap(&mut h, &tab_name(FRAME_TABS[2]));
     let name = h.state().doc.layer(town.layer).unwrap().name.clone();
     tap(&mut h, &format!("Layer {name}"));
     assert_eq!(h.state().selected_vector(), Some(town.layer));
@@ -9098,7 +9151,7 @@ fn the_features_row_of_the_layers_tab_opens_the_attribute_table() {
     tap(&mut h, FRAME_TOOL);
     let inset = middle(&h, 1);
     tap_with(&mut h, inset, Input::Finger);
-    tap(&mut h, &tab_name(FRAME_TABS[2]));
+    quick_tap(&mut h, &tab_name(FRAME_TABS[2]));
     let name = h.state().doc.layer(town.layer).unwrap().name.clone();
     tap(&mut h, &format!("Layer {name}"));
     tap(&mut h, FEATURES);
@@ -9321,12 +9374,13 @@ fn the_maps_tile_lists_the_map_frames_and_a_row_opens_the_frame_panes() {
     use vale_app::ui::pad::Panel;
     let mut h = inset_pad(BOARDS[0]);
     // The Projection tab shows, and then the page is the selection.
-    tap(&mut h, &tab_name(FRAME_TABS[1]));
+    quick_tap(&mut h, &tab_name(FRAME_TABS[1]));
     h.state_mut().atlas.selection = AtlasSelection::Page;
     h.run_steps(2);
     open_panel(&mut h, MAPS);
     assert!(h.state().pad.is_open(Panel::Maps));
-    assert!(!h.state().pad.is_open(Panel::Frame));
+    // The panes of the frame stay, with their hints.
+    assert!(h.state().pad.is_open(Panel::Frame));
     let names = atlas::frame_names(h.state());
     assert_eq!(names.len(), 2);
     for (_, name) in &names {
@@ -9335,14 +9389,12 @@ fn the_maps_tile_lists_the_map_frames_and_a_row_opens_the_frame_panes() {
     }
     tap(&mut h, &names[0].1);
     assert_eq!(h.state().atlas.selection, AtlasSelection::Frame(names[0].0));
-    // The panes of the frame open on the tab of the last time, in place of
-    // the list.
+    // The panes of the frame show the frame on the tab of the last time,
+    // and the list stays.
     assert!(h.state().pad.shows(Panel::Projection));
     assert_eq!(h.state().atlas.tab, FrameTab::Projection);
-    assert!(!h.state().pad.is_open(Panel::Maps));
-    // The list closes with a second tap of the tile.
-    open_panel(&mut h, MAPS);
     assert!(h.state().pad.is_open(Panel::Maps));
+    // The list closes with a tap of its tile.
     open_panel(&mut h, MAPS);
     assert!(!h.state().pad.is_open(Panel::Maps));
 }
@@ -9355,9 +9407,9 @@ fn the_list_of_the_map_frames_of_an_empty_page_says_how_to_add_one() {
     open_panel(&mut h, MAPS);
     assert!(h.state().pad.is_open(Panel::Maps));
     assert!(h.query_by_label(NO_FRAMES).is_some());
-    // A new frame opens its own panes in place of the list.
+    // A new frame opens its own panes, and the list stays.
     add_frame(&mut h);
-    assert!(!h.state().pad.is_open(Panel::Maps));
+    assert!(h.state().pad.is_open(Panel::Maps));
     assert!(h.state().pad.is_open(Panel::Frame));
 }
 
@@ -9371,11 +9423,9 @@ fn attributes_and_the_frame_panes_show_together() {
     assert!(panels.contains(&Panel::Frame) && panels.contains(&Panel::Attributes));
     assert_eq!(h.state().pad.dock().panes.len(), 2);
     assert!(control(&h, &tab_name(FRAME_TABS[0])).is_some());
-    assert!(control(&h, &format!("Close {ATTRIBUTES}")).is_some());
-    // Another panel takes the place of the inspector, and the frame panes
-    // stay.
+    // Another panel opens below them, and each pane stays.
     open_panel(&mut h, MAPS);
-    assert!(!h.state().pad.is_open(Panel::Attributes));
+    assert!(h.state().pad.is_open(Panel::Attributes));
     assert!(h.state().pad.is_open(Panel::Maps));
     assert!(h.state().pad.is_open(Panel::Frame));
 }
@@ -9389,7 +9439,6 @@ fn a_selected_frame_opens_one_pane_with_four_tabs() {
     let dock = h.state().pad.dock();
     assert_eq!(dock.panes.len(), 1);
     assert_eq!(dock.panes[0].tabs, vale_app::ui::pad::panes::FRAME_PANELS);
-    assert!(!dock.panes[0].pinned);
     assert!(h.state().pad.shows(Panel::Frame));
     for name in FRAME_TABS {
         assert!(control(&h, &tab_name(name)).is_some(), "{name}");
@@ -9408,8 +9457,7 @@ fn a_split_arrangement_of_the_frame_panes_comes_back_for_the_next_frame() {
         .dock_mut()
         .move_tab(Panel::Labels, Drop::Split { at: 1 });
     h.run_steps(2);
-    // The move pinned the panes. They close, and the other frame opens
-    // them again.
+    // The panes close, and the frame opens them again.
     h.state_mut().pad.dock_mut().close_all();
     h.state_mut().atlas.selection = AtlasSelection::None;
     h.run_steps(2);
@@ -9426,29 +9474,39 @@ fn a_split_arrangement_of_the_frame_panes_comes_back_for_the_next_frame() {
             vec![Panel::Labels]
         ]
     );
-    assert!(h.state().pad.dock().panes.iter().all(|p| !p.pinned));
 }
 
 #[test]
-fn with_no_frame_a_pinned_frame_pane_shows_a_hint_and_an_unpinned_one_closes() {
+fn with_no_frame_the_frame_panes_stay_and_show_a_hint() {
     use vale_app::ui::pad::Panel;
     use vale_app::ui::pad::atlas::frame_hint;
+    use vale_app::ui::pad::panes::FRAME_PANELS;
     let mut h = inset_pad(BOARDS[0]);
-    h.state_mut().pad.dock_mut().open_pinned(Panel::Projection);
+    h.state_mut().pad.dock_mut().open(Panel::Projection);
     h.run_steps(2);
     let page = h.state().atlas.place.unwrap().rect;
     tap_with(&mut h, page.left_center() - vec2(4.0, 0.0), Input::Finger);
     assert_eq!(h.state().atlas.selection, AtlasSelection::None);
     let dock = h.state().pad.dock();
     assert_eq!(dock.panes.len(), 1);
-    assert_eq!(dock.panes[0].tabs, [Panel::Projection]);
+    assert_eq!(dock.panes[0].tabs, FRAME_PANELS);
     assert!(h.query_by_label(frame_hint(Panel::Projection)).is_some());
     assert!(control(&h, PROJECTION).is_none());
-    // The tile of a pinned pane stays on.
+    // The tiles of the open panes stay on, so that they can close.
     let groups = vale_app::ui::pad::panels_menu::atlas(h.state());
     let tiles: Vec<_> = groups.iter().flat_map(|g| g.tiles.iter()).collect();
     let on = |name: &str| tiles.iter().any(|t| t.name == name && t.enabled);
-    assert!(on(FRAME_TABS[1]) && !on(FRAME_TABS[0]));
+    assert!(FRAME_TABS.iter().all(|name| on(name)));
+}
+
+#[test]
+fn the_item_pane_stays_and_shows_a_hint_with_no_item() {
+    use vale_app::ui::pad::Panel;
+    use vale_app::ui::pad::atlas::NO_ITEM;
+    let mut h = inset_pad(BOARDS[0]);
+    h.state_mut().pad.dock_mut().open(Panel::Item);
+    h.run_steps(2);
+    assert!(h.query_by_label(NO_ITEM).is_some());
 }
 
 #[test]
@@ -9459,14 +9517,14 @@ fn a_tap_on_the_paper_opens_the_pages_panel() {
     tap_with(&mut h, at, Input::Finger);
     assert_eq!(h.state().atlas.selection, AtlasSelection::Page);
     let dock = h.state().pad.dock();
-    assert_eq!(dock.panes.len(), 1);
-    assert_eq!(dock.panes[0].tabs, [Panel::Pages]);
-    assert!(!dock.panes[0].pinned);
-    // A tap on a frame opens the frame panes in its place.
+    assert_eq!(dock.panes.len(), 2);
+    assert_eq!(dock.panes[1].tabs, [Panel::Pages]);
+    // A tap on a frame opens no pane, and closes none.
     let inset = middle(&h, 1);
     tap_with(&mut h, inset, Input::Finger);
-    assert!(!h.state().pad.is_open(Panel::Pages));
+    assert!(h.state().pad.is_open(Panel::Pages));
     assert!(h.state().pad.is_open(Panel::Frame));
+    assert_eq!(h.state().pad.dock().panes.len(), 2);
 }
 
 #[test]
@@ -9984,11 +10042,17 @@ fn the_panels_menu_of_the_atlas_opens_the_frame_tabs_the_pages_and_the_maps() {
     tap(&mut h, PANELS);
     tap_tile(&mut h, MAPS);
     assert!(h.state().pad.is_open(Panel::Maps));
-    assert!(!h.state().pad.is_open(Panel::Pages));
+    assert!(h.state().pad.is_open(Panel::Pages));
     tap(&mut h, PANELS);
     tap_tile(&mut h, vale_app::ui::select::ATTRIBUTES);
     assert!(h.state().pad.is_open(Panel::Attributes));
-    assert!(!h.state().pad.is_open(Panel::Maps));
+    assert!(h.state().pad.is_open(Panel::Maps));
+    // The tiles of the open panels close them.
+    for name in [panels_menu::PAGES, MAPS] {
+        tap(&mut h, PANELS);
+        tap_tile(&mut h, name);
+    }
+    assert_eq!(h.state().pad.dock().panes.len(), 1);
 
     // A selected frame turns on the tiles of its panels. A tile shows the
     // tab of its panel.
@@ -10041,6 +10105,8 @@ fn the_page_pill_turns_the_pages_and_its_name_opens_the_pages_panel() {
         atlas::go_to_page(h.state_mut(), -1);
         atlas::go_to_page(h.state_mut(), -1);
         h.state_mut().atlas.selection = AtlasSelection::None;
+        // The panes of the frame stay until they close.
+        h.state_mut().pad.dock_mut().close_all();
         h.run_steps(3);
         assert_eq!(page_pill_text(h.state()), "Page 1 of 3", "{what}");
         // The first page has no previous page.

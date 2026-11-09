@@ -66,7 +66,7 @@ fn run() -> anyhow::Result<u8> {
             state.pad.dock_mut().open_tabs(tabs);
         }
         for panel in &args.panel {
-            state.pad.dock_mut().open_pinned(*panel);
+            state.pad.dock_mut().open_new(*panel);
         }
         if let Some(width) = args.dock_width {
             state.pad.dock_mut().set_width(width);
@@ -76,6 +76,14 @@ fn run() -> anyhow::Result<u8> {
             .then(|| Flyout::Brush(ModeGroup::of(state.globe.brush.mode)));
         apply_measure(&args, &mut state)?;
         apply_frame(&args, &mut state)?;
+        if args.dock_hidden {
+            // The panes of the selected frame open before the dock collapses.
+            if state.atlas.frame().is_some() {
+                state.pad.docks.atlas.open_frames();
+                state.pad.atlas_selection = Some(state.atlas.selection);
+            }
+            state.pad.dock_mut().collapsed = true;
+        }
         let world = &state.doc.project.world;
         state.world_form = args.world_form.map(|mode| WorldForm::open(mode, world));
         if args.worlds_menu {

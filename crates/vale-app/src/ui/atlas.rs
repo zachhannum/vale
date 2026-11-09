@@ -1933,8 +1933,6 @@ fn input(ui: &egui::Ui, state: &mut AppState, resp: &egui::Response, place: Page
     {
         let last = state.atlas.last_tap.replace((now, pos));
         let again = last.is_some_and(|(t, p)| now - t < DOUBLE_TAP && p.distance(pos) < 12.0);
-        // A tap of the Select tool selects features, so the panes stay.
-        state.pad.canvas_tap = state.atlas.tool != AtlasTool::Select;
         tap(state, &page, place, pos, shift);
         if again && !place.rect.contains(pos) {
             state.atlas.view = PageView::default();

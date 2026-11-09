@@ -23,7 +23,7 @@ pub const PANE_MIN: f32 = ROW + 2.0 * 48.0;
 const FILE: &str = "panels.txt";
 
 /// The names of the panels in the file.
-const NAMES: [(Panel, &str); 9] = [
+const NAMES: [(Panel, &str); 10] = [
     (Panel::Brush, "brush"),
     (Panel::Layers, "layers"),
     (Panel::Toolbox, "toolbox"),
@@ -33,6 +33,7 @@ const NAMES: [(Panel, &str); 9] = [
     (Panel::Labels, "labels"),
     (Panel::Pages, "pages"),
     (Panel::Maps, "maps"),
+    (Panel::Item, "item"),
 ];
 
 /// The panels of a map frame in the Atlas workspace.
@@ -66,8 +67,6 @@ pub struct Pane {
     pub tabs: Vec<Panel>,
     /// The index of the open tab.
     pub active: usize,
-    /// A pinned pane stays open until the user closes it.
-    pub pinned: bool,
     /// The height that the user gave the pane. `None`: the height of its
     /// content.
     pub height: Option<f32>,
@@ -77,22 +76,20 @@ pub struct Pane {
 }
 
 impl Pane {
-    pub fn new(panel: Panel, pinned: bool) -> Pane {
+    pub fn new(panel: Panel) -> Pane {
         Pane {
             tabs: vec![panel],
             active: 0,
-            pinned,
             height: None,
             joined: Vec::new(),
         }
     }
 
     /// A pane with these tabs.
-    pub fn with_tabs(tabs: Vec<Panel>, active: usize, pinned: bool) -> Pane {
+    pub fn with_tabs(tabs: Vec<Panel>, active: usize) -> Pane {
         Pane {
             tabs,
             active,
-            pinned,
             height: None,
             joined: Vec::new(),
         }
@@ -127,7 +124,6 @@ impl Pane {
             out.push(Pane {
                 tabs,
                 active,
-                pinned: pane.pinned,
                 height: pane.height,
                 joined: Vec::new(),
             });
@@ -163,6 +159,8 @@ pub struct Dock {
     /// The groups of the panels of a frame that a selected frame opens, in
     /// the order of the dock. The Atlas workspace uses it.
     pub arrangement: Vec<Group>,
+    /// The dock is off the right edge, with its panes as they were.
+    pub collapsed: bool,
 }
 
 impl Default for Dock {
@@ -173,6 +171,7 @@ impl Default for Dock {
             focus: None,
             room: f32::INFINITY,
             arrangement: first_arrangement(),
+            collapsed: false,
         }
     }
 }
@@ -205,11 +204,6 @@ impl Dock {
             .is_some_and(|(i, tab)| self.panes[i].active == tab)
     }
 
-    /// The panel is in a pinned pane.
-    pub fn is_pinned(&self, panel: Panel) -> bool {
-        self.find(panel).is_some_and(|(i, _)| self.panes[i].pinned)
-    }
-
     /// The most panes that fit in the room.
     fn most(&self) -> usize {
         ((self.room + BAR) / (PANE_MIN + BAR)).floor().max(1.0) as usize
@@ -217,16 +211,16 @@ impl Dock {
 
     /// Shows a panel. An open panel becomes the open tab of its pane. A
     /// closed panel of a frame joins the pane of the other panels of its
-    /// group. Another closed panel takes the place of the unpinned pane
-    /// that holds no panel of a frame, or else opens in a new unpinned pane
-    /// at the bottom. With no room for a new pane, it takes the place of an
-    /// unpinned pane, or else it shows as a tab of the last pane.
+    /// group. Another closed panel opens in a new pane at the bottom, or,
+    /// with no room for a new pane, as a tab of the last pane. A panel that
+    /// opens shows the dock.
     pub fn open(&mut self, panel: Panel) {
         self.focus = Some(panel);
         if let Some((i, tab)) = self.find(panel) {
             self.panes[i].active = tab;
             return;
         }
+        self.collapsed = false;
         if let Some(group) = self.arrangement.iter().find(|g| g.tabs.contains(&panel))
             && let Some((i, _)) = (group.tabs.iter())
                 .filter(|p| **p != panel)
@@ -246,25 +240,13 @@ impl Dock {
             pane.active = at;
             return;
         }
-        let pane = Pane::new(panel, false);
-        let frame = |t: &Panel| self.arrangement.iter().any(|g| g.tabs.contains(t));
-        let free = |p: &Pane| !p.pinned && !p.tabs.iter().any(frame);
-        // With no room for a new pane, the new panel takes the place of an
-        // unpinned pane of a frame too.
-        let full = self.panes.len() >= self.most();
-        if let Some(i) = self.panes.iter().position(free) {
-            self.panes[i] = pane;
-        } else if let Some(i) = (self.panes.iter().rposition(|p| !p.pinned)).filter(|_| full) {
-            self.panes[i] = pane;
-        } else {
-            self.panes.push(pane);
-            self.keep_in(self.room);
-        }
+        self.panes.push(Pane::new(panel));
+        self.keep_in(self.room);
     }
 
     /// Opens the groups of the panels of a frame that are not open, as
-    /// unpinned panes at the bottom, in the order of the arrangement. Each
-    /// group shows its open tab of the last time.
+    /// panes at the bottom, in the order of the arrangement. Each group
+    /// shows its open tab of the last time.
     pub fn open_frames(&mut self) {
         let mut first = None;
         for group in self.arrangement.clone() {
@@ -278,22 +260,12 @@ impl Dock {
             let shown = group.tabs.get(group.active);
             let active = (missing.iter()).position(|p| Some(p) == shown).unwrap_or(0);
             first.get_or_insert(missing[active]);
-            self.panes.push(Pane::with_tabs(missing, active, false));
+            self.panes.push(Pane::with_tabs(missing, active));
         }
         if first.is_some() {
             self.focus = first;
+            self.collapsed = false;
             self.keep_in(self.room);
-        }
-    }
-
-    /// Closes the unpinned panes that hold one of `panels`.
-    pub fn close_unpinned(&mut self, panels: &[Panel]) {
-        let gone = |p: &Pane| !p.pinned && p.tabs.iter().any(|t| panels.contains(t));
-        if self.panes.iter().any(gone) {
-            self.panes.retain(|p| !gone(p));
-            if self.focus.is_some_and(|f| !self.is_open(f)) {
-                self.focus = self.panes.last().map(Pane::panel);
-            }
         }
     }
 
@@ -343,14 +315,15 @@ impl Dock {
         self.panes.iter().flat_map(Pane::split).collect()
     }
 
-    /// Opens a panel in a new pinned pane at the bottom.
-    pub fn open_pinned(&mut self, panel: Panel) {
+    /// Opens a panel in a new pane at the bottom.
+    pub fn open_new(&mut self, panel: Panel) {
         self.close(panel);
-        self.panes.push(Pane::new(panel, true));
+        self.panes.push(Pane::new(panel));
         self.focus = Some(panel);
+        self.collapsed = false;
     }
 
-    /// Opens the panels as the tabs of one new pinned pane.
+    /// Opens the panels as the tabs of one new pane.
     pub fn open_tabs(&mut self, panels: &[Panel]) {
         for panel in panels {
             self.close(*panel);
@@ -361,7 +334,8 @@ impl Dock {
             return;
         }
         self.focus = tabs.first().copied();
-        self.panes.push(Pane::with_tabs(tabs, 0, true));
+        self.collapsed = false;
+        self.panes.push(Pane::with_tabs(tabs, 0));
     }
 
     pub fn close(&mut self, panel: Panel) {
@@ -399,13 +373,6 @@ impl Dock {
         }
     }
 
-    /// Pins or unpins the pane with this index.
-    pub fn pin(&mut self, i: usize, pinned: bool) {
-        if let Some(pane) = self.panes.get_mut(i) {
-            pane.pinned = pinned;
-        }
-    }
-
     /// Makes a tab the open tab of its pane.
     pub fn focus(&mut self, pane: usize, tab: usize) {
         if let Some(p) = self.panes.get_mut(pane)
@@ -417,21 +384,18 @@ impl Dock {
     }
 
     /// Moves a pane to the place before the pane with index `to`, as the
-    /// column was before the move. `to` can be the number of panes. The
-    /// pane becomes pinned.
+    /// column was before the move. `to` can be the number of panes.
     pub fn move_pane(&mut self, from: usize, to: usize) {
         if from >= self.panes.len() {
             return;
         }
-        let mut pane = self.panes.remove(from);
-        pane.pinned = true;
+        let pane = self.panes.remove(from);
         let to = if to > from { to - 1 } else { to };
         self.panes.insert(to.min(self.panes.len()), pane);
     }
 
     /// Moves a tab out of its pane, to another pane or to a new pane. The
-    /// indices of `drop` are of the column before the move. The panes that
-    /// change become pinned.
+    /// indices of `drop` are of the column before the move.
     pub fn move_tab(&mut self, panel: Panel, drop: Drop) {
         let Some((from, tab)) = self.find(panel) else {
             return;
@@ -449,16 +413,11 @@ impl Dock {
                 let index = index.min(target.tabs.len());
                 target.tabs.insert(index, panel);
                 target.active = index;
-                target.pinned = true;
-                if let Some(source) = self.panes.get_mut(from).filter(|_| !gone) {
-                    source.pinned = true;
-                }
             }
             Drop::Split { at } => {
                 self.remove_tab(from, tab);
-                self.panes[from].pinned = true;
                 let at = at.min(self.panes.len());
-                self.panes.insert(at, Pane::new(panel, true));
+                self.panes.insert(at, Pane::new(panel));
             }
         }
         self.focus = Some(panel);
@@ -481,7 +440,7 @@ impl Dock {
 
     /// Moves `delta` points of height from the pane below the bar with
     /// index `bar` to the pane above it. `heights` are the heights of the
-    /// panes as they show. The two panes become pinned.
+    /// panes as they show.
     pub fn resize(&mut self, bar: usize, delta: f32, heights: &[f32]) {
         let (Some(&above), Some(&below)) = (heights.get(bar), heights.get(bar + 1)) else {
             return;
@@ -492,35 +451,28 @@ impl Dock {
         for (i, height) in [(bar, new), (bar + 1, above + below - new)] {
             if let Some(pane) = self.panes.get_mut(i) {
                 pane.height = Some(height);
-                pane.pinned = true;
             }
         }
     }
 
-    /// Closes the unpinned pane, for a tap on the canvas. Returns true if
-    /// a pane closed.
-    pub fn tap_canvas(&mut self) -> bool {
-        match self.panes.iter().position(|p| !p.pinned) {
-            Some(i) => {
-                self.close_pane(i);
-                true
-            }
-            None => false,
+    /// Moves a tab of a pane with more than one tab to a new pane below
+    /// its pane.
+    pub fn split_tab(&mut self, panel: Panel) {
+        if let Some((i, _)) = self.find(panel)
+            && self.panes[i].tabs.len() > 1
+        {
+            self.move_tab(panel, Drop::Split { at: i + 1 });
         }
     }
 
-    /// Closes the pinned panes and puts the width back.
+    /// Puts back the first state: no panes, the first width, the first
+    /// arrangement, and the dock on the screen.
     pub fn reset(&mut self) {
-        self.panes.retain(|p| !p.pinned);
-        for pane in &mut self.panes {
-            pane.height = None;
-        }
+        self.close_all();
         self.width = WIDTH;
+        self.collapsed = false;
         if !self.arrangement.is_empty() {
             self.arrangement = first_arrangement();
-        }
-        if self.focus.is_some_and(|f| !self.is_open(f)) {
-            self.focus = self.panes.last().map(Pane::panel);
         }
     }
 
@@ -613,25 +565,19 @@ impl Default for Docks {
 }
 
 impl Docks {
-    /// The text of the file: the width and the pinned panes of each dock,
-    /// and the arrangement of the panels of a frame in the Atlas.
+    /// The text of the file: the width, the panes, and the collapsed state
+    /// of each dock, and the arrangement of the panels of a frame in the
+    /// Atlas.
     pub fn text(&self) -> String {
         let mut lines = Vec::new();
         for (key, dock) in [("world", &self.world), ("atlas", &self.atlas)] {
             lines.push(format!("{key} width {}", dock.width));
-            for pane in dock.user_panes().iter().filter(|p| p.pinned) {
-                // A temporary panel, such as the panel of an item, does not
-                // stay.
-                let shown = pane.panel();
-                let tabs: Vec<Panel> = (pane.tabs.iter())
-                    .filter(|t| !name(**t).is_empty())
-                    .copied()
-                    .collect();
-                if tabs.is_empty() {
-                    continue;
-                }
-                let active = tabs.iter().position(|t| *t == shown).unwrap_or(0);
-                let names: Vec<&str> = tabs.iter().map(|t| name(*t)).collect();
+            if dock.collapsed {
+                lines.push(format!("{key} collapsed"));
+            }
+            for pane in dock.user_panes() {
+                let active = pane.active;
+                let names: Vec<&str> = pane.tabs.iter().map(|t| name(*t)).collect();
                 let height = pane.height.map_or("auto".to_owned(), |h| h.to_string());
                 lines.push(format!("{key} pane {} {active} {height}", names.join(",")));
             }
@@ -659,7 +605,9 @@ impl Docks {
                         dock.set_width(w);
                     }
                 }
-                ["pane", tabs, active, height] => {
+                ["collapsed"] => dock.collapsed = true,
+                // The fifth field of an older file has no effect.
+                ["pane", tabs, active, height] | ["pane", tabs, active, height, _] => {
                     if let Some(pane) = parse_pane(tabs, active, height)
                         && pane.tabs.iter().all(|t| !dock.is_open(*t))
                     {
@@ -720,7 +668,7 @@ fn parse_pane(tabs: &str, active: &str, height: &str) -> Option<Pane> {
                 .filter(|h| h.is_finite() && *h > 0.0)?,
         ),
     };
-    let mut pane = Pane::with_tabs(panels, active, true);
+    let mut pane = Pane::with_tabs(panels, active);
     pane.height = height;
     Some(pane)
 }
@@ -744,10 +692,10 @@ pub fn write(dir: &Path, text: &str) -> std::io::Result<()> {
 mod tests {
     use super::*;
 
-    fn dock(panes: &[(&[Panel], bool)]) -> Dock {
+    fn dock(panes: &[&[Panel]]) -> Dock {
         let mut dock = Dock::world();
-        for (tabs, pinned) in panes {
-            dock.panes.push(Pane::with_tabs(tabs.to_vec(), 0, *pinned));
+        for tabs in panes {
+            dock.panes.push(Pane::with_tabs(tabs.to_vec(), 0));
         }
         dock
     }
@@ -775,38 +723,40 @@ mod tests {
     }
 
     #[test]
-    fn a_move_or_a_resize_pins_a_pane() {
-        let mut d = dock(&[(&[Panel::Layers], false), (&[Panel::Brush], true)]);
+    fn a_move_and_a_resize() {
+        let mut d = dock(&[&[Panel::Layers], &[Panel::Brush]]);
         d.move_pane(0, 2);
         assert_eq!(tabs(&d), vec![vec![Panel::Brush], vec![Panel::Layers]]);
-        assert!(d.panes[1].pinned);
 
-        let mut d = dock(&[(&[Panel::Layers], true), (&[Panel::Brush], false)]);
         d.resize(0, 50.0, &[300.0, 300.0]);
         assert_eq!(d.panes[0].height, Some(350.0));
         assert_eq!(d.panes[1].height, Some(250.0));
-        assert!(d.panes[1].pinned);
         d.resize(0, 1000.0, &[350.0, 250.0]);
         assert_eq!(d.panes[1].height, Some(PANE_MIN));
     }
 
     #[test]
-    fn a_new_panel_replaces_the_one_unpinned_pane() {
-        let mut d = dock(&[(&[Panel::Layers], true), (&[Panel::Toolbox], false)]);
+    fn each_panel_opens_in_a_new_pane_and_stays() {
+        let mut d = dock(&[&[Panel::Layers], &[Panel::Toolbox]]);
         d.open(Panel::Attributes);
-        assert_eq!(tabs(&d), vec![vec![Panel::Layers], vec![Panel::Attributes]]);
-        d.pin(1, true);
         d.open(Panel::Brush);
-        assert_eq!(d.panes.len(), 3);
-        assert_eq!(d.panes.iter().filter(|p| !p.pinned).count(), 1);
-        assert!(d.tap_canvas());
-        assert_eq!(d.panes.len(), 2);
-        assert!(!d.tap_canvas());
+        assert_eq!(
+            tabs(&d),
+            vec![
+                vec![Panel::Layers],
+                vec![Panel::Toolbox],
+                vec![Panel::Attributes],
+                vec![Panel::Brush]
+            ]
+        );
+        // An open panel only shows.
+        d.open(Panel::Layers);
+        assert_eq!(d.panes.len(), 4);
     }
 
     #[test]
     fn with_no_room_a_new_panel_joins_the_last_pane() {
-        let mut d = dock(&[(&[Panel::Layers], true), (&[Panel::Toolbox], true)]);
+        let mut d = dock(&[&[Panel::Layers], &[Panel::Toolbox]]);
         d.room = 2.0 * PANE_MIN + BAR;
         d.open(Panel::Brush);
         assert_eq!(
@@ -817,17 +767,31 @@ mod tests {
     }
 
     #[test]
+    fn a_tab_moves_to_a_new_pane_below_its_pane() {
+        let mut d = dock(&[&[Panel::Layers, Panel::Toolbox], &[Panel::Attributes]]);
+        d.split_tab(Panel::Toolbox);
+        assert_eq!(
+            tabs(&d),
+            vec![
+                vec![Panel::Layers],
+                vec![Panel::Toolbox],
+                vec![Panel::Attributes]
+            ]
+        );
+        // A pane with one tab stays.
+        d.split_tab(Panel::Toolbox);
+        assert_eq!(d.panes.len(), 3);
+    }
+
+    #[test]
     fn a_tab_merges_into_a_pane_and_splits_to_a_new_pane() {
-        let mut d = dock(&[
-            (&[Panel::Layers, Panel::Toolbox], false),
-            (&[Panel::Attributes], false),
-        ]);
+        let mut d = dock(&[&[Panel::Layers, Panel::Toolbox], &[Panel::Attributes]]);
         d.move_tab(Panel::Attributes, Drop::Merge { pane: 0, index: 1 });
         assert_eq!(
             tabs(&d),
             vec![vec![Panel::Layers, Panel::Attributes, Panel::Toolbox]]
         );
-        assert!(d.panes[0].pinned && d.shows(Panel::Attributes));
+        assert!(d.shows(Panel::Attributes));
 
         d.move_tab(Panel::Layers, Drop::Split { at: 1 });
         assert_eq!(
@@ -853,39 +817,77 @@ mod tests {
 
     #[test]
     fn close_toggle_and_reset() {
-        let mut d = dock(&[(&[Panel::Layers, Panel::Toolbox], true)]);
+        let mut d = dock(&[&[Panel::Layers, Panel::Toolbox]]);
         d.toggle(Panel::Toolbox);
         assert!(d.shows(Panel::Toolbox));
         d.toggle(Panel::Toolbox);
         assert_eq!(tabs(&d), vec![vec![Panel::Layers]]);
         d.open(Panel::Brush);
         d.width = 480.0;
+        d.collapsed = true;
         d.reset();
-        assert_eq!(tabs(&d), vec![vec![Panel::Brush]]);
+        assert!(d.panes.is_empty());
         assert_eq!(d.width, WIDTH);
+        assert!(!d.collapsed);
     }
 
     #[test]
-    fn the_text_keeps_the_pinned_panes_of_each_workspace() {
+    fn a_panel_that_opens_shows_a_collapsed_dock() {
+        let mut d = dock(&[&[Panel::Layers]]);
+        d.collapsed = true;
+        // An open panel keeps the dock collapsed.
+        d.open(Panel::Layers);
+        assert!(d.collapsed);
+        d.open(Panel::Toolbox);
+        assert!(!d.collapsed);
+        let mut d = Dock {
+            collapsed: true,
+            ..Dock::default()
+        };
+        d.open_frames();
+        assert!(!d.collapsed);
+    }
+
+    #[test]
+    fn the_text_keeps_the_panes_of_each_workspace() {
         let mut docks = Docks::default();
         docks.world.open_tabs(&[Panel::Layers, Panel::Toolbox]);
         docks.world.panes[0].active = 1;
         docks.world.panes[0].height = Some(320.0);
-        docks.world.open_pinned(Panel::Brush);
+        docks.world.open_new(Panel::Brush);
         docks.world.open(Panel::Attributes);
         docks.world.width = 460.0;
-        docks.atlas.open_pinned(Panel::Attributes);
+        docks.world.collapsed = true;
+        docks.atlas.open(Panel::Item);
         let mut back = Docks::default();
         back.load(&docks.text());
         assert_eq!(back.world.width, 460.0);
         assert_eq!(
             tabs(&back.world),
-            vec![vec![Panel::Layers, Panel::Toolbox], vec![Panel::Brush]]
+            vec![
+                vec![Panel::Layers, Panel::Toolbox],
+                vec![Panel::Brush],
+                vec![Panel::Attributes]
+            ]
         );
         assert_eq!(back.world.panes[0].active, 1);
         assert_eq!(back.world.panes[0].height, Some(320.0));
-        assert_eq!(tabs(&back.atlas), vec![vec![Panel::Attributes]]);
+        assert!(back.world.collapsed);
+        assert_eq!(tabs(&back.atlas), vec![vec![Panel::Item]]);
         assert_eq!(back.atlas.width, WIDTH);
+        assert!(!back.atlas.collapsed);
+    }
+
+    #[test]
+    fn a_pane_of_an_older_file_loads() {
+        let mut docks = Docks::default();
+        docks.load("world pane layers,toolbox 1 auto pinned\nworld pane brush 0 200");
+        assert_eq!(
+            tabs(&docks.world),
+            vec![vec![Panel::Layers, Panel::Toolbox], vec![Panel::Brush]]
+        );
+        assert_eq!(docks.world.panes[0].active, 1);
+        assert_eq!(docks.world.panes[1].height, Some(200.0));
     }
 
     #[test]
@@ -901,11 +903,7 @@ mod tests {
     }
     #[test]
     fn panes_that_join_for_lack_of_room_come_back_with_room() {
-        let mut d = dock(&[
-            (&[Panel::Layers], true),
-            (&[Panel::Toolbox], true),
-            (&[Panel::Brush], false),
-        ]);
+        let mut d = dock(&[&[Panel::Layers], &[Panel::Toolbox], &[Panel::Brush]]);
         d.panes[1].height = Some(300.0);
         d.keep_in(2.0 * PANE_MIN + BAR);
         assert_eq!(
@@ -922,7 +920,6 @@ mod tests {
                 vec![Panel::Brush]
             ]
         );
-        assert!(d.panes[1].pinned && !d.panes[2].pinned);
         assert_eq!(d.panes[1].height, Some(300.0));
         // A tab that the user moves out of a joined pane stays out.
         d.keep_in(2.0 * PANE_MIN + BAR);
@@ -939,7 +936,6 @@ mod tests {
         let mut d = Dock::default();
         d.open_frames();
         assert_eq!(tabs(&d), vec![FRAME_PANELS.to_vec()]);
-        assert!(!d.panes[0].pinned);
         // Labels moves to a pane of its own, and Projection is the open tab.
         d.move_tab(Panel::Labels, Drop::Split { at: 1 });
         d.focus(0, 1);
@@ -974,14 +970,22 @@ mod tests {
     }
 
     #[test]
-    fn another_panel_opens_beside_the_unpinned_panes_of_a_frame() {
+    fn a_frame_opens_only_the_panels_that_are_not_open() {
         let mut d = Dock::default();
         d.open_frames();
-        d.open(Panel::Attributes);
         d.open(Panel::Pages);
-        assert_eq!(tabs(&d), vec![FRAME_PANELS.to_vec(), vec![Panel::Pages]]);
-        d.close_unpinned(&FRAME_PANELS);
-        assert_eq!(tabs(&d), vec![vec![Panel::Pages]]);
+        d.close(Panel::Labels);
+        d.open_frames();
+        assert_eq!(
+            tabs(&d),
+            vec![
+                vec![Panel::Frame, Panel::Projection, Panel::Layers],
+                vec![Panel::Pages],
+                vec![Panel::Labels]
+            ]
+        );
+        d.open_frames();
+        assert_eq!(d.panes.len(), 3);
     }
 
     #[test]

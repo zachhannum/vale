@@ -1,19 +1,22 @@
-//! The Panels menu: a tile for each panel of the workspace, and the rows
-//! "Close all" and "Reset layout". A tinted tile is an open panel. A tile
-//! is off when its panel does nothing.
+//! The Panels menu: a tile for each panel of the workspace, the row that
+//! hides or shows the dock, and the rows "Close all" and "Reset layout". A
+//! tinted tile is an open panel. A closed tile is off when its panel does
+//! nothing.
 
 use eframe::egui::{self, Align2, Order, Rect, Sense, pos2, vec2};
 
 use super::geometry::{self, PANELS_MENU_WIDTH, Rects};
 use super::icons::{self, Icon};
 use super::widgets::{self, Controls, HIGHLIGHT_INSET, ICON, PANEL_ROW};
-use super::{PANELS, Panel, card_cells, has_strip, theme};
+use super::{PANELS, Panel, brush_settings, theme};
 use crate::ui::{AppState, Workspace, select};
 
 pub const BRUSH: &str = "Brush";
 pub const PAGES: &str = "Pages";
 pub const CLOSE_ALL: &str = "Close all";
 pub const RESET_LAYOUT: &str = "Reset layout";
+pub const HIDE_DOCK: &str = "Hide dock";
+pub const SHOW_DOCK: &str = "Show dock";
 pub const WORLD: &str = "World";
 pub const SELECTION: &str = "Selection";
 pub const ATLAS: &str = "Atlas";
@@ -34,7 +37,6 @@ pub struct Tile {
     pub name: &'static str,
     pub icon: Icon,
     pub open: bool,
-    pub pinned: bool,
     pub enabled: bool,
 }
 
@@ -44,26 +46,23 @@ pub struct Group {
     pub tiles: Vec<Tile>,
 }
 
+/// A tile. An open panel can always close.
 fn tile(entry: Panel, name: &'static str, icon: Icon, open: bool, enabled: bool) -> Tile {
     Tile {
         entry,
         name,
         icon,
-        open: open && enabled,
-        pinned: false,
-        enabled,
+        open,
+        enabled: enabled || open,
     }
 }
 
 /// The tiles of the World workspace.
 pub fn world(state: &AppState) -> Vec<Group> {
     let pad = &state.pad;
-    let brush =
-        (has_strip(&state.globe) || card_cells(&state.globe) > 0) && !state.globe.selecting();
-    let panel = |panel: Panel, name, icon, enabled| Tile {
-        pinned: enabled && pad.dock().is_pinned(panel),
-        ..tile(panel, name, icon, pad.is_open(panel), enabled)
-    };
+    let brush = brush_settings(state);
+    let panel =
+        |panel: Panel, name, icon, enabled| tile(panel, name, icon, pad.is_open(panel), enabled);
     vec![Group {
         heading: WORLD,
         tiles: vec![
@@ -85,12 +84,7 @@ pub fn atlas(state: &AppState) -> Vec<Group> {
     let pad = &state.pad;
     let frame = state.atlas.frame().is_some();
     let panel = |panel: Panel, name, icon, enabled: bool| {
-        // A pinned panel of a frame shows its hint with no frame.
-        let enabled = enabled || pad.dock().is_pinned(panel);
-        Tile {
-            pinned: enabled && pad.dock().is_pinned(panel),
-            ..tile(panel, name, icon, pad.is_open(panel), enabled)
-        }
+        tile(panel, name, icon, pad.is_open(panel), enabled)
     };
     let [frame_name, projection, layers, labels] = super::atlas::FRAME_TABS;
     vec![
@@ -120,8 +114,9 @@ pub fn atlas(state: &AppState) -> Vec<Group> {
     ]
 }
 
-/// The height of the menu with these groups.
-fn height(groups: &[Group]) -> f32 {
+/// The height of the menu with these groups, and with the row of the dock
+/// or without it.
+fn height(groups: &[Group], dock_row: bool) -> f32 {
     let tiles: f32 = groups
         .iter()
         .map(|g| {
@@ -129,7 +124,8 @@ fn height(groups: &[Group]) -> f32 {
             HEADING + rows * TILE + (rows - 1.0).max(0.0) * TILE_GAP + TILE_GAP
         })
         .sum();
-    PAD + tiles + PANEL_ROW + PAD
+    let dock_row = if dock_row { PANEL_ROW + TILE_GAP } else { 0.0 };
+    PAD + tiles + dock_row + PANEL_ROW + PAD
 }
 
 /// The menu, on the right edge below the top row. A tap outside the menu
@@ -141,7 +137,12 @@ pub fn show(
     rects: &Rects,
     groups: &[Group],
 ) {
-    let size = vec2(PANELS_MENU_WIDTH + rects.bands.right, height(groups));
+    let dock_row = !state.pad.dock().panes.is_empty();
+    let collapsed = state.pad.dock().collapsed;
+    let size = vec2(
+        PANELS_MENU_WIDTH + rects.bands.right,
+        height(groups, dock_row),
+    );
     let rect = Rect::from_min_size(pos2(rects.screen.right() - size.x, rects.column_top), size);
     state.pad.panels_menu_rect = Some(rect);
     let button = controls.iter().find(|c| c.name == PANELS).map(|c| c.rect);
@@ -160,6 +161,7 @@ pub fn show(
     let mut chosen = None;
     let mut close = false;
     let mut reset = false;
+    let mut hide = false;
     widgets::card(
         ctx,
         None,
@@ -193,6 +195,13 @@ pub fn show(
                 let rows = group.tiles.len().div_ceil(COLUMNS) as f32;
                 top += rows * TILE + (rows - 1.0).max(0.0) * TILE_GAP + TILE_GAP;
             }
+            if dock_row {
+                let row =
+                    Rect::from_min_size(pos2(inner.left(), top), vec2(inner.width(), PANEL_ROW));
+                let name = if collapsed { SHOW_DOCK } else { HIDE_DOCK };
+                hide = text_button(ui, controls, row, name);
+                top += PANEL_ROW + TILE_GAP;
+            }
             let half = (inner.width() - TILE_GAP) / 2.0;
             let left = Rect::from_min_size(pos2(inner.left(), top), vec2(half, PANEL_ROW));
             let right = left.translate(vec2(half + TILE_GAP, 0.0));
@@ -201,7 +210,17 @@ pub fn show(
         },
     );
     if let Some(tile) = chosen {
-        state.pad.toggle(tile.entry);
+        // A tile of an open panel of a collapsed dock shows the panel.
+        if collapsed && tile.open {
+            state.pad.open(tile.entry);
+            state.pad.dock_mut().collapsed = false;
+        } else {
+            state.pad.toggle(tile.entry);
+        }
+        state.pad.panels_menu = false;
+    }
+    if hide {
+        state.pad.dock_mut().collapsed = !collapsed;
         state.pad.panels_menu = false;
     }
     if close {
@@ -258,10 +277,6 @@ fn paint_tile(ui: &egui::Ui, controls: &mut Controls, rect: Rect, tile: &Tile) -
     let at = pos2(rect.center().x, rect.bottom() - 18.0);
     let color = widgets::fade(color, tile.enabled);
     painter.text(at, Align2::CENTER_CENTER, tile.name, theme::hint(), color);
-    if tile.pinned {
-        let pin = Rect::from_center_size(rect.right_top() + vec2(-14.0, 14.0), vec2(14.0, 14.0));
-        icons::paint(painter, pin, Icon::Pin, 14.0, theme::ACCENT);
-    }
     resp.clicked()
 }
 

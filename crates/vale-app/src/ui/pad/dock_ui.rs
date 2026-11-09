@@ -1,6 +1,6 @@
 //! The dock of a workspace on the screen: the panes in one card on
 //! the right edge. On a compact screen, the pane of the last focus is a
-//! sheet.
+//! sheet. A long press on a tab opens the menu of its panel.
 
 use eframe::egui::{self, Align2, Order, Pos2, Rect, Sense, Stroke, pos2, vec2};
 
@@ -8,8 +8,8 @@ use super::geometry::{self, PAD, ROW, Rects, TOUCH, WidthClass};
 use super::icons::{self, Icon};
 use super::panes::{self, BAR, Drop};
 use super::widgets::{self, BODY_PAD, Controls, ICON};
+use super::{HOLD_SLOP, HOLD_TIME, point_card, popover, theme};
 use super::{Head, Panel, panel_body, panel_head, panel_icon, panel_name, panel_title, panel_top};
-use super::{point_card, theme};
 use crate::ui::AppState;
 
 /// The handle that changes the width of the dock.
@@ -20,6 +20,19 @@ const BAR_TOUCH: f32 = 24.0;
 const HANDLE: (f32, f32) = (TOUCH, 64.0);
 /// The padding at each side of the name of a tab.
 const TAB_PAD: f32 = 12.0;
+/// The time of the slide of the dock and of the move of the canvas.
+pub const SLIDE_TIME: f32 = 0.25;
+/// A drag of the width handle this far past the narrowest dock collapses
+/// the dock.
+pub const COLLAPSE_DRAG: f32 = 40.0;
+/// The tab at the right edge that shows a collapsed dock.
+pub const SHOW_DOCK: &str = super::panels_menu::SHOW_DOCK;
+/// The touch area of the tab of a collapsed dock.
+const EDGE_TAB: (f32, f32) = (TOUCH, 72.0);
+/// The row of the menu of a tab that moves the tab to a new pane.
+pub const MOVE_TO_NEW_PANE: &str = "Move to new pane";
+/// The width of the menu of a tab.
+const MENU_WIDTH: f32 = 240.0;
 
 /// What a finger moves in the dock.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -42,9 +55,22 @@ pub fn tab_name(name: &str) -> String {
     format!("{name} tab")
 }
 
-/// The control name of the Pin button of a pane.
-pub fn pin_name(name: &str) -> String {
-    format!("Pin {name}")
+/// The row of the menu of a tab, and the button of a sheet, that close a
+/// panel.
+pub fn close_name(name: &str) -> String {
+    format!("Close {name}")
+}
+
+/// The menu of a tab, which a long press opens.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PaneMenu {
+    pub panel: Panel,
+    /// The tab or the title that the menu points at.
+    pub anchor: Rect,
+    /// The menu is the menu of a sheet, which has no Move row.
+    sheet: bool,
+    /// The press that opened the menu goes on. Its release is not a tap.
+    held: bool,
 }
 
 /// The places of a pane in the last frame, for a drop.
@@ -65,8 +91,8 @@ enum Mode {
 
 /// What the user did with the header of a pane.
 struct HeaderOut {
+    /// The Close button of a sheet.
     close: bool,
-    pin: bool,
     /// The tab that the user chose.
     focus: Option<usize>,
     /// The empty part of the header.
@@ -87,8 +113,14 @@ enum DragPhase {
 
 pub fn show(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
     state.pad.dock_rect = None;
+    if let Some(menu) = &mut state.pad.pane_menu
+        && !ctx.input(|i| i.pointer.any_down() || i.pointer.any_released())
+    {
+        menu.held = false;
+    }
     if state.pad.dock().panes.is_empty() {
         state.pad.dock_drag = None;
+        state.pad.pane_menu = None;
         return;
     }
     if rects.class == WidthClass::Compact {
@@ -99,12 +131,169 @@ pub fn show(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, 
         } else if let Some(sheet) = rects.sheet {
             show_sheet(ctx, state, controls, rects, sheet);
         }
-        return;
+    } else {
+        let slide = slide(ctx, state);
+        if slide < 1.0 {
+            show_dock(ctx, state, controls, rects, slide);
+        }
+        if state.pad.dock().collapsed {
+            state.pad.pane_menu = None;
+            if !state.pad.panels_menu {
+                edge_tab(ctx, state, controls, rects);
+            }
+        }
     }
-    show_dock(ctx, state, controls, rects);
+    pane_menu(ctx, state, controls);
 }
 
-fn show_dock(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
+/// How far the dock is off the right edge, from 0 on the screen to 1 off
+/// it.
+fn slide(ctx: &egui::Context, state: &AppState) -> f32 {
+    let collapsed = state.pad.dock().collapsed;
+    let id = egui::Id::new(("pad-dock-slide", state.pad.workspace as u8));
+    let t = ctx.animate_bool_with_time(id, collapsed, SLIDE_TIME);
+    if state.headless {
+        f32::from(u8::from(collapsed))
+    } else {
+        t
+    }
+}
+
+/// The width of the dock that the canvas leaves free at the right, in this
+/// frame. Only a wide screen leaves room for the dock. The width moves in
+/// `SLIDE_TIME`, and at once in a run with no window and during a drag of
+/// the width.
+pub fn shown_width(ctx: &egui::Context, state: &AppState, screen: Rect, bands: f32) -> f32 {
+    let dock = state.pad.dock();
+    let wide = WidthClass::of(screen.width()) == WidthClass::Wide;
+    let target = if wide && !dock.panes.is_empty() && !dock.collapsed {
+        dock.width + bands
+    } else {
+        0.0
+    };
+    let id = egui::Id::new(("pad-dock-shown", state.pad.workspace as u8));
+    let value = ctx.animate_value_with_time(id, target, SLIDE_TIME);
+    if state.headless || state.pad.dock_drag == Some(DockDrag::Width) {
+        target
+    } else {
+        value
+    }
+}
+
+/// The tab at the middle of the right edge that shows a collapsed dock,
+/// with a tap or a drag to the left.
+fn edge_tab(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
+    let right = rects.screen.right() - rects.bands.right;
+    let rect = Rect::from_min_size(
+        pos2(right - EDGE_TAB.0, rects.dock.center().y - EDGE_TAB.1 / 2.0),
+        vec2(EDGE_TAB.0, EDGE_TAB.1),
+    );
+    let visible = Rect::from_min_max(
+        pos2(right - 16.0, rect.top() + 8.0),
+        pos2(rects.screen.right(), rect.bottom() - 8.0),
+    );
+    let mut show = false;
+    egui::Area::new(egui::Id::new("pad-dock-edge-tab"))
+        .order(Order::Middle)
+        .fixed_pos(rect.min)
+        .movable(false)
+        .constrain(false)
+        .fade_in(false)
+        .show(ctx, |ui| {
+            let (_, _) = ui.allocate_exact_size(rect.size(), Sense::hover());
+            let resp = widgets::drag_area(ui, controls, rect, SHOW_DOCK);
+            let r = theme::CONTROL_RADIUS as u8;
+            let radius = egui::CornerRadius {
+                nw: r,
+                sw: r,
+                ne: 0,
+                se: 0,
+            };
+            let painter = ui.painter();
+            let fill = if resp.is_pointer_button_down_on() {
+                theme::card(false).to_opaque().blend(theme::raise())
+            } else {
+                theme::card(false).to_opaque()
+            };
+            painter.add(theme::shadow().as_shape(visible, r));
+            painter.rect_filled(visible, radius, fill);
+            let pill = Rect::from_center_size(
+                pos2(visible.left() + 8.0, visible.center().y),
+                vec2(4.0, 28.0),
+            );
+            painter.rect_filled(pill, 2.0, theme::MUTE.gamma_multiply(0.7));
+            let left = ui.input(|i| {
+                let origin = i.pointer.press_origin()?;
+                Some(origin.x - i.pointer.interact_pos()?.x)
+            });
+            show = resp.clicked() || (resp.dragged() && left.is_some_and(|d| d >= 2.0 * HOLD_SLOP));
+        });
+    if show {
+        state.pad.dock_mut().collapsed = false;
+    }
+}
+
+/// The menu of a tab after a long press: "Close <panel>", and in a dock
+/// pane with more than one tab, "Move to new pane".
+fn pane_menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls) {
+    let Some(menu) = state.pad.pane_menu else {
+        return;
+    };
+    let Some((i, _)) = state.pad.dock().find(menu.panel) else {
+        state.pad.pane_menu = None;
+        return;
+    };
+    let split = !menu.sheet && state.pad.dock().panes[i].tabs.len() > 1;
+    let close = close_name(panel_name(state, menu.panel));
+    let (mut closed, mut moved) = (false, false);
+    let shown = popover::show(ctx, "pad-pane-menu", menu.anchor, MENU_WIDTH, |ui| {
+        closed = widgets::text_row(ui, controls, &close, 0.0, false, true).clicked();
+        if split {
+            popover::divider(ui);
+            moved = widgets::text_row(ui, controls, MOVE_TO_NEW_PANE, 0.0, false, true).clicked();
+        }
+    });
+    if closed {
+        state.pad.close(menu.panel);
+    }
+    if moved {
+        state.pad.dock_mut().split_tab(menu.panel);
+    }
+    if closed || moved || (shown.closed && !menu.held) {
+        state.pad.pane_menu = None;
+    }
+}
+
+/// True if a press on `resp` is a long press: it lasts `HOLD_TIME` and
+/// moves no more than `HOLD_SLOP`.
+fn long_press(ui: &egui::Ui, resp: &egui::Response) -> bool {
+    // The frame of the release is not part of the press.
+    if !resp.is_pointer_button_down_on() || !ui.input(|i| i.pointer.primary_down()) {
+        return false;
+    }
+    let press = ui.input(|i| {
+        let (start, origin) = (i.pointer.press_start_time()?, i.pointer.press_origin()?);
+        let pos = i.pointer.interact_pos()?;
+        Some((i.time - start, origin.distance(pos)))
+    });
+    match press {
+        Some((time, moved)) if moved <= HOLD_SLOP && time >= HOLD_TIME => true,
+        Some((time, moved)) if moved <= HOLD_SLOP => {
+            let wait = std::time::Duration::from_secs_f64(HOLD_TIME - time);
+            ui.ctx().request_repaint_after(wait);
+            false
+        }
+        _ => false,
+    }
+}
+
+fn show_dock(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    controls: &mut Controls,
+    rects: &Rects,
+    slide: f32,
+) {
     let room = rects.dock;
     state.pad.dock_mut().keep_in(room.height());
     let mut heads: Vec<Head> = (0..state.pad.dock().panes.len())
@@ -122,6 +311,8 @@ fn show_dock(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls,
     let heights = panes::fit(&wanted, room.height());
     let total = heights.iter().sum::<f32>() + BAR * (heights.len() - 1) as f32;
     let rect = Rect::from_min_size(room.min, vec2(room.width(), total.min(room.height())));
+    // A collapsing dock slides off the right edge.
+    let rect = rect.translate(vec2((slide * room.width()).round(), 0.0));
     let radius = geometry::edge_radius(rect, rects.screen);
     let names = rect.width() - rects.bands.right >= panes::NAMES_WIDTH;
     let backdrop = state.globe.backdrop();
@@ -194,19 +385,12 @@ fn show_dock(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls,
             }
         },
     );
-    state.pad.dock_rect = Some(rect);
+    if !state.pad.dock().collapsed {
+        state.pad.dock_rect = Some(rect);
+    }
     for (i, out) in actions.into_iter().rev() {
-        let dock = state.pad.dock_mut();
-        if out.close {
-            dock.close_pane(i);
-            continue;
-        }
-        if out.pin {
-            let pinned = dock.panes[i].pinned;
-            dock.pin(i, !pinned);
-        }
         if let Some(tab) = out.focus {
-            dock.focus(i, tab);
+            state.pad.dock_mut().focus(i, tab);
         }
     }
     match drag {
@@ -215,6 +399,8 @@ fn show_dock(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls,
             paint_drop(ctx, state, rect, &placed, drag);
             ctx.request_repaint();
         }
+        // A drag that did not move is no drop.
+        Some((_, DragPhase::Stopped)) if state.pad.dock_drag.is_none() => {}
         Some((drag, DragPhase::Stopped)) => {
             // The finger is gone at the end of the drag, so the drop is at
             // its last place.
@@ -370,6 +556,20 @@ pub fn handle(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
             let (_, _) = ui.allocate_exact_size(rect.size(), Sense::hover());
             let resp = widgets::drag_area(ui, controls, rect, DOCK_WIDTH);
             let active = resp.dragged();
+            // The width that the finger asks for, which can be below the
+            // narrowest dock.
+            if !active {
+                // The collapsed dock keeps the width of the start of the
+                // drag.
+                if let Some((start, width)) = state.pad.width_drag.take()
+                    && resp.drag_stopped()
+                    && width <= panes::MIN_WIDTH - COLLAPSE_DRAG
+                {
+                    let dock = state.pad.dock_mut();
+                    dock.collapsed = true;
+                    dock.width = start;
+                }
+            }
             let pill =
                 Rect::from_center_size(pos2(rect.right() - 6.0, rect.center().y), vec2(5.0, 36.0));
             let color = if active {
@@ -378,13 +578,19 @@ pub fn handle(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
                 theme::MUTE.gamma_multiply(0.7)
             };
             ui.painter().rect_filled(pill, 3.0, color);
-            let dock = state.pad.dock_mut();
             if active {
-                if resp.drag_delta().x != 0.0 {
-                    dock.set_width(dock.width - resp.drag_delta().x);
-                    dock.width = dock.width.min(most);
-                }
-                let text = format!("{} pt", dock.width.round());
+                let (start, width) = (state.pad.width_drag)
+                    .unwrap_or((state.pad.dock().width, state.pad.dock().width));
+                let width = width - resp.drag_delta().x;
+                state.pad.width_drag = Some((start, width));
+                let dock = state.pad.dock_mut();
+                dock.set_width(width);
+                dock.width = dock.width.min(most);
+                let text = if width <= panes::MIN_WIDTH - COLLAPSE_DRAG {
+                    super::panels_menu::HIDE_DOCK.to_owned()
+                } else {
+                    format!("{} pt", dock.width.round())
+                };
                 state.pad.dock_drag = Some(DockDrag::Width);
                 let painter = ctx.layer_painter(egui::LayerId::new(
                     Order::Foreground,
@@ -406,7 +612,7 @@ pub fn handle(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
 }
 
 /// The sheet of a compact screen: the pane of the last focus, with its
-/// tabs, and with no pin and no drag of its tabs.
+/// tabs and its Close button, and with no drag of its tabs.
 fn show_sheet(
     ctx: &egui::Context,
     state: &mut AppState,
@@ -460,6 +666,7 @@ fn show_sheet(
         let dock = state.pad.dock_mut();
         if out.close {
             dock.close_pane(i);
+            state.pad.pane_menu = None;
         } else if let Some(tab) = out.focus {
             dock.focus(i, tab);
         }
@@ -607,8 +814,9 @@ fn tab_width(ui: &egui::Ui, name: &str, named: bool) -> f32 {
     TAB_PAD + ICON + 8.0 + galley.size().x.ceil() + TAB_PAD
 }
 
-/// The header of a pane: the title or the tabs, the action button, the Pin
-/// button, and the Close button.
+/// The header of a pane: the title or the tabs, and the action button. A
+/// sheet has the Close button too. A long press on a tab or on the title
+/// opens the menu of its panel.
 #[allow(clippy::too_many_arguments)]
 fn header_row(
     ui: &mut egui::Ui,
@@ -622,47 +830,25 @@ fn header_row(
 ) -> HeaderOut {
     let pane = state.pad.dock().panes[i].clone();
     let name = panel_name(state, pane.panel());
+    // The press that opened a menu does not choose or move a tab.
+    let holding = state.pad.pane_menu.is_some_and(|m| m.held);
+    let mut menu = None;
     let button = |x: f32| Rect::from_min_size(pos2(x, rect.top() + PAD), vec2(TOUCH, TOUCH));
-    let close_rect = button(rect.right() - PAD - TOUCH);
-    let close_name = format!("Close {name}");
-    let close = widgets::icon_button_at(
-        ui,
-        controls,
-        close_rect,
-        &close_name,
-        Icon::Close,
-        false,
-        true,
-    )
-    .clicked();
-    let mut left_of = close_rect.left();
-    let mut pin = false;
-    if mode == Mode::Dock {
-        let pin_rect = button(left_of - TOUCH);
-        left_of = pin_rect.left();
-        let resp = widgets::hit(
+    let mut left_of = rect.right() - PAD;
+    let mut close = false;
+    if mode == Mode::Sheet {
+        let close_rect = button(left_of - TOUCH);
+        left_of = close_rect.left();
+        let tap = widgets::icon_button_at(
             ui,
             controls,
-            pin_rect,
-            &pin_name(name),
-            Sense::click(),
+            close_rect,
+            &close_name(name),
+            Icon::Close,
+            false,
             true,
-            Some(pane.pinned),
         );
-        let color = if pane.pinned {
-            theme::ACCENT
-        } else {
-            theme::MUTE
-        };
-        if resp.is_pointer_button_down_on() {
-            ui.painter().rect_filled(
-                pin_rect.shrink(widgets::HIGHLIGHT_INSET),
-                theme::CONTROL_RADIUS,
-                theme::raise(),
-            );
-        }
-        icons::paint(ui.painter(), pin_rect, Icon::Pin, ICON, color);
-        pin = resp.clicked();
+        close = tap.clicked();
     }
     if let Some((action, icon, active)) = head.action {
         let at = button(left_of - TOUCH);
@@ -680,6 +866,7 @@ fn header_row(
     let mut drag = None;
     let mut centers = Vec::new();
     let mut end = tabs_area.left();
+    let mut title_rect = tabs_area;
     let painter = ui
         .painter()
         .with_clip_rect(tabs_area.intersect(ui.clip_rect()));
@@ -691,6 +878,10 @@ fn header_row(
         icons::paint(&painter, icon, panel_icon(pane.panel()), ICON, theme::MUTE);
         let at = pos2(icon.right() + 10.0, rect.center().y);
         let title = painter.text(at, Align2::LEFT_CENTER, name, theme::title(), theme::TEXT);
+        title_rect = Rect::from_min_max(
+            pos2(rect.left(), rect.top() + PAD),
+            pos2(title.right().min(left_of), rect.bottom() - PAD),
+        );
         if let Some(subtitle) = &head.subtitle {
             let at = pos2(left_of - 8.0, rect.center().y);
             let galley = painter.layout_no_wrap(subtitle.clone(), theme::body(), theme::MUTE);
@@ -748,6 +939,13 @@ fn header_row(
                 let at = pos2(icon.right() + 8.0, tab.center().y);
                 painter.text(at, Align2::LEFT_CENTER, tab_label, theme::body(), color);
             }
+            if holding {
+                continue;
+            }
+            if long_press(ui, &resp) {
+                menu = Some((*panel, tab.intersect(tabs_area)));
+                continue;
+            }
             if resp.clicked() {
                 focus = Some(t);
             }
@@ -785,21 +983,34 @@ fn header_row(
         };
         widgets::hit(ui, controls, empty, &move_name(name), sense, true, None)
     });
-    if mode == Mode::Dock
-        && let Some(bar) = &bar
+    if let Some(bar) = &bar
+        && !holding
     {
-        let kind = if pane.tabs.len() == 1 {
-            DockDrag::Tab {
-                panel: pane.panel(),
-                pos: Pos2::ZERO,
-            }
-        } else {
-            DockDrag::Pane {
-                pane: i,
-                pos: Pos2::ZERO,
-            }
-        };
-        drag = drag.or_else(|| tab_drag(ui, bar, kind));
+        if pane.tabs.len() == 1 && long_press(ui, bar) {
+            menu = Some((pane.panel(), title_rect));
+        } else if mode == Mode::Dock {
+            let kind = if pane.tabs.len() == 1 {
+                DockDrag::Tab {
+                    panel: pane.panel(),
+                    pos: Pos2::ZERO,
+                }
+            } else {
+                DockDrag::Pane {
+                    pane: i,
+                    pos: Pos2::ZERO,
+                }
+            };
+            drag = drag.or_else(|| tab_drag(ui, bar, kind));
+        }
+    }
+    if let Some((panel, anchor)) = menu {
+        state.pad.pane_menu = Some(PaneMenu {
+            panel,
+            anchor,
+            sheet: mode == Mode::Sheet,
+            held: true,
+        });
+        ui.ctx().request_repaint();
     }
     let tabs = Rect::from_min_max(
         tabs_area.min,
@@ -815,9 +1026,8 @@ fn header_row(
     };
     HeaderOut {
         close,
-        pin,
         focus,
-        bar,
+        bar: if holding { None } else { bar },
         tab_drags,
         drag,
         tabs,
@@ -827,9 +1037,14 @@ fn header_row(
 
 /// The drag of a response, with the place of the finger.
 fn tab_drag(ui: &egui::Ui, resp: &egui::Response, kind: DockDrag) -> Option<(DockDrag, DragPhase)> {
+    // A press that stays in place is no drag, even when it is long.
+    let moved = ui.input(|i| {
+        let origin = i.pointer.press_origin()?;
+        Some(origin.distance(i.pointer.interact_pos()?))
+    });
     let phase = if resp.drag_stopped() {
         DragPhase::Stopped
-    } else if resp.dragged() {
+    } else if resp.dragged() && moved.is_some_and(|m| m > HOLD_SLOP) {
         DragPhase::Moving
     } else {
         return None;

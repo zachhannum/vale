@@ -196,10 +196,11 @@ fn a_selection_in_one_layer_makes_that_layer_the_active_layer() {
 #[test]
 fn the_inspector_shows_the_count_of_each_layer_of_a_mixed_selection() {
     let mut h = harness();
+    // The open pane moves the globe, so it opens first.
+    h.state_mut().pad.open(Panel::Attributes);
     let (towns, wells, at) = two_layers(&mut h);
     add_point(&mut h, towns.layer);
     h.state_mut().select_all_layers();
-    h.state_mut().pad.open(Panel::Attributes);
     pen_box(&mut h, at - vec2(30.0, 30.0), at + vec2(30.0, 30.0));
     assert_eq!(h.state().feature_selection.len(), 3);
     assert_eq!(
