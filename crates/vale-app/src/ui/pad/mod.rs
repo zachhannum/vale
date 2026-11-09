@@ -64,8 +64,8 @@ pub mod widgets;
 
 use flyout::{Choice, Flyout, Flyouts};
 use geometry::{
-    BrushCard, CELL, Input, MEASURE_CELLS, PAD, ROW, Rects, SELECT_CELLS, TOOLS, TOUCH,
-    VERTEX_CELLS, WidthClass,
+    BrushCard, CELL, ColumnInput, Input, MEASURE_CELLS, PAD, ROW, Rects, SELECT_CELLS, TOOLS,
+    TOUCH, VERTEX_CELLS, WidthClass,
 };
 use icons::Icon;
 use number::{Number, Scale};
@@ -477,12 +477,11 @@ pub struct PadState {
     pub projections: bool,
     /// The list of the projections in the last frame.
     pub projections_rect: Option<Rect>,
-    /// The view options are open.
-    pub view_options: bool,
-    /// The view options in the last frame.
-    pub view_options_rect: Option<Rect>,
-    /// The card of the center of the projection in the last frame.
-    pub center_rect: Option<Rect>,
+    /// The card of the view buttons of the readout in the last frame.
+    pub view_rect: Option<Rect>,
+    /// The label at the end of the scale bar of the readout in the last
+    /// frame.
+    pub readout_scale: Option<String>,
     /// The workspace menu is open.
     pub menu: bool,
     /// The Panels menu is open.
@@ -598,7 +597,8 @@ pub const TOOLBOX: &str = "Toolbox";
 pub const LAYERS: &str = "Layers";
 /// The button that opens the Panels menu.
 pub const PANELS: &str = "Panels";
-const VIEWS: [&str; 2] = ["Globe", "Flat"];
+/// The buttons of the globe and of the flat view, in the readout.
+pub const VIEWS: [&str; 2] = ["Globe", "Flat"];
 /// The action that makes the place at the middle of the canvas the center of
 /// the projection of the flat view.
 pub const RECENTER: &str = "Recenter";
@@ -606,13 +606,10 @@ pub const RECENTER: &str = "Recenter";
 pub const RESET: &str = "Reset";
 /// The control that opens the list of the projections.
 pub const PROJECTION: &str = "Projection";
-/// The button that opens the view options.
-pub const VIEW_OPTIONS: &str = "View options";
-/// The switch of the view options that shows the graticule.
+/// The button of the readout that shows the graticule.
 pub const GRATICULE: &str = "Graticule";
-/// The width that the button of the view options and its line add to the
-/// view card.
-const OPTIONS_LEAD: f32 = TOUCH + 9.0;
+/// The width of the space of a divider in a row of buttons.
+const DIVIDER: f32 = 9.0;
 const WORLD_VIEWS: [WorldView; 2] = [WorldView::Globe, WorldView::Flat];
 
 /// The text of the position readout.
@@ -654,23 +651,10 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
 
     let class = WidthClass::of(screen.width());
     let flat = state.globe.world_view == WorldView::Flat;
-    // The compact layout has no room for the Worlds button, so the
-    // workspace menu has a row for it.
-    let workspace_width = match class {
-        WidthClass::Wide => WORLDS_LEAD + widgets::segments_width(ui, &WORKSPACES),
-        WidthClass::Medium => WORLDS_LEAD + widgets::menu_button_width(ui, WORKSPACES[0]),
-        WidthClass::Compact => widgets::menu_button_width(ui, WORKSPACES[0]),
-    };
     let mut input = Input {
         screen,
         bands: geometry::Bands::new(screen, ctx.content_rect()),
-        workspace_width,
-        // In the flat view, the card also has the button of the list of
-        // projections, a line, and the Recenter and Reset buttons. The
-        // button of the view options is at the right.
-        view_width: widgets::segments_width(ui, &VIEWS)
-            + OPTIONS_LEAD
-            + if flat { 3.0 * TOUCH + 9.0 + PAD } else { 0.0 },
+        workspace_width: workspace_width(ui, class, WORKSPACES[0]),
         panel: has_sheet(state, class),
         sheet_offset: state.pad.sheet_offset,
         cells: card_cells(&state.globe),
@@ -678,6 +662,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         extra: extra_cells(state),
         tools: TOOLS,
         row: class == WidthClass::Compact,
+        column: column_input(state),
         dock_width: state.pad.docks.world.width,
     };
     // A tap on the canvas closes the unpinned pane. A tap that closes the
@@ -716,11 +701,16 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     }
 
     top_row(&ctx, state, &mut controls, &rects);
-    tool_strip(&ctx, state, &mut controls, &rects);
-    brush_card(&ctx, state, &mut controls, &rects);
+    if rects.row {
+        tool_strip(&ctx, state, &mut controls, &rects);
+        brush_card(&ctx, state, &mut controls, &rects);
+    } else {
+        tool_column(&ctx, state, &mut controls, &rects);
+    }
     // A button above can open or close a panel. The panels use the new state.
     input.panel = has_sheet(state, class);
     input.cells = card_cells(&state.globe);
+    input.column = column_input(state);
     input.sheet_offset = state.pad.sheet_offset;
     rects = geometry::layout(&input);
     table::check(state);
@@ -736,26 +726,16 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     rules::picker_frame(&ctx, state);
     raster::reset_card(&ctx, state, &mut controls, &rects);
     raster::ramp_card(&ctx, state, &mut controls, &rects);
-    readout(&ctx, ui, state, &rects);
+    readout(&ctx, state, &mut controls, &rects);
     held_card(&ctx, state, &mut controls, &rects);
-    state.pad.center_rect = None;
-    // With no view switch in the top row, the two buttons have their own card.
-    if flat && rects.view.is_none() {
-        center_card(&ctx, state, &mut controls, &rects);
-    }
     state.pad.projections_rect = None;
-    if state.pad.projections && flat {
-        projections(&ctx, state, &mut controls, &rects);
-    } else {
-        state.pad.projections = false;
+    match state.pad.view_rect {
+        Some(view) if state.pad.projections && flat => {
+            projections(&ctx, state, &mut controls, &rects, view);
+        }
+        _ => state.pad.projections = false,
     }
-    state.pad.view_options_rect = None;
-    if state.pad.view_options && rects.view.is_some() {
-        view_options(&ctx, state, &mut controls, &rects);
-    } else {
-        state.pad.view_options = false;
-    }
-    if state.pad.menu && class != WidthClass::Wide {
+    if state.pad.menu && class == WidthClass::Compact {
         menu(&ctx, state, &mut controls, &rects);
     } else {
         state.pad.menu = false;
@@ -800,8 +780,24 @@ fn has_sheet(state: &AppState, class: WidthClass) -> bool {
     open && !super::new_feature::point_card(state, class)
 }
 
-fn top_row(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
-    let radius = theme::CARD_RADIUS.into();
+/// The width of the workspace card: the Worlds button, a divider, and the
+/// buttons of the two workspaces. The compact layout has the button of the
+/// workspace menu, which holds the Worlds row.
+pub(super) fn workspace_width(ui: &egui::Ui, class: WidthClass, current: &str) -> f32 {
+    match class {
+        WidthClass::Compact => widgets::menu_button_width(ui, current),
+        _ => WORLDS_LEAD + 2.0 * TOUCH + 2.0 * PAD,
+    }
+}
+
+/// The workspace card at the left end of the top row.
+pub(super) fn workspace_card(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    controls: &mut Controls,
+    rects: &Rects,
+) {
+    let current = state.workspace;
     widgets::edge_card(
         ctx,
         state.globe.backdrop(),
@@ -810,101 +806,61 @@ fn top_row(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
         rects,
         |ui| {
             let card = ui.max_rect();
-            let mut rest = card;
-            if rects.class != WidthClass::Compact {
-                let button = Rect::from_min_size(card.min + vec2(PAD, PAD), vec2(TOUCH, TOUCH));
-                let open = state.pad.worlds.is_some();
-                let worlds =
-                    widgets::icon_button_at(ui, controls, button, WORLDS, Icon::World, open, true);
-                if worlds.clicked() {
-                    toggle_worlds(state);
-                }
-                let divider = pos2(button.right() + 4.5, card.center().y);
-                let line = Rect::from_center_size(divider, vec2(1.0, 24.0));
-                ui.painter().rect_filled(line, 0.0, theme::divider());
-                rest.min.x += WORLDS_LEAD;
-            }
-            let ui = &ui.new_child(egui::UiBuilder::new().max_rect(rest));
-            if rects.class == WidthClass::Wide {
-                let items = [(WORKSPACES[0], true), (WORKSPACES[1], true)];
-                if widgets::segments(ui, controls, &items, 0) == Some(1) {
-                    state.workspace = Workspace::Atlas;
-                }
-            } else {
+            if rects.class == WidthClass::Compact {
+                let label = match current {
+                    Workspace::Globe => WORKSPACES[0],
+                    Workspace::Atlas => WORKSPACES[1],
+                };
                 let open = state.pad.menu;
-                if widgets::menu_button(ui, controls, "Workspace", WORKSPACES[0], open).clicked() {
+                if widgets::menu_button(ui, controls, "Workspace", label, open).clicked() {
                     state.pad.menu = !open;
                     state.pad.worlds = None;
+                }
+                return;
+            }
+            let at = |x: f32| {
+                Rect::from_min_size(pos2(card.left() + x, card.top() + PAD), vec2(TOUCH, TOUCH))
+            };
+            let open = state.pad.worlds.is_some();
+            let worlds =
+                widgets::icon_button_at(ui, controls, at(PAD), WORLDS, Icon::Folder, open, true);
+            if worlds.clicked() {
+                toggle_worlds(state);
+            }
+            let line = Rect::from_center_size(
+                pos2(card.left() + PAD + TOUCH + 4.5, card.center().y),
+                vec2(1.0, 24.0),
+            );
+            ui.painter().rect_filled(line, 0.0, theme::divider());
+            let workspaces = [
+                (WORKSPACES[0], Icon::World, Workspace::Globe),
+                (WORKSPACES[1], Icon::Book, Workspace::Atlas),
+            ];
+            for (i, (name, icon, workspace)) in workspaces.into_iter().enumerate() {
+                let rect = at(WORLDS_LEAD + PAD + i as f32 * TOUCH);
+                let flyouts = &mut state.pad.flyouts;
+                let on = current == workspace;
+                let place = flyout::Place::Below;
+                if flyout::button(
+                    ui,
+                    controls,
+                    flyouts,
+                    rect,
+                    (name, name),
+                    icon,
+                    on,
+                    true,
+                    place,
+                ) {
+                    state.workspace = workspace;
                 }
             }
         },
     );
-    if let Some(view) = rects.view {
-        widgets::card(
-            ctx,
-            state.globe.backdrop(),
-            "pad-view",
-            view,
-            Order::Middle,
-            radius,
-            |ui| {
-                let active = state.globe.world_view as usize;
-                let items = [(VIEWS[0], true), (VIEWS[1], true)];
-                if let Some(chosen) = widgets::segments(ui, controls, &items, active) {
-                    state.globe.world_view = WORLD_VIEWS[chosen];
-                }
-                // From the right: the button of the view options and a line,
-                // and in the flat view Reset, Recenter, a line, and the
-                // button of the list of projections.
-                let card = ui.max_rect();
-                let at = |right: f32| {
-                    let min = pos2(right - TOUCH, card.top() + PAD);
-                    Rect::from_min_size(min, vec2(TOUCH, TOUCH))
-                };
-                let options = at(card.right() - PAD);
-                let divider = pos2(options.left() - 4.5, card.center().y);
-                let line = Rect::from_center_size(divider, vec2(1.0, 24.0));
-                ui.painter().rect_filled(line, 0.0, theme::divider());
-                let open = state.pad.view_options;
-                let button = widgets::icon_button_at(
-                    ui,
-                    controls,
-                    options,
-                    VIEW_OPTIONS,
-                    Icon::Grid,
-                    open,
-                    true,
-                );
-                if button.clicked() {
-                    state.pad.view_options = !open;
-                    state.pad.projections = false;
-                }
-                if state.globe.world_view == WorldView::Flat {
-                    let reset = at(options.left() - 9.0);
-                    let recenter = at(reset.left() - PAD);
-                    let divider = pos2(recenter.left() - 4.5, card.center().y);
-                    let line = Rect::from_center_size(divider, vec2(1.0, 24.0));
-                    ui.painter().rect_filled(line, 0.0, theme::divider());
-                    let open = state.pad.projections;
-                    let list = at(recenter.left() - 9.0);
-                    let button = widgets::icon_button_at(
-                        ui,
-                        controls,
-                        list,
-                        PROJECTION,
-                        Icon::Down,
-                        open,
-                        true,
-                    );
-                    if button.clicked() {
-                        state.pad.projections = !open;
-                        state.pad.view_options = false;
-                    }
-                    center_buttons(ui, state, controls, recenter, reset);
-                }
-            },
-        );
-    }
+}
+
+fn top_row(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
+    workspace_card(ctx, state, controls, rects);
     widgets::edge_card(
         ctx,
         state.globe.backdrop(),
@@ -1032,6 +988,7 @@ fn padded_in(ui: &mut egui::Ui, row: bool) -> egui::Ui {
     ui
 }
 
+/// The tool strip of the row layout.
 fn tool_strip(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
     // An open sheet covers the row of the strip.
     if rects.tool_cells == 0 {
@@ -1044,50 +1001,165 @@ fn tool_strip(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
         rects.tools,
         rects,
         |ui| {
-            let mut ui = padded_in(ui, rects.row);
-            let mut cells = |ui: &mut egui::Ui| {
-                for group in ModeGroup::ALL {
-                    brush_cell(ui, state, controls, group);
-                }
-                vector_cell(ui, state, controls);
-                let globe = &state.globe;
-                let pan = !globe.brushing()
-                    && !globe.editing()
-                    && !globe.measuring()
-                    && !globe.selecting();
-                for (name, label, icon, tool, active) in [
-                    (
-                        select::TOOL,
-                        select::TOOL,
-                        Icon::Select,
-                        Tool::Select,
-                        globe.selecting(),
-                    ),
-                    ("Pan", "Move", Icon::Move, Tool::Navigate, pan),
-                    (
-                        MEASURE,
-                        MEASURE,
-                        Icon::Measure,
-                        Tool::Measure,
-                        globe.measuring(),
-                    ),
-                ] {
-                    let flyouts = &mut state.pad.flyouts;
-                    if flyout::tool(ui, controls, flyouts, None, name, label, icon, active, true) {
-                        state.globe.tool = tool;
-                        state.pad.flyouts.open = None;
-                    }
-                }
-            };
+            let mut ui = padded_in(ui, true);
             if rects.tool_cells < TOOLS {
-                egui::ScrollArea::new([rects.row, !rects.row])
+                egui::ScrollArea::horizontal()
                     .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-                    .show(&mut ui, cells);
+                    .show(&mut ui, |ui| tool_cells(ui, state, controls));
             } else {
-                cells(&mut ui);
+                tool_cells(&mut ui, state, controls);
             }
         },
     );
+}
+
+/// The cells of the tools: Sculpt, Terrain, Vector, Select, Move, and
+/// Measure.
+fn tool_cells(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
+    for group in ModeGroup::ALL {
+        brush_cell(ui, state, controls, group);
+    }
+    vector_cell(ui, state, controls);
+    let globe = &state.globe;
+    let pan = !globe.brushing() && !globe.editing() && !globe.measuring() && !globe.selecting();
+    for (name, label, icon, tool, active) in [
+        (
+            select::TOOL,
+            select::TOOL,
+            Icon::Select,
+            Tool::Select,
+            globe.selecting(),
+        ),
+        ("Pan", "Move", Icon::Move, Tool::Navigate, pan),
+        (
+            MEASURE,
+            MEASURE,
+            Icon::Measure,
+            Tool::Measure,
+            globe.measuring(),
+        ),
+    ] {
+        let flyouts = &mut state.pad.flyouts;
+        if flyout::tool(ui, controls, flyouts, None, name, label, icon, active, true) {
+            state.globe.tool = tool;
+            state.pad.flyouts.open = None;
+        }
+    }
+}
+
+/// The contents of the tool column for the tool of the globe.
+fn column_input(state: &AppState) -> ColumnInput {
+    let globe = &state.globe;
+    let (cells, sliders, brush_button) = if card_cells(globe) > 0 {
+        (card_cells(globe), 0, false)
+    } else if has_strip(globe) {
+        let (cells, sliders) = strip_counts(globe);
+        (cells, sliders, true)
+    } else {
+        (0, 0, false)
+    };
+    ColumnInput {
+        tools: TOOLS,
+        cells: cells + extra_cells(state),
+        sliders,
+        brush_button,
+    }
+}
+
+/// The number of cells and of sliders that `strip_controls` adds.
+fn strip_counts(globe: &crate::globe::Globe) -> (usize, usize) {
+    if globe.stroking() || globe.placing() {
+        let cells = 1
+            + usize::from(globe.filling())
+            + usize::from(globe.drawing())
+            + usize::from(globe.lining());
+        (cells, usize::from(globe.stroking()))
+    } else if globe.brushing() {
+        (0, 2)
+    } else {
+        (0, 0)
+    }
+}
+
+/// Shows the tool column card at `rects.tools` with the contents that
+/// `add_contents` adds from the top, as icon cells. The contents scroll if
+/// they are longer than the card.
+pub(super) fn column_card(
+    ctx: &egui::Context,
+    backdrop: Option<eframe::egui_wgpu::wgpu::TextureFormat>,
+    rects: &Rects,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) {
+    let rect = rects.tools;
+    let scroll = rects.column_content > rect.height() + 0.5;
+    widgets::edge_card(ctx, backdrop, "pad-tools", rect, rects, |ui| {
+        let inner = ui.max_rect().shrink(geometry::COLUMN_INSET);
+        let layout = egui::Layout::top_down(egui::Align::Min);
+        let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
+        ui.set_clip_rect(rect.shrink2(vec2(0.0, geometry::COLUMN_INSET)));
+        ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+        widgets::with_cell_style(&mut ui, widgets::CellStyle::Icon, |ui| {
+            if scroll {
+                egui::ScrollArea::vertical()
+                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                    .show(ui, add_contents);
+            } else {
+                add_contents(ui);
+            }
+        });
+    });
+}
+
+/// The line between the tools and the controls of the tool in the tool
+/// column.
+pub(super) fn column_divider(ui: &mut egui::Ui) {
+    let size = vec2(ui.available_width(), geometry::COLUMN_DIVIDER);
+    let (rule, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+    let line = Rect::from_center_size(rule.center(), vec2(rule.width() - 4.0, 1.0));
+    ui.painter().rect_filled(line, 0.0, theme::divider());
+}
+
+/// The tool column: the tool cells, and below a divider the controls of
+/// the tool.
+fn tool_column(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
+    let mut merge_cell = None;
+    let mut selectable_cell = None;
+    let backdrop = state.globe.backdrop();
+    let context = rects.column_content
+        > 2.0 * geometry::COLUMN_INSET + TOOLS as f32 * geometry::COLUMN_CELL + 0.5;
+    column_card(ctx, backdrop, rects, |ui| {
+        tool_cells(ui, state, controls);
+        if !context {
+            return;
+        }
+        column_divider(ui);
+        if state.globe.vertexing() {
+            vertex_cells(ui, state, controls);
+        } else if state.globe.selecting() {
+            selectable_cell = Some(selectable::cell(ui, state, controls));
+            merge_cell = select_cells(ui, state, controls);
+        } else if state.globe.measuring() {
+            measure_cells(ui, state, controls);
+        } else if has_strip(&state.globe) {
+            let track = match rects.brush_card {
+                BrushCard::Full(track) => track,
+                _ => 0.0,
+            };
+            strip_controls(ui, state, controls, Slide::Column(track));
+            deselect_cell(ui, state, controls);
+            brush_button(ui, state, controls);
+        } else {
+            deselect_cell(ui, state, controls);
+        }
+    });
+    match merge_cell {
+        Some(cell) if state.merging => merge_menu(ctx, state, controls, rects, cell),
+        _ => state.merging = false,
+    }
+    match selectable_cell {
+        Some(cell) if state.pad.selectable => selectable::menu(ctx, state, controls, rects, cell),
+        _ => state.pad.selectable = false,
+    }
 }
 
 /// A brush cell. It shows the mode of the brush while that mode is in its
@@ -1248,141 +1320,138 @@ fn brush_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
         rect,
         rects,
         |ui| {
-            let mut ui = padded_in(ui, rects.row);
-            // In the row layout, a slider is a row as long as `length`.
-            let row = rects.row;
-            let slide = |number: Number<'_>, ui: &mut egui::Ui, controls: &mut Controls, length| {
-                if row {
-                    number.horizontal(ui, controls, length)
-                } else {
-                    number.vertical(ui, controls, length)
-                }
-            };
-            // Each control shows while the tool can use it.
-            let paint = state.globe.brushing();
-            let line = state.globe.drawing();
-            let stroke = state.globe.stroking();
-            let vector = stroke || state.globe.placing();
-            if let BrushCard::Full(height) = rects.brush_card {
-                // The tools of a vector layer have the snap button. The line
-                // tool, the polygon tool, and Split also have the smoothing.
-                // The line tool and the polygon tool also have the reshape
-                // button. The line tool also has the terrain fit button, and
-                // the polygon tool has its modes.
-                let fit = state.globe.lining();
-                let fill = state.globe.filling();
-                if vector {
-                    if fill {
-                        let mode = state.globe.line.polygon_mode;
-                        let (label, icon, _) = POLYGON_MODES
-                            .into_iter()
-                            .find(|m| m.2 == mode)
-                            .expect("a mode");
-                        let key = Flyout::PolygonMode;
-                        let flyouts = &mut state.pad.flyouts;
-                        let on = mode != PolygonMode::New;
-                        if flyout::cell(
-                            &mut ui,
-                            controls,
-                            flyouts,
-                            key,
-                            POLYGON_MODE,
-                            label,
-                            icon,
-                            on,
-                            true,
-                        ) {
-                            flyouts.toggle(key);
-                        }
-                    }
-                    if stroke {
-                        let cells = [true, line, fit || fill].iter().filter(|&&c| c).count() as f32;
-                        let cell = if row { CELL.0 } else { CELL.1 };
-                        let length = 2.0 * height - cells * cell;
-                        let smoothing = &mut state.globe.line.smoothing;
-                        let number = percent(SMOOTHING, *smoothing).default(DEFAULT_SMOOTHING);
-                        if let Some(value) = slide(number, &mut ui, controls, length) {
-                            *smoothing = value;
-                        }
-                    }
-                    let snap = &mut state.globe.snap.on;
-                    let cell = widgets::tool_cell(
-                        &mut ui,
-                        controls,
-                        SNAP,
-                        SNAP,
-                        Icon::Magnet,
-                        *snap,
-                        true,
-                    );
-                    if cell.clicked() {
-                        *snap = !*snap;
-                    }
-                    if line {
-                        // Reshape works in the New mode of the polygon tool.
-                        let new = state.globe.line.polygon_mode == PolygonMode::New;
-                        let enabled = !fill || new;
-                        let on = &mut state.globe.line.reshape;
-                        let cell = widgets::tool_cell(
-                            &mut ui,
-                            controls,
-                            RESHAPE,
-                            RESHAPE,
-                            Icon::Reshape,
-                            *on && enabled,
-                            enabled,
-                        );
-                        if cell.clicked() {
-                            *on = !*on;
-                        }
-                    }
-                    if fit {
-                        let terrain = state.globe.fit_layer.is_some();
-                        let on = &mut state.globe.line.fit;
-                        let active = *on && terrain;
-                        let cell = widgets::tool_cell(
-                            &mut ui,
-                            controls,
-                            TERRAIN_FIT,
-                            "Fit",
-                            Icon::Range,
-                            active,
-                            terrain,
-                        );
-                        if cell.clicked() {
-                            *on = !*on;
-                        }
-                    }
-                } else if paint {
-                    // The outline sets the size of a basin, and a basin has no
-                    // flow. The sliders keep their place in the card.
-                    let on = state.globe.brush.mode != Mode::Basin;
-                    brush_size(state, "Size", |n| {
-                        slide(n.enabled(on), &mut ui, controls, height)
-                    });
-                    let flow = &mut state.globe.brush.flow;
-                    let number = Number::new("Flow", *flow, FLOW).percent().enabled(on);
-                    if let Some(value) = slide(number, &mut ui, controls, height) {
-                        *flow = value;
-                    }
-                }
+            let mut ui = padded_in(ui, true);
+            if let BrushCard::Full(length) = rects.brush_card {
+                strip_controls(&mut ui, state, controls, Slide::Row(length));
             }
             deselect_cell(&mut ui, state, controls);
-            let open = state.pad.is_open(Panel::Brush);
-            let button = widgets::tool_cell(
-                &mut ui,
-                controls,
-                "Brush settings",
-                "Brush",
-                Icon::Brush,
-                open,
-                true,
-            );
-            if button.clicked() {
-                state.pad.toggle(Panel::Brush);
-            }
+            brush_button(&mut ui, state, controls);
         },
     );
+}
+
+/// The length of the sliders of the controls of the brush and of the
+/// vector tools.
+#[derive(Clone, Copy)]
+enum Slide {
+    /// The row layout, with two sliders of this length.
+    Row(f32),
+    /// The tool column, with tracks of this length. Zero: the Brush panel
+    /// holds the sliders.
+    Column(f32),
+}
+
+/// The controls of the brush and of the vector tools. Each control shows
+/// while the tool can use it.
+fn strip_controls(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, slide: Slide) {
+    let height = match slide {
+        Slide::Row(height) => height,
+        Slide::Column(_) => 0.0,
+    };
+    let slide =
+        |number: Number<'_>, ui: &mut egui::Ui, controls: &mut Controls, length: f32| match slide {
+            Slide::Row(_) => number.horizontal(ui, controls, length),
+            Slide::Column(track) if track > 0.0 => {
+                number.vertical(ui, controls, track + geometry::SLIDER_TEXT)
+            }
+            Slide::Column(_) => None,
+        };
+    let paint = state.globe.brushing();
+    let line = state.globe.drawing();
+    let stroke = state.globe.stroking();
+    let vector = stroke || state.globe.placing();
+    // The tools of a vector layer have the snap button. The line tool, the
+    // polygon tool, and Split also have the smoothing. The line tool and
+    // the polygon tool also have the reshape button. The line tool also
+    // has the terrain fit button, and the polygon tool has its modes.
+    let fit = state.globe.lining();
+    let fill = state.globe.filling();
+    if vector {
+        if fill {
+            let mode = state.globe.line.polygon_mode;
+            let (label, icon, _) = POLYGON_MODES
+                .into_iter()
+                .find(|m| m.2 == mode)
+                .expect("a mode");
+            let key = Flyout::PolygonMode;
+            let flyouts = &mut state.pad.flyouts;
+            let on = mode != PolygonMode::New;
+            if flyout::cell(
+                ui,
+                controls,
+                flyouts,
+                key,
+                POLYGON_MODE,
+                label,
+                icon,
+                on,
+                true,
+            ) {
+                flyouts.toggle(key);
+            }
+        }
+        if stroke {
+            let cells = [true, line, fit || fill].iter().filter(|&&c| c).count() as f32;
+            let length = 2.0 * height - cells * CELL.0;
+            let smoothing = &mut state.globe.line.smoothing;
+            let number = percent(SMOOTHING, *smoothing).default(DEFAULT_SMOOTHING);
+            if let Some(value) = slide(number, ui, controls, length) {
+                *smoothing = value;
+            }
+        }
+        let snap = &mut state.globe.snap.on;
+        let cell = widgets::tool_cell(ui, controls, SNAP, SNAP, Icon::Magnet, *snap, true);
+        if cell.clicked() {
+            *snap = !*snap;
+        }
+        if line {
+            // Reshape works in the New mode of the polygon tool.
+            let new = state.globe.line.polygon_mode == PolygonMode::New;
+            let enabled = !fill || new;
+            let on = &mut state.globe.line.reshape;
+            let cell = widgets::tool_cell(
+                ui,
+                controls,
+                RESHAPE,
+                RESHAPE,
+                Icon::Reshape,
+                *on && enabled,
+                enabled,
+            );
+            if cell.clicked() {
+                *on = !*on;
+            }
+        }
+        if fit {
+            let terrain = state.globe.fit_layer.is_some();
+            let on = &mut state.globe.line.fit;
+            let active = *on && terrain;
+            let cell = widgets::tool_cell(
+                ui,
+                controls,
+                TERRAIN_FIT,
+                "Fit",
+                Icon::Range,
+                active,
+                terrain,
+            );
+            if cell.clicked() {
+                *on = !*on;
+            }
+        }
+    } else if paint {
+        // The outline sets the size of a basin, and a basin has no flow.
+        // The sliders keep their place.
+        let on = state.globe.brush.mode != Mode::Basin;
+        brush_size(state, "Size", |n| {
+            slide(n.enabled(on), ui, controls, height)
+        });
+        let flow = &mut state.globe.brush.flow;
+        let number = Number::new("Flow", *flow, FLOW).percent().enabled(on);
+        if let Some(value) = slide(number, ui, controls, height) {
+            *flow = value;
+        }
+    }
 }
 
 /// The card of cells of the Measure tool, the Vertex tool, or the Select
@@ -1614,7 +1683,7 @@ fn select_cells(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls
 
 /// The cells of the card of the Measure tool: the snap switch, the Clear
 /// path cell, and the Brush button, which opens the snapping settings.
-fn measure_cells(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
+pub(super) fn measure_cells(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
     let snap = &mut state.globe.snap.on;
     if widgets::tool_cell(ui, controls, SNAP, SNAP, Icon::Magnet, *snap, true).clicked() {
         *snap = !*snap;
@@ -3068,42 +3137,286 @@ fn toolbox_body(ui: &mut egui::Ui, state: &mut AppState) {
 
 /// The readout: the place and the elevation under the pointer. With a
 /// project file, the save mark is at its left.
-fn readout(ctx: &egui::Context, ui: &egui::Ui, state: &AppState, rects: &Rects) {
+/// The readout at the lower left of the canvas: the view buttons, and the
+/// place and the scale bar as text with a dark halo. In the row layout,
+/// the buttons are above the text.
+fn readout(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
+    state.pad.readout_scale = None;
+    state.pad.view_rect = None;
     let Some(band) = rects.readout else {
         return;
     };
+    let flat = state.globe.world_view == WorldView::Flat;
+    let view = Rect::from_min_size(band.min, vec2(view_width(flat), ROW));
+    view_card(ctx, state, controls, view);
     let text = readout_line(state);
-    let galley = ui
-        .painter()
-        .layout_no_wrap(text, theme::mono(), theme::MUTE);
+    let world = &state.doc.project.world;
+    let scale = km_per_point(&state.globe, world.radius_km)
+        .and_then(|km| crate::scale_bar::readout_scale(km, world.units));
+    state.pad.readout_scale = scale.map(|s| s.label());
     let mark = state.save_mark(std::time::Instant::now());
-    let lead = if mark.is_some() { SAVE_MARK + 8.0 } else { 0.0 };
-    let size = vec2(lead + galley.size().x.ceil() + 24.0, band.height());
-    let rect = if rects.class == WidthClass::Compact && !rects.row {
-        Rect::from_min_size(band.min, size)
+    let place = readout_place(band, view);
+    // A test has no clock, so there the mark does not turn.
+    paint_readout(ctx, place, &text, scale, mark, !state.headless);
+}
+
+/// The place of the text of the readout: at the right of the buttons, or
+/// below them in the row layout.
+pub(super) fn readout_place(band: Rect, buttons: Rect) -> Rect {
+    if band.height() >= ROW + geometry::READOUT_HEIGHT {
+        Rect::from_min_max(pos2(band.left(), buttons.bottom()), band.max)
     } else {
-        Rect::from_center_size(band.center(), size)
-    };
-    let radius = theme::CONTROL_RADIUS.into();
+        let height = geometry::READOUT_HEIGHT;
+        let top = band.center().y - height / 2.0;
+        Rect::from_min_max(
+            pos2(buttons.right() + 12.0, top),
+            pos2(band.right(), top + height),
+        )
+    }
+}
+
+/// The width of the view buttons: Globe, Flat, a divider, and Graticule,
+/// and in the flat view a divider, Projection, Recenter, and Reset.
+fn view_width(flat: bool) -> f32 {
+    let flat = if flat { DIVIDER + 3.0 * TOUCH } else { 0.0 };
+    PAD + 3.0 * TOUCH + DIVIDER + flat + PAD
+}
+
+/// The card of the view buttons of the readout. A hold on a button shows
+/// its name above it.
+fn view_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rect: Rect) {
+    state.pad.view_rect = Some(rect);
+    let flat = state.globe.world_view == WorldView::Flat;
     widgets::card(
         ctx,
         state.globe.backdrop(),
-        "pad-readout",
+        "pad-view",
         rect,
         Order::Middle,
-        radius,
+        theme::CARD_RADIUS.into(),
         |ui| {
-            let left = rect.left() + 12.0;
-            if let Some(mark) = mark {
-                let center = pos2(left + SAVE_MARK / 2.0, rect.center().y);
-                let at = Rect::from_center_size(center, vec2(SAVE_MARK, SAVE_MARK));
-                // A test has no clock, so there the mark does not turn.
-                save_mark(ui, at, mark, !state.headless);
+            // The place of a button after `buttons` buttons and `lines`
+            // dividers.
+            let at = |buttons: f32, lines: f32| {
+                let x = rect.left() + PAD + buttons * TOUCH + lines * DIVIDER;
+                Rect::from_min_size(pos2(x, rect.top() + PAD), vec2(TOUCH, TOUCH))
+            };
+            let divider = |ui: &egui::Ui, buttons: f32, lines: f32| {
+                let x = at(buttons, lines).left() + DIVIDER / 2.0;
+                let line = Rect::from_center_size(pos2(x, rect.center().y), vec2(1.0, 24.0));
+                ui.painter().rect_filled(line, 0.0, theme::divider());
+            };
+            let place = flyout::Place::Above;
+            let views = [(VIEWS[0], Icon::World), (VIEWS[1], Icon::Map)];
+            for (i, ((name, icon), view)) in views.into_iter().zip(WORLD_VIEWS).enumerate() {
+                let flyouts = &mut state.pad.flyouts;
+                let on = state.globe.world_view == view;
+                let at = at(i as f32, 0.0);
+                if flyout::button(
+                    ui,
+                    controls,
+                    flyouts,
+                    at,
+                    (name, name),
+                    icon,
+                    on,
+                    true,
+                    place,
+                ) {
+                    state.globe.world_view = view;
+                }
             }
-            let at = pos2(left + lead, rect.center().y - galley.size().y / 2.0);
-            ui.painter().galley(at, galley, theme::MUTE);
+            divider(ui, 2.0, 0.0);
+            let flyouts = &mut state.pad.flyouts;
+            let graticule = &mut state.globe.preview.graticule;
+            let names = (GRATICULE, GRATICULE);
+            let grid = at(2.0, 1.0);
+            if flyout::button(
+                ui,
+                controls,
+                flyouts,
+                grid,
+                names,
+                Icon::Grid,
+                *graticule,
+                true,
+                place,
+            ) {
+                *graticule = !*graticule;
+            }
+            if !flat {
+                return;
+            }
+            divider(ui, 3.0, 1.0);
+            let open = state.pad.projections;
+            let names = (PROJECTION, PROJECTION);
+            let (list, icon) = (at(3.0, 2.0), Icon::Projection);
+            if flyout::button(ui, controls, flyouts, list, names, icon, open, true, place) {
+                state.pad.projections = !open;
+            }
+            let flat = &mut state.globe.flat;
+            let (center, can) = (at(4.0, 2.0), flat.can_center_here());
+            let names = (RECENTER, RECENTER);
+            if flyout::button(
+                ui,
+                controls,
+                flyouts,
+                center,
+                names,
+                Icon::Center,
+                false,
+                can,
+                place,
+            ) {
+                flat.center_here();
+            }
+            let (reset, can) = (at(5.0, 2.0), flat.can_reset());
+            let names = (RESET, RESET);
+            if flyout::button(
+                ui,
+                controls,
+                flyouts,
+                reset,
+                names,
+                Icon::Reset,
+                false,
+                can,
+                place,
+            ) {
+                flat.reset();
+            }
         },
     );
+}
+
+/// The kilometers in one point at the center of the view. On the flat map,
+/// the distance between two places 40 points apart.
+fn km_per_point(globe: &crate::globe::Globe, world_km: f64) -> Option<f64> {
+    let on_globe = world_km / globe.radius();
+    if globe.world_view == WorldView::Flat {
+        let center = globe.rect.center();
+        let side = vec2(20.0, 0.0);
+        if let (Some(a), Some(b)) = (
+            globe.unproject(center - side),
+            globe.unproject(center + side),
+        ) {
+            let km = crate::globe::math::angle(a, b) * world_km / 40.0;
+            if km.is_finite() && km > 0.0 {
+                return Some(km);
+            }
+        }
+    }
+    (on_globe.is_finite() && on_globe > 0.0).then_some(on_globe)
+}
+
+/// The color of the halo of the text of the readout.
+const HALO: egui::Color32 = egui::Color32::from_rgba_premultiplied(0, 0, 0, 200);
+
+/// Paints `text` with a dark halo, so it shows on each part of the canvas.
+fn halo_text(
+    painter: &egui::Painter,
+    at: egui::Pos2,
+    align: egui::Align2,
+    text: &str,
+    font: egui::FontId,
+    color: egui::Color32,
+) {
+    for (dx, dy) in [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)] {
+        let at = at + vec2(dx, dy);
+        painter.text(at, align, text, font.clone(), HALO);
+    }
+    for (dx, dy) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+        let at = at + vec2(dx, dy);
+        painter.text(at, align, text, font.clone(), HALO);
+    }
+    painter.text(at, align, text, font, color);
+}
+
+/// The text of the readout in `place`, with no card: the save mark and the
+/// place on the first line, and with a `scale`, the scale bar with four
+/// divisions and its round distance below it.
+pub(super) fn paint_readout(
+    ctx: &egui::Context,
+    place: Rect,
+    text: &str,
+    scale: Option<crate::scale_bar::ReadoutScale>,
+    mark: Option<SaveMark>,
+    turn: bool,
+) {
+    egui::Area::new(egui::Id::new("pad-readout"))
+        .order(Order::Middle)
+        .fixed_pos(place.min)
+        .interactable(false)
+        .movable(false)
+        .constrain(false)
+        .fade_in(false)
+        .show(ctx, |ui| {
+            ui.set_clip_rect(place.expand(2.0));
+            let painter = ui.painter();
+            let mut left = place.left();
+            // With no scale bar, the line is at the middle.
+            let line = if scale.is_some() {
+                place.top() + 10.0
+            } else {
+                place.center().y
+            };
+            if let Some(mark) = mark {
+                let center = pos2(left + SAVE_MARK / 2.0, line);
+                let at = Rect::from_center_size(center, vec2(SAVE_MARK, SAVE_MARK));
+                painter.circle_filled(center, SAVE_MARK / 2.0 + 1.0, HALO);
+                save_mark(ui, at, mark, turn);
+                left += SAVE_MARK + 8.0;
+            }
+            let at = pos2(left, line);
+            halo_text(
+                painter,
+                at,
+                egui::Align2::LEFT_CENTER,
+                text,
+                theme::mono(),
+                theme::TEXT,
+            );
+            let Some(scale) = scale else {
+                return;
+            };
+            let bar = Rect::from_min_size(
+                pos2(place.left(), place.top() + 21.0),
+                vec2(scale.length as f32, 4.0),
+            );
+            painter.rect_filled(bar.expand(1.0), 0.0, HALO);
+            let part = bar.width() / 4.0;
+            for i in 0..4 {
+                let fill = if i % 2 == 0 {
+                    theme::TEXT
+                } else {
+                    theme::GROUND
+                };
+                let x = bar.left() + i as f32 * part;
+                let rect = Rect::from_min_max(pos2(x, bar.top()), pos2(x + part, bar.bottom()));
+                painter.rect_filled(rect, 0.0, fill);
+            }
+            let labels = bar.bottom() + 2.0;
+            let font = theme::small();
+            let zero = pos2(bar.left(), labels);
+            halo_text(
+                painter,
+                zero,
+                egui::Align2::LEFT_TOP,
+                "0",
+                font.clone(),
+                theme::MUTE,
+            );
+            let end = pos2(bar.right(), labels);
+            let label = scale.label();
+            halo_text(
+                painter,
+                end,
+                egui::Align2::CENTER_TOP,
+                &label,
+                font,
+                theme::MUTE,
+            );
+        });
 }
 
 /// The width of a button of the card of a held stroke, and the least width
@@ -3264,75 +3577,22 @@ fn save_mark(ui: &egui::Ui, rect: Rect, mark: SaveMark, turn: bool) {
     }
 }
 
-/// The Recenter and Reset buttons of the flat view, at the given places.
-fn center_buttons(
-    ui: &egui::Ui,
+/// The list of the projections of the flat view, above the view buttons
+/// of the readout.
+fn projections(
+    ctx: &egui::Context,
     state: &mut AppState,
     controls: &mut Controls,
-    recenter: Rect,
-    reset: Rect,
+    rects: &Rects,
+    view: Rect,
 ) {
-    let flat = &mut state.globe.flat;
-    let can = flat.can_center_here();
-    if widgets::icon_button_at(ui, controls, recenter, RECENTER, Icon::Center, false, can).clicked()
-    {
-        flat.center_here();
-    }
-    let can = flat.can_reset();
-    if widgets::icon_button_at(ui, controls, reset, RESET, Icon::Reset, false, can).clicked() {
-        flat.reset();
-    }
-}
-
-/// The card of the Recenter and Reset buttons in the compact layout, below
-/// the top row.
-fn center_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
-    let size = vec2(2.0 * TOUCH + 3.0 * PAD, ROW);
-    let middle = rects.screen.center().x;
-    let top = if rects.row {
-        rects.column_top
-    } else {
-        rects.tools.top()
-    };
-    let mut rect = Rect::from_min_size(pos2(middle - size.x / 2.0, top), size);
-    // An open panel pushes the card to its right. With no room there, the
-    // card does not show.
-    let panels = &state.pad.panels;
-    let free = |rect: Rect| !panels.iter().any(|(_, panel)| panel.intersects(rect));
-    if let Some((_, panel)) = panels.iter().find(|(_, panel)| panel.intersects(rect)) {
-        rect = rect.translate(vec2(panel.right() + geometry::GAP - rect.left(), 0.0));
-        if !free(rect) || rect.right() > rects.screen.right() - geometry::GAP {
-            return;
-        }
-    }
-    state.pad.center_rect = Some(rect);
-    widgets::card(
-        ctx,
-        state.globe.backdrop(),
-        "pad-center",
-        rect,
-        Order::Middle,
-        theme::CARD_RADIUS.into(),
-        |ui| {
-            let at = |x: f32| {
-                let min = pos2(rect.left() + PAD + x, rect.top() + PAD);
-                Rect::from_min_size(min, vec2(TOUCH, TOUCH))
-            };
-            center_buttons(ui, state, controls, at(0.0), at(TOUCH + PAD));
-        },
-    );
-}
-
-/// The list of the projections of the flat view. It opens below the view
-/// switch, or in the place of the workspace menu.
-fn projections(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
     let rows = ProjectionKind::ALL.len() as f32;
     let size = vec2(geometry::MENU_WIDTH, 10.0 + rows * PANEL_ROW + 10.0);
-    let min = match rects.view {
-        Some(view) => pos2(view.center().x - size.x / 2.0, view.bottom() + PAD),
-        None => rects.menu,
-    };
-    let rect = Rect::from_min_size(min, size);
+    let screen = rects.screen.shrink(geometry::PANEL_GAP);
+    let left = view.right() - size.x;
+    let left = left.min(screen.right() - size.x).max(screen.left());
+    let top = (view.top() - PAD - size.y).max(rects.column_top);
+    let rect = Rect::from_min_size(pos2(left, top), size);
     state.pad.projections_rect = Some(rect);
     let pressed = ctx.input(|i| {
         i.pointer
@@ -3340,8 +3600,7 @@ fn projections(ctx: &egui::Context, state: &mut AppState, controls: &mut Control
             .then(|| i.pointer.interact_pos())
             .flatten()
     });
-    let on_switch = |pos| rects.view.is_some_and(|view| view.contains(pos));
-    if pressed.is_some_and(|pos| !rect.contains(pos) && !on_switch(pos)) {
+    if pressed.is_some_and(|pos| !rect.contains(pos) && !view.contains(pos)) {
         state.pad.projections = false;
     }
     let radius = theme::CARD_RADIUS.into();
@@ -3380,63 +3639,10 @@ fn projections(ctx: &egui::Context, state: &mut AppState, controls: &mut Control
     );
 }
 
-/// The view options: a card below the view switch with the switch of the
-/// graticule.
-fn view_options(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
-    let Some(view) = rects.view else {
-        return;
-    };
-    let size = vec2(geometry::MENU_WIDTH, 10.0 + PANEL_ROW + 10.0);
-    let min = pos2(view.right() - size.x, view.bottom() + PAD);
-    let rect = Rect::from_min_size(min, size);
-    state.pad.view_options_rect = Some(rect);
-    let pressed = ctx.input(|i| {
-        i.pointer
-            .any_pressed()
-            .then(|| i.pointer.interact_pos())
-            .flatten()
-    });
-    if pressed.is_some_and(|pos| !rect.contains(pos) && !view.contains(pos)) {
-        state.pad.view_options = false;
-    }
-    let radius = theme::CARD_RADIUS.into();
-    widgets::card(
-        ctx,
-        None,
-        "pad-view-options",
-        rect,
-        Order::Foreground,
-        radius,
-        |ui| {
-            // The card covers other cards, so its fill is opaque.
-            ui.painter()
-                .rect_filled(rect, radius, theme::card(false).to_opaque());
-            let inner = rect.shrink2(vec2(BODY_PAD, 10.0));
-            let layout = egui::Layout::top_down(egui::Align::Min);
-            let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
-            ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
-            let preview = &mut state.globe.preview;
-            widgets::switch_row(
-                &mut ui,
-                controls,
-                GRATICULE,
-                GRATICULE,
-                &mut preview.graticule,
-            );
-        },
-    );
-}
-
+/// The workspace menu of the compact layout: the two workspaces and the
+/// Worlds row.
 fn menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
-    let compact = rects.class == WidthClass::Compact;
-    let flat = state.globe.world_view == WorldView::Flat;
-    let rows = match (compact, flat) {
-        (true, true) => 7.0,
-        (true, false) => 6.0,
-        (false, _) => 2.0,
-    };
-    let rules = if compact { 2.0 } else { 1.0 };
-    let height = 10.0 + rows * PANEL_ROW + rules * 13.0 + 10.0;
+    let height = 10.0 + 3.0 * PANEL_ROW + 2.0 * 13.0 + 10.0;
     let size = vec2(geometry::MENU_WIDTH, height);
     let rect = Rect::from_min_size(rects.menu, size);
     state.pad.menu_rect = Some(rect);
@@ -3469,40 +3675,15 @@ fn menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rect
             if widgets::text_row(ui, controls, WORKSPACES[0], 0.0, true, true).clicked() {
                 state.pad.menu = false;
             }
-            if compact {
-                for (label, view) in VIEWS.into_iter().zip(WORLD_VIEWS) {
-                    let row = widgets::text_row(ui, controls, label, 16.0, false, true);
-                    if state.globe.world_view == view {
-                        let tick = Rect::from_center_size(
-                            pos2(row.rect.right() - 14.0, row.rect.center().y),
-                            vec2(18.0, 18.0),
-                        );
-                        icons::paint(ui.painter(), tick, Icon::Tick, 18.0, theme::ACCENT);
-                    }
-                    if row.clicked() {
-                        state.globe.world_view = view;
-                        state.pad.menu = false;
-                    }
-                }
-                if flat && widgets::text_row(ui, controls, PROJECTION, 32.0, false, true).clicked()
-                {
-                    state.pad.projections = true;
-                    state.pad.menu = false;
-                }
-                let preview = &mut state.globe.preview;
-                widgets::switch_row(ui, controls, GRATICULE, GRATICULE, &mut preview.graticule);
-            }
             rule(ui);
             if widgets::text_row(ui, controls, WORKSPACES[1], 0.0, false, true).clicked() {
                 state.workspace = Workspace::Atlas;
                 state.pad.menu = false;
             }
-            if compact {
-                rule(ui);
-                if widgets::text_row(ui, controls, WORLDS_ROW, 0.0, false, true).clicked() {
-                    state.pad.menu = false;
-                    toggle_worlds(state);
-                }
+            rule(ui);
+            if widgets::text_row(ui, controls, WORLDS_ROW, 0.0, false, true).clicked() {
+                state.pad.menu = false;
+                toggle_worlds(state);
             }
         },
     );

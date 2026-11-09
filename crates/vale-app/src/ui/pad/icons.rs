@@ -92,6 +92,10 @@ pub enum Icon {
     Tag,
     /// An ellipse with a graticule.
     Projection,
+    /// An open book.
+    Book,
+    /// A folder.
+    Folder,
 }
 
 impl Icon {
@@ -149,6 +153,10 @@ impl Icon {
                  M12 3c2.5 2.5 3.5 5.5 3.5 9s-1 6.5-3.5 9c-2.5-2.5-3.5-5.5-3.5-9s1-6.5 3.5-9zM3 12h18"
             }
             Icon::Grid => "M12 3v18M3 12h18",
+            Icon::Book => {
+                "M3 5h6c1.66 0 3 1.34 3 3v12c0-1.1-.9-2-2-2H3zM21 5h-6c-1.66 0-3 1.34-3 3v12c0-1.1.9-2 2-2h7z"
+            }
+            Icon::Folder => "M3 5h6l2 3h10v11H3z",
             Icon::Pin => "M9 3h6l-1 6 3.5 3.5h-11L10 9zM12 12.5V21",
             Icon::Panels => "M3 4h18v16H3zM3 9h18M10 9v11",
             Icon::Pages => "M7 3h10v14H7zM4 7v14h10",
@@ -506,6 +514,8 @@ mod tests {
             Icon::Pages,
             Icon::Tag,
             Icon::Projection,
+            Icon::Book,
+            Icon::Folder,
         ] {
             let lines = parse(icon.path());
             let circles = icon.circles();

@@ -167,10 +167,11 @@ fn table_rect(h: &Pad) -> Rect {
         .expect("no table")
 }
 
-/// The card of the Select tool below the tool strip.
+/// The card with the controls of the Select tool: the row above the tool
+/// strip, or the tool column.
 fn select_card(h: &Pad) -> Rect {
     let rects = h.state().pad.rects.as_ref().expect("no layout");
-    rects.brush.expect("no card of the Select tool")
+    rects.brush.unwrap_or(rects.tools)
 }
 
 /// The center of the globe on the canvas, in the Select tool.

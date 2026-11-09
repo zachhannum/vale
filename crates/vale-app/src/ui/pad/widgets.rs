@@ -329,7 +329,77 @@ pub fn menu_button(
     resp
 }
 
-/// One cell of the tool strip: an icon with a name below it.
+/// The look of a tool cell.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CellStyle {
+    /// A cell of `CELL` with an icon, and the name below it for a
+    /// `tool_cell`.
+    #[default]
+    Labeled,
+    /// A cell of `COLUMN_CELL` with an icon alone, as in the tool column.
+    /// A hold on a `tool_cell` shows its name next to it.
+    Icon,
+}
+
+fn cell_style_id() -> egui::Id {
+    egui::Id::new("pad-cell-style")
+}
+
+fn hold_id() -> egui::Id {
+    egui::Id::new("pad-hold-label")
+}
+
+/// The look of the tool cells that `add_contents` adds.
+pub fn with_cell_style<R>(
+    ui: &mut egui::Ui,
+    style: CellStyle,
+    add_contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    let ctx = ui.ctx().clone();
+    let before = cell_style(&ctx);
+    ctx.data_mut(|d| d.insert_temp(cell_style_id(), style));
+    let out = add_contents(ui);
+    ctx.data_mut(|d| d.insert_temp(cell_style_id(), before));
+    out
+}
+
+/// The look of the tool cells that are added now.
+pub fn cell_style(ctx: &egui::Context) -> CellStyle {
+    ctx.data(|d| d.get_temp(cell_style_id()))
+        .unwrap_or_default()
+}
+
+/// The size of a tool cell in the look of now.
+fn cell_size(ctx: &egui::Context) -> egui::Vec2 {
+    match cell_style(ctx) {
+        CellStyle::Labeled => vec2(CELL.0, CELL.1),
+        CellStyle::Icon => vec2(geometry::COLUMN_CELL, geometry::COLUMN_CELL),
+    }
+}
+
+/// A held cell: its ID, its name, and its place.
+#[derive(Clone, Debug, PartialEq)]
+struct Hold {
+    id: egui::Id,
+    label: String,
+    rect: Rect,
+}
+
+/// The name and the place of the cell that a finger holds, if the hold is
+/// long enough to show the name. After the end of the press, it forgets
+/// the cell.
+pub fn take_hold_label(ctx: &egui::Context) -> Option<(String, Rect)> {
+    let hold: Option<Hold> = ctx.data(|d| d.get_temp(hold_id()));
+    if ctx.input(|i| i.pointer.any_down()) {
+        return hold.map(|h| (h.label, h.rect));
+    }
+    ctx.data_mut(|d| d.remove::<Hold>(hold_id()));
+    None
+}
+
+/// One cell of the tool strip: an icon with a name below it. In the
+/// `CellStyle::Icon` look, the icon alone, and a hold shows `label` next
+/// to the cell.
 pub fn tool_cell(
     ui: &mut egui::Ui,
     controls: &mut Controls,
@@ -339,7 +409,23 @@ pub fn tool_cell(
     active: bool,
     enabled: bool,
 ) -> Response {
-    let (rect, _) = ui.allocate_exact_size(vec2(CELL.0, CELL.1), Sense::hover());
+    tool_cell_with(ui, controls, name, label, icon, active, enabled, true)
+}
+
+/// A `tool_cell`. With no `hold`, a hold does not show the name.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn tool_cell_with(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    name: &str,
+    label: &str,
+    icon: Icon,
+    active: bool,
+    enabled: bool,
+    hold: bool,
+) -> Response {
+    let style = cell_style(ui.ctx());
+    let (rect, _) = ui.allocate_exact_size(cell_size(ui.ctx()), Sense::hover());
     let resp = hit(
         ui,
         controls,
@@ -351,12 +437,50 @@ pub fn tool_cell(
     );
     fill(ui, rect, &resp, active);
     let color = fade(if active { theme::TEXT } else { theme::MUTE }, enabled);
+    if style == CellStyle::Icon {
+        icons::paint(ui.painter(), rect, icon, ICON, color);
+        if hold {
+            hold_name(ui, &resp, label);
+        }
+        return resp;
+    }
     let icon_rect = Rect::from_center_size(rect.center() - vec2(0.0, 7.0), vec2(ICON, ICON));
     icons::paint(ui.painter(), icon_rect, icon, ICON, color);
     let at = pos2(rect.center().x, rect.bottom() - 7.0);
     ui.painter()
         .text(at, Align2::CENTER_BOTTOM, label, theme::small(), color);
     resp
+}
+
+/// Follows a press on a cell. After a hold of `HOLD_TIME`, the cell is the
+/// held cell until the press ends.
+fn hold_name(ui: &egui::Ui, resp: &Response, label: &str) {
+    let ctx = ui.ctx();
+    let held: Option<Hold> = ctx.data(|d| d.get_temp(hold_id()));
+    if !resp.is_pointer_button_down_on() || held.is_some_and(|h| h.id == resp.id) {
+        return;
+    }
+    let press = ui.input(|i| {
+        let (start, origin) = (i.pointer.press_start_time()?, i.pointer.press_origin()?);
+        let pos = i.pointer.interact_pos()?;
+        Some((i.time - start, origin.distance(pos)))
+    });
+    match press {
+        Some((time, moved)) if moved <= super::HOLD_SLOP && time >= super::HOLD_TIME => {
+            let hold = Hold {
+                id: resp.id,
+                label: label.to_owned(),
+                rect: resp.rect,
+            };
+            ctx.data_mut(|d| d.insert_temp(hold_id(), hold));
+            ctx.request_repaint();
+        }
+        Some((time, moved)) if moved <= super::HOLD_SLOP => {
+            let wait = std::time::Duration::from_secs_f64(super::HOLD_TIME - time);
+            ctx.request_repaint_after(wait);
+        }
+        _ => {}
+    }
 }
 
 /// One cell of the tool strip: an icon with no name.
@@ -368,7 +492,7 @@ pub fn icon_cell(
     active: bool,
     enabled: bool,
 ) -> Response {
-    let (rect, _) = ui.allocate_exact_size(vec2(CELL.0, CELL.1), Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(cell_size(ui.ctx()), Sense::hover());
     let resp = hit(
         ui,
         controls,

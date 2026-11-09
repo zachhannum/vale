@@ -298,6 +298,22 @@ fn drag(h: &mut Pad, from: Pos2, to: Pos2, input: Input) {
     release(h, to, input);
 }
 
+/// Scrolls the tool column of a short screen until it shows the control
+/// `name`. A drag of a finger on the column scrolls it.
+fn scroll_column_to(h: &mut Pad, name: &str) {
+    for i in 0..10 {
+        let rects = h.state().pad.rects.unwrap();
+        let column = rects.tools;
+        if rects.row || control(h, name).is_some_and(|r| column.contains_rect(r)) {
+            return;
+        }
+        let d = if i < 5 { -120.0 } else { 120.0 };
+        // The column holds its cells to the right of the band of the system.
+        let from = pos2(column.right() - 28.0, column.center().y - d / 2.0);
+        drag(h, from, from + vec2(0.0, d), Input::Finger);
+    }
+}
+
 /// Two fingers about `center`: they start `from` points apart on a
 /// horizontal line, and they end `to` points apart, turned clockwise by
 /// `turn` degrees, with the middle moved by `shift`.
@@ -2695,7 +2711,7 @@ fn a_tap_of_two_fingers_undoes_and_a_tap_of_three_redoes_in_the_atlas() {
     h.state_mut().save_waiting().unwrap();
     assert_eq!(open_page(&h).frames.len(), 2);
 
-    let empty = pos2(200.0, 780.0);
+    let empty = pos2(100.0, 715.0);
     fingers_tap(&mut h, 2, empty);
     assert_eq!(open_page(&h).frames.len(), 1);
     fingers_tap(&mut h, 3, empty);
@@ -3635,7 +3651,7 @@ fn undo_and_redo_act_on_the_path_in_the_atlas_and_not_on_the_page() {
     assert_eq!(path(&h), (3, true));
     assert_eq!(undo_able(&h), (true, false));
     // A tap of two fingers reopens the path, and a tap of three closes it.
-    let empty = pos2(200.0, 780.0);
+    let empty = pos2(100.0, 715.0);
     fingers_tap(&mut h, 2, empty);
     assert_eq!(path(&h), (3, false));
     assert_eq!(undo_able(&h), (true, true));
@@ -3685,7 +3701,8 @@ fn the_measure_card_acts_on_the_path_in_the_atlas() {
         let at = in_box(&h, 0, x, y);
         tap_with(&mut h, at, Input::Finger);
     }
-    let card = h.state().pad.rects.unwrap().brush.unwrap();
+    let rects = h.state().pad.rects.unwrap();
+    let card = rects.brush.unwrap_or(rects.tools);
     for name in [SNAP, CLEAR_PATH, "Brush settings"] {
         let rect = control(&h, name).unwrap_or_else(|| panic!("{name}"));
         assert!(card.contains_rect(rect), "{name}");
@@ -6876,9 +6893,11 @@ fn snap_shows_with_no_selection_in_the_frame_and_vertex_tools() {
         let what = format!("{size:?}");
         let mut h = inset_pad(size);
         for tool in ["Frame tool", VERTEX] {
+            scroll_column_to(&mut h, tool);
             tap(&mut h, tool);
             h.state_mut().atlas.selection = AtlasSelection::None;
             h.run_steps(3);
+            scroll_column_to(&mut h, SNAP_TO_LAYOUT);
             assert!(control(&h, SNAP_TO_LAYOUT).is_some(), "{what}: {tool}");
             for name in [DESELECT, DELETE_SELECTION, DELETE_VERTEX] {
                 assert!(control(&h, name).is_none(), "{what}: {tool}: {name}");
@@ -9232,6 +9251,7 @@ fn the_selectable_cell_and_list_fit_in_the_atlas_on_each_screen() {
         let what = format!("{size:?}");
         let (mut h, _, _) = towns_pad(size);
         let screen = Rect::from_min_size(Pos2::ZERO, size.into());
+        scroll_column_to(&mut h, SELECTABLE);
         let cell = control(&h, SELECTABLE).unwrap_or_else(|| panic!("{what}"));
         assert!(screen.contains_rect(cell), "{what}");
         check_controls(&h, &what);
@@ -9493,7 +9513,7 @@ fn iphone_pad() -> Pad {
 }
 
 #[test]
-fn on_an_iphone_the_page_card_is_below_the_top_row_and_the_tools_are_a_row_at_the_bottom() {
+fn on_an_iphone_the_page_pill_is_above_the_tools_and_the_tools_are_a_row_at_the_bottom() {
     let mut h = iphone_pad();
     let ((width, height), [_, _, bottom, _]) = IPHONE;
     // The middle page of three, so both page buttons are on.
@@ -9507,7 +9527,8 @@ fn on_an_iphone_the_page_card_is_below_the_top_row_and_the_tools_are_a_row_at_th
     let top_row = control(&h, "Workspace").unwrap();
     let previous = control(&h, PREVIOUS_PAGE).unwrap();
     let next = control(&h, NEXT_PAGE).unwrap();
-    // The page card is below the top row, in the middle of the screen.
+    // The page pill is above the rows of the tools, in the middle of the
+    // screen.
     assert!(previous.top() > top_row.bottom(), "{previous:?}");
     assert_eq!(previous.top(), next.top());
     let middle = (previous.left() + next.right()) / 2.0;
@@ -9523,9 +9544,10 @@ fn on_an_iphone_the_page_card_is_below_the_top_row_and_the_tools_are_a_row_at_th
     assert!(tools[0].bottom() <= foot && tools[0].bottom() > foot - 40.0);
     let row_middle = (tools[0].left() + tools[4].right()) / 2.0;
     assert!((row_middle - width / 2.0).abs() < 1.0, "{row_middle}");
-    // The page is between the page card and the tools.
+    // The page is between the top row and the page pill.
     let page = place(&h).rect;
-    assert!(page.top() > next.bottom() && page.bottom() < tools[0].top());
+    assert!(page.top() > top_row.bottom() && page.bottom() < previous.top());
+    assert!(next.bottom() < tools[0].top());
     check_controls(&h, "iphone");
 
     // A selected frame shows its panel as a sheet, with its tabs.
@@ -10006,4 +10028,55 @@ fn a_long_press_on_a_tool_of_the_atlas_shows_its_name() {
     // The end of the hold does not choose the tool.
     assert_eq!(h.state().atlas.tool, AtlasTool::Frame);
     assert_eq!(h.state().pad.flyouts.tip, None);
+}
+
+#[test]
+fn the_page_pill_turns_the_pages_and_its_name_opens_the_pages_panel() {
+    use vale_app::ui::pad::atlas::{OPEN_PAGES, page_pill_text};
+    for size in BOARDS {
+        let what = format!("{size:?}");
+        let mut h = inset_pad(size);
+        atlas::add_page(h.state_mut());
+        atlas::add_page(h.state_mut());
+        atlas::go_to_page(h.state_mut(), -1);
+        atlas::go_to_page(h.state_mut(), -1);
+        h.state_mut().atlas.selection = AtlasSelection::None;
+        h.run_steps(3);
+        assert_eq!(page_pill_text(h.state()), "Page 1 of 3", "{what}");
+        // The first page has no previous page.
+        assert!(control(&h, PREVIOUS_PAGE).is_none(), "{what}");
+        let next = control(&h, NEXT_PAGE).unwrap();
+        let name = control(&h, OPEN_PAGES).unwrap();
+        // The pill is at the bottom, below the page, in the middle of the
+        // space of the page.
+        let page = place(&h).rect;
+        assert!(name.top() > page.bottom(), "{what}");
+        assert_eq!(name.top(), next.top(), "{what}");
+        let r = h.state().pad.rects.unwrap();
+        assert!(r.readout.unwrap().contains_rect(name), "{what}");
+        let dock = h.state().pad.dock_rect;
+        if let Some(dock) = dock {
+            assert!(!dock.intersects(name) && !dock.intersects(next), "{what}");
+        } else if !r.row {
+            let middle = (name.left() - 44.0 + next.right()) / 2.0;
+            assert!((middle - page.center().x).abs() < 1.0, "{what}: {middle}");
+        }
+        check_controls(&h, &what);
+
+        tap(&mut h, NEXT_PAGE);
+        assert_eq!(page_pill_text(h.state()), "Page 2 of 3", "{what}");
+        tap(&mut h, NEXT_PAGE);
+        assert_eq!(atlas::page_index(h.state()), (2, 3), "{what}");
+        assert!(control(&h, NEXT_PAGE).is_none(), "{what}");
+        tap(&mut h, PREVIOUS_PAGE);
+        assert_eq!(atlas::page_index(h.state()), (1, 3), "{what}");
+
+        // A tap on the name opens the Pages panel.
+        tap(&mut h, OPEN_PAGES);
+        assert!(h.state().pad.shows(Panel::Pages), "{what}");
+        // On a compact screen, the sheet of the panel covers the pill.
+        if control(&h, OPEN_PAGES).is_some() {
+            assert_eq!(toggled(&h, OPEN_PAGES), Some(true), "{what}");
+        }
+    }
 }

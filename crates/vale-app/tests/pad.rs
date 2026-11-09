@@ -25,8 +25,8 @@ use vale_app::ui::pad::{
     LayerRef, MEASURE, ModeGroup, NEW_GEOJSON, NEW_HEIGHTMAP, NEW_IMAGE, NEW_RASTER, OPACITY,
     PANELS, POLYGON, Page, Panel, RECENTER, RESET, SCULPT, SMOOTHING, SNAP, SNAP_DISTANCE,
     SNAP_EDGES, SNAP_VERTICES, SNAPPING, TERRAIN, TERRAIN_BALANCE, TERRAIN_FIT, TERRAIN_FIT_SWITCH,
-    TOOLBOX, VECTOR, VIEW_OPTIONS, WORLD_PROPERTIES, WORLDS, WORLDS_ROW, brush_size_text,
-    panels_menu, readout_line, readout_text, theme,
+    TOOLBOX, VECTOR, WORLD_PROPERTIES, WORLDS, WORLDS_ROW, brush_size_text, panels_menu,
+    readout_line, readout_text, theme,
 };
 use vale_app::ui::raster_form::{self, PRESETS, RasterForm, face_size_name};
 use vale_app::ui::select;
@@ -291,7 +291,19 @@ fn choose_mode(h: &mut Pad, name: &str) {
 
 /// The place of the draw cell: the third cell of the tool strip.
 fn draw_cell(h: &Pad) -> Rect {
-    control(h, SCULPT).unwrap().translate(vec2(0.0, 2.0 * 52.0))
+    let sculpt = control(h, SCULPT).unwrap();
+    if h.state().pad.rects.unwrap().row {
+        sculpt.translate(vec2(2.0 * sculpt.width(), 0.0))
+    } else {
+        sculpt.translate(vec2(0.0, 2.0 * sculpt.height()))
+    }
+}
+
+/// The card with the controls of the tool: the row above the tool strip
+/// in the row layout, and else the tool column.
+fn context_card(h: &Pad) -> Rect {
+    let rects = h.state().pad.rects.unwrap();
+    rects.brush.unwrap_or(rects.tools)
 }
 
 /// The rectangles of all cards on the screen.
@@ -299,13 +311,12 @@ fn cards(h: &Pad) -> Vec<Rect> {
     let pad = &h.state().pad;
     let r = pad.rects.unwrap();
     let mut cards = vec![r.workspace, r.actions, r.tools];
-    cards.extend(r.view);
+    cards.extend(pad.view_rect);
     cards.extend(r.brush);
     cards.extend(pad.panels.iter().map(|(_, rect)| *rect));
     cards.extend(pad.menu_rect);
     cards.extend(pad.flyouts.rect);
     cards.extend(pad.add_rect);
-    cards.extend(pad.view_options_rect);
     cards
 }
 
@@ -372,8 +383,7 @@ fn check_controls(h: &Pad, what: &str) {
         || in_add
         || in_panels
         || in_list
-        || in_stop
-        || h.state().pad.view_options_rect.is_some();
+        || in_stop;
     for (i, a) in controls.iter().enumerate() {
         let (name, rect) = (&a.name, a.rect);
         assert!(
@@ -399,9 +409,13 @@ fn check_controls(h: &Pad, what: &str) {
                 let kind = vale_sphere::ProjectionKind::ALL
                     .iter()
                     .any(|k| k.name() == name);
-                let menu =
-                    ["World", "Globe", "Flat", GRATICULE, "Atlas", WORLDS_ROW].contains(&name);
-                let modes = in_modes && all_modes().any(|mode| mode == name);
+                let menu = ["World", "Atlas", WORLDS_ROW].contains(&name);
+                let modes = in_modes
+                    && (all_modes().any(|mode| mode == name)
+                        || vale_app::ui::pad::POLYGON_MODES.iter().any(|m| m.0 == name)
+                        || vale_app::ui::pad::VECTOR_TOOLS
+                            .iter()
+                            .any(|t| t.name == name));
                 let rows = [
                     NEW_RASTER,
                     NEW_IMAGE,
@@ -2016,11 +2030,25 @@ fn the_brush_size_uses_the_radius_and_the_units_of_the_world() {
     );
 }
 
-/// The names of the cells of the tool strip that are on, from the top.
+/// The names of the tool cells of the tool strip that are on, from the
+/// top. The tool column also holds the controls of the tool.
 fn strip(h: &Pad) -> Vec<String> {
+    use vale_app::ui::pad::atlas::{FRAME_TOOL, MOVE, VERTEX};
+    let names = [
+        SCULPT,
+        TERRAIN,
+        VECTOR,
+        select::TOOL,
+        "Pan",
+        MEASURE,
+        FRAME_TOOL,
+        VERTEX,
+        MOVE,
+    ];
     let tools = h.state().pad.rects.unwrap().tools;
     let controls = h.state().pad.controls.iter();
-    let cells = controls.filter(|c| tools.contains_rect(c.rect));
+    let cells =
+        controls.filter(|c| tools.contains_rect(c.rect) && names.contains(&c.name.as_str()));
     cells.map(|c| c.name.clone()).collect()
 }
 
@@ -2030,20 +2058,21 @@ fn the_tool_strip_has_six_cells_on_each_screen() {
         let what = format!("{size:?}");
         let mut h = safe_pad(size, safe);
         let rects = h.state().pad.rects.unwrap();
-        // The landscape iPhone is too short for six cells, so the strip
+        // The landscape iPhone is too short for the column, so the column
         // scrolls.
         let full = size.1 > 400.0;
-        if full {
-            assert_eq!(rects.tool_cells, TOOLS, "{what}");
+        assert_eq!(rects.tool_cells, TOOLS, "{what}");
+        if rects.row {
             // On a compact screen, the strip is a row.
-            let length = if rects.row {
-                rects.tools.width()
-            } else {
-                rects.tools.height()
-            };
-            assert_eq!(length, 6.0 * 52.0 + 8.0, "{what}");
+            assert_eq!(rects.tools.width(), 6.0 * 52.0 + 8.0, "{what}");
         } else {
-            assert_eq!(rects.tool_cells, 3, "{what}");
+            // The tool column has the six tools at its top, and below them
+            // the controls of the tool.
+            let top = rects.tools.top() + 6.0;
+            assert_eq!(control(&h, SCULPT).unwrap().top(), top, "{what}");
+            assert!(rects.column_content > 12.0 + 6.0 * 44.0, "{what}");
+            let scrolls = rects.column_content > rects.tools.height() + 0.5;
+            assert_eq!(scrolls, !full, "{what}");
         }
         let screen = Rect::from_min_size(Pos2::ZERO, size.into());
         assert!(screen.contains_rect(rects.tools), "{what}");
@@ -2081,24 +2110,29 @@ fn the_tool_strip_has_six_cells_on_each_screen() {
 }
 
 #[test]
-fn the_small_ipads_show_the_full_sliders_with_a_raster_layer() {
+fn the_small_ipads_show_the_sliders_in_the_tool_column() {
     // The small iPads in landscape have less room for the sliders.
-    for (size, slider) in [
-        ((1133.0, 744.0), 112.0),
-        ((744.0, 1133.0), 140.0),
-        ((1024.0, 768.0), 124.0),
-        ((768.0, 1024.0), 140.0),
+    for (size, track) in [
+        ((1133.0, 744.0), 101.5),
+        ((744.0, 1133.0), 120.0),
+        ((1024.0, 768.0), 113.5),
+        ((768.0, 1024.0), 120.0),
     ] {
         let what = format!("{size:?}");
         let h = pad(size);
         let rects = h.state().pad.rects.unwrap();
-        assert_eq!(rects.brush_card, BrushCard::Full(slider), "{what}");
-        let card = rects.brush.unwrap();
+        assert_eq!(rects.brush_card, BrushCard::Full(track), "{what}");
+        assert_eq!(rects.tools.height(), rects.column_content, "{what}");
         for name in ["Size", "Flow", "Brush settings"] {
             let rect = control(&h, name).unwrap_or_else(|| panic!("{what}: {name}"));
-            assert!(card.contains_rect(rect), "{what}: {name}");
+            assert!(rects.tools.contains_rect(rect), "{what}: {name}");
         }
-        assert_eq!(control(&h, "Size").unwrap().height(), slider, "{what}");
+        // The value is above the track, and the name is below it.
+        assert_eq!(
+            control(&h, "Size").unwrap().height(),
+            track + 44.0,
+            "{what}"
+        );
         check_controls(&h, &what);
     }
 }
@@ -3422,7 +3456,7 @@ fn each_card_shows_the_blurred_canvas_and_the_blur_follows_the_globe() {
         _ => 0,
     });
     let cards = cards(&h);
-    assert!(cards.len() >= 7);
+    assert!(cards.len() >= 6);
     let blurred = h.render().unwrap();
     std::fs::create_dir_all("../../target/app").unwrap();
     blurred.save("../../target/app/test-pad-blur.png").unwrap();
@@ -3483,11 +3517,13 @@ fn the_blur_behind_a_card_shows_the_visible_vector_layers_in_the_draw_order() {
     assert!(difference(&red, &plain) > width * 20);
     assert!(red.iter().zip(&plain).all(|(r, p)| r >= p));
 
-    // The flat view has the polygon in the blur too. The polygon is below
-    // a smaller part of the cards there.
+    // The flat view has the polygon in the blur too. A close view puts
+    // the polygon below the cards.
     h.state_mut().globe.world_view = WorldView::Flat;
+    h.state_mut().globe.flat.zoom = 3.0;
     let (red, plain) = (reds(&mut h, true), reds(&mut h, false));
     assert!(difference(&red, &plain) > width * 2);
+    h.state_mut().globe.flat.zoom = 1.0;
     h.state_mut().globe.world_view = WorldView::Globe;
 
     // A raster mask cuts the polygon in the blur too. The whole world is
@@ -3862,21 +3898,23 @@ fn one_tap_switches_the_view_and_the_tool_and_the_panels_stay() {
 }
 
 #[test]
-fn the_view_switch_has_the_list_of_the_projections_of_the_flat_view() {
+fn the_view_buttons_have_the_list_of_the_projections_of_the_flat_view() {
     use vale_sphere::ProjectionKind;
     let mut h = pad(BOARDS[0]);
     assert!(control(&h, "Projection").is_none());
     choose_mode(&mut h, "Lower");
     tap(&mut h, "Flat");
-    // The card is wider by the button, and it stays in the middle.
-    let view = h.state().pad.rects.unwrap().view.unwrap();
-    assert_eq!(view.center().x, 597.0);
+    // The card of the buttons is wider by the flat buttons, at the lower
+    // left of the canvas.
+    let view = h.state().pad.view_rect.unwrap();
+    let readout = h.state().pad.rects.unwrap().readout.unwrap();
+    assert_eq!(view.left_bottom(), readout.left_bottom());
     assert!(view.contains_rect(control(&h, "Projection").unwrap()));
     assert!(control(&h, "Projection").unwrap().width() >= 44.0);
 
     tap(&mut h, "Projection");
     let list = h.state().pad.projections_rect.unwrap();
-    assert_eq!(list.top(), view.bottom() + 4.0);
+    assert_eq!(list.bottom(), view.top() - 4.0);
     for kind in ProjectionKind::ALL {
         assert!(list.contains_rect(control(&h, kind.name()).unwrap()));
     }
@@ -3900,7 +3938,7 @@ fn the_view_switch_has_the_list_of_the_projections_of_the_flat_view() {
 }
 
 #[test]
-fn the_view_options_menu_has_the_graticule_switch() {
+fn the_readout_has_the_view_buttons_and_the_graticule_button() {
     use vale_app::ui::pad::raster::{self, RIVERS};
     for size in BOARDS {
         let mut h = painted_pad(size);
@@ -3909,59 +3947,42 @@ fn the_view_options_menu_has_the_graticule_switch() {
             h.state_mut().globe.world_view = view;
             h.run_steps(2);
             let rects = h.state().pad.rects.unwrap();
-            // The compact layout has the switch in the workspace menu.
-            let open = match rects.view {
-                Some(card) => {
-                    let button = control(&h, VIEW_OPTIONS).unwrap();
-                    assert!(card.contains_rect(button), "{what}");
-                    let right = card.right() - 4.0;
-                    assert!((button.right() - right).abs() <= 0.5, "{what}");
-                    assert!(card.right() + 12.0 <= rects.actions.left(), "{what}");
-                    VIEW_OPTIONS
+            let card = h.state().pad.view_rect.unwrap();
+            assert!(rects.readout.unwrap().contains_rect(card), "{what}");
+            // The buttons of the flat view show in the flat view only.
+            let flat = view == WorldView::Flat;
+            for name in ["Globe", "Flat", GRATICULE, "Projection", RECENTER, RESET] {
+                let shows = !matches!(name, "Projection" | RECENTER | RESET) || flat;
+                if let Some(button) = control(&h, name) {
+                    assert!(card.contains_rect(button), "{what}: {name}");
+                } else if name != RECENTER && name != RESET {
+                    // Recenter and Reset are off until the view moves.
+                    assert!(!shows, "{what}: no {name}");
                 }
-                None => {
-                    assert!(control(&h, VIEW_OPTIONS).is_none(), "{what}");
-                    "Workspace"
+                if !shows {
+                    assert!(control(&h, name).is_none(), "{what}: {name}");
                 }
-            };
-            tap(&mut h, open);
-            if let Some(card) = rects.view {
-                let options = h.state().pad.view_options_rect.unwrap();
-                assert_eq!(options.top(), card.bottom() + 4.0, "{what}");
-                assert!(options.contains_rect(control(&h, GRATICULE).unwrap()));
             }
-            check_controls(&h, &format!("{what} with the view options"));
+            check_controls(&h, &format!("{what} with the view buttons"));
             let before = h.state().globe.preview.graticule;
             tap(&mut h, GRATICULE);
             assert_eq!(h.state().globe.preview.graticule, !before, "{what}");
+            assert_eq!(toggled(&h, GRATICULE), Some(!before), "{what}");
             tap(&mut h, GRATICULE);
             assert_eq!(h.state().globe.preview.graticule, before, "{what}");
-            tap(&mut h, open);
-            let pad = &h.state().pad;
-            assert!(!pad.view_options && !pad.menu, "{what}");
-            assert!(control(&h, GRATICULE).is_none(), "{what}");
-
-            // The view options and the list of the projections exclude each
-            // other, and a press outside closes the view options.
-            if rects.view.is_some() && view == WorldView::Flat {
-                tap(&mut h, VIEW_OPTIONS);
-                tap(&mut h, "Projection");
-                let pad = &h.state().pad;
-                assert!(pad.projections && !pad.view_options, "{what}");
-                tap(&mut h, VIEW_OPTIONS);
-                let pad = &h.state().pad;
-                assert!(!pad.projections && pad.view_options, "{what}");
-                open_panel(&mut h, "Layers");
-                assert!(!h.state().pad.view_options, "{what}");
-                open_panel(&mut h, "Layers");
-            }
+            // The Globe and Flat buttons change the view.
+            let other = if flat { "Globe" } else { "Flat" };
+            tap(&mut h, other);
+            assert_ne!(h.state().globe.world_view, view, "{what}");
+            assert_eq!(toggled(&h, other), Some(true), "{what}");
+            h.state_mut().globe.world_view = view;
+            h.run_steps(2);
         }
 
         // The panel of the height layer has the rivers and no graticule.
         open_height(&mut h);
         let mut rivers = control(&h, RIVERS).is_some();
         for _ in 0..8 {
-            assert!(control(&h, GRATICULE).is_none(), "{size:?}");
             if rivers {
                 break;
             }
@@ -3995,54 +4016,29 @@ fn the_flat_view_has_buttons_that_move_the_center_of_the_projection_and_reset_it
         h.state_mut().globe.world_view = WorldView::Flat;
         h.run_steps(2);
         let rects = h.state().pad.rects.unwrap();
-        // The buttons are in the card of the view switch, to the right of
-        // the switch. With no switch in the top row, they have a card below
-        // the top row.
-        let card = match rects.view {
-            Some(view) => {
-                assert_eq!(h.state().pad.center_rect, None);
-                assert_eq!(view.center().x, size.0 / 2.0, "{size:?}");
-                assert!(view.right() + 12.0 <= rects.actions.left(), "{size:?}");
-                view
-            }
-            None => {
-                let card = h.state().pad.center_rect.unwrap();
-                assert_eq!(card.center().x, size.0 / 2.0, "{size:?}");
-                // In the row layout, the strip is at the bottom, and the
-                // card is at the top of the space below the top row.
-                let top = if rects.row {
-                    rects.column_top
-                } else {
-                    rects.tools.top()
-                };
-                assert_eq!(card.top(), top, "{size:?}");
-                assert!(!card.intersects(rects.tools));
-                card
-            }
-        };
+        // The buttons are in the card of the view buttons of the readout,
+        // at the lower left of the canvas.
+        let card = h.state().pad.view_rect.unwrap();
+        assert_eq!(
+            card.left_top(),
+            rects.readout.unwrap().left_top(),
+            "{size:?}"
+        );
+        assert!(!card.intersects(rects.tools), "{size:?}");
         // The middle of the view is the center of the projection, and the
         // view shows the whole map, so the two actions are off.
         assert!(control(&h, RECENTER).is_none() && control(&h, RESET).is_none());
 
         // A drag moves the map at the first zoom, with no zoom before it.
         let canvas = h.state().globe.rect;
-        // The rows of the tool strip and its card are at the bottom of a
-        // compact screen.
-        let y = if rects.row {
-            canvas.center().y
-        } else {
-            canvas.bottom() - 120.0
-        };
-        let from = pos2(canvas.center().x, y);
+        let from = canvas.center();
         drag(&mut h, from, from + vec2(-60.0, 0.0), None);
         let (recenter, reset) = (control(&h, RECENTER).unwrap(), control(&h, RESET).unwrap());
         assert!(card.contains_rect(recenter) && card.contains_rect(reset));
-        assert_eq!(reset.left() - recenter.right(), 4.0);
-        if rects.view.is_some() {
-            let switch = control(&h, "Flat").unwrap();
-            assert!(recenter.left() > control(&h, "Projection").unwrap().right());
-            assert!(recenter.left() > switch.right() && recenter.top() == switch.top());
-        }
+        assert_eq!(reset.left(), recenter.right());
+        let switch = control(&h, "Flat").unwrap();
+        assert!(recenter.left() >= control(&h, "Projection").unwrap().right());
+        assert!(recenter.left() > switch.right() && recenter.top() == switch.top());
         check_controls(&h, &format!("{size:?} with the center buttons"));
         tap(&mut h, RECENTER);
         let flat = &h.state().globe.flat;
@@ -4054,11 +4050,41 @@ fn the_flat_view_has_buttons_that_move_the_center_of_the_projection_and_reset_it
         assert_eq!((flat.spec().lon0, flat.zoom), (0.0, 1.0));
         assert!(control(&h, RESET).is_none());
 
-        // The globe has no buttons.
+        // The globe has no such buttons, and its card is narrower.
         h.state_mut().globe.world_view = WorldView::Globe;
         h.run_steps(2);
-        assert_eq!(h.state().pad.center_rect, None);
+        assert!(h.state().pad.view_rect.unwrap().width() < card.width());
         assert!(control(&h, RECENTER).is_none() && control(&h, RESET).is_none());
+    }
+}
+
+/// There is no card at the top center: the World view switch and the page
+/// card of the Atlas are gone from the top row.
+#[test]
+fn the_top_row_has_no_center_card() {
+    for size in BOARDS {
+        for atlas in [false, true] {
+            let mut h = pad(size);
+            if atlas {
+                h.state_mut().workspace = Workspace::Atlas;
+                h.run_steps(3);
+            }
+            let r = h.state().pad.rects.unwrap();
+            let what = format!("{size:?} atlas {atlas}");
+            let top = Rect::from_min_max(
+                pos2(r.workspace.right() + 1.0, r.workspace.top()),
+                pos2(r.actions.left() - 1.0, r.workspace.bottom()),
+            );
+            for c in &h.state().pad.controls {
+                assert!(!top.intersects(c.rect), "{what}: {}", c.name);
+            }
+            use vale_app::ui::pad::atlas::{NEXT_PAGE, PREVIOUS_PAGE};
+            for name in ["Globe", "Flat", PREVIOUS_PAGE, NEXT_PAGE] {
+                if let Some(rect) = control(&h, name) {
+                    assert!(rect.top() > r.column_top, "{what}: {name}");
+                }
+            }
+        }
     }
 }
 
@@ -4072,11 +4098,14 @@ fn the_top_row_and_the_panels_match_the_landscape_board() {
     // The Worlds button and a line are at the left of the workspaces.
     assert_eq!(control(&h, WORLDS).unwrap().min, pos2(4.0, 32.0));
     assert_eq!(control(&h, "World").unwrap().min, pos2(57.0, 32.0));
-    assert!(control(&h, "Atlas").is_some());
+    assert_eq!(control(&h, "Atlas").unwrap().min, pos2(101.0, 32.0));
+    assert_eq!(r.workspace.width(), 149.0);
     assert!(control(&h, "Workspace").is_none());
-    assert!(r.view.unwrap().contains_rect(control(&h, "Flat").unwrap()));
-    assert_eq!(r.view.unwrap().center(), pos2(597.0, 54.0));
-    assert!(r.view.unwrap().contains_rect(control(&h, "Globe").unwrap()));
+    // The view buttons are at the lower left of the canvas.
+    let view = h.state().pad.view_rect.unwrap();
+    assert_eq!(view.min, pos2(72.0, 754.0));
+    assert!(view.contains_rect(control(&h, "Flat").unwrap()));
+    assert!(view.contains_rect(control(&h, "Globe").unwrap()));
     assert_eq!(
         r.actions,
         Rect::from_min_size(pos2(1033.0, 28.0), vec2(161.0, 52.0))
@@ -4086,23 +4115,22 @@ fn the_top_row_and_the_panels_match_the_landscape_board() {
     for name in ["Layers", "Toolbox", select::ATTRIBUTES] {
         assert!(control(&h, name).is_none(), "{name}");
     }
+    // The tool column: six tools, a divider, two sliders, and the Brush
+    // button.
     assert_eq!(
         r.tools,
-        Rect::from_min_size(pos2(0.0, 92.0), vec2(60.0, 320.0))
+        Rect::from_min_size(pos2(0.0, 92.0), vec2(56.0, 661.0))
     );
+    assert_eq!(r.brush, None);
     assert_eq!(
         control(&h, SCULPT).unwrap(),
-        Rect::from_min_size(pos2(4.0, 96.0), vec2(52.0, 52.0))
+        Rect::from_min_size(pos2(6.0, 98.0), vec2(44.0, 44.0))
     );
     assert_eq!(
         control(&h, TERRAIN).unwrap(),
-        Rect::from_min_size(pos2(4.0, 148.0), vec2(52.0, 52.0))
+        Rect::from_min_size(pos2(6.0, 142.0), vec2(44.0, 44.0))
     );
-    assert_eq!(
-        r.brush.unwrap(),
-        Rect::from_min_size(pos2(0.0, 424.0), vec2(60.0, 340.0))
-    );
-    assert_eq!(control(&h, "Brush settings").unwrap().min, pos2(4.0, 708.0));
+    assert_eq!(control(&h, "Brush settings").unwrap().min, pos2(6.0, 703.0));
 
     open_panel(&mut h, "Layers");
     tap(&mut h, "Pin Layers");
@@ -4129,15 +4157,14 @@ fn the_top_row_and_the_panels_match_the_portrait_board() {
     let mut h = pad(BOARDS[1]);
     let r = h.state().pad.rects.unwrap();
     assert_eq!(r.class, WidthClass::Medium);
-    assert!(control(&h, "World").is_none());
+    // The workspace buttons are icons, as in the landscape board.
     assert_eq!(control(&h, WORLDS).unwrap().min, pos2(4.0, 32.0));
-    let button = control(&h, "Workspace").unwrap();
-    assert_eq!((button.left(), button.right()), (53.0, r.workspace.right()));
+    assert_eq!(control(&h, "World").unwrap().min, pos2(57.0, 32.0));
+    assert!(control(&h, "Workspace").is_none());
     assert_eq!(
         (r.workspace.min, r.workspace.height()),
         (pos2(0.0, 28.0), 52.0)
     );
-    assert_eq!(r.view.unwrap().center(), pos2(417.0, 54.0));
     assert!(control(&h, "Globe").is_some());
     assert_eq!(r.actions.right(), 834.0);
 
@@ -4148,18 +4175,11 @@ fn the_top_row_and_the_panels_match_the_portrait_board() {
     tap(&mut h, "Brush settings");
     assert!(h.state().pad.is_open(Panel::Toolbox) && h.state().pad.is_open(Panel::Brush));
 
-    // The menu holds the workspaces. The view switch stays in the top row.
-    tap(&mut h, "Workspace");
-    let menu = h.state().pad.menu_rect.unwrap();
-    assert_eq!((menu.min, menu.width()), (pos2(16.0, 84.0), 240.0));
-    assert!(menu.contains_rect(control(&h, "Atlas").unwrap()));
+    // The workspace buttons change the workspace.
     tap(&mut h, "Atlas");
     assert_eq!(h.state().workspace, Workspace::Atlas);
-    // The menu of the Atlas workspace goes back to the world.
-    tap(&mut h, "Workspace");
     tap(&mut h, "World");
     assert_eq!(h.state().workspace, Workspace::Globe);
-    assert!(control(&h, "Workspace").is_some());
 }
 
 #[test]
@@ -4168,41 +4188,42 @@ fn the_top_row_and_the_panels_match_the_split_view_boards() {
         let mut h = pad(size);
         let r = h.state().pad.rects.unwrap();
         assert_eq!(r.class, WidthClass::Compact);
-        assert_eq!(r.view, None);
-        assert!(control(&h, "Globe").is_none());
         assert_eq!(r.workspace.min, pos2(0.0, 28.0));
         assert_eq!(r.actions.right(), size.0);
         assert!(r.workspace.right() < r.actions.left());
         // The readout is above the card of the tool, and the card is above
-        // the row of the strip.
-        assert_eq!(r.readout.unwrap().left_bottom(), pos2(16.0, 670.0));
+        // the row of the strip. The view buttons are above the text of the
+        // readout.
+        let readout = r.readout.unwrap();
+        assert_eq!(readout.left_bottom(), pos2(16.0, 670.0));
+        assert_eq!(readout.top(), 670.0 - 52.0 - 40.0);
+        assert_eq!(h.state().pad.view_rect.unwrap().min, readout.min);
         assert_eq!(r.brush.unwrap().bottom(), r.tools.top() - 8.0);
         assert_eq!(r.tools.bottom(), 834.0 - 20.0 - 8.0);
 
-        // The menu holds the views.
+        // The menu holds the workspaces and the Worlds row.
         tap(&mut h, "Workspace");
         let menu = h.state().pad.menu_rect.unwrap();
         assert_eq!(
             menu,
-            Rect::from_min_size(pos2(16.0, 84.0), vec2(240.0, 334.0))
+            Rect::from_min_size(pos2(16.0, 84.0), vec2(240.0, 190.0))
         );
-        let tops = ["World", "Globe", "Atlas"].map(|name| control(&h, name).unwrap().top());
-        assert_eq!(tops, [94.0, 142.0, 299.0]);
+        let tops = ["World", "Atlas", WORLDS_ROW].map(|name| control(&h, name).unwrap().top());
+        assert_eq!(tops, [94.0, 155.0, 216.0]);
         assert!(control(&h, "Toolbox").is_none());
+        h.state_mut().pad.menu = false;
+        h.run_steps(2);
+        // The readout has the view buttons and the list of the
+        // projections.
         tap(&mut h, "Flat");
-        assert!(!h.state().pad.menu);
         assert_eq!(h.state().globe.world_view, WorldView::Flat);
-        // In the flat view, the menu opens the list of the projections.
-        tap(&mut h, "Workspace");
         tap(&mut h, "Projection");
-        assert!(!h.state().pad.menu);
-        assert_eq!(h.state().pad.projections_rect.unwrap().min, menu.min);
+        let list = h.state().pad.projections_rect.unwrap();
+        assert!(Rect::from_min_size(Pos2::ZERO, size.into()).contains_rect(list));
         tap(&mut h, "Mercator");
         let kind = h.state().globe.flat.spec().kind;
         assert_eq!(kind, vale_sphere::ProjectionKind::Mercator);
-        tap(&mut h, "Workspace");
         tap(&mut h, "Globe");
-        assert!(!h.state().pad.menu);
         assert_eq!(h.state().globe.world_view, WorldView::Globe);
 
         // A panel is a sheet at the bottom, and one sheet shows at a time.
@@ -4270,22 +4291,44 @@ fn the_layout_follows_the_turn_of_the_ipad() {
 
 #[test]
 fn a_short_window_makes_the_sliders_short_and_then_leaves_them_out() {
-    // The sliders fit with less height.
+    let column = |h: &Pad| h.state().pad.rects.unwrap();
+    // The sliders have their full length with room.
     let h = pad((1024.0, 784.0));
-    assert_eq!(
-        h.state().pad.rects.unwrap().brush_card,
-        BrushCard::Full(132.0)
-    );
+    assert_eq!(column(&h).brush_card, BrushCard::Full(120.0));
     check_controls(&h, "784 high");
 
+    // At 744 points high, the sliders are shorter, and they work.
+    let mut h = pad((1133.0, 744.0));
+    let r = column(&h);
+    assert_eq!(r.brush_card, BrushCard::Full(101.5));
+    assert_eq!(r.tools.height(), r.column_content);
+    let slider = control(&h, "Size").unwrap();
+    assert!(slider.height() > slider.width());
+    assert!(r.tools.contains_rect(slider));
+    let size = h.state().globe.brush.size_points;
+    drag(&mut h, slider.center(), slider.center_bottom(), None);
+    assert!(h.state().globe.brush.size_points < size);
+    slide_to_end(&mut h, "Flow", false);
+    let flow = h.state().globe.brush.flow;
+    slide_to_end(&mut h, "Flow", true);
+    assert!(h.state().globe.brush.flow > flow);
+    check_controls(&h, "744 high");
+
+    // With less room, the Brush panel holds the two sliders.
     let mut h = pad((1024.0, 600.0));
-    assert_eq!(h.state().pad.rects.unwrap().brush_card, BrushCard::Button);
+    assert_eq!(column(&h).brush_card, BrushCard::Button);
     assert!(control(&h, "Size").is_none() && control(&h, "Flow").is_none());
     check_controls(&h, "600 high");
-    // The Brush panel holds the two sliders.
     tap(&mut h, "Brush settings");
     assert!(control(&h, "Brush size").is_some() && control(&h, "Brush flow").is_some());
     check_controls(&h, "600 high with the Brush panel");
+
+    // Then the column scrolls.
+    let h = pad((1024.0, 360.0));
+    let r = column(&h);
+    assert!(r.column_content > r.tools.height());
+    assert_eq!(r.tools.bottom(), 360.0 - 20.0 - 8.0);
+    check_controls(&h, "360 high");
 }
 
 #[test]
@@ -6463,6 +6506,7 @@ fn the_terrain_fit_controls_are_touch_size_in_each_layout() {
         h.state_mut().select(Some(LayerRef::Vector(lines)));
         h.run_steps(2);
         quick_tap(&mut h, VECTOR);
+        scroll_column_to_end(&mut h);
         if matches!(h.state().pad.rects.unwrap().brush_card, BrushCard::Full(_)) {
             for name in [TERRAIN_FIT, SMOOTHING] {
                 let rect = control(&h, name).unwrap_or_else(|| panic!("{what}: no {name}"));
@@ -6475,8 +6519,9 @@ fn the_terrain_fit_controls_are_touch_size_in_each_layout() {
             assert!(!h.state().globe.line.fit, "{what}");
             check_controls(&h, &what);
         } else {
-            assert!(control(&h, TERRAIN_FIT).is_none(), "{what}");
+            assert!(control(&h, SMOOTHING).is_none(), "{what}");
         }
+        scroll_strip_to(&mut h, "Brush settings");
         tap(&mut h, "Brush settings");
         // The balance slider is disabled while the fit is off.
         assert!(disabled(&h, TERRAIN_BALANCE), "{what}");
@@ -10547,6 +10592,22 @@ fn check_safe(h: &Pad, size: (f32, f32), [top, right, bottom, left]: [f32; 4], w
 }
 
 /// Scrolls the tool strip down, and then up, until a cell shows in full.
+/// Scrolls the tool column of a short screen to its end, where the
+/// controls of the tool are.
+fn scroll_column_to_end(h: &mut Pad) {
+    for _ in 0..4 {
+        let rects = h.state().pad.rects.unwrap();
+        if rects.row || rects.column_content <= rects.tools.height() + 0.5 {
+            return;
+        }
+        // The column holds its cells to the right of the band of the
+        // system.
+        let column = rects.tools;
+        let from = pos2(column.right() - 28.0, column.bottom() - 10.0);
+        drag(h, from, pos2(from.x, column.top() + 10.0), None);
+    }
+}
+
 fn scroll_strip_to(h: &mut Pad, name: &str) {
     for i in 0..10 {
         let rects = h.state().pad.rects.unwrap();
@@ -10620,7 +10681,8 @@ fn the_measure_cell_of_the_tool_strip_opens_the_tool_with_any_layer_on_each_scre
                 finger_tap(&mut h, center + offset);
             }
             assert_eq!(h.state().measure.points.len(), 3, "{what}");
-            let card = h.state().pad.rects.unwrap().brush.unwrap();
+            scroll_column_to_end(&mut h);
+            let card = context_card(&h);
             for name in [SNAP, CLEAR_PATH] {
                 let rect = control(&h, name).unwrap_or_else(|| panic!("{what}: {name}"));
                 assert!(card.contains_rect(rect), "{what}");
@@ -10687,6 +10749,7 @@ fn the_cells_of_the_measure_card_act_on_the_path() {
         tap(&mut h, "Redo");
         assert!(h.state().measure.closed, "{what}");
         assert!(disabled(&h, "Redo"), "{what}");
+        scroll_strip_to(&mut h, CLEAR_PATH);
         tap(&mut h, CLEAR_PATH);
         assert!(h.state().measure.is_empty(), "{what}");
         assert!(disabled(&h, CLEAR_PATH), "{what}");
@@ -10694,6 +10757,7 @@ fn the_cells_of_the_measure_card_act_on_the_path() {
         assert!(h.state().measure.closed, "{what}");
 
         let snap = h.state().globe.snap.on;
+        scroll_strip_to(&mut h, SNAP);
         tap(&mut h, SNAP);
         assert_eq!(h.state().globe.snap.on, !snap, "{what}");
         tap(&mut h, SNAP);
@@ -10789,10 +10853,12 @@ fn the_measure_cell_and_card_fit_in_the_atlas_on_each_screen() {
             assert_ne!(toggled(&h, name), Some(true), "{what}: {name}");
         }
         assert!(!readout_line(h.state()).starts_with("Length"), "{what}");
-        let card = h.state().pad.rects.unwrap().brush.unwrap();
         // On a short screen, the card scrolls, and the Brush button is
-        // below its end.
-        let all = h.state().pad.rects.unwrap().card_cells == 3;
+        // below its end. The tool column scrolls to its end.
+        scroll_column_to_end(&mut h);
+        let card = context_card(&h);
+        let rects = h.state().pad.rects.unwrap();
+        let all = rects.card_cells == 3 || !rects.row;
         let names: &[&str] = if all {
             &[SNAP, "Brush settings"]
         } else {
@@ -10806,8 +10872,13 @@ fn the_measure_cell_and_card_fit_in_the_atlas_on_each_screen() {
         check_safe(&h, size, safe, &what);
         let screen = Rect::from_min_size(Pos2::ZERO, size.into());
         let r = h.state().pad.rects.unwrap();
-        let mut cards = vec![r.workspace, r.actions, r.tools, card];
-        cards.extend(r.view);
+        let mut cards = vec![r.workspace, r.actions, card];
+        // The tool column holds the cells of the tool.
+        if r.row {
+            cards.push(r.tools);
+        } else {
+            assert!(r.tools.contains_rect(card), "{what}");
+        }
         for (i, a) in cards.iter().enumerate() {
             assert!(screen.contains_rect(*a), "{what}: {a:?}");
             for b in &cards[i + 1..] {
@@ -10860,6 +10931,7 @@ fn the_vertex_cell_and_card_fit_in_the_atlas_on_each_screen() {
         h.state_mut().atlas.vertices = vec![(0, 0)];
         h.run_steps(2);
         lower_sheet(&mut h);
+        scroll_column_to_end(&mut h);
         let names = [SNAP_TO_LAYOUT, DELETE_VERTEX, DESELECT];
         let cells = names.map(|name| control(&h, name).unwrap_or_else(|| panic!("{what}: {name}")));
         for pair in cells.windows(2) {
@@ -10867,8 +10939,12 @@ fn the_vertex_cell_and_card_fit_in_the_atlas_on_each_screen() {
         }
         let card = cells[0].union(cells[2]);
         let r = h.state().pad.rects.unwrap();
-        let mut cards = vec![r.workspace, r.actions, r.tools];
-        cards.extend(r.view);
+        let mut cards = vec![r.workspace, r.actions];
+        if r.row {
+            cards.push(r.tools);
+        } else {
+            assert!(r.tools.contains_rect(card), "{what}");
+        }
         cards.extend(h.state().atlas.panel_rect);
         for other in cards {
             assert!(!card.intersects(other), "{what}: {card:?} {other:?}");
@@ -10908,6 +10984,7 @@ fn the_frame_strip_fits_in_the_atlas_on_each_screen() {
         h.run_steps(3);
         lower_sheet(&mut h);
         assert_eq!(h.state().atlas.tool, AtlasTool::Frame, "{what}");
+        scroll_column_to_end(&mut h);
         let names = [SNAP_TO_LAYOUT, DELETE, DESELECT];
         let cells = names.map(|name| control(&h, name).unwrap_or_else(|| panic!("{what}: {name}")));
         for pair in cells.windows(2) {
@@ -10915,8 +10992,12 @@ fn the_frame_strip_fits_in_the_atlas_on_each_screen() {
         }
         let card = cells[0].union(cells[2]);
         let r = h.state().pad.rects.unwrap();
-        let mut cards = vec![r.workspace, r.actions, r.tools];
-        cards.extend(r.view);
+        let mut cards = vec![r.workspace, r.actions];
+        if r.row {
+            cards.push(r.tools);
+        } else {
+            assert!(r.tools.contains_rect(card), "{what}");
+        }
         cards.extend(h.state().atlas.panel_rect);
         for other in cards {
             assert!(!card.intersects(other), "{what}: {card:?} {other:?}");
@@ -11249,7 +11330,12 @@ fn the_context_strip_has_deselect_in_each_tool_while_features_are_selected() {
         // strip.
         assert!(control(&h, DESELECT).is_none(), "{what}");
         quick_tap(&mut h, "Pan");
-        assert!(h.state().pad.rects.unwrap().brush.is_none(), "{what}");
+        let r = h.state().pad.rects.unwrap();
+        let tools_only = 12.0 + TOOLS as f32 * 44.0 + 0.5;
+        assert!(
+            r.brush.is_none() && (r.row || r.column_content <= tools_only),
+            "{what}"
+        );
         for name in [select::TOOL, "Pan", VECTOR, MEASURE] {
             quick_tap(&mut h, name);
             h.state_mut().feature_selection = vec![picks.polygon];
@@ -11517,7 +11603,7 @@ fn a_selection_opens_no_card_over_the_canvas() {
     assert!(control(&h, "name").is_none());
     assert!(control(&h, SHOW_IN_TABLE).is_none());
     // The one control of the selection is in the card below the strip.
-    let card = h.state().pad.rects.unwrap().brush.expect("no card");
+    let card = context_card(&h);
     assert!(card.contains_rect(control(&h, select::DELETE).unwrap()));
 }
 
@@ -11587,7 +11673,7 @@ fn merge_joins_two_provinces_into_the_feature_that_you_choose_in_one_undo_step()
     let big_row = control(&h, "Isle Big").unwrap();
     let small_row = control(&h, "Isle Small").unwrap();
     assert!(big_row.top() < small_row.top());
-    let card = h.state().pad.rects.unwrap().brush.unwrap();
+    let card = context_card(&h);
     assert!(big_row.left() > card.right());
     check_controls(&h, "the list of Merge");
     screenshot::save(&mut h, "pad-merge");
@@ -13044,13 +13130,36 @@ fn on_an_iphone_the_readout_is_above_the_slider_row() {
 }
 
 #[test]
-fn on_an_iphone_the_workspace_menu_holds_the_view_switch() {
+fn on_an_iphone_the_readout_holds_the_view_buttons_above_its_text() {
     let mut h = phone_pad();
-    assert!(control(&h, "Globe").is_none());
+    let readout = h.state().pad.rects.unwrap().readout.unwrap();
+    let view = h.state().pad.view_rect.unwrap();
+    assert_eq!(view.min, readout.min);
+    assert!(view.width() <= readout.width());
+    for name in ["Globe", "Flat", GRATICULE] {
+        let button = control(&h, name).unwrap_or_else(|| panic!("{name}"));
+        assert!(view.contains_rect(button), "{name}");
+    }
+    // The menu no longer holds the views.
     tap(&mut h, "Workspace");
-    assert!(control(&h, "Globe").is_some());
+    assert!(
+        !h.state()
+            .pad
+            .menu_rect
+            .unwrap()
+            .contains_rect(control(&h, "Globe").unwrap())
+    );
+    h.state_mut().pad.menu = false;
+    h.run_steps(2);
     tap(&mut h, "Flat");
     assert_eq!(h.state().globe.world_view, WorldView::Flat);
+    // The flat buttons fit in the width of the phone.
+    let view = h.state().pad.view_rect.unwrap();
+    assert!(view.right() <= 393.0 - 16.0);
+    for name in ["Projection", "Flat", GRATICULE] {
+        assert!(view.contains_rect(control(&h, name).unwrap()), "{name}");
+    }
+    check_safe(&h, (393.0, 852.0), [59.0, 0.0, 34.0, 0.0], "phone flat");
 }
 
 #[test]
@@ -13485,6 +13594,7 @@ fn the_selectable_cell_and_list_fit_in_the_world_on_each_screen() {
         h.state_mut().select(Some(LayerRef::Vector(rivers)));
         h.state_mut().globe.tool = Tool::Select;
         h.run_steps(2);
+        scroll_strip_to(&mut h, SELECTABLE);
         assert!(control(&h, SELECTABLE).is_some(), "{what}");
         check_controls(&h, &what);
         check_safe(&h, size, safe, &what);
@@ -13517,7 +13627,7 @@ fn a_long_press_shows_the_name_of_a_tool_and_a_longer_hold_opens_its_modes() {
     quick_tap(&mut h, "Pan");
     let tools = h.state().pad.rects.unwrap().tools;
     // The cells show icons only.
-    assert_eq!(control(&h, MEASURE).unwrap().size(), vec2(52.0, 52.0));
+    assert_eq!(control(&h, MEASURE).unwrap().size(), vec2(44.0, 44.0));
     assert!(h.query_by_label_contains(HOLD_HINT).is_none());
 
     // A hold on a tool with no modes shows its name. The end of the hold
@@ -13899,4 +14009,155 @@ fn on_a_phone_a_panel_is_a_sheet_with_its_tabs() {
     tap(&mut h, &format!("Close {TOOLBOX}"));
     assert!(h.state().pad.docks.world.panes.is_empty());
     assert!(h.state().pad.rects.unwrap().sheet.is_none());
+}
+
+#[test]
+fn the_tool_column_holds_the_tools_a_divider_and_the_controls_of_the_tool() {
+    let mut h = pad(BOARDS[0]);
+    let r = h.state().pad.rects.unwrap();
+    let column = r.tools;
+    assert!(!r.row);
+    // The six tools are at the top, from Sculpt to Measure.
+    let tools = [SCULPT, TERRAIN, VECTOR, select::TOOL, "Pan", MEASURE];
+    let last = control(&h, MEASURE).unwrap();
+    for pair in tools.windows(2) {
+        let (a, b) = (h.get_by_label(pair[0]), h.get_by_label(pair[1]));
+        let (a, b) = (a.rect(), b.rect());
+        assert_eq!(a.bottom(), b.top(), "{pair:?}");
+    }
+    // Below a divider, the controls of the brush: the two sliders and the
+    // Brush button.
+    let size = control(&h, "Size").unwrap();
+    assert_eq!(size.top(), last.bottom() + 13.0);
+    let flow = control(&h, "Flow").unwrap();
+    assert_eq!(flow.top(), size.bottom());
+    let button = control(&h, "Brush settings").unwrap();
+    assert_eq!(button.top(), flow.bottom());
+    for rect in [size, flow, button] {
+        assert!(column.contains_rect(rect));
+    }
+    // The Measure tool has its cells below the divider.
+    quick_tap(&mut h, MEASURE);
+    let column = h.state().pad.rects.unwrap().tools;
+    let snap = control(&h, SNAP).unwrap();
+    assert_eq!(snap.top(), control(&h, MEASURE).unwrap().bottom() + 13.0);
+    for name in [SNAP, "Brush settings"] {
+        assert!(column.contains_rect(control(&h, name).unwrap()), "{name}");
+    }
+    assert!(h.query_by_label(CLEAR_PATH).is_some());
+    // The Move tool has no controls, so the column ends after the tools.
+    quick_tap(&mut h, "Pan");
+    let r = h.state().pad.rects.unwrap();
+    assert_eq!(r.tools.height(), 12.0 + 6.0 * 44.0);
+    assert_eq!(
+        r.tools.bottom(),
+        control(&h, MEASURE).unwrap().bottom() + 6.0
+    );
+    check_controls(&h, "the column of the Move tool");
+}
+
+#[test]
+fn a_hold_on_a_control_of_the_column_shows_its_name() {
+    let mut h = pad(BOARDS[0]);
+    quick_tap(&mut h, MEASURE);
+    let column = h.state().pad.rects.unwrap().tools;
+    let pos = control(&h, SNAP).unwrap().center();
+    let on = h.state().globe.snap.on;
+    touch(&mut h, egui::TouchPhase::Start, pos, None);
+    let mut steps = 0;
+    while h.state().pad.flyouts.tip_rect.is_none() && steps < 120 {
+        h.step();
+        steps += 1;
+    }
+    let tip = h.state().pad.flyouts.tip_rect.expect("a tooltip");
+    assert!(tip.left() > column.right());
+    assert!(h.query_by_label(SNAP).is_some());
+    h.run_steps(60);
+    touch(&mut h, egui::TouchPhase::End, pos, None);
+    h.run_steps(3);
+    assert_eq!(h.state().pad.flyouts.tip_rect, None);
+    // A hold longer than a click does not change the switch.
+    assert_eq!(h.state().globe.snap.on, on);
+}
+
+#[test]
+fn the_readout_shows_the_place_and_a_scale_bar_with_a_round_distance() {
+    for size in BOARDS {
+        let mut h = pad(size);
+        let what = format!("{size:?}");
+        // A pointer over the globe gives the place.
+        let center = h.state().globe.rect.center();
+        h.event(egui::Event::PointerMoved(center));
+        h.run_steps(2);
+        let place = readout_line(h.state());
+        assert!(place.contains('°') && place != "–", "{what}: {place}");
+        let label = h.state().pad.readout_scale.clone().expect("a scale bar");
+        let (value, unit) = label.split_once(' ').unwrap();
+        assert!(["km", "m"].contains(&unit), "{what}: {label}");
+        let value: f64 = value.parse().unwrap();
+        let lead = value / 10f64.powf(value.log10().floor());
+        assert!(
+            [1.0, 2.0, 5.0].iter().any(|r| (lead - r).abs() < 1e-9),
+            "{what}: {label}"
+        );
+        // A closer view has a shorter distance.
+        h.state_mut().globe.view.zoom *= 4.0;
+        h.run_steps(2);
+        let closer = h.state().pad.readout_scale.clone().unwrap();
+        assert_ne!(closer, label, "{what}");
+        // Miles in the imperial units.
+        h.state_mut().doc.project.world.units = Units::Imperial;
+        h.run_steps(2);
+        let miles = h.state().pad.readout_scale.clone().unwrap();
+        assert!(
+            miles.ends_with(" mi") || miles.ends_with(" ft"),
+            "{what}: {miles}"
+        );
+        // The readout is at the lower left of the canvas, at the right of
+        // the tool column, and it has no card.
+        let r = h.state().pad.rects.unwrap();
+        let readout = r.readout.unwrap();
+        if !r.row {
+            assert_eq!(readout.left(), r.tools.right() + 16.0, "{what}");
+            assert_eq!(readout.bottom(), size.1 - 20.0 - 8.0, "{what}");
+        }
+    }
+}
+
+#[test]
+fn the_workspace_switch_has_icons_and_a_hold_names_them() {
+    use vale_app::ui::pad::flyout::Place;
+    for size in [BOARDS[0], BOARDS[1]] {
+        let mut h = pad(size);
+        let what = format!("{size:?}");
+        for name in ["World", "Atlas"] {
+            let button = control(&h, name).unwrap_or_else(|| panic!("{what}: {name}"));
+            assert_eq!(button.size(), vec2(44.0, 44.0), "{what}: {name}");
+        }
+        assert_eq!(toggled(&h, "World"), Some(true), "{what}");
+        // A hold shows the name below the button.
+        let pos = control(&h, "Atlas").unwrap().center();
+        touch(&mut h, egui::TouchPhase::Start, pos, None);
+        let mut steps = 0;
+        while h.state().pad.flyouts.tip.is_none() && steps < 120 {
+            h.step();
+            steps += 1;
+        }
+        let tip = h.state().pad.flyouts.tip.clone().expect("a tooltip");
+        assert_eq!((tip.name.as_str(), tip.place), ("Atlas", Place::Below));
+        let card = h.state().pad.flyouts.tip_rect.unwrap();
+        assert!(
+            card.top() > control(&h, "Atlas").unwrap().bottom(),
+            "{what}"
+        );
+        touch(&mut h, egui::TouchPhase::End, pos, None);
+        h.run_steps(3);
+        assert_eq!(h.state().pad.flyouts.tip, None, "{what}");
+        // A tap switches the workspace.
+        tap(&mut h, "Atlas");
+        assert_eq!(h.state().workspace, Workspace::Atlas, "{what}");
+        assert_eq!(toggled(&h, "Atlas"), Some(true), "{what}");
+        tap(&mut h, "World");
+        assert_eq!(h.state().workspace, Workspace::Globe, "{what}");
+    }
 }
