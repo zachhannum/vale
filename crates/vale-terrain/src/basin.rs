@@ -44,6 +44,14 @@ const MIN_RADIUS_CELLS: f64 = 8.0;
 /// more.
 const MIN_DENSITY_CELLS: f64 = 4.0;
 
+/// The mean distance between two tributaries is this number of half-widths
+/// of the basin or less.
+const MAX_DENSITY: f64 = 4.0;
+
+/// The smallest bumps of the start surface are this many cells in size or
+/// more.
+const SMALLEST_BUMP: f64 = 4.0;
+
 /// The size of the bumps of the start surface, in tributary distances.
 const WAVELENGTH: f64 = 1.6;
 
@@ -427,12 +435,15 @@ pub fn basin(map: &Heightmap, line: &BasinLine) -> BasinCut {
     // the size of the tributary distance. Its valleys start the network.
     let density = spec.density.clamp(
         MIN_DENSITY_CELLS * cell,
-        radius.max(MIN_DENSITY_CELLS * cell),
+        (MAX_DENSITY * radius).max(MIN_DENSITY_CELLS * cell),
     );
     let wavelength = WAVELENGTH * density;
     let seed = spec.seed ^ SALT_BASIN;
     let old_outlet = f64::from(old.levels[*chain.last().expect("the chain has cells")]);
     let relief = spec.height.max(1.0);
+    // The octaves go down to bumps of a few cells, so the streams bend at
+    // each Density setting.
+    let octaves = ((wavelength / (SMALLEST_BUMP * cell)).log2().floor() as u32 + 1).max(3);
     let mut h: Vec<f64> = (0..count)
         .map(|i| {
             // Smaller octaves bend the streams.
@@ -440,7 +451,7 @@ pub fn basin(map: &Heightmap, line: &BasinLine) -> BasinCut {
                 let size = f64::from(1u32 << k);
                 noise3(scale(dirs[i], size / wavelength), seed.wrapping_add(k))[0] / size
             };
-            let bump = octave(0) + octave(1) + octave(2);
+            let bump: f64 = (0..octaves).map(octave).sum();
             // The old ground steers the streams, so they follow its valleys.
             let ground = (f64::from(old.levels[i]) - old_outlet) / relief;
             across(i)
@@ -2091,6 +2102,29 @@ mod tests {
         assert!(far > 1.4 * near, "{near} and {far}");
     }
 
+    #[test]
+    fn a_density_above_the_half_width_changes_the_basin() {
+        // The half-width of the outline is less than 8 degrees.
+        let ground = ground();
+        let levels = |degrees: f64| {
+            let line = line(spec(degrees, 7), -25.0, 25.0, 0.0);
+            let map = apply(&ground, &basin(&ground, &line));
+            (0..=200)
+                .map(|k| {
+                    let lon = -20.0 + 40.0 * f64::from(k) / 200.0;
+                    f64::from(map.sample(lonlat_to_dir(lon, 4.0)))
+                })
+                .collect::<Vec<f64>>()
+        };
+        let (wide, wider) = (levels(10.0), levels(25.0));
+        let change = wide
+            .iter()
+            .zip(&wider)
+            .map(|(a, b)| (a - b).abs())
+            .sum::<f64>();
+        assert!(change > 0.0, "the basin does not change");
+    }
+
     /// Ground that rises by 1000 m from 25 degrees east to 25 degrees west.
     fn ramp() -> Heightmap {
         let mut map = Heightmap::new(N, level(300.0));
@@ -2510,7 +2544,12 @@ mod tests {
         // `EROSION` sets the Erosion setting, from 0 to 1.
         let spec = BasinSpec {
             erosion: var("EROSION", 0.5),
-            ..spec(2.0, var("SEED", 7.0) as u32)
+            channel: ChannelShape::new(
+                var("CHANNEL", crate::channel::CHANNEL_WIDTH_KM),
+                crate::channel::FLOODPLAIN_KM,
+                6371.0,
+            ),
+            ..spec(var("DENSITY", 2.0), var("SEED", 7.0) as u32)
         };
         let mut line = BasinLine::new(spec, &outline, n);
         for k in 0..=2000 {
