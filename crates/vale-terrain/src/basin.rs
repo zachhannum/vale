@@ -49,7 +49,7 @@ const WAVELENGTH: f64 = 1.6;
 
 /// The height of the bumps of the start surface, as a part of the rise
 /// across the area over one wavelength.
-const BUMPS: f64 = 1.0;
+const BUMPS: f64 = 0.5;
 
 /// The rise along the area from the outlet to the source in the start
 /// surface, as a part of the rise across the area.
@@ -73,9 +73,10 @@ const DEPTH_M: f64 = 10.0;
 /// Half of the diagonal of a cell, in cells, with a small margin.
 const HALF_DIAGONAL: f64 = 0.75;
 
-/// A cell drains to a neighbor that is nearer to the main river by this
-/// part of a cell or more.
-const CLOSER: f64 = 0.25;
+/// The slope from a cell of the network to a neighbor counts from 1 - this
+/// to 1 + this times its value, by a fixed random number for each pair of
+/// cells.
+const SCATTER: f64 = 0.3;
 
 /// The smallest drop from a cell to its receiver, in 16-bit steps.
 const STEP: f64 = 2.0;
@@ -398,7 +399,7 @@ pub fn basin(map: &Heightmap, line: &BasinLine) -> BasinCut {
             })
             .collect()
     };
-    let mut rim = rim_of(&inside);
+    let rim = rim_of(&inside);
     // From 0 at the main river to 1 at the outline.
     let across = |i: usize| {
         if on_chain[i] {
@@ -449,33 +450,9 @@ pub fn basin(map: &Heightmap, line: &BasinLine) -> BasinCut {
         })
         .collect();
 
-    // A cell drains to a neighbor that is nearer to the main river by a part
-    // of a cell. A cell with no such neighbor is not in the area.
-    let order_of = |inside: &[bool]| {
-        let mut order: Vec<usize> = (0..count).filter(|&i| inside[i] && !on_chain[i]).collect();
-        order.sort_by(|&a, &b| reach[a].total_cmp(&reach[b]));
-        order
-    };
-    let mut order = order_of(&inside);
-    let mut flow = loop {
-        let can_take = |i: usize, j: usize| {
-            on_chain[j] || (inside[j] && !rim[j] && reach[j] < reach[i] - CLOSER * cell)
-        };
-        let flow = route(&window, &chain, &order, can_take, &h);
-        if flow.stack.len() == chain.len() + order.len() {
-            break flow;
-        }
-        let mut reached = vec![false; count];
-        for &i in &flow.stack {
-            reached[i] = true;
-        }
-        inside = reached;
-        rim = rim_of(&inside);
-        order = order_of(&inside);
-    };
-    let can_take = |i: usize, j: usize| {
-        on_chain[j] || (inside[j] && !rim[j] && reach[j] < reach[i] - CLOSER * cell)
-    };
+    // A flood out from the main river gives the receivers, so the streams
+    // follow the valleys of the start surface to the main river.
+    let mut flow = flood(&window, &chain, &inside, &rim, &h);
     let length_to = |i: usize, r: usize| angle(dirs[i], dirs[r]) / cell;
 
     // Braun and Willett (2013): an implicit step of the stream-power law
@@ -487,7 +464,7 @@ pub fn basin(map: &Heightmap, line: &BasinLine) -> BasinCut {
     for step in 0..=ITERATIONS {
         if step > 0 {
             let old_receivers = std::mem::take(&mut flow.receiver);
-            flow = route(&window, &chain, &order, can_take, &h);
+            flow = flood(&window, &chain, &inside, &rim, &h);
             if flow.receiver == old_receivers {
                 break;
             }
@@ -953,38 +930,55 @@ fn chain_cells(line: &StrokeLine, window: &Window) -> Vec<usize> {
     chain
 }
 
-/// The flow on the cells of the area. The cells of the main river have
-/// fixed receivers. `order` holds the other cells of the area, nearest to the
-/// main river first. Each of them drains to its steepest neighbor that has a
-/// receiver and that `can_take(cell, neighbor)` allows. A cell with no such
-/// neighbor has no receiver.
-fn route(
-    window: &Window,
-    chain: &[usize],
-    order: &[usize],
-    can_take: impl Fn(usize, usize) -> bool,
-    h: &[f64],
-) -> Flow {
-    let mut receiver = vec![NONE; h.len()];
+/// The flow on the cells of the area, from a flood out from the main river.
+/// The cells of the main river have fixed receivers. The flood takes the
+/// other cells of the area from the lowest level of `h` up, and a cell
+/// drains to its steepest neighbor that the flood took before it. A cell of
+/// the rim takes no water if another neighbor can. Thus each cell that the
+/// flood reaches drains to the main river.
+fn flood(window: &Window, chain: &[usize], inside: &[bool], rim: &[bool], h: &[f64]) -> Flow {
+    let count = h.len();
+    let mut receiver = vec![NONE; count];
+    let mut queued = vec![false; count];
+    let mut filled = h.to_vec();
+    let mut heap = BinaryHeap::new();
+    let mut pushes = 0u32;
     let mut stack: Vec<usize> = chain.iter().rev().copied().collect();
     for (k, &c) in chain.iter().enumerate() {
         receiver[c] = chain.get(k + 1).map_or(OUT, |&next| next as u32);
+        queued[c] = true;
+        heap.push(Low(h[c], pushes, c));
+        pushes += 1;
     }
-    for &i in order {
-        let mut best = (f64::MIN, NONE);
-        for (k, &j) in window.neighbors(i).iter().enumerate() {
-            if j == NONE || receiver[j as usize] == NONE || !can_take(i, j as usize) {
-                continue;
+    while let Some(Low(level, _, i)) = heap.pop() {
+        if receiver[i] == NONE {
+            let mut best = (f64::MIN, NONE, true);
+            for (k, &j) in window.neighbors(i).iter().enumerate() {
+                if j == NONE || receiver[j as usize] == NONE {
+                    continue;
+                }
+                let run = if k < 4 { 1.0 } else { SQRT_2 };
+                let edge = rim[j as usize];
+                // The scatter turns a stream a little to one side, so the
+                // streams do not follow the grid.
+                let slope = (level - filled[j as usize]) / run;
+                let score = slope * (1.0 - SCATTER + 2.0 * SCATTER * window.scatter(i, k))
+                    + 1e-9 * window.scatter(i, k);
+                if (best.2 && !edge) || (best.2 == edge && score > best.0) {
+                    best = (score, j, edge);
+                }
             }
-            let run = if k < 4 { 1.0 } else { SQRT_2 };
-            let score = (h[i] - h[j as usize]) / run + 1e-9 * window.scatter(i, k);
-            if score > best.0 {
-                best = (score, j);
-            }
-        }
-        if best.1 != NONE {
             receiver[i] = best.1;
             stack.push(i);
+        }
+        for &j in &window.neighbors(i) {
+            if j != NONE && inside[j as usize] && !queued[j as usize] {
+                let j = j as usize;
+                queued[j] = true;
+                filled[j] = h[j].max(level);
+                heap.push(Low(filled[j], pushes, j));
+                pushes += 1;
+            }
         }
     }
     Flow { receiver, stack }
@@ -1896,7 +1890,9 @@ mod tests {
 
     #[test]
     fn the_streams_bend() {
-        // Streams that go down the slope with few bends give about 0.13.
+        // Streams that go down the slope with few bends give about 0.13, and
+        // a network where each cell drains toward the main river gives about
+        // 0.155.
         let n = 2048;
         let bend = [7, 20, 33]
             .map(|seed| {
@@ -1907,7 +1903,7 @@ mod tests {
             .iter()
             .sum::<f64>()
             / 3.0;
-        assert!(bend > 0.14, "{bend}");
+        assert!(bend > 0.165, "{bend}");
     }
 
     /// The relief of the ground in a band of longitude inside the outline of
