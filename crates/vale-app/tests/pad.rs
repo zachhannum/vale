@@ -443,7 +443,9 @@ fn check_controls(h: &Pad, what: &str) {
                 let add = add || in_panels && tiles.contains(&name);
                 let pane_menu = in_pane_menu
                     && (name.starts_with("Close ")
-                        || name == vale_app::ui::pad::dock_ui::MOVE_TO_NEW_PANE);
+                        || name == vale_app::ui::pad::dock_ui::MOVE_TO_NEW_PANE
+                        || name == vale_app::ui::pad::dock_ui::COLLAPSE_PANE
+                        || name == vale_app::ui::pad::dock_ui::EXPAND_PANE);
                 let add = add || pane_menu;
                 let view = in_view && view_rows().contains(&name);
                 let add = add || view;
@@ -14094,6 +14096,187 @@ fn a_drag_of_a_tab_opens_no_menu() {
     drag(&mut h, from, pos2(from.x, dock.bottom() + 10.0), None);
     assert_eq!(dock_tabs(&h), [[Panel::Layers], [Panel::Toolbox]]);
     assert!(h.state().pad.pane_menu.is_none());
+}
+
+fn folded(h: &Pad) -> Vec<bool> {
+    let panes = &h.state().pad.docks.world.panes;
+    panes.iter().map(|p| p.folded).collect()
+}
+
+#[test]
+fn a_tap_on_the_open_tab_folds_the_pane_to_its_header() {
+    use vale_app::ui::pad::dock_ui::{fold_name, tab_name};
+    use vale_app::ui::pad::geometry::ROW;
+    use vale_app::ui::pad::panes::BAR;
+    let mut h = docked(
+        BOARDS[0],
+        &[&[Panel::Layers, Panel::Toolbox], &[Panel::Brush]],
+    );
+    let brush = panel(&h, Panel::Brush).unwrap();
+    quick_tap(&mut h, &tab_name("Layers"));
+    assert_eq!(folded(&h), [true, false]);
+    // The folded pane is its header, and the pane below moves up.
+    let layers = panel(&h, Panel::Layers).unwrap();
+    assert_eq!(layers.height(), ROW);
+    let below = panel(&h, Panel::Brush).unwrap();
+    assert_eq!(below.top(), layers.bottom() + BAR);
+    assert!(below.top() < brush.top());
+    // The chevron points right, and a tap on it opens the pane.
+    assert!(control(&h, &fold_name("Layers", false)).is_none());
+    check_controls(&h, "a folded pane");
+    screenshot::save(&mut h, "pad-folded-pane");
+    quick_tap(&mut h, &fold_name("Layers", true));
+    assert_eq!(folded(&h), [false, false]);
+    // A tap on another tab shows it and opens the pane.
+    quick_tap(&mut h, &tab_name("Layers"));
+    quick_tap(&mut h, &tab_name(TOOLBOX));
+    assert_eq!(folded(&h), [false, false]);
+    assert!(h.state().pad.shows(Panel::Toolbox));
+    // A tap on the title of a pane with one tab folds it, and the chevron
+    // folds it too.
+    use vale_app::ui::pad::dock_ui::move_name;
+    quick_tap(&mut h, &move_name("Brush"));
+    assert_eq!(folded(&h), [false, true]);
+    quick_tap(&mut h, &move_name("Brush"));
+    assert_eq!(folded(&h), [false, false]);
+    quick_tap(&mut h, &fold_name("Brush", false));
+    assert_eq!(folded(&h), [false, true]);
+    // A folded pane has no resize bar.
+    let brush = panel(&h, Panel::Brush).unwrap();
+    let bar = pos2(brush.center().x, brush.bottom() + BAR / 2.0);
+    drag(&mut h, bar, bar + vec2(0.0, -60.0), None);
+    assert_eq!(panel(&h, Panel::Brush).unwrap().height(), ROW);
+    assert_eq!(h.state().pad.docks.world.panes[1].height, None);
+}
+
+#[test]
+fn the_menu_of_a_tab_folds_and_opens_the_pane() {
+    use vale_app::ui::pad::dock_ui::{COLLAPSE_PANE, EXPAND_PANE, move_name, tab_name};
+    let mut h = docked(
+        BOARDS[0],
+        &[&[Panel::Layers, Panel::Toolbox], &[Panel::Brush]],
+    );
+    long_press(&mut h, &tab_name(TOOLBOX));
+    assert!(control(&h, EXPAND_PANE).is_none());
+    check_controls(&h, "the menu of a tab");
+    tap(&mut h, COLLAPSE_PANE);
+    assert_eq!(folded(&h), [true, false]);
+    // The release did not choose the tab.
+    assert!(h.state().pad.shows(Panel::Layers));
+    long_press(&mut h, &move_name("Brush"));
+    tap(&mut h, COLLAPSE_PANE);
+    assert_eq!(folded(&h), [true, true]);
+    long_press(&mut h, &tab_name("Layers"));
+    tap(&mut h, EXPAND_PANE);
+    assert_eq!(folded(&h), [false, true]);
+}
+
+#[test]
+fn a_tile_opens_a_folded_pane() {
+    use vale_app::ui::pad::dock_ui::tab_name;
+    let mut h = docked(BOARDS[0], &[&[Panel::Layers, Panel::Toolbox]]);
+    quick_tap(&mut h, &tab_name("Layers"));
+    assert_eq!(folded(&h), [true]);
+    // The tile of the panel that shows opens the pane, and does not close
+    // the panel.
+    open_panel(&mut h, "Layers");
+    assert_eq!(folded(&h), [false]);
+    assert!(h.state().pad.shows(Panel::Layers));
+    // The tile of a tab behind shows it and opens the pane.
+    quick_tap(&mut h, &tab_name("Layers"));
+    toolbox(&mut h);
+    assert_eq!(folded(&h), [false]);
+    assert!(h.state().pad.shows(Panel::Toolbox));
+}
+
+/// A drag of a finger on the header control `name` by `by`.
+fn drag_header(h: &mut Pad, name: &str, by: egui::Vec2) {
+    let from = control(h, name)
+        .unwrap_or_else(|| panic!("no control `{name}`"))
+        .center();
+    drag(h, from, from + by, None);
+}
+
+#[test]
+fn a_swipe_to_the_right_on_a_header_hides_the_dock() {
+    use vale_app::ui::pad::dock_ui::{move_name, tab_name};
+    for name in [tab_name("Layers"), tab_name(TOOLBOX), move_name("Brush")] {
+        let mut h = docked(
+            BOARDS[0],
+            &[&[Panel::Layers, Panel::Toolbox], &[Panel::Brush]],
+        );
+        let before = dock_tabs(&h);
+        drag_header(&mut h, &name, vec2(160.0, 10.0));
+        let dock = &h.state().pad.docks.world;
+        assert!(dock.collapsed, "{name}");
+        // The panes stay as they were.
+        assert_eq!(dock_tabs(&h), before, "{name}");
+        assert!(h.state().pad.panels.is_empty(), "{name}");
+        assert!(h.state().pad.dock_drag.is_none(), "{name}");
+    }
+}
+
+#[test]
+fn a_short_swipe_on_a_header_keeps_the_dock() {
+    use vale_app::ui::pad::dock_ui::tab_name;
+    let mut h = docked(
+        BOARDS[0],
+        &[&[Panel::Layers, Panel::Toolbox], &[Panel::Brush]],
+    );
+    let rect = panel(&h, Panel::Layers).unwrap();
+    // During the swipe, the dock moves with the finger.
+    let from = control(&h, &tab_name(TOOLBOX)).unwrap().center();
+    touch(&mut h, egui::TouchPhase::Start, from, None);
+    h.step();
+    for i in 1..=4 {
+        let at = from + vec2(15.0 * i as f32, 0.0);
+        touch(&mut h, egui::TouchPhase::Move, at, None);
+        h.step();
+    }
+    h.step();
+    let moved = panel(&h, Panel::Layers).unwrap();
+    assert!(moved.left() > rect.left() + 30.0, "{moved:?}");
+    touch(&mut h, egui::TouchPhase::End, from + vec2(60.0, 0.0), None);
+    h.run_steps(3);
+    assert!(!h.state().pad.docks.world.collapsed);
+    assert_eq!(panel(&h, Panel::Layers), Some(rect));
+    assert_eq!(
+        dock_tabs(&h),
+        [vec![Panel::Layers, Panel::Toolbox], vec![Panel::Brush]]
+    );
+    assert!(h.state().pad.pane_menu.is_none());
+}
+
+#[test]
+fn a_vertical_drag_on_a_header_still_moves_the_pane() {
+    use vale_app::ui::pad::dock_ui::{move_name, tab_name};
+    let mut h = docked(
+        BOARDS[0],
+        &[&[Panel::Layers, Panel::Toolbox], &[Panel::Brush]],
+    );
+    let dock = h.state().pad.dock_rect.unwrap();
+    // The empty part of the header moves the pane below the other pane.
+    let name = move_name("Layers");
+    let from = control(&h, &name).unwrap().center();
+    drag(&mut h, from, pos2(from.x + 20.0, dock.bottom() - 4.0), None);
+    assert!(!h.state().pad.docks.world.collapsed);
+    assert_eq!(
+        dock_tabs(&h),
+        [vec![Panel::Brush], vec![Panel::Layers, Panel::Toolbox]]
+    );
+    // A tab moves to a pane of its own.
+    let from = control(&h, &tab_name(TOOLBOX)).unwrap().center();
+    let dock = h.state().pad.dock_rect.unwrap();
+    drag(&mut h, from, pos2(from.x + 20.0, dock.bottom() - 4.0), None);
+    assert!(!h.state().pad.docks.world.collapsed);
+    assert_eq!(
+        dock_tabs(&h),
+        [
+            vec![Panel::Brush],
+            vec![Panel::Layers],
+            vec![Panel::Toolbox]
+        ]
+    );
 }
 
 #[test]

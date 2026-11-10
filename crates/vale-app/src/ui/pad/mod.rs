@@ -578,9 +578,10 @@ impl PadState {
         self.dock_mut().close(panel);
     }
 
-    /// Closes a panel that shows, and else shows it.
+    /// Closes a panel that shows, and else shows it. A panel in a folded
+    /// pane shows.
     pub fn toggle(&mut self, panel: Panel) {
-        if self.shows(panel) {
+        if self.shows(panel) && !self.dock().folded(panel) {
             self.close(panel);
         } else {
             self.open(panel);
@@ -1594,16 +1595,15 @@ fn merge_menu(
     }
     let mut keep = None;
     let radius = theme::CARD_RADIUS.into();
+    let backdrop = state.globe.backdrop();
     widgets::card(
         ctx,
-        None,
+        backdrop,
         "pad-merge",
         rect,
         Order::Foreground,
         radius,
         |ui| {
-            ui.painter()
-                .rect_filled(rect, radius, theme::card(false).to_opaque());
             let inner = rect.shrink2(vec2(widgets::BODY_PAD, 10.0));
             let layout = egui::Layout::top_down(egui::Align::Min);
             let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
@@ -2880,17 +2880,15 @@ fn add_menu(
         state.pad.add = false;
     }
     let radius = theme::CARD_RADIUS.into();
+    let backdrop = state.globe.backdrop();
     widgets::card(
         ctx,
-        None,
+        backdrop,
         "pad-add-layer",
         rect,
         Order::Foreground,
         radius,
         |ui| {
-            // The menu can cover a panel, so its fill is opaque.
-            ui.painter()
-                .rect_filled(rect, radius, theme::card(false).to_opaque());
             let inner = rect.shrink2(vec2(BODY_PAD, 10.0));
             let layout = egui::Layout::top_down(egui::Align::Min);
             let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
@@ -3316,17 +3314,15 @@ fn menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rect
         state.pad.menu = false;
     }
     let radius = theme::CARD_RADIUS.into();
+    let backdrop = state.globe.backdrop();
     widgets::card(
         ctx,
-        None,
+        backdrop,
         "pad-menu",
         rect,
         Order::Foreground,
         radius,
         |ui| {
-            // The menu covers the tool strip, so its fill is opaque.
-            ui.painter()
-                .rect_filled(rect, radius, theme::card(false).to_opaque());
             let inner = rect.shrink2(vec2(BODY_PAD, 10.0));
             let layout = egui::Layout::top_down(egui::Align::Min);
             let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
@@ -3402,17 +3398,15 @@ fn worlds_menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Control
         !pressed.is_some_and(|pos| !rect.contains(pos) && !rects.workspace.contains(pos));
     let current = state.session.as_ref().map(|s| s.path().to_path_buf());
     let radius = theme::CARD_RADIUS.into();
+    let backdrop = state.globe.backdrop();
     widgets::card(
         ctx,
-        None,
+        backdrop,
         "pad-worlds",
         rect,
         Order::Foreground,
         radius,
         |ui| {
-            // The menu covers the tool strip, so its fill is opaque.
-            ui.painter()
-                .rect_filled(rect, radius, theme::card(false).to_opaque());
             let inner = rect.shrink2(vec2(BODY_PAD, 10.0));
             let layout = egui::Layout::top_down(egui::Align::Min);
             let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));

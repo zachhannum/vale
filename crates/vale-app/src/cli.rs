@@ -60,6 +60,10 @@ pub struct Args {
     /// With --layout pad: collapse the dock off the right edge.
     #[arg(long)]
     pub dock_hidden: bool,
+    /// With --layout pad: fold pane N of the dock to its header. The first
+    /// pane is 1.
+    #[arg(long, value_name = "N")]
+    pub fold_pane: Vec<usize>,
     /// With --layout pad: open the flyout of the group of the brush mode.
     #[arg(long)]
     pub brush_modes: bool,

@@ -37,6 +37,13 @@ const EDGE_TAB: (f32, f32) = (TOUCH, 72.0);
 pub const MOVE_TO_NEW_PANE: &str = "Move to new pane";
 /// The width of the menu of a tab.
 const MENU_WIDTH: f32 = 240.0;
+/// The row of the menu of a tab that folds the pane to its header.
+pub const COLLAPSE_PANE: &str = "Collapse pane";
+/// The row of the menu of a tab that opens a folded pane.
+pub const EXPAND_PANE: &str = "Expand pane";
+/// A swipe on a header that ends at this speed to the right, in points per
+/// second, hides the dock.
+const FLING: f32 = 800.0;
 
 /// What a finger moves in the dock.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -47,6 +54,9 @@ pub enum DockDrag {
     Tab { panel: Panel, pos: Pos2 },
     /// The handle of the width.
     Width,
+    /// The whole dock, by a header, sideways to the right. `dx` is the
+    /// distance to the right, and `speed` the speed of the finger.
+    Swipe { dx: f32, speed: f32 },
 }
 
 /// The control name of the empty part of the header of a pane.
@@ -57,6 +67,14 @@ pub fn move_name(name: &str) -> String {
 /// The control name of a tab.
 pub fn tab_name(name: &str) -> String {
     format!("{name} tab")
+}
+
+/// The control name of the chevron at the right of the header of a pane.
+pub fn fold_name(name: &str, folded: bool) -> String {
+    match folded {
+        true => format!("Expand {name}"),
+        false => format!("Collapse {name}"),
+    }
 }
 
 /// The row of the menu of a tab, and the button of a sheet, that close a
@@ -97,6 +115,9 @@ enum Mode {
 struct HeaderOut {
     /// The Close button of a sheet.
     close: bool,
+    /// The chevron, or the title of a pane with one tab, folds or opens
+    /// the pane.
+    fold: bool,
     /// The tab that the user chose.
     focus: Option<usize>,
     /// The empty part of the header.
@@ -136,7 +157,7 @@ pub fn show(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, 
             show_sheet(ctx, state, controls, rects, sheet);
         }
     } else {
-        let slide = slide(ctx, state);
+        let slide = slide(ctx, state, rects.dock.width());
         if slide < 1.0 {
             show_dock(ctx, state, controls, rects, slide);
         }
@@ -151,16 +172,36 @@ pub fn show(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, 
 }
 
 /// How far the dock is off the right edge, from 0 on the screen to 1 off
-/// it.
-fn slide(ctx: &egui::Context, state: &AppState) -> f32 {
+/// it. During a swipe, the dock moves with the finger, and after the swipe
+/// it slides on from there. `width` is the width of the dock.
+fn slide(ctx: &egui::Context, state: &AppState, width: f32) -> f32 {
     let collapsed = state.pad.dock().collapsed;
     let id = egui::Id::new(("pad-dock-slide", state.pad.workspace as u8));
     let t = ctx.animate_bool_with_time(id, collapsed, SLIDE_TIME);
-    if state.headless {
-        f32::from(u8::from(collapsed))
-    } else {
-        t
+    let end = f32::from(u8::from(collapsed));
+    if let Some(DockDrag::Swipe { dx, .. }) = state.pad.dock_drag {
+        // The header stays under the finger, so the dock keeps the drag.
+        return (dx / width.max(1.0)).clamp(0.0, 0.9);
     }
+    let release = release_id(state);
+    let from: Option<(f32, f64)> = ctx.data(|d| d.get_temp(release));
+    let base = if state.headless { end } else { t };
+    let Some((from, start)) = from else {
+        return base;
+    };
+    let p = ((ctx.input(|i| i.time) - start) as f32 / SLIDE_TIME).clamp(0.0, 1.0);
+    if state.headless || p >= 1.0 {
+        ctx.data_mut(|d| d.remove::<(f32, f64)>(release));
+        return base;
+    }
+    ctx.request_repaint();
+    let ease = 1.0 - (1.0 - p) * (1.0 - p);
+    from + (end - from) * ease
+}
+
+/// The place of the dock at the end of a swipe, and the time of the end.
+fn release_id(state: &AppState) -> egui::Id {
+    egui::Id::new(("pad-dock-release", state.pad.workspace as u8))
 }
 
 /// The tab at the middle of the right edge that shows a collapsed dock,
@@ -227,22 +268,32 @@ fn pane_menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls)
         return;
     };
     let split = !menu.sheet && state.pad.dock().panes[i].tabs.len() > 1;
+    let fold = match state.pad.dock().panes[i].folded {
+        true => EXPAND_PANE,
+        false => COLLAPSE_PANE,
+    };
     let close = close_name(panel_name(state, menu.panel));
-    let (mut closed, mut moved) = (false, false);
+    let (mut closed, mut moved, mut folded) = (false, false, false);
     let shown = popover::show(ctx, "pad-pane-menu", menu.anchor, MENU_WIDTH, |ui| {
         closed = widgets::text_row(ui, controls, &close, 0.0, false, true).clicked();
-        if split {
+        if !menu.sheet {
             popover::divider(ui);
+            folded = widgets::text_row(ui, controls, fold, 0.0, false, true).clicked();
+        }
+        if split {
             moved = widgets::text_row(ui, controls, MOVE_TO_NEW_PANE, 0.0, false, true).clicked();
         }
     });
     if closed {
         state.pad.close(menu.panel);
     }
+    if folded {
+        state.pad.dock_mut().fold(i);
+    }
     if moved {
         state.pad.dock_mut().split_tab(menu.panel);
     }
-    if closed || moved || (shown.closed && !menu.held) {
+    if closed || moved || folded || (shown.closed && !menu.held) {
         state.pad.pane_menu = None;
     }
 }
@@ -286,16 +337,14 @@ fn show_dock(
         })
         .collect();
     // A pane shows its content, up to the height that the user gave it.
-    let natural: Vec<f32> = (heads.iter())
-        .map(|head| {
-            state
-                .pad
-                .heights
-                .get(head.key)
-                .copied()
-                .unwrap_or(room.height())
+    // A folded pane shows only its header.
+    let natural: Vec<f32> = (heads.iter().zip(&state.pad.dock().panes))
+        .map(|(head, pane)| match pane.folded {
+            true => ROW,
+            false => (state.pad.heights.get(head.key).copied()).unwrap_or(room.height()),
         })
         .collect();
+    let folded: Vec<bool> = state.pad.dock().panes.iter().map(|p| p.folded).collect();
     let wanted: Vec<f32> = (state.pad.dock().panes.iter().zip(&natural))
         .map(|(pane, &natural)| pane.height.map_or(natural, |h| h.min(natural)))
         .collect();
@@ -324,6 +373,10 @@ fn show_dock(
             for (i, head) in heads.iter_mut().enumerate() {
                 let pane_rect =
                     Rect::from_min_size(pos2(rect.left(), top), vec2(rect.width(), heights[i]));
+                let pane_rect = match folded[i] {
+                    true => Rect::from_min_size(pane_rect.min, vec2(rect.width(), ROW)),
+                    false => pane_rect,
+                };
                 let inner = geometry::edge_content(pane_rect, rects.screen, rects.bands);
                 let mut child = ui.new_child(
                     egui::UiBuilder::new()
@@ -362,6 +415,10 @@ fn show_dock(
                         Stroke::new(1.0, theme::divider()),
                     );
                 }
+                // The bar of a folded pane does not change its height.
+                if folded[i] {
+                    continue;
+                }
                 let pill = Rect::from_center_size(bar.center(), vec2(36.0, 4.0));
                 let pill = pill.translate(vec2((line.center().x - bar.center().x).round(), 0.0));
                 let touch = Rect::from_center_size(bar.center(), vec2(bar.width(), BAR_TOUCH));
@@ -391,10 +448,28 @@ fn show_dock(
     }
     for (i, out) in actions.into_iter().rev() {
         if let Some(tab) = out.focus {
-            state.pad.dock_mut().focus(i, tab);
+            state.pad.dock_mut().tap_tab(i, tab);
+        }
+        if out.fold {
+            state.pad.dock_mut().fold(i);
         }
     }
     match drag {
+        Some((DockDrag::Swipe { dx, speed }, DragPhase::Stopped)) => {
+            // A swipe of a third of the dock, or a quick swipe, hides the
+            // dock. Else the dock slides back.
+            let width = room.width();
+            let hide = dx > width / 3.0 || (speed > FLING && dx > HOLD_SLOP);
+            if hide {
+                state.pad.dock_mut().collapsed = true;
+                state.pad.pane_menu = None;
+            }
+            let at = (dx / width.max(1.0)).clamp(0.0, 0.9);
+            let now = ctx.input(|i| i.time);
+            ctx.data_mut(|d| d.insert_temp(release_id(state), (at, now)));
+            state.pad.dock_drag = None;
+            ctx.request_repaint();
+        }
         Some((drag, DragPhase::Moving)) => {
             state.pad.dock_drag = Some(drag);
             paint_drop(ctx, state, rect, &placed, drag);
@@ -453,7 +528,7 @@ fn drop_of(dock: &panes::Dock, rect: Rect, placed: &[Placed], drag: DockDrag) ->
     let (pos, from) = match drag {
         DockDrag::Pane { pane, pos } => (pos, Some(pane)),
         DockDrag::Tab { panel, pos } => (pos, dock.find(panel).map(|(i, _)| i)),
-        DockDrag::Width => return None,
+        DockDrag::Width | DockDrag::Swipe { .. } => return None,
     };
     let area = rect.expand2(vec2(0.0, ROW));
     if !(area.x_range().contains(pos.x) && area.y_range().contains(pos.y)) {
@@ -486,7 +561,7 @@ fn paint_drop(
             (pos, panel_name(state, panel), panel_icon(panel))
         }
         DockDrag::Tab { panel, pos } => (pos, panel_name(state, panel), panel_icon(panel)),
-        DockDrag::Width => return,
+        DockDrag::Width | DockDrag::Swipe { .. } => return,
     };
     let target = drop_of(state.pad.dock(), rect, placed, drag);
     let painter = ctx.layer_painter(egui::LayerId::new(
@@ -732,7 +807,9 @@ fn pane(
     let header = Rect::from_min_size(rect.min, vec2(rect.width(), ROW));
     let out = header_row(ui, state, controls, i, head, header, Mode::Dock, names);
     ui.advance_cursor_after_rect(header);
-    contents(ui, state, controls, head, rect.bottom());
+    if !state.pad.dock().panes[i].folded {
+        contents(ui, state, controls, head, rect.bottom());
+    }
     out
 }
 
@@ -865,6 +942,18 @@ fn header_row(
         let resp = widgets::icon_button_at(ui, controls, at, action, icon, active, true);
         panel_title(state, head, false, Some(&resp));
     }
+    // The chevron of a dock pane points right while the pane is folded, and
+    // down while it is open.
+    let mut fold = false;
+    if mode == Mode::Dock {
+        let at = button(left_of - TOUCH);
+        left_of = at.left();
+        let (chevron, icon) = match pane.folded {
+            true => (fold_name(name, true), Icon::Open),
+            false => (fold_name(name, false), Icon::Down),
+        };
+        fold = widgets::icon_button_at(ui, controls, at, &chevron, icon, false, true).clicked();
+    }
     let tabs_area = Rect::from_min_max(
         pos2(rect.left() + PAD, rect.top()),
         pos2(left_of, rect.bottom()),
@@ -962,16 +1051,11 @@ fn header_row(
                 tab_drags.push(resp);
                 continue;
             }
-            drag = drag.or_else(|| {
-                tab_drag(
-                    ui,
-                    &resp,
-                    DockDrag::Tab {
-                        panel: *panel,
-                        pos: Pos2::ZERO,
-                    },
-                )
-            });
+            let kind = DockDrag::Tab {
+                panel: *panel,
+                pos: Pos2::ZERO,
+            };
+            drag = drag.or_else(|| tab_drag(ui, &resp, kind, state.pad.dock_drag));
         }
     }
     // The empty part of the header. In a pane with one tab, it holds the
@@ -986,10 +1070,7 @@ fn header_row(
         empty
     };
     let bar = (empty.width() >= TOUCH).then(|| {
-        let sense = match mode {
-            Mode::Dock => Sense::drag(),
-            Mode::Sheet => Sense::click_and_drag(),
-        };
+        let sense = Sense::click_and_drag();
         widgets::hit(ui, controls, empty, &move_name(name), sense, true, None)
     });
     if let Some(bar) = &bar
@@ -998,6 +1079,8 @@ fn header_row(
         if pane.tabs.len() == 1 && long_press(ui, bar) {
             menu = Some((pane.panel(), title_rect));
         } else if mode == Mode::Dock {
+            // A tap on the title of a pane with one tab folds or opens it.
+            fold |= pane.tabs.len() == 1 && bar.clicked();
             let kind = if pane.tabs.len() == 1 {
                 DockDrag::Tab {
                     panel: pane.panel(),
@@ -1009,7 +1092,7 @@ fn header_row(
                     pos: Pos2::ZERO,
                 }
             };
-            drag = drag.or_else(|| tab_drag(ui, bar, kind));
+            drag = drag.or_else(|| tab_drag(ui, bar, kind, state.pad.dock_drag));
         }
     }
     if let Some((panel, anchor)) = menu {
@@ -1035,6 +1118,7 @@ fn header_row(
     };
     HeaderOut {
         close,
+        fold,
         focus,
         bar: if holding { None } else { bar },
         tab_drags,
@@ -1044,20 +1128,38 @@ fn header_row(
     }
 }
 
-/// The drag of a response, with the place of the finger.
-fn tab_drag(ui: &egui::Ui, resp: &egui::Response, kind: DockDrag) -> Option<(DockDrag, DragPhase)> {
+/// The drag of a response, with the place of the finger. `now` is the
+/// drag of the dock in the last frame. A drag that starts sideways to the
+/// right is a swipe of the dock.
+fn tab_drag(
+    ui: &egui::Ui,
+    resp: &egui::Response,
+    kind: DockDrag,
+    now: Option<DockDrag>,
+) -> Option<(DockDrag, DragPhase)> {
+    let delta = ui.input(|i| Some(i.pointer.interact_pos()? - i.pointer.press_origin()?));
     // A press that stays in place is no drag, even when it is long.
-    let moved = ui.input(|i| {
-        let origin = i.pointer.press_origin()?;
-        Some(origin.distance(i.pointer.interact_pos()?))
-    });
     let phase = if resp.drag_stopped() {
         DragPhase::Stopped
-    } else if resp.dragged() && moved.is_some_and(|m| m > HOLD_SLOP) {
+    } else if resp.dragged() && delta.is_some_and(|d| d.length() > HOLD_SLOP) {
         DragPhase::Moving
     } else {
         return None;
     };
+    let swipe = match now {
+        Some(DockDrag::Swipe { dx, speed }) => Some((dx, speed)),
+        Some(_) => None,
+        None => delta.filter(|d| d.x > d.y.abs()).map(|_| (0.0, 0.0)),
+    };
+    if let Some((dx, speed)) = swipe {
+        // The finger is gone at the end of the drag, so the swipe keeps the
+        // last distance and speed.
+        let (dx, speed) = match (phase, delta) {
+            (DragPhase::Moving, Some(d)) => (d.x.max(0.0), ui.input(|i| i.pointer.velocity().x)),
+            _ => (dx, speed),
+        };
+        return Some((DockDrag::Swipe { dx, speed }, phase));
+    }
     let pos = ui
         .ctx()
         .pointer_interact_pos()
@@ -1066,7 +1168,7 @@ fn tab_drag(ui: &egui::Ui, resp: &egui::Response, kind: DockDrag) -> Option<(Doc
     let kind = match kind {
         DockDrag::Pane { pane, .. } => DockDrag::Pane { pane, pos },
         DockDrag::Tab { panel, .. } => DockDrag::Tab { panel, pos },
-        DockDrag::Width => DockDrag::Width,
+        other => other,
     };
     Some((kind, phase))
 }

@@ -35,9 +35,7 @@ use vale_app::ui::pad::atlas::{
     EDITED, MAP_STYLE, MAP_STYLE_NAME, NO_MAP_STYLE_ROW, RESET_TO_MAP_STYLE, SAVE_AS_MAP_STYLE,
     UPDATE_MAP_STYLE, map_style_row,
 };
-use vale_app::ui::pad::atlas::{
-    GRID, GRID_COLOR, GRID_SPACING, LAYOUT_GRID, SHOW_GRID, SNAP_TO_LAYOUT,
-};
+use vale_app::ui::pad::atlas::{GRID, GRID_COLOR, GRID_SPACING, LAYOUT_GRID, SNAP_TO_LAYOUT};
 use vale_app::ui::pad::dock_ui::tab_name;
 use vale_app::ui::pad::edge_labels::{
     EDGE_LABELS, HALO as EDGE_HALO, HALO_WIDTH as EDGE_HALO_WIDTH, OFFSET as EDGE_OFFSET,
@@ -259,6 +257,11 @@ fn show_tab(h: &mut Pad, name: &str) {
         .is_some_and(|(p, _)| dock.panes[p].tabs.len() > 1);
     if !tab {
         merge_frame_tabs(h);
+    }
+    // A tap on the open tab folds its pane, so the tap is only on a tab
+    // behind another.
+    if h.state().pad.dock().shows(panel) {
+        return;
     }
     // The Frame tab of the desktop is the Properties tab of the iPad.
     let name = if i == Some(0) { PROPERTIES } else { name };
@@ -4371,10 +4374,11 @@ fn the_filter_of_a_class_has_the_condition_builder() {
     }
 
     // Code holds the whole filter.
-    // A tap on the header of the pane, right of the tabs, closes the menu
-    // of the values.
-    let card = h.state().atlas.panel_rect.unwrap();
-    quick_tap_at(&mut h, card.right_top() + vec2(-24.0, 26.0));
+    // A tap on the header of the pane, right of the tabs and left of the
+    // chevron, closes the menu of the values.
+    let chevron = vale_app::ui::pad::dock_ui::fold_name("Labels", false);
+    let chevron = control(&h, &chevron).unwrap();
+    quick_tap_at(&mut h, chevron.left_center() - vec2(30.0, 0.0));
     assert!(h.state().pad.shows(vale_app::ui::pad::Panel::Labels));
     scroll_to(&mut h, VIEWS[1]);
     tap(&mut h, VIEWS[1]);
@@ -7216,7 +7220,7 @@ fn frames_snap_to_the_layout_grid_of_the_page_panel() {
 }
 
 #[test]
-fn the_top_row_ends_with_the_layout_grid_add_the_panels_button_and_the_dock_button() {
+fn the_top_row_has_undo_redo_the_panels_button_and_the_dock_button() {
     use vale_app::ui::pad::{DOCK, PANELS};
     for size in BOARDS.into_iter().chain([(393.0, 852.0), (852.0, 393.0)]) {
         let h = pad_with(state(), size);
@@ -7235,7 +7239,14 @@ fn the_top_row_ends_with_the_layout_grid_add_the_panels_button_and_the_dock_butt
                 );
             }
         }
-        assert!(control(&h, SHOW_GRID).is_none(), "{size:?}");
+        assert!(
+            h.state()
+                .pad
+                .controls
+                .iter()
+                .all(|c| c.name != GRID || c.rect.top() > 90.0),
+            "{size:?}"
+        );
         assert!(
             control(&h, vale_app::ui::select::ATTRIBUTES).is_none(),
             "{size:?}"
@@ -7253,49 +7264,54 @@ fn the_top_row_ends_with_the_layout_grid_add_the_panels_button_and_the_dock_butt
         assert_eq!(last + 44.0 + 4.0, size.0, "{size:?}");
         // The top row adds no frame and no item of furniture.
         assert!(control(&h, "Add").is_none(), "{size:?}");
-        // On a phone, the layout grid is a row of the workspace menu.
-        match x(GRID) {
-            Some(grid) => {
-                assert!(!compact, "{size:?}");
-                assert!(redo < grid && grid < panels, "{size:?}");
-                // The Dock button, which is off with no panes, is at the
-                // right of the Panels button.
-                assert!(h.query_by_label(DOCK).is_some(), "{size:?}");
-            }
-            None => {
-                assert!(compact, "{size:?}");
-                assert!(h.query_by_label(DOCK).is_none(), "{size:?}");
-            }
-        }
+        // Undo, Redo, a line, and then the Panels button, as in the World
+        // workspace.
+        assert_eq!(panels, redo + 44.0 + 4.0 + 9.0 + 4.0, "{size:?}");
+        // The Dock button, which is off with no panes, is at the right of
+        // the Panels button. A phone has no Dock button.
+        assert_eq!(h.query_by_label(DOCK).is_some(), !compact, "{size:?}");
     }
 }
 
 #[test]
-fn the_grid_switch_is_in_the_top_row_and_not_in_the_frame_and_vertex_strips() {
+fn the_grid_cell_is_in_the_context_strip_of_the_frame_item_and_vertex_tools() {
     for size in BOARDS.into_iter().chain([(393.0, 852.0)]) {
         let mut h = pad_with(state(), size);
-        let compact = size.0 < 600.0;
-        // On a compact screen, the workspace menu has the switch.
-        for on in [true, false].into_iter().filter(|_| compact) {
+        // The workspace menu of a phone has no grid row.
+        if size.0 < 600.0 {
             tap(&mut h, "Workspace");
-            tap(&mut h, SHOW_GRID);
-            assert_eq!(h.state().doc.project.atlas.grid.on, on, "{size:?}");
-        }
-        if !compact {
-            tap(&mut h, GRID);
-            assert!(h.state().doc.project.atlas.grid.on, "{size:?}");
-            assert_eq!(toggled(&h, GRID), Some(true), "{size:?}");
-            tap(&mut h, GRID);
-            assert!(!h.state().doc.project.atlas.grid.on, "{size:?}");
+            assert!(h.state().pad.menu, "{size:?}");
+            assert!(control(&h, "Show layout grid").is_none(), "{size:?}");
+            h.state_mut().pad.menu = false;
+            h.run_steps(2);
         }
         add_frame(&mut h);
         // On a compact screen, the sheet of the frame covers the strips.
         lower_sheet(&mut h);
-        for tool in ["Frame tool", VERTEX] {
-            tap(&mut h, tool);
-            assert!(control(&h, SNAP_TO_LAYOUT).is_some(), "{size:?}: {tool}");
-            let strip = h.state().pad.controls.iter().filter(|c| c.name == GRID);
-            assert!(strip.count() <= usize::from(!compact), "{size:?}: {tool}");
+        let tools = [
+            AtlasTool::Frame,
+            AtlasTool::Vertex,
+            AtlasTool::Furniture(ItemKind::Legend),
+        ];
+        for tool in tools {
+            h.state_mut().atlas.tool = tool;
+            h.run_steps(2);
+            let what = format!("{size:?}: {tool:?}");
+            let grid = control(&h, GRID).unwrap_or_else(|| panic!("{what}"));
+            // The cell is below the top row, next to Snap.
+            assert!(grid.top() > 90.0, "{what}");
+            let snap = control(&h, SNAP_TO_LAYOUT).unwrap();
+            assert!(
+                snap.top() == grid.top() || snap.left() == grid.left(),
+                "{what}"
+            );
+            let on = h.state().doc.project.atlas.grid.on;
+            tap(&mut h, GRID);
+            assert_eq!(h.state().doc.project.atlas.grid.on, !on, "{what}");
+            assert_eq!(toggled(&h, GRID), Some(!on), "{what}");
+            tap(&mut h, GRID);
+            assert_eq!(h.state().doc.project.atlas.grid.on, on, "{what}");
+            check_controls(&h, &what);
         }
     }
 }

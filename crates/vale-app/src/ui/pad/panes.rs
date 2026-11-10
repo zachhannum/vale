@@ -80,6 +80,8 @@ pub struct Pane {
     /// The panes that joined this pane as tabs because the dock had no room
     /// for them. They come back when the room is there.
     pub joined: Vec<Pane>,
+    /// The pane shows only its header.
+    pub folded: bool,
 }
 
 impl Pane {
@@ -89,6 +91,7 @@ impl Pane {
             active: 0,
             height: None,
             joined: Vec::new(),
+            folded: false,
         }
     }
 
@@ -99,6 +102,7 @@ impl Pane {
             active,
             height: None,
             joined: Vec::new(),
+            folded: false,
         }
     }
 
@@ -133,6 +137,7 @@ impl Pane {
                 active,
                 height: pane.height,
                 joined: Vec::new(),
+                folded: pane.folded,
             });
         }
         out
@@ -141,6 +146,11 @@ impl Pane {
     /// The open tab.
     pub fn panel(&self) -> Panel {
         self.tabs[self.active.min(self.tabs.len() - 1)]
+    }
+
+    /// The least height of the pane: its header if it is folded.
+    fn least(&self) -> f32 {
+        if self.folded { ROW } else { PANE_MIN }
     }
 }
 
@@ -214,9 +224,36 @@ impl Dock {
             .is_some_and(|(i, tab)| self.panes[i].active == tab)
     }
 
-    /// The most panes that fit in the room.
-    fn most(&self) -> usize {
-        (self.room / (PANE_MIN + BAR)).floor().max(1.0) as usize
+    /// The panes fit in the room. A folded pane needs only its header.
+    fn fits(&self) -> bool {
+        let need: f32 = self.panes.iter().map(|p| p.least() + BAR).sum();
+        self.panes.len() <= 1 || need <= self.room
+    }
+
+    /// The pane of a panel is folded.
+    pub fn folded(&self, panel: Panel) -> bool {
+        self.find(panel).is_some_and(|(i, _)| self.panes[i].folded)
+    }
+
+    /// Folds the pane with index `i`, or opens a folded pane.
+    pub fn fold(&mut self, i: usize) {
+        if let Some(pane) = self.panes.get_mut(i) {
+            pane.folded = !pane.folded;
+        }
+    }
+
+    /// A tap on a tab. A tap on the open tab folds or opens the pane, and a
+    /// tap on another tab shows that tab in the open pane.
+    pub fn tap_tab(&mut self, pane: usize, tab: usize) {
+        let Some(p) = self.panes.get_mut(pane) else {
+            return;
+        };
+        if tab == p.active {
+            p.folded = !p.folded;
+        } else {
+            p.folded = false;
+        }
+        self.focus(pane, tab);
     }
 
     /// Shows a panel at the request of the user, and forgets that the user
@@ -246,8 +283,16 @@ impl Dock {
     /// Shows a panel. An open panel becomes the open tab of its pane. A
     /// closed panel of a frame joins the pane of the other panels of its
     /// group. Another closed panel opens in a new pane at the bottom, or,
-    /// with no room for a new pane, as a tab of the last pane.
+    /// with no room for a new pane, as a tab of the last pane. The pane of
+    /// the panel opens if it is folded.
     fn place(&mut self, panel: Panel) {
+        self.add(panel);
+        if let Some((i, _)) = self.find(panel) {
+            self.panes[i].folded = false;
+        }
+    }
+
+    fn add(&mut self, panel: Panel) {
         self.focus = Some(panel);
         if let Some((i, tab)) = self.find(panel) {
             self.panes[i].active = tab;
@@ -397,8 +442,8 @@ impl Dock {
     /// Closes a panel that shows, shows an open panel that is a tab
     /// behind another, and opens a closed panel.
     pub fn toggle(&mut self, panel: Panel) {
-        // In a hidden dock, the tile shows the panel.
-        if self.shows(panel) && !self.collapsed {
+        // In a hidden dock or a folded pane, the tile shows the panel.
+        if self.shows(panel) && !self.collapsed && !self.folded(panel) {
             self.close(panel);
         } else {
             self.open(panel);
@@ -529,13 +574,12 @@ impl Dock {
     /// the room is there.
     pub fn keep_in(&mut self, room: f32) {
         self.room = room;
-        let most = self.most();
         // The joined panes come back, and then the panes that do not fit
         // join again.
         if self.panes.iter().any(|p| !p.joined.is_empty()) {
             self.panes = self.user_panes();
         }
-        while self.panes.len() > most {
+        while !self.fits() {
             let extra = self.panes.pop().unwrap_or_else(|| unreachable!());
             let focus = self.focus;
             let last = self.panes.last_mut().unwrap_or_else(|| unreachable!());
@@ -674,7 +718,11 @@ impl Docks {
                 let active = pane.active;
                 let names: Vec<&str> = pane.tabs.iter().map(|t| name(*t)).collect();
                 let height = pane.height.map_or("auto".to_owned(), |h| h.to_string());
-                lines.push(format!("{key} pane {} {active} {height}", names.join(",")));
+                let fold = if pane.folded { " folded" } else { "" };
+                lines.push(format!(
+                    "{key} pane {} {active} {height}{fold}",
+                    names.join(",")
+                ));
             }
             if !dock.closed.is_empty() {
                 let names: Vec<&str> = dock.closed.iter().map(|t| name(*t)).collect();
@@ -709,11 +757,13 @@ impl Docks {
                     let panels = names.split(',').filter_map(panel);
                     dock.remember(&panels.collect::<Vec<_>>());
                 }
-                // The fifth field of an older file has no effect.
+                // A fifth field other than "folded" is of an older file, and
+                // has no effect.
                 ["pane", tabs, active, height] | ["pane", tabs, active, height, _] => {
-                    if let Some(pane) = parse_pane(tabs, active, height)
+                    if let Some(mut pane) = parse_pane(tabs, active, height)
                         && pane.tabs.iter().all(|t| !dock.is_open(*t))
                     {
+                        pane.folded = words.get(5) == Some(&"folded");
                         dock.panes.push(pane);
                     }
                 }
@@ -1060,6 +1110,72 @@ mod tests {
         );
         assert_eq!(docks.world.panes[0].active, 1);
         assert_eq!(docks.world.panes[1].height, Some(200.0));
+    }
+
+    #[test]
+    fn the_text_keeps_a_folded_pane_and_an_older_file_has_open_panes() {
+        let mut docks = Docks::default();
+        docks.world.open_tabs(&[Panel::Layers, Panel::Toolbox]);
+        docks.world.open(Panel::Brush);
+        docks.world.fold(0);
+        let mut back = Docks::default();
+        back.load(&docks.text());
+        let folded: Vec<bool> = back.world.panes.iter().map(|p| p.folded).collect();
+        assert_eq!(folded, [true, false]);
+        let mut old = Docks::default();
+        old.load("world pane layers,toolbox 1 auto\nworld pane brush 0 200 pinned");
+        assert!(old.world.panes.iter().all(|p| !p.folded));
+        assert_eq!(old.world.panes.len(), 2);
+    }
+
+    #[test]
+    fn a_tap_on_the_open_tab_folds_the_pane_and_a_tap_on_another_tab_opens_it() {
+        let mut d = dock(&[&[Panel::Layers, Panel::Toolbox]]);
+        d.tap_tab(0, 0);
+        assert!(d.panes[0].folded);
+        d.tap_tab(0, 0);
+        assert!(!d.panes[0].folded);
+        d.tap_tab(0, 0);
+        d.tap_tab(0, 1);
+        assert!(!d.panes[0].folded && d.shows(Panel::Toolbox));
+    }
+
+    #[test]
+    fn a_selection_opens_a_folded_pane_only_for_a_panel_that_it_opens() {
+        let mut d = Dock::default();
+        d.open(Panel::Properties);
+        d.fold(0);
+        d.follow(Panel::Properties);
+        assert!(d.panes[0].folded);
+        // Projection joins the pane of its group, which opens.
+        d.arrangement = vec![Group {
+            tabs: vec![Panel::Properties, Panel::Projection],
+            active: 0,
+        }];
+        d.follow(Panel::Projection);
+        assert_eq!(tabs(&d), vec![vec![Panel::Properties, Panel::Projection]]);
+        assert!(!d.panes[0].folded);
+        // A tile opens the pane of an open panel, and does not close it.
+        d.fold(0);
+        d.toggle(Panel::Projection);
+        assert!(!d.panes[0].folded && d.shows(Panel::Projection));
+    }
+
+    #[test]
+    fn a_folded_pane_needs_only_its_header() {
+        // A folded pane keeps the height of its header, and the other panes
+        // get the room.
+        let heights = fit(&[ROW, 900.0, 900.0], 600.0);
+        assert_eq!(heights[0], ROW);
+        assert!((heights[1] - (600.0 - 3.0 * BAR - ROW) / 2.0).abs() < 0.01);
+        // Room for two open panes holds a third pane that is folded.
+        let mut d = dock(&[&[Panel::Layers], &[Panel::Toolbox], &[Panel::Brush]]);
+        d.panes[2].folded = true;
+        d.keep_in(2.0 * (PANE_MIN + BAR) + ROW + BAR);
+        assert_eq!(d.panes.len(), 3);
+        d.panes[2].folded = false;
+        d.keep_in(2.0 * (PANE_MIN + BAR) + ROW + BAR);
+        assert_eq!(d.panes.len(), 2);
     }
 
     #[test]

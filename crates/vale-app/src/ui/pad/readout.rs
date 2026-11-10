@@ -4,6 +4,7 @@
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Align2, Color32, Order, Rect, Sense, pos2, vec2};
+use eframe::egui_wgpu::wgpu;
 use vale_sphere::{ProjectionKind, ProjectionSpec};
 
 use super::geometry::{self, PAD, ROW, Rects, TOUCH};
@@ -304,7 +305,8 @@ pub(super) fn view_menu(
     let list = list(state.pad.projections);
     if !list.is_some_and(|l| l.left() == menu.left()) {
         state.pad.view_menu_rect = Some(menu);
-        menu_card(ctx, "pad-view-menu", menu, |ui| {
+        let backdrop = state.globe.backdrop();
+        menu_card(ctx, backdrop, "pad-view-menu", menu, |ui| {
             view_rows(ui, state, controls, flat);
         });
     }
@@ -388,13 +390,17 @@ fn view_tabs(ui: &mut egui::Ui, controls: &mut Controls, view: WorldView) -> Opt
     chosen
 }
 
-/// An opaque card for a menu, with rows from the top.
-fn menu_card(ctx: &egui::Context, id: &str, rect: Rect, contents: impl FnOnce(&mut egui::Ui)) {
+/// A blur card for a menu, with rows from the top. The blur also shows the
+/// cards below the menu.
+fn menu_card(
+    ctx: &egui::Context,
+    backdrop: Option<wgpu::TextureFormat>,
+    id: &str,
+    rect: Rect,
+    contents: impl FnOnce(&mut egui::Ui),
+) {
     let radius = theme::CARD_RADIUS.into();
-    widgets::card(ctx, None, id, rect, Order::Foreground, radius, |ui| {
-        // The menu covers other cards, so its fill is opaque.
-        ui.painter()
-            .rect_filled(rect, radius, theme::card(false).to_opaque());
+    widgets::card(ctx, backdrop, id, rect, Order::Foreground, radius, |ui| {
         let inner = rect.shrink2(vec2(BODY_PAD, 10.0));
         let layout = egui::Layout::top_down(egui::Align::Min);
         let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
@@ -406,7 +412,8 @@ fn menu_card(ctx: &egui::Context, id: &str, rect: Rect, contents: impl FnOnce(&m
 /// The list of the projections of the flat view in `rect`. A tap on a row
 /// picks the projection and closes the list.
 fn projections(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rect: Rect) {
-    menu_card(ctx, "pad-projections", rect, |ui| {
+    let backdrop = state.globe.backdrop();
+    menu_card(ctx, backdrop, "pad-projections", rect, |ui| {
         let spec = state.globe.flat.spec();
         for kind in ProjectionKind::ALL {
             let row = widgets::text_row(ui, controls, kind.name(), 0.0, false, true);

@@ -89,6 +89,14 @@ fn run() -> anyhow::Result<u8> {
             }
             state.pad.dock_mut().collapsed = true;
         }
+        for n in &args.fold_pane {
+            if let Some(pane) = n
+                .checked_sub(1)
+                .and_then(|i| state.pad.dock_mut().panes.get_mut(i))
+            {
+                pane.folded = true;
+            }
+        }
         let world = &state.doc.project.world;
         state.world_form = args.world_form.map(|mode| WorldForm::open(mode, world));
         if args.worlds_menu {

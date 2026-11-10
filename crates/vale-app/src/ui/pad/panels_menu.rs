@@ -135,17 +135,15 @@ pub fn show(
     let mut chosen = None;
     let mut close = false;
     let mut reset = false;
+    let backdrop = state.globe.backdrop();
     widgets::card(
         ctx,
-        None,
+        backdrop,
         "pad-panels-menu",
         rect,
         Order::Foreground,
         radius,
         |ui| {
-            // The menu covers the panels, so its fill is opaque.
-            ui.painter()
-                .rect_filled(rect, radius, theme::card(false).to_opaque());
             let width = (inner.width() - (COLUMNS - 1) as f32 * TILE_GAP) / COLUMNS as f32;
             let mut top = inner.top();
             for group in groups {

@@ -135,6 +135,9 @@ fn the_layout_and_the_panels_come_from_the_flags() {
     assert!(!args.dock_hidden);
     let args = Args::parse_from(["vale-app", "--layout", "pad", "--dock-hidden"]);
     assert!(args.dock_hidden);
+    assert!(args.fold_pane.is_empty());
+    let args = Args::parse_from(["vale-app", "--fold-pane", "1", "--fold-pane", "3"]);
+    assert_eq!(args.fold_pane, [1, 3]);
     assert!(Args::try_parse_from(["vale-app", "--more-tools"]).is_err());
     let args = Args::parse_from(["vale-app", "--world-form", "new"]);
     assert_eq!(
