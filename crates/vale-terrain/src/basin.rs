@@ -129,13 +129,20 @@ const CARVE: f64 = 3.0;
 
 /// The part of the difference to the mean of its neighbors that a cell
 /// moves by hillslope creep.
-const CREEP: f64 = 0.2;
+const CREEP: f64 = 0.6;
 
 /// A cut of the ground gets less within this height above sea level, in
 /// meters.
 const COAST_M: f64 = 10.0;
 
 const SALT_BASIN: u32 = 0x5b2e_93c7;
+const SALT_WARP: u32 = 0x71d3_0e9b;
+
+/// A finer level takes the change of the coarser level from a place that a
+/// noise moves by this part of a coarse cell at most. The noise has features
+/// of `WARP_SIZE` coarse cells.
+const WARP: f64 = 1.5;
+const WARP_SIZE: f64 = 3.0;
 
 /// The settings of a basin.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -633,6 +640,7 @@ pub fn basin(map: &Heightmap, line: &BasinLine) -> BasinCut {
         levels: levels.clone(),
         lifts,
         sea,
+        seed,
     };
     let mut rough = ROUGH * spec.height;
     let levels = grid.levels.clone();
@@ -962,6 +970,7 @@ struct Level {
     lifts: Vec<(f64, f64)>,
     /// The level of the sea.
     sea: f64,
+    seed: u32,
 }
 
 /// The flow on the cells of a grid. A receiver can be a cell outside the
@@ -1026,7 +1035,28 @@ impl Level {
             .iter()
             .map(|&l| f64::from(l))
             .collect();
-        let change = up(&change);
+        // The change of the coarser grid goes to a place that a noise moves
+        // by a part of a coarse cell, so its valleys bend at this scale too.
+        // The main river stays on its line.
+        let coarse_cell = 2.0 * cell;
+        let change: Vec<f64> = (0..side * side)
+            .map(|i| {
+                let (x, y) = ((i % side) as f64 + 0.5, (i / side) as f64 + 0.5);
+                let p = window.cell_dir(i % side, i / side);
+                let shift = noise3(
+                    scale(p, 1.0 / (WARP_SIZE * coarse_cell)),
+                    self.seed ^ SALT_WARP,
+                );
+                let calm = smoothstep(distance[i] / (3.0 * coarse_cell));
+                let amount = WARP * calm;
+                bilinear(
+                    &change,
+                    coarse,
+                    x / 2.0 + amount * shift[0],
+                    y / 2.0 + amount * shift[1],
+                )
+            })
+            .collect();
         let levels = (0..side * side)
             .map(|i| {
                 if inside[i] {
@@ -1067,6 +1097,7 @@ impl Level {
             levels,
             lifts: self.lifts.clone(),
             sea: self.sea,
+            seed: self.seed,
         }
     }
 
@@ -1673,6 +1704,62 @@ mod tests {
 
     fn touch(side: usize, a: usize, b: usize) -> bool {
         (a % side).abs_diff(b % side) <= 1 && (a / side).abs_diff(b / side) <= 1
+    }
+
+    /// The mean of the largest distance of each stream from the straight
+    /// line between its ends, over the length of that line. A stream starts
+    /// at every fourth texel in a box of longitude and latitude, and it goes
+    /// down to the lowest of the 8 texels around it until no texel is lower.
+    fn bends(map: &Heightmap, lon: (f64, f64), lat: (f64, f64)) -> f64 {
+        let (_, x0, y0) = map.texel_of(lonlat_to_dir(lon.0, lat.1));
+        let (_, x1, y1) = map.texel_of(lonlat_to_dir(lon.1, lat.0));
+        let mut ratios = Vec::new();
+        for y in (y0.min(y1)..y0.max(y1)).step_by(4) {
+            for x in (x0.min(x1)..x0.max(x1)).step_by(4) {
+                let mut path = vec![(x, y)];
+                loop {
+                    let (px, py) = *path.last().unwrap();
+                    let here = map.get(0, px as i64, py as i64);
+                    let next = (0..9)
+                        .map(|k| ((px + k % 3).wrapping_sub(1), (py + k / 3).wrapping_sub(1)))
+                        .min_by_key(|&(qx, qy)| map.get(0, qx as i64, qy as i64))
+                        .unwrap();
+                    if map.get(0, next.0 as i64, next.1 as i64) >= here {
+                        break;
+                    }
+                    path.push(next);
+                }
+                let dir = |&(x, y): &(usize, usize)| map.texel_dir(0, x, y);
+                let (a, b) = (dir(&path[0]), dir(path.last().unwrap()));
+                let straight = angle(a, b);
+                if straight < 16.0 * FRAC_PI_2 / map.face_size() as f64 {
+                    continue;
+                }
+                let normal = normalize(cross(a, b));
+                let off = path
+                    .iter()
+                    .map(|t| dot(dir(t), normal).abs().asin())
+                    .fold(0.0, f64::max);
+                ratios.push(off / straight);
+            }
+        }
+        ratios.iter().sum::<f64>() / ratios.len().max(1) as f64
+    }
+
+    #[test]
+    fn the_streams_bend() {
+        // Streams that go down the slope with few bends give about 0.13.
+        let n = 2048;
+        let bend = [7, 20, 33]
+            .map(|seed| {
+                let line = line_of(n, spec(2.0, seed), -20.0, 20.0, 2.0);
+                let map = apply(&ground_of(n), &basin(&ground_of(n), &line));
+                bends(&map, (-10.0, 10.0), (3.0, 7.0))
+            })
+            .iter()
+            .sum::<f64>()
+            / 3.0;
+        assert!(bend > 0.14, "{bend}");
     }
 
     #[test]
