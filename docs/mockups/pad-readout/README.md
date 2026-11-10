@@ -9,6 +9,8 @@ These mockups show a proposal for the lower left of the World workspace on the i
 5. The View popover on the flat map: also the projection, "Recenter", and "Reset view".
 6. A save that failed: a banner at the top, in place of the save mark.
 
+`icons.html` draws four choices for the icon of the View button, and `screens/icons.png` is its picture.
+
 This command makes the picture:
 
 ```sh
