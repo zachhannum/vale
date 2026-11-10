@@ -466,6 +466,12 @@ fn check_controls(h: &Pad, what: &str) {
             let choice = |c: &vale_app::ui::pad::widgets::Control| choice_rows.contains(&c.name);
             let covered =
                 own || popup && (row(a) != row(b) || edit(a) != edit(b) || choice(a) != choice(b));
+            // The width handle is on the edge of the dock, over the left
+            // ends of the rows of the panes, and it takes only a drag.
+            let handle = |c: &vale_app::ui::pad::widgets::Control| {
+                c.name == vale_app::ui::pad::dock_ui::DOCK_WIDTH
+            };
+            let covered = covered || handle(a) || handle(b);
             let free = !a.rect.shrink(0.5).intersects(b.rect.shrink(0.5));
             assert!(free || covered, "{what}: {name} and {} overlap", b.name);
         }
@@ -5100,8 +5106,10 @@ fn check_form(h: &Pad, what: &str) {
         );
         for b in &controls[i + 1..] {
             assert_ne!(a.name, b.name, "{what}");
+            let handle =
+                [&a.name, &b.name].contains(&&vale_app::ui::pad::dock_ui::DOCK_WIDTH.to_owned());
             let free = !a.rect.shrink(0.5).intersects(b.rect.shrink(0.5));
-            assert!(free, "{what}: {name} and {} overlap", b.name);
+            assert!(free || handle, "{what}: {name} and {} overlap", b.name);
         }
     }
 }
@@ -5410,9 +5418,12 @@ fn scroll_to_y(h: &mut Pad, y: impl Fn(&Pad) -> f32) {
         if card.top() + 120.0 < at && at < card.bottom() - 120.0 {
             return;
         }
-        let from = pos2(card.left() + 6.0, card.center().y);
-        let reach = from.y - card.top() - 60.0;
+        // The drag starts above or below the width handle, which is at the
+        // middle of the left edge of the dock.
+        let reach = card.height() / 2.0 - 60.0;
         let dy = (card.center().y - at).clamp(-reach, reach);
+        let side = if dy > 0.0 { -90.0 } else { 90.0 };
+        let from = pos2(card.left() + 6.0, card.center().y + side);
         drag(h, from, from + vec2(0.0, dy), None);
     }
 }
@@ -6698,8 +6709,17 @@ fn scroll_brush_to(h: &mut Pad, name: &str) {
         if control(h, name).is_some_and(inside) {
             return;
         }
-        let from = pos2(card.left() + 6.0, card.bottom() - 60.0);
+        let from = clear_of_handle(h, pos2(card.left() + 6.0, card.bottom() - 60.0));
         drag(h, from, from - vec2(0.0, 120.0), None);
+    }
+}
+
+/// `at`, or a place right of the width handle of the dock if the handle
+/// takes a drag at `at`.
+fn clear_of_handle(h: &Pad, at: Pos2) -> Pos2 {
+    match control(h, vale_app::ui::pad::dock_ui::DOCK_WIDTH) {
+        Some(handle) if handle.contains(at) => pos2(handle.right() + 6.0, at.y),
+        _ => at,
     }
 }
 
@@ -14711,4 +14731,18 @@ fn promotion_pad() -> Pad {
         .open_tabs(&[Panel::Layers, Panel::Toolbox]);
     h.run_steps(3);
     h
+}
+
+#[test]
+fn a_drag_on_the_edge_of_the_dock_takes_the_width_handle_and_a_tap_there_reaches_the_row() {
+    use vale_app::ui::pad::dock_ui::DOCK_WIDTH;
+    let mut h = docked(BOARDS[0], &[&[Panel::Layers]]);
+    let dock = h.state().pad.dock_rect.unwrap();
+    let handle = control(&h, DOCK_WIDTH).unwrap();
+    // The handle is on the edge, with a part in the dock.
+    assert!(handle.left() < dock.left() && handle.right() > dock.left() + 10.0);
+    // A drag that starts just inside the dock changes its width.
+    let at = pos2(dock.left() + 8.0, handle.center().y);
+    drag(&mut h, at, at - vec2(60.0, 0.0), None);
+    assert!(h.state().pad.docks.world.width > 380.0);
 }

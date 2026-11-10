@@ -20,6 +20,8 @@ const BAR_TOUCH: f32 = TOUCH;
 const FOOT: f32 = (BAR_TOUCH - BAR) / 2.0;
 /// The size of the handle at the left edge of the dock.
 pub const HANDLE: (f32, f32) = (TOUCH, 120.0);
+/// The part of the touch area of the handle in the dock.
+const HANDLE_IN: f32 = 20.0;
 /// The padding at each side of the name of a tab.
 const TAB_PAD: f32 = 12.0;
 /// The time of the slide of the dock.
@@ -605,18 +607,24 @@ pub fn handle(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
     let Some(dock) = state.pad.dock_rect else {
         return;
     };
-    // The touch area of the handle is at the left of the dock, so it covers
-    // no control of a pane. Its grip is in it.
+    // The touch area of the handle is on the edge of the dock, as the
+    // resize handles of iPadOS are, so a finger on the edge takes it. It
+    // takes only a drag, so a tap at the left end of a row of a pane still
+    // reaches the row.
     let rect = Rect::from_min_size(
-        pos2(dock.left() - HANDLE.0, dock.center().y - HANDLE.1 / 2.0),
+        pos2(
+            dock.left() + HANDLE_IN - HANDLE.0,
+            dock.center().y - HANDLE.1 / 2.0,
+        ),
         vec2(HANDLE.0, HANDLE.1),
     );
     let dragging = state.pad.dock_drag == Some(DockDrag::Width);
-    // A control under the handle hides it. A control of a pane touches its
-    // right edge, and that is no overlap.
+    // A control on the canvas under the handle hides it. The controls of
+    // the dock do not.
     if !dragging
         && controls
             .iter()
+            .filter(|c| !dock.contains_rect(c.rect))
             .any(|c| c.rect.intersect(rect).is_positive())
     {
         return;
@@ -635,7 +643,8 @@ pub fn handle(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
         .fade_in(false)
         .show(ctx, |ui| {
             let (_, _) = ui.allocate_exact_size(rect.size(), Sense::hover());
-            let resp = widgets::drag_area(ui, controls, rect, DOCK_WIDTH);
+            let sense = Sense::drag();
+            let resp = widgets::hit(ui, controls, rect, DOCK_WIDTH, sense, true, None);
             let active = resp.dragged();
             // The width that the finger asks for, which can be below the
             // narrowest dock.
@@ -653,9 +662,7 @@ pub fn handle(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
             }
             // A grip on a dark capsule shows over a white page and over the
             // dark canvas.
-            // The grip is in its touch area, at the left of the dock, so a
-            // finger that aims at it does not land on a control of a pane.
-            let center = pos2(dock.left() - 14.0, rect.center().y);
+            let center = pos2(dock.left(), rect.center().y);
             let capsule = Rect::from_center_size(center, vec2(12.0, 64.0));
             let back = theme::card(false).to_opaque();
             ui.painter().rect_filled(capsule, 6.0, back);
