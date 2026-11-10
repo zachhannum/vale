@@ -329,6 +329,7 @@ impl BrushSettings {
             height: f64::from(height),
             density: self.basin_density_km / world_km,
             seed,
+            erosion: self.erosion,
             rain,
             channel,
             world_km,
@@ -1007,6 +1008,7 @@ mod tests {
             mode: Mode::Basin,
             strength_m: 2000.0,
             basin_density_km: 80.0,
+            erosion: 0.8,
             floor_on: true,
             floor_m: 100.0,
             ..BrushSettings::default()
@@ -1020,6 +1022,7 @@ mod tests {
         let height = meters_to_level(2000.0) - meters_to_level(0.0);
         assert_eq!(spec.height, f64::from(height));
         assert!((spec.density - 80.0 / 6371.0).abs() < 1e-12);
+        assert_eq!(spec.erosion, brush.erosion);
         assert_eq!(spec.seed, 9);
         assert_eq!(spec.rain, rain);
         assert_eq!(spec.channel, channel);

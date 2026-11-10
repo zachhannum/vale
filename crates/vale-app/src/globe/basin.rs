@@ -91,6 +91,7 @@ mod tests {
             height: f64::from(meters_to_level(1500.0) - meters_to_level(0.0)),
             density: 0.02,
             seed: 7,
+            erosion: 0.5,
             rain: Rain::default(),
             channel: ChannelShape::default(),
             world_km: 6371.0,

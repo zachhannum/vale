@@ -4886,6 +4886,7 @@ fn the_brush_panel_has_the_basin_mode_and_its_sliders() {
     for name in [
         "Height",
         "Density",
+        "Erosion",
         "Seed",
         "Channel width",
         "Wind",
@@ -4901,7 +4902,6 @@ fn the_brush_panel_has_the_basin_mode_and_its_sliders() {
         "Radius",
         "Hardness",
         "Flow",
-        "Erosion",
         "Spacing",
         "Floodplain",
         "Strength",

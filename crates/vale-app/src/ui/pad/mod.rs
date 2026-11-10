@@ -2431,7 +2431,7 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
         let number = km("Brush floodplain", "Floodplain", value, FLOODPLAIN_WIDTH_KM).step(1.0);
         apply(number.stepper(ui, controls), &mut brush.floodplain_km);
     }
-    if matches!(brush.mode, Mode::Uplift | Mode::Range) {
+    if matches!(brush.mode, Mode::Uplift | Mode::Range | Mode::Basin) {
         let number = Number::new("Brush erosion", brush.erosion, EROSION)
             .label("Erosion")
             .percent()

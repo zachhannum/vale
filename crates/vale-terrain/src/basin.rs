@@ -131,11 +131,14 @@ const ROUGH_FALLOFF: f64 = 0.55;
 /// The finest level has this number of cells along one side or fewer.
 const FINE_CELLS: usize = 1024;
 
-/// The number of erosion steps of each finer level, the erodibility, and the
-/// largest cut of one step, as a part of the rough ground of the level.
+/// The number of erosion steps of each finer level, and the largest cut of
+/// one step, as a part of the rough ground of the level.
 const FINE_STEPS: usize = 4;
-const ERODE: f64 = 0.1;
 const CARVE: f64 = 3.0;
+
+/// The erodibility of the finer levels at an Erosion setting of 0 and of 1.
+/// It changes by the same factor for each step of the setting between them.
+const ERODE: (f64, f64) = (0.02, 1.0);
 
 /// A pit fills if it is this many times the rough ground of its level deep
 /// or less.
@@ -170,6 +173,10 @@ pub struct BasinSpec {
     pub density: f64,
     /// The seed of the network.
     pub seed: u32,
+    /// The erosion of the finer levels, from 0 to 1. Less erosion gives
+    /// fewer gullies and smooth slopes between them, and more erosion gives
+    /// a gully down each slope.
+    pub erosion: f64,
     pub rain: Rain,
     pub channel: ChannelShape,
     /// The radius of the world, in kilometers.
@@ -195,6 +202,7 @@ impl BasinLine {
     pub fn new(spec: BasinSpec, outline: &[V3], face_size: usize) -> BasinLine {
         let spec = BasinSpec {
             height: spec.height.clamp(0.0, 65535.0),
+            erosion: spec.erosion.clamp(0.0, 1.0),
             ..spec
         };
         let outline: Vec<V3> = outline.iter().map(|&p| normalize(p)).collect();
@@ -693,11 +701,12 @@ pub fn basin(map: &Heightmap, line: &BasinLine) -> BasinCut {
         seed,
     };
     let mut rough = ROUGH;
+    let erodibility = ERODE.0 * (ERODE.1 / ERODE.0).powf(spec.erosion);
     let levels = grid.levels.clone();
     while grid.window.cell > 1 && 2 * grid.window.cells <= FINE_CELLS {
         let rough_at = |p: V3, e: f64, size: f64| fractal(p, size, seed) * fade(e) * gap(p);
         grid = grid.finer(map, &river, rough, rough_at);
-        grid.erode(rough);
+        grid.erode(rough, erodibility);
         rough *= ROUGH_FALLOFF;
     }
 
@@ -1258,7 +1267,7 @@ impl Level {
     /// The rough ground of a cell is `part` of the height of its relief. The
     /// steps cut a cell by its rough ground times `CARVE` at most, so the
     /// level adds valleys at its own scale. The main river keeps its levels.
-    fn erode(&mut self, part: f64) {
+    fn erode(&mut self, part: f64, erodibility: f64) {
         let side = self.window.cells;
         let cell = FRAC_PI_2 * self.window.cell as f64 / self.window.face_size as f64;
         let mut on_chain = vec![false; side * side];
@@ -1280,7 +1289,7 @@ impl Level {
                     self.window.cell_dir(i % side, i / side),
                     self.window.cell_dir(r % side, r / side),
                 ) / cell;
-                let f = ERODE * flow.area[i].powf(AREA_EXPONENT) / run;
+                let f = erodibility * flow.area[i].powf(AREA_EXPONENT) / run;
                 // A shallow pit fills to one step of rough ground below its
                 // rim, so a hollow of the rough ground stays shallow. A deep
                 // hollow of the old ground stays.
@@ -1732,6 +1741,7 @@ mod tests {
             height: f64::from(level(1500.0) - level(0.0)),
             density: density_deg.to_radians(),
             seed,
+            erosion: 0.5,
             rain: Rain::default(),
             channel: ChannelShape::default(),
             world_km: 6371.0,
@@ -2001,6 +2011,22 @@ mod tests {
         let map = apply(&ground_of(n), &basin(&ground_of(n), &line));
         let density = valleys(&map, (-15.0, 15.0), (2.0, 5.0));
         assert!(density < 1.4, "{density} valleys for each degree");
+    }
+
+    #[test]
+    fn more_erosion_gives_more_gullies() {
+        let n = 2048;
+        let density = |erosion: f64| {
+            let spec = BasinSpec {
+                erosion,
+                ..spec(2.0, 7)
+            };
+            let line = line_of(n, spec, -20.0, 20.0, 2.0);
+            let map = apply(&ground_of(n), &basin(&ground_of(n), &line));
+            valleys(&map, (-15.0, 15.0), (2.0, 5.0))
+        };
+        let [few, some, many] = [0.0, 0.5, 1.0].map(density);
+        assert!(few < some && some < many, "{few}, {some}, {many}");
     }
 
     #[test]
