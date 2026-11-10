@@ -6003,6 +6003,28 @@ fn a_tap_with_an_item_tool_puts_the_item_at_the_tap_and_its_properties_show() {
 }
 
 #[test]
+fn an_item_tool_has_snap_delete_and_deselect_for_a_selected_item() {
+    let mut h = pad();
+    choose(&mut h, FURNITURE, ItemKind::Text.name());
+    assert!(control(&h, vale_app::ui::pad::atlas::SNAP_TO_LAYOUT).is_some());
+    assert!(control(&h, vale_app::ui::select::DELETE).is_none());
+    let at = screen(&h, Point::new(40.0, 150.0));
+    tap_with(&mut h, at, Input::Finger);
+    assert_eq!(open_page(&h).furniture.len(), 1);
+    check_controls(&h, "an item tool with a selected item");
+    tap(&mut h, DESELECT);
+    assert_eq!(h.state().atlas.selection, AtlasSelection::None);
+    assert!(control(&h, vale_app::ui::select::DELETE).is_none());
+    // A second item, which Delete takes away again.
+    let at = screen(&h, Point::new(150.0, 40.0));
+    tap_with(&mut h, at, Input::Finger);
+    assert_eq!(open_page(&h).furniture.len(), 2);
+    tap(&mut h, vale_app::ui::select::DELETE);
+    assert_eq!(open_page(&h).furniture.len(), 1);
+    assert_eq!(h.state().atlas.selection, AtlasSelection::None);
+}
+
+#[test]
 fn a_drag_with_an_item_tool_puts_the_item_in_the_rectangle_of_the_drag() {
     for input in INPUTS {
         let mut h = pad();
