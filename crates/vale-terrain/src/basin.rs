@@ -2511,7 +2511,12 @@ mod tests {
         // degrees apart, on a larger wave.
         let meander = var("MEANDER", 0.0);
         let outline = outline_of(from, to, 2.0);
-        let mut line = BasinLine::new(spec(2.0, var("SEED", 7.0) as u32), &outline, n);
+        // `EROSION` sets the Erosion setting, from 0 to 1.
+        let spec = BasinSpec {
+            erosion: var("EROSION", 0.5),
+            ..spec(2.0, var("SEED", 7.0) as u32)
+        };
+        let mut line = BasinLine::new(spec, &outline, n);
         for k in 0..=2000 {
             let lon = from + (to + 1.0 - from) * f64::from(k) / 2000.0;
             let lat =
