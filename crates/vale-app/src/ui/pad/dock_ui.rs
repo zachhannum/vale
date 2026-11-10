@@ -41,9 +41,12 @@ const MENU_WIDTH: f32 = 240.0;
 pub const COLLAPSE_PANE: &str = "Collapse pane";
 /// The row of the menu of a tab that opens a folded pane.
 pub const EXPAND_PANE: &str = "Expand pane";
-/// A swipe on a header that ends at this speed to the right, in points per
-/// second, hides the dock.
-const FLING: f32 = 800.0;
+/// The deceleration rate of a scroll view of UIKit. A swipe that ends at a
+/// speed coasts on by `speed * COAST` points, as a throw in UIKit does.
+const COAST: f32 = 0.998 / (1.0 - 0.998) / 1000.0;
+/// The time of the last places of the finger that give the speed of a
+/// swipe, in seconds.
+const SPEED_TIME: f64 = 0.1;
 
 /// What a finger moves in the dock.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -456,10 +459,10 @@ fn show_dock(
     }
     match drag {
         Some((DockDrag::Swipe { dx, speed }, DragPhase::Stopped)) => {
-            // A swipe of a third of the dock, or a quick swipe, hides the
-            // dock. Else the dock slides back.
+            // The dock hides if a throw from the release would end past
+            // the middle of the dock. Else it slides back.
             let width = room.width();
-            let hide = dx > width / 3.0 || (speed > FLING && dx > HOLD_SLOP);
+            let hide = swipe_hides(dx, speed, width);
             if hide {
                 state.pad.dock_mut().collapsed = true;
                 state.pad.pane_menu = None;
@@ -629,7 +632,11 @@ pub fn handle(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
     }
     let most =
         (rects.screen.right() - rects.bands.right - rects.column_right).max(panes::MIN_WIDTH);
-    egui::Area::new(egui::Id::new("pad-dock-handle"))
+    // A touch on the dock brings the dock to the top of its order, so the
+    // grip, which is half over the dock, comes back on top in each frame.
+    let id = egui::Id::new("pad-dock-handle");
+    ctx.move_to_top(egui::LayerId::new(Order::Middle, id));
+    egui::Area::new(id)
         .order(Order::Middle)
         .fixed_pos(rect.min)
         .movable(false)
@@ -1151,13 +1158,19 @@ fn tab_drag(
         Some(_) => None,
         None => delta.filter(|d| d.x > d.y.abs()).map(|_| (0.0, 0.0)),
     };
-    if let Some((dx, speed)) = swipe {
-        // The finger is gone at the end of the drag, so the swipe keeps the
-        // last distance and speed.
-        let (dx, speed) = match (phase, delta) {
-            (DragPhase::Moving, Some(d)) => (d.x.max(0.0), ui.input(|i| i.pointer.velocity().x)),
-            _ => (dx, speed),
+    if let Some((last, _)) = swipe {
+        // The speed of egui is zero after the release, so the swipe keeps
+        // its own places of the finger.
+        let dx = delta.map_or(last, |d| d.x.max(0.0));
+        let (time, start) = ui.input(|i| (i.time, i.pointer.press_start_time()));
+        let id = egui::Id::new("pad-dock-swipe");
+        let mut places: Vec<(f64, f32)> = match now {
+            Some(DockDrag::Swipe { .. }) => ui.data(|d| d.get_temp(id)).unwrap_or_default(),
+            _ => start.map(|t| vec![(t, 0.0)]).unwrap_or_default(),
         };
+        places.push((time, dx));
+        let speed = swipe_speed(&mut places);
+        ui.data_mut(|d| d.insert_temp(id, places));
         return Some((DockDrag::Swipe { dx, speed }, phase));
     }
     let pos = ui
@@ -1171,4 +1184,54 @@ fn tab_drag(
         other => other,
     };
     Some((kind, phase))
+}
+
+/// The speed of a swipe, in points per second, from the places of the
+/// finger in the last `SPEED_TIME`. Each place is a time and a distance.
+/// The places before that time go, but one stays as the start.
+fn swipe_speed(places: &mut Vec<(f64, f32)>) -> f32 {
+    let Some(&(now, x)) = places.last() else {
+        return 0.0;
+    };
+    let keep = places
+        .iter()
+        .rposition(|p| now - p.0 >= SPEED_TIME - 1e-6)
+        .unwrap_or(0);
+    places.drain(..keep);
+    let (then, from) = places[0];
+    let time = (now - then) as f32;
+    if time > 0.0 { (x - from) / time } else { 0.0 }
+}
+
+/// A swipe of `dx` points that ends at `speed` hides a dock `width`
+/// points wide if its throw would end past the middle of the dock.
+fn swipe_hides(dx: f32, speed: f32, width: f32) -> bool {
+    dx + speed.max(0.0) * COAST > width / 2.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_speed_comes_from_the_last_places_of_the_finger() {
+        // A slow start and then a quick end.
+        let mut places = vec![(0.0, 0.0), (0.5, 10.0), (0.55, 30.0), (0.6, 60.0)];
+        let speed = swipe_speed(&mut places);
+        assert!((speed - 500.0).abs() < 1.0, "{speed}");
+        assert_eq!(places.len(), 3);
+        // One place gives no speed.
+        assert_eq!(swipe_speed(&mut vec![(1.0, 5.0)]), 0.0);
+    }
+
+    #[test]
+    fn a_throw_past_the_middle_hides_the_dock() {
+        // A slow swipe hides the dock past half its width.
+        assert!(!swipe_hides(160.0, 0.0, 340.0));
+        assert!(swipe_hides(180.0, 0.0, 340.0));
+        // A quick short flick coasts on past the middle.
+        assert!(swipe_hides(40.0, 600.0, 340.0));
+        // A flick back to the left keeps the dock.
+        assert!(!swipe_hides(160.0, -600.0, 340.0));
+    }
 }

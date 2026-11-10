@@ -14206,7 +14206,7 @@ fn a_swipe_to_the_right_on_a_header_hides_the_dock() {
             &[&[Panel::Layers, Panel::Toolbox], &[Panel::Brush]],
         );
         let before = dock_tabs(&h);
-        drag_header(&mut h, &name, vec2(160.0, 10.0));
+        drag_header(&mut h, &name, vec2(200.0, 10.0));
         let dock = &h.state().pad.docks.world;
         assert!(dock.collapsed, "{name}");
         // The panes stay as they were.
