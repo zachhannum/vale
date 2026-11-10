@@ -9,6 +9,7 @@ use vale_store::{
     PageUnits, RasterId,
 };
 
+use super::flyout::{self, Choice, Flyout};
 use super::geometry::{self, GAP, Input, MARGIN, PAD, ROW, Rects, TOUCH, WidthClass};
 use super::icons::Icon;
 use super::number::Number;
@@ -29,11 +30,10 @@ pub const VERTEX: &str = "Vertex";
 pub const MOVE: &str = "Move";
 pub const PREVIOUS_PAGE: &str = "Previous page";
 pub const NEXT_PAGE: &str = "Next page";
-/// The button of the top row that opens the Add menu.
-pub const ADD: &str = "Add";
-/// The row of the Add menu that adds a map frame.
-pub const MAP_FRAME: &str = "Map frame";
-/// The rows of the Add menu that other tasks add.
+/// The cell of the furniture tools.
+pub const FURNITURE: &str = "Furniture";
+/// The row of the list of the Frame cell that chooses the Frame tool.
+pub const FRAME_ROW: &str = "Frame";
 /// The tabs of the panel of a frame.
 pub const FRAME_TABS: [&str; 4] = ["Frame", "Projection", "Layers", "Labels"];
 /// The name of the panel of the selected map frame or item.
@@ -143,11 +143,10 @@ pub const EXPORT_PAGE_PDF: &str = "Export page PDF…";
 pub const EXPORT_ATLAS_PDF: &str = "Export atlas PDF…";
 pub const CANCEL_EXPORT: &str = "Cancel export";
 
-/// The width of the actions bar: Undo, Redo, the layout grid, Add, the
-/// Dock button, the Panels button, and two dividers.
-const ACTIONS_WIDTH: f32 = 6.0 * TOUCH + 2.0 * 9.0 + 9.0 * PAD;
-const ADD_WIDTH: f32 = 220.0;
-const TOOL_CELLS: usize = 5;
+/// The width of the actions bar: Undo, Redo, the layout grid, the Dock
+/// button, the Panels button, and two dividers.
+const ACTIONS_WIDTH: f32 = 5.0 * TOUCH + 2.0 * 9.0 + 8.0 * PAD;
+const TOOL_CELLS: usize = 6;
 /// The smallest space at each side of the text of a tab.
 pub const TAB_PAD: f32 = 12.0;
 
@@ -302,9 +301,12 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         let groups = super::panels_menu::atlas(state);
         super::panels_menu::show(&ctx, state, &mut controls, &rects, &groups);
     }
-    state.atlas.add_rect = None;
-    if state.atlas.add {
-        add_menu(&ctx, state, &mut controls, &rects);
+    match state.pad.flyouts.open {
+        Some(Flyout::Frame) => frame_flyout(&ctx, state, &mut controls, &rects),
+        Some(Flyout::Furniture) => furniture_flyout(&ctx, state, &mut controls, &rects),
+        // The cells of the globe workspace are not here.
+        Some(_) => state.pad.flyouts.open = None,
+        None => {}
     }
     if state.pad.menu && class == WidthClass::Compact {
         workspace_menu(&ctx, state, &mut controls, &rects);
@@ -339,7 +341,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
 
 fn layout(input: &Input) -> Rects {
     let mut rects = geometry::layout(input);
-    // On a compact screen, the layout grid and Add are in the workspace menu.
+    // On a compact screen, the layout grid is in the workspace menu.
     if rects.class != WidthClass::Compact {
         rects.actions.min.x = rects.actions.max.x - rects.bands.right - ACTIONS_WIDTH;
     }
@@ -456,14 +458,8 @@ fn top_row(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
                 {
                     atlas::edit_grid(state, |g| g.on = !on);
                 }
-                let open = state.atlas.add;
-                let add = at(x + step);
-                if widgets::icon_button_at(ui, controls, add, ADD, Icon::Plus, open, true).clicked()
-                {
-                    state.atlas.add = !open;
-                }
-                divider(ui, card.left() + PAD + x + 2.0 * step + 4.5, card);
-                x += 2.0 * step + 9.0 + PAD;
+                divider(ui, card.left() + PAD + x + step + 4.5, card);
+                x += step + 9.0 + PAD;
             }
             super::panels_button(ui, state, controls, at(x));
             if rects.class != WidthClass::Compact {
@@ -613,10 +609,12 @@ fn tool_strip(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
     );
 }
 
-/// The cells of the tools: Frame, Select, Vertex, Move, and Measure.
+/// The cells of the tools: Frame, Furniture, Select, Vertex, Move, and
+/// Measure.
 fn tool_cells(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
+    frame_cell(ui, state, controls);
+    furniture_cell(ui, state, controls);
     for (name, label, icon, tool) in [
-        (FRAME_TOOL, "Frame", Icon::Frame, AtlasTool::Frame),
         (select::TOOL, select::TOOL, Icon::Select, AtlasTool::Select),
         (VERTEX, VERTEX, Icon::Vertex, AtlasTool::Vertex),
         (MOVE, MOVE, Icon::Move, AtlasTool::Move),
@@ -632,6 +630,124 @@ fn tool_cells(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
         if super::flyout::tool(ui, controls, flyouts, None, name, label, icon, active, true) {
             state.atlas.tool = tool;
         }
+    }
+}
+
+/// The Frame cell. A tap chooses the Frame tool, and a tap while the Frame
+/// tool is on or a hold opens its list: Frame and "Map from region".
+fn frame_cell(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
+    let active = state.atlas.tool == AtlasTool::Frame;
+    let flyouts = &mut state.pad.flyouts;
+    let key = Some(Flyout::Frame);
+    let (name, label) = (FRAME_TOOL, FRAME_ROW);
+    if flyout::tool(
+        ui,
+        controls,
+        flyouts,
+        key,
+        name,
+        label,
+        Icon::Frame,
+        active,
+        true,
+    ) {
+        if active {
+            flyouts.toggle(Flyout::Frame);
+        } else {
+            state.atlas.tool = AtlasTool::Frame;
+            flyouts.open = None;
+        }
+    }
+}
+
+/// The icon of a kind of furniture.
+pub fn kind_icon(kind: atlas::ItemKind) -> Icon {
+    match kind {
+        atlas::ItemKind::Text => Icon::TextCursor,
+        atlas::ItemKind::Legend => Icon::Legend,
+        atlas::ItemKind::ScaleBar => Icon::ScaleBar,
+        atlas::ItemKind::NorthArrow => Icon::NorthArrow,
+        atlas::ItemKind::ColorKey => Icon::ColorKey,
+    }
+}
+
+/// The Furniture cell. It shows the kind of the tool while the tool is on,
+/// and else the last kind that was chosen. A tap chooses that tool, and a
+/// tap while the tool is on or a hold opens the list of the kinds.
+fn furniture_cell(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
+    let current = match state.atlas.tool {
+        AtlasTool::Furniture(kind) => Some(kind),
+        _ => None,
+    };
+    if current.is_some() {
+        state.pad.furniture_kind = current;
+    }
+    let face = state.pad.furniture_kind.unwrap_or(atlas::ItemKind::Text);
+    let active = current.is_some();
+    let flyouts = &mut state.pad.flyouts;
+    let key = Some(Flyout::Furniture);
+    if flyout::tool(
+        ui,
+        controls,
+        flyouts,
+        key,
+        FURNITURE,
+        face.name(),
+        kind_icon(face),
+        active,
+        true,
+    ) {
+        if active {
+            flyouts.toggle(Flyout::Furniture);
+        } else {
+            state.atlas.tool = AtlasTool::Furniture(face);
+            flyouts.open = None;
+        }
+    }
+}
+
+/// The list of the Frame cell.
+fn frame_flyout(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
+    let choices = [
+        Choice {
+            name: FRAME_ROW,
+            icon: Icon::Frame,
+            enabled: true,
+        },
+        Choice {
+            name: region::MAP_FROM_REGION,
+            icon: Icon::World,
+            enabled: true,
+        },
+    ];
+    let current = (state.atlas.tool == AtlasTool::Frame).then_some(0);
+    let backdrop = state.globe.backdrop();
+    let flyouts = &mut state.pad.flyouts;
+    match flyout::show(ctx, backdrop, controls, flyouts, rects, &choices, current) {
+        Some(0) => state.atlas.tool = AtlasTool::Frame,
+        Some(_) => region::start(state),
+        None => {}
+    }
+}
+
+/// The list of the Furniture cell.
+fn furniture_flyout(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    controls: &mut Controls,
+    rects: &Rects,
+) {
+    let kinds = atlas::ItemKind::ALL;
+    let choices = kinds.map(|kind| Choice {
+        name: kind.name(),
+        icon: kind_icon(kind),
+        enabled: true,
+    });
+    let current = (kinds.iter()).position(|&k| state.atlas.tool == AtlasTool::Furniture(k));
+    let backdrop = state.globe.backdrop();
+    let flyouts = &mut state.pad.flyouts;
+    if let Some(i) = flyout::show(ctx, backdrop, controls, flyouts, rects, &choices, current) {
+        state.atlas.tool = AtlasTool::Furniture(kinds[i]);
     }
 }
 
@@ -792,32 +908,6 @@ fn menu_card(ctx: &egui::Context, id: &str, rect: Rect, contents: impl FnOnce(&m
     });
 }
 
-fn add_menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
-    let rows = 2 + atlas::ItemKind::ALL.len();
-    let size = vec2(ADD_WIDTH, 10.0 + rows as f32 * PANEL_ROW + 10.0);
-    let left = (rects.actions.right() - size.x).max(rects.screen.left() + geometry::PANEL_GAP);
-    let rect = Rect::from_min_size(pos2(left, rects.actions.bottom() + PAD), size);
-    state.atlas.add_rect = Some(rect);
-    if pressed_outside(ctx, rect, rects.actions) {
-        state.atlas.add = false;
-    }
-    menu_card(ctx, "pad-atlas-add", rect, |ui| {
-        if widgets::text_row(ui, controls, MAP_FRAME, 0.0, false, true).clicked() {
-            atlas::add_frame(state);
-            state.atlas.add = false;
-        }
-        if widgets::text_row(ui, controls, region::MAP_FROM_REGION, 0.0, false, true).clicked() {
-            region::start(state);
-        }
-        for kind in atlas::ItemKind::ALL {
-            if widgets::text_row(ui, controls, kind.name(), 0.0, false, true).clicked() {
-                atlas::add_item(state, kind);
-                state.atlas.add = false;
-            }
-        }
-    });
-}
-
 fn workspace_menu(
     ctx: &egui::Context,
     state: &mut AppState,
@@ -825,7 +915,7 @@ fn workspace_menu(
     rects: &Rects,
 ) {
     let compact = rects.class == WidthClass::Compact;
-    let rows = if compact { 5.0 } else { 2.0 };
+    let rows = if compact { 4.0 } else { 2.0 };
     let rules = if compact { 1.0 } else { 0.0 };
     let size = vec2(
         geometry::MENU_WIDTH,
@@ -855,10 +945,6 @@ fn workspace_menu(
         if compact && widgets::text_row(ui, controls, SHOW_GRID, 0.0, on, true).clicked() {
             state.pad.menu = false;
             atlas::edit_grid(state, |g| g.on = !on);
-        }
-        if compact && widgets::text_row(ui, controls, ADD, 0.0, false, true).clicked() {
-            state.pad.menu = false;
-            state.atlas.add = true;
         }
     });
 }

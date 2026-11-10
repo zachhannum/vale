@@ -500,6 +500,8 @@ pub struct PadState {
     group_modes: [Option<Mode>; 2],
     /// The last tool that was chosen in the Vector cell.
     vector_tool: Option<Tool>,
+    /// The last kind that was chosen in the Furniture cell of the Atlas.
+    furniture_kind: Option<crate::ui::atlas::ItemKind>,
     /// The name of the tool that the Vector cell shows, while it is on.
     pub vector_face: Option<&'static str>,
     /// The distance that the sheet is pulled down from its open place.
@@ -736,6 +738,8 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         Some(Flyout::Brush(group)) => brush_flyout(&ctx, state, &mut controls, &rects, group),
         Some(Flyout::PolygonMode) => polygon_flyout(&ctx, state, &mut controls, &rects),
         Some(Flyout::Vector) => vector_flyout(&ctx, state, &mut controls, &rects),
+        // The cells of the Atlas are not here.
+        Some(Flyout::Frame | Flyout::Furniture) => state.pad.flyouts.open = None,
         None => {}
     }
     state.pad.add_rect = None;

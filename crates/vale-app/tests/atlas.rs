@@ -20,17 +20,16 @@ use vale_app::ui::atlas::{self as atlas, BarPage, BarPick, ItemKind, ItemPage, T
 use vale_app::ui::atlas::{AtlasSelection, AtlasTool, FrameTab};
 use vale_app::ui::map_texture::MapRenderer;
 use vale_app::ui::pad::atlas::{
-    ADD, ADD_HOLE, ADD_PAGE, AUTO_INTERVAL, BORDER, BORDER_DISTANCE, BORDER_STROKE, BORDER_STYLES,
+    ADD_HOLE, ADD_PAGE, AUTO_INTERVAL, BORDER, BORDER_DISTANCE, BORDER_STROKE, BORDER_STYLES,
     BORDER_WIDTH, CENTER_ON_FRAME, COPY_GLOBE_STYLE, DELETE_PAGE, DELETE_PROJECTION,
     EXPORT_ATLAS_PDF, EXPORT_PAGE_PDF, EXPORT_PAGE_PNG, FIRST_PARALLEL, FRAME_TABS, FRAME_TOOL,
-    GRATICULE_COLOR, GRATICULE_WIDTH, HEIGHT, INTERVAL, LABEL_FORMATS, MAP_FRAME, MAP_NAME,
-    NEATLINE, NEATLINE_COLOR, NEATLINE_WIDTH, NEXT_PAGE, OBLIQUE, PAPER_COLOR, POLYGON,
-    PREVIOUS_PAGE, PROJECTION, REFERENCE_GRID, SAVE_PROJECTION, SCALE, SECOND_COLOR, SIZE,
-    STROKE_COLOR, STROKE_WIDTH as BORDER_STROKE_WIDTH, VERTEX, WIDTH, custom_row, page_title,
-    readout_text,
+    GRATICULE_COLOR, GRATICULE_WIDTH, HEIGHT, INTERVAL, LABEL_FORMATS, MAP_NAME, NEATLINE,
+    NEATLINE_COLOR, NEATLINE_WIDTH, NEXT_PAGE, OBLIQUE, PAPER_COLOR, POLYGON, PREVIOUS_PAGE,
+    PROJECTION, REFERENCE_GRID, SAVE_PROJECTION, SCALE, SECOND_COLOR, SIZE, STROKE_COLOR,
+    STROKE_WIDTH as BORDER_STROKE_WIDTH, VERTEX, WIDTH, custom_row, page_title, readout_text,
 };
 use vale_app::ui::pad::atlas::{
-    BORDER_GAP, DISTANCE_BY_SIDE, GRID_COLUMN_NAMES, PROPERTIES, SIDE_DISTANCES,
+    BORDER_GAP, DISTANCE_BY_SIDE, FURNITURE, GRID_COLUMN_NAMES, PROPERTIES, SIDE_DISTANCES,
 };
 use vale_app::ui::pad::atlas::{
     EDITED, MAP_STYLE, MAP_STYLE_NAME, NO_MAP_STYLE_ROW, RESET_TO_MAP_STYLE, SAVE_AS_MAP_STYLE,
@@ -443,19 +442,35 @@ fn middle(h: &Pad, index: usize) -> Pos2 {
     screen(h, anchor(&frame(h, index).shape))
 }
 
-/// Opens the Add menu. On a compact screen, Add is a row of the workspace
-/// menu.
-fn open_add(h: &mut Pad) {
-    if control(h, ADD).is_none() {
-        tap(h, "Workspace");
-    }
-    tap(h, ADD);
+/// Adds a frame at the default place of a new frame.
+fn add_frame(h: &mut Pad) {
+    atlas::add_frame(h.state_mut());
+    h.run_steps(3);
 }
 
-/// Adds a frame with the Add menu.
-fn add_frame(h: &mut Pad) {
-    open_add(h);
-    tap(h, MAP_FRAME);
+/// Holds a finger on a cell of the tools until its list opens, and lifts
+/// it.
+fn hold_cell(h: &mut Pad, name: &str) {
+    let pos = control(h, name)
+        .unwrap_or_else(|| panic!("no cell `{name}`"))
+        .center();
+    touch(h, 1, egui::TouchPhase::Start, pos, None);
+    for _ in 0..40 {
+        h.step();
+        if h.state().pad.flyouts.open.is_some() {
+            break;
+        }
+    }
+    touch(h, 1, egui::TouchPhase::End, pos, None);
+    h.run_steps(3);
+}
+
+/// Chooses a row of the list of a cell of the tools. A hold on the cell
+/// opens the list.
+fn choose(h: &mut Pad, cell: &str, row: &str) {
+    hold_cell(h, cell);
+    assert!(h.state().pad.flyouts.rect.is_some(), "{cell}");
+    tap(h, row);
 }
 
 /// A page with a main frame and an inset frame. The inset is selected.
@@ -689,16 +704,19 @@ fn a_tap_opens_the_panel_of_a_frame_or_of_the_page() {
 }
 
 #[test]
-fn the_add_button_adds_a_frame_that_shows_the_map_of_the_project() {
+fn the_frame_tool_draws_a_frame_that_shows_the_map_of_the_project() {
     let mut h = pad();
-    open_add(&mut h);
-    assert!(h.state().atlas.add_rect.is_some());
-    check_controls(&h, "add menu");
-    tap(&mut h, MAP_FRAME);
-    assert_eq!(h.state().atlas.add_rect, None);
+    assert_eq!(h.state().atlas.tool, AtlasTool::Frame);
+    let (from, to) = (Point::new(30.0, 40.0), Point::new(150.0, 120.0));
+    let (from, to) = (screen(&h, from), screen(&h, to));
+    drag(&mut h, from, to, Input::Finger);
     let page = open_page(&h);
     assert_eq!(page.frames.len(), 1);
     let f = &page.frames[0];
+    let r = shape_bbox(&f.shape);
+    for (got, want) in [(r.x0, 30.0), (r.y0, 40.0), (r.x1, 150.0), (r.y1, 120.0)] {
+        assert!((got - want).abs() < 1.0, "{r:?}");
+    }
     assert_eq!(f.map, h.state().doc.first_map());
     assert_eq!(h.state().atlas.selection, AtlasSelection::Frame(f.id));
     assert!(h.state().atlas.has_image(f.id));
@@ -1491,7 +1509,12 @@ fn a_drag_on_the_paper_moves_the_page() {
         tap(&mut h, tool);
         for input in INPUTS {
             let before = place(&h);
-            let from = margin(&h);
+            // With the Frame tool, a drag on the paper draws a frame, and a
+            // drag off the paper moves the page.
+            let from = match tool {
+                "Move" => margin(&h),
+                _ => place(&h).rect.left_center() - vec2(20.0, 0.0),
+            };
             drag(&mut h, from, from + vec2(60.0, 30.0), input);
             let moved = place(&h).rect.min - before.rect.min;
             assert!(
@@ -5864,19 +5887,151 @@ fn item_middle(h: &Pad, index: usize) -> Pos2 {
     screen(h, rect_of(&item(h, index)).center())
 }
 
+/// Adds an item of furniture at its default place.
 fn add_item(h: &mut Pad, kind: ItemKind) {
-    open_add(h);
-    tap(h, kind.name());
+    atlas::add_item(h.state_mut(), kind);
+    h.run_steps(3);
 }
 
 #[test]
-fn the_add_button_adds_each_item_of_furniture() {
+fn the_furniture_cell_chooses_each_item_tool_from_its_list() {
+    use vale_app::ui::pad::flyout::Flyout;
+    for size in BOARDS {
+        let mut h = pad_with(state(), size);
+        let what = format!("{size:?}");
+        // A hold opens the list of the kinds, and a row chooses its tool.
+        for kind in ItemKind::ALL {
+            hold_cell(&mut h, FURNITURE);
+            let open = h.state().pad.flyouts.open;
+            assert_eq!(open, Some(Flyout::Furniture), "{what}");
+            for k in ItemKind::ALL {
+                assert!(control(&h, k.name()).is_some(), "{what}: {k:?}");
+            }
+            check_controls(&h, "furniture list");
+            tap(&mut h, kind.name());
+            assert_eq!(h.state().atlas.tool, AtlasTool::Furniture(kind), "{what}");
+            assert_eq!(h.state().pad.flyouts.open, None, "{what}");
+        }
+        // After another tool, a tap on the cell chooses the last kind again.
+        tap(&mut h, FRAME_TOOL);
+        assert_eq!(h.state().atlas.tool, AtlasTool::Frame, "{what}");
+        tap(&mut h, FURNITURE);
+        let last = ItemKind::ALL[ItemKind::ALL.len() - 1];
+        assert_eq!(h.state().atlas.tool, AtlasTool::Furniture(last), "{what}");
+        assert_eq!(h.state().pad.flyouts.open, None, "{what}");
+        // A tap while the tool is on opens the list.
+        tap(&mut h, FURNITURE);
+        let open = h.state().pad.flyouts.open;
+        assert_eq!(open, Some(Flyout::Furniture), "{what}");
+    }
+}
+
+#[test]
+fn the_frame_cell_lists_the_frame_tool_and_map_from_region() {
+    use vale_app::ui::pad::atlas::FRAME_ROW;
+    use vale_app::ui::region::MAP_FROM_REGION;
+    for size in BOARDS {
+        let mut h = pad_with(state(), size);
+        let what = format!("{size:?}");
+        tap(&mut h, FURNITURE);
+        choose(&mut h, FRAME_TOOL, FRAME_ROW);
+        assert_eq!(h.state().atlas.tool, AtlasTool::Frame, "{what}");
+        hold_cell(&mut h, FRAME_TOOL);
+        assert!(control(&h, MAP_FROM_REGION).is_some(), "{what}");
+        check_controls(&h, "frame list");
+    }
+}
+
+#[test]
+fn the_top_row_and_the_workspace_menu_add_no_frame_and_no_item() {
+    use vale_app::ui::pad::atlas::FRAME_ROW;
+    use vale_app::ui::region::MAP_FROM_REGION;
+    for size in BOARDS {
+        let mut h = pad_with(state(), size);
+        if size.0 < 600.0 {
+            tap(&mut h, "Workspace");
+            assert!(h.state().pad.menu_rect.is_some(), "{size:?}");
+        }
+        let names = ItemKind::ALL.map(|k| k.name());
+        for name in names.into_iter().chain(["Add", FRAME_ROW, MAP_FROM_REGION]) {
+            assert!(control(&h, name).is_none(), "{size:?}: {name}");
+        }
+    }
+}
+
+#[test]
+fn a_tap_with_an_item_tool_puts_the_item_at_the_tap_and_its_properties_show() {
+    for input in INPUTS {
+        let mut h = pad();
+        add_frame(&mut h);
+        let main = frame(&h, 0).id;
+        choose(&mut h, FURNITURE, ItemKind::Text.name());
+        let at = Point::new(40.0, 150.0);
+        let at = screen(&h, at);
+        tap_with(&mut h, at, input);
+        assert_eq!(open_page(&h).furniture.len(), 1, "{input:?}");
+        let rec = item(&h, 0);
+        assert_eq!(ItemKind::of(&rec.item), ItemKind::Text, "{input:?}");
+        let r = rect_of(&rec);
+        let (w, height) = ItemKind::Text.size();
+        assert!(
+            (r.x0 - 40.0).abs() < 0.5 && (r.y0 - 150.0).abs() < 0.5,
+            "{r:?}"
+        );
+        assert!((r.width() - w).abs() < 1e-9 && (r.height() - height).abs() < 1e-9);
+        // The new item is selected, the Properties panel shows it, and the
+        // tool stays.
+        assert_eq!(h.state().atlas.selection, AtlasSelection::Item(rec.id));
+        assert!(h.state().pad.shows(Panel::Properties), "{input:?}");
+        scroll_to(&mut h, ITEM_TEXT);
+        assert!(control(&h, ITEM_TEXT).is_some(), "{input:?}");
+        let tool = h.state().atlas.tool;
+        assert_eq!(tool, AtlasTool::Furniture(ItemKind::Text), "{input:?}");
+        // An item near the corner stays on the page.
+        choose(&mut h, FURNITURE, "North arrow");
+        let page = open_page(&h);
+        let corner = Point::new(page.width_mm - 2.0, page.height_mm - 2.0);
+        let corner = screen(&h, corner);
+        tap_with(&mut h, corner, input);
+        let rec = item(&h, 1);
+        assert_eq!(ItemKind::of(&rec.item), ItemKind::NorthArrow);
+        assert_eq!(rec.item.frame(), Some(main));
+        let r = rect_of(&rec);
+        assert!((r.x1 - page.width_mm).abs() < 1e-9, "{r:?}");
+        assert!((r.y1 - page.height_mm).abs() < 1e-9, "{r:?}");
+    }
+}
+
+#[test]
+fn a_drag_with_an_item_tool_puts_the_item_in_the_rectangle_of_the_drag() {
+    for input in INPUTS {
+        let mut h = pad();
+        choose(&mut h, FURNITURE, "Legend");
+        // The drag goes up and to the left.
+        let (from, to) = (Point::new(120.0, 100.0), Point::new(60.0, 30.0));
+        let (from, to) = (screen(&h, from), screen(&h, to));
+        drag(&mut h, from, to, input);
+        assert_eq!(open_page(&h).furniture.len(), 1, "{input:?}");
+        let rec = item(&h, 0);
+        assert_eq!(ItemKind::of(&rec.item), ItemKind::Legend, "{input:?}");
+        let r = rect_of(&rec);
+        for (got, want) in [(r.x0, 60.0), (r.y0, 30.0), (r.x1, 120.0), (r.y1, 100.0)] {
+            assert!((got - want).abs() < 1.0, "{input:?}: {r:?}");
+        }
+        assert_eq!(h.state().atlas.selection, AtlasSelection::Item(rec.id));
+        assert!(h.state().pad.shows(Panel::Properties), "{input:?}");
+        let tool = h.state().atlas.tool;
+        assert_eq!(tool, AtlasTool::Furniture(ItemKind::Legend), "{input:?}");
+    }
+}
+
+#[test]
+fn a_new_item_of_furniture_links_to_the_main_frame_and_its_panel_opens() {
     let mut h = pad();
     add_frame(&mut h);
     let main = frame(&h, 0).id;
     for (n, kind) in ItemKind::ALL.into_iter().enumerate() {
         add_item(&mut h, kind);
-        assert_eq!(h.state().atlas.add_rect, None, "{kind:?}");
         let page = open_page(&h);
         assert_eq!(page.furniture.len(), n + 1, "{kind:?}");
         let rec = item(&h, n);
@@ -7074,20 +7229,21 @@ fn the_top_row_ends_with_the_layout_grid_add_the_panels_button_and_the_dock_butt
         assert_eq!(rects.actions.right(), size.0, "{size:?}");
         let last = if compact { panels } else { panels + 48.0 };
         assert_eq!(last + 44.0 + 4.0, size.0, "{size:?}");
-        // On a phone, the layout grid and Add are rows of the workspace menu.
-        match (x(GRID), x(ADD)) {
-            (Some(grid), Some(add)) => {
+        // The top row adds no frame and no item of furniture.
+        assert!(control(&h, "Add").is_none(), "{size:?}");
+        // On a phone, the layout grid is a row of the workspace menu.
+        match x(GRID) {
+            Some(grid) => {
                 assert!(!compact, "{size:?}");
-                assert!(redo < grid && grid < add && add < panels, "{size:?}");
+                assert!(redo < grid && grid < panels, "{size:?}");
                 // The Dock button, which is off with no panes, is at the
                 // right of the Panels button.
                 assert!(h.query_by_label(DOCK).is_some(), "{size:?}");
             }
-            (None, None) => {
+            None => {
                 assert!(compact, "{size:?}");
                 assert!(h.query_by_label(DOCK).is_none(), "{size:?}");
             }
-            other => panic!("{size:?}: {other:?}"),
         }
     }
 }
@@ -7531,10 +7687,10 @@ fn a_zoomed_frame_loads_the_tiles_of_a_layer_from_the_project_file() {
     assert!(state.status.is_empty(), "{}", state.status);
 }
 
-/// Starts Map from region with the globe centered on a place.
+/// Starts Map from region from the list of the Frame cell, with the globe
+/// centered on a place.
 fn start_region(h: &mut Pad, lon: f64, lat: f64) {
-    open_add(h);
-    tap(h, vale_app::ui::region::MAP_FROM_REGION);
+    choose(h, FRAME_TOOL, vale_app::ui::region::MAP_FROM_REGION);
     assert_eq!(h.state().workspace, Workspace::Globe);
     h.state_mut().globe.view = vale_app::globe::view::GlobeView::centered(lon, lat);
     h.run_steps(3);

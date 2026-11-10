@@ -22,6 +22,10 @@ pub enum Flyout {
     PolygonMode,
     /// The tools of the Vector cell of the tool strip.
     Vector,
+    /// The Frame tool and "Map from region" in the Frame cell of the Atlas.
+    Frame,
+    /// The furniture tools of the Furniture cell of the Atlas.
+    Furniture,
 }
 
 impl Flyout {

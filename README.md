@@ -59,14 +59,15 @@ The default face size is 8,192 pixels for a height layer and 2,048 pixels for ea
 
 Click "Atlas" in the tool bar to open the pages of the atlas. On iPad, tap "Atlas" in the workspace switch. You can do these things there.
 
-- Click "Add map frame" to add a frame to the page. The frame shows the map of the project. On iPad, tap the Add button and then "Map frame".
+- Click "Add map frame" to add a frame to the page. With the Frame tool, drag on the empty paper to draw a frame. The frame shows the map of the project. On iPad, the list of the Frame cell of the tool column has the Frame tool and "Map from region".
+- On iPad, the Furniture cell of the tool column has a tool for text, a legend, a color key, a scale bar, and a north arrow. Hold the cell to choose the tool. Tap the page to put the item there, or drag to put it in a rectangle. The Properties pane shows the new item. On the desktop, the Add menu adds these items.
 - Click a frame to select it. Drag the frame to move it, and drag a handle to resize it. The dock shows the tabs Frame, Projection, and Layers.
 - Click "Maps" in the tool bar to show or hide the panel of the selected frame. With no frame selected, choose a frame in its menu. On iPad, a selected frame or item opens the Properties pane in the dock.
 - In the Frame tab, change the shape to a polygon. Drag a vertex to move it, drag the middle of an edge to add a vertex, and double-click a vertex to remove it. "Add hole" adds a hole.
 - With the Move tool, drag in the selected frame to pan its map. The key H selects the Move tool, and F selects the Frame tool. Scroll in the selected frame to zoom its map. On a touch screen, two fingers in the selected frame pan and zoom the map.
 - With the Select tool, tap or click a feature of the selectable layers in a frame to select it, or drag a box with the pen or the mouse. A row of a vector layer in the Layers tab makes that layer the active layer. The key V selects the Select tool. The globe shows the same selection.
 - With the Measure tool, tap or click in the map frames to measure a path. The path shows in each frame of the page, and it can cross from one frame to another.
-- Drag the page outside the frames to pan it, and scroll to zoom it. With the Move tool, scroll outside the selected frame to zoom the page. On a touch screen, two fingers pan and zoom the page. Double-click outside the page to fit the page in the window again.
+- Drag the page outside the frames to pan it, and scroll to zoom it. With the Frame tool, start the drag off the paper. With the Move tool, scroll outside the selected frame to zoom the page. On a touch screen, two fingers pan and zoom the page. Double-click outside the page to fit the page in the window again.
 - To delete the selected frame, click "Delete frame" in the Frame tab, or press Delete when no vertex is selected.
 - Type the scale, the center, and the rotation of a frame in the Frame tab. Select a projection in the Projection tab. Each frame of the map shows the new projection.
 - In the Layers tab, the eye of a layer turns the layer on or off in the map of the frame. Each frame of that map shows the change. The eye in the globe workspace does not change a map.
