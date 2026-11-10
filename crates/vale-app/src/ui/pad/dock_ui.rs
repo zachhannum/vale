@@ -160,6 +160,7 @@ pub fn show(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, 
             show_sheet(ctx, state, controls, rects, sheet);
         }
     } else {
+        track_swipe(ctx, state, rects.dock.width());
         let slide = slide(ctx, state, rects.dock.width());
         if slide < 1.0 {
             show_dock(ctx, state, controls, rects, slide);
@@ -446,6 +447,11 @@ fn show_dock(
             }
         },
     );
+    // The headers take the press of a swipe in the next frame.
+    let headers: Vec<Rect> = (placed.iter())
+        .map(|p| Rect::from_min_size(p.rect.min, vec2(p.rect.width(), ROW)))
+        .collect();
+    ctx.data_mut(|d| d.insert_temp(egui::Id::new(HEADERS), headers));
     if !state.pad.dock().collapsed {
         state.pad.dock_rect = Some(rect);
     }
@@ -458,21 +464,6 @@ fn show_dock(
         }
     }
     match drag {
-        Some((DockDrag::Swipe { dx, speed }, DragPhase::Stopped)) => {
-            // The dock hides if a throw from the release would end past
-            // the middle of the dock. Else it slides back.
-            let width = room.width();
-            let hide = swipe_hides(dx, speed, width);
-            if hide {
-                state.pad.dock_mut().collapsed = true;
-                state.pad.pane_menu = None;
-            }
-            let at = (dx / width.max(1.0)).clamp(0.0, 0.9);
-            let now = ctx.input(|i| i.time);
-            ctx.data_mut(|d| d.insert_temp(release_id(state), (at, now)));
-            state.pad.dock_drag = None;
-            ctx.request_repaint();
-        }
         Some((drag, DragPhase::Moving)) => {
             state.pad.dock_drag = Some(drag);
             paint_drop(ctx, state, rect, &placed, drag);
@@ -615,7 +606,7 @@ pub fn handle(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
         return;
     };
     // The touch area of the handle is at the left of the dock, so it covers
-    // no control of a pane. Its grip is on the edge of the dock.
+    // no control of a pane. Its grip is in it.
     let rect = Rect::from_min_size(
         pos2(dock.left() - HANDLE.0, dock.center().y - HANDLE.1 / 2.0),
         vec2(HANDLE.0, HANDLE.1),
@@ -633,7 +624,7 @@ pub fn handle(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
     let most =
         (rects.screen.right() - rects.bands.right - rects.column_right).max(panes::MIN_WIDTH);
     // A touch on the dock brings the dock to the top of its order, so the
-    // grip, which is half over the dock, comes back on top in each frame.
+    // grip comes back on top in each frame.
     let id = egui::Id::new("pad-dock-handle");
     ctx.move_to_top(egui::LayerId::new(Order::Middle, id));
     egui::Area::new(id)
@@ -662,7 +653,9 @@ pub fn handle(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
             }
             // A grip on a dark capsule shows over a white page and over the
             // dark canvas.
-            let center = pos2(dock.left(), rect.center().y);
+            // The grip is in its touch area, at the left of the dock, so a
+            // finger that aims at it does not land on a control of a pane.
+            let center = pos2(dock.left() - 14.0, rect.center().y);
             let capsule = Rect::from_center_size(center, vec2(12.0, 64.0));
             let back = theme::card(false).to_opaque();
             ui.painter().rect_filled(capsule, 6.0, back);
@@ -1153,25 +1146,11 @@ fn tab_drag(
     } else {
         return None;
     };
-    let swipe = match now {
-        Some(DockDrag::Swipe { dx, speed }) => Some((dx, speed)),
-        Some(_) => None,
-        None => delta.filter(|d| d.x > d.y.abs()).map(|_| (0.0, 0.0)),
-    };
-    if let Some((last, _)) = swipe {
-        // The speed of egui is zero after the release, so the swipe keeps
-        // its own places of the finger.
-        let dx = delta.map_or(last, |d| d.x.max(0.0));
-        let (time, start) = ui.input(|i| (i.time, i.pointer.press_start_time()));
-        let id = egui::Id::new("pad-dock-swipe");
-        let mut places: Vec<(f64, f32)> = match now {
-            Some(DockDrag::Swipe { .. }) => ui.data(|d| d.get_temp(id)).unwrap_or_default(),
-            _ => start.map(|t| vec![(t, 0.0)]).unwrap_or_default(),
-        };
-        places.push((time, dx));
-        let speed = swipe_speed(&mut places);
-        ui.data_mut(|d| d.insert_temp(id, places));
-        return Some((DockDrag::Swipe { dx, speed }, phase));
+    // A swipe of the dock is no drag of a tab or a pane. `track_swipe`
+    // follows it.
+    let sideways = delta.is_some_and(|d| d.x > d.y.abs());
+    if matches!(now, Some(DockDrag::Swipe { .. })) || (now.is_none() && sideways) {
+        return None;
     }
     let pos = ui
         .ctx()
@@ -1233,5 +1212,111 @@ mod tests {
         assert!(swipe_hides(40.0, 600.0, 340.0));
         // A flick back to the left keeps the dock.
         assert!(!swipe_hides(160.0, -600.0, 340.0));
+    }
+}
+
+/// The key of the places of the headers of the dock in the last frame.
+const HEADERS: &str = "pad-dock-headers";
+
+/// A swipe of the dock that a finger makes on a header.
+#[derive(Clone, Debug, Default)]
+struct SwipeTrack {
+    origin: Pos2,
+    /// The times and the distances to the right of the finger.
+    places: Vec<(f64, f32)>,
+    /// `Some(true)` once the finger moved past `HOLD_SLOP` and more to the
+    /// right than up or down, `Some(false)` for another way.
+    sideways: Option<bool>,
+}
+
+/// Follows a swipe on a header of the dock in the events of the frame, in
+/// their order. A quick flick can start, move, and end in one frame, and
+/// then egui sees no drag, so the swipe does not wait for one. While the
+/// swipe goes, the dock moves with the finger. At its end, the dock hides
+/// if a throw from the release would end past the middle of the dock, and
+/// else it slides back.
+fn track_swipe(ctx: &egui::Context, state: &mut AppState, width: f32) {
+    let id = egui::Id::new("pad-dock-swipe");
+    let mut track: Option<SwipeTrack> = ctx.data(|d| d.get_temp(id));
+    let headers: Vec<Rect> = ctx
+        .data(|d| d.get_temp(egui::Id::new(HEADERS)))
+        .unwrap_or_default();
+    let open = !state.pad.dock().collapsed && state.pad.pane_menu.is_none();
+    let (time, events) = ctx.input(|i| (i.time, i.events.clone()));
+    let mut end = None;
+    for event in events {
+        match event {
+            egui::Event::PointerButton {
+                pos, pressed: true, ..
+            } => {
+                track = (open && headers.iter().any(|h| h.contains(pos))).then(|| SwipeTrack {
+                    origin: pos,
+                    places: vec![(time, 0.0)],
+                    sideways: None,
+                });
+            }
+            egui::Event::PointerMoved(pos) => {
+                if let Some(t) = &mut track {
+                    let d = pos - t.origin;
+                    if t.sideways.is_none() && d.length() > HOLD_SLOP {
+                        t.sideways = Some(d.x > d.y.abs());
+                    }
+                    t.places.push((time, d.x.max(0.0)));
+                }
+            }
+            egui::Event::PointerButton {
+                pos,
+                pressed: false,
+                ..
+            } => {
+                if let Some(t) = &mut track {
+                    t.places.push((time, (pos - t.origin).x.max(0.0)));
+                }
+                if let Some(mut t) = track.take()
+                    && t.sideways == Some(true)
+                {
+                    let dx = t.places.last().map_or(0.0, |p| p.1);
+                    end = Some((dx, swipe_speed(&mut t.places)));
+                }
+            }
+            egui::Event::PointerGone => {
+                if let Some(mut t) = track.take()
+                    && t.sideways == Some(true)
+                {
+                    let dx = t.places.last().map_or(0.0, |p| p.1);
+                    end = Some((dx, swipe_speed(&mut t.places)));
+                }
+            }
+            _ => {}
+        }
+    }
+    match &mut track {
+        Some(t) if t.sideways == Some(true) => {
+            let dx = t.places.last().map_or(0.0, |p| p.1);
+            let speed = swipe_speed(&mut t.places);
+            state.pad.dock_drag = Some(DockDrag::Swipe { dx, speed });
+            ctx.request_repaint();
+        }
+        Some(_) => {}
+        None if matches!(state.pad.dock_drag, Some(DockDrag::Swipe { .. })) => {
+            state.pad.dock_drag = None;
+        }
+        None => {}
+    }
+    ctx.data_mut(|d| match &track {
+        Some(t) => {
+            d.insert_temp(id, t.clone());
+        }
+        None => d.remove::<SwipeTrack>(id),
+    });
+    if let Some((dx, speed)) = end {
+        if swipe_hides(dx, speed, width) {
+            state.pad.dock_mut().collapsed = true;
+            state.pad.pane_menu = None;
+        }
+        let at = (dx / width.max(1.0)).clamp(0.0, 0.9);
+        ctx.data_mut(|d| d.insert_temp(release_id(state), (at, time)));
+        state.pad.dock_drag = None;
+        ctx.request_repaint();
     }
 }

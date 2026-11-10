@@ -14651,3 +14651,64 @@ fn the_workspace_switch_has_icons_and_a_hold_names_them() {
         assert_eq!(h.state().workspace, Workspace::Globe, "{what}");
     }
 }
+
+#[test]
+fn a_quick_flick_on_a_header_hides_the_dock() {
+    use vale_app::ui::pad::dock_ui::tab_name;
+    let mut h = promotion_pad();
+    let from = control(&h, &tab_name(TOOLBOX)).unwrap().center();
+    // 60 points in 10 frames: 720 points each second.
+    touch(&mut h, egui::TouchPhase::Start, from, None);
+    h.step();
+    for i in 1..=10 {
+        let at = from + vec2(6.0 * i as f32, 0.0);
+        touch(&mut h, egui::TouchPhase::Move, at, None);
+        h.step();
+    }
+    touch(&mut h, egui::TouchPhase::End, from + vec2(60.0, 0.0), None);
+    h.run_steps(3);
+    assert!(h.state().pad.docks.world.collapsed);
+}
+
+#[test]
+fn a_flick_that_moves_and_ends_in_one_frame_hides_the_dock() {
+    use vale_app::ui::pad::dock_ui::tab_name;
+    let mut h = promotion_pad();
+    let from = control(&h, &tab_name(TOOLBOX)).unwrap().center();
+    touch(&mut h, egui::TouchPhase::Start, from, None);
+    h.step();
+    // A slow frame: the moves and the end of the flick come together.
+    for dx in [20.0, 40.0, 60.0] {
+        touch(&mut h, egui::TouchPhase::Move, from + vec2(dx, 2.0), None);
+    }
+    touch(&mut h, egui::TouchPhase::End, from + vec2(60.0, 2.0), None);
+    h.run_steps(3);
+    assert!(h.state().pad.docks.world.collapsed);
+    // A tap on a tab hides nothing.
+    h.state_mut().pad.docks.world.collapsed = false;
+    h.run_steps(3);
+    let from = control(&h, &tab_name(TOOLBOX)).unwrap().center();
+    touch(&mut h, egui::TouchPhase::Start, from, None);
+    touch(&mut h, egui::TouchPhase::End, from, None);
+    h.run_steps(3);
+    assert!(!h.state().pad.docks.world.collapsed);
+}
+
+/// A layout with a pane of two tabs, with the frames of a ProMotion screen:
+/// 120 each second. The harness puts the end of a touch in a frame of its
+/// own, so the steps of other tests are too long for a flick.
+fn promotion_pad() -> Pad {
+    let mut h = Harness::builder()
+        .with_size(vec2(BOARDS[0].0, BOARDS[0].1))
+        .with_pixels_per_point(1.0)
+        .with_step_dt(1.0 / 120.0)
+        .build_ui_state(|ui, state: &mut AppState| draw(ui, state), state());
+    h.run_steps(3);
+    h.state_mut()
+        .pad
+        .docks
+        .world
+        .open_tabs(&[Panel::Layers, Panel::Toolbox]);
+    h.run_steps(3);
+    h
+}
