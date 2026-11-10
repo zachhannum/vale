@@ -8357,7 +8357,7 @@ fn selected_rules_take_one_stroke_and_keep_their_fills() {
         let fills: Vec<_> = rules(&h, land).iter().map(|r| r.fill()).collect();
         let picked = |h: &Pad| h.state().pad.rules.picked(land);
 
-        tap(&mut h, "Layers");
+        open_panel(&mut h, "Layers");
         tap(&mut h, "Open Land");
         // A long press selects a rule and does not open it.
         scroll_to_control(&mut h, "Default");

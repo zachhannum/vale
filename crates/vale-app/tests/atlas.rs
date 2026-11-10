@@ -2993,9 +2993,9 @@ fn the_blur_behind_a_card_shows_the_raster_layers_of_a_frame() {
     assert!(shown.iter().zip(&hidden).all(|(s, h)| s <= h));
 }
 
-/// A long press of a finger on the middle of a control, for one and a half
-/// seconds.
-fn long_press(h: &mut Pad, name: &str) {
+/// A finger on the middle of a control for one and a half seconds, longer
+/// than the long touch of egui.
+fn long_touch(h: &mut Pad, name: &str) {
     let rect = control(h, name).unwrap_or_else(|| panic!("no control `{name}`"));
     touch(h, 1, egui::TouchPhase::Start, rect.center(), None);
     h.run_steps(30);
@@ -3022,7 +3022,7 @@ fn selected_rules_of_a_frame_change_in_the_map_only() {
             rules.iter().map(|r| r.stroke().unwrap().width).collect()
         };
         let globe = widths(&h, None);
-        tap(&mut h, FRAME_TABS[2]);
+        show_tab(&mut h, FRAME_TABS[2]);
         scroll_to(&mut h, "Open Rivers");
         tap(&mut h, "Open Rivers");
         for _ in 0..2 {
@@ -3031,7 +3031,7 @@ fn selected_rules_of_a_frame_change_in_the_map_only() {
             tap(&mut h, "Back to Rivers");
         }
         scroll_to(&mut h, "Default");
-        long_press(&mut h, "Default");
+        long_touch(&mut h, "Default");
         assert_eq!(h.state().pad.rules.picked(rivers), [0], "{what}");
         nudge_up_to(&mut h, SELECT_ALL);
         tap(&mut h, SELECT_ALL);
