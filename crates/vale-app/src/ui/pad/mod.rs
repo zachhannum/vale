@@ -610,7 +610,7 @@ pub const PROJECTION: &str = "Projection";
 /// The button of the readout that shows the graticule.
 pub const GRATICULE: &str = "Graticule";
 /// The width of the space of a divider in a row of buttons.
-const DIVIDER: f32 = 9.0;
+pub(super) const DIVIDER: f32 = 9.0;
 const WORLD_VIEWS: [WorldView; 2] = [WorldView::Globe, WorldView::Flat];
 
 /// The text of the position readout.
@@ -886,12 +886,11 @@ fn top_row(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
             let divider = pos2(card.left() + PAD + 2.0 * step + 4.5, card.center().y);
             let line = Rect::from_center_size(divider, vec2(1.0, 24.0));
             ui.painter().rect_filled(line, 0.0, theme::divider());
-            let mut x = 2.0 * step + 9.0 + PAD;
-            if rects.class != WidthClass::Compact {
-                dock_button(ui, state, controls, at(x));
-                x += step;
-            }
+            let x = 2.0 * step + 9.0 + PAD;
             panels_button(ui, state, controls, at(x));
+            if rects.class != WidthClass::Compact {
+                dock_button(ui, state, controls, at(x + step));
+            }
         },
     );
 }

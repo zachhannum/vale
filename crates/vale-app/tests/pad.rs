@@ -4111,15 +4111,15 @@ fn the_top_row_and_the_panels_match_the_landscape_board() {
     assert!(control(&h, "Workspace").is_none());
     // The view buttons are at the lower left of the canvas.
     let view = h.state().pad.view_rect.unwrap();
-    assert_eq!(view.min, pos2(72.0, 754.0));
+    assert_eq!(view.min, pos2(72.0, 714.0));
     assert!(view.contains_rect(control(&h, "Flat").unwrap()));
     assert!(view.contains_rect(control(&h, "Globe").unwrap()));
     assert_eq!(
         r.actions,
         Rect::from_min_size(pos2(985.0, 28.0), vec2(209.0, 52.0))
     );
-    // Undo, Redo, a line, the Dock button, and the Panels button.
-    assert_eq!(control(&h, PANELS).unwrap().min, pos2(1146.0, 32.0));
+    // Undo, Redo, a line, the Panels button, and the Dock button.
+    assert_eq!(control(&h, PANELS).unwrap().min, pos2(1098.0, 32.0));
     for name in ["Layers", "Toolbox", select::ATTRIBUTES] {
         assert!(control(&h, name).is_none(), "{name}");
     }
@@ -6203,6 +6203,7 @@ fn an_imported_ramp_stays_in_the_list_and_applies_from_its_card() {
     h.state_mut()
         .run_action(Action::ImportRamp(Some(height), path));
     h.run();
+    scroll_to_control(&mut h, "land");
     tap(&mut h, "land");
     check_controls(&h, "with the card of a land ramp");
     // The user can choose another part.
@@ -13781,7 +13782,7 @@ fn docked(size: (f32, f32), panes: &[&[Panel]]) -> Pad {
 }
 
 #[test]
-fn two_panes_stack_with_a_bar_and_the_bar_changes_their_heights() {
+fn each_pane_has_a_bar_below_it_that_changes_its_height() {
     use vale_app::ui::pad::panes::BAR;
     let mut h = docked(BOARDS[0], &[&[Panel::Layers], &[Panel::Toolbox]]);
     let (layers, toolbox) = (
@@ -13792,23 +13793,32 @@ fn two_panes_stack_with_a_bar_and_the_bar_changes_their_heights() {
     assert_eq!(toolbox.top(), layers.bottom() + BAR);
     assert_eq!((toolbox.left(), toolbox.right()), (layers.left(), 1194.0));
 
+    // The last pane has a bar too, at the bottom of the dock.
+    let dock = h.state().pad.dock_rect.unwrap();
+    assert_eq!(dock.bottom(), toolbox.bottom() + BAR);
+
+    // The pane above the bar gets shorter. The pane below it shows all its
+    // content, so it keeps its height and moves up.
     let bar = pos2(layers.center().x, layers.bottom() + BAR / 2.0);
-    drag(&mut h, bar, bar - vec2(0.0, 60.0), None);
+    drag(&mut h, bar, bar - vec2(0.0, 40.0), None);
     let (above, below) = (
         panel(&h, Panel::Layers).unwrap(),
         panel(&h, Panel::Toolbox).unwrap(),
     );
     assert!(
-        (above.height() - (layers.height() - 60.0)).abs() < 1.0,
+        (above.height() - (layers.height() - 40.0)).abs() < 1.0,
         "{above:?}"
     );
-    assert!(
-        (below.height() - (toolbox.height() + 60.0)).abs() < 1.0,
-        "{below:?}"
-    );
+    assert!((below.height() - toolbox.height()).abs() < 1.0, "{below:?}");
     assert_eq!(below.top(), above.bottom() + BAR);
     let panes = &h.state().pad.docks.world.panes;
-    assert!(panes.iter().all(|p| p.height.is_some()));
+    assert!(panes[0].height.is_some() && panes[1].height.is_none());
+
+    // The pane grows back into the free room, and never past its content.
+    let bar = pos2(above.center().x, above.bottom() + BAR / 2.0);
+    drag(&mut h, bar, bar + vec2(0.0, 200.0), None);
+    let grown = panel(&h, Panel::Layers).unwrap();
+    assert!((grown.height() - layers.height()).abs() < 1.0, "{grown:?}");
 }
 
 #[test]
@@ -13993,18 +14003,19 @@ fn the_dock_button_hides_and_shows_the_dock_and_is_off_with_no_panes() {
         // With no panes, the button is off.
         assert!(control(&h, DOCK).is_none(), "{what}");
         assert!(disabled(&h, DOCK), "{what}");
-        // The Dock button is between Redo and the Panels button. Undo,
-        // Redo, and a line are at its left.
+        // The Dock button is at the right end, after the Panels button.
+        // Undo, Redo, and a line are at their left.
         let actions = h.state().pad.rects.unwrap().actions;
         open_panel(&mut h, "Layers");
         let button = control(&h, DOCK).expect("a Dock button");
         let panels = control(&h, PANELS).unwrap();
         assert_eq!(
-            button.left(),
+            panels.left(),
             actions.left() + 4.0 + 2.0 * 48.0 + 9.0 + 4.0,
             "{what}"
         );
-        assert_eq!(button.right() + 4.0, panels.left(), "{what}");
+        assert_eq!(button.left(), panels.left() + 48.0, "{what}");
+        assert_eq!(panels.right() + 4.0, button.left(), "{what}");
         assert_eq!(button.size(), vec2(44.0, 44.0), "{what}");
         assert_eq!(toggled(&h, DOCK), Some(true), "{what}");
         // The Panels menu has no row of the dock.
@@ -14231,14 +14242,9 @@ fn the_readout_is_one_card_with_the_view_buttons_the_place_and_the_scale_bar() {
                 assert!(card.contains_rect(button), "{what}: {name}");
                 assert_eq!(button.top(), card.top() + 4.0, "{what}: {name}");
             }
-            if rects.row {
-                // On a phone, the text is below the buttons.
-                assert_eq!(card.height(), 52.0 + READOUT_HEIGHT, "{what}");
-            } else {
-                // The text is at the right of the buttons, in the same card.
-                assert_eq!(card.height(), 52.0, "{what}");
-                assert!(card.right() >= last.right() + 80.0, "{what}");
-            }
+            // The text is below the buttons, in the same card.
+            assert_eq!(card.height(), 52.0 + READOUT_HEIGHT, "{what}");
+            assert!(card.right() >= last.right() + 4.0, "{what}");
             check_controls(&h, &what);
         }
     }

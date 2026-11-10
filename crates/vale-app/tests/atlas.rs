@@ -7034,7 +7034,7 @@ fn frames_snap_to_the_layout_grid_of_the_page_panel() {
 }
 
 #[test]
-fn the_top_row_ends_with_the_layout_grid_add_and_the_panels_button() {
+fn the_top_row_ends_with_the_layout_grid_add_the_panels_button_and_the_dock_button() {
     use vale_app::ui::pad::{DOCK, PANELS};
     for size in BOARDS.into_iter().chain([(393.0, 852.0), (852.0, 393.0)]) {
         let h = pad_with(state(), size);
@@ -7062,21 +7062,21 @@ fn the_top_row_ends_with_the_layout_grid_add_and_the_panels_button() {
         // Undo and Redo, which are off here, are at the left end.
         let redo = h.state().pad.rects.unwrap().actions.left() + 4.0 + 48.0;
         let panels = x(PANELS).unwrap_or_else(|| panic!("{size:?}"));
-        // The Panels button is at the right end of the screen.
+        // The Dock button is at the right end of the screen, and on a phone,
+        // which has no Dock button, the Panels button is.
+        let compact = size.0 < 600.0;
         let rects = h.state().pad.rects.unwrap();
         assert_eq!(rects.actions.right(), size.0, "{size:?}");
-        assert_eq!(panels + 44.0 + 4.0, size.0, "{size:?}");
+        let last = if compact { panels } else { panels + 48.0 };
+        assert_eq!(last + 44.0 + 4.0, size.0, "{size:?}");
         // On a phone, the layout grid and Add are rows of the workspace menu.
-        let compact = size.0 < 600.0;
         match (x(GRID), x(ADD)) {
             (Some(grid), Some(add)) => {
                 assert!(!compact, "{size:?}");
                 assert!(redo < grid && grid < add && add < panels, "{size:?}");
-                // The Dock button is between Add and the Panels button.
+                // The Dock button, which is off with no panes, is at the
+                // right of the Panels button.
                 assert!(h.query_by_label(DOCK).is_some(), "{size:?}");
-                if let Some(dock) = x(DOCK) {
-                    assert!(add < dock && dock + 48.0 == panels, "{size:?}");
-                }
             }
             (None, None) => {
                 assert!(compact, "{size:?}");
@@ -9606,7 +9606,7 @@ fn iphone_pad() -> Pad {
 }
 
 #[test]
-fn on_an_iphone_the_page_pill_is_above_the_tools_and_the_tools_are_a_row_at_the_bottom() {
+fn on_an_iphone_the_page_card_is_above_the_tools_and_the_tools_are_a_row_at_the_bottom() {
     let mut h = iphone_pad();
     let ((width, height), [_, _, bottom, _]) = IPHONE;
     // The middle page of three, so both page buttons are on.
@@ -9620,12 +9620,11 @@ fn on_an_iphone_the_page_pill_is_above_the_tools_and_the_tools_are_a_row_at_the_
     let top_row = control(&h, "Workspace").unwrap();
     let previous = control(&h, PREVIOUS_PAGE).unwrap();
     let next = control(&h, NEXT_PAGE).unwrap();
-    // The page pill is above the rows of the tools, in the middle of the
+    // The page card is above the rows of the tools, at the left of the
     // screen.
     assert!(previous.top() > top_row.bottom(), "{previous:?}");
     assert_eq!(previous.top(), next.top());
-    let middle = (previous.left() + next.right()) / 2.0;
-    assert!((middle - width / 2.0).abs() < 1.0, "{middle}");
+    assert!(previous.left() < width / 4.0, "{previous:?}");
     // The tools are one row above the home indicator.
     let names = [FRAME_TOOL, SELECT_TOOL, VERTEX, "Move", MEASURE];
     let tools = names.map(|name| control(&h, name).unwrap());
@@ -10189,20 +10188,14 @@ fn the_page_pill_turns_the_pages_and_its_name_opens_the_pages_panel() {
         assert!(control(&h, PREVIOUS_PAGE).is_none(), "{what}");
         let next = control(&h, NEXT_PAGE).unwrap();
         let name = control(&h, OPEN_PAGES).unwrap();
-        // The pill is at the bottom, below the page, in the middle of the
-        // space of the page.
+        // The card is at the lower left, below the page.
         let page = place(&h).rect;
         assert!(name.top() > page.bottom(), "{what}");
         assert_eq!(name.top(), next.top(), "{what}");
         let r = h.state().pad.rects.unwrap();
-        assert!(r.readout.unwrap().contains_rect(name), "{what}");
-        let dock = h.state().pad.dock_rect;
-        if let Some(dock) = dock {
-            assert!(!dock.intersects(name) && !dock.intersects(next), "{what}");
-        } else if !r.row {
-            let middle = (name.left() - 44.0 + next.right()) / 2.0;
-            assert!((middle - page.center().x).abs() < 1.0, "{what}: {middle}");
-        }
+        let band = r.readout.unwrap();
+        assert!(band.contains_rect(name), "{what}");
+        assert!(name.left() - 44.0 - band.left() < 20.0, "{what}: {name:?}");
         check_controls(&h, &what);
 
         tap(&mut h, NEXT_PAGE);

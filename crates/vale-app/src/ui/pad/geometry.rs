@@ -225,8 +225,7 @@ pub struct Rects {
     /// The top of the space below the top row.
     pub column_top: f32,
     /// The place of the readout at the lower left of the canvas: the row
-    /// of the view buttons and the text of the place. In the row layout,
-    /// the buttons are above the text.
+    /// of the view buttons above the text of the place.
     pub readout: Option<Rect>,
 }
 
@@ -387,10 +386,14 @@ pub fn layout(input: &Input) -> Rects {
         ),
     };
     // The readout is at the lower left of the canvas, at the right of the
-    // tool column. An open sheet covers it.
+    // tool column, with the buttons above the text. An open sheet covers
+    // it.
     let readout = sheet.is_none().then(|| {
         Rect::from_min_max(
-            pos2(tools.right() + READOUT_GAP, bottom - DOCK_FOOT - ROW),
+            pos2(
+                tools.right() + READOUT_GAP,
+                bottom - DOCK_FOOT - ROW - READOUT_HEIGHT,
+            ),
             pos2(right, bottom - DOCK_FOOT),
         )
     });
@@ -585,7 +588,7 @@ mod tests {
         assert_eq!(r.column_right, 68.0);
         assert_eq!(r.dock, rect(854.0, 92.0, 340.0, 714.0));
         assert_eq!(r.sheet, None);
-        assert_eq!(r.readout, Some(rect(72.0, 754.0, 1106.0, 52.0)));
+        assert_eq!(r.readout, Some(rect(72.0, 714.0, 1106.0, 92.0)));
     }
 
     #[test]

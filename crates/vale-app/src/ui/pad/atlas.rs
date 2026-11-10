@@ -293,8 +293,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     if state.pad.shows(Panel::Layers) {
         raster_cards(&ctx, state, &mut controls, &rects);
     }
-    let pill = page_pill(&ctx, state, &mut controls, &rects);
-    readout(&ctx, state, &rects, pill);
+    page_card(&ctx, state, &mut controls, &rects);
     super::flyout::tooltip(&ctx, state.globe.backdrop(), &mut state.pad.flyouts, &rects);
     state.pad.panels_menu_rect = None;
     if state.pad.panels_menu {
@@ -320,9 +319,6 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     // canvas, so the page stays in place when the dock shows, hides, or
     // changes its width.
     let mut free = page_space(&rects);
-    if let Some(pill) = pill {
-        free.max.y = free.max.y.min(pill.top() - GAP);
-    }
     // In the row layout, the page is at the top of the space, so a sheet
     // covers only its lower part.
     if rects.row {
@@ -361,7 +357,9 @@ fn page_space(rects: &Rects) -> Rect {
         WidthClass::Compact => rects.screen.right() - rects.bands.right - MARGIN,
         _ => rects.screen.right() - rects.bands.right - panes::WIDTH - GAP,
     };
-    let bottom = rects.readout.map_or(rects.panel_bottom, |r| r.top() - GAP);
+    let bottom = rects
+        .readout
+        .map_or(rects.panel_bottom, |r| r.bottom() - ROW - GAP);
     Rect::from_min_max(pos2(left, rects.column_top), pos2(right, bottom))
 }
 
@@ -460,10 +458,11 @@ fn top_row(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
                 }
                 divider(ui, card.left() + PAD + x + 2.0 * step + 4.5, card);
                 x += 2.0 * step + 9.0 + PAD;
-                super::dock_button(ui, state, controls, at(x));
-                x += step;
             }
             super::panels_button(ui, state, controls, at(x));
+            if rects.class != WidthClass::Compact {
+                super::dock_button(ui, state, controls, at(x + step));
+            }
         },
     );
 }
@@ -658,10 +657,10 @@ fn tool_column(
     selectable_menu(ctx, state, controls, rects, selectable_cell);
 }
 
-/// The button of the page pill that opens the Pages panel.
+/// The button of the page card that opens the Pages panel.
 pub const OPEN_PAGES: &str = "Open Pages";
 
-/// The text of the page pill, for example "Page 1 of 3".
+/// The text of the page card, for example "Page 1 of 3".
 pub fn page_pill_text(state: &AppState) -> String {
     let (index, count) = atlas::page_index(state);
     format!("Page {} of {count}", index + 1)
@@ -679,17 +678,14 @@ fn page_size_text(state: &AppState) -> String {
     )
 }
 
-/// The page pill at the bottom center of the page space: the previous
-/// page, the place of the open page in the atlas with its size, and the
-/// next page. A tap on the text opens the Pages panel. In the row layout,
-/// the pill is at the top of the readout. Returns the place of the pill.
-fn page_pill(
-    ctx: &egui::Context,
-    state: &mut AppState,
-    controls: &mut Controls,
-    rects: &Rects,
-) -> Option<Rect> {
-    let band = rects.readout?;
+/// The card at the lower left of the canvas: the previous page, the place
+/// of the open page in the atlas with its size, and the next page. A tap on
+/// the text opens the Pages panel. The save mark and the result of the
+/// Measure tool are at the right of the next page.
+fn page_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
+    let Some(band) = rects.readout else {
+        return;
+    };
     let text = page_pill_text(state);
     let size = page_size_text(state);
     let name = text_width(ctx, &text);
@@ -697,26 +693,24 @@ fn page_pill(
         let galley = ctx.fonts_mut(|f| f.layout_no_wrap(size.clone(), theme::hint(), theme::MUTE));
         galley.size().x.ceil()
     };
-    // The pill is in the middle of the part of the page space that a dock
-    // over the canvas leaves free.
-    let mut space = page_space(rects);
-    if let Some(dock) = state.pad.dock_rect.filter(|d| d.bottom() > band.top()) {
-        space.max.x = space.max.x.min(dock.left() - GAP).max(space.min.x);
-    }
-    // The size shows if the pill has room for it.
-    let most = band.width().min(space.width());
-    let with_size = 2.0 * TOUCH + name + 10.0 + size_width + 2.0 * TAB_PAD + 2.0 * PAD;
-    let shows_size = with_size <= most && !rects.row;
-    let width = if shows_size {
-        with_size
-    } else {
-        2.0 * TOUCH + name + 2.0 * TAB_PAD + 2.0 * PAD
+    let readout = state.measure_readout().unwrap_or_default();
+    let mark = state.save_mark(std::time::Instant::now());
+    let extra = match readout.is_empty() && mark.is_none() {
+        true => 0.0,
+        false => {
+            super::DIVIDER + super::readout_width(ctx, &readout, None, mark) + super::READOUT_PAD
+        }
     };
-    let rect = Rect::from_center_size(
-        pos2(space.center().x, band.top() + ROW / 2.0),
-        vec2(width, ROW),
-    );
+    // The size shows if the card has room for it.
+    let pages = 2.0 * TOUCH + name + 2.0 * TAB_PAD + 2.0 * PAD;
+    let with_size = pages + 10.0 + size_width;
+    let shows_size = with_size + extra <= band.width() && !rects.row;
+    let pages = if shows_size { with_size } else { pages };
+    let width = (pages + extra).min(band.width());
+    let rect = Rect::from_min_size(pos2(band.left(), band.bottom() - ROW), vec2(width, ROW));
     let (index, count) = atlas::page_index(state);
+    // A test has no clock, so there the mark does not turn.
+    let turn = !state.headless;
     widgets::card(
         ctx,
         state.globe.backdrop(),
@@ -727,7 +721,7 @@ fn page_pill(
         |ui| {
             let at = |x: f32| Rect::from_min_size(pos2(x, rect.top() + PAD), vec2(TOUCH, TOUCH));
             let previous = at(rect.left() + PAD);
-            let next = at(rect.right() - PAD - TOUCH);
+            let next = at(rect.left() + pages - PAD - TOUCH);
             let back = widgets::icon_button_at(
                 ui,
                 controls,
@@ -779,48 +773,20 @@ fn page_pill(
                 let at = middle.center();
                 painter.text(at, Align2::CENTER_CENTER, &text, theme::body(), theme::TEXT);
             }
+            if extra > 0.0 {
+                divider(
+                    ui,
+                    rect.left() + pages + super::DIVIDER / 2.0 - PAD / 2.0,
+                    rect,
+                );
+                let left = rect.left() + pages + super::DIVIDER;
+                let place = Rect::from_min_max(
+                    pos2(left, rect.top()),
+                    pos2(rect.right() - super::READOUT_PAD, rect.bottom()),
+                );
+                super::paint_readout(ui, place, &readout, None, mark, turn);
+            }
         },
-    );
-    Some(rect)
-}
-
-/// The readout at the lower left of the canvas: the save mark and the
-/// result of the Measure tool, as text with a dark halo. In the row
-/// layout, it is below the page pill.
-fn readout(ctx: &egui::Context, state: &AppState, rects: &Rects, pill: Option<Rect>) {
-    let Some(band) = rects.readout else {
-        return;
-    };
-    let text = state.measure_readout().unwrap_or_default();
-    let mark = state.save_mark(std::time::Instant::now());
-    if text.is_empty() && mark.is_none() {
-        return;
-    }
-    // In the row layout, the card is below the page pill. Otherwise it ends
-    // at the page pill.
-    let height = geometry::READOUT_HEIGHT;
-    let (top, card_height) = if band.height() >= ROW + height {
-        (band.bottom() - height, height)
-    } else {
-        (band.top(), ROW)
-    };
-    let mut right = band.right();
-    if let Some(pill) = pill.filter(|_| !rects.row) {
-        right = right.min(pill.left() - GAP);
-    }
-    let width = super::readout_width(ctx, &text, None, mark) + 2.0 * super::READOUT_PAD;
-    let width = width.min(right - band.left()).max(0.0);
-    let rect = Rect::from_min_size(pos2(band.left(), top), vec2(width, card_height));
-    let place = rect.shrink2(vec2(super::READOUT_PAD, 0.0));
-    let turn = !state.headless;
-    widgets::card(
-        ctx,
-        state.globe.backdrop(),
-        "pad-readout",
-        rect,
-        Order::Middle,
-        theme::CARD_RADIUS.into(),
-        |ui| super::paint_readout(ui, place, &text, None, mark, turn),
     );
 }
 
