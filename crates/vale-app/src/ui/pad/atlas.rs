@@ -357,7 +357,11 @@ fn page_space(rects: &Rects) -> Rect {
     };
     let right = match rects.class {
         WidthClass::Compact => rects.screen.right() - rects.bands.right - MARGIN,
-        _ => rects.screen.right() - rects.bands.right - panes::WIDTH - GAP,
+        // The page leaves room for the dock and its width handle.
+        _ => {
+            let dock = panes::WIDTH + super::dock_ui::HANDLE.0;
+            rects.screen.right() - rects.bands.right - dock - GAP
+        }
     };
     let bottom = rects
         .readout
@@ -668,20 +672,8 @@ pub fn page_pill_text(state: &AppState) -> String {
     format!("Page {} of {count}", index + 1)
 }
 
-/// The size of the open page, for example "297 × 210 mm".
-fn page_size_text(state: &AppState) -> String {
-    let page = atlas::open_page(state);
-    let units = page.units;
-    format!(
-        "{} × {} {}",
-        length_text(page.width_mm, units),
-        length_text(page.height_mm, units),
-        unit_name(units)
-    )
-}
-
 /// The card at the lower left of the canvas: the previous page, the place
-/// of the open page in the atlas with its size, and the next page. A tap on
+/// of the open page in the atlas, and the next page. A tap on
 /// the text opens the Pages panel. The save mark and the result of the
 /// Measure tool are at the right of the next page.
 fn page_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
@@ -689,25 +681,16 @@ fn page_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls,
         return;
     };
     let text = page_pill_text(state);
-    let size = page_size_text(state);
     let name = text_width(ctx, &text);
-    let size_width = {
-        let galley = ctx.fonts_mut(|f| f.layout_no_wrap(size.clone(), theme::hint(), theme::MUTE));
-        galley.size().x.ceil()
-    };
     let readout = state.measure_readout().unwrap_or_default();
-    let mark = state.save_mark(std::time::Instant::now());
+    let mark = super::pad_save_mark(state);
     let extra = match readout.is_empty() && mark.is_none() {
         true => 0.0,
         false => {
             super::DIVIDER + super::readout_width(ctx, &readout, None, mark) + super::READOUT_PAD
         }
     };
-    // The size shows if the card has room for it.
     let pages = 2.0 * TOUCH + name + 2.0 * TAB_PAD + 2.0 * PAD;
-    let with_size = pages + 10.0 + size_width;
-    let shows_size = with_size + extra <= band.width() && !rects.row;
-    let pages = if shows_size { with_size } else { pages };
     let width = (pages + extra).min(band.width());
     let rect = Rect::from_min_size(pos2(band.left(), band.bottom() - ROW), vec2(width, ROW));
     let (index, count) = atlas::page_index(state);
@@ -764,17 +747,9 @@ fn page_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls,
             if button.clicked() {
                 state.pad.open(Panel::Pages);
             }
-            let painter = ui.painter();
-            if shows_size {
-                let left = middle.left() + TAB_PAD;
-                let at = pos2(left, middle.center().y);
-                painter.text(at, Align2::LEFT_CENTER, &text, theme::body(), theme::TEXT);
-                let at = pos2(left + name + 10.0, middle.center().y);
-                painter.text(at, Align2::LEFT_CENTER, &size, theme::hint(), theme::MUTE);
-            } else {
-                let at = middle.center();
-                painter.text(at, Align2::CENTER_CENTER, &text, theme::body(), theme::TEXT);
-            }
+            let at = middle.center();
+            ui.painter()
+                .text(at, Align2::CENTER_CENTER, &text, theme::body(), theme::TEXT);
             if extra > 0.0 {
                 divider(
                     ui,
@@ -1577,6 +1552,10 @@ fn layers_tab(
             .inner;
         if row.eye {
             state.set_map_shown(map, layer, !shown);
+        }
+        // The body of a row takes a drag, so the drag scrolls the pane.
+        if let Some(body) = row.body.as_ref().filter(|b| b.dragged()) {
+            ui.scroll_with_delta(vec2(0.0, body.drag_delta().y));
         }
         if row.open || row.body.is_some_and(|b| b.clicked()) {
             open = Some(layer);

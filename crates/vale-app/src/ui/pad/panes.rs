@@ -223,6 +223,7 @@ impl Dock {
     /// closed it.
     pub fn open(&mut self, panel: Panel) {
         self.closed.retain(|p| *p != panel);
+        self.collapsed = false;
         self.place(panel);
     }
 
@@ -245,15 +246,13 @@ impl Dock {
     /// Shows a panel. An open panel becomes the open tab of its pane. A
     /// closed panel of a frame joins the pane of the other panels of its
     /// group. Another closed panel opens in a new pane at the bottom, or,
-    /// with no room for a new pane, as a tab of the last pane. A panel that
-    /// opens shows the dock.
+    /// with no room for a new pane, as a tab of the last pane.
     fn place(&mut self, panel: Panel) {
         self.focus = Some(panel);
         if let Some((i, tab)) = self.find(panel) {
             self.panes[i].active = tab;
             return;
         }
-        self.collapsed = false;
         if let Some(group) = self.arrangement.iter().find(|g| g.tabs.contains(&panel))
             && let Some((i, _)) = (group.tabs.iter())
                 .filter(|p| **p != panel)
@@ -398,7 +397,8 @@ impl Dock {
     /// Closes a panel that shows, shows an open panel that is a tab
     /// behind another, and opens a closed panel.
     pub fn toggle(&mut self, panel: Panel) {
-        if self.shows(panel) {
+        // In a hidden dock, the tile shows the panel.
+        if self.shows(panel) && !self.collapsed {
             self.close(panel);
         } else {
             self.open(panel);
@@ -1003,20 +1003,21 @@ mod tests {
     }
 
     #[test]
-    fn a_panel_that_opens_shows_a_collapsed_dock() {
+    fn a_panel_that_the_user_opens_shows_a_collapsed_dock() {
         let mut d = dock(&[&[Panel::Layers]]);
         d.collapsed = true;
-        // An open panel keeps the dock collapsed.
-        d.open(Panel::Layers);
-        assert!(d.collapsed);
         d.open(Panel::Toolbox);
         assert!(!d.collapsed);
+        // A selection keeps the dock collapsed.
         let mut d = Dock {
             collapsed: true,
             ..Dock::default()
         };
         d.follow_frame(Panel::Properties);
-        assert!(!d.collapsed);
+        assert!(d.collapsed && d.is_open(Panel::Properties));
+        // The tile of a panel in a hidden dock shows it.
+        d.toggle(Panel::Properties);
+        assert!(!d.collapsed && d.is_open(Panel::Properties));
     }
 
     #[test]
@@ -1148,8 +1149,11 @@ mod tests {
         d.collapsed = true;
         d.follow(Panel::Properties);
         assert_eq!(d.panes[0].active, 1);
-        // A panel that opens shows the dock.
+        // A panel that a selection opens does not show a hidden dock. A
+        // panel that the user opens does.
         d.follow(Panel::Attributes);
+        assert!(d.collapsed && d.is_open(Panel::Attributes));
+        d.open(Panel::Labels);
         assert!(!d.collapsed);
     }
 

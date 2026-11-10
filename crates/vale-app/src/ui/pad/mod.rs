@@ -3186,7 +3186,7 @@ fn readout(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
     let scale = km_per_point(&state.globe, world.radius_km)
         .and_then(|km| crate::scale_bar::readout_scale(km, world.units));
     state.pad.readout_scale = scale.map(|s| s.label());
-    let mark = state.save_mark(std::time::Instant::now());
+    let mark = pad_save_mark(state);
     let buttons = view_width(flat);
     let width = readout_width(ctx, &text, scale, mark);
     let height = geometry::READOUT_HEIGHT;
@@ -3223,6 +3223,13 @@ fn readout(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
             paint_readout(ui, place, &text, scale, mark, turn);
         },
     );
+}
+
+/// The save mark of the iPad layout. It shows during a save and after a
+/// save that failed. The file holds each change when it does not show.
+pub(super) fn pad_save_mark(state: &AppState) -> Option<SaveMark> {
+    let mark = state.save_mark(std::time::Instant::now());
+    mark.filter(|m| *m != SaveMark::Saved)
 }
 
 /// The space at the sides of the text of the readout in its card.

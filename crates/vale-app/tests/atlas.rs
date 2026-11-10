@@ -10212,3 +10212,28 @@ fn the_page_pill_turns_the_pages_and_its_name_opens_the_pages_panel() {
         }
     }
 }
+
+#[test]
+fn a_drag_on_the_rows_scrolls_a_short_layers_pane() {
+    use vale_app::ui::pad::Panel;
+    let mut h = inset_pad(BOARDS[0]);
+    for panel in [Panel::Layers, Panel::Pages, Panel::Attributes] {
+        h.state_mut().pad.dock_mut().open(panel);
+    }
+    h.run_steps(3);
+    // The pane is too short for its rows.
+    assert!(control(&h, "Layer Places").is_none());
+    let rect = (h.state().pad.panels.iter())
+        .find(|(p, _)| *p == Panel::Layers)
+        .unwrap()
+        .1;
+    let land = control(&h, "Layer Land").unwrap();
+    drag(
+        &mut h,
+        land.center(),
+        land.center() - vec2(0.0, 80.0),
+        Input::Finger,
+    );
+    let places = control(&h, "Layer Places").expect("a row that scrolled into view");
+    assert!(rect.contains_rect(places), "{places:?}");
+}

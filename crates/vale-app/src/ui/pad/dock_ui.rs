@@ -19,7 +19,7 @@ const BAR_TOUCH: f32 = TOUCH;
 /// The extra height of the last bar, so its touch area is in the dock.
 const FOOT: f32 = (BAR_TOUCH - BAR) / 2.0;
 /// The size of the handle at the left edge of the dock.
-const HANDLE: (f32, f32) = (TOUCH, 64.0);
+pub const HANDLE: (f32, f32) = (TOUCH, 120.0);
 /// The padding at each side of the name of a tab.
 const TAB_PAD: f32 = 12.0;
 /// The time of the slide of the dock.
@@ -536,14 +536,15 @@ pub fn handle(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
     let Some(dock) = state.pad.dock_rect else {
         return;
     };
-    // The handle is outside the dock, so it covers no control of a pane.
+    // The touch area of the handle is at the left of the dock, so it covers
+    // no control of a pane. Its grip is on the edge of the dock.
     let rect = Rect::from_min_size(
         pos2(dock.left() - HANDLE.0, dock.center().y - HANDLE.1 / 2.0),
         vec2(HANDLE.0, HANDLE.1),
     );
     let dragging = state.pad.dock_drag == Some(DockDrag::Width);
-    // A control of a pane touches the left edge of the handle, and that is
-    // no overlap.
+    // A control under the handle hides it. A control of a pane touches its
+    // right edge, and that is no overlap.
     if !dragging
         && controls
             .iter()
@@ -577,14 +578,15 @@ pub fn handle(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
                     dock.width = start;
                 }
             }
-            let pill =
-                Rect::from_center_size(pos2(rect.right() - 6.0, rect.center().y), vec2(5.0, 36.0));
-            let color = if active {
-                theme::ACCENT
-            } else {
-                theme::MUTE.gamma_multiply(0.7)
-            };
-            ui.painter().rect_filled(pill, 3.0, color);
+            // A grip on a dark capsule shows over a white page and over the
+            // dark canvas.
+            let center = pos2(dock.left(), rect.center().y);
+            let capsule = Rect::from_center_size(center, vec2(12.0, 64.0));
+            let back = theme::card(false).to_opaque();
+            ui.painter().rect_filled(capsule, 6.0, back);
+            let pill = Rect::from_center_size(center, vec2(4.0, 48.0));
+            let color = if active { theme::ACCENT } else { theme::TEXT };
+            ui.painter().rect_filled(pill, 2.0, color);
             if active {
                 let (start, width) = (state.pad.width_drag)
                     .unwrap_or((state.pad.dock().width, state.pad.dock().width));

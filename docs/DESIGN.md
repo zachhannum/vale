@@ -608,9 +608,9 @@ The chrome sits on the left edge and the right edge of the screen, so the canvas
 
 The workspace switch is two icon buttons: a globe for World and a book for Atlas. A hold on a button shows its name.
 
-The readout is a card, with the same blur as the other cards. In the World workspace, it holds the view buttons: Globe, Flat, and the graticule, and in the flat view also Projection, Recenter, and Reset. A hold on a button shows its name. Below the buttons, it shows the save mark and the place in a monospace font, and below them a scale bar with a round distance.
+The readout is a card, with the same blur as the other cards. In the World workspace, it holds the view buttons: Globe, Flat, and the graticule, and in the flat view also Projection, Recenter, and Reset. A hold on a button shows its name. Below the buttons, it shows the save mark and the place in a monospace font, and below them a scale bar with a round distance. In the iPad layout, the save mark shows only while a change waits for its save and after a save that failed.
 
-The page card of the Atlas workspace holds the previous page, "Page N of M", the page size if it fits, and the next page. A tap on the text opens the Pages panel. At the right of the next page, after a divider, the card shows the save mark and the result of the Measure tool.
+The page card of the Atlas workspace holds the previous page, "Page N of M", and the next page. The Pages panel shows the page size. A tap on the text opens the Pages panel. At the right of the next page, after a divider, the card shows the save mark and the result of the Measure tool.
 
 A card shows a blurred copy of the canvas below a dark fill. The blur comes from the pixels of the frame below the card, so it shows each kind of content, and it follows the canvas in the same frame. A card over another card, such as the keypad over a panel, shows the blurred card below it. Two cards at the same level do not blur each other. In the Toolbox panel, the debug controls have a checkbox that turns the blur off.
 
@@ -662,19 +662,19 @@ These rules apply to the dock:
 - A pane stays open until you close it. It keeps its place, its height, and its tabs. A tap on the canvas closes no pane.
 - A long press on a tab or on the title opens a menu with "Close" and the name of the panel. With more than one tab, the menu also has "Move to new pane".
 - A selection opens one pane at most, and it never closes a pane. In the Atlas workspace, a frame opens Properties if no frame panel is open, a tap on the paper opens Pages, and a furniture item opens Properties. A map from a region opens Projection in place of Properties.
-- A selection does not change the tab that shows in a pane. A panel that opens shows the dock.
+- A selection does not change the tab that shows in a pane, and it does not show a hidden dock. A panel that you open from its tile shows the dock.
 - A selection does not open a panel that you closed. Only its tile opens it again. After that, a selection can open it again.
 - A pane with nothing to show shows a hint, for example "Select an item to see its settings."
 - A drag of the bar below a pane changes the height of that pane. A pane grows into the free room of the dock first, and then takes room from the panes below it. A pane that gets shorter gives its room to the panes below it that scroll. A pane is never taller than its content.
 - A double tap on the bar below a pane makes the pane as tall as the dock allows. The other panes get as short as they can.
 - A drag of the empty part of a header moves the pane to another place in the column.
 - A drag of a tab onto the tab row of another pane adds it as a tab. A drag of a tab to a place in the column makes it a pane of its own.
-- The handle "Dock width" at the middle of the left edge of the dock changes its width, from 300 to 520 points. During the drag, a label shows the width. The dock is 340 points wide at first.
+- The handle "Dock width" at the middle of the left edge of the dock changes its width. Its grip is on the edge, on a dark capsule, and its touch area is 44 by 120 points at the left of the dock. The width goes from 300 to 520 points. During the drag, a label shows the width. The dock is 340 points wide at first.
 - The dock is as tall as its panes, and it ends 8 points above the bottom band. If the panes do not fit, each pane that does not fit gets shorter and scrolls its content. A pane with content that fits keeps its height.
 - A pane is never shorter than its header and two rows. If the panes still do not fit, the last panes join the last pane that fits, as tabs. When the room is there again, they are panes of their own again.
 - The dock can collapse. It then slides off the right edge in 0.25 seconds, and it keeps its layout. The Dock button in the top row collapses the dock and shows it again. The button has the accent color while the dock shows, and it is off while the dock has no pane. A drag of the width handle 40 points past the narrowest width also collapses the dock.
 - A slim tab at the middle of the right edge shows a collapsed dock again, with a tap or a drag to the left. A panel that opens also shows the dock.
-- The dock floats over the canvas. The globe and the flat map do not move when the dock shows, hides, or changes its width. At 600 points or more, the page fits at the left of a dock of the default width, 340 points, whether the dock shows or not. Thus the page does not move either.
+- The dock floats over the canvas. The globe and the flat map do not move when the dock shows, hides, or changes its width. At 600 points or more, a page fits at the left of a dock of the default width, 340 points, and its width handle, whether the dock shows or not. This is the place where a page opens, and where a double tap fits it.
 - Each workspace has its own dock. The file `panels.txt`, in the folder that holds the state of the last run, keeps the open panes and the width of each dock. It also keeps the arrangement of the panels of a frame, the collapsed state, and the panels that you closed. The project file does not hold them.
 
 The Panels button opens the Panels menu below the top row. The menu has a tile for each panel of the workspace. A tinted tile is an open panel. No tile is off. A tap on a tile opens the panel, shows it if it is a tab behind another tab, or closes it if it shows. Below the tiles, "Close all" closes each pane. "Reset layout" closes each pane, sets the width to 340 points, and shows the dock. It also puts the arrangement of the panels of a frame back to the first one, and it forgets the panels that you closed. If a frame is selected, Properties then opens.
