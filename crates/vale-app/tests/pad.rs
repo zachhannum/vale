@@ -10372,7 +10372,7 @@ fn the_label_bar_inserts_length_and_its_popover_sets_the_unit() {
         .style
         .label
         .text = String::new();
-    tap(&mut h, "Layers");
+    open_panel(&mut h, "Layers");
     tap(&mut h, "Open Rivers");
     scroll_to_control(&mut h, LABEL_TEXT);
     tap(&mut h, LABEL_TEXT);
