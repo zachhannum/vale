@@ -283,14 +283,22 @@ fn show_dock(
             panel_head(state, panel)
         })
         .collect();
-    let wanted: Vec<f32> = (state.pad.dock().panes.iter().zip(&heads))
-        .map(|(pane, head)| {
-            let natural = state.pad.heights.get(head.key).copied();
-            pane.height.or(natural).unwrap_or(room.height())
+    // A pane shows its content, up to the height that the user gave it.
+    let natural: Vec<f32> = (heads.iter())
+        .map(|head| {
+            state
+                .pad
+                .heights
+                .get(head.key)
+                .copied()
+                .unwrap_or(room.height())
         })
         .collect();
+    let wanted: Vec<f32> = (state.pad.dock().panes.iter().zip(&natural))
+        .map(|(pane, &natural)| pane.height.map_or(natural, |h| h.min(natural)))
+        .collect();
     let heights = panes::fit(&wanted, room.height());
-    let total = heights.iter().sum::<f32>() + BAR * (heights.len() - 1) as f32;
+    let total = heights.iter().sum::<f32>() + BAR * heights.len() as f32;
     let rect = Rect::from_min_size(room.min, vec2(room.width(), total.min(room.height())));
     // A collapsing dock slides off the right edge.
     let rect = rect.translate(vec2((slide * room.width()).round(), 0.0));
@@ -310,7 +318,6 @@ fn show_dock(
         radius,
         |ui| {
             let mut top = rect.top();
-            let count = heads.len();
             for (i, head) in heads.iter_mut().enumerate() {
                 let pane_rect =
                     Rect::from_min_size(pos2(rect.left(), top), vec2(rect.width(), heights[i]));
@@ -333,25 +340,31 @@ fn show_dock(
                     drag = out.drag;
                 }
                 actions.push((i, out));
-                top = pane_rect.bottom();
-                if i + 1 < count {
-                    let bar = Rect::from_min_size(pos2(rect.left(), top), vec2(rect.width(), BAR));
-                    bars.push(bar);
-                    top = bar.bottom();
-                }
+                // Each pane has a bar below it that sets its height.
+                let bar = Rect::from_min_size(
+                    pos2(rect.left(), pane_rect.bottom()),
+                    vec2(rect.width(), BAR),
+                );
+                bars.push(bar);
+                top = bar.bottom();
             }
             // The bars take a drag after the panes, so they win at the edges.
+            let last = bars.len().saturating_sub(1);
             for (i, bar) in bars.iter().enumerate() {
                 let line = geometry::edge_content(*bar, rects.screen, rects.bands);
-                ui.painter().hline(
-                    line.x_range(),
-                    bar.center().y,
-                    Stroke::new(1.0, theme::divider()),
-                );
+                if i < last {
+                    ui.painter().hline(
+                        line.x_range(),
+                        bar.center().y,
+                        Stroke::new(1.0, theme::divider()),
+                    );
+                }
                 let pill = Rect::from_center_size(bar.center(), vec2(36.0, 4.0));
                 let pill = pill.translate(vec2((line.center().x - bar.center().x).round(), 0.0));
                 let touch = Rect::from_center_size(bar.center(), vec2(bar.width(), BAR_TOUCH));
-                let resp = ui.interact(touch, ui.id().with(("pad-bar", i)), Sense::drag());
+                let touch = touch.intersect(rect);
+                let sense = Sense::click_and_drag();
+                let resp = ui.interact(touch, ui.id().with(("pad-bar", i)), sense);
                 let color = if resp.dragged() {
                     theme::ACCENT
                 } else {
@@ -360,8 +373,13 @@ fn show_dock(
                 ui.painter().rect_filled(pill, 2.0, color);
                 if resp.dragged() && resp.drag_delta().y != 0.0 {
                     let delta = resp.drag_delta().y;
-                    state.pad.dock_mut().resize(i, delta, &heights);
+                    let dock = state.pad.dock_mut();
+                    dock.resize(i, delta, &heights, &natural, room.height());
                     ctx.request_repaint();
+                }
+                if resp.double_clicked() {
+                    let dock = state.pad.dock_mut();
+                    dock.grow(i, &heights, &natural, room.height());
                 }
             }
         },
@@ -522,7 +540,13 @@ pub fn handle(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
         vec2(HANDLE.0, HANDLE.1),
     );
     let dragging = state.pad.dock_drag == Some(DockDrag::Width);
-    if !dragging && controls.iter().any(|c| c.rect.intersects(rect)) {
+    // A control of a pane touches the left edge of the handle, and that is
+    // no overlap.
+    if !dragging
+        && controls
+            .iter()
+            .any(|c| c.rect.intersect(rect).is_positive())
+    {
         return;
     }
     let most =

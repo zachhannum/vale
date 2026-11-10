@@ -14,7 +14,7 @@ pub const MIN_WIDTH: f32 = 300.0;
 pub const MAX_WIDTH: f32 = 520.0;
 /// From this width, each tab shows its name.
 pub const NAMES_WIDTH: f32 = 420.0;
-/// The height of the bar between two panes.
+/// The height of the bar below each pane, which sets its height.
 pub const BAR: f32 = 14.0;
 /// A pane is never shorter than its header and two rows.
 pub const PANE_MIN: f32 = ROW + 2.0 * 48.0;
@@ -214,7 +214,7 @@ impl Dock {
 
     /// The most panes that fit in the room.
     fn most(&self) -> usize {
-        ((self.room + BAR) / (PANE_MIN + BAR)).floor().max(1.0) as usize
+        (self.room / (PANE_MIN + BAR)).floor().max(1.0) as usize
     }
 
     /// Shows a panel at the request of the user, and forgets that the user
@@ -468,19 +468,33 @@ impl Dock {
         false
     }
 
-    /// Moves `delta` points of height from the pane below the bar with
-    /// index `bar` to the pane above it. `heights` are the heights of the
-    /// panes as they show.
-    pub fn resize(&mut self, bar: usize, delta: f32, heights: &[f32]) {
-        let (Some(&above), Some(&below)) = (heights.get(bar), heights.get(bar + 1)) else {
-            return;
-        };
-        // A pane that is shorter than `PANE_MIN` does not get shorter.
-        let (low, high) = (PANE_MIN.min(above), above + below - PANE_MIN.min(below));
-        let new = (above + delta).clamp(low, high.max(low));
-        for (i, height) in [(bar, new), (bar + 1, above + below - new)] {
-            if let Some(pane) = self.panes.get_mut(i) {
-                pane.height = Some(height);
+    /// Changes the height of the pane with index `i` by `delta` points.
+    /// A pane grows into the free room of the dock, and then takes room
+    /// from the panes below it. A pane that gets shorter gives its room to
+    /// the panes below it that scroll. `heights` are the heights of the
+    /// panes as they show, and `natural` are the heights of their content.
+    pub fn resize(&mut self, i: usize, delta: f32, heights: &[f32], natural: &[f32], room: f32) {
+        let new = sized(i, delta, heights, natural, room, false);
+        self.set_heights(heights, &new, natural);
+    }
+
+    /// Grows the pane with index `i` as much as the dock allows. The other
+    /// panes get as short as they can.
+    pub fn grow(&mut self, i: usize, heights: &[f32], natural: &[f32], room: f32) {
+        let new = sized(i, f32::INFINITY, heights, natural, room, true);
+        self.set_heights(heights, &new, natural);
+    }
+
+    /// Keeps the heights of the panes that changed and of the panes that
+    /// scroll. The other panes keep the height of their content.
+    fn set_heights(&mut self, old: &[f32], new: &[f32], natural: &[f32]) {
+        for (k, pane) in self.panes.iter_mut().enumerate() {
+            let (Some(&old), Some(&new), Some(&natural)) = (old.get(k), new.get(k), natural.get(k))
+            else {
+                continue;
+            };
+            if (new - old).abs() > 0.01 || new < natural - 0.5 {
+                pane.height = Some(new);
             }
         }
     }
@@ -538,6 +552,53 @@ impl Dock {
     }
 }
 
+/// The heights of the panes after the pane with index `i` changes by
+/// `delta`. A pane is never taller than its content, and never shorter
+/// than `PANE_MIN` or than its content. With `above`, a pane that grows
+/// also takes room from the panes above it.
+fn sized(
+    i: usize,
+    delta: f32,
+    heights: &[f32],
+    natural: &[f32],
+    room: f32,
+    above: bool,
+) -> Vec<f32> {
+    let mut h = heights.to_vec();
+    let n = h.len();
+    if i >= n || natural.len() != n {
+        return h;
+    }
+    let low = |k: usize, h: &[f32]| PANE_MIN.min(natural[k]).min(h[k]);
+    if delta > 0.0 {
+        let mut need = delta.min(natural[i] - h[i]).max(0.0);
+        let free = (room - h.iter().sum::<f32>() - BAR * n as f32).max(0.0);
+        let from_free = need.min(free);
+        h[i] += from_free;
+        need -= from_free;
+        let below = i + 1..n;
+        let donors: Vec<usize> = match above {
+            true => below.chain((0..i).rev()).collect(),
+            false => below.collect(),
+        };
+        for k in donors {
+            let give = need.min(h[k] - low(k, &h)).max(0.0);
+            h[k] -= give;
+            h[i] += give;
+            need -= give;
+        }
+    } else {
+        let mut give = (-delta).min(h[i] - low(i, &h)).max(0.0);
+        h[i] -= give;
+        for k in i + 1..n {
+            let take = give.min(natural[k] - h[k]).max(0.0);
+            h[k] += take;
+            give -= take;
+        }
+    }
+    h
+}
+
 /// The heights of the panes in `room`. `wanted` is the height that each
 /// pane wants: the height of its content or the height that the user gave
 /// it. A pane that fits keeps its height, and the panes that do not fit
@@ -548,7 +609,7 @@ pub fn fit(wanted: &[f32], room: f32) -> Vec<f32> {
     if n == 0 {
         return Vec::new();
     }
-    let space = room - BAR * (n - 1) as f32;
+    let space = room - BAR * n as f32;
     if wanted.iter().sum::<f32>() <= space {
         return wanted.to_vec();
     }
@@ -777,7 +838,7 @@ mod tests {
         let heights = fit(&[200.0, 900.0, 900.0], 800.0);
         assert_eq!(heights[0], 200.0);
         assert_eq!(heights[1], heights[2]);
-        let total: f32 = heights.iter().sum::<f32>() + 2.0 * BAR;
+        let total: f32 = heights.iter().sum::<f32>() + 3.0 * BAR;
         assert!((total - 800.0).abs() < 0.01, "{heights:?}");
     }
 
@@ -795,11 +856,47 @@ mod tests {
         d.move_pane(0, 2);
         assert_eq!(tabs(&d), vec![vec![Panel::Brush], vec![Panel::Layers]]);
 
-        d.resize(0, 50.0, &[300.0, 300.0]);
+        // With no free room, a pane takes room from the pane below it.
+        let natural = [900.0, 900.0];
+        d.resize(0, 50.0, &[300.0, 300.0], &natural, 600.0 + 2.0 * BAR);
         assert_eq!(d.panes[0].height, Some(350.0));
         assert_eq!(d.panes[1].height, Some(250.0));
-        d.resize(0, 1000.0, &[350.0, 250.0]);
+        d.resize(0, 1000.0, &[350.0, 250.0], &natural, 600.0 + 2.0 * BAR);
         assert_eq!(d.panes[1].height, Some(PANE_MIN));
+    }
+
+    #[test]
+    fn a_pane_grows_into_the_free_room_of_the_dock() {
+        let mut d = dock(&[&[Panel::Layers], &[Panel::Brush]]);
+        let natural = [900.0, 200.0];
+        // The dock has 300 points of free room below its panes.
+        let room = 300.0 + 200.0 + 2.0 * BAR + 300.0;
+        d.resize(0, 100.0, &[300.0, 200.0], &natural, room);
+        assert_eq!(d.panes[0].height, Some(400.0));
+        // The pane below keeps the height of its content.
+        assert_eq!(d.panes[1].height, None);
+        // The last pane grows too, and never past its content.
+        d.resize(1, 500.0, &[400.0, 150.0], &natural, room);
+        assert_eq!(d.panes[1].height, Some(200.0));
+    }
+
+    #[test]
+    fn a_pane_that_gets_shorter_gives_its_room_to_a_pane_that_scrolls() {
+        let mut d = dock(&[&[Panel::Layers], &[Panel::Brush]]);
+        let natural = [900.0, 400.0];
+        d.resize(0, -100.0, &[500.0, 300.0], &natural, 800.0 + 2.0 * BAR);
+        assert_eq!(d.panes[0].height, Some(400.0));
+        assert_eq!(d.panes[1].height, Some(400.0));
+    }
+
+    #[test]
+    fn a_double_tap_grows_a_pane_as_much_as_the_dock_allows() {
+        let mut d = dock(&[&[Panel::Layers], &[Panel::Brush], &[Panel::Toolbox]]);
+        let natural = [900.0, 900.0, 900.0];
+        let room = 900.0 + 3.0 * BAR;
+        d.grow(1, &[300.0, 300.0, 300.0], &natural, room);
+        let heights: Vec<f32> = d.panes.iter().map(|p| p.height.unwrap()).collect();
+        assert_eq!(heights, vec![PANE_MIN, 900.0 - 2.0 * PANE_MIN, PANE_MIN]);
     }
 
     #[test]
@@ -824,7 +921,7 @@ mod tests {
     #[test]
     fn with_no_room_a_new_panel_joins_the_last_pane() {
         let mut d = dock(&[&[Panel::Layers], &[Panel::Toolbox]]);
-        d.room = 2.0 * PANE_MIN + BAR;
+        d.room = 2.0 * (PANE_MIN + BAR);
         d.open(Panel::Brush);
         assert_eq!(
             tabs(&d),
@@ -972,7 +1069,7 @@ mod tests {
     fn panes_that_join_for_lack_of_room_come_back_with_room() {
         let mut d = dock(&[&[Panel::Layers], &[Panel::Toolbox], &[Panel::Brush]]);
         d.panes[1].height = Some(300.0);
-        d.keep_in(2.0 * PANE_MIN + BAR);
+        d.keep_in(2.0 * (PANE_MIN + BAR));
         assert_eq!(
             tabs(&d),
             vec![vec![Panel::Layers], vec![Panel::Toolbox, Panel::Brush]]
@@ -989,7 +1086,7 @@ mod tests {
         );
         assert_eq!(d.panes[1].height, Some(300.0));
         // A tab that the user moves out of a joined pane stays out.
-        d.keep_in(2.0 * PANE_MIN + BAR);
+        d.keep_in(2.0 * (PANE_MIN + BAR));
         d.move_tab(Panel::Brush, Drop::Merge { pane: 0, index: 1 });
         d.keep_in(1000.0);
         assert_eq!(
