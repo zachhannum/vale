@@ -9,18 +9,15 @@ use vale_store::{
     ScaleUnit, SecondUnit, TextAlign, TickFrequency, UnitLabelStyle, UnitPosition,
 };
 
-use super::atlas::panel_width;
-use super::geometry::{Rects, TOUCH};
+use super::geometry::TOUCH;
 use super::icons::{self, Icon};
 use super::number::Number;
 use super::raster::heading;
 use super::text_style::{self, TextEvent, TextSpec, rgba_rows};
 use super::widgets::keypad_below;
 use super::widgets::{self, Controls, HIGHLIGHT_INSET, Keys, PANEL_ROW};
-use super::{Card, CardTitle, show_card, theme};
-use crate::ui::atlas::{
-    self, AtlasSelection, BarPage, BarPick, ClassColor, ItemKind, ItemPage, TextPart,
-};
+use super::{Head, PageParts, Panel, theme};
+use crate::ui::atlas::{self, BarPage, BarPick, ClassColor, ItemKind, ItemPage, TextPart};
 use crate::ui::{Action, AppState, FontTarget};
 
 pub use super::fonts::FONT;
@@ -147,7 +144,7 @@ fn page_key(page: &ItemPage) -> &'static str {
 /// The title of a page of the panel of an item of `kind`.
 fn page_title(page: Option<&ItemPage>, kind: ItemKind) -> &'static str {
     match page {
-        None => kind.name(),
+        None => super::atlas::PROPERTIES,
         Some(ItemPage::Frame) => MAP_FRAME,
         Some(ItemPage::Face(_)) => STYLE,
         Some(ItemPage::Case(_)) => CASE,
@@ -177,19 +174,13 @@ fn go(ui: &egui::Ui, state: &mut AppState, page: Option<ItemPage>) {
     widgets::close_keypad(ui.ctx());
 }
 
-/// The panel of an item, or of a page of the panel.
-pub fn panel(
-    ctx: &egui::Context,
-    state: &mut AppState,
-    controls: &mut Controls,
-    rects: &Rects,
-    id: FurnitureId,
-) -> Option<Rect> {
+/// The panel of an item, or of a page of the panel, in the Item pane.
+pub(super) fn head(state: &mut AppState, id: FurnitureId) -> Option<Head> {
     let rec = state.doc.project.atlas.furniture(id)?.clone();
     let kind = ItemKind::of(&rec.item);
     let page = state.atlas.item_page.clone();
     let (key, title, back) = match &page {
-        None => (key_of(kind), kind.name(), None),
+        None => (key_of(kind), super::atlas::PROPERTIES, None),
         Some(p) => {
             let back = page_title(p.parent().as_ref(), kind);
             let title = match (&rec.item, p) {
@@ -199,28 +190,13 @@ pub fn panel(
             (page_key(p), title, Some(back))
         }
     };
-    let card = Card {
-        key,
-        place: (rects.right_panel, panel_width(ctx)),
-        head: CardTitle {
-            title,
-            back,
-            action: None,
-        },
-        scroll: egui::scroll_area::ScrollSource::default(),
-    };
     let parent = page.as_ref().and_then(ItemPage::parent);
-    let on_title = |state: &mut AppState, row: &widgets::TitleRow| {
-        if row.back {
-            state.atlas.item_page = parent.clone();
-            state.atlas.label_color = None;
-        }
-        if row.close {
-            state.atlas.selection = AtlasSelection::None;
-        }
+    let back_to = move |state: &mut AppState| {
+        state.atlas.item_page = parent;
+        state.atlas.label_color = None;
     };
     let top = |_: &mut egui::Ui, _: &mut AppState, _: &mut Controls| {};
-    let body = |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| {
+    let body = move |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| {
         ui.spacing_mut().item_spacing.y = 0.0;
         match page {
             None => body(ui, state, controls, &rec),
@@ -268,9 +244,8 @@ pub fn panel(
             }
         }
     };
-    Some(show_card(
-        ctx, state, controls, rects, card, on_title, top, body,
-    ))
+    let parts = PageParts::new(key, title, back);
+    Some(parts.head(Panel::Properties, back_to, top, body))
 }
 
 /// An empty state.

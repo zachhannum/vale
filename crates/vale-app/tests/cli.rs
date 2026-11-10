@@ -97,10 +97,47 @@ fn the_layout_and_the_panels_come_from_the_flags() {
     assert_eq!(args.workspace, Workspace::Globe);
     assert_eq!(args.layout, Layout::Pad);
     assert_eq!(args.panel, vec![Panel::Brush, Panel::Layers]);
+    assert!(args.tabs.is_empty() && args.dock_width.is_none());
+    let flags = [
+        "--tabs",
+        "layers,toolbox",
+        "--tabs",
+        "brush",
+        "--dock-width",
+        "460",
+    ];
+    let args = Args::parse_from(["vale-app"].into_iter().chain(flags));
+    let tabs = vec![vec![Panel::Layers, Panel::Toolbox], vec![Panel::Brush]];
+    assert_eq!((args.tabs, args.dock_width), (tabs, Some(460.0)));
+    assert!(Args::try_parse_from(["vale-app", "--tabs", "layers,moon"]).is_err());
+    assert!(Args::try_parse_from(["vale-app", "--tabs", "item"]).is_err());
+    let flags = [
+        "--workspace",
+        "atlas",
+        "--tabs",
+        "properties,labels",
+        "--frame",
+        "2",
+    ];
+    let args = Args::parse_from(["vale-app"].into_iter().chain(flags));
+    assert_eq!(args.tabs, vec![vec![Panel::Properties, Panel::Labels]]);
+    assert_eq!(args.frame, Some(2));
     assert_eq!(args.world_form, None);
     assert!(!args.brush_modes);
     let args = Args::parse_from(["vale-app", "--layout", "pad", "--brush-modes"]);
     assert!(args.brush_modes);
+    assert!(!args.panels_menu);
+    let args = Args::parse_from(["vale-app", "--layout", "pad", "--panels-menu"]);
+    assert!(args.panels_menu);
+    assert!(!args.view_menu);
+    let args = Args::parse_from(["vale-app", "--layout", "pad", "--view-menu"]);
+    assert!(args.view_menu);
+    assert!(!args.dock_hidden);
+    let args = Args::parse_from(["vale-app", "--layout", "pad", "--dock-hidden"]);
+    assert!(args.dock_hidden);
+    assert!(args.fold_pane.is_empty());
+    let args = Args::parse_from(["vale-app", "--fold-pane", "1", "--fold-pane", "3"]);
+    assert_eq!(args.fold_pane, [1, 3]);
     assert!(Args::try_parse_from(["vale-app", "--more-tools"]).is_err());
     let args = Args::parse_from(["vale-app", "--world-form", "new"]);
     assert_eq!(
@@ -209,4 +246,21 @@ fn measure_chooses_the_tool_in_the_open_workspace() {
         state.sync_measure();
         assert_eq!(state.measure.points.len(), 3, "{workspace}");
     }
+}
+
+#[test]
+fn frame_selects_a_map_frame_of_the_open_page() {
+    use vale_app::cli::apply_frame;
+    use vale_app::ui::AppState;
+    use vale_app::ui::atlas::{AtlasSelection, open_page};
+
+    let mut state = AppState::new(Document::sample()).unwrap();
+    apply_frame(&parse(&["--frame", "2"]), &mut state).unwrap();
+    // A page with fewer frames gets new frames.
+    let frames = open_page(&state).frames.clone();
+    assert!(frames.len() >= 2);
+    assert_eq!(state.atlas.selection, AtlasSelection::Frame(frames[1].id));
+    apply_frame(&parse(&["--frame", "1"]), &mut state).unwrap();
+    assert_eq!(state.atlas.selection, AtlasSelection::Frame(frames[0].id));
+    assert!(apply_frame(&parse(&["--frame", "0"]), &mut state).is_err());
 }

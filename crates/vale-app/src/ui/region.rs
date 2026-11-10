@@ -44,7 +44,6 @@ pub fn start(state: &mut AppState) {
     }
     state.globe.tool = Tool::Navigate;
     state.globe.region = true;
-    state.atlas.add = false;
     state.workspace = Workspace::Globe;
 }
 

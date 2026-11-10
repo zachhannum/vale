@@ -82,6 +82,32 @@ pub enum Icon {
     Grip,
     /// A pipette.
     Eyedropper,
+    /// A push pin.
+    Pin,
+    /// A window with a header and a column at the left.
+    Panels,
+    /// A window with a column at the right.
+    Dock,
+    /// Two sheets, one behind the other.
+    Pages,
+    /// A price tag.
+    Tag,
+    /// An ellipse with a graticule.
+    Projection,
+    /// An open book.
+    Book,
+    /// A folder.
+    Folder,
+    /// The Properties panel: three sliders.
+    Properties,
+    /// Two swatches with a line of text each.
+    Legend,
+    /// A bar with a tick at each end.
+    ScaleBar,
+    /// An arrow that points up.
+    NorthArrow,
+    /// A bar of colors with a scale below it.
+    ColorKey,
 }
 
 impl Icon {
@@ -139,6 +165,26 @@ impl Icon {
                  M12 3c2.5 2.5 3.5 5.5 3.5 9s-1 6.5-3.5 9c-2.5-2.5-3.5-5.5-3.5-9s1-6.5 3.5-9zM3 12h18"
             }
             Icon::Grid => "M12 3v18M3 12h18",
+            Icon::Book => {
+                "M3 5h6c1.66 0 3 1.34 3 3v12c0-1.1-.9-2-2-2H3zM21 5h-6c-1.66 0-3 1.34-3 3v12c0-1.1.9-2 2-2h7z"
+            }
+            Icon::Folder => "M3 5h6l2 3h10v11H3z",
+            Icon::Legend => "M3 5h5v5H3zM3 14h5v5H3zM11 7.5h10M11 16.5h7",
+            Icon::ScaleBar => "M3 9v6M21 9v6M3 12h18M12 10v4",
+            Icon::NorthArrow => "M6 21l6-18 6 18M8.5 14h7",
+            Icon::ColorKey => "M3 6h18v6H3zM9 6v6M15 6v6M3 16v3M12 16v3M21 16v3",
+            Icon::Properties => {
+                "M4 6h9M17 6h3M15 4v4M4 12h3M11 12h9M9 10v4M4 18h11M19 18h1M17 16v4"
+            }
+            Icon::Pin => "M9 3h6l-1 6 3.5 3.5h-11L10 9zM12 12.5V21",
+            Icon::Panels => "M3 4h18v16H3zM3 9h18M10 9v11",
+            Icon::Dock => "M3 4h18v16H3zM14 4v16M16.5 8h2M16.5 11h2",
+            Icon::Pages => "M7 3h10v14H7zM4 7v14h10",
+            Icon::Tag => "M3 12V4h8l10 10-8 8z",
+            Icon::Projection => {
+                "M12 6c4.97 0 9 2.69 9 6s-4.03 6-9 6-9-2.69-9-6 4.03-6 9-6z\
+                 M12 6v12M3 12h18M6.5 7.5c1.5 3 1.5 6 0 9M17.5 7.5c-1.5 3-1.5 6 0 9"
+            }
             Icon::LayoutGrid => "M4 4h16v16h-16zM4 9.33h16M4 14.67h16M9.33 4v16M14.67 4v16",
             Icon::Grip => "M5 8h14M5 12h14M5 16h14",
             Icon::Select => "M5 3l14 8-6 2-2 6z",
@@ -178,6 +224,7 @@ impl Icon {
             Icon::Eye | Icon::EyeOff | Icon::Point => &[(12.0, 12.0, 3.0, false)],
             Icon::Grid => &[(12.0, 12.0, 9.0, false)],
             Icon::Reshape => &[(6.0, 8.0, 1.5, true), (18.0, 8.0, 1.5, true)],
+            Icon::Tag => &[(7.5, 8.5, 1.5, true)],
             Icon::More => &[
                 (5.0, 12.0, 1.5, true),
                 (12.0, 12.0, 1.5, true),
@@ -482,6 +529,18 @@ mod tests {
             Icon::Shared,
             Icon::Grip,
             Icon::Eyedropper,
+            Icon::Pin,
+            Icon::Panels,
+            Icon::Dock,
+            Icon::Pages,
+            Icon::Tag,
+            Icon::Projection,
+            Icon::Book,
+            Icon::Folder,
+            Icon::Legend,
+            Icon::ScaleBar,
+            Icon::NorthArrow,
+            Icon::ColorKey,
         ] {
             let lines = parse(icon.path());
             let circles = icon.circles();

@@ -4,7 +4,8 @@ use anyhow::Context;
 use clap::Parser;
 use vale_app::app::run_window;
 use vale_app::cli::{
-    Args, apply_globe, apply_import, apply_measure, apply_view, export_heightmap, parse_pair,
+    Args, apply_frame, apply_globe, apply_import, apply_measure, apply_view, export_heightmap,
+    parse_pair,
 };
 use vale_app::globe::{FACE_SIZE, WINDOW_FACE_SIZE};
 use vale_app::headless;
@@ -60,18 +61,49 @@ fn run() -> anyhow::Result<u8> {
         }
         state.workspace = args.workspace;
         state.set_layout(args.layout);
+        state.pad.workspace = args.workspace;
+        for tabs in &args.tabs {
+            state.pad.dock_mut().open_tabs(tabs);
+        }
         for panel in &args.panel {
-            state.pad.open(*panel);
+            state.pad.dock_mut().open_new(*panel);
+        }
+        if let Some(width) = args.dock_width {
+            state.pad.dock_mut().set_width(width);
         }
         state.pad.flyouts.open = args
             .brush_modes
             .then(|| Flyout::Brush(ModeGroup::of(state.globe.brush.mode)));
         apply_measure(&args, &mut state)?;
+        apply_frame(&args, &mut state)?;
+        if args.dock_hidden {
+            // The Frame panel of the selected frame opens before the dock
+            // collapses.
+            if state.atlas.frame().is_some() {
+                state
+                    .pad
+                    .docks
+                    .atlas
+                    .follow_frame(vale_app::ui::pad::Panel::Properties);
+                state.pad.atlas_selection = Some(state.atlas.selection);
+            }
+            state.pad.dock_mut().collapsed = true;
+        }
+        for n in &args.fold_pane {
+            if let Some(pane) = n
+                .checked_sub(1)
+                .and_then(|i| state.pad.dock_mut().panes.get_mut(i))
+            {
+                pane.folded = true;
+            }
+        }
         let world = &state.doc.project.world;
         state.world_form = args.world_form.map(|mode| WorldForm::open(mode, world));
         if args.worlds_menu {
             vale_app::ui::pad::toggle_worlds(&mut state);
         }
+        state.pad.panels_menu = args.panels_menu;
+        state.pad.view_menu = args.view_menu;
         apply_globe(&args, &mut state.globe, face_size)?;
         state.form_face_size = args.face_size.map(|size| size as usize);
         if args.raster_form {

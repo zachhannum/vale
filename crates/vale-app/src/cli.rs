@@ -42,9 +42,28 @@ pub struct Args {
     /// The arrangement of the controls. The iPad uses `pad`.
     #[arg(long, value_enum, default_value_t)]
     pub layout: Layout,
-    /// With --layout pad: open this panel. You can give more than one.
+    /// With --layout pad: open this panel in a pane of the dock.
+    /// You can give more than one, and each one gets its own pane.
     #[arg(long, value_enum, value_name = "PANEL")]
     pub panel: Vec<Panel>,
+    /// With --layout pad: open these panels as the tabs of one pane.
+    /// You can give more than one.
+    #[arg(long, value_name = "PANEL,PANEL ...", value_parser = parse_tabs)]
+    pub tabs: Vec<Vec<Panel>>,
+    /// With --workspace atlas: select the map frame with this number, from
+    /// 1, on the open page. A page with fewer frames gets new frames.
+    #[arg(long, value_name = "N")]
+    pub frame: Option<usize>,
+    /// With --layout pad: the width of the dock, in points.
+    #[arg(long, value_name = "POINTS")]
+    pub dock_width: Option<f32>,
+    /// With --layout pad: collapse the dock off the right edge.
+    #[arg(long)]
+    pub dock_hidden: bool,
+    /// With --layout pad: fold pane N of the dock to its header. The first
+    /// pane is 1.
+    #[arg(long, value_name = "N")]
+    pub fold_pane: Vec<usize>,
     /// With --layout pad: open the flyout of the group of the brush mode.
     #[arg(long)]
     pub brush_modes: bool,
@@ -58,6 +77,12 @@ pub struct Args {
     /// With --layout pad: open the menu of the worlds.
     #[arg(long)]
     pub worlds_menu: bool,
+    /// With --layout pad: open the Panels menu.
+    #[arg(long)]
+    pub panels_menu: bool,
+    /// With --layout pad: open the View popover of the readout.
+    #[arg(long)]
+    pub view_menu: bool,
     /// Open the form of a new raster layer.
     #[arg(long)]
     pub raster_form: bool,
@@ -229,6 +254,25 @@ pub fn parse_measure(s: &str) -> anyhow::Result<Measure> {
         path.close();
     }
     Ok(path)
+}
+
+/// Applies `--frame`: selects the frame with this number on the open page.
+pub fn apply_frame(args: &Args, state: &mut AppState) -> anyhow::Result<()> {
+    use crate::ui::atlas::{self, AtlasSelection};
+    let Some(n) = args.frame else {
+        return Ok(());
+    };
+    if n == 0 {
+        bail!("the first map frame is --frame 1");
+    }
+    while atlas::open_page(state).frames.len() < n {
+        if atlas::add_frame(state).is_none() {
+            bail!("no map frame {n}: {}", state.status);
+        }
+    }
+    let frame = atlas::open_page(state).frames[n - 1].id;
+    state.atlas.selection = AtlasSelection::Frame(frame);
+    Ok(())
 }
 
 /// Applies `--measure` to the open workspace.
@@ -573,4 +617,12 @@ pub fn apply_globe_view(args: &Args, view: &mut GlobeView) -> anyhow::Result<()>
     }
     view.zoom = args.zoom.clamp(ZOOM_MIN, ZOOM_MAX);
     Ok(())
+}
+
+/// The panels of `--tabs`, such as `layers,toolbox`.
+fn parse_tabs(text: &str) -> Result<Vec<Panel>, String> {
+    use clap::ValueEnum;
+    text.split(',')
+        .map(|name| Panel::from_str(name.trim(), true))
+        .collect()
 }

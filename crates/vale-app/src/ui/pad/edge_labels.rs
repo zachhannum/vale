@@ -1,19 +1,18 @@
 //! The Edge labels page of the Frame tab: the labels of the graticule at the
 //! edge of a frame, with one set for the meridians and one for the parallels.
 
-use eframe::egui::{self, Rect};
+use eframe::egui;
 use vale_labeler::Face;
 use vale_store::{CoordFormat, EdgeLabels, EdgeOrientation, FrameId, Graticule, Rgba};
 
-use super::atlas::{FRAME_TABS, LABEL_FORMAT, LABEL_FORMATS, named_tabs, panel_width};
-use super::geometry::Rects;
+use super::atlas::{LABEL_FORMAT, LABEL_FORMATS, named_tabs};
 use super::labels::{color_rows, faces_of};
 use super::number::Number;
 use super::raster::heading;
 use super::widgets::{self, Controls};
-use super::{Card, CardTitle, show_card};
+use super::{Head, PageParts, Panel};
 use crate::fonts::DEFAULT_FAMILY;
-use crate::ui::atlas::{self, AtlasSelection, ClassColor, EdgeSet};
+use crate::ui::atlas::{self, ClassColor, EdgeSet};
 use crate::ui::{Action, AppState, FontTarget};
 
 pub const EDGE_LABELS: &str = "Edge labels";
@@ -58,46 +57,28 @@ pub fn summary(g: &Graticule) -> &'static str {
     }
 }
 
-/// The Edge labels page of a frame, in place of the Frame tab.
-pub fn panel(
-    ctx: &egui::Context,
-    state: &mut AppState,
-    controls: &mut Controls,
-    rects: &Rects,
-    id: FrameId,
-) -> Option<Rect> {
+/// The Edge labels page of a frame, in the pane of the Frame panel.
+pub(super) fn head(state: &mut AppState, id: FrameId) -> Option<Head> {
     state.doc.project.atlas.frame(id)?;
     let styles = state.atlas.edge_styles;
     let (key, title, back) = if styles {
         ("pad-atlas-edge-styles", STYLES_TITLE, EDGE_LABELS)
     } else {
-        ("pad-atlas-edge-labels", EDGE_LABELS, FRAME_TABS[0])
+        (
+            "pad-atlas-edge-labels",
+            EDGE_LABELS,
+            super::atlas::PROPERTIES,
+        )
     };
-    let card = Card {
-        key,
-        place: (rects.right_panel, panel_width(ctx)),
-        head: CardTitle {
-            title,
-            back: Some(back),
-            action: None,
-        },
-        scroll: egui::scroll_area::ScrollSource::default(),
-    };
-    let on_title = |state: &mut AppState, row: &widgets::TitleRow| {
-        if row.back {
-            if state.atlas.edge_styles {
-                state.atlas.edge_styles = false;
-            } else {
-                state.atlas.edge = None;
-            }
-            state.atlas.label_color = None;
+    let back_to = |state: &mut AppState| {
+        if state.atlas.edge_styles {
+            state.atlas.edge_styles = false;
+        } else {
+            state.atlas.edge = None;
         }
-        if row.close {
-            state.atlas.selection = AtlasSelection::None;
-            state.atlas.vertices.clear();
-        }
+        state.atlas.label_color = None;
     };
-    let top = |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| {
+    let top = move |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| {
         if state.atlas.edge_styles {
             return;
         }
@@ -122,16 +103,15 @@ pub fn panel(
         }
         ui.add_space(6.0);
     };
-    let body = |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| {
+    let body = move |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| {
         if state.atlas.edge_styles {
             styles_body(ui, state, controls, id);
         } else {
             body(ui, state, controls, id);
         }
     };
-    Some(show_card(
-        ctx, state, controls, rects, card, on_title, top, body,
-    ))
+    let parts = PageParts::new(key, title, Some(back));
+    Some(parts.head(Panel::Properties, back_to, top, body))
 }
 
 /// The rows of the open set.

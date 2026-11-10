@@ -1,0 +1,182 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<style>
+@font-face { font-family: UI; src: local("Ubuntu Light"), local("Ubuntu-Light"); }
+@font-face { font-family: Mono; src: local("Ubuntu Mono"), local("DejaVu Sans Mono"); }
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { width: 1180px; overflow: hidden; background: rgb(8,9,10); color: rgb(231,233,236); font-family: UI, sans-serif; padding: 20px; }
+.grid { display: grid; grid-template-columns: 560px 560px; gap: 20px; }
+.cap { font-size: 15px; color: rgb(174,181,190); margin: 0 0 8px 2px; }
+.cap b { color: rgb(231,233,236); font-weight: normal; }
+/* The lower-left corner of the 11-inch iPad screen, 560 by 380 points. */
+.shot { width: 560px; height: 430px; position: relative; overflow: hidden; border-radius: 12px;
+  background: rgb(15,17,19) url(../pad-layout/assets/globe.png) no-repeat; background-size: 1194px 834px; background-position: -120px -340px; }
+svg.i { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.card { position: absolute; background: rgba(26,29,33,.78); backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px);
+  border-radius: 14px; box-shadow: 0 4px 20px rgba(0,0,0,.35); }
+.edge { border-radius: 0 14px 14px 0; left: 0; }
+.b { width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; color: rgb(174,181,190); border-radius: 10px; flex: none; }
+.b.on { background: rgba(255,255,255,.13); color: rgb(231,233,236); }
+.b.acc { background: rgba(69,196,168,.22); color: rgb(69,196,168); }
+.row { display: flex; align-items: center; gap: 0; padding: 4px; }
+.sep { width: 1px; height: 24px; background: rgba(255,255,255,.16); margin: 0 4px; }
+.col { position: absolute; left: 0; top: -10px; width: 56px; height: 260px; }
+.mono { font-family: Mono, monospace; font-size: 13px; }
+.mute { color: rgb(174,181,190); }
+.small { font-size: 10.5px; color: rgb(174,181,190); }
+.bar { display: flex; height: 4px; }
+.bar i { display: block; height: 4px; flex: 1; }
+.bar i:nth-child(odd) { background: rgb(231,233,236); }
+.bar i:nth-child(even) { background: rgba(255,255,255,.22); }
+.pop { position: absolute; background: rgb(32,35,40); border-radius: 14px; box-shadow: 0 10px 40px rgba(0,0,0,.55); padding: 12px; width: 260px; }
+.pop h4 { font-weight: normal; font-size: 12px; letter-spacing: .06em; color: rgb(140,147,156); margin: 4px 4px 8px; }
+.segc { display: flex; background: rgba(255,255,255,.07); border-radius: 10px; padding: 3px; }
+.segc div { flex: 1; height: 38px; border-radius: 8px; display: flex; align-items: center; justify-content: center; gap: 6px; font-size: 15px; color: rgb(174,181,190); }
+.segc div.on { background: rgba(255,255,255,.15); color: rgb(231,233,236); }
+.segc svg.i { width: 18px; height: 18px; }
+.prow { height: 48px; display: flex; align-items: center; justify-content: space-between; padding: 0 4px; font-size: 15px; border-top: 1px solid rgba(255,255,255,.08); }
+.prow:first-of-type { border-top: none; }
+.sw { width: 46px; height: 28px; border-radius: 14px; background: rgb(69,196,168); position: relative; }
+.sw::after { content: ""; position: absolute; right: 2px; top: 2px; width: 24px; height: 24px; border-radius: 12px; background: #eee; }
+.sw.off { background: rgba(255,255,255,.18); }
+.sw.off::after { right: auto; left: 2px; }
+.chev { color: rgb(140,147,156); display: flex; align-items: center; gap: 6px; }
+.dot { position: absolute; width: 34px; height: 34px; border-radius: 17px; border: 2px solid rgba(255,255,255,.85); background: rgba(255,255,255,.18); }
+.fade { opacity: .45; }
+</style></head><body>
+<svg width="0" height="0" style="position:absolute">
+  <symbol id="globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 3c2.5 2.5 3.5 5.5 3.5 9s-1 6.5-3.5 9c-2.5-2.5-3.5-5.5-3.5-9s1-6.5 3.5-9zM3 12h18"/></symbol>
+  <symbol id="map" viewBox="0 0 24 24"><path d="M3 6l6-2 6 2 6-2v14l-6 2-6-2-6 2zM9 4v14M15 6v14"/></symbol>
+  <symbol id="grid" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 3v18M3 12h18"/></symbol>
+  <symbol id="layers" viewBox="0 0 24 24"><path d="M12 3l9 5-9 5-9-5zM3 13l9 5 9-5M3 17.5l9 5 9-5" transform="translate(0 -1.5)"/></symbol>
+  <symbol id="proj" viewBox="0 0 24 24"><path d="M12 6c4.97 0 9 2.69 9 6s-4.03 6-9 6-9-2.69-9-6 4.03-6 9-6zM12 6v12M3 12h18"/></symbol>
+  <symbol id="tool" viewBox="0 0 24 24"><path d="M5 5l6 14 2-6 6-2z"/></symbol>
+</svg>
+
+<div class="grid">
+
+<div>
+  <p class="cap"><b>1. Now, on the globe.</b> The view buttons, the place and the scale bar in one block. The flat view adds three more buttons.</p>
+  <div class="shot">
+    <div class="card edge col"></div>
+    <div class="card" style="left:72px; top:314px; width:170px; height:92px;">
+      <div class="row">
+        <div class="b on"><svg class="i"><use href="#globe"/></svg></div>
+        <div class="b"><svg class="i"><use href="#map"/></svg></div>
+        <div class="sep"></div>
+        <div class="b on"><svg class="i"><use href="#grid"/></svg></div>
+      </div>
+      <div style="padding: 0 12px;">
+        <div class="mono">41.90° N, 12.50° E</div>
+        <div class="bar" style="width:140px; margin-top:5px;"><i></i><i></i><i></i><i></i></div>
+        <div class="small" style="display:flex; justify-content:space-between; width:160px; margin-top:2px;"><span>0</span><span>2000 km</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div>
+  <p class="cap"><b>2. Proposal, at rest.</b> One View button and the scale bar.</p>
+  <div class="shot">
+    <div class="card edge col"></div>
+    <div class="card" style="left:72px; top:354px; width:208px; height:52px; display:flex; align-items:center;">
+      <div class="row"><div class="b"><svg class="i"><use href="#layers"/></svg></div></div>
+      <div class="sep" style="margin-left:0"></div>
+      <div style="padding: 0 12px 0 8px;">
+        <div class="bar" style="width:120px;"><i></i><i></i><i></i><i></i></div>
+        <div class="small" style="display:flex; justify-content:space-between; width:136px; margin-top:3px;"><span>0</span><span>2000 km</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div>
+  <p class="cap"><b>3. While a finger or the Pencil is down.</b> The place shows above the card, and fades after you lift.</p>
+  <div class="shot">
+    <div class="card edge col"></div>
+    <div class="dot" style="left:330px; top:120px;"></div>
+    <div class="card" style="left:72px; top:312px; width:190px; height:34px; display:flex; align-items:center; padding: 0 12px;">
+      <span class="mono">41.90° N, 12.50° E</span>
+    </div>
+    <div class="card" style="left:72px; top:354px; width:208px; height:52px; display:flex; align-items:center;">
+      <div class="row"><div class="b"><svg class="i"><use href="#layers"/></svg></div></div>
+      <div class="sep" style="margin-left:0"></div>
+      <div style="padding: 0 12px 0 8px;">
+        <div class="bar" style="width:120px;"><i></i><i></i><i></i><i></i></div>
+        <div class="small" style="display:flex; justify-content:space-between; width:136px; margin-top:3px;"><span>0</span><span>2000 km</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div>
+  <p class="cap"><b>4. The View popover, on the globe.</b></p>
+  <div class="shot">
+    <div class="card edge col"></div>
+    <div class="pop" style="left:72px; top:200px;">
+      <div class="segc">
+        <div class="on"><svg class="i"><use href="#globe"/></svg>Globe</div>
+        <div><svg class="i"><use href="#map"/></svg>Flat</div>
+      </div>
+      <div style="margin-top:8px;">
+        <div class="prow"><span>Graticule</span><div class="sw"></div></div>
+      </div>
+    </div>
+    <div class="card" style="left:72px; top:354px; width:208px; height:52px; display:flex; align-items:center;">
+      <div class="row"><div class="b acc"><svg class="i"><use href="#layers"/></svg></div></div>
+      <div class="sep" style="margin-left:0"></div>
+      <div style="padding: 0 12px 0 8px;">
+        <div class="bar" style="width:120px;"><i></i><i></i><i></i><i></i></div>
+        <div class="small" style="display:flex; justify-content:space-between; width:136px; margin-top:3px;"><span>0</span><span>2000 km</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div>
+  <p class="cap"><b>5. The View popover, on the flat map.</b> The flat view adds three rows.</p>
+  <div class="shot" style="background: rgb(15,17,19) url(../pad-layout/assets/map.png) no-repeat; background-size: 900px auto; background-position: -40px -160px;">
+    <div class="card edge col"></div>
+    <div class="pop" style="left:72px; top:14px;">
+      <div class="segc">
+        <div><svg class="i"><use href="#globe"/></svg>Globe</div>
+        <div class="on"><svg class="i"><use href="#map"/></svg>Flat</div>
+      </div>
+      <div style="margin-top:8px;">
+        <div class="prow"><span>Graticule</span><div class="sw off"></div></div>
+        <div class="prow"><span>Projection</span><span class="chev">Equal Earth ›</span></div>
+        <div class="prow"><span>Recenter</span><span></span></div>
+        <div class="prow"><span>Reset view</span><span></span></div>
+      </div>
+    </div>
+    <div class="card" style="left:72px; top:354px; width:208px; height:52px; display:flex; align-items:center;">
+      <div class="row"><div class="b acc"><svg class="i"><use href="#layers"/></svg></div></div>
+      <div class="sep" style="margin-left:0"></div>
+      <div style="padding: 0 12px 0 8px;">
+        <div class="bar" style="width:120px;"><i></i><i></i><i></i><i></i></div>
+        <div class="small" style="display:flex; justify-content:space-between; width:136px; margin-top:3px;"><span>0</span><span>2000 km</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div>
+  <p class="cap"><b>6. A save that failed.</b> A short banner, not a mark in the corner.</p>
+  <div class="shot">
+    <div class="card edge col"></div>
+    <div class="card" style="left:50%; transform:translateX(-50%); top:24px; height:44px; display:flex; align-items:center; gap:10px; padding:0 16px; font-size:15px; white-space:nowrap; background: rgba(60,30,28,.9);">
+      <span style="color:rgb(240,140,120)">⚠</span> Could not save. Changes are kept and saved again.
+    </div>
+    <div class="card" style="left:72px; top:354px; width:208px; height:52px; display:flex; align-items:center;">
+      <div class="row"><div class="b"><svg class="i"><use href="#layers"/></svg></div></div>
+      <div class="sep" style="margin-left:0"></div>
+      <div style="padding: 0 12px 0 8px;">
+        <div class="bar" style="width:120px;"><i></i><i></i><i></i><i></i></div>
+        <div class="small" style="display:flex; justify-content:space-between; width:136px; margin-top:3px;"><span>0</span><span>2000 km</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+</div>
+</body></html>

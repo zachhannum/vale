@@ -413,8 +413,8 @@ fn atlas_buttons(ui: &mut egui::Ui, state: &mut AppState) {
     // With a frame selected, Maps shows and hides its panel. With none, it
     // lists the map frames of the page.
     if state.atlas.frame().is_some() {
-        if ui.selectable_label(atlas::maps_open(state), MAPS).clicked() {
-            atlas::toggle_maps(state);
+        if ui.selectable_label(true, MAPS).clicked() {
+            atlas::clear_selection(state);
         }
     } else {
         ui.menu_button(MAPS, |ui| {

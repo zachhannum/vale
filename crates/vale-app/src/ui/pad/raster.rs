@@ -703,16 +703,14 @@ pub fn band_card(
         return;
     }
 
+    let backdrop = state.globe.backdrop();
     let style = &mut state.pad.style;
     let Some(bands) = state.globe.bands_mut(id) else {
         return;
     };
     let mut removed = false;
     let radius = theme::CARD_RADIUS.into();
-    widgets::card(ctx, None, key, rect, Order::Foreground, radius, |ui| {
-        // The card covers the globe and other cards, so its fill is opaque.
-        let fill = theme::card(false).to_opaque();
-        ui.painter().rect_filled(rect, radius, fill);
+    widgets::card(ctx, backdrop, key, rect, Order::Foreground, radius, |ui| {
         let inner = rect.shrink(CARD_PAD);
         let layout = egui::Layout::top_down(egui::Align::Min);
         let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
@@ -923,7 +921,7 @@ fn paint_point(ctx: &egui::Context, key: &str, point: [Pos2; 3]) {
     ctx.layer_painter(egui::LayerId::new(Order::Foreground, egui::Id::new(key)))
         .add(egui::Shape::convex_polygon(
             point.to_vec(),
-            theme::card(false).to_opaque(),
+            theme::card(true),
             egui::Stroke::NONE,
         ));
 }
@@ -964,9 +962,8 @@ pub fn reset_card(
     let mut reset = false;
     let radius = theme::CARD_RADIUS.into();
     let key = "pad-reset-stops";
-    widgets::card(ctx, None, key, rect, Order::Foreground, radius, |ui| {
-        ui.painter()
-            .rect_filled(rect, radius, theme::card(false).to_opaque());
+    let backdrop = state.globe.backdrop();
+    widgets::card(ctx, backdrop, key, rect, Order::Foreground, radius, |ui| {
         let inner = rect.shrink(CARD_PAD);
         let layout = egui::Layout::top_down(egui::Align::Min);
         let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
@@ -1074,9 +1071,8 @@ pub fn ramp_card(
     let mut new_part = None;
     let radius = theme::CARD_RADIUS.into();
     let key = "pad-ramp";
-    widgets::card(ctx, None, key, rect, Order::Foreground, radius, |ui| {
-        ui.painter()
-            .rect_filled(rect, radius, theme::card(false).to_opaque());
+    let backdrop = state.globe.backdrop();
+    widgets::card(ctx, backdrop, key, rect, Order::Foreground, radius, |ui| {
         let inner = rect.shrink(CARD_PAD);
         let layout = egui::Layout::top_down(egui::Align::Min);
         let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));

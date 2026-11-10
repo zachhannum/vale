@@ -1,0 +1,51 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<style>
+@font-face { font-family: UI; src: local("Ubuntu Light"), local("Ubuntu-Light"); }
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { width: 1180px; background: rgb(8,9,10); color: rgb(231,233,236); font-family: UI, sans-serif; padding: 20px; overflow: hidden; }
+.grid { display: grid; grid-template-columns: repeat(4, 270px); gap: 20px; }
+.opt { background: rgb(15,17,19) url(../pad-layout/assets/globe.png) no-repeat; background-size: 1194px 834px; background-position: -80px -620px;
+  height: 230px; border-radius: 12px; position: relative; overflow: hidden; }
+.cap { font-size: 15px; margin: 0 0 8px 2px; }
+.cap span { color: rgb(174,181,190); }
+svg.i { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.card { position: absolute; left: 16px; background: rgba(26,29,33,.78); backdrop-filter: blur(24px); border-radius: 14px;
+  box-shadow: 0 4px 20px rgba(0,0,0,.35); height: 52px; width: 208px; display: flex; align-items: center; }
+.b { width: 44px; height: 44px; margin: 4px; display: flex; align-items: center; justify-content: center; color: rgb(174,181,190); border-radius: 10px; }
+.sep { width: 1px; height: 24px; background: rgba(255,255,255,.16); }
+.bar { display: flex; height: 4px; width: 120px; } .bar i { flex: 1; } .bar i:nth-child(odd) { background: rgb(231,233,236); } .bar i:nth-child(even) { background: rgba(255,255,255,.22); }
+.small { font-size: 10.5px; color: rgb(174,181,190); display: flex; justify-content: space-between; width: 136px; margin-top: 3px; }
+.note { font-size: 13px; color: rgb(174,181,190); margin: 8px 2px 0; line-height: 1.35; }
+</style></head><body>
+<svg width="0" height="0" style="position:absolute">
+  <symbol id="globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 3c2.5 2.5 3.5 5.5 3.5 9s-1 6.5-3.5 9c-2.5-2.5-3.5-5.5-3.5-9s1-6.5 3.5-9zM3 12h18"/></symbol>
+  <symbol id="map" viewBox="0 0 24 24"><path d="M3 6l6-2 6 2 6-2v14l-6 2-6-2-6 2zM9 4v14M15 6v14"/></symbol>
+  <symbol id="eye" viewBox="0 0 24 24"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></symbol>
+  <symbol id="globemap" viewBox="0 0 24 24"><circle cx="8.5" cy="9" r="5.5"/><path d="M3 9h11M8.5 3.5c1.6 1.6 2.2 3.4 2.2 5.5s-.6 3.9-2.2 5.5"/><path d="M12 15l3-1 3 1 3-1v6l-3 1-3-1-3 1z"/></symbol>
+  <symbol id="view" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="12" cy="12" r="4.5"/><path d="M7.5 12h9M12 7.5c1.3 1.3 1.8 2.8 1.8 4.5s-.5 3.2-1.8 4.5"/></symbol>
+</svg>
+<div class="grid">
+  <div><p class="cap">A. The present view <span>(globe or map)</span></p>
+    <div class="opt">
+      <div class="card" style="top:40px;"><div class="b"><svg class="i"><use href="#globe"/></svg></div><div class="sep"></div><div style="padding-left:8px"><div class="bar"><i></i><i></i><i></i><i></i></div><div class="small"><span>0</span><span>2000 km</span></div></div></div>
+      <div class="card" style="top:120px;"><div class="b"><svg class="i"><use href="#map"/></svg></div><div class="sep"></div><div style="padding-left:8px"><div class="bar"><i></i><i></i><i></i><i></i></div><div class="small"><span>0</span><span>2000 km</span></div></div></div>
+    </div>
+    <p class="note">The button shows the view you are in, as the view menu of Apple Maps does. Top: on the globe. Bottom: on the flat map.</p></div>
+  <div><p class="cap">B. Globe and map</p>
+    <div class="opt">
+      <div class="card" style="top:80px;"><div class="b"><svg class="i"><use href="#globemap"/></svg></div><div class="sep"></div><div style="padding-left:8px"><div class="bar"><i></i><i></i><i></i><i></i></div><div class="small"><span>0</span><span>2000 km</span></div></div></div>
+    </div>
+    <p class="note">One fixed icon that says "globe or flat map".</p></div>
+  <div><p class="cap">C. Eye</p>
+    <div class="opt">
+      <div class="card" style="top:80px;"><div class="b"><svg class="i"><use href="#eye"/></svg></div><div class="sep"></div><div style="padding-left:8px"><div class="bar"><i></i><i></i><i></i><i></i></div><div class="small"><span>0</span><span>2000 km</span></div></div></div>
+    </div>
+    <p class="note">"View". But the Layers panel uses the eye to hide and show a layer.</p></div>
+  <div><p class="cap">D. Globe in a frame</p>
+    <div class="opt">
+      <div class="card" style="top:80px;"><div class="b"><svg class="i"><use href="#view"/></svg></div><div class="sep"></div><div style="padding-left:8px"><div class="bar"><i></i><i></i><i></i><i></i></div><div class="small"><span>0</span><span>2000 km</span></div></div></div>
+    </div>
+    <p class="note">"View settings of the canvas". It is close to the Atlas icon of the workspace switch.</p></div>
+</div>
+</body></html>

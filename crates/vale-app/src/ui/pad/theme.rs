@@ -61,6 +61,11 @@ pub fn title() -> FontId {
     FontId::proportional(16.0)
 }
 
+/// The font of a hint next to a name.
+pub fn hint() -> FontId {
+    FontId::proportional(13.0)
+}
+
 pub fn small() -> FontId {
     FontId::proportional(10.0)
 }

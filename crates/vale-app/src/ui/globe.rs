@@ -1372,7 +1372,7 @@ pub fn vector_layer_cut(
                         },
                     ) if *size > 0.0 => {
                         let size = *size as f32;
-                        for &pos in points.iter().filter(|p| rect.expand(size).contains(**p)) {
+                        for &pos in points.iter().filter(|p| shown.expand(size).contains(**p)) {
                             match symbols.get(symbol) {
                                 Some(s) => SymbolMesh::of(s).append(
                                     sink.symbols(),
@@ -1758,6 +1758,9 @@ pub(super) fn canvas_input(
             globe.nav.update(ui, rect, &resp, &mut globe.flat, painting);
         }
     }
+    let input = &globe.input;
+    let touched = input.pen.is_some() || input.finger.is_some() || globe.pen.down;
+    state.pad.canvas_down = touched || resp.is_pointer_button_down_on();
     state.poll_line();
     state.poll_point();
     state.poll_measure();

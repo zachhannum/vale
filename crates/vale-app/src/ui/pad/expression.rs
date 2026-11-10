@@ -2,9 +2,9 @@
 //! chips that insert into an expression, and the width of a panel with an
 //! expression editor.
 
-use eframe::egui::{self, Pos2, Sense, vec2};
+use eframe::egui::{self, Pos2, Rect, Sense, vec2};
 
-use super::geometry::{MARGIN, Rects};
+use super::geometry::{Rects, WidthClass};
 use super::{LayerRef, Page, Panel, theme};
 use crate::ui::AppState;
 use crate::ui::expr_help::{ExprHelp, ExprKind, Line};
@@ -15,7 +15,7 @@ pub const PANEL_WIDTH: f32 = 460.0;
 /// True if the Layers panel shows a page with an expression editor: the
 /// label text, a rule with its filter, or Classify with its value.
 pub fn showing(state: &AppState) -> bool {
-    state.pad.right == Some(Panel::Layers)
+    state.pad.shows(Panel::Layers)
         && matches!(state.pad.layer, Some(LayerRef::Vector(_)))
         && matches!(
             state.pad.page,
@@ -23,29 +23,32 @@ pub fn showing(state: &AppState) -> bool {
         )
 }
 
-/// The top left corner and the width of a right panel of width `normal`
-/// that holds an expression editor. The panel is wider when the screen has
-/// room, and stays clear of the tool strip and of the cards beside it. A
-/// sheet keeps its width.
-pub fn wide_place(rects: &Rects, normal: f32) -> (Pos2, f32) {
-    let right = rects.screen.right() - rects.bands.right - MARGIN;
-    let x = right - normal;
-    if rects.sheet.is_some() {
-        return (egui::pos2(x, rects.right_panel.y), normal);
-    }
-    let room = right - rects.brush_panel.x;
-    let width = PANEL_WIDTH.min(room).max(normal);
-    (egui::pos2(right - width, rects.right_panel.y), width)
+/// The dock, at least `width` wide inside the band of the system, if the
+/// screen has room. It stays clear of the tool strip and of the cards
+/// beside it.
+pub fn wider(rects: &Rects, width: f32) -> Rect {
+    let mut dock = rects.dock;
+    let left = (rects.screen.right() - rects.bands.right - width).max(rects.column_right);
+    dock.min.x = dock.min.x.min(left);
+    dock
 }
 
-/// Makes the right panel wider while it shows an expression editor.
+/// The top left corner and the width of a panel that holds an expression
+/// editor. The panel is wider when the screen has room. A sheet keeps its
+/// width.
+pub fn wide_place(rects: &Rects) -> (Pos2, f32) {
+    let dock = match rects.class {
+        WidthClass::Compact => rects.dock,
+        _ => wider(rects, PANEL_WIDTH),
+    };
+    (dock.min, dock.width())
+}
+
+/// Makes the dock wider while it shows an expression editor.
 pub fn widen(state: &AppState, rects: &mut Rects) {
-    if !showing(state) {
-        return;
+    if showing(state) && rects.class != WidthClass::Compact {
+        rects.dock = wider(rects, PANEL_WIDTH);
     }
-    let right = rects.screen.right() - rects.bands.right - MARGIN;
-    let (at, _) = wide_place(rects, right - rects.right_panel.x);
-    rects.right_panel = at;
 }
 
 /// The height of the line under an expression field.

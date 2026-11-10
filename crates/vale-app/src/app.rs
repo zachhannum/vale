@@ -341,6 +341,13 @@ impl eframe::App for ValeApp {
             state.run_action(Action::Save);
         }
 
+        // A control changes the state after it draws, in the frame of the
+        // input. One more frame shows the change. A touch screen sends no
+        // hover events, so no other event draws that frame.
+        if ui.ctx().input(|i| !i.events.is_empty()) {
+            ui.ctx().request_repaint();
+        }
+
         // One drag of a control is one save, and thus one undo step.
         let hold = ui.ctx().input(|i| i.pointer.any_down());
         if let Some(wait) = state.save_tick(hold, std::time::Instant::now()) {

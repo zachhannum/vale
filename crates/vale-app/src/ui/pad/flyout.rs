@@ -1,9 +1,11 @@
-//! Cells with a flyout. A cell shows the current choice of its group, and
-//! the flyout at the right of the tool column lists all choices of the
-//! group. A hold on the cell opens the flyout. The owner of the cell
-//! decides what a tap does.
+//! Cells with a flyout, the cells of the tool strip, and icon buttons with
+//! a tooltip. A cell shows the current choice of its group, and the flyout
+//! at the right of the tool column lists all choices of the group. A hold
+//! on the cell opens the flyout. A hold on a cell of the tool strip or on
+//! an icon button first shows a tooltip with its name. The owner of the
+//! cell decides what a tap does.
 
-use eframe::egui::{self, Order, Rect, pos2, vec2};
+use eframe::egui::{self, Align2, Order, Rect, pos2, vec2};
 use eframe::egui_wgpu::wgpu;
 
 use super::geometry::{self, Rects};
@@ -20,6 +22,10 @@ pub enum Flyout {
     PolygonMode,
     /// The tools of the Vector cell of the tool strip.
     Vector,
+    /// The Frame tool and "Map from region" in the Frame cell of the Atlas.
+    Frame,
+    /// The furniture tools of the Furniture cell of the Atlas.
+    Furniture,
 }
 
 impl Flyout {
@@ -37,6 +43,33 @@ pub struct Choice {
     pub enabled: bool,
 }
 
+/// The time of a hold on a cell of the tool strip that opens the flyout of
+/// its modes, in seconds. A shorter hold shows the tooltip.
+pub const MODES_TIME: f64 = 0.8;
+/// The text of the tooltip of a tool with modes.
+pub const HOLD_HINT: &str = "Hold to change mode";
+
+/// The side of a cell where its tooltip shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Place {
+    /// At the right of the tool strip, or above the strip in the row
+    /// layout.
+    Strip,
+    Above,
+    Below,
+}
+
+/// The tooltip of a cell that a finger holds.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Tip {
+    /// The name of the tool or of the button.
+    pub name: String,
+    /// The tool has modes, so the tooltip also shows `HOLD_HINT`.
+    pub modes: bool,
+    pub cell: Rect,
+    pub place: Place,
+}
+
 /// The flyouts of the iPad layout.
 #[derive(Default)]
 pub struct Flyouts {
@@ -44,18 +77,24 @@ pub struct Flyouts {
     pub open: Option<Flyout>,
     /// The flyout in the last frame.
     pub rect: Option<Rect>,
-    /// A hold on this cell opened the flyout, so the end of the press is
-    /// not a tap.
-    held: Option<Flyout>,
+    /// The tooltip of this frame.
+    pub tip: Option<Tip>,
+    /// The tooltip in the last frame.
+    pub tip_rect: Option<Rect>,
+    /// A hold on the cell with this name showed a tooltip or opened a
+    /// flyout, so the end of the press is not a tap.
+    held: Option<String>,
     /// The cells of this frame.
     cells: Vec<(Flyout, Rect)>,
 }
 
 impl Flyouts {
-    /// Forgets the cells of the last frame.
+    /// Forgets the cells and the tooltip of the last frame.
     pub fn begin_frame(&mut self) {
         self.cells.clear();
         self.rect = None;
+        self.tip = None;
+        self.tip_rect = None;
     }
 
     /// Opens the flyout, or closes it when it is open.
@@ -78,18 +117,84 @@ pub fn cell(
     active: bool,
     enabled: bool,
 ) -> bool {
-    let cell = widgets::tool_cell(ui, controls, name, label, icon, active, enabled);
+    let cell = widgets::tool_cell_with(ui, controls, name, label, icon, active, enabled, false);
     flyouts.cells.push((key, cell.rect));
     paint_mark(ui, cell.rect, active, enabled);
-    let held = flyouts.held == Some(key);
+    hold(ui, flyouts, &cell, name, None, Some(key), Place::Strip)
+}
+
+/// A cell of the tool strip: an icon with no name. A hold shows a tooltip
+/// with `label`, the name of the tool. For a cell with `modes`, a longer
+/// hold opens their flyout and hides the tooltip. Returns true for a tap
+/// that is not the end of a hold.
+#[allow(clippy::too_many_arguments)]
+pub fn tool(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    flyouts: &mut Flyouts,
+    modes: Option<Flyout>,
+    name: &str,
+    label: &str,
+    icon: Icon,
+    active: bool,
+    enabled: bool,
+) -> bool {
+    let cell = widgets::icon_cell(ui, controls, name, icon, active, enabled);
+    if let Some(key) = modes {
+        flyouts.cells.push((key, cell.rect));
+        paint_mark(ui, cell.rect, active, enabled);
+    }
+    hold(ui, flyouts, &cell, name, Some(label), modes, Place::Strip)
+}
+
+/// An icon button at `rect`. A hold shows a tooltip with `label` at the
+/// `place` side of the button. Returns true for a tap. As with the large
+/// content viewer of iPadOS, the end of a hold is a tap too.
+#[allow(clippy::too_many_arguments)]
+pub fn button(
+    ui: &egui::Ui,
+    controls: &mut Controls,
+    flyouts: &mut Flyouts,
+    rect: Rect,
+    (name, label): (&str, &str),
+    icon: Icon,
+    active: bool,
+    enabled: bool,
+    place: Place,
+) -> bool {
+    let cell = widgets::icon_button_at(ui, controls, rect, name, icon, active, enabled);
+    hold(ui, flyouts, &cell, name, Some(label), None, place);
+    cell.clicked()
+}
+
+/// Follows a press on a cell. With a `label`, a hold of `HOLD_TIME` shows
+/// the tooltip, and a hold of `MODES_TIME` opens the flyout of `modes`.
+/// With no label, a hold of `HOLD_TIME` opens the flyout. Returns true for
+/// a tap that is not the end of a hold.
+fn hold(
+    ui: &egui::Ui,
+    flyouts: &mut Flyouts,
+    cell: &egui::Response,
+    name: &str,
+    label: Option<&str>,
+    modes: Option<Flyout>,
+    place: Place,
+) -> bool {
+    let held = flyouts.held.as_deref() == Some(name);
     let tapped = cell.clicked() && !held;
-    if !cell.is_pointer_button_down_on() {
+    // A press that is too long for a click no longer counts as a press on
+    // a control that takes clicks only, so a held press is followed here.
+    let still = held
+        && ui.input(|i| {
+            i.pointer.primary_down()
+                && i.pointer
+                    .press_origin()
+                    .is_some_and(|p| cell.rect.contains(p))
+        });
+    if !cell.is_pointer_button_down_on() && !still {
         if held {
             flyouts.held = None;
         }
-        return tapped;
-    }
-    if held {
         return tapped;
     }
     let press = ui.input(|i| {
@@ -97,19 +202,167 @@ pub fn cell(
         let pos = i.pointer.interact_pos()?;
         Some((i.time - start, origin.distance(pos)))
     });
-    match press {
-        Some((held, moved)) if moved <= HOLD_SLOP && held >= HOLD_TIME => {
-            flyouts.held = Some(key);
-            flyouts.open = Some(key);
-            ui.ctx().request_repaint();
-        }
-        Some((held, moved)) if moved <= HOLD_SLOP => {
-            let wait = std::time::Duration::from_secs_f64(HOLD_TIME - held);
-            ui.ctx().request_repaint_after(wait);
+    let Some((time, _)) = press.filter(|&(_, moved)| moved <= HOLD_SLOP) else {
+        return tapped;
+    };
+    let open_at = if label.is_some() {
+        MODES_TIME
+    } else {
+        HOLD_TIME
+    };
+    let wait = |until: f64| {
+        let wait = std::time::Duration::from_secs_f64((until - time).max(0.0));
+        ui.ctx().request_repaint_after(wait);
+    };
+    if time < HOLD_TIME {
+        wait(HOLD_TIME);
+        return tapped;
+    }
+    if !held {
+        flyouts.held = Some(name.to_owned());
+        ui.ctx().request_repaint();
+    }
+    match (modes, label) {
+        (Some(key), _) if time >= open_at => flyouts.open = Some(key),
+        (modes, Some(label)) => {
+            flyouts.tip = Some(Tip {
+                name: label.to_owned(),
+                modes: modes.is_some(),
+                cell: cell.rect,
+                place,
+            });
+            if modes.is_some() {
+                wait(open_at);
+            }
         }
         _ => {}
     }
     tapped
+}
+
+/// The width of the space between a tooltip and the tool strip.
+const TIP_GAP: f32 = 8.0;
+/// The height of a tooltip.
+const TIP_HEIGHT: f32 = 40.0;
+
+/// The tooltip of the held cell or button: at the right of the tool
+/// strip, above the strip in the row layout, or above or below a button.
+/// With no such cell, the tooltip of a held cell of the controls of the
+/// tool column.
+pub fn tooltip(
+    ctx: &egui::Context,
+    backdrop: Option<wgpu::TextureFormat>,
+    flyouts: &mut Flyouts,
+    rects: &Rects,
+) {
+    let held = widgets::take_hold_label(ctx).map(|(name, cell)| Tip {
+        name,
+        modes: false,
+        cell,
+        place: Place::Strip,
+    });
+    let Some(tip) = flyouts.tip.clone().or(held) else {
+        return;
+    };
+    let width = |text: &str, font: egui::FontId| {
+        let galley = ctx.fonts_mut(|f| f.layout_no_wrap(text.to_owned(), font, theme::TEXT));
+        galley.size().x.ceil()
+    };
+    let name = width(&tip.name, theme::body());
+    let hint = if tip.modes {
+        10.0 + width(HOLD_HINT, theme::hint())
+    } else {
+        0.0
+    };
+    let size = vec2(14.0 + name + hint + 14.0, TIP_HEIGHT);
+    let screen = rects.screen.shrink2(vec2(geometry::MARGIN, 0.0));
+    let centered = |y: f32| {
+        let left = (tip.cell.center().x - size.x / 2.0)
+            .min(screen.right() - size.x)
+            .max(screen.left());
+        Rect::from_min_size(pos2(left, y), size)
+    };
+    // `above`: the point is at the bottom of the tooltip. `below`: it is at
+    // the top.
+    let (rect, point) = match tip.place {
+        Place::Strip if rects.row => (centered(rects.tools.top() - TIP_GAP - size.y), Side::Down),
+        Place::Strip => {
+            let min = pos2(
+                rects.tools.right() + TIP_GAP,
+                tip.cell.center().y - size.y / 2.0,
+            );
+            (Rect::from_min_size(min, size), Side::Left)
+        }
+        Place::Above => (centered(tip.cell.top() - TIP_GAP - size.y), Side::Down),
+        Place::Below => (centered(tip.cell.bottom() + TIP_GAP), Side::Up),
+    };
+    flyouts.tip_rect = Some(rect);
+    let radius = theme::CONTROL_RADIUS.into();
+    widgets::card(
+        ctx,
+        backdrop,
+        "pad-tooltip",
+        rect,
+        Order::Tooltip,
+        radius,
+        |ui| {
+            let painter = ui.painter();
+            // A small point toward the cell.
+            let x = tip
+                .cell
+                .center()
+                .x
+                .clamp(rect.left() + 12.0, rect.right() - 12.0);
+            let point = match point {
+                Side::Down => vec![
+                    pos2(x - 6.0, rect.bottom()),
+                    pos2(x + 6.0, rect.bottom()),
+                    pos2(x, rect.bottom() + 6.0),
+                ],
+                Side::Up => vec![
+                    pos2(x + 6.0, rect.top()),
+                    pos2(x - 6.0, rect.top()),
+                    pos2(x, rect.top() - 6.0),
+                ],
+                Side::Left => {
+                    let y = rect.center().y;
+                    vec![
+                        pos2(rect.left(), y - 6.0),
+                        pos2(rect.left(), y + 6.0),
+                        pos2(rect.left() - 6.0, y),
+                    ]
+                }
+            };
+            let fill = theme::card(backdrop.is_some());
+            painter.add(egui::Shape::convex_polygon(point, fill, egui::Stroke::NONE));
+            let at = pos2(rect.left() + 14.0, rect.center().y);
+            painter.text(
+                at,
+                Align2::LEFT_CENTER,
+                &tip.name,
+                theme::body(),
+                theme::TEXT,
+            );
+            if tip.modes {
+                let at = at + vec2(name + 10.0, 0.0);
+                painter.text(
+                    at,
+                    Align2::LEFT_CENTER,
+                    HOLD_HINT,
+                    theme::hint(),
+                    theme::MUTE,
+                );
+            }
+        },
+    );
+}
+
+/// The side of a tooltip with its point.
+#[derive(Clone, Copy)]
+enum Side {
+    Down,
+    Up,
+    Left,
 }
 
 /// The mark in the corner of a cell with a flyout.

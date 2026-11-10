@@ -1,0 +1,320 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<style>
+@font-face { font-family: UI; src: local("Ubuntu Light"), local("Ubuntu-Light"), url(../../../assets/fonts/NotoSans-Regular.ttf); }
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { width: 1194px; height: 834px; background: rgb(15,17,19); color: rgb(231,233,236);
+  font-family: UI, sans-serif; overflow: hidden; position: relative; }
+svg.i { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+.b { width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; color: rgb(174,181,190); flex: none; border-radius: 10px; position: relative; }
+.b.sm svg.i { width: 19px; height: 19px; }
+.b.on { background: rgba(255,255,255,.13); color: rgb(231,233,236); }
+.b.pin.on { background: none; color: rgb(69,196,168); }
+.b.pin.on svg.i { fill: rgba(69,196,168,.25); }
+.b.dim { opacity: .35; }
+.b.tri::after { content: ""; position: absolute; right: 7px; bottom: 7px; border: 2.5px solid transparent;
+  border-right-color: currentColor; border-bottom-color: currentColor; opacity: .7; }
+.b.press { background: rgba(255,255,255,.2); color: #fff; }
+
+/* Chrome on the edges: no outer margin, and only the inner corners are round. */
+.chrome { position: absolute; background: rgba(26,29,33,.92); backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px);
+  box-shadow: 0 4px 20px rgba(0,0,0,.35); z-index: 3; }
+.tl { left: 0; top: 28px; height: 52px; border-radius: 0 14px 14px 0; display: flex; align-items: center; padding: 0 4px; gap: 2px; }
+.tr { right: 0; top: 28px; height: 52px; border-radius: 14px 0 0 14px; display: flex; align-items: center; padding: 0 4px; gap: 2px; }
+.sep { width: 1px; height: 24px; background: rgba(255,255,255,.16); margin: 0 4px; }
+.seg { display: flex; gap: 2px; }
+.seg div { height: 40px; padding: 0 12px; border-radius: 10px; display: flex; align-items: center; font-size: 15px; color: rgb(174,181,190); }
+.seg div.on { background: rgba(255,255,255,.13); color: rgb(231,233,236); }
+/* The status bar of the system is 24 points high. */
+.status { position: absolute; left: 0; right: 0; top: 0; height: 24px; display: flex; align-items: center; justify-content: space-between; padding: 0 20px; font-size: 13px; z-index: 9; }
+/* The center menu floats. */
+.mid { position: absolute; left: 50%; top: 32px; transform: translateX(-50%); height: 44px; border-radius: 12px; background: rgba(26,29,33,.92);
+  display: flex; align-items: center; padding: 0 2px; gap: 2px; z-index: 3; box-shadow: 0 4px 20px rgba(0,0,0,.35); }
+.mid .seg div { height: 38px; }
+.mid .pg { padding: 0 8px; font-size: 15px; }
+.col { left: 0; width: 52px; border-radius: 0 14px 14px 0; display: flex; flex-direction: column; align-items: center; padding: 4px 0; gap: 4px; }
+.vsl { display: flex; flex-direction: column; align-items: center; gap: 4px; margin: 4px 0; }
+.vsl .val { font-size: 11.5px; color: rgb(231,233,236); }
+.vsl .tk { width: 28px; height: 120px; border-radius: 8px; background: rgba(255,255,255,.07); position: relative; overflow: hidden; }
+.vsl .tk div { position: absolute; left: 0; right: 0; bottom: 0; background: rgba(255,255,255,.26); border-top: 2px solid rgba(255,255,255,.9); }
+.foot { position: absolute; left: 50%; bottom: 8px; transform: translateX(-50%); height: 32px; border-radius: 10px; background: rgba(26,29,33,.92);
+  display: flex; align-items: center; padding: 0 12px; font-family: "DejaVu Sans Mono", monospace; font-size: 12.5px; color: rgb(174,181,190); z-index: 3; }
+
+.tip { position: absolute; z-index: 8; height: 40px; border-radius: 10px; background: rgb(44,48,54); box-shadow: 0 8px 24px rgba(0,0,0,.5);
+  display: flex; align-items: center; padding: 0 14px; font-size: 15px; gap: 10px; white-space: nowrap; }
+.tip::before { content: ""; position: absolute; left: -6px; top: 50%; width: 12px; height: 12px; margin-top: -6px; background: rgb(44,48,54); transform: rotate(45deg); border-radius: 2px; }
+.tip.r::before { left: auto; right: -6px; }
+.tip span { color: rgb(140,147,156); font-size: 13px; }
+
+/* The dock: one card on the right edge, with the panes in a column. */
+.card { right: 0; width: 340px; border-radius: 14px 0 0 14px; display: flex; flex-direction: column; }
+.pane { display: flex; flex-direction: column; overflow: hidden; flex: none; }
+.split { height: 14px; flex: none; display: flex; align-items: center; justify-content: center; border-top: 1px solid rgba(255,255,255,.08); }
+.split div { width: 36px; height: 4px; border-radius: 2px; background: rgba(255,255,255,.28); }
+.card.ghost { right: auto; border-radius: 14px; padding-bottom: 12px; opacity: .8; box-shadow: 0 18px 50px rgba(0,0,0,.6); transform: rotate(-1.2deg); z-index: 6; }
+.hd { height: 52px; flex: none; display: flex; align-items: center; padding: 4px 4px 0 14px; position: relative; gap: 2px; }
+.hd .t { flex: 1; font-size: 16px; white-space: nowrap; display: flex; align-items: center; gap: 10px; min-width: 0; }
+.hd .t svg.i { color: rgb(174,181,190); width: 20px; height: 20px; }
+.hd .sub { font-size: 13px; color: rgb(140,147,156); margin-right: 4px; white-space: nowrap; }
+.tabs { flex: 1; display: flex; gap: 4px; min-width: 0; margin-left: -6px; }
+.tabs div { height: 40px; min-width: 44px; padding: 0 11px; border-radius: 10px; display: flex; align-items: center; justify-content: center; gap: 8px; font-size: 15px; color: rgb(174,181,190); white-space: nowrap; }
+.tabs div svg.i { width: 20px; height: 20px; }
+.tabs div.on { background: rgba(255,255,255,.13); color: rgb(231,233,236); padding: 0 14px 0 12px; }
+.tabs div.lift { opacity: .25; }
+.body { flex: 1; overflow: hidden; position: relative; min-height: 0; }
+.body::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 28px; background: linear-gradient(rgba(26,29,33,0), rgba(26,29,33,.95)); }
+.bar { position: absolute; right: 3px; width: 4px; border-radius: 2px; background: rgba(255,255,255,.35); z-index: 2; }
+.grip { position: absolute; width: 22px; height: 22px; color: rgba(255,255,255,.4); z-index: 4; transform: scaleX(-1); }
+.grip svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; }
+/* The handle on the left edge of the dock changes its width. */
+.edge { position: absolute; width: 6px; height: 48px; background: rgba(255,255,255,.4); border-radius: 3px; z-index: 4; }
+.edge.on { background: rgb(69,196,168); box-shadow: 0 0 0 4px rgba(69,196,168,.25); }
+
+.r { height: 48px; display: flex; align-items: center; padding: 0 8px 0 16px; font-size: 15px; flex: none; }
+.r .n { flex: 1; margin-left: 14px; white-space: nowrap; }
+.r .n.k { margin-left: 0; }
+.r .v { color: rgb(174,181,190); font-size: 15px; }
+.r.sel { background: rgba(69,196,168,.16); margin: 0 8px; border-radius: 10px; padding-left: 8px; padding-right: 0; }
+.thumb { width: 34px; height: 26px; border-radius: 6px; background: rgba(0,0,0,.3); border: 1px solid rgba(255,255,255,.08); display: flex; align-items: center; justify-content: center; color: rgb(174,181,190); flex: none; }
+.thumb svg.i { width: 18px; height: 18px; }
+.gl { padding: 12px 16px 6px; font-size: 12.5px; color: rgb(140,147,156); text-transform: uppercase; letter-spacing: .04em; flex: none; }
+.hint { padding: 2px 16px 4px; font-size: 15px; color: rgb(174,181,190); }
+.step { display: flex; align-items: center; height: 36px; border-radius: 10px; background: rgba(0,0,0,.4); font-size: 14px; margin-right: 8px; }
+.step span { width: 36px; text-align: center; color: rgb(174,181,190); font-size: 17px; }
+.step b { font-weight: normal; min-width: 76px; text-align: center; }
+.sw { width: 44px; height: 26px; border-radius: 13px; background: rgb(69,196,168); position: relative; margin-right: 8px; flex: none; }
+.sw::after { content: ""; position: absolute; right: 3px; top: 3px; width: 20px; height: 20px; border-radius: 10px; background: #fff; }
+.sw.no { background: rgba(255,255,255,.18); } .sw.no::after { right: auto; left: 3px; }
+.fld { padding: 0 16px; flex: none; }
+.fld .k { font-size: 12.5px; color: rgb(140,147,156); margin: 8px 0 6px; }
+.fld .in { height: 40px; border-radius: 10px; background: rgba(0,0,0,.4); display: flex; align-items: center; padding: 0 12px; font-size: 15px; }
+.sample { font-family: serif; font-size: 13px; letter-spacing: .02em; color: rgb(140,147,156); margin-left: 10px; }
+
+/* The Panels menu hangs from the right edge below the top row. */
+.menu { position: absolute; right: 0; border-radius: 16px 0 0 16px; background: rgb(38,41,46); box-shadow: 0 12px 40px rgba(0,0,0,.55); z-index: 7; padding: 8px 12px 12px; }
+.menu .gl { padding: 8px 4px; }
+.tiles { display: grid; grid-template-columns: repeat(4, 84px); gap: 8px; }
+.tile { height: 80px; border-radius: 12px; background: rgba(255,255,255,.05); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
+  font-size: 13px; color: rgb(174,181,190); position: relative; }
+.tile svg.i { width: 24px; height: 24px; }
+.tile.open { background: rgba(69,196,168,.16); color: rgb(231,233,236); }
+.tile.open svg.i { color: rgb(69,196,168); }
+.tile .pb { position: absolute; right: 6px; top: 6px; color: rgb(69,196,168); }
+.tile .pb svg.i { width: 14px; height: 14px; fill: rgba(69,196,168,.3); }
+.tile.off { opacity: .35; }
+.mfoot { display: flex; gap: 8px; margin-top: 12px; }
+.mfoot div { flex: 1; height: 44px; border-radius: 12px; background: rgba(255,255,255,.07); display: flex; align-items: center; justify-content: center; font-size: 15px; }
+
+.globe { position: absolute; width: 604px; height: 604px; border-radius: 50%; overflow: hidden;
+  background: url(../pad-layout/assets/globe.png) no-repeat; background-size: 1194px 834px; background-position: -294.5px -114.5px; }
+.page { position: absolute; background: #fff; box-shadow: 0 2px 16px rgba(0,0,0,.45); }
+.frame { position: absolute; left: 6%; top: 8%; right: 6%; bottom: 8%; border: 1px solid #333;
+  background: url(../pad-layout/assets/map.png) no-repeat 50% 50%/100% auto; }
+.frame.sel { outline: 2px solid rgb(69,196,168); outline-offset: 2px; }
+.h { position: absolute; width: 11px; height: 11px; background: #fff; border: 2px solid rgb(69,196,168); border-radius: 2px; z-index: 2; }
+
+.zone { position: absolute; border-radius: 12px; border: 2px dashed rgba(69,196,168,.8); background: rgba(69,196,168,.12); z-index: 5;
+  display: flex; align-items: center; justify-content: center; font-size: 13px; color: rgb(140,220,200); }
+.zone.hot { background: rgba(69,196,168,.3); border-style: solid; color: #fff; }
+.note { position: absolute; z-index: 8; font-size: 12.5px; color: rgb(15,17,19); background: rgb(242,184,92); border-radius: 7px; padding: 3px 8px; white-space: nowrap; }
+.dot { position: absolute; width: 10px; height: 10px; border-radius: 5px; background: rgb(242,184,92); z-index: 8; box-shadow: 0 0 0 3px rgba(15,17,19,.6); }
+</style></head>
+<body>
+<script>
+const P = {
+  Pin: "M9 3h6l-1 6 3.5 3.5h-11L10 9zM12 12.5V21",
+  Close: "M6 6l12 12M18 6L6 18", Open: "M9 6l6 6-6 6", Back: "M15 6l-6 6 6 6", Plus: "M12 5v14M5 12h14",
+  Undo: "M8 5L3 10l5 5M3 10h11c3.04 0 5.5 2.46 5.5 5.5s-2.46 5.5-5.5 5.5h-3",
+  Redo: "M16 5l5 5-5 5M21 10H10c-3.04 0-5.5 2.46-5.5 5.5s2.46 5.5 5.5 5.5h3",
+  Eye: "M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z", Polygon: "M5 7l8-3 6 6-3 9-9-1z", Line: "M4 18c4-10 8 2 16-12",
+  Layers: "M12 4l9 5-9 5-9-5zM3 14l9 5 9-5", Toolbox: "M4 9h16v10H4zM9 9V6h6v3M4 14h16",
+  Attributes: "M5 3h14v18H5zM8 8h8M8 12h8M8 16h5", Maps: "M3 6l6-2 6 2 6-2v14l-6 2-6-2-6 2zM9 4v14M15 6v14",
+  Frame: "M6 6h12v12H6zM3 3h4v4H3zM17 3h4v4h-4zM3 17h4v4H3zM17 17h4v4h-4z",
+  Projection: "M3 12a9 6 0 1 0 18 0a9 6 0 1 0 -18 0M12 6v12M3 12h18M6.5 7.5c1.5 3 1.5 6 0 9M17.5 7.5c-1.5 3-1.5 6 0 9",
+  Labels: "M3 12V4h8l10 10-8 8zM7.5 8.5h.01", Brush: "M5 4v16M12 4v16M19 4v16",
+  Pages: "M7 3h10v14H7zM4 7v14h10",
+  LayoutGrid: "M4 4h16v16h-16zM4 9.33h16M4 14.67h16M9.33 4v16M14.67 4v16",
+  Panels: "M3 4h18v16H3zM3 9h18M10 9v11",
+  World: "M12 3c4.97 0 9 4.03 9 9s-4.03 9-9 9-9-4.03-9-9 4.03-9 9-9zM12 3c2.5 2.5 3.5 5.5 3.5 9s-1 6.5-3.5 9c-2.5-2.5-3.5-5.5-3.5-9s1-6.5 3.5-9zM3 12h18",
+  Graticule: "M12 3c4.97 0 9 4.03 9 9s-4.03 9-9 9-9-4.03-9-9 4.03-9 9-9zM12 3v18M3 12h18",
+  Raise: "M3 18c4 0 5-11 9-11s5 11 9 11", Carve: "M3 7c4 0 5 9 9 9s5-9 9-9M12 16v5",
+  Select: "M5 3l14 8-6 2-2 6z", Move: "M12 3v18M3 12h18M12 3l-3 3M12 3l3 3M12 21l-3-3M12 21l3-3M3 12l3-3M3 12l3 3M21 12l-3-3M21 12l-3 3",
+  Measure: "M3 17L17 3l4 4L7 21zM7 13l2 2M10 10l3 3M13 7l2 2",
+};
+const C = { Eye: [[12,12,3]], Point: [[12,12,3]], Brush: [[5,9,2],[12,15,2],[19,8,2]] };
+const ic = n => `<svg class="i" viewBox="0 0 24 24"><path d="${P[n]||""}"/>${(C[n]||[]).map(c=>`<circle cx="${c[0]}" cy="${c[1]}" r="${c[2]}"/>`).join("")}</svg>`;
+const b = (n, cls="") => `<div class="b ${cls}">${ic(n)}</div>`;
+const seg = (items, on) => `<div class="seg">${items.map(t => `<div class="${t === on ? "on" : ""}">${t}</div>`).join("")}</div>`;
+
+const screen = location.hash.slice(1) || "globe-pinned";
+const atlas = screen.startsWith("atlas");
+const menuOpen = screen.endsWith("-menu");
+const DW = screen === "globe-wide" ? 460 : 340;   // width of the dock
+const brush = ["globe-tooltip", "globe-tabs", "globe-full", "anatomy"].includes(screen);   // the Raise brush is the tool
+let h = "";
+
+// Canvas.
+const CX = 597;
+if (!atlas) {
+  h += `<div class="globe" style="left:${CX - 302}px;top:${456 - 302}px;transform:scale(1.22)"></div>`;
+} else {
+  const L = 76, T = 150, W = 760, H = W * 210 / 297, sel = screen !== "atlas-empty";
+  h += `<div class="page" style="left:${L}px;top:${T}px;width:${W}px;height:${H}px"><div class="frame ${sel ? "sel" : ""}"></div></div>`;
+  const fl = L + W * .06, ft = T + H * .08, fr = L + W * .94, fb = T + H * .92;
+  if (sel) for (const [x, y] of [[fl, ft], [fr, ft], [fl, fb], [fr, fb], [(fl + fr) / 2, ft], [(fl + fr) / 2, fb], [fl, (ft + fb) / 2], [fr, (ft + fb) / 2]])
+    h += `<div class="h" style="left:${x - 7.5}px;top:${y - 7.5}px"></div>`;
+}
+
+h += `<div class="status"><div>9:41  Mon 9 Nov</div><div>100% ▮</div></div>`;
+
+// Top row, below the status bar: the world menu at the top left corner, the center menu, and undo, redo, and Panels at the top right corner.
+h += `<div class="chrome tl">${b("World")}<div class="sep"></div>${seg(["World", "Atlas"], atlas ? "Atlas" : "World")}</div>`;
+h += atlas
+  ? `<div class="mid">${b("Back")}<div class="pg">Page 1</div>${b("Open")}</div>`
+  : `<div class="mid">${seg(["Globe", "Flat"], "Globe")}<div class="sep"></div>${b("Graticule")}</div>`;
+h += `<div class="chrome tr">${b("Undo")}${b("Redo", "dim")}<div class="sep"></div>${atlas ? b("LayoutGrid") + b("Plus") + `<div class="sep"></div>` : ""}${b("Panels", menuOpen ? "on" : "")}</div>`;
+h += `<div class="foot">${atlas ? "297 × 210 mm · 1 / 1" : "0 ──── 2000 km"}</div>`;
+
+// Tool strip on the left edge: icons only. The context strip of the tool is below it.
+const TOP = 88;   // top of the strips and of the panel column, below the top row
+const tools = atlas ? [["Select", "on"], ["Move"], ["Measure"]]
+  : [["Raise", "tri" + (brush ? " on" : "")], ["Carve", "tri" + (screen === "globe-tooltip" ? " press" : "")], ["Line", "dim"], ["Select"], ["Move", brush ? "" : "on"], ["Measure"]];
+h += `<div class="chrome col" style="top:${TOP}px">${tools.map(([n, c]) => b(n, c || "")).join("")}</div>`;
+if (brush) {
+  const vsl = (v, f) => `<div class="vsl"><div class="val">${v}</div><div class="tk"><div style="height:${f}%"></div></div></div>`;
+  h += `<div class="chrome col" style="top:${TOP + 6 * 48 + 8 + 8}px">${vsl("120 km", 38)}${vsl("72 %", 72)}${b("Brush")}</div>`;
+}
+if (screen === "globe-tooltip") h += `<div class="tip" style="left:62px;top:${TOP + 4 + 48 + 2}px">Carve<span>Hold to change mode</span></div>`;
+
+// Parts of a panel. A tab shows its icon, and the open tab also shows its name.
+const pin = on => b("Pin", "sm pin" + (on ? " on" : ""));
+// In a wide dock, each tab shows its name.
+const tabEl = ([name, on, lift]) => `<div class="${on ? "on" : ""} ${lift ? "lift" : ""}">${ic(name)}${on || DW >= 420 ? name : ""}</div>`;
+const hd = (title, { pinned = false, tabs = null, sub = "", extra = "" } = {}) =>
+  `<div class="hd">${tabs ? `<div class="tabs">${tabs.map(tabEl).join("")}</div>` : `<div class="t">${ic(title)}${title}</div>`}${sub ? `<div class="sub">${sub}</div>` : ""}${extra}${pin(pinned)}${b("Close", "sm")}</div>`;
+// The panes sit in one dock on the right edge. Each pane returns its top, and the dock is drawn at the end.
+const SPLIT = 14;
+let y = TOP;
+const panes = [];
+const card = (inner, hgt) => { const top = y; panes.push(`<div class="pane" style="height:${hgt}px">${inner}</div>`); y = top + hgt + SPLIT; return top; };
+const corner = () => {};
+
+// Content.
+const lr = (k, name, sel) => `<div class="r ${sel ? "sel" : ""}"><div class="thumb" style="${k === "r" ? "background:linear-gradient(135deg,#3b4a5a,#8a9a6a 45%,#b9a37e 70%,#eee)" : ""}">${k === "r" ? "" : ic(k)}</div><div class="n">${name}</div>${b("Eye")}</div>`;
+const r = (name, ctl) => `<div class="r"><div class="n k">${name}</div>${ctl}</div>`;
+const step = v => `<div class="step"><span>−</span><b>${v}</b><span>+</span></div>`;
+const fld = (k, v) => `<div class="fld"><div class="k">${k}</div><div class="in">${v}</div></div>`;
+const worldLayers = sel => lr("r", "Height") + lr("Polygon", "Land") + lr("Line", "Rivers") + lr("Point", "Places", sel);
+const attrs = fld("Name", "Paris") + fld("Population", "2 102 650") + `<div style="height:6px"></div>` + r("Capital", `<div class="sw"></div>`);
+const frameBody = r("Map", `<div class="v">World</div>${b("Open")}`) + r("Scale", step("1 : 60 M")) + r("Rotation", step("0°"))
+  + `<div class="gl">Edges</div>` + r("Neatline", `<div class="sw"></div>`) + r("Border", `<div class="sw no"></div>`) + r("Edge labels", `<div class="sw"></div>`);
+const projBody = r("Projection", `<div class="v">Robinson</div>${b("Open")}`) + r("Center", step("0°, 0°"))
+  + `<div class="gl">Graticule</div>` + r("Show graticule", `<div class="sw"></div>`) + r("Interval", step("30°"));
+const lab = (name, on, sample) => `<div class="r"><div class="thumb">${ic("Labels")}</div><div class="n">${name}<span class="sample">${sample}</span></div><div class="sw ${on ? "" : "no"}"></div></div>`;
+const labelsBody = r("Show labels", `<div class="sw"></div>`) + `<div class="gl">Classes</div>`
+  + lab("Capitals", true, "PARIS") + lab("Cities", true, "Lyon") + lab("Rivers", true, "Rhône") + lab("Seas", false, "Atlantic");
+const HD = 52, PAD = 14, ROW = 48, GL = 40;
+const layersH = HD + 4 * ROW + PAD, attrsH = HD + 2 * 86 + 6 + ROW + PAD;
+
+// The Panels menu: a tile for each panel of the workspace. A tinted tile is open, and a pin marks a pinned panel.
+const tile = (name, st = "") => `<div class="tile ${st.includes("o") ? "open" : ""} ${st.includes("x") ? "off" : ""}">${st.includes("p") ? `<div class="pb">${ic("Pin")}</div>` : ""}${ic(name)}${name}</div>`;
+const menu = groups => `<div class="menu" style="top:${TOP}px">${groups.map(([g, ts]) => `<div class="gl">${g}</div><div class="tiles">${ts.map(t => tile(...t)).join("")}</div>`).join("")}
+  <div class="mfoot"><div>Close all</div><div>Reset layout</div></div></div>`;
+
+if (screen === "globe-menu") {
+  card(hd("Layers", { pinned: true, extra: b("Plus", "sm") }) + worldLayers(true), layersH);
+  h += menu([["World", [["Layers", "op"], ["Attributes"], ["Toolbox"], ["Brush"]]]]);
+}
+if (screen === "atlas-menu") {
+  h += menu([["Selection", [["Frame", "op"], ["Projection", "op"], ["Layers"], ["Labels", "op"]]],
+             ["Atlas", [["Pages"], ["Maps"], ["Attributes"], ["Brush", "x"]]]]);
+}
+
+if (screen === "globe-tooltip") {
+  card(hd("Layers", { pinned: true, extra: b("Plus", "sm") }) + worldLayers(false), layersH);
+}
+
+if (screen === "globe-pinned") {
+  // Layers and Attributes pinned, one below the other.
+  const t = card(hd("Layers", { pinned: true, extra: b("Plus", "sm") }) + worldLayers(true), layersH);
+  corner(t, layersH);
+  card(hd("Attributes", { pinned: true, sub: "Places" }) + attrs, attrsH);
+}
+
+if (screen === "globe-full") {
+  // The dock is as tall as the screen allows. The panes share its height, and each one scrolls its content.
+  const avail = 834 - 8 - TOP - 2 * SPLIT;   // three panes and two bars
+  const brushH = HD + 3 * ROW + PAD, rest = avail - brushH, l = Math.round(rest * .55), a = rest - l;
+  const scroll = (body, top, frac) => `<div class="body">${body}<div class="bar" style="top:${top}%;height:${frac}%"></div></div>`;
+  const more = lr("Polygon", "Forests") + lr("Polygon", "Lakes") + lr("Line", "Roads") + lr("Line", "Borders") + lr("Point", "Ruins");
+  card(hd("Layers", { pinned: true, extra: b("Plus", "sm") }) + scroll(worldLayers(true) + more, 4, 42), l);
+  card(hd("Attributes", { pinned: true, sub: "Places" }) + scroll(attrs + fld("Founded", "−250") + fld("Region", "Île-de-France"), 0, 55), a);
+  card(hd("Brush", { pinned: true }) + r("Size", step("120 km")) + r("Flow", step("72 %")) + r("Pressure", `<div class="sw"></div>`), brushH);
+}
+
+if (screen === "globe-wide") {
+  // The dock is wider. Each tab shows its name.
+  card(hd("", { pinned: true, tabs: [["Layers", true], ["Toolbox"], ["Brush"]] }) + worldLayers(true), layersH);
+  card(hd("Attributes", { pinned: true, sub: "Places" }) + attrs, attrsH);
+}
+
+if (screen === "globe-tabs") {
+  // Layers, Toolbox, and Attributes as tabs of one panel, and the Brush panel below it.
+  const t = card(hd("", { pinned: true, tabs: [["Layers", true], ["Toolbox"], ["Attributes"]] }) + worldLayers(true), layersH);
+  corner(t, layersH);
+  card(hd("Brush") + r("Size", step("120 km")) + r("Flow", step("72 %")) + r("Pressure", `<div class="sw"></div>`), HD + 3 * ROW + PAD);
+}
+
+if (screen === "globe-drag") {
+  // The Attributes tab moves out of its panel. It can join the tabs of a panel or take a place in the column.
+  card(hd("", { pinned: true, tabs: [["Layers", true], ["Toolbox"], ["Attributes", false, true]] }) + worldLayers(true), layersH);
+  h += `<div class="zone" style="right:96px;top:${TOP + 8}px;width:236px;height:44px"></div><div class="zone" style="right:${340 + 8}px;top:${TOP + 14}px;width:110px;height:32px;border-style:solid">Add as tab</div>`;
+  h += `<div class="zone hot" style="right:0;top:${y - SPLIT + 4}px;width:340px;height:${attrsH}px">Place here</div>`;
+  h += `<div class="chrome card ghost" style="left:${1194 - 340 - 300}px;top:${y + 170}px">${hd("Attributes", { sub: "Places" }) + attrs}</div>`;
+}
+
+if (screen === "atlas-tabs") {
+  // A selected frame opens its four panels as one panel with four tabs, on the tab of the last time.
+  card(hd("", { tabs: [["Frame", true], ["Projection"], ["Layers"], ["Labels"]] }) + frameBody, HD + 6 * ROW + GL + PAD);
+}
+
+if (screen === "atlas-split") {
+  // Frame, Projection, and Layers as tabs of one panel, and Labels below it.
+  const ph = HD + 4 * ROW + GL + PAD;
+  const t = card(hd("", { pinned: true, tabs: [["Frame"], ["Projection", true], ["Layers"]] }) + projBody, ph);
+  corner(t, ph);
+  card(hd("Labels", { pinned: true, sub: "World" }) + labelsBody, HD + 5 * ROW + GL + PAD);
+}
+
+if (screen === "atlas-empty") {
+  // Pinned panels stay with no selection and wait for a frame.
+  card(hd("", { pinned: true, tabs: [["Frame"], ["Projection", true], ["Layers"]] }) + `<div class="hint">Select a map frame to see its projection.</div>`, HD + 34 + PAD);
+  card(hd("Labels", { pinned: true }) + `<div class="hint">Select a map frame to see its labels.</div>`, HD + 34 + PAD);
+}
+
+if (screen === "anatomy") {
+  // One panel with the names of its parts.
+  const t = card(hd("", { pinned: true, tabs: [["Layers", true], ["Toolbox"]] }) + worldLayers(false), layersH);
+  card(hd("Attributes", { pinned: true, sub: "Places" }) + attrs, attrsH);
+  const x = 1194 - 340;
+  const n = (px, py, t, dx, dy) => `<div class="dot" style="left:${px - 5}px;top:${py - 5}px"></div><div class="note" style="left:${px + dx}px;top:${py + dy}px">${t}</div>`;
+  h += n(x + 200, t + 28, "Empty part of the header: drag to move the pane", -560, -40);
+  h += n(x + 22, t + 50, "Open tab: icon and name", -260, -10);
+  h += n(x + 150, t + 50, "Other tabs: icon only. Drag one out to move it", -400, 24);
+  h += n(x + 272, t + 30, "Pin", -24, 30);
+  h += n(x + 316, t + 30, "Close", -46, 62);
+  h += n(x + 1, t + 126, "Handle: drag to change the width of the dock", -340, -10);
+  h += n(x + 170, t + layersH + 7, "Bar: drag to change the heights of the panes", -520, -10);
+  h += n(26, TOP + 26, "Hold a tool to see its name", 34, -10);
+  h += n(26, TOP + 6 * 48 + 30, "Context strip of the tool", 34, -10);
+}
+
+if (panes.length) {
+  const dh = y - SPLIT - TOP;
+  h += `<div class="edge ${screen === "globe-wide" ? "on" : ""}" style="right:${DW - 3}px;top:${TOP + dh / 2 - 24}px"></div>`;
+  if (screen === "globe-wide") h += `<div class="tip r" style="right:${DW + 22}px;top:${TOP + dh / 2 - 20}px;font-family:'DejaVu Sans Mono',monospace;font-size:13px">${DW} pt</div>`;
+}
+if (panes.length) h += `<div class="chrome card" style="top:${TOP}px;width:${DW}px">${panes.join(`<div class="split"><div></div></div>`)}</div>`;
+document.body.insertAdjacentHTML("beforeend", h);
+</script>
+</body></html>
