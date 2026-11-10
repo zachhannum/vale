@@ -134,7 +134,7 @@ const FINE_CELLS: usize = 1024;
 /// The number of erosion steps of each finer level, the erodibility, and the
 /// largest cut of one step, as a part of the rough ground of the level.
 const FINE_STEPS: usize = 4;
-const ERODE: f64 = 1.0;
+const ERODE: f64 = 0.1;
 const CARVE: f64 = 3.0;
 
 /// A pit fills if it is this many times the rough ground of its level deep
@@ -1918,16 +1918,8 @@ mod tests {
 
     #[test]
     fn the_relief_follows_the_old_ground_across_mountains_and_lowlands() {
-        // Mountains 2,000 m high in the west and lowlands in the east.
         let n = 512;
-        let mut map = ground_of(n);
-        for y in 0..n {
-            for x in 0..n {
-                let (lon, _) = dir_to_lonlat(map.texel_dir(0, x, y));
-                let range = 2000.0 * smoothstep((-lon - 2.0) / 8.0);
-                map.set(0, x, y, level(150.0 + range));
-            }
-        }
+        let map = mountains_of(n);
         let spec = BasinSpec {
             height: 300.0 / METERS_PER_LEVEL,
             ..spec(2.0, 7)
@@ -1958,6 +1950,57 @@ mod tests {
         let (old_top, new_top) = (top(&map), top(&after));
         let kept = (new_top - 150.0) / (old_top - 150.0);
         assert!(kept > 0.65, "{old_top} m, {new_top} m");
+    }
+
+    /// Mountains 2,000 m high in the west and lowlands in the east.
+    fn mountains_of(n: usize) -> Heightmap {
+        let mut map = ground_of(n);
+        for y in 0..n {
+            for x in 0..n {
+                let (lon, _) = dir_to_lonlat(map.texel_dir(0, x, y));
+                let range = 2000.0 * smoothstep((-lon - 2.0) / 8.0);
+                map.set(0, x, y, level(150.0 + range));
+            }
+        }
+        map
+    }
+
+    /// The number of valleys for each degree along lines of latitude from
+    /// `lon.0` to `lon.1`, a quarter of a degree apart, from `lat.0` to
+    /// `lat.1`. A valley is a texel that is lower than the 2 texels to each
+    /// side of it.
+    fn valleys(map: &Heightmap, lon: (f64, f64), lat: (f64, f64)) -> f64 {
+        let step = 90.0 / map.face_size() as f64;
+        let count = ((lon.1 - lon.0) / step) as usize;
+        let (mut valleys, mut length) = (0, 0.0);
+        let mut y = lat.0;
+        while y <= lat.1 {
+            let h: Vec<u16> = (0..count)
+                .map(|k| map.sample(lonlat_to_dir(lon.0 + k as f64 * step, y)))
+                .collect();
+            valleys += (2..count - 2)
+                .filter(|&k| {
+                    h[k - 2..k]
+                        .iter()
+                        .chain(&h[k + 1..k + 3])
+                        .all(|&v| v > h[k])
+                })
+                .count();
+            length += lon.1 - lon.0;
+            y += 0.25;
+        }
+        valleys as f64 / length
+    }
+
+    #[test]
+    fn the_slopes_have_no_rills() {
+        // The streams north of the main river go south. With a rill down each
+        // line of texels, the count is about 1.6.
+        let n = 2048;
+        let line = line_of(n, spec(2.0, 7), -20.0, 20.0, 2.0);
+        let map = apply(&ground_of(n), &basin(&ground_of(n), &line));
+        let density = valleys(&map, (-15.0, 15.0), (2.0, 5.0));
+        assert!(density < 1.4, "{density} valleys for each degree");
     }
 
     #[test]
@@ -2395,7 +2438,8 @@ mod tests {
     }
 
     /// Writes a hillshade of a basin to `target/basin-<n>.pgm`, on a grid of
-    /// longitude and latitude. `N`, `SEED`, `FROM`, `TO`, and `Z` set the
+    /// longitude and latitude. With `DEM`, the picture shows the height from
+    /// black at sea level to white at that many meters, with no shade. `N`, `SEED`, `FROM`, `TO`, and `Z` set the
     /// face size, the seed, the ends of the line, and the relief.
     #[test]
     #[ignore = "manual"]
@@ -2467,6 +2511,18 @@ mod tests {
             f64::from(after.sample(lonlat_to_dir(lon, lat))) * METERS_PER_LEVEL
         };
         let texel_m = step.to_radians() * 6_371_000.0;
+        if var("DEM", 0.0) > 0.0 {
+            let top = var("DEM", 2500.0);
+            let mut out = format!("P5 {w} {h} 255\n").into_bytes();
+            for y in 0..h {
+                for x in 0..w {
+                    let m = at(x, y) + crate::cube::ELEV_MIN;
+                    out.push(((m / top).clamp(0.0, 1.0) * 255.0) as u8);
+                }
+            }
+            std::fs::write(format!("../../target/basin-{n}.pgm"), out).unwrap();
+            return;
+        }
         let mut out = format!("P5 {w} {h} 255\n").into_bytes();
         for y in 0..h {
             for x in 0..w {
