@@ -76,6 +76,9 @@ pub struct Args {
     /// With --layout pad: open the Panels menu.
     #[arg(long)]
     pub panels_menu: bool,
+    /// With --layout pad: open the View popover of the readout.
+    #[arg(long)]
+    pub view_menu: bool,
     /// Open the form of a new raster layer.
     #[arg(long)]
     pub raster_form: bool,

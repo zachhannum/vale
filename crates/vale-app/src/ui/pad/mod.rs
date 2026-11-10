@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use eframe::egui::{self, Order, Rect, pos2, vec2};
-use vale_sphere::{LonLat, ProjectionKind, ProjectionSpec};
+use vale_sphere::LonLat;
 use vale_store::{GeometryKind, ImageId, Layer, LayerId, LayerKind, RasterId};
 use vale_terrain::Mode;
 
@@ -13,7 +13,8 @@ use super::atlas::{AtlasTool, FrameTab};
 use super::raster_form::{self, RasterForm};
 use super::select;
 use super::world_form::{self, WorldForm};
-use super::{Action, AppState, Note, SaveMark, Workspace, globe, is_height, panels};
+use super::{Action, AppState, Note, Workspace, globe, is_height, panels};
+use crate::globe::Tool;
 use crate::globe::brush::{
     BASIN_DENSITY, CHANNEL_KM, EROSION, FLOODPLAIN_WIDTH_KM, FLOW, NOISE_GRAIN, NOISE_M,
     RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM,
@@ -24,7 +25,6 @@ use crate::globe::brush::{BrushSettings, brush_radius};
 use crate::globe::combine::PolygonMode;
 use crate::globe::line::{DEFAULT_SMOOTHING, LineSettings};
 use crate::globe::snap;
-use crate::globe::{Tool, WorldView};
 use crate::session::{WorldFile, worlds_of};
 use crate::world;
 
@@ -53,6 +53,7 @@ pub mod panes;
 pub mod point_card;
 pub mod popover;
 pub mod raster;
+pub mod readout;
 pub mod rules;
 pub mod selectable;
 pub mod swipe;
@@ -64,8 +65,8 @@ pub mod widgets;
 
 use flyout::{Choice, Flyout, Flyouts};
 use geometry::{
-    BrushCard, CELL, ColumnInput, Input, MEASURE_CELLS, PAD, ROW, Rects, SELECT_CELLS, TOOLS,
-    TOUCH, VERTEX_CELLS, WidthClass,
+    BrushCard, CELL, ColumnInput, Input, MEASURE_CELLS, PAD, Rects, SELECT_CELLS, TOOLS, TOUCH,
+    VERTEX_CELLS, WidthClass,
 };
 use icons::Icon;
 use number::{Number, Scale};
@@ -272,8 +273,6 @@ pub fn mode_face(mode: Mode) -> (&'static str, Icon) {
 pub const WORLD_PROPERTIES: &str = "World properties";
 /// The row of the menu of the worlds that saves the open project.
 pub const SAVE: &str = "Save";
-/// The side of the save mark in the readout.
-const SAVE_MARK: f32 = 14.0;
 /// The button that opens the menu of the worlds.
 pub const WORLDS: &str = "Worlds";
 /// The row of the workspace menu that opens the menu of the worlds.
@@ -476,8 +475,23 @@ pub struct PadState {
     pub projections: bool,
     /// The list of the projections in the last frame.
     pub projections_rect: Option<Rect>,
-    /// The card of the view buttons of the readout in the last frame.
+    /// The card of the View button and the scale bar of the readout in the
+    /// last frame.
     pub view_rect: Option<Rect>,
+    /// The View button of the readout in the last frame.
+    view_button: Option<Rect>,
+    /// The View popover is open.
+    pub view_menu: bool,
+    /// The View popover in the last frame.
+    pub view_menu_rect: Option<Rect>,
+    /// The card of the place above the readout in the last frame.
+    pub place_rect: Option<Rect>,
+    /// A finger, the pen, or the mouse button is down on the canvas.
+    pub canvas_down: bool,
+    /// The last time that `canvas_down` was true.
+    last_down: Option<std::time::Instant>,
+    /// The banner of a save that failed in the last frame.
+    pub save_banner: Option<Rect>,
     /// The label at the end of the scale bar of the readout in the last
     /// frame.
     pub readout_scale: Option<String>,
@@ -596,20 +610,21 @@ pub const LAYERS: &str = "Layers";
 pub const PANELS: &str = "Panels";
 /// The button that hides and shows the dock.
 pub const DOCK: &str = "Dock";
-/// The buttons of the globe and of the flat view, in the readout.
+/// The button of the readout that opens the View popover.
+pub const VIEW: &str = "View";
+/// The segments of the globe and of the flat view, in the View popover.
 pub const VIEWS: [&str; 2] = ["Globe", "Flat"];
 /// The action that makes the place at the middle of the canvas the center of
 /// the projection of the flat view.
 pub const RECENTER: &str = "Recenter";
 /// The action that puts the center of the projection and the view back.
-pub const RESET: &str = "Reset";
-/// The control that opens the list of the projections.
+pub const RESET: &str = "Reset view";
+/// The row that opens the list of the projections.
 pub const PROJECTION: &str = "Projection";
-/// The button of the readout that shows the graticule.
+/// The switch of the View popover that shows the graticule.
 pub const GRATICULE: &str = "Graticule";
 /// The width of the space of a divider in a row of buttons.
 pub(super) const DIVIDER: f32 = 9.0;
-const WORLD_VIEWS: [WorldView; 2] = [WorldView::Globe, WorldView::Flat];
 
 /// The text of the position readout.
 /// `value` is the value of the raster layer at the place, with its unit.
@@ -650,7 +665,6 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     });
 
     let class = WidthClass::of(screen.width());
-    let flat = state.globe.world_view == WorldView::Flat;
     let mut input = Input {
         screen,
         bands,
@@ -714,15 +728,9 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     rules::picker_frame(&ctx, state);
     raster::reset_card(&ctx, state, &mut controls, &rects);
     raster::ramp_card(&ctx, state, &mut controls, &rects);
-    readout(&ctx, state, &mut controls, &rects);
+    readout::readout(&ctx, state, &mut controls, &rects);
     held_card(&ctx, state, &mut controls, &rects);
-    state.pad.projections_rect = None;
-    match state.pad.view_rect {
-        Some(view) if state.pad.projections && flat => {
-            projections(&ctx, state, &mut controls, &rects, view);
-        }
-        _ => state.pad.projections = false,
-    }
+    readout::view_menu(&ctx, state, &mut controls, &rects);
     if state.pad.menu && class == WidthClass::Compact {
         menu(&ctx, state, &mut controls, &rects);
     } else {
@@ -754,6 +762,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     world_form::pad(&ctx, state, &mut controls, &rects);
     raster_form::pad(&ctx, state, &mut controls, &rects);
     super::region::pad(&ctx, state, &mut controls, &rects);
+    readout::save_banner(&ctx, state, &rects);
     dock_ui::handle(&ctx, state, &mut controls, &rects);
     if let Some(rect) = canvas.inner {
         globe::paint_canvas(ui, state, rect, theme::CANVAS);
@@ -3175,275 +3184,6 @@ fn toolbox_body(ui: &mut egui::Ui, state: &mut AppState) {
     }
 }
 
-/// The readout at the lower left of the canvas: one card with the view
-/// buttons, and the place and the scale bar at their right. In the row
-/// layout, the text is below the buttons.
-fn readout(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
-    state.pad.readout_scale = None;
-    state.pad.view_rect = None;
-    let Some(band) = rects.readout else {
-        return;
-    };
-    let flat = state.globe.world_view == WorldView::Flat;
-    let text = readout_line(state);
-    let world = &state.doc.project.world;
-    let scale = km_per_point(&state.globe, world.radius_km)
-        .and_then(|km| crate::scale_bar::readout_scale(km, world.units));
-    state.pad.readout_scale = scale.map(|s| s.label());
-    let mark = pad_save_mark(state);
-    let buttons = view_width(flat);
-    let width = readout_width(ctx, &text, scale, mark);
-    let height = geometry::READOUT_HEIGHT;
-    let (rect, place) = if band.height() >= ROW + height {
-        let card = buttons.max(width + 2.0 * READOUT_PAD).min(band.width());
-        let rect = Rect::from_min_size(band.min, vec2(card, band.height()));
-        let top = rect.top() + ROW - PAD;
-        let place = Rect::from_min_size(pos2(rect.left() + READOUT_PAD, top), vec2(width, height));
-        (rect, place)
-    } else {
-        let card = (buttons + PAD + width + READOUT_PAD).min(band.width());
-        let rect = Rect::from_min_size(band.min, vec2(card, ROW));
-        let left = rect.left() + buttons + PAD;
-        let top = rect.center().y - height / 2.0;
-        (
-            rect,
-            Rect::from_min_size(pos2(left, top), vec2(width, height)),
-        )
-    };
-    state.pad.view_rect = Some(rect);
-    let row = Rect::from_min_size(rect.min, vec2(buttons, ROW));
-    // A test has no clock, so there the mark does not turn.
-    let turn = !state.headless;
-    widgets::card(
-        ctx,
-        state.globe.backdrop(),
-        "pad-view",
-        rect,
-        Order::Middle,
-        theme::CARD_RADIUS.into(),
-        |ui| {
-            view_buttons(ui, state, controls, row);
-            let place = place.intersect(rect.shrink(PAD));
-            paint_readout(ui, place, &text, scale, mark, turn);
-        },
-    );
-}
-
-/// The save mark of the iPad layout. It shows during a save and after a
-/// save that failed. The file holds each change when it does not show.
-pub(super) fn pad_save_mark(state: &AppState) -> Option<SaveMark> {
-    let mark = state.save_mark(std::time::Instant::now());
-    mark.filter(|m| *m != SaveMark::Saved)
-}
-
-/// The space at the sides of the text of the readout in its card.
-pub(super) const READOUT_PAD: f32 = 12.0;
-
-/// The width of the text of the readout: the save mark and the place, or
-/// the scale bar with the label at its end.
-pub(super) fn readout_width(
-    ctx: &egui::Context,
-    text: &str,
-    scale: Option<crate::scale_bar::ReadoutScale>,
-    mark: Option<SaveMark>,
-) -> f32 {
-    let width = |text: String, font| {
-        ctx.fonts_mut(|f| f.layout_no_wrap(text, font, theme::TEXT))
-            .size()
-            .x
-            .ceil()
-    };
-    let lead = if mark.is_some() { SAVE_MARK + 8.0 } else { 0.0 };
-    let line = lead + width(text.to_owned(), theme::mono());
-    let bar = scale.map_or(0.0, |s| {
-        s.length as f32 + (width(s.label(), theme::small()) / 2.0).ceil()
-    });
-    line.max(bar)
-}
-
-/// The width of the view buttons: Globe, Flat, a divider, and Graticule,
-/// and in the flat view a divider, Projection, Recenter, and Reset.
-fn view_width(flat: bool) -> f32 {
-    let flat = if flat { DIVIDER + 3.0 * TOUCH } else { 0.0 };
-    PAD + 3.0 * TOUCH + DIVIDER + flat + PAD
-}
-
-/// The view buttons of the readout in `rect`, a row in its card. A hold on
-/// a button shows its name above it.
-fn view_buttons(ui: &egui::Ui, state: &mut AppState, controls: &mut Controls, rect: Rect) {
-    let flat = state.globe.world_view == WorldView::Flat;
-    // The place of a button after `buttons` buttons and `lines`
-    // dividers.
-    let at = |buttons: f32, lines: f32| {
-        let x = rect.left() + PAD + buttons * TOUCH + lines * DIVIDER;
-        Rect::from_min_size(pos2(x, rect.top() + PAD), vec2(TOUCH, TOUCH))
-    };
-    let divider = |ui: &egui::Ui, buttons: f32, lines: f32| {
-        let x = at(buttons, lines).left() + DIVIDER / 2.0;
-        let line = Rect::from_center_size(pos2(x, rect.center().y), vec2(1.0, 24.0));
-        ui.painter().rect_filled(line, 0.0, theme::divider());
-    };
-    let place = flyout::Place::Above;
-    let views = [(VIEWS[0], Icon::World), (VIEWS[1], Icon::Map)];
-    for (i, ((name, icon), view)) in views.into_iter().zip(WORLD_VIEWS).enumerate() {
-        let flyouts = &mut state.pad.flyouts;
-        let on = state.globe.world_view == view;
-        let at = at(i as f32, 0.0);
-        if flyout::button(
-            ui,
-            controls,
-            flyouts,
-            at,
-            (name, name),
-            icon,
-            on,
-            true,
-            place,
-        ) {
-            state.globe.world_view = view;
-        }
-    }
-    divider(ui, 2.0, 0.0);
-    let flyouts = &mut state.pad.flyouts;
-    let graticule = &mut state.globe.preview.graticule;
-    let names = (GRATICULE, GRATICULE);
-    let grid = at(2.0, 1.0);
-    if flyout::button(
-        ui,
-        controls,
-        flyouts,
-        grid,
-        names,
-        Icon::Grid,
-        *graticule,
-        true,
-        place,
-    ) {
-        *graticule = !*graticule;
-    }
-    if !flat {
-        return;
-    }
-    divider(ui, 3.0, 1.0);
-    let open = state.pad.projections;
-    let names = (PROJECTION, PROJECTION);
-    let (list, icon) = (at(3.0, 2.0), Icon::Projection);
-    if flyout::button(ui, controls, flyouts, list, names, icon, open, true, place) {
-        state.pad.projections = !open;
-    }
-    let flat = &mut state.globe.flat;
-    let (center, can) = (at(4.0, 2.0), flat.can_center_here());
-    let names = (RECENTER, RECENTER);
-    if flyout::button(
-        ui,
-        controls,
-        flyouts,
-        center,
-        names,
-        Icon::Center,
-        false,
-        can,
-        place,
-    ) {
-        flat.center_here();
-    }
-    let (reset, can) = (at(5.0, 2.0), flat.can_reset());
-    let names = (RESET, RESET);
-    if flyout::button(
-        ui,
-        controls,
-        flyouts,
-        reset,
-        names,
-        Icon::Reset,
-        false,
-        can,
-        place,
-    ) {
-        flat.reset();
-    }
-}
-
-/// The kilometers in one point at the center of the view. On the flat map,
-/// the distance between two places 40 points apart.
-fn km_per_point(globe: &crate::globe::Globe, world_km: f64) -> Option<f64> {
-    let on_globe = world_km / globe.radius();
-    if globe.world_view == WorldView::Flat {
-        let center = globe.rect.center();
-        let side = vec2(20.0, 0.0);
-        if let (Some(a), Some(b)) = (
-            globe.unproject(center - side),
-            globe.unproject(center + side),
-        ) {
-            let km = crate::globe::math::angle(a, b) * world_km / 40.0;
-            if km.is_finite() && km > 0.0 {
-                return Some(km);
-            }
-        }
-    }
-    (on_globe.is_finite() && on_globe > 0.0).then_some(on_globe)
-}
-
-/// The text of the readout in `place`, in a card: the save mark and the
-/// place on the first line, and with a `scale`, the scale bar with four
-/// divisions and its round distance below it.
-pub(super) fn paint_readout(
-    ui: &egui::Ui,
-    place: Rect,
-    text: &str,
-    scale: Option<crate::scale_bar::ReadoutScale>,
-    mark: Option<SaveMark>,
-    turn: bool,
-) {
-    let painter = ui.painter_at(place.expand(2.0));
-    let mut left = place.left();
-    // With no scale bar, the line is at the middle.
-    let line = if scale.is_some() {
-        place.top() + 10.0
-    } else {
-        place.center().y
-    };
-    if let Some(mark) = mark {
-        let center = pos2(left + SAVE_MARK / 2.0, line);
-        let at = Rect::from_center_size(center, vec2(SAVE_MARK, SAVE_MARK));
-        save_mark(ui, at, mark, turn);
-        left += SAVE_MARK + 8.0;
-    }
-    let at = pos2(left, line);
-    let left_center = egui::Align2::LEFT_CENTER;
-    painter.text(at, left_center, text, theme::mono(), theme::TEXT);
-    let Some(scale) = scale else {
-        return;
-    };
-    let bar = Rect::from_min_size(
-        pos2(place.left(), place.top() + 21.0),
-        vec2(scale.length as f32, 4.0),
-    );
-    let part = bar.width() / 4.0;
-    for i in 0..4 {
-        let fill = if i % 2 == 0 {
-            theme::TEXT
-        } else {
-            theme::track()
-        };
-        let x = bar.left() + i as f32 * part;
-        let rect = Rect::from_min_max(pos2(x, bar.top()), pos2(x + part, bar.bottom()));
-        painter.rect_filled(rect, 0.0, fill);
-    }
-    let labels = bar.bottom() + 2.0;
-    let font = theme::small();
-    let zero = pos2(bar.left(), labels);
-    painter.text(zero, egui::Align2::LEFT_TOP, "0", font.clone(), theme::MUTE);
-    let end = pos2(bar.right(), labels);
-    painter.text(
-        end,
-        egui::Align2::CENTER_TOP,
-        scale.label(),
-        font,
-        theme::MUTE,
-    );
-}
-
 /// The width of a button of the card of a held stroke, and the least width
 /// of its state.
 const HELD_BUTTON: f32 = 120.0;
@@ -3557,111 +3297,6 @@ fn held_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls,
         Some(panels::APPLY) => globe.apply_held(),
         _ => {}
     }
-}
-
-/// The save mark: an arc that turns during a save, a tick when the file
-/// holds each change, and a warning sign after a save that failed.
-fn save_mark(ui: &egui::Ui, rect: Rect, mark: SaveMark, turn: bool) {
-    let painter = ui.painter();
-    let stroke = |color| egui::Stroke::new(1.4, color);
-    match mark {
-        SaveMark::Saving => {
-            let start = if turn {
-                ui.ctx().request_repaint();
-                ui.input(|i| i.time) as f32 * std::f32::consts::TAU
-            } else {
-                0.0
-            };
-            let radius = rect.width() / 2.0 - 1.5;
-            let points = (0..=18).map(|i| {
-                let angle = start + i as f32 / 18.0 * 0.75 * std::f32::consts::TAU;
-                rect.center() + radius * vec2(angle.cos(), angle.sin())
-            });
-            painter.add(egui::Shape::line(points.collect(), stroke(theme::MUTE)));
-        }
-        SaveMark::Saved => {
-            let color = theme::MUTE.gamma_multiply(0.6);
-            icons::paint(painter, rect, Icon::Tick, rect.width(), color);
-        }
-        SaveMark::Failed => {
-            let (center, top) = (rect.center(), rect.top() + 1.0);
-            let half = rect.width() / 2.0 - 0.5;
-            let corners = [
-                pos2(center.x, top),
-                pos2(center.x + half, rect.bottom() - 1.0),
-                pos2(center.x - half, rect.bottom() - 1.0),
-            ];
-            painter.add(egui::Shape::closed_line(
-                corners.to_vec(),
-                stroke(theme::WARN),
-            ));
-            let line = [pos2(center.x, top + 4.5), pos2(center.x, top + 8.0)];
-            painter.line_segment(line, stroke(theme::WARN));
-            painter.circle_filled(pos2(center.x, top + 10.2), 0.8, theme::WARN);
-        }
-    }
-}
-
-/// The list of the projections of the flat view, above the view buttons
-/// of the readout.
-fn projections(
-    ctx: &egui::Context,
-    state: &mut AppState,
-    controls: &mut Controls,
-    rects: &Rects,
-    view: Rect,
-) {
-    let rows = ProjectionKind::ALL.len() as f32;
-    let size = vec2(geometry::MENU_WIDTH, 10.0 + rows * PANEL_ROW + 10.0);
-    let screen = rects.screen.shrink(geometry::PANEL_GAP);
-    let left = view.right() - size.x;
-    let left = left.min(screen.right() - size.x).max(screen.left());
-    let top = (view.top() - PAD - size.y).max(rects.column_top);
-    let rect = Rect::from_min_size(pos2(left, top), size);
-    state.pad.projections_rect = Some(rect);
-    let pressed = ctx.input(|i| {
-        i.pointer
-            .any_pressed()
-            .then(|| i.pointer.interact_pos())
-            .flatten()
-    });
-    if pressed.is_some_and(|pos| !rect.contains(pos) && !view.contains(pos)) {
-        state.pad.projections = false;
-    }
-    let radius = theme::CARD_RADIUS.into();
-    widgets::card(
-        ctx,
-        None,
-        "pad-projections",
-        rect,
-        Order::Foreground,
-        radius,
-        |ui| {
-            // The list covers other cards, so its fill is opaque.
-            ui.painter()
-                .rect_filled(rect, radius, theme::card(false).to_opaque());
-            let inner = rect.shrink2(vec2(BODY_PAD, 10.0));
-            let layout = egui::Layout::top_down(egui::Align::Min);
-            let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
-            let ui = &mut ui;
-            ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
-            let spec = state.globe.flat.spec();
-            for kind in ProjectionKind::ALL {
-                let row = widgets::text_row(ui, controls, kind.name(), 0.0, false, true);
-                if kind == spec.kind {
-                    let tick = Rect::from_center_size(
-                        pos2(row.rect.right() - 14.0, row.rect.center().y),
-                        vec2(18.0, 18.0),
-                    );
-                    icons::paint(ui.painter(), tick, Icon::Tick, 18.0, theme::ACCENT);
-                }
-                if row.clicked() {
-                    state.globe.flat.set_spec(ProjectionSpec { kind, ..spec });
-                    state.pad.projections = false;
-                }
-            }
-        },
-    );
 }
 
 /// The workspace menu of the compact layout: the two workspaces and the

@@ -14,6 +14,7 @@ use super::geometry::{self, GAP, Input, MARGIN, PAD, ROW, Rects, TOUCH, WidthCla
 use super::icons::Icon;
 use super::number::Number;
 use super::panes;
+use super::readout;
 use super::text_style;
 use super::widgets::{self, BODY_PAD, Controls, Keys, PANEL_ROW, keypad_below};
 use super::{GRATICULE, Head, PageParts, Panel, WORKSPACES, WORLDS_ROW};
@@ -295,6 +296,11 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         raster_cards(&ctx, state, &mut controls, &rects);
     }
     page_card(&ctx, state, &mut controls, &rects);
+    // The View popover of the readout is a part of the World workspace.
+    state.pad.view_menu = false;
+    state.pad.view_menu_rect = None;
+    state.pad.projections = false;
+    state.pad.projections_rect = None;
     super::flyout::tooltip(&ctx, state.globe.backdrop(), &mut state.pad.flyouts, &rects);
     state.pad.panels_menu_rect = None;
     if state.pad.panels_menu {
@@ -317,6 +323,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     if state.pad.worlds.is_some() {
         worlds_menu(&ctx, state, &mut controls, &rects);
     }
+    readout::save_banner(&ctx, state, &rects);
     super::dock_ui::handle(&ctx, state, &mut controls, &rects);
 
     // The page fits the space between the cards. The dock floats over the
@@ -795,8 +802,8 @@ pub fn page_pill_text(state: &AppState) -> String {
 
 /// The card at the lower left of the canvas: the previous page, the place
 /// of the open page in the atlas, and the next page. A tap on
-/// the text opens the Pages panel. The save mark and the result of the
-/// Measure tool are at the right of the next page.
+/// the text opens the Pages panel. The result of the Measure tool is at the
+/// right of the next page.
 fn page_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
     let Some(band) = rects.readout else {
         return;
@@ -804,19 +811,14 @@ fn page_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls,
     let text = page_pill_text(state);
     let name = text_width(ctx, &text);
     let readout = state.measure_readout().unwrap_or_default();
-    let mark = super::pad_save_mark(state);
-    let extra = match readout.is_empty() && mark.is_none() {
+    let extra = match readout.is_empty() {
         true => 0.0,
-        false => {
-            super::DIVIDER + super::readout_width(ctx, &readout, None, mark) + super::READOUT_PAD
-        }
+        false => super::DIVIDER + readout::mono_width(ctx, &readout) + readout::READOUT_PAD,
     };
     let pages = 2.0 * TOUCH + name + 2.0 * TAB_PAD + 2.0 * PAD;
     let width = (pages + extra).min(band.width());
     let rect = Rect::from_min_size(pos2(band.left(), band.bottom() - ROW), vec2(width, ROW));
     let (index, count) = atlas::page_index(state);
-    // A test has no clock, so there the mark does not turn.
-    let turn = !state.headless;
     widgets::card(
         ctx,
         state.globe.backdrop(),
@@ -880,9 +882,9 @@ fn page_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls,
                 let left = rect.left() + pages + super::DIVIDER;
                 let place = Rect::from_min_max(
                     pos2(left, rect.top()),
-                    pos2(rect.right() - super::READOUT_PAD, rect.bottom()),
+                    pos2(rect.right() - readout::READOUT_PAD, rect.bottom()),
                 );
-                super::paint_readout(ui, place, &readout, None, mark, turn);
+                readout::paint_line(ui, place, &readout);
             }
         },
     );

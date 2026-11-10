@@ -23,10 +23,10 @@ use vale_app::ui::pad::raster;
 use vale_app::ui::pad::{
     ADD_LAYER, CLEAR_PATH, DESELECT, EXPORT_GEOTIFF, GRATICULE, IMPORT_HEIGHTMAP, LAYER_NAME, LINE,
     LayerRef, MEASURE, ModeGroup, NEW_GEOJSON, NEW_HEIGHTMAP, NEW_IMAGE, NEW_RASTER, OPACITY,
-    PANELS, POLYGON, Page, Panel, RECENTER, RESET, SCULPT, SMOOTHING, SNAP, SNAP_DISTANCE,
-    SNAP_EDGES, SNAP_VERTICES, SNAPPING, TERRAIN, TERRAIN_BALANCE, TERRAIN_FIT, TERRAIN_FIT_SWITCH,
-    TOOLBOX, VECTOR, WORLD_PROPERTIES, WORLDS, WORLDS_ROW, brush_size_text, panels_menu,
-    readout_line, readout_text, theme,
+    PANELS, POLYGON, PROJECTION, Page, Panel, RECENTER, RESET, SCULPT, SMOOTHING, SNAP,
+    SNAP_DISTANCE, SNAP_EDGES, SNAP_VERTICES, SNAPPING, TERRAIN, TERRAIN_BALANCE, TERRAIN_FIT,
+    TERRAIN_FIT_SWITCH, TOOLBOX, VECTOR, VIEW, VIEWS, WORLD_PROPERTIES, WORLDS, WORLDS_ROW,
+    brush_size_text, panels_menu, readout_line, readout_text, theme,
 };
 use vale_app::ui::raster_form::{self, PRESETS, RasterForm, face_size_name};
 use vale_app::ui::select;
@@ -312,6 +312,8 @@ fn cards(h: &Pad) -> Vec<Rect> {
     let r = pad.rects.unwrap();
     let mut cards = vec![r.workspace, r.actions, r.tools];
     cards.extend(pad.view_rect);
+    cards.extend(pad.view_menu_rect);
+    cards.extend(pad.place_rect);
     cards.extend(r.brush);
     cards.extend(pad.panels.iter().map(|(_, rect)| *rect));
     cards.extend(pad.menu_rect);
@@ -360,6 +362,7 @@ fn check_controls(h: &Pad, what: &str) {
     let in_add = h.state().pad.add_rect.is_some();
     let in_panels = h.state().pad.panels_menu_rect.is_some();
     let in_list = h.state().pad.projections_rect.is_some();
+    let in_view = h.state().pad.view_menu_rect.is_some();
     let in_pane_menu = h.state().pad.pane_menu.is_some();
     let in_stop = h.state().pad.style.card.is_some() || h.state().pad.style.reset_card.is_some();
     let in_edit = controls
@@ -384,6 +387,7 @@ fn check_controls(h: &Pad, what: &str) {
         || in_add
         || in_panels
         || in_list
+        || in_view
         || in_pane_menu
         || in_stop;
     for (i, a) in controls.iter().enumerate() {
@@ -441,6 +445,8 @@ fn check_controls(h: &Pad, what: &str) {
                     && (name.starts_with("Close ")
                         || name == vale_app::ui::pad::dock_ui::MOVE_TO_NEW_PANE);
                 let add = add || pane_menu;
+                let view = in_view && view_rows().contains(&name);
+                let add = add || view;
                 let stop = in_stop
                     && (name.starts_with(vale_app::ui::pad::raster::COLOR) || raster_stop(name));
                 menu || kind || modes || add || stop || (in_menu && name == "Projection")
@@ -462,6 +468,19 @@ fn check_controls(h: &Pad, what: &str) {
             assert!(free || covered, "{what}: {name} and {} overlap", b.name);
         }
     }
+}
+
+/// The controls of the View popover.
+fn view_rows() -> [&'static str; 6] {
+    [VIEWS[0], VIEWS[1], GRATICULE, PROJECTION, RECENTER, RESET]
+}
+
+/// Opens the View popover of the readout and taps the control `name` in it.
+fn tap_in_view(h: &mut Pad, name: &str) {
+    if !h.state().pad.view_menu {
+        tap(h, VIEW);
+    }
+    tap(h, name);
 }
 
 /// A control of the card of the selected stop.
@@ -3885,7 +3904,7 @@ fn the_undo_button_works_after_the_app_stops_and_starts() {
 }
 
 #[test]
-fn one_tap_switches_the_view_and_the_tool_and_the_panels_stay() {
+fn the_view_popover_switches_the_view_and_the_tool_and_the_panels_stay() {
     let mut h = pad(BOARDS[0]);
     choose_mode(&mut h, "Lower");
     open_panel(&mut h, "Layers");
@@ -3893,36 +3912,42 @@ fn one_tap_switches_the_view_and_the_tool_and_the_panels_stay() {
     let panels = h.state().pad.panels.clone();
     assert_eq!(panels.len(), 2);
     for (name, view) in [("Flat", WorldView::Flat), ("Globe", WorldView::Globe)] {
-        tap(&mut h, name);
+        tap_in_view(&mut h, name);
         let s = h.state();
         assert_eq!(s.globe.world_view, view);
+        assert_eq!(toggled(&h, name), Some(true));
         assert_eq!(s.workspace, Workspace::Globe);
         assert_eq!(
             (s.globe.tool, s.globe.brush.mode),
             (Tool::Brush, Mode::Lower)
         );
         assert_eq!(s.pad.panels, panels);
+        // The popover stays open.
+        assert!(s.pad.view_menu);
     }
 }
 
 #[test]
-fn the_view_buttons_have_the_list_of_the_projections_of_the_flat_view() {
+fn the_view_popover_opens_the_list_of_the_projections_of_the_flat_view() {
     use vale_sphere::ProjectionKind;
     let mut h = pad(BOARDS[0]);
-    assert!(control(&h, "Projection").is_none());
+    assert!(control(&h, PROJECTION).is_none());
     choose_mode(&mut h, "Lower");
+    tap(&mut h, VIEW);
+    assert!(control(&h, PROJECTION).is_none());
     tap(&mut h, "Flat");
-    // The card of the buttons is wider by the flat buttons, at the lower
-    // left of the canvas.
-    let view = h.state().pad.view_rect.unwrap();
-    let readout = h.state().pad.rects.unwrap().readout.unwrap();
-    assert_eq!(view.left_bottom(), readout.left_bottom());
-    assert!(view.contains_rect(control(&h, "Projection").unwrap()));
-    assert!(control(&h, "Projection").unwrap().width() >= 44.0);
+    // The popover is above the card of the readout, at its left edge.
+    let menu = h.state().pad.view_menu_rect.unwrap();
+    let card = h.state().pad.view_rect.unwrap();
+    assert_eq!(menu.left(), card.left());
+    assert!(menu.bottom() < card.top());
+    assert!(menu.contains_rect(control(&h, PROJECTION).unwrap()));
 
-    tap(&mut h, "Projection");
+    tap(&mut h, PROJECTION);
+    // On a wide screen, the list is at the right of the popover.
     let list = h.state().pad.projections_rect.unwrap();
-    assert_eq!(list.bottom(), view.top() - 4.0);
+    assert!(list.left() > menu.right());
+    assert_eq!(list.bottom(), menu.bottom());
     for kind in ProjectionKind::ALL {
         assert!(list.contains_rect(control(&h, kind.name()).unwrap()));
     }
@@ -3931,22 +3956,24 @@ fn the_view_buttons_have_the_list_of_the_projections_of_the_flat_view() {
     let s = h.state();
     assert_eq!(s.globe.flat.spec().kind, ProjectionKind::EqualEarth);
     assert!(!s.pad.projections && s.pad.projections_rect.is_none());
+    assert!(s.pad.view_menu);
     assert_eq!(
         (s.globe.tool, s.globe.brush.mode),
         (Tool::Brush, Mode::Lower)
     );
 
-    // A touch off the list closes it, and the globe has no list.
-    tap(&mut h, "Projection");
-    open_panel(&mut h, "Layers");
-    assert!(!h.state().pad.projections);
-    tap(&mut h, "Projection");
+    // A touch off the list closes it, and the popover stays. The globe
+    // has no list.
+    tap(&mut h, PROJECTION);
+    tap(&mut h, GRATICULE);
+    assert!(!h.state().pad.projections && h.state().pad.view_menu);
+    tap(&mut h, PROJECTION);
     tap(&mut h, "Globe");
-    assert!(!h.state().pad.projections && control(&h, "Projection").is_none());
+    assert!(!h.state().pad.projections && control(&h, PROJECTION).is_none());
 }
 
 #[test]
-fn the_readout_has_the_view_buttons_and_the_graticule_button() {
+fn the_view_popover_has_the_views_and_the_graticule_switch() {
     use vale_app::ui::pad::raster::{self, RIVERS};
     for size in BOARDS {
         let mut h = painted_pad(size);
@@ -3957,32 +3984,45 @@ fn the_readout_has_the_view_buttons_and_the_graticule_button() {
             let rects = h.state().pad.rects.unwrap();
             let card = h.state().pad.view_rect.unwrap();
             assert!(rects.readout.unwrap().contains_rect(card), "{what}");
-            // The buttons of the flat view show in the flat view only.
+            // At rest, the card has the View button and no rows.
+            assert!(card.contains_rect(control(&h, VIEW).unwrap()), "{what}");
+            for name in view_rows() {
+                assert!(control(&h, name).is_none(), "{what}: {name}");
+            }
+            tap(&mut h, VIEW);
+            assert_eq!(toggled(&h, VIEW), Some(true), "{what}");
+            let menu = h.state().pad.view_menu_rect.unwrap();
+            assert!(rects.screen.contains_rect(menu), "{what}");
+            // The rows of the flat view show in the flat view only.
             let flat = view == WorldView::Flat;
-            for name in ["Globe", "Flat", GRATICULE, "Projection", RECENTER, RESET] {
-                let shows = !matches!(name, "Projection" | RECENTER | RESET) || flat;
-                if let Some(button) = control(&h, name) {
-                    assert!(card.contains_rect(button), "{what}: {name}");
+            for name in view_rows() {
+                let shows = !matches!(name, PROJECTION | RECENTER | RESET) || flat;
+                if let Some(row) = control(&h, name) {
+                    assert!(menu.contains_rect(row), "{what}: {name}");
                 } else if name != RECENTER && name != RESET {
-                    // Recenter and Reset are off until the view moves.
+                    // Recenter and Reset view are off until the view moves.
                     assert!(!shows, "{what}: no {name}");
                 }
                 if !shows {
                     assert!(control(&h, name).is_none(), "{what}: {name}");
                 }
             }
-            check_controls(&h, &format!("{what} with the view buttons"));
+            check_controls(&h, &format!("{what} with the View popover"));
             let before = h.state().globe.preview.graticule;
             tap(&mut h, GRATICULE);
             assert_eq!(h.state().globe.preview.graticule, !before, "{what}");
             assert_eq!(toggled(&h, GRATICULE), Some(!before), "{what}");
             tap(&mut h, GRATICULE);
             assert_eq!(h.state().globe.preview.graticule, before, "{what}");
-            // The Globe and Flat buttons change the view.
+            // The segments change the view.
             let other = if flat { "Globe" } else { "Flat" };
             tap(&mut h, other);
             assert_ne!(h.state().globe.world_view, view, "{what}");
             assert_eq!(toggled(&h, other), Some(true), "{what}");
+            // A second tap on the View button closes the popover.
+            tap(&mut h, VIEW);
+            assert!(!h.state().pad.view_menu, "{what}");
+            assert!(h.state().pad.view_menu_rect.is_none(), "{what}");
             h.state_mut().globe.world_view = view;
             h.run_steps(2);
         }
@@ -4018,36 +4058,38 @@ fn the_readout_has_the_view_buttons_and_the_graticule_button() {
 }
 
 #[test]
-fn the_flat_view_has_buttons_that_move_the_center_of_the_projection_and_reset_it() {
+fn the_flat_view_has_rows_that_move_the_center_of_the_projection_and_reset_it() {
     for size in BOARDS {
         let mut h = pad(size);
         h.state_mut().globe.world_view = WorldView::Flat;
         h.run_steps(2);
         let rects = h.state().pad.rects.unwrap();
-        // The buttons are in the card of the view buttons of the readout,
-        // at the lower left of the canvas.
+        // The card of the readout is at the lower left of the canvas.
         let card = h.state().pad.view_rect.unwrap();
         assert_eq!(
-            card.left_top(),
-            rects.readout.unwrap().left_top(),
+            card.left_bottom(),
+            rects.readout.unwrap().left_bottom(),
             "{size:?}"
         );
         assert!(!card.intersects(rects.tools), "{size:?}");
         // The middle of the view is the center of the projection, and the
         // view shows the whole map, so the two actions are off.
+        tap(&mut h, VIEW);
+        assert!(control(&h, PROJECTION).is_some(), "{size:?}");
         assert!(control(&h, RECENTER).is_none() && control(&h, RESET).is_none());
 
         // A drag moves the map at the first zoom, with no zoom before it.
+        tap(&mut h, VIEW);
         let canvas = h.state().globe.rect;
         let from = canvas.center();
         drag(&mut h, from, from + vec2(-60.0, 0.0), None);
+        tap(&mut h, VIEW);
+        let menu = h.state().pad.view_menu_rect.unwrap();
         let (recenter, reset) = (control(&h, RECENTER).unwrap(), control(&h, RESET).unwrap());
-        assert!(card.contains_rect(recenter) && card.contains_rect(reset));
-        assert_eq!(reset.left(), recenter.right());
-        let switch = control(&h, "Flat").unwrap();
-        assert!(recenter.left() >= control(&h, "Projection").unwrap().right());
-        assert!(recenter.left() > switch.right() && recenter.top() == switch.top());
-        check_controls(&h, &format!("{size:?} with the center buttons"));
+        assert!(menu.contains_rect(recenter) && menu.contains_rect(reset));
+        assert_eq!(recenter.top(), control(&h, PROJECTION).unwrap().bottom());
+        assert_eq!(reset.top(), recenter.bottom());
+        check_controls(&h, &format!("{size:?} with the center rows"));
         tap(&mut h, RECENTER);
         let flat = &h.state().globe.flat;
         assert!(flat.spec().lon0 > 1.0, "{size:?}: {:?}", flat.spec());
@@ -4058,11 +4100,96 @@ fn the_flat_view_has_buttons_that_move_the_center_of_the_projection_and_reset_it
         assert_eq!((flat.spec().lon0, flat.zoom), (0.0, 1.0));
         assert!(control(&h, RESET).is_none());
 
-        // The globe has no such buttons, and its card is narrower.
+        // The globe has no such rows.
         h.state_mut().globe.world_view = WorldView::Globe;
         h.run_steps(2);
-        assert!(h.state().pad.view_rect.unwrap().width() < card.width());
+        assert!(h.state().pad.view_menu, "{size:?}");
         assert!(control(&h, RECENTER).is_none() && control(&h, RESET).is_none());
+        assert!(control(&h, PROJECTION).is_none());
+    }
+}
+
+#[test]
+fn the_readout_at_rest_has_the_view_button_and_the_scale_bar_and_no_place() {
+    for size in BOARDS {
+        for view in WORLD_VIEWS {
+            let what = format!("{size:?} {view:?}");
+            let mut h = pad(size);
+            h.state_mut().globe.world_view = view;
+            h.run_steps(2);
+            let band = h.state().pad.rects.unwrap().readout.unwrap();
+            let card = h.state().pad.view_rect.unwrap();
+            // One row at the bottom of the band.
+            assert_eq!(card.height(), 52.0, "{what}");
+            assert_eq!(card.left_bottom(), band.left_bottom(), "{what}");
+            let button = control(&h, VIEW).unwrap();
+            assert_eq!(button.size(), vec2(44.0, 44.0), "{what}");
+            assert!(card.contains_rect(button), "{what}");
+            let scale = h.state().pad.readout_scale.clone();
+            assert!(scale.is_some_and(|s| s.ends_with("km")), "{what}");
+            assert_eq!(h.state().pad.place_rect, None, "{what}");
+
+            // While a finger is down on the canvas, the place shows above
+            // the card. A test has no clock, so the place goes when the
+            // finger lifts.
+            let at = h.state().globe.rect.center() + vec2(30.0, 0.0);
+            touch(&mut h, egui::TouchPhase::Start, at, None);
+            h.run_steps(2);
+            let place = h.state().pad.place_rect.unwrap();
+            assert_eq!(place.height(), 34.0, "{what}");
+            assert_eq!(place.left(), card.left(), "{what}");
+            assert!(
+                place.bottom() < card.top() && place.top() >= band.top(),
+                "{what}"
+            );
+            assert!(place.width() < band.width(), "{what}");
+            touch(&mut h, egui::TouchPhase::End, at, None);
+            h.run_steps(2);
+            assert_eq!(h.state().pad.place_rect, None, "{what}");
+        }
+    }
+}
+
+#[test]
+fn the_place_shows_while_the_measure_tool_has_a_result() {
+    let mut h = pad(BOARDS[0]);
+    h.state_mut().globe.tool = Tool::Measure;
+    h.run_steps(2);
+    assert_eq!(h.state().pad.place_rect, None);
+    let measure = &mut h.state_mut().measure;
+    measure.add([0.0, 0.0], true);
+    measure.add([10.0, 0.0], true);
+    h.run_steps(2);
+    assert!(h.state().measure_readout().is_some());
+    assert!(h.state().pad.place_rect.is_some());
+}
+
+#[test]
+fn a_tap_outside_the_view_popover_closes_it() {
+    for size in [BOARDS[0], BOARDS[3]] {
+        let mut h = pad(size);
+        tap(&mut h, VIEW);
+        assert!(h.state().pad.view_menu, "{size:?}");
+        // A tap on the canvas closes it.
+        let at = h.state().globe.rect.center() + vec2(0.0, -200.0);
+        finger_tap_at(&mut h, at);
+        assert!(!h.state().pad.view_menu, "{size:?}");
+        assert!(control(&h, GRATICULE).is_none(), "{size:?}");
+        // A tap on another card closes it.
+        tap(&mut h, VIEW);
+        tap(&mut h, PANELS);
+        assert!(!h.state().pad.view_menu, "{size:?}");
+        h.state_mut().pad.panels_menu = false;
+        h.run_steps(2);
+        // The Atlas workspace has no popover.
+        tap(&mut h, VIEW);
+        h.state_mut().workspace = Workspace::Atlas;
+        h.run_steps(3);
+        assert!(!h.state().pad.view_menu, "{size:?}");
+        assert!(h.state().pad.view_menu_rect.is_none(), "{size:?}");
+        h.state_mut().workspace = Workspace::Globe;
+        h.run_steps(3);
+        assert!(control(&h, GRATICULE).is_none(), "{size:?}");
     }
 }
 
@@ -4087,7 +4214,7 @@ fn the_top_row_has_no_center_card() {
                 assert!(!top.intersects(c.rect), "{what}: {}", c.name);
             }
             use vale_app::ui::pad::atlas::{NEXT_PAGE, PREVIOUS_PAGE};
-            for name in ["Globe", "Flat", PREVIOUS_PAGE, NEXT_PAGE] {
+            for name in [VIEW, PREVIOUS_PAGE, NEXT_PAGE] {
                 if let Some(rect) = control(&h, name) {
                     assert!(rect.top() > r.column_top, "{what}: {name}");
                 }
@@ -4109,11 +4236,10 @@ fn the_top_row_and_the_panels_match_the_landscape_board() {
     assert_eq!(control(&h, "Atlas").unwrap().min, pos2(101.0, 32.0));
     assert_eq!(r.workspace.width(), 149.0);
     assert!(control(&h, "Workspace").is_none());
-    // The view buttons are at the lower left of the canvas.
+    // The View button is at the lower left of the canvas.
     let view = h.state().pad.view_rect.unwrap();
-    assert_eq!(view.min, pos2(72.0, 714.0));
-    assert!(view.contains_rect(control(&h, "Flat").unwrap()));
-    assert!(view.contains_rect(control(&h, "Globe").unwrap()));
+    assert_eq!(view.min, pos2(72.0, 754.0));
+    assert_eq!(control(&h, VIEW).unwrap().min, pos2(76.0, 758.0));
     assert_eq!(
         r.actions,
         Rect::from_min_size(pos2(985.0, 28.0), vec2(209.0, 52.0))
@@ -4182,7 +4308,7 @@ fn the_top_row_and_the_panels_match_the_portrait_board() {
         (r.workspace.min, r.workspace.height()),
         (pos2(0.0, 28.0), 52.0)
     );
-    assert!(control(&h, "Globe").is_some());
+    assert!(control(&h, VIEW).is_some());
     assert_eq!(r.actions.right(), 834.0);
 
     toolbox(&mut h);
@@ -4208,12 +4334,13 @@ fn the_top_row_and_the_panels_match_the_split_view_boards() {
         assert_eq!(r.actions.right(), size.0);
         assert!(r.workspace.right() < r.actions.left());
         // The readout is above the card of the tool, and the card is above
-        // the row of the strip. The view buttons are above the text of the
-        // readout.
+        // the row of the strip. The card of the View button is at the
+        // bottom of the band of the readout.
         let readout = r.readout.unwrap();
         assert_eq!(readout.left_bottom(), pos2(16.0, 670.0));
         assert_eq!(readout.top(), 670.0 - 52.0 - 40.0);
-        assert_eq!(h.state().pad.view_rect.unwrap().min, readout.min);
+        let view = h.state().pad.view_rect.unwrap();
+        assert_eq!(view.left_bottom(), readout.left_bottom());
         assert_eq!(r.brush.unwrap().bottom(), r.tools.top() - 8.0);
         assert_eq!(r.tools.bottom(), 834.0 - 20.0 - 8.0);
 
@@ -4229,13 +4356,17 @@ fn the_top_row_and_the_panels_match_the_split_view_boards() {
         assert!(control(&h, "Toolbox").is_none());
         h.state_mut().pad.menu = false;
         h.run_steps(2);
-        // The readout has the view buttons and the list of the
-        // projections.
-        tap(&mut h, "Flat");
+        // The View popover has the views and the list of the projections.
+        // The list has no room at the right of the popover, so it takes
+        // its place.
+        tap_in_view(&mut h, "Flat");
         assert_eq!(h.state().globe.world_view, WorldView::Flat);
-        tap(&mut h, "Projection");
+        tap(&mut h, PROJECTION);
         let list = h.state().pad.projections_rect.unwrap();
         assert!(Rect::from_min_size(Pos2::ZERO, size.into()).contains_rect(list));
+        assert_eq!(list.left(), readout.left());
+        assert!(h.state().pad.view_menu_rect.is_none());
+        check_controls(&h, &format!("{size:?} with the projections"));
         tap(&mut h, "Mercator");
         let kind = h.state().globe.flat.spec().kind;
         assert_eq!(kind, vale_sphere::ProjectionKind::Mercator);
@@ -13147,34 +13278,26 @@ fn on_an_iphone_the_readout_is_above_the_slider_row() {
 }
 
 #[test]
-fn on_an_iphone_the_readout_holds_the_view_buttons_above_its_text() {
+fn on_an_iphone_the_readout_has_the_view_button_and_the_popover_fits() {
     let mut h = phone_pad();
     let readout = h.state().pad.rects.unwrap().readout.unwrap();
     let view = h.state().pad.view_rect.unwrap();
-    assert_eq!(view.min, readout.min);
+    assert_eq!(view.left_bottom(), readout.left_bottom());
     assert!(view.width() <= readout.width());
-    for name in ["Globe", "Flat", GRATICULE] {
-        let button = control(&h, name).unwrap_or_else(|| panic!("{name}"));
-        assert!(view.contains_rect(button), "{name}");
-    }
-    // The menu no longer holds the views.
+    assert!(view.contains_rect(control(&h, VIEW).unwrap()));
+    // The menu does not hold the views.
     tap(&mut h, "Workspace");
-    assert!(
-        !h.state()
-            .pad
-            .menu_rect
-            .unwrap()
-            .contains_rect(control(&h, "Globe").unwrap())
-    );
+    assert!(control(&h, VIEWS[0]).is_none());
     h.state_mut().pad.menu = false;
     h.run_steps(2);
-    tap(&mut h, "Flat");
+    tap_in_view(&mut h, "Flat");
     assert_eq!(h.state().globe.world_view, WorldView::Flat);
-    // The flat buttons fit in the width of the phone.
-    let view = h.state().pad.view_rect.unwrap();
-    assert!(view.right() <= 393.0 - 16.0);
-    for name in ["Projection", "Flat", GRATICULE] {
-        assert!(view.contains_rect(control(&h, name).unwrap()), "{name}");
+    // The popover fits in the width of the phone.
+    let menu = h.state().pad.view_menu_rect.unwrap();
+    assert_eq!(menu.left(), view.left());
+    assert!(menu.right() <= 393.0 - 8.0);
+    for name in [PROJECTION, "Flat", GRATICULE] {
+        assert!(menu.contains_rect(control(&h, name).unwrap()), "{name}");
     }
     check_safe(&h, (393.0, 852.0), [59.0, 0.0, 34.0, 0.0], "phone flat");
 }
@@ -14239,8 +14362,7 @@ fn a_hold_on_a_control_of_the_column_shows_its_name() {
 }
 
 #[test]
-fn the_readout_is_one_card_with_the_view_buttons_the_place_and_the_scale_bar() {
-    use vale_app::ui::pad::geometry::READOUT_HEIGHT;
+fn the_readout_is_one_card_with_the_view_button_and_the_scale_bar() {
     for size in BOARDS.into_iter().chain([(393.0, 852.0)]) {
         for view in WORLD_VIEWS {
             let mut h = pad(size);
@@ -14254,17 +14376,12 @@ fn the_readout_is_one_card_with_the_view_buttons_the_place_and_the_scale_bar() {
             let band = rects.readout.unwrap();
             let card = h.state().pad.view_rect.unwrap();
             assert!(band.contains_rect(card), "{what}");
-            assert_eq!(card.min, band.min, "{what}");
-            let last = control(&h, GRATICULE).unwrap();
-            let last = control(&h, "Projection").unwrap_or(last);
-            for name in ["Globe", "Flat", GRATICULE] {
-                let button = control(&h, name).unwrap();
-                assert!(card.contains_rect(button), "{what}: {name}");
-                assert_eq!(button.top(), card.top() + 4.0, "{what}: {name}");
-            }
-            // The text is below the buttons, in the same card.
-            assert_eq!(card.height(), 52.0 + READOUT_HEIGHT, "{what}");
-            assert!(card.right() >= last.right() + 4.0, "{what}");
+            assert_eq!(card.left_bottom(), band.left_bottom(), "{what}");
+            assert_eq!(card.height(), 52.0, "{what}");
+            let button = control(&h, VIEW).unwrap();
+            assert_eq!(button.min, card.min + vec2(4.0, 4.0), "{what}");
+            // The scale bar is at the right of the button.
+            assert!(card.right() >= button.right() + 60.0, "{what}");
             check_controls(&h, &what);
         }
     }

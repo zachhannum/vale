@@ -129,6 +129,9 @@ fn the_layout_and_the_panels_come_from_the_flags() {
     assert!(!args.panels_menu);
     let args = Args::parse_from(["vale-app", "--layout", "pad", "--panels-menu"]);
     assert!(args.panels_menu);
+    assert!(!args.view_menu);
+    let args = Args::parse_from(["vale-app", "--layout", "pad", "--view-menu"]);
+    assert!(args.view_menu);
     assert!(!args.dock_hidden);
     let args = Args::parse_from(["vale-app", "--layout", "pad", "--dock-hidden"]);
     assert!(args.dock_hidden);

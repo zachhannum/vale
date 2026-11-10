@@ -927,3 +927,37 @@ fn the_pencil_switches_tools_and_each_tool_keeps_its_settings_after_a_restart() 
     choose_mode(&mut h, Mode::Raise);
     assert_eq!(brush(&h), (Mode::Raise, 150.0));
 }
+
+#[cfg(unix)]
+#[test]
+fn a_save_that_failed_shows_a_banner_at_the_top_in_both_workspaces_of_the_ipad_layout() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    create(dir.path(), "Borea");
+    let mut h = start(dir.path(), Layout::Pad);
+    click(&mut h, "Open Borea");
+    assert_eq!(h.state().pad.save_banner, None);
+    // A save that runs shows nothing.
+    h.state_mut().doc.project.world.name = "Cassia".to_string();
+    let now = Instant::now();
+    h.state_mut().save_tick(false, now);
+    run(&mut h);
+    assert_eq!(h.state().save_mark(now), Some(SaveMark::Saving));
+    assert_eq!(h.state().pad.save_banner, None);
+    // The folder takes no new file, so the save fails.
+    let mode = |m| std::fs::Permissions::from_mode(m);
+    std::fs::set_permissions(dir.path(), mode(0o555)).unwrap();
+    h.state_mut().save_tick(false, now + SAVE_DELAY);
+    std::fs::set_permissions(dir.path(), mode(0o755)).unwrap();
+    assert_eq!(h.state().save_mark(now), Some(SaveMark::Failed));
+    for workspace in [Workspace::Globe, Workspace::Atlas] {
+        h.state_mut().workspace = workspace;
+        run(&mut h);
+        let banner = h.state().pad.save_banner.expect("a banner");
+        let rects = h.state().pad.rects.unwrap();
+        // The banner is at the top center, below the top row.
+        assert_eq!(banner.top(), rects.column_top, "{workspace:?}");
+        let middle = rects.screen.center().x;
+        assert!((banner.center().x - middle).abs() < 1.0, "{workspace:?}");
+    }
+}

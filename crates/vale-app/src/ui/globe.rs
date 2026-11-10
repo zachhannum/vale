@@ -1758,6 +1758,9 @@ pub(super) fn canvas_input(
             globe.nav.update(ui, rect, &resp, &mut globe.flat, painting);
         }
     }
+    let input = &globe.input;
+    let touched = input.pen.is_some() || input.finger.is_some() || globe.pen.down;
+    state.pad.canvas_down = touched || resp.is_pointer_button_down_on();
     state.poll_line();
     state.poll_point();
     state.poll_measure();

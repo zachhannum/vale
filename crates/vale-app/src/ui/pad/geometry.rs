@@ -38,7 +38,7 @@ pub const MODES_WIDTH: f32 = 200.0;
 pub const SHEET_HEIGHT: f32 = 452.0;
 /// The space between two cards of the row layout.
 pub const ROW_GAP: f32 = 8.0;
-/// The height of the text of the readout: the place and the scale bar.
+/// The height of the card of the place above the readout, with its gap.
 pub const READOUT_HEIGHT: f32 = 40.0;
 /// The width of the tool column, without the band at the left edge.
 pub const COLUMN: f32 = 56.0;
@@ -224,8 +224,8 @@ pub struct Rects {
     pub row: bool,
     /// The top of the space below the top row.
     pub column_top: f32,
-    /// The place of the readout at the lower left of the canvas: the row
-    /// of the view buttons above the text of the place.
+    /// The place of the readout at the lower left of the canvas: the card
+    /// of the place above the card of the View button and the scale bar.
     pub readout: Option<Rect>,
 }
 
@@ -386,8 +386,7 @@ pub fn layout(input: &Input) -> Rects {
         ),
     };
     // The readout is at the lower left of the canvas, at the right of the
-    // tool column, with the buttons above the text. An open sheet covers
-    // it.
+    // tool column. An open sheet covers it.
     let readout = sheet.is_none().then(|| {
         Rect::from_min_max(
             pos2(
