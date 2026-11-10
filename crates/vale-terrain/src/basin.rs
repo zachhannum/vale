@@ -10,8 +10,9 @@
 //! the area, so all the water of the network drains to the outlet.
 //! Stream-power erosion with uplift runs to a steady state with the implicit
 //! solver of Braun and Willett (2013), and the steady state gives the relief
-//! of the basin above the main river. The main river stays at or below the
-//! old ground. Finer levels then add rough ground at their scale and erode
+//! of the basin above the main river. The relief has the height of the old
+//! ground above the main river, or the Height setting if that is more. The
+//! main river stays at or below the old ground. Finer levels then add rough ground at their scale and erode
 //! it, so the gullies of all sizes come from the erosion. Last, the rivers
 //! are cut into the texels as thin channels.
 
@@ -109,6 +110,15 @@ const GROUND: f64 = 1.0;
 /// relief of the basin.
 const KEEP: f64 = 0.7;
 
+/// Where the basin cuts into high old ground, the ground rises from the
+/// main river to the divides as this power of the shape, so the valleys are
+/// narrow and the ridges are broad.
+const CARVED: f64 = 0.5;
+
+/// The height of the old ground above the main river, and the highest shape
+/// of the relief, are means over about this part of the half-width.
+const LOCAL: f64 = 0.5;
+
 /// The change goes to zero over this part of the brush radius at the side
 /// of the area.
 const EDGE: f64 = 0.1;
@@ -126,6 +136,10 @@ const FINE_CELLS: usize = 1024;
 const FINE_STEPS: usize = 4;
 const ERODE: f64 = 1.0;
 const CARVE: f64 = 3.0;
+
+/// A pit fills if it is this many times the rough ground of its level deep
+/// or less.
+const PIT: f64 = 2.0;
 
 /// The part of the difference to the mean of its neighbors that a cell
 /// moves by hillslope creep.
@@ -148,7 +162,8 @@ const WARP_SIZE: f64 = 3.0;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BasinSpec {
     /// The height of the highest ground inside the divide above the main
-    /// river, in 16-bit steps.
+    /// river where the old ground is low, in 16-bit steps. Where the old
+    /// ground is higher above the main river, the relief follows it.
     pub height: f64,
     /// The mean distance between two tributaries along the main river, as an
     /// angle, in radians.
@@ -557,8 +572,8 @@ pub fn basin(map: &Heightmap, line: &BasinLine) -> BasinCut {
         chain_index[c] = k;
     }
 
-    // The relief rises from the main river to the divides, and the hills
-    // near the source are higher. It goes onto the old ground.
+    // The shape of the relief rises from 0 at the main river to 1 at the
+    // highest divide, and the hills near the source are higher.
     let above = |i: usize| match join[i] {
         usize::MAX => 0.0,
         j => (h[i] - (1.0 - HEAD) * h[j]).max(0.0),
@@ -567,6 +582,41 @@ pub fn basin(map: &Heightmap, line: &BasinLine) -> BasinCut {
         .filter(|&i| inside[i] && !rim[i])
         .map(above)
         .fold(f64::MIN_POSITIVE, f64::max);
+    let shape = |i: usize| (1.0 - ACROSS) * above(i) / top + ACROSS * across(i);
+    let base = |i: usize| match join[i] {
+        usize::MAX => old_levels[i],
+        j => river_levels[chain_index[j]],
+    };
+    // The height of the old ground above the main river near each cell, from
+    // the level of the main river at the nearest place along it.
+    let mut furthest = f64::MIN;
+    let river_profile: Vec<(f64, f64)> = chain
+        .iter()
+        .zip(&river_levels)
+        .map(|(&c, &l)| {
+            furthest = furthest.max(places[c].1);
+            (furthest, l)
+        })
+        .collect();
+    let mask: Vec<bool> = (0..count).map(|i| inside[i] && !on_chain[i]).collect();
+    let rise: Vec<f64> = (0..count)
+        .map(|i| (old_levels[i] - profile_at(&river_profile, places[i].1)).max(0.0))
+        .collect();
+    let span = ((LOCAL * radius / cell).round() as usize).max(1);
+    let ground_rise = blur(&rise, &mask, side, span);
+    // The shape over the highest shape near the cell, so it reaches about 1
+    // at each divide.
+    let shapes: Vec<f64> = (0..count)
+        .map(|i| if mask[i] { shape(i) } else { 0.0 })
+        .collect();
+    let crest = blur(&max_filter(&shapes, side, span), &mask, side, span);
+    // The relief of the basin rises from the main river. Where the old
+    // ground is not much higher than the main river, the relief of the Height
+    // setting goes onto the old ground. Where the old ground is higher, the
+    // basin cuts its valleys into it, and the divides stay near the old
+    // ground. Thus a basin across mountains and lowlands has high divides in
+    // the mountains and low hills in the lowlands.
+    let relief: Vec<f64> = ground_rise.iter().map(|&r| r.max(spec.height)).collect();
     let mut levels: Vec<f64> = (0..count)
         .map(|i| {
             if !inside[i] {
@@ -575,16 +625,15 @@ pub fn basin(map: &Heightmap, line: &BasinLine) -> BasinCut {
             if on_chain[i] {
                 return river_levels[chain_index[i]];
             }
-            let shape = (1.0 - ACROSS) * above(i) / top + ACROSS * across(i);
-            let target = spec.height * shape;
-            // Where the old ground is already high above the main river, the
-            // basin adds less.
-            let base = match join[i] {
-                usize::MAX => old_levels[i],
-                j => river_levels[chain_index[j]],
-            };
-            let already = (old_levels[i] - base).clamp(0.0, target);
-            old_levels[i] + (target - KEEP * already) * fade(edge[i]) * gap(dirs[i])
+            let target = spec.height * shape(i);
+            let already = (old_levels[i] - base(i)).clamp(0.0, target);
+            let onto = old_levels[i] + target - KEEP * already;
+            let extra = (ground_rise[i] - spec.height).max(0.0);
+            let up = (shape(i) / crest[i].max(1e-9)).min(1.0).powf(CARVED);
+            let carved = base(i) + target + extra * up;
+            let t = smoothstep(extra / spec.height.max(1.0));
+            let new = onto + (carved - onto) * t;
+            old_levels[i] + (new - old_levels[i]) * fade(edge[i]) * gap(dirs[i])
         })
         .collect();
     // Each cell is above its receiver, so the old ground has no hollows in
@@ -601,8 +650,8 @@ pub fn basin(map: &Heightmap, line: &BasinLine) -> BasinCut {
         .collect();
     // Each cell next to the main river is above the river cells next to it.
     // Thus the main river stays on the line.
-    let bank = STEP + BANK * spec.height;
     for i in (0..count).filter(|&i| inner[i] && !on_chain[i]) {
+        let bank = STEP + BANK * relief[i];
         let near = window.neighbors(i);
         let river = near
             .iter()
@@ -638,15 +687,16 @@ pub fn basin(map: &Heightmap, line: &BasinLine) -> BasinCut {
         rain: rain.iter().map(|&r| f64::from(r)).collect(),
         old: old_levels,
         levels: levels.clone(),
+        relief: relief.clone(),
         lifts,
         sea,
         seed,
     };
-    let mut rough = ROUGH * spec.height;
+    let mut rough = ROUGH;
     let levels = grid.levels.clone();
     while grid.window.cell > 1 && 2 * grid.window.cells <= FINE_CELLS {
-        let rough_at = |p: V3, e: f64, size: f64| rough * fractal(p, size, seed) * fade(e) * gap(p);
-        grid = grid.finer(map, &river, rough_at);
+        let rough_at = |p: V3, e: f64, size: f64| fractal(p, size, seed) * fade(e) * gap(p);
+        grid = grid.finer(map, &river, rough, rough_at);
         grid.erode(rough);
         rough *= ROUGH_FALLOFF;
     }
@@ -757,7 +807,8 @@ pub fn basin(map: &Heightmap, line: &BasinLine) -> BasinCut {
         if fine_cell > 1.5 * texel_size {
             // The detail fades out at the main river.
             let calm = smoothstep(d / (3.0 * fine_cell));
-            new += 0.5 * rough * fractal(p, fine_cell, seed) * fade(e) * gap(p) * calm;
+            let height = bilinear(&grid.relief, fine_side, u, v);
+            new += 0.5 * rough * height * fractal(p, fine_cell, seed) * fade(e) * gap(p) * calm;
         }
         if let Some(bin) = lines.window_bin(u, v) {
             let surface = new;
@@ -965,6 +1016,8 @@ struct Level {
     /// The level of each cell before the basin.
     old: Vec<f64>,
     levels: Vec<f64>,
+    /// The height of the relief at each cell.
+    relief: Vec<f64>,
     /// The height of the level of the main river above its bed at each
     /// distance along the main river.
     lifts: Vec<(f64, f64)>,
@@ -987,12 +1040,14 @@ struct GridFlow {
 
 impl Level {
     /// The grid with cells of half the size. It takes the change of this
-    /// grid, and `rough` gives the rough ground of a direction, a distance to
-    /// the outline, and a size.
+    /// grid, and rough ground of `part` of the height of the relief. `rough`
+    /// gives the rough ground of a direction, a distance to the outline, and
+    /// a size, from about -1 to 1.
     fn finer(
         &self,
         map: &Heightmap,
         river: &StrokeLine,
+        part: f64,
         rough: impl Fn(V3, f64, f64) -> f64,
     ) -> Level {
         let window = Window {
@@ -1025,6 +1080,7 @@ impl Level {
         let distance = up(&self.distance);
         let along = up(&self.along);
         let edge = up(&self.edge);
+        let relief = up(&self.relief);
         let chain = chain_cells(river, &window);
         let mut inside: Vec<bool> = edge.iter().map(|&e| e >= HALF_DIAGONAL * cell).collect();
         for &c in &chain {
@@ -1061,7 +1117,7 @@ impl Level {
             .map(|i| {
                 if inside[i] {
                     let p = window.cell_dir(i % side, i / side);
-                    old[i] + change[i] + rough(p, edge[i], 2.0 * cell)
+                    old[i] + change[i] + part * relief[i] * rough(p, edge[i], 2.0 * cell)
                 } else {
                     old[i]
                 }
@@ -1095,6 +1151,7 @@ impl Level {
             rain: up(&self.rain),
             old,
             levels,
+            relief,
             lifts: self.lifts.clone(),
             sea: self.sea,
             seed: self.seed,
@@ -1198,9 +1255,10 @@ impl Level {
     }
 
     /// Erodes the cells with a few implicit steps of the stream-power law.
-    /// The steps cut a cell by `rough` times `CARVE` at most, so the level
-    /// adds valleys at its own scale. The main river keeps its levels.
-    fn erode(&mut self, rough: f64) {
+    /// The rough ground of a cell is `part` of the height of its relief. The
+    /// steps cut a cell by its rough ground times `CARVE` at most, so the
+    /// level adds valleys at its own scale. The main river keeps its levels.
+    fn erode(&mut self, part: f64) {
         let side = self.window.cells;
         let cell = FRAC_PI_2 * self.window.cell as f64 / self.window.face_size as f64;
         let mut on_chain = vec![false; side * side];
@@ -1223,9 +1281,15 @@ impl Level {
                     self.window.cell_dir(r % side, r / side),
                 ) / cell;
                 let f = ERODE * flow.area[i].powf(AREA_EXPONENT) / run;
-                // A pit fills to one step of rough ground below its rim, so
-                // a hollow stays shallow.
-                let from = self.levels[i].max(flow.filled[i] - rough);
+                // A shallow pit fills to one step of rough ground below its
+                // rim, so a hollow of the rough ground stays shallow. A deep
+                // hollow of the old ground stays.
+                let rough = part * self.relief[i];
+                let from = if flow.filled[i] - self.levels[i] <= PIT * rough {
+                    self.levels[i].max(flow.filled[i] - rough)
+                } else {
+                    self.levels[i]
+                };
                 let drop = ((from - self.levels[r]) * f / (1.0 + f)).clamp(0.0, CARVE * rough);
                 self.levels[i] = from - drop;
             }
@@ -1556,6 +1620,80 @@ fn bilinear(field: &[f64], side: usize, u: f64, v: f64) -> f64 {
     top * (1.0 - ty) + bottom * ty
 }
 
+/// A field on a square of `side` cells, blurred by three boxes of `span`
+/// cells to each side. Only the cells of `mask` count, and a cell with no
+/// such cell near it keeps its value.
+fn blur(field: &[f64], mask: &[bool], side: usize, span: usize) -> Vec<f64> {
+    let mut sum: Vec<f64> = field
+        .iter()
+        .zip(mask)
+        .map(|(&f, &m)| if m { f } else { 0.0 })
+        .collect();
+    let mut weight: Vec<f64> = mask.iter().map(|&m| if m { 1.0 } else { 0.0 }).collect();
+    for _ in 0..3 {
+        for along_x in [true, false] {
+            sum = box_pass(&sum, side, span, along_x);
+            weight = box_pass(&weight, side, span, along_x);
+        }
+    }
+    (0..field.len())
+        .map(|i| {
+            if weight[i] > 1e-9 {
+                sum[i] / weight[i]
+            } else {
+                field[i]
+            }
+        })
+        .collect()
+}
+
+/// The sum of a field over `span` cells to each side, along x or along y.
+fn box_pass(field: &[f64], side: usize, span: usize, along_x: bool) -> Vec<f64> {
+    let at = |line: usize, k: usize| {
+        if along_x {
+            line * side + k
+        } else {
+            k * side + line
+        }
+    };
+    let mut out = vec![0.0; field.len()];
+    let mut prefix = vec![0.0; side + 1];
+    for line in 0..side {
+        for k in 0..side {
+            prefix[k + 1] = prefix[k] + field[at(line, k)];
+        }
+        for k in 0..side {
+            let (lo, hi) = (k.saturating_sub(span), (k + span + 1).min(side));
+            out[at(line, k)] = prefix[hi] - prefix[lo];
+        }
+    }
+    out
+}
+
+/// The highest value of a field within `span` cells along x and along y.
+fn max_filter(field: &[f64], side: usize, span: usize) -> Vec<f64> {
+    let pass = |field: &[f64], along_x: bool| -> Vec<f64> {
+        let at = |line: usize, k: usize| {
+            if along_x {
+                line * side + k
+            } else {
+                k * side + line
+            }
+        };
+        let mut out = vec![0.0; field.len()];
+        for line in 0..side {
+            for k in 0..side {
+                let (lo, hi) = (k.saturating_sub(span), (k + span + 1).min(side));
+                out[at(line, k)] = (lo..hi)
+                    .map(|m| field[at(line, m)])
+                    .fold(f64::MIN, f64::max);
+            }
+        }
+        out
+    };
+    pass(&pass(field, true), false)
+}
+
 /// The rectangle of each face that the cells of an area touch.
 fn basin_rects(window: &Window, inside: &[bool], n: usize) -> Vec<(usize, TexelRect)> {
     let side = window.cells;
@@ -1760,6 +1898,66 @@ mod tests {
             .sum::<f64>()
             / 3.0;
         assert!(bend > 0.14, "{bend}");
+    }
+
+    /// The relief of the ground in a band of longitude inside the outline of
+    /// `outline_of`: the 90th percentile of the height less the 10th, in
+    /// meters.
+    fn relief_in(map: &Heightmap, lon: (f64, f64), wave: f64) -> f64 {
+        let mut heights = Vec::new();
+        for a in 0..=60 {
+            for b in 0..=60 {
+                let x = lon.0 + (lon.1 - lon.0) * f64::from(a) / 60.0;
+                let y = middle(x, wave) + (WIDTH - 2.0) * (f64::from(b) / 30.0 - 1.0);
+                heights.push(f64::from(map.sample(lonlat_to_dir(x, y))) * METERS_PER_LEVEL);
+            }
+        }
+        heights.sort_by(f64::total_cmp);
+        heights[heights.len() * 9 / 10] - heights[heights.len() / 10]
+    }
+
+    #[test]
+    fn the_relief_follows_the_old_ground_across_mountains_and_lowlands() {
+        // Mountains 2,000 m high in the west and lowlands in the east.
+        let n = 512;
+        let mut map = ground_of(n);
+        for y in 0..n {
+            for x in 0..n {
+                let (lon, _) = dir_to_lonlat(map.texel_dir(0, x, y));
+                let range = 2000.0 * smoothstep((-lon - 2.0) / 8.0);
+                map.set(0, x, y, level(150.0 + range));
+            }
+        }
+        let spec = BasinSpec {
+            height: 300.0 / METERS_PER_LEVEL,
+            ..spec(2.0, 7)
+        };
+        let line = line_of(n, spec, -20.0, 20.0, 2.0);
+        let after = apply(&map, &basin(&map, &line));
+        let mountains = relief_in(&after, (-18.0, -12.0), 2.0);
+        let lowlands = relief_in(&after, (6.0, 14.0), 2.0);
+        // The basin cuts valleys into the mountains, and the hills of the
+        // lowlands follow the Height setting. A relief of one Height setting
+        // gives about 40 m in the mountains.
+        assert!(mountains > 200.0, "{mountains} m");
+        assert!(lowlands > 50.0 && lowlands < 150.0, "{lowlands} m");
+        // The mountains keep most of their height above the lowlands.
+        let top = |map: &Heightmap| {
+            let mut h: Vec<f64> = (0..=40)
+                .flat_map(|a| (0..=40).map(move |b| (a, b)))
+                .map(|(a, b)| {
+                    let x = -18.0 + 6.0 * f64::from(a) / 40.0;
+                    let y = middle(x, 2.0) + (WIDTH - 2.0) * (f64::from(b) / 20.0 - 1.0);
+                    f64::from(map.sample(lonlat_to_dir(x, y))) * METERS_PER_LEVEL
+                        + crate::cube::ELEV_MIN
+                })
+                .collect();
+            h.sort_by(f64::total_cmp);
+            h[h.len() * 9 / 10]
+        };
+        let (old_top, new_top) = (top(&map), top(&after));
+        let kept = (new_top - 150.0) / (old_top - 150.0);
+        assert!(kept > 0.65, "{old_top} m, {new_top} m");
     }
 
     #[test]
@@ -2211,7 +2409,23 @@ mod tests {
         let n = var("N", 2048.0) as usize;
         let (from, to, z) = (var("FROM", -15.0), var("TO", 15.0), var("Z", 20.0));
         let mut map = Heightmap::new(n, level(300.0));
-        if var("TERRAIN", 0.0) > 0.0 {
+        if var("TERRAIN", 0.0) > 1.0 {
+            // Mountains in the west and lowlands in the east.
+            for y in 0..n {
+                for x in 0..n {
+                    let p = map.texel_dir(0, x, y);
+                    let (lon, _) = crate::math::dir_to_lonlat(p);
+                    let hills = 300.0 * fractal(p, 0.02, 4);
+                    let range = 2200.0 * smoothstep((-lon - 2.0) / 8.0);
+                    map.set(
+                        0,
+                        x,
+                        y,
+                        level(150.0 + range * (1.0 + hills / 600.0) + hills.abs() * 0.2),
+                    );
+                }
+            }
+        } else if var("TERRAIN", 0.0) > 0.0 {
             // Rough hills and a ridge across the basin.
             for y in 0..n {
                 for x in 0..n {
