@@ -84,7 +84,7 @@ fn run() -> anyhow::Result<u8> {
                     .pad
                     .docks
                     .atlas
-                    .follow_frame(vale_app::ui::pad::Panel::Frame);
+                    .follow_frame(vale_app::ui::pad::Panel::Properties);
                 state.pad.atlas_selection = Some(state.atlas.selection);
             }
             state.pad.dock_mut().collapsed = true;

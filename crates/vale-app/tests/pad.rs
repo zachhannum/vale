@@ -4008,7 +4008,7 @@ fn the_readout_has_the_view_buttons_and_the_graticule_button() {
                 .filter(inside)
                 .max_by(|a, b| a.y.total_cmp(&b.y))
                 // The margin at the left of the rows scrolls too.
-                .unwrap_or(pos2(card.left() + 6.0, card.bottom() - 40.0));
+                .unwrap_or(pos2(card.left() + 6.0, card.bottom() - 60.0));
             let to = pos2(from.x, (from.y - 400.0).max(40.0));
             drag(&mut h, from, to, None);
             rivers = control(&h, RIVERS).is_some();
@@ -4151,15 +4151,20 @@ fn the_top_row_and_the_panels_match_the_landscape_board() {
     assert_eq!(control(&h, ADD_LAYER).unwrap().min, pos2(1146.0, 96.0));
     // The Brush panel is a pane below a bar.
     let brush = panel(&h, Panel::Brush).unwrap();
-    assert_eq!(brush.min, pos2(854.0, layers.bottom() + 14.0));
+    assert_eq!(
+        brush.min,
+        pos2(854.0, layers.bottom() + vale_app::ui::pad::panes::BAR)
+    );
     assert_eq!(brush.width(), 340.0);
     // Toolbox opens below the Brush pane, which gets shorter.
     toolbox(&mut h);
-    assert_eq!(panel(&h, Panel::Brush).unwrap().min, brush.min);
+    let layers = panel(&h, Panel::Layers).unwrap();
+    let brush = panel(&h, Panel::Brush).unwrap();
+    assert_eq!(brush.top(), layers.bottom() + vale_app::ui::pad::panes::BAR);
     let toolbox = panel(&h, Panel::Toolbox).unwrap();
     assert_eq!(
         toolbox.top(),
-        panel(&h, Panel::Brush).unwrap().bottom() + 14.0
+        panel(&h, Panel::Brush).unwrap().bottom() + vale_app::ui::pad::panes::BAR
     );
     assert!(panel(&h, Panel::Layers).is_some());
 }
@@ -6560,7 +6565,7 @@ fn scroll_brush_to(h: &mut Pad, name: &str) {
         if control(h, name).is_some_and(inside) {
             return;
         }
-        let from = pos2(card.left() + 6.0, card.bottom() - 40.0);
+        let from = pos2(card.left() + 6.0, card.bottom() - 60.0);
         drag(h, from, from - vec2(0.0, 120.0), None);
     }
 }
@@ -7057,7 +7062,7 @@ fn scroll_to(h: &mut Pad, name: &str) {
         if control(h, name).is_some_and(inside) {
             return;
         }
-        let from = pos2(card.left() + 6.0, card.bottom() - 40.0);
+        let from = pos2(card.left() + 6.0, card.bottom() - 60.0);
         drag(h, from, from - vec2(0.0, 200.0), None);
     }
 }
@@ -7947,6 +7952,7 @@ fn a_name_that_is_not_free_turns_add_off() {
     tap(&mut h, ADD_LAYER);
     tap(&mut h, "Points");
     let id = vector(&h, "Points 1");
+    scroll_to_control(&mut h, ADD_FIELD);
     tap(&mut h, ADD_FIELD);
     // A blank name is not free.
     assert!(control(&h, ADD).is_none());
@@ -13717,14 +13723,15 @@ fn the_panels_button_opens_a_menu_with_a_tile_for_each_panel() {
             "Layers",
             select::ATTRIBUTES,
             "Toolbox",
+            "Brush",
             CLOSE_ALL,
             RESET_LAYOUT,
         ] {
             let tile = control(&h, name).unwrap_or_else(|| panic!("{size:?}: {name}"));
             assert!(menu.contains_rect(tile), "{size:?}: {name}");
         }
-        // The Move tool has no Brush panel, so its tile is off.
-        assert!(control(&h, "Brush").is_none(), "{size:?}");
+        // No tile is off, also the Brush tile with the Move tool.
+        assert!(!disabled(&h, "Brush"), "{size:?}");
         check_controls(&h, &format!("{size:?} with the Panels menu"));
 
         // A tap on a tile opens its panel and closes the menu. A tap on
@@ -13795,7 +13802,7 @@ fn each_pane_has_a_bar_below_it_that_changes_its_height() {
 
     // The last pane has a bar too, at the bottom of the dock.
     let dock = h.state().pad.dock_rect.unwrap();
-    assert_eq!(dock.bottom(), toolbox.bottom() + BAR);
+    assert_eq!(dock.bottom(), toolbox.bottom() + BAR + 10.0);
 
     // The pane above the bar gets shorter. The pane below it shows all its
     // content, so it keeps its height and moves up.
@@ -13813,6 +13820,19 @@ fn each_pane_has_a_bar_below_it_that_changes_its_height() {
     assert_eq!(below.top(), above.bottom() + BAR);
     let panes = &h.state().pad.docks.world.panes;
     assert!(panes[0].height.is_some() && panes[1].height.is_none());
+
+    // The bar takes a touch 44 points high. The last bar is at the bottom
+    // of the dock, and its touch area ends there.
+    let mut one = docked(BOARDS[0], &[&[Panel::Layers]]);
+    let before = panel(&one, Panel::Layers).unwrap();
+    let bottom = one.state().pad.dock_rect.unwrap().bottom();
+    assert_eq!(bottom, before.bottom() + BAR + 10.0);
+    let at = pos2(before.center().x, bottom - 6.0);
+    drag(&mut one, at, at - vec2(0.0, 30.0), None);
+    // The first step of the drag goes to its start.
+    let after = panel(&one, Panel::Layers).unwrap();
+    let less = before.height() - after.height();
+    assert!((20.0..=30.0).contains(&less), "{after:?}");
 
     // The pane grows back into the free room, and never past its content.
     let bar = pos2(above.center().x, above.bottom() + BAR / 2.0);

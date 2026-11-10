@@ -1,13 +1,12 @@
 //! The Panels menu: a tile for each panel of the workspace, and the rows
-//! "Close all" and "Reset layout". A tinted tile is an open panel. A closed tile is off when its panel does
-//! nothing.
+//! "Close all" and "Reset layout". A tinted tile is an open panel.
 
 use eframe::egui::{self, Align2, Order, Rect, Sense, pos2, vec2};
 
 use super::geometry::{self, PANELS_MENU_WIDTH, Rects};
 use super::icons::{self, Icon};
 use super::widgets::{self, Controls, HIGHLIGHT_INSET, ICON, PANEL_ROW};
-use super::{PANELS, Panel, brush_settings, theme};
+use super::{PANELS, Panel, theme};
 use crate::ui::{AppState, Workspace, select};
 
 pub const BRUSH: &str = "Brush";
@@ -34,7 +33,6 @@ pub struct Tile {
     pub name: &'static str,
     pub icon: Icon,
     pub open: bool,
-    pub enabled: bool,
 }
 
 /// A group of tiles under a heading.
@@ -43,67 +41,54 @@ pub struct Group {
     pub tiles: Vec<Tile>,
 }
 
-/// A tile. An open panel can always close.
-fn tile(entry: Panel, name: &'static str, icon: Icon, open: bool, enabled: bool) -> Tile {
-    Tile {
+/// The tiles of the World workspace.
+pub fn world(state: &AppState) -> Vec<Group> {
+    let panel = |entry: Panel, name, icon| Tile {
         entry,
         name,
         icon,
-        open,
-        enabled: enabled || open,
-    }
-}
-
-/// The tiles of the World workspace.
-pub fn world(state: &AppState) -> Vec<Group> {
-    let pad = &state.pad;
-    let brush = brush_settings(state);
-    let panel =
-        |panel: Panel, name, icon, enabled| tile(panel, name, icon, pad.is_open(panel), enabled);
+        open: state.pad.is_open(entry),
+    };
     vec![Group {
         heading: WORLD,
         tiles: vec![
-            panel(Panel::Layers, "Layers", Icon::Layers, true),
-            panel(
-                Panel::Attributes,
-                select::ATTRIBUTES,
-                Icon::Attributes,
-                true,
-            ),
-            panel(Panel::Toolbox, super::TOOLBOX, Icon::Toolbox, true),
-            panel(Panel::Brush, BRUSH, Icon::Brush, brush),
+            panel(Panel::Layers, "Layers", Icon::Layers),
+            panel(Panel::Attributes, select::ATTRIBUTES, Icon::Attributes),
+            panel(Panel::Toolbox, super::TOOLBOX, Icon::Toolbox),
+            panel(Panel::Brush, BRUSH, Icon::Brush),
         ],
     }]
 }
 
 /// The tiles of the Atlas workspace.
 pub fn atlas(state: &AppState) -> Vec<Group> {
-    let pad = &state.pad;
-    let panel = |panel: Panel, name, icon, enabled: bool| {
-        tile(panel, name, icon, pad.is_open(panel), enabled)
+    let panel = |entry: Panel, name, icon| Tile {
+        entry,
+        name,
+        icon,
+        open: state.pad.is_open(entry),
     };
-    let [frame_name, projection, layers, labels] = super::atlas::FRAME_TABS;
+    let [_, projection, layers, labels] = super::atlas::FRAME_TABS;
     vec![
         Group {
             heading: SELECTION,
             tiles: vec![
-                panel(Panel::Frame, frame_name, Icon::Frame, true),
-                panel(Panel::Projection, projection, Icon::Projection, true),
-                panel(Panel::Layers, layers, Icon::Layers, true),
-                panel(Panel::Labels, labels, Icon::Tag, true),
+                panel(
+                    Panel::Properties,
+                    super::atlas::PROPERTIES,
+                    Icon::Properties,
+                ),
+                panel(Panel::Projection, projection, Icon::Projection),
+                panel(Panel::Layers, layers, Icon::Layers),
+                panel(Panel::Labels, labels, Icon::Tag),
             ],
         },
         Group {
             heading: ATLAS,
             tiles: vec![
-                panel(Panel::Pages, PAGES, Icon::Pages, true),
-                panel(
-                    Panel::Attributes,
-                    select::ATTRIBUTES,
-                    Icon::Attributes,
-                    true,
-                ),
-                panel(Panel::Brush, BRUSH, Icon::Brush, state.measuring()),
+                panel(Panel::Pages, PAGES, Icon::Pages),
+                panel(Panel::Attributes, select::ATTRIBUTES, Icon::Attributes),
+                panel(Panel::Brush, BRUSH, Icon::Brush),
             ],
         },
     ]
@@ -208,7 +193,7 @@ pub fn show(
         state.pad.dock_mut().reset();
         // A selected frame opens its Frame panel.
         if state.workspace == Workspace::Atlas && state.atlas.frame().is_some() {
-            state.pad.dock_mut().follow_frame(Panel::Frame);
+            state.pad.dock_mut().follow_frame(Panel::Properties);
         }
         state.pad.panels_menu = false;
     }
@@ -222,7 +207,7 @@ fn paint_tile(ui: &egui::Ui, controls: &mut Controls, rect: Rect, tile: &Tile) -
         rect,
         tile.name,
         Sense::click(),
-        tile.enabled,
+        true,
         Some(tile.open),
     );
     let fill = if tile.open {
@@ -243,16 +228,9 @@ fn paint_tile(ui: &egui::Ui, controls: &mut Controls, rect: Rect, tile: &Tile) -
         theme::MUTE
     };
     let icon = Rect::from_center_size(pos2(rect.center().x, rect.top() + 26.0), vec2(ICON, ICON));
-    icons::paint(
-        painter,
-        icon,
-        tile.icon,
-        ICON,
-        widgets::fade(color, tile.enabled),
-    );
+    icons::paint(painter, icon, tile.icon, ICON, color);
     let color = if tile.open { theme::TEXT } else { theme::MUTE };
     let at = pos2(rect.center().x, rect.bottom() - 18.0);
-    let color = widgets::fade(color, tile.enabled);
     painter.text(at, Align2::CENTER_CENTER, tile.name, theme::hint(), color);
     resp.clicked()
 }

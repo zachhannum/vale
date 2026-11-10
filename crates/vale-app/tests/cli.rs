@@ -115,12 +115,12 @@ fn the_layout_and_the_panels_come_from_the_flags() {
         "--workspace",
         "atlas",
         "--tabs",
-        "frame,labels",
+        "properties,labels",
         "--frame",
         "2",
     ];
     let args = Args::parse_from(["vale-app"].into_iter().chain(flags));
-    assert_eq!(args.tabs, vec![vec![Panel::Frame, Panel::Labels]]);
+    assert_eq!(args.tabs, vec![vec![Panel::Properties, Panel::Labels]]);
     assert_eq!(args.frame, Some(2));
     assert_eq!(args.world_form, None);
     assert!(!args.brush_modes);

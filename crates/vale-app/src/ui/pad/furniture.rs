@@ -144,7 +144,7 @@ fn page_key(page: &ItemPage) -> &'static str {
 /// The title of a page of the panel of an item of `kind`.
 fn page_title(page: Option<&ItemPage>, kind: ItemKind) -> &'static str {
     match page {
-        None => kind.name(),
+        None => super::atlas::PROPERTIES,
         Some(ItemPage::Frame) => MAP_FRAME,
         Some(ItemPage::Face(_)) => STYLE,
         Some(ItemPage::Case(_)) => CASE,
@@ -180,7 +180,7 @@ pub(super) fn head(state: &mut AppState, id: FurnitureId) -> Option<Head> {
     let kind = ItemKind::of(&rec.item);
     let page = state.atlas.item_page.clone();
     let (key, title, back) = match &page {
-        None => (key_of(kind), kind.name(), None),
+        None => (key_of(kind), super::atlas::PROPERTIES, None),
         Some(p) => {
             let back = page_title(p.parent().as_ref(), kind);
             let title = match (&rec.item, p) {
@@ -245,7 +245,7 @@ pub(super) fn head(state: &mut AppState, id: FurnitureId) -> Option<Head> {
         }
     };
     let parts = PageParts::new(key, title, back);
-    Some(parts.head(Panel::Item, back_to, top, body))
+    Some(parts.head(Panel::Properties, back_to, top, body))
 }
 
 /// An empty state.

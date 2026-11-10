@@ -98,6 +98,8 @@ pub enum Icon {
     Book,
     /// A folder.
     Folder,
+    /// The Properties panel: three sliders.
+    Properties,
 }
 
 impl Icon {
@@ -159,6 +161,9 @@ impl Icon {
                 "M3 5h6c1.66 0 3 1.34 3 3v12c0-1.1-.9-2-2-2H3zM21 5h-6c-1.66 0-3 1.34-3 3v12c0-1.1.9-2 2-2h7z"
             }
             Icon::Folder => "M3 5h6l2 3h10v11H3z",
+            Icon::Properties => {
+                "M4 6h9M17 6h3M15 4v4M4 12h3M11 12h9M9 10v4M4 18h11M19 18h1M17 16v4"
+            }
             Icon::Pin => "M9 3h6l-1 6 3.5 3.5h-11L10 9zM12 12.5V21",
             Icon::Panels => "M3 4h18v16H3zM3 9h18M10 9v11",
             Icon::Dock => "M3 4h18v16H3zM14 4v16M16.5 8h2M16.5 11h2",

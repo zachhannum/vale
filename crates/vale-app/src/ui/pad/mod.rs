@@ -349,17 +349,14 @@ pub enum Panel {
     Layers,
     Toolbox,
     Attributes,
-    /// The settings of the selected frame.
-    Frame,
+    /// The settings of the selected map frame or item of the page.
+    Properties,
     /// The projection of the map of the selected frame.
     Projection,
     /// The label classes of the map of the selected frame.
     Labels,
     /// The open page of the atlas.
     Pages,
-    /// The selected item of the page. It has no tile.
-    #[value(skip)]
-    Item,
 }
 
 impl Panel {
@@ -369,11 +366,10 @@ impl Panel {
             Panel::Layers => "pad-layers",
             Panel::Toolbox => "pad-toolbox",
             Panel::Attributes => "pad-attributes",
-            Panel::Frame => "pad-frame",
+            Panel::Properties => "pad-properties",
             Panel::Projection => "pad-projection",
             Panel::Labels => "pad-labels",
             Panel::Pages => "pad-pages",
-            Panel::Item => "pad-item",
         }
     }
 
@@ -381,7 +377,7 @@ impl Panel {
     /// same rows.
     pub fn frame_tab(self) -> Option<FrameTab> {
         match self {
-            Panel::Frame => Some(FrameTab::Frame),
+            Panel::Properties => Some(FrameTab::Frame),
             Panel::Projection => Some(FrameTab::Projection),
             Panel::Layers => Some(FrameTab::Layers),
             Panel::Labels => Some(FrameTab::Labels),
@@ -393,7 +389,7 @@ impl Panel {
 impl From<FrameTab> for Panel {
     fn from(tab: FrameTab) -> Panel {
         match tab {
-            FrameTab::Frame => Panel::Frame,
+            FrameTab::Frame => Panel::Properties,
             FrameTab::Projection => Panel::Projection,
             FrameTab::Layers => Panel::Layers,
             FrameTab::Labels => Panel::Labels,
@@ -1763,11 +1759,10 @@ pub fn panel_name(state: &AppState, panel: Panel) -> &'static str {
         Panel::Layers => LAYERS,
         Panel::Toolbox => TOOLBOX,
         Panel::Attributes => select::ATTRIBUTES,
-        Panel::Frame => atlas::FRAME_TABS[0],
+        Panel::Properties => atlas::PROPERTIES,
         Panel::Projection => atlas::FRAME_TABS[1],
         Panel::Labels => atlas::FRAME_TABS[3],
         Panel::Pages => panels_menu::PAGES,
-        Panel::Item => atlas::item_name(state),
     }
 }
 
@@ -1777,11 +1772,10 @@ pub fn panel_icon(panel: Panel) -> Icon {
         Panel::Layers => Icon::Layers,
         Panel::Toolbox => Icon::Toolbox,
         Panel::Attributes => Icon::Attributes,
-        Panel::Frame => Icon::Frame,
+        Panel::Properties => Icon::Properties,
         Panel::Projection => Icon::Projection,
         Panel::Labels => Icon::Tag,
         Panel::Pages => Icon::Pages,
-        Panel::Item => Icon::Attributes,
     }
 }
 

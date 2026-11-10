@@ -15,7 +15,9 @@ use crate::ui::AppState;
 /// The handle that changes the width of the dock.
 pub const DOCK_WIDTH: &str = "Dock width";
 /// The height of the part of a bar that takes a drag.
-const BAR_TOUCH: f32 = 24.0;
+const BAR_TOUCH: f32 = TOUCH;
+/// The extra height of the last bar, so its touch area is in the dock.
+const FOOT: f32 = (BAR_TOUCH - BAR) / 2.0;
 /// The size of the handle at the left edge of the dock.
 const HANDLE: (f32, f32) = (TOUCH, 64.0);
 /// The padding at each side of the name of a tab.
@@ -297,8 +299,9 @@ fn show_dock(
     let wanted: Vec<f32> = (state.pad.dock().panes.iter().zip(&natural))
         .map(|(pane, &natural)| pane.height.map_or(natural, |h| h.min(natural)))
         .collect();
-    let heights = panes::fit(&wanted, room.height());
-    let total = heights.iter().sum::<f32>() + BAR * heights.len() as f32;
+    let space = room.height() - FOOT;
+    let heights = panes::fit(&wanted, space);
+    let total = heights.iter().sum::<f32>() + BAR * heights.len() as f32 + FOOT;
     let rect = Rect::from_min_size(room.min, vec2(room.width(), total.min(room.height())));
     // A collapsing dock slides off the right edge.
     let rect = rect.translate(vec2((slide * room.width()).round(), 0.0));
@@ -362,7 +365,6 @@ fn show_dock(
                 let pill = Rect::from_center_size(bar.center(), vec2(36.0, 4.0));
                 let pill = pill.translate(vec2((line.center().x - bar.center().x).round(), 0.0));
                 let touch = Rect::from_center_size(bar.center(), vec2(bar.width(), BAR_TOUCH));
-                let touch = touch.intersect(rect);
                 let sense = Sense::click_and_drag();
                 let resp = ui.interact(touch, ui.id().with(("pad-bar", i)), sense);
                 let color = if resp.dragged() {
@@ -374,12 +376,12 @@ fn show_dock(
                 if resp.dragged() && resp.drag_delta().y != 0.0 {
                     let delta = resp.drag_delta().y;
                     let dock = state.pad.dock_mut();
-                    dock.resize(i, delta, &heights, &natural, room.height());
+                    dock.resize(i, delta, &heights, &natural, space);
                     ctx.request_repaint();
                 }
                 if resp.double_clicked() {
                     let dock = state.pad.dock_mut();
-                    dock.grow(i, &heights, &natural, room.height());
+                    dock.grow(i, &heights, &natural, space);
                 }
             }
         },

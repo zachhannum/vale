@@ -5,7 +5,7 @@ use eframe::egui;
 use vale_labeler::Face;
 use vale_store::{CoordFormat, EdgeLabels, EdgeOrientation, FrameId, Graticule, Rgba};
 
-use super::atlas::{FRAME_TABS, LABEL_FORMAT, LABEL_FORMATS, named_tabs};
+use super::atlas::{LABEL_FORMAT, LABEL_FORMATS, named_tabs};
 use super::labels::{color_rows, faces_of};
 use super::number::Number;
 use super::raster::heading;
@@ -64,7 +64,11 @@ pub(super) fn head(state: &mut AppState, id: FrameId) -> Option<Head> {
     let (key, title, back) = if styles {
         ("pad-atlas-edge-styles", STYLES_TITLE, EDGE_LABELS)
     } else {
-        ("pad-atlas-edge-labels", EDGE_LABELS, FRAME_TABS[0])
+        (
+            "pad-atlas-edge-labels",
+            EDGE_LABELS,
+            super::atlas::PROPERTIES,
+        )
     };
     let back_to = |state: &mut AppState| {
         if state.atlas.edge_styles {
@@ -107,7 +111,7 @@ pub(super) fn head(state: &mut AppState, id: FrameId) -> Option<Head> {
         }
     };
     let parts = PageParts::new(key, title, Some(back));
-    Some(parts.head(Panel::Frame, back_to, top, body))
+    Some(parts.head(Panel::Properties, back_to, top, body))
 }
 
 /// The rows of the open set.

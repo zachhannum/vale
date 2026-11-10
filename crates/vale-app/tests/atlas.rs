@@ -29,7 +29,9 @@ use vale_app::ui::pad::atlas::{
     STROKE_COLOR, STROKE_WIDTH as BORDER_STROKE_WIDTH, VERTEX, WIDTH, custom_row, page_title,
     readout_text,
 };
-use vale_app::ui::pad::atlas::{BORDER_GAP, DISTANCE_BY_SIDE, GRID_COLUMN_NAMES, SIDE_DISTANCES};
+use vale_app::ui::pad::atlas::{
+    BORDER_GAP, DISTANCE_BY_SIDE, GRID_COLUMN_NAMES, PROPERTIES, SIDE_DISTANCES,
+};
 use vale_app::ui::pad::atlas::{
     EDITED, MAP_STYLE, MAP_STYLE_NAME, NO_MAP_STYLE_ROW, RESET_TO_MAP_STYLE, SAVE_AS_MAP_STYLE,
     UPDATE_MAP_STYLE, map_style_row,
@@ -259,6 +261,8 @@ fn show_tab(h: &mut Pad, name: &str) {
     if !tab {
         merge_frame_tabs(h);
     }
+    // The Frame tab of the desktop is the Properties tab of the iPad.
+    let name = if i == Some(0) { PROPERTIES } else { name };
     quick_tap(h, &tab_name(name));
 }
 
@@ -502,7 +506,7 @@ fn scroll_to(h: &mut Pad, name: &str) {
         if control(h, name).is_some_and(inside) {
             return;
         }
-        let from = pos2(card.left() + 6.0, card.bottom() - 40.0);
+        let from = pos2(card.left() + 6.0, card.bottom() - 60.0);
         drag(h, from, from - vec2(0.0, 200.0), Input::Finger);
     }
 }
@@ -668,7 +672,7 @@ fn a_tap_opens_the_panel_of_a_frame_or_of_the_page() {
     tap_with(&mut h, at, Input::Finger);
     assert_eq!(h.state().atlas.selection, AtlasSelection::Frame(inset));
     assert!(h.state().atlas.panel_rect.is_some());
-    let shows = h.state().pad.shows(vale_app::ui::pad::Panel::Frame);
+    let shows = h.state().pad.shows(vale_app::ui::pad::Panel::Properties);
     assert!(shows && control(&h, SCALE).is_some());
     let at = middle(&h, 0);
     tap_with(&mut h, at, Input::Finger);
@@ -1606,11 +1610,12 @@ fn each_tab_of_a_frame_takes_a_finger_and_the_open_tab_shows_its_name() {
     for size in BOARDS {
         let mut h = inset_pad(size);
         merge_frame_tabs(&mut h);
-        for name in FRAME_TABS {
+        let names = [PROPERTIES, FRAME_TABS[1], FRAME_TABS[2], FRAME_TABS[3]];
+        for name in names {
             let rect = h.get_by_label(&tab_name(name)).rect();
             assert!(rect.width() >= 44.0, "{size:?} {name}: {rect:?}");
         }
-        let name = FRAME_TABS[0];
+        let name = PROPERTIES;
         let rect = h.get_by_label(&tab_name(name)).rect();
         let font = vale_app::ui::pad::theme::body();
         let text = h.ctx.fonts_mut(|f| {
@@ -1672,7 +1677,7 @@ fn the_context_strip_deletes_the_frame_and_undo_brings_it_back() {
     assert!(h.state().atlas.vertices.is_empty());
     assert!(!h.state().atlas.has_image(inset.id));
     // The panes of the frame stay, with their hints.
-    assert!(h.state().pad.is_open(vale_app::ui::pad::Panel::Frame));
+    assert!(h.state().pad.is_open(vale_app::ui::pad::Panel::Properties));
     assert!(control(&h, DELETE_SELECTION).is_none());
     assert!(control(&h, DESELECT).is_none());
 
@@ -2298,7 +2303,7 @@ fn the_graticule_controls_work_with_a_finger() {
         tap(&mut h, SHOW_LABELS);
         assert!(!frame(&h, 1).graticule.parallels.on, "{size:?}");
         assert!(control(&h, &value_of(EDGE_OFFSET)).is_none(), "{size:?}");
-        tap(&mut h, &format!("Back to {}", FRAME_TABS[0]));
+        tap(&mut h, &format!("Back to {PROPERTIES}"));
         assert!(control(&h, SETS[0].0).is_none(), "{size:?}");
         scroll_to(&mut h, EDGE_LABELS);
     }
@@ -2600,7 +2605,7 @@ fn the_border_and_grid_controls_work_with_a_finger() {
 
         // The grid turns off with the border, and the border turns on with
         // the grid.
-        tap(&mut h, &format!("Back to {}", FRAME_TABS[0]));
+        tap(&mut h, &format!("Back to {PROPERTIES}"));
         scroll_up_to(&mut h, BORDER);
         tap(&mut h, BORDER);
         let b = &frame(&h, 1).border;
@@ -5932,7 +5937,7 @@ fn a_tap_opens_the_panel_of_an_item_and_its_controls_work_with_a_finger() {
         Some(ItemPage::Face(TextPart::Text))
     );
     check_controls(&h, "style page");
-    tap(&mut h, "Back to Text");
+    tap(&mut h, "Back to Properties");
     assert_eq!(h.state().atlas.item_page, None);
     type_text(&mut h, ITEM_TEXT, "Vesperan");
     let Furniture::Text(text) = &item(&h, 0).item else {
@@ -6207,7 +6212,7 @@ fn every_page_of_the_scale_bar_panel_works_with_a_finger() {
             h.query_by_label("Measured at the center of the frame.")
                 .is_none()
         );
-        let back = |h: &mut Pad| tap(h, "Back to Scale bar");
+        let back = |h: &mut Pad| tap(h, "Back to Properties");
 
         // The style gallery sets the kind and goes back.
         tap_row(&mut h, BarPage::Style.name());
@@ -6440,7 +6445,7 @@ fn each_change_of_a_scale_bar_is_one_undo_step() {
     h.state_mut().save_waiting().unwrap();
     tap(&mut h, BarPage::Divisions.name());
     tap(&mut h, item::BEFORE_ZERO);
-    tap(&mut h, "Back to Scale bar");
+    tap(&mut h, "Back to Properties");
     tap(&mut h, BarPage::Style.name());
     tap(&mut h, ScaleBarKind::Hollow.label());
     tap(&mut h, BarPage::Numbers.name());
@@ -6569,7 +6574,7 @@ fn each_text_part_edits_its_own_style() {
     set_case(&mut h, TextCase::Upper, TextPart::Title);
     tap_row(&mut h, item::HALO);
     picks_font(&mut h, TextPart::Title);
-    tap(&mut h, "Back to Legend");
+    tap(&mut h, "Back to Properties");
     tap(&mut h, item::ENTRIES);
     set_case(&mut h, TextCase::Lower, TextPart::Entries);
     picks_font(&mut h, TextPart::Entries);
@@ -6596,7 +6601,7 @@ fn each_text_part_edits_its_own_style() {
     set_case(&mut h, TextCase::Upper, TextPart::Numbers);
     tap_row(&mut h, item::HALO);
     picks_font(&mut h, TextPart::Numbers);
-    tap(&mut h, "Back to Scale bar");
+    tap(&mut h, "Back to Properties");
     tap(&mut h, BarPage::Units.name());
     set_case(&mut h, TextCase::Title, TextPart::Units);
     let b = bar(&h, 2);
@@ -8200,7 +8205,7 @@ fn the_map_style_page_saves_and_links_a_map_style() {
     assert_eq!(linked(&h, inset), Some(style));
 
     // Back goes to the Frame tab.
-    tap(&mut h, &format!("Back to {}", FRAME_TABS[0]));
+    tap(&mut h, &format!("Back to {PROPERTIES}"));
     assert_eq!(h.state().atlas.open_map_styles(), None);
     assert!(control(&h, MAP_NAME).is_some());
 }
@@ -8351,7 +8356,7 @@ fn the_map_style_controls_work_with_a_finger() {
         h.run_steps(2);
         find(&mut h, SAVE_AS_MAP_STYLE);
         check_controls(&h, &format!("{what}: map style buttons"));
-        tap(&mut h, &format!("Back to {}", FRAME_TABS[0]));
+        tap(&mut h, &format!("Back to {PROPERTIES}"));
 
         // The Layers tab with the marks of the local changes.
         show_tab(&mut h, FRAME_TABS[2]);
@@ -9103,14 +9108,14 @@ fn the_attributes_button_opens_the_inspector_of_the_world_in_the_atlas() {
     tap_with(&mut h, at, Input::Finger);
     assert_eq!(h.state().feature_selection, vec![town]);
     assert!(control(&h, "name").is_none());
-    assert!(h.state().pad.shows(Panel::Frame));
+    assert!(h.state().pad.shows(Panel::Properties));
     // The Attributes tile opens the inspector in a pane of its own, beside
     // the pane of the frame.
     open_panel(&mut h, ATTRIBUTES);
     assert!(h.state().pad.is_open(Panel::Attributes));
     assert!(control(&h, "name").is_some());
     assert!(control(&h, FOCUS_NEW).is_some());
-    assert!(h.state().pad.shows(Panel::Frame));
+    assert!(h.state().pad.shows(Panel::Properties));
     // It follows the selection, and it shows the empty state.
     h.state_mut().set_feature_selection(Vec::new());
     h.run_steps(2);
@@ -9118,7 +9123,7 @@ fn the_attributes_button_opens_the_inspector_of_the_world_in_the_atlas() {
     // A second tap closes it, and the pane of the frame stays.
     open_panel(&mut h, ATTRIBUTES);
     assert!(!h.state().pad.is_open(Panel::Attributes));
-    assert!(h.state().pad.shows(Panel::Frame));
+    assert!(h.state().pad.shows(Panel::Properties));
 }
 
 #[test]
@@ -9138,7 +9143,7 @@ fn a_frame_that_the_frame_tool_selects_keeps_the_inspector_open() {
         AtlasSelection::Frame(_)
     ));
     assert!(h.state().pad.is_open(Panel::Attributes));
-    assert!(h.state().pad.shows(Panel::Frame));
+    assert!(h.state().pad.shows(Panel::Properties));
 }
 
 #[test]
@@ -9395,17 +9400,17 @@ fn the_tile_of_an_open_frame_pane_is_tinted() {
     let mut h = inset_pad(BOARDS[0]);
     let id = frame(&h, 1).id;
     assert_eq!(h.state().atlas.selection, AtlasSelection::Frame(id));
-    assert_eq!(open(&h), FRAME_TABS[..1]);
+    assert_eq!(open(&h), [PROPERTIES]);
     tap(&mut h, PANELS);
     tap_tile(&mut h, FRAME_TABS[3]);
     assert!(h.state().pad.shows(Panel::Labels));
     assert_eq!(h.state().atlas.tab, FrameTab::Labels);
-    assert_eq!(open(&h), [FRAME_TABS[0], FRAME_TABS[3]]);
+    assert_eq!(open(&h), [PROPERTIES, FRAME_TABS[3]]);
     // A tap on the tile of the panel that shows closes it.
     tap(&mut h, PANELS);
     tap_tile(&mut h, FRAME_TABS[3]);
     assert!(!h.state().pad.is_open(Panel::Labels));
-    assert_eq!(open(&h), FRAME_TABS[..1]);
+    assert_eq!(open(&h), [PROPERTIES]);
     assert_eq!(h.state().atlas.selection, AtlasSelection::Frame(id));
 }
 
@@ -9416,13 +9421,13 @@ fn attributes_and_the_frame_panes_show_together() {
     let mut h = inset_pad(BOARDS[0]);
     open_panel(&mut h, ATTRIBUTES);
     let panels: Vec<Panel> = h.state().pad.panels.iter().map(|p| p.0).collect();
-    assert!(panels.contains(&Panel::Frame) && panels.contains(&Panel::Attributes));
+    assert!(panels.contains(&Panel::Properties) && panels.contains(&Panel::Attributes));
     assert_eq!(h.state().pad.dock().panes.len(), 2);
     // Another panel opens below them, and each pane stays.
     open_panel(&mut h, vale_app::ui::pad::panels_menu::PAGES);
     assert!(h.state().pad.is_open(Panel::Attributes));
     assert!(h.state().pad.is_open(Panel::Pages));
-    assert!(h.state().pad.is_open(Panel::Frame));
+    assert!(h.state().pad.is_open(Panel::Properties));
 }
 
 #[test]
@@ -9433,8 +9438,8 @@ fn a_selected_frame_opens_one_pane_with_only_the_frame_panel() {
     add_frame(&mut h);
     let dock = h.state().pad.dock();
     assert_eq!(dock.panes.len(), 1);
-    assert_eq!(dock.panes[0].tabs, [Panel::Frame]);
-    assert!(h.state().pad.shows(Panel::Frame));
+    assert_eq!(dock.panes[0].tabs, [Panel::Properties]);
+    assert!(h.state().pad.shows(Panel::Properties));
     check_controls(&h, "frame pane");
     // The next frame opens no second pane.
     add_frame(&mut h);
@@ -9457,16 +9462,16 @@ fn a_frame_pane_that_the_user_closed_stays_closed() {
     let mut h = inset_pad(BOARDS[0]);
     let main = frame(&h, 0).id;
     // A pane with one tab has its menu on its title.
-    long_press(&mut h, &move_name(FRAME_TABS[0]));
-    tap(&mut h, &close_name(FRAME_TABS[0]));
+    long_press(&mut h, &move_name(PROPERTIES));
+    tap(&mut h, &close_name(PROPERTIES));
     assert!(h.state().pad.dock().panes.is_empty());
     atlas::open_frame(h.state_mut(), main);
     h.run_steps(2);
     assert_eq!(h.state().atlas.selection, AtlasSelection::Frame(main));
     assert!(h.state().pad.dock().panes.is_empty());
     // Its tile opens it again.
-    open_panel(&mut h, FRAME_TABS[0]);
-    assert!(h.state().pad.shows(Panel::Frame));
+    open_panel(&mut h, PROPERTIES);
+    assert!(h.state().pad.shows(Panel::Properties));
     assert!(h.state().pad.dock().closed.is_empty());
 }
 
@@ -9510,7 +9515,7 @@ fn a_merged_frame_panel_opens_from_its_tile_in_the_pane_of_its_group() {
     let tabs: Vec<Vec<Panel>> = (h.state().pad.dock().panes.iter())
         .map(|p| p.tabs.clone())
         .collect();
-    assert_eq!(tabs, [vec![Panel::Frame, Panel::Labels]]);
+    assert_eq!(tabs, [vec![Panel::Properties, Panel::Labels]]);
 }
 
 #[test]
@@ -9529,13 +9534,15 @@ fn with_no_frame_the_frame_panes_stay_and_show_a_hint() {
 }
 
 #[test]
-fn the_item_pane_stays_and_shows_a_hint_with_no_item() {
+fn the_properties_pane_stays_and_shows_a_hint_with_no_selection() {
     use vale_app::ui::pad::Panel;
-    use vale_app::ui::pad::atlas::NO_ITEM;
     let mut h = inset_pad(BOARDS[0]);
-    h.state_mut().pad.dock_mut().open(Panel::Item);
+    h.state_mut().atlas.selection = AtlasSelection::None;
+    h.state_mut().pad.dock_mut().open(Panel::Properties);
     h.run_steps(2);
-    assert!(h.query_by_label(NO_ITEM).is_some());
+    let hint = vale_app::ui::pad::atlas::frame_hint(Panel::Properties);
+    assert_eq!(hint, "Select a map frame or an item to see its properties.");
+    assert!(h.query_by_label(hint).is_some());
 }
 
 #[test]
@@ -9552,7 +9559,7 @@ fn a_tap_on_the_paper_opens_the_pages_panel() {
     let inset = middle(&h, 1);
     tap_with(&mut h, inset, Input::Finger);
     assert!(h.state().pad.is_open(Panel::Pages));
-    assert!(h.state().pad.is_open(Panel::Frame));
+    assert!(h.state().pad.is_open(Panel::Properties));
     assert_eq!(h.state().pad.dock().panes.len(), 2);
     // After the user closes Pages, a tap on the paper opens nothing.
     open_panel(&mut h, vale_app::ui::pad::panels_menu::PAGES);
@@ -9649,12 +9656,12 @@ fn on_an_iphone_the_page_card_is_above_the_tools_and_the_tools_are_a_row_at_the_
         h.state().atlas.selection,
         AtlasSelection::Frame(_)
     ));
-    assert!(h.state().pad.shows(vale_app::ui::pad::Panel::Frame));
+    assert!(h.state().pad.shows(vale_app::ui::pad::Panel::Properties));
     merge_frame_tabs(&mut h);
     let sheet = h.state().pad.rects.unwrap().sheet.unwrap();
     assert_eq!((sheet.left(), sheet.right()), (0.0, width));
     assert_eq!(h.state().atlas.panel_rect, Some(sheet));
-    for tab in FRAME_TABS {
+    for tab in [PROPERTIES, FRAME_TABS[1], FRAME_TABS[2], FRAME_TABS[3]] {
         let rect = control(&h, &tab_name(tab)).unwrap();
         assert!(sheet.contains_rect(rect), "{tab}");
     }
@@ -9909,7 +9916,7 @@ fn the_color_key_panel_sets_the_text_styles_and_the_border() {
             );
             check_controls(&h, &what);
             set_number(&mut h, item::SIZE, "12");
-            tap(&mut h, &format!("Back to {}", ItemKind::ColorKey.name()));
+            tap(&mut h, &format!("Back to {PROPERTIES}"));
         }
         let k = key(&h, 0);
         assert_eq!((k.value_style.size, k.second_unit_style.size), (12.0, 12.0));
@@ -9922,7 +9929,7 @@ fn the_color_key_panel_sets_the_text_styles_and_the_border() {
         tap_row(&mut h, item::BOX_NAMES);
         set_number(&mut h, item::SIZE, "10");
         assert_eq!(key(&h, 0).box_text_style.size, 10.0, "{what}");
-        tap(&mut h, &format!("Back to {}", ItemKind::ColorKey.name()));
+        tap(&mut h, &format!("Back to {PROPERTIES}"));
 
         // The border page sets the width, and 0 draws no lines.
         scroll_to(&mut h, item::BORDER);
@@ -10053,25 +10060,18 @@ fn tap_tile(h: &mut Pad, name: &str) {
 fn the_panels_menu_of_the_atlas_opens_the_frame_panels_and_the_pages() {
     use vale_app::ui::pad::PANELS;
     use vale_app::ui::pad::panels_menu::{self, CLOSE_ALL};
-    let off = |h: &Pad| -> Vec<&'static str> {
-        let groups = panels_menu::atlas(h.state());
-        let tiles = groups.iter().flat_map(|g| g.tiles.iter());
-        tiles.filter(|t| !t.enabled).map(|t| t.name).collect()
-    };
     let mut h = pad();
     tap(&mut h, PANELS);
     let groups = panels_menu::atlas(h.state());
     let headings: Vec<_> = groups.iter().map(|g| g.heading).collect();
     assert_eq!(headings, [panels_menu::SELECTION, panels_menu::ATLAS]);
-    // With no frame, the tiles of the frame panels are on, and the Brush
-    // tile is off with a tool other than Measure.
-    assert_eq!(off(&h), [panels_menu::BRUSH]);
     let groups = panels_menu::atlas(h.state());
     let names: Vec<&str> = groups
         .iter()
         .flat_map(|g| g.tiles.iter().map(|t| t.name))
         .collect();
-    let mut want = FRAME_TABS.to_vec();
+    let mut want = vec![PROPERTIES];
+    want.extend(&FRAME_TABS[1..]);
     want.extend([
         panels_menu::PAGES,
         vale_app::ui::select::ATTRIBUTES,
@@ -10095,7 +10095,6 @@ fn the_panels_menu_of_the_atlas_opens_the_frame_panels_and_the_pages() {
     // A tile opens the panel of a frame, and shows its tab.
     add_frame(&mut h);
     tap(&mut h, PANELS);
-    assert_eq!(off(&h), [panels_menu::BRUSH]);
     tap_tile(&mut h, FRAME_TABS[1]);
     assert_eq!(h.state().atlas.tab, FrameTab::Projection);
     assert!(h.state().pad.is_open(Panel::Attributes));
@@ -10104,10 +10103,8 @@ fn the_panels_menu_of_the_atlas_opens_the_frame_panels_and_the_pages() {
     tap_tile(&mut h, FRAME_TABS[3]);
     assert_eq!(h.state().atlas.tab, FrameTab::Labels);
 
-    // The Measure tool turns on the Brush tile.
-    tap(&mut h, MEASURE);
+    // The Brush tile is on with each tool.
     tap(&mut h, PANELS);
-    assert!(!off(&h).contains(&panels_menu::BRUSH));
     tap_tile(&mut h, panels_menu::BRUSH);
     assert!(h.state().pad.is_open(Panel::Brush));
     tap(&mut h, PANELS);

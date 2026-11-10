@@ -36,6 +36,8 @@ pub const MAP_FRAME: &str = "Map frame";
 /// The rows of the Add menu that other tasks add.
 /// The tabs of the panel of a frame.
 pub const FRAME_TABS: [&str; 4] = ["Frame", "Projection", "Layers", "Labels"];
+/// The name of the panel of the selected map frame or item.
+pub const PROPERTIES: &str = "Properties";
 pub const MAP_NAME: &str = "Map name";
 pub const MAP_STYLE: &str = "Map style";
 /// The value of the Map style row when the map has no map style.
@@ -396,9 +398,9 @@ fn follow_selection(state: &mut AppState) {
                 dock.follow(Panel::from(tab));
             }
             AtlasSelection::Frame(_) if new_tab => dock.follow_frame(Panel::from(tab)),
-            AtlasSelection::Frame(_) => dock.follow_frame(Panel::Frame),
+            AtlasSelection::Frame(_) => dock.follow_frame(Panel::Properties),
             AtlasSelection::Page => dock.follow(Panel::Pages),
-            AtlasSelection::Item(_) => dock.follow(Panel::Item),
+            AtlasSelection::Item(_) => dock.follow(Panel::Properties),
             AtlasSelection::None => {}
         }
         state.pad.sheet_offset = 0.0;
@@ -886,20 +888,18 @@ fn workspace_menu(
     });
 }
 
-/// The hint of the Item panel with no item.
-pub const NO_ITEM: &str = "Select an item to see its settings.";
-
 /// The hint of a panel of a frame with no frame selected.
 pub fn frame_hint(panel: Panel) -> &'static str {
     match panel {
         Panel::Projection => "Select a map frame to see its projection.",
         Panel::Layers => "Select a map frame to see its layers.",
         Panel::Labels => "Select a map frame to see its labels.",
-        _ => "Select a map frame to see its settings.",
+        _ => "Select a map frame or an item to see its properties.",
     }
 }
 
-/// The name of the kind of the selected item, the title of the Item pane.
+/// The name of the kind of the selected item, the subtitle of the
+/// Properties pane.
 pub fn item_name(state: &AppState) -> &'static str {
     let item = state.atlas.item();
     let rec = item.and_then(|id| state.doc.project.atlas.furniture(id));
@@ -933,7 +933,7 @@ fn frame_title(panel: Panel) -> &'static str {
         Panel::Projection => FRAME_TABS[1],
         Panel::Layers => FRAME_TABS[2],
         Panel::Labels => FRAME_TABS[3],
-        _ => FRAME_TABS[0],
+        _ => PROPERTIES,
     }
 }
 
@@ -942,7 +942,7 @@ fn frame_title(panel: Panel) -> &'static str {
 pub(super) fn head(state: &mut AppState, panel: Panel) -> Option<Head> {
     let frame = state.atlas.frame();
     let frame_head = match (panel, frame) {
-        (Panel::Frame, Some(id)) => {
+        (Panel::Properties, Some(id)) => {
             if state.atlas.open_map_styles().is_some() {
                 map_style_head(state, id)
             } else if state.atlas.open_grid().is_some() {
@@ -973,8 +973,16 @@ pub(super) fn head(state: &mut AppState, panel: Panel) -> Option<Head> {
         },
         _ => None,
     };
+    // With an item selected, Properties shows the settings of the item.
+    let item = state.atlas.item();
+    if panel == Panel::Properties
+        && let Some(mut head) = item.and_then(|id| super::furniture::head(state, id))
+    {
+        head.subtitle = Some(item_name(state).to_owned());
+        return Some(head);
+    }
     let mut head = match panel {
-        Panel::Frame | Panel::Projection | Panel::Layers | Panel::Labels => frame_head
+        Panel::Properties | Panel::Projection | Panel::Layers | Panel::Labels => frame_head
             .unwrap_or_else(|| {
                 let hint = frame_hint(panel);
                 let body = move |ui: &mut egui::Ui, _: &mut AppState, _: &mut Controls| {
@@ -989,19 +997,6 @@ pub(super) fn head(state: &mut AppState, panel: Panel) -> Option<Head> {
             let (index, _) = atlas::page_index(state);
             head.subtitle = Some(format!("Page {}", index + 1));
             head
-        }
-        Panel::Item => {
-            let item = state.atlas.item();
-            match item.and_then(|id| super::furniture::head(state, id)) {
-                Some(head) => head,
-                None => {
-                    let body = |ui: &mut egui::Ui, _: &mut AppState, _: &mut Controls| {
-                        muted(ui, NO_ITEM);
-                    };
-                    PageParts::new("pad-atlas-item", item_name(state), None)
-                        .head(panel, no_back, no_rows, body)
-                }
-            }
         }
         _ => return None,
     };
@@ -1223,8 +1218,8 @@ pub(super) fn map_style_head(state: &mut AppState, id: vale_store::FrameId) -> O
     let body = move |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| {
         map_style_body(ui, state, controls, map);
     };
-    let parts = PageParts::new("pad-atlas-map-style", MAP_STYLE, Some(FRAME_TABS[0]));
-    Some(parts.head(Panel::Frame, back_to, no_rows, body))
+    let parts = PageParts::new("pad-atlas-map-style", MAP_STYLE, Some(PROPERTIES));
+    Some(parts.head(Panel::Properties, back_to, no_rows, body))
 }
 
 fn map_style_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, map: MapId) {

@@ -4,7 +4,6 @@
 use eframe::egui;
 use vale_store::{FrameId, FurnitureText};
 
-use super::atlas::FRAME_TABS;
 use super::text_style::{self, TextEvent, TextSpec};
 use super::widgets::Controls;
 use super::{Head, PageParts, Panel};
@@ -24,7 +23,11 @@ pub fn summary(text: &FurnitureText) -> String {
 pub(super) fn head(state: &mut AppState, id: FrameId) -> Option<Head> {
     state.doc.project.atlas.frame(id)?;
     let (key, title, back) = match state.atlas.grid_page {
-        None => ("pad-atlas-grid-labels", GRID_LABELS, FRAME_TABS[0]),
+        None => (
+            "pad-atlas-grid-labels",
+            GRID_LABELS,
+            super::atlas::PROPERTIES,
+        ),
         Some(GridPage::Faces) => ("pad-atlas-grid-faces", "Style", GRID_LABELS),
         Some(GridPage::Cases) => ("pad-atlas-grid-cases", "Case", GRID_LABELS),
     };
@@ -41,7 +44,7 @@ pub(super) fn head(state: &mut AppState, id: FrameId) -> Option<Head> {
         body(ui, state, controls, id);
     };
     let parts = PageParts::new(key, title, Some(back));
-    Some(parts.head(Panel::Frame, back_to, top, body))
+    Some(parts.head(Panel::Properties, back_to, top, body))
 }
 
 fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id: FrameId) {
