@@ -1196,6 +1196,42 @@ fn a_click_on_a_frame_shows_the_frame_and_projection_tabs() {
 }
 
 #[test]
+fn the_desktop_select_tool_deletes_a_frame_and_a_double_click_enters_one() {
+    use vale_app::ui::pad::atlas::EXIT_FRAME;
+    use vale_app::ui::pad::selectable::SELECTABLE;
+    // Short steps, so that two clicks are quick.
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(SIZE.0 as f32, SIZE.1 as f32))
+        .with_pixels_per_point(1.0)
+        .with_step_dt(0.01)
+        .build_ui_state(
+            |ui, state: &mut AppState| draw(ui, state),
+            state_with(Document::sample()),
+        );
+    h.run_steps(3);
+    h.key_press(egui::Key::V);
+    h.run_steps(2);
+    let pos = frame_middle(&h);
+    let frame = h.state().doc.project.atlas.pages[0].frames[0].id;
+    // A double click enters the frame, and the tool bar has Selectable and
+    // "Exit frame".
+    click_at(&mut h, pos);
+    assert_eq!(h.state().atlas.selection, AtlasSelection::Frame(frame));
+    assert_eq!(h.state().atlas.entered, None);
+    click_at(&mut h, pos);
+    assert_eq!(h.state().atlas.entered, Some(frame));
+    assert!(h.query_by_label(SELECTABLE).is_some());
+    h.get_by_label(EXIT_FRAME).click();
+    h.run_steps(2);
+    assert_eq!(h.state().atlas.entered, None);
+    assert!(h.query_by_label(SELECTABLE).is_none());
+    // Outside an entered frame, Delete deletes the selected frame.
+    h.key_press(egui::Key::Delete);
+    h.run_steps(2);
+    assert!(vale_app::ui::atlas::open_page(h.state()).frames.is_empty());
+}
+
+#[test]
 fn a_click_on_the_paper_shows_the_page_panel() {
     let mut h = harness();
     h.run_steps(3);
@@ -1456,7 +1492,7 @@ fn the_v_key_and_the_select_button_choose_the_select_tool() {
 }
 
 #[test]
-fn with_the_select_tool_esc_clears_the_features_and_then_the_frame() {
+fn with_the_select_tool_esc_exits_the_frame_then_clears_the_frame_and_then_the_features() {
     use vale_app::globe::select::FeatureRef;
     use vale_app::ui::LayerRef;
     let mut h = harness();
@@ -1472,20 +1508,26 @@ fn with_the_select_tool_esc_clears_the_features_and_then_the_frame() {
     s.select(Some(LayerRef::Vector(found.layer)));
     s.atlas.tool = AtlasTool::Select;
     let frame = vale_app::ui::atlas::open_page(s).frames[0].id;
-    s.atlas.selection = AtlasSelection::Frame(frame);
+    vale_app::ui::atlas::enter_frame(s, frame);
     s.set_feature_selection(vec![found]);
     h.run_steps(2);
+    // In an entered frame, Delete does nothing.
     h.key_press(egui::Key::Delete);
     h.run_steps(2);
     assert_eq!(h.state().feature_selection, vec![found]);
     assert_eq!(h.state().atlas.selection, AtlasSelection::Frame(frame));
     h.key_press(egui::Key::Escape);
     h.run_steps(2);
-    assert!(h.state().feature_selection.is_empty());
+    assert_eq!(h.state().atlas.entered, None);
+    assert_eq!(h.state().feature_selection, vec![found]);
     assert_eq!(h.state().atlas.selection, AtlasSelection::Frame(frame));
     h.key_press(egui::Key::Escape);
     h.run_steps(2);
     assert_eq!(h.state().atlas.selection, AtlasSelection::None);
+    assert_eq!(h.state().feature_selection, vec![found]);
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+    assert!(h.state().feature_selection.is_empty());
     assert_eq!(vale_app::ui::atlas::open_page(h.state()).frames.len(), 1);
 }
 
@@ -2594,6 +2636,13 @@ fn the_desktop_tool_bars_have_the_selectable_menu_with_the_select_tool() {
         assert!(h.query_by_label(SELECTABLE).is_none(), "{what}");
         h.key_press(egui::Key::V);
         h.run_steps(2);
+        // The Select tool of the Atlas has Selectable in an entered frame.
+        if what == "atlas" {
+            assert!(h.query_by_label(SELECTABLE).is_none(), "{what}");
+            let frame = vale_app::ui::atlas::open_page(h.state()).frames[0].id;
+            vale_app::ui::atlas::enter_frame(h.state_mut(), frame);
+            h.run_steps(2);
+        }
         h.get_by_label(SELECTABLE).click();
         h.run_steps(2);
         for name in [ACTIVE_LAYER, SELECT_ALL, DESELECT_ALL] {

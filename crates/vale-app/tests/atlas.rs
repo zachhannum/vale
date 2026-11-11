@@ -35,7 +35,9 @@ use vale_app::ui::pad::atlas::{
     EDITED, MAP_STYLE, MAP_STYLE_NAME, NO_MAP_STYLE_ROW, RESET_TO_MAP_STYLE, SAVE_AS_MAP_STYLE,
     UPDATE_MAP_STYLE, map_style_row,
 };
-use vale_app::ui::pad::atlas::{GRID, GRID_COLOR, GRID_SPACING, LAYOUT_GRID, SNAP_TO_LAYOUT};
+use vale_app::ui::pad::atlas::{
+    EXIT_FRAME, GRID, GRID_COLOR, GRID_SPACING, LAYOUT_GRID, SNAP_TO_LAYOUT,
+};
 use vale_app::ui::pad::dock_ui::tab_name;
 use vale_app::ui::pad::edge_labels::{
     EDGE_LABELS, HALO as EDGE_HALO, HALO_WIDTH as EDGE_HALO_WIDTH, OFFSET as EDGE_OFFSET,
@@ -86,7 +88,7 @@ const BOARDS: [(f32, f32); 4] = [
 /// The bands that the system uses at the top and at the bottom.
 const BANDS: (f32, f32) = (24.0, 20.0);
 /// The ways to touch the screen: a finger, a pen, and the mouse.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum Input {
     Finger,
     Pen,
@@ -8999,8 +9001,8 @@ fn save_as_map_style_asks_for_the_name() {
 }
 
 /// A page with a main frame and an inset frame, and a new point layer with
-/// a town at the middle of the inset. The layer is the selected layer, and
-/// the Select tool is the tool.
+/// a town at the middle of the inset. The layer is the selected layer, the
+/// Select tool is the tool, and the inset is entered.
 fn towns_pad(size: (f32, f32)) -> (Pad, Pos2, vale_app::globe::select::FeatureRef) {
     towns_pad_with(state(), size)
 }
@@ -9031,6 +9033,9 @@ fn towns_pad_with(
     h.run_steps(2);
     tap(&mut h, SELECT_TOOL);
     assert_eq!(h.state().atlas.tool, AtlasTool::Select);
+    let inset = frame(&h, 1).id;
+    atlas::enter_frame(h.state_mut(), inset);
+    h.run_steps(2);
     let at = pos_of(&mut h, 1, lonlat);
     (h, at, found)
 }
@@ -9133,14 +9138,15 @@ fn with_the_select_tool_a_layer_that_the_map_hides_has_no_hit() {
 }
 
 #[test]
-fn with_the_select_tool_a_tap_outside_the_frames_clears_the_selection() {
+fn with_the_select_tool_a_tap_on_the_paper_exits_the_frame_and_keeps_the_features() {
     let (mut h, at, town) = towns_pad(BOARDS[0]);
     tap_with(&mut h, at, Input::Finger);
     assert_eq!(h.state().feature_selection, vec![town]);
-    let off = margin(&h);
-    tap_with(&mut h, off, Input::Finger);
-    assert!(h.state().feature_selection.is_empty());
-    assert_eq!(h.state().atlas.selection, AtlasSelection::None);
+    let paper = margin(&h);
+    tap_with(&mut h, paper, Input::Finger);
+    assert_eq!(h.state().atlas.entered, None);
+    assert_eq!(h.state().atlas.selection, AtlasSelection::Page);
+    assert_eq!(h.state().feature_selection, vec![town]);
 }
 
 #[test]
@@ -9235,11 +9241,12 @@ fn the_selection_of_the_atlas_is_the_selection_of_the_world() {
 }
 
 #[test]
-fn with_the_select_tool_the_context_strip_has_add_and_deselect_and_no_edits() {
+fn in_an_entered_frame_the_card_has_add_exit_and_deselect_and_no_edits() {
+    use vale_app::ui::pad::selectable::SELECTABLE;
     use vale_app::ui::select::{ADD_TO_SELECTION, SUBTRACT};
     let (mut h, at, town) = towns_pad(BOARDS[0]);
     tap_with(&mut h, at, Input::Finger);
-    for name in [ADD_TO_SELECTION, DESELECT] {
+    for name in [ADD_TO_SELECTION, EXIT_FRAME, DESELECT] {
         assert!(h.query_by_label(name).is_some(), "{name}");
     }
     for name in [SNAP_TO_LAYOUT, DELETE_SELECTION, DELETE_VERTEX, SUBTRACT] {
@@ -9258,6 +9265,17 @@ fn with_the_select_tool_the_context_strip_has_add_and_deselect_and_no_edits() {
     tap(&mut h, DESELECT);
     assert!(h.state().feature_selection.is_empty());
     assert_eq!(h.state().atlas.selection, AtlasSelection::Frame(inset));
+    assert!(control(&h, DESELECT).is_none());
+    // Outside the frame, the card edits the frame.
+    tap(&mut h, EXIT_FRAME);
+    assert_eq!(h.state().atlas.entered, None);
+    assert_eq!(h.state().atlas.selection, AtlasSelection::Frame(inset));
+    for name in [SNAP_TO_LAYOUT, DELETE_SELECTION, DESELECT] {
+        assert!(control(&h, name).is_some(), "{name}");
+    }
+    for name in [SELECTABLE, ADD_TO_SELECTION, EXIT_FRAME] {
+        assert!(control(&h, name).is_none(), "{name}");
+    }
     tap(&mut h, DESELECT);
     assert_eq!(h.state().atlas.selection, AtlasSelection::None);
     assert!(control(&h, DESELECT).is_none());
@@ -10430,4 +10448,294 @@ fn a_drag_on_the_rows_scrolls_a_short_layers_pane() {
     );
     let places = control(&h, "Layer Places").expect("a row that scrolled into view");
     assert!(rect.contains_rect(places), "{places:?}");
+}
+
+/// `towns_pad` with the inset exited and selected.
+fn towns_pad_outside(size: (f32, f32)) -> (Pad, Pos2, vale_app::globe::select::FeatureRef) {
+    let (mut h, at, town) = towns_pad(size);
+    atlas::exit_frame(h.state_mut());
+    h.run_steps(2);
+    (h, at, town)
+}
+
+/// A state with a session in a new folder, so that edits are undo steps.
+fn session_state() -> (tempfile::TempDir, AppState) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let mut s = state();
+    s.session = Some(Session::open(&path, &mut s.doc).unwrap());
+    (dir, s)
+}
+
+/// Saves the waiting edits and undoes the last step.
+fn undo(h: &mut Pad) {
+    h.state_mut().save_waiting().unwrap();
+    tap(h, "Undo");
+    h.state_mut().save_waiting().unwrap();
+}
+
+/// The bounding box of a frame in millimeters.
+fn frame_box(h: &Pad, index: usize) -> kurbo::Rect {
+    shape_bbox(&frame(h, index).shape)
+}
+
+#[test]
+fn with_the_select_tool_a_tap_selects_the_top_item_or_frame_and_shows_its_handles() {
+    let (mut h, _, town) = towns_pad_outside(BOARDS[0]);
+    h.state_mut().set_feature_selection(vec![town]);
+    add_item(&mut h, ItemKind::NorthArrow);
+    let item_id = item(&h, 0).id;
+    let item_m0 = item_middle(&h, 0);
+    tap_with(&mut h, item_m0, Input::Finger);
+    assert_eq!(h.state().atlas.selection, AtlasSelection::Item(item_id));
+    assert!(!h.state().atlas.handles.is_empty());
+    let inset = frame(&h, 1).id;
+    let m1 = middle(&h, 1);
+    tap_with(&mut h, m1, Input::Finger);
+    assert_eq!(h.state().atlas.selection, AtlasSelection::Frame(inset));
+    assert_eq!(h.state().atlas.entered, None);
+    let handles = &h.state().atlas.handles;
+    assert!(handles.iter().any(|(h, _)| matches!(h, Handle::Resize(_))));
+    assert_eq!(h.state().feature_selection, vec![town]);
+}
+
+#[test]
+fn with_the_select_tool_a_drag_moves_a_frame_and_a_handle_resizes_it() {
+    for input in [Input::Pen, Input::Mouse, Input::Finger] {
+        let (_dir, s) = session_state();
+        let mut h = pad_with(s, BOARDS[0]);
+        add_frame(&mut h);
+        add_frame(&mut h);
+        tap(&mut h, SELECT_TOOL);
+        atlas::clear_selection(h.state_mut());
+        h.run_steps(2);
+        h.state_mut().save_waiting().unwrap();
+        let before = frame_box(&h, 1);
+        if input == Input::Finger {
+            // A finger moves only the selected element.
+            let offset = h.state().atlas.view.offset;
+            let m1 = middle(&h, 1);
+            drag(&mut h, m1, m1 + vec2(30.0, 20.0), input);
+            assert_eq!(frame_box(&h, 1), before, "{input:?}");
+            assert_ne!(h.state().atlas.view.offset, offset, "{input:?}");
+            let m1 = middle(&h, 1);
+            tap_with(&mut h, m1, input);
+        }
+        let inset = frame(&h, 1).id;
+        let m1 = middle(&h, 1);
+        drag(&mut h, m1, m1 + vec2(30.0, 20.0), input);
+        assert_eq!(
+            h.state().atlas.selection,
+            AtlasSelection::Frame(inset),
+            "{input:?}"
+        );
+        let moved = frame_box(&h, 1);
+        assert_ne!(moved.origin(), before.origin(), "{input:?}");
+        assert!((moved.width() - before.width()).abs() < 1e-6, "{input:?}");
+        h.state_mut().save_waiting().unwrap();
+        let corner = handle(&h, Handle::Resize(0));
+        drag(&mut h, corner, corner - vec2(20.0, 20.0), input);
+        let resized = frame_box(&h, 1);
+        assert!(resized.width() > moved.width(), "{input:?}");
+        // Each drag is one undo step.
+        undo(&mut h);
+        assert_eq!(frame_box(&h, 1), moved, "{input:?}");
+        undo(&mut h);
+        assert_eq!(frame_box(&h, 1), before, "{input:?}");
+    }
+}
+
+#[test]
+fn with_the_select_tool_a_drag_on_the_empty_paper_pans_the_page_and_draws_nothing() {
+    for input in [Input::Pen, Input::Mouse, Input::Finger] {
+        let mut h = inset_pad(BOARDS[0]);
+        tap(&mut h, SELECT_TOOL);
+        let offset = h.state().atlas.view.offset;
+        let from = margin(&h);
+        drag(&mut h, from, from + vec2(40.0, 40.0), input);
+        assert_eq!(open_page(&h).frames.len(), 2, "{input:?}");
+        assert_ne!(h.state().atlas.view.offset, offset, "{input:?}");
+    }
+}
+
+#[test]
+fn with_the_select_tool_delete_selection_and_deselect_act_on_the_frame_and_the_features() {
+    let (_dir, s) = session_state();
+    let (mut h, at, town) = towns_pad_with(s, BOARDS[0]);
+    tap_with(&mut h, at, Input::Finger);
+    assert_eq!(h.state().feature_selection, vec![town]);
+    tap(&mut h, EXIT_FRAME);
+    // Deselect clears the frame, and then the features.
+    tap(&mut h, DESELECT);
+    assert_eq!(h.state().atlas.selection, AtlasSelection::None);
+    assert_eq!(h.state().feature_selection, vec![town]);
+    assert!(control(&h, DELETE_SELECTION).is_none());
+    tap(&mut h, DESELECT);
+    assert!(h.state().feature_selection.is_empty());
+    assert!(control(&h, DESELECT).is_none());
+    // "Delete selection" deletes the selected frame in one undo step.
+    let m1 = middle(&h, 1);
+    tap_with(&mut h, m1, Input::Finger);
+    h.state_mut().save_waiting().unwrap();
+    tap(&mut h, DELETE_SELECTION);
+    assert_eq!(open_page(&h).frames.len(), 1);
+    undo(&mut h);
+    assert_eq!(open_page(&h).frames.len(), 2);
+}
+
+#[test]
+fn a_double_tap_in_a_frame_enters_it_and_selects_the_feature_under_it() {
+    for input in [Input::Finger, Input::Pen, Input::Mouse] {
+        let (mut h, at, _) = towns_pad_outside(BOARDS[0]);
+        let inset = frame(&h, 1).id;
+        tap_with(&mut h, at, input);
+        assert_eq!(h.state().atlas.entered, None, "{input:?}");
+        assert!(h.state().feature_selection.is_empty(), "{input:?}");
+        let (mut h, at, town) = towns_pad_outside(BOARDS[0]);
+        double_tap(&mut h, at, input);
+        assert_eq!(h.state().atlas.entered, Some(inset), "{input:?}");
+        assert_eq!(h.state().feature_selection, vec![town], "{input:?}");
+    }
+}
+
+#[test]
+fn an_entered_frame_shows_no_handles() {
+    let (mut h, _, _) = towns_pad(BOARDS[0]);
+    let inset = frame(&h, 1).id;
+    assert_eq!(h.state().atlas.selection, AtlasSelection::Frame(inset));
+    assert!(h.state().atlas.handles.is_empty());
+    screenshot::save(&mut h, "pad-atlas-entered-frame");
+}
+
+#[test]
+fn in_an_entered_frame_a_box_selects_only_in_that_frame() {
+    let (mut h, at, town) = towns_pad(BOARDS[0]);
+    // The main frame shows the town too, outside the inset.
+    let lonlat = place_at(&mut h, 1, at);
+    let main = pos_of(&mut h, 0, lonlat);
+    assert!(!vale_app::atlas::contains(
+        &frame(&h, 1).shape,
+        place(&h).to_mm(main)
+    ));
+    let d = vec2(10.0, 10.0);
+    drag(&mut h, main - d, main + d, Input::Pen);
+    assert!(h.state().feature_selection.is_empty());
+    drag(&mut h, at - d, at + d, Input::Pen);
+    assert_eq!(h.state().feature_selection, vec![town]);
+}
+
+#[test]
+fn a_tap_outside_the_entered_frame_exits_it_and_selects_what_is_under_it() {
+    let (mut h, _, _) = towns_pad(BOARDS[0]);
+    let main = frame(&h, 0).id;
+    let m0 = middle(&h, 0);
+    tap_with(&mut h, m0, Input::Finger);
+    assert_eq!(h.state().atlas.entered, None);
+    assert_eq!(h.state().atlas.selection, AtlasSelection::Frame(main));
+    let inset = frame(&h, 1).id;
+    atlas::enter_frame(h.state_mut(), inset);
+    add_item(&mut h, ItemKind::NorthArrow);
+    let item_id = item(&h, 0).id;
+    let item_m0 = item_middle(&h, 0);
+    tap_with(&mut h, item_m0, Input::Finger);
+    assert_eq!(h.state().atlas.entered, None);
+    assert_eq!(h.state().atlas.selection, AtlasSelection::Item(item_id));
+}
+
+#[test]
+fn a_change_of_tool_page_or_workspace_exits_the_frame() {
+    let (mut h, _, _) = towns_pad(BOARDS[0]);
+    let inset = frame(&h, 1).id;
+    tap(&mut h, FRAME_TOOL);
+    assert_eq!(h.state().atlas.entered, None);
+    assert_eq!(h.state().atlas.selection, AtlasSelection::Frame(inset));
+    tap(&mut h, SELECT_TOOL);
+    assert_eq!(h.state().atlas.entered, None);
+    atlas::enter_frame(h.state_mut(), inset);
+    h.run_steps(2);
+    tap(&mut h, "World");
+    tap(&mut h, "Atlas");
+    assert_eq!(h.state().atlas.entered, None);
+    let s = h.state_mut();
+    let first = s.atlas.page;
+    s.doc
+        .project
+        .atlas
+        .add_page(Some(first), 297.0, 210.0, PageUnits::Mm);
+    atlas::enter_frame(s, inset);
+    h.run_steps(2);
+    tap(&mut h, NEXT_PAGE);
+    assert_ne!(h.state().atlas.page, first);
+    assert_eq!(h.state().atlas.entered, None);
+}
+
+#[test]
+fn an_undo_that_selects_another_frame_exits_the_entered_frame() {
+    let (_dir, s) = session_state();
+    let (mut h, _, _) = towns_pad_with(s, BOARDS[0]);
+    atlas::exit_frame(h.state_mut());
+    h.run_steps(2);
+    h.state_mut().save_waiting().unwrap();
+    let main = frame(&h, 0).id;
+    let m1 = middle(&h, 1);
+    drag(&mut h, m1, m1 + vec2(30.0, 20.0), Input::Pen);
+    atlas::enter_frame(h.state_mut(), main);
+    h.run_steps(2);
+    undo(&mut h);
+    assert_ne!(h.state().atlas.selection, AtlasSelection::Frame(main));
+    assert_eq!(h.state().atlas.entered, None);
+}
+
+#[test]
+fn the_card_of_the_select_tool_fits_outside_and_in_an_entered_frame() {
+    use vale_app::ui::pad::selectable::SELECTABLE;
+    let phones = [(393.0, 852.0), (852.0, 393.0)];
+    for size in BOARDS.into_iter().chain(phones) {
+        let what = format!("{size:?}");
+        let (mut h, _, town) = towns_pad(size);
+        h.state_mut().set_feature_selection(vec![town]);
+        h.run_steps(2);
+        scroll_column_to(&mut h, EXIT_FRAME);
+        assert!(control(&h, EXIT_FRAME).is_some(), "{what}");
+        assert!(control(&h, SNAP_TO_LAYOUT).is_none(), "{what}");
+        check_controls(&h, &what);
+        atlas::exit_frame(h.state_mut());
+        h.run_steps(2);
+        scroll_column_to(&mut h, DELETE_SELECTION);
+        for name in [SNAP_TO_LAYOUT, GRID, DELETE_SELECTION, DESELECT] {
+            assert!(control(&h, name).is_some(), "{what}: {name}");
+        }
+        assert!(control(&h, SELECTABLE).is_none(), "{what}");
+        check_controls(&h, &what);
+    }
+}
+
+#[test]
+fn the_selected_features_show_outside_an_entered_frame() {
+    let (mut h, at, town) = towns_pad(BOARDS[0]);
+    tap_with(&mut h, at, Input::Finger);
+    assert_eq!(h.state().feature_selection, vec![town]);
+    tap(&mut h, EXIT_FRAME);
+    let place = place(&h);
+    let shown = atlas::features::highlight(h.state_mut(), place);
+    assert!(!shown.points.is_empty());
+}
+
+#[test]
+fn a_held_finger_tap_outside_the_entered_frame_does_not_exit_it() {
+    let (mut h, at, town) = towns_pad(BOARDS[0]);
+    let inset = frame(&h, 1).id;
+    tap_with(&mut h, at, Input::Finger);
+    let held = margin(&h);
+    let main = middle(&h, 0);
+    touch(&mut h, 1, egui::TouchPhase::Start, held, None);
+    h.run_steps(40);
+    touch(&mut h, 2, egui::TouchPhase::Start, main, Some(0.5));
+    h.step();
+    touch(&mut h, 2, egui::TouchPhase::End, main, Some(0.5));
+    h.run_steps(2);
+    touch(&mut h, 1, egui::TouchPhase::End, held, None);
+    h.run_steps(3);
+    assert_eq!(h.state().atlas.entered, Some(inset));
+    assert_eq!(h.state().feature_selection, vec![town]);
 }

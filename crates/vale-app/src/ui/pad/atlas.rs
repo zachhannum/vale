@@ -107,6 +107,7 @@ pub const STROKE_WIDTH: &str = "Stroke width";
 pub const REFERENCE_GRID: &str = "Reference grid";
 pub const PAPER_COLOR: &str = "Paper color";
 pub const SNAP_TO_LAYOUT: &str = "Snap to layout";
+pub const EXIT_FRAME: &str = "Exit frame";
 pub const LAYOUT_GRID: &str = "Layout grid";
 /// The switch of the layout grid in the context strip.
 pub const GRID: &str = "Grid";
@@ -492,21 +493,25 @@ fn selectable_menu(
     }
 }
 
-/// The controls of the tool. With the Frame tool and an item tool, the
-/// switch that snaps a frame to the layout of the page, the switch of the
-/// layout grid, and with a selection "Delete selection" and Deselect. With
-/// the Vertex tool, the two switches, and with a frame "Delete vertex" and
-/// Deselect. With the Select tool, Selectable, Add, and Deselect, and with
-/// the Move tool and a selection, Deselect. Returns the place of the
-/// Selectable cell.
+/// The controls of the tool. With the Frame tool, an item tool, and the
+/// Select tool outside an entered frame, the switch that snaps a frame to
+/// the layout of the page, the switch of the layout grid, and with a
+/// selection "Delete selection" and Deselect. With the Vertex tool, the two
+/// switches, and with a frame "Delete vertex" and Deselect. In an entered
+/// frame, Selectable, Add, "Exit frame", and with selected features
+/// Deselect. With the Move tool and a selection, Deselect. Returns the place
+/// of the Selectable cell.
 fn frame_cells(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) -> Option<Rect> {
     let tool = state.atlas.tool;
-    let acts = context_acts(state);
-    let cells = context_cells(state);
+    let entered = state.atlas.entered.is_some();
     let mut selectable_cell = None;
     let on = state.atlas.snap;
     let label = super::SNAP;
-    let places = matches!(tool, AtlasTool::Frame | AtlasTool::Furniture(_));
+    let places = match tool {
+        AtlasTool::Frame | AtlasTool::Furniture(_) => true,
+        AtlasTool::Select => !entered,
+        _ => false,
+    };
     if (places || tool == AtlasTool::Vertex)
         && widgets::tool_cell(ui, controls, SNAP_TO_LAYOUT, label, Icon::Magnet, on, true).clicked()
     {
@@ -518,29 +523,33 @@ fn frame_cells(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls)
     {
         atlas::edit_grid(state, |g| g.on = !grid);
     }
-    if tool == AtlasTool::Select {
+    if tool == AtlasTool::Select && entered {
         selectable_cell = Some(super::selectable::cell(ui, state, controls));
         let (name, add) = (select::ADD_TO_SELECTION, state.select_add);
         if widgets::tool_cell(ui, controls, name, "Add", Icon::Plus, add, true).clicked() {
             state.select_add = !add;
         }
-        if cells < 3 {
-            return selectable_cell;
+        let name = EXIT_FRAME;
+        if widgets::tool_cell(ui, controls, name, "Exit", Icon::Back, false, true).clicked() {
+            atlas::exit_frame(state);
         }
     }
-    if (places || tool == AtlasTool::Vertex) && !acts {
-        return selectable_cell;
-    }
     if tool == AtlasTool::Vertex {
+        if !can_deselect(state) {
+            return selectable_cell;
+        }
         let (name, can) = (super::DELETE_VERTEX, atlas::can_delete_vertices(state));
         if widgets::tool_cell(ui, controls, name, "Delete", Icon::Delete, false, can).clicked() {
             atlas::delete_vertices(state);
         }
-    } else if places {
+    } else if places && can_delete(state) {
         let name = select::DELETE;
         if widgets::tool_cell(ui, controls, name, "Delete", Icon::Trash, false, true).clicked() {
             atlas::delete_selection(state);
         }
+    }
+    if !can_deselect(state) {
+        return selectable_cell;
     }
     let name = super::DESELECT;
     if widgets::tool_cell(ui, controls, name, name, Icon::Close, false, true).clicked() {
@@ -553,28 +562,41 @@ fn frame_cells(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls)
     selectable_cell
 }
 
-/// Delete and Deselect show in the context strip of the Frame tool, an item
-/// tool, and the Vertex tool while they have something to act on.
-fn context_acts(state: &AppState) -> bool {
+/// "Delete selection" shows in the context strip of the Frame tool, an item
+/// tool, and the Select tool outside an entered frame while a frame or an
+/// item is selected.
+fn can_delete(state: &AppState) -> bool {
+    match state.atlas.tool {
+        AtlasTool::Frame | AtlasTool::Furniture(_) => atlas::has_selection(state),
+        AtlasTool::Select => state.atlas.entered.is_none() && atlas::has_selection(state),
+        _ => false,
+    }
+}
+
+/// Deselect shows in the context strip while the tool has something to
+/// clear.
+fn can_deselect(state: &AppState) -> bool {
+    let features = !state.feature_selection.is_empty();
     match state.atlas.tool {
         AtlasTool::Vertex => state.atlas.frame().is_some(),
-        AtlasTool::Frame | AtlasTool::Furniture(_) => atlas::has_selection(state),
+        AtlasTool::Frame | AtlasTool::Furniture(_) | AtlasTool::Move => atlas::has_selection(state),
+        AtlasTool::Select if state.atlas.entered.is_some() => features,
+        AtlasTool::Select => atlas::has_selection(state) || features,
         _ => false,
     }
 }
 
 /// The number of cells of the context strip. Zero: the tool has no context
-/// strip. Snap and Grid always show with the Frame tool, an item tool, and
-/// the Vertex tool.
+/// strip. Snap and Grid always show with the Frame tool, an item tool, the
+/// Vertex tool, and the Select tool outside an entered frame.
 fn context_cells(state: &AppState) -> usize {
+    let deselect = usize::from(can_deselect(state));
     match state.atlas.tool {
-        AtlasTool::Vertex | AtlasTool::Frame | AtlasTool::Furniture(_) => {
-            2 + 2 * usize::from(context_acts(state))
-        }
-        AtlasTool::Move if atlas::has_selection(state) => 1,
-        AtlasTool::Select => {
-            2 + usize::from(atlas::has_selection(state) || !state.feature_selection.is_empty())
-        }
+        AtlasTool::Vertex => 2 + 2 * deselect,
+        AtlasTool::Frame | AtlasTool::Furniture(_) => 2 + usize::from(can_delete(state)) + deselect,
+        AtlasTool::Move => deselect,
+        AtlasTool::Select if state.atlas.entered.is_some() => 3 + deselect,
+        AtlasTool::Select => 2 + usize::from(can_delete(state)) + deselect,
         _ => 0,
     }
 }

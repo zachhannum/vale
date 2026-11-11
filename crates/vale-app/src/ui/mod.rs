@@ -4053,6 +4053,10 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     state.sync_measure();
     state.check_new_feature();
     state.atlas.every_tab = state.layout == Layout::Pad;
+    // A switch to the World workspace exits the entered frame.
+    if state.workspace == Workspace::Globe {
+        state.atlas.entered = None;
+    }
     if state.layout == Layout::Pad {
         match state.workspace {
             Workspace::Globe => pad::draw(ui, state),
