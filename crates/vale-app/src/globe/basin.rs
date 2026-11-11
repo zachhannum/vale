@@ -92,6 +92,8 @@ mod tests {
             density: 0.02,
             seed: 7,
             erosion: 0.5,
+            age: 0.5,
+            lakes: 0.0,
             rain: Rain::default(),
             channel: ChannelShape::default(),
             world_km: 6371.0,

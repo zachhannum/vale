@@ -324,6 +324,8 @@ impl BrushSettings {
             density: self.basin_density_km / world_km,
             seed,
             erosion: self.erosion,
+            age: 0.5,
+            lakes: 0.0,
             rain,
             channel: ChannelShape::new(CHANNEL_WIDTH_KM, FLOODPLAIN_KM, world_km),
             world_km,
