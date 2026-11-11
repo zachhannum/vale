@@ -2993,14 +2993,11 @@ fn the_blur_behind_a_card_shows_the_raster_layers_of_a_frame() {
     assert!(shown.iter().zip(&hidden).all(|(s, h)| s <= h));
 }
 
-/// A finger on the middle of a control for one and a half seconds, longer
-/// than the long touch of egui.
-fn long_touch(h: &mut Pad, name: &str) {
+/// A swipe of a finger to the right on the row `name`.
+fn swipe_right(h: &mut Pad, name: &str) {
     let rect = control(h, name).unwrap_or_else(|| panic!("no control `{name}`"));
-    touch(h, 1, egui::TouchPhase::Start, rect.center(), None);
-    h.run_steps(30);
-    touch(h, 1, egui::TouchPhase::End, rect.center(), None);
-    h.run_steps(2);
+    let from = rect.left_center() + vec2(40.0, 0.0);
+    drag(h, from, from + vec2(120.0, 0.0), Input::Finger);
 }
 
 #[test]
@@ -3031,7 +3028,7 @@ fn selected_rules_of_a_frame_change_in_the_map_only() {
             tap(&mut h, "Back to Rivers");
         }
         scroll_to(&mut h, "Default");
-        long_touch(&mut h, "Default");
+        swipe_right(&mut h, "Default");
         assert_eq!(h.state().pad.rules.picked(rivers), [0], "{what}");
         nudge_up_to(&mut h, SELECT_ALL);
         tap(&mut h, SELECT_ALL);

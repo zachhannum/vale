@@ -8337,7 +8337,6 @@ fn drag_right(h: &mut Pad, name: &str) {
 fn selected_rules_take_one_stroke_and_keep_their_fills() {
     use vale_app::ui::pad::rules::{DELETE_RULES, EDIT_RULES, STROKE_COLOR, STROKE_WIDTH};
     use vale_app::ui::pad::selectable::{DESELECT_ALL, SELECT_ALL};
-    use vale_app::ui::pad::widgets::DONE;
     use vale_store::GeometryKind;
     use vale_style::Color;
     for size in [BOARDS[1], BOARDS[3]] {
@@ -8359,16 +8358,16 @@ fn selected_rules_take_one_stroke_and_keep_their_fills() {
 
         open_panel(&mut h, "Layers");
         tap(&mut h, "Open Land");
-        // A long press selects a rule and does not open it.
-        scroll_to_control(&mut h, "Default");
-        long_press(&mut h, "Default");
+        // A swipe to the right selects a rule and does not open it. A
+        // second swipe deselects it.
+        assert!(control(&h, SELECT_ALL).is_none(), "{what}");
+        swipe_right(&mut h, "Default");
         assert_eq!(picked(&h), [0], "{what}");
         assert_eq!(h.state().pad.page, None, "{what}");
-        scroll_to_control(&mut h, "Rule 2");
-        tap(&mut h, "Rule 2");
+        swipe_right(&mut h, "Rule 2");
         assert_eq!(picked(&h), [0, 2], "{what}");
-        scroll_to_control(&mut h, "Default");
-        tap(&mut h, "Default");
+        screenshot::save(&mut h, &format!("pad-swipe-rules-{}", size.0));
+        swipe_right(&mut h, "Default");
         assert_eq!(picked(&h), [2], "{what}");
         scroll_to_control(&mut h, SELECT_ALL);
         tap(&mut h, SELECT_ALL);
@@ -8402,8 +8401,8 @@ fn selected_rules_take_one_stroke_and_keep_their_fills() {
         assert_eq!(picked(&h), [0, 1, 2], "{what}");
         scroll_to_control(&mut h, DESELECT_ALL);
         tap(&mut h, DESELECT_ALL);
-        scroll_to_control(&mut h, "Rule 1");
-        tap(&mut h, "Rule 1");
+        assert!(control(&h, DELETE_RULES).is_none(), "{what}");
+        swipe_right(&mut h, "Rule 1");
         save_frames(&mut h);
         scroll_to_control(&mut h, DELETE_RULES);
         tap(&mut h, DELETE_RULES);
@@ -8413,17 +8412,23 @@ fn selected_rules_take_one_stroke_and_keep_their_fills() {
         tap(&mut h, "Undo");
         assert_eq!(rule_names(&h, land), ["Default", "Rule 1", "Rule 2"]);
 
+        // A short swipe does not select, and a tap opens the rule.
         scroll_to_control(&mut h, "Rule 1");
-        long_press(&mut h, "Rule 1");
-        assert_eq!(picked(&h), [1], "{what}");
-        scroll_to_control(&mut h, DONE);
-        tap(&mut h, DONE);
+        let rect = control(&h, "Rule 1").unwrap();
+        let from = rect.left_center() + vec2(40.0, 0.0);
+        drag(&mut h, from, from + vec2(12.0, 0.0), None);
         assert!(h.state().pad.rules.select.is_none(), "{what}");
-        // A tap opens the rule again.
-        scroll_to_control(&mut h, "Rule 1");
         tap(&mut h, "Rule 1");
         assert_eq!(h.state().pad.page, Some(Page::Rule(1)), "{what}");
     }
+}
+
+/// A swipe to the right on the row `name`.
+fn swipe_right(h: &mut Pad, name: &str) {
+    scroll_to_control(h, name);
+    let rect = control(h, name).unwrap_or_else(|| panic!("no control `{name}`"));
+    let from = rect.left_center() + vec2(40.0, 0.0);
+    drag(h, from, from + vec2(120.0, 0.0), None);
 }
 
 /// The rules of the style of a vector layer.

@@ -157,12 +157,11 @@ pub struct RulesState {
     field: Option<(LayerId, usize, &'static str)>,
     /// The Classify form.
     pub(super) classify: super::classify::Draft,
-    /// The layer whose rule rows select rules, and the indices of the
-    /// selected rules.
+    /// The layer of the selected rules, and the indices of the rules.
     pub select: Option<(LayerId, Vec<usize>)>,
-    /// The finger of the long press that started the selection is still
-    /// down, so its release is not a tap.
-    held: bool,
+    /// The rule row that a finger swipes to the right, and the distance of
+    /// the row from its place.
+    swipe: Option<(LayerId, usize, f32)>,
 }
 
 impl RulesState {
@@ -185,7 +184,10 @@ pub fn selection_title(state: &AppState, id: LayerId) -> String {
 
 /// The Style section: a row for each rule, first rule first, and the row
 /// that adds a rule. A later rule draws on top. A tap on a rule opens its
-/// page, and a long press on a rule selects it and starts the selection.
+/// page. A swipe to the right on a rule selects it or deselects it, as in
+/// the layer list of Procreate. While rules are selected, the heading has
+/// "Select all" and "Deselect all", and the buttons below the rules edit
+/// and delete the selected rules.
 pub fn section(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id: LayerId) {
     let Some(kind) = state.doc.layer(id).and_then(|l| l.geometry()) else {
         return;
@@ -200,25 +202,79 @@ pub fn section(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
         .iter()
         .map(|r| (r.name.clone(), row_filter(&r.filter)))
         .collect();
-    let held = state.pad.rules.held;
-    if held && !ui.input(|i| i.pointer.any_down()) {
-        state.pad.rules.held = false;
-    }
-    if let Some((layer, picked)) = &mut state.pad.rules.select {
-        picked.retain(|i| *i < rows.len());
-        if *layer == id {
-            select_rows(ui, state, controls, id, &rows, held);
-            return;
+    let mut picked = state.pad.rules.picked(id);
+    picked.retain(|i| *i < rows.len());
+
+    if picked.is_empty() {
+        heading(ui, STYLE);
+    } else {
+        let all = picked.len() == rows.len();
+        let buttons: &[&str] = if all {
+            &[DESELECT_ALL]
+        } else {
+            &[SELECT_ALL, DESELECT_ALL]
+        };
+        match widgets::heading_buttons(ui, controls, STYLE, buttons) {
+            Some(0) if !all => picked = (0..rows.len()).collect(),
+            Some(_) => picked.clear(),
+            None => {}
         }
     }
-    heading(ui, STYLE);
     for (i, (name, filter)) in rows.iter().enumerate() {
-        let row = widgets::open_row(ui, controls, name, filter);
-        if row.long_touched() {
-            state.pad.rules.select = Some((id, vec![i]));
-            state.pad.rules.held = true;
+        let on = picked.contains(&i);
+        let swipe = state.pad.rules.swipe.filter(|s| s.0 == id && s.1 == i);
+        let shift = swipe.map_or(0.0, |s| s.2);
+        let row = widgets::swipe_select_row(ui, controls, name, filter, on, shift);
+        let moved = ui.input(|i| Some(i.pointer.interact_pos()? - i.pointer.press_origin()?));
+        if row.drag_started() {
+            let d = moved.unwrap_or_default();
+            if d.x > d.y.abs() {
+                state.pad.rules.swipe = Some((id, i, 0.0));
+            }
+        }
+        if let Some((_, _, dx)) = state.pad.rules.swipe.filter(|s| s.0 == id && s.1 == i) {
+            if row.dragged() {
+                let dx = moved.map_or(dx, |d| d.x.clamp(0.0, widgets::SWIPE_SELECT));
+                state.pad.rules.swipe = Some((id, i, dx));
+            } else {
+                // The finger is up: a swipe past the middle selects the
+                // rule or deselects it.
+                if dx >= widgets::SWIPE_SELECT / 2.0 {
+                    if on {
+                        picked.retain(|p| *p != i);
+                    } else {
+                        picked.push(i);
+                        picked.sort_unstable();
+                    }
+                }
+                state.pad.rules.swipe = None;
+            }
+            ui.ctx().request_repaint();
+        } else if row.dragged() {
+            ui.scroll_with_delta(egui::vec2(0.0, row.drag_delta().y));
         } else if row.clicked() {
             state.pad.page = Some(Page::Rule(i));
+        }
+    }
+    state.pad.rules.select = (!picked.is_empty()).then(|| (id, picked.clone()));
+
+    if !picked.is_empty() {
+        let buttons = [
+            (EDIT_RULES, true, theme::ACCENT),
+            (DELETE_RULES, true, theme::WARN),
+        ];
+        match widgets::button_bar(ui, controls, &buttons) {
+            Some(0) => state.pad.page = Some(Page::Rules),
+            Some(_) => {
+                if let Some(entry) = state.doc.entry_mut(id) {
+                    for &i in picked.iter().rev() {
+                        entry.style.style.rules.remove(i);
+                    }
+                    state.pad.rules = RulesState::default();
+                    state.touch();
+                }
+            }
+            None => {}
         }
     }
     if widgets::button_row(ui, controls, ADD_RULE, true).clicked()
@@ -236,62 +292,6 @@ pub fn section(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
         if widgets::open_row(ui, controls, MASK, &text).clicked() {
             state.pad.page = Some(Page::Mask);
         }
-    }
-}
-
-/// The heading with "Select all" or "Deselect all" and "Done", a row with
-/// a selection circle for each rule, and the buttons that edit and delete
-/// the selected rules. `held`: the release of the finger is not a tap.
-fn select_rows(
-    ui: &mut egui::Ui,
-    state: &mut AppState,
-    controls: &mut Controls,
-    id: LayerId,
-    rows: &[(String, String)],
-    held: bool,
-) {
-    let mut picked = state.pad.rules.picked(id);
-    let all = picked.len() == rows.len();
-    let toggle = if all { DESELECT_ALL } else { SELECT_ALL };
-    match widgets::heading_buttons(ui, controls, STYLE, &[toggle, widgets::DONE]) {
-        Some(0) if all => picked.clear(),
-        Some(0) => picked = (0..rows.len()).collect(),
-        Some(_) => {
-            state.pad.rules.select = None;
-            return;
-        }
-        None => {}
-    }
-    for (i, (name, filter)) in rows.iter().enumerate() {
-        let on = picked.contains(&i);
-        if widgets::select_row(ui, controls, name, filter, on).clicked() && !held {
-            if on {
-                picked.retain(|p| *p != i);
-            } else {
-                picked.push(i);
-                picked.sort_unstable();
-            }
-        }
-    }
-    let some = !picked.is_empty();
-    let buttons = [
-        (EDIT_RULES, some, theme::ACCENT),
-        (DELETE_RULES, some, theme::WARN),
-    ];
-    let tapped = widgets::button_bar(ui, controls, &buttons);
-    state.pad.rules.select = Some((id, picked.clone()));
-    match tapped {
-        Some(0) => state.pad.page = Some(Page::Rules),
-        Some(_) => {
-            if let Some(entry) = state.doc.entry_mut(id) {
-                for &i in picked.iter().rev() {
-                    entry.style.style.rules.remove(i);
-                }
-                state.pad.rules = RulesState::default();
-                state.touch();
-            }
-        }
-        None => {}
     }
 }
 

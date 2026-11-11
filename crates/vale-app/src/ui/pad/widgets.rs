@@ -1161,43 +1161,67 @@ pub fn open_row(ui: &mut egui::Ui, controls: &mut Controls, name: &str, value: &
     resp
 }
 
-/// The size of the selection circle of a row.
-const SELECT_CIRCLE: f32 = 22.0;
+/// The distance that a swipe to the right moves a row, at most.
+pub const SWIPE_SELECT: f32 = 56.0;
 
-/// A row of a list in which the user selects items: a selection circle at
-/// the left, the name, and `value` at the right. The circle is filled and
-/// has a tick when the row is `on`.
-pub fn select_row(
+/// A row of a list that a swipe to the right selects, as in the layer list
+/// of Procreate: the name at the left, and `value` and an arrow at the
+/// right. A selected row has a tint of the accent color. `shift` moves the
+/// row to the right during a swipe, and a check shows behind it.
+pub fn swipe_select_row(
     ui: &mut egui::Ui,
     controls: &mut Controls,
     name: &str,
     value: &str,
     on: bool,
+    shift: f32,
 ) -> Response {
-    let resp = text_row(ui, controls, name, SELECT_CIRCLE + 12.0, false, true);
-    let row = resp.rect;
-    let circle = Rect::from_center_size(
-        pos2(row.left() + SELECT_CIRCLE / 2.0, row.center().y),
-        vec2(SELECT_CIRCLE, SELECT_CIRCLE),
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), Sense::hover());
+    let resp = hit(
+        ui,
+        controls,
+        rect,
+        name,
+        Sense::click_and_drag(),
+        true,
+        Some(on),
     );
     let painter = ui.painter();
-    if on {
-        painter.circle_filled(circle.center(), SELECT_CIRCLE / 2.0, theme::ACCENT);
-        icons::paint(
-            painter,
-            circle.shrink(3.0),
-            Icon::Tick,
-            SELECT_CIRCLE - 6.0,
-            theme::CANVAS,
+    let back = rect.expand2(vec2(8.0, -HIGHLIGHT_INSET));
+    if shift > 0.0 {
+        // The check behind the row tells what the swipe does.
+        let mark = Rect::from_center_size(
+            pos2(rect.left() + shift.min(SWIPE_SELECT) / 2.0, rect.center().y),
+            vec2(18.0, 18.0),
         );
-    } else {
-        let ring = egui::Stroke::new(1.5, theme::MUTE);
-        painter.circle_stroke(circle.center(), SELECT_CIRCLE / 2.0 - 0.75, ring);
+        let color = if shift >= SWIPE_SELECT / 2.0 {
+            theme::ACCENT
+        } else {
+            theme::MUTE
+        };
+        let icon = if on { Icon::Close } else { Icon::Tick };
+        icons::paint(painter, mark, icon, 18.0, color);
     }
+    let moved = vec2(shift, 0.0);
+    if on {
+        let tint = theme::ACCENT.gamma_multiply(0.25);
+        painter.rect_filled(back.translate(moved), 5.0, tint);
+    } else if resp.is_pointer_button_down_on() {
+        painter.rect_filled(back.translate(moved), 5.0, theme::raise());
+    }
+    let row = rect.translate(moved);
+    painter.text(
+        pos2(row.left(), row.center().y),
+        Align2::LEFT_CENTER,
+        name,
+        theme::body(),
+        theme::TEXT,
+    );
     if !value.is_empty() {
-        let at = pos2(row.right(), row.center().y);
+        let at = pos2(row.right() - ICON - 8.0, row.center().y);
         painter.text(at, Align2::RIGHT_CENTER, value, theme::body(), theme::MUTE);
     }
+    paint_open(ui, row);
     resp
 }
 
@@ -1262,7 +1286,7 @@ pub fn button_bar(
         } else {
             fill.gamma_multiply(0.8)
         };
-        let back = place.shrink2(vec2(0.0, HIGHLIGHT_INSET));
+        let back = place.shrink(HIGHLIGHT_INSET);
         ui.painter()
             .rect_filled(back, theme::CONTROL_RADIUS, fade(color, *enabled));
         ui.painter().text(
