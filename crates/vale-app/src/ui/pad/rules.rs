@@ -18,7 +18,7 @@ use super::number::Number;
 use super::raster::{self, heading};
 use super::selectable::{DESELECT_ALL, SELECT_ALL};
 use super::widgets::{self, Controls, Keys, PANEL_ROW};
-use super::{Page, filter, theme};
+use super::{Icon, Page, filter, theme};
 use crate::document::Document;
 use crate::globe::symbol::paint_symbol;
 use crate::rule_edit::{self, Change};
@@ -186,7 +186,7 @@ pub fn selection_title(state: &AppState, id: LayerId) -> String {
 /// that adds a rule. A later rule draws on top. A tap on a rule opens its
 /// page. A swipe to the right on a rule selects it or deselects it, as in
 /// the layer list of Procreate, and a tap on a selected rule opens the page
-/// of the selected rules. [`selection_bar`] holds the other actions.
+/// of the selected rules. [`selection_buttons`] gives the other actions.
 pub fn section(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id: LayerId) {
     let Some(kind) = state.doc.layer(id).and_then(|l| l.geometry()) else {
         return;
@@ -260,61 +260,47 @@ pub fn section(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
     }
 }
 
-/// The bar of the selected rules of layer `id`, which floats at the bottom
-/// of the visible part of the panel: a button that deselects the rules, the
-/// number of the rules, "Select all", "Edit rules", and "Delete rules".
-/// Call it at the end of the panel, because it adds the room that the bar
-/// covers.
-pub fn selection_bar(
-    ui: &mut egui::Ui,
-    state: &mut AppState,
-    controls: &mut Controls,
+/// The buttons of the selected rules of layer `id`, which has `count`
+/// rules, in the back row of the panel of the layer: "Select all" while a
+/// rule is not selected, "Edit rules", "Delete rules", and "Deselect all".
+/// `None`: no rule is selected.
+pub fn selection_buttons(
+    state: &AppState,
     id: LayerId,
-) {
+    count: usize,
+) -> Option<Vec<(&'static str, Icon)>> {
     let picked = state.pad.rules.picked(id);
-    let Some(count) = state.doc.entry(id).map(|e| e.style.style.rules.len()) else {
-        return;
-    };
     if picked.is_empty() {
-        return;
+        return None;
     }
-    ui.add_space(PANEL_ROW + 16.0);
-    let view = ui.clip_rect();
-    let (left, right) = (ui.max_rect().left() - 4.0, ui.max_rect().right() + 4.0);
-    let rect = egui::Rect::from_min_max(
-        egui::pos2(left, view.bottom() - 8.0 - PANEL_ROW),
-        egui::pos2(right, view.bottom() - 8.0),
-    );
-    let all = picked.len() == count;
-    let mut buttons = vec![(EDIT_RULES, theme::ACCENT), (DELETE_RULES, theme::WARN)];
-    if !all {
-        buttons.insert(0, (SELECT_ALL, theme::ACCENT));
+    let mut buttons = vec![
+        (EDIT_RULES, Icon::Brush),
+        (DELETE_RULES, Icon::Trash),
+        (DESELECT_ALL, Icon::Close),
+    ];
+    if picked.len() < count {
+        buttons.insert(0, (SELECT_ALL, Icon::Tick));
     }
-    let label = selection_title(state, id);
-    let area = egui::Area::new(ui.id().with(("rules-bar", id.0)))
-        .order(egui::Order::Foreground)
-        .fixed_pos(rect.min)
-        .constrain(false);
-    let bar = area
-        .show(ui.ctx(), |ui| {
-            widgets::tool_bar(ui, controls, rect, DESELECT_ALL, &label, &buttons)
-        })
-        .inner;
-    let tapped = bar.tapped.map(|i| buttons[i].0);
-    if bar.close {
-        state.pad.rules.select = None;
-    } else if tapped == Some(SELECT_ALL) {
-        state.pad.rules.select = Some((id, (0..count).collect()));
-    } else if tapped == Some(EDIT_RULES) {
-        state.pad.page = Some(Page::Rules);
-    } else if tapped == Some(DELETE_RULES)
-        && let Some(entry) = state.doc.entry_mut(id)
-    {
-        for &i in picked.iter().rev() {
-            entry.style.style.rules.remove(i);
+    Some(buttons)
+}
+
+/// Does the action of the button `name` of [`selection_buttons`].
+pub fn selection_action(state: &mut AppState, id: LayerId, name: &str) {
+    let picked = state.pad.rules.picked(id);
+    let count = state.doc.entry(id).map_or(0, |e| e.style.style.rules.len());
+    match name {
+        SELECT_ALL => state.pad.rules.select = Some((id, (0..count).collect())),
+        EDIT_RULES => state.pad.page = Some(Page::Rules),
+        DELETE_RULES => {
+            if let Some(entry) = state.doc.entry_mut(id) {
+                for &i in picked.iter().rev() {
+                    entry.style.style.rules.remove(i);
+                }
+                state.pad.rules = RulesState::default();
+                state.touch();
+            }
         }
-        state.pad.rules = RulesState::default();
-        state.touch();
+        _ => state.pad.rules.select = None,
     }
 }
 

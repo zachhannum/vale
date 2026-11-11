@@ -1810,6 +1810,16 @@ pub(super) struct View {
     pub body: Option<Rows>,
 }
 
+/// What a tap on the button with this name does.
+pub(super) type ButtonAction = Box<dyn FnOnce(&mut AppState, &'static str)>;
+
+/// The icon buttons at the right of the back row of a page, with their
+/// names, and what a tap on one of them does.
+pub(super) struct PageButtons {
+    pub buttons: Vec<(&'static str, Icon)>,
+    pub act: ButtonAction,
+}
+
 /// The parts of a page of a panel of the Atlas.
 pub(super) struct PageParts {
     pub key: &'static str,
@@ -1846,6 +1856,7 @@ impl PageParts {
             scroll: self.scroll,
             layer: None,
             page: None,
+            buttons: None,
             view: Some(View {
                 back: Some(Box::new(back)),
                 top: Some(Box::new(top)),
@@ -1874,6 +1885,8 @@ pub(super) struct Head {
     pub subtitle: Option<String>,
     layer: Option<LayerRef>,
     page: Option<Page>,
+    /// The buttons of the back row.
+    pub buttons: Option<PageButtons>,
     /// The parts of a page of a panel of the Atlas.
     pub view: Option<View>,
 }
@@ -2051,6 +2064,15 @@ pub(super) fn panel_head(state: &mut AppState, panel: Panel) -> Head {
         Panel::Attributes => select::layer_name(state),
         _ => None,
     };
+    let buttons = match (layer, page) {
+        (Some(LayerRef::Vector(id)), None) => {
+            rules::selection_buttons(state, id, rule_count).map(|buttons| PageButtons {
+                buttons,
+                act: Box::new(move |state, name| rules::selection_action(state, id, name)),
+            })
+        }
+        _ => None,
+    };
     Head {
         key,
         panel,
@@ -2061,6 +2083,7 @@ pub(super) fn panel_head(state: &mut AppState, panel: Panel) -> Head {
         scroll,
         layer,
         page,
+        buttons,
         view: None,
     }
 }
@@ -3029,7 +3052,6 @@ fn vector_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
         fonts::section(ui, state, controls, id);
     }
     fields::list(ui, state, controls, id);
-    rules::selection_bar(ui, state, controls, id);
 }
 
 /// A note with no warning goes away after this time, in seconds.

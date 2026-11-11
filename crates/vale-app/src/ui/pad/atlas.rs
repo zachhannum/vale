@@ -1794,12 +1794,21 @@ fn layer_head(state: &mut AppState, id: vale_store::FrameId) -> Option<Head> {
             if widgets::open_row(ui, controls, super::table::FEATURES, &features).clicked() {
                 state.open_table(layer);
             }
-            state.edit_map_style(map, layer, |state| {
-                super::rules::selection_bar(ui, state, controls, layer);
-            });
         }
     };
-    Some(parts.head(Panel::Layers, back_to, top, body))
+    let mut head = parts.head(Panel::Layers, back_to, top, body);
+    if page.is_none() {
+        let buttons = super::rules::selection_buttons(state, layer, rules.len());
+        head.buttons = buttons.map(|buttons| super::PageButtons {
+            buttons,
+            act: Box::new(move |state, name| {
+                state.edit_map_style(map, layer, |state| {
+                    super::rules::selection_action(state, layer, name);
+                });
+            }),
+        });
+    }
+    Some(head)
 }
 
 /// The rows that set the style of a layer in a map from its map style or
