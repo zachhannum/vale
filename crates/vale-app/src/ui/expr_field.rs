@@ -6,10 +6,11 @@ use eframe::egui::{self, Align2, Key, Modifiers, Rect, Sense, Stroke, pos2, vec2
 use vale_store::Value;
 use vale_style::expr::editor::FieldFormat;
 use vale_style::expr::editor::{Formula, Piece, Seq, Subject, Template, Tok};
-use vale_style::expr::{Category, FUNCTIONS, Function, Var};
+use vale_style::expr::{Category, FUNCTIONS, Function, Var, layer_functions};
 
 use super::expr_help::{
-    ExprHelp, ExprKind, FIELDS, FUNCTIONS_MENU, GEOMETRY_MENU, INSERT, VARIABLES_MENU, desktop_line,
+    DESKTOP_PAGE_VALUES, ExprHelp, ExprKind, FIELDS, FUNCTIONS_MENU, GEOMETRY_MENU, INSERT,
+    VARIABLES_MENU, desktop_line,
 };
 use super::pad::{filter, popover, theme};
 use super::token_field::formula::{self, Completion};
@@ -48,6 +49,8 @@ enum Item {
     Var(Var),
     /// A function. In label text, the call with its slots filled.
     Function(&'static Function, Option<Seq>),
+    /// A page value of the text of a text item: its name and its text.
+    Page(&'static str, &'static str),
 }
 
 impl Item {
@@ -58,6 +61,7 @@ impl Item {
             Item::Var(v) => format!("@{}", v.name()),
             Item::Function(_, Some(seq)) => seq.to_text(),
             Item::Function(f, None) => f.signature.to_owned(),
+            Item::Page(label, _) => (*label).to_owned(),
         }
     }
 }
@@ -136,11 +140,21 @@ fn heading_row(ui: &mut egui::Ui, heading: &str, items: &[Item]) -> Option<Item>
         Item::Measure(_) => 1,
         Item::Var(_) => 2,
         Item::Function(..) => 3,
+        Item::Page(..) => 0,
     };
     ui.horizontal(|ui| {
         ui.label(heading);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.menu_button(format!("{INSERT} ⏷"), |ui| {
+                // The page values of a text item are one list.
+                if items.iter().any(|i| matches!(i, Item::Page(..))) {
+                    for item in items {
+                        if ui.button(item.label()).clicked() {
+                            chosen = Some(item.clone());
+                        }
+                    }
+                    return;
+                }
                 for (k, title) in groups.into_iter().enumerate() {
                     let group: Vec<&Item> = items.iter().filter(|i| group_of(i) == k).collect();
                     if group.is_empty() {
@@ -285,6 +299,12 @@ fn brace_query(field: &Field<Piece>) -> Option<(Caret, String)> {
 /// whose names start with it. With `all`, all of them.
 fn text_items(q: &str, help: &ExprHelp, all: bool) -> Vec<Item> {
     let q = q.to_lowercase();
+    if help.is_page() {
+        let page = (DESKTOP_PAGE_VALUES.iter())
+            .filter(|(label, _)| all || label.to_lowercase().starts_with(&q))
+            .map(|(label, text)| Item::Page(label, text));
+        return page.collect();
+    }
     let fields: Vec<&String> = (help.fields.iter())
         .filter(|f| all || f.to_lowercase().starts_with(&q))
         .collect();
@@ -326,8 +346,8 @@ fn field_seq(name: &str) -> Seq {
     Seq(vec![Tok::Field(name.to_owned())])
 }
 
-/// The note of an item of the label text: the sample value of a field, or
-/// "Function".
+/// The note of an item of the label text: the sample value of a field or
+/// of a page value, or "Function".
 fn text_note(item: &Item, help: &ExprHelp) -> String {
     match item {
         Item::Field(name) => help.sample(name).and_then(Value::label).unwrap_or_default(),
@@ -342,6 +362,7 @@ fn text_note(item: &Item, help: &ExprHelp) -> String {
         }
         Item::Var(v) => v.hint().to_owned(),
         Item::Function(..) => FUNCTION_NOTE.to_owned(),
+        Item::Page(_, text) => help.eval(text).and_then(|v| v.label()).unwrap_or_default(),
     }
 }
 
@@ -370,6 +391,11 @@ fn insert_text_item(field: &mut Field<Piece>, item: &Item, brace: Option<Caret>,
             f,
             args: vec![Seq(Vec::new()); f.min_args.max(1)],
         }])),
+        Item::Page(_, text) => {
+            let pieces = Template::from_text(text).pieces;
+            field.replace(template::nodes_of(&pieces, help));
+            return;
+        }
     };
     field.replace(template::nodes_of(&[piece], help));
 }
@@ -398,7 +424,7 @@ pub fn value(
     }
     let mut menu_items: Vec<Item> = help.fields.iter().cloned().map(Item::Field).collect();
     menu_items.extend(Var::ALL.into_iter().map(Item::Var));
-    menu_items.extend(FUNCTIONS.iter().map(|f| Item::Function(f, None)));
+    menu_items.extend(layer_functions().map(|f| Item::Function(f, None)));
     let mut changed = false;
     if let Some(item) = heading_row(ui, heading, &menu_items) {
         match item {
@@ -406,6 +432,7 @@ pub fn value(
             Item::Var(v) => formula::insert_var(&mut st.field, v, help),
             Item::Function(f, _) => formula::insert_function(&mut st.field, f),
             Item::Measure(_) => {}
+            Item::Page(..) => {}
         }
         ui.memory_mut(|m| m.request_focus(field_id));
         changed = true;
@@ -504,6 +531,7 @@ fn completion_of(item: &Item) -> Completion {
         Item::Function(f, _) => Completion::Function(f),
         Item::Var(v) | Item::Measure(Subject::Var(v)) => Completion::Var(*v),
         Item::Measure(s) => Completion::Field(s.label()),
+        Item::Page(..) => unreachable!("a value field has no page values"),
     }
 }
 
@@ -524,6 +552,7 @@ fn rows_of(items: &[Item], help: &ExprHelp) -> Vec<(Item, String, Option<Glyph>)
         Item::Measure(s) => help.subject_type(s).map(Glyph::of),
         Item::Var(v) => Some(Glyph::of(v.field_type())),
         Item::Function(..) => None,
+        Item::Page(..) => Some(Glyph::Text),
     };
     (items.iter())
         .map(|i| (i.clone(), text_note(i, help), glyph(i)))
@@ -603,7 +632,9 @@ fn completion_list(
                 }
                 let mid = row.center().y;
                 let (color, font) = match item {
-                    Item::Field(_) => (theme::TEXT, egui::FontId::proportional(13.0)),
+                    Item::Field(_) | Item::Page(..) => {
+                        (theme::TEXT, egui::FontId::proportional(13.0))
+                    }
                     Item::Measure(_) | Item::Var(_) => {
                         (VARIABLE_TEXT, egui::FontId::proportional(13.0))
                     }
@@ -611,7 +642,10 @@ fn completion_list(
                 };
                 let mut x = row.left() + 8.0;
                 match (item, glyph) {
-                    (Item::Field(_) | Item::Measure(_) | Item::Var(_), Some(g)) => {
+                    (
+                        Item::Field(_) | Item::Page(..) | Item::Measure(_) | Item::Var(_),
+                        Some(g),
+                    ) => {
                         paint_glyph(painter, pos2(x + m.glyph / 2.0, mid), *g, &m, false);
                         x += m.glyph + 8.0;
                     }

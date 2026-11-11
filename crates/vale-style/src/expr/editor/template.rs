@@ -5,6 +5,7 @@ use std::ops::Range;
 use vale_store::Value;
 
 use super::super::field_ref;
+use super::super::functions::Category;
 use super::super::parser::{BinOp, Node, Spans, Var};
 use super::super::print::{CONCAT, quote};
 use super::cond::operands;
@@ -75,6 +76,11 @@ pub enum Piece {
     Field {
         subject: Subject,
         format: FieldFormat,
+    },
+    /// A call of a page function whose arguments are texts, for example `scale('relative', 'cm')`. `name` is the name of the function.
+    Page {
+        name: &'static str,
+        options: Vec<String>,
     },
     /// Pieces that show only when each of them has a value. It writes a chain of `||`.
     Group(Vec<Piece>),
@@ -174,15 +180,39 @@ pub(super) fn pieces_of(
             }
             list.push(Piece::Group(items));
         }
-        _ => match field_of(node) {
-            Some((subject, format)) => {
+        _ => {
+            if let Some((name, options)) = page_of(node) {
+                spans.add(path, sp.span.clone());
+                list.push(Piece::Page { name, options });
+            } else if let Some((subject, format)) = field_of(node) {
                 spans.add(path, sp.span.clone());
                 list.push(Piece::Field { subject, format });
+            } else {
+                list.push(Piece::Expr(seq_of(node, sp, path, spans)));
             }
-            None => list.push(Piece::Expr(seq_of(node, sp, path, spans))),
-        },
+        }
     }
     path.pop();
+}
+
+/// The name and the options of a call of a page function whose arguments are all texts.
+fn page_of(node: &Node) -> Option<(&'static str, Vec<String>)> {
+    let Node::Call(f, args) = node else {
+        return None;
+    };
+    if f.category != Category::Page {
+        return None;
+    }
+    let options = args.iter().map(|a| match a {
+        Node::Lit(Value::Text(s)) => Some(s.clone()),
+        _ => None,
+    });
+    Some((f.name, options.collect::<Option<_>>()?))
+}
+
+fn page_text(name: &str, options: &[String]) -> String {
+    let args: Vec<String> = options.iter().map(|o| quote(o)).collect();
+    format!("{name}({})", args.join(", "))
 }
 
 /// The subject and its format, if the node is a subject in the functions of a format, in their order.
@@ -307,6 +337,7 @@ fn operands_of(pieces: &[Piece], in_group: bool) -> Vec<String> {
                 let min = if out.is_empty() { CONCAT } else { CONCAT + 1 };
                 let text = match p {
                     Piece::Field { subject, format } => field_text(subject, format),
+                    Piece::Page { name, options } => page_text(name, options),
                     Piece::Group(items) => {
                         let text = operands_of(items, true).join(" || ");
                         if in_group { format!("({text})") } else { text }

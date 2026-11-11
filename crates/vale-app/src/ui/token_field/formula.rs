@@ -5,7 +5,7 @@
 //! text of the field reads the chars as expression text.
 
 use vale_style::expr::editor::{Formula, Op, Seq, Tok};
-use vale_style::expr::{FUNCTIONS, Function, Var};
+use vale_style::expr::{FUNCTIONS, Function, Var, layer_functions};
 
 use super::{BoxKind, Boxed, Caret, Chip, ChipKind, Field, Glyph, Look, Node, Selection, Token};
 use crate::classify::number_text;
@@ -583,7 +583,7 @@ pub fn completions(word: &str, help: &ExprHelp) -> Vec<Completion> {
     let fields = (help.fields.iter())
         .filter(|f| f.to_lowercase().starts_with(&w))
         .map(|f| Completion::Field(f.clone()));
-    let functions = (FUNCTIONS.iter())
+    let functions = layer_functions()
         .filter(|f| f.name.starts_with(&w))
         .map(Completion::Function);
     fields.chain(functions).collect()

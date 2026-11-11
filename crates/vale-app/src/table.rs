@@ -99,6 +99,7 @@ pub fn build(
                 geometry: f.geometry.kind(),
                 shape: Some(&f.geometry),
                 radius_km,
+                page: None,
             })
         })
         .map(|(i, _)| i)

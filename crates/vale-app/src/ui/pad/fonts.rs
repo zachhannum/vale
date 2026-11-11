@@ -73,7 +73,14 @@ pub fn text_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Control
         class: &class,
         fonts: &mut state.fonts,
     };
-    let edit = label_text::editor(ui, controls, ("", LABEL_TEXT), &current, &help, &mut look);
+    let edit = label_text::editor(
+        ui,
+        controls,
+        ("", LABEL_TEXT),
+        &current,
+        &help,
+        Some(&mut look),
+    );
     if let Some(text) = edit.text {
         set_text(state, id, text);
     }

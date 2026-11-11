@@ -93,6 +93,24 @@ A filter matches a feature only if the result is `true`. The `if` function also 
 
 The measures use the sphere of the world, with the radius of the world. The edges are great-circle arcs. A measure on the wrong geometry type gives null, for example the area of a point or `@parts` of a point. A wrong unit also gives null.
 
+### Page functions
+
+A text item on a page of the atlas can use the page functions. In a filter, a style property, or a label text, a page function gives null, and the lists of functions do not show them.
+
+```text
+concat('Scale ', scale('fraction'))
+concat('Page ', page_number(), ' of ', page_count())
+```
+
+| Function | Result |
+| --- | --- |
+| `scale(format, unit)` | The scale of the map frame. With `'fraction'`, the result is like `1:25,000,000`. With `'relative'`, it is a length on the page and the distance that it shows, like `1 cm = 250 km`. The unit is `'cm'` or `'in'`, and `'cm'` if not given. |
+| `map_name()` | The name of the map in the map frame |
+| `page_name()` | The name of the page |
+| `page_number()` | The number of the page in the atlas. The first page is 1. |
+| `page_count()` | The number of pages in the atlas |
+| `date(format)` | The date of today. With `'long'`, the result is like `November 8, 2026`. With `'iso'`, it is like `2026-11-08`. |
+
 ## Errors
 
 An error in the text gives a message with the line and the column, for example `1:8: unknown function 'shout'`. Unknown functions, unknown variables, and a wrong number of arguments are errors in the text. The nesting depth has a limit of 64 levels.

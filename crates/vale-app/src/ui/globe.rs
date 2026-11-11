@@ -1200,6 +1200,7 @@ pub fn vector_layer_cut(
                 geometry: features[i].geometry.kind(),
                 shape: Some(&features[i].geometry),
                 radius_km: doc.project.world.radius_km,
+                page: None,
             })
         })
         .collect();
@@ -1603,6 +1604,7 @@ pub fn flat_vector_layer_cut(
         geometry: features[i].geometry.kind(),
         shape: Some(&features[i].geometry),
         radius_km,
+        page: None,
     });
     let mut screens: Vec<Option<Option<FlatScreen>>> = features.iter().map(|_| None).collect();
     let mut sink = Sink::new(format, cut.is_some());

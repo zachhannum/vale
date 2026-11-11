@@ -553,7 +553,7 @@ fn text_segment(
         class,
         fonts: &mut state.fonts,
     };
-    let edit = label_text::editor(ui, controls, names, &class.text, &help, &mut look);
+    let edit = label_text::editor(ui, controls, names, &class.text, &help, Some(&mut look));
     if let Some(text) = edit.text {
         if edit.step {
             state.label_class_step(map, layer, i, |c| c.text = text);

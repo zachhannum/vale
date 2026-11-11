@@ -319,16 +319,17 @@ pub fn wrap(text: &str, style: &TextStyle, width: f64, fonts: &mut Fonts) -> Vec
     lines
 }
 
-/// The glyphs of a text item in `rect`, in target points. A line that does
-/// not fit above the bottom of `rect` is left out.
-fn text_items(item: &TextItem, rect: Rect, unit: f64, fonts: &mut Fonts) -> Vec<Item> {
+/// The glyphs of `text`, the shown text of a text item, in `rect`, in
+/// target points. A line that does not fit above the bottom of `rect` is
+/// left out.
+fn text_items(item: &TextItem, text: &str, rect: Rect, unit: f64, fonts: &mut Fonts) -> Vec<Item> {
     let ink = TextInk::new(&item.style, unit, fonts);
     let style = &ink.style;
     let metrics = fonts.measure("Hg", style);
     let (ascent, descent) = (metrics.ascent, metrics.descent.abs());
     let step = LINE_HEIGHT * style.size;
     let mut out = Painted::default();
-    let text = item.style.case.apply(&item.text);
+    let text = item.style.case.apply(text);
     for (k, line) in wrap(&text, style, rect.width(), fonts).iter().enumerate() {
         let baseline = rect.y0 + ascent + k as f64 * step;
         if baseline + descent > rect.y1 + 1e-9 {
@@ -344,6 +345,244 @@ fn text_items(item: &TextItem, rect: Rect, unit: f64, fonts: &mut Fonts) -> Vec<
         ink.line(line, Affine::translate((x, baseline)), fonts, &mut out);
     }
     out.into_items().collect()
+}
+
+/// The scale of `km_per_mm` ground kilometers per page millimeter as text.
+/// The format `fraction` gives "1:25,000,000". The format `relative` gives
+/// "1 cm = 250 km" for the page unit `cm` and "1 in = 40.0 mi" for `in`. The
+/// numbers have three significant digits. `None` for an unknown format or
+/// unit.
+pub fn scale_value(format: &str, page_unit: &str, km_per_mm: f64, units: Units) -> Option<String> {
+    match format {
+        "fraction" => {
+            const MM_PER_KM: f64 = 1e6;
+            let n = significant(km_per_mm * MM_PER_KM).round().max(1.0);
+            Some(format!("1:{}", world::grouped(n as u64)))
+        }
+        "relative" => {
+            let (page_mm, page_symbol) = match page_unit {
+                "cm" => (10.0, "cm"),
+                "in" => (25.4, "in"),
+                _ => return None,
+            };
+            let km = km_per_mm * page_mm;
+            let (unit_km, symbol) = world::unit_for(km, units);
+            let value = significant(km / unit_km);
+            let value = if value >= 100.0 {
+                world::grouped(value as u64)
+            } else {
+                world::three_significant(value)
+            };
+            Some(format!("1 {page_symbol} = {value} {symbol}"))
+        }
+        _ => None,
+    }
+}
+
+/// `v` rounded to three significant digits.
+fn significant(v: f64) -> f64 {
+    if !(v.is_finite() && v > 0.0) {
+        return 0.0;
+    }
+    let step = 10f64.powi(v.log10().floor() as i32 - 2);
+    (v / step).round() * step
+}
+
+/// The date `days` days after 1970-01-01 as text. The format `long` gives
+/// "November 8, 2026", and the format `iso` gives "2026-11-08". `None` for
+/// an unknown format.
+pub fn date_value(format: &str, days: i64) -> Option<String> {
+    const MONTHS: [&str; 12] = [
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
+    ];
+    let (y, m, d) = civil(days);
+    match format {
+        "long" => Some(format!("{} {d}, {y}", MONTHS[m as usize - 1])),
+        "iso" => Some(format!("{y:04}-{m:02}-{d:02}")),
+        _ => None,
+    }
+}
+
+/// The year, the month, and the day of `days` days after 1970-01-01, in the
+/// Gregorian calendar.
+fn civil(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    (y, m, d)
+}
+
+/// The values of the page functions for a text item.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PageSample {
+    page_name: String,
+    /// From 1.
+    page_number: usize,
+    page_count: usize,
+    /// The name of the map of the frame. `None`: the item has no frame.
+    map_name: Option<String>,
+    /// Ground kilometers per page millimeter at the center of the frame.
+    km_per_mm: Option<f64>,
+    units: Units,
+    /// Days after 1970-01-01.
+    today: i64,
+}
+
+impl vale_style::expr::PageValues for PageSample {
+    fn value(&self, name: &str, args: &[vale_style::expr::Value]) -> vale_style::expr::Value {
+        use vale_style::expr::Value;
+        let arg = |i: usize| match args.get(i) {
+            Some(Value::Text(t)) => t.as_str(),
+            _ => "",
+        };
+        let text = |t: Option<String>| t.map_or(Value::Null, Value::Text);
+        match name {
+            "scale" => {
+                let unit = if arg(1).is_empty() { "cm" } else { arg(1) };
+                let km = self.km_per_mm;
+                text(km.and_then(|km| scale_value(arg(0), unit, km, self.units)))
+            }
+            "map_name" => text(self.map_name.clone()),
+            "page_name" => Value::Text(self.page_name.clone()),
+            "page_number" => Value::Number(self.page_number as f64),
+            "page_count" => Value::Number(self.page_count as f64),
+            "date" => text(date_value(arg(0), self.today)),
+            _ => Value::Null,
+        }
+    }
+}
+
+/// The page values of a sample, and whether a frame value was asked for.
+#[derive(Default)]
+struct AtlasValues {
+    sample: PageSample,
+    asked_frame: std::cell::Cell<bool>,
+}
+
+impl vale_style::expr::PageValues for AtlasValues {
+    fn value(&self, name: &str, args: &[vale_style::expr::Value]) -> vale_style::expr::Value {
+        if matches!(name, "scale" | "map_name") {
+            self.asked_frame.set(true);
+        }
+        self.sample.value(name, args)
+    }
+}
+
+/// The text that a text item shows.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ShownText {
+    pub text: String,
+    /// The text uses a frame value, and the item has no frame.
+    pub missing_frame: bool,
+}
+
+/// The template of `values` evaluated. A template that does not parse shows
+/// as its text.
+fn evaluate(template: &str, values: &AtlasValues) -> String {
+    use vale_style::expr::{Context, Expr};
+    static NONE: std::collections::BTreeMap<String, vale_style::expr::Value> =
+        std::collections::BTreeMap::new();
+    let Ok(expr) = Expr::parse_lenient(template) else {
+        return template.to_string();
+    };
+    let ctx = Context {
+        attributes: &NONE,
+        scale: 0.0,
+        geometry: vale_store::GeometryKind::Point,
+        shape: None,
+        radius_km: 0.0,
+        page: Some(values),
+    };
+    expr.eval(&ctx).label().unwrap_or_default()
+}
+
+/// Whether a text template uses a value of a frame: the scale or the map
+/// name.
+pub fn uses_frame(template: &str) -> bool {
+    let values = AtlasValues::default();
+    evaluate(template, &values);
+    values.asked_frame.get()
+}
+
+/// The page values of the item `rec` on the day `today`, in days after
+/// 1970-01-01. The frame values come from the frame of the item.
+pub fn page_sample(
+    pipeline: &mut Pipeline,
+    doc: &Document,
+    rec: &FurnitureRecord,
+    today: i64,
+) -> PageSample {
+    let atlas = &doc.project.atlas;
+    let index = (atlas.pages.iter())
+        .position(|p| p.furniture.iter().any(|f| f.id == rec.id))
+        .unwrap_or(0);
+    let world = &doc.project.world;
+    let mut sample = PageSample {
+        page_name: atlas.pages.get(index).map_or(String::new(), |p| {
+            crate::ui::pad::atlas::page_title(index, &p.name)
+        }),
+        page_number: index + 1,
+        page_count: atlas.pages.len(),
+        units: world.units,
+        today,
+        ..PageSample::default()
+    };
+    if let Some(frame) = rec.item.frame().and_then(|id| atlas.frame(id)) {
+        sample.map_name = atlas.map(frame.map).map(|m| m.name.clone());
+        if let Ok(projection) = pipeline.projection(doc, frame.map) {
+            sample.km_per_mm = scale_at_center(projection, frame, world.radius_km);
+        }
+    }
+    sample
+}
+
+/// The text of the text item `rec` on the day `today`, in days after
+/// 1970-01-01.
+pub fn shown_text(
+    pipeline: &mut Pipeline,
+    doc: &Document,
+    rec: &FurnitureRecord,
+    today: i64,
+) -> ShownText {
+    let Furniture::Text(item) = &rec.item else {
+        return ShownText {
+            text: String::new(),
+            missing_frame: false,
+        };
+    };
+    let values = AtlasValues {
+        sample: page_sample(pipeline, doc, rec, today),
+        ..AtlasValues::default()
+    };
+    let text = evaluate(&item.template, &values);
+    let missing_frame = values.asked_frame.get() && values.sample.km_per_mm.is_none();
+    ShownText {
+        text,
+        missing_frame,
+    }
+}
+
+/// The days from 1970-01-01 to today, in UTC.
+pub fn today() -> i64 {
+    let since = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
+    since.map_or(0, |d| (d.as_secs() / 86_400) as i64)
 }
 
 /// The box of an item in page millimeters.
@@ -376,7 +615,13 @@ pub fn items(
         Purpose::Export => Vec::new(),
     };
     if let Furniture::Text(item) = &rec.item {
-        return text_items(item, rect, unit, fonts);
+        let shown = shown_text(pipeline, doc, rec, today());
+        let mut out = match purpose {
+            Purpose::Screen if shown.missing_frame => placeholder(),
+            _ => Vec::new(),
+        };
+        out.extend(text_items(item, &shown.text, rect, unit, fonts));
+        return out;
     }
     let Some(frame) = (rec.item.frame()).and_then(|id| doc.project.atlas.frame(id)) else {
         return placeholder();
@@ -754,6 +999,32 @@ mod tests {
     }
 
     #[test]
+    fn the_scale_value_has_three_significant_digits() {
+        let value = |f, u, km| scale_value(f, u, km, Units::Metric).unwrap();
+        assert_eq!(value("fraction", "", 25.034), "1:25,000,000");
+        assert_eq!(value("fraction", "", 0.012_345_6), "1:12,300");
+        assert_eq!(value("fraction", "", 1e-9), "1:1");
+        assert_eq!(value("relative", "cm", 25.034), "1 cm = 250 km");
+        assert_eq!(value("relative", "cm", 123.456), "1 cm = 1,230 km");
+        assert_eq!(value("relative", "cm", 0.01), "1 cm = 100 m");
+        let km = 40.0 * world::large_unit(Units::Imperial).0 / 25.4;
+        let inch = scale_value("relative", "in", km, Units::Imperial);
+        assert_eq!(inch.as_deref(), Some("1 in = 40.0 mi"));
+        assert_eq!(scale_value("words", "cm", 1.0, Units::Metric), None);
+        assert_eq!(scale_value("relative", "mm", 1.0, Units::Metric), None);
+    }
+
+    #[test]
+    fn the_date_value_has_a_long_and_an_iso_format() {
+        // 2026-11-08 is day 20,765.
+        assert_eq!(date_value("long", 20_765).unwrap(), "November 8, 2026");
+        assert_eq!(date_value("iso", 20_765).unwrap(), "2026-11-08");
+        assert_eq!(date_value("iso", 0).unwrap(), "1970-01-01");
+        assert_eq!(date_value("iso", 11_016).unwrap(), "2000-02-29");
+        assert_eq!(date_value("short", 0), None);
+    }
+
+    #[test]
     fn text_wraps_at_the_width_and_at_line_breaks() {
         let mut fonts = crate::pipeline::fonts().unwrap();
         let s = text_style(&style(10.0), 1.0, &mut fonts);
@@ -772,11 +1043,11 @@ mod tests {
         let rect = Rect::new(100.0, 50.0, 300.0, 80.0);
         let start = |align: TextAlign, fonts: &mut Fonts| {
             let item = TextItem {
-                text: "Title\nSecond\nThird".to_string(),
                 style: style(10.0),
                 align,
+                ..TextItem::default()
             };
-            lines(&text_items(&item, rect, 1.0, fonts))
+            lines(&text_items(&item, "Title\nSecond\nThird", rect, 1.0, fonts))
         };
         let left = start(TextAlign::Left, &mut fonts);
         // Two lines of 12 points fit in 30 points, and the third does not.

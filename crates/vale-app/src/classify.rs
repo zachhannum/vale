@@ -71,6 +71,7 @@ pub fn values(layer: &Layer, expr: &Expr, radius_km: f64) -> Vec<Value> {
                 geometry: f.geometry.kind(),
                 shape: Some(&f.geometry),
                 radius_km,
+                page: None,
             })
         })
         .collect()
@@ -750,6 +751,7 @@ mod tests {
                 geometry: GeometryKind::Polygon,
                 shape: None,
                 radius_km: 0.0,
+                page: None,
             };
             assert_eq!(other.matches(&context), inside, "{v:?}");
         }
@@ -786,6 +788,7 @@ mod tests {
                 geometry: GeometryKind::Polygon,
                 shape: None,
                 radius_km: 0.0,
+                page: None,
             };
             assert_eq!(other.matches(&ctx), inside, "{v:?}");
         }

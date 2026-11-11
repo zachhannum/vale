@@ -7,7 +7,7 @@
 use eframe::egui::{self, Align2, Color32, Rect, Sense, Stroke, pos2, vec2};
 use vale_store::Value;
 use vale_style::expr::editor::{Cond, Formula, Seq, Tok};
-use vale_style::expr::{Category, Expr, FUNCTIONS, Function, Var};
+use vale_style::expr::{Category, Expr, FUNCTIONS, Function, Var, layer_functions};
 
 use super::cases::{self, CasesEdit, CasesState};
 use super::expression;
@@ -567,7 +567,7 @@ fn bar(
                 }
             }
             1 => {
-                for f in FUNCTIONS.iter().filter(|f| f.name.contains(&needle)) {
+                for f in layer_functions().filter(|f| f.name.contains(&needle)) {
                     let label = (f.name, FUNCTION_TEXT);
                     let name = bar_name(&insert_name(f.name));
                     if bar_chip(ui, controls, &name, None, label, f.hint) {
@@ -817,8 +817,8 @@ mod tests {
     use crate::ui::token_field::ChipKind;
 
     #[test]
-    fn the_tray_lists_each_function() {
-        for f in FUNCTIONS {
+    fn the_tray_lists_each_layer_function() {
+        for f in layer_functions() {
             assert!(TRAY_CATEGORIES.contains(&f.category), "{}", f.name);
         }
     }

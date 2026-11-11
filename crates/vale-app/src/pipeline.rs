@@ -78,6 +78,7 @@ impl PageLayer<'_> {
             geometry: self.kind,
             shape: feature.map(|f| &f.geometry),
             radius_km: self.radius_km,
+            page: None,
         }
     }
 

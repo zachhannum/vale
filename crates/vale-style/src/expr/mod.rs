@@ -17,7 +17,7 @@ use vale_render::Color;
 pub use vale_store::Value;
 use vale_store::{Geometry, GeometryKind};
 
-pub use functions::{Category, FUNCTIONS, Function};
+pub use functions::{Category, FUNCTIONS, Function, layer_functions};
 pub use measure::{Measure, Unit};
 pub use parser::Var;
 use parser::{Node, Spans};
@@ -95,6 +95,14 @@ pub struct Context<'a> {
     pub shape: Option<&'a Geometry>,
     /// The radius of the world, in kilometers.
     pub radius_km: f64,
+    /// The values of the page functions. Without a page, a page function gives null.
+    pub page: Option<&'a dyn PageValues>,
+}
+
+/// The values of the page functions, for a text item on a page of an atlas.
+pub trait PageValues {
+    /// The value of the page function `name` for the arguments `args`.
+    fn value(&self, name: &str, args: &[Value]) -> Value;
 }
 
 /// An error in the text of an expression.

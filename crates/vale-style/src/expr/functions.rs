@@ -40,6 +40,8 @@ pub enum Category {
     Logic,
     Convert,
     Geometry,
+    /// Values of the page of an atlas. Only a text item on a page has them.
+    Page,
 }
 
 impl Category {
@@ -50,6 +52,7 @@ impl Category {
             Category::Logic => "Logic",
             Category::Convert => "Convert",
             Category::Geometry => "Geometry",
+            Category::Page => "Page",
         }
     }
 }
@@ -381,11 +384,76 @@ pub static FUNCTIONS: &[Function] = &[
         hint: "Length of a line",
         call: measure::line_length,
     },
+    Function {
+        name: "scale",
+        signature: "scale(format, unit)",
+        min_args: 1,
+        max_args: Some(2),
+        summary: "The scale of the map frame. `format` is `'fraction'` for `1:25,000,000`, or `'relative'` for `1 cm = 250 km`. `unit` is `'cm'` or `'in'`, and `'cm'` if not given",
+        category: Category::Page,
+        hint: "Scale of the map",
+        call: |_, _| Value::Null,
+    },
+    Function {
+        name: "map_name",
+        signature: "map_name()",
+        min_args: 0,
+        max_args: Some(0),
+        summary: "The name of the map in the map frame",
+        category: Category::Page,
+        hint: "Name of the map",
+        call: |_, _| Value::Null,
+    },
+    Function {
+        name: "page_name",
+        signature: "page_name()",
+        min_args: 0,
+        max_args: Some(0),
+        summary: "The name of the page",
+        category: Category::Page,
+        hint: "Name of the page",
+        call: |_, _| Value::Null,
+    },
+    Function {
+        name: "page_number",
+        signature: "page_number()",
+        min_args: 0,
+        max_args: Some(0),
+        summary: "The number of the page in the atlas. The first page is 1",
+        category: Category::Page,
+        hint: "Number of the page",
+        call: |_, _| Value::Null,
+    },
+    Function {
+        name: "page_count",
+        signature: "page_count()",
+        min_args: 0,
+        max_args: Some(0),
+        summary: "The number of pages in the atlas",
+        category: Category::Page,
+        hint: "Number of pages",
+        call: |_, _| Value::Null,
+    },
+    Function {
+        name: "date",
+        signature: "date(format)",
+        min_args: 1,
+        max_args: Some(1),
+        summary: "The date of today. `format` is `'long'` for `November 8, 2026`, or `'iso'` for `2026-11-08`",
+        category: Category::Page,
+        hint: "Date of today",
+        call: |_, _| Value::Null,
+    },
 ];
 
 /// The function with this name. Case does not matter.
 pub fn find(name: &str) -> Option<&'static Function> {
     FUNCTIONS.iter().find(|f| f.name.eq_ignore_ascii_case(name))
+}
+
+/// The functions that a layer expression can use: all functions but the page functions.
+pub fn layer_functions() -> impl Iterator<Item = &'static Function> {
+    FUNCTIONS.iter().filter(|f| f.category != Category::Page)
 }
 
 /// Only `true` is true.

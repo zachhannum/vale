@@ -441,6 +441,39 @@ fn text(s: &str) -> Piece {
 }
 
 #[test]
+fn template_reads_page_functions() {
+    let src = "concat('Scale ', scale('relative', 'cm'))";
+    let t = Template::from_text(src);
+    assert_eq!(
+        t.pieces,
+        vec![
+            text("Scale "),
+            Piece::Page {
+                name: "scale",
+                options: vec!["relative".into(), "cm".into()],
+            },
+        ]
+    );
+    assert_eq!(t.to_text(), src);
+    assert_eq!(t.span(&[1]), Some(17..40));
+    for src in [
+        "concat('Page ', page_number(), ' of ', page_count())",
+        "date('iso')",
+        "concat(map_name(), ' · ' || page_name())",
+    ] {
+        assert_eq!(template_trip(src), src);
+    }
+    assert!(matches!(
+        &Template::from_text("concat('Page ', page_number())").pieces[..],
+        [_, Piece::Page { name: "page_number", options }] if options.is_empty()
+    ));
+    assert!(matches!(
+        &Template::from_text("scale(kind)").pieces[..],
+        [Piece::Expr(_)]
+    ));
+}
+
+#[test]
 fn template_reads_text_fields_and_groups() {
     let t = Template::from_text(
         "concat(name, '\n', 'Pop ' || format_number(pop, 0), ' · ', round(elev) || ' m')",
