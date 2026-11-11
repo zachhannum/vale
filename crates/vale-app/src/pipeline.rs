@@ -1231,13 +1231,15 @@ impl Pipeline {
         self.lod.forget(id);
     }
 
-    /// A pipeline with no kept geometry, that keeps the levels of detail.
-    /// Each layer compares its levels with its geometry at the next use.
+    /// A pipeline with no kept geometry, that keeps the levels of detail
+    /// and the page masks. Each layer compares its levels with its geometry
+    /// at the next use. A page mask stays until its new capture arrives.
     pub fn reset(&mut self) {
         let mut lod = std::mem::take(&mut self.lod);
         lod.uncheck();
         *self = Pipeline {
             lod,
+            page_masks: std::mem::take(&mut self.page_masks),
             ..Pipeline::default()
         };
     }
