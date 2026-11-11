@@ -187,9 +187,15 @@ pub fn editor(
     edit
 }
 
-/// The top of the bar above the keyboard.
+/// The top of the bar above the keyboard. Without a keyboard, no bar
+/// shows, and this is the bottom of the screen.
 pub fn bar_top(ctx: &egui::Context) -> f32 {
-    keyboard_top(ctx.viewport_rect()) - BAR
+    let top = keyboard_top(ctx.viewport_rect());
+    if crate::keyboard::hidden() {
+        top
+    } else {
+        top - BAR
+    }
 }
 
 /// The least height of a token field at the cursor of `ui`. While the
@@ -602,8 +608,12 @@ fn bar(
 
 /// The bar above the keyboard, with the items that `add` adds from left to
 /// right. The bar scrolls sideways when the screen is too narrow for its
-/// items. A press on the bar keeps the focus of the field.
+/// items. A press on the bar keeps the focus of the field. The bar does not
+/// show while the system reports no keyboard.
 pub fn bar_area(ui: &egui::Ui, id: &str, add: impl FnOnce(&mut egui::Ui)) {
+    if crate::keyboard::hidden() {
+        return;
+    }
     let ctx = ui.ctx().clone();
     let screen = ctx.viewport_rect();
     let bottom = keyboard_top(screen);

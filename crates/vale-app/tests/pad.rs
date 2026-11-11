@@ -8620,6 +8620,28 @@ fn value_bar_inserts_field() {
 }
 
 #[test]
+fn the_bar_hides_with_the_keyboard_while_the_field_keeps_the_focus() {
+    use vale_app::ui::pad::classify::EXPRESSION;
+    use vale_app::ui::pad::value::{OPERATORS_TAB, bar_name};
+    let mut h = pad(BOARDS[0]);
+    open_classify(&mut h, "Places");
+    scroll_to_control(&mut h, EXPRESSION);
+    type_text(&mut h, EXPRESSION, "pop_max ");
+    let tab = bar_name(OPERATORS_TAB);
+    assert!(control(&h, &tab).is_some());
+    // The user dismisses the on-screen keyboard.
+    vale_app::keyboard::set_cover(Some(0.0));
+    h.run_steps(2);
+    assert!(!no_keyboard(&h));
+    assert!(control(&h, &tab).is_none());
+    // The keyboard comes back.
+    vale_app::keyboard::set_cover(Some(398.0));
+    h.run_steps(2);
+    assert!(control(&h, &tab).is_some());
+    vale_app::keyboard::set_cover(None);
+}
+
+#[test]
 fn the_value_tray_inserts_a_variable() {
     use vale_app::ui::pad::classify::EXPRESSION;
     use vale_app::ui::pad::value::{SEARCH, insert_name};

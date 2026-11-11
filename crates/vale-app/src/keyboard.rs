@@ -24,6 +24,12 @@ pub fn cover() -> Option<f32> {
     COVER.with(Cell::get)
 }
 
+/// True if the system reported that no keyboard covers the window, for
+/// example after the user dismissed the on-screen keyboard.
+pub fn hidden() -> bool {
+    cover() == Some(0.0)
+}
+
 #[cfg(target_os = "ios")]
 pub mod uikit {
     //! The observer of the keyboard notifications of UIKit.
