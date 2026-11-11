@@ -235,8 +235,8 @@ pub fn section(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
                 state.pad.rules.swipe = None;
             }
             ui.ctx().request_repaint();
-        } else if row.dragged() {
-            ui.scroll_with_delta(egui::vec2(0.0, row.drag_delta().y));
+        } else if row.dragged() || row.drag_stopped() {
+            widgets::drag_scroll(ui, &row);
         } else if row.clicked() {
             state.pad.page = Some(if on { Page::Rules } else { Page::Rule(i) });
         }

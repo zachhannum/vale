@@ -1161,6 +1161,39 @@ pub fn open_row(ui: &mut egui::Ui, controls: &mut Controls, name: &str, value: &
     resp
 }
 
+/// The speed of a flick, in points per second, below which the list stops
+/// when the finger is up.
+const FLICK_SPEED: f32 = 200.0;
+/// The time that the list of a flick moves on, in seconds.
+const FLICK_TIME: f32 = 0.6;
+
+/// Scrolls the list under a row that takes drags, as a drag on the list
+/// itself does: the list follows the finger with no delay, and after a
+/// flick it moves on and slows down. Call it while `resp` is dragged and
+/// in the frame in which the drag stops.
+pub fn drag_scroll(ui: &egui::Ui, resp: &Response) {
+    use egui::style::ScrollAnimation;
+    let key = resp.id.with("flick");
+    if resp.dragged() {
+        let dy = resp.drag_delta().y;
+        ui.scroll_with_delta_animation(vec2(0.0, dy), ScrollAnimation::none());
+        let dt = ui.input(|i| i.stable_dt).max(1e-3);
+        let old: f32 = ui.data(|d| d.get_temp(key)).unwrap_or(0.0);
+        // The speed of the last frames, so that one slow frame does not
+        // stop a flick.
+        let speed = 0.6 * dy / dt + 0.4 * old;
+        ui.data_mut(|d| d.insert_temp(key, speed));
+    } else if resp.drag_stopped() {
+        let speed: f32 = ui.data_mut(|d| d.remove_temp(key)).unwrap_or(0.0);
+        if speed.abs() > FLICK_SPEED {
+            // An ease-out motion over `FLICK_TIME` covers half of the
+            // distance that the flick speed keeps up for that time.
+            let delta = vec2(0.0, speed * FLICK_TIME / 2.0);
+            ui.scroll_with_delta_animation(delta, ScrollAnimation::duration(FLICK_TIME));
+        }
+    }
+}
+
 /// The distance that a swipe to the right moves a row, at most.
 pub const SWIPE_SELECT: f32 = 56.0;
 

@@ -2847,9 +2847,7 @@ fn swipe_rows(
         if swipe::drag(ui, &mut state.pad.swipe, id, &body, widgets::RENAME_WIDTH) {
             continue;
         }
-        if body.dragged() {
-            ui.scroll_with_delta(vec2(0.0, body.drag_delta().y));
-        }
+        widgets::drag_scroll(ui, &body);
         if body.clicked() {
             if open.is_some() {
                 state.pad.swipe = None;

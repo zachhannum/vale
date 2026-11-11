@@ -662,7 +662,7 @@ impl<'a> Number<'a> {
             return None;
         }
         if drag.scroll {
-            ui.scroll_with_delta(vec2(0.0, resp.drag_delta().y));
+            widgets::drag_scroll(ui, resp);
             return None;
         }
         let pos = resp.interact_pointer_pos()?;

@@ -198,7 +198,7 @@ pub fn editor(
                 lifted: lift(pos),
             }),
             _ => {
-                ui.scroll_with_delta(vec2(0.0, resp.drag_delta().y));
+                super::pad::widgets::drag_scroll(ui, &resp);
                 Some(Gesture::Scroll)
             }
         };
@@ -502,7 +502,7 @@ pub fn column(
                 }
                 moving = Some(index);
             }
-            _ => ui.scroll_with_delta(vec2(0.0, resp.drag_delta().y)),
+            _ => super::pad::widgets::drag_scroll(ui, &resp),
         }
     }
     if resp.drag_stopped() {
