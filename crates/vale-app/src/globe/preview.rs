@@ -21,6 +21,8 @@ pub struct Preview {
     pub rivers: bool,
     /// The factor of the width of a river line on screen.
     pub river_width: f32,
+    /// The opacity of the rivers and the lakes, from 0 to 1.
+    pub river_opacity: f32,
     /// The area of the smallest lake, in square kilometers.
     pub lake_km2: f64,
     /// The elevation panel is open.
@@ -37,6 +39,7 @@ impl Default for Preview {
             graticule: true,
             rivers: true,
             river_width: 1.0,
+            river_opacity: 0.9,
             lake_km2: LAKE_KM2,
             panel: false,
             selected: None,

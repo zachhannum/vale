@@ -13284,6 +13284,23 @@ fn the_smallest_lake_slider_sets_the_size_of_the_smallest_lake() {
 }
 
 #[test]
+fn the_river_sliders_set_a_thin_width_and_the_opacity() {
+    for size in BOARDS {
+        let mut h = painted_pad(size);
+        open_height(&mut h);
+        scroll_to_control(&mut h, raster::RIVER_OPACITY);
+        slide_to_end(&mut h, raster::RIVER_WIDTH, false);
+        assert_eq!(h.state().globe.preview.river_width, 0.05, "{size:?}");
+        slide_to_end(&mut h, raster::RIVER_OPACITY, false);
+        assert_eq!(h.state().globe.preview.river_opacity, 0.0, "{size:?}");
+        slide_to_end(&mut h, raster::RIVER_OPACITY, true);
+        assert_eq!(h.state().globe.preview.river_opacity, 1.0, "{size:?}");
+        check_controls(&h, "the river sliders");
+        screenshot::save(&mut h, &format!("pad-river-sliders-{}", size.0));
+    }
+}
+
+#[test]
 fn the_mask_page_sets_and_clears_the_mask_of_a_layer() {
     use vale_app::ui::pad::rules::{MASK, MASK_MAX, MASK_OFFSET, NO_MASK};
     use vale_style::Mask;
