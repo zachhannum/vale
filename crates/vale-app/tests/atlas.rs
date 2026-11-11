@@ -3030,9 +3030,7 @@ fn selected_rules_of_a_frame_change_in_the_map_only() {
         scroll_to(&mut h, "Default");
         swipe_right(&mut h, "Default");
         assert_eq!(h.state().pad.rules.picked(rivers), [0], "{what}");
-        nudge_up_to(&mut h, SELECT_ALL);
         tap(&mut h, SELECT_ALL);
-        scroll_to(&mut h, EDIT_RULES);
         check_controls(&h, &format!("{what}: select rules"));
         tap(&mut h, EDIT_RULES);
         assert_eq!(

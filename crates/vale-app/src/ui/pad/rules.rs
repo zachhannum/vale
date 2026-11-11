@@ -185,9 +185,8 @@ pub fn selection_title(state: &AppState, id: LayerId) -> String {
 /// The Style section: a row for each rule, first rule first, and the row
 /// that adds a rule. A later rule draws on top. A tap on a rule opens its
 /// page. A swipe to the right on a rule selects it or deselects it, as in
-/// the layer list of Procreate. While rules are selected, the heading has
-/// "Select all" and "Deselect all", and the buttons below the rules edit
-/// and delete the selected rules.
+/// the layer list of Procreate, and a tap on a selected rule opens the page
+/// of the selected rules. [`selection_bar`] holds the other actions.
 pub fn section(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id: LayerId) {
     let Some(kind) = state.doc.layer(id).and_then(|l| l.geometry()) else {
         return;
@@ -205,21 +204,7 @@ pub fn section(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
     let mut picked = state.pad.rules.picked(id);
     picked.retain(|i| *i < rows.len());
 
-    if picked.is_empty() {
-        heading(ui, STYLE);
-    } else {
-        let all = picked.len() == rows.len();
-        let buttons: &[&str] = if all {
-            &[DESELECT_ALL]
-        } else {
-            &[SELECT_ALL, DESELECT_ALL]
-        };
-        match widgets::heading_buttons(ui, controls, STYLE, buttons) {
-            Some(0) if !all => picked = (0..rows.len()).collect(),
-            Some(_) => picked.clear(),
-            None => {}
-        }
-    }
+    heading(ui, STYLE);
     for (i, (name, filter)) in rows.iter().enumerate() {
         let on = picked.contains(&i);
         let swipe = state.pad.rules.swipe.filter(|s| s.0 == id && s.1 == i);
@@ -253,30 +238,10 @@ pub fn section(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
         } else if row.dragged() {
             ui.scroll_with_delta(egui::vec2(0.0, row.drag_delta().y));
         } else if row.clicked() {
-            state.pad.page = Some(Page::Rule(i));
+            state.pad.page = Some(if on { Page::Rules } else { Page::Rule(i) });
         }
     }
     state.pad.rules.select = (!picked.is_empty()).then(|| (id, picked.clone()));
-
-    if !picked.is_empty() {
-        let buttons = [
-            (EDIT_RULES, true, theme::ACCENT),
-            (DELETE_RULES, true, theme::WARN),
-        ];
-        match widgets::button_bar(ui, controls, &buttons) {
-            Some(0) => state.pad.page = Some(Page::Rules),
-            Some(_) => {
-                if let Some(entry) = state.doc.entry_mut(id) {
-                    for &i in picked.iter().rev() {
-                        entry.style.style.rules.remove(i);
-                    }
-                    state.pad.rules = RulesState::default();
-                    state.touch();
-                }
-            }
-            None => {}
-        }
-    }
     if widgets::button_row(ui, controls, ADD_RULE, true).clicked()
         && let Some(entry) = state.doc.entry_mut(id)
     {
@@ -292,6 +257,64 @@ pub fn section(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
         if widgets::open_row(ui, controls, MASK, &text).clicked() {
             state.pad.page = Some(Page::Mask);
         }
+    }
+}
+
+/// The bar of the selected rules of layer `id`, which floats at the bottom
+/// of the visible part of the panel: a button that deselects the rules, the
+/// number of the rules, "Select all", "Edit rules", and "Delete rules".
+/// Call it at the end of the panel, because it adds the room that the bar
+/// covers.
+pub fn selection_bar(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    id: LayerId,
+) {
+    let picked = state.pad.rules.picked(id);
+    let Some(count) = state.doc.entry(id).map(|e| e.style.style.rules.len()) else {
+        return;
+    };
+    if picked.is_empty() {
+        return;
+    }
+    ui.add_space(PANEL_ROW + 16.0);
+    let view = ui.clip_rect();
+    let (left, right) = (ui.max_rect().left() - 4.0, ui.max_rect().right() + 4.0);
+    let rect = egui::Rect::from_min_max(
+        egui::pos2(left, view.bottom() - 8.0 - PANEL_ROW),
+        egui::pos2(right, view.bottom() - 8.0),
+    );
+    let all = picked.len() == count;
+    let mut buttons = vec![(EDIT_RULES, theme::ACCENT), (DELETE_RULES, theme::WARN)];
+    if !all {
+        buttons.insert(0, (SELECT_ALL, theme::ACCENT));
+    }
+    let label = selection_title(state, id);
+    let area = egui::Area::new(ui.id().with(("rules-bar", id.0)))
+        .order(egui::Order::Foreground)
+        .fixed_pos(rect.min)
+        .constrain(false);
+    let bar = area
+        .show(ui.ctx(), |ui| {
+            widgets::tool_bar(ui, controls, rect, DESELECT_ALL, &label, &buttons)
+        })
+        .inner;
+    let tapped = bar.tapped.map(|i| buttons[i].0);
+    if bar.close {
+        state.pad.rules.select = None;
+    } else if tapped == Some(SELECT_ALL) {
+        state.pad.rules.select = Some((id, (0..count).collect()));
+    } else if tapped == Some(EDIT_RULES) {
+        state.pad.page = Some(Page::Rules);
+    } else if tapped == Some(DELETE_RULES)
+        && let Some(entry) = state.doc.entry_mut(id)
+    {
+        for &i in picked.iter().rev() {
+            entry.style.style.rules.remove(i);
+        }
+        state.pad.rules = RulesState::default();
+        state.touch();
     }
 }
 

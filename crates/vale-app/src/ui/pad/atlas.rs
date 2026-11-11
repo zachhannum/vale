@@ -1798,6 +1798,9 @@ fn layer_head(state: &mut AppState, id: vale_store::FrameId) -> Option<Head> {
             if widgets::open_row(ui, controls, super::table::FEATURES, &features).clicked() {
                 state.open_table(layer);
             }
+            state.edit_map_style(map, layer, |state| {
+                super::rules::selection_bar(ui, state, controls, layer);
+            });
         }
     };
     Some(parts.head(Panel::Layers, back_to, top, body))

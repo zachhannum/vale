@@ -3031,6 +3031,7 @@ fn vector_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
         fonts::section(ui, state, controls, id);
     }
     fields::list(ui, state, controls, id);
+    rules::selection_bar(ui, state, controls, id);
 }
 
 /// A note with no warning goes away after this time, in seconds.

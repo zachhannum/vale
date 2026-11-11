@@ -1225,82 +1225,68 @@ pub fn swipe_select_row(
     resp
 }
 
-/// The heading of a section with text buttons at its right, as in the
-/// header of an iPadOS list. Returns the index of the tapped button.
-pub fn heading_buttons(
-    ui: &mut egui::Ui,
-    controls: &mut Controls,
-    text: &str,
-    buttons: &[&str],
-) -> Option<usize> {
-    let height = TOUCH.max(40.0);
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
-    let y = rect.bottom() - 8.0;
-    ui.painter().text(
-        pos2(rect.left(), y),
-        Align2::LEFT_BOTTOM,
-        text,
-        theme::title(),
-        theme::TEXT,
-    );
-    let mut right = rect.right();
-    let mut out = None;
-    for (index, name) in buttons.iter().enumerate().rev() {
-        let width = text_width(ui, name, theme::body()) + 16.0;
-        let place = Rect::from_min_max(pos2(right - width, rect.top()), pos2(right, rect.bottom()));
-        let resp = hit(ui, controls, place, name, Sense::click(), true, None);
-        let color = if resp.is_pointer_button_down_on() {
-            theme::ACCENT.gamma_multiply(0.6)
-        } else {
-            theme::ACCENT
-        };
-        let at = pos2(place.right() - 8.0, y);
-        ui.painter()
-            .text(at, Align2::RIGHT_BOTTOM, *name, theme::body(), color);
-        if resp.clicked() {
-            out = Some(index);
-        }
-        right = place.left();
-    }
-    out
+/// What the user tapped in a tool bar.
+pub struct ToolBar {
+    /// The close button at the left.
+    pub close: bool,
+    /// The index of the tapped text button.
+    pub tapped: Option<usize>,
 }
 
-/// A row of a panel with buttons side by side, each with its name, its
-/// state, and its fill color. Returns the index of the tapped button.
-pub fn button_bar(
+/// A bar of text buttons that floats in `rect` over the content, as the
+/// tool bar of a selection in iPadOS: a close button named `close` at the
+/// left, `label`, and the buttons with their colors at the right. The
+/// label shows only if it has room.
+pub fn tool_bar(
     ui: &mut egui::Ui,
     controls: &mut Controls,
-    buttons: &[(&str, bool, Color32)],
-) -> Option<usize> {
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), Sense::hover());
-    let gap = 8.0;
-    let count = buttons.len().max(1) as f32;
-    let width = (rect.width() - gap * (count - 1.0)) / count;
-    let mut out = None;
-    for (index, (name, enabled, fill)) in buttons.iter().enumerate() {
-        let left = rect.left() + index as f32 * (width + gap);
-        let place = Rect::from_min_size(pos2(left, rect.top()), vec2(width, rect.height()));
-        let resp = hit(ui, controls, place, name, Sense::click(), *enabled, None);
-        let color = if resp.is_pointer_button_down_on() {
-            *fill
+    rect: Rect,
+    close: &str,
+    label: &str,
+    buttons: &[(&str, Color32)],
+) -> ToolBar {
+    let painter = ui.painter();
+    painter.add(theme::shadow().as_shape(rect, theme::CARD_RADIUS));
+    painter.rect_filled(rect, theme::CARD_RADIUS, theme::menu());
+    // The bar takes the taps that miss its buttons, so the rows below it
+    // do not get them.
+    ui.interact(rect, ui.id().with((close, "bar")), Sense::click());
+    let x = Rect::from_min_size(rect.min, vec2(TOUCH, rect.height()));
+    let resp = hit(ui, controls, x, close, Sense::click(), true, None);
+    let mark = Rect::from_center_size(x.center(), vec2(ICON, ICON));
+    icons::paint(ui.painter(), mark, Icon::Close, ICON, theme::MUTE);
+    let mut right = rect.right() - 6.0;
+    let mut tapped = None;
+    for (index, (name, color)) in buttons.iter().enumerate().rev() {
+        let width = text_width(ui, name, theme::body()) + 20.0;
+        let place = Rect::from_min_max(pos2(right - width, rect.top()), pos2(right, rect.bottom()));
+        let button = hit(ui, controls, place, name, Sense::click(), true, None);
+        let color = if button.is_pointer_button_down_on() {
+            color.gamma_multiply(0.6)
         } else {
-            fill.gamma_multiply(0.8)
+            *color
         };
-        let back = place.shrink(HIGHLIGHT_INSET);
-        ui.painter()
-            .rect_filled(back, theme::CONTROL_RADIUS, fade(color, *enabled));
         ui.painter().text(
             place.center(),
             Align2::CENTER_CENTER,
             *name,
             theme::body(),
-            theme::CANVAS,
+            color,
         );
-        if resp.clicked() {
-            out = Some(index);
+        if button.clicked() {
+            tapped = Some(index);
         }
+        right = place.left();
     }
-    out
+    if text_width(ui, label, theme::body()) + 8.0 < right - x.right() {
+        let at = pos2(x.right(), rect.center().y);
+        ui.painter()
+            .text(at, Align2::LEFT_CENTER, label, theme::body(), theme::TEXT);
+    }
+    ToolBar {
+        close: resp.clicked(),
+        tapped,
+    }
 }
 
 /// The size of the square of a compass dial.

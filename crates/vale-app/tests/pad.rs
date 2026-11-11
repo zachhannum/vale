@@ -8360,20 +8360,26 @@ fn selected_rules_take_one_stroke_and_keep_their_fills() {
         tap(&mut h, "Open Land");
         // A swipe to the right selects a rule and does not open it. A
         // second swipe deselects it.
+        // The list does not move when the bar shows.
         assert!(control(&h, SELECT_ALL).is_none(), "{what}");
+        scroll_to_control(&mut h, "Default");
+        let below = control(&h, "Rule 1");
         swipe_right(&mut h, "Default");
         assert_eq!(picked(&h), [0], "{what}");
         assert_eq!(h.state().pad.page, None, "{what}");
+        assert_eq!(control(&h, "Rule 1"), below, "{what}");
         swipe_right(&mut h, "Rule 2");
         assert_eq!(picked(&h), [0, 2], "{what}");
         screenshot::save(&mut h, &format!("pad-swipe-rules-{}", size.0));
         swipe_right(&mut h, "Default");
         assert_eq!(picked(&h), [2], "{what}");
-        scroll_to_control(&mut h, SELECT_ALL);
+        // A tap on a selected rule edits the selection.
+        tap(&mut h, "Rule 2");
+        assert_eq!(h.state().pad.page, Some(Page::Rules), "{what}");
+        tap(&mut h, "Back to Land");
         tap(&mut h, SELECT_ALL);
         assert_eq!(picked(&h), [0, 1, 2], "{what}");
         screenshot::save(&mut h, &format!("pad-select-rules-{}", size.0));
-        scroll_to_control(&mut h, EDIT_RULES);
         tap(&mut h, EDIT_RULES);
         assert_eq!(h.state().pad.page, Some(Page::Rules), "{what}");
 
@@ -8399,12 +8405,10 @@ fn selected_rules_take_one_stroke_and_keep_their_fills() {
 
         tap(&mut h, "Back to Land");
         assert_eq!(picked(&h), [0, 1, 2], "{what}");
-        scroll_to_control(&mut h, DESELECT_ALL);
         tap(&mut h, DESELECT_ALL);
         assert!(control(&h, DELETE_RULES).is_none(), "{what}");
         swipe_right(&mut h, "Rule 1");
         save_frames(&mut h);
-        scroll_to_control(&mut h, DELETE_RULES);
         tap(&mut h, DELETE_RULES);
         save_frames(&mut h);
         assert_eq!(rule_names(&h, land), ["Default", "Rule 2"], "{what}");
