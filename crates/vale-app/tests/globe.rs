@@ -4885,6 +4885,8 @@ fn the_brush_panel_has_the_basin_mode_and_its_sliders() {
     for name in [
         "Height",
         "Density",
+        "Age",
+        "Lakes",
         "Erosion",
         "Seed",
         "Wind",

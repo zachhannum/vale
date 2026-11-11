@@ -16,10 +16,10 @@ use super::{
 use vale_terrain::Mode;
 
 use crate::globe::brush::{
-    BASIN_DENSITY, CHANNEL_HELP, CHANNEL_KM, EROSION, FLOODPLAIN_WIDTH_KM, FLOW, NOISE_GRAIN,
-    NOISE_M, RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM,
-    RIDGE_SPREAD_MM, SCALE_KM, SEED, SHAPE, STRENGTH_M, TALUS_DEG, TERRACE_STEP_M, WARP_KM,
-    needs_height, shape_text,
+    BASIN_AGE, BASIN_DENSITY, BASIN_LAKES, CHANNEL_HELP, CHANNEL_KM, EROSION, FLOODPLAIN_WIDTH_KM,
+    FLOW, NOISE_GRAIN, NOISE_M, RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_MAGMA, RIDGE_OFFSET_KM,
+    RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM, SCALE_KM, SEED, SHAPE, STRENGTH_M, TALUS_DEG,
+    TERRACE_STEP_M, WARP_KM, needs_height, shape_text,
 };
 use crate::globe::combine::PolygonMode;
 use crate::globe::{Globe, Tool, WorldView, rivers, snap, stats, stroke_test, zoom_test};
@@ -1149,6 +1149,8 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
             .log()
             .suffix(" km")
             .show(ui);
+        number::slider("Age", &mut globe.brush.basin_age, BASIN_AGE).show(ui);
+        number::slider("Lakes", &mut globe.brush.basin_lakes, BASIN_LAKES).show(ui);
         seed(ui, state);
     }
     let globe = &mut state.globe;

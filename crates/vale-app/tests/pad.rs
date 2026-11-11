@@ -3131,9 +3131,11 @@ fn the_tool_strip_has_the_basin_mode() {
 }
 
 /// The rows of the basin mode in the brush panel.
-const BASIN_ROWS: [&str; 6] = [
+const BASIN_ROWS: [&str; 8] = [
     "Brush strength",
     "Brush density",
+    "Brush age",
+    "Brush lakes",
     "Brush erosion",
     "Brush seed",
     "Brush wind",
