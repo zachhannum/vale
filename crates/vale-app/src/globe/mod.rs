@@ -3290,8 +3290,7 @@ impl Globe {
                                 match self.basin_outline.take() {
                                     Some(outline) => {
                                         let rain = self.world_rain;
-                                        let channel = self.brush.channel_shape(km);
-                                        let spec = self.brush.basin_spec(km, seed, rain, channel);
+                                        let spec = self.brush.basin_spec(km, seed, rain);
                                         active.basin = Some(Basining {
                                             line: BasinLine::new(spec, &outline, n),
                                             asked: false,
@@ -3393,9 +3392,8 @@ impl Globe {
                         if let Some(mut outline) = active.outline.take() {
                             outline.extend(stamps.drain(..).map(|s| s.center));
                             let (km, n) = (self.world_km, map.face_size());
-                            let channel = self.brush.channel_shape(km);
                             let rain = self.world_rain;
-                            let spec = self.brush.basin_spec(km, self.world_seed, rain, channel);
+                            let spec = self.brush.basin_spec(km, self.world_seed, rain);
                             let usable = BasinLine::new(spec, &outline, n).has_outline();
                             self.basin_outline = usable.then_some(outline);
                         }
@@ -3616,10 +3614,7 @@ impl Globe {
         }
         let spec = match held.spec {
             HeldSpec::Ridge(_) => HeldSpec::Ridge(self.brush.ridge_spec(held.radius, km, seed)),
-            HeldSpec::Basin(_) => {
-                let channel = self.brush.channel_shape(km);
-                HeldSpec::Basin(self.brush.basin_spec(km, seed, self.world_rain, channel))
-            }
+            HeldSpec::Basin(_) => HeldSpec::Basin(self.brush.basin_spec(km, seed, self.world_rain)),
         };
         let wanted = (spec, self.brush.flow);
         if wanted != held.wanted {

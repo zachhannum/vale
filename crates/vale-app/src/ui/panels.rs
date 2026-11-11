@@ -1152,7 +1152,7 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
         seed(ui, state);
     }
     let globe = &mut state.globe;
-    if matches!(globe.brush.mode, Mode::Carve | Mode::Erode | Mode::Basin) {
+    if matches!(globe.brush.mode, Mode::Carve | Mode::Erode) {
         number::stepper("Channel width", &mut globe.brush.channel_km)
             .range(CHANNEL_KM)
             .suffix(" km")

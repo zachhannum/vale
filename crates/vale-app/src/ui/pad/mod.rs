@@ -2421,7 +2421,7 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
         apply(number.slider(ui, controls), &mut brush.basin_density_km);
         seed_stepper(ui, controls, &mut world.seed);
     }
-    if matches!(brush.mode, Mode::Carve | Mode::Erode | Mode::Basin) {
+    if matches!(brush.mode, Mode::Carve | Mode::Erode) {
         let name = "Brush channel width";
         let number = km(name, "Channel width", brush.channel_km, CHANNEL_KM).nice();
         apply(number.stepper(ui, controls), &mut brush.channel_km);

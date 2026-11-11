@@ -316,14 +316,8 @@ impl BrushSettings {
     }
 
     /// The settings of a basin. `world_km` is the radius of the world. The
-    /// height is the strength.
-    pub fn basin_spec(
-        &self,
-        world_km: f64,
-        seed: u32,
-        rain: Rain,
-        channel: ChannelShape,
-    ) -> BasinSpec {
+    /// height is the strength. The channels have the default width.
+    pub fn basin_spec(&self, world_km: f64, seed: u32, rain: Rain) -> BasinSpec {
         let height = meters_to_level(self.strength_m) - meters_to_level(0.0);
         BasinSpec {
             height: f64::from(height),
@@ -331,7 +325,7 @@ impl BrushSettings {
             seed,
             erosion: self.erosion,
             rain,
-            channel,
+            channel: ChannelShape::new(CHANNEL_WIDTH_KM, FLOODPLAIN_KM, world_km),
             world_km,
             limits: self.limits(),
         }
@@ -1009,6 +1003,7 @@ mod tests {
             strength_m: 2000.0,
             basin_density_km: 80.0,
             erosion: 0.8,
+            channel_km: 5.0,
             floor_on: true,
             floor_m: 100.0,
             ..BrushSettings::default()
@@ -1017,14 +1012,14 @@ mod tests {
             wind: 270.0,
             shadow: 0.5,
         };
-        let channel = brush.channel_shape(6371.0);
-        let spec = brush.basin_spec(6371.0, 9, rain, channel);
+        let spec = brush.basin_spec(6371.0, 9, rain);
         let height = meters_to_level(2000.0) - meters_to_level(0.0);
         assert_eq!(spec.height, f64::from(height));
         assert!((spec.density - 80.0 / 6371.0).abs() < 1e-12);
         assert_eq!(spec.erosion, brush.erosion);
         assert_eq!(spec.seed, 9);
         assert_eq!(spec.rain, rain);
+        let channel = ChannelShape::new(CHANNEL_WIDTH_KM, FLOODPLAIN_KM, 6371.0);
         assert_eq!(spec.channel, channel);
         assert_eq!(spec.world_km, 6371.0);
         assert_eq!(spec.limits, brush.limits());

@@ -4767,8 +4767,7 @@ fn a_basin_stroke_gives_the_levels_of_the_cpu_basin() {
     let river = basin_points(&h, ridge_samples());
     let globe = &h.state().globe;
     let (brush, n, km) = (globe.brush, globe.map.face_size(), globe.world_km);
-    let channel = brush.channel_shape(km);
-    let spec = brush.basin_spec(km, globe.world_seed, globe.world_rain, channel);
+    let spec = brush.basin_spec(km, globe.world_seed, globe.world_rain);
     assert_eq!(spec.seed, 7);
     let mut line = BasinLine::new(spec, &outline, n);
     assert!(line.has_outline());
@@ -4888,7 +4887,6 @@ fn the_brush_panel_has_the_basin_mode_and_its_sliders() {
         "Density",
         "Erosion",
         "Seed",
-        "Channel width",
         "Wind",
         "Rain shadow",
         "Floor",
@@ -4903,6 +4901,7 @@ fn the_brush_panel_has_the_basin_mode_and_its_sliders() {
         "Hardness",
         "Flow",
         "Spacing",
+        "Channel width",
         "Floodplain",
         "Strength",
         CLEAR_OUTLINE,
