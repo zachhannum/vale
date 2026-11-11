@@ -5,10 +5,11 @@ use std::ops::Range;
 use vale_store::Value;
 
 use super::super::field_ref;
-use super::super::parser::{BinOp, Node, Spans};
+use super::super::parser::{BinOp, Node, Spans, Var};
 use super::super::print::{CONCAT, quote};
 use super::cond::operands;
 use super::seq::{Seq, seq_of};
+use super::subject::{Subject, subject_of};
 use super::{SpanMap, read, tolerant, wrap_code};
 
 /// The most decimal places of a field format.
@@ -46,14 +47,33 @@ pub struct FieldFormat {
     pub empty: Empty,
 }
 
+impl FieldFormat {
+    /// The format of a subject that the user inserts: a measure with thousands separators and no places, a latitude or a longitude with 2 places, and no format for the others.
+    pub fn for_subject(subject: &Subject) -> FieldFormat {
+        match subject {
+            Subject::Measure(..) => FieldFormat {
+                places: Some(0),
+                thousands: true,
+                ..Default::default()
+            },
+            Subject::Var(Var::Lat | Var::Lon) => FieldFormat {
+                places: Some(2),
+                ..Default::default()
+            },
+            Subject::Field(_) | Subject::Var(_) => FieldFormat::default(),
+        }
+    }
+}
+
 /// One piece of a label text.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Piece {
     /// Fixed text. An empty text is a boundary between two pieces of text that write as separate texts.
     Text(String),
     LineBreak,
+    /// A field, a variable, or a measure, with a format.
     Field {
-        name: String,
+        subject: Subject,
         format: FieldFormat,
     },
     /// Pieces that show only when each of them has a value. It writes a chain of `||`.
@@ -155,9 +175,9 @@ pub(super) fn pieces_of(
             list.push(Piece::Group(items));
         }
         _ => match field_of(node) {
-            Some((name, format)) => {
+            Some((subject, format)) => {
                 spans.add(path, sp.span.clone());
-                list.push(Piece::Field { name, format });
+                list.push(Piece::Field { subject, format });
             }
             None => list.push(Piece::Expr(seq_of(node, sp, path, spans))),
         },
@@ -165,8 +185,8 @@ pub(super) fn pieces_of(
     path.pop();
 }
 
-/// The field and its format, if the node is a field in the functions of a format, in their order.
-fn field_of(node: &Node) -> Option<(String, FieldFormat)> {
+/// The subject and its format, if the node is a subject in the functions of a format, in their order.
+fn field_of(node: &Node) -> Option<(Subject, FieldFormat)> {
     let mut format = FieldFormat::default();
     let mut node = node;
     if let Some(("coalesce", [x, other])) = call(node) {
@@ -206,10 +226,7 @@ fn field_of(node: &Node) -> Option<(String, FieldFormat)> {
         }
         _ => {}
     }
-    match node {
-        Node::Field(name) => Some((name.clone(), format)),
-        _ => None,
-    }
+    Some((subject_of(node)?, format))
 }
 
 fn call(node: &Node) -> Option<(&'static str, &[Node])> {
@@ -232,8 +249,8 @@ fn whole(node: &Node) -> Option<i32> {
     (n.fract() == 0.0 && n.abs() <= MAX_PLACES as f64).then_some(n as i32)
 }
 
-fn field_text(name: &str, format: &FieldFormat) -> String {
-    let mut s = field_ref(name);
+fn field_text(subject: &Subject, format: &FieldFormat) -> String {
+    let mut s = subject.to_text();
     if format.thousands {
         let places = format.places.unwrap_or(0).clamp(0, MAX_PLACES);
         s = format!("format_number({s}, {places})");
@@ -289,7 +306,7 @@ fn operands_of(pieces: &[Piece], in_group: bool) -> Vec<String> {
                 close(&mut open, &mut out);
                 let min = if out.is_empty() { CONCAT } else { CONCAT + 1 };
                 let text = match p {
-                    Piece::Field { name, format } => field_text(name, format),
+                    Piece::Field { subject, format } => field_text(subject, format),
                     Piece::Group(items) => {
                         let text = operands_of(items, true).join(" || ");
                         if in_group { format!("({text})") } else { text }

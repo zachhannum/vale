@@ -7,7 +7,7 @@
 use eframe::egui::{self, Align2, Color32, Rect, Sense, Stroke, pos2, vec2};
 use vale_store::Value;
 use vale_style::expr::editor::{Cond, Formula, Seq, Tok};
-use vale_style::expr::{Category, Expr, FUNCTIONS, Function};
+use vale_style::expr::{Category, Expr, FUNCTIONS, Function, Var};
 
 use super::cases::{self, CasesEdit, CasesState};
 use super::expression;
@@ -21,13 +21,15 @@ use super::theme;
 use super::widgets::{self, Controls, PANEL_ROW};
 use crate::ui::expr_help::{ExprHelp, ExprKind, NO_VALUE, ValueRange, range_text};
 use crate::ui::token_field::formula::{self, Completion, OPERATORS, op_label};
-use crate::ui::token_field::paint::{BAD, FUNCTION_TEXT, paint_glyph};
+use crate::ui::token_field::paint::{BAD, FUNCTION_TEXT, VARIABLE_TEXT, paint_glyph};
 use crate::ui::token_field::{self, Field, Glyph, Metrics, Node, Options};
 
 /// The tabs of the tray.
 pub const FIELDS: &str = "Fields";
 pub const FUNCTIONS_TAB: &str = "Functions";
 pub const OPERATORS_TAB: &str = "Operators";
+/// The heading of the variables in the Fields tab of the tray.
+pub const VARIABLES: &str = crate::ui::expr_help::VARIABLES_MENU;
 /// The search fields of the tabs of the tray.
 pub const SEARCH: [&str; 3] = ["Search fields", "Search functions", "Search operators"];
 
@@ -431,6 +433,14 @@ fn has_chars(nodes: &[Node<Tok>]) -> bool {
 const BAR_GAP: f32 = 2.0;
 /// The most height of the rows of the tray.
 const TRAY_HEIGHT: f32 = 300.0;
+/// The groups of the Functions tab of the tray, in order.
+const TRAY_CATEGORIES: [Category; 5] = [
+    Category::Math,
+    Category::Text,
+    Category::Logic,
+    Category::Convert,
+    Category::Geometry,
+];
 
 /// The preview: the value for the feature of the help, the feature, a
 /// histogram of the values across the layer with a line at the value, and
@@ -541,6 +551,20 @@ fn bar(
                     formula::pick(&mut st.field, &Completion::Field(field), help);
                     out = Some(true);
                 }
+                for v in variables(&needle) {
+                    let label = format!("@{}", v.name());
+                    let sample = help
+                        .eval(&label)
+                        .and_then(|x| x.label())
+                        .unwrap_or_default();
+                    let glyph = Some(Glyph::of(v.field_type()));
+                    let name = bar_name(&insert_name(&label));
+                    let note = super::label_text::short(sample);
+                    if bar_chip(ui, controls, &name, glyph, (&label, VARIABLE_TEXT), &note) {
+                        formula::pick(&mut st.field, &Completion::Var(v), help);
+                        out = Some(true);
+                    }
+                }
             }
             1 => {
                 for f in FUNCTIONS.iter().filter(|f| f.name.contains(&needle)) {
@@ -565,6 +589,12 @@ fn bar(
         }
     });
     out
+}
+
+/// The variables whose names hold `needle`, with or without its `@`.
+fn variables(needle: &str) -> impl Iterator<Item = Var> + '_ {
+    let needle = needle.strip_prefix('@').unwrap_or(needle);
+    (Var::ALL.into_iter()).filter(move |v| v.name().contains(needle))
 }
 
 /// Puts function `f` in the field: in place of the typed word, or around
@@ -632,25 +662,36 @@ fn tray(
                     out = Some(true);
                 }
             }
+            let vars: Vec<Var> = variables(&needle).collect();
+            if !vars.is_empty() {
+                widgets::list_heading(ui, VARIABLES);
+            }
+            for v in vars {
+                let label = format!("@{}", v.name());
+                let glyph = Some(Glyph::of(v.field_type()));
+                let name = insert_name(&label);
+                if tray_row(
+                    ui,
+                    controls,
+                    &name,
+                    glyph,
+                    (&label, VARIABLE_TEXT),
+                    v.hint(),
+                ) {
+                    formula::pick(&mut st.field, &Completion::Var(v), help);
+                    out = Some(true);
+                }
+            }
         }
         1 => {
-            for category in [
-                Category::Math,
-                Category::Text,
-                Category::Logic,
-                Category::Convert,
-            ] {
+            for category in TRAY_CATEGORIES {
                 let functions: Vec<_> = (FUNCTIONS.iter())
                     .filter(|f| f.category == category && f.name.contains(&needle))
                     .collect();
                 if functions.is_empty() {
                     continue;
                 }
-                let (head, _) =
-                    ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::hover());
-                let at = pos2(head.left() + 4.0, head.bottom() - 6.0);
-                let title = category.name().to_uppercase();
-                (ui.painter()).text(at, Align2::LEFT_BOTTOM, title, theme::small(), theme::MUTE);
+                widgets::list_heading(ui, category.name());
                 if category == Category::Logic
                     && CASES_ROW.to_lowercase().contains(&needle)
                     && tray_row(
@@ -774,6 +815,25 @@ fn op_button(ui: &egui::Ui, controls: &mut Controls, rect: Rect, name: &str, lab
 mod tests {
     use super::*;
     use crate::ui::token_field::ChipKind;
+
+    #[test]
+    fn the_tray_lists_each_function() {
+        for f in FUNCTIONS {
+            assert!(TRAY_CATEGORIES.contains(&f.category), "{}", f.name);
+        }
+    }
+
+    #[test]
+    fn the_tray_lists_each_variable() {
+        let all: Vec<Var> = variables("").collect();
+        assert_eq!(all, Var::ALL);
+        // The search finds a variable with or without its `@`.
+        assert_eq!(variables("@lat").collect::<Vec<_>>(), [Var::Lat]);
+        assert_eq!(variables("vert").collect::<Vec<_>>(), [Var::Vertices]);
+        for v in Var::ALL {
+            assert!(!v.hint().is_empty(), "{v:?}");
+        }
+    }
 
     #[test]
     fn missing_condition_marks_slot() {

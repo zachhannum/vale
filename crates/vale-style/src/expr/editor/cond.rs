@@ -4,10 +4,10 @@ use std::ops::Range;
 
 use vale_store::{FieldType, Value};
 
-use super::super::field_ref;
 use super::super::functions::number_text;
 use super::super::parser::{BinOp, Node, Spans};
 use super::super::print::{self, AND, OR, literal, quote};
+use super::subject::{Subject, subject_of};
 use super::{SpanMap, read, tolerant, wrap_code};
 
 /// The comparison of a condition.
@@ -73,9 +73,9 @@ pub fn ops_for(field_type: FieldType) -> &'static [CmpOp] {
 /// A condition of a filter or of a case.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Cond {
-    /// A field, a comparison, and its values. A yes-or-no field compares with `Value::Bool`. A rule that lacks values writes holes.
+    /// A subject, a comparison, and its values. A yes-or-no field compares with `Value::Bool`. A rule that lacks values writes holes.
     Rule {
-        field: String,
+        subject: Subject,
         op: CmpOp,
         values: Vec<Value>,
     },
@@ -97,7 +97,11 @@ impl Cond {
     pub fn to_text(&self) -> String {
         match self {
             Cond::Group { all, items } => group_text(*all, items),
-            Cond::Rule { field, op, values } => rule_text(field, *op, values),
+            Cond::Rule {
+                subject,
+                op,
+                values,
+            } => rule_text(subject, *op, values),
             Cond::Code(s) => s.clone(),
         }
     }
@@ -197,21 +201,22 @@ pub(super) fn operands<'a>(
 }
 
 fn rule_of(node: &Node) -> Option<Cond> {
-    let rule = |field: &str, op, values| {
+    let rule = |subject, op, values| {
         Some(Cond::Rule {
-            field: field.to_owned(),
+            subject,
             op,
             values,
         })
     };
+    let field = |f: &str| Subject::Field(f.to_owned());
     match node {
-        Node::Field(f) => rule(f, CmpOp::Is, vec![Value::Bool(true)]),
+        Node::Field(f) => rule(field(f), CmpOp::Is, vec![Value::Bool(true)]),
         Node::Not(a) => match &**a {
-            Node::Field(f) => rule(f, CmpOp::Is, vec![Value::Bool(false)]),
+            Node::Field(f) => rule(field(f), CmpOp::Is, vec![Value::Bool(false)]),
             _ => None,
         },
         Node::Binary(op, a, b) => {
-            let Node::Field(f) = &**a else { return None };
+            let f = subject_of(a)?;
             let op = match op {
                 BinOp::Eq => CmpOp::Is,
                 BinOp::Ne => CmpOp::IsNot,
@@ -224,9 +229,7 @@ fn rule_of(node: &Node) -> Option<Cond> {
             rule(f, op, values_of(&[b])?)
         }
         Node::IsNull { value, negated } => {
-            let Node::Field(f) = &**value else {
-                return None;
-            };
+            let f = subject_of(value)?;
             let op = if *negated {
                 CmpOp::NotEmpty
             } else {
@@ -240,9 +243,7 @@ fn rule_of(node: &Node) -> Option<Cond> {
             high,
             negated: false,
         } => {
-            let Node::Field(f) = &**value else {
-                return None;
-            };
+            let f = subject_of(value)?;
             rule(f, CmpOp::Between, values_of(&[low, high])?)
         }
         Node::In {
@@ -250,9 +251,7 @@ fn rule_of(node: &Node) -> Option<Cond> {
             list,
             negated: false,
         } => {
-            let Node::Field(f) = &**value else {
-                return None;
-            };
+            let f = subject_of(value)?;
             rule(
                 f,
                 CmpOp::OneOf,
@@ -265,7 +264,7 @@ fn rule_of(node: &Node) -> Option<Cond> {
             ignore_case: true,
             negated: false,
         } => {
-            let (Node::Field(f), Node::Lit(Value::Text(p))) = (&**value, &**pattern) else {
+            let (Some(f), Node::Lit(Value::Text(p))) = (subject_of(value), &**pattern) else {
                 return None;
             };
             let plain = |s: &str| !s.contains(['%', '_']);
@@ -331,8 +330,9 @@ fn item_text(c: &Cond, parent_all: bool) -> String {
     }
 }
 
-fn rule_text(field: &str, op: CmpOp, values: &[Value]) -> String {
-    let f = field_ref(field);
+fn rule_text(subject: &Subject, op: CmpOp, values: &[Value]) -> String {
+    let f = subject.to_text();
+    let short = matches!(subject, Subject::Field(_));
     let v = |i: usize| values.get(i).map_or(String::new(), literal);
     let pattern = |before: &str| {
         let text = match values.first() {
@@ -345,8 +345,8 @@ fn rule_text(field: &str, op: CmpOp, values: &[Value]) -> String {
     };
     match op {
         CmpOp::Is => match values {
-            [Value::Bool(true)] => f,
-            [Value::Bool(false)] => format!("not {f}"),
+            [Value::Bool(true)] if short => f,
+            [Value::Bool(false)] if short => format!("not {f}"),
             _ => format!("{f} = {}", v(0)),
         },
         CmpOp::IsNot => format!("{f} != {}", v(0)),

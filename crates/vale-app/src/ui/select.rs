@@ -479,12 +479,15 @@ impl AppState {
             .map(|f| (crate::globe::merge::size(&f.geometry), f))
             .collect();
         features.sort_by(|a, b| b.0.total_cmp(&a.0));
+        let radius_km = self.doc.project.world.radius_km;
         let name = |i: usize, f: &vale_store::Feature| {
             let value = text.as_ref().map(|e| {
                 e.eval(&Context {
                     attributes: &f.attributes,
                     scale: PREVIEW_SCALE,
                     geometry,
+                    shape: Some(&f.geometry),
+                    radius_km,
                 })
             });
             let label = value

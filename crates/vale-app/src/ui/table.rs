@@ -244,6 +244,7 @@ impl AppState {
         let key = RowKey {
             layer: table.layer,
             revision: (self.line_edits, self.history),
+            radius_km: self.doc.project.world.radius_km,
             len: layer.features.len(),
             sort: table.sort.clone(),
             filter: table.filter.clone(),

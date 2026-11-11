@@ -160,3 +160,79 @@ pub fn ring_crosses_itself(ring: &[LonLat]) -> bool {
     }
     false
 }
+
+/// The first moment of the smaller side of a ring, on the unit sphere. Its
+/// direction is the center of the area of that side.
+fn ring_moment(ring: &[LonLat]) -> V3 {
+    let v: Vec<V3> = ring.iter().map(|&p| vec(p)).collect();
+    let mut m = [0.0; 3];
+    if v.len() < 3 {
+        return m;
+    }
+    // The moment of the left side is half the sum of the edge poles, each
+    // scaled by the angle of its edge.
+    for (i, &a) in v.iter().enumerate() {
+        let b = v[(i + 1) % v.len()];
+        let pole = cross(a, b);
+        let s = norm(pole);
+        if s < 1e-15 {
+            continue;
+        }
+        let k = 0.5 * s.atan2(dot(a, b)) / s;
+        (0..3).for_each(|j| m[j] += k * pole[j]);
+    }
+    // The two sides have opposite moments.
+    if signed_ring_area(ring, 1.0).rem_euclid(4.0 * PI) > 2.0 * PI {
+        m = m.map(|x| -x);
+    }
+    m
+}
+
+fn center_of(sum: V3) -> Option<LonLat> {
+    let n = norm(sum);
+    (n > 1e-12).then(|| lonlat(sum.map(|x| x / n)))
+}
+
+/// The center of the area of polygons, each a list of rings with the outer
+/// ring first. `None` if the area is empty.
+pub fn area_center(polygons: &[Vec<Vec<LonLat>>]) -> Option<LonLat> {
+    let mut sum = [0.0; 3];
+    for rings in polygons {
+        for (i, ring) in rings.iter().enumerate() {
+            let sign = if i == 0 { 1.0 } else { -1.0 };
+            let m = ring_moment(ring);
+            (0..3).for_each(|j| sum[j] += sign * m[j]);
+        }
+    }
+    center_of(sum)
+}
+
+/// The center of lines, with each great-circle arc weighted by its length.
+/// `None` if the lines have no length.
+pub fn line_center(lines: &[Vec<LonLat>]) -> Option<LonLat> {
+    let mut sum = [0.0; 3];
+    for line in lines {
+        for w in line.windows(2) {
+            let (a, b) = (vec(w[0]), vec(w[1]));
+            let mid = [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+            if norm(mid) < 1e-12 {
+                continue;
+            }
+            // The moment of an arc of angle t is its unit midpoint times
+            // 2 sin(t / 2), which is a + b times tan(t / 2).
+            let k = norm(cross(a, b)) / (1.0 + dot(a, b));
+            (0..3).for_each(|j| sum[j] += k * mid[j]);
+        }
+    }
+    center_of(sum)
+}
+
+/// The mean direction of points. `None` if there are no points or they cancel.
+pub fn point_center(points: &[LonLat]) -> Option<LonLat> {
+    let mut sum = [0.0; 3];
+    for &p in points {
+        let v = vec(p);
+        (0..3).for_each(|j| sum[j] += v[j]);
+    }
+    center_of(sum)
+}

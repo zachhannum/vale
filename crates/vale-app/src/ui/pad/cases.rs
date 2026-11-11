@@ -98,8 +98,12 @@ pub fn block(
         let row_top = child.cursor().top();
         let lead = Some(WHEN);
         let place = match &*cond {
-            Cond::Rule { field, op, values } => {
-                let rule = (field.as_str(), *op, values.as_slice());
+            Cond::Rule {
+                subject,
+                op,
+                values,
+            } => {
+                let rule = (subject, *op, values.as_slice());
                 filter::rule_row(&mut child, controls, &mut rows, &[0], rule, lead, RESULT)
             }
             Cond::Group { items, .. } if items.is_empty() => {

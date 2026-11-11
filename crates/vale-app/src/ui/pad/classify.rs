@@ -161,7 +161,7 @@ pub fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id
     if !fresh && !draft.text.trim().is_empty() {
         let values = match Expr::parse(&draft.text) {
             Ok(expr) => {
-                let all = classify::values(layer, &expr);
+                let all = classify::values(layer, &expr, state.doc.project.world.radius_km);
                 match classify::numbers(&all) {
                     Some((sorted, nulls)) => Values::Numbers(sorted, nulls),
                     None => Values::Categories(classify::categories(&all)),
@@ -414,6 +414,7 @@ pub fn apply(state: &mut AppState, id: LayerId, request: &Request) -> bool {
     };
     let Some(classes) = classify::classes_of(
         layer,
+        state.doc.project.world.radius_km,
         &request.text,
         request.method,
         request.classes,

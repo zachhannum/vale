@@ -1,9 +1,10 @@
-//! The popover of a field chip: the format of the field, the value when the
-//! field is empty, Wrap in function, Cut, Copy, and Remove field.
+//! The popover of a field chip: the unit of a measure, the format of the
+//! field, the value when the field is empty, Wrap in function, Cut, Copy,
+//! and Remove field.
 
 use eframe::egui::{self, Align2, Color32, Rect, Sense, pos2, vec2};
 use vale_store::FieldType;
-use vale_style::expr::editor::{Case, Empty, FieldFormat};
+use vale_style::expr::editor::{Case, Empty, FieldFormat, Piece, Subject, Template};
 use vale_style::expr::{Category, FUNCTIONS, Function};
 
 use super::geometry::TOUCH;
@@ -13,6 +14,8 @@ use super::widgets::{self, Controls, PANEL_ROW};
 use crate::ui::expr_help::ExprHelp;
 use crate::ui::token_field::paint::{BAD, FUNCTION_TEXT};
 
+/// The row of the unit of a measure.
+pub const UNIT_ROW: &str = "Unit";
 pub const DECIMAL_PLACES: &str = "Decimal places";
 pub const THOUSANDS: &str = "Thousands separator";
 pub const CASE: &str = "Case";
@@ -59,6 +62,8 @@ pub enum Action {
     /// A new format, with true for one step and false while typing.
     Format(FieldFormat, bool),
     Page(Page),
+    /// A new subject, such as a measure with another unit.
+    Subject(Subject),
     Wrap(&'static Function),
     Cut,
     Copy,
@@ -67,7 +72,7 @@ pub enum Action {
 
 /// The field of a popover.
 pub struct Chip<'a> {
-    pub name: &'a str,
+    pub subject: &'a Subject,
     pub format: &'a FieldFormat,
     /// The field is in a group, so a field with no value hides the group.
     pub in_group: bool,
@@ -110,12 +115,23 @@ fn header(ui: &mut egui::Ui, chip: &Chip, help: &ExprHelp) {
     painter.text(
         pos2(row.left(), y),
         Align2::LEFT_CENTER,
-        chip.name,
+        chip.subject.label(),
         name_font,
         theme::TEXT,
     );
-    let kind = help.field_type(chip.name).map_or("", FieldType::label);
-    let sample = help.sample(chip.name).and_then(|v| v.label());
+    let kind = help.subject_type(chip.subject).map_or("", FieldType::label);
+    let sample = match chip.subject {
+        Subject::Field(name) => help.sample(name).and_then(|v| v.label()),
+        // A measure shows its value in the format of the chip.
+        s => {
+            let piece = Piece::Field {
+                subject: s.clone(),
+                format: chip.format.clone(),
+            };
+            help.eval(&Template::new(vec![piece]).to_text())
+                .and_then(|v| v.label())
+        }
+    };
     let note = match sample {
         Some(s) if !kind.is_empty() => format!("{kind} · {s}"),
         Some(s) => s,
@@ -242,8 +258,29 @@ fn main_page(
 ) -> Option<Action> {
     header(ui, chip, help);
     let mut out = None;
+    if let Subject::Measure(m, u) = chip.subject {
+        popover::divider(ui);
+        let (row, _) =
+            ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), Sense::hover());
+        let at = pos2(row.left(), row.center().y);
+        ui.painter().text(
+            at,
+            Align2::LEFT_CENTER,
+            UNIT_ROW,
+            theme::body(),
+            theme::TEXT,
+        );
+        let labels: Vec<&str> = m.units().iter().map(|u| u.label()).collect();
+        let w = widgets::small_segments_width(ui, &labels);
+        let seg = Rect::from_min_size(pos2(row.right() - w, row.center().y - 18.0), vec2(w, 36.0));
+        let unit = u.unwrap_or(m.default_unit());
+        let active = m.units().iter().position(|x| *x == unit).unwrap_or(0);
+        if let Some(i) = widgets::small_segments(ui, controls, seg, &labels, active) {
+            out = Some(Action::Subject(Subject::Measure(*m, Some(m.units()[i]))));
+        }
+    }
     let format = chip.format;
-    let kind = help.field_type(chip.name);
+    let kind = help.subject_type(chip.subject);
     if matches!(kind, Some(FieldType::Integer | FieldType::Real)) {
         if let Some(places) = places_row(ui, controls, format.places) {
             out = Some(Action::Format(
@@ -367,7 +404,7 @@ fn empty_page(
         .max_height(5.0 * PANEL_ROW)
         .id_salt("pad-chip-empty");
     scroll.show(ui, |ui| {
-        for other in help.fields.iter().filter(|f| *f != chip.name) {
+        for other in (help.fields.iter()).filter(|f| chip.subject.field() != Some(f.as_str())) {
             let name = use_field(other);
             let on = format.empty == Empty::Field(other.clone());
             if widgets::option_row(ui, controls, &name, &name, &[], on).clicked() {
@@ -380,7 +417,7 @@ fn empty_page(
 
 fn wrap_page(ui: &mut egui::Ui, controls: &mut Controls, chip: &Chip) -> Option<Action> {
     let mut out = None;
-    if back_row(ui, controls, chip.name) {
+    if back_row(ui, controls, &chip.subject.label()) {
         out = Some(Action::Page(Page::Main));
     }
     let categories = [

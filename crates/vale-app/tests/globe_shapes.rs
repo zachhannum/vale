@@ -229,6 +229,105 @@ fn a_new_world_shows_its_own_layers_at_once() {
     assert!(spread < 30.0, "{spread}");
 }
 
+/// A square of 20° at 0°, 0°, and a square of 1° at 30°, 0°: about
+/// 1,900,000 and 4,800 square miles.
+const LARGE_AND_SMALL: &str = r#"{"type": "FeatureCollection", "features": [
+  {"type": "Feature", "properties": {}, "geometry": {"type": "Polygon",
+    "coordinates": [[[-10, -10], [10, -10], [10, 10], [-10, 10], [-10, -10]]]}},
+  {"type": "Feature", "properties": {}, "geometry": {"type": "Polygon",
+    "coordinates": [[[30, 0], [31, 0], [31, 1], [30, 1], [30, 0]]]}}
+]}"#;
+
+fn set_filter(doc: &mut Document, id: LayerId, filter: &str) {
+    let rule = &mut doc.entry_mut(id).unwrap().style.style.rules[0];
+    rule.filter = vale_style::expr::Filter::new(filter);
+}
+
+/// The smallest and the largest x of the drawn shapes.
+fn x_range(shapes: &[egui::Shape]) -> (f32, f32) {
+    let xs = positions(shapes).into_iter().map(|p| p.x);
+    xs.fold((f32::MAX, f32::MIN), |(a, b), x| (a.min(x), b.max(x)))
+}
+
+/// The shapes of the large square with filter `large`, and of the small
+/// square with filter `small`, as `draw` gives them. The large square is
+/// west of the small one and wider.
+fn assert_large_and_small(draw: impl Fn(&Document, &mut Pipeline, LayerId) -> Vec<egui::Shape>) {
+    let mut doc = Document::empty();
+    let id = import(&mut doc, "areas", LARGE_AND_SMALL);
+    set_filter(&mut doc, id, "area('mi2') > 10000");
+    let large = x_range(&draw(&doc, &mut Pipeline::new(), id));
+    set_filter(&mut doc, id, "area('mi2') <= 10000");
+    let small = x_range(&draw(&doc, &mut Pipeline::new(), id));
+    assert!(
+        large.0 < large.1 && small.0 < small.1,
+        "{large:?} {small:?}"
+    );
+    assert!(large.1 < small.0, "{large:?} {small:?}");
+    assert!(large.1 - large.0 > 5.0 * (small.1 - small.0));
+}
+
+#[test]
+fn an_area_filter_picks_the_large_polygon_on_the_globe() {
+    let view = GlobeView::centered(15.0, 0.0);
+    assert_large_and_small(|doc, pipeline, id| draw(doc, pipeline, &view, id));
+}
+
+#[test]
+fn an_area_filter_picks_the_large_polygon_in_the_flat_view() {
+    let mut flat = vale_app::globe::flat::FlatView::default();
+    flat.look_at(15.0, 0.0);
+    flat.zoom = 2.0;
+    assert_large_and_small(|doc, pipeline, id| {
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let painter = ui.ctx().layer_painter(egui::LayerId::background());
+            vale_app::ui::globe::flat_vector_layer(&painter, None, RECT, doc, &flat, id, pipeline);
+        });
+        output.textures_delta.clear();
+        output.shapes.into_iter().map(|s| s.shape).collect()
+    });
+}
+
+#[test]
+fn a_vertex_edit_and_an_undo_change_what_an_area_filter_picks() {
+    use vale_app::globe::Tool;
+    use vale_app::ui::LayerRef;
+    // A square of 1° with a spike to 40°, 10°: about 26,000 square miles,
+    // and 4,800 without the spike.
+    let spike = r#"{"type": "Feature", "properties": {}, "geometry": {"type": "Polygon",
+        "coordinates": [[[30, 0], [31, 0], [31, 1], [40, 10], [30, 1], [30, 0]]]}}"#;
+    let dir = tempfile::tempdir().unwrap();
+    let mut state = AppState::new(Document::empty()).unwrap();
+    state.headless = true;
+    let id = import(&mut state.doc, "spike", spike);
+    set_filter(&mut state.doc, id, "area('mi2') > 10000");
+    let path = dir.path().join("w.gpkg");
+    state.session = Some(vale_app::session::Session::open(&path, &mut state.doc).unwrap());
+    state.save_waiting().unwrap();
+    let view = GlobeView::centered(30.0, 0.0);
+    let drawn = |state: &mut AppState| !draw(&state.doc, &mut state.pipeline, &view, id).is_empty();
+    assert!(drawn(&mut state));
+
+    state.select(Some(LayerRef::Vector(id)));
+    state.globe.tool = Tool::Vertex;
+    let uuid = state.doc.layer(id).unwrap().features[0].uuid();
+    state.set_feature_selection(vec![FeatureRef { layer: id, uuid }]);
+    state.vertex_selection = vec![[40.0, 10.0]];
+    // The edit cleans the ring at the scale of the globe on the screen.
+    state.globe.rect = RECT;
+    state.delete_vertices();
+    state.save_waiting().unwrap();
+    let Geometry::Polygons(p) = &state.doc.layer(id).unwrap().features[0].geometry else {
+        panic!("not a polygon");
+    };
+    assert_eq!(p[0][0].len(), 5);
+    assert!(!drawn(&mut state));
+
+    state.undo();
+    assert!(drawn(&mut state));
+}
+
 /// Prints the frame times of the globe with a large polygon layer: the
 /// first frame, a frame with no change, and the frames of a turn and of a
 /// zoom. `VALE_LAND` names a GeoJSON file, for example the Natural Earth

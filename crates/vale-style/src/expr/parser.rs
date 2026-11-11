@@ -2,7 +2,7 @@
 
 use std::ops::Range;
 
-use vale_store::Value;
+use vale_store::{FieldType, GeometryKind, Value};
 
 use super::ParseError;
 use super::functions::{self, Function};
@@ -29,10 +29,74 @@ pub(super) enum BinOp {
     Rem,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub(super) enum Var {
+/// A variable of the feature or the map, written with a leading `@`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum Var {
     Scale,
     Geometry,
+    Lat,
+    Lon,
+    Parts,
+    Vertices,
+}
+
+impl Var {
+    pub const ALL: [Var; 6] = [
+        Var::Scale,
+        Var::Geometry,
+        Var::Lat,
+        Var::Lon,
+        Var::Parts,
+        Var::Vertices,
+    ];
+
+    /// The name without the `@`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Var::Scale => "scale",
+            Var::Geometry => "geometry",
+            Var::Lat => "lat",
+            Var::Lon => "lon",
+            Var::Parts => "parts",
+            Var::Vertices => "vertices",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Var::Scale => "Scale",
+            Var::Geometry => "Geometry type",
+            Var::Lat => "Latitude",
+            Var::Lon => "Longitude",
+            Var::Parts => "Parts",
+            Var::Vertices => "Vertices",
+        }
+    }
+
+    pub fn hint(self) -> &'static str {
+        match self {
+            Var::Scale => "Map scale denominator",
+            Var::Geometry => "Geometry type of the feature",
+            Var::Lat => "Latitude of the center",
+            Var::Lon => "Longitude of the center",
+            Var::Parts => "Number of parts",
+            Var::Vertices => "Number of vertices",
+        }
+    }
+
+    /// The type of the value of the variable.
+    pub fn field_type(self) -> FieldType {
+        match self {
+            Var::Scale | Var::Lat | Var::Lon => FieldType::Real,
+            Var::Geometry => FieldType::Text,
+            Var::Parts | Var::Vertices => FieldType::Integer,
+        }
+    }
+
+    /// True if the variable has a value for features of this kind.
+    pub fn fits(self, kind: GeometryKind) -> bool {
+        !(self == Var::Parts && kind == GeometryKind::Point)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -516,15 +580,20 @@ impl<'a> Parser<'a> {
             }
             Tok::Var(name) => {
                 self.next();
-                match name.to_ascii_lowercase().as_str() {
-                    "scale" => Node::Var(Var::Scale),
-                    "geometry" => Node::Var(Var::Geometry),
-                    _ => {
+                match Var::ALL
+                    .into_iter()
+                    .find(|v| v.name().eq_ignore_ascii_case(&name))
+                {
+                    Some(var) => Node::Var(var),
+                    None => {
+                        let names: Vec<String> =
+                            Var::ALL.iter().map(|v| format!("@{}", v.name())).collect();
                         return Err(self.error(
                             t.start,
                             t.end,
                             format!(
-                                "unknown variable '@{name}'. The variables are @scale and @geometry"
+                                "unknown variable '@{name}'. The variables are {}",
+                                names.join(", ")
                             ),
                         ));
                     }

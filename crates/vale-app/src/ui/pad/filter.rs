@@ -6,7 +6,8 @@
 
 use eframe::egui::{self, Align2, Color32, Rect, Sense, Shape, Stroke, pos2, vec2};
 use vale_store::{FieldType, Value};
-use vale_style::expr::editor::{CmpOp, Cond, Conditions, ops_for};
+use vale_style::expr::Unit;
+use vale_style::expr::editor::{CmpOp, Cond, Conditions, Subject, ops_for};
 
 use super::expression;
 use super::geometry::TOUCH;
@@ -47,6 +48,7 @@ pub const ALL_OF: &str = "All of";
 pub const ANY_OF: &str = "Any of";
 /// The starts of the names of the controls of a condition.
 pub const FIELD: &str = "Field";
+pub const UNIT: &str = "Unit";
 pub const COMPARISON: &str = "Comparison";
 pub const VALUE: &str = "Value";
 pub const SECOND_VALUE: &str = "Second value";
@@ -56,6 +58,8 @@ pub const CODE_ROW: &str = "Code row";
 /// The values of a yes-or-no field.
 pub const YES: &str = "Yes";
 pub const NO: &str = "No";
+/// The heading of the measures in the menu of fields.
+pub const GEOMETRY: &str = crate::ui::expr_help::GEOMETRY_MENU;
 /// The search fields of the menu of text values and of the menu of
 /// fields.
 pub const SEARCH_VALUES: &str = "Search values";
@@ -107,6 +111,8 @@ pub enum Menu {
     /// Match all or Match any, of the list or of a group.
     Match,
     Field,
+    /// The unit of a measure.
+    Unit,
     Comparison,
     /// The value with this index.
     Value(usize),
@@ -117,7 +123,10 @@ pub enum Menu {
 pub enum Act {
     /// Match all or any: the list at the empty path, or a group.
     SetAll(Vec<usize>, bool),
-    SetField(Vec<usize>, String),
+    /// Sets the field, the variable, or the measure.
+    SetSubject(Vec<usize>, Subject),
+    /// Sets the unit of a measure.
+    SetUnit(Vec<usize>, Unit),
     SetOp(Vec<usize>, CmpOp),
     /// Sets value `k`. False for typing.
     SetValue(Vec<usize>, usize, Value, bool),
@@ -377,8 +386,12 @@ fn list(
         let mut path = group.to_vec();
         path.push(i);
         match cond {
-            Cond::Rule { field, op, values } => {
-                rule_row(ui, controls, rows, &path, (field, *op, values), None, 0.0);
+            Cond::Rule {
+                subject,
+                op,
+                values,
+            } => {
+                rule_row(ui, controls, rows, &path, (subject, *op, values), None, 0.0);
             }
             Cond::Group { items, .. } if items.is_empty() => {
                 hole_row(ui, controls, rows, &path, None, 0.0);
@@ -454,13 +467,26 @@ fn chip_width(ui: &egui::Ui, look: &Look) -> f32 {
     crate::ui::token_field::chip_parts(look, &m, &mut measure).0
 }
 
-/// The look of the chip of field `name`.
-fn field_look(name: &str, help: &ExprHelp) -> Look {
+/// The look of the chip of a subject. A measure shows its noun, and its
+/// unit has a menu of its own.
+fn field_look(subject: &Subject, help: &ExprHelp) -> Look {
+    let kind = match subject {
+        Subject::Field(_) => ChipKind::Field,
+        _ => ChipKind::Variable,
+    };
     Look {
-        kind: ChipKind::Field,
-        glyph: Some(help.field_type(name).map_or(Glyph::Text, Glyph::of)),
-        label: name.to_owned(),
+        kind,
+        glyph: Some(help.subject_type(subject).map_or(Glyph::Text, Glyph::of)),
+        label: subject.label(),
         badge: None,
+    }
+}
+
+/// The unit of a measure. With no unit, the default unit.
+fn unit_of(subject: &Subject) -> Option<Unit> {
+    match subject {
+        Subject::Measure(m, u) => Some(u.unwrap_or(m.default_unit())),
+        _ => None,
     }
 }
 
@@ -483,6 +509,7 @@ fn value_text(v: &Value) -> String {
 /// One control of a row: its width, and what it is.
 enum Piece {
     Field,
+    Unit,
     Op,
     /// The value with this index.
     Value(usize),
@@ -552,14 +579,18 @@ pub fn rule_row(
     controls: &mut Controls,
     rows: &mut Rows,
     path: &[usize],
-    (field, op, values): (&str, CmpOp, &[Value]),
+    (subject, op, values): (&Subject, CmpOp, &[Value]),
     lead: Option<&str>,
     trail: f32,
 ) -> Rect {
-    let kind = rows.help.field_type(field);
-    let look = field_look(field, rows.help);
+    let kind = rows.help.subject_type(subject);
+    let look = field_look(subject, rows.help);
     let count = op.value_count().unwrap_or(1);
     let mut pieces = vec![(chip_width(ui, &look), Piece::Field)];
+    let unit = unit_of(subject);
+    if let Some(u) = unit {
+        pieces.push((menu_width(ui, u.label()), Piece::Unit));
+    }
     pieces.push((menu_width(ui, op.label()), Piece::Op));
     for k in 0..count {
         if k > 0 {
@@ -591,6 +622,16 @@ pub fn rule_row(
                     rows.toggle(path, Menu::Field);
                 }
                 if rows.is_open(path, &Menu::Field) {
+                    rows.anchor = Some(rect);
+                }
+            }
+            Piece::Unit => {
+                let name = rows.name(UNIT, path);
+                let label = unit.map_or("", Unit::label);
+                if menu_button(ui, controls, rect, &name, label) {
+                    rows.toggle(path, Menu::Unit);
+                }
+                if rows.is_open(path, &Menu::Unit) {
                     rows.anchor = Some(rect);
                 }
             }
@@ -927,23 +968,50 @@ pub fn menu_popover(
                     }
                 }
             }
-            (Menu::Field, Some(Cond::Rule { field, .. })) => {
+            (Menu::Field, Some(Cond::Rule { subject, .. })) => {
                 search_field(ui, controls, SEARCH_FIELDS, search);
                 let needle = search.trim().to_lowercase();
                 let shown = (help.fields.iter()).filter(|f| f.to_lowercase().contains(&needle));
+                let measures: Vec<Subject> = (help.measures().into_iter())
+                    .filter(|m| m.label().to_lowercase().contains(&needle))
+                    .collect();
                 egui::ScrollArea::vertical()
                     .max_height(320.0)
                     .show(ui, |ui| {
                         for name in shown {
-                            let on = name == field;
+                            let on = subject.field() == Some(name);
                             if widgets::option_row(ui, controls, name, name, &[], on).clicked() {
-                                acts.push(Act::SetField(path.clone(), name.clone()));
+                                let s = Subject::Field(name.clone());
+                                acts.push(Act::SetSubject(path.clone(), s));
+                            }
+                        }
+                        if !measures.is_empty() {
+                            widgets::list_heading(ui, GEOMETRY);
+                        }
+                        for m in measures {
+                            let label = m.label();
+                            let on = m.same_kind(subject);
+                            if widgets::option_row(ui, controls, &label, &label, &[], on).clicked()
+                            {
+                                acts.push(Act::SetSubject(path.clone(), m));
                             }
                         }
                     });
             }
-            (Menu::Comparison, Some(Cond::Rule { field, op, .. })) => {
-                let kind = help.field_type(field).unwrap_or(FieldType::Text);
+            (Menu::Unit, Some(Cond::Rule { subject, .. })) => {
+                if let Subject::Measure(m, _) = subject {
+                    let unit = unit_of(subject);
+                    for u in m.units() {
+                        let label = u.label();
+                        let on = unit == Some(*u);
+                        if widgets::option_row(ui, controls, label, label, &[], on).clicked() {
+                            acts.push(Act::SetUnit(path.clone(), *u));
+                        }
+                    }
+                }
+            }
+            (Menu::Comparison, Some(Cond::Rule { subject, op, .. })) => {
+                let kind = help.subject_type(subject).unwrap_or(FieldType::Text);
                 for o in ops_for(kind) {
                     let label = o.label();
                     if widgets::option_row(ui, controls, label, label, &[], o == op).clicked() {
@@ -951,8 +1019,15 @@ pub fn menu_popover(
                     }
                 }
             }
-            (Menu::Value(k), Some(Cond::Rule { field, op, values })) => {
-                if help.field_type(field) == Some(FieldType::Bool) {
+            (
+                Menu::Value(k),
+                Some(Cond::Rule {
+                    subject,
+                    op,
+                    values,
+                }),
+            ) => {
+                if help.subject_type(subject) == Some(FieldType::Bool) {
                     for (word, b) in [(YES, true), (NO, false)] {
                         let on = values.get(*k) == Some(&Value::Bool(b));
                         if widgets::option_row(ui, controls, word, word, &[], on).clicked() {
@@ -964,7 +1039,7 @@ pub fn menu_popover(
                         ui,
                         controls,
                         help,
-                        (&path, field, *op, values, *k),
+                        (&path, subject, *op, values, *k),
                         search,
                         &mut acts,
                     );
@@ -999,13 +1074,13 @@ fn text_values(
     ui: &mut egui::Ui,
     controls: &mut Controls,
     help: &ExprHelp,
-    (path, field, op, values, k): (&[usize], &str, CmpOp, &[Value], usize),
+    (path, subject, op, values, k): (&[usize], &Subject, CmpOp, &[Value], usize),
     search: &mut String,
     acts: &mut Vec<Act>,
 ) {
     search_field(ui, controls, SEARCH_VALUES, search);
     let needle = search.trim().to_lowercase();
-    let all = help.values(field);
+    let all = subject.field().map_or(&[][..], |f| help.values(f));
     let shown: Vec<&String> = (all.iter())
         .filter(|v| v.to_lowercase().contains(&needle))
         .take(MENU_VALUES)
@@ -1079,13 +1154,16 @@ fn list_mut<'a>(items: &'a mut Vec<Cond>, path: &[usize]) -> Option<&'a mut Vec<
     }
 }
 
-/// The value of a new rule on a field of type `kind`: the first value of a
-/// text field in the layer, 0, or yes.
-fn default_value(help: &ExprHelp, field: &str, kind: Option<FieldType>) -> Value {
+/// The value of a new rule on a subject of type `kind`: the first value of
+/// a text field in the layer, 0, or yes.
+fn default_value(help: &ExprHelp, subject: &Subject, kind: Option<FieldType>) -> Value {
     match kind {
         Some(FieldType::Integer | FieldType::Real) => Value::Number(0.0),
         Some(FieldType::Bool) => Value::Bool(true),
-        _ => Value::Text(help.values(field).first().cloned().unwrap_or_default()),
+        _ => {
+            let values = subject.field().map_or(&[][..], |f| help.values(f));
+            Value::Text(values.first().cloned().unwrap_or_default())
+        }
     }
 }
 
@@ -1098,26 +1176,34 @@ fn fits(v: &Value, kind: Option<FieldType>) -> bool {
     }
 }
 
-/// The values for comparison `op` on `field`: the values that fit, and
+/// The values for comparison `op` on `subject`: the values that fit, and
 /// default values for the rest.
-fn values_for(help: &ExprHelp, field: &str, op: CmpOp, old: &[Value]) -> Vec<Value> {
-    let kind = help.field_type(field);
+fn values_for(help: &ExprHelp, subject: &Subject, op: CmpOp, old: &[Value]) -> Vec<Value> {
+    let kind = help.subject_type(subject);
     let count = op.value_count().unwrap_or(old.len().max(1));
     (0..count)
         .map(|i| match old.get(i) {
             Some(v) if fits(v, kind) => v.clone(),
-            _ => default_value(help, field, kind),
+            _ => default_value(help, subject, kind),
         })
         .collect()
 }
 
-/// A new rule on the first field.
+/// A new rule on the first field, or on the first measure of a layer with
+/// no fields.
 pub fn new_rule(help: &ExprHelp) -> Cond {
-    let field = help.fields.first().cloned().unwrap_or_default();
-    let kind = help.field_type(&field).unwrap_or(FieldType::Text);
+    let subject = match help.fields.first() {
+        Some(f) => Subject::Field(f.clone()),
+        None => (help.measures().into_iter().next()).unwrap_or(Subject::Field(String::new())),
+    };
+    let kind = help.subject_type(&subject).unwrap_or(FieldType::Text);
     let op = ops_for(kind)[0];
-    let values = values_for(help, &field, op, &[]);
-    Cond::Rule { field, op, values }
+    let values = values_for(help, &subject, op, &[]);
+    Cond::Rule {
+        subject,
+        op,
+        values,
+    }
 }
 
 /// Applies a change to `items`. Returns true if the conditions changed.
@@ -1130,23 +1216,49 @@ pub fn apply(items: &mut Vec<Cond>, act: Act, help: &ExprHelp) -> bool {
             }
             _ => false,
         },
-        Act::SetField(path, name) => {
-            let Some(Cond::Rule { field, op, values }) = cond_mut(items, &path) else {
+        Act::SetSubject(path, new) => {
+            let Some(Cond::Rule {
+                subject,
+                op,
+                values,
+            }) = cond_mut(items, &path)
+            else {
                 return false;
             };
-            let kind = help.field_type(&name).unwrap_or(FieldType::Text);
+            // A measure keeps its unit.
+            let new = if new.same_kind(subject) {
+                subject.clone()
+            } else {
+                new
+            };
+            let kind = help.subject_type(&new).unwrap_or(FieldType::Text);
             if !ops_for(kind).contains(op) {
                 *op = ops_for(kind)[0];
             }
-            *values = values_for(help, &name, *op, values);
-            *field = name;
+            *values = values_for(help, &new, *op, values);
+            *subject = new;
             true
         }
+        Act::SetUnit(path, unit) => match cond_mut(items, &path) {
+            Some(Cond::Rule {
+                subject: Subject::Measure(m, u),
+                ..
+            }) if m.units().contains(&unit) => {
+                *u = Some(unit);
+                true
+            }
+            _ => false,
+        },
         Act::SetOp(path, new) => {
-            let Some(Cond::Rule { field, op, values }) = cond_mut(items, &path) else {
+            let Some(Cond::Rule {
+                subject,
+                op,
+                values,
+            }) = cond_mut(items, &path)
+            else {
                 return false;
             };
-            *values = values_for(help, field, new, values);
+            *values = values_for(help, subject, new, values);
             *op = new;
             true
         }
@@ -1222,7 +1334,7 @@ mod tests {
     fn a_new_field_keeps_the_comparison_that_fits() {
         let help = ExprHelp::empty();
         let mut items = vec![Cond::Rule {
-            field: "a".into(),
+            subject: Subject::Field("a".into()),
             op: CmpOp::Contains,
             values: vec![Value::Text("x".into())],
         }];
@@ -1235,8 +1347,78 @@ mod tests {
         assert!(apply(&mut items, Act::Remove(vec![1, 0]), &help));
         assert!(apply(&mut items, Act::SetOp(vec![0], CmpOp::Empty), &help));
         assert!(matches!(&items[0], Cond::Rule { values, .. } if values.is_empty()));
-        assert!(apply(&mut items, Act::SetField(vec![0], "b".into()), &help));
+        let b = Subject::Field("b".into());
+        assert!(apply(&mut items, Act::SetSubject(vec![0], b), &help));
         let text = Conditions::new(true, items).to_text();
         assert!(text.starts_with("b is null and "), "{text}");
+    }
+
+    fn polygons() -> ExprHelp {
+        let mut help = ExprHelp::empty();
+        help.fields = vec!["name".into()];
+        help.types = vec![FieldType::Text];
+        help.geometry = vale_store::GeometryKind::Polygon;
+        help
+    }
+
+    #[test]
+    fn a_measure_takes_number_comparisons_and_its_units() {
+        use vale_style::expr::Measure;
+        let help = polygons();
+        let mut items = vec![new_rule(&help)];
+        assert!(matches!(&items[0], Cond::Rule { op: CmpOp::Is, .. }));
+        let area = Subject::Measure(Measure::Area, Some(Unit::Km2));
+        assert!(apply(&mut items, Act::SetSubject(vec![0], area), &help));
+        let Cond::Rule { op, values, .. } = &items[0] else {
+            panic!("{items:?}");
+        };
+        // Is fits a number too, and the text value becomes a number.
+        assert_eq!(*op, CmpOp::Is);
+        assert_eq!(values, &[Value::Number(0.0)]);
+        // A text comparison does not fit a measure.
+        items[0] = new_rule(&help);
+        assert!(apply(
+            &mut items,
+            Act::SetOp(vec![0], CmpOp::Contains),
+            &help
+        ));
+        let area = Subject::Measure(Measure::Area, None);
+        assert!(apply(&mut items, Act::SetSubject(vec![0], area), &help));
+        assert!(matches!(&items[0], Cond::Rule { op: CmpOp::Is, .. }));
+        assert!(apply(&mut items, Act::SetOp(vec![0], CmpOp::Gt), &help));
+        assert!(apply(&mut items, Act::SetUnit(vec![0], Unit::Mi2), &help));
+        // A length unit does not fit an area.
+        assert!(!apply(&mut items, Act::SetUnit(vec![0], Unit::Km), &help));
+        // The same measure from the menu keeps the unit.
+        let again = Subject::Measure(Measure::Area, Some(Unit::Km2));
+        assert!(apply(&mut items, Act::SetSubject(vec![0], again), &help));
+        let text = Conditions::new(true, items.clone()).to_text();
+        assert_eq!(text, "area('mi2') > 0");
+        // A variable takes number comparisons too.
+        let lat = Subject::Var(vale_style::expr::Var::Lat);
+        assert!(apply(&mut items, Act::SetSubject(vec![0], lat), &help));
+        let text = Conditions::new(true, items).to_text();
+        assert_eq!(text, "@lat > 0");
+    }
+
+    #[test]
+    fn a_new_rule_on_a_layer_with_no_fields_uses_a_measure() {
+        use vale_style::expr::Measure;
+        let mut help = polygons();
+        help.fields.clear();
+        help.types.clear();
+        let Cond::Rule {
+            subject, values, ..
+        } = new_rule(&help)
+        else {
+            panic!("no rule");
+        };
+        assert_eq!(subject, Subject::Measure(Measure::Area, Some(Unit::Km2)));
+        assert_eq!(values, [Value::Number(0.0)]);
+        help.geometry = vale_store::GeometryKind::Line;
+        let Cond::Rule { subject, .. } = new_rule(&help) else {
+            panic!("no rule");
+        };
+        assert_eq!(subject, Subject::Measure(Measure::Length, Some(Unit::Km)));
     }
 }

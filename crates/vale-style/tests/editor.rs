@@ -1,10 +1,9 @@
-use vale_store::FieldType;
-use vale_style::expr::Value;
+use vale_store::{FieldType, GeometryKind};
 use vale_style::expr::editor::{
-    Case, CmpOp, Cond, Conditions, Empty, FieldFormat, Formula, Op, Piece, Seq, Template, Tok,
-    ops_for,
+    Case, CmpOp, Cond, Conditions, Empty, FieldFormat, Formula, Op, Piece, Seq, Subject, Template,
+    Tok, measures_for, ops_for,
 };
-use vale_style::expr::{Expr, FUNCTIONS};
+use vale_style::expr::{Expr, FUNCTIONS, Measure, Unit, Value, Var};
 
 fn tree(text: &str) -> Expr {
     Expr::parse(text).unwrap_or_else(|e| panic!("{text}: {e}"))
@@ -20,7 +19,7 @@ fn round_trip(text: &str, to_text: impl Fn(&str) -> String) -> String {
 
 fn rule(field: &str, op: CmpOp, values: Vec<Value>) -> Cond {
     Cond::Rule {
-        field: field.into(),
+        subject: Subject::Field(field.into()),
         op,
         values,
     }
@@ -61,6 +60,12 @@ const FILTERS: &[&str] = &[
     "x = y",
     "(a or b) = true",
     "capital != true",
+    "area('mi2') > 10000",
+    "area() between 10 and 20",
+    "@vertices >= 5",
+    "line_length('mi') < 3",
+    "@scale < 5000000 and @geometry = 'line'",
+    "area('KM2') > 1",
 ];
 
 fn filter_trip(text: &str) -> String {
@@ -253,6 +258,8 @@ const VALUES: &[&str] = &[
     "concat(a, b, c)",
     "if(type = 'City' and pop > 3, 'big', 'small')",
     "1e300",
+    "@lat + 1",
+    "round(area('ha'), 1)",
 ];
 
 fn value_trip(text: &str) -> String {
@@ -310,7 +317,7 @@ fn value_reads_blocks_and_operators() {
     );
     assert_eq!(
         Formula::from_text("@scale").seq,
-        Seq(vec![Tok::Code("@scale".into())])
+        Seq(vec![Tok::Var(Var::Scale)])
     );
     assert!(Formula::from_text("").seq.is_hole());
 }
@@ -407,6 +414,8 @@ const TEMPLATES: &[&str] = &[
     "concat(name, if(capital, ' ★', ''))",
     "pop * 2",
     "concat(a || b, c)",
+    "format_number(area('km2'), 0)",
+    "concat('Lat ', round(@lat, 2))",
 ];
 
 fn template_trip(text: &str) -> String {
@@ -422,7 +431,7 @@ fn templates_round_trip() {
 
 fn field(name: &str, format: FieldFormat) -> Piece {
     Piece::Field {
-        name: name.into(),
+        subject: Subject::Field(name.into()),
         format,
     }
 }
@@ -682,4 +691,235 @@ fn every_model_round_trips_every_corpus() {
         round_trip(text, value_trip);
         round_trip(text, template_trip);
     }
+}
+
+fn measure(m: Measure, u: Option<Unit>, op: CmpOp, values: Vec<Value>) -> Cond {
+    Cond::Rule {
+        subject: Subject::Measure(m, u),
+        op,
+        values,
+    }
+}
+
+fn one_cond(text: &str) -> Cond {
+    let c = Conditions::from_text(text);
+    assert_eq!(c.items.len(), 1, "{text}");
+    c.items[0].clone()
+}
+
+#[test]
+fn filter_reads_measure_and_variable_rules() {
+    assert_eq!(
+        one_cond("area('mi2') > 10000"),
+        measure(Measure::Area, Some(Unit::Mi2), CmpOp::Gt, vec![n(10000.0)])
+    );
+    assert_eq!(
+        one_cond("area() between 10 and 20"),
+        measure(Measure::Area, None, CmpOp::Between, vec![n(10.0), n(20.0)])
+    );
+    assert_eq!(
+        one_cond("line_length('m') is null"),
+        measure(Measure::Length, Some(Unit::M), CmpOp::Empty, vec![])
+    );
+    assert_eq!(
+        one_cond("@vertices >= 5"),
+        Cond::Rule {
+            subject: Subject::Var(Var::Vertices),
+            op: CmpOp::Ge,
+            values: vec![n(5.0)],
+        }
+    );
+    let c = Conditions::from_text("@scale < 5000000 and @geometry = 'line'");
+    assert_eq!(
+        c.items,
+        vec![
+            Cond::Rule {
+                subject: Subject::Var(Var::Scale),
+                op: CmpOp::Lt,
+                values: vec![n(5e6)],
+            },
+            Cond::Rule {
+                subject: Subject::Var(Var::Geometry),
+                op: CmpOp::Is,
+                values: vec![t("line")],
+            },
+        ]
+    );
+    for code in [
+        "area('KM2') > 1",
+        "area('furlong') > 1",
+        "perimeter('km2') > 1",
+        "area(u) > 1",
+        "area('km2') = area('mi2')",
+    ] {
+        assert_eq!(one_cond(code), Cond::Code(tree(code).to_string()), "{code}");
+    }
+    assert_eq!(filter_trip("area() > 1"), "area() > 1");
+}
+
+#[test]
+fn filter_writes_measure_rules() {
+    let c = Conditions::new(
+        true,
+        vec![
+            measure(Measure::Area, Some(Unit::Km2), CmpOp::Gt, vec![n(10000.0)]),
+            measure(Measure::Perimeter, None, CmpOp::Le, vec![n(3.0)]),
+            Cond::Rule {
+                subject: Subject::Var(Var::Lat),
+                op: CmpOp::Between,
+                values: vec![n(-10.0), n(10.0)],
+            },
+        ],
+    );
+    assert_eq!(
+        c.to_text(),
+        "area('km2') > 10000 and perimeter() <= 3 and @lat between -10 and 10"
+    );
+    let geometry = Conditions::new(
+        true,
+        vec![Cond::Rule {
+            subject: Subject::Var(Var::Geometry),
+            op: CmpOp::Is,
+            values: vec![Value::Bool(true)],
+        }],
+    );
+    assert_eq!(geometry.to_text(), "@geometry = true");
+}
+
+#[test]
+fn value_reads_variables() {
+    assert_eq!(
+        Formula::from_text("@lat + 1").seq,
+        Seq(vec![Tok::Var(Var::Lat), Tok::Op(Op::Add), Tok::Num(1.0)])
+    );
+    assert_eq!(value_trip("@LAT + 1"), "@lat + 1");
+    assert_eq!(
+        Formula::from_text("@nope").seq,
+        Seq(vec![Tok::Code("@nope".into())])
+    );
+    let v = Formula::from_text("clamp(@vertices, shout(pop), 2)");
+    let Tok::Call { args, .. } = &v.seq.0[0] else {
+        panic!("{:?}", v.seq);
+    };
+    assert_eq!(args[0], Seq(vec![Tok::Var(Var::Vertices)]));
+}
+
+#[test]
+fn template_reads_measures_and_variables() {
+    assert_eq!(
+        Template::from_text("format_number(area('km2'), 0)").pieces,
+        vec![Piece::Field {
+            subject: Subject::Measure(Measure::Area, Some(Unit::Km2)),
+            format: FieldFormat {
+                places: Some(0),
+                thousands: true,
+                ..Default::default()
+            },
+        }]
+    );
+    assert_eq!(
+        Template::from_text("concat('Lat ', round(@lat, 2))").pieces,
+        vec![
+            text("Lat "),
+            Piece::Field {
+                subject: Subject::Var(Var::Lat),
+                format: FieldFormat {
+                    places: Some(2),
+                    ..Default::default()
+                },
+            },
+        ]
+    );
+    assert!(matches!(
+        &Template::from_text("area('furlong')").pieces[..],
+        [Piece::Expr(_)]
+    ));
+    assert_eq!(template_trip("area()"), "area()");
+}
+
+#[test]
+fn measures_follow_the_geometry() {
+    let area = Subject::Measure(Measure::Area, Some(Unit::Km2));
+    let perimeter = Subject::Measure(Measure::Perimeter, Some(Unit::Km));
+    let length = Subject::Measure(Measure::Length, Some(Unit::Km));
+    let var = Subject::Var;
+    assert_eq!(
+        measures_for(GeometryKind::Polygon),
+        vec![
+            area,
+            perimeter,
+            var(Var::Vertices),
+            var(Var::Parts),
+            var(Var::Lat),
+            var(Var::Lon)
+        ]
+    );
+    assert_eq!(
+        measures_for(GeometryKind::Line),
+        vec![
+            length,
+            var(Var::Vertices),
+            var(Var::Parts),
+            var(Var::Lat),
+            var(Var::Lon)
+        ]
+    );
+    assert_eq!(
+        measures_for(GeometryKind::Point),
+        vec![var(Var::Vertices), var(Var::Lat), var(Var::Lon)]
+    );
+    let labels = |m: Measure| m.units().iter().map(|u| u.label()).collect::<Vec<_>>();
+    assert_eq!(labels(Measure::Area), ["km²", "mi²", "ha", "acres"]);
+    assert_eq!(labels(Measure::Length), ["km", "mi", "m"]);
+    assert_eq!(labels(Measure::Perimeter), ["km", "mi", "m"]);
+    let a = Subject::Measure(Measure::Area, None);
+    assert!(a.same_kind(&Subject::Measure(Measure::Area, Some(Unit::Ha))));
+    assert!(!a.same_kind(&Subject::Measure(Measure::Perimeter, None)));
+    assert_eq!(a.field_type(|_| None), Some(FieldType::Real));
+    assert_eq!(
+        Subject::Var(Var::Parts).field_type(|_| None),
+        Some(FieldType::Integer)
+    );
+    assert_eq!(
+        Subject::Field("x".into()).field_type(|_| Some(FieldType::Text)),
+        Some(FieldType::Text)
+    );
+    assert_eq!(Subject::Field("x".into()).field(), Some("x"));
+    assert_eq!(a.field(), None);
+}
+
+#[test]
+fn measures_have_default_formats() {
+    let text = |s: Subject| {
+        let format = FieldFormat::for_subject(&s);
+        Template::new(vec![Piece::Field { subject: s, format }]).to_text()
+    };
+    assert_eq!(
+        text(Subject::Measure(Measure::Area, Some(Unit::Km2))),
+        "format_number(area('km2'), 0)"
+    );
+    assert_eq!(
+        text(Subject::Measure(Measure::Length, Some(Unit::Mi))),
+        "format_number(line_length('mi'), 0)"
+    );
+    assert_eq!(text(Subject::Var(Var::Lat)), "round(@lat, 2)");
+    assert_eq!(text(Subject::Var(Var::Lon)), "round(@lon, 2)");
+    assert_eq!(text(Subject::Var(Var::Vertices)), "@vertices");
+    assert_eq!(text(Subject::Var(Var::Parts)), "@parts");
+    assert_eq!(text(Subject::Field("pop".into())), "pop");
+}
+
+#[test]
+fn each_variable_has_a_label_and_a_hint() {
+    for v in Var::ALL {
+        assert!(!v.label().is_empty(), "{v:?}");
+        assert!(!v.hint().is_empty(), "{v:?}");
+        assert_eq!(Subject::Var(v).label(), v.label());
+        assert_eq!(Subject::Var(v).to_text(), format!("@{}", v.name()));
+    }
+    assert_eq!(Var::Lat.label(), "Latitude");
+    assert_eq!(Var::Geometry.field_type(), FieldType::Text);
+    assert!(!Var::Parts.fits(GeometryKind::Point));
+    assert!(Var::Parts.fits(GeometryKind::Line));
+    assert!(Var::Vertices.fits(GeometryKind::Point));
 }

@@ -1255,6 +1255,14 @@ pub fn compass_row(
     *degrees != before
 }
 
+/// The heading of a part of a list, in small capitals.
+pub fn list_heading(ui: &mut egui::Ui, title: &str) {
+    let (head, _) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::hover());
+    let at = pos2(head.left() + 4.0, head.bottom() - 6.0);
+    let title = title.to_uppercase();
+    (ui.painter()).text(at, Align2::LEFT_BOTTOM, title, theme::small(), theme::MUTE);
+}
+
 /// A row of a form that is one choice of a list: a title at the left, and
 /// lines of small text at the right that tell what the choice gives. The
 /// row that is `on` has a mark. `name` is the name of the control.

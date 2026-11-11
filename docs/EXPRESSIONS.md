@@ -21,6 +21,9 @@ A value is a number, text, `true`, `false`, or `null`. Null means that no value 
 | `"old name"` | The value of a field with a space or a keyword in its name. Two double quotes stand for one double quote. |
 | `@scale` | The map scale denominator, for example `1000000` for 1:1,000,000. On the globe and the flat view, it is the scale at the center of the view. |
 | `@geometry` | The geometry type of the feature: `'point'`, `'line'`, or `'polygon'` |
+| `@lat`, `@lon` | The latitude and the longitude of the feature in degrees. For several points, it is their mean position. For a line, it is the center of the line, with each part weighted by its length. For a polygon, it is the center of the area. |
+| `@parts` | The number of parts of a line or a polygon |
+| `@vertices` | The number of vertices of the feature. A ring that repeats its first vertex at the end counts it one time. |
 
 Field names are case-sensitive. Keywords, function names, and variable names are not case-sensitive.
 
@@ -84,6 +87,11 @@ A filter matches a feature only if the result is `true`. The `if` function also 
 | `min(a, b, ...)` | The smallest number. Values that are not numbers are skipped. |
 | `max(a, b, ...)` | The largest number. Values that are not numbers are skipped. |
 | `clamp(low, x, high)` | `x`, but not below `low` and not above `high` |
+| `area(unit)` | The area of a polygon. The unit is `'km2'`, `'mi2'`, `'ha'`, or `'acre'`, and `'km2'` if not given. |
+| `perimeter(unit)` | The length of the edge of a polygon, holes included. The unit is `'km'`, `'mi'`, or `'m'`, and `'km'` if not given. |
+| `line_length(unit)` | The length of a line, with the units of `perimeter`. The name `length` is the function for text. |
+
+The measures use the sphere of the world, with the radius of the world. The edges are great-circle arcs. A measure on the wrong geometry type gives null, for example the area of a point or `@parts` of a point. A wrong unit also gives null.
 
 ## Errors
 

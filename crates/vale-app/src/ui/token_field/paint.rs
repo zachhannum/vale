@@ -19,6 +19,8 @@ pub const FIELD_TEXT: Color32 = Color32::from_rgb(147, 232, 211);
 const BADGE_TEXT: Color32 = Color32::from_rgb(111, 195, 174);
 /// The text of a function.
 pub const FUNCTION_TEXT: Color32 = Color32::from_rgb(185, 196, 255);
+/// The text of a variable or a measure.
+pub const VARIABLE_TEXT: Color32 = Color32::from_rgb(232, 170, 236);
 const VALUE_TEXT: Color32 = Color32::from_rgb(245, 205, 138);
 pub const BAD: Color32 = Color32::from_rgb(239, 107, 107);
 /// The text of a selected chip.
@@ -38,6 +40,11 @@ fn colors(kind: ChipKind) -> (Color32, Color32, Color32) {
             rgba(130, 150, 255, 26),
             rgba(140, 160, 255, 97),
             FUNCTION_TEXT,
+        ),
+        ChipKind::Variable => (
+            rgba(214, 120, 224, 30),
+            rgba(214, 120, 224, 110),
+            VARIABLE_TEXT,
         ),
         ChipKind::Value => (rgba(242, 184, 92, 28), rgba(242, 184, 92, 89), VALUE_TEXT),
         ChipKind::Operator => (rgba(255, 255, 255, 26), Color32::TRANSPARENT, theme::TEXT),

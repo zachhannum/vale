@@ -22,6 +22,8 @@ fn eval_with(src: &str, scale: f64, geometry: GeometryKind) -> Value {
         attributes: &attrs,
         scale,
         geometry,
+        shape: None,
+        radius_km: 0.0,
     };
     Expr::parse(src)
         .unwrap_or_else(|e| panic!("{src}: {e}"))
@@ -246,6 +248,8 @@ fn wrong_expressions_still_draw() {
         attributes: &attrs,
         scale: 1e6,
         geometry: GeometryKind::Line,
+        shape: None,
+        radius_km: 0.0,
     };
 
     let bad = Filter::new("population >");
@@ -323,6 +327,8 @@ fn random_text_does_not_panic() {
         attributes: &attrs,
         scale: 0.0,
         geometry: GeometryKind::Polygon,
+        shape: None,
+        radius_km: 0.0,
     };
     let mut seed: u64 = 0x2545_f491_4f6c_dd1d;
     let mut next = || {
@@ -476,6 +482,8 @@ fn lenient_parse_reads_holes() {
         attributes: &attrs,
         scale: 1.0,
         geometry: GeometryKind::Point,
+        shape: None,
+        radius_km: 0.0,
     };
     assert_eq!(
         Expr::parse_lenient("coalesce(, 3)").unwrap().eval(&ctx),

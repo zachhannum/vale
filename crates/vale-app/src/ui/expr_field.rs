@@ -4,13 +4,16 @@
 
 use eframe::egui::{self, Align2, Key, Modifiers, Rect, Sense, Stroke, pos2, vec2};
 use vale_store::Value;
-use vale_style::expr::editor::{Formula, Piece, Seq, Template, Tok};
-use vale_style::expr::{Category, FUNCTIONS, Function};
+use vale_style::expr::editor::FieldFormat;
+use vale_style::expr::editor::{Formula, Piece, Seq, Subject, Template, Tok};
+use vale_style::expr::{Category, FUNCTIONS, Function, Var};
 
-use super::expr_help::{ExprHelp, ExprKind, FIELDS, FUNCTIONS_MENU, INSERT, desktop_line};
+use super::expr_help::{
+    ExprHelp, ExprKind, FIELDS, FUNCTIONS_MENU, GEOMETRY_MENU, INSERT, VARIABLES_MENU, desktop_line,
+};
 use super::pad::{filter, popover, theme};
 use super::token_field::formula::{self, Completion};
-use super::token_field::paint::{self, FUNCTION_TEXT, paint_glyph};
+use super::token_field::paint::{self, FUNCTION_TEXT, VARIABLE_TEXT, paint_glyph};
 use super::token_field::{self, Caret, Field, Glyph, Metrics, Node, Options, template};
 
 /// The hints at the foot of the completion list.
@@ -39,6 +42,10 @@ pub fn completion_name(label: &str) -> String {
 #[derive(Clone, Debug, PartialEq)]
 enum Item {
     Field(String),
+    /// A measure or a variable of the geometry, in label text.
+    Measure(Subject),
+    /// A variable, in a value.
+    Var(Var),
     /// A function. In label text, the call with its slots filled.
     Function(&'static Function, Option<Seq>),
 }
@@ -47,6 +54,8 @@ impl Item {
     fn label(&self) -> String {
         match self {
             Item::Field(name) => name.clone(),
+            Item::Measure(s) => s.label(),
+            Item::Var(v) => format!("@{}", v.name()),
             Item::Function(_, Some(seq)) => seq.to_text(),
             Item::Function(f, None) => f.signature.to_owned(),
         }
@@ -116,35 +125,44 @@ fn escaped(ui: &egui::Ui, field_id: egui::Id, was_open: bool) -> bool {
     escape
 }
 
-/// The row of `heading` and the Insert menu. Returns the item that the user
-/// picked in the menu.
-fn heading_row(ui: &mut egui::Ui, heading: &str, items: &[Item], fields: usize) -> Option<Item> {
+/// The row of `heading` and the Insert menu, with a submenu for each kind
+/// of item that `items` holds. Returns the item that the user picked in the
+/// menu.
+fn heading_row(ui: &mut egui::Ui, heading: &str, items: &[Item]) -> Option<Item> {
     let mut chosen = None;
+    let groups = [FIELDS, GEOMETRY_MENU, VARIABLES_MENU, FUNCTIONS_MENU];
+    let group_of = |i: &Item| match i {
+        Item::Field(_) => 0,
+        Item::Measure(_) => 1,
+        Item::Var(_) => 2,
+        Item::Function(..) => 3,
+    };
     ui.horizontal(|ui| {
         ui.label(heading);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.menu_button(format!("{INSERT} ⏷"), |ui| {
-                let (fs, functions) = items.split_at(fields);
-                ui.add_enabled_ui(!fs.is_empty(), |ui| {
-                    ui.menu_button(FIELDS, |ui| {
-                        for item in fs {
-                            if ui.button(item.label()).clicked() {
+                for (k, title) in groups.into_iter().enumerate() {
+                    let group: Vec<&Item> = items.iter().filter(|i| group_of(i) == k).collect();
+                    if group.is_empty() {
+                        continue;
+                    }
+                    ui.menu_button(title, |ui| {
+                        for item in group {
+                            let hint = match item {
+                                Item::Function(f, _) => f.summary,
+                                Item::Var(v) => v.hint(),
+                                _ => "",
+                            };
+                            let mut button = ui.button(item.label());
+                            if !hint.is_empty() {
+                                button = button.on_hover_text(hint);
+                            }
+                            if button.clicked() {
                                 chosen = Some(item.clone());
                             }
                         }
                     });
-                });
-                ui.menu_button(FUNCTIONS_MENU, |ui| {
-                    for item in functions {
-                        let Item::Function(f, _) = item else {
-                            continue;
-                        };
-                        let button = ui.button(item.label()).on_hover_text(f.summary);
-                        if button.clicked() {
-                            chosen = Some(item.clone());
-                        }
-                    }
-                });
+                }
             })
             .response
             .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, INSERT));
@@ -174,12 +192,8 @@ pub fn label_text(
         st.source = Some(text.clone());
     }
     let menu_items = text_items("", help, true);
-    let fields = menu_items
-        .iter()
-        .filter(|i| matches!(i, Item::Field(_)))
-        .count();
     let mut changed = false;
-    if let Some(item) = heading_row(ui, heading, &menu_items, fields) {
+    if let Some(item) = heading_row(ui, heading, &menu_items) {
         insert_text_item(&mut st.field, &item, None, help);
         ui.memory_mut(|m| m.request_focus(ui.id().with(name)));
         changed = true;
@@ -266,9 +280,9 @@ fn brace_query(field: &Field<Piece>) -> Option<(Caret, String)> {
 }
 
 /// The items of the label text for query `q`: the fields whose names start
-/// with it, a `coalesce` of the first two text fields, and the text
-/// functions whose names start with it, on the first text field. With
-/// `all`, all fields and all text functions.
+/// with it, a `coalesce` of the first two text fields, the text functions
+/// whose names start with it, on the first text field, and the measures
+/// whose names start with it. With `all`, all of them.
 fn text_items(q: &str, help: &ExprHelp, all: bool) -> Vec<Item> {
     let q = q.to_lowercase();
     let fields: Vec<&String> = (help.fields.iter())
@@ -301,6 +315,10 @@ fn text_items(q: &str, help: &ExprHelp, all: bool) -> Vec<Item> {
             out.push(Item::Function(f, Some(Seq(vec![Tok::Call { f, args }]))));
         }
     }
+    let measures = (help.measures().into_iter())
+        .filter(|s| all || s.label().to_lowercase().starts_with(&q))
+        .map(Item::Measure);
+    out.extend(measures);
     out
 }
 
@@ -313,6 +331,16 @@ fn field_seq(name: &str) -> Seq {
 fn text_note(item: &Item, help: &ExprHelp) -> String {
     match item {
         Item::Field(name) => help.sample(name).and_then(Value::label).unwrap_or_default(),
+        Item::Measure(s) => {
+            let format = FieldFormat::for_subject(s);
+            let text = Template::new(vec![Piece::Field {
+                subject: s.clone(),
+                format,
+            }])
+            .to_text();
+            help.eval(&text).and_then(|v| v.label()).unwrap_or_default()
+        }
+        Item::Var(v) => v.hint().to_owned(),
         Item::Function(..) => FUNCTION_NOTE.to_owned(),
     }
 }
@@ -326,7 +354,15 @@ fn insert_text_item(field: &mut Field<Piece>, item: &Item, brace: Option<Caret>,
     }
     let piece = match item {
         Item::Field(name) => Piece::Field {
-            name: name.clone(),
+            subject: Subject::Field(name.clone()),
+            format: Default::default(),
+        },
+        Item::Measure(s) => Piece::Field {
+            subject: s.clone(),
+            format: FieldFormat::for_subject(s),
+        },
+        Item::Var(v) => Piece::Field {
+            subject: Subject::Var(*v),
             format: Default::default(),
         },
         Item::Function(_, Some(seq)) => Piece::Expr(seq.clone()),
@@ -361,12 +397,15 @@ pub fn value(
         st.source = Some(text.clone());
     }
     let mut menu_items: Vec<Item> = help.fields.iter().cloned().map(Item::Field).collect();
+    menu_items.extend(Var::ALL.into_iter().map(Item::Var));
     menu_items.extend(FUNCTIONS.iter().map(|f| Item::Function(f, None)));
     let mut changed = false;
-    if let Some(item) = heading_row(ui, heading, &menu_items, help.fields.len()) {
+    if let Some(item) = heading_row(ui, heading, &menu_items) {
         match item {
             Item::Field(name) => formula::insert_field(&mut st.field, &name, help),
+            Item::Var(v) => formula::insert_var(&mut st.field, v, help),
             Item::Function(f, _) => formula::insert_function(&mut st.field, f),
+            Item::Measure(_) => {}
         }
         ui.memory_mut(|m| m.request_focus(field_id));
         changed = true;
@@ -384,6 +423,7 @@ pub fn value(
             .map(|c| match c {
                 Completion::Field(f) => Item::Field(f),
                 Completion::Function(f) => Item::Function(f, None),
+                Completion::Var(v) => Item::Var(v),
             })
             .collect(),
         false => Vec::new(),
@@ -457,10 +497,13 @@ fn word_start(field: &Field<Tok>, word: &str) -> Caret {
     Caret::new(head.path, head.index.saturating_sub(n))
 }
 
+/// The completion of an item of a value. A value lists no measures.
 fn completion_of(item: &Item) -> Completion {
     match item {
         Item::Field(name) => Completion::Field(name.clone()),
         Item::Function(f, _) => Completion::Function(f),
+        Item::Var(v) | Item::Measure(Subject::Var(v)) => Completion::Var(*v),
+        Item::Measure(s) => Completion::Field(s.label()),
     }
 }
 
@@ -478,6 +521,8 @@ fn has_chars(nodes: &[Node<Tok>]) -> bool {
 fn rows_of(items: &[Item], help: &ExprHelp) -> Vec<(Item, String, Option<Glyph>)> {
     let glyph = |i: &Item| match i {
         Item::Field(f) => help.field_type(f).map(Glyph::of),
+        Item::Measure(s) => help.subject_type(s).map(Glyph::of),
+        Item::Var(v) => Some(Glyph::of(v.field_type())),
         Item::Function(..) => None,
     };
     (items.iter())
@@ -559,11 +604,14 @@ fn completion_list(
                 let mid = row.center().y;
                 let (color, font) = match item {
                     Item::Field(_) => (theme::TEXT, egui::FontId::proportional(13.0)),
+                    Item::Measure(_) | Item::Var(_) => {
+                        (VARIABLE_TEXT, egui::FontId::proportional(13.0))
+                    }
                     Item::Function(..) => (FUNCTION_TEXT, egui::FontId::monospace(12.5)),
                 };
                 let mut x = row.left() + 8.0;
                 match (item, glyph) {
-                    (Item::Field(_), Some(g)) => {
+                    (Item::Field(_) | Item::Measure(_) | Item::Var(_), Some(g)) => {
                         paint_glyph(painter, pos2(x + m.glyph / 2.0, mid), *g, &m, false);
                         x += m.glyph + 8.0;
                     }

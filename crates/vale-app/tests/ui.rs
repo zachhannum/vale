@@ -1592,7 +1592,12 @@ fn short_filter_shows_inline() {
     h.run_steps(3);
     let layer = h.state().doc.layer(rivers).unwrap();
     let all = layer.features.len();
-    let n = vale_app::ui::expr_help::count_matches(layer, "scalerank < 3").unwrap();
+    let n = vale_app::ui::expr_help::count_matches(
+        layer,
+        h.state().doc.project.world.radius_km,
+        "scalerank < 3",
+    )
+    .unwrap();
     assert!(h.query_by_label(&matches_text(n, all)).is_some());
     assert!(h.query_by_label(ADD_CONDITION).is_none());
     screenshot::save(&mut h, "desktop-filter-inline");
@@ -1661,6 +1666,35 @@ fn a_desktop_expression_field_shows_the_result_and_inserts_from_its_menu() {
     h.run_steps(3);
     let text = filter(&h).unwrap();
     assert!(text.starts_with("abs(scalerank) < "), "{text}");
+}
+
+#[test]
+fn a_desktop_label_text_inserts_a_measure_from_its_menu() {
+    use vale_app::ui::expr_help::{GEOMETRY_MENU, INSERT};
+    let mut h = harness();
+    h.run_steps(2);
+    let layers = h.state().doc.project.layers();
+    let rivers = layers.iter().find(|l| l.name == "Rivers").unwrap().id;
+    h.state_mut()
+        .doc
+        .entry_mut(rivers)
+        .unwrap()
+        .style
+        .label
+        .text = String::new();
+    h.state_mut().select(Some(LayerRef::Vector(rivers)));
+    h.run_steps(2);
+    // The label text has the last Insert menu of the inspector.
+    h.query_all_by_label(INSERT).last().unwrap().click();
+    h.run_steps(2);
+    h.get_by_label_contains(GEOMETRY_MENU).click();
+    h.run_steps(2);
+    // A line layer has Length and no Area.
+    assert!(h.query_by_label("Area").is_none());
+    h.get_by_label("Length").click();
+    h.run_steps(3);
+    let text = &h.state().doc.entry(rivers).unwrap().style.label.text;
+    assert_eq!(text, "format_number(line_length('km'), 0)");
 }
 
 #[test]

@@ -320,7 +320,13 @@ fn the_table_and_pick_use_the_full_geometry() {
     let mut pipeline = pipeline();
     let vertex = dropped_vertex(&doc, &mut pipeline, id);
     let layer = doc.layer(id).unwrap();
-    let rows = vale_app::table::build(layer, None, &Filter::new(""), None);
+    let rows = vale_app::table::build(
+        layer,
+        doc.project.world.radius_km,
+        None,
+        &Filter::new(""),
+        None,
+    );
     assert_eq!(rows.len(), 72);
     assert_eq!(rows.len(), layer.features.len());
 

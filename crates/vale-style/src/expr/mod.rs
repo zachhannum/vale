@@ -6,6 +6,7 @@ pub mod editor;
 mod eval;
 mod functions;
 mod lexer;
+mod measure;
 mod parser;
 mod print;
 
@@ -13,10 +14,12 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use vale_render::Color;
-use vale_store::GeometryKind;
 pub use vale_store::Value;
+use vale_store::{Geometry, GeometryKind};
 
 pub use functions::{Category, FUNCTIONS, Function};
+pub use measure::{Measure, Unit};
+pub use parser::Var;
 use parser::{Node, Spans};
 
 /// The words of the syntax that a plain field name cannot be.
@@ -88,6 +91,10 @@ pub struct Context<'a> {
     /// The map scale denominator. On the globe and the flat view, it is the scale at the center of the view.
     pub scale: f64,
     pub geometry: GeometryKind,
+    /// The geometry of the feature, for the measures. Without it, a measure is null.
+    pub shape: Option<&'a Geometry>,
+    /// The radius of the world, in kilometers.
+    pub radius_km: f64,
 }
 
 /// An error in the text of an expression.
