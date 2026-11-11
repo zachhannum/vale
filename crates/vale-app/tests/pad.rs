@@ -3131,11 +3131,13 @@ fn the_tool_strip_has_the_basin_mode() {
 }
 
 /// The rows of the basin mode in the brush panel.
-const BASIN_ROWS: [&str; 6] = [
+const BASIN_ROWS: [&str; 8] = [
     "Brush strength",
     "Brush density",
+    "Brush age",
+    "Brush lakes",
+    "Brush erosion",
     "Brush seed",
-    "Brush channel width",
     "Brush wind",
     "Brush rain shadow",
 ];
@@ -3155,8 +3157,8 @@ fn the_brush_panel_has_the_sliders_of_the_basin_mode() {
         "Brush size",
         "Brush hardness",
         "Brush flow",
-        "Brush erosion",
         "Brush spacing",
+        "Brush channel width",
         "Brush floodplain",
         "Brush angle",
     ] {
@@ -3262,7 +3264,7 @@ fn the_brush_panel_has_the_channel_rows_of_the_carve_and_erode_modes() {
         ("Carve", [true, true]),
         ("Erode", [true, false]),
         ("Range", [false, false]),
-        ("Basin", [true, false]),
+        ("Basin", [false, false]),
         ("Noise", [false, false]),
         ("Push", [false, false]),
     ] {

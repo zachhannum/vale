@@ -16,10 +16,10 @@ use super::world_form::{self, WorldForm};
 use super::{Action, AppState, Note, Workspace, globe, is_height, panels};
 use crate::globe::Tool;
 use crate::globe::brush::{
-    BASIN_DENSITY, CHANNEL_KM, EROSION, FLOODPLAIN_WIDTH_KM, FLOW, NOISE_GRAIN, NOISE_M,
-    RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM,
-    RIDGE_SPREAD_MM, SCALE_KM, SEED, SHAPE, STRENGTH_M, TALUS_DEG, TERRACE_STEP_M, WARP_KM,
-    needs_height, shape_text,
+    BASIN_AGE, BASIN_DENSITY, BASIN_LAKES, CHANNEL_KM, EROSION, FLOODPLAIN_WIDTH_KM, FLOW,
+    NOISE_GRAIN, NOISE_M, RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_MAGMA, RIDGE_OFFSET_KM,
+    RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM, SCALE_KM, SEED, SHAPE, STRENGTH_M, TALUS_DEG,
+    TERRACE_STEP_M, WARP_KM, needs_height, shape_text,
 };
 use crate::globe::brush::{BrushSettings, brush_radius};
 use crate::globe::combine::PolygonMode;
@@ -2419,9 +2419,19 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
             .log()
             .default(defaults.basin_density_km);
         apply(number.slider(ui, controls), &mut brush.basin_density_km);
+        let number = Number::new("Brush age", brush.basin_age, BASIN_AGE)
+            .label("Age")
+            .percent()
+            .default(defaults.basin_age);
+        apply(number.slider(ui, controls), &mut brush.basin_age);
+        let number = Number::new("Brush lakes", brush.basin_lakes, BASIN_LAKES)
+            .label("Lakes")
+            .percent()
+            .default(defaults.basin_lakes);
+        apply(number.slider(ui, controls), &mut brush.basin_lakes);
         seed_stepper(ui, controls, &mut world.seed);
     }
-    if matches!(brush.mode, Mode::Carve | Mode::Erode | Mode::Basin) {
+    if matches!(brush.mode, Mode::Carve | Mode::Erode) {
         let name = "Brush channel width";
         let number = km(name, "Channel width", brush.channel_km, CHANNEL_KM).nice();
         apply(number.stepper(ui, controls), &mut brush.channel_km);
@@ -2431,7 +2441,7 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
         let number = km("Brush floodplain", "Floodplain", value, FLOODPLAIN_WIDTH_KM).step(1.0);
         apply(number.stepper(ui, controls), &mut brush.floodplain_km);
     }
-    if matches!(brush.mode, Mode::Uplift | Mode::Range) {
+    if matches!(brush.mode, Mode::Uplift | Mode::Range | Mode::Basin) {
         let number = Number::new("Brush erosion", brush.erosion, EROSION)
             .label("Erosion")
             .percent()

@@ -68,6 +68,10 @@ pub const CHANNEL_HELP: &str = "Width of a river that drains 1,000,000 km².";
 pub const UPLIFT_GAIN: f64 = 1.0;
 /// The limits of the erosion setting of the uplift mode.
 pub const EROSION: std::ops::RangeInclusive<f64> = 0.0..=1.0;
+
+/// The limits of the age and the lakes of the basin mode.
+pub const BASIN_AGE: std::ops::RangeInclusive<f64> = 0.0..=1.0;
+pub const BASIN_LAKES: std::ops::RangeInclusive<f64> = 0.0..=1.0;
 pub const SIZE_POINTS: std::ops::RangeInclusive<f32> = 4.0..=160.0;
 /// The most passes that the stamps of one frame cost. A smooth stamp costs
 /// one pass. A stamp of another mode costs one part in `GROUP_STAMPS` of a
@@ -141,6 +145,10 @@ pub struct BrushSettings {
     /// The mean distance between two tributaries of the basin mode, in
     /// kilometers.
     pub basin_density_km: f64,
+    /// The age of the land of the basin mode, from 0 for young land to 1 for
+    /// old land, and the amount of its lakes, from 0 to 1.
+    pub basin_age: f64,
+    pub basin_lakes: f64,
     /// The width of the channel of a river that drains
     /// `vale_terrain::REFERENCE_AREA_KM2`, in kilometers.
     pub channel_km: f64,
@@ -189,6 +197,8 @@ impl Default for BrushSettings {
             ridge_magma: 0.0,
             range_spacing_km: 30.0,
             basin_density_km: 40.0,
+            basin_age: 0.5,
+            basin_lakes: 0.0,
             channel_km: CHANNEL_WIDTH_KM,
             floodplain_km: FLOODPLAIN_KM,
             floor_on: false,
@@ -316,21 +326,18 @@ impl BrushSettings {
     }
 
     /// The settings of a basin. `world_km` is the radius of the world. The
-    /// height is the strength.
-    pub fn basin_spec(
-        &self,
-        world_km: f64,
-        seed: u32,
-        rain: Rain,
-        channel: ChannelShape,
-    ) -> BasinSpec {
+    /// height is the strength. The channels have the default width.
+    pub fn basin_spec(&self, world_km: f64, seed: u32, rain: Rain) -> BasinSpec {
         let height = meters_to_level(self.strength_m) - meters_to_level(0.0);
         BasinSpec {
             height: f64::from(height),
             density: self.basin_density_km / world_km,
             seed,
+            erosion: self.erosion,
+            age: self.basin_age,
+            lakes: self.basin_lakes,
             rain,
-            channel,
+            channel: ChannelShape::new(CHANNEL_WIDTH_KM, FLOODPLAIN_KM, world_km),
             world_km,
             limits: self.limits(),
         }
@@ -1007,6 +1014,10 @@ mod tests {
             mode: Mode::Basin,
             strength_m: 2000.0,
             basin_density_km: 80.0,
+            basin_age: 0.9,
+            basin_lakes: 0.3,
+            erosion: 0.8,
+            channel_km: 5.0,
             floor_on: true,
             floor_m: 100.0,
             ..BrushSettings::default()
@@ -1015,13 +1026,15 @@ mod tests {
             wind: 270.0,
             shadow: 0.5,
         };
-        let channel = brush.channel_shape(6371.0);
-        let spec = brush.basin_spec(6371.0, 9, rain, channel);
+        let spec = brush.basin_spec(6371.0, 9, rain);
         let height = meters_to_level(2000.0) - meters_to_level(0.0);
         assert_eq!(spec.height, f64::from(height));
         assert!((spec.density - 80.0 / 6371.0).abs() < 1e-12);
+        assert_eq!(spec.erosion, brush.erosion);
+        assert_eq!((spec.age, spec.lakes), (0.9, 0.3));
         assert_eq!(spec.seed, 9);
         assert_eq!(spec.rain, rain);
+        let channel = ChannelShape::new(CHANNEL_WIDTH_KM, FLOODPLAIN_KM, 6371.0);
         assert_eq!(spec.channel, channel);
         assert_eq!(spec.world_km, 6371.0);
         assert_eq!(spec.limits, brush.limits());
