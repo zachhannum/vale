@@ -6,7 +6,7 @@ use vale_store::{GeometryKind, RasterId, World};
 
 use super::number;
 use super::pad::atlas::{
-    LAYOUT_GRID, MAPS, NEXT_PAGE, NO_FRAMES, PREVIOUS_PAGE, SNAP_TO_LAYOUT, page_title,
+    EXIT_FRAME, LAYOUT_GRID, MAPS, NEXT_PAGE, NO_FRAMES, PREVIOUS_PAGE, SNAP_TO_LAYOUT, page_title,
 };
 use super::raster_form::RasterForm;
 use super::world_form::{self, WorldForm};
@@ -400,7 +400,15 @@ fn atlas_buttons(ui: &mut egui::Ui, state: &mut AppState) {
     });
     let editing = matches!(state.atlas.selection, atlas::AtlasSelection::Frame(_));
     let vertexing = state.atlas.tool == atlas::AtlasTool::Vertex;
-    if editing && (vertexing || state.atlas.tool == atlas::AtlasTool::Frame) {
+    let entered = state.atlas.entered.is_some();
+    // The Frame tool, and the Select tool outside an entered frame, move
+    // and resize the frames and the items.
+    let arranging = match state.atlas.tool {
+        atlas::AtlasTool::Frame => true,
+        atlas::AtlasTool::Select => !entered,
+        _ => false,
+    };
+    if editing && (vertexing || arranging) {
         let snap = ui.selectable_label(state.atlas.snap, SNAP_TO_LAYOUT);
         if snap.clicked() {
             state.atlas.snap = !state.atlas.snap;
@@ -476,23 +484,40 @@ fn atlas_buttons(ui: &mut egui::Ui, state: &mut AppState) {
         }
     }
     let tool = state.atlas.tool;
-    let moving = matches!(tool, atlas::AtlasTool::Frame | atlas::AtlasTool::Move);
-    if moving && atlas::has_selection(state) {
-        if tool == atlas::AtlasTool::Frame
-            && ui.button(select::DELETE).on_hover_text("Delete").clicked()
-        {
-            atlas::delete_selection(state);
-        }
-        if ui.button(DESELECT).on_hover_text("Esc").clicked() {
-            atlas::clear_selection(state);
-        }
+    if arranging
+        && atlas::has_selection(state)
+        && ui.button(select::DELETE).on_hover_text("Delete").clicked()
+    {
+        atlas::delete_selection(state);
     }
-    if selecting {
+    if selecting && entered {
         select::selectable_menu(ui, state);
+        if ui.button(EXIT_FRAME).on_hover_text("Esc").clicked() {
+            atlas::exit_frame(state);
+        }
     }
-    let selected = atlas::has_selection(state) || !state.feature_selection.is_empty();
-    if selecting && selected && ui.button(DESELECT).on_hover_text("Esc").clicked() {
-        atlas::deselect(state);
+    let features = !state.feature_selection.is_empty();
+    let deselect = match tool {
+        atlas::AtlasTool::Frame | atlas::AtlasTool::Move => atlas::has_selection(state),
+        atlas::AtlasTool::Select if entered => features,
+        atlas::AtlasTool::Select => atlas::has_selection(state) || features,
+        _ => false,
+    };
+    if deselect {
+        // In an entered frame, Esc exits the frame.
+        let button = ui.button(DESELECT);
+        let button = if entered {
+            button
+        } else {
+            button.on_hover_text("Esc")
+        };
+        if button.clicked() {
+            if selecting {
+                atlas::deselect(state);
+            } else {
+                atlas::clear_selection(state);
+            }
+        }
     }
     if measuring {
         snap_controls(ui, state, &[]);
