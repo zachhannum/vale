@@ -172,12 +172,12 @@ fn a_small_polygon_gets_a_label_outside_with_a_leader_line() {
 #[test]
 fn a_crowded_point_label_moves_away_with_a_leader_line() {
     let (x, y) = (200.0, 150.0);
-    // A frame of hard obstacles around the point, from 3 to 15 units away.
+    // Hard obstacles around the point, from 3 to 15 units away, with a gap on the right that
+    // is too narrow for the text.
     let ring = [
         Rect::new(x - 15.0, y - 15.0, x + 15.0, y - 3.0),
         Rect::new(x - 15.0, y + 3.0, x + 15.0, y + 15.0),
         Rect::new(x - 15.0, y - 3.0, x - 3.0, y + 3.0),
-        Rect::new(x + 3.0, y - 3.0, x + 15.0, y + 3.0),
     ];
     let obstacles: Vec<Obstacle> = ring
         .iter()
@@ -210,6 +210,41 @@ fn a_crowded_point_label_moves_away_with_a_leader_line() {
     let leader = label.leader.expect("a leader line");
     assert!((leader.anchor.distance(Point::new(x, y)) - 2.0).abs() < 1e-6);
     assert!(leader.end.distance(leader.anchor) > 15.0);
+    // The leader line goes through the gap.
+    assert!((leader.anchor.y - y).abs() < 3.0 && (leader.end.y - y).abs() < 3.0);
+}
+
+#[test]
+fn a_leader_line_does_not_cross_a_hard_obstacle() {
+    let (x, y) = (200.0, 150.0);
+    // Hard obstacles all around the point, so each leader line crosses one.
+    let ring = [
+        Rect::new(x - 15.0, y - 15.0, x + 15.0, y - 3.0),
+        Rect::new(x - 15.0, y + 3.0, x + 15.0, y + 15.0),
+        Rect::new(x - 15.0, y - 3.0, x - 3.0, y + 3.0),
+        Rect::new(x + 3.0, y - 3.0, x + 15.0, y + 3.0),
+    ];
+    let obstacles: Vec<Obstacle> = ring
+        .iter()
+        .map(|r| Obstacle {
+            rect: *r,
+            kind: ObstacleKind::Hard,
+        })
+        .collect();
+    let town = Feature {
+        id: 1,
+        class: 0,
+        text: "Town".into(),
+        priority: 0.0,
+        geometry: Geometry::Point {
+            position: Point::new(x, y),
+            symbol_radius: 2.0,
+        },
+    };
+    let point = Placement::Point(PointPlacement::default());
+    let out = run(class(point, 10.0, vec![Fallback::Leader]), town, obstacles);
+    assert!(out.placed.is_empty());
+    assert_eq!(out.unplaced[0].reason, UnplacedReason::Obstructed);
 }
 
 #[test]

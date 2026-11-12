@@ -555,6 +555,15 @@ impl Scorer<'_> {
                     }
                 }
             }
+            // A leader line does not cross a hard obstacle other than the symbol of its feature.
+            if let Some(l) = c.leader {
+                let line = Rect::from_points(l.anchor, l.end);
+                self.hard_grid.query(line, &mut hits);
+                blocked |= hits.iter().any(|&h| {
+                    self.owner[h as usize] != Some(own)
+                        && self.hard[h as usize].intersects_segment(l.anchor, l.end)
+                });
+            }
             if blocked {
                 obstructed = true;
                 continue;
