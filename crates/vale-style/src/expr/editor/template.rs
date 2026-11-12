@@ -49,10 +49,10 @@ pub struct FieldFormat {
 }
 
 impl FieldFormat {
-    /// The format of a subject that the user inserts: a measure with thousands separators and no places, a latitude or a longitude with 2 places, and no format for the others.
+    /// The format of a subject that the user inserts: a measure or a raster value with thousands separators and no places, a latitude or a longitude with 2 places, and no format for the others.
     pub fn for_subject(subject: &Subject) -> FieldFormat {
         match subject {
-            Subject::Measure(..) => FieldFormat {
+            Subject::Measure(..) | Subject::Raster(..) => FieldFormat {
                 places: Some(0),
                 thousands: true,
                 ..Default::default()

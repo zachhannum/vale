@@ -18,7 +18,7 @@ use std::ops::Range;
 
 pub use cond::{CmpOp, Cond, Conditions, ops_for};
 pub use seq::{Formula, Op, Seq, Tok};
-pub use subject::{Subject, measures_for};
+pub use subject::{Subject, measures_for, rasters_for};
 pub use template::{Case, Empty, FieldFormat, Piece, Template};
 
 use super::parser::Node;
