@@ -16134,5 +16134,6 @@ fn add_and_subtract_with_the_polygon_brush_take_one_undo_step_each() {
     assert!(!inside_polygon(&cut, 0.0, -18.0));
     assert!(!inside_polygon(&cut, 0.8, -18.0));
     assert!(inside_polygon(&cut, 1.3, -18.0));
+    screenshot::save(&mut h, "pad-polygon-brush-subtract");
     undo_redo(&mut h, &added, &cut);
 }
