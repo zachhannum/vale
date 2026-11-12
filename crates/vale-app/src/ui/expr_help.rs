@@ -334,8 +334,10 @@ struct CacheEntry {
     values: Arc<LayerValues>,
     /// The radius of the world of `counts` and `ranges`.
     radius_km: f64,
-    counts: HashMap<String, Option<usize>>,
-    ranges: HashMap<String, Option<Arc<ValueRange>>>,
+    /// The counts and the ranges by text and by the stamp of the raster
+    /// values. The stamp is 0 for a text that reads no raster.
+    counts: HashMap<(String, u64), Option<usize>>,
+    ranges: HashMap<(String, u64), Option<Arc<ValueRange>>>,
 }
 
 /// The values and the match counts of the layers. A layer computes them
@@ -394,19 +396,20 @@ impl HelpCache {
         layer: &Layer,
         generation: u64,
         radius_km: f64,
-        rasters: Option<&dyn RasterValues>,
+        rasters: Option<(&dyn RasterValues, u64)>,
         text: &str,
     ) -> Option<usize> {
         self.entry(layer, generation, Some(radius_km), |e, cache| {
-            if let Some(count) = e.counts.get(text) {
+            let key = (text.to_owned(), stamp(rasters, text));
+            if let Some(count) = e.counts.get(&key) {
                 return *count;
             }
             cache.count_one();
             if e.counts.len() >= MAX_COUNTS {
                 e.counts.clear();
             }
-            let count = count_matches(layer, radius_km, rasters, text);
-            e.counts.insert(text.to_owned(), count);
+            let count = count_matches(layer, radius_km, rasters.map(|r| r.0), text);
+            e.counts.insert(key, count);
             count
         })
     }
@@ -417,19 +420,20 @@ impl HelpCache {
         layer: &Layer,
         generation: u64,
         radius_km: f64,
-        rasters: Option<&dyn RasterValues>,
+        rasters: Option<(&dyn RasterValues, u64)>,
         text: &str,
     ) -> Option<Arc<ValueRange>> {
         self.entry(layer, generation, Some(radius_km), |e, cache| {
-            if let Some(range) = e.ranges.get(text) {
+            let key = (text.to_owned(), stamp(rasters, text));
+            if let Some(range) = e.ranges.get(&key) {
                 return range.clone();
             }
             cache.count_one();
             if e.ranges.len() >= MAX_COUNTS {
                 e.ranges.clear();
             }
-            let range = value_range(layer, radius_km, rasters, text).map(Arc::new);
-            e.ranges.insert(text.to_owned(), range.clone());
+            let range = value_range(layer, radius_km, rasters.map(|r| r.0), text).map(Arc::new);
+            e.ranges.insert(key, range.clone());
             range
         })
     }
@@ -445,9 +449,11 @@ impl HelpCache {
 pub fn matches(state: &AppState, id: LayerId, text: &str) -> Option<(usize, usize)> {
     let layer = state.doc.layer(id)?;
     let radius_km = state.doc.project.world.radius_km;
-    let rasters = state.pipeline.rasters().for_layer(id);
-    let generation = help_generation(state);
-    let count = (state.help_cache).matches(layer, generation, radius_km, Some(&rasters), text)?;
+    let cache = state.pipeline.rasters();
+    let rasters = cache.for_layer(id);
+    let rasters = Some((&rasters as &dyn RasterValues, cache.arrived()));
+    let count =
+        (state.help_cache).matches(layer, state.map_generation, radius_km, rasters, text)?;
     Some((count, layer.features.len()))
 }
 
@@ -455,15 +461,19 @@ pub fn matches(state: &AppState, id: LayerId, text: &str) -> Option<(usize, usiz
 pub fn range(state: &AppState, id: LayerId, text: &str) -> Option<Arc<ValueRange>> {
     let layer = state.doc.layer(id)?;
     let radius_km = state.doc.project.world.radius_km;
-    let rasters = state.pipeline.rasters().for_layer(id);
-    let generation = help_generation(state);
-    (state.help_cache).range(layer, generation, radius_km, Some(&rasters), text)
+    let cache = state.pipeline.rasters();
+    let rasters = cache.for_layer(id);
+    let rasters = Some((&rasters as &dyn RasterValues, cache.arrived()));
+    (state.help_cache).range(layer, state.map_generation, radius_km, rasters, text)
 }
 
-/// The generation of the help cache. It changes when the map changes and
-/// when new raster values arrive.
-fn help_generation(state: &AppState) -> u64 {
-    (state.map_generation).wrapping_add(state.pipeline.rasters().arrived() << 32)
+/// The stamp of the raster values for `text`: the count of the raster jobs
+/// that finished if the text reads a raster layer, and 0 if not.
+fn stamp(rasters: Option<(&dyn RasterValues, u64)>, text: &str) -> u64 {
+    match rasters {
+        Some((_, arrived)) if text.contains("raster") => arrived + 1,
+        _ => 0,
+    }
 }
 
 impl ExprHelp {

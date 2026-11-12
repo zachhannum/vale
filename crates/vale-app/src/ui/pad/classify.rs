@@ -106,7 +106,7 @@ pub fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id
         return;
     };
     state.open_ramps();
-    let generation = (state.map_generation).wrapping_add(state.pipeline.rasters().arrived() << 32);
+    let generation = state.map_generation;
     let mut draft = std::mem::take(&mut state.pad.rules.classify);
     if draft.layer != Some(id) {
         draft = Draft::new(id, kind);
@@ -157,6 +157,11 @@ pub fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id
         draft.text = text;
     }
 
+    // New raster values change the values of a text that reads a raster.
+    let mut generation = generation;
+    if draft.text.contains("raster") {
+        generation = generation.wrapping_add(state.pipeline.rasters().arrived() << 32);
+    }
     let fresh = matches!(&draft.values, Some((t, g, _)) if *t == draft.text && *g == generation);
     if !fresh && !draft.text.trim().is_empty() {
         let values = match Expr::parse(&draft.text) {
