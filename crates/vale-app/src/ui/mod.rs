@@ -3067,10 +3067,14 @@ impl AppState {
             let Some(sweep) = sweep::sweep(dirs, pressure, size, stroke.scale, smoothing) else {
                 return;
             };
-            if stroke.mode == PolygonMode::New {
+            // In Add, a stroke that touches no polygon is a new feature, so
+            // the brush paints with no change of mode.
+            let touched = match (stroke.mode, StrokeArea::of_sweep(&sweep, stroke.scale)) {
+                (PolygonMode::New, _) | (_, None) => false,
+                (mode, Some(area)) => self.combine_area(id, &area, mode, stroke.scale),
+            };
+            if stroke.mode != PolygonMode::Subtract && !touched {
                 self.add_line_edit(id, sweep.geometry().map(LineEdit::New));
-            } else if let Some(area) = StrokeArea::of_sweep(&sweep, stroke.scale) {
-                self.combine_area(id, &area, stroke.mode, stroke.scale);
             }
             return;
         }
@@ -3202,16 +3206,24 @@ impl AppState {
     }
 
     /// Joins an area to a polygon of a layer, or cuts it out of polygons,
-    /// as `combine_polygons` does.
-    fn combine_area(&mut self, id: LayerId, area: &StrokeArea, mode: PolygonMode, scale: f64) {
+    /// as `combine_polygons` does. Returns true if the area reaches or
+    /// overlaps a polygon of the layer.
+    fn combine_area(
+        &mut self,
+        id: LayerId,
+        area: &StrokeArea,
+        mode: PolygonMode,
+        scale: f64,
+    ) -> bool {
         let Some(layer) = self.doc.project.layer(id) else {
-            return;
+            return false;
         };
         let near: Vec<&Feature> = (layer.features.iter())
             .filter(|f| area.near(&f.geometry))
             .collect();
         let mut set = Vec::new();
         let mut removed = Vec::new();
+        let mut touched = false;
         if mode == PolygonMode::Add {
             // A stroke that goes around a polygon reaches it at its end.
             let mut order: Vec<(usize, &Feature)> = (near.iter())
@@ -3221,14 +3233,16 @@ impl AppState {
             let added = order
                 .iter()
                 .find_map(|(_, f)| Some((f.uuid(), area.add(&f.geometry)?)));
+            touched = added.is_some() || order.iter().any(|(at, _)| *at != usize::MAX);
             set.extend(added);
         } else {
             for f in near {
                 match area.subtract(&f.geometry) {
                     Some(Some(g)) => set.push((f.uuid(), g)),
                     Some(None) => removed.push(f.uuid()),
-                    None => {}
+                    None => continue,
                 }
+                touched = true;
             }
         }
         let project = &mut self.doc.project;
@@ -3246,6 +3260,7 @@ impl AppState {
             self.pipeline.forget(id);
             self.touch();
         }
+        touched
     }
 
     /// The selected polygon that Subtract cuts with, and the other selected

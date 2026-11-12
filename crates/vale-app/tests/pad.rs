@@ -16137,3 +16137,44 @@ fn add_and_subtract_with_the_polygon_brush_take_one_undo_step_each() {
     screenshot::save(&mut h, "pad-polygon-brush-subtract");
     undo_redo(&mut h, &added, &cut);
 }
+
+#[test]
+fn in_add_the_polygon_brush_paints_a_new_feature_and_then_joins_it() {
+    use vale_app::globe::combine::PolygonMode;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
+    select_layer(&mut h, picks.polygon.layer);
+    choose_polygon_brush(&mut h);
+    assert_eq!(h.state().globe.line.polygon_mode, PolygonMode::Add);
+    set_brush_degrees(&mut h, 1.0);
+    let layer = picks.polygon.layer;
+    step_and_save(&mut h, false);
+    h.state_mut().save_waiting().unwrap();
+    let paint = |h: &mut Pad, way: &[[f64; 2]]| {
+        pen_way(h, way);
+        for _ in 0..3 {
+            step_and_save(h, false);
+        }
+        line_features(h, layer)
+    };
+
+    // A stroke that touches no polygon is a new feature.
+    let features = paint(&mut h, &[[-8.0, -5.0], [8.0, -5.0]]);
+    assert_eq!(features.len(), 2);
+    let band = features[1].uuid();
+    // A stroke from the band joins it.
+    let features = paint(&mut h, &[[0.0, -5.0], [0.0, -1.0]]);
+    assert_eq!(features.len(), 2);
+    let joined = &features.iter().find(|f| f.uuid() == band).unwrap().geometry;
+    assert!(inside_polygon(joined, 0.0, -2.0));
+    assert!(inside_polygon(joined, -7.0, -5.0));
+    // A stroke inside the square changes nothing.
+    let square = geometry_of(&h, picks.polygon);
+    let features = paint(&mut h, &[[-3.0, -18.0], [3.0, -18.0]]);
+    assert_eq!(features.len(), 2);
+    assert_eq!(geometry_of(&h, picks.polygon), square);
+    tap(&mut h, "Undo");
+    let features = line_features(&h, layer);
+    let band_geometry = &features.iter().find(|f| f.uuid() == band).unwrap().geometry;
+    assert!(!inside_polygon(band_geometry, 0.0, -2.0));
+}

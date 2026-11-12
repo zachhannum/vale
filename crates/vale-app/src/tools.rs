@@ -248,15 +248,20 @@ impl Tools {
             self.smoothing_of = Some(tool);
         }
         if matches!(tool, Tool::Polygon | Tool::PolygonBrush) {
-            match self.polygon_mode_of {
-                Some(of) if of != tool => {
+            if self.polygon_mode_of != Some(tool) {
+                if let Some(of) = self.polygon_mode_of {
                     self.polygon_mode[mode_index(of)] = Some(line.polygon_mode);
-                    if let Some(mode) = self.polygon_mode[mode_index(tool)] {
-                        changed |= mode != line.polygon_mode;
-                        line.polygon_mode = mode;
-                    }
                 }
-                _ => {}
+                // A new Polygon brush paints in Add, and a new polygon tool
+                // draws in New.
+                let mode = match (self.polygon_mode[mode_index(tool)], tool) {
+                    (Some(mode), _) => mode,
+                    (None, Tool::PolygonBrush) => PolygonMode::Add,
+                    (None, _) if self.polygon_mode_of.is_some() => PolygonMode::New,
+                    (None, _) => line.polygon_mode,
+                };
+                changed |= mode != line.polygon_mode;
+                line.polygon_mode = mode;
             }
             self.polygon_mode_of = Some(tool);
         }
@@ -751,6 +756,15 @@ mod tests {
         next.choose(Choice::Tool(Tool::PolygonBrush));
         assert_eq!(next.line.smoothing, 0.6);
         assert_eq!(next.line.polygon_mode, PolygonMode::Add);
+    }
+
+    #[test]
+    fn a_new_polygon_brush_paints_in_add() {
+        let mut globe = Globe::new();
+        globe.choose(Choice::Tool(Tool::PolygonBrush));
+        assert_eq!(globe.line.polygon_mode, PolygonMode::Add);
+        globe.choose(Choice::Tool(Tool::Polygon));
+        assert_eq!(globe.line.polygon_mode, PolygonMode::New);
     }
 
     #[test]
