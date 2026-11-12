@@ -16,7 +16,7 @@ use vale_sphere::{
 use vale_store::{
     FrameId, FrameRecord, Geometry, GeometryKind, Layer, LayerId, MapId, PageRecord, Value,
 };
-use vale_style::expr::Context;
+use vale_style::expr::{Context, RasterValues};
 use vale_style::{Extent, Hatch, MarkerShape, Mask, Paint, Stroke, StrokeKind, scale_denominator};
 
 use crate::atlas::{self, FrameTarget, PT_PER_MM};
@@ -24,6 +24,7 @@ use crate::document::{Document, LayerEntry};
 use crate::globe::shapes::ShapeCache;
 use crate::lod::{self, LodCache};
 use crate::mask::{MaskCache, MaskedFeature, MaskedLayer, PageMask};
+use crate::raster_values::{LayerRasters, RasterCache};
 use crate::scatter::{self, ScatterCache, ScatterFill};
 use crate::view::{View, ViewTransform};
 use crate::{edge_labels, frame_border, furniture, labels, pick};
@@ -65,6 +66,8 @@ pub struct PageLayer<'a> {
     pub scale: f64,
     /// The radius of the world, in kilometers.
     pub radius_km: f64,
+    /// The values of the raster layers under the features.
+    pub rasters: Option<LayerRasters<'a>>,
 }
 
 impl PageLayer<'_> {
@@ -79,7 +82,7 @@ impl PageLayer<'_> {
             shape: feature.map(|f| &f.geometry),
             radius_km: self.radius_km,
             page: None,
-            rasters: None,
+            rasters: self.rasters.as_ref().map(|r| r as &dyn RasterValues),
             index,
         }
     }
@@ -185,6 +188,7 @@ pub struct Pipeline {
     masks: MaskCache,
     globe: ShapeCache,
     lod: LodCache,
+    rasters: RasterCache,
     /// The raster masks of the layers in the map frames.
     page_masks: HashMap<(FrameId, LayerId), Arc<PageMask>>,
 }
@@ -321,6 +325,7 @@ fn drawn_layers(doc: &Document, map: Option<MapId>) -> Vec<LayerId> {
 
 /// The features of the layers that meet `area`, in page space, with the
 /// styles of `map`.
+#[allow(clippy::too_many_arguments)]
 fn build_page_layers<'a>(
     doc: &'a Document,
     map: Option<MapId>,
@@ -329,6 +334,7 @@ fn build_page_layers<'a>(
     area: Rect,
     ids: &[LayerId],
     scale: f64,
+    rasters: &'a RasterCache,
 ) -> Vec<PageLayer<'a>> {
     let page = area.inflate(8.0, 8.0);
     let mut out = Vec::new();
@@ -357,6 +363,7 @@ fn build_page_layers<'a>(
             features,
             scale,
             radius_km: doc.project.world.radius_km,
+            rasters: Some(rasters.for_layer(layer.id)),
         });
     }
     out
@@ -1104,6 +1111,7 @@ fn draw_map<'a>(
     ids: &[LayerId],
     graticule: Option<(&[Vec<Point>], Stroke)>,
     scatter: &mut ScatterCache,
+    rasters: &'a RasterCache,
     symbol_scale: SymbolScale,
     masks: Option<(&FrameMasks, FrameTarget)>,
 ) -> DrawnMap<'a> {
@@ -1130,7 +1138,7 @@ fn draw_map<'a>(
     // 3: layers.
     let km_per_point = km_per_point(cache, vt);
     let scale = scale_denominator(km_per_point * 1000.0);
-    let page_layers = build_page_layers(doc, map, cache, vt, area, ids, scale);
+    let page_layers = build_page_layers(doc, map, cache, vt, area, ids, scale, rasters);
     let mut sd = SymbolDraw {
         symbols: doc.symbols(),
         scatter,
@@ -1231,6 +1239,7 @@ impl Pipeline {
         self.masks.forget(id);
         self.globe.forget(id);
         self.lod.forget(id);
+        self.rasters.forget(id);
     }
 
     /// A pipeline with no kept geometry, that keeps the levels of detail
@@ -1239,8 +1248,11 @@ impl Pipeline {
     pub fn reset(&mut self) {
         let mut lod = std::mem::take(&mut self.lod);
         lod.uncheck();
+        let mut rasters = std::mem::take(&mut self.rasters);
+        rasters.uncheck();
         *self = Pipeline {
             lod,
+            rasters,
             page_masks: std::mem::take(&mut self.page_masks),
             ..Pipeline::default()
         };
@@ -1259,6 +1271,15 @@ impl Pipeline {
     /// running build. True while a build runs or waits.
     pub fn poll_lod(&mut self, block: bool) -> bool {
         self.lod.poll(block)
+    }
+
+    /// The values of the raster layers under the features.
+    pub fn rasters(&self) -> &RasterCache {
+        &self.rasters
+    }
+
+    pub fn rasters_mut(&mut self) -> &mut RasterCache {
+        &mut self.rasters
     }
 
     /// Sets the raster mask of layer `layer` in frame `frame`, from the
@@ -1481,9 +1502,19 @@ impl Pipeline {
         let view = self.resolve_view(doc, size)?;
         let vt = ViewTransform::new(view, size.0, size.1);
         let ids = drawn_layers(doc, None);
-        let cache = self.ensure(doc, doc.first_map(), None, &ids, None)?;
+        self.ensure(doc, doc.first_map(), None, &ids, None)?;
+        let cache = &self.caches[0];
         let scale = scale_denominator(km_per_point(cache, &vt) * 1000.0);
-        let layers = build_page_layers(doc, None, cache, &vt, vt.page_rect(), &ids, scale);
+        let layers = build_page_layers(
+            doc,
+            None,
+            cache,
+            &vt,
+            vt.page_rect(),
+            &ids,
+            scale,
+            &self.rasters,
+        );
         Ok(pick::pick(&layers, at))
     }
 
@@ -1527,6 +1558,7 @@ impl Pipeline {
             &ids,
             graticule,
             &mut self.scatter,
+            &self.rasters,
             symbol_scale,
             None,
         );
@@ -1716,6 +1748,7 @@ impl Pipeline {
             &ids,
             graticule,
             &mut self.scatter,
+            &self.rasters,
             symbol_scale,
             Some((&masks, target)),
         );
@@ -1804,6 +1837,7 @@ impl Pipeline {
             &ids,
             graticule,
             &mut self.scatter,
+            &self.rasters,
             symbol_scale,
             Some((&masks, target)),
         );
@@ -1830,6 +1864,7 @@ impl Pipeline {
                     &ids,
                     None,
                     &mut self.scatter,
+                    &self.rasters,
                     symbol_scale,
                     Some((&masks, target)),
                 )
@@ -1980,6 +2015,7 @@ pub(crate) fn swatch(
         features: vec![feature],
         scale: 0.0,
         radius_km: doc.project.world.radius_km,
+        rasters: None,
     };
     let vt = ViewTransform::new(
         View {

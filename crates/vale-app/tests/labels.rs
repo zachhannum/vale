@@ -376,6 +376,7 @@ fn hit(kind: GeometryKind, geometry: Geometry, f: PageFeature, at: Point) -> boo
         features: vec![f],
         scale: 1.0e7,
         radius_km: 6371.0,
+        rasters: None,
     }];
     pick(&layers, at).is_some()
 }
@@ -404,6 +405,7 @@ fn a_tap_at_the_corner_of_a_square_marker_picks_the_point() {
             features: vec![f],
             scale: 1.0e7,
             radius_km: 6371.0,
+            rasters: None,
         }];
         pick(&layers, at).is_some()
     };
