@@ -12,6 +12,7 @@ use vale_app::globe::select::FeatureRef;
 use vale_app::globe::view::GlobeView;
 use vale_app::globe::{StackItem, Tool, WorldView};
 use vale_app::headless;
+use vale_app::pen::{PenEvent, PenPhase, PenQueue};
 use vale_app::projects::Locations;
 use vale_app::session::Session;
 use vale_app::ui::gradient::{COLUMN, ColumnParts, GRADIENT, band_row, widest_gap_value};
@@ -4172,6 +4173,38 @@ fn the_place_shows_while_the_measure_tool_has_a_result() {
     h.run_steps(2);
     assert!(h.state().measure_readout().is_some());
     assert!(h.state().pad.place_rect.is_some());
+}
+
+#[test]
+fn the_place_shows_the_point_under_a_hovering_pen() {
+    let mut h = pad(BOARDS[0]);
+    let queue = PenQueue::default();
+    h.state_mut().globe.pen.queue = Some(queue.clone());
+    h.run_steps(2);
+    assert_eq!(h.state().pad.place_rect, None);
+    let hover = |phase, pos: Pos2| PenEvent {
+        phase,
+        pos: [pos.x, pos.y],
+        force: 0.0,
+        altitude: None,
+        azimuth: None,
+        height: Some(0.4),
+        time: 0.0,
+    };
+    let center = h.state().globe.rect.center();
+    queue.push([hover(PenPhase::Hover, center)]);
+    h.run_steps(2);
+    assert!(h.state().pad.place_rect.is_some());
+    let [lon, lat] = h.state().cursor_lonlat.unwrap();
+    let first = (lon, lat);
+    queue.push([hover(PenPhase::Hover, center + vec2(60.0, 0.0))]);
+    h.run_steps(2);
+    let [lon, _] = h.state().cursor_lonlat.unwrap();
+    assert!(lon > first.0, "{lon} {first:?}");
+    // A test has no clock, so the place goes when the hover ends.
+    queue.push([hover(PenPhase::HoverEnd, center)]);
+    h.run_steps(2);
+    assert_eq!(h.state().pad.place_rect, None);
 }
 
 #[test]
