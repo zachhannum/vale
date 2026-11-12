@@ -2444,8 +2444,9 @@ impl AppState {
         let text = self.projects.state_dir().and_then(tools::read);
         if let Some(text) = text {
             let globe = &mut self.globe;
-            let (brush, line, snap) = (&mut globe.brush, &mut globe.line, &mut globe.snap);
-            self.tools.load(&text, brush, line, snap);
+            let (tool, brush) = (&mut globe.tool, &mut globe.brush);
+            let (line, snap) = (&mut globe.line, &mut globe.snap);
+            self.tools.load(&text, tool, brush, line, snap);
             self.tools_saved = Some(text);
         }
         if let Some(text) = self.projects.state_dir().and_then(pad::panes::read) {
