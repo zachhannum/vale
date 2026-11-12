@@ -12,7 +12,7 @@ use crate::globe::preview::{LAKE_KM2_RANGE, Preview};
 use crate::world;
 
 /// The range of the factor of the width of a river line.
-pub const RIVER_WIDTH: std::ops::RangeInclusive<f32> = 0.25..=4.0;
+pub const RIVER_WIDTH: std::ops::RangeInclusive<f32> = 0.05..=4.0;
 
 /// The most height of the list of the stops.
 const STOP_LIST: f32 = 240.0;
@@ -184,105 +184,109 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     egui::Panel::right("elevation")
         .default_size(210.0)
         .show(ui, |ui| {
-            if let Some(id) = state.selected_vector() {
-                vector_style(ui, state, id);
-                return;
-            }
-            let raster = state.panel_raster().cloned();
-            let layer = raster.as_ref().map(|raster| LayerRef::Raster(raster.id));
-            let layer = layer.and_then(|layer| state.layer_of(layer));
-            let name = layer.map_or(PANEL.to_string(), |layer| layer.name.clone());
-            ui.heading(name);
-            let Some(raster) = raster else {
-                let mut preview = state.globe.preview;
-                let (bands, unit) = (&mut state.globe.map.bands, super::HEIGHT_UNIT);
-                ui.checkbox(&mut preview.rivers, pad::raster::RIVERS);
-                let on = preview.rivers;
-                river_width(ui, &mut preview, on);
-                lake_size(ui, &mut preview, on);
-                display_choice(ui, &mut preview.display);
-                ui.separator();
-                let mut chosen = selected(&preview, None);
-                gradient::editor(
-                    ui,
-                    None,
-                    &DESKTOP,
-                    bands,
-                    &mut chosen,
-                    preview.display,
-                    unit,
-                );
-                stop_list(ui, bands, &mut chosen, unit);
-                selected_stop(ui, bands, &mut chosen, unit);
-                state.globe.preview = preview;
-                return;
-            };
-            let id = raster.id;
-            let height = super::is_height(&raster);
-            ui.horizontal(|ui| {
-                ui.label("Unit");
-                if height {
-                    ui.label(&raster.unit);
-                    return;
-                }
-                let mut unit = raster.unit.clone();
-                let field = ui.add(egui::TextEdit::singleline(&mut unit).desired_width(80.0));
-                field.widget_info(|| {
-                    egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, UNIT)
-                });
-                if field.changed() {
-                    state.set_raster_unit(id, &unit);
-                }
-            });
-            if height {
-                rivers(ui, state, &raster);
-            }
-            ui.separator();
-            ui.label("Style");
-            let mut display = raster.display;
-            if display_choice(ui, &mut display) {
-                state.set_raster_display(id, display);
-            }
-            smoothing(ui, state, &raster);
-            let mut lines = raster.lines;
-            if ui.checkbox(&mut lines, pad::raster::BAND_LINES).changed() {
-                state.set_raster_lines(id, lines);
-            }
-            if height {
-                hillshade(ui, state, &raster);
-            }
-            let unit = raster.unit.clone();
-            let globe = &mut state.globe;
-            let mut chosen = selected(&globe.preview, Some(id));
-            if let Some(bands) = globe.bands_mut(id) {
-                gradient::editor(ui, None, &DESKTOP, bands, &mut chosen, display, &unit);
-                stop_list(ui, bands, &mut chosen, &unit);
-                selected_stop(ui, bands, &mut chosen, &unit);
-                if reset_button(ui, bands, height) {
-                    chosen = None;
-                }
-            }
-            globe.preview.selected = chosen.map(|index| (id, index));
-            ui.menu_button(pad::raster::COLOR_RAMPS, |ui| {
-                let import = ui.button(pad::raster::IMPORT_RAMP);
-                if import
-                    .on_hover_text(pad::raster::IMPORT_RAMP_HINT)
-                    .clicked()
-                {
-                    state.actions.push(Action::ImportRampDialog(Some(id)));
-                    ui.close();
-                }
-                ramp_menus(ui, state, id);
-            });
-            if let Some(note) = state.ramp_note.as_ref().filter(|n| n.layer == Some(id)) {
-                let color = if note.warning {
-                    ui.visuals().warn_fg_color
-                } else {
-                    ui.visuals().weak_text_color()
-                };
-                ui.label(egui::RichText::new(&note.text).color(color));
-            }
+            egui::ScrollArea::vertical().show(ui, |ui| body(ui, state));
         });
+}
+
+/// The content of the panel.
+fn body(ui: &mut egui::Ui, state: &mut AppState) {
+    if let Some(id) = state.selected_vector() {
+        vector_style(ui, state, id);
+        return;
+    }
+    let raster = state.panel_raster().cloned();
+    let layer = raster.as_ref().map(|raster| LayerRef::Raster(raster.id));
+    let layer = layer.and_then(|layer| state.layer_of(layer));
+    let name = layer.map_or(PANEL.to_string(), |layer| layer.name.clone());
+    ui.heading(name);
+    let Some(raster) = raster else {
+        let mut preview = state.globe.preview;
+        let (bands, unit) = (&mut state.globe.map.bands, super::HEIGHT_UNIT);
+        ui.checkbox(&mut preview.rivers, pad::raster::RIVERS);
+        let on = preview.rivers;
+        river_width(ui, &mut preview, on);
+        river_opacity(ui, &mut preview, on);
+        lake_size(ui, &mut preview, on);
+        display_choice(ui, &mut preview.display);
+        ui.separator();
+        let mut chosen = selected(&preview, None);
+        gradient::editor(
+            ui,
+            None,
+            &DESKTOP,
+            bands,
+            &mut chosen,
+            preview.display,
+            unit,
+        );
+        stop_list(ui, bands, &mut chosen, unit);
+        selected_stop(ui, bands, &mut chosen, unit);
+        state.globe.preview = preview;
+        return;
+    };
+    let id = raster.id;
+    let height = super::is_height(&raster);
+    ui.horizontal(|ui| {
+        ui.label("Unit");
+        if height {
+            ui.label(&raster.unit);
+            return;
+        }
+        let mut unit = raster.unit.clone();
+        let field = ui.add(egui::TextEdit::singleline(&mut unit).desired_width(80.0));
+        field.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, UNIT));
+        if field.changed() {
+            state.set_raster_unit(id, &unit);
+        }
+    });
+    if height {
+        rivers(ui, state, &raster);
+    }
+    ui.separator();
+    ui.label("Style");
+    let mut display = raster.display;
+    if display_choice(ui, &mut display) {
+        state.set_raster_display(id, display);
+    }
+    smoothing(ui, state, &raster);
+    let mut lines = raster.lines;
+    if ui.checkbox(&mut lines, pad::raster::BAND_LINES).changed() {
+        state.set_raster_lines(id, lines);
+    }
+    if height {
+        hillshade(ui, state, &raster);
+    }
+    let unit = raster.unit.clone();
+    let globe = &mut state.globe;
+    let mut chosen = selected(&globe.preview, Some(id));
+    if let Some(bands) = globe.bands_mut(id) {
+        gradient::editor(ui, None, &DESKTOP, bands, &mut chosen, display, &unit);
+        stop_list(ui, bands, &mut chosen, &unit);
+        selected_stop(ui, bands, &mut chosen, &unit);
+        if reset_button(ui, bands, height) {
+            chosen = None;
+        }
+    }
+    globe.preview.selected = chosen.map(|index| (id, index));
+    ui.menu_button(pad::raster::COLOR_RAMPS, |ui| {
+        let import = ui.button(pad::raster::IMPORT_RAMP);
+        if import
+            .on_hover_text(pad::raster::IMPORT_RAMP_HINT)
+            .clicked()
+        {
+            state.actions.push(Action::ImportRampDialog(Some(id)));
+            ui.close();
+        }
+        ramp_menus(ui, state, id);
+    });
+    if let Some(note) = state.ramp_note.as_ref().filter(|n| n.layer == Some(id)) {
+        let color = if note.warning {
+            ui.visuals().warn_fg_color
+        } else {
+            ui.visuals().weak_text_color()
+        };
+        ui.label(egui::RichText::new(&note.text).color(color));
+    }
 }
 
 /// One menu for each color ramp, with the ways to apply it, its reverse,
@@ -382,22 +386,40 @@ fn ramp_menus(ui: &mut egui::Ui, state: &mut AppState, id: RasterId) {
 /// The name of the unit field.
 pub const UNIT: &str = "Unit";
 
-/// The switch of the rivers of a height layer, the width of all rivers, and
-/// the size of the smallest lake.
+/// The switch of the rivers of a height layer, the width and the opacity of
+/// all rivers, and the size of the smallest lake.
 fn rivers(ui: &mut egui::Ui, state: &mut AppState, raster: &Raster) {
     let mut on = raster.rivers;
     if ui.checkbox(&mut on, pad::raster::RIVERS).changed() {
         state.set_raster_rivers(raster.id, on);
     }
     river_width(ui, &mut state.globe.preview, on);
+    river_opacity(ui, &mut state.globe.preview, on);
     lake_size(ui, &mut state.globe.preview, on);
 }
 
 /// The slider of the width of the rivers.
 fn river_width(ui: &mut egui::Ui, preview: &mut Preview, enabled: bool) {
-    number::slider("River width", &mut preview.river_width, RIVER_WIDTH)
-        .enabled(enabled)
-        .show(ui);
+    number::slider(
+        pad::raster::RIVER_WIDTH,
+        &mut preview.river_width,
+        RIVER_WIDTH,
+    )
+    .log()
+    .enabled(enabled)
+    .show(ui);
+}
+
+/// The slider of the opacity of the rivers and the lakes.
+fn river_opacity(ui: &mut egui::Ui, preview: &mut Preview, enabled: bool) {
+    number::slider(
+        pad::raster::RIVER_OPACITY,
+        &mut preview.river_opacity,
+        0.0..=1.0,
+    )
+    .percent()
+    .enabled(enabled)
+    .show(ui);
 }
 
 /// The slider of the area of the smallest lake.

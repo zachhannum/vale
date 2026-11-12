@@ -3350,6 +3350,25 @@ fn the_river_width_slider_changes_the_lines() {
     assert!(state_of(&h) == before);
 }
 
+#[test]
+#[ignore = "gpu"]
+fn the_river_sliders_make_thin_and_clear_lines() {
+    let _gpu = one_gpu_test();
+    let mut h = island_harness(1024, 0.35, 8.0);
+    h.state_mut().globe.preview.panel = true;
+    h.run_steps(2);
+    assert!(h.query_all_by_label("River opacity").next().is_some());
+    let img = canvas_image(&mut h);
+    let normal = river_pixels(&h, &img);
+    h.state_mut().globe.preview.river_width = 0.05;
+    let img = canvas_image(&mut h);
+    let thin = river_pixels(&h, &img);
+    assert!(normal > 100 && thin * 3 / 2 < normal, "{thin} and {normal}");
+    h.state_mut().globe.preview.river_opacity = 0.0;
+    let img = canvas_image(&mut h);
+    assert_eq!(river_pixels(&h, &img), 0);
+}
+
 /// A drag of the primary mouse button from one place to another.
 fn mouse_drag(h: &mut Harness<'static, AppState>, from: Pos2, to: Pos2) {
     button(h, egui::PointerButton::Primary, from, true);
@@ -6504,6 +6523,9 @@ fn the_desktop_panel_sets_the_line_of_the_selected_stop() {
     h.get_by_label(vale_app::ui::pad::raster::LINE).click();
     h.run_steps(2);
     assert!(h.state().globe.map.bands.stops()[sea].line.on);
+    h.get_by_label(vale_app::ui::pad::raster::DARKER)
+        .scroll_to_me();
+    h.run();
     h.get_by_label(vale_app::ui::pad::raster::DARKER).click();
     h.run_steps(2);
     assert!(h.state().globe.map.bands.stops()[sea].line.darker);

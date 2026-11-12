@@ -4065,7 +4065,7 @@ impl Globe {
                 cell as f32,
                 window_size,
                 self.preview.river_width * scale,
-                0.0,
+                self.preview.river_opacity,
             ],
             layer: [layer.map_or(1.0, |layer| layer.opacity), 0.0, 0.0, 0.0],
             shade: match layer {

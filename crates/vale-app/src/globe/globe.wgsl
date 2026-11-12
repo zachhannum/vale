@@ -47,8 +47,9 @@ struct Uniforms {
     // gives its texel grid, and the first texel of the window on that face.
     window: vec4<f32>,
     // The number of texels along one side of a cell of the window, the
-    // number of channel texels along one side of the window, and the factor
-    // of the width of a river line in pixels.
+    // number of channel texels along one side of the window, the factor of
+    // the width of a river line in pixels, and the opacity of the rivers and
+    // the lakes, from 0 to 1.
     rivers: vec4<f32>,
     // The opacity of the layer, from 0 to 1.
     layer: vec4<f32>,
@@ -258,8 +259,9 @@ fn river(d: vec3<f32>, pixel: f32) -> f32 {
     // The size of one channel texel in pixels.
     let texel = angle / pixel;
     // Half of the width of the line in pixels. A large river has a wide
-    // line. A line that is thin against the texels has steps.
-    let half = max((0.6 + 1.4 * flow) * u.rivers.z, 0.7 * texel);
+    // line. A line that is thin against the texels has steps, so a line has
+    // a smallest width in texels, and a factor below 1 makes it smaller.
+    let half = max((0.6 + 1.4 * flow) * u.rivers.z, 0.7 * texel * min(u.rivers.z, 1.0));
     let edge = min(half + 0.5, CHANNEL_REACH * texel);
     return clamp(edge - found.x * texel, 0.0, 1.0);
 }
@@ -385,8 +387,8 @@ fn ground(h: f32, width: f32, d: vec3<f32>, pixel: f32, frag: vec2<f32>) -> vec3
         // A river stops at the coast.
         let land = land_part(h, width);
         let lake = lake_part(h, width, d);
-        color = mix(color, RIVER_COLOR, 0.9 * land * river(d, pixel) * (1.0 - lake));
-        color = mix(color, RIVER_COLOR, 0.9 * lake);
+        color = mix(color, RIVER_COLOR, u.rivers.w * land * river(d, pixel) * (1.0 - lake));
+        color = mix(color, RIVER_COLOR, u.rivers.w * lake);
     }
     if screen {
         let line = line_cover(p);

@@ -96,6 +96,7 @@ pub const RIVERS: &str = "Rivers";
 /// The switch of the lines of the stops of a raster layer.
 pub const BAND_LINES: &str = "Band lines";
 pub const RIVER_WIDTH: &str = "River width";
+pub const RIVER_OPACITY: &str = "River opacity";
 pub const SMALLEST_LAKE: &str = "Smallest lake";
 
 /// The height of the heading of a section.
@@ -256,6 +257,7 @@ pub fn style(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, i
         let range = f64::from(*range.start())..=f64::from(*range.end());
         let width = Number::new(RIVER_WIDTH, f64::from(preview.river_width), range)
             .label("Width")
+            .log()
             .step(0.01)
             .unit("×")
             .text(|w| format!("{w:.2}×"))
@@ -263,6 +265,14 @@ pub fn style(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, i
             .slider(ui, controls);
         if let Some(width) = width {
             preview.river_width = width as f32;
+        }
+        let opacity = Number::new(RIVER_OPACITY, f64::from(preview.river_opacity), 0.0..=1.0)
+            .label("Opacity")
+            .percent()
+            .default(0.9)
+            .slider(ui, controls);
+        if let Some(opacity) = opacity {
+            preview.river_opacity = opacity as f32;
         }
         let lake = Number::new(SMALLEST_LAKE, preview.lake_km2, LAKE_KM2_RANGE)
             .log()
