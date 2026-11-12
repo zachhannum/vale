@@ -927,3 +927,30 @@ fn the_mask_covers_the_part_of_the_frame_that_was_off_screen_at_its_capture() {
     let image = h.render().unwrap();
     assert!(masked::red(image.get_pixel(at.x as u32, at.y as u32)));
 }
+
+#[test]
+#[ignore = "gpu"]
+fn an_undo_keeps_the_masks_of_the_other_frames() {
+    let _gpu = one_gpu_test();
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, _, layer) = masked_atlas();
+    let state = h.state_mut();
+    let session = vale_app::session::Session::open(&dir.path().join("w.gpkg"), &mut state.doc);
+    state.session = Some(session.unwrap());
+    state.save_waiting().unwrap();
+    settled_mask(&mut h, layer);
+    let mask = mask_of(&h, layer);
+    vale_app::ui::atlas::add_frame(h.state_mut()).expect("a page takes a frame");
+    h.run_steps(4);
+    h.state_mut().save_waiting().unwrap();
+
+    h.state_mut().undo();
+    h.run_steps(30);
+    assert_eq!(vale_app::ui::atlas::open_page(h.state()).frames.len(), 1);
+    assert!(std::sync::Arc::ptr_eq(&mask, &mask_of(&h, layer)));
+    let land = page_point(&mut h, 6.0, 0.0);
+    let at = screen(&h, land);
+    h.remove_cursor();
+    let image = h.render().unwrap();
+    assert!(masked::red(image.get_pixel(at.x as u32, at.y as u32)));
+}
