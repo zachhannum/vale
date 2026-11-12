@@ -17,7 +17,8 @@ for world in Kareth Vesperan; do
 done
 
 # The screen is 1878 by 2670 pixels. At 3 pixels per point, it is 626 by
-# 890 points. The safe areas are estimates.
+# 890 points. Other sources give 669 by 951 points. The sizes and the safe
+# areas are estimates.
 portrait=(--size 626x890 --safe-area 32,0,20,0)
 landscape=(--size 890x626 --safe-area 24,0,20,0)
 

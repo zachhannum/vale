@@ -2,7 +2,7 @@
 
 These files show the app on the inner screen of iPhone Duo, in portrait and in landscape. Each picture is real output of `vale-app`, at a pixel ratio of 2. `gallery.html` shows the pictures in pairs, with a dashed line at the hinge crease.
 
-The screen is 1878 by 2670 pixels. At 3 pixels per point, it is 626 by 890 points in portrait and 890 by 626 points in landscape. The point size and the safe areas are estimates until a measurement on the device. Both orientations are 600 points wide or more, so the app uses the medium layout of the iPad.
+The screen is 1878 by 2670 pixels. At 3 pixels per point, it is 626 by 890 points in portrait and 890 by 626 points in landscape. Apple does not publish the size in points. Other sources give 669 by 951 points, from the size of the screenshots of App Store Connect. With that size, the system renders at 3x and scales the picture down to the pixels of the screen. The point size and the safe areas are estimates until a measurement in the iPhone Duo simulator. Both orientations are 600 points wide or more, so the app uses the medium layout of the iPad.
 
 ## Screens
 
