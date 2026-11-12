@@ -8,6 +8,11 @@ on:
 permissions:
   contents: read
 
+# Only an app that is built with the iOS 27.1 SDK or later fills the inner
+# screen of iPhone Duo.
+env:
+  DEVELOPER_DIR: /Applications/Xcode_27.1.app/Contents/Developer
+
 concurrency:
   group: ios-${{ github.ref }}
   cancel-in-progress: true
@@ -15,7 +20,7 @@ concurrency:
 jobs:
   build:
     name: Build vale-app (${{ matrix.device }} simulator)
-    runs-on: macos-15
+    runs-on: xcode-27
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -38,7 +43,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: aarch64-apple-ios-sim-${{ matrix.device }}
+          key: aarch64-apple-ios-sim-xcode27-${{ matrix.device }}
 
       # The build is for the first simulator of the device family.
       - name: Find the simulator
@@ -52,6 +57,7 @@ jobs:
       - name: Build the app
         working-directory: crates/vale-app/ios
         run: |
+          xcodebuild -version
           xcodegen generate
           xcodebuild -project ValeApp.xcodeproj -scheme ValeApp \
             -configuration Release -sdk "$SDK" \
@@ -64,8 +70,7 @@ jobs:
   # device build. The steps that sign and upload run only when the secrets exist.
   testflight:
     name: Archive vale-app and upload it to TestFlight
-    # App Store Connect accepts only a build from Xcode 26 or later.
-    runs-on: macos-26
+    runs-on: xcode-27
     timeout-minutes: 90
     permissions:
       contents: read
@@ -97,7 +102,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: aarch64-apple-ios-xcode26
+          key: aarch64-apple-ios-xcode27
 
       # TestFlight groups the builds by version, so each PR has its own row.
       # The build number holds the attempt, so a second attempt of a run gets a new number.
@@ -143,6 +148,9 @@ jobs:
           expect ITSAppUsesNonExemptEncryption false
           expect LSSupportsOpeningDocumentsInPlace true
           expect UIFileSharingEnabled true
+          expect DTSDKName iphoneos27.1
+          # winit puts the window on the scene only through its scene delegate.
+          expect UIApplicationSceneManifest.UISceneConfigurations.UIWindowSceneSessionRoleApplication.0.UISceneDelegateClassName WinitSceneDelegate
           # The export keeps the entitlements of the archive.
           codesign -d --entitlements - --xml "$app" | plutil -p - | tee "$RUNNER_TEMP/entitlements.txt"
           grep -q CloudDocuments "$RUNNER_TEMP/entitlements.txt" || { echo "::error::The archive has no iCloud entitlement"; exit 1; }

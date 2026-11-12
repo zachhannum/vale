@@ -121,4 +121,3 @@ pub(crate) fn wait_for_scene(window: Retained<WinitUIWindow>) {
 pub(crate) fn register() {
     let _ = WinitSceneDelegate::class();
 }
-

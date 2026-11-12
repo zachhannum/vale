@@ -147,7 +147,7 @@ cargo run --release -p vale-app -- --project path/to/world.gpkg --export-heightm
 
 ## Run on an iPad
 
-You need a Mac with Xcode. Do the one-time steps for the Mac and for the iPad in `crates/vale-globe-proto/README.md`, in the section "Run on an iPad". Then connect the iPad, unlock it, and run this script:
+You need a Mac with Xcode 27.1 or later. Do the one-time steps for the Mac and for the iPad in `crates/vale-globe-proto/README.md`, in the section "Run on an iPad". Then connect the iPad, unlock it, and run this script:
 
 ```sh
 scripts/app-ipad.sh

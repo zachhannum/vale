@@ -15,6 +15,13 @@ targets:
       properties:
         CFBundleDisplayName: Vale Globe
         UILaunchScreen: {}
+        # The scene delegate of winit puts the window on the window scene.
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+          UISceneConfigurations:
+            UIWindowSceneSessionRoleApplication:
+              - UISceneConfigurationName: Default Configuration
+                UISceneDelegateClassName: WinitSceneDelegate
         UIRequiresFullScreen: true
         UIApplicationSupportsIndirectInputEvents: true
         CADisableMinimumFrameDurationOnPhone: true
