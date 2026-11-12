@@ -25,6 +25,7 @@ use crate::globe::brush::{BrushSettings, brush_radius};
 use crate::globe::combine::PolygonMode;
 use crate::globe::line::{DEFAULT_SMOOTHING, LineSettings};
 use crate::globe::snap;
+use crate::globe::sweep;
 use crate::session::{WorldFile, worlds_of};
 use crate::world;
 
@@ -80,6 +81,12 @@ pub const VECTOR: &str = "Vector";
 pub const LINE: &str = "Line";
 /// The tool that draws in a polygon layer.
 pub const POLYGON: &str = "Polygon";
+/// The tool that paints in a polygon layer with a round brush.
+pub const POLYGON_BRUSH: &str = "Polygon brush";
+/// The slider of the radius of the Polygon brush.
+pub const POLYGON_BRUSH_SIZE: &str = "Size";
+/// The slider of the radius of the Polygon brush in the Brush panel.
+pub const POLYGON_BRUSH_PANEL_SIZE: &str = "Polygon brush size";
 /// The tool that places points in a point layer.
 pub const POINT: &str = "Point";
 /// The tool that splits lines and polygons along a stroke.
@@ -106,7 +113,7 @@ pub struct VectorTool {
 }
 
 /// The tools of the Vector cell.
-pub const VECTOR_TOOLS: [VectorTool; 5] = [
+pub const VECTOR_TOOLS: [VectorTool; 6] = [
     VectorTool {
         tool: Tool::Line,
         name: LINE,
@@ -118,6 +125,13 @@ pub const VECTOR_TOOLS: [VectorTool; 5] = [
         tool: Tool::Polygon,
         name: POLYGON,
         icon: Icon::Polygon,
+        kinds: &[GeometryKind::Polygon],
+        draws: true,
+    },
+    VectorTool {
+        tool: Tool::PolygonBrush,
+        name: POLYGON_BRUSH,
+        icon: Icon::PolygonBrush,
         kinds: &[GeometryKind::Polygon],
         draws: true,
     },
@@ -1106,7 +1120,10 @@ fn column_input(state: &AppState) -> ColumnInput {
 
 /// The number of cells and of sliders that `strip_controls` adds.
 fn strip_counts(globe: &crate::globe::Globe) -> (usize, usize) {
-    if globe.stroking() || globe.placing() {
+    if globe.sweeping() {
+        // The mode cell, and the Smoothing slider and the Size slider.
+        (1, 2)
+    } else if globe.stroking() || globe.placing() {
         let cells = 1
             + usize::from(globe.filling())
             + usize::from(globe.drawing())
@@ -1327,6 +1344,19 @@ fn brush_size<'a>(
 }
 
 /// A number from 0 to 1 in whole percents.
+/// The slider of the radius of the Polygon brush, in points. During a
+/// drag, a circle shows the brush.
+fn polygon_brush_size(state: &AppState, name: &'static str) -> Number<'static> {
+    let (lo, hi) = (*sweep::SIZE.start(), *sweep::SIZE.end());
+    let size = f64::from(state.globe.line.brush_size);
+    Number::new(name, size, f64::from(lo)..=f64::from(hi))
+        .log()
+        .step(1.0)
+        .unit("pt")
+        .default(f64::from(sweep::DEFAULT_SIZE))
+        .preview(|points| points as f32)
+}
+
 fn percent(name: &str, value: f64) -> Number<'_> {
     Number::new(name, value, 0.0..=1.0).percent()
 }
@@ -1404,8 +1434,11 @@ fn strip_controls(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Contro
     // has the terrain fit button, and the polygon tool has its modes.
     let fit = state.globe.lining();
     let fill = state.globe.filling();
+    // The Polygon brush has the modes, the smoothing, and the size, and it
+    // does not snap.
+    let sweep = state.globe.sweeping();
     if vector {
-        if fill {
+        if fill || sweep {
             let mode = state.globe.line.polygon_mode;
             let (label, icon, _) = POLYGON_MODES
                 .into_iter()
@@ -1427,6 +1460,23 @@ fn strip_controls(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Contro
             ) {
                 flyouts.toggle(key);
             }
+        }
+        if sweep {
+            let length = height - CELL.0 / 2.0;
+            let smoothing = &mut state.globe.line.smoothing;
+            let number = percent(SMOOTHING, *smoothing).default(DEFAULT_SMOOTHING);
+            if let Some(value) = slide(number, ui, controls, length) {
+                *smoothing = value;
+            }
+            if let Some(value) = slide(
+                polygon_brush_size(state, POLYGON_BRUSH_SIZE),
+                ui,
+                controls,
+                length,
+            ) {
+                state.globe.line.brush_size = value as f32;
+            }
+            return;
         }
         if stroke {
             let cells = [true, line, fit || fill].iter().filter(|&&c| c).count() as f32;
@@ -1769,6 +1819,7 @@ pub fn panel_name(state: &AppState, panel: Panel) -> &'static str {
         Panel::Brush if state.measuring() => MEASURE,
         Panel::Brush if state.globe.lining() => LINE,
         Panel::Brush if state.globe.filling() => POLYGON,
+        Panel::Brush if state.globe.sweeping() => POLYGON_BRUSH,
         Panel::Brush if state.globe.placing() => POINT,
         Panel::Brush if state.globe.splitting() => SPLIT,
         Panel::Brush if state.globe.vertexing() => VERTEX,
@@ -2510,6 +2561,13 @@ fn tool_rows(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
                 .label(SMOOTHING)
                 .default(DEFAULT_SMOOTHING);
             apply(number.slider(ui, controls), smoothing);
+        }
+        if state.globe.sweeping() {
+            let number = polygon_brush_size(state, POLYGON_BRUSH_PANEL_SIZE).label("Size");
+            if let Some(value) = number.slider(ui, controls) {
+                state.globe.line.brush_size = value as f32;
+            }
+            return;
         }
         if !(stroke || vertexing) {
             muted(ui, SNAP_HINT);

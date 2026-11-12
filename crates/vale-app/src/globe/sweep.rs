@@ -365,6 +365,7 @@ fn winding(ring: &[V3], p: V3, reference: V3) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::globe::combine::StrokeArea;
     use crate::globe::math::lonlat_to_dir;
     use crate::globe::polygon::tests::{assert_valid, inside};
     use crate::globe::snap::slerp;
@@ -576,5 +577,70 @@ mod tests {
                 .fold(f64::INFINITY, f64::min);
             assert!((d - r).abs() < tolerance, "{}", (d - r) * SCALE);
         }
+    }
+
+    fn square() -> Geometry {
+        Geometry::Polygons(vec![vec![vec![
+            [0.0, 0.0],
+            [10.0, 0.0],
+            [10.0, 10.0],
+            [0.0, 10.0],
+            [0.0, 0.0],
+        ]]])
+    }
+
+    fn area(way: &[LonLat]) -> StrokeArea {
+        let s = samples(way);
+        let sweep = sweep(&s, &[], DEFAULT_SIZE, SCALE, SMOOTHING).expect("an area");
+        StrokeArea::of_sweep(&sweep, SCALE).expect("an area")
+    }
+
+    fn polygons(g: &Geometry) -> Vec<Vec<Vec<LonLat>>> {
+        let Geometry::Polygons(p) = g else {
+            panic!("not a polygon");
+        };
+        p.clone()
+    }
+
+    #[test]
+    fn a_band_whose_edge_touches_a_polygon_reaches_it_and_joins_it() {
+        // The center line stays east of the square, within the radius.
+        let r = radius();
+        let a = area(&[[10.0 + 0.5 * r, 5.0], [15.0, 5.0]]);
+        assert_eq!(a.reaches(&square(), SCALE), Some(0));
+        let p = polygons(&a.add(&square()).expect("a change"));
+        assert_valid(&p);
+        assert_eq!(p.len(), 1);
+        assert!(inside(&p, [14.0, 5.0]));
+        assert!(inside(&p, [5.0, 5.0]));
+        // A band far away does not reach it.
+        let far = area(&[[20.0, 5.0], [25.0, 5.0]]);
+        assert_eq!(far.reaches(&square(), SCALE), None);
+    }
+
+    #[test]
+    fn a_band_across_a_polygon_cuts_it_in_two() {
+        let r = radius();
+        let a = area(&[[5.0, -3.0], [5.0, 13.0]]);
+        let p = polygons(&a.subtract(&square()).expect("a change").expect("a polygon"));
+        assert_valid(&p);
+        assert_eq!(p.len(), 2);
+        assert!(!inside(&p, [5.0, 5.0]));
+        assert!(!inside(&p, [5.0 + 0.9 * r, 5.0]));
+        assert!(inside(&p, [5.0 + 1.1 * r, 5.0]));
+        assert!(inside(&p, [2.0, 5.0]));
+    }
+
+    #[test]
+    fn a_band_that_covers_a_polygon_deletes_it() {
+        let small = Geometry::Polygons(vec![vec![vec![
+            [0.0, 0.0],
+            [0.2, 0.0],
+            [0.2, 0.2],
+            [0.0, 0.2],
+            [0.0, 0.0],
+        ]]]);
+        let a = area(&[[-1.0, 0.1], [1.0, 0.1]]);
+        assert_eq!(a.subtract(&small), Some(None));
     }
 }

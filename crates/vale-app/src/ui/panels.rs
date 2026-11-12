@@ -24,6 +24,7 @@ use crate::globe::brush::{
     TERRACE_STEP_M, WARP_KM, needs_height, shape_text,
 };
 use crate::globe::combine::PolygonMode;
+use crate::globe::sweep;
 use crate::globe::{Globe, Tool, WorldView, rivers, snap, stats, stroke_test, zoom_test};
 use crate::projects;
 use crate::ui::pad::{DELETE_VERTEX, DESELECT, MOVE_SHARED, SMOOTH_VERTICES, vector_tools};
@@ -74,6 +75,9 @@ pub const EXPORT_PNG: &str = "Export PNG…";
 pub const LINE_TOOL: &str = "Line";
 /// The button of the polygon tool.
 pub const POLYGON_TOOL: &str = "Polygon";
+pub const POLYGON_BRUSH_TOOL: &str = "Polygon brush";
+/// The slider of the radius of the Polygon brush, in points.
+pub const BRUSH_SIZE: &str = "Size";
 /// The button of the point tool.
 pub const POINT_TOOL: &str = "Point";
 /// The button of the Measure tool.
@@ -151,6 +155,12 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                 if ui.add_enabled(able, draw).clicked() {
                     globe.tool = tool;
                 }
+                if globe.fillable {
+                    let on = globe.sweeping();
+                    if ui.selectable_label(on, POLYGON_BRUSH_TOOL).clicked() {
+                        globe.tool = Tool::PolygonBrush;
+                    }
+                }
                 // The tools that edit show for the kind of the selected
                 // layer.
                 let kind = if globe.fillable {
@@ -188,7 +198,15 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                             .percent()
                             .show(ui);
                     }
-                    if globe.filling() {
+                    if globe.sweeping() {
+                        let (lo, hi) = (*sweep::SIZE.start(), *sweep::SIZE.end());
+                        number::slider(BRUSH_SIZE, &mut globe.line.brush_size, lo..=hi)
+                            .log()
+                            .step(1.0)
+                            .suffix(" pt")
+                            .show(ui);
+                    }
+                    if globe.filling() || globe.sweeping() {
                         let mode = &mut globe.line.polygon_mode;
                         ui.selectable_value(mode, PolygonMode::New, "New");
                         ui.selectable_value(mode, PolygonMode::Add, "Add")
@@ -209,7 +227,9 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                             .enabled(terrain && globe.line.fit)
                             .show(ui);
                     }
-                    snap_controls(ui, state);
+                    if !state.globe.sweeping() {
+                        snap_controls(ui, state);
+                    }
                     if state.globe.vertexing() {
                         vertex_buttons(ui, state);
                     }

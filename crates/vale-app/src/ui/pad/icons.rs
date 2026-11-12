@@ -51,6 +51,8 @@ pub enum Icon {
     Point,
     Line,
     Polygon,
+    /// A painted band, for the Polygon brush.
+    PolygonBrush,
     Plus,
     /// A text cursor.
     TextCursor,
@@ -165,6 +167,7 @@ impl Icon {
             Icon::Point => "",
             Icon::Line => "M4 18c4-10 8 2 16-12",
             Icon::Polygon => "M5 7l8-3 6 6-3 9-9-1z",
+            Icon::PolygonBrush => "M3 17c2-6 6-2 9-7s6-5 9-3c-2 4-5 5-8 8s-7 5-10 2z",
             Icon::Plus => "M12 5v14M5 12h14",
             Icon::TextCursor => "M9 4h6M9 20h6M12 4v16",
             Icon::Center => "M12 3v5M12 16v5M3 12h5M16 12h5",
@@ -517,6 +520,7 @@ mod tests {
             Icon::Point,
             Icon::Line,
             Icon::Polygon,
+            Icon::PolygonBrush,
             Icon::Plus,
             Icon::TextCursor,
             Icon::Center,
