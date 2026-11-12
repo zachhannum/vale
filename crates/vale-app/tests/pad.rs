@@ -8500,6 +8500,7 @@ fn value_preview_shows_range() {
     let range = value_range(
         layer,
         h.state().doc.project.world.radius_km,
+        None,
         "pop_max / 1000",
     )
     .unwrap();
@@ -9108,7 +9109,7 @@ fn filter_shows_match_count() {
     let layer = h.state().doc.layer(rivers).unwrap();
     let first = layer.features[0].attributes["scalerank"].label().unwrap();
     let text = format!("scalerank = {first}");
-    let n = count_matches(layer, h.state().doc.project.world.radius_km, &text).unwrap();
+    let n = count_matches(layer, h.state().doc.project.world.radius_km, None, &text).unwrap();
     let m = layer.features.len();
     assert!(n > 0 && n <= m);
     set_filter(&mut h, rivers, &text);
@@ -9250,6 +9251,24 @@ fn the_pad_expression_field_warns_of_an_unknown_raster_layer() {
     assert!(h.query_by_label(&warning).is_some());
     type_text(&mut h, EXPRESSION, "raster('Height') > 3000");
     assert!(h.query_by_label(&warning).is_none());
+}
+
+#[test]
+fn the_pad_expression_field_shows_the_raster_value_of_a_feature() {
+    use vale_app::ui::expr_help::{MATCHES, NO_MATCH};
+    use vale_app::ui::pad::filter::VIEWS;
+    use vale_app::ui::pad::rules::EXPRESSION;
+    let mut h = pad(BOARDS[0]);
+    open_rule(&mut h, "Places", "Default");
+    scroll_to_control(&mut h, VIEWS[1]);
+    tap(&mut h, VIEWS[1]);
+    scroll_to_control(&mut h, EXPRESSION);
+    type_text(&mut h, EXPRESSION, "raster('Height') > -1000000");
+    h.run_steps(4);
+    assert!(h.query_by_label(MATCHES).is_some());
+    type_text(&mut h, EXPRESSION, "raster('Height') < -1000000");
+    h.run_steps(4);
+    assert!(h.query_by_label(NO_MATCH).is_some());
 }
 
 /// The text of the filter of the first rule of a layer.

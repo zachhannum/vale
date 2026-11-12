@@ -1680,6 +1680,7 @@ fn short_filter_shows_inline() {
     let n = vale_app::ui::expr_help::count_matches(
         layer,
         h.state().doc.project.world.radius_km,
+        None,
         "scalerank < 3",
     )
     .unwrap();

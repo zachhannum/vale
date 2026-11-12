@@ -106,7 +106,7 @@ pub fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id
         return;
     };
     state.open_ramps();
-    let generation = state.map_generation;
+    let generation = (state.map_generation).wrapping_add(state.pipeline.rasters().arrived() << 32);
     let mut draft = std::mem::take(&mut state.pad.rules.classify);
     if draft.layer != Some(id) {
         draft = Draft::new(id, kind);
@@ -161,7 +161,9 @@ pub fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id
     if !fresh && !draft.text.trim().is_empty() {
         let values = match Expr::parse(&draft.text) {
             Ok(expr) => {
-                let all = classify::values(layer, &expr, state.doc.project.world.radius_km);
+                let radius_km = state.doc.project.world.radius_km;
+                let rasters = state.pipeline.rasters().for_layer(id);
+                let all = classify::values_with(layer, &expr, radius_km, Some(&rasters));
                 match classify::numbers(&all) {
                     Some((sorted, nulls)) => Values::Numbers(sorted, nulls),
                     None => Values::Categories(classify::categories(&all)),
@@ -412,9 +414,11 @@ pub fn apply(state: &mut AppState, id: LayerId, request: &Request) -> bool {
     let Some(kind) = layer.geometry() else {
         return false;
     };
-    let Some(classes) = classify::classes_of(
+    let rasters = state.pipeline.rasters().for_layer(id);
+    let Some(classes) = classify::classes_with(
         layer,
         state.doc.project.world.radius_km,
+        Some(&rasters),
         &request.text,
         request.method,
         request.classes,
