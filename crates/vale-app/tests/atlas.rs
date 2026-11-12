@@ -48,6 +48,10 @@ use vale_app::ui::pad::furniture::{
     MAP_FRAME as ITEM_MAP_FRAME, RESET_ENTRIES, STYLE as ITEM_STYLE, entry_names,
 };
 use vale_app::ui::pad::labels::{
+    ABBREVIATIONS, ADD_ABBREVIATION, DELETE_ABBREVIATION, FALLBACKS, LEADER_DISTANCE,
+    LINE_FALLBACKS, MAX_LINES, MIN_SIZE, SHORT_FORM, SIZE_STEP, WORD,
+};
+use vale_app::ui::pad::labels::{
     ADD_CLASS, BUFFER, CASE, COLOR, CURVE_LIMIT, DELETE_CLASS, DUPLICATE_DISTANCE,
     FOLLOW_PARALLELS, HALO, HALO_COLOR, HALO_WIDTH, LABEL_SIZE, LAYER, MOVE_DOWN, MOVE_UP, OFFSET,
     PLACEMENT, POSITIONS, REMOVE_DUPLICATES, REORDER, REPEAT, REPEAT_INTERVAL, SEGMENTS, SMOOTHING,
@@ -3934,9 +3938,11 @@ fn the_labels_tab_makes_a_label_class() {
     let runs = label_runs(&mut h, 0);
     let ours: Vec<_> = (runs.iter()).filter(|g| g.color == class.color).collect();
     assert!(!ours.is_empty());
+    // A label that does not fit can take a smaller font.
+    assert!(ours.iter().any(|g| f64::from(g.font_size) == class.size));
     for g in ours {
         assert!(uppercase(&g.text), "{}", g.text);
-        assert_eq!(f64::from(g.font_size), class.size, "{}", g.text);
+        assert!(f64::from(g.font_size) <= class.size, "{}", g.text);
     }
 }
 
@@ -4029,7 +4035,9 @@ fn a_change_of_a_class_places_the_labels_again_while_you_edit() {
     let runs = label_runs(&mut h, 0);
     let places: Vec<_> = runs.iter().filter(|g| g.color == PLACES_COLOR).collect();
     assert!(!places.is_empty());
-    assert!(places.iter().all(|g| f64::from(g.font_size) == size));
+    // A label that does not fit can take a smaller font.
+    assert!(places.iter().any(|g| f64::from(g.font_size) == size));
+    assert!(places.iter().all(|g| f64::from(g.font_size) <= size));
     release(&mut h, plus, Input::Finger);
 
     // One edit of the text, and the field keeps the focus.
@@ -5303,6 +5311,270 @@ fn the_polygon_options_survive_a_close_and_an_open() {
     assert_eq!(doc.label_classes(Some(map), land), lands);
 }
 
+/// Opens the Fallbacks page of the first class of `layer`.
+fn open_fallbacks(h: &mut Pad, layer: &str) {
+    tap(h, layer);
+    tap(h, SEGMENTS[2].0);
+    scroll_to(h, FALLBACKS);
+    tap(h, FALLBACKS);
+}
+
+/// The fallbacks of the first class of "Places", each with its switch.
+fn place_fallbacks(h: &Pad, map: MapId) -> Vec<(vale_style::LabelFallback, bool)> {
+    (classes(h, map, "Places")[0].fallbacks.iter())
+        .map(|r| (r.fallback, r.on))
+        .collect()
+}
+
+#[test]
+fn a_tap_or_a_drag_on_the_fallbacks_page_is_one_undo_step() {
+    use vale_style::LabelFallback::{Abbreviate, Leader, SmallerFont, Stack};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let mut s = state();
+    s.session = Some(Session::open(&path, &mut s.doc).unwrap());
+    let mut h = pad_with(s, BOARDS[0]);
+    add_frame(&mut h);
+    let map = frame(&h, 0).map;
+    h.state_mut().save_waiting().unwrap();
+    show_tab(&mut h, FRAME_TABS[3]);
+    open_fallbacks(&mut h, "Places");
+    let start = classes(&h, map, "Places")[0].clone();
+    let all_on = vec![
+        (SmallerFont, true),
+        (Stack, true),
+        (Abbreviate, true),
+        (Leader, true),
+    ];
+    assert_eq!(place_fallbacks(&h, map), all_on);
+
+    tap(&mut h, Abbreviate.name());
+    let off = vec![
+        (SmallerFont, true),
+        (Stack, true),
+        (Abbreviate, false),
+        (Leader, true),
+    ];
+    assert_eq!(place_fallbacks(&h, map), off);
+
+    // A finger drags the leader line from the last place to the top.
+    let from = control(&h, &format!("{REORDER} {}", Leader.name()))
+        .unwrap()
+        .center();
+    let to = control(&h, &format!("{REORDER} {}", SmallerFont.name()))
+        .unwrap()
+        .center()
+        - vec2(0.0, 10.0);
+    drag_steps(&mut h, from, to, Input::Finger, 24);
+    release(&mut h, to, Input::Finger);
+    let moved = vec![
+        (Leader, true),
+        (SmallerFont, true),
+        (Stack, true),
+        (Abbreviate, false),
+    ];
+    assert_eq!(place_fallbacks(&h, map), moved);
+
+    tap(&mut h, "Undo");
+    assert_eq!(place_fallbacks(&h, map), off);
+    tap(&mut h, "Undo");
+    assert_eq!(classes(&h, map, "Places")[0], start);
+}
+
+#[test]
+fn a_line_class_has_no_stacked_lines_or_leader_line() {
+    use vale_style::LabelFallback::{Abbreviate, Leader, SmallerFont, Stack};
+    let mut h = labels_pad(BOARDS[0]);
+    let map = frame(&h, 0).map;
+    open_fallbacks(&mut h, "Rivers");
+    assert!(control(&h, SmallerFont.name()).is_some());
+    assert!(control(&h, Abbreviate.name()).is_some());
+    for name in [Stack.name(), Leader.name(), &value_of(MAX_LINES)] {
+        assert!(control(&h, name).is_none(), "{name}");
+    }
+    assert!(control(&h, &value_of(LEADER_DISTANCE)).is_none());
+    assert!(h.query_by_label(LINE_FALLBACKS).is_some());
+
+    // A drag among the rows that show skips the rows that do not.
+    let from = control(&h, &format!("{REORDER} {}", Abbreviate.name()))
+        .unwrap()
+        .center();
+    let to = control(&h, &format!("{REORDER} {}", SmallerFont.name()))
+        .unwrap()
+        .center()
+        - vec2(0.0, 10.0);
+    drag_steps(&mut h, from, to, Input::Finger, 24);
+    release(&mut h, to, Input::Finger);
+    let order: Vec<_> = (classes(&h, map, "Rivers")[0].fallbacks.iter())
+        .map(|r| r.fallback)
+        .collect();
+    assert_eq!(order, [Abbreviate, SmallerFont, Stack, Leader]);
+}
+
+#[test]
+fn the_steppers_of_the_fallbacks_page_change_the_numbers() {
+    let mut h = labels_pad(BOARDS[0]);
+    let map = frame(&h, 0).map;
+    open_fallbacks(&mut h, "Places");
+    set_number(&mut h, MIN_SIZE, "8");
+    scroll_to(&mut h, &value_of(SIZE_STEP));
+    step(&mut h, SIZE_STEP, true);
+    set_number(&mut h, MAX_LINES, "3");
+    scroll_to(&mut h, &value_of(MAX_LINES));
+    step(&mut h, MAX_LINES, true);
+    // The plus button stops at the most lines.
+    assert!(control(&h, &format!("Increase {MAX_LINES}")).is_none());
+    set_number(&mut h, LEADER_DISTANCE, "20");
+    let c = &classes(&h, map, "Places")[0];
+    assert_eq!((c.min_size, c.size_step), (8.0, 1.25));
+    assert_eq!(c.max_lines, 4);
+    assert_eq!(c.leader_distance, 20.0);
+}
+
+/// Adds the abbreviation "Lake", "L." on the Abbreviations page.
+fn add_lake(h: &mut Pad) {
+    scroll_to(h, ADD_ABBREVIATION);
+    tap(h, ADD_ABBREVIATION);
+    let n = vale_style::ABBREVIATIONS.len() + 1;
+    let word = format!("{WORD} {n}");
+    scroll_to(h, &word);
+    type_text(h, &word, "Lake");
+    type_text(h, &format!("{SHORT_FORM} {n}"), "L.");
+}
+
+#[test]
+fn the_abbreviations_page_adds_edits_and_deletes_a_pair() {
+    let mut h = labels_pad(BOARDS[0]);
+    let map = frame(&h, 0).map;
+    open_fallbacks(&mut h, "Places");
+    scroll_to(&mut h, ABBREVIATIONS);
+    tap(&mut h, ABBREVIATIONS);
+    let pairs = |h: &Pad| classes(h, map, "Places")[0].abbreviations.clone();
+    assert_eq!(pairs(&h), vale_style::default_abbreviations());
+    add_lake(&mut h);
+    let list = pairs(&h);
+    assert_eq!(list.len(), vale_style::ABBREVIATIONS.len() + 1);
+    assert_eq!(list.last().unwrap(), &("Lake".to_owned(), "L.".to_owned()));
+
+    scroll_up_to(&mut h, &format!("{WORD} 1"));
+    type_text(&mut h, &format!("{SHORT_FORM} 1"), "Mnt.");
+    assert_eq!(pairs(&h)[0], ("Mount".to_owned(), "Mnt.".to_owned()));
+    tap(&mut h, &format!("{DELETE_ABBREVIATION} 1"));
+    let list = pairs(&h);
+    assert_eq!(list[0].0, "Mountains");
+    assert_eq!(list.len(), vale_style::ABBREVIATIONS.len());
+    tap(&mut h, "Back to Fallbacks");
+    assert_eq!(
+        h.state().atlas.label_page,
+        Some(vale_app::ui::atlas::ClassPage::Fallbacks)
+    );
+}
+
+#[test]
+fn the_fallback_pages_work_with_a_finger() {
+    for size in BOARDS {
+        let what = format!("{size:?}");
+        let mut h = labels_pad(size);
+        open_fallbacks(&mut h, "Places");
+        check_controls(&h, &format!("{what}: fallbacks page"));
+        if size == BOARDS[0] {
+            screenshot::save(&mut h, "pad-atlas-label-fallbacks");
+        }
+        for name in [
+            &value_of(MIN_SIZE),
+            &value_of(SIZE_STEP),
+            &value_of(MAX_LINES),
+            &value_of(LEADER_DISTANCE),
+            ABBREVIATIONS,
+        ] {
+            scroll_to(&mut h, name);
+            assert!(control(&h, name).is_some(), "{what}: {name}");
+            check_controls(&h, &format!("{what}: {name}"));
+        }
+        tap(&mut h, ABBREVIATIONS);
+        check_controls(&h, &format!("{what}: abbreviations page"));
+        if size == BOARDS[0] {
+            screenshot::save(&mut h, "pad-atlas-label-abbreviations");
+        }
+        scroll_to(&mut h, ADD_ABBREVIATION);
+        for name in [ADD_ABBREVIATION, &format!("{DELETE_ABBREVIATION} 12")] {
+            assert!(control(&h, name).is_some(), "{what}: {name}");
+        }
+        check_controls(&h, &format!("{what}: bottom of the abbreviations"));
+        tap(&mut h, "Back to Fallbacks");
+        tap(&mut h, "Back to Places");
+        tap(&mut h, "Back to Labels");
+        open_fallbacks(&mut h, "Rivers");
+        check_controls(&h, &format!("{what}: line fallbacks"));
+    }
+}
+
+#[test]
+fn the_fallback_options_survive_a_close_and_an_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let mut doc = Document::sample();
+    let mut session = Session::open(&path, &mut doc).unwrap();
+    let mut s = state();
+    s.doc = doc;
+    let mut h = pad_with(s, BOARDS[0]);
+    add_frame(&mut h);
+    let map = frame(&h, 0).map;
+    show_tab(&mut h, FRAME_TABS[3]);
+    open_fallbacks(&mut h, "Places");
+    tap(&mut h, vale_style::LabelFallback::Stack.name());
+    set_number(&mut h, MIN_SIZE, "7");
+    set_number(&mut h, MAX_LINES, "3");
+    set_number(&mut h, LEADER_DISTANCE, "15");
+    scroll_to(&mut h, ABBREVIATIONS);
+    tap(&mut h, ABBREVIATIONS);
+    add_lake(&mut h);
+    let places = classes(&h, map, "Places");
+    let c = &places[0];
+    assert!(!c.fallbacks[1].on);
+    assert_eq!((c.min_size, c.max_lines, c.leader_distance), (7.0, 3, 15.0));
+    assert_eq!(c.abbreviations.last().unwrap().0, "Lake");
+    let mut project = h.state().doc.project.clone();
+    session.flush(&mut project, &mut []).unwrap();
+    drop(session);
+    let mut doc = Document::sample();
+    let _session = Session::open(&path, &mut doc).unwrap();
+    assert_eq!(doc.label_classes(Some(map), layer_id(&h, "Places")), places);
+}
+
+#[test]
+fn the_fallback_options_reach_the_labeler() {
+    use vale_labeler::Fallback;
+    use vale_style::LabelFallback::{Abbreviate, Leader};
+    let mut h = labels_pad(BOARDS[0]);
+    let map = frame(&h, 0).map;
+    open_fallbacks(&mut h, "Places");
+    tap(&mut h, Abbreviate.name());
+    let from = control(&h, &format!("{REORDER} {}", Leader.name()))
+        .unwrap()
+        .center();
+    let to = control(&h, &format!("{REORDER} Smaller font"))
+        .unwrap()
+        .center()
+        - vec2(0.0, 10.0);
+    drag_steps(&mut h, from, to, Input::Finger, 24);
+    release(&mut h, to, Input::Finger);
+    set_number(&mut h, MIN_SIZE, "5");
+    set_number(&mut h, SIZE_STEP, "0.5");
+    set_number(&mut h, MAX_LINES, "3");
+    set_number(&mut h, LEADER_DISTANCE, "18");
+    let f = vale_app::labels::fallbacks(&classes(&h, map, "Places")[0]);
+    assert_eq!(
+        f.order,
+        [Fallback::Leader, Fallback::SmallerFont, Fallback::Stack]
+    );
+    // A page unit is one point.
+    assert_eq!((f.min_size, f.size_step), (5.0, 0.5));
+    assert_eq!(f.max_lines, 3);
+    assert_eq!(f.leader_distance, 18.0);
+    assert_eq!(f.abbreviations, vale_style::default_abbreviations());
+}
+
 /// The color of the leader lines in the leader tests.
 const LEADER_COLOR: vale_render::Color = vale_render::Color::rgb(200, 10, 90);
 /// The color of the halo of the leader lines in the leader tests.
@@ -5377,6 +5649,10 @@ fn a_label_outside_its_polygon_draws_a_leader_line() {
     let land = layer_id(&h, "Land");
     let mut class = classes(&h, map, "Land")[0].clone();
     class.leader = leader_style();
+    // The fallback "Leader line" uses the zones outside too.
+    for r in &mut class.fallbacks {
+        r.on = false;
+    }
     h.state_mut()
         .doc
         .set_label_classes(map, land, std::slice::from_ref(&class));

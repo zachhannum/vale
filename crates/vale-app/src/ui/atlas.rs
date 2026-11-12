@@ -378,6 +378,10 @@ pub enum ClassPage {
     Zones,
     /// The start and the style of the leader line of a label outside its polygon.
     LeaderLine,
+    /// The ranked fallbacks of a label that does not fit, and their numbers.
+    Fallbacks,
+    /// The words and the short forms of the fallback "Abbreviation".
+    Abbreviations,
 }
 
 /// A segment of the panel of a label class.
@@ -659,6 +663,8 @@ pub struct AtlasState {
     pub label_drag: Option<ClassDrag>,
     /// The position that a finger drags on the Positions page.
     pub position_drag: Option<ClassDrag>,
+    /// The fallback that a finger drags on the Fallbacks page.
+    pub fallback_drag: Option<ClassDrag>,
     /// The frame whose Edge labels page the Frame tab shows.
     pub edge: Option<FrameId>,
     /// The set of edge labels that the page shows.
@@ -867,6 +873,7 @@ impl Default for AtlasState {
             label_color_shown: false,
             label_drag: None,
             position_drag: None,
+            fallback_drag: None,
             edge: None,
             edge_set: EdgeSet::Meridians,
             edge_styles: false,

@@ -4,16 +4,16 @@ use std::collections::{HashMap, HashSet};
 
 use kurbo::{Point, Rect};
 use vale_labeler::{
-    Caps, Feature, Fonts, Geometry, LabelClass, LabelInput, LeaderAnchor, LinePlacement, LineSide,
-    Obstacle, ObstacleKind, Options, Placement, PointPlacement, PointPosition, PolygonMode,
-    PolygonPlacement, PolygonZones, TextStyle, place_labels,
+    Caps, Fallback, Fallbacks, Feature, Fonts, Geometry, LabelClass, LabelInput, LeaderAnchor,
+    LinePlacement, LineSide, Obstacle, ObstacleKind, Options, Placement, PointPlacement,
+    PointPosition, PolygonMode, PolygonPlacement, PolygonZones, TextStyle, place_labels,
 };
 use vale_render::{Color, FillRule, GlyphRun, Item};
 use vale_store::GeometryKind;
 use vale_style::expr::{Expr, Filter};
 use vale_style::{
-    LabelClass as StyleClass, LabelPlacement as StylePlacement, LabelPosition, LeaderEnd,
-    LeaderStyle, TextCase,
+    LabelClass as StyleClass, LabelFallback, LabelPlacement as StylePlacement, LabelPosition,
+    LeaderEnd, LeaderStyle, TextCase,
 };
 
 use crate::atlas::FrameTarget;
@@ -43,6 +43,26 @@ pub fn clip_to_masks(layers: &mut [PageLayer<'_>], masks: &FrameMasks, target: F
                 None => Vec::new(),
             };
         }
+    }
+}
+
+/// The labeler fallbacks of class `c`: the fallbacks that are on, in order.
+pub fn fallbacks(c: &StyleClass) -> Fallbacks {
+    Fallbacks {
+        order: (c.fallbacks.iter())
+            .filter(|r| r.on)
+            .map(|r| match r.fallback {
+                LabelFallback::SmallerFont => Fallback::SmallerFont,
+                LabelFallback::Stack => Fallback::Stack,
+                LabelFallback::Abbreviate => Fallback::Abbreviate,
+                LabelFallback::Leader => Fallback::Leader,
+            })
+            .collect(),
+        min_size: c.min_size,
+        size_step: c.size_step,
+        max_lines: c.max_lines as usize,
+        abbreviations: c.abbreviations.clone(),
+        leader_distance: c.leader_distance,
     }
 }
 
@@ -103,6 +123,7 @@ pub fn place(
                 margin: c.buffer,
                 placement: placement(c, pl.kind),
                 duplicate_distance: c.remove_duplicates.then_some(c.duplicate_distance),
+                fallbacks: fallbacks(c),
             });
             class_colors.push(c.color);
             let leader = c.leader;
