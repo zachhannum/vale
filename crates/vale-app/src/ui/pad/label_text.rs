@@ -600,8 +600,9 @@ pub fn wrap_in_function(field: &mut Field<Piece>, path: &[usize], f: &'static Fu
 }
 
 /// The bar above the keyboard: the Fields and Functions tabs, Group, Line
-/// break, and a chip for each field and each measure with its value in the
-/// feature of the preview. Returns `Some` after a change, with true for one step.
+/// break, and a chip for each field, measure, and raster layer with its
+/// value in the feature of the preview. Returns `Some` after a change, with
+/// true for one step.
 fn bar(
     ui: &egui::Ui,
     controls: &mut Controls,
@@ -873,16 +874,16 @@ pub fn short(sample: String) -> String {
     }
 }
 
-/// The chips of the measures of the layer, each with its value in its
-/// default format for the feature of the preview. Returns the measure that
-/// the user tapped, with its default format.
+/// The chips of the measures of the layer and of the raster layers, each
+/// with its value in its default format for the feature of the preview.
+/// Returns the chip that the user tapped, with its default format.
 fn measure_chips(
     ui: &mut egui::Ui,
     controls: &mut Controls,
     help: &ExprHelp,
 ) -> Option<(Subject, FieldFormat)> {
     let mut chosen = None;
-    for subject in help.measures() {
+    for subject in help.measures().into_iter().chain(help.rasters()) {
         let format = FieldFormat::for_subject(&subject);
         let piece = Piece::Field {
             subject: subject.clone(),
