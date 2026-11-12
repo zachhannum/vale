@@ -2,7 +2,7 @@
 
 use eframe::egui;
 use vale_sphere::{ProjectionKind, ProjectionSpec};
-use vale_store::{GeometryKind, RasterId, World};
+use vale_store::{GeometryKind, World};
 
 use super::number;
 use super::pad::atlas::{
@@ -93,23 +93,7 @@ pub const BALANCE: &str = "Balance";
 pub const SNAP: &str = "Snap";
 /// The menu of the snap targets and the snap distance.
 pub const SNAP_OPTIONS: &str = "Snap options";
-pub const SNAP_VERTICES: &str = "Snap to vertices";
-pub const SNAP_EDGES: &str = "Snap to edges";
 pub const SNAP_DISTANCE: &str = "Snap distance";
-
-/// The name of the switch that makes the color stops of a raster layer
-/// snap targets.
-pub fn snap_stops_name(layer: &str) -> String {
-    format!("Snap to stops of {layer}")
-}
-
-/// The raster layers of the project, with their names, in the list order.
-pub fn raster_layers(state: &AppState) -> Vec<(RasterId, String)> {
-    let layers = state.doc.project.layers().iter();
-    layers
-        .filter_map(|l| Some((l.raster()?, l.name.clone())))
-        .collect()
-}
 
 pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
     egui::Panel::top("toolbar").show(ui, |ui| {
@@ -223,8 +207,7 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                             .enabled(terrain && globe.line.fit)
                             .show(ui);
                     }
-                    let rasters = raster_layers(state);
-                    snap_controls(ui, state, &rasters);
+                    snap_controls(ui, state);
                     if state.globe.vertexing() {
                         vertex_buttons(ui, state);
                     }
@@ -334,20 +317,11 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
     });
 }
 
-/// The Snap check box and the menu of the snap settings. `rasters` are the
-/// raster layers whose color stops can be targets.
-fn snap_controls(ui: &mut egui::Ui, state: &mut AppState, rasters: &[(RasterId, String)]) {
+/// The Snap check box and the menu of the snap settings.
+fn snap_controls(ui: &mut egui::Ui, state: &mut AppState) {
     let snap = &mut state.globe.snap;
     ui.checkbox(&mut snap.on, SNAP);
     ui.menu_button(SNAP_OPTIONS, |ui| {
-        ui.checkbox(&mut snap.vertices, SNAP_VERTICES);
-        ui.checkbox(&mut snap.edges, SNAP_EDGES);
-        for (id, name) in rasters {
-            let mut on = snap.stops(*id);
-            if ui.checkbox(&mut on, snap_stops_name(name)).changed() {
-                snap.set_stops(*id, on);
-            }
-        }
         number::slider(SNAP_DISTANCE, &mut snap.distance, snap::DISTANCE_RANGE)
             .step(1.0)
             .suffix(" pt")
@@ -520,7 +494,7 @@ fn atlas_buttons(ui: &mut egui::Ui, state: &mut AppState) {
         }
     }
     if measuring {
-        snap_controls(ui, state, &[]);
+        snap_controls(ui, state);
         path_buttons(ui, state);
     }
 }

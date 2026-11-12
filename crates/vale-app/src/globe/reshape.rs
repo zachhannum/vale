@@ -664,7 +664,7 @@ mod tests {
             [7.4, 2.2],
             [8.5, 0.0],
         ];
-        let runs = trace_excluding(&t, &pen(&way, 0.0), SnapSettings::default(), 1, Some(uuid));
+        let runs = trace_excluding(&t, &pen(&way, 0.0), SnapSettings::every(&t), 1, Some(uuid));
         assert!(kinds(&runs).contains('T'), "{}", kinds(&runs));
         let g = reshape(&Geometry::Polygons(square()), &runs, SCALE, 0.0).expect("a polygon");
         let p = polygons(&g);
@@ -680,7 +680,7 @@ mod tests {
         let uuid = a.features[0].uuid();
         let t = Arc::new(snap_test::targets(&[a]));
         let way = [[3.0, 0.0], [3.0, -0.1], [7.0, -0.1], [7.0, 0.0]];
-        let runs = trace_excluding(&t, &pen(&way, 0.0), SnapSettings::default(), 1, Some(uuid));
+        let runs = trace_excluding(&t, &pen(&way, 0.0), SnapSettings::every(&t), 1, Some(uuid));
         assert!(!kinds(&runs).contains('T'), "{}", kinds(&runs));
     }
 

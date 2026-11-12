@@ -187,11 +187,14 @@ fn a_point_snaps_to_a_vertex_only_when_snap_is_on() {
             .layers()
             .iter()
             .find(|l| l.name == "Places");
-        let target = match &places.unwrap().features[0].geometry {
-            vale_store::Geometry::Points(points) => points[0],
+        let places = places.unwrap();
+        let (id, target) = match &places.features[0].geometry {
+            vale_store::Geometry::Points(points) => (places.id, points[0]),
             _ => panic!("not a point"),
         };
         let state = h.state_mut();
+        // The Measure tool snaps to the targets of the active layer.
+        state.select(Some(vale_app::ui::LayerRef::Vector(id)));
         state.globe.snap.on = on;
         let view = GlobeView::centered(target[0], target[1]);
         state.globe.view = GlobeView { zoom: 20.0, ..view };

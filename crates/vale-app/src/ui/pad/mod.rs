@@ -182,8 +182,6 @@ pub const MEASURE: &str = "Measure";
 pub const CLEAR_PATH: &str = "Clear path";
 /// The switch of the sheet that turns all snapping on and off.
 pub const SNAPPING: &str = "Snapping";
-pub const SNAP_VERTICES: &str = "Snap to vertices";
-pub const SNAP_EDGES: &str = "Snap to edges";
 /// The slider of the snap distance, in points.
 pub const SNAP_DISTANCE: &str = "Snap distance";
 /// The cell of the tool strip with the modes that shape the height freely.
@@ -2269,28 +2267,8 @@ fn tool_rows(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
                 .default(DEFAULT_SMOOTHING);
             apply(number.slider(ui, controls), smoothing);
         }
-        // The Measure tool in a map frame does not snap to color stops.
-        let rasters = match state.workspace {
-            Workspace::Atlas => Vec::new(),
-            Workspace::Globe => panels::raster_layers(state),
-        };
         let snap = &mut state.globe.snap;
         widgets::switch_row(ui, controls, SNAPPING, SNAPPING, &mut snap.on);
-        widgets::switch_row(
-            ui,
-            controls,
-            SNAP_VERTICES,
-            SNAP_VERTICES,
-            &mut snap.vertices,
-        );
-        widgets::switch_row(ui, controls, SNAP_EDGES, SNAP_EDGES, &mut snap.edges);
-        for (id, name) in rasters {
-            let mut on = snap.stops(id);
-            let (control, label) = (panels::snap_stops_name(&name), format!("Stops of {name}"));
-            if widgets::switch_row(ui, controls, &control, &label, &mut on) {
-                snap.set_stops(id, on);
-            }
-        }
         let number = Number::new(SNAP_DISTANCE, snap.distance, snap::DISTANCE_RANGE)
             .label("Distance")
             .step(1.0)

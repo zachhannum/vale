@@ -11,7 +11,7 @@ use vale_labeler::Fonts;
 use vale_sphere::LonLat;
 use vale_store::{
     BlendMode, Feature, GeometryKind, ImageId, Layer, LayerId, LayerKind, MapId, MapStyleId,
-    Project, Raster, RasterDisplay, RasterId, Rgb, StepSelection, StoreError, World,
+    Project, Raster, RasterDisplay, RasterId, Rgb, SnapTypes, StepSelection, StoreError, World,
 };
 use vale_style::LabelClass;
 use vale_terrain::{Bands, Heightmap, Mode};
@@ -24,7 +24,7 @@ use crate::globe::fit;
 use crate::globe::import::{ImportResult, ProbeJob, Source, file_name};
 use crate::globe::line::{self, LineEdit};
 use crate::globe::math::lonlat_to_dir;
-use crate::globe::snap::{LayerTargets, Targets};
+use crate::globe::snap::{LayerTargets, TargetSet, Targets};
 use crate::globe::split::SplitStroke;
 use crate::globe::{Globe, Look, START_ELEVATION, StackItem, Tool, brush};
 use crate::globe::{LineStroke, PictureLayer, polygon, reshape, thumbnail};
@@ -2877,6 +2877,7 @@ impl AppState {
     /// stops again if a layer changed. Only the layers that changed build
     /// again.
     pub fn refresh_targets(&mut self) {
+        self.globe.snap.targets = self.target_set();
         self.globe.refresh_stops();
         let layers = self.doc.project.layers().iter();
         let vectors: Vec<&Layer> = layers
@@ -2900,6 +2901,58 @@ impl AppState {
         let targets = (!targets.is_empty()).then(|| Arc::new(Targets::new(targets, Vec::new())));
         self.globe.set_targets(targets);
         self.targets_key = Some(key);
+    }
+
+    /// The layer that a stroke, a point, or a vertex move goes to: the
+    /// selected vector or raster layer. An image layer has no snap targets,
+    /// so it gives `None`.
+    pub fn active_layer_id(&self) -> Option<LayerId> {
+        match self.selected_layer? {
+            LayerRef::Vector(id) => Some(id),
+            LayerRef::Raster(id) => self.doc.project.raster_layer(id).map(|l| l.id),
+            LayerRef::Image(_) => None,
+        }
+    }
+
+    /// The snap targets of the active layer, with the visible layers only.
+    pub fn target_set(&self) -> TargetSet {
+        let mut set = TargetSet::default();
+        let Some(active) = self.active_layer_id() else {
+            return set;
+        };
+        let project = &self.doc.project;
+        for (id, types) in project.snap_targets(active) {
+            let Some(layer) = project.layer(id).filter(|l| l.visible) else {
+                continue;
+            };
+            if let Some(raster) = layer.raster() {
+                if types.stops {
+                    set.stops.insert(raster);
+                }
+            } else if layer.geometry().is_some() {
+                if types.vertices {
+                    set.vertices.insert(id);
+                }
+                if types.edges {
+                    set.edges.insert(id);
+                }
+            }
+        }
+        set
+    }
+
+    /// Sets the types that the layer `layer` snaps to in the layer
+    /// `target`. The project file gets the change with no undo step.
+    pub fn set_snap_target(&mut self, layer: LayerId, target: LayerId, types: SnapTypes) {
+        if !self.doc.project.set_snap_target(layer, target, types) {
+            return;
+        }
+        self.globe.snap.targets = self.target_set();
+        if let Some(session) = &mut self.session
+            && let Err(e) = session.save_snap_targets(&self.doc.project)
+        {
+            self.status = format!("Could not save project: {e}");
+        }
     }
 
     /// The snap targets of layer `id`, kept or new. A layer with the same

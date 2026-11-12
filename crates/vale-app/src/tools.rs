@@ -319,8 +319,6 @@ impl Tools {
             polygon_mode.map_or("new", |m| m.1)
         ));
         lines.push(format!("snap {}", snap.on));
-        lines.push(format!("snap_vertices {}", snap.vertices));
-        lines.push(format!("snap_edges {}", snap.edges));
         lines.push(format!("snap_distance {}", snap.distance));
         lines.push(format!("focus_new_features {}", self.focus_new));
         if let Some(on) = self.finger_paints {
@@ -407,12 +405,6 @@ impl Tools {
         }
         if let Some(v) = boolean("finger_paints") {
             self.finger_paints = Some(v);
-        }
-        if let Some(v) = boolean("snap_vertices") {
-            snap.vertices = v;
-        }
-        if let Some(v) = boolean("snap_edges") {
-            snap.edges = v;
         }
         if let Some(v) = float("snap_distance").filter(|&v| v > 0.0) {
             snap.distance = v;
@@ -646,7 +638,6 @@ mod tests {
         globe.line.smoothing = 0.9;
         globe.line.polygon_mode = PolygonMode::Subtract;
         let mut snap = SnapSettings {
-            edges: false,
             distance: 20.0,
             ..SnapSettings::default()
         };
@@ -661,6 +652,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(read(dir.path()), None);
         let text = globe.tools.text(&globe.brush, &globe.line, &snap);
+        // The snap targets are in the project file.
+        assert!(!text.contains("snap_vertices") && !text.contains("snap_edges"));
         write(dir.path(), &text).unwrap();
 
         let mut next = Globe::new();
@@ -710,6 +703,15 @@ mod tests {
         assert_eq!(globe.brush, BrushSettings::default());
         assert_eq!(globe.line, LineSettings::default());
         assert_eq!(snap, SnapSettings::default());
+        // A file of an older version with the lines of the snap types loads.
+        let old = "snap false\nsnap_vertices false\nsnap_edges false\nsnap_distance 20";
+        let (brush, line) = (&mut globe.brush, &mut globe.line);
+        globe
+            .tools
+            .load(old, &mut Tool::Navigate, brush, line, &mut snap);
+        assert!(!snap.on);
+        assert_eq!(snap.distance, 20.0);
+        assert_eq!(snap.targets, SnapSettings::default().targets);
         // A value out of its limits goes to the limit.
         globe.choose(Choice::Brush(Mode::Lower));
         assert_eq!(globe.brush.size_points, *SIZE_POINTS.end());

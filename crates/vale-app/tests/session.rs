@@ -1549,6 +1549,38 @@ fn stored_style(path: &std::path::Path, id: vale_store::LayerId) -> Option<Strin
 }
 
 #[test]
+fn a_snap_target_change_survives_a_reopen_with_no_undo_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let mut project = Project::new(World::default());
+    let roads = project.add_layer("Roads".into(), GeometryKind::Line, None, Vec::new());
+    let towns = project.add_layer("Towns".into(), GeometryKind::Point, None, Vec::new());
+    ProjectFile::create(&path, &project).unwrap();
+    let mut state = AppState::new(Document::empty()).unwrap();
+    state.headless = true;
+    state.session = Some(Session::open(&path, &mut state.doc).unwrap());
+    assert!(!state.can_undo());
+    let types = vale_store::SnapTypes {
+        vertices: true,
+        edges: false,
+        stops: false,
+    };
+    state.set_snap_target(roads, towns, types);
+    assert!(!state.can_undo());
+    state.save_waiting().unwrap();
+    assert!(!state.can_undo());
+    let want = state.doc.project.snap_targets(roads);
+    assert_eq!(want.len(), 2);
+    assert_eq!(want[1], (towns, types));
+    drop(state);
+
+    let mut doc = Document::empty();
+    let session = Session::open(&path, &mut doc).unwrap();
+    assert!(!session.can_undo());
+    assert_eq!(doc.project.snap_targets(roads), want);
+}
+
+#[test]
 fn opening_a_file_with_no_styles_stores_them_with_no_undo_step() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("old.vale");

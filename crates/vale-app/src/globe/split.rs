@@ -482,7 +482,7 @@ mod tests {
             [5.33, 8.0],
             [5.02, 12.0],
         ];
-        let runs = trace(&t, &pen(&way, 0.0), SnapSettings::default(), 9);
+        let runs = trace(&t, &pen(&way, 0.0), SnapSettings::every(&t), 9);
         assert!(kinds(&runs).contains('T'), "{}", kinds(&runs));
         let s = SplitStroke::new(&runs, SCALE, 0.0).expect("a stroke");
         let parts = s.split(&square()).expect("a split");

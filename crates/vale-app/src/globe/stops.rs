@@ -580,7 +580,6 @@ mod tests {
     fn a_position_snaps_to_the_line_of_a_stop() {
         let c = lonlat_to_dir(0.0, 90.0);
         let t = stop(c, 90.0);
-        let s = SnapSettings::default();
         // A point north of the line, and a line north of it.
         let point = layer(
             1,
@@ -591,6 +590,7 @@ mod tests {
         let part: Vec<LonLat> = vec![[20.0, lat], [30.0, lat]];
         let line = layer(2, GeometryKind::Line, vec![Geometry::Lines(vec![part])]);
         let all = targets(&t, &[point, line]);
+        let s = SnapSettings::every(&all);
         for scale in [SCALE, 4.0 * SCALE] {
             let only = targets(&t, &[]);
             let p = north(10.0, 0.0, 8.0, scale);
@@ -611,8 +611,7 @@ mod tests {
                 None
             );
             let mut off = s.clone();
-            off.set_stops(RASTER, false);
-            assert!(!off.stops(RASTER));
+            off.targets.stops.remove(&RASTER);
             assert_eq!(only.snap(p, scale, &off, None), None);
         }
         // A vertex wins over a stop, and the nearer of an edge and a stop
@@ -630,7 +629,7 @@ mod tests {
         let all = targets(&t, &[]);
         // The wiggle is about 3 points each way.
         let samples = pen(&[[0.0, 6.0], [4.0, 0.0], [20.0, 0.0], [24.0, 8.0]], 0.5);
-        let runs = run(&all, &samples, SnapSettings::default());
+        let runs = run(&all, &samples, SnapSettings::every(&all));
         assert_eq!(kinds(&runs), "FTF");
         let line = traced(&runs);
         for &d in &line {
@@ -650,7 +649,7 @@ mod tests {
 
         // A short crossing does not trace.
         let samples = pen(&[[4.0, -5.0], [5.0, 5.0]], 0.0);
-        let runs = run(&all, &samples, SnapSettings::default());
+        let runs = run(&all, &samples, SnapSettings::every(&all));
         assert_eq!(runs, [Run::Free(samples)]);
     }
 
@@ -667,7 +666,7 @@ mod tests {
             [9.6, -6.0],
             [0.5, -6.0],
         ];
-        let runs = run(&all, &pen(&way, 0.3), SnapSettings::default());
+        let runs = run(&all, &pen(&way, 0.3), SnapSettings::every(&all));
         assert!(kinds(&runs).contains('T'));
         let Some(Geometry::Polygons(p)) = polygon::commit(&runs, SCALE, 0.35) else {
             panic!("no polygon");
@@ -688,7 +687,7 @@ mod tests {
         let t = stop(c, 5.0);
         let all = targets(&t, &[]);
         let samples = around(c, 5.0, 0.0, 1.2, 0.3);
-        let runs = run(&all, &samples, SnapSettings::default());
+        let runs = run(&all, &samples, SnapSettings::every(&all));
         assert_eq!(kinds(&runs), "FTF");
         let line = traced(&runs);
         let lap = TAU * 5f64.to_radians().sin();
@@ -706,7 +705,7 @@ mod tests {
             let t = stop(c, 6.0);
             let all = targets(&t, &[]);
             let samples = around(c, 6.0, 0.0, 1.1, 0.2);
-            let runs = run(&all, &samples, SnapSettings::default());
+            let runs = run(&all, &samples, SnapSettings::every(&all));
             assert_eq!(kinds(&runs), "FTF");
             let line = traced(&runs);
             let lap = TAU * 6f64.to_radians().sin();
@@ -738,7 +737,8 @@ mod tests {
         let samples: Vec<V3> = (0..40)
             .map(|i| lonlat_to_dir(f64::from(i) * step, 0.0))
             .collect();
-        let mut tracer = Tracer::new(all, SnapSettings::default(), SCALE, LayerId(9));
+        let s = SnapSettings::every(&all);
+        let mut tracer = Tracer::new(all, s, SCALE, LayerId(9));
         let mut worst = 0f64;
         for (i, &p) in samples.iter().enumerate() {
             let filled = t.field().filled();

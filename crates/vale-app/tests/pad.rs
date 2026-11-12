@@ -25,9 +25,9 @@ use vale_app::ui::pad::{
     ADD_LAYER, CLEAR_PATH, DESELECT, EXPORT_GEOTIFF, GRATICULE, IMPORT_HEIGHTMAP, LAYER_NAME, LINE,
     LayerRef, MEASURE, ModeGroup, NEW_GEOJSON, NEW_HEIGHTMAP, NEW_IMAGE, NEW_RASTER, OPACITY,
     PANELS, POLYGON, PROJECTION, Page, Panel, RECENTER, RESET, SCULPT, SMOOTHING, SNAP,
-    SNAP_DISTANCE, SNAP_EDGES, SNAP_VERTICES, SNAPPING, TERRAIN, TERRAIN_BALANCE, TERRAIN_FIT,
-    TERRAIN_FIT_SWITCH, TOOLBOX, VECTOR, VIEW, VIEWS, WORLD_PROPERTIES, WORLDS, WORLDS_ROW,
-    brush_size_text, panels_menu, readout_line, readout_text, theme,
+    SNAP_DISTANCE, SNAPPING, TERRAIN, TERRAIN_BALANCE, TERRAIN_FIT, TERRAIN_FIT_SWITCH, TOOLBOX,
+    VECTOR, VIEW, VIEWS, WORLD_PROPERTIES, WORLDS, WORLDS_ROW, brush_size_text, panels_menu,
+    readout_line, readout_text, theme,
 };
 use vale_app::ui::raster_form::{self, PRESETS, RasterForm, face_size_name};
 use vale_app::ui::select;
@@ -7362,66 +7362,19 @@ fn the_snap_controls_work_with_a_pen_a_finger_and_a_mouse() {
         tap(&mut h, "Brush settings");
         check_controls(&h, &format!("{what} with the snap controls"));
         screenshot::save(&mut h, &format!("pad-snap-{}", size.0));
-        let snap = |h: &Pad| {
-            let s = &h.state().globe.snap;
-            [s.on, s.vertices, s.edges]
-        };
-        for (i, name) in [SNAPPING, SNAP_VERTICES, SNAP_EDGES]
-            .into_iter()
-            .enumerate()
-        {
-            assert!(snap(&h)[i], "{what}: {name}");
-            tap(&mut h, name);
-            assert!(!snap(&h)[i], "{what}: {name} after a finger");
-            pen_tap(&mut h, name);
-            assert!(snap(&h)[i], "{what}: {name} after a pen");
-            click(&mut h, name);
-            assert!(!snap(&h)[i], "{what}: {name} after a mouse");
-            tap(&mut h, name);
-        }
+        let on = |h: &Pad| h.state().globe.snap.on;
+        assert!(on(&h), "{what}");
+        tap(&mut h, SNAPPING);
+        assert!(!on(&h), "{what}: after a finger");
+        pen_tap(&mut h, SNAPPING);
+        assert!(on(&h), "{what}: after a pen");
+        click(&mut h, SNAPPING);
+        assert!(!on(&h), "{what}: after a mouse");
+        tap(&mut h, SNAPPING);
         slide_to_end(&mut h, SNAP_DISTANCE, false);
         assert_eq!(h.state().globe.snap.distance, 4.0, "{what}");
         slide_to_end(&mut h, SNAP_DISTANCE, true);
         assert_eq!(h.state().globe.snap.distance, 32.0, "{what}");
-    }
-}
-
-#[test]
-fn the_snap_sheet_has_a_switch_for_the_stops_of_each_raster_layer() {
-    for size in BOARDS {
-        let what = format!("{size:?}");
-        let mut h = pad(size);
-        let rain = vale_app::ui::RasterSpec {
-            name: "Rain".to_string(),
-            unit: "mm".to_string(),
-            min: 0.0,
-            max: 4000.0,
-            face_size: 256,
-        };
-        h.state_mut().add_raster(rain).unwrap();
-        let lines = h.state_mut().doc.add_layer(vale_store::GeometryKind::Line);
-        h.state_mut().select(Some(LayerRef::Vector(lines)));
-        h.run_steps(2);
-        quick_tap(&mut h, VECTOR);
-        assert!(h.state().globe.lining(), "{what}");
-        tap(&mut h, "Brush settings");
-        let rasters = panels::raster_layers(h.state());
-        assert_eq!(rasters.len(), 2, "{what}");
-        for (id, name) in rasters {
-            let name = panels::snap_stops_name(&name);
-            let on = |h: &Pad| h.state().globe.snap.stops(id);
-            assert!(on(&h), "{what}: {name}");
-            tap(&mut h, &name);
-            assert!(!on(&h), "{what}: {name} after a finger");
-            pen_tap(&mut h, &name);
-            assert!(on(&h), "{what}: {name} after a pen");
-            click(&mut h, &name);
-            assert!(!on(&h), "{what}: {name} after a mouse");
-            tap(&mut h, &name);
-            assert!(on(&h), "{what}: {name}");
-        }
-        check_controls(&h, &format!("{what} with the switches of the stops"));
-        screenshot::save(&mut h, &format!("pad-snap-stops-{}", size.0));
     }
 }
 
@@ -7452,6 +7405,12 @@ fn stroke_along_a_river(snap: bool) -> (Vec<[f64; 2]>, Vec<[f64; 2]>) {
     let (mut h, lines) = line_pad(BOARDS[0]);
     h.state_mut().globe.snap.on = snap;
     let rivers = vector(&h, "Rivers");
+    let types = vale_store::SnapTypes {
+        vertices: true,
+        edges: true,
+        stops: false,
+    };
+    h.state_mut().set_snap_target(lines, rivers, types);
     let longest = line_features(&h, rivers)
         .into_iter()
         .filter_map(|f| match f.geometry {
@@ -11246,7 +11205,7 @@ fn the_brush_button_of_the_measure_card_opens_the_snapping_settings() {
         quick_tap(&mut h, MEASURE);
         tap(&mut h, "Brush settings");
         assert!(h.state().pad.is_open(Panel::Brush), "{what}");
-        for name in [SNAPPING, SNAP_VERTICES, SNAP_EDGES, SNAP_DISTANCE] {
+        for name in [SNAPPING, SNAP_DISTANCE] {
             assert!(control(&h, name).is_some(), "{what}: {name}");
         }
         assert!(control(&h, "Brush size").is_none(), "{what}");
@@ -12968,7 +12927,7 @@ fn the_card_of_vertex_has_its_buttons_at_touch_size() {
     assert!(!h.state().globe.vertex.shared);
     // The Brush panel has the snap switches and the smoothing.
     tap(&mut h, "Brush settings");
-    for name in [SNAPPING, SNAP_VERTICES, SNAP_EDGES, "Line smoothing"] {
+    for name in [SNAPPING, "Line smoothing"] {
         assert!(row_of(&h, name).is_some(), "{name}");
     }
 }
@@ -13141,7 +13100,7 @@ fn a_move_of_a_shared_vertex_moves_both_polygons_with_the_switch_on() {
 }
 
 #[test]
-fn a_vertex_snaps_to_a_vertex_and_an_edge_and_the_switches_apply() {
+fn a_vertex_snaps_to_a_vertex_and_an_edge_and_the_targets_apply() {
     let dir = tempfile::tempdir().unwrap();
     let (mut h, picks) = vertex_pad(dir.path());
     h.state_mut().globe.vertex.shared = false;
@@ -13162,8 +13121,13 @@ fn a_vertex_snaps_to_a_vertex_and_an_edge_and_the_switches_apply() {
         ([14.0, -18.0], false, false, None),
     ];
     for (target, vertices, edges, want) in cases {
-        let snap = &mut h.state_mut().globe.snap;
-        (snap.vertices, snap.edges) = (vertices, edges);
+        let layer = picks.polygon.layer;
+        let types = vale_store::SnapTypes {
+            vertices,
+            edges,
+            stops: false,
+        };
+        h.state_mut().set_snap_target(layer, layer, types);
         let before = geometry_of(&h, picks.polygon);
         let from = screen_at(&h, corner[0], corner[1]);
         let to = screen_at(&h, target[0], target[1]) + vec2(-4.0, 3.0);

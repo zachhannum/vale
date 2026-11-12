@@ -309,7 +309,7 @@ fn snapping_finds_a_vertex_of_the_full_geometry() {
     );
     // A scale of 1,000 points per radian at the vertex.
     let at = lonlat_to_dir(vertex[0] + 0.0001, vertex[1]);
-    let snap = targets.snap(at, 1000.0, &SnapSettings::default(), None);
+    let snap = targets.snap(at, 1000.0, &SnapSettings::every(&targets), None);
     assert_eq!(snap.and_then(|s| s.exact), Some(vertex));
 }
 

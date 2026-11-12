@@ -61,8 +61,8 @@ use vale_app::ui::pad::labels::{
 use vale_app::ui::pad::rules::STROKE_WIDTH;
 use vale_app::ui::pad::widgets::eye_name;
 use vale_app::ui::pad::{
-    CLEAR_PATH, DELETE_VERTEX, DESELECT, GRATICULE, MEASURE, Panel, SNAP, SNAP_DISTANCE,
-    SNAP_EDGES, SNAP_VERTICES, SNAPPING, readout_line,
+    CLEAR_PATH, DELETE_VERTEX, DESELECT, GRATICULE, MEASURE, Panel, SNAP, SNAP_DISTANCE, SNAPPING,
+    readout_line,
 };
 use vale_app::ui::select::{DELETE as DELETE_SELECTION, TOOL as SELECT_TOOL};
 use vale_app::ui::{Action, AppState, ExportFormat, Layout, Screen, Workspace, draw};
@@ -3664,6 +3664,42 @@ fn a_point_in_a_frame_snaps_to_a_vertex_only_when_snap_is_on() {
 }
 
 #[test]
+fn measure_in_a_frame_snaps_to_the_layers_of_the_map() {
+    // With no active layer, and with another layer active, the layers of
+    // the map are the targets. A layer that the map hides is not one.
+    for (active, shown) in [
+        (None, true),
+        (Some("Places"), false),
+        (Some("Rivers"), true),
+    ] {
+        let mut h = measure_pad(1);
+        let layers = h.state().doc.project.layers();
+        let places = layers.iter().find(|l| l.name == "Places").unwrap();
+        let (id, target) = match &places.features[0].geometry {
+            Geometry::Points(points) => (places.id, points[0]),
+            _ => panic!("not a point"),
+        };
+        let active = active.and_then(|name| layers.iter().find(|l| l.name == name));
+        let active = active.map(vale_app::ui::LayerRef::of);
+        let state = h.state_mut();
+        state.select(active);
+        state.globe.snap.on = true;
+        let frame_id = frame(&h, 0).id;
+        let map = frame(&h, 0).map;
+        assert!(h.state_mut().doc.set_shown(map, id, shown) || shown);
+        let record = h.state_mut().doc.project.atlas.frame_mut(frame_id).unwrap();
+        record.center = target;
+        record.scale = 2.0e5;
+        h.run_steps(2);
+        let at = pos_of(&mut h, 0, target) + vec2(6.0, 6.0);
+        tap_with(&mut h, at, Input::Pen);
+        let point = h.state().measure.points[0];
+        assert_eq!(point.exact, shown, "{active:?} {shown}");
+        assert_eq!(point.pos == target, shown, "{active:?} {point:?}");
+    }
+}
+
+#[test]
 fn the_path_is_not_saved_and_a_page_change_or_a_tool_change_clears_it() {
     let dir = tempfile::tempdir().unwrap();
     let mut h = measure_pad(1);
@@ -3820,7 +3856,7 @@ fn the_measure_card_acts_on_the_path_in_the_atlas() {
     assert!(h.state().globe.snap.on);
     tap(&mut h, "Brush settings");
     assert!(h.state().pad.is_open(Panel::Brush));
-    for name in [SNAPPING, SNAP_VERTICES, SNAP_EDGES, SNAP_DISTANCE] {
+    for name in [SNAPPING, SNAP_DISTANCE] {
         assert!(control(&h, name).is_some(), "{name}");
     }
     check_controls(&h, "Atlas with the snapping settings");

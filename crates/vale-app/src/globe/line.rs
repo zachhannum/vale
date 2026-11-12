@@ -763,7 +763,7 @@ pub(super) mod tests {
         all.extend(layer.cloned());
         let t = Arc::new(snap_test::targets(&all));
         let id = layer.map_or(9, |l| l.id.0);
-        let runs = snap_test::trace(&t, &snap_test::pen(way, noise), SnapSettings::default(), id);
+        let runs = snap_test::trace(&t, &snap_test::pen(way, noise), SnapSettings::every(&t), id);
         let features = layer.map_or(&[][..], |l| &l.features[..]);
         let edit = commit(features, &runs, SCALE, 0.35).expect("a line");
         (runs, edit)

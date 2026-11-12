@@ -290,6 +290,14 @@ impl Session {
         Ok(())
     }
 
+    /// Writes the snap targets of each layer of `project`, with no undo
+    /// step.
+    pub fn save_snap_targets(&mut self, project: &Project) -> Result<(), StoreError> {
+        self.file.set_snap_targets(project)?;
+        self.mark_changed();
+        Ok(())
+    }
+
     /// The heightmap of each raster layer of the file, in the order of the
     /// project. A heightmap has the face size, the base level, the bands,
     /// and the tiles that the file holds.
