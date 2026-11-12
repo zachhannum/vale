@@ -16,6 +16,9 @@ pub const RESET_LAYOUT: &str = "Reset layout";
 pub const WORLD: &str = "World";
 pub const SELECTION: &str = "Selection";
 pub const ATLAS: &str = "Atlas";
+/// The name of the control of the Snap tile, which differs from the name
+/// of the Snap cell of the cards.
+pub const SNAP_TILE: &str = "Snap panel";
 
 /// The padding of the menu.
 const PAD: f32 = 12.0;
@@ -30,7 +33,10 @@ const HEADING: f32 = 28.0;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Tile {
     pub entry: Panel,
+    /// The name on the tile.
     pub name: &'static str,
+    /// The name of the control.
+    pub control: &'static str,
     pub icon: Icon,
     pub open: bool,
 }
@@ -46,6 +52,11 @@ pub fn world(state: &AppState) -> Vec<Group> {
     let panel = |entry: Panel, name, icon| Tile {
         entry,
         name,
+        control: if entry == Panel::Snap {
+            SNAP_TILE
+        } else {
+            name
+        },
         icon,
         open: state.pad.is_open(entry),
     };
@@ -56,6 +67,7 @@ pub fn world(state: &AppState) -> Vec<Group> {
             panel(Panel::Attributes, select::ATTRIBUTES, Icon::Attributes),
             panel(Panel::Toolbox, super::TOOLBOX, Icon::Toolbox),
             panel(Panel::Brush, BRUSH, Icon::Brush),
+            panel(Panel::Snap, super::SNAP, Icon::Magnet),
         ],
     }]
 }
@@ -65,6 +77,11 @@ pub fn atlas(state: &AppState) -> Vec<Group> {
     let panel = |entry: Panel, name, icon| Tile {
         entry,
         name,
+        control: if entry == Panel::Snap {
+            SNAP_TILE
+        } else {
+            name
+        },
         icon,
         open: state.pad.is_open(entry),
     };
@@ -89,6 +106,7 @@ pub fn atlas(state: &AppState) -> Vec<Group> {
                 panel(Panel::Pages, PAGES, Icon::Pages),
                 panel(Panel::Attributes, select::ATTRIBUTES, Icon::Attributes),
                 panel(Panel::Brush, BRUSH, Icon::Brush),
+                panel(Panel::Snap, super::SNAP, Icon::Magnet),
             ],
         },
     ]
@@ -203,7 +221,7 @@ fn paint_tile(ui: &egui::Ui, controls: &mut Controls, rect: Rect, tile: &Tile) -
         ui,
         controls,
         rect,
-        tile.name,
+        tile.control,
         Sense::click(),
         true,
         Some(tile.open),

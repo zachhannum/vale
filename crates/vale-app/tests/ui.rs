@@ -1982,6 +1982,75 @@ fn the_toolbar_and_the_keys_work_the_measure_tool() {
 }
 
 #[test]
+fn the_snap_options_menu_lists_the_visible_layers_and_a_check_box_changes_a_target() {
+    use vale_app::ui::pad::{SNAP_EDGES, SNAP_VERTICES};
+    use vale_app::ui::panels::{MEASURE_TOOL, SNAP_OPTIONS};
+    let mut state = AppState::new(Document::sample()).unwrap();
+    state.headless = true;
+    let lines = state.doc.add_layer(GeometryKind::Line);
+    let layers = state.doc.project.layers();
+    let rivers = layers.iter().find(|l| l.name == "Rivers").unwrap().id;
+    let ids: Vec<LayerId> = layers.iter().map(|l| l.id).collect();
+    for id in ids {
+        state
+            .doc
+            .project
+            .set_layer_visible(id, id == lines || id == rivers);
+    }
+    state.select(Some(LayerRef::Vector(lines)));
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(SIZE.0 as f32, SIZE.1 as f32))
+        .with_pixels_per_point(1.0)
+        .build_ui_state(|ui, state: &mut AppState| draw(ui, state), state);
+    h.run_steps(3);
+    h.get_by_label(MEASURE_TOOL).click();
+    h.run_steps(3);
+    h.get_by_label(SNAP_OPTIONS).click();
+    h.run_steps(3);
+    // The visible layers are in the order of the layer list, each with its
+    // check boxes.
+    let project = &h.state().doc.project;
+    let shown: Vec<(LayerId, String)> = (project.layers().iter())
+        .filter(|l| l.visible)
+        .map(|l| (l.id, l.name.clone()))
+        .collect();
+    assert_eq!(shown.len(), 2);
+    let tops: Vec<f32> = (shown.iter())
+        .map(|(_, name)| h.get_by_label(name).rect().top())
+        .collect();
+    assert!(tops[0] < tops[1], "{shown:?}");
+    let checked = |h: &Harness<'_, AppState>, label: &str, i: usize| {
+        let node = h.get_all_by_label(label).nth(i).unwrap();
+        node.accesskit_node().toggled() == Some(egui::accesskit::Toggled::True)
+    };
+    let own = shown.iter().position(|(id, _)| *id == lines).unwrap();
+    let other = 1 - own;
+    assert_eq!(h.get_all_by_label(SNAP_VERTICES).count(), 2);
+    assert!(checked(&h, SNAP_VERTICES, own));
+    assert!(checked(&h, SNAP_EDGES, own));
+    assert!(!checked(&h, SNAP_VERTICES, other));
+    // A check box changes the target of the active layer.
+    h.get_all_by_label(SNAP_VERTICES)
+        .nth(other)
+        .unwrap()
+        .click();
+    h.run_steps(3);
+    let targets = h.state().doc.project.snap_targets(lines);
+    let types = targets
+        .iter()
+        .find(|(id, _)| *id == rivers)
+        .map(|(_, t)| *t);
+    let want = SnapTypes {
+        vertices: true,
+        edges: false,
+        stops: false,
+    };
+    assert_eq!(types, Some(want));
+    assert!(h.state().globe.snap.targets.vertices.contains(&rivers));
+    assert!(h.state().doc.project.snap_targets(rivers).len() == 1);
+}
+
+#[test]
 fn the_toolbar_and_the_keys_work_the_measure_tool_in_the_atlas() {
     use vale_app::ui::atlas::AtlasTool;
     use vale_app::ui::pad::CLEAR_PATH;

@@ -61,8 +61,8 @@ use vale_app::ui::pad::labels::{
 use vale_app::ui::pad::rules::STROKE_WIDTH;
 use vale_app::ui::pad::widgets::eye_name;
 use vale_app::ui::pad::{
-    CLEAR_PATH, DELETE_VERTEX, DESELECT, GRATICULE, MEASURE, Panel, SNAP, SNAP_DISTANCE, SNAPPING,
-    readout_line,
+    CLEAR_PATH, DELETE_VERTEX, DESELECT, GRATICULE, MAP_SNAP, MEASURE, Panel, SNAP, SNAP_DISTANCE,
+    SNAP_HINT, SNAPPING, readout_line,
 };
 use vale_app::ui::select::{DELETE as DELETE_SELECTION, TOOL as SELECT_TOOL};
 use vale_app::ui::{Action, AppState, ExportFormat, Layout, Screen, Workspace, draw};
@@ -3852,14 +3852,47 @@ fn the_measure_card_acts_on_the_path_in_the_atlas() {
     }
     tap(&mut h, CLEAR_PATH);
     assert!(h.state().measure.is_empty());
-    tap(&mut h, SNAP);
+    quick_tap(&mut h, SNAP);
     assert!(h.state().globe.snap.on);
     tap(&mut h, "Brush settings");
     assert!(h.state().pad.is_open(Panel::Brush));
+    assert!(h.query_by_label(SNAP_HINT).is_some());
     for name in [SNAPPING, SNAP_DISTANCE] {
-        assert!(control(&h, name).is_some(), "{name}");
+        assert!(control(&h, name).is_none(), "{name}");
     }
-    check_controls(&h, "Atlas with the snapping settings");
+    check_controls(&h, "Atlas with the Brush panel");
+    // A long press on Snap opens the Snap panel and keeps Snapping on.
+    long_press(&mut h, SNAP);
+    assert!(h.state().pad.is_open(Panel::Snap));
+    assert!(h.state().globe.snap.on);
+    check_atlas_snap_panel(&h, "Atlas with the Snap panel");
+}
+
+/// The Snap panel of the Atlas has the Snapping switch, the distance, and
+/// a hint, and no rows of the snap targets.
+fn check_atlas_snap_panel(h: &Pad, what: &str) {
+    for name in [SNAPPING, SNAP_DISTANCE] {
+        assert!(control(h, name).is_some(), "{what}: {name}");
+    }
+    assert!(h.query_by_label(MAP_SNAP).is_some(), "{what}");
+    let controls = &h.state().pad.controls;
+    let targets = controls.iter().filter(|c| c.name.contains(" of "));
+    assert_eq!(targets.count(), 0, "{what}");
+    check_controls(h, what);
+}
+
+#[test]
+fn the_snap_panel_of_the_atlas_has_the_switch_the_distance_and_a_hint() {
+    use vale_app::ui::pad::panels_menu::SNAP_TILE;
+    let mut h = measure_pad(1);
+    let places = layer_id(&h, "Places");
+    h.state_mut()
+        .select(Some(vale_app::ui::LayerRef::Vector(places)));
+    h.run_steps(2);
+    open_panel(&mut h, SNAP_TILE);
+    assert!(h.state().pad.is_open(Panel::Snap));
+    check_atlas_snap_panel(&h, "the Snap tile of the Atlas");
+    screenshot::save(&mut h, "atlas-snap-panel");
 }
 
 /// The label classes of a layer in a map.
@@ -10488,6 +10521,7 @@ fn the_panels_menu_of_the_atlas_opens_the_frame_panels_and_the_pages() {
         panels_menu::PAGES,
         vale_app::ui::select::ATTRIBUTES,
         panels_menu::BRUSH,
+        SNAP,
     ]);
     assert_eq!(names, want);
     check_controls(&h, "the Panels menu");

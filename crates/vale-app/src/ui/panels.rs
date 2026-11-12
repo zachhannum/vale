@@ -317,15 +317,43 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
     });
 }
 
-/// The Snap check box and the menu of the snap settings.
+/// The Snap check box and the menu of the snap settings: the distance, and
+/// on the globe the snap targets of the active layer in each visible layer.
 fn snap_controls(ui: &mut egui::Ui, state: &mut AppState) {
-    let snap = &mut state.globe.snap;
-    ui.checkbox(&mut snap.on, SNAP);
+    ui.checkbox(&mut state.globe.snap.on, SNAP);
     ui.menu_button(SNAP_OPTIONS, |ui| {
+        let snap = &mut state.globe.snap;
         number::slider(SNAP_DISTANCE, &mut snap.distance, snap::DISTANCE_RANGE)
             .step(1.0)
             .suffix(" pt")
             .show(ui);
+        if state.workspace == Workspace::Atlas {
+            return;
+        }
+        let Some(active) = state.active_layer_id() else {
+            ui.weak(pad::NO_SNAP_LAYER);
+            return;
+        };
+        let targets = state.doc.project.snap_targets(active);
+        for layer in pad::snap_layers(state) {
+            let mut types = pad::snap_types(&targets, layer.id);
+            let before = types;
+            ui.separator();
+            ui.label(&layer.name);
+            match layer.stops {
+                None => {
+                    ui.checkbox(&mut types.vertices, pad::SNAP_VERTICES);
+                    ui.checkbox(&mut types.edges, pad::SNAP_EDGES);
+                }
+                Some(bands) => {
+                    let check = egui::Checkbox::new(&mut types.stops, pad::SNAP_STOPS);
+                    ui.add_enabled(bands, check);
+                }
+            }
+            if types != before {
+                state.set_snap_target(active, layer.id, types);
+            }
+        }
     });
 }
 
