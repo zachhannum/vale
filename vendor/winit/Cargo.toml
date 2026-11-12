@@ -429,6 +429,8 @@ features = [
     "NSProcessInfo",
     "NSThread",
     "NSSet",
+    "NSDictionary",
+    "NSURL",
 ]
 
 [target.'cfg(target_os = "ios")'.dependencies.objc2-ui-kit]
@@ -439,6 +441,7 @@ features = [
     "UIEvent",
     "UIGeometry",
     "UIGestureRecognizer",
+    "UIOpenURLContext",
     "UITextInput",
     "UITextInputTraits",
     "UIOrientation",
@@ -446,6 +449,10 @@ features = [
     "UIPinchGestureRecognizer",
     "UIResponder",
     "UIRotationGestureRecognizer",
+    "UIScene",
+    "UISceneDefinitions",
+    "UISceneOptions",
+    "UISceneSession",
     "UIScreen",
     "UIScreenMode",
     "UITapGestureRecognizer",
@@ -454,6 +461,7 @@ features = [
     "UIView",
     "UIViewController",
     "UIWindow",
+    "UIWindowScene",
 ]
 
 [target.'cfg(target_os = "macos")'.dependencies.core-graphics]

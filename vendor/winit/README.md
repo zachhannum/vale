@@ -1,70 +1,26 @@
-# winit - Cross-platform window creation and management in Rust
+# winit, patched for Vale
 
-[![Crates.io](https://img.shields.io/crates/v/winit.svg)](https://crates.io/crates/winit)
-[![Docs.rs](https://docs.rs/winit/badge.svg)](https://docs.rs/winit)
-[![Master Docs](https://img.shields.io/github/actions/workflow/status/rust-windowing/winit/docs.yml?branch=master&label=master%20docs
-)](https://rust-windowing.github.io/winit/winit/index.html)
-[![CI Status](https://github.com/rust-windowing/winit/workflows/CI/badge.svg)](https://github.com/rust-windowing/winit/actions)
+This is a copy of `winit` 0.30.13 from crates.io, with a small change. The root `Cargo.toml` uses it through `[patch.crates-io]`. The license is the license of winit: `Apache-2.0`.
 
-```toml
-[dependencies]
-winit = "0.30.13"
-```
+The change gives the iOS backend a scene delegate, as Apple recommends for iPhone Duo. A window takes its screen, its size, and its scale from its window scene.
 
-## [Documentation](https://docs.rs/winit)
+## The change
 
-For features _within_ the scope of winit, see [FEATURES.md](FEATURES.md).
+To upgrade winit, apply these changes to the new version:
 
-For features _outside_ the scope of winit, see [Are we GUI Yet?](https://areweguiyet.com/) and [Are we game yet?](https://arewegameyet.rs/), depending on what kind of project you're looking to do.
-
-## Contact Us
-
-Join us in our [![Matrix](https://img.shields.io/badge/Matrix-%23rust--windowing%3Amatrix.org-blueviolet.svg)](https://matrix.to/#/#rust-windowing:matrix.org) room.
-
-The maintainers have a meeting every friday at UTC 15. The meeting notes can be found [here](https://hackmd.io/@winit-meetings).
-
-## Usage
-
-Winit is a window creation and management library. It can create windows and lets you handle
-events (for example: the window being resized, a key being pressed, a mouse movement, etc.)
-produced by the window.
-
-Winit is designed to be a low-level brick in a hierarchy of libraries. Consequently, in order to
-show something on the window you need to use the platform-specific getters provided by winit, or
-another library.
-
-## CONTRIBUTING
-
-For contributing guidelines see [CONTRIBUTING.md](./CONTRIBUTING.md).
-
-## MSRV Policy
-
-This crate's Minimum Supported Rust Version (MSRV) is **1.70**. Changes to
-the MSRV will be accompanied by a minor version bump.
-
-As a **tentative** policy, the upper bound of the MSRV is given by the following
-formula:
-
-```
-min(sid, stable - 3)
-```
-
-Where `sid` is the current version of `rustc` provided by [Debian Sid], and
-`stable` is the latest stable version of Rust. This bound may be broken in case of a major ecosystem shift or a security vulnerability.
-
-[Debian Sid]: https://packages.debian.org/sid/rustc
-
-The exception is for the Android platform, where a higher Rust version
-must be used for certain Android features. In this case, the MSRV will be
-capped at the latest stable version of Rust minus three. This inconsistency is
-not reflected in Cargo metadata, as it is not powerful enough to expose this
-restriction.
-
-All crates in the [`rust-windowing`] organizations have the
-same MSRV policy.
-
-[`rust-windowing`]: https://github.com/rust-windowing
-
-### Platform-specific usage
-
-Check out the [`winit::platform`](https://rust-windowing.github.io/winit/winit/platform/index.html) module for platform-specific usage.
+1. In `Cargo.toml`, add the features `NSDictionary` and `NSURL` to `objc2-foundation`, and the features `UIOpenURLContext`, `UIScene`, `UISceneDefinitions`, `UISceneOptions`, `UISceneSession`, and `UIWindowScene` to `objc2-ui-kit`.
+2. Add the file `src/platform_impl/ios/scene.rs`, and declare it in `src/platform_impl/ios/mod.rs`. It has these items:
+   - `WinitSceneDelegate` is a `UIResponder` that conforms to `UIWindowSceneDelegate`. An app names it in the `UISceneDelegateClassName` key of its scene manifest. When a scene connects, the delegate puts the waiting windows on the scene. It gives the URLs of the connection options and of `scene:openURLContexts:` to `application:openURL:options:` of the app delegate.
+   - `current` returns the window scene of the app: the active scene, or else the first connected scene.
+   - `wait_for_scene` keeps a window until a scene connects.
+   - `register` registers the class of the delegate.
+3. In `EventLoop::run` in `event_loop.rs`, call `scene::register` before `UIApplicationMain`. `ActiveEventLoop::primary_monitor` returns the screen of the scene.
+4. In `window.rs`:
+   - `Window::new` takes the bounds and the scale of the window from the scene: `coordinateSpace().bounds()` and `traitCollection().displayScale()`. If no scene is connected, it uses the main screen, and it gives the window to `wait_for_scene`. A fullscreen window on a given monitor uses the bounds and the scale of that screen.
+   - `WinitUIWindow::new` takes the scene, and it makes the window with `initWithWindowScene:` and then sets the frame.
+   - `current_monitor` and `primary_monitor` return the screen of the window scene.
+   - `set_scale_factor` calls `WinitView::stop_scene_scale`.
+5. In `view.rs`:
+   - `WinitViewState` has the field `scene_scale: Cell<bool>`. It is true if the window attributes give no scale factor.
+   - `WinitView::new` takes the scale of the scene, and it sets the content scale factor to the scale of the attributes or else to the scale of the scene.
+   - In `layoutSubviews`, if `scene_scale` is true and the display scale of the window scene is not the content scale factor, the view calls `setContentScaleFactor` with the display scale. That call sends the events of the new scale and size. Otherwise, the size of the `Resized` event uses the content scale factor, not the scale of the screen.

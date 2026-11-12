@@ -10,7 +10,7 @@ use objc2_foundation::{
 };
 use objc2_ui_kit::{
     UIApplication, UICoordinateSpace, UIResponder, UIScreen, UIScreenOverscanCompensation,
-    UIViewController, UIWindow,
+    UIViewController, UIWindow, UIWindowScene,
 };
 use tracing::{debug, warn};
 
@@ -24,7 +24,7 @@ use crate::event::{Event, WindowEvent};
 use crate::icon::Icon;
 use crate::platform::ios::{ScreenEdge, StatusBarStyle, ValidOrientations};
 use crate::platform_impl::platform::{
-    app_state, monitor, ActiveEventLoop, Fullscreen, MonitorHandle,
+    app_state, monitor, scene, ActiveEventLoop, Fullscreen, MonitorHandle,
 };
 use crate::window::{
     CursorGrabMode, ImePurpose, ResizeDirection, Theme, UserAttentionType, WindowAttributes,
@@ -77,10 +77,19 @@ impl WinitUIWindow {
     pub(crate) fn new(
         mtm: MainThreadMarker,
         window_attributes: &WindowAttributes,
+        window_scene: Option<&UIWindowScene>,
         frame: CGRect,
         view_controller: &UIViewController,
     ) -> Retained<Self> {
-        let this: Retained<Self> = unsafe { msg_send_id![mtm.alloc(), initWithFrame: frame] };
+        let this: Retained<Self> = match window_scene {
+            Some(window_scene) => unsafe {
+                let this: Retained<Self> =
+                    msg_send_id![mtm.alloc(), initWithWindowScene: window_scene];
+                this.setFrame(frame);
+                this
+            },
+            None => unsafe { msg_send_id![mtm.alloc(), initWithFrame: frame] },
+        };
 
         this.setRootViewController(Some(view_controller));
 
@@ -397,7 +406,11 @@ impl Inner {
 
     // Allow directly accessing the current monitor internally without unwrapping.
     fn current_monitor_inner(&self) -> MonitorHandle {
-        MonitorHandle::new(self.window.screen())
+        let screen = match unsafe { self.window.windowScene() } {
+            Some(scene) => unsafe { scene.screen() },
+            None => self.window.screen(),
+        };
+        MonitorHandle::new(screen)
     }
 
     pub fn current_monitor(&self) -> Option<MonitorHandle> {
@@ -409,8 +422,7 @@ impl Inner {
     }
 
     pub fn primary_monitor(&self) -> Option<MonitorHandle> {
-        #[allow(deprecated)]
-        Some(MonitorHandle::new(UIScreen::mainScreen(MainThreadMarker::new().unwrap())))
+        Some(self.current_monitor_inner())
     }
 
     pub fn id(&self) -> WindowId {
@@ -497,21 +509,34 @@ impl Window {
 
         // TODO: transparency, visible
 
-        #[allow(deprecated)]
-        let main_screen = UIScreen::mainScreen(mtm);
-        let fullscreen = window_attributes.fullscreen.clone().map(Into::into);
-        let screen = match fullscreen {
-            Some(Fullscreen::Exclusive(ref video_mode)) => video_mode.monitor.ui_screen(mtm),
-            Some(Fullscreen::Borderless(Some(ref monitor))) => monitor.ui_screen(mtm),
-            Some(Fullscreen::Borderless(None)) | None => &main_screen,
+        // The window takes its bounds and its scale from its scene. Before a
+        // scene connects, it takes them from the main screen.
+        let window_scene = scene::current(mtm);
+        let fullscreen_screen = match window_attributes.fullscreen.clone().map(Into::into) {
+            Some(Fullscreen::Exclusive(ref video_mode)) => {
+                Some(video_mode.monitor.ui_screen(mtm).clone())
+            },
+            Some(Fullscreen::Borderless(Some(ref monitor))) => Some(monitor.ui_screen(mtm).clone()),
+            Some(Fullscreen::Borderless(None)) | None => None,
         };
-
-        let screen_bounds = screen.bounds();
+        let (screen_bounds, scene_scale) = match (&fullscreen_screen, &window_scene) {
+            (Some(screen), _) => (screen.bounds(), screen.scale()),
+            (None, Some(window_scene)) => unsafe {
+                (
+                    window_scene.coordinateSpace().bounds(),
+                    window_scene.traitCollection().displayScale(),
+                )
+            },
+            (None, None) => {
+                #[allow(deprecated)]
+                let main_screen = UIScreen::mainScreen(mtm);
+                (main_screen.bounds(), main_screen.scale())
+            },
+        };
 
         let frame = match window_attributes.inner_size {
             Some(dim) => {
-                let scale_factor = screen.scale();
-                let size = dim.to_logical::<f64>(scale_factor as f64);
+                let size = dim.to_logical::<f64>(scene_scale as f64);
                 CGRect {
                     origin: screen_bounds.origin,
                     size: CGSize { width: size.width as _, height: size.height as _ },
@@ -520,13 +545,22 @@ impl Window {
             None => screen_bounds,
         };
 
-        let view = WinitView::new(mtm, &window_attributes, frame);
+        let view = WinitView::new(mtm, &window_attributes, frame, scene_scale);
 
         let gl_or_metal_backed =
             view.isKindOfClass(class!(CAMetalLayer)) || view.isKindOfClass(class!(CAEAGLLayer));
 
         let view_controller = WinitViewController::new(mtm, &window_attributes, &view);
-        let window = WinitUIWindow::new(mtm, &window_attributes, frame, &view_controller);
+        let window = WinitUIWindow::new(
+            mtm,
+            &window_attributes,
+            window_scene.as_deref(),
+            frame,
+            &view_controller,
+        );
+        if window_scene.is_none() {
+            scene::wait_for_scene(window.clone());
+        }
 
         app_state::set_key_window(mtm, &window);
 
@@ -602,6 +636,7 @@ impl Inner {
             "`WindowExtIOS::set_scale_factor` received an invalid hidpi factor"
         );
         let scale_factor = scale_factor as CGFloat;
+        self.view.stop_scene_scale();
         self.view.setContentScaleFactor(scale_factor);
     }
 

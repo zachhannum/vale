@@ -31,6 +31,9 @@ pub struct WinitViewState {
     rotation_last_delta: Cell<CGFloat>,
     pinch_last_delta: Cell<CGFloat>,
     pan_last_delta: Cell<CGPoint>,
+
+    /// The scale factor follows the scale of the window scene.
+    scene_scale: Cell<bool>,
 }
 
 declare_class!(
@@ -69,10 +72,26 @@ declare_class!(
 
             let window = self.window().unwrap();
             let window_bounds = window.bounds();
+
+            // The scale of the window scene changes when the scene moves to
+            // another screen. `setContentScaleFactor` sends the new size.
+            if self.ivars().scene_scale.get() {
+                if let Some(scene) = unsafe { window.windowScene() } {
+                    let scale = unsafe { scene.traitCollection().displayScale() };
+                    if scale > 0.0 && scale != self.contentScaleFactor() {
+                        if self.frame() != window_bounds {
+                            self.setFrame(window_bounds);
+                        }
+                        self.setContentScaleFactor(scale);
+                        return;
+                    }
+                }
+            }
+
             let screen = window.screen();
             let screen_space = screen.coordinateSpace();
             let screen_frame = self.convertRect_toCoordinateSpace(window_bounds, &screen_space);
-            let scale_factor = screen.scale();
+            let scale_factor = self.contentScaleFactor();
             let size = crate::dpi::LogicalSize {
                 width: screen_frame.size.width as f64,
                 height: screen_frame.size.height as f64,
@@ -358,6 +377,7 @@ impl WinitView {
         mtm: MainThreadMarker,
         window_attributes: &WindowAttributes,
         frame: CGRect,
+        scene_scale: CGFloat,
     ) -> Retained<Self> {
         let this = mtm.alloc().set_ivars(WinitViewState {
             pinch_gesture_recognizer: RefCell::new(None),
@@ -368,16 +388,22 @@ impl WinitView {
             rotation_last_delta: Cell::new(0.0),
             pinch_last_delta: Cell::new(0.0),
             pan_last_delta: Cell::new(CGPoint { x: 0.0, y: 0.0 }),
+
+            scene_scale: Cell::new(window_attributes.platform_specific.scale_factor.is_none()),
         });
         let this: Retained<Self> = unsafe { msg_send_id![super(this), initWithFrame: frame] };
 
         this.setMultipleTouchEnabled(true);
 
-        if let Some(scale_factor) = window_attributes.platform_specific.scale_factor {
-            this.setContentScaleFactor(scale_factor as _);
-        }
+        let scale_factor = window_attributes.platform_specific.scale_factor;
+        this.setContentScaleFactor(scale_factor.map_or(scene_scale, |scale| scale as _));
 
         this
+    }
+
+    /// Keeps the scale factor that the app sets.
+    pub(crate) fn stop_scene_scale(&self) {
+        self.ivars().scene_scale.set(false);
     }
 
     fn window(&self) -> Option<Retained<WinitUIWindow>> {

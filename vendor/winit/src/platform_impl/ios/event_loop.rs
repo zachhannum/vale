@@ -19,7 +19,7 @@ use objc2_ui_kit::{
     UIApplicationDidEnterBackgroundNotification, UIApplicationDidFinishLaunchingNotification,
     UIApplicationDidReceiveMemoryWarningNotification, UIApplicationMain,
     UIApplicationWillEnterForegroundNotification, UIApplicationWillResignActiveNotification,
-    UIApplicationWillTerminateNotification, UIDevice, UIScreen, UIUserInterfaceIdiom,
+    UIApplicationWillTerminateNotification, UIDevice, UIUserInterfaceIdiom,
 };
 
 use crate::error::EventLoopError;
@@ -33,7 +33,7 @@ use crate::window::{CustomCursor, CustomCursorSource, Theme};
 
 use super::app_state::{send_occluded_event_for_all_windows, AppState, EventWrapper};
 use super::notification_center::create_observer;
-use super::{app_state, monitor, MonitorHandle};
+use super::{app_state, monitor, scene, MonitorHandle};
 
 #[derive(Debug)]
 pub struct ActiveEventLoop {
@@ -51,8 +51,7 @@ impl ActiveEventLoop {
     }
 
     pub fn primary_monitor(&self) -> Option<MonitorHandle> {
-        #[allow(deprecated)]
-        Some(MonitorHandle::new(UIScreen::mainScreen(self.mtm)))
+        scene::current(self.mtm).map(|scene| MonitorHandle::new(unsafe { scene.screen() }))
     }
 
     #[inline]
@@ -295,6 +294,7 @@ impl<T: 'static> EventLoop<T> {
         let handler = EventLoopHandler { handler, event_loop: self.window_target };
 
         app_state::will_launch(self.mtm, handler);
+        scene::register();
 
         extern "C" {
             // These functions are in crt_externs.h.
