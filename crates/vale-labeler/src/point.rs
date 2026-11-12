@@ -4,7 +4,7 @@ use crate::collide::OrientedBox;
 use crate::engine::Candidate;
 use crate::graticule::{Parallels, upright};
 use crate::line::{along, parallel};
-use crate::model::{CandidateKind, LabelClass, PointPlacement, PointPosition};
+use crate::model::{CandidateKind, LabelClass, Leader, PointPlacement, PointPosition};
 use crate::polygon::{follow, glyph_boxes};
 use crate::text::ShapedText;
 use kurbo::{Affine, Point, Rect};
@@ -94,4 +94,19 @@ pub(crate) fn candidates(
         });
     }
     out
+}
+
+/// A leader line from the edge of the symbol to the nearest point of the ink `rect`.
+pub(crate) fn leader(position: Point, symbol_radius: f64, rect: Rect) -> Leader {
+    let end = Point::new(
+        position.x.clamp(rect.x0, rect.x1),
+        position.y.clamp(rect.y0, rect.y1),
+    );
+    let d = end - position;
+    let anchor = if d.hypot() > symbol_radius && symbol_radius > 0.0 {
+        position + d * (symbol_radius / d.hypot())
+    } else {
+        position
+    };
+    Leader { anchor, end }
 }

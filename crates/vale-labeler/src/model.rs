@@ -309,6 +309,62 @@ pub enum Placement {
     Polygon(PolygonPlacement),
 }
 
+/// A way to place a label that does not fit. Removal comes after the last fallback of a class.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum Fallback {
+    /// Smaller font sizes, one step at a time, down to [`Fallbacks::min_size`].
+    SmallerFont,
+    /// The words on two or more horizontal lines, up to [`Fallbacks::max_lines`].
+    Stack,
+    /// The words of [`Fallbacks::abbreviations`] in their short form.
+    Abbreviate,
+    /// A point label farther from its symbol, or a polygon label outside the shape, with a
+    /// leader line. A line label has no leader line.
+    Leader,
+}
+
+impl Fallback {
+    /// All fallbacks in the default order.
+    pub const ALL: [Fallback; 4] = [
+        Fallback::SmallerFont,
+        Fallback::Stack,
+        Fallback::Abbreviate,
+        Fallback::Leader,
+    ];
+}
+
+/// The fallbacks of a label class and their options.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Fallbacks {
+    /// The fallbacks to try, in order. Each one starts again from the label of the class.
+    pub order: Vec<Fallback>,
+    /// The smallest font size of [`Fallback::SmallerFont`], in page units.
+    pub min_size: f64,
+    /// The step between two font sizes, in page units.
+    pub size_step: f64,
+    /// The most lines of [`Fallback::Stack`].
+    pub max_lines: usize,
+    /// Pairs of a word and its short form, for example "Mount" and "Mt.". A word matches as a
+    /// whole word, with the same case.
+    pub abbreviations: Vec<(String, String)>,
+    /// The extra distance of a point label with a leader line from its symbol, in page units.
+    pub leader_distance: f64,
+}
+
+impl Default for Fallbacks {
+    /// No fallbacks, so a label that does not fit is removed.
+    fn default() -> Self {
+        Self {
+            order: Vec::new(),
+            min_size: 6.0,
+            size_step: 1.0,
+            max_lines: 2,
+            abbreviations: Vec::new(),
+            leader_distance: 12.0,
+        }
+    }
+}
+
 /// A group of labels that share style and rules.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LabelClass {
@@ -322,6 +378,7 @@ pub struct LabelClass {
     /// Minimum distance between labels of this class with the same text.
     /// `None` keeps all of them.
     pub duplicate_distance: Option<f64>,
+    pub fallbacks: Fallbacks,
 }
 
 /// Page-space geometry of a feature.
@@ -465,6 +522,8 @@ pub struct PlacedLabel {
     pub bounds: Rect,
     pub cost: f64,
     pub leader: Option<Leader>,
+    /// The fallback that placed the label, or `None` if the label of the class fits.
+    pub fallback: Option<Fallback>,
 }
 
 impl PlacedLabel {

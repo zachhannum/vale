@@ -26,6 +26,7 @@ fn class(placement: Placement) -> LabelClass {
         margin: 0.0,
         placement,
         duplicate_distance: None,
+        fallbacks: Default::default(),
     }
 }
 

@@ -475,6 +475,45 @@ impl ShapedText {
             .iter()
             .flat_map(|r| r.glyphs.iter().map(move |g| (r, g)))
     }
+
+    /// The lines one above the other, `line_height` apart and centered. The baseline of the last
+    /// line is at zero, and the cap height spans all lines, so horizontal placement treats the
+    /// block as one tall line.
+    pub fn stack(lines: Vec<ShapedText>, line_height: f64) -> ShapedText {
+        let n = lines.len();
+        let width = lines.iter().map(|l| l.advance).fold(0.0, f64::max);
+        let rise = (n.saturating_sub(1)) as f64 * line_height;
+        let mut out = ShapedText {
+            runs: Vec::new(),
+            advance: width,
+            ascent: lines.first().map_or(0.0, |l| l.ascent) + rise,
+            descent: lines.last().map_or(0.0, |l| l.descent),
+            cap_height: lines.first().map_or(0.0, |l| l.cap_height) + rise,
+            ink_bounds: Rect::ZERO,
+            missing_glyphs: 0,
+        };
+        let mut ink: Option<Rect> = None;
+        for (i, line) in lines.into_iter().enumerate() {
+            let shift = Vec2::new(
+                (width - line.advance) / 2.0,
+                -((n - 1 - i) as f64) * line_height,
+            );
+            out.missing_glyphs += line.missing_glyphs;
+            if line.ink_bounds != Rect::ZERO {
+                let moved = line.ink_bounds + shift;
+                ink = Some(ink.map_or(moved, |r| r.union(moved)));
+            }
+            for mut run in line.runs {
+                for g in &mut run.glyphs {
+                    g.x += shift.x;
+                    g.y += shift.y;
+                }
+                out.runs.push(run);
+            }
+        }
+        out.ink_bounds = ink.unwrap_or(Rect::ZERO);
+        out
+    }
 }
 
 struct PathPen(BezPath);
@@ -669,6 +708,7 @@ mod tests {
             bounds: Rect::ZERO,
             cost: 0.0,
             leader: None,
+            fallback: None,
         };
         let ob = label.outlines().bounding_box();
         let want = sb + Vec2::new(100.0, 50.0);
