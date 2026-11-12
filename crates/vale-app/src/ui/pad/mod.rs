@@ -488,7 +488,9 @@ pub struct PadState {
     pub place_rect: Option<Rect>,
     /// A finger, the pen, or the mouse button is down on the canvas.
     pub canvas_down: bool,
-    /// The last time that `canvas_down` was true.
+    /// The pen hovers over the canvas.
+    pub pen_hover: bool,
+    /// The last time that `canvas_down` or `pen_hover` was true.
     last_down: Option<std::time::Instant>,
     /// The banner of a save that failed in the last frame.
     pub save_banner: Option<Rect>,

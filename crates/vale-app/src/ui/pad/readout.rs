@@ -39,8 +39,9 @@ const BANNER: Color32 = Color32::from_rgb(70, 30, 30);
 const ALERT: Color32 = Color32::from_rgb(238, 116, 100);
 
 /// True if the place shows above the readout. It shows while a touch is
-/// down on the canvas, while the Measure tool has a result, and for
-/// `PLACE_TIME` after `last_down`, the last time that a touch was down.
+/// down on the canvas or the pen hovers over it, while the Measure tool has
+/// a result, and for `PLACE_TIME` after `last_down`, the last time of a
+/// touch or a hover.
 pub fn shows_place(down: bool, measure: bool, last_down: Option<Instant>, now: Instant) -> bool {
     let recent = |at: Instant| now.saturating_duration_since(at) < PLACE_TIME;
     down || measure || last_down.is_some_and(recent)
@@ -123,7 +124,7 @@ pub(super) fn readout(
 /// stay after the touch.
 fn place_card(ctx: &egui::Context, state: &mut AppState, band: Rect, card: Rect) {
     let now = Instant::now();
-    let down = state.pad.canvas_down;
+    let down = state.pad.canvas_down || state.pad.pen_hover;
     if down && !state.headless {
         state.pad.last_down = Some(now);
     }

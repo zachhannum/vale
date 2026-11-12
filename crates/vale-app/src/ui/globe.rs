@@ -1767,6 +1767,8 @@ pub(super) fn canvas_input(
     let input = &globe.input;
     let touched = input.pen.is_some() || input.finger.is_some() || globe.pen.down;
     state.pad.canvas_down = touched || resp.is_pointer_button_down_on();
+    let hover = globe.pen.hover.filter(|pos| on_canvas(ui, rect, *pos));
+    state.pad.pen_hover = hover.is_some();
     state.poll_line();
     state.poll_point();
     state.poll_measure();
@@ -1786,6 +1788,7 @@ pub(super) fn canvas_input(
     let cursor = resp
         .hover_pos()
         .or(globe.input.pos)
+        .or(hover)
         .and_then(|pos| globe.unproject(pos));
     state.cursor_lonlat = cursor.map(|dir| dir_to_lonlat(dir).into());
     // The value is that of the raster layer of the readout.
