@@ -9199,6 +9199,59 @@ fn a_measure_filter_opens_in_blocks() {
     );
 }
 
+#[test]
+fn the_raster_heading_lists_the_raster_layers_of_the_project() {
+    use vale_app::ui::pad::filter::{ADD_CONDITION, SEARCH_FIELDS};
+    let mut h = pad(BOARDS[0]);
+    let places = vector(&h, "Places");
+    open_rule(&mut h, "Places", "Default");
+    scroll_to_control(&mut h, ADD_CONDITION);
+    tap(&mut h, ADD_CONDITION);
+    scroll_to_control(&mut h, "Field 1");
+    tap(&mut h, "Field 1");
+    type_text(&mut h, SEARCH_FIELDS, "Hei");
+    assert!(control(&h, "Height").is_some());
+    tap(&mut h, "Height");
+    // A point layer has no Stat menu.
+    assert!(control(&h, "Stat 1").is_none());
+    pick(&mut h, "Comparison 1", "is greater than");
+    type_scrolled_keys(&mut h, "Value 1", "3000");
+    let text = filter_text(&h, places);
+    assert_eq!(text.as_deref(), Some("raster('Height') > 3000"));
+}
+
+#[test]
+fn a_filter_rule_on_a_raster_layer_takes_a_stat_on_a_polygon_layer() {
+    let mut h = pad(BOARDS[0]);
+    let land = vector(&h, "Land");
+    open_rule(&mut h, "Land", "Default");
+    add_condition(&mut h, 1, "Height");
+    assert!(control(&h, "Stat 1").is_some());
+    check_controls(&h, "with a raster value");
+    pick(&mut h, "Stat 1", "Max");
+    let text = filter_text(&h, land);
+    assert_eq!(text.as_deref(), Some("raster('Height', 'max') = 0"));
+    screenshot::save(&mut h, "pad-filter-raster");
+}
+
+#[test]
+fn the_pad_expression_field_warns_of_an_unknown_raster_layer() {
+    use vale_app::ui::expr_help::no_raster;
+    use vale_app::ui::pad::filter::VIEWS;
+    use vale_app::ui::pad::rules::EXPRESSION;
+    let mut h = pad(BOARDS[0]);
+    open_rule(&mut h, "Places", "Default");
+    scroll_to_control(&mut h, VIEWS[1]);
+    tap(&mut h, VIEWS[1]);
+    scroll_to_control(&mut h, EXPRESSION);
+    type_text(&mut h, EXPRESSION, "raster('Heat') > 3000");
+    let warning = no_raster("Heat");
+    assert_eq!(warning, "No raster layer is named 'Heat'.");
+    assert!(h.query_by_label(&warning).is_some());
+    type_text(&mut h, EXPRESSION, "raster('Height') > 3000");
+    assert!(h.query_by_label(&warning).is_none());
+}
+
 /// The text of the filter of the first rule of a layer.
 fn filter_text(h: &Pad, id: vale_store::LayerId) -> Option<String> {
     let rule = rules(h, id)[0].clone();
@@ -10509,6 +10562,49 @@ fn the_label_bar_inserts_length_and_its_popover_sets_the_unit() {
     assert_eq!(
         label_text(&h, rivers),
         "format_number(line_length('mi'), 0)"
+    );
+}
+
+#[test]
+fn the_label_bar_inserts_a_raster_chip_and_its_popover_sets_the_stat() {
+    use vale_app::ui::pad::chip_popover::STAT_ROW;
+    use vale_app::ui::pad::label_text::{LABEL_TEXT, insert_name};
+    let mut h = pad(BOARDS[0]);
+    let rivers = vector(&h, "Rivers");
+    h.state_mut()
+        .doc
+        .entry_mut(rivers)
+        .unwrap()
+        .style
+        .label
+        .text = String::new();
+    open_panel(&mut h, "Layers");
+    tap(&mut h, "Open Rivers");
+    scroll_to_control(&mut h, LABEL_TEXT);
+    tap(&mut h, LABEL_TEXT);
+    assert_eq!(h.state().pad.page, Some(Page::LabelText));
+    let at = control(&h, LABEL_TEXT).unwrap().right_bottom() - vec2(16.0, 8.0);
+    touch(&mut h, egui::TouchPhase::Start, at, None);
+    h.step();
+    touch(&mut h, egui::TouchPhase::End, at, None);
+    h.run_steps(3);
+    tap_bar(&mut h, &insert_name("Height"));
+    let text = "format_number(raster('Height'), 0)";
+    assert_eq!(label_text(&h, rivers), text);
+    let lay = label_layout(&h, text);
+    let chip = lay.rect_of(&[0]).unwrap().center();
+    touch(&mut h, egui::TouchPhase::Start, chip, None);
+    h.step();
+    touch(&mut h, egui::TouchPhase::End, chip, None);
+    h.run_steps(3);
+    // The Stat row shows each stat.
+    for stat in ["Mean", "Min", "Max"] {
+        assert!(control(&h, stat).is_some(), "{STAT_ROW}: {stat}");
+    }
+    tap(&mut h, "Max");
+    assert_eq!(
+        label_text(&h, rivers),
+        "format_number(raster('Height', 'max'), 0)"
     );
 }
 
