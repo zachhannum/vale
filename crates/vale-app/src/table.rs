@@ -6,7 +6,7 @@ use std::cmp::Ordering;
 use std::collections::HashSet;
 
 use vale_store::{Layer, LayerId, Uuid, Value};
-use vale_style::expr::{Context, Filter};
+use vale_style::expr::{Context, Filter, RasterValues};
 
 /// The sort of the table: a field name, and the direction.
 #[derive(Clone, Debug, PartialEq)]
@@ -28,6 +28,8 @@ pub struct RowKey {
     pub sort: Option<Sort>,
     pub filter: String,
     pub selected: Option<Vec<Uuid>>,
+    /// A number that changes when raster values arrive.
+    pub rasters: u64,
 }
 
 #[derive(Default)]
@@ -40,7 +42,12 @@ pub struct Rows {
 
 impl Rows {
     /// The rows for the key. They are built again if the key changed.
-    pub fn update(&mut self, key: RowKey, layer: &Layer) -> &[usize] {
+    pub fn update(
+        &mut self,
+        key: RowKey,
+        layer: &Layer,
+        rasters: Option<&dyn RasterValues>,
+    ) -> &[usize] {
         if self.key.as_ref() != Some(&key) {
             let filter = Filter::new(&key.filter);
             self.error = filter.error().map(|e| e.to_string());
@@ -54,6 +61,7 @@ impl Rows {
                 key.sort.as_ref(),
                 &filter,
                 selected.as_ref(),
+                rasters,
             );
             self.key = Some(key);
             self.rebuilds += 1;
@@ -86,6 +94,7 @@ pub fn build(
     sort: Option<&Sort>,
     filter: &Filter,
     selected: Option<&HashSet<Uuid>>,
+    rasters: Option<&dyn RasterValues>,
 ) -> Vec<usize> {
     let mut rows: Vec<usize> = layer
         .features
@@ -100,7 +109,7 @@ pub fn build(
                 shape: Some(&f.geometry),
                 radius_km,
                 page: None,
-                rasters: None,
+                rasters,
                 index: *i,
             })
         })
@@ -212,13 +221,13 @@ mod tests {
         let (p, id) = layer();
         let l = p.layer(id).unwrap();
         let all = Filter::all();
-        let up = build(l, R, sort("name", true).as_ref(), &all, None);
+        let up = build(l, R, sort("name", true).as_ref(), &all, None, None);
         assert_eq!(names(l, &up), ["Ardent", "castellane", "hartle", "Zell"]);
-        let down = build(l, R, sort("rank", false).as_ref(), &all, None);
+        let down = build(l, R, sort("rank", false).as_ref(), &all, None, None);
         assert_eq!(names(l, &down), ["hartle", "Zell", "Ardent", "castellane"]);
-        let up = build(l, R, sort("rank", true).as_ref(), &all, None);
+        let up = build(l, R, sort("rank", true).as_ref(), &all, None, None);
         assert_eq!(names(l, &up), ["Ardent", "Zell", "hartle", "castellane"]);
-        assert_eq!(build(l, R, None, &all, None), [0, 1, 2, 3]);
+        assert_eq!(build(l, R, None, &all, None, None), [0, 1, 2, 3]);
     }
 
     #[test]
@@ -226,11 +235,14 @@ mod tests {
         let (p, id) = layer();
         let l = p.layer(id).unwrap();
         let filter = Filter::new("rank >= 2");
-        assert_eq!(build(l, R, None, &filter, None), [0, 3]);
+        assert_eq!(build(l, R, None, &filter, None, None), [0, 3]);
         let selected = HashSet::from([l.features[0].uuid(), l.features[1].uuid()]);
-        assert_eq!(build(l, R, None, &Filter::all(), Some(&selected)), [0, 1]);
-        assert_eq!(build(l, R, None, &filter, Some(&selected)), [0]);
-        assert!(build(l, R, None, &Filter::new("rank >="), None).is_empty());
+        assert_eq!(
+            build(l, R, None, &Filter::all(), Some(&selected), None),
+            [0, 1]
+        );
+        assert_eq!(build(l, R, None, &filter, Some(&selected), None), [0]);
+        assert!(build(l, R, None, &Filter::new("rank >="), None, None).is_empty());
     }
 
     #[test]
@@ -245,16 +257,17 @@ mod tests {
             sort: None,
             filter: String::new(),
             selected: None,
+            rasters: 0,
         };
         let mut rows = Rows::default();
-        rows.update(key.clone(), l);
-        rows.update(key.clone(), l);
+        rows.update(key.clone(), l, None);
+        rows.update(key.clone(), l, None);
         assert_eq!(rows.rebuilds(), 1);
         let wrong = RowKey {
             filter: "rank >=".into(),
             ..key
         };
-        assert!(rows.update(wrong, l).is_empty());
+        assert!(rows.update(wrong, l, None).is_empty());
         assert_eq!(rows.rebuilds(), 2);
         assert!(rows.error().is_some());
     }
@@ -285,6 +298,7 @@ mod tests {
             R,
             sort("name", true).as_ref(),
             &Filter::new("rank > 2"),
+            None,
             None,
         );
         let time = start.elapsed();

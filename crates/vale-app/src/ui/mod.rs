@@ -3646,7 +3646,10 @@ impl AppState {
             return;
         }
         match PdfExport::new(self.doc.clone(), path, pages) {
-            Ok(job) => {
+            Ok(mut job) => {
+                let rasters = self.pipeline.rasters_mut();
+                rasters.poll(true);
+                job.set_rasters(rasters.frozen());
                 self.atlas_export = Some(job);
                 self.status = self.atlas_export_progress().unwrap_or_default();
                 if self.headless {
@@ -4112,6 +4115,13 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     state.pump_images(state.headless);
     state.pump_details(state.headless);
     if state.pipeline.poll_lod(state.headless) {
+        ui.ctx().request_repaint_after(LOAD_POLL);
+    }
+    let globe = &state.globe;
+    let map_of = |id| globe.raster_map(id).or_else(|| globe.display_map(id));
+    let rasters = state.pipeline.rasters_mut();
+    rasters.update(&state.doc, map_of);
+    if rasters.poll(state.headless) {
         ui.ctx().request_repaint_after(LOAD_POLL);
     }
     if state.poll_open() {
