@@ -9,7 +9,7 @@ use std::cell::RefCell;
 
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject};
-use objc2::{declare_class, msg_send, mutability, sel, ClassType, DeclaredClass};
+use objc2::{declare_class, msg_send, msg_send_id, mutability, sel, ClassType, DeclaredClass};
 use objc2_foundation::{MainThreadMarker, NSDictionary, NSObjectProtocol, NSSet};
 use objc2_ui_kit::{
     UIApplication, UIOpenURLContext, UIResponder, UIScene, UISceneActivationState,
@@ -52,8 +52,12 @@ declare_class!(
                     window.makeKeyAndVisible();
                 }
             }
-            let contexts = unsafe { options.URLContexts() };
-            open_urls(&contexts);
+            // UIKit gives nil, not an empty set, when the launch has no URLs.
+            let contexts: Option<Retained<NSSet<UIOpenURLContext>>> =
+                unsafe { msg_send_id![options, URLContexts] };
+            if let Some(contexts) = contexts {
+                open_urls(&contexts);
+            }
         }
 
         #[method(scene:openURLContexts:)]
