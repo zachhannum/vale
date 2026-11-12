@@ -16177,4 +16177,9 @@ fn in_add_the_polygon_brush_paints_a_new_feature_and_then_joins_it() {
     let features = line_features(&h, layer);
     let band_geometry = &features.iter().find(|f| f.uuid() == band).unwrap().geometry;
     assert!(!inside_polygon(band_geometry, 0.0, -2.0));
+
+    // A switch back to the brush chooses Add again.
+    h.state_mut().globe.line.polygon_mode = PolygonMode::New;
+    choose_polygon_brush(&mut h);
+    assert_eq!(h.state().globe.line.polygon_mode, PolygonMode::Add);
 }
