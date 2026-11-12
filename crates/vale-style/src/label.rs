@@ -359,6 +359,102 @@ impl LeaderStyle {
     }
 }
 
+/// A way to place a label that does not fit.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum LabelFallback {
+    SmallerFont,
+    Stack,
+    Abbreviate,
+    Leader,
+}
+
+impl LabelFallback {
+    /// All fallbacks in the default order.
+    pub const ALL: [LabelFallback; 4] = [
+        LabelFallback::SmallerFont,
+        LabelFallback::Stack,
+        LabelFallback::Abbreviate,
+        LabelFallback::Leader,
+    ];
+
+    /// The UI text.
+    pub fn name(self) -> &'static str {
+        match self {
+            LabelFallback::SmallerFont => "Smaller font",
+            LabelFallback::Stack => "Stacked lines",
+            LabelFallback::Abbreviate => "Abbreviation",
+            LabelFallback::Leader => "Leader line",
+        }
+    }
+
+    /// The JSON name.
+    fn key(self) -> &'static str {
+        match self {
+            LabelFallback::SmallerFont => "smaller_font",
+            LabelFallback::Stack => "stack",
+            LabelFallback::Abbreviate => "abbreviate",
+            LabelFallback::Leader => "leader",
+        }
+    }
+
+    fn from_key(key: &str) -> Option<LabelFallback> {
+        LabelFallback::ALL.into_iter().find(|f| f.key() == key)
+    }
+}
+
+/// One fallback in the order of a class. An off fallback is skipped.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct FallbackRank {
+    pub fallback: LabelFallback,
+    pub on: bool,
+}
+
+impl FallbackRank {
+    /// All fallbacks in the default order, all on.
+    pub fn defaults() -> Vec<FallbackRank> {
+        LabelFallback::ALL
+            .into_iter()
+            .map(|fallback| FallbackRank { fallback, on: true })
+            .collect()
+    }
+}
+
+/// The default smallest font size of the fallback "Smaller font", in points.
+pub const MIN_SIZE: f64 = 6.0;
+
+/// The default step between two font sizes of the fallback "Smaller font", in points.
+pub const SIZE_STEP: f64 = 1.0;
+
+/// The default most lines of the fallback "Stacked lines".
+pub const MAX_LINES: u32 = 2;
+
+/// The default extra distance of a point label with a leader line, in points.
+pub const LEADER_DISTANCE: f64 = 12.0;
+
+/// The default abbreviations: a word and its short form.
+pub const ABBREVIATIONS: [(&str, &str); 12] = [
+    ("Mount", "Mt."),
+    ("Mountains", "Mts."),
+    ("Saint", "St."),
+    ("Fort", "Ft."),
+    ("Point", "Pt."),
+    ("Island", "I."),
+    ("Islands", "Is."),
+    ("River", "R."),
+    ("North", "N."),
+    ("South", "S."),
+    ("East", "E."),
+    ("West", "W."),
+];
+
+/// [`ABBREVIATIONS`] as owned pairs.
+pub fn default_abbreviations() -> Vec<(String, String)> {
+    ABBREVIATIONS
+        .iter()
+        .map(|(long, short)| (long.to_string(), short.to_string()))
+        .collect()
+}
+
 /// One position in the rank of a point class. A blocked position is off.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct PositionRank {
@@ -519,6 +615,18 @@ pub struct LabelClass {
     pub remove_duplicates: bool,
     /// The smallest distance between two labels with the same text, in points.
     pub duplicate_distance: f64,
+    /// The fallbacks of a label that does not fit, in the order that they are tried.
+    pub fallbacks: Vec<FallbackRank>,
+    /// The smallest font size of the fallback "Smaller font", in points.
+    pub min_size: f64,
+    /// The step between two font sizes of the fallback "Smaller font", in points.
+    pub size_step: f64,
+    /// The most lines of the fallback "Stacked lines".
+    pub max_lines: u32,
+    /// Pairs of a word and its short form, for the fallback "Abbreviation".
+    pub abbreviations: Vec<(String, String)>,
+    /// Points. The extra distance of a point label with a leader line, in points.
+    pub leader_distance: f64,
 }
 
 impl LabelClass {
@@ -603,6 +711,12 @@ impl LabelClass {
             buffer: BUFFER,
             remove_duplicates: true,
             duplicate_distance: DUPLICATE_DISTANCE,
+            fallbacks: FallbackRank::defaults(),
+            min_size: MIN_SIZE,
+            size_step: SIZE_STEP,
+            max_lines: MAX_LINES,
+            abbreviations: default_abbreviations(),
+            leader_distance: LEADER_DISTANCE,
         }
     }
 
@@ -649,7 +763,7 @@ pub fn classes_to_json(classes: &[LabelClass]) -> String {
     let classes: Vec<Json> = classes
         .iter()
         .map(|c| {
-            json!({
+            let mut class = json!({
                 "name": c.name,
                 "text": c.text,
                 "filter": c.filter,
@@ -693,7 +807,24 @@ pub fn classes_to_json(classes: &[LabelClass]) -> String {
                 "buffer": c.buffer,
                 "remove_duplicates": c.remove_duplicates,
                 "duplicate_distance": c.duplicate_distance,
-            })
+            });
+            // The macro has a recursion limit, so the fallbacks go in after it.
+            let fallbacks = json!({
+                "fallbacks": c
+                    .fallbacks
+                    .iter()
+                    .map(|r| json!({ "fallback": r.fallback.key(), "on": r.on }))
+                    .collect::<Vec<_>>(),
+                "min_size": c.min_size,
+                "size_step": c.size_step,
+                "max_lines": c.max_lines,
+                "abbreviations": c.abbreviations,
+                "leader_distance": c.leader_distance,
+            });
+            if let (Json::Object(m), Json::Object(f)) = (&mut class, fallbacks) {
+                m.extend(f);
+            }
+            class
         })
         .collect();
     json!({ "version": CLASSES_VERSION, "classes": classes }).to_string()
@@ -733,6 +864,51 @@ fn ranks<const N: usize>(m: &Map<String, Json>, key: &str, fallback: [u8; N]) ->
         .filter_map(|r| r.as_u64().and_then(|r| u8::try_from(r).ok()))
         .collect();
     ranks.try_into().unwrap_or(fallback)
+}
+
+/// The fallback order of a class. A fallback that the list leaves out comes last, off.
+fn fallbacks(m: &Map<String, Json>) -> Vec<FallbackRank> {
+    let Some(list) = m.get("fallbacks").and_then(Json::as_array) else {
+        return FallbackRank::defaults();
+    };
+    let mut out: Vec<FallbackRank> = Vec::new();
+    for r in list {
+        let Some(fallback) = r
+            .get("fallback")
+            .and_then(Json::as_str)
+            .and_then(LabelFallback::from_key)
+        else {
+            continue;
+        };
+        if out.iter().all(|o| o.fallback != fallback) {
+            let on = r.get("on").and_then(Json::as_bool).unwrap_or(true);
+            out.push(FallbackRank { fallback, on });
+        }
+    }
+    for fallback in LabelFallback::ALL {
+        if out.iter().all(|o| o.fallback != fallback) {
+            out.push(FallbackRank {
+                fallback,
+                on: false,
+            });
+        }
+    }
+    out
+}
+
+/// The abbreviations of a class, each a list of a word and its short form.
+fn abbreviations(m: &Map<String, Json>) -> Vec<(String, String)> {
+    let Some(list) = m.get("abbreviations").and_then(Json::as_array) else {
+        return default_abbreviations();
+    };
+    list.iter()
+        .filter_map(|pair| {
+            let [long, short] = pair.as_array()?.as_slice() else {
+                return None;
+            };
+            Some((long.as_str()?.to_owned(), short.as_str()?.to_owned()))
+        })
+        .collect()
 }
 
 fn read_class(j: &Json) -> Result<LabelClass, StyleError> {
@@ -829,6 +1005,16 @@ fn read_class(j: &Json) -> Result<LabelClass, StyleError> {
         buffer: number("buffer", BUFFER),
         remove_duplicates: flag("remove_duplicates", true),
         duplicate_distance: number("duplicate_distance", DUPLICATE_DISTANCE),
+        fallbacks: fallbacks(m),
+        min_size: number("min_size", MIN_SIZE),
+        size_step: number("size_step", SIZE_STEP),
+        max_lines: m
+            .get("max_lines")
+            .and_then(Json::as_u64)
+            .and_then(|n| u32::try_from(n).ok())
+            .unwrap_or(MAX_LINES),
+        abbreviations: abbreviations(m),
+        leader_distance: number("leader_distance", LEADER_DISTANCE),
     };
     fold_opacity(&mut class, m);
     Ok(class)
@@ -883,6 +1069,23 @@ mod tests {
             italic: true,
             font: Some("Serif".to_owned()),
         }
+    }
+
+    #[test]
+    fn a_fallback_that_the_list_leaves_out_comes_last_and_off() {
+        let text = r##"{"version":1,"classes":[{"color":"#102030","placement":"around","fallbacks":[{"fallback":"leader","on":true},{"fallback":"x"},{"fallback":"leader","on":false}]}]}"##;
+        let read = &classes_from_json(text).unwrap()[0];
+        let order: Vec<(LabelFallback, bool)> =
+            read.fallbacks.iter().map(|r| (r.fallback, r.on)).collect();
+        assert_eq!(
+            order,
+            vec![
+                (LabelFallback::Leader, true),
+                (LabelFallback::SmallerFont, false),
+                (LabelFallback::Stack, false),
+                (LabelFallback::Abbreviate, false),
+            ]
+        );
     }
 
     #[test]
@@ -960,6 +1163,29 @@ mod tests {
             label_gap: 2.5,
             anchor_gap: 1.5,
         };
+        h.fallbacks = vec![
+            FallbackRank {
+                fallback: LabelFallback::Leader,
+                on: true,
+            },
+            FallbackRank {
+                fallback: LabelFallback::Abbreviate,
+                on: false,
+            },
+            FallbackRank {
+                fallback: LabelFallback::SmallerFont,
+                on: true,
+            },
+            FallbackRank {
+                fallback: LabelFallback::Stack,
+                on: true,
+            },
+        ];
+        h.min_size = 7.5;
+        h.size_step = 0.5;
+        h.max_lines = 3;
+        h.abbreviations = vec![("Lake".to_owned(), "L.".to_owned())];
+        h.leader_distance = 20.0;
         let classes = vec![a, b, c, d, e, f, g, h];
         let text = classes_to_json(&classes);
         assert_eq!(classes_from_json(&text).unwrap(), classes);
@@ -997,6 +1223,11 @@ mod tests {
         assert_eq!(read[0].polygon_repeat_distance, 400.0);
         assert_eq!((read[0].overrun, read[0].min_area), (0.0, 0.0));
         assert_eq!(read[0].leader, LeaderStyle::default());
+        assert_eq!(read[0].fallbacks, FallbackRank::defaults());
+        assert_eq!((read[0].min_size, read[0].size_step), (6.0, 1.0));
+        assert_eq!(read[0].max_lines, 2);
+        assert_eq!(read[0].abbreviations, default_abbreviations());
+        assert_eq!(read[0].leader_distance, 12.0);
         let leader = r##"{"version":1,"classes":[{"color":"#102030","placement":"best_fit","leader":{"width":2,"end":"dot"}}]}"##;
         let leader = classes_from_json(leader).unwrap()[0].leader;
         assert_eq!((leader.width, leader.end), (2.0, LeaderEnd::Dot));

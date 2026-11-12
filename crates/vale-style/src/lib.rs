@@ -8,10 +8,12 @@ mod rule;
 
 pub use json::{STYLE_VERSION, StyleError, style_version};
 pub use label::{
-    BUFFER, CLASSES_VERSION, CURVE_LIMIT, DUPLICATE_DISTANCE, LabelClass, LabelPlacement,
-    LabelPosition, LeaderAnchor, LeaderEnd, LeaderStyle, POLYGON_CURVE_LIMIT,
-    POLYGON_REPEAT_DISTANCE, PositionRank, REPEAT_DISTANCE, SMOOTHING, SPREAD, TextCase,
-    ZONES_INSIDE, ZONES_OUTSIDE, classes_from_json, classes_to_json, curve_limit_for, offset_for,
+    ABBREVIATIONS, BUFFER, CLASSES_VERSION, CURVE_LIMIT, DUPLICATE_DISTANCE, FallbackRank,
+    LEADER_DISTANCE, LabelClass, LabelFallback, LabelPlacement, LabelPosition, LeaderAnchor,
+    LeaderEnd, LeaderStyle, MAX_LINES, MIN_SIZE, POLYGON_CURVE_LIMIT, POLYGON_REPEAT_DISTANCE,
+    PositionRank, REPEAT_DISTANCE, SIZE_STEP, SMOOTHING, SPREAD, TextCase, ZONES_INSIDE,
+    ZONES_OUTSIDE, classes_from_json, classes_to_json, curve_limit_for, default_abbreviations,
+    offset_for,
 };
 pub use overrides::Overrides;
 pub use rule::{
