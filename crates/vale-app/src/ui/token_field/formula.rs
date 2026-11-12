@@ -4,7 +4,7 @@
 //! chars until a space, an operator, or a pick makes them a token. The
 //! text of the field reads the chars as expression text.
 
-use vale_style::expr::editor::{Formula, Op, Seq, Tok};
+use vale_style::expr::editor::{Formula, Op, Seq, Subject, Tok};
 use vale_style::expr::{FUNCTIONS, Function, Var, layer_functions};
 
 use super::{BoxKind, Boxed, Caret, Chip, ChipKind, Field, Glyph, Look, Node, Selection, Token};
@@ -563,6 +563,8 @@ pub enum Completion {
     Field(String),
     Function(&'static Function),
     Var(Var),
+    /// A raster value: a call of `raster`.
+    Raster(Subject),
 }
 
 /// The fields and the functions whose names start with `word`, fields
@@ -596,7 +598,18 @@ pub fn pick(field: &mut Field<Tok>, completion: &Completion, help: &ExprHelp) {
         Completion::Field(name) => insert_field(field, name, help),
         Completion::Function(f) => insert_function(field, f),
         Completion::Var(v) => insert_var(field, *v, help),
+        Completion::Raster(s) => insert_subject(field, s, help),
     }
+}
+
+/// Puts the expression of a subject at the caret, in place of the selection
+/// and of the run of chars before the caret.
+pub fn insert_subject(field: &mut Field<Tok>, subject: &Subject, help: &ExprHelp) {
+    if field.sel.is_empty() {
+        take_run(field);
+    }
+    let seq = Formula::from_text(&subject.to_text()).seq;
+    field.replace(nodes_of(&seq, help));
 }
 
 /// Puts variable `v` at the caret, in place of the selection and of the run

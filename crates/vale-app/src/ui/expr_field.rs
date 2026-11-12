@@ -9,8 +9,8 @@ use vale_style::expr::editor::{Formula, Piece, Seq, Subject, Template, Tok};
 use vale_style::expr::{Category, FUNCTIONS, Function, Var, layer_functions};
 
 use super::expr_help::{
-    DESKTOP_PAGE_VALUES, ExprHelp, ExprKind, FIELDS, FUNCTIONS_MENU, GEOMETRY_MENU, INSERT,
-    VARIABLES_MENU, desktop_line,
+    self, DESKTOP_PAGE_VALUES, ExprHelp, ExprKind, FIELDS, FUNCTIONS_MENU, GEOMETRY_MENU, INSERT,
+    RASTER_MENU, VARIABLES_MENU, desktop_line,
 };
 use super::pad::{filter, popover, theme};
 use super::token_field::formula::{self, Completion};
@@ -45,6 +45,8 @@ enum Item {
     Field(String),
     /// A measure or a variable of the geometry, in label text.
     Measure(Subject),
+    /// The value of a raster layer.
+    Raster(Subject),
     /// A variable, in a value.
     Var(Var),
     /// A function. In label text, the call with its slots filled.
@@ -57,7 +59,7 @@ impl Item {
     fn label(&self) -> String {
         match self {
             Item::Field(name) => name.clone(),
-            Item::Measure(s) => s.label(),
+            Item::Measure(s) | Item::Raster(s) => s.label(),
             Item::Var(v) => format!("@{}", v.name()),
             Item::Function(_, Some(seq)) => seq.to_text(),
             Item::Function(f, None) => f.signature.to_owned(),
@@ -130,16 +132,24 @@ fn escaped(ui: &egui::Ui, field_id: egui::Id, was_open: bool) -> bool {
 }
 
 /// The row of `heading` and the Insert menu, with a submenu for each kind
-/// of item that `items` holds. Returns the item that the user picked in the
+/// of item that `items` holds. A raster layer with a value for each stat
+/// has a submenu of the stats. Returns the item that the user picked in the
 /// menu.
 fn heading_row(ui: &mut egui::Ui, heading: &str, items: &[Item]) -> Option<Item> {
     let mut chosen = None;
-    let groups = [FIELDS, GEOMETRY_MENU, VARIABLES_MENU, FUNCTIONS_MENU];
+    let groups = [
+        FIELDS,
+        GEOMETRY_MENU,
+        RASTER_MENU,
+        VARIABLES_MENU,
+        FUNCTIONS_MENU,
+    ];
     let group_of = |i: &Item| match i {
         Item::Field(_) => 0,
         Item::Measure(_) => 1,
-        Item::Var(_) => 2,
-        Item::Function(..) => 3,
+        Item::Raster(_) => 2,
+        Item::Var(_) => 3,
+        Item::Function(..) => 4,
         Item::Page(..) => 0,
     };
     ui.horizontal(|ui| {
@@ -158,6 +168,15 @@ fn heading_row(ui: &mut egui::Ui, heading: &str, items: &[Item]) -> Option<Item>
                 for (k, title) in groups.into_iter().enumerate() {
                     let group: Vec<&Item> = items.iter().filter(|i| group_of(i) == k).collect();
                     if group.is_empty() {
+                        continue;
+                    }
+                    if title == RASTER_MENU {
+                        let rasters = raster_groups(&group);
+                        ui.menu_button(title, |ui| {
+                            if let Some(s) = expr_help::raster_menu_items(ui, &rasters) {
+                                chosen = Some(Item::Raster(s));
+                            }
+                        });
                         continue;
                     }
                     ui.menu_button(title, |ui| {
@@ -183,6 +202,27 @@ fn heading_row(ui: &mut egui::Ui, heading: &str, items: &[Item]) -> Option<Item>
         });
     });
     chosen
+}
+
+/// The raster values of `items`, by raster layer, in order.
+fn raster_groups(items: &[&Item]) -> Vec<(String, Vec<Subject>)> {
+    let mut out: Vec<(String, Vec<Subject>)> = Vec::new();
+    for item in items {
+        let Item::Raster(s @ Subject::Raster(name, _)) = item else {
+            continue;
+        };
+        match out.last_mut() {
+            Some((last, values)) if last == name => values.push(s.clone()),
+            _ => out.push((name.clone(), vec![s.clone()])),
+        }
+    }
+    out
+}
+
+/// The raster items of an Insert menu: for a line or a polygon layer, a
+/// value for each stat of each raster layer.
+fn raster_menu_items(help: &ExprHelp) -> impl Iterator<Item = Item> {
+    (help.raster_menu().into_iter()).flat_map(|(_, values)| values.into_iter().map(Item::Raster))
 }
 
 /// The label text field `name` under `heading`. Typed text stays text, and
@@ -295,8 +335,9 @@ fn brace_query(field: &Field<Piece>) -> Option<(Caret, String)> {
 
 /// The items of the label text for query `q`: the fields whose names start
 /// with it, a `coalesce` of the first two text fields, the text functions
-/// whose names start with it, on the first text field, and the measures
-/// whose names start with it. With `all`, all of them.
+/// whose names start with it, on the first text field, and the measures and
+/// the raster layers whose names start with it. With `all`, all of them,
+/// with a raster value for each stat on a line or a polygon layer.
 fn text_items(q: &str, help: &ExprHelp, all: bool) -> Vec<Item> {
     let q = q.to_lowercase();
     if help.is_page() {
@@ -339,6 +380,14 @@ fn text_items(q: &str, help: &ExprHelp, all: bool) -> Vec<Item> {
         .filter(|s| all || s.label().to_lowercase().starts_with(&q))
         .map(Item::Measure);
     out.extend(measures);
+    match all {
+        true => out.extend(raster_menu_items(help)),
+        false => out.extend(
+            (help.rasters().into_iter())
+                .filter(|s| s.label().to_lowercase().starts_with(&q))
+                .map(Item::Raster),
+        ),
+    }
     out
 }
 
@@ -351,7 +400,7 @@ fn field_seq(name: &str) -> Seq {
 fn text_note(item: &Item, help: &ExprHelp) -> String {
     match item {
         Item::Field(name) => help.sample(name).and_then(Value::label).unwrap_or_default(),
-        Item::Measure(s) => {
+        Item::Measure(s) | Item::Raster(s) => {
             let format = FieldFormat::for_subject(s);
             let text = Template::new(vec![Piece::Field {
                 subject: s.clone(),
@@ -378,7 +427,7 @@ fn insert_text_item(field: &mut Field<Piece>, item: &Item, brace: Option<Caret>,
             subject: Subject::Field(name.clone()),
             format: Default::default(),
         },
-        Item::Measure(s) => Piece::Field {
+        Item::Measure(s) | Item::Raster(s) => Piece::Field {
             subject: s.clone(),
             format: FieldFormat::for_subject(s),
         },
@@ -423,6 +472,7 @@ pub fn value(
         st.source = Some(text.clone());
     }
     let mut menu_items: Vec<Item> = help.fields.iter().cloned().map(Item::Field).collect();
+    menu_items.extend(raster_menu_items(help));
     menu_items.extend(Var::ALL.into_iter().map(Item::Var));
     menu_items.extend(layer_functions().map(|f| Item::Function(f, None)));
     let mut changed = false;
@@ -431,6 +481,7 @@ pub fn value(
             Item::Field(name) => formula::insert_field(&mut st.field, &name, help),
             Item::Var(v) => formula::insert_var(&mut st.field, v, help),
             Item::Function(f, _) => formula::insert_function(&mut st.field, f),
+            Item::Raster(s) => formula::insert_subject(&mut st.field, &s, help),
             Item::Measure(_) => {}
             Item::Page(..) => {}
         }
@@ -451,6 +502,7 @@ pub fn value(
                 Completion::Field(f) => Item::Field(f),
                 Completion::Function(f) => Item::Function(f, None),
                 Completion::Var(v) => Item::Var(v),
+                Completion::Raster(s) => Item::Raster(s),
             })
             .collect(),
         false => Vec::new(),
@@ -531,6 +583,7 @@ fn completion_of(item: &Item) -> Completion {
         Item::Function(f, _) => Completion::Function(f),
         Item::Var(v) | Item::Measure(Subject::Var(v)) => Completion::Var(*v),
         Item::Measure(s) => Completion::Field(s.label()),
+        Item::Raster(s) => Completion::Raster(s.clone()),
         Item::Page(..) => unreachable!("a value field has no page values"),
     }
 }
@@ -549,7 +602,7 @@ fn has_chars(nodes: &[Node<Tok>]) -> bool {
 fn rows_of(items: &[Item], help: &ExprHelp) -> Vec<(Item, String, Option<Glyph>)> {
     let glyph = |i: &Item| match i {
         Item::Field(f) => help.field_type(f).map(Glyph::of),
-        Item::Measure(s) => help.subject_type(s).map(Glyph::of),
+        Item::Measure(s) | Item::Raster(s) => help.subject_type(s).map(Glyph::of),
         Item::Var(v) => Some(Glyph::of(v.field_type())),
         Item::Function(..) => None,
         Item::Page(..) => Some(Glyph::Text),
@@ -635,7 +688,7 @@ fn completion_list(
                     Item::Field(_) | Item::Page(..) => {
                         (theme::TEXT, egui::FontId::proportional(13.0))
                     }
-                    Item::Measure(_) | Item::Var(_) => {
+                    Item::Measure(_) | Item::Raster(_) | Item::Var(_) => {
                         (VARIABLE_TEXT, egui::FontId::proportional(13.0))
                     }
                     Item::Function(..) => (FUNCTION_TEXT, egui::FontId::monospace(12.5)),
@@ -643,7 +696,11 @@ fn completion_list(
                 let mut x = row.left() + 8.0;
                 match (item, glyph) {
                     (
-                        Item::Field(_) | Item::Page(..) | Item::Measure(_) | Item::Var(_),
+                        Item::Field(_)
+                        | Item::Page(..)
+                        | Item::Measure(_)
+                        | Item::Raster(_)
+                        | Item::Var(_),
                         Some(g),
                     ) => {
                         paint_glyph(painter, pos2(x + m.glyph / 2.0, mid), *g, &m, false);

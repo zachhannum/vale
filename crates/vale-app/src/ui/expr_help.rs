@@ -9,8 +9,8 @@ use eframe::egui;
 use eframe::egui::text::{CCursor, CCursorRange};
 use vale_store::FurnitureId;
 use vale_store::{FieldType, Geometry, GeometryKind, Layer, LayerId, Value};
-use vale_style::expr::editor::{Subject, measures_for};
-use vale_style::expr::{Context, Expr, PageValues, field_ref, layer_functions};
+use vale_style::expr::editor::{Subject, measures_for, rasters_for};
+use vale_style::expr::{Context, Expr, PageValues, Stat, field_ref, layer_functions};
 
 use super::AppState;
 use crate::furniture::PageSample;
@@ -30,6 +30,14 @@ pub const FUNCTIONS_MENU: &str = "Functions";
 pub const GEOMETRY_MENU: &str = "Geometry";
 /// The `@` variables, in the value editor.
 pub const VARIABLES_MENU: &str = "Variables";
+/// The raster layers, in the filter field menu, the label text, and the
+/// value editor.
+pub const RASTER_MENU: &str = "Raster";
+
+/// The warning of a raster call that names no raster layer.
+pub fn no_raster(name: &str) -> String {
+    format!("No raster layer is named '{name}'.")
+}
 
 /// The page values of a text item.
 pub const SCALE: &str = "Scale";
@@ -126,6 +134,9 @@ pub struct ExprHelp {
     shape: Option<Geometry>,
     radius_km: f64,
     values: Arc<LayerValues>,
+    /// The raster layers of the project: the name and the unit of each, in
+    /// the list order.
+    pub raster_layers: Vec<(String, String)>,
     /// The page values of a text item. The help of a text item has no
     /// fields, and it lists the page values in place of the fields and the
     /// functions.
@@ -437,6 +448,7 @@ impl ExprHelp {
             shape: sample.map(|f| f.geometry.clone()),
             radius_km: state.doc.project.world.radius_km,
             values: state.help_cache.values(layer, state.map_generation),
+            raster_layers: raster_layers(state),
             page: None,
         }
     }
@@ -475,6 +487,7 @@ impl ExprHelp {
             shape: None,
             radius_km: 0.0,
             values: Arc::default(),
+            raster_layers: Vec::new(),
             page: None,
         }
     }
@@ -513,6 +526,44 @@ impl ExprHelp {
     /// The measures of the geometry of the layer.
     pub fn measures(&self) -> Vec<Subject> {
         measures_for(self.geometry)
+    }
+
+    /// The raster values of the layer, one for each raster layer, with no
+    /// stat.
+    pub fn rasters(&self) -> Vec<Subject> {
+        let names: Vec<String> = self.raster_layers.iter().map(|(n, _)| n.clone()).collect();
+        rasters_for(self.geometry, &names)
+    }
+
+    /// The unit of raster layer `name`.
+    pub fn raster_unit(&self, name: &str) -> Option<&str> {
+        let (_, unit) = self.raster_layers.iter().find(|(n, _)| n == name)?;
+        Some(unit)
+    }
+
+    /// The raster values of the Insert menus, for each raster layer: its
+    /// name and its values. A point layer has one value with no stat, and a
+    /// line or a polygon layer has one value for each stat.
+    pub fn raster_menu(&self) -> Vec<(String, Vec<Subject>)> {
+        (self.raster_layers.iter())
+            .map(|(name, _)| {
+                let values = match self.geometry {
+                    GeometryKind::Point => vec![Subject::Raster(name.clone(), None)],
+                    _ => (Stat::ALL.into_iter())
+                        .map(|st| Subject::Raster(name.clone(), Some(st)))
+                        .collect(),
+                };
+                (name.clone(), values)
+            })
+            .collect()
+    }
+
+    /// The warning for an expression that parses: a raster call that names
+    /// no raster layer.
+    fn warning(&self, expr: &Expr) -> Option<String> {
+        let names = expr.raster_layers();
+        let missing = (names.iter()).find(|n| !self.raster_layers.iter().any(|(r, _)| r == *n))?;
+        Some(no_raster(missing))
     }
 
     /// The value of field `name` in the feature of the preview.
@@ -577,6 +628,9 @@ impl ExprHelp {
             Ok(expr) => expr,
             Err(e) => return Some(Line::Error(e.short())),
         };
+        if let Some(warning) = self.warning(&expr) {
+            return Some(Line::Error(warning));
+        }
         let value = self.value_of(&expr)?;
         let text = match kind {
             ExprKind::Filter if value == Value::Bool(true) => MATCHES.to_owned(),
@@ -633,8 +687,20 @@ fn first_argument(call: &str) -> (usize, usize) {
     (start, end)
 }
 
-/// The "Insert" menu of a desktop expression field `id`, with the fields
-/// and the functions. Returns true when the user inserts one.
+/// The raster layers of the project, with their names and units, in the
+/// list order.
+fn raster_layers(state: &AppState) -> Vec<(String, String)> {
+    let project = &state.doc.project;
+    (project.layers().iter())
+        .filter_map(|l| {
+            let raster = project.raster(l.raster()?)?;
+            Some((l.name.clone(), raster.unit.clone()))
+        })
+        .collect()
+}
+
+/// The "Insert" menu of a desktop expression field `id`, with the fields,
+/// the raster layers, and the functions. Returns true when the user inserts one.
 pub fn insert_menu(ui: &mut egui::Ui, help: &ExprHelp, id: egui::Id, text: &mut String) -> bool {
     let mut chosen = None;
     ui.menu_button(INSERT, |ui| {
@@ -657,6 +723,18 @@ pub fn insert_menu(ui: &mut egui::Ui, help: &ExprHelp, id: egui::Id, text: &mut 
                 }
             });
         });
+        let rasters = help.raster_menu();
+        if !rasters.is_empty() {
+            ui.menu_button(RASTER_MENU, |ui| {
+                if let Some(s) = raster_menu_items(ui, &rasters) {
+                    chosen = Some(Chip {
+                        label: s.label(),
+                        insert: s.to_text(),
+                        call: false,
+                    });
+                }
+            });
+        }
         ui.menu_button(FUNCTIONS_MENU, |ui| {
             for (chip, f) in functions.iter().zip(layer_functions()) {
                 let button = ui.button(&chip.insert).on_hover_text(f.summary);
@@ -672,6 +750,36 @@ pub fn insert_menu(ui: &mut egui::Ui, help: &ExprHelp, id: egui::Id, text: &mut 
     insert_at_cursor(ui.ctx(), id, text, &chip);
     ui.memory_mut(|m| m.request_focus(id));
     true
+}
+
+/// The items of the Raster submenu of an Insert menu: a button for each
+/// raster value of a point layer, or a submenu of the stats for each raster
+/// layer of a line or a polygon layer. Returns the value that the user
+/// picked.
+pub fn raster_menu_items(ui: &mut egui::Ui, rasters: &[(String, Vec<Subject>)]) -> Option<Subject> {
+    let mut chosen = None;
+    for (name, values) in rasters {
+        match values.as_slice() {
+            [one] => {
+                if ui.button(name).clicked() {
+                    chosen = Some(one.clone());
+                }
+            }
+            _ => {
+                ui.menu_button(name, |ui| {
+                    for s in values {
+                        let Subject::Raster(_, Some(st)) = s else {
+                            continue;
+                        };
+                        if ui.button(st.label()).clicked() {
+                            chosen = Some(s.clone());
+                        }
+                    }
+                });
+            }
+        }
+    }
+    chosen
 }
 
 /// The line under a desktop expression field: the result in weak text, or
@@ -708,6 +816,7 @@ mod tests {
             shape: None,
             radius_km: 0.0,
             values: Arc::default(),
+            raster_layers: vec![("Height".into(), "m".into())],
             page: None,
         }
     }
@@ -795,6 +904,13 @@ mod tests {
         let error = Some(Line::Error("Unknown function 'shout'.".to_owned()));
         assert_eq!(line("shout(name)", ExprKind::Text), error);
         assert_eq!(ExprHelp::empty().line("name", ExprKind::Text), None);
+        // A raster call that names no raster layer gives a warning.
+        let warning = Some(Line::Error("No raster layer is named 'Heat'.".to_owned()));
+        assert_eq!(line("raster('Heat') > 3", ExprKind::Filter), warning);
+        assert_eq!(
+            line("raster('Height') > 3", ExprKind::Filter),
+            preview(NO_MATCH)
+        );
     }
 
     #[test]
