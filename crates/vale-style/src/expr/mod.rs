@@ -429,8 +429,8 @@ impl Source {
         self.parsed.as_ref().err()
     }
 
-    pub fn rename_field(&mut self, old: &str, new: &str) {
-        let text = rename_field(&self.text, old, new);
+    pub fn rewrite(&mut self, f: &dyn Fn(&str) -> String) {
+        let text = f(&self.text);
         if text != self.text {
             *self = Source::new(text);
         }
@@ -467,9 +467,9 @@ impl Filter {
         self.source.as_ref().and_then(Source::error)
     }
 
-    pub fn rename_field(&mut self, old: &str, new: &str) {
+    pub fn rewrite(&mut self, f: &dyn Fn(&str) -> String) {
         if let Some(s) = &mut self.source {
-            s.rename_field(old, new);
+            s.rewrite(f);
         }
     }
 
@@ -552,9 +552,9 @@ impl<T: FromValue + Clone> Property<T> {
         self.source.as_ref().and_then(Source::error)
     }
 
-    pub fn rename_field(&mut self, old: &str, new: &str) {
+    pub fn rewrite(&mut self, f: &dyn Fn(&str) -> String) {
         if let Some(s) = &mut self.source {
-            s.rename_field(old, new);
+            s.rewrite(f);
         }
     }
 

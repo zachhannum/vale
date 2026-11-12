@@ -414,9 +414,31 @@ impl Document {
     }
 
     /// Gives a layer a new name. A blank name changes nothing.
+    /// Gives a layer a new name. The expressions that read a raster layer
+    /// by its name keep the layer, if no other raster layer has the old
+    /// name or the new name.
     pub fn rename_layer(&mut self, id: LayerId, name: &str) -> bool {
         let name = name.trim();
-        !name.is_empty() && self.project.rename_layer(id, name.to_string())
+        let Some(layer) = self.project.layer(id) else {
+            return false;
+        };
+        let old = layer.name.clone();
+        let raster = layer.raster().is_some();
+        if name.is_empty() || !self.project.rename_layer(id, name.to_string()) {
+            return false;
+        }
+        let other = |n: &str| {
+            (self.project.layers().iter())
+                .any(|l| l.id != id && l.raster().is_some() && l.name == n)
+        };
+        if raster && old != name && !other(&old) && !other(name) {
+            self.rewrite_styles(
+                None,
+                |s| s.rename_raster(&old, name),
+                |c| c.rename_raster(&old, name),
+            );
+        }
+        true
     }
 
     /// Gives a field of a vector layer a new name. Each expression of the
@@ -426,9 +448,27 @@ impl Document {
         if !self.project.rename_field(id, old, new) {
             return false;
         }
-        if let Some(entry) = self.entry_mut(id) {
-            entry.style.rename_field(old, new);
-        }
+        self.rewrite_styles(
+            Some(id),
+            |s| s.rename_field(old, new),
+            |c| c.rename_field(old, new),
+        );
+        true
+    }
+
+    /// Changes the styles and the label classes of layer `only`, or of each
+    /// layer if `None`: in the globe style, and in the maps and the map
+    /// styles.
+    fn rewrite_styles(
+        &mut self,
+        only: Option<LayerId>,
+        style: impl Fn(&mut LayerStyle),
+        class: impl Fn(&mut LabelClass),
+    ) {
+        let wanted = |id: &LayerId| only.is_none_or(|o| o == *id);
+        (self.frame.entries.iter_mut())
+            .filter(|e| wanted(&e.layer))
+            .for_each(|e| style(&mut e.style));
         let atlas = &mut self.project.atlas;
         let maps = atlas
             .maps
@@ -436,20 +476,27 @@ impl Document {
             .map(|m| (&mut m.styles, &mut m.labels));
         let shared = (atlas.map_styles.iter_mut()).map(|s| (&mut s.styles, &mut s.labels));
         for (styles, labels) in maps.chain(shared) {
-            if let Some(text) = styles.get_mut(&id)
-                && let Ok(mut style) = LayerStyle::from_json(text)
-            {
-                style.rename_field(old, new);
-                *text = style.to_json();
+            for (_, text) in styles.iter_mut().filter(|(id, _)| wanted(id)) {
+                if let Ok(mut s) = LayerStyle::from_json(text) {
+                    let before = s.to_json();
+                    style(&mut s);
+                    let after = s.to_json();
+                    if after != before {
+                        *text = after;
+                    }
+                }
             }
-            if let Some(text) = labels.get_mut(&id)
-                && let Ok(mut classes) = vale_style::classes_from_json(text)
-            {
-                classes.iter_mut().for_each(|c| c.rename_field(old, new));
-                *text = vale_style::classes_to_json(&classes);
+            for (_, text) in labels.iter_mut().filter(|(id, _)| wanted(id)) {
+                if let Ok(mut classes) = vale_style::classes_from_json(text) {
+                    let before = vale_style::classes_to_json(&classes);
+                    classes.iter_mut().for_each(&class);
+                    let after = vale_style::classes_to_json(&classes);
+                    if after != before {
+                        *text = after;
+                    }
+                }
             }
         }
-        true
     }
 
     pub fn set_visible(&mut self, id: LayerId, visible: bool) -> bool {

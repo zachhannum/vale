@@ -531,6 +531,12 @@ impl LabelClass {
         }
     }
 
+    /// Replaces the raster layer `old` with `new` in the text and the filter.
+    pub fn rename_raster(&mut self, old: &str, new: &str) {
+        self.text = crate::expr::rename_raster(&self.text, old, new);
+        self.filter = crate::expr::rename_raster(&self.filter, old, new);
+    }
+
     /// The class that gives the labels of `style`. `None` if the labels are off, the text is blank, or the feature type has no placements.
     pub fn from_style(
         name: &str,

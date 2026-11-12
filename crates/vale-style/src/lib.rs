@@ -131,11 +131,17 @@ fn stroke(color: Color, width: f64) -> Symbolizer {
 impl LayerStyle {
     /// Replaces the field `old` with `new` in the rules, the label text, and the priority field.
     pub fn rename_field(&mut self, old: &str, new: &str) {
-        self.style.rename_field(old, new);
+        self.style.rewrite(&|t| expr::rename_field(t, old, new));
         self.label.text = expr::rename_field(&self.label.text, old, new);
         if self.label.priority_field.as_deref() == Some(old) {
             self.label.priority_field = Some(new.to_owned());
         }
+    }
+
+    /// Replaces the raster layer `old` with `new` in the rules and the label text.
+    pub fn rename_raster(&mut self, old: &str, new: &str) {
+        self.style.rewrite(&|t| expr::rename_raster(t, old, new));
+        self.label.text = expr::rename_raster(&self.label.text, old, new);
     }
 
     /// The style of a new layer: one rule with constant symbolizers. `ordinal` picks a color and wraps around.

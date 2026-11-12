@@ -10,9 +10,7 @@ use eframe::egui::text::{CCursor, CCursorRange};
 use vale_store::FurnitureId;
 use vale_store::{FieldType, Geometry, GeometryKind, Layer, LayerId, Value};
 use vale_style::expr::editor::{Subject, measures_for, rasters_for};
-use vale_style::expr::{
-    Context, Expr, PageValues, RasterValues, Stat, field_ref, layer_functions,
-};
+use vale_style::expr::{Context, Expr, PageValues, RasterValues, Stat, field_ref, layer_functions};
 
 use super::AppState;
 use crate::furniture::PageSample;
