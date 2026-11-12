@@ -4009,3 +4009,289 @@ fn the_list_follows_the_box_height() {
         assert!(y > b.y0 && y < b.y1, "{text} {y} {b:?}");
     }
 }
+
+/// Adds a raster layer `Height` with values from 0 m to 6,553.5 m, so a
+/// value is a tenth of its level.
+fn add_height(doc: &mut Document) -> vale_store::RasterId {
+    (doc.project).add_raster("Height".to_string(), 64, "m".to_string(), 0.0, 6553.5)
+}
+
+/// The levels of the raster layers of `doc` at the next compose.
+fn update_rasters(doc: &Document, pipeline: &mut Pipeline, map: &vale_terrain::Heightmap) {
+    let rasters = pipeline.rasters_mut();
+    rasters.update(doc, |_| Some(map));
+    rasters.poll(true);
+}
+
+/// The value of `text` for feature `index` of layer `id`.
+fn raster_eval(
+    doc: &Document,
+    pipeline: &Pipeline,
+    id: vale_store::LayerId,
+    index: usize,
+    text: &str,
+) -> vale_store::Value {
+    let feature = &doc.layer(id).unwrap().features[index];
+    let rasters = pipeline.rasters().for_layer(id);
+    let expr = vale_style::expr::Expr::parse(text).unwrap();
+    expr.eval(&vale_style::expr::Context {
+        attributes: &feature.attributes,
+        scale: 0.0,
+        geometry: feature.geometry.kind(),
+        shape: Some(&feature.geometry),
+        radius_km: doc.project.world.radius_km,
+        page: None,
+        rasters: Some(&rasters),
+        index,
+    })
+}
+
+fn number(value: vale_store::Value) -> f64 {
+    match value {
+        vale_store::Value::Number(n) => n,
+        other => panic!("not a number: {other:?}"),
+    }
+}
+
+/// A document with one point layer.
+fn point_layer(doc: &mut Document, points: &[[f64; 2]]) -> vale_store::LayerId {
+    let id = (doc.project).add_layer(
+        "Points".into(),
+        vale_store::GeometryKind::Point,
+        None,
+        vec![],
+    );
+    for p in points {
+        let geometry = vale_store::Geometry::Points(vec![*p]);
+        let feature = vale_store::Feature::new(geometry, Default::default());
+        doc.project.add_feature(id, feature);
+    }
+    id
+}
+
+#[test]
+fn a_raster_value_at_a_point_is_between_the_pixels() {
+    use vale_terrain::math::lonlat_to_dir;
+    let mut doc = Document::empty();
+    add_height(&mut doc);
+    let at = [10.3, 20.7];
+    let id = point_layer(&mut doc, &[at]);
+    let mut map = vale_terrain::Heightmap::new(64, 0);
+    for face in 0..6 {
+        for y in 0..64 {
+            for x in 0..64 {
+                map.set(
+                    face,
+                    x,
+                    y,
+                    ((x * 977 + y * 331 + face * 101) % 60_000) as u16,
+                );
+            }
+        }
+    }
+    let mut pipeline = Pipeline::new();
+    update_rasters(&doc, &mut pipeline, &map);
+    // The first read asks for the values.
+    assert_eq!(
+        raster_eval(&doc, &pipeline, id, 0, "raster('Height')"),
+        vale_store::Value::Null
+    );
+    update_rasters(&doc, &mut pipeline, &map);
+    let value = number(raster_eval(&doc, &pipeline, id, 0, "raster('Height')"));
+    let d = lonlat_to_dir(at[0], at[1]);
+    assert!(
+        (value - map.sample_bilinear(d) / 10.0).abs() < 1e-9,
+        "{value}"
+    );
+    assert!(
+        (value - f64::from(map.sample(d)) / 10.0).abs() > 1.0,
+        "{value}"
+    );
+    let stat = vale_style::expr::Stat::Max;
+    assert_eq!(
+        pipeline.rasters().value_of(id, 0, "Height", stat),
+        Some(value)
+    );
+    // A moved point gets the value at its new place.
+    let uuid = doc.layer(id).unwrap().features[0].uuid();
+    let to = [-50.2, -10.9];
+    (doc.project).set_geometry(id, uuid, vale_store::Geometry::Points(vec![to]));
+    pipeline.forget(id);
+    update_rasters(&doc, &mut pipeline, &map);
+    let moved = pipeline.rasters().value_of(id, 0, "Height", stat).unwrap();
+    let d = lonlat_to_dir(to[0], to[1]);
+    assert!(
+        (moved - map.sample_bilinear(d) / 10.0).abs() < 1e-9,
+        "{moved}"
+    );
+}
+
+#[test]
+fn the_raster_mean_of_a_polygon_is_weighted_by_area() {
+    let mut doc = Document::empty();
+    add_height(&mut doc);
+    let text = r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{},"geometry":{"type":"Polygon","coordinates":[[[0,-10],[20,-10],[20,30],[0,30],[0,-10]]]}}]}"#;
+    let id = doc.add_imported(vale_import::geojson::read_str("zone", text).unwrap(), None)[0];
+    // 20,000 north of the equator and 0 south of it.
+    let mut map = vale_terrain::Heightmap::new(64, 0);
+    for face in 0..6 {
+        for y in 0..64 {
+            for x in 0..64 {
+                if map.texel_dir(face, x, y)[2] > 0.0 {
+                    map.set(face, x, y, 20_000);
+                }
+            }
+        }
+    }
+    let mut pipeline = Pipeline::new();
+    update_rasters(&doc, &mut pipeline, &map);
+    raster_eval(&doc, &pipeline, id, 0, "raster('Height')");
+    update_rasters(&doc, &mut pipeline, &map);
+    let mean = number(raster_eval(
+        &doc,
+        &pipeline,
+        id,
+        0,
+        "raster('Height', 'mean')",
+    ));
+    let rings = match &doc.layer(id).unwrap().features[0].geometry {
+        vale_store::Geometry::Polygons(p) => p[0].clone(),
+        _ => unreachable!(),
+    };
+    let zonal = vale_terrain::polygon_zonal(&map, &rings).unwrap();
+    assert!((mean - zonal.mean / 10.0).abs() < 1e-9, "{mean}");
+    // The area north of the equator is sin 30° and the area south of it is
+    // sin 10°.
+    let north = 30f64.to_radians().sin();
+    let south = 10f64.to_radians().sin();
+    let expected = 2000.0 * north / (north + south);
+    assert!((mean - expected).abs() < 40.0, "{mean} {expected}");
+    let max = number(raster_eval(
+        &doc,
+        &pipeline,
+        id,
+        0,
+        "raster('Height', 'max')",
+    ));
+    let min = number(raster_eval(
+        &doc,
+        &pipeline,
+        id,
+        0,
+        "raster('Height', 'min')",
+    ));
+    assert_eq!(min, 0.0);
+    assert!((max - 2000.0).abs() < 1e-9, "{max}");
+}
+
+#[test]
+fn a_stroke_on_the_raster_redraws_its_styles_within_a_second() {
+    use std::time::{Duration, Instant};
+    use vale_terrain::math::lonlat_to_dir;
+    let (mut doc, id) = lines(&[("a", 1.0)]);
+    add_height(&mut doc);
+    let (red, blue) = (Color::rgb(200, 0, 0), Color::rgb(0, 0, 200));
+    doc.entry_mut(id).unwrap().style.style = Style {
+        mask: None,
+        rules: vec![
+            stroke_rule("High", "raster('Height', 'max') > 3000", red, 1.0),
+            stroke_rule("Low", "raster('Height', 'max') <= 3000", blue, 1.0),
+        ],
+    };
+    let colors = |pipeline: &mut Pipeline| -> Vec<[u8; 3]> {
+        (compose(&doc, pipeline).list.items.iter())
+            .filter_map(|i| match i {
+                Item::Stroke {
+                    color, round: true, ..
+                } => Some([color.r, color.g, color.b]),
+                _ => None,
+            })
+            .collect()
+    };
+    let mut map = vale_terrain::Heightmap::new(64, 10_000);
+    let mut pipeline = Pipeline::new();
+    update_rasters(&doc, &mut pipeline, &map);
+    // No value yet: neither rule draws the line.
+    assert!(colors(&mut pipeline).is_empty());
+    update_rasters(&doc, &mut pipeline, &map);
+    assert_eq!(colors(&mut pipeline), [[0, 0, 200]]);
+
+    // A stroke raises the ground under the middle of the line.
+    map.begin_stroke();
+    let (a, b) = (lonlat_to_dir(-40.0, -40.0), lonlat_to_dir(40.0, -40.0));
+    let (face, x, y) = map.texel_of([a[0] + b[0], a[1] + b[1], a[2] + b[2]]);
+    for dy in 0..3 {
+        for dx in 0..3 {
+            map.set(face, x + dx - 1, y + dy - 1, 50_000);
+        }
+    }
+    map.end_stroke();
+    let start = Instant::now();
+    pipeline.rasters_mut().held = true;
+    pipeline.rasters_mut().update(&doc, |_| Some(&map));
+    assert!(start.elapsed() < Duration::from_millis(200));
+    // The job runs, and the map draws with the old value.
+    assert!(pipeline.rasters_mut().poll(false));
+    assert_eq!(colors(&mut pipeline), [[0, 0, 200]]);
+    pipeline.rasters_mut().held = false;
+    loop {
+        let rasters = pipeline.rasters_mut();
+        rasters.update(&doc, |_| Some(&map));
+        rasters.poll(false);
+        if colors(&mut pipeline) == [[200, 0, 0]] {
+            break;
+        }
+        assert!(start.elapsed() < Duration::from_secs(1), "no redraw");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn the_raster_values_of_fifty_thousand_points_take_less_than_a_second() {
+    let mut doc = Document::empty();
+    add_height(&mut doc);
+    let points: Vec<[f64; 2]> = (0..50_000)
+        .map(|i| {
+            let i = f64::from(i);
+            [
+                (i * 0.618_033).fract() * 360.0 - 180.0,
+                (i * 0.414_213).fract() * 170.0 - 85.0,
+            ]
+        })
+        .collect();
+    let id = point_layer(&mut doc, &points);
+    let map = vale_terrain::Heightmap::new(64, 12_345);
+    let mut pipeline = Pipeline::new();
+    update_rasters(&doc, &mut pipeline, &map);
+    let stat = vale_style::expr::Stat::Mean;
+    assert_eq!(pipeline.rasters().value_of(id, 0, "Height", stat), None);
+    let start = std::time::Instant::now();
+    update_rasters(&doc, &mut pipeline, &map);
+    let time = start.elapsed();
+    assert!(time.as_secs_f64() < 1.0, "{time:?}");
+    for i in [0, 25_000, 49_999] {
+        let value = pipeline.rasters().value_of(id, i, "Height", stat).unwrap();
+        assert!((value - 1234.5).abs() < 1e-6, "{value}");
+    }
+}
+
+#[test]
+fn an_unknown_raster_name_gives_null() {
+    let mut doc = Document::empty();
+    add_height(&mut doc);
+    let id = point_layer(&mut doc, &[[0.0, 0.0]]);
+    let map = vale_terrain::Heightmap::new(64, 1000);
+    let mut pipeline = Pipeline::new();
+    update_rasters(&doc, &mut pipeline, &map);
+    raster_eval(&doc, &pipeline, id, 0, "raster('Height')");
+    update_rasters(&doc, &mut pipeline, &map);
+    assert_eq!(
+        number(raster_eval(&doc, &pipeline, id, 0, "raster('Height')")),
+        100.0
+    );
+    let null = raster_eval(&doc, &pipeline, id, 0, "raster('Rain')");
+    assert_eq!(null, vale_store::Value::Null);
+    let rasters = pipeline.rasters().for_layer(id);
+    assert!(!vale_style::expr::RasterValues::has_layer(&rasters, "Rain"));
+    assert_eq!(pipeline.rasters().raster_names(), ["Height"]);
+}
