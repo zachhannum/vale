@@ -1317,7 +1317,6 @@ fn map_style_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Contro
     });
     let (name, title, on) = (NO_MAP_STYLE_ROW, NO_MAP_STYLE, linked.is_none());
     let none = widgets::swipe_option_row(ui, controls, place(0), name, title, on, 0.0);
-    widgets::drag_scroll(ui, &none.body);
     if none.body.clicked() {
         state.atlas.map_style_swipe = None;
         state.set_map_style_link(map, None);
@@ -1373,7 +1372,6 @@ fn map_style_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Contro
         ) {
             continue;
         }
-        widgets::drag_scroll(ui, &row.body);
         if row.body.clicked() {
             if open.is_some() {
                 state.atlas.map_style_swipe = None;
@@ -1645,10 +1643,6 @@ fn layers_tab(
             .inner;
         if row.eye {
             state.set_map_shown(map, layer, !shown);
-        }
-        // The body of a row takes a drag, so the drag scrolls the pane.
-        if let Some(body) = row.body.as_ref() {
-            widgets::drag_scroll(ui, body);
         }
         if row.open || row.body.is_some_and(|b| b.clicked()) {
             open = Some(layer);

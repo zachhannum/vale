@@ -2870,7 +2870,6 @@ fn swipe_rows(
         if swipe::drag(ui, &mut state.pad.swipe, id, &body, widgets::RENAME_WIDTH) {
             continue;
         }
-        widgets::drag_scroll(ui, &body);
         if body.clicked() {
             if open.is_some() {
                 state.pad.swipe = None;
@@ -2888,6 +2887,9 @@ fn swipe_rows(
         });
         match press {
             Some((held, moved, y)) if moved <= HOLD_SLOP && held >= HOLD_TIME => {
+                // The row takes the drag, so that the list does not scroll
+                // while the finger moves the layer.
+                ui.ctx().set_dragged_id(body.id);
                 state.select(Some(row.layer));
                 state.pad.reorder = Some(Reorder {
                     layer: id,

@@ -65,10 +65,10 @@ pub fn drag<K: Copy + PartialEq>(
     width: f32,
 ) -> bool {
     let moved = ui.input(|i| Some(i.pointer.interact_pos()? - i.pointer.press_origin()?));
-    if body.drag_started() {
-        let d = moved.unwrap_or_default();
+    let took = super::widgets::take_drag(ui, body, super::widgets::sideways);
+    if took {
         let base = swipe.filter(|s| s.row == row).map_or(0.0, |s| s.offset);
-        *swipe = (d.x.abs() > d.y.abs()).then_some(Swipe {
+        *swipe = Some(Swipe {
             row,
             offset: base,
             base,
@@ -78,7 +78,7 @@ pub fn drag<K: Copy + PartialEq>(
     let Some(mut open) = swipe.filter(|s| s.row == row && s.moving) else {
         return false;
     };
-    if body.dragged() {
+    if body.dragged() || took {
         let dx = moved.map_or(0.0, |d| d.x);
         open.offset = (open.base + dx).clamp(-width, 0.0);
         *swipe = Some(open);

@@ -211,14 +211,12 @@ pub fn section(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
         let shift = swipe.map_or(0.0, |s| s.2);
         let row = widgets::swipe_select_row(ui, controls, name, filter, on, shift);
         let moved = ui.input(|i| Some(i.pointer.interact_pos()? - i.pointer.press_origin()?));
-        if row.drag_started() {
-            let d = moved.unwrap_or_default();
-            if d.x > d.y.abs() {
-                state.pad.rules.swipe = Some((id, i, 0.0));
-            }
+        let took = widgets::take_drag(ui, &row, |m| m.x > m.y.abs());
+        if took {
+            state.pad.rules.swipe = Some((id, i, 0.0));
         }
         if let Some((_, _, dx)) = state.pad.rules.swipe.filter(|s| s.0 == id && s.1 == i) {
-            if row.dragged() {
+            if row.dragged() || took {
                 let dx = moved.map_or(dx, |d| d.x.clamp(0.0, widgets::SWIPE_SELECT));
                 state.pad.rules.swipe = Some((id, i, dx));
             } else {
@@ -235,8 +233,6 @@ pub fn section(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
                 state.pad.rules.swipe = None;
             }
             ui.ctx().request_repaint();
-        } else if row.dragged() || row.drag_stopped() {
-            widgets::drag_scroll(ui, &row);
         } else if row.clicked() {
             state.pad.page = Some(if on { Page::Rules } else { Page::Rule(i) });
         }

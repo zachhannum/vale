@@ -8427,6 +8427,65 @@ fn selected_rules_take_one_stroke_and_keep_their_fills() {
     }
 }
 
+#[test]
+fn a_drag_on_a_rule_row_scrolls_as_a_drag_between_rows() {
+    use vale_store::GeometryKind;
+    // The place of the row "Rule 2" in each frame of a drag up and of the
+    // frames after it, with the drag from `on_row` or from the heading.
+    let drag_up = |on_row: bool| -> Vec<f32> {
+        let mut h = pad(BOARDS[3]);
+        let land = vector(&h, "Land");
+        for _ in 0..8 {
+            let entry = h.state_mut().doc.entry_mut(land).unwrap();
+            entry.style.add_rule(GeometryKind::Polygon);
+        }
+        open_panel(&mut h, "Layers");
+        tap(&mut h, "Open Land");
+        scroll_to_control(&mut h, "Default");
+        let row = control(&h, "Rule 2").unwrap();
+        // The heading "Style" is above the first rule and takes no touch.
+        let heading = control(&h, "Default").unwrap().center_top() - vec2(0.0, 20.0);
+        let start = if on_row { row.center() } else { heading };
+        let mut places = Vec::new();
+        touch(&mut h, egui::TouchPhase::Start, start, None);
+        h.step();
+        for dy in [10.0, 40.0, 70.0, 130.0] {
+            touch(&mut h, egui::TouchPhase::Move, start - vec2(0.0, dy), None);
+            h.step();
+            places.push(control(&h, "Rule 2").unwrap().center().y);
+        }
+        touch(
+            &mut h,
+            egui::TouchPhase::End,
+            start - vec2(0.0, 130.0),
+            None,
+        );
+        for _ in 0..4 {
+            h.step();
+            places.push(control(&h, "Rule 2").unwrap().center().y);
+        }
+        assert!(h.state().pad.rules.select.is_none());
+        assert_eq!(h.state().pad.page, None);
+        places
+    };
+    let (on_row, between) = (drag_up(true), drag_up(false));
+    assert!(between[3] < between[0] - 50.0, "{between:?}");
+    assert_eq!(on_row, between);
+}
+
+#[test]
+fn a_drag_to_the_side_on_a_rule_row_selects_it_and_does_not_scroll() {
+    let mut h = pad(BOARDS[3]);
+    let land = vector(&h, "Land");
+    open_panel(&mut h, "Layers");
+    tap(&mut h, "Open Land");
+    scroll_to_control(&mut h, "Default");
+    let before = control(&h, "Default").unwrap().top();
+    swipe_right(&mut h, "Default");
+    assert_eq!(h.state().pad.rules.picked(land), [0]);
+    assert_eq!(control(&h, "Default").unwrap().top(), before);
+}
+
 /// A swipe to the right on the row `name`.
 fn swipe_right(h: &mut Pad, name: &str) {
     scroll_to_control(h, name);

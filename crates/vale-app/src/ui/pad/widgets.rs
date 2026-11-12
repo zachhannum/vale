@@ -719,7 +719,7 @@ pub fn layer_row(
             controls,
             body_rect,
             &body_name,
-            Sense::click_and_drag(),
+            Sense::click(),
             true,
             Some(selected),
         )
@@ -917,7 +917,7 @@ pub fn swipe_option_row(
         controls,
         body_rect,
         name,
-        Sense::click_and_drag(),
+        Sense::click(),
         true,
         Some(on),
     );
@@ -1161,37 +1161,61 @@ pub fn open_row(ui: &mut egui::Ui, controls: &mut Controls, name: &str, value: &
     resp
 }
 
-/// The speed of a flick, in points per second, below which the list stops
-/// when the finger is up.
-const FLICK_SPEED: f32 = 200.0;
-/// The time that the list of a flick moves on, in seconds.
-const FLICK_TIME: f32 = 0.6;
+/// The move of a press, in points, at which a widget in a list takes the
+/// drag or leaves it to the list. It is less than the move at which egui
+/// starts a drag, so with small moves the list has not started to scroll.
+const DECIDE: f32 = 4.0;
 
-/// Scrolls the list under a row that takes drags, as a drag on the list
-/// itself does: the list follows the finger with no delay, and after a
-/// flick it moves on and slows down. Call it while `resp` is dragged and
-/// in the frame in which the drag stops.
-pub fn drag_scroll(ui: &egui::Ui, resp: &Response) {
-    use egui::style::ScrollAnimation;
-    let key = resp.id.with("flick");
-    if resp.dragged() {
-        let dy = resp.drag_delta().y;
-        ui.scroll_with_delta_animation(vec2(0.0, dy), ScrollAnimation::none());
-        let dt = ui.input(|i| i.stable_dt).max(1e-3);
-        let old: f32 = ui.data(|d| d.get_temp(key)).unwrap_or(0.0);
-        // The speed of the last frames, so that one slow frame does not
-        // stop a flick.
-        let speed = 0.6 * dy / dt + 0.4 * old;
-        ui.data_mut(|d| d.insert_temp(key, speed));
-    } else if resp.drag_stopped() {
-        let speed: f32 = ui.data_mut(|d| d.remove_temp(key)).unwrap_or(0.0);
-        if speed.abs() > FLICK_SPEED {
-            // An ease-out motion over `FLICK_TIME` covers half of the
-            // distance that the flick speed keeps up for that time.
-            let delta = vec2(0.0, speed * FLICK_TIME / 2.0);
-            ui.scroll_with_delta_animation(delta, ScrollAnimation::duration(FLICK_TIME));
-        }
+/// Lets a widget in a scrolling list take a drag in some directions only.
+/// The widget senses clicks, so egui gives a drag on it to the list, which
+/// scrolls with its own motion and momentum, as a drag between the widgets
+/// does. When a press that egui gave to the widget moves `DECIDE` points,
+/// `takes` tells, from the move, if the drag belongs to the widget. If it
+/// does, the widget takes the drag from the list, and `resp.dragged()` and
+/// `resp.drag_stopped()` work as for a widget that senses drags, from the
+/// next frame on. Each press decides one time. Returns true in the frame
+/// that the widget takes the drag.
+pub fn take_drag(ui: &egui::Ui, resp: &Response, takes: impl FnOnce(egui::Vec2) -> bool) -> bool {
+    if !resp.enabled() || resp.dragged() {
+        return false;
     }
+    let (down, start, origin, pos) = ui.input(|i| {
+        let p = &i.pointer;
+        (
+            p.primary_down(),
+            p.press_start_time(),
+            p.press_origin(),
+            p.latest_pos(),
+        )
+    });
+    let (Some(start), Some(origin), Some(pos)) = (start, origin, pos) else {
+        return false;
+    };
+    // egui forgets the widget of a press when the press moves far, so the
+    // widget notes the press in its first frame, before it moves.
+    let (pressed, decided) = (resp.id.with("pressed"), resp.id.with("decided"));
+    if resp.is_pointer_button_down_on() && pos.distance(origin) < DECIDE {
+        ui.data_mut(|d| d.insert_temp(pressed, start));
+    }
+    let moved = pos - origin;
+    let ours = ui.data(|d| d.get_temp::<f64>(pressed)) == Some(start);
+    if !down || !ours || moved.length() < DECIDE {
+        return false;
+    }
+    if ui.data(|d| d.get_temp::<f64>(decided)) == Some(start) {
+        return false;
+    }
+    ui.data_mut(|d| d.insert_temp(decided, start));
+    let take = takes(moved);
+    if take {
+        ui.ctx().set_dragged_id(resp.id);
+    }
+    take
+}
+
+/// True if the move of a press is more to the side than up or down.
+pub fn sideways(moved: egui::Vec2) -> bool {
+    moved.x.abs() > moved.y.abs()
 }
 
 /// The distance that a swipe to the right moves a row, at most.
@@ -1210,15 +1234,7 @@ pub fn swipe_select_row(
     shift: f32,
 ) -> Response {
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), Sense::hover());
-    let resp = hit(
-        ui,
-        controls,
-        rect,
-        name,
-        Sense::click_and_drag(),
-        true,
-        Some(on),
-    );
+    let resp = hit(ui, controls, rect, name, Sense::click(), true, Some(on));
     let painter = ui.painter();
     let back = rect.expand2(vec2(8.0, -HIGHLIGHT_INSET));
     if shift > 0.0 {
