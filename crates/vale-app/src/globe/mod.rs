@@ -5455,6 +5455,39 @@ mod tests {
     }
 
     #[test]
+    fn a_stroke_of_the_polygon_brush_shows_its_band_and_does_not_snap() {
+        let ours = layer(9, GeometryKind::Polygon, Vec::new());
+        let built = Arc::new(LayerTargets::build(ours.id, &ours));
+        let mut globe = Globe {
+            rect: Rect::from_min_size(Pos2::ZERO, Vec2::splat(300.0 / 0.45)),
+            view: GlobeView::centered(5.0, 0.0),
+            draw_layer: Some(LayerId(9)),
+            fillable: true,
+            tool: Tool::PolygonBrush,
+            ..Globe::default()
+        };
+        globe.set_targets(Some(Arc::new(Targets::new(vec![built], Vec::new()))));
+        globe.line.brush_size = 10.0;
+        assert!(globe.sweeping() && globe.stroking());
+        globe.line_down();
+        globe.line_keys(true, false);
+        assert_eq!(globe.stroke_mode(), Some(PolygonMode::Add));
+        globe.line_sample(Pos2::new(10.0, 10.0), Some(lonlat_to_dir(5.0, 0.0)), 1.0);
+        globe.line_sample(Pos2::new(20.0, 10.0), Some(lonlat_to_dir(6.0, 0.0)), 0.5);
+        let band = globe.sweep_preview().expect("a band");
+        assert_eq!(
+            band,
+            vec![(Pos2::new(10.0, 10.0), 10.0), (Pos2::new(20.0, 10.0), 5.0)]
+        );
+        assert!(globe.snap_highlight().is_none());
+        globe.line_up();
+        let stroke = globe.take_line().expect("a stroke");
+        assert!(stroke.sweep);
+        assert_eq!(stroke.pressure, vec![1.0, 0.5]);
+        assert_eq!(stroke.mode, PolygonMode::Add);
+    }
+
+    #[test]
     fn a_hover_shows_where_the_stroke_starts() {
         let line = |id: u32, part: Vec<LonLat>| {
             layer(id, GeometryKind::Line, vec![Geometry::Lines(vec![part])])
