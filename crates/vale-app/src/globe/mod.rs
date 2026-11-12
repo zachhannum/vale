@@ -51,6 +51,7 @@ pub mod stats;
 pub mod stops;
 pub mod stroke_group;
 pub mod stroke_test;
+pub mod sweep;
 pub mod symbol;
 pub mod thumbnail;
 pub mod vector;
@@ -154,11 +155,13 @@ const LINE_TEXELS_PER_FRAME: usize = 1 << 20;
 /// and the frames of the UI do not wait for a large plan.
 const RIDGE_PIECE_TEXELS: usize = 1 << 20;
 
-/// A stroke of the line tool or the polygon tool.
+/// A stroke of the line tool, the polygon tool, or the Polygon brush.
 pub struct LineStroke {
     pub screen: Vec<Pos2>,
     /// The samples on the unit sphere.
     pub dirs: Vec<V3>,
+    /// The pen pressure of each sample, from 0 to 1.
+    pub pressure: Vec<f32>,
     /// The points in one radian at the start of the stroke.
     pub scale: f64,
     /// The pen left the world, and the stroke takes no more samples.
@@ -173,6 +176,8 @@ pub struct LineStroke {
     pub mode: PolygonMode,
     /// The stroke splits features.
     pub split: bool,
+    /// The stroke is a stroke of the Polygon brush.
+    pub sweep: bool,
 }
 
 /// A point that the point tool placed.
@@ -192,6 +197,8 @@ pub enum Tool {
     Brush,
     Line,
     Polygon,
+    /// Paints polygon area with a round brush.
+    PolygonBrush,
     Point,
     /// Measures a path on the world. It works with any layer selected.
     Measure,
@@ -2085,10 +2092,16 @@ impl Globe {
         self.tool == Tool::Vertex && (self.lineable || self.fillable)
     }
 
+    /// True if the Polygon brush is the tool and it can paint in the
+    /// selected layer.
+    pub fn sweeping(&self) -> bool {
+        self.tool == Tool::PolygonBrush && self.fillable
+    }
+
     /// True if a tool that takes a stroke on a vector layer can take one
     /// now.
     pub fn stroking(&self) -> bool {
-        self.drawing() || self.splitting()
+        self.drawing() || self.splitting() || self.sweeping()
     }
 
     /// True if a tool that edits a vector layer can edit now.
@@ -2296,10 +2309,13 @@ impl Globe {
         let scale = self.radius();
         let targets = self.targets.clone().zip(self.draw_layer);
         let snap = &self.snap;
-        let tracer = targets.map(|(t, layer)| Tracer::new(t, snap.clone(), scale, layer));
+        let tracer = targets
+            .filter(|_| !self.sweeping())
+            .map(|(t, layer)| Tracer::new(t, snap.clone(), scale, layer));
         self.line_stroke = Some(LineStroke {
             screen: Vec::new(),
             dirs: Vec::new(),
+            pressure: Vec::new(),
             scale,
             off: false,
             tracer,
@@ -2307,6 +2323,7 @@ impl Globe {
             reshape: None,
             mode: self.line.polygon_mode,
             split: self.splitting(),
+            sweep: self.sweeping(),
         });
     }
 
@@ -2324,15 +2341,16 @@ impl Globe {
     }
 
     /// Adds one sample to the stroke of the line or polygon tool. The stroke ends at
-    /// the first sample off the world.
-    pub fn line_sample(&mut self, pos: Pos2, dir: Option<V3>) {
+    /// the first sample off the world. `pressure` is from 0 to 1.
+    pub fn line_sample(&mut self, pos: Pos2, dir: Option<V3>, pressure: f32) {
         let first = self.line_stroke.as_ref().is_some_and(|s| s.dirs.is_empty());
         let reshape = match (dir, &self.targets, self.draw_layer) {
             (Some(dir), Some(targets), Some(layer))
                 if first
                     && self.line.reshape
                     && self.line.polygon_mode == PolygonMode::New
-                    && !self.splitting() =>
+                    && !self.splitting()
+                    && !self.sweeping() =>
             {
                 let scale = self.radius();
                 targets.reshape(layer, dir, scale, reshape::REACH / scale)
@@ -2350,6 +2368,7 @@ impl Globe {
             Some(dir) => {
                 stroke.screen.push(pos);
                 stroke.dirs.push(dir);
+                stroke.pressure.push(pressure);
                 if let Some(tracer) = &mut stroke.tracer {
                     tracer.push(dir);
                 }
@@ -2387,7 +2406,7 @@ impl Globe {
                 point: Some(snap.dir),
             });
         }
-        if !self.editing() || self.vertexing() {
+        if !self.editing() || self.vertexing() || self.sweeping() {
             return None;
         }
         let dir = self.unproject(self.input.pos?)?;
@@ -2402,6 +2421,26 @@ impl Globe {
     /// The stroke of the line or polygon tool while the pen is down, in screen points.
     pub fn line_preview(&self) -> Option<&[Pos2]> {
         self.line_stroke.as_ref().map(|s| s.screen.as_slice())
+    }
+
+    /// The stroke of the Polygon brush while the pen is down: each sample in
+    /// screen points, with the brush radius there in points.
+    pub fn sweep_preview(&self) -> Option<Vec<(Pos2, f32)>> {
+        let stroke = self.line_stroke.as_ref().filter(|s| s.sweep)?;
+        let size = self.line.brush_size;
+        Some(
+            stroke
+                .screen
+                .iter()
+                .zip(&stroke.pressure)
+                .map(|(&p, &f)| (p, size * f))
+                .collect(),
+        )
+    }
+
+    /// The mode of the stroke while the pen is down.
+    pub fn stroke_mode(&self) -> Option<PolygonMode> {
+        self.line_stroke.as_ref().map(|s| s.mode)
     }
 
     /// The feature that the stroke of the line or polygon tool reshapes.
@@ -5403,7 +5442,7 @@ mod tests {
         globe.snap.targets = snap::TargetSet::every(globe.vector_targets().unwrap());
         let stroke = |globe: &mut Globe, lon: f64, lat: f64| {
             globe.line_down();
-            globe.line_sample(Pos2::ZERO, Some(lonlat_to_dir(lon, lat)));
+            globe.line_sample(Pos2::ZERO, Some(lonlat_to_dir(lon, lat)), 1.0);
             let reshape = globe.reshape_preview();
             globe.line_up();
             globe.take_line();
@@ -5455,7 +5494,7 @@ mod tests {
         assert!(near(lit(&mut globe, 10.5, 0.5), 10.0, 0.0));
         // While the stroke starts at that end, the end shows.
         globe.line_down();
-        globe.line_sample(Pos2::ZERO, Some(lonlat_to_dir(10.5, 0.5)));
+        globe.line_sample(Pos2::ZERO, Some(lonlat_to_dir(10.5, 0.5)), 1.0);
         assert!(near(
             globe.snap_highlight().and_then(|h| h.point),
             10.0,
@@ -5487,7 +5526,7 @@ mod tests {
         let mut traced = false;
         let mut left = false;
         for &p in &samples {
-            globe.line_sample(Pos2::ZERO, Some(p));
+            globe.line_sample(Pos2::ZERO, Some(p), 1.0);
             let lit = globe.snap_highlight().filter(|h| h.span.len() > 1);
             if let Some(h) = lit {
                 traced = true;

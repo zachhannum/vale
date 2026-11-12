@@ -42,6 +42,8 @@ pub struct LineSettings {
     pub reshape: bool,
     /// How a stroke of the polygon tool changes the layer.
     pub polygon_mode: PolygonMode,
+    /// The radius of the Polygon brush, in points.
+    pub brush_size: f32,
 }
 
 impl Default for LineSettings {
@@ -52,6 +54,7 @@ impl Default for LineSettings {
             terrain: 0.5,
             reshape: false,
             polygon_mode: PolygonMode::New,
+            brush_size: super::sweep::DEFAULT_SIZE,
         }
     }
 }

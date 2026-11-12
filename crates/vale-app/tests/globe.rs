@@ -7687,7 +7687,7 @@ fn a_trace_of_the_coast_follows_the_line_that_the_globe_shows() {
         globe.line_down();
         for &d in &samples {
             let pos = globe.view.project(globe.rect, d).unwrap();
-            globe.line_sample(pos, Some(d));
+            globe.line_sample(pos, Some(d), 1.0);
         }
         globe.line_up();
         let stroke = globe.take_line().unwrap();

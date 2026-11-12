@@ -20,6 +20,7 @@ use super::polygon::{
 };
 use super::reshape::{REACH, ends, outlines};
 use super::snap::{PathVertex, Run, distance_to_arc};
+use super::sweep::Sweep;
 use super::vector;
 
 /// How the polygon tool uses a stroke.
@@ -45,6 +46,9 @@ pub struct StrokeArea {
     /// A box around the path.
     bounds: Bounds,
     min_area: f64,
+    /// The brush radius at each vertex of the path, in radians, for a
+    /// stroke of the Polygon brush. It is empty for other areas.
+    radii: Vec<f64>,
 }
 
 /// A box in 3D around a part of the sphere.
@@ -78,6 +82,25 @@ impl StrokeArea {
             path,
             bounds,
             min_area,
+            radii: Vec::new(),
+        })
+    }
+
+    /// The area of a stroke of the Polygon brush. The path is the center
+    /// line of the brush, so the stroke reaches a polygon where the edge of
+    /// the brush reaches it.
+    pub fn of_sweep(sweep: &Sweep, scale: f64) -> Option<Self> {
+        if sweep.rings.is_empty() || sweep.center.is_empty() {
+            return None;
+        }
+        let ring_dirs = sweep.rings.iter().flat_map(|r| dirs(r));
+        Some(StrokeArea {
+            rings: sweep.rings.clone(),
+            area: Feature::new(&sweep.polygons()),
+            path: sweep.center.clone(),
+            bounds: boxed(ring_dirs, REACH / scale),
+            min_area: MIN_AREA / (scale * scale),
+            radii: sweep.radii.clone(),
         })
     }
 
@@ -101,6 +124,7 @@ impl StrokeArea {
             path,
             bounds,
             min_area: MIN_AREA / (scale * scale),
+            radii: Vec::new(),
         })
     }
 
@@ -146,17 +170,21 @@ impl StrokeArea {
             return None;
         };
         let start = *self.path.first()?;
-        let near_start = polygons.iter().flatten().any(|ring| {
-            ring.windows(2).any(|w| {
-                let (a, b) = (dir(w[0]), dir(w[1]));
-                distance_to_arc(start, a, b) * scale <= REACH
+        let radius = |i: usize| self.radii.get(i).copied().unwrap_or(0.0);
+        let near = |p: V3, reach: f64| {
+            polygons.iter().flatten().any(|ring| {
+                ring.windows(2).any(|w| {
+                    let (a, b) = (dir(w[0]), dir(w[1]));
+                    distance_to_arc(p, a, b) <= reach
+                })
             })
-        });
-        if near_start {
+        };
+        if near(start, REACH / scale + radius(0)) {
             return Some(0);
         }
         let feature = Feature::new(polygons);
-        self.path.iter().position(|&p| feature.holds(p))
+        (self.path.iter().enumerate())
+            .position(|(i, &p)| feature.holds(p) || (radius(i) > 0.0 && near(p, radius(i))))
     }
 
     /// The geometry with the area of the stroke joined to it. A stroke that
