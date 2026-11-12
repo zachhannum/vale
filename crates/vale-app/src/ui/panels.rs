@@ -318,7 +318,8 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
 }
 
 /// The Snap check box and the menu of the snap settings: the distance, and
-/// on the globe the snap targets of the active layer in each visible layer.
+/// on the globe a line for each visible layer, the active layer first, with
+/// the check boxes of its types of snap target of the active layer.
 fn snap_controls(ui: &mut egui::Ui, state: &mut AppState) {
     ui.checkbox(&mut state.globe.snap.on, SNAP);
     ui.menu_button(SNAP_OPTIONS, |ui| {
@@ -334,26 +335,27 @@ fn snap_controls(ui: &mut egui::Ui, state: &mut AppState) {
             ui.weak(pad::NO_SNAP_LAYER);
             return;
         };
-        let targets = state.doc.project.snap_targets(active);
-        for layer in pad::snap_layers(state) {
-            let mut types = pad::snap_types(&targets, layer.id);
-            let before = types;
+        let layers = pad::snap_layers(state);
+        if !layers.is_empty() {
             ui.separator();
-            ui.label(&layer.name);
-            match layer.stops {
-                None => {
-                    ui.checkbox(&mut types.vertices, pad::SNAP_VERTICES);
-                    ui.checkbox(&mut types.edges, pad::SNAP_EDGES);
-                }
-                Some(bands) => {
-                    let check = egui::Checkbox::new(&mut types.stops, pad::SNAP_STOPS);
-                    ui.add_enabled(bands, check);
-                }
-            }
-            if types != before {
-                state.set_snap_target(active, layer.id, types);
-            }
         }
+        let targets = state.doc.project.snap_targets(active);
+        egui::Grid::new("snap targets").show(ui, |ui| {
+            for layer in layers {
+                let mut types = pad::snap_types(&targets, layer.id);
+                let before = types;
+                let enabled = layer.kind.enabled();
+                ui.add_enabled(enabled, egui::Label::new(&layer.name));
+                for (label, kind) in layer.kind.toggles() {
+                    let check = egui::Checkbox::new(kind.of(&mut types), *label);
+                    ui.add_enabled(enabled, check);
+                }
+                ui.end_row();
+                if types != before {
+                    state.set_snap_target(active, layer.id, types);
+                }
+            }
+        });
     });
 }
 

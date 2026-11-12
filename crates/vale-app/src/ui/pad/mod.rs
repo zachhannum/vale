@@ -2234,12 +2234,15 @@ pub const SNAP_HINT: &str = "Touch and hold Snap to change snap settings.";
 pub const NO_SNAP_LAYER: &str = "Select a layer to choose snap targets.";
 /// The hint of the Snap panel in the Atlas workspace.
 pub const MAP_SNAP: &str = "In a map frame, Measure snaps to the layers of the map.";
-/// The labels of the switches of the snap targets of a layer.
+/// The labels of the toggles of the snap targets of a layer.
 pub const SNAP_VERTICES: &str = "Vertices";
 pub const SNAP_EDGES: &str = "Edges";
+/// The label of the toggle of the points of a point layer. It sets the
+/// vertices of the targets.
+pub const SNAP_POINTS: &str = "Points";
 pub const SNAP_STOPS: &str = "Color stops";
 
-/// The name of the switch of a type of snap target, `label`, in the layer
+/// The name of the toggle of a type of snap target, `label`, in the layer
 /// `layer`.
 pub fn snap_target_name(label: &str, layer: &str) -> String {
     format!("{label} of {layer}")
@@ -2254,31 +2257,86 @@ fn muted(ui: &mut egui::Ui, text: &str) {
 pub(crate) struct SnapLayer {
     pub id: LayerId,
     pub name: String,
-    /// For a raster layer, its color stops can be targets: it shows bands.
-    /// `None` for a vector layer.
-    pub stops: Option<bool>,
+    pub icon: Icon,
+    pub kind: SnapKind,
 }
 
-/// The visible vector and raster layers, in the order of the layer list.
+/// The kind of a layer that can be a snap target.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SnapKind {
+    /// A line or a polygon layer: its vertices and its edges.
+    Shapes,
+    /// A point layer: its points, which are the vertices of a target.
+    Points,
+    /// A raster layer. Its color stops can be targets if it shows bands.
+    Raster { bands: bool },
+}
+
+impl SnapKind {
+    /// The labels of the toggles of the kind, each with the type that it sets.
+    pub fn toggles(self) -> &'static [(&'static str, SnapType)] {
+        match self {
+            SnapKind::Shapes => &[
+                (SNAP_VERTICES, SnapType::Vertices),
+                (SNAP_EDGES, SnapType::Edges),
+            ],
+            SnapKind::Points => &[(SNAP_POINTS, SnapType::Vertices)],
+            SnapKind::Raster { .. } => &[(SNAP_STOPS, SnapType::Stops)],
+        }
+    }
+
+    /// The toggles can change: false for a raster that does not show bands.
+    pub fn enabled(self) -> bool {
+        self != SnapKind::Raster { bands: false }
+    }
+}
+
+/// A type of snap target.
+#[derive(Clone, Copy)]
+pub(crate) enum SnapType {
+    Vertices,
+    Edges,
+    Stops,
+}
+
+impl SnapType {
+    pub fn of(self, types: &mut vale_store::SnapTypes) -> &mut bool {
+        match self {
+            SnapType::Vertices => &mut types.vertices,
+            SnapType::Edges => &mut types.edges,
+            SnapType::Stops => &mut types.stops,
+        }
+    }
+}
+
+/// The visible vector and raster layers: the active layer first, then the
+/// others in the order of the layer list.
 pub(crate) fn snap_layers(state: &AppState) -> Vec<SnapLayer> {
     let project = &state.doc.project;
-    (project.layers().iter())
+    let mut layers: Vec<SnapLayer> = (project.layers().iter())
         .filter(|l| l.visible)
         .filter_map(|l| {
-            let stops = match l.raster() {
-                Some(id) => Some(project.raster(id)?.display == vale_store::RasterDisplay::Bands),
-                None => {
-                    l.geometry()?;
-                    None
-                }
+            let kind = match l.raster() {
+                Some(id) => SnapKind::Raster {
+                    bands: project.raster(id)?.display == vale_store::RasterDisplay::Bands,
+                },
+                None if l.geometry()? == GeometryKind::Point => SnapKind::Points,
+                None => SnapKind::Shapes,
             };
             Some(SnapLayer {
                 id: l.id,
                 name: l.name.clone(),
-                stops,
+                icon: layer_icon(l),
+                kind,
             })
         })
-        .collect()
+        .collect();
+    let active = state.active_layer_id();
+    if let Some(at) = layers.iter().position(|l| Some(l.id) == active) {
+        let first = layers.remove(at);
+        layers.insert(0, first);
+    }
+    layers
 }
 
 /// The types of target `target` in a list of snap targets.
@@ -2294,8 +2352,9 @@ pub(crate) fn snap_types(
     (targets.iter().find(|(id, _)| *id == target)).map_or(none, |(_, t)| *t)
 }
 
-/// The Snap panel: the Snapping switch, the snap distance, and the snap
-/// targets of the active layer in each visible layer.
+/// The Snap panel: the Snapping switch, the snap distance, and a row for
+/// each visible layer with the toggles of its types of snap target of the
+/// active layer.
 fn snap_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
     ui.spacing_mut().item_spacing.y = 0.0;
     let snap = &mut state.globe.snap;
@@ -2314,31 +2373,15 @@ fn snap_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
         muted(ui, NO_SNAP_LAYER);
         return;
     };
+    let layers = snap_layers(state);
+    if !layers.is_empty() {
+        rule(ui);
+    }
     let targets = state.doc.project.snap_targets(active);
-    for layer in snap_layers(state) {
+    for layer in layers {
         let mut types = snap_types(&targets, layer.id);
-        widgets::list_heading(ui, &layer.name);
         let before = types;
-        let name = |label| snap_target_name(label, &layer.name);
-        match layer.stops {
-            None => {
-                let vertices = &mut types.vertices;
-                widgets::switch_row(ui, controls, &name(SNAP_VERTICES), SNAP_VERTICES, vertices);
-                let edges = &mut types.edges;
-                widgets::switch_row(ui, controls, &name(SNAP_EDGES), SNAP_EDGES, edges);
-            }
-            Some(bands) => {
-                let stops = &mut types.stops;
-                widgets::switch_row_enabled(
-                    ui,
-                    controls,
-                    &name(SNAP_STOPS),
-                    SNAP_STOPS,
-                    stops,
-                    bands,
-                );
-            }
-        }
+        snap_row(ui, controls, &layer, layer.id == active, &mut types);
         if types != before {
             state.set_snap_target(active, layer.id, types);
         }
@@ -2347,6 +2390,50 @@ fn snap_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
 
 /// The switch of the Brush panel for one finger that paints and draws.
 pub const FINGER_PAINT: &str = "Paint with finger";
+
+/// A row of the Snap panel: the icon of the kind of the layer, its name,
+/// and at the right the toggles of its types of target. The `active` layer
+/// has the accent color.
+fn snap_row(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    layer: &SnapLayer,
+    active: bool,
+    types: &mut vale_store::SnapTypes,
+) {
+    let size = vec2(ui.available_width(), PANEL_ROW);
+    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+    let enabled = layer.kind.enabled();
+    let mut right = rect.right_center();
+    for (label, kind) in layer.kind.toggles().iter().rev() {
+        let name = snap_target_name(label, &layer.name);
+        let on = kind.of(types);
+        let (left, _) = widgets::pill_toggle(ui, controls, right, &name, label, on, enabled);
+        right.x = left - widgets::PILL_GAP;
+    }
+    let color = if active { theme::ACCENT } else { theme::TEXT };
+    let painter = ui.painter();
+    let kind = Rect::from_center_size(pos2(rect.left() + 10.0, rect.center().y), vec2(18.0, 18.0));
+    let icon = if active { theme::ACCENT } else { theme::MUTE };
+    icons::paint(
+        painter,
+        kind,
+        layer.icon,
+        18.0,
+        widgets::fade(icon, enabled),
+    );
+    let left = rect.left() + 28.0;
+    let width = (right.x - 8.0 - left).max(0.0);
+    let mut job = egui::text::LayoutJob::simple_singleline(
+        layer.name.clone(),
+        theme::body(),
+        widgets::fade(color, enabled),
+    );
+    job.wrap = egui::text::TextWrapping::truncate_at_width(width);
+    let galley = painter.layout_job(job);
+    let at = pos2(left, rect.center().y - galley.size().y / 2.0);
+    painter.galley(at, galley, color);
+}
 
 /// The tool has settings in the Brush panel.
 pub(super) fn brush_settings(state: &AppState) -> bool {

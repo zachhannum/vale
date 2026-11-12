@@ -7462,7 +7462,7 @@ fn snap_types(h: &Pad, layer: vale_store::LayerId, target: vale_store::LayerId) 
 }
 
 #[test]
-fn the_snap_panel_lists_the_visible_layers_in_draw_order_with_their_switches() {
+fn the_snap_panel_lists_the_active_layer_first_then_the_visible_layers_with_their_toggles() {
     use vale_app::ui::pad::{SNAP_EDGES, SNAP_STOPS, SNAP_VERTICES, snap_target_name};
     let dir = tempfile::tempdir().unwrap();
     let picture = images::half_red(64, 32);
@@ -7505,29 +7505,43 @@ fn the_snap_panel_lists_the_visible_layers_in_draw_order_with_their_switches() {
         let name = |id| project.layer(id).unwrap().name.clone();
         let image = project.layers().iter().find(|l| l.image().is_some());
         let image = image.unwrap().name.clone();
-        let mut rows = Vec::new();
-        for layer in project.layers() {
-            let switches: &[&str] = match layer.raster() {
-                _ if !layer.visible || layer.image().is_some() => &[],
-                Some(_) => &[SNAP_STOPS],
-                None => &[SNAP_VERTICES, SNAP_EDGES],
-            };
-            for label in switches {
-                rows.push(snap_target_name(label, &layer.name));
-            }
-        }
-        assert_eq!(rows.len(), 5, "{what}");
+        // The active layer is first, then the other visible layers in the
+        // order of the layer list. Each row has the toggles of its layer.
+        let mut layers: Vec<_> = (project.layers().iter())
+            .filter(|l| l.visible && l.image().is_none())
+            .collect();
+        let at = layers.iter().position(|l| l.id == lines).unwrap();
+        let active = layers.remove(at);
+        layers.insert(0, active);
+        let rows: Vec<Vec<String>> = (layers.iter())
+            .map(|layer| {
+                let toggles: &[&str] = match layer.raster() {
+                    Some(_) => &[SNAP_STOPS],
+                    None => &[SNAP_VERTICES, SNAP_EDGES],
+                };
+                (toggles.iter())
+                    .map(|label| snap_target_name(label, &layer.name))
+                    .collect()
+            })
+            .collect();
+        assert_eq!(rows.len(), 3, "{what}");
         for label in [SNAP_VERTICES, SNAP_STOPS] {
             assert!(
                 control(&h, &snap_target_name(label, &image)).is_none(),
                 "{what}"
             );
         }
-        let tops: Vec<f32> = rows
-            .iter()
+        let rect = |row: &String| control(&h, row).unwrap_or_else(|| panic!("{what}: {row}"));
+        let tops: Vec<f32> = (rows.iter())
             .map(|row| {
-                let rect = control(&h, row).unwrap_or_else(|| panic!("{what}: {row}"));
-                rect.top()
+                let rects: Vec<Rect> = row.iter().map(rect).collect();
+                // The toggles of a layer are on one line, from the left.
+                assert!(rects.windows(2).all(|r| r[0].top() == r[1].top()), "{what}");
+                assert!(
+                    rects.windows(2).all(|r| r[0].right() < r[1].left()),
+                    "{what}"
+                );
+                rects[0].top()
             })
             .collect();
         assert!(tops.windows(2).all(|t| t[0] < t[1]), "{what}: {rows:?}");
@@ -7580,7 +7594,7 @@ fn the_snap_panel_lists_the_visible_layers_in_draw_order_with_their_switches() {
 }
 
 #[test]
-fn the_snap_panel_has_a_color_stops_switch_for_each_visible_raster_layer() {
+fn the_snap_panel_has_a_color_stops_toggle_for_each_visible_raster_layer() {
     use vale_app::ui::pad::{SNAP_STOPS, snap_target_name};
     for size in BOARDS {
         let what = format!("{size:?}");
@@ -7630,8 +7644,61 @@ fn the_snap_panel_has_a_color_stops_switch_for_each_visible_raster_layer() {
             click(&mut h, &name);
             assert!(on(&h), "{what}: {name} after a mouse");
         }
-        check_controls(&h, &format!("{what} with the switches of the stops"));
+        check_controls(&h, &format!("{what} with the toggles of the stops"));
         screenshot::save(&mut h, &format!("pad-snap-stops-{}", size.0));
+    }
+}
+
+#[test]
+fn a_point_layer_has_a_points_snap_toggle_and_a_dim_one_for_a_raster_with_no_stops() {
+    use vale_app::ui::pad::{SNAP_EDGES, SNAP_POINTS, SNAP_STOPS, SNAP_VERTICES, snap_target_name};
+    for size in BOARDS {
+        let what = format!("{size:?}");
+        let (mut h, lines) = line_pad(size);
+        let places = vector(&h, "Places");
+        // A long name does not move the toggle.
+        let long = "Places of the northern kingdoms and the far isles";
+        h.state_mut().doc.rename_layer(places, long);
+        let height = h.state().doc.project.rasters()[0].id;
+        let height = h.state().doc.project.raster_layer(height).unwrap().id;
+        let other = RasterDisplay::ALL
+            .into_iter()
+            .find(|d| *d != RasterDisplay::Bands);
+        show_as(h.state_mut(), other.unwrap());
+        let ids: Vec<_> = (h.state().doc.project.layers().iter())
+            .map(|l| l.id)
+            .collect();
+        for id in ids {
+            let shown = [lines, places, height].contains(&id);
+            h.state_mut().doc.project.set_layer_visible(id, shown);
+        }
+        h.run_steps(2);
+        open_snap(&mut h);
+        let project = &h.state().doc.project;
+        let name = |id| project.layer(id).unwrap().name.clone();
+        let (places, height_name) = (name(places), name(height));
+        let points = snap_target_name(SNAP_POINTS, &places);
+        for label in [SNAP_VERTICES, SNAP_EDGES] {
+            let toggle = snap_target_name(label, &places);
+            assert!(h.query_by_label(&toggle).is_none(), "{what}: {toggle}");
+        }
+        let right = h.state().pad.panels.iter().find(|(p, _)| *p == Panel::Snap);
+        let right = right.unwrap().1.right();
+        assert!(control(&h, &points).unwrap().right() < right, "{what}");
+        // The Points toggle sets the vertices of the target.
+        let id = vector(&h, long);
+        tap(&mut h, &points);
+        assert_eq!(snap_types(&h, lines, id), [true, false, false], "{what}");
+        pen_tap(&mut h, &points);
+        assert_eq!(snap_types(&h, lines, id), [false; 3], "{what}");
+        click(&mut h, &points);
+        assert_eq!(snap_types(&h, lines, id), [true, false, false], "{what}");
+        // A raster that does not show its color stops has a dim toggle.
+        let stops = snap_target_name(SNAP_STOPS, &height_name);
+        assert!(control(&h, &stops).is_none(), "{what}");
+        assert!(disabled(&h, &stops), "{what}");
+        check_controls(&h, &format!("{what} with a point layer"));
+        screenshot::save(&mut h, &format!("pad-snap-points-{}", size.0));
     }
 }
 
