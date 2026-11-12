@@ -16,6 +16,8 @@ fn ctx<'a>(shape: &'a Geometry, radius_km: f64) -> Context<'a> {
         shape: Some(shape),
         radius_km,
         page: None,
+        rasters: None,
+        index: 0,
     }
 }
 

@@ -92,7 +92,7 @@ pub fn build(
         .iter()
         .enumerate()
         .filter(|(_, f)| selected.is_none_or(|s| s.contains(&f.uuid())))
-        .filter(|(_, f)| {
+        .filter(|(i, f)| {
             filter.matches(&Context {
                 attributes: &f.attributes,
                 scale: 0.0,
@@ -100,6 +100,8 @@ pub fn build(
                 shape: Some(&f.geometry),
                 radius_km,
                 page: None,
+                rasters: None,
+                index: *i,
             })
         })
         .map(|(i, _)| i)

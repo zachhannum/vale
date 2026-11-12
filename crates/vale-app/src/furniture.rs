@@ -509,6 +509,8 @@ fn evaluate(template: &str, values: &AtlasValues) -> String {
         shape: None,
         radius_km: 0.0,
         page: Some(values),
+        rasters: None,
+        index: 0,
     };
     expr.eval(&ctx).label().unwrap_or_default()
 }

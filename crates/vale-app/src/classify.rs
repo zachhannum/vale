@@ -72,6 +72,8 @@ pub fn values(layer: &Layer, expr: &Expr, radius_km: f64) -> Vec<Value> {
                 shape: Some(&f.geometry),
                 radius_km,
                 page: None,
+                rasters: None,
+                index: 0,
             })
         })
         .collect()
@@ -752,6 +754,8 @@ mod tests {
                 shape: None,
                 radius_km: 0.0,
                 page: None,
+                rasters: None,
+                index: 0,
             };
             assert_eq!(other.matches(&context), inside, "{v:?}");
         }
@@ -789,6 +793,8 @@ mod tests {
                 shape: None,
                 radius_km: 0.0,
                 page: None,
+                rasters: None,
+                index: 0,
             };
             assert_eq!(other.matches(&ctx), inside, "{v:?}");
         }

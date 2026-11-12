@@ -9,6 +9,7 @@ mod lexer;
 mod measure;
 mod parser;
 mod print;
+mod raster;
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -21,6 +22,7 @@ pub use functions::{Category, FUNCTIONS, Function, layer_functions};
 pub use measure::{Measure, Unit};
 pub use parser::Var;
 use parser::{Node, Spans};
+pub use raster::{RasterValues, Stat};
 
 /// The words of the syntax that a plain field name cannot be.
 const KEYWORDS: [&str; 16] = [
@@ -73,6 +75,29 @@ pub fn rename_field(text: &str, old: &str, new: &str) -> String {
     out
 }
 
+/// The text of an expression with each `raster` call that names the raster layer `old` changed to name `new`. Text that does not lex stays as it is.
+pub fn rename_raster(text: &str, old: &str, new: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let Ok(tokens) = lexer::lex(&chars) else {
+        return text.to_owned();
+    };
+    let mut out = String::with_capacity(text.len());
+    let mut copied = 0;
+    for w in tokens.windows(4) {
+        let hit = matches!(&w[0].tok, lexer::Tok::Name(f) if f.eq_ignore_ascii_case("raster"))
+            && w[1].tok == lexer::Tok::LParen
+            && matches!(&w[2].tok, lexer::Tok::Str(s) if s == old)
+            && matches!(w[3].tok, lexer::Tok::Comma | lexer::Tok::RParen);
+        if hit {
+            out.extend(&chars[copied..w[2].start]);
+            out.push_str(&print::quote(new));
+            copied = w[2].end;
+        }
+    }
+    out.extend(&chars[copied..]);
+    out
+}
+
 /// The attributes of one feature, by field name.
 pub trait Attributes {
     fn get(&self, field: &str) -> Option<&Value>;
@@ -97,6 +122,10 @@ pub struct Context<'a> {
     pub radius_km: f64,
     /// The values of the page functions. Without a page, a page function gives null.
     pub page: Option<&'a dyn PageValues>,
+    /// The values of the raster layers. Without them, `raster` is null.
+    pub rasters: Option<&'a dyn RasterValues>,
+    /// The index of the feature in its layer, for `raster`.
+    pub index: usize,
 }
 
 /// The values of the page functions, for a text item on a page of an atlas.
@@ -209,6 +238,15 @@ impl Expr {
         out.dedup();
         out
     }
+
+    /// The names of the raster layers that the `raster` calls name with literal text, sorted and without repeats.
+    pub fn raster_layers(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        collect_raster_layers(&self.root, &mut out);
+        out.sort();
+        out.dedup();
+        out
+    }
 }
 
 /// The tree of the text and the span of each node.
@@ -249,6 +287,43 @@ fn collect_fields(node: &Node, out: &mut Vec<String>) {
             collect_fields(high, out);
         }
         Node::Call(_, args) => args.iter().for_each(|n| collect_fields(n, out)),
+    }
+}
+
+fn collect_raster_layers(node: &Node, out: &mut Vec<String>) {
+    match node {
+        Node::Field(_) | Node::Lit(_) | Node::Var(_) | Node::Hole => {}
+        Node::Not(a) | Node::Neg(a) | Node::IsNull { value: a, .. } => {
+            collect_raster_layers(a, out)
+        }
+        Node::Binary(_, a, b)
+        | Node::Like {
+            value: a,
+            pattern: b,
+            ..
+        } => {
+            collect_raster_layers(a, out);
+            collect_raster_layers(b, out);
+        }
+        Node::In { value, list, .. } => {
+            collect_raster_layers(value, out);
+            list.iter().for_each(|n| collect_raster_layers(n, out));
+        }
+        Node::Between {
+            value, low, high, ..
+        } => {
+            collect_raster_layers(value, out);
+            collect_raster_layers(low, out);
+            collect_raster_layers(high, out);
+        }
+        Node::Call(f, args) => {
+            if f.name == "raster"
+                && let Some(Node::Lit(Value::Text(name))) = args.first()
+            {
+                out.push(name.clone());
+            }
+            args.iter().for_each(|n| collect_raster_layers(n, out));
+        }
     }
 }
 

@@ -489,6 +489,8 @@ impl AppState {
                     shape: Some(&f.geometry),
                     radius_km,
                     page: None,
+                    rasters: None,
+                    index: 0,
                 })
             });
             let label = value

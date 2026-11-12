@@ -79,6 +79,8 @@ impl PageLayer<'_> {
             shape: feature.map(|f| &f.geometry),
             radius_km: self.radius_km,
             page: None,
+            rasters: None,
+            index,
         }
     }
 

@@ -25,6 +25,8 @@ fn eval_with(src: &str, scale: f64, geometry: GeometryKind) -> Value {
         shape: None,
         radius_km: 0.0,
         page: None,
+        rasters: None,
+        index: 0,
     };
     Expr::parse(src)
         .unwrap_or_else(|e| panic!("{src}: {e}"))
@@ -252,6 +254,8 @@ fn wrong_expressions_still_draw() {
         shape: None,
         radius_km: 0.0,
         page: None,
+        rasters: None,
+        index: 0,
     };
 
     let bad = Filter::new("population >");
@@ -332,6 +336,8 @@ fn random_text_does_not_panic() {
         shape: None,
         radius_km: 0.0,
         page: None,
+        rasters: None,
+        index: 0,
     };
     let mut seed: u64 = 0x2545_f491_4f6c_dd1d;
     let mut next = || {
@@ -488,6 +494,8 @@ fn lenient_parse_reads_holes() {
         shape: None,
         radius_km: 0.0,
         page: None,
+        rasters: None,
+        index: 0,
     };
     assert_eq!(
         Expr::parse_lenient("coalesce(, 3)").unwrap().eval(&ctx),
@@ -526,6 +534,8 @@ fn page_function_reads_the_page() {
         shape: None,
         radius_km: 0.0,
         page: Some(&StubPage),
+        rasters: None,
+        index: 0,
     };
     assert_eq!(expr.eval(&ctx), Value::Text("Scale 1:25,000,000".into()));
     let number = Expr::parse("page_number() + 1").unwrap();
