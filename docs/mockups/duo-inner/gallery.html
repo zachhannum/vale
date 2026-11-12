@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Vale on the inner screen of iPhone Duo</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 32px 40px 64px; background: #1c1d20; color: #e6e6e6;
+         font: 14px/1.45 -apple-system, "Noto Sans", sans-serif; }
+  h1 { font-size: 22px; font-weight: 600; margin: 0 0 6px; }
+  .lead { color: #a8a8a8; max-width: 900px; margin: 0 0 18px; }
+  .bar { display: flex; gap: 18px; align-items: center; margin-bottom: 28px; color: #c8c8c8; }
+  .bar label { display: flex; gap: 6px; align-items: center; cursor: pointer; }
+  section { margin: 0 0 44px; }
+  h2 { font-size: 16px; font-weight: 600; margin: 0 0 4px; }
+  .note { color: #a8a8a8; margin: 0 0 12px; max-width: 900px; }
+  .pair { display: flex; gap: 28px; align-items: flex-start; flex-wrap: wrap; }
+  figure { margin: 0; }
+  figcaption { color: #8a8a8a; font-size: 12px; margin-top: 6px; }
+  .device { position: relative; background: #000; border-radius: 30px; padding: 10px;
+            box-shadow: 0 0 0 2px #3a3b40, 0 10px 30px rgba(0,0,0,.5); }
+  .device img { display: block; border-radius: 22px; }
+  .portrait img { width: 313px; height: 445px; }
+  .landscape img { width: 445px; height: 313px; }
+  .crease { position: absolute; pointer-events: none; border: 0 dashed rgba(255,190,60,.8); }
+  .portrait .crease { top: 10px; bottom: 10px; left: 50%; border-left-width: 1px; }
+  .landscape .crease { left: 10px; right: 10px; top: 50%; border-top-width: 1px; }
+  body.no-crease .crease { display: none; }
+  body.large .portrait img { width: 626px; height: 890px; }
+  body.large .landscape img { width: 890px; height: 626px; }
+</style>
+</head>
+<body>
+<h1>Vale on the inner screen of iPhone Duo</h1>
+<p class="lead">Each picture is real output of <code>vale-app</code> at 626 by 890 points in portrait and 890 by 626 points in landscape. The point size is the pixels of the screen divided by 3, and the safe areas are estimates. Other sources give 669 by 951 points for the inner screen. Both orientations are 600 points wide or more, so the app uses the iPad layout with the floating dock. The dashed line is the hinge crease.</p>
+<div class="bar">
+  <label><input type="checkbox" id="crease" checked> Show crease</label>
+  <label><input type="checkbox" id="large"> Actual size (1 px per point)</label>
+</div>
+<div id="screens"></div>
+<script>
+const screens = [
+  ["start", "Start screen", "The list of the project files. The headless render has no pictures of the globes."],
+  ["globe", "World workspace", "The globe with the Move tool and no pane. The globe fits in both orientations."],
+  ["globe-layers", "Layers panel", "In portrait, the dock of 340 points leaves 286 points of canvas, and the crease runs through the rows of the dock."],
+  ["globe-dock", "Three panes", "In landscape, the dock has no room for three panes, so Attributes joins Toolbox as a tab."],
+  ["globe-dock-hidden", "Collapsed dock", "The slim tab at the right edge shows the dock again."],
+  ["globe-height", "Height layer", "The Raise brush on a height layer. In portrait, the tool column has the Size and Flow sliders. In landscape, the screen is too short, so the sliders are in the Brush panel."],
+  ["globe-modes", "Sculpt modes", "The list of the Sculpt cell, next to the tool column."],
+  ["globe-stops", "Color stops", "The page of the color stops of the height layer, in the dock."],
+  ["globe-panels-menu", "Panels menu", "The tiles of the World workspace below the top row."],
+  ["globe-view-menu", "View popover", "The View popover above the readout."],
+  ["globe-worlds-menu", "Worlds menu", "The menu of the worlds below the Worlds button."],
+  ["globe-world-form", "New world form", "The form is a card near the top of the screen, so the keyboard does not cover it."],
+  ["globe-measure", "Measure tool", "A measured path, with the length above the readout."],
+  ["flat", "Flat view", "The whole world as a flat map. In portrait, the map fills only a band across the middle."],
+  ["flat-layers", "Flat view with Layers", "The dock over the flat map."],
+  ["atlas", "Atlas workspace", "In portrait, the page fits in the 286 points at the left of the dock, so it is small."],
+  ["atlas-frame", "Selected map frame", "Properties of the frame. In landscape, the pane is shorter than its rows and scrolls."],
+  ["atlas-labels", "Labels panel", "The label classes of the map of the frame."],
+  ["atlas-pages", "Pages panel", "The settings of the open page."],
+];
+const root = document.getElementById("screens");
+for (const [id, title, note] of screens) {
+  const s = document.createElement("section");
+  s.id = id;
+  s.innerHTML = `<h2>${title}</h2><p class="note">${note}</p><div class="pair">` +
+    ["portrait", "landscape"].map(o =>
+      `<figure><div class="device ${o}"><img src="screens/${id}-${o}.png" alt="${title}, ${o}"><div class="crease"></div></div>` +
+      `<figcaption>${id}-${o}.png</figcaption></figure>`).join("") + `</div>`;
+  root.appendChild(s);
+}
+document.getElementById("crease").onchange = e => document.body.classList.toggle("no-crease", !e.target.checked);
+document.getElementById("large").onchange = e => document.body.classList.toggle("large", e.target.checked);
+</script>
+</body>
+</html>
