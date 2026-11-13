@@ -20,7 +20,7 @@ The part of the URL after `#` chooses the screen, for example `layout.html#globe
 
 ## Render the screens
 
-The pictures in `assets/` come from `vale-app`, at a pixel ratio of 2, with the safe area `0,0,34,0`. The globe screens have the Layers panel, and the globe screens of the iPhone layout have no panel. The Atlas screens have map frame 1 selected. The files with the suffix `-behind` have the dock collapsed, and they show the canvas in the gap at the folding region.
+The pictures in `assets/` come from `vale-app`, at a pixel ratio of 2, with the safe area `0,0,34,0`. The globe screens have the Layers panel, and the globe screens of the iPhone layout have no panel. The Atlas screens have map frame 1 selected. The Atlas pictures of `outer-portrait` and `split` come from a window 113 points taller, 466 × 791 and 476 × 786, so the sheet of 452 points opens at half the height of the screen. The screen shows the top part of the picture. The files with the suffix `-behind` have the dock collapsed, and they show the canvas in the gap at the folding region.
 
 This command renders the screens with Chromium. Run it from the root of the repository. The variable `CHROME` gives the Chromium command, and the default is `chromium`.
 

@@ -22,11 +22,11 @@ body { background: rgb(15,17,19); overflow: hidden; position: relative; font-fam
 // Each screen is a picture of vale-app at the size of its pose, from assets/, with the
 // changes of iPhone Duo on top. The hinge is vertical in landscape and horizontal in portrait.
 const POSES = {
-  "outer-portrait":  { w: 466, h: 678, camera: "right" },
+  "outer-portrait":  { w: 466, h: 678, camera: "right", sheet: 791 },
   "outer-landscape": { w: 678, h: 466, camera: "left" },
   "inner-portrait":  { w: 669, h: 951, hinge: "h" },
   "inner-landscape": { w: 951, h: 669, hinge: "v" },
-  "split":           { w: 951, h: 669, split: 476 },
+  "split":           { w: 951, h: 669, split: 476, sheet: 786 },
   "tabletop":        { w: 669, h: 951, hinge: "h", folded: true, pic: "inner-portrait" },
   "book":            { w: 951, h: 669, hinge: "v", folded: true, pic: "inner-landscape" },
 };
@@ -41,10 +41,13 @@ document.body.style.cssText = `width:${W}px;height:${H}px`;
 const box = (x, y, w, h) => `left:${x}px;top:${y}px;width:${w}px;height:${h}px;`;
 const src = `assets/${ws}-${pose.pic ?? name.slice(ws.length + 1)}.png`;
 const pw = pose.split ?? W;
+// The sheet of the iPhone layout opens at 452 points. On iPhone Duo, it opens at half the height of the screen,
+// so the picture of a selected frame comes from a taller window, and the screen shows its top part.
+const ph = ws === "atlas" && pose.sheet ? pose.sheet : H;
 // A part of a picture, from (sx, sy) to (x, y), at a scale.
 const crop = (file, sx, sy, w, h, x, y, k = 1, extra = "") =>
-  `<div class="pic" style="${box(x, y, w * k, h * k)}background-image:url(${file});background-size:${pw * k}px ${H * k}px;background-position:${-sx * k}px ${-sy * k}px;${extra}"></div>`;
-let out = `<div class="pic" style="${box(0, 0, pw, H)}background-image:url(${src});background-size:100% 100%"></div>`;
+  `<div class="pic" style="${box(x, y, w * k, h * k)}background-image:url(${file});background-size:${pw * k}px ${ph * k}px;background-position:${-sx * k}px ${-sy * k}px;${extra}"></div>`;
+let out = `<div class="pic" style="${box(0, 0, pw, H)}background-image:url(${src});background-size:${pw}px ${ph}px"></div>`;
 
 // The card of the top row at the corner of the camera moves along the row, out of the region of the camera.
 if (pose.camera) {
