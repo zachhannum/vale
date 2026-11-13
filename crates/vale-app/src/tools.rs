@@ -520,7 +520,7 @@ mod tests {
 
         // Each tool of the strip is a tool of the switch.
         for tool in [
-            Tool::Navigate,
+            Tool::Pan,
             Tool::Line,
             Tool::Polygon,
             Tool::Point,

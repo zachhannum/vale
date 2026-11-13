@@ -5,8 +5,10 @@ use vale_sphere::{ProjectionKind, ProjectionSpec};
 use vale_store::{GeometryKind, World};
 
 use super::number;
+use super::pad::PAN;
 use super::pad::atlas::{
-    EXIT_FRAME, LAYOUT_GRID, MAPS, NEXT_PAGE, NO_FRAMES, PREVIOUS_PAGE, SNAP_TO_LAYOUT, page_title,
+    EXIT_FRAME, LAYOUT_GRID, MAPS, MOVE, NEXT_PAGE, NO_FRAMES, PREVIOUS_PAGE, SNAP_TO_LAYOUT,
+    page_title,
 };
 use super::raster_form::RasterForm;
 use super::world_form::{self, WorldForm};
@@ -121,15 +123,15 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                 select::edit_menu(ui, state);
                 select::view_menu(ui, state);
                 ui.separator();
-                // With no layer for the tool, the tool is Navigate.
+                // With no layer for the tool, the tool is Pan.
                 let globe = &mut state.globe;
                 let (paintable, lineable) = (globe.paintable, globe.lineable);
-                let navigate = !globe.brushing()
+                let pan = !globe.brushing()
                     && !globe.editing()
                     && !globe.measuring()
                     && !globe.selecting();
-                if ui.selectable_label(navigate, "Navigate").clicked() {
-                    globe.tool = Tool::Navigate;
+                if ui.selectable_label(pan, PAN).clicked() {
+                    globe.tool = Tool::Pan;
                 }
                 let brush = egui::Button::selectable(globe.brushing(), "Brush");
                 if ui.add_enabled(paintable, brush).clicked() {
@@ -443,6 +445,14 @@ fn atlas_buttons(ui: &mut egui::Ui, state: &mut AppState) {
         });
     }
     ui.separator();
+    let panning = state.atlas.tool == atlas::AtlasTool::Pan;
+    if ui
+        .selectable_label(panning, PAN)
+        .on_hover_text("H")
+        .clicked()
+    {
+        state.atlas.tool = atlas::AtlasTool::Pan;
+    }
     let framing = state.atlas.tool == atlas::AtlasTool::Frame;
     let frame = ui.selectable_label(framing, "Frame");
     frame.widget_info(|| {
@@ -468,6 +478,10 @@ fn atlas_buttons(ui: &mut egui::Ui, state: &mut AppState) {
         } else {
             atlas::AtlasTool::Vertex
         };
+    }
+    let moving = state.atlas.tool == atlas::AtlasTool::Move;
+    if ui.selectable_label(moving, MOVE).clicked() {
+        state.atlas.tool = atlas::AtlasTool::Move;
     }
     let measuring = state.measuring();
     if ui.selectable_label(measuring, MEASURE_TOOL).clicked() {
@@ -502,7 +516,9 @@ fn atlas_buttons(ui: &mut egui::Ui, state: &mut AppState) {
     }
     let features = !state.feature_selection.is_empty();
     let deselect = match tool {
-        atlas::AtlasTool::Frame | atlas::AtlasTool::Move => atlas::has_selection(state),
+        atlas::AtlasTool::Frame | atlas::AtlasTool::Pan | atlas::AtlasTool::Move => {
+            atlas::has_selection(state)
+        }
         atlas::AtlasTool::Select if entered => features,
         atlas::AtlasTool::Select => atlas::has_selection(state) || features,
         _ => false,

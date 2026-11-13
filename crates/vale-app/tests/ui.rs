@@ -2029,8 +2029,8 @@ fn the_toolbar_and_the_keys_work_the_measure_tool() {
     assert!(h.state().measure.is_empty());
     assert!(h.get_by_label(CLEAR_PATH).accesskit_node().is_disabled());
 
-    // Navigate leaves the tool, and M chooses it.
-    h.get_by_label("Navigate").click();
+    // Pan leaves the tool, and M chooses it.
+    h.get_by_label("Pan").click();
     h.run_steps(3);
     assert!(!h.state().globe.measuring());
     h.key_press(egui::Key::M);

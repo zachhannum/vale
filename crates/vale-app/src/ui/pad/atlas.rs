@@ -145,7 +145,7 @@ pub const EXPORT_PAGE_PDF: &str = "Export page PDF…";
 pub const EXPORT_ATLAS_PDF: &str = "Export atlas PDF…";
 pub const CANCEL_EXPORT: &str = "Cancel export";
 
-const TOOL_CELLS: usize = 6;
+const TOOL_CELLS: usize = 7;
 /// The smallest space at each side of the text of a tab.
 pub const TAB_PAD: f32 = 12.0;
 
@@ -499,7 +499,7 @@ fn selectable_menu(
 /// selection "Delete selection" and Deselect. With the Vertex tool, the two
 /// switches, and with a frame "Delete vertex" and Deselect. In an entered
 /// frame, Selectable, Add, "Exit frame", and with selected features
-/// Deselect. With the Move tool and a selection, Deselect. Returns the place
+/// Deselect. With the Pan tool or the Move tool and a selection, Deselect. Returns the place
 /// of the Selectable cell.
 fn frame_cells(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) -> Option<Rect> {
     let tool = state.atlas.tool;
@@ -579,7 +579,9 @@ fn can_deselect(state: &AppState) -> bool {
     let features = !state.feature_selection.is_empty();
     match state.atlas.tool {
         AtlasTool::Vertex => state.atlas.frame().is_some(),
-        AtlasTool::Frame | AtlasTool::Furniture(_) | AtlasTool::Move => atlas::has_selection(state),
+        AtlasTool::Frame | AtlasTool::Furniture(_) | AtlasTool::Pan | AtlasTool::Move => {
+            atlas::has_selection(state)
+        }
         AtlasTool::Select if state.atlas.entered.is_some() => features,
         AtlasTool::Select => atlas::has_selection(state) || features,
         _ => false,
@@ -594,7 +596,7 @@ fn context_cells(state: &AppState) -> usize {
     match state.atlas.tool {
         AtlasTool::Vertex => 2 + 2 * deselect,
         AtlasTool::Frame | AtlasTool::Furniture(_) => 2 + usize::from(can_delete(state)) + deselect,
-        AtlasTool::Move => deselect,
+        AtlasTool::Pan | AtlasTool::Move => deselect,
         AtlasTool::Select if state.atlas.entered.is_some() => 3 + deselect,
         AtlasTool::Select => 2 + usize::from(can_delete(state)) + deselect,
         _ => 0,
@@ -626,14 +628,15 @@ fn tool_strip(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
     );
 }
 
-/// The cells of the tools: Frame, Furniture, Select, Vertex, Move, and
-/// Measure.
+/// The cells of the tools: Frame, Furniture, Select, Vertex, Pan, Move,
+/// and Measure.
 fn tool_cells(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
     frame_cell(ui, state, controls);
     furniture_cell(ui, state, controls);
     for (name, label, icon, tool) in [
         (select::TOOL, select::TOOL, Icon::Select, AtlasTool::Select),
         (VERTEX, VERTEX, Icon::Vertex, AtlasTool::Vertex),
+        (super::PAN, super::PAN, Icon::Hand, AtlasTool::Pan),
         (MOVE, MOVE, Icon::Move, AtlasTool::Move),
         (
             super::MEASURE,

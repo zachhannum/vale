@@ -10138,7 +10138,7 @@ fn on_an_iphone_the_page_card_is_above_the_tools_and_the_tools_are_a_row_at_the_
     assert_eq!(previous.top(), next.top());
     assert!(previous.left() < width / 4.0, "{previous:?}");
     // The tools are one row above the home indicator.
-    let names = [FRAME_TOOL, SELECT_TOOL, VERTEX, "Move", MEASURE];
+    let names = [FRAME_TOOL, SELECT_TOOL, VERTEX, "Pan", "Move", MEASURE];
     let tools = names.map(|name| control(&h, name).unwrap());
     for pair in tools.windows(2) {
         assert_eq!(pair[0].top(), pair[1].top());
@@ -10146,7 +10146,7 @@ fn on_an_iphone_the_page_card_is_above_the_tools_and_the_tools_are_a_row_at_the_
     }
     let foot = height - bottom;
     assert!(tools[0].bottom() <= foot && tools[0].bottom() > foot - 40.0);
-    let row_middle = (tools[0].left() + tools[4].right()) / 2.0;
+    let row_middle = (tools[0].left() + tools[5].right()) / 2.0;
     assert!((row_middle - width / 2.0).abs() < 1.0, "{row_middle}");
     // The page is between the top row and the page pill.
     let page = place(&h).rect;
