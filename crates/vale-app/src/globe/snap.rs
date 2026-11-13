@@ -53,28 +53,20 @@ const SAME: f64 = 1e-9;
 pub struct SnapSettings {
     /// The control that turns all snapping on and off.
     pub on: bool,
-    /// Snap to the vertices of features.
-    pub vertices: bool,
-    /// Snap to the edges of features, and trace them.
-    pub edges: bool,
     /// The reach of a snap, in points.
     pub distance: f64,
-    /// The raster layers whose color stops are not targets.
-    pub stops_off: BTreeSet<RasterId>,
+    /// The targets of the active layer.
+    pub targets: TargetSet,
 }
 
 impl SnapSettings {
-    /// True if the color stops of the raster layer `id` are targets.
-    pub fn stops(&self, id: RasterId) -> bool {
-        !self.stops_off.contains(&id)
-    }
-
-    /// Makes the color stops of the raster layer `id` targets or not.
-    pub fn set_stops(&mut self, id: RasterId, on: bool) {
-        match on {
-            true => self.stops_off.remove(&id),
-            false => self.stops_off.insert(id),
-        };
+    /// The default settings, with each layer of `targets` as a target of
+    /// each type.
+    pub fn every(targets: &Targets) -> Self {
+        SnapSettings {
+            targets: TargetSet::every(targets),
+            ..SnapSettings::default()
+        }
     }
 }
 
@@ -82,10 +74,31 @@ impl Default for SnapSettings {
     fn default() -> Self {
         SnapSettings {
             on: true,
-            vertices: true,
-            edges: true,
             distance: DEFAULT_DISTANCE,
-            stops_off: BTreeSet::new(),
+            targets: TargetSet::default(),
+        }
+    }
+}
+
+/// The layers that a snap goes to, for each type of target.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TargetSet {
+    /// The vector layers whose vertices are targets.
+    pub vertices: BTreeSet<LayerId>,
+    /// The vector layers whose edges are targets, to snap to and trace.
+    pub edges: BTreeSet<LayerId>,
+    /// The raster layers whose color stops are targets.
+    pub stops: BTreeSet<RasterId>,
+}
+
+impl TargetSet {
+    /// Each layer of `targets`, with each type.
+    pub fn every(targets: &Targets) -> Self {
+        let layers: BTreeSet<LayerId> = targets.layers.iter().map(|l| l.layer).collect();
+        TargetSet {
+            vertices: layers.clone(),
+            edges: layers,
+            stops: targets.stops.iter().map(|s| s.raster()).collect(),
         }
     }
 }
@@ -425,7 +438,7 @@ impl Targets {
             return None;
         }
         let reach = s.distance / scale;
-        let vertex = s.vertices.then(|| self.vertex(p, reach, exclude)).flatten();
+        let vertex = self.vertex(p, reach, exclude, &s.targets.vertices);
         let (hit, kind) = match vertex {
             Some(h) => (h, Kind::Vertex),
             None => match self.line(p, scale, s, exclude)? {
@@ -467,9 +480,15 @@ impl Targets {
         exclude: &Exclude,
     ) -> Option<LineHit> {
         let reach = s.distance / scale;
-        let edge = s.edges.then(|| self.edge(p, reach, exclude)).flatten();
+        let edge = self.edge(p, reach, exclude, &s.targets.edges);
         let within = edge.map_or(reach, |e| e.dist);
-        match stops::snap(&self.stops, |r| s.stops(r), p, scale, within) {
+        match stops::snap(
+            &self.stops,
+            |r| s.targets.stops.contains(&r),
+            p,
+            scale,
+            within,
+        ) {
             Some(stop) if edge.is_none_or(|e| stop.dist < e.dist) => Some(LineHit::Stop(stop)),
             _ => edge.map(LineHit::Edge),
         }
@@ -525,11 +544,18 @@ impl Targets {
         best.map(|b| (b.1, b.2))
     }
 
-    /// The nearest vertex within `reach`: an end of a target edge, or a
-    /// point.
-    pub(super) fn vertex(&self, p: V3, reach: f64, exclude: &Exclude) -> Option<Hit> {
+    /// The nearest vertex within `reach` in the layers `of`: an end of a
+    /// target edge, or a point.
+    pub(super) fn vertex(
+        &self,
+        p: V3,
+        reach: f64,
+        exclude: &Exclude,
+        of: &BTreeSet<LayerId>,
+    ) -> Option<Hit> {
         let mut best: Option<Hit> = None;
-        for (li, layer) in self.layers.iter().enumerate() {
+        let layers = self.layers.iter().enumerate();
+        for (li, layer) in layers.filter(|(_, l)| of.contains(&l.layer)) {
             let (edges, points) = layer.near(p, reach);
             let ends = edges.iter().flat_map(|&e| {
                 let (i, k) = layer.edges[e as usize];
@@ -558,10 +584,18 @@ impl Targets {
         best
     }
 
-    /// The nearest point on a target edge within `reach`.
-    pub(super) fn edge(&self, p: V3, reach: f64, exclude: &Exclude) -> Option<Hit> {
+    /// The nearest point on a target edge within `reach` in the layers
+    /// `of`.
+    pub(super) fn edge(
+        &self,
+        p: V3,
+        reach: f64,
+        exclude: &Exclude,
+        of: &BTreeSet<LayerId>,
+    ) -> Option<Hit> {
         let mut best: Option<Hit> = None;
-        for (li, layer) in self.layers.iter().enumerate() {
+        let layers = self.layers.iter().enumerate();
+        for (li, layer) in layers.filter(|(_, l)| of.contains(&l.layer)) {
             for e in layer.near(p, reach).0 {
                 let (i, k) = layer.edges[e as usize];
                 let path = &layer.paths[i as usize];
@@ -1065,11 +1099,9 @@ impl Tracer {
 
     fn try_lock(&mut self, p: V3) {
         let (s, targets) = (&self.settings, &self.targets);
-        let vertex = s
-            .vertices
-            .then(|| targets.vertex(p, self.reach(), &self.exclude.into()))
-            .flatten();
-        let line = targets.line(p, self.scale, s, &self.exclude.into());
+        let exclude = self.exclude.into();
+        let vertex = targets.vertex(p, self.reach(), &exclude, &s.targets.vertices);
+        let line = targets.line(p, self.scale, s, &exclude);
         self.point = vertex.map(|v| v.dir).or(line.map(|l| l.dir()));
         let Some(line) = line else {
             return;
@@ -1462,7 +1494,7 @@ pub(super) mod tests {
             ]]])],
         );
         let t = targets(&[points, lines.clone(), polygons]);
-        let s = SnapSettings::default();
+        let s = SnapSettings::every(&t);
         for scale in [SCALE, 4.0 * SCALE] {
             // A point.
             let snap = t
@@ -1564,7 +1596,7 @@ pub(super) mod tests {
                     .filter(|&d| d <= reach)
                     .fold(f64::INFINITY, f64::min);
                 let found = t
-                    .edge(p, reach, &Exclude::None)
+                    .edge(p, reach, &Exclude::None, &BTreeSet::from([LayerId(1)]))
                     .map_or(f64::INFINITY, |h| h.dist);
                 assert_eq!(found, scan, "reach {reach}");
             }
@@ -1661,7 +1693,7 @@ pub(super) mod tests {
         let uuid = line.features[0].uuid();
         let t = Arc::new(targets(&[line]));
         let samples = pen(&[[0.0, 0.0], [20.0, 0.0], [24.0, 8.0]], 0.5);
-        let runs = trace_excluding(&t, &samples, SnapSettings::default(), 1, Some(uuid));
+        let runs = trace_excluding(&t, &samples, SnapSettings::every(&t), 1, Some(uuid));
         // The start can snap to a vertex of the feature.
         assert_eq!(kinds(&runs), "VF");
     }
@@ -1671,7 +1703,7 @@ pub(super) mod tests {
         let t = Arc::new(targets(&[equator()]));
         // The wiggle is about 3 points each way.
         let samples = pen(&[[0.0, 6.0], [4.0, 0.0], [20.0, 0.0], [24.0, 8.0]], 0.5);
-        let runs = trace(&t, &samples, SnapSettings::default(), 9);
+        let runs = trace(&t, &samples, SnapSettings::every(&t), 9);
         assert_eq!(kinds(&runs), "FTF");
         // The blends cover about 2.3 degrees at each end.
         let lons: Vec<f64> = exact(&runs).iter().map(|p| p[0]).collect();
@@ -1714,7 +1746,7 @@ pub(super) mod tests {
             [3.0, 0.0],
             [3.0, -5.0],
         ];
-        let runs = trace(&t, &pen(&way, 0.3), SnapSettings::default(), 9);
+        let runs = trace(&t, &pen(&way, 0.3), SnapSettings::every(&t), 9);
         assert_eq!(kinds(&runs), "FTF");
         assert_eq!(
             exact(&runs),
@@ -1726,7 +1758,7 @@ pub(super) mod tests {
     fn a_short_crossing_does_not_trace() {
         let t = Arc::new(targets(&[equator()]));
         let samples = pen(&[[4.0, -5.0], [5.0, 5.0]], 0.0);
-        let runs = trace(&t, &samples, SnapSettings::default(), 9);
+        let runs = trace(&t, &samples, SnapSettings::every(&t), 9);
         assert_eq!(runs, [Run::Free(samples)]);
     }
 
@@ -1750,7 +1782,7 @@ pub(super) mod tests {
         let mut way = vec![[30.0, 35.0]];
         way.extend_from_slice(&part[..4]);
         way.extend([[52.0, 37.8], [52.0, 45.0]]);
-        let runs = trace(&t, &pen(&way, 0.3), SnapSettings::default(), 9);
+        let runs = trace(&t, &pen(&way, 0.3), SnapSettings::every(&t), 9);
         assert_eq!(kinds(&runs), "FTF");
         // The blend into the target takes the first vertex.
         assert_eq!(exact(&runs), part[1..4]);
@@ -1774,7 +1806,7 @@ pub(super) mod tests {
         );
         let a = l.features[0].uuid();
         let t = targets(&[l]);
-        let s = SnapSettings::default();
+        let s = SnapSettings::every(&t);
         let near = north(10.0, 0.0, 4.0, SCALE);
         let snap = |exclude: &Exclude| t.snap_excluding(near, SCALE, &s, exclude);
         assert_eq!(snap(&Exclude::None).unwrap().exact, Some([10.0, 0.0]));
@@ -1795,29 +1827,45 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn each_switch_turns_off_its_target_kind() {
-        let t = Arc::new(targets(&[equator()]));
+    fn each_target_layer_has_its_own_switches() {
+        // Layer 1 on the equator, layer 2 a line at 20 degrees north.
+        let far = (0..=10).map(|i| [3.0 * f64::from(i), 20.0]).collect();
+        let north_line = layer(2, GeometryKind::Line, vec![Geometry::Lines(vec![far])]);
+        let t = Arc::new(targets(&[equator(), north_line]));
         let near_vertex = north(9.0, 0.0, 4.0, SCALE);
         let near_edge = north(10.5, 0.0, 10.0, SCALE);
-        let on = SnapSettings::default();
+        let near_other = north(9.0, 20.0, 4.0, SCALE);
+        let on = SnapSettings::every(&t);
         let snap = |p: V3, s: &SnapSettings| t.snap(p, SCALE, s, None).map(|s| s.kind);
         assert_eq!(snap(near_vertex, &on), Some(Kind::Vertex));
-        let no_vertices = SnapSettings {
-            vertices: false,
+        assert_eq!(snap(near_other, &on), Some(Kind::Vertex));
+        let with = |vertices: &[u32], edges: &[u32]| SnapSettings {
+            targets: TargetSet {
+                vertices: vertices.iter().map(|&i| LayerId(i)).collect(),
+                edges: edges.iter().map(|&i| LayerId(i)).collect(),
+                stops: BTreeSet::new(),
+            },
             ..on.clone()
         };
+        let no_vertices = with(&[2], &[1, 2]);
         assert_eq!(snap(near_vertex, &no_vertices), Some(Kind::Edge));
-        let no_edges = SnapSettings {
-            edges: false,
-            ..on.clone()
-        };
+        assert_eq!(snap(near_other, &no_vertices), Some(Kind::Vertex));
+        let no_edges = with(&[1, 2], &[2]);
         assert_eq!(snap(near_vertex, &no_edges), Some(Kind::Vertex));
         assert_eq!(snap(near_edge, &no_edges), None);
-        let off = SnapSettings { on: false, ..on };
+        // A layer that is not a target has neither type.
+        let only_first = with(&[1], &[1]);
+        assert_eq!(snap(near_vertex, &only_first), Some(Kind::Vertex));
+        assert_eq!(snap(near_other, &only_first), None);
+        let off = SnapSettings {
+            on: false,
+            ..on.clone()
+        };
         assert_eq!(snap(near_vertex, &off), None);
 
         let samples = pen(&[[0.0, 6.0], [4.0, 0.0], [20.0, 0.0], [24.0, 8.0]], 0.5);
         assert_eq!(kinds(&trace(&t, &samples, no_edges, 9)), "F");
+        assert_eq!(kinds(&trace(&t, &samples, with(&[], &[2]), 9)), "F");
         assert_eq!(trace(&t, &samples, off, 9), [Run::Free(samples)]);
     }
 }

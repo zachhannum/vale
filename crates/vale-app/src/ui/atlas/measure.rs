@@ -12,7 +12,7 @@ use super::{AppState, PagePlace, frame_at, math, open_page};
 use crate::globe::brush::slerp;
 use crate::globe::math::{dir_to_lonlat, lonlat_to_dir};
 use crate::globe::nav::on_canvas;
-use crate::globe::snap::Targets;
+use crate::globe::snap::{SnapSettings, TargetSet, Targets};
 use crate::measure::{DENSIFY_DEG, MeasurePoint, close_reach};
 use crate::ui::globe::press_input;
 use crate::ui::pad::theme;
@@ -52,8 +52,14 @@ fn point_at(
         return Some(point);
     }
     let targets = map_targets(state, frame.map)?;
+    // Each vector layer of the map is a target, with its vertices and
+    // edges.
+    let snap = SnapSettings {
+        targets: TargetSet::every(&targets),
+        ..state.globe.snap.clone()
+    };
     let dir = lonlat_to_dir(pos[0], pos[1]);
-    if let Some(snap) = targets.snap(dir, scale, &state.globe.snap, None) {
+    if let Some(snap) = targets.snap(dir, scale, &snap, None) {
         point = match snap.exact {
             Some(exact) => MeasurePoint {
                 pos: exact,

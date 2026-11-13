@@ -560,7 +560,7 @@ mod tests {
             [11.9, 9.0],
             [8.0, 9.0],
         ];
-        let runs = trace(&t, &pen(&way, 0.0), SnapSettings::default(), 9);
+        let runs = trace(&t, &pen(&way, 0.0), SnapSettings::every(&t), 9);
         assert!(kinds(&runs).contains('T'), "{}", kinds(&runs));
         let s = StrokeArea::new(&runs, SCALE, 0.0).expect("an area");
         let p = polygons(&s.add(&square()).expect("a change"));

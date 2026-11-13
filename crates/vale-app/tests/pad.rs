@@ -25,9 +25,9 @@ use vale_app::ui::pad::{
     ADD_LAYER, CLEAR_PATH, DESELECT, EXPORT_GEOTIFF, GRATICULE, IMPORT_HEIGHTMAP, LAYER_NAME, LINE,
     LayerRef, MEASURE, ModeGroup, NEW_GEOJSON, NEW_HEIGHTMAP, NEW_IMAGE, NEW_RASTER, OPACITY,
     PANELS, POLYGON, PROJECTION, Page, Panel, RECENTER, RESET, SCULPT, SMOOTHING, SNAP,
-    SNAP_DISTANCE, SNAP_EDGES, SNAP_VERTICES, SNAPPING, TERRAIN, TERRAIN_BALANCE, TERRAIN_FIT,
-    TERRAIN_FIT_SWITCH, TOOLBOX, VECTOR, VIEW, VIEWS, WORLD_PROPERTIES, WORLDS, WORLDS_ROW,
-    brush_size_text, panels_menu, readout_line, readout_text, theme,
+    SNAP_DISTANCE, SNAPPING, TERRAIN, TERRAIN_BALANCE, TERRAIN_FIT, TERRAIN_FIT_SWITCH, TOOLBOX,
+    VECTOR, VIEW, VIEWS, WORLD_PROPERTIES, WORLDS, WORLDS_ROW, brush_size_text, panels_menu,
+    readout_line, readout_text, theme,
 };
 use vale_app::ui::raster_form::{self, PRESETS, RasterForm, face_size_name};
 use vale_app::ui::select;
@@ -221,6 +221,16 @@ fn slide_to_end(h: &mut Pad, name: &str, up: bool) {
 /// A tap of a finger on the middle of a control, with each half of the
 /// touch in one frame. A `tap` lasts as long as a hold on the brush cell.
 fn quick_tap(h: &mut Pad, name: &str) {
+    quick_touch(h, name, None);
+}
+
+/// A `quick_tap` of the pen.
+fn quick_pen_tap(h: &mut Pad, name: &str) {
+    quick_touch(h, name, Some(0.5));
+}
+
+/// A `quick_tap`. A force makes it a pen.
+fn quick_touch(h: &mut Pad, name: &str, force: Option<f32>) {
     let pos = control(h, name)
         .unwrap_or_else(|| panic!("no control `{name}`"))
         .center();
@@ -236,7 +246,7 @@ fn quick_tap(h: &mut Pad, name: &str) {
             id: egui::TouchId(1),
             phase,
             pos,
-            force: None,
+            force,
         });
         events.push(egui::Event::PointerMoved(pos));
         events.push(egui::Event::PointerButton {
@@ -7344,6 +7354,25 @@ fn line_pad(size: (f32, f32)) -> (Pad, vale_store::LayerId) {
     (h, lines)
 }
 
+/// Pulls an open sheet up to its full height.
+fn raise_sheet(h: &mut Pad) {
+    if let Some(sheet) = h.state().pad.rects.unwrap().sheet {
+        let bar = pos2(sheet.center().x, sheet.top() + 26.0);
+        drag(h, bar, pos2(bar.x, 0.0), None);
+    }
+}
+
+/// Opens the Snap panel: with a long press on the Snap cell, or with its
+/// tile in the Panels menu when the card has no Snap cell.
+fn open_snap(h: &mut Pad) {
+    if control(h, SNAP).is_some() {
+        long_press(h, SNAP);
+    } else {
+        open_panel(h, panels_menu::SNAP_TILE);
+    }
+    assert!(h.state().pad.is_open(Panel::Snap));
+}
+
 #[test]
 fn the_snap_controls_work_with_a_pen_a_finger_and_a_mouse() {
     for size in BOARDS {
@@ -7351,34 +7380,26 @@ fn the_snap_controls_work_with_a_pen_a_finger_and_a_mouse() {
         let (mut h, _) = line_pad(size);
         if matches!(h.state().pad.rects.unwrap().brush_card, BrushCard::Full(_)) {
             assert!(h.state().globe.snap.on, "{what}");
-            tap(&mut h, SNAP);
+            quick_tap(&mut h, SNAP);
             assert!(!h.state().globe.snap.on, "{what}");
-            pen_tap(&mut h, SNAP);
+            quick_pen_tap(&mut h, SNAP);
             assert!(h.state().globe.snap.on, "{what}");
             click(&mut h, SNAP);
             assert!(!h.state().globe.snap.on, "{what}");
-            tap(&mut h, SNAP);
+            quick_tap(&mut h, SNAP);
         }
-        tap(&mut h, "Brush settings");
+        open_snap(&mut h);
         check_controls(&h, &format!("{what} with the snap controls"));
         screenshot::save(&mut h, &format!("pad-snap-{}", size.0));
-        let snap = |h: &Pad| {
-            let s = &h.state().globe.snap;
-            [s.on, s.vertices, s.edges]
-        };
-        for (i, name) in [SNAPPING, SNAP_VERTICES, SNAP_EDGES]
-            .into_iter()
-            .enumerate()
-        {
-            assert!(snap(&h)[i], "{what}: {name}");
-            tap(&mut h, name);
-            assert!(!snap(&h)[i], "{what}: {name} after a finger");
-            pen_tap(&mut h, name);
-            assert!(snap(&h)[i], "{what}: {name} after a pen");
-            click(&mut h, name);
-            assert!(!snap(&h)[i], "{what}: {name} after a mouse");
-            tap(&mut h, name);
-        }
+        let on = |h: &Pad| h.state().globe.snap.on;
+        assert!(on(&h), "{what}");
+        tap(&mut h, SNAPPING);
+        assert!(!on(&h), "{what}: after a finger");
+        pen_tap(&mut h, SNAPPING);
+        assert!(on(&h), "{what}: after a pen");
+        click(&mut h, SNAPPING);
+        assert!(!on(&h), "{what}: after a mouse");
+        tap(&mut h, SNAPPING);
         slide_to_end(&mut h, SNAP_DISTANCE, false);
         assert_eq!(h.state().globe.snap.distance, 4.0, "{what}");
         slide_to_end(&mut h, SNAP_DISTANCE, true);
@@ -7387,7 +7408,194 @@ fn the_snap_controls_work_with_a_pen_a_finger_and_a_mouse() {
 }
 
 #[test]
-fn the_snap_sheet_has_a_switch_for_the_stops_of_each_raster_layer() {
+fn a_long_press_on_snap_opens_the_snap_panel() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
+    let check = |h: &mut Pad, what: &str| {
+        h.state_mut().pad.close(Panel::Snap);
+        h.run_steps(2);
+        let on = h.state().globe.snap.on;
+        long_press(h, SNAP);
+        assert!(h.state().pad.is_open(Panel::Snap), "{what}");
+        assert_eq!(
+            h.state().globe.snap.on,
+            on,
+            "{what}: the hold changed Snapping"
+        );
+        assert!(h.state().pad.flyouts.tip.is_none(), "{what}");
+        // A tap still changes Snapping.
+        quick_tap(h, SNAP);
+        assert_eq!(h.state().globe.snap.on, !on, "{what}: a tap");
+        quick_tap(h, SNAP);
+        assert!(h.state().pad.is_open(Panel::Snap), "{what}");
+    };
+    select_layer(&mut h, picks.line.layer);
+    quick_tap(&mut h, VECTOR);
+    assert!(h.state().globe.lining());
+    check(&mut h, "the line tool");
+    select_layer(&mut h, picks.polygon.layer);
+    assert!(h.state().globe.filling());
+    check(&mut h, "the polygon tool");
+    select_layer(&mut h, picks.point.layer);
+    quick_tap(&mut h, VECTOR);
+    assert!(h.state().globe.placing());
+    check(&mut h, "the point tool");
+    select_layer(&mut h, picks.polygon.layer);
+    choose_split(&mut h);
+    check(&mut h, "Split");
+    choose_vertex(&mut h);
+    check(&mut h, "Vertex");
+    scroll_strip_to(&mut h, MEASURE);
+    quick_tap(&mut h, MEASURE);
+    assert!(h.state().globe.measuring());
+    check(&mut h, "Measure");
+}
+
+/// The snap targets of the layer `layer` in the layer `target`.
+fn snap_types(h: &Pad, layer: vale_store::LayerId, target: vale_store::LayerId) -> [bool; 3] {
+    let targets = h.state().doc.project.snap_targets(layer);
+    let types = targets
+        .iter()
+        .find(|(id, _)| *id == target)
+        .map(|(_, t)| *t);
+    types.map_or([false; 3], |t| [t.vertices, t.edges, t.stops])
+}
+
+#[test]
+fn the_snap_panel_lists_the_active_layer_first_then_the_visible_layers_with_their_toggles() {
+    use vale_app::ui::pad::{SNAP_EDGES, SNAP_STOPS, SNAP_VERTICES, snap_target_name};
+    let dir = tempfile::tempdir().unwrap();
+    let picture = images::half_red(64, 32);
+    let png = images::write_png(&dir.path().join("plates.png"), &picture);
+    for size in BOARDS {
+        let what = format!("{size:?}");
+        let (mut h, lines) = line_pad(size);
+        show_as(h.state_mut(), RasterDisplay::Bands);
+        let rivers = vector(&h, "Rivers");
+        let height = h.state().doc.project.rasters()[0].id;
+        let height = h.state().doc.project.raster_layer(height).unwrap().id;
+        // The other layers are hidden, and an image layer has no rows.
+        let ids: Vec<_> = h
+            .state()
+            .doc
+            .project
+            .layers()
+            .iter()
+            .map(|l| l.id)
+            .collect();
+        for id in ids {
+            let shown = [lines, rivers, height].contains(&id);
+            h.state_mut().doc.project.set_layer_visible(id, shown);
+        }
+        h.state_mut()
+            .run_action(Action::ImportImageLayer(png.clone()));
+        h.run_steps(2);
+        h.state_mut().pad.close(Panel::Layers);
+        h.state_mut().pad.layer = None;
+        h.state_mut().select(Some(LayerRef::Vector(lines)));
+        h.run_steps(2);
+        if !h.state().globe.lining() {
+            quick_tap(&mut h, VECTOR);
+        }
+        open_snap(&mut h);
+        raise_sheet(&mut h);
+        check_controls(&h, &format!("{what} with the Snap panel"));
+        screenshot::save(&mut h, &format!("pad-snap-panel-{}", size.0));
+        let project = &h.state().doc.project;
+        let name = |id| project.layer(id).unwrap().name.clone();
+        let image = project.layers().iter().find(|l| l.image().is_some());
+        let image = image.unwrap().name.clone();
+        // The active layer is first, then the other visible layers in the
+        // order of the layer list. Each row has the toggles of its layer.
+        let mut layers: Vec<_> = (project.layers().iter())
+            .filter(|l| l.visible && l.image().is_none())
+            .collect();
+        let at = layers.iter().position(|l| l.id == lines).unwrap();
+        let active = layers.remove(at);
+        layers.insert(0, active);
+        let rows: Vec<Vec<String>> = (layers.iter())
+            .map(|layer| {
+                let toggles: &[&str] = match layer.raster() {
+                    Some(_) => &[SNAP_STOPS],
+                    None => &[SNAP_VERTICES, SNAP_EDGES],
+                };
+                (toggles.iter())
+                    .map(|label| snap_target_name(label, &layer.name))
+                    .collect()
+            })
+            .collect();
+        assert_eq!(rows.len(), 3, "{what}");
+        for label in [SNAP_VERTICES, SNAP_STOPS] {
+            assert!(
+                control(&h, &snap_target_name(label, &image)).is_none(),
+                "{what}"
+            );
+        }
+        let rect = |row: &String| control(&h, row).unwrap_or_else(|| panic!("{what}: {row}"));
+        let tops: Vec<f32> = (rows.iter())
+            .map(|row| {
+                let rects: Vec<Rect> = row.iter().map(rect).collect();
+                // The toggles of a layer are on one line, from the left.
+                assert!(rects.windows(2).all(|r| r[0].top() == r[1].top()), "{what}");
+                assert!(
+                    rects.windows(2).all(|r| r[0].right() < r[1].left()),
+                    "{what}"
+                );
+                rects[0].top()
+            })
+            .collect();
+        assert!(tops.windows(2).all(|t| t[0] < t[1]), "{what}: {rows:?}");
+        // A layer snaps to itself, and a switch changes a target of the
+        // active layer.
+        assert_eq!(snap_types(&h, lines, lines), [true, true, false], "{what}");
+        assert_eq!(snap_types(&h, lines, rivers), [false; 3], "{what}");
+        let vertices = snap_target_name(SNAP_VERTICES, &name(rivers));
+        let edges = snap_target_name(SNAP_EDGES, &name(rivers));
+        let stops = snap_target_name(SNAP_STOPS, &name(height));
+        assert_eq!(toggled(&h, &vertices), Some(false), "{what}");
+        tap(&mut h, &vertices);
+        assert_eq!(
+            snap_types(&h, lines, rivers),
+            [true, false, false],
+            "{what}"
+        );
+        pen_tap(&mut h, &edges);
+        assert_eq!(snap_types(&h, lines, rivers), [true, true, false], "{what}");
+        click(&mut h, &vertices);
+        assert_eq!(
+            snap_types(&h, lines, rivers),
+            [false, true, false],
+            "{what}"
+        );
+        tap(&mut h, &stops);
+        assert_eq!(
+            snap_types(&h, lines, height),
+            [false, false, true],
+            "{what}"
+        );
+        assert!(
+            h.state().globe.snap.targets.edges.contains(&rivers),
+            "{what}"
+        );
+        // Another layer has its own targets.
+        h.state_mut().select(Some(LayerRef::Vector(rivers)));
+        h.run_steps(2);
+        assert_eq!(toggled(&h, &edges), Some(true), "{what}");
+        assert_eq!(snap_types(&h, rivers, lines), [false; 3], "{what}");
+        // The switch of a raster layer that does not show bands is off.
+        let other = RasterDisplay::ALL
+            .into_iter()
+            .find(|d| *d != RasterDisplay::Bands);
+        show_as(h.state_mut(), other.unwrap());
+        h.run_steps(2);
+        assert!(control(&h, &stops).is_none(), "{what}");
+        assert!(disabled(&h, &stops), "{what}");
+    }
+}
+
+#[test]
+fn the_snap_panel_has_a_color_stops_toggle_for_each_visible_raster_layer() {
+    use vale_app::ui::pad::{SNAP_STOPS, snap_target_name};
     for size in BOARDS {
         let what = format!("{size:?}");
         let mut h = pad(size);
@@ -7399,30 +7607,133 @@ fn the_snap_sheet_has_a_switch_for_the_stops_of_each_raster_layer() {
             face_size: 256,
         };
         h.state_mut().add_raster(rain).unwrap();
+        show_as(h.state_mut(), RasterDisplay::Bands);
         let lines = h.state_mut().doc.add_layer(vale_store::GeometryKind::Line);
+        // The vector layers of the sample are hidden, so the rows fit.
+        let ids: Vec<_> = h
+            .state()
+            .doc
+            .project
+            .layers()
+            .iter()
+            .map(|l| l.id)
+            .collect();
+        for id in ids {
+            let layer = h.state().doc.project.layer(id).unwrap();
+            let shown = id == lines || layer.raster().is_some();
+            h.state_mut().doc.project.set_layer_visible(id, shown);
+        }
         h.state_mut().select(Some(LayerRef::Vector(lines)));
         h.run_steps(2);
         quick_tap(&mut h, VECTOR);
         assert!(h.state().globe.lining(), "{what}");
-        tap(&mut h, "Brush settings");
-        let rasters = panels::raster_layers(h.state());
+        open_snap(&mut h);
+        let layers = h.state().doc.project.layers();
+        let rasters: Vec<_> = (layers.iter())
+            .filter(|l| l.raster().is_some())
+            .map(|l| (l.id, snap_target_name(SNAP_STOPS, &l.name)))
+            .collect();
         assert_eq!(rasters.len(), 2, "{what}");
         for (id, name) in rasters {
-            let name = panels::snap_stops_name(&name);
-            let on = |h: &Pad| h.state().globe.snap.stops(id);
-            assert!(on(&h), "{what}: {name}");
+            let on = |h: &Pad| snap_types(h, lines, id)[2];
+            assert!(!on(&h), "{what}: {name}");
             tap(&mut h, &name);
-            assert!(!on(&h), "{what}: {name} after a finger");
+            assert!(on(&h), "{what}: {name} after a finger");
             pen_tap(&mut h, &name);
-            assert!(on(&h), "{what}: {name} after a pen");
+            assert!(!on(&h), "{what}: {name} after a pen");
             click(&mut h, &name);
-            assert!(!on(&h), "{what}: {name} after a mouse");
-            tap(&mut h, &name);
-            assert!(on(&h), "{what}: {name}");
+            assert!(on(&h), "{what}: {name} after a mouse");
         }
-        check_controls(&h, &format!("{what} with the switches of the stops"));
+        check_controls(&h, &format!("{what} with the toggles of the stops"));
         screenshot::save(&mut h, &format!("pad-snap-stops-{}", size.0));
     }
+}
+
+#[test]
+fn a_point_layer_has_a_points_snap_toggle_and_a_dim_one_for_a_raster_with_no_stops() {
+    use vale_app::ui::pad::{SNAP_EDGES, SNAP_POINTS, SNAP_STOPS, SNAP_VERTICES, snap_target_name};
+    for size in BOARDS {
+        let what = format!("{size:?}");
+        let (mut h, lines) = line_pad(size);
+        let places = vector(&h, "Places");
+        // A long name does not move the toggle.
+        let long = "Places of the northern kingdoms and the far isles";
+        h.state_mut().doc.rename_layer(places, long);
+        let height = h.state().doc.project.rasters()[0].id;
+        let height = h.state().doc.project.raster_layer(height).unwrap().id;
+        let other = RasterDisplay::ALL
+            .into_iter()
+            .find(|d| *d != RasterDisplay::Bands);
+        show_as(h.state_mut(), other.unwrap());
+        let ids: Vec<_> = (h.state().doc.project.layers().iter())
+            .map(|l| l.id)
+            .collect();
+        for id in ids {
+            let shown = [lines, places, height].contains(&id);
+            h.state_mut().doc.project.set_layer_visible(id, shown);
+        }
+        h.run_steps(2);
+        open_snap(&mut h);
+        let project = &h.state().doc.project;
+        let name = |id| project.layer(id).unwrap().name.clone();
+        let (places, height_name) = (name(places), name(height));
+        let points = snap_target_name(SNAP_POINTS, &places);
+        for label in [SNAP_VERTICES, SNAP_EDGES] {
+            let toggle = snap_target_name(label, &places);
+            assert!(h.query_by_label(&toggle).is_none(), "{what}: {toggle}");
+        }
+        let right = h.state().pad.panels.iter().find(|(p, _)| *p == Panel::Snap);
+        let right = right.unwrap().1.right();
+        assert!(control(&h, &points).unwrap().right() < right, "{what}");
+        // The Points toggle sets the vertices of the target.
+        let id = vector(&h, long);
+        tap(&mut h, &points);
+        assert_eq!(snap_types(&h, lines, id), [true, false, false], "{what}");
+        pen_tap(&mut h, &points);
+        assert_eq!(snap_types(&h, lines, id), [false; 3], "{what}");
+        click(&mut h, &points);
+        assert_eq!(snap_types(&h, lines, id), [true, false, false], "{what}");
+        // A raster that does not show its color stops has a dim toggle.
+        let stops = snap_target_name(SNAP_STOPS, &height_name);
+        assert!(control(&h, &stops).is_none(), "{what}");
+        assert!(disabled(&h, &stops), "{what}");
+        check_controls(&h, &format!("{what} with a point layer"));
+        screenshot::save(&mut h, &format!("pad-snap-points-{}", size.0));
+    }
+}
+
+#[test]
+fn the_snap_panel_shows_a_hint_with_no_active_layer_or_an_image_layer() {
+    use vale_app::ui::pad::{NO_SNAP_LAYER, SNAP_VERTICES, snap_target_name};
+    let dir = tempfile::tempdir().unwrap();
+    let picture = images::half_red(64, 32);
+    let png = images::write_png(&dir.path().join("plates.png"), &picture);
+    let mut h = pad(BOARDS[0]);
+    let rivers = vector(&h, "Rivers");
+    let name = h.state().doc.project.layer(rivers).unwrap().name.clone();
+    let row = snap_target_name(SNAP_VERTICES, &name);
+    h.state_mut().select(None);
+    h.run_steps(2);
+    open_panel(&mut h, panels_menu::SNAP_TILE);
+    assert!(h.state().pad.is_open(Panel::Snap));
+    assert!(h.query_by_label(NO_SNAP_LAYER).is_some());
+    assert!(control(&h, &row).is_none());
+    for name in [SNAPPING, SNAP_DISTANCE] {
+        assert!(control(&h, name).is_some(), "{name}");
+    }
+    h.state_mut().select(Some(LayerRef::Vector(rivers)));
+    h.run_steps(2);
+    assert!(h.query_by_label(NO_SNAP_LAYER).is_none());
+    assert!(control(&h, &row).is_some());
+    h.state_mut().run_action(Action::ImportImageLayer(png));
+    h.run_steps(2);
+    let image = h.state().doc.project.images()[0].id;
+    h.state_mut().select(Some(LayerRef::Image(image)));
+    h.state_mut().pad.open(Panel::Snap);
+    h.run_steps(2);
+    assert!(h.state().pad.shows(Panel::Snap));
+    assert!(h.query_by_label(NO_SNAP_LAYER).is_some());
+    assert!(control(&h, &row).is_none());
 }
 
 /// A pen stroke through screen points, with a sample each 3 points.
@@ -7452,6 +7763,12 @@ fn stroke_along_a_river(snap: bool) -> (Vec<[f64; 2]>, Vec<[f64; 2]>) {
     let (mut h, lines) = line_pad(BOARDS[0]);
     h.state_mut().globe.snap.on = snap;
     let rivers = vector(&h, "Rivers");
+    let types = vale_store::SnapTypes {
+        vertices: true,
+        edges: true,
+        stops: false,
+    };
+    h.state_mut().set_snap_target(lines, rivers, types);
     let longest = line_features(&h, rivers)
         .into_iter()
         .filter_map(|f| match f.geometry {
@@ -11470,9 +11787,9 @@ fn the_cells_of_the_measure_card_act_on_the_path() {
 
         let snap = h.state().globe.snap.on;
         scroll_strip_to(&mut h, SNAP);
-        tap(&mut h, SNAP);
+        quick_tap(&mut h, SNAP);
         assert_eq!(h.state().globe.snap.on, !snap, "{what}");
-        tap(&mut h, SNAP);
+        quick_tap(&mut h, SNAP);
 
         // A cell of the tool strip leaves the tool and clears the path.
         let height = h.state().doc.project.rasters()[0].id;
@@ -11510,7 +11827,8 @@ fn a_crossing_path_shows_the_perimeter_and_no_area_or_hint() {
 }
 
 #[test]
-fn the_brush_button_of_the_measure_card_opens_the_snapping_settings() {
+fn the_brush_button_of_the_measure_card_opens_the_snap_hint() {
+    use vale_app::ui::pad::SNAP_HINT;
     for size in [BOARDS[0], BOARDS[3]] {
         let what = format!("{size:?}");
         let mut h = pad(size);
@@ -11521,12 +11839,45 @@ fn the_brush_button_of_the_measure_card_opens_the_snapping_settings() {
         quick_tap(&mut h, MEASURE);
         tap(&mut h, "Brush settings");
         assert!(h.state().pad.is_open(Panel::Brush), "{what}");
-        for name in [SNAPPING, SNAP_VERTICES, SNAP_EDGES, SNAP_DISTANCE] {
-            assert!(control(&h, name).is_some(), "{what}: {name}");
+        assert!(h.query_by_label(SNAP_HINT).is_some(), "{what}");
+        for name in [SNAPPING, SNAP_DISTANCE, "Brush size"] {
+            assert!(control(&h, name).is_none(), "{what}: {name}");
         }
-        assert!(control(&h, "Brush size").is_none(), "{what}");
-        check_controls(&h, &format!("{what} with the snapping settings"));
+        check_controls(&h, &format!("{what} with the Brush panel"));
     }
+}
+
+#[test]
+fn the_brush_panel_has_no_snap_settings() {
+    use vale_app::ui::pad::SNAP_HINT;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
+    let check = |h: &mut Pad, hint: bool, what: &str| {
+        h.state_mut().pad.open(Panel::Brush);
+        h.run_steps(2);
+        for name in [SNAPPING, SNAP_DISTANCE] {
+            assert!(control(h, name).is_none(), "{what}: {name}");
+        }
+        assert_eq!(h.query_by_label(SNAP_HINT).is_some(), hint, "{what}");
+    };
+    select_layer(&mut h, picks.line.layer);
+    quick_tap(&mut h, VECTOR);
+    check(&mut h, false, "the line tool");
+    select_layer(&mut h, picks.polygon.layer);
+    check(&mut h, false, "the polygon tool");
+    choose_split(&mut h);
+    check(&mut h, false, "Split");
+    choose_vertex(&mut h);
+    check(&mut h, false, "Vertex");
+    select_layer(&mut h, picks.point.layer);
+    quick_tap(&mut h, VECTOR);
+    assert!(h.state().globe.placing());
+    check(&mut h, true, "the point tool");
+    h.state_mut().pad.close(Panel::Brush);
+    h.run_steps(2);
+    scroll_strip_to(&mut h, MEASURE);
+    quick_tap(&mut h, MEASURE);
+    check(&mut h, true, "Measure");
 }
 
 /// Two cells of a strip are in order: in a column, or in a row.
@@ -11608,13 +11959,9 @@ fn the_measure_cell_and_card_fit_in_the_atlas_on_each_screen() {
         if all {
             tap(&mut h, "Brush settings");
             assert!(h.state().pad.is_open(Panel::Brush), "{what}");
-            assert!(control(&h, SNAPPING).is_some(), "{what}");
-            check_safe(
-                &h,
-                size,
-                safe,
-                &format!("{what} with the snapping settings"),
-            );
+            let hint = vale_app::ui::pad::SNAP_HINT;
+            assert!(h.query_by_label(hint).is_some(), "{what}");
+            check_safe(&h, size, safe, &format!("{what} with the Brush panel"));
         }
         // Frame leaves the tool.
         lower_sheet(&mut h);
@@ -13241,11 +13588,16 @@ fn the_card_of_vertex_has_its_buttons_at_touch_size() {
     assert_eq!(toggled(&h, MOVE_SHARED), Some(true));
     tap(&mut h, MOVE_SHARED);
     assert!(!h.state().globe.vertex.shared);
-    // The Brush panel has the snap switches and the smoothing.
+    // The Brush panel has the smoothing, and the Snap panel has the snap
+    // settings.
     tap(&mut h, "Brush settings");
-    for name in [SNAPPING, SNAP_VERTICES, SNAP_EDGES, "Line smoothing"] {
+    assert!(row_of(&h, "Line smoothing").is_some());
+    assert!(row_of(&h, SNAPPING).is_none());
+    long_press(&mut h, SNAP);
+    for name in [SNAPPING, SNAP_DISTANCE] {
         assert!(row_of(&h, name).is_some(), "{name}");
     }
+    check_controls(&h, "the Vertex tool with the Snap panel");
 }
 
 #[test]
@@ -13416,7 +13768,7 @@ fn a_move_of_a_shared_vertex_moves_both_polygons_with_the_switch_on() {
 }
 
 #[test]
-fn a_vertex_snaps_to_a_vertex_and_an_edge_and_the_switches_apply() {
+fn a_vertex_snaps_to_a_vertex_and_an_edge_and_the_targets_apply() {
     let dir = tempfile::tempdir().unwrap();
     let (mut h, picks) = vertex_pad(dir.path());
     h.state_mut().globe.vertex.shared = false;
@@ -13437,8 +13789,13 @@ fn a_vertex_snaps_to_a_vertex_and_an_edge_and_the_switches_apply() {
         ([14.0, -18.0], false, false, None),
     ];
     for (target, vertices, edges, want) in cases {
-        let snap = &mut h.state_mut().globe.snap;
-        (snap.vertices, snap.edges) = (vertices, edges);
+        let layer = picks.polygon.layer;
+        let types = vale_store::SnapTypes {
+            vertices,
+            edges,
+            stops: false,
+        };
+        h.state_mut().set_snap_target(layer, layer, types);
         let before = geometry_of(&h, picks.polygon);
         let from = screen_at(&h, corner[0], corner[1]);
         let to = screen_at(&h, target[0], target[1]) + vec2(-4.0, 3.0);
@@ -15214,8 +15571,10 @@ fn a_hold_on_a_control_of_the_column_shows_its_name() {
     let mut h = pad(BOARDS[0]);
     quick_tap(&mut h, MEASURE);
     let column = h.state().pad.rects.unwrap().tools;
-    let pos = control(&h, SNAP).unwrap().center();
-    let on = h.state().globe.snap.on;
+    // The Snap cell opens the Snap panel after a hold, so the Brush button
+    // shows the name.
+    let brush = "Brush settings";
+    let pos = control(&h, brush).unwrap().center();
     touch(&mut h, egui::TouchPhase::Start, pos, None);
     let mut steps = 0;
     while h.state().pad.flyouts.tip_rect.is_none() && steps < 120 {
@@ -15224,13 +15583,13 @@ fn a_hold_on_a_control_of_the_column_shows_its_name() {
     }
     let tip = h.state().pad.flyouts.tip_rect.expect("a tooltip");
     assert!(tip.left() > column.right());
-    assert!(h.query_by_label(SNAP).is_some());
+    assert!(h.query_by_label(brush).is_some());
     h.run_steps(60);
     touch(&mut h, egui::TouchPhase::End, pos, None);
     h.run_steps(3);
     assert_eq!(h.state().pad.flyouts.tip_rect, None);
-    // A hold longer than a click does not change the switch.
-    assert_eq!(h.state().globe.snap.on, on);
+    // A hold longer than a click does not open the panel.
+    assert!(!h.state().pad.is_open(Panel::Brush));
 }
 
 #[test]

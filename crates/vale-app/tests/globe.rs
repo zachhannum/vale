@@ -7637,6 +7637,13 @@ fn a_trace_of_the_coast_follows_the_line_that_the_globe_shows() {
     let id = brush_layer(&h);
     let lines = h.state_mut().doc.add_layer(vale_store::GeometryKind::Line);
     h.state_mut().select(Some(LayerRef::Vector(lines)));
+    let coast = h.state().doc.project.raster_layer(id).unwrap().id;
+    let types = vale_store::SnapTypes {
+        vertices: false,
+        edges: false,
+        stops: true,
+    };
+    h.state_mut().set_snap_target(lines, coast, types);
     h.state_mut().globe.tool = Tool::Line;
     load(&mut h);
     let globe = &mut h.state_mut().globe;

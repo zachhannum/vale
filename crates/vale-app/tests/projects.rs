@@ -961,3 +961,33 @@ fn a_save_that_failed_shows_a_banner_at_the_top_in_both_workspaces_of_the_ipad_l
         assert!((banner.center().x - middle).abs() < 1.0, "{workspace:?}");
     }
 }
+
+#[test]
+fn the_tool_the_brush_mode_and_each_brush_setting_are_the_same_after_a_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    create(dir.path(), "Aurelia");
+    let mut h = start(dir.path(), Layout::Pad);
+    click(&mut h, "Open Aurelia");
+    h.state_mut().add_height();
+    run(&mut h);
+    choose_mode(&mut h, Mode::Noise);
+    let globe = &mut h.state_mut().globe;
+    globe.brush.size_points = 90.0;
+    globe.brush.shape = 0.7;
+    globe.brush.terrace_step_m = 350.0;
+    run(&mut h);
+    h.state_mut().globe.tool = Tool::Measure;
+    run(&mut h);
+
+    // The system stops the app with no exit call.
+    h.state_mut().save_tick(false, Instant::now());
+    drop(h);
+
+    let h = start(dir.path(), Layout::Pad);
+    let globe = &h.state().globe;
+    assert_eq!(globe.tool, Tool::Measure);
+    assert_eq!(globe.brush.mode, Mode::Noise);
+    assert_eq!(globe.brush.size_points, 90.0);
+    assert_eq!(globe.brush.shape, 0.7);
+    assert_eq!(globe.brush.terrace_step_m, 350.0);
+}

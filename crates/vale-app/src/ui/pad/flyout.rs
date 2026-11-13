@@ -167,6 +167,29 @@ pub fn button(
     cell.clicked()
 }
 
+/// What a press on a cell did.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Press {
+    None,
+    /// A tap that is not the end of a hold.
+    Tap,
+    /// The press became a hold of `HOLD_TIME` in this frame.
+    Long,
+}
+
+/// Follows a press on a cell that shows no tooltip.
+pub fn press(ui: &egui::Ui, flyouts: &mut Flyouts, cell: &egui::Response, name: &str) -> Press {
+    let was = flyouts.held.as_deref() == Some(name);
+    let tapped = hold(ui, flyouts, cell, name, None, None, Place::Strip);
+    if !was && flyouts.held.as_deref() == Some(name) {
+        Press::Long
+    } else if tapped {
+        Press::Tap
+    } else {
+        Press::None
+    }
+}
+
 /// Follows a press on a cell. With a `label`, a hold of `HOLD_TIME` shows
 /// the tooltip, and a hold of `MODES_TIME` opens the flyout of `modes`.
 /// With no label, a hold of `HOLD_TIME` opens the flyout. Returns true for

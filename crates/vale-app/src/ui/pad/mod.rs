@@ -182,8 +182,6 @@ pub const MEASURE: &str = "Measure";
 pub const CLEAR_PATH: &str = "Clear path";
 /// The switch of the sheet that turns all snapping on and off.
 pub const SNAPPING: &str = "Snapping";
-pub const SNAP_VERTICES: &str = "Snap to vertices";
-pub const SNAP_EDGES: &str = "Snap to edges";
 /// The slider of the snap distance, in points.
 pub const SNAP_DISTANCE: &str = "Snap distance";
 /// The cell of the tool strip with the modes that shape the height freely.
@@ -343,6 +341,8 @@ pub struct Reorder {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum Panel {
     Brush,
+    /// The snap settings, and the snap targets of the active layer.
+    Snap,
     /// The layers of the world, or in the Atlas the layers of the map of
     /// the selected frame.
     Layers,
@@ -362,6 +362,7 @@ impl Panel {
     fn key(self) -> &'static str {
         match self {
             Panel::Brush => "pad-brush",
+            Panel::Snap => "pad-snap",
             Panel::Layers => "pad-layers",
             Panel::Toolbox => "pad-toolbox",
             Panel::Attributes => "pad-attributes",
@@ -1439,11 +1440,7 @@ fn strip_controls(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Contro
                 *smoothing = value;
             }
         }
-        let snap = &mut state.globe.snap.on;
-        let cell = widgets::tool_cell(ui, controls, SNAP, SNAP, Icon::Magnet, *snap, true);
-        if cell.clicked() {
-            *snap = !*snap;
-        }
+        snap_cell(ui, state, controls);
         if line {
             // Reshape works in the New mode of the polygon tool.
             let new = state.globe.line.polygon_mode == PolygonMode::New;
@@ -1636,14 +1633,10 @@ fn merge_menu(
     }
 }
 
-/// The cells of the card of the Vertex tool: the snap switch, the switch of
-/// the move of shared vertices, Delete vertex, Smooth vertices, and the
-/// Brush button, which opens the snapping settings.
+/// The cells of the card of the Vertex tool: Snap, the switch of the move
+/// of shared vertices, Delete vertex, Smooth vertices, and the Brush button.
 fn vertex_cells(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
-    let snap = &mut state.globe.snap.on;
-    if widgets::tool_cell(ui, controls, SNAP, SNAP, Icon::Magnet, *snap, true).clicked() {
-        *snap = !*snap;
-    }
+    snap_cell(ui, state, controls);
     let shared = &mut state.globe.vertex.shared;
     if widgets::tool_cell(
         ui,
@@ -1720,13 +1713,10 @@ fn select_cells(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls
     Some(merge.rect)
 }
 
-/// The cells of the card of the Measure tool: the snap switch, the Clear
-/// path cell, and the Brush button, which opens the snapping settings.
+/// The cells of the card of the Measure tool: Snap, the Clear path cell,
+/// and the Brush button.
 pub(super) fn measure_cells(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
-    let snap = &mut state.globe.snap.on;
-    if widgets::tool_cell(ui, controls, SNAP, SNAP, Icon::Magnet, *snap, true).clicked() {
-        *snap = !*snap;
-    }
+    snap_cell(ui, state, controls);
     let path = &mut state.measure;
     let filled = !path.is_empty();
     if widgets::tool_cell(
@@ -1744,6 +1734,18 @@ pub(super) fn measure_cells(ui: &mut egui::Ui, state: &mut AppState, controls: &
     }
     deselect_cell(ui, state, controls);
     brush_button(ui, state, controls);
+}
+
+/// The Snap cell of a card. A tap turns snapping on and off, and a hold
+/// opens the Snap panel.
+fn snap_cell(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
+    let on = state.globe.snap.on;
+    let cell = widgets::tool_cell_with(ui, controls, SNAP, SNAP, Icon::Magnet, on, true, false);
+    match flyout::press(ui, &mut state.pad.flyouts, &cell, SNAP) {
+        flyout::Press::Tap => state.globe.snap.on = !on,
+        flyout::Press::Long => state.pad.open(Panel::Snap),
+        flyout::Press::None => {}
+    }
 }
 
 /// The Brush button of a card of cells, which opens the Brush panel.
@@ -1774,6 +1776,7 @@ pub fn panel_name(state: &AppState, panel: Panel) -> &'static str {
         Panel::Brush if state.globe.splitting() => SPLIT,
         Panel::Brush if state.globe.vertexing() => VERTEX,
         Panel::Brush => panels_menu::BRUSH,
+        Panel::Snap => SNAP,
         Panel::Layers => LAYERS,
         Panel::Toolbox => TOOLBOX,
         Panel::Attributes => select::ATTRIBUTES,
@@ -1787,6 +1790,7 @@ pub fn panel_name(state: &AppState, panel: Panel) -> &'static str {
 pub fn panel_icon(panel: Panel) -> Icon {
     match panel {
         Panel::Brush => Icon::Brush,
+        Panel::Snap => Icon::Magnet,
         Panel::Layers => Icon::Layers,
         Panel::Toolbox => Icon::Toolbox,
         Panel::Attributes => Icon::Attributes,
@@ -2152,6 +2156,7 @@ pub(super) fn panel_body(
     let (panel, layer, page) = (head.panel, head.layer, head.page);
     match (panel, layer) {
         (Panel::Brush, _) => brush_body(ui, state, controls),
+        (Panel::Snap, _) => snap_body(ui, state, controls),
         (Panel::Layers, Some(LayerRef::Raster(id))) => match page {
             Some(Page::Ramps) => {
                 raster::ramps_body(ui, state, controls, raster::RampUser::Raster(id))
@@ -2258,9 +2263,213 @@ fn sheet_drag(ui: &egui::Ui, pad: &mut PadState, bar: &egui::Response, rects: &R
 
 /// The hint of the Brush panel for a tool with no settings.
 pub const NO_SETTINGS: &str = "This tool has no settings.";
+/// The hint of the Brush panel for a tool whose only settings are in the
+/// Snap panel.
+pub const SNAP_HINT: &str = "Touch and hold Snap to change snap settings.";
+/// The hint of the Snap panel with no active layer, or with an image layer.
+pub const NO_SNAP_LAYER: &str = "Select a layer to choose snap targets.";
+/// The hint of the Snap panel in the Atlas workspace.
+pub const MAP_SNAP: &str = "In a map frame, Measure snaps to the layers of the map.";
+/// The labels of the toggles of the snap targets of a layer.
+pub const SNAP_VERTICES: &str = "Vertices";
+pub const SNAP_EDGES: &str = "Edges";
+/// The label of the toggle of the points of a point layer. It sets the
+/// vertices of the targets.
+pub const SNAP_POINTS: &str = "Points";
+pub const SNAP_STOPS: &str = "Color stops";
+
+/// The name of the toggle of a type of snap target, `label`, in the layer
+/// `layer`.
+pub fn snap_target_name(label: &str, layer: &str) -> String {
+    format!("{label} of {layer}")
+}
+
+fn muted(ui: &mut egui::Ui, text: &str) {
+    ui.add_space(4.0);
+    ui.label(egui::RichText::new(text).color(theme::MUTE));
+}
+
+/// A visible layer that can be a snap target.
+pub(crate) struct SnapLayer {
+    pub id: LayerId,
+    pub name: String,
+    pub icon: Icon,
+    pub kind: SnapKind,
+}
+
+/// The kind of a layer that can be a snap target.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SnapKind {
+    /// A line or a polygon layer: its vertices and its edges.
+    Shapes,
+    /// A point layer: its points, which are the vertices of a target.
+    Points,
+    /// A raster layer. Its color stops can be targets if it shows bands.
+    Raster { bands: bool },
+}
+
+impl SnapKind {
+    /// The labels of the toggles of the kind, each with the type that it sets.
+    pub fn toggles(self) -> &'static [(&'static str, SnapType)] {
+        match self {
+            SnapKind::Shapes => &[
+                (SNAP_VERTICES, SnapType::Vertices),
+                (SNAP_EDGES, SnapType::Edges),
+            ],
+            SnapKind::Points => &[(SNAP_POINTS, SnapType::Vertices)],
+            SnapKind::Raster { .. } => &[(SNAP_STOPS, SnapType::Stops)],
+        }
+    }
+
+    /// The toggles can change: false for a raster that does not show bands.
+    pub fn enabled(self) -> bool {
+        self != SnapKind::Raster { bands: false }
+    }
+}
+
+/// A type of snap target.
+#[derive(Clone, Copy)]
+pub(crate) enum SnapType {
+    Vertices,
+    Edges,
+    Stops,
+}
+
+impl SnapType {
+    pub fn of(self, types: &mut vale_store::SnapTypes) -> &mut bool {
+        match self {
+            SnapType::Vertices => &mut types.vertices,
+            SnapType::Edges => &mut types.edges,
+            SnapType::Stops => &mut types.stops,
+        }
+    }
+}
+
+/// The visible vector and raster layers: the active layer first, then the
+/// others in the order of the layer list.
+pub(crate) fn snap_layers(state: &AppState) -> Vec<SnapLayer> {
+    let project = &state.doc.project;
+    let mut layers: Vec<SnapLayer> = (project.layers().iter())
+        .filter(|l| l.visible)
+        .filter_map(|l| {
+            let kind = match l.raster() {
+                Some(id) => SnapKind::Raster {
+                    bands: project.raster(id)?.display == vale_store::RasterDisplay::Bands,
+                },
+                None if l.geometry()? == GeometryKind::Point => SnapKind::Points,
+                None => SnapKind::Shapes,
+            };
+            Some(SnapLayer {
+                id: l.id,
+                name: l.name.clone(),
+                icon: layer_icon(l),
+                kind,
+            })
+        })
+        .collect();
+    let active = state.active_layer_id();
+    if let Some(at) = layers.iter().position(|l| Some(l.id) == active) {
+        let first = layers.remove(at);
+        layers.insert(0, first);
+    }
+    layers
+}
+
+/// The types of target `target` in a list of snap targets.
+pub(crate) fn snap_types(
+    targets: &[(LayerId, vale_store::SnapTypes)],
+    target: LayerId,
+) -> vale_store::SnapTypes {
+    let none = vale_store::SnapTypes {
+        vertices: false,
+        edges: false,
+        stops: false,
+    };
+    (targets.iter().find(|(id, _)| *id == target)).map_or(none, |(_, t)| *t)
+}
+
+/// The Snap panel: the Snapping switch, the snap distance, and a row for
+/// each visible layer with the toggles of its types of snap target of the
+/// active layer.
+fn snap_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
+    ui.spacing_mut().item_spacing.y = 0.0;
+    let snap = &mut state.globe.snap;
+    widgets::switch_row(ui, controls, SNAPPING, SNAPPING, &mut snap.on);
+    let number = Number::new(SNAP_DISTANCE, snap.distance, snap::DISTANCE_RANGE)
+        .label("Distance")
+        .step(1.0)
+        .unit("pt")
+        .default(snap::DEFAULT_DISTANCE);
+    apply(number.slider(ui, controls), &mut snap.distance);
+    if state.workspace == Workspace::Atlas {
+        muted(ui, MAP_SNAP);
+        return;
+    }
+    let Some(active) = state.active_layer_id() else {
+        muted(ui, NO_SNAP_LAYER);
+        return;
+    };
+    let layers = snap_layers(state);
+    if !layers.is_empty() {
+        rule(ui);
+    }
+    let targets = state.doc.project.snap_targets(active);
+    for layer in layers {
+        let mut types = snap_types(&targets, layer.id);
+        let before = types;
+        snap_row(ui, controls, &layer, layer.id == active, &mut types);
+        if types != before {
+            state.set_snap_target(active, layer.id, types);
+        }
+    }
+}
 
 /// The switch of the Brush panel for one finger that paints and draws.
 pub const FINGER_PAINT: &str = "Paint with finger";
+
+/// A row of the Snap panel: the icon of the kind of the layer, its name,
+/// and at the right the toggles of its types of target. The `active` layer
+/// has the accent color.
+fn snap_row(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    layer: &SnapLayer,
+    active: bool,
+    types: &mut vale_store::SnapTypes,
+) {
+    let size = vec2(ui.available_width(), PANEL_ROW);
+    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+    let enabled = layer.kind.enabled();
+    let mut right = rect.right_center();
+    for (label, kind) in layer.kind.toggles().iter().rev() {
+        let name = snap_target_name(label, &layer.name);
+        let on = kind.of(types);
+        let (left, _) = widgets::pill_toggle(ui, controls, right, &name, label, on, enabled);
+        right.x = left - widgets::PILL_GAP;
+    }
+    let color = if active { theme::ACCENT } else { theme::TEXT };
+    let painter = ui.painter();
+    let kind = Rect::from_center_size(pos2(rect.left() + 10.0, rect.center().y), vec2(18.0, 18.0));
+    let icon = if active { theme::ACCENT } else { theme::MUTE };
+    icons::paint(
+        painter,
+        kind,
+        layer.icon,
+        18.0,
+        widgets::fade(icon, enabled),
+    );
+    let left = rect.left() + 28.0;
+    let width = (right.x - 8.0 - left).max(0.0);
+    let mut job = egui::text::LayoutJob::simple_singleline(
+        layer.name.clone(),
+        theme::body(),
+        widgets::fade(color, enabled),
+    );
+    job.wrap = egui::text::TextWrapping::truncate_at_width(width);
+    let galley = painter.layout_job(job);
+    let at = pos2(left, rect.center().y - galley.size().y / 2.0);
+    painter.galley(at, galley, color);
+}
 
 /// The tool has settings in the Brush panel.
 pub(super) fn brush_settings(state: &AppState) -> bool {
@@ -2305,34 +2514,9 @@ fn tool_rows(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
                 .default(DEFAULT_SMOOTHING);
             apply(number.slider(ui, controls), smoothing);
         }
-        // The Measure tool in a map frame does not snap to color stops.
-        let rasters = match state.workspace {
-            Workspace::Atlas => Vec::new(),
-            Workspace::Globe => panels::raster_layers(state),
-        };
-        let snap = &mut state.globe.snap;
-        widgets::switch_row(ui, controls, SNAPPING, SNAPPING, &mut snap.on);
-        widgets::switch_row(
-            ui,
-            controls,
-            SNAP_VERTICES,
-            SNAP_VERTICES,
-            &mut snap.vertices,
-        );
-        widgets::switch_row(ui, controls, SNAP_EDGES, SNAP_EDGES, &mut snap.edges);
-        for (id, name) in rasters {
-            let mut on = snap.stops(id);
-            let (control, label) = (panels::snap_stops_name(&name), format!("Stops of {name}"));
-            if widgets::switch_row(ui, controls, &control, &label, &mut on) {
-                snap.set_stops(id, on);
-            }
+        if !(stroke || vertexing) {
+            muted(ui, SNAP_HINT);
         }
-        let number = Number::new(SNAP_DISTANCE, snap.distance, snap::DISTANCE_RANGE)
-            .label("Distance")
-            .step(1.0)
-            .unit("pt")
-            .default(snap::DEFAULT_DISTANCE);
-        apply(number.slider(ui, controls), &mut snap.distance);
         if line {
             let on = &mut state.globe.line.reshape;
             widgets::switch_row(ui, controls, RESHAPE_SWITCH, RESHAPE, on);

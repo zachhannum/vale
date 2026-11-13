@@ -1106,7 +1106,7 @@ pub(super) mod tests {
     fn trace(target: Layer, way: &[LonLat]) -> (Vec<Run>, Vec<Vec<Vec<LonLat>>>) {
         let t = Arc::new(snap_test::targets(&[target]));
         let samples = snap_test::pen(way, 0.3);
-        let runs = snap_test::trace(&t, &samples, SnapSettings::default(), 9);
+        let runs = snap_test::trace(&t, &samples, SnapSettings::every(&t), 9);
         let g = commit(&runs, SCALE, 0.35).expect("a polygon");
         (runs, polygons(&g).clone())
     }

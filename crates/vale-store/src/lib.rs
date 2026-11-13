@@ -815,6 +815,39 @@ pub struct Project {
     next_image_id: u32,
     pub atlas: Atlas,
     symbols: Vec<SymbolRecord>,
+    /// The snap targets of each layer that has its own. A layer with no
+    /// entry has the default targets.
+    snap_targets: BTreeMap<LayerId, BTreeMap<LayerId, SnapTypes>>,
+}
+
+/// What a layer snaps to in one target layer. A vector target reads
+/// `vertices` and `edges`, and a raster target reads `stops`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct SnapTypes {
+    pub vertices: bool,
+    pub edges: bool,
+    /// The lines of the color stops.
+    pub stops: bool,
+}
+
+impl SnapTypes {
+    /// The types that a layer has in its own default target, or `None` for
+    /// a layer that has no targets.
+    fn default_for(kind: LayerKind) -> Option<SnapTypes> {
+        match kind {
+            LayerKind::Vector(_) => Some(SnapTypes {
+                vertices: true,
+                edges: true,
+                stops: false,
+            }),
+            LayerKind::Raster(_) => Some(SnapTypes {
+                vertices: false,
+                edges: false,
+                stops: true,
+            }),
+            LayerKind::Image(_) => None,
+        }
+    }
 }
 
 /// A point symbol that the user adds to the project, as the text of an SVG
@@ -838,6 +871,7 @@ impl Project {
             symbols: Vec::new(),
             images: Vec::new(),
             next_image_id: 0,
+            snap_targets: BTreeMap::new(),
         }
     }
 
@@ -1047,6 +1081,7 @@ impl Project {
     pub fn remove_raster(&mut self, id: RasterId) -> Option<Raster> {
         let i = self.rasters.iter().position(|r| r.id == id)?;
         self.layers.retain(|l| l.raster() != Some(id));
+        self.prune_snap_targets();
         Some(self.rasters.remove(i))
     }
 
@@ -1120,6 +1155,7 @@ impl Project {
     pub fn remove_image(&mut self, id: ImageId) -> Option<Image> {
         let i = self.images.iter().position(|x| x.id == id)?;
         self.layers.retain(|l| l.image() != Some(id));
+        self.prune_snap_targets();
         Some(self.images.remove(i))
     }
 
@@ -1479,7 +1515,63 @@ impl Project {
         if let Some(image) = layer.image() {
             self.images.retain(|i| i.id != image);
         }
+        self.prune_snap_targets();
         Some(layer)
+    }
+
+    /// The layers that a stroke, a point, or a vertex move in this layer
+    /// snaps to, in ID order, with the types of each. A layer with no
+    /// targets of its own targets only itself: a vector layer its vertices
+    /// and edges, and a raster layer its color stops. An image layer and a
+    /// missing layer have no targets.
+    pub fn snap_targets(&self, id: LayerId) -> Vec<(LayerId, SnapTypes)> {
+        let Some(layer) = self.layer(id) else {
+            return Vec::new();
+        };
+        let Some(own) = SnapTypes::default_for(layer.kind) else {
+            return Vec::new();
+        };
+        match self.snap_targets.get(&id) {
+            Some(targets) => targets.iter().map(|(t, types)| (*t, *types)).collect(),
+            None => vec![(id, own)],
+        }
+    }
+
+    /// Sets the types that a layer snaps to in a target layer. A layer that
+    /// has no targets of its own gets its default targets first. A target
+    /// with all types off stays a target. A change of a target is not an
+    /// edit, so it gets no undo step. False if a layer is missing or is an
+    /// image layer.
+    pub fn set_snap_target(&mut self, layer: LayerId, target: LayerId, types: SnapTypes) -> bool {
+        let snaps = |id| {
+            self.layer(id)
+                .is_some_and(|l| SnapTypes::default_for(l.kind).is_some())
+        };
+        if !snaps(layer) || !snaps(target) {
+            return false;
+        }
+        let defaults = self.snap_targets(layer);
+        let targets = self
+            .snap_targets
+            .entry(layer)
+            .or_insert_with(|| defaults.into_iter().collect());
+        targets.insert(target, types);
+        true
+    }
+
+    /// Removes the targets of each missing layer and each image layer, and
+    /// each target that is such a layer.
+    pub(crate) fn prune_snap_targets(&mut self) {
+        let snaps: BTreeSet<LayerId> = self
+            .layers
+            .iter()
+            .filter(|l| SnapTypes::default_for(l.kind).is_some())
+            .map(|l| l.id)
+            .collect();
+        self.snap_targets.retain(|id, _| snaps.contains(id));
+        for targets in self.snap_targets.values_mut() {
+            targets.retain(|id, _| snaps.contains(id));
+        }
     }
 }
 
@@ -2109,5 +2201,62 @@ mod tests {
             names,
             ["oak", "oak 2", "oak 3", "Symbol", "Symbol 2", "Circle 3"]
         );
+    }
+
+    const VECTOR: SnapTypes = SnapTypes {
+        vertices: true,
+        edges: true,
+        stops: false,
+    };
+    const RASTER: SnapTypes = SnapTypes {
+        vertices: false,
+        edges: false,
+        stops: true,
+    };
+
+    #[test]
+    fn a_new_layer_snaps_to_itself() {
+        let mut p = Project::new(World::default());
+        let roads = p.add_layer("Roads".into(), GeometryKind::Line, None, vec![]);
+        let height = p.add_raster("Height".into(), 1024, "m".into(), 0.0, 1.0);
+        let height = p.raster_layer(height).unwrap().id;
+        let image = p.add_image("Plates".into(), 10, 10);
+        let image = p.image_layer(image).unwrap().id;
+        assert_eq!(p.snap_targets(roads), [(roads, VECTOR)]);
+        assert_eq!(p.snap_targets(height), [(height, RASTER)]);
+        assert_eq!(p.snap_targets(image), []);
+        assert_eq!(p.snap_targets(LayerId(99)), []);
+
+        // A change keeps the default target.
+        assert!(p.set_snap_target(roads, height, RASTER));
+        assert_eq!(p.snap_targets(roads), [(roads, VECTOR), (height, RASTER)]);
+        // An image layer and a missing layer are not targets.
+        assert!(!p.set_snap_target(roads, image, VECTOR));
+        assert!(!p.set_snap_target(image, roads, VECTOR));
+        assert!(!p.set_snap_target(roads, LayerId(99), VECTOR));
+        assert_eq!(p.snap_targets(image), []);
+        assert_eq!(p.snap_targets(roads), [(roads, VECTOR), (height, RASTER)]);
+    }
+
+    #[test]
+    fn a_removed_layer_leaves_the_snap_targets_of_the_other_layers() {
+        let mut p = Project::new(World::default());
+        let roads = p.add_layer("Roads".into(), GeometryKind::Line, None, vec![]);
+        let towns = p.add_layer("Towns".into(), GeometryKind::Point, None, vec![]);
+        let height = p.add_raster("Height".into(), 1024, "m".into(), 0.0, 1.0);
+        let height_layer = p.raster_layer(height).unwrap().id;
+        assert!(p.set_snap_target(roads, towns, VECTOR));
+        assert!(p.set_snap_target(roads, height_layer, RASTER));
+        assert!(p.set_snap_target(towns, height_layer, RASTER));
+
+        assert!(p.remove_layer(towns).is_some());
+        assert_eq!(
+            p.snap_targets(roads),
+            [(roads, VECTOR), (height_layer, RASTER)]
+        );
+        assert!(p.snap_targets.keys().all(|id| *id != towns));
+        assert!(p.remove_raster(height).is_some());
+        assert_eq!(p.snap_targets(roads), [(roads, VECTOR)]);
+        assert_eq!(p.snap_targets.keys().collect::<Vec<_>>(), [&roads]);
     }
 }

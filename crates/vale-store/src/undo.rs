@@ -380,6 +380,7 @@ pub(crate) fn swap_records(
         let at = position.min(next.layers.len());
         next.layers.insert(at, layer);
     }
+    next.prune_snap_targets();
     Ok(next)
 }
 

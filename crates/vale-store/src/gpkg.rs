@@ -31,11 +31,12 @@ use crate::undo::{self, StepSelection, UNDO_LIMIT};
 use crate::{
     BlendMode, Feature, Field, FieldType, Geometry, GeometryKind, Hillshade, Image, ImageId, Layer,
     LayerId, LayerKind, LonLat, Project, Raster, RasterDisplay, RasterId, Rgb, Rgba, Smoothing,
-    Stop, StopLine, SymbolRecord, Units, Uuid, Value, World, clamp_feature_size, clamp_opacity,
+    SnapTypes, Stop, StopLine, SymbolRecord, Units, Uuid, Value, World, clamp_feature_size,
+    clamp_opacity,
 };
 
 /// The version of the `vale_` tables that this code writes.
-pub const FORMAT_VERSION: u32 = 38;
+pub const FORMAT_VERSION: u32 = 39;
 
 /// One step for each format version. Step `n` changes a file of version `n`
 /// to version `n + 1`. A new version adds a step and never changes an old one.
@@ -78,6 +79,7 @@ const MIGRATIONS: &[fn(&Transaction) -> rusqlite::Result<()>] = &[
     undo::v36,
     v37,
     v38,
+    v39,
 ];
 
 /// `GPKG` in ASCII.
@@ -504,6 +506,17 @@ impl ProjectFile {
         Ok(())
     }
 
+    /// Writes the snap targets of the project. This is not an edit, so it
+    /// gets no undo step.
+    pub fn set_snap_targets(&mut self, project: &Project) -> Result<(), StoreError> {
+        let tx = self.conn.transaction()?;
+        write_snap_targets(&tx, project)?;
+        tx.commit()?;
+        self.project.snap_targets = project.snap_targets.clone();
+        self.project.prune_snap_targets();
+        Ok(())
+    }
+
     /// Writes the project as one edit. Each feature keeps its UUID, and each
     /// raster keeps its tiles.
     pub fn save(&mut self, project: &Project) -> Result<(), StoreError> {
@@ -579,6 +592,9 @@ impl ProjectFile {
         };
         let project = undo::swap_records(&tx, step, &self.project)?;
         write_records(&tx, &project)?;
+        if project.snap_targets != self.project.snap_targets {
+            write_snap_targets(&tx, &project)?;
+        }
         let tiles = undo::swap_tiles(&tx, step)?;
         let selection = undo::selection(&tx, step, redo)?;
         remove_rasters(&tx, &project)?;
@@ -1329,6 +1345,25 @@ fn v38(tx: &Transaction) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// The snap targets of each layer. In an older file, each layer has its
+/// default targets.
+fn v39(tx: &Transaction) -> rusqlite::Result<()> {
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS vale_snap_target (
+           layer_id INTEGER NOT NULL,
+           target_id INTEGER NOT NULL,
+           vertices INTEGER NOT NULL,
+           edges INTEGER NOT NULL,
+           stops INTEGER NOT NULL,
+           PRIMARY KEY (layer_id, target_id));
+         INSERT OR IGNORE INTO gpkg_contents (table_name, data_type, identifier)
+           VALUES ('vale_snap_target', 'vale', 'vale_snap_target');
+         INSERT OR IGNORE INTO gpkg_extensions
+           VALUES ('vale_snap_target', NULL, 'vale_project', 'Records of the Vale app',
+                   'read-write');",
+    )
+}
+
 /// The point symbols that the user adds. An older file has none.
 fn v27(tx: &Transaction) -> rusqlite::Result<()> {
     tx.execute_batch(
@@ -1830,6 +1865,9 @@ fn write_edit(
     if old.is_none_or(|old| old.symbols != project.symbols) {
         write_symbols(tx, project)?;
     }
+    if old.is_none_or(|old| old.snap_targets != project.snap_targets) {
+        write_snap_targets(tx, project)?;
+    }
     remove_rasters(tx, project)?;
     remove_images(tx, project)?;
     for change in changes {
@@ -2078,6 +2116,21 @@ fn write_symbols(tx: &Transaction, project: &Project) -> Result<(), StoreError> 
         tx.prepare("INSERT INTO vale_symbol (position, name, svg) VALUES (?1, ?2, ?3)")?;
     for (position, symbol) in project.symbols.iter().enumerate() {
         insert.execute(params![position, symbol.name, symbol.svg])?;
+    }
+    Ok(())
+}
+
+/// Writes the snap targets of each layer that has its own.
+fn write_snap_targets(tx: &Transaction, project: &Project) -> Result<(), StoreError> {
+    tx.execute("DELETE FROM vale_snap_target", [])?;
+    let mut insert = tx.prepare(
+        "INSERT INTO vale_snap_target (layer_id, target_id, vertices, edges, stops)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+    )?;
+    for (layer, targets) in &project.snap_targets {
+        for (target, t) in targets {
+            insert.execute(params![layer.0, target.0, t.vertices, t.edges, t.stops])?;
+        }
     }
     Ok(())
 }
@@ -2918,7 +2971,22 @@ fn load(conn: &Connection) -> Result<Project, StoreError> {
             })
         })?
         .collect::<Result<_, _>>()?;
-    Ok(Project {
+    let mut snap_targets: BTreeMap<LayerId, BTreeMap<LayerId, SnapTypes>> = BTreeMap::new();
+    let rows = conn
+        .prepare("SELECT layer_id, target_id, vertices, edges, stops FROM vale_snap_target")?
+        .query_map([], |r| {
+            let types = SnapTypes {
+                vertices: r.get(2)?,
+                edges: r.get(3)?,
+                stops: r.get(4)?,
+            };
+            Ok((LayerId(r.get(0)?), LayerId(r.get(1)?), types))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    for (layer, target, types) in rows {
+        snap_targets.entry(layer).or_default().insert(target, types);
+    }
+    let mut project = Project {
         atlas: load_atlas(conn, units)?,
         world,
         layers,
@@ -2928,7 +2996,11 @@ fn load(conn: &Connection) -> Result<Project, StoreError> {
         symbols,
         images,
         next_image_id,
-    })
+        snap_targets,
+    };
+    // A row of a removed layer stays in the file until the next write.
+    project.prune_snap_targets();
+    Ok(project)
 }
 
 fn counter(conn: &Connection, key: &str) -> Result<u32, StoreError> {
@@ -3609,6 +3681,7 @@ mod tests {
                 "vale_shared_style_hidden",
                 "vale_shared_style_label",
                 "vale_shared_style_layer",
+                "vale_snap_target",
                 "vale_symbol",
                 "vale_thumbnail",
                 "vale_undo_record",
@@ -7747,5 +7820,178 @@ mod tests {
         let (file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
         assert_eq!(loaded, project);
         assert_eq!(image_tile_count(&file), 3);
+    }
+
+    const VECTOR: SnapTypes = SnapTypes {
+        vertices: true,
+        edges: true,
+        stops: false,
+    };
+    const RASTER: SnapTypes = SnapTypes {
+        vertices: false,
+        edges: false,
+        stops: true,
+    };
+    const OFF: SnapTypes = SnapTypes {
+        vertices: false,
+        edges: false,
+        stops: false,
+    };
+
+    #[test]
+    fn the_file_keeps_the_snap_targets_of_each_layer() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World::default());
+        let roads = project.add_layer("Roads".into(), GeometryKind::Line, None, vec![]);
+        let towns = project.add_layer("Towns".into(), GeometryKind::Point, None, vec![]);
+        let rivers = project.add_layer("Rivers".into(), GeometryKind::Line, None, vec![]);
+        let height = project.add_raster("Height".into(), 1024, "m".into(), 0.0, 1.0);
+        let height = project.raster_layer(height).unwrap().id;
+        let edges = SnapTypes {
+            vertices: false,
+            ..VECTOR
+        };
+        assert!(project.set_snap_target(roads, height, RASTER));
+        assert!(project.set_snap_target(roads, towns, edges));
+        assert!(project.set_snap_target(towns, towns, OFF));
+        drop(ProjectFile::create(&path(&dir), &project).unwrap());
+
+        let (mut file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(loaded, project);
+        assert_eq!(
+            loaded.snap_targets(roads),
+            [(roads, VECTOR), (towns, edges), (height, RASTER)]
+        );
+        // A target with each type off stays a target.
+        assert_eq!(loaded.snap_targets(towns), [(towns, OFF)]);
+        assert_eq!(loaded.snap_targets(rivers), [(rivers, VECTOR)]);
+        assert_eq!(loaded.snap_targets(height), [(height, RASTER)]);
+
+        // A save of a removed layer removes it from the targets.
+        project.remove_layer(towns);
+        file.save(&project).unwrap();
+        drop(file);
+        let (_, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(loaded, project);
+        assert_eq!(
+            loaded.snap_targets(roads),
+            [(roads, VECTOR), (height, RASTER)]
+        );
+    }
+
+    #[test]
+    fn a_change_of_a_snap_target_is_not_an_undo_step() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World::default());
+        let roads = project.add_layer("Roads".into(), GeometryKind::Line, None, vec![]);
+        let towns = project.add_layer("Towns".into(), GeometryKind::Point, None, vec![]);
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+
+        // With `save`.
+        assert!(project.set_snap_target(roads, towns, VECTOR));
+        file.save(&project).unwrap();
+        assert!(!file.can_undo() && !file.can_redo());
+        // With `set_snap_targets`.
+        assert!(project.set_snap_target(towns, roads, VECTOR));
+        file.set_snap_targets(&project).unwrap();
+        assert!(!file.can_undo());
+        assert_eq!(file.project(), &project);
+
+        // A change of a target keeps the redo steps.
+        assert!(project.rename_layer(roads, "Paths".into()));
+        file.save(&project).unwrap();
+        assert!(file.undo().unwrap().is_some());
+        let mut project = file.project().clone();
+        assert!(project.set_snap_target(roads, towns, OFF));
+        file.save(&project).unwrap();
+        assert!(file.can_redo());
+        assert!(project.set_snap_target(roads, roads, OFF));
+        file.set_snap_targets(&project).unwrap();
+        assert!(file.can_redo() && !file.can_undo());
+
+        // An undo of an earlier edit keeps the targets.
+        assert!(file.redo().unwrap().is_some());
+        assert!(file.undo().unwrap().is_some());
+        let targets = [(roads, OFF), (towns, OFF)];
+        assert_eq!(file.project().snap_targets(roads), targets);
+        assert_eq!(
+            file.project().snap_targets(towns),
+            [(roads, VECTOR), (towns, VECTOR)]
+        );
+        drop(file);
+        let (_, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(loaded.snap_targets(roads), targets);
+    }
+
+    #[test]
+    fn a_file_of_version_38_has_each_layer_as_its_own_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World::default());
+        let roads = project.add_layer("Roads".into(), GeometryKind::Line, None, vec![]);
+        let height = project.add_raster("Height".into(), 1024, "m".into(), 0.0, 1.0);
+        let height = project.raster_layer(height).unwrap().id;
+        let image = project.add_image("Plates".into(), 10, 10);
+        let image = project.image_layer(image).unwrap().id;
+        drop(ProjectFile::create(&path(&dir), &project).unwrap());
+        let conn = Connection::open(path(&dir)).unwrap();
+        conn.execute_batch(
+            "DROP TABLE vale_snap_target;
+             DELETE FROM gpkg_extensions WHERE table_name = 'vale_snap_target';
+             DELETE FROM gpkg_contents WHERE table_name = 'vale_snap_target';",
+        )
+        .unwrap();
+        drop(conn);
+        set_format_version(&dir, 38);
+
+        let (mut file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(format_version(&file.conn).unwrap(), FORMAT_VERSION);
+        assert_eq!(loaded.snap_targets(roads), [(roads, VECTOR)]);
+        assert_eq!(loaded.snap_targets(height), [(height, RASTER)]);
+        assert_eq!(loaded.snap_targets(image), []);
+        let registered: i64 = file
+            .conn
+            .query_row(
+                "SELECT count(*) FROM gpkg_contents c JOIN gpkg_extensions e USING (table_name)
+                 WHERE table_name = 'vale_snap_target'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(registered, 1);
+        assert!(project.set_snap_target(roads, height, RASTER));
+        file.set_snap_targets(&project).unwrap();
+        drop(file);
+        let (_, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(
+            loaded.snap_targets(roads),
+            [(roads, VECTOR), (height, RASTER)]
+        );
+    }
+
+    #[test]
+    fn undo_of_a_new_layer_removes_it_from_the_snap_targets() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World::default());
+        let roads = project.add_layer("Roads".into(), GeometryKind::Line, None, vec![]);
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        let towns = project.add_layer("Towns".into(), GeometryKind::Point, None, vec![]);
+        file.save(&project).unwrap();
+        assert!(project.set_snap_target(roads, towns, VECTOR));
+        assert!(project.set_snap_target(towns, roads, VECTOR));
+        file.set_snap_targets(&project).unwrap();
+
+        assert!(file.undo().unwrap().is_some());
+        assert!(file.project().layer(towns).is_none());
+        assert_eq!(file.project().snap_targets(roads), [(roads, VECTOR)]);
+        drop(file);
+        let (mut file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(&loaded, file.project());
+        assert_eq!(loaded.snap_targets(roads), [(roads, VECTOR)]);
+
+        // The redo gives the layer its default targets, and the other layers
+        // do not target it.
+        assert!(file.redo().unwrap().is_some());
+        assert_eq!(file.project().snap_targets(towns), [(towns, VECTOR)]);
+        assert_eq!(file.project().snap_targets(roads), [(roads, VECTOR)]);
     }
 }

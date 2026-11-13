@@ -5399,6 +5399,7 @@ mod tests {
             ..Globe::default()
         };
         globe.set_targets(Some(Arc::new(Targets::new(vec![built], Vec::new()))));
+        globe.snap.targets = snap::TargetSet::every(globe.vector_targets().unwrap());
         let stroke = |globe: &mut Globe, lon: f64, lat: f64| {
             globe.line_down();
             globe.line_sample(Pos2::ZERO, Some(lonlat_to_dir(lon, lat)));
@@ -5430,6 +5431,7 @@ mod tests {
             ..Globe::default()
         };
         globe.set_targets(Some(Arc::new(Targets::new(built.to_vec(), Vec::new()))));
+        globe.snap.targets = snap::TargetSet::every(globe.vector_targets().unwrap());
         let at = |globe: &Globe, lon: f64, lat: f64| {
             globe.view.project(globe.rect, lonlat_to_dir(lon, lat))
         };
@@ -5478,6 +5480,7 @@ mod tests {
             ..Globe::default()
         };
         globe.set_targets(Some(Arc::new(targets)));
+        globe.snap.targets = snap::TargetSet::every(globe.vector_targets().unwrap());
         globe.line_down();
         let samples = pen(&[[0.0, 6.0], [4.0, 0.0], [20.0, 0.0], [24.0, 8.0]], 0.0);
         let mut traced = false;

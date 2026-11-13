@@ -1,5 +1,6 @@
 mod screenshot;
 
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use eframe::egui;
@@ -7,6 +8,8 @@ use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
 use vale_app::document::Document;
 use vale_app::globe::StackItem;
+use vale_app::globe::math::lonlat_to_dir;
+use vale_app::globe::snap::TargetSet;
 use vale_app::headless;
 use vale_app::projects::Locations;
 use vale_app::session::Session;
@@ -24,7 +27,10 @@ use vale_app::ui::{
     is_heightmap_path,
 };
 use vale_sphere::{ProjectionKind, ProjectionSpec};
-use vale_store::{Project, ProjectFile, RasterId, Units, World};
+use vale_store::{
+    Feature, Geometry, GeometryKind, LayerId, Project, ProjectFile, RasterId, SnapTypes, Units,
+    World,
+};
 use vale_terrain::{FACES, Heightmap, TexelRect};
 
 const SIZE: (f64, f64) = (1280.0, 800.0);
@@ -2033,6 +2039,70 @@ fn the_toolbar_and_the_keys_work_the_measure_tool() {
 }
 
 #[test]
+fn the_snap_options_menu_lists_the_active_layer_first_and_a_check_box_changes_a_target() {
+    use vale_app::ui::pad::{SNAP_EDGES, SNAP_VERTICES};
+    use vale_app::ui::panels::{MEASURE_TOOL, SNAP_OPTIONS};
+    let mut state = AppState::new(Document::sample()).unwrap();
+    state.headless = true;
+    let lines = state.doc.add_layer(GeometryKind::Line);
+    let layers = state.doc.project.layers();
+    let rivers = layers.iter().find(|l| l.name == "Rivers").unwrap().id;
+    let ids: Vec<LayerId> = layers.iter().map(|l| l.id).collect();
+    for id in ids {
+        state
+            .doc
+            .project
+            .set_layer_visible(id, id == lines || id == rivers);
+    }
+    state.select(Some(LayerRef::Vector(lines)));
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(SIZE.0 as f32, SIZE.1 as f32))
+        .with_pixels_per_point(1.0)
+        .build_ui_state(|ui, state: &mut AppState| draw(ui, state), state);
+    h.run_steps(3);
+    h.get_by_label(MEASURE_TOOL).click();
+    h.run_steps(3);
+    h.get_by_label(SNAP_OPTIONS).click();
+    h.run_steps(3);
+    screenshot::save(&mut h, "desktop-snap-options");
+    // The active layer is first, then the other visible layers, each with
+    // its check boxes.
+    let names = |id| h.state().doc.project.layer(id).unwrap().name.clone();
+    let tops: Vec<f32> = ([lines, rivers].into_iter())
+        .map(|id| h.get_by_label(&names(id)).rect().top())
+        .collect();
+    assert!(tops[0] < tops[1], "{tops:?}");
+    let checked = |h: &Harness<'_, AppState>, label: &str, i: usize| {
+        let node = h.get_all_by_label(label).nth(i).unwrap();
+        node.accesskit_node().toggled() == Some(egui::accesskit::Toggled::True)
+    };
+    let (own, other) = (0, 1);
+    assert_eq!(h.get_all_by_label(SNAP_VERTICES).count(), 2);
+    assert!(checked(&h, SNAP_VERTICES, own));
+    assert!(checked(&h, SNAP_EDGES, own));
+    assert!(!checked(&h, SNAP_VERTICES, other));
+    // A check box changes the target of the active layer.
+    h.get_all_by_label(SNAP_VERTICES)
+        .nth(other)
+        .unwrap()
+        .click();
+    h.run_steps(3);
+    let targets = h.state().doc.project.snap_targets(lines);
+    let types = targets
+        .iter()
+        .find(|(id, _)| *id == rivers)
+        .map(|(_, t)| *t);
+    let want = SnapTypes {
+        vertices: true,
+        edges: false,
+        stops: false,
+    };
+    assert_eq!(types, Some(want));
+    assert!(h.state().globe.snap.targets.vertices.contains(&rivers));
+    assert!(h.state().doc.project.snap_targets(rivers).len() == 1);
+}
+
+#[test]
 fn the_toolbar_and_the_keys_work_the_measure_tool_in_the_atlas() {
     use vale_app::ui::atlas::AtlasTool;
     use vale_app::ui::pad::CLEAR_PATH;
@@ -2797,4 +2867,124 @@ fn the_maps_button_of_the_desktop_shows_the_panel_of_a_frame() {
     h.get_by_label(MAPS).click();
     h.run_steps(2);
     assert_eq!(h.state().atlas.selection, AtlasSelection::None);
+}
+
+/// The globe with the Measure tool and two point layers: `a` with a point at
+/// 30 degrees east, and `b` with a point at 0 degrees. `a` is the active
+/// layer.
+fn snap_harness() -> (Harness<'static, AppState>, LayerId, LayerId) {
+    let mut doc = Document::empty();
+    let a = doc.add_layer(GeometryKind::Point);
+    let b = doc.add_layer(GeometryKind::Point);
+    for (id, at) in [(a, [30.0, 0.0]), (b, [0.0, 0.0])] {
+        let feature = Feature::new(Geometry::Points(vec![at]), Default::default());
+        assert!(doc.project.add_feature(id, feature));
+    }
+    let mut state = AppState::new(doc).unwrap();
+    state.headless = true;
+    state.select(Some(LayerRef::Vector(a)));
+    state.globe.tool = vale_app::globe::Tool::Measure;
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(SIZE.0 as f32, SIZE.1 as f32))
+        .with_pixels_per_point(1.0)
+        .build_ui_state(|ui, state: &mut AppState| draw(ui, state), state);
+    h.run_steps(3);
+    (h, a, b)
+}
+
+/// The vertex that the Measure tool snaps to near a position.
+fn measure_vertex(h: &Harness<'static, AppState>, lon: f64, lat: f64) -> Option<[f64; 2]> {
+    let point = h.state().globe.measure_point(lonlat_to_dir(lon, lat));
+    point.exact.then_some(point.pos)
+}
+
+const VERTICES: SnapTypes = SnapTypes {
+    vertices: true,
+    edges: false,
+    stops: false,
+};
+
+#[test]
+fn the_targets_of_the_active_layer_decide_the_snap() {
+    let (mut h, a, b) = snap_harness();
+    let set = |ids: &[LayerId]| ids.iter().copied().collect::<BTreeSet<_>>();
+    let targets = h.state().globe.snap.targets.clone();
+    assert_eq!((targets.vertices, targets.edges), (set(&[a]), set(&[a])));
+    // `a` does not snap to `b` until `b` is a target of `a`.
+    h.state_mut().set_snap_target(a, b, VERTICES);
+    h.run_steps(2);
+    let targets = h.state().globe.snap.targets.clone();
+    assert_eq!((targets.vertices, targets.edges), (set(&[a, b]), set(&[a])));
+    // The targets of `b` stay its own.
+    h.state_mut().select(Some(LayerRef::Vector(b)));
+    h.run_steps(2);
+    let targets = h.state().globe.snap.targets.clone();
+    assert_eq!((targets.vertices, targets.edges), (set(&[b]), set(&[b])));
+    // With no active layer, nothing is a target.
+    h.state_mut().select(None);
+    h.run_steps(2);
+    assert_eq!(h.state().globe.snap.targets, TargetSet::default());
+}
+
+#[test]
+fn a_hidden_layer_is_never_a_snap_target() {
+    let (mut h, a, b) = snap_harness();
+    h.state_mut().set_snap_target(a, b, VERTICES);
+    h.run_steps(2);
+    assert_eq!(measure_vertex(&h, 0.01, 0.0), Some([0.0, 0.0]));
+    h.state_mut().set_layer_visible(b, false);
+    h.run_steps(2);
+    assert_eq!(measure_vertex(&h, 0.01, 0.0), None);
+    assert!(!h.state().globe.snap.targets.vertices.contains(&b));
+    // The active layer is not its own target while it is hidden.
+    assert_eq!(measure_vertex(&h, 30.01, 0.0), Some([30.0, 0.0]));
+    h.state_mut().set_layer_visible(a, false);
+    h.run_steps(2);
+    assert_eq!(measure_vertex(&h, 30.01, 0.0), None);
+}
+
+#[test]
+fn measure_on_the_globe_snaps_to_the_targets_of_the_active_layer() {
+    let (mut h, a, b) = snap_harness();
+    assert_eq!(measure_vertex(&h, 30.01, 0.0), Some([30.0, 0.0]));
+    assert_eq!(measure_vertex(&h, 0.01, 0.0), None);
+    h.state_mut().set_snap_target(a, b, VERTICES);
+    h.run_steps(2);
+    assert_eq!(measure_vertex(&h, 0.01, 0.0), Some([0.0, 0.0]));
+    // With the vertices of `a` off, `a` is no target.
+    let off = SnapTypes {
+        vertices: false,
+        ..VERTICES
+    };
+    h.state_mut().set_snap_target(a, a, off);
+    h.run_steps(2);
+    assert_eq!(measure_vertex(&h, 30.01, 0.0), None);
+}
+
+#[test]
+fn a_new_layer_snaps_only_to_itself() {
+    let (mut h, a, _) = snap_harness();
+    let lines = h.state_mut().doc.add_layer(GeometryKind::Line);
+    h.state_mut().select(Some(LayerRef::Vector(lines)));
+    h.run_steps(2);
+    let only = BTreeSet::from([lines]);
+    let targets = h.state().globe.snap.targets.clone();
+    assert_eq!((targets.vertices, targets.edges), (only.clone(), only));
+    assert!(targets.stops.is_empty());
+    assert_eq!(measure_vertex(&h, 30.01, 0.0), None);
+    let rain = RasterSpec {
+        name: "Rain".to_string(),
+        unit: "mm".to_string(),
+        min: 0.0,
+        max: 4000.0,
+        face_size: 64,
+    };
+    let rain = h.state_mut().add_raster(rain).unwrap();
+    h.state_mut().select(Some(LayerRef::Raster(rain)));
+    h.run_steps(2);
+    let targets = h.state().globe.snap.targets.clone();
+    assert!(targets.vertices.is_empty() && targets.edges.is_empty());
+    assert_eq!(targets.stops, BTreeSet::from([rain]));
+    // The first layer keeps its own targets.
+    assert_eq!(h.state().doc.project.snap_targets(a).len(), 1);
 }

@@ -2461,6 +2461,67 @@ pub fn chip_row(
     chosen
 }
 
+/// The height of a pill toggle. Its touch area is `TOUCH` high.
+const PILL: f32 = 32.0;
+/// The padding at each side of the text of a pill toggle.
+const PILL_PAD: f32 = 12.0;
+/// The space between two pill toggles.
+pub const PILL_GAP: f32 = 6.0;
+
+/// The width of a pill toggle with the text `label`.
+pub fn pill_width(ui: &egui::Ui, label: &str) -> f32 {
+    text_width(ui, label, theme::body()) + 2.0 * PILL_PAD
+}
+
+/// A pill with a text that is a toggle, with its right edge and its middle
+/// at `right`. The pill has the accent color while `on`. A tap changes `on`.
+/// A pill that is not `enabled` is dim and takes no touch. Returns the left
+/// edge of the pill, and true if the user changed `on`.
+pub fn pill_toggle(
+    ui: &egui::Ui,
+    controls: &mut Controls,
+    right: Pos2,
+    name: &str,
+    label: &str,
+    on: &mut bool,
+    enabled: bool,
+) -> (f32, bool) {
+    let width = pill_width(ui, label);
+    let pill = Rect::from_min_max(
+        pos2(right.x - width, right.y - PILL / 2.0),
+        pos2(right.x, right.y + PILL / 2.0),
+    );
+    let area = Rect::from_center_size(pill.center(), vec2(width.max(TOUCH), TOUCH));
+    let resp = hit(ui, controls, area, name, Sense::click(), enabled, Some(*on));
+    let changed = resp.clicked();
+    if changed {
+        *on = !*on;
+    }
+    let pressed = resp.is_pointer_button_down_on();
+    let painter = ui.painter();
+    let radius = PILL / 2.0;
+    let (back, text) = match *on {
+        true => (theme::ACCENT.gamma_multiply(0.45), theme::TEXT),
+        false => (theme::raise(), theme::MUTE),
+    };
+    painter.rect_filled(pill, radius, fade(back, enabled));
+    if pressed {
+        painter.rect_filled(pill, radius, theme::raise());
+    }
+    if *on {
+        let stroke = egui::Stroke::new(1.5, fade(theme::ACCENT, enabled));
+        painter.rect_stroke(pill, radius, stroke, egui::StrokeKind::Inside);
+    }
+    painter.text(
+        pill.center(),
+        Align2::CENTER_CENTER,
+        label,
+        theme::body(),
+        fade(text, enabled),
+    );
+    (pill.left(), changed)
+}
+
 /// The smallest width of a tile of a tile grid.
 pub const TILE: f32 = 76.0;
 /// The space between two tiles.

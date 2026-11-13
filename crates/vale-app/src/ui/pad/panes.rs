@@ -26,8 +26,9 @@ const FILE: &str = "panels.txt";
 const REMOVED: [&str; 1] = ["maps"];
 
 /// The names of the panels in the file.
-const NAMES: [(Panel, &str); 8] = [
+const NAMES: [(Panel, &str); 9] = [
     (Panel::Brush, "brush"),
+    (Panel::Snap, "snap"),
     (Panel::Layers, "layers"),
     (Panel::Toolbox, "toolbox"),
     (Panel::Attributes, "attributes"),

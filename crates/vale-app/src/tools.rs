@@ -37,6 +37,19 @@ const MODES: [(Mode, &str); 16] = [
     (Mode::Basin, "basin"),
 ];
 
+/// The tools, with their names in the file.
+const TOOLS: [(Tool, &str); 9] = [
+    (Tool::Navigate, "navigate"),
+    (Tool::Brush, "brush"),
+    (Tool::Line, "line"),
+    (Tool::Polygon, "polygon"),
+    (Tool::Point, "point"),
+    (Tool::Measure, "measure"),
+    (Tool::Select, "select"),
+    (Tool::Split, "split"),
+    (Tool::Vertex, "vertex"),
+];
+
 /// The polygon modes, with their names in the file.
 const POLYGON_MODES: [(PolygonMode, &str); 3] = [
     (PolygonMode::New, "new"),
@@ -47,7 +60,7 @@ const POLYGON_MODES: [(PolygonMode, &str); 3] = [
 type Field<T> = (&'static str, fn(&mut BrushSettings) -> &mut T);
 
 /// The brush settings that one mode uses and all modes share.
-const FLOATS: [Field<f64>; 21] = [
+const FLOATS: [Field<f64>; 23] = [
     ("noise_raise_m", |b| &mut b.noise_raise_m),
     ("noise_lower_m", |b| &mut b.noise_lower_m),
     ("talus_deg", |b| &mut b.talus_deg),
@@ -69,6 +82,8 @@ const FLOATS: [Field<f64>; 21] = [
     ("floodplain_km", |b| &mut b.floodplain_km),
     ("floor_m", |b| &mut b.floor_m),
     ("ceiling_m", |b| &mut b.ceiling_m),
+    ("shape", |b| &mut b.shape),
+    ("terrace_step_m", |b| &mut b.terrace_step_m),
 ];
 
 const BOOLS: [Field<bool>; 4] = [
@@ -265,6 +280,17 @@ impl Tools {
             tools.smoothing[smoothing_index(of)] = Some(line.smoothing);
         }
         let mut lines = Vec::new();
+        let tool = match tools.current {
+            Some(Choice::Brush(_)) => Some(Tool::Brush),
+            Some(Choice::Tool(tool)) => Some(tool),
+            None => None,
+        };
+        if let Some(tool) = tool.and_then(|tool| name(&TOOLS, tool)) {
+            lines.push(format!("tool {tool}"));
+        }
+        if let Some(mode) = name(&MODES, brush.mode) {
+            lines.push(format!("brush_mode {mode}"));
+        }
         for (mode, name) in MODES {
             let Some(s) = tools.mode(mode) else {
                 continue;
@@ -293,8 +319,6 @@ impl Tools {
             polygon_mode.map_or("new", |m| m.1)
         ));
         lines.push(format!("snap {}", snap.on));
-        lines.push(format!("snap_vertices {}", snap.vertices));
-        lines.push(format!("snap_edges {}", snap.edges));
         lines.push(format!("snap_distance {}", snap.distance));
         lines.push(format!("focus_new_features {}", self.focus_new));
         if let Some(on) = self.finger_paints {
@@ -308,6 +332,7 @@ impl Tools {
     pub fn load(
         &mut self,
         text: &str,
+        tool: &mut Tool,
         brush: &mut BrushSettings,
         line: &mut LineSettings,
         snap: &mut SnapSettings,
@@ -317,6 +342,14 @@ impl Tools {
         let float = |key: &str| value(key)?.parse::<f64>().ok().filter(|v| v.is_finite());
         let boolean = |key: &str| value(key)?.parse::<bool>().ok();
 
+        let tool_name = value("tool").and_then(|name| TOOLS.iter().find(|(_, n)| *n == name));
+        if let Some(&(t, _)) = tool_name {
+            *tool = t;
+        }
+        let mode = value("brush_mode").and_then(|name| MODES.iter().find(|(_, n)| *n == name));
+        if let Some(&(mode, _)) = mode {
+            brush.mode = mode;
+        }
         for (_, text) in pairs().filter(|(key, _)| *key == "mode") {
             if let Some((mode, settings)) = parse_mode(text) {
                 self.keep(mode, settings);
@@ -373,16 +406,15 @@ impl Tools {
         if let Some(v) = boolean("finger_paints") {
             self.finger_paints = Some(v);
         }
-        if let Some(v) = boolean("snap_vertices") {
-            snap.vertices = v;
-        }
-        if let Some(v) = boolean("snap_edges") {
-            snap.edges = v;
-        }
         if let Some(v) = float("snap_distance").filter(|&v| v > 0.0) {
             snap.distance = v;
         }
     }
+}
+
+/// The name in the file of `key`.
+fn name<K: PartialEq>(list: &[(K, &'static str)], key: K) -> Option<&'static str> {
+    list.iter().find(|(k, _)| *k == key).map(|e| e.1)
 }
 
 /// The values of a line of a brush mode: the name of the mode, the size,
@@ -606,7 +638,6 @@ mod tests {
         globe.line.smoothing = 0.9;
         globe.line.polygon_mode = PolygonMode::Subtract;
         let mut snap = SnapSettings {
-            edges: false,
             distance: 20.0,
             ..SnapSettings::default()
         };
@@ -621,13 +652,21 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(read(dir.path()), None);
         let text = globe.tools.text(&globe.brush, &globe.line, &snap);
+        // The snap targets are in the project file.
+        assert!(!text.contains("snap_vertices") && !text.contains("snap_edges"));
         write(dir.path(), &text).unwrap();
 
         let mut next = Globe::new();
         let mut next_snap = SnapSettings::default();
         let text = read(dir.path()).unwrap();
         let (brush, line) = (&mut next.brush, &mut next.line);
-        next.tools.load(&text, brush, line, &mut next_snap);
+        let mut tool = Tool::Navigate;
+        next.tools
+            .load(&text, &mut tool, brush, line, &mut next_snap);
+        assert_eq!(tool, Tool::Polygon);
+        assert_eq!(next.brush.mode, Mode::Erode);
+        assert_eq!(next.brush.size_points, 8.0);
+        next.choose(Choice::Brush(Mode::Raise));
         assert_eq!(next.brush.size_points, 150.0);
         assert_eq!(next.brush.lock, Some(0.25));
         assert!(next.brush.noise_ridged);
@@ -658,10 +697,21 @@ mod tests {
                     snap_distance -4\n\
                     smoothing 0.5";
         let (brush, line) = (&mut globe.brush, &mut globe.line);
-        globe.tools.load(text, brush, line, &mut snap);
+        globe
+            .tools
+            .load(text, &mut Tool::Navigate, brush, line, &mut snap);
         assert_eq!(globe.brush, BrushSettings::default());
         assert_eq!(globe.line, LineSettings::default());
         assert_eq!(snap, SnapSettings::default());
+        // A file of an older version with the lines of the snap types loads.
+        let old = "snap false\nsnap_vertices false\nsnap_edges false\nsnap_distance 20";
+        let (brush, line) = (&mut globe.brush, &mut globe.line);
+        globe
+            .tools
+            .load(old, &mut Tool::Navigate, brush, line, &mut snap);
+        assert!(!snap.on);
+        assert_eq!(snap.distance, 20.0);
+        assert_eq!(snap.targets, SnapSettings::default().targets);
         // A value out of its limits goes to the limit.
         globe.choose(Choice::Brush(Mode::Lower));
         assert_eq!(globe.brush.size_points, *SIZE_POINTS.end());
