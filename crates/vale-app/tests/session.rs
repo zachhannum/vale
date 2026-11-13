@@ -1127,6 +1127,7 @@ fn the_brush_layer_frees_its_whole_heightmap_outside_the_globe_workspace() {
     state.pump_layers(true);
     assert_eq!(state.globe.raster(), Some(height));
     assert!(state.globe.has_full_copy());
+    assert!(state.globe.paintable, "the raster tools are on");
     assert!(same_tiles(&state.globe.map, &wanted));
     paint_layer(&mut state, height, -100.0, 5.0);
     paint(&mut wanted, -100.0, 5.0, 0.1);
