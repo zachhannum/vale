@@ -836,7 +836,25 @@ fn contents(
             Rect::from_min_size(pos2(row.left() + PAD, row.top() + PAD), vec2(TOUCH, TOUCH));
         let name = format!("Back to {back}");
         let tap = widgets::icon_button_at(ui, controls, button, &name, Icon::Back, false, true);
-        let clip = Rect::from_min_max(pos2(button.right() + 4.0, row.top()), row.max);
+        let mut right = row.right() - PAD;
+        if let Some(page) = head.buttons.take() {
+            let mut tapped = None;
+            for (name, icon) in page.buttons.iter().rev() {
+                let at =
+                    Rect::from_min_size(pos2(right - TOUCH, row.top() + PAD), vec2(TOUCH, TOUCH));
+                if widgets::icon_button_at(ui, controls, at, name, *icon, false, true).clicked() {
+                    tapped = Some(*name);
+                }
+                right = at.left();
+            }
+            if let Some(name) = tapped {
+                (page.act)(state, name);
+            }
+        }
+        let clip = Rect::from_min_max(
+            pos2(button.right() + 4.0, row.top()),
+            pos2(right, row.bottom()),
+        );
         ui.painter()
             .with_clip_rect(clip.intersect(ui.clip_rect()))
             .text(

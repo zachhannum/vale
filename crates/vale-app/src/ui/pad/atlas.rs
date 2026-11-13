@@ -1317,9 +1317,6 @@ fn map_style_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Contro
     });
     let (name, title, on) = (NO_MAP_STYLE_ROW, NO_MAP_STYLE, linked.is_none());
     let none = widgets::swipe_option_row(ui, controls, place(0), name, title, on, 0.0);
-    if none.body.dragged() {
-        ui.scroll_with_delta(vec2(0.0, none.body.drag_delta().y));
-    }
     if none.body.clicked() {
         state.atlas.map_style_swipe = None;
         state.set_map_style_link(map, None);
@@ -1374,9 +1371,6 @@ fn map_style_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Contro
             width,
         ) {
             continue;
-        }
-        if row.body.dragged() {
-            ui.scroll_with_delta(vec2(0.0, row.body.drag_delta().y));
         }
         if row.body.clicked() {
             if open.is_some() {
@@ -1650,10 +1644,6 @@ fn layers_tab(
         if row.eye {
             state.set_map_shown(map, layer, !shown);
         }
-        // The body of a row takes a drag, so the drag scrolls the pane.
-        if let Some(body) = row.body.as_ref().filter(|b| b.dragged()) {
-            ui.scroll_with_delta(vec2(0.0, body.drag_delta().y));
-        }
         if row.open || row.body.is_some_and(|b| b.clicked()) {
             open = Some(layer);
         }
@@ -1702,6 +1692,7 @@ fn layer_head(state: &mut AppState, id: vale_store::FrameId) -> Option<Head> {
             state.atlas.layer_page
         }
         Some(Page::Table) => state.atlas.layer_page,
+        Some(Page::Rules) if !state.pad.rules.picked(layer).is_empty() => state.atlas.layer_page,
         _ => None,
     };
     state.atlas.layer_page = page;
@@ -1709,6 +1700,7 @@ fn layer_head(state: &mut AppState, id: vale_store::FrameId) -> Option<Head> {
         Some(Page::Rule(i) | Page::Symbols(i) | Page::MarkerShape(i) | Page::MarkerFill(i)) => {
             rules[i].name.clone()
         }
+        Some(Page::Rules) => super::rules::selection_title(state, layer),
         _ => String::new(),
     };
     let (key, title, back) = match page {
@@ -1732,6 +1724,7 @@ fn layer_head(state: &mut AppState, id: vale_store::FrameId) -> Option<Head> {
             super::raster::COLOR_RAMPS,
         ),
         Some(Page::Table) => ("pad-atlas-table", super::table::TITLE, name.as_str()),
+        Some(Page::Rules) => ("pad-atlas-rules", rule_name.as_str(), name.as_str()),
         Some(_) => ("pad-atlas-rule", rule_name.as_str(), name.as_str()),
         None => ("pad-atlas-layer", name.as_str(), FRAME_TABS[2]),
     };
@@ -1749,7 +1742,10 @@ fn layer_head(state: &mut AppState, id: vale_store::FrameId) -> Option<Head> {
                 None
             }
         };
+        // The selection of the rules stays.
+        let select = state.pad.rules.select.take();
         state.pad.rules = Default::default();
+        state.pad.rules.select = select;
     };
     let table = page == Some(Page::Table);
     // The table fills the page, and its rows have their own scroll. The
@@ -1767,6 +1763,7 @@ fn layer_head(state: &mut AppState, id: vale_store::FrameId) -> Option<Head> {
         }
         state.edit_map_style(map, layer, |state| match page {
             Some(Page::Rule(i)) => super::rules::rule_body(ui, state, controls, layer, i),
+            Some(Page::Rules) => super::rules::selection_body(ui, state, controls, layer),
             Some(Page::Symbols(i)) => super::rules::symbols_body(ui, state, controls, layer, i),
             Some(Page::MarkerShape(i)) => {
                 super::rules::shape_body(ui, state, controls, layer, i);
@@ -1793,7 +1790,19 @@ fn layer_head(state: &mut AppState, id: vale_store::FrameId) -> Option<Head> {
             }
         }
     };
-    Some(parts.head(Panel::Layers, back_to, top, body))
+    let mut head = parts.head(Panel::Layers, back_to, top, body);
+    if page.is_none() {
+        let buttons = super::rules::selection_buttons(state, layer, rules.len());
+        head.buttons = buttons.map(|buttons| super::PageButtons {
+            buttons,
+            act: Box::new(move |state, name| {
+                state.edit_map_style(map, layer, |state| {
+                    super::rules::selection_action(state, layer, name);
+                });
+            }),
+        });
+    }
+    Some(head)
 }
 
 /// The rows that set the style of a layer in a map from its map style or

@@ -719,7 +719,7 @@ pub fn layer_row(
             controls,
             body_rect,
             &body_name,
-            Sense::click_and_drag(),
+            Sense::click(),
             true,
             Some(selected),
         )
@@ -917,7 +917,7 @@ pub fn swipe_option_row(
         controls,
         body_rect,
         name,
-        Sense::click_and_drag(),
+        Sense::click(),
         true,
         Some(on),
     );
@@ -1081,6 +1081,31 @@ pub fn color_row(
     row
 }
 
+/// A color row for a color that is different in the selected items: an
+/// empty swatch with a slash, and "Mixed" at its left.
+pub fn mixed_color_row(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    name: &str,
+    open: bool,
+) -> Response {
+    let row = text_row(ui, controls, name, 0.0, open, true);
+    let swatch = Rect::from_center_size(
+        pos2(row.rect.right() - SWATCH / 2.0, row.rect.center().y),
+        vec2(SWATCH, SWATCH),
+    );
+    let painter = ui.painter();
+    let stroke = egui::Stroke::new(1.0, theme::divider());
+    painter.rect_stroke(swatch, 6.0, stroke, egui::StrokeKind::Inside);
+    let inset = swatch.shrink(5.0);
+    let slash = egui::Stroke::new(1.5, theme::MUTE);
+    painter.line_segment([inset.left_bottom(), inset.right_top()], slash);
+    let at = pos2(swatch.left() - 10.0, row.rect.center().y);
+    let mixed = crate::ui::select::MIXED;
+    painter.text(at, Align2::RIGHT_CENTER, mixed, theme::body(), theme::MUTE);
+    row
+}
+
 /// An opaque color with the red, green, and blue of `rgb`.
 pub fn opaque(rgb: [u8; 3]) -> [u8; 4] {
     let [r, g, b] = rgb;
@@ -1131,6 +1156,119 @@ pub fn open_row(ui: &mut egui::Ui, controls: &mut Controls, name: &str, value: &
         let at = pos2(row.right() - ICON - 8.0, row.center().y);
         ui.painter()
             .text(at, Align2::RIGHT_CENTER, value, theme::body(), theme::MUTE);
+    }
+    paint_open(ui, row);
+    resp
+}
+
+/// The move of a press, in points, at which a widget in a list takes the
+/// drag or leaves it to the list. It is less than the move at which egui
+/// starts a drag, so with small moves the list has not started to scroll.
+const DECIDE: f32 = 4.0;
+
+/// Lets a widget in a scrolling list take a drag in some directions only.
+/// The widget senses clicks, so egui gives a drag on it to the list, which
+/// scrolls with its own motion and momentum, as a drag between the widgets
+/// does. When a press that egui gave to the widget moves `DECIDE` points,
+/// `takes` tells, from the move, if the drag belongs to the widget. If it
+/// does, the widget takes the drag from the list, and `resp.dragged()` and
+/// `resp.drag_stopped()` work as for a widget that senses drags, from the
+/// next frame on. Each press decides one time. Returns true in the frame
+/// that the widget takes the drag.
+pub fn take_drag(ui: &egui::Ui, resp: &Response, takes: impl FnOnce(egui::Vec2) -> bool) -> bool {
+    if !resp.enabled() || resp.dragged() {
+        return false;
+    }
+    let (down, start, origin, pos) = ui.input(|i| {
+        let p = &i.pointer;
+        (
+            p.primary_down(),
+            p.press_start_time(),
+            p.press_origin(),
+            p.latest_pos(),
+        )
+    });
+    let (Some(start), Some(origin), Some(pos)) = (start, origin, pos) else {
+        return false;
+    };
+    // egui forgets the widget of a press when the press moves far, so the
+    // widget notes the press in its first frame, before it moves.
+    let (pressed, decided) = (resp.id.with("pressed"), resp.id.with("decided"));
+    if resp.is_pointer_button_down_on() && pos.distance(origin) < DECIDE {
+        ui.data_mut(|d| d.insert_temp(pressed, start));
+    }
+    let moved = pos - origin;
+    let ours = ui.data(|d| d.get_temp::<f64>(pressed)) == Some(start);
+    if !down || !ours || moved.length() < DECIDE {
+        return false;
+    }
+    if ui.data(|d| d.get_temp::<f64>(decided)) == Some(start) {
+        return false;
+    }
+    ui.data_mut(|d| d.insert_temp(decided, start));
+    let take = takes(moved);
+    if take {
+        ui.ctx().set_dragged_id(resp.id);
+    }
+    take
+}
+
+/// True if the move of a press is more to the side than up or down.
+pub fn sideways(moved: egui::Vec2) -> bool {
+    moved.x.abs() > moved.y.abs()
+}
+
+/// The distance that a swipe to the right moves a row, at most.
+pub const SWIPE_SELECT: f32 = 56.0;
+
+/// A row of a list that a swipe to the right selects, as in the layer list
+/// of Procreate: the name at the left, and `value` and an arrow at the
+/// right. A selected row has a tint of the accent color. `shift` moves the
+/// row to the right during a swipe, and a check shows behind it.
+pub fn swipe_select_row(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    name: &str,
+    value: &str,
+    on: bool,
+    shift: f32,
+) -> Response {
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), Sense::hover());
+    let resp = hit(ui, controls, rect, name, Sense::click(), true, Some(on));
+    let painter = ui.painter();
+    let back = rect.expand2(vec2(8.0, -HIGHLIGHT_INSET));
+    if shift > 0.0 {
+        // The check behind the row tells what the swipe does.
+        let mark = Rect::from_center_size(
+            pos2(rect.left() + shift.min(SWIPE_SELECT) / 2.0, rect.center().y),
+            vec2(18.0, 18.0),
+        );
+        let color = if shift >= SWIPE_SELECT / 2.0 {
+            theme::ACCENT
+        } else {
+            theme::MUTE
+        };
+        let icon = if on { Icon::Close } else { Icon::Tick };
+        icons::paint(painter, mark, icon, 18.0, color);
+    }
+    let moved = vec2(shift, 0.0);
+    if on {
+        let tint = theme::ACCENT.gamma_multiply(0.25);
+        painter.rect_filled(back.translate(moved), 5.0, tint);
+    } else if resp.is_pointer_button_down_on() {
+        painter.rect_filled(back.translate(moved), 5.0, theme::raise());
+    }
+    let row = rect.translate(moved);
+    painter.text(
+        pos2(row.left(), row.center().y),
+        Align2::LEFT_CENTER,
+        name,
+        theme::body(),
+        theme::TEXT,
+    );
+    if !value.is_empty() {
+        let at = pos2(row.right() - ICON - 8.0, row.center().y);
+        painter.text(at, Align2::RIGHT_CENTER, value, theme::body(), theme::MUTE);
     }
     paint_open(ui, row);
     resp

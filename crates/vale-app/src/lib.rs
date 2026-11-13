@@ -44,6 +44,7 @@ pub mod raster_style;
 pub mod raster_values;
 pub mod region;
 pub mod resume;
+pub mod rule_edit;
 pub mod scale_bar;
 pub mod scatter;
 pub mod session;

@@ -1,6 +1,7 @@
 //! The rule editor of the desktop layout: the list of the rules, and the
 //! filter, the scale range, the stroke, the fill, the point symbol, and the
-//! scatter of the selected rule.
+//! scatter of the selected rule. With more than one selected rule, the
+//! editor changes the stroke, the fill, and the size of each of them.
 
 use eframe::egui;
 use vale_render::Symbols;
@@ -18,9 +19,9 @@ use super::pad::filter;
 use super::pad::furniture::{ANGLE, LINE_COLOR, LINE_WIDTH};
 use super::pad::raster::IMPORT_RAMP;
 use super::pad::rules::{
-    ADD_RULE, ALL_FEATURES, BAD_RANGE, BRUSH, DASH, DASHED, DASHES, DELETE_RULE, EXPRESSION, FILL,
-    FILTER, GAP, LINE, MAX_SCALE, MIN_SCALE, MOVE_DOWN, MOVE_UP, NO_LIMIT, SOLID, STROKE,
-    STROKE_WIDTH, TAPER, TAPER_START, parse_scale, scale_text,
+    ADD_RULE, ALL_FEATURES, BAD_RANGE, BRUSH, DASH, DASHED, DASHES, DELETE_RULE, DELETE_RULES,
+    EXPRESSION, FILL, FILTER, GAP, LINE, MAX_SCALE, MIN_SCALE, MOVE_DOWN, MOVE_UP, NO_LIMIT, SOLID,
+    STROKE, STROKE_WIDTH, TAPER, TAPER_START, parse_scale, scale_text,
 };
 use super::pad::rules::{
     ADD_SYMBOL, BAD_MASK_RANGE, CIRCLE_SIZES, COLOR, MARKER, MARKER_SHAPE, MASK, MASK_MAX,
@@ -33,6 +34,7 @@ use super::{Action, Note, number};
 use crate::classify::{self, Method, Step};
 use crate::globe::symbol::paint_symbol;
 use crate::ramps::Ramp;
+use crate::rule_edit::{self, Change};
 
 /// The symbols that the editor lists, the text of the last addition of a
 /// symbol, the actions of the app, and the help of the expression fields.
@@ -73,47 +75,75 @@ pub fn rules(
 ) -> bool {
     let key = egui::Id::new(("style-rule", id.0));
     let count = style.style.rules.len();
-    let mut at: usize = ui.data(|d| d.get_temp(key)).unwrap_or(0);
-    at = at.min(count.saturating_sub(1));
+    // The selected rules, first rule first. Command-click adds or removes a
+    // rule, and Shift-click selects the rules up to the clicked rule.
+    let mut picked: Vec<usize> = ui.data(|d| d.get_temp(key)).unwrap_or_default();
+    picked.retain(|i| *i < count);
+    if picked.is_empty() && count > 0 {
+        picked.push(0);
+    }
+    let mut at = picked.first().copied().unwrap_or(0);
     let mut changed = false;
 
     for (i, rule) in style.style.rules.iter().enumerate() {
         ui.horizontal(|ui| {
-            if ui.selectable_label(i == at, &rule.name).clicked() {
-                at = i;
+            if ui
+                .selectable_label(picked.contains(&i), &rule.name)
+                .clicked()
+            {
+                let keys = ui.input(|input| input.modifiers);
+                if keys.command {
+                    if !picked.contains(&i) {
+                        picked.push(i);
+                    } else if picked.len() > 1 {
+                        picked.retain(|p| *p != i);
+                    }
+                } else if keys.shift {
+                    picked = (at.min(i)..=at.max(i)).collect();
+                } else {
+                    picked = vec![i];
+                }
+                picked.sort_unstable();
+                at = picked[0];
             }
             let filter = rule.filter.source().map_or(ALL_FEATURES, |s| s.text());
             ui.weak(filter);
         });
     }
+    let one = picked.len() == 1;
     ui.horizontal_wrapped(|ui| {
         if ui.button(ADD_RULE).clicked() {
-            at = style.add_rule(kind);
+            picked = vec![style.add_rule(kind)];
             changed = true;
         }
-        let some = at < style.style.rules.len();
+        let some = !picked.is_empty();
         if ui
-            .add_enabled(some && at > 0, egui::Button::new(MOVE_UP))
+            .add_enabled(one && at > 0, egui::Button::new(MOVE_UP))
             .clicked()
         {
-            at = style.style.move_rule(at, true);
+            picked = vec![style.style.move_rule(at, true)];
             changed = true;
         }
-        let down = at + 1 < style.style.rules.len();
+        let down = one && at + 1 < style.style.rules.len();
         if ui.add_enabled(down, egui::Button::new(MOVE_DOWN)).clicked() {
-            at = style.style.move_rule(at, false);
+            picked = vec![style.style.move_rule(at, false)];
             changed = true;
         }
-        if ui
-            .add_enabled(some, egui::Button::new(DELETE_RULE))
-            .clicked()
-        {
-            style.style.rules.remove(at);
-            at = at.saturating_sub(1);
+        let delete = if one { DELETE_RULE } else { DELETE_RULES };
+        if ui.add_enabled(some, egui::Button::new(delete)).clicked() {
+            for &i in picked.iter().rev() {
+                style.style.rules.remove(i);
+            }
+            picked = vec![at.saturating_sub(1)];
             changed = true;
         }
     });
-    ui.data_mut(|d| d.insert_temp(key, at));
+    ui.data_mut(|d| d.insert_temp(key, picked.clone()));
+    if picked.len() > 1 {
+        ui.separator();
+        return selection_rows(ui, &mut style.style.rules, &picked, kind) || changed;
+    }
+    let at = picked.first().copied().unwrap_or(0);
     if let Some(rule) = style.style.rules.get_mut(at) {
         ui.separator();
         let salt = key.with(at);
@@ -130,6 +160,93 @@ pub fn rules(
         if kind == GeometryKind::Polygon {
             changed |= scatter_rows(ui, rule, library, salt);
         }
+    }
+    changed
+}
+
+/// The stroke, the fill, and the size of the selected rules. A change sets
+/// one property in each rule. A value that is different in the rules shows
+/// "Mixed" next to it. Returns true if a rule changed.
+fn selection_rows(
+    ui: &mut egui::Ui,
+    rules: &mut [Rule],
+    picked: &[usize],
+    kind: GeometryKind,
+) -> bool {
+    let mixed = |ui: &mut egui::Ui, on: bool| {
+        if on {
+            ui.weak(crate::ui::select::MIXED);
+        }
+    };
+    let default = LayerStyle::default_for(kind, 0, &[]);
+    let mut changes = Vec::new();
+    let paints: Vec<usize> = (picked.iter().copied())
+        .filter(|&i| rules[i].symbol().is_none())
+        .collect();
+    if !paints.is_empty() {
+        ui.horizontal(|ui| {
+            let mut on = paints.iter().all(|&i| rules[i].stroke().is_some());
+            if ui.checkbox(&mut on, STROKE).changed() {
+                let stroke = default.stroke();
+                let stroke = stroke.unwrap_or(Stroke::solid(Color::rgb(90, 90, 90), 1.0));
+                changes.push(Change::Stroke(on.then_some(stroke)));
+            }
+            let color = rule_edit::shared(rules, &paints, |r| r.stroke().map(|s| s.color));
+            if let Some((mut c, m)) = color {
+                if color_button(ui, &mut c) {
+                    changes.push(Change::StrokeColor(c));
+                }
+                mixed(ui, m);
+            }
+        });
+    }
+    if let Some((mut width, m)) = rule_edit::shared(rules, &paints, |r| r.stroke().map(|s| s.width))
+    {
+        ui.horizontal(|ui| {
+            let stepper = number::stepper(STROKE_WIDTH, &mut width)
+                .range(0.1..=20.0)
+                .step(0.25)
+                .suffix(" pt");
+            if stepper.show(ui).changed() {
+                changes.push(Change::StrokeWidth(width));
+            }
+            mixed(ui, m);
+        });
+    }
+    if kind != GeometryKind::Line && !paints.is_empty() {
+        ui.horizontal(|ui| {
+            if kind == GeometryKind::Polygon {
+                let mut on = paints.iter().all(|&i| rules[i].fill().is_some());
+                if ui.checkbox(&mut on, FILL).changed() {
+                    let fill = default.fill().unwrap_or(Color::rgb(200, 200, 200));
+                    changes.push(Change::Fill(on.then_some(fill)));
+                }
+            } else {
+                ui.label(FILL);
+            }
+            if let Some((mut c, m)) = rule_edit::shared(rules, &paints, Rule::fill) {
+                if color_button(ui, &mut c) {
+                    changes.push(Change::FillColor(c));
+                }
+                mixed(ui, m);
+            }
+        });
+    }
+    if kind == GeometryKind::Point
+        && let Some((mut size, m)) = rule_edit::shared(rules, picked, rule_edit::size)
+    {
+        ui.horizontal(|ui| {
+            let (lo, hi) = POINT_SIZES;
+            let stepper = number::stepper(SIZE, &mut size).range(lo..=hi);
+            if stepper.suffix(" pt").show(ui).changed() {
+                changes.push(Change::Size(size));
+            }
+            mixed(ui, m);
+        });
+    }
+    let mut changed = false;
+    for change in changes {
+        changed |= rule_edit::apply(rules, picked, kind, change);
     }
     changed
 }

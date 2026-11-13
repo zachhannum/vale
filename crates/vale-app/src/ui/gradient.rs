@@ -92,21 +92,15 @@ pub fn stop_x(area: Rect, m: &Metrics, bands: &Bands, value: f64) -> f32 {
     bar.left() + elevation::bar_fraction(bands, value) as f32 * bar.width()
 }
 
-/// What a drag on the control does. It is set when the drag starts.
+/// What a drag on the control does. It is set when the control takes the
+/// drag. Another drag scrolls the panel.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Gesture {
     /// Moves a stop. `lifted`: the finger is in the place that removes it.
-    Move {
-        index: usize,
-        lifted: bool,
-    },
+    Move { index: usize, lifted: bool },
     /// Pulls the stop at the lower edge of the selected band down to
     /// remove it.
-    Pull {
-        index: usize,
-        lifted: bool,
-    },
-    Scroll,
+    Pull { index: usize, lifted: bool },
 }
 
 fn color32(c: Rgb) -> Color32 {
@@ -133,9 +127,9 @@ pub fn editor(
     let size = vec2(ui.available_width(), m.bar + m.handles);
     let (area, _) = ui.allocate_exact_size(size, Sense::hover());
     let resp = match controls {
-        Some(controls) => widgets::drag_area(ui, controls, area, GRADIENT),
+        Some(controls) => widgets::tap_area(ui, controls, area, GRADIENT, true),
         None => {
-            let resp = ui.interact(area, ui.id().with(GRADIENT), Sense::click_and_drag());
+            let resp = ui.interact(area, ui.id().with(GRADIENT), Sense::click());
             resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, GRADIENT));
             resp
         }
@@ -154,29 +148,33 @@ pub fn editor(
     };
 
     let gesture_id = resp.id.with("gesture");
-    if resp.drag_started() {
-        let pointer = ui.input(|i| i.pointer.press_origin().zip(i.pointer.interact_pos()));
-        let gesture = pointer.map_or(Gesture::Scroll, |(from, to)| {
-            let moved = to - from;
-            let on = (from.y >= row.top())
-                .then(|| hit(&xs(bands), from.x, m.cap))
-                .flatten()
-                .filter(|i| !bands.fixed(*i));
-            match on {
-                Some(index) if moved.x.abs() >= moved.y.abs() => {
-                    *selected = Some(index);
-                    Gesture::Move {
-                        index,
-                        lifted: false,
-                    }
-                }
-                Some(index) if moved.y > 0.0 && *selected == Some(index) => Gesture::Pull {
+    let origin = ui.input(|i| i.pointer.press_origin());
+    let mut chosen = None;
+    widgets::take_drag(ui, &resp, |moved| {
+        let Some(from) = origin else {
+            return false;
+        };
+        let on = (from.y >= row.top())
+            .then(|| hit(&xs(bands), from.x, m.cap))
+            .flatten()
+            .filter(|i| !bands.fixed(*i));
+        chosen = match on {
+            Some(index) if moved.x.abs() >= moved.y.abs() => {
+                *selected = Some(index);
+                Some(Gesture::Move {
                     index,
                     lifted: false,
-                },
-                _ => Gesture::Scroll,
+                })
             }
-        });
+            Some(index) if moved.y > 0.0 && *selected == Some(index) => Some(Gesture::Pull {
+                index,
+                lifted: false,
+            }),
+            _ => None,
+        };
+        chosen.is_some()
+    });
+    if let Some(gesture) = chosen {
         ui.data_mut(|data| data.insert_temp(gesture_id, gesture));
     }
     let mut gesture: Option<Gesture> = ui.data(|data| data.get_temp(gesture_id));
@@ -197,10 +195,7 @@ pub fn editor(
                 index,
                 lifted: lift(pos),
             }),
-            _ => {
-                ui.scroll_with_delta(vec2(0.0, resp.drag_delta().y));
-                Some(Gesture::Scroll)
-            }
+            None => None,
         };
         if let Some(gesture) = gesture {
             ui.data_mut(|data| data.insert_temp(gesture_id, gesture));
@@ -452,7 +447,7 @@ pub fn column(
     let (area, _) = ui.allocate_exact_size(size, Sense::hover());
     let parts = ColumnParts::new(area, m);
     let grab = parts.bar.union(parts.handles);
-    let resp = widgets::drag_area(ui, controls, grab, GRADIENT);
+    let resp = widgets::tap_area(ui, controls, grab, GRADIENT, true);
     if selected.is_some_and(|i| i >= count) {
         *selected = None;
     }
@@ -474,36 +469,32 @@ pub fn column(
         stops.map(|s| parts.stop_y(bands, s.value)).collect()
     };
     let gesture_id = resp.id.with("gesture");
-    if resp.drag_started() {
-        let from = ui.input(|i| i.pointer.press_origin());
-        let on = from
-            .filter(|p| p.x >= parts.handles.left())
-            .and_then(|p| hit(&ys(bands), p.y, m.cap))
-            .filter(|i| !bands.fixed(*i));
-        let gesture = match on {
-            Some(index) => {
-                *selected = Some(index);
-                Gesture::Move {
-                    index,
-                    lifted: false,
-                }
-            }
-            None => Gesture::Scroll,
+    // A drag that starts on a handle moves its stop. Another drag scrolls
+    // the panel.
+    let from = ui.input(|i| i.pointer.press_origin());
+    let on = from
+        .filter(|p| p.x >= parts.handles.left())
+        .and_then(|p| hit(&ys(bands), p.y, m.cap))
+        .filter(|i| !bands.fixed(*i));
+    if widgets::take_drag(ui, &resp, |_| on.is_some())
+        && let Some(index) = on
+    {
+        *selected = Some(index);
+        let gesture = Gesture::Move {
+            index,
+            lifted: false,
         };
         ui.data_mut(|data| data.insert_temp(gesture_id, gesture));
     }
     let gesture: Option<Gesture> = ui.data(|data| data.get_temp(gesture_id));
     let mut moving = None;
-    if resp.dragged() {
-        match gesture {
-            Some(Gesture::Move { index, .. }) => {
-                if let Some(pos) = resp.interact_pointer_pos() {
-                    bands.move_to(index, value_of(bands, pos.y));
-                }
-                moving = Some(index);
-            }
-            _ => ui.scroll_with_delta(vec2(0.0, resp.drag_delta().y)),
+    if resp.dragged()
+        && let Some(Gesture::Move { index, .. }) = gesture
+    {
+        if let Some(pos) = resp.interact_pointer_pos() {
+            bands.move_to(index, value_of(bands, pos.y));
         }
+        moving = Some(index);
     }
     if resp.drag_stopped() {
         ui.data_mut(|data| data.remove::<Gesture>(gesture_id));

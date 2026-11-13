@@ -409,6 +409,8 @@ pub enum Page {
     NewField,
     /// The rule with this index.
     Rule(usize),
+    /// The rules that the Style section selects.
+    Rules,
     /// The symbols that the rule with this index can pick.
     Symbols(usize),
     /// The shapes of the marker of the rule with this index.
@@ -1808,6 +1810,16 @@ pub(super) struct View {
     pub body: Option<Rows>,
 }
 
+/// What a tap on the button with this name does.
+pub(super) type ButtonAction = Box<dyn FnOnce(&mut AppState, &'static str)>;
+
+/// The icon buttons at the right of the back row of a page, with their
+/// names, and what a tap on one of them does.
+pub(super) struct PageButtons {
+    pub buttons: Vec<(&'static str, Icon)>,
+    pub act: ButtonAction,
+}
+
 /// The parts of a page of a panel of the Atlas.
 pub(super) struct PageParts {
     pub key: &'static str,
@@ -1844,6 +1856,7 @@ impl PageParts {
             scroll: self.scroll,
             layer: None,
             page: None,
+            buttons: None,
             view: Some(View {
                 back: Some(Box::new(back)),
                 top: Some(Box::new(top)),
@@ -1872,6 +1885,8 @@ pub(super) struct Head {
     pub subtitle: Option<String>,
     layer: Option<LayerRef>,
     page: Option<Page>,
+    /// The buttons of the back row.
+    pub buttons: Option<PageButtons>,
     /// The parts of a page of a panel of the Atlas.
     pub view: Option<View>,
 }
@@ -1900,6 +1915,10 @@ pub(super) fn panel_head(state: &mut AppState, panel: Panel) -> Head {
         Some(Page::Rule(i) | Page::Symbols(i) | Page::MarkerShape(i) | Page::MarkerFill(i)) => {
             rules.and_then(|r| r.get(i)).map(|r| r.name.clone())
         }
+        Some(Page::Rules) => match state.pad.layer {
+            Some(LayerRef::Vector(id)) => Some(rules::selection_title(state, id)),
+            _ => None,
+        },
         _ => None,
     };
     if name.is_none() {
@@ -1929,6 +1948,7 @@ pub(super) fn panel_head(state: &mut AppState, panel: Panel) -> Head {
             Some(LayerRef::Vector(_)),
             Some(Page::Rule(i) | Page::Symbols(i) | Page::MarkerShape(i) | Page::MarkerFill(i)),
         ) => i < rule_count,
+        (Some(LayerRef::Vector(id)), Some(Page::Rules)) => !state.pad.rules.picked(id).is_empty(),
         _ => false,
     };
     if panel == Panel::Layers && !fits {
@@ -2008,6 +2028,11 @@ pub(super) fn panel_head(state: &mut AppState, panel: Panel) -> Head {
         (Panel::Layers, Some(LayerRef::Vector(_))) if matches!(page, Some(Page::MarkerFill(_))) => {
             ("pad-marker-fill", rules::FILL, rule_name.as_deref())
         }
+        (Panel::Layers, Some(LayerRef::Vector(_))) if page == Some(Page::Rules) => (
+            "pad-rules",
+            rule_name.as_deref().unwrap_or_default(),
+            Some(name),
+        ),
         (Panel::Layers, Some(LayerRef::Vector(_))) if matches!(page, Some(Page::Rule(_))) => (
             "pad-rule",
             rule_name.as_deref().unwrap_or_default(),
@@ -2039,6 +2064,15 @@ pub(super) fn panel_head(state: &mut AppState, panel: Panel) -> Head {
         Panel::Attributes => select::layer_name(state),
         _ => None,
     };
+    let buttons = match (layer, page) {
+        (Some(LayerRef::Vector(id)), None) => {
+            rules::selection_buttons(state, id, rule_count).map(|buttons| PageButtons {
+                buttons,
+                act: Box::new(move |state, name| rules::selection_action(state, id, name)),
+            })
+        }
+        _ => None,
+    };
     Head {
         key,
         panel,
@@ -2049,6 +2083,7 @@ pub(super) fn panel_head(state: &mut AppState, panel: Panel) -> Head {
         scroll,
         layer,
         page,
+        buttons,
         view: None,
     }
 }
@@ -2141,6 +2176,7 @@ pub(super) fn panel_body(
                 fields::field_body(ui, state, controls, id, i);
             }
             Some(Page::Rule(i)) => rules::rule_body(ui, state, controls, id, i),
+            Some(Page::Rules) => rules::selection_body(ui, state, controls, id),
             Some(Page::Symbols(i)) => rules::symbols_body(ui, state, controls, id, i),
             Some(Page::MarkerShape(i)) => rules::shape_body(ui, state, controls, id, i),
             Some(Page::MarkerFill(i)) => rules::marker_fill_body(ui, state, controls, id, i),
@@ -2834,9 +2870,6 @@ fn swipe_rows(
         if swipe::drag(ui, &mut state.pad.swipe, id, &body, widgets::RENAME_WIDTH) {
             continue;
         }
-        if body.dragged() {
-            ui.scroll_with_delta(vec2(0.0, body.drag_delta().y));
-        }
         if body.clicked() {
             if open.is_some() {
                 state.pad.swipe = None;
@@ -2854,6 +2887,9 @@ fn swipe_rows(
         });
         match press {
             Some((held, moved, y)) if moved <= HOLD_SLOP && held >= HOLD_TIME => {
+                // The row takes the drag, so that the list does not scroll
+                // while the finger moves the layer.
+                ui.ctx().set_dragged_id(body.id);
                 state.select(Some(row.layer));
                 state.pad.reorder = Some(Reorder {
                     layer: id,

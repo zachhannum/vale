@@ -16,10 +16,12 @@ use super::classify::CLASSIFY;
 use super::furniture::{ANGLE, LINE_COLOR, LINE_WIDTH, fill_kind_rows};
 use super::number::Number;
 use super::raster::{self, heading};
+use super::selectable::{DESELECT_ALL, SELECT_ALL};
 use super::widgets::{self, Controls, Keys, PANEL_ROW};
-use super::{Page, filter, theme};
+use super::{Icon, Page, filter, theme};
 use crate::document::Document;
 use crate::globe::symbol::paint_symbol;
+use crate::rule_edit::{self, Change};
 use crate::ui::expr_help::{self, ExprHelp};
 use crate::ui::{Action, AppState};
 
@@ -87,6 +89,8 @@ pub const ROTATION_VARIATION: &str = "Rotation variation";
 pub const MOVE_UP: &str = "Move rule up";
 pub const MOVE_DOWN: &str = "Move rule down";
 pub const DELETE_RULE: &str = "Delete rule";
+pub const EDIT_RULES: &str = "Edit rules";
+pub const DELETE_RULES: &str = "Delete rules";
 /// The row of the mask of a layer, and the title of its page.
 pub const MASK: &str = "Mask";
 /// The row of the mask page and the text of the Mask row with no mask.
@@ -129,6 +133,9 @@ const KEYPAD: f32 = 4.0 * PANEL_ROW;
 /// The longest filter text that the row of a rule shows, in characters.
 const ROW_FILTER: usize = 18;
 
+/// The index of the color picker of the page of the selected rules.
+const SELECTION: usize = usize::MAX;
+
 /// The color of a rule that the color picker edits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Part {
@@ -150,11 +157,36 @@ pub struct RulesState {
     field: Option<(LayerId, usize, &'static str)>,
     /// The Classify form.
     pub(super) classify: super::classify::Draft,
+    /// The layer of the selected rules, and the indices of the rules.
+    pub select: Option<(LayerId, Vec<usize>)>,
+    /// The rule row that a finger swipes to the right, and the distance of
+    /// the row from its place.
+    swipe: Option<(LayerId, usize, f32)>,
+}
+
+impl RulesState {
+    /// The indices of the selected rules of layer `id`, first rule first.
+    pub fn picked(&self, id: LayerId) -> Vec<usize> {
+        match &self.select {
+            Some((layer, picked)) if *layer == id => picked.clone(),
+            _ => Vec::new(),
+        }
+    }
+}
+
+/// The title of the page of the selected rules of layer `id`.
+pub fn selection_title(state: &AppState, id: LayerId) -> String {
+    match state.pad.rules.picked(id).len() {
+        1 => "1 rule".to_owned(),
+        n => format!("{n} rules"),
+    }
 }
 
 /// The Style section: a row for each rule, first rule first, and the row
 /// that adds a rule. A later rule draws on top. A tap on a rule opens its
-/// page.
+/// page. A swipe to the right on a rule selects it or deselects it, as in
+/// the layer list of Procreate, and a tap on a selected rule opens the page
+/// of the selected rules. [`selection_buttons`] gives the other actions.
 pub fn section(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id: LayerId) {
     let Some(kind) = state.doc.layer(id).and_then(|l| l.geometry()) else {
         return;
@@ -169,12 +201,43 @@ pub fn section(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
         .iter()
         .map(|r| (r.name.clone(), row_filter(&r.filter)))
         .collect();
+    let mut picked = state.pad.rules.picked(id);
+    picked.retain(|i| *i < rows.len());
+
     heading(ui, STYLE);
     for (i, (name, filter)) in rows.iter().enumerate() {
-        if widgets::open_row(ui, controls, name, filter).clicked() {
-            state.pad.page = Some(Page::Rule(i));
+        let on = picked.contains(&i);
+        let swipe = state.pad.rules.swipe.filter(|s| s.0 == id && s.1 == i);
+        let shift = swipe.map_or(0.0, |s| s.2);
+        let row = widgets::swipe_select_row(ui, controls, name, filter, on, shift);
+        let moved = ui.input(|i| Some(i.pointer.interact_pos()? - i.pointer.press_origin()?));
+        let took = widgets::take_drag(ui, &row, |m| m.x > m.y.abs());
+        if took {
+            state.pad.rules.swipe = Some((id, i, 0.0));
+        }
+        if let Some((_, _, dx)) = state.pad.rules.swipe.filter(|s| s.0 == id && s.1 == i) {
+            if row.dragged() || took {
+                let dx = moved.map_or(dx, |d| d.x.clamp(0.0, widgets::SWIPE_SELECT));
+                state.pad.rules.swipe = Some((id, i, dx));
+            } else {
+                // The finger is up: a swipe past the middle selects the
+                // rule or deselects it.
+                if dx >= widgets::SWIPE_SELECT / 2.0 {
+                    if on {
+                        picked.retain(|p| *p != i);
+                    } else {
+                        picked.push(i);
+                        picked.sort_unstable();
+                    }
+                }
+                state.pad.rules.swipe = None;
+            }
+            ui.ctx().request_repaint();
+        } else if row.clicked() {
+            state.pad.page = Some(if on { Page::Rules } else { Page::Rule(i) });
         }
     }
+    state.pad.rules.select = (!picked.is_empty()).then(|| (id, picked.clone()));
     if widgets::button_row(ui, controls, ADD_RULE, true).clicked()
         && let Some(entry) = state.doc.entry_mut(id)
     {
@@ -191,6 +254,304 @@ pub fn section(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
             state.pad.page = Some(Page::Mask);
         }
     }
+}
+
+/// The buttons of the selected rules of layer `id`, which has `count`
+/// rules, in the back row of the panel of the layer: "Select all" while a
+/// rule is not selected, "Edit rules", "Delete rules", and "Deselect all".
+/// `None`: no rule is selected.
+pub fn selection_buttons(
+    state: &AppState,
+    id: LayerId,
+    count: usize,
+) -> Option<Vec<(&'static str, Icon)>> {
+    let picked = state.pad.rules.picked(id);
+    if picked.is_empty() {
+        return None;
+    }
+    let mut buttons = vec![
+        (EDIT_RULES, Icon::Brush),
+        (DELETE_RULES, Icon::Trash),
+        (DESELECT_ALL, Icon::Close),
+    ];
+    if picked.len() < count {
+        buttons.insert(0, (SELECT_ALL, Icon::Tick));
+    }
+    Some(buttons)
+}
+
+/// Does the action of the button `name` of [`selection_buttons`].
+pub fn selection_action(state: &mut AppState, id: LayerId, name: &str) {
+    let picked = state.pad.rules.picked(id);
+    let count = state.doc.entry(id).map_or(0, |e| e.style.style.rules.len());
+    match name {
+        SELECT_ALL => state.pad.rules.select = Some((id, (0..count).collect())),
+        EDIT_RULES => state.pad.page = Some(Page::Rules),
+        DELETE_RULES => {
+            if let Some(entry) = state.doc.entry_mut(id) {
+                for &i in picked.iter().rev() {
+                    entry.style.style.rules.remove(i);
+                }
+                state.pad.rules = RulesState::default();
+                state.touch();
+            }
+        }
+        _ => state.pad.rules.select = None,
+    }
+}
+
+/// The page of the selected rules: the scale range, the stroke, the fill,
+/// and the size of a marker. A change sets one property in each selected
+/// rule, and the other properties of each rule stay. A value that is
+/// different in the selected rules shows "Mixed".
+pub fn selection_body(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    id: LayerId,
+) {
+    let Some(kind) = state.doc.layer(id).and_then(|l| l.geometry()) else {
+        return;
+    };
+    let Some(rules) = state.doc.entry(id).map(|e| e.style.style.rules.clone()) else {
+        return;
+    };
+    let picked = state.pad.rules.picked(id);
+    ui.spacing_mut().item_spacing.y = 0.0;
+    let mut changes = Vec::new();
+    let shared = |get: &dyn Fn(&Rule) -> Option<f64>| rule_edit::shared(&rules, &picked, get);
+
+    for (name, min) in [(MIN_SCALE, true), (MAX_SCALE, false)] {
+        let value = |r: &Rule| Some(if min { r.min_scale } else { r.max_scale });
+        let shown = match rule_edit::shared(&rules, &picked, value) {
+            Some((_, true)) => crate::ui::select::MIXED.to_owned(),
+            Some((Some(v), false)) => scale_text(v),
+            _ => NO_LIMIT.to_owned(),
+        };
+        let none = |text: &str| text.trim().is_empty() || text == NO_LIMIT;
+        let valid = |text: &str| none(text) || parse_scale(text).is_some();
+        let typed = widgets::key_field(ui, controls, name, name, "", &shown, Keys::Number, valid);
+        if let Some(text) = typed {
+            let v = if none(&text) {
+                None
+            } else {
+                parse_scale(&text)
+            };
+            if none(&text) || v.is_some() {
+                changes.push(if min {
+                    Change::MinScale(v)
+                } else {
+                    Change::MaxScale(v)
+                });
+            }
+        }
+    }
+    let open = widgets::keypad_field(ui.ctx());
+    if open
+        .as_deref()
+        .is_some_and(|f| f == MIN_SCALE || f == MAX_SCALE)
+    {
+        state.pad.rules.picker = None;
+        ui.add_space(4.0);
+        widgets::keypad(ui, controls, KEYPAD);
+    }
+    ui.add_space(8.0);
+
+    // An SVG symbol has no stroke and no fill.
+    let paints: Vec<usize> = (picked.iter().copied())
+        .filter(|&i| rules[i].symbol().is_none())
+        .collect();
+    let strokes = rule_edit::shared(&rules, &paints, Rule::stroke);
+    if !paints.is_empty() {
+        let mut on = paints.iter().all(|&i| rules[i].stroke().is_some());
+        if widgets::switch_row(ui, controls, STROKE, STROKE, &mut on) {
+            let default = LayerStyle::default_for(kind, 0, &[]).stroke();
+            let stroke = default.unwrap_or(Stroke::solid(Color::rgb(90, 90, 90), 1.0));
+            changes.push(Change::Stroke(on.then_some(stroke)));
+        }
+    }
+    if strokes.is_some() {
+        let color = rule_edit::shared(&rules, &paints, |r| r.stroke().map(|s| s.color));
+        if let Some(c) = selection_color(ui, state, controls, (id, Part::Stroke), color) {
+            changes.push(Change::StrokeColor(c));
+        }
+        let (width, mixed) = shared(&|r| r.stroke().map(|s| s.width)).unwrap_or((1.0, false));
+        let width = Number::new(STROKE_WIDTH, width, WIDTHS.0..=WIDTHS.1)
+            .nice()
+            .step(0.05)
+            .unit("pt")
+            .mixed(mixed)
+            .stepper(ui, controls);
+        if let Some(w) = width {
+            changes.push(Change::StrokeWidth(w));
+        }
+        // A marker ignores the line type.
+        if kind != GeometryKind::Point {
+            selection_line_rows(ui, controls, kind, &rules, &paints, &mut changes);
+        }
+    }
+    if kind == GeometryKind::Polygon {
+        let mut on = paints.iter().all(|&i| rules[i].fill().is_some());
+        if !paints.is_empty() && widgets::switch_row(ui, controls, FILL, FILL, &mut on) {
+            let default = LayerStyle::default_for(kind, 0, &[]).fill();
+            let fill = default.unwrap_or(Color::rgb(200, 200, 200));
+            changes.push(Change::Fill(on.then_some(fill)));
+        }
+    }
+    let fill = rule_edit::shared(&rules, &paints, Rule::fill);
+    if kind != GeometryKind::Line && fill.is_some() {
+        let part = if kind == GeometryKind::Point {
+            Part::Marker(false)
+        } else {
+            Part::Fill
+        };
+        if let Some(c) = selection_color(ui, state, controls, (id, part), fill) {
+            changes.push(Change::FillColor(c));
+        }
+    }
+    if kind == GeometryKind::Point
+        && let Some((size, mixed)) = shared(&rule_edit::size)
+    {
+        let symbols = picked.iter().any(|&i| rules[i].symbol().is_some());
+        let range = if symbols { POINT_SIZES } else { CIRCLE_SIZES };
+        let size = Number::new(SIZE, size, range.0..=range.1)
+            .nice()
+            .step(0.05)
+            .unit("pt")
+            .mixed(mixed)
+            .stepper(ui, controls);
+        if let Some(size) = size {
+            changes.push(Change::Size(size));
+        }
+    }
+
+    let Some(entry) = state.doc.entry_mut(id) else {
+        return;
+    };
+    let mut changed = false;
+    for change in changes {
+        changed |= rule_edit::apply(&mut entry.style.style.rules, &picked, kind, change);
+    }
+    if changed {
+        state.touch();
+    }
+}
+
+/// The line type of the selected strokes, with the dash and the gap when
+/// each stroke is dashed, or the start width when each stroke tapers.
+fn selection_line_rows(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    kind: GeometryKind,
+    rules: &[Rule],
+    paints: &[usize],
+    changes: &mut Vec<Change>,
+) {
+    let mut kinds = vec![SOLID, DASHED, BRUSH];
+    if kind == GeometryKind::Line {
+        kinds.push(TAPER);
+    }
+    let index = |k: &StrokeKind| match k {
+        StrokeKind::Solid => 0,
+        StrokeKind::Dashed { .. } => 1,
+        StrokeKind::Brush => 2,
+        StrokeKind::Taper { .. } => 3,
+    };
+    let line = rule_edit::shared(rules, paints, |r| r.stroke().map(|s| index(&s.kind)));
+    let active = line.filter(|l| !l.1).map(|l| l.0);
+    if let Some(picked) = widgets::choice_row(ui, controls, LINE, &kinds, active)
+        && Some(picked) != active
+    {
+        changes.push(Change::LineKind(match picked {
+            1 => StrokeKind::dashed(),
+            2 => StrokeKind::Brush,
+            3 => StrokeKind::taper(),
+            _ => StrokeKind::Solid,
+        }));
+    }
+    let number = |get: &dyn Fn(StrokeKind) -> Option<f64>| {
+        rule_edit::shared(rules, paints, |r| r.stroke().and_then(|s| get(s.kind)))
+    };
+    match active {
+        Some(1) => {
+            let dash = number(&|k| match k {
+                StrokeKind::Dashed { dash, .. } => Some(dash),
+                _ => None,
+            });
+            let gap = number(&|k| match k {
+                StrokeKind::Dashed { gap, .. } => Some(gap),
+                _ => None,
+            });
+            for (name, value, make) in [
+                (DASH, dash, Change::Dash as fn(f64) -> Change),
+                (GAP, gap, Change::Gap),
+            ] {
+                let (v, mixed) = value.unwrap_or((StrokeKind::DASH, false));
+                let v = Number::new(name, v, DASHES.0..=DASHES.1)
+                    .nice()
+                    .step(0.05)
+                    .unit("pt")
+                    .mixed(mixed)
+                    .stepper(ui, controls);
+                if let Some(v) = v {
+                    changes.push(make(v));
+                }
+            }
+        }
+        Some(3) => {
+            let start = number(&|k| match k {
+                StrokeKind::Taper { start } => Some(start),
+                _ => None,
+            });
+            let (v, mixed) = start.unwrap_or((StrokeKind::TAPER_START, false));
+            let v = Number::new(TAPER_START, v, 0.0..=1.0)
+                .percent()
+                .mixed(mixed)
+                .slider(ui, controls);
+            if let Some(v) = v {
+                changes.push(Change::TaperStart(v));
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The row of a color of the selected rules and, while it is open, its
+/// color picker. `color`: the color of the first rule, and true if the
+/// rules have different colors. Returns the color that the user picked.
+fn selection_color(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    (id, part): (LayerId, Part),
+    color: Option<(Color, bool)>,
+) -> Option<Color> {
+    let (color, mixed) = color?;
+    let this = (id, SELECTION, part);
+    let name = match part {
+        Part::Stroke => STROKE_COLOR,
+        Part::Fill => FILL_COLOR,
+        _ => COLOR,
+    };
+    let is_open = state.pad.rules.picker == Some(this);
+    let mut rgba = [color.r, color.g, color.b, color.a];
+    let row = if mixed {
+        widgets::mixed_color_row(ui, controls, name, is_open)
+    } else {
+        widgets::color_row(ui, controls, name, rgba, is_open)
+    };
+    if row.clicked() {
+        state.pad.rules.picker = (!is_open).then_some(this);
+        widgets::close_keypad(ui.ctx());
+    }
+    if state.pad.rules.picker != Some(this) {
+        return None;
+    }
+    state.pad.rules.shown = true;
+    ui.add_space(4.0);
+    let changed = widgets::color_picker_alpha(ui, controls, name, &mut rgba);
+    let [r, g, b, a] = rgba;
+    changed.then_some(Color { r, g, b, a })
 }
 
 /// The text of the Mask row: the name of the layer of the mask, or "None".

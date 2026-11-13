@@ -56,8 +56,6 @@ pub enum Scale {
 struct Drag {
     /// The place on the track, from 0 to 1, before the step and the detent.
     place: f64,
-    /// The drag scrolls the panel.
-    scroll: bool,
     /// The name of the speed, if it is slower than full speed.
     note: Option<&'static str>,
 }
@@ -82,6 +80,7 @@ pub struct Number<'a> {
     ticks: &'a [(f64, &'a str)],
     field: bool,
     keypad: bool,
+    mixed: bool,
 }
 
 impl<'a> Number<'a> {
@@ -105,6 +104,7 @@ impl<'a> Number<'a> {
             ticks: &[],
             field: true,
             keypad: true,
+            mixed: false,
         }
     }
 
@@ -140,6 +140,14 @@ impl<'a> Number<'a> {
     pub fn unit(self, unit: &'a str) -> Self {
         let factor = self.factor;
         self.shown(factor, unit)
+    }
+
+    /// The value is different in the selected items. The value shows
+    /// "Mixed", and a value that the user sets is a change also when it is
+    /// equal to `value`.
+    pub fn mixed(mut self, mixed: bool) -> Self {
+        self.mixed = mixed;
+        self
     }
 
     /// The buttons of a stepper go through 1, 2, 5, 10, 20, and so on.
@@ -285,6 +293,9 @@ impl<'a> Number<'a> {
 
     /// The value on screen with its unit.
     pub fn value_text(&self, value: f64) -> String {
+        if self.mixed {
+            return crate::ui::select::MIXED.to_owned();
+        }
         if let Some(text) = &self.text {
             return text(value);
         }
@@ -335,15 +346,9 @@ impl<'a> Number<'a> {
             Rect::from_min_max(pos2(row.right(), y), pos2(row.right(), y))
         };
         let body = row.with_max_x(field.left());
-        let resp = hit(
-            ui,
-            controls,
-            body,
-            self.name,
-            Sense::click_and_drag(),
-            enabled,
-            None,
-        );
+        // The slider senses clicks, and takes a drag along its track. A
+        // drag up or down scrolls the panel.
+        let resp = hit(ui, controls, body, self.name, Sense::click(), enabled, None);
         let start = if self.label.is_empty() {
             row.left()
         } else {
@@ -566,7 +571,7 @@ impl<'a> Number<'a> {
         let typed = self.field(ui, controls, field, back, value, Look::Segment);
         out = typed.or(out);
         self.keypad_beside(ui, controls, row);
-        out.filter(|v| *v != self.value)
+        out.filter(|v| self.mixed || *v != self.value)
     }
 
     /// The name of the minus button of a stepper.
@@ -616,8 +621,9 @@ impl<'a> Number<'a> {
         moved.then_some(next)
     }
 
-    /// Moves the value with a drag on `resp`. A drag that is more up or
-    /// down than along the track scrolls if `scrolls`. `length` is the
+    /// Moves the value with a drag on `resp`. If `scrolls`, `resp` senses
+    /// clicks, and it takes only a drag that is more along the track than
+    /// across it, so another drag scrolls the panel. `length` is the
     /// length of the track. `along` gives, for a place on the screen, its place along the
     /// track and its distance from the track. Returns the value while the
     /// drag moves it.
@@ -630,45 +636,44 @@ impl<'a> Number<'a> {
         along: impl Fn(Pos2) -> (f32, f32),
     ) -> Option<f64> {
         let id = resp.id.with("drag");
-        if resp.drag_started() {
-            let pointer = ui.input(|i| i.pointer.press_origin().zip(i.pointer.interact_pos()));
-            let moved = pointer.map_or(egui::Vec2::ZERO, |(from, to)| to - from);
-            let scroll = scrolls && moved.y.abs() > moved.x.abs();
+        let origin = ui.input(|i| i.pointer.press_origin());
+        let started = if scrolls {
+            widgets::take_drag(ui, resp, |moved| {
+                let from = origin.unwrap_or_default();
+                let ((a, b), (c, d)) = (along(from), along(from + moved));
+                (c - a).abs() > (d - b).abs()
+            })
+        } else {
+            resp.drag_started()
+        };
+        if started {
             let drag = Drag {
                 place: self.place(self.value),
-                scroll,
                 note: None,
             };
             ui.data_mut(|data| data.insert_temp(id, drag));
         }
         let drag: Drag = ui.data(|data| data.get_temp(id))?;
-        if !resp.dragged() {
+        // In the frame that the slider takes the drag, its response is
+        // not dragged yet.
+        if !resp.dragged() && !started {
             if resp.drag_stopped() {
                 ui.data_mut(|data| data.remove::<Drag>(id));
             }
             return None;
         }
-        if drag.scroll {
-            ui.scroll_with_delta(vec2(0.0, resp.drag_delta().y));
-            return None;
-        }
-        let pos = resp.interact_pointer_pos()?;
+        let pos = (resp.interact_pointer_pos()).or_else(|| ui.input(|i| i.pointer.latest_pos()))?;
         let (now, away) = along(pos);
         // The first frame of a drag counts the move from the touch, so the
         // move before the drag starts is not lost.
-        let origin = ui.input(|i| i.pointer.press_origin());
         let last = match origin {
-            Some(origin) if resp.drag_started() => origin,
+            Some(origin) if started => origin,
             _ => pos - resp.drag_delta(),
         };
         let (before, _) = along(last);
         let (speed, note) = speed(away);
         let place = (drag.place + f64::from((now - before) / length) * speed).clamp(0.0, 1.0);
-        let drag = Drag {
-            place,
-            note,
-            ..drag
-        };
+        let drag = Drag { place, note };
         ui.data_mut(|data| data.insert_temp(id, drag));
         let near = |d: f64| f64::from(length) * (place - self.place(d)).abs() <= f64::from(DETENT);
         let stops = self.default.iter().chain(self.ticks.iter().map(|(v, _)| v));
@@ -712,7 +717,11 @@ impl<'a> Number<'a> {
                     field: id,
                     name: name.clone(),
                     keys: Keys::Number,
-                    text: self.number(value),
+                    text: if self.mixed {
+                        String::new()
+                    } else {
+                        self.number(value)
+                    },
                     fresh: true,
                     changed: false,
                     placed: self.keypad,
@@ -930,7 +939,7 @@ fn speed(away: f32) -> (f64, Option<&'static str>) {
 fn dragging(ui: &egui::Ui, resp: &egui::Response) -> Option<Drag> {
     let id = resp.id.with("drag");
     let drag = ui.data(|data| data.get_temp::<Drag>(id))?;
-    (resp.dragged() && !drag.scroll).then_some(drag)
+    resp.dragged().then_some(drag)
 }
 
 /// The place of a card of `size` next to `panel`, the panel or the card
@@ -1085,6 +1094,13 @@ fn paint_track(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_mixed_value_shows_mixed() {
+        let n = Number::new("n", 2.0, 0.0..=10.0).unit("pt");
+        assert_eq!(n.value_text(2.0), "2 pt");
+        assert_eq!(n.mixed(true).value_text(2.0), "Mixed");
+    }
 
     #[test]
     fn a_place_on_the_track_and_its_value_match_on_each_scale() {

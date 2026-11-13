@@ -2993,6 +2993,66 @@ fn the_blur_behind_a_card_shows_the_raster_layers_of_a_frame() {
     assert!(shown.iter().zip(&hidden).all(|(s, h)| s <= h));
 }
 
+/// A swipe of a finger to the right on the row `name`.
+fn swipe_right(h: &mut Pad, name: &str) {
+    let rect = control(h, name).unwrap_or_else(|| panic!("no control `{name}`"));
+    let from = rect.left_center() + vec2(40.0, 0.0);
+    drag(h, from, from + vec2(120.0, 0.0), Input::Finger);
+}
+
+#[test]
+fn selected_rules_of_a_frame_change_in_the_map_only() {
+    use vale_app::ui::pad::rules::{ADD_RULE, EDIT_RULES, STROKE_WIDTH};
+    use vale_app::ui::pad::selectable::SELECT_ALL;
+    for size in [BOARDS[1], BOARDS[3]] {
+        let what = format!("{size:?}");
+        let mut h = inset_pad(size);
+        let inset = frame(&h, 1).map;
+        let rivers = layer_id(&h, "Rivers");
+        let widths = |h: &Pad, map: Option<MapId>| -> Vec<f64> {
+            let doc = &h.state().doc;
+            let style = match map {
+                Some(map) => doc.map_style(map, rivers).unwrap(),
+                None => doc.entry(rivers).unwrap().style.clone(),
+            };
+            let rules = style.style.rules;
+            rules.iter().map(|r| r.stroke().unwrap().width).collect()
+        };
+        let globe = widths(&h, None);
+        show_tab(&mut h, FRAME_TABS[2]);
+        scroll_to(&mut h, "Open Rivers");
+        tap(&mut h, "Open Rivers");
+        for _ in 0..2 {
+            scroll_to(&mut h, ADD_RULE);
+            tap(&mut h, ADD_RULE);
+            tap(&mut h, "Back to Rivers");
+        }
+        scroll_to(&mut h, "Default");
+        swipe_right(&mut h, "Default");
+        assert_eq!(h.state().pad.rules.picked(rivers), [0], "{what}");
+        tap(&mut h, SELECT_ALL);
+        check_controls(&h, &format!("{what}: select rules"));
+        tap(&mut h, EDIT_RULES);
+        assert_eq!(
+            h.state().atlas.layer_page,
+            Some(vale_app::ui::pad::Page::Rules),
+            "{what}"
+        );
+        check_controls(&h, &format!("{what}: edit rules"));
+        let increase = format!("Increase {STROKE_WIDTH}");
+        scroll_to(&mut h, &increase);
+        tap(&mut h, &increase);
+        let after = widths(&h, Some(inset));
+        assert_eq!(after.len(), globe.len() + 2, "{what}");
+        assert!(after.iter().all(|w| *w == after[0]), "{what}: {after:?}");
+        assert!(after[0] > globe[0], "{what}: {after:?}");
+        assert_eq!(widths(&h, None), globe, "{what}");
+        // The selection stays after the page closes.
+        tap(&mut h, "Back to Rivers");
+        assert_eq!(h.state().pad.rules.picked(rivers).len(), after.len());
+    }
+}
+
 /// The width of the stroke of the first rule of Rivers: in the style of the
 /// layer, or in the style of a map.
 fn rivers_width(h: &Pad, map: Option<MapId>) -> f64 {

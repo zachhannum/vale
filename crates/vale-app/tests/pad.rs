@@ -8333,6 +8333,166 @@ fn drag_right(h: &mut Pad, name: &str) {
     let from = pos2(slider.left() + 100.0, y);
     drag(h, from, pos2(from.x + 600.0, y), None);
 }
+#[test]
+fn selected_rules_take_one_stroke_and_keep_their_fills() {
+    use vale_app::ui::pad::rules::{DELETE_RULES, EDIT_RULES, STROKE_COLOR, STROKE_WIDTH};
+    use vale_app::ui::pad::selectable::{DESELECT_ALL, SELECT_ALL};
+    use vale_store::GeometryKind;
+    use vale_style::Color;
+    for size in [BOARDS[1], BOARDS[3]] {
+        let what = format!("{size:?}");
+        let dir = tempfile::tempdir().unwrap();
+        let mut h = saved_pad(size, dir.path());
+        let land = vector(&h, "Land");
+        let entry = h.state_mut().doc.entry_mut(land).unwrap();
+        entry.style.add_rule(GeometryKind::Polygon);
+        entry.style.add_rule(GeometryKind::Polygon);
+        let wide = entry.style.style.rules[2]
+            .stroke()
+            .map(|s| vale_style::Stroke { width: 3.0, ..s });
+        entry.style.style.rules[2].set_stroke(wide);
+        h.state_mut().touch();
+        save_frames(&mut h);
+        let fills: Vec<_> = rules(&h, land).iter().map(|r| r.fill()).collect();
+        let picked = |h: &Pad| h.state().pad.rules.picked(land);
+
+        open_panel(&mut h, "Layers");
+        tap(&mut h, "Open Land");
+        // A swipe to the right selects a rule and does not open it. A
+        // second swipe deselects it.
+        // The list does not move when the bar shows.
+        assert!(control(&h, SELECT_ALL).is_none(), "{what}");
+        scroll_to_control(&mut h, "Default");
+        let below = control(&h, "Rule 1");
+        swipe_right(&mut h, "Default");
+        assert_eq!(picked(&h), [0], "{what}");
+        assert_eq!(h.state().pad.page, None, "{what}");
+        assert_eq!(control(&h, "Rule 1"), below, "{what}");
+        swipe_right(&mut h, "Rule 2");
+        assert_eq!(picked(&h), [0, 2], "{what}");
+        screenshot::save(&mut h, &format!("pad-swipe-rules-{}", size.0));
+        swipe_right(&mut h, "Default");
+        assert_eq!(picked(&h), [2], "{what}");
+        // A tap on a selected rule edits the selection.
+        tap(&mut h, "Rule 2");
+        assert_eq!(h.state().pad.page, Some(Page::Rules), "{what}");
+        tap(&mut h, "Back to Land");
+        tap(&mut h, SELECT_ALL);
+        assert_eq!(picked(&h), [0, 1, 2], "{what}");
+        screenshot::save(&mut h, &format!("pad-select-rules-{}", size.0));
+        tap(&mut h, EDIT_RULES);
+        assert_eq!(h.state().pad.page, Some(Page::Rules), "{what}");
+
+        scroll_to_control(&mut h, STROKE_COLOR);
+        tap(&mut h, STROKE_COLOR);
+        let hex = format!("{STROKE_COLOR} hex");
+        scroll_to_control(&mut h, &hex);
+        type_scrolled_keys(&mut h, &hex, "C04020");
+        let red = Color::rgb(0xc0, 0x40, 0x20);
+        for rule in rules(&h, land) {
+            assert_eq!(rule.stroke().unwrap().color, red, "{what}");
+        }
+        // The widths are mixed, and a step gives each rule the same width.
+        scrolled_step(&mut h, STROKE_WIDTH, true);
+        let widths: Vec<_> = rules(&h, land)
+            .iter()
+            .map(|r| r.stroke().unwrap().width)
+            .collect();
+        assert!(widths.iter().all(|w| *w == widths[0]), "{what}: {widths:?}");
+        let after: Vec<_> = rules(&h, land).iter().map(|r| r.fill()).collect();
+        assert_eq!(after, fills, "{what}");
+        screenshot::save(&mut h, &format!("pad-edit-rules-{}", size.0));
+
+        tap(&mut h, "Back to Land");
+        assert_eq!(picked(&h), [0, 1, 2], "{what}");
+        tap(&mut h, DESELECT_ALL);
+        assert!(control(&h, DELETE_RULES).is_none(), "{what}");
+        swipe_right(&mut h, "Rule 1");
+        save_frames(&mut h);
+        tap(&mut h, DELETE_RULES);
+        save_frames(&mut h);
+        assert_eq!(rule_names(&h, land), ["Default", "Rule 2"], "{what}");
+        assert!(h.state().pad.rules.select.is_none(), "{what}");
+        tap(&mut h, "Undo");
+        assert_eq!(rule_names(&h, land), ["Default", "Rule 1", "Rule 2"]);
+
+        // A short swipe does not select, and a tap opens the rule.
+        scroll_to_control(&mut h, "Rule 1");
+        let rect = control(&h, "Rule 1").unwrap();
+        let from = rect.left_center() + vec2(40.0, 0.0);
+        drag(&mut h, from, from + vec2(12.0, 0.0), None);
+        assert!(h.state().pad.rules.select.is_none(), "{what}");
+        tap(&mut h, "Rule 1");
+        assert_eq!(h.state().pad.page, Some(Page::Rule(1)), "{what}");
+    }
+}
+
+#[test]
+fn a_drag_on_a_rule_row_scrolls_as_a_drag_between_rows() {
+    use vale_store::GeometryKind;
+    // The place of the row "Rule 2" in each frame of a drag up and of the
+    // frames after it, with the drag from `on_row` or from the heading.
+    let drag_up = |on_row: bool| -> Vec<f32> {
+        let mut h = pad(BOARDS[3]);
+        let land = vector(&h, "Land");
+        for _ in 0..8 {
+            let entry = h.state_mut().doc.entry_mut(land).unwrap();
+            entry.style.add_rule(GeometryKind::Polygon);
+        }
+        open_panel(&mut h, "Layers");
+        tap(&mut h, "Open Land");
+        scroll_to_control(&mut h, "Default");
+        let row = control(&h, "Rule 2").unwrap();
+        // The heading "Style" is above the first rule and takes no touch.
+        let heading = control(&h, "Default").unwrap().center_top() - vec2(0.0, 20.0);
+        let start = if on_row { row.center() } else { heading };
+        let mut places = Vec::new();
+        touch(&mut h, egui::TouchPhase::Start, start, None);
+        h.step();
+        for dy in [10.0, 40.0, 70.0, 130.0] {
+            touch(&mut h, egui::TouchPhase::Move, start - vec2(0.0, dy), None);
+            h.step();
+            places.push(control(&h, "Rule 2").unwrap().center().y);
+        }
+        touch(
+            &mut h,
+            egui::TouchPhase::End,
+            start - vec2(0.0, 130.0),
+            None,
+        );
+        for _ in 0..4 {
+            h.step();
+            places.push(control(&h, "Rule 2").unwrap().center().y);
+        }
+        assert!(h.state().pad.rules.select.is_none());
+        assert_eq!(h.state().pad.page, None);
+        places
+    };
+    let (on_row, between) = (drag_up(true), drag_up(false));
+    assert!(between[3] < between[0] - 50.0, "{between:?}");
+    assert_eq!(on_row, between);
+}
+
+#[test]
+fn a_drag_to_the_side_on_a_rule_row_selects_it_and_does_not_scroll() {
+    let mut h = pad(BOARDS[3]);
+    let land = vector(&h, "Land");
+    open_panel(&mut h, "Layers");
+    tap(&mut h, "Open Land");
+    scroll_to_control(&mut h, "Default");
+    let before = control(&h, "Default").unwrap().top();
+    swipe_right(&mut h, "Default");
+    assert_eq!(h.state().pad.rules.picked(land), [0]);
+    assert_eq!(control(&h, "Default").unwrap().top(), before);
+}
+
+/// A swipe to the right on the row `name`.
+fn swipe_right(h: &mut Pad, name: &str) {
+    scroll_to_control(h, name);
+    let rect = control(h, name).unwrap_or_else(|| panic!("no control `{name}`"));
+    let from = rect.left_center() + vec2(40.0, 0.0);
+    drag(h, from, from + vec2(120.0, 0.0), None);
+}
 
 /// The rules of the style of a vector layer.
 fn rules(h: &Pad, id: vale_store::LayerId) -> Vec<vale_style::Rule> {
