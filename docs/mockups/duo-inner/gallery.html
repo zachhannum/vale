@@ -26,14 +26,14 @@
   .portrait .crease { top: 10px; bottom: 10px; left: 50%; border-left-width: 1px; }
   .landscape .crease { left: 10px; right: 10px; top: 50%; border-top-width: 1px; }
   body.no-crease .crease { display: none; }
-  body.large .portrait img { width: 626px; height: 890px; }
-  body.large .landscape img { width: 890px; height: 626px; }
+  body.large .portrait img { width: 669px; height: 951px; }
+  body.large .landscape img { width: 951px; height: 669px; }
 </style>
 </head>
 <body>
 <h1>Vale on the inner screen of iPhone Duo</h1>
-<p class="lead">Each picture is real output of <code>vale-app</code> at 626 by 890 points in portrait and 890 by 626 points in landscape. The point size is the pixels of the screen divided by 3, and the safe areas are estimates. Other sources give 669 by 951 points for the inner screen. Both orientations are 600 points wide or more, so the app uses the iPad layout with the floating dock. The dashed line is the hinge crease.</p>
-<p class="lead">The pictures show the app as it is, not the target layout. In landscape, iPhone Duo puts the status bar, the Dynamic Island, and the controls of the app in a column at one side of the screen. The landscape pictures have the status bar and the top row at the top, so they do not follow this rule. In portrait, the inner screen keeps the bars at the top.</p>
+<p class="lead">Each picture is real output of <code>vale-app</code> at 669 by 951 points in portrait and 951 by 669 points in landscape, with the safe areas of the device. Both orientations are 600 points wide or more, so the app uses the iPad layout with the floating dock. The dashed line is the hinge crease.</p>
+<p class="lead">The pictures show the app as it is, not the target layout. In landscape, iPhone Duo puts the Dynamic Island and the controls of the app in a column at one side of the screen. The landscape pictures have the top row at the top, so they do not follow this rule. In portrait, the inner screen keeps the top row at the top.</p>
 <div class="bar">
   <label><input type="checkbox" id="crease" checked> Show crease</label>
   <label><input type="checkbox" id="large"> Actual size (1 px per point)</label>
@@ -43,7 +43,7 @@
 const screens = [
   ["start", "Start screen", "The list of the project files. The headless render has no pictures of the globes."],
   ["globe", "World workspace", "The globe with the Move tool and no pane. The globe fits in both orientations."],
-  ["globe-layers", "Layers panel", "In portrait, the dock of 340 points leaves 286 points of canvas, and the crease runs through the rows of the dock."],
+  ["globe-layers", "Layers panel", "In portrait, the dock of 340 points leaves 329 points of canvas, and the crease runs through the rows of the dock."],
   ["globe-dock", "Three panes", "In landscape, the dock has no room for three panes, so Attributes joins Toolbox as a tab."],
   ["globe-dock-hidden", "Collapsed dock", "The slim tab at the right edge shows the dock again."],
   ["globe-height", "Height layer", "The Raise brush on a height layer. In portrait, the tool column has the Size and Flow sliders. In landscape, the screen is too short, so the sliders are in the Brush panel."],
@@ -56,7 +56,7 @@ const screens = [
   ["globe-measure", "Measure tool", "A measured path, with the length above the readout."],
   ["flat", "Flat view", "The whole world as a flat map. In portrait, the map fills only a band across the middle."],
   ["flat-layers", "Flat view with Layers", "The dock over the flat map."],
-  ["atlas", "Atlas workspace", "In portrait, the page fits in the 286 points at the left of the dock, so it is small."],
+  ["atlas", "Atlas workspace", "In portrait, the page fits in the 329 points at the left of the dock, so it is small."],
   ["atlas-frame", "Selected map frame", "Properties of the frame. In landscape, the pane is shorter than its rows and scrolls."],
   ["atlas-labels", "Labels panel", "The label classes of the map of the frame."],
   ["atlas-pages", "Pages panel", "The settings of the open page."],

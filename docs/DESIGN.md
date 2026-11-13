@@ -597,7 +597,7 @@ Each tool keeps its own settings. Each brush mode keeps its size, size lock, har
 
 iPad is an equal platform. The layout for iPad is its own design, with a full-screen canvas, a dock of panels, and touch-size controls. It is not the desktop layout made smaller.
 
-The app also installs on iPhone, with the same layout. In portrait, an iPhone screen is compact. The safe area of an iPhone holds the Dynamic Island and the status bar at the top, and the home indicator at the bottom. In landscape, it also holds a band at each side. The Files app shows the local folder as "On My iPhone > Vale", and the app names it "On this iPhone".
+The app also installs on iPhone, with the same layout. In portrait, an iPhone screen is compact. The app hides the status bar on iPad and on iPhone. The safe area of an iPhone holds the Dynamic Island at the top, and the home indicator at the bottom. In landscape, it also holds a band at each side. The Files app shows the local folder as "On My iPhone > Vale", and the app names it "On this iPhone".
 
 The chrome sits on the left edge and the right edge of the screen, so the canvas gets more room. Each part touches its edge with no margin, and only its inner corners are round. No part touches the top edge, because the status bar of the system is there. The top row is 4 points below the top band. The layout has these places:
 
@@ -699,6 +699,19 @@ The iPhone layout is the compact layout of the iPad, below 600 points, with thes
 - In landscape, the width is 600 points or more, so the phone has the tool column and the dock at the right edge. The Brush panel holds the sliders, and the column scrolls.
 
 The safe area of the iPhone is larger than the bands of the iPad. In portrait, it leaves out the top 59 points and the bottom 34 points.
+
+#### iPhone Duo
+
+iPhone Duo has an outer screen and an inner screen. Both render at a pixel ratio of 3. The inner screen renders 2007 by 2853 pixels, and the system scales the picture down to the 1878 by 2670 pixels of the screen. The numbers come from the debug controls of the Toolbox panel on the device.
+
+| Screen | Pose | Size in points | Safe area: top, right, bottom, left |
+|---|---|---|---|
+| Outer | Portrait | 466 × 678 | 0, 0, 34, 0 |
+| Outer | Landscape | 678 × 466 | 0, 0, 34, 0 |
+| Inner | Portrait | 669 × 951 | 0, 0, 34, 0 |
+| Inner | Landscape | 951 × 669 | 0, 0, 34, 0 |
+
+A visible status bar adds to the safe area. On the outer screen and on the inner screen in landscape, the status bar is a side column, 84 points wide. The column is at the right edge on the outer screen in portrait and on the inner screen in landscape. It is at the left edge on the outer screen in landscape. On the inner screen in portrait, the status bar is a band of 82 points at the top. The app hides the status bar, so the column and the band are not in the safe area. The outer screen in portrait is below 600 points wide, so it has the iPhone layout. The other poses are 600 points wide or more.
 
 ### Desktop layout
 

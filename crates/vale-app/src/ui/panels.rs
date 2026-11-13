@@ -828,7 +828,37 @@ fn window_line(globe: &Globe, world: &World) -> String {
     }
 }
 
+/// The size of the window, the pixel ratio, and the four bands of the safe
+/// area. The bands are the raw safe area, without the least bands of the
+/// layout.
+pub fn screen_lines(screen: egui::Rect, safe: egui::Rect, pixels_per_point: f32) -> [String; 2] {
+    let size = screen.size();
+    let pixels = size * pixels_per_point;
+    [
+        format!(
+            "Window: {} × {} pt at {}x ({} × {} px)",
+            size.x, size.y, pixels_per_point, pixels.x, pixels.y
+        ),
+        format!(
+            "Safe area: top {}, left {}, bottom {}, right {}",
+            safe.top() - screen.top(),
+            safe.left() - screen.left(),
+            screen.bottom() - safe.bottom(),
+            screen.right() - safe.right(),
+        ),
+    ]
+}
+
 pub(super) fn debug_controls(ui: &mut egui::Ui, state: &mut AppState) {
+    let ctx = ui.ctx().clone();
+    for line in screen_lines(
+        ctx.viewport_rect(),
+        ctx.content_rect(),
+        ctx.pixels_per_point(),
+    ) {
+        ui.label(line);
+    }
+    ui.separator();
     let world = &state.doc.project.world;
     // The undo log of the project file has the strokes.
     let session = state.session.as_ref();
