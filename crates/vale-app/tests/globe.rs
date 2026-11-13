@@ -4672,7 +4672,7 @@ fn basin_points(
 
 #[test]
 #[ignore = "gpu"]
-fn the_outline_stroke_waits_for_the_main_river_of_the_basin() {
+fn the_outline_stroke_waits_for_the_first_river_of_the_basin() {
     let _gpu = one_gpu_test();
     let mut h = basin_harness(7);
     let before = all_levels(&h);
@@ -4686,7 +4686,7 @@ fn the_outline_stroke_waits_for_the_main_river_of_the_basin() {
     assert_eq!(globe.basin_outline(), Some(outline.as_slice()));
     let (closed, river) = globe.basin_preview().unwrap();
     assert!(closed.len() > 20 && river.is_empty(), "{}", closed.len());
-    // The second stroke draws the main river, and the basin follows.
+    // The second stroke draws the first river, and the basin follows.
     pen_line(&mut h, |_| {});
     settle(&mut h);
     let globe = &h.state().globe;
@@ -4774,10 +4774,10 @@ fn a_basin_stroke_gives_the_levels_of_the_cpu_basin() {
     pen_outline(&mut h);
     pen_line(&mut h, |h| {
         // The heightmap waits for the end of the stroke, and the outline
-        // and the main river show.
+        // and the river show.
         assert!(all_levels(h) == before);
-        let (outline, river) = h.state().globe.basin_preview().unwrap();
-        assert!(outline.len() > 20 && !river.is_empty());
+        let (outline, rivers) = h.state().globe.basin_preview().unwrap();
+        assert!(outline.len() > 20 && rivers.len() == 1 && !rivers[0].is_empty());
     });
     settle(&mut h);
     assert!(h.state().globe.basin_preview().is_none());
@@ -4838,6 +4838,115 @@ fn painting_does_not_wait_for_the_basin() {
     assert!(globe.can_undo());
     assert!(all_levels(&h) != before);
     assert_eq!(globe.stats.last().unwrap().id, 2);
+}
+
+/// The samples of the second river of the basin tests: a line from the
+/// north edge of the outline toward the middle of `ridge_samples`.
+fn second_river_samples() -> Vec<vale_app::globe::brush::Sample> {
+    (0..=16)
+        .map(|i| {
+            let t = f64::from(i);
+            vale_app::globe::brush::Sample {
+                dir: Some(lonlat_to_dir(62.0 - 1.0 * t, 14.0 - 0.6 * t)),
+                flow: 0.5,
+                radius: 0.1,
+            }
+        })
+        .collect()
+}
+
+/// The levels of the CPU basin of the outline of the basin tests and the
+/// rivers of these samples, on `ground`.
+fn cpu_basin(
+    h: &Harness<'static, AppState>,
+    ground: &vale_terrain::Heightmap,
+    rivers: Vec<Vec<vale_app::globe::brush::Sample>>,
+) -> Vec<u16> {
+    use vale_terrain::BasinLine;
+    let outline = basin_points(h, basin_outline_samples());
+    let globe = &h.state().globe;
+    let (brush, n, km) = (globe.brush, globe.map.face_size(), globe.world_km);
+    let spec = brush.basin_spec(km, globe.world_seed, globe.world_rain);
+    let mut line = BasinLine::new(spec, &outline, n);
+    for samples in rivers {
+        line.begin_river();
+        for dir in basin_points(h, samples) {
+            line.push(dir);
+        }
+    }
+    let mut cpu = ground.snapshot();
+    cpu.basin(&vale_terrain::basin(ground, &line));
+    let texels = (0..6 * n * n).map(|i| (i / (n * n), i % n, i / n % n));
+    texels
+        .map(|(face, x, y)| cpu.get(face, x as i64, y as i64))
+        .collect()
+}
+
+/// Draws the outline and the first river of the basin tests, and then the
+/// second river while the basin is held.
+fn two_river_basin(h: &mut Harness<'static, AppState>) {
+    pen_outline(h);
+    pen_line(h, |_| {});
+    wait_held(h);
+    assert_eq!(h.state().globe.basin_rivers(), 1);
+    pen_line_of(h, second_river_samples(), |h| {
+        // The basin and its lines stay while the pen draws the river.
+        let (_, rivers) = h.state().globe.basin_preview().unwrap();
+        assert_eq!(rivers.len(), 2);
+    });
+    wait_held(h);
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_second_river_stroke_adds_a_river_to_the_held_basin() {
+    let _gpu = one_gpu_test();
+    let mut h = basin_harness(7);
+    let ground = h.state().globe.map.snapshot();
+    let before = all_levels(&h);
+    two_river_basin(&mut h);
+    let globe = &h.state().globe;
+    assert_eq!(globe.holding(), Some(Mode::Basin));
+    assert_eq!(globe.basin_rivers(), 2);
+    let (_, rivers) = globe.basin_preview().unwrap();
+    assert!(rivers.iter().all(|r| r.len() > 5), "{rivers:?}");
+    assert!(all_levels(&h) == before);
+
+    h.state_mut().globe.apply_held();
+    run_until_idle(&mut h);
+    let app = all_levels(&h);
+    let cpu = cpu_basin(&h, &ground, vec![ridge_samples(), second_river_samples()]);
+    let one = cpu_basin(&h, &ground, vec![ridge_samples()]);
+    assert!(cpu != one, "the second river changes the basin");
+    assert!(app == cpu);
+    // Both rivers are one stroke and one undo step.
+    let globe = &h.state().globe;
+    assert_eq!(globe.stats.last().unwrap().id, 2);
+    assert!(h.state_mut().globe.undo());
+    h.run_steps(2);
+    assert!(all_levels(&h) == before);
+    assert!(!h.state().globe.can_undo());
+}
+
+#[test]
+#[ignore = "gpu"]
+fn undo_river_gives_the_basin_of_the_rivers_before_it() {
+    let _gpu = one_gpu_test();
+    let mut h = basin_harness(7);
+    let ground = h.state().globe.map.snapshot();
+    two_river_basin(&mut h);
+    h.state_mut().globe.undo_river();
+    wait_held(&mut h);
+    let globe = &h.state().globe;
+    assert_eq!(globe.holding(), Some(Mode::Basin));
+    assert_eq!(globe.basin_rivers(), 1);
+    // A basin with one river has no river to take away.
+    h.state_mut().globe.undo_river();
+    assert_eq!(h.state().globe.basin_rivers(), 1);
+
+    h.state_mut().globe.apply_held();
+    run_until_idle(&mut h);
+    assert!(all_levels(&h) == cpu_basin(&h, &ground, vec![ridge_samples()]));
 }
 
 /// Draws the outline of a basin around the stroke of the uplift tests with
@@ -4931,7 +5040,7 @@ fn the_brush_panel_has_the_basin_mode_and_its_sliders() {
     ] {
         assert!(h.query_all_by_label(name).next().is_none(), "{name}");
     }
-    // An outline that waits for its main river has a button that drops it.
+    // An outline that waits for its first river has a button that drops it.
     let outline = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0)];
     let outline = outline.map(|(lon, lat)| lonlat_to_dir(lon, lat)).to_vec();
     h.state_mut().globe.set_basin_outline(Some(outline));
