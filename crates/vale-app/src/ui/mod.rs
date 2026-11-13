@@ -4118,8 +4118,8 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         ui.ctx().request_repaint_after(LOAD_POLL);
     }
     let globe = &state.globe;
-    let map_of = |id| globe.raster_map(id).or_else(|| globe.display_map(id));
     let rasters = state.pipeline.rasters_mut();
+    let map_of = |id| globe.value_map(id);
     rasters.update(&state.doc, map_of);
     if rasters.poll(state.headless) {
         ui.ctx().request_repaint_after(LOAD_POLL);

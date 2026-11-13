@@ -1561,6 +1561,15 @@ impl Globe {
         Some(self.layer(id)?.display(&self.map))
     }
 
+    /// The heightmap that the expressions read for a raster layer: the
+    /// reduced heightmap of a layer with a face larger than `DISPLAY_CAP`,
+    /// or else the whole heightmap. It does not change when the brush
+    /// gives back the whole heightmap outside the globe workspace.
+    pub fn value_map(&self, id: RasterId) -> Option<&Heightmap> {
+        let reduced = self.layer(id).and_then(|layer| layer.reduced.as_ref());
+        reduced.or_else(|| self.raster_map(id))
+    }
+
     /// The reduced heightmap of each raster layer that has no whole
     /// heightmap in the main memory.
     pub fn reduced_maps(&self) -> impl Iterator<Item = (RasterId, &Heightmap)> {
