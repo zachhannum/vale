@@ -225,6 +225,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         row,
         column: column_input(state, measuring),
         dock_width: state.pad.docks.atlas.width,
+        camera: state.pad.camera,
     };
     let mut rects = geometry::layout(&input);
     state.pad.sheet_offset = input

@@ -546,6 +546,9 @@ pub struct PadState {
     pub controls: Controls,
     /// The places of the cards in the last frame.
     pub rects: Option<Rects>,
+    /// The region that the system reserves around a camera at the top of
+    /// the screen, in points.
+    pub camera: Option<Rect>,
     /// The pane of each open tab of the last frame, by its panel.
     pub panels: Vec<(Panel, Rect)>,
     /// The workspace menu of the last frame.
@@ -701,6 +704,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         row: class == WidthClass::Compact,
         column: column_input(state),
         dock_width: state.pad.docks.world.width,
+        camera: state.pad.camera,
     };
     let mut rects = geometry::layout(&input);
     state.pad.sheet_offset = input

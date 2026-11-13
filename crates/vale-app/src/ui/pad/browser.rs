@@ -139,6 +139,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         row: false,
         column: geometry::ColumnInput::default(),
         dock_width: super::panes::WIDTH,
+        camera: state.pad.camera,
     });
     world_form::pad(&ctx, state, &mut controls, &rects);
     state.pad.controls = controls;

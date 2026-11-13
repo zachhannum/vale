@@ -180,6 +180,9 @@ pub struct Input {
     pub column: ColumnInput,
     /// The width of the dock that the user chose.
     pub dock_width: f32,
+    /// The region that the system reserves around a camera at the top of
+    /// the screen.
+    pub camera: Option<Rect>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -289,10 +292,24 @@ pub fn layout(input: &Input) -> Rects {
         WidthClass::Compact => ACTIONS_WIDTH - BUTTON_STEP,
         _ => ACTIONS_WIDTH,
     };
-    let actions = Rect::from_min_max(
+    let mut actions = Rect::from_min_max(
         pos2(screen.right() - bands.right - actions_width, top),
         pos2(screen.right(), top + ROW),
     );
+    let mut workspace = workspace;
+    // The card of the top row at the corner of the camera moves along the
+    // row, out of the region of the camera.
+    let row_band = Rect::from_x_y_ranges(screen.x_range(), top..=top + ROW);
+    if let Some(camera) = input.camera.filter(|c| c.intersects(row_band)) {
+        if camera.center().x > screen.center().x {
+            let right = camera.left() - ROW_GAP;
+            actions =
+                Rect::from_min_size(pos2(right - actions_width, top), vec2(actions_width, ROW));
+        } else {
+            let left = camera.right() + ROW_GAP;
+            workspace = Rect::from_min_size(pos2(left, top), vec2(input.workspace_width, ROW));
+        }
+    }
 
     let (sheet, sheet_travel, sheet_rise) = if class == WidthClass::Compact {
         let full = screen.bottom() - column_top;
@@ -542,6 +559,7 @@ mod tests {
             row: false,
             column: brush(),
             dock_width: 340.0,
+            camera: None,
         }
     }
 
@@ -855,5 +873,77 @@ mod tests {
         let r = measure(1024.0, 400.0);
         assert!(r.column_content > r.tools.height());
         assert_eq!(r.tools.bottom(), 400.0 - 20.0 - DOCK_FOOT);
+    }
+
+    /// The outer screen of iPhone Duo, with a camera region of 30 points
+    /// at the top right in portrait and at the top left in landscape.
+    fn duo_outer(portrait: bool) -> Input {
+        let (width, height) = if portrait {
+            (466.0, 678.0)
+        } else {
+            (678.0, 466.0)
+        };
+        let mut input = board(width, height);
+        input.bands.bottom = 34.0;
+        input.row = portrait;
+        let x = if portrait { width - 57.0 } else { 27.0 };
+        input.camera = Some(rect(x, 9.0, 30.0, 30.0));
+        input
+    }
+
+    #[test]
+    fn the_card_at_the_corner_of_the_camera_moves_out_of_its_region() {
+        // Portrait: the card of the actions ends at the left of the region.
+        let input = duo_outer(true);
+        let camera = input.camera.unwrap();
+        let mut without = input;
+        without.camera = None;
+        let (r, before) = (layout(&input), layout(&without));
+        assert_eq!(r.class, WidthClass::Compact);
+        assert_eq!(r.actions.right(), camera.left() - ROW_GAP);
+        assert_eq!(r.actions.size(), vec2(ACTIONS_WIDTH - BUTTON_STEP, ROW));
+        assert_eq!(r.actions.top(), before.actions.top());
+        assert!(!r.actions.intersects(camera));
+        assert_eq!(
+            Rects {
+                actions: before.actions,
+                ..r
+            },
+            before
+        );
+
+        // Landscape: the card of the world menu starts at the right of the
+        // region.
+        let input = duo_outer(false);
+        let camera = input.camera.unwrap();
+        let mut without = input;
+        without.camera = None;
+        let (r, before) = (layout(&input), layout(&without));
+        assert_eq!(r.class, WidthClass::Medium);
+        assert_eq!(r.workspace.left(), camera.right() + ROW_GAP);
+        assert_eq!(r.workspace.size(), vec2(149.0, ROW));
+        assert!(!r.workspace.intersects(camera));
+        let moved = Rects {
+            workspace: before.workspace,
+            ..r
+        };
+        assert_eq!(moved, before);
+    }
+
+    #[test]
+    fn a_camera_below_the_top_row_moves_no_card() {
+        let mut input = duo_outer(true);
+        let mut without = input;
+        without.camera = None;
+        input.camera = Some(rect(400.0, 300.0, 30.0, 30.0));
+        assert_eq!(layout(&input), layout(&without));
+    }
+
+    #[test]
+    fn the_outer_screen_of_iphone_duo_opens_the_sheet_at_half_its_height() {
+        let mut input = duo_outer(true);
+        input.panel = true;
+        let r = layout(&input);
+        assert_eq!(r.sheet, Some(rect(0.0, 339.0, 466.0, 339.0)));
     }
 }
