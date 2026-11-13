@@ -12,15 +12,14 @@ height=docs/mockups/duo-inner/assets/height.png
 # The start screen lists the project files of this folder.
 projects=$(mktemp -d)
 for world in Kareth Vesperan; do
-  "$app" --layout pad --project "$projects/$world.gpkg" --size 626x890 \
+  "$app" --layout pad --project "$projects/$world.gpkg" --size 669x951 \
     --screenshot "$(mktemp --suffix=.png)" >/dev/null
 done
 
-# The screen is 1878 by 2670 pixels. At 3 pixels per point, it is 626 by
-# 890 points. Other sources give 669 by 951 points. The sizes and the safe
-# areas are estimates.
-portrait=(--size 626x890 --safe-area 32,0,20,0)
-landscape=(--size 890x626 --safe-area 24,0,20,0)
+# The sizes and the safe areas are from the device. In landscape, the side
+# column of the status bar is at the right edge.
+portrait=(--size 669x951 --safe-area 82,0,34,0)
+landscape=(--size 951x669 --safe-area 0,84,34,0)
 
 screens=(
   "start|--start-screen --projects-dir $projects"
