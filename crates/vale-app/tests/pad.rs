@@ -14980,3 +14980,29 @@ fn a_drag_on_the_edge_of_the_dock_takes_the_width_handle_and_a_tap_there_reaches
     drag(&mut h, at, at - vec2(60.0, 0.0), None);
     assert!(h.state().pad.docks.world.width > 380.0);
 }
+
+#[test]
+fn the_debug_controls_show_the_window_and_the_safe_area() {
+    let screen = Rect::from_min_size(Pos2::ZERO, egui::vec2(466.0, 678.0));
+    let safe = Rect::from_min_max(Pos2::new(0.0, 54.0), Pos2::new(422.0, 644.0));
+    let [window, bands] = vale_app::ui::panels::screen_lines(screen, safe, 3.0);
+    assert_eq!(window, "Window: 466 × 678 pt at 3x (1398 × 2034 px)");
+    assert_eq!(bands, "Safe area: top 54, left 0, bottom 34, right 44");
+
+    let mut h = pad(BOARDS[0]);
+    let insets = egui::epaint::MarginF32 {
+        left: 0.0,
+        right: 0.0,
+        top: 24.0,
+        bottom: 20.0,
+    };
+    h.input_mut().safe_area_insets = Some(egui::SafeAreaInsets(insets));
+    toolbox(&mut h);
+    h.state_mut().globe.debug = true;
+    h.run_steps(2);
+    let (width, height) = BOARDS[0];
+    h.get_by_label(&format!(
+        "Window: {width} × {height} pt at 1x ({width} × {height} px)"
+    ));
+    h.get_by_label("Safe area: top 24, left 0, bottom 20, right 0");
+}
