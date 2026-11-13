@@ -85,7 +85,15 @@ pub(super) fn input(
     let area = resp.rect;
     let on = |pos| on_canvas(ui, area, pos);
     let press = &mut state.atlas.measure_press;
-    let Some(at) = press_input(ui, resp, press, on, |_, force| force.is_some(), false, touching) else {
+    let Some(at) = press_input(
+        ui,
+        resp,
+        press,
+        on,
+        |_, force| force.is_some(),
+        false,
+        touching,
+    ) else {
         return;
     };
     let mut firsts = Vec::new();
