@@ -15055,3 +15055,144 @@ fn the_debug_controls_show_the_window_and_the_safe_area() {
     ));
     h.get_by_label("Safe area: top 24, left 0, bottom 20, right 0");
 }
+
+/// The inner screen of iPhone Duo in portrait, in landscape, and in Split
+/// View, with its safe area: the bands at the top, the right, the bottom,
+/// and the left. In Split View, the app has one half of the screen in
+/// landscape.
+const DUO_INNER: [(&str, (f32, f32), [f32; 4]); 3] = [
+    ("portrait", (669.0, 951.0), [0.0, 0.0, 34.0, 0.0]),
+    ("landscape", (951.0, 669.0), [0.0, 0.0, 34.0, 0.0]),
+    ("split", (475.0, 669.0), [0.0, 0.0, 34.0, 0.0]),
+];
+
+/// The inner screen of iPhone Duo in this pose, with the Layers panel open
+/// in the globe workspace, or with a map frame selected in the Atlas
+/// workspace.
+fn duo_inner(size: (f32, f32), [top, right, bottom, left]: [f32; 4], atlas: bool) -> Pad {
+    let mut h = empty_pad(size);
+    let insets = egui::epaint::MarginF32 {
+        left,
+        right,
+        top,
+        bottom,
+    };
+    h.input_mut().safe_area_insets = Some(egui::SafeAreaInsets(insets));
+    h.state_mut().add_height();
+    h.run_steps(2);
+    let state = h.state_mut();
+    if atlas {
+        state.workspace = Workspace::Atlas;
+        vale_app::ui::atlas::add_frame(state).unwrap();
+    } else {
+        state.pad.open(Panel::Layers);
+    }
+    h.run_steps(3);
+    h
+}
+
+#[test]
+fn the_inner_screen_of_iphone_duo_has_the_layout_of_its_width() {
+    for (pose, size, safe) in DUO_INNER {
+        let [top, right, bottom, left] = safe;
+        for atlas in [false, true] {
+            let what = format!("{pose}, atlas {atlas}");
+            let h = duo_inner(size, safe, atlas);
+            check_controls(&h, &what);
+            let rects = h.state().pad.rects.unwrap();
+            let screen = rects.screen;
+            let open = if atlas {
+                Panel::Properties
+            } else {
+                Panel::Layers
+            };
+            assert!(panel(&h, open).is_some(), "{what}: {open:?}");
+            if pose == "split" {
+                assert_eq!(rects.class, WidthClass::Compact, "{what}");
+                let sheet = rects.sheet.expect(&what);
+                assert_eq!(sheet.height(), size.1 / 2.0, "{what}");
+            } else {
+                assert_eq!(rects.class, WidthClass::Medium, "{what}");
+                assert!(!rects.row, "{what}");
+                // The top row is at the top, the tool column at the left
+                // edge, and the dock at the right edge.
+                assert!(rects.workspace.top() < 60.0, "{what}");
+                assert!(rects.tools.left() < 20.0, "{what}");
+                let dock = h.state().pad.dock_rect.expect(&what);
+                assert!(dock.right() > screen.right() - 20.0, "{what}");
+                // The tool column ends in the safe area, and it scrolls if
+                // its contents are higher.
+                assert!(rects.tools.bottom() <= screen.bottom() - bottom, "{what}");
+                // Each pane ends in the safe area.
+                assert!(dock.bottom() <= screen.bottom() - bottom, "{what}");
+                for (p, r) in &h.state().pad.panels {
+                    assert!(
+                        r.bottom() <= screen.bottom() - bottom,
+                        "{what}: {p:?} is {r:?}"
+                    );
+                }
+            }
+            for c in &h.state().pad.controls {
+                let r = c.rect;
+                assert!(
+                    r.top() >= top
+                        && r.bottom() <= screen.bottom() - bottom
+                        && r.left() >= left
+                        && r.right() <= screen.right() - right,
+                    "{what}: {} is {r:?}",
+                    c.name
+                );
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "gpu"]
+fn the_screenshots_of_the_inner_screen_of_iphone_duo_show_both_workspaces() {
+    let _gpu = one_gpu_test();
+    std::fs::create_dir_all("../../target/app").unwrap();
+    for (pose, size, [top, right, bottom, left]) in DUO_INNER {
+        for atlas in [false, true] {
+            let mut state = state();
+            state.globe.set_face_size(64);
+            state.add_height();
+            if atlas {
+                state.workspace = Workspace::Atlas;
+                vale_app::ui::atlas::add_frame(&mut state).unwrap();
+            } else {
+                state.pad.open(Panel::Layers);
+            }
+            let insets = egui::epaint::MarginF32 {
+                left,
+                right,
+                top,
+                bottom,
+            };
+            let safe = Some(egui::SafeAreaInsets(insets));
+            let size64 = (size.0 as f64, size.1 as f64);
+            let (image, state) =
+                headless::ui_png_safe(state, size64, 1.0, safe, |_| Ok(())).unwrap();
+            let workspace = if atlas { "atlas" } else { "globe" };
+            let what = format!("{pose}, {workspace}");
+            assert_eq!(image.dimensions(), (size.0 as u32, size.1 as u32), "{what}");
+            image
+                .save(format!(
+                    "../../target/app/test-pad-duo-inner-{pose}-{workspace}.png"
+                ))
+                .unwrap();
+            assert!(state.pad.controls.len() >= 7, "{what}");
+            for c in &state.pad.controls {
+                let r = c.rect;
+                assert!(
+                    r.top() >= top
+                        && r.bottom() <= size.1 - bottom
+                        && r.left() >= left
+                        && r.right() <= size.0 - right,
+                    "{what}: {} is {r:?}",
+                    c.name
+                );
+            }
+        }
+    }
+}

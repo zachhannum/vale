@@ -36,6 +36,9 @@ pub const WORLDS_WIDTH: f32 = 300.0;
 pub const MODES_WIDTH: f32 = 200.0;
 /// The height of an open sheet, about half the height of a phone.
 pub const SHEET_HEIGHT: f32 = 452.0;
+/// A screen lower than this opens the sheet at half its height, such as
+/// Split View on the inner screen of iPhone Duo.
+pub const SHORT_SCREEN: f32 = 834.0;
 /// The space between two cards of the row layout.
 pub const ROW_GAP: f32 = 8.0;
 /// The height of the card of the place above the readout, with its gap.
@@ -293,7 +296,12 @@ pub fn layout(input: &Input) -> Rects {
 
     let (sheet, sheet_travel, sheet_rise) = if class == WidthClass::Compact {
         let full = screen.bottom() - column_top;
-        let height = SHEET_HEIGHT.min(full);
+        let open = if screen.height() < SHORT_SCREEN {
+            screen.height() / 2.0
+        } else {
+            SHEET_HEIGHT
+        };
+        let height = open.min(full);
         let travel = (height - bands.bottom - ROW).max(0.0);
         let rise = full - height;
         let offset = input.sheet_offset.clamp(-rise, travel);
@@ -697,6 +705,18 @@ mod tests {
         // A card with more cells than the row holds scrolls.
         input.cells = 9;
         assert_eq!(layout(&input).card_cells, 6);
+    }
+
+    #[test]
+    fn a_short_screen_opens_the_sheet_at_half_its_height() {
+        // Split View on the inner screen of iPhone Duo in landscape.
+        let mut input = board(475.0, 669.0);
+        input.bands.bottom = 34.0;
+        input.row = true;
+        input.panel = true;
+        let r = layout(&input);
+        assert_eq!(r.class, WidthClass::Compact);
+        assert_eq!(r.sheet, Some(rect(0.0, 334.5, 475.0, 334.5)));
     }
 
     #[test]
