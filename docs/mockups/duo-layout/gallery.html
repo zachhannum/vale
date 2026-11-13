@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>The layout of Vale on iPhone Duo</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 32px 40px 64px; background: #1c1d20; color: #e6e6e6;
+         font: 14px/1.45 -apple-system, "Noto Sans", sans-serif; }
+  h1 { font-size: 22px; font-weight: 600; margin: 0 0 6px; }
+  .lead { color: #a8a8a8; max-width: 900px; margin: 0 0 24px; }
+  section { margin: 0 0 44px; }
+  h2 { font-size: 16px; font-weight: 600; margin: 0 0 4px; }
+  .note { color: #a8a8a8; margin: 0 0 12px; max-width: 900px; }
+  .pair { display: flex; gap: 28px; align-items: flex-start; flex-wrap: wrap; }
+  figure { margin: 0; }
+  figcaption { color: #8a8a8a; font-size: 12px; margin-top: 6px; }
+  .device { background: #000; border-radius: 26px; padding: 9px; box-shadow: 0 0 0 2px #3a3b40, 0 10px 30px rgba(0,0,0,.5); }
+  .device img { display: block; border-radius: 18px; }
+</style>
+</head>
+<body>
+<h1>The layout of Vale on iPhone Duo</h1>
+<p class="lead">The chrome is HTML over pictures from <code>vale-app</code>. The side column holds the controls of the top row on the edge of the system bars. The tool column is at the left edge in each pose. The dock is a card only on the inner screen in landscape, and else it is the sheet. A dashed line is the hinge, and a hatched band is the folding region of a partially folded device.</p>
+<div id="screens"></div>
+<script>
+const poses = [
+  ["outer-portrait", 466, 678, "Outer screen, portrait", "The side column is at the right edge, below the outer camera. The sheet opens at half the height of the screen."],
+  ["outer-landscape", 678, 466, "Outer screen, landscape", "The side column is at the left edge, with the camera at its top, and the tool column is at its right. The screen is short, so the Brush panel holds the sliders."],
+  ["inner-portrait", 669, 951, "Inner screen, portrait", "The system keeps its bars at the top, so the top row stays. The sheet opens to the hinge, so the canvas has the upper half."],
+  ["inner-landscape", 951, 669, "Inner screen, landscape", "The dock and the side column share the right edge. The dock is at the left of the column, and it is right of the hinge."],
+  ["split", 951, 669, "Split View", "Vale is the left app, so its side column is at the left edge, as on the outer screen in landscape. The hinge is between the two apps."],
+  ["tabletop", 669, 951, "Partially folded, portrait", "The sheet opens below the folding region. The readout or the page card is above the region, and the tool column has a gap at the region."],
+  ["book", 951, 669, "Partially folded, landscape", "The canvas is the left part, and the dock and the side column are in the right part. A page fits at the left of the folding region."],
+];
+const scale = 0.5;
+const root = document.getElementById("screens");
+for (const [id, w, h, title, note] of poses) {
+  const s = document.createElement("section");
+  s.innerHTML = `<h2>${title}</h2><p class="note">${note}</p><div class="pair">` +
+    ["globe", "atlas"].map(ws => `<figure><div class="device"><img src="screens/${ws}-${id}.png" width="${w * scale}" height="${h * scale}" alt="${title}, ${ws}"></div>` +
+      `<figcaption>${ws}-${id}.png</figcaption></figure>`).join("") + `</div>`;
+  root.appendChild(s);
+}
+</script>
+</body>
+</html>
