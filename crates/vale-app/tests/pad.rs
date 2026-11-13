@@ -4598,13 +4598,13 @@ fn the_screenshot_of_an_iphone_keeps_the_controls_in_the_safe_area() {
 }
 
 /// The screens of iPhone Duo in each pose, and their safe areas: the bands at
-/// the top, the right, the bottom, and the left. The side column of the
-/// status bar is one of the side bands.
+/// the top, the right, the bottom, and the left. The app hides the status
+/// bar, so only the home indicator has a band.
 const DUO: [(&str, (f64, f64), [f32; 4]); 4] = [
-    ("outer-portrait", (466.0, 678.0), [0.0, 84.0, 34.0, 0.0]),
-    ("outer-landscape", (678.0, 466.0), [0.0, 0.0, 34.0, 84.0]),
-    ("inner-portrait", (669.0, 951.0), [82.0, 0.0, 34.0, 0.0]),
-    ("inner-landscape", (951.0, 669.0), [0.0, 84.0, 34.0, 0.0]),
+    ("outer-portrait", (466.0, 678.0), [0.0, 0.0, 34.0, 0.0]),
+    ("outer-landscape", (678.0, 466.0), [0.0, 0.0, 34.0, 0.0]),
+    ("inner-portrait", (669.0, 951.0), [0.0, 0.0, 34.0, 0.0]),
+    ("inner-landscape", (951.0, 669.0), [0.0, 0.0, 34.0, 0.0]),
 ];
 
 #[test]

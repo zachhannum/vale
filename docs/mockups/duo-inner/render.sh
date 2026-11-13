@@ -16,10 +16,10 @@ for world in Kareth Vesperan; do
     --screenshot "$(mktemp --suffix=.png)" >/dev/null
 done
 
-# The sizes and the safe areas are from the device. In landscape, the side
-# column of the status bar is at the right edge.
-portrait=(--size 669x951 --safe-area 82,0,34,0)
-landscape=(--size 951x669 --safe-area 0,84,34,0)
+# The sizes and the safe areas are from the device, with the status bar
+# hidden.
+portrait=(--size 669x951 --safe-area 0,0,34,0)
+landscape=(--size 951x669 --safe-area 0,0,34,0)
 
 screens=(
   "start|--start-screen --projects-dir $projects"
