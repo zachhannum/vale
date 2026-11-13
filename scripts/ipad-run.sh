@@ -1,6 +1,6 @@
 #!/bin/sh
-# Builds one iOS app of the workspace, installs it on the connected iPad, and
-# starts it. `app-ipad.sh` and `globe-proto-ipad.sh` call this script.
+# Builds one iOS app of the workspace, installs it on the connected iPad or iPhone,
+# and starts it. `app-ipad.sh` and `globe-proto-ipad.sh` call this script.
 #
 # Usage: scripts/ipad-run.sh CRATE PROJECT BUNDLE_ID NAME
 #   CRATE      The crate that has the `ios` directory, for example vale-app.
@@ -55,7 +55,7 @@ except Exception:
 for d in devices:
     hardware = d.get("hardwareProperties", {})
     connection = d.get("connectionProperties", {})
-    if hardware.get("deviceType") != "iPad":
+    if hardware.get("deviceType") not in ("iPad", "iPhone"):
         continue
     if connection.get("tunnelState") == "unavailable":
         continue
