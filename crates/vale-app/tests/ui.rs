@@ -1232,6 +1232,7 @@ fn the_dock_shows_only_with_a_selection() {
 #[test]
 fn a_click_on_a_frame_shows_the_frame_and_projection_tabs() {
     let mut h = harness();
+    h.state_mut().atlas.tool = AtlasTool::Frame;
     h.run_steps(3);
     let pos = frame_middle(&h);
     click_at(&mut h, pos);
@@ -1283,6 +1284,7 @@ fn the_desktop_select_tool_deletes_a_frame_and_a_double_click_enters_one() {
 #[test]
 fn a_click_on_the_paper_shows_the_page_panel() {
     let mut h = harness();
+    h.state_mut().atlas.tool = AtlasTool::Frame;
     h.run_steps(3);
     let pos = page_pos(&h, 2.0, 2.0);
     click_at(&mut h, pos);
@@ -1429,6 +1431,7 @@ fn the_wheel_zooms_the_page_and_with_the_move_tool_the_map_of_the_selected_frame
 fn the_tool_bar_deletes_and_deselects_the_selection() {
     use vale_app::ui::select::DELETE;
     let mut h = harness();
+    h.state_mut().atlas.tool = AtlasTool::Frame;
     let frame = h.state().doc.project.atlas.pages[0].frames[0].id;
     assert!(h.query_by_label(DELETE).is_none());
     h.state_mut().atlas.selection = AtlasSelection::Frame(frame);
@@ -1514,15 +1517,22 @@ fn the_a_key_chooses_the_vertex_tool() {
 }
 
 #[test]
-fn the_keys_f_and_h_choose_the_tools() {
+fn the_keys_f_and_h_and_the_move_button_choose_the_tools() {
     let mut h = harness();
     h.run_steps(3);
-    h.key_press(egui::Key::H);
-    h.run_steps(2);
-    assert_eq!(h.state().atlas.tool, AtlasTool::Move);
+    assert_eq!(h.state().atlas.tool, AtlasTool::Pan);
     h.key_press(egui::Key::F);
     h.run_steps(2);
     assert_eq!(h.state().atlas.tool, AtlasTool::Frame);
+    h.key_press(egui::Key::H);
+    h.run_steps(2);
+    assert_eq!(h.state().atlas.tool, AtlasTool::Pan);
+    h.get_by_label("Move").click();
+    h.run_steps(2);
+    assert_eq!(h.state().atlas.tool, AtlasTool::Move);
+    h.get_by_label("Pan").click();
+    h.run_steps(2);
+    assert_eq!(h.state().atlas.tool, AtlasTool::Pan);
 }
 
 #[test]

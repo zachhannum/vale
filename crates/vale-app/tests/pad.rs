@@ -12042,7 +12042,8 @@ fn the_frame_strip_fits_in_the_atlas_on_each_screen() {
         vale_app::ui::atlas::add_frame(h.state_mut());
         h.run_steps(3);
         lower_sheet(&mut h);
-        assert_eq!(h.state().atlas.tool, AtlasTool::Frame, "{what}");
+        h.state_mut().atlas.tool = AtlasTool::Frame;
+        h.run_steps(3);
         scroll_column_to_end(&mut h);
         let names = [SNAP_TO_LAYOUT, DELETE, DESELECT];
         let cells = names.map(|name| control(&h, name).unwrap_or_else(|| panic!("{what}: {name}")));
