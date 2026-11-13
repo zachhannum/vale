@@ -1,232 +1,102 @@
 <!doctype html>
 <html><head><meta charset="utf-8">
 <style>
-@font-face { font-family: UI; src: local("Ubuntu Light"), local("Ubuntu-Light"), url(../../../assets/fonts/NotoSans-Regular.ttf); }
 * { box-sizing: border-box; margin: 0; padding: 0; }
-body { background: rgb(15,17,19); color: rgb(231,233,236); font-family: UI, sans-serif; overflow: hidden; position: relative; }
-.globe { position: absolute; border-radius: 50%; overflow: hidden; background: url(../pad-layout/assets/globe.png) no-repeat; }
-.glass { position: absolute; background: rgba(24,27,31,.82); backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px);
-  border: 1px solid rgba(255,255,255,.05); z-index: 5; }
-.b { width: 44px; height: 44px; flex: none; display: flex; align-items: center; justify-content: center; color: rgb(174,181,190); position: relative; }
-.b.on { color: rgb(231,233,236); background: rgba(255,255,255,.12); border-radius: 10px; }
-.b.acc { color: rgb(69,196,168); background: rgba(69,196,168,.16); border-radius: 10px; }
-.b.dim { opacity: .35; }
-.b.tri::after { content: ""; position: absolute; right: 6px; bottom: 6px; border: 2.5px solid transparent;
-  border-right-color: currentColor; border-bottom-color: currentColor; }
-svg.i { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
-.hr { width: 32px; height: 1px; background: rgba(255,255,255,.1); margin: 6px 0; flex: none; }
-.vr { width: 1px; height: 24px; background: rgba(255,255,255,.1); margin: 0 4px; flex: none; }
-.vcol { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 6px 0; }
-.hrow { display: flex; align-items: center; gap: 2px; padding: 0 4px; }
-.cam { width: 30px; height: 30px; border-radius: 15px; background: #000; display: flex; align-items: center; justify-content: center; margin: 10px 0 8px; }
-.cam div { width: 10px; height: 10px; border-radius: 5px; background: #12161c; box-shadow: inset 0 0 0 2px #1d2530; }
-.vsl { display: flex; flex-direction: column; align-items: center; gap: 4px; margin: 2px 0; }
-.vsl .val { font-size: 11.5px; } .vsl .nm { font-size: 11px; color: rgb(140,147,156); }
-.vsl .tk { width: 36px; border-radius: 9px; background: rgba(255,255,255,.08); position: relative; overflow: hidden; }
-.vsl .tk div { position: absolute; left: 0; right: 0; bottom: 0; background: rgba(255,255,255,.24); border-top: 2px solid rgba(255,255,255,.9); }
-.ph { height: 48px; display: flex; align-items: center; padding: 0 4px 0 14px; font-size: 16px; gap: 10px; flex: none; }
-.ph .t { flex: 1; }
-.r { height: 48px; display: flex; align-items: center; padding: 0 4px 0 16px; font-size: 15.5px; gap: 12px; flex: none; }
-.r .n { flex: 1; } .r .v { color: rgb(174,181,190); font-size: 15px; }
-.r .k { width: 96px; color: rgb(174,181,190); }
-.r.sel { background: rgba(69,196,168,.14); }
-.in { flex: 1; height: 36px; border-radius: 10px; background: rgba(255,255,255,.1); display: flex; align-items: center; padding: 0 12px; margin-right: 12px; }
-.seg { flex: 1; height: 36px; border-radius: 10px; background: rgba(0,0,0,.3); display: flex; padding: 2px; margin-right: 12px; font-size: 14.5px; }
-.seg div { flex: 1; display: flex; align-items: center; justify-content: center; border-radius: 8px; color: rgb(174,181,190); }
-.seg div.on { background: rgba(255,255,255,.12); color: rgb(231,233,236); }
-.thumb { width: 22px; display: flex; justify-content: center; color: rgb(174,181,190); }
-.thumb svg.i { width: 18px; height: 18px; }
-.ras { width: 22px; height: 16px; border-radius: 3px; background: linear-gradient(135deg,#2c4a6e,#7f9a63 45%,#b9a37e 70%,#eee); }
-.bar { height: 24px; flex: none; display: flex; align-items: center; justify-content: center; }
-.bar div, .grab { width: 36px; height: 4px; border-radius: 2px; background: rgba(255,255,255,.3); }
-.grip { position: absolute; top: 50%; left: -6px; width: 12px; height: 56px; margin-top: -28px; border-radius: 6px; background: rgba(10,12,14,.9);
-  display: flex; align-items: center; justify-content: center; z-index: 6; }
-.grip div { width: 4px; height: 40px; border-radius: 2px; background: rgba(255,255,255,.75); }
-.tab { position: absolute; width: 10px; height: 64px; border-radius: 5px; background: rgba(10,12,14,.9); z-index: 6; }
-.ro { display: flex; align-items: center; height: 52px; padding: 0 12px 0 4px; gap: 6px; font-size: 13px; }
-.sb { display: flex; flex-direction: column; gap: 4px; font-size: 10.5px; color: rgb(174,181,190); }
-.sb .l { display: flex; width: 112px; height: 4px; }
-.sb .l div { flex: 1; } .sb .l div:nth-child(odd) { background: rgba(231,233,236,.85); }
-.sb .t { display: flex; justify-content: space-between; }
-.page { position: absolute; background: #fff; box-shadow: 0 2px 16px rgba(0,0,0,.45); z-index: 2; }
-.frame { position: absolute; left: 7%; top: 9%; right: 7%; bottom: 9%; background: url(assets/map.png) no-repeat 50% 50% / 100% auto; border: 1px solid #555; }
-.frame.sel { outline: 2px dashed rgb(69,196,168); outline-offset: 0; }
-.h { position: absolute; width: 12px; height: 12px; margin: -6px 0 0 -6px; border-radius: 6px; background: rgb(69,196,168); border: 1.5px solid #0b2a24; z-index: 3; }
-.fold { position: absolute; z-index: 9; pointer-events: none;
-  background: repeating-linear-gradient(45deg, rgba(255,190,60,.18) 0 6px, rgba(255,190,60,.05) 6px 12px);
+body { background: rgb(15,17,19); overflow: hidden; position: relative; font-family: "Noto Sans", sans-serif; }
+.pic { position: absolute; background-repeat: no-repeat; }
+.cover { position: absolute; background: rgb(15,17,19); }
+.cam { position: absolute; width: 30px; height: 30px; margin: -15px 0 0 -15px; border-radius: 15px; border: 1px dashed rgba(255,190,60,.9);
+  display: flex; align-items: center; justify-content: center; z-index: 9; }
+.cam div { width: 12px; height: 12px; border-radius: 6px; background: #000; box-shadow: 0 0 0 2px #222a33; }
+.fold { position: absolute; z-index: 9; background: repeating-linear-gradient(45deg, rgba(255,190,60,.2) 0 6px, rgba(255,190,60,.05) 6px 12px);
   border: 1px dashed rgba(255,190,60,.8); }
 .hinge { position: absolute; z-index: 9; border: 0 dashed rgba(255,190,60,.7); }
-.other { position: absolute; background: rgb(236,236,240); color: #333; z-index: 1; font-size: 15px; }
-.other .sc { position: absolute; top: 0; bottom: 0; right: 0; width: 84px; background: rgb(222,222,228); }
-.other .t { position: absolute; left: 24px; top: 30px; font-size: 22px; font-weight: 600; }
+.other { position: absolute; background: rgb(236,236,240); }
+.other .t { position: absolute; left: 24px; top: 40px; font-size: 22px; font-weight: 600; color: #333; }
 .other .ln { position: absolute; left: 24px; height: 10px; border-radius: 5px; background: rgb(214,214,220); }
 .split { position: absolute; top: 0; bottom: 0; width: 6px; margin-left: -3px; background: #000; z-index: 8; }
 .split div { position: absolute; left: 1px; top: 50%; width: 4px; height: 40px; margin-top: -20px; border-radius: 2px; background: rgba(255,255,255,.6); }
 </style></head>
 <body>
 <script>
-// The icons and the colors of ui/pad/icons.rs and ui/pad/theme.rs.
-const P = {
-  Folder: "M3 5h6l2 3h10v11H3z",
-  World: "M12 3c4.97 0 9 4.03 9 9s-4.03 9-9 9-9-4.03-9-9 4.03-9 9-9zM12 3c2.5 2.5 3.5 5.5 3.5 9s-1 6.5-3.5 9c-2.5-2.5-3.5-5.5-3.5-9s1-6.5 3.5-9zM3 12h18",
-  Book: "M3 5h6c1.66 0 3 1.34 3 3v12c0-1.1-.9-2-2-2H3zM21 5h-6c-1.66 0-3 1.34-3 3v12c0-1.1.9-2 2-2h7z",
-  Undo: "M8 5L3 10l5 5M3 10h11c3.04 0 5.5 2.46 5.5 5.5s-2.46 5.5-5.5 5.5h-3",
-  Redo: "M16 5l5 5-5 5M21 10H10c-3.04 0-5.5 2.46-5.5 5.5s2.46 5.5 5.5 5.5h3",
-  Panels: "M3 4h18v16H3zM3 9h18M10 9v11", Dock: "M3 4h18v16H3zM14 4v16M16.5 8h2M16.5 11h2",
-  Raise: "M3 18c4 0 5-11 9-11s5 11 9 11", Carve: "M3 7c4 0 5 9 9 9s5-9 9-9M12 16v5", Line: "M4 18c4-10 8 2 16-12",
-  Select: "M5 3l14 8-6 2-2 6z",
-  Move: "M12 3v18M3 12h18M12 3l-3 3M12 3l3 3M12 21l-3-3M12 21l3-3M3 12l3-3M3 12l3 3M21 12l-3-3M21 12l-3 3",
-  Measure: "M3 17L17 3l4 4L7 21zM7 13l2 2M10 10l3 3M13 7l2 2",
-  Frame: "M6 6h12v12H6zM3 3h4v4H3zM17 3h4v4h-4zM3 17h4v4H3zM17 17h4v4h-4z", TextCursor: "M9 4h6M9 20h6M12 4v16",
-  Vertex: "M4 18L10 8l10 4M2 16h4v4H2zM8 6h4v4H8zM18 10h4v4h-4z",
-  Magnet: "M5 4h4v8c0 1.66 1.34 3 3 3s3-1.34 3-3V4h4v8c0 3.87-3.13 7-7 7s-7-3.13-7-7zM5 8h4M15 8h4",
-  LayoutGrid: "M4 4h16v16h-16zM4 9.33h16M4 14.67h16M9.33 4v16M14.67 4v16",
-  Trash: "M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6", Close: "M6 6l12 12M18 6L6 18",
-  Brush: "M5 4v16M12 4v16M19 4v16", Layers: "M12 4l9 5-9 5-9-5zM3 14l9 5 9-5", Plus: "M12 5v14M5 12h14",
-  Eye: "M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z", Open: "M9 6l6 6-6 6", Back: "M15 6l-6 6 6 6", Down: "M6 9l6 6 6-6",
-  Polygon: "M5 7l8-3 6 6-3 9-9-1z", Point: "",
-  Properties: "M4 6h9M17 6h3M15 4v4M4 12h3M11 12h9M9 10v4M4 18h11M19 18h1M17 16v4",
-};
-const C = { Eye: [[12,12,3]], Point: [[12,12,3]], Brush: [[5,9,2],[12,15,2],[19,8,2]] };
-const ic = n => `<svg class="i" viewBox="0 0 24 24"><path d="${P[n]}"/>${(C[n]||[]).map(c=>`<circle cx="${c[0]}" cy="${c[1]}" r="${c[2]}"/>`).join("")}</svg>`;
-const b = (n, cls = "") => `<div class="b ${cls}">${ic(n)}</div>`;
-const box = (x, y, w, h, extra = "") => `left:${x}px;top:${y}px;width:${w}px;height:${h}px;${extra}`;
-
-// The poses. The hinge is vertical in landscape and horizontal in portrait.
+// Each screen is a picture of vale-app at the size of its pose, from assets/, with the
+// changes of iPhone Duo on top. The hinge is vertical in landscape and horizontal in portrait.
 const POSES = {
-  "outer-portrait":   { w: 466, h: 678, side: "right", outer: true },
-  "outer-landscape":  { w: 678, h: 466, side: "left", outer: true },
-  "inner-portrait":   { w: 669, h: 951, side: "top", hinge: "h" },
-  "inner-landscape":  { w: 951, h: 669, side: "right", hinge: "v", dock: true },
-  "split":            { w: 951, h: 669, side: "left", hinge: "v", split: true },
-  "tabletop":         { w: 669, h: 951, side: "top", hinge: "h", folded: true },
-  "book":             { w: 951, h: 669, side: "right", hinge: "v", dock: true, folded: true },
+  "outer-portrait":  { w: 466, h: 678, camera: "right" },
+  "outer-landscape": { w: 678, h: 466, camera: "left" },
+  "inner-portrait":  { w: 669, h: 951, hinge: "h" },
+  "inner-landscape": { w: 951, h: 669, hinge: "v" },
+  "split":           { w: 951, h: 669, split: 476 },
+  "tabletop":        { w: 669, h: 951, hinge: "h", folded: true, pic: "inner-portrait" },
+  "book":            { w: 951, h: 669, hinge: "v", folded: true, pic: "inner-landscape" },
 };
-const TOP = 24, BOTTOM = 34, SIDE = 84, COL = 56, FOLD = 28;   // FOLD is a drawing value, not a device value.
+const FOLD = 28;   // A drawing value. The device gives the size of the folding region.
+const ROW = { y: 28, h: 52 };   // The top row, 4 points below the top band.
 
-const id = location.hash.slice(1);
-const atlas = id.startsWith("atlas-");
-const pose = POSES[id.replace(/^(globe|atlas)-/, "")];
-const W = pose.split ? 476 : pose.w, H = pose.h;               // Vale has the left half in Split View.
-document.body.style.cssText = `width:${pose.w}px;height:${H}px`;
-let h = "";
+const name = location.hash.slice(1);
+const ws = name.split("-")[0];
+const pose = POSES[name.slice(ws.length + 1)];
+const W = pose.w, H = pose.h;
+document.body.style.cssText = `width:${W}px;height:${H}px`;
+const box = (x, y, w, h) => `left:${x}px;top:${y}px;width:${w}px;height:${h}px;`;
+const src = `assets/${ws}-${pose.pic ?? name.slice(ws.length + 1)}.png`;
+const pw = pose.split ?? W;
+// A part of a picture, from (sx, sy) to (x, y), at a scale.
+const crop = (file, sx, sy, w, h, x, y, k = 1, extra = "") =>
+  `<div class="pic" style="${box(x, y, w * k, h * k)}background-image:url(${file});background-size:${pw * k}px ${H * k}px;background-position:${-sx * k}px ${-sy * k}px;${extra}"></div>`;
+let out = `<div class="pic" style="${box(0, 0, pw, H)}background-image:url(${src});background-size:100% 100%"></div>`;
 
-// The folding region, or the hinge of a device that is open flat.
-const hingeX = pose.hinge === "v" ? pose.w / 2 : null, hingeY = pose.hinge === "h" ? H / 2 : null;
-const foldA = pose.folded ? (hingeX ?? hingeY) - FOLD / 2 : null, foldB = pose.folded ? foldA + FOLD : null;
-
-// The side column, the top row, and the tool column.
-const sideX = pose.side === "left" ? 0 : pose.side === "right" ? W - SIDE : null;
-const colX = pose.side === "left" ? SIDE : 0;
-const colRight = colX + COL;
-const right = pose.side === "right" ? W - SIDE : W;
-const ws = (atlas ? b("World") + b("Book", "on") : b("World", "on") + b("Book"));
-const acts = b("Undo") + b("Redo", "dim");
-const panels = b("Panels") ;
-const dockB = pose.dock ? b("Dock", "acc") : "";
-let colTop = TOP;
-if (sideX !== null) {
-  h += `<div class="glass vcol" style="${box(sideX, 0, SIDE, H, `justify-content:space-between;padding:${pose.outer ? 0 : TOP + 4}px 0 ${BOTTOM + 6}px;border-radius:${pose.side === "right" ? "16px 0 0 16px" : "0 16px 16px 0"}`)}">
-    <div class="vcol" style="padding:0">${pose.outer ? `<div class="cam"><div></div></div>` : ""}${b("Folder")}<div class="hr"></div>${ws}</div>
-    <div class="vcol" style="padding:0">${acts}<div class="hr"></div>${panels}${dockB}</div></div>`;
-} else {
-  const y = TOP + 4;
-  h += `<div class="glass hrow" style="${box(0, y, 0, 52, "width:auto;border-radius:0 16px 16px 0;border-left:none")}">${b("Folder")}<div class="vr"></div>${ws}</div>`;
-  h += `<div class="glass hrow" style="${box(0, y, 0, 52, `width:auto;left:auto;right:0;border-radius:16px 0 0 16px;border-right:none`)}">${acts}<div class="vr"></div>${panels}</div>`;
-  colTop = y + 52 + 12;
+// The card of the top row at the corner of the camera moves along the row, out of the region of the camera.
+if (pose.camera) {
+  const cx = pose.camera === "right" ? W - 42 : 42, cy = 24, clear = 65;
+  // The width of the card at the corner, measured on the picture.
+  const cw = { "outer-portrait": 161, "outer-landscape": 149 }[name.slice(ws.length + 1)];
+  const sx = pose.camera === "right" ? W - cw : 0;
+  const x = pose.camera === "right" ? W - clear - cw : clear;
+  // The cover also hides the shadow of the card.
+  out += `<div class="cover" style="${box(sx - (pose.camera === "right" ? 16 : 0), ROW.y - 12, cw + 16, ROW.h + 18)}"></div>`;
+  out += crop(src, sx, ROW.y, cw, ROW.h, x, ROW.y, 1, "border-radius:16px;overflow:hidden");
+  out += `<div class="cam" style="left:${cx}px;top:${cy}px"><div></div></div>`;
 }
 
-// The dock or the sheet.
-const DOCK = 340;
-let sheetTop = null, dockX = null;
-if (pose.dock) {
-  const room = right - foldB;
-  const dw = pose.folded ? Math.min(DOCK, room) : DOCK;
-  dockX = right - dw;
-} else {
-  sheetTop = pose.outer || pose.split ? Math.round(H / 2) : (pose.folded ? foldB : hingeY);
+// In the folded portrait pose, the tool column and the dock have a gap at the folding region.
+const mid = pose.hinge === "v" ? W / 2 : H / 2, a = mid - FOLD / 2;
+if (pose.folded && pose.hinge === "h") {
+  const behind = `assets/${ws}-inner-portrait-behind.png`;
+  const end = H - 34 - 8;
+  for (const [x0, x1] of [[0, 56], [323, W]]) {
+    out += crop(behind, x0, a, x1 - x0, FOLD, x0, a);
+    out += crop(src, x0, a, x1 - x0, end - a - FOLD, x0, a + FOLD);
+  }
 }
 
-// The canvas: the globe, or the page of the Atlas workspace in the free part of the canvas.
-const lowEdge = pose.folded && pose.hinge === "h" ? foldA : sheetTop ?? H - BOTTOM;
-const roY = lowEdge - 8 - 52;
-const free = { x0: colRight, x1: dockX ?? right, y0: colTop, y1: roY - 8 };
-if (pose.folded && pose.hinge === "v") free.x1 = Math.min(free.x1, foldA);
-if (pose.side === "top") free.y0 = colTop - 8;
-if (!atlas) {
-  // The globe of ../pad-layout/assets/globe.png: a disc of radius 302 at the middle of 1194 by 834 points.
-  const cx = pose.split ? 238 : pose.w / 2, cy = H / 2, r = Math.min(pose.split ? 476 : pose.w, H) * 0.42, k = r / 302;
-  h += `<div class="globe" style="${box(cx - r, cy - r, 2 * r, 2 * r, `background-size:${1194 * k}px ${834 * k}px;background-position:${-295 * k}px ${-115 * k}px`)}"></div>`;
-} else {
-  const fw = free.x1 - free.x0 - 24, fh = free.y1 - free.y0 - 24;
-  const pw = Math.min(fw, fh * 297 / 210), ph = pw * 210 / 297;
-  const px = (free.x0 + free.x1) / 2 - pw / 2, py = (free.y0 + free.y1) / 2 - ph / 2;
-  h += `<div class="page" style="${box(px, py, pw, ph)}"><div class="frame sel"></div></div>`;
-  const fx0 = px + pw * .07, fx1 = px + pw * .93, fy0 = py + ph * .09, fy1 = py + ph * .91;
-  for (const [x, y] of [[fx0,fy0],[fx1,fy0],[fx0,fy1],[fx1,fy1],[(fx0+fx1)/2,fy0],[(fx0+fx1)/2,fy1],[fx0,(fy0+fy1)/2],[fx1,(fy0+fy1)/2]])
-    h += `<div class="h" style="left:${x}px;top:${y}px"></div>`;
+// In the folded landscape pose, the page fits at the left of the folding region.
+if (pose.folded && pose.hinge === "v" && ws === "atlas") {
+  const p = { x: 60, y: 148, w: 502, h: 359 };   // The page and its handles, measured on the picture.
+  const room = a - 56 - 24, k = room / p.w;
+  out += `<div class="cover" style="${box(p.x, p.y, p.w, p.h)}"></div>`;
+  out += crop(src, p.x, p.y, p.w, p.h, 56 + 12, (p.y + p.h / 2) - p.h * k / 2, k);
 }
 
-// The tool column. The brush sliders show where the column has room for them.
-const vsl = (n, v, f, len) => `<div class="vsl"><div class="val">${v}</div><div class="tk" style="height:${len}px"><div style="height:${f}%"></div></div><div class="nm">${n}</div></div>`;
-const cells = atlas
-  ? b("Frame", "tri") + b("TextCursor", "tri") + b("Select", "on") + b("Vertex") + b("Move") + b("Measure")
-  : b("Raise", "on tri") + b("Carve", "tri") + b("Line", "tri") + b("Select") + b("Move") + b("Measure");
-const colBottom = H - BOTTOM - 8;
-let controls = [], ctlH = [];
-if (atlas) { controls = [b("Magnet", "on"), b("LayoutGrid"), b("Trash"), b("Close")]; ctlH = [46, 46, 46, 46]; }
-else {
-  const room = colBottom - colTop - 12 - 6 * 46 - 13 - 46 - (pose.folded && pose.hinge === "h" ? FOLD : 0);
-  const len = Math.min(120, Math.floor((room - 2 * 38 - 8) / 2));
-  if (len >= 90) { controls = [vsl("Size", "120 km", 38, len), vsl("Flow", "72 %", 72, len)]; ctlH = [len + 38, len + 38]; }
-  controls.push(b("Brush")); ctlH.push(46);
-}
-// In a fold, the column has a gap at the folding region.
-const part = (y, inner) => `<div class="glass vcol" style="${box(colX, y, COL, 0, `height:auto;border-radius:0 16px 16px 0;${colX ? "" : "border-left:none"}`)}">${inner}</div>`;
-let first = cells + `<div class="hr"></div>`, second = "", y = colTop + 6 + 6 * 46 + 13;
-for (let i = 0; i < controls.length; i++) {
-  if (pose.folded && pose.hinge === "h" && !second && y + ctlH[i] > foldA) second = " ";
-  if (second) second += controls[i]; else { first += controls[i]; y += ctlH[i]; }
-}
-h += part(colTop, first);
-if (second) h += part(foldB, second.trim());
-
-// The readout or the page card, above the sheet.
-h += atlas
-  ? `<div class="glass ro" style="left:${colRight + 16}px;top:${roY}px;border-radius:14px;padding:0 4px">${b("Back", "dim")}<span style="padding:0 6px;font-size:15px">Page 1 of 1</span>${b("Open", "dim")}</div>`
-  : `<div class="glass ro" style="left:${colRight + 16}px;top:${roY}px;border-radius:14px">${b("World")}<div class="vr"></div><div class="sb"><div class="l"><div></div><div></div><div></div><div></div></div><div class="t"><span>0</span><span>2000 km</span></div></div></div>`;
-
-// The panel: Layers in the World workspace, and Properties of a map frame in the Atlas workspace.
-const lr = (k, n, sel) => `<div class="r ${sel ? "sel" : ""}"><div class="thumb">${k === "r" ? `<div class="ras"></div>` : ic(k)}</div><div class="n">${n}</div>${b("Eye")}${b("Open")}</div>`;
-const pr = (k, v) => `<div class="r"><div class="k">${k}</div>${v}</div>`;
-const rows = atlas
-  ? pr("Name", `<div class="in">Map</div>`) + pr("Map style", `<div class="n"></div><div class="v">None</div>${b("Open")}`)
-    + pr("Shape", `<div class="seg"><div class="on">Rectangle</div><div>Polygon</div></div>`) + pr("Scale", `<div class="n"></div><div class="v" style="margin-right:12px">1:200,000,000</div>`)
-    + pr("Longitude", `<div class="n"></div><div class="v" style="margin-right:12px">0°</div>`) + pr("Latitude", `<div class="n"></div><div class="v" style="margin-right:12px">0°</div>`)
-  : lr("r", "Height", true) + lr("Polygon", "Land") + lr("Line", "Rivers") + lr("Point", "Places");
-const title = atlas ? `${ic("Properties")}<div class="t">Properties</div><div class="v" style="color:rgb(174,181,190);font-size:15px">Map</div>` : `${ic("Layers")}<div class="t">Layers</div>`;
-if (pose.dock) {
-  const dh = atlas ? 48 + 6 * 48 + 24 : 48 + 4 * 48 + 24;
-  h += `<div class="glass" style="${box(dockX, TOP, right - dockX, dh, "display:flex;flex-direction:column;border-radius:14px 0 0 14px;border-right:none;overflow:visible")}">
-    <div class="grip"><div></div></div><div class="ph">${title}${b("Down")}${atlas ? "" : b("Plus")}</div>${rows}<div class="bar"><div></div></div></div>`;
-} else {
-  const sx = colRight, sw = right - colRight;
-  h += `<div class="glass" style="${box(sx, sheetTop, sw, H - sheetTop, "display:flex;flex-direction:column;border-radius:18px 18px 0 0;border-bottom:none;overflow:hidden;z-index:7")}">
-    <div style="display:flex;justify-content:center;padding-top:6px"><div class="grab"></div></div><div class="ph" style="height:42px">${title}${atlas ? "" : b("Plus")}${b("Close")}</div>${rows}</div>`;
+// In the folded portrait pose, the page fits in the upper part, at the left of the dock.
+if (pose.folded && pose.hinge === "h" && ws === "atlas") {
+  const p = { x: 60, y: 388, w: 222, h: 162 };   // The page and its handles, measured on the picture.
+  out += `<div class="cover" style="${box(p.x, p.y, p.w, p.h)}"></div>`;
+  out += crop(src, p.x, p.y, p.w, p.h, p.x, (92 + a) / 2 - p.h / 2);
 }
 
-// The other app of Split View, with its side column at its outer edge.
+// The other app of Split View.
 if (pose.split) {
-  h += `<div class="other" style="${box(476, 0, pose.w - 476, H)}"><div class="t">Notes</div>${[90, 120, 150, 210, 240, 270, 330, 360].map((t, i) => `<div class="ln" style="top:${t}px;width:${[260, 300, 220, 280, 240, 300, 200, 260][i]}px"></div>`).join("")}<div class="sc"></div></div>`;
-  h += `<div class="split" style="left:476px"><div></div></div>`;
+  out += `<div class="other" style="${box(pose.split, 0, W - pose.split, H)}"><div class="t">Notes</div>` +
+    [100, 130, 160, 220, 250, 280, 340, 370].map((t, i) => `<div class="ln" style="top:${t}px;width:${[260, 300, 220, 280, 240, 300, 200, 260][i]}px"></div>`).join("") + `</div>`;
+  out += `<div class="split" style="left:${pose.split}px"><div></div></div>`;
 }
 
-// The hinge of a flat device is a dashed line. A fold is a hatched band.
-if (pose.folded) h += pose.hinge === "v"
-  ? `<div class="fold" style="${box(foldA, 0, FOLD, H)}"></div>` : `<div class="fold" style="${box(0, foldA, pose.w, FOLD)}"></div>`;
-else if (pose.hinge && !pose.split) h += pose.hinge === "v"
-  ? `<div class="hinge" style="${box(hingeX, 0, 0, H, "border-left-width:1px")}"></div>` : `<div class="hinge" style="${box(0, hingeY, pose.w, 0, "border-top-width:1px")}"></div>`;
+// A dashed line is the hinge of a flat device, and a hatched band is the folding region.
+if (pose.folded) out += pose.hinge === "v" ? `<div class="fold" style="${box(a, 0, FOLD, H)}"></div>` : `<div class="fold" style="${box(0, a, W, FOLD)}"></div>`;
+else if (pose.hinge) out += pose.hinge === "v"
+  ? `<div class="hinge" style="${box(mid, 0, 0, H)}border-left-width:1px"></div>` : `<div class="hinge" style="${box(0, mid, W, 0)}border-top-width:1px"></div>`;
 
-document.body.insertAdjacentHTML("beforeend", h);
+document.body.insertAdjacentHTML("beforeend", out);
 </script>
 </body></html>

@@ -715,38 +715,17 @@ A visible status bar adds to the safe area. On the outer screen and on the inner
 
 The device opens like a book, so the outer screen in portrait is one half of the inner screen in landscape. The hinge is vertical on the inner screen in landscape and horizontal in portrait. When the device is partially folded, the system reserves a folding region along the hinge, and the region divides the inner screen into two parts.
 
-On iPhone Duo, the pose chooses the layout, and the width of 600 points does not. The system puts its bars in a side column on the outer screen and on the inner screen in landscape. Vale puts the controls of its top row in a side column on the same edge. On the inner screen in portrait, the system keeps its bars at the top, so Vale keeps the top row. The parts of the layout have these places:
+On iPhone Duo, Vale keeps the layout of its width in each pose, with the top row at the top. The outer screen in portrait is below 600 points wide, so it has the iPhone layout. The outer screen in landscape and the inner screen in both orientations have the medium layout of the iPad, with the tool column at the left edge and the dock at the right edge. In Split View, each app has one half of the inner screen in landscape, so Vale is below 600 points wide and has the iPhone layout.
 
-| Pose | Top row | Tool column | Dock |
-|---|---|---|---|
-| Outer screen, portrait | Side column at the right edge | Left edge | Sheet |
-| Outer screen, landscape | Side column at the left edge | At the right of the side column | Sheet |
-| Inner screen, portrait | Top row | Left edge | Sheet that opens to the hinge |
-| Inner screen, landscape | Side column at the right edge | Left edge | Card at the left of the side column |
-| Split View | Side column at the outer edge of the app | Left edge, or at the right of the side column | Sheet |
+The outer camera is in a top corner of the outer screen, and the system reserves a region around it. The app gets the region from the system. On the outer screen in portrait, the camera is at the top right, so the card of the actions ends at the left of the region. On the outer screen in landscape, the camera is at the top left, so the card of the world menu starts at the right of the region. No other part moves.
 
-These rules apply to the layout of iPhone Duo:
+The parts of the layout keep out of the folding region, so a fold changes the layout only a little:
 
-- The tool column is at the left edge in each pose, and it is never two rows at the bottom. If the side column is at the left edge, the tool column is at its right. With no top row, the tool column starts below the top band.
-- The side column is on the edge where the system puts its bars. On the outer screen, that edge has the outer camera. The app gets the edge from the system.
-- The side column is one card, as wide as the status bar column, 84 points, so its controls are on the axis of the outer camera. On the outer screen, the region of the camera is at the top of the column, and the controls are below it.
-- From the top, the side column holds the Worlds button, a divider, the World button, and the Atlas button. At the bottom, it holds Undo, Redo, a divider, the Panels button, and the Dock button. Thus the left end of the top row is at the top of the column, and the right end is at the bottom.
-- A menu or a popover of a button of the side column opens next to the column, at the height of the button. A tooltip shows at the side of the canvas.
-- The dock is a card only on the inner screen in landscape. There the dock and the side column share the right edge: the dock is at the left of the side column, and it touches the column. The dock starts below the top band. It collapses under the side column, and the slim tab is at the left edge of the column. The width handle is on the left edge of the dock.
-- In each other pose, the dock is the sheet, and the side column or the top row has no Dock button. The sheet spans from the tool column to the side column or to the edge. On the outer screen, it opens at half the height of the screen. On the inner screen in portrait, it opens to the hinge. You pull it up to the full height or down to its title row.
-- The readout is at the lower left of the canvas, at the right of the tool column. In the Atlas workspace, the page card is there. Both are above the sheet, and a sheet at the full height covers them.
-
-When the device opens or closes, the side column stays on the right edge, and the tool column stays on the left edge. Only the panels change their form. When the device opens, the sheet becomes the dock, and the dock shows the pane of the sheet. When the device closes, the dock becomes the sheet, and the sheet shows the pane of the last focus. The tool, the selection, and the view do not change.
-
-The layout of each inner pose keeps its parts out of the folding region, so a fold changes the layout only a little:
-
-- In landscape, the canvas is the left part, and the dock and the side column are in the right part. The dock is at most as wide as the room between the folding region and the side column. A wider dock gets narrower during the fold, and it gets its width back when the device opens flat.
-- In portrait, the top row and the canvas are in the upper part. The sheet opens to the lower edge of the folding region, so the lower part holds the panel. The readout and the page card are above the folding region. The tool column has a gap at the folding region: a cell or a control that is in the region moves below it.
-- A page of the Atlas workspace opens, and a double tap fits it, in the part of the canvas with no dock and no sheet. That is the left part in landscape and the upper part in portrait.
+- In landscape, the canvas is the left part, and the dock is in the right part. The dock is at most as wide as the right part. A wider dock gets narrower during the fold, and it gets its width back when the device opens flat.
+- In portrait, the top row is in the upper part. The tool column and the dock have a gap at the folding region: a cell, a control, or a row that is in the region moves below it.
+- A page of the Atlas workspace opens, and a double tap fits it, in one part of the canvas. That is the left part in landscape and the upper part in portrait.
 - If a card, a menu, or a popover crosses the folding region, it moves to the side of its control.
 - The globe and the flat map do not move.
-
-In Split View, each app has one half of the inner screen in landscape, and the hinge is between the two apps. Each app puts its side column on its outer edge. Vale is narrower than 600 points there, so it has the sheet. If Vale is the left app, it has the layout of the outer screen in landscape: the side column at the left edge, and the tool column at its right. If Vale is the right app, it has the layout of the outer screen in portrait.
 
 ### Desktop layout
 

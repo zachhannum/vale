@@ -21,17 +21,17 @@
 </head>
 <body>
 <h1>The layout of Vale on iPhone Duo</h1>
-<p class="lead">The chrome is HTML over pictures from <code>vale-app</code>. The side column holds the controls of the top row on the edge of the system bars. The tool column is at the left edge in each pose. The dock is a card only on the inner screen in landscape, and else it is the sheet. A dashed line is the hinge, and a hatched band is the folding region of a partially folded device.</p>
+<p class="lead">Each screen is a picture of <code>vale-app</code> at the size of its pose, with the changes of iPhone Duo drawn on top. Vale keeps the layout of its width in each pose. A dashed line is the hinge, a hatched band is the folding region of a partially folded device, and a dashed circle is the region of the outer camera.</p>
 <div id="screens"></div>
 <script>
 const poses = [
-  ["outer-portrait", 466, 678, "Outer screen, portrait", "The side column is at the right edge, below the outer camera. The sheet opens at half the height of the screen."],
-  ["outer-landscape", 678, 466, "Outer screen, landscape", "The side column is at the left edge, with the camera at its top, and the tool column is at its right. The screen is short, so the Brush panel holds the sliders."],
-  ["inner-portrait", 669, 951, "Inner screen, portrait", "The system keeps its bars at the top, so the top row stays. The sheet opens to the hinge, so the canvas has the upper half."],
-  ["inner-landscape", 951, 669, "Inner screen, landscape", "The dock and the side column share the right edge. The dock is at the left of the column, and it is right of the hinge."],
-  ["split", 951, 669, "Split View", "Vale is the left app, so its side column is at the left edge, as on the outer screen in landscape. The hinge is between the two apps."],
-  ["tabletop", 669, 951, "Partially folded, portrait", "The sheet opens below the folding region. The readout or the page card is above the region, and the tool column has a gap at the region."],
-  ["book", 951, 669, "Partially folded, landscape", "The canvas is the left part, and the dock and the side column are in the right part. A page fits at the left of the folding region."],
+  ["outer-portrait", 466, 678, "Outer screen, portrait", "The screen is below 600 points wide, so it has the iPhone layout. The card of the actions moves to the left of the camera."],
+  ["outer-landscape", 678, 466, "Outer screen, landscape", "The medium layout of the iPad. The card of the world menu moves to the right of the camera."],
+  ["inner-portrait", 669, 951, "Inner screen, portrait", "The medium layout of the iPad. The hinge is horizontal."],
+  ["inner-landscape", 951, 669, "Inner screen, landscape", "The medium layout of the iPad. The hinge is vertical, and the dock is right of it."],
+  ["split", 951, 669, "Split View", "Vale has one half of the inner screen, which is below 600 points wide, so it has the iPhone layout."],
+  ["tabletop", 669, 951, "Partially folded, portrait", "The tool column and the dock have a gap at the folding region. A page fits in the upper part."],
+  ["book", 951, 669, "Partially folded, landscape", "The dock already fits right of the folding region. A page fits in the left part."],
 ];
 const scale = 0.5;
 const root = document.getElementById("screens");

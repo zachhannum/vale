@@ -2,9 +2,7 @@
 
 These files show the layout of Vale on iPhone Duo in each pose, for the globe workspace and the Atlas workspace. The section "iPhone Duo" of `docs/DESIGN.md` gives the layout. `gallery.html` shows the pictures.
 
-`layout.html` draws the chrome in HTML over pictures from the app. The globe is `../pad-layout/assets/globe.png`, and `assets/map.png` is the map of the sample project. The chrome uses the colors of `ui/pad/theme.rs` and the icon paths of `ui/pad/icons.rs`. The panel rows are sample content.
-
-A dashed line is the hinge. A hatched band is the folding region of a partially folded device. The device gives the size of the region, and the pictures use 28 points.
+Vale keeps the layout of its width in each pose, so each screen starts from a picture of `vale-app` at the size of the pose. `layout.html` draws the changes of iPhone Duo on top: the card that moves away from the outer camera, the gap at the folding region, and the page that fits in one part of a folded screen. A dashed circle is the region of the outer camera. A dashed line is the hinge, and a hatched band is the folding region. The device gives the size and the place of both regions, and the pictures use a camera region of 30 points and a folding region of 28 points.
 
 ## Screens
 
@@ -12,28 +10,20 @@ The part of the URL after `#` chooses the screen, for example `layout.html#globe
 
 | Pose | Size in points | Content |
 | --- | --- | --- |
-| `outer-portrait` | 466 × 678 | The side column at the right edge, and the sheet. |
-| `outer-landscape` | 678 × 466 | The side column at the left edge, the tool column at its right, and the sheet. |
-| `inner-portrait` | 669 × 951 | The top row, and the sheet open to the hinge. |
-| `inner-landscape` | 951 × 669 | The dock at the left of the side column. |
-| `split` | 951 × 669 | Vale as the left app of Split View. |
+| `outer-portrait` | 466 × 678 | The iPhone layout, with the card of the actions at the left of the camera. |
+| `outer-landscape` | 678 × 466 | The medium layout, with the card of the world menu at the right of the camera. |
+| `inner-portrait` | 669 × 951 | The medium layout, with the hinge. |
+| `inner-landscape` | 951 × 669 | The medium layout, with the hinge. |
+| `split` | 951 × 669 | Vale as the left app of Split View, with the iPhone layout. |
 | `tabletop` | 669 × 951 | Portrait, partially folded. |
 | `book` | 951 × 669 | Landscape, partially folded. |
 
-The globe screens show the Raise brush and the Layers panel. The Atlas screens show a selected map frame and its Properties panel.
-
 ## Render the screens
 
-Run the script from the root of the repository. The variable `CHROME` gives the Chromium command, and the default is `chromium`.
+The pictures in `assets/` come from `vale-app`, at a pixel ratio of 2, with the safe area `0,0,34,0`. The globe screens have the Layers panel, and the globe screens of the iPhone layout have no panel. The Atlas screens have map frame 1 selected. The files with the suffix `-behind` have the dock collapsed, and they show the canvas in the gap at the folding region.
+
+This command renders the screens with Chromium. Run it from the root of the repository. The variable `CHROME` gives the Chromium command, and the default is `chromium`.
 
 ```sh
 docs/mockups/duo-layout/render.sh
-```
-
-The app draws its UI text in the Ubuntu Light font of egui. If the computer does not have that font, the page uses Noto Sans from `assets/fonts`.
-
-`assets/map.png` comes from this command:
-
-```sh
-cargo run --release -p vale-app -- --layout pad --map-only --screenshot map.png --size 862x782 --pixel-ratio 2
 ```
