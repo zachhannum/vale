@@ -1,20 +1,20 @@
 //! The basin brush.
 //!
-//! The brush makes a watershed from two strokes. The first stroke is the
-//! outline of the basin. The second stroke is the main river, from its source
-//! at the first point to its outlet, where the line leaves the outline or
-//! ends.
+//! The brush makes a watershed from an outline and one or more rivers. Each
+//! river goes from its source at the first point to its end. A river that
+//! comes near an earlier river joins it as a tributary. Another river has
+//! its own outlet, where the line leaves the outline or ends.
 //!
 //! The network of the rivers is on the coarse cells of one window. Each cell
-//! of the area drains to a neighbor that is nearer to the main river inside
-//! the area, so all the water of the network drains to the outlet.
+//! of the area drains to a neighbor that is nearer to a river inside the
+//! area, so all the water of the network drains to the outlets.
 //! Stream-power erosion with uplift runs to a steady state with the implicit
 //! solver of Braun and Willett (2013), and the steady state gives the relief
-//! of the basin above the main river. The relief has the height of the old
-//! ground above the main river, or the Height setting if that is more. The
-//! main river stays at or below the old ground. Finer levels then add rough ground at their scale and erode
-//! it, so the gullies of all sizes come from the erosion. Last, the rivers
-//! are cut into the texels as thin channels.
+//! of the basin above the rivers. The relief has the height of the old
+//! ground above the rivers, or the Height setting if that is more. The
+//! rivers stay at or below the old ground. Finer levels then add rough
+//! ground at their scale and erode it, so the gullies of all sizes come from
+//! the erosion. Last, the rivers are cut into the texels as thin channels.
 
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
@@ -3181,6 +3181,142 @@ mod tests {
         ];
         let line = BasinLine::new(spec(2.0, 7), &flat, N);
         assert!(!line.has_outline());
+    }
+
+    /// A basin in the outline of `outline_of(-20.0, 20.0, 0.0)`. Each river
+    /// goes through places of longitude and latitude, in degrees.
+    fn rivers_of(n: usize, spec: BasinSpec, rivers: &[&[(f64, f64)]]) -> BasinLine {
+        let mut line = BasinLine::new(spec, &outline_of(-20.0, 20.0, 0.0), n);
+        for places in rivers {
+            line.begin_river();
+            line.push(lonlat_to_dir(places[0].0, places[0].1));
+            for pair in places.windows(2) {
+                let ((x0, y0), (x1, y1)) = (pair[0], pair[1]);
+                let steps = ((x1 - x0).hypot(y1 - y0) / 0.25).ceil() as usize;
+                for k in 1..=steps {
+                    let t = k as f64 / steps as f64;
+                    line.push(lonlat_to_dir(x0 + (x1 - x0) * t, y0 + (y1 - y0) * t));
+                }
+            }
+        }
+        line
+    }
+
+    /// The cell where the water of a cell leaves the basin.
+    fn outlet_of(net: &BasinNet, i: usize) -> usize {
+        let mut at = i;
+        while net.receiver[at] != OUT {
+            let to = net.receiver[at] as usize;
+            assert!(net.inside[to], "cell {at} drains out of the basin");
+            at = to;
+        }
+        at
+    }
+
+    /// The main river along the equator, from 15 degrees west out of the
+    /// outline at 20 degrees east.
+    const TRUNK: &[(f64, f64)] = &[(-15.0, 0.0), (21.0, 0.0)];
+
+    #[test]
+    fn two_separate_rivers_each_keep_their_line_and_outlet() {
+        // The second river leaves the outline to the north.
+        let line = rivers_of(N, spec(2.0, 7), &[TRUNK, &[(5.0, 3.0), (5.0, 10.0)]]);
+        let net = basin(&ground(), &line).net.unwrap();
+        let side = net.window.cells;
+        let cell = cell_angle(&net.window);
+        assert_eq!(net.chains.len(), 2);
+        assert_eq!(net.ends, [OUT, OUT]);
+        for (k, chain) in net.chains.iter().enumerate() {
+            assert!(chain.len() >= 2, "river {k}");
+            for &c in chain {
+                let (d, _) = net.rivers[k].nearest(net.window.cell_dir(c % side, c / side));
+                assert!(d <= cell, "river {k} is {} cells off", d / cell);
+            }
+        }
+        let outlets = [
+            *net.chains[0].last().unwrap(),
+            *net.chains[1].last().unwrap(),
+        ];
+        let (_, lat) = dir_to_lonlat(net.window.cell_dir(outlets[1] % side, outlets[1] / side));
+        assert!(lat > 7.0, "the second outlet is at {lat} degrees");
+        let mut cells = [0; 2];
+        for i in (0..net.inside.len()).filter(|&i| net.inside[i]) {
+            let at = outlet_of(&net, i);
+            let k = outlets.iter().position(|&o| o == at);
+            cells[k.unwrap_or_else(|| panic!("cell {i} drains to {at}"))] += 1;
+        }
+        assert!(cells[1] * 10 > cells[0], "{cells:?}");
+    }
+
+    /// A tributary from the north that ends on the main river.
+    const TRIBUTARY: &[(f64, f64)] = &[(0.0, 6.5), (0.0, 0.0)];
+
+    #[test]
+    fn a_river_that_ends_on_another_joins_it() {
+        for n in [N, 2048] {
+            let line = rivers_of(n, spec(2.0, 7), &[TRUNK, TRIBUTARY]);
+            let net = basin(&ground_of(n), &line).net.unwrap();
+            let end = net.ends[1];
+            assert!(net.chains[0].contains(&(end as usize)), "face size {n}");
+            let levels: Vec<f64> = net.chains[1].iter().map(|&c| net.levels[c]).collect();
+            assert!(levels.windows(2).all(|w| w[1] < w[0]), "{levels:?}");
+            let last = levels[levels.len() - 1];
+            assert!(
+                last >= net.levels[end as usize] + RIVER_STEP,
+                "face size {n}"
+            );
+            let outlet = *net.chains[0].last().unwrap();
+            for i in (0..net.inside.len()).filter(|&i| net.inside[i]) {
+                assert_eq!(outlet_of(&net, i), outlet, "face size {n}, cell {i}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_river_outside_the_outline_is_not_used() {
+        let ground = ground();
+        let alone = basin(&ground, &rivers_of(N, spec(2.0, 7), &[TRUNK]));
+        let outside: &[(f64, f64)] = &[(30.0, 0.0), (40.0, 0.0)];
+        let both = basin(&ground, &rivers_of(N, spec(2.0, 7), &[outside, TRUNK]));
+        assert_eq!(both.net.as_ref().unwrap().chains.len(), 1);
+        assert!(alone.rects == both.rects);
+    }
+
+    #[test]
+    fn a_river_that_starts_on_another_has_its_source_off_it() {
+        let line = rivers_of(N, spec(2.0, 7), &[TRUNK, &[(0.0, 0.0), (0.0, 10.0)]]);
+        let net = basin(&ground(), &line).net.unwrap();
+        let cell = cell_angle(&net.window);
+        let source = net.rivers[1].points().next().unwrap();
+        let (d, _) = net.rivers[0].nearest(source);
+        assert!(
+            d > JOIN * cell && d < (JOIN + 1.0) * cell,
+            "{} cells",
+            d / cell
+        );
+        assert_eq!(net.ends[1], OUT);
+        let side = net.window.cells;
+        let first = net.chains[1][0];
+        assert!(!net.chains[0].iter().any(|&c| touch(side, c, first)));
+    }
+
+    #[test]
+    fn each_river_is_cut_into_the_texels() {
+        let ground = ground();
+        let line = rivers_of(N, spec(2.0, 7), &[TRUNK, TRIBUTARY]);
+        let after = apply(&ground, &basin(&ground, &line));
+        let texel = 90.0 / N as f64;
+        let at = |lon: f64| f64::from(after.sample(lonlat_to_dir(lon, 3.0)));
+        let bed = (-2..=2)
+            .map(|k| at(0.5 * texel * f64::from(k)))
+            .fold(f64::MAX, f64::min);
+        for side in [-4.0, 4.0] {
+            let bank = at(side * texel);
+            assert!(
+                bed < bank,
+                "the bed is {bed}, the ground {side} texels to the side {bank}"
+            );
+        }
     }
 
     /// Writes a hillshade of a basin to `target/basin-<n>.pgm`, on a grid of
