@@ -936,14 +936,14 @@ fn a_save_that_failed_shows_a_banner_at_the_top_in_both_workspaces_of_the_ipad_l
     create(dir.path(), "Borea");
     let mut h = start(dir.path(), Layout::Pad);
     click(&mut h, "Open Borea");
-    assert_eq!(h.state().pad.save_banner, None);
+    assert_eq!(h.state().pad.banner, None);
     // A save that runs shows nothing.
     h.state_mut().doc.project.world.name = "Cassia".to_string();
     let now = Instant::now();
     h.state_mut().save_tick(false, now);
     run(&mut h);
     assert_eq!(h.state().save_mark(now), Some(SaveMark::Saving));
-    assert_eq!(h.state().pad.save_banner, None);
+    assert_eq!(h.state().pad.banner, None);
     // The folder takes no new file, so the save fails.
     let mode = |m| std::fs::Permissions::from_mode(m);
     std::fs::set_permissions(dir.path(), mode(0o555)).unwrap();
@@ -953,7 +953,7 @@ fn a_save_that_failed_shows_a_banner_at_the_top_in_both_workspaces_of_the_ipad_l
     for workspace in [Workspace::Globe, Workspace::Atlas] {
         h.state_mut().workspace = workspace;
         run(&mut h);
-        let banner = h.state().pad.save_banner.expect("a banner");
+        let banner = h.state().pad.banner.expect("a banner");
         let rects = h.state().pad.rects.unwrap();
         // The banner is at the top center, below the top row.
         assert_eq!(banner.top(), rects.column_top, "{workspace:?}");

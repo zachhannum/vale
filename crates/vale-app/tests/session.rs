@@ -3,9 +3,10 @@ mod images;
 use std::time::Instant;
 
 use vale_app::document::Document;
+use vale_app::memory;
 use vale_app::pipeline::Quality;
 use vale_app::session::{SAVE_DELAY, Session, latest_project, new_project_path, worlds};
-use vale_app::ui::{Action, AppState, LayerRef, RasterSpec};
+use vale_app::ui::{Action, AppState, LayerRef, RasterSpec, Workspace};
 use vale_store::{
     GeometryKind, Hillshade, Project, ProjectFile, RasterDisplay, RasterId, Smoothing, Units, World,
 };
@@ -1095,6 +1096,106 @@ fn a_layer_that_is_not_the_brush_layer_holds_only_its_reduced_tiles() {
     state.select(Some(LayerRef::Raster(height)));
     assert_eq!(state.globe.raster(), Some(height));
     assert!(state.globe.raster_map(rain).is_some() && state.globe.can_undo());
+}
+
+#[test]
+fn the_brush_layer_frees_its_whole_heightmap_outside_the_globe_workspace() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut state, height, _) = large_world(&dir.path().join("project.gpkg"));
+    paint_layer(&mut state, height, 45.0, 35.3);
+    let mut wanted = state.globe.map.snapshot();
+    assert!(state.globe.raster_map(height).is_some());
+    assert!(state.globe.has_full_copy());
+
+    // In the Atlas workspace, the brush paints no layer, and the layer
+    // shows from its reduced heightmap.
+    state.workspace = Workspace::Atlas;
+    state.pump_layers(true);
+    assert_eq!(state.globe.raster(), None);
+    assert!(state.globe.raster_map(height).is_none());
+    assert!(!state.globe.has_full_copy());
+    assert_eq!(state.globe.display_map(height).unwrap().face_size(), 2048);
+    assert!(same_tiles(&stored_map(&state, height), &wanted));
+    // A change of the layers in the Atlas does not give the layer back.
+    state.sync_globe();
+    state.pump_layers(true);
+    assert_eq!(state.globe.raster(), None);
+
+    // Back in the globe workspace, the brush paints the layer again, from
+    // its saved texels.
+    state.workspace = Workspace::Globe;
+    state.pump_layers(true);
+    assert_eq!(state.globe.raster(), Some(height));
+    assert!(state.globe.has_full_copy());
+    assert!(state.globe.paintable, "the raster tools are on");
+    assert!(same_tiles(&state.globe.map, &wanted));
+    paint_layer(&mut state, height, -100.0, 5.0);
+    paint(&mut wanted, -100.0, 5.0, 0.1);
+    assert!(same_tiles(&stored_map(&state, height), &wanted));
+}
+
+#[test]
+fn a_whole_heightmap_that_does_not_fit_in_the_memory_does_not_load() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut state, height, rain) = large_world(&dir.path().join("project.gpkg"));
+    paint_layer(&mut state, height, 45.0, 35.3);
+    paint_layer(&mut state, rain, 10.0, -40.0);
+    assert!(state.globe.raster_map(height).is_none());
+
+    // The height layer needs more memory than the system still gives.
+    let short = memory::heightmap_bytes(4096) + memory::RESERVE - 1;
+    memory::set_test_available(Some(short));
+    state.select(Some(LayerRef::Raster(height)));
+    state.pump_layers(true);
+    assert_eq!(state.globe.raster(), None);
+    assert!(state.globe.raster_map(height).is_none());
+    assert!(
+        state.globe.raster_map(rain).is_none(),
+        "the rain layer is saved and released"
+    );
+    assert_eq!(state.status, "Not enough memory to paint Height");
+    let note = state
+        .memory_note
+        .as_ref()
+        .map(|(id, text)| (*id, text.as_str()));
+    assert_eq!(note, Some((height, "Not enough memory to paint Height")));
+    assert!(!state.globe.paintable, "the raster tools are off");
+
+    // With enough memory, the layer loads.
+    memory::set_test_available(Some(short + 1));
+    state.sync_globe();
+    state.pump_layers(true);
+    assert_eq!(state.globe.raster(), Some(height));
+    assert_eq!(state.memory_note, None);
+    memory::set_test_available(None);
+}
+
+#[test]
+fn after_the_atlas_a_heightmap_that_does_not_fit_frees_the_caches_of_the_atlas_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut state, height, _) = large_world(&dir.path().join("project.gpkg"));
+    paint_layer(&mut state, height, 45.0, 35.3);
+    state.workspace = Workspace::Atlas;
+    state.pump_layers(true);
+
+    // The first refusal frees the caches of the Atlas and waits for the
+    // GPU. The next one says that the memory is not enough.
+    let short = memory::heightmap_bytes(4096) + memory::RESERVE - 1;
+    memory::set_test_available(Some(short));
+    state.workspace = Workspace::Globe;
+    state.pump_layers(true);
+    assert_eq!(state.globe.raster(), None);
+    assert_eq!(state.memory_note, None);
+    state.sync_globe();
+    state.pump_layers(true);
+    assert!(state.memory_note.is_some());
+
+    // When the memory is there, the layer loads at the next pass.
+    memory::set_test_available(None);
+    state.sync_globe();
+    state.pump_layers(true);
+    assert_eq!(state.globe.raster(), Some(height));
+    assert_eq!(state.memory_note, None);
 }
 
 #[test]

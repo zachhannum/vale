@@ -32,6 +32,14 @@ impl MapRenderer {
             egui: render_state.renderer.clone(),
         })
     }
+
+    /// Makes a new renderer, so that the buffers of the old one go away.
+    /// The shaders compile again.
+    pub fn renew(&mut self) {
+        if let Ok(renderer) = GpuRenderer::new(&self.device) {
+            self.renderer = renderer;
+        }
+    }
 }
 
 /// A texture of a display list.

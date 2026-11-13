@@ -321,7 +321,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     if state.pad.worlds.is_some() {
         worlds_menu(&ctx, state, &mut controls, &rects);
     }
-    readout::save_banner(&ctx, state, &rects);
+    readout::banner(&ctx, state, &rects);
     super::dock_ui::handle(&ctx, state, &mut controls, &rects);
 
     // The page fits the space between the cards. The dock floats over the

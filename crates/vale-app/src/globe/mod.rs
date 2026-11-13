@@ -932,6 +932,9 @@ pub struct Globe {
     /// The raster layer that the brush paints after the stroke or the
     /// import that runs.
     pending: Option<Option<RasterId>>,
+    /// The brush paints no raster layer while the app shows another
+    /// workspace. This is the layer that the brush paints after `wake`.
+    resting: Option<Option<RasterId>>,
     /// The count of the heightmaps that the GPU got.
     generations: u64,
     /// The full heightmap of `map` on the GPU. `None`: the GPU holds none.
@@ -1132,6 +1135,7 @@ impl Globe {
             raster_masks: Vec::new(),
             frame_mask_rasters: Vec::new(),
             pending: None,
+            resting: None,
             generations: 0,
             full: None,
             full_loaded: false,
@@ -1348,11 +1352,47 @@ impl Globe {
         true
     }
 
+    /// Takes the whole heightmap from the brush, while the app shows a
+    /// workspace where the brush does not paint. The heightmap goes back to
+    /// its raster layer, and the copy on the GPU goes away. After a save,
+    /// `release_saved` takes the heightmap from the main memory.
+    pub fn rest(&mut self) {
+        if self.resting.is_some() {
+            return;
+        }
+        self.resting = Some(self.pending.unwrap_or(self.raster));
+        self.activate(None);
+    }
+
+    /// Gives the brush the raster layer that it painted before `rest`.
+    /// If the main memory no longer has the whole heightmap of the layer,
+    /// `load_request` asks for it.
+    pub fn wake(&mut self) {
+        let Some(id) = self.resting.take() else {
+            return;
+        };
+        let id = id.filter(|id| self.holds(*id));
+        if id.is_some() {
+            self.activate(id);
+        }
+    }
+
+    /// True if the GPU keeps a copy of the whole heightmap of the brush.
+    pub fn has_full_copy(&self) -> bool {
+        self.full.is_some()
+    }
+
+    /// True between `rest` and `wake`.
+    pub fn is_resting(&self) -> bool {
+        self.resting.is_some()
+    }
+
     /// Tells the globe if the app wants the brush to paint the raster layer
     /// of the last `activate`.
     pub fn set_paintable(&mut self, paintable: bool) {
         self.paint_wanted = paintable;
-        self.paintable = paintable && self.pending.is_none();
+        // With no heightmap for the brush, the brush paints nothing.
+        self.paintable = paintable && self.pending.is_none() && self.full.is_some();
     }
 
     /// True while a stroke or an import of `map` is not complete.

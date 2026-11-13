@@ -23,8 +23,9 @@ pub const CENTER: [f64; 2] = [10.2, 20.3];
 /// of `FACE` texels has stripes of two texels around `CENTER`, which a
 /// copy with a quarter of the face makes one grey. The stripes change
 /// places in each band of 64 rows of texels. The file holds
-/// its tiles, and the main memory does not. The brush paints another
-/// layer, which the frame does not show. The frame of the page shows
+/// its tiles, and the main memory does not. Another layer was the brush
+/// layer in the globe workspace, and the frame does not show it. The
+/// frame of the page shows
 /// `CENTER` at `scale`. At a scale of 400,000, a texel is about 3
 /// millimeters on the page.
 pub fn project(path: &Path, scale: f64) -> (AppState, RasterId, FrameId) {
@@ -32,7 +33,6 @@ pub fn project(path: &Path, scale: f64) -> (AppState, RasterId, FrameId) {
     state.headless = true;
     state.session = Some(Session::open(path, &mut state.doc).unwrap());
     state.set_layout(Layout::Pad);
-    state.workspace = Workspace::Atlas;
     let height = state
         .add_raster(RasterSpec::height("Height", FACE))
         .unwrap();
@@ -72,5 +72,7 @@ pub fn project(path: &Path, scale: f64) -> (AppState, RasterId, FrameId) {
     frame.center = CENTER;
     frame.scale = scale;
     state.touch();
+    state.workspace = Workspace::Atlas;
+    state.pump_layers(true);
     (state, height, id)
 }

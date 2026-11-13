@@ -32,6 +32,7 @@ static ALLOCATOR: log_file::CountingAllocator = log_file::CountingAllocator;
 pub mod map_styles;
 pub mod mask;
 pub mod measure;
+pub mod memory;
 pub mod neighbors;
 pub mod page_snap;
 pub mod pen;
