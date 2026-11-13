@@ -964,6 +964,7 @@ fn form_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, t
     }
     let mut form = state.selection_form.take();
     let mut outcome = Outcome::default();
+    let mut focused = None;
     match form.as_mut() {
         Some(form) => {
             if count > 1 {
@@ -999,6 +1000,9 @@ fn form_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, t
                 if resp.gained_focus() {
                     resp.scroll_to_me(None);
                 }
+                if resp.has_focus() {
+                    focused = Some(resp.rect);
+                }
                 read_field(&resp, focus, &mut outcome, name, names.get(i + 1));
                 field.mixed &= outcome.edited.as_ref() != Some(&field.name);
                 if field.mixed && field.text.is_empty() {
@@ -1023,6 +1027,11 @@ fn form_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, t
         ui.add_space(8.0);
         let can_show = state.can_show_in_table();
         outcome.show = widgets::button_row(ui, controls, SHOW_IN_TABLE, can_show).clicked();
+    }
+    // The field that has the keyboard ends above the keyboard.
+    if let Some(rect) = focused {
+        let floor = super::new_feature::keyboard_top(ui.ctx().viewport_rect());
+        super::pad::label_text::keep_above(ui, rect, floor);
     }
     state.finish_inspector(form, outcome);
 }
