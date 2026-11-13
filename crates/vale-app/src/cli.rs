@@ -141,6 +141,12 @@ pub struct Args {
     /// `59,0,34,0`.
     #[arg(long, value_name = "T,R,B,L", value_delimiter = ',')]
     pub safe_area: Option<Vec<f32>>,
+    /// The region that the system reserves around a camera, in headless
+    /// output: the left edge, the top edge, the width, and the height, in
+    /// points. The outer screen of iPhone Duo in portrait has about
+    /// `409,9,30,30`.
+    #[arg(long, value_name = "X,Y,W,H", value_delimiter = ',')]
+    pub camera_region: Option<Vec<f32>>,
     /// Pixels per point of headless output.
     #[arg(long, value_name = "F", default_value_t = 1.0)]
     pub pixel_ratio: f64,
@@ -402,6 +408,24 @@ impl Args {
             bottom,
         };
         Ok(Some(eframe::egui::SafeAreaInsets(insets)))
+    }
+
+    /// The region of `--camera-region`.
+    pub fn camera_region(&self) -> anyhow::Result<Option<eframe::egui::Rect>> {
+        let Some(values) = &self.camera_region else {
+            return Ok(None);
+        };
+        let &[x, y, w, h] = values.as_slice() else {
+            bail!("expected four values of the camera region, got {values:?}");
+        };
+        if values.iter().any(|v| !v.is_finite()) || w <= 0.0 || h <= 0.0 {
+            bail!("the camera region must have a size above 0, got {values:?}");
+        }
+        let min = eframe::egui::pos2(x, y);
+        Ok(Some(eframe::egui::Rect::from_min_size(
+            min,
+            eframe::egui::vec2(w, h),
+        )))
     }
 
     pub fn size(&self) -> anyhow::Result<(f64, f64)> {

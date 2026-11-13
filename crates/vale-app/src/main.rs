@@ -203,7 +203,9 @@ fn run() -> anyhow::Result<u8> {
             let state = new_state(doc.clone(), FACE_SIZE)?;
             // The renderer can make the face size smaller, and that drops an
             // import. So the import runs after the renderer is there.
+            let camera = args.camera_region()?;
             let import = |state: &mut AppState| {
+                state.pad.camera = camera;
                 apply_import(&args, state, true)?;
                 // The flyout of the brush modes closes while no layer is
                 // painted, so it opens after the import.

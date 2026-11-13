@@ -69,6 +69,27 @@ fn safe_areas() {
 }
 
 #[test]
+fn camera_regions() {
+    let region = parse(&["--camera-region", "409,9,30,30"])
+        .camera_region()
+        .unwrap()
+        .unwrap();
+    assert_eq!((region.left(), region.top()), (409.0, 9.0));
+    assert_eq!((region.width(), region.height()), (30.0, 30.0));
+    assert!(parse(&[]).camera_region().unwrap().is_none());
+    assert!(
+        parse(&["--camera-region", "409,9,30"])
+            .camera_region()
+            .is_err()
+    );
+    assert!(
+        parse(&["--camera-region", "409,9,0,30"])
+            .camera_region()
+            .is_err()
+    );
+}
+
+#[test]
 fn look_at_and_zoom() {
     let a = parse(&["--look-at", "139.7,35.7", "--zoom", "4"]);
     let size = a.size().unwrap();
