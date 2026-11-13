@@ -41,6 +41,11 @@ struct Pending {
 }
 
 impl FrameMasks {
+    /// The number of masks of frames and raster layers.
+    pub fn count(&self) -> usize {
+        self.entries.len()
+    }
+
     /// Sets the masks whose captures arrived in `pipeline`. Returns `true`
     /// while a capture waits.
     pub fn poll(&mut self, pipeline: &mut Pipeline) -> bool {

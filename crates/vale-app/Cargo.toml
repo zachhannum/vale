@@ -24,6 +24,7 @@ anyhow.workspace = true
 kurbo.workspace = true
 bytemuck = "1.25.2"
 earcut = "0.4.11"
+log = "0.4.34"
 i_overlay.workspace = true
 image.workspace = true
 
@@ -43,6 +44,7 @@ objc2 = "0.6.5"
 objc2-foundation = { version = "0.3.2", default-features = false, features = [
     "std",
     "NSArray",
+    "NSBundle",
     "NSSet",
     "NSEnumerator",
     "NSNotification",

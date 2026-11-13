@@ -193,6 +193,8 @@ A PR from a fork gets no secrets. CI then makes the archive with no signature an
 
 All builds have the same bundle ID, so a new build installs over the old one and keeps the app data. A TestFlight build stops after 90 days.
 
+The app writes a log to `vale-log.txt` in its Documents folder. The Files app shows the file under "On My iPad > Vale" or "On My iPhone > Vale". The log holds the warnings and the errors, the panics, the normal exit, the memory use, and the changes between the foreground and the background. If the app closes with no crash notice, send this file.
+
 The job `testflight` in `.github/workflows/ios.yml` does the work, with `scripts/testflight/testflight.py`.
 
 ## What the prototype leaves out

@@ -60,6 +60,8 @@ struct ValeApp {
     _lifecycle: Option<crate::lifecycle::Observer>,
     #[cfg(target_os = "ios")]
     _keyboard: Option<crate::keyboard::uikit::Observer>,
+    /// Writes the actions and the caches of the app to the log file.
+    probe: crate::log_file::Probe,
 }
 
 impl eframe::App for ValeApp {
@@ -67,6 +69,7 @@ impl eframe::App for ValeApp {
         let state = &mut *self.state.borrow_mut();
         state.poll_system();
         ui::draw(ui, state);
+        self.probe.update(state);
 
         let dropped = ui.ctx().input(|i| i.raw.dropped_files.clone());
         let paths = dropped.into_iter().map(|f| f.path().to_path_buf());
@@ -428,6 +431,7 @@ pub fn run_window(
         _lifecycle: None,
         #[cfg(target_os = "ios")]
         _keyboard: None,
+        probe: Default::default(),
     };
     eframe::run_native(
         "Vale",

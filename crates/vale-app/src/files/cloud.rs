@@ -237,7 +237,7 @@ define_class!(
 );
 
 /// Observes a notification of the app for the life of the process.
-fn observe(name: &NSNotificationName, f: impl Fn(&NSNotification) + 'static) {
+pub(crate) fn observe(name: &NSNotificationName, f: impl Fn(&NSNotification) + 'static) {
     let block = RcBlock::new(move |notification: NonNull<NSNotification>| {
         // SAFETY: the center gives a live notification for the time of the
         // call.
