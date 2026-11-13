@@ -219,7 +219,7 @@ pub struct BasinSpec {
     pub limits: Limits,
 }
 
-/// The outline and the main river of one basin.
+/// The outline and the rivers of one basin.
 #[derive(Clone, Debug)]
 pub struct BasinLine {
     spec: BasinSpec,
@@ -227,56 +227,94 @@ pub struct BasinLine {
     outline: Vec<V3>,
     /// The half-width of the basin, in radians.
     width: f64,
-    line: StrokeLine,
+    face_size: usize,
+    /// The rivers, in the order that they were drawn.
+    rivers: Vec<StrokeLine>,
 }
 
 impl BasinLine {
-    /// Starts a main river with no points in an outline, on a heightmap
-    /// with `face_size` texels along one side of a face. The settings go
-    /// inside their limits.
+    /// Starts a basin with no rivers in an outline, on a heightmap with
+    /// `face_size` texels along one side of a face. The settings go inside
+    /// their limits.
     pub fn new(spec: BasinSpec, outline: &[V3], face_size: usize) -> BasinLine {
-        let spec = BasinSpec {
-            height: spec.height.clamp(0.0, 65535.0),
-            erosion: spec.erosion.clamp(0.0, 1.0),
-            age: spec.age.clamp(0.0, 1.0),
-            lakes: spec.lakes.clamp(0.0, 1.0),
-            ..spec
-        };
         let outline: Vec<V3> = outline.iter().map(|&p| normalize(p)).collect();
         let width = outline_width(&outline);
         BasinLine {
-            spec,
+            spec: clamp_spec(spec),
             outline,
             width,
-            line: StrokeLine::new(width.max(1e-9), face_size),
+            face_size,
+            rivers: Vec::new(),
+        }
+    }
+
+    /// The same outline and rivers with other settings. The settings go
+    /// inside their limits.
+    pub fn with_spec(&self, spec: BasinSpec) -> BasinLine {
+        BasinLine {
+            spec: clamp_spec(spec),
+            ..self.clone()
         }
     }
 
     /// True if the outline holds an area with a half-width of four texels or
     /// more.
     pub fn has_outline(&self) -> bool {
-        let texel = FRAC_PI_2 / self.line.face_size() as f64;
+        let texel = FRAC_PI_2 / self.face_size as f64;
         self.outline.len() >= 3 && self.width >= 4.0 * texel
     }
 
-    /// Adds a point to the main river. A point near the last point is not
-    /// added.
-    pub fn push(&mut self, dir: V3) {
-        self.line.push(dir, 1.0);
+    /// Starts a new river with no points.
+    pub fn begin_river(&mut self) {
+        let line = StrokeLine::new(self.width.max(1e-9), self.face_size);
+        self.rivers.push(line);
     }
 
-    /// The number of points of the main river.
+    /// Adds a point to the last river, and starts a river if there is none.
+    /// A point near the last point is not added.
+    pub fn push(&mut self, dir: V3) {
+        if self.rivers.is_empty() {
+            self.begin_river();
+        }
+        if let Some(river) = self.rivers.last_mut() {
+            river.push(dir, 1.0);
+        }
+    }
+
+    /// Removes the last river.
+    pub fn pop_river(&mut self) {
+        self.rivers.pop();
+    }
+
+    /// The number of rivers.
+    pub fn rivers(&self) -> usize {
+        self.rivers.len()
+    }
+
+    /// The direction of each point of river `k`.
+    pub fn river(&self, k: usize) -> Vec<V3> {
+        self.rivers
+            .get(k)
+            .map_or(Vec::new(), |r| r.points().collect())
+    }
+
+    /// True if a river has two points or more.
+    pub fn has_river(&self) -> bool {
+        self.rivers.iter().any(|r| r.len() >= 2)
+    }
+
+    /// The number of points of the last river.
     pub fn len(&self) -> usize {
-        self.line.len()
+        self.rivers.last().map_or(0, StrokeLine::len)
     }
 
     pub fn is_empty(&self) -> bool {
-        self.line.is_empty()
+        self.len() == 0
     }
 
-    /// The length of the main river, in radians.
+    /// The length of the last river, in radians.
     pub fn length(&self) -> f64 {
-        self.line.length()
+        self.rivers.last().map_or(0.0, StrokeLine::length)
     }
 
     /// The settings, inside their limits.
@@ -284,14 +322,28 @@ impl BasinLine {
         self.spec
     }
 
-    /// The direction of each point of the main river.
+    /// The direction of each point of the last river.
     pub fn points(&self) -> Vec<V3> {
-        self.line.points().collect()
+        self.rivers
+            .len()
+            .checked_sub(1)
+            .map_or(Vec::new(), |k| self.river(k))
     }
 
     /// The direction of each point of the outline.
     pub fn outline(&self) -> &[V3] {
         &self.outline
+    }
+}
+
+/// The settings inside their limits.
+fn clamp_spec(spec: BasinSpec) -> BasinSpec {
+    BasinSpec {
+        height: spec.height.clamp(0.0, 65535.0),
+        erosion: spec.erosion.clamp(0.0, 1.0),
+        age: spec.age.clamp(0.0, 1.0),
+        lakes: spec.lakes.clamp(0.0, 1.0),
+        ..spec
     }
 }
 
@@ -370,7 +422,7 @@ struct Flow {
 /// Makes the basin of an outline and a main river on the ground of `map`. A
 /// main river with less than two points in the outline makes no basin.
 pub fn basin(map: &Heightmap, line: &BasinLine) -> BasinCut {
-    if line.len() < 2 || !line.has_outline() {
+    if !line.has_river() || !line.has_outline() {
         return BasinCut::default();
     }
     let spec = line.spec;
@@ -385,7 +437,8 @@ pub fn basin(map: &Heightmap, line: &BasinLine) -> BasinCut {
     // The sea is outside the basin.
     let sea = f64::from(meters_to_level(0.0));
     let land = |p: V3| f64::from(map.sample(p)) >= sea;
-    let Some(river) = outline.clip(&line.line, &window, land) else {
+    let first = line.rivers.iter().find(|r| r.len() >= 2);
+    let Some(river) = first.and_then(|r| outline.clip(r, &window, land)) else {
         return BasinCut::default();
     };
     let chain = chain_cells(&river, &window);
@@ -2793,7 +2846,7 @@ mod tests {
             ));
         }
         let window = basin_window(&line.outline, line.width, N);
-        let chain = chain_cells(&line.line, &window);
+        let chain = chain_cells(&line.rivers[0], &window);
         let side = window.cells;
         for (k, &c) in chain.iter().enumerate() {
             if let Some(&next) = chain.get(k + 1) {
