@@ -1,14 +1,21 @@
 //! The log file of the app. On iOS, it is in the Documents folder, and the
 //! Files app shows it as "On My iPhone > Vale > vale-log.txt". It holds the
 //! warnings and the errors of the `log` crate, the panics, and the normal
-//! exit. On iOS, it also holds the memory use and the changes between the
-//! foreground and the background.
+//! exit. It also holds the actions of the app and the memory at each one.
+//! On iOS, it holds the memory use and the changes between the foreground
+//! and the background.
 
+use std::alloc::{GlobalAlloc, Layout, System};
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use vale_store::PageId;
+
+use crate::ui::{AppState, Screen, Workspace};
 
 pub const FILE_NAME: &str = "vale-log.txt";
 
@@ -165,6 +172,170 @@ impl log::Log for Logger {
     fn flush(&self) {}
 }
 
+static HEAP: AtomicUsize = AtomicUsize::new(0);
+
+/// The system allocator, with a count of the bytes that it holds.
+pub struct CountingAllocator;
+
+// SAFETY: each method passes its arguments to the system allocator, and only
+// counts the result.
+unsafe impl GlobalAlloc for CountingAllocator {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        // SAFETY: the caller keeps the contract of `alloc`.
+        let p = unsafe { System.alloc(layout) };
+        if !p.is_null() {
+            HEAP.fetch_add(layout.size(), Ordering::Relaxed);
+        }
+        p
+    }
+
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        // SAFETY: the caller keeps the contract of `alloc_zeroed`.
+        let p = unsafe { System.alloc_zeroed(layout) };
+        if !p.is_null() {
+            HEAP.fetch_add(layout.size(), Ordering::Relaxed);
+        }
+        p
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        // SAFETY: the caller keeps the contract of `dealloc`.
+        unsafe { System.dealloc(ptr, layout) };
+        HEAP.fetch_sub(layout.size(), Ordering::Relaxed);
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        // SAFETY: the caller keeps the contract of `realloc`.
+        let p = unsafe { System.realloc(ptr, layout, new_size) };
+        if !p.is_null() {
+            HEAP.fetch_add(new_size, Ordering::Relaxed);
+            HEAP.fetch_sub(layout.size(), Ordering::Relaxed);
+        }
+        p
+    }
+}
+
+/// The bytes that `CountingAllocator` holds.
+pub fn heap_bytes() -> usize {
+    HEAP.load(Ordering::Relaxed)
+}
+
+/// The memory of the app, for example `memory 812 MB, gpu 530 MB, heap
+/// 190 MB`. The footprint and the GPU memory are on iOS only.
+pub fn memory() -> String {
+    #[cfg_attr(not(target_os = "ios"), expect(unused_mut))]
+    let mut text = String::new();
+    #[cfg(target_os = "ios")]
+    {
+        if let Some(bytes) = ios::footprint() {
+            text += &format!("memory {} MB, ", bytes >> 20);
+        }
+        if let Some(bytes) = ios::gpu_bytes() {
+            text += &format!("gpu {} MB, ", bytes >> 20);
+        }
+    }
+    text + &format!("heap {} MB", heap_bytes() >> 20)
+}
+
+/// The sizes of the caches of the app, which `Probe` sets.
+static CACHES: Mutex<String> = Mutex::new(String::new());
+
+#[cfg_attr(not(target_os = "ios"), expect(dead_code))]
+fn caches() -> String {
+    CACHES.lock().map_or(String::new(), |c| c.clone())
+}
+
+/// What the app shows, for the action lines of the log.
+#[derive(Clone, Debug, PartialEq)]
+struct Seen {
+    screen: Screen,
+    workspace: Workspace,
+    project: Option<String>,
+    page: PageId,
+    /// The zoom of the page in half steps of 2: 2 is a zoom of 2.
+    zoom: i32,
+}
+
+impl Seen {
+    fn of(state: &AppState) -> Seen {
+        let project = state.session.as_ref().map(|s| {
+            let name = s.path().file_name().unwrap_or_default();
+            name.to_string_lossy().into_owned()
+        });
+        Seen {
+            screen: state.screen,
+            workspace: state.workspace,
+            project,
+            page: state.atlas.page,
+            zoom: (state.atlas.view.zoom.log2() * 2.0).round() as i32,
+        }
+    }
+
+    /// The actions from `self` to `now`.
+    fn changes(&self, now: &Seen) -> Vec<String> {
+        let mut out = Vec::new();
+        if now.screen != self.screen {
+            out.push(format!("screen {:?}", now.screen));
+        }
+        if now.project != self.project {
+            let name = now.project.as_deref().unwrap_or("none");
+            out.push(format!("project {name}"));
+        }
+        if now.workspace != self.workspace {
+            out.push(format!("workspace {:?}", now.workspace));
+        }
+        if now.workspace == Workspace::Atlas {
+            if now.page != self.page {
+                out.push(format!("page {}", now.page.0));
+            }
+            if now.zoom != self.zoom {
+                out.push(format!("zoom {:.1}x", 2f64.powf(f64::from(now.zoom) / 2.0)));
+            }
+        }
+        out
+    }
+}
+
+/// Writes the actions of the app to the log, each with the memory, and keeps
+/// the sizes of the caches for the memory lines.
+#[derive(Default)]
+pub struct Probe {
+    seen: Option<Seen>,
+    caches_at: Option<Instant>,
+}
+
+impl Probe {
+    /// Call it one time in each pass of the UI.
+    pub fn update(&mut self, state: &AppState) {
+        if LOG.get().is_none() {
+            return;
+        }
+        let now = Seen::of(state);
+        if let Some(seen) = &self.seen {
+            for change in seen.changes(&now) {
+                write(&format!("{change}; {}", memory()));
+            }
+        }
+        self.seen = Some(now);
+        if self
+            .caches_at
+            .is_none_or(|at| at.elapsed() >= Duration::from_secs(1))
+        {
+            let text = format!(
+                "tiles {}, details {} MB, masks {}, projections {}",
+                state.atlas.tile_count(),
+                state.globe.detail_bytes() >> 20,
+                state.atlas.mask_count(),
+                state.pipeline.cache_count()
+            );
+            if let Ok(mut caches) = CACHES.lock() {
+                *caches = text;
+            }
+            self.caches_at = Some(Instant::now());
+        }
+    }
+}
+
 unsafe extern "C" {
     fn atexit(f: extern "C" fn()) -> std::ffi::c_int;
 }
@@ -207,11 +378,14 @@ pub fn install(path: &Path) -> io::Result<()> {
 
 #[cfg(target_os = "ios")]
 mod ios {
+    use std::sync::OnceLock;
     use std::time::{Duration, Instant};
 
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
     use objc2_foundation::{NSBundle, NSString, ns_string};
 
-    use super::write;
+    use super::{caches, memory, write};
 
     pub fn version() -> Option<String> {
         let bundle = NSBundle::mainBundle();
@@ -261,8 +435,28 @@ mod ios {
 
     const TASK_VM_INFO: u32 = 22;
 
+    unsafe extern "C" {
+        fn MTLCreateSystemDefaultDevice() -> *mut AnyObject;
+    }
+
+    /// The memory that the Metal device of the app holds. On iOS, the app
+    /// has one device, and wgpu uses it.
+    pub fn gpu_bytes() -> Option<u64> {
+        // The address of the device, which stays for the life of the process.
+        static DEVICE: OnceLock<usize> = OnceLock::new();
+        // SAFETY: the function has no arguments, and it returns a retained
+        // device or null. The device is never released.
+        let device = *DEVICE.get_or_init(|| unsafe { MTLCreateSystemDefaultDevice() } as usize);
+        let device = (device as *mut AnyObject).cast_const();
+        // SAFETY: the device is live, and `currentAllocatedSize` returns an
+        // `NSUInteger`. A device can be used from any thread.
+        let device = unsafe { device.as_ref() }?;
+        let bytes: usize = unsafe { msg_send![device, currentAllocatedSize] };
+        Some(bytes as u64)
+    }
+
     /// The memory of the app that counts toward the limit of iOS.
-    fn footprint() -> Option<u64> {
+    pub fn footprint() -> Option<u64> {
         let mut info = TaskVmInfo::default();
         let mut count = (size_of::<TaskVmInfo>() / 4) as u32;
         // SAFETY: `info` has room for `count` 32-bit words, and the kernel
@@ -290,11 +484,11 @@ mod ios {
                                 || at.elapsed() >= Duration::from_secs(60)
                         });
                         if due {
-                            write(&format!("memory {} MB", bytes >> 20));
+                            write(&format!("{}; {}", memory(), caches()));
                             last = Some((bytes, Instant::now()));
                         }
                     }
-                    std::thread::sleep(Duration::from_secs(5));
+                    std::thread::sleep(Duration::from_secs(1));
                 }
             })
             .ok();
@@ -409,6 +603,67 @@ mod tests {
         assert_eq!(at(0), "1970-01-01 00:00:00Z");
         assert_eq!(at(951_782_400), "2000-02-29 00:00:00Z");
         assert_eq!(at(1_794_526_200 + 3_725), "2026-11-13 00:32:05Z");
+    }
+
+    #[test]
+    fn the_counting_allocator_counts_the_bytes_that_it_holds() {
+        let before = heap_bytes();
+        let layout = Layout::from_size_align(1000, 8).unwrap();
+        // SAFETY: the layout has a size, and each pointer goes back with
+        // the layout that it came with.
+        unsafe {
+            let p = CountingAllocator.alloc(layout);
+            assert_eq!(heap_bytes() - before, 1000);
+            let p = CountingAllocator.realloc(p, layout, 3000);
+            assert_eq!(heap_bytes() - before, 3000);
+            let bigger = Layout::from_size_align(3000, 8).unwrap();
+            CountingAllocator.dealloc(p, bigger);
+        }
+        assert_eq!(heap_bytes(), before);
+    }
+
+    fn seen() -> Seen {
+        Seen {
+            screen: Screen::Editor,
+            workspace: Workspace::Globe,
+            project: Some("World.gpkg".into()),
+            page: PageId(1),
+            zoom: 0,
+        }
+    }
+
+    #[test]
+    fn each_action_is_one_line() {
+        let before = seen();
+        assert!(before.changes(&before).is_empty());
+        let atlas = Seen {
+            workspace: Workspace::Atlas,
+            ..before.clone()
+        };
+        assert_eq!(before.changes(&atlas), ["workspace Atlas"]);
+        let zoomed = Seen {
+            page: PageId(2),
+            zoom: 3,
+            ..atlas.clone()
+        };
+        assert_eq!(atlas.changes(&zoomed), ["page 2", "zoom 2.8x"]);
+        let other = Seen {
+            project: None,
+            screen: Screen::Browser,
+            ..before.clone()
+        };
+        assert_eq!(before.changes(&other), ["screen Browser", "project none"]);
+    }
+
+    #[test]
+    fn the_page_and_the_zoom_count_only_in_the_atlas() {
+        let before = seen();
+        let now = Seen {
+            page: PageId(2),
+            zoom: 4,
+            ..before.clone()
+        };
+        assert!(before.changes(&now).is_empty());
     }
 
     #[test]

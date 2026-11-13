@@ -725,6 +725,11 @@ pub struct AtlasState {
 }
 
 impl AtlasState {
+    /// The number of masks of the raster layers of the frames.
+    pub fn mask_count(&self) -> usize {
+        self.raster_masks.count()
+    }
+
     /// The pages of the tab show.
     fn on(&self, tab: FrameTab) -> bool {
         self.every_tab || self.tab == tab

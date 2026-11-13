@@ -24,6 +24,11 @@ pub mod labels;
 pub mod lifecycle;
 pub mod lod;
 pub mod log_file;
+
+/// The log file reads the size of the heap from this allocator.
+#[cfg(target_os = "ios")]
+#[global_allocator]
+static ALLOCATOR: log_file::CountingAllocator = log_file::CountingAllocator;
 pub mod map_styles;
 pub mod mask;
 pub mod measure;
