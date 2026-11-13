@@ -56,7 +56,10 @@ impl LogFile {
             return;
         }
         if inner.repeats > 0 {
-            let repeats = format!("(repeated {} times)", inner.repeats);
+            let repeats = match inner.repeats {
+                1 => "(and 1 more time)".to_string(),
+                n => format!("(and {n} more times)"),
+            };
             inner.repeats = 0;
             self.put(&mut inner, &repeats);
         }
@@ -122,6 +125,16 @@ fn utc_time(time: SystemTime) -> String {
     )
 }
 
+/// The version of the app. On iOS, it is the version and the build number of
+/// the bundle, for example `0.1.456 (640.1)`.
+fn version() -> String {
+    #[cfg(target_os = "ios")]
+    if let Some(version) = ios::version() {
+        return version;
+    }
+    env!("CARGO_PKG_VERSION").to_string()
+}
+
 static LOG: OnceLock<LogFile> = OnceLock::new();
 
 /// Writes one line to the log file of the app, if the app has one.
@@ -165,7 +178,7 @@ extern "C" fn on_exit() {
 /// process. Call it one time, at the start.
 pub fn install(path: &Path) -> io::Result<()> {
     let log = LogFile::open(path)?;
-    log.write(&format!("start, version {}", env!("CARGO_PKG_VERSION")));
+    log.write(&format!("start, version {}", version()));
     if LOG.set(log).is_err() {
         return Err(io::Error::other("the log file is already set"));
     }
@@ -196,9 +209,22 @@ pub fn install(path: &Path) -> io::Result<()> {
 mod ios {
     use std::time::{Duration, Instant};
 
-    use objc2_foundation::ns_string;
+    use objc2_foundation::{NSBundle, NSString, ns_string};
 
     use super::write;
+
+    pub fn version() -> Option<String> {
+        let bundle = NSBundle::mainBundle();
+        let key = |key: &NSString| {
+            let value = bundle.objectForInfoDictionaryKey(key)?;
+            Some(value.downcast::<NSString>().ok()?.to_string())
+        };
+        let version = key(ns_string!("CFBundleShortVersionString"))?;
+        Some(match key(ns_string!("CFBundleVersion")) {
+            Some(build) => format!("{version} ({build})"),
+            None => version,
+        })
+    }
 
     const STEP: u64 = 16 << 20;
 
@@ -336,7 +362,7 @@ mod tests {
         let lines = lines(&path);
         assert_eq!(lines.len(), 3, "{lines:?}");
         assert!(lines[0].ends_with("same"));
-        assert!(lines[1].ends_with("(repeated 3 times)"));
+        assert!(lines[1].ends_with("(and 3 more times)"));
         assert!(lines[2].ends_with("other"));
     }
 
