@@ -23,6 +23,7 @@ pub mod labels;
 #[cfg(target_os = "ios")]
 pub mod lifecycle;
 pub mod lod;
+pub mod log_file;
 pub mod map_styles;
 pub mod mask;
 pub mod measure;
@@ -50,6 +51,9 @@ pub mod world;
 #[cfg(target_os = "ios")]
 #[unsafe(no_mangle)]
 pub extern "C" fn vale_app_main() {
+    if let Some(dir) = projects::default_dir() {
+        let _ = log_file::install(&dir.join(log_file::FILE_NAME));
+    }
     files::clear_exports();
     // The layers of a file take the styles of the sample.
     let result = ui::AppState::new(document::Document::sample()).and_then(|mut state| {
@@ -66,5 +70,6 @@ pub extern "C" fn vale_app_main() {
     });
     if let Err(err) = result {
         eprintln!("vale-app: {err:#}");
+        log_file::write(&format!("error: {err:#}"));
     }
 }
