@@ -5,13 +5,14 @@ use std::cell::Cell;
 
 use vale_terrain::FACES;
 
-/// The bytes of one texel of a whole heightmap: 2 in the main memory, and 2
-/// on the GPU with a third more for the coarser levels.
-const BYTES_PER_TEXEL: f64 = 2.0 + 2.0 * 4.0 / 3.0;
+/// The bytes of one texel of a whole heightmap, as an iPhone measured: 2 in
+/// the main memory, 2 on the GPU with a third more for the coarser levels,
+/// and about 1.6 more that neither of them counts.
+const BYTES_PER_TEXEL: f64 = 6.25;
 
 /// The memory that stays free for the rest of the app after a heightmap
 /// loads.
-pub const RESERVE: u64 = 512 << 20;
+pub const RESERVE: u64 = 256 << 20;
 
 /// The memory that a whole heightmap with all its tiles needs, in the main
 /// memory and on the GPU together.
@@ -66,9 +67,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_heightmap_of_face_8192_needs_about_2_gb() {
-        let gb = heightmap_bytes(8192) as f64 / f64::from(1 << 30);
-        assert!((1.7..1.9).contains(&gb), "{gb}");
+    fn a_heightmap_of_face_8192_needs_what_an_iphone_measured() {
+        // The footprint grew by about 2,400 MB when the layer loaded.
+        let mb = heightmap_bytes(8192) >> 20;
+        assert!((2300..2500).contains(&mb), "{mb}");
     }
 
     #[test]

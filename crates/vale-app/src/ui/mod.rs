@@ -584,6 +584,9 @@ pub struct AppState {
     /// The raster layer whose whole heightmap did not fit in the memory, and
     /// the text that says so. It clears when the brush gets another layer.
     pub memory_note: Option<(RasterId, String)>,
+    /// The Atlas workspace was open after the last load of a whole
+    /// heightmap, so its caches can hold memory.
+    atlas_caches: bool,
     /// The thread that reads the tiles of the detail maps of the map frames
     /// from the project file.
     detail_reader: Option<session::DetailReader>,
@@ -724,6 +727,7 @@ impl AppState {
             system: SystemEvents::default(),
             loader: None,
             memory_note: None,
+            atlas_caches: false,
             detail_reader: None,
             screen_frames: (0, Vec::new()),
             export_frame: None,
@@ -1031,6 +1035,7 @@ impl AppState {
             self.loader = None;
             self.globe.rest();
         } else if !rest && self.globe.is_resting() {
+            self.atlas_caches = true;
             self.globe.wake();
             self.sync_globe();
         }
@@ -1046,6 +1051,19 @@ impl AppState {
         };
         let available = memory::available();
         if self.loader.is_none() && !memory::heightmap_fits(face_size, available) {
+            // The brush paints no layer, not the layer of the last brush,
+            // and that layer gives back its whole heightmap after its save.
+            self.globe.cancel_activation();
+            self.globe.activate(None);
+            // The caches of the Atlas go first. A later pass checks again,
+            // after the GPU frees their memory.
+            if std::mem::take(&mut self.atlas_caches) {
+                self.free_atlas_caches();
+                return;
+            }
+            if self.memory_note.as_ref().is_some_and(|(of, _)| *of == id) {
+                return;
+            }
             let project = &self.doc.project;
             let name = project.raster_layer(id).map_or("", |l| l.name.as_str());
             let text = format!("Not enough memory to paint {name}");
@@ -1057,7 +1075,6 @@ impl AppState {
             ));
             self.status = text.clone();
             self.memory_note = Some((id, text));
-            self.globe.cancel_activation();
             return;
         }
         let session = self.session.as_ref().expect("checked above");
@@ -1113,6 +1130,7 @@ impl AppState {
                 self.globe.give_full(id, map);
                 self.status.clear();
                 self.memory_note = None;
+                self.atlas_caches = false;
             }
             Ok(None) => {}
             Err(e) => {
@@ -1120,6 +1138,20 @@ impl AppState {
                 self.globe.cancel_activation();
             }
         }
+    }
+
+    /// Frees the memory that the Atlas workspace keeps for its next visit:
+    /// the tiles of the map frames, the masks of their raster layers, and
+    /// the buffers of the map renderer.
+    pub fn free_atlas_caches(&mut self) {
+        self.atlas.free_caches();
+        if let Some(renderer) = &mut self.map_renderer {
+            renderer.renew();
+        }
+        crate::log_file::write(&format!(
+            "free the caches of the Atlas; {}",
+            crate::log_file::memory()
+        ));
     }
 
     /// True while the whole heightmap of a raster layer comes from the

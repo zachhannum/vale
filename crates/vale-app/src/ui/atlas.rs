@@ -725,6 +725,13 @@ pub struct AtlasState {
 }
 
 impl AtlasState {
+    /// Frees the tiles of the map frames and the masks of their raster
+    /// layers. The next pass of the Atlas workspace makes them again.
+    pub fn free_caches(&mut self) {
+        self.tiles = Tiles::default();
+        self.raster_masks = Default::default();
+    }
+
     /// The number of masks of the raster layers of the frames.
     pub fn mask_count(&self) -> usize {
         self.raster_masks.count()

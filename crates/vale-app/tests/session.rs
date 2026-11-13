@@ -1147,14 +1147,19 @@ fn a_whole_heightmap_that_does_not_fit_in_the_memory_does_not_load() {
     memory::set_test_available(Some(short));
     state.select(Some(LayerRef::Raster(height)));
     state.pump_layers(true);
-    assert_eq!(state.globe.raster(), Some(rain));
+    assert_eq!(state.globe.raster(), None);
     assert!(state.globe.raster_map(height).is_none());
+    assert!(
+        state.globe.raster_map(rain).is_none(),
+        "the rain layer is saved and released"
+    );
     assert_eq!(state.status, "Not enough memory to paint Height");
     let note = state
         .memory_note
         .as_ref()
         .map(|(id, text)| (*id, text.as_str()));
     assert_eq!(note, Some((height, "Not enough memory to paint Height")));
+    assert!(!state.globe.paintable, "the raster tools are off");
 
     // With enough memory, the layer loads.
     memory::set_test_available(Some(short + 1));
@@ -1163,6 +1168,34 @@ fn a_whole_heightmap_that_does_not_fit_in_the_memory_does_not_load() {
     assert_eq!(state.globe.raster(), Some(height));
     assert_eq!(state.memory_note, None);
     memory::set_test_available(None);
+}
+
+#[test]
+fn after_the_atlas_a_heightmap_that_does_not_fit_frees_the_caches_of_the_atlas_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut state, height, _) = large_world(&dir.path().join("project.gpkg"));
+    paint_layer(&mut state, height, 45.0, 35.3);
+    state.workspace = Workspace::Atlas;
+    state.pump_layers(true);
+
+    // The first refusal frees the caches of the Atlas and waits for the
+    // GPU. The next one says that the memory is not enough.
+    let short = memory::heightmap_bytes(4096) + memory::RESERVE - 1;
+    memory::set_test_available(Some(short));
+    state.workspace = Workspace::Globe;
+    state.pump_layers(true);
+    assert_eq!(state.globe.raster(), None);
+    assert_eq!(state.memory_note, None);
+    state.sync_globe();
+    state.pump_layers(true);
+    assert!(state.memory_note.is_some());
+
+    // When the memory is there, the layer loads at the next pass.
+    memory::set_test_available(None);
+    state.sync_globe();
+    state.pump_layers(true);
+    assert_eq!(state.globe.raster(), Some(height));
+    assert_eq!(state.memory_note, None);
 }
 
 #[test]

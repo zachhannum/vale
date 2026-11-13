@@ -1391,7 +1391,8 @@ impl Globe {
     /// of the last `activate`.
     pub fn set_paintable(&mut self, paintable: bool) {
         self.paint_wanted = paintable;
-        self.paintable = paintable && self.pending.is_none();
+        // With no heightmap for the brush, the brush paints nothing.
+        self.paintable = paintable && self.pending.is_none() && self.full.is_some();
     }
 
     /// True while a stroke or an import of `map` is not complete.

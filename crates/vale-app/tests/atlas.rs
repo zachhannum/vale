@@ -10903,3 +10903,15 @@ fn a_held_finger_tap_outside_the_entered_frame_does_not_exit_it() {
     assert_eq!(h.state().atlas.entered, Some(inset));
     assert_eq!(h.state().feature_selection, vec![town]);
 }
+
+#[test]
+fn freeing_the_caches_of_the_atlas_takes_the_tiles_and_the_next_pass_makes_them_again() {
+    let mut h = inset_pad(BOARDS[0]);
+    settle(&mut h);
+    assert!(h.state().atlas.tile_count() > 0);
+    h.state_mut().free_atlas_caches();
+    assert_eq!(h.state().atlas.tile_count(), 0);
+    assert_eq!(h.state().atlas.mask_count(), 0);
+    settle(&mut h);
+    assert!(h.state().atlas.tile_count() > 0);
+}
