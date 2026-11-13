@@ -15196,3 +15196,20 @@ fn the_screenshots_of_the_inner_screen_of_iphone_duo_show_both_workspaces() {
         }
     }
 }
+
+#[test]
+fn a_layer_that_does_not_fit_in_the_memory_shows_a_banner_in_the_globe_workspace() {
+    let mut h = pad(BOARDS[0]);
+    h.run();
+    assert_eq!(h.state().pad.banner, None);
+    let text = "Not enough memory to paint Height".to_string();
+    h.state_mut().memory_note = Some((RasterId(0), text));
+    h.run();
+    let banner = h.state().pad.banner.expect("a banner");
+    let rects = h.state().pad.rects.unwrap();
+    assert_eq!(banner.top(), rects.column_top);
+    // The Atlas workspace has no brush, so it shows no banner.
+    h.state_mut().workspace = Workspace::Atlas;
+    h.run();
+    assert_eq!(h.state().pad.banner, None);
+}

@@ -492,8 +492,9 @@ pub struct PadState {
     pub pen_hover: bool,
     /// The last time that `canvas_down` or `pen_hover` was true.
     last_down: Option<std::time::Instant>,
-    /// The banner of a save that failed in the last frame.
-    pub save_banner: Option<Rect>,
+    /// The banner of the last frame: a save that failed, or a raster layer
+    /// that does not fit in the memory.
+    pub banner: Option<Rect>,
     /// The label at the end of the scale bar of the readout in the last
     /// frame.
     pub readout_scale: Option<String>,
@@ -765,7 +766,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     world_form::pad(&ctx, state, &mut controls, &rects);
     raster_form::pad(&ctx, state, &mut controls, &rects);
     super::region::pad(&ctx, state, &mut controls, &rects);
-    readout::save_banner(&ctx, state, &rects);
+    readout::banner(&ctx, state, &rects);
     dock_ui::handle(&ctx, state, &mut controls, &rects);
     if let Some(rect) = canvas.inner {
         globe::paint_canvas(ui, state, rect, theme::CANVAS);

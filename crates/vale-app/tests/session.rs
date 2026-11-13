@@ -1150,12 +1150,18 @@ fn a_whole_heightmap_that_does_not_fit_in_the_memory_does_not_load() {
     assert_eq!(state.globe.raster(), Some(rain));
     assert!(state.globe.raster_map(height).is_none());
     assert_eq!(state.status, "Not enough memory to paint Height");
+    let note = state
+        .memory_note
+        .as_ref()
+        .map(|(id, text)| (*id, text.as_str()));
+    assert_eq!(note, Some((height, "Not enough memory to paint Height")));
 
     // With enough memory, the layer loads.
     memory::set_test_available(Some(short + 1));
     state.sync_globe();
     state.pump_layers(true);
     assert_eq!(state.globe.raster(), Some(height));
+    assert_eq!(state.memory_note, None);
     memory::set_test_available(None);
 }
 

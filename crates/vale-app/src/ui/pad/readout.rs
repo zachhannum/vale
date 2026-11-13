@@ -12,7 +12,7 @@ use super::icons::{self, Icon};
 use super::widgets::{self, BODY_PAD, Controls, PANEL_ROW};
 use super::{DIVIDER, GRATICULE, PROJECTION, RECENTER, RESET, VIEW, VIEWS, theme};
 use crate::globe::WorldView;
-use crate::ui::{AppState, SaveMark};
+use crate::ui::{AppState, SaveMark, Workspace};
 
 /// The time that the place stays after the last touch on the canvas.
 pub const PLACE_TIME: Duration = Duration::from_secs(1);
@@ -433,20 +433,28 @@ fn projections(ctx: &egui::Context, state: &mut AppState, controls: &mut Control
     });
 }
 
-/// The banner of a save that failed, at the top center of the screen below
-/// the top row. It stays while the save state is failed, and a touch goes
+/// The banner at the top center of the screen below the top row: a save
+/// that failed, or else in the globe workspace, a raster layer that does not
+/// fit in the memory. It stays while its state stays, and a touch goes
 /// through it.
-pub(super) fn save_banner(ctx: &egui::Context, state: &mut AppState, rects: &Rects) {
-    state.pad.save_banner = None;
-    if state.save_mark(Instant::now()) != Some(SaveMark::Failed) {
+pub(super) fn banner(ctx: &egui::Context, state: &mut AppState, rects: &Rects) {
+    state.pad.banner = None;
+    let text = if state.save_mark(Instant::now()) == Some(SaveMark::Failed) {
+        SAVE_FAILED.to_owned()
+    } else if let Some((_, note)) = state
+        .memory_note
+        .as_ref()
+        .filter(|_| state.workspace == Workspace::Globe)
+    {
+        note.clone()
+    } else {
         return;
-    }
+    };
     let screen = rects.screen.shrink(geometry::PANEL_GAP);
     let lead = WARNING + 10.0;
     let side = BODY_PAD;
     let room = (screen.width() - 2.0 * side - lead).max(TOUCH);
-    let galley =
-        ctx.fonts_mut(|f| f.layout(SAVE_FAILED.to_owned(), theme::body(), theme::TEXT, room));
+    let galley = ctx.fonts_mut(|f| f.layout(text, theme::body(), theme::TEXT, room));
     let text = galley.size();
     let size = vec2(
         text.x.ceil() + lead + 2.0 * side,
@@ -454,9 +462,9 @@ pub(super) fn save_banner(ctx: &egui::Context, state: &mut AppState, rects: &Rec
     );
     let left = (screen.center().x - size.x / 2.0).max(screen.left());
     let rect = Rect::from_min_size(pos2(left, rects.column_top), size);
-    state.pad.save_banner = Some(rect);
+    state.pad.banner = Some(rect);
     let radius = egui::CornerRadius::from(theme::CARD_RADIUS);
-    egui::Area::new(egui::Id::new("pad-save-banner"))
+    egui::Area::new(egui::Id::new("pad-banner"))
         .order(Order::Foreground)
         .fixed_pos(rect.min)
         .interactable(false)

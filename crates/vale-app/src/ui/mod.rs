@@ -581,6 +581,9 @@ pub struct AppState {
     pub system: SystemEvents,
     /// The whole heightmap that comes from the project file for the brush.
     loader: Option<Loader>,
+    /// The raster layer whose whole heightmap did not fit in the memory, and
+    /// the text that says so. It clears when the brush gets another layer.
+    pub memory_note: Option<(RasterId, String)>,
     /// The thread that reads the tiles of the detail maps of the map frames
     /// from the project file.
     detail_reader: Option<session::DetailReader>,
@@ -720,6 +723,7 @@ impl AppState {
             files: Box::new(PlainFiles),
             system: SystemEvents::default(),
             loader: None,
+            memory_note: None,
             detail_reader: None,
             screen_frames: (0, Vec::new()),
             export_frame: None,
@@ -897,6 +901,13 @@ impl AppState {
             None => globe.is_height(),
         };
         globe.set_stack(stack);
+        if self
+            .memory_note
+            .as_ref()
+            .is_some_and(|(id, _)| active != Some(*id))
+        {
+            self.memory_note = None;
+        }
         // Outside the globe workspace, the brush gets its layer at `wake`.
         if active.is_some() && !globe.is_resting() {
             globe.activate(active);
@@ -1033,10 +1044,19 @@ impl AppState {
             self.loader = None;
             return;
         };
-        if self.loader.is_none() && !memory::heightmap_fits(face_size, memory::available()) {
+        let available = memory::available();
+        if self.loader.is_none() && !memory::heightmap_fits(face_size, available) {
             let project = &self.doc.project;
             let name = project.raster_layer(id).map_or("", |l| l.name.as_str());
-            self.status = format!("Not enough memory to paint {name}");
+            let text = format!("Not enough memory to paint {name}");
+            crate::log_file::write(&format!(
+                "{text}: needs {} MB, {} MB available; {}",
+                memory::heightmap_bytes(face_size) >> 20,
+                available.unwrap_or(0) >> 20,
+                crate::log_file::memory()
+            ));
+            self.status = text.clone();
+            self.memory_note = Some((id, text));
             self.globe.cancel_activation();
             return;
         }
@@ -1092,6 +1112,7 @@ impl AppState {
             Ok(Some(map)) => {
                 self.globe.give_full(id, map);
                 self.status.clear();
+                self.memory_note = None;
             }
             Ok(None) => {}
             Err(e) => {
