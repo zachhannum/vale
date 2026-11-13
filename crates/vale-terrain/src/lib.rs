@@ -31,6 +31,7 @@ mod smooth;
 mod swatch;
 #[cfg(feature = "gpu")]
 mod tiles;
+mod zonal;
 
 pub use bands::{Band, Bands, MAX_BANDS, MIN_BAND, Part, Rgb, SEA_LEVEL, Stop, StopLine};
 pub use basin::{BASIN_DENSITY_KM, BasinCut, BasinLine, BasinSpec, basin};
@@ -71,6 +72,7 @@ pub use smooth::{
 pub use swatch::swatches;
 #[cfg(feature = "gpu")]
 pub use tiles::{GpuTiles, TILES_WGSL, tiles_layout};
+pub use zonal::{Zonal, line_zonal, polygon_zonal, rects_meet};
 
 // A worker thread makes the pipelines, and the main thread uses them.
 #[cfg(feature = "gpu")]

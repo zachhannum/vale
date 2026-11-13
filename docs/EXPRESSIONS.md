@@ -90,8 +90,11 @@ A filter matches a feature only if the result is `true`. The `if` function also 
 | `area(unit)` | The area of a polygon. The unit is `'km2'`, `'mi2'`, `'ha'`, or `'acre'`, and `'km2'` if not given. |
 | `perimeter(unit)` | The length of the edge of a polygon, holes included. The unit is `'km'`, `'mi'`, or `'m'`, and `'km'` if not given. |
 | `line_length(unit)` | The length of a line, with the units of `perimeter`. The name `length` is the function for text. |
+| `raster(layer, stat)` | The value of the raster layer named `layer` under the feature, in the unit of the layer. For a point, the value at the point. For a line or a polygon, `stat` is `'mean'`, `'min'`, or `'max'`, and `'mean'` if not given. A name that no raster layer has gives null, and the expression field shows a warning. |
 
 The measures use the sphere of the world, with the radius of the world. The edges are great-circle arcs. A measure on the wrong geometry type gives null, for example the area of a point or `@parts` of a point. A wrong unit also gives null.
+
+The filter `raster('Height') > 3000` matches the features above 3,000 m on the raster layer named Height.
 
 ### Page functions
 

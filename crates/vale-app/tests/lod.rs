@@ -326,6 +326,7 @@ fn the_table_and_pick_use_the_full_geometry() {
         None,
         &Filter::new(""),
         None,
+        None,
     );
     assert_eq!(rows.len(), 72);
     assert_eq!(rows.len(), layer.features.len());

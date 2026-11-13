@@ -1135,6 +1135,25 @@ fn the_brush_layer_frees_its_whole_heightmap_outside_the_globe_workspace() {
 }
 
 #[test]
+fn the_expressions_read_the_reduced_heightmap_of_a_large_layer_in_each_workspace() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut state, height, _) = large_world(&dir.path().join("project.gpkg"));
+    let at = vale_terrain::math::lonlat_to_dir(45.0, 35.3);
+    let before = state.globe.value_map(height).unwrap().sample_bilinear(at);
+    paint_layer(&mut state, height, 45.0, 35.3);
+    let in_globe = state.globe.value_map(height).unwrap();
+    assert_eq!(in_globe.face_size(), 2048);
+    let painted = in_globe.sample_bilinear(at);
+    assert!(painted != before, "the reduced heightmap follows the brush");
+
+    state.workspace = Workspace::Atlas;
+    state.pump_layers(true);
+    let in_atlas = state.globe.value_map(height).unwrap();
+    assert_eq!(in_atlas.face_size(), 2048);
+    assert_eq!(in_atlas.sample_bilinear(at), painted);
+}
+
+#[test]
 fn a_whole_heightmap_that_does_not_fit_in_the_memory_does_not_load() {
     let dir = tempfile::tempdir().unwrap();
     let (mut state, height, rain) = large_world(&dir.path().join("project.gpkg"));

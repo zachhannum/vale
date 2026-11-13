@@ -1,12 +1,13 @@
-//! The popover of a field chip: the unit of a measure, the format of the
+//! The popover of a field chip: the unit of a measure or the stat of a
+//! raster value on a line or a polygon layer, the format of the
 //! field, the value when the field is empty, Wrap in function, Cut, Copy,
 //! and Remove field. The popover of a page value: its format, Cut, Copy,
 //! and Remove value.
 
 use eframe::egui::{self, Align2, Color32, Rect, Sense, pos2, vec2};
-use vale_store::FieldType;
+use vale_store::{FieldType, GeometryKind};
 use vale_style::expr::editor::{Case, Empty, FieldFormat, Piece, Subject, Template};
-use vale_style::expr::{Category, FUNCTIONS, Function};
+use vale_style::expr::{Category, FUNCTIONS, Function, Stat};
 
 use super::geometry::TOUCH;
 use super::popover;
@@ -17,6 +18,8 @@ use crate::ui::token_field::paint::{BAD, FUNCTION_TEXT};
 
 /// The row of the unit of a measure.
 pub const UNIT_ROW: &str = "Unit";
+/// The row of the stat of a raster value.
+pub const STAT_ROW: &str = "Stat";
 pub const DECIMAL_PLACES: &str = "Decimal places";
 pub const THOUSANDS: &str = "Thousands separator";
 pub const CASE: &str = "Case";
@@ -262,6 +265,24 @@ fn places_row(
     out
 }
 
+/// A row of `title` and small segments of `labels`, after a divider.
+/// Returns the segment that the user tapped.
+fn segments_row(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    title: &str,
+    labels: &[&str],
+    active: usize,
+) -> Option<usize> {
+    popover::divider(ui);
+    let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), Sense::hover());
+    let at = pos2(row.left(), row.center().y);
+    (ui.painter()).text(at, Align2::LEFT_CENTER, title, theme::body(), theme::TEXT);
+    let w = widgets::small_segments_width(ui, labels);
+    let seg = Rect::from_min_size(pos2(row.right() - w, row.center().y - 18.0), vec2(w, 36.0));
+    widgets::small_segments(ui, controls, seg, labels, active)
+}
+
 fn main_page(
     ui: &mut egui::Ui,
     controls: &mut Controls,
@@ -270,26 +291,27 @@ fn main_page(
 ) -> Option<Action> {
     header(ui, chip, help);
     let mut out = None;
-    if let Subject::Measure(m, u) = chip.subject {
-        popover::divider(ui);
-        let (row, _) =
-            ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), Sense::hover());
-        let at = pos2(row.left(), row.center().y);
-        ui.painter().text(
-            at,
-            Align2::LEFT_CENTER,
-            UNIT_ROW,
-            theme::body(),
-            theme::TEXT,
-        );
-        let labels: Vec<&str> = m.units().iter().map(|u| u.label()).collect();
-        let w = widgets::small_segments_width(ui, &labels);
-        let seg = Rect::from_min_size(pos2(row.right() - w, row.center().y - 18.0), vec2(w, 36.0));
-        let unit = u.unwrap_or(m.default_unit());
-        let active = m.units().iter().position(|x| *x == unit).unwrap_or(0);
-        if let Some(i) = widgets::small_segments(ui, controls, seg, &labels, active) {
-            out = Some(Action::Subject(Subject::Measure(*m, Some(m.units()[i]))));
+    match chip.subject {
+        Subject::Measure(m, u) => {
+            let labels: Vec<&str> = m.units().iter().map(|u| u.label()).collect();
+            let unit = u.unwrap_or(m.default_unit());
+            let active = m.units().iter().position(|x| *x == unit).unwrap_or(0);
+            if let Some(i) = segments_row(ui, controls, UNIT_ROW, &labels, active) {
+                out = Some(Action::Subject(Subject::Measure(*m, Some(m.units()[i]))));
+            }
         }
+        Subject::Raster(name, st) if help.geometry != GeometryKind::Point => {
+            let labels = Stat::ALL.map(Stat::label);
+            let stat = st.unwrap_or_default();
+            let active = Stat::ALL.iter().position(|x| *x == stat).unwrap_or(0);
+            if let Some(i) = segments_row(ui, controls, STAT_ROW, &labels, active) {
+                out = Some(Action::Subject(Subject::Raster(
+                    name.clone(),
+                    Some(Stat::ALL[i]),
+                )));
+            }
+        }
+        _ => {}
     }
     let format = chip.format;
     let kind = help.subject_type(chip.subject);

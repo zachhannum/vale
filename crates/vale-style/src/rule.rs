@@ -402,9 +402,9 @@ impl StrokeSymbolizer {
     }
 
     /// The stroke from the fallbacks.
-    pub fn rename_field(&mut self, old: &str, new: &str) {
-        self.color.rename_field(old, new);
-        self.width.rename_field(old, new);
+    pub fn rewrite(&mut self, f: &dyn Fn(&str) -> String) {
+        self.color.rewrite(f);
+        self.width.rewrite(f);
     }
 
     pub fn fallback(&self) -> Stroke {
@@ -421,37 +421,37 @@ impl StrokeSymbolizer {
 }
 
 impl Symbolizer {
-    /// Replaces the field `old` with `new` in each expression.
-    pub fn rename_field(&mut self, old: &str, new: &str) {
+    /// Rewrites the text of each expression with `f`.
+    pub fn rewrite(&mut self, f: &dyn Fn(&str) -> String) {
         match self {
-            Symbolizer::Fill { color } => color.rename_field(old, new),
-            Symbolizer::Stroke(s) => s.rename_field(old, new),
+            Symbolizer::Fill { color } => color.rewrite(f),
+            Symbolizer::Stroke(s) => s.rewrite(f),
             Symbolizer::Marker {
                 radius,
                 fill,
                 stroke,
                 ..
             } => {
-                radius.rename_field(old, new);
-                if let Some(f) = fill {
-                    f.rename_field(old, new);
+                radius.rewrite(f);
+                if let Some(fill) = fill {
+                    fill.rewrite(f);
                 }
                 if let Some(s) = stroke {
-                    s.rename_field(old, new);
+                    s.rewrite(f);
                 }
             }
             Symbolizer::Symbol(s) => {
-                s.size.rename_field(old, new);
-                s.rotation.rename_field(old, new);
+                s.size.rewrite(f);
+                s.rotation.rewrite(f);
                 if let Some(t) = &mut s.tint {
-                    t.rename_field(old, new);
+                    t.rewrite(f);
                 }
             }
             Symbolizer::Scatter(s) => {
-                s.size.rename_field(old, new);
-                s.spacing.rename_field(old, new);
+                s.size.rewrite(f);
+                s.spacing.rewrite(f);
                 if let Some(t) = &mut s.tint {
-                    t.rename_field(old, new);
+                    t.rewrite(f);
                 }
             }
             Symbolizer::Raster(_) | Symbolizer::Image(_) => {}
@@ -568,15 +568,15 @@ impl Rule {
         }
     }
 
-    /// True if the rule draws at the scale denominator `scale`.
-    /// Replaces the field `old` with `new` in the filter and in each symbolizer.
-    pub fn rename_field(&mut self, old: &str, new: &str) {
-        self.filter.rename_field(old, new);
+    /// Rewrites the text of the filter and of each symbolizer expression with `f`.
+    pub fn rewrite(&mut self, f: &dyn Fn(&str) -> String) {
+        self.filter.rewrite(f);
         for s in &mut self.symbolizers {
-            s.rename_field(old, new);
+            s.rewrite(f);
         }
     }
 
+    /// True if the rule draws at the scale denominator `scale`.
     pub fn in_scale(&self, scale: f64) -> bool {
         self.min_scale.is_none_or(|min| scale >= min)
             && self.max_scale.is_none_or(|max| scale < max)
@@ -809,10 +809,10 @@ impl Rule {
 }
 
 impl Style {
-    /// Replaces the field `old` with `new` in each rule.
-    pub fn rename_field(&mut self, old: &str, new: &str) {
+    /// Rewrites the text of each expression of each rule with `f`.
+    pub fn rewrite(&mut self, f: &dyn Fn(&str) -> String) {
         for r in &mut self.rules {
-            r.rename_field(old, new);
+            r.rewrite(f);
         }
     }
 

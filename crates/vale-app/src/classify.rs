@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 
 use vale_store::{FieldType, GeometryKind, Layer, Value};
-use vale_style::expr::{Context, Expr, Filter, Property, field_ref};
+use vale_style::expr::{Context, Expr, Filter, Property, RasterValues, field_ref};
 use vale_style::{Color, Rule, Stroke};
 
 use crate::ramps::Ramp;
@@ -59,12 +59,21 @@ const OTHER_COLOR: Color = Color::rgb(180, 180, 180);
 const JENKS_VALUES: usize = 1000;
 
 /// The value of an expression for each feature of a layer, on a world of
-/// radius `radius_km`.
+/// radius `radius_km`, with no raster values.
 pub fn values(layer: &Layer, expr: &Expr, radius_km: f64) -> Vec<Value> {
-    layer
-        .features
-        .iter()
-        .map(|f| {
+    values_with(layer, expr, radius_km, None)
+}
+
+/// The value of an expression for each feature of a layer, on a world of
+/// radius `radius_km`, with the raster values `rasters`.
+pub fn values_with(
+    layer: &Layer,
+    expr: &Expr,
+    radius_km: f64,
+    rasters: Option<&dyn RasterValues>,
+) -> Vec<Value> {
+    (layer.features.iter().enumerate())
+        .map(|(index, f)| {
             expr.eval(&Context {
                 attributes: &f.attributes,
                 scale: 0.0,
@@ -72,6 +81,8 @@ pub fn values(layer: &Layer, expr: &Expr, radius_km: f64) -> Vec<Value> {
                 shape: Some(&f.geometry),
                 radius_km,
                 page: None,
+                rasters,
+                index,
             })
         })
         .collect()
@@ -505,8 +516,21 @@ pub fn classes_of(
     n: usize,
     ramp: Option<&Ramp>,
 ) -> Option<Vec<Class>> {
+    classes_with(layer, radius_km, None, text, method, n, ramp)
+}
+
+/// The classes of `classes_of`, with the raster values `rasters`.
+pub fn classes_with(
+    layer: &Layer,
+    radius_km: f64,
+    rasters: Option<&dyn RasterValues>,
+    text: &str,
+    method: Method,
+    n: usize,
+    ramp: Option<&Ramp>,
+) -> Option<Vec<Class>> {
     let expr = Expr::parse(text).ok()?;
-    let all = values(layer, &expr, radius_km);
+    let all = values_with(layer, &expr, radius_km, rasters);
     let left = left_side(text);
     let classes = match numbers(&all) {
         Some((sorted, nulls)) => number_classes(&left, &breaks(&sorted, method, n), nulls > 0),
@@ -752,6 +776,8 @@ mod tests {
                 shape: None,
                 radius_km: 0.0,
                 page: None,
+                rasters: None,
+                index: 0,
             };
             assert_eq!(other.matches(&context), inside, "{v:?}");
         }
@@ -789,6 +815,8 @@ mod tests {
                 shape: None,
                 radius_km: 0.0,
                 page: None,
+                rasters: None,
+                index: 0,
             };
             assert_eq!(other.matches(&ctx), inside, "{v:?}");
         }

@@ -6,7 +6,7 @@
 
 use eframe::egui::{self, Align2, Color32, Rect, Sense, Stroke, pos2, vec2};
 use vale_store::Value;
-use vale_style::expr::editor::{Cond, Formula, Seq, Tok};
+use vale_style::expr::editor::{Cond, Formula, Seq, Subject, Tok};
 use vale_style::expr::{Category, Expr, FUNCTIONS, Function, Var, layer_functions};
 
 use super::cases::{self, CasesEdit, CasesState};
@@ -30,6 +30,8 @@ pub const FUNCTIONS_TAB: &str = "Functions";
 pub const OPERATORS_TAB: &str = "Operators";
 /// The heading of the variables in the Fields tab of the tray.
 pub const VARIABLES: &str = crate::ui::expr_help::VARIABLES_MENU;
+/// The heading of the raster layers in the Fields tab of the tray.
+pub const RASTER: &str = crate::ui::expr_help::RASTER_MENU;
 /// The search fields of the tabs of the tray.
 pub const SEARCH: [&str; 3] = ["Search fields", "Search functions", "Search operators"];
 
@@ -565,6 +567,16 @@ fn bar(
                         out = Some(true);
                     }
                 }
+                for r in rasters(help, &needle) {
+                    let label = r.label();
+                    let name = bar_name(&insert_name(&label));
+                    let glyph = help.subject_type(&r).map(Glyph::of);
+                    let unit = raster_note(help, &r);
+                    if bar_chip(ui, controls, &name, glyph, (&label, VARIABLE_TEXT), &unit) {
+                        formula::pick(&mut st.field, &Completion::Raster(r), help);
+                        out = Some(true);
+                    }
+                }
             }
             1 => {
                 for f in layer_functions().filter(|f| f.name.contains(&needle)) {
@@ -589,6 +601,21 @@ fn bar(
         }
     });
     out
+}
+
+/// The raster values whose layer names hold `needle`, with no stat.
+fn rasters(help: &ExprHelp, needle: &str) -> Vec<Subject> {
+    (help.rasters().into_iter())
+        .filter(|r| r.label().to_lowercase().contains(needle))
+        .collect()
+}
+
+/// The unit of the raster layer of a raster value.
+fn raster_note(help: &ExprHelp, r: &Subject) -> String {
+    let Subject::Raster(name, _) = r else {
+        return String::new();
+    };
+    help.raster_unit(name).unwrap_or_default().to_owned()
 }
 
 /// The variables whose names hold `needle`, with or without its `@`.
@@ -679,6 +706,20 @@ fn tray(
                     v.hint(),
                 ) {
                     formula::pick(&mut st.field, &Completion::Var(v), help);
+                    out = Some(true);
+                }
+            }
+            let rs = rasters(help, &needle);
+            if !rs.is_empty() {
+                widgets::list_heading(ui, RASTER);
+            }
+            for r in rs {
+                let label = r.label();
+                let glyph = help.subject_type(&r).map(Glyph::of);
+                let name = insert_name(&label);
+                let note = raster_note(help, &r);
+                if tray_row(ui, controls, &name, glyph, (&label, VARIABLE_TEXT), &note) {
+                    formula::pick(&mut st.field, &Completion::Raster(r), help);
                     out = Some(true);
                 }
             }

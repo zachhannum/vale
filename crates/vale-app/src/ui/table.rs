@@ -249,8 +249,10 @@ impl AppState {
             sort: table.sort.clone(),
             filter: table.filter.clone(),
             selected,
+            rasters: self.pipeline.rasters().arrived(),
         };
-        Some(table.rows.update(key, layer))
+        let rasters = self.pipeline.rasters().for_layer(table.layer);
+        Some(table.rows.update(key, layer, Some(&rasters)))
     }
 
     /// The selected features of the layer of the table.

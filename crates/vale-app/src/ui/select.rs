@@ -474,13 +474,14 @@ impl AppState {
         };
         let text = (self.doc.entry(id)).and_then(|e| Expr::parse(&e.style.label.text).ok());
         let geometry = layer.geometry().unwrap_or(GeometryKind::Point);
-        let mut features: Vec<_> = (layer.features.iter())
-            .filter(|f| self.feature_selection.iter().any(|s| s.uuid == f.uuid()))
-            .map(|f| (crate::globe::merge::size(&f.geometry), f))
+        let mut features: Vec<_> = (layer.features.iter().enumerate())
+            .filter(|(_, f)| self.feature_selection.iter().any(|s| s.uuid == f.uuid()))
+            .map(|(index, f)| (crate::globe::merge::size(&f.geometry), index, f))
             .collect();
         features.sort_by(|a, b| b.0.total_cmp(&a.0));
         let radius_km = self.doc.project.world.radius_km;
-        let name = |i: usize, f: &vale_store::Feature| {
+        let rasters = self.pipeline.rasters().for_layer(id);
+        let name = |i: usize, index: usize, f: &vale_store::Feature| {
             let value = text.as_ref().map(|e| {
                 e.eval(&Context {
                     attributes: &f.attributes,
@@ -489,6 +490,8 @@ impl AppState {
                     shape: Some(&f.geometry),
                     radius_km,
                     page: None,
+                    rasters: Some(&rasters),
+                    index,
                 })
             });
             let label = value
@@ -497,7 +500,7 @@ impl AppState {
             label.unwrap_or_else(|| format!("Feature {}", i + 1))
         };
         (features.iter().enumerate())
-            .map(|(i, (_, f))| (f.uuid(), name(i, f)))
+            .map(|(i, (_, index, f))| (f.uuid(), name(i, *index, f)))
             .collect()
     }
 

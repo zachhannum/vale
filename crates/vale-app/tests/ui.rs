@@ -1680,6 +1680,7 @@ fn short_filter_shows_inline() {
     let n = vale_app::ui::expr_help::count_matches(
         layer,
         h.state().doc.project.world.radius_km,
+        None,
         "scalerank < 3",
     )
     .unwrap();
@@ -1780,6 +1781,62 @@ fn a_desktop_label_text_inserts_a_measure_from_its_menu() {
     h.run_steps(3);
     let text = &h.state().doc.entry(rivers).unwrap().style.label.text;
     assert_eq!(text, "format_number(line_length('km'), 0)");
+}
+
+#[test]
+fn a_desktop_label_text_inserts_a_raster_value_from_its_menu() {
+    use vale_app::ui::expr_help::{INSERT, RASTER_MENU};
+    let mut h = harness();
+    h.state_mut()
+        .add_raster(RasterSpec::height("Height", 64))
+        .unwrap();
+    h.run_steps(2);
+    let layers = h.state().doc.project.layers();
+    let rivers = layers.iter().find(|l| l.name == "Rivers").unwrap().id;
+    h.state_mut()
+        .doc
+        .entry_mut(rivers)
+        .unwrap()
+        .style
+        .label
+        .text = String::new();
+    h.state_mut().select(Some(LayerRef::Vector(rivers)));
+    h.run_steps(2);
+    h.query_all_by_label(INSERT).last().unwrap().click();
+    h.run_steps(2);
+    h.get_by_label_contains(RASTER_MENU).click();
+    h.run_steps(2);
+    // A line layer has a submenu of the stats for each raster layer.
+    let height = h.query_all_by_label_contains("Height").last().unwrap();
+    assert_eq!(height.accesskit_node().label().as_deref(), Some("Height ⏵"));
+    height.click();
+    h.run_steps(2);
+    h.get_by_label("Max").click();
+    h.run_steps(3);
+    let text = &h.state().doc.entry(rivers).unwrap().style.label.text;
+    assert_eq!(text, "format_number(raster('Height', 'max'), 0)");
+}
+
+#[test]
+fn a_desktop_filter_warns_of_an_unknown_raster_layer() {
+    use vale_app::ui::expr_help::no_raster;
+    use vale_app::ui::pad::filter::VIEWS;
+    use vale_app::ui::pad::rules::EXPRESSION;
+    let mut h = globe_harness();
+    h.state_mut()
+        .add_raster(RasterSpec::height("Height", 64))
+        .unwrap();
+    h.run_steps(2);
+    open_rivers(&mut h);
+    click_filter(&mut h);
+    h.get_by_label(VIEWS[1]).click();
+    h.run_steps(2);
+    type_in(&mut h, EXPRESSION, "raster('Heat') > 3000");
+    let warning = no_raster("Heat");
+    assert_eq!(warning, "No raster layer is named 'Heat'.");
+    assert!(h.query_all_by_label(&warning).next().is_some());
+    type_in(&mut h, EXPRESSION, "raster('Height') > 3000");
+    assert!(h.query_all_by_label(&warning).next().is_none());
 }
 
 #[test]

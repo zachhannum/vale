@@ -2,7 +2,7 @@
 
 use vale_store::{Value, title_case};
 
-use super::{Context, measure};
+use super::{Context, measure, raster};
 
 /// A function that an expression can call.
 pub struct Function {
@@ -383,6 +383,16 @@ pub static FUNCTIONS: &[Function] = &[
         category: Category::Geometry,
         hint: "Length of a line",
         call: measure::line_length,
+    },
+    Function {
+        name: "raster",
+        signature: "raster(layer, stat)",
+        min_args: 1,
+        max_args: Some(2),
+        summary: "The value of the raster layer named `layer` under the feature, in the unit of the layer. For a line or a polygon, `stat` is `'mean'`, `'min'`, or `'max'`, and `'mean'` if not given",
+        category: Category::Geometry,
+        hint: "Value of a raster layer",
+        call: raster::raster,
     },
     Function {
         name: "scale",

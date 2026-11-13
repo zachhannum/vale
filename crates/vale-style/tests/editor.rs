@@ -1,9 +1,9 @@
 use vale_store::{FieldType, GeometryKind};
 use vale_style::expr::editor::{
     Case, CmpOp, Cond, Conditions, Empty, FieldFormat, Formula, Op, Piece, Seq, Subject, Template,
-    Tok, measures_for, ops_for,
+    Tok, measures_for, ops_for, rasters_for,
 };
-use vale_style::expr::{Expr, FUNCTIONS, Measure, Unit, Value, Var};
+use vale_style::expr::{Expr, FUNCTIONS, Measure, Stat, Unit, Value, Var};
 
 fn tree(text: &str) -> Expr {
     Expr::parse(text).unwrap_or_else(|e| panic!("{text}: {e}"))
@@ -955,4 +955,87 @@ fn each_variable_has_a_label_and_a_hint() {
     assert!(!Var::Parts.fits(GeometryKind::Point));
     assert!(Var::Parts.fits(GeometryKind::Line));
     assert!(Var::Vertices.fits(GeometryKind::Point));
+}
+
+fn raster(layer: &str, stat: Option<Stat>) -> Subject {
+    Subject::Raster(layer.into(), stat)
+}
+
+#[test]
+fn raster_subject_round_trips() {
+    for (subject, text) in [
+        (raster("Height", None), "raster('Height')"),
+        (raster("Height", Some(Stat::Max)), "raster('Height', 'max')"),
+        (
+            raster("Bob's land", Some(Stat::Min)),
+            "raster('Bob''s land', 'min')",
+        ),
+    ] {
+        assert_eq!(subject.to_text(), text);
+        let code = format!("{text} > 3000");
+        assert_eq!(
+            one_cond(&code),
+            Cond::Rule {
+                subject: subject.clone(),
+                op: CmpOp::Gt,
+                values: vec![n(3000.0)],
+            },
+            "{code}"
+        );
+        assert_eq!(filter_trip(&code), code);
+        assert_eq!(template_trip(text), text);
+    }
+    for code in [
+        "raster('Height', 'MAX') > 1",
+        "raster('Height', 'median') > 1",
+        "raster(name) > 1",
+    ] {
+        assert_eq!(one_cond(code), Cond::Code(tree(code).to_string()), "{code}");
+    }
+}
+
+#[test]
+fn raster_subject_label_type_and_kind() {
+    let height = raster("Height", None);
+    assert_eq!(height.label(), "Height");
+    assert_eq!(raster("Height", Some(Stat::Max)).label(), "Height (max)");
+    assert_eq!(height.field_type(|_| None), Some(FieldType::Real));
+    assert!(height.same_kind(&raster("Height", Some(Stat::Min))));
+    assert!(!height.same_kind(&raster("Rain", None)));
+    assert_eq!(height.field(), None);
+    let names = vec!["Height".to_owned(), "Rain".to_owned()];
+    assert_eq!(
+        rasters_for(GeometryKind::Polygon, &names),
+        vec![height.clone(), raster("Rain", None)]
+    );
+}
+
+#[test]
+fn template_reads_raster_values() {
+    let format = FieldFormat::for_subject(&raster("Height", None));
+    assert_eq!(
+        format,
+        FieldFormat {
+            places: Some(0),
+            thousands: true,
+            ..Default::default()
+        }
+    );
+    let text = "format_number(raster('Height', 'max'), 0)";
+    assert_eq!(
+        Template::from_text(text).pieces,
+        vec![Piece::Field {
+            subject: raster("Height", Some(Stat::Max)),
+            format,
+        }]
+    );
+    assert_eq!(template_trip(text), text);
+    assert_eq!(
+        Template::new(vec![Piece::Field {
+            subject: raster("Height", None),
+            format: FieldFormat::for_subject(&raster("Height", None)),
+        }])
+        .to_text(),
+        "format_number(raster('Height'), 0)"
+    );
 }

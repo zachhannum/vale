@@ -5,9 +5,9 @@
 //! as it is.
 
 use eframe::egui::{self, Align2, Color32, Rect, Sense, Shape, Stroke, pos2, vec2};
-use vale_store::{FieldType, Value};
-use vale_style::expr::Unit;
+use vale_store::{FieldType, GeometryKind, Value};
 use vale_style::expr::editor::{CmpOp, Cond, Conditions, Subject, ops_for};
+use vale_style::expr::{Stat, Unit};
 
 use super::expression;
 use super::geometry::TOUCH;
@@ -49,6 +49,7 @@ pub const ANY_OF: &str = "Any of";
 /// The starts of the names of the controls of a condition.
 pub const FIELD: &str = "Field";
 pub const UNIT: &str = "Unit";
+pub const STAT: &str = "Stat";
 pub const COMPARISON: &str = "Comparison";
 pub const VALUE: &str = "Value";
 pub const SECOND_VALUE: &str = "Second value";
@@ -60,6 +61,8 @@ pub const YES: &str = "Yes";
 pub const NO: &str = "No";
 /// The heading of the measures in the menu of fields.
 pub const GEOMETRY: &str = crate::ui::expr_help::GEOMETRY_MENU;
+/// The heading of the raster layers in the menu of fields.
+pub const RASTER: &str = crate::ui::expr_help::RASTER_MENU;
 /// The search fields of the menu of text values and of the menu of
 /// fields.
 pub const SEARCH_VALUES: &str = "Search values";
@@ -113,6 +116,8 @@ pub enum Menu {
     Field,
     /// The unit of a measure.
     Unit,
+    /// The stat of a raster value.
+    Stat,
     Comparison,
     /// The value with this index.
     Value(usize),
@@ -127,6 +132,8 @@ pub enum Act {
     SetSubject(Vec<usize>, Subject),
     /// Sets the unit of a measure.
     SetUnit(Vec<usize>, Unit),
+    /// Sets the stat of a raster value.
+    SetStat(Vec<usize>, Stat),
     SetOp(Vec<usize>, CmpOp),
     /// Sets value `k`. False for typing.
     SetValue(Vec<usize>, usize, Value, bool),
@@ -477,8 +484,22 @@ fn field_look(subject: &Subject, help: &ExprHelp) -> Look {
     Look {
         kind,
         glyph: Some(help.subject_type(subject).map_or(Glyph::Text, Glyph::of)),
-        label: subject.label(),
+        label: match subject {
+            Subject::Raster(name, _) => name.clone(),
+            s => s.label(),
+        },
         badge: None,
+    }
+}
+
+/// The stat of a raster value on a line or a polygon layer. With no stat,
+/// the default stat. A point has no stat.
+fn stat_of(subject: &Subject, help: &ExprHelp) -> Option<Stat> {
+    match subject {
+        Subject::Raster(_, st) if help.geometry != GeometryKind::Point => {
+            Some(st.unwrap_or_default())
+        }
+        _ => None,
     }
 }
 
@@ -510,6 +531,7 @@ fn value_text(v: &Value) -> String {
 enum Piece {
     Field,
     Unit,
+    Stat,
     Op,
     /// The value with this index.
     Value(usize),
@@ -591,6 +613,10 @@ pub fn rule_row(
     if let Some(u) = unit {
         pieces.push((menu_width(ui, u.label()), Piece::Unit));
     }
+    let stat = stat_of(subject, rows.help);
+    if let Some(st) = stat {
+        pieces.push((menu_width(ui, st.label()), Piece::Stat));
+    }
     pieces.push((menu_width(ui, op.label()), Piece::Op));
     for k in 0..count {
         if k > 0 {
@@ -632,6 +658,16 @@ pub fn rule_row(
                     rows.toggle(path, Menu::Unit);
                 }
                 if rows.is_open(path, &Menu::Unit) {
+                    rows.anchor = Some(rect);
+                }
+            }
+            Piece::Stat => {
+                let name = rows.name(STAT, path);
+                let label = stat.map_or("", Stat::label);
+                if menu_button(ui, controls, rect, &name, label) {
+                    rows.toggle(path, Menu::Stat);
+                }
+                if rows.is_open(path, &Menu::Stat) {
                     rows.anchor = Some(rect);
                 }
             }
@@ -975,6 +1011,9 @@ pub fn menu_popover(
                 let measures: Vec<Subject> = (help.measures().into_iter())
                     .filter(|m| m.label().to_lowercase().contains(&needle))
                     .collect();
+                let rasters: Vec<Subject> = (help.rasters().into_iter())
+                    .filter(|r| r.label().to_lowercase().contains(&needle))
+                    .collect();
                 egui::ScrollArea::vertical()
                     .max_height(320.0)
                     .show(ui, |ui| {
@@ -996,6 +1035,17 @@ pub fn menu_popover(
                                 acts.push(Act::SetSubject(path.clone(), m));
                             }
                         }
+                        if !rasters.is_empty() {
+                            widgets::list_heading(ui, RASTER);
+                        }
+                        for r in rasters {
+                            let label = r.label();
+                            let on = r.same_kind(subject);
+                            if widgets::option_row(ui, controls, &label, &label, &[], on).clicked()
+                            {
+                                acts.push(Act::SetSubject(path.clone(), r));
+                            }
+                        }
                     });
             }
             (Menu::Unit, Some(Cond::Rule { subject, .. })) => {
@@ -1007,6 +1057,16 @@ pub fn menu_popover(
                         if widgets::option_row(ui, controls, label, label, &[], on).clicked() {
                             acts.push(Act::SetUnit(path.clone(), *u));
                         }
+                    }
+                }
+            }
+            (Menu::Stat, Some(Cond::Rule { subject, .. })) => {
+                let stat = stat_of(subject, help);
+                for st in Stat::ALL {
+                    let label = st.label();
+                    let on = stat == Some(st);
+                    if widgets::option_row(ui, controls, label, label, &[], on).clicked() {
+                        acts.push(Act::SetStat(path.clone(), st));
                     }
                 }
             }
@@ -1249,6 +1309,16 @@ pub fn apply(items: &mut Vec<Cond>, act: Act, help: &ExprHelp) -> bool {
             }
             _ => false,
         },
+        Act::SetStat(path, stat) => match cond_mut(items, &path) {
+            Some(Cond::Rule {
+                subject: Subject::Raster(_, st),
+                ..
+            }) => {
+                *st = Some(stat);
+                true
+            }
+            _ => false,
+        },
         Act::SetOp(path, new) => {
             let Some(Cond::Rule {
                 subject,
@@ -1420,5 +1490,25 @@ mod tests {
             panic!("no rule");
         };
         assert_eq!(subject, Subject::Measure(Measure::Length, Some(Unit::Km)));
+    }
+
+    #[test]
+    fn a_raster_value_takes_number_comparisons_and_its_stats() {
+        let mut help = polygons();
+        help.raster_layers = vec![("Height".into(), "m".into())];
+        let mut items = vec![new_rule(&help)];
+        let height = help.rasters().remove(0);
+        assert!(apply(&mut items, Act::SetSubject(vec![0], height), &help));
+        assert!(apply(&mut items, Act::SetOp(vec![0], CmpOp::Gt), &help));
+        assert!(apply(&mut items, Act::SetStat(vec![0], Stat::Max), &help));
+        let text = Conditions::new(true, items.clone()).to_text();
+        assert_eq!(text, "raster('Height', 'max') > 0");
+        // A point layer has no stat.
+        let Cond::Rule { subject, .. } = &items[0] else {
+            panic!("{items:?}");
+        };
+        assert_eq!(stat_of(subject, &help), Some(Stat::Max));
+        help.geometry = GeometryKind::Point;
+        assert_eq!(stat_of(subject, &help), None);
     }
 }

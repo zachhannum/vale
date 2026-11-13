@@ -133,6 +133,11 @@ impl PdfExport {
         &self.path
     }
 
+    /// Gives the export the raster values under the features.
+    pub fn set_rasters(&mut self, rasters: crate::raster_values::RasterCache) {
+        *self.pipeline.rasters_mut() = rasters;
+    }
+
     /// The page that the next step composes, and the total page count.
     pub fn progress(&self) -> (usize, usize) {
         ((self.page + 1).min(self.pages.len()), self.pages.len())

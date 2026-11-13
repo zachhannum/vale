@@ -9,8 +9,8 @@ use eframe::egui;
 use eframe::egui::text::{CCursor, CCursorRange};
 use vale_store::FurnitureId;
 use vale_store::{FieldType, Geometry, GeometryKind, Layer, LayerId, Value};
-use vale_style::expr::editor::{Subject, measures_for};
-use vale_style::expr::{Context, Expr, PageValues, field_ref, layer_functions};
+use vale_style::expr::editor::{Subject, measures_for, rasters_for};
+use vale_style::expr::{Context, Expr, PageValues, RasterValues, Stat, field_ref, layer_functions};
 
 use super::AppState;
 use crate::furniture::PageSample;
@@ -30,6 +30,14 @@ pub const FUNCTIONS_MENU: &str = "Functions";
 pub const GEOMETRY_MENU: &str = "Geometry";
 /// The `@` variables, in the value editor.
 pub const VARIABLES_MENU: &str = "Variables";
+/// The raster layers, in the filter field menu, the label text, and the
+/// value editor.
+pub const RASTER_MENU: &str = "Raster";
+
+/// The warning of a raster call that names no raster layer.
+pub fn no_raster(name: &str) -> String {
+    format!("No raster layer is named '{name}'.")
+}
 
 /// The page values of a text item.
 pub const SCALE: &str = "Scale";
@@ -126,10 +134,31 @@ pub struct ExprHelp {
     shape: Option<Geometry>,
     radius_km: f64,
     values: Arc<LayerValues>,
+    /// The raster layers of the project: the name and the unit of each, in
+    /// the list order.
+    pub raster_layers: Vec<(String, String)>,
+    /// The raster values of the feature of the preview.
+    sample_rasters: SampleRasters,
     /// The page values of a text item. The help of a text item has no
     /// fields, and it lists the page values in place of the fields and the
     /// functions.
     page: Option<PageSample>,
+}
+
+/// The mean, the min, and the max of each raster layer under the feature
+/// of the preview.
+#[derive(Clone, Debug, Default)]
+struct SampleRasters(BTreeMap<String, [Option<f64>; 3]>);
+
+impl RasterValues for SampleRasters {
+    fn value(&self, layer: &str, stat: Stat, _: usize, _: &Geometry) -> Option<f64> {
+        let i = Stat::ALL.iter().position(|s| *s == stat)?;
+        self.0.get(layer)?[i]
+    }
+
+    fn has_layer(&self, layer: &str) -> bool {
+        self.0.contains_key(layer)
+    }
 }
 
 /// The values of the features of a layer.
@@ -168,14 +197,19 @@ impl LayerValues {
 
 /// The count of the features of `layer` that filter `text` matches, on a
 /// world of radius `radius_km`. `None` if the text does not parse.
-pub fn count_matches(layer: &Layer, radius_km: f64, text: &str) -> Option<usize> {
+pub fn count_matches(
+    layer: &Layer,
+    radius_km: f64,
+    rasters: Option<&dyn RasterValues>,
+    text: &str,
+) -> Option<usize> {
     if text.trim().is_empty() {
         return Some(layer.features.len());
     }
     let expr = Expr::parse(text).ok()?;
     let geometry = layer.geometry().unwrap_or(GeometryKind::Point);
-    let count = (layer.features.iter())
-        .filter(|f| {
+    let count = (layer.features.iter().enumerate())
+        .filter(|(index, f)| {
             let ctx = Context {
                 attributes: &f.attributes,
                 scale: PREVIEW_SCALE,
@@ -183,6 +217,8 @@ pub fn count_matches(layer: &Layer, radius_km: f64, text: &str) -> Option<usize>
                 shape: Some(&f.geometry),
                 radius_km,
                 page: None,
+                rasters,
+                index: *index,
             };
             expr.eval(&ctx) == Value::Bool(true)
         })
@@ -207,11 +243,16 @@ pub struct ValueRange {
 /// The range of the numbers that value `text` gives across `layer`, on a
 /// world of radius `radius_km`. `None` if the text does not parse or gives
 /// no number.
-pub fn value_range(layer: &Layer, radius_km: f64, text: &str) -> Option<ValueRange> {
+pub fn value_range(
+    layer: &Layer,
+    radius_km: f64,
+    rasters: Option<&dyn RasterValues>,
+    text: &str,
+) -> Option<ValueRange> {
     let expr = Expr::parse(text).ok()?;
     let geometry = layer.geometry().unwrap_or(GeometryKind::Point);
-    let numbers: Vec<f64> = (layer.features.iter())
-        .filter_map(|f| {
+    let numbers: Vec<f64> = (layer.features.iter().enumerate())
+        .filter_map(|(index, f)| {
             let ctx = Context {
                 attributes: &f.attributes,
                 scale: PREVIEW_SCALE,
@@ -219,6 +260,8 @@ pub fn value_range(layer: &Layer, radius_km: f64, text: &str) -> Option<ValueRan
                 shape: Some(&f.geometry),
                 radius_km,
                 page: None,
+                rasters,
+                index,
             };
             match expr.eval(&ctx) {
                 Value::Number(n) if n.is_finite() => Some(n),
@@ -291,8 +334,10 @@ struct CacheEntry {
     values: Arc<LayerValues>,
     /// The radius of the world of `counts` and `ranges`.
     radius_km: f64,
-    counts: HashMap<String, Option<usize>>,
-    ranges: HashMap<String, Option<Arc<ValueRange>>>,
+    /// The counts and the ranges by text and by the stamp of the raster
+    /// values. The stamp is 0 for a text that reads no raster.
+    counts: HashMap<(String, u64), Option<usize>>,
+    ranges: HashMap<(String, u64), Option<Arc<ValueRange>>>,
 }
 
 /// The values and the match counts of the layers. A layer computes them
@@ -351,18 +396,20 @@ impl HelpCache {
         layer: &Layer,
         generation: u64,
         radius_km: f64,
+        rasters: Option<(&dyn RasterValues, u64)>,
         text: &str,
     ) -> Option<usize> {
         self.entry(layer, generation, Some(radius_km), |e, cache| {
-            if let Some(count) = e.counts.get(text) {
+            let key = (text.to_owned(), stamp(rasters, text));
+            if let Some(count) = e.counts.get(&key) {
                 return *count;
             }
             cache.count_one();
             if e.counts.len() >= MAX_COUNTS {
                 e.counts.clear();
             }
-            let count = count_matches(layer, radius_km, text);
-            e.counts.insert(text.to_owned(), count);
+            let count = count_matches(layer, radius_km, rasters.map(|r| r.0), text);
+            e.counts.insert(key, count);
             count
         })
     }
@@ -373,18 +420,20 @@ impl HelpCache {
         layer: &Layer,
         generation: u64,
         radius_km: f64,
+        rasters: Option<(&dyn RasterValues, u64)>,
         text: &str,
     ) -> Option<Arc<ValueRange>> {
         self.entry(layer, generation, Some(radius_km), |e, cache| {
-            if let Some(range) = e.ranges.get(text) {
+            let key = (text.to_owned(), stamp(rasters, text));
+            if let Some(range) = e.ranges.get(&key) {
                 return range.clone();
             }
             cache.count_one();
             if e.ranges.len() >= MAX_COUNTS {
                 e.ranges.clear();
             }
-            let range = value_range(layer, radius_km, text).map(Arc::new);
-            e.ranges.insert(text.to_owned(), range.clone());
+            let range = value_range(layer, radius_km, rasters.map(|r| r.0), text).map(Arc::new);
+            e.ranges.insert(key, range.clone());
             range
         })
     }
@@ -400,7 +449,11 @@ impl HelpCache {
 pub fn matches(state: &AppState, id: LayerId, text: &str) -> Option<(usize, usize)> {
     let layer = state.doc.layer(id)?;
     let radius_km = state.doc.project.world.radius_km;
-    let count = (state.help_cache).matches(layer, state.map_generation, radius_km, text)?;
+    let cache = state.pipeline.rasters();
+    let rasters = cache.for_layer(id);
+    let rasters = Some((&rasters as &dyn RasterValues, cache.arrived()));
+    let count =
+        (state.help_cache).matches(layer, state.map_generation, radius_km, rasters, text)?;
     Some((count, layer.features.len()))
 }
 
@@ -408,7 +461,19 @@ pub fn matches(state: &AppState, id: LayerId, text: &str) -> Option<(usize, usiz
 pub fn range(state: &AppState, id: LayerId, text: &str) -> Option<Arc<ValueRange>> {
     let layer = state.doc.layer(id)?;
     let radius_km = state.doc.project.world.radius_km;
-    (state.help_cache).range(layer, state.map_generation, radius_km, text)
+    let cache = state.pipeline.rasters();
+    let rasters = cache.for_layer(id);
+    let rasters = Some((&rasters as &dyn RasterValues, cache.arrived()));
+    (state.help_cache).range(layer, state.map_generation, radius_km, rasters, text)
+}
+
+/// The stamp of the raster values for `text`: the count of the raster jobs
+/// that finished if the text reads a raster layer, and 0 if not.
+fn stamp(rasters: Option<(&dyn RasterValues, u64)>, text: &str) -> u64 {
+    match rasters {
+        Some((_, arrived)) if text.contains("raster") => arrived + 1,
+        _ => 0,
+    }
 }
 
 impl ExprHelp {
@@ -424,6 +489,17 @@ impl ExprHelp {
             .filter(|f| f.layer == id)
             .find_map(|f| layer.features.iter().find(|g| g.uuid() == f.uuid));
         let sample = selected.or(layer.features.first());
+        let index = sample.and_then(|f| layer.features.iter().position(|g| std::ptr::eq(f, g)));
+        let raster_layers = raster_layers(state);
+        let cache = state.pipeline.rasters();
+        let sample_rasters = SampleRasters(
+            (raster_layers.iter())
+                .map(|(name, _)| {
+                    let stat = |s| index.and_then(|i| cache.value_of(id, i, name, s));
+                    (name.clone(), Stat::ALL.map(stat))
+                })
+                .collect(),
+        );
         ExprHelp {
             fields: layer.fields.iter().map(|f| f.name.clone()).collect(),
             types: layer.fields.iter().map(|f| f.kind).collect(),
@@ -433,6 +509,8 @@ impl ExprHelp {
             shape: sample.map(|f| f.geometry.clone()),
             radius_km: state.doc.project.world.radius_km,
             values: state.help_cache.values(layer, state.map_generation),
+            raster_layers,
+            sample_rasters,
             page: None,
         }
     }
@@ -471,6 +549,8 @@ impl ExprHelp {
             shape: None,
             radius_km: 0.0,
             values: Arc::default(),
+            raster_layers: Vec::new(),
+            sample_rasters: SampleRasters::default(),
             page: None,
         }
     }
@@ -490,6 +570,8 @@ impl ExprHelp {
             shape: self.shape.as_ref(),
             radius_km: self.radius_km,
             page,
+            rasters: Some(&self.sample_rasters),
+            index: 0,
         }))
     }
 
@@ -507,6 +589,44 @@ impl ExprHelp {
     /// The measures of the geometry of the layer.
     pub fn measures(&self) -> Vec<Subject> {
         measures_for(self.geometry)
+    }
+
+    /// The raster values of the layer, one for each raster layer, with no
+    /// stat.
+    pub fn rasters(&self) -> Vec<Subject> {
+        let names: Vec<String> = self.raster_layers.iter().map(|(n, _)| n.clone()).collect();
+        rasters_for(self.geometry, &names)
+    }
+
+    /// The unit of raster layer `name`.
+    pub fn raster_unit(&self, name: &str) -> Option<&str> {
+        let (_, unit) = self.raster_layers.iter().find(|(n, _)| n == name)?;
+        Some(unit)
+    }
+
+    /// The raster values of the Insert menus, for each raster layer: its
+    /// name and its values. A point layer has one value with no stat, and a
+    /// line or a polygon layer has one value for each stat.
+    pub fn raster_menu(&self) -> Vec<(String, Vec<Subject>)> {
+        (self.raster_layers.iter())
+            .map(|(name, _)| {
+                let values = match self.geometry {
+                    GeometryKind::Point => vec![Subject::Raster(name.clone(), None)],
+                    _ => (Stat::ALL.into_iter())
+                        .map(|st| Subject::Raster(name.clone(), Some(st)))
+                        .collect(),
+                };
+                (name.clone(), values)
+            })
+            .collect()
+    }
+
+    /// The warning for an expression that parses: a raster call that names
+    /// no raster layer.
+    fn warning(&self, expr: &Expr) -> Option<String> {
+        let names = expr.raster_layers();
+        let missing = (names.iter()).find(|n| !self.raster_layers.iter().any(|(r, _)| r == *n))?;
+        Some(no_raster(missing))
     }
 
     /// The value of field `name` in the feature of the preview.
@@ -571,6 +691,9 @@ impl ExprHelp {
             Ok(expr) => expr,
             Err(e) => return Some(Line::Error(e.short())),
         };
+        if let Some(warning) = self.warning(&expr) {
+            return Some(Line::Error(warning));
+        }
         let value = self.value_of(&expr)?;
         let text = match kind {
             ExprKind::Filter if value == Value::Bool(true) => MATCHES.to_owned(),
@@ -627,8 +750,20 @@ fn first_argument(call: &str) -> (usize, usize) {
     (start, end)
 }
 
-/// The "Insert" menu of a desktop expression field `id`, with the fields
-/// and the functions. Returns true when the user inserts one.
+/// The raster layers of the project, with their names and units, in the
+/// list order.
+fn raster_layers(state: &AppState) -> Vec<(String, String)> {
+    let project = &state.doc.project;
+    (project.layers().iter())
+        .filter_map(|l| {
+            let raster = project.raster(l.raster()?)?;
+            Some((l.name.clone(), raster.unit.clone()))
+        })
+        .collect()
+}
+
+/// The "Insert" menu of a desktop expression field `id`, with the fields,
+/// the raster layers, and the functions. Returns true when the user inserts one.
 pub fn insert_menu(ui: &mut egui::Ui, help: &ExprHelp, id: egui::Id, text: &mut String) -> bool {
     let mut chosen = None;
     ui.menu_button(INSERT, |ui| {
@@ -651,6 +786,18 @@ pub fn insert_menu(ui: &mut egui::Ui, help: &ExprHelp, id: egui::Id, text: &mut 
                 }
             });
         });
+        let rasters = help.raster_menu();
+        if !rasters.is_empty() {
+            ui.menu_button(RASTER_MENU, |ui| {
+                if let Some(s) = raster_menu_items(ui, &rasters) {
+                    chosen = Some(Chip {
+                        label: s.label(),
+                        insert: s.to_text(),
+                        call: false,
+                    });
+                }
+            });
+        }
         ui.menu_button(FUNCTIONS_MENU, |ui| {
             for (chip, f) in functions.iter().zip(layer_functions()) {
                 let button = ui.button(&chip.insert).on_hover_text(f.summary);
@@ -666,6 +813,36 @@ pub fn insert_menu(ui: &mut egui::Ui, help: &ExprHelp, id: egui::Id, text: &mut 
     insert_at_cursor(ui.ctx(), id, text, &chip);
     ui.memory_mut(|m| m.request_focus(id));
     true
+}
+
+/// The items of the Raster submenu of an Insert menu: a button for each
+/// raster value of a point layer, or a submenu of the stats for each raster
+/// layer of a line or a polygon layer. Returns the value that the user
+/// picked.
+pub fn raster_menu_items(ui: &mut egui::Ui, rasters: &[(String, Vec<Subject>)]) -> Option<Subject> {
+    let mut chosen = None;
+    for (name, values) in rasters {
+        match values.as_slice() {
+            [one] => {
+                if ui.button(name).clicked() {
+                    chosen = Some(one.clone());
+                }
+            }
+            _ => {
+                ui.menu_button(name, |ui| {
+                    for s in values {
+                        let Subject::Raster(_, Some(st)) = s else {
+                            continue;
+                        };
+                        if ui.button(st.label()).clicked() {
+                            chosen = Some(s.clone());
+                        }
+                    }
+                });
+            }
+        }
+    }
+    chosen
 }
 
 /// The line under a desktop expression field: the result in weak text, or
@@ -702,6 +879,8 @@ mod tests {
             shape: None,
             radius_km: 0.0,
             values: Arc::default(),
+            raster_layers: vec![("Height".into(), "m".into())],
+            sample_rasters: SampleRasters::default(),
             page: None,
         }
     }
@@ -757,20 +936,20 @@ mod tests {
     #[test]
     fn help_counts_matching_features() {
         let layer = towns();
-        assert_eq!(count_matches(&layer, R, "pop > 100"), Some(2));
-        assert_eq!(count_matches(&layer, R, ""), Some(3));
-        assert_eq!(count_matches(&layer, R, "pop >"), None);
+        assert_eq!(count_matches(&layer, R, None, "pop > 100"), Some(2));
+        assert_eq!(count_matches(&layer, R, None, ""), Some(3));
+        assert_eq!(count_matches(&layer, R, None, "pop >"), None);
         let cache = HelpCache::default();
-        assert_eq!(cache.matches(&layer, 0, R, "pop > 100"), Some(2));
+        assert_eq!(cache.matches(&layer, 0, R, None, "pop > 100"), Some(2));
         let computed = cache.computed();
         // The same text and the same layer do not compute again.
         for _ in 0..3 {
-            assert_eq!(cache.matches(&layer, 0, R, "pop > 100"), Some(2));
+            assert_eq!(cache.matches(&layer, 0, R, None, "pop > 100"), Some(2));
             cache.values(&layer, 0);
         }
         assert_eq!(cache.computed(), computed);
         // A change of the maps computes again.
-        assert_eq!(cache.matches(&layer, 1, R, "name = 'Bree'"), Some(1));
+        assert_eq!(cache.matches(&layer, 1, R, None, "name = 'Bree'"), Some(1));
         assert!(cache.computed() > computed);
     }
 
@@ -789,6 +968,13 @@ mod tests {
         let error = Some(Line::Error("Unknown function 'shout'.".to_owned()));
         assert_eq!(line("shout(name)", ExprKind::Text), error);
         assert_eq!(ExprHelp::empty().line("name", ExprKind::Text), None);
+        // A raster call that names no raster layer gives a warning.
+        let warning = Some(Line::Error("No raster layer is named 'Heat'.".to_owned()));
+        assert_eq!(line("raster('Heat') > 3", ExprKind::Filter), warning);
+        assert_eq!(
+            line("raster('Height') > 3", ExprKind::Filter),
+            preview(NO_MATCH)
+        );
     }
 
     #[test]

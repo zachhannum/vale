@@ -166,6 +166,51 @@ fn open_missing_changes_nothing() {
 }
 
 #[test]
+fn a_raster_rename_changes_each_expression_that_reads_the_raster() {
+    use vale_style::expr::Filter;
+    let mut d = Document::sample();
+    let layer_of = |d: &Document, name: &str| {
+        (d.project.layers().iter())
+            .find(|l| l.name == name)
+            .unwrap()
+            .id
+    };
+    for name in ["Height", "Rain"] {
+        d.project
+            .add_raster(name.into(), 64, "m".into(), 0.0, 4000.0);
+    }
+    let places = layer_of(&d, "Places");
+    let style = &mut d.entry_mut(places).unwrap().style;
+    style.style.rules[0].filter = Filter::new("raster('Height') > raster('Rain')");
+    style.label.text = "name || raster('Height', 'max')".into();
+    let map = d.project.atlas.add_map();
+    let globe = d.entry(places).unwrap().style.to_json();
+    let record = d.project.atlas.map_mut(map).unwrap();
+    record.styles.insert(places, globe);
+    let filter = |d: &Document| {
+        let style = &d.entry(places).unwrap().style;
+        style.style.rules[0]
+            .filter
+            .source()
+            .unwrap()
+            .text()
+            .to_owned()
+    };
+
+    let height = layer_of(&d, "Height");
+    assert!(d.rename_layer(height, "Elevation"));
+    assert_eq!(filter(&d), "raster('Elevation') > raster('Rain')");
+    let style = &d.entry(places).unwrap().style;
+    assert_eq!(style.label.text, "name || raster('Elevation', 'max')");
+    let in_map = d.project.atlas.map(map).unwrap().styles[&places].clone();
+    assert!(in_map.contains("raster('Elevation')"), "{in_map}");
+
+    // A name that another raster layer has changes no expression.
+    assert!(d.rename_layer(height, "Rain"));
+    assert_eq!(filter(&d), "raster('Elevation') > raster('Rain')");
+}
+
+#[test]
 fn a_field_rename_changes_each_expression_of_the_layer() {
     use vale_app::document::Target;
     use vale_style::LabelClass;

@@ -1203,6 +1203,7 @@ pub fn vector_layer_cut(
     let entries: Vec<_> = (doc.frame.entries.iter())
         .filter(|e| e.layer == id && layer.visible)
         .collect();
+    let rasters = pipeline.rasters().for_layer(id);
     let batches: Vec<_> = (entries.iter())
         .map(|entry| {
             pipeline::style_batches(&entry.style.style, scale, features.len(), |i| Context {
@@ -1212,6 +1213,8 @@ pub fn vector_layer_cut(
                 shape: Some(&features[i].geometry),
                 radius_km: doc.project.world.radius_km,
                 page: None,
+                rasters: Some(&rasters),
+                index: i,
             })
         })
         .collect();
@@ -1609,6 +1612,7 @@ pub fn flat_vector_layer_cut(
         }
     };
     let features = &layer.features;
+    let rasters = pipeline.rasters().for_layer(id);
     let batches = pipeline::style_batches(&entry.style.style, scale, features.len(), |i| Context {
         attributes: &features[i].attributes,
         scale,
@@ -1616,6 +1620,8 @@ pub fn flat_vector_layer_cut(
         shape: Some(&features[i].geometry),
         radius_km,
         page: None,
+        rasters: Some(&rasters),
+        index: i,
     });
     let mut screens: Vec<Option<Option<FlatScreen>>> = features.iter().map(|_| None).collect();
     let mut sink = Sink::new(format, cut.is_some());
