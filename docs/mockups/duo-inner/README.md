@@ -4,7 +4,7 @@ These files show the app on the inner screen of iPhone Duo, in portrait and in l
 
 The screen is 669 by 951 points in portrait and 951 by 669 points in landscape, at a pixel ratio of 3. `docs/DESIGN.md` gives the safe area of each pose. Both orientations are 600 points wide or more, so the app uses the medium layout of the iPad.
 
-The pictures show the app as it is, not the target layout. In landscape, iPhone Duo puts the Dynamic Island and the controls of the app in a column at one side of the screen. The landscape pictures have the top row at the top, so they do not follow this rule. In portrait, the inner screen keeps the top row at the top.
+The pictures show the app as it is, not the target layout. `../duo-layout` shows the target layout. In landscape, iPhone Duo puts the Dynamic Island and the controls of the app in a column at one side of the screen. The landscape pictures have the top row at the top, so they do not follow this rule. In portrait, the inner screen keeps the top row at the top.
 
 ## Screens
 

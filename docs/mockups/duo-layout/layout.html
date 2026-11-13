@@ -1,0 +1,102 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: rgb(15,17,19); overflow: hidden; position: relative; font-family: "Noto Sans", sans-serif; }
+.pic { position: absolute; background-repeat: no-repeat; }
+.cover { position: absolute; background: rgb(15,17,19); }
+.cam { position: absolute; width: 30px; height: 30px; margin: -15px 0 0 -15px; border-radius: 15px; border: 1px dashed rgba(255,190,60,.9);
+  display: flex; align-items: center; justify-content: center; z-index: 9; }
+.cam div { width: 12px; height: 12px; border-radius: 6px; background: #000; box-shadow: 0 0 0 2px #222a33; }
+.fold { position: absolute; z-index: 9; background: repeating-linear-gradient(45deg, rgba(255,190,60,.2) 0 6px, rgba(255,190,60,.05) 6px 12px);
+  border: 1px dashed rgba(255,190,60,.8); }
+.hinge { position: absolute; z-index: 9; border: 0 dashed rgba(255,190,60,.7); }
+.other { position: absolute; background: rgb(236,236,240); }
+.other .t { position: absolute; left: 24px; top: 40px; font-size: 22px; font-weight: 600; color: #333; }
+.other .ln { position: absolute; left: 24px; height: 10px; border-radius: 5px; background: rgb(214,214,220); }
+.split { position: absolute; top: 0; bottom: 0; width: 6px; margin-left: -3px; background: #000; z-index: 8; }
+.split div { position: absolute; left: 1px; top: 50%; width: 4px; height: 40px; margin-top: -20px; border-radius: 2px; background: rgba(255,255,255,.6); }
+</style></head>
+<body>
+<script>
+// Each screen is a picture of vale-app at the size of its pose, from assets/, with the
+// changes of iPhone Duo on top. The hinge is vertical in landscape and horizontal in portrait.
+const POSES = {
+  "outer-portrait":  { w: 466, h: 678, camera: "right" },
+  "outer-landscape": { w: 678, h: 466, camera: "left" },
+  "inner-portrait":  { w: 669, h: 951, hinge: "h" },
+  "inner-landscape": { w: 951, h: 669, hinge: "v" },
+  "split":           { w: 951, h: 669, split: 476 },
+  "tabletop":        { w: 669, h: 951, hinge: "h", folded: true, pic: "inner-portrait" },
+  "book":            { w: 951, h: 669, hinge: "v", folded: true, pic: "inner-landscape" },
+};
+const FOLD = 28;   // A drawing value. The device gives the size of the folding region.
+const ROW = { y: 28, h: 52 };   // The top row, 4 points below the top band.
+
+const name = location.hash.slice(1);
+const ws = name.split("-")[0];
+const pose = POSES[name.slice(ws.length + 1)];
+const W = pose.w, H = pose.h;
+document.body.style.cssText = `width:${W}px;height:${H}px`;
+const box = (x, y, w, h) => `left:${x}px;top:${y}px;width:${w}px;height:${h}px;`;
+const src = `assets/${ws}-${pose.pic ?? name.slice(ws.length + 1)}.png`;
+const pw = pose.split ?? W;
+// A part of a picture, from (sx, sy) to (x, y), at a scale.
+const crop = (file, sx, sy, w, h, x, y, k = 1, extra = "") =>
+  `<div class="pic" style="${box(x, y, w * k, h * k)}background-image:url(${file});background-size:${pw * k}px ${H * k}px;background-position:${-sx * k}px ${-sy * k}px;${extra}"></div>`;
+let out = `<div class="pic" style="${box(0, 0, pw, H)}background-image:url(${src});background-size:100% 100%"></div>`;
+
+// The card of the top row at the corner of the camera moves along the row, out of the region of the camera.
+if (pose.camera) {
+  const cx = pose.camera === "right" ? W - 42 : 42, cy = 24, clear = 65;
+  // The width of the card at the corner, measured on the picture.
+  const cw = { "outer-portrait": 161, "outer-landscape": 149 }[name.slice(ws.length + 1)];
+  const sx = pose.camera === "right" ? W - cw : 0;
+  const x = pose.camera === "right" ? W - clear - cw : clear;
+  // The cover also hides the shadow of the card.
+  out += `<div class="cover" style="${box(sx - (pose.camera === "right" ? 16 : 0), ROW.y - 12, cw + 16, ROW.h + 18)}"></div>`;
+  out += crop(src, sx, ROW.y, cw, ROW.h, x, ROW.y, 1, "border-radius:16px;overflow:hidden");
+  out += `<div class="cam" style="left:${cx}px;top:${cy}px"><div></div></div>`;
+}
+
+// In the folded portrait pose, the tool column and the dock have a gap at the folding region.
+const mid = pose.hinge === "v" ? W / 2 : H / 2, a = mid - FOLD / 2;
+if (pose.folded && pose.hinge === "h") {
+  const behind = `assets/${ws}-inner-portrait-behind.png`;
+  const end = H - 34 - 8;
+  for (const [x0, x1] of [[0, 56], [323, W]]) {
+    out += crop(behind, x0, a, x1 - x0, FOLD, x0, a);
+    out += crop(src, x0, a, x1 - x0, end - a - FOLD, x0, a + FOLD);
+  }
+}
+
+// In the folded landscape pose, the page fits at the left of the folding region.
+if (pose.folded && pose.hinge === "v" && ws === "atlas") {
+  const p = { x: 60, y: 148, w: 502, h: 359 };   // The page and its handles, measured on the picture.
+  const room = a - 56 - 24, k = room / p.w;
+  out += `<div class="cover" style="${box(p.x, p.y, p.w, p.h)}"></div>`;
+  out += crop(src, p.x, p.y, p.w, p.h, 56 + 12, (p.y + p.h / 2) - p.h * k / 2, k);
+}
+
+// In the folded portrait pose, the page fits in the upper part, at the left of the dock.
+if (pose.folded && pose.hinge === "h" && ws === "atlas") {
+  const p = { x: 60, y: 388, w: 222, h: 162 };   // The page and its handles, measured on the picture.
+  out += `<div class="cover" style="${box(p.x, p.y, p.w, p.h)}"></div>`;
+  out += crop(src, p.x, p.y, p.w, p.h, p.x, (92 + a) / 2 - p.h / 2);
+}
+
+// The other app of Split View.
+if (pose.split) {
+  out += `<div class="other" style="${box(pose.split, 0, W - pose.split, H)}"><div class="t">Notes</div>` +
+    [100, 130, 160, 220, 250, 280, 340, 370].map((t, i) => `<div class="ln" style="top:${t}px;width:${[260, 300, 220, 280, 240, 300, 200, 260][i]}px"></div>`).join("") + `</div>`;
+  out += `<div class="split" style="left:${pose.split}px"><div></div></div>`;
+}
+
+// A dashed line is the hinge of a flat device, and a hatched band is the folding region.
+if (pose.folded) out += pose.hinge === "v" ? `<div class="fold" style="${box(a, 0, FOLD, H)}"></div>` : `<div class="fold" style="${box(0, a, W, FOLD)}"></div>`;
+else if (pose.hinge) out += pose.hinge === "v"
+  ? `<div class="hinge" style="${box(mid, 0, 0, H)}border-left-width:1px"></div>` : `<div class="hinge" style="${box(0, mid, W, 0)}border-top-width:1px"></div>`;
+
+document.body.insertAdjacentHTML("beforeend", out);
+</script>
+</body></html>

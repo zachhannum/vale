@@ -711,7 +711,21 @@ iPhone Duo has an outer screen and an inner screen. Both render at a pixel ratio
 | Inner | Portrait | 669 × 951 | 0, 0, 34, 0 |
 | Inner | Landscape | 951 × 669 | 0, 0, 34, 0 |
 
-A visible status bar adds to the safe area. On the outer screen and on the inner screen in landscape, the status bar is a side column, 84 points wide. The column is at the right edge on the outer screen in portrait and on the inner screen in landscape. It is at the left edge on the outer screen in landscape. On the inner screen in portrait, the status bar is a band of 82 points at the top. The app hides the status bar, so the column and the band are not in the safe area. The outer screen in portrait is below 600 points wide, so it has the iPhone layout. The other poses are 600 points wide or more.
+A visible status bar adds to the safe area. On the outer screen and on the inner screen in landscape, the status bar is a side column, 84 points wide. The column is at the right edge on the outer screen in portrait and on the inner screen in landscape. It is at the left edge on the outer screen in landscape. On the inner screen in portrait, the status bar is a band of 82 points at the top. The app hides the status bar, so the column and the band are not in the safe area.
+
+The device opens like a book, so the outer screen in portrait is one half of the inner screen in landscape. The hinge is vertical on the inner screen in landscape and horizontal in portrait. When the device is partially folded, the system reserves a folding region along the hinge, and the region divides the inner screen into two parts.
+
+On iPhone Duo, Vale keeps the layout of its width in each pose, with the top row at the top. The outer screen in portrait is below 600 points wide, so it has the iPhone layout. The outer screen in landscape and the inner screen in both orientations have the medium layout of the iPad, with the tool column at the left edge and the dock at the right edge. In Split View, each app has one half of the inner screen in landscape, so Vale is below 600 points wide and has the iPhone layout.
+
+The outer camera is in a top corner of the outer screen, and the system reserves a region around it. The app gets the region from the system. On the outer screen in portrait, the camera is at the top right, so the card of the actions ends at the left of the region. On the outer screen in landscape, the camera is at the top left, so the card of the world menu starts at the right of the region. No other part moves.
+
+The parts of the layout keep out of the folding region, so a fold changes the layout only a little:
+
+- In landscape, the canvas is the left part, and the dock is in the right part. The dock is at most as wide as the right part. A wider dock gets narrower during the fold, and it gets its width back when the device opens flat.
+- In portrait, the top row is in the upper part. The tool column and the dock have a gap at the folding region: a cell, a control, or a row that is in the region moves below it.
+- A page of the Atlas workspace opens, and a double tap fits it, in one part of the canvas. That is the left part in landscape and the upper part in portrait.
+- If a card, a menu, or a popover crosses the folding region, it moves to the side of its control.
+- The globe and the flat map do not move.
 
 ### Desktop layout
 

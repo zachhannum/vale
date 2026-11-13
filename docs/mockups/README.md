@@ -18,6 +18,7 @@ View the mockups at https://claude.ai/artifact/K7SGPcJf76r1k1HhgvQi8T. The link 
 | `pad-layout/` | The iPad layout with the top bar, the tool column, and the dock, as HTML over pictures from the app. It does not need the Claude Design runtime. Its README lists the screens. |
 | `pad-panels/` | Floating panels with pins and tabs, and chrome on the edges of the screen, for the iPad layout, in HTML. Its README lists the screens. |
 | `duo-inner/` | The app on the inner screen of iPhone Duo, in portrait and in landscape, as pictures from the app. Its README lists the screens. |
+| `duo-layout/` | The layout of iPhone Duo in each pose, as HTML over pictures from the app. Its README lists the screens. |
 | `pad-readout/` | A proposal for the readout at the lower left of the World workspace of the iPad layout, in HTML. Its README lists the states. |
 
 The sample world, Kareth, and all names on the maps are invented for the mockups.

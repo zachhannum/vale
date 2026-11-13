@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>The layout of Vale on iPhone Duo</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 32px 40px 64px; background: #1c1d20; color: #e6e6e6;
+         font: 14px/1.45 -apple-system, "Noto Sans", sans-serif; }
+  h1 { font-size: 22px; font-weight: 600; margin: 0 0 6px; }
+  .lead { color: #a8a8a8; max-width: 900px; margin: 0 0 24px; }
+  section { margin: 0 0 44px; }
+  h2 { font-size: 16px; font-weight: 600; margin: 0 0 4px; }
+  .note { color: #a8a8a8; margin: 0 0 12px; max-width: 900px; }
+  .pair { display: flex; gap: 28px; align-items: flex-start; flex-wrap: wrap; }
+  figure { margin: 0; }
+  figcaption { color: #8a8a8a; font-size: 12px; margin-top: 6px; }
+  .device { background: #000; border-radius: 26px; padding: 9px; box-shadow: 0 0 0 2px #3a3b40, 0 10px 30px rgba(0,0,0,.5); }
+  .device img { display: block; border-radius: 18px; }
+</style>
+</head>
+<body>
+<h1>The layout of Vale on iPhone Duo</h1>
+<p class="lead">Each screen is a picture of <code>vale-app</code> at the size of its pose, with the changes of iPhone Duo drawn on top. Vale keeps the layout of its width in each pose. A dashed line is the hinge, a hatched band is the folding region of a partially folded device, and a dashed circle is the region of the outer camera.</p>
+<div id="screens"></div>
+<script>
+const poses = [
+  ["outer-portrait", 466, 678, "Outer screen, portrait", "The screen is below 600 points wide, so it has the iPhone layout. The card of the actions moves to the left of the camera."],
+  ["outer-landscape", 678, 466, "Outer screen, landscape", "The medium layout of the iPad. The card of the world menu moves to the right of the camera."],
+  ["inner-portrait", 669, 951, "Inner screen, portrait", "The medium layout of the iPad. The hinge is horizontal."],
+  ["inner-landscape", 951, 669, "Inner screen, landscape", "The medium layout of the iPad. The hinge is vertical, and the dock is right of it."],
+  ["split", 951, 669, "Split View", "Vale has one half of the inner screen, which is below 600 points wide, so it has the iPhone layout."],
+  ["tabletop", 669, 951, "Partially folded, portrait", "The tool column and the dock have a gap at the folding region. A page fits in the upper part."],
+  ["book", 951, 669, "Partially folded, landscape", "The dock already fits right of the folding region. A page fits in the left part."],
+];
+const scale = 0.5;
+const root = document.getElementById("screens");
+for (const [id, w, h, title, note] of poses) {
+  const s = document.createElement("section");
+  s.innerHTML = `<h2>${title}</h2><p class="note">${note}</p><div class="pair">` +
+    ["globe", "atlas"].map(ws => `<figure><div class="device"><img src="screens/${ws}-${id}.png" width="${w * scale}" height="${h * scale}" alt="${title}, ${ws}"></div>` +
+      `<figcaption>${ws}-${id}.png</figcaption></figure>`).join("") + `</div>`;
+  root.appendChild(s);
+}
+</script>
+</body>
+</html>
