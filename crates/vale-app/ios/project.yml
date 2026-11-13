@@ -21,6 +21,9 @@ targets:
         # The app has no encryption of its own, so TestFlight does not ask about it.
         ITSAppUsesNonExemptEncryption: false
         UILaunchScreen: {}
+        # The app hides the status bar on each device, as drawing apps do.
+        UIStatusBarHidden: true
+        UIViewControllerBasedStatusBarAppearance: false
         # The scene delegate of winit puts the window on the window scene.
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false

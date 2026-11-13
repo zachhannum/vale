@@ -597,7 +597,7 @@ Each tool keeps its own settings. Each brush mode keeps its size, size lock, har
 
 iPad is an equal platform. The layout for iPad is its own design, with a full-screen canvas, a dock of panels, and touch-size controls. It is not the desktop layout made smaller.
 
-The app also installs on iPhone, with the same layout. In portrait, an iPhone screen is compact. The safe area of an iPhone holds the Dynamic Island and the status bar at the top, and the home indicator at the bottom. In landscape, it also holds a band at each side. The Files app shows the local folder as "On My iPhone > Vale", and the app names it "On this iPhone".
+The app also installs on iPhone, with the same layout. In portrait, an iPhone screen is compact. The app hides the status bar on iPad and on iPhone. The safe area of an iPhone holds the Dynamic Island at the top, and the home indicator at the bottom. In landscape, it also holds a band at each side. The Files app shows the local folder as "On My iPhone > Vale", and the app names it "On this iPhone".
 
 The chrome sits on the left edge and the right edge of the screen, so the canvas gets more room. Each part touches its edge with no margin, and only its inner corners are round. No part touches the top edge, because the status bar of the system is there. The top row is 4 points below the top band. The layout has these places:
 
