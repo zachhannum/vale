@@ -269,6 +269,20 @@ impl StrokeLine {
         self.points.iter().map(|point| point.dir)
     }
 
+    /// The direction of the place at a distance along the line, in radians.
+    pub(crate) fn at(&self, u: f64) -> V3 {
+        let k = self.points.partition_point(|point| point.u < u);
+        match k {
+            0 => self.points[0].dir,
+            k if k == self.points.len() => self.points[k - 1].dir,
+            k => {
+                let (a, b) = (self.points[k - 1], self.points[k]);
+                let t = (u - a.u) / (b.u - a.u).max(f64::MIN_POSITIVE);
+                normalize(add(scale(a.dir, 1.0 - t), scale(b.dir, t)))
+            }
+        }
+    }
+
     /// The distance from a direction to the line, and the distance along the
     /// line of the nearest place, in radians. The line has a round end at
     /// each end.
