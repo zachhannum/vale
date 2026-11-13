@@ -700,6 +700,19 @@ The iPhone layout is the compact layout of the iPad, below 600 points, with thes
 
 The safe area of the iPhone is larger than the bands of the iPad. In portrait, it leaves out the top 59 points and the bottom 34 points.
 
+#### iPhone Duo
+
+iPhone Duo has an outer screen and an inner screen. Both render at a pixel ratio of 3. The inner screen renders 2007 by 2853 pixels, and the system scales the picture down to the 1878 by 2670 pixels of the screen. The numbers come from the debug controls of the Toolbox panel on the device.
+
+| Screen | Pose | Size in points | Safe area: top, right, bottom, left |
+|---|---|---|---|
+| Outer | Portrait | 466 × 678 | 0, 84, 34, 0 |
+| Outer | Landscape | 678 × 466 | 0, 0, 34, 84 |
+| Inner | Portrait | 669 × 951 | 82, 0, 34, 0 |
+| Inner | Landscape | 951 × 669 | 0, 84, 34, 0 |
+
+On the outer screen and on the inner screen in landscape, the status bar is a side column, 84 points wide. The column is at the right edge on the outer screen in portrait and on the inner screen in landscape. It is at the left edge on the outer screen in landscape. On the inner screen in portrait, the status bar is a band at the top. The outer screen in portrait is below 600 points wide, so it has the iPhone layout. The other poses are 600 points wide or more.
+
 ### Desktop layout
 
 The desktop layout has the workspaces, switches, tools, and panels of the iPad layout. The panels are docked, and the controls are for a mouse and a keyboard. macOS is the primary desktop platform, and the app uses its materials and conventions. The app prototype does not have this layout yet.

@@ -4597,6 +4597,55 @@ fn the_screenshot_of_an_iphone_keeps_the_controls_in_the_safe_area() {
     }
 }
 
+/// The screens of iPhone Duo in each pose, and their safe areas: the bands at
+/// the top, the right, the bottom, and the left. The side column of the
+/// status bar is one of the side bands.
+const DUO: [(&str, (f64, f64), [f32; 4]); 4] = [
+    ("outer-portrait", (466.0, 678.0), [0.0, 84.0, 34.0, 0.0]),
+    ("outer-landscape", (678.0, 466.0), [0.0, 0.0, 34.0, 84.0]),
+    ("inner-portrait", (669.0, 951.0), [82.0, 0.0, 34.0, 0.0]),
+    ("inner-landscape", (951.0, 669.0), [0.0, 84.0, 34.0, 0.0]),
+];
+
+#[test]
+#[ignore = "gpu"]
+fn the_screenshots_of_iphone_duo_keep_the_controls_in_the_safe_area() {
+    let _gpu = one_gpu_test();
+    std::fs::create_dir_all("../../target/app").unwrap();
+    for (name, size, [top, right, bottom, left]) in DUO {
+        let mut state = state();
+        state.globe.set_face_size(64);
+        state.add_height();
+        state.pad.open(Panel::Layers);
+        let insets = egui::epaint::MarginF32 {
+            left,
+            right,
+            top,
+            bottom,
+        };
+        let safe = Some(egui::SafeAreaInsets(insets));
+        let (image, state) = headless::ui_png_safe(state, size, 1.0, safe, |_| Ok(())).unwrap();
+        assert_eq!(image.dimensions(), (size.0 as u32, size.1 as u32), "{name}");
+        image
+            .save(format!("../../target/app/test-pad-duo-{name}.png"))
+            .unwrap();
+        let (width, height) = (size.0 as f32, size.1 as f32);
+        let controls = &state.pad.controls;
+        assert!(controls.len() >= 7, "{name}: {} controls", controls.len());
+        for c in controls {
+            let r = c.rect;
+            assert!(
+                r.top() >= top
+                    && r.bottom() <= height - bottom
+                    && r.left() >= left
+                    && r.right() <= width - right,
+                "{name}: {} is {r:?}",
+                c.name
+            );
+        }
+    }
+}
+
 /// The screens of the iPhone mockups in portrait, and the change from the
 /// drawing screen that each one has.
 type PhoneScreen = (&'static str, fn(&mut AppState));
