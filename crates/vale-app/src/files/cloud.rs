@@ -2,7 +2,8 @@
 //! coordination, the versions of a file, and the files that the Files app
 //! gives to the app.
 
-// The app has no scene manifest, so the system uses the app delegate.
+// The scene delegate of winit gives the URLs of the scene to the app
+// delegate method `application:openURL:options:`.
 #![allow(deprecated)]
 
 use std::cell::{Cell, RefCell};
@@ -24,8 +25,7 @@ use objc2_foundation::{
 };
 use objc2_ui_kit::{
     UIApplication, UIApplicationDelegate, UIApplicationDidBecomeActiveNotification,
-    UIApplicationDidFinishLaunchingNotification, UIApplicationLaunchOptionsURLKey,
-    UIApplicationOpenURLOptionsKey,
+    UIApplicationDidFinishLaunchingNotification, UIApplicationOpenURLOptionsKey,
 };
 
 use super::{Availability, Files, SystemEvents, Version};
@@ -207,8 +207,6 @@ fn container_documents() -> Option<PathBuf> {
 
 struct Ivars {
     system: SystemEvents,
-    /// The file of the launch, which the system can give two times.
-    launch: RefCell<Option<PathBuf>>,
 }
 
 define_class!(
@@ -231,10 +229,7 @@ define_class!(
         ) -> bool {
             let path = url.to_file_path();
             if let Some(path) = &path {
-                let ivars = self.ivars();
-                if ivars.launch.take().as_ref() != Some(path) {
-                    ivars.system.open(path.clone());
-                }
+                self.ivars().system.open(path.clone());
             }
             path.is_some()
         }
@@ -258,7 +253,7 @@ fn observe(name: &NSNotificationName, f: impl Fn(&NSNotification) + 'static) {
 }
 
 /// Connects the app to the system. Call it on the main thread before the
-/// window starts, because the system gives the file of the launch while the
+/// window starts, because the scene gives the file of the launch while the
 /// app starts.
 pub fn install(system: SystemEvents) {
     // SAFETY: the statics are constants of UIKit.
@@ -270,29 +265,15 @@ pub fn install(system: SystemEvents) {
     };
 
     // winit starts the app with no delegate. This delegate gets the files
-    // that the Files app opens in the app.
+    // that the Files app opens in the app. The scene connects after the
+    // launch, so the delegate gets the file of the launch too.
     let events = system.clone();
-    observe(launched, move |notification| {
+    observe(launched, move |_| {
         let Some(mtm) = MainThreadMarker::new() else {
             return;
         };
-        // SAFETY: the static is a constant of UIKit.
-        let key: &NSString = unsafe { UIApplicationLaunchOptionsURLKey };
-        let info = notification.userInfo();
-        let url = info.as_ref().and_then(|info| {
-            // SAFETY: the keys of the launch options are strings.
-            let info = unsafe { info.cast_unchecked::<NSString, AnyObject>() };
-            info.objectForKey(key)
-        });
-        let launch = url
-            .and_then(|url| url.downcast::<NSURL>().ok())
-            .and_then(|url| url.to_file_path());
-        if let Some(path) = &launch {
-            events.open(path.clone());
-        }
         let this = AppDelegate::alloc(mtm).set_ivars(Ivars {
             system: events.clone(),
-            launch: RefCell::new(launch),
         });
         // SAFETY: NSObject has the initializer `init`.
         let delegate: Retained<AppDelegate> = unsafe { msg_send![super(this), init] };

@@ -21,6 +21,13 @@ targets:
         # The app has no encryption of its own, so TestFlight does not ask about it.
         ITSAppUsesNonExemptEncryption: false
         UILaunchScreen: {}
+        # The scene delegate of winit puts the window on the window scene.
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+          UISceneConfigurations:
+            UIWindowSceneSessionRoleApplication:
+              - UISceneConfigurationName: Default Configuration
+                UISceneDelegateClassName: WinitSceneDelegate
         # The Files app shows the Documents folder as "On My iPad > Vale" or
         # "On My iPhone > Vale".
         UIFileSharingEnabled: true
