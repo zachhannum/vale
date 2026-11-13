@@ -112,6 +112,7 @@ define_class!(
                 height,
                 // This clock is the clock of the touch times.
                 time: NSProcessInfo::processInfo().systemUptime(),
+                touch: 0,
             }]);
         }
     }
@@ -191,6 +192,8 @@ impl PenRecognizer {
                 (Stage::Cancelled, _) | (_, None) => None,
                 (_, Some(event)) => event.coalescedTouchesForTouch(&touch),
             };
+            // winit gives a touch the address of its UITouch as its id.
+            let id = Retained::as_ptr(&touch) as u64;
             let samples: Vec<Retained<UITouch>> = coalesced
                 .map(|list| list.to_vec())
                 .filter(|list| !list.is_empty())
@@ -214,6 +217,7 @@ impl PenRecognizer {
                     azimuth: Some(sample.azimuthAngleInView(view) as f32),
                     height: None,
                     time: sample.timestamp(),
+                    touch: id,
                 });
             }
         }

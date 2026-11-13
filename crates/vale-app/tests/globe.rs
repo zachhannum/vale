@@ -1581,6 +1581,8 @@ fn pen_event(phase: PenPhase, pos: Pos2, time: f64) -> PenEvent {
         azimuth: Some(2.0),
         height: hovers.then_some(0.4),
         time,
+        // The touch of `first_touch`.
+        touch: if hovers { 0 } else { 1 },
     }
 }
 

@@ -1321,6 +1321,14 @@ pub(super) fn brush_settings(ui: &mut egui::Ui, state: &mut AppState) {
     let lock_box = ui.checkbox(&mut lock, "Lock size");
     lock_box.on_hover_text("Keep the brush size on the ground while zooming");
     globe.brush.set_lock(lock, globe_radius);
+    let mut finger = state.finger_paints();
+    if ui
+        .checkbox(&mut finger, crate::ui::pad::FINGER_PAINT)
+        .changed()
+    {
+        state.tools.finger_paints = Some(finger);
+    }
+    let globe = &mut state.globe;
 
     if globe.brush.mode != Mode::Flatten {
         globe.pick_level = false;

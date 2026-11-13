@@ -587,7 +587,7 @@ You can import an equirectangular heightmap that you painted before. The app cop
 
 The drawing tools are designed for a pen: pressure, hover preview of the brush, and palm rejection. On desktop that is a graphics tablet. On iPad it is Apple Pencil.
 
-On iPad, winit 0.30 gives 120 pen samples per second, no hover, and no tilt. A UIKit gesture recognizer on the view of the app reads the pen below egui. It reads the coalesced touches (the extra pen samples that iOS collects in each frame, 240 per second), the tilt, and the hover. It sends them to the canvas, and it does not take the touches from winit. The canvas reads the pen from that recognizer, and egui handles the pen only on the panels. Fingers come through egui. While the pen is down, each other touch is a palm.
+On iPad, winit 0.30 gives 120 pen samples per second, no hover, and no tilt. A UIKit gesture recognizer on the view of the app reads the pen below egui. It reads the coalesced touches (the extra pen samples that iOS collects in each frame, 240 per second), the tilt, and the hover. It sends them to the canvas, and it does not take the touches from winit. The canvas reads the pen from that recognizer, and egui handles the pen only on the panels. Fingers come through egui. The recognizer gives each sample the id of its touch in egui, so the canvas knows which egui touch is the pen. While the pen is down, each other touch is a palm.
 
 The path of a stroke is a curve through the pen samples, so a fast stroke has no corners.
 
@@ -636,6 +636,7 @@ These rules apply to the layout:
 - If the active layer is a visible line layer, the line tool has the Smoothing slider, Snap, Reshape, and Fit. The Brush panel holds the Smoothing slider, the Terrain fit switch, and the Balance slider. The polygon tool has the same controls and no terrain fit. A selection does not change the tool, so you tap the cell to draw. The point tool has the Snap button and no Smoothing slider. If you select a vector layer of another kind, a tool of the Vector cell stays the tool if the new kind has it, and else the tool that draws in the new layer becomes the tool.
 - On a raster layer with a unit other than `m`, the modes that move ground are disabled.
 - The pen paints. One finger turns the globe, and two fingers zoom it.
+- The switch "Paint with finger" is the last row of the Brush panel for the brush, the line tool, the polygon tool, and the point tool. While it is on, one finger paints and draws as on a phone, and two fingers turn and zoom the globe. It is on at the first start on a phone, and off on an iPad. The app keeps it in `tools.txt`.
 - A tap of two fingers is undo, and a tap of three fingers is redo. In both workspaces, the actions in the top row are Undo, Redo, a divider, the Panels button, and the Dock button. Below 600 points, the top row has no Dock button.
 - A long press on a text field opens a menu with Copy and Paste, and no keyboard. Paste replaces the whole text. On iPadOS, the system can ask for permission before a paste.
 - The value field and the hex field of the card of a band have a keypad in the card, in place of the keyboard of the system. A tap on the field opens the keypad in the place of the color picker, so the card does not move. The first key replaces the whole text. Done, a second tap on the field, or a tap anywhere but the keypad closes the keypad. A drag, for example a scroll of the panel, does not close it.
@@ -691,8 +692,8 @@ On a compact screen, the dock is the sheet. The sheet shows the pane of the last
 The iPhone layout is the compact layout of the iPad, below 600 points, with these changes:
 
 - In portrait, the tool column is two rows at the bottom, as in the compact layout of the iPad.
-- The phone has no pen. With a brush tool, one finger paints, and two fingers turn and zoom the globe. With Move, one finger turns the globe.
-- A finger of a brush tool, the line tool, the polygon tool, or the point tool starts its stroke when it moves 10 points, when it holds for 0.3 seconds, or when it lifts. A second finger before that, or during the stroke, ends the stroke, and the two fingers turn and zoom the globe. The stroke has no pressure, and a touch with a force is also a finger.
+- With a brush tool, one finger paints, and two fingers turn and zoom the globe. With Move, one finger turns the globe. On a phone with Apple Pencil, such as iPhone Duo, the pen also paints, with pressure. With "Paint with finger" off, only the pen paints, and one finger turns the globe.
+- A finger of a brush tool, the line tool, the polygon tool, or the point tool starts its stroke when it moves 10 points, when it holds for 0.3 seconds, or when it lifts. A second finger before that, or during the stroke, ends the stroke, and the two fingers turn and zoom the globe. The stroke has no pressure, and a finger with a force is also a finger.
 - The Brush panel has no pressure settings.
 - In the Atlas workspace, the page card is above the control row. The panel of the selection is a sheet.
 - The inspector is a sheet. The form of a new point is a card directly below the top row, in place of the sheet, at the full width inside the margins. Its title is "New" and the name of the layer in the singular, and its title row has Cancel and Add. Cancel removes the point. After Cancel or Add, the sheet shows only its title row. The card ends 96 points above the keyboard, and a card with more fields scrolls. If the new point is under the card or under the keyboard, the globe turns, so the point is between them.

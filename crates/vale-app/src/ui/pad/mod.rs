@@ -2223,6 +2223,9 @@ fn sheet_drag(ui: &egui::Ui, pad: &mut PadState, bar: &egui::Response, rects: &R
 /// The hint of the Brush panel for a tool with no settings.
 pub const NO_SETTINGS: &str = "This tool has no settings.";
 
+/// The switch of the Brush panel for one finger that paints and draws.
+pub const FINGER_PAINT: &str = "Paint with finger";
+
 /// The tool has settings in the Brush panel.
 pub(super) fn brush_settings(state: &AppState) -> bool {
     match state.workspace {
@@ -2234,6 +2237,19 @@ pub(super) fn brush_settings(state: &AppState) -> bool {
 }
 
 fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
+    tool_rows(ui, state, controls);
+    let globe = &state.globe;
+    let draws = globe.brushing() || globe.stroking() || globe.placing();
+    if state.workspace == Workspace::Globe && draws {
+        let mut on = state.finger_paints();
+        if widgets::switch_row(ui, controls, FINGER_PAINT, FINGER_PAINT, &mut on) {
+            state.tools.finger_paints = Some(on);
+        }
+    }
+}
+
+/// The rows of the Brush panel for the settings of the tool.
+fn tool_rows(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
     if !brush_settings(state) {
         ui.add_space(4.0);
         ui.label(egui::RichText::new(NO_SETTINGS).color(theme::MUTE));

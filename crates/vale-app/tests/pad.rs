@@ -4190,6 +4190,7 @@ fn the_place_shows_the_point_under_a_hovering_pen() {
         azimuth: None,
         height: Some(0.4),
         time: 0.0,
+        touch: 0,
     };
     let center = h.state().globe.rect.center();
     queue.push([hover(PenPhase::Hover, center)]);
@@ -13817,6 +13818,44 @@ fn phone_with(gpu: bool, kind: GeometryKind) -> (Pad, vale_store::LayerId) {
 }
 
 #[test]
+fn with_paint_with_finger_off_one_finger_turns_the_globe_on_a_phone_and_the_pencil_draws() {
+    use vale_app::ui::pad::FINGER_PAINT;
+    let (mut h, lines) = phone_with(false, GeometryKind::Line);
+    let queue = PenQueue::default();
+    h.state_mut().globe.pen.queue = Some(queue.clone());
+    open_panel(&mut h, "Brush");
+    // The switch is the last row, so the sheet goes up to its full height.
+    let sheet = h.state().pad.rects.unwrap().sheet.unwrap();
+    let bar = pos2(sheet.center().x, sheet.top() + 26.0);
+    drag(&mut h, bar, pos2(bar.x, 0.0), None);
+    assert!(h.state().finger_paints());
+    tap(&mut h, FINGER_PAINT);
+    assert!(!h.state().finger_paints());
+    assert_eq!(h.state().tools.finger_paints, Some(false));
+    screenshot::save(&mut h, "phone-finger-paint");
+    // The sheet can cover the globe.
+    lower_sheet(&mut h);
+    let view = h.state().globe.view;
+    let c = h.state().globe.rect.center();
+    let (from, to) = (c - vec2(60.0, 0.0), c + vec2(60.0, 40.0));
+    drag(&mut h, from, to, None);
+    assert!(line_features(&h, lines).is_empty());
+    assert_ne!(h.state().globe.view, view);
+    let view = h.state().globe.view;
+    pencil_drag(&mut h, &queue, from, to, false);
+    assert_eq!(line_features(&h, lines).len(), 1);
+    assert_eq!(h.state().globe.view, view);
+
+    // The switch is also in the Brush panel of an iPad, and it is off there.
+    let mut h = pad(BOARDS[0]);
+    h.state_mut().globe.tool = Tool::Brush;
+    open_panel(&mut h, "Brush");
+    assert!(control(&h, FINGER_PAINT).is_some());
+    assert!(!h.state().finger_paints());
+    screenshot::save(&mut h, "pad-finger-paint");
+}
+
+#[test]
 fn one_finger_draws_a_line_and_places_a_point_on_a_phone() {
     let (mut h, lines) = phone_with(false, GeometryKind::Line);
     assert!(h.state().globe.lining());
@@ -13985,6 +14024,78 @@ fn a_tap_of_two_or_three_fingers_is_undo_or_redo_of_a_finger_stroke() {
     tap_fingers(&mut h, 3);
     settle(&mut h);
     assert_eq!(middle_level(&h), level);
+}
+
+/// A stroke of the Apple Pencil, as UIKit gives it: the samples in the
+/// queue, and the same touch in egui. The touch of a pen on a phone can
+/// have a force that is not the force of the queue. With `palm`, a second
+/// touch comes down and lifts while the pen is down.
+fn pencil_drag(h: &mut Pad, queue: &PenQueue, from: Pos2, to: Pos2, palm: bool) {
+    use egui::TouchPhase::{End, Move, Start};
+    let sample = |phase, pos: Pos2, i: u32| PenEvent {
+        phase,
+        pos: [pos.x, pos.y],
+        force: 0.8,
+        altitude: Some(1.0),
+        azimuth: Some(2.0),
+        height: None,
+        time: 100.0 + f64::from(i) / 120.0,
+        touch: 1,
+    };
+    queue.push([sample(PenPhase::Down, from, 0)]);
+    touch(h, Start, from, Some(0.3));
+    h.step();
+    let away = from + vec2(0.0, 80.0);
+    for i in 1..=6 {
+        let pos = from.lerp(to, i as f32 / 6.0);
+        queue.push([sample(PenPhase::Move, pos, i)]);
+        touch(h, Move, pos, Some(0.3));
+        match i {
+            2 if palm => finger(h, 2, Start, away),
+            4 if palm => finger(h, 2, End, away + vec2(30.0, 0.0)),
+            _ => {}
+        }
+        h.step();
+    }
+    queue.push([sample(PenPhase::Up, to, 7)]);
+    touch(h, End, to, Some(0.3));
+    h.run_steps(3);
+}
+
+#[test]
+#[ignore = "gpu"]
+fn the_pencil_paints_with_pressure_on_a_phone_and_fingers_still_paint_and_zoom() {
+    let _gpu = one_gpu_test();
+    let mut h = phone(true);
+    let queue = PenQueue::default();
+    h.state_mut().globe.pen.queue = Some(queue.clone());
+    h.state_mut().globe.tool = Tool::Brush;
+    h.run_steps(2);
+    let view = h.state().globe.view;
+    let before = middle_level(&h);
+    let c = h.state().globe.rect.center();
+    let (from, to) = (c - vec2(40.0, 0.0), c + vec2(40.0, 0.0));
+    pencil_drag(&mut h, &queue, from, to, true);
+    settle(&mut h);
+    let pencil = middle_level(&h);
+    assert!(pencil > before, "{pencil} after {before}");
+    assert_eq!(h.state().globe.view, view);
+    assert_eq!(h.state().globe.pen.stats.force, Some(0.8));
+    // The palm did not end the stroke.
+    assert_eq!(h.state().globe.stats.last().unwrap().id, 1);
+
+    // After the pencil, one finger paints and two fingers zoom.
+    drag(&mut h, from, to, None);
+    settle(&mut h);
+    let finger = middle_level(&h);
+    assert!(finger > pencil, "{finger} after {pencil}");
+    assert_eq!(h.state().globe.view, view);
+    let zoom = h.state().globe.view.zoom;
+    pinch(&mut h, 0);
+    settle(&mut h);
+    let after = h.state().globe.view.zoom;
+    assert!((after / zoom - 2.0).abs() < 0.05, "{after}");
+    assert_eq!(middle_level(&h), finger);
 }
 
 #[test]

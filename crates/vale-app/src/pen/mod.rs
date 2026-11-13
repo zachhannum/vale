@@ -38,6 +38,8 @@ pub struct PenEvent {
     pub height: Option<f32>,
     /// The time of the sample, in seconds.
     pub time: f64,
+    /// The id of the touch in egui, or 0 for a pen that hovers.
+    pub touch: u64,
 }
 
 /// The action of a double tap or a squeeze of the pen, from the Pencil
@@ -253,6 +255,7 @@ mod tests {
             azimuth: None,
             height: Some(0.4),
             time: 1.0,
+            touch: 0,
         };
         queue.clone().push([event, event]);
         assert_eq!(queue.take().len(), 2);

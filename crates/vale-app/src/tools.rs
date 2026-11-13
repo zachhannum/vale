@@ -150,6 +150,8 @@ pub struct Tools {
     /// A new feature of the point tool, the line tool, or the polygon tool
     /// takes the focus in the inspector.
     pub focus_new: bool,
+    /// One finger paints and draws. `None`: the default of the device.
+    pub finger_paints: Option<bool>,
 }
 
 impl Tools {
@@ -295,6 +297,9 @@ impl Tools {
         lines.push(format!("snap_edges {}", snap.edges));
         lines.push(format!("snap_distance {}", snap.distance));
         lines.push(format!("focus_new_features {}", self.focus_new));
+        if let Some(on) = self.finger_paints {
+            lines.push(format!("finger_paints {on}"));
+        }
         lines.join("\n")
     }
 
@@ -364,6 +369,9 @@ impl Tools {
         }
         if let Some(v) = boolean("focus_new_features") {
             self.focus_new = v;
+        }
+        if let Some(v) = boolean("finger_paints") {
+            self.finger_paints = Some(v);
         }
         if let Some(v) = boolean("snap_vertices") {
             snap.vertices = v;
@@ -605,6 +613,10 @@ mod tests {
         snap.on = false;
         assert!(!globe.tools.focus_new);
         globe.tools.focus_new = true;
+        // With no choice, the file has no line for the finger.
+        let text = globe.tools.text(&globe.brush, &globe.line, &snap);
+        assert!(!text.contains("finger_paints"));
+        globe.tools.finger_paints = Some(false);
 
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(read(dir.path()), None);
@@ -624,6 +636,7 @@ mod tests {
         assert!(next.line.fit);
         assert_eq!(next.line.polygon_mode, PolygonMode::Subtract);
         assert!(next.tools.focus_new);
+        assert_eq!(next.tools.finger_paints, Some(false));
 
         next.choose(Choice::Brush(Mode::Erode));
         assert_eq!((next.brush.size_points, next.brush.hardness), (8.0, 0.75));

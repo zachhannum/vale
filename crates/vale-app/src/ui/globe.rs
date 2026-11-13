@@ -110,6 +110,10 @@ fn finger_input(
     match phase {
         egui::TouchPhase::Start => {
             let alone = !std::mem::replace(started, true) && globe.nav.counts().1 == 0;
+            // A touch while the pen is down is a palm.
+            if globe.pen.down {
+                return;
+            }
             if globe.input.finger.take().is_some() {
                 return;
             }
@@ -182,9 +186,9 @@ fn hover_input(globe: &mut Globe, events: &[(egui::Pos2, PenEvent)]) {
 /// Reads the pen and the mouse for the brush and the line tool. In the
 /// brush tool, a pen and the primary mouse button paint a raster layer that
 /// the brush can paint. In the line tool, they draw a line in the selected
-/// line layer. A touch with a force is a pen. With a pen queue, the pen
-/// comes from the queue and not from egui. On a device with no pen, one
-/// finger takes the place of the pen.
+/// line layer. With a pen queue, the pen comes from the queue and not from
+/// egui. Without a queue, a touch with a force is a pen. With the setting
+/// "Paint with finger", one finger also paints.
 fn brush_input(
     ui: &egui::Ui,
     rect: egui::Rect,
@@ -201,6 +205,11 @@ fn brush_input(
         .into_iter()
         .map(|e| (egui::pos2(e.pos[0] / zoom, e.pos[1] / zoom), e))
         .collect();
+    for (_, event) in &queue {
+        if event.phase == PenPhase::Down && event.touch != 0 {
+            globe.nav.add_pen(event.touch);
+        }
+    }
     hover_input(globe, &queue);
     let brushing = globe.brushing() && globe.format.is_some();
     if !(brushing || globe.stroking() || globe.placing()) || globe.importing() {
@@ -242,6 +251,8 @@ fn brush_input(
         let ours = globe.input.pen == Some(QUEUE_PEN);
         match event.phase {
             PenPhase::Down => {
+                // A finger that waits to paint is a palm.
+                globe.input.finger = None;
                 let free = globe.input.pen.is_none() && !globe.input.mouse;
                 if free && on_canvas(ui, rect, *pos) {
                     globe.input.pen = Some(QUEUE_PEN);
@@ -264,7 +275,7 @@ fn brush_input(
         }
     }
 
-    let no_pen = globe.nav.no_pen;
+    let fingers = globe.nav.finger_paints;
     let mut started = false;
     let mut touched = false;
     let events = ui.input(|i| i.events.clone());
@@ -280,19 +291,20 @@ fn brush_input(
             continue;
         };
         touched = true;
-        if no_pen {
-            let started = &mut started;
-            finger_input(ui, rect, globe, started, id.0, *phase, *pos, time, &sample);
+        let pen = globe.nav.is_pen(id.0, *force);
+        if from_queue && pen {
             continue;
         }
-        if from_queue && force.is_some() {
+        if fingers {
+            let started = &mut started;
+            finger_input(ui, rect, globe, started, id.0, *phase, *pos, time, &sample);
             continue;
         }
         let flow = force.map_or(FIXED_FLOW, pen_flow);
         match phase {
             egui::TouchPhase::Start => {
                 let free = globe.input.pen.is_none() && !globe.input.mouse;
-                if force.is_some() && free && on_canvas(ui, rect, *pos) {
+                if pen && free && on_canvas(ui, rect, *pos) {
                     globe.input.pen = Some(id.0);
                     press(globe);
                     sample(globe, *pos, flow);
@@ -370,8 +382,8 @@ fn brush_input(
     Painting {
         pen: true,
         mouse: globe.input.mouse,
-        finger: globe.input.pen.filter(|_| no_pen),
-        fingers: no_pen,
+        finger: globe.input.pen.filter(|_| fingers),
+        fingers,
     }
 }
 
@@ -398,8 +410,10 @@ fn measure_input(
     }
     let touching = globe.nav.touching();
     let on = |pos| on_canvas(ui, rect, pos);
+    let nav = &globe.nav;
+    let is_pen = |id, force| nav.is_pen(id, force);
     let press = &mut globe.measure_press;
-    tap = press_input(ui, resp, press, on, from_queue, touching).or(tap);
+    tap = press_input(ui, resp, press, on, is_pen, from_queue, touching).or(tap);
     if let Some(pos) = tap {
         globe.measure_tap(pos);
     }
@@ -446,14 +460,11 @@ fn select_input(
             continue;
         };
         touched = true;
-        if from_queue && force.is_some() {
+        let pen = globe.nav.is_pen(id.0, *force);
+        if from_queue && pen {
             continue;
         }
-        let pointer = if force.is_some() {
-            Pointer::Pen
-        } else {
-            Pointer::Finger
-        };
+        let pointer = if pen { Pointer::Pen } else { Pointer::Finger };
         match phase {
             egui::TouchPhase::Start if on(*pos) => press.down(id.0, *pos, pointer),
             egui::TouchPhase::Move => press.moved(id.0, *pos),
@@ -545,14 +556,11 @@ fn vertex_input(
             continue;
         };
         touched = true;
-        if from_queue && force.is_some() {
+        let pen = globe.nav.is_pen(id.0, *force);
+        if from_queue && pen {
             continue;
         }
-        let pointer = if force.is_some() {
-            Pointer::Pen
-        } else {
-            Pointer::Finger
-        };
+        let pointer = if pen { Pointer::Pen } else { Pointer::Finger };
         match phase {
             egui::TouchPhase::Start if on(*pos) => press.down(id.0, *pos, pointer, on_handle(*pos)),
             egui::TouchPhase::Move => press.moved(id.0, *pos),
@@ -596,13 +604,15 @@ fn vertex_input(
 
 /// Feeds the touches and the mouse of this frame to a press of the Measure
 /// tool, and returns the position of a tap. A press starts where `on` is
-/// true. With `skip_pen`, the pen queue has the touches of the pen.
+/// true. `is_pen` tells a pen from a finger by the touch id and the force.
+/// With `skip_pen`, the pen queue has the touches of the pen.
 /// `touching` is true while a finger or a pen is down on the canvas.
 pub(super) fn press_input(
     ui: &egui::Ui,
     resp: &egui::Response,
     press: &mut TapPress,
     on: impl Fn(egui::Pos2) -> bool,
+    is_pen: impl Fn(u64, Option<f32>) -> bool,
     skip_pen: bool,
     touching: bool,
 ) -> Option<egui::Pos2> {
@@ -621,11 +631,12 @@ pub(super) fn press_input(
             continue;
         };
         touched = true;
-        if skip_pen && force.is_some() {
+        let pen = is_pen(id.0, *force);
+        if skip_pen && pen {
             continue;
         }
         match phase {
-            egui::TouchPhase::Start if on(*pos) => press.down(id.0, *pos, force.is_some()),
+            egui::TouchPhase::Start if on(*pos) => press.down(id.0, *pos, pen),
             egui::TouchPhase::Move => press.moved(id.0, *pos),
             egui::TouchPhase::End => tap = press.up(id.0, *pos).or(tap),
             egui::TouchPhase::Cancel => press.cancel(id.0),
@@ -1738,6 +1749,7 @@ pub(super) fn canvas_input(
     if state.globe.snapping() && state.globe.line_preview().is_none() {
         state.refresh_targets();
     }
+    state.globe.nav.finger_paints = state.finger_paints();
     let globe = &mut state.globe;
     globe.world_km = state.doc.project.world.radius_km;
     globe.world_seed = state.doc.project.world.seed;

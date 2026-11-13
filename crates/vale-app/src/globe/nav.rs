@@ -81,9 +81,16 @@ pub struct Nav {
     time: f64,
     touching: Option<Touching>,
     tap: Option<Tap>,
-    /// The device has no pen, so a touch with a force is a finger.
+    /// A touch with a force is a finger, as on a phone.
     pub no_pen: bool,
+    /// One finger paints and draws, and two fingers move the view.
+    pub finger_paints: bool,
+    /// The touches that the pen queue named as a pen.
+    pens: Vec<u64>,
 }
+
+/// The largest count of touches in `Nav::pens`.
+const PENS_MAX: usize = 8;
 
 /// The angle from `a` to `b` in radians, from -π to π. Screen y points down,
 /// so a positive angle is clockwise on screen.
@@ -101,8 +108,26 @@ impl Nav {
     pub fn new(no_pen: bool) -> Self {
         Self {
             no_pen,
+            finger_paints: no_pen,
             ..Self::default()
         }
+    }
+
+    /// Records that touch `id` is a pen. The pen queue knows this before
+    /// egui gets the touch.
+    pub fn add_pen(&mut self, id: u64) {
+        if !self.pens.contains(&id) {
+            if self.pens.len() == PENS_MAX {
+                self.pens.remove(0);
+            }
+            self.pens.push(id);
+        }
+    }
+
+    /// True if touch `id` is a pen: the pen queue named it, or it has a
+    /// force on a device with a pen.
+    pub fn is_pen(&self, id: u64, force: Option<f32>) -> bool {
+        self.pens.contains(&id) || (force.is_some() && !self.no_pen)
     }
 
     /// True while a finger or a mouse button holds the globe.
@@ -123,7 +148,7 @@ impl Nav {
     }
 
     /// Records one touch event. A touch that starts off the canvas is not a finger
-    /// of the globe. `pen` is true for a touch with a force. A pen that does not
+    /// of the globe. `pen` is true for a touch of a pen. A pen that does not
     /// paint moves the globe as one finger does.
     pub fn touch(
         &mut self,
@@ -169,6 +194,7 @@ impl Nav {
             }
             egui::TouchPhase::End | egui::TouchPhase::Cancel => {
                 self.fingers.remove(&id);
+                self.pens.retain(|pen| *pen != id);
                 if self.pen == Some(id) {
                     self.pen = None;
                 }
@@ -204,7 +230,7 @@ impl Nav {
             } = event
             {
                 let on_canvas = on_canvas(ui, rect, *pos);
-                let pen = force.is_some() && !self.no_pen;
+                let pen = self.is_pen(id.0, *force);
                 self.touch(id.0, *phase, *pos, on_canvas, pen);
             }
         }
@@ -356,7 +382,7 @@ impl Nav {
                 } => {
                     touched = true;
                     let on_canvas = on_canvas(ui, rect, *pos);
-                    let pen = force.is_some() && !self.no_pen;
+                    let pen = self.is_pen(id.0, *force);
                     self.touch(id.0, *phase, *pos, on_canvas, pen);
                 }
                 // A trackpad scrolls in points. A wheel scrolls in lines or pages.
