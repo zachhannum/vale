@@ -2956,12 +2956,12 @@ fn the_blur_behind_a_card_shows_the_raster_layers_of_a_frame() {
     let mut state = AppState::new(Document::empty()).unwrap();
     state.headless = true;
     state.set_layout(Layout::Pad);
-    state.workspace = Workspace::Atlas;
     atlas::add_frame(&mut state).expect("a page takes a frame");
     state.globe.set_face_size(128);
     let height = state.add_height();
     state.set_raster_display(height, vale_store::RasterDisplay::Grey);
     state.globe.raster_map_mut(height).unwrap().fill(0);
+    state.workspace = Workspace::Atlas;
     let setup = egui_kittest::wgpu::default_wgpu_setup();
     let mut h = vale_app::headless::ui_harness(state, (1194.0, 834.0), 1.0, setup);
     h.set_render_every_step(true);

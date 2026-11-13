@@ -30,6 +30,7 @@ use crate::globe::{Globe, Look, START_ELEVATION, StackItem, Tool, brush};
 use crate::globe::{LineStroke, PictureLayer, polygon, reshape, thumbnail};
 use crate::image_layer::{ImageImport, ImageTiles, ImportStep};
 use crate::measure::{self, Measure};
+use crate::memory;
 use crate::pipeline::{Composed, Pipeline};
 use crate::projects::{self, Location, Locations};
 use crate::raster_style;
@@ -896,7 +897,8 @@ impl AppState {
             None => globe.is_height(),
         };
         globe.set_stack(stack);
-        if active.is_some() {
+        // Outside the globe workspace, the brush gets its layer at `wake`.
+        if active.is_some() && !globe.is_resting() {
             globe.activate(active);
         }
         globe.set_paintable(paintable);
@@ -998,6 +1000,7 @@ impl AppState {
     /// the brush from the file. Without `all`, one call reads tiles for a
     /// short time, so the UI does not stop.
     pub fn pump_layers(&mut self, all: bool) {
+        self.rest_brush();
         if self.session.is_none() {
             return;
         }
@@ -1005,6 +1008,20 @@ impl AppState {
         if self.globe.has_spare() {
             self.save_edit();
             self.globe.release_saved();
+        }
+    }
+
+    /// The brush paints only in the globe workspace. In another
+    /// workspace, the brush layer gives back its whole heightmap, and it
+    /// gets it back in the globe workspace.
+    fn rest_brush(&mut self) {
+        let rest = self.workspace != Workspace::Globe;
+        if rest && !self.globe.is_resting() {
+            self.loader = None;
+            self.globe.rest();
+        } else if !rest && self.globe.is_resting() {
+            self.globe.wake();
+            self.sync_globe();
         }
     }
 
@@ -1016,6 +1033,13 @@ impl AppState {
             self.loader = None;
             return;
         };
+        if self.loader.is_none() && !memory::heightmap_fits(face_size, memory::available()) {
+            let project = &self.doc.project;
+            let name = project.raster_layer(id).map_or("", |l| l.name.as_str());
+            self.status = format!("Not enough memory to paint {name}");
+            self.globe.cancel_activation();
+            return;
+        }
         let session = self.session.as_ref().expect("checked above");
         let loaded = match self.loader.take().filter(|loader| loader.id == id) {
             Some(loader) => {

@@ -369,14 +369,14 @@ fn a_frame_zoomed_on_an_unselected_layer_draws_full_texels() {
     let mut state = AppState::new(Document::empty()).unwrap();
     state.headless = true;
     state.set_layout(Layout::Pad);
-    state.workspace = Workspace::Atlas;
     vale_app::ui::atlas::add_frame(&mut state).expect("a page takes a frame");
     state.globe.set_face_size(8192);
     let height = state.add_height();
     state.set_raster_display(height, RasterDisplay::Grey);
     state.set_raster_smoothing(height, false);
     state.set_raster_hillshade(height, false);
-    // The brush paints another layer, which the frame does not show.
+    // The brush paints another layer in the globe workspace, which the
+    // frame does not show.
     let other = state.add_height();
     let map = vale_app::ui::atlas::open_page(&state).frames[0].map;
     let layer = state.doc.project.raster_layer(other).unwrap().id;
@@ -405,6 +405,7 @@ fn a_frame_zoomed_on_an_unselected_layer_draws_full_texels() {
     // One texel is about 3 millimeters on the page.
     frame.scale = 4.0e5;
     state.touch();
+    state.workspace = Workspace::Atlas;
     let setup = egui_kittest::wgpu::default_wgpu_setup();
     let mut h = headless::ui_harness(state, (1194.0, 834.0), 1.0, setup);
     h.set_render_every_step(true);
