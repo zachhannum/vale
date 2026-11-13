@@ -81,8 +81,10 @@ pub struct Nav {
     time: f64,
     touching: Option<Touching>,
     tap: Option<Tap>,
-    /// The device has no pen, so a touch with a force is a finger.
+    /// A touch with a force is a finger, as on a phone.
     pub no_pen: bool,
+    /// One finger paints and draws, and two fingers move the view.
+    pub finger_paints: bool,
     /// The touches that the pen queue named as a pen.
     pens: Vec<u64>,
 }
@@ -106,6 +108,7 @@ impl Nav {
     pub fn new(no_pen: bool) -> Self {
         Self {
             no_pen,
+            finger_paints: no_pen,
             ..Self::default()
         }
     }

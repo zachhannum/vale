@@ -187,8 +187,8 @@ fn hover_input(globe: &mut Globe, events: &[(egui::Pos2, PenEvent)]) {
 /// brush tool, a pen and the primary mouse button paint a raster layer that
 /// the brush can paint. In the line tool, they draw a line in the selected
 /// line layer. With a pen queue, the pen comes from the queue and not from
-/// egui. Without a queue, a touch with a force is a pen. On a device with
-/// no pen, one finger also paints.
+/// egui. Without a queue, a touch with a force is a pen. With the setting
+/// "Paint with finger", one finger also paints.
 fn brush_input(
     ui: &egui::Ui,
     rect: egui::Rect,
@@ -275,7 +275,7 @@ fn brush_input(
         }
     }
 
-    let no_pen = globe.nav.no_pen;
+    let fingers = globe.nav.finger_paints;
     let mut started = false;
     let mut touched = false;
     let events = ui.input(|i| i.events.clone());
@@ -295,7 +295,7 @@ fn brush_input(
         if from_queue && pen {
             continue;
         }
-        if no_pen {
+        if fingers {
             let started = &mut started;
             finger_input(ui, rect, globe, started, id.0, *phase, *pos, time, &sample);
             continue;
@@ -382,8 +382,8 @@ fn brush_input(
     Painting {
         pen: true,
         mouse: globe.input.mouse,
-        finger: globe.input.pen.filter(|_| no_pen),
-        fingers: no_pen,
+        finger: globe.input.pen.filter(|_| fingers),
+        fingers,
     }
 }
 
@@ -1749,6 +1749,7 @@ pub(super) fn canvas_input(
     if state.globe.snapping() && state.globe.line_preview().is_none() {
         state.refresh_targets();
     }
+    state.globe.nav.finger_paints = state.finger_paints();
     let globe = &mut state.globe;
     globe.world_km = state.doc.project.world.radius_km;
     globe.world_seed = state.doc.project.world.seed;

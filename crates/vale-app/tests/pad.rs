@@ -13818,6 +13818,44 @@ fn phone_with(gpu: bool, kind: GeometryKind) -> (Pad, vale_store::LayerId) {
 }
 
 #[test]
+fn with_paint_with_finger_off_one_finger_turns_the_globe_on_a_phone_and_the_pencil_draws() {
+    use vale_app::ui::pad::FINGER_PAINT;
+    let (mut h, lines) = phone_with(false, GeometryKind::Line);
+    let queue = PenQueue::default();
+    h.state_mut().globe.pen.queue = Some(queue.clone());
+    open_panel(&mut h, "Brush");
+    // The switch is the last row, so the sheet goes up to its full height.
+    let sheet = h.state().pad.rects.unwrap().sheet.unwrap();
+    let bar = pos2(sheet.center().x, sheet.top() + 26.0);
+    drag(&mut h, bar, pos2(bar.x, 0.0), None);
+    assert!(h.state().finger_paints());
+    tap(&mut h, FINGER_PAINT);
+    assert!(!h.state().finger_paints());
+    assert_eq!(h.state().tools.finger_paints, Some(false));
+    screenshot::save(&mut h, "phone-finger-paint");
+    // The sheet can cover the globe.
+    lower_sheet(&mut h);
+    let view = h.state().globe.view;
+    let c = h.state().globe.rect.center();
+    let (from, to) = (c - vec2(60.0, 0.0), c + vec2(60.0, 40.0));
+    drag(&mut h, from, to, None);
+    assert!(line_features(&h, lines).is_empty());
+    assert_ne!(h.state().globe.view, view);
+    let view = h.state().globe.view;
+    pencil_drag(&mut h, &queue, from, to, false);
+    assert_eq!(line_features(&h, lines).len(), 1);
+    assert_eq!(h.state().globe.view, view);
+
+    // The switch is also in the Brush panel of an iPad, and it is off there.
+    let mut h = pad(BOARDS[0]);
+    h.state_mut().globe.tool = Tool::Brush;
+    open_panel(&mut h, "Brush");
+    assert!(control(&h, FINGER_PAINT).is_some());
+    assert!(!h.state().finger_paints());
+    screenshot::save(&mut h, "pad-finger-paint");
+}
+
+#[test]
 fn one_finger_draws_a_line_and_places_a_point_on_a_phone() {
     let (mut h, lines) = phone_with(false, GeometryKind::Line);
     assert!(h.state().globe.lining());

@@ -2927,6 +2927,12 @@ impl AppState {
     }
 
     /// True if the tool of the open workspace is the Measure tool.
+    /// One finger paints and draws: the setting "Paint with finger", or
+    /// else the default of the device.
+    pub fn finger_paints(&self) -> bool {
+        self.tools.finger_paints.unwrap_or(self.globe.nav.no_pen)
+    }
+
     pub fn measuring(&self) -> bool {
         match self.workspace {
             Workspace::Globe => self.globe.measuring(),
