@@ -39,7 +39,12 @@ pub const BASIN: &str = "Basin";
 /// The hint of the basin mode before the outline.
 pub const BASIN_OUTLINE_HINT: &str = "Draw the outline of the basin.";
 /// The hint of the basin mode after the outline.
-pub const BASIN_RIVER_HINT: &str = "Draw the main river.";
+pub const BASIN_RIVER_HINT: &str = "Draw a river.";
+/// The hint of a held basin.
+pub const BASIN_HELD_HINT: &str = "Draw a river or apply.";
+/// The button on the canvas that takes the last river away from a held
+/// basin.
+pub const UNDO_RIVER: &str = "Undo river";
 /// The button that drops the outline of the next basin.
 pub const CLEAR_OUTLINE: &str = "Clear";
 /// The hint of the ocean ridge mode.
@@ -57,7 +62,7 @@ pub const READY: &str = "Ready";
 /// The hint of the basin mode.
 pub fn basin_hint(globe: &crate::globe::Globe) -> &'static str {
     if globe.holding().is_some() {
-        HELD_HINT
+        BASIN_HELD_HINT
     } else if globe.basin_outline().is_some() {
         BASIN_RIVER_HINT
     } else {
