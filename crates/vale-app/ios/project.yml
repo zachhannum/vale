@@ -83,6 +83,9 @@ targets:
           - iCloud.dev.vale.app
         com.apple.developer.icloud-services:
           - CloudDocuments
+        # On a device with enough RAM, iOS stops the app at a higher footprint.
+        # The App ID needs the capability "Increased Memory Limit".
+        com.apple.developer.kernel.increased-memory-limit: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.vale.app
