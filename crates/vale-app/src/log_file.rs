@@ -142,6 +142,25 @@ fn version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
+/// The first line of each run, for example `start, version 0.1.456 (640.1),
+/// memory limit 3375 MB`.
+fn start_line(version: &str, limit: Option<u64>) -> String {
+    match limit {
+        Some(bytes) => format!("start, version {version}, memory limit {} MB", bytes >> 20),
+        None => format!("start, version {version}"),
+    }
+}
+
+/// The footprint at which iOS stops the app: the footprint now plus the
+/// memory that the system still gives the app. `None` off iOS.
+fn memory_limit() -> Option<u64> {
+    #[cfg(target_os = "ios")]
+    if let (Some(footprint), Some(available)) = (ios::footprint(), crate::memory::available()) {
+        return Some(footprint + available);
+    }
+    None
+}
+
 static LOG: OnceLock<LogFile> = OnceLock::new();
 
 /// Writes one line to the log file of the app, if the app has one.
@@ -349,7 +368,7 @@ extern "C" fn on_exit() {
 /// process. Call it one time, at the start.
 pub fn install(path: &Path) -> io::Result<()> {
     let log = LogFile::open(path)?;
-    log.write(&format!("start, version {}", version()));
+    log.write(&start_line(&version(), memory_limit()));
     if LOG.set(log).is_err() {
         return Err(io::Error::other("the log file is already set"));
     }
@@ -528,6 +547,13 @@ mod tests {
     fn lines(path: &Path) -> Vec<String> {
         let text = std::fs::read_to_string(path).unwrap();
         text.lines().map(str::to_string).collect()
+    }
+
+    #[test]
+    fn the_start_line_has_the_memory_limit() {
+        let line = start_line("0.1.0 (1.1)", Some(3375 << 20));
+        assert_eq!(line, "start, version 0.1.0 (1.1), memory limit 3375 MB");
+        assert_eq!(start_line("0.1.0", None), "start, version 0.1.0");
     }
 
     #[test]

@@ -154,6 +154,7 @@ jobs:
           # The export keeps the entitlements of the archive.
           codesign -d --entitlements - --xml "$app" | plutil -p - | tee "$RUNNER_TEMP/entitlements.txt"
           grep -q CloudDocuments "$RUNNER_TEMP/entitlements.txt" || { echo "::error::The archive has no iCloud entitlement"; exit 1; }
+          grep -q increased-memory-limit "$RUNNER_TEMP/entitlements.txt" || { echo "::error::The archive has no increased memory limit"; exit 1; }
           # The app is for iPhone and iPad, so the icon name is in both keys.
           /usr/libexec/PlistBuddy -c "Print :CFBundleIcons:CFBundlePrimaryIcon:CFBundleIconName" "$app/Info.plist"
           /usr/libexec/PlistBuddy -c "Print :CFBundleIcons~ipad:CFBundlePrimaryIcon:CFBundleIconName" "$app/Info.plist"
