@@ -343,7 +343,7 @@ pub(crate) fn run(fonts: &mut Fonts, input: &LabelInput) -> Labeling {
         let fi = instances[i].feature_index;
         let f = &input.features[fi];
         let class = &input.classes[f.class];
-        'fallbacks: for &fb in &class.fallbacks.order {
+        'fallbacks: for fb in Fallbacks::normalized_order(&class.fallbacks.order) {
             for attempt in fallback::attempts(fonts, &f.text, class, fb) {
                 let slot = generator
                     .slots(fi, &attempt.class, &attempt.shaped)
@@ -401,6 +401,7 @@ pub(crate) fn run(fonts: &mut Fonts, input: &LabelInput) -> Labeling {
                 let variant = inst.variant(ci);
                 let shaped = variant.map_or_else(|| shaped_of(inst.feature_index), |v| &v.shaped);
                 let mut t = c.transforms.iter();
+                let narrow = Affine::scale_non_uniform(shaped.scale_x, 1.0);
                 let glyph_runs = shaped
                     .runs
                     .iter()
@@ -413,7 +414,7 @@ pub(crate) fn run(fonts: &mut Fonts, input: &LabelInput) -> Labeling {
                             .iter()
                             .map(|g| PlacedGlyph {
                                 id: g.id,
-                                transform: t.next().copied().unwrap_or(Affine::IDENTITY),
+                                transform: t.next().copied().unwrap_or(Affine::IDENTITY) * narrow,
                             })
                             .collect(),
                     })
