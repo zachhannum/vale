@@ -47,6 +47,11 @@ pub trait RasterValues {
 
     /// True if a raster layer has the name.
     fn has_layer(&self, layer: &str) -> bool;
+
+    /// The solid angle, in steradians, that drains through the line at `index` in its layer, from the height layer `layer`. `None` if no height layer has the name, or if the value is not known yet.
+    fn flow(&self, _layer: &str, _index: usize, _shape: &Geometry) -> Option<f64> {
+        None
+    }
 }
 
 pub(super) fn raster(args: &[Value], ctx: &Context) -> Value {
@@ -69,4 +74,15 @@ pub(super) fn raster(args: &[Value], ctx: &Context) -> Value {
         _ => stat,
     };
     (rasters.value(layer, stat, ctx.index, shape)).map_or(Value::Null, finite)
+}
+
+pub(super) fn flow(args: &[Value], ctx: &Context) -> Value {
+    let Some(Value::Text(layer)) = args.first() else {
+        return Value::Null;
+    };
+    let (Some(rasters), Some(shape @ Geometry::Lines(_))) = (ctx.rasters, ctx.shape) else {
+        return Value::Null;
+    };
+    let km2 = ctx.radius_km * ctx.radius_km;
+    (rasters.flow(layer, ctx.index, shape)).map_or(Value::Null, |sr| finite(sr * km2))
 }

@@ -742,6 +742,14 @@ fn selected_layer(ui: &mut egui::Ui, state: &mut AppState) {
     {
         ui.label(&note.text);
     }
+    if let LayerRef::Vector(id) = layer
+        && state.doc.layer(id).and_then(|l| l.geometry()) == Some(GeometryKind::Line)
+    {
+        let enabled = state.can_orient_rivers(id);
+        if (ui.add_enabled(enabled, egui::Button::new(pad::ORIENT_RIVERS))).clicked() {
+            state.orient_rivers(id);
+        }
+    }
     if ui.button(DELETE_LAYER).clicked() {
         state.remove_layer(id);
     }

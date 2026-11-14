@@ -1,5 +1,7 @@
 //! The globe keeps the shapes of the vector layers between frames.
 
+mod common;
+
 use eframe::egui::{self, Pos2, Rect};
 use vale_app::document::Document;
 use vale_app::globe::math::Mat3;
@@ -397,4 +399,57 @@ fn circles(count: usize, points: usize) -> String {
         r#"{{"type": "FeatureCollection", "features": [{}]}}"#,
         features.join(", ")
     )
+}
+
+#[test]
+fn a_width_from_flow_with_the_taper_grows_toward_the_mouth_on_the_globe() {
+    use vale_style::expr::Property;
+    use vale_style::{Rule, StrokeKind, StrokeSymbolizer, Style, Symbolizer};
+    let mut doc = Document::empty();
+    let id = import(
+        &mut doc,
+        "Rivers",
+        r#"{"type": "FeatureCollection", "features": [
+          {"type": "Feature", "properties": {}, "geometry": {"type": "LineString",
+            "coordinates": [[0.5, -5], [0.5, -20], [0.5, -38]]}}]}"#,
+    );
+    (doc.project).add_raster("Height".to_string(), 64, "m".to_string(), -6000.0, 6000.0);
+    let mut map = vale_terrain::Heightmap::new(128, 0);
+    common::paint_valley(&mut map, 0.0);
+    let width = "clamp(0.5, sqrt(flow('Height')) / 100, 12)";
+    doc.entry_mut(id).unwrap().style.style = Style {
+        mask: None,
+        rules: vec![Rule::new(
+            "River",
+            vec![Symbolizer::Stroke(StrokeSymbolizer {
+                color: Property::constant(Color::rgb(200, 0, 0)),
+                width: Property::expression(width, 0.25),
+                kind: StrokeKind::taper(),
+            })],
+        )],
+    };
+    let mut pipeline = Pipeline::new();
+    let update = |pipeline: &mut Pipeline| {
+        let rasters = pipeline.rasters_mut();
+        rasters.update(&doc, |_| Some(&map));
+        rasters.poll(true);
+    };
+    update(&mut pipeline);
+    let _ = pipeline.rasters().flow_of(id, 0, "Height");
+    update(&mut pipeline);
+    assert!(pipeline.rasters().flow_of(id, 0, "Height").is_some());
+
+    let view = GlobeView::centered(0.0, -20.0);
+    // The radius of each circle of the taper, from north to south.
+    let mut circles: Vec<(f32, f32)> = (draw(&doc, &mut pipeline, &view, id).iter())
+        .filter_map(|s| match s {
+            egui::Shape::Circle(c) => Some((c.center.y, c.radius)),
+            _ => None,
+        })
+        .collect();
+    circles.sort_by(|a, b| a.0.total_cmp(&b.0));
+    assert!(circles.len() >= 2, "{circles:?}");
+    let (source, mouth) = (circles[0].1, circles[circles.len() - 1].1);
+    assert!(mouth > 2.0 * source, "{circles:?}");
+    assert!(circles.windows(2).all(|w| w[1].1 >= w[0].1), "{circles:?}");
 }

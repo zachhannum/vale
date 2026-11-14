@@ -84,6 +84,7 @@ A filter matches a feature only if the result is `true`. The `if` function also 
 | `floor(x)` | The largest whole number not above `x` |
 | `ceil(x)` | The smallest whole number not below `x` |
 | `abs(x)` | The absolute value of `x` |
+| `sqrt(x)` | The square root of `x`, or null if `x` is negative |
 | `min(a, b, ...)` | The smallest number. Values that are not numbers are skipped. |
 | `max(a, b, ...)` | The largest number. Values that are not numbers are skipped. |
 | `clamp(low, x, high)` | `x`, but not below `low` and not above `high` |
@@ -91,10 +92,13 @@ A filter matches a feature only if the result is `true`. The `if` function also 
 | `perimeter(unit)` | The length of the edge of a polygon, holes included. The unit is `'km'`, `'mi'`, or `'m'`, and `'km'` if not given. |
 | `line_length(unit)` | The length of a line, with the units of `perimeter`. The name `length` is the function for text. |
 | `raster(layer, stat)` | The value of the raster layer named `layer` under the feature, in the unit of the layer. For a point, the value at the point. For a line or a polygon, `stat` is `'mean'`, `'min'`, or `'max'`, and `'mean'` if not given. A name that no raster layer has gives null, and the expression field shows a warning. |
+| `flow(layer)` | The area of land that drains through a line, in km², from the height layer named `layer`. Each sample of the line moves to the nearest river cell within two cells of the coarse heightmap. The result is the largest area of the samples. A line far from all rivers gets a low flow. A point, a polygon, or a layer that is not a height layer gives null. |
 
 The measures use the sphere of the world, with the radius of the world. The edges are great-circle arcs. A measure on the wrong geometry type gives null, for example the area of a point or `@parts` of a point. A wrong unit also gives null.
 
 The filter `raster('Height') > 3000` matches the features above 3,000 m on the raster layer named Height.
+
+With the Taper stroke, the width `clamp(0.5, sqrt(flow('Height')) / 20, 6)` gives a river that grows from its source to its mouth. The taper is narrow at the first vertex. The command "Orient rivers downhill" in the panel of a line layer puts the first vertex of each line at its upstream end.
 
 ### Page functions
 
