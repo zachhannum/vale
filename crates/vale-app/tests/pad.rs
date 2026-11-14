@@ -17043,7 +17043,8 @@ fn a_line_rule_takes_its_width_from_an_expression() {
     // The switch starts with a width from the flow of the height layer.
     scroll_to_control(&mut h, WIDTH_FROM_EXPRESSION);
     tap(&mut h, WIDTH_FROM_EXPRESSION);
-    assert_eq!(text(&h).as_deref(), Some("sqrt(flow('Height')) / 100"));
+    let start = text(&h).unwrap();
+    assert!(start.starts_with("sqrt(flow('Height')) / "), "{start}");
     scroll_to_control(&mut h, WIDTH_EXPRESSION);
     check_controls(&h, "the rule page with a width expression");
     screenshot::save(&mut h, "pad-width-expression");
@@ -17056,4 +17057,49 @@ fn a_line_rule_takes_its_width_from_an_expression() {
     tap(&mut h, WIDTH_FROM_EXPRESSION);
     assert_eq!(text(&h), None);
     assert!(control(&h, WIDTH_EXPRESSION).is_none());
+}
+
+#[test]
+fn the_width_template_gives_the_largest_river_about_four_points() {
+    use vale_app::ui::pad::rules::WIDTH_FROM_EXPRESSION;
+    let (mut h, streams, _) = valley_pad(&[&[[0.5, -5.0], [0.5, -20.0], [0.5, -38.0]]]);
+    open_rule(&mut h, "Streams", "Default");
+    // The rule page asks for the flow of the lines, and it arrives.
+    for _ in 0..20 {
+        if h.state()
+            .pipeline
+            .rasters()
+            .flow_of(streams, 0, "Height")
+            .is_some()
+        {
+            break;
+        }
+        h.run_steps(1);
+    }
+    scroll_to_control(&mut h, WIDTH_FROM_EXPRESSION);
+    tap(&mut h, WIDTH_FROM_EXPRESSION);
+    let rule = rules(&h, streams)[0].clone();
+    let text = rule.stroke_width_expression().unwrap().to_owned();
+    assert_ne!(
+        text, "sqrt(flow('Height')) / 100",
+        "the flow did not arrive"
+    );
+    let feature = &h.state().doc.layer(streams).unwrap().features[0];
+    let rasters = h.state().pipeline.rasters().for_layer(streams);
+    let width = vale_style::expr::Expr::parse(&text)
+        .unwrap()
+        .eval(&vale_style::expr::Context {
+            attributes: &feature.attributes,
+            scale: 0.0,
+            geometry: feature.geometry.kind(),
+            shape: Some(&feature.geometry),
+            radius_km: h.state().doc.project.world.radius_km,
+            page: None,
+            rasters: Some(&rasters),
+            index: 0,
+        });
+    let vale_store::Value::Number(width) = width else {
+        panic!("{text}: {width:?}");
+    };
+    assert!((2.5..=6.5).contains(&width), "{text}: {width} pt");
 }

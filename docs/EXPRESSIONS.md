@@ -98,7 +98,7 @@ The measures use the sphere of the world, with the radius of the world. The edge
 
 The filter `raster('Height') > 3000` matches the features above 3,000 m on the raster layer named Height.
 
-With the Taper line type, the width `sqrt(flow('Height')) / 100` gives a river that grows from its source to its mouth. The square root makes the width grow slowly: four times the area gives two times the width. To keep each river between 0.5 and 6 points wide, write `clamp(0.5, sqrt(flow('Height')) / 100, 6)`. The taper is narrow at the first vertex. The command "Orient rivers downhill" in the panel of a line layer puts the first vertex of each line at its upstream end.
+With the Taper line type, the width `sqrt(flow('Height')) / 100` gives a river that grows from its source to its mouth. The square root makes the width grow slowly: four times the area gives two times the width. The switch "Width from expression" of a line rule starts with this expression, with a divisor that makes the largest river of the layer about 4 points wide. To keep each river between 0.5 and 6 points wide, write `clamp(0.5, sqrt(flow('Height')) / 100, 6)`. The taper is narrow at the first vertex. The command "Orient rivers downhill" in the panel of a line layer puts the first vertex of each line at its upstream end.
 
 ### Page functions
 

@@ -137,6 +137,9 @@ pub struct ExprHelp {
     /// The raster layers of the project: the name and the unit of each, in
     /// the list order.
     pub raster_layers: Vec<(String, String)>,
+    /// The largest flow of the lines of the layer, in km², on the first
+    /// height layer. `None` until the flow arrives.
+    largest_flow: Option<f64>,
     /// The raster values of the feature of the preview.
     sample_rasters: SampleRasters,
     /// The page values of a text item. The help of a text item has no
@@ -145,15 +148,47 @@ pub struct ExprHelp {
     page: Option<PageSample>,
 }
 
+/// The width in points that the start text of a width expression gives the
+/// largest river of a layer.
+pub const LARGEST_RIVER_WIDTH: f64 = 4.0;
+
+/// The divisor of `sqrt(flow(...))` that gives a river with the flow
+/// `largest` km² about `LARGEST_RIVER_WIDTH` points, as 1, 2, or 5 times a
+/// power of ten. 100 if the flow is not known.
+pub fn width_divisor(largest: Option<f64>) -> f64 {
+    let Some(d) = largest
+        .map(|km2| km2.sqrt() / LARGEST_RIVER_WIDTH)
+        .filter(|d| d.is_finite() && *d > 0.0)
+    else {
+        return 100.0;
+    };
+    let power = 10f64.powf(d.log10().floor());
+    let steps = [1.0, 2.0, 5.0, 10.0];
+    let nearest = |m: &f64| ((d / power).ln() - m.ln()).abs();
+    let m = steps
+        .iter()
+        .copied()
+        .min_by(|a, b| nearest(a).total_cmp(&nearest(b)));
+    power * m.unwrap_or(1.0)
+}
+
 impl ExprHelp {
+    /// The first height layer of the project, by name.
+    fn height_layer(&self) -> Option<&str> {
+        (self.raster_layers.iter())
+            .find(|(_, unit)| unit == super::HEIGHT_UNIT)
+            .map(|(name, _)| name.as_str())
+    }
+
     /// The start text of a width expression: a width from the flow of the
-    /// first height layer, or else 1.
+    /// first height layer, with a divisor that gives the largest river of
+    /// the layer about `LARGEST_RIVER_WIDTH` points, or else 1.
     pub fn flow_width(&self) -> String {
-        let height = (self.raster_layers.iter()).find(|(_, unit)| unit == super::HEIGHT_UNIT);
-        match height {
-            Some((name, _)) => format!("sqrt(flow('{}')) / 100", name.replace('\'', "''")),
-            None => "1".to_owned(),
-        }
+        let Some(name) = self.height_layer() else {
+            return "1".to_owned();
+        };
+        let divisor = width_divisor(self.largest_flow);
+        format!("sqrt(flow('{}')) / {divisor}", name.replace('\'', "''"))
     }
 }
 
@@ -512,6 +547,14 @@ impl ExprHelp {
                 })
                 .collect(),
         );
+        let height = (raster_layers.iter()).find(|(_, unit)| unit == super::HEIGHT_UNIT);
+        let largest_flow = match (height, layer.geometry()) {
+            (Some((name, _)), Some(GeometryKind::Line)) => (0..layer.features.len())
+                .filter_map(|i| cache.flow_of(id, i, name))
+                .reduce(f64::max)
+                .map(|sr| sr * state.doc.project.world.radius_km.powi(2)),
+            _ => None,
+        };
         ExprHelp {
             fields: layer.fields.iter().map(|f| f.name.clone()).collect(),
             types: layer.fields.iter().map(|f| f.kind).collect(),
@@ -522,6 +565,7 @@ impl ExprHelp {
             radius_km: state.doc.project.world.radius_km,
             values: state.help_cache.values(layer, state.map_generation),
             raster_layers,
+            largest_flow,
             sample_rasters,
             page: None,
         }
@@ -562,6 +606,7 @@ impl ExprHelp {
             radius_km: 0.0,
             values: Arc::default(),
             raster_layers: Vec::new(),
+            largest_flow: None,
             sample_rasters: SampleRasters::default(),
             page: None,
         }
@@ -875,6 +920,20 @@ pub fn desktop_line(ui: &mut egui::Ui, help: &ExprHelp, text: &str, kind: ExprKi
 mod tests {
     use super::*;
 
+    #[test]
+    fn the_width_divisor_gives_the_largest_river_about_four_points() {
+        assert_eq!(width_divisor(None), 100.0);
+        assert_eq!(width_divisor(Some(0.0)), 100.0);
+        // sqrt(1,000,000) / 4 is 250, and the nearest step is 200.
+        assert_eq!(width_divisor(Some(1.0e6)), 200.0);
+        assert_eq!(width_divisor(Some(1.6e5)), 100.0);
+        assert_eq!(width_divisor(Some(400.0)), 5.0);
+        for km2 in [3.0e2, 4.5e3, 1.8e6, 2.0e7] {
+            let width = f64::sqrt(km2) / width_divisor(Some(km2));
+            assert!((2.5..=6.5).contains(&width), "{km2} km²: {width} pt");
+        }
+    }
+
     const R: f64 = 6371.0;
 
     fn help(attributes: &[(&str, Value)]) -> ExprHelp {
@@ -892,6 +951,7 @@ mod tests {
             radius_km: 0.0,
             values: Arc::default(),
             raster_layers: vec![("Height".into(), "m".into())],
+            largest_flow: None,
             sample_rasters: SampleRasters::default(),
             page: None,
         }
