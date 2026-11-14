@@ -344,7 +344,7 @@ fn undo_and_redo_act_on_the_path_and_leave_the_project_and_its_undo_log_alone() 
     assert_eq!(h.state().doc.project, project);
     assert_eq!(undo_log(&h), log);
     // After the Measure tool, undo acts on the project again.
-    h.state_mut().globe.tool = Tool::Navigate;
+    h.state_mut().globe.tool = Tool::Pan;
     h.step();
     assert!(h.state().can_undo());
     h.state_mut().undo();
@@ -372,7 +372,7 @@ fn the_path_is_not_saved_and_a_tool_change_or_a_workspace_switch_clears_it() {
     assert_eq!(h.state().session.as_ref().unwrap().saves(), saves);
     assert_eq!(undo_log(&h), log);
 
-    h.state_mut().globe.tool = Tool::Navigate;
+    h.state_mut().globe.tool = Tool::Pan;
     h.step();
     assert!(h.state().measure.is_empty());
 

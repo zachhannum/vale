@@ -72,6 +72,8 @@ use icons::Icon;
 use number::{Number, Scale};
 use widgets::{BODY_PAD, Controls, PANEL_ROW};
 
+/// The tool that moves and zooms the view, in both workspaces.
+pub const PAN: &str = "Pan";
 /// The cell of the tool strip with the tools of the selected vector layer.
 pub const VECTOR: &str = "Vector";
 /// The tool that draws in a line layer.
@@ -956,21 +958,16 @@ pub(super) fn panels_button(
     }
 }
 
-/// Chooses the Measure tool, or goes back from it to Move on the globe and
-/// to Frame in the Atlas.
+/// Chooses the Measure tool, or goes back from it to Pan.
 pub fn toggle_measure(state: &mut AppState) {
     let measuring = state.measuring();
     match state.workspace {
         Workspace::Globe => {
-            state.globe.tool = if measuring {
-                Tool::Navigate
-            } else {
-                Tool::Measure
-            };
+            state.globe.tool = if measuring { Tool::Pan } else { Tool::Measure };
         }
         Workspace::Atlas => {
             state.atlas.tool = if measuring {
-                AtlasTool::Frame
+                AtlasTool::Pan
             } else {
                 AtlasTool::Measure
             };
@@ -1071,7 +1068,7 @@ fn tool_cells(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
             Tool::Select,
             globe.selecting(),
         ),
-        ("Pan", "Move", Icon::Move, Tool::Navigate, pan),
+        (PAN, PAN, Icon::Hand, Tool::Pan, pan),
         (
             MEASURE,
             MEASURE,

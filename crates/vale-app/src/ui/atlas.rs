@@ -330,8 +330,10 @@ impl ItemPage {
 /// The tool of a pen, a finger, and the mouse on the page.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub enum AtlasTool {
-    /// A tap selects a frame or an item, and a drag moves it or a handle.
+    /// A drag pans the page, and a tap selects nothing.
     #[default]
+    Pan,
+    /// A tap selects a frame or an item, and a drag moves it or a handle.
     Frame,
     /// A tap selects a frame or an item, and a drag moves it or a handle.
     /// In an entered frame, a tap selects the feature under it, and a pen
@@ -844,7 +846,7 @@ impl Default for AtlasState {
             selection: AtlasSelection::None,
             entered: None,
             vertices: Vec::new(),
-            tool: AtlasTool::Frame,
+            tool: AtlasTool::Pan,
             tab: FrameTab::Frame,
             sizes: false,
             kinds: false,
@@ -2052,7 +2054,9 @@ fn input(ui: &egui::Ui, state: &mut AppState, resp: &egui::Response, place: Page
         let quick = last.is_some_and(|(t, _)| now - t < DOUBLE_TAP);
         let again = quick && last.is_some_and(|(_, p)| p.distance(pos) < 12.0);
         let before = state.atlas.selection;
-        tap(state, &page, place, pos, shift);
+        if state.atlas.tool != AtlasTool::Pan {
+            tap(state, &page, place, pos, shift);
+        }
         let at = place.to_mm(pos);
         if again && !place.rect.contains(pos) {
             state.atlas.view = PageView::default();
@@ -2087,7 +2091,7 @@ fn input(ui: &egui::Ui, state: &mut AppState, resp: &egui::Response, place: Page
                 clear_selection(state);
             }
         }
-        AtlasTool::Move if escape => clear_selection(state),
+        AtlasTool::Pan | AtlasTool::Move if escape => clear_selection(state),
         // In an entered frame, Delete and Backspace do nothing, because the
         // Atlas workspace does not edit the features.
         AtlasTool::Select if state.atlas.entered.is_some() => {
@@ -2317,7 +2321,7 @@ fn start_drag(
             Some(id) => Drag::Pan(id),
             None => Drag::Page,
         },
-        AtlasTool::Measure => Drag::Page,
+        AtlasTool::Pan | AtlasTool::Measure => Drag::Page,
         AtlasTool::Select if state.atlas.entered.is_some() => match state.atlas.pointer {
             Pointer::Finger => Drag::Page,
             Pointer::Pen | Pointer::Mouse => Drag::Box(pos),
@@ -4022,8 +4026,8 @@ pub fn rename_map_style(state: &mut AppState, id: MapStyleId, name: &str) -> boo
 }
 
 /// The canvas of the desktop layout, in the space between the panels. The
-/// keys F, V, A, and H choose the Frame tool, the Select tool, the Vertex
-/// tool, and the Move tool.
+/// keys H, F, V, and A choose the Pan tool, the Frame tool, the Select tool,
+/// and the Vertex tool.
 pub fn desktop(ui: &mut egui::Ui, state: &mut AppState) {
     let typing = ui.ctx().memory(|m| m.focused().is_some());
     if !typing {
@@ -4039,7 +4043,7 @@ pub fn desktop(ui: &mut egui::Ui, state: &mut AppState) {
             state.atlas.tool = AtlasTool::Vertex;
         }
         if h {
-            state.atlas.tool = AtlasTool::Move;
+            state.atlas.tool = AtlasTool::Pan;
         }
     }
     egui::CentralPanel::default()

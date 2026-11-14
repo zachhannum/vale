@@ -407,7 +407,7 @@ fn rivers_show_in_the_flat_view_and_a_switch_hides_them() {
     let globe = &mut h.state_mut().globe;
     globe.preview.panel = true;
     // Without the brush panel, the canvas has more room.
-    globe.tool = Tool::Navigate;
+    globe.tool = Tool::Pan;
     globe.flat.zoom = 2.0;
     let center = lonlat_to_dir(0.0, 0.0);
     let n = globe.map.face_size();
@@ -442,7 +442,7 @@ fn lakes_show_in_the_flat_view_and_a_switch_hides_them() {
     let globe = &mut h.state_mut().globe;
     two_bands(globe.bands_mut(id).unwrap(), [40, 40, 40], [150, 140, 120]);
     globe.preview.panel = true;
-    globe.tool = Tool::Navigate;
+    globe.tool = Tool::Pan;
     globe.flat.zoom = 4.0;
     let crater = lonlat_to_dir(0.0, 0.0);
     set_crater(&mut globe.map, crater, 800.0);
@@ -804,7 +804,7 @@ fn masked_flat() -> (App, vale_store::RasterId, masked::RasterMasked) {
     let globe = &mut h.state_mut().globe;
     two_bands(globe.bands_mut(id).unwrap(), [40, 40, 40], [150, 140, 120]);
     globe.preview.panel = true;
-    globe.tool = Tool::Navigate;
+    globe.tool = Tool::Pan;
     globe.flat.zoom = 4.0;
     set_crater(&mut globe.map, lonlat_to_dir(0.0, 0.0), 800.0);
     let found = masked::raster_masked(h.state_mut(), id);

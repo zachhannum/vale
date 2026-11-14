@@ -42,7 +42,7 @@ pub fn start(state: &mut AppState) {
             drag: None,
         });
     }
-    state.globe.tool = Tool::Navigate;
+    state.globe.tool = Tool::Pan;
     state.globe.region = true;
     state.workspace = Workspace::Globe;
 }
@@ -56,7 +56,7 @@ pub fn cancel(state: &mut AppState) {
 /// Ends the command, and puts back the tool of the globe.
 fn end(state: &mut AppState) {
     if let Some(mode) = state.region.take()
-        && state.globe.tool == Tool::Navigate
+        && state.globe.tool == Tool::Pan
     {
         state.globe.tool = mode.back;
     }
@@ -71,7 +71,7 @@ impl AppState {
             self.globe.region = false;
             return;
         };
-        if self.globe.tool != Tool::Navigate || self.workspace != Workspace::Globe {
+        if self.globe.tool != Tool::Pan || self.workspace != Workspace::Globe {
             end(self);
             return;
         }

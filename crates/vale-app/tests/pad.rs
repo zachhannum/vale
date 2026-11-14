@@ -2028,7 +2028,7 @@ fn a_finger_hits_each_control_at_the_first_try() {
 
     // The Move tool has no context strip, and the Brush panel stays.
     quick_tap(&mut h, "Pan");
-    assert_eq!(h.state().globe.tool, Tool::Navigate);
+    assert_eq!(h.state().globe.tool, Tool::Pan);
     assert!(control(&h, "Brush settings").is_none());
     assert!(h.state().pad.is_open(Panel::Brush));
 
@@ -2188,7 +2188,7 @@ fn a_tap_on_the_brush_cell_chooses_the_brush_in_its_mode() {
     let mut h = pad(BOARDS[0]);
     h.state_mut().globe.brush.mode = Mode::Erode;
     quick_tap(&mut h, "Pan");
-    assert_eq!(h.state().globe.tool, Tool::Navigate);
+    assert_eq!(h.state().globe.tool, Tool::Pan);
     assert_eq!(toggled(&h, TERRAIN), Some(false));
     assert_eq!(face(&h, ModeGroup::Terrain), "Erode");
     assert_eq!(face(&h, ModeGroup::Sculpt), "Raise");
@@ -2309,7 +2309,7 @@ fn a_hold_or_a_second_tap_on_the_brush_cell_opens_the_flyout() {
             Some(Flyout::Brush(group)),
             "{name}"
         );
-        assert_eq!(h.state().globe.tool, Tool::Navigate, "{name}");
+        assert_eq!(h.state().globe.tool, Tool::Pan, "{name}");
         let flyout = h.state().pad.flyouts.rect.unwrap();
         let cell = control(&h, name).unwrap();
         assert_eq!(flyout.left_top(), pos2(tools.right() + 12.0, cell.top()));
@@ -2326,7 +2326,7 @@ fn a_hold_or_a_second_tap_on_the_brush_cell_opens_the_flyout() {
         let s = h.state();
         assert!(s.pad.flyouts.open.is_none() && s.pad.flyouts.rect.is_none());
         assert!(control(&h, "Weather").is_none());
-        assert_eq!(s.globe.tool, Tool::Navigate);
+        assert_eq!(s.globe.tool, Tool::Pan);
     }
 
     // The first tap chooses the brush, the second tap opens the flyout,
@@ -3356,13 +3356,13 @@ fn the_globe_does_not_move_when_you_touch_a_card() {
             open_panel(&mut h, "Layers");
         }
         // The Move tool has no context strip.
-        h.state_mut().globe.tool = Tool::Navigate;
+        h.state_mut().globe.tool = Tool::Pan;
         h.run_steps(2);
         for card in cards(&h) {
             for from in [card.center(), card.left_top() + vec2(3.0, 3.0)] {
                 let to = screen.center();
                 // A finger, and then a pen in the Move tool. Each one turns the globe on the canvas.
-                h.state_mut().globe.tool = Tool::Navigate;
+                h.state_mut().globe.tool = Tool::Pan;
                 drag(&mut h, from, to, None);
                 drag(&mut h, from, to, Some(0.5));
                 assert_eq!(
@@ -11729,7 +11729,7 @@ fn the_measure_cell_of_the_tool_strip_opens_the_tool_with_any_layer_on_each_scre
             scroll_strip_to(&mut h, "Pan");
             quick_tap(&mut h, "Pan");
             assert!(!h.state().globe.measuring(), "{what}");
-            assert_eq!(h.state().globe.tool, Tool::Navigate, "{what}");
+            assert_eq!(h.state().globe.tool, Tool::Pan, "{what}");
             assert!(h.state().measure.is_empty(), "{what}");
         }
     }
@@ -11896,7 +11896,7 @@ fn the_measure_cell_and_card_fit_in_the_atlas_on_each_screen() {
         h.run_steps(3);
         lower_sheet(&mut h);
         let strip = h.state().pad.rects.unwrap().tools;
-        let names = ["Frame tool", "Select", "Vertex", "Move", MEASURE];
+        let names = ["Frame tool", "Select", "Vertex", "Pan", "Move", MEASURE];
         for name in names {
             scroll_strip_to(&mut h, name);
             let cell = control(&h, name).unwrap_or_else(|| panic!("{what}: {name}"));
@@ -11912,7 +11912,7 @@ fn the_measure_cell_and_card_fit_in_the_atlas_on_each_screen() {
         assert!(h.state().measuring(), "{what}");
         assert_eq!(h.state().atlas.tool, AtlasTool::Measure, "{what}");
         assert_eq!(toggled(&h, MEASURE), Some(true), "{what}");
-        for name in ["Frame tool", "Select", "Vertex", "Move"] {
+        for name in ["Frame tool", "Select", "Vertex", "Pan", "Move"] {
             assert_ne!(toggled(&h, name), Some(true), "{what}: {name}");
         }
         assert!(!readout_line(h.state()).starts_with("Length"), "{what}");
@@ -12042,7 +12042,8 @@ fn the_frame_strip_fits_in_the_atlas_on_each_screen() {
         vale_app::ui::atlas::add_frame(h.state_mut());
         h.run_steps(3);
         lower_sheet(&mut h);
-        assert_eq!(h.state().atlas.tool, AtlasTool::Frame, "{what}");
+        h.state_mut().atlas.tool = AtlasTool::Frame;
+        h.run_steps(3);
         scroll_column_to_end(&mut h);
         let names = [SNAP_TO_LAYOUT, DELETE, DESELECT];
         let cells = names.map(|name| control(&h, name).unwrap_or_else(|| panic!("{what}: {name}")));
@@ -14573,7 +14574,7 @@ fn a_tap_of_two_or_three_fingers_is_undo_or_redo_on_a_phone() {
 #[test]
 fn one_finger_turns_the_globe_with_move_on_a_phone_and_with_the_line_tool_on_an_ipad() {
     let mut h = phone(false);
-    h.state_mut().globe.tool = Tool::Navigate;
+    h.state_mut().globe.tool = Tool::Pan;
     h.run_steps(2);
     let view = h.state().globe.view;
     let c = h.state().globe.rect.center();
@@ -14840,7 +14841,7 @@ fn a_long_press_shows_the_name_of_a_tool_and_a_longer_hold_opens_its_modes() {
     assert_eq!(h.state().pad.flyouts.open, None);
     touch(&mut h, egui::TouchPhase::End, pos, None);
     h.run_steps(3);
-    assert_eq!(h.state().globe.tool, Tool::Navigate);
+    assert_eq!(h.state().globe.tool, Tool::Pan);
     assert_eq!(h.state().pad.flyouts.tip, None);
 
     // A hold on a brush cell shows the mode and the hint. A longer hold
@@ -14868,7 +14869,7 @@ fn a_long_press_shows_the_name_of_a_tool_and_a_longer_hold_opens_its_modes() {
     assert_eq!(h.state().pad.flyouts.tip, None);
     touch(&mut h, egui::TouchPhase::End, pos, None);
     h.run_steps(3);
-    assert_eq!(h.state().globe.tool, Tool::Navigate);
+    assert_eq!(h.state().globe.tool, Tool::Pan);
     assert_eq!(h.state().pad.flyouts.open, Some(terrain));
 }
 
@@ -15331,7 +15332,7 @@ fn the_brush_pane_stays_with_a_tool_that_has_no_settings() {
     let mut h = pad(BOARDS[0]);
     tap(&mut h, "Brush settings");
     assert!(h.state().pad.is_open(Panel::Brush));
-    h.state_mut().globe.tool = Tool::Navigate;
+    h.state_mut().globe.tool = Tool::Pan;
     h.run_steps(3);
     assert!(h.state().pad.is_open(Panel::Brush));
     let hint = h.query_by_label(NO_SETTINGS);

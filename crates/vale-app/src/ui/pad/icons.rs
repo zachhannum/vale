@@ -28,6 +28,8 @@ pub enum Icon {
     Basin,
     More,
     Move,
+    /// An open hand, for the Pan tool.
+    Hand,
     Undo,
     Redo,
     Layers,
@@ -136,6 +138,12 @@ impl Icon {
             Icon::Move => {
                 "M12 3v18M3 12h18M12 3l-3 3M12 3l3 3M12 21l-3-3M12 21l3-3\
                  M3 12l3-3M3 12l3 3M21 12l-3-3M21 12l-3 3"
+            }
+            Icon::Hand => {
+                "M6 14V6c0-2.67 4-2.67 4 0v5M10 10.5V4c0-2.67 4-2.67 4 0v6.5\
+                 M14 10.5V6c0-2.67 4-2.67 4 0v4.5\
+                 M18 8.5c0-2.67 4-2.67 4 0V14c0 4.4-3.6 8-8 8h-2c-2.8 0-4.5-.9-6-2.3\
+                 l-3.6-3.6c-1.9-1.9.9-4.7 2.8-2.8L6 14"
             }
             Icon::Undo => "M8 5L3 10l5 5M3 10h11c3.04 0 5.5 2.46 5.5 5.5s-2.46 5.5-5.5 5.5h-3",
             Icon::Redo => "M16 5l5 5-5 5M21 10H10c-3.04 0-5.5 2.46-5.5 5.5s2.46 5.5 5.5 5.5h3",
@@ -489,6 +497,7 @@ mod tests {
             Icon::Basin,
             Icon::More,
             Icon::Move,
+            Icon::Hand,
             Icon::Undo,
             Icon::Redo,
             Icon::Layers,

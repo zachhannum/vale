@@ -804,7 +804,7 @@ fn a_stroke_reaches_the_cpu_heightmap_and_undo_puts_it_back() {
 fn navigate_is_unchanged_with_the_brush_tool_off() {
     let _gpu = one_gpu_test();
     let mut h = gpu_harness();
-    assert_eq!(h.state().globe.tool, Tool::Navigate);
+    assert_eq!(h.state().globe.tool, Tool::Pan);
     let c = h.state().globe.rect.center();
     let (from, to) = (c - Vec2::new(40.0, 0.0), c + Vec2::new(40.0, 20.0));
     let grabbed = place(&h, from);
@@ -4748,7 +4748,7 @@ fn another_mode_or_tool_drops_the_outline_of_the_basin() {
         .collect();
     for change in [
         (|g: &mut vale_app::globe::Globe| g.brush.mode = Mode::Range) as fn(&mut _),
-        |g| g.tool = Tool::Navigate,
+        |g| g.tool = Tool::Pan,
     ] {
         let mut h = harness();
         let globe = &mut h.state_mut().globe;

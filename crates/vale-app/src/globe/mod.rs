@@ -187,7 +187,8 @@ pub struct PlacedPoint {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Tool {
     #[default]
-    Navigate,
+    /// Moves and zooms the view.
+    Pan,
     Brush,
     Line,
     Polygon,

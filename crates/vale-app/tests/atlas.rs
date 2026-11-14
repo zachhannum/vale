@@ -65,8 +65,8 @@ use vale_app::ui::pad::labels::{
 use vale_app::ui::pad::rules::STROKE_WIDTH;
 use vale_app::ui::pad::widgets::eye_name;
 use vale_app::ui::pad::{
-    CLEAR_PATH, DELETE_VERTEX, DESELECT, GRATICULE, MAP_SNAP, MEASURE, Panel, SNAP, SNAP_DISTANCE,
-    SNAP_HINT, SNAPPING, readout_line,
+    CLEAR_PATH, DELETE_VERTEX, DESELECT, GRATICULE, MAP_SNAP, MEASURE, PAN, Panel, SNAP,
+    SNAP_DISTANCE, SNAP_HINT, SNAPPING, readout_line,
 };
 use vale_app::ui::select::{DELETE as DELETE_SELECTION, TOOL as SELECT_TOOL};
 use vale_app::ui::{Action, AppState, ExportFormat, Layout, Screen, Workspace, draw};
@@ -100,7 +100,15 @@ enum Input {
 }
 const INPUTS: [Input; 3] = [Input::Finger, Input::Pen, Input::Mouse];
 
+/// The state of the Atlas workspace, with the Frame tool.
 fn state() -> AppState {
+    let mut state = default_state();
+    state.atlas.tool = AtlasTool::Frame;
+    state
+}
+
+/// The state of the Atlas workspace, with the default tool.
+fn default_state() -> AppState {
     let mut state = AppState::new(Document::sample()).unwrap();
     state.headless = true;
     state.set_layout(Layout::Pad);
@@ -710,6 +718,54 @@ fn a_tap_opens_the_panel_of_a_frame_or_of_the_page() {
     scroll_to(&mut h, ADD_PAGE);
     assert!(control(&h, ADD_PAGE).is_some());
     assert!(control(&h, SCALE).is_none());
+}
+
+#[test]
+fn the_pan_tool_is_the_default_and_pans_the_page_without_a_change() {
+    let h = pad_with(default_state(), BOARDS[0]);
+    assert_eq!(h.state().atlas.tool, AtlasTool::Pan);
+    assert_eq!(toggled(&h, PAN), Some(true));
+
+    let mut h = inset_pad(BOARDS[0]);
+    tap(&mut h, PAN);
+    atlas::clear_selection(h.state_mut());
+    h.run_steps(2);
+    let shape = frame(&h, 0).shape.clone();
+    // A tap on a frame and a tap on the paper select nothing.
+    let (on_frame, on_paper) = (middle(&h, 0), screen(&h, Point::new(4.0, 50.0)));
+    tap_with(&mut h, on_frame, Input::Finger);
+    tap_with(&mut h, on_paper, Input::Finger);
+    assert_eq!(h.state().atlas.selection, AtlasSelection::None);
+    // A drag on a frame and on the paper pans the page, and the frame and
+    // its map stay.
+    let center = frame(&h, 0).center;
+    for input in INPUTS {
+        let offset = h.state().atlas.view.offset;
+        let from = middle(&h, 0);
+        drag(&mut h, from, from + vec2(40.0, 25.0), input);
+        let moved = h.state().atlas.view.offset - offset;
+        assert!(
+            (moved - vec2(40.0, 25.0)).length() < 1.0,
+            "{input:?}: {moved:?}"
+        );
+    }
+    assert_eq!(frame(&h, 0).shape, shape);
+    assert_eq!(frame(&h, 0).center, center);
+    assert_eq!(h.state().atlas.selection, AtlasSelection::None);
+    assert_eq!(open_page(&h).frames.len(), 2);
+}
+
+#[test]
+fn the_pan_tool_has_deselect_alone_while_a_frame_is_selected() {
+    let mut h = inset_pad(BOARDS[0]);
+    tap(&mut h, PAN);
+    assert!(atlas::has_selection(h.state()));
+    assert!(control(&h, DESELECT).is_some());
+    assert!(control(&h, SNAP_TO_LAYOUT).is_none());
+    assert!(control(&h, DELETE_SELECTION).is_none());
+    tap(&mut h, DESELECT);
+    assert!(!atlas::has_selection(h.state()));
+    assert!(control(&h, DESELECT).is_none());
 }
 
 #[test]
@@ -10413,8 +10469,9 @@ fn on_an_iphone_the_page_card_is_above_the_tools_and_the_tools_are_a_row_at_the_
     assert!(previous.top() > top_row.bottom(), "{previous:?}");
     assert_eq!(previous.top(), next.top());
     assert!(previous.left() < width / 4.0, "{previous:?}");
-    // The tools are one row above the home indicator.
-    let names = [FRAME_TOOL, SELECT_TOOL, VERTEX, "Move", MEASURE];
+    // The tools are one row above the home indicator. Six cells fit, and
+    // the row scrolls to Measure.
+    let names = [FRAME_TOOL, SELECT_TOOL, VERTEX, "Pan", "Move"];
     let tools = names.map(|name| control(&h, name).unwrap());
     for pair in tools.windows(2) {
         assert_eq!(pair[0].top(), pair[1].top());

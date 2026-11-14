@@ -420,7 +420,7 @@ fn style_change_reaches_the_pixels() {
 #[test]
 fn a_frame_tool_click_on_a_feature_selects_only_the_frame() {
     let mut h = harness();
-    assert_eq!(h.state().atlas.tool, vale_app::ui::atlas::AtlasTool::Frame);
+    h.state_mut().atlas.tool = vale_app::ui::atlas::AtlasTool::Frame;
     let tokyo = screen_pos(&mut h, [139.75, 35.68]);
     click_at(&mut h, tokyo);
     h.run_steps(3);
