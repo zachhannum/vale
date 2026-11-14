@@ -20,7 +20,9 @@ use crate::globe::math::V3;
 use crate::globe::math::{angle, dir_to_lonlat, lonlat_to_dir};
 use crate::globe::nav::{Nav, Painting, TAP_SECONDS, TAP_SLOP, Tap, on_canvas};
 use crate::globe::select::Pointer;
-use crate::globe::shapes::{self, Directions, DrawKey, OnScreen, Out, ViewKey};
+use crate::globe::shapes::{
+    self, Directions, DrawKey, Feature, LayerShapes, OnScreen, Out, ViewKey, Work,
+};
 use crate::globe::snap::Highlight;
 use crate::globe::stroke_group;
 use crate::globe::sweep;
@@ -888,6 +890,14 @@ impl Sink {
         });
     }
 
+    /// Sends the next shapes to the cut, or to the painter.
+    fn set_cut(&mut self, cut: bool) {
+        if self.cut != cut {
+            self.flush();
+            self.cut = cut;
+        }
+    }
+
     /// Sends the shapes that `paint` gives to the painter, also with a cut.
     fn uncut(&mut self, paint: impl FnOnce(&mut Self)) {
         let cut = std::mem::replace(&mut self.cut, false);
@@ -937,13 +947,16 @@ impl Sink {
 
 /// Sends the shapes of a sink to the painter and to the cut. With `tee`, a
 /// copy of each shape for the painter goes to `tee`, except the symbols.
+/// The place of the cut in the draw order is a placeholder shape at the
+/// first shape of the cut. `None`: no shape goes to the cut.
 fn paint_out(
     painter: &egui::Painter,
     format: Option<egui_wgpu::wgpu::TextureFormat>,
     mut cut: Option<&mut Vec<Cut>>,
     mut tee: Option<&mut Vec<Cut>>,
     out: &[Out],
-) {
+) -> Option<egui::layers::ShapeIdx> {
+    let mut slot = None;
     for out in out {
         if let Some(tee) = &mut tee {
             match out {
@@ -976,11 +989,13 @@ fn paint_out(
             }
             Out::Cut(shape) => {
                 if let Some(cut) = &mut cut {
+                    slot.get_or_insert_with(|| painter.add(egui::Shape::Noop));
                     cut.push(shape.clone());
                 }
             }
         }
     }
+    slot
 }
 
 fn color(c: vale_style::Color) -> egui::Color32 {
@@ -1181,11 +1196,12 @@ enum Done {
 }
 
 /// Draws one vector layer over the globe, as `vector_layer`. With `cut`,
-/// the fills and the strokes go to `cut`, and the other shapes go to the
-/// painter. With `tee`, a copy of the shapes for the painter goes to `tee`,
-/// except the symbols. The layer keeps its shapes between frames, and a draw
-/// with no change to the view, the layer, or its style sends the kept shapes
-/// again.
+/// the fills and the strokes that the mask cuts go to `cut`, and the other
+/// shapes go to the painter. The result is the place of the cut in the
+/// draw order, as `paint_out` gives it. With `tee`, a copy of the shapes
+/// for the painter goes to `tee`, except the symbols. The layer keeps its
+/// shapes between frames, and a draw with no change to the view, the
+/// layer, or its style sends the kept shapes again.
 #[expect(clippy::too_many_arguments)]
 pub fn vector_layer_cut(
     painter: &egui::Painter,
@@ -1197,10 +1213,8 @@ pub fn vector_layer_cut(
     view: &GlobeView,
     id: LayerId,
     pipeline: &mut Pipeline,
-) {
-    let Some(layer) = doc.layer(id) else {
-        return;
-    };
+) -> Option<egui::layers::ShapeIdx> {
+    let layer = doc.layer(id)?;
     let masked = pipeline.masked(doc, id);
     let radius = view.radius(rect);
     let radius_m = doc.project.world.radius_km * 1000.0;
@@ -1247,14 +1261,18 @@ pub fn vector_layer_cut(
     };
     // One pixel at the center of the globe, in radians.
     let pixel = 1.0 / (radius * f64::from(pixels_per_point));
-    let detail = (masked.is_none())
+    // A masked layer draws the paints that the mask does not cut from the
+    // whole geometry.
+    let whole = masked.is_some()
+        && (key.batches.iter().flatten())
+            .any(|b| !b.masked && matches!(b.paint, StylePaint::Fill(_) | StylePaint::Stroke(_)));
+    let detail = (masked.is_none() || whole)
         .then(|| pipeline.lod_mut().level(layer, pixel))
         .flatten();
     let (scatter, cache) = pipeline.globe_caches_mut();
-    let (shapes, work) = cache.layer(layer, masked.as_ref(), detail.as_ref());
+    let (shapes, whole_shapes, work) = cache.layer(layer, masked.as_ref(), detail.as_ref(), whole);
     if let Some(out) = shapes.drawn(&key) {
-        paint_out(painter, format, cut, tee, out);
-        return;
+        return paint_out(painter, format, cut, tee, out);
     }
     work.draws += 1;
     let step = vector::step(radius * f64::from(pixels_per_point));
@@ -1278,103 +1296,30 @@ pub fn vector_layer_cut(
         ]
     };
     let (min, max) = (to_disc(shown.left_bottom()), to_disc(shown.right_top()));
-    let measured = |lines: &[Vec<V3>]| -> Vec<Vec<(kurbo::Point, f64)>> {
-        (lines.iter())
-            .flat_map(|line| vector::clip_line_measured(&view.rot, line, step))
-            .map(|part| part.iter().map(|(p, f)| (point(p), *f)).collect())
-            .collect()
-    };
     let symbols = doc.symbols();
     let mut places = None;
     let mut sink = Sink::new(format, key.cut);
-    let (dirs, screens) = shapes.view(view_key, work);
-    // The parts on the screen that the draw needs and the view does not
-    // keep yet, and the polygons that it fills.
-    let mut needed = vec![false; dirs.len()];
-    let mut filled = vec![false; dirs.len()];
-    for batch in key.batches.iter().flatten() {
-        let fill = matches!(batch.paint, StylePaint::Fill(_));
-        for &i in &batch.features {
-            if screens[i].is_none() && view_key.shows(&dirs[i].cap) {
-                needed[i] = true;
-                filled[i] |= fill;
-            }
-        }
-    }
-    let mut jobs = Vec::new();
-    for (i, feature) in dirs.iter().enumerate().filter(|(i, _)| needed[*i]) {
-        if let Directions::Polygons(polygons, _) = &feature.directions {
-            let shown = (0..polygons.len()).filter(|&k| view_key.shows(&feature.parts[k]));
-            jobs.extend(shown.map(|k| Job::Polygon(i, k)));
-        }
-        jobs.push(Job::Feature(i));
-    }
-    let cost = |job: &Job| match *job {
-        Job::Polygon(i, k) => match &dirs[i].directions {
-            Directions::Polygons(polygons, _) => polygons[k].iter().map(Vec::len).sum(),
-            _ => 0,
-        },
-        Job::Feature(i) => match &dirs[i].directions {
-            Directions::Points(points) => points.len(),
-            Directions::Lines(lines) => lines.iter().map(Vec::len).sum(),
-            Directions::Polygons(_, outlines) => outlines.iter().flatten().map(Vec::len).sum(),
-        },
+    let on_whole = |batch: &pipeline::Batch| whole && !batch.masked;
+    let all = || key.batches.iter().flatten();
+    let projector = Projector {
+        view,
+        rect,
+        step,
+        bounds: (min, max),
+        point: &point,
     };
-    let done = shapes::par_map(&jobs, cost, |job| match *job {
-        Job::Polygon(i, k) => {
-            let Directions::Polygons(polygons, _) = &dirs[i].directions else {
-                unreachable!()
-            };
-            let clipped = vector::clip_polygon(&view.rot, &polygons[k], step);
-            let triangles = (filled[i])
-                .then(|| vector::triangulate(&vector::clip_loops(&clipped.loops, min, max)));
-            Done::Polygon(clipped, triangles)
-        }
-        Job::Feature(i) => Done::Feature(match &dirs[i].directions {
-            Directions::Points(points) => OnScreen::Points(
-                (points.iter())
-                    .filter_map(|d| view.project(rect, *d))
-                    .collect(),
-            ),
-            Directions::Lines(lines) => {
-                let shown: Vec<_> = (lines.iter().zip(&dirs[i].parts))
-                    .filter(|(_, cap)| view_key.shows(cap))
-                    .map(|(line, _)| line.clone())
-                    .collect();
-                OnScreen::Lines(measured(&shown))
-            }
-            Directions::Polygons(_, outlines) => {
-                let outlines = outlines.as_ref().map(|lines| {
-                    (lines.iter())
-                        .flat_map(|line| vector::clip_line(&view.rot, line, step))
-                        .map(|o| o.iter().map(|p| (point(p), 0.0)).collect())
-                        .collect()
-                });
-                OnScreen::Polygons(Vec::new(), Vec::new(), outlines)
-            }
-        }),
-    });
-    let mut parts = (Vec::new(), Vec::new());
-    for (job, done) in jobs.iter().zip(done) {
-        match (job, done) {
-            (_, Done::Polygon(clipped, triangles)) => {
-                parts.0.push(clipped);
-                parts.1.push(triangles);
-            }
-            (Job::Feature(i), Done::Feature(mut screen)) => {
-                if let OnScreen::Polygons(clipped, triangles, _) = &mut screen {
-                    (*clipped, *triangles) = std::mem::take(&mut parts);
-                }
-                work.clipped += 1;
-                screens[*i] = Some(screen);
-            }
-            _ => {}
-        }
-    }
+    let (dirs, screens) = projector.screens(shapes, work, view_key, all().filter(|b| !on_whole(b)));
+    let mut whole_view =
+        whole_shapes.map(|w| projector.screens(w, work, view_key, all().filter(|b| on_whole(b))));
     for (entry, batches) in entries.iter().zip(&key.batches) {
         let mut count = 0;
         for batch in batches {
             let paint = &batch.paint;
+            sink.set_cut(key.cut && batch.masked);
+            let (dirs, screens): (&[Feature], &mut [Option<OnScreen>]) = match &mut whole_view {
+                Some((dirs, screens)) if on_whole(batch) => (dirs, screens),
+                _ => (dirs, &mut *screens),
+            };
             for &index in &batch.features {
                 let feature = &features[index];
                 if !view_key.shows(&dirs[index].cap) {
@@ -1510,8 +1455,126 @@ pub fn vector_layer_cut(
         }
     }
     let out = sink.finish();
-    paint_out(painter, format, cut, tee, &out);
+    let slot = paint_out(painter, format, cut, tee, &out);
     shapes.keep(key, out);
+    slot
+}
+
+/// What puts the features of a layer on the globe on the screen.
+struct Projector<'a> {
+    view: &'a GlobeView,
+    rect: egui::Rect,
+    step: f64,
+    /// The screen in disc space.
+    bounds: (vector::P2, vector::P2),
+    /// A point in disc space on the screen.
+    point: &'a (dyn Fn(&vector::P2) -> kurbo::Point + Sync),
+}
+
+impl Projector<'_> {
+    /// The parts on the screen in `view_key` of the features of `shapes`,
+    /// with the parts that `batches` draw and the view does not keep yet.
+    fn screens<'s, 'b>(
+        &self,
+        shapes: &'s mut LayerShapes,
+        work: &mut Work,
+        view_key: ViewKey,
+        batches: impl Iterator<Item = &'b pipeline::Batch>,
+    ) -> (&'s [Feature], &'s mut [Option<OnScreen>]) {
+        let (view, rect, step, point) = (self.view, self.rect, self.step, self.point);
+        let (min, max) = self.bounds;
+        let measured = |lines: &[Vec<V3>]| -> Vec<Vec<(kurbo::Point, f64)>> {
+            (lines.iter())
+                .flat_map(|line| vector::clip_line_measured(&view.rot, line, step))
+                .map(|part| part.iter().map(|(p, f)| (point(p), *f)).collect())
+                .collect()
+        };
+        let (dirs, screens) = shapes.view(view_key, work);
+        // The parts on the screen that the draw needs and the view does not
+        // keep yet, and the polygons that it fills.
+        let mut needed = vec![false; dirs.len()];
+        let mut filled = vec![false; dirs.len()];
+        for batch in batches {
+            let fill = matches!(batch.paint, StylePaint::Fill(_));
+            for &i in &batch.features {
+                if screens[i].is_none() && view_key.shows(&dirs[i].cap) {
+                    needed[i] = true;
+                    filled[i] |= fill;
+                }
+            }
+        }
+        let mut jobs = Vec::new();
+        for (i, feature) in dirs.iter().enumerate().filter(|(i, _)| needed[*i]) {
+            if let Directions::Polygons(polygons, _) = &feature.directions {
+                let shown = (0..polygons.len()).filter(|&k| view_key.shows(&feature.parts[k]));
+                jobs.extend(shown.map(|k| Job::Polygon(i, k)));
+            }
+            jobs.push(Job::Feature(i));
+        }
+        let cost = |job: &Job| match *job {
+            Job::Polygon(i, k) => match &dirs[i].directions {
+                Directions::Polygons(polygons, _) => polygons[k].iter().map(Vec::len).sum(),
+                _ => 0,
+            },
+            Job::Feature(i) => match &dirs[i].directions {
+                Directions::Points(points) => points.len(),
+                Directions::Lines(lines) => lines.iter().map(Vec::len).sum(),
+                Directions::Polygons(_, outlines) => outlines.iter().flatten().map(Vec::len).sum(),
+            },
+        };
+        let done = shapes::par_map(&jobs, cost, |job| match *job {
+            Job::Polygon(i, k) => {
+                let Directions::Polygons(polygons, _) = &dirs[i].directions else {
+                    unreachable!()
+                };
+                let clipped = vector::clip_polygon(&view.rot, &polygons[k], step);
+                let triangles = (filled[i])
+                    .then(|| vector::triangulate(&vector::clip_loops(&clipped.loops, min, max)));
+                Done::Polygon(clipped, triangles)
+            }
+            Job::Feature(i) => Done::Feature(match &dirs[i].directions {
+                Directions::Points(points) => OnScreen::Points(
+                    (points.iter())
+                        .filter_map(|d| view.project(rect, *d))
+                        .collect(),
+                ),
+                Directions::Lines(lines) => {
+                    let shown: Vec<_> = (lines.iter().zip(&dirs[i].parts))
+                        .filter(|(_, cap)| view_key.shows(cap))
+                        .map(|(line, _)| line.clone())
+                        .collect();
+                    OnScreen::Lines(measured(&shown))
+                }
+                Directions::Polygons(_, outlines) => {
+                    let outlines = outlines.as_ref().map(|lines| {
+                        (lines.iter())
+                            .flat_map(|line| vector::clip_line(&view.rot, line, step))
+                            .map(|o| o.iter().map(|p| (point(p), 0.0)).collect())
+                            .collect()
+                    });
+                    OnScreen::Polygons(Vec::new(), Vec::new(), outlines)
+                }
+            }),
+        });
+        let mut parts = (Vec::new(), Vec::new());
+        for (job, done) in jobs.iter().zip(done) {
+            match (job, done) {
+                (_, Done::Polygon(clipped, triangles)) => {
+                    parts.0.push(clipped);
+                    parts.1.push(triangles);
+                }
+                (Job::Feature(i), Done::Feature(mut screen)) => {
+                    if let OnScreen::Polygons(clipped, triangles, _) = &mut screen {
+                        (*clipped, *triangles) = std::mem::take(&mut parts);
+                    }
+                    work.clipped += 1;
+                    screens[*i] = Some(screen);
+                }
+                _ => {}
+            }
+        }
+        (dirs, screens)
+    }
 }
 
 /// The geometry of a feature in the flat view: the rings of the fill, the
@@ -1539,7 +1602,8 @@ pub fn flat_vector_layer(
 }
 
 /// Draws one vector layer over the flat view, as `flat_vector_layer`. With
-/// `cut`, the shapes go to `cut`.
+/// `cut`, the shapes that the mask cuts go to `cut`. The result is the
+/// place of the cut in the draw order, as `paint_out` gives it.
 #[expect(clippy::too_many_arguments)]
 pub fn flat_vector_layer_cut(
     painter: &egui::Painter,
@@ -1550,15 +1614,29 @@ pub fn flat_vector_layer_cut(
     flat: &FlatView,
     id: LayerId,
     pipeline: &mut Pipeline,
-) {
-    let (Some(entry), Some(layer)) = (doc.entry(id), doc.layer(id).filter(|l| l.visible)) else {
-        return;
-    };
+) -> Option<egui::layers::ShapeIdx> {
+    let entry = doc.entry(id)?;
+    let layer = doc.layer(id).filter(|l| l.visible)?;
     let masked = pipeline.masked(doc, id);
     let projection = flat.projection();
     let radius_km = doc.project.world.radius_km;
     let scale = scale_denominator(radius_km * 1000.0 / flat.scale(rect));
-    let detail = (masked.is_none())
+    let features = &layer.features;
+    let rasters = pipeline.rasters().for_layer(id);
+    let batches = pipeline::style_batches(&entry.style.style, scale, features.len(), |i| Context {
+        attributes: &features[i].attributes,
+        scale,
+        geometry: features[i].geometry.kind(),
+        shape: Some(&features[i].geometry),
+        radius_km,
+        page: None,
+        rasters: Some(&rasters),
+        index: i,
+    });
+    // A masked layer draws the paints that the mask does not cut from the
+    // whole geometry.
+    let on_whole = |batch: &pipeline::Batch| masked.is_some() && !batch.masked;
+    let detail = (masked.is_none() || batches.iter().any(on_whole))
         .then(|| {
             let pixel = flat_pixel(flat, rect, painter.ctx().pixels_per_point())?;
             pipeline.lod_mut().level(layer, pixel)
@@ -1618,27 +1696,28 @@ pub fn flat_vector_layer_cut(
             })
         }
     };
-    let features = &layer.features;
-    let rasters = pipeline.rasters().for_layer(id);
-    let batches = pipeline::style_batches(&entry.style.style, scale, features.len(), |i| Context {
-        attributes: &features[i].attributes,
-        scale,
-        geometry: features[i].geometry.kind(),
-        shape: Some(&features[i].geometry),
-        radius_km,
-        page: None,
-        rasters: Some(&rasters),
-        index: i,
-    });
     let mut screens: Vec<Option<Option<FlatScreen>>> = features.iter().map(|_| None).collect();
+    let mut whole_screens: Vec<Option<Option<FlatScreen>>> = Vec::new();
     let mut sink = Sink::new(format, cut.is_some());
     for batch in &batches {
+        sink.set_cut(cut.is_some() && batch.masked);
+        let whole = on_whole(batch);
+        // A cut has the geometry of the mask, not of the level of detail.
+        let (detail, screens) = match (whole, masked.is_some()) {
+            (true, _) => {
+                whole_screens.resize_with(features.len(), || None);
+                (detail.as_deref(), &mut whole_screens)
+            }
+            (false, true) => (None, &mut screens),
+            (false, false) => (detail.as_deref(), &mut screens),
+        };
         for &index in &batch.features {
             let feature = &features[index];
-            let part = (masked.as_ref()).and_then(|m| m.features.get(index)?.as_ref());
+            let part = (masked.as_ref())
+                .filter(|_| !whole)
+                .and_then(|m| m.features.get(index)?.as_ref());
             let screen = screens[index].get_or_insert_with(|| {
-                lod::geometry(detail.as_deref(), index, &feature.geometry)
-                    .and_then(|g| on_screen(g, part))
+                lod::geometry(detail, index, &feature.geometry).and_then(|g| on_screen(g, part))
             });
             let Some(screen) = screen else {
                 continue;
@@ -1679,7 +1758,7 @@ pub fn flat_vector_layer_cut(
         }
         sink.end_group();
     }
-    paint_out(painter, format, cut, None, &sink.finish());
+    paint_out(painter, format, cut, None, &sink.finish())
 }
 
 /// The smallest pixel of the flat view in radians, from the center, the
@@ -1988,25 +2067,29 @@ pub(super) fn paint_canvas(
                         flat_vector_layer(&painter, format, rect, doc, flat, id, pipeline);
                     }
                     Paint::Masked(id, pass) => {
-                        // The cut shapes go below the other shapes of the
-                        // layer.
-                        let slot = painter.add(egui::Shape::Noop);
+                        // The cut shapes go at the place of the masked
+                        // paints in the draw order of the layer.
                         let mut shapes = Vec::new();
                         let cut = Some(&mut shapes);
                         let (view, flat) = (&globe.view, &globe.flat);
-                        if globe_view {
+                        let slot = if globe_view {
                             vector_layer_cut(
                                 &painter, format, cut, None, rect, doc, view, id, pipeline,
-                            );
+                            )
                         } else {
                             flat_vector_layer_cut(
                                 &painter, format, cut, rect, doc, flat, id, pipeline,
-                            );
-                        }
+                            )
+                        };
                         let meshes = tessellate(ui.ctx(), painter.clip_rect(), shapes);
                         let callback = pass.callback(pixels_per_point, meshes);
                         let callback = egui_wgpu::Callback::new_paint_callback(rect, callback);
-                        painter.set(slot, callback);
+                        match slot {
+                            Some(slot) => painter.set(slot, callback),
+                            None => {
+                                painter.add(callback);
+                            }
+                        }
                     }
                 }
             }
