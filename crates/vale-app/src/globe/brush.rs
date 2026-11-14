@@ -577,7 +577,7 @@ pub fn set_world(
 }
 
 /// The distance between the points of the line of a basin stroke, in
-/// texels. The outline and the main river keep the small bends of the
+/// texels. The outline and the rivers keep the small bends of the
 /// stroke, and the brush radius has no effect.
 pub const BASIN_SPACING_TEXELS: f64 = 1.5;
 

@@ -409,7 +409,7 @@ struct Ranging {
     done: bool,
 }
 
-/// The main river of a basin stroke, in the outline of the basin. After the
+/// The rivers of a basin stroke, in the outline of the basin. Each time the
 /// pen goes up, the worker makes the basin, and its texels go to the GPU.
 struct Basining {
     line: BasinLine,
@@ -443,11 +443,11 @@ struct Active {
     uplift: Option<Uplifting>,
     /// `Some`: the stroke is an ocean ridge stroke or a range stroke.
     ridge: Option<Ridging>,
-    /// `Some`: the stroke draws the main river of a basin.
+    /// `Some`: the stroke draws the rivers of a basin.
     basin: Option<Basining>,
     /// `Some`: the stroke draws the outline of a basin. It changes no texels.
     outline: Option<Vec<V3>>,
-    /// `Some`: the stroke is an ocean ridge stroke or the main river of a
+    /// `Some`: the stroke is an ocean ridge stroke or the rivers of a
     /// basin. Its texels wait for `apply_held`.
     held: Option<Held>,
     /// The pen is up. Stamps of the stroke can still wait in the backlog.
@@ -1062,7 +1062,7 @@ pub struct Globe {
     rivers: Rivers,
     eroder: Eroder,
     basiner: Basiner,
-    /// The outline of the next basin. The next basin stroke draws its main
+    /// The outline of the next basin. The next basin stroke draws its first
     /// river.
     basin_outline: Option<Vec<V3>>,
     /// The newest channel map that went to the GPU.
@@ -2450,10 +2450,10 @@ impl Globe {
     }
 
     /// The lines of a basin in screen points: the outline, which closes,
-    /// and the main river. The outline shows while the pen draws it and
-    /// while it waits for its main river. The main river shows until its
-    /// basin goes to the GPU, and while the basin is held.
-    pub fn basin_preview(&self) -> Option<(Vec<Pos2>, Vec<Pos2>)> {
+    /// and the rivers. The outline shows while the pen draws it and while
+    /// it waits for its first river. The rivers show until their basin goes
+    /// to the GPU, and while the basin is held.
+    pub fn basin_preview(&self) -> Option<(Vec<Pos2>, Vec<Vec<Pos2>>)> {
         // A point closer to the last point than 1.5 points is left out.
         let screen = |dirs: &[V3]| -> Vec<Pos2> {
             let mut points: Vec<Pos2> = Vec::new();
@@ -2472,8 +2472,10 @@ impl Globe {
         if let Some(active) = active
             && let Some(basin) = &active.basin
         {
-            return (!basin.done || active.held.is_some())
-                .then(|| (screen(basin.line.outline()), screen(&basin.line.points())));
+            return (!basin.done || active.held.is_some()).then(|| {
+                let rivers = (0..basin.line.rivers()).map(|k| screen(&basin.line.river(k)));
+                (screen(basin.line.outline()), rivers.collect())
+            });
         }
         let outline = self.basin_outline.as_ref()?;
         Some((screen(outline), Vec::new()))
@@ -2525,7 +2527,7 @@ impl Globe {
         Some(points)
     }
 
-    /// The outline of the next basin. The next basin stroke draws its main
+    /// The outline of the next basin. The next basin stroke draws its first
     /// river.
     pub fn basin_outline(&self) -> Option<&[V3]> {
         self.basin_outline.as_deref()
@@ -3327,6 +3329,27 @@ impl Globe {
         while let Some(&input) = self.inputs.front() {
             match input {
                 Input::Down => {
+                    // A new stroke on a held basin draws one more river of
+                    // it, in the same undo step.
+                    if self.tool == Tool::Brush && self.brush.mode == Mode::Basin {
+                        let active = self.stroke.as_mut().filter(|a| a.ended);
+                        let held = active.filter(|a| a.held.as_ref().is_some_and(|h| !h.apply));
+                        if let Some(active) = held
+                            && let Some(basin) = &mut active.basin
+                        {
+                            self.basiner.cancel();
+                            basin.line.begin_river();
+                            // The texels of the basin before the river are
+                            // on the GPU, or they are on the way.
+                            basin.shown |= basin.asked;
+                            (basin.asked, basin.done) = (false, false);
+                            active.stroke = Stroke::default();
+                            active.sampled = None;
+                            active.ended = false;
+                            self.inputs.pop_front();
+                            continue;
+                        }
+                    }
                     if let Some(active) = &mut self.stroke {
                         // The stroke before this one still waits for its
                         // texels. A new stroke applies a held one.
@@ -3369,12 +3392,13 @@ impl Globe {
                 Input::Sample(sample, time) => {
                     if let Some(active) = self.stroke.as_mut().filter(|a| !a.ended) {
                         // The first sample gives the radius of the line.
-                        if active.sampled.is_none() {
+                        // A river of a held basin is not a new stroke.
+                        if active.sampled.is_none() && active.basin.is_none() {
                             let (km, seed, n) =
                                 (self.world_km, self.world_seed, self.map.face_size());
                             active.ridge = line_of(&self.brush, km, seed, n, sample.radius);
                             // The first basin stroke draws the outline, and
-                            // the second one draws the main river.
+                            // the second one draws the first river.
                             if self.brush.mode == Mode::Basin {
                                 match self.basin_outline.take() {
                                     Some(outline) => {
@@ -3477,7 +3501,7 @@ impl Globe {
                             basin.extend(&stamps);
                             stamps.clear();
                         }
-                        // An outline with an area waits for its main river.
+                        // An outline with an area waits for its first river.
                         if let Some(mut outline) = active.outline.take() {
                             outline.extend(stamps.drain(..).map(|s| s.center));
                             let (km, n) = (self.world_km, map.face_size());
@@ -3752,12 +3776,8 @@ impl Globe {
                     return;
                 }
                 (held.spec, held.flow) = wanted;
-                let mut line = BasinLine::new(spec, basin.line.outline(), n);
-                for dir in basin.line.points() {
-                    line.push(dir);
-                }
                 *basin = Basining {
-                    line,
+                    line: basin.line.with_spec(spec),
                     asked: false,
                     done: false,
                     shown: true,
@@ -3802,6 +3822,28 @@ impl Globe {
         if let Some(held) = active.and_then(|a| a.held.as_mut()) {
             held.apply = true;
         }
+    }
+
+    /// The number of rivers of the held basin, or of the basin that the pen
+    /// draws.
+    pub fn basin_rivers(&self) -> usize {
+        let basin = self.stroke.as_ref().and_then(|a| a.basin.as_ref());
+        basin.map_or(0, |b| b.line.rivers())
+    }
+
+    /// Takes the last river away from a held basin with 2 rivers or more,
+    /// and makes the basin again from the other rivers.
+    pub fn undo_river(&mut self) {
+        if self.holding() != Some(Mode::Basin) || self.basin_rivers() < 2 {
+            return;
+        }
+        let Some(basin) = self.stroke.as_mut().and_then(|a| a.basin.as_mut()) else {
+            return;
+        };
+        self.basiner.cancel();
+        basin.line.pop_river();
+        basin.shown |= basin.asked;
+        (basin.asked, basin.done) = (false, false);
     }
 
     /// Ends the held stroke with no change. The GPU gets the ground from
@@ -3969,7 +4011,7 @@ impl Globe {
             return;
         };
         if !basin.asked {
-            if basin.line.len() < 2 {
+            if !basin.line.has_river() {
                 basin.done = true;
                 return;
             }

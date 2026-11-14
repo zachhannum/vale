@@ -1,20 +1,20 @@
 //! The basin brush.
 //!
-//! The brush makes a watershed from two strokes. The first stroke is the
-//! outline of the basin. The second stroke is the main river, from its source
-//! at the first point to its outlet, where the line leaves the outline or
-//! ends.
+//! The brush makes a watershed from an outline and one or more rivers. Each
+//! river goes from its source at the first point to its end. A river that
+//! comes near an earlier river joins it as a tributary. Another river has
+//! its own outlet, where the line leaves the outline or ends.
 //!
 //! The network of the rivers is on the coarse cells of one window. Each cell
-//! of the area drains to a neighbor that is nearer to the main river inside
-//! the area, so all the water of the network drains to the outlet.
+//! of the area drains to a neighbor that is nearer to a river inside the
+//! area, so all the water of the network drains to the outlets.
 //! Stream-power erosion with uplift runs to a steady state with the implicit
 //! solver of Braun and Willett (2013), and the steady state gives the relief
-//! of the basin above the main river. The relief has the height of the old
-//! ground above the main river, or the Height setting if that is more. The
-//! main river stays at or below the old ground. Finer levels then add rough ground at their scale and erode
-//! it, so the gullies of all sizes come from the erosion. Last, the rivers
-//! are cut into the texels as thin channels.
+//! of the basin above the rivers. The relief has the height of the old
+//! ground above the rivers, or the Height setting if that is more. The
+//! rivers stay at or below the old ground. Finer levels then add rough
+//! ground at their scale and erode it, so the gullies of all sizes come from
+//! the erosion. Last, the rivers are cut into the texels as thin channels.
 
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
@@ -191,6 +191,10 @@ const SALT_WARP: u32 = 0x71d3_0e9b;
 const WARP: f64 = 1.5;
 const WARP_SIZE: f64 = 3.0;
 
+/// A river that comes within this many coarse cells of an earlier river
+/// joins it.
+const JOIN: f64 = 2.0;
+
 /// The settings of a basin.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BasinSpec {
@@ -219,7 +223,7 @@ pub struct BasinSpec {
     pub limits: Limits,
 }
 
-/// The outline and the main river of one basin.
+/// The outline and the rivers of one basin.
 #[derive(Clone, Debug)]
 pub struct BasinLine {
     spec: BasinSpec,
@@ -227,56 +231,94 @@ pub struct BasinLine {
     outline: Vec<V3>,
     /// The half-width of the basin, in radians.
     width: f64,
-    line: StrokeLine,
+    face_size: usize,
+    /// The rivers, in the order that they were drawn.
+    rivers: Vec<StrokeLine>,
 }
 
 impl BasinLine {
-    /// Starts a main river with no points in an outline, on a heightmap
-    /// with `face_size` texels along one side of a face. The settings go
-    /// inside their limits.
+    /// Starts a basin with no rivers in an outline, on a heightmap with
+    /// `face_size` texels along one side of a face. The settings go inside
+    /// their limits.
     pub fn new(spec: BasinSpec, outline: &[V3], face_size: usize) -> BasinLine {
-        let spec = BasinSpec {
-            height: spec.height.clamp(0.0, 65535.0),
-            erosion: spec.erosion.clamp(0.0, 1.0),
-            age: spec.age.clamp(0.0, 1.0),
-            lakes: spec.lakes.clamp(0.0, 1.0),
-            ..spec
-        };
         let outline: Vec<V3> = outline.iter().map(|&p| normalize(p)).collect();
         let width = outline_width(&outline);
         BasinLine {
-            spec,
+            spec: clamp_spec(spec),
             outline,
             width,
-            line: StrokeLine::new(width.max(1e-9), face_size),
+            face_size,
+            rivers: Vec::new(),
+        }
+    }
+
+    /// The same outline and rivers with other settings. The settings go
+    /// inside their limits.
+    pub fn with_spec(&self, spec: BasinSpec) -> BasinLine {
+        BasinLine {
+            spec: clamp_spec(spec),
+            ..self.clone()
         }
     }
 
     /// True if the outline holds an area with a half-width of four texels or
     /// more.
     pub fn has_outline(&self) -> bool {
-        let texel = FRAC_PI_2 / self.line.face_size() as f64;
+        let texel = FRAC_PI_2 / self.face_size as f64;
         self.outline.len() >= 3 && self.width >= 4.0 * texel
     }
 
-    /// Adds a point to the main river. A point near the last point is not
-    /// added.
-    pub fn push(&mut self, dir: V3) {
-        self.line.push(dir, 1.0);
+    /// Starts a new river with no points.
+    pub fn begin_river(&mut self) {
+        let line = StrokeLine::new(self.width.max(1e-9), self.face_size);
+        self.rivers.push(line);
     }
 
-    /// The number of points of the main river.
+    /// Adds a point to the last river, and starts a river if there is none.
+    /// A point near the last point is not added.
+    pub fn push(&mut self, dir: V3) {
+        if self.rivers.is_empty() {
+            self.begin_river();
+        }
+        if let Some(river) = self.rivers.last_mut() {
+            river.push(dir, 1.0);
+        }
+    }
+
+    /// Removes the last river.
+    pub fn pop_river(&mut self) {
+        self.rivers.pop();
+    }
+
+    /// The number of rivers.
+    pub fn rivers(&self) -> usize {
+        self.rivers.len()
+    }
+
+    /// The direction of each point of river `k`.
+    pub fn river(&self, k: usize) -> Vec<V3> {
+        self.rivers
+            .get(k)
+            .map_or(Vec::new(), |r| r.points().collect())
+    }
+
+    /// True if a river has two points or more.
+    pub fn has_river(&self) -> bool {
+        self.rivers.iter().any(|r| r.len() >= 2)
+    }
+
+    /// The number of points of the last river.
     pub fn len(&self) -> usize {
-        self.line.len()
+        self.rivers.last().map_or(0, StrokeLine::len)
     }
 
     pub fn is_empty(&self) -> bool {
-        self.line.is_empty()
+        self.len() == 0
     }
 
-    /// The length of the main river, in radians.
+    /// The length of the last river, in radians.
     pub fn length(&self) -> f64 {
-        self.line.length()
+        self.rivers.last().map_or(0.0, StrokeLine::length)
     }
 
     /// The settings, inside their limits.
@@ -284,14 +326,28 @@ impl BasinLine {
         self.spec
     }
 
-    /// The direction of each point of the main river.
+    /// The direction of each point of the last river.
     pub fn points(&self) -> Vec<V3> {
-        self.line.points().collect()
+        self.rivers
+            .len()
+            .checked_sub(1)
+            .map_or(Vec::new(), |k| self.river(k))
     }
 
     /// The direction of each point of the outline.
     pub fn outline(&self) -> &[V3] {
         &self.outline
+    }
+}
+
+/// The settings inside their limits.
+fn clamp_spec(spec: BasinSpec) -> BasinSpec {
+    BasinSpec {
+        height: spec.height.clamp(0.0, 65535.0),
+        erosion: spec.erosion.clamp(0.0, 1.0),
+        age: spec.age.clamp(0.0, 1.0),
+        lakes: spec.lakes.clamp(0.0, 1.0),
+        ..spec
     }
 }
 
@@ -352,12 +408,16 @@ pub(crate) struct BasinNet {
     pub(crate) receiver: Vec<u32>,
     /// The water that drains through each cell, in steradians of even rain.
     pub(crate) area: Vec<f32>,
-    /// The cells of the main river, from the source to the outlet.
-    pub(crate) chain: Vec<usize>,
+    /// The cells of each river, from its source to its end.
+    pub(crate) chains: Vec<Vec<usize>>,
+    /// The cell that the last cell of each river drains to: `OUT`, or a cell
+    /// of an earlier river.
+    pub(crate) ends: Vec<u32>,
     /// The smallest water of a tributary, in steradians of even rain.
     pub(crate) min_area: f64,
-    /// The main river inside the outline.
-    pub(crate) river: StrokeLine,
+    /// The rivers inside the outline. A tributary ends on the river that it
+    /// joins.
+    pub(crate) rivers: Vec<StrokeLine>,
 }
 
 /// The receivers of the cells of the area, and the cells in an order where
@@ -367,10 +427,18 @@ struct Flow {
     stack: Vec<usize>,
 }
 
-/// Makes the basin of an outline and a main river on the ground of `map`. A
-/// main river with less than two points in the outline makes no basin.
+/// A river of a basin inside the outline.
+struct River {
+    line: StrokeLine,
+    /// The earlier river that a tributary joins, and the distance along that
+    /// river of the join, in radians. A tributary ends at the join.
+    join: Option<(usize, f64)>,
+}
+
+/// Makes the basin of an outline and its rivers on the ground of `map`. A
+/// basin with no river of two points or more in the outline is empty.
 pub fn basin(map: &Heightmap, line: &BasinLine) -> BasinCut {
-    if line.len() < 2 || !line.has_outline() {
+    if !line.has_river() || !line.has_outline() {
         return BasinCut::default();
     }
     let spec = line.spec;
@@ -385,18 +453,36 @@ pub fn basin(map: &Heightmap, line: &BasinLine) -> BasinCut {
     // The sea is outside the basin.
     let sea = f64::from(meters_to_level(0.0));
     let land = |p: V3| f64::from(map.sample(p)) >= sea;
-    let Some(river) = outline.clip(&line.line, &window, land) else {
+    let rivers = prepare_rivers(&line.rivers, &outline, &window, land, JOIN * cell);
+    let (chains, ends) = river_chains(&rivers, &window, &vec![true; rivers.len()]);
+    let Some(main) = chains.iter().find(|chain| chain.len() >= 2) else {
         return BasinCut::default();
     };
-    let chain = chain_cells(&river, &window);
-    if chain.len() < 2 {
-        return BasinCut::default();
-    }
     let old = WindowHeights::new(map, window);
     let dirs: Vec<V3> = (0..count)
         .map(|i| window.cell_dir(i % side, i / side))
         .collect();
-    let places: Vec<(f64, f64)> = dirs.iter().map(|&p| river.nearest(p)).collect();
+    let mut on_chain = vec![false; count];
+    let mut river_of = vec![usize::MAX; count];
+    for (k, chain) in chains.iter().enumerate() {
+        for &c in chain {
+            on_chain[c] = true;
+            river_of[c] = k;
+        }
+    }
+    let all_chains: Vec<usize> = chains.concat();
+    // The distance to the nearest river, the river, and the distance along
+    // it. A cell of a river takes the place on its own river.
+    let places: Vec<(f64, usize, f64)> = (0..count)
+        .map(|i| {
+            if on_chain[i] {
+                let (d, u) = rivers[river_of[i]].line.nearest(dirs[i]);
+                (d, river_of[i], u)
+            } else {
+                nearest_river(&rivers, &chains, dirs[i])
+            }
+        })
+        .collect();
     // The distance of each cell to the outline. It is less than zero outside
     // the outline. A cell of the area is inside the outline with all its
     // texels, so its whole cell changes.
@@ -411,18 +497,31 @@ pub fn basin(map: &Heightmap, line: &BasinLine) -> BasinCut {
         .map(|(&e, &d)| (e * cell).min(d - 0.5 * cell))
         .collect();
     let mut inside: Vec<bool> = edge.iter().map(|&e| e >= HALF_DIAGONAL * cell).collect();
-    let mut on_chain = vec![false; count];
-    for &c in &chain {
+    for &c in &all_chains {
         inside[c] = true;
-        on_chain[c] = true;
     }
-    // The distance to the main river inside the area. A part of the area
-    // that the main river does not reach is not in the area.
-    let reach = river_distances(&window, &chain, &inside, cell);
+    // The distance to the rivers inside the area. A part of the area that
+    // no river reaches is not in the area.
+    let reach = river_distances(&window, &all_chains, &inside, cell);
     for i in 0..count {
         inside[i] &= reach[i].is_finite();
     }
-    let length = river.length().max(cell);
+    // The distance from the end of each river to the outlet of its water,
+    // along the rivers, and the longest way of the water to an outlet.
+    let mut past = vec![0.0; rivers.len()];
+    for k in 0..rivers.len() {
+        if let Some((t, u)) = rivers[k].join {
+            past[k] = rivers[t].line.length() - u + past[t];
+        }
+    }
+    let longest = (0..rivers.len())
+        .map(|k| rivers[k].line.length() + past[k])
+        .fold(cell, f64::max);
+    // From 1 at the source of the longest way to 0 at the outlets.
+    let up_river = |i: usize| {
+        let (_, k, u) = places[i];
+        1.0 - (u + longest - rivers[k].line.length() - past[k]) / longest
+    };
     let rim_of = |inside: &[bool]| -> Vec<bool> {
         (0..count)
             .map(|i| {
@@ -436,7 +535,7 @@ pub fn basin(map: &Heightmap, line: &BasinLine) -> BasinCut {
             .collect()
     };
     let rim = rim_of(&inside);
-    // From 0 at the main river to 1 at the outline.
+    // From 0 at the rivers to 1 at the outline.
     let across = |i: usize| {
         if on_chain[i] {
             0.0
@@ -467,7 +566,7 @@ pub fn basin(map: &Heightmap, line: &BasinLine) -> BasinCut {
     );
     let wavelength = WAVELENGTH * density;
     let seed = spec.seed ^ SALT_BASIN;
-    let old_outlet = f64::from(old.levels[*chain.last().expect("the chain has cells")]);
+    let old_outlet = f64::from(old.levels[*main.last().expect("the chain has cells")]);
     let relief = spec.height.max(1.0);
     // The octaves go down to bumps of a few cells, so the streams bend at
     // each Density setting.
@@ -482,16 +581,13 @@ pub fn basin(map: &Heightmap, line: &BasinLine) -> BasinCut {
             let bump: f64 = (0..octaves).map(octave).sum();
             // The old ground steers the streams, so they follow its valleys.
             let ground = (f64::from(old.levels[i]) - old_outlet) / relief;
-            across(i)
-                + ALONG * (1.0 - places[i].1 / length)
-                + BUMPS * wavelength / radius * bump
-                + GROUND * ground
+            across(i) + ALONG * up_river(i) + BUMPS * wavelength / radius * bump + GROUND * ground
         })
         .collect();
 
-    // A flood out from the main river gives the receivers, so the streams
-    // follow the valleys of the start surface to the main river.
-    let mut flow = flood(&window, &chain, &inside, &rim, &h);
+    // A flood out from the rivers gives the receivers, so the streams follow
+    // the valleys of the start surface to the rivers.
+    let mut flow = flood(&window, &chains, &ends, &inside, &rim, &h);
     let length_to = |i: usize, r: usize| angle(dirs[i], dirs[r]) / cell;
 
     // Braun and Willett (2013): an implicit step of the stream-power law
@@ -503,7 +599,7 @@ pub fn basin(map: &Heightmap, line: &BasinLine) -> BasinCut {
     for step in 0..=ITERATIONS {
         if step > 0 {
             let old_receivers = std::mem::take(&mut flow.receiver);
-            flow = flood(&window, &chain, &inside, &rim, &h);
+            flow = flood(&window, &chains, &ends, &inside, &rim, &h);
             if flow.receiver == old_receivers {
                 break;
             }
@@ -529,8 +625,8 @@ pub fn basin(map: &Heightmap, line: &BasinLine) -> BasinCut {
             h[i] = (h[i] + TIME_STEP + f * h[r]) / (1.0 + f);
         }
     }
-    // The steady state of the last receivers, and the cell of the main river
-    // where the water of each cell joins it.
+    // The steady state of the last receivers, and the cell of a river where
+    // the water of each cell joins it.
     let mut join = vec![usize::MAX; count];
     for &i in &flow.stack {
         let r = flow.receiver[i];
@@ -542,27 +638,41 @@ pub fn basin(map: &Heightmap, line: &BasinLine) -> BasinCut {
         join[i] = if on_chain[i] { i } else { join[r as usize] };
     }
 
-    // Past the outlet, the relief opens in a gap along the main river, the
-    // mouth of the basin.
+    // Past the end of a river with its own outlet, the relief opens in a gap
+    // along the river, the mouth of the basin.
+    let separate: Vec<&StrokeLine> = rivers
+        .iter()
+        .filter(|r| r.join.is_none())
+        .map(|r| &r.line)
+        .collect();
     let gap = |p: V3| {
-        let (past, side) = river.past_end(p);
         let mouth = MOUTH * radius;
-        1.0 - (1.0 - smoothstep(side / mouth)) * smoothstep(past / (0.25 * mouth).max(2.0 * cell))
+        separate
+            .iter()
+            .map(|river| {
+                let (past, side) = river.past_end(p);
+                1.0 - (1.0 - smoothstep(side / mouth))
+                    * smoothstep(past / (0.25 * mouth).max(2.0 * cell))
+            })
+            .product::<f64>()
     };
     // The relief fades out near the outline.
     let fade = |e: f64| smoothstep(e / (FADE * radius));
-    // The inner basin is inside the divide, out of the mouth. Its water goes
-    // to the main river. The water of the rest of the area can leave the
+    // The inner basin is inside the divide, out of the mouths. Its water
+    // goes to the rivers. The water of the rest of the area can leave the
     // area.
     let in_basin = |p: V3, e: f64| {
-        let (past, side) = river.past_end(p);
-        e > FADE * radius && !(past > 0.0 && side < MOUTH * radius)
+        let in_mouth = separate.iter().any(|river| {
+            let (past, side) = river.past_end(p);
+            past > 0.0 && side < MOUTH * radius
+        });
+        e > FADE * radius && !in_mouth
     };
     let old_levels: Vec<f64> = old.levels.iter().map(|&l| f64::from(l)).collect();
 
-    // The main river follows a concave profile, and it stays at or below the
+    // Each river follows a concave profile, and it stays at or below the
     // lowest old ground upstream of it. Its bed is the depth of the channel
-    // below its level.
+    // below its level. A tributary ends above the river that it joins.
     let depth = DEPTH_M / METERS_PER_LEVEL;
     let lift = |c: usize| depth * channel_size(area[c] * mean_solid);
     let lowest = |levels: &[f64], window: &Window, c: usize| {
@@ -573,31 +683,33 @@ pub fn basin(map: &Heightmap, line: &BasinLine) -> BasinCut {
             .map(|&j| levels[j as usize]);
         around.fold(levels[c], f64::min)
     };
-    let mut low = f64::MAX;
-    let floor: Vec<f64> = chain
-        .iter()
-        .map(|&c| {
-            low = low.min(lowest(&old_levels, &window, c));
-            low.max(sea)
-        })
-        .collect();
-    let (first, last) = (floor[0], floor[floor.len() - 1]);
-    let source = h[chain[0]].max(f64::MIN_POSITIVE);
-    let mut river_levels: Vec<f64> = chain
-        .iter()
-        .zip(&floor)
-        .map(|(&c, &f)| f.min(last + (first - last) * h[c] / source) + lift(c))
-        .collect();
-    for k in (0..chain.len() - 1).rev() {
-        river_levels[k] = river_levels[k].max(river_levels[k + 1] + RIVER_STEP);
-    }
-    let mut chain_index = vec![usize::MAX; count];
-    for (k, &c) in chain.iter().enumerate() {
-        chain_index[c] = k;
+    let mut river_levels = vec![0.0; count];
+    for (chain, &end) in chains.iter().zip(&ends) {
+        if chain.is_empty() {
+            continue;
+        }
+        let mut low = f64::MAX;
+        let floor: Vec<f64> = chain
+            .iter()
+            .map(|&c| {
+                low = low.min(lowest(&old_levels, &window, c));
+                low.max(sea)
+            })
+            .collect();
+        let first = floor[0];
+        let (last, bottom) = match end {
+            OUT => (floor[floor.len() - 1], 0.0),
+            e => (river_levels[e as usize], h[e as usize]),
+        };
+        let source = (h[chain[0]] - bottom).max(f64::MIN_POSITIVE);
+        for (&c, &f) in chain.iter().zip(&floor) {
+            river_levels[c] = f.min(last + (first - last) * (h[c] - bottom) / source) + lift(c);
+        }
+        downhill_one(&mut river_levels, chain, end);
     }
 
-    // The shape of the relief rises from 0 at the main river to 1 at the
-    // highest divide, and the hills near the source are higher.
+    // The shape of the relief rises from 0 at the rivers to 1 at the
+    // highest divide, and the hills near the sources are higher.
     let above = |i: usize| match join[i] {
         usize::MAX => 0.0,
         j => (h[i] - (1.0 - HEAD) * h[j]).max(0.0),
@@ -609,22 +721,29 @@ pub fn basin(map: &Heightmap, line: &BasinLine) -> BasinCut {
     let shape = |i: usize| (1.0 - ACROSS) * above(i) / top + ACROSS * across(i);
     let base = |i: usize| match join[i] {
         usize::MAX => old_levels[i],
-        j => river_levels[chain_index[j]],
+        j => river_levels[j],
     };
-    // The height of the old ground above the main river near each cell, from
-    // the level of the main river at the nearest place along it.
-    let mut furthest = f64::MIN;
-    let river_profile: Vec<(f64, f64)> = chain
+    // The height of the old ground above the rivers near each cell, from the
+    // level of the nearest river at the nearest place along it.
+    let profiles: Vec<Vec<(f64, f64)>> = chains
         .iter()
-        .zip(&river_levels)
-        .map(|(&c, &l)| {
-            furthest = furthest.max(places[c].1);
-            (furthest, l)
+        .map(|chain| {
+            let mut furthest = f64::MIN;
+            chain
+                .iter()
+                .map(|&c| {
+                    furthest = furthest.max(places[c].2);
+                    (furthest, river_levels[c])
+                })
+                .collect()
         })
         .collect();
     let mask: Vec<bool> = (0..count).map(|i| inside[i] && !on_chain[i]).collect();
     let rise: Vec<f64> = (0..count)
-        .map(|i| (old_levels[i] - profile_at(&river_profile, places[i].1)).max(0.0))
+        .map(|i| {
+            let (_, k, u) = places[i];
+            (old_levels[i] - profile_at(&profiles[k], u)).max(0.0)
+        })
         .collect();
     let span = ((LOCAL * radius / cell).round() as usize).max(1);
     let ground_rise = blur(&rise, &mask, side, span);
@@ -634,12 +753,12 @@ pub fn basin(map: &Heightmap, line: &BasinLine) -> BasinCut {
         .map(|i| if mask[i] { shape(i) } else { 0.0 })
         .collect();
     let crest = blur(&max_filter(&shapes, side, span), &mask, side, span);
-    // The relief of the basin rises from the main river. Where the old
-    // ground is not much higher than the main river, the relief of the Height
-    // setting goes onto the old ground. Where the old ground is higher, the
-    // basin cuts its valleys into it, and the divides stay near the old
-    // ground. Thus a basin across mountains and lowlands has high divides in
-    // the mountains and low hills in the lowlands.
+    // The relief of the basin rises from the rivers. Where the old ground is
+    // not much higher than the rivers, the relief of the Height setting goes
+    // onto the old ground. Where the old ground is higher, the basin cuts its
+    // valleys into it, and the divides stay near the old ground. Thus a
+    // basin across mountains and lowlands has high divides in the mountains
+    // and low hills in the lowlands.
     let relief: Vec<f64> = ground_rise.iter().map(|&r| r.max(spec.height)).collect();
     let mut levels: Vec<f64> = (0..count)
         .map(|i| {
@@ -647,7 +766,7 @@ pub fn basin(map: &Heightmap, line: &BasinLine) -> BasinCut {
                 return old_levels[i];
             }
             if on_chain[i] {
-                return river_levels[chain_index[i]];
+                return river_levels[i];
             }
             let target = spec.height * shape(i);
             let already = (old_levels[i] - base(i)).clamp(0.0, target);
@@ -672,8 +791,8 @@ pub fn basin(map: &Heightmap, line: &BasinLine) -> BasinCut {
     let inner: Vec<bool> = (0..count)
         .map(|i| on_chain[i] || (inside[i] && in_basin(dirs[i], edge[i])))
         .collect();
-    // Each cell next to the main river is above the river cells next to it.
-    // Thus the main river stays on the line.
+    // Each cell next to a river is above the river cells next to it. Thus
+    // the rivers stay on their lines.
     for i in (0..count).filter(|&i| inner[i] && !on_chain[i]) {
         let bank = STEP + BANK * relief[i];
         let near = window.neighbors(i);
@@ -693,20 +812,27 @@ pub fn basin(map: &Heightmap, line: &BasinLine) -> BasinCut {
     let min_area = TRIBUTARY_AREA * (density / cell) * (radius / cell) * mean_solid;
 
     // Finer levels add rough ground at their scale and erode it.
-    let mut furthest = f64::MIN;
-    let lifts = chain
+    let lifts = chains
         .iter()
-        .map(|&c| {
-            furthest = furthest.max(places[c].1);
-            (furthest, lift(c))
+        .map(|chain| {
+            let mut furthest = f64::MIN;
+            chain
+                .iter()
+                .map(|&c| {
+                    furthest = furthest.max(places[c].2);
+                    (furthest, lift(c))
+                })
+                .collect()
         })
         .collect();
     let mut grid = Level {
         window,
         inside: inside.clone(),
-        chain: chain.clone(),
+        chains: chains.clone(),
+        ends: ends.clone(),
+        near: places.iter().map(|p| p.1).collect(),
         distance: places.iter().map(|p| p.0).collect(),
-        along: places.iter().map(|p| p.1).collect(),
+        along: places.iter().map(|p| p.2).collect(),
         edge: edge.clone(),
         rain: rain.iter().map(|&r| f64::from(r)).collect(),
         old: old_levels,
@@ -723,7 +849,7 @@ pub fn basin(map: &Heightmap, line: &BasinLine) -> BasinCut {
     let levels = grid.levels.clone();
     while grid.window.cell > 1 && 2 * grid.window.cells <= FINE_CELLS {
         let rough_at = |p: V3, e: f64, size: f64| fractal(p, size, seed) * fade(e) * gap(p);
-        grid = grid.finer(map, &river, rough, rough_at);
+        grid = grid.finer(map, &rivers, rough, rough_at);
         grid.erode(rough, erodibility, creep);
         rough *= ROUGH_FALLOFF;
     }
@@ -737,24 +863,16 @@ pub fn basin(map: &Heightmap, line: &BasinLine) -> BasinCut {
     }
     grid.breach();
     if spec.lakes > 0.0 {
-        let count = (spec.lakes * LAKES * river.length() / density).round() as usize;
+        let length: f64 = rivers.iter().map(|r| r.line.length()).sum();
+        let count = (spec.lakes * LAKES * length / density).round() as usize;
         grid.lakes(count, density, min_area / fine_solid, seed);
     }
 
-    // The channels of the main river and the tributaries, on the finest
-    // level.
+    // The channels of the rivers and the tributaries of the network, on the
+    // finest level.
     let fine = grid.flow();
     let mut curve_area: Vec<f32> = fine.area.iter().map(|&a| (a * fine_solid) as f32).collect();
-    // The main river follows the drawn line, not the cells. Its level and
-    // its water come from the cells of the main river at the same place
-    // along the line.
-    let profile = grid.profile();
-    let water: Vec<(f64, f64)> = profile
-        .iter()
-        .zip(&grid.chain)
-        .map(|(&(u, _), &c)| (u, (fine.area[c] * fine_solid).max(2.0 * min_area)))
-        .collect();
-    for &c in &grid.chain {
+    for &c in grid.chains.iter().flatten() {
         curve_area[c] = 0.0;
     }
     let mut curves = level_curves(
@@ -764,29 +882,43 @@ pub fn basin(map: &Heightmap, line: &BasinLine) -> BasinCut {
         min_area,
         &grid.levels,
     );
-    let points: Vec<V3> = river.points().collect();
-    let mut drawn = vec![(points[0], 0.0)];
-    for pair in points.windows(2) {
-        let (a, b) = (pair[0], pair[1]);
-        let steps = (angle(a, b) / fine_cell).ceil().max(1.0) as usize;
-        let start = drawn.last().map_or(0.0, |d| d.1);
-        for k in 1..=steps {
-            let t = k as f64 / steps as f64;
-            let p = normalize(add(a, scale(add(b, scale(a, -1.0)), t)));
-            drawn.push((p, start + angle(a, b) * t));
+    // Each river follows its drawn line, not the cells. Its level and its
+    // water come from the cells of the river at the same place along the
+    // line.
+    for (k, river) in rivers.iter().enumerate() {
+        if grid.chains[k].is_empty() {
+            continue;
         }
-    }
-    for pair in drawn.windows(2) {
-        let ((a, ua), (b, ub)) = (pair[0], pair[1]);
-        let um = 0.5 * (ua + ub);
-        let at = |u: f64| [profile_at(&profile, u), profile_at(&water, u)];
-        let [[la, wa], [lm, wm], [lb, wb]] = [at(ua), at(um), at(ub)];
-        curves.push(ChannelCurve {
-            points: [a, normalize(add(a, b)), b],
-            levels: [la, lm, lb],
-            areas: [wa, wm, wb],
-            plains: [0.0; 3],
-        });
+        let profile = grid.profile(k);
+        let water: Vec<(f64, f64)> = profile
+            .iter()
+            .zip(&grid.chains[k])
+            .map(|(&(u, _), &c)| (u, (fine.area[c] * fine_solid).max(2.0 * min_area)))
+            .collect();
+        let points: Vec<V3> = river.line.points().collect();
+        let mut drawn = vec![(points[0], 0.0)];
+        for pair in points.windows(2) {
+            let (a, b) = (pair[0], pair[1]);
+            let steps = (angle(a, b) / fine_cell).ceil().max(1.0) as usize;
+            let start = drawn.last().map_or(0.0, |d| d.1);
+            for k in 1..=steps {
+                let t = k as f64 / steps as f64;
+                let p = normalize(add(a, scale(add(b, scale(a, -1.0)), t)));
+                drawn.push((p, start + angle(a, b) * t));
+            }
+        }
+        for pair in drawn.windows(2) {
+            let ((a, ua), (b, ub)) = (pair[0], pair[1]);
+            let um = 0.5 * (ua + ub);
+            let at = |u: f64| [profile_at(&profile, u), profile_at(&water, u)];
+            let [[la, wa], [lm, wm], [lb, wb]] = [at(ua), at(um), at(ub)];
+            curves.push(ChannelCurve {
+                points: [a, normalize(add(a, b)), b],
+                levels: [la, lm, lb],
+                areas: [wa, wm, wb],
+                plains: [0.0; 3],
+            });
+        }
     }
     let lines = ChannelLines::window(curves, grid.window, spec.world_km);
     let cut = ChannelCut {
@@ -888,7 +1020,7 @@ pub fn basin(map: &Heightmap, line: &BasinLine) -> BasinCut {
         rects.push((face, rect, data));
     }
     let mut net_area: Vec<f32> = area.iter().map(|&a| (a * mean_solid) as f32).collect();
-    for &c in &chain {
+    for &c in &all_chains {
         net_area[c] = net_area[c].max(min_area as f32);
     }
     BasinCut {
@@ -899,9 +1031,10 @@ pub fn basin(map: &Heightmap, line: &BasinLine) -> BasinCut {
             levels,
             receiver: flow.receiver,
             area: net_area,
-            chain,
+            chains,
+            ends,
             min_area,
-            river,
+            rivers: rivers.into_iter().map(|r| r.line).collect(),
         }),
     }
 }
@@ -937,7 +1070,7 @@ fn basin_window(outline: &[V3], radius: f64, n: usize) -> Window {
     }
 }
 
-/// The cells of the main river, from the source to the outlet. Two cells
+/// The cells of a river, from its source to its end. Two cells
 /// next to each other in the list are neighbors, and no cell is a neighbor
 /// of a later cell other than the next one. Thus a loop of the line is cut
 /// out.
@@ -982,25 +1115,203 @@ fn chain_cells(line: &StrokeLine, window: &Window) -> Vec<usize> {
     chain
 }
 
-/// The flow on the cells of the area, from a flood out from the main river.
-/// The cells of the main river have fixed receivers. The flood takes the
-/// other cells of the area from the lowest level of `h` up, and a cell
-/// drains to its steepest neighbor that the flood took before it. A cell of
-/// the rim takes no water if another neighbor can. Thus each cell that the
-/// flood reaches drains to the main river.
-fn flood(window: &Window, chain: &[usize], inside: &[bool], rim: &[bool], h: &[f64]) -> Flow {
+/// The rivers inside the outline and on `land`, in drawn order. A river
+/// with less than two points there is not used. The part of a river before
+/// its first place farther than `join` from each earlier river is not used.
+/// A river that then comes within `join` of an earlier river joins it, and
+/// it ends at the nearest place on that river.
+fn prepare_rivers(
+    lines: &[StrokeLine],
+    outline: &OutlineGrid,
+    window: &Window,
+    land: impl Fn(V3) -> bool,
+    join: f64,
+) -> Vec<River> {
+    let mut rivers: Vec<River> = Vec::new();
+    for line in lines {
+        let Some(clipped) = outline.clip(line, window, &land) else {
+            continue;
+        };
+        // The distance to the nearest earlier river, the river, and the
+        // distance along it.
+        let near = |p: V3| {
+            let mut best = (f64::INFINITY, 0, 0.0);
+            for (k, river) in rivers.iter().enumerate() {
+                let (d, u) = river.line.nearest(p);
+                if d < best.0 {
+                    best = (d, k, u);
+                }
+            }
+            best
+        };
+        // The points of the line, and places between them no more than half
+        // of `join` apart. A place between two points is not kept.
+        let points: Vec<V3> = clipped.points().collect();
+        let mut places = vec![(points[0], true)];
+        for pair in points.windows(2) {
+            let (a, b) = (pair[0], pair[1]);
+            let steps = (angle(a, b) / (0.5 * join)).ceil().max(1.0) as usize;
+            for s in 1..steps {
+                let t = s as f64 / steps as f64;
+                places.push((normalize(add(a, scale(add(b, scale(a, -1.0)), t))), false));
+            }
+            places.push((b, true));
+        }
+        let mut river = StrokeLine::new(clipped.radius(), clipped.face_size());
+        let mut joined = None;
+        for &(p, point) in &places {
+            let (d, k, u) = near(p);
+            if river.is_empty() {
+                if d > join {
+                    river.push(p, 1.0);
+                }
+            } else if d <= join {
+                river.push(rivers[k].line.at(u), 1.0);
+                joined = Some((k, u));
+                break;
+            } else if point {
+                river.push(p, 1.0);
+            }
+        }
+        if river.len() >= 2 {
+            rivers.push(River {
+                line: river,
+                join: joined,
+            });
+        }
+    }
+    rivers
+}
+
+/// The cells of each river of `used`, and the cell that the last cell of
+/// each drains to: `OUT`, or a cell of an earlier river. A river stops at
+/// its first cell on or next to a cell of an earlier river, so no two
+/// rivers share a cell. A tributary that touches no earlier river drains to
+/// the nearest cell of one.
+fn river_chains(rivers: &[River], window: &Window, used: &[bool]) -> (Vec<Vec<usize>>, Vec<u32>) {
+    let side = window.cells;
+    let mut taken = vec![false; side * side];
+    let (mut chains, mut ends) = (Vec::new(), Vec::new());
+    for (river, &used) in rivers.iter().zip(used) {
+        if !used {
+            chains.push(Vec::new());
+            ends.push(OUT);
+            continue;
+        }
+        let mut chain = chain_cells(&river.line, window);
+        let mut end = None;
+        'cells: for m in 0..chain.len() {
+            let c = chain[m];
+            if taken[c] {
+                chain.truncate(m);
+                end = Some(c);
+                break;
+            }
+            for &j in &window.neighbors(c) {
+                if j != NONE && taken[j as usize] {
+                    chain.truncate(m + 1);
+                    end = Some(j as usize);
+                    break 'cells;
+                }
+            }
+        }
+        if end.is_none()
+            && river.join.is_some()
+            && let Some(&last) = chain.last()
+        {
+            let distance = |i: usize| {
+                let (dx, dy) = (
+                    (i % side).abs_diff(last % side),
+                    (i / side).abs_diff(last / side),
+                );
+                dx * dx + dy * dy
+            };
+            end = (0..side * side)
+                .filter(|&i| taken[i])
+                .min_by_key(|&i| distance(i));
+        }
+        for &c in &chain {
+            taken[c] = true;
+        }
+        let end = match end {
+            Some(e) if !chain.is_empty() => e as u32,
+            _ => OUT,
+        };
+        chains.push(chain);
+        ends.push(end);
+    }
+    (chains, ends)
+}
+
+/// The distance from a direction to the nearest river with cells, the
+/// river, and the distance along it, in radians.
+fn nearest_river(rivers: &[River], chains: &[Vec<usize>], p: V3) -> (f64, usize, f64) {
+    let mut best = (f64::INFINITY, 0, 0.0);
+    for (k, river) in rivers.iter().enumerate() {
+        if chains[k].is_empty() {
+            continue;
+        }
+        let (d, u) = river.line.nearest(p);
+        if d < best.0 {
+            best = (d, k, u);
+        }
+    }
+    best
+}
+
+/// Makes a river go down at each cell. A tributary ends above the cell of
+/// the river that it joins.
+fn downhill_one(levels: &mut [f64], chain: &[usize], end: u32) {
+    let Some(&last) = chain.last() else {
+        return;
+    };
+    if end != OUT {
+        levels[last] = levels[last].max(levels[end as usize] + RIVER_STEP);
+    }
+    for k in (0..chain.len() - 1).rev() {
+        levels[chain[k]] = levels[chain[k]].max(levels[chain[k + 1]] + RIVER_STEP);
+    }
+}
+
+/// Makes each river go down at each cell, in drawn order.
+fn downhill(levels: &mut [f64], chains: &[Vec<usize>], ends: &[u32]) {
+    for (chain, &end) in chains.iter().zip(ends) {
+        downhill_one(levels, chain, end);
+    }
+}
+
+/// The flow on the cells of the area, from a flood out from the rivers. The
+/// cells of the rivers have fixed receivers: the next cell, and `ends` after
+/// the last cell. The flood takes the other cells of the area from the
+/// lowest level of `h` up, and a cell drains to its steepest neighbor that
+/// the flood took before it. A cell of the rim takes no water if another
+/// neighbor can. Thus each cell that the flood reaches drains to a river.
+fn flood(
+    window: &Window,
+    chains: &[Vec<usize>],
+    ends: &[u32],
+    inside: &[bool],
+    rim: &[bool],
+    h: &[f64],
+) -> Flow {
     let count = h.len();
     let mut receiver = vec![NONE; count];
     let mut queued = vec![false; count];
     let mut filled = h.to_vec();
     let mut heap = BinaryHeap::new();
     let mut pushes = 0u32;
-    let mut stack: Vec<usize> = chain.iter().rev().copied().collect();
-    for (k, &c) in chain.iter().enumerate() {
-        receiver[c] = chain.get(k + 1).map_or(OUT, |&next| next as u32);
-        queued[c] = true;
-        heap.push(Low(h[c], pushes, c));
-        pushes += 1;
+    let mut stack: Vec<usize> = chains
+        .iter()
+        .flat_map(|chain| chain.iter().rev())
+        .copied()
+        .collect();
+    for (chain, &end) in chains.iter().zip(ends) {
+        for (k, &c) in chain.iter().enumerate() {
+            receiver[c] = chain.get(k + 1).map_or(end, |&next| next as u32);
+            queued[c] = true;
+            heap.push(Low(h[c], pushes, c));
+            pushes += 1;
+        }
     }
     while let Some(Low(level, _, i)) = heap.pop() {
         if receiver[i] == NONE {
@@ -1058,10 +1369,15 @@ fn fractal(p: V3, size: f64, seed: u32) -> f64 {
 struct Level {
     window: Window,
     inside: Vec<bool>,
-    /// The cells of the main river, from the source to the outlet.
-    chain: Vec<usize>,
-    /// The distance of each cell to the main river, and the distance along
-    /// the main river of the nearest place, in radians.
+    /// The cells of each river, from its source to its end.
+    chains: Vec<Vec<usize>>,
+    /// The cell that the last cell of each river drains to: `OUT`, or a cell
+    /// of an earlier river.
+    ends: Vec<u32>,
+    /// The nearest river to each cell.
+    near: Vec<usize>,
+    /// The distance of each cell to the nearest river, and the distance
+    /// along that river of the nearest place, in radians.
     distance: Vec<f64>,
     along: Vec<f64>,
     /// The distance of each cell to the outline, in radians. It is less than
@@ -1073,9 +1389,9 @@ struct Level {
     levels: Vec<f64>,
     /// The height of the relief at each cell.
     relief: Vec<f64>,
-    /// The height of the level of the main river above its bed at each
-    /// distance along the main river.
-    lifts: Vec<(f64, f64)>,
+    /// The height of the level of each river above its bed at each distance
+    /// along the river.
+    lifts: Vec<Vec<(f64, f64)>>,
     /// The level of the sea.
     sea: f64,
     seed: u32,
@@ -1101,7 +1417,7 @@ impl Level {
     fn finer(
         &self,
         map: &Heightmap,
-        river: &StrokeLine,
+        rivers: &[River],
         part: f64,
         rough: impl Fn(V3, f64, f64) -> f64,
     ) -> Level {
@@ -1136,9 +1452,13 @@ impl Level {
         let along = up(&self.along);
         let edge = up(&self.edge);
         let relief = up(&self.relief);
-        let chain = chain_cells(river, &window);
+        let mut near: Vec<usize> = (0..side * side)
+            .map(|i| self.near[(i / side / 2) * coarse + i % side / 2])
+            .collect();
+        let used: Vec<bool> = self.chains.iter().map(|c| !c.is_empty()).collect();
+        let (chains, ends) = river_chains(rivers, &window, &used);
         let mut inside: Vec<bool> = edge.iter().map(|&e| e >= HALF_DIAGONAL * cell).collect();
-        for &c in &chain {
+        for &c in chains.iter().flatten() {
             inside[c] = true;
         }
         let old: Vec<f64> = WindowHeights::new(map, window)
@@ -1178,28 +1498,51 @@ impl Level {
                 }
             })
             .collect();
-        // The main river keeps the profile of the coarser level, and it
-        // stays at or below the lowest old ground upstream of it.
-        let profile = self.profile();
+        // Each river keeps the profile of the coarser level, and it stays at
+        // or below the lowest old ground upstream of it. A tributary ends
+        // above the river that it joins.
         let mut levels: Vec<f64> = levels;
-        let mut low = f64::MAX;
-        for &c in &chain {
-            let near = window.neighbors(c);
-            let around = near
-                .iter()
-                .filter(|&&j| j != NONE)
-                .map(|&j| old[j as usize]);
-            low = low.min(around.fold(old[c], f64::min));
-            let lift = profile_at(&self.lifts, along[c]);
-            levels[c] = profile_at(&profile, along[c]).min(low.max(self.sea) + lift);
-        }
-        for k in (0..chain.len().saturating_sub(1)).rev() {
-            levels[chain[k]] = levels[chain[k]].max(levels[chain[k + 1]] + RIVER_STEP);
+        let mut along = along;
+        for (k, chain) in chains.iter().enumerate() {
+            if chain.is_empty() {
+                continue;
+            }
+            let profile = self.profile(k);
+            let mut low = f64::MAX;
+            for &c in chain {
+                // The place along the river. Near another river, the
+                // coarser cells hold the places along that river.
+                let (u, v) = (
+                    ((c % side) as f64 + 0.5) / 2.0,
+                    ((c / side) as f64 + 0.5) / 2.0,
+                );
+                if bilinear_cells(coarse, u, v)
+                    .iter()
+                    .any(|&j| self.near[j] != k)
+                {
+                    along[c] = rivers[k]
+                        .line
+                        .nearest(window.cell_dir(c % side, c / side))
+                        .1;
+                }
+                near[c] = k;
+                let around = window.neighbors(c);
+                let around = around
+                    .iter()
+                    .filter(|&&j| j != NONE)
+                    .map(|&j| old[j as usize]);
+                low = low.min(around.fold(old[c], f64::min));
+                let lift = profile_at(&self.lifts[k], along[c]);
+                levels[c] = profile_at(&profile, along[c]).min(low.max(self.sea) + lift);
+            }
+            downhill_one(&mut levels, chain, ends[k]);
         }
         Level {
             window,
             inside,
-            chain,
+            chains,
+            ends,
+            near,
             distance,
             along,
             edge,
@@ -1213,9 +1556,9 @@ impl Level {
         }
     }
 
-    /// The flow of the water. The main river has fixed receivers, and the
-    /// water of the other cells goes to the main river or out of the area,
-    /// after a flood fills the pits.
+    /// The flow of the water. The rivers have fixed receivers, and the water
+    /// of the other cells goes to a river or out of the area, after a flood
+    /// fills the pits.
     fn flow(&self) -> GridFlow {
         let side = self.window.cells;
         let count = side * side;
@@ -1225,12 +1568,19 @@ impl Level {
         let mut filled = self.levels.clone();
         let mut heap = BinaryHeap::new();
         let mut pushes = 0u32;
-        let mut stack: Vec<usize> = self.chain.iter().rev().copied().collect();
-        for (k, &c) in self.chain.iter().enumerate() {
-            receiver[c] = self.chain.get(k + 1).map_or(OUT, |&next| next as u32);
+        let mut stack: Vec<usize> = self
+            .chains
+            .iter()
+            .flat_map(|chain| chain.iter().rev())
+            .copied()
+            .collect();
+        for (chain, &end) in self.chains.iter().zip(&self.ends) {
+            for (k, &c) in chain.iter().enumerate() {
+                receiver[c] = chain.get(k + 1).map_or(end, |&next| next as u32);
+            }
         }
-        // The cells outside the area next to it, and the main river, are
-        // where the flood starts.
+        // The cells outside the area next to it, and the rivers, are where
+        // the flood starts.
         for i in 0..count {
             let edge = !self.inside[i]
                 && self
@@ -1296,11 +1646,11 @@ impl Level {
         }
     }
 
-    /// The level of the main river at each distance along the line, in the
-    /// order of the line.
-    fn profile(&self) -> Vec<(f64, f64)> {
+    /// The level of river `k` at each distance along its line, in the order
+    /// of the line.
+    fn profile(&self, k: usize) -> Vec<(f64, f64)> {
         let mut furthest = f64::MIN;
-        self.chain
+        self.chains[k]
             .iter()
             .map(|&c| {
                 furthest = furthest.max(self.along[c]);
@@ -1312,12 +1662,12 @@ impl Level {
     /// Erodes the cells with a few implicit steps of the stream-power law.
     /// The rough ground of a cell is `part` of the height of its relief. The
     /// steps cut a cell by its rough ground times `CARVE` at most, so the
-    /// level adds valleys at its own scale. The main river keeps its levels.
+    /// level adds valleys at its own scale. The rivers keep their levels.
     fn erode(&mut self, part: f64, erodibility: f64, creep: f64) {
         let side = self.window.cells;
         let cell = FRAC_PI_2 * self.window.cell as f64 / self.window.face_size as f64;
         let mut on_chain = vec![false; side * side];
-        for &c in &self.chain {
+        for &c in self.chains.iter().flatten() {
             on_chain[c] = true;
         }
         for _ in 0..FINE_STEPS {
@@ -1348,11 +1698,8 @@ impl Level {
                 let drop = ((from - self.levels[r]) * f / (1.0 + f)).clamp(0.0, CARVE * rough);
                 self.levels[i] = from - drop;
             }
-            // The main river goes down at each step.
-            for k in (0..self.chain.len().saturating_sub(1)).rev() {
-                let (c, next) = (self.chain[k], self.chain[k + 1]);
-                self.levels[c] = self.levels[c].max(self.levels[next] + RIVER_STEP);
-            }
+            // Each river goes down at each step.
+            downhill(&mut self.levels, &self.chains, &self.ends);
         }
         // Hillslope creep rounds the crests, in passes of `CREEP` or less.
         let passes = (creep / CREEP).ceil().max(1.0) as usize;
@@ -1403,7 +1750,7 @@ impl Level {
             }
         }
         let mut on_chain = vec![false; count];
-        for &c in &self.chain {
+        for &c in self.chains.iter().flatten() {
             on_chain[c] = true;
         }
         for i in (0..count).filter(|&i| self.inside[i] && !on_chain[i]) {
@@ -1416,7 +1763,7 @@ impl Level {
     }
 
     /// Cuts a path out of each hollow of the area, so its water leaves it.
-    /// A flood from the cells next to the area and from the main river takes
+    /// A flood from the cells next to the area and from the rivers takes
     /// the cells from the lowest up. If a cell is lower than the cell that the
     /// flood came from, the cells on the way of the flood back from it go
     /// down below it, so the path falls to the outside of the hollow.
@@ -1427,7 +1774,7 @@ impl Level {
         let mut fixed = vec![false; count];
         let mut heap = BinaryHeap::new();
         let mut pushes = 0u32;
-        for &c in &self.chain {
+        for &c in self.chains.iter().flatten() {
             fixed[c] = true;
         }
         for i in 0..count {
@@ -1521,7 +1868,7 @@ impl Level {
     }
 }
 
-/// The level of a profile of the main river at a distance along the line.
+/// The level of a profile of a river at a distance along its line.
 fn profile_at(profile: &[(f64, f64)], u: f64) -> f64 {
     match profile.partition_point(|point| point.0 < u) {
         0 => profile[0].1,
@@ -1829,6 +2176,18 @@ fn bilinear(field: &[f64], side: usize, u: f64, v: f64) -> f64 {
     top * (1.0 - ty) + bottom * ty
 }
 
+/// The cells that `bilinear` blends at a place.
+fn bilinear_cells(side: usize, u: f64, v: f64) -> [usize; 4] {
+    let last = side as i64 - 1;
+    let (x0, y0) = ((u - 0.5).floor() as i64, (v - 0.5).floor() as i64);
+    let at = |dx: i64, dy: i64| {
+        let cx = (x0 + dx).clamp(0, last) as usize;
+        let cy = (y0 + dy).clamp(0, last) as usize;
+        cy * side + cx
+    };
+    [at(0, 0), at(1, 0), at(0, 1), at(1, 1)]
+}
+
 /// A field on a square of `side` cells, blurred by three boxes of `span`
 /// cells to each side. Only the cells of `mask` count, and a cell with no
 /// such cell near it keeps its value.
@@ -2032,7 +2391,7 @@ mod tests {
     /// The tributaries: cells off the main river with the water of a
     /// tributary, that drain into the main river.
     fn tributaries(net: &BasinNet) -> usize {
-        let on: std::collections::HashSet<usize> = net.chain.iter().copied().collect();
+        let on: std::collections::HashSet<usize> = net.chains[0].iter().copied().collect();
         (0..net.inside.len())
             .filter(|&i| net.inside[i] && !on.contains(&i))
             .filter(|&i| f64::from(net.area[i]) >= net.min_area)
@@ -2373,7 +2732,7 @@ mod tests {
         for (n, seed) in [(N, 7), (2048, 7), (2048, 20)] {
             let line = line_of(n, spec(2.0, seed), -20.0, 20.0, 2.0);
             let net = basin(&ground_of(n), &line).net.unwrap();
-            let outlet = *net.chain.last().unwrap();
+            let outlet = *net.chains[0].last().unwrap();
             // Each cell of the area drains to the outlet.
             for i in (0..net.inside.len()).filter(|&i| net.inside[i]) {
                 let mut at = i;
@@ -2397,8 +2756,8 @@ mod tests {
             let net = basin(&ground_of(n), &line).net.unwrap();
             let side = net.window.cells;
             let cell = cell_angle(&net.window);
-            for (k, &c) in net.chain.iter().enumerate() {
-                let (d, _) = net.river.nearest(net.window.cell_dir(c % side, c / side));
+            for (k, &c) in net.chains[0].iter().enumerate() {
+                let (d, _) = net.rivers[0].nearest(net.window.cell_dir(c % side, c / side));
                 assert!(
                     d <= cell,
                     "face size {n}, wave {wave}: cell {k} is {} cells off",
@@ -2407,8 +2766,8 @@ mod tests {
             }
             // The main river runs from the source to the outline.
             let ends = [line.points()[0], lonlat_to_dir(20.0, middle(20.0, wave))];
-            let first = net.chain[0];
-            let last = *net.chain.last().unwrap();
+            let first = net.chains[0][0];
+            let last = *net.chains[0].last().unwrap();
             let dir = |c: usize| net.window.cell_dir(c % side, c / side);
             assert!(angle(dir(first), ends[0]) <= cell);
             assert!(angle(dir(last), ends[1]) <= cell);
@@ -2478,7 +2837,7 @@ mod tests {
         let line = line(spec(2.0, 7), -20.0, 20.0, 2.0);
         let cut = basin(&map, &line);
         let net = cut.net.clone().unwrap();
-        let levels: Vec<f64> = net.chain.iter().map(|&c| net.levels[c]).collect();
+        let levels: Vec<f64> = net.chains[0].iter().map(|&c| net.levels[c]).collect();
         assert!(levels.windows(2).all(|w| w[1] < w[0]), "{levels:?}");
         let count = levels.len();
         let (top, low) = (levels[0], levels[count - 1]);
@@ -2496,8 +2855,7 @@ mod tests {
         // On the texels, the bed goes down from the source to the outlet.
         let after = apply(&map, &cut);
         let side = net.window.cells;
-        let bed: Vec<u16> = net
-            .chain
+        let bed: Vec<u16> = net.chains[0]
             .iter()
             .map(|&c| {
                 let (face, x, y) = after.texel_of(net.window.cell_dir(c % side, c / side));
@@ -2536,7 +2894,7 @@ mod tests {
         // it and upstream of it, with a margin for the depth of the channel.
         let margin = DEPTH_M / METERS_PER_LEVEL;
         let mut low = f64::MAX;
-        for &c in &net.chain {
+        for &c in &net.chains[0] {
             let (face, x, y) = after.texel_of(net.window.cell_dir(c % side, c / side));
             let near = |a: usize| a.saturating_sub(1)..=(a + 1).min(N - 1);
             let texels = || near(y).flat_map(|y| near(x).map(move |x| (x, y)));
@@ -2614,7 +2972,7 @@ mod tests {
         // The main river ends at the coast.
         let net = cut.net.unwrap();
         let side = net.window.cells;
-        let &outlet = net.chain.last().unwrap();
+        let &outlet = net.chains[0].last().unwrap();
         let (lon, _) = dir_to_lonlat(net.window.cell_dir(outlet % side, outlet / side));
         assert!((lon - 12.0).abs() < 1.0, "the outlet is at {lon}");
     }
@@ -2793,7 +3151,7 @@ mod tests {
             ));
         }
         let window = basin_window(&line.outline, line.width, N);
-        let chain = chain_cells(&line.line, &window);
+        let chain = chain_cells(&line.rivers[0], &window);
         let side = window.cells;
         for (k, &c) in chain.iter().enumerate() {
             if let Some(&next) = chain.get(k + 1) {
@@ -2823,6 +3181,142 @@ mod tests {
         ];
         let line = BasinLine::new(spec(2.0, 7), &flat, N);
         assert!(!line.has_outline());
+    }
+
+    /// A basin in the outline of `outline_of(-20.0, 20.0, 0.0)`. Each river
+    /// goes through places of longitude and latitude, in degrees.
+    fn rivers_of(n: usize, spec: BasinSpec, rivers: &[&[(f64, f64)]]) -> BasinLine {
+        let mut line = BasinLine::new(spec, &outline_of(-20.0, 20.0, 0.0), n);
+        for places in rivers {
+            line.begin_river();
+            line.push(lonlat_to_dir(places[0].0, places[0].1));
+            for pair in places.windows(2) {
+                let ((x0, y0), (x1, y1)) = (pair[0], pair[1]);
+                let steps = ((x1 - x0).hypot(y1 - y0) / 0.25).ceil() as usize;
+                for k in 1..=steps {
+                    let t = k as f64 / steps as f64;
+                    line.push(lonlat_to_dir(x0 + (x1 - x0) * t, y0 + (y1 - y0) * t));
+                }
+            }
+        }
+        line
+    }
+
+    /// The cell where the water of a cell leaves the basin.
+    fn outlet_of(net: &BasinNet, i: usize) -> usize {
+        let mut at = i;
+        while net.receiver[at] != OUT {
+            let to = net.receiver[at] as usize;
+            assert!(net.inside[to], "cell {at} drains out of the basin");
+            at = to;
+        }
+        at
+    }
+
+    /// The main river along the equator, from 15 degrees west out of the
+    /// outline at 20 degrees east.
+    const TRUNK: &[(f64, f64)] = &[(-15.0, 0.0), (21.0, 0.0)];
+
+    #[test]
+    fn two_separate_rivers_each_keep_their_line_and_outlet() {
+        // The second river leaves the outline to the north.
+        let line = rivers_of(N, spec(2.0, 7), &[TRUNK, &[(5.0, 3.0), (5.0, 10.0)]]);
+        let net = basin(&ground(), &line).net.unwrap();
+        let side = net.window.cells;
+        let cell = cell_angle(&net.window);
+        assert_eq!(net.chains.len(), 2);
+        assert_eq!(net.ends, [OUT, OUT]);
+        for (k, chain) in net.chains.iter().enumerate() {
+            assert!(chain.len() >= 2, "river {k}");
+            for &c in chain {
+                let (d, _) = net.rivers[k].nearest(net.window.cell_dir(c % side, c / side));
+                assert!(d <= cell, "river {k} is {} cells off", d / cell);
+            }
+        }
+        let outlets = [
+            *net.chains[0].last().unwrap(),
+            *net.chains[1].last().unwrap(),
+        ];
+        let (_, lat) = dir_to_lonlat(net.window.cell_dir(outlets[1] % side, outlets[1] / side));
+        assert!(lat > 7.0, "the second outlet is at {lat} degrees");
+        let mut cells = [0; 2];
+        for i in (0..net.inside.len()).filter(|&i| net.inside[i]) {
+            let at = outlet_of(&net, i);
+            let k = outlets.iter().position(|&o| o == at);
+            cells[k.unwrap_or_else(|| panic!("cell {i} drains to {at}"))] += 1;
+        }
+        assert!(cells[1] * 10 > cells[0], "{cells:?}");
+    }
+
+    /// A tributary from the north that ends on the main river.
+    const TRIBUTARY: &[(f64, f64)] = &[(0.0, 6.5), (0.0, 0.0)];
+
+    #[test]
+    fn a_river_that_ends_on_another_joins_it() {
+        for n in [N, 2048] {
+            let line = rivers_of(n, spec(2.0, 7), &[TRUNK, TRIBUTARY]);
+            let net = basin(&ground_of(n), &line).net.unwrap();
+            let end = net.ends[1];
+            assert!(net.chains[0].contains(&(end as usize)), "face size {n}");
+            let levels: Vec<f64> = net.chains[1].iter().map(|&c| net.levels[c]).collect();
+            assert!(levels.windows(2).all(|w| w[1] < w[0]), "{levels:?}");
+            let last = levels[levels.len() - 1];
+            assert!(
+                last >= net.levels[end as usize] + RIVER_STEP,
+                "face size {n}"
+            );
+            let outlet = *net.chains[0].last().unwrap();
+            for i in (0..net.inside.len()).filter(|&i| net.inside[i]) {
+                assert_eq!(outlet_of(&net, i), outlet, "face size {n}, cell {i}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_river_outside_the_outline_is_not_used() {
+        let ground = ground();
+        let alone = basin(&ground, &rivers_of(N, spec(2.0, 7), &[TRUNK]));
+        let outside: &[(f64, f64)] = &[(30.0, 0.0), (40.0, 0.0)];
+        let both = basin(&ground, &rivers_of(N, spec(2.0, 7), &[outside, TRUNK]));
+        assert_eq!(both.net.as_ref().unwrap().chains.len(), 1);
+        assert!(alone.rects == both.rects);
+    }
+
+    #[test]
+    fn a_river_that_starts_on_another_has_its_source_off_it() {
+        let line = rivers_of(N, spec(2.0, 7), &[TRUNK, &[(0.0, 0.0), (0.0, 10.0)]]);
+        let net = basin(&ground(), &line).net.unwrap();
+        let cell = cell_angle(&net.window);
+        let source = net.rivers[1].points().next().unwrap();
+        let (d, _) = net.rivers[0].nearest(source);
+        assert!(
+            d > JOIN * cell && d < (JOIN + 1.0) * cell,
+            "{} cells",
+            d / cell
+        );
+        assert_eq!(net.ends[1], OUT);
+        let side = net.window.cells;
+        let first = net.chains[1][0];
+        assert!(!net.chains[0].iter().any(|&c| touch(side, c, first)));
+    }
+
+    #[test]
+    fn each_river_is_cut_into_the_texels() {
+        let ground = ground();
+        let line = rivers_of(N, spec(2.0, 7), &[TRUNK, TRIBUTARY]);
+        let after = apply(&ground, &basin(&ground, &line));
+        let texel = 90.0 / N as f64;
+        let at = |lon: f64| f64::from(after.sample(lonlat_to_dir(lon, 3.0)));
+        let bed = (-2..=2)
+            .map(|k| at(0.5 * texel * f64::from(k)))
+            .fold(f64::MAX, f64::min);
+        for side in [-4.0, 4.0] {
+            let bank = at(side * texel);
+            assert!(
+                bed < bank,
+                "the bed is {bed}, the ground {side} texels to the side {bank}"
+            );
+        }
     }
 
     /// Writes a hillshade of a basin to `target/basin-<n>.pgm`, on a grid of

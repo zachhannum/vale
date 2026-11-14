@@ -1707,10 +1707,13 @@ pub(super) fn canvas(ui: &mut egui::Ui, state: &mut AppState, background: egui::
 }
 
 /// The state and the Discard and Apply buttons of a held ocean ridge or
-/// basin, at the bottom of the canvas. The outline of the next basin shows
-/// the hint of its main river and the Clear button there.
+/// basin, at the bottom of the canvas. A held basin with 2 rivers or more
+/// also has the Undo river button. The outline of the next basin shows the
+/// hint of its first river and the Clear button there.
 fn held_buttons(ui: &egui::Ui, state: &mut AppState, rect: egui::Rect) {
-    use super::panels::{APPLY, BASIN_RIVER_HINT, CLEAR_OUTLINE, DISCARD, READY, UPDATING};
+    use super::panels::{
+        APPLY, BASIN_RIVER_HINT, CLEAR_OUTLINE, DISCARD, READY, UNDO_RIVER, UPDATING,
+    };
     let globe = &mut state.globe;
     let outline = globe.brushing() && globe.brush.mode == Mode::Basin;
     let outline = outline && globe.basin_outline().is_some();
@@ -1741,6 +1744,9 @@ fn held_buttons(ui: &egui::Ui, state: &mut AppState, rect: egui::Rect) {
                     }
                     if ui.button(DISCARD).clicked() {
                         globe.discard_held();
+                    }
+                    if globe.basin_rivers() >= 2 && ui.button(UNDO_RIVER).clicked() {
+                        globe.undo_river();
                     }
                     if ui.button(APPLY).clicked() {
                         globe.apply_held();
@@ -2048,15 +2054,15 @@ pub(super) fn paint_canvas(
         let stroke = egui::Stroke::new(1.0, egui::Color32::from_white_alpha(170));
         painter.circle_stroke(pos, globe.line.brush_size, stroke);
     }
-    // The outline of a basin and its main river show until the basin arrives.
-    if let Some((outline, river)) = globe.basin_preview() {
+    // The outline of a basin and its rivers show until the basin arrives.
+    if let Some((outline, rivers)) = globe.basin_preview() {
         let shade = egui::Stroke::new(3.5, egui::Color32::from_black_alpha(90));
         let line = egui::Stroke::new(1.5, egui::Color32::from_white_alpha(220));
         if outline.len() > 2 {
             painter.add(egui::Shape::closed_line(outline.clone(), shade));
             painter.add(egui::Shape::closed_line(outline, line));
         }
-        if river.len() > 1 {
+        for river in rivers.into_iter().filter(|r| r.len() > 1) {
             painter.line(river.clone(), shade);
             painter.line(river, line);
         }

@@ -13990,6 +13990,89 @@ fn a_held_ocean_ridge_has_its_buttons_on_the_canvas() {
     assert!(h.state().globe.can_undo());
 }
 
+/// Draws a line through these places with the pen API, one sample in each
+/// frame.
+fn pen_places(h: &mut Pad, places: impl IntoIterator<Item = (f64, f64)>) {
+    use vale_app::globe::math::lonlat_to_dir;
+    h.state_mut().globe.pen_down();
+    for (lon, lat) in places {
+        let sample = vale_app::globe::brush::Sample {
+            dir: Some(lonlat_to_dir(lon, lat)),
+            flow: 0.5,
+            radius: 0.05,
+        };
+        h.state_mut()
+            .globe
+            .pen_sample(sample, std::time::Instant::now());
+        h.step();
+    }
+    h.state_mut().globe.pen_up();
+    for _ in 0..400 {
+        h.step();
+        if !h.state().globe.busy() || h.state().globe.held_idle() {
+            break;
+        }
+    }
+    h.run_steps(4);
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_held_basin_with_two_rivers_has_three_buttons_that_fit() {
+    let _gpu = one_gpu_test();
+    let ((width, height), safe) = IPHONES[0];
+    let sizes = BOARDS.map(|size| (size, [0.0; 4]));
+    for (size, [top, right, bottom, left]) in sizes
+        .into_iter()
+        .chain([((width as f32, height as f32), safe)])
+    {
+        let mut h = gpu_pad(size);
+        let insets = egui::epaint::MarginF32 {
+            left,
+            right,
+            top,
+            bottom,
+        };
+        h.input_mut().safe_area_insets = Some(egui::SafeAreaInsets(insets));
+        let globe = &mut h.state_mut().globe;
+        globe.map.fill(meters_to_level(300.0));
+        globe.tool = Tool::Brush;
+        globe.brush.mode = Mode::Basin;
+        h.run_steps(3);
+        // The outline, and then two rivers in it.
+        let mut outline = Vec::new();
+        let corners = [(-20.0, -15.0), (20.0, -15.0), (20.0, 15.0), (-20.0, 15.0)];
+        for (i, &(lon0, lat0)) in corners.iter().enumerate() {
+            let (lon1, lat1) = corners[(i + 1) % corners.len()];
+            for step in 0..8 {
+                let t = f64::from(step) / 8.0;
+                outline.push((lon0 + (lon1 - lon0) * t, lat0 + (lat1 - lat0) * t));
+            }
+        }
+        outline.push(corners[0]);
+        pen_places(&mut h, outline);
+        assert!(h.state().globe.basin_outline().is_some(), "{size:?}");
+        pen_places(&mut h, (0..=20).map(|i| (-15.0 + 1.5 * f64::from(i), 0.0)));
+        assert!(control(&h, panels::UNDO_RIVER).is_none(), "{size:?}");
+        pen_places(&mut h, (0..=10).map(|i| (5.0, 12.0 - f64::from(i))));
+        let globe = &h.state().globe;
+        assert_eq!(globe.holding(), Some(Mode::Basin), "{size:?}");
+        assert_eq!(globe.basin_rivers(), 2, "{size:?}");
+        for name in [panels::DISCARD, panels::UNDO_RIVER, panels::APPLY] {
+            let rect = control(&h, name).unwrap_or_else(|| panic!("{size:?}: {name}"));
+            assert!(rect.height() >= 44.0, "{size:?}: {name} is {rect:?}");
+        }
+        check_controls(&h, &format!("{size:?} with a held basin"));
+        screenshot::save(&mut h, &format!("pad-held-basin-{}", size.0));
+        // Undo river leaves one river, and its button goes away.
+        tap(&mut h, panels::UNDO_RIVER);
+        assert_eq!(h.state().globe.basin_rivers(), 1, "{size:?}");
+        h.run_steps(2);
+        assert!(control(&h, panels::UNDO_RIVER).is_none(), "{size:?}");
+        assert_eq!(h.state().globe.holding(), Some(Mode::Basin), "{size:?}");
+    }
+}
+
 #[test]
 fn the_smallest_lake_slider_sets_the_size_of_the_smallest_lake() {
     for size in BOARDS {
