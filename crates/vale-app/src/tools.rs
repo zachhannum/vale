@@ -12,6 +12,7 @@ use crate::globe::brush::{BrushSettings, FLOW, SIZE_POINTS, STRENGTH_M};
 use crate::globe::combine::PolygonMode;
 use crate::globe::line::LineSettings;
 use crate::globe::snap::SnapSettings;
+use crate::globe::sweep;
 use crate::pen::PenSwitch;
 
 /// The file in the state folder that holds the settings.
@@ -38,11 +39,12 @@ const MODES: [(Mode, &str); 16] = [
 ];
 
 /// The tools, with their names in the file.
-const TOOLS: [(Tool, &str); 9] = [
+const TOOLS: [(Tool, &str); 10] = [
     (Tool::Pan, "navigate"),
     (Tool::Brush, "brush"),
     (Tool::Line, "line"),
     (Tool::Polygon, "polygon"),
+    (Tool::PolygonBrush, "polygon_brush"),
     (Tool::Point, "point"),
     (Tool::Measure, "measure"),
     (Tool::Select, "select"),
@@ -139,9 +141,22 @@ impl ModeSettings {
     }
 }
 
-/// The index of the smoothing of the line tool or of the polygon tool.
+/// The index of the smoothing of the line tool, the polygon tool, or the
+/// Polygon brush.
 fn smoothing_index(tool: Tool) -> usize {
-    usize::from(tool == Tool::Polygon)
+    match tool {
+        Tool::Polygon => 1,
+        Tool::PolygonBrush => 2,
+        _ => 0,
+    }
+}
+
+/// The name of a polygon mode in the file.
+fn mode_name(mode: PolygonMode) -> &'static str {
+    POLYGON_MODES
+        .iter()
+        .find(|(m, _)| *m == mode)
+        .map_or("new", |m| m.1)
 }
 
 /// The settings of each tool, and the tool before the current tool. The
@@ -154,12 +169,17 @@ pub struct Tools {
     /// The mode whose settings the brush holds. `None`: no frame saw the
     /// brush.
     held: Option<Mode>,
-    /// The smoothing of the line tool and of the polygon tool. `None`: the
-    /// tool has the smoothing of the other tool.
-    smoothing: [Option<f64>; 2],
-    /// The tool whose smoothing the line settings hold, the line tool or
-    /// the polygon tool.
+    /// The smoothing of the line tool, the polygon tool, and the Polygon
+    /// brush. `None`: the tool has the smoothing of the tool before it.
+    smoothing: [Option<f64>; 3],
+    /// The tool whose smoothing the line settings hold.
     smoothing_of: Option<Tool>,
+    /// The mode of the polygon tool while the Polygon brush holds the
+    /// line settings.
+    polygon_mode: Option<PolygonMode>,
+    /// The tool whose mode the line settings hold, the polygon tool or the
+    /// Polygon brush.
+    polygon_mode_of: Option<Tool>,
     current: Option<Choice>,
     last: Option<Choice>,
     /// A new feature of the point tool, the line tool, or the polygon tool
@@ -210,7 +230,7 @@ impl Tools {
         }
         self.held = Some(brush.mode);
 
-        if matches!(tool, Tool::Line | Tool::Polygon) {
+        if matches!(tool, Tool::Line | Tool::Polygon | Tool::PolygonBrush) {
             match self.smoothing_of {
                 Some(of) if of != tool => {
                     self.smoothing[smoothing_index(of)] = Some(line.smoothing);
@@ -222,6 +242,27 @@ impl Tools {
                 _ => {}
             }
             self.smoothing_of = Some(tool);
+        }
+        // Each switch to the Polygon brush chooses Add. The polygon tool
+        // keeps its mode.
+        let mode = match tool {
+            Tool::PolygonBrush if self.current != Some(Choice::Tool(tool)) => {
+                if self.polygon_mode_of == Some(Tool::Polygon) {
+                    self.polygon_mode = Some(line.polygon_mode);
+                }
+                Some(PolygonMode::Add)
+            }
+            Tool::Polygon if self.polygon_mode_of != Some(tool) => self
+                .polygon_mode
+                .or(self.polygon_mode_of.is_some().then_some(PolygonMode::New)),
+            _ => None,
+        };
+        if let Some(mode) = mode {
+            changed |= mode != line.polygon_mode;
+            line.polygon_mode = mode;
+        }
+        if matches!(tool, Tool::Polygon | Tool::PolygonBrush) {
+            self.polygon_mode_of = Some(tool);
         }
 
         let choice = Choice::of(tool, brush.mode);
@@ -279,6 +320,10 @@ impl Tools {
         if let Some(of) = tools.smoothing_of {
             tools.smoothing[smoothing_index(of)] = Some(line.smoothing);
         }
+        let polygon_mode = match tools.polygon_mode_of {
+            Some(Tool::PolygonBrush) => tools.polygon_mode.unwrap_or_default(),
+            _ => line.polygon_mode,
+        };
         let mut lines = Vec::new();
         let tool = match tools.current {
             Some(Choice::Brush(_)) => Some(Tool::Brush),
@@ -309,15 +354,15 @@ impl Tools {
             lines.push(format!("{key} {}", field(&mut brush)));
         }
         let smoothing = tools.smoothing.map(|s| s.unwrap_or(line.smoothing));
-        lines.push(format!("smoothing {} {}", smoothing[0], smoothing[1]));
+        lines.push(format!(
+            "smoothing {} {} {}",
+            smoothing[0], smoothing[1], smoothing[2]
+        ));
         lines.push(format!("terrain_fit {}", line.fit));
         lines.push(format!("terrain {}", line.terrain));
         lines.push(format!("reshape {}", line.reshape));
-        let polygon_mode = POLYGON_MODES.iter().find(|(m, _)| *m == line.polygon_mode);
-        lines.push(format!(
-            "polygon_mode {}",
-            polygon_mode.map_or("new", |m| m.1)
-        ));
+        lines.push(format!("polygon_mode {}", mode_name(polygon_mode)));
+        lines.push(format!("polygon_brush_size {}", line.brush_size));
         lines.push(format!("snap {}", snap.on));
         lines.push(format!("snap_distance {}", snap.distance));
         lines.push(format!("focus_new_features {}", self.focus_new));
@@ -374,13 +419,16 @@ impl Tools {
             let values = text.split(' ').map(|v| v.parse::<f64>().ok());
             values.map(|v| v.filter(|v| v.is_finite()).map(|v| v.clamp(0.0, 1.0)))
         });
+        // A file of an older version has no smoothing of the Polygon brush.
         if let Some(mut values) = smoothing
-            && let (Some(Some(l)), Some(Some(p)), None) =
-                (values.next(), values.next(), values.next())
+            && let (Some(Some(l)), Some(Some(p)), b, None) =
+                (values.next(), values.next(), values.next(), values.next())
+            && b.is_none_or(|b| b.is_some())
         {
-            self.smoothing = [Some(l), Some(p)];
+            let b = b.flatten().unwrap_or(p);
+            self.smoothing = [Some(l), Some(p), Some(b)];
             let of = self.smoothing_of.unwrap_or(Tool::Line);
-            line.smoothing = [l, p][smoothing_index(of)];
+            line.smoothing = [l, p, b][smoothing_index(of)];
             self.smoothing_of = Some(of);
         }
         if let Some(v) = boolean("terrain_fit") {
@@ -395,7 +443,14 @@ impl Tools {
         let polygon_mode =
             value("polygon_mode").and_then(|name| POLYGON_MODES.iter().find(|(_, n)| *n == name));
         if let Some(&(mode, _)) = polygon_mode {
-            line.polygon_mode = mode;
+            self.polygon_mode = Some(mode);
+            if self.polygon_mode_of != Some(Tool::PolygonBrush) {
+                line.polygon_mode = mode;
+            }
+        }
+        if let Some(v) = float("polygon_brush_size") {
+            let (lo, hi) = (*sweep::SIZE.start(), *sweep::SIZE.end());
+            line.brush_size = (v as f32).clamp(lo, hi);
         }
         if let Some(v) = boolean("snap") {
             snap.on = v;
@@ -523,6 +578,7 @@ mod tests {
             Tool::Pan,
             Tool::Line,
             Tool::Polygon,
+            Tool::PolygonBrush,
             Tool::Point,
             Tool::Measure,
             Tool::Select,
@@ -637,6 +693,10 @@ mod tests {
         globe.choose(Choice::Tool(Tool::Polygon));
         globe.line.smoothing = 0.9;
         globe.line.polygon_mode = PolygonMode::Subtract;
+        globe.choose(Choice::Tool(Tool::PolygonBrush));
+        globe.line.smoothing = 0.6;
+        globe.line.polygon_mode = PolygonMode::New;
+        globe.line.brush_size = 24.0;
         let mut snap = SnapSettings {
             distance: 20.0,
             ..SnapSettings::default()
@@ -663,7 +723,7 @@ mod tests {
         let mut tool = Tool::Pan;
         next.tools
             .load(&text, &mut tool, brush, line, &mut next_snap);
-        assert_eq!(tool, Tool::Polygon);
+        assert_eq!(tool, Tool::PolygonBrush);
         assert_eq!(next.brush.mode, Mode::Erode);
         assert_eq!(next.brush.size_points, 8.0);
         next.choose(Choice::Brush(Mode::Raise));
@@ -673,7 +733,7 @@ mod tests {
         assert_eq!(next.brush.channel_km, 2.5);
         assert_eq!(next_snap, snap);
         assert!(next.line.fit);
-        assert_eq!(next.line.polygon_mode, PolygonMode::Subtract);
+        assert_eq!(next.line.brush_size, 24.0);
         assert!(next.tools.focus_new);
         assert_eq!(next.tools.finger_paints, Some(false));
 
@@ -683,6 +743,58 @@ mod tests {
         assert_eq!(next.line.smoothing, 0.1);
         next.choose(Choice::Tool(Tool::Polygon));
         assert_eq!(next.line.smoothing, 0.9);
+        assert_eq!(next.line.polygon_mode, PolygonMode::Subtract);
+        next.choose(Choice::Tool(Tool::PolygonBrush));
+        assert_eq!(next.line.smoothing, 0.6);
+        assert_eq!(next.line.polygon_mode, PolygonMode::Add);
+    }
+
+    #[test]
+    fn a_new_polygon_brush_paints_in_add() {
+        let mut globe = Globe::new();
+        globe.choose(Choice::Tool(Tool::PolygonBrush));
+        assert_eq!(globe.line.polygon_mode, PolygonMode::Add);
+        globe.choose(Choice::Tool(Tool::Polygon));
+        assert_eq!(globe.line.polygon_mode, PolygonMode::New);
+    }
+
+    #[test]
+    fn each_switch_to_the_polygon_brush_chooses_add_and_the_polygon_tool_keeps_its_mode() {
+        let mut globe = Globe::new();
+        globe.choose(Choice::Tool(Tool::Polygon));
+        globe.line.polygon_mode = PolygonMode::Subtract;
+        globe.choose(Choice::Tool(Tool::PolygonBrush));
+        assert_eq!(globe.line.polygon_mode, PolygonMode::Add);
+        globe.line.polygon_mode = PolygonMode::New;
+        globe.choose(Choice::Tool(Tool::Line));
+        globe.choose(Choice::Tool(Tool::PolygonBrush));
+        assert_eq!(globe.line.polygon_mode, PolygonMode::Add);
+        globe.line.polygon_mode = PolygonMode::Subtract;
+        globe.choose(Choice::Tool(Tool::Polygon));
+        assert_eq!(globe.line.polygon_mode, PolygonMode::Subtract);
+        globe.line.polygon_mode = PolygonMode::New;
+        globe.choose(Choice::Tool(Tool::PolygonBrush));
+        assert_eq!(globe.line.polygon_mode, PolygonMode::Add);
+        globe.choose(Choice::Tool(Tool::Polygon));
+        assert_eq!(globe.line.polygon_mode, PolygonMode::New);
+    }
+
+    #[test]
+    fn a_file_with_two_smoothing_values_still_loads() {
+        let mut globe = Globe::new();
+        let mut snap = SnapSettings::default();
+        let text = "smoothing 0.2 0.7\npolygon_brush_size 500";
+        let (brush, line) = (&mut globe.brush, &mut globe.line);
+        globe
+            .tools
+            .load(text, &mut Tool::Pan, brush, line, &mut snap);
+        assert_eq!(globe.line.brush_size, *sweep::SIZE.end());
+        globe.choose(Choice::Tool(Tool::Polygon));
+        assert_eq!(globe.line.smoothing, 0.7);
+        globe.choose(Choice::Tool(Tool::PolygonBrush));
+        assert_eq!(globe.line.smoothing, 0.7);
+        globe.choose(Choice::Tool(Tool::Line));
+        assert_eq!(globe.line.smoothing, 0.2);
     }
 
     #[test]

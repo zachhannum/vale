@@ -27,7 +27,7 @@ use crate::globe::math::lonlat_to_dir;
 use crate::globe::snap::{LayerTargets, TargetSet, Targets};
 use crate::globe::split::SplitStroke;
 use crate::globe::{Globe, Look, START_ELEVATION, StackItem, Tool, brush};
-use crate::globe::{LineStroke, PictureLayer, polygon, reshape, thumbnail};
+use crate::globe::{LineStroke, PictureLayer, polygon, reshape, sweep, thumbnail};
 use crate::image_layer::{ImageImport, ImageTiles, ImportStep};
 use crate::measure::{self, Measure};
 use crate::memory;
@@ -3058,6 +3058,26 @@ impl AppState {
         }
         let settings = self.globe.line;
         let smoothing = settings.smoothing;
+        if stroke.sweep {
+            if layer.geometry() != Some(GeometryKind::Polygon) {
+                return;
+            }
+            let (dirs, pressure) = (&stroke.dirs, &stroke.pressure);
+            let size = settings.brush_size;
+            let Some(sweep) = sweep::sweep(dirs, pressure, size, stroke.scale, smoothing) else {
+                return;
+            };
+            // In Add, a stroke that touches no polygon is a new feature, so
+            // the brush paints with no change of mode.
+            let touched = match (stroke.mode, StrokeArea::of_sweep(&sweep, stroke.scale)) {
+                (PolygonMode::New, _) | (_, None) => false,
+                (mode, Some(area)) => self.combine_area(id, &area, mode, stroke.scale),
+            };
+            if stroke.mode != PolygonMode::Subtract && !touched {
+                self.add_line_edit(id, sweep.geometry().map(LineEdit::New));
+            }
+            return;
+        }
         if stroke.mode != PolygonMode::New {
             if layer.geometry() == Some(GeometryKind::Polygon) {
                 self.combine_polygons(id, &stroke);
@@ -3097,6 +3117,12 @@ impl AppState {
                 line::commit(&layer.features, &runs, stroke.scale, smoothing)
             }
         };
+        self.add_line_edit(id, edit);
+    }
+
+    /// Makes the edit of a stroke in a layer. A new feature becomes the
+    /// selection.
+    fn add_line_edit(&mut self, id: LayerId, edit: Option<LineEdit>) {
         let project = &mut self.doc.project;
         let mut new = None;
         let done = match edit {
@@ -3176,37 +3202,47 @@ impl AppState {
         else {
             return;
         };
+        self.combine_area(id, &area, stroke.mode, stroke.scale);
+    }
+
+    /// Joins an area to a polygon of a layer, or cuts it out of polygons,
+    /// as `combine_polygons` does. Returns true if the area reaches or
+    /// overlaps a polygon of the layer.
+    fn combine_area(
+        &mut self,
+        id: LayerId,
+        area: &StrokeArea,
+        mode: PolygonMode,
+        scale: f64,
+    ) -> bool {
         let Some(layer) = self.doc.project.layer(id) else {
-            return;
+            return false;
         };
         let near: Vec<&Feature> = (layer.features.iter())
             .filter(|f| area.near(&f.geometry))
             .collect();
         let mut set = Vec::new();
         let mut removed = Vec::new();
-        if stroke.mode == PolygonMode::Add {
+        let mut touched = false;
+        if mode == PolygonMode::Add {
             // A stroke that goes around a polygon reaches it at its end.
             let mut order: Vec<(usize, &Feature)> = (near.iter())
-                .map(|f| {
-                    (
-                        area.reaches(&f.geometry, stroke.scale)
-                            .unwrap_or(usize::MAX),
-                        *f,
-                    )
-                })
+                .map(|f| (area.reaches(&f.geometry, scale).unwrap_or(usize::MAX), *f))
                 .collect();
             order.sort_by_key(|(at, _)| *at);
             let added = order
                 .iter()
                 .find_map(|(_, f)| Some((f.uuid(), area.add(&f.geometry)?)));
+            touched = added.is_some() || order.iter().any(|(at, _)| *at != usize::MAX);
             set.extend(added);
         } else {
             for f in near {
                 match area.subtract(&f.geometry) {
                     Some(Some(g)) => set.push((f.uuid(), g)),
                     Some(None) => removed.push(f.uuid()),
-                    None => {}
+                    None => continue,
                 }
+                touched = true;
             }
         }
         let project = &mut self.doc.project;
@@ -3224,6 +3260,7 @@ impl AppState {
             self.pipeline.forget(id);
             self.touch();
         }
+        touched
     }
 
     /// The selected polygon that Subtract cuts with, and the other selected

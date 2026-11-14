@@ -7687,7 +7687,7 @@ fn a_trace_of_the_coast_follows_the_line_that_the_globe_shows() {
         globe.line_down();
         for &d in &samples {
             let pos = globe.view.project(globe.rect, d).unwrap();
-            globe.line_sample(pos, Some(d));
+            globe.line_sample(pos, Some(d), 1.0);
         }
         globe.line_up();
         let stroke = globe.take_line().unwrap();
@@ -8599,4 +8599,66 @@ fn a_tapered_stroke_of_a_masked_layer_has_round_pieces() {
     masked::save_images("mask-taper", &plain, &masked);
     let (wrong, drawn) = masked::differences(&ground, &plain, &masked, 40);
     assert!(drawn > 1000 && wrong * 100 < drawn, "{wrong} of {drawn}");
+}
+
+#[test]
+#[ignore = "gpu"]
+fn manual_pictures_of_a_river_that_the_polygon_brush_cuts() {
+    use vale_app::globe::combine::StrokeArea;
+    use vale_app::globe::sweep;
+    use vale_store::{Feature, Geometry, GeometryKind};
+    let _gpu = one_gpu_test();
+    let mut state = AppState::new(Document::empty()).unwrap();
+    state.headless = true;
+    let mut view = GlobeView::centered(0.0, 0.0);
+    view.zoom = 6.0;
+    state.globe.view = view;
+    let land = state.doc.add_layer(GeometryKind::Polygon);
+    let square = vec![
+        [-15.0, -15.0],
+        [15.0, -15.0],
+        [15.0, 15.0],
+        [-15.0, 15.0],
+        [-15.0, -15.0],
+    ];
+    let feature = Feature::new(Geometry::Polygons(vec![vec![square]]), Default::default());
+    let uuid = feature.uuid();
+    assert!(state.doc.project.add_feature(land, feature));
+    let style = &mut state.doc.entry_mut(land).unwrap().style;
+    style.set_fill(Some(Color::rgb(120, 160, 90)));
+    style.set_stroke(None);
+
+    // The scale of the first render.
+    let scale = 300.0 * view.zoom;
+    // A river from a source in the west to the sea in the south east, thin
+    // at the source and wide at the mouth, and a tributary from the north.
+    let river = |from: [f64; 2], to: [f64; 2], wiggle: f64| {
+        let n = 2000;
+        let samples: Vec<V3> = (0..=n)
+            .map(|k| {
+                let t = k as f64 / n as f64;
+                let (dx, dy) = (to[0] - from[0], to[1] - from[1]);
+                let len = dx.hypot(dy);
+                let w = wiggle * (t * 25.0).sin() * (1.0 - t * 0.5);
+                let lon = from[0] + dx * t - dy / len * w;
+                let lat = from[1] + dy * t + dx / len * w;
+                lonlat_to_dir(lon, lat)
+            })
+            .collect();
+        let pressure: Vec<f32> = (0..=n).map(|k| 0.15 + 0.85 * k as f32 / n as f32).collect();
+        sweep::sweep(&samples, &pressure, 14.0, scale, 0.35).unwrap()
+    };
+    for (from, to, wiggle) in [
+        ([-10.0, 6.0], [17.0, -9.0], 0.6),
+        ([2.0, 12.0], [3.5, -2.8], 0.4),
+    ] {
+        let area = StrokeArea::of_sweep(&river(from, to, wiggle), scale).unwrap();
+        let layer = state.doc.project.layer(land).unwrap();
+        let g = layer.features[0].geometry.clone();
+        let cut = area.subtract(&g).unwrap().unwrap();
+        assert!(state.doc.project.set_geometry(land, uuid, cut));
+    }
+    let (img, _) = headless::ui_png(state, (1280.0, 800.0), 1.0).unwrap();
+    img.save("../../target/app/test-polygon-brush-river.png")
+        .unwrap();
 }

@@ -14,6 +14,7 @@ use vale_terrain::Mode;
 use crate::document::Document;
 use crate::globe::Canvas;
 use crate::globe::brush::{FIXED_FLOW, Sample, pen_flow, slerp};
+use crate::globe::combine::PolygonMode;
 use crate::globe::flat::FlatView;
 use crate::globe::math::V3;
 use crate::globe::math::{angle, dir_to_lonlat, lonlat_to_dir};
@@ -22,6 +23,7 @@ use crate::globe::select::Pointer;
 use crate::globe::shapes::{self, Directions, DrawKey, OnScreen, Out, ViewKey};
 use crate::globe::snap::Highlight;
 use crate::globe::stroke_group;
+use crate::globe::sweep;
 use crate::globe::symbol::{GlobeScatter, SymbolMesh, append_missing, view_places};
 use crate::globe::vector;
 use crate::globe::view::GlobeView;
@@ -76,7 +78,11 @@ fn release(globe: &mut Globe) {
 
 /// Starts the stroke of the finger that waits, with the places that it
 /// touched. The finger no longer moves the view.
-fn finger_down(globe: &mut Globe, time: f64, sample: &impl Fn(&mut Globe, egui::Pos2, f64)) {
+fn finger_down(
+    globe: &mut Globe,
+    time: f64,
+    sample: &impl Fn(&mut Globe, egui::Pos2, Option<f32>),
+) {
     let Some(finger) = globe.input.finger.take() else {
         return;
     };
@@ -84,7 +90,7 @@ fn finger_down(globe: &mut Globe, time: f64, sample: &impl Fn(&mut Globe, egui::
     globe.input.pen = Some(finger.id);
     press(globe);
     for pos in finger.path {
-        sample(globe, pos, FIXED_FLOW);
+        sample(globe, pos, None);
     }
     globe.pen.stats.sample(time, None, None);
 }
@@ -104,7 +110,7 @@ fn finger_input(
     phase: egui::TouchPhase,
     pos: egui::Pos2,
     time: f64,
-    sample: &impl Fn(&mut Globe, egui::Pos2, f64),
+    sample: &impl Fn(&mut Globe, egui::Pos2, Option<f32>),
 ) {
     let waits = globe.input.finger.as_ref().is_some_and(|f| f.id == id);
     match phase {
@@ -142,7 +148,7 @@ fn finger_input(
         }
         egui::TouchPhase::Move => {
             if globe.input.pen == Some(id) {
-                sample(globe, pos, FIXED_FLOW);
+                sample(globe, pos, None);
                 globe.pen.stats.sample(time, None, None);
             }
         }
@@ -232,11 +238,13 @@ fn brush_input(
     }
     let time = ui.input(|i| i.time);
     let radius = globe.brush.radius(globe.radius());
-    let sample = |globe: &mut Globe, pos: egui::Pos2, flow: f64| {
+    let sample = |globe: &mut Globe, pos: egui::Pos2, force: Option<f32>| {
         let dir = globe.unproject(pos);
         globe.input.pos = Some(pos);
+        let flow = force.map_or(FIXED_FLOW, pen_flow);
         if globe.stroking() {
-            globe.line_sample(pos, dir);
+            let pressure = force.map_or(1.0, |f| (pen_flow(f) as f32).max(sweep::MIN_PRESSURE));
+            globe.line_sample(pos, dir, pressure);
         } else if globe.placing() {
             globe.point_sample(dir);
         } else if globe.input.picking {
@@ -246,7 +254,7 @@ fn brush_input(
         }
     };
     for (pos, event) in &queue {
-        let flow = pen_flow(event.force);
+        let force = Some(event.force);
         let tilt = event.altitude.zip(event.azimuth);
         let ours = globe.input.pen == Some(QUEUE_PEN);
         match event.phase {
@@ -257,12 +265,12 @@ fn brush_input(
                 if free && on_canvas(ui, rect, *pos) {
                     globe.input.pen = Some(QUEUE_PEN);
                     press(globe);
-                    sample(globe, *pos, flow);
+                    sample(globe, *pos, force);
                     globe.pen.stats.sample(event.time, Some(event.force), tilt);
                 }
             }
             PenPhase::Move | PenPhase::Up if ours => {
-                sample(globe, *pos, flow);
+                sample(globe, *pos, force);
                 globe.pen.stats.sample(event.time, Some(event.force), tilt);
             }
             _ => {}
@@ -300,20 +308,19 @@ fn brush_input(
             finger_input(ui, rect, globe, started, id.0, *phase, *pos, time, &sample);
             continue;
         }
-        let flow = force.map_or(FIXED_FLOW, pen_flow);
         match phase {
             egui::TouchPhase::Start => {
                 let free = globe.input.pen.is_none() && !globe.input.mouse;
                 if pen && free && on_canvas(ui, rect, *pos) {
                     globe.input.pen = Some(id.0);
                     press(globe);
-                    sample(globe, *pos, flow);
+                    sample(globe, *pos, *force);
                     globe.pen.stats.sample(time, *force, None);
                 }
             }
             egui::TouchPhase::Move => {
                 if globe.input.pen == Some(id.0) {
-                    sample(globe, *pos, flow);
+                    sample(globe, *pos, *force);
                     globe.pen.stats.sample(time, *force, None);
                 }
             }
@@ -349,13 +356,13 @@ fn brush_input(
     });
     // Shift and Option choose the mode of the polygon tool, so they start
     // a stroke and do not turn the globe.
-    let keys = globe.filling();
+    let keys = globe.filling() || globe.sweeping();
     // The first touch is also the egui pointer.
     let touched = touched || globe.nav.touching() || globe.input.pen.is_some();
     match pos {
         Some(pos) if globe.input.mouse && down => {
             if moved {
-                sample(globe, pos, FIXED_FLOW);
+                sample(globe, pos, None);
                 globe.pen.stats.sample(time, None, None);
             }
         }
@@ -367,7 +374,7 @@ fn brush_input(
         Some(pos) if pressed && (keys || !shift) && !touched && resp.contains_pointer() => {
             globe.input.mouse = true;
             press(globe);
-            sample(globe, pos, FIXED_FLOW);
+            sample(globe, pos, None);
             globe.pen.stats.sample(time, None, None);
         }
         _ => {}
@@ -2031,6 +2038,16 @@ pub(super) fn paint_canvas(
             }
         }
     }
+    // The Polygon brush has a radius in points, on the globe and on the flat
+    // map.
+    if let Some(pos) = globe
+        .input
+        .pos
+        .filter(|_| globe.sweeping() && globe.line_preview().is_none())
+    {
+        let stroke = egui::Stroke::new(1.0, egui::Color32::from_white_alpha(170));
+        painter.circle_stroke(pos, globe.line.brush_size, stroke);
+    }
     // The outline of a basin and its main river show until the basin arrives.
     if let Some((outline, river)) = globe.basin_preview() {
         let shade = egui::Stroke::new(3.5, egui::Color32::from_black_alpha(90));
@@ -2074,7 +2091,9 @@ pub(super) fn paint_canvas(
         &state.measure,
         &state.doc.project.world,
     );
-    if let Some(line) = globe.line_preview() {
+    if let Some(band) = globe.sweep_preview() {
+        sweep_preview(&painter, globe, &band, stroke.color);
+    } else if let Some(line) = globe.line_preview() {
         let mut line = line.to_vec();
         let reshape = globe.reshape_preview();
         // The stroke of the polygon tool closes, and a stroke that reshapes
@@ -2110,6 +2129,30 @@ pub(super) fn paint_canvas(
     super::region::paint(&painter, state);
     if state.globe.nav.active() || more {
         ui.ctx().request_repaint();
+    }
+}
+
+/// The band of a stroke of the Polygon brush: a disk at each sample, and a
+/// wide segment between two samples. The color is opaque, so the overlaps
+/// do not get darker. A cut is not layer data, so it draws as a sketch.
+fn sweep_preview(
+    painter: &egui::Painter,
+    globe: &Globe,
+    band: &[(egui::Pos2, f32)],
+    color: egui::Color32,
+) {
+    let subtract = globe.stroke_mode() == Some(PolygonMode::Subtract);
+    let color = if subtract {
+        egui::Color32::from_gray(220)
+    } else {
+        color.to_opaque()
+    };
+    for w in band.windows(2) {
+        let ((a, ra), (b, rb)) = (w[0], w[1]);
+        painter.line_segment([a, b], egui::Stroke::new(ra + rb, color));
+    }
+    for &(p, r) in band {
+        painter.circle_filled(p, r, color);
     }
 }
 

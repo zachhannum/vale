@@ -13194,7 +13194,11 @@ fn the_vector_cell_lists_the_tools_of_the_kind_of_the_selected_layer() {
             .collect::<Vec<_>>()
     };
     assert_eq!(names(GeometryKind::Line), [LINE, VERTEX, SPLIT]);
-    assert_eq!(names(GeometryKind::Polygon), [POLYGON, VERTEX, SPLIT]);
+    let brush = vale_app::ui::pad::POLYGON_BRUSH;
+    assert_eq!(
+        names(GeometryKind::Polygon),
+        [POLYGON, brush, VERTEX, SPLIT]
+    );
     assert_eq!(names(GeometryKind::Point), [POINT]);
     let dir = tempfile::tempdir().unwrap();
     let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
@@ -15958,4 +15962,224 @@ fn a_layer_that_does_not_fit_in_the_memory_shows_a_banner_in_the_globe_workspace
     h.state_mut().workspace = Workspace::Atlas;
     h.run();
     assert_eq!(h.state().pad.banner, None);
+}
+
+/// A pen stroke through places with a force.
+fn pen_way_force(h: &mut Pad, way: &[[f64; 2]], force: f32) {
+    let points: Vec<Pos2> = way.iter().map(|p| screen_at(h, p[0], p[1])).collect();
+    touch(h, egui::TouchPhase::Start, points[0], Some(force));
+    h.step();
+    for pair in points.windows(2) {
+        let n = (pair[0].distance(pair[1]) / 3.0).ceil().max(1.0) as usize;
+        for i in 1..=n {
+            let pos = pair[0].lerp(pair[1], i as f32 / n as f32);
+            touch(h, egui::TouchPhase::Move, pos, Some(force));
+            h.step();
+        }
+    }
+    touch(
+        h,
+        egui::TouchPhase::End,
+        points[points.len() - 1],
+        Some(force),
+    );
+    h.run_steps(3);
+}
+
+/// Chooses the Polygon brush in the list of the Vector cell.
+fn choose_polygon_brush(h: &mut Pad) {
+    use vale_app::ui::pad::POLYGON_BRUSH;
+    quick_tap(h, "Pan");
+    hold_cell(h, VECTOR);
+    assert_eq!(h.state().pad.flyouts.open, Some(Flyout::Vector));
+    tap(h, POLYGON_BRUSH);
+    assert_eq!(h.state().globe.tool, Tool::PolygonBrush);
+    assert!(h.state().globe.sweeping());
+}
+
+/// The brush radius in degrees.
+fn brush_degrees(h: &Pad) -> f64 {
+    let globe = &h.state().globe;
+    (f64::from(globe.line.brush_size) / globe.radius()).to_degrees()
+}
+
+/// Sets the brush radius to about `degrees`.
+fn set_brush_degrees(h: &mut Pad, degrees: f64) {
+    let points = degrees.to_radians() * h.state().globe.radius();
+    h.state_mut().globe.line.brush_size = points as f32;
+    assert!((brush_degrees(h) - degrees).abs() < 1e-6, "{points}");
+}
+
+#[test]
+fn the_polygon_brush_has_the_mode_cell_and_two_sliders_on_each_board() {
+    use vale_app::ui::pad::{POLYGON_BRUSH, POLYGON_BRUSH_SIZE, POLYGON_MODE, RESHAPE};
+    for size in BOARDS {
+        let what = format!("{size:?}");
+        let dir = tempfile::tempdir().unwrap();
+        let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
+        h.set_size(egui::vec2(size.0, size.1));
+        h.run_steps(2);
+        select_layer(&mut h, picks.polygon.layer);
+        choose_polygon_brush(&mut h);
+        assert_eq!(h.state().pad.vector_face, Some(POLYGON_BRUSH), "{what}");
+        for name in [POLYGON_MODE, SMOOTHING, POLYGON_BRUSH_SIZE] {
+            assert!(control(&h, name).is_some(), "{what}: no {name}");
+        }
+        for name in [SNAP, RESHAPE] {
+            assert!(control(&h, name).is_none(), "{what}: {name}");
+        }
+        check_controls(&h, &format!("{what}: the Polygon brush"));
+        if size == BOARDS[0] {
+            screenshot::save(&mut h, "pad-polygon-brush");
+        }
+    }
+}
+
+#[test]
+fn a_stroke_of_the_polygon_brush_is_one_feature_that_undo_removes() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
+    select_layer(&mut h, picks.polygon.layer);
+    choose_polygon_brush(&mut h);
+    set_brush_degrees(&mut h, 1.0);
+    step_and_save(&mut h, false);
+    h.state_mut().save_waiting().unwrap();
+    let saved = saves(&h);
+    let layer = picks.polygon.layer;
+
+    // A band from west to east, north of the square.
+    pen_way(&mut h, &[[-8.0, -5.0], [8.0, -5.0]]);
+    for _ in 0..3 {
+        step_and_save(&mut h, false);
+    }
+    assert_eq!(saves(&h), saved + 1);
+    let features = line_features(&h, layer);
+    assert_eq!(features.len(), 2);
+    let band = &features[1].geometry;
+    assert!(inside_polygon(band, 0.0, -5.0));
+    assert!(inside_polygon(band, 0.0, -5.8));
+    assert!(inside_polygon(band, -8.8, -5.0));
+    assert!(!inside_polygon(band, 0.0, -6.3));
+    assert!(!inside_polygon(band, -9.3, -5.0));
+
+    tap(&mut h, "Undo");
+    assert_eq!(line_features(&h, layer).len(), 1);
+    tap(&mut h, "Redo");
+    assert_eq!(line_features(&h, layer).len(), 2);
+}
+
+#[test]
+fn a_light_pen_paints_a_narrower_band() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
+    select_layer(&mut h, picks.polygon.layer);
+    choose_polygon_brush(&mut h);
+    set_brush_degrees(&mut h, 1.0);
+    let layer = picks.polygon.layer;
+    // A force of 0.5 is full pressure, and 0.15 is less than a third.
+    pen_way_force(&mut h, &[[-8.0, -5.0], [8.0, -5.0]], 0.5);
+    pen_way_force(&mut h, &[[-8.0, -1.0], [8.0, -1.0]], 0.15);
+    h.run_steps(3);
+    let features = line_features(&h, layer);
+    assert_eq!(features.len(), 3);
+    let (full, light) = (&features[1].geometry, &features[2].geometry);
+    assert!(inside_polygon(full, 0.0, -5.6));
+    assert!(!inside_polygon(light, 0.0, -1.6));
+    assert!(inside_polygon(light, 0.0, -1.0));
+}
+
+#[test]
+fn add_and_subtract_with_the_polygon_brush_take_one_undo_step_each() {
+    use vale_app::globe::combine::PolygonMode;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
+    select_layer(&mut h, picks.polygon.layer);
+    choose_polygon_brush(&mut h);
+    set_brush_degrees(&mut h, 1.0);
+    h.state_mut().globe.line.polygon_mode = PolygonMode::Add;
+    step_and_save(&mut h, false);
+    h.state_mut().save_waiting().unwrap();
+    let before = geometry_of(&h, picks.polygon);
+    let stroke = |h: &mut Pad, way: &[[f64; 2]]| {
+        let saved = saves(h);
+        pen_way(h, way);
+        for _ in 0..3 {
+            step_and_save(h, false);
+        }
+        assert_eq!(saves(h), saved + 1);
+        assert_eq!(line_features(h, picks.polygon.layer).len(), 1);
+        geometry_of(h, picks.polygon)
+    };
+    let undo_redo = |h: &mut Pad, before: &vale_store::Geometry, after: &vale_store::Geometry| {
+        tap(h, "Undo");
+        assert_eq!(&geometry_of(h, picks.polygon), before);
+        tap(h, "Redo");
+        assert_eq!(&geometry_of(h, picks.polygon), after);
+    };
+
+    // Add, from the square out to the east. The band joins the square.
+    let added = stroke(&mut h, &[[5.0, -18.0], [16.0, -18.0]]);
+    assert!(inside_polygon(&added, 14.0, -18.0));
+    assert!(inside_polygon(&added, 16.8, -18.0));
+    assert!(!inside_polygon(&added, 14.0, -19.5));
+    undo_redo(&mut h, &before, &added);
+
+    // Subtract, a channel through the square.
+    h.state_mut().globe.line.polygon_mode = PolygonMode::Subtract;
+    let cut = stroke(&mut h, &[[0.0, -28.0], [0.0, -9.0]]);
+    let vale_store::Geometry::Polygons(parts) = &cut else {
+        panic!("not a polygon");
+    };
+    assert_eq!(parts.len(), 2);
+    assert!(!inside_polygon(&cut, 0.0, -18.0));
+    assert!(!inside_polygon(&cut, 0.8, -18.0));
+    assert!(inside_polygon(&cut, 1.3, -18.0));
+    screenshot::save(&mut h, "pad-polygon-brush-subtract");
+    undo_redo(&mut h, &added, &cut);
+}
+
+#[test]
+fn in_add_the_polygon_brush_paints_a_new_feature_and_then_joins_it() {
+    use vale_app::globe::combine::PolygonMode;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
+    select_layer(&mut h, picks.polygon.layer);
+    choose_polygon_brush(&mut h);
+    assert_eq!(h.state().globe.line.polygon_mode, PolygonMode::Add);
+    set_brush_degrees(&mut h, 1.0);
+    let layer = picks.polygon.layer;
+    step_and_save(&mut h, false);
+    h.state_mut().save_waiting().unwrap();
+    let paint = |h: &mut Pad, way: &[[f64; 2]]| {
+        pen_way(h, way);
+        for _ in 0..3 {
+            step_and_save(h, false);
+        }
+        line_features(h, layer)
+    };
+
+    // A stroke that touches no polygon is a new feature.
+    let features = paint(&mut h, &[[-8.0, -5.0], [8.0, -5.0]]);
+    assert_eq!(features.len(), 2);
+    let band = features[1].uuid();
+    // A stroke from the band joins it.
+    let features = paint(&mut h, &[[0.0, -5.0], [0.0, -1.0]]);
+    assert_eq!(features.len(), 2);
+    let joined = &features.iter().find(|f| f.uuid() == band).unwrap().geometry;
+    assert!(inside_polygon(joined, 0.0, -2.0));
+    assert!(inside_polygon(joined, -7.0, -5.0));
+    // A stroke inside the square changes nothing.
+    let square = geometry_of(&h, picks.polygon);
+    let features = paint(&mut h, &[[-3.0, -18.0], [3.0, -18.0]]);
+    assert_eq!(features.len(), 2);
+    assert_eq!(geometry_of(&h, picks.polygon), square);
+    tap(&mut h, "Undo");
+    let features = line_features(&h, layer);
+    let band_geometry = &features.iter().find(|f| f.uuid() == band).unwrap().geometry;
+    assert!(!inside_polygon(band_geometry, 0.0, -2.0));
+
+    // A switch back to the brush chooses Add again.
+    h.state_mut().globe.line.polygon_mode = PolygonMode::New;
+    choose_polygon_brush(&mut h);
+    assert_eq!(h.state().globe.line.polygon_mode, PolygonMode::Add);
 }

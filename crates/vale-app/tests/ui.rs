@@ -2998,3 +2998,70 @@ fn a_new_layer_snaps_only_to_itself() {
     // The first layer keeps its own targets.
     assert_eq!(h.state().doc.project.snap_targets(a).len(), 1);
 }
+
+#[test]
+fn the_tool_bar_has_the_polygon_brush_and_the_keys_choose_its_mode() {
+    use vale_app::globe::Tool;
+    use vale_app::globe::math::lonlat_to_dir;
+    use vale_app::globe::vector;
+    use vale_app::globe::view::GlobeView;
+    use vale_app::ui::panels::{BRUSH_SIZE, POLYGON_BRUSH_TOOL};
+    use vale_store::{Feature, Geometry, GeometryKind};
+    let mut doc = Document::sample();
+    let id = doc.add_layer(GeometryKind::Polygon);
+    let square = vec![
+        [-10.0, -10.0],
+        [10.0, -10.0],
+        [10.0, 10.0],
+        [-10.0, 10.0],
+        [-10.0, -10.0],
+    ];
+    let feature = Feature::new(Geometry::Polygons(vec![vec![square]]), Default::default());
+    let uuid = feature.uuid();
+    assert!(doc.project.add_feature(id, feature));
+    let mut state = AppState::new(doc).unwrap();
+    state.headless = true;
+    state.select(Some(LayerRef::Vector(id)));
+    state.globe.view = GlobeView::centered(0.0, 0.0);
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(SIZE.0 as f32, SIZE.1 as f32))
+        .with_pixels_per_point(1.0)
+        .build_ui_state(|ui, state: &mut AppState| draw(ui, state), state);
+    h.run_steps(3);
+    h.get_by_label(POLYGON_BRUSH_TOOL).click();
+    h.run_steps(3);
+    assert_eq!(h.state().globe.tool, Tool::PolygonBrush);
+    assert!(h.state().globe.sweeping());
+    assert!(h.query_all_by_label(BRUSH_SIZE).next().is_some());
+    h.get_by_label("Subtract");
+    // The brush does not snap.
+    assert!(h.query_by_label(vale_app::ui::panels::SNAP).is_none());
+    let inside = |h: &Harness<'static, AppState>, lon: f64, lat: f64| {
+        let layer = h.state().doc.project.layer(id).unwrap();
+        let f = layer.features.iter().find(|f| f.uuid() == uuid).unwrap();
+        let Geometry::Polygons(polygons) = &f.geometry else {
+            panic!("not a polygon");
+        };
+        polygons.iter().any(|p| {
+            let rings: Vec<_> = (p.iter().enumerate())
+                .map(|(i, r)| vector::ring(r, i > 0))
+                .collect();
+            vector::contains(&rings, lonlat_to_dir(lon, lat))
+        })
+    };
+    let count =
+        |h: &Harness<'static, AppState>| h.state().doc.project.layer(id).unwrap().features.len();
+
+    // Shift during a stroke from the polygon joins the band to it.
+    mouse_way(&mut h, &[[5.0, 0.0], [16.0, 0.0]], egui::Modifiers::SHIFT);
+    assert!(inside(&h, 14.0, 0.0));
+    assert_eq!(count(&h), 1);
+    // Option cuts the band out of it.
+    mouse_way(&mut h, &[[0.0, -14.0], [0.0, 14.0]], egui::Modifiers::ALT);
+    assert!(!inside(&h, 0.0, 0.0));
+    assert!(inside(&h, -6.0, 0.0));
+    assert_eq!(count(&h), 1);
+    // With no key, the band is a new polygon.
+    mouse_way(&mut h, &[[-30.0, 0.0], [-24.0, 0.0]], egui::Modifiers::NONE);
+    assert_eq!(count(&h), 2);
+}
