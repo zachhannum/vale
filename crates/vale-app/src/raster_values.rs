@@ -716,17 +716,35 @@ impl RasterValues for LayerRasters<'_> {
 }
 
 impl LayerRasters<'_> {
-    /// The drainage of line `index`, with the geometry `shape`, on the first
-    /// height layer, for the Flow line type.
-    pub fn flow_line(&self, index: usize, shape: &Geometry) -> Option<Arc<LineFlow>> {
-        let raster = self.cache.first_height?;
+    /// The height layer named `height`, or else the first height layer.
+    fn flow_raster(&self, height: Option<&str>) -> Option<RasterId> {
+        let named = height
+            .and_then(|n| self.cache.names.get(n))
+            .filter(|n| n.height);
+        named.map(|n| n.id).or(self.cache.first_height)
+    }
+
+    /// The drainage of line `index`, with the geometry `shape`, on the
+    /// height layer of `flow_height`, for the Flow line type.
+    pub fn flow_line(
+        &self,
+        flow_height: Option<&str>,
+        index: usize,
+        shape: &Geometry,
+    ) -> Option<Arc<LineFlow>> {
+        let raster = self.flow_raster(flow_height)?;
         (self.cache).read_line(self.layer, raster, index, Some(shape))
     }
 
     /// The largest area, in steradians, of the lines `features` of the
-    /// layer on the first height layer. `None` until a line arrives.
-    pub fn flow_largest(&self, features: &[vale_store::Feature]) -> Option<f64> {
-        let raster = self.cache.first_height?;
+    /// layer on the height layer of `flow_height`. `None` until a line
+    /// arrives.
+    pub fn flow_largest(
+        &self,
+        flow_height: Option<&str>,
+        features: &[vale_store::Feature],
+    ) -> Option<f64> {
+        let raster = self.flow_raster(flow_height)?;
         (self.cache).read_largest(self.layer, raster, features)
     }
 }

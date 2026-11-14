@@ -4713,3 +4713,38 @@ fn a_flow_line_draws_at_its_smallest_width_before_the_flow_arrives() {
     let smallest = StrokeKind::FLOW_MIN * 8.0 * scale;
     assert!((run - smallest).abs() <= 1.5, "{run} px, not {smallest} px");
 }
+
+#[test]
+fn a_flow_stroke_reads_the_height_layer_of_its_style() {
+    let (mut doc, id, map) = flow_rivers();
+    // The first height layer is all sea, so it has no flow.
+    let first = doc.project.rasters()[0].id;
+    let valley = (doc.project).add_raster("Valley".to_string(), 64, "m".to_string(), 0.0, 6553.5);
+    let sea = vale_terrain::Heightmap::new(128, 0);
+    let mut pipeline = Pipeline::new();
+    let update = |doc: &Document, pipeline: &mut Pipeline| {
+        let rasters = pipeline.rasters_mut();
+        rasters.update(doc, |r| Some(if r == valley { &map } else { &sea }));
+        rasters.poll(true);
+    };
+    let geometry = doc.layer(id).unwrap().features[0].geometry.clone();
+    let area = |doc: &Document, pipeline: &mut Pipeline| {
+        update(doc, pipeline);
+        let height = doc.entry(id).unwrap().style.flow_height.clone();
+        let rasters = pipeline.rasters().for_layer(id);
+        let _ = rasters.flow_line(height.as_deref(), 0, &geometry);
+        update(doc, pipeline);
+        let rasters = pipeline.rasters().for_layer(id);
+        rasters
+            .flow_line(height.as_deref(), 0, &geometry)
+            .unwrap()
+            .largest()
+    };
+    assert_ne!(first, valley);
+    assert_eq!(area(&doc, &mut pipeline), 0.0);
+    doc.entry_mut(id).unwrap().style.flow_height = Some("Valley".into());
+    assert!(area(&doc, &mut pipeline) > vale_terrain::RIVER_MIN_AREA);
+    // A name that no height layer has reads the first height layer.
+    doc.entry_mut(id).unwrap().style.flow_height = Some("Gone".into());
+    assert_eq!(area(&doc, &mut pipeline), 0.0);
+}

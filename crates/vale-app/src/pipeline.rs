@@ -419,22 +419,25 @@ fn build_page_layers<'a>(
             .collect();
         let layer_rasters = rasters.for_layer(layer.id);
         let flow = kind == GeometryKind::Line && has_flow(&entry.style.style);
+        let height = entry.style.flow_height.as_deref();
         let mut largest_flow = None;
         if flow {
             for f in &mut features {
                 let Some(geometry) = layer.features.get(f.index).map(|g| &g.geometry) else {
                     continue;
                 };
-                f.flow = layer_rasters.flow_line(f.index, geometry).map(|line| {
-                    (line.samples.iter())
-                        .filter_map(|&(ll, area)| {
-                            let p = cache.projection.forward(ll)?;
-                            Some((vt.to_page(p), area))
-                        })
-                        .collect()
-                });
+                f.flow = layer_rasters
+                    .flow_line(height, f.index, geometry)
+                    .map(|line| {
+                        (line.samples.iter())
+                            .filter_map(|&(ll, area)| {
+                                let p = cache.projection.forward(ll)?;
+                                Some((vt.to_page(p), area))
+                            })
+                            .collect()
+                    });
             }
-            largest_flow = layer_rasters.flow_largest(&layer.features);
+            largest_flow = layer_rasters.flow_largest(height, &layer.features);
         }
         out.push(PageLayer {
             entry,

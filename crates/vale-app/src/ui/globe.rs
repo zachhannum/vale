@@ -1207,7 +1207,7 @@ impl Flows {
     /// The drainage of the lines `features` if a batch has a Flow stroke.
     fn of(
         rasters: &LayerRasters<'_>,
-        features: &[vale_store::Feature],
+        (features, height): (&[vale_store::Feature], Option<&str>),
         batches: &[&pipeline::Batch],
     ) -> Flows {
         let flow = |b: &&pipeline::Batch| matches!(&b.paint, StylePaint::Stroke(s) if matches!(s.kind, StrokeKind::Flow { .. }));
@@ -1219,9 +1219,9 @@ impl Flows {
         }
         Flows {
             lines: (features.iter().enumerate())
-                .map(|(i, f)| rasters.flow_line(i, &f.geometry))
+                .map(|(i, f)| rasters.flow_line(height, i, &f.geometry))
                 .collect(),
-            largest: rasters.flow_largest(features),
+            largest: rasters.flow_largest(height, features),
         }
     }
 
@@ -1305,9 +1305,10 @@ pub fn vector_layer_cut(
         pixels_per_point,
         margin,
     };
+    let height = entries.first().and_then(|e| e.style.flow_height.as_deref());
     let flows = Flows::of(
         &rasters,
-        features,
+        (features, height),
         &batches.iter().flatten().collect::<Vec<_>>(),
     );
     let key = DrawKey {
@@ -1703,7 +1704,12 @@ pub fn flat_vector_layer_cut(
         rasters: Some(&rasters),
         index: i,
     });
-    let flat_flows = Flows::of(&rasters, features, &batches.iter().collect::<Vec<_>>());
+    let height = entry.style.flow_height.as_deref();
+    let flat_flows = Flows::of(
+        &rasters,
+        (features, height),
+        &batches.iter().collect::<Vec<_>>(),
+    );
     // A masked layer draws the paints that the mask does not cut from the
     // whole geometry.
     let on_whole = |batch: &pipeline::Batch| masked.is_some() && !batch.masked;
