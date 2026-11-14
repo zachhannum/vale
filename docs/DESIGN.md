@@ -245,6 +245,10 @@ The projection editor exposes the parameters that matter: center, standard paral
 
 The editor shows distortion while you edit. It draws Tissot circles (equal circles on the sphere that show local stretch after projection) and prints the scale error at the corners of the frame.
 
+The circles sit on a grid in the frame. They show while the Projection tab is open and its switch "Tissot circles" is on. The Distortion table of the tab gives the scale error and the area error at the four corners and at the center of the frame. An error is relative to the scale of the frame, which the projection has on its standard lines. The scale error uses the scale factor that differs most from 1. A place off the map shows a dash.
+
+On iPad, each parameter is a slider. A drag changes the map at once, so each frame of the map redraws during the drag.
+
 The sphere crate generates graticule lines on the sphere and sends them through the same pipeline as features. The graticule belongs to the map frame. The frame turns it on or off, and it holds its interval, its color, and its width. The interval follows the scale of the frame, or you set it by hand. The labels sit where each line meets the frame edge. The frame sets their format: degrees, minutes, and seconds, or decimal degrees. The meridians and the parallels each have a set of labels, and each set has its own switch, text, and placement. The text is the font, the style, the size, the color, and the halo. The placement is inside or outside the edge, the offset from the edge, the orientation, and the sides that have labels. A label lies along its line or is level on the page, and it reads from left to right. An edge of a polygon frame is on the side that it faces. A label that overlaps another label, or is not on its side of the edge, does not show, so the labels at a corner do not overlap. The map labels keep clear of the edge labels inside the frame. The globe and the flat view show a graticule as a view option, and that graticule is not in an export.
 
 A scale bar and a scale value in a text box are correct only where the projection keeps scale. The app measures both at the frame center.
@@ -1149,7 +1153,6 @@ The prototype leaves out the following.
 - Pattern fills, texture fills, hatch fills of polygons, and edge effects, and style properties from expressions in the style editor other than the size and the rotation of a point symbol.
 - Label fallbacks, leader lines, and manual label changes (pin, move, exclude).
 - The overview of the pages, page templates, SVG export, and tiled raster export.
-- Tissot circles.
 - All editing tools other than the freehand line tool, the freehand polygon tool, point placement, the Select tool, reshape, and the attribute table: vertex editing.
 - Wholesale procedural world generation. This is a permanent non-goal.
 

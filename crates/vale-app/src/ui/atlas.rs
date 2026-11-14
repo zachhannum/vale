@@ -21,6 +21,7 @@ use super::AppState;
 use super::frame_tiles::{FrameLists, FramePaint, Layer, Screen, Shown, Spill, Tiles};
 use super::map_texture::{self, MapTexture};
 use crate::atlas::{self as math, FrameTarget, Handle, PT_PER_MM, PagePreset, Vertex};
+use crate::distortion::ScaleError;
 use crate::document::Document;
 use crate::globe::Canvas;
 use crate::globe::flat::FlatMesh;
@@ -600,6 +601,8 @@ pub struct AtlasState {
     pub sizes: bool,
     /// The list of the projections of the Projection tab is open.
     pub kinds: bool,
+    /// The Tissot circles show while the Projection tab is open.
+    pub tissot: bool,
     /// The color picker of the graticule is open.
     pub graticule_color: bool,
     /// The color picker of the graticule showed in this frame.
@@ -850,6 +853,7 @@ impl Default for AtlasState {
             tab: FrameTab::Frame,
             sizes: false,
             kinds: false,
+            tissot: true,
             graticule_color: false,
             graticule_shown: false,
             neatline_color: false,
@@ -939,6 +943,11 @@ impl AtlasState {
     }
 
     /// The selected frame.
+    /// The key of what a frame showed when its lists were built last.
+    pub fn frame_content(&self, id: FrameId) -> Option<u64> {
+        self.tiles.lists(id).map(|l| l.content)
+    }
+
     pub fn frame(&self) -> Option<FrameId> {
         match self.selection {
             AtlasSelection::Frame(id) => Some(id),
@@ -1812,6 +1821,7 @@ pub fn canvas(ui: &mut egui::Ui, state: &mut AppState, area: Rect, free: Rect, b
     frames(ui, state, place, area);
     items(ui, state, place, area);
     layout_grid(ui, state, place, area);
+    tissot(ui, state, place, area);
     selection(ui, state, place, area);
     features::paint(ui, state, place, area);
     guides(ui, state, place, area);
@@ -3569,6 +3579,51 @@ fn selection(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) 
             }
             state.atlas.handles = handles;
         }
+    }
+}
+
+/// The frame that shows its Tissot circles: the selected frame while its
+/// Projection tab shows and the circles are on.
+pub fn tissot_frame(state: &AppState) -> Option<FrameId> {
+    let id = state.atlas.frame()?;
+    let open = if state.layout == super::Layout::Pad {
+        state.pad.docks.atlas.shows(super::pad::Panel::Projection)
+    } else {
+        state.atlas.tab == FrameTab::Projection
+    };
+    (open && state.atlas.tissot).then_some(id)
+}
+
+/// The scale error at the corners and the center of a frame.
+pub fn frame_errors(state: &mut AppState, id: FrameId) -> [Option<ScaleError>; 5] {
+    let Some(frame) = state.doc.project.atlas.frame(id).cloned() else {
+        return [None; 5];
+    };
+    match state.pipeline.projection(&state.doc, frame.map) {
+        Ok(projection) => crate::distortion::frame_errors(projection, &frame),
+        Err(_) => [None; 5],
+    }
+}
+
+/// The Tissot circles of the frame of `tissot_frame`.
+fn tissot(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
+    let Some(id) = tissot_frame(state) else {
+        return;
+    };
+    let Some(frame) = state.doc.project.atlas.frame(id).cloned() else {
+        return;
+    };
+    let Ok(projection) = state.pipeline.projection(&state.doc, frame.map) else {
+        return;
+    };
+    let circles = crate::distortion::tissot_circles(projection, &frame);
+    let clip = place.rect_to_screen(math::shape_bbox(&frame.shape));
+    let painter = ui.painter_at(clip.intersect(area));
+    let fill = Color32::from_rgba_unmultiplied(194, 56, 43, 36);
+    let stroke = egui::Stroke::new(1.5, Color32::from_rgb(156, 36, 21));
+    for ring in circles {
+        let points = ring.iter().map(|p| place.to_screen(*p)).collect();
+        painter.add(egui::Shape::convex_polygon(points, fill, stroke));
     }
 }
 
