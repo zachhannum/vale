@@ -4537,6 +4537,7 @@ fn a_width_from_flow_with_the_taper_grows_toward_the_mouth_in_a_frame_and_in_pdf
                 color: Property::constant(Color::rgb(200, 0, 0)),
                 width: Property::expression(width, 0.25),
                 kind: StrokeKind::taper(),
+                apply_mask: true,
             })],
         )],
     };

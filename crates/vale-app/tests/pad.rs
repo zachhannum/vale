@@ -17008,6 +17008,7 @@ fn the_flow_works_on_a_height_layer_with_its_rivers_off() {
                 color: Property::constant(Color::rgb(0, 0, 200)),
                 width: Property::expression("clamp(0.5, sqrt(flow('Height')) / 20, 6)", 1.0),
                 kind: StrokeKind::taper(),
+                apply_mask: true,
             })],
         )],
     };

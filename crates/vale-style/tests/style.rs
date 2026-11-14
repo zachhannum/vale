@@ -1164,6 +1164,7 @@ fn set_fill_and_set_stroke_keep_apply_mask() {
     assert_eq!(rule.fill_applies_mask(), None);
     rule.set_fill(Some(RED));
     assert_eq!(rule.fill_applies_mask(), Some(true));
+}
 
 #[test]
 fn a_width_expression_stays_after_an_edit_of_the_stroke() {

@@ -425,6 +425,7 @@ fn a_width_from_flow_with_the_taper_grows_toward_the_mouth_on_the_globe() {
                 color: Property::constant(Color::rgb(200, 0, 0)),
                 width: Property::expression(width, 0.25),
                 kind: StrokeKind::taper(),
+                apply_mask: true,
             })],
         )],
     };
