@@ -3583,14 +3583,16 @@ fn selection(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) 
 }
 
 /// The frame that shows its Tissot circles: the selected frame while its
-/// Projection tab shows and the circles are on.
+/// Projection tab is the tab of the frame that the user looks at, and the
+/// circles are on. In the iPad layout, the user chose the Projection panel
+/// last of the panels of the frame, and its pane is open.
 pub fn tissot_frame(state: &AppState) -> Option<FrameId> {
     let id = state.atlas.frame()?;
-    let open = if state.layout == super::Layout::Pad {
-        state.pad.docks.atlas.shows(super::pad::Panel::Projection)
-    } else {
-        state.atlas.tab == FrameTab::Projection
-    };
+    let dock = &state.pad.docks.atlas;
+    let panel = super::pad::Panel::Projection;
+    let open = state.atlas.tab == FrameTab::Projection
+        && (state.layout != super::Layout::Pad
+            || (dock.shows(panel) && !dock.folded(panel) && !dock.collapsed));
     (open && state.atlas.tissot).then_some(id)
 }
 

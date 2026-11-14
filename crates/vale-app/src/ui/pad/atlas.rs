@@ -277,6 +277,14 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     state.atlas.every_tab = true;
     super::dock_ui::show(&ctx, state, &mut controls, &rects);
     state.pad.docks.atlas.learn();
+    // A touch in the pane of a panel of a frame chooses that panel.
+    let pressed = ctx.input(|i| i.pointer.any_pressed().then(|| i.pointer.press_origin()));
+    if let Some(at) = pressed.flatten()
+        && let Some(&(panel, _)) = (state.pad.panels.iter())
+            .find(|(panel, rect)| panel.frame_tab().is_some() && rect.contains(at))
+    {
+        state.pad.docks.atlas.focus = Some(panel);
+    }
     // The panel of the frame that the user chose last is the tab of the
     // frame. A tab that changed in this frame opens its panel in the next.
     let focus = state.pad.docks.atlas.focus.and_then(Panel::frame_tab);

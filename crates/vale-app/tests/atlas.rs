@@ -11506,3 +11506,42 @@ fn a_slider_drag_redraws_each_frame_of_the_map() {
     let shown = s.pipeline.projection(&s.doc, inset.map).unwrap().spec();
     assert_eq!(shown.lat2, lat2);
 }
+
+/// The middle of the left margin of the pane of a panel, where a touch hits
+/// no control.
+fn pane_margin(h: &Pad, panel: vale_app::ui::pad::Panel) -> Pos2 {
+    let (_, rect) = (h.state().pad.panels.iter())
+        .find(|(p, _)| *p == panel)
+        .unwrap_or_else(|| panic!("no pane of {panel:?}"));
+    pos2(rect.left() + 6.0, rect.center().y)
+}
+
+#[test]
+fn the_tissot_circles_follow_the_panel_of_the_frame_that_a_finger_touched_last() {
+    use vale_app::ui::pad::Panel;
+    let mut h = inset_pad(BOARDS[0]);
+    let inset = frame(&h, 1);
+    let dock = h.state_mut().pad.dock_mut();
+    dock.panes.clear();
+    dock.open(Panel::Properties);
+    dock.open(Panel::Projection);
+    h.run_steps(3);
+    let dock = h.state().pad.dock();
+    assert!(dock.shows(Panel::Properties) && dock.shows(Panel::Projection));
+
+    let at = pane_margin(&h, Panel::Projection);
+    quick_tap_at(&mut h, at);
+    assert_eq!(atlas::tissot_frame(h.state()), Some(inset.id));
+    let at = pane_margin(&h, Panel::Properties);
+    quick_tap_at(&mut h, at);
+    assert_eq!(atlas::tissot_frame(h.state()), None);
+    let at = pane_margin(&h, Panel::Projection);
+    quick_tap_at(&mut h, at);
+    assert_eq!(atlas::tissot_frame(h.state()), Some(inset.id));
+
+    // A folded pane shows no circles.
+    let (pane, _) = h.state().pad.dock().find(Panel::Projection).unwrap();
+    h.state_mut().pad.dock_mut().fold(pane);
+    h.run_steps(2);
+    assert_eq!(atlas::tissot_frame(h.state()), None);
+}
