@@ -105,7 +105,7 @@ pub fn show(
     let id = egui::Id::new(key);
     let height: f32 = ctx.data(|d| d.get_temp(id.with("height"))).unwrap_or(240.0);
     let screen = ctx.viewport_rect();
-    let top = screen.top() + Bands::new(screen, ctx.content_rect()).top;
+    let top = screen.top() + Bands::of(ctx).top;
     let area = (top, floor(ctx, screen));
     let (rect, below) = place(anchor, vec2(width, height), screen, area);
     let pressed = ctx.input(|i| i.pointer.press_origin().filter(|_| i.pointer.any_pressed()));

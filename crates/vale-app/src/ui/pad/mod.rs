@@ -549,6 +549,8 @@ pub struct PadState {
     /// The region that the system reserves around a camera at the top of
     /// the screen, in points.
     pub camera: Option<Rect>,
+    /// The folding region of a partially folded device, in points.
+    pub fold: Option<Rect>,
     /// The pane of each open tab of the last frame, by its panel.
     pub panels: Vec<(Panel, Rect)>,
     /// The workspace menu of the last frame.
@@ -684,7 +686,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     let screen = ctx.viewport_rect();
     // The globe paints after the panels, so a change in a panel shows in
     // the same frame. The dock floats over the canvas.
-    let bands = geometry::Bands::new(screen, ctx.content_rect());
+    let bands = geometry::Bands::of(&ctx);
     let canvas = ui.scope_builder(egui::UiBuilder::new().max_rect(screen), |ui| {
         ui.set_clip_rect(screen);
         globe::canvas_input(ui, state, theme::CANVAS)
@@ -705,6 +707,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         column: column_input(state),
         dock_width: state.pad.docks.world.width,
         camera: state.pad.camera,
+        fold: state.pad.fold,
     };
     let mut rects = geometry::layout(&input);
     state.pad.sheet_offset = input

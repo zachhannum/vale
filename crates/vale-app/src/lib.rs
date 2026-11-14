@@ -43,6 +43,7 @@ pub mod ramps;
 pub mod raster_style;
 pub mod raster_values;
 pub mod region;
+pub mod reserved;
 pub mod resume;
 pub mod rule_edit;
 pub mod scale_bar;

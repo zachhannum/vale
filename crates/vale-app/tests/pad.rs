@@ -16184,9 +16184,11 @@ fn in_add_the_polygon_brush_paints_a_new_feature_and_then_joins_it() {
     assert_eq!(h.state().globe.line.polygon_mode, PolygonMode::Add);
 }
 
-/// The outer screen of iPhone Duo in portrait and in landscape, with its
-/// safe area and the region of the outer camera: a circle of 30 points at
-/// the top right in portrait and at the top left in landscape.
+/// The outer screen of iPhone Duo in portrait and in landscape, with the
+/// safe area that the device reports and the region of the outer camera: a
+/// circle of 30 points at the top right in portrait and at the top left in
+/// landscape. The safe area leaves out the column of the status bar, at
+/// the side of the camera.
 /// A pose: its name, its size in points, its safe area, and the region of
 /// the camera.
 type Pose = (&'static str, (f32, f32), [f32; 4], Rect);
@@ -16195,13 +16197,13 @@ const DUO_OUTER: [Pose; 2] = [
     (
         "portrait",
         (466.0, 678.0),
-        [0.0, 0.0, 34.0, 0.0],
+        [0.0, 84.0, 34.0, 0.0],
         Rect::from_min_max(pos2(409.0, 9.0), pos2(439.0, 39.0)),
     ),
     (
         "landscape",
         (678.0, 466.0),
-        [0.0, 0.0, 34.0, 0.0],
+        [0.0, 0.0, 34.0, 84.0],
         Rect::from_min_max(pos2(27.0, 9.0), pos2(57.0, 39.0)),
     ),
 ];
@@ -16219,10 +16221,14 @@ fn duo_outer(size: (f32, f32), safe: [f32; 4], camera: Rect, atlas: bool) -> Pad
 /// Asserts that each control is in the safe area and out of the camera.
 fn check_duo_controls(
     h: &Pad,
-    [top, right, bottom, left]: [f32; 4],
+    [top, mut right, bottom, mut left]: [f32; 4],
     camera: Option<Rect>,
     what: &str,
 ) {
+    // The side band of the camera is free.
+    if camera.is_some() {
+        (right, left) = (0.0, 0.0);
+    }
     check_controls(h, what);
     let screen = h.state().pad.rects.unwrap().screen;
     for c in &h.state().pad.controls {
@@ -16249,12 +16255,15 @@ fn the_outer_screen_of_iphone_duo_keeps_the_controls_off_the_camera() {
     for (pose, size, safe, camera) in DUO_OUTER {
         for atlas in [false, true] {
             let what = format!("{pose}, atlas {atlas}");
-            let mut h = duo_inner(size, safe, atlas);
-            let before = h.state().pad.rects.unwrap();
-            h.state_mut().pad.camera = Some(camera);
-            h.run_steps(3);
+            // The layout of the screen with no side band and no camera.
+            let [top, _, bottom, _] = safe;
+            let plain = duo_inner(size, [top, 0.0, bottom, 0.0], atlas);
+            let before = plain.state().pad.rects.unwrap();
+            let h = duo_outer(size, safe, camera, atlas);
             check_duo_controls(&h, safe, Some(camera), &what);
             let rects = h.state().pad.rects.unwrap();
+            // The column of the status bar is free.
+            assert_eq!((rects.bands.left, rects.bands.right), (0.0, 0.0), "{what}");
             if pose == "portrait" {
                 assert_eq!(rects.class, WidthClass::Compact, "{what}");
                 // The card of the actions ends at the left of the camera.
@@ -16415,6 +16424,16 @@ fn on_the_outer_screen_of_iphone_duo_the_inspector_fits_with_the_keyboard_up() {
     }
 }
 
+fn set_safe_area(h: &mut Pad, [top, right, bottom, left]: [f32; 4]) {
+    let insets = egui::epaint::MarginF32 {
+        left,
+        right,
+        top,
+        bottom,
+    };
+    h.input_mut().safe_area_insets = Some(egui::SafeAreaInsets(insets));
+}
+
 #[test]
 fn after_a_fold_or_an_unfold_the_controls_have_their_places() {
     let (_, outer, outer_safe, camera) = DUO_OUTER[0];
@@ -16424,6 +16443,7 @@ fn after_a_fold_or_an_unfold_the_controls_have_their_places() {
         let folded = h.state().pad.rects.unwrap();
         // Unfold: the app moves to the inner screen, with no camera region.
         h.state_mut().pad.camera = None;
+        set_safe_area(&mut h, inner_safe);
         h.set_size(vec2(inner.0, inner.1));
         h.run_steps(4);
         let what = format!("unfolded, atlas {atlas}");
@@ -16442,6 +16462,7 @@ fn after_a_fold_or_an_unfold_the_controls_have_their_places() {
         );
         // Fold: back on the outer screen with the camera.
         h.state_mut().pad.camera = Some(camera);
+        set_safe_area(&mut h, outer_safe);
         h.set_size(vec2(outer.0, outer.1));
         h.run_steps(4);
         let what = format!("folded, atlas {atlas}");
@@ -16495,8 +16516,8 @@ fn the_screenshots_of_the_outer_screen_of_iphone_duo_show_both_workspaces() {
                 assert!(
                     r.top() >= top
                         && r.bottom() <= size.1 - bottom
-                        && r.left() >= left
-                        && r.right() <= size.0 - right
+                        && r.left() >= 0.0
+                        && r.right() <= size.0
                         && !camera.intersects(r),
                     "{what}: {} is {r:?}",
                     c.name

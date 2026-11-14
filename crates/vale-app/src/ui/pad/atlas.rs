@@ -206,7 +206,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     let row = class == WidthClass::Compact;
     let mut input = Input {
         screen,
-        bands: geometry::Bands::new(screen, ctx.content_rect()),
+        bands: geometry::Bands::of(&ctx),
         workspace_width: super::workspace_width(ui, class, WORKSPACES[1]),
         panel: !state.pad.dock().panes.is_empty(),
         sheet_offset: state.pad.sheet_offset,
@@ -226,6 +226,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         column: column_input(state, measuring),
         dock_width: state.pad.docks.atlas.width,
         camera: state.pad.camera,
+        fold: state.pad.fold,
     };
     let mut rects = geometry::layout(&input);
     state.pad.sheet_offset = input

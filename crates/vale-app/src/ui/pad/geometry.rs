@@ -1,6 +1,8 @@
 //! The places of the cards of the iPad layout. All sizes are in points.
 
-use eframe::egui::{CornerRadius, Pos2, Rect, pos2, vec2};
+use eframe::egui::{self, CornerRadius, Pos2, Rect, pos2, vec2};
+
+use crate::reserved::Regions;
 
 /// The space from a card to the edge of the screen.
 pub const MARGIN: f32 = 16.0;
@@ -99,6 +101,46 @@ impl Bands {
             right: (screen.right() - safe.right()).max(0.0),
         }
     }
+
+    /// The bands of the screen of `ctx`, with its reserved regions.
+    pub fn of(ctx: &egui::Context) -> Bands {
+        let screen = ctx.viewport_rect();
+        Bands::new(screen, ctx.content_rect()).free_camera_side(screen, regions(ctx).camera)
+    }
+
+    /// A side band that holds a camera at a top corner is free, and the
+    /// layout keeps out of the camera region alone. The outer screen of
+    /// iPhone Duo has such a band, the column of the status bar.
+    pub fn free_camera_side(mut self, screen: Rect, camera: Option<Rect>) -> Bands {
+        let Some(camera) = camera else {
+            return self;
+        };
+        if camera.bottom() > screen.top() + self.top + TOP_GAP + ROW {
+            return self;
+        }
+        let x = camera.center().x;
+        if self.right > 0.0 && x >= screen.right() - self.right {
+            self.right = 0.0;
+        }
+        if self.left > 0.0 && x <= screen.left() + self.left {
+            self.left = 0.0;
+        }
+        self
+    }
+}
+
+fn regions_id() -> egui::Id {
+    egui::Id::new("pad-reserved-regions")
+}
+
+/// Keeps the reserved regions for the code of this frame.
+pub fn set_regions(ctx: &egui::Context, regions: Regions) {
+    ctx.data_mut(|d| d.insert_temp(regions_id(), regions));
+}
+
+/// The reserved regions of this frame.
+pub fn regions(ctx: &egui::Context) -> Regions {
+    ctx.data(|d| d.get_temp(regions_id())).unwrap_or_default()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -183,6 +225,8 @@ pub struct Input {
     /// The region that the system reserves around a camera at the top of
     /// the screen.
     pub camera: Option<Rect>,
+    /// The folding region of a partially folded device.
+    pub fold: Option<Rect>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -560,6 +604,7 @@ mod tests {
             column: brush(),
             dock_width: 340.0,
             camera: None,
+            fold: None,
         }
     }
 
@@ -945,5 +990,37 @@ mod tests {
         input.panel = true;
         let r = layout(&input);
         assert_eq!(r.sheet, Some(rect(0.0, 339.0, 466.0, 339.0)));
+    }
+
+    #[test]
+    fn a_side_band_with_a_camera_at_a_top_corner_is_free() {
+        let screen = rect(0.0, 0.0, 466.0, 678.0);
+        let bands = Bands {
+            top: 24.0,
+            bottom: 34.0,
+            left: 0.0,
+            right: 84.0,
+        };
+        // The outer screen of iPhone Duo in portrait.
+        let camera = rect(409.0, 9.0, 30.0, 30.0);
+        let free = bands.free_camera_side(screen, Some(camera));
+        assert_eq!(
+            free,
+            Bands {
+                right: 0.0,
+                ..bands
+            }
+        );
+        assert_eq!(bands.free_camera_side(screen, None), bands);
+        // The Dynamic Island of an iPhone in landscape is at the middle of
+        // the side band, and the band stays.
+        let screen = rect(0.0, 0.0, 852.0, 393.0);
+        let bands = Bands {
+            left: 59.0,
+            right: 59.0,
+            ..Bands::MIN
+        };
+        let island = rect(10.0, 140.0, 37.0, 113.0);
+        assert_eq!(bands.free_camera_side(screen, Some(island)), bands);
     }
 }

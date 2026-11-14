@@ -88,7 +88,7 @@ fn one_line(
 pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     let ctx = ui.ctx().clone();
     let screen = ctx.viewport_rect();
-    let bands = Bands::new(screen, ctx.content_rect());
+    let bands = Bands::of(&ctx);
     let mut controls = std::mem::take(&mut state.pad.controls);
     controls.clear();
 
@@ -140,6 +140,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         column: geometry::ColumnInput::default(),
         dock_width: super::panes::WIDTH,
         camera: state.pad.camera,
+        fold: state.pad.fold,
     });
     world_form::pad(&ctx, state, &mut controls, &rects);
     state.pad.controls = controls;
