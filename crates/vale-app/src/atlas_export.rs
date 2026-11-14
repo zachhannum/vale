@@ -22,8 +22,10 @@ use crate::pipeline::{FrameDetail, Pipeline, Quality, paper_color};
 use crate::raster_style;
 use crate::{furniture, headless};
 
-/// The pixels in one point of an exported raster layer: 300 pixels per inch.
-pub const RASTER_PIXEL_RATIO: f64 = 300.0 / 72.0;
+/// The pixels in one point of a raster export at `dpi` dots per inch.
+pub fn pixel_ratio(dpi: u32) -> f64 {
+    f64::from(dpi) / 72.0
+}
 
 /// The fewest rows of pixels in a strip of an exported frame.
 pub const MIN_STRIP_ROWS: u32 = 64;
@@ -201,6 +203,12 @@ impl PdfExport {
             .collect()
     }
 
+    /// The pixels in one point of the raster images of the page that the
+    /// export draws.
+    pub fn pixel_ratio(&self) -> f64 {
+        pixel_ratio(self.pages[self.page.min(self.pages.len() - 1)].dpi)
+    }
+
     fn shown_images(&self, frame: &FrameRecord) -> Vec<ImageId> {
         self.doc
             .project
@@ -226,15 +234,13 @@ impl PdfExport {
             anyhow::bail!("the map frame has no area on the page");
         }
         let point_min = Point::new(bbox.x0 * PT_PER_MM, bbox.y0 * PT_PER_MM);
-        let pixel = |points: f64| (points * RASTER_PIXEL_RATIO).ceil().max(1.0) as u32;
+        let ratio = pixel_ratio(page.dpi);
+        let pixel = |points: f64| (points * ratio).ceil().max(1.0) as u32;
         let size = [
             pixel(bbox.width() * PT_PER_MM),
             pixel(bbox.height() * PT_PER_MM),
         ];
-        let point_size = Point::new(
-            f64::from(size[0]) / RASTER_PIXEL_RATIO,
-            f64::from(size[1]) / RASTER_PIXEL_RATIO,
-        );
+        let point_size = Point::new(f64::from(size[0]) / ratio, f64::from(size[1]) / ratio);
         let image_rect = Rect::from_origin_size(point_min, (point_size.x, point_size.y));
         let page_target = FrameTarget {
             origin: Point::ZERO,
@@ -253,7 +259,7 @@ impl PdfExport {
         let unit_projection =
             Projection::new(spec, 1.0).map_err(|error| anyhow::anyhow!("projection: {error}"))?;
         let mask_list = Pipeline::frame_mask(frame, capture_target, (part.width(), part.height()));
-        let image = vale_render::render_rgba(&mask_list, RASTER_PIXEL_RATIO)?;
+        let image = vale_render::render_rgba(&mask_list, ratio)?;
         let mask = Arc::new(Mask {
             id: MASK_ID.fetch_add(1, Ordering::Relaxed),
             size,
@@ -272,18 +278,15 @@ impl PdfExport {
         let draw = FrameDraw {
             id: next_draw_id(),
             place: FramePlace {
-                center: [
-                    (vt.origin.x * RASTER_PIXEL_RATIO) as f32,
-                    (vt.origin.y * RASTER_PIXEL_RATIO) as f32,
-                ],
+                center: [(vt.origin.x * ratio) as f32, (vt.origin.y * ratio) as f32],
                 map_center: [
                     (vt.view.center.x / radius) as f32,
                     (vt.view.center.y / radius) as f32,
                 ],
-                units_to_pixels: (vt.view.scale * radius * RASTER_PIXEL_RATIO) as f32,
+                units_to_pixels: (vt.view.scale * radius * ratio) as f32,
                 rotation: vt.view.rotation,
                 points_per_radian: radius * PT_PER_MM * 1000.0 / frame.scale,
-                pixels_per_page_point: RASTER_PIXEL_RATIO as f32,
+                pixels_per_page_point: ratio as f32,
             },
             rect: [0, 0, size[0], size[1]],
             mesh: Arc::new(FlatMesh::new(&unit_projection)),
@@ -312,11 +315,8 @@ impl PdfExport {
             part: image_rect,
             image_rect,
             pixels: FrameTarget {
-                origin: Point::new(
-                    -point_min.x * RASTER_PIXEL_RATIO,
-                    -point_min.y * RASTER_PIXEL_RATIO,
-                ),
-                pts_per_mm: PT_PER_MM * RASTER_PIXEL_RATIO,
+                origin: Point::new(-point_min.x * ratio, -point_min.y * ratio),
+                pts_per_mm: PT_PER_MM * ratio,
             },
             receivers: None,
         })
@@ -505,7 +505,7 @@ impl PdfExport {
             }
             let list = self.list.take().unwrap();
             if matches!(self.output, Some(Output::Png)) {
-                let bytes = vale_render::render_png(&list, RASTER_PIXEL_RATIO)?;
+                let bytes = vale_render::render_png(&list, pixel_ratio(page.dpi))?;
                 headless::write_file(&self.path, &bytes)?;
                 return Ok(ExportStep::Done(Ok(self.path.clone())));
             }

@@ -542,7 +542,7 @@ fn an_export_over_the_detail_budget_draws_in_strips_with_no_seam() {
 
     // The rows on each side of each strip boundary show the stripes.
     let bbox = vale_app::atlas::shape_bbox(&frame.shape);
-    let ratio = vale_app::atlas_export::RASTER_PIXEL_RATIO;
+    let ratio = vale_app::atlas_export::pixel_ratio(vale_store::DEFAULT_DPI);
     let rows = (bbox.height() * vale_app::atlas::PT_PER_MM * ratio).ceil() as u32;
     let strip = (0..8)
         .map(|k| rows.div_ceil(1 << k))

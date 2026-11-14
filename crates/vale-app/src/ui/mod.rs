@@ -16,7 +16,7 @@ use vale_store::{
 use vale_style::LabelClass;
 use vale_terrain::{Bands, Heightmap, Mode};
 
-use crate::atlas_export::{ExportStep, PdfExport, RASTER_PIXEL_RATIO};
+use crate::atlas_export::{ExportStep, PdfExport};
 use crate::document::{Document, Target};
 use crate::files::{Availability, ExportEvent, Files, PlainFiles, SystemEvents};
 use crate::globe::combine::{PolygonMode, StrokeArea};
@@ -3817,7 +3817,7 @@ impl AppState {
                 }
                 let canvas = crate::globe::Canvas {
                     background: egui::Color32::TRANSPARENT,
-                    pixels_per_point: RASTER_PIXEL_RATIO as f32,
+                    pixels_per_point: job.pixel_ratio() as f32,
                 };
                 let mut callbacks = Vec::new();
                 let mut covers = Vec::new();
