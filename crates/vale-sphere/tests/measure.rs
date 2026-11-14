@@ -175,3 +175,18 @@ fn the_center_of_points_is_their_mean_direction() {
     assert!(near(c, [0.0, 0.0]), "{c:?}");
     assert!(point_center(&[[0.0, 0.0], [180.0, 0.0]]).is_none());
 }
+
+#[test]
+fn a_small_circle_keeps_its_radius_from_the_center() {
+    for center in [[0.0, 0.0], [170.0, 50.0], [-30.0, 89.0], [0.0, -90.0]] {
+        let ring = small_circle(center, 5.0, 24);
+        assert_eq!(ring.len(), 24);
+        for p in ring {
+            let angle = central_angle(center, p).to_degrees();
+            assert!((angle - 5.0).abs() < 1e-9, "{center:?}: {angle}");
+        }
+    }
+    // The first point is north of the center.
+    let first = small_circle([10.0, 20.0], 5.0, 8)[0];
+    assert!((first[0] - 10.0).abs() < 1e-9 && (first[1] - 25.0).abs() < 1e-9);
+}
