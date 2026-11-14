@@ -1117,9 +1117,13 @@ fn column_input(state: &AppState) -> ColumnInput {
     } else {
         (0, 0, false)
     };
+    // The cell of the polygon modes is above the slider.
+    let strip = card_cells(globe) == 0 && has_strip(globe);
+    let vector = globe.stroking() || globe.placing();
     ColumnInput {
         tools: TOOLS,
         cells: cells + extra_cells(state),
+        lead: usize::from(strip && vector && globe.filling()),
         sliders,
         brush_button,
     }
@@ -1154,7 +1158,10 @@ pub(super) fn column_card(
 ) {
     let rect = rects.tools;
     let scroll = rects.column_content > rect.height() + 0.5;
-    widgets::edge_card(ctx, backdrop, "pad-tools", rect, rects, |ui| {
+    let inset = geometry::COLUMN_INSET;
+    let gap = rects.column_gap.filter(|_| !scroll);
+    let card_gap = gap.map(|g| egui::Rangef::new(g.min + inset, g.max - inset));
+    widgets::split_edge_card(ctx, backdrop, "pad-tools", rect, card_gap, rects, |ui| {
         let inner = ui.max_rect().shrink(geometry::COLUMN_INSET);
         let layout = egui::Layout::top_down(egui::Align::Min);
         let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
@@ -1166,7 +1173,9 @@ pub(super) fn column_card(
                     .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
                     .show(ui, add_contents);
             } else {
+                widgets::set_column_gap(ui.ctx(), gap);
                 add_contents(ui);
+                widgets::set_column_gap(ui.ctx(), None);
             }
         });
     });
@@ -1175,6 +1184,7 @@ pub(super) fn column_card(
 /// The line between the tools and the controls of the tool in the tool
 /// column.
 pub(super) fn column_divider(ui: &mut egui::Ui) {
+    widgets::skip_fold(ui, geometry::COLUMN_DIVIDER);
     let size = vec2(ui.available_width(), geometry::COLUMN_DIVIDER);
     let (rule, _) = ui.allocate_exact_size(size, egui::Sense::hover());
     let line = Rect::from_center_size(rule.center(), vec2(rule.width() - 4.0, 1.0));
@@ -1187,8 +1197,7 @@ fn tool_column(ctx: &egui::Context, state: &mut AppState, controls: &mut Control
     let mut merge_cell = None;
     let mut selectable_cell = None;
     let backdrop = state.globe.backdrop();
-    let context = rects.column_content
-        > 2.0 * geometry::COLUMN_INSET + TOOLS as f32 * geometry::COLUMN_CELL + 0.5;
+    let context = rects.column_context;
     column_card(ctx, backdrop, rects, |ui| {
         tool_cells(ui, state, controls);
         if !context {

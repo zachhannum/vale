@@ -379,6 +379,7 @@ fn column_input(state: &AppState, measuring: bool) -> geometry::ColumnInput {
     geometry::ColumnInput {
         tools: TOOL_CELLS,
         cells,
+        lead: 0,
         sliders: 0,
         brush_button: false,
     }
@@ -782,8 +783,7 @@ fn tool_column(
     rects: &Rects,
     measuring: bool,
 ) {
-    let context = rects.column_content
-        > 2.0 * geometry::COLUMN_INSET + TOOL_CELLS as f32 * geometry::COLUMN_CELL + 0.5;
+    let context = rects.column_context;
     let mut selectable_cell = None;
     let backdrop = state.globe.backdrop();
     super::column_card(ctx, backdrop, rects, |ui| {

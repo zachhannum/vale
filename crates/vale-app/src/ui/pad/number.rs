@@ -400,6 +400,7 @@ impl<'a> Number<'a> {
     pub fn vertical(self, ui: &mut egui::Ui, controls: &mut Controls, height: f32) -> Option<f64> {
         let enabled = self.enabled;
         let width = ui.available_width().min(CELL.0);
+        super::widgets::skip_fold(ui, height);
         let (rect, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
         let resp = hit(
             ui,

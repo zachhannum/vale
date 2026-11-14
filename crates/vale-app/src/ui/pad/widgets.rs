@@ -55,6 +55,23 @@ pub fn card(
     radius: CornerRadius,
     add_contents: impl FnOnce(&mut egui::Ui),
 ) {
+    split_card(ctx, backdrop, id, rect, None, order, radius, add_contents);
+}
+
+/// A `card` in two parts, one above `gap` and one below it. The gap is
+/// not a part of the card, and it takes no touch.
+#[allow(clippy::too_many_arguments)]
+pub fn split_card(
+    ctx: &egui::Context,
+    backdrop: Option<wgpu::TextureFormat>,
+    id: &str,
+    rect: Rect,
+    gap: Option<egui::Rangef>,
+    order: egui::Order,
+    radius: CornerRadius,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) {
+    let gap = gap.filter(|g| g.min > rect.top() && g.max < rect.bottom());
     egui::Area::new(egui::Id::new(id))
         .order(order)
         .fixed_pos(rect.min)
@@ -69,19 +86,37 @@ pub fn card(
         .fade_in(false)
         .sizing_pass(false)
         .show(ctx, |ui| {
-            let (rect, _) = ui.allocate_exact_size(rect.size(), Sense::click_and_drag());
+            let sense = match gap {
+                Some(_) => Sense::hover(),
+                None => Sense::click_and_drag(),
+            };
+            let (rect, _) = ui.allocate_exact_size(rect.size(), sense);
             // The blur shows what the frame drew below this order, without
             // the shadow.
             if backdrop.is_some() {
                 ui.painter().add(marker(order, rect));
             }
-            ui.painter().add(theme::shadow().as_shape(rect, radius));
-            if let Some(format) = backdrop {
-                let shape = card_shape(format, rect, radius, ctx.pixels_per_point());
-                ui.painter().add(shape);
+            let parts = match gap {
+                Some(g) => vec![
+                    Rect::from_x_y_ranges(rect.x_range(), rect.top()..=g.min),
+                    Rect::from_x_y_ranges(rect.x_range(), g.max..=rect.bottom()),
+                ],
+                None => vec![rect],
+            };
+            for (i, &part) in parts.iter().enumerate() {
+                if gap.is_some() {
+                    ui.interact(part, ui.id().with(("part", i)), Sense::click_and_drag());
+                }
+                ui.painter().add(theme::shadow().as_shape(part, radius));
             }
-            ui.painter()
-                .rect_filled(rect, radius, theme::card(backdrop.is_some()));
+            for &part in &parts {
+                if let Some(format) = backdrop {
+                    let shape = card_shape(format, part, radius, ctx.pixels_per_point());
+                    ui.painter().add(shape);
+                }
+                ui.painter()
+                    .rect_filled(part, radius, theme::card(backdrop.is_some()));
+            }
             let layout = egui::Layout::top_down(egui::Align::Min);
             let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(layout));
             ui.set_clip_rect(rect);
@@ -108,6 +143,52 @@ pub fn edge_card(
         let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
         add_contents(&mut ui);
     });
+}
+
+/// An `edge_card` in two parts, one above `gap` and one below it.
+pub fn split_edge_card(
+    ctx: &egui::Context,
+    backdrop: Option<wgpu::TextureFormat>,
+    id: &str,
+    rect: Rect,
+    gap: Option<egui::Rangef>,
+    rects: &Rects,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) {
+    let radius = geometry::edge_radius(rect, rects.screen);
+    let inner = geometry::edge_content(rect, rects.screen, rects.bands);
+    let order = egui::Order::Middle;
+    split_card(ctx, backdrop, id, rect, gap, order, radius, |ui| {
+        let layout = egui::Layout::top_down(egui::Align::Min);
+        let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
+        add_contents(&mut ui);
+    });
+}
+
+fn column_gap_id() -> egui::Id {
+    egui::Id::new("pad-column-gap")
+}
+
+/// Sets the gap of the tool column for the controls that the column adds
+/// next. `None` ends it.
+pub(super) fn set_column_gap(ctx: &egui::Context, gap: Option<egui::Rangef>) {
+    ctx.data_mut(|d| match gap {
+        Some(gap) => {
+            d.insert_temp(column_gap_id(), gap);
+        }
+        None => d.remove::<egui::Rangef>(column_gap_id()),
+    });
+}
+
+/// Moves the cursor of the tool column below its gap at the fold, if a
+/// control `height` high at the cursor would be in the gap.
+pub(super) fn skip_fold(ui: &mut egui::Ui, height: f32) {
+    let gap = ui.ctx().data(|d| d.get_temp(column_gap_id()));
+    let y = ui.cursor().top();
+    let top = geometry::skip_gap(y, height, gap);
+    if top > y {
+        ui.add_space(top - y);
+    }
 }
 
 /// Makes a rectangle a control. `selected` is the state of a control that
@@ -425,6 +506,7 @@ pub(super) fn tool_cell_with(
     hold: bool,
 ) -> Response {
     let style = cell_style(ui.ctx());
+    skip_fold(ui, cell_size(ui.ctx()).y);
     let (rect, _) = ui.allocate_exact_size(cell_size(ui.ctx()), Sense::hover());
     let resp = hit(
         ui,
@@ -492,6 +574,7 @@ pub fn icon_cell(
     active: bool,
     enabled: bool,
 ) -> Response {
+    skip_fold(ui, cell_size(ui.ctx()).y);
     let (rect, _) = ui.allocate_exact_size(cell_size(ui.ctx()), Sense::hover());
     let resp = hit(
         ui,
