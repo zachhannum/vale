@@ -3108,3 +3108,25 @@ fn the_desktop_style_editor_sets_the_flow_line_type() {
     assert_eq!(kind(&h), StrokeKind::flow());
     assert!(h.query_all_by_label(FLOW_MIN).next().is_some());
 }
+
+#[test]
+fn the_desktop_style_editor_picks_the_height_layer_of_flow() {
+    use vale_app::ui::pad::rules::{FLOW, HEIGHT_LAYER, LINE, height_layers};
+    let mut h = globe_harness();
+    h.state_mut().add_height();
+    h.state_mut().add_height();
+    h.run_steps(2);
+    let rivers = open_rivers(&mut h);
+    h.get_all_by_label(LINE).last().unwrap().click();
+    h.run_steps(2);
+    h.get_by_label(FLOW).click();
+    h.run_steps(2);
+    let heights = height_layers(&h.state().doc);
+    assert!(heights.len() >= 2, "{heights:?}");
+    h.get_all_by_label(HEIGHT_LAYER).last().unwrap().click();
+    h.run_steps(2);
+    h.get_by_label(&heights[1]).click();
+    h.run_steps(2);
+    let entry = h.state().doc.entry(rivers).unwrap();
+    assert_eq!(entry.style.flow_height.as_ref(), Some(&heights[1]));
+}

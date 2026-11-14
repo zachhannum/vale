@@ -60,6 +60,8 @@ pub const FLOW: &str = "Flow";
 pub const FLOW_MIN: &str = "Smallest width";
 /// The hint of a Flow line in a project with no height layer.
 pub const FLOW_NEEDS_HEIGHT: &str = "Flow needs a height layer.";
+/// The heading of the height layers that the Flow lines of a layer can read.
+pub const HEIGHT_LAYER: &str = "Height layer";
 pub const FILL: &str = "Fill";
 pub const FILL_COLOR: &str = "Fill color";
 /// The label of the switch of a fill or a stroke that follows the mask of the style.
@@ -404,6 +406,15 @@ pub fn selection_body(
         // A marker ignores the line type.
         if kind != GeometryKind::Point {
             selection_line_rows(ui, controls, kind, &rules, &paints, &mut changes);
+        }
+        let flow = |i: &usize| {
+            matches!(
+                rules[*i].stroke().map(|s| s.kind),
+                Some(StrokeKind::Flow { .. })
+            )
+        };
+        if kind == GeometryKind::Line && paints.iter().any(flow) {
+            flow_height_rows(ui, state, controls, id);
         }
         let value = rule_edit::shared(&rules, &paints, Rule::stroke_applies_mask);
         if let Some(v) = mask_row(ui, controls, masked, STROKE_MASK, value) {
@@ -990,6 +1001,9 @@ fn paint_rows(
         if kind != GeometryKind::Point {
             let has_height = state.doc.project.rasters().iter().any(crate::ui::is_height);
             line_rows(ui, controls, rule, stroke, (kind, has_height));
+            if matches!(rule.stroke().map(|s| s.kind), Some(StrokeKind::Flow { .. })) {
+                flow_height_rows(ui, state, controls, id);
+            }
         }
         let value = rule.stroke_applies_mask().map(|v| (v, false));
         if let Some(v) = mask_row(ui, controls, masked, STROKE_MASK, value) {
@@ -1667,6 +1681,45 @@ fn line_rows(
             }
         }
         StrokeKind::Solid | StrokeKind::Brush => {}
+    }
+}
+
+/// The names of the height layers of the project, in the order of the
+/// layer list.
+pub fn height_layers(doc: &Document) -> Vec<String> {
+    let project = &doc.project;
+    (project.layers().iter())
+        .filter(|l| {
+            let raster = l.raster().and_then(|r| project.raster(r));
+            raster.is_some_and(crate::ui::is_height)
+        })
+        .map(|l| l.name.clone())
+        .collect()
+}
+
+/// The height layer of the Flow lines of layer `id`, as a chip for each
+/// height layer. It shows only if the project has more than one. A name
+/// that no height layer has picks the first.
+fn flow_height_rows(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id: LayerId) {
+    let heights = height_layers(&state.doc);
+    if heights.len() < 2 {
+        return;
+    }
+    let current = state
+        .doc
+        .entry(id)
+        .and_then(|e| e.style.flow_height.clone());
+    let active = (heights.iter())
+        .position(|h| Some(h) == current.as_ref())
+        .unwrap_or(0);
+    heading(ui, HEIGHT_LAYER);
+    let names: Vec<&str> = heights.iter().map(String::as_str).collect();
+    if let Some(picked) = widgets::chips(ui, controls, &names, active)
+        && picked != active
+        && let Some(entry) = state.doc.entry_mut(id)
+    {
+        entry.style.flow_height = Some(heights[picked].clone());
+        state.touch();
     }
 }
 

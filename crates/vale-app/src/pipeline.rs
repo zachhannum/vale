@@ -419,7 +419,11 @@ fn build_page_layers<'a>(
             .collect();
         let layer_rasters = rasters.for_layer(layer.id);
         let flow = kind == GeometryKind::Line && has_flow(&entry.style.style);
-        let height = entry.style.flow_height.as_deref();
+        // A map style with no height layer of its own reads the one of the globe style.
+        let globe = doc
+            .entry(entry.layer)
+            .and_then(|e| e.style.flow_height.as_deref());
+        let height = entry.style.flow_height.as_deref().or(globe);
         let mut largest_flow = None;
         if flow {
             for f in &mut features {

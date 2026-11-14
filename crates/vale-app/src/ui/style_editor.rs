@@ -20,9 +20,9 @@ use super::pad::furniture::{ANGLE, LINE_COLOR, LINE_WIDTH};
 use super::pad::raster::IMPORT_RAMP;
 use super::pad::rules::{
     ADD_RULE, ALL_FEATURES, BAD_RANGE, BRUSH, DASH, DASHED, DASHES, DELETE_RULE, DELETE_RULES,
-    EXPRESSION, FILL, FILTER, FLOW, FLOW_MIN, GAP, LINE, MAX_SCALE, MIN_SCALE, MOVE_DOWN, MOVE_UP,
-    NO_LIMIT, SOLID, STROKE, STROKE_WIDTH, TAPER, TAPER_START, WIDTH_EXPRESSION,
-    WIDTH_FROM_EXPRESSION, parse_scale, scale_text,
+    EXPRESSION, FILL, FILTER, FLOW, FLOW_MIN, GAP, HEIGHT_LAYER, LINE, MAX_SCALE, MIN_SCALE,
+    MOVE_DOWN, MOVE_UP, NO_LIMIT, SOLID, STROKE, STROKE_WIDTH, TAPER, TAPER_START,
+    WIDTH_EXPRESSION, WIDTH_FROM_EXPRESSION, parse_scale, scale_text,
 };
 use super::pad::rules::{
     ADD_SYMBOL, APPLY_MASK, BAD_MASK_RANGE, CIRCLE_SIZES, COLOR, MARKER, MARKER_SHAPE, MASK,
@@ -143,7 +143,8 @@ pub fn rules(
     if picked.len() > 1 {
         ui.separator();
         let masked = style.style.mask.is_some();
-        return selection_rows(ui, &mut style.style.rules, &picked, kind, masked) || changed;
+        changed |= selection_rows(ui, &mut style.style.rules, &picked, kind, masked);
+        return flow_height_row(ui, style, &picked, library) || changed;
     }
     let at = picked.first().copied().unwrap_or(0);
     let masked = style.style.mask.is_some();
@@ -167,7 +168,51 @@ pub fn rules(
             changed |= scatter_rows(ui, rule, library, salt);
         }
     }
-    changed
+    flow_height_row(ui, style, &[at], library) || changed
+}
+
+/// The menu of the height layer of the Flow lines of the layer, if a rule of
+/// `picked` is a Flow line and the project has more than one height layer.
+/// Returns true if the user picked a layer.
+fn flow_height_row(
+    ui: &mut egui::Ui,
+    style: &mut LayerStyle,
+    picked: &[usize],
+    library: &Library,
+) -> bool {
+    let flow = |i: &usize| {
+        let stroke = style.style.rules.get(*i).and_then(Rule::stroke);
+        matches!(stroke.map(|s| s.kind), Some(StrokeKind::Flow { .. }))
+    };
+    let heights: Vec<&str> = (library.help.raster_layers.iter())
+        .filter(|(_, unit)| unit == super::HEIGHT_UNIT)
+        .map(|(name, _)| name.as_str())
+        .collect();
+    if heights.len() < 2 || !picked.iter().any(flow) {
+        return false;
+    }
+    let current = (heights.iter())
+        .find(|h| style.flow_height.as_deref() == Some(**h))
+        .unwrap_or(&heights[0])
+        .to_string();
+    let mut chosen = current.clone();
+    ui.horizontal(|ui| {
+        ui.label(HEIGHT_LAYER);
+        let menu = egui::ComboBox::from_id_salt("flow-height")
+            .selected_text(&chosen)
+            .show_ui(ui, |ui| {
+                for h in &heights {
+                    ui.selectable_value(&mut chosen, h.to_string(), *h);
+                }
+            });
+        let named = egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, HEIGHT_LAYER);
+        menu.response.widget_info(|| named.clone());
+    });
+    if chosen == current {
+        return false;
+    }
+    style.flow_height = Some(chosen);
+    true
 }
 
 /// The stroke, the fill, and the size of the selected rules. A change sets
