@@ -621,6 +621,14 @@ pub fn layout(input: &Input) -> Rects {
             pos2(screen.right(), bottom - DOCK_FOOT),
         ),
     };
+    // At a horizontal fold, the dock is above the fold, near the top row.
+    let mut dock = dock;
+    if let Some(f) = input
+        .fold
+        .filter(|f| horizontal(*f) && f.top() < dock.bottom())
+    {
+        dock.max.y = (f.top() - FOLD_GAP).max(dock.top() + ROW);
+    }
     // The readout is at the lower left of the canvas, at the right of the
     // tool column. An open sheet covers it.
     let readout = sheet.is_none().then(|| {
@@ -1256,7 +1264,9 @@ mod tests {
         assert_eq!(r.column_content, before.column_content + gap.span());
         assert_eq!(r.tools.height(), r.column_content);
         assert_eq!(r.tools.top(), before.tools.top());
-        assert_eq!(r.dock, before.dock);
+        // The dock ends above the fold.
+        assert_eq!(r.dock.top(), before.dock.top());
+        assert_eq!(r.dock.bottom(), fold.top() - FOLD_GAP);
         // The tools are above the fold. The first slider does not fit
         // there, so it moves below the fold with the divider above it, and
         // the gap starts at the bottom of the last tool.

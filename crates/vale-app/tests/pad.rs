@@ -16638,11 +16638,11 @@ fn on_a_partially_folded_iphone_duo_no_control_crosses_the_fold() {
                     );
                     assert!(first >= lower_start, "{what}");
                 }
-                if !atlas {
-                    // The panes are above and below the fold.
-                    let panes = &h.state().pad.panels;
-                    assert!(panes.iter().any(|(_, r)| r.bottom() < fold.top()), "{what}");
-                    assert!(panes.iter().any(|(_, r)| r.top() > fold.bottom()), "{what}");
+                // The dock is one card above the fold.
+                let dock = h.state().pad.dock_rect.expect(&what);
+                assert!(dock.bottom() < fold.top(), "{what}: dock {dock:?}");
+                for (p, r) in &h.state().pad.panels {
+                    assert!(r.bottom() < fold.top(), "{what}: {p:?} is {r:?}");
                 }
             }
             if atlas {
