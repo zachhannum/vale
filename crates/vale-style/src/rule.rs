@@ -660,7 +660,29 @@ impl Rule {
             .flatten()
     }
 
-    /// Sets the stroke of the rule, or the stroke of its marker. `None` removes the stroke. A changed stroke keeps its `apply_mask`.
+    /// The text of the width expression of the stroke of the rule. `None`: a fixed width.
+    pub fn stroke_width_expression(&self) -> Option<&str> {
+        self.symbolizers.iter().find_map(|s| match s {
+            Symbolizer::Stroke(s) => s.width.source().map(|src| src.text()),
+            _ => None,
+        })
+    }
+
+    /// Sets the width expression of the stroke of the rule. `None` makes the width fixed. A rule with no stroke, or with a marker, does not change.
+    pub fn set_stroke_width_expression(&mut self, text: Option<&str>) {
+        for s in &mut self.symbolizers {
+            if let Symbolizer::Stroke(s) = s {
+                let fallback = s.width.fallback;
+                s.width = match text {
+                    Some(text) => Property::expression(text, fallback),
+                    None => Property::constant(fallback),
+                };
+                return;
+            }
+        }
+    }
+
+    /// Sets the stroke of the rule, or the stroke of its marker. `None` removes the stroke. A changed stroke keeps its `apply_mask`, and its width expression with the width of `value` as the fallback.
     pub fn set_stroke(&mut self, value: Option<Stroke>) {
         if let Some(Symbolizer::Marker { stroke, .. }) = self
             .symbolizers
@@ -677,10 +699,12 @@ impl Rule {
         match (at, value) {
             (Some(i), Some(v)) => {
                 let apply_mask = self.symbolizers[i].cut_by_mask();
+                let text = self.stroke_width_expression().map(str::to_owned);
                 self.symbolizers[i] = Symbolizer::Stroke(StrokeSymbolizer {
                     apply_mask,
                     ..StrokeSymbolizer::constant(v)
-                })
+                });
+                self.set_stroke_width_expression(text.as_deref());
             }
             (Some(i), None) => {
                 self.symbolizers.remove(i);
