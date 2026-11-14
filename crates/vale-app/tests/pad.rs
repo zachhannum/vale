@@ -17109,7 +17109,7 @@ fn a_flow_line_picks_its_height_layer_when_the_world_has_two() {
     scroll_to_control(&mut h, FLOW);
     tap(&mut h, FLOW);
     // With one height layer, the row does not show.
-    assert!(h.query_by_label(HEIGHT_LAYER).is_none());
+    assert!(control(&h, HEIGHT_LAYER).is_none());
     let mut h = pad(BOARDS[1]);
     h.state_mut().add_height();
     h.run_steps(2);
@@ -17118,10 +17118,16 @@ fn a_flow_line_picks_its_height_layer_when_the_world_has_two() {
     open_rule(&mut h, "Rivers", "Default");
     scroll_to_control(&mut h, FLOW);
     tap(&mut h, FLOW);
-    scroll_to_control(&mut h, &heights[1]);
+    scroll_to_control(&mut h, HEIGHT_LAYER);
     check_controls(&h, "the rule page with two height layers");
+    tap(&mut h, HEIGHT_LAYER);
+    assert_eq!(h.state().pad.page, Some(Page::FlowHeight(Some(0))));
+    check_controls(&h, "the height layer page");
     screenshot::save(&mut h, "pad-flow-height");
     tap(&mut h, &heights[1]);
     let entry = h.state().doc.entry(rivers).unwrap();
     assert_eq!(entry.style.flow_height.as_ref(), Some(&heights[1]));
+    // Back goes to the page of the rule.
+    tap(&mut h, "Back to Default");
+    assert_eq!(h.state().pad.page, Some(Page::Rule(0)));
 }

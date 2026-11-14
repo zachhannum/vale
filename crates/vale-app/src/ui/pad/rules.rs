@@ -414,7 +414,7 @@ pub fn selection_body(
             )
         };
         if kind == GeometryKind::Line && paints.iter().any(flow) {
-            flow_height_rows(ui, state, controls, id);
+            flow_height_row(ui, state, controls, (id, None));
         }
         let value = rule_edit::shared(&rules, &paints, Rule::stroke_applies_mask);
         if let Some(v) = mask_row(ui, controls, masked, STROKE_MASK, value) {
@@ -1002,7 +1002,7 @@ fn paint_rows(
             let has_height = state.doc.project.rasters().iter().any(crate::ui::is_height);
             line_rows(ui, controls, rule, stroke, (kind, has_height));
             if matches!(rule.stroke().map(|s| s.kind), Some(StrokeKind::Flow { .. })) {
-                flow_height_rows(ui, state, controls, id);
+                flow_height_row(ui, state, controls, (id, Some(i)));
             }
         }
         let value = rule.stroke_applies_mask().map(|v| (v, false));
@@ -1697,29 +1697,58 @@ pub fn height_layers(doc: &Document) -> Vec<String> {
         .collect()
 }
 
-/// The height layer of the Flow lines of layer `id`, as a chip for each
-/// height layer. It shows only if the project has more than one. A name
-/// that no height layer has picks the first.
-fn flow_height_rows(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id: LayerId) {
+/// The height layer that the Flow lines of layer `id` read: the name in its
+/// style, or else the first height layer. `None` with no height layer.
+fn flow_height(state: &AppState, id: LayerId) -> Option<String> {
     let heights = height_layers(&state.doc);
-    if heights.len() < 2 {
-        return;
-    }
     let current = state
         .doc
         .entry(id)
         .and_then(|e| e.style.flow_height.clone());
-    let active = (heights.iter())
-        .position(|h| Some(h) == current.as_ref())
-        .unwrap_or(0);
-    heading(ui, HEIGHT_LAYER);
-    let names: Vec<&str> = heights.iter().map(String::as_str).collect();
-    if let Some(picked) = widgets::chips(ui, controls, &names, active)
-        && picked != active
-        && let Some(entry) = state.doc.entry_mut(id)
-    {
-        entry.style.flow_height = Some(heights[picked].clone());
-        state.touch();
+    current
+        .filter(|c| heights.contains(c))
+        .or_else(|| heights.first().cloned())
+}
+
+/// The row of the height layer of the Flow lines of layer `id`, which opens
+/// its page. It shows only if the project has more than one height layer.
+/// `rule`: the rule of the page, or `None` for the selected rules.
+fn flow_height_row(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    (id, rule): (LayerId, Option<usize>),
+) {
+    if height_layers(&state.doc).len() < 2 {
+        return;
+    }
+    let current = flow_height(state, id).unwrap_or_default();
+    if widgets::open_row(ui, controls, HEIGHT_LAYER, &current).clicked() {
+        state.pad.page = Some(Page::FlowHeight(rule));
+        state.pad.rules.picker = None;
+    }
+}
+
+/// The page of the height layer of the Flow lines of layer `id`: a row for
+/// each height layer.
+pub fn flow_height_body(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    id: LayerId,
+) {
+    let current = flow_height(state, id);
+    ui.spacing_mut().item_spacing.y = 0.0;
+    ui.add_space(8.0);
+    for name in height_layers(&state.doc) {
+        let on = current.as_ref() == Some(&name);
+        if widgets::option_row(ui, controls, &name, &name, &[], on).clicked()
+            && !on
+            && let Some(entry) = state.doc.entry_mut(id)
+        {
+            entry.style.flow_height = Some(name);
+            state.touch();
+        }
     }
 }
 
