@@ -5,6 +5,7 @@
 
 mod collide;
 mod engine;
+mod fallback;
 mod geom;
 mod graticule;
 mod improve;

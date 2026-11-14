@@ -1211,6 +1211,7 @@ fn labels_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
                 .show(ui);
         }
     });
+    fallback_controls(ui, &mut class, kind, salt);
     let at = list.iter().position(|(l, j, _)| (*l, *j) == (layer, i));
     if let Some(at) = at {
         ui.horizontal(|ui| {
@@ -1235,6 +1236,91 @@ fn labels_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
     if ui.button(DELETE_CLASS).clicked() {
         state.delete_label_class(map, layer, i);
         state.atlas.label = None;
+    }
+}
+
+/// The fallbacks of a label class in their order, their numbers, and the
+/// abbreviations.
+fn fallback_controls(
+    ui: &mut egui::Ui,
+    class: &mut vale_style::LabelClass,
+    kind: vale_store::GeometryKind,
+    salt: egui::Id,
+) {
+    use super::pad::labels::{
+        ABBREVIATIONS, ADD_ABBREVIATION, FALLBACKS, LEADER_DISTANCE, LEADER_DISTANCES, LINE_COUNTS,
+        MAX_LINES, MIN_SIZE, MIN_SIZES, SHORT_FORM, SIZE_STEP, SIZE_STEPS, WORD, fallback_applies,
+    };
+    use vale_store::GeometryKind;
+    ui.label(FALLBACKS);
+    let shown: Vec<usize> = (0..class.fallbacks.len())
+        .filter(|&k| fallback_applies(kind, class.fallbacks[k].fallback))
+        .collect();
+    let mut swap = None;
+    for (n, &k) in shown.iter().enumerate() {
+        let r = &mut class.fallbacks[k];
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut r.on, r.fallback.name());
+            if ui.add_enabled(n > 0, egui::Button::new("Up")).clicked() {
+                swap = Some((k, shown[n - 1]));
+            }
+            let down = n + 1 < shown.len();
+            if ui.add_enabled(down, egui::Button::new("Down")).clicked() {
+                swap = Some((k, shown[n + 1]));
+            }
+        });
+    }
+    if let Some((a, b)) = swap {
+        class.fallbacks.swap(a, b);
+    }
+    number::stepper(MIN_SIZE, &mut class.min_size)
+        .range(MIN_SIZES.0..=MIN_SIZES.1)
+        .step(0.5)
+        .suffix(" pt")
+        .show(ui);
+    number::stepper(SIZE_STEP, &mut class.size_step)
+        .range(SIZE_STEPS.0..=SIZE_STEPS.1)
+        .step(0.25)
+        .suffix(" pt")
+        .show(ui);
+    if kind != GeometryKind::Line {
+        let (lo, hi) = LINE_COUNTS;
+        number::stepper(MAX_LINES, &mut class.max_lines)
+            .range(lo as u32..=hi as u32)
+            .step(1.0)
+            .decimals(0)
+            .show(ui);
+    }
+    if kind == GeometryKind::Point {
+        number::stepper(LEADER_DISTANCE, &mut class.leader_distance)
+            .range(LEADER_DISTANCES.0..=LEADER_DISTANCES.1)
+            .step(1.0)
+            .suffix(" pt")
+            .show(ui);
+    }
+    ui.label(ABBREVIATIONS);
+    let mut delete = None;
+    egui::Grid::new(salt.with("abbreviations")).show(ui, |ui| {
+        if !class.abbreviations.is_empty() {
+            ui.weak(WORD);
+            ui.weak(SHORT_FORM);
+            ui.end_row();
+        }
+        for (k, (long, short)) in class.abbreviations.iter_mut().enumerate() {
+            ui.add(egui::TextEdit::singleline(long).desired_width(100.0));
+            ui.add(egui::TextEdit::singleline(short).desired_width(60.0));
+            let button = ui.small_button("×").on_hover_text("Delete abbreviation");
+            if button.clicked() {
+                delete = Some(k);
+            }
+            ui.end_row();
+        }
+    });
+    if let Some(k) = delete {
+        class.abbreviations.remove(k);
+    }
+    if ui.button(ADD_ABBREVIATION).clicked() {
+        class.abbreviations.push((String::new(), String::new()));
     }
 }
 

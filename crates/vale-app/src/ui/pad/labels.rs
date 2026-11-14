@@ -6,7 +6,7 @@ use eframe::egui::{self, Align2, Rect, pos2, vec2};
 use vale_labeler::Face;
 use vale_store::{FrameId, FurnitureText, GeometryKind, LayerId, MapId};
 use vale_style::expr::Filter;
-use vale_style::{LabelClass, LabelPlacement, LabelPosition};
+use vale_style::{LabelClass, LabelFallback, LabelPlacement, LabelPosition};
 
 use super::atlas::{FRAME_TABS, named_tabs};
 use super::filter;
@@ -116,6 +116,26 @@ pub const MAX_ZONE_RANK: u8 = 3;
 pub const BUFFER: &str = "Buffer";
 pub const REMOVE_DUPLICATES: &str = "Remove duplicates";
 pub const DUPLICATE_DISTANCE: &str = "Duplicate distance";
+/// The row of the fallbacks, and the title of its page.
+pub const FALLBACKS: &str = "Fallbacks";
+/// The hint of the Fallbacks page of a line class.
+pub const LINE_FALLBACKS: &str = "Line labels do not stack or take a leader line.";
+pub const MIN_SIZE: &str = "Smallest size";
+pub const SIZE_STEP: &str = "Size step";
+pub const MAX_LINES: &str = "Lines";
+pub const LEADER_DISTANCE: &str = "Leader distance";
+/// The row of the abbreviations, and the title of its page.
+pub const ABBREVIATIONS: &str = "Abbreviations";
+pub const ADD_ABBREVIATION: &str = "Add abbreviation";
+pub const NO_ABBREVIATIONS: &str = "This class has no abbreviations.";
+/// The headings of the columns of the Abbreviations page. The field of a
+/// row has the heading and the number of the row as its name, for example
+/// "Word 1".
+pub const WORD: &str = "Word";
+pub const SHORT_FORM: &str = "Short form";
+/// The start of the name of the delete button of a row of the
+/// Abbreviations page. The number of the row follows.
+pub const DELETE_ABBREVIATION: &str = "Delete abbreviation";
 pub const MOVE_UP: &str = "Move up";
 pub const MOVE_DOWN: &str = "Move down";
 /// The start of the name of the handle of a row of the class list. The
@@ -157,6 +177,14 @@ pub const LEADER_GAPS: (f64, f64) = (0.0, 10.0);
 pub const BUFFERS: (f64, f64) = (0.0, 10.0);
 /// The smallest and the largest duplicate distance, in points.
 pub const DUPLICATE_DISTANCES: (f64, f64) = (0.0, 2000.0);
+/// The smallest and the largest smallest size of the fallback "Smaller font", in points.
+pub const MIN_SIZES: (f64, f64) = (2.0, 72.0);
+/// The smallest and the largest size step, in points.
+pub const SIZE_STEPS: (f64, f64) = (0.25, 4.0);
+/// The fewest and the most lines of the fallback "Stacked lines".
+pub const LINE_COUNTS: (f64, f64) = (2.0, 4.0);
+/// The smallest and the largest leader distance, in points.
+pub const LEADER_DISTANCES: (f64, f64) = (0.0, 50.0);
 
 /// The name of the feature type of a layer on the Layer page.
 fn kind_name(kind: GeometryKind) -> &'static str {
@@ -207,6 +235,7 @@ fn show_class(state: &mut AppState, frame: FrameId, layer: LayerId, i: usize) {
     state.atlas.label_segment = ClassSegment::Text;
     state.atlas.label_color = None;
     state.atlas.position_drag = None;
+    state.atlas.fallback_drag = None;
 }
 
 /// The label classes of the map of frame `id` in priority order, and the
@@ -381,14 +410,17 @@ pub(super) fn class_head(state: &mut AppState, id: FrameId) -> Option<Head> {
         Some(ClassPage::Positions) => ("pad-atlas-positions", POSITIONS, &*class.name),
         Some(ClassPage::Zones) => ("pad-atlas-zones", ZONES, &*class.name),
         Some(ClassPage::LeaderLine) => ("pad-atlas-leader", LEADER_LINE, &*class.name),
+        Some(ClassPage::Fallbacks) => ("pad-atlas-fallbacks", FALLBACKS, &*class.name),
+        Some(ClassPage::Abbreviations) => ("pad-atlas-abbreviations", ABBREVIATIONS, FALLBACKS),
         None => ("pad-atlas-class", class.name.as_str(), FRAME_TABS[3]),
     };
     let mut parts = PageParts::new(key, title, Some(back));
-    // The panel stays still while a finger drags a position.
-    if state.atlas.position_drag.is_some() {
+    // The panel stays still while a finger drags a row of a rank.
+    if state.atlas.position_drag.is_some() || state.atlas.fallback_drag.is_some() {
         parts.scroll = egui::scroll_area::ScrollSource::NONE;
     }
     let back_to = move |state: &mut AppState| match page {
+        Some(ClassPage::Abbreviations) => state.atlas.label_page = Some(ClassPage::Fallbacks),
         Some(_) => state.atlas.label_page = None,
         None => state.atlas.label = None,
     };
@@ -409,13 +441,17 @@ pub(super) fn class_head(state: &mut AppState, id: FrameId) -> Option<Head> {
             Some(ClassPage::Positions) => positions_page(ui, state, controls, at, &class),
             Some(ClassPage::Zones) => zones_page(ui, state, controls, at, &class),
             Some(ClassPage::LeaderLine) => leader_page(ui, state, controls, at, &class),
+            Some(ClassPage::Fallbacks) => fallbacks_page(ui, state, controls, at, kind, &class),
+            Some(ClassPage::Abbreviations) => abbreviations_page(ui, state, controls, at, &class),
             None => {
                 match segment {
                     ClassSegment::Text => text_segment(ui, state, controls, at, &class),
                     ClassSegment::Placement => {
                         placement_segment(ui, state, controls, at, kind, &class);
                     }
-                    ClassSegment::Conflicts => conflicts_segment(ui, state, controls, at, &class),
+                    ClassSegment::Conflicts => {
+                        conflicts_segment(ui, state, controls, at, kind, &class);
+                    }
                 }
                 class_buttons(ui, state, controls, at);
             }
@@ -1086,13 +1122,14 @@ fn curve_limit(
     }
 }
 
-/// The Conflicts segment of the panel of a class: the buffer and the
-/// distance between labels with the same text.
+/// The Conflicts segment of the panel of a class: the buffer, the
+/// distance between labels with the same text, and the fallbacks.
 fn conflicts_segment(
     ui: &mut egui::Ui,
     state: &mut AppState,
     controls: &mut Controls,
     (_, map, layer, i): ClassAt,
+    kind: GeometryKind,
     class: &LabelClass,
 ) {
     let buffer = Number::new(BUFFER, class.buffer, BUFFERS.0..=BUFFERS.1)
@@ -1122,6 +1159,206 @@ fn conflicts_segment(
             state.edit_label_class(map, layer, i, |c| c.duplicate_distance = distance);
         }
     }
+    let fits = |r: &&vale_style::FallbackRank| fallback_applies(kind, r.fallback);
+    let all = class.fallbacks.iter().filter(fits).count();
+    let on = class.fallbacks.iter().filter(fits).filter(|r| r.on).count();
+    let value = match on {
+        0 => ZONE_OFF.to_owned(),
+        on => format!("{on} of {all}"),
+    };
+    if widgets::open_row(ui, controls, FALLBACKS, &value).clicked() {
+        state.atlas.label_page = Some(ClassPage::Fallbacks);
+        state.atlas.fallback_drag = None;
+    }
+}
+
+/// True if a class of `kind` can use `fallback`. A line label does not
+/// stack and has no leader line.
+pub fn fallback_applies(kind: GeometryKind, fallback: LabelFallback) -> bool {
+    kind != GeometryKind::Line
+        || matches!(
+            fallback,
+            LabelFallback::SmallerFont | LabelFallback::Abbreviate
+        )
+}
+
+/// Moves the item at `from` to `to`.
+fn move_item<T>(list: &mut Vec<T>, from: usize, to: usize) {
+    if from < list.len() && to < list.len() {
+        let moved = list.remove(from);
+        list.insert(to, moved);
+    }
+}
+
+/// The ranked fallbacks of a class that its feature type can use, and the
+/// numbers of the fallbacks. A tap on a row turns its fallback on or off,
+/// and a drag on the handle of a row moves the fallback in the rank.
+fn fallbacks_page(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    (_, map, layer, i): ClassAt,
+    kind: GeometryKind,
+    class: &LabelClass,
+) {
+    // The places of the rows in the list of the class.
+    let shown: Vec<usize> = (0..class.fallbacks.len())
+        .filter(|&k| fallback_applies(kind, class.fallbacks[k].fallback))
+        .collect();
+    let rows: Vec<(&str, bool)> = (shown.iter())
+        .map(|&k| (class.fallbacks[k].fallback.name(), class.fallbacks[k].on))
+        .collect();
+    match rank_list(ui, controls, &mut state.atlas.fallback_drag, &rows) {
+        Some(RankEvent::Toggle(n)) => {
+            let k = shown[n];
+            state.label_class_step(map, layer, i, |c| {
+                if let Some(r) = c.fallbacks.get_mut(k) {
+                    r.on = !r.on;
+                }
+            });
+        }
+        Some(RankEvent::Move(from, to)) => {
+            let (from, to) = (shown[from], shown[to]);
+            state.label_class_step(map, layer, i, |c| move_item(&mut c.fallbacks, from, to));
+        }
+        None => {}
+    }
+    if kind == GeometryKind::Line {
+        hint(ui, LINE_FALLBACKS);
+    }
+    ui.add_space(6.0);
+    let size = Number::new(MIN_SIZE, class.min_size, MIN_SIZES.0..=MIN_SIZES.1)
+        .step(0.5)
+        .unit("pt")
+        .stepper(ui, controls);
+    if let Some(size) = size {
+        state.edit_label_class(map, layer, i, |c| c.min_size = size);
+    }
+    let step = Number::new(SIZE_STEP, class.size_step, SIZE_STEPS.0..=SIZE_STEPS.1)
+        .step(0.25)
+        .unit("pt")
+        .stepper(ui, controls);
+    if let Some(step) = step {
+        state.edit_label_class(map, layer, i, |c| c.size_step = step);
+    }
+    if kind != GeometryKind::Line {
+        let (lo, hi) = LINE_COUNTS;
+        let lines = Number::new(MAX_LINES, f64::from(class.max_lines), lo..=hi)
+            .step(1.0)
+            .stepper(ui, controls);
+        if let Some(lines) = lines {
+            let lines = lines.round() as u32;
+            state.edit_label_class(map, layer, i, |c| c.max_lines = lines);
+        }
+    }
+    if kind == GeometryKind::Point {
+        let (lo, hi) = LEADER_DISTANCES;
+        let distance = Number::new(LEADER_DISTANCE, class.leader_distance, lo..=hi)
+            .step(1.0)
+            .unit("pt")
+            .stepper(ui, controls);
+        if let Some(distance) = distance {
+            state.edit_label_class(map, layer, i, |c| c.leader_distance = distance);
+        }
+    }
+    let count = class.abbreviations.len().to_string();
+    if widgets::open_row(ui, controls, ABBREVIATIONS, &count).clicked() {
+        state.atlas.label_page = Some(ClassPage::Abbreviations);
+    }
+}
+
+/// The space between two fields of a row of the Abbreviations page.
+const FIELD_GAP: f32 = 8.0;
+
+/// The words and the short forms of a class, one pair on each row, with
+/// a delete button at the right of each row.
+fn abbreviations_page(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    (_, map, layer, i): ClassAt,
+    class: &LabelClass,
+) {
+    let list = &class.abbreviations;
+    if list.is_empty() {
+        hint(ui, NO_ABBREVIATIONS);
+    } else {
+        let (head, _) =
+            ui.allocate_exact_size(vec2(ui.available_width(), 28.0), egui::Sense::hover());
+        let (word, short, _) = abbreviation_columns(head);
+        for (column, text) in [(word, WORD), (short, SHORT_FORM)] {
+            let at = pos2(column.left() + 12.0, column.center().y);
+            ui.painter()
+                .text(at, Align2::LEFT_CENTER, text, theme::small(), theme::MUTE);
+        }
+    }
+    let mut delete = None;
+    for (k, (long, short)) in list.iter().enumerate() {
+        let (row, _) =
+            ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), egui::Sense::hover());
+        let (word_rect, short_rect, button) = abbreviation_columns(row);
+        let n = k + 1;
+        let (mut long, mut short) = (long.clone(), short.clone());
+        let font = theme::body();
+        let name = format!("{WORD} {n}");
+        let word = widgets::field_at(
+            ui,
+            controls,
+            word_rect,
+            &name,
+            None,
+            &mut long,
+            true,
+            font.clone(),
+        );
+        let name = format!("{SHORT_FORM} {n}");
+        let shorter = widgets::field_at(
+            ui, controls, short_rect, &name, None, &mut short, true, font,
+        );
+        if word.changed() || shorter.changed() {
+            state.edit_label_class(map, layer, i, |c| {
+                if let Some(pair) = c.abbreviations.get_mut(k) {
+                    *pair = (long, short);
+                }
+            });
+        }
+        let name = format!("{DELETE_ABBREVIATION} {n}");
+        if widgets::icon_button_at(ui, controls, button, &name, Icon::Close, false, true).clicked()
+        {
+            delete = Some(k);
+        }
+    }
+    if let Some(k) = delete {
+        widgets::close_keypad(ui.ctx());
+        state.label_class_step(map, layer, i, |c| {
+            if k < c.abbreviations.len() {
+                c.abbreviations.remove(k);
+            }
+        });
+    }
+    ui.add_space(6.0);
+    if widgets::button_row(ui, controls, ADD_ABBREVIATION, true).clicked() {
+        state.label_class_step(map, layer, i, |c| {
+            c.abbreviations.push((String::new(), String::new()));
+        });
+    }
+}
+
+/// The field of the word, the field of the short form, and the delete
+/// button of a row of the Abbreviations page.
+fn abbreviation_columns(row: Rect) -> (Rect, Rect, Rect) {
+    let button = Rect::from_center_size(
+        pos2(row.right() - TOUCH / 2.0 + 8.0, row.center().y),
+        vec2(TOUCH, TOUCH),
+    );
+    let width = (button.left() - row.left() - 2.0 * FIELD_GAP).max(2.0 * TOUCH);
+    let word_width = (width * 0.55).round();
+    let field = |left: f32, width: f32| {
+        Rect::from_min_size(pos2(left, row.center().y - TOUCH / 2.0), vec2(width, TOUCH))
+    };
+    let word = field(row.left(), word_width);
+    let short = field(word.right() + FIELD_GAP, width - word_width);
+    (word, short, button)
 }
 
 /// The buttons at the bottom of each segment of the panel of a class.
@@ -1242,13 +1479,13 @@ fn cell(p: LabelPosition) -> (f32, f32) {
     }
 }
 
-/// The rank of each position among the positions that are on, from 1. A
-/// position that is off has no rank.
-fn ranks(positions: &[vale_style::PositionRank]) -> Vec<Option<usize>> {
+/// The rank of each row among the rows that are on, from 1. A row that is
+/// off has no rank.
+fn ranks(on: impl IntoIterator<Item = bool>) -> Vec<Option<usize>> {
     let mut n = 0;
-    (positions.iter())
-        .map(|r| {
-            r.on.then(|| {
+    (on.into_iter())
+        .map(|on| {
+            on.then(|| {
                 n += 1;
                 n
             })
@@ -1268,7 +1505,7 @@ fn diagram(ui: &mut egui::Ui, positions: &[vale_style::PositionRank]) {
         Rect::from_min_size(min, vec2(CELL, CELL)).shrink(2.0)
     };
     painter.circle_filled(at((1.0, 1.0)).center(), 4.0, theme::TEXT);
-    for (r, rank) in positions.iter().zip(ranks(positions)) {
+    for (r, rank) in positions.iter().zip(ranks(positions.iter().map(|r| r.on))) {
         let square = at(cell(r.position));
         let (fill, text, color) = match rank {
             Some(n) => (theme::raise(), n.to_string(), theme::TEXT),
@@ -1286,8 +1523,7 @@ fn diagram(ui: &mut egui::Ui, positions: &[vale_style::PositionRank]) {
 }
 
 /// The ranked positions of a point class, best first, under a diagram of
-/// the ranks. A tap on a row turns its position on or off, and a drag on the
-/// handle of a row moves the position in the rank.
+/// the ranks.
 fn positions_page(
     ui: &mut egui::Ui,
     state: &mut AppState,
@@ -1297,7 +1533,40 @@ fn positions_page(
 ) {
     let list = &class.positions;
     diagram(ui, list);
-    let rank = ranks(list);
+    let rows: Vec<(&str, bool)> = list.iter().map(|r| (r.position.name(), r.on)).collect();
+    match rank_list(ui, controls, &mut state.atlas.position_drag, &rows) {
+        Some(RankEvent::Toggle(k)) => {
+            state.label_class_step(map, layer, i, |c| {
+                if let Some(r) = c.positions.get_mut(k) {
+                    r.on = !r.on;
+                }
+            });
+        }
+        Some(RankEvent::Move(from, to)) => {
+            state.label_class_step(map, layer, i, |c| move_item(&mut c.positions, from, to));
+        }
+        None => {}
+    }
+}
+
+/// A change of a ranked list.
+enum RankEvent {
+    /// A tap on a row turns it on or off.
+    Toggle(usize),
+    /// A drop moves a row from one place to another.
+    Move(usize, usize),
+}
+
+/// A ranked list of rows, each with a name and a switch, best first. A tap
+/// on a row turns it on or off, and a drag on the handle of a row moves the
+/// row in the rank. `drag` holds the row that a finger drags.
+fn rank_list(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    drag: &mut Option<ClassDrag>,
+    list: &[(&str, bool)],
+) -> Option<RankEvent> {
+    let rank = ranks(list.iter().map(|r| r.1));
     let size = vec2(ui.available_width(), list.len() as f32 * PANEL_ROW);
     let (area, _) = ui.allocate_exact_size(size, egui::Sense::hover());
     let slot =
@@ -1305,74 +1574,63 @@ fn positions_page(
     let place = |k: usize| slot(area.top() + k as f32 * PANEL_ROW);
     let (pointer, down) = ui.input(|i| (i.pointer.interact_pos(), i.pointer.any_down()));
 
-    let Some(drag) = state.atlas.position_drag.filter(|d| d.from < list.len()) else {
-        state.atlas.position_drag = None;
-        for (k, r) in list.iter().enumerate() {
+    let Some(held) = drag.filter(|d| d.from < list.len()) else {
+        *drag = None;
+        let mut event = None;
+        for (k, &(name, on)) in list.iter().enumerate() {
             let rect = place(k);
-            let row = (r.position, r.on, rank[k]);
-            let Some((body, handle)) = position_row(ui, Some(&mut *controls), rect, row, false)
-            else {
+            let row = (name, on, rank[k]);
+            let Some((body, handle)) = rank_row(ui, Some(&mut *controls), rect, row, false) else {
                 continue;
             };
             if body.clicked() {
-                state.label_class_step(map, layer, i, |c| {
-                    if let Some(r) = c.positions.get_mut(k) {
-                        r.on = !r.on;
-                    }
-                });
+                event = Some(RankEvent::Toggle(k));
             }
             if handle.drag_started() || handle.dragged() {
                 let y = pointer.map_or(rect.center().y, |p| p.y);
-                state.atlas.position_drag = Some(ClassDrag {
+                *drag = Some(ClassDrag {
                     from: k,
                     grab: y - rect.top(),
                 });
                 ui.ctx().request_repaint();
             }
         }
-        return;
+        return event;
     };
 
     // The lifted row follows the finger, and the other rows make room at
     // the place where it goes.
-    let from = drag.from;
-    let y = pointer.map_or(place(from).top() + drag.grab, |p| p.y);
-    let top = (y - drag.grab).clamp(area.top(), area.bottom() - PANEL_ROW);
+    let from = held.from;
+    let y = pointer.map_or(place(from).top() + held.grab, |p| p.y);
+    let top = (y - held.grab).clamp(area.top(), area.bottom() - PANEL_ROW);
     let to = ((top - area.top()) / PANEL_ROW).round() as usize;
     let others = list.iter().enumerate().filter(|(k, _)| *k != from);
-    for (n, (k, r)) in others.enumerate() {
+    for (n, (k, &(name, on))) in others.enumerate() {
         let rect = place(if n < to { n } else { n + 1 });
-        position_row(ui, None, rect, (r.position, r.on, rank[k]), false);
+        rank_row(ui, None, rect, (name, on, rank[k]), false);
     }
-    let r = list[from];
-    position_row(ui, None, slot(top), (r.position, r.on, rank[from]), true);
+    let (name, on) = list[from];
+    rank_row(ui, None, slot(top), (name, on, rank[from]), true);
     if down {
         ui.ctx().request_repaint();
+        None
     } else {
-        state.atlas.position_drag = None;
-        if to != from {
-            state.label_class_step(map, layer, i, |c| {
-                if from < c.positions.len() && to < c.positions.len() {
-                    let moved = c.positions.remove(from);
-                    c.positions.insert(to, moved);
-                }
-            });
-        }
+        *drag = None;
+        (to != from).then_some(RankEvent::Move(from, to))
     }
 }
 
-/// One row of the Positions page in `rect`: the rank, the name of the
-/// position, its switch, and the handle at the right. With `controls`, the
-/// row takes a tap, its handle takes a drag, and the function returns both.
-/// A `lifted` row shows above the others.
-fn position_row(
+/// One row of a ranked list in `rect`: the rank, the name, the switch, and
+/// the handle at the right. With `controls`, the row takes a tap, its
+/// handle takes a drag, and the function returns both. A `lifted` row shows
+/// above the others.
+fn rank_row(
     ui: &egui::Ui,
     controls: Option<&mut Controls>,
     rect: Rect,
-    (position, on, rank): (LabelPosition, bool, Option<usize>),
+    (name, on, rank): (&str, bool, Option<usize>),
     lifted: bool,
 ) -> Option<(egui::Response, egui::Response)> {
-    let name = position.name();
     let handle = Rect::from_center_size(
         pos2(rect.right() - TOUCH / 2.0 + 8.0, rect.center().y),
         vec2(TOUCH, TOUCH),

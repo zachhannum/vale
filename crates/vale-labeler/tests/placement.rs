@@ -9,6 +9,7 @@ fn invalid_features_are_reported() {
         margin: 0.0,
         placement: Placement::Point(PointPlacement::default()),
         duplicate_distance: None,
+        fallbacks: Default::default(),
     };
     let pt = Geometry::Point {
         position: Point::new(10.0, 10.0),
@@ -71,6 +72,7 @@ fn class(priority: i32) -> LabelClass {
         margin: 0.0,
         placement: Placement::Point(PointPlacement::default()),
         duplicate_distance: None,
+        fallbacks: Default::default(),
     }
 }
 
@@ -322,6 +324,7 @@ fn line_class(priority: i32, lp: LinePlacement) -> LabelClass {
         margin: 0.0,
         placement: Placement::Line(lp),
         duplicate_distance: None,
+        fallbacks: Default::default(),
     }
 }
 

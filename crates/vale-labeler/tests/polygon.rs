@@ -21,6 +21,7 @@ fn run(pp: PolygonPlacement, rings: Vec<Vec<Point>>, text: &str, bounds: Rect) -
             margin: 0.0,
             placement: Placement::Polygon(pp),
             duplicate_distance: None,
+            fallbacks: Default::default(),
         }],
         features: vec![Feature {
             id: 1,
@@ -346,6 +347,7 @@ fn run_all(pp: PolygonPlacement, shapes: Vec<Vec<Vec<Point>>>, text: &str) -> La
             margin: 0.0,
             placement: Placement::Polygon(pp),
             duplicate_distance: None,
+            fallbacks: Default::default(),
         }],
         features: shapes
             .into_iter()

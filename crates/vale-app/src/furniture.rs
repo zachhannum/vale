@@ -86,6 +86,7 @@ pub fn scale_bar(
                 ..Default::default()
             }),
             duplicate_distance: None,
+            fallbacks: Default::default(),
         }],
         features: vec![Feature {
             id: 0,
@@ -171,6 +172,7 @@ pub(crate) fn glyph_line(
                 ..Default::default()
             }),
             duplicate_distance: None,
+            fallbacks: Default::default(),
         }],
         features: vec![Feature {
             id: 0,

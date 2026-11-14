@@ -203,7 +203,7 @@ The job `testflight` in `.github/workflows/ios.yml` does the work, with `scripts
 - Rasters and blend modes in the PNG and PDF export, regional source extents over a world source, SVG and Shapefile import, and the command Replace from file.
 - The points, the symbols, and the scatter fills in the flat view of the globe workspace.
 - Pattern fills, texture fills, hatch fills, and edge effects. In the style editor, only the size and the rotation of a point symbol can come from a field.
-- Label fallbacks, leader lines, and manual label changes.
+- Manual label changes.
 - The overview of the pages, page templates, and SVG export.
 - Tissot circles.
 - Editing tools other than the line tool, the polygon tool, the point tool, the Select tool, reshape, split, Subtract, merge, Vertex, and the attribute table.

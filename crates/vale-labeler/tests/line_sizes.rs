@@ -72,6 +72,7 @@ fn class(size: f64) -> LabelClass {
             smoothing: 1.5,
         }),
         duplicate_distance: Some(300.0),
+        fallbacks: Default::default(),
     }
 }
 

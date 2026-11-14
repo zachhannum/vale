@@ -169,6 +169,7 @@ pub fn build(preset: Preset, data_dir: &Path, seed: u64, improve: bool) -> anyho
             margin: 1.0,
             placement: Placement::Point(PointPlacement::default()),
             duplicate_distance: Some(400.0),
+            fallbacks: Default::default(),
         },
         LabelClass {
             name: "rivers".into(),
@@ -185,6 +186,7 @@ pub fn build(preset: Preset, data_dir: &Path, seed: u64, improve: bool) -> anyho
                 ..Default::default()
             }),
             duplicate_distance: Some(400.0),
+            fallbacks: Default::default(),
         },
         LabelClass {
             name: "cities".into(),
@@ -193,6 +195,7 @@ pub fn build(preset: Preset, data_dir: &Path, seed: u64, improve: bool) -> anyho
             margin: 1.0,
             placement: Placement::Point(PointPlacement::default()),
             duplicate_distance: Some(400.0),
+            fallbacks: Default::default(),
         },
         LabelClass {
             name: "countries".into(),
@@ -204,6 +207,7 @@ pub fn build(preset: Preset, data_dir: &Path, seed: u64, improve: bool) -> anyho
             margin: 2.0,
             placement: Placement::Polygon(PolygonPlacement::default()),
             duplicate_distance: None,
+            fallbacks: Default::default(),
         },
         LabelClass {
             name: "seas".into(),
@@ -219,6 +223,7 @@ pub fn build(preset: Preset, data_dir: &Path, seed: u64, improve: bool) -> anyho
                 ..Default::default()
             }),
             duplicate_distance: None,
+            fallbacks: Default::default(),
         },
     ];
 

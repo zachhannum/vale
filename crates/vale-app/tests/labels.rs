@@ -794,10 +794,21 @@ fn span(runs: &[&vale_render::GlyphRun]) -> f64 {
 #[test]
 fn small_caps_and_letter_spacing_reach_the_labeler() {
     use vale_style::TextCase;
-    let (_, base) = places_frame(|_| {});
-    let (_, caps) = places_frame(|c| c.case = TextCase::AllSmallCaps);
-    let (_, small) = places_frame(|c| c.case = TextCase::SmallCaps);
-    let (_, spaced) = places_frame(|c| c.letter_spacing = 0.2);
+    // With no fallbacks, each label has the size of the class.
+    let no_fallbacks = |c: &mut vale_style::LabelClass| c.fallbacks.clear();
+    let (_, base) = places_frame(no_fallbacks);
+    let (_, caps) = places_frame(|c| {
+        no_fallbacks(c);
+        c.case = TextCase::AllSmallCaps;
+    });
+    let (_, small) = places_frame(|c| {
+        no_fallbacks(c);
+        c.case = TextCase::SmallCaps;
+    });
+    let (_, spaced) = places_frame(|c| {
+        no_fallbacks(c);
+        c.letter_spacing = 0.2;
+    });
     // Noto Sans has small capitals, so the glyphs change and the size stays.
     let ids = |runs: &[&vale_render::GlyphRun]| -> Vec<u32> {
         runs.iter()
