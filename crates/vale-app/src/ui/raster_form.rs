@@ -638,12 +638,15 @@ pub fn pad(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
         body = last;
     }
     let screen = rects.screen;
-    let width = WIDTH.min(screen.width() - 2.0 * MARGIN);
-    let most = rects.panel_bottom - rects.bands.top - GAP;
+    // On a partially folded device, the form is in one part of the canvas.
+    let part = super::pad::geometry::canvas_part(screen, rects.fold);
+    let bottom = rects.panel_bottom.min(part.bottom());
+    let width = WIDTH.min(part.width() - 2.0 * MARGIN);
+    let most = bottom - rects.bands.top - GAP;
     let height = (ROW + body).min(most);
-    let top = (rects.workspace.bottom() + GAP).min(rects.panel_bottom - height);
+    let top = (rects.workspace.bottom() + GAP).min(bottom - height);
     let rect = Rect::from_min_size(
-        pos2(screen.center().x - width / 2.0, top),
+        pos2(part.center().x - width / 2.0, top),
         vec2(width, height),
     );
 

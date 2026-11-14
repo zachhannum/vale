@@ -275,6 +275,8 @@ pub(super) fn view_menu(
     let width = VIEW_MENU_WIDTH.min(screen.right() - card.left());
     let top = (card.top() - geometry::PANEL_GAP - height).max(rects.column_top);
     let menu = Rect::from_min_size(pos2(card.left(), top), vec2(width, height));
+    let room = Rect::from_x_y_ranges(screen.x_range(), rects.column_top..=rects.panel_bottom);
+    let menu = geometry::off_fold(menu, button, rects.fold, room);
     let list = |open: bool| {
         open.then(|| {
             let kinds = ProjectionKind::ALL.len() as f32;
@@ -286,7 +288,12 @@ pub(super) fn view_menu(
                 menu.left()
             };
             let top = (menu.bottom() - size.y).max(rects.column_top);
-            Rect::from_min_size(pos2(left, top), size)
+            geometry::off_fold(
+                Rect::from_min_size(pos2(left, top), size),
+                menu,
+                rects.fold,
+                room,
+            )
         })
     };
     let open = list(state.pad.projections);
@@ -450,7 +457,9 @@ pub(super) fn banner(ctx: &egui::Context, state: &mut AppState, rects: &Rects) {
     } else {
         return;
     };
-    let screen = rects.screen.shrink(geometry::PANEL_GAP);
+    // On a partially folded device, the banner is in one part of the
+    // canvas.
+    let screen = geometry::canvas_part(rects.screen, rects.fold).shrink(geometry::PANEL_GAP);
     let lead = WARNING + 10.0;
     let side = BODY_PAD;
     let room = (screen.width() - 2.0 * side - lead).max(TOUCH);

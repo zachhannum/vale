@@ -104,6 +104,8 @@ pub(super) fn menu(
         let y = cell.top().min(bottom - height).max(top);
         Rect::from_min_size(pos2(left, y), vec2(width, height))
     };
+    let room = Rect::from_x_y_ranges(rects.screen.x_range(), top..=bottom);
+    let rect = super::geometry::off_fold(rect, cell, rects.fold, room);
     let pressed = ctx.input(|i| {
         i.pointer
             .any_pressed()

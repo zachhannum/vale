@@ -137,7 +137,8 @@ pub fn pad(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
     if state.region.is_none() || state.workspace != Workspace::Globe {
         return;
     }
-    let screen = rects.screen;
+    // On a partially folded device, the card is in one part of the canvas.
+    let screen = super::pad::geometry::canvas_part(rects.screen, rects.fold);
     let top = rects.workspace.bottom() + GAP;
     let width = WIDTH.min(screen.width() - 2.0 * MARGIN);
     let rect = Rect::from_min_size(

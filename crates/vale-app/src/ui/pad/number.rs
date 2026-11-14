@@ -957,7 +957,9 @@ fn place(
     own: Option<egui::LayerId>,
 ) -> Rect {
     let screen = ctx.content_rect().shrink(8.0);
-    let fits = |rect: Rect| screen.contains_rect(rect);
+    // A card does not cross the fold of a partially folded device.
+    let fold = super::geometry::regions(ctx).fold;
+    let fits = |rect: Rect| screen.contains_rect(rect) && !fold.is_some_and(|f| f.intersects(rect));
     let top = top.clamp(screen.top(), (screen.bottom() - size.y).max(screen.top()));
     // At the right, past each panel in the way.
     let mut x = panel.right() + GAP;
@@ -998,7 +1000,7 @@ fn place(
         }
     }
     let below = Rect::from_min_size(pos2(anchor.right() - size.x, anchor.bottom() + 4.0), size);
-    keep_in(below, screen)
+    super::geometry::off_fold(keep_in(below, screen), anchor, fold, screen)
 }
 
 /// The rectangle of a panel or a card below a part of `rect`, if there is

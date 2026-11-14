@@ -136,6 +136,11 @@ pub fn show(
     let collapsed = state.pad.dock().collapsed;
     let size = vec2(PANELS_MENU_WIDTH + rects.bands.right, height(groups));
     let rect = Rect::from_min_size(pos2(rects.screen.right() - size.x, rects.column_top), size);
+    let room = Rect::from_x_y_ranges(
+        rects.screen.x_range(),
+        rects.column_top..=rects.panel_bottom,
+    );
+    let rect = geometry::off_fold(rect, rects.actions, rects.fold, room);
     state.pad.panels_menu_rect = Some(rect);
     let button = controls.iter().find(|c| c.name == PANELS).map(|c| c.rect);
     let pressed = ctx.input(|i| {

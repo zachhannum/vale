@@ -319,6 +319,7 @@ pub fn tooltip(
         Place::Above => (centered(tip.cell.top() - TIP_GAP - size.y), Side::Down),
         Place::Below => (centered(tip.cell.bottom() + TIP_GAP), Side::Up),
     };
+    let rect = geometry::off_fold(rect, tip.cell, rects.fold, rects.screen);
     flyouts.tip_rect = Some(rect);
     let radius = theme::CONTROL_RADIUS.into();
     widgets::card(
@@ -437,6 +438,13 @@ pub fn show(
             .max(rects.tools.top());
         Rect::from_min_size(pos2(rects.tools.right() + geometry::GAP, top), size)
     };
+    // On a partially folded device, the list is in the part of its cell,
+    // and it scrolls if it does not fit.
+    let room = Rect::from_x_y_ranges(
+        rects.screen.x_range(),
+        rects.column_top..=rects.panel_bottom,
+    );
+    let rect = geometry::off_fold(rect, cell, rects.fold, room);
     flyouts.rect = Some(rect);
     let pressed = ctx.input(|i| {
         i.pointer

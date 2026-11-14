@@ -1654,6 +1654,7 @@ fn merge_menu(
             vec2(width, height),
         )
     };
+    let rect = geometry::off_fold(rect, cell, rects.fold, screen);
     if choices.is_empty() || pressed.is_some_and(|p| !rect.contains(p) && !cell.contains(p)) {
         state.merging = false;
         return;
@@ -3188,7 +3189,12 @@ fn add_menu(
         let top = (rects.panel_bottom - size.y).min(button.bottom() + PAD);
         pos2(left, top.max(rects.screen.top() + rects.bands.top))
     };
-    let rect = Rect::from_min_size(min, size);
+    let rect = geometry::off_fold(
+        Rect::from_min_size(min, size),
+        button,
+        rects.fold,
+        rects.screen,
+    );
     state.pad.add_rect = Some(rect);
     let pressed = ctx.input(|i| {
         i.pointer
@@ -3568,7 +3574,7 @@ fn held_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls,
     {
         bottom = bottom.min(top - geometry::GAP);
     }
-    let middle = rects.screen.center().x;
+    let middle = geometry::canvas_part(rects.screen, rects.fold).center().x;
     let mut rect = Rect::from_min_size(pos2(middle - size.x / 2.0, bottom - size.y), size);
     let panels = &state.pad.panels;
     if let Some((_, panel)) = panels.iter().find(|(_, panel)| panel.intersects(rect)) {
@@ -3707,6 +3713,8 @@ fn worlds_menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Control
     let rows = 2.0 + f32::from(state.projects.any()) + f32::from(state.session.is_some());
     let size = vec2(width, 10.0 + shown + rule_height + rows * PANEL_ROW + 10.0);
     let rect = Rect::from_min_size(rects.menu, size);
+    let room = Rect::from_x_y_ranges(rects.screen.x_range(), rects.menu.y..=rects.panel_bottom);
+    let rect = geometry::off_fold(rect, rects.workspace, rects.fold, room);
     state.pad.worlds_rect = Some(rect);
     let pressed = ctx.input(|i| {
         i.pointer
