@@ -128,6 +128,8 @@ pub struct LabelStyle {
 pub struct LayerStyle {
     pub style: Style,
     pub label: LabelStyle,
+    /// The name of the height layer that the Flow strokes read. `None`, or a name that no height layer has, reads the first height layer.
+    pub flow_height: Option<String>,
 }
 
 const POLYGON_FILLS: [&str; 6] = [
@@ -174,6 +176,9 @@ impl LayerStyle {
     pub fn rename_raster(&mut self, old: &str, new: &str) {
         self.style.rewrite(&|t| expr::rename_raster(t, old, new));
         self.label.text = expr::rename_raster(&self.label.text, old, new);
+        if self.flow_height.as_deref() == Some(old) {
+            self.flow_height = Some(new.to_owned());
+        }
     }
 
     /// The style of a new layer: one rule with constant symbolizers. `ordinal` picks a color and wraps around.
@@ -237,6 +242,7 @@ impl LayerStyle {
                 mask: None,
             },
             label,
+            flow_height: None,
         }
     }
 
@@ -261,6 +267,7 @@ impl LayerStyle {
                 italic: false,
                 font: None,
             },
+            flow_height: None,
         }
     }
 
@@ -564,6 +571,7 @@ mod tests {
         let mut empty = LayerStyle {
             style: Style::default(),
             label: l.label.clone(),
+            flow_height: None,
         };
         empty.add_rule(GeometryKind::Polygon);
         assert!(empty.fill().is_some());

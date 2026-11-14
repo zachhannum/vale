@@ -1218,3 +1218,17 @@ fn a_flow_width_follows_the_square_root_of_the_area() {
     assert!(StrokeKind::flow().along_line() && StrokeKind::taper().along_line());
     assert!(!StrokeKind::Solid.along_line());
 }
+
+#[test]
+fn the_height_layer_of_flow_round_trips_and_follows_a_rename() {
+    let mut style = line_with(StrokeKind::flow());
+    assert!(!style.to_json().contains("flow_height"));
+    style.flow_height = Some("Ridges".into());
+    let back = LayerStyle::from_json(&style.to_json()).unwrap();
+    assert_eq!(back.flow_height.as_deref(), Some("Ridges"));
+    assert_eq!(back, style);
+    style.rename_raster("Ridges", "Highlands");
+    assert_eq!(style.flow_height.as_deref(), Some("Highlands"));
+    style.rename_raster("Other", "Name");
+    assert_eq!(style.flow_height.as_deref(), Some("Highlands"));
+}
