@@ -20,9 +20,9 @@ use super::pad::furniture::{ANGLE, LINE_COLOR, LINE_WIDTH};
 use super::pad::raster::IMPORT_RAMP;
 use super::pad::rules::{
     ADD_RULE, ALL_FEATURES, BAD_RANGE, BRUSH, DASH, DASHED, DASHES, DELETE_RULE, DELETE_RULES,
-    EXPRESSION, FILL, FILTER, GAP, LINE, MAX_SCALE, MIN_SCALE, MOVE_DOWN, MOVE_UP, NO_LIMIT, SOLID,
-    STROKE, STROKE_WIDTH, TAPER, TAPER_START, WIDTH_EXPRESSION, WIDTH_FROM_EXPRESSION, parse_scale,
-    scale_text,
+    EXPRESSION, FILL, FILTER, FLOW, FLOW_MIN, GAP, LINE, MAX_SCALE, MIN_SCALE, MOVE_DOWN, MOVE_UP,
+    NO_LIMIT, SOLID, STROKE, STROKE_WIDTH, TAPER, TAPER_START, WIDTH_EXPRESSION,
+    WIDTH_FROM_EXPRESSION, parse_scale, scale_text,
 };
 use super::pad::rules::{
     ADD_SYMBOL, APPLY_MASK, BAD_MASK_RANGE, CIRCLE_SIZES, COLOR, MARKER, MARKER_SHAPE, MASK,
@@ -851,12 +851,14 @@ fn line_rows(ui: &mut egui::Ui, s: &mut Stroke, kind: GeometryKind, salt: egui::
     ];
     if kind == GeometryKind::Line {
         kinds.push((TAPER, StrokeKind::taper()));
+        kinds.push((FLOW, StrokeKind::flow()));
     }
     let name = |k: StrokeKind| match k {
         StrokeKind::Solid => SOLID,
         StrokeKind::Dashed { .. } => DASHED,
         StrokeKind::Brush => BRUSH,
         StrokeKind::Taper { .. } => TAPER,
+        StrokeKind::Flow { .. } => FLOW,
     };
     ui.horizontal(|ui| {
         ui.label(LINE);
@@ -884,6 +886,13 @@ fn line_rows(ui: &mut egui::Ui, s: &mut Stroke, kind: GeometryKind, salt: egui::
         }
         StrokeKind::Taper { start } => {
             changed |= number::slider(TAPER_START, start, 0.0..=1.0)
+                .percent()
+                .step(1.0)
+                .show(ui)
+                .changed();
+        }
+        StrokeKind::Flow { min } => {
+            changed |= number::slider(FLOW_MIN, min, 0.0..=1.0)
                 .percent()
                 .step(1.0)
                 .show(ui)

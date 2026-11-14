@@ -35,6 +35,7 @@ use crate::mask::MaskedFeature;
 use crate::measure::{DENSIFY_DEG, MOUSE, Measure, TapPress};
 use crate::pen::{PenEvent, PenPhase, QUEUE_PEN};
 use crate::pipeline::Pipeline;
+use crate::raster_values::{LayerRasters, LineFlow};
 use crate::scatter::ScatterFill;
 use crate::ui::pad::theme;
 use vale_render::hatch::offset_ring;
@@ -1195,6 +1196,59 @@ enum Done {
     Feature(OnScreen),
 }
 
+/// The drainage of the lines of a layer, for its Flow strokes.
+struct Flows {
+    lines: Vec<Option<Arc<LineFlow>>>,
+    /// The largest area of the lines of the layer.
+    largest: Option<f64>,
+}
+
+impl Flows {
+    /// The drainage of the lines `features` if a batch has a Flow stroke.
+    fn of(
+        rasters: &LayerRasters<'_>,
+        features: &[vale_store::Feature],
+        batches: &[&pipeline::Batch],
+    ) -> Flows {
+        let flow = |b: &&pipeline::Batch| matches!(&b.paint, StylePaint::Stroke(s) if matches!(s.kind, StrokeKind::Flow { .. }));
+        if !batches.iter().any(flow) {
+            return Flows {
+                lines: Vec::new(),
+                largest: None,
+            };
+        }
+        Flows {
+            lines: (features.iter().enumerate())
+                .map(|(i, f)| rasters.flow_line(i, &f.geometry))
+                .collect(),
+            largest: rasters.flow_largest(features),
+        }
+    }
+
+    fn any(&self) -> bool {
+        !self.lines.is_empty()
+    }
+
+    /// The width of a Flow stroke at places along line `index`, on screen.
+    /// `place` gives the screen point of a position, or `None` where it does
+    /// not show. `None` for another kind, or before the flow arrives.
+    fn widths(
+        &self,
+        index: usize,
+        stroke: &vale_style::Stroke,
+        place: impl Fn(vale_store::LonLat) -> Option<kurbo::Point>,
+    ) -> Option<Vec<(kurbo::Point, f64)>> {
+        if !matches!(stroke.kind, StrokeKind::Flow { .. }) {
+            return None;
+        }
+        let (line, largest) = (self.lines.get(index)?.as_ref()?, self.largest?);
+        let out = (line.samples.iter())
+            .filter_map(|&(ll, area)| Some((place(ll)?, stroke.width_at(area, largest))))
+            .collect();
+        Some(out)
+    }
+}
+
 /// Draws one vector layer over the globe, as `vector_layer`. With `cut`,
 /// the fills and the strokes that the mask cuts go to `cut`, and the other
 /// shapes go to the painter. The result is the place of the cut in the
@@ -1251,6 +1305,11 @@ pub fn vector_layer_cut(
         pixels_per_point,
         margin,
     };
+    let flows = Flows::of(
+        &rasters,
+        features,
+        &batches.iter().flatten().collect::<Vec<_>>(),
+    );
     let key = DrawKey {
         view: view_key,
         clip: painter.clip_rect(),
@@ -1258,6 +1317,11 @@ pub fn vector_layer_cut(
         symbols: Arc::as_ptr(doc.symbols()) as usize,
         format,
         cut: cut.is_some(),
+        flow: if flows.any() {
+            pipeline.rasters().arrived()
+        } else {
+            0
+        },
     };
     // One pixel at the center of the globe, in radians.
     let pixel = 1.0 / (radius * f64::from(pixels_per_point));
@@ -1355,7 +1419,12 @@ pub fn vector_layer_cut(
                         }
                     }
                     (OnScreen::Lines(parts), StylePaint::Stroke(stroke)) if !parts.is_empty() => {
-                        sink.stroke(*stroke, vector::stroke_shapes(parts, stroke, seed));
+                        let flow = flows.widths(index, stroke, |ll| {
+                            let v = view.rot.mul_vec(lonlat_to_dir(ll[0], ll[1]));
+                            (v[2] > 0.0).then(|| point(&[v[0], v[1]]))
+                        });
+                        let shapes = vector::stroke_shapes(parts, stroke, seed, flow.as_deref());
+                        sink.stroke(*stroke, shapes);
                     }
                     (OnScreen::Polygons(clipped, triangles, _), StylePaint::Fill(c)) => {
                         for (part, triangles) in clipped.iter().zip(triangles) {
@@ -1380,11 +1449,12 @@ pub fn vector_layer_cut(
                     (OnScreen::Polygons(clipped, _, outlines), StylePaint::Stroke(stroke)) => {
                         let mut stroke = *stroke;
                         // A polygon outline has no start and no end to taper.
-                        if matches!(stroke.kind, StrokeKind::Taper { .. }) {
+                        if stroke.kind.along_line() {
                             stroke.kind = StrokeKind::Solid;
                         }
                         if let Some(outlines) = outlines {
-                            sink.stroke(stroke, vector::stroke_shapes(outlines, &stroke, seed));
+                            let shapes = vector::stroke_shapes(outlines, &stroke, seed, None);
+                            sink.stroke(stroke, shapes);
                             continue;
                         }
                         for part in clipped.iter() {
@@ -1393,7 +1463,7 @@ pub fn vector_layer_cut(
                                 .iter()
                                 .map(|o| o.iter().map(|p| (point(p), 0.0)).collect())
                                 .collect();
-                            let shapes = vector::stroke_shapes(&outlines, &stroke, seed);
+                            let shapes = vector::stroke_shapes(&outlines, &stroke, seed, None);
                             sink.stroke(stroke, shapes);
                         }
                     }
@@ -1633,6 +1703,7 @@ pub fn flat_vector_layer_cut(
         rasters: Some(&rasters),
         index: i,
     });
+    let flat_flows = Flows::of(&rasters, features, &batches.iter().collect::<Vec<_>>());
     // A masked layer draws the paints that the mask does not cut from the
     // whole geometry.
     let on_whole = |batch: &pipeline::Batch| masked.is_some() && !batch.masked;
@@ -1745,12 +1816,21 @@ pub fn flat_vector_layer_cut(
                 StylePaint::Stroke(stroke) if !screen.outline.is_empty() => {
                     let mut stroke = *stroke;
                     // A polygon outline has no start and no end to taper.
-                    if screen.fill.is_some() && matches!(stroke.kind, StrokeKind::Taper { .. }) {
+                    if screen.fill.is_some() && stroke.kind.along_line() {
                         stroke.kind = StrokeKind::Solid;
                     }
+                    let flow = (screen.fill.is_none())
+                        .then(|| {
+                            flat_flows.widths(index, &stroke, |ll| {
+                                let p = projection.forward(ll)?;
+                                let q = flat.screen(rect, p);
+                                Some(kurbo::Point::new(f64::from(q.x), f64::from(q.y)))
+                            })
+                        })
+                        .flatten();
                     sink.stroke(
                         stroke,
-                        vector::stroke_shapes(&screen.outline, &stroke, seed),
+                        vector::stroke_shapes(&screen.outline, &stroke, seed, flow.as_deref()),
                     );
                 }
                 _ => {}

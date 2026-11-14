@@ -16,7 +16,7 @@ use vale_sphere::LonLat;
 use vale_sphere::measure::{area_center, line_center};
 use vale_store::{Geometry, LayerId, RasterId};
 use vale_style::expr::{RasterValues, Stat};
-use vale_terrain::math::lonlat_to_dir;
+use vale_terrain::math::{dir_to_lonlat, lonlat_to_dir};
 use vale_terrain::{
     CoarseHeights, FACES, FlowMap, Heightmap, TexelRect, Zonal, line_zonal, polygon_zonal,
     rects_meet,
@@ -36,7 +36,25 @@ type Memo = HashMap<(LayerId, RasterId, usize), Option<Levels>>;
 
 /// The drained areas that a frozen copy computed, by layer, raster, and
 /// feature.
-type FlowMemo = HashMap<(LayerId, RasterId, usize), Option<f64>>;
+type FlowMemo = HashMap<(LayerId, RasterId, usize), Option<Arc<LineFlow>>>;
+
+/// The drainage of one line.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LineFlow {
+    /// The largest area that drains through the line, in steradians, for
+    /// the `flow` function.
+    pub area: f64,
+    /// The area at each place along the line, in steradians, in the order
+    /// of the parts. The area never gets smaller downstream.
+    pub samples: Vec<(LonLat, f64)>,
+}
+
+impl LineFlow {
+    /// The largest area of the samples.
+    pub fn largest(&self) -> f64 {
+        self.samples.iter().map(|s| s.1).fold(0.0, f64::max)
+    }
+}
 
 /// A raster layer by its name.
 #[derive(Clone, Copy)]
@@ -125,7 +143,7 @@ impl Entry {
 }
 
 /// The result of a flow job: the index and the drained area of each line.
-type FlowDone = Vec<(usize, Option<f64>)>;
+type FlowDone = Vec<(usize, Option<Arc<LineFlow>>)>;
 
 /// The drainage of one height layer.
 struct Drainage {
@@ -149,7 +167,9 @@ impl Default for Drainage {
 /// one height layer.
 struct FlowEntry {
     geoms: Arc<Vec<Geometry>>,
-    areas: Vec<Option<f64>>,
+    lines: Vec<Option<Arc<LineFlow>>>,
+    /// The largest area of the samples of all lines.
+    largest: f64,
     /// The features to compute again.
     pending: BTreeSet<usize>,
     job: Option<mpsc::Receiver<FlowDone>>,
@@ -162,7 +182,8 @@ impl FlowEntry {
         let n = geoms.len();
         FlowEntry {
             geoms: Arc::new(geoms),
-            areas: vec![None; n],
+            lines: vec![None; n],
+            largest: 0.0,
             pending: (0..n).collect(),
             job: None,
             checked: true,
@@ -185,7 +206,7 @@ impl FlowEntry {
                 self.pending.insert(i);
             }
         }
-        self.areas.resize(geoms.len(), None);
+        self.lines.resize(geoms.len(), None);
         self.pending.retain(|&i| i < geoms.len());
         self.geoms = Arc::new(geoms);
     }
@@ -208,6 +229,8 @@ pub struct RasterCache {
     /// The pairs that a `flow` read found with no entry.
     flow_wanted: Mutex<HashSet<(LayerId, RasterId)>>,
     flow_memo: Option<Mutex<FlowMemo>>,
+    /// The first height layer of the project, for the Flow line type.
+    first_height: Option<RasterId>,
     /// The count of the jobs that finished.
     arrived: u64,
     /// The results of the jobs stay in their channels, for the tests.
@@ -242,10 +265,22 @@ impl RasterCache {
         shape: Option<&Geometry>,
     ) -> Option<f64> {
         let named = self.names.get(name).filter(|n| n.height)?;
-        let key = (layer, named.id);
+        Some(self.read_line(layer, named.id, index, shape)?.area)
+    }
+
+    /// The drainage of line `index` of vector layer `layer` on height layer
+    /// `raster`. A frozen copy computes a missing line at the read.
+    fn read_line(
+        &self,
+        layer: LayerId,
+        raster: RasterId,
+        index: usize,
+        shape: Option<&Geometry>,
+    ) -> Option<Arc<LineFlow>> {
+        let key = (layer, raster);
         let entry = self.flows.get(&key);
-        if let Some(area) = entry.and_then(|e| e.areas.get(index).copied().flatten()) {
-            return Some(area);
+        if let Some(line) = entry.and_then(|e| e.lines.get(index).cloned().flatten()) {
+            return Some(line);
         }
         let Some(memo) = &self.flow_memo else {
             if entry.is_none() {
@@ -253,10 +288,39 @@ impl RasterCache {
             }
             return None;
         };
-        let (shape, flow) = (shape?, self.drainages.get(&named.id)?.map.as_ref()?);
-        *(memo.lock().ok()?)
-            .entry((layer, named.id, index))
-            .or_insert_with(|| line_flow(flow, shape))
+        let (shape, flow) = (shape?, self.drainages.get(&raster)?.map.as_ref()?);
+        (memo.lock().ok()?)
+            .entry((layer, raster, index))
+            .or_insert_with(|| line_flow(flow, shape).map(Arc::new))
+            .clone()
+    }
+
+    /// The largest area, in steradians, of the lines of vector layer
+    /// `layer` on height layer `raster`, with the geometry `shapes`. `None`
+    /// until a line arrives.
+    fn read_largest(
+        &self,
+        layer: LayerId,
+        raster: RasterId,
+        shapes: &[vale_store::Feature],
+    ) -> Option<f64> {
+        if self.flow_memo.is_some() {
+            let lines = shapes.iter().enumerate();
+            let largest = lines
+                .filter_map(|(i, f)| self.read_line(layer, raster, i, Some(&f.geometry)))
+                .map(|l| l.largest())
+                .reduce(f64::max);
+            return largest;
+        }
+        let Some(entry) = self.flows.get(&(layer, raster)) else {
+            self.flow_wanted.lock().ok()?.insert((layer, raster));
+            return None;
+        };
+        entry
+            .lines
+            .iter()
+            .any(Option::is_some)
+            .then_some(entry.largest)
     }
 
     /// The names of the raster layers, sorted.
@@ -330,6 +394,10 @@ impl RasterCache {
                 Some((layer.name.clone(), named))
             })
             .collect();
+        self.first_height = (project.layers().iter())
+            .filter_map(|layer| project.raster(layer.raster()?))
+            .find(|raster| crate::ui::is_height(raster))
+            .map(|raster| raster.id);
         let rasters: HashSet<RasterId> = self.names.values().map(|n| n.id).collect();
         let vector = |id: LayerId| doc.layer(id).filter(|l| l.geometry().is_some());
         self.entries
@@ -518,11 +586,14 @@ impl RasterCache {
                 }
                 match take(rx, block) {
                     Ok(done) => {
-                        for (i, area) in done {
-                            if i < entry.areas.len() {
-                                entry.areas[i] = area;
+                        for (i, line) in done {
+                            if i < entry.lines.len() {
+                                entry.lines[i] = line;
                             }
                         }
+                        entry.largest = (entry.lines.iter().flatten())
+                            .map(|l| l.largest())
+                            .fold(0.0, f64::max);
                         entry.job = None;
                         self.arrived += 1;
                         new = true;
@@ -598,7 +669,8 @@ impl RasterCache {
             .map(|(key, e)| {
                 let entry = FlowEntry {
                     geoms: e.geoms.clone(),
-                    areas: e.areas.clone(),
+                    lines: e.lines.clone(),
+                    largest: e.largest,
                     pending: BTreeSet::new(),
                     job: None,
                     checked: true,
@@ -611,6 +683,7 @@ impl RasterCache {
             drainages,
             flows,
             flow_memo: Some(Mutex::default()),
+            first_height: self.first_height,
             maps: (self.maps.iter())
                 .map(|(id, m)| (*id, m.snapshot()))
                 .collect(),
@@ -642,6 +715,22 @@ impl RasterValues for LayerRasters<'_> {
     }
 }
 
+impl LayerRasters<'_> {
+    /// The drainage of line `index`, with the geometry `shape`, on the first
+    /// height layer, for the Flow line type.
+    pub fn flow_line(&self, index: usize, shape: &Geometry) -> Option<Arc<LineFlow>> {
+        let raster = self.cache.first_height?;
+        (self.cache).read_line(self.layer, raster, index, Some(shape))
+    }
+
+    /// The largest area, in steradians, of the lines `features` of the
+    /// layer on the first height layer. `None` until a line arrives.
+    pub fn flow_largest(&self, features: &[vale_store::Feature]) -> Option<f64> {
+        let raster = self.cache.first_height?;
+        (self.cache).read_largest(self.layer, raster, features)
+    }
+}
+
 /// Starts a job that computes the drainage of a height layer on a worker
 /// thread.
 fn start_drainage(map: Heightmap) -> Option<mpsc::Receiver<FlowMap>> {
@@ -666,7 +755,7 @@ fn start_flow(
     let (tx, rx) = mpsc::channel();
     let run = move || {
         let done = (indices.into_iter())
-            .filter_map(|i| Some((i, line_flow(&flow, geoms.get(i)?))))
+            .filter_map(|i| Some((i, line_flow(&flow, geoms.get(i)?).map(Arc::new))))
             .collect();
         let _ = tx.send(done);
     };
@@ -677,18 +766,28 @@ fn start_flow(
         .map(|_| rx)
 }
 
-/// The largest drained area of the parts of a line, in steradians. `None`
-/// for a point or a polygon.
-fn line_flow(flow: &FlowMap, shape: &Geometry) -> Option<f64> {
+/// The drainage of a line: the largest area of its parts, and the area
+/// along each part. `None` for a point or a polygon.
+fn line_flow(flow: &FlowMap, shape: &Geometry) -> Option<LineFlow> {
     let Geometry::Lines(parts) = shape else {
         return None;
     };
     let dirs =
         |part: &Vec<LonLat>| -> Vec<_> { part.iter().map(|p| lonlat_to_dir(p[0], p[1])).collect() };
-    parts
-        .iter()
-        .map(|part| flow.line_area(&dirs(part)))
-        .reduce(f64::max)
+    let mut area: Option<f64> = None;
+    let mut samples = Vec::new();
+    for part in parts.iter().map(dirs) {
+        let a = flow.line_area(&part);
+        area = Some(area.map_or(a, |b| b.max(a)));
+        samples.extend(flow.line_profile(&part).into_iter().map(|s| {
+            let (lon, lat) = dir_to_lonlat(s.dir);
+            ([lon, lat], s.area)
+        }));
+    }
+    Some(LineFlow {
+        area: area?,
+        samples,
+    })
 }
 
 /// Starts a job that computes the levels of the features at `indices` on a

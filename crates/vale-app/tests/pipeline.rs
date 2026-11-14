@@ -4572,3 +4572,141 @@ fn a_width_from_flow_with_the_taper_grows_toward_the_mouth_in_a_frame_and_in_pdf
         }
     )));
 }
+
+/// The count of the pixels of a column `x` from `y0` to `y1` where `hit`
+/// is true for the color.
+fn column_run(
+    px: &vale_render::Rgba,
+    x: f64,
+    y0: f64,
+    y1: f64,
+    hit: impl Fn([i32; 3]) -> bool,
+) -> usize {
+    let x = x.floor() as usize;
+    (y0.floor() as usize..y1.ceil() as usize)
+        .filter(|&y| {
+            let i = (y * px.width + x) * 4;
+            hit([px.data[i], px.data[i + 1], px.data[i + 2]].map(i32::from))
+        })
+        .count()
+}
+
+/// The count of the pixels of a row `y` from `x0` to `x1` where `hit` is
+/// true for the color.
+fn row_run(
+    px: &vale_render::Rgba,
+    y: f64,
+    x0: f64,
+    x1: f64,
+    hit: impl Fn([i32; 3]) -> bool,
+) -> usize {
+    let y = y.floor() as usize;
+    (x0.floor() as usize..x1.ceil() as usize)
+        .filter(|&x| {
+            let i = (y * px.width + x) * 4;
+            hit([px.data[i], px.data[i + 1], px.data[i + 2]].map(i32::from))
+        })
+        .count()
+}
+
+fn is_red([r, g, b]: [i32; 3]) -> bool {
+    r - g.max(b) >= 100
+}
+
+fn is_blue([r, g, b]: [i32; 3]) -> bool {
+    b - r.max(g) >= 100
+}
+
+/// A main river down the valley of `common::confluence_meters` in blue, and
+/// its tributary from the east in red, both with the Flow line type.
+fn flow_rivers() -> (Document, vale_store::LayerId, vale_terrain::Heightmap) {
+    let (mut doc, id) = lines_at(&[
+        ("main", &[[0.5, -3.0], [0.5, -20.0], [0.5, -38.0]]),
+        ("trib", &[[12.0, -20.5], [6.0, -20.5], [0.5, -20.5]]),
+    ]);
+    doc.set_projection(
+        doc.first_map(),
+        ProjectionSpec::new(ProjectionKind::Equirectangular, 0.0, -20.0),
+    );
+    add_height(&mut doc);
+    doc.entry_mut(id).unwrap().style.style = Style {
+        mask: None,
+        rules: vec![
+            kind_rule("main", Color::rgb(0, 0, 200), 8.0, StrokeKind::flow()),
+            kind_rule("trib", Color::rgb(200, 0, 0), 8.0, StrokeKind::flow()),
+        ],
+    };
+    let mut map = vale_terrain::Heightmap::new(128, 0);
+    common::paint_confluence(&mut map);
+    (doc, id, map)
+}
+
+#[test]
+fn a_flow_tributary_is_no_wider_than_the_main_river_at_the_join_in_a_frame_and_in_pdf() {
+    let (doc, _, map) = flow_rivers();
+    let mut pipeline = Pipeline::new();
+    update_rasters(&doc, &mut pipeline, &map);
+    let _ = compose(&doc, &mut pipeline);
+    update_rasters(&doc, &mut pipeline, &map);
+    let list = compose(&doc, &mut pipeline).list;
+    let scale = 4.0;
+    let px = render_rgba(&list, scale).unwrap();
+    if std::env::var_os("VALE_SCREENSHOTS").is_some() {
+        let image = image::RgbaImage::from_raw(px.width as u32, px.height as u32, px.data.clone());
+        image.unwrap().save("../../target/app/test-flow-confluence.png").unwrap();
+    }
+    let mut at = |lon: f64, lat: f64| {
+        let p = pipeline
+            .lonlat_to_page(&doc, SIZE, [lon, lat])
+            .unwrap()
+            .unwrap();
+        (p.x * scale, p.y * scale)
+    };
+    let join = at(0.5, -20.5);
+    let (east, _) = at(2.0, -20.5);
+    let (_, above) = at(0.5, -16.0);
+    let (_, below) = at(0.5, -25.0);
+    let (_, source) = at(0.5, -5.0);
+    let blue = |y: f64| row_run(&px, y, join.0 - 80.0, join.0 + 80.0, is_blue);
+    let red = |x: f64| column_run(&px, x, join.1 - 80.0, join.1 + 80.0, is_red);
+    // The main river grows where the tributary joins it, and toward its mouth.
+    let (b_source, b_above, b_below) = (blue(source), blue(above), blue(below));
+    assert!(
+        b_below > b_above && b_above >= b_source,
+        "{b_source} {b_above} {b_below}"
+    );
+    // Just upstream of the join, the tributary is no wider than the main river.
+    let r_east = red(east);
+    assert!(r_east > 0, "no tributary");
+    assert!(r_east <= b_below + 1, "{r_east} px > {b_below} px");
+    assert!(r_east <= b_above + 1, "{r_east} px > {b_above} px");
+    // No tributary pixel shows on the far side of the main river.
+    let (west, _) = at(-1.5, -20.5);
+    assert_eq!(red(west), 0);
+    // In the PDF, the rivers are vector fills.
+    let pdf = vale_render::render_pdf(&list).unwrap();
+    assert!(!String::from_utf8_lossy(&pdf).contains("/Subtype/Image"));
+    assert!(list.items.iter().any(|i| matches!(
+        i,
+        Item::Fill {
+            rule: FillRule::NonZero,
+            ..
+        }
+    )));
+}
+
+#[test]
+fn a_flow_line_draws_at_its_smallest_width_before_the_flow_arrives() {
+    let (doc, _, _) = flow_rivers();
+    let mut pipeline = Pipeline::new();
+    let scale = 4.0;
+    let px = render_rgba(&compose(&doc, &mut pipeline).list, scale).unwrap();
+    let p = pipeline
+        .lonlat_to_page(&doc, SIZE, [0.5, -10.0])
+        .unwrap()
+        .unwrap();
+    let (x, y) = (p.x * scale, p.y * scale);
+    let run = row_run(&px, y, x - 80.0, x + 80.0, is_blue) as f64;
+    let smallest = StrokeKind::FLOW_MIN * 8.0 * scale;
+    assert!((run - smallest).abs() <= 1.5, "{run} px, not {smallest} px");
+}

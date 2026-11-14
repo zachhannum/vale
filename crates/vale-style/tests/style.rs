@@ -496,6 +496,8 @@ fn each_stroke_kind_round_trips() {
         StrokeKind::Brush,
         StrokeKind::taper(),
         StrokeKind::Taper { start: 0.1 },
+        StrokeKind::flow(),
+        StrokeKind::Flow { min: 0.35 },
     ] {
         let style = line_with(kind);
         let json = style.to_json();
@@ -517,6 +519,7 @@ fn a_stroke_without_kind_reads_as_solid() {
     };
     assert_eq!(read(""), StrokeKind::Solid);
     assert_eq!(read(",\"kind\":\"wavy\""), StrokeKind::Solid);
+    assert_eq!(read(",\"kind\":\"flow\""), StrokeKind::Flow { min: 0.25 });
     assert_eq!(read(",\"kind\":\"dashed\""), StrokeKind::dashed());
     assert_eq!(
         read(",\"kind\":\"dashed\",\"gap\":3.0"),
@@ -1194,4 +1197,24 @@ fn a_width_expression_stays_after_an_edit_of_the_stroke() {
     rule.set_stroke_width_expression(None);
     assert_eq!(rule.stroke_width_expression(), None);
     assert_eq!(rule.stroke().unwrap().width, 2.0);
+}
+
+#[test]
+fn a_flow_width_follows_the_square_root_of_the_area() {
+    let stroke = Stroke {
+        color: BLUE,
+        width: 8.0,
+        kind: StrokeKind::Flow { min: 0.25 },
+    };
+    assert_eq!(stroke.width_at(0.0, 4.0), 2.0);
+    assert_eq!(stroke.width_at(4.0, 4.0), 8.0);
+    // A quarter of the largest area gets half of the part of the width that grows.
+    assert_eq!(stroke.width_at(1.0, 4.0), 2.0 + 0.5 * 6.0);
+    // More than the largest area, and no largest area.
+    assert_eq!(stroke.width_at(9.0, 4.0), 8.0);
+    assert_eq!(stroke.width_at(1.0, 0.0), 2.0);
+    // Another kind keeps its width.
+    assert_eq!(Stroke::solid(BLUE, 3.0).width_at(1.0, 4.0), 3.0);
+    assert!(StrokeKind::flow().along_line() && StrokeKind::taper().along_line());
+    assert!(!StrokeKind::Solid.along_line());
 }

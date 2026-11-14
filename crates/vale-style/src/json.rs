@@ -220,6 +220,10 @@ fn stroke_json(s: &StrokeSymbolizer) -> Map<String, Json> {
             m.insert("kind".into(), json!("taper"));
             m.insert("start".into(), json!(start));
         }
+        StrokeKind::Flow { min } => {
+            m.insert("kind".into(), json!("flow"));
+            m.insert("min".into(), json!(min));
+        }
     }
     m
 }
@@ -392,6 +396,9 @@ fn read_kind(m: &Map<String, Json>) -> StrokeKind {
         Some("brush") => StrokeKind::Brush,
         Some("taper") => StrokeKind::Taper {
             start: number("start", StrokeKind::TAPER_START),
+        },
+        Some("flow") => StrokeKind::Flow {
+            min: number("min", StrokeKind::FLOW_MIN),
         },
         _ => StrokeKind::Solid,
     }

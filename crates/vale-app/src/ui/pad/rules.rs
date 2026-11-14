@@ -54,6 +54,12 @@ pub const TAPER: &str = "Taper";
 pub const DASH: &str = "Dash";
 pub const GAP: &str = "Gap";
 pub const TAPER_START: &str = "Start width";
+/// The line type whose width follows the drainage of the height layer.
+pub const FLOW: &str = "Flow";
+/// The width of a Flow line with no flow, as a part of the width.
+pub const FLOW_MIN: &str = "Smallest width";
+/// The hint of a Flow line in a project with no height layer.
+pub const FLOW_NEEDS_HEIGHT: &str = "Flow needs a height layer.";
 pub const FILL: &str = "Fill";
 pub const FILL_COLOR: &str = "Fill color";
 /// The label of the switch of a fill or a stroke that follows the mask of the style.
@@ -467,13 +473,14 @@ fn selection_line_rows(
 ) {
     let mut kinds = vec![SOLID, DASHED, BRUSH];
     if kind == GeometryKind::Line {
-        kinds.push(TAPER);
+        kinds.extend([TAPER, FLOW]);
     }
     let index = |k: &StrokeKind| match k {
         StrokeKind::Solid => 0,
         StrokeKind::Dashed { .. } => 1,
         StrokeKind::Brush => 2,
         StrokeKind::Taper { .. } => 3,
+        StrokeKind::Flow { .. } => 4,
     };
     let line = rule_edit::shared(rules, paints, |r| r.stroke().map(|s| index(&s.kind)));
     let active = line.filter(|l| !l.1).map(|l| l.0);
@@ -484,6 +491,7 @@ fn selection_line_rows(
             1 => StrokeKind::dashed(),
             2 => StrokeKind::Brush,
             3 => StrokeKind::taper(),
+            4 => StrokeKind::flow(),
             _ => StrokeKind::Solid,
         }));
     }
@@ -528,6 +536,20 @@ fn selection_line_rows(
                 .slider(ui, controls);
             if let Some(v) = v {
                 changes.push(Change::TaperStart(v));
+            }
+        }
+        Some(4) => {
+            let min = number(&|k| match k {
+                StrokeKind::Flow { min } => Some(min),
+                _ => None,
+            });
+            let (v, mixed) = min.unwrap_or((StrokeKind::FLOW_MIN, false));
+            let v = Number::new(FLOW_MIN, v, 0.0..=1.0)
+                .percent()
+                .mixed(mixed)
+                .slider(ui, controls);
+            if let Some(v) = v {
+                changes.push(Change::FlowMin(v));
             }
         }
         _ => {}
@@ -966,7 +988,8 @@ fn paint_rows(
         }
         // A marker ignores the line type.
         if kind != GeometryKind::Point {
-            line_rows(ui, controls, rule, stroke, kind);
+            let has_height = state.doc.project.rasters().iter().any(crate::ui::is_height);
+            line_rows(ui, controls, rule, stroke, (kind, has_height));
         }
         let value = rule.stroke_applies_mask().map(|v| (v, false));
         if let Some(v) = mask_row(ui, controls, masked, STROKE_MASK, value) {
@@ -1577,17 +1600,18 @@ fn line_rows(
     controls: &mut Controls,
     rule: &mut Rule,
     mut stroke: Stroke,
-    kind: GeometryKind,
+    (kind, has_height): (GeometryKind, bool),
 ) {
     let mut kinds = vec![SOLID, DASHED, BRUSH];
     if kind == GeometryKind::Line {
-        kinds.push(TAPER);
+        kinds.extend([TAPER, FLOW]);
     }
     let active = match stroke.kind {
         StrokeKind::Solid => 0,
         StrokeKind::Dashed { .. } => 1,
         StrokeKind::Brush => 2,
         StrokeKind::Taper { .. } => 3,
+        StrokeKind::Flow { .. } => 4,
     };
     if let Some(index) = widgets::choice_row(ui, controls, LINE, &kinds, Some(active))
         && index != active
@@ -1596,6 +1620,7 @@ fn line_rows(
             1 => StrokeKind::dashed(),
             2 => StrokeKind::Brush,
             3 => StrokeKind::taper(),
+            4 => StrokeKind::flow(),
             _ => StrokeKind::Solid,
         };
         rule.set_stroke(Some(stroke));
@@ -1624,6 +1649,18 @@ fn line_rows(
             if let Some(start) = start {
                 stroke.kind = StrokeKind::Taper { start };
                 rule.set_stroke(Some(stroke));
+            }
+        }
+        StrokeKind::Flow { min } => {
+            let min = Number::new(FLOW_MIN, min, 0.0..=1.0)
+                .percent()
+                .slider(ui, controls);
+            if let Some(min) = min {
+                stroke.kind = StrokeKind::Flow { min };
+                rule.set_stroke(Some(stroke));
+            }
+            if !has_height {
+                widgets::form_note(ui, FLOW_NEEDS_HEIGHT, 20.0);
             }
         }
         StrokeKind::Solid | StrokeKind::Brush => {}

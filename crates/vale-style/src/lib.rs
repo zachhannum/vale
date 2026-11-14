@@ -38,12 +38,15 @@ pub enum StrokeKind {
     Brush,
     /// The width grows along the line. `start` is the fraction of the width at the first vertex. The last vertex has the full width.
     Taper { start: f64 },
+    /// The width follows the area that drains through each place of the line, from the first height layer. `min` is the fraction of the width for a line with no flow. The largest river of the layer has the full width.
+    Flow { min: f64 },
 }
 
 impl StrokeKind {
     pub const DASH: f64 = 4.0;
     pub const GAP: f64 = 2.0;
     pub const TAPER_START: f64 = 0.25;
+    pub const FLOW_MIN: f64 = 0.25;
 
     /// A dashed kind with the default dash and gap.
     pub const fn dashed() -> Self {
@@ -58,6 +61,18 @@ impl StrokeKind {
         StrokeKind::Taper {
             start: Self::TAPER_START,
         }
+    }
+
+    /// A flow with the default smallest width.
+    pub const fn flow() -> Self {
+        StrokeKind::Flow {
+            min: Self::FLOW_MIN,
+        }
+    }
+
+    /// True for a kind whose width changes along the line.
+    pub fn along_line(&self) -> bool {
+        matches!(self, StrokeKind::Taper { .. } | StrokeKind::Flow { .. })
     }
 }
 
@@ -76,6 +91,19 @@ impl Stroke {
             width,
             kind: StrokeKind::Solid,
         }
+    }
+
+    /// The width of a Flow stroke where `area` drains, if the largest river of the layer drains `largest`. It grows with the square root of the area, from the smallest width to the full width. Another kind has its width.
+    pub fn width_at(&self, area: f64, largest: f64) -> f64 {
+        let StrokeKind::Flow { min } = self.kind else {
+            return self.width;
+        };
+        let t = if largest > 0.0 {
+            (area / largest).clamp(0.0, 1.0).sqrt()
+        } else {
+            0.0
+        };
+        self.width * (min + (1.0 - min) * t)
     }
 }
 

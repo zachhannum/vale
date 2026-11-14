@@ -47,3 +47,35 @@ pub fn paint_valley(map: &mut vale_terrain::Heightmap, head: f64) {
         }
     }
 }
+
+/// The height in meters of the valley of `valley_meters` with its head at
+/// the equator, and a side valley along 20.35° S that falls into it from
+/// the east.
+pub fn confluence_meters(lonlat: [f64; 2]) -> f64 {
+    let [lon, lat] = lonlat;
+    let main = valley_meters(lonlat, 0.0);
+    let main = (main > 0.0).then_some(main);
+    let side = (0.35..14.0).contains(&lon) && (lat + 20.35).abs() <= 3.0;
+    let side =
+        side.then(|| 100.0 + 30.0 * 19.65 + 15.0 * (lon - 0.35) + 300.0 * (lat + 20.35).abs());
+    match (main, side) {
+        (Some(a), Some(b)) => a.min(b),
+        (Some(h), None) | (None, Some(h)) => h,
+        (None, None) => -1000.0,
+    }
+}
+
+/// Puts the valley and the side valley of `confluence_meters` into `map`.
+pub fn paint_confluence(map: &mut vale_terrain::Heightmap) {
+    use vale_terrain::math::dir_to_lonlat;
+    let n = map.face_size();
+    for face in 0..vale_terrain::FACES {
+        for y in 0..n {
+            for x in 0..n {
+                let (lon, lat) = dir_to_lonlat(map.texel_dir(face, x, y));
+                let level = vale_terrain::meters_to_level(confluence_meters([lon, lat]));
+                map.set(face, x, y, level);
+            }
+        }
+    }
+}

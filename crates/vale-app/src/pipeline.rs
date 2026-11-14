@@ -68,6 +68,9 @@ pub struct PageLayer<'a> {
     pub radius_km: f64,
     /// The values of the raster layers under the features.
     pub rasters: Option<LayerRasters<'a>>,
+    /// The largest drained area of the lines of the layer, in steradians,
+    /// for a style with a Flow stroke. `None` before the flow arrives.
+    pub largest_flow: Option<f64>,
 }
 
 impl PageLayer<'_> {
@@ -107,6 +110,9 @@ pub struct PageFeature {
     pub whole: Option<Box<Whole>>,
     /// The box of the cut and of the whole geometry.
     pub bbox: Rect,
+    /// The drained area at places along a line, in steradians, on the page,
+    /// for a style with a Flow stroke. `None` before the flow arrives.
+    pub flow: Option<Vec<(Point, f64)>>,
 }
 
 /// The lines and the rings of a feature before a polygon mask cuts them.
@@ -364,6 +370,7 @@ fn page_feature(vt: &ViewTransform, index: usize, f: &ProjFeature) -> PageFeatur
             })
         }),
         bbox: vt.page_bbox(f.bbox),
+        flow: None,
     }
 }
 
@@ -403,13 +410,32 @@ fn build_page_layers<'a>(
         let Some(kind) = layer.geometry() else {
             continue;
         };
-        let features = feats
+        let mut features: Vec<PageFeature> = feats
             .iter()
             .enumerate()
             .filter_map(|(i, f)| f.as_ref().map(|f| (i, f)))
             .filter(|(_, f)| meets(vt.page_bbox(f.bbox), page))
             .map(|(i, f)| page_feature(vt, i, f))
             .collect();
+        let layer_rasters = rasters.for_layer(layer.id);
+        let flow = kind == GeometryKind::Line && has_flow(&entry.style.style);
+        let mut largest_flow = None;
+        if flow {
+            for f in &mut features {
+                let Some(geometry) = layer.features.get(f.index).map(|g| &g.geometry) else {
+                    continue;
+                };
+                f.flow = layer_rasters.flow_line(f.index, geometry).map(|line| {
+                    (line.samples.iter())
+                        .filter_map(|&(ll, area)| {
+                            let p = cache.projection.forward(ll)?;
+                            Some((vt.to_page(p), area))
+                        })
+                        .collect()
+                });
+            }
+            largest_flow = layer_rasters.flow_largest(&layer.features);
+        }
         out.push(PageLayer {
             entry,
             layer,
@@ -417,10 +443,18 @@ fn build_page_layers<'a>(
             features,
             scale,
             radius_km: doc.project.world.radius_km,
-            rasters: Some(rasters.for_layer(layer.id)),
+            rasters: Some(layer_rasters),
+            largest_flow,
         });
     }
     out
+}
+
+/// True if a rule of the style has a Flow stroke.
+pub fn has_flow(style: &vale_style::Style) -> bool {
+    (style.rules.iter().flat_map(|r| &r.symbolizers)).any(|s| {
+        matches!(s, vale_style::Symbolizer::Stroke(s) if matches!(s.kind, StrokeKind::Flow { .. }))
+    })
 }
 
 /// Km per point at the center of the view.
@@ -468,6 +502,7 @@ fn paint_key(paint: &Paint) -> [u64; 8] {
                 StrokeKind::Dashed { dash, gap } => [1, dash.to_bits(), gap.to_bits()],
                 StrokeKind::Brush => [2, 0, 0],
                 StrokeKind::Taper { start } => [3, start.to_bits(), 0],
+                StrokeKind::Flow { min } => [4, min.to_bits(), 0],
             };
             [1, c, w, k, a, b, 0, 0]
         }
@@ -703,6 +738,37 @@ fn symbol_affine(at: Point, size: f64, rotation: f64) -> Affine {
     Affine::translate(at.to_vec2()) * Affine::rotate(rotation.to_radians()) * Affine::scale(size)
 }
 
+/// The pieces of a stroke whose width changes along the line: a taper, or
+/// a flow from the drained area along feature `f`. A flow line with no flow
+/// yet has its smallest width.
+fn along_line(
+    f: &PageFeature,
+    parts: &[Vec<Point>],
+    stroke: &Stroke,
+    largest: Option<f64>,
+) -> Vec<stroke::TaperPiece> {
+    match stroke.kind {
+        StrokeKind::Taper { start } => stroke::taper(parts, start * stroke.width, stroke.width),
+        StrokeKind::Flow { .. } => {
+            let samples: Vec<(Point, f64)> = match (&f.flow, largest) {
+                (Some(flow), Some(largest)) if !flow.is_empty() => (flow.iter())
+                    .map(|&(p, area)| (p, stroke.width_at(area, largest)))
+                    .collect(),
+                _ => {
+                    let w = stroke.width_at(0.0, 0.0);
+                    return stroke::varying(
+                        &(parts.iter())
+                            .map(|part| part.iter().map(|&p| (p, w)).collect())
+                            .collect::<Vec<_>>(),
+                    );
+                }
+            };
+            stroke::varying(&stroke::sampled(parts, &samples))
+        }
+        _ => Vec::new(),
+    }
+}
+
 /// Draws one batch. A paint that does not fit the kind of the layer draws nothing.
 fn draw_batch(list: &mut DisplayList, pl: &PageLayer<'_>, batch: &Batch, sd: &mut SymbolDraw<'_>) {
     let features = || batch.features.iter().map(|&i| &pl.features[i]);
@@ -727,12 +793,19 @@ fn draw_batch(list: &mut DisplayList, pl: &PageLayer<'_>, batch: &Batch, sd: &mu
                         .collect();
                     push_stroke(list, polylines_path(&parts, false), &stroke, false);
                 }
-                StrokeKind::Taper { start } if line => {
+                StrokeKind::Taper { .. } | StrokeKind::Flow { .. } if line => {
                     // One fill for the batch, so that the alpha does not build up where two lines overlap.
                     let mut path = BezPath::new();
                     for f in features().filter(|f| !f.lines_for(masked).is_empty()) {
-                        let pieces =
-                            stroke::taper(f.lines_for(masked), start * stroke.width, stroke.width);
+                        // The swatch of a legend has no drainage, and shows a flow as a taper.
+                        let stroke = match stroke.kind {
+                            StrokeKind::Flow { min } if pl.rasters.is_none() => Stroke {
+                                kind: StrokeKind::Taper { start: min },
+                                ..stroke
+                            },
+                            _ => stroke,
+                        };
+                        let pieces = along_line(f, f.lines_for(masked), &stroke, pl.largest_flow);
                         path.extend(stroke::taper_path(&pieces));
                     }
                     if !path.elements().is_empty() {
@@ -776,7 +849,7 @@ fn draw_batch(list: &mut DisplayList, pl: &PageLayer<'_>, batch: &Batch, sd: &mu
                         list.push(Item::Rasterize { bounds, items });
                     }
                 }
-                StrokeKind::Solid | StrokeKind::Taper { .. } => {
+                StrokeKind::Solid | StrokeKind::Taper { .. } | StrokeKind::Flow { .. } => {
                     push_stroke(list, lines(), &stroke, line);
                 }
             }
@@ -2101,6 +2174,7 @@ pub(crate) fn swatch(
         rings: vec![ring],
         whole: None,
         bbox: rect,
+        flow: None,
     };
     let pl = PageLayer {
         entry: Cow::Borrowed(entry),
@@ -2110,6 +2184,7 @@ pub(crate) fn swatch(
         scale: 0.0,
         radius_km: doc.project.world.radius_km,
         rasters: None,
+        largest_flow: None,
     };
     let vt = ViewTransform::new(
         View {

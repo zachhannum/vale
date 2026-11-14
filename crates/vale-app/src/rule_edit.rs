@@ -20,6 +20,7 @@ pub enum Change {
     Dash(f64),
     Gap(f64),
     TaperStart(f64),
+    FlowMin(f64),
     /// Adds the fill color to each rule with no fill, or removes each fill.
     Fill(Option<Color>),
     FillColor(Color),
@@ -85,6 +86,11 @@ fn apply_one(rule: &mut Rule, kind: GeometryKind, change: Change) {
         Change::TaperStart(t) => edit(rule, &|s| {
             if let StrokeKind::Taper { start } = &mut s.kind {
                 *start = t;
+            }
+        }),
+        Change::FlowMin(m) => edit(rule, &|s| {
+            if let StrokeKind::Flow { min } = &mut s.kind {
+                *min = m;
             }
         }),
         Change::Fill(Some(c)) => {
