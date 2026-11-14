@@ -17041,11 +17041,11 @@ fn a_line_rule_takes_its_width_from_an_expression() {
     };
     open_rule(&mut h, "Rivers", "Default");
     assert!(control(&h, WIDTH_EXPRESSION).is_none());
-    // The switch starts with a width from the flow of the height layer.
     scroll_to_control(&mut h, WIDTH_FROM_EXPRESSION);
     tap(&mut h, WIDTH_FROM_EXPRESSION);
-    let start = text(&h).unwrap();
-    assert!(start.starts_with("1 + sqrt(flow('Height')) / "), "{start}");
+    // The switch starts with the width of the stepper.
+    let width = rules(&h, rivers)[0].stroke().unwrap().width;
+    assert_eq!(text(&h), Some(width.to_string()));
     scroll_to_control(&mut h, WIDTH_EXPRESSION);
     check_controls(&h, "the rule page with a width expression");
     screenshot::save(&mut h, "pad-width-expression");
@@ -17058,58 +17058,6 @@ fn a_line_rule_takes_its_width_from_an_expression() {
     tap(&mut h, WIDTH_FROM_EXPRESSION);
     assert_eq!(text(&h), None);
     assert!(control(&h, WIDTH_EXPRESSION).is_none());
-}
-
-#[test]
-fn the_width_template_gives_the_largest_river_about_four_points_and_each_line_one_point() {
-    use vale_app::ui::pad::rules::WIDTH_FROM_EXPRESSION;
-    // The second line is in the sea, so it has no flow.
-    let river: &[[f64; 2]] = &[[0.5, -5.0], [0.5, -20.0], [0.5, -38.0]];
-    let (mut h, streams, _) = valley_pad(&[river, &[[20.0, -20.0], [21.0, -20.0]]]);
-    open_rule(&mut h, "Streams", "Default");
-    // The rule page asks for the flow of the lines, and it arrives.
-    for _ in 0..20 {
-        if h.state()
-            .pipeline
-            .rasters()
-            .flow_of(streams, 0, "Height")
-            .is_some()
-        {
-            break;
-        }
-        h.run_steps(1);
-    }
-    scroll_to_control(&mut h, WIDTH_FROM_EXPRESSION);
-    tap(&mut h, WIDTH_FROM_EXPRESSION);
-    let rule = rules(&h, streams)[0].clone();
-    let text = rule.stroke_width_expression().unwrap().to_owned();
-    assert_ne!(
-        text, "1 + sqrt(flow('Height')) / 100",
-        "the flow did not arrive"
-    );
-    let width = |index: usize| {
-        let feature = &h.state().doc.layer(streams).unwrap().features[index];
-        let rasters = h.state().pipeline.rasters().for_layer(streams);
-        let width =
-            vale_style::expr::Expr::parse(&text)
-                .unwrap()
-                .eval(&vale_style::expr::Context {
-                    attributes: &feature.attributes,
-                    scale: 0.0,
-                    geometry: feature.geometry.kind(),
-                    shape: Some(&feature.geometry),
-                    radius_km: h.state().doc.project.world.radius_km,
-                    page: None,
-                    rasters: Some(&rasters),
-                    index,
-                });
-        match width {
-            vale_store::Value::Number(w) => w,
-            other => panic!("{text}: {other:?}"),
-        }
-    };
-    assert!((2.5..=6.5).contains(&width(0)), "{text}: {} pt", width(0));
-    assert_eq!(width(1), 1.0, "{text}");
 }
 
 #[test]

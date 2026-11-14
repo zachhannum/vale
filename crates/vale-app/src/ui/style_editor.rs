@@ -687,7 +687,10 @@ fn width_expression_rows(ui: &mut egui::Ui, rule: &mut Rule, library: &Library) 
     let mut on = rule.stroke_width_expression().is_some();
     let mut changed = false;
     if ui.checkbox(&mut on, WIDTH_FROM_EXPRESSION).changed() {
-        let start = library.help.flow_width();
+        let start = rule
+            .stroke()
+            .map(|s| s.width.to_string())
+            .unwrap_or_default();
         rule.set_stroke_width_expression(on.then_some(start.as_str()));
         changed = true;
     }

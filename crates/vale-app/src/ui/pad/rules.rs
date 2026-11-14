@@ -1046,7 +1046,10 @@ fn width_expression_rows(
         WIDTH_FROM_EXPRESSION,
         &mut on,
     ) {
-        let start = help.flow_width();
+        let start = rule
+            .stroke()
+            .map(|s| s.width.to_string())
+            .unwrap_or_default();
         rule.set_stroke_width_expression(on.then_some(start.as_str()));
     }
     let Some(text) = rule.stroke_width_expression().map(str::to_owned) else {

@@ -1681,8 +1681,6 @@ fn the_style_editor_opens_from_layers_on_the_globe_and_the_flat_view() {
 fn the_desktop_style_editor_gives_a_line_its_width_from_an_expression() {
     use vale_app::ui::pad::rules::{WIDTH_EXPRESSION, WIDTH_FROM_EXPRESSION};
     let mut h = globe_harness();
-    h.state_mut().add_height();
-    h.run_steps(2);
     let rivers = open_rivers(&mut h);
     let text = |h: &Harness<'static, AppState>| {
         let rule = &h.state().doc.entry(rivers).unwrap().style.style.rules[0];
@@ -1690,8 +1688,11 @@ fn the_desktop_style_editor_gives_a_line_its_width_from_an_expression() {
     };
     h.get_by_label(WIDTH_FROM_EXPRESSION).click();
     h.run_steps(2);
-    let start = text(&h).unwrap();
-    assert!(start.starts_with("1 + sqrt(flow('Height')) / "), "{start}");
+    let width = h.state().doc.entry(rivers).unwrap().style.style.rules[0]
+        .stroke()
+        .unwrap()
+        .width;
+    assert_eq!(text(&h), Some(width.to_string()));
     type_in(&mut h, WIDTH_EXPRESSION, "sqrt(flow('Height')) / 50");
     assert_eq!(text(&h).as_deref(), Some("sqrt(flow('Height')) / 50"));
     h.get_by_label(WIDTH_FROM_EXPRESSION).click();
