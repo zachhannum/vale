@@ -161,6 +161,13 @@ pub fn even_slope(along: f64) -> f64 {
     3000.0 * along
 }
 
+/// A slope 100 times as steep as `even_slope` near its coast. The steps of
+/// the 16-bit heights move its coast by less than a pixel at the highest
+/// zoom.
+pub fn steep_slope(along: f64) -> f64 {
+    (300_000.0 * along).clamp(-2000.0, 2000.0)
+}
+
 /// A slope down to a flat sea just below sea level.
 pub fn flat_sea(along: f64) -> f64 {
     if along < 0.0 { -5.0 } else { 3000.0 * along }

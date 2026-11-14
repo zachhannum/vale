@@ -7693,7 +7693,7 @@ const COAST_PLACES: [(&str, f64, f64); 2] = [
     ("cube corner", 45.0, 35.264_389_682_754_654),
 ];
 
-const ZOOMS: [f64; 4] = [1.0, 4.0, 15.0, 40.0];
+const ZOOMS: [f64; 5] = [1.0, 4.0, 15.0, 40.0, vale_app::globe::view::ZOOM_MAX];
 
 /// Makes sure that the coast line of `ground` has its weight across the
 /// line and its middle on the band edge on the globe, at each zoom and
@@ -7735,6 +7735,55 @@ fn a_stop_line_next_to_a_flat_sea_has_its_weight_at_each_zoom() {
 fn a_stop_line_next_to_flat_land_has_its_weight_at_each_zoom() {
     let _gpu = one_gpu_test();
     assert_globe_coasts(flat_land, "flat land");
+}
+
+/// Makes sure that a band edge stays within half a pixel of the place where
+/// the vector layers draw it, in each column, at the highest zoom.
+#[test]
+#[ignore = "gpu"]
+fn a_band_edge_stays_on_its_place_at_the_highest_zoom() {
+    let _gpu = one_gpu_test();
+    let (lon, lat) = (37.3f64, 52.1f64);
+    let z = lat.to_radians().sin();
+    let mut h = gpu_harness_at(render_state(), 2.0);
+    lines::measured_scene(&mut h, 1024, move |d| lines::steep_slope(d[2] - z));
+    set_coast_line(&mut h, false);
+    let globe = &mut h.state_mut().globe;
+    globe.view = GlobeView::centered(lon, lat);
+    globe.view.zoom = vale_app::globe::view::ZOOM_MAX;
+    let img = canvas_image(&mut h);
+    let (view, rect) = (h.state().globe.view, h.state().globe.rect);
+    let scale = h.ctx.pixels_per_point();
+    let origin = (rect.min * scale).ceil();
+    // The land is yellow and the sea is red, so green over red is 1 on land
+    // and 0 on the sea. The land is north of the edge.
+    let land = |x: u32, y: u32| {
+        let p = img.get_pixel(x, y).0;
+        f32::from(p[1]) / f32::from(p[0]).max(1.0)
+    };
+    for x in (8..img.width() - 8).step_by(16) {
+        let y = (1..img.height())
+            .find(|&y| land(x, y) < 0.5)
+            .expect("the canvas shows the edge");
+        let (above, below) = (land(x, y - 1), land(x, y));
+        let found = y as f32 - 0.5 + (above - 0.5) / (above - below);
+        // The row where the globe crosses the latitude, by bisection.
+        let at = |y: f32| Pos2::new(origin.x + x as f32 + 0.5, origin.y + y) / scale;
+        let (mut north, mut south) = (0.0, img.height() as f32);
+        for _ in 0..40 {
+            let mid = (north + south) / 2.0;
+            if view.unproject(rect, at(mid)).unwrap()[2] > z {
+                north = mid;
+            } else {
+                south = mid;
+            }
+        }
+        let want = (north + south) / 2.0;
+        assert!(
+            (found - want).abs() < 0.5,
+            "column {x}: edge at {found}, not at {want}"
+        );
+    }
 }
 
 #[test]

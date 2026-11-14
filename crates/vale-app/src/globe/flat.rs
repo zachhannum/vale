@@ -10,8 +10,10 @@ use super::math::{V3, add, cross, dir_to_lonlat, lonlat_to_dir, normalize, scale
 use super::view::Camera;
 
 /// The limits of the zoom. At a zoom of 1, the whole map fits the canvas.
+/// Past the maximum, the raster layers on the mesh move more than a pixel
+/// away from the vector layers.
 pub const ZOOM_MIN: f64 = 0.25;
-pub const ZOOM_MAX: f64 = 64.0;
+pub const ZOOM_MAX: f64 = 128.0;
 
 /// The number of points of a brush outline.
 const OUTLINE_POINTS: usize = 128;

@@ -676,7 +676,7 @@ fn assert_flat_coasts(ground: fn(f64) -> f64, name: &str) {
         let z = lat.to_radians().sin();
         let mut h = flat_harness();
         lines::measured_scene(&mut h, 64, move |d| ground(d[2] - z));
-        for zoom in [1.0, 4.0, 15.0, 40.0] {
+        for zoom in [1.0, 4.0, 15.0, 40.0, vale_app::globe::flat::ZOOM_MAX] {
             let globe = &mut h.state_mut().globe;
             globe.flat = FlatView::new(spec(ProjectionKind::Equirectangular, 0.0, 0.0));
             globe.flat.zoom = zoom;
@@ -707,6 +707,45 @@ fn a_stop_line_next_to_a_flat_sea_has_its_weight_in_the_flat_view() {
 fn a_stop_line_next_to_flat_land_has_its_weight_in_the_flat_view() {
     let _gpu = one_gpu_test();
     assert_flat_coasts(lines::flat_land, "flat land");
+}
+
+/// Makes sure that a band edge stays within half a pixel of the place where
+/// the vector layers draw it, at the highest zoom. The place is in the middle
+/// of a cell of the mesh, where the mesh is farthest from the projection.
+#[test]
+#[ignore = "gpu"]
+fn a_band_edge_stays_on_its_place_at_the_highest_zoom() {
+    let _gpu = one_gpu_test();
+    let (lon, lat) = (45.5f64, 45.5f64);
+    let z = lat.to_radians().sin();
+    let mut h = flat_harness();
+    lines::measured_scene(&mut h, 1024, move |d| lines::steep_slope(d[2] - z));
+    lines::set_coast_line(&mut h, false);
+    let globe = &mut h.state_mut().globe;
+    globe.flat = FlatView::new(spec(ProjectionKind::Equirectangular, 0.0, 0.0));
+    globe.flat.zoom = vale_app::globe::flat::ZOOM_MAX;
+    globe.flat.look_at(lon, lat);
+    let img = canvas_image(&mut h);
+    let globe = &h.state().globe;
+    let at = globe
+        .flat
+        .project(globe.rect, lonlat_to_dir(lon, lat))
+        .unwrap();
+    let scale = h.ctx.pixels_per_point();
+    let origin = (globe.rect.min * scale).ceil();
+    let (x, want) = ((at.x * scale - origin.x) as u32, at.y * scale - origin.y);
+    // The land is yellow and the sea is red, so green over red is 1 on land
+    // and 0 on the sea. The land is north of the edge.
+    let land = |y: u32| {
+        let p = img.get_pixel(x, y).0;
+        f32::from(p[1]) / f32::from(p[0]).max(1.0)
+    };
+    let y = (1..img.height())
+        .find(|&y| land(y) < 0.5)
+        .expect("the canvas shows the edge");
+    let (above, below) = (land(y - 1), land(y));
+    let found = y as f32 - 0.5 + (above - 0.5) / (above - below);
+    assert!((found - want).abs() < 0.5, "edge at {found}, not at {want}");
 }
 
 /// A flat view with a grey height layer of `level`, and right above it an
