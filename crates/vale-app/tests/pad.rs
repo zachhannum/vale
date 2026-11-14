@@ -16959,8 +16959,8 @@ fn valley_pad(lines: &[&[[f64; 2]]]) -> (Pad, vale_store::LayerId, RasterId) {
 }
 
 #[test]
-fn orient_rivers_downhill_reverses_each_uphill_line_in_one_undo_step() {
-    use vale_app::ui::pad::ORIENT_RIVERS;
+fn orient_lines_downhill_reverses_each_uphill_line_in_one_undo_step() {
+    use vale_app::ui::pad::ORIENT_DOWNHILL;
     use vale_store::Geometry;
     let up: &[[f64; 2]] = &[[0.5, -38.0], [0.5, -20.0], [0.5, -5.0]];
     let down: &[[f64; 2]] = &[[0.3, -5.0], [0.3, -30.0]];
@@ -16984,7 +16984,7 @@ fn orient_rivers_downhill_reverses_each_uphill_line_in_one_undo_step() {
     let before = lines(&h);
     assert_eq!(before, [line(up), line(down), line(also_up)]);
 
-    tap(&mut h, ORIENT_RIVERS);
+    tap(&mut h, ORIENT_DOWNHILL);
     assert_eq!(lines(&h), [reversed(up), line(down), reversed(also_up)]);
     // One undo puts back each line.
     h.state_mut().undo();

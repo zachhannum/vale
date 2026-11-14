@@ -102,7 +102,7 @@ pub const DELETE_VERTEX: &str = "Delete vertex";
 pub const SMOOTH_VERTICES: &str = "Smooth vertices";
 /// The row of the panel of a line layer that reverses each line that runs
 /// uphill.
-pub const ORIENT_RIVERS: &str = "Orient rivers downhill";
+pub const ORIENT_DOWNHILL: &str = "Orient lines downhill";
 
 /// A tool of the Vector cell.
 pub struct VectorTool {
@@ -3355,9 +3355,9 @@ fn vector_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
         state.open_table(id);
     }
     if kind == "Lines" {
-        let enabled = state.can_orient_rivers(id);
-        if widgets::text_row(ui, controls, ORIENT_RIVERS, 0.0, false, enabled).clicked() {
-            state.orient_rivers(id);
+        let enabled = state.can_orient_downhill(id);
+        if widgets::text_row(ui, controls, ORIENT_DOWNHILL, 0.0, false, enabled).clicked() {
+            state.orient_downhill(id);
         }
     }
     rules::section(ui, state, controls, id);

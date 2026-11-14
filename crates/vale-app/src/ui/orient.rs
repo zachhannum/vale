@@ -1,5 +1,5 @@
-//! "Orient rivers downhill": each line of a layer gets its first vertex at
-//! its upstream end, so a taper is narrow at the source.
+//! "Orient lines downhill": each line of a layer gets its first vertex at
+//! its higher end, so a taper is narrow at the top.
 
 use vale_store::{Geometry, GeometryKind, LayerId, LonLat, RasterId, Uuid};
 use vale_terrain::math::lonlat_to_dir;
@@ -26,7 +26,7 @@ pub fn downhill(g: &Geometry, level: impl Fn(LonLat) -> f64) -> Option<Geometry>
 }
 
 impl AppState {
-    /// The height layer that "Orient rivers downhill" reads: the first
+    /// The height layer that "Orient lines downhill" reads: the first
     /// height layer that the globe holds.
     fn orient_height(&self) -> Option<RasterId> {
         let rasters = self.doc.project.rasters();
@@ -34,16 +34,16 @@ impl AppState {
         rasters.iter().find(fit).map(|r| r.id)
     }
 
-    /// True if "Orient rivers downhill" can run on layer `layer`.
-    pub fn can_orient_rivers(&self, layer: LayerId) -> bool {
+    /// True if "Orient lines downhill" can run on layer `layer`.
+    pub fn can_orient_downhill(&self, layer: LayerId) -> bool {
         let lines = self.doc.layer(layer).and_then(|l| l.geometry()) == Some(GeometryKind::Line);
         lines && !self.globe.busy() && self.orient_height().is_some()
     }
 
     /// Reverses each line of layer `layer` that runs uphill, in one undo
     /// step. Returns the number of reversed lines.
-    pub fn orient_rivers(&mut self, layer: LayerId) -> usize {
-        if !self.can_orient_rivers(layer) {
+    pub fn orient_downhill(&mut self, layer: LayerId) -> usize {
+        if !self.can_orient_downhill(layer) {
             return 0;
         }
         let (Some(height), Some(lines)) = (self.orient_height(), self.doc.layer(layer)) else {

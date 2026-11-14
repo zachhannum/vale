@@ -194,7 +194,7 @@ fn brush_is_deterministic_and_inside_the_width() {
 
 #[test]
 fn varying_with_linear_widths_is_the_taper() {
-    let part = vec![
+    let part = [
         Point::new(0.0, 0.0),
         Point::new(10.0, 0.0),
         Point::new(10.0, 10.0),
