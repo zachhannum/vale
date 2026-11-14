@@ -719,12 +719,12 @@ iPhone Duo has an outer screen and an inner screen. Both render at a pixel ratio
 
 | Screen | Pose | Size in points | Safe area: top, right, bottom, left |
 |---|---|---|---|
-| Outer | Portrait | 466 × 678 | 0, 0, 34, 0 |
-| Outer | Landscape | 678 × 466 | 0, 0, 34, 0 |
+| Outer | Portrait | 466 × 678 | 0, 84, 34, 0 |
+| Outer | Landscape | 678 × 466 | 0, 0, 34, 84 |
 | Inner | Portrait | 669 × 951 | 0, 0, 34, 0 |
 | Inner | Landscape | 951 × 669 | 0, 0, 34, 0 |
 
-A visible status bar adds to the safe area. On the outer screen and on the inner screen in landscape, the status bar is a side column, 84 points wide. The column is at the right edge on the outer screen in portrait and on the inner screen in landscape. It is at the left edge on the outer screen in landscape. On the inner screen in portrait, the status bar is a band of 82 points at the top. The app hides the status bar, so the column and the band are not in the safe area.
+A visible status bar adds to the safe area. On the outer screen and on the inner screen in landscape, the status bar is a side column, 84 points wide. The column is at the right edge on the outer screen in portrait and on the inner screen in landscape. It is at the left edge on the outer screen in landscape. On the inner screen in portrait, the status bar is a band of 82 points at the top. The app hides the status bar. On the inner screen, the column and the band are then not in the safe area. On the outer screen, the safe area leaves out the column, because the outer camera is at its top. The layout uses the column, and it keeps out of the region of the camera only.
 
 The device opens like a book, so the outer screen in portrait is one half of the inner screen in landscape. The hinge is vertical on the inner screen in landscape and horizontal in portrait. When the device is partially folded, the system reserves a folding region along the hinge, and the region divides the inner screen into two parts.
 
