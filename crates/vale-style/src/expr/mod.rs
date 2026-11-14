@@ -75,7 +75,7 @@ pub fn rename_field(text: &str, old: &str, new: &str) -> String {
     out
 }
 
-/// The text of an expression with each `raster` call that names the raster layer `old` changed to name `new`. Text that does not lex stays as it is.
+/// The text of an expression with each `raster` or `flow` call that names the raster layer `old` changed to name `new`. Text that does not lex stays as it is.
 pub fn rename_raster(text: &str, old: &str, new: &str) -> String {
     let chars: Vec<char> = text.chars().collect();
     let Ok(tokens) = lexer::lex(&chars) else {
@@ -84,7 +84,7 @@ pub fn rename_raster(text: &str, old: &str, new: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut copied = 0;
     for w in tokens.windows(4) {
-        let hit = matches!(&w[0].tok, lexer::Tok::Name(f) if f.eq_ignore_ascii_case("raster"))
+        let hit = matches!(&w[0].tok, lexer::Tok::Name(f) if names_raster(f))
             && w[1].tok == lexer::Tok::LParen
             && matches!(&w[2].tok, lexer::Tok::Str(s) if s == old)
             && matches!(w[3].tok, lexer::Tok::Comma | lexer::Tok::RParen);
@@ -239,7 +239,7 @@ impl Expr {
         out
     }
 
-    /// The names of the raster layers that the `raster` calls name with literal text, sorted and without repeats.
+    /// The names of the raster layers that the `raster` and `flow` calls name with literal text, sorted and without repeats.
     pub fn raster_layers(&self) -> Vec<String> {
         let mut out = Vec::new();
         collect_raster_layers(&self.root, &mut out);
@@ -290,6 +290,11 @@ fn collect_fields(node: &Node, out: &mut Vec<String>) {
     }
 }
 
+/// True for a function whose first argument names a raster layer.
+fn names_raster(function: &str) -> bool {
+    function.eq_ignore_ascii_case("raster") || function.eq_ignore_ascii_case("flow")
+}
+
 fn collect_raster_layers(node: &Node, out: &mut Vec<String>) {
     match node {
         Node::Field(_) | Node::Lit(_) | Node::Var(_) | Node::Hole => {}
@@ -317,7 +322,7 @@ fn collect_raster_layers(node: &Node, out: &mut Vec<String>) {
             collect_raster_layers(high, out);
         }
         Node::Call(f, args) => {
-            if f.name == "raster"
+            if names_raster(f.name)
                 && let Some(Node::Lit(Value::Text(name))) = args.first()
             {
                 out.push(name.clone());
