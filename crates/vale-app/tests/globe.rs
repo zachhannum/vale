@@ -8100,6 +8100,7 @@ fn symbol_world() -> (Document, vale_store::LayerId, vale_store::LayerId) {
     scatter.tint = Some(Property::constant(Color::rgb(30, 100, 40)));
     let fill = Symbolizer::Fill {
         color: Property::constant(Color::rgb(200, 230, 180)),
+        apply_mask: true,
     };
     doc.entry_mut(forest).unwrap().style.style = Style {
         mask: None,

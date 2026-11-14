@@ -488,7 +488,7 @@ pub(crate) fn style_batches<'a>(
         return paints
             .into_iter()
             .enumerate()
-            .map(|(i, paint)| Batch {
+            .map(|(i, (paint, _))| Batch {
                 order: (0, i),
                 paint,
                 features: (0..count).collect(),

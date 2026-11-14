@@ -356,6 +356,7 @@ fn a_width_expression_follows_the_attribute() {
                 color: Property::constant(blue),
                 width: Property::expression("flow * 0.5", 1.0),
                 kind: StrokeKind::Solid,
+                apply_mask: true,
             })],
         )],
     };
@@ -2295,6 +2296,7 @@ fn the_legend_lists_the_visible_rules_with_their_symbols() {
             name,
             vec![Symbolizer::Fill {
                 color: Property::constant(color),
+                apply_mask: true,
             }],
         )
     };
@@ -3289,6 +3291,7 @@ fn masked_doc() -> (Document, vale_store::LayerId) {
             vec![
                 Symbolizer::Fill {
                     color: Property::constant(fill),
+                    apply_mask: true,
                 },
                 Symbolizer::Stroke(StrokeSymbolizer::constant(Stroke::solid(stroke, 2.0))),
             ],

@@ -89,13 +89,18 @@ pub struct StrokeSymbolizer {
     pub color: Property<Color>,
     pub width: Property<f64>,
     pub kind: StrokeKind,
+    /// The style mask cuts the stroke. A marker stroke ignores it.
+    pub apply_mask: bool,
 }
 
 /// An instruction that draws a feature.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Symbolizer {
-    /// Fills polygons.
-    Fill { color: Property<Color> },
+    /// Fills polygons. With `apply_mask`, the style mask cuts the fill.
+    Fill {
+        color: Property<Color>,
+        apply_mask: bool,
+    },
     /// Strokes lines and polygon outlines.
     Stroke(StrokeSymbolizer),
     /// A shape at each point. The radius is in points, and the stroke is outside the fill. The hatch lines take the fill color, so a hatch with no fill draws nothing.
@@ -390,6 +395,7 @@ impl StrokeSymbolizer {
             color: Property::constant(stroke.color),
             width: Property::constant(stroke.width),
             kind: stroke.kind,
+            apply_mask: true,
         }
     }
 
@@ -424,7 +430,7 @@ impl Symbolizer {
     /// Rewrites the text of each expression with `f`.
     pub fn rewrite(&mut self, f: &dyn Fn(&str) -> String) {
         match self {
-            Symbolizer::Fill { color } => color.rewrite(f),
+            Symbolizer::Fill { color, .. } => color.rewrite(f),
             Symbolizer::Stroke(s) => s.rewrite(f),
             Symbolizer::Marker {
                 radius,
@@ -461,7 +467,7 @@ impl Symbolizer {
     /// The paint for the feature of `ctx`. A raster symbolizer and an image symbolizer have none.
     pub fn resolve(&self, ctx: &Context) -> Option<Paint> {
         Some(match self {
-            Symbolizer::Fill { color } => Paint::Fill(color.eval(ctx)),
+            Symbolizer::Fill { color, .. } => Paint::Fill(color.eval(ctx)),
             Symbolizer::Stroke(s) => Paint::Stroke(s.resolve(ctx)),
             Symbolizer::Raster(_) | Symbolizer::Image(_) => return None,
             Symbolizer::Marker {
@@ -494,7 +500,7 @@ impl Symbolizer {
     /// True if no property is an expression.
     pub fn is_constant(&self) -> bool {
         match self {
-            Symbolizer::Fill { color } => color.is_constant(),
+            Symbolizer::Fill { color, .. } => color.is_constant(),
             Symbolizer::Stroke(s) => s.is_constant(),
             Symbolizer::Raster(_) | Symbolizer::Image(_) => true,
             Symbolizer::Marker {
@@ -512,10 +518,19 @@ impl Symbolizer {
         }
     }
 
+    /// True for a fill or a stroke that the style mask cuts.
+    pub fn cut_by_mask(&self) -> bool {
+        match self {
+            Symbolizer::Fill { apply_mask, .. } => *apply_mask,
+            Symbolizer::Stroke(s) => s.apply_mask,
+            _ => false,
+        }
+    }
+
     /// The paint from the fallbacks.
     pub fn fallback(&self) -> Option<Paint> {
         Some(match self {
-            Symbolizer::Fill { color } => Paint::Fill(color.fallback),
+            Symbolizer::Fill { color, .. } => Paint::Fill(color.fallback),
             Symbolizer::Stroke(s) => Paint::Stroke(s.fallback()),
             Symbolizer::Raster(_) | Symbolizer::Image(_) => return None,
             Symbolizer::Marker {
@@ -592,14 +607,14 @@ impl Rule {
         self.symbolizers
             .iter()
             .find_map(|s| match s {
-                Symbolizer::Fill { color } => Some(Some(color.fallback)),
+                Symbolizer::Fill { color, .. } => Some(Some(color.fallback)),
                 Symbolizer::Marker { fill, .. } => Some(fill.as_ref().map(|c| c.fallback)),
                 _ => None,
             })
             .flatten()
     }
 
-    /// Sets the fill of the rule, or the fill of its marker. `None` removes the fill.
+    /// Sets the fill of the rule, or the fill of its marker. `None` removes the fill. A changed fill keeps its `apply_mask`, and a new fill has it on.
     pub fn set_fill(&mut self, color: Option<Color>) {
         if let Some(Symbolizer::Marker { fill, .. }) = self
             .symbolizers
@@ -613,15 +628,19 @@ impl Rule {
             .symbolizers
             .iter()
             .position(|s| matches!(s, Symbolizer::Fill { .. }));
-        let fill = |c| Symbolizer::Fill {
+        let fill = |c, apply_mask| Symbolizer::Fill {
             color: Property::constant(c),
+            apply_mask,
         };
         match (at, color) {
-            (Some(i), Some(c)) => self.symbolizers[i] = fill(c),
+            (Some(i), Some(c)) => {
+                let keep = self.symbolizers[i].cut_by_mask();
+                self.symbolizers[i] = fill(c, keep);
+            }
             (Some(i), None) => {
                 self.symbolizers.remove(i);
             }
-            (None, Some(c)) => self.symbolizers.insert(0, fill(c)),
+            (None, Some(c)) => self.symbolizers.insert(0, fill(c, true)),
             (None, None) => {}
         }
     }
@@ -640,7 +659,7 @@ impl Rule {
             .flatten()
     }
 
-    /// Sets the stroke of the rule, or the stroke of its marker. `None` removes the stroke.
+    /// Sets the stroke of the rule, or the stroke of its marker. `None` removes the stroke. A changed stroke keeps its `apply_mask`.
     pub fn set_stroke(&mut self, value: Option<Stroke>) {
         if let Some(Symbolizer::Marker { stroke, .. }) = self
             .symbolizers
@@ -656,7 +675,11 @@ impl Rule {
             .position(|s| matches!(s, Symbolizer::Stroke(_)));
         match (at, value) {
             (Some(i), Some(v)) => {
-                self.symbolizers[i] = Symbolizer::Stroke(StrokeSymbolizer::constant(v))
+                let apply_mask = self.symbolizers[i].cut_by_mask();
+                self.symbolizers[i] = Symbolizer::Stroke(StrokeSymbolizer {
+                    apply_mask,
+                    ..StrokeSymbolizer::constant(v)
+                })
             }
             (Some(i), None) => {
                 self.symbolizers.remove(i);
@@ -665,6 +688,44 @@ impl Rule {
                 .symbolizers
                 .push(Symbolizer::Stroke(StrokeSymbolizer::constant(v))),
             (None, None) => {}
+        }
+    }
+
+    /// The `apply_mask` of the first fill of the rule. A marker fill does not count.
+    pub fn fill_applies_mask(&self) -> Option<bool> {
+        self.symbolizers.iter().find_map(|s| match s {
+            Symbolizer::Fill { apply_mask, .. } => Some(*apply_mask),
+            _ => None,
+        })
+    }
+
+    /// Sets the `apply_mask` of the first fill. A rule with no fill does not change.
+    pub fn set_fill_applies_mask(&mut self, value: bool) {
+        if let Some(Symbolizer::Fill { apply_mask, .. }) = self
+            .symbolizers
+            .iter_mut()
+            .find(|s| matches!(s, Symbolizer::Fill { .. }))
+        {
+            *apply_mask = value;
+        }
+    }
+
+    /// The `apply_mask` of the first stroke of the rule. A marker stroke does not count.
+    pub fn stroke_applies_mask(&self) -> Option<bool> {
+        self.symbolizers.iter().find_map(|s| match s {
+            Symbolizer::Stroke(s) => Some(s.apply_mask),
+            _ => None,
+        })
+    }
+
+    /// Sets the `apply_mask` of the first stroke. A rule with no stroke does not change.
+    pub fn set_stroke_applies_mask(&mut self, value: bool) {
+        if let Some(Symbolizer::Stroke(s)) = self
+            .symbolizers
+            .iter_mut()
+            .find(|s| matches!(s, Symbolizer::Stroke(_)))
+        {
+            s.apply_mask = value;
         }
     }
 
@@ -848,16 +909,31 @@ impl Style {
         }
     }
 
-    /// The paints at the scale denominator `scale` when they are the same for each feature: no visible rule has a filter or an expression.
-    pub fn constant_paints(&self, scale: f64) -> Option<Vec<Paint>> {
+    /// The paints at the scale denominator `scale` when they are the same for each feature: no visible rule has a filter or an expression. The flag of each paint is true if the mask of the style cuts it.
+    pub fn constant_paints(&self, scale: f64) -> Option<Vec<(Paint, bool)>> {
         let mut out = Vec::new();
         for rule in self.visible(scale) {
             if !rule.filter.is_all() || !rule.symbolizers.iter().all(Symbolizer::is_constant) {
                 return None;
             }
-            out.extend(rule.symbolizers.iter().filter_map(Symbolizer::fallback));
+            out.extend(rule.symbolizers.iter().filter_map(|s| {
+                s.fallback()
+                    .map(|p| (p, s.cut_by_mask() && self.mask.is_some()))
+            }));
         }
         Some(out)
+    }
+
+    /// True if the label of the feature of `ctx` stays inside the mask: a matching rule has a fill that the mask cuts, or no matching rule has a fill.
+    pub fn label_in_mask(&self, ctx: &Context) -> bool {
+        let mut fills = self
+            .rules
+            .iter()
+            .filter(|r| r.matches(ctx))
+            .flat_map(|r| &r.symbolizers)
+            .filter(|s| matches!(s, Symbolizer::Fill { .. }))
+            .peekable();
+        fills.peek().is_none() || fills.any(Symbolizer::cut_by_mask)
     }
 
     /// How far the paints of the feature of `ctx` reach.
