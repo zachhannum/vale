@@ -451,15 +451,15 @@ impl Projection {
     /// The Tissot indicatrix at `p`: the largest and the smallest scale
     /// factor. Both are 1 where the projection keeps scale, and their
     /// product is the area scale. `None` at a pole, or where a point next to
-    /// `p` does not project.
+    /// `p` does not project. `p` must be on the map.
     pub fn distortion(&self, p: LonLat) -> Option<[f64; 2]> {
         const STEP: f64 = 1e-3;
         let [lon, lat] = p;
-        if lat.abs() > 90.0 - 2.0 * STEP || !self.is_visible(p) {
+        if lat.abs() > 90.0 - 2.0 * STEP {
             return None;
         }
-        // A point next to the center of an azimuthal map can be at the edge
-        // of the clip rectangle.
+        // A point north of the center of an azimuthal map is on the edge of
+        // the clip rectangle, so the points do not go through the clip.
         let at = |dlon: f64, dlat: f64| self.forward_raw([lon + dlon, lat + dlat]);
         let east = at(STEP, 0.0)? - at(-STEP, 0.0)?;
         let north = at(0.0, STEP)? - at(0.0, -STEP)?;

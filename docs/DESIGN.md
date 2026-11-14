@@ -245,7 +245,7 @@ The projection editor exposes the parameters that matter: center, standard paral
 
 The editor shows distortion while you edit. It draws Tissot circles (equal circles on the sphere that show local stretch after projection) and prints the scale error at the corners of the frame.
 
-The circles sit on a grid in the frame. They show while the Projection tab is open and its switch "Tissot circles" is on. The Distortion table of the tab gives the scale error and the area error at the four corners and at the center of the frame. An error is relative to the scale of the frame, which the projection has on its standard lines. The scale error uses the scale factor that differs most from 1. A place off the map shows a dash.
+The circles are equal on the sphere. They sit on a grid on the part of the frame that the map covers, and the largest circle fits in its cell of the grid. A circle across a cut of the map, or around a pole that the map draws as a line, does not show. The circles show while the Projection tab is open and its switch "Tissot circles" is on. The Distortion table of the tab gives the scale error and the area error at the four corners and at the center of the frame. An error is relative to the scale of the frame, which the projection has on its standard lines. The scale error uses the scale factor that differs most from 1. A place off the map shows a dash.
 
 On iPad, each parameter is a slider. A drag changes the map at once, so each frame of the map redraws during the drag.
 

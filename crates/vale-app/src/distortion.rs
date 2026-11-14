@@ -23,9 +23,9 @@ pub const PLACES: [&str; 5] = [
 
 /// The number of circles across the shorter side of a frame.
 const ACROSS: f64 = 4.0;
-/// The radius of the circle at the center of a frame, as a part of the
-/// space between two circles.
-const RADIUS: f64 = 0.3;
+/// The half of the longest side of the box of the largest circle, as a
+/// part of the space between two circles.
+const LARGEST: f64 = 0.35;
 /// The number of points of a circle.
 const POINTS: usize = 48;
 
@@ -88,30 +88,20 @@ pub fn percent_text(error: f64) -> String {
 }
 
 /// Tissot circles in a frame, in page millimeters. The circles are equal
-/// on the sphere, and their centers are on a grid in the box of the shape.
-/// A circle with its center outside the shape, or across a cut of the
-/// map, is left out.
+/// on the sphere, and their centers are on a grid in the part of the box of
+/// the shape that the map covers. The largest circle fits in its cell of
+/// the grid. A circle with its center outside the shape, or across a cut of
+/// the map, is left out.
 pub fn tissot_circles(projection: &Projection, frame: &FrameRecord) -> Vec<Vec<Point>> {
     let vt = math::frame_transform(projection, frame, FrameTarget::MM);
-    let b = math::shape_bbox(&frame.shape);
+    let b = math::shape_bbox(&frame.shape).intersect(vt.page_bbox(projection.bounds()));
     let space = b.width().min(b.height()) / ACROSS;
     if space <= 0.0 {
         return Vec::new();
     }
-    let Some([a, c]) = lonlat_at(projection, &vt, b.center())
-        .or_else(|| projection.inverse(vt.view.center))
-        .and_then(|ll| projection.distortion(ll))
-    else {
-        return Vec::new();
-    };
-    // The ground meters of one page millimeter at the center.
-    let ground = frame.scale / 1000.0 / (a * c).sqrt();
-    let radius = (RADIUS * space * ground / projection.radius_m())
-        .to_degrees()
-        .min(20.0);
     let cols = (b.width() / space).round().max(1.0) as usize;
     let rows = (b.height() / space).round().max(1.0) as usize;
-    let mut circles = Vec::new();
+    let mut centers = Vec::new();
     for row in 0..rows {
         for col in 0..cols {
             let p = Point::new(
@@ -121,24 +111,86 @@ pub fn tissot_circles(projection: &Projection, frame: &FrameRecord) -> Vec<Vec<P
             if !math::contains(&frame.shape, p) {
                 continue;
             }
-            let Some(center) = lonlat_at(projection, &vt, p) else {
-                continue;
-            };
-            // A point on the edge of the clip rectangle does not project.
-            // The edge runs north from the center of an azimuthal map, so
-            // the circle leaves out the point.
+            if let Some(center) = lonlat_at(projection, &vt, p) {
+                centers.push((p, center));
+            }
+        }
+    }
+    // The radius starts at the size of a cell at the scale of the frame. It
+    // shrinks until the largest circle fits, and then it tries smaller radii
+    // that keep more circles off the cuts and the edges of the map. The
+    // largest radius with the most circles wins.
+    let mut radius = (LARGEST * space * frame.scale / 1000.0 / projection.radius_m())
+        .to_degrees()
+        .min(20.0);
+    let mut best: Vec<Vec<Point>> = Vec::new();
+    for _ in 0..12 {
+        let circles = rings(projection, &vt, &centers, radius, space);
+        let largest = (circles.iter())
+            .map(|ring| {
+                let r = ring
+                    .iter()
+                    .fold(kurbo::Rect::from_points(ring[0], ring[0]), |r, q| {
+                        r.union_pt(*q)
+                    });
+                r.width().max(r.height()) / 2.0
+            })
+            .fold(0.0, f64::max);
+        let over = largest / (LARGEST * space);
+        if over > 1.02 {
+            radius /= over;
+            continue;
+        }
+        let all = circles.len() == centers.len();
+        if circles.len() > best.len() {
+            best = circles;
+        }
+        if all {
+            break;
+        }
+        radius *= 0.75;
+    }
+    best
+}
+
+/// The circles of one radius around the centers that project with no cut.
+fn rings(
+    projection: &Projection,
+    vt: &ViewTransform,
+    centers: &[(Point, LonLat)],
+    radius: f64,
+    space: f64,
+) -> Vec<Vec<Point>> {
+    (centers.iter())
+        .filter_map(|&(p, center)| {
+            // A point on the edge of the clip rectangle does not project. The
+            // edge runs north from the center of an azimuthal map, so the
+            // circle leaves out the point.
             let ring: Vec<Point> = small_circle(center, radius, POINTS)
                 .into_iter()
                 .filter_map(|q| projection.forward(q).map(|x| vt.to_page(x)))
                 .collect();
-            // A circle across a cut of the map has points on both sides.
-            let whole = ring.iter().all(|q| (*q - p).hypot() < 2.0 * space);
-            if ring.len() + 2 >= POINTS && whole {
-                circles.push(ring);
-            }
+            (ring.len() + 2 >= POINTS && whole(&ring, p, space)).then_some(ring)
+        })
+        .collect()
+}
+
+/// True if a projected circle has no cut: its points follow each other
+/// with no jump, and it goes around its center. A circle across a cut of
+/// the map, or around a pole that the map draws as a line, has a jump.
+fn whole(ring: &[Point], center: Point, space: f64) -> bool {
+    let n = ring.len();
+    let steps = (0..n).all(|i| (ring[(i + 1) % n] - ring[i]).hypot() < 0.5 * space);
+    let mut inside = false;
+    for i in 0..n {
+        let (a, b) = (ring[i], ring[(i + 1) % n]);
+        if (a.y > center.y) != (b.y > center.y)
+            && center.x < a.x + (center.y - a.y) / (b.y - a.y) * (b.x - a.x)
+        {
+            inside = !inside;
         }
     }
-    circles
+    steps && inside
 }
 
 #[cfg(test)]
@@ -226,6 +278,37 @@ mod tests {
         // A circle at a high latitude is wider than tall.
         let top = circles.first().unwrap();
         assert!(width(top) > 1.2 * height(top));
+    }
+
+    #[test]
+    fn the_circles_of_a_world_map_keep_apart_and_off_the_poles() {
+        let p = projection(ProjectionKind::EqualEarth, 0.0, 0.0);
+        let f = frame([0.0, 0.0], 1.2e8);
+        let circles = tissot_circles(&p, &f);
+        assert!(circles.len() >= 10);
+        let boxes: Vec<kurbo::Rect> = (circles.iter())
+            .map(|ring| {
+                ring.iter()
+                    .fold(kurbo::Rect::from_points(ring[0], ring[0]), |r, q| {
+                        r.union_pt(*q)
+                    })
+            })
+            .collect();
+        for (i, a) in boxes.iter().enumerate() {
+            for b in &boxes[i + 1..] {
+                assert!(a.intersect(*b).area() == 0.0, "{a:?} {b:?}");
+            }
+        }
+        // No circle reaches the line of a pole.
+        let pole = math::frame_transform(&p, &f, FrameTarget::MM)
+            .to_page(p.forward([0.0, 90.0]).unwrap())
+            .y;
+        for b in &boxes {
+            assert!(
+                b.y0 > pole + 0.5 && b.y1 < 2.0 * 85.0 - pole - 0.5,
+                "{b:?} {pole}"
+            );
+        }
     }
 
     #[test]
