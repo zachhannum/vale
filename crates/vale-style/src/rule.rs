@@ -518,11 +518,12 @@ impl Symbolizer {
         }
     }
 
-    /// True for a fill or a stroke that the style mask cuts.
+    /// True for a symbolizer that the style mask cuts: a scatter, and a fill or a stroke that applies the mask.
     pub fn cut_by_mask(&self) -> bool {
         match self {
             Symbolizer::Fill { apply_mask, .. } => *apply_mask,
             Symbolizer::Stroke(s) => s.apply_mask,
+            Symbolizer::Scatter(_) => true,
             _ => false,
         }
     }

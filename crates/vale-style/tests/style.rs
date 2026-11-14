@@ -1131,9 +1131,14 @@ fn constant_paints_flag_the_paints_that_the_mask_cuts() {
             .collect()
     };
     let mut style = masked_polygons(true, false).style;
-    assert_eq!(flags(&style), [true, false]);
+    style.rules[0]
+        .symbolizers
+        .push(Symbolizer::Scatter(ScatterSymbolizer::new(
+            "tree", 6.0, 10.0,
+        )));
+    assert_eq!(flags(&style), [true, false, true]);
     style.mask = None;
-    assert_eq!(flags(&style), [false, false]);
+    assert_eq!(flags(&style), [false, false, false]);
 }
 
 #[test]
