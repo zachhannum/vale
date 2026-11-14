@@ -670,6 +670,7 @@ mod tests {
             width_mm: 297.0,
             height_mm: 210.0,
             paper: [0xff, 0xff, 0xff],
+            dpi: vale_store::DEFAULT_DPI,
             units: PageUnits::Mm,
             frames: (0..frames).map(|_| frame(1e7)).collect(),
             furniture: Vec::new(),
