@@ -363,26 +363,32 @@ impl LeaderStyle {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum LabelFallback {
     SmallerFont,
+    Compress,
     Stack,
     Abbreviate,
+    Truncate,
     Leader,
 }
 
 impl LabelFallback {
     /// All fallbacks in the default order.
-    pub const ALL: [LabelFallback; 4] = [
+    pub const ALL: [LabelFallback; 6] = [
         LabelFallback::SmallerFont,
+        LabelFallback::Compress,
         LabelFallback::Stack,
         LabelFallback::Abbreviate,
         LabelFallback::Leader,
+        LabelFallback::Truncate,
     ];
 
     /// The UI text.
     pub fn name(self) -> &'static str {
         match self {
             LabelFallback::SmallerFont => "Smaller font",
+            LabelFallback::Compress => "Narrow letters",
             LabelFallback::Stack => "Stacked lines",
             LabelFallback::Abbreviate => "Abbreviation",
+            LabelFallback::Truncate => "Truncation",
             LabelFallback::Leader => "Leader line",
         }
     }
@@ -391,8 +397,10 @@ impl LabelFallback {
     fn key(self) -> &'static str {
         match self {
             LabelFallback::SmallerFont => "smaller_font",
+            LabelFallback::Compress => "compress",
             LabelFallback::Stack => "stack",
             LabelFallback::Abbreviate => "abbreviate",
+            LabelFallback::Truncate => "truncate",
             LabelFallback::Leader => "leader",
         }
     }
@@ -410,12 +418,68 @@ pub struct FallbackRank {
 }
 
 impl FallbackRank {
-    /// All fallbacks in the default order, all on.
+    /// All fallbacks in the default order. All are on except truncation.
     pub fn defaults() -> Vec<FallbackRank> {
         LabelFallback::ALL
             .into_iter()
-            .map(|fallback| FallbackRank { fallback, on: true })
+            .map(|fallback| FallbackRank {
+                fallback,
+                on: fallback != LabelFallback::Truncate,
+            })
             .collect()
+    }
+
+    /// Moves truncation after the last other fallback that changes the text, so that it is the
+    /// last text fallback.
+    pub fn normalize(ranks: &mut Vec<FallbackRank>) {
+        let Some(t) = ranks
+            .iter()
+            .position(|r| r.fallback == LabelFallback::Truncate)
+        else {
+            return;
+        };
+        let rank = ranks.remove(t);
+        let at = ranks
+            .iter()
+            .rposition(|r| r.fallback != LabelFallback::Leader)
+            .map_or(0, |i| i + 1)
+            .max(t.min(ranks.len()));
+        ranks.insert(at, rank);
+    }
+}
+
+/// The alignment of stacked lines.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub enum StackAlign {
+    Left,
+    #[default]
+    Center,
+    Right,
+}
+
+impl StackAlign {
+    pub const ALL: [StackAlign; 3] = [StackAlign::Left, StackAlign::Center, StackAlign::Right];
+
+    /// The UI text.
+    pub fn name(self) -> &'static str {
+        match self {
+            StackAlign::Left => "Left",
+            StackAlign::Center => "Center",
+            StackAlign::Right => "Right",
+        }
+    }
+
+    /// The JSON name.
+    fn key(self) -> &'static str {
+        match self {
+            StackAlign::Left => "left",
+            StackAlign::Center => "center",
+            StackAlign::Right => "right",
+        }
+    }
+
+    fn from_key(key: &str) -> Option<StackAlign> {
+        StackAlign::ALL.into_iter().find(|a| a.key() == key)
     }
 }
 
@@ -427,6 +491,24 @@ pub const SIZE_STEP: f64 = 1.0;
 
 /// The default most lines of the fallback "Stacked lines".
 pub const MAX_LINES: u32 = 2;
+
+/// The default smallest width of the fallback "Narrow letters", in percent of the full width.
+pub const MIN_WIDTH: f64 = 80.0;
+
+/// The default step between two widths of the fallback "Narrow letters", in percent.
+pub const WIDTH_STEP: f64 = 5.0;
+
+/// The default characters where the fallback "Stacked lines" can break a line.
+pub const STACK_SEPARATORS: &str = " ";
+
+/// The default fewest characters on a stacked line.
+pub const MIN_LINE_CHARS: u32 = 3;
+
+/// The default most characters on a stacked line.
+pub const MAX_LINE_CHARS: u32 = 24;
+
+/// The default text at the end of a word that the fallback "Truncation" makes shorter.
+pub const TRUNCATION_MARKER: &str = ".";
 
 /// The default extra distance of a point label with a leader line, in points.
 pub const LEADER_DISTANCE: f64 = 12.0;
@@ -621,10 +703,26 @@ pub struct LabelClass {
     pub min_size: f64,
     /// The step between two font sizes of the fallback "Smaller font", in points.
     pub size_step: f64,
+    /// The smallest width of the fallback "Narrow letters", in percent of the full width.
+    pub min_width: f64,
+    /// The step between two widths of the fallback "Narrow letters", in percent.
+    pub width_step: f64,
+    /// True makes the fallback "Smaller font" also try narrow letters.
+    pub compress_with_size: bool,
     /// The most lines of the fallback "Stacked lines".
     pub max_lines: u32,
+    /// The characters where the fallback "Stacked lines" can break a line.
+    pub stack_separators: String,
+    /// The fewest characters on a stacked line.
+    pub min_line_chars: u32,
+    /// The most characters on a stacked line.
+    pub max_line_chars: u32,
+    /// The alignment of stacked lines.
+    pub stack_align: StackAlign,
     /// Pairs of a word and its short form, for the fallback "Abbreviation".
     pub abbreviations: Vec<(String, String)>,
+    /// The text at the end of a word that the fallback "Truncation" makes shorter.
+    pub truncation_marker: String,
     /// Points. The extra distance of a point label with a leader line, in points.
     pub leader_distance: f64,
 }
@@ -720,8 +818,16 @@ impl LabelClass {
             fallbacks: FallbackRank::defaults(),
             min_size: MIN_SIZE,
             size_step: SIZE_STEP,
+            min_width: MIN_WIDTH,
+            width_step: WIDTH_STEP,
+            compress_with_size: false,
             max_lines: MAX_LINES,
+            stack_separators: STACK_SEPARATORS.to_owned(),
+            min_line_chars: MIN_LINE_CHARS,
+            max_line_chars: MAX_LINE_CHARS,
+            stack_align: StackAlign::Center,
             abbreviations: default_abbreviations(),
+            truncation_marker: TRUNCATION_MARKER.to_owned(),
             leader_distance: LEADER_DISTANCE,
         }
     }
@@ -823,8 +929,16 @@ pub fn classes_to_json(classes: &[LabelClass]) -> String {
                     .collect::<Vec<_>>(),
                 "min_size": c.min_size,
                 "size_step": c.size_step,
+                "min_width": c.min_width,
+                "width_step": c.width_step,
+                "compress_with_size": c.compress_with_size,
                 "max_lines": c.max_lines,
+                "stack_separators": c.stack_separators,
+                "min_line_chars": c.min_line_chars,
+                "max_line_chars": c.max_line_chars,
+                "stack_align": c.stack_align.key(),
                 "abbreviations": c.abbreviations,
+                "truncation_marker": c.truncation_marker,
                 "leader_distance": c.leader_distance,
             });
             if let (Json::Object(m), Json::Object(f)) = (&mut class, fallbacks) {
@@ -899,6 +1013,7 @@ fn fallbacks(m: &Map<String, Json>) -> Vec<FallbackRank> {
             });
         }
     }
+    FallbackRank::normalize(&mut out);
     out
 }
 
@@ -961,6 +1076,11 @@ fn read_class(j: &Json) -> Result<LabelClass, StyleError> {
         .unwrap_or(0);
     let number = |key: &str, fallback: f64| m.get(key).and_then(Json::as_f64).unwrap_or(fallback);
     let flag = |key: &str, fallback: bool| m.get(key).and_then(Json::as_bool).unwrap_or(fallback);
+    let count = |key: &str, fallback: u32| {
+        (m.get(key).and_then(Json::as_u64))
+            .and_then(|n| u32::try_from(n).ok())
+            .unwrap_or(fallback)
+    };
     let mut class = LabelClass {
         name: text(m, "name").unwrap_or_default(),
         text: text(m, "text").unwrap_or_default(),
@@ -1014,12 +1134,22 @@ fn read_class(j: &Json) -> Result<LabelClass, StyleError> {
         fallbacks: fallbacks(m),
         min_size: number("min_size", MIN_SIZE),
         size_step: number("size_step", SIZE_STEP),
-        max_lines: m
-            .get("max_lines")
-            .and_then(Json::as_u64)
-            .and_then(|n| u32::try_from(n).ok())
-            .unwrap_or(MAX_LINES),
+        min_width: number("min_width", MIN_WIDTH),
+        width_step: number("width_step", WIDTH_STEP),
+        compress_with_size: flag("compress_with_size", false),
+        max_lines: count("max_lines", MAX_LINES),
+        stack_separators: text(m, "stack_separators")
+            .unwrap_or_else(|| STACK_SEPARATORS.to_owned()),
+        min_line_chars: count("min_line_chars", MIN_LINE_CHARS),
+        max_line_chars: count("max_line_chars", MAX_LINE_CHARS),
+        stack_align: m
+            .get("stack_align")
+            .and_then(Json::as_str)
+            .and_then(StackAlign::from_key)
+            .unwrap_or_default(),
         abbreviations: abbreviations(m),
+        truncation_marker: text(m, "truncation_marker")
+            .unwrap_or_else(|| TRUNCATION_MARKER.to_owned()),
         leader_distance: number("leader_distance", LEADER_DISTANCE),
     };
     fold_opacity(&mut class, m);
@@ -1078,6 +1208,33 @@ mod tests {
     }
 
     #[test]
+    fn truncation_is_the_last_text_fallback() {
+        let rank = |fallback| FallbackRank { fallback, on: true };
+        let mut ranks = vec![
+            rank(LabelFallback::Truncate),
+            rank(LabelFallback::Stack),
+            rank(LabelFallback::Leader),
+        ];
+        FallbackRank::normalize(&mut ranks);
+        let order: Vec<LabelFallback> = ranks.iter().map(|r| r.fallback).collect();
+        assert_eq!(
+            order,
+            vec![
+                LabelFallback::Stack,
+                LabelFallback::Truncate,
+                LabelFallback::Leader
+            ]
+        );
+        let text = r##"{"version":1,"classes":[{"color":"#102030","placement":"around","fallbacks":[{"fallback":"truncate"},{"fallback":"stack"}]}]}"##;
+        let read = &classes_from_json(text).unwrap()[0];
+        let order: Vec<LabelFallback> = read.fallbacks.iter().map(|r| r.fallback).collect();
+        assert_eq!(
+            order[order.len() - 2..],
+            [LabelFallback::Truncate, LabelFallback::Leader]
+        );
+    }
+
+    #[test]
     fn a_fallback_that_the_list_leaves_out_comes_last_and_off() {
         let text = r##"{"version":1,"classes":[{"color":"#102030","placement":"around","fallbacks":[{"fallback":"leader","on":true},{"fallback":"x"},{"fallback":"leader","on":false}]}]}"##;
         let read = &classes_from_json(text).unwrap()[0];
@@ -1088,8 +1245,10 @@ mod tests {
             vec![
                 (LabelFallback::Leader, true),
                 (LabelFallback::SmallerFont, false),
+                (LabelFallback::Compress, false),
                 (LabelFallback::Stack, false),
                 (LabelFallback::Abbreviate, false),
+                (LabelFallback::Truncate, false),
             ]
         );
     }
@@ -1186,11 +1345,27 @@ mod tests {
                 fallback: LabelFallback::Stack,
                 on: true,
             },
+            FallbackRank {
+                fallback: LabelFallback::Compress,
+                on: false,
+            },
+            FallbackRank {
+                fallback: LabelFallback::Truncate,
+                on: true,
+            },
         ];
         h.min_size = 7.5;
         h.size_step = 0.5;
+        h.min_width = 70.0;
+        h.width_step = 10.0;
+        h.compress_with_size = true;
         h.max_lines = 3;
+        h.stack_separators = " -/".to_owned();
+        h.min_line_chars = 2;
+        h.max_line_chars = 12;
+        h.stack_align = StackAlign::Left;
         h.abbreviations = vec![("Lake".to_owned(), "L.".to_owned())];
+        h.truncation_marker = "…".to_owned();
         h.leader_distance = 20.0;
         let classes = vec![a, b, c, d, e, f, g, h];
         let text = classes_to_json(&classes);
@@ -1232,6 +1407,12 @@ mod tests {
         assert_eq!(read[0].fallbacks, FallbackRank::defaults());
         assert_eq!((read[0].min_size, read[0].size_step), (6.0, 1.0));
         assert_eq!(read[0].max_lines, 2);
+        assert_eq!((read[0].min_width, read[0].width_step), (80.0, 5.0));
+        assert!(!read[0].compress_with_size);
+        assert_eq!(read[0].stack_separators, " ");
+        assert_eq!((read[0].min_line_chars, read[0].max_line_chars), (3, 24));
+        assert_eq!(read[0].stack_align, StackAlign::Center);
+        assert_eq!(read[0].truncation_marker, ".");
         assert_eq!(read[0].abbreviations, default_abbreviations());
         assert_eq!(read[0].leader_distance, 12.0);
         let leader = r##"{"version":1,"classes":[{"color":"#102030","placement":"best_fit","leader":{"width":2,"end":"dot"}}]}"##;
