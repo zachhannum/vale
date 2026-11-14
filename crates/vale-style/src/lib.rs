@@ -93,13 +93,13 @@ impl Stroke {
         }
     }
 
-    /// The width of a Flow stroke where `area` drains, if the largest river of the layer drains `largest`. It grows with the square root of the area, from the smallest width to the full width. Another kind has its width.
-    pub fn width_at(&self, area: f64, largest: f64) -> f64 {
+    /// The width of a Flow stroke where `area` drains. `(floor, largest)`: the area of the smallest river, and the area of the largest river of the layer. The width grows with the square root of the area above `floor`, from the smallest width at `floor` to the full width at `largest`. Another kind has its width.
+    pub fn width_at(&self, area: f64, (floor, largest): (f64, f64)) -> f64 {
         let StrokeKind::Flow { min } = self.kind else {
             return self.width;
         };
-        let t = if largest > 0.0 {
-            (area / largest).clamp(0.0, 1.0).sqrt()
+        let t = if largest > floor {
+            ((area - floor) / (largest - floor)).clamp(0.0, 1.0).sqrt()
         } else {
             0.0
         };

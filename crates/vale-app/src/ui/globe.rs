@@ -1243,7 +1243,12 @@ impl Flows {
         }
         let (line, largest) = (self.lines.get(index)?.as_ref()?, self.largest?);
         let out = (line.samples.iter())
-            .filter_map(|&(ll, area)| Some((place(ll)?, stroke.width_at(area, largest))))
+            .filter_map(|&(ll, area)| {
+                Some((
+                    place(ll)?,
+                    stroke.width_at(area, pipeline::flow_range(largest)),
+                ))
+            })
             .collect();
         Some(out)
     }

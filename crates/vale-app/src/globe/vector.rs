@@ -360,7 +360,7 @@ pub fn stroke_shapes(
         StrokeKind::Flow { .. } => match flow.filter(|f| !f.is_empty()) {
             Some(flow) => pieces(stroke::varying(&stroke::sampled(&plain(), flow))),
             None => {
-                let w = stroke.width_at(0.0, 0.0);
+                let w = stroke.width_at(0.0, (0.0, 0.0));
                 let parts: Vec<Vec<(Point, f64)>> = (plain().into_iter())
                     .map(|part| part.into_iter().map(|p| (p, w)).collect())
                     .collect();

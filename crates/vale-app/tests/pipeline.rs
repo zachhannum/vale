@@ -4621,7 +4621,7 @@ fn is_blue([r, g, b]: [i32; 3]) -> bool {
 /// its tributary from the east in red, both with the Flow line type.
 fn flow_rivers() -> (Document, vale_store::LayerId, vale_terrain::Heightmap) {
     let (mut doc, id) = lines_at(&[
-        ("main", &[[0.5, -3.0], [0.5, -20.0], [0.5, -38.0]]),
+        ("main", &[[0.5, -0.5], [0.5, -20.0], [0.5, -38.0]]),
         ("trib", &[[12.0, -20.5], [6.0, -20.5], [0.5, -20.5]]),
     ]);
     doc.set_projection(
@@ -4669,7 +4669,7 @@ fn a_flow_tributary_is_no_wider_than_the_main_river_at_the_join_in_a_frame_and_i
     let (east, _) = at(2.0, -20.5);
     let (_, above) = at(0.5, -16.0);
     let (_, below) = at(0.5, -25.0);
-    let (_, source) = at(0.5, -5.0);
+    let (_, source) = at(0.5, -1.0);
     let blue = |y: f64| row_run(&px, y, join.0 - 80.0, join.0 + 80.0, is_blue);
     let red = |x: f64| column_run(&px, x, join.1 - 80.0, join.1 + 80.0, is_red);
     // The main river grows where the tributary joins it, and toward its mouth.
@@ -4677,6 +4677,13 @@ fn a_flow_tributary_is_no_wider_than_the_main_river_at_the_join_in_a_frame_and_i
     assert!(
         b_below > b_above && b_above >= b_source,
         "{b_source} {b_above} {b_below}"
+    );
+    // Near its source, the river is close to the smallest width.
+    let (smallest, full) = (StrokeKind::FLOW_MIN * 8.0 * scale, 8.0 * scale);
+    let near = smallest + 0.15 * (full - smallest);
+    assert!(
+        b_source as f64 <= near,
+        "{b_source} px, not near {smallest} px"
     );
     // Just upstream of the join, the tributary is no wider than the main river.
     let r_east = red(east);

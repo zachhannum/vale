@@ -759,10 +759,10 @@ fn along_line(
         StrokeKind::Flow { .. } => {
             let samples: Vec<(Point, f64)> = match (&f.flow, largest) {
                 (Some(flow), Some(largest)) if !flow.is_empty() => (flow.iter())
-                    .map(|&(p, area)| (p, stroke.width_at(area, largest)))
+                    .map(|&(p, area)| (p, stroke.width_at(area, flow_range(largest))))
                     .collect(),
                 _ => {
-                    let w = stroke.width_at(0.0, 0.0);
+                    let w = stroke.width_at(0.0, (0.0, 0.0));
                     return stroke::varying(
                         &(parts.iter())
                             .map(|part| part.iter().map(|&p| (p, w)).collect())
@@ -774,6 +774,13 @@ fn along_line(
         }
         _ => Vec::new(),
     }
+}
+
+/// The area of the smallest river and of the largest river of a layer, for
+/// the width of a Flow stroke. A line below the river threshold has the
+/// smallest width.
+pub fn flow_range(largest: f64) -> (f64, f64) {
+    (vale_terrain::RIVER_MIN_AREA, largest)
 }
 
 /// Draws one batch. A paint that does not fit the kind of the layer draws nothing.

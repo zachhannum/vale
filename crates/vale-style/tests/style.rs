@@ -1206,15 +1206,20 @@ fn a_flow_width_follows_the_square_root_of_the_area() {
         width: 8.0,
         kind: StrokeKind::Flow { min: 0.25 },
     };
-    assert_eq!(stroke.width_at(0.0, 4.0), 2.0);
-    assert_eq!(stroke.width_at(4.0, 4.0), 8.0);
+    assert_eq!(stroke.width_at(0.0, (0.0, 4.0)), 2.0);
+    assert_eq!(stroke.width_at(4.0, (0.0, 4.0)), 8.0);
     // A quarter of the largest area gets half of the part of the width that grows.
-    assert_eq!(stroke.width_at(1.0, 4.0), 2.0 + 0.5 * 6.0);
+    assert_eq!(stroke.width_at(1.0, (0.0, 4.0)), 2.0 + 0.5 * 6.0);
     // More than the largest area, and no largest area.
-    assert_eq!(stroke.width_at(9.0, 4.0), 8.0);
-    assert_eq!(stroke.width_at(1.0, 0.0), 2.0);
+    assert_eq!(stroke.width_at(9.0, (0.0, 4.0)), 8.0);
+    assert_eq!(stroke.width_at(1.0, (0.0, 0.0)), 2.0);
+    // The width grows from the floor: a river at the floor has the smallest width.
+    assert_eq!(stroke.width_at(1.0, (1.0, 5.0)), 2.0);
+    assert_eq!(stroke.width_at(0.5, (1.0, 5.0)), 2.0);
+    assert_eq!(stroke.width_at(2.0, (1.0, 5.0)), 2.0 + 0.5 * 6.0);
+    assert_eq!(stroke.width_at(1.0, (2.0, 1.0)), 2.0);
     // Another kind keeps its width.
-    assert_eq!(Stroke::solid(BLUE, 3.0).width_at(1.0, 4.0), 3.0);
+    assert_eq!(Stroke::solid(BLUE, 3.0).width_at(1.0, (0.0, 4.0)), 3.0);
     assert!(StrokeKind::flow().along_line() && StrokeKind::taper().along_line());
     assert!(!StrokeKind::Solid.along_line());
 }
