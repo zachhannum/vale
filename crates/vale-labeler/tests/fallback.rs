@@ -32,6 +32,7 @@ fn class(placement: Placement, size: f64, order: Vec<Fallback>) -> LabelClass {
                 ("Saint".into(), "St.".into()),
             ],
             leader_distance: 20.0,
+            ..Fallbacks::default()
         },
     }
 }
@@ -292,4 +293,138 @@ fn a_label_is_removed_when_no_fallback_fits() {
     );
     assert!(out.placed.is_empty());
     assert_eq!(out.unplaced[0].reason, UnplacedReason::AreaTooSmall);
+}
+
+/// The horizontal scale of the first glyph of `label`.
+fn scale_x(label: &PlacedLabel) -> f64 {
+    let t = label.glyph_runs[0].glyphs[0].transform.as_coeffs();
+    t[0].hypot(t[1])
+}
+
+/// The x of the first glyph on each baseline, from the top line down.
+fn line_starts(label: &PlacedLabel) -> Vec<f64> {
+    let mut lines: Vec<(f64, f64)> = Vec::new();
+    for g in label.glyph_runs.iter().flat_map(|r| &r.glyphs) {
+        let p = g.transform.translation();
+        match lines.iter_mut().find(|(y, _)| (y - p.y).abs() < 0.5) {
+            Some((_, x)) => *x = x.min(p.x),
+            None => lines.push((p.y, p.x)),
+        }
+    }
+    lines.sort_by(|a, b| a.0.total_cmp(&b.0));
+    lines.into_iter().map(|(_, x)| x).collect()
+}
+
+#[test]
+fn narrow_letters_fit_a_small_polygon() {
+    let text = "Lakeland";
+    let out = run(
+        class(horizontal(), 12.0, vec![Fallback::Compress]),
+        rect(text, 0.92 * width(text, 12.0), 30.0),
+        vec![],
+    );
+    let label = &out.placed[0];
+    assert_eq!(label.fallback, Some(Fallback::Compress));
+    assert_eq!(label.glyph_runs[0].font_size, 12.0);
+    let s = scale_x(label);
+    assert!((0.8 - 1e-9..1.0).contains(&s), "{s}");
+}
+
+#[test]
+fn narrow_letters_stop_at_the_smallest_width() {
+    let text = "Lakeland";
+    let out = run(
+        class(horizontal(), 12.0, vec![Fallback::Compress]),
+        rect(text, 0.6 * width(text, 12.0), 30.0),
+        vec![],
+    );
+    assert!(out.placed.is_empty());
+}
+
+#[test]
+fn narrow_letters_combine_with_a_smaller_font() {
+    let text = "Lakeland";
+    let feature = rect(text, 0.76 * width(text, 12.0), 30.0);
+    let mut c = class(horizontal(), 12.0, vec![Fallback::SmallerFont]);
+    c.fallbacks.min_size = 10.0;
+    let out = run(c.clone(), feature.clone(), vec![]);
+    assert!(out.placed.is_empty(), "a smaller font alone does not fit");
+    c.fallbacks.compress_with_size = true;
+    let out = run(c, feature, vec![]);
+    let label = &out.placed[0];
+    assert_eq!(label.fallback, Some(Fallback::SmallerFont));
+    assert!(label.glyph_runs[0].font_size < 12.0);
+    assert!(scale_x(label) < 1.0);
+}
+
+#[test]
+fn truncation_fits_a_small_polygon() {
+    let text = "Lakeland";
+    let out = run(
+        class(horizontal(), 12.0, vec![Fallback::Truncate]),
+        rect(text, 0.8 * width(text, 12.0), 30.0),
+        vec![],
+    );
+    let label = &out.placed[0];
+    assert_eq!(label.fallback, Some(Fallback::Truncate));
+    assert_eq!(label.glyph_runs[0].font_size, 12.0);
+    let glyphs: usize = label.glyph_runs.iter().map(|r| r.glyphs.len()).sum();
+    assert!(glyphs < text.len(), "{glyphs}");
+}
+
+#[test]
+fn truncation_comes_after_the_other_text_fallbacks() {
+    let text = "Lakeland";
+    let out = run(
+        class(
+            horizontal(),
+            12.0,
+            vec![Fallback::Truncate, Fallback::SmallerFont],
+        ),
+        rect(text, 0.8 * width(text, 12.0), 30.0),
+        vec![],
+    );
+    assert_eq!(out.placed[0].fallback, Some(Fallback::SmallerFont));
+}
+
+#[test]
+fn the_class_aligns_stacked_lines() {
+    let text = "Gulf of Saint Lawrence";
+    let feature = rect(text, 0.75 * width(text, 8.0), 50.0);
+    let starts = |align: StackAlign| {
+        let mut c = class(horizontal(), 8.0, vec![Fallback::Stack]);
+        c.fallbacks.max_lines = 2;
+        c.fallbacks.stack_align = align;
+        let out = run(c, feature.clone(), vec![]);
+        line_starts(&out.placed[0])
+    };
+    let left = starts(StackAlign::Left);
+    assert_eq!(left.len(), 2);
+    assert!((left[0] - left[1]).abs() < 1.0, "{left:?}");
+    // "Gulf of Saint" is longer than "Lawrence", so a centered or a right second line starts
+    // farther right.
+    let center = starts(StackAlign::Center);
+    let right = starts(StackAlign::Right);
+    assert!(center[1] - center[0] > 1.0, "{center:?}");
+    assert!(
+        right[1] - right[0] > center[1] - center[0] + 1.0,
+        "{right:?}"
+    );
+}
+
+#[test]
+fn the_class_sets_the_stack_separators_and_the_line_lengths() {
+    let text = "Stratford-upon-Avon";
+    let feature = rect(text, 0.7 * width(text, 8.0), 50.0);
+    let mut c = class(horizontal(), 8.0, vec![Fallback::Stack]);
+    assert!(run(c.clone(), feature.clone(), vec![]).placed.is_empty());
+    c.fallbacks.stack_separators = " -".into();
+    let out = run(c.clone(), feature.clone(), vec![]);
+    assert_eq!(out.placed[0].fallback, Some(Fallback::Stack));
+    assert!(line_starts(&out.placed[0]).len() >= 2);
+    c.fallbacks.max_line_chars = 4;
+    assert!(run(c.clone(), feature.clone(), vec![]).placed.is_empty());
+    c.fallbacks.max_line_chars = 64;
+    c.fallbacks.min_line_chars = 12;
+    assert!(run(c, feature, vec![]).placed.is_empty());
 }

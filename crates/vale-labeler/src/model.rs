@@ -312,12 +312,19 @@ pub enum Placement {
 /// A way to place a label that does not fit. Removal comes after the last fallback of a class.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Fallback {
-    /// Smaller font sizes, one step at a time, down to [`Fallbacks::min_size`].
+    /// Smaller font sizes, one step at a time, down to [`Fallbacks::min_size`]. With
+    /// [`Fallbacks::compress_with_size`], each size also tries the narrow widths of
+    /// [`Fallback::Compress`].
     SmallerFont,
+    /// Narrower letters, one step at a time, down to [`Fallbacks::min_width`].
+    Compress,
     /// The words on two or more horizontal lines, up to [`Fallbacks::max_lines`].
     Stack,
     /// The words of [`Fallbacks::abbreviations`] in their short form.
     Abbreviate,
+    /// Fewer letters in the longest word, one at a time, with [`Fallbacks::truncation_marker`]
+    /// at the end of each short word. This is always the last fallback that changes the text.
+    Truncate,
     /// A point label farther from its symbol, or a polygon label outside the shape, with a
     /// leader line. A line label has no leader line.
     Leader,
@@ -325,30 +332,90 @@ pub enum Fallback {
 
 impl Fallback {
     /// All fallbacks in the default order.
-    pub const ALL: [Fallback; 4] = [
+    pub const ALL: [Fallback; 6] = [
         Fallback::SmallerFont,
+        Fallback::Compress,
         Fallback::Stack,
         Fallback::Abbreviate,
         Fallback::Leader,
+        Fallback::Truncate,
     ];
+
+    /// Whether the fallback changes the text or its font. The leader line changes only the
+    /// placement.
+    pub fn changes_text(self) -> bool {
+        self != Fallback::Leader
+    }
+}
+
+/// The alignment of stacked lines.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub enum StackAlign {
+    Left,
+    #[default]
+    Center,
+    Right,
 }
 
 /// The fallbacks of a label class and their options.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Fallbacks {
-    /// The fallbacks to try, in order. Each one starts again from the label of the class.
+    /// The fallbacks to try, in order. Each one starts again from the label of the class. The
+    /// engine uses the order of [`Fallbacks::normalized_order`].
     pub order: Vec<Fallback>,
     /// The smallest font size of [`Fallback::SmallerFont`], in page units.
     pub min_size: f64,
     /// The step between two font sizes, in page units.
     pub size_step: f64,
+    /// The smallest width of the letters of [`Fallback::Compress`], as a share of the full
+    /// width.
+    pub min_width: f64,
+    /// The step between two widths, as a share of the full width.
+    pub width_step: f64,
+    /// [`Fallback::SmallerFont`] tries the narrow widths at the size of the class and at each
+    /// smaller size.
+    pub compress_with_size: bool,
     /// The most lines of [`Fallback::Stack`].
     pub max_lines: usize,
+    /// The characters where [`Fallback::Stack`] can break a line. A space goes away at the
+    /// break, and another character stays at the end of the line.
+    pub stack_separators: String,
+    /// The fewest characters on a stacked line.
+    pub min_line_chars: usize,
+    /// The most characters on a stacked line.
+    pub max_line_chars: usize,
+    /// The alignment of stacked lines.
+    pub stack_align: StackAlign,
     /// Pairs of a word and its short form, for example "Mount" and "Mt.". A word matches as a
     /// whole word, with the same case.
     pub abbreviations: Vec<(String, String)>,
+    /// The text at the end of a word that [`Fallback::Truncate`] makes shorter.
+    pub truncation_marker: String,
     /// The extra distance of a point label with a leader line from its symbol, in page units.
     pub leader_distance: f64,
+}
+
+impl Fallbacks {
+    /// `order` with no repeats, and with [`Fallback::Truncate`] after the last other fallback
+    /// that changes the text.
+    pub fn normalized_order(order: &[Fallback]) -> Vec<Fallback> {
+        let mut out: Vec<Fallback> = Vec::with_capacity(order.len());
+        for &f in order {
+            if !out.contains(&f) {
+                out.push(f);
+            }
+        }
+        if let Some(t) = out.iter().position(|&f| f == Fallback::Truncate) {
+            out.remove(t);
+            let at = out
+                .iter()
+                .rposition(|f| f.changes_text())
+                .map_or(0, |i| i + 1)
+                .max(t.min(out.len()));
+            out.insert(at, Fallback::Truncate);
+        }
+        out
+    }
 }
 
 impl Default for Fallbacks {
@@ -358,8 +425,16 @@ impl Default for Fallbacks {
             order: Vec::new(),
             min_size: 6.0,
             size_step: 1.0,
+            min_width: 0.8,
+            width_step: 0.05,
+            compress_with_size: false,
             max_lines: 2,
+            stack_separators: " ".to_string(),
+            min_line_chars: 1,
+            max_line_chars: 64,
+            stack_align: StackAlign::Center,
             abbreviations: Vec::new(),
+            truncation_marker: ".".to_string(),
             leader_distance: 12.0,
         }
     }
