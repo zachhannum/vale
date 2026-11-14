@@ -3,7 +3,7 @@
 
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Shape, Stroke, pos2, vec2};
 
-use super::geometry::Bands;
+use super::geometry::{self, Bands};
 use super::theme;
 use crate::ui::token_field;
 
@@ -105,9 +105,12 @@ pub fn show(
     let id = egui::Id::new(key);
     let height: f32 = ctx.data(|d| d.get_temp(id.with("height"))).unwrap_or(240.0);
     let screen = ctx.viewport_rect();
-    let top = screen.top() + Bands::new(screen, ctx.content_rect()).top;
-    let area = (top, floor(ctx, screen));
-    let (rect, below) = place(anchor, vec2(width, height), screen, area);
+    let top = screen.top() + Bands::of(ctx).top;
+    // On a partially folded device, the popover is in the part of its
+    // control.
+    let part = geometry::fold_part(anchor, geometry::regions(ctx).fold, screen);
+    let area = (top.max(part.top()), floor(ctx, screen).min(part.bottom()));
+    let (rect, below) = place(anchor, vec2(width, height), part, area);
     let pressed = ctx.input(|i| i.pointer.press_origin().filter(|_| i.pointer.any_pressed()));
     let closed = pressed.is_some_and(|p| !rect.contains(p) && !anchor.contains(p));
     token_field::keep_focus(ctx, rect);

@@ -719,12 +719,12 @@ iPhone Duo has an outer screen and an inner screen. Both render at a pixel ratio
 
 | Screen | Pose | Size in points | Safe area: top, right, bottom, left |
 |---|---|---|---|
-| Outer | Portrait | 466 × 678 | 0, 0, 34, 0 |
-| Outer | Landscape | 678 × 466 | 0, 0, 34, 0 |
+| Outer | Portrait | 466 × 678 | 0, 84, 34, 0 |
+| Outer | Landscape | 678 × 466 | 0, 0, 34, 84 |
 | Inner | Portrait | 669 × 951 | 0, 0, 34, 0 |
 | Inner | Landscape | 951 × 669 | 0, 0, 34, 0 |
 
-A visible status bar adds to the safe area. On the outer screen and on the inner screen in landscape, the status bar is a side column, 84 points wide. The column is at the right edge on the outer screen in portrait and on the inner screen in landscape. It is at the left edge on the outer screen in landscape. On the inner screen in portrait, the status bar is a band of 82 points at the top. The app hides the status bar, so the column and the band are not in the safe area.
+A visible status bar adds to the safe area. On the outer screen and on the inner screen in landscape, the status bar is a side column, 84 points wide. The column is at the right edge on the outer screen in portrait and on the inner screen in landscape. It is at the left edge on the outer screen in landscape. On the inner screen in portrait, the status bar is a band of 82 points at the top. The app hides the status bar. On the inner screen, the column and the band are then not in the safe area. On the outer screen, the safe area leaves out the column, because the outer camera is at its top. The layout uses the column, and it keeps out of the region of the camera only.
 
 The device opens like a book, so the outer screen in portrait is one half of the inner screen in landscape. The hinge is vertical on the inner screen in landscape and horizontal in portrait. When the device is partially folded, the system reserves a folding region along the hinge, and the region divides the inner screen into two parts.
 
@@ -735,9 +735,9 @@ The outer camera is in a top corner of the outer screen, and the system reserves
 The parts of the layout keep out of the folding region, so a fold changes the layout only a little:
 
 - In landscape, the canvas is the left part, and the dock is in the right part. The dock is at most as wide as the right part. A wider dock gets narrower during the fold, and it gets its width back when the device opens flat.
-- In portrait, the top row is in the upper part. The tool column and the dock have a gap at the folding region: a cell, a control, or a row that is in the region moves below it.
+- In portrait, the top row and the dock are in the upper part. The dock ends above the folding region, and panes that do not fit join as tabs. The tool column has a gap at the folding region: a cell or a control that is in the region moves below it. If the tool column still does not fit, it ends above the gap and scrolls.
 - A page of the Atlas workspace opens, and a double tap fits it, in one part of the canvas. That is the left part in landscape and the upper part in portrait.
-- If a card, a menu, or a popover crosses the folding region, it moves to the side of its control.
+- If a card, a menu, or a popover crosses the folding region, it moves to the side of its control. If it does not fit there, it gets shorter. A card at the center of the screen, such as a form, is at the center of the left part in landscape and of the upper part in portrait.
 - The globe and the flat map do not move.
 
 ### Desktop layout

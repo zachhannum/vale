@@ -206,7 +206,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     let row = class == WidthClass::Compact;
     let mut input = Input {
         screen,
-        bands: geometry::Bands::new(screen, ctx.content_rect()),
+        bands: geometry::Bands::of(&ctx),
         workspace_width: super::workspace_width(ui, class, WORKSPACES[1]),
         panel: !state.pad.dock().panes.is_empty(),
         sheet_offset: state.pad.sheet_offset,
@@ -225,6 +225,8 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         row,
         column: column_input(state, measuring),
         dock_width: state.pad.docks.atlas.width,
+        camera: state.pad.camera,
+        fold: state.pad.fold,
     };
     let mut rects = geometry::layout(&input);
     state.pad.sheet_offset = input
@@ -364,7 +366,10 @@ fn page_space(rects: &Rects) -> Rect {
     let bottom = rects
         .readout
         .map_or(rects.panel_bottom, |r| r.bottom() - ROW - GAP);
-    Rect::from_min_max(pos2(left, rects.column_top), pos2(right, bottom))
+    let space = Rect::from_min_max(pos2(left, rects.column_top), pos2(right, bottom));
+    // On a partially folded device, the page is in one part of the canvas.
+    let part = geometry::canvas_part(rects.screen, rects.fold);
+    space.intersect(part)
 }
 
 /// The contents of the tool column for the tool of the Atlas.
@@ -377,6 +382,7 @@ fn column_input(state: &AppState, measuring: bool) -> geometry::ColumnInput {
     geometry::ColumnInput {
         tools: TOOL_CELLS,
         cells,
+        lead: 0,
         sliders: 0,
         brush_button: false,
     }
@@ -780,8 +786,7 @@ fn tool_column(
     rects: &Rects,
     measuring: bool,
 ) {
-    let context = rects.column_content
-        > 2.0 * geometry::COLUMN_INSET + TOOL_CELLS as f32 * geometry::COLUMN_CELL + 0.5;
+    let context = rects.column_context;
     let mut selectable_cell = None;
     let backdrop = state.globe.backdrop();
     super::column_card(ctx, backdrop, rects, |ui| {

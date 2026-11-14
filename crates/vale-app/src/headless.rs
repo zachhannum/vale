@@ -490,6 +490,38 @@ pub fn ui_png_safe(
         harness.step();
         harness.render().map_err(no_gpu)?;
     }
-    let image = harness.render().map_err(no_gpu)?;
+    let mut image = harness.render().map_err(no_gpu)?;
+    let pad = &harness.state().pad;
+    for (region, oval) in [(pad.camera, true), (pad.fold, false)] {
+        if let Some(region) = region {
+            outline_region(&mut image, region, oval, pixel_ratio as f32);
+        }
+    }
     Ok((image, harness.into_state()))
+}
+
+/// Draws the outline of a region of the screen in points: an oval for the
+/// region of a camera, and a rectangle for a folding region.
+#[cfg(not(target_os = "ios"))]
+fn outline_region(
+    image: &mut image::RgbaImage,
+    region: eframe::egui::Rect,
+    oval: bool,
+    ratio: f32,
+) {
+    let center = region.center() * ratio;
+    let (rx, ry) = (region.width() * ratio / 2.0, region.height() * ratio / 2.0);
+    let line = 1.5 * ratio;
+    for (x, y, pixel) in image.enumerate_pixels_mut() {
+        let (dx, dy) = (x as f32 + 0.5 - center.x, y as f32 + 0.5 - center.y);
+        // The distance to the edge, in pixels, near the edge.
+        let d = if oval {
+            (((dx / rx).powi(2) + (dy / ry).powi(2)).sqrt() - 1.0) * rx.min(ry)
+        } else {
+            (dx.abs() - rx).max(dy.abs() - ry)
+        };
+        if d.abs() <= line / 2.0 {
+            *pixel = image::Rgba([255, 80, 80, 255]);
+        }
+    }
 }

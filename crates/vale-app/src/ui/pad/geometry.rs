@@ -1,6 +1,8 @@
 //! The places of the cards of the iPad layout. All sizes are in points.
 
-use eframe::egui::{CornerRadius, Pos2, Rect, pos2, vec2};
+use eframe::egui::{self, CornerRadius, Pos2, Rangef, Rect, pos2, vec2};
+
+use crate::reserved::Regions;
 
 /// The space from a card to the edge of the screen.
 pub const MARGIN: f32 = 16.0;
@@ -71,6 +73,8 @@ pub const BUTTON_STEP: f32 = TOUCH + PAD;
 pub const TOP_GAP: f32 = 4.0;
 /// The width of the Panels menu, without the band at the right edge.
 pub const PANELS_MENU_WIDTH: f32 = 360.0;
+/// The space from a card to the folding region.
+pub const FOLD_GAP: f32 = 8.0;
 
 /// The bands at the screen edges that the system uses.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -99,6 +103,46 @@ impl Bands {
             right: (screen.right() - safe.right()).max(0.0),
         }
     }
+
+    /// The bands of the screen of `ctx`, with its reserved regions.
+    pub fn of(ctx: &egui::Context) -> Bands {
+        let screen = ctx.viewport_rect();
+        Bands::new(screen, ctx.content_rect()).free_camera_side(screen, regions(ctx).camera)
+    }
+
+    /// A side band that holds a camera at a top corner is free, and the
+    /// layout keeps out of the camera region alone. The outer screen of
+    /// iPhone Duo has such a band, the column of the status bar.
+    pub fn free_camera_side(mut self, screen: Rect, camera: Option<Rect>) -> Bands {
+        let Some(camera) = camera else {
+            return self;
+        };
+        if camera.bottom() > screen.top() + self.top + TOP_GAP + ROW {
+            return self;
+        }
+        let x = camera.center().x;
+        if self.right > 0.0 && x >= screen.right() - self.right {
+            self.right = 0.0;
+        }
+        if self.left > 0.0 && x <= screen.left() + self.left {
+            self.left = 0.0;
+        }
+        self
+    }
+}
+
+fn regions_id() -> egui::Id {
+    egui::Id::new("pad-reserved-regions")
+}
+
+/// Keeps the reserved regions for the code of this frame.
+pub fn set_regions(ctx: &egui::Context, regions: Regions) {
+    ctx.data_mut(|d| d.insert_temp(regions_id(), regions));
+}
+
+/// The reserved regions of this frame.
+pub fn regions(ctx: &egui::Context) -> Regions {
+    ctx.data(|d| d.get_temp(regions_id())).unwrap_or_default()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -132,6 +176,8 @@ pub struct ColumnInput {
     /// The number of cells of the controls of the tool: switches and
     /// commands.
     pub cells: usize,
+    /// The number of these cells that are above the sliders.
+    pub lead: usize,
     /// The number of vertical sliders.
     pub sliders: usize,
     /// The column ends with the Brush button.
@@ -180,6 +226,11 @@ pub struct Input {
     pub column: ColumnInput,
     /// The width of the dock that the user chose.
     pub dock_width: f32,
+    /// The region that the system reserves around a camera at the top of
+    /// the screen.
+    pub camera: Option<Rect>,
+    /// The folding region of a partially folded device.
+    pub fold: Option<Rect>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -230,6 +281,134 @@ pub struct Rects {
     /// The place of the readout at the lower left of the canvas: the card
     /// of the place above the card of the View button and the scale bar.
     pub readout: Option<Rect>,
+    /// The tool column has controls below the tools.
+    pub column_context: bool,
+    /// The folding region of a partially folded device.
+    pub fold: Option<Rect>,
+    /// The band of the tool column that holds no control, at a fold that
+    /// crosses the column: from the bottom of the last control above the
+    /// fold to `COLUMN_INSET` below the end of the card at the fold. A
+    /// control that would be in it is below it.
+    pub column_gap: Option<Rangef>,
+}
+
+/// True if the fold is a horizontal band: the hinge of the inner screen of
+/// iPhone Duo in portrait.
+pub fn horizontal(fold: Rect) -> bool {
+    fold.width() > fold.height()
+}
+
+/// The part of `room` at the side of the fold that holds `anchor`, with
+/// `FOLD_GAP` from the fold.
+pub fn fold_part(anchor: Rect, fold: Option<Rect>, room: Rect) -> Rect {
+    let Some(fold) = fold.filter(|f| f.intersects(room)) else {
+        return room;
+    };
+    let mut part = room;
+    if horizontal(fold) {
+        if anchor.center().y < fold.center().y {
+            part.max.y = part.max.y.min(fold.top() - FOLD_GAP);
+        } else {
+            part.min.y = part.min.y.max(fold.bottom() + FOLD_GAP);
+        }
+    } else if anchor.center().x < fold.center().x {
+        part.max.x = part.max.x.min(fold.left() - FOLD_GAP);
+    } else {
+        part.min.x = part.min.x.max(fold.right() + FOLD_GAP);
+    }
+    part
+}
+
+/// Moves a card that crosses the fold to the side of the fold that holds
+/// `anchor`, its control, inside `room`. A card that opens past its
+/// control keeps that edge, so it does not cover the control. A card that
+/// does not fit becomes smaller.
+pub fn off_fold(rect: Rect, anchor: Rect, fold: Option<Rect>, room: Rect) -> Rect {
+    let Some(f) = fold.filter(|f| f.intersects(rect)) else {
+        return rect;
+    };
+    let part = fold_part(anchor, Some(f), room);
+    let (r, a, p) = match horizontal(f) {
+        true => (rect.y_range(), anchor.y_range(), part.y_range()),
+        false => (rect.x_range(), anchor.x_range(), part.x_range()),
+    };
+    let (min, max) = if r.min >= a.max && r.min + TOUCH <= p.max {
+        // The card opens after its control.
+        let min = r.min.max(p.min);
+        (min, r.max.min(p.max))
+    } else if r.max <= a.min && r.max - TOUCH >= p.min {
+        // The card opens before its control.
+        let max = r.max.min(p.max);
+        (r.min.max(p.min), max)
+    } else {
+        let min = r.min.min(p.max - r.span()).max(p.min);
+        (min, (min + r.span()).min(p.max))
+    };
+    match horizontal(f) {
+        true => Rect::from_x_y_ranges(rect.x_range(), min..=max),
+        false => Rect::from_x_y_ranges(min..=max, rect.y_range()),
+    }
+}
+
+/// The part of the canvas for a card at its center: the left part in
+/// landscape and the upper part in portrait.
+pub fn canvas_part(screen: Rect, fold: Option<Rect>) -> Rect {
+    fold_part(
+        Rect::from_min_size(screen.min, vec2(1.0, 1.0)),
+        fold,
+        screen,
+    )
+}
+
+/// The height of the contents of the tool column from `top`, and the gap
+/// of the column. A control that would be in `gap` moves below it, and so
+/// does a divider just above it. The gap of the column starts at the
+/// bottom of the last control above it.
+fn column_height(
+    top: f32,
+    c: &ColumnInput,
+    slider: f32,
+    gap: Option<Rangef>,
+) -> (f32, Option<Rangef>) {
+    let mut y = top + COLUMN_INSET;
+    let mut start = None;
+    let mut divider = None;
+    let mut add = |height: f32, is_divider: bool| {
+        let at = skip_gap(y, height, gap);
+        if at > y && start.is_none() {
+            start = Some(divider.unwrap_or(y));
+            y = match divider {
+                Some(_) => at + COLUMN_DIVIDER,
+                None => at,
+            };
+        }
+        divider = is_divider.then_some(y);
+        y += height;
+    };
+    let cell = |n: usize, add: &mut dyn FnMut(f32, bool)| {
+        (0..n).for_each(|_| add(COLUMN_CELL, false));
+    };
+    cell(c.tools, &mut add);
+    if c.cells > 0 || c.sliders > 0 || c.brush_button {
+        add(COLUMN_DIVIDER, true);
+    }
+    let lead = c.lead.min(c.cells);
+    cell(lead, &mut add);
+    if slider > 0.0 {
+        (0..c.sliders).for_each(|_| add(slider + SLIDER_TEXT, false));
+    }
+    cell(c.cells - lead + usize::from(c.brush_button), &mut add);
+    let gap = gap.zip(start).map(|(g, start)| Rangef::new(start, g.max));
+    (y + COLUMN_INSET - top, gap)
+}
+
+/// The top of a control `height` high that would start at `y`: below the
+/// gap if it would be in the gap.
+pub fn skip_gap(y: f32, height: f32, gap: Option<Rangef>) -> f32 {
+    match gap {
+        Some(g) if y < g.max && y + height > g.min => g.max,
+        _ => y,
+    }
 }
 
 /// The corners of a card that touches a side edge of the screen. Only the
@@ -289,10 +468,24 @@ pub fn layout(input: &Input) -> Rects {
         WidthClass::Compact => ACTIONS_WIDTH - BUTTON_STEP,
         _ => ACTIONS_WIDTH,
     };
-    let actions = Rect::from_min_max(
+    let mut actions = Rect::from_min_max(
         pos2(screen.right() - bands.right - actions_width, top),
         pos2(screen.right(), top + ROW),
     );
+    let mut workspace = workspace;
+    // The card of the top row at the corner of the camera moves along the
+    // row, out of the region of the camera.
+    let row_band = Rect::from_x_y_ranges(screen.x_range(), top..=top + ROW);
+    if let Some(camera) = input.camera.filter(|c| c.intersects(row_band)) {
+        if camera.center().x > screen.center().x {
+            let right = camera.left() - ROW_GAP;
+            actions =
+                Rect::from_min_size(pos2(right - actions_width, top), vec2(actions_width, ROW));
+        } else {
+            let left = camera.right() + ROW_GAP;
+            workspace = Rect::from_min_size(pos2(left, top), vec2(input.workspace_width, ROW));
+        }
+    }
 
     let (sheet, sheet_travel, sheet_rise) = if class == WidthClass::Compact {
         let full = screen.bottom() - column_top;
@@ -344,6 +537,9 @@ pub fn layout(input: &Input) -> Rects {
             row,
             column_top,
             readout,
+            column_context: false,
+            fold: input.fold,
+            column_gap: None,
         };
     }
 
@@ -356,19 +552,47 @@ pub fn layout(input: &Input) -> Rects {
     let fixed = 2.0 * COLUMN_INSET
         + COLUMN_CELL * (c.tools + c.cells + usize::from(c.brush_button)) as f32
         + if context { COLUMN_DIVIDER } else { 0.0 };
+    // A horizontal fold makes a gap in the column, with `FOLD_GAP` and the
+    // inset of the column at each side of the fold.
+    let gap = input.fold.filter(|f| horizontal(*f)).map(|f| {
+        let space = FOLD_GAP + COLUMN_INSET;
+        Rangef::new(f.top() - space, f.bottom() + space)
+    });
+    let fits = |slider: f32| column_height(column_top, &c, slider, gap).0 <= room;
     // The sliders become shorter, and then the Brush panel holds them.
-    let slider = if c.sliders == 0 {
+    let mut slider = if c.sliders == 0 {
         0.0
     } else {
         let track = ((room - fixed) / c.sliders as f32 - SLIDER_TEXT).min(TRACK);
         if track >= TRACK_MIN { track } else { 0.0 }
     };
-    let column_content = fixed
+    while gap.is_some() && slider > 0.0 && !fits(slider) {
+        slider = if slider - 1.0 >= TRACK_MIN {
+            slider - 1.0
+        } else {
+            0.0
+        };
+    }
+    let plain = fixed
         + if slider > 0.0 {
             c.sliders as f32 * (slider + SLIDER_TEXT)
         } else {
             0.0
         };
+    let (mut column_content, mut column_gap) = match gap {
+        Some(_) => column_height(column_top, &c, slider, gap),
+        None => (plain, None),
+    };
+    let mut room = room;
+    // A column that scrolls ends above the fold.
+    if column_content > room
+        && column_gap.is_some()
+        && let Some(g) = gap
+    {
+        room = room.min(g.min + COLUMN_INSET - column_top);
+        column_content = plain;
+        column_gap = None;
+    }
     let height = column_content
         .min(room)
         .max(COLUMN_CELL + 2.0 * COLUMN_INSET);
@@ -381,7 +605,11 @@ pub fn layout(input: &Input) -> Rects {
     let column_right = tools.right() + GAP;
 
     // The dock touches the right edge, and it leaves the left column free.
-    let most = screen.right() - column_right;
+    // In landscape, it is in the part at the right of the fold.
+    let mut most = screen.right() - column_right;
+    if let Some(f) = input.fold.filter(|f| !horizontal(*f)) {
+        most = most.min(screen.right() - f.right() - FOLD_GAP);
+    }
     let width = (input.dock_width + bands.right).min(most);
     let dock = match class {
         WidthClass::Compact => Rect::from_min_max(
@@ -393,6 +621,14 @@ pub fn layout(input: &Input) -> Rects {
             pos2(screen.right(), bottom - DOCK_FOOT),
         ),
     };
+    // At a horizontal fold, the dock is above the fold, near the top row.
+    let mut dock = dock;
+    if let Some(f) = input
+        .fold
+        .filter(|f| horizontal(*f) && f.top() < dock.bottom())
+    {
+        dock.max.y = (f.top() - FOLD_GAP).max(dock.top() + ROW);
+    }
     // The readout is at the lower left of the canvas, at the right of the
     // tool column. An open sheet covers it.
     let readout = sheet.is_none().then(|| {
@@ -403,6 +639,11 @@ pub fn layout(input: &Input) -> Rects {
             ),
             pos2(right, bottom - DOCK_FOOT),
         )
+    });
+    // In landscape, the readout is in the part at the left of the fold.
+    let readout = readout.map(|r| match input.fold.filter(|f| !horizontal(*f)) {
+        Some(f) => Rect::from_min_max(r.min, pos2(r.right().min(f.left() - FOLD_GAP), r.bottom())),
+        None => r,
     });
 
     Rects {
@@ -427,6 +668,9 @@ pub fn layout(input: &Input) -> Rects {
         row,
         column_top,
         readout,
+        column_context: context,
+        fold: input.fold,
+        column_gap,
     }
 }
 
@@ -523,6 +767,7 @@ mod tests {
         ColumnInput {
             tools: TOOLS,
             cells: 0,
+            lead: 0,
             sliders: 2,
             brush_button: true,
         }
@@ -542,6 +787,8 @@ mod tests {
             row: false,
             column: brush(),
             dock_width: 340.0,
+            camera: None,
+            fold: None,
         }
     }
 
@@ -855,5 +1102,225 @@ mod tests {
         let r = measure(1024.0, 400.0);
         assert!(r.column_content > r.tools.height());
         assert_eq!(r.tools.bottom(), 400.0 - 20.0 - DOCK_FOOT);
+    }
+
+    /// The outer screen of iPhone Duo, with a camera region of 30 points
+    /// at the top right in portrait and at the top left in landscape.
+    fn duo_outer(portrait: bool) -> Input {
+        let (width, height) = if portrait {
+            (466.0, 678.0)
+        } else {
+            (678.0, 466.0)
+        };
+        let mut input = board(width, height);
+        input.bands.bottom = 34.0;
+        input.row = portrait;
+        let x = if portrait { width - 57.0 } else { 27.0 };
+        input.camera = Some(rect(x, 9.0, 30.0, 30.0));
+        input
+    }
+
+    #[test]
+    fn the_card_at_the_corner_of_the_camera_moves_out_of_its_region() {
+        // Portrait: the card of the actions ends at the left of the region.
+        let input = duo_outer(true);
+        let camera = input.camera.unwrap();
+        let mut without = input;
+        without.camera = None;
+        let (r, before) = (layout(&input), layout(&without));
+        assert_eq!(r.class, WidthClass::Compact);
+        assert_eq!(r.actions.right(), camera.left() - ROW_GAP);
+        assert_eq!(r.actions.size(), vec2(ACTIONS_WIDTH - BUTTON_STEP, ROW));
+        assert_eq!(r.actions.top(), before.actions.top());
+        assert!(!r.actions.intersects(camera));
+        assert_eq!(
+            Rects {
+                actions: before.actions,
+                ..r
+            },
+            before
+        );
+
+        // Landscape: the card of the world menu starts at the right of the
+        // region.
+        let input = duo_outer(false);
+        let camera = input.camera.unwrap();
+        let mut without = input;
+        without.camera = None;
+        let (r, before) = (layout(&input), layout(&without));
+        assert_eq!(r.class, WidthClass::Medium);
+        assert_eq!(r.workspace.left(), camera.right() + ROW_GAP);
+        assert_eq!(r.workspace.size(), vec2(149.0, ROW));
+        assert!(!r.workspace.intersects(camera));
+        let moved = Rects {
+            workspace: before.workspace,
+            ..r
+        };
+        assert_eq!(moved, before);
+    }
+
+    #[test]
+    fn a_camera_below_the_top_row_moves_no_card() {
+        let mut input = duo_outer(true);
+        let mut without = input;
+        without.camera = None;
+        input.camera = Some(rect(400.0, 300.0, 30.0, 30.0));
+        assert_eq!(layout(&input), layout(&without));
+    }
+
+    #[test]
+    fn the_outer_screen_of_iphone_duo_opens_the_sheet_at_half_its_height() {
+        let mut input = duo_outer(true);
+        input.panel = true;
+        let r = layout(&input);
+        assert_eq!(r.sheet, Some(rect(0.0, 339.0, 466.0, 339.0)));
+    }
+
+    #[test]
+    fn a_side_band_with_a_camera_at_a_top_corner_is_free() {
+        let screen = rect(0.0, 0.0, 466.0, 678.0);
+        let bands = Bands {
+            top: 24.0,
+            bottom: 34.0,
+            left: 0.0,
+            right: 84.0,
+        };
+        // The outer screen of iPhone Duo in portrait.
+        let camera = rect(409.0, 9.0, 30.0, 30.0);
+        let free = bands.free_camera_side(screen, Some(camera));
+        assert_eq!(
+            free,
+            Bands {
+                right: 0.0,
+                ..bands
+            }
+        );
+        assert_eq!(bands.free_camera_side(screen, None), bands);
+        // The Dynamic Island of an iPhone in landscape is at the middle of
+        // the side band, and the band stays.
+        let screen = rect(0.0, 0.0, 852.0, 393.0);
+        let bands = Bands {
+            left: 59.0,
+            right: 59.0,
+            ..Bands::MIN
+        };
+        let island = rect(10.0, 140.0, 37.0, 113.0);
+        assert_eq!(bands.free_camera_side(screen, Some(island)), bands);
+    }
+
+    /// The inner screen of iPhone Duo, with a folding region of 28 points
+    /// along the hinge.
+    fn duo_folded(portrait: bool) -> Input {
+        let (width, height) = if portrait {
+            (669.0, 951.0)
+        } else {
+            (951.0, 669.0)
+        };
+        let mut input = board(width, height);
+        input.bands.bottom = 34.0;
+        input.fold = Some(if portrait {
+            rect(0.0, 461.0, width, 28.0)
+        } else {
+            rect(461.0, 0.0, 28.0, height)
+        });
+        input
+    }
+
+    #[test]
+    fn in_landscape_the_dock_is_at_the_right_of_the_fold() {
+        let mut input = duo_folded(false);
+        let fold = input.fold.unwrap();
+        let mut flat = input;
+        flat.fold = None;
+        // A dock that fits keeps its width.
+        let (r, before) = (layout(&input), layout(&flat));
+        assert_eq!(r.dock, before.dock);
+        assert_eq!(r.tools, before.tools);
+        // A wider dock is as wide as the right part.
+        input.dock_width = 600.0;
+        flat.dock_width = 600.0;
+        let r = layout(&input);
+        assert_eq!(r.dock.left(), fold.right() + FOLD_GAP);
+        assert_eq!(r.dock.right(), 951.0);
+        assert!(layout(&flat).dock.left() < fold.left());
+        // The readout is at the left of the fold.
+        let readout = r.readout.unwrap();
+        assert_eq!(readout.right(), fold.left() - FOLD_GAP);
+        assert_eq!(r.column_gap, None);
+    }
+
+    #[test]
+    fn in_portrait_the_tool_column_has_a_gap_at_the_fold() {
+        let input = duo_folded(true);
+        let fold = input.fold.unwrap();
+        let mut flat = input;
+        flat.fold = None;
+        let (r, before) = (layout(&input), layout(&flat));
+        let gap = r.column_gap.expect("a gap");
+        assert_eq!(gap.max, fold.bottom() + FOLD_GAP + COLUMN_INSET);
+        // The sliders keep their length, and the column is longer by the
+        // gap.
+        assert_eq!(r.brush_card, BrushCard::Full(TRACK));
+        assert_eq!(r.column_content, before.column_content + gap.span());
+        assert_eq!(r.tools.height(), r.column_content);
+        assert_eq!(r.tools.top(), before.tools.top());
+        // The dock ends above the fold.
+        assert_eq!(r.dock.top(), before.dock.top());
+        assert_eq!(r.dock.bottom(), fold.top() - FOLD_GAP);
+        // The tools are above the fold. The first slider does not fit
+        // there, so it moves below the fold with the divider above it, and
+        // the gap starts at the bottom of the last tool.
+        let top = r.tools.top() + COLUMN_INSET;
+        assert_eq!(gap.min, top + TOOLS as f32 * COLUMN_CELL);
+        assert!(gap.min + COLUMN_INSET < fold.top() - FOLD_GAP);
+        let slider = TRACK + SLIDER_TEXT;
+        let below = gap.max + COLUMN_DIVIDER + 2.0 * slider + COLUMN_CELL;
+        assert_eq!(r.tools.bottom(), below + COLUMN_INSET);
+
+        // A column that does not reach the fold has no gap.
+        let mut short = input;
+        short.column = ColumnInput {
+            tools: TOOLS,
+            ..ColumnInput::default()
+        };
+        let r = layout(&short);
+        assert_eq!(r.column_gap, None);
+        assert!(r.tools.bottom() < fold.top());
+
+        // A column that scrolls ends above the fold.
+        let mut long = input;
+        long.column.cells = 12;
+        let r = layout(&long);
+        assert_eq!(r.column_gap, None);
+        assert_eq!(r.tools.bottom(), fold.top() - FOLD_GAP);
+        assert!(r.column_content > r.tools.height());
+    }
+
+    #[test]
+    fn a_card_that_crosses_the_fold_moves_to_the_side_of_its_control() {
+        let screen = rect(0.0, 0.0, 669.0, 951.0);
+        let fold = Some(rect(0.0, 461.0, 669.0, 28.0));
+        let button = rect(600.0, 28.0, 44.0, 44.0);
+        // A menu below a button of the top row ends above the fold.
+        let menu = rect(300.0, 84.0, 360.0, 600.0);
+        let moved = off_fold(menu, button, fold, screen);
+        assert_eq!(moved, rect(300.0, 84.0, 360.0, 461.0 - FOLD_GAP - 84.0));
+        // A card at the side of a control below the fold starts below it.
+        let cell = rect(6.0, 500.0, 44.0, 44.0);
+        let card = rect(68.0, 420.0, 200.0, 100.0);
+        let moved = off_fold(card, cell, fold, screen);
+        assert_eq!(moved.top(), 489.0 + FOLD_GAP);
+        assert_eq!(moved.size(), card.size());
+        // A card off the fold does not move.
+        assert_eq!(off_fold(button, button, fold, screen), button);
+        assert_eq!(off_fold(menu, button, None, screen), menu);
+        // In landscape, a card at the center of the canvas is in the left
+        // part.
+        let screen = rect(0.0, 0.0, 951.0, 669.0);
+        let fold = Some(rect(461.0, 0.0, 28.0, 669.0));
+        assert_eq!(
+            canvas_part(screen, fold),
+            rect(0.0, 0.0, 461.0 - FOLD_GAP, 669.0)
+        );
     }
 }

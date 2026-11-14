@@ -611,13 +611,17 @@ pub fn handle(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
     // resize handles of iPadOS are, so a finger on the edge takes it. It
     // takes only a drag, so a tap at the left end of a row of a pane still
     // reaches the row.
-    let rect = Rect::from_min_size(
+    let mut rect = Rect::from_min_size(
         pos2(
             dock.left() + HANDLE_IN - HANDLE.0,
             dock.center().y - HANDLE.1 / 2.0,
         ),
         vec2(HANDLE.0, HANDLE.1),
     );
+    // At a vertical fold, the handle is at the right of the fold.
+    if let Some(fold) = rects.fold.filter(|f| f.intersects(rect)) {
+        rect = rect.translate(vec2(fold.right() - rect.left(), 0.0));
+    }
     let dragging = state.pad.dock_drag == Some(DockDrag::Width);
     // A control on the canvas under the handle hides it. The controls of
     // the dock do not.
@@ -629,8 +633,12 @@ pub fn handle(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
     {
         return;
     }
-    let most =
-        (rects.screen.right() - rects.bands.right - rects.column_right).max(panes::MIN_WIDTH);
+    let mut most = rects.screen.right() - rects.bands.right - rects.column_right;
+    if let Some(fold) = rects.fold.filter(|f| !geometry::horizontal(*f)) {
+        most =
+            most.min(rects.screen.right() - rects.bands.right - fold.right() - geometry::FOLD_GAP);
+    }
+    let most = most.max(panes::MIN_WIDTH);
     // A touch on the dock brings the dock to the top of its order, so the
     // grip comes back on top in each frame.
     let id = egui::Id::new("pad-dock-handle");

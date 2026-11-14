@@ -164,7 +164,7 @@ pub fn draw(ctx: &egui::Context, controls: &mut Controls) {
     }
 
     let screen = ctx.viewport_rect();
-    let bands = Bands::new(screen, ctx.content_rect());
+    let bands = Bands::of(ctx);
     let width = HINT_WIDTH.min(screen.width() - 2.0 * MARGIN);
     let hint = Rect::from_min_size(
         pos2(screen.center().x - width / 2.0, screen.top() + bands.top),

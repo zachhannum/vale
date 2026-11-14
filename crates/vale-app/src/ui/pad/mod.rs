@@ -546,6 +546,11 @@ pub struct PadState {
     pub controls: Controls,
     /// The places of the cards in the last frame.
     pub rects: Option<Rects>,
+    /// The region that the system reserves around a camera at the top of
+    /// the screen, in points.
+    pub camera: Option<Rect>,
+    /// The folding region of a partially folded device, in points.
+    pub fold: Option<Rect>,
     /// The pane of each open tab of the last frame, by its panel.
     pub panels: Vec<(Panel, Rect)>,
     /// The workspace menu of the last frame.
@@ -681,7 +686,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     let screen = ctx.viewport_rect();
     // The globe paints after the panels, so a change in a panel shows in
     // the same frame. The dock floats over the canvas.
-    let bands = geometry::Bands::new(screen, ctx.content_rect());
+    let bands = geometry::Bands::of(&ctx);
     let canvas = ui.scope_builder(egui::UiBuilder::new().max_rect(screen), |ui| {
         ui.set_clip_rect(screen);
         globe::canvas_input(ui, state, theme::CANVAS)
@@ -701,6 +706,8 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         row: class == WidthClass::Compact,
         column: column_input(state),
         dock_width: state.pad.docks.world.width,
+        camera: state.pad.camera,
+        fold: state.pad.fold,
     };
     let mut rects = geometry::layout(&input);
     state.pad.sheet_offset = input
@@ -1110,9 +1117,13 @@ fn column_input(state: &AppState) -> ColumnInput {
     } else {
         (0, 0, false)
     };
+    // The cell of the polygon modes is above the slider.
+    let strip = card_cells(globe) == 0 && has_strip(globe);
+    let vector = globe.stroking() || globe.placing();
     ColumnInput {
         tools: TOOLS,
         cells: cells + extra_cells(state),
+        lead: usize::from(strip && vector && globe.filling()),
         sliders,
         brush_button,
     }
@@ -1147,7 +1158,10 @@ pub(super) fn column_card(
 ) {
     let rect = rects.tools;
     let scroll = rects.column_content > rect.height() + 0.5;
-    widgets::edge_card(ctx, backdrop, "pad-tools", rect, rects, |ui| {
+    let inset = geometry::COLUMN_INSET;
+    let gap = rects.column_gap.filter(|_| !scroll);
+    let card_gap = gap.map(|g| egui::Rangef::new(g.min + inset, g.max - inset));
+    widgets::split_edge_card(ctx, backdrop, "pad-tools", rect, card_gap, rects, |ui| {
         let inner = ui.max_rect().shrink(geometry::COLUMN_INSET);
         let layout = egui::Layout::top_down(egui::Align::Min);
         let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
@@ -1159,7 +1173,9 @@ pub(super) fn column_card(
                     .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
                     .show(ui, add_contents);
             } else {
+                widgets::set_column_gap(ui.ctx(), gap);
                 add_contents(ui);
+                widgets::set_column_gap(ui.ctx(), None);
             }
         });
     });
@@ -1168,6 +1184,7 @@ pub(super) fn column_card(
 /// The line between the tools and the controls of the tool in the tool
 /// column.
 pub(super) fn column_divider(ui: &mut egui::Ui) {
+    widgets::skip_fold(ui, geometry::COLUMN_DIVIDER);
     let size = vec2(ui.available_width(), geometry::COLUMN_DIVIDER);
     let (rule, _) = ui.allocate_exact_size(size, egui::Sense::hover());
     let line = Rect::from_center_size(rule.center(), vec2(rule.width() - 4.0, 1.0));
@@ -1180,8 +1197,7 @@ fn tool_column(ctx: &egui::Context, state: &mut AppState, controls: &mut Control
     let mut merge_cell = None;
     let mut selectable_cell = None;
     let backdrop = state.globe.backdrop();
-    let context = rects.column_content
-        > 2.0 * geometry::COLUMN_INSET + TOOLS as f32 * geometry::COLUMN_CELL + 0.5;
+    let context = rects.column_context;
     column_card(ctx, backdrop, rects, |ui| {
         tool_cells(ui, state, controls);
         if !context {
@@ -1638,6 +1654,7 @@ fn merge_menu(
             vec2(width, height),
         )
     };
+    let rect = geometry::off_fold(rect, cell, rects.fold, screen);
     if choices.is_empty() || pressed.is_some_and(|p| !rect.contains(p) && !cell.contains(p)) {
         state.merging = false;
         return;
@@ -3172,7 +3189,12 @@ fn add_menu(
         let top = (rects.panel_bottom - size.y).min(button.bottom() + PAD);
         pos2(left, top.max(rects.screen.top() + rects.bands.top))
     };
-    let rect = Rect::from_min_size(min, size);
+    let rect = geometry::off_fold(
+        Rect::from_min_size(min, size),
+        button,
+        rects.fold,
+        rects.screen,
+    );
     state.pad.add_rect = Some(rect);
     let pressed = ctx.input(|i| {
         i.pointer
@@ -3552,7 +3574,7 @@ fn held_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls,
     {
         bottom = bottom.min(top - geometry::GAP);
     }
-    let middle = rects.screen.center().x;
+    let middle = geometry::canvas_part(rects.screen, rects.fold).center().x;
     let mut rect = Rect::from_min_size(pos2(middle - size.x / 2.0, bottom - size.y), size);
     let panels = &state.pad.panels;
     if let Some((_, panel)) = panels.iter().find(|(_, panel)| panel.intersects(rect)) {
@@ -3693,6 +3715,8 @@ fn worlds_menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Control
     let rows = 2.0 + f32::from(state.projects.any()) + f32::from(state.session.is_some());
     let size = vec2(width, 10.0 + shown + rule_height + rows * PANEL_ROW + 10.0);
     let rect = Rect::from_min_size(rects.menu, size);
+    let room = Rect::from_x_y_ranges(rects.screen.x_range(), rects.menu.y..=rects.panel_bottom);
+    let rect = geometry::off_fold(rect, rects.workspace, rects.fold, room);
     state.pad.worlds_rect = Some(rect);
     let pressed = ctx.input(|i| {
         i.pointer

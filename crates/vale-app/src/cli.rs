@@ -141,6 +141,18 @@ pub struct Args {
     /// `59,0,34,0`.
     #[arg(long, value_name = "T,R,B,L", value_delimiter = ',')]
     pub safe_area: Option<Vec<f32>>,
+    /// The region that the system reserves around a camera, in headless
+    /// output: the left edge, the top edge, the width, and the height, in
+    /// points. The outer screen of iPhone Duo in portrait has about
+    /// `409,9,30,30`.
+    #[arg(long, value_name = "X,Y,W,H", value_delimiter = ',')]
+    pub camera_region: Option<Vec<f32>>,
+    /// The folding region of a partially folded device, in headless
+    /// output: the left edge, the top edge, the width, and the height, in
+    /// points. The inner screen of iPhone Duo in landscape has about
+    /// `461,0,28,669`.
+    #[arg(long, value_name = "X,Y,W,H", value_delimiter = ',')]
+    pub fold_region: Option<Vec<f32>>,
     /// Pixels per point of headless output.
     #[arg(long, value_name = "F", default_value_t = 1.0)]
     pub pixel_ratio: f64,
@@ -404,6 +416,16 @@ impl Args {
         Ok(Some(eframe::egui::SafeAreaInsets(insets)))
     }
 
+    /// The region of `--camera-region`.
+    pub fn camera_region(&self) -> anyhow::Result<Option<eframe::egui::Rect>> {
+        region(self.camera_region.as_deref(), "camera region")
+    }
+
+    /// The region of `--fold-region`.
+    pub fn fold_region(&self) -> anyhow::Result<Option<eframe::egui::Rect>> {
+        region(self.fold_region.as_deref(), "folding region")
+    }
+
     pub fn size(&self) -> anyhow::Result<(f64, f64)> {
         let (w, h) = self
             .size
@@ -625,4 +647,22 @@ fn parse_tabs(text: &str) -> Result<Vec<Panel>, String> {
     text.split(',')
         .map(|name| Panel::from_str(name.trim(), true))
         .collect()
+}
+
+/// A region from its left edge, its top edge, its width, and its height.
+fn region(values: Option<&[f32]>, name: &str) -> anyhow::Result<Option<eframe::egui::Rect>> {
+    let Some(values) = values else {
+        return Ok(None);
+    };
+    let &[x, y, w, h] = values else {
+        bail!("expected four values of the {name}, got {values:?}");
+    };
+    if values.iter().any(|v| !v.is_finite()) || w <= 0.0 || h <= 0.0 {
+        bail!("the {name} must have a size above 0, got {values:?}");
+    }
+    let min = eframe::egui::pos2(x, y);
+    Ok(Some(eframe::egui::Rect::from_min_size(
+        min,
+        eframe::egui::vec2(w, h),
+    )))
 }

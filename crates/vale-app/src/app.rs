@@ -60,6 +60,9 @@ struct ValeApp {
     _lifecycle: Option<crate::lifecycle::Observer>,
     #[cfg(target_os = "ios")]
     _keyboard: Option<crate::keyboard::uikit::Observer>,
+    /// The reader of the camera region and the folding region.
+    #[cfg(target_os = "ios")]
+    reserved: Option<crate::reserved::uikit::Reader>,
     /// Writes the actions and the caches of the app to the log file.
     probe: crate::log_file::Probe,
 }
@@ -68,6 +71,12 @@ impl eframe::App for ValeApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let state = &mut *self.state.borrow_mut();
         state.poll_system();
+        #[cfg(target_os = "ios")]
+        if let Some(reader) = &self.reserved {
+            let regions = reader.read();
+            state.pad.camera = regions.camera;
+            state.pad.fold = regions.fold;
+        }
         ui::draw(ui, state);
         self.probe.update(state);
 
@@ -431,6 +440,8 @@ pub fn run_window(
         _lifecycle: None,
         #[cfg(target_os = "ios")]
         _keyboard: None,
+        #[cfg(target_os = "ios")]
+        reserved: None,
         probe: Default::default(),
     };
     eframe::run_native(
@@ -472,6 +483,9 @@ pub fn run_window(
                     let ctx = cc.egui_ctx.clone();
                     let wake = Box::new(move || ctx.request_repaint());
                     app._keyboard = crate::keyboard::uikit::Observer::new(handle.ui_view, wake);
+                    let ctx = cc.egui_ctx.clone();
+                    let wake = Box::new(move || ctx.request_repaint());
+                    app.reserved = crate::reserved::uikit::Reader::new(handle.ui_view, wake);
                     let (picked, ctx) = (app.picked.clone(), cc.egui_ctx.clone());
                     let exports = app.exports.clone();
                     app.picker = handle.ui_view_controller.and_then(|controller| {

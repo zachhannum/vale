@@ -863,14 +863,20 @@ fn line_controls(ui: &mut egui::Ui, controls: &mut Controls, line: &mut StopLine
 /// room is above.
 fn place(rects: &Rects, panel: Rect, at: Pos2, avoid: Rect, height: f32) -> (Rect, [Pos2; 3]) {
     let screen = rects.screen;
-    let top = screen.top() + rects.bands.top + PAD;
-    let bottom = screen.bottom() - rects.bands.bottom - PAD;
+    // On a partially folded device, the card is in the part of its row.
+    let part = super::geometry::fold_part(Rect::from_pos(at), rects.fold, screen);
+    let top = (screen.top() + rects.bands.top + PAD).max(part.top());
+    let bottom = (screen.bottom() - rects.bands.bottom - PAD).min(part.bottom());
     let room = panel.left() - GAP - CARD_WIDTH - PAD;
-    if rects.sheet.is_none() && room >= screen.left() {
+    let side = |height: f32| {
         let height = height.min(bottom - top);
         let size = vec2(CARD_WIDTH, height);
         let y = (at.y - height / 2.0).clamp(top, (bottom - height).max(top));
-        let rect = Rect::from_min_size(pos2(panel.left() - GAP - CARD_WIDTH, y), size);
+        Rect::from_min_size(pos2(panel.left() - GAP - CARD_WIDTH, y), size)
+    };
+    let crosses = |rect: Rect| rects.fold.is_some_and(|f| f.intersects(rect));
+    if rects.sheet.is_none() && room >= screen.left() && !crosses(side(height)) {
+        let rect = side(height);
         let y =
             at.y.clamp(rect.top() + 2.0 * POINT, rect.bottom() - 2.0 * POINT);
         let base = rect.right();
@@ -881,8 +887,8 @@ fn place(rects: &Rects, panel: Rect, at: Pos2, avoid: Rect, height: f32) -> (Rec
         ];
         return (rect, point);
     }
-    let left = screen.left() + rects.bands.left + PAD;
-    let right = screen.right() - rects.bands.right - PAD;
+    let left = (screen.left() + rects.bands.left + PAD).max(part.left());
+    let right = (screen.right() - rects.bands.right - PAD).min(part.right());
     let x = (at.x - CARD_WIDTH / 2.0).clamp(left, (right - CARD_WIDTH).max(left));
     // A card that fits nowhere goes where it has the most room, and it
     // scrolls.

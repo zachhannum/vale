@@ -4174,6 +4174,11 @@ fn draw_opening(ui: &mut egui::Ui, state: &AppState) {
 
 /// Draws the whole UI.
 pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
+    let regions = crate::reserved::Regions {
+        camera: state.pad.camera,
+        fold: state.pad.fold,
+    };
+    pad::geometry::set_regions(ui.ctx(), regions);
     let queue = state.globe.pen.queue.as_ref();
     let switches = queue.map(|queue| queue.take_switches()).unwrap_or_default();
     // The pen does not paint while the eyedropper is on.
