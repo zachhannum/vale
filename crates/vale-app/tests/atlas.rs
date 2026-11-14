@@ -48,8 +48,10 @@ use vale_app::ui::pad::furniture::{
     MAP_FRAME as ITEM_MAP_FRAME, RESET_ENTRIES, STYLE as ITEM_STYLE, entry_names,
 };
 use vale_app::ui::pad::labels::{
-    ABBREVIATIONS, ADD_ABBREVIATION, DELETE_ABBREVIATION, FALLBACKS, LEADER_DISTANCE,
-    LINE_FALLBACKS, MAX_LINES, MIN_SIZE, SHORT_FORM, SIZE_STEP, WORD,
+    ABBREVIATIONS, ADD_ABBREVIATION, BREAK_AT_SPACES, COMPRESS_WITH_SIZE, DELETE_ABBREVIATION,
+    FALLBACKS, LEADER_DISTANCE, LINE_FALLBACKS, MAX_LINE_CHARS, MAX_LINES, MIN_LINE_CHARS,
+    MIN_SIZE, MIN_WIDTH, OTHER_SEPARATORS, SEPARATORS_HINT, SHORT_FORM, SIZE_STEP,
+    TRUNCATION_MARKER, WIDTH_STEP, WORD,
 };
 use vale_app::ui::pad::labels::{
     ADD_CLASS, BUFFER, CASE, COLOR, CURVE_LIMIT, DELETE_CLASS, DUPLICATE_DISTANCE,
@@ -5513,7 +5515,7 @@ fn place_fallbacks(h: &Pad, map: MapId) -> Vec<(vale_style::LabelFallback, bool)
 
 #[test]
 fn a_tap_or_a_drag_on_the_fallbacks_page_is_one_undo_step() {
-    use vale_style::LabelFallback::{Abbreviate, Leader, SmallerFont, Stack};
+    use vale_style::LabelFallback::{Abbreviate, Compress, Leader, SmallerFont, Stack, Truncate};
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("project.gpkg");
     let mut s = state();
@@ -5527,22 +5529,26 @@ fn a_tap_or_a_drag_on_the_fallbacks_page_is_one_undo_step() {
     let start = classes(&h, map, "Places")[0].clone();
     let all_on = vec![
         (SmallerFont, true),
+        (Compress, true),
         (Stack, true),
         (Abbreviate, true),
         (Leader, true),
+        (Truncate, false),
     ];
     assert_eq!(place_fallbacks(&h, map), all_on);
 
     tap(&mut h, Abbreviate.name());
     let off = vec![
         (SmallerFont, true),
+        (Compress, true),
         (Stack, true),
         (Abbreviate, false),
         (Leader, true),
+        (Truncate, false),
     ];
     assert_eq!(place_fallbacks(&h, map), off);
 
-    // A finger drags the leader line from the last place to the top.
+    // A finger drags the leader line to the top.
     let from = control(&h, &format!("{REORDER} {}", Leader.name()))
         .unwrap()
         .center();
@@ -5555,8 +5561,10 @@ fn a_tap_or_a_drag_on_the_fallbacks_page_is_one_undo_step() {
     let moved = vec![
         (Leader, true),
         (SmallerFont, true),
+        (Compress, true),
         (Stack, true),
         (Abbreviate, false),
+        (Truncate, false),
     ];
     assert_eq!(place_fallbacks(&h, map), moved);
 
@@ -5568,13 +5576,17 @@ fn a_tap_or_a_drag_on_the_fallbacks_page_is_one_undo_step() {
 
 #[test]
 fn a_line_class_has_no_stacked_lines_or_leader_line() {
-    use vale_style::LabelFallback::{Abbreviate, Leader, SmallerFont, Stack};
+    use vale_style::LabelFallback::{Abbreviate, Compress, Leader, SmallerFont, Stack, Truncate};
     let mut h = labels_pad(BOARDS[0]);
     let map = frame(&h, 0).map;
     open_fallbacks(&mut h, "Rivers");
-    assert!(control(&h, SmallerFont.name()).is_some());
-    assert!(control(&h, Abbreviate.name()).is_some());
+    for f in [SmallerFont, Compress, Abbreviate, Truncate] {
+        assert!(control(&h, f.name()).is_some(), "{}", f.name());
+    }
     for name in [Stack.name(), Leader.name(), &value_of(MAX_LINES)] {
+        assert!(control(&h, name).is_none(), "{name}");
+    }
+    for name in [BREAK_AT_SPACES, OTHER_SEPARATORS, &value_of(MIN_LINE_CHARS)] {
         assert!(control(&h, name).is_none(), "{name}");
     }
     assert!(control(&h, &value_of(LEADER_DISTANCE)).is_none());
@@ -5593,7 +5605,10 @@ fn a_line_class_has_no_stacked_lines_or_leader_line() {
     let order: Vec<_> = (classes(&h, map, "Rivers")[0].fallbacks.iter())
         .map(|r| r.fallback)
         .collect();
-    assert_eq!(order, [Abbreviate, SmallerFont, Stack, Leader]);
+    assert_eq!(
+        order,
+        [Abbreviate, SmallerFont, Compress, Stack, Leader, Truncate]
+    );
 }
 
 #[test]
@@ -5668,14 +5683,24 @@ fn the_fallback_pages_work_with_a_finger() {
         for name in [
             &value_of(MIN_SIZE),
             &value_of(SIZE_STEP),
+            COMPRESS_WITH_SIZE,
+            &value_of(MIN_WIDTH),
+            &value_of(WIDTH_STEP),
             &value_of(MAX_LINES),
-            &value_of(LEADER_DISTANCE),
+            BREAK_AT_SPACES,
+            OTHER_SEPARATORS,
+            &value_of(MIN_LINE_CHARS),
+            &value_of(MAX_LINE_CHARS),
+            vale_style::StackAlign::Right.name(),
             ABBREVIATIONS,
+            TRUNCATION_MARKER,
+            &value_of(LEADER_DISTANCE),
         ] {
             scroll_to(&mut h, name);
             assert!(control(&h, name).is_some(), "{what}: {name}");
             check_controls(&h, &format!("{what}: {name}"));
         }
+        nudge_up_to(&mut h, ABBREVIATIONS);
         tap(&mut h, ABBREVIATIONS);
         check_controls(&h, &format!("{what}: abbreviations page"));
         if size == BOARDS[0] {
@@ -5711,12 +5736,12 @@ fn the_fallback_options_survive_a_close_and_an_open() {
     set_number(&mut h, MIN_SIZE, "7");
     set_number(&mut h, MAX_LINES, "3");
     set_number(&mut h, LEADER_DISTANCE, "15");
-    scroll_to(&mut h, ABBREVIATIONS);
+    nudge_up_to(&mut h, ABBREVIATIONS);
     tap(&mut h, ABBREVIATIONS);
     add_lake(&mut h);
     let places = classes(&h, map, "Places");
     let c = &places[0];
-    assert!(!c.fallbacks[1].on);
+    assert!(!c.fallbacks[2].on);
     assert_eq!((c.min_size, c.max_lines, c.leader_distance), (7.0, 3, 15.0));
     assert_eq!(c.abbreviations.last().unwrap().0, "Lake");
     let mut project = h.state().doc.project.clone();
@@ -5751,13 +5776,174 @@ fn the_fallback_options_reach_the_labeler() {
     let f = vale_app::labels::fallbacks(&classes(&h, map, "Places")[0]);
     assert_eq!(
         f.order,
-        [Fallback::Leader, Fallback::SmallerFont, Fallback::Stack]
+        [
+            Fallback::Leader,
+            Fallback::SmallerFont,
+            Fallback::Compress,
+            Fallback::Stack
+        ]
     );
     // A page unit is one point.
     assert_eq!((f.min_size, f.size_step), (5.0, 0.5));
     assert_eq!(f.max_lines, 3);
     assert_eq!(f.leader_distance, 18.0);
     assert_eq!(f.abbreviations, vale_style::default_abbreviations());
+}
+
+/// Sets the options of the fallbacks "Smaller font", "Narrow letters",
+/// "Stacked lines", and "Truncation" of the first class of "Places" on its
+/// open Fallbacks page.
+fn set_new_fallback_options(h: &mut Pad) {
+    scroll_to(h, COMPRESS_WITH_SIZE);
+    tap(h, COMPRESS_WITH_SIZE);
+    set_number(h, MIN_WIDTH, "60");
+    scroll_to(h, &value_of(WIDTH_STEP));
+    step(h, WIDTH_STEP, true);
+    scroll_to(h, BREAK_AT_SPACES);
+    tap(h, BREAK_AT_SPACES);
+    scroll_to(h, OTHER_SEPARATORS);
+    type_text(h, OTHER_SEPARATORS, "-/");
+    set_number(h, MIN_LINE_CHARS, "30");
+    set_number(h, MAX_LINE_CHARS, "10");
+    let left = vale_style::StackAlign::Left.name();
+    scroll_to(h, left);
+    tap(h, left);
+    scroll_to(h, TRUNCATION_MARKER);
+    type_text(h, TRUNCATION_MARKER, "…");
+}
+
+#[test]
+fn the_new_fallback_controls_change_the_class() {
+    let mut h = labels_pad(BOARDS[0]);
+    let map = frame(&h, 0).map;
+    open_fallbacks(&mut h, "Places");
+    let c = classes(&h, map, "Places")[0].clone();
+    assert!(!c.compress_with_size);
+    assert_eq!((c.min_width, c.width_step), (80.0, 5.0));
+    assert_eq!(c.stack_separators, " ");
+    set_new_fallback_options(&mut h);
+    let c = &classes(&h, map, "Places")[0];
+    assert!(c.compress_with_size);
+    assert_eq!((c.min_width, c.width_step), (60.0, 10.0));
+    assert_eq!(c.stack_separators, "-/");
+    // Each count keeps the fewest characters at most the most characters.
+    assert_eq!((c.min_line_chars, c.max_line_chars), (10, 10));
+    assert_eq!(c.stack_align, vale_style::StackAlign::Left);
+    assert_eq!(c.truncation_marker, "…");
+    assert!(h.query_by_label(SEPARATORS_HINT).is_some());
+
+    // The space comes first, and the field shows the other separators.
+    scroll_up_to(&mut h, BREAK_AT_SPACES);
+    tap(&mut h, BREAK_AT_SPACES);
+    assert_eq!(classes(&h, map, "Places")[0].stack_separators, " -/");
+    type_text(&mut h, OTHER_SEPARATORS, "- ,");
+    assert_eq!(classes(&h, map, "Places")[0].stack_separators, " -,");
+}
+
+#[test]
+fn each_new_fallback_control_is_one_undo_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let mut s = state();
+    s.session = Some(Session::open(&path, &mut s.doc).unwrap());
+    let mut h = pad_with(s, BOARDS[0]);
+    add_frame(&mut h);
+    let map = frame(&h, 0).map;
+    h.state_mut().save_waiting().unwrap();
+    show_tab(&mut h, FRAME_TABS[3]);
+    open_fallbacks(&mut h, "Places");
+    let start = classes(&h, map, "Places")[0].clone();
+    let mut states = vec![start.clone()];
+    scroll_to(&mut h, COMPRESS_WITH_SIZE);
+    tap(&mut h, COMPRESS_WITH_SIZE);
+    states.push(classes(&h, map, "Places")[0].clone());
+    scroll_to(&mut h, &value_of(MIN_WIDTH));
+    step(&mut h, MIN_WIDTH, false);
+    states.push(classes(&h, map, "Places")[0].clone());
+    scroll_to(&mut h, BREAK_AT_SPACES);
+    tap(&mut h, BREAK_AT_SPACES);
+    states.push(classes(&h, map, "Places")[0].clone());
+    let right = vale_style::StackAlign::Right.name();
+    scroll_to(&mut h, right);
+    tap(&mut h, right);
+    states.push(classes(&h, map, "Places")[0].clone());
+    let last = states.last().unwrap();
+    assert!(last.compress_with_size);
+    assert_eq!(last.min_width, 75.0);
+    assert_eq!(last.stack_separators, "");
+    assert_eq!(last.stack_align, vale_style::StackAlign::Right);
+    for (n, before) in states.iter().rev().skip(1).enumerate() {
+        tap(&mut h, "Undo");
+        assert_eq!(&classes(&h, map, "Places")[0], before, "undo {}", n + 1);
+    }
+}
+
+#[test]
+fn a_drag_that_puts_truncation_first_keeps_it_after_the_text_fallbacks() {
+    use vale_style::LabelFallback::{Abbreviate, Compress, Leader, SmallerFont, Stack, Truncate};
+    let mut h = labels_pad(BOARDS[0]);
+    let map = frame(&h, 0).map;
+    open_fallbacks(&mut h, "Places");
+    tap(&mut h, Truncate.name());
+    let from = control(&h, &format!("{REORDER} {}", Truncate.name()))
+        .unwrap()
+        .center();
+    let to = control(&h, &format!("{REORDER} {}", SmallerFont.name()))
+        .unwrap()
+        .center()
+        - vec2(0.0, 10.0);
+    drag_steps(&mut h, from, to, Input::Finger, 24);
+    release(&mut h, to, Input::Finger);
+    let order: Vec<_> = (classes(&h, map, "Places")[0].fallbacks.iter())
+        .map(|r| (r.fallback, r.on))
+        .collect();
+    assert_eq!(
+        order,
+        [
+            (SmallerFont, true),
+            (Compress, true),
+            (Stack, true),
+            (Abbreviate, true),
+            (Truncate, true),
+            (Leader, true),
+        ]
+    );
+    // The rows show the same order.
+    let y = |f: vale_style::LabelFallback| {
+        let name = format!("{REORDER} {}", f.name());
+        control(&h, &name).unwrap().center().y
+    };
+    assert!(y(Abbreviate) < y(Truncate) && y(Truncate) < y(Leader));
+}
+
+#[test]
+fn the_new_fallback_options_reach_the_labeler() {
+    use vale_labeler::{Fallback, StackAlign};
+    use vale_style::LabelFallback::Truncate;
+    let mut h = labels_pad(BOARDS[0]);
+    let map = frame(&h, 0).map;
+    open_fallbacks(&mut h, "Places");
+    tap(&mut h, Truncate.name());
+    set_new_fallback_options(&mut h);
+    let f = vale_app::labels::fallbacks(&classes(&h, map, "Places")[0]);
+    assert_eq!(
+        f.order,
+        [
+            Fallback::SmallerFont,
+            Fallback::Compress,
+            Fallback::Stack,
+            Fallback::Abbreviate,
+            Fallback::Leader,
+            Fallback::Truncate,
+        ]
+    );
+    // The labeler takes the widths as fractions of the full width.
+    assert!(f.compress_with_size);
+    assert!((f.min_width - 0.6).abs() < 1e-9 && (f.width_step - 0.1).abs() < 1e-9);
+    assert_eq!(f.stack_separators, "-/");
+    assert_eq!((f.min_line_chars, f.max_line_chars), (10, 10));
+    assert_eq!(f.stack_align, StackAlign::Left);
+    assert_eq!(f.truncation_marker, "…");
 }
 
 /// The color of the leader lines in the leader tests.
