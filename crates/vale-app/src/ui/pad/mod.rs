@@ -13,7 +13,7 @@ use super::atlas::{AtlasTool, FrameTab};
 use super::raster_form::{self, RasterForm};
 use super::select;
 use super::world_form::{self, WorldForm};
-use super::{Action, AppState, Note, Workspace, globe, is_height, panels};
+use super::{Action, AppState, Note, SaveMark, Workspace, globe, is_height, panels};
 use crate::globe::Tool;
 use crate::globe::brush::{
     BASIN_AGE, BASIN_DENSITY, BASIN_LAKES, CHANNEL_KM, EROSION, FLOODPLAIN_WIDTH_KM, FLOW,
@@ -841,10 +841,12 @@ pub(super) fn workspace_card(
                     Workspace::Atlas => WORKSPACES[1],
                 };
                 let open = state.pad.menu;
-                if widgets::menu_button(ui, controls, "Workspace", label, open).clicked() {
+                let menu = widgets::menu_button(ui, controls, "Workspace", label, open);
+                if menu.clicked() {
                     state.pad.menu = !open;
                     state.pad.worlds = None;
                 }
+                save_mark(ui, state, menu.rect);
                 return;
             }
             let at = |x: f32| {
@@ -856,6 +858,7 @@ pub(super) fn workspace_card(
             if worlds.clicked() {
                 toggle_worlds(state);
             }
+            save_mark(ui, state, worlds.rect);
             let line = Rect::from_center_size(
                 pos2(card.left() + PAD + TOUCH + 4.5, card.center().y),
                 vec2(1.0, 24.0),
@@ -886,6 +889,44 @@ pub(super) fn workspace_card(
             }
         },
     );
+}
+
+/// The names of the states of the save mark.
+pub const SAVING: &str = "Saving";
+pub const NOT_SAVED: &str = "Not saved";
+/// The side of the save mark.
+const SAVE_MARK: f32 = 14.0;
+
+/// The save mark at the bottom-right corner of a button: a spinner while a
+/// change waits, and a warning sign after a save that failed. When the file
+/// holds each change, the button has no mark.
+fn save_mark(ui: &mut egui::Ui, state: &AppState, button: Rect) {
+    let mark = state.save_mark(std::time::Instant::now());
+    let Some(mark) = mark.filter(|&m| m != SaveMark::Saved) else {
+        return;
+    };
+    let center = button.right_bottom() - vec2(SAVE_MARK / 2.0 + 2.0, SAVE_MARK / 2.0 + 2.0);
+    let rect = Rect::from_center_size(center, vec2(SAVE_MARK, SAVE_MARK));
+    let painter = ui.painter();
+    painter.circle_filled(center, SAVE_MARK / 2.0 + 1.0, theme::menu());
+    let name = match mark {
+        // A test has no clock, so there the mark does not turn.
+        SaveMark::Saving if !state.headless => {
+            let spin = egui::Spinner::new()
+                .size(SAVE_MARK - 4.0)
+                .color(theme::MUTE);
+            ui.put(rect.shrink(2.0), spin);
+            SAVING
+        }
+        SaveMark::Saving | SaveMark::Saved => SAVING,
+        SaveMark::Failed => {
+            readout::paint_warning(painter, rect.shrink(1.0), theme::WARN);
+            NOT_SAVED
+        }
+    };
+    let id = ui.id().with("save-mark");
+    let resp = ui.interact(rect, id, egui::Sense::hover());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, name));
 }
 
 fn top_row(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
