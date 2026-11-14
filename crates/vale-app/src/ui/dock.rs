@@ -18,14 +18,14 @@ use super::expr_help;
 use super::pad::atlas::{
     ADD_HOLE, ADD_PAGE, AUTO_INTERVAL, AZIMUTH, BORDER, BORDER_COLOR, BORDER_DISTANCE,
     BORDER_STROKE, BORDER_STYLE, BORDER_STYLES, BORDER_WIDTH, CENTER_LATITUDE, CENTER_LONGITUDE,
-    CENTER_ON_FRAME, COPY_GLOBE_STYLE, DELETE_MAP_STYLE, DELETE_PAGE, DELETE_PROJECTION, EDITED,
-    FIRST_PARALLEL, FRAME_TABS, GRATICULE_COLOR, GRATICULE_WIDTH, GRID_COLOR, GRID_SPACING, HEIGHT,
-    INTERVAL, LABEL_FORMAT, LABEL_FORMATS, LATITUDE, LAYOUT_GRID, LONGITUDE, MAP_NAME, MAP_STYLE,
-    MAP_STYLE_NAME, NEATLINE, NEATLINE_COLOR, NEATLINE_WIDTH, NO_MAP_STYLE, OBLIQUE, ORIENTATIONS,
-    PAGE_NAME, PAPER_COLOR, POLYGON, PROJECTION_NAME, RECTANGLE, REFERENCE_GRID,
-    RESET_TO_MAP_STYLE, ROTATION, SAVE_AS_MAP_STYLE, SAVE_PROJECTION, SCALE, SECOND_COLOR,
-    SECOND_PARALLEL, SHAPE, SIZE, STROKE_COLOR, STROKE_WIDTH, UNIT_NAMES, UPDATE_MAP_STYLE, WIDTH,
-    custom_row, edited_value, length_text, unit_name,
+    CENTER_ON_FRAME, COPY_GLOBE_STYLE, DELETE_MAP_STYLE, DELETE_PAGE, DELETE_PROJECTION,
+    DISTORTION, EDITED, FIRST_PARALLEL, FRAME_TABS, GRATICULE_COLOR, GRATICULE_WIDTH, GRID_COLOR,
+    GRID_SPACING, HEIGHT, INTERVAL, LABEL_FORMAT, LABEL_FORMATS, LATITUDE, LAYOUT_GRID, LONGITUDE,
+    MAP_NAME, MAP_STYLE, MAP_STYLE_NAME, NEATLINE, NEATLINE_COLOR, NEATLINE_WIDTH, NO_MAP_STYLE,
+    OBLIQUE, ORIENTATIONS, PAGE_NAME, PAPER_COLOR, POLYGON, PROJECTION_NAME, RECTANGLE,
+    REFERENCE_GRID, RESET_TO_MAP_STYLE, ROTATION, SAVE_AS_MAP_STYLE, SAVE_PROJECTION, SCALE,
+    SECOND_COLOR, SECOND_PARALLEL, SHAPE, SIZE, STROKE_COLOR, STROKE_WIDTH, TISSOT_CIRCLES,
+    UNIT_NAMES, UPDATE_MAP_STYLE, WIDTH, custom_row, edited_value, length_text, unit_name,
 };
 use super::pad::atlas::{
     BORDER_GAP, DISTANCE_BY_SIDE, GRID_COLUMN_NAMES, GRID_COLUMNS, SIDE_DISTANCES,
@@ -822,6 +822,27 @@ fn projection_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) 
     if ui.button(CENTER_ON_FRAME).clicked() {
         atlas::center_projection(state, frame.id);
     }
+    ui.add_space(4.0);
+    ui.strong(DISTORTION);
+    let errors = atlas::frame_errors(state, frame.id);
+    egui::Grid::new("atlas-distortion")
+        .num_columns(3)
+        .show(ui, |ui| {
+            ui.label("");
+            ui.label("Scale");
+            ui.label("Area");
+            ui.end_row();
+            for (place, error) in crate::distortion::PLACES.iter().zip(errors) {
+                ui.label(*place);
+                for value in error.map_or([None, None], |e| [Some(e.scale), Some(e.area)]) {
+                    let text =
+                        value.map_or("\u{2014}".to_string(), crate::distortion::percent_text);
+                    ui.monospace(text);
+                }
+                ui.end_row();
+            }
+        });
+    ui.checkbox(&mut state.atlas.tissot, TISSOT_CIRCLES);
     ui.add_space(4.0);
     let mut name = state.atlas.preset_name.clone();
     let resp = ui.add(egui::TextEdit::singleline(&mut name).hint_text("Name"));
