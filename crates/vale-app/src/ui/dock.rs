@@ -1248,10 +1248,14 @@ fn fallback_controls(
     salt: egui::Id,
 ) {
     use super::pad::labels::{
-        ABBREVIATIONS, ADD_ABBREVIATION, FALLBACKS, LEADER_DISTANCE, LEADER_DISTANCES, LINE_COUNTS,
-        MAX_LINES, MIN_SIZE, MIN_SIZES, SHORT_FORM, SIZE_STEP, SIZE_STEPS, WORD, fallback_applies,
+        ABBREVIATIONS, ADD_ABBREVIATION, ALIGNMENT, BREAK_AT_SPACES, COMPRESS_WITH_SIZE, FALLBACKS,
+        LEADER_DISTANCE, LEADER_DISTANCES, LINE_CHARS, LINE_COUNTS, MARKER, MAX_LINE_CHARS,
+        MAX_LINES, MIN_LINE_CHARS, MIN_SIZE, MIN_SIZES, MIN_WIDTH, MIN_WIDTHS, OTHER_SEPARATORS,
+        SEPARATORS_HINT, SHORT_FORM, SIZE_STEP, SIZE_STEPS, WIDTH_STEP, WIDTH_STEPS, WORD,
+        fallback_applies, separators,
     };
     use vale_store::GeometryKind;
+    use vale_style::{LabelFallback, StackAlign};
     ui.label(FALLBACKS);
     let shown: Vec<usize> = (0..class.fallbacks.len())
         .filter(|&k| fallback_applies(kind, class.fallbacks[k].fallback))
@@ -1272,7 +1276,9 @@ fn fallback_controls(
     }
     if let Some((a, b)) = swap {
         class.fallbacks.swap(a, b);
+        vale_style::FallbackRank::normalize(&mut class.fallbacks);
     }
+    ui.label(LabelFallback::SmallerFont.name());
     number::stepper(MIN_SIZE, &mut class.min_size)
         .range(MIN_SIZES.0..=MIN_SIZES.1)
         .step(0.5)
@@ -1283,15 +1289,71 @@ fn fallback_controls(
         .step(0.25)
         .suffix(" pt")
         .show(ui);
-    if kind != GeometryKind::Line {
+    ui.checkbox(&mut class.compress_with_size, COMPRESS_WITH_SIZE);
+    ui.label(LabelFallback::Compress.name());
+    number::stepper(MIN_WIDTH, &mut class.min_width)
+        .range(MIN_WIDTHS.0..=MIN_WIDTHS.1)
+        .step(5.0)
+        .suffix("%")
+        .show(ui);
+    ui.horizontal(|ui| {
+        ui.label(WIDTH_STEP);
+        egui::ComboBox::from_id_salt(salt.with("width-step"))
+            .selected_text(format!("{}%", class.width_step))
+            .show_ui(ui, |ui| {
+                for step in WIDTH_STEPS {
+                    ui.selectable_value(&mut class.width_step, step, format!("{step}%"));
+                }
+            });
+    });
+    if fallback_applies(kind, LabelFallback::Stack) {
+        ui.label(LabelFallback::Stack.name());
         let (lo, hi) = LINE_COUNTS;
         number::stepper(MAX_LINES, &mut class.max_lines)
             .range(lo as u32..=hi as u32)
             .step(1.0)
             .decimals(0)
             .show(ui);
+        let mut spaces = class.stack_separators.contains(' ');
+        let mut others = class.stack_separators.replace(' ', "");
+        ui.checkbox(&mut spaces, BREAK_AT_SPACES);
+        ui.horizontal(|ui| {
+            ui.label(OTHER_SEPARATORS);
+            ui.add(egui::TextEdit::singleline(&mut others).desired_width(60.0));
+        });
+        class.stack_separators = separators(spaces, &others);
+        ui.weak(SEPARATORS_HINT);
+        let (lo, hi) = (LINE_CHARS.0 as u32, LINE_CHARS.1 as u32);
+        let (fewest, most) = (class.min_line_chars, class.max_line_chars);
+        number::stepper(MIN_LINE_CHARS, &mut class.min_line_chars)
+            .range(lo..=hi)
+            .step(1.0)
+            .decimals(0)
+            .show(ui);
+        number::stepper(MAX_LINE_CHARS, &mut class.max_line_chars)
+            .range(lo..=hi)
+            .step(1.0)
+            .decimals(0)
+            .show(ui);
+        if class.min_line_chars != fewest {
+            class.max_line_chars = class.max_line_chars.max(class.min_line_chars);
+        } else if class.max_line_chars != most {
+            class.min_line_chars = class.min_line_chars.min(class.max_line_chars);
+        }
+        ui.horizontal(|ui| {
+            ui.label(ALIGNMENT);
+            for align in StackAlign::ALL {
+                ui.selectable_value(&mut class.stack_align, align, align.name());
+            }
+        });
     }
+    ui.label(LabelFallback::Truncate.name());
+    ui.horizontal(|ui| {
+        ui.label(MARKER);
+        ui.add(egui::TextEdit::singleline(&mut class.truncation_marker).desired_width(40.0));
+    });
     if kind == GeometryKind::Point {
+        ui.label(LabelFallback::Leader.name());
         number::stepper(LEADER_DISTANCE, &mut class.leader_distance)
             .range(LEADER_DISTANCES.0..=LEADER_DISTANCES.1)
             .step(1.0)

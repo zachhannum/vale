@@ -122,7 +122,24 @@ pub const FALLBACKS: &str = "Fallbacks";
 pub const LINE_FALLBACKS: &str = "Line labels do not stack or take a leader line.";
 pub const MIN_SIZE: &str = "Smallest size";
 pub const SIZE_STEP: &str = "Size step";
+/// The switch of the fallback "Smaller font" that also narrows the letters.
+pub const COMPRESS_WITH_SIZE: &str = "Narrow letters too";
+pub const MIN_WIDTH: &str = "Smallest width";
+pub const WIDTH_STEP: &str = "Width step";
 pub const MAX_LINES: &str = "Lines";
+pub const BREAK_AT_SPACES: &str = "Break at spaces";
+/// The field of the separators of the fallback "Stacked lines" other than
+/// the space. Its label is "Others".
+pub const OTHER_SEPARATORS: &str = "Other separators";
+pub const OTHERS: &str = "Others";
+pub const SEPARATORS_HINT: &str = "Characters where a line can break.";
+pub const MIN_LINE_CHARS: &str = "Fewest characters";
+pub const MAX_LINE_CHARS: &str = "Most characters";
+pub const ALIGNMENT: &str = "Alignment";
+/// The field of the marker of the fallback "Truncation". Its label is
+/// "Marker".
+pub const TRUNCATION_MARKER: &str = "Truncation marker";
+pub const MARKER: &str = "Marker";
 pub const LEADER_DISTANCE: &str = "Leader distance";
 /// The row of the abbreviations, and the title of its page.
 pub const ABBREVIATIONS: &str = "Abbreviations";
@@ -181,8 +198,14 @@ pub const DUPLICATE_DISTANCES: (f64, f64) = (0.0, 2000.0);
 pub const MIN_SIZES: (f64, f64) = (2.0, 72.0);
 /// The smallest and the largest size step, in points.
 pub const SIZE_STEPS: (f64, f64) = (0.25, 4.0);
+/// The smallest and the largest smallest width of the fallback "Narrow letters", in percent.
+pub const MIN_WIDTHS: (f64, f64) = (50.0, 95.0);
+/// The width steps of the fallback "Narrow letters", in percent.
+pub const WIDTH_STEPS: [f64; 4] = [1.0, 2.0, 5.0, 10.0];
 /// The fewest and the most lines of the fallback "Stacked lines".
 pub const LINE_COUNTS: (f64, f64) = (2.0, 4.0);
+/// The fewest and the most characters on a stacked line.
+pub const LINE_CHARS: (f64, f64) = (1.0, 60.0);
 /// The smallest and the largest leader distance, in points.
 pub const LEADER_DISTANCES: (f64, f64) = (0.0, 50.0);
 
@@ -1175,11 +1198,7 @@ fn conflicts_segment(
 /// True if a class of `kind` can use `fallback`. A line label does not
 /// stack and has no leader line.
 pub fn fallback_applies(kind: GeometryKind, fallback: LabelFallback) -> bool {
-    kind != GeometryKind::Line
-        || matches!(
-            fallback,
-            LabelFallback::SmallerFont | LabelFallback::Abbreviate
-        )
+    kind != GeometryKind::Line || !matches!(fallback, LabelFallback::Stack | LabelFallback::Leader)
 }
 
 /// Moves the item at `from` to `to`.
@@ -1191,16 +1210,19 @@ fn move_item<T>(list: &mut Vec<T>, from: usize, to: usize) {
 }
 
 /// The ranked fallbacks of a class that its feature type can use, and the
-/// numbers of the fallbacks. A tap on a row turns its fallback on or off,
-/// and a drag on the handle of a row moves the fallback in the rank.
+/// options of the fallbacks, in a section for each fallback. A tap on a row
+/// turns its fallback on or off, and a drag on the handle of a row moves
+/// the fallback in the rank. Truncation stays the last fallback that
+/// changes the text.
 fn fallbacks_page(
     ui: &mut egui::Ui,
     state: &mut AppState,
     controls: &mut Controls,
-    (_, map, layer, i): ClassAt,
+    at: ClassAt,
     kind: GeometryKind,
     class: &LabelClass,
 ) {
+    let (_, map, layer, i) = at;
     // The places of the rows in the list of the class.
     let shown: Vec<usize> = (0..class.fallbacks.len())
         .filter(|&k| fallback_applies(kind, class.fallbacks[k].fallback))
@@ -1219,14 +1241,55 @@ fn fallbacks_page(
         }
         Some(RankEvent::Move(from, to)) => {
             let (from, to) = (shown[from], shown[to]);
-            state.label_class_step(map, layer, i, |c| move_item(&mut c.fallbacks, from, to));
+            state.label_class_step(map, layer, i, |c| {
+                move_item(&mut c.fallbacks, from, to);
+                vale_style::FallbackRank::normalize(&mut c.fallbacks);
+            });
         }
         None => {}
     }
     if kind == GeometryKind::Line {
         hint(ui, LINE_FALLBACKS);
     }
-    ui.add_space(6.0);
+    smaller_font_section(ui, state, controls, at, class);
+    narrow_letters_section(ui, state, controls, at, class);
+    if fallback_applies(kind, LabelFallback::Stack) {
+        stacked_lines_section(ui, state, controls, at, class);
+    }
+    super::raster::heading(ui, LabelFallback::Abbreviate.name());
+    let count = class.abbreviations.len().to_string();
+    if widgets::open_row(ui, controls, ABBREVIATIONS, &count).clicked() {
+        state.atlas.label_page = Some(ClassPage::Abbreviations);
+    }
+    super::raster::heading(ui, LabelFallback::Truncate.name());
+    let mut marker = class.truncation_marker.clone();
+    if short_field_row(ui, controls, (TRUNCATION_MARKER, MARKER), &mut marker).changed() {
+        state.edit_label_class(map, layer, i, |c| c.truncation_marker = marker);
+    }
+    // Only a point label has a leader line distance. A polygon sets its
+    // leader line on the Leader line page.
+    if kind == GeometryKind::Point {
+        super::raster::heading(ui, LabelFallback::Leader.name());
+        let (lo, hi) = LEADER_DISTANCES;
+        let distance = Number::new(LEADER_DISTANCE, class.leader_distance, lo..=hi)
+            .step(1.0)
+            .unit("pt")
+            .stepper(ui, controls);
+        if let Some(distance) = distance {
+            state.edit_label_class(map, layer, i, |c| c.leader_distance = distance);
+        }
+    }
+}
+
+/// The options of the fallback "Smaller font".
+fn smaller_font_section(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    (_, map, layer, i): ClassAt,
+    class: &LabelClass,
+) {
+    super::raster::heading(ui, LabelFallback::SmallerFont.name());
     let size = Number::new(MIN_SIZE, class.min_size, MIN_SIZES.0..=MIN_SIZES.1)
         .step(0.5)
         .unit("pt")
@@ -1241,30 +1304,150 @@ fn fallbacks_page(
     if let Some(step) = step {
         state.edit_label_class(map, layer, i, |c| c.size_step = step);
     }
-    if kind != GeometryKind::Line {
-        let (lo, hi) = LINE_COUNTS;
-        let lines = Number::new(MAX_LINES, f64::from(class.max_lines), lo..=hi)
-            .step(1.0)
-            .stepper(ui, controls);
-        if let Some(lines) = lines {
-            let lines = lines.round() as u32;
-            state.edit_label_class(map, layer, i, |c| c.max_lines = lines);
+    let mut both = class.compress_with_size;
+    let name = COMPRESS_WITH_SIZE;
+    if widgets::switch_row(ui, controls, name, name, &mut both) {
+        state.label_class_step(map, layer, i, |c| c.compress_with_size = both);
+    }
+}
+
+/// The options of the fallback "Narrow letters".
+fn narrow_letters_section(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    (_, map, layer, i): ClassAt,
+    class: &LabelClass,
+) {
+    super::raster::heading(ui, LabelFallback::Compress.name());
+    let width = Number::new(MIN_WIDTH, class.min_width, MIN_WIDTHS.0..=MIN_WIDTHS.1)
+        .step(5.0)
+        .unit("%")
+        .stepper(ui, controls);
+    if let Some(width) = width {
+        state.edit_label_class(map, layer, i, |c| c.min_width = width);
+    }
+    let (lo, hi) = (WIDTH_STEPS[0], WIDTH_STEPS[WIDTH_STEPS.len() - 1]);
+    let step = Number::new(WIDTH_STEP, class.width_step, lo..=hi)
+        .choices(&WIDTH_STEPS)
+        .unit("%")
+        .stepper(ui, controls);
+    if let Some(step) = step {
+        state.edit_label_class(map, layer, i, |c| c.width_step = step);
+    }
+}
+
+/// The options of the fallback "Stacked lines". The separators are a switch
+/// for the space, which a field does not show, and a field for the other
+/// characters. The class stores the space first.
+fn stacked_lines_section(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    (_, map, layer, i): ClassAt,
+    class: &LabelClass,
+) {
+    super::raster::heading(ui, LabelFallback::Stack.name());
+    let (lo, hi) = LINE_COUNTS;
+    let lines = Number::new(MAX_LINES, f64::from(class.max_lines), lo..=hi)
+        .step(1.0)
+        .stepper(ui, controls);
+    if let Some(lines) = lines {
+        let lines = lines.round() as u32;
+        state.edit_label_class(map, layer, i, |c| c.max_lines = lines);
+    }
+    let mut spaces = class.stack_separators.contains(' ');
+    let mut others: String = class.stack_separators.replace(' ', "");
+    let name = BREAK_AT_SPACES;
+    let switched = widgets::switch_row(ui, controls, name, name, &mut spaces);
+    let typed = short_field_row(ui, controls, (OTHER_SEPARATORS, OTHERS), &mut others).changed();
+    if switched || typed {
+        let text = separators(spaces, &others);
+        if switched {
+            state.label_class_step(map, layer, i, |c| c.stack_separators = text);
+        } else {
+            state.edit_label_class(map, layer, i, |c| c.stack_separators = text);
         }
     }
-    if kind == GeometryKind::Point {
-        let (lo, hi) = LEADER_DISTANCES;
-        let distance = Number::new(LEADER_DISTANCE, class.leader_distance, lo..=hi)
-            .step(1.0)
-            .unit("pt")
-            .stepper(ui, controls);
-        if let Some(distance) = distance {
-            state.edit_label_class(map, layer, i, |c| c.leader_distance = distance);
-        }
+    hint(ui, SEPARATORS_HINT);
+    let (lo, hi) = LINE_CHARS;
+    let fewest = Number::new(MIN_LINE_CHARS, f64::from(class.min_line_chars), lo..=hi)
+        .step(1.0)
+        .stepper(ui, controls);
+    if let Some(fewest) = fewest {
+        let fewest = fewest.round() as u32;
+        state.edit_label_class(map, layer, i, |c| {
+            c.min_line_chars = fewest;
+            c.max_line_chars = c.max_line_chars.max(fewest);
+        });
     }
-    let count = class.abbreviations.len().to_string();
-    if widgets::open_row(ui, controls, ABBREVIATIONS, &count).clicked() {
-        state.atlas.label_page = Some(ClassPage::Abbreviations);
+    let most = Number::new(MAX_LINE_CHARS, f64::from(class.max_line_chars), lo..=hi)
+        .step(1.0)
+        .stepper(ui, controls);
+    if let Some(most) = most {
+        let most = most.round() as u32;
+        state.edit_label_class(map, layer, i, |c| {
+            c.max_line_chars = most;
+            c.min_line_chars = c.min_line_chars.min(most);
+        });
     }
+    let names = vale_style::StackAlign::ALL.map(|a| a.name());
+    let active = (vale_style::StackAlign::ALL.iter())
+        .position(|a| *a == class.stack_align)
+        .unwrap_or(1);
+    if let Some(k) = segment_row(ui, controls, ALIGNMENT, &names, active) {
+        let align = vale_style::StackAlign::ALL[k];
+        state.label_class_step(map, layer, i, |c| c.stack_align = align);
+    }
+}
+
+/// The separators of the fallback "Stacked lines": a space if `spaces`,
+/// then the characters of `others` that are not spaces.
+pub fn separators(spaces: bool, others: &str) -> String {
+    let space = if spaces { " " } else { "" };
+    let others = others.chars().filter(|c| !c.is_whitespace());
+    space.chars().chain(others).collect()
+}
+
+/// The width of a short field at the right of a row, the width of a
+/// stepper, so that the two line up.
+const SHORT_FIELD: f32 = 2.0 * TOUCH + 84.0;
+
+/// A row with `label` at the left and a short field for one line of text at
+/// the right. `name` is the name of the field.
+fn short_field_row(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    (name, label): (&str, &str),
+    text: &mut String,
+) -> egui::Response {
+    let (row, _) =
+        ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), egui::Sense::hover());
+    let at = pos2(row.left(), row.center().y);
+    (ui.painter()).text(at, Align2::LEFT_CENTER, label, theme::body(), theme::TEXT);
+    let field = Rect::from_min_size(
+        pos2(row.right() - SHORT_FIELD, row.center().y - TOUCH / 2.0),
+        vec2(SHORT_FIELD, TOUCH),
+    );
+    widgets::field_at(ui, controls, field, name, None, text, true, theme::body())
+}
+
+/// A row with `label` at the left and a small segmented control of
+/// `choices` at the right. Returns the choice that the user tapped.
+fn segment_row(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    label: &str,
+    choices: &[&str],
+    active: usize,
+) -> Option<usize> {
+    let (row, _) =
+        ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), egui::Sense::hover());
+    let at = pos2(row.left(), row.center().y);
+    (ui.painter()).text(at, Align2::LEFT_CENTER, label, theme::body(), theme::TEXT);
+    let w = widgets::small_segments_width(ui, choices);
+    let seg = Rect::from_min_size(pos2(row.right() - w, row.center().y - 18.0), vec2(w, 36.0));
+    widgets::small_segments(ui, controls, seg, choices, active)
 }
 
 /// The space between two fields of a row of the Abbreviations page.
