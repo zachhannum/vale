@@ -13,6 +13,8 @@ pub enum Change {
     Stroke(Option<Stroke>),
     StrokeColor(Color),
     StrokeWidth(f64),
+    /// Whether the stroke follows the mask of the style. A marker stroke has no such value.
+    StrokeAppliesMask(bool),
     /// The line type, with its default dash, gap, or start width.
     LineKind(StrokeKind),
     Dash(f64),
@@ -21,6 +23,8 @@ pub enum Change {
     /// Adds the fill color to each rule with no fill, or removes each fill.
     Fill(Option<Color>),
     FillColor(Color),
+    /// Whether the fill follows the mask of the style. A marker fill has no such value.
+    FillAppliesMask(bool),
     /// The size of a marker or of a point symbol, in points.
     Size(f64),
 }
@@ -62,6 +66,7 @@ fn apply_one(rule: &mut Rule, kind: GeometryKind, change: Change) {
         Change::Stroke(None) => rule.set_stroke(None),
         Change::StrokeColor(c) => edit(rule, &|s| s.color = c),
         Change::StrokeWidth(w) => edit(rule, &|s| s.width = w),
+        Change::StrokeAppliesMask(v) => rule.set_stroke_applies_mask(v),
         Change::LineKind(k) => edit(rule, &|s| {
             if std::mem::discriminant(&s.kind) != std::mem::discriminant(&k) {
                 s.kind = k;
@@ -97,6 +102,7 @@ fn apply_one(rule: &mut Rule, kind: GeometryKind, change: Change) {
                 rule.set_fill(Some(c));
             }
         }
+        Change::FillAppliesMask(v) => rule.set_fill_applies_mask(v),
         Change::Size(size) => {
             if let Some(mut s) = rule.symbol().cloned() {
                 s.size.fallback = size;
@@ -247,5 +253,46 @@ mod tests {
         assert_eq!(shared(&rules, &[0, 1, 2], width), Some((2.0, true)));
         rules[0].set_stroke(None);
         assert_eq!(shared(&rules, &[0], width), None);
+    }
+
+    #[test]
+    fn an_apply_mask_change_keeps_the_color_and_skips_markers() {
+        let kind = GeometryKind::Polygon;
+        let mut rules = classes(kind);
+        let colors: Vec<_> = rules.iter().map(|r| (r.fill(), r.stroke())).collect();
+        assert!(apply(
+            &mut rules,
+            &[0, 1],
+            kind,
+            Change::FillAppliesMask(false)
+        ));
+        assert!(apply(
+            &mut rules,
+            &[0],
+            kind,
+            Change::StrokeAppliesMask(false)
+        ));
+        let fill = |r: &Rule| r.fill_applies_mask();
+        let stroke = |r: &Rule| r.stroke_applies_mask();
+        assert_eq!(shared(&rules, &[0, 1], fill), Some((false, false)));
+        assert_eq!(shared(&rules, &[0, 1, 2], fill), Some((false, true)));
+        assert_eq!(shared(&rules, &[0, 1], stroke), Some((false, true)));
+        let after: Vec<_> = rules.iter().map(|r| (r.fill(), r.stroke())).collect();
+        assert_eq!(after, colors);
+
+        let kind = GeometryKind::Point;
+        let mut rules = classes(kind);
+        assert!(!apply(
+            &mut rules,
+            &[0],
+            kind,
+            Change::StrokeAppliesMask(false)
+        ));
+        assert!(!apply(
+            &mut rules,
+            &[0],
+            kind,
+            Change::FillAppliesMask(false)
+        ));
     }
 }
