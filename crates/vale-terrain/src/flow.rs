@@ -10,7 +10,7 @@
 
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
-use std::f64::consts::{FRAC_1_SQRT_2, FRAC_PI_4};
+use std::f64::consts::{FRAC_1_SQRT_2, FRAC_PI_2, FRAC_PI_4};
 use std::sync::LazyLock;
 
 use crate::bands::SEA_LEVEL;
@@ -35,6 +35,10 @@ pub const CHANNEL_SCALE: f64 = 32.0;
 
 /// The largest distance that the channel map holds, in channel texels.
 const CHANNEL_REACH: f64 = 255.0 / CHANNEL_SCALE;
+
+/// The largest distance, in flow cells, over which a sample of a line moves
+/// to the nearest river cell.
+pub const FLOW_REACH: f64 = 2.0;
 
 /// The number of smoothing passes over the river nodes.
 const SMOOTH_PASSES: usize = 4;
@@ -524,6 +528,53 @@ impl FlowMap {
 
     pub fn is_river(&self, face: usize, x: usize, y: usize) -> bool {
         self.area(face, x, y) >= RIVER_MIN_AREA
+    }
+
+    /// The largest solid angle, in steradians, that drains through a line of
+    /// unit vectors. The line has samples about every half cell. Each sample
+    /// takes the area of the nearest river cell within `FLOW_REACH` cells,
+    /// or else the area of its own cell.
+    pub fn line_area(&self, line: &[V3]) -> f64 {
+        let m = self.m;
+        let cell = FRAC_PI_2 / m as f64;
+        let reach = FLOW_REACH * cell;
+        let steps = FLOW_REACH.ceil() as i64 + 1;
+        let sample = |d: V3| {
+            let (face, x, y) = cell_at(m, d);
+            let mut best: Option<(f64, f64)> = None;
+            for dy in -steps..=steps {
+                for dx in -steps..=steps {
+                    let (f, a, b) = cell_past_edge(m, face, x as i64 + dx, y as i64 + dy);
+                    let area = self.area(f, a, b);
+                    let far = angle(d, cell_dir(m, f, a, b));
+                    let nearer = best.is_none_or(|(near, _)| far < near);
+                    if area >= RIVER_MIN_AREA && far <= reach && nearer {
+                        best = Some((far, area));
+                    }
+                }
+            }
+            best.map_or_else(|| self.area(face, x, y), |(_, area)| area)
+        };
+        let mut most = line.first().map_or(0.0, |&d| sample(d));
+        for pair in line.windows(2) {
+            let (a, b) = (pair[0], pair[1]);
+            let arc = angle(a, b);
+            let n = (arc / (0.5 * cell)).ceil().max(1.0) as usize;
+            for k in 1..=n {
+                let t = k as f64 / n as f64;
+                let d = if arc < 1e-9 {
+                    b
+                } else {
+                    let s = arc.sin();
+                    add(
+                        scale(a, ((1.0 - t) * arc).sin() / s),
+                        scale(b, (t * arc).sin() / s),
+                    )
+                };
+                most = most.max(sample(normalize(d)));
+            }
+        }
+        most
     }
 
     /// The lake level of a cell, or 0 for no lake. A cell beside a lake also
@@ -1886,6 +1937,42 @@ pub(crate) mod tests {
             assert_eq!(flow.is_river(face, x, y), on_river, "{face} {x} {y}");
         }
         (heights, flow)
+    }
+
+    #[test]
+    fn a_line_along_a_river_gets_the_flow_at_its_lowest_point() {
+        let m = 128;
+        let (_, flow) = straight(m);
+        // The line is one row off the river, and it goes down the valley.
+        let line: Vec<V3> = [100, 60, 20].map(|x| cell_dir(m, 0, x, m / 2 + 1)).to_vec();
+        let river = flow.area(0, 20, m / 2);
+        let area = flow.line_area(&line);
+        assert!((area - river).abs() < 0.1 * river, "{area} {river}");
+        // The order of the vertices does not matter.
+        let back: Vec<V3> = line.iter().rev().copied().collect();
+        assert_eq!(flow.line_area(&back), area);
+    }
+
+    #[test]
+    fn a_line_across_a_ridge_gets_less_than_the_river_threshold() {
+        let m = 256;
+        // Two valleys go down to the cells with the lowest `x`, and a ridge
+        // at row 128 is between them.
+        let floors = [118.0, 138.0];
+        let heights = from_cells(m, |face, x, y| {
+            let across = floors.map(|f| (y as f64 - f).abs());
+            let across = across[0].min(across[1]);
+            let outside = (y as f64) < floors[0] - 3.4 || (y as f64) > floors[1] + 3.4;
+            if face != 0 || !(8..m - 8).contains(&x) || outside {
+                return OCEAN;
+            }
+            100.0 + 20.0 * x as f64 + 300.0 * across
+        });
+        let flow = FlowMap::new(&heights);
+        assert!(flow.is_river(0, 128, 118) && flow.is_river(0, 128, 138));
+        let line = [cell_dir(m, 0, 128, 122), cell_dir(m, 0, 128, 134)];
+        let area = flow.line_area(&line);
+        assert!(area > 0.0 && area < RIVER_MIN_AREA, "{area}");
     }
 
     #[test]
