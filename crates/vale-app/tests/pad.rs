@@ -16526,3 +16526,214 @@ fn the_screenshots_of_the_outer_screen_of_iphone_duo_show_both_workspaces() {
         }
     }
 }
+
+/// The folding region of the inner screen of iPhone Duo when the device is
+/// partially folded: 28 points at the middle of the hinge, which is
+/// horizontal in portrait and vertical in landscape.
+fn duo_fold((width, height): (f32, f32)) -> Rect {
+    if width < height {
+        Rect::from_min_size(pos2(0.0, height / 2.0 - 14.0), vec2(width, 28.0))
+    } else {
+        Rect::from_min_size(pos2(width / 2.0 - 14.0, 0.0), vec2(28.0, height))
+    }
+}
+
+/// The inner screen of iPhone Duo in this pose, partially folded. The
+/// globe workspace has the brush and the Layers panel and the Brush panel
+/// open, and the Atlas workspace has a map frame selected.
+fn duo_folded(size: (f32, f32), safe: [f32; 4], atlas: bool) -> Pad {
+    let mut h = duo_inner(size, safe, atlas);
+    if !atlas {
+        h.state_mut().globe.tool = Tool::Brush;
+        h.state_mut().pad.open(Panel::Brush);
+    }
+    h.state_mut().pad.fold = Some(duo_fold(size));
+    h.run_steps(3);
+    h
+}
+
+/// Asserts that no control, pane, or menu crosses the fold.
+fn check_off_fold(h: &Pad, fold: Rect, what: &str) {
+    let pad = &h.state().pad;
+    for c in &pad.controls {
+        assert!(
+            !fold.intersects(c.rect),
+            "{what}: {} is {:?}",
+            c.name,
+            c.rect
+        );
+    }
+    for (p, r) in &pad.panels {
+        assert!(!fold.intersects(*r), "{what}: {p:?} is {r:?}");
+    }
+    let menus = [
+        pad.menu_rect,
+        pad.worlds_rect,
+        pad.panels_menu_rect,
+        pad.add_rect,
+        pad.flyouts.rect,
+        pad.view_menu_rect,
+    ];
+    for menu in menus.into_iter().flatten() {
+        assert!(!fold.intersects(menu), "{what}: a menu is {menu:?}");
+    }
+}
+
+#[test]
+fn on_a_partially_folded_iphone_duo_no_control_crosses_the_fold() {
+    for (pose, size, safe) in &DUO_INNER[..2] {
+        let (pose, size, safe) = (*pose, *size, *safe);
+        let fold = duo_fold(size);
+        for atlas in [false, true] {
+            let what = format!("{pose}, atlas {atlas}");
+            let mut h = duo_folded(size, safe, atlas);
+            check_duo_controls(&h, safe, None, &what);
+            check_off_fold(&h, fold, &what);
+            let rects = h.state().pad.rects.unwrap();
+            assert_eq!(rects.class, WidthClass::Medium, "{what}");
+            let dock = h.state().pad.dock_rect.expect(&what);
+            let controls = &h.state().pad.controls;
+            if pose == "landscape" {
+                // The dock is at the right of the fold.
+                assert!(dock.left() > fold.right(), "{what}: {dock:?}");
+            } else {
+                // The top row is above the fold.
+                assert!(rects.actions.bottom() < fold.top(), "{what}");
+                assert!(rects.workspace.bottom() < fold.top(), "{what}");
+                // The tool column crosses the fold and has controls above
+                // it and below it.
+                if rects.tools.bottom() > fold.bottom() {
+                    let column = |c: &&vale_app::ui::pad::widgets::Control| {
+                        c.rect.right() <= rects.tools.right() && c.rect.top() >= rects.tools.top()
+                    };
+                    let column: Vec<_> = controls.iter().filter(column).collect();
+                    assert!(
+                        column.iter().any(|c| c.rect.bottom() < fold.top()),
+                        "{what}"
+                    );
+                    assert!(
+                        column.iter().any(|c| c.rect.top() > fold.bottom()),
+                        "{what}"
+                    );
+                }
+                if !atlas {
+                    // The panes are above and below the fold.
+                    let panes = &h.state().pad.panels;
+                    assert!(panes.iter().any(|(_, r)| r.bottom() < fold.top()), "{what}");
+                    assert!(panes.iter().any(|(_, r)| r.top() > fold.bottom()), "{what}");
+                }
+            }
+            if atlas {
+                // The page is in one part of the canvas.
+                let page = h.state().atlas.place.expect(&what).rect;
+                assert!(!page.intersects(fold), "{what}: page {page:?}");
+                if pose == "landscape" {
+                    assert!(page.right() < fold.left(), "{what}: page {page:?}");
+                } else {
+                    assert!(page.bottom() < fold.top(), "{what}: page {page:?}");
+                }
+            }
+            // The Panels menu and the menu of the worlds.
+            tap(&mut h, PANELS);
+            h.run_steps(2);
+            assert!(h.state().pad.panels_menu, "{what}");
+            check_off_fold(&h, fold, &format!("{what}, panels"));
+            tap(&mut h, PANELS);
+            tap(&mut h, WORLDS);
+            h.run_steps(2);
+            assert!(h.state().pad.worlds.is_some(), "{what}");
+            check_off_fold(&h, fold, &format!("{what}, worlds"));
+        }
+    }
+}
+
+#[test]
+fn when_the_fold_ends_the_layout_is_flat_again() {
+    for (pose, size, safe) in &DUO_INNER[..2] {
+        let (pose, size, safe) = (*pose, *size, *safe);
+        for atlas in [false, true] {
+            let what = format!("{pose}, atlas {atlas}");
+            let mut flat = duo_folded(size, safe, atlas);
+            flat.state_mut().pad.fold = None;
+            flat.run_steps(3);
+            // A wide dock gets narrower during the fold, and it gets its
+            // width back.
+            let mut h = duo_folded(size, safe, atlas);
+            h.state_mut().pad.dock_mut().width = 560.0;
+            h.run_steps(3);
+            if pose == "landscape" {
+                let dock = h.state().pad.dock_rect.expect(&what);
+                assert!(dock.left() > duo_fold(size).right(), "{what}: {dock:?}");
+            }
+            h.state_mut().pad.fold = None;
+            h.state_mut().pad.dock_mut().width = flat.state().pad.dock().width;
+            h.run_steps(3);
+            let (rects, expected) = (
+                h.state().pad.rects.unwrap(),
+                flat.state().pad.rects.unwrap(),
+            );
+            assert_eq!(rects, expected, "{what}");
+            assert_eq!(
+                h.state().pad.dock_rect,
+                flat.state().pad.dock_rect,
+                "{what}"
+            );
+            assert_eq!(h.state().pad.panels, flat.state().pad.panels, "{what}");
+        }
+    }
+}
+
+#[test]
+#[ignore = "gpu"]
+fn the_screenshots_of_a_partially_folded_iphone_duo_show_both_workspaces() {
+    let _gpu = one_gpu_test();
+    std::fs::create_dir_all("../../target/app").unwrap();
+    for (pose, size, [top, right, bottom, left]) in &DUO_INNER[..2] {
+        let (pose, size) = (*pose, *size);
+        let fold = duo_fold(size);
+        for atlas in [false, true] {
+            let mut state = state();
+            state.globe.set_face_size(64);
+            state.add_height();
+            state.pad.fold = Some(fold);
+            if atlas {
+                state.workspace = Workspace::Atlas;
+                vale_app::ui::atlas::add_frame(&mut state).unwrap();
+            } else {
+                state.globe.tool = Tool::Brush;
+                state.pad.open(Panel::Layers);
+                state.pad.open(Panel::Brush);
+            }
+            let insets = egui::epaint::MarginF32 {
+                left: *left,
+                right: *right,
+                top: *top,
+                bottom: *bottom,
+            };
+            let safe = Some(egui::SafeAreaInsets(insets));
+            let size64 = (size.0 as f64, size.1 as f64);
+            let (image, state) =
+                headless::ui_png_safe(state, size64, 1.0, safe, |_| Ok(())).unwrap();
+            let workspace = if atlas { "atlas" } else { "globe" };
+            let what = format!("{pose}, {workspace}");
+            assert_eq!(image.dimensions(), (size.0 as u32, size.1 as u32), "{what}");
+            image
+                .save(format!(
+                    "../../target/app/test-pad-duo-fold-{pose}-{workspace}.png"
+                ))
+                .unwrap();
+            assert!(state.pad.controls.len() >= 7, "{what}");
+            for c in &state.pad.controls {
+                assert!(
+                    !fold.intersects(c.rect),
+                    "{what}: {} is {:?}",
+                    c.name,
+                    c.rect
+                );
+            }
+            for (p, r) in &state.pad.panels {
+                assert!(!fold.intersects(*r), "{what}: {p:?} is {r:?}");
+            }
+        }
+    }
+}

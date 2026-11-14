@@ -335,7 +335,18 @@ fn show_dock(
     slide: f32,
 ) {
     let room = rects.dock;
-    state.pad.dock_mut().keep_in(room.height());
+    // A horizontal fold divides the room into a part above it and a part
+    // below it.
+    let fold = (rects.fold)
+        .filter(|f| geometry::horizontal(*f) && f.top() > room.top() && f.bottom() < room.bottom());
+    let (upper, lower) = match fold {
+        Some(f) => (
+            f.top() - geometry::FOLD_GAP - room.top(),
+            room.bottom() - f.bottom() - geometry::FOLD_GAP,
+        ),
+        None => (room.height(), 0.0),
+    };
+    state.pad.dock_mut().keep_in(upper + lower);
     let mut heads: Vec<Head> = (0..state.pad.dock().panes.len())
         .map(|i| {
             let panel = state.pad.dock().panes[i].panel();
@@ -354,10 +365,42 @@ fn show_dock(
     let wanted: Vec<f32> = (state.pad.dock().panes.iter().zip(&natural))
         .map(|(pane, &natural)| pane.height.map_or(natural, |h| h.min(natural)))
         .collect();
-    let space = room.height() - FOOT;
-    let heights = panes::fit(&wanted, space);
-    let total = heights.iter().sum::<f32>() + BAR * heights.len() as f32 + FOOT;
-    let rect = Rect::from_min_size(room.min, vec2(room.width(), total.min(room.height())));
+    // The first panes that fit are above the fold, and the other panes
+    // are below it.
+    let n = wanted.len();
+    let split = match fold {
+        Some(_) if lower >= ROW + BAR + FOOT => {
+            let mut used = FOOT;
+            let above = (wanted.iter())
+                .take_while(|&&w| {
+                    used += w + BAR;
+                    used <= upper
+                })
+                .count();
+            above.max(1)
+        }
+        _ => n,
+    };
+    let (space, lower_space) = (upper - FOOT, lower - FOOT);
+    let mut heights = panes::fit(&wanted[..split], space);
+    heights.extend(panes::fit(&wanted[split..], lower_space));
+    let part = |h: &[f32]| h.iter().sum::<f32>() + BAR * h.len() as f32 + FOOT;
+    let total = part(&heights[..split]);
+    let lower_top = fold.map_or(room.bottom(), |f| f.bottom() + geometry::FOLD_GAP);
+    let (rect, gap) = match split < n {
+        true => {
+            let bottom = (lower_top + part(&heights[split..])).min(room.bottom());
+            let rect = Rect::from_min_max(room.min, pos2(room.right(), bottom));
+            (rect, Some(egui::Rangef::new(room.top() + total, lower_top)))
+        }
+        false => {
+            let height = total.min(upper);
+            (
+                Rect::from_min_size(room.min, vec2(room.width(), height)),
+                None,
+            )
+        }
+    };
     // A collapsing dock slides off the right edge.
     let rect = rect.translate(vec2((slide * room.width()).round(), 0.0));
     let radius = geometry::edge_radius(rect, rects.screen);
@@ -367,16 +410,20 @@ fn show_dock(
     let mut drag = None;
     let mut bars = Vec::new();
     let mut actions: Vec<(usize, HeaderOut)> = Vec::new();
-    widgets::card(
+    widgets::split_card(
         ctx,
         backdrop,
         "pad-dock",
         rect,
+        gap,
         Order::Middle,
         radius,
         |ui| {
             let mut top = rect.top();
             for (i, head) in heads.iter_mut().enumerate() {
+                if i == split && i > 0 {
+                    top = lower_top;
+                }
                 let pane_rect =
                     Rect::from_min_size(pos2(rect.left(), top), vec2(rect.width(), heights[i]));
                 let pane_rect = match folded[i] {
@@ -414,7 +461,7 @@ fn show_dock(
             let last = bars.len().saturating_sub(1);
             for (i, bar) in bars.iter().enumerate() {
                 let line = geometry::edge_content(*bar, rects.screen, rects.bands);
-                if i < last {
+                if i < last && i + 1 != split {
                     ui.painter().hline(
                         line.x_range(),
                         bar.center().y,
@@ -436,15 +483,22 @@ fn show_dock(
                     theme::MUTE.gamma_multiply(0.6)
                 };
                 ui.painter().rect_filled(pill, 2.0, color);
+                // A bar changes the heights of the panes of its part.
+                let (start, room) = match i < split {
+                    true => (0, space),
+                    false => (split, lower_space),
+                };
+                let end = if i < split { split } else { n };
+                let (part, natural) = (&heights[start..end], &natural[start..end]);
                 if resp.dragged() && resp.drag_delta().y != 0.0 {
                     let delta = resp.drag_delta().y;
                     let dock = state.pad.dock_mut();
-                    dock.resize(i, delta, &heights, &natural, space);
+                    dock.resize_part(start, i - start, delta, part, natural, room);
                     ctx.request_repaint();
                 }
                 if resp.double_clicked() {
                     let dock = state.pad.dock_mut();
-                    dock.grow(i, &heights, &natural, space);
+                    dock.grow_part(start, i - start, part, natural, room);
                 }
             }
         },
@@ -611,13 +665,23 @@ pub fn handle(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
     // resize handles of iPadOS are, so a finger on the edge takes it. It
     // takes only a drag, so a tap at the left end of a row of a pane still
     // reaches the row.
-    let rect = Rect::from_min_size(
+    let mut rect = Rect::from_min_size(
         pos2(
             dock.left() + HANDLE_IN - HANDLE.0,
             dock.center().y - HANDLE.1 / 2.0,
         ),
         vec2(HANDLE.0, HANDLE.1),
     );
+    // The handle is at the side of the fold that holds the top of the dock.
+    if let Some(fold) = rects.fold.filter(|f| f.intersects(rect)) {
+        if geometry::horizontal(fold) {
+            let top = Rect::from_min_size(dock.min, vec2(dock.width(), ROW));
+            rect = geometry::off_fold(rect, top, Some(fold), dock);
+            rect.set_height(HANDLE.1.min(rect.height()));
+        } else {
+            rect = rect.translate(vec2(fold.right() - rect.left(), 0.0));
+        }
+    }
     let dragging = state.pad.dock_drag == Some(DockDrag::Width);
     // A control on the canvas under the handle hides it. The controls of
     // the dock do not.
@@ -629,8 +693,12 @@ pub fn handle(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
     {
         return;
     }
-    let most =
-        (rects.screen.right() - rects.bands.right - rects.column_right).max(panes::MIN_WIDTH);
+    let mut most = rects.screen.right() - rects.bands.right - rects.column_right;
+    if let Some(fold) = rects.fold.filter(|f| !geometry::horizontal(*f)) {
+        most =
+            most.min(rects.screen.right() - rects.bands.right - fold.right() - geometry::FOLD_GAP);
+    }
+    let most = most.max(panes::MIN_WIDTH);
     // A touch on the dock brings the dock to the top of its order, so the
     // grip comes back on top in each frame.
     let id = egui::Id::new("pad-dock-handle");

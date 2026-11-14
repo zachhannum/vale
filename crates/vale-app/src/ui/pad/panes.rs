@@ -522,21 +522,50 @@ impl Dock {
     /// the panes below it that scroll. `heights` are the heights of the
     /// panes as they show, and `natural` are the heights of their content.
     pub fn resize(&mut self, i: usize, delta: f32, heights: &[f32], natural: &[f32], room: f32) {
+        self.resize_part(0, i, delta, heights, natural, room);
+    }
+
+    /// A `resize` in the part of the dock that starts at the pane with
+    /// index `start`, such as the part below a fold. `i`, `heights`, and
+    /// `natural` are of the panes of the part.
+    pub fn resize_part(
+        &mut self,
+        start: usize,
+        i: usize,
+        delta: f32,
+        heights: &[f32],
+        natural: &[f32],
+        room: f32,
+    ) {
         let new = sized(i, delta, heights, natural, room, false);
-        self.set_heights(heights, &new, natural);
+        self.set_heights(start, heights, &new, natural);
     }
 
     /// Grows the pane with index `i` as much as the dock allows. The other
     /// panes get as short as they can.
     pub fn grow(&mut self, i: usize, heights: &[f32], natural: &[f32], room: f32) {
+        self.grow_part(0, i, heights, natural, room);
+    }
+
+    /// A `grow` in the part of the dock that starts at the pane with index
+    /// `start`.
+    pub fn grow_part(
+        &mut self,
+        start: usize,
+        i: usize,
+        heights: &[f32],
+        natural: &[f32],
+        room: f32,
+    ) {
         let new = sized(i, f32::INFINITY, heights, natural, room, true);
-        self.set_heights(heights, &new, natural);
+        self.set_heights(start, heights, &new, natural);
     }
 
     /// Keeps the heights of the panes that changed and of the panes that
-    /// scroll. The other panes keep the height of their content.
-    fn set_heights(&mut self, old: &[f32], new: &[f32], natural: &[f32]) {
-        for (k, pane) in self.panes.iter_mut().enumerate() {
+    /// scroll. The other panes keep the height of their content. The
+    /// heights are of the panes from the index `start`.
+    fn set_heights(&mut self, start: usize, old: &[f32], new: &[f32], natural: &[f32]) {
+        for (k, pane) in self.panes.iter_mut().skip(start).enumerate() {
             let (Some(&old), Some(&new), Some(&natural)) = (old.get(k), new.get(k), natural.get(k))
             else {
                 continue;

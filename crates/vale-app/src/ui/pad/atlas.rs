@@ -366,7 +366,10 @@ fn page_space(rects: &Rects) -> Rect {
     let bottom = rects
         .readout
         .map_or(rects.panel_bottom, |r| r.bottom() - ROW - GAP);
-    Rect::from_min_max(pos2(left, rects.column_top), pos2(right, bottom))
+    let space = Rect::from_min_max(pos2(left, rects.column_top), pos2(right, bottom));
+    // On a partially folded device, the page is in one part of the canvas.
+    let part = geometry::canvas_part(rects.screen, rects.fold);
+    space.intersect(part)
 }
 
 /// The contents of the tool column for the tool of the Atlas.

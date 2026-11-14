@@ -28,7 +28,10 @@ pub fn showing(state: &AppState) -> bool {
 /// beside it.
 pub fn wider(rects: &Rects, width: f32) -> Rect {
     let mut dock = rects.dock;
-    let left = (rects.screen.right() - rects.bands.right - width).max(rects.column_right);
+    let mut left = (rects.screen.right() - rects.bands.right - width).max(rects.column_right);
+    if let Some(fold) = rects.fold.filter(|f| !super::geometry::horizontal(*f)) {
+        left = left.max(fold.right() + super::geometry::FOLD_GAP);
+    }
     dock.min.x = dock.min.x.min(left);
     dock
 }
