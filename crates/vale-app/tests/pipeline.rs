@@ -4296,41 +4296,13 @@ fn an_unknown_raster_name_gives_null() {
     assert_eq!(pipeline.rasters().raster_names(), ["Height"]);
 }
 
-/// The height in meters of a valley along the meridian at 0.35° east. It
-/// goes down to the sea at 40° south, and its head is at latitude `head`.
-fn valley_meters(lonlat: [f64; 2], head: f64) -> f64 {
-    let [lon, lat] = lonlat;
-    if lon.abs() > 3.0 || !(-40.0..head).contains(&lat) {
-        return -1000.0;
-    }
-    100.0 + 30.0 * (lat + 40.0) + 300.0 * (lon - 0.35).abs()
-}
-
-/// Puts the valley with its head at `head` into `map`. Only the texels that
-/// change get a new level.
-fn paint_valley(map: &mut vale_terrain::Heightmap, head: f64) {
-    use vale_terrain::math::dir_to_lonlat;
-    let n = map.face_size();
-    for face in 0..vale_terrain::FACES {
-        for y in 0..n {
-            for x in 0..n {
-                let (lon, lat) = dir_to_lonlat(map.texel_dir(face, x, y));
-                let level = vale_terrain::meters_to_level(valley_meters([lon, lat], head));
-                if map.get(face, x as i64, y as i64) != level {
-                    map.set(face, x, y, level);
-                }
-            }
-        }
-    }
-}
-
 /// A document with a height layer and a line layer with one river. The
 /// river goes down the valley, from its source at 5° south to its mouth.
 fn river_doc() -> (Document, vale_store::LayerId, vale_terrain::Heightmap) {
     let (mut doc, id) = lines_at(&[("river", &[[0.5, -5.0], [0.5, -20.0], [0.5, -38.0]])]);
     add_height(&mut doc);
     let mut map = vale_terrain::Heightmap::new(128, 0);
-    paint_valley(&mut map, 0.0);
+    common::paint_valley(&mut map, 0.0);
     (doc, id, map)
 }
 
@@ -4384,7 +4356,7 @@ fn a_stroke_that_changes_the_drainage_computes_the_flow_again_without_a_wait() {
 
     // A stroke makes the valley longer uphill.
     map.begin_stroke();
-    paint_valley(&mut map, 25.0);
+    common::paint_valley(&mut map, 25.0);
     map.end_stroke();
     let start = Instant::now();
     pipeline.rasters_mut().held = true;
