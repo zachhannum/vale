@@ -16615,6 +16615,28 @@ fn on_a_partially_folded_iphone_duo_no_control_crosses_the_fold() {
                         column.iter().any(|c| c.rect.top() > fold.bottom()),
                         "{what}"
                     );
+                    // The upper part of the card ends at its last control,
+                    // and the lower part starts below the fold.
+                    use vale_app::ui::pad::geometry::COLUMN_INSET;
+                    let last = (column.iter())
+                        .map(|c| c.rect.bottom())
+                        .filter(|&b| b < fold.top())
+                        .fold(0.0, f32::max);
+                    let first = (column.iter())
+                        .map(|c| c.rect.top())
+                        .filter(|&t| t > fold.bottom())
+                        .fold(f32::MAX, f32::min);
+                    let gap = rects.column_gap.expect(&what);
+                    let (upper_end, lower_start) = (gap.min + COLUMN_INSET, gap.max - COLUMN_INSET);
+                    assert!(
+                        upper_end - last <= COLUMN_INSET + 0.5,
+                        "{what}: {last} {upper_end}"
+                    );
+                    assert!(
+                        upper_end < fold.top() && lower_start > fold.bottom(),
+                        "{what}"
+                    );
+                    assert!(first >= lower_start, "{what}");
                 }
                 if !atlas {
                     // The panes are above and below the fold.

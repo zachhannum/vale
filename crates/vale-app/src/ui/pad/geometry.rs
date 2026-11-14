@@ -286,7 +286,9 @@ pub struct Rects {
     /// The folding region of a partially folded device.
     pub fold: Option<Rect>,
     /// The band of the tool column that holds no control, at a fold that
-    /// crosses the column. A control that would be in it is below it.
+    /// crosses the column: from the bottom of the last control above the
+    /// fold to `COLUMN_INSET` below the end of the card at the fold. A
+    /// control that would be in it is below it.
     pub column_gap: Option<Rangef>,
 }
 
@@ -358,25 +360,46 @@ pub fn canvas_part(screen: Rect, fold: Option<Rect>) -> Rect {
     )
 }
 
-/// The height of the contents of the tool column from `top`. A control
-/// that would be in `gap` moves below it.
-fn column_height(top: f32, c: &ColumnInput, slider: f32, gap: Option<Rangef>) -> f32 {
+/// The height of the contents of the tool column from `top`, and the gap
+/// of the column. A control that would be in `gap` moves below it, and so
+/// does a divider just above it. The gap of the column starts at the
+/// bottom of the last control above it.
+fn column_height(
+    top: f32,
+    c: &ColumnInput,
+    slider: f32,
+    gap: Option<Rangef>,
+) -> (f32, Option<Rangef>) {
     let mut y = top + COLUMN_INSET;
-    let mut add = |height: f32| {
-        y = skip_gap(y, height, gap) + height;
+    let mut start = None;
+    let mut divider = None;
+    let mut add = |height: f32, is_divider: bool| {
+        let at = skip_gap(y, height, gap);
+        if at > y && start.is_none() {
+            start = Some(divider.unwrap_or(y));
+            y = match divider {
+                Some(_) => at + COLUMN_DIVIDER,
+                None => at,
+            };
+        }
+        divider = is_divider.then_some(y);
+        y += height;
     };
-    let cell = |n: usize, add: &mut dyn FnMut(f32)| (0..n).for_each(|_| add(COLUMN_CELL));
+    let cell = |n: usize, add: &mut dyn FnMut(f32, bool)| {
+        (0..n).for_each(|_| add(COLUMN_CELL, false));
+    };
     cell(c.tools, &mut add);
     if c.cells > 0 || c.sliders > 0 || c.brush_button {
-        add(COLUMN_DIVIDER);
+        add(COLUMN_DIVIDER, true);
     }
     let lead = c.lead.min(c.cells);
     cell(lead, &mut add);
     if slider > 0.0 {
-        (0..c.sliders).for_each(|_| add(slider + SLIDER_TEXT));
+        (0..c.sliders).for_each(|_| add(slider + SLIDER_TEXT, false));
     }
     cell(c.cells - lead + usize::from(c.brush_button), &mut add);
-    y + COLUMN_INSET - top
+    let gap = gap.zip(start).map(|(g, start)| Rangef::new(start, g.max));
+    (y + COLUMN_INSET - top, gap)
 }
 
 /// The top of a control `height` high that would start at `y`: below the
@@ -535,7 +558,7 @@ pub fn layout(input: &Input) -> Rects {
         let space = FOLD_GAP + COLUMN_INSET;
         Rangef::new(f.top() - space, f.bottom() + space)
     });
-    let fits = |slider: f32| column_height(column_top, &c, slider, gap) <= room;
+    let fits = |slider: f32| column_height(column_top, &c, slider, gap).0 <= room;
     // The sliders become shorter, and then the Brush panel holds them.
     let mut slider = if c.sliders == 0 {
         0.0
@@ -556,15 +579,15 @@ pub fn layout(input: &Input) -> Rects {
         } else {
             0.0
         };
-    let mut column_content = match gap {
+    let (mut column_content, mut column_gap) = match gap {
         Some(_) => column_height(column_top, &c, slider, gap),
-        None => plain,
+        None => (plain, None),
     };
-    let mut column_gap = gap.filter(|g| column_top + column_content > g.min && g.max > column_top);
     let mut room = room;
     // A column that scrolls ends above the fold.
     if column_content > room
-        && let Some(g) = column_gap
+        && column_gap.is_some()
+        && let Some(g) = gap
     {
         room = room.min(g.min + COLUMN_INSET - column_top);
         column_content = plain;
@@ -1226,23 +1249,22 @@ mod tests {
         flat.fold = None;
         let (r, before) = (layout(&input), layout(&flat));
         let gap = r.column_gap.expect("a gap");
-        assert_eq!(gap.min, fold.top() - FOLD_GAP - COLUMN_INSET);
         assert_eq!(gap.max, fold.bottom() + FOLD_GAP + COLUMN_INSET);
         // The sliders keep their length, and the column is longer by the
-        // gap and the part of the control that moves below it.
+        // gap.
         assert_eq!(r.brush_card, BrushCard::Full(TRACK));
-        assert!(r.column_content > before.column_content + gap.span());
+        assert_eq!(r.column_content, before.column_content + gap.span());
         assert_eq!(r.tools.height(), r.column_content);
         assert_eq!(r.tools.top(), before.tools.top());
         assert_eq!(r.dock, before.dock);
-        // The controls of the gap move below it: the tools, the divider,
-        // and the first slider are above it, and the second slider is
-        // below it.
+        // The tools are above the fold. The first slider does not fit
+        // there, so it moves below the fold with the divider above it, and
+        // the gap starts at the bottom of the last tool.
         let top = r.tools.top() + COLUMN_INSET;
-        let above = TOOLS as f32 * COLUMN_CELL + COLUMN_DIVIDER;
-        assert!(top + above <= gap.min);
+        assert_eq!(gap.min, top + TOOLS as f32 * COLUMN_CELL);
+        assert!(gap.min + COLUMN_INSET < fold.top() - FOLD_GAP);
         let slider = TRACK + SLIDER_TEXT;
-        let below = gap.max + 2.0 * slider + COLUMN_CELL;
+        let below = gap.max + COLUMN_DIVIDER + 2.0 * slider + COLUMN_CELL;
         assert_eq!(r.tools.bottom(), below + COLUMN_INSET);
 
         // A column that does not reach the fold has no gap.
