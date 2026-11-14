@@ -447,6 +447,30 @@ impl Projection {
         let b = self.forward([p[0] + 0.01, p[1]])?;
         Some((b - a).hypot() / (self.radius_m * cos * 0.01f64.to_radians()))
     }
+
+    /// The Tissot indicatrix at `p`: the largest and the smallest scale
+    /// factor. Both are 1 where the projection keeps scale, and their
+    /// product is the area scale. `None` at a pole, or where a point next to
+    /// `p` does not project.
+    pub fn distortion(&self, p: LonLat) -> Option<[f64; 2]> {
+        const STEP: f64 = 1e-3;
+        let [lon, lat] = p;
+        if lat.abs() > 90.0 - 2.0 * STEP {
+            return None;
+        }
+        let at = |dlon: f64, dlat: f64| self.forward([lon + dlon, lat + dlat]);
+        let east = at(STEP, 0.0)? - at(-STEP, 0.0)?;
+        let north = at(0.0, STEP)? - at(0.0, -STEP)?;
+        let ground = 2.0 * STEP.to_radians() * self.radius_m;
+        let east = east / (ground * lat.to_radians().cos());
+        let north = north / ground;
+        // a² + b² = h² + k², and a·b is the area scale.
+        let squares = east.hypot2() + north.hypot2();
+        let area = east.cross(north).abs();
+        let sum = (squares + 2.0 * area).sqrt();
+        let difference = (squares - 2.0 * area).max(0.0).sqrt();
+        Some([(sum + difference) / 2.0, (sum - difference) / 2.0])
+    }
 }
 
 #[cfg(test)]
@@ -477,6 +501,34 @@ mod tests {
     }
 
     const EE: f64 = 2.70663;
+
+    #[test]
+    fn the_distortion_follows_the_scale_factors_of_known_projections() {
+        let near = |a: f64, b: f64| (a - b).abs() < 1e-4;
+        let mercator = proj(ProjectionKind::Mercator, 0.0, 0.0);
+        let [a, b] = mercator.distortion([10.0, 60.0]).unwrap();
+        assert!(near(a, 2.0) && near(b, 2.0), "{a} {b}");
+        let [a, b] = mercator.distortion([10.0, 0.0]).unwrap();
+        assert!(near(a, 1.0) && near(b, 1.0), "{a} {b}");
+        for kind in [
+            ProjectionKind::LambertAzimuthal,
+            ProjectionKind::AlbersEqualArea,
+            ProjectionKind::EqualEarth,
+        ] {
+            let [a, b] = proj(kind, 10.0, 40.0).distortion([30.0, 55.0]).unwrap();
+            assert!(near(a * b, 1.0) && a > b, "{kind:?}: {a} {b}");
+        }
+        let mut lcc = spec(ProjectionKind::LambertConformal, 0.0, 45.0);
+        (lcc.lat1, lcc.lat2) = (30.0, 60.0);
+        let lcc = Projection::new(lcc, 1000.0).unwrap();
+        for lat in [30.0, 60.0] {
+            let [a, b] = lcc.distortion([5.0, lat]).unwrap();
+            assert!(near(a, 1.0) && near(b, 1.0), "{lat}: {a} {b}");
+        }
+        let [a, b] = lcc.distortion([5.0, 45.0]).unwrap();
+        assert!(a < 0.99 && near(a, b), "{a} {b}");
+        assert!(mercator.distortion([0.0, 90.0]).is_none());
+    }
 
     fn spec(kind: ProjectionKind, lon0: f64, lat0: f64) -> ProjectionSpec {
         ProjectionSpec::new(kind, lon0, lat0)

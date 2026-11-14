@@ -46,6 +46,24 @@ pub fn central_angle(a: LonLat, b: LonLat) -> f64 {
     norm(cross(a, b)).atan2(dot(a, b))
 }
 
+/// The points of a circle on the sphere around `center`, with an angular
+/// radius in degrees, clockwise from north. The ring is open.
+pub fn small_circle(center: LonLat, radius_deg: f64, points: usize) -> Vec<LonLat> {
+    let c = vec(center);
+    let (lon, lat) = (center[0].to_radians(), center[1].to_radians());
+    let east = [-lon.sin(), lon.cos(), 0.0];
+    let north = [-lat.sin() * lon.cos(), -lat.sin() * lon.sin(), lat.cos()];
+    let (sin_r, cos_r) = radius_deg.to_radians().sin_cos();
+    (0..points)
+        .map(|i| {
+            let (s, co) = (i as f64 / points as f64 * 2.0 * PI).sin_cos();
+            lonlat(std::array::from_fn(|j| {
+                c[j] * cos_r + (north[j] * co + east[j] * s) * sin_r
+            }))
+        })
+        .collect()
+}
+
 /// The great-circle length of a path. A closed path includes the edge from
 /// the last point back to the first.
 pub fn path_length(points: &[LonLat], closed: bool, radius: f64) -> f64 {
