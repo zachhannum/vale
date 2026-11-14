@@ -24,8 +24,8 @@ use super::pad::rules::{
     STROKE, STROKE_WIDTH, TAPER, TAPER_START, parse_scale, scale_text,
 };
 use super::pad::rules::{
-    ADD_SYMBOL, BAD_MASK_RANGE, CIRCLE_SIZES, COLOR, MARKER, MARKER_SHAPE, MASK, MASK_MAX,
-    MASK_MIN, MAX_SPACING, NO_FIELD, NO_MASK, NO_SYMBOL_LIST, POINT_SIZES, ROTATION,
+    ADD_SYMBOL, APPLY_MASK, BAD_MASK_RANGE, CIRCLE_SIZES, COLOR, MARKER, MARKER_SHAPE, MASK,
+    MASK_MAX, MASK_MIN, MAX_SPACING, NO_FIELD, NO_MASK, NO_SYMBOL_LIST, POINT_SIZES, ROTATION,
     ROTATION_FIELD, ROTATION_VARIATION, SCATTER, SCATTER_SIZES, SHAPE, SIZE, SIZE_FIELD,
     SIZE_VARIATION, SPACING, SVG_SYMBOL, SYMBOL, TINT, marker_radius, new_tint, numeric_fields,
     pick_symbol, property_field, to_circle, with_field,
@@ -141,9 +141,11 @@ pub fn rules(
     ui.data_mut(|d| d.insert_temp(key, picked.clone()));
     if picked.len() > 1 {
         ui.separator();
-        return selection_rows(ui, &mut style.style.rules, &picked, kind) || changed;
+        let masked = style.style.mask.is_some();
+        return selection_rows(ui, &mut style.style.rules, &picked, kind, masked) || changed;
     }
     let at = picked.first().copied().unwrap_or(0);
+    let masked = style.style.mask.is_some();
     if let Some(rule) = style.style.rules.get_mut(at) {
         ui.separator();
         let salt = key.with(at);
@@ -155,7 +157,7 @@ pub fn rules(
         }
         // An SVG symbol has no stroke and no fill.
         if rule.symbol().is_none() {
-            changed |= paint_rows(ui, rule, kind, salt);
+            changed |= paint_rows(ui, rule, kind, masked, salt);
         }
         if kind == GeometryKind::Polygon {
             changed |= scatter_rows(ui, rule, library, salt);
@@ -166,17 +168,29 @@ pub fn rules(
 
 /// The stroke, the fill, and the size of the selected rules. A change sets
 /// one property in each rule. A value that is different in the rules shows
-/// "Mixed" next to it. Returns true if a rule changed.
+/// "Mixed" next to it. The "Apply mask" boxes show when `masked`. Returns
+/// true if a rule changed.
 fn selection_rows(
     ui: &mut egui::Ui,
     rules: &mut [Rule],
     picked: &[usize],
     kind: GeometryKind,
+    masked: bool,
 ) -> bool {
     let mixed = |ui: &mut egui::Ui, on: bool| {
         if on {
             ui.weak(crate::ui::select::MIXED);
         }
+    };
+    let mask_box = |ui: &mut egui::Ui, rules: &[Rule], get: fn(&Rule) -> Option<bool>| {
+        let (on, m) = rule_edit::shared(rules, picked, get).filter(|_| masked)?;
+        let mut on = on && !m;
+        ui.horizontal(|ui| {
+            let changed = ui.checkbox(&mut on, APPLY_MASK).changed();
+            mixed(ui, m);
+            changed.then_some(on)
+        })
+        .inner
     };
     let default = LayerStyle::default_for(kind, 0, &[]);
     let mut changes = Vec::new();
@@ -213,6 +227,9 @@ fn selection_rows(
             mixed(ui, m);
         });
     }
+    if let Some(v) = mask_box(ui, rules, Rule::stroke_applies_mask) {
+        changes.push(Change::StrokeAppliesMask(v));
+    }
     if kind != GeometryKind::Line && !paints.is_empty() {
         ui.horizontal(|ui| {
             if kind == GeometryKind::Polygon {
@@ -231,6 +248,9 @@ fn selection_rows(
                 mixed(ui, m);
             }
         });
+    }
+    if let Some(v) = mask_box(ui, rules, Rule::fill_applies_mask) {
+        changes.push(Change::FillAppliesMask(v));
     }
     if kind == GeometryKind::Point
         && let Some((mut size, m)) = rule_edit::shared(rules, picked, rule_edit::size)
@@ -654,8 +674,15 @@ fn scale_rows(ui: &mut egui::Ui, rule: &mut Rule, salt: egui::Id) -> bool {
     changed
 }
 
-/// The stroke and its width, and the fill. A line layer has no fill.
-fn paint_rows(ui: &mut egui::Ui, rule: &mut Rule, kind: GeometryKind, salt: egui::Id) -> bool {
+/// The stroke and its width, and the fill. A line layer has no fill. The
+/// "Apply mask" boxes show when `masked`.
+fn paint_rows(
+    ui: &mut egui::Ui,
+    rule: &mut Rule,
+    kind: GeometryKind,
+    masked: bool,
+    salt: egui::Id,
+) -> bool {
     let default = LayerStyle::default_for(kind, 0, &[]);
     let mut changed = false;
     let mut stroke = rule.stroke();
@@ -688,6 +715,12 @@ fn paint_rows(ui: &mut egui::Ui, rule: &mut Rule, kind: GeometryKind, salt: egui
     if changed {
         rule.set_stroke(stroke);
     }
+    if let Some(mut on) = rule.stroke_applies_mask().filter(|_| masked)
+        && ui.checkbox(&mut on, APPLY_MASK).changed()
+    {
+        rule.set_stroke_applies_mask(on);
+        changed = true;
+    }
     if kind == GeometryKind::Line {
         return changed;
     }
@@ -708,6 +741,12 @@ fn paint_rows(ui: &mut egui::Ui, rule: &mut Rule, kind: GeometryKind, salt: egui
     });
     if fill_changed {
         rule.set_fill(fill);
+    }
+    if let Some(mut on) = rule.fill_applies_mask().filter(|_| masked)
+        && ui.checkbox(&mut on, APPLY_MASK).changed()
+    {
+        rule.set_fill_applies_mask(on);
+        fill_changed = true;
     }
     changed || fill_changed
 }
