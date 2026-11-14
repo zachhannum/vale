@@ -32,11 +32,12 @@ use vale_app::ui::pad::atlas::{
     BORDER_GAP, DISTANCE_BY_SIDE, FURNITURE, GRID_COLUMN_NAMES, PROPERTIES, SIDE_DISTANCES,
 };
 use vale_app::ui::pad::atlas::{
-    EDITED, MAP_STYLE, MAP_STYLE_NAME, NO_MAP_STYLE_ROW, RESET_TO_MAP_STYLE, SAVE_AS_MAP_STYLE,
-    UPDATE_MAP_STYLE, map_style_row,
+    CENTER_LONGITUDE, EXIT_FRAME, GRID, GRID_COLOR, GRID_SPACING, LAYOUT_GRID, SECOND_PARALLEL,
+    SNAP_TO_LAYOUT, TISSOT_CIRCLES,
 };
 use vale_app::ui::pad::atlas::{
-    EXIT_FRAME, GRID, GRID_COLOR, GRID_SPACING, LAYOUT_GRID, SNAP_TO_LAYOUT,
+    EDITED, MAP_STYLE, MAP_STYLE_NAME, NO_MAP_STYLE_ROW, RESET_TO_MAP_STYLE, SAVE_AS_MAP_STYLE,
+    UPDATE_MAP_STYLE, map_style_row,
 };
 use vale_app::ui::pad::dock_ui::tab_name;
 use vale_app::ui::pad::edge_labels::{
@@ -1182,21 +1183,22 @@ fn a_custom_projection_is_saved_in_the_project_and_picked_again() {
     assert!(h.state().atlas.preset_name.is_empty());
     h.state_mut().atlas.preset_name = "Home".into();
     h.run_steps(2);
+    scroll_to(&mut h, SAVE_PROJECTION);
     tap(&mut h, SAVE_PROJECTION);
     let saved = h.state().doc.projection(map).to_proj();
     assert_eq!(h.state().doc.presets().len(), 1);
     assert_eq!(h.state().doc.presets()[0].projection, saved);
 
     // Another projection, and then the custom one again.
-    tap(&mut h, PROJECTION);
-    tap(&mut h, ProjectionKind::Mercator.name());
-    h.run_steps(2);
+    tap_projection(&mut h, ProjectionKind::Mercator);
     assert_eq!(h.state().doc.projection(map).kind, ProjectionKind::Mercator);
+    scroll_up_to(&mut h, PROJECTION);
     tap(&mut h, PROJECTION);
     scroll_to(&mut h, &custom_row("Home"));
     tap(&mut h, &custom_row("Home"));
     assert_eq!(h.state().doc.projection(map).to_proj(), saved);
 
+    scroll_to(&mut h, DELETE_PROJECTION);
     tap(&mut h, DELETE_PROJECTION);
     assert!(h.state().doc.presets().is_empty());
     assert_eq!(h.state().doc.projection(map).to_proj(), saved);
@@ -11377,4 +11379,130 @@ fn freeing_the_caches_of_the_atlas_takes_the_tiles_and_the_next_pass_makes_them_
     assert_eq!(h.state().atlas.mask_count(), 0);
     settle(&mut h);
     assert!(h.state().atlas.tile_count() > 0);
+}
+
+/// Opens the Projection tab of the inset frame with a conic projection.
+fn conic_projection_tab(size: (f32, f32)) -> Pad {
+    let mut h = inset_pad(size);
+    show_tab(&mut h, "Projection");
+    tap_projection(&mut h, ProjectionKind::LambertConformal);
+    // The inset shows a region at the middle latitudes, so that its corners
+    // are on the map.
+    let inset = frame(&h, 1);
+    let lon0 = h.state().doc.projection(inset.map).lon0;
+    let s = h.state_mut();
+    let f = s.doc.project.atlas.frame_mut(inset.id).unwrap();
+    (f.center, f.scale) = ([lon0, 45.0], 2e7);
+    s.touch();
+    h.run_steps(3);
+    h
+}
+
+/// Moves a finger along a slider by `dx` points and holds it there.
+fn hold_slider(h: &mut Pad, name: &str, dx: f32) -> Pos2 {
+    scroll_up_to(h, PROJECTION);
+    scroll_to(h, name);
+    let rect = control(h, name).unwrap_or_else(|| panic!("no slider `{name}`"));
+    let from = rect.center();
+    let to = from + vec2(dx, 0.0);
+    drag_steps(h, from, to, Input::Finger, 6);
+    to
+}
+
+#[test]
+fn a_finger_on_a_projection_slider_redraws_the_frame_during_the_drag() {
+    for size in BOARDS {
+        let mut h = conic_projection_tab(size);
+        let inset = frame(&h, 1);
+        let before = h.state().doc.projection(inset.map);
+        let content = h.state().atlas.frame_content(inset.id);
+        assert!(content.is_some(), "{size:?}");
+        let at = hold_slider(&mut h, FIRST_PARALLEL, 60.0);
+        h.run_steps(2);
+        // The finger is still down.
+        let during = h.state().doc.projection(inset.map);
+        assert!(during.lat1 > before.lat1, "{size:?}");
+        assert_eq!(during.lat2, before.lat2, "{size:?}");
+        assert_ne!(h.state().atlas.frame_content(inset.id), content, "{size:?}");
+        release(&mut h, at, Input::Finger);
+
+        let at = hold_slider(&mut h, CENTER_LONGITUDE, -60.0);
+        h.run_steps(2);
+        assert!(
+            h.state().doc.projection(inset.map).lon0 < before.lon0,
+            "{size:?}"
+        );
+        release(&mut h, at, Input::Finger);
+        check_controls(&h, "the Projection tab");
+    }
+}
+
+#[test]
+fn the_tissot_circles_show_while_the_projection_tab_is_open() {
+    let mut h = conic_projection_tab(BOARDS[0]);
+    let inset = frame(&h, 1);
+    assert_eq!(atlas::tissot_frame(h.state()), Some(inset.id));
+    let circles = {
+        let s = h.state_mut();
+        let projection = s.pipeline.projection(&s.doc, inset.map).unwrap();
+        vale_app::distortion::tissot_circles(projection, &inset)
+    };
+    assert!(circles.len() >= 4);
+    screenshot::save(&mut h, "pad-atlas-projection");
+
+    scroll_to(&mut h, TISSOT_CIRCLES);
+    tap(&mut h, TISSOT_CIRCLES);
+    assert_eq!(atlas::tissot_frame(h.state()), None);
+    tap(&mut h, TISSOT_CIRCLES);
+    assert_eq!(atlas::tissot_frame(h.state()), Some(inset.id));
+
+    show_tab(&mut h, "Frame");
+    assert_eq!(atlas::tissot_frame(h.state()), None);
+    show_tab(&mut h, "Projection");
+    assert_eq!(atlas::tissot_frame(h.state()), Some(inset.id));
+}
+
+#[test]
+fn the_projection_tab_prints_the_scale_error_at_the_four_corners() {
+    let mut h = conic_projection_tab(BOARDS[0]);
+    let inset = frame(&h, 1);
+    scroll_to(&mut h, TISSOT_CIRCLES);
+    assert!(control(&h, TISSOT_CIRCLES).is_some());
+    let errors = atlas::frame_errors(h.state_mut(), inset.id);
+    for (place, error) in vale_app::distortion::PLACES.iter().zip(errors) {
+        assert!(error.is_some(), "{place}");
+    }
+    // The error follows the projection.
+    tap_projection(&mut h, ProjectionKind::Mercator);
+    let mercator = atlas::frame_errors(h.state_mut(), inset.id);
+    assert_ne!(mercator, errors);
+}
+
+fn tap_projection(h: &mut Pad, kind: ProjectionKind) {
+    scroll_up_to(h, PROJECTION);
+    tap(h, PROJECTION);
+    scroll_to(h, kind.name());
+    tap(h, kind.name());
+    h.run_steps(3);
+}
+
+#[test]
+fn a_slider_drag_redraws_each_frame_of_the_map() {
+    let mut h = conic_projection_tab(BOARDS[0]);
+    let main = frame(&h, 0);
+    let inset = frame(&h, 1);
+    // The main frame shows the map of the inset.
+    let s = h.state_mut();
+    s.doc.project.atlas.frame_mut(main.id).unwrap().map = inset.map;
+    h.run_steps(3);
+    let content = h.state().atlas.frame_content(main.id);
+    let at = hold_slider(&mut h, SECOND_PARALLEL, 60.0);
+    h.run_steps(2);
+    assert_ne!(h.state().atlas.frame_content(main.id), content);
+    release(&mut h, at, Input::Finger);
+    let lat2 = h.state().doc.projection(inset.map).lat2;
+    assert!(lat2 > 60.0);
+    let s = h.state_mut();
+    let shown = s.pipeline.projection(&s.doc, inset.map).unwrap().spec();
+    assert_eq!(shown.lat2, lat2);
 }

@@ -21,6 +21,7 @@ use super::widgets::{self, BODY_PAD, Controls, Keys, PANEL_ROW, keypad_below};
 use super::{GRATICULE, Head, PageParts, Panel, WORKSPACES, WORLDS_ROW};
 use super::{NO_LAYERS, layer_icon, rule, theme, toggle_worlds, worlds_menu};
 use crate::atlas::{self as math, PAGE_PRESETS};
+use crate::distortion::{self, ScaleError};
 use crate::ui::atlas::{self, AtlasSelection, AtlasTool, ClassColor};
 use crate::ui::{Action, AppState, ExportFormat, Workspace};
 use crate::ui::{region, select};
@@ -125,6 +126,8 @@ pub const FIRST_PARALLEL: &str = "First parallel";
 pub const SECOND_PARALLEL: &str = "Second parallel";
 pub const OBLIQUE: &str = "Oblique";
 pub const AZIMUTH: &str = "Azimuth";
+pub const DISTORTION: &str = "Distortion";
+pub const TISSOT_CIRCLES: &str = "Tissot circles";
 pub const PROJECTION_NAME: &str = "Projection name";
 pub const SAVE_PROJECTION: &str = "Save projection";
 pub const DELETE_PROJECTION: &str = "Delete projection";
@@ -2052,42 +2055,25 @@ fn projection_tab(
     }
     ui.add_space(6.0);
 
-    let keys = Keys::Number;
-    let degrees = |text: &str| math::parse_degrees(text);
+    // Each slider changes the map while it moves, so each frame of the map
+    // redraws during the drag.
     let spec = state.doc.projection(map);
-    let shown = math::lon_text(spec.lon0);
-    let typed = widgets::key_field(
-        ui,
-        controls,
-        CENTER_LONGITUDE,
-        CENTER_LONGITUDE,
-        "",
-        &shown,
-        keys,
-        |t| degrees(t).is_some(),
-    );
-    if let Some(lon) = typed.as_deref().and_then(degrees) {
+    let lon = Number::new(CENTER_LONGITUDE, spec.lon0, -180.0..=180.0)
+        .label("Longitude")
+        .step(0.1)
+        .text(math::lon_text);
+    if let Some(lon) = lon.slider(ui, controls) {
         atlas::set_projection_longitude(state, id, lon);
     }
-    keypad_below(ui, controls, CENTER_LONGITUDE);
     let has_latitude = spec.kind.has_origin_latitude() || spec.azimuth.is_some();
     if has_latitude && spec.kind != ProjectionKind::PolarStereographic {
-        let shown = math::lat_text(spec.lat0);
-        let valid = |t: &str| degrees(t).is_some_and(|v| v.abs() <= 90.0);
-        let typed = widgets::key_field(
-            ui,
-            controls,
-            CENTER_LATITUDE,
-            CENTER_LATITUDE,
-            "",
-            &shown,
-            keys,
-            valid,
-        );
-        if let Some(lat) = typed.as_deref().and_then(degrees) {
+        let lat = Number::new(CENTER_LATITUDE, spec.lat0, -90.0..=90.0)
+            .label("Latitude")
+            .step(0.1)
+            .text(math::lat_text);
+        if let Some(lat) = lat.slider(ui, controls) {
             atlas::set_projection_latitude(state, id, lat);
         }
-        keypad_below(ui, controls, CENTER_LATITUDE);
     }
     if spec.kind == ProjectionKind::PolarStereographic {
         let pole = ["South pole", "North pole"];
@@ -2097,14 +2083,15 @@ fn projection_tab(
         }
     }
     if spec.kind.is_conic() {
-        let valid = |t: &str| degrees(t).is_some_and(|v| v.abs() <= 89.0);
-        for (name, value, first) in [
-            (FIRST_PARALLEL, spec.lat1, true),
-            (SECOND_PARALLEL, spec.lat2, false),
+        for (name, label, value, first) in [
+            (FIRST_PARALLEL, "Parallel 1", spec.lat1, true),
+            (SECOND_PARALLEL, "Parallel 2", spec.lat2, false),
         ] {
-            let shown = math::lat_text(value);
-            let typed = widgets::key_field(ui, controls, name, name, "", &shown, keys, valid);
-            if let Some(v) = typed.as_deref().and_then(degrees) {
+            let parallel = Number::new(name, value, -89.0..=89.0)
+                .label(label)
+                .step(0.1)
+                .text(math::lat_text);
+            if let Some(v) = parallel.slider(ui, controls) {
                 let (a, b) = if first {
                     (v, spec.lat2)
                 } else {
@@ -2112,7 +2099,6 @@ fn projection_tab(
                 };
                 atlas::set_parallels(state, id, a, b);
             }
-            keypad_below(ui, controls, name);
         }
     }
     if spec.kind.can_tilt() {
@@ -2130,6 +2116,12 @@ fn projection_tab(
     ui.add_space(6.0);
     if widgets::button_row(ui, controls, CENTER_ON_FRAME, true).clicked() {
         atlas::center_projection(state, id);
+    }
+    widgets::list_heading(ui, DISTORTION);
+    distortion_table(ui, &atlas::frame_errors(state, id));
+    let mut tissot = state.atlas.tissot;
+    if widgets::switch_row(ui, controls, TISSOT_CIRCLES, TISSOT_CIRCLES, &mut tissot) {
+        state.atlas.tissot = tissot;
     }
 
     ui.add_space(6.0);
@@ -2150,6 +2142,41 @@ fn projection_tab(
     if widgets::button_row(ui, controls, DELETE_PROJECTION, saved).clicked() {
         atlas::delete_preset(state);
     }
+}
+
+/// The scale error and the area error at the corners and the center of a
+/// frame. A place off the globe shows a dash.
+fn distortion_table(ui: &mut egui::Ui, errors: &[Option<ScaleError>; 5]) {
+    const LINE: f32 = 28.0;
+    const COLUMN: f32 = 72.0;
+    let width = ui.available_width();
+    let (head, _) = ui.allocate_exact_size(vec2(width, LINE), egui::Sense::hover());
+    let painter = ui.painter();
+    for (i, title) in ["Scale", "Area"].into_iter().enumerate() {
+        let at = pos2(
+            head.right() - COLUMN * (1 - i) as f32 - 4.0,
+            head.center().y,
+        );
+        painter.text(at, Align2::RIGHT_CENTER, title, theme::small(), theme::MUTE);
+    }
+    for (place, error) in distortion::PLACES.iter().zip(errors) {
+        let (row, _) = ui.allocate_exact_size(vec2(width, LINE), egui::Sense::hover());
+        let painter = ui.painter();
+        let at = pos2(row.left() + 4.0, row.center().y);
+        painter.text(at, Align2::LEFT_CENTER, *place, theme::body(), theme::TEXT);
+        let values = match error {
+            Some(e) => [
+                distortion::percent_text(e.scale),
+                distortion::percent_text(e.area),
+            ],
+            None => ["\u{2014}".to_string(), "\u{2014}".to_string()],
+        };
+        for (i, value) in values.into_iter().enumerate() {
+            let at = pos2(row.right() - COLUMN * (1 - i) as f32 - 4.0, row.center().y);
+            painter.text(at, Align2::RIGHT_CENTER, value, theme::mono(), theme::TEXT);
+        }
+    }
+    ui.add_space(4.0);
 }
 
 /// The switch of the layout grid, and its spacing, color, and opacity while
