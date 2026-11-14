@@ -1678,6 +1678,27 @@ fn the_style_editor_opens_from_layers_on_the_globe_and_the_flat_view() {
 }
 
 #[test]
+fn the_desktop_style_editor_gives_a_line_its_width_from_an_expression() {
+    use vale_app::ui::pad::rules::{WIDTH_EXPRESSION, WIDTH_FROM_EXPRESSION};
+    let mut h = globe_harness();
+    h.state_mut().add_height();
+    h.run_steps(2);
+    let rivers = open_rivers(&mut h);
+    let text = |h: &Harness<'static, AppState>| {
+        let rule = &h.state().doc.entry(rivers).unwrap().style.style.rules[0];
+        rule.stroke_width_expression().map(str::to_owned)
+    };
+    h.get_by_label(WIDTH_FROM_EXPRESSION).click();
+    h.run_steps(2);
+    assert_eq!(text(&h).as_deref(), Some("sqrt(flow('Height')) / 100"));
+    type_in(&mut h, WIDTH_EXPRESSION, "sqrt(flow('Height')) / 50");
+    assert_eq!(text(&h).as_deref(), Some("sqrt(flow('Height')) / 50"));
+    h.get_by_label(WIDTH_FROM_EXPRESSION).click();
+    h.run_steps(2);
+    assert_eq!(text(&h), None);
+}
+
+#[test]
 fn short_filter_shows_inline() {
     use vale_app::ui::pad::filter::{ADD_CONDITION, matches_text};
     let mut h = globe_harness();

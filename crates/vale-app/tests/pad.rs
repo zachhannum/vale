@@ -17027,3 +17027,33 @@ fn the_flow_works_on_a_height_layer_with_its_rivers_off() {
         sr * radius * radius
     );
 }
+
+#[test]
+fn a_line_rule_takes_its_width_from_an_expression() {
+    use vale_app::ui::pad::rules::{STROKE_WIDTH, WIDTH_EXPRESSION, WIDTH_FROM_EXPRESSION};
+    let mut h = pad(BOARDS[1]);
+    let rivers = vector(&h, "Rivers");
+    let text = |h: &Pad| {
+        rules(h, rivers)[0]
+            .stroke_width_expression()
+            .map(str::to_owned)
+    };
+    open_rule(&mut h, "Rivers", "Default");
+    assert!(control(&h, WIDTH_EXPRESSION).is_none());
+    // The switch starts with a width from the flow of the height layer.
+    scroll_to_control(&mut h, WIDTH_FROM_EXPRESSION);
+    tap(&mut h, WIDTH_FROM_EXPRESSION);
+    assert_eq!(text(&h).as_deref(), Some("sqrt(flow('Height')) / 100"));
+    scroll_to_control(&mut h, WIDTH_EXPRESSION);
+    check_controls(&h, "the rule page with a width expression");
+    screenshot::save(&mut h, "pad-width-expression");
+    type_text(&mut h, WIDTH_EXPRESSION, "sqrt(flow('Height')) / 50");
+    assert_eq!(text(&h).as_deref(), Some("sqrt(flow('Height')) / 50"));
+    // The stepper sets the width where the expression gives no value.
+    scrolled_step(&mut h, STROKE_WIDTH, true);
+    assert_eq!(text(&h).as_deref(), Some("sqrt(flow('Height')) / 50"));
+    scroll_to_control(&mut h, WIDTH_FROM_EXPRESSION);
+    tap(&mut h, WIDTH_FROM_EXPRESSION);
+    assert_eq!(text(&h), None);
+    assert!(control(&h, WIDTH_EXPRESSION).is_none());
+}

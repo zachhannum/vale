@@ -21,7 +21,8 @@ use super::pad::raster::IMPORT_RAMP;
 use super::pad::rules::{
     ADD_RULE, ALL_FEATURES, BAD_RANGE, BRUSH, DASH, DASHED, DASHES, DELETE_RULE, DELETE_RULES,
     EXPRESSION, FILL, FILTER, GAP, LINE, MAX_SCALE, MIN_SCALE, MOVE_DOWN, MOVE_UP, NO_LIMIT, SOLID,
-    STROKE, STROKE_WIDTH, TAPER, TAPER_START, parse_scale, scale_text,
+    STROKE, STROKE_WIDTH, TAPER, TAPER_START, WIDTH_EXPRESSION, WIDTH_FROM_EXPRESSION, parse_scale,
+    scale_text,
 };
 use super::pad::rules::{
     ADD_SYMBOL, APPLY_MASK, BAD_MASK_RANGE, CIRCLE_SIZES, COLOR, MARKER, MARKER_SHAPE, MASK,
@@ -158,6 +159,9 @@ pub fn rules(
         // An SVG symbol has no stroke and no fill.
         if rule.symbol().is_none() {
             changed |= paint_rows(ui, rule, kind, masked, salt);
+            if kind == GeometryKind::Line {
+                changed |= width_expression_rows(ui, rule, library);
+            }
         }
         if kind == GeometryKind::Polygon {
             changed |= scatter_rows(ui, rule, library, salt);
@@ -670,6 +674,30 @@ fn scale_rows(ui: &mut egui::Ui, rule: &mut Rule, salt: egui::Id) -> bool {
         && min >= max
     {
         ui.colored_label(ui.visuals().warn_fg_color, BAD_RANGE);
+    }
+    changed
+}
+
+/// The switch and the field of the width expression of a line. The width
+/// of the stepper is the width where the expression gives no value.
+fn width_expression_rows(ui: &mut egui::Ui, rule: &mut Rule, library: &Library) -> bool {
+    if rule.stroke().is_none() {
+        return false;
+    }
+    let mut on = rule.stroke_width_expression().is_some();
+    let mut changed = false;
+    if ui.checkbox(&mut on, WIDTH_FROM_EXPRESSION).changed() {
+        let start = library.help.flow_width();
+        rule.set_stroke_width_expression(on.then_some(start.as_str()));
+        changed = true;
+    }
+    if let Some(text) = rule.stroke_width_expression() {
+        let mut text = text.to_owned();
+        let names = (WIDTH_EXPRESSION, WIDTH_EXPRESSION);
+        if expr_field::value(ui, names, &mut text, library.help) {
+            rule.set_stroke_width_expression(Some(&text));
+            changed = true;
+        }
     }
     changed
 }

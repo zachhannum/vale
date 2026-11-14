@@ -145,6 +145,18 @@ pub struct ExprHelp {
     page: Option<PageSample>,
 }
 
+impl ExprHelp {
+    /// The start text of a width expression: a width from the flow of the
+    /// first height layer, or else 1.
+    pub fn flow_width(&self) -> String {
+        let height = (self.raster_layers.iter()).find(|(_, unit)| unit == super::HEIGHT_UNIT);
+        match height {
+            Some((name, _)) => format!("sqrt(flow('{}')) / 100", name.replace('\'', "''")),
+            None => "1".to_owned(),
+        }
+    }
+}
+
 /// The mean, the min, and the max of each raster layer under the feature
 /// of the preview.
 #[derive(Clone, Debug, Default)]

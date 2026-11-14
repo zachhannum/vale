@@ -42,6 +42,10 @@ pub const BAD_RANGE: &str = "Min scale must be less than max scale.";
 pub const STROKE: &str = "Stroke";
 pub const STROKE_COLOR: &str = "Stroke color";
 pub const STROKE_WIDTH: &str = "Width";
+/// The switch that gives a line its width from an expression.
+pub const WIDTH_FROM_EXPRESSION: &str = "Width from expression";
+/// The field of the width expression of a line.
+pub const WIDTH_EXPRESSION: &str = "Width expression";
 pub const LINE: &str = "Line";
 pub const SOLID: &str = "Solid";
 pub const DASHED: &str = "Dashed";
@@ -957,6 +961,9 @@ fn paint_rows(
             stroke.width = width;
             rule.set_stroke(Some(stroke));
         }
+        if kind == GeometryKind::Line {
+            width_expression_rows(ui, state, controls, id, rule);
+        }
         // A marker ignores the line type.
         if kind != GeometryKind::Point {
             line_rows(ui, controls, rule, stroke, kind);
@@ -994,6 +1001,45 @@ fn paint_rows(
     }
     if kind == GeometryKind::Polygon {
         scatter_rows(ui, state, controls, (id, i), rule);
+    }
+}
+
+/// The switch and the field of the width expression of a line. The width
+/// of the stepper is the width where the expression gives no value.
+fn width_expression_rows(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    id: LayerId,
+    rule: &mut Rule,
+) {
+    let help = ExprHelp::for_layer(state, id);
+    let text = rule.stroke_width_expression().map(str::to_owned);
+    let mut on = text.is_some();
+    if widgets::switch_row(
+        ui,
+        controls,
+        WIDTH_FROM_EXPRESSION,
+        WIDTH_FROM_EXPRESSION,
+        &mut on,
+    ) {
+        let start = help.flow_width();
+        rule.set_stroke_width_expression(on.then_some(start.as_str()));
+    }
+    let Some(text) = rule.stroke_width_expression().map(str::to_owned) else {
+        return;
+    };
+    let range = expr_help::range(state, id, &text);
+    let edit = super::value::editor(
+        ui,
+        controls,
+        WIDTH_EXPRESSION,
+        &text,
+        &help,
+        range.as_deref(),
+    );
+    if let Some(text) = edit.text {
+        rule.set_stroke_width_expression(Some(&text));
     }
 }
 
