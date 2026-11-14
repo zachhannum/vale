@@ -647,8 +647,8 @@ impl FlowMap {
     }
 
     /// The solid angle, in steradians, that drains through each sample of a
-    /// line of unit vectors, about every half cell. The end with the larger
-    /// area is downstream, and the area never gets smaller downstream. Where
+    /// line of unit vectors, about every half cell. The end nearer the
+    /// largest area is downstream, and the area never gets smaller downstream. Where
     /// the line comes into a larger river near its downstream end, the area
     /// stays the area above that confluence.
     pub fn line_profile(&self, line: &[V3]) -> Vec<FlowSample> {
@@ -658,7 +658,20 @@ impl FlowMap {
             return Vec::new();
         }
         let area = |i: usize| f64::from(self.area[samples[i].2]);
-        let down_last = area(n - 1) >= area(0);
+        // The downstream end is the end nearer the largest area. An end that
+        // goes on into the sea drains nothing, so the areas at the ends alone
+        // can point the wrong way.
+        let most = (0..n).map(area).fold(0.0, f64::max);
+        let at_most: Vec<f64> = (0..n)
+            .filter(|&i| area(i) == most)
+            .map(|i| samples[i].1)
+            .collect();
+        let middle = at_most.iter().sum::<f64>() / at_most.len().max(1) as f64;
+        let down_last = if (middle - 0.5).abs() > 1e-9 {
+            middle > 0.5
+        } else {
+            area(n - 1) >= area(0)
+        };
         let order: Vec<usize> = if down_last {
             (0..n).collect()
         } else {
@@ -2105,6 +2118,25 @@ pub(crate) mod tests {
         };
         assert!(at(56) > 1.5 * at(72), "{} {}", at(56), at(72));
         assert_eq!(profile.last().unwrap().area, flow.line_area(&line));
+    }
+
+    #[test]
+    fn a_line_that_ends_in_the_sea_grows_toward_its_mouth() {
+        let m = 128;
+        let flow = FlowMap::new(&confluence(m));
+        // The valley meets the sea at column 8. The line goes on past the
+        // coast, so its last samples drain nothing.
+        for line in [[110, 64, 2], [2, 64, 110]] {
+            let line: Vec<V3> = line.map(|x| cell_dir(m, 0, x, m / 2 + 1)).to_vec();
+            let profile = flow.line_profile(&line);
+            let source = if line[0] == cell_dir(m, 0, 110, m / 2 + 1) {
+                profile.first().unwrap()
+            } else {
+                profile.last().unwrap()
+            };
+            let largest = profile.iter().map(|s| s.area).fold(0.0, f64::max);
+            assert!(source.area < 0.25 * largest, "{} {largest}", source.area);
+        }
     }
 
     #[test]
