@@ -1,6 +1,6 @@
 //! Fonts, shaping, and glyph outlines.
 
-use crate::model::{Caps, PlacedLabel, TextStyle};
+use crate::model::{Caps, PlacedLabel, StackAlign, TextStyle};
 use kurbo::{BezPath, Rect, Shape, Vec2};
 use parley::fontique::{Blob, Collection, CollectionOptions, SourceCache};
 use parley::setting::Tag;
@@ -231,6 +231,7 @@ impl Fonts {
             cap_height: 0.7 * style.size,
             ink_bounds: Rect::ZERO,
             missing_glyphs: 0,
+            scale_x: 1.0,
         };
         let size = style.size as f32;
         let mut b = self.lcx.ranged_builder(&mut self.fcx, text, 1.0, false);
@@ -463,6 +464,9 @@ pub(crate) struct ShapedText {
     /// Union of glyph boxes moved by (x, y); `Rect::ZERO` when there is no ink.
     pub ink_bounds: Rect,
     pub missing_glyphs: usize,
+    /// The horizontal scale of each glyph, below 1 for narrow letters. The positions, the
+    /// advances, the boxes, and the profiles already have this scale.
+    pub scale_x: f64,
 }
 
 impl ShapedText {
@@ -476,10 +480,30 @@ impl ShapedText {
             .flat_map(|r| r.glyphs.iter().map(move |g| (r, g)))
     }
 
-    /// The lines one above the other, `line_height` apart and centered. The baseline of the last
-    /// line is at zero, and the cap height spans all lines, so horizontal placement treats the
-    /// block as one tall line.
-    pub fn stack(lines: Vec<ShapedText>, line_height: f64) -> ShapedText {
+    /// The text with its letters narrowed to `scale` of their width.
+    pub fn compress(mut self, scale: f64) -> ShapedText {
+        let sx = |r: Rect| Rect::new(r.x0 * scale, r.y0, r.x1 * scale, r.y1);
+        for run in &mut self.runs {
+            for g in &mut run.glyphs {
+                g.x *= scale;
+                g.advance *= scale;
+                g.bbox = g.bbox.map(sx);
+                for (l, r) in g.profile.iter_mut().flatten() {
+                    *l *= scale;
+                    *r *= scale;
+                }
+            }
+        }
+        self.advance *= scale;
+        self.ink_bounds = sx(self.ink_bounds);
+        self.scale_x *= scale;
+        self
+    }
+
+    /// The lines one above the other, `line_height` apart and aligned by `align`. The baseline of
+    /// the last line is at zero, and the cap height spans all lines, so horizontal placement
+    /// treats the block as one tall line.
+    pub fn stack(lines: Vec<ShapedText>, line_height: f64, align: StackAlign) -> ShapedText {
         let n = lines.len();
         let width = lines.iter().map(|l| l.advance).fold(0.0, f64::max);
         let rise = (n.saturating_sub(1)) as f64 * line_height;
@@ -491,11 +515,17 @@ impl ShapedText {
             cap_height: lines.first().map_or(0.0, |l| l.cap_height) + rise,
             ink_bounds: Rect::ZERO,
             missing_glyphs: 0,
+            scale_x: lines.first().map_or(1.0, |l| l.scale_x),
         };
         let mut ink: Option<Rect> = None;
         for (i, line) in lines.into_iter().enumerate() {
+            let room = width - line.advance;
             let shift = Vec2::new(
-                (width - line.advance) / 2.0,
+                match align {
+                    StackAlign::Left => 0.0,
+                    StackAlign::Center => room / 2.0,
+                    StackAlign::Right => room,
+                },
                 -((n - 1 - i) as f64) * line_height,
             );
             out.missing_glyphs += line.missing_glyphs;

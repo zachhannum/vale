@@ -10,10 +10,11 @@ pub use json::{STYLE_VERSION, StyleError, style_version};
 pub use label::{
     ABBREVIATIONS, BUFFER, CLASSES_VERSION, CURVE_LIMIT, DUPLICATE_DISTANCE, FallbackRank,
     LEADER_DISTANCE, LabelClass, LabelFallback, LabelPlacement, LabelPosition, LeaderAnchor,
-    LeaderEnd, LeaderStyle, MAX_LINES, MIN_SIZE, POLYGON_CURVE_LIMIT, POLYGON_REPEAT_DISTANCE,
-    PositionRank, REPEAT_DISTANCE, SIZE_STEP, SMOOTHING, SPREAD, TextCase, ZONES_INSIDE,
-    ZONES_OUTSIDE, classes_from_json, classes_to_json, curve_limit_for, default_abbreviations,
-    offset_for,
+    LeaderEnd, LeaderStyle, MAX_LINE_CHARS, MAX_LINES, MIN_LINE_CHARS, MIN_SIZE, MIN_WIDTH,
+    POLYGON_CURVE_LIMIT, POLYGON_REPEAT_DISTANCE, PositionRank, REPEAT_DISTANCE, SIZE_STEP,
+    SMOOTHING, SPREAD, STACK_SEPARATORS, StackAlign, TRUNCATION_MARKER, TextCase, WIDTH_STEP,
+    ZONES_INSIDE, ZONES_OUTSIDE, classes_from_json, classes_to_json, curve_limit_for,
+    default_abbreviations, offset_for,
 };
 pub use overrides::Overrides;
 pub use rule::{

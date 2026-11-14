@@ -13,7 +13,7 @@ use vale_store::GeometryKind;
 use vale_style::expr::{Expr, Filter};
 use vale_style::{
     LabelClass as StyleClass, LabelFallback, LabelPlacement as StylePlacement, LabelPosition,
-    LeaderEnd, LeaderStyle, TextCase,
+    LeaderEnd, LeaderStyle, StackAlign, TextCase,
 };
 
 use crate::atlas::FrameTarget;
@@ -53,15 +53,29 @@ pub fn fallbacks(c: &StyleClass) -> Fallbacks {
             .filter(|r| r.on)
             .map(|r| match r.fallback {
                 LabelFallback::SmallerFont => Fallback::SmallerFont,
+                LabelFallback::Compress => Fallback::Compress,
                 LabelFallback::Stack => Fallback::Stack,
                 LabelFallback::Abbreviate => Fallback::Abbreviate,
+                LabelFallback::Truncate => Fallback::Truncate,
                 LabelFallback::Leader => Fallback::Leader,
             })
             .collect(),
         min_size: c.min_size,
         size_step: c.size_step,
+        min_width: c.min_width / 100.0,
+        width_step: c.width_step / 100.0,
+        compress_with_size: c.compress_with_size,
         max_lines: c.max_lines as usize,
+        stack_separators: c.stack_separators.clone(),
+        min_line_chars: c.min_line_chars as usize,
+        max_line_chars: c.max_line_chars as usize,
+        stack_align: match c.stack_align {
+            StackAlign::Left => vale_labeler::StackAlign::Left,
+            StackAlign::Center => vale_labeler::StackAlign::Center,
+            StackAlign::Right => vale_labeler::StackAlign::Right,
+        },
         abbreviations: c.abbreviations.clone(),
+        truncation_marker: c.truncation_marker.clone(),
         leader_distance: c.leader_distance,
     }
 }
