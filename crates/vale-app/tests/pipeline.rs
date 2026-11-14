@@ -4653,7 +4653,10 @@ fn a_flow_tributary_is_no_wider_than_the_main_river_at_the_join_in_a_frame_and_i
     let px = render_rgba(&list, scale).unwrap();
     if std::env::var_os("VALE_SCREENSHOTS").is_some() {
         let image = image::RgbaImage::from_raw(px.width as u32, px.height as u32, px.data.clone());
-        image.unwrap().save("../../target/app/test-flow-confluence.png").unwrap();
+        image
+            .unwrap()
+            .save("../../target/app/test-flow-confluence.png")
+            .unwrap();
     }
     let mut at = |lon: f64, lat: f64| {
         let p = pipeline

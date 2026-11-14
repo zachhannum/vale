@@ -862,7 +862,7 @@ fn line_rows(ui: &mut egui::Ui, s: &mut Stroke, kind: GeometryKind, salt: egui::
     };
     ui.horizontal(|ui| {
         ui.label(LINE);
-        egui::ComboBox::from_id_salt(salt.with("line"))
+        let menu = egui::ComboBox::from_id_salt(salt.with("line"))
             .selected_text(name(s.kind))
             .show_ui(ui, |ui| {
                 for (label, k) in kinds {
@@ -873,6 +873,8 @@ fn line_rows(ui: &mut egui::Ui, s: &mut Stroke, kind: GeometryKind, salt: egui::
                     }
                 }
             });
+        let named = egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, LINE);
+        menu.response.widget_info(|| named.clone());
     });
     match &mut s.kind {
         StrokeKind::Dashed { dash, gap } => {

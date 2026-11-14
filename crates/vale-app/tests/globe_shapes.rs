@@ -454,3 +454,80 @@ fn a_width_from_flow_with_the_taper_grows_toward_the_mouth_on_the_globe() {
     assert!(mouth > 2.0 * source, "{circles:?}");
     assert!(circles.windows(2).all(|w| w[1].1 >= w[0].1), "{circles:?}");
 }
+
+#[test]
+fn a_flow_tributary_meets_the_main_river_with_no_step_on_the_globe() {
+    use vale_style::expr::Filter;
+    use vale_style::{Rule, Stroke, StrokeKind, StrokeSymbolizer, Style, Symbolizer};
+    let mut doc = Document::empty();
+    let id = import(
+        &mut doc,
+        "Rivers",
+        r#"{"type": "FeatureCollection", "features": [
+          {"type": "Feature", "properties": {"kind": "main"}, "geometry": {"type": "LineString",
+            "coordinates": [[0.5, -3], [0.5, -20], [0.5, -38]]}},
+          {"type": "Feature", "properties": {"kind": "trib"}, "geometry": {"type": "LineString",
+            "coordinates": [[12, -20.5], [6, -20.5], [0.5, -20.5]]}}]}"#,
+    );
+    (doc.project).add_raster("Height".to_string(), 64, "m".to_string(), -6000.0, 6000.0);
+    let mut map = vale_terrain::Heightmap::new(128, 0);
+    common::paint_confluence(&mut map);
+    let rule = |kind: &str, color: Color| {
+        let stroke = Stroke {
+            color,
+            width: 12.0,
+            kind: StrokeKind::flow(),
+        };
+        let mut rule = Rule::new(
+            kind,
+            vec![Symbolizer::Stroke(StrokeSymbolizer::constant(stroke))],
+        );
+        rule.filter = Filter::new(&format!("kind = '{kind}'"));
+        rule
+    };
+    let (blue, red) = (Color::rgb(0, 0, 200), Color::rgb(200, 0, 0));
+    doc.entry_mut(id).unwrap().style.style = Style {
+        mask: None,
+        rules: vec![rule("main", blue), rule("trib", red)],
+    };
+    let mut pipeline = Pipeline::new();
+    let update = |pipeline: &mut Pipeline| {
+        let rasters = pipeline.rasters_mut();
+        rasters.update(&doc, |_| Some(&map));
+        rasters.poll(true);
+    };
+    let view = GlobeView::centered(2.0, -20.0);
+    update(&mut pipeline);
+    let _ = draw(&doc, &mut pipeline, &view, id);
+    update(&mut pipeline);
+    let shapes = draw(&doc, &mut pipeline, &view, id);
+    // The circles of each river: the center and the radius.
+    let circles = |c: Color| -> Vec<(Pos2, f32)> {
+        let fill = egui::Color32::from_rgb(c.r, c.g, c.b);
+        (shapes.iter())
+            .filter_map(|s| match s {
+                egui::Shape::Circle(k) if k.fill == fill => Some((k.center, k.radius)),
+                _ => None,
+            })
+            .collect()
+    };
+    let (mut main, trib) = (circles(blue), circles(red));
+    assert!(
+        main.len() > 4 && trib.len() > 2,
+        "{} {}",
+        main.len(),
+        trib.len()
+    );
+    // The main river never gets narrower toward its mouth, in the south.
+    main.sort_by(|a, b| a.0.y.total_cmp(&b.0.y));
+    assert!(main.windows(2).all(|w| w[1].1 >= w[0].1 - 1e-3), "{main:?}");
+    assert!(main[main.len() - 1].1 > 2.0 * main[0].1, "{main:?}");
+    // At the join, the end of the tributary is no wider than the main river.
+    let end = trib.iter().min_by(|a, b| a.0.x.total_cmp(&b.0.x)).unwrap();
+    let near = |p: &&(Pos2, f32)| p.0.distance(end.0);
+    let beside = main
+        .iter()
+        .min_by(|a, b| near(a).total_cmp(&near(b)))
+        .unwrap();
+    assert!(end.1 <= beside.1 + 1e-3, "{end:?} {beside:?}");
+}

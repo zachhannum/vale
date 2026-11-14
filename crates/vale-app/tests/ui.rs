@@ -3087,3 +3087,23 @@ fn the_tool_bar_has_the_polygon_brush_and_the_keys_choose_its_mode() {
     mouse_way(&mut h, &[[-30.0, 0.0], [-24.0, 0.0]], egui::Modifiers::NONE);
     assert_eq!(count(&h), 2);
 }
+
+#[test]
+fn the_desktop_style_editor_sets_the_flow_line_type() {
+    use vale_app::ui::pad::rules::{FLOW, FLOW_MIN, LINE};
+    use vale_style::StrokeKind;
+    let mut h = globe_harness();
+    let rivers = open_rivers(&mut h);
+    let kind = |h: &Harness<'static, AppState>| {
+        let rule = &h.state().doc.entry(rivers).unwrap().style.style.rules[0];
+        rule.stroke().unwrap().kind
+    };
+    assert_eq!(kind(&h), StrokeKind::Solid);
+    assert!(h.query_by_label(FLOW_MIN).is_none());
+    h.get_all_by_label(LINE).last().unwrap().click();
+    h.run_steps(2);
+    h.get_by_label(FLOW).click();
+    h.run_steps(2);
+    assert_eq!(kind(&h), StrokeKind::flow());
+    assert!(h.query_all_by_label(FLOW_MIN).next().is_some());
+}

@@ -17111,3 +17111,43 @@ fn the_width_template_gives_the_largest_river_about_four_points_and_each_line_on
     assert!((2.5..=6.5).contains(&width(0)), "{text}: {} pt", width(0));
     assert_eq!(width(1), 1.0, "{text}");
 }
+
+#[test]
+fn a_rule_page_sets_the_flow_line_type_and_its_smallest_width() {
+    use vale_app::ui::pad::rules::{FLOW, FLOW_MIN, FLOW_NEEDS_HEIGHT, TAPER};
+    use vale_style::StrokeKind;
+    for size in [BOARDS[1], BOARDS[3]] {
+        let what = format!("{size:?}");
+        let mut h = pad(size);
+        let rivers = vector(&h, "Rivers");
+        let kind = |h: &Pad| rules(h, rivers)[0].stroke().unwrap().kind;
+        open_rule(&mut h, "Rivers", "Default");
+        assert!(control(&h, FLOW_MIN).is_none(), "{what}");
+        scroll_to_control(&mut h, FLOW);
+        tap(&mut h, FLOW);
+        assert_eq!(kind(&h), StrokeKind::flow(), "{what}");
+        drag_right(&mut h, FLOW_MIN);
+        let StrokeKind::Flow { min } = kind(&h) else {
+            panic!("{what}: {:?}", kind(&h));
+        };
+        assert!(min > StrokeKind::FLOW_MIN && min <= 1.0, "{what}: {min}");
+        // The world has a height layer, so no hint shows.
+        assert!(h.query_by_label(FLOW_NEEDS_HEIGHT).is_none(), "{what}");
+        check_controls(&h, &format!("{what} with a flow"));
+        screenshot::save(&mut h, &format!("pad-flow-{}", size.0));
+        // Another line type takes the slider away.
+        scroll_to_control(&mut h, TAPER);
+        tap(&mut h, TAPER);
+        assert!(control(&h, FLOW_MIN).is_none(), "{what}");
+    }
+    // A polygon layer has no Flow.
+    let mut h = pad(BOARDS[1]);
+    open_rule(&mut h, "Land", "Default");
+    assert!(control(&h, FLOW).is_none());
+    // With no height layer, a hint shows.
+    let mut h = empty_pad(BOARDS[1]);
+    open_rule(&mut h, "Rivers", "Default");
+    scroll_to_control(&mut h, FLOW);
+    tap(&mut h, FLOW);
+    assert!(h.query_by_label(FLOW_NEEDS_HEIGHT).is_some());
+}
