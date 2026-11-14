@@ -356,6 +356,7 @@ fn a_width_expression_follows_the_attribute() {
                 color: Property::constant(blue),
                 width: Property::expression("flow * 0.5", 1.0),
                 kind: StrokeKind::Solid,
+                apply_mask: true,
             })],
         )],
     };
@@ -2295,6 +2296,7 @@ fn the_legend_lists_the_visible_rules_with_their_symbols() {
             name,
             vec![Symbolizer::Fill {
                 color: Property::constant(color),
+                apply_mask: true,
             }],
         )
     };
@@ -3289,6 +3291,7 @@ fn masked_doc() -> (Document, vale_store::LayerId) {
             vec![
                 Symbolizer::Fill {
                     color: Property::constant(fill),
+                    apply_mask: true,
                 },
                 Symbolizer::Stroke(StrokeSymbolizer::constant(Stroke::solid(stroke, 2.0))),
             ],
@@ -3376,6 +3379,142 @@ fn a_page_mask_clips_the_fills_and_the_strokes_of_its_layer() {
     let before = vale_render::render_pdf(&unmasked).unwrap();
     assert_eq!(masked::pdf_clips(&pdf).0, masked::pdf_clips(&before).0 + 1);
     assert_eq!(masked::pdf_clips(&pdf).1, masked::pdf_clips(&before).1);
+}
+
+/// Sets the "Apply mask" value of each fill and each stroke of `layer`.
+fn set_apply_mask(doc: &mut Document, layer: vale_store::LayerId, fill: bool, stroke: bool) {
+    let style = &mut doc.entry_mut(layer).unwrap().style.style;
+    for s in style.rules.iter_mut().flat_map(|r| &mut r.symbolizers) {
+        match s {
+            Symbolizer::Fill { apply_mask, .. } => *apply_mask = fill,
+            Symbolizer::Stroke(s) => s.apply_mask = stroke,
+            _ => {}
+        }
+    }
+}
+
+#[test]
+fn a_fill_or_a_stroke_that_does_not_apply_a_polygon_mask_draws_the_whole_polygon() {
+    let (mut doc, ids) = shapes(&[
+        &square_json(0.0, 0.0, 40.0, 40.0),
+        &square_json(-10.0, -10.0, 20.0, 50.0),
+    ]);
+    let (layer, mask) = (ids[0], ids[1]);
+    doc.set_visible(mask, false);
+    let map = doc.project.atlas.maps[0].id;
+    doc.set_shown(map, mask, false);
+    doc.entry_mut(layer).unwrap().style.style.mask = Some(Mask::Polygons { layer: mask });
+    let mut pipeline = Pipeline::new();
+    let page = doc.project.atlas.pages[0].id;
+    let frame = frame_on(&mut doc, &mut pipeline, page);
+
+    // The east end of the fill and of the stroke, in degrees.
+    let ends = |doc: &Document, pipeline: &mut Pipeline| {
+        let (fills, strokes) = masked_paths(&compose(doc, pipeline).list.items);
+        let fill = lon_range(&to_lonlat(doc, pipeline, &fills)).1;
+        let stroke = lon_range(&to_lonlat(doc, pipeline, &strokes)).1;
+        (fill, stroke)
+    };
+    // The width of the fill and of the stroke in the map frame.
+    let widths = |doc: &Document, pipeline: &mut Pipeline| {
+        let (fills, strokes) = masked_paths(&compose_frame(doc, pipeline, frame));
+        (path_box(&fills).width(), path_box(&strokes).width())
+    };
+    let near = |a: f64, b: f64| (a - b).abs() < 0.1;
+    let (cut, whole) = widths(&doc, &mut pipeline);
+    assert!(near(cut, whole), "{cut} {whole}");
+
+    set_apply_mask(&mut doc, layer, true, false);
+    let (fill, stroke) = ends(&doc, &mut pipeline);
+    assert!(near(fill, 20.0) && near(stroke, 40.0), "{fill} {stroke}");
+    let (fill, stroke) = widths(&doc, &mut pipeline);
+    assert!(near(fill, cut) && stroke > 1.5 * cut, "{fill} {stroke}");
+
+    set_apply_mask(&mut doc, layer, false, true);
+    let (fill, stroke) = ends(&doc, &mut pipeline);
+    assert!(near(fill, 40.0) && near(stroke, 20.0), "{fill} {stroke}");
+    let (fill, stroke) = widths(&doc, &mut pipeline);
+    assert!(fill > 1.5 * cut && near(stroke, cut), "{fill} {stroke}");
+}
+
+#[test]
+fn a_stroke_that_does_not_apply_a_polygon_mask_draws_a_polygon_outside_the_mask() {
+    let (mut doc, ids) = shapes(&[
+        &square_json(30.0, 0.0, 40.0, 10.0),
+        &square_json(-10.0, -10.0, 20.0, 50.0),
+    ]);
+    let (layer, mask) = (ids[0], ids[1]);
+    doc.set_visible(mask, false);
+    doc.entry_mut(layer).unwrap().style.style.mask = Some(Mask::Polygons { layer: mask });
+    let mut pipeline = Pipeline::new();
+    let (fills, strokes) = masked_paths(&compose(&doc, &mut pipeline).list.items);
+    assert!(fills.is_empty() && strokes.is_empty());
+
+    set_apply_mask(&mut doc, layer, true, false);
+    let (fills, strokes) = masked_paths(&compose(&doc, &mut pipeline).list.items);
+    assert!(fills.is_empty() && !strokes.is_empty());
+    let (west, east) = lon_range(&to_lonlat(&doc, &mut pipeline, &strokes));
+    assert!(
+        (west - 30.0).abs() < 0.1 && (east - 40.0).abs() < 0.1,
+        "{west} {east}"
+    );
+}
+
+#[test]
+fn a_page_mask_does_not_clip_a_stroke_that_does_not_apply_it() {
+    use vale_app::mask::PageMask;
+    let (mut doc, a) = masked_doc();
+    set_apply_mask(&mut doc, a, true, false);
+    let mut pipeline = Pipeline::new();
+    let page = doc.project.atlas.pages[0].id;
+    let frame = frame_on(&mut doc, &mut pipeline, page);
+    let has = |items: &[Item], c: Color| items.iter().any(|i| item_color(i) == Some(c));
+
+    // With no page mask yet, the layer draws its stroke and no fill.
+    let unmasked = compose_frame_full(&doc, &mut pipeline, frame).list;
+    assert!(!has(&unmasked.items, MASKED_FILL));
+    assert!(has(&unmasked.items, MASKED_STROKE));
+
+    let square = vec![
+        Point::new(0.0, 0.0),
+        Point::new(150.0, 0.0),
+        Point::new(150.0, 150.0),
+        Point::new(0.0, 150.0),
+    ];
+    pipeline.set_page_mask(frame, a, Some(PageMask::new(vec![square])));
+    let list = compose_frame_full(&doc, &mut pipeline, frame).list;
+    let is_clip = |i: &Item| {
+        matches!(
+            i,
+            Item::PushClip {
+                rule: FillRule::NonZero,
+                ..
+            }
+        )
+    };
+    let start = list.items.iter().position(is_clip).expect("a clip");
+    assert_eq!(list.items.iter().filter(|i| is_clip(i)).count(), 1);
+    let end = start
+        + (list.items[start..].iter())
+            .position(|i| matches!(i, Item::PopClip))
+            .unwrap();
+    let inside = &list.items[start + 1..end];
+    assert!(inside.iter().all(|i| item_color(i) == Some(MASKED_FILL)));
+    assert!(has(inside, MASKED_FILL));
+    // The stroke draws after the clip, over the fill.
+    assert!(has(&list.items[end..], MASKED_STROKE));
+    assert!(!has(&list.items[..start], MASKED_STROKE));
+
+    // In the PDF, the clip holds the fill only.
+    let pdf = vale_render::render_pdf(&list).unwrap();
+    let before = vale_render::render_pdf(&unmasked).unwrap();
+    assert_eq!(masked::pdf_clips(&pdf).0, masked::pdf_clips(&before).0 + 1);
+
+    // With the fill off too, nothing is clipped.
+    set_apply_mask(&mut doc, a, false, false);
+    let list = compose_frame_full(&doc, &mut pipeline, frame).list;
+    assert!(!list.items.iter().any(is_clip));
+    assert!(has(&list.items, MASKED_FILL) && has(&list.items, MASKED_STROKE));
 }
 
 /// A document with one raster layer of `unit` with bands at `stops`, the

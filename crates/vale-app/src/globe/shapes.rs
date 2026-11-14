@@ -293,45 +293,89 @@ pub struct Work {
     pub draws: usize,
 }
 
+/// The kept shapes of one layer: of the paints that the mask cuts, and of
+/// the paints that draw the whole geometry of a masked layer.
+struct Kept {
+    shapes: LayerShapes,
+    whole: Option<LayerShapes>,
+}
+
 /// The kept shapes of the vector layers on the globe.
 #[derive(Default)]
 pub struct ShapeCache {
-    layers: HashMap<LayerId, LayerShapes>,
+    layers: HashMap<LayerId, Kept>,
     work: HashMap<LayerId, Work>,
+}
+
+impl LayerShapes {
+    fn new(source: Source) -> LayerShapes {
+        LayerShapes {
+            source,
+            features: Vec::new(),
+            views: Vec::new(),
+            draws: Vec::new(),
+        }
+    }
+
+    /// Makes the directions again if they are out of date. True if it made
+    /// them.
+    fn update(
+        &mut self,
+        layer: &Layer,
+        masked: Option<&Arc<MaskedLayer>>,
+        detail: Option<&Arc<Detail>>,
+        work: &mut Work,
+    ) -> bool {
+        let source = Source::of(layer, masked.map(Arc::as_ref), detail);
+        if self.source == source && self.features.len() == layer.features.len() {
+            return false;
+        }
+        work.directions += 1;
+        self.source = source;
+        self.features = (layer.features.iter().enumerate())
+            .map(|(i, f)| {
+                let part = masked.and_then(|m| m.features.get(i)?.as_ref());
+                let geometry = lod::geometry(detail.map(Arc::as_ref), i, &f.geometry);
+                Feature::new(geometry, part)
+            })
+            .collect();
+        self.views.clear();
+        self.draws.clear();
+        true
+    }
 }
 
 impl ShapeCache {
     /// The kept shapes of `layer`, with directions that are up to date. A
-    /// layer with no mask has the geometry of `detail`.
+    /// layer with no mask has the geometry of `detail`. With a mask, the
+    /// first shapes are cut by the mask, and with `whole`, the second
+    /// shapes have the whole geometry of `detail`. The first shapes keep
+    /// the draws.
     pub fn layer(
         &mut self,
         layer: &Layer,
         masked: Option<&Arc<MaskedLayer>>,
         detail: Option<&Arc<Detail>>,
-    ) -> (&mut LayerShapes, &mut Work) {
-        let detail = detail.filter(|_| masked.is_none());
-        let source = Source::of(layer, masked.map(Arc::as_ref), detail);
+        whole: bool,
+    ) -> (&mut LayerShapes, Option<&mut LayerShapes>, &mut Work) {
+        let cut_detail = detail.filter(|_| masked.is_none());
+        let source = Source::of(layer, masked.map(Arc::as_ref), cut_detail);
         let work = self.work.entry(layer.id).or_default();
-        let shapes = self.layers.entry(layer.id).or_insert_with(|| LayerShapes {
-            source,
-            features: Vec::new(),
-            views: Vec::new(),
-            draws: Vec::new(),
+        let kept = self.layers.entry(layer.id).or_insert_with(|| Kept {
+            shapes: LayerShapes::new(source),
+            whole: None,
         });
-        if shapes.source != source || shapes.features.len() != layer.features.len() {
-            work.directions += 1;
-            shapes.source = source;
-            shapes.features = (layer.features.iter().enumerate())
-                .map(|(i, f)| {
-                    let part = masked.and_then(|m| m.features.get(i)?.as_ref());
-                    let geometry = lod::geometry(detail.map(Arc::as_ref), i, &f.geometry);
-                    Feature::new(geometry, part)
-                })
-                .collect();
-            shapes.views.clear();
-            shapes.draws.clear();
+        kept.shapes.update(layer, masked, cut_detail, work);
+        if whole && masked.is_some() {
+            let whole = (kept.whole)
+                .get_or_insert_with(|| LayerShapes::new(Source::of(layer, None, detail)));
+            if whole.update(layer, None, detail, work) {
+                kept.shapes.draws.clear();
+            }
+        } else if kept.whole.take().is_some() {
+            kept.shapes.draws.clear();
         }
-        (shapes, work)
+        (&mut kept.shapes, kept.whole.as_mut(), work)
     }
 
     /// Makes the shapes of layer `id` again at the next draw.

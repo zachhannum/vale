@@ -56,6 +56,7 @@ fn width_from_flow() -> LayerStyle {
         color: Property::constant(BLUE),
         width: Property::expression("flow * 0.5", 1.0),
         kind: StrokeKind::Solid,
+        apply_mask: true,
     })];
     style
 }
@@ -120,7 +121,13 @@ fn constant_paints_only_for_constant_rules() {
     ] {
         let style = LayerStyle::default_for(kind, 2, &[]);
         assert!(style.is_simple());
-        let constant = style.style.constant_paints(1.0).unwrap();
+        let constant: Vec<Paint> = style
+            .style
+            .constant_paints(1.0)
+            .unwrap()
+            .into_iter()
+            .map(|(p, _)| p)
+            .collect();
         assert_eq!(constant, paints(&style.style, &river("x", 1.0), 1.0));
     }
     assert!(two_rules().constant_paints(1.0).is_none());
@@ -164,7 +171,7 @@ fn the_json_has_a_version() {
     let json = LayerStyle::default_for(GeometryKind::Line, 0, &[]).to_json();
     let root: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(root["version"], STYLE_VERSION);
-    assert_eq!(STYLE_VERSION, 7);
+    assert_eq!(STYLE_VERSION, 8);
 }
 
 #[test]
@@ -267,11 +274,11 @@ fn json_errors() {
         root.to_string()
     };
     let newer = edit(&|m| {
-        m.insert("version".into(), 8.into());
+        m.insert("version".into(), 9.into());
     });
     assert_eq!(
         LayerStyle::from_json(&newer),
-        Err(StyleError::Version(Some(8)))
+        Err(StyleError::Version(Some(9)))
     );
     let none = edit(&|m| {
         m.remove("version");
@@ -531,7 +538,7 @@ fn solid_json_is_unchanged() {
     let json = line_with(StrokeKind::Solid).to_json();
     let expected = concat!(
         r##"{"label":{"color":"#2864a0","enabled":false,"font":null,"italic":true,"priority_field":null,"size":11.0,"text":""},"##,
-        r##""rules":[{"filter":"","name":"Default","symbolizers":[{"color":"#0000ff","type":"stroke","width":2.0}]}],"version":7}"##,
+        r##""rules":[{"filter":"","name":"Default","symbolizers":[{"color":"#0000ff","type":"stroke","width":2.0}]}],"version":8}"##,
     );
     assert_eq!(json, expected);
 }
@@ -691,12 +698,15 @@ fn a_symbol_takes_size_and_rotation_from_attributes() {
     assert!(constant.rules[0].symbolizers[0].is_constant());
     assert_eq!(
         constant.constant_paints(1.0),
-        Some(vec![Paint::Symbol {
-            symbol: "pine".into(),
-            size: 8.0,
-            rotation: 0.0,
-            tint: None,
-        }])
+        Some(vec![(
+            Paint::Symbol {
+                symbol: "pine".into(),
+                size: 8.0,
+                rotation: 0.0,
+                tint: None,
+            },
+            false
+        )])
     );
 }
 
@@ -741,7 +751,7 @@ fn a_scatter_keeps_spacing_at_least_size() {
     let Some(paints) = constant.style.constant_paints(1.0) else {
         panic!("constant")
     };
-    assert!(matches!(paints[0], Paint::Scatter { spacing: 6.0, .. }));
+    assert!(matches!(paints[0].0, Paint::Scatter { spacing: 6.0, .. }));
 }
 
 fn paint_with(s: Symbolizer, size: f64) -> Paint {
@@ -751,6 +761,7 @@ fn paint_with(s: Symbolizer, size: f64) -> Paint {
 fn fill(color: Color) -> Symbolizer {
     Symbolizer::Fill {
         color: Property::constant(color),
+        apply_mask: true,
     }
 }
 
@@ -1057,6 +1068,100 @@ fn label_text_round_trips() {
     let mut s = LayerStyle::default_for(GeometryKind::Point, 0, &[]);
     s.label.text = "concat(name, ' (' || round(elevation) || ' m)')".to_owned();
     let json = s.to_json();
-    assert!(json.contains("\"version\":7"));
+    assert!(json.contains("\"version\":8"));
     assert_eq!(LayerStyle::from_json(&json).unwrap(), s);
+}
+
+fn masked_polygons(fill_mask: bool, stroke_mask: bool) -> LayerStyle {
+    let mut style = LayerStyle::default_for(GeometryKind::Polygon, 0, &[]);
+    style.style.rules = vec![Rule::new("r", vec![fill(RED), stroke(BLUE, 1.0)])];
+    style.style.rules[0].set_fill_applies_mask(fill_mask);
+    style.style.rules[0].set_stroke_applies_mask(stroke_mask);
+    style.style.mask = Some(Mask::land(LayerId(3)));
+    style
+}
+
+fn polygon(attrs: &BTreeMap<String, Value>) -> Context<'_> {
+    Context {
+        attributes: attrs,
+        scale: 1.0,
+        geometry: GeometryKind::Polygon,
+        shape: None,
+        radius_km: 0.0,
+        page: None,
+        rasters: None,
+        index: 0,
+    }
+}
+
+#[test]
+fn apply_mask_off_round_trips() {
+    let style = masked_polygons(false, false);
+    let json = style.to_json();
+    assert_eq!(json.matches("\"apply_mask\":false").count(), 2);
+    let back = LayerStyle::from_json(&json).unwrap();
+    assert_eq!(back, style);
+    assert_eq!(back.style.rules[0].fill_applies_mask(), Some(false));
+    assert_eq!(back.style.rules[0].stroke_applies_mask(), Some(false));
+}
+
+#[test]
+fn apply_mask_on_writes_no_key() {
+    let json = masked_polygons(true, true).to_json();
+    assert!(!json.contains("apply_mask"));
+}
+
+#[test]
+fn a_style_of_version_7_applies_the_mask() {
+    let mut root: serde_json::Value =
+        serde_json::from_str(&masked_polygons(true, true).to_json()).unwrap();
+    root["version"] = 7.into();
+    let style = LayerStyle::from_json(&root.to_string()).unwrap();
+    assert_eq!(style.style.rules[0].fill_applies_mask(), Some(true));
+    assert_eq!(style.style.rules[0].stroke_applies_mask(), Some(true));
+}
+
+#[test]
+fn constant_paints_flag_the_paints_that_the_mask_cuts() {
+    let flags = |s: &Style| -> Vec<bool> {
+        s.constant_paints(1.0)
+            .unwrap()
+            .into_iter()
+            .map(|(_, cut)| cut)
+            .collect()
+    };
+    let mut style = masked_polygons(true, false).style;
+    style.rules[0]
+        .symbolizers
+        .push(Symbolizer::Scatter(ScatterSymbolizer::new(
+            "tree", 6.0, 10.0,
+        )));
+    assert_eq!(flags(&style), [true, false, true]);
+    style.mask = None;
+    assert_eq!(flags(&style), [false, false, false]);
+}
+
+#[test]
+fn a_label_is_in_the_mask_with_a_masked_fill_or_no_fill() {
+    let attrs = BTreeMap::new();
+    let ctx = polygon(&attrs);
+    assert!(masked_polygons(true, false).style.label_in_mask(&ctx));
+    assert!(!masked_polygons(false, true).style.label_in_mask(&ctx));
+    let mut no_fill = masked_polygons(true, true).style;
+    no_fill.rules[0].set_fill(None);
+    assert!(no_fill.label_in_mask(&ctx));
+}
+
+#[test]
+fn set_fill_and_set_stroke_keep_apply_mask() {
+    let mut rule = masked_polygons(false, false).style.rules.remove(0);
+    rule.set_fill(Some(BLUE));
+    rule.set_stroke(Some(Stroke::solid(RED, 3.0)));
+    assert_eq!(rule.fill(), Some(BLUE));
+    assert_eq!(rule.fill_applies_mask(), Some(false));
+    assert_eq!(rule.stroke_applies_mask(), Some(false));
+    rule.set_fill(None);
+    assert_eq!(rule.fill_applies_mask(), None);
+    rule.set_fill(Some(RED));
+    assert_eq!(rule.fill_applies_mask(), Some(true));
 }

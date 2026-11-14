@@ -102,7 +102,36 @@ pub struct PageFeature {
     pub lines: Vec<Vec<Point>>,
     /// Polygon layers: closed rings for an even-odd fill.
     pub rings: Vec<Vec<Point>>,
+    /// The whole geometry of a feature that a polygon mask cuts, for the
+    /// paints that do not apply the mask. `lines` and `rings` are the cut.
+    pub whole: Option<Box<Whole>>,
+    /// The box of the cut and of the whole geometry.
     pub bbox: Rect,
+}
+
+/// The lines and the rings of a feature before a polygon mask cuts them.
+pub struct Whole {
+    pub lines: Vec<Vec<Point>>,
+    pub rings: Vec<Vec<Point>>,
+}
+
+impl PageFeature {
+    /// The lines that a paint draws: the cut if the paint applies the mask,
+    /// else the whole lines.
+    pub fn lines_for(&self, masked: bool) -> &[Vec<Point>] {
+        match &self.whole {
+            Some(w) if !masked => &w.lines,
+            _ => &self.lines,
+        }
+    }
+
+    /// The rings that a paint draws, as `lines_for` gives the lines.
+    pub fn rings_for(&self, masked: bool) -> &[Vec<Point>] {
+        match &self.whole {
+            Some(w) if !masked => &w.rings,
+            _ => &self.rings,
+        }
+    }
 }
 
 /// A symbol that a map drew.
@@ -142,6 +171,7 @@ struct ProjFeature {
     points: Vec<Point>,
     lines: Vec<Vec<Point>>,
     rings: Vec<Vec<Point>>,
+    whole: Option<Box<Whole>>,
     bbox: Rect,
 }
 
@@ -170,8 +200,9 @@ struct WindowGraticule {
 }
 
 /// The projected features of a layer, with the generation of its cut and
-/// the key of its level of detail. `None`: the layer draws whole.
-type ProjLayer = ((Option<u64>, usize), Vec<Option<ProjFeature>>);
+/// the key of its level of detail. `None`: the layer draws whole. The flag
+/// of the cut is true if the features keep their whole geometry too.
+type ProjLayer = ((Option<(u64, bool)>, usize), Vec<Option<ProjFeature>>);
 
 /// The most caches that a pipeline keeps.
 const MAX_CACHES: usize = 3;
@@ -251,12 +282,18 @@ fn project_feature(projection: &Projection, geometry: &Geometry) -> Option<ProjF
         points,
         lines,
         rings,
+        whole: None,
         bbox,
     })
 }
 
-/// The geometry of the part of a feature inside its mask.
-fn project_masked(projection: &Projection, part: &MaskedFeature) -> Option<ProjFeature> {
+/// The geometry of the part of a feature inside its mask. With `whole`, the
+/// feature keeps the whole geometry too.
+fn project_masked(
+    projection: &Projection,
+    part: &MaskedFeature,
+    whole: Option<&Geometry>,
+) -> Option<ProjFeature> {
     let rings: Vec<Vec<Point>> = (part.polygons.iter())
         .flat_map(|p| projection.project_polygon(p))
         .collect();
@@ -267,10 +304,21 @@ fn project_masked(projection: &Projection, part: &MaskedFeature) -> Option<ProjF
     for p in lines.iter().chain(&rings).flatten() {
         extend_bbox(&mut bbox, *p);
     }
+    let whole = whole.and_then(|g| project_feature(projection, g));
+    if let Some(w) = &whole {
+        extend_bbox(&mut bbox, Point::new(w.bbox.x0, w.bbox.y0));
+        extend_bbox(&mut bbox, Point::new(w.bbox.x1, w.bbox.y1));
+    }
     bbox.map(|bbox| ProjFeature {
         points: Vec::new(),
         lines,
         rings,
+        whole: whole.map(|w| {
+            Box::new(Whole {
+                lines: w.lines,
+                rings: w.rings,
+            })
+        }),
         bbox,
     })
 }
@@ -309,6 +357,12 @@ fn page_feature(vt: &ViewTransform, index: usize, f: &ProjFeature) -> PageFeatur
         points: map_pts(vt, &f.points),
         lines: f.lines.iter().map(|l| map_pts(vt, l)).collect(),
         rings: f.rings.iter().map(|l| map_pts(vt, l)).collect(),
+        whole: f.whole.as_ref().map(|w| {
+            Box::new(Whole {
+                lines: w.lines.iter().map(|l| map_pts(vt, l)).collect(),
+                rings: w.rings.iter().map(|l| map_pts(vt, l)).collect(),
+            })
+        }),
         bbox: vt.page_bbox(f.bbox),
     }
 }
@@ -386,6 +440,8 @@ pub(crate) struct Batch {
     pub paint: Paint,
     /// Indices in the features that `style_batches` takes.
     pub features: Vec<usize>,
+    /// True if the mask of the style cuts the paint.
+    pub masked: bool,
 }
 
 /// The bits of a paint, for grouping.
@@ -478,6 +534,8 @@ fn batches(pl: &PageLayer<'_>) -> Vec<Batch> {
 }
 
 /// The batches of `count` features with `style` at the scale denominator `scale`, as `batches` gives them. `context` gives the style context of feature `i`.
+///
+/// The masked batches draw as one group, at the place of the first masked batch, so that one clip holds them.
 pub(crate) fn style_batches<'a>(
     style: &vale_style::Style,
     scale: f64,
@@ -485,15 +543,17 @@ pub(crate) fn style_batches<'a>(
     context: impl Fn(usize) -> Context<'a>,
 ) -> Vec<Batch> {
     if let Some(paints) = style.constant_paints(scale) {
-        return paints
+        let out = paints
             .into_iter()
             .enumerate()
-            .map(|(i, paint)| Batch {
+            .map(|(i, (paint, masked))| Batch {
                 order: (0, i),
                 paint,
                 features: (0..count).collect(),
+                masked,
             })
             .collect();
+        return group_masked(out);
     }
     let mut out: Vec<Batch> = Vec::new();
     let mut index: HashMap<(usize, usize, [u64; 8]), usize> = HashMap::new();
@@ -518,6 +578,7 @@ pub(crate) fn style_batches<'a>(
                         order: (*r, k),
                         paint,
                         features: Vec::new(),
+                        masked: symbolizer.cut_by_mask() && style.mask.is_some(),
                     });
                     out.len() - 1
                 });
@@ -526,7 +587,16 @@ pub(crate) fn style_batches<'a>(
         }
     }
     out.sort_by_key(|b| b.order);
-    out
+    group_masked(out)
+}
+
+/// Moves the masked batches of `batches`, which are in style order, to the
+/// place of the first masked batch. The other batches keep their order.
+fn group_masked(mut batches: Vec<Batch>) -> Vec<Batch> {
+    if let Some(first) = batches.iter().find(|b| b.masked).map(|b| b.order) {
+        batches.sort_by_key(|b| if b.masked { first } else { b.order });
+    }
+    batches
 }
 
 /// What the symbols of a map need.
@@ -636,12 +706,13 @@ fn symbol_affine(at: Point, size: f64, rotation: f64) -> Affine {
 /// Draws one batch. A paint that does not fit the kind of the layer draws nothing.
 fn draw_batch(list: &mut DisplayList, pl: &PageLayer<'_>, batch: &Batch, sd: &mut SymbolDraw<'_>) {
     let features = || batch.features.iter().map(|&i| &pl.features[i]);
-    let lines = || polylines_path(features().flat_map(|f| &f.lines), false);
+    let masked = batch.masked;
+    let lines = || polylines_path(features().flat_map(|f| f.lines_for(masked)), false);
     match (pl.kind, batch.paint.clone()) {
         (GeometryKind::Polygon, Paint::Fill(color)) => {
-            for f in features().filter(|f| !f.rings.is_empty()) {
+            for f in features().filter(|f| !f.rings_for(masked).is_empty()) {
                 list.push(Item::Fill {
-                    path: polylines_path(&f.rings, true),
+                    path: polylines_path(f.rings_for(masked), true),
                     color,
                     rule: FillRule::EvenOdd,
                 });
@@ -652,15 +723,16 @@ fn draw_batch(list: &mut DisplayList, pl: &PageLayer<'_>, batch: &Batch, sd: &mu
             match stroke.kind {
                 StrokeKind::Dashed { dash, gap } => {
                     let parts: Vec<_> = features()
-                        .flat_map(|f| stroke::dash(&f.lines, dash, gap))
+                        .flat_map(|f| stroke::dash(f.lines_for(masked), dash, gap))
                         .collect();
                     push_stroke(list, polylines_path(&parts, false), &stroke, false);
                 }
                 StrokeKind::Taper { start } if line => {
                     // One fill for the batch, so that the alpha does not build up where two lines overlap.
                     let mut path = BezPath::new();
-                    for f in features().filter(|f| !f.lines.is_empty()) {
-                        let pieces = stroke::taper(&f.lines, start * stroke.width, stroke.width);
+                    for f in features().filter(|f| !f.lines_for(masked).is_empty()) {
+                        let pieces =
+                            stroke::taper(f.lines_for(masked), start * stroke.width, stroke.width);
                         path.extend(stroke::taper_path(&pieces));
                     }
                     if !path.elements().is_empty() {
@@ -675,7 +747,9 @@ fn draw_batch(list: &mut DisplayList, pl: &PageLayer<'_>, batch: &Batch, sd: &mu
                     let mut items = Vec::new();
                     let mut bounds: Option<Rect> = None;
                     for f in features() {
-                        for d in stroke::brush_dabs(&f.lines, stroke.width, f.index as u64) {
+                        for d in
+                            stroke::brush_dabs(f.lines_for(masked), stroke.width, f.index as u64)
+                        {
                             let circle = Circle::new(d.center, d.radius);
                             let b = circle.bounding_box();
                             bounds = Some(bounds.map_or(b, |r| r.union(b)));
@@ -878,6 +952,17 @@ fn push_stroke(list: &mut DisplayList, path: BezPath, stroke: &Stroke, round: bo
             width: stroke.width,
             round,
         });
+    }
+}
+
+/// Closes the clip that starts at item `at`. A clip with nothing in it goes.
+fn close_clip(list: &mut DisplayList, at: Option<usize>) {
+    match at {
+        Some(at) if list.items.len() == at + 1 => {
+            list.items.pop();
+        }
+        Some(_) => list.push(Item::PopClip),
+        None => {}
     }
 }
 
@@ -1154,36 +1239,32 @@ fn draw_map<'a>(
     };
     for pl in &page_layers {
         sd.layer_count = 0;
-        // The page mask clips the fills and the strokes of a line or polygon
-        // layer. A layer whose page mask is not ready draws none of them.
+        // The page mask clips the masked batches of a line or polygon layer.
+        // A layer whose page mask is not ready draws none of them.
         let mask = match masks {
             Some((masks, target)) if pl.kind != GeometryKind::Point => masks
                 .get(&pl.layer.id)
                 .map(|m| m.as_ref().map(|m| m.path(target))),
             _ => None,
         };
-        let clip_at = list.items.len();
-        let clipped = match mask {
-            Some(None) => continue,
-            Some(Some(path)) => {
-                list.push(Item::PushClip {
-                    path,
-                    rule: FillRule::NonZero,
-                });
-                true
-            }
-            None => false,
-        };
+        // The index of the open clip in the list.
+        let mut open: Option<usize> = None;
         for batch in batches(pl) {
+            match (&mask, batch.masked) {
+                (Some(None), true) => continue,
+                (Some(Some(path)), true) if open.is_none() => {
+                    open = Some(list.items.len());
+                    list.push(Item::PushClip {
+                        path: path.clone(),
+                        rule: FillRule::NonZero,
+                    });
+                }
+                (_, false) => close_clip(list, open.take()),
+                _ => {}
+            }
             draw_batch(list, pl, &batch, &mut sd);
         }
-        if clipped {
-            if list.items.len() == clip_at + 1 {
-                list.items.pop();
-            } else {
-                list.push(Item::PopClip);
-            }
-        }
+        close_clip(list, open);
     }
     let symbols = sd.placed;
 
@@ -1398,14 +1479,22 @@ impl Pipeline {
         let cache = &mut self.caches[0];
         cache.layers.retain(|id, _| exists(*id));
         for id in ids {
-            let mask = doc.map_entry(styled, *id).and_then(|e| e.style.style.mask);
+            let entry = doc.map_entry(styled, *id);
+            let style = entry.as_ref().map(|e| &e.style.style);
+            let mask = style.and_then(|s| s.mask);
+            // A paint that does not apply the mask draws the whole geometry.
+            let keep_whole = style.is_some_and(|s| {
+                (s.rules.iter())
+                    .flat_map(|r| &r.symbolizers)
+                    .any(|s| !s.cut_by_mask())
+            });
             let masked = self.masks.layer(doc, *id, mask);
             let detail = match (pixel, &masked) {
                 (Some(pixel), None) => doc.layer(*id).and_then(|l| self.lod.level(l, pixel)),
                 _ => None,
             };
             let generation = (
-                masked.as_ref().map(|m| m.generation),
+                masked.as_ref().map(|m| (m.generation, keep_whole)),
                 lod::key(detail.as_ref()),
             );
             let cuts = cache.layers.entry(*id).or_default();
@@ -1419,7 +1508,11 @@ impl Pipeline {
                     .map(|(i, f)| {
                         let part = masked.as_ref().and_then(|m| m.features.get(i)?.as_ref());
                         match part {
-                            Some(part) => project_masked(&cache.projection, part),
+                            Some(part) => project_masked(
+                                &cache.projection,
+                                part,
+                                keep_whole.then_some(&f.geometry),
+                            ),
                             None => lod::geometry(detail.as_deref(), i, &f.geometry)
                                 .and_then(|g| project_feature(&cache.projection, g)),
                         }
@@ -2006,6 +2099,7 @@ pub(crate) fn swatch(
             GeometryKind::Point => vec![],
         },
         rings: vec![ring],
+        whole: None,
         bbox: rect,
     };
     let pl = PageLayer {
@@ -2062,6 +2156,7 @@ pub(crate) fn swatch(
             order: (0, k),
             paint,
             features: vec![0],
+            masked: false,
         };
         draw_batch(&mut list, &pl, &batch, &mut sd);
     }
@@ -2075,4 +2170,81 @@ pub(crate) fn frame_area(frame: &FrameRecord, target: FrameTarget) -> Rect {
         target.to_target(Point::new(b.x0, b.y0)),
         target.to_target(Point::new(b.x1, b.y1)),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vale_style::expr::Property;
+    use vale_style::{Color, Rule, StrokeSymbolizer, Symbolizer};
+
+    fn fill(c: u8, apply_mask: bool) -> Symbolizer {
+        Symbolizer::Fill {
+            color: Property::constant(Color::rgb(c, 0, 0)),
+            apply_mask,
+        }
+    }
+
+    fn stroke(c: u8, apply_mask: bool) -> Symbolizer {
+        let mut s = StrokeSymbolizer::constant(Stroke::solid(Color::rgb(0, c, 0), 1.0));
+        s.apply_mask = apply_mask;
+        Symbolizer::Stroke(s)
+    }
+
+    fn style(symbolizers: Vec<Symbolizer>, filter: &str) -> vale_style::Style {
+        let mut rule = Rule::new("Default", symbolizers);
+        rule.filter = vale_style::expr::Filter::new(filter);
+        vale_style::Style {
+            mask: Some(Mask::Polygons { layer: LayerId(1) }),
+            rules: vec![rule],
+        }
+    }
+
+    /// The order and the mask flag of the batches of one feature.
+    fn order(style: &vale_style::Style) -> Vec<(usize, bool)> {
+        let none = BTreeMap::new();
+        let batches = style_batches(style, 1.0, 1, |i| Context {
+            attributes: &none,
+            scale: 1.0,
+            geometry: GeometryKind::Polygon,
+            shape: None,
+            radius_km: 1.0,
+            page: None,
+            rasters: None,
+            index: i,
+        });
+        batches.iter().map(|b| (b.order.1, b.masked)).collect()
+    }
+
+    #[test]
+    fn the_masked_batches_draw_as_one_group_at_the_first_masked_batch() {
+        let symbolizers = vec![
+            stroke(1, false),
+            fill(2, true),
+            stroke(3, false),
+            fill(4, true),
+            stroke(5, false),
+        ];
+        let want = vec![(0, false), (1, true), (3, true), (2, false), (4, false)];
+        // The constant path and the path of each feature.
+        for filter in ["", "1 = 1"] {
+            assert_eq!(
+                order(&style(symbolizers.clone(), filter)),
+                want,
+                "{filter:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_style_with_no_mask_has_no_masked_batch() {
+        for filter in ["", "1 = 1"] {
+            let mut style = style(
+                vec![stroke(1, false), fill(2, true), stroke(3, true)],
+                filter,
+            );
+            style.mask = None;
+            assert_eq!(order(&style), vec![(0, false), (1, false), (2, false)]);
+        }
+    }
 }

@@ -28,7 +28,8 @@ const MAX_SOFT: usize = 20_000;
 const SCATTER_COST: f64 = 0.5;
 
 /// Keeps the part of each polygon of a raster-masked layer inside its page
-/// mask. A layer whose page mask is not ready keeps no polygon.
+/// mask, if the label of the polygon stays inside the mask. A layer whose
+/// page mask is not ready keeps none of those polygons.
 pub fn clip_to_masks(layers: &mut [PageLayer<'_>], masks: &FrameMasks, target: FrameTarget) {
     for pl in layers.iter_mut() {
         if pl.kind != GeometryKind::Polygon {
@@ -37,7 +38,11 @@ pub fn clip_to_masks(layers: &mut [PageLayer<'_>], masks: &FrameMasks, target: F
         let Some(mask) = masks.get(&pl.layer.id) else {
             continue;
         };
-        for f in &mut pl.features {
+        let style = &pl.entry.style.style;
+        let inside: Vec<bool> = (pl.features.iter())
+            .map(|f| style.label_in_mask(&pl.context(f.index)))
+            .collect();
+        for (f, _) in pl.features.iter_mut().zip(inside).filter(|(_, i)| *i) {
             f.rings = match mask {
                 Some(mask) => mask.clip(&f.rings, f.bbox, target),
                 None => Vec::new(),
@@ -190,8 +195,12 @@ pub fn place(
                         }
                     }
                     GeometryKind::Polygon => {
-                        let rings: Vec<_> =
-                            (f.rings.iter()).filter(|r| r.len() >= 3).cloned().collect();
+                        // The part inside a polygon mask, if the label stays inside it.
+                        let inside = f.whole.is_none() || pl.entry.style.style.label_in_mask(&ctx);
+                        let rings: Vec<_> = (f.rings_for(inside).iter())
+                            .filter(|r| r.len() >= 3)
+                            .cloned()
+                            .collect();
                         if !rings.is_empty() {
                             push(Geometry::Polygon { rings });
                         }

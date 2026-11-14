@@ -8100,6 +8100,7 @@ fn symbol_world() -> (Document, vale_store::LayerId, vale_store::LayerId) {
     scatter.tint = Some(Property::constant(Color::rgb(30, 100, 40)));
     let fill = Symbolizer::Fill {
         color: Property::constant(Color::rgb(200, 230, 180)),
+        apply_mask: true,
     };
     doc.entry_mut(forest).unwrap().style.style = Style {
         mask: None,
@@ -8538,6 +8539,45 @@ fn the_globe_draws_a_masked_polygon_only_inside_the_mask() {
     assert_masked(&fills, &strokes, |p| view.unproject(rect, p));
 }
 
+/// The longitudes of the fill and of the stroke of `masked_square` on the
+/// globe, with the mask on the fill and the stroke or not.
+fn masked_square_lons(fill: bool, stroke: bool) -> ((f64, f64), (f64, f64)) {
+    let (mut doc, id) = masked_square();
+    masked::set_applies_mask(&mut doc, id, fill, stroke);
+    let view = GlobeView::centered(20.0, 20.0);
+    let rect = egui::Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 800.0));
+    let mut pipeline = vale_app::pipeline::Pipeline::new();
+    let (fills, strokes) = painted(|painter| {
+        vale_app::ui::globe::vector_layer(painter, None, rect, &doc, &view, id, &mut pipeline);
+    });
+    let strokes: Vec<Pos2> = strokes.into_iter().flatten().collect();
+    let unproject = |p| view.unproject(rect, p);
+    (
+        masked::lon_range(&fills, unproject),
+        masked::lon_range(&strokes, unproject),
+    )
+}
+
+#[test]
+fn the_globe_draws_a_stroke_that_does_not_apply_the_mask_outside_it() {
+    let ((_, fill_east), (stroke_west, stroke_east)) = masked_square_lons(true, false);
+    assert!((fill_east - 20.0).abs() < 0.3, "fill {fill_east}");
+    assert!(
+        stroke_west.abs() < 0.3 && (stroke_east - 40.0).abs() < 0.3,
+        "stroke {stroke_west} {stroke_east}"
+    );
+}
+
+#[test]
+fn the_globe_draws_a_fill_that_does_not_apply_the_mask_outside_it() {
+    let ((fill_west, fill_east), (_, stroke_east)) = masked_square_lons(false, true);
+    assert!(
+        fill_west.abs() < 0.3 && (fill_east - 40.0).abs() < 0.3,
+        "fill {fill_west} {fill_east}"
+    );
+    assert!((stroke_east - 20.0).abs() < 0.3, "stroke {stroke_east}");
+}
+
 /// The colors of the sea band and of the land band of a masked crater.
 const MASK_SEA: [u8; 3] = [40, 40, 40];
 const MASK_LAND: [u8; 3] = [150, 140, 120];
@@ -8601,6 +8641,85 @@ fn a_raster_mask_cuts_a_fill_to_the_land_and_the_lakes_that_the_globe_draws() {
     );
     let (wet, red) = masked::lake_red(globe, &plain, &masked);
     assert!(wet > 100 && red == 0, "{red} of {wet}");
+}
+
+/// The canvas with no line, and with the line of `masked_line` with a mask
+/// of the land, with the strokes of `strokes` in its first rule.
+fn land_masked_line_images(strokes: Vec<vale_style::Symbolizer>) -> [image::RgbaImage; 2] {
+    let (mut h, id, found) = masked_crater();
+    h.state_mut().set_raster_rivers(id, false);
+    masked::show(h.state_mut(), found.layer, false);
+    let line = masked::masked_line(h.state_mut(), id, Stroke::solid(Color::rgb(0, 0, 0), 1.0));
+    masked::set_land_mask(h.state_mut(), &line);
+    let ground = canvas_image(&mut h);
+    let rule = &mut h
+        .state_mut()
+        .doc
+        .entry_mut(line.layer)
+        .unwrap()
+        .style
+        .style
+        .rules[0];
+    rule.symbolizers = strokes;
+    masked::show(h.state_mut(), line.layer, true);
+    let drawn = canvas_image(&mut h);
+    [ground, drawn]
+}
+
+/// A solid stroke of `color` and `width` that applies the mask or not.
+fn mask_stroke(color: Color, width: f64, apply_mask: bool) -> vale_style::Symbolizer {
+    let mut s = vale_style::StrokeSymbolizer::constant(Stroke::solid(color, width));
+    s.apply_mask = apply_mask;
+    vale_style::Symbolizer::Stroke(s)
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_stroke_that_does_not_apply_a_raster_mask_reaches_the_sea_on_the_globe() {
+    let _gpu = one_gpu_test();
+    let red = Color::rgb(200, 10, 10);
+    let [ground, cut] = land_masked_line_images(vec![mask_stroke(red, 6.0, true)]);
+    let [_, whole] = land_masked_line_images(vec![mask_stroke(red, 6.0, false)]);
+    masked::save_images("mask-globe-stroke-whole", &cut, &whole);
+    let on = |image, kind| masked::count_on(&ground, image, kind, masked::red);
+    let (cut_land, cut_sea) = (
+        on(&cut, masked::Ground::Land),
+        on(&cut, masked::Ground::Sea),
+    );
+    let (whole_land, whole_sea) = (
+        on(&whole, masked::Ground::Land),
+        on(&whole, masked::Ground::Sea),
+    );
+    assert!(cut_land > 300 && cut_sea == 0, "{cut_land} {cut_sea}");
+    assert!(
+        whole_land > 300 && whole_sea > 300,
+        "{whole_land} {whole_sea}"
+    );
+}
+
+#[test]
+#[ignore = "gpu"]
+fn the_cut_of_a_raster_mask_draws_at_its_place_in_the_draw_order_on_the_globe() {
+    let _gpu = one_gpu_test();
+    // A narrow red stroke that the mask does not cut, under a wide green
+    // stroke that it cuts to the land.
+    let strokes = vec![
+        mask_stroke(Color::rgb(200, 10, 10), 4.0, false),
+        mask_stroke(Color::rgb(10, 200, 10), 10.0, true),
+    ];
+    let [ground, drawn] = land_masked_line_images(strokes);
+    masked::save_images("mask-globe-order", &ground, &drawn);
+    let on =
+        |kind, color: fn(&image::Rgba<u8>) -> bool| masked::count_on(&ground, &drawn, kind, color);
+    let (red_land, red_sea) = (
+        on(masked::Ground::Land, masked::red),
+        on(masked::Ground::Sea, masked::red),
+    );
+    let green_land = on(masked::Ground::Land, masked::green);
+    assert!(
+        red_land == 0 && red_sea > 300 && green_land > 300,
+        "{red_land} {red_sea} {green_land}"
+    );
 }
 
 #[test]

@@ -14,7 +14,7 @@ use crate::{
 };
 
 /// The version of the style JSON that this build writes. It reads this version and each earlier version.
-pub const STYLE_VERSION: u64 = 7;
+pub const STYLE_VERSION: u64 = 8;
 
 /// Why a style JSON did not load.
 #[derive(Clone, Debug, PartialEq)]
@@ -141,7 +141,15 @@ fn rule_json(r: &Rule) -> Json {
 
 fn symbolizer_json(s: &Symbolizer) -> Json {
     match s {
-        Symbolizer::Fill { color } => json!({ "type": "fill", "color": color_json(color) }),
+        Symbolizer::Fill { color, apply_mask } => {
+            let mut m = Map::new();
+            m.insert("type".into(), json!("fill"));
+            m.insert("color".into(), color_json(color));
+            if !apply_mask {
+                m.insert("apply_mask".into(), json!(false));
+            }
+            Json::Object(m)
+        }
         Symbolizer::Raster(r) => raster_json(r),
         Symbolizer::Image(i) => json!({
             "type": "image",
@@ -151,6 +159,9 @@ fn symbolizer_json(s: &Symbolizer) -> Json {
         Symbolizer::Stroke(s) => {
             let mut m = stroke_json(s);
             m.insert("type".into(), json!("stroke"));
+            if !s.apply_mask {
+                m.insert("apply_mask".into(), json!(false));
+            }
             Json::Object(m)
         }
         Symbolizer::Marker {
@@ -265,8 +276,12 @@ fn read_symbolizer(j: &Json) -> Result<Symbolizer, StyleError> {
     match m.get("type").and_then(Json::as_str) {
         Some("fill") => Ok(Symbolizer::Fill {
             color: read_color(m.get("color"))?,
+            apply_mask: read_apply_mask(m),
         }),
-        Some("stroke") => Ok(Symbolizer::Stroke(read_stroke(m)?)),
+        Some("stroke") => Ok(Symbolizer::Stroke(StrokeSymbolizer {
+            apply_mask: read_apply_mask(m),
+            ..read_stroke(m)?
+        })),
         Some("marker") => Ok(Symbolizer::Marker {
             radius: read_number(m.get("radius"))?,
             shape: match m.get("shape") {
@@ -357,7 +372,13 @@ fn read_stroke(m: &Map<String, Json>) -> Result<StrokeSymbolizer, StyleError> {
         color: read_color(m.get("color"))?,
         width: read_number(m.get("width"))?,
         kind: read_kind(m),
+        apply_mask: true,
     })
+}
+
+/// A missing `apply_mask` is true. A symbolizer of style version 7 or earlier has none.
+fn read_apply_mask(m: &Map<String, Json>) -> bool {
+    m.get("apply_mask").and_then(Json::as_bool).unwrap_or(true)
 }
 
 /// A missing or unknown kind is solid. A missing number is the default.

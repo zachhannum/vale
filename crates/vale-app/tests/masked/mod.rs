@@ -33,6 +33,22 @@ pub fn masked_square() -> (Document, vale_store::LayerId) {
     (doc, id)
 }
 
+/// Sets whether the mask cuts the fill and the stroke of `masked_square`.
+pub fn set_applies_mask(doc: &mut Document, id: vale_store::LayerId, fill: bool, stroke: bool) {
+    let rule = &mut doc.entry_mut(id).unwrap().style.style.rules[0];
+    rule.set_fill_applies_mask(fill);
+    rule.set_stroke_applies_mask(stroke);
+}
+
+/// The smallest and the largest longitude of `points`.
+pub fn lon_range(points: &[Pos2], unproject: impl Fn(Pos2) -> Option<V3>) -> (f64, f64) {
+    let l = lons(points, unproject);
+    (
+        l.iter().copied().fold(f64::INFINITY, f64::min),
+        l.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+    )
+}
+
 /// The screen positions of the fill and of the stroke of the shapes that
 /// `paint` gives, in the colors of `masked_square`.
 pub fn painted(paint: impl FnMut(&egui::Painter)) -> (Vec<Pos2>, Vec<Vec<Pos2>>) {
@@ -427,4 +443,43 @@ pub fn differences(
         }
     }
     (wrong, drawn)
+}
+
+/// Sets the mask of `line.layer` to the land of its raster, as the mask of
+/// `raster_masked`.
+pub fn set_land_mask(state: &mut AppState, line: &RasterMasked) {
+    state.doc.entry_mut(line.layer).unwrap().style.style.mask = Some(vale_style::Mask::Raster {
+        layer: line.raster,
+        min: Some(0.0),
+        max: None,
+        offset: 0.0,
+    });
+    state.sync_globe();
+}
+
+/// The pixels of `image` that `color` keeps, at the pixels of `ground` of
+/// the kind `kind` with no pixel of another kind next to them.
+pub fn count_on(
+    ground_image: &image::RgbaImage,
+    image: &image::RgbaImage,
+    kind: Ground,
+    color: impl Fn(&image::Rgba<u8>) -> bool,
+) -> usize {
+    let (w, h) = ground_image.dimensions();
+    let mut out = 0;
+    for y in 1..h - 1 {
+        for x in 1..w - 1 {
+            let mut near = (0..9).map(|i| (x + i % 3 - 1, y + i / 3 - 1));
+            if near.all(|(a, b)| ground(ground_image.get_pixel(a, b)) == kind) {
+                out += usize::from(color(image.get_pixel(x, y)));
+            }
+        }
+    }
+    out
+}
+
+/// A green color, for a second paint next to the red of `red`.
+pub fn green(p: &image::Rgba<u8>) -> bool {
+    let [r, g, b, _] = p.0;
+    g > 150 && r < 70 && b < 70
 }

@@ -14159,6 +14159,86 @@ fn the_mask_page_sets_and_clears_the_mask_of_a_layer() {
 }
 
 #[test]
+fn the_apply_mask_switches_of_a_rule_show_only_with_a_mask_and_undo() {
+    use vale_app::ui::pad::rules::{FILL_MASK, STROKE_COLOR, STROKE_MASK};
+    use vale_style::Mask;
+    for size in [BOARDS[0], BOARDS[3]] {
+        let what = format!("{size:?}");
+        let dir = tempfile::tempdir().unwrap();
+        let mut h = saved_pad(size, dir.path());
+        let land = vector(&h, "Land");
+        let height = vector(&h, "Height");
+        let rule = |h: &Pad| rules(h, land)[0].clone();
+        open_rule(&mut h, "Land", "Default");
+        // With no mask, the rule has no switch.
+        scroll_to_control(&mut h, STROKE_COLOR);
+        assert!(control(&h, STROKE_MASK).is_none(), "{what}");
+        assert!(control(&h, FILL_MASK).is_none(), "{what}");
+
+        let entry = h.state_mut().doc.entry_mut(land).unwrap();
+        entry.style.style.mask = Some(Mask::land(height));
+        h.state_mut().touch();
+        save_frames(&mut h);
+        assert_eq!(rule(&h).stroke_applies_mask(), Some(true), "{what}");
+        assert_eq!(rule(&h).fill_applies_mask(), Some(true), "{what}");
+
+        scroll_to_control(&mut h, STROKE_MASK);
+        let row = control(&h, STROKE_MASK).unwrap();
+        assert!(row.height() >= 44.0, "{what}: {row:?}");
+        screenshot::save(&mut h, &format!("pad-apply-mask-{}", size.0));
+        finger_tap(&mut h, row.center());
+        save_frames(&mut h);
+        assert_eq!(rule(&h).stroke_applies_mask(), Some(false), "{what}");
+        assert_eq!(rule(&h).fill_applies_mask(), Some(true), "{what}");
+
+        scroll_to_control(&mut h, FILL_MASK);
+        tap(&mut h, FILL_MASK);
+        save_frames(&mut h);
+        assert_eq!(rule(&h).fill_applies_mask(), Some(false), "{what}");
+
+        tap(&mut h, "Undo");
+        assert_eq!(rule(&h).fill_applies_mask(), Some(true), "{what}");
+        assert_eq!(rule(&h).stroke_applies_mask(), Some(false), "{what}");
+        tap(&mut h, "Undo");
+        assert_eq!(rule(&h).stroke_applies_mask(), Some(true), "{what}");
+    }
+}
+
+#[test]
+fn the_apply_mask_switch_of_selected_rules_sets_each_rule() {
+    use vale_app::ui::pad::rules::{EDIT_RULES, STROKE_MASK};
+    use vale_style::Mask;
+    let mut h = pad(BOARDS[1]);
+    let land = vector(&h, "Land");
+    let height = vector(&h, "Height");
+    let entry = h.state_mut().doc.entry_mut(land).unwrap();
+    let kind = vale_store::GeometryKind::Polygon;
+    entry.style.add_rule(kind);
+    entry.style.style.rules[1].set_stroke_applies_mask(false);
+    entry.style.style.mask = Some(Mask::land(height));
+    h.state_mut().touch();
+    h.run_steps(2);
+    let values = |h: &Pad| {
+        let r = rules(h, land);
+        r.iter()
+            .map(|r| r.stroke_applies_mask())
+            .collect::<Vec<_>>()
+    };
+    open_panel(&mut h, "Layers");
+    tap(&mut h, "Open Land");
+    h.state_mut().pad.rules.select = Some((land, vec![0, 1]));
+    h.run_steps(2);
+    tap(&mut h, EDIT_RULES);
+    assert_eq!(h.state().pad.page, Some(Page::Rules));
+    // A mixed value shows off, and a tap turns each stroke on.
+    scroll_to_control(&mut h, STROKE_MASK);
+    tap(&mut h, STROKE_MASK);
+    assert_eq!(values(&h), vec![Some(true), Some(true)]);
+    tap(&mut h, STROKE_MASK);
+    assert_eq!(values(&h), vec![Some(false), Some(false)]);
+}
+
+#[test]
 fn a_new_raster_mask_keeps_the_offset_of_the_raster_mask_before_it() {
     use vale_app::ui::pad::rules::keep_offset;
     use vale_store::LayerId;

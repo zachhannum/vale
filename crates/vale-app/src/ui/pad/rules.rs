@@ -52,6 +52,11 @@ pub const GAP: &str = "Gap";
 pub const TAPER_START: &str = "Start width";
 pub const FILL: &str = "Fill";
 pub const FILL_COLOR: &str = "Fill color";
+/// The label of the switch of a fill or a stroke that follows the mask of the style.
+pub const APPLY_MASK: &str = "Apply mask";
+/// The names of the "Apply mask" switches of the stroke and of the fill.
+pub const STROKE_MASK: &str = "Stroke apply mask";
+pub const FILL_MASK: &str = "Fill apply mask";
 /// The choice of the marker of a point layer, and its two choices.
 pub const MARKER: &str = "Marker";
 pub const SHAPE: &str = "Shape";
@@ -105,7 +110,7 @@ pub const MASK_OFFSETS: (f64, f64) = (-20.0, 20.0);
 /// The text below the range of a raster mask when the minimum is not below the maximum.
 pub const BAD_MASK_RANGE: &str = "Minimum must be less than maximum.";
 /// The hint of the mask page.
-pub const MASK_HINT: &str = "The fill and the stroke draw only inside the mask. A negative offset clears a line at its edge.";
+pub const MASK_HINT: &str = "A fill or a stroke with Apply mask on draws only inside the mask. A negative offset clears a line at its edge.";
 /// The range of the width slider, in points. The slider has a log scale.
 pub const WIDTHS: (f64, f64) = (0.1, 20.0);
 /// The range of the dash and gap sliders, in points. The sliders have a log scale.
@@ -316,6 +321,7 @@ pub fn selection_body(
     let Some(rules) = state.doc.entry(id).map(|e| e.style.style.rules.clone()) else {
         return;
     };
+    let masked = has_mask(state, id);
     let picked = state.pad.rules.picked(id);
     ui.spacing_mut().item_spacing.y = 0.0;
     let mut changes = Vec::new();
@@ -389,6 +395,10 @@ pub fn selection_body(
         if kind != GeometryKind::Point {
             selection_line_rows(ui, controls, kind, &rules, &paints, &mut changes);
         }
+        let value = rule_edit::shared(&rules, &paints, Rule::stroke_applies_mask);
+        if let Some(v) = mask_row(ui, controls, masked, STROKE_MASK, value) {
+            changes.push(Change::StrokeAppliesMask(v));
+        }
     }
     if kind == GeometryKind::Polygon {
         let mut on = paints.iter().all(|&i| rules[i].fill().is_some());
@@ -407,6 +417,10 @@ pub fn selection_body(
         };
         if let Some(c) = selection_color(ui, state, controls, (id, part), fill) {
             changes.push(Change::FillColor(c));
+        }
+        let value = rule_edit::shared(&rules, &paints, Rule::fill_applies_mask);
+        if let Some(v) = mask_row(ui, controls, masked, FILL_MASK, value) {
+            changes.push(Change::FillAppliesMask(v));
         }
     }
     if kind == GeometryKind::Point
@@ -552,6 +566,29 @@ fn selection_color(
     let changed = widgets::color_picker_alpha(ui, controls, name, &mut rgba);
     let [r, g, b, a] = rgba;
     changed.then_some(Color { r, g, b, a })
+}
+
+/// True if the style of layer `id` has a mask.
+fn has_mask(state: &AppState, id: LayerId) -> bool {
+    state
+        .doc
+        .entry(id)
+        .is_some_and(|e| e.style.style.mask.is_some())
+}
+
+/// The "Apply mask" switch of a fill or a stroke, when the style has a mask
+/// and the rules have a `value`. A mixed value shows off, and a tap turns
+/// it on. Returns the new value after a tap.
+fn mask_row(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    masked: bool,
+    name: &str,
+    value: Option<(bool, bool)>,
+) -> Option<bool> {
+    let (on, mixed) = value.filter(|_| masked)?;
+    let mut on = on && !mixed;
+    widgets::switch_row(ui, controls, name, APPLY_MASK, &mut on).then_some(on)
 }
 
 /// The text of the Mask row: the name of the layer of the mask, or "None".
@@ -886,6 +923,7 @@ fn paint_rows(
     rule: &mut Rule,
 ) {
     let default = LayerStyle::default_for(kind, 0, &[]);
+    let masked = has_mask(state, id);
     let open = state.pad.rules.picker.filter(|p| p.0 == id && p.1 == i);
     // An SVG symbol has no stroke and no fill.
     if kind == GeometryKind::Point && symbol_rows(ui, state, controls, (id, i), rule) {
@@ -923,6 +961,10 @@ fn paint_rows(
         if kind != GeometryKind::Point {
             line_rows(ui, controls, rule, stroke, kind);
         }
+        let value = rule.stroke_applies_mask().map(|v| (v, false));
+        if let Some(v) = mask_row(ui, controls, masked, STROKE_MASK, value) {
+            rule.set_stroke_applies_mask(v);
+        }
     }
     if kind == GeometryKind::Line {
         return;
@@ -945,6 +987,10 @@ fn paint_rows(
         && color_rows(ui, state, controls, (id, i, Part::Fill), open, &mut fill)
     {
         rule.set_fill(Some(fill));
+    }
+    let value = rule.fill_applies_mask().map(|v| (v, false));
+    if let Some(v) = mask_row(ui, controls, masked, FILL_MASK, value) {
+        rule.set_fill_applies_mask(v);
     }
     if kind == GeometryKind::Polygon {
         scatter_rows(ui, state, controls, (id, i), rule);

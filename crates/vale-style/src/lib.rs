@@ -123,6 +123,7 @@ fn default_point_fill() -> Color {
 fn fill(color: Color) -> Symbolizer {
     Symbolizer::Fill {
         color: Property::constant(color),
+        apply_mask: true,
     }
 }
 
