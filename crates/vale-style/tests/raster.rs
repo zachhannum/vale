@@ -23,6 +23,10 @@ impl RasterValues for Fake {
     fn has_layer(&self, layer: &str) -> bool {
         layer == "Height" || layer == "Rain"
     }
+
+    fn flow(&self, layer: &str, index: usize, _shape: &Geometry) -> Option<f64> {
+        (layer == "Height").then_some(1e-3 * (index + 1) as f64)
+    }
 }
 
 fn attributes() -> BTreeMap<String, Value> {
@@ -200,5 +204,43 @@ fn rename_changes_only_raster_names() {
     assert_eq!(
         rename_raster("raster('Height", "Height", "H"),
         "raster('Height"
+    );
+}
+
+#[test]
+fn flow_gives_the_drained_area_in_square_kilometers() {
+    let km2 = 1e-3 * 6371.0 * 6371.0;
+    assert_eq!(eval("flow('Height')", &line()), n(km2));
+    assert_eq!(eval("FLOW('Height')", &line()), n(km2));
+    let a = attributes();
+    let shape = line();
+    let mut c = ctx(&a, &shape, Some(&Fake));
+    c.index = 2;
+    assert_eq!(
+        Expr::parse("flow('Height')").unwrap().eval(&c),
+        n(3.0 * km2)
+    );
+}
+
+#[test]
+fn flow_is_null_off_a_line_and_for_an_unknown_layer() {
+    let polygon = Geometry::Polygons(vec![vec![vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]]]);
+    assert_eq!(eval("flow('Height')", &point()), Value::Null);
+    assert_eq!(eval("flow('Height')", &polygon), Value::Null);
+    assert_eq!(eval("flow('Rain')", &line()), Value::Null);
+    assert_eq!(eval("flow(1)", &line()), Value::Null);
+    let a = attributes();
+    let shape = line();
+    let expr = Expr::parse("flow('Height')").unwrap();
+    assert_eq!(expr.eval(&ctx(&a, &shape, None)), Value::Null);
+}
+
+#[test]
+fn flow_names_a_raster_layer() {
+    let expr = Expr::parse("sqrt(flow('Height')) / 20 + raster('Rain')").unwrap();
+    assert_eq!(expr.raster_layers(), ["Height", "Rain"]);
+    assert_eq!(
+        rename_raster("clamp(0.5, sqrt(flow('Height')) / 20, 6)", "Height", "Land"),
+        "clamp(0.5, sqrt(flow('Land')) / 20, 6)"
     );
 }

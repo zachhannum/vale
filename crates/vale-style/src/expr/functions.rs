@@ -320,6 +320,16 @@ pub static FUNCTIONS: &[Function] = &[
         call: |a, _| number(&a[0], f64::abs),
     },
     Function {
+        name: "sqrt",
+        signature: "sqrt(x)",
+        min_args: 1,
+        max_args: Some(1),
+        summary: "The square root of `x`, or null if `x` is negative",
+        category: Category::Math,
+        hint: "Square root",
+        call: |a, _| number(&a[0], f64::sqrt),
+    },
+    Function {
         name: "min",
         signature: "min(a, b, ...)",
         min_args: 1,
@@ -383,6 +393,16 @@ pub static FUNCTIONS: &[Function] = &[
         category: Category::Geometry,
         hint: "Length of a line",
         call: measure::line_length,
+    },
+    Function {
+        name: "flow",
+        signature: "flow(layer)",
+        min_args: 1,
+        max_args: Some(1),
+        summary: "The area of land that drains through a line, in km², from the height layer named `layer`. A line far from all rivers gets a low flow",
+        category: Category::Geometry,
+        hint: "Area that drains through a line",
+        call: raster::flow,
     },
     Function {
         name: "raster",

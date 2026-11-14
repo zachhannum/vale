@@ -141,6 +141,8 @@ fn number_functions() {
     assert_eq!(eval("floor(-1.5)"), n(-2.0));
     assert_eq!(eval("ceil(1.2)"), n(2.0));
     assert_eq!(eval("abs(-3)"), n(3.0));
+    assert_eq!(eval("sqrt(16)"), n(4.0));
+    assert_eq!(eval("sqrt(-1)"), Value::Null);
     assert_eq!(eval("min(4, flow, note)"), n(3.0));
     assert_eq!(eval("max(4, flow)"), n(4.0));
     assert_eq!(eval("clamp(1, flow * 2, 5)"), n(5.0));
