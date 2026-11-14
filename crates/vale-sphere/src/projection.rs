@@ -455,10 +455,12 @@ impl Projection {
     pub fn distortion(&self, p: LonLat) -> Option<[f64; 2]> {
         const STEP: f64 = 1e-3;
         let [lon, lat] = p;
-        if lat.abs() > 90.0 - 2.0 * STEP {
+        if lat.abs() > 90.0 - 2.0 * STEP || !self.is_visible(p) {
             return None;
         }
-        let at = |dlon: f64, dlat: f64| self.forward([lon + dlon, lat + dlat]);
+        // A point next to the center of an azimuthal map can be at the edge
+        // of the clip rectangle.
+        let at = |dlon: f64, dlat: f64| self.forward_raw([lon + dlon, lat + dlat]);
         let east = at(STEP, 0.0)? - at(-STEP, 0.0)?;
         let north = at(0.0, STEP)? - at(0.0, -STEP)?;
         let ground = 2.0 * STEP.to_radians() * self.radius_m;
@@ -528,6 +530,9 @@ mod tests {
         let [a, b] = lcc.distortion([5.0, 45.0]).unwrap();
         assert!(a < 0.99 && near(a, b), "{a} {b}");
         assert!(mercator.distortion([0.0, 90.0]).is_none());
+        let laea = proj(ProjectionKind::LambertAzimuthal, 20.0, 50.0);
+        let [a, b] = laea.distortion([20.0, 50.0]).unwrap();
+        assert!(near(a, 1.0) && near(b, 1.0), "{a} {b}");
     }
 
     fn spec(kind: ProjectionKind, lon0: f64, lat0: f64) -> ProjectionSpec {
