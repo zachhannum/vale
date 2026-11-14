@@ -4295,3 +4295,168 @@ fn an_unknown_raster_name_gives_null() {
     assert!(!vale_style::expr::RasterValues::has_layer(&rasters, "Rain"));
     assert_eq!(pipeline.rasters().raster_names(), ["Height"]);
 }
+
+/// The height in meters of a valley along the meridian at 0.35° east. It
+/// goes down to the sea at 40° south, and its head is at latitude `head`.
+fn valley_meters(lonlat: [f64; 2], head: f64) -> f64 {
+    let [lon, lat] = lonlat;
+    if lon.abs() > 3.0 || !(-40.0..head).contains(&lat) {
+        return -1000.0;
+    }
+    100.0 + 30.0 * (lat + 40.0) + 300.0 * (lon - 0.35).abs()
+}
+
+/// Puts the valley with its head at `head` into `map`. Only the texels that
+/// change get a new level.
+fn paint_valley(map: &mut vale_terrain::Heightmap, head: f64) {
+    use vale_terrain::math::dir_to_lonlat;
+    let n = map.face_size();
+    for face in 0..vale_terrain::FACES {
+        for y in 0..n {
+            for x in 0..n {
+                let (lon, lat) = dir_to_lonlat(map.texel_dir(face, x, y));
+                let level = vale_terrain::meters_to_level(valley_meters([lon, lat], head));
+                if map.get(face, x as i64, y as i64) != level {
+                    map.set(face, x, y, level);
+                }
+            }
+        }
+    }
+}
+
+/// A document with a height layer and a line layer with one river. The
+/// river goes down the valley, from its source at 5° south to its mouth.
+fn river_doc() -> (Document, vale_store::LayerId, vale_terrain::Heightmap) {
+    let (mut doc, id) = lines_at(&[("river", &[[0.5, -5.0], [0.5, -20.0], [0.5, -38.0]])]);
+    add_height(&mut doc);
+    let mut map = vale_terrain::Heightmap::new(128, 0);
+    paint_valley(&mut map, 0.0);
+    (doc, id, map)
+}
+
+/// The flow of the river in km², after the jobs finish.
+fn river_flow(
+    doc: &Document,
+    id: vale_store::LayerId,
+    pipeline: &mut Pipeline,
+    map: &vale_terrain::Heightmap,
+) -> f64 {
+    update_rasters(doc, pipeline, map);
+    let _ = pipeline.rasters().flow_of(id, 0, "Height");
+    update_rasters(doc, pipeline, map);
+    number(raster_eval(doc, pipeline, id, 0, "flow('Height')"))
+}
+
+/// The threshold of the live rivers on a world of `radius_km`, in km².
+fn river_threshold(radius_km: f64) -> f64 {
+    vale_terrain::RIVER_MIN_AREA * radius_km * radius_km
+}
+
+#[test]
+fn a_river_line_gets_the_flow_of_the_height_layer() {
+    let (doc, id, map) = river_doc();
+    let mut pipeline = Pipeline::new();
+    let km2 = river_flow(&doc, id, &mut pipeline, &map);
+    let radius = doc.project.world.radius_km;
+    assert!(km2 > river_threshold(radius), "{km2}");
+    let sr = pipeline.rasters().flow_of(id, 0, "Height").unwrap();
+    assert!((km2 - sr * radius * radius).abs() < 1e-6 * km2);
+    // The flow is the same as the area of the line on the drainage.
+    let flow = vale_terrain::FlowMap::new(&vale_terrain::CoarseHeights::new(&map));
+    let line: Vec<_> = [[0.5, -5.0], [0.5, -20.0], [0.5, -38.0]]
+        .map(|[lon, lat]| vale_terrain::math::lonlat_to_dir(lon, lat))
+        .to_vec();
+    assert_eq!(sr, flow.line_area(&line));
+    // A layer that is not a height layer gives null.
+    let mut other = doc.clone();
+    (other.project).add_raster("Rain".to_string(), 64, "mm".to_string(), 0.0, 1.0);
+    let _ = pipeline.rasters().flow_of(id, 0, "Rain");
+    update_rasters(&other, &mut pipeline, &map);
+    assert_eq!(pipeline.rasters().flow_of(id, 0, "Rain"), None);
+}
+
+#[test]
+fn a_stroke_that_changes_the_drainage_computes_the_flow_again_without_a_wait() {
+    use std::time::{Duration, Instant};
+    let (doc, id, mut map) = river_doc();
+    let mut pipeline = Pipeline::new();
+    let before = river_flow(&doc, id, &mut pipeline, &map);
+
+    // A stroke makes the valley longer uphill.
+    map.begin_stroke();
+    paint_valley(&mut map, 25.0);
+    map.end_stroke();
+    let start = Instant::now();
+    pipeline.rasters_mut().held = true;
+    pipeline.rasters_mut().update(&doc, |_| Some(&map));
+    assert!(start.elapsed() < Duration::from_millis(200));
+    // The drainage job runs, and the river keeps its old flow.
+    assert!(pipeline.rasters_mut().poll(false));
+    assert_eq!(
+        number(raster_eval(&doc, &pipeline, id, 0, "flow('Height')")),
+        before
+    );
+    pipeline.rasters_mut().held = false;
+    loop {
+        let rasters = pipeline.rasters_mut();
+        rasters.update(&doc, |_| Some(&map));
+        rasters.poll(false);
+        let now = number(raster_eval(&doc, &pipeline, id, 0, "flow('Height')"));
+        if now > 1.5 * before {
+            break;
+        }
+        assert!(start.elapsed() < Duration::from_secs(10), "no new flow");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn a_width_from_flow_with_the_taper_grows_toward_the_mouth_in_a_frame_and_in_pdf() {
+    let (mut doc, id, map) = river_doc();
+    doc.set_projection(
+        doc.first_map(),
+        ProjectionSpec::new(ProjectionKind::Equirectangular, 0.0, 0.0),
+    );
+    let width = "clamp(0.5, sqrt(flow('Height')) / 300, 6)";
+    doc.entry_mut(id).unwrap().style.style = Style {
+        mask: None,
+        rules: vec![Rule::new(
+            "River",
+            vec![Symbolizer::Stroke(StrokeSymbolizer {
+                color: Property::constant(Color::rgb(200, 0, 0)),
+                width: Property::expression(width, 0.25),
+                kind: StrokeKind::taper(),
+            })],
+        )],
+    };
+    let mut pipeline = Pipeline::new();
+    let _ = river_flow(&doc, id, &mut pipeline, &map);
+    let w = number(raster_eval(&doc, &pipeline, id, 0, width));
+    assert!(w > 1.5 && w < 6.0, "{w}");
+    let mut at = |lat: f64| {
+        (pipeline.lonlat_to_page(&doc, SIZE, [0.5, lat]))
+            .unwrap()
+            .unwrap()
+    };
+    let (source, mouth) = (at(-5.0), at(-38.0));
+    let list = compose(&doc, &mut pipeline).list;
+    let scale = 4.0;
+    let px = render_rgba(&list, scale).unwrap();
+    let x = source.x * scale;
+    let width_at = |y: f64| red_run(&px, y * scale, x - 40.0, x + 40.0) as f64;
+    let near_source = width_at(source.y + 2.0);
+    let near_mouth = width_at(mouth.y - 2.0);
+    // The river is narrow at its source and has the width of its flow at its mouth.
+    assert!((near_mouth - w * scale).abs() <= 1.5, "{near_mouth} px");
+    assert!(near_source < 0.5 * near_mouth, "{near_source} px");
+    // In the PDF, the river is a vector fill.
+    let pdf = vale_render::render_pdf(&list).unwrap();
+    assert!(!String::from_utf8_lossy(&pdf).contains("/Subtype/Image"));
+    assert!(list.items.iter().any(|i| matches!(
+        i,
+        Item::Fill {
+            rule: FillRule::NonZero,
+            ..
+        }
+    )));
+}

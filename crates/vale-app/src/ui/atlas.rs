@@ -2871,6 +2871,7 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
             layered,
             state.atlas.raster_masks.number(frame.id),
             state.pipeline.lod().arrived(),
+            state.pipeline.rasters().arrived(),
         ));
         // The neatline reaches out of the shape by half its width, and a
         // sharp corner reaches further. The edge labels outside the shape
