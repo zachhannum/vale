@@ -494,7 +494,7 @@ pub(super) fn banner(ctx: &egui::Context, state: &mut AppState, rects: &Rects) {
 }
 
 /// A warning sign: a triangle with an exclamation mark.
-fn paint_warning(painter: &egui::Painter, rect: Rect, color: Color32) {
+pub(super) fn paint_warning(painter: &egui::Painter, rect: Rect, color: Color32) {
     let stroke = egui::Stroke::new(1.4, color);
     let (center, top) = (rect.center(), rect.top() + 1.0);
     let half = rect.width() / 2.0 - 0.5;

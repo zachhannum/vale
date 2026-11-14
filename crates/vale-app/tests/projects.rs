@@ -16,7 +16,7 @@ use vale_app::session::{SAVE_DELAY, new_project_path};
 use vale_app::ui::browser::Dialog;
 use vale_app::ui::pad::browser as pad_browser;
 use vale_app::ui::pad::geometry::TOUCH;
-use vale_app::ui::pad::{SAVE, WORLDS};
+use vale_app::ui::pad::{SAVE, SAVING, WORLDS};
 use vale_app::ui::panels::{ALL_WORLDS, FILE_MENU};
 use vale_app::ui::world_form::{CREATE, NEW_WORLD};
 use vale_app::ui::{Action, AppState, Layout, SAVE_MARK_TIME, SaveMark, Screen, Workspace, draw};
@@ -835,6 +835,23 @@ fn the_save_command_saves_a_change_that_waits_in_both_layouts() {
         let later = now + SAVE_MARK_TIME;
         assert_eq!(h.state().save_mark(later), Some(SaveMark::Saved));
     }
+}
+
+#[test]
+fn the_pad_save_mark_shows_only_while_a_change_waits() {
+    let dir = tempfile::tempdir().unwrap();
+    create(dir.path(), "Borea");
+    let mut h = start(dir.path(), Layout::Pad);
+    click(&mut h, "Open Borea");
+    assert!(
+        h.query_by_label(SAVING).is_none(),
+        "the file holds each change"
+    );
+
+    h.state_mut().doc.project.world.name = "Cassia".to_string();
+    assert!(h.state_mut().save_tick(false, Instant::now()).is_some());
+    run(&mut h);
+    assert!(h.query_by_label(SAVING).is_some());
 }
 
 #[test]
