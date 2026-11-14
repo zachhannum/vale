@@ -343,7 +343,7 @@ pub(crate) fn run(fonts: &mut Fonts, input: &LabelInput) -> Labeling {
         let fi = instances[i].feature_index;
         let f = &input.features[fi];
         let class = &input.classes[f.class];
-        'fallbacks: for fb in Fallbacks::normalized_order(&class.fallbacks.order) {
+        'fallbacks: for fb in fallback::order(&class.fallbacks) {
             for attempt in fallback::attempts(fonts, &f.text, class, fb) {
                 let slot = generator
                     .slots(fi, &attempt.class, &attempt.shaped)
@@ -373,7 +373,7 @@ pub(crate) fn run(fonts: &mut Fonts, input: &LabelInput) -> Labeling {
                 let first = instances[i].candidates.len();
                 instances[i].candidates.extend(cands);
                 instances[i].variants.push(Variant {
-                    fallback: fb,
+                    fallback: attempt.fallback,
                     shaped: attempt.shaped,
                     first,
                 });

@@ -122,8 +122,6 @@ pub const FALLBACKS: &str = "Fallbacks";
 pub const LINE_FALLBACKS: &str = "Line labels do not stack or take a leader line.";
 pub const MIN_SIZE: &str = "Smallest size";
 pub const SIZE_STEP: &str = "Size step";
-/// The switch of the fallback "Smaller font" that also narrows the letters.
-pub const COMPRESS_WITH_SIZE: &str = "Narrow letters at each size";
 pub const MIN_WIDTH: &str = "Smallest width";
 pub const WIDTH_STEP: &str = "Width step";
 pub const MAX_LINES: &str = "Lines";
@@ -1303,11 +1301,6 @@ fn smaller_font_section(
         .stepper(ui, controls);
     if let Some(step) = step {
         state.edit_label_class(map, layer, i, |c| c.size_step = step);
-    }
-    let mut both = class.compress_with_size;
-    let name = COMPRESS_WITH_SIZE;
-    if widgets::switch_row(ui, controls, name, name, &mut both) {
-        state.label_class_step(map, layer, i, |c| c.compress_with_size = both);
     }
 }
 

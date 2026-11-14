@@ -347,13 +347,47 @@ fn narrow_letters_combine_with_a_smaller_font() {
     let feature = rect(text, 0.76 * width(text, 12.0), 30.0);
     let mut c = class(horizontal(), 12.0, vec![Fallback::SmallerFont]);
     c.fallbacks.min_size = 10.0;
+    assert!(
+        run(c.clone(), feature.clone(), vec![]).placed.is_empty(),
+        "a smaller font alone does not fit"
+    );
+    c.fallbacks.order = vec![Fallback::Compress];
+    assert!(
+        run(c.clone(), feature.clone(), vec![]).placed.is_empty(),
+        "narrow letters alone do not fit"
+    );
+    for order in [
+        vec![Fallback::SmallerFont, Fallback::Compress],
+        vec![Fallback::Compress, Fallback::SmallerFont],
+    ] {
+        c.fallbacks.order = order.clone();
+        let out = run(c.clone(), feature.clone(), vec![]);
+        let label = &out.placed[0];
+        assert_eq!(label.fallback, Some(order[0]));
+        assert!(label.glyph_runs[0].font_size < 12.0);
+        assert!(scale_x(label) < 1.0);
+    }
+}
+
+#[test]
+fn the_first_of_smaller_font_and_narrow_letters_takes_all_its_steps_first() {
+    let text = "Lakeland";
+    // Size 10 at the full width fits, and so does size 12 at 80 % width.
+    let feature = rect(text, 0.9 * width(text, 12.0), 30.0);
+    let mut c = class(horizontal(), 12.0, vec![]);
+    c.fallbacks.min_width = 0.8;
+    c.fallbacks.width_step = 0.1;
+    c.fallbacks.order = vec![Fallback::SmallerFont, Fallback::Compress];
     let out = run(c.clone(), feature.clone(), vec![]);
-    assert!(out.placed.is_empty(), "a smaller font alone does not fit");
-    c.fallbacks.compress_with_size = true;
-    let out = run(c, feature, vec![]);
     let label = &out.placed[0];
     assert_eq!(label.fallback, Some(Fallback::SmallerFont));
     assert!(label.glyph_runs[0].font_size < 12.0);
+    assert!((scale_x(label) - 1.0).abs() < 1e-9);
+    c.fallbacks.order = vec![Fallback::Compress, Fallback::SmallerFont];
+    let out = run(c, feature, vec![]);
+    let label = &out.placed[0];
+    assert_eq!(label.fallback, Some(Fallback::Compress));
+    assert_eq!(label.glyph_runs[0].font_size, 12.0);
     assert!(scale_x(label) < 1.0);
 }
 

@@ -48,10 +48,10 @@ use vale_app::ui::pad::furniture::{
     MAP_FRAME as ITEM_MAP_FRAME, RESET_ENTRIES, STYLE as ITEM_STYLE, entry_names,
 };
 use vale_app::ui::pad::labels::{
-    ABBREVIATIONS, ADD_ABBREVIATION, BREAK_AT_SPACES, COMPRESS_WITH_SIZE, DELETE_ABBREVIATION,
-    FALLBACKS, LEADER_DISTANCE, LINE_FALLBACKS, MAX_LINE_CHARS, MAX_LINES, MIN_LINE_CHARS,
-    MIN_SIZE, MIN_WIDTH, OTHER_SEPARATORS, SEPARATORS_HINT, SHORT_FORM, SIZE_STEP,
-    TRUNCATION_MARKER, WIDTH_STEP, WORD,
+    ABBREVIATIONS, ADD_ABBREVIATION, BREAK_AT_SPACES, DELETE_ABBREVIATION, FALLBACKS,
+    LEADER_DISTANCE, LINE_FALLBACKS, MAX_LINE_CHARS, MAX_LINES, MIN_LINE_CHARS, MIN_SIZE,
+    MIN_WIDTH, OTHER_SEPARATORS, SEPARATORS_HINT, SHORT_FORM, SIZE_STEP, TRUNCATION_MARKER,
+    WIDTH_STEP, WORD,
 };
 use vale_app::ui::pad::labels::{
     ADD_CLASS, BUFFER, CASE, COLOR, CURVE_LIMIT, DELETE_CLASS, DUPLICATE_DISTANCE,
@@ -5683,7 +5683,6 @@ fn the_fallback_pages_work_with_a_finger() {
         for name in [
             &value_of(MIN_SIZE),
             &value_of(SIZE_STEP),
-            COMPRESS_WITH_SIZE,
             &value_of(MIN_WIDTH),
             &value_of(WIDTH_STEP),
             &value_of(MAX_LINES),
@@ -5794,8 +5793,7 @@ fn the_fallback_options_reach_the_labeler() {
 /// "Stacked lines", and "Truncation" of the first class of "Places" on its
 /// open Fallbacks page.
 fn set_new_fallback_options(h: &mut Pad) {
-    scroll_to(h, COMPRESS_WITH_SIZE);
-    tap(h, COMPRESS_WITH_SIZE);
+    scroll_to(h, &value_of(MIN_WIDTH));
     set_number(h, MIN_WIDTH, "60");
     scroll_to(h, &value_of(WIDTH_STEP));
     step(h, WIDTH_STEP, true);
@@ -5818,12 +5816,10 @@ fn the_new_fallback_controls_change_the_class() {
     let map = frame(&h, 0).map;
     open_fallbacks(&mut h, "Places");
     let c = classes(&h, map, "Places")[0].clone();
-    assert!(!c.compress_with_size);
     assert_eq!((c.min_width, c.width_step), (80.0, 5.0));
     assert_eq!(c.stack_separators, " ");
     set_new_fallback_options(&mut h);
     let c = &classes(&h, map, "Places")[0];
-    assert!(c.compress_with_size);
     assert_eq!((c.min_width, c.width_step), (60.0, 10.0));
     assert_eq!(c.stack_separators, "-/");
     // Each count keeps the fewest characters at most the most characters.
@@ -5854,9 +5850,6 @@ fn each_new_fallback_control_is_one_undo_step() {
     open_fallbacks(&mut h, "Places");
     let start = classes(&h, map, "Places")[0].clone();
     let mut states = vec![start.clone()];
-    scroll_to(&mut h, COMPRESS_WITH_SIZE);
-    tap(&mut h, COMPRESS_WITH_SIZE);
-    states.push(classes(&h, map, "Places")[0].clone());
     scroll_to(&mut h, &value_of(MIN_WIDTH));
     step(&mut h, MIN_WIDTH, false);
     states.push(classes(&h, map, "Places")[0].clone());
@@ -5868,7 +5861,6 @@ fn each_new_fallback_control_is_one_undo_step() {
     tap(&mut h, right);
     states.push(classes(&h, map, "Places")[0].clone());
     let last = states.last().unwrap();
-    assert!(last.compress_with_size);
     assert_eq!(last.min_width, 75.0);
     assert_eq!(last.stack_separators, "");
     assert_eq!(last.stack_align, vale_style::StackAlign::Right);
@@ -5938,7 +5930,6 @@ fn the_new_fallback_options_reach_the_labeler() {
         ]
     );
     // The labeler takes the widths as fractions of the full width.
-    assert!(f.compress_with_size);
     assert!((f.min_width - 0.6).abs() < 1e-9 && (f.width_step - 0.1).abs() < 1e-9);
     assert_eq!(f.stack_separators, "-/");
     assert_eq!((f.min_line_chars, f.max_line_chars), (10, 10));

@@ -707,8 +707,6 @@ pub struct LabelClass {
     pub min_width: f64,
     /// The step between two widths of the fallback "Narrow letters", in percent.
     pub width_step: f64,
-    /// True makes the fallback "Smaller font" also try narrow letters.
-    pub compress_with_size: bool,
     /// The most lines of the fallback "Stacked lines".
     pub max_lines: u32,
     /// The characters where the fallback "Stacked lines" can break a line.
@@ -820,7 +818,6 @@ impl LabelClass {
             size_step: SIZE_STEP,
             min_width: MIN_WIDTH,
             width_step: WIDTH_STEP,
-            compress_with_size: false,
             max_lines: MAX_LINES,
             stack_separators: STACK_SEPARATORS.to_owned(),
             min_line_chars: MIN_LINE_CHARS,
@@ -931,7 +928,6 @@ pub fn classes_to_json(classes: &[LabelClass]) -> String {
                 "size_step": c.size_step,
                 "min_width": c.min_width,
                 "width_step": c.width_step,
-                "compress_with_size": c.compress_with_size,
                 "max_lines": c.max_lines,
                 "stack_separators": c.stack_separators,
                 "min_line_chars": c.min_line_chars,
@@ -1136,7 +1132,6 @@ fn read_class(j: &Json) -> Result<LabelClass, StyleError> {
         size_step: number("size_step", SIZE_STEP),
         min_width: number("min_width", MIN_WIDTH),
         width_step: number("width_step", WIDTH_STEP),
-        compress_with_size: flag("compress_with_size", false),
         max_lines: count("max_lines", MAX_LINES),
         stack_separators: text(m, "stack_separators")
             .unwrap_or_else(|| STACK_SEPARATORS.to_owned()),
@@ -1358,7 +1353,6 @@ mod tests {
         h.size_step = 0.5;
         h.min_width = 70.0;
         h.width_step = 10.0;
-        h.compress_with_size = true;
         h.max_lines = 3;
         h.stack_separators = " -/".to_owned();
         h.min_line_chars = 2;
@@ -1408,7 +1402,6 @@ mod tests {
         assert_eq!((read[0].min_size, read[0].size_step), (6.0, 1.0));
         assert_eq!(read[0].max_lines, 2);
         assert_eq!((read[0].min_width, read[0].width_step), (80.0, 5.0));
-        assert!(!read[0].compress_with_size);
         assert_eq!(read[0].stack_separators, " ");
         assert_eq!((read[0].min_line_chars, read[0].max_line_chars), (3, 24));
         assert_eq!(read[0].stack_align, StackAlign::Center);

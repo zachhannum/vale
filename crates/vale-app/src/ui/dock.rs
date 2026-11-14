@@ -1248,9 +1248,9 @@ fn fallback_controls(
     salt: egui::Id,
 ) {
     use super::pad::labels::{
-        ABBREVIATIONS, ADD_ABBREVIATION, ALIGNMENT, BREAK_AT_SPACES, COMPRESS_WITH_SIZE, FALLBACKS,
-        LEADER_DISTANCE, LEADER_DISTANCES, LINE_CHARS, LINE_COUNTS, MARKER, MAX_LINE_CHARS,
-        MAX_LINES, MIN_LINE_CHARS, MIN_SIZE, MIN_SIZES, MIN_WIDTH, MIN_WIDTHS, OTHER_SEPARATORS,
+        ABBREVIATIONS, ADD_ABBREVIATION, ALIGNMENT, BREAK_AT_SPACES, FALLBACKS, LEADER_DISTANCE,
+        LEADER_DISTANCES, LINE_CHARS, LINE_COUNTS, MARKER, MAX_LINE_CHARS, MAX_LINES,
+        MIN_LINE_CHARS, MIN_SIZE, MIN_SIZES, MIN_WIDTH, MIN_WIDTHS, OTHER_SEPARATORS,
         SEPARATORS_HINT, SHORT_FORM, SIZE_STEP, SIZE_STEPS, WIDTH_STEP, WIDTH_STEPS, WORD,
         fallback_applies, separators,
     };
@@ -1289,7 +1289,6 @@ fn fallback_controls(
         .step(0.25)
         .suffix(" pt")
         .show(ui);
-    ui.checkbox(&mut class.compress_with_size, COMPRESS_WITH_SIZE);
     ui.label(LabelFallback::Compress.name());
     number::stepper(MIN_WIDTH, &mut class.min_width)
         .range(MIN_WIDTHS.0..=MIN_WIDTHS.1)

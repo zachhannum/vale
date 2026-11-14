@@ -15,6 +15,21 @@ const MAX_STEPS: usize = 32;
 pub(crate) struct Attempt {
     pub class: LabelClass,
     pub shaped: ShapedText,
+    /// The fallback that the result reports.
+    pub fallback: Fallback,
+}
+
+/// The fallbacks of `fb` in the order that the engine tries them. If the class has both
+/// [`Fallback::SmallerFont`] and [`Fallback::Compress`], they are one try at the place of the
+/// first of them.
+pub(crate) fn order(fb: &Fallbacks) -> Vec<Fallback> {
+    let mut out = Fallbacks::normalized_order(&fb.order);
+    let font = |f: &Fallback| matches!(f, Fallback::SmallerFont | Fallback::Compress);
+    if out.iter().filter(|f| font(f)).count() == 2 {
+        let second = out.iter().rposition(font).unwrap();
+        out.remove(second);
+    }
+    out
 }
 
 /// The tries of `fallback` for `text` in `class`, in order. A fallback that does not apply to
@@ -27,37 +42,61 @@ pub(crate) fn attempts(
 ) -> Vec<Attempt> {
     let fb = &class.fallbacks;
     let mut out = Vec::new();
-    let mut push = |class: LabelClass, shaped: ShapedText| {
+    let mut push = |class: LabelClass, shaped: ShapedText, fallback: Fallback| {
         if shaped.glyph_count() > 0 && shaped.missing_glyphs == 0 {
-            out.push(Attempt { class, shaped });
+            out.push(Attempt {
+                class,
+                shaped,
+                fallback,
+            });
         }
     };
     match fallback {
-        Fallback::SmallerFont => {
-            let mut narrow = vec![1.0];
-            if fb.compress_with_size {
-                narrow.extend(widths(fb));
+        Fallback::SmallerFont | Fallback::Compress => {
+            // The font sizes and the widths, each with the full one first. A fallback that the
+            // class does not have keeps only the full one.
+            let enabled = Fallbacks::normalized_order(&fb.order);
+            let mut all_sizes = vec![class.style.size];
+            if fallback == Fallback::SmallerFont || enabled.contains(&Fallback::SmallerFont) {
+                all_sizes.extend(sizes(class.style.size, fb));
             }
-            let all = std::iter::once(class.style.size).chain(sizes(class.style.size, fb));
-            for (i, size) in all.enumerate() {
-                let mut c = class.clone();
-                c.style.size = size;
-                for &w in &narrow[usize::from(i == 0)..] {
-                    let shaped = fonts.shape(text, &c.style).compress(w);
-                    push(c.clone(), shaped);
+            let mut all_widths = vec![1.0];
+            if fallback == Fallback::Compress || enabled.contains(&Fallback::Compress) {
+                all_widths.extend(widths(fb));
+            }
+            // The fallback that comes first changes in the inner loop, so it goes through all
+            // of its steps before the other one takes a step.
+            let mut pairs = Vec::new();
+            if fallback == Fallback::Compress {
+                for (i, &size) in all_sizes.iter().enumerate() {
+                    for (j, &w) in all_widths.iter().enumerate() {
+                        pairs.push((i, size, j, w));
+                    }
+                }
+            } else {
+                for (j, &w) in all_widths.iter().enumerate() {
+                    for (i, &size) in all_sizes.iter().enumerate() {
+                        pairs.push((i, size, j, w));
+                    }
                 }
             }
-        }
-        Fallback::Compress => {
-            for w in widths(fb) {
-                let shaped = fonts.shape(text, &class.style).compress(w);
-                push(class.clone(), shaped);
+            for (i, size, j, w) in pairs {
+                let reported = match (i, j) {
+                    (0, 0) => continue,
+                    (_, 0) => Fallback::SmallerFont,
+                    (0, _) => Fallback::Compress,
+                    _ => fallback,
+                };
+                let mut c = class.clone();
+                c.style.size = size;
+                let shaped = fonts.shape(text, &c.style).compress(w);
+                push(c, shaped, reported);
             }
         }
         Fallback::Truncate => {
             for short in truncations(text, &fb.truncation_marker) {
                 let shaped = fonts.shape(&short, &class.style);
-                push(class.clone(), shaped);
+                push(class.clone(), shaped, fallback);
             }
         }
         Fallback::Stack => {
@@ -80,13 +119,13 @@ pub(crate) fn attempts(
                 let lines: Vec<ShapedText> =
                     lines.iter().map(|l| fonts.shape(l, &c.style)).collect();
                 let shaped = ShapedText::stack(lines, LINE_SPACING * c.style.size, fb.stack_align);
-                push(c.clone(), shaped);
+                push(c.clone(), shaped, fallback);
             }
         }
         Fallback::Abbreviate => {
             if let Some(short) = abbreviate(text, &fb.abbreviations) {
                 let shaped = fonts.shape(&short, &class.style);
-                push(class.clone(), shaped);
+                push(class.clone(), shaped, fallback);
             }
         }
         Fallback::Leader => {
@@ -103,7 +142,7 @@ pub(crate) fn attempts(
                 Placement::Line(_) => return out,
             }
             let shaped = fonts.shape(text, &c.style);
-            push(c, shaped);
+            push(c, shaped, fallback);
         }
     }
     out

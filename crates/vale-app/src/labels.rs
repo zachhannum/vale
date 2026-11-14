@@ -69,7 +69,6 @@ pub fn fallbacks(c: &StyleClass) -> Fallbacks {
         size_step: c.size_step,
         min_width: c.min_width / 100.0,
         width_step: c.width_step / 100.0,
-        compress_with_size: c.compress_with_size,
         max_lines: c.max_lines as usize,
         stack_separators: c.stack_separators.clone(),
         min_line_chars: c.min_line_chars as usize,

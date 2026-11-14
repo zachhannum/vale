@@ -312,11 +312,12 @@ pub enum Placement {
 /// A way to place a label that does not fit. Removal comes after the last fallback of a class.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Fallback {
-    /// Smaller font sizes, one step at a time, down to [`Fallbacks::min_size`]. With
-    /// [`Fallbacks::compress_with_size`], each size also tries the narrow widths of
-    /// [`Fallback::Compress`].
+    /// Smaller font sizes, one step at a time, down to [`Fallbacks::min_size`].
     SmallerFont,
-    /// Narrower letters, one step at a time, down to [`Fallbacks::min_width`].
+    /// Narrower letters, one step at a time, down to [`Fallbacks::min_width`]. A class with
+    /// [`Fallback::SmallerFont`] also tries the narrow widths at each smaller size. The first of
+    /// the two in the order goes through all of its steps before the other one takes a step. A
+    /// label with a smaller font and narrow letters reports the first of the two.
     Compress,
     /// The words on two or more horizontal lines, up to [`Fallbacks::max_lines`].
     Stack,
@@ -372,9 +373,6 @@ pub struct Fallbacks {
     pub min_width: f64,
     /// The step between two widths, as a share of the full width.
     pub width_step: f64,
-    /// [`Fallback::SmallerFont`] tries the narrow widths at the size of the class and at each
-    /// smaller size.
-    pub compress_with_size: bool,
     /// The most lines of [`Fallback::Stack`].
     pub max_lines: usize,
     /// The characters where [`Fallback::Stack`] can break a line. A space goes away at the
@@ -427,7 +425,6 @@ impl Default for Fallbacks {
             size_step: 1.0,
             min_width: 0.8,
             width_step: 0.05,
-            compress_with_size: false,
             max_lines: 2,
             stack_separators: " ".to_string(),
             min_line_chars: 1,
