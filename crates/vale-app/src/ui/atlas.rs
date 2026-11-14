@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 
-use eframe::egui::{self, Color32, Pos2, Rect, pos2, vec2};
+use eframe::egui::{self, Color32, Pos2, Rect, TextureFilter, pos2, vec2};
 use kurbo::{Point, Vec2};
 use vale_sphere::{Projection, ProjectionKind, ProjectionSpec};
 use vale_store::{
@@ -603,6 +603,8 @@ pub struct AtlasState {
     pub kinds: bool,
     /// The Tissot circles show while the Projection tab is open.
     pub tissot: bool,
+    /// The map frames and the furniture show at the resolution of the page.
+    pub pixel_preview: bool,
     /// The color picker of the graticule is open.
     pub graticule_color: bool,
     /// The color picker of the graticule showed in this frame.
@@ -854,6 +856,7 @@ impl Default for AtlasState {
             sizes: false,
             kinds: false,
             tissot: true,
+            pixel_preview: false,
             graticule_color: false,
             graticule_shown: false,
             neatline_color: false,
@@ -2997,10 +3000,12 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
         };
         placed.push(shown);
     }
+    let (scale, filter) = page_pixels(state, &page, place.pixels_per_page_point(ppp));
+    state.atlas.tiles.set_filter(filter);
     let screen = Screen {
         origin: place.rect.min,
         zoom: (place.pts_per_mm / PT_PER_MM) as f32,
-        scale: place.pixels_per_page_point(ppp),
+        scale,
         moving,
     };
     let renderer = state.map_renderer.as_mut();
@@ -3296,7 +3301,8 @@ fn items(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
             crate::furniture::RENDER_MARGIN_MM,
         );
         let side = outer.width().max(outer.height()) * PT_PER_MM;
-        let scale = (f64::from(ppp) * zoom).min(ITEM_PIXELS / side.max(1.0));
+        let (pixels, filter) = page_pixels(state, &page, (f64::from(ppp) * zoom) as f32);
+        let scale = f64::from(pixels).min(ITEM_PIXELS / side.max(1.0));
         let atlas = &state.doc.project.atlas;
         let frame = rec.item.frame().and_then(|f| atlas.frame(f));
         let map = frame.and_then(|f| atlas.map(f.map));
@@ -3329,7 +3335,7 @@ fn items(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
             state.map_generation,
             page_values,
         ));
-        let content = hash_of((look, scale.to_bits()));
+        let content = hash_of((look, scale.to_bits(), filter == TextureFilter::Nearest));
         let old = state
             .atlas
             .item_images
@@ -3349,7 +3355,8 @@ fn items(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
             let old = state.atlas.item_images.remove(&rec.id).map(|i| i.texture);
             let name = || format!("item-{}", rec.id.0);
             let renderer = state.map_renderer.as_mut();
-            let texture = match map_texture::draw(&ctx, renderer, old, name, &list, scale) {
+            let texture = match map_texture::draw(&ctx, renderer, old, name, &list, (scale, filter))
+            {
                 Ok((texture, _)) => texture,
                 Err(e) => {
                     state.status = e;
@@ -3373,6 +3380,18 @@ fn items(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
             let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
             painter.image(image.texture.id(), image.rect, uv, Color32::WHITE);
         }
+    }
+}
+
+/// The pixels in one page point of the map frames and the items on the screen, and their
+/// sampling, at `screen` pixels per page point. With the pixel preview, the page shows no more
+/// pixels than its raster export has, and each of them is a square.
+pub fn page_pixels(state: &AppState, page: &PageRecord, screen: f32) -> (f32, TextureFilter) {
+    let export = crate::atlas_export::pixel_ratio(page.dpi) as f32;
+    if state.atlas.pixel_preview && export < screen {
+        (export, TextureFilter::Nearest)
+    } else {
+        (screen, TextureFilter::Linear)
     }
 }
 
@@ -3406,7 +3425,14 @@ fn compose_spill(ctx: &egui::Context, state: &mut AppState, frame: &FrameRecord,
     let drawn = list.map_err(|e| format!("{e:#}")).and_then(|list| {
         let name = || format!("spill-{}", frame.id.0);
         let renderer = state.map_renderer.as_mut();
-        map_texture::draw(ctx, renderer, None, name, &list, scale)
+        map_texture::draw(
+            ctx,
+            renderer,
+            None,
+            name,
+            &list,
+            (scale, TextureFilter::Linear),
+        )
     });
     match drawn {
         Ok((texture, _)) => (state.atlas.tiles).set_spill(frame.id, Some(Spill { texture, rect })),
@@ -4139,6 +4165,12 @@ pub fn set_neatline_width(state: &mut AppState, id: FrameId, width: f64) {
         f.neatline.width = width;
         true
     });
+}
+
+/// A resolution in dots per inch that a page can have.
+pub fn parse_dpi(text: &str) -> Option<u32> {
+    let dpi = text.trim().parse().ok()?;
+    vale_store::DPI_RANGE.contains(&dpi).then_some(dpi)
 }
 
 /// Sets the paper color of the open page.

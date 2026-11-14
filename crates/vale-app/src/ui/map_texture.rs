@@ -69,6 +69,7 @@ impl MapTexture {
 pub struct GpuTexture {
     texture: wgpu::Texture,
     id: egui::TextureId,
+    filter: egui::TextureFilter,
     egui: Arc<RwLock<egui_wgpu::Renderer>>,
 }
 
@@ -78,20 +79,36 @@ impl Drop for GpuTexture {
     }
 }
 
+/// The sampling of a texture that the screen shows larger than its pixels.
+fn options(filter: egui::TextureFilter) -> egui::TextureOptions {
+    egui::TextureOptions {
+        magnification: filter,
+        ..egui::TextureOptions::LINEAR
+    }
+}
+
+fn filter_mode(filter: egui::TextureFilter) -> wgpu::FilterMode {
+    match filter {
+        egui::TextureFilter::Linear => wgpu::FilterMode::Linear,
+        egui::TextureFilter::Nearest => wgpu::FilterMode::Nearest,
+    }
+}
+
 /// Draws the list at `scale` pixels per point to `old` when it has the right size, or to a new
-/// texture. Returns the texture, and the pixels when the CPU drew them.
+/// texture with the sampling `filter`. Returns the texture, and the pixels when the CPU drew
+/// them.
 pub fn draw(
     ctx: &egui::Context,
     renderer: Option<&mut MapRenderer>,
     old: Option<MapTexture>,
     name: impl FnOnce() -> String,
     list: &DisplayList,
-    scale: f64,
+    (scale, filter): (f64, egui::TextureFilter),
 ) -> Result<(MapTexture, Option<Rgba>), String> {
     let Some(r) = renderer else {
         let img = vale_render::render_rgba(list, scale).map_err(|e| format!("{e}"))?;
         let image = egui::ColorImage::from_rgba_premultiplied([img.width, img.height], &img.data);
-        let options = egui::TextureOptions::LINEAR;
+        let options = options(filter);
         let texture = match old {
             Some(MapTexture::Cpu(mut t)) => {
                 t.set(image, options);
@@ -103,18 +120,17 @@ pub fn draw(
     };
     let (w, h) = vale_render::pixel_size(list, scale).map_err(|e| format!("{e}"))?;
     let texture = match old {
-        Some(MapTexture::Gpu(t)) if t.texture.size() == extent(w, h) => t,
+        Some(MapTexture::Gpu(t)) if t.texture.size() == extent(w, h) && t.filter == filter => t,
         _ => {
             let texture =
                 GpuRenderer::target(&r.device, list, scale).map_err(|e| format!("{e}"))?;
             let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
             let id =
-                r.egui
-                    .write()
-                    .register_native_texture(&r.device, &view, wgpu::FilterMode::Linear);
+                (r.egui.write()).register_native_texture(&r.device, &view, filter_mode(filter));
             GpuTexture {
                 texture,
                 id,
+                filter,
                 egui: r.egui.clone(),
             }
         }
@@ -126,21 +142,21 @@ pub fn draw(
 }
 
 /// Draws the part of a prepared list that falls in `size` pixels, where the page point `p` lands
-/// on the pixel `transform * p`. Draws to `old` when it has that size, so that the GPU registers
-/// no new texture with egui, or else to a new texture.
+/// on the pixel `transform * p`. Draws to `old` when it has that size and the sampling `filter`,
+/// so that the GPU registers no new texture with egui, or else to a new texture.
 pub fn draw_region(
     ctx: &egui::Context,
     renderer: Option<&mut MapRenderer>,
     old: Option<MapTexture>,
     list: &PreparedList,
     transform: kurbo::Affine,
-    [w, h]: [u32; 2],
+    ([w, h], filter): ([u32; 2], egui::TextureFilter),
 ) -> Result<MapTexture, String> {
     let Some(r) = renderer else {
         let (img, _) =
             vale_render::render_region(list, transform, w, h).map_err(|e| format!("{e}"))?;
         let image = egui::ColorImage::from_rgba_premultiplied([img.width, img.height], &img.data);
-        let options = egui::TextureOptions::LINEAR;
+        let options = options(filter);
         let texture = match old {
             Some(MapTexture::Cpu(mut t)) if t.size() == [img.width, img.height] => {
                 t.set(image, options);
@@ -151,17 +167,20 @@ pub fn draw_region(
         return Ok(MapTexture::Cpu(texture));
     };
     let texture = match old {
-        Some(MapTexture::Gpu(t)) if (t.texture.width(), t.texture.height()) == (w, h) => t,
+        Some(MapTexture::Gpu(t))
+            if (t.texture.width(), t.texture.height()) == (w, h) && t.filter == filter =>
+        {
+            t
+        }
         _ => {
             let texture = GpuRenderer::target_sized(&r.device, w, h);
             let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
             let id =
-                r.egui
-                    .write()
-                    .register_native_texture(&r.device, &view, wgpu::FilterMode::Linear);
+                (r.egui.write()).register_native_texture(&r.device, &view, filter_mode(filter));
             GpuTexture {
                 texture,
                 id,
+                filter,
                 egui: r.egui.clone(),
             }
         }

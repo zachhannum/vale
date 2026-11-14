@@ -396,6 +396,8 @@ pub struct Tiles {
     /// The number of tiles that rendered.
     pub renders: u64,
     pub painted: HashMap<FrameId, FramePaint>,
+    /// The textures on the screen show each pixel as a square.
+    nearest: bool,
 }
 
 impl Tiles {
@@ -427,6 +429,36 @@ impl Tiles {
             (f.tiles.values()).any(|t| matches!(t.texture, Some(MapTexture::Gpu(_))))
         };
         self.frames.values().filter(|f| gpu(f)).count()
+    }
+
+    /// Sets the sampling of the textures on the screen. A change renders the textures again.
+    pub fn set_filter(&mut self, filter: egui::TextureFilter) {
+        let nearest = filter == egui::TextureFilter::Nearest;
+        if nearest == self.nearest {
+            return;
+        }
+        self.nearest = nearest;
+        let ids: Vec<FrameId> = self.frames.keys().copied().collect();
+        for id in ids {
+            let f = self.frames.get_mut(&id).expect("a frame of the list");
+            let tiles: Vec<Tile> = f.tiles.drain().map(|(_, t)| t).collect();
+            let previous = f.previous.take();
+            (f.overviews, f.spill) = (HashMap::new(), None);
+            (f.spilled, f.complete) = (false, false);
+            for tile in tiles {
+                self.free(tile);
+            }
+            if let Some(previous) = previous {
+                self.recycle(*previous);
+            }
+        }
+    }
+
+    fn filter(&self) -> egui::TextureFilter {
+        match self.nearest {
+            true => egui::TextureFilter::Nearest,
+            false => egui::TextureFilter::Linear,
+        }
     }
 
     /// Keeps the frames for which `keep` is true.
@@ -635,6 +667,7 @@ impl Tiles {
         layer: Layer,
         budget: &mut Budget,
     ) -> Result<bool, String> {
+        let filter = self.filter();
         let Some(set) = self.frames.get_mut(&id) else {
             return Ok(true);
         };
@@ -653,7 +686,8 @@ impl Tiles {
         let size = |v: f64| ((v * scale).ceil() as u32).max(1);
         let (w, h) = (size(b.width()), size(b.height()));
         let transform = Affine::translate((-b.x0 * scale, -b.y0 * scale)) * Affine::scale(scale);
-        let texture = map_texture::draw_region(ctx, renderer, None, list, transform, [w, h])?;
+        let texture =
+            map_texture::draw_region(ctx, renderer, None, list, transform, ([w, h], filter))?;
         let rect = kurbo::Rect::new(
             b.x0,
             b.y0,
@@ -677,6 +711,7 @@ impl Tiles {
         key: TileKey,
         budget: &mut Budget,
     ) -> Result<bool, String> {
+        let filter = self.filter();
         let Some(set) = self.frames.get_mut(&id) else {
             return Ok(true);
         };
@@ -699,7 +734,8 @@ impl Tiles {
         budget.renders -= 1;
         self.renders += 1;
         let old = self.pool.pop();
-        let drawn = map_texture::draw_region(ctx, renderer, old, list, transform, [TILE, TILE]);
+        let size = ([TILE, TILE], filter);
+        let drawn = map_texture::draw_region(ctx, renderer, old, list, transform, size);
         let (texture, result) = match drawn {
             Ok(texture) => (Some(texture), Ok(true)),
             Err(e) => (None, Err(e)),
