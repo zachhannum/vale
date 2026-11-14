@@ -862,6 +862,34 @@ fn an_export_clips_a_masked_layer_to_the_coast_of_its_raster_image() {
     assert_eq!(sea, 0, "{sea} label pixels on the sea");
 }
 
+#[test]
+#[ignore = "gpu"]
+fn an_export_does_not_clip_a_fill_that_does_not_apply_the_mask() {
+    let _gpu = one_gpu_test();
+    let (mut h, _, layer) = masked_atlas();
+    settled_mask(&mut h, layer);
+    let dir = tempfile::tempdir().unwrap();
+    let (masked, _) = masked::pdf_clips(&export_pdf(&mut h, &dir.path().join("masked.pdf")));
+    let map = open_frame(&h).map;
+    let state = h.state_mut();
+    let mut style = state.doc.map_style(map, layer).unwrap();
+    for s in style
+        .style
+        .rules
+        .iter_mut()
+        .flat_map(|r| &mut r.symbolizers)
+    {
+        if let vale_style::Symbolizer::Fill { apply_mask, .. } = s {
+            *apply_mask = false;
+        }
+    }
+    assert!(state.doc.set_map_style(map, layer, &style));
+    state.touch();
+    h.run_steps(4);
+    let (plain, _) = masked::pdf_clips(&export_pdf(&mut h, &dir.path().join("plain.pdf")));
+    assert_eq!(plain + 1, masked, "{plain} {masked}");
+}
+
 /// The page mask of `layer` in the open frame.
 fn mask_of(h: &App, layer: vale_store::LayerId) -> std::sync::Arc<vale_app::mask::PageMask> {
     let frame = open_frame(h).id;

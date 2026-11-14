@@ -348,6 +348,7 @@ fn pf(
         points,
         lines,
         rings,
+        whole: None,
         bbox: b,
     }
 }
@@ -1062,6 +1063,120 @@ fn a_masked_polygon_places_its_label_inside_the_mask() {
     // Each glyph is west of 0 degrees, over the part of the polygon inside
     // the mask. With no mask, the label is across 0 degrees.
     assert_west_half(&doc, &mut p, &origins);
+}
+
+/// A fill of `half_land` that applies the mask or not.
+fn half_land_fill(apply_mask: bool) -> Symbolizer {
+    Symbolizer::Fill {
+        color: vale_style::expr::Property::constant(vale_style::Color::rgb(200, 180, 140)),
+        apply_mask,
+    }
+}
+
+/// A stroke of `half_land` that applies the mask or not.
+fn half_land_stroke(apply_mask: bool) -> Symbolizer {
+    let color = vale_style::Color::rgb(40, 40, 40);
+    let mut s = vale_style::StrokeSymbolizer::constant(vale_style::Stroke::solid(color, 1.0));
+    s.apply_mask = apply_mask;
+    Symbolizer::Stroke(s)
+}
+
+/// The longitudes of the glyphs of the label of `half_land`, with the mask
+/// of the west half and `symbolizers` in its style.
+fn half_land_label_lons(symbolizers: Vec<Symbolizer>) -> Vec<f64> {
+    let (mut doc, land, mask) = half_land();
+    let mut p = Pipeline::new();
+    let style = &mut doc.entry_mut(land).unwrap().style.style;
+    style.mask = Some(vale_style::Mask::Polygons { layer: mask });
+    style.rules = vec![Rule::new("Default", symbolizers)];
+    let (c, _) = first_map_frame(&mut doc, &mut p);
+    let origins = half_land_glyphs(&c);
+    assert!(!origins.is_empty(), "{:?}", c.labels.unplaced);
+    let record = doc.project.atlas.pages[0].frames[0].clone();
+    let projection = p.projection(&doc, doc.first_map()).unwrap();
+    let target = FrameTarget {
+        origin: Point::ZERO,
+        pts_per_mm: PT_PER_MM,
+    };
+    let vt = vale_app::atlas::frame_transform(projection, &record, target);
+    (origins.iter())
+        .map(|o| projection.inverse(vt.from_page(*o)).unwrap()[0])
+        .collect()
+}
+
+#[test]
+fn a_polygon_with_a_fill_that_does_not_apply_its_mask_places_its_label_on_the_whole_polygon() {
+    // The label is across 0 degrees, the east edge of the mask.
+    let lons = half_land_label_lons(vec![half_land_fill(false), half_land_stroke(true)]);
+    assert!(
+        lons.iter().any(|&l| l < 0.0) && lons.iter().any(|&l| l > 0.0),
+        "{lons:?}"
+    );
+    // A fill that applies the mask keeps the label inside the mask.
+    let lons = half_land_label_lons(vec![half_land_fill(true), half_land_stroke(false)]);
+    assert!(lons.iter().all(|&l| l > -80.0 && l < 0.0), "{lons:?}");
+}
+
+#[test]
+fn a_polygon_with_no_fill_places_its_label_inside_its_mask() {
+    for apply_mask in [true, false] {
+        let lons = half_land_label_lons(vec![half_land_stroke(apply_mask)]);
+        assert!(
+            lons.iter().all(|&l| l > -80.0 && l < 0.0),
+            "{apply_mask}: {lons:?}"
+        );
+    }
+}
+
+#[test]
+fn a_fill_that_does_not_apply_a_page_mask_places_its_label_on_the_whole_polygon() {
+    use vale_app::mask::PageMask;
+    let (mut doc, land, mask) = half_land();
+    let mut p = Pipeline::new();
+    let style = &mut doc.entry_mut(land).unwrap().style.style;
+    style.mask = Some(vale_style::Mask::Raster {
+        layer: mask,
+        min: Some(0.0),
+        max: None,
+        offset: 0.0,
+    });
+    style.rules = vec![Rule::new("Default", vec![half_land_fill(false)])];
+    // With no page mask yet, the polygon has its label.
+    let (c, _) = first_map_frame(&mut doc, &mut p);
+    assert!(!half_land_glyphs(&c).is_empty(), "{:?}", c.labels.unplaced);
+
+    // A page mask west of 0 degrees does not move the label.
+    let record = doc.project.atlas.pages[0].frames[0].clone();
+    let projection = p.projection(&doc, doc.first_map()).unwrap();
+    let vt = vale_app::atlas::frame_transform(projection, &record, FrameTarget::MM);
+    let x = vt.to_page(projection.forward([0.0, 0.0]).unwrap()).x;
+    let west = vec![
+        Point::new(-1000.0, -1000.0),
+        Point::new(x, -1000.0),
+        Point::new(x, 1000.0),
+        Point::new(-1000.0, 1000.0),
+    ];
+    p.set_page_mask(record.id, land, Some(PageMask::new(vec![west])));
+    let page = &doc.project.atlas.pages[0];
+    let mut f = fonts().unwrap();
+    let target = FrameTarget {
+        origin: Point::ZERO,
+        pts_per_mm: PT_PER_MM,
+    };
+    let c = p
+        .compose_frame(&doc, page, &record, target, &mut f, Quality::Final)
+        .unwrap();
+    let origins = half_land_glyphs(&c);
+    assert!(!origins.is_empty(), "{:?}", c.labels.unplaced);
+    let projection = p.projection(&doc, doc.first_map()).unwrap();
+    let vt = vale_app::atlas::frame_transform(projection, &record, target);
+    let lons: Vec<f64> = (origins.iter())
+        .map(|o| projection.inverse(vt.from_page(*o)).unwrap()[0])
+        .collect();
+    assert!(
+        lons.iter().any(|&l| l < 0.0) && lons.iter().any(|&l| l > 0.0),
+        "{lons:?}"
+    );
 }
 
 #[test]
