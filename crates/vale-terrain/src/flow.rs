@@ -2074,9 +2074,9 @@ pub(crate) mod tests {
             }
             let main = (y - mid).abs();
             let side = (x - mid).abs();
-            let main_h = (main <= 3.4).then(|| 100.0 + 20.0 * x + 300.0 * main);
+            let main_h = (main <= 3.4).then_some(100.0 + 20.0 * x + 300.0 * main);
             let side_h = (side <= 3.4 && y >= mid && y < m as f64 - 12.0)
-                .then(|| 100.0 + 20.0 * mid + 30.0 * (y - mid) + 300.0 * side);
+                .then_some(100.0 + 20.0 * mid + 30.0 * (y - mid) + 300.0 * side);
             match (main_h, side_h) {
                 (Some(a), Some(b)) => a.min(b),
                 (Some(h), None) | (None, Some(h)) => h,
