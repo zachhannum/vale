@@ -6,7 +6,7 @@ use super::math::{Mat3, V3, cross, lonlat_to_dir, normalize};
 
 pub const ZOOM_MIN: f64 = 0.5;
 /// The shader finds the place of each pixel in 32-bit floats. Past this
-/// zoom, the band lines and the hillshade shimmer.
+/// zoom, the band lines lose their even weight.
 pub const ZOOM_MAX: f64 = 1000.0;
 
 /// A view that the navigation moves.
