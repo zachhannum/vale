@@ -1691,7 +1691,7 @@ fn the_desktop_style_editor_gives_a_line_its_width_from_an_expression() {
     h.get_by_label(WIDTH_FROM_EXPRESSION).click();
     h.run_steps(2);
     let start = text(&h).unwrap();
-    assert!(start.starts_with("sqrt(flow('Height')) / "), "{start}");
+    assert!(start.starts_with("1 + sqrt(flow('Height')) / "), "{start}");
     type_in(&mut h, WIDTH_EXPRESSION, "sqrt(flow('Height')) / 50");
     assert_eq!(text(&h).as_deref(), Some("sqrt(flow('Height')) / 50"));
     h.get_by_label(WIDTH_FROM_EXPRESSION).click();

@@ -148,16 +148,20 @@ pub struct ExprHelp {
     page: Option<PageSample>,
 }
 
+/// The width in points that the start text of a width expression gives a
+/// line with no flow. The flow adds to it.
+pub const BASE_RIVER_WIDTH: f64 = 1.0;
+
 /// The width in points that the start text of a width expression gives the
 /// largest river of a layer.
 pub const LARGEST_RIVER_WIDTH: f64 = 4.0;
 
 /// The divisor of `sqrt(flow(...))` that gives a river with the flow
-/// `largest` km² about `LARGEST_RIVER_WIDTH` points, as 1, 2, or 5 times a
-/// power of ten. 100 if the flow is not known.
+/// `largest` km² about `LARGEST_RIVER_WIDTH` points with the base width, as
+/// 1, 2, or 5 times a power of ten. 100 if the flow is not known.
 pub fn width_divisor(largest: Option<f64>) -> f64 {
     let Some(d) = largest
-        .map(|km2| km2.sqrt() / LARGEST_RIVER_WIDTH)
+        .map(|km2| km2.sqrt() / (LARGEST_RIVER_WIDTH - BASE_RIVER_WIDTH))
         .filter(|d| d.is_finite() && *d > 0.0)
     else {
         return 100.0;
@@ -180,15 +184,17 @@ impl ExprHelp {
             .map(|(name, _)| name.as_str())
     }
 
-    /// The start text of a width expression: a width from the flow of the
-    /// first height layer, with a divisor that gives the largest river of
-    /// the layer about `LARGEST_RIVER_WIDTH` points, or else 1.
+    /// The start text of a width expression: the base width, and a width
+    /// from the flow of the first height layer, with a divisor that gives the
+    /// largest river of the layer about `LARGEST_RIVER_WIDTH` points. 1 with
+    /// no height layer.
     pub fn flow_width(&self) -> String {
         let Some(name) = self.height_layer() else {
             return "1".to_owned();
         };
         let divisor = width_divisor(self.largest_flow);
-        format!("sqrt(flow('{}')) / {divisor}", name.replace('\'', "''"))
+        let name = name.replace('\'', "''");
+        format!("{BASE_RIVER_WIDTH} + sqrt(flow('{name}')) / {divisor}")
     }
 }
 
@@ -924,12 +930,12 @@ mod tests {
     fn the_width_divisor_gives_the_largest_river_about_four_points() {
         assert_eq!(width_divisor(None), 100.0);
         assert_eq!(width_divisor(Some(0.0)), 100.0);
-        // sqrt(1,000,000) / 4 is 250, and the nearest step is 200.
-        assert_eq!(width_divisor(Some(1.0e6)), 200.0);
+        // sqrt(360,000) / 3 is 200.
+        assert_eq!(width_divisor(Some(3.6e5)), 200.0);
         assert_eq!(width_divisor(Some(1.6e5)), 100.0);
         assert_eq!(width_divisor(Some(400.0)), 5.0);
         for km2 in [3.0e2, 4.5e3, 1.8e6, 2.0e7] {
-            let width = f64::sqrt(km2) / width_divisor(Some(km2));
+            let width = BASE_RIVER_WIDTH + f64::sqrt(km2) / width_divisor(Some(km2));
             assert!((2.5..=6.5).contains(&width), "{km2} km²: {width} pt");
         }
     }
