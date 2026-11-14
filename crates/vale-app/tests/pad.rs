@@ -16643,6 +16643,14 @@ fn on_a_partially_folded_iphone_duo_no_control_crosses_the_fold() {
             h.run_steps(2);
             assert!(h.state().pad.worlds.is_some(), "{what}");
             check_off_fold(&h, fold, &format!("{what}, worlds"));
+            tap(&mut h, WORLDS);
+            if !atlas {
+                // The list of the modes of the Terrain cell.
+                open_group(&mut h, ModeGroup::Terrain);
+                h.run_steps(2);
+                assert!(h.state().pad.flyouts.rect.is_some(), "{what}");
+                check_off_fold(&h, fold, &format!("{what}, modes"));
+            }
         }
     }
 }

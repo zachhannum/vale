@@ -735,9 +735,9 @@ The outer camera is in a top corner of the outer screen, and the system reserves
 The parts of the layout keep out of the folding region, so a fold changes the layout only a little:
 
 - In landscape, the canvas is the left part, and the dock is in the right part. The dock is at most as wide as the right part. A wider dock gets narrower during the fold, and it gets its width back when the device opens flat.
-- In portrait, the top row is in the upper part. The tool column and the dock have a gap at the folding region: a cell, a control, or a row that is in the region moves below it.
+- In portrait, the top row is in the upper part. The tool column and the dock have a gap at the folding region: a cell, a control, or a row that is in the region moves below it. If the tool column still does not fit, it ends above the gap and scrolls. In the dock, the first panes that fit are above the gap, and the other panes are below it. A bar changes the heights of the panes in its part.
 - A page of the Atlas workspace opens, and a double tap fits it, in one part of the canvas. That is the left part in landscape and the upper part in portrait.
-- If a card, a menu, or a popover crosses the folding region, it moves to the side of its control.
+- If a card, a menu, or a popover crosses the folding region, it moves to the side of its control. If it does not fit there, it gets shorter. A card at the center of the screen, such as a form, is at the center of the left part in landscape and of the upper part in portrait.
 - The globe and the flat map do not move.
 
 ### Desktop layout
