@@ -39,7 +39,7 @@ const MODES: [(Mode, &str); 16] = [
 
 /// The tools, with their names in the file.
 const TOOLS: [(Tool, &str); 9] = [
-    (Tool::Navigate, "navigate"),
+    (Tool::Pan, "navigate"),
     (Tool::Brush, "brush"),
     (Tool::Line, "line"),
     (Tool::Polygon, "polygon"),
@@ -660,7 +660,7 @@ mod tests {
         let mut next_snap = SnapSettings::default();
         let text = read(dir.path()).unwrap();
         let (brush, line) = (&mut next.brush, &mut next.line);
-        let mut tool = Tool::Navigate;
+        let mut tool = Tool::Pan;
         next.tools
             .load(&text, &mut tool, brush, line, &mut next_snap);
         assert_eq!(tool, Tool::Polygon);
@@ -699,7 +699,7 @@ mod tests {
         let (brush, line) = (&mut globe.brush, &mut globe.line);
         globe
             .tools
-            .load(text, &mut Tool::Navigate, brush, line, &mut snap);
+            .load(text, &mut Tool::Pan, brush, line, &mut snap);
         assert_eq!(globe.brush, BrushSettings::default());
         assert_eq!(globe.line, LineSettings::default());
         assert_eq!(snap, SnapSettings::default());
@@ -708,7 +708,7 @@ mod tests {
         let (brush, line) = (&mut globe.brush, &mut globe.line);
         globe
             .tools
-            .load(old, &mut Tool::Navigate, brush, line, &mut snap);
+            .load(old, &mut Tool::Pan, brush, line, &mut snap);
         assert!(!snap.on);
         assert_eq!(snap.distance, 20.0);
         assert_eq!(snap.targets, SnapSettings::default().targets);
