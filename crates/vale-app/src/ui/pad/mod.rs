@@ -100,6 +100,9 @@ pub const MOVE_SHARED: &str = "Move shared vertices";
 pub const DELETE_VERTEX: &str = "Delete vertex";
 /// The button of the Vertex tool that smooths the selected part.
 pub const SMOOTH_VERTICES: &str = "Smooth vertices";
+/// The row of the panel of a line layer that reverses each line that runs
+/// uphill.
+pub const ORIENT_RIVERS: &str = "Orient rivers downhill";
 
 /// A tool of the Vector cell.
 pub struct VectorTool {
@@ -3309,6 +3312,12 @@ fn vector_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
     widgets::value_row(ui, "Type", kind);
     if widgets::open_row(ui, controls, table::FEATURES, &features).clicked() {
         state.open_table(id);
+    }
+    if kind == "Lines" {
+        let enabled = state.can_orient_rivers(id);
+        if widgets::text_row(ui, controls, ORIENT_RIVERS, 0.0, false, enabled).clicked() {
+            state.orient_rivers(id);
+        }
     }
     rules::section(ui, state, controls, id);
     if kind != "Polygons" {

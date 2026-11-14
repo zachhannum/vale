@@ -54,6 +54,7 @@ pub mod inspector;
 pub mod map_texture;
 pub mod new_feature;
 pub mod number;
+pub mod orient;
 pub mod pad;
 pub mod panels;
 pub mod raster_form;
