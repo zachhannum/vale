@@ -124,6 +124,9 @@ impl Entry {
     }
 }
 
+/// The result of a flow job: the index and the drained area of each line.
+type FlowDone = Vec<(usize, Option<f64>)>;
+
 /// The drainage of one height layer.
 struct Drainage {
     map: Option<Arc<FlowMap>>,
@@ -149,7 +152,7 @@ struct FlowEntry {
     areas: Vec<Option<f64>>,
     /// The features to compute again.
     pending: BTreeSet<usize>,
-    job: Option<mpsc::Receiver<Vec<(usize, Option<f64>)>>>,
+    job: Option<mpsc::Receiver<FlowDone>>,
     /// The geometry is the same as the layer.
     checked: bool,
 }
@@ -659,7 +662,7 @@ fn start_flow(
     flow: Arc<FlowMap>,
     geoms: Arc<Vec<Geometry>>,
     indices: Vec<usize>,
-) -> Option<mpsc::Receiver<Vec<(usize, Option<f64>)>>> {
+) -> Option<mpsc::Receiver<FlowDone>> {
     let (tx, rx) = mpsc::channel();
     let run = move || {
         let done = (indices.into_iter())
