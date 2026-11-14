@@ -94,17 +94,26 @@ pub fn taper(parts: &[Vec<Point>], start_w: f64, end_w: f64) -> Vec<TaperPiece> 
 
 /// Like `taper`, but each point carries its fraction from 0 to 1 along the whole line.
 pub fn taper_measured(parts: &[Vec<(Point, f64)>], start_w: f64, end_w: f64) -> Vec<TaperPiece> {
-    let radius = |f: f64| ((start_w + (end_w - start_w) * f) * 0.5).max(0.0);
+    let width = |f: f64| start_w + (end_w - start_w) * f;
+    let parts: Vec<Vec<(Point, f64)>> = (parts.iter())
+        .map(|part| part.iter().map(|&(p, f)| (p, width(f))).collect())
+        .collect();
+    varying(&parts)
+}
+
+/// A stroke whose width changes from point to point. Each point carries its width.
+pub fn varying(parts: &[Vec<(Point, f64)>]) -> Vec<TaperPiece> {
+    let radius = |w: f64| (w * 0.5).max(0.0);
     let mut out = Vec::new();
     for part in parts {
-        for (i, &(p, f)) in part.iter().enumerate() {
-            let r = radius(f);
+        for (i, &(p, w)) in part.iter().enumerate() {
+            let r = radius(w);
             if i > 0 {
-                let (q, g) = part[i - 1];
+                let (q, v) = part[i - 1];
                 if q == p {
                     continue;
                 }
-                if let Some(quad) = hull(q, radius(g), p, r) {
+                if let Some(quad) = hull(q, radius(v), p, r) {
                     out.push(TaperPiece::Quad(quad));
                 }
             }
@@ -112,6 +121,53 @@ pub fn taper_measured(parts: &[Vec<(Point, f64)>], start_w: f64, end_w: f64) -> 
         }
     }
     out
+}
+
+/// The points of `parts` with the width of the nearest of `samples`, each a place and a
+/// width. A segment longer than half the mean distance between the samples gets more points,
+/// so the width changes where the samples change. With no samples, each width is 0.
+pub fn sampled(parts: &[Vec<Point>], samples: &[(Point, f64)]) -> Vec<Vec<(Point, f64)>> {
+    let gaps: f64 = samples.windows(2).map(|w| w[0].0.distance(w[1].0)).sum();
+    let mean = gaps / samples.len().saturating_sub(1).max(1) as f64;
+    let step = (0.5 * mean).max(0.25);
+    // The nearest sample, searched near the last one first.
+    let mut hint = None;
+    let mut nearest = |p: Point| -> f64 {
+        if samples.is_empty() {
+            return 0.0;
+        }
+        let best_in = |range: std::ops::Range<usize>| {
+            (range.map(|i| (samples[i].0.distance_squared(p), i)))
+                .min_by(|a, b| a.0.total_cmp(&b.0))
+        };
+        let near = hint.and_then(|h: usize| {
+            let lo = h.saturating_sub(16);
+            let hi = (h + 17).min(samples.len());
+            best_in(lo..hi).filter(|b| b.0 <= (2.0 * step).powi(2))
+        });
+        let (_, i) = near
+            .or_else(|| best_in(0..samples.len()))
+            .unwrap_or((0.0, 0));
+        hint = Some(i);
+        samples[i].1
+    };
+    (parts.iter())
+        .map(|part| {
+            let mut out = Vec::new();
+            for (k, &p) in part.iter().enumerate() {
+                if k > 0 {
+                    let q = part[k - 1];
+                    let n = (q.distance(p) / step).floor() as usize;
+                    for j in 1..=n.min(10_000) {
+                        let at = q.lerp(p, j as f64 / (n + 1) as f64);
+                        out.push((at, nearest(at)));
+                    }
+                }
+                out.push((p, nearest(p)));
+            }
+            out
+        })
+        .collect()
 }
 
 /// The outer-tangent hull of two circles, or `None` if one circle contains the other.
