@@ -1448,8 +1448,7 @@ pub fn sideways(moved: egui::Vec2) -> bool {
     moved.x.abs() > moved.y.abs()
 }
 
-/// The distance that a swipe to the right moves a row, at most.
-pub const SWIPE_SELECT: f32 = 56.0;
+pub use super::list::SWIPE_SELECT;
 
 /// A row of a list that a swipe to the right selects, as in the layer list
 /// of Procreate: the name at the left, and `value` and an arrow at the

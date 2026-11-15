@@ -48,6 +48,7 @@ pub mod grid_labels;
 pub mod icons;
 pub mod label_text;
 pub mod labels;
+pub mod list;
 pub mod motion;
 pub mod number;
 pub mod panels_menu;
@@ -339,23 +340,11 @@ const NEW_LAYERS: [(&str, GeometryKind); 3] = [
 ];
 /// The width of the menu of the new layers.
 const ADD_WIDTH: f32 = 220.0;
-/// The time that a finger holds a row of the layer list before the row
-/// moves with the finger, in seconds.
-pub const HOLD_TIME: f64 = 0.4;
-/// The largest distance that a finger moves during the hold, in points.
-pub(crate) const HOLD_SLOP: f32 = 6.0;
+pub use list::{HOLD_SLOP, HOLD_TIME};
 
-/// A row of the layer list that a finger moved to the left, to show its
-/// Delete button.
+/// A row of a list that a finger moved to the left, to show its Delete
+/// button.
 pub type Swipe<K = LayerId> = swipe::Swipe<K>;
-
-/// A row of the layer list that moves with a finger.
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub struct Reorder {
-    pub layer: LayerId,
-    /// The distance from the top of the row to the finger.
-    grab: f32,
-}
 
 /// A panel that a button of the layout opens.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, clap::ValueEnum)]
@@ -488,13 +477,8 @@ pub struct PadState {
     pub add_rect: Option<Rect>,
     /// The button of this frame that opens the menu of the new layers.
     add_button: Option<Rect>,
-    /// The row of the layer list that moves with a finger.
-    pub reorder: Option<Reorder>,
-    /// The row of the layer list that a finger swiped.
-    pub swipe: Option<Swipe>,
-    /// The layer that the user renames in the layer list, and the text of
-    /// its name field.
-    pub rename: Option<(LayerId, String)>,
+    /// The gestures and the selected rows of the layer list.
+    pub layer_list: list::ListState<LayerId>,
     /// The text of the name field of the panel of a vector layer.
     name: Option<(LayerRef, String)>,
     /// The list of the projections of the flat view is open.
@@ -605,7 +589,7 @@ impl PadState {
             self.sheet_offset = 0.0;
         }
         self.dock_mut().open(panel);
-        self.swipe = None;
+        self.layer_list.open = None;
     }
 
     pub fn close(&mut self, panel: Panel) {
@@ -2183,17 +2167,13 @@ pub(super) fn panel_head(state: &mut AppState, panel: Panel) -> Head {
         (_, _) => (panel.key(), panel_name(state, panel), None),
     };
     let list = panel == Panel::Layers && layer.is_none();
-    if list && state.pad.reorder.is_none() {
+    if list && state.pad.layer_list.lift.is_none() {
         state.pad.name = None;
     }
     if !list {
-        state.pad.reorder = None;
-        state.pad.swipe = None;
+        state.pad.layer_list.shut();
     }
-    let scroll = match state.pad.reorder {
-        Some(_) => egui::scroll_area::ScrollSource::NONE,
-        None => egui::scroll_area::ScrollSource::default(),
-    };
+    let scroll = egui::scroll_area::ScrollSource::default();
     let action = match panel {
         Panel::Attributes => Some((select::FOCUS_NEW, Icon::TextCursor, state.tools.focus_new)),
         _ => list.then_some((ADD_LAYER, Icon::Plus, state.pad.add)),
@@ -2207,6 +2187,15 @@ pub(super) fn panel_head(state: &mut AppState, panel: Panel) -> Head {
             rules::selection_buttons(state, id, rule_count).map(|buttons| PageButtons {
                 buttons,
                 act: Box::new(move |state, name| rules::selection_action(state, id, name)),
+            })
+        }
+        (None, None) if list => {
+            let picked = state.pad.layer_list.picked.len();
+            let count = state.doc.project.layers().len();
+            let buttons = list::group_buttons(picked, count, &[], Some(DELETE_LAYERS));
+            buttons.map(|buttons| PageButtons {
+                buttons,
+                act: Box::new(layer_group),
             })
         }
         _ => None,
@@ -3042,22 +3031,11 @@ pub(super) fn layer_icon(layer: &Layer) -> Icon {
     }
 }
 
-/// One row of the layer list.
-struct ListRow {
-    id: LayerId,
-    layer: LayerRef,
-    name: String,
-    icon: Icon,
-    visible: bool,
-}
-
 /// The list of the layers of each kind, in draw order. The first row is the
 /// bottom of the drawing. A tap on a row selects the layer, and the eye
-/// shows or hides it. A finger that holds a row lifts it, and the row then
-/// moves with the finger to a new place in the order. A swipe to the left
-/// shows the Delete button of the row, and a long swipe deletes the layer.
-/// The list of the layers, and below it the text of the import of an image
-/// layer that runs or that failed, or of a GeoJSON import that failed.
+/// shows or hides it. The list has each gesture of [`list`]. Below the list
+/// is the text of the import of an image layer that runs or that failed,
+/// or of a GeoJSON import that failed.
 fn layers_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
     layer_list(ui, state, controls);
     image_note(ui, state, None);
@@ -3087,188 +3065,91 @@ fn image_note(ui: &mut egui::Ui, state: &mut AppState, layer: Option<ImageId>) {
 
 fn layer_list(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
     ui.spacing_mut().item_spacing.y = 0.0;
-    let layers = state.doc.project.layers().iter();
-    let rows: Vec<ListRow> = layers
-        .map(|l| ListRow {
-            id: l.id,
-            layer: LayerRef::of(l),
-            name: l.name.clone(),
-            icon: layer_icon(l),
-            visible: l.visible,
-        })
-        .collect();
-    if rows.is_empty() {
-        state.pad.reorder = None;
-        state.pad.swipe = None;
+    let layers = state.doc.project.layers();
+    if layers.is_empty() {
+        state.pad.layer_list = list::ListState::default();
         ui.add_space(4.0);
         ui.label(egui::RichText::new(NO_LAYERS).color(theme::MUTE));
         return;
     }
-    let size = vec2(ui.available_width(), rows.len() as f32 * PANEL_ROW);
-    let (area, _) = ui.allocate_exact_size(size, egui::Sense::hover());
-    let slot =
-        |top: f32| Rect::from_min_size(pos2(area.left(), top), vec2(area.width(), PANEL_ROW));
-    let place = |i: usize| slot(area.top() + i as f32 * PANEL_ROW);
     let selected = state.selected_layer;
-    let (pointer, down) = ui.input(|i| (i.pointer.interact_pos(), i.pointer.any_down()));
-
-    let lifted = state
-        .pad
-        .reorder
-        .and_then(|r| Some((r, rows.iter().position(|row| row.id == r.layer)?)));
-    let Some((reorder, from)) = lifted else {
-        state.pad.reorder = None;
-        swipe_rows(ui, state, controls, &rows, area);
-        return;
+    let looks: Vec<(LayerRef, Icon, bool)> = layers
+        .iter()
+        .map(|l| (LayerRef::of(l), layer_icon(l), l.visible))
+        .collect();
+    let rows: Vec<list::Row<LayerId>> = layers
+        .iter()
+        .map(|l| list::Row {
+            label: format!("Layer {}", l.name),
+            on: selected == Some(LayerRef::of(l)),
+            rename: true,
+            delete: true,
+            trailing: 2.0 * geometry::TOUCH,
+            ..list::Row::new(l.id, l.name.clone())
+        })
+        .collect();
+    let spec = list::Spec {
+        select: true,
+        reorder: true,
+        field: LAYER_NAME,
+        ..list::Spec::default()
     };
-
-    let y = pointer.map_or(place(from).top() + reorder.grab, |p| p.y);
-    let top = (y - reorder.grab).clamp(area.top(), area.bottom() - PANEL_ROW);
-    let to = ((top - area.top()) / PANEL_ROW).round() as usize;
-    let others = rows.iter().enumerate().filter(|(i, _)| *i != from);
-    for (k, (_, row)) in others.enumerate() {
-        // The rows make room at the place where the lifted row goes.
-        let rect = row_place(ui, row.id, area, if k < to { k } else { k + 1 });
-        let on = selected == Some(row.layer);
-        let (icon, name, visible) = (row.icon, &row.name, Some(row.visible));
-        widgets::layer_row(
-            ui, controls, rect, icon, name, visible, on, false, false, 0.0, None,
-        );
-    }
-    let row = &rows[from];
-    let (icon, name, visible) = (row.icon, &row.name, Some(row.visible));
-    let rect = slot(top);
-    motion::set(ui.ctx(), row_spring(ui, row.id), top - area.top());
-    widgets::layer_row(
-        ui, controls, rect, icon, name, visible, true, false, true, 0.0, None,
-    );
-    if !down {
-        state.pad.reorder = None;
-        if to != from {
-            state.move_layer(reorder.layer, to);
-        }
-    }
-}
-
-/// The spring of the place of the row of layer `id` in the layer list.
-fn row_spring(ui: &egui::Ui, id: LayerId) -> egui::Id {
-    ui.id().with(("layer-row", id))
-}
-
-/// The place of the row of layer `id` at index `i` of the list in `area`.
-/// The row moves to its place on a spring, as after a reorder.
-fn row_place(ui: &egui::Ui, id: LayerId, area: Rect, i: usize) -> Rect {
-    let target = i as f32 * PANEL_ROW;
-    let y = motion::points(ui.ctx(), row_spring(ui, id), target, motion::SNAPPY);
-    Rect::from_min_size(
-        pos2(area.left(), area.top() + y),
-        vec2(area.width(), PANEL_ROW),
-    )
-}
-
-/// The rows of the layer list that take touch. A sideways drag on a row
-/// swipes it, and a drag up or down scrolls the list.
-fn swipe_rows(
-    ui: &mut egui::Ui,
-    state: &mut AppState,
-    controls: &mut Controls,
-    rows: &[ListRow],
-    area: Rect,
-) {
-    let place = |i: usize| {
-        let top = area.top() + i as f32 * PANEL_ROW;
-        Rect::from_min_size(pos2(area.left(), top), vec2(area.width(), PANEL_ROW))
-    };
-    let selected = state.selected_layer;
-    swipe::shut_outside(ui, &mut state.pad.swipe, |layer| {
-        rows.iter().position(|row| row.id == layer).map(place)
+    let list = &mut state.pad.layer_list;
+    let events = list::show(ui, controls, list, spec, &rows, |ui, controls, cell, i| {
+        let look = list::Look {
+            icon: Some(looks[i].1),
+            text: &rows[i].name,
+            eye: Some(looks[i].2),
+            open: true,
+            ..list::Look::default()
+        };
+        list::draw(ui, controls, cell, &look)
     });
-    for (i, row) in rows.iter().enumerate() {
-        let (id, rect) = (row.id, row_place(ui, row.id, area, i));
-        if let Some((_, text)) = state.pad.rename.as_mut().filter(|r| r.0 == id) {
-            // The row is the name field while the user renames the layer. The
-            // name changes when the field loses the focus.
-            let valid = !text.trim().is_empty();
-            let field = ui
-                .push_id(id.0, |ui| {
-                    let font = theme::body();
-                    widgets::field_at(ui, controls, rect, LAYER_NAME, None, text, valid, font)
-                })
-                .inner;
-            if field.lost_focus() {
-                let text = state.pad.rename.take().map(|r| r.1);
-                state.doc.rename_layer(id, &text.unwrap_or_default());
-            } else if !field.has_focus() {
-                widgets::focus_all(ui, &field, &row.name);
+    let of = |id: LayerId| {
+        let i = rows.iter().position(|r| r.key == id)?;
+        Some((looks[i].0, looks[i].2))
+    };
+    for event in events {
+        match event {
+            list::Event::Tap(id) | list::Event::Lift(id) => {
+                state.select(of(id).map(|(layer, _)| layer));
             }
-            continue;
-        }
-        let on = selected == Some(row.layer);
-        let (icon, name, visible) = (row.icon, &row.name, Some(row.visible));
-        let open = state.pad.swipe.filter(|s| s.row == id);
-        let shift = swipe::shift(ui, state.pad.swipe, id);
-        let out = ui
-            .push_id(id.0, |ui| {
-                widgets::layer_row(
-                    ui, controls, rect, icon, name, visible, on, true, false, shift, None,
-                )
-            })
-            .inner;
-        if out.delete {
-            state.pad.swipe = None;
-            state.remove_layer(id);
-            continue;
-        }
-        if out.rename {
-            state.pad.swipe = None;
-            state.pad.rename = Some((id, row.name.clone()));
-            continue;
-        }
-        if out.eye {
-            state.set_layer_visible(id, !row.visible);
-        }
-        if out.open {
-            state.select(Some(row.layer));
-            state.pad.layer = Some(row.layer);
-            state.pad.swipe = None;
-        }
-        let Some(body) = out.body else { continue };
-        if swipe::drag(ui, &mut state.pad.swipe, id, &body, widgets::RENAME_WIDTH) {
-            continue;
-        }
-        if body.clicked() {
-            if open.is_some() {
-                state.pad.swipe = None;
-            } else {
-                state.select(Some(row.layer));
+            list::Event::Open(id) => {
+                if let Some((layer, _)) = of(id) {
+                    state.select(Some(layer));
+                    state.pad.layer = Some(layer);
+                }
+            }
+            list::Event::Control(id, list::EYE) => {
+                if let Some((_, visible)) = of(id) {
+                    state.set_layer_visible(id, !visible);
+                }
+            }
+            list::Event::Control(..) => {}
+            list::Event::Rename(id, name) => {
+                state.doc.rename_layer(id, &name);
+            }
+            list::Event::Delete(id) => {
+                state.remove_layer(id);
+            }
+            list::Event::Move { key, to, .. } => {
+                state.move_layer(key, to);
             }
         }
-        if !body.is_pointer_button_down_on() || body.dragged() || state.pad.swipe.is_some() {
-            continue;
-        }
-        let press = ui.input(|i| {
-            let (start, origin) = (i.pointer.press_start_time()?, i.pointer.press_origin()?);
-            let pos = i.pointer.interact_pos()?;
-            Some((i.time - start, origin.distance(pos), pos.y))
-        });
-        match press {
-            Some((held, moved, y)) if moved <= HOLD_SLOP && held >= HOLD_TIME => {
-                // The row takes the drag, so that the list does not scroll
-                // while the finger moves the layer.
-                ui.ctx().set_dragged_id(body.id);
-                state.select(Some(row.layer));
-                state.pad.reorder = Some(Reorder {
-                    layer: id,
-                    grab: y - rect.top(),
-                });
-                ui.ctx().request_repaint();
-            }
-            Some((held, moved, _)) if moved <= HOLD_SLOP => {
-                let wait = std::time::Duration::from_secs_f64(HOLD_TIME - held);
-                ui.ctx().request_repaint_after(wait);
-            }
-            _ => {}
-        }
+    }
+}
+
+/// The name of the header button that deletes the selected layers.
+pub const DELETE_LAYERS: &str = "Delete layers";
+
+/// Does the action of a header button of the selected layers.
+fn layer_group(state: &mut AppState, name: &'static str) {
+    let keys: Vec<LayerId> = state.doc.project.layers().iter().map(|l| l.id).collect();
+    let list = &mut state.pad.layer_list;
+    if let Some(list::Group::Delete(ids)) =
+        list::group_action(list, &keys, name, Some(DELETE_LAYERS))
+    {
+        state.remove_layers(&ids);
     }
 }
 

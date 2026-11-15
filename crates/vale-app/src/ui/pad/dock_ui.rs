@@ -1018,6 +1018,7 @@ fn contents(
     let most = (bottom - ui.cursor().top()).max(0.0);
     let scroll = match state.pad.dock_drag {
         Some(_) => egui::scroll_area::ScrollSource::NONE,
+        None if super::list::lifted(ui.ctx()) => egui::scroll_area::ScrollSource::NONE,
         None => head.scroll,
     };
     let out = egui::ScrollArea::vertical()
@@ -1067,7 +1068,7 @@ fn header_row(
     state: &mut AppState,
     controls: &mut Controls,
     i: usize,
-    head: &Head,
+    head: &mut Head,
     rect: Rect,
     mode: Mode,
     names: bool,
@@ -1111,6 +1112,22 @@ fn header_row(
             false => (fold_name(name, false), Icon::Down),
         };
         fold = widgets::icon_button_at(ui, controls, at, &chevron, icon, false, true).clicked();
+    }
+    // A first page with no back row shows its buttons in the header.
+    if head.back.is_none()
+        && let Some(page) = head.buttons.take()
+    {
+        let mut tapped = None;
+        for (name, icon) in page.buttons.iter().rev() {
+            let at = button(left_of - TOUCH);
+            left_of = at.left();
+            if widgets::icon_button_at(ui, controls, at, name, *icon, false, true).clicked() {
+                tapped = Some(*name);
+            }
+        }
+        if let Some(name) = tapped {
+            (page.act)(state, name);
+        }
     }
     let tabs_area = Rect::from_min_max(
         pos2(rect.left() + PAD, rect.top()),

@@ -1291,6 +1291,16 @@ impl AppState {
     /// `false` if the project has no such layer.
     pub fn remove_raster(&mut self, id: RasterId) -> bool {
         self.save_edit();
+        if !self.drop_raster(id) {
+            return false;
+        }
+        self.sync_globe();
+        self.save_edit();
+        true
+    }
+
+    /// Removes a raster layer and its heightmap, with no save.
+    fn drop_raster(&mut self, id: RasterId) -> bool {
         if self.doc.project.remove_raster(id).is_none() {
             return false;
         }
@@ -1298,8 +1308,6 @@ impl AppState {
         if self.pad.layer == Some(LayerRef::Raster(id)) {
             self.pad.layer = None;
         }
-        self.sync_globe();
-        self.save_edit();
         true
     }
 
@@ -1481,15 +1489,46 @@ impl AppState {
     pub fn remove_layer(&mut self, id: LayerId) -> bool {
         match self.doc.layer(id).map(|layer| layer.kind) {
             Some(LayerKind::Raster(raster)) => self.remove_raster(raster),
-            Some(LayerKind::Image(image)) => {
+            Some(LayerKind::Image(_)) => {
                 self.save_edit();
+                let removed = self.drop_layer(id);
+                self.sync_globe();
+                self.touch();
+                self.save_edit();
+                removed
+            }
+            Some(LayerKind::Vector(_)) => {
+                let removed = self.drop_layer(id);
+                self.sync_globe();
+                self.touch();
+                removed
+            }
+            None => false,
+        }
+    }
+
+    /// Removes layers of each kind as one undo step. Returns the number of
+    /// the removed layers.
+    pub fn remove_layers(&mut self, ids: &[LayerId]) -> usize {
+        self.save_edit();
+        let removed = ids.iter().filter(|id| self.drop_layer(**id)).count();
+        if removed > 0 {
+            self.sync_globe();
+            self.touch();
+            self.save_edit();
+        }
+        removed
+    }
+
+    /// Removes a layer of each kind, with no save.
+    fn drop_layer(&mut self, id: LayerId) -> bool {
+        match self.doc.layer(id).map(|layer| layer.kind) {
+            Some(LayerKind::Raster(raster)) => self.drop_raster(raster),
+            Some(LayerKind::Image(image)) => {
                 let removed = self.doc.project.remove_image(image).is_some();
                 if self.pad.layer == Some(LayerRef::Image(image)) {
                     self.pad.layer = None;
                 }
-                self.sync_globe();
-                self.touch();
-                self.save_edit();
                 removed
             }
             Some(LayerKind::Vector(_)) => {
@@ -1497,8 +1536,6 @@ impl AppState {
                 if self.pad.layer == Some(LayerRef::Vector(id)) {
                     self.pad.layer = None;
                 }
-                self.sync_globe();
-                self.touch();
                 removed
             }
             None => false,
@@ -2589,7 +2626,7 @@ impl AppState {
         self.image_tiles.clear();
         self.pad.layer = None;
         self.pad.add = false;
-        self.pad.reorder = None;
+        self.pad.layer_list = Default::default();
         // A layer of the next world can have the ID of an old layer.
         self.pipeline = Pipeline::new();
         self.touch();

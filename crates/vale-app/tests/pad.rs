@@ -1335,7 +1335,7 @@ fn hold(h: &mut Pad, name: &str) -> Pos2 {
     touch(h, egui::TouchPhase::Start, pos, None);
     for _ in 0..200 {
         h.step();
-        if h.state().pad.reorder.is_some() {
+        if h.state().pad.layer_list.lift.is_some() {
             break;
         }
     }
@@ -1350,7 +1350,7 @@ fn a_hold_and_a_drag_change_the_order() {
         let land = vector(&h, "Land");
         let places = control(&h, "Layer Places").unwrap().center();
         let from = hold(&mut h, "Layer Land");
-        assert_eq!(h.state().pad.reorder.map(|r| r.layer), Some(land));
+        assert_eq!(h.state().pad.layer_list.lift.map(|l| l.key), Some(land));
         // The order changes when the finger goes up.
         for i in 1..=6 {
             let pos = from.lerp(places + vec2(0.0, 6.0), i as f32 / 6.0);
@@ -1360,7 +1360,7 @@ fn a_hold_and_a_drag_change_the_order() {
         assert_eq!(layer_names(&h), ["Height", "Land", "Rivers", "Places"]);
         touch(&mut h, egui::TouchPhase::End, places, None);
         h.run_steps(3);
-        assert_eq!(h.state().pad.reorder, None);
+        assert_eq!(h.state().pad.layer_list.lift, None);
         assert_eq!(
             layer_names(&h),
             ["Height", "Rivers", "Places", "Land"],
@@ -1427,7 +1427,7 @@ fn a_drag_moves_a_raster_row_past_a_vector_row_and_undo_puts_it_back() {
         // The finger holds the raster row and moves it past two vector rows.
         let rivers = control(&h, "Layer Rivers").unwrap().center();
         let from = hold(&mut h, "Layer Height");
-        assert_eq!(h.state().pad.reorder.map(|r| r.layer), Some(layer));
+        assert_eq!(h.state().pad.layer_list.lift.map(|l| l.key), Some(layer));
         for i in 1..=6 {
             let pos = from.lerp(rivers + vec2(0.0, 6.0), i as f32 / 6.0);
             touch(&mut h, egui::TouchPhase::Move, pos, None);
@@ -1608,7 +1608,7 @@ fn a_quick_drag_does_not_lift_a_row() {
     touch(&mut h, egui::TouchPhase::Move, from.lerp(to, 0.5), None);
     for _ in 0..8 {
         h.step();
-        assert_eq!(h.state().pad.reorder, None);
+        assert_eq!(h.state().pad.layer_list.lift, None);
     }
     touch(&mut h, egui::TouchPhase::End, to, None);
     h.run_steps(3);
@@ -1643,7 +1643,7 @@ fn a_swipe_shows_delete_a_tap_deletes_and_undo_brings_it_back() {
         assert!(control(&h, "Delete Rivers").is_none(), "{what}");
         swipe(&mut h, "Rivers", -120.0);
         let rivers = vector(&h, "Rivers");
-        let open = h.state().pad.swipe.unwrap();
+        let open = h.state().pad.layer_list.open.unwrap();
         assert_eq!((open.row, open.moving), (rivers, false), "{what}");
         let delete = control(&h, "Delete Rivers").unwrap_or_else(|| panic!("{what}"));
         assert!(delete.width() >= 88.0 - 0.5, "{what}: {delete:?}");
@@ -1654,7 +1654,7 @@ fn a_swipe_shows_delete_a_tap_deletes_and_undo_brings_it_back() {
         check_controls(&h, &format!("{what} with an open row"));
         tap(&mut h, "Delete Rivers");
         assert_eq!(layer_names(&h), ["Height", "Land", "Places"], "{what}");
-        assert_eq!(h.state().pad.swipe, None, "{what}");
+        assert_eq!(h.state().pad.layer_list.open, None, "{what}");
         step_and_save(&mut h, false);
         h.state_mut().undo();
         h.run_steps(2);
@@ -1666,7 +1666,7 @@ fn a_swipe_shows_delete_a_tap_deletes_and_undo_brings_it_back() {
         let width = panel(&h, Panel::Layers).unwrap().width();
         swipe(&mut h, "Height", -0.9 * width);
         assert_eq!(layer_names(&h), ["Height", "Land", "Rivers", "Places"]);
-        let open = h.state().pad.swipe.unwrap();
+        let open = h.state().pad.layer_list.open.unwrap();
         assert_eq!(
             open.offset,
             -vale_app::ui::pad::widgets::RENAME_WIDTH,
@@ -1690,7 +1690,7 @@ fn a_short_swipe_snaps_shut() {
         let mut h = pad(size);
         open_panel(&mut h, "Layers");
         swipe(&mut h, "Land", -30.0);
-        assert_eq!(h.state().pad.swipe, None, "{what}");
+        assert_eq!(h.state().pad.layer_list.open, None, "{what}");
         assert!(control(&h, "Delete Land").is_none(), "{what}");
         assert!(control(&h, "Hide Land").is_some(), "{what}");
         assert_eq!(layer_names(&h).len(), 4, "{what}");
@@ -1698,17 +1698,17 @@ fn a_short_swipe_snaps_shut() {
         // A tap on the body of an open row shuts it, and a press elsewhere
         // shuts it.
         swipe(&mut h, "Land", -120.0);
-        assert!(h.state().pad.swipe.is_some(), "{what}");
+        assert!(h.state().pad.layer_list.open.is_some(), "{what}");
         tap(&mut h, "Layer Land");
-        assert_eq!(h.state().pad.swipe, None, "{what}");
+        assert_eq!(h.state().pad.layer_list.open, None, "{what}");
         swipe(&mut h, "Land", -120.0);
         tap(&mut h, "Layer Places");
-        assert_eq!(h.state().pad.swipe, None, "{what}");
+        assert_eq!(h.state().pad.layer_list.open, None, "{what}");
         assert!(control(&h, "Hide Land").is_some(), "{what}");
         // Only one row is open.
         swipe(&mut h, "Land", -120.0);
         swipe(&mut h, "Places", -120.0);
-        let open = h.state().pad.swipe.map(|s| s.row);
+        let open = h.state().pad.layer_list.open.map(|s| s.row);
         assert_eq!(open, Some(vector(&h, "Places")), "{what}");
         assert!(control(&h, "Delete Land").is_none(), "{what}");
         assert_eq!(layer_names(&h).len(), 4, "{what}");
@@ -1726,14 +1726,78 @@ fn a_vertical_drag_on_the_list_scrolls_and_opens_no_row() {
     let top = control(&h, "Layer Height").unwrap().center().y;
     let from = control(&h, "Layer Places").unwrap().center();
     drag(&mut h, from, from - vec2(10.0, 150.0), None);
-    assert_eq!(h.state().pad.swipe, None);
-    assert_eq!(h.state().pad.reorder, None);
+    assert_eq!(h.state().pad.layer_list.open, None);
+    assert_eq!(h.state().pad.layer_list.lift, None);
     assert!(
         control(&h, "Layer Height").is_none_or(|r| r.center().y < top - 50.0),
         "the list did not scroll"
     );
     assert_eq!(layer_names(&h).len(), 16);
     assert!(control(&h, "Delete Places").is_none());
+}
+
+#[test]
+fn a_swipe_to_the_right_selects_layers_and_the_header_deletes_them_in_one_step() {
+    use vale_app::ui::pad::DELETE_LAYERS;
+    use vale_app::ui::pad::list::{DESELECT_ALL, SELECT_ALL};
+    for size in [BOARDS[0], BOARDS[3]] {
+        let what = format!("{size:?}");
+        let dir = tempfile::tempdir().unwrap();
+        let mut h = saved_pad(size, dir.path());
+        open_panel(&mut h, "Layers");
+        let picked = |h: &Pad| h.state().pad.layer_list.picked.clone();
+        assert!(control(&h, DELETE_LAYERS).is_none(), "{what}");
+        swipe_right(&mut h, "Layer Places");
+        swipe_right(&mut h, "Layer Land");
+        let (land, places) = (vector(&h, "Land"), vector(&h, "Places"));
+        assert_eq!(picked(&h), [land, places], "{what}");
+        for name in [SELECT_ALL, DELETE_LAYERS, DESELECT_ALL, ADD_LAYER] {
+            assert!(control(&h, name).is_some(), "{what}: {name}");
+        }
+        check_controls(&h, &format!("{what} with selected layers"));
+        if size == BOARDS[0] {
+            screenshot::save(&mut h, "pad-layer-select");
+        }
+        // A second swipe deselects the layer.
+        swipe_right(&mut h, "Layer Land");
+        assert_eq!(picked(&h), [places], "{what}");
+        tap(&mut h, SELECT_ALL);
+        assert_eq!(picked(&h).len(), 4, "{what}");
+        assert!(control(&h, SELECT_ALL).is_none(), "{what}");
+        tap(&mut h, DESELECT_ALL);
+        assert!(picked(&h).is_empty(), "{what}");
+        assert!(control(&h, DELETE_LAYERS).is_none(), "{what}");
+
+        // The group delete is one undo step, for a raster layer and a vector
+        // layer.
+        swipe_right(&mut h, "Layer Height");
+        swipe_right(&mut h, "Layer Rivers");
+        tap(&mut h, DELETE_LAYERS);
+        assert_eq!(layer_names(&h), ["Land", "Places"], "{what}");
+        assert!(picked(&h).is_empty(), "{what}");
+        step_and_save(&mut h, false);
+        h.state_mut().undo();
+        h.run_steps(2);
+        assert_eq!(
+            layer_names(&h),
+            ["Height", "Land", "Rivers", "Places"],
+            "{what}"
+        );
+    }
+}
+
+#[test]
+fn a_tap_on_a_selected_layer_makes_it_the_active_layer() {
+    let mut h = pad(BOARDS[0]);
+    open_panel(&mut h, "Layers");
+    swipe_right(&mut h, "Layer Rivers");
+    let rivers = vector(&h, "Rivers");
+    assert_eq!(h.state().pad.layer_list.picked, [rivers]);
+    // A `tap` lasts as long as a hold, and a hold clears the selection.
+    quick_tap(&mut h, "Layer Land");
+    let land = vector(&h, "Land");
+    assert_eq!(h.state().selected_layer, Some(LayerRef::Vector(land)));
+    assert_eq!(h.state().pad.layer_list.picked, [rivers]);
 }
 
 /// Writes a 16-bit greyscale PNG with a slope from west to east.
