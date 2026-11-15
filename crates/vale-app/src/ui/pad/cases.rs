@@ -206,7 +206,7 @@ pub fn block(
     }
     widgets::keypad_below(&mut child, controls, &name);
     child.add_space(4.0);
-    if filter::add_row(&mut child, controls, ADD_CASE, ADD_CASE) {
+    if widgets::button_row(&mut child, controls, ADD_CASE, true).clicked() {
         cases.push((filter::new_rule(help), otherwise.clone()));
         changed = Some(true);
     }
