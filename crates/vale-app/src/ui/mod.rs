@@ -60,6 +60,7 @@ pub mod number;
 pub mod orient;
 pub mod pad;
 pub mod panels;
+pub mod ramp_editor;
 pub mod raster_form;
 pub mod region;
 pub mod select;
@@ -4848,6 +4849,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     world_form::desktop(ui.ctx(), state);
     raster_form::desktop(ui.ctx(), state);
     export_form::desktop(ui.ctx(), state);
+    ramp_editor::window(ui.ctx(), state);
     if state.workspace == Workspace::Globe {
         region::desktop(ui.ctx(), state);
     }

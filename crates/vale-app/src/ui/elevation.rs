@@ -277,6 +277,19 @@ fn body(ui: &mut egui::Ui, state: &mut AppState) {
             state.actions.push(Action::ImportRampDialog(Some(id)));
             ui.close();
         }
+        if ui.button(pad::raster::NEW_RAMP).clicked() {
+            state
+                .actions
+                .push(Action::NewRamp(Some(id), super::RampSource::Blank));
+            ui.close();
+        }
+        if ui.button(pad::raster::SAVE_AS_RAMP).clicked() {
+            state
+                .actions
+                .push(Action::NewRamp(Some(id), super::RampSource::Bands(id)));
+            ui.close();
+        }
+        ui.separator();
         ramp_menus(ui, state, id);
     });
     if let Some(note) = state.ramp_note.as_ref().filter(|n| n.layer == Some(id)) {
@@ -336,8 +349,9 @@ fn ramp_menus(ui: &mut egui::Ui, state: &mut AppState, id: RasterId) {
                 let fresh = format!("Make {colors} {kind}bands");
                 choose(ui, &fresh, RampChoice::Apply(false));
             }
+            ui.separator();
+            choose(ui, pad::raster::DUPLICATE_RAMP, RampChoice::Duplicate);
             if !ramp.built_in {
-                ui.separator();
                 choose(ui, pad::raster::REVERSE_RAMP, RampChoice::Reverse);
                 choose(ui, pad::raster::DELETE_RAMP, RampChoice::Delete);
             }
@@ -376,7 +390,12 @@ fn ramp_menus(ui: &mut egui::Ui, state: &mut AppState, id: RasterId) {
         RampChoice::Apply(keep) => state.apply_ramp(id, index, keep, part),
         RampChoice::Reverse => state.ramps.reverse(index).map_err(|e| e.to_string()),
         RampChoice::Delete => state.ramps.remove(index).map_err(|e| e.to_string()),
-        RampChoice::Labels | RampChoice::Use | RampChoice::Duplicate => Ok(()),
+        RampChoice::Duplicate => {
+            let source = super::RampSource::Copy(index);
+            state.actions.push(Action::NewRamp(Some(id), source));
+            Ok(())
+        }
+        RampChoice::Labels | RampChoice::Use => Ok(()),
     };
     if let Err(text) = result {
         state.ramp_note = Some(super::Note::new(text, true, Some(id)));

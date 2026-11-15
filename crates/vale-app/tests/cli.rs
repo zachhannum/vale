@@ -340,3 +340,22 @@ fn the_export_form_flags_open_the_form_with_a_format_and_a_range() {
     let only = ["vale-app", "--export-format", "png"];
     assert!(Args::try_parse_from(only).is_err());
 }
+
+#[test]
+fn ramp_editor_flag_opens_the_editor() {
+    use vale_app::cli::apply_import;
+    use vale_app::ui::pad::Page;
+    use vale_app::ui::{AppState, LayerRef, RasterSpec};
+
+    let args = parse(&["--layout", "pad", "--panel", "layers", "--ramp-editor"]);
+    assert!(args.ramp_editor);
+    let mut state = AppState::new(Document::sample()).unwrap();
+    let id = state.add_raster(RasterSpec::height("Height", 64)).unwrap();
+    state.select(Some(LayerRef::Raster(id)));
+    apply_import(&args, &mut state, true).unwrap();
+    let draft = state.ramp_draft.as_ref().unwrap();
+    assert_eq!(draft.colors.len(), 2);
+    assert_eq!(draft.layer, Some(id));
+    assert_eq!(state.pad.layer, Some(LayerRef::Raster(id)));
+    assert_eq!(state.pad.page, Some(Page::RampEditor));
+}

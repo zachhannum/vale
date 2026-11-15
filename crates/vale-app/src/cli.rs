@@ -104,6 +104,11 @@ pub struct Args {
     /// of the selected raster layer.
     #[arg(long)]
     pub stops_page: bool,
+    /// Open the editor of a new ramp. With --layout pad and --panel layers,
+    /// it opens on the page of the color ramps of the selected raster layer,
+    /// and the project needs a raster layer.
+    #[arg(long)]
+    pub ramp_editor: bool,
     /// With --layout pad and --panel layers: open the page of the hillshade
     /// of the selected height layer, and turn the hillshade on.
     #[arg(long)]
@@ -551,9 +556,10 @@ pub fn apply_globe(args: &Args, globe: &mut Globe, face_size: usize) -> anyhow::
     apply_globe_view(args, &mut globe.view)
 }
 
-/// Applies `--import-heightmap` and `--import-ramp`. `wait`: the imports
-/// end before the call returns, and a failure is an error. Without `wait`,
-/// the host starts the imports at its first frame.
+/// Applies `--import-heightmap`, `--import-ramp`, and the flags that open
+/// a page of a raster layer. `wait`: the imports end before the call
+/// returns, and a failure is an error. Without `wait`, the host starts the
+/// imports at its first frame.
 pub fn apply_import(args: &Args, state: &mut AppState, wait: bool) -> anyhow::Result<()> {
     apply_heightmap(args, state, wait)?;
     apply_ramp(args, state, wait)?;
@@ -562,6 +568,17 @@ pub fn apply_import(args: &Args, state: &mut AppState, wait: bool) -> anyhow::Re
     {
         state.pad.layer = Some(crate::ui::LayerRef::Raster(id));
         state.pad.page = Some(crate::ui::pad::Page::Stops);
+    }
+    if args.ramp_editor {
+        let id = state.selected_raster();
+        if args.layout == Layout::Pad && id.is_none() {
+            bail!("--ramp-editor with --layout pad needs a raster layer");
+        }
+        state.run_action(Action::NewRamp(id, crate::ui::RampSource::Blank));
+        if let Some(id) = id {
+            state.pad.layer = Some(crate::ui::LayerRef::Raster(id));
+            state.pad.page = Some(crate::ui::pad::Page::RampEditor);
+        }
     }
     if args.hillshade_page
         && let Some(id) = state.selected_raster()
