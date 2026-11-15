@@ -4821,6 +4821,9 @@ fn a_swipe_to_the_right_selects_classes_and_the_header_deletes_them_in_one_step(
     for name in [SELECT_ALL, DELETE_CLASSES, DESELECT_ALL] {
         assert!(control(&h, name).is_some(), "{name}");
     }
+    // The pane has more than one tab, so the buttons have a row of their
+    // own, and the tabs keep their size.
+    check_controls(&h, "selected class");
     // A second swipe deselects the class.
     swipe_right(&mut h, "Places");
     assert_eq!(picked(&h), 0);

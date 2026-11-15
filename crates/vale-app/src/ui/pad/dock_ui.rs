@@ -963,12 +963,14 @@ fn contents(
     bottom: f32,
 ) {
     let start = ui.cursor().top();
-    if let Some(back) = &head.back {
+    if head.back.is_some() || head.buttons.is_some() {
         let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::hover());
         let button =
             Rect::from_min_size(pos2(row.left() + PAD, row.top() + PAD), vec2(TOUCH, TOUCH));
-        let name = format!("Back to {back}");
-        let tap = widgets::icon_button_at(ui, controls, button, &name, Icon::Back, false, true);
+        let tap = head.back.as_ref().map(|back| {
+            let name = format!("Back to {back}");
+            widgets::icon_button_at(ui, controls, button, &name, Icon::Back, false, true)
+        });
         let mut right = row.right() - PAD;
         if let Some(page) = head.buttons.take() {
             let mut tapped = None;
@@ -984,23 +986,27 @@ fn contents(
                 (page.act)(state, name);
             }
         }
-        let clip = Rect::from_min_max(
-            pos2(button.right() + 4.0, row.top()),
-            pos2(right, row.bottom()),
-        );
-        ui.painter()
-            .with_clip_rect(clip.intersect(ui.clip_rect()))
-            .text(
-                pos2(clip.left(), row.center().y),
-                Align2::LEFT_CENTER,
-                &head.title,
-                theme::title(),
-                theme::TEXT,
+        // Without a back row, the row holds only the group buttons of a pane
+        // with more than one tab.
+        if let Some(tap) = tap {
+            let clip = Rect::from_min_max(
+                pos2(button.right() + 4.0, row.top()),
+                pos2(right, row.bottom()),
             );
-        if tap.clicked() {
-            match head.view.as_mut().and_then(|v| v.back.take()) {
-                Some(back) => back(state),
-                None => panel_title(state, head, true, None),
+            ui.painter()
+                .with_clip_rect(clip.intersect(ui.clip_rect()))
+                .text(
+                    pos2(clip.left(), row.center().y),
+                    Align2::LEFT_CENTER,
+                    &head.title,
+                    theme::title(),
+                    theme::TEXT,
+                );
+            if tap.clicked() {
+                match head.view.as_mut().and_then(|v| v.back.take()) {
+                    Some(back) => back(state),
+                    None => panel_title(state, head, true, None),
+                }
             }
         }
     }
@@ -1113,8 +1119,10 @@ fn header_row(
         };
         fold = widgets::icon_button_at(ui, controls, at, &chevron, icon, false, true).clicked();
     }
-    // A first page with no back row shows its buttons in the header.
+    // A first page with no back row shows its buttons in the header, if the
+    // pane has one tab. With more tabs, the buttons get a row of their own.
     if head.back.is_none()
+        && pane.tabs.len() == 1
         && let Some(page) = head.buttons.take()
     {
         let mut tapped = None;
