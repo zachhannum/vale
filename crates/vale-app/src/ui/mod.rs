@@ -568,6 +568,9 @@ pub struct AppState {
     pub actions: Vec<Action>,
     /// True: no timers, and each compose is final.
     pub headless: bool,
+    /// True: Reduce Motion is on in the system, and the chrome does not
+    /// move on springs.
+    pub reduce_motion: bool,
     /// The threads that make the regions of the raster masks.
     /// False: the tool bar has no buttons for GeoJSON files and for exports.
     pub file_buttons: bool,
@@ -720,6 +723,7 @@ impl AppState {
             form_face_size: None,
             actions: Vec::new(),
             headless: false,
+            reduce_motion: false,
             file_buttons: true,
             frames: 0,
             session: None,
@@ -4180,6 +4184,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         fold: state.pad.fold,
     };
     pad::geometry::set_regions(ui.ctx(), regions);
+    pad::motion::set_instant(ui.ctx(), state.headless || state.reduce_motion);
     let queue = state.globe.pen.queue.as_ref();
     let switches = queue.map(|queue| queue.take_switches()).unwrap_or_default();
     // The pen does not paint while the eyedropper is on.

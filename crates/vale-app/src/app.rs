@@ -77,6 +77,10 @@ impl eframe::App for ValeApp {
             state.pad.camera = regions.camera;
             state.pad.fold = regions.fold;
         }
+        #[cfg(target_os = "ios")]
+        {
+            state.reduce_motion = objc2_ui_kit::UIAccessibilityIsReduceMotionEnabled();
+        }
         ui::draw(ui, state);
         self.probe.update(state);
 

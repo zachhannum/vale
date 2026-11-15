@@ -48,6 +48,7 @@ pub mod grid_labels;
 pub mod icons;
 pub mod label_text;
 pub mod labels;
+pub mod motion;
 pub mod number;
 pub mod panels_menu;
 pub mod panes;
