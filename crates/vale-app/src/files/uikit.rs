@@ -1,9 +1,9 @@
 //! The file picker of iOS. It shows the Files app. For an import, the app
 //! gets a copy of the picked file in its own temporary folder. For an
-//! export, the Files app moves the file to the picked place.
+//! export, the Files app moves the files to the picked place.
 
 use std::ffi::c_void;
-use std::path::Path;
+use std::path::PathBuf;
 use std::ptr::NonNull;
 
 use objc2::rc::Retained;
@@ -178,19 +178,24 @@ impl Picker {
         true
     }
 
-    /// Shows the Files app, which moves `path` to the place that the user
-    /// picks. Returns `false` if the Files app cannot show now.
-    pub fn export_file(&self, path: &Path) -> bool {
+    /// Shows the Files app, which moves the files at `paths` to the place
+    /// that the user picks, in one step. Returns `false` if the Files app
+    /// cannot show now.
+    pub fn export_file(&self, paths: &[PathBuf]) -> bool {
         let Some(mtm) = MainThreadMarker::new() else {
             return false;
         };
         if self.presenter.presentedViewController().is_some() {
             return false;
         }
-        let Some(url) = NSURL::from_file_path(path) else {
+        let Some(urls) = paths
+            .iter()
+            .map(NSURL::from_file_path)
+            .collect::<Option<Vec<_>>>()
+        else {
             return false;
         };
-        let urls = NSArray::from_retained_slice(&[url]);
+        let urls = NSArray::from_retained_slice(&urls);
         let picker =
             UIDocumentPickerViewController::initForExportingURLs_asCopy(mtm.alloc(), &urls, false);
         picker.setDelegate(Some(ProtocolObject::from_ref(&*self.export_delegate)));

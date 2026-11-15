@@ -118,6 +118,8 @@ pub struct ExportForm {
     pub name: String,
     /// The page that the strip scrolls to on the next frame.
     pub center_on: Option<usize>,
+    /// The page of the last click on the strip in the desktop layout.
+    pub anchor: Option<usize>,
     /// The error of the last export of the form.
     pub error: Option<String>,
 }
@@ -146,6 +148,7 @@ impl ExportForm {
             transparent: options.transparent,
             name,
             center_on: None,
+            anchor: None,
             error: None,
         };
         form.set_mode(PagesMode::All);
@@ -539,13 +542,21 @@ pub fn pad(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
     if stop {
         state.actions.push(Action::CancelExport);
     }
+    if did == Did::Close {
+        widgets::close_keypad(ctx);
+    }
+    finish(state, form, did, busy);
+}
+
+/// Keeps the form open, closes it, or asks for the place of the export.
+/// A close while the export runs stops the export.
+fn finish(state: &mut AppState, mut form: ExportForm, did: Did, busy: bool) {
     match did {
         Did::Nothing => state.export_form = Some(form),
         Did::Close => {
             if busy {
                 state.actions.push(Action::CancelExport);
             }
-            widgets::close_keypad(ctx);
         }
         Did::Export => {
             form.error = None;
@@ -554,6 +565,181 @@ pub fn pad(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
             state.export_form = Some(form);
         }
     }
+}
+
+/// The keyboard shortcut that opens the form: Cmd+E, or Ctrl+E off macOS.
+pub fn shortcut() -> egui::KeyboardShortcut {
+    egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::E)
+}
+
+/// The strip of the pages in the desktop layout. A click ticks or clears a
+/// page. A Shift+click gives each page from the page of the last click to
+/// this page the tick of the page of the last click.
+fn desktop_strip(ui: &mut egui::Ui, state: &AppState, form: &mut ExportForm, enabled: bool) {
+    let pages = &state.doc.project.atlas.pages;
+    let sizes: Vec<egui::Vec2> = (form.page_ids.iter())
+        .map(|id| {
+            let page = pages.iter().find(|p| p.id == *id);
+            page.map_or(vec2(112.0, export_thumbs::HEIGHT), export_thumbs::size)
+        })
+        .collect();
+    let mut scroll = egui::ScrollArea::horizontal()
+        .id_salt((STRIP, "desktop"))
+        .auto_shrink([false, true]);
+    if let Some(index) = form.center_on.take() {
+        let left: f32 = sizes[..index.min(sizes.len())]
+            .iter()
+            .map(|s| s.x + 2.0 * RING + STRIP_GAP)
+            .sum();
+        let size = sizes.get(index).map_or(0.0, |s| s.x);
+        let offset = left + size / 2.0 + RING - ui.available_width() / 2.0;
+        scroll = scroll.horizontal_scroll_offset(offset.max(0.0));
+    }
+    scroll.show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = STRIP_GAP;
+            for (index, size) in sizes.iter().enumerate() {
+                let page =
+                    (form.page_ids.get(index)).and_then(|id| pages.iter().find(|p| p.id == *id));
+                let sense = if enabled {
+                    Sense::click()
+                } else {
+                    Sense::hover()
+                };
+                let (rect, resp) = ui.allocate_exact_size(*size + vec2(2.0, 2.0) * RING, sense);
+                let name = page_name(index);
+                resp.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, &name)
+                });
+                if resp.clicked() {
+                    match form.anchor {
+                        Some(anchor) if ui.input(|i| i.modifiers.shift) => {
+                            let on = form.selected.get(anchor).copied().unwrap_or(true);
+                            form.select_run(anchor, index, on);
+                        }
+                        _ => {
+                            form.toggle(index);
+                            form.anchor = Some(index);
+                        }
+                    }
+                }
+                let on = form.selected.get(index).copied().unwrap_or(false);
+                paint_page(ui, state, page, rect.shrink(RING), on, enabled);
+            }
+        });
+    });
+}
+
+/// The form in the desktop layout: a modal window.
+pub fn desktop(ctx: &egui::Context, state: &mut AppState) {
+    let Some(mut form) = state.export_form.take() else {
+        return;
+    };
+    let busy = state.atlas_export.is_some();
+    let enabled = !busy;
+    let mut did = Did::Nothing;
+    let mut stop = false;
+    let modal = egui::Modal::new(egui::Id::new(CARD)).show(ctx, |ui| {
+        ui.set_width(WIDTH);
+        ui.heading(TITLE);
+        ui.add_space(6.0);
+        desktop_strip(ui, state, &mut form, enabled);
+        ui.add_space(8.0);
+        ui.add_enabled_ui(enabled, |ui| {
+            egui::Grid::new((CARD, "grid"))
+                .num_columns(2)
+                .spacing([10.0, 8.0])
+                .show(ui, |ui| desktop_rows(ui, &mut form));
+        });
+        ui.add_space(8.0);
+        if busy {
+            ui.label(state.atlas_export_progress().unwrap_or_default());
+            let (page, count) = (state.atlas_export.as_ref()).map_or((0, 1), |job| job.progress());
+            let done = (page.saturating_sub(1) as f32 / count.max(1) as f32).clamp(0.0, 1.0);
+            ui.add(egui::ProgressBar::new(done));
+            stop = ui.button(CANCEL_EXPORT).clicked();
+        } else if let Some(error) = &form.error {
+            ui.colored_label(ui.visuals().warn_fg_color, error);
+        }
+        ui.add_space(8.0);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let ready = form.can_export() && !busy;
+            if ui.add_enabled(ready, egui::Button::new(EXPORT)).clicked() {
+                did = Did::Export;
+            }
+            if ui.button(CANCEL).clicked() {
+                did = Did::Close;
+            }
+        });
+    });
+    if modal.should_close() && did == Did::Nothing {
+        did = Did::Close;
+    }
+    if stop {
+        state.actions.push(Action::CancelExport);
+    }
+    finish(state, form, did, busy);
+}
+
+/// The rows of the form in the desktop layout, in a grid of two columns.
+fn desktop_rows(ui: &mut egui::Ui, form: &mut ExportForm) {
+    ui.label(FORMAT);
+    ui.horizontal(|ui| {
+        for (format, name) in FORMATS_ORDER.into_iter().zip(FORMATS) {
+            if ui.selectable_label(form.format == format, name).clicked() {
+                form.format = format;
+            }
+        }
+    });
+    ui.end_row();
+
+    ui.label(PAGES);
+    ui.horizontal(|ui| {
+        for (mode, name) in MODES.into_iter().zip(PAGE_CHOICES) {
+            if ui.selectable_label(form.pages == mode, name).clicked() {
+                form.set_mode(mode);
+            }
+        }
+        if form.pages == PagesMode::Range {
+            ui.add_space(8.0);
+            let (mut from, mut to) = (form.from.clone(), form.to.clone());
+            ui.label(FROM);
+            let a = ui.add(egui::TextEdit::singleline(&mut from).desired_width(36.0));
+            ui.label(TO);
+            let b = ui.add(egui::TextEdit::singleline(&mut to).desired_width(36.0));
+            if a.changed() || b.changed() {
+                form.set_from_to(&from, &to);
+            }
+        }
+    });
+    ui.end_row();
+
+    ui.label(match form.format {
+        ExportFormat::Pdf => RASTER_RESOLUTION,
+        ExportFormat::Png => RESOLUTION,
+    });
+    let mut ppi = form.ppi;
+    let drag = egui::DragValue::new(&mut ppi)
+        .range(MIN_PPI..=MAX_PPI)
+        .suffix(" ppi");
+    if ui.add(drag).changed() {
+        form.set_ppi(ppi);
+    }
+    ui.end_row();
+
+    if form.format == ExportFormat::Png {
+        ui.label("");
+        ui.checkbox(&mut form.transparent, TRANSPARENT_PAPER);
+        ui.end_row();
+    }
+
+    ui.label(NAME);
+    ui.horizontal(|ui| {
+        let width = ui.available_width() - 40.0;
+        ui.add(egui::TextEdit::singleline(&mut form.name).desired_width(width));
+        ui.weak(format!(".{}", form.format.ext()));
+    });
+    ui.end_row();
 }
 
 /// The rows of the form below its bar.

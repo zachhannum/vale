@@ -257,7 +257,7 @@ fn the_worker_exports_the_heightmap_and_gives_a_note() {
     assert_eq!(note.text, "Exported Terra.tif (256 × 128)");
     assert!(!note.warning);
     assert_eq!(state.status, note.text);
-    assert_eq!(state.share, None);
+    assert!(state.share.is_empty());
     assert!(state.can_export() && !second.exists());
     let (size, levels) = read_tiff(&out);
     assert_eq!(size, (256, 128));
@@ -267,7 +267,7 @@ fn the_worker_exports_the_heightmap_and_gives_a_note() {
     state.share_exports = true;
     state.headless = true;
     state.run_action(Action::ExportHeightmap(out.clone()));
-    assert_eq!(state.share, Some(out));
+    assert_eq!(state.share, [out]);
 }
 
 #[test]
@@ -282,7 +282,7 @@ fn an_export_to_a_path_that_cannot_be_written_gives_a_warning() {
     assert!(note.warning);
     assert!(note.text.starts_with("cannot write "), "{}", note.text);
     assert_eq!(state.status, note.text);
-    assert_eq!(state.share, None);
+    assert!(state.share.is_empty());
     assert!(!state.globe.exporting() && state.can_export());
 }
 
@@ -334,32 +334,45 @@ fn the_export_file_has_the_name_of_the_world() {
 }
 
 #[test]
+fn the_export_of_pages_keeps_the_name_of_the_world() {
+    let mut state = AppState::new(Document::sample()).unwrap();
+    let mut stem = |text: &str| -> String {
+        state.doc.project.world.name = text.to_string();
+        state.export_stem()
+    };
+    assert_eq!(stem("Earth (sample)"), "Earth (sample)");
+    assert_eq!(stem("a/b:c"), "a_b_c");
+    assert_eq!(stem(" Terra\\Nova? "), "Terra_Nova_");
+    assert_eq!(stem(""), "atlas");
+}
+
+#[test]
 fn the_end_of_the_hand_off_to_the_files_app_sets_the_note() {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("Terra.tif");
     let mut state = state();
     state.share_exports = true;
-    let export = |state: &mut AppState| -> PathBuf {
+    let export = |state: &mut AppState| -> Vec<PathBuf> {
         state.run_action(Action::ExportHeightmap(out.clone()));
         assert_eq!(
             state.export_note.as_ref().unwrap().text,
             "Exported Terra.tif (256 × 128)"
         );
-        state.share.take().unwrap()
+        std::mem::take(&mut state.share)
     };
 
-    let path = export(&mut state);
-    state.end_share(ExportEvent::Saved, &path);
+    let paths = export(&mut state);
+    state.end_share(ExportEvent::Saved, &paths);
     let note = state.export_note.clone().unwrap();
     assert_eq!(note.text, "Saved Terra.tif to Files");
     assert!(!note.warning);
     assert_eq!(state.status, note.text);
 
     // A cancelled hand-off leaves no file and no text.
-    let path = export(&mut state);
-    assert!(path.is_file());
-    state.end_share(ExportEvent::Cancelled, &path);
-    assert!(!path.exists());
+    let paths = export(&mut state);
+    assert!(paths[0].is_file());
+    state.end_share(ExportEvent::Cancelled, &paths);
+    assert!(!paths[0].exists());
     assert_eq!(state.export_note, None);
     assert_eq!(state.status, "");
     assert!(state.can_export());
@@ -568,6 +581,20 @@ fn three_png_pages_go_to_one_file_each_with_the_page_number() {
         let bytes = std::fs::read(dir.path().join(name)).unwrap();
         assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
     }
+}
+
+#[test]
+fn the_files_app_gets_each_png_page_and_a_cancel_removes_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut state, pages) = atlas_state();
+    state.share_exports = true;
+    let spec = spec(&state, ExportFormat::Png, pages, 72);
+    state.run_action(Action::ExportPages(spec, dir.path().to_path_buf()));
+    let paths = std::mem::take(&mut state.share);
+    assert_eq!(paths.len(), 3);
+    assert!(paths.iter().all(|p| p.is_file()));
+    state.end_share(ExportEvent::Cancelled, &paths);
+    assert!(paths.iter().all(|p| !p.exists()));
 }
 
 #[test]

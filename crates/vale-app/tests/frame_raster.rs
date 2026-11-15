@@ -11,7 +11,7 @@ use kurbo::Point;
 use vale_app::atlas::anchor;
 use vale_app::document::Document;
 use vale_app::headless;
-use vale_app::ui::{Action, AppState, Layout, Workspace};
+use vale_app::ui::{Action, AppState, ExportFormat, ExportSpec, Layout, Workspace};
 use vale_store::{BlendMode, RasterDisplay, RasterId};
 
 type App = Harness<'static, AppState>;
@@ -270,6 +270,49 @@ fn a_pdf_export_embeds_the_raster_layers_of_a_frame() {
         pixel[0].abs_diff(want) <= 3 && pixel[0] == pixel[1] && pixel[1] == pixel[2],
         "{pixel:?} and {want}"
     );
+}
+
+/// The widest raster image of a PDF file, in pixels.
+fn widest_image(pdf: &[u8]) -> u32 {
+    let raw = String::from_utf8_lossy(pdf);
+    (raw.match_indices("/Width"))
+        .filter_map(|(at, key)| {
+            let rest = raw[at + key.len()..].trim_start();
+            let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+            digits.parse().ok()
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_pdf_at_150_ppi_has_a_raster_image_half_as_wide_as_one_at_300_ppi() {
+    let _gpu = one_gpu_test();
+    let (mut h, _) = atlas(40000);
+    let dir = tempfile::tempdir().unwrap();
+    h.state_mut().headless = false;
+    let mut width = |ppi: u32| {
+        let path = dir.path().join(format!("{ppi}.pdf"));
+        let page = h.state().atlas.page;
+        let spec = ExportSpec {
+            ppi,
+            ..ExportSpec::new(h.state(), ExportFormat::Pdf, vec![page])
+        };
+        h.state_mut()
+            .run_action(Action::ExportPages(spec, path.clone()));
+        for _ in 0..60 {
+            h.run_steps(1);
+            if h.state().atlas_export.is_none() {
+                break;
+            }
+        }
+        let status = &h.state().status;
+        assert!(status.starts_with("Exported"), "{status}");
+        widest_image(&std::fs::read(path).unwrap())
+    };
+    let (high, low) = (width(300), width(150));
+    assert!(low > 0 && high.abs_diff(2 * low) <= 2, "{high} and {low}");
 }
 
 #[test]

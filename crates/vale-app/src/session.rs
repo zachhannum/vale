@@ -43,6 +43,16 @@ pub fn file_stem(name: &str) -> String {
     name.trim().chars().map(safe).collect()
 }
 
+/// The name of a world as the name of an export file. Each character that
+/// a file system refuses becomes `_`. An empty name gives an empty text.
+pub fn export_stem(name: &str) -> String {
+    let safe = |c: char| match c {
+        c if c.is_control() || "/\\:*?\"<>|".contains(c) => '_',
+        c => c,
+    };
+    name.trim().chars().map(safe).collect()
+}
+
 /// The path of a new project file in `dir` for a world with this name. No
 /// file is at the path.
 pub fn new_project_path(dir: &Path, name: &str) -> PathBuf {

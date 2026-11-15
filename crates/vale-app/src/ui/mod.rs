@@ -586,8 +586,8 @@ pub struct AppState {
     pub export_layer: Option<RasterId>,
     /// True: a complete export goes to `share`.
     pub share_exports: bool,
-    /// The file of a complete export that the host gives to the Files app.
-    pub share: Option<PathBuf>,
+    /// The files of a complete export that the host gives to the Files app.
+    pub share: Vec<PathBuf>,
     /// The open form of a new world or of the world of the project.
     pub world_form: Option<world_form::WorldForm>,
     /// The new feature whose values the inspector takes before its undo
@@ -783,7 +783,7 @@ impl AppState {
             image_tiles: ImageTiles::new(),
             export_layer: None,
             share_exports: false,
-            share: None,
+            share: Vec::new(),
             world_form: None,
             new_feature: None,
             feature_selection: Vec::new(),
@@ -3922,7 +3922,7 @@ impl AppState {
             Ok(info) => {
                 let text = info.message();
                 if self.share_exports {
-                    self.share = Some(info.path);
+                    self.share = vec![info.path];
                 }
                 Note::new(text, false, self.export_layer)
             }
@@ -4059,14 +4059,14 @@ impl AppState {
                 self.end_export_frame();
                 self.export_form = None;
                 let files = job.files();
-                if files.len() > 1 {
+                self.status = if files.len() > 1 {
                     let folder = path.parent().unwrap_or(&path);
-                    self.status = format!("Exported {} pages to {}", files.len(), folder.display());
-                    return;
-                }
-                self.status = format!("Exported {}", path.display());
+                    format!("Exported {} pages to {}", files.len(), folder.display())
+                } else {
+                    format!("Exported {}", path.display())
+                };
                 if self.share_exports {
-                    self.share = Some(path);
+                    self.share = files;
                 }
             }
             ExportStep::Done(Err(error)) => self.fail_export(format!("{error:#}")),
@@ -4091,17 +4091,22 @@ impl AppState {
         self.status = format!("Canceled export of {}", file_name(job.path()));
     }
 
-    /// Ends the hand-off of the export file `path` to the Files app. A
-    /// cancelled hand-off removes the file and the text of the export.
-    pub fn end_share(&mut self, event: ExportEvent, path: &Path) {
+    /// Ends the hand-off of the export files `paths` to the Files app. A
+    /// cancelled hand-off removes the files and the text of the export.
+    pub fn end_share(&mut self, event: ExportEvent, paths: &[PathBuf]) {
         match event {
             ExportEvent::Saved => {
-                let text = format!("Saved {} to Files", file_name(path));
+                let text = match paths {
+                    [path] => format!("Saved {} to Files", file_name(path)),
+                    _ => format!("Saved {} files to Files", paths.len()),
+                };
                 self.status = text.clone();
                 self.export_note = Some(Note::new(text, false, self.export_layer));
             }
             ExportEvent::Cancelled => {
-                let _ = std::fs::remove_file(path);
+                for path in paths {
+                    let _ = std::fs::remove_file(path);
+                }
                 self.export_note = None;
                 self.status.clear();
             }
@@ -4111,7 +4116,7 @@ impl AppState {
     /// The file name of an export of a raster layer, from the name of the
     /// world.
     pub fn export_name(&self, ext: &str) -> String {
-        let stem = session::file_stem(&self.doc.project.world.name);
+        let stem = session::export_stem(&self.doc.project.world.name);
         let stem = if stem.is_empty() { "raster" } else { &stem };
         format!("{stem}.{ext}")
     }
@@ -4119,7 +4124,7 @@ impl AppState {
     /// The file name with no extension of an export of atlas pages, from
     /// the name of the world.
     pub fn export_stem(&self) -> String {
-        let stem = session::file_stem(&self.doc.project.world.name);
+        let stem = session::export_stem(&self.doc.project.world.name);
         if stem.is_empty() {
             "atlas".to_string()
         } else {
@@ -4528,6 +4533,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     });
     world_form::desktop(ui.ctx(), state);
     raster_form::desktop(ui.ctx(), state);
+    export_form::desktop(ui.ctx(), state);
     if state.workspace == Workspace::Globe {
         region::desktop(ui.ctx(), state);
     }
