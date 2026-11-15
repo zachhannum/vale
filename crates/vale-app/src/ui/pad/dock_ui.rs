@@ -31,8 +31,11 @@ pub const COLLAPSE_DRAG: f32 = 40.0;
 pub const SHOW_DOCK: &str = "Show dock";
 /// The text of a drag of the width handle that collapses the dock.
 pub const HIDE_DOCK: &str = "Hide dock";
-/// The touch area of the tab of a collapsed dock.
+/// The touch area of the grip of a collapsed dock.
 const EDGE_TAB: (f32, f32) = (TOUCH, 72.0);
+/// The distance of the middle of the grip of a hidden dock from the right
+/// edge of the screen.
+const GRIP_INSET: f32 = 10.0;
 /// The row of the menu of a tab that moves the tab to a new pane.
 pub const MOVE_TO_NEW_PANE: &str = "Move to new pane";
 /// The width of the menu of a tab.
@@ -252,10 +255,9 @@ pub fn show(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, 
         }
         if state.pad.dock().collapsed {
             state.pad.pane_menu = None;
-        }
-        // The tab comes in from the edge as the dock goes out.
-        if slide > 0.0 && !state.pad.panels_menu {
-            edge_tab(ctx, state, controls, rects, slide);
+            if !state.pad.panels_menu {
+                edge_tab(ctx, state, controls, rects, slide);
+            }
         }
     }
     pane_menu(ctx, state, controls);
@@ -355,31 +357,24 @@ fn edge_tab(
     slide: f32,
 ) {
     let right = rects.screen.right() - rects.bands.right;
-    // The tab is at the height of the handle of the dock, so the handle
-    // goes into the tab.
+    // The grip is at the height that it had on the dock.
     let y: f32 = ctx
         .data(|d| d.get_temp(handle_y_id()))
         .unwrap_or(rects.dock.center().y)
         .min(rects.dock.bottom() - EDGE_TAB.1 / 2.0)
         .max(rects.dock.top() + EDGE_TAB.1 / 2.0);
-    // The tab is as far off the edge as the dock is from its end, so the
-    // two meet at the edge.
-    let gone = EDGE_TAB.0 + rects.bands.right + 24.0;
-    let out = ((1.0 - slide) * rects.dock.width()).clamp(0.0, gone);
     let rect = Rect::from_min_size(
-        pos2(right - EDGE_TAB.0 + out, y - EDGE_TAB.1 / 2.0),
+        pos2(right - EDGE_TAB.0, y - EDGE_TAB.1 / 2.0),
         vec2(EDGE_TAB.0, EDGE_TAB.1),
     );
-    let live = state.pad.dock().collapsed && out == 0.0;
+    let live = slide >= 1.0;
     if live {
         ctx.data_mut(|d| d.insert_temp(egui::Id::new(EDGE_TAB_RECT), rect));
     } else {
         ctx.data_mut(|d| d.remove::<Rect>(egui::Id::new(EDGE_TAB_RECT)));
     }
-    let visible = Rect::from_min_max(
-        pos2(right - 16.0, rect.top() + 8.0),
-        pos2(rects.screen.right(), rect.bottom() - 8.0),
-    );
+    let pulled = pulling(ctx).is_some();
+    let dock_left = rects.dock.left() + slide * rects.dock.width();
     let mut show = false;
     egui::Area::new(egui::Id::new("pad-dock-edge-tab"))
         .order(Order::Middle)
@@ -392,32 +387,22 @@ fn edge_tab(
             let mut scratch = Controls::new();
             let controls = if live { &mut *controls } else { &mut scratch };
             let resp = widgets::drag_area(ui, controls, rect, SHOW_DOCK);
-            let r = theme::CONTROL_RADIUS as u8;
-            let radius = egui::CornerRadius {
-                nw: r,
-                sw: r,
-                ne: 0,
-                se: 0,
-            };
-            let painter = ui.painter();
-            let fill = if resp.is_pointer_button_down_on() {
-                theme::card(false).to_opaque().blend(theme::raise())
-            } else {
-                theme::card(false).to_opaque()
-            };
-            painter.add(theme::shadow().as_shape(visible, r));
-            painter.rect_filled(visible, radius, fill);
-            let pill = Rect::from_center_size(
-                pos2(visible.left() + 8.0, visible.center().y),
-                vec2(4.0, 28.0),
-            );
-            painter.rect_filled(pill, 2.0, theme::MUTE.gamma_multiply(0.7));
-            // A drag of the tab pulls the dock, in `track_pull`.
+            let active = pulled || resp.is_pointer_button_down_on();
+            let painter = ui.painter().with_clip_rect(rects.screen);
+            paint_grip(&painter, pos2(grip_x(dock_left, right), y), active);
+            // A drag of the grip pulls the dock, in `track_pull`.
             show = live && resp.clicked();
         });
     if show {
         state.pad.dock_mut().collapsed = false;
     }
+}
+
+/// The middle of the grip of a dock whose left edge is at `dock_left`. The
+/// grip rides on the edge of the dock, and it stops at the right edge of
+/// the screen, at `right`, so it stays in view while the dock is hidden.
+fn grip_x(dock_left: f32, right: f32) -> f32 {
+    dock_left.min(right - GRIP_INSET)
 }
 
 /// The menu of a tab after a long press: "Close <panel>", and in a dock
@@ -518,11 +503,7 @@ fn show_dock(
     let rect = Rect::from_min_size(room.min, vec2(room.width(), total.min(room.height())));
     // A collapsing dock slides off the right edge.
     let rect = rect.translate(vec2((slide * room.width()).round(), 0.0));
-    let pass = ctx.cumulative_pass_nr();
-    ctx.data_mut(|d| {
-        d.insert_temp(handle_y_id(), rect.center().y);
-        d.insert_temp(egui::Id::new(SHOWN_DOCK), (rect, pass));
-    });
+    ctx.data_mut(|d| d.insert_temp(handle_y_id(), rect.center().y));
     let radius = geometry::edge_radius(rect, rects.screen);
     let names = rect.width() - rects.bands.right >= panes::NAMES_WIDTH;
     let backdrop = state.globe.backdrop();
@@ -765,17 +746,8 @@ fn paint_drop(
 /// the width during its drag. A card or a menu that covers the place of the
 /// handle hides it.
 pub fn handle(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
+    // The edge tab paints the grip of a hidden dock.
     let Some(dock) = state.pad.dock_rect else {
-        // A dock that slides out takes its grip with it to the edge tab.
-        let shown: Option<(Rect, u64)> = ctx.data(|d| d.get_temp(egui::Id::new(SHOWN_DOCK)));
-        if let Some((dock, _)) = shown.filter(|s| s.1 == ctx.cumulative_pass_nr()) {
-            let layer = egui::LayerId::new(Order::Middle, egui::Id::new("pad-dock-handle"));
-            paint_grip(
-                &ctx.layer_painter(layer),
-                pos2(dock.left(), dock.center().y),
-                false,
-            );
-        }
         return;
     };
     // The touch area of the handle is on the edge of the dock, as the
@@ -839,7 +811,13 @@ pub fn handle(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
                     dock.width = start;
                 }
             }
-            paint_grip(ui.painter(), pos2(dock.left(), rect.center().y), active);
+            let right = rects.screen.right() - rects.bands.right;
+            let painter = ui.painter().with_clip_rect(rects.screen);
+            paint_grip(
+                &painter,
+                pos2(grip_x(dock.left(), right), rect.center().y),
+                active,
+            );
             if active {
                 let (start, width) = (state.pad.width_drag)
                     .unwrap_or((state.pad.dock().width, state.pad.dock().width));
@@ -1424,6 +1402,13 @@ mod tests {
     }
 
     #[test]
+    fn the_grip_rides_the_dock_and_stops_at_the_edge() {
+        assert_eq!(grip_x(854.0, 1194.0), 854.0);
+        assert_eq!(grip_x(1190.0, 1194.0), 1184.0);
+        assert_eq!(grip_x(1194.0, 1194.0), 1184.0);
+    }
+
+    #[test]
     fn a_throw_past_the_middle_hides_the_dock() {
         // A slow swipe hides the dock past half its width.
         assert!(!swipe_hides(160.0, 0.0, 340.0));
@@ -1439,8 +1424,6 @@ mod tests {
 const HEADERS: &str = "pad-dock-headers";
 /// The key of the edge tab in the last frame, while it takes touch.
 const EDGE_TAB_RECT: &str = "pad-dock-edge-tab-rect";
-/// The key of the dock on the screen and the pass that drew it.
-const SHOWN_DOCK: &str = "pad-dock-shown";
 
 /// The key of the height of the handle of the dock in the last frame that
 /// drew the dock.

@@ -693,7 +693,9 @@ These rules apply to the dock:
 - The dock is as tall as its panes, and it ends 8 points above the bottom band. If the panes do not fit, each pane that does not fit gets shorter and scrolls its content. A pane with content that fits keeps its height.
 - A pane is never shorter than its header and two rows. If the panes still do not fit, the last panes join the last pane that fits, as tabs. When the room is there again, they are panes of their own again.
 - The dock can collapse. It then slides off the right edge, and it keeps its layout. The Dock button in the top row collapses the dock and shows it again. The button has the accent color while the dock shows, and it is off while the dock has no pane. A swipe to the right on a header, and a drag of the width handle 40 points past the narrowest width, also collapse the dock.
-- A slim tab at the right edge shows a collapsed dock again. The tab is at the height of the width handle, and the handle slides with the dock into the tab. A tap on the tab shows the dock. A drag to the left on the tab pulls the dock out with the finger, and at the release the dock shows or slides back by the same rule as a swipe. A panel that opens also shows the dock.
+- The grip of the width handle stays at the right edge while the dock is hidden. It rides on the left edge of the dock as the dock slides, and it stops 10 points from the right edge of the screen, at the height that it had on the dock. A tap on the grip shows the dock. A drag to the left on the grip pulls the dock out with the finger, and at the release the dock shows or slides back by the same rule as a swipe. A panel that opens also shows the dock.
+
+- The app defers the system gestures at the right edge of the screen, so a touch there goes to the grip first. A system gesture at that edge needs a second swipe.
 - The dock floats over the canvas. The globe and the flat map do not move when the dock shows, hides, or changes its width. At 600 points or more, a page fits at the left of a dock of the default width, 340 points, and its width handle, whether the dock shows or not. This is the place where a page opens, and where a double tap fits it.
 - Each workspace has its own dock. The file `panels.txt`, in the folder that holds the state of the last run, keeps the open panes, the folded panes, and the width of each dock. It also keeps the arrangement of the panels of a frame, the collapsed state, and the panels that you closed. The project file does not hold them.
 
@@ -713,7 +715,7 @@ The chrome moves on springs, as iPadOS moves its controls. A spring moves a valu
 | Bouncy | 0.36 s | 0.24 | Menus, popovers, and the thumbs of controls |
 | Press | 0.22 s | 0.3 | A control under a finger |
 
-- The dock slides on and off. After a swipe or a pull, the dock continues at the speed of the finger. The edge tab comes in from the edge as the dock goes out.
+- The dock slides on and off. After a swipe or a pull, the dock continues at the speed of the finger.
 - The panes of the dock move to their new places and heights when a panel opens, closes, or folds. A new pane grows from a height of zero.
 - The sheet moves to its detent at the speed of the finger.
 - A menu, a flyout, or a popover grows from 90 percent of its size at its control, and it fades in. When it closes, it shrinks back to its control and fades out in about 0.2 seconds, with no bounce. The closing card is a picture of its last frame, and it takes no touch.
