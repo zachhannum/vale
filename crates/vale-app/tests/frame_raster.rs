@@ -983,3 +983,70 @@ fn an_undo_keeps_the_masks_of_the_other_frames() {
     let image = h.render().unwrap();
     assert!(masked::red(image.get_pixel(at.x as u32, at.y as u32)));
 }
+
+#[test]
+#[ignore = "gpu"]
+fn the_pixel_preview_draws_a_raster_layer_in_squares_of_the_page_pixels() {
+    use vale_terrain::math::lonlat_to_dir;
+    let _gpu = one_gpu_test();
+    let mut state = AppState::new(Document::empty()).unwrap();
+    state.headless = true;
+    state.set_layout(Layout::Pad);
+    vale_app::ui::atlas::add_frame(&mut state).expect("a page takes a frame");
+    state.globe.set_face_size(1024);
+    let height = state.add_height();
+    state.set_raster_display(height, RasterDisplay::Grey);
+    state.set_raster_smoothing(height, false);
+    state.set_raster_hillshade(height, false);
+    // Stripes of two texels around the middle of the frame. One texel is
+    // about 3 millimeters on the page.
+    let center = [10.0, 20.0];
+    let (face, a, b) = vale_terrain::face_of(lonlat_to_dir(center[0], center[1]));
+    let texel = |s: f64| ((vale_terrain::warp(s) + 1.0) / 2.0 * 1024.0) as usize;
+    let (cx, cy) = (texel(a), texel(b));
+    let map = state.globe.raster_map_mut(height).unwrap();
+    for y in cy - 100..cy + 100 {
+        for x in cx - 100..cx + 100 {
+            let level = if (x / 2) % 2 == 0 { 50000 } else { 15000 };
+            map.set(face, x, y, level);
+        }
+    }
+    let id = vale_app::ui::atlas::open_page(&state).frames[0].id;
+    let frame = state.doc.project.atlas.frame_mut(id).unwrap();
+    frame.center = center;
+    frame.scale = 3.2e6;
+    frame.graticule.on = false;
+    // 36 dots per inch are half a pixel in each page point.
+    vale_app::ui::atlas::edit_page(&mut state, |p| p.dpi = 36);
+    state.touch();
+    state.workspace = Workspace::Atlas;
+    let setup = egui_kittest::wgpu::default_wgpu_setup();
+    let mut h = headless::ui_harness(state, (1194.0, 834.0), 1.0, setup);
+    h.set_render_every_step(true);
+    h.run_steps(4);
+    let frame = open_frame(&h);
+    let start = screen(&h, anchor(&frame.shape)) + eframe::egui::vec2(-60.0, 17.0);
+    let place = h.state().atlas.place.unwrap();
+    let side = place.pixels_per_page_point(1.0) / 0.5;
+    assert!(side > 1.5, "{side}");
+    // The square of the page pixel that shows a pixel of the row.
+    let square = |i: u32| ((start.x + i as f32 + 0.5 - place.rect.min.x) / side).floor();
+    // The places in the row where the value changes, and whether each of
+    // them is on the edge of a square.
+    let changes = |values: &[u8]| -> Vec<(u32, bool)> {
+        (0..values.len() as u32 - 1)
+            .filter(|&i| values[i as usize].abs_diff(values[i as usize + 1]) > 2)
+            .map(|i| (i, square(i) != square(i + 1)))
+            .collect()
+    };
+
+    let smooth = row(&mut h, start, 120);
+    let inside = changes(&smooth).iter().filter(|(_, edge)| !edge).count();
+    assert!(inside >= 5, "{smooth:?}");
+
+    h.state_mut().atlas.pixel_preview = true;
+    let squares = row(&mut h, start, 120);
+    let found = changes(&squares);
+    assert!(found.len() >= 5, "{squares:?}");
+    assert!(found.iter().all(|(_, edge)| *edge), "{found:?} {squares:?}");
+}

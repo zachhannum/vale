@@ -3050,7 +3050,13 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
     let mut callbacks: HashMap<u32, _> = if draws.is_empty() {
         HashMap::new()
     } else {
-        let painted = state.globe.paint_frames(canvas, draws);
+        // With the pixel preview, the squares of the pixels of the page.
+        let side = match filter {
+            TextureFilter::Nearest => place.pixels_per_page_point(ppp) / scale,
+            TextureFilter::Linear => 0.0,
+        };
+        let grid = [place.rect.min.x * ppp, place.rect.min.y * ppp, side];
+        let painted = state.globe.paint_frames(canvas, draws, grid);
         painted.unwrap_or_default().into_iter().collect()
     };
     capture_masks(state, &painter, (canvas, area), masked, moving);
