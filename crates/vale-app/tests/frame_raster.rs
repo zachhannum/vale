@@ -1050,3 +1050,30 @@ fn the_pixel_preview_draws_a_raster_layer_in_squares_of_the_page_pixels() {
     assert!(found.len() >= 5, "{squares:?}");
     assert!(found.iter().all(|(_, edge)| *edge), "{found:?} {squares:?}");
 }
+
+#[test]
+#[ignore = "gpu"]
+fn an_export_wider_than_the_largest_texture_draws_in_strips_with_no_seam() {
+    let _gpu = one_gpu_test();
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, _, _) = striped_app(dir.path(), 6.4e6);
+    let frame = open_frame(&h);
+    let bbox = vale_app::atlas::shape_bbox(&frame.shape);
+    // The frame is wider and taller than 256 pixels at the export resolution.
+    assert!(bbox.width().min(bbox.height()) * EXPORT_PIXELS_PER_MM > 600.0);
+    h.state_mut().export_max_side = Some(256);
+    let tiled = export_png(&mut h, &dir.path().join("tiled.png"));
+    let count = h.state().export_strips;
+    assert!(count >= 9, "{count} strips");
+
+    h.state_mut().export_max_side = None;
+    h.state_mut().export_strips = 0;
+    let whole = export_png(&mut h, &dir.path().join("whole.png"));
+    assert_eq!(h.state().export_strips, 1);
+    let off = tiled
+        .pixels()
+        .zip(whole.pixels())
+        .filter(|(a, b)| a.0.iter().zip(b.0).any(|(a, b)| a.abs_diff(b) > 8))
+        .count();
+    assert!(off <= 100, "{off} pixels differ");
+}

@@ -478,6 +478,9 @@ pub struct AppState {
     pub status: String,
     /// The GPU renderer of the maps of the atlas, in a window with a GPU.
     pub map_renderer: Option<map_texture::MapRenderer>,
+    /// The most pixels on a side of a strip of an exported frame, in place of
+    /// the largest texture of the device.
+    pub export_max_side: Option<u32>,
     /// The text of the last import of a heightmap.
     pub import_note: Option<Note>,
     /// The text of the last export of the heightmap.
@@ -666,6 +669,7 @@ impl AppState {
             layout: Layout::default(),
             pad: pad::PadState::default(),
             map_renderer: None,
+            export_max_side: None,
             globe: Globe::default(),
             doc,
             pipeline: Pipeline::new(),
@@ -3739,6 +3743,8 @@ impl AppState {
         }
         match PdfExport::new(self.doc.clone(), path, pages) {
             Ok(mut job) => {
+                let side = self.globe.max_face_size().min(u32::MAX as usize) as u32;
+                job.set_max_side(self.export_max_side.unwrap_or(side));
                 let rasters = self.pipeline.rasters_mut();
                 rasters.poll(true);
                 job.set_rasters(rasters.frozen());
