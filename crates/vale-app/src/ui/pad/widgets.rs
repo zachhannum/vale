@@ -105,6 +105,7 @@ pub fn grow(ctx: &egui::Context, layer: egui::LayerId, origin: Pos2) -> Grow {
         )
     };
     ctx.set_transform_layer(layer, transform);
+    motion::keep(ctx, layer, origin);
     Grow {
         opacity: t.clamp(0.0, 1.0),
         transform,

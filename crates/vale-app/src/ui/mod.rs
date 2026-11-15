@@ -4259,6 +4259,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         }
         pad::eyedropper::draw(ui.ctx(), &mut state.pad.controls);
         font_dialog::show(ui.ctx(), state);
+        pad::motion::paint_exits(ui.ctx());
         state.frames += 1;
         return;
     }

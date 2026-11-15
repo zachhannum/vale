@@ -2,7 +2,9 @@
 //! keeps a value and a velocity for each id, in the data of the context.
 //! While a spring moves, it asks for a repaint, and at rest it stops.
 
-use eframe::egui::{self, Id, Pos2, emath::TSTransform};
+use std::sync::Arc;
+
+use eframe::egui::{self, Id, LayerId, Pos2, emath::TSTransform, epaint::ClippedShape};
 
 /// The feel of a spring. `response` is the time of one swing in seconds,
 /// and `bounce` is from 0 for no overshoot to 1 for no friction.
@@ -35,6 +37,12 @@ pub const PRESS_SCALE: f32 = 0.96;
 
 /// The scale of a card when it starts to appear.
 pub const APPEAR_SCALE: f32 = 0.9;
+
+/// A card that closes, which shrinks and fades out with no overshoot.
+pub const EXIT: Spring = Spring {
+    response: 0.2,
+    bounce: 0.0,
+};
 
 /// A distance below which a value of 0 to 1 is at rest.
 const REST: f32 = 1e-3;
@@ -220,6 +228,110 @@ pub fn appear(ctx: &egui::Context, id: Id) -> f32 {
 pub fn press(ctx: &egui::Context, id: Id, down: bool) -> f32 {
     let t = value(ctx, id.with("press"), f32::from(u8::from(down)), PRESS);
     1.0 - (1.0 - PRESS_SCALE) * t
+}
+
+/// A card that the frame shows, with the place that it grows from.
+#[derive(Clone)]
+struct Shown {
+    layer: LayerId,
+    origin: Pos2,
+}
+
+/// The last picture of a card, and the last pass that showed it.
+#[derive(Clone)]
+struct Picture {
+    layer: LayerId,
+    origin: Pos2,
+    shapes: Arc<Vec<ClippedShape>>,
+    pass: u64,
+}
+
+fn kept_id() -> Id {
+    Id::new("pad-motion-kept")
+}
+
+fn pictures_id() -> Id {
+    Id::new("pad-motion-pictures")
+}
+
+/// Keeps the picture of the card on `layer` at the end of the frame, so the
+/// card can shrink to `origin` and fade out after it closes.
+pub fn keep(ctx: &egui::Context, layer: LayerId, origin: Pos2) {
+    ctx.data_mut(|d| {
+        let kept: &mut Vec<Shown> = d.get_temp_mut_or_default(kept_id());
+        kept.push(Shown { layer, origin });
+    });
+}
+
+/// Keeps the pictures of the cards of this frame, and paints each card
+/// that closed in this frame or a frame before as it shrinks and fades
+/// out. The UI calls this after it draws everything else.
+pub fn paint_exits(ctx: &egui::Context) {
+    let pass = ctx.cumulative_pass_nr();
+    let kept: Vec<Shown> = ctx.data_mut(|d| d.remove_temp(kept_id())).unwrap_or_default();
+    let mut pictures: Vec<Picture> = ctx.data(|d| d.get_temp(pictures_id())).unwrap_or_default();
+    for k in kept {
+        // A blur reads the screen of its own frame, so a picture leaves it
+        // out.
+        let shapes = ctx.graphics(|g| {
+            g.get(k.layer).map_or_else(Vec::new, |list| {
+                list.all_entries()
+                    .filter(|c| !matches!(c.shape, egui::Shape::Callback(_)))
+                    .cloned()
+                    .collect()
+            })
+        });
+        pictures.retain(|p| p.layer != k.layer);
+        pictures.push(Picture {
+            layer: k.layer,
+            origin: k.origin,
+            shapes: Arc::new(shapes),
+            pass,
+        });
+    }
+    let instant = instant(ctx);
+    pictures.retain(|p| {
+        if p.pass == pass {
+            return true;
+        }
+        if instant {
+            return false;
+        }
+        let id = p.layer.id.with("exit");
+        if p.pass + 1 == pass {
+            set(ctx, id, 1.0);
+        }
+        let t = value(ctx, id, 0.0, EXIT);
+        if t <= 0.0 {
+            return false;
+        }
+        paint_picture(ctx, p, t);
+        true
+    });
+    ctx.data_mut(|d| d.insert_temp(pictures_id(), pictures));
+}
+
+/// Paints the picture of a closed card at `t` of its size and opacity,
+/// from 1 when it closes to 0 when it is gone.
+fn paint_picture(ctx: &egui::Context, picture: &Picture, t: f32) {
+    let id = picture.layer.id.with("ghost");
+    let layer = LayerId::new(picture.layer.order, id);
+    let scale = APPEAR_SCALE + (1.0 - APPEAR_SCALE) * t;
+    ctx.set_transform_layer(layer, about(scale, picture.origin));
+    egui::Area::new(id)
+        .order(picture.layer.order)
+        .fixed_pos(picture.origin)
+        .interactable(false)
+        .movable(false)
+        .constrain(false)
+        .fade_in(false)
+        .show(ctx, |ui| {
+            let mut painter = ui.painter().clone();
+            painter.set_opacity(t);
+            for c in picture.shapes.iter() {
+                painter.with_clip_rect(c.clip_rect).add(c.shape.clone());
+            }
+        });
 }
 
 /// A scale by `scale` about `origin`.
