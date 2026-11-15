@@ -100,6 +100,9 @@ pub const MOVE_SHARED: &str = "Move shared vertices";
 pub const DELETE_VERTEX: &str = "Delete vertex";
 /// The button of the Vertex tool that smooths the selected part.
 pub const SMOOTH_VERTICES: &str = "Smooth vertices";
+/// The row of the panel of a line layer that reverses each line that runs
+/// uphill.
+pub const ORIENT_DOWNHILL: &str = "Orient lines downhill";
 
 /// A tool of the Vector cell.
 pub struct VectorTool {
@@ -444,6 +447,9 @@ pub enum Page {
     Mask,
     /// The label text of the layer.
     LabelText,
+    /// The height layer of the Flow lines of the layer, from the rule with
+    /// this index, or from the selected rules.
+    FlowHeight(Option<usize>),
 }
 
 /// The state of the iPad layout.
@@ -2022,10 +2028,14 @@ pub(super) fn panel_head(state: &mut AppState, panel: Panel) -> Head {
     };
     let rule_count = rules.map_or(0, Vec::len);
     let rule_name = match state.pad.page {
-        Some(Page::Rule(i) | Page::Symbols(i) | Page::MarkerShape(i) | Page::MarkerFill(i)) => {
-            rules.and_then(|r| r.get(i)).map(|r| r.name.clone())
-        }
-        Some(Page::Rules) => match state.pad.layer {
+        Some(
+            Page::Rule(i)
+            | Page::Symbols(i)
+            | Page::MarkerShape(i)
+            | Page::MarkerFill(i)
+            | Page::FlowHeight(Some(i)),
+        ) => rules.and_then(|r| r.get(i)).map(|r| r.name.clone()),
+        Some(Page::Rules | Page::FlowHeight(None)) => match state.pad.layer {
             Some(LayerRef::Vector(id)) => Some(rules::selection_title(state, id)),
             _ => None,
         },
@@ -2058,7 +2068,10 @@ pub(super) fn panel_head(state: &mut AppState, panel: Panel) -> Head {
             Some(LayerRef::Vector(_)),
             Some(Page::Rule(i) | Page::Symbols(i) | Page::MarkerShape(i) | Page::MarkerFill(i)),
         ) => i < rule_count,
-        (Some(LayerRef::Vector(id)), Some(Page::Rules)) => !state.pad.rules.picked(id).is_empty(),
+        (Some(LayerRef::Vector(id)), Some(Page::Rules | Page::FlowHeight(None))) => {
+            !state.pad.rules.picked(id).is_empty()
+        }
+        (Some(LayerRef::Vector(_)), Some(Page::FlowHeight(Some(i)))) => i < rule_count,
         _ => false,
     };
     if panel == Panel::Layers && !fits {
@@ -2111,6 +2124,9 @@ pub(super) fn panel_head(state: &mut AppState, panel: Panel) -> Head {
         }
         (Panel::Layers, Some(LayerRef::Vector(_))) if page == Some(Page::Mask) => {
             ("pad-mask", rules::MASK, Some(name))
+        }
+        (Panel::Layers, Some(LayerRef::Vector(_))) if matches!(page, Some(Page::FlowHeight(_))) => {
+            ("pad-flow-height", rules::HEIGHT_LAYER, rule_name.as_deref())
         }
         (Panel::Layers, Some(LayerRef::Vector(_))) if page == Some(Page::LabelText) => {
             ("pad-label-text", label_text::LABEL_TEXT, Some(name))
@@ -2230,6 +2246,8 @@ pub(super) fn panel_title(
         (back, page)
     {
         state.pad.page = Some(Page::Rule(i));
+    } else if let (true, Some(Page::FlowHeight(rule))) = (back, page) {
+        state.pad.page = Some(rule.map_or(Page::Rules, Page::Rule));
     } else if back && page.is_some() {
         state.pad.page = None;
         state.globe.preview.selected = None;
@@ -2297,6 +2315,7 @@ pub(super) fn panel_body(
             }
             Some(Page::RampLabels(i)) => raster::labels_body(ui, state, controls, i),
             Some(Page::Mask) => rules::mask_body(ui, state, controls, id),
+            Some(Page::FlowHeight(_)) => rules::flow_height_body(ui, state, controls, id),
             Some(Page::LabelText) => fonts::text_body(ui, state, controls, id),
             Some(Page::Table) => {}
             _ => vector_body(ui, state, controls, id),
@@ -3350,6 +3369,12 @@ fn vector_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
     widgets::value_row(ui, "Type", kind);
     if widgets::open_row(ui, controls, table::FEATURES, &features).clicked() {
         state.open_table(id);
+    }
+    if kind == "Lines" {
+        let enabled = state.can_orient_downhill(id);
+        if widgets::text_row(ui, controls, ORIENT_DOWNHILL, 0.0, false, enabled).clicked() {
+            state.orient_downhill(id);
+        }
     }
     rules::section(ui, state, controls, id);
     if kind != "Polygons" {

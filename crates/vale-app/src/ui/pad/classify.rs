@@ -159,7 +159,7 @@ pub fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id
 
     // New raster values change the values of a text that reads a raster.
     let mut generation = generation;
-    if draft.text.contains("raster") {
+    if draft.text.contains("raster") || draft.text.contains("flow") {
         generation = generation.wrapping_add(state.pipeline.rasters().arrived() << 32);
     }
     let fresh = matches!(&draft.values, Some((t, g, _)) if *t == draft.text && *g == generation);

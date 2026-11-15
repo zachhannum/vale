@@ -10,7 +10,7 @@
 
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
-use std::f64::consts::{FRAC_1_SQRT_2, FRAC_PI_4};
+use std::f64::consts::{FRAC_1_SQRT_2, FRAC_PI_2, FRAC_PI_4};
 use std::sync::LazyLock;
 
 use crate::bands::SEA_LEVEL;
@@ -35,6 +35,28 @@ pub const CHANNEL_SCALE: f64 = 32.0;
 
 /// The largest distance that the channel map holds, in channel texels.
 const CHANNEL_REACH: f64 = 255.0 / CHANNEL_SCALE;
+
+/// The largest distance, in flow cells, over which a sample of a line moves
+/// to the nearest river cell.
+pub const FLOW_REACH: f64 = 2.0;
+
+/// The distance, in flow cells, from the downstream end of a line inside
+/// which a confluence with a larger river ends the growth of the line.
+const JOIN_TAIL: f64 = FLOW_REACH + 1.0;
+
+/// The largest number of steps from one sample of a line to the next along
+/// the path of the water.
+const JOIN_STEPS: usize = 8;
+
+/// The drained area at one place along a line.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FlowSample {
+    pub dir: V3,
+    /// The fraction of the length of the line, from its first vertex.
+    pub along: f64,
+    /// The solid angle that drains through the place, in steradians.
+    pub area: f64,
+}
 
 /// The number of smoothing passes over the river nodes.
 const SMOOTH_PASSES: usize = 4;
@@ -524,6 +546,158 @@ impl FlowMap {
 
     pub fn is_river(&self, face: usize, x: usize, y: usize) -> bool {
         self.area(face, x, y) >= RIVER_MIN_AREA
+    }
+
+    /// The index of the nearest river cell within `FLOW_REACH` cells of a
+    /// direction, or else the index of its own cell.
+    fn snap(&self, d: V3) -> usize {
+        let m = self.m;
+        let reach = FLOW_REACH * FRAC_PI_2 / m as f64;
+        let steps = FLOW_REACH.ceil() as i64 + 1;
+        let (face, x, y) = cell_at(m, d);
+        let mut best: Option<(f64, usize)> = None;
+        for dy in -steps..=steps {
+            for dx in -steps..=steps {
+                let (f, a, b) = cell_past_edge(m, face, x as i64 + dx, y as i64 + dy);
+                let i = self.index(f, a, b);
+                let far = angle(d, cell_dir(m, f, a, b));
+                let nearer = best.is_none_or(|(near, _)| far < near);
+                if f64::from(self.area[i]) >= RIVER_MIN_AREA && far <= reach && nearer {
+                    best = Some((far, i));
+                }
+            }
+        }
+        best.map_or_else(|| self.index(face, x, y), |(_, i)| i)
+    }
+
+    /// The samples of a line of unit vectors, about every half cell, with
+    /// each vertex: the direction, the fraction of the length of the line,
+    /// and the snapped cell.
+    fn line_samples(&self, line: &[V3]) -> Vec<(V3, f64, usize)> {
+        let cell = FRAC_PI_2 / self.m as f64;
+        let Some(&first) = line.first() else {
+            return Vec::new();
+        };
+        let mut out = vec![(first, 0.0, self.snap(first))];
+        let mut length = 0.0;
+        for pair in line.windows(2) {
+            let (a, b) = (pair[0], pair[1]);
+            let arc = angle(a, b);
+            let n = (arc / (0.5 * cell)).ceil().max(1.0) as usize;
+            for k in 1..=n {
+                let t = k as f64 / n as f64;
+                let d = if arc < 1e-9 {
+                    b
+                } else {
+                    let s = arc.sin();
+                    let d = add(
+                        scale(a, ((1.0 - t) * arc).sin() / s),
+                        scale(b, (t * arc).sin() / s),
+                    );
+                    normalize(d)
+                };
+                out.push((d, length + t * arc, self.snap(d)));
+            }
+            length += arc;
+        }
+        if length > 0.0 {
+            out.iter_mut().for_each(|s| s.1 /= length);
+        }
+        out
+    }
+
+    /// The largest solid angle, in steradians, that drains through a line of
+    /// unit vectors. The line has samples about every half cell. Each sample
+    /// takes the area of the nearest river cell within `FLOW_REACH` cells,
+    /// or else the area of its own cell.
+    pub fn line_area(&self, line: &[V3]) -> f64 {
+        (self.line_samples(line).iter())
+            .map(|s| f64::from(self.area[s.2]))
+            .fold(0.0, f64::max)
+    }
+
+    /// The cell before `to` on the path of the water from `from`, if the
+    /// path reaches `to` in at most `steps` steps.
+    fn reaches(&self, from: usize, to: usize, steps: usize) -> Option<usize> {
+        let mut at = from;
+        for _ in 0..steps {
+            let next = self.receiver[at];
+            if next == NONE {
+                return None;
+            }
+            if next as usize == to {
+                return Some(at);
+            }
+            at = next as usize;
+        }
+        None
+    }
+
+    /// True if the water from `from` comes into `to` as the smaller branch
+    /// of a confluence, or if `to` is off the path of `from` and drains more.
+    fn joins(&self, from: usize, to: usize) -> bool {
+        let area = |i: usize| f64::from(self.area[i]);
+        match self.reaches(from, to, JOIN_STEPS) {
+            Some(before) => (neighbors(self.m, to).into_iter())
+                .map(|n| n as usize)
+                .filter(|&n| n != before && self.receiver[n] as usize == to)
+                .any(|n| area(n) > area(before)),
+            None => area(to) > area(from),
+        }
+    }
+
+    /// The solid angle, in steradians, that drains through each sample of a
+    /// line of unit vectors, about every half cell. The end nearer the
+    /// largest area is downstream, and the area never gets smaller downstream. Where
+    /// the line comes into a larger river near its downstream end, the area
+    /// stays the area above that confluence.
+    pub fn line_profile(&self, line: &[V3]) -> Vec<FlowSample> {
+        let samples = self.line_samples(line);
+        let n = samples.len();
+        if n == 0 {
+            return Vec::new();
+        }
+        let area = |i: usize| f64::from(self.area[samples[i].2]);
+        // The downstream end is the end nearer the largest area. An end that
+        // goes on into the sea drains nothing, so the areas at the ends alone
+        // can point the wrong way.
+        let most = (0..n).map(area).fold(0.0, f64::max);
+        let at_most: Vec<f64> = (0..n)
+            .filter(|&i| area(i) == most)
+            .map(|i| samples[i].1)
+            .collect();
+        let middle = at_most.iter().sum::<f64>() / at_most.len().max(1) as f64;
+        let down_last = if (middle - 0.5).abs() > 1e-9 {
+            middle > 0.5
+        } else {
+            area(n - 1) >= area(0)
+        };
+        let order: Vec<usize> = if down_last {
+            (0..n).collect()
+        } else {
+            (0..n).rev().collect()
+        };
+        let length: f64 = line.windows(2).map(|w| angle(w[0], w[1])).sum();
+        let tail = JOIN_TAIL * FRAC_PI_2 / self.m as f64;
+        let end = samples[order[n - 1]].1;
+        let mut areas = vec![0.0; n];
+        let mut most = 0.0f64;
+        let mut cap: Option<f64> = None;
+        let mut prev = samples[order[0]].2;
+        for &i in &order {
+            let cell = samples[i].2;
+            let near_end = (end - samples[i].1).abs() * length <= tail;
+            if cap.is_none() && cell != prev && near_end && self.joins(prev, cell) {
+                cap = Some(most);
+            }
+            prev = cell;
+            let a = cap.map_or(area(i), |c| area(i).min(c));
+            most = most.max(a);
+            areas[i] = most;
+        }
+        (samples.iter().zip(areas))
+            .map(|(&(dir, along, _), area)| FlowSample { dir, along, area })
+            .collect()
     }
 
     /// The lake level of a cell, or 0 for no lake. A cell beside a lake also
@@ -1886,6 +2060,144 @@ pub(crate) mod tests {
             assert_eq!(flow.is_river(face, x, y), on_river, "{face} {x} {y}");
         }
         (heights, flow)
+    }
+
+    #[test]
+    fn a_line_along_a_river_gets_the_flow_at_its_lowest_point() {
+        let m = 128;
+        let (_, flow) = straight(m);
+        // The line is one row off the river, and it goes down the valley.
+        let line: Vec<V3> = [100, 60, 20].map(|x| cell_dir(m, 0, x, m / 2 + 1)).to_vec();
+        let river = flow.area(0, 20, m / 2);
+        let area = flow.line_area(&line);
+        assert!((area - river).abs() < 0.1 * river, "{area} {river}");
+        // The order of the vertices does not matter.
+        let back: Vec<V3> = line.iter().rev().copied().collect();
+        assert_eq!(flow.line_area(&back), area);
+    }
+
+    /// The straight valley of `valley` along row `m / 2`, and a side valley
+    /// up column `m / 2` that falls into it from the rows above.
+    fn confluence(m: usize) -> CoarseHeights {
+        let mid = (m / 2) as f64;
+        from_cells(m, |face, x, y| {
+            let (x, y) = (x as f64, y as f64);
+            if face != 0 || !(8.0..m as f64 - 8.0).contains(&x) {
+                return OCEAN;
+            }
+            let main = (y - mid).abs();
+            let side = (x - mid).abs();
+            let main_h = (main <= 3.4).then_some(100.0 + 20.0 * x + 300.0 * main);
+            let side_h = (side <= 3.4 && y >= mid && y < m as f64 - 12.0)
+                .then_some(100.0 + 20.0 * mid + 30.0 * (y - mid) + 300.0 * side);
+            match (main_h, side_h) {
+                (Some(a), Some(b)) => a.min(b),
+                (Some(h), None) | (None, Some(h)) => h,
+                (None, None) => OCEAN,
+            }
+        })
+    }
+
+    #[test]
+    fn a_line_profile_never_decreases_downstream() {
+        let m = 128;
+        let flow = FlowMap::new(&confluence(m));
+        let line: Vec<V3> = [110, 64, 12].map(|x| cell_dir(m, 0, x, m / 2 + 1)).to_vec();
+        let profile = flow.line_profile(&line);
+        assert!(profile.windows(2).all(|w| w[1].area >= w[0].area));
+        assert!(profile.windows(2).all(|w| w[1].along > w[0].along));
+        // The river grows where the side valley joins it.
+        let at = |x: usize| {
+            let d = cell_dir(m, 0, x, m / 2 + 1);
+            let near = |s: &&FlowSample| angle(s.dir, d);
+            profile
+                .iter()
+                .min_by(|a, b| near(a).total_cmp(&near(b)))
+                .unwrap()
+                .area
+        };
+        assert!(at(56) > 1.5 * at(72), "{} {}", at(56), at(72));
+        assert_eq!(profile.last().unwrap().area, flow.line_area(&line));
+    }
+
+    #[test]
+    fn a_line_that_ends_in_the_sea_grows_toward_its_mouth() {
+        let m = 128;
+        let flow = FlowMap::new(&confluence(m));
+        // The valley meets the sea at column 8. The line goes on past the
+        // coast, so its last samples drain nothing.
+        for line in [[110, 64, 2], [2, 64, 110]] {
+            let line: Vec<V3> = line.map(|x| cell_dir(m, 0, x, m / 2 + 1)).to_vec();
+            let profile = flow.line_profile(&line);
+            let source = if line[0] == cell_dir(m, 0, 110, m / 2 + 1) {
+                profile.first().unwrap()
+            } else {
+                profile.last().unwrap()
+            };
+            let largest = profile.iter().map(|s| s.area).fold(0.0, f64::max);
+            assert!(source.area < 0.25 * largest, "{} {largest}", source.area);
+        }
+    }
+
+    #[test]
+    fn a_line_from_mouth_to_source_gets_the_same_profile() {
+        let m = 128;
+        let flow = FlowMap::new(&confluence(m));
+        let line: Vec<V3> = [110, 64, 12].map(|x| cell_dir(m, 0, x, m / 2 + 1)).to_vec();
+        let back: Vec<V3> = line.iter().rev().copied().collect();
+        let (a, b) = (flow.line_profile(&line), flow.line_profile(&back));
+        assert_eq!(a.len(), b.len());
+        for (x, y) in a.iter().zip(b.iter().rev()) {
+            assert_eq!(x.area, y.area);
+            assert!((x.along - (1.0 - y.along)).abs() < 1e-9);
+        }
+    }
+
+    #[test]
+    fn a_tributary_profile_ends_no_larger_than_the_main_river() {
+        let m = 128;
+        let flow = FlowMap::new(&confluence(m));
+        let mid = m / 2;
+        // The tributary goes down the side valley, one column off, to the
+        // floor of the main valley.
+        let tributary: Vec<V3> = [110, 80, mid].map(|y| cell_dir(m, 0, mid + 1, y)).to_vec();
+        let profile = flow.line_profile(&tributary);
+        let end = profile.last().unwrap().area;
+        assert!(end >= RIVER_MIN_AREA, "{end}");
+        // The main river above the confluence drains more than the tributary.
+        let above = flow.area(0, mid + 2, mid);
+        assert!(end <= above, "{end} {above}");
+        let main: Vec<V3> = [110, 64, 12].map(|x| cell_dir(m, 0, x, mid + 1)).to_vec();
+        let main = flow.line_profile(&main);
+        let join = cell_dir(m, 0, mid, mid);
+        let near = |s: &&FlowSample| angle(s.dir, join);
+        let at_join = main
+            .iter()
+            .min_by(|a, b| near(a).total_cmp(&near(b)))
+            .unwrap();
+        assert!(end <= at_join.area, "{end} {}", at_join.area);
+    }
+
+    #[test]
+    fn a_line_across_a_ridge_gets_less_than_the_river_threshold() {
+        let m = 256;
+        // Two valleys go down to the cells with the lowest `x`, and a ridge
+        // at row 128 is between them.
+        let floors = [118.0, 138.0];
+        let heights = from_cells(m, |face, x, y| {
+            let across = floors.map(|f| (y as f64 - f).abs());
+            let across = across[0].min(across[1]);
+            let outside = (y as f64) < floors[0] - 3.4 || (y as f64) > floors[1] + 3.4;
+            if face != 0 || !(8..m - 8).contains(&x) || outside {
+                return OCEAN;
+            }
+            100.0 + 20.0 * x as f64 + 300.0 * across
+        });
+        let flow = FlowMap::new(&heights);
+        assert!(flow.is_river(0, 128, 118) && flow.is_river(0, 128, 138));
+        let line = [cell_dir(m, 0, 128, 122), cell_dir(m, 0, 128, 134)];
+        let area = flow.line_area(&line);
+        assert!(area > 0.0 && area < RIVER_MIN_AREA, "{area}");
     }
 
     #[test]

@@ -471,7 +471,7 @@ pub fn range(state: &AppState, id: LayerId, text: &str) -> Option<Arc<ValueRange
 /// that finished if the text reads a raster layer, and 0 if not.
 fn stamp(rasters: Option<(&dyn RasterValues, u64)>, text: &str) -> u64 {
     match rasters {
-        Some((_, arrived)) if text.contains("raster") => arrived + 1,
+        Some((_, arrived)) if text.contains("raster") || text.contains("flow") => arrived + 1,
         _ => 0,
     }
 }

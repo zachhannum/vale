@@ -1,5 +1,7 @@
 use vale_render::Point;
-use vale_render::stroke::{Dab, TaperPiece, brush_dabs, dash, taper, taper_measured, taper_path};
+use vale_render::stroke::{
+    Dab, TaperPiece, brush_dabs, dash, sampled, taper, taper_measured, taper_path, varying,
+};
 
 /// The distance from `p` to the segment `a`-`b`, and the distance from `a` to the foot.
 fn project(p: Point, a: Point, b: Point) -> (f64, f64) {
@@ -188,4 +190,45 @@ fn brush_is_deterministic_and_inside_the_width() {
     // A long line gets no more than the cap.
     let long = vec![vec![Point::new(0.0, 0.0), Point::new(1.0e6, 0.0)]];
     assert!(brush_dabs(&long, 1.0, 1).len() <= vale_render::stroke::MAX_DABS);
+}
+
+#[test]
+fn varying_with_linear_widths_is_the_taper() {
+    let part = [
+        Point::new(0.0, 0.0),
+        Point::new(10.0, 0.0),
+        Point::new(10.0, 10.0),
+    ];
+    let measured: Vec<(Point, f64)> = vec![(part[0], 0.0), (part[1], 0.5), (part[2], 1.0)];
+    let widths: Vec<(Point, f64)> = vec![(part[0], 2.0), (part[1], 4.0), (part[2], 6.0)];
+    assert_eq!(taper_measured(&[measured], 2.0, 6.0), varying(&[widths]));
+}
+
+#[test]
+fn sampled_cuts_long_segments_and_takes_the_nearest_width() {
+    let part = vec![Point::new(0.0, 0.0), Point::new(100.0, 0.0)];
+    let samples: Vec<(Point, f64)> = (0..=10)
+        .map(|i| {
+            let x = 10.0 * i as f64;
+            (Point::new(x, 0.0), if x < 50.0 { 1.0 } else { 5.0 })
+        })
+        .collect();
+    let out = sampled(&[part], &samples);
+    assert_eq!(out.len(), 1);
+    let points = &out[0];
+    assert!(points.len() > 10, "{}", points.len());
+    for &(p, w) in points {
+        let expected = if p.x < 45.0 {
+            1.0
+        } else if p.x > 50.0 {
+            5.0
+        } else {
+            continue;
+        };
+        assert_eq!(w, expected, "{p:?}");
+    }
+    assert!(points.windows(2).all(|w| w[1].0.x > w[0].0.x));
+    // With no samples, the width is 0.
+    let none = sampled(&[vec![Point::new(0.0, 0.0), Point::new(1.0, 0.0)]], &[]);
+    assert!(none[0].iter().all(|&(_, w)| w == 0.0));
 }

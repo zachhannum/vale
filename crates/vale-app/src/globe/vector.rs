@@ -308,10 +308,14 @@ pub fn clip_line_measured(rot: &Mat3, pts: &[V3], step: f64) -> Vec<Vec<Measured
 /// the alpha of the color. The shapes must go to one layer that gets the
 /// group alpha once, so that the overlaps of the pieces do not show darker.
 /// A group alpha of 1 means that the shapes can go to the screen directly.
+///
+/// A Flow stroke takes its width from `flow`: places on screen, each with
+/// its width. With no flow, it has its smallest width.
 pub fn stroke_shapes(
     parts: &[Vec<(Point, f64)>],
     stroke: &vale_style::Stroke,
     seed: u64,
+    flow: Option<&[(Point, f64)]>,
 ) -> (Vec<egui::Shape>, f32) {
     let c = stroke.color;
     let group = f32::from(c.a) / 255.0;
@@ -333,22 +337,36 @@ pub fn stroke_shapes(
             })
             .collect()
     };
+    let pieces = |pieces: Vec<TaperPiece>| -> Vec<egui::Shape> {
+        (pieces.into_iter())
+            .map(|piece| match piece {
+                TaperPiece::Circle(c, r) => egui::Shape::circle_filled(pos(c), r as f32, color),
+                TaperPiece::Quad(q) => egui::Shape::convex_polygon(
+                    q.iter().map(|p| pos(*p)).collect(),
+                    color,
+                    egui::Stroke::NONE,
+                ),
+            })
+            .collect()
+    };
     let shapes = match stroke.kind {
         StrokeKind::Solid => lines(plain()),
         StrokeKind::Dashed { dash, gap } => lines(stroke::dash(&plain(), dash, gap)),
-        StrokeKind::Taper { start } => {
-            stroke::taper_measured(parts, start * stroke.width, stroke.width)
-                .into_iter()
-                .map(|piece| match piece {
-                    TaperPiece::Circle(c, r) => egui::Shape::circle_filled(pos(c), r as f32, color),
-                    TaperPiece::Quad(q) => egui::Shape::convex_polygon(
-                        q.iter().map(|p| pos(*p)).collect(),
-                        color,
-                        egui::Stroke::NONE,
-                    ),
-                })
-                .collect()
-        }
+        StrokeKind::Taper { start } => pieces(stroke::taper_measured(
+            parts,
+            start * stroke.width,
+            stroke.width,
+        )),
+        StrokeKind::Flow { .. } => match flow.filter(|f| !f.is_empty()) {
+            Some(flow) => pieces(stroke::varying(&stroke::sampled(&plain(), flow))),
+            None => {
+                let w = stroke.width_at(0.0, (0.0, 0.0));
+                let parts: Vec<Vec<(Point, f64)>> = (plain().into_iter())
+                    .map(|part| part.into_iter().map(|p| (p, w)).collect())
+                    .collect();
+                pieces(stroke::varying(&parts))
+            }
+        },
         StrokeKind::Brush => stroke::brush_dabs(&plain(), stroke.width, seed)
             .into_iter()
             .map(|d| {
@@ -942,6 +960,7 @@ mod tests {
                     kind,
                 },
                 7,
+                None,
             );
             assert_eq!(alpha, 1.0);
             shapes
@@ -986,6 +1005,7 @@ mod tests {
                     kind,
                 },
                 7,
+                None,
             )
         };
         let colors = |shapes: &[Shape]| -> Vec<egui::Color32> {
@@ -1080,7 +1100,7 @@ mod tests {
             width,
             kind: StrokeKind::Taper { start },
         };
-        let radii = taper_radii(&stroke_shapes(&screen, &stroke, 0).0);
+        let radii = taper_radii(&stroke_shapes(&screen, &stroke, 0, None).0);
         let w0 = 2.0 * f64::from(radii[0].1);
         let expected = width * (start + (1.0 - start) * f0);
         assert!((w0 - expected).abs() < 1e-4, "{w0} and {expected}");

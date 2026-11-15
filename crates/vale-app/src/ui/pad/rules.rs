@@ -42,6 +42,10 @@ pub const BAD_RANGE: &str = "Min scale must be less than max scale.";
 pub const STROKE: &str = "Stroke";
 pub const STROKE_COLOR: &str = "Stroke color";
 pub const STROKE_WIDTH: &str = "Width";
+/// The switch that gives a line its width from an expression.
+pub const WIDTH_FROM_EXPRESSION: &str = "Width from expression";
+/// The field of the width expression of a line.
+pub const WIDTH_EXPRESSION: &str = "Width expression";
 pub const LINE: &str = "Line";
 pub const SOLID: &str = "Solid";
 pub const DASHED: &str = "Dashed";
@@ -50,6 +54,14 @@ pub const TAPER: &str = "Taper";
 pub const DASH: &str = "Dash";
 pub const GAP: &str = "Gap";
 pub const TAPER_START: &str = "Start width";
+/// The line type whose width follows the drainage of the height layer.
+pub const FLOW: &str = "Flow";
+/// The width of a Flow line with no flow, as a part of the width.
+pub const FLOW_MIN: &str = "Smallest width";
+/// The hint of a Flow line in a project with no height layer.
+pub const FLOW_NEEDS_HEIGHT: &str = "Flow needs a height layer.";
+/// The heading of the height layers that the Flow lines of a layer can read.
+pub const HEIGHT_LAYER: &str = "Height layer";
 pub const FILL: &str = "Fill";
 pub const FILL_COLOR: &str = "Fill color";
 /// The label of the switch of a fill or a stroke that follows the mask of the style.
@@ -395,6 +407,15 @@ pub fn selection_body(
         if kind != GeometryKind::Point {
             selection_line_rows(ui, controls, kind, &rules, &paints, &mut changes);
         }
+        let flow = |i: &usize| {
+            matches!(
+                rules[*i].stroke().map(|s| s.kind),
+                Some(StrokeKind::Flow { .. })
+            )
+        };
+        if kind == GeometryKind::Line && paints.iter().any(flow) {
+            flow_height_row(ui, state, controls, (id, None));
+        }
         let value = rule_edit::shared(&rules, &paints, Rule::stroke_applies_mask);
         if let Some(v) = mask_row(ui, controls, masked, STROKE_MASK, value) {
             changes.push(Change::StrokeAppliesMask(v));
@@ -463,13 +484,14 @@ fn selection_line_rows(
 ) {
     let mut kinds = vec![SOLID, DASHED, BRUSH];
     if kind == GeometryKind::Line {
-        kinds.push(TAPER);
+        kinds.extend([TAPER, FLOW]);
     }
     let index = |k: &StrokeKind| match k {
         StrokeKind::Solid => 0,
         StrokeKind::Dashed { .. } => 1,
         StrokeKind::Brush => 2,
         StrokeKind::Taper { .. } => 3,
+        StrokeKind::Flow { .. } => 4,
     };
     let line = rule_edit::shared(rules, paints, |r| r.stroke().map(|s| index(&s.kind)));
     let active = line.filter(|l| !l.1).map(|l| l.0);
@@ -480,6 +502,7 @@ fn selection_line_rows(
             1 => StrokeKind::dashed(),
             2 => StrokeKind::Brush,
             3 => StrokeKind::taper(),
+            4 => StrokeKind::flow(),
             _ => StrokeKind::Solid,
         }));
     }
@@ -524,6 +547,20 @@ fn selection_line_rows(
                 .slider(ui, controls);
             if let Some(v) = v {
                 changes.push(Change::TaperStart(v));
+            }
+        }
+        Some(4) => {
+            let min = number(&|k| match k {
+                StrokeKind::Flow { min } => Some(min),
+                _ => None,
+            });
+            let (v, mixed) = min.unwrap_or((StrokeKind::FLOW_MIN, false));
+            let v = Number::new(FLOW_MIN, v, 0.0..=1.0)
+                .percent()
+                .mixed(mixed)
+                .slider(ui, controls);
+            if let Some(v) = v {
+                changes.push(Change::FlowMin(v));
             }
         }
         _ => {}
@@ -957,9 +994,16 @@ fn paint_rows(
             stroke.width = width;
             rule.set_stroke(Some(stroke));
         }
+        if kind == GeometryKind::Line {
+            width_expression_rows(ui, state, controls, id, rule);
+        }
         // A marker ignores the line type.
         if kind != GeometryKind::Point {
-            line_rows(ui, controls, rule, stroke, kind);
+            let has_height = state.doc.project.rasters().iter().any(crate::ui::is_height);
+            line_rows(ui, controls, rule, stroke, (kind, has_height));
+            if matches!(rule.stroke().map(|s| s.kind), Some(StrokeKind::Flow { .. })) {
+                flow_height_row(ui, state, controls, (id, Some(i)));
+            }
         }
         let value = rule.stroke_applies_mask().map(|v| (v, false));
         if let Some(v) = mask_row(ui, controls, masked, STROKE_MASK, value) {
@@ -994,6 +1038,48 @@ fn paint_rows(
     }
     if kind == GeometryKind::Polygon {
         scatter_rows(ui, state, controls, (id, i), rule);
+    }
+}
+
+/// The switch and the field of the width expression of a line. The width
+/// of the stepper is the width where the expression gives no value.
+fn width_expression_rows(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    id: LayerId,
+    rule: &mut Rule,
+) {
+    let help = ExprHelp::for_layer(state, id);
+    let text = rule.stroke_width_expression().map(str::to_owned);
+    let mut on = text.is_some();
+    if widgets::switch_row(
+        ui,
+        controls,
+        WIDTH_FROM_EXPRESSION,
+        WIDTH_FROM_EXPRESSION,
+        &mut on,
+    ) {
+        let start = rule
+            .stroke()
+            .map(|s| s.width.to_string())
+            .unwrap_or_default();
+        rule.set_stroke_width_expression(on.then_some(start.as_str()));
+    }
+    let Some(text) = rule.stroke_width_expression().map(str::to_owned) else {
+        return;
+    };
+    let range = expr_help::range(state, id, &text);
+    let edit = super::value::editor(
+        ui,
+        controls,
+        WIDTH_EXPRESSION,
+        &text,
+        &help,
+        range.as_deref(),
+    );
+    if let Some(text) = edit.text {
+        rule.set_stroke_width_expression(Some(&text));
     }
 }
 
@@ -1531,17 +1617,18 @@ fn line_rows(
     controls: &mut Controls,
     rule: &mut Rule,
     mut stroke: Stroke,
-    kind: GeometryKind,
+    (kind, has_height): (GeometryKind, bool),
 ) {
     let mut kinds = vec![SOLID, DASHED, BRUSH];
     if kind == GeometryKind::Line {
-        kinds.push(TAPER);
+        kinds.extend([TAPER, FLOW]);
     }
     let active = match stroke.kind {
         StrokeKind::Solid => 0,
         StrokeKind::Dashed { .. } => 1,
         StrokeKind::Brush => 2,
         StrokeKind::Taper { .. } => 3,
+        StrokeKind::Flow { .. } => 4,
     };
     if let Some(index) = widgets::choice_row(ui, controls, LINE, &kinds, Some(active))
         && index != active
@@ -1550,6 +1637,7 @@ fn line_rows(
             1 => StrokeKind::dashed(),
             2 => StrokeKind::Brush,
             3 => StrokeKind::taper(),
+            4 => StrokeKind::flow(),
             _ => StrokeKind::Solid,
         };
         rule.set_stroke(Some(stroke));
@@ -1580,7 +1668,87 @@ fn line_rows(
                 rule.set_stroke(Some(stroke));
             }
         }
+        StrokeKind::Flow { min } => {
+            let min = Number::new(FLOW_MIN, min, 0.0..=1.0)
+                .percent()
+                .slider(ui, controls);
+            if let Some(min) = min {
+                stroke.kind = StrokeKind::Flow { min };
+                rule.set_stroke(Some(stroke));
+            }
+            if !has_height {
+                widgets::form_note(ui, FLOW_NEEDS_HEIGHT, 20.0);
+            }
+        }
         StrokeKind::Solid | StrokeKind::Brush => {}
+    }
+}
+
+/// The names of the height layers of the project, in the order of the
+/// layer list.
+pub fn height_layers(doc: &Document) -> Vec<String> {
+    let project = &doc.project;
+    (project.layers().iter())
+        .filter(|l| {
+            let raster = l.raster().and_then(|r| project.raster(r));
+            raster.is_some_and(crate::ui::is_height)
+        })
+        .map(|l| l.name.clone())
+        .collect()
+}
+
+/// The height layer that the Flow lines of layer `id` read: the name in its
+/// style, or else the first height layer. `None` with no height layer.
+fn flow_height(state: &AppState, id: LayerId) -> Option<String> {
+    let heights = height_layers(&state.doc);
+    let current = state
+        .doc
+        .entry(id)
+        .and_then(|e| e.style.flow_height.clone());
+    current
+        .filter(|c| heights.contains(c))
+        .or_else(|| heights.first().cloned())
+}
+
+/// The row of the height layer of the Flow lines of layer `id`, which opens
+/// its page. It shows only if the project has more than one height layer.
+/// `rule`: the rule of the page, or `None` for the selected rules.
+fn flow_height_row(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    (id, rule): (LayerId, Option<usize>),
+) {
+    if height_layers(&state.doc).len() < 2 {
+        return;
+    }
+    let current = flow_height(state, id).unwrap_or_default();
+    if widgets::open_row(ui, controls, HEIGHT_LAYER, &current).clicked() {
+        state.pad.page = Some(Page::FlowHeight(rule));
+        state.pad.rules.picker = None;
+    }
+}
+
+/// The page of the height layer of the Flow lines of layer `id`: a row for
+/// each height layer.
+pub fn flow_height_body(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    id: LayerId,
+) {
+    let current = flow_height(state, id);
+    ui.spacing_mut().item_spacing.y = 0.0;
+    ui.add_space(8.0);
+    for name in height_layers(&state.doc) {
+        let on = current.as_ref() == Some(&name);
+        if widgets::option_row(ui, controls, &name, &name, &[], on).clicked()
+            && !on
+            && let Some(entry) = state.doc.entry_mut(id)
+        {
+            entry.style.flow_height = Some(name);
+            state.touch();
+        }
     }
 }
 

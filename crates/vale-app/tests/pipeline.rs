@@ -4434,3 +4434,324 @@ fn an_unknown_raster_name_gives_null() {
     assert!(!vale_style::expr::RasterValues::has_layer(&rasters, "Rain"));
     assert_eq!(pipeline.rasters().raster_names(), ["Height"]);
 }
+
+/// A document with a height layer and a line layer with one river. The
+/// river goes down the valley, from its source at 5° south to its mouth.
+fn river_doc() -> (Document, vale_store::LayerId, vale_terrain::Heightmap) {
+    let (mut doc, id) = lines_at(&[("river", &[[0.5, -5.0], [0.5, -20.0], [0.5, -38.0]])]);
+    add_height(&mut doc);
+    let mut map = vale_terrain::Heightmap::new(128, 0);
+    common::paint_valley(&mut map, 0.0);
+    (doc, id, map)
+}
+
+/// The flow of the river in km², after the jobs finish.
+fn river_flow(
+    doc: &Document,
+    id: vale_store::LayerId,
+    pipeline: &mut Pipeline,
+    map: &vale_terrain::Heightmap,
+) -> f64 {
+    update_rasters(doc, pipeline, map);
+    let _ = pipeline.rasters().flow_of(id, 0, "Height");
+    update_rasters(doc, pipeline, map);
+    number(raster_eval(doc, pipeline, id, 0, "flow('Height')"))
+}
+
+/// The threshold of the live rivers on a world of `radius_km`, in km².
+fn river_threshold(radius_km: f64) -> f64 {
+    vale_terrain::RIVER_MIN_AREA * radius_km * radius_km
+}
+
+#[test]
+fn a_river_line_gets_the_flow_of_the_height_layer() {
+    let (doc, id, map) = river_doc();
+    let mut pipeline = Pipeline::new();
+    let km2 = river_flow(&doc, id, &mut pipeline, &map);
+    let radius = doc.project.world.radius_km;
+    assert!(km2 > river_threshold(radius), "{km2}");
+    let sr = pipeline.rasters().flow_of(id, 0, "Height").unwrap();
+    assert!((km2 - sr * radius * radius).abs() < 1e-6 * km2);
+    // The flow is the same as the area of the line on the drainage.
+    let flow = vale_terrain::FlowMap::new(&vale_terrain::CoarseHeights::new(&map));
+    let line: Vec<_> = [[0.5, -5.0], [0.5, -20.0], [0.5, -38.0]]
+        .map(|[lon, lat]| vale_terrain::math::lonlat_to_dir(lon, lat))
+        .to_vec();
+    assert_eq!(sr, flow.line_area(&line));
+    // A layer that is not a height layer gives null.
+    let mut other = doc.clone();
+    (other.project).add_raster("Rain".to_string(), 64, "mm".to_string(), 0.0, 1.0);
+    let _ = pipeline.rasters().flow_of(id, 0, "Rain");
+    update_rasters(&other, &mut pipeline, &map);
+    assert_eq!(pipeline.rasters().flow_of(id, 0, "Rain"), None);
+}
+
+#[test]
+fn a_stroke_that_changes_the_drainage_computes_the_flow_again_without_a_wait() {
+    use std::time::{Duration, Instant};
+    let (doc, id, mut map) = river_doc();
+    let mut pipeline = Pipeline::new();
+    let before = river_flow(&doc, id, &mut pipeline, &map);
+
+    // A stroke makes the valley longer uphill.
+    map.begin_stroke();
+    common::paint_valley(&mut map, 25.0);
+    map.end_stroke();
+    let start = Instant::now();
+    pipeline.rasters_mut().held = true;
+    pipeline.rasters_mut().update(&doc, |_| Some(&map));
+    assert!(start.elapsed() < Duration::from_millis(200));
+    // The drainage job runs, and the river keeps its old flow.
+    assert!(pipeline.rasters_mut().poll(false));
+    assert_eq!(
+        number(raster_eval(&doc, &pipeline, id, 0, "flow('Height')")),
+        before
+    );
+    pipeline.rasters_mut().held = false;
+    loop {
+        let rasters = pipeline.rasters_mut();
+        rasters.update(&doc, |_| Some(&map));
+        rasters.poll(false);
+        let now = number(raster_eval(&doc, &pipeline, id, 0, "flow('Height')"));
+        if now > 1.5 * before {
+            break;
+        }
+        assert!(start.elapsed() < Duration::from_secs(10), "no new flow");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn a_width_from_flow_with_the_taper_grows_toward_the_mouth_in_a_frame_and_in_pdf() {
+    let (mut doc, id, map) = river_doc();
+    doc.set_projection(
+        doc.first_map(),
+        ProjectionSpec::new(ProjectionKind::Equirectangular, 0.0, 0.0),
+    );
+    let width = "clamp(0.5, sqrt(flow('Height')) / 300, 6)";
+    doc.entry_mut(id).unwrap().style.style = Style {
+        mask: None,
+        rules: vec![Rule::new(
+            "River",
+            vec![Symbolizer::Stroke(StrokeSymbolizer {
+                color: Property::constant(Color::rgb(200, 0, 0)),
+                width: Property::expression(width, 0.25),
+                kind: StrokeKind::taper(),
+                apply_mask: true,
+            })],
+        )],
+    };
+    let mut pipeline = Pipeline::new();
+    let _ = river_flow(&doc, id, &mut pipeline, &map);
+    let w = number(raster_eval(&doc, &pipeline, id, 0, width));
+    assert!(w > 1.5 && w < 6.0, "{w}");
+    let mut at = |lat: f64| {
+        (pipeline.lonlat_to_page(&doc, SIZE, [0.5, lat]))
+            .unwrap()
+            .unwrap()
+    };
+    let (source, mouth) = (at(-5.0), at(-38.0));
+    let list = compose(&doc, &mut pipeline).list;
+    let scale = 4.0;
+    let px = render_rgba(&list, scale).unwrap();
+    let x = source.x * scale;
+    let width_at = |y: f64| red_run(&px, y * scale, x - 40.0, x + 40.0) as f64;
+    let near_source = width_at(source.y + 2.0);
+    let near_mouth = width_at(mouth.y - 2.0);
+    // The river is narrow at its source and has the width of its flow at its mouth.
+    assert!((near_mouth - w * scale).abs() <= 1.5, "{near_mouth} px");
+    assert!(near_source < 0.5 * near_mouth, "{near_source} px");
+    // In the PDF, the river is a vector fill.
+    let pdf = vale_render::render_pdf(&list).unwrap();
+    assert!(!String::from_utf8_lossy(&pdf).contains("/Subtype/Image"));
+    assert!(list.items.iter().any(|i| matches!(
+        i,
+        Item::Fill {
+            rule: FillRule::NonZero,
+            ..
+        }
+    )));
+}
+
+/// The count of the pixels of a column `x` from `y0` to `y1` where `hit`
+/// is true for the color.
+fn column_run(
+    px: &vale_render::Rgba,
+    x: f64,
+    y0: f64,
+    y1: f64,
+    hit: impl Fn([i32; 3]) -> bool,
+) -> usize {
+    let x = x.floor() as usize;
+    (y0.floor() as usize..y1.ceil() as usize)
+        .filter(|&y| {
+            let i = (y * px.width + x) * 4;
+            hit([px.data[i], px.data[i + 1], px.data[i + 2]].map(i32::from))
+        })
+        .count()
+}
+
+/// The count of the pixels of a row `y` from `x0` to `x1` where `hit` is
+/// true for the color.
+fn row_run(
+    px: &vale_render::Rgba,
+    y: f64,
+    x0: f64,
+    x1: f64,
+    hit: impl Fn([i32; 3]) -> bool,
+) -> usize {
+    let y = y.floor() as usize;
+    (x0.floor() as usize..x1.ceil() as usize)
+        .filter(|&x| {
+            let i = (y * px.width + x) * 4;
+            hit([px.data[i], px.data[i + 1], px.data[i + 2]].map(i32::from))
+        })
+        .count()
+}
+
+fn is_red([r, g, b]: [i32; 3]) -> bool {
+    r - g.max(b) >= 100
+}
+
+fn is_blue([r, g, b]: [i32; 3]) -> bool {
+    b - r.max(g) >= 100
+}
+
+/// A main river down the valley of `common::confluence_meters` in blue, and
+/// its tributary from the east in red, both with the Flow line type.
+fn flow_rivers() -> (Document, vale_store::LayerId, vale_terrain::Heightmap) {
+    let (mut doc, id) = lines_at(&[
+        ("main", &[[0.5, -0.5], [0.5, -20.0], [0.5, -38.0]]),
+        ("trib", &[[12.0, -20.5], [6.0, -20.5], [0.5, -20.5]]),
+    ]);
+    doc.set_projection(
+        doc.first_map(),
+        ProjectionSpec::new(ProjectionKind::Equirectangular, 0.0, -20.0),
+    );
+    add_height(&mut doc);
+    doc.entry_mut(id).unwrap().style.style = Style {
+        mask: None,
+        rules: vec![
+            kind_rule("main", Color::rgb(0, 0, 200), 8.0, StrokeKind::flow()),
+            kind_rule("trib", Color::rgb(200, 0, 0), 8.0, StrokeKind::flow()),
+        ],
+    };
+    let mut map = vale_terrain::Heightmap::new(128, 0);
+    common::paint_confluence(&mut map);
+    (doc, id, map)
+}
+
+#[test]
+fn a_flow_tributary_is_no_wider_than_the_main_river_at_the_join_in_a_frame_and_in_pdf() {
+    let (doc, _, map) = flow_rivers();
+    let mut pipeline = Pipeline::new();
+    update_rasters(&doc, &mut pipeline, &map);
+    let _ = compose(&doc, &mut pipeline);
+    update_rasters(&doc, &mut pipeline, &map);
+    let list = compose(&doc, &mut pipeline).list;
+    let scale = 4.0;
+    let px = render_rgba(&list, scale).unwrap();
+    if std::env::var_os("VALE_SCREENSHOTS").is_some() {
+        let image = image::RgbaImage::from_raw(px.width as u32, px.height as u32, px.data.clone());
+        image
+            .unwrap()
+            .save("../../target/app/test-flow-confluence.png")
+            .unwrap();
+    }
+    let mut at = |lon: f64, lat: f64| {
+        let p = pipeline
+            .lonlat_to_page(&doc, SIZE, [lon, lat])
+            .unwrap()
+            .unwrap();
+        (p.x * scale, p.y * scale)
+    };
+    let join = at(0.5, -20.5);
+    let (east, _) = at(2.0, -20.5);
+    let (_, above) = at(0.5, -16.0);
+    let (_, below) = at(0.5, -25.0);
+    let (_, source) = at(0.5, -1.0);
+    let blue = |y: f64| row_run(&px, y, join.0 - 80.0, join.0 + 80.0, is_blue);
+    let red = |x: f64| column_run(&px, x, join.1 - 80.0, join.1 + 80.0, is_red);
+    // The main river grows where the tributary joins it, and toward its mouth.
+    let (b_source, b_above, b_below) = (blue(source), blue(above), blue(below));
+    assert!(
+        b_below > b_above && b_above >= b_source,
+        "{b_source} {b_above} {b_below}"
+    );
+    // Near its source, the river is close to the smallest width.
+    let (smallest, full) = (StrokeKind::FLOW_MIN * 8.0 * scale, 8.0 * scale);
+    let near = smallest + 0.15 * (full - smallest);
+    assert!(
+        b_source as f64 <= near,
+        "{b_source} px, not near {smallest} px"
+    );
+    // Just upstream of the join, the tributary is no wider than the main river.
+    let r_east = red(east);
+    assert!(r_east > 0, "no tributary");
+    assert!(r_east <= b_below + 1, "{r_east} px > {b_below} px");
+    assert!(r_east <= b_above + 1, "{r_east} px > {b_above} px");
+    // No tributary pixel shows on the far side of the main river.
+    let (west, _) = at(-1.5, -20.5);
+    assert_eq!(red(west), 0);
+    // In the PDF, the rivers are vector fills.
+    let pdf = vale_render::render_pdf(&list).unwrap();
+    assert!(!String::from_utf8_lossy(&pdf).contains("/Subtype/Image"));
+    assert!(list.items.iter().any(|i| matches!(
+        i,
+        Item::Fill {
+            rule: FillRule::NonZero,
+            ..
+        }
+    )));
+}
+
+#[test]
+fn a_flow_line_draws_at_its_smallest_width_before_the_flow_arrives() {
+    let (doc, _, _) = flow_rivers();
+    let mut pipeline = Pipeline::new();
+    let scale = 4.0;
+    let px = render_rgba(&compose(&doc, &mut pipeline).list, scale).unwrap();
+    let p = pipeline
+        .lonlat_to_page(&doc, SIZE, [0.5, -10.0])
+        .unwrap()
+        .unwrap();
+    let (x, y) = (p.x * scale, p.y * scale);
+    let run = row_run(&px, y, x - 80.0, x + 80.0, is_blue) as f64;
+    let smallest = StrokeKind::FLOW_MIN * 8.0 * scale;
+    assert!((run - smallest).abs() <= 1.5, "{run} px, not {smallest} px");
+}
+
+#[test]
+fn a_flow_stroke_reads_the_height_layer_of_its_style() {
+    let (mut doc, id, map) = flow_rivers();
+    // The first height layer is all sea, so it has no flow.
+    let first = doc.project.rasters()[0].id;
+    let valley = (doc.project).add_raster("Valley".to_string(), 64, "m".to_string(), 0.0, 6553.5);
+    let sea = vale_terrain::Heightmap::new(128, 0);
+    let mut pipeline = Pipeline::new();
+    let update = |doc: &Document, pipeline: &mut Pipeline| {
+        let rasters = pipeline.rasters_mut();
+        rasters.update(doc, |r| Some(if r == valley { &map } else { &sea }));
+        rasters.poll(true);
+    };
+    let geometry = doc.layer(id).unwrap().features[0].geometry.clone();
+    let area = |doc: &Document, pipeline: &mut Pipeline| {
+        update(doc, pipeline);
+        let height = doc.entry(id).unwrap().style.flow_height.clone();
+        let rasters = pipeline.rasters().for_layer(id);
+        let _ = rasters.flow_line(height.as_deref(), 0, &geometry);
+        update(doc, pipeline);
+        let rasters = pipeline.rasters().for_layer(id);
+        rasters
+            .flow_line(height.as_deref(), 0, &geometry)
+            .unwrap()
+            .largest()
+    };
+    assert_ne!(first, valley);
+    assert_eq!(area(&doc, &mut pipeline), 0.0);
+    doc.entry_mut(id).unwrap().style.flow_height = Some("Valley".into());
+    assert!(area(&doc, &mut pipeline) > vale_terrain::RIVER_MIN_AREA);
+    // A name that no height layer has reads the first height layer.
+    doc.entry_mut(id).unwrap().style.flow_height = Some("Gone".into());
+    assert_eq!(area(&doc, &mut pipeline), 0.0);
+}

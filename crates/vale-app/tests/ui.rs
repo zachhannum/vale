@@ -1678,6 +1678,29 @@ fn the_style_editor_opens_from_layers_on_the_globe_and_the_flat_view() {
 }
 
 #[test]
+fn the_desktop_style_editor_gives_a_line_its_width_from_an_expression() {
+    use vale_app::ui::pad::rules::{WIDTH_EXPRESSION, WIDTH_FROM_EXPRESSION};
+    let mut h = globe_harness();
+    let rivers = open_rivers(&mut h);
+    let text = |h: &Harness<'static, AppState>| {
+        let rule = &h.state().doc.entry(rivers).unwrap().style.style.rules[0];
+        rule.stroke_width_expression().map(str::to_owned)
+    };
+    h.get_by_label(WIDTH_FROM_EXPRESSION).click();
+    h.run_steps(2);
+    let width = h.state().doc.entry(rivers).unwrap().style.style.rules[0]
+        .stroke()
+        .unwrap()
+        .width;
+    assert_eq!(text(&h), Some(width.to_string()));
+    type_in(&mut h, WIDTH_EXPRESSION, "sqrt(flow('Height')) / 50");
+    assert_eq!(text(&h).as_deref(), Some("sqrt(flow('Height')) / 50"));
+    h.get_by_label(WIDTH_FROM_EXPRESSION).click();
+    h.run_steps(2);
+    assert_eq!(text(&h), None);
+}
+
+#[test]
 fn short_filter_shows_inline() {
     use vale_app::ui::pad::filter::{ADD_CONDITION, matches_text};
     let mut h = globe_harness();
@@ -3064,4 +3087,46 @@ fn the_tool_bar_has_the_polygon_brush_and_the_keys_choose_its_mode() {
     // With no key, the band is a new polygon.
     mouse_way(&mut h, &[[-30.0, 0.0], [-24.0, 0.0]], egui::Modifiers::NONE);
     assert_eq!(count(&h), 2);
+}
+
+#[test]
+fn the_desktop_style_editor_sets_the_flow_line_type() {
+    use vale_app::ui::pad::rules::{FLOW, FLOW_MIN, LINE};
+    use vale_style::StrokeKind;
+    let mut h = globe_harness();
+    let rivers = open_rivers(&mut h);
+    let kind = |h: &Harness<'static, AppState>| {
+        let rule = &h.state().doc.entry(rivers).unwrap().style.style.rules[0];
+        rule.stroke().unwrap().kind
+    };
+    assert_eq!(kind(&h), StrokeKind::Solid);
+    assert!(h.query_by_label(FLOW_MIN).is_none());
+    h.get_all_by_label(LINE).last().unwrap().click();
+    h.run_steps(2);
+    h.get_by_label(FLOW).click();
+    h.run_steps(2);
+    assert_eq!(kind(&h), StrokeKind::flow());
+    assert!(h.query_all_by_label(FLOW_MIN).next().is_some());
+}
+
+#[test]
+fn the_desktop_style_editor_picks_the_height_layer_of_flow() {
+    use vale_app::ui::pad::rules::{FLOW, HEIGHT_LAYER, LINE, height_layers};
+    let mut h = globe_harness();
+    h.state_mut().add_height();
+    h.state_mut().add_height();
+    h.run_steps(2);
+    let rivers = open_rivers(&mut h);
+    h.get_all_by_label(LINE).last().unwrap().click();
+    h.run_steps(2);
+    h.get_by_label(FLOW).click();
+    h.run_steps(2);
+    let heights = height_layers(&h.state().doc);
+    assert!(heights.len() >= 2, "{heights:?}");
+    h.get_all_by_label(HEIGHT_LAYER).last().unwrap().click();
+    h.run_steps(2);
+    h.get_by_label(&heights[1]).click();
+    h.run_steps(2);
+    let entry = h.state().doc.entry(rivers).unwrap();
+    assert_eq!(entry.style.flow_height.as_ref(), Some(&heights[1]));
 }

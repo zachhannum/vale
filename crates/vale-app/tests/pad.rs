@@ -16930,3 +16930,204 @@ fn the_screenshots_of_a_partially_folded_iphone_duo_show_both_workspaces() {
         }
     }
 }
+
+/// A world with a height layer of 128 texels along a face, with a valley,
+/// and a line layer "Streams" with `lines`. The valley rises to the north.
+fn valley_pad(lines: &[&[[f64; 2]]]) -> (Pad, vale_store::LayerId, RasterId) {
+    use vale_app::ui::RasterSpec;
+    let mut h = empty_pad(BOARDS[1]);
+    let state = h.state_mut();
+    let height = state.add_raster(RasterSpec::height("Height", 128)).unwrap();
+    common::paint_valley(state.globe.raster_map_mut(height).unwrap(), 0.0);
+    let features: Vec<String> = (lines.iter())
+        .map(|line| {
+            let coords: Vec<String> = line.iter().map(|[x, y]| format!("[{x},{y}]")).collect();
+            format!(
+                r#"{{"type":"Feature","properties":{{}},"geometry":{{"type":"LineString","coordinates":[{}]}}}}"#,
+                coords.join(",")
+            )
+        })
+        .collect();
+    let text = format!(
+        r#"{{"type":"FeatureCollection","features":[{}]}}"#,
+        features.join(",")
+    );
+    let imported = vale_import::geojson::read_str("Streams", &text).unwrap();
+    let streams = state.doc.add_imported(imported, None)[0];
+    h.run_steps(2);
+    (h, streams, height)
+}
+
+#[test]
+fn orient_lines_downhill_reverses_each_uphill_line_in_one_undo_step() {
+    use vale_app::ui::pad::ORIENT_DOWNHILL;
+    use vale_store::Geometry;
+    let up: &[[f64; 2]] = &[[0.5, -38.0], [0.5, -20.0], [0.5, -5.0]];
+    let down: &[[f64; 2]] = &[[0.3, -5.0], [0.3, -30.0]];
+    let also_up: &[[f64; 2]] = &[[0.2, -30.0], [0.2, -10.0]];
+    let (mut h, streams, _) = valley_pad(&[up, down, also_up]);
+    let dir = tempfile::tempdir().unwrap();
+    let state = h.state_mut();
+    state.session = Some(Session::open(&dir.path().join("w.gpkg"), &mut state.doc).unwrap());
+    state.save_waiting().unwrap();
+    let pad = &mut h.state_mut().pad;
+    pad.layer = Some(LayerRef::Vector(streams));
+    pad.open(Panel::Layers);
+    h.run_steps(2);
+    check_controls(&h, "the panel of a line layer");
+    let lines = |h: &Pad| -> Vec<Geometry> {
+        let layer = h.state().doc.layer(streams).unwrap();
+        layer.features.iter().map(|f| f.geometry.clone()).collect()
+    };
+    let line = |pts: &[[f64; 2]]| Geometry::Lines(vec![pts.to_vec()]);
+    let reversed = |pts: &[[f64; 2]]| Geometry::Lines(vec![pts.iter().rev().copied().collect()]);
+    let before = lines(&h);
+    assert_eq!(before, [line(up), line(down), line(also_up)]);
+
+    tap(&mut h, ORIENT_DOWNHILL);
+    assert_eq!(lines(&h), [reversed(up), line(down), reversed(also_up)]);
+    // One undo puts back each line.
+    h.state_mut().undo();
+    h.run_steps(2);
+    assert_eq!(lines(&h), before);
+}
+
+#[test]
+fn the_flow_works_on_a_height_layer_with_its_rivers_off() {
+    use vale_style::expr::Property;
+    use vale_style::{Color, Rule, StrokeKind, StrokeSymbolizer, Style, Symbolizer};
+    let (mut h, streams, height) = valley_pad(&[&[[0.5, -5.0], [0.5, -20.0], [0.5, -38.0]]]);
+    let state = h.state_mut();
+    assert!(state.set_raster_rivers(height, false));
+    assert!(!state.doc.project.raster(height).unwrap().rivers);
+    state.doc.entry_mut(streams).unwrap().style.style = Style {
+        mask: None,
+        rules: vec![Rule::new(
+            "River",
+            vec![Symbolizer::Stroke(StrokeSymbolizer {
+                color: Property::constant(Color::rgb(0, 0, 200)),
+                width: Property::expression("clamp(0.5, sqrt(flow('Height')) / 20, 6)", 1.0),
+                kind: StrokeKind::taper(),
+                apply_mask: true,
+            })],
+        )],
+    };
+    let flow = |h: &Pad| h.state().pipeline.rasters().flow_of(streams, 0, "Height");
+    for _ in 0..20 {
+        h.run_steps(1);
+        let _ = flow(&h);
+        if flow(&h).is_some() {
+            break;
+        }
+    }
+    let radius = h.state().doc.project.world.radius_km;
+    let sr = flow(&h).expect("no flow");
+    assert!(
+        sr > vale_terrain::RIVER_MIN_AREA,
+        "{} km²",
+        sr * radius * radius
+    );
+}
+
+#[test]
+fn a_line_rule_takes_its_width_from_an_expression() {
+    use vale_app::ui::pad::rules::{STROKE_WIDTH, WIDTH_EXPRESSION, WIDTH_FROM_EXPRESSION};
+    let mut h = pad(BOARDS[1]);
+    let rivers = vector(&h, "Rivers");
+    let text = |h: &Pad| {
+        rules(h, rivers)[0]
+            .stroke_width_expression()
+            .map(str::to_owned)
+    };
+    open_rule(&mut h, "Rivers", "Default");
+    assert!(control(&h, WIDTH_EXPRESSION).is_none());
+    scroll_to_control(&mut h, WIDTH_FROM_EXPRESSION);
+    tap(&mut h, WIDTH_FROM_EXPRESSION);
+    // The switch starts with the width of the stepper.
+    let width = rules(&h, rivers)[0].stroke().unwrap().width;
+    assert_eq!(text(&h), Some(width.to_string()));
+    scroll_to_control(&mut h, WIDTH_EXPRESSION);
+    check_controls(&h, "the rule page with a width expression");
+    screenshot::save(&mut h, "pad-width-expression");
+    type_text(&mut h, WIDTH_EXPRESSION, "sqrt(flow('Height')) / 50");
+    assert_eq!(text(&h).as_deref(), Some("sqrt(flow('Height')) / 50"));
+    // The stepper sets the width where the expression gives no value.
+    scrolled_step(&mut h, STROKE_WIDTH, true);
+    assert_eq!(text(&h).as_deref(), Some("sqrt(flow('Height')) / 50"));
+    scroll_to_control(&mut h, WIDTH_FROM_EXPRESSION);
+    tap(&mut h, WIDTH_FROM_EXPRESSION);
+    assert_eq!(text(&h), None);
+    assert!(control(&h, WIDTH_EXPRESSION).is_none());
+}
+
+#[test]
+fn a_rule_page_sets_the_flow_line_type_and_its_smallest_width() {
+    use vale_app::ui::pad::rules::{FLOW, FLOW_MIN, FLOW_NEEDS_HEIGHT, TAPER};
+    use vale_style::StrokeKind;
+    for size in [BOARDS[1], BOARDS[3]] {
+        let what = format!("{size:?}");
+        let mut h = pad(size);
+        let rivers = vector(&h, "Rivers");
+        let kind = |h: &Pad| rules(h, rivers)[0].stroke().unwrap().kind;
+        open_rule(&mut h, "Rivers", "Default");
+        assert!(control(&h, FLOW_MIN).is_none(), "{what}");
+        scroll_to_control(&mut h, FLOW);
+        tap(&mut h, FLOW);
+        assert_eq!(kind(&h), StrokeKind::flow(), "{what}");
+        drag_right(&mut h, FLOW_MIN);
+        let StrokeKind::Flow { min } = kind(&h) else {
+            panic!("{what}: {:?}", kind(&h));
+        };
+        assert!(min > StrokeKind::FLOW_MIN && min <= 1.0, "{what}: {min}");
+        // The world has a height layer, so no hint shows.
+        assert!(h.query_by_label(FLOW_NEEDS_HEIGHT).is_none(), "{what}");
+        check_controls(&h, &format!("{what} with a flow"));
+        screenshot::save(&mut h, &format!("pad-flow-{}", size.0));
+        // Another line type takes the slider away.
+        scroll_to_control(&mut h, TAPER);
+        tap(&mut h, TAPER);
+        assert!(control(&h, FLOW_MIN).is_none(), "{what}");
+    }
+    // A polygon layer has no Flow.
+    let mut h = pad(BOARDS[1]);
+    open_rule(&mut h, "Land", "Default");
+    assert!(control(&h, FLOW).is_none());
+    // With no height layer, a hint shows.
+    let mut h = empty_pad(BOARDS[1]);
+    open_rule(&mut h, "Rivers", "Default");
+    scroll_to_control(&mut h, FLOW);
+    tap(&mut h, FLOW);
+    assert!(h.query_by_label(FLOW_NEEDS_HEIGHT).is_some());
+}
+
+#[test]
+fn a_flow_line_picks_its_height_layer_when_the_world_has_two() {
+    use vale_app::ui::pad::rules::{FLOW, HEIGHT_LAYER, height_layers};
+    let mut h = pad(BOARDS[1]);
+    let rivers = vector(&h, "Rivers");
+    open_rule(&mut h, "Rivers", "Default");
+    scroll_to_control(&mut h, FLOW);
+    tap(&mut h, FLOW);
+    // With one height layer, the row does not show.
+    assert!(control(&h, HEIGHT_LAYER).is_none());
+    let mut h = pad(BOARDS[1]);
+    h.state_mut().add_height();
+    h.run_steps(2);
+    let heights = height_layers(&h.state().doc);
+    assert_eq!(heights.len(), 2, "{heights:?}");
+    open_rule(&mut h, "Rivers", "Default");
+    scroll_to_control(&mut h, FLOW);
+    tap(&mut h, FLOW);
+    scroll_to_control(&mut h, HEIGHT_LAYER);
+    check_controls(&h, "the rule page with two height layers");
+    tap(&mut h, HEIGHT_LAYER);
+    assert_eq!(h.state().pad.page, Some(Page::FlowHeight(Some(0))));
+    check_controls(&h, "the height layer page");
+    screenshot::save(&mut h, "pad-flow-height");
+    tap(&mut h, &heights[1]);
+    let entry = h.state().doc.entry(rivers).unwrap();
+    assert_eq!(entry.style.flow_height.as_ref(), Some(&heights[1]));
+    // Back goes to the page of the rule.
+    tap(&mut h, "Back to Default");
+    assert_eq!(h.state().pad.page, Some(Page::Rule(0)));
+}

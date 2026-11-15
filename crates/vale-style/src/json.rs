@@ -64,6 +64,9 @@ impl LayerStyle {
         if let Some(mask) = &self.style.mask {
             root["mask"] = mask_json(mask);
         }
+        if let Some(name) = &self.flow_height {
+            root["flow_height"] = json!(name);
+        }
         root.to_string()
     }
 
@@ -83,9 +86,11 @@ impl LayerStyle {
             .collect::<Result<_, _>>()?;
         let label = read_label(object(root, "label")?)?;
         let mask = root.get("mask").and_then(read_mask);
+        let flow_height = (root.get("flow_height").and_then(Json::as_str)).map(str::to_owned);
         Ok(LayerStyle {
             style: Style { rules, mask },
             label,
+            flow_height,
         })
     }
 }
@@ -219,6 +224,10 @@ fn stroke_json(s: &StrokeSymbolizer) -> Map<String, Json> {
         StrokeKind::Taper { start } => {
             m.insert("kind".into(), json!("taper"));
             m.insert("start".into(), json!(start));
+        }
+        StrokeKind::Flow { min } => {
+            m.insert("kind".into(), json!("flow"));
+            m.insert("min".into(), json!(min));
         }
     }
     m
@@ -392,6 +401,9 @@ fn read_kind(m: &Map<String, Json>) -> StrokeKind {
         Some("brush") => StrokeKind::Brush,
         Some("taper") => StrokeKind::Taper {
             start: number("start", StrokeKind::TAPER_START),
+        },
+        Some("flow") => StrokeKind::Flow {
+            min: number("min", StrokeKind::FLOW_MIN),
         },
         _ => StrokeKind::Solid,
     }

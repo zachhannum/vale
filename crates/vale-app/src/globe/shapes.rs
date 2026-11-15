@@ -201,6 +201,9 @@ pub(crate) struct DrawKey {
     pub symbols: usize,
     pub format: Option<egui_wgpu::wgpu::TextureFormat>,
     pub cut: bool,
+    /// The count of the raster jobs that finished, for a layer with a Flow
+    /// stroke, and 0 for another layer.
+    pub flow: u64,
 }
 
 /// A shape of a draw on its way to the painter or to the cut.

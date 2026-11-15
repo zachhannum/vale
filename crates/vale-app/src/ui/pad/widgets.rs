@@ -2412,7 +2412,8 @@ pub fn keypad_below(ui: &mut egui::Ui, controls: &mut Controls, name: &str) {
 
 /// A row of a form with a segmented control: choices of equal width on one
 /// track. `active` is the choice that is on. Returns the choice that the
-/// user made.
+/// user made. If the choices beside the label would be narrower than a
+/// touch target, the label goes on its own line above the track.
 pub fn choice_row(
     ui: &mut egui::Ui,
     controls: &mut Controls,
@@ -2420,7 +2421,18 @@ pub fn choice_row(
     choices: &[&str],
     active: Option<usize>,
 ) -> Option<usize> {
-    let field = form_row(ui, label);
+    let beside = (ui.available_width() - FORM_LABEL) / choices.len().max(1) as f32;
+    let field = if beside >= TOUCH {
+        form_row(ui, label)
+    } else {
+        let (top, _) = ui.allocate_exact_size(vec2(ui.available_width(), 28.0), Sense::hover());
+        let at = pos2(top.left(), top.center().y);
+        ui.painter()
+            .text(at, Align2::LEFT_CENTER, label, theme::body(), theme::MUTE);
+        let (row, _) =
+            ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), Sense::hover());
+        Rect::from_center_size(row.center(), vec2(row.width(), TOUCH))
+    };
     let track = field.shrink(HIGHLIGHT_INSET);
     ui.painter()
         .rect_filled(track, theme::CONTROL_RADIUS, theme::track());

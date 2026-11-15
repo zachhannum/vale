@@ -496,6 +496,8 @@ fn each_stroke_kind_round_trips() {
         StrokeKind::Brush,
         StrokeKind::taper(),
         StrokeKind::Taper { start: 0.1 },
+        StrokeKind::flow(),
+        StrokeKind::Flow { min: 0.35 },
     ] {
         let style = line_with(kind);
         let json = style.to_json();
@@ -517,6 +519,7 @@ fn a_stroke_without_kind_reads_as_solid() {
     };
     assert_eq!(read(""), StrokeKind::Solid);
     assert_eq!(read(",\"kind\":\"wavy\""), StrokeKind::Solid);
+    assert_eq!(read(",\"kind\":\"flow\""), StrokeKind::Flow { min: 0.25 });
     assert_eq!(read(",\"kind\":\"dashed\""), StrokeKind::dashed());
     assert_eq!(
         read(",\"kind\":\"dashed\",\"gap\":3.0"),
@@ -1164,4 +1167,73 @@ fn set_fill_and_set_stroke_keep_apply_mask() {
     assert_eq!(rule.fill_applies_mask(), None);
     rule.set_fill(Some(RED));
     assert_eq!(rule.fill_applies_mask(), Some(true));
+}
+
+#[test]
+fn a_width_expression_stays_after_an_edit_of_the_stroke() {
+    let mut rule = Rule::new(
+        "River",
+        vec![Symbolizer::Stroke(StrokeSymbolizer::constant(
+            Stroke::solid(Color::rgb(0, 0, 200), 1.0),
+        ))],
+    );
+    assert_eq!(rule.stroke_width_expression(), None);
+    rule.set_stroke_width_expression(Some("sqrt(flow('Height')) / 100"));
+    assert_eq!(
+        rule.stroke_width_expression(),
+        Some("sqrt(flow('Height')) / 100")
+    );
+    // A new color, width, or line type keeps the expression, and the width is its fallback.
+    let mut stroke = rule.stroke().unwrap();
+    stroke.width = 2.0;
+    stroke.kind = StrokeKind::taper();
+    rule.set_stroke(Some(stroke));
+    assert_eq!(
+        rule.stroke_width_expression(),
+        Some("sqrt(flow('Height')) / 100")
+    );
+    assert_eq!(rule.stroke().unwrap().width, 2.0);
+    assert_eq!(rule.stroke().unwrap().kind, StrokeKind::taper());
+    rule.set_stroke_width_expression(None);
+    assert_eq!(rule.stroke_width_expression(), None);
+    assert_eq!(rule.stroke().unwrap().width, 2.0);
+}
+
+#[test]
+fn a_flow_width_follows_the_square_root_of_the_area() {
+    let stroke = Stroke {
+        color: BLUE,
+        width: 8.0,
+        kind: StrokeKind::Flow { min: 0.25 },
+    };
+    assert_eq!(stroke.width_at(0.0, (0.0, 4.0)), 2.0);
+    assert_eq!(stroke.width_at(4.0, (0.0, 4.0)), 8.0);
+    // A quarter of the largest area gets half of the part of the width that grows.
+    assert_eq!(stroke.width_at(1.0, (0.0, 4.0)), 2.0 + 0.5 * 6.0);
+    // More than the largest area, and no largest area.
+    assert_eq!(stroke.width_at(9.0, (0.0, 4.0)), 8.0);
+    assert_eq!(stroke.width_at(1.0, (0.0, 0.0)), 2.0);
+    // The width grows from the floor: a river at the floor has the smallest width.
+    assert_eq!(stroke.width_at(1.0, (1.0, 5.0)), 2.0);
+    assert_eq!(stroke.width_at(0.5, (1.0, 5.0)), 2.0);
+    assert_eq!(stroke.width_at(2.0, (1.0, 5.0)), 2.0 + 0.5 * 6.0);
+    assert_eq!(stroke.width_at(1.0, (2.0, 1.0)), 2.0);
+    // Another kind keeps its width.
+    assert_eq!(Stroke::solid(BLUE, 3.0).width_at(1.0, (0.0, 4.0)), 3.0);
+    assert!(StrokeKind::flow().along_line() && StrokeKind::taper().along_line());
+    assert!(!StrokeKind::Solid.along_line());
+}
+
+#[test]
+fn the_height_layer_of_flow_round_trips_and_follows_a_rename() {
+    let mut style = line_with(StrokeKind::flow());
+    assert!(!style.to_json().contains("flow_height"));
+    style.flow_height = Some("Ridges".into());
+    let back = LayerStyle::from_json(&style.to_json()).unwrap();
+    assert_eq!(back.flow_height.as_deref(), Some("Ridges"));
+    assert_eq!(back, style);
+    style.rename_raster("Ridges", "Highlands");
+    assert_eq!(style.flow_height.as_deref(), Some("Highlands"));
+    style.rename_raster("Other", "Name");
+    assert_eq!(style.flow_height.as_deref(), Some("Highlands"));
 }

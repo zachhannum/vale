@@ -605,11 +605,37 @@ pub fn pick(field: &mut Field<Tok>, completion: &Completion, help: &ExprHelp) {
 /// Puts the expression of a subject at the caret, in place of the selection
 /// and of the run of chars before the caret.
 pub fn insert_subject(field: &mut Field<Tok>, subject: &Subject, help: &ExprHelp) {
+    // A raster layer in place of the layer name of `raster` or `flow` changes only the name.
+    if let Subject::Raster(name, _) = subject
+        && selects_raster_name(field)
+    {
+        field.replace(vec![chip(Tok::Text(name.clone()), help)]);
+        return;
+    }
     if field.sel.is_empty() {
         take_run(field);
     }
     let seq = Formula::from_text(&subject.to_text()).seq;
     field.replace(nodes_of(&seq, help));
+}
+
+/// True if the selection is the text in the first slot of a `raster` or
+/// `flow` block: the name of a raster layer.
+fn selects_raster_name(field: &Field<Tok>) -> bool {
+    let Some((path, Node::Chip(c))) = field.selected_node() else {
+        return false;
+    };
+    if !matches!(c.data, Tok::Text(_)) {
+        return false;
+    }
+    // The path ends with the block, the slot, and the chip.
+    let [.., slot, _] = path[..] else {
+        return false;
+    };
+    let block = field.node(&path[..path.len() - 2]);
+    let names = |f: &Function| matches!(f.name, "raster" | "flow");
+    slot == 0
+        && matches!(block, Some(Node::Box(Boxed { data: Some(Tok::Call { f, .. }), .. })) if names(f))
 }
 
 /// Puts variable `v` at the caret, in place of the selection and of the run
@@ -645,6 +671,44 @@ mod tests {
         let mut f = Field::default();
         type_text(&mut f, text, &help());
         f
+    }
+
+    #[test]
+    fn a_raster_layer_replaces_only_the_layer_name_of_flow_and_raster() {
+        let raster = Subject::Raster("Rain".into(), None);
+        for (text, expected) in [
+            ("sqrt(flow('Height')) / 100", "sqrt(flow('Rain')) / 100"),
+            ("raster('Height', 'max')", "raster('Rain', 'max')"),
+        ] {
+            let mut f = Field::new(nodes_of(&Formula::from_text(text).seq, &help()));
+            let path = find_text(&f.nodes, &mut Vec::new()).unwrap();
+            f.select_node(&path);
+            insert_subject(&mut f, &raster, &help());
+            assert_eq!(text_of(&f.nodes), expected);
+        }
+        // A selected text outside those blocks takes the whole raster value.
+        let mut f = Field::new(nodes_of(&Formula::from_text("'Height'").seq, &help()));
+        f.select_node(&[0]);
+        insert_subject(&mut f, &raster, &help());
+        assert_eq!(text_of(&f.nodes), "raster('Rain')");
+    }
+
+    /// The path of the first text chip.
+    fn find_text(nodes: &[Node<Tok>], path: &mut Vec<usize>) -> Option<Vec<usize>> {
+        for (i, n) in nodes.iter().enumerate() {
+            path.push(i);
+            match n {
+                Node::Chip(c) if matches!(c.data, Tok::Text(_)) => return Some(path.clone()),
+                Node::Box(b) => {
+                    if let Some(p) = find_text(&b.children, path) {
+                        return Some(p);
+                    }
+                }
+                _ => {}
+            }
+            path.pop();
+        }
+        None
     }
 
     #[test]

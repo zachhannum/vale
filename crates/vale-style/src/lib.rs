@@ -38,12 +38,15 @@ pub enum StrokeKind {
     Brush,
     /// The width grows along the line. `start` is the fraction of the width at the first vertex. The last vertex has the full width.
     Taper { start: f64 },
+    /// The width follows the area that drains through each place of the line, from the first height layer. `min` is the fraction of the width for a line with no flow. The largest river of the layer has the full width.
+    Flow { min: f64 },
 }
 
 impl StrokeKind {
     pub const DASH: f64 = 4.0;
     pub const GAP: f64 = 2.0;
     pub const TAPER_START: f64 = 0.25;
+    pub const FLOW_MIN: f64 = 0.25;
 
     /// A dashed kind with the default dash and gap.
     pub const fn dashed() -> Self {
@@ -58,6 +61,18 @@ impl StrokeKind {
         StrokeKind::Taper {
             start: Self::TAPER_START,
         }
+    }
+
+    /// A flow with the default smallest width.
+    pub const fn flow() -> Self {
+        StrokeKind::Flow {
+            min: Self::FLOW_MIN,
+        }
+    }
+
+    /// True for a kind whose width changes along the line.
+    pub fn along_line(&self) -> bool {
+        matches!(self, StrokeKind::Taper { .. } | StrokeKind::Flow { .. })
     }
 }
 
@@ -76,6 +91,19 @@ impl Stroke {
             width,
             kind: StrokeKind::Solid,
         }
+    }
+
+    /// The width of a Flow stroke where `area` drains. `(floor, largest)`: the area of the smallest river, and the area of the largest river of the layer. The width grows with the square root of the area above `floor`, from the smallest width at `floor` to the full width at `largest`. Another kind has its width.
+    pub fn width_at(&self, area: f64, (floor, largest): (f64, f64)) -> f64 {
+        let StrokeKind::Flow { min } = self.kind else {
+            return self.width;
+        };
+        let t = if largest > floor {
+            ((area - floor) / (largest - floor)).clamp(0.0, 1.0).sqrt()
+        } else {
+            0.0
+        };
+        self.width * (min + (1.0 - min) * t)
     }
 }
 
@@ -100,6 +128,8 @@ pub struct LabelStyle {
 pub struct LayerStyle {
     pub style: Style,
     pub label: LabelStyle,
+    /// The name of the height layer that the Flow strokes read. `None`, or a name that no height layer has, reads the first height layer.
+    pub flow_height: Option<String>,
 }
 
 const POLYGON_FILLS: [&str; 6] = [
@@ -146,6 +176,9 @@ impl LayerStyle {
     pub fn rename_raster(&mut self, old: &str, new: &str) {
         self.style.rewrite(&|t| expr::rename_raster(t, old, new));
         self.label.text = expr::rename_raster(&self.label.text, old, new);
+        if self.flow_height.as_deref() == Some(old) {
+            self.flow_height = Some(new.to_owned());
+        }
     }
 
     /// The style of a new layer: one rule with constant symbolizers. `ordinal` picks a color and wraps around.
@@ -209,6 +242,7 @@ impl LayerStyle {
                 mask: None,
             },
             label,
+            flow_height: None,
         }
     }
 
@@ -233,6 +267,7 @@ impl LayerStyle {
                 italic: false,
                 font: None,
             },
+            flow_height: None,
         }
     }
 
@@ -536,6 +571,7 @@ mod tests {
         let mut empty = LayerStyle {
             style: Style::default(),
             label: l.label.clone(),
+            flow_height: None,
         };
         empty.add_rule(GeometryKind::Polygon);
         assert!(empty.fill().is_some());

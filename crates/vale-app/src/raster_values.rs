@@ -3,6 +3,10 @@
 //! each raster layer that a style reads, and a worker thread computes them
 //! again after a change to the raster or to a feature. A read never waits
 //! for the worker: it gets the old value until the new one arrives.
+//!
+//! The `flow` function reads the drained area of each line from a height
+//! layer. A worker computes the drainage of the whole layer after a change,
+//! and then the area of each line.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::mpsc;
@@ -12,8 +16,11 @@ use vale_sphere::LonLat;
 use vale_sphere::measure::{area_center, line_center};
 use vale_store::{Geometry, LayerId, RasterId};
 use vale_style::expr::{RasterValues, Stat};
-use vale_terrain::math::lonlat_to_dir;
-use vale_terrain::{FACES, Heightmap, TexelRect, Zonal, line_zonal, polygon_zonal, rects_meet};
+use vale_terrain::math::{dir_to_lonlat, lonlat_to_dir};
+use vale_terrain::{
+    CoarseHeights, FACES, FlowMap, Heightmap, TexelRect, Zonal, line_zonal, polygon_zonal,
+    rects_meet,
+};
 
 use crate::document::Document;
 
@@ -27,6 +34,28 @@ type Rects = Option<[Option<TexelRect>; FACES]>;
 /// The levels that a frozen copy computed, by layer, raster, and feature.
 type Memo = HashMap<(LayerId, RasterId, usize), Option<Levels>>;
 
+/// The drained areas that a frozen copy computed, by layer, raster, and
+/// feature.
+type FlowMemo = HashMap<(LayerId, RasterId, usize), Option<Arc<LineFlow>>>;
+
+/// The drainage of one line.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LineFlow {
+    /// The largest area that drains through the line, in steradians, for
+    /// the `flow` function.
+    pub area: f64,
+    /// The area at each place along the line, in steradians, in the order
+    /// of the parts. The area never gets smaller downstream.
+    pub samples: Vec<(LonLat, f64)>,
+}
+
+impl LineFlow {
+    /// The largest area of the samples.
+    pub fn largest(&self) -> f64 {
+        self.samples.iter().map(|s| s.1).fold(0.0, f64::max)
+    }
+}
+
 /// A raster layer by its name.
 #[derive(Clone, Copy)]
 struct Named {
@@ -34,6 +63,8 @@ struct Named {
     /// The values of level 0 and of level 65,535.
     min: f64,
     max: f64,
+    /// The raster is a height layer, so `flow` can read it.
+    height: bool,
 }
 
 impl Named {
@@ -111,6 +142,76 @@ impl Entry {
     }
 }
 
+/// The result of a flow job: the index and the drained area of each line.
+type FlowDone = Vec<(usize, Option<Arc<LineFlow>>)>;
+
+/// The drainage of one height layer.
+struct Drainage {
+    map: Option<Arc<FlowMap>>,
+    job: Option<mpsc::Receiver<FlowMap>>,
+    /// The heights changed after the start of the last job.
+    dirty: bool,
+}
+
+impl Default for Drainage {
+    fn default() -> Drainage {
+        Drainage {
+            map: None,
+            job: None,
+            dirty: true,
+        }
+    }
+}
+
+/// The drained areas, in steradians, of the lines of one vector layer on
+/// one height layer.
+struct FlowEntry {
+    geoms: Arc<Vec<Geometry>>,
+    lines: Vec<Option<Arc<LineFlow>>>,
+    /// The largest area of the samples of all lines.
+    largest: f64,
+    /// The features to compute again.
+    pending: BTreeSet<usize>,
+    job: Option<mpsc::Receiver<FlowDone>>,
+    /// The geometry is the same as the layer.
+    checked: bool,
+}
+
+impl FlowEntry {
+    fn new(geoms: Vec<Geometry>) -> FlowEntry {
+        let n = geoms.len();
+        FlowEntry {
+            geoms: Arc::new(geoms),
+            lines: vec![None; n],
+            largest: 0.0,
+            pending: (0..n).collect(),
+            job: None,
+            checked: true,
+        }
+    }
+
+    fn check(&mut self, layer: &vale_store::Layer) {
+        if self.checked {
+            return;
+        }
+        self.checked = true;
+        let features = &layer.features;
+        let same = |(g, f): (&Geometry, &vale_store::Feature)| *g == f.geometry;
+        if self.geoms.len() == features.len() && self.geoms.iter().zip(features).all(same) {
+            return;
+        }
+        let geoms: Vec<Geometry> = features.iter().map(|f| f.geometry.clone()).collect();
+        for (i, g) in geoms.iter().enumerate() {
+            if self.geoms.get(i) != Some(g) {
+                self.pending.insert(i);
+            }
+        }
+        self.lines.resize(geoms.len(), None);
+        self.pending.retain(|&i| i < geoms.len());
+        self.geoms = Arc::new(geoms);
+    }
+}
+
 /// The values of the raster layers under the features of the vector
 /// layers.
 #[derive(Default)]
@@ -123,6 +224,13 @@ pub struct RasterCache {
     wanted: Mutex<HashSet<(LayerId, RasterId)>>,
     /// A frozen copy computes a missing value at the read and keeps it here.
     memo: Option<Mutex<Memo>>,
+    drainages: HashMap<RasterId, Drainage>,
+    flows: HashMap<(LayerId, RasterId), FlowEntry>,
+    /// The pairs that a `flow` read found with no entry.
+    flow_wanted: Mutex<HashSet<(LayerId, RasterId)>>,
+    flow_memo: Option<Mutex<FlowMemo>>,
+    /// The first height layer of the project, for the Flow line type.
+    first_height: Option<RasterId>,
     /// The count of the jobs that finished.
     arrived: u64,
     /// The results of the jobs stay in their channels, for the tests.
@@ -140,6 +248,79 @@ impl RasterCache {
     /// layer has the name, or if the value is not computed yet.
     pub fn value_of(&self, layer: LayerId, index: usize, name: &str, stat: Stat) -> Option<f64> {
         self.read(layer, name, stat, index, None)
+    }
+
+    /// The area, in steradians, that drains through line `index` of vector
+    /// layer `layer`, from height layer `name`. `None` if no height layer
+    /// has the name, or if the area is not computed yet.
+    pub fn flow_of(&self, layer: LayerId, index: usize, name: &str) -> Option<f64> {
+        self.read_flow(layer, name, index, None)
+    }
+
+    fn read_flow(
+        &self,
+        layer: LayerId,
+        name: &str,
+        index: usize,
+        shape: Option<&Geometry>,
+    ) -> Option<f64> {
+        let named = self.names.get(name).filter(|n| n.height)?;
+        Some(self.read_line(layer, named.id, index, shape)?.area)
+    }
+
+    /// The drainage of line `index` of vector layer `layer` on height layer
+    /// `raster`. A frozen copy computes a missing line at the read.
+    fn read_line(
+        &self,
+        layer: LayerId,
+        raster: RasterId,
+        index: usize,
+        shape: Option<&Geometry>,
+    ) -> Option<Arc<LineFlow>> {
+        let key = (layer, raster);
+        let entry = self.flows.get(&key);
+        if let Some(line) = entry.and_then(|e| e.lines.get(index).cloned().flatten()) {
+            return Some(line);
+        }
+        let Some(memo) = &self.flow_memo else {
+            if entry.is_none() {
+                self.flow_wanted.lock().ok()?.insert(key);
+            }
+            return None;
+        };
+        let (shape, flow) = (shape?, self.drainages.get(&raster)?.map.as_ref()?);
+        (memo.lock().ok()?)
+            .entry((layer, raster, index))
+            .or_insert_with(|| line_flow(flow, shape).map(Arc::new))
+            .clone()
+    }
+
+    /// The largest area, in steradians, of the lines of vector layer
+    /// `layer` on height layer `raster`, with the geometry `shapes`. `None`
+    /// until a line arrives.
+    fn read_largest(
+        &self,
+        layer: LayerId,
+        raster: RasterId,
+        shapes: &[vale_store::Feature],
+    ) -> Option<f64> {
+        if self.flow_memo.is_some() {
+            let lines = shapes.iter().enumerate();
+            let largest = lines
+                .filter_map(|(i, f)| self.read_line(layer, raster, i, Some(&f.geometry)))
+                .map(|l| l.largest())
+                .reduce(f64::max);
+            return largest;
+        }
+        let Some(entry) = self.flows.get(&(layer, raster)) else {
+            self.flow_wanted.lock().ok()?.insert((layer, raster));
+            return None;
+        };
+        entry
+            .lines
+            .iter()
+            .any(Option::is_some)
+            .then_some(entry.largest)
     }
 
     /// The names of the raster layers, sorted.
@@ -208,10 +389,15 @@ impl RasterCache {
                     id: raster.id,
                     min: raster.value_min,
                     max: raster.value_max,
+                    height: crate::ui::is_height(raster),
                 };
                 Some((layer.name.clone(), named))
             })
             .collect();
+        self.first_height = (project.layers().iter())
+            .filter_map(|layer| project.raster(layer.raster()?))
+            .find(|raster| crate::ui::is_height(raster))
+            .map(|raster| raster.id);
         let rasters: HashSet<RasterId> = self.names.values().map(|n| n.id).collect();
         let vector = |id: LayerId| doc.layer(id).filter(|l| l.geometry().is_some());
         self.entries
@@ -227,7 +413,30 @@ impl RasterCache {
                 self.entries.entry(key).or_insert_with(|| Entry::new(geoms));
             }
         }
-        let used: HashSet<RasterId> = self.entries.keys().map(|k| k.1).collect();
+        let heights: HashSet<RasterId> = (self.names.values())
+            .filter(|n| n.height)
+            .map(|n| n.id)
+            .collect();
+        self.flows
+            .retain(|(layer, raster), _| vector(*layer).is_some() && heights.contains(raster));
+        let wanted = (self.flow_wanted.get_mut())
+            .map(std::mem::take)
+            .unwrap_or_default();
+        for key in wanted {
+            if let (Some(layer), true) = (vector(key.0), heights.contains(&key.1)) {
+                let geoms = layer.features.iter().map(|f| f.geometry.clone()).collect();
+                self.flows
+                    .entry(key)
+                    .or_insert_with(|| FlowEntry::new(geoms));
+            }
+        }
+        let drained: HashSet<RasterId> = self.flows.keys().map(|k| k.1).collect();
+        self.drainages.retain(|id, _| drained.contains(id));
+        for &id in &drained {
+            self.drainages.entry(id).or_default();
+        }
+        let mut used: HashSet<RasterId> = self.entries.keys().map(|k| k.1).collect();
+        used.extend(&drained);
         self.maps.retain(|id, _| used.contains(id));
         for id in used {
             let Some(live) = map_of(id) else { continue };
@@ -244,7 +453,16 @@ impl RasterCache {
             for (_, entry) in self.entries.iter_mut().filter(|(k, _)| k.1 == id) {
                 entry.raster_changed(changed.as_deref());
             }
+            if let Some(drainage) = self.drainages.get_mut(&id) {
+                drainage.dirty = true;
+            }
         }
+        for ((layer, _), entry) in &mut self.flows {
+            if let Some(layer) = doc.layer(*layer) {
+                entry.check(layer);
+            }
+        }
+        self.start_flow_jobs();
         for ((layer, raster), entry) in &mut self.entries {
             if let Some(layer) = doc.layer(*layer) {
                 entry.check(layer);
@@ -291,7 +509,107 @@ impl RasterCache {
                 Err(mpsc::TryRecvError::Disconnected) => entry.job = None,
             }
         }
+        busy |= self.poll_flow(block);
         busy || self.wanted.get_mut().is_ok_and(|w| !w.is_empty())
+            || self.flow_wanted.get_mut().is_ok_and(|w| !w.is_empty())
+    }
+
+    /// Starts a drainage job for each height layer that changed, and a job
+    /// for the lines that wait, on the newest drainage. The lines wait while
+    /// the drainage of their layer is computed again.
+    fn start_flow_jobs(&mut self) {
+        for (id, drainage) in &mut self.drainages {
+            if !drainage.dirty || drainage.job.is_some() {
+                continue;
+            }
+            let Some(map) = self.maps.get(id) else {
+                continue;
+            };
+            drainage.dirty = false;
+            drainage.job = start_drainage(map.snapshot());
+        }
+        for ((_, raster), entry) in &mut self.flows {
+            let Some(drainage) = self.drainages.get(raster) else {
+                continue;
+            };
+            let Some(flow) = &drainage.map else { continue };
+            let ready = drainage.job.is_none() && !drainage.dirty;
+            if !ready || entry.job.is_some() || entry.pending.is_empty() {
+                continue;
+            }
+            let indices: Vec<usize> = std::mem::take(&mut entry.pending).into_iter().collect();
+            entry.job = start_flow(flow.clone(), entry.geoms.clone(), indices);
+        }
+    }
+
+    /// Takes the drainages and the areas that the jobs finished. `block`:
+    /// waits for each job, and for the jobs that a new drainage starts.
+    /// True while a job runs.
+    fn poll_flow(&mut self, block: bool) -> bool {
+        fn take<T>(rx: &mpsc::Receiver<T>, block: bool) -> Result<T, mpsc::TryRecvError> {
+            if block {
+                rx.recv().map_err(|_| mpsc::TryRecvError::Disconnected)
+            } else {
+                rx.try_recv()
+            }
+        }
+        let mut busy = false;
+        loop {
+            let mut new = false;
+            for (id, drainage) in &mut self.drainages {
+                let Some(rx) = &drainage.job else { continue };
+                if self.held {
+                    busy = true;
+                    continue;
+                }
+                match take(rx, block) {
+                    Ok(flow) => {
+                        drainage.map = Some(Arc::new(flow));
+                        drainage.job = None;
+                        new = true;
+                        for (_, entry) in self.flows.iter_mut().filter(|(k, _)| k.1 == *id) {
+                            entry.pending.extend(0..entry.geoms.len());
+                        }
+                    }
+                    Err(mpsc::TryRecvError::Empty) => busy = true,
+                    Err(mpsc::TryRecvError::Disconnected) => drainage.job = None,
+                }
+            }
+            if new {
+                self.start_flow_jobs();
+            }
+            for entry in self.flows.values_mut() {
+                let Some(rx) = &entry.job else { continue };
+                if self.held {
+                    busy = true;
+                    continue;
+                }
+                match take(rx, block) {
+                    Ok(done) => {
+                        for (i, line) in done {
+                            if i < entry.lines.len() {
+                                entry.lines[i] = line;
+                            }
+                        }
+                        entry.largest = (entry.lines.iter().flatten())
+                            .map(|l| l.largest())
+                            .fold(0.0, f64::max);
+                        entry.job = None;
+                        self.arrived += 1;
+                        new = true;
+                        busy |= !entry.pending.is_empty();
+                    }
+                    Err(mpsc::TryRecvError::Empty) => busy = true,
+                    Err(mpsc::TryRecvError::Disconnected) => entry.job = None,
+                }
+            }
+            if !block || !new {
+                break;
+            }
+            self.start_flow_jobs();
+        }
+        let maps = &self.maps;
+        busy || (self.drainages.iter()).any(|(id, d)| d.dirty && maps.contains_key(id))
     }
 
     /// Compares the kept geometry of layer `id` with the layer at the next
@@ -300,12 +618,18 @@ impl RasterCache {
         for (_, entry) in self.entries.iter_mut().filter(|(k, _)| k.0 == id) {
             entry.checked = false;
         }
+        for (_, entry) in self.flows.iter_mut().filter(|(k, _)| k.0 == id) {
+            entry.checked = false;
+        }
     }
 
     /// Compares the kept geometry of each layer with the layer at the next
     /// update. An undo can change any layer.
     pub fn uncheck(&mut self) {
         for entry in self.entries.values_mut() {
+            entry.checked = false;
+        }
+        for entry in self.flows.values_mut() {
             entry.checked = false;
         }
     }
@@ -331,8 +655,35 @@ impl RasterCache {
                 (*key, entry)
             })
             .collect();
+        let drainages = (self.drainages.iter())
+            .map(|(id, d)| {
+                let drainage = Drainage {
+                    map: d.map.clone(),
+                    job: None,
+                    dirty: false,
+                };
+                (*id, drainage)
+            })
+            .collect();
+        let flows = (self.flows.iter())
+            .map(|(key, e)| {
+                let entry = FlowEntry {
+                    geoms: e.geoms.clone(),
+                    lines: e.lines.clone(),
+                    largest: e.largest,
+                    pending: BTreeSet::new(),
+                    job: None,
+                    checked: true,
+                };
+                (*key, entry)
+            })
+            .collect();
         RasterCache {
             names: self.names.clone(),
+            drainages,
+            flows,
+            flow_memo: Some(Mutex::default()),
+            first_height: self.first_height,
             maps: (self.maps.iter())
                 .map(|(id, m)| (*id, m.snapshot()))
                 .collect(),
@@ -358,6 +709,103 @@ impl RasterValues for LayerRasters<'_> {
     fn has_layer(&self, layer: &str) -> bool {
         self.cache.has_raster(layer)
     }
+
+    fn flow(&self, layer: &str, index: usize, shape: &Geometry) -> Option<f64> {
+        (self.cache).read_flow(self.layer, layer, index, Some(shape))
+    }
+}
+
+impl LayerRasters<'_> {
+    /// The height layer named `height`, or else the first height layer.
+    fn flow_raster(&self, height: Option<&str>) -> Option<RasterId> {
+        let named = height
+            .and_then(|n| self.cache.names.get(n))
+            .filter(|n| n.height);
+        named.map(|n| n.id).or(self.cache.first_height)
+    }
+
+    /// The drainage of line `index`, with the geometry `shape`, on the
+    /// height layer of `flow_height`, for the Flow line type.
+    pub fn flow_line(
+        &self,
+        flow_height: Option<&str>,
+        index: usize,
+        shape: &Geometry,
+    ) -> Option<Arc<LineFlow>> {
+        let raster = self.flow_raster(flow_height)?;
+        (self.cache).read_line(self.layer, raster, index, Some(shape))
+    }
+
+    /// The largest area, in steradians, of the lines `features` of the
+    /// layer on the height layer of `flow_height`. `None` until a line
+    /// arrives.
+    pub fn flow_largest(
+        &self,
+        flow_height: Option<&str>,
+        features: &[vale_store::Feature],
+    ) -> Option<f64> {
+        let raster = self.flow_raster(flow_height)?;
+        (self.cache).read_largest(self.layer, raster, features)
+    }
+}
+
+/// Starts a job that computes the drainage of a height layer on a worker
+/// thread.
+fn start_drainage(map: Heightmap) -> Option<mpsc::Receiver<FlowMap>> {
+    let (tx, rx) = mpsc::channel();
+    let run = move || {
+        let _ = tx.send(FlowMap::new(&CoarseHeights::new(&map)));
+    };
+    std::thread::Builder::new()
+        .name("vale-drainage".to_string())
+        .spawn(run)
+        .ok()
+        .map(|_| rx)
+}
+
+/// Starts a job that computes the drained areas of the lines at `indices`
+/// on a worker thread.
+fn start_flow(
+    flow: Arc<FlowMap>,
+    geoms: Arc<Vec<Geometry>>,
+    indices: Vec<usize>,
+) -> Option<mpsc::Receiver<FlowDone>> {
+    let (tx, rx) = mpsc::channel();
+    let run = move || {
+        let done = (indices.into_iter())
+            .filter_map(|i| Some((i, line_flow(&flow, geoms.get(i)?).map(Arc::new))))
+            .collect();
+        let _ = tx.send(done);
+    };
+    std::thread::Builder::new()
+        .name("vale-flow".to_string())
+        .spawn(run)
+        .ok()
+        .map(|_| rx)
+}
+
+/// The drainage of a line: the largest area of its parts, and the area
+/// along each part. `None` for a point or a polygon.
+fn line_flow(flow: &FlowMap, shape: &Geometry) -> Option<LineFlow> {
+    let Geometry::Lines(parts) = shape else {
+        return None;
+    };
+    let dirs =
+        |part: &Vec<LonLat>| -> Vec<_> { part.iter().map(|p| lonlat_to_dir(p[0], p[1])).collect() };
+    let mut area: Option<f64> = None;
+    let mut samples = Vec::new();
+    for part in parts.iter().map(dirs) {
+        let a = flow.line_area(&part);
+        area = Some(area.map_or(a, |b| b.max(a)));
+        samples.extend(flow.line_profile(&part).into_iter().map(|s| {
+            let (lon, lat) = dir_to_lonlat(s.dir);
+            ([lon, lat], s.area)
+        }));
+    }
+    Some(LineFlow {
+        area: area?,
+        samples,
+    })
 }
 
 /// Starts a job that computes the levels of the features at `indices` on a
