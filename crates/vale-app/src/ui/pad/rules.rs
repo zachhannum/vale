@@ -734,18 +734,45 @@ pub fn mask_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Control
     let (rasters, polygons) = mask_choices(&state.doc, id);
     ui.spacing_mut().item_spacing.y = 0.0;
     ui.add_space(8.0);
-    if widgets::option_row(ui, controls, NO_MASK, NO_MASK, &[], current.is_none()).clicked() {
-        set_mask(state, id, None);
-    }
-    for (title, list) in [(RASTER_LAYERS, rasters), (POLYGON_LAYERS, polygons)] {
-        if list.is_empty() {
+    let groups = [
+        (None, vec![(NO_MASK.to_owned(), None)]),
+        (Some(RASTER_LAYERS), with_masks(rasters)),
+        (Some(POLYGON_LAYERS), with_masks(polygons)),
+    ];
+    let on = |mask: &Option<Mask>| current.map(|m| m.layer()) == mask.map(|m| m.layer());
+    for (title, choices) in groups {
+        if choices.is_empty() {
             continue;
         }
-        heading(ui, title);
-        for (name, mask) in list {
-            let on = current.is_some_and(|m| m.layer() == mask.layer());
-            if widgets::option_row(ui, controls, &name, &name, &[], on).clicked() && !on {
-                set_mask(state, id, Some(keep_offset(mask, current)));
+        if let Some(title) = title {
+            heading(ui, title);
+        }
+        let rows: Vec<list::Row<Option<LayerId>>> = (choices.iter())
+            .map(|(name, mask)| list::Row::new(mask.map(|m| m.layer()), name.clone()))
+            .collect();
+        let mut plain = list::ListState::default();
+        let spec = list::Spec::default();
+        let events = list::show(
+            ui,
+            controls,
+            &mut plain,
+            spec,
+            &rows,
+            |ui, controls, cell, i| {
+                let look = list::Look {
+                    text: &choices[i].0,
+                    check: Some(on(&choices[i].1)),
+                    ..list::Look::default()
+                };
+                list::draw(ui, controls, cell, &look)
+            },
+        );
+        for event in events {
+            if let list::Event::Tap(key) = event
+                && let Some((_, mask)) = choices.iter().find(|c| c.1.map(|m| m.layer()) == key)
+                && !on(mask)
+            {
+                set_mask(state, id, mask.map(|m| keep_offset(m, current)));
             }
         }
     }
@@ -784,6 +811,14 @@ pub fn mask_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Control
     }
     ui.add_space(8.0);
     raster::note(ui, MASK_HINT);
+}
+
+/// The choices of a mask, each with its mask.
+fn with_masks(choices: Vec<MaskChoice>) -> Vec<(String, Option<Mask>)> {
+    choices
+        .into_iter()
+        .map(|(name, mask)| (name, Some(mask)))
+        .collect()
 }
 
 /// The minimum and the maximum of a raster mask. A blank field has no limit. True if a value changed.
