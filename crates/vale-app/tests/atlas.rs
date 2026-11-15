@@ -4668,7 +4668,8 @@ fn the_filter_of_a_class_has_the_condition_builder() {
     pick_in_menu(&mut h, "Admin-1 capital");
     let text = "featurecla = 'Admin-1 capital'";
     assert_eq!(classes(&h, map, "Places")[0].filter, text);
-    assert!(control(&h, &format!("{REMOVE_CONDITION} 1")).is_some());
+    assert!(control(&h, "Condition 1").is_some());
+    assert!(control(&h, &format!("{REMOVE_CONDITION} 1")).is_none());
 
     let layer = h.state().doc.layer(layer_id(&h, "Places")).unwrap();
     let wanted = Value::Text("Admin-1 capital".into());
@@ -4694,9 +4695,9 @@ fn the_filter_of_a_class_has_the_condition_builder() {
     type_text(&mut h, EXPRESSION, "scalerank < 1");
     assert_eq!(classes(&h, map, "Places")[0].filter, "scalerank < 1");
     tap(&mut h, VIEWS[0]);
-    let first = format!("{REMOVE_CONDITION} 1");
-    scroll_to(&mut h, &first);
-    tap(&mut h, &first);
+    scroll_to(&mut h, "Condition 1");
+    swipe_row(&mut h, "Condition 1", -120.0);
+    tap(&mut h, "Delete condition 1");
     assert_eq!(classes(&h, map, "Places")[0].filter, "");
 }
 

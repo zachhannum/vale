@@ -827,7 +827,7 @@ pub fn filter(
         let shown = popover::show(&ctx, &key, rect, FILTER_WIDTH, |ui| {
             ui.add_space(4.0);
             let mut controls = Vec::new();
-            let edit = filter::editor(ui, &mut controls, id, text, help, count, none);
+            let edit = filter::desk_editor(ui, &mut controls, id, text, help, count, none);
             if let Some(t) = edit.text {
                 *text = t;
                 changed = true;
