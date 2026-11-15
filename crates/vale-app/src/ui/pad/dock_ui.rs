@@ -799,24 +799,25 @@ pub fn handle(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
                 let dock = state.pad.dock_mut();
                 dock.set_width(width);
                 dock.width = dock.width.min(most);
-                let text = if width <= panes::MIN_WIDTH - COLLAPSE_DRAG {
-                    HIDE_DOCK.to_owned()
-                } else {
-                    format!("{} pt", dock.width.round())
-                };
                 state.pad.dock_drag = Some(DockDrag::Width);
-                let painter = ctx.layer_painter(egui::LayerId::new(
-                    Order::Foreground,
-                    "pad-dock-width".into(),
-                ));
-                let galley = painter.layout_no_wrap(text, theme::body(), theme::TEXT);
-                let size = galley.size() + vec2(24.0, 14.0);
-                let label = Rect::from_min_size(
-                    pos2(rect.left() - 8.0 - size.x, rect.center().y - size.y / 2.0),
-                    size,
-                );
-                painter.rect_filled(label, theme::CONTROL_RADIUS, theme::card(false).to_opaque());
-                painter.galley(label.center() - galley.size() / 2.0, galley, theme::TEXT);
+                // Past the narrowest dock, a label says that the release
+                // hides the dock.
+                if width <= panes::MIN_WIDTH - COLLAPSE_DRAG {
+                    let painter = ctx.layer_painter(egui::LayerId::new(
+                        Order::Foreground,
+                        "pad-dock-width".into(),
+                    ));
+                    let galley =
+                        painter.layout_no_wrap(HIDE_DOCK.to_owned(), theme::body(), theme::TEXT);
+                    let size = galley.size() + vec2(24.0, 14.0);
+                    let label = Rect::from_min_size(
+                        pos2(rect.left() - 8.0 - size.x, rect.center().y - size.y / 2.0),
+                        size,
+                    );
+                    let fill = theme::card(false).to_opaque();
+                    painter.rect_filled(label, theme::CONTROL_RADIUS, fill);
+                    painter.galley(label.center() - galley.size() / 2.0, galley, theme::TEXT);
+                }
                 ctx.request_repaint();
             } else if state.pad.dock_drag == Some(DockDrag::Width) {
                 state.pad.dock_drag = None;
