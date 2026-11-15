@@ -1,5 +1,5 @@
-//! "Orient lines downhill": each line of a layer gets its first vertex at
-//! its higher end, so a taper is narrow at the top.
+//! The toolbox operation "Orient lines downhill": each line of a layer gets
+//! its first vertex at its higher end, so a taper is narrow at the top.
 
 use vale_store::{Geometry, GeometryKind, LayerId, LonLat, RasterId, Uuid};
 use vale_terrain::math::lonlat_to_dir;

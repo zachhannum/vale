@@ -17594,7 +17594,6 @@ fn valley_pad(lines: &[&[[f64; 2]]]) -> (Pad, vale_store::LayerId, RasterId) {
 
 #[test]
 fn orient_lines_downhill_reverses_each_uphill_line_in_one_undo_step() {
-    use vale_app::ui::pad::ORIENT_DOWNHILL;
     use vale_store::Geometry;
     let up: &[[f64; 2]] = &[[0.5, -38.0], [0.5, -20.0], [0.5, -5.0]];
     let down: &[[f64; 2]] = &[[0.3, -5.0], [0.3, -30.0]];
@@ -17609,6 +17608,8 @@ fn orient_lines_downhill_reverses_each_uphill_line_in_one_undo_step() {
     pad.open(Panel::Layers);
     h.run_steps(2);
     check_controls(&h, "the panel of a line layer");
+    // The operation belongs to the toolbox, so the panel has no row for it.
+    assert!(h.query_by_label("Orient lines downhill").is_none());
     let lines = |h: &Pad| -> Vec<Geometry> {
         let layer = h.state().doc.layer(streams).unwrap();
         layer.features.iter().map(|f| f.geometry.clone()).collect()
@@ -17618,7 +17619,8 @@ fn orient_lines_downhill_reverses_each_uphill_line_in_one_undo_step() {
     let before = lines(&h);
     assert_eq!(before, [line(up), line(down), line(also_up)]);
 
-    tap(&mut h, ORIENT_DOWNHILL);
+    assert_eq!(h.state_mut().orient_downhill(streams), 2);
+    h.run_steps(2);
     assert_eq!(lines(&h), [reversed(up), line(down), reversed(also_up)]);
     // One undo puts back each line.
     h.state_mut().undo();
