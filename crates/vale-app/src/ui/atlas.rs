@@ -20,6 +20,7 @@ use vale_store::RasterId;
 use super::AppState;
 use super::frame_tiles::{FrameLists, FramePaint, Layer, Screen, Shown, Spill, Tiles};
 use super::map_texture::{self, MapTexture};
+use super::pad::list::ListState;
 use crate::atlas::{self as math, FrameTarget, Handle, PT_PER_MM, PagePreset, Vertex};
 use crate::distortion::ScaleError;
 use crate::document::Document;
@@ -34,6 +35,7 @@ use crate::page_snap;
 use crate::pipeline::{FrameDetail, Pipeline, Quality};
 use crate::region::{Region, RegionKind, fit, suggest};
 use crate::view::ViewTransform;
+use vale_style::{LabelFallback, LabelPosition};
 
 pub mod features;
 pub mod measure;
@@ -439,16 +441,6 @@ pub enum ClassColor {
     GridHalo,
 }
 
-/// A row that a finger drags by its handle: a label class in the Labels
-/// tab, or a position on the Positions page.
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub struct ClassDrag {
-    /// The place of the row in its list.
-    pub from: usize,
-    /// The distance from the top of the row to the finger.
-    pub grab: f32,
-}
-
 /// The pan and the zoom of the page on the screen.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct PageView {
@@ -664,12 +656,14 @@ pub struct AtlasState {
     pub label_color: Option<ClassColor>,
     /// The color picker of the label class showed in this frame.
     pub(crate) label_color_shown: bool,
-    /// The label class that a finger drags in the Labels tab.
-    pub label_drag: Option<ClassDrag>,
-    /// The position that a finger drags on the Positions page.
-    pub position_drag: Option<ClassDrag>,
-    /// The fallback that a finger drags on the Fallbacks page.
-    pub fallback_drag: Option<ClassDrag>,
+    /// The list of the label classes of the Labels tab.
+    pub label_list: ListState<(MapId, LayerId, usize)>,
+    /// The list of the Positions page.
+    pub position_list: ListState<LabelPosition>,
+    /// The list of the Fallbacks page.
+    pub fallback_list: ListState<LabelFallback>,
+    /// The list of the Abbreviations page.
+    pub abbreviation_list: ListState<usize>,
     /// The frame whose Edge labels page the Frame tab shows.
     pub edge: Option<FrameId>,
     /// The set of edge labels that the page shows.
@@ -877,9 +871,10 @@ impl Default for AtlasState {
             label_segment: ClassSegment::Text,
             label_color: None,
             label_color_shown: false,
-            label_drag: None,
-            position_drag: None,
-            fallback_drag: None,
+            label_list: ListState::default(),
+            position_list: ListState::default(),
+            fallback_list: ListState::default(),
+            abbreviation_list: ListState::default(),
             edge: None,
             edge_set: EdgeSet::Meridians,
             edge_styles: false,

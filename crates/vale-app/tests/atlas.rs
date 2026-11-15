@@ -49,7 +49,7 @@ use vale_app::ui::pad::furniture::{
     MAP_FRAME as ITEM_MAP_FRAME, RESET_ENTRIES, STYLE as ITEM_STYLE, entry_names,
 };
 use vale_app::ui::pad::labels::{
-    ABBREVIATIONS, ADD_ABBREVIATION, BREAK_AT_SPACES, DELETE_ABBREVIATION, FALLBACKS,
+    ABBREVIATION, ABBREVIATIONS, ADD_ABBREVIATION, BREAK_AT_SPACES, DELETE_ABBREVIATION, FALLBACKS,
     LEADER_DISTANCE, LINE_FALLBACKS, MAX_LINE_CHARS, MAX_LINES, MIN_LINE_CHARS, MIN_SIZE,
     MIN_WIDTH, OTHER_SEPARATORS, SEPARATORS_HINT, SHORT_FORM, SIZE_STEP, TRUNCATION_MARKER,
     WIDTH_STEP, WORD,
@@ -57,8 +57,8 @@ use vale_app::ui::pad::labels::{
 use vale_app::ui::pad::labels::{
     ADD_CLASS, BUFFER, CASE, COLOR, CURVE_LIMIT, DELETE_CLASS, DUPLICATE_DISTANCE,
     FOLLOW_PARALLELS, HALO, HALO_COLOR, HALO_WIDTH, LABEL_SIZE, LAYER, MOVE_DOWN, MOVE_UP, OFFSET,
-    PLACEMENT, POSITIONS, REMOVE_DUPLICATES, REORDER, REPEAT, REPEAT_INTERVAL, SEGMENTS, SMOOTHING,
-    SPREAD, STYLE, TEXT, UPSIDE_DOWN,
+    PLACEMENT, POSITIONS, REMOVE_DUPLICATES, REPEAT, REPEAT_INTERVAL, SEGMENTS, SMOOTHING, SPREAD,
+    STYLE, TEXT, UPSIDE_DOWN,
 };
 use vale_app::ui::pad::labels::{
     ANCHOR_GAP, AVOID_POLYGONS, DASH, DASH_GAP, DASHED, END_SIZE, LABEL_GAP, LARGEST_PART,
@@ -136,6 +136,32 @@ fn pad() -> Pad {
 fn control(h: &Pad, name: &str) -> Option<Rect> {
     let controls = &h.state().pad.controls;
     controls.iter().find(|c| c.name == name).map(|c| c.rect)
+}
+
+/// A finger holds the row `name` until it lifts, drags it to `to`, and
+/// lets it go.
+fn hold_drag(h: &mut Pad, name: &str, to: Pos2) {
+    let from = control(h, name)
+        .unwrap_or_else(|| panic!("no row `{name}`"))
+        .center();
+    touch(h, 1, egui::TouchPhase::Start, from, None);
+    // The hold lasts 0.4 seconds, and a frame lasts 0.05 seconds.
+    h.run_steps(10);
+    for i in 1..=12 {
+        let pos = from.lerp(to, i as f32 / 12.0);
+        touch(h, 1, egui::TouchPhase::Move, pos, None);
+        h.step();
+    }
+    touch(h, 1, egui::TouchPhase::End, to, None);
+    h.run_steps(3);
+}
+
+/// The center of the row `name`, `dy` points lower.
+fn below(h: &Pad, name: &str, dy: f32) -> Pos2 {
+    control(h, name)
+        .unwrap_or_else(|| panic!("no row `{name}`"))
+        .center()
+        + vec2(0.0, dy)
 }
 
 /// One touch. The touch with id 1 is also the pointer. A touch with a force
@@ -4368,7 +4394,7 @@ fn the_controls_of_the_labels_tab_work_with_a_finger() {
         tap(&mut h, "Top right");
         assert!(!classes(&h, map, "Places")[1].positions[0].on, "{what}");
         tap(&mut h, "Back to Class 1");
-        for name in [&value_of(OFFSET), MOVE_UP] {
+        for name in [&value_of(OFFSET), DELETE_CLASS] {
             scroll_to(&mut h, name);
             assert!(control(&h, name).is_some(), "{what}: {name}");
         }
@@ -4632,7 +4658,7 @@ fn the_text_of_a_class_has_the_token_field() {
 }
 
 #[test]
-fn the_class_list_is_in_priority_order_and_a_drag_reorders_it() {
+fn the_class_list_is_in_priority_order_and_a_hold_and_drag_reorders_it() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("project.gpkg");
     let mut s = state();
@@ -4652,10 +4678,9 @@ fn the_class_list_is_in_priority_order_and_a_drag_reorders_it() {
     assert_eq!(order(&h), ["Places", "Rivers"]);
     assert!(above(&h, "Places", "Rivers"));
 
-    let from = control(&h, &format!("{REORDER} Places")).unwrap().center();
-    let to = from + vec2(0.0, 60.0);
-    drag_steps(&mut h, from, to, Input::Finger, 8);
-    release(&mut h, to, Input::Finger);
+    let to = below(&h, "Places", 60.0);
+    hold_drag(&mut h, "Places", to);
+    assert_eq!(h.state().atlas.label_list.lift, None);
     assert_eq!(order(&h), ["Rivers", "Places"]);
     let priority = |h: &Pad, layer: &str| classes(h, map, layer)[0].priority;
     assert!(priority(&h, "Rivers") > priority(&h, "Places"));
@@ -4674,15 +4699,155 @@ fn the_class_list_is_in_priority_order_and_a_drag_reorders_it() {
             .is_empty()
     );
 
-    // Move up and Move down on the page of a class.
+    // The page of a class has no Move up and no Move down.
     tap(&mut h, "Rivers");
-    scroll_to(&mut h, MOVE_UP);
-    tap(&mut h, MOVE_UP);
-    assert_eq!(order(&h), ["Rivers", "Places"]);
-    tap(&mut h, MOVE_DOWN);
-    assert_eq!(order(&h), ["Places", "Rivers"]);
+    for segment in SEGMENTS {
+        tap(&mut h, segment.0);
+        scroll_to(&mut h, DELETE_CLASS);
+        for name in [MOVE_UP, MOVE_DOWN] {
+            assert!(control(&h, name).is_none(), "{}: {name}", segment.1);
+        }
+    }
+}
+
+/// The Labels tab of a frame of a world with a project file, so that each
+/// change is an undo step.
+fn saved_labels_pad(dir: &std::path::Path) -> Pad {
+    let mut s = state();
+    s.session = Some(Session::open(&dir.join("project.gpkg"), &mut s.doc).unwrap());
+    let mut h = pad_with(s, BOARDS[0]);
+    add_frame(&mut h);
+    h.state_mut().save_waiting().unwrap();
+    show_tab(&mut h, FRAME_TABS[3]);
+    h
+}
+
+#[test]
+fn a_swipe_to_the_right_selects_classes_and_the_header_deletes_them_in_one_step() {
+    use vale_app::ui::pad::labels::DELETE_CLASSES;
+    use vale_app::ui::pad::list::{DESELECT_ALL, SELECT_ALL};
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = saved_labels_pad(dir.path());
+    let map = frame(&h, 0).map;
+    let picked = |h: &Pad| h.state().atlas.label_list.picked.len();
+    assert!(control(&h, DELETE_CLASSES).is_none());
+    swipe_right(&mut h, "Places");
+    assert_eq!(picked(&h), 1);
+    for name in [SELECT_ALL, DELETE_CLASSES, DESELECT_ALL] {
+        assert!(control(&h, name).is_some(), "{name}");
+    }
+    // A second swipe deselects the class.
+    swipe_right(&mut h, "Places");
+    assert_eq!(picked(&h), 0);
+    assert!(control(&h, DELETE_CLASSES).is_none());
+
+    swipe_right(&mut h, "Places");
+    swipe_right(&mut h, "Rivers");
+    assert_eq!(picked(&h), 2);
+    assert!(control(&h, SELECT_ALL).is_none());
+    tap(&mut h, DELETE_CLASSES);
+    assert!(classes(&h, map, "Places").is_empty());
+    assert!(classes(&h, map, "Rivers").is_empty());
+    assert_eq!(picked(&h), 0);
     tap(&mut h, "Undo");
-    assert_eq!(order(&h), ["Rivers", "Places"]);
+    assert_eq!(classes(&h, map, "Places").len(), 1);
+    assert_eq!(classes(&h, map, "Rivers").len(), 1);
+}
+
+#[test]
+fn a_swipe_to_the_left_renames_and_deletes_a_class() {
+    use vale_app::ui::pad::labels::CLASS_NAME;
+    use vale_app::ui::pad::widgets::RENAME;
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = saved_labels_pad(dir.path());
+    let map = frame(&h, 0).map;
+    swipe_row(&mut h, "Places", -120.0);
+    assert!(control(&h, "Delete Places").is_some());
+    tap(&mut h, &format!("{RENAME} Places"));
+    assert!(control(&h, CLASS_NAME).is_some());
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::A);
+    h.run_steps(1);
+    h.event(egui::Event::Text("Towns".to_owned()));
+    h.run_steps(1);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    assert_eq!(classes(&h, map, "Places")[0].name, "Towns");
+    assert!(control(&h, "Towns").is_some());
+
+    // An empty name keeps the old name.
+    swipe_row(&mut h, "Towns", -120.0);
+    tap(&mut h, &format!("{RENAME} Towns"));
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::A);
+    h.run_steps(1);
+    h.key_press(egui::Key::Backspace);
+    h.run_steps(1);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    assert_eq!(classes(&h, map, "Places")[0].name, "Towns");
+
+    swipe_row(&mut h, "Towns", -120.0);
+    tap(&mut h, "Delete Towns");
+    assert!(classes(&h, map, "Places").is_empty());
+    assert!(control(&h, "Towns").is_none());
+    tap(&mut h, "Undo");
+    assert_eq!(classes(&h, map, "Places")[0].name, "Towns");
+}
+
+#[test]
+fn the_label_lists_have_no_grip() {
+    let mut h = labels_pad(BOARDS[0]);
+    let grips = |h: &Pad| {
+        let controls = &h.state().pad.controls;
+        (controls.iter())
+            .filter(|c| c.name.starts_with("Reorder"))
+            .count()
+    };
+    let row_width = |h: &Pad, name: &str| control(h, name).unwrap().width();
+    assert_eq!(grips(&h), 0);
+    // The body of a row reaches the right edge of the list.
+    let wide = row_width(&h, "Places");
+    tap(&mut h, "Places");
+    tap(&mut h, SEGMENTS[1].0);
+    tap(&mut h, POSITIONS);
+    assert_eq!(grips(&h), 0, "positions");
+    assert_eq!(row_width(&h, "Top right"), wide, "positions");
+    tap(&mut h, "Back to Places");
+    tap(&mut h, SEGMENTS[2].0);
+    scroll_to(&mut h, FALLBACKS);
+    tap(&mut h, FALLBACKS);
+    assert_eq!(grips(&h), 0, "fallbacks");
+    assert_eq!(row_width(&h, "Smaller font"), wide, "fallbacks");
+}
+
+#[test]
+fn a_swipe_to_the_left_deletes_an_abbreviation_and_a_drag_on_a_field_does_not() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = saved_labels_pad(dir.path());
+    let map = frame(&h, 0).map;
+    open_fallbacks(&mut h, "Places");
+    scroll_to(&mut h, ABBREVIATIONS);
+    tap(&mut h, ABBREVIATIONS);
+    let pairs = |h: &Pad| classes(h, map, "Places")[0].abbreviations.clone();
+    let count = pairs(&h).len();
+    assert!(control(&h, &format!("{DELETE_ABBREVIATION} 1")).is_none());
+
+    // A sideways drag on a field opens no row, and the field still takes
+    // the text.
+    let field = control(&h, &format!("{WORD} 1")).unwrap().center();
+    drag(&mut h, field, field - vec2(120.0, 0.0), Input::Finger);
+    h.run_steps(5);
+    assert!(control(&h, &format!("{DELETE_ABBREVIATION} 1")).is_none());
+    assert_eq!(pairs(&h).len(), count);
+    type_text(&mut h, &format!("{WORD} 1"), "Mountain");
+    assert_eq!(pairs(&h)[0].0, "Mountain");
+
+    swipe_row(&mut h, &format!("{ABBREVIATION} 1"), -120.0);
+    assert!(control(&h, &format!("{WORD} 1")).is_none());
+    tap(&mut h, &format!("{DELETE_ABBREVIATION} 1"));
+    assert_eq!(pairs(&h).len(), count - 1);
+    assert_ne!(pairs(&h)[0].0, "Mountain");
+    tap(&mut h, "Undo");
+    assert_eq!(pairs(&h)[0].0, "Mountain");
 }
 
 #[test]
@@ -4882,12 +5047,8 @@ fn the_positions_page_ranks_and_blocks_the_point_positions() {
 
     // A finger drags Right from the fifth place to the top.
     let right = LabelPosition::Right.name();
-    let from = control(&h, &format!("{REORDER} {right}")).unwrap().center();
-    let to = control(&h, &format!("{REORDER} Top right"))
-        .unwrap()
-        .center();
-    drag_steps(&mut h, from, to - vec2(0.0, 10.0), Input::Finger, 24);
-    release(&mut h, to - vec2(0.0, 10.0), Input::Finger);
+    let to = below(&h, "Top right", -10.0);
+    hold_drag(&mut h, right, to);
     let mut wanted = LabelPosition::DEFAULT_ORDER.to_vec();
     wanted.retain(|p| *p != LabelPosition::Right);
     wanted.insert(0, LabelPosition::Right);
@@ -5551,15 +5712,8 @@ fn a_tap_or_a_drag_on_the_fallbacks_page_is_one_undo_step() {
     assert_eq!(place_fallbacks(&h, map), off);
 
     // A finger drags the leader line to the top.
-    let from = control(&h, &format!("{REORDER} {}", Leader.name()))
-        .unwrap()
-        .center();
-    let to = control(&h, &format!("{REORDER} {}", SmallerFont.name()))
-        .unwrap()
-        .center()
-        - vec2(0.0, 10.0);
-    drag_steps(&mut h, from, to, Input::Finger, 24);
-    release(&mut h, to, Input::Finger);
+    let to = below(&h, SmallerFont.name(), -10.0);
+    hold_drag(&mut h, Leader.name(), to);
     let moved = vec![
         (Leader, true),
         (SmallerFont, true),
@@ -5595,15 +5749,8 @@ fn a_line_class_has_no_stacked_lines_or_leader_line() {
     assert!(h.query_by_label(LINE_FALLBACKS).is_some());
 
     // A drag among the rows that show skips the rows that do not.
-    let from = control(&h, &format!("{REORDER} {}", Abbreviate.name()))
-        .unwrap()
-        .center();
-    let to = control(&h, &format!("{REORDER} {}", SmallerFont.name()))
-        .unwrap()
-        .center()
-        - vec2(0.0, 10.0);
-    drag_steps(&mut h, from, to, Input::Finger, 24);
-    release(&mut h, to, Input::Finger);
+    let to = below(&h, SmallerFont.name(), -10.0);
+    hold_drag(&mut h, Abbreviate.name(), to);
     let order: Vec<_> = (classes(&h, map, "Rivers")[0].fallbacks.iter())
         .map(|r| r.fallback)
         .collect();
@@ -5661,6 +5808,7 @@ fn the_abbreviations_page_adds_edits_and_deletes_a_pair() {
     scroll_up_to(&mut h, &format!("{WORD} 1"));
     type_text(&mut h, &format!("{SHORT_FORM} 1"), "Mnt.");
     assert_eq!(pairs(&h)[0], ("Mount".to_owned(), "Mnt.".to_owned()));
+    swipe_row(&mut h, &format!("{ABBREVIATION} 1"), -120.0);
     tap(&mut h, &format!("{DELETE_ABBREVIATION} 1"));
     let list = pairs(&h);
     assert_eq!(list[0].0, "Mountains");
@@ -5708,7 +5856,7 @@ fn the_fallback_pages_work_with_a_finger() {
             screenshot::save(&mut h, "pad-atlas-label-abbreviations");
         }
         scroll_to(&mut h, ADD_ABBREVIATION);
-        for name in [ADD_ABBREVIATION, &format!("{DELETE_ABBREVIATION} 12")] {
+        for name in [ADD_ABBREVIATION, &format!("{ABBREVIATION} 12")] {
             assert!(control(&h, name).is_some(), "{what}: {name}");
         }
         check_controls(&h, &format!("{what}: bottom of the abbreviations"));
@@ -5761,15 +5909,8 @@ fn the_fallback_options_reach_the_labeler() {
     let map = frame(&h, 0).map;
     open_fallbacks(&mut h, "Places");
     tap(&mut h, Abbreviate.name());
-    let from = control(&h, &format!("{REORDER} {}", Leader.name()))
-        .unwrap()
-        .center();
-    let to = control(&h, &format!("{REORDER} Smaller font"))
-        .unwrap()
-        .center()
-        - vec2(0.0, 10.0);
-    drag_steps(&mut h, from, to, Input::Finger, 24);
-    release(&mut h, to, Input::Finger);
+    let to = below(&h, "Smaller font", -10.0);
+    hold_drag(&mut h, Leader.name(), to);
     set_number(&mut h, MIN_SIZE, "5");
     set_number(&mut h, SIZE_STEP, "0.5");
     set_number(&mut h, MAX_LINES, "3");
@@ -5879,15 +6020,8 @@ fn a_drag_that_puts_truncation_first_keeps_it_after_the_text_fallbacks() {
     let map = frame(&h, 0).map;
     open_fallbacks(&mut h, "Places");
     tap(&mut h, Truncate.name());
-    let from = control(&h, &format!("{REORDER} {}", Truncate.name()))
-        .unwrap()
-        .center();
-    let to = control(&h, &format!("{REORDER} {}", SmallerFont.name()))
-        .unwrap()
-        .center()
-        - vec2(0.0, 10.0);
-    drag_steps(&mut h, from, to, Input::Finger, 24);
-    release(&mut h, to, Input::Finger);
+    let to = below(&h, SmallerFont.name(), -10.0);
+    hold_drag(&mut h, Truncate.name(), to);
     let order: Vec<_> = (classes(&h, map, "Places")[0].fallbacks.iter())
         .map(|r| (r.fallback, r.on))
         .collect();
@@ -5903,10 +6037,7 @@ fn a_drag_that_puts_truncation_first_keeps_it_after_the_text_fallbacks() {
         ]
     );
     // The rows show the same order.
-    let y = |f: vale_style::LabelFallback| {
-        let name = format!("{REORDER} {}", f.name());
-        control(&h, &name).unwrap().center().y
-    };
+    let y = |f: vale_style::LabelFallback| control(&h, f.name()).unwrap().center().y;
     assert!(y(Abbreviate) < y(Truncate) && y(Truncate) < y(Leader));
 }
 
@@ -6483,12 +6614,8 @@ fn each_change_of_a_placement_option_is_one_undo_step() {
 
     tap(&mut h, POSITIONS);
     tap(&mut h, "Top left");
-    let from = control(&h, &format!("{REORDER} Bottom")).unwrap().center();
-    let to = control(&h, &format!("{REORDER} Top right"))
-        .unwrap()
-        .center();
-    drag_steps(&mut h, from, to - vec2(0.0, 10.0), Input::Finger, 24);
-    release(&mut h, to - vec2(0.0, 10.0), Input::Finger);
+    let to = below(&h, "Top right", -10.0);
+    hold_drag(&mut h, "Bottom", to);
     assert_eq!(
         class(&h, "Places").positions[0].position,
         LabelPosition::Bottom

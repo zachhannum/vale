@@ -1069,10 +1069,7 @@ pub(super) fn head(state: &mut AppState, panel: Panel) -> Option<Head> {
             Some(_) => super::labels::class_head(state, id),
             None => {
                 let mut head = tab_head(panel, "pad-atlas-labels", id, super::labels::tab);
-                // A drag of a label class moves the class, and not the pane.
-                if state.atlas.label_drag.is_some() {
-                    head.scroll = egui::scroll_area::ScrollSource::NONE;
-                }
+                head.buttons = super::labels::class_group_buttons(state, id);
                 Some(head)
             }
         },
