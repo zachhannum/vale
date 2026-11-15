@@ -8,7 +8,7 @@ use super::geometry::{self, PAD, ROW, Rects, TOUCH, WidthClass};
 use super::icons::{self, Icon};
 use super::panes::{self, BAR, Drop};
 use super::widgets::{self, BODY_PAD, Controls, ICON};
-use super::{HOLD_SLOP, HOLD_TIME, point_card, popover, theme};
+use super::{HOLD_SLOP, HOLD_TIME, motion, point_card, popover, theme};
 use super::{Head, Panel, panel_body, panel_head, panel_icon, panel_name, panel_title, panel_top};
 use crate::ui::AppState;
 
@@ -24,8 +24,6 @@ pub const HANDLE: (f32, f32) = (TOUCH, 120.0);
 const HANDLE_IN: f32 = 20.0;
 /// The padding at each side of the name of a tab.
 const TAB_PAD: f32 = 12.0;
-/// The time of the slide of the dock.
-pub const SLIDE_TIME: f32 = 0.25;
 /// A drag of the width handle this far past the narrowest dock collapses
 /// the dock.
 pub const COLLAPSE_DRAG: f32 = 40.0;
@@ -179,35 +177,23 @@ pub fn show(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, 
 
 /// How far the dock is off the right edge, from 0 on the screen to 1 off
 /// it. During a swipe, the dock moves with the finger, and after the swipe
-/// it slides on from there. `width` is the width of the dock.
+/// it springs on from there with the speed of the finger. `width` is the
+/// width of the dock.
 fn slide(ctx: &egui::Context, state: &AppState, width: f32) -> f32 {
     let collapsed = state.pad.dock().collapsed;
-    let id = egui::Id::new(("pad-dock-slide", state.pad.workspace as u8));
-    let t = ctx.animate_bool_with_time(id, collapsed, SLIDE_TIME);
-    let end = f32::from(u8::from(collapsed));
+    let id = slide_id(state);
     if let Some(DockDrag::Swipe { dx, .. }) = state.pad.dock_drag {
         // The header stays under the finger, so the dock keeps the drag.
-        return (dx / width.max(1.0)).clamp(0.0, 0.9);
+        let at = (dx / width.max(1.0)).clamp(0.0, 0.9);
+        motion::set(ctx, id, at);
+        return at;
     }
-    let release = release_id(state);
-    let from: Option<(f32, f64)> = ctx.data(|d| d.get_temp(release));
-    let base = if state.headless { end } else { t };
-    let Some((from, start)) = from else {
-        return base;
-    };
-    let p = ((ctx.input(|i| i.time) - start) as f32 / SLIDE_TIME).clamp(0.0, 1.0);
-    if state.headless || p >= 1.0 {
-        ctx.data_mut(|d| d.remove::<(f32, f64)>(release));
-        return base;
-    }
-    ctx.request_repaint();
-    let ease = 1.0 - (1.0 - p) * (1.0 - p);
-    from + (end - from) * ease
+    motion::value(ctx, id, f32::from(u8::from(collapsed)), motion::SNAPPY)
 }
 
-/// The place of the dock at the end of a swipe, and the time of the end.
-fn release_id(state: &AppState) -> egui::Id {
-    egui::Id::new(("pad-dock-release", state.pad.workspace as u8))
+/// The spring of the slide of the dock.
+fn slide_id(state: &AppState) -> egui::Id {
+    egui::Id::new(("pad-dock-slide", state.pad.workspace as u8))
 }
 
 /// The tab at the middle of the right edge that shows a collapsed dock,
@@ -1348,7 +1334,7 @@ fn track_swipe(ctx: &egui::Context, state: &mut AppState, width: f32) {
             state.pad.pane_menu = None;
         }
         let at = (dx / width.max(1.0)).clamp(0.0, 0.9);
-        ctx.data_mut(|d| d.insert_temp(release_id(state), (at, time)));
+        motion::kick(ctx, slide_id(state), at, speed / width.max(1.0));
         state.pad.dock_drag = None;
         ctx.request_repaint();
     }
