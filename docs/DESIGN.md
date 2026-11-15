@@ -703,6 +703,27 @@ The World workspace has the tiles Layers, Attributes, Toolbox, Brush, and Snap. 
 
 On a compact screen, the dock is the sheet. The sheet shows the pane of the last focus, with its tab row and a close button. A long press on a tab opens a menu with "Close" and the name of the panel. The sheet has no bars and no handle, and its tabs do not move.
 
+### Motion
+
+The chrome moves on springs, as iPadOS moves its controls. A spring moves a value to its target with a velocity, and a small overshoot. A spring that gets a new target during a move keeps its velocity, so the move turns around smoothly. A spring has a response, which is the time of one swing, and a bounce, from 0 for no overshoot to 1 for no friction.
+
+| Spring | Response | Bounce | Use |
+|---|---|---|---|
+| Snappy | 0.32 s | 0.15 | The dock, the sheet, the panes, and the rows |
+| Bouncy | 0.36 s | 0.24 | Menus, popovers, and the thumbs of controls |
+| Press | 0.22 s | 0.3 | A control under a finger |
+
+- The dock slides on and off. After a swipe, the dock continues at the speed of the finger.
+- The panes of the dock move to their new places and heights when a panel opens, closes, or folds. A new pane grows from a height of zero.
+- The sheet moves to its detent at the speed of the finger.
+- A menu, a flyout, or a popover grows from 90 percent of its size at its control, and it fades in. It closes at once.
+- A button, a chip, a pill, or a tile shrinks to 96 percent of its size under a finger. A wide control shrinks by the same distance as a control of 160 points.
+- The thumb of a segmented control or a switch slides to the new choice.
+- A row that you swipe snaps open or shut at the speed of the finger. During a reorder of the layers, the other rows move aside on springs.
+- The globe, the flat view, the pen strokes, and the map frames do not move on springs.
+
+When Reduce Motion is on in iPadOS, each value goes to its target at once. Headless renders and the tests do the same.
+
 ### iPhone layout
 
 The iPhone layout is the compact layout of the iPad, below 600 points, with these changes:
