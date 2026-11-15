@@ -6,7 +6,7 @@ use vale_labeler::Face;
 use vale_store::{CoordFormat, EdgeLabels, EdgeOrientation, FrameId, Graticule, Rgba};
 
 use super::atlas::{LABEL_FORMAT, LABEL_FORMATS, named_tabs};
-use super::labels::{color_rows, faces_of};
+use super::labels::color_rows;
 use super::number::Number;
 use super::raster::heading;
 use super::widgets::{self, Controls};
@@ -222,16 +222,17 @@ fn styles_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
     };
     let which = state.atlas.edge_set;
     let set = which.of(&frame.graticule).clone();
-    for f in faces_of(state, set.font.as_deref()) {
-        let name = f.name();
-        let on = f.weight == set.weight && f.italic == set.italic;
-        if widgets::option_row(ui, controls, &name, &name, &[], on).clicked() {
-            atlas::edit_edge_labels(state, id, which, |e| {
-                e.weight = f.weight;
-                e.italic = f.italic;
-            });
-            state.atlas.edge_styles = false;
-        }
+    let current = vale_labeler::Face {
+        weight: set.weight,
+        italic: set.italic,
+    };
+    let font = set.font.as_deref();
+    if let Some(f) = super::text_style::face_rows(ui, state, controls, font, current) {
+        atlas::edit_edge_labels(state, id, which, |e| {
+            e.weight = f.weight;
+            e.italic = f.italic;
+        });
+        state.atlas.edge_styles = false;
     }
 }
 

@@ -483,6 +483,12 @@ fn check_controls(h: &Pad, what: &str) {
                 c.name == vale_app::ui::pad::dock_ui::DOCK_WIDTH
             };
             let covered = covered || handle(a) || handle(b);
+            // The row of a condition or of a group is under its controls,
+            // and it takes the touches between them.
+            let condition = |c: &vale_app::ui::pad::widgets::Control| {
+                c.name.starts_with("Condition ") || c.name.starts_with("Group ")
+            };
+            let covered = covered || condition(a) || condition(b);
             let free = !a.rect.shrink(0.5).intersects(b.rect.shrink(0.5));
             assert!(free || covered, "{what}: {name} and {} overlap", b.name);
         }
@@ -6428,6 +6434,101 @@ fn a_custom_ramp_gets_labels_and_a_built_in_ramp_shows_them() {
     screenshot::save(&mut h, "pad-koppen-labels");
 }
 
+/// The Height layer on the page of the color ramps, with the custom ramps
+/// `names`.
+fn ramps_page(names: &[&str]) -> Pad {
+    let mut h = painted_pad(BOARDS[0]);
+    open_height(&mut h);
+    for name in names {
+        let colors = vec![[33, 113, 181], [140, 81, 10]];
+        h.state_mut().ramps.add(name, colors).unwrap();
+    }
+    h.state_mut().pad.page = Some(Page::Ramps);
+    h.run_steps(3);
+    h
+}
+
+fn custom_ramps(h: &Pad) -> Vec<String> {
+    (h.state().ramps.custom().iter())
+        .map(|r| r.name.clone())
+        .collect()
+}
+
+#[test]
+fn a_swipe_to_the_left_deletes_a_custom_ramp() {
+    use vale_app::ui::pad::raster::DELETE_RAMP;
+    let mut h = ramps_page(&["Sand", "Moss"]);
+    swipe_left_from_top(&mut h, "Moss");
+    // A custom ramp has Delete and no Rename.
+    assert!(control(&h, "Rename Moss").is_none());
+    tap(&mut h, "Delete Moss");
+    assert_eq!(custom_ramps(&h), ["Sand"]);
+    // The card of a custom ramp keeps its Delete button.
+    scroll_to_control(&mut h, "Sand");
+    tap(&mut h, "Sand");
+    tap(&mut h, DELETE_RAMP);
+    assert!(custom_ramps(&h).is_empty());
+}
+
+#[test]
+fn a_built_in_ramp_has_no_swipe() {
+    use vale_app::ui::pad::raster::DELETE_RAMPS;
+    let mut h = ramps_page(&["Sand"]);
+    let before = control(&h, "Viridis").unwrap();
+    swipe_left_from_top(&mut h, "Viridis");
+    assert!(control(&h, "Delete Viridis").is_none());
+    swipe_right(&mut h, "Viridis");
+    assert!(h.state().pad.style.ramp_list.picked.is_empty());
+    assert!(control(&h, DELETE_RAMPS).is_none());
+    assert_eq!(control(&h, "Viridis"), Some(before));
+}
+
+#[test]
+fn delete_ramps_deletes_the_selected_custom_ramps() {
+    use vale_app::ui::pad::list::{DESELECT_ALL, SELECT_ALL};
+    use vale_app::ui::pad::raster::DELETE_RAMPS;
+    let mut h = ramps_page(&["Sand", "Moss", "Ash"]);
+    swipe_right(&mut h, "Sand");
+    swipe_right(&mut h, "Ash");
+    for name in [SELECT_ALL, DELETE_RAMPS, DESELECT_ALL] {
+        assert!(control(&h, name).is_some(), "{name}");
+    }
+    tap(&mut h, DELETE_RAMPS);
+    assert_eq!(custom_ramps(&h), ["Moss"]);
+    assert!(control(&h, DELETE_RAMPS).is_none());
+}
+
+#[test]
+fn the_selectable_list_ignores_swipes_and_holds_and_a_tap_checks_a_layer() {
+    use vale_app::ui::pad::selectable::{SELECTABLE, layer_row_name};
+    let mut h = pad(BOARDS[0]);
+    let rivers = vector(&h, "Rivers");
+    h.state_mut().select(Some(LayerRef::Vector(rivers)));
+    h.state_mut().globe.tool = Tool::Select;
+    h.run_steps(2);
+    scroll_strip_to(&mut h, SELECTABLE);
+    tap(&mut h, SELECTABLE);
+    let row = layer_row_name("Rivers");
+    let rect = control(&h, &row).unwrap();
+    let checked = h.state().selectable_checked(rivers);
+    for dx in [-120.0, 120.0] {
+        drag(&mut h, rect.center(), rect.center() + vec2(dx, 0.0), None);
+        assert_eq!(control(&h, &row), Some(rect), "{dx}");
+        assert!(control(&h, "Delete Rivers").is_none(), "{dx}");
+        assert_eq!(h.state().selectable_checked(rivers), checked, "{dx}");
+    }
+    // A hold does not lift the row.
+    touch(&mut h, egui::TouchPhase::Start, rect.center(), None);
+    h.run_steps(60);
+    touch(&mut h, egui::TouchPhase::End, rect.center(), None);
+    h.run_steps(3);
+    assert_eq!(control(&h, &row), Some(rect));
+    assert!(h.state().pad.selectable);
+    let checked = h.state().selectable_checked(rivers);
+    tap(&mut h, &row);
+    assert_ne!(h.state().selectable_checked(rivers), checked);
+}
+
 #[test]
 fn an_imported_ramp_stays_in_the_list_and_applies_from_its_card() {
     use vale_app::ui::pad::raster::{COLOR_RAMPS, DELETE_RAMP, IMPORT_RAMP, REVERSE_RAMP};
@@ -9169,8 +9270,8 @@ fn classify_makes_quantile_rules_in_one_undo_step() {
     quick_tap(&mut h, &middle);
     assert_eq!(h.state().pad.page, Some(Page::Rule(1)));
     for n in 1..=2 {
-        let remove = format!("Remove condition {n}");
-        assert!(control(&h, &remove).is_some(), "{remove}");
+        let row = format!("Condition {n}");
+        assert!(control(&h, &row).is_some(), "{row}");
     }
 
     tap(&mut h, "Undo");
@@ -9713,13 +9814,15 @@ fn a_rule_page_sets_the_filter_and_the_scale_range() {
         assert_eq!(filter(&h).as_deref(), Some(text), "{what}");
         assert!(rule(&h).filter.error().is_none(), "{what}");
 
-        // The button of a condition removes it.
-        // On a phone, the open value menu covers the button of the first
-        // condition.
-        let second = format!("{REMOVE_CONDITION} 2");
-        scroll_to_control(&mut h, &second);
-        tap(&mut h, &second);
-        let text = "scalerank < 5";
+        // A swipe to the left on a condition shows its Delete button, in
+        // place of a remove button.
+        assert!(
+            control(&h, &format!("{REMOVE_CONDITION} 1")).is_none(),
+            "{what}"
+        );
+        swipe_left_from_top(&mut h, "Condition 1");
+        tap(&mut h, "Delete condition 1");
+        let text = "featurecla = 'River'";
         assert_eq!(filter(&h).as_deref(), Some(text), "{what}");
 
         // Code takes any filter, and warns about a wrong one.
@@ -9840,7 +9943,7 @@ fn text_value_menu_lists_layer_values() {
 
 #[test]
 fn add_group_nests_conditions() {
-    use vale_app::ui::pad::filter::{ADD_CONDITION, ADD_GROUP, ANY_OF, REMOVE_CONDITION};
+    use vale_app::ui::pad::filter::{ADD_CONDITION, ADD_GROUP, ANY_OF, REMOVE_GROUP};
     let mut h = pad(BOARDS[0]);
     let rivers = vector(&h, "Rivers");
     open_rule(&mut h, "Rivers", "Default");
@@ -9856,14 +9959,28 @@ fn add_group_nests_conditions() {
     assert!(text.starts_with("scalerank = 0 and ("), "{text}");
     assert!(text.contains(" or featurecla = "), "{text}");
     screenshot::save(&mut h, "pad-filter-group");
-    let inner = format!("{REMOVE_CONDITION} 2.1");
-    scroll_to_control(&mut h, &inner);
-    tap(&mut h, &inner);
+    // A swipe to the left deletes a condition in a group, and a swipe on
+    // the group deletes the group.
+    assert!(control(&h, &format!("{REMOVE_GROUP} 2")).is_none());
+    swipe_left_from_top(&mut h, "Condition 2.1");
+    tap(&mut h, "Delete condition 2.1");
     let text = filter_text(&h, rivers).unwrap();
     assert!(
         text.starts_with("scalerank = 0 and featurecla = "),
         "{text}"
     );
+    swipe_left_from_top(&mut h, "Group 2");
+    tap(&mut h, "Delete group 2");
+    assert_eq!(filter_text(&h, rivers).as_deref(), Some("scalerank = 0"));
+}
+
+/// A swipe to the left on the row `name`, from near its top right corner,
+/// that opens the buttons behind it. The top of a group card is its head.
+fn swipe_left_from_top(h: &mut Pad, name: &str) {
+    scroll_to_control(h, name);
+    let rect = control(h, name).unwrap_or_else(|| panic!("no control `{name}`"));
+    let from = rect.right_top() + vec2(-10.0, (rect.height() / 2.0).min(26.0));
+    drag(h, from, from - vec2(120.0, 0.0), None);
 }
 
 #[test]

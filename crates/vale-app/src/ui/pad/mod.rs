@@ -1726,9 +1726,28 @@ fn merge_menu(
                 theme::body(),
                 theme::MUTE,
             );
-            for (uuid, name) in &choices {
-                if widgets::text_row(&mut ui, controls, name, 0.0, false, true).clicked() {
-                    keep = Some(*uuid);
+            let rows: Vec<list::Row<usize>> = (choices.iter().enumerate())
+                .map(|(i, (_, name))| list::Row::new(i, name.clone()))
+                .collect();
+            let mut taps = list::ListState::default();
+            let spec = list::Spec::default();
+            let events = list::show(
+                &mut ui,
+                controls,
+                &mut taps,
+                spec,
+                &rows,
+                |ui, c, cell, i| {
+                    let look = list::Look {
+                        text: &rows[i].name,
+                        ..list::Look::default()
+                    };
+                    list::draw(ui, c, cell, &look)
+                },
+            );
+            for event in events {
+                if let list::Event::Tap(i) = event {
+                    keep = Some(choices[i].0);
                 }
             }
         },
@@ -2072,6 +2091,9 @@ pub(super) fn panel_head(state: &mut AppState, panel: Panel) -> Head {
         state.pad.page = None;
     }
     let page = state.pad.page.filter(|_| panel == Panel::Layers);
+    if panel == Panel::Layers && page != Some(Page::Ramps) {
+        state.pad.style.ramp_list = list::ListState::default();
+    }
     if panel == Panel::Layers && !matches!(page, Some(Page::Field(_) | Page::NewField)) {
         state.pad.field = None;
     }
@@ -2193,6 +2215,20 @@ pub(super) fn panel_head(state: &mut AppState, panel: Panel) -> Head {
                     buttons,
                     act: Box::new(move |state, name| fields::selection_action(state, id, name)),
                 })
+            })
+        }
+        (Some(LayerRef::Raster(id)), Some(Page::Ramps)) => {
+            let user = raster::RampUser::Raster(id);
+            raster::ramp_buttons(state).map(|buttons| PageButtons {
+                buttons,
+                act: Box::new(move |state, name| raster::ramp_group(state, user, name)),
+            })
+        }
+        (Some(LayerRef::Vector(id)), Some(Page::Ramps)) => {
+            let user = raster::RampUser::Classify(id);
+            raster::ramp_buttons(state).map(|buttons| PageButtons {
+                buttons,
+                act: Box::new(move |state, name| raster::ramp_group(state, user, name)),
             })
         }
         (None, None) if list => {
@@ -2567,13 +2603,39 @@ fn snap_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
         rule(ui);
     }
     let targets = state.doc.project.snap_targets(active);
-    for layer in layers {
-        let mut types = snap_types(&targets, layer.id);
-        let before = types;
-        snap_row(ui, controls, &layer, layer.id == active, &mut types);
-        if types != before {
-            state.set_snap_target(active, layer.id, types);
-        }
+    // The toggles take the touches at the right of a row.
+    let toggles = |l: &SnapLayer| {
+        let pills = l.kind.toggles().iter();
+        let width = |(label, _): &(&str, _)| widgets::pill_width(ui, label) + widgets::PILL_GAP;
+        pills.map(width).sum::<f32>() + 8.0
+    };
+    let rows: Vec<list::Row<LayerId>> = (layers.iter())
+        .map(|l| list::Row {
+            trailing: toggles(l),
+            ..list::Row::new(l.id, l.name.clone())
+        })
+        .collect();
+    let mut changed = Vec::new();
+    let mut list = list::ListState::default();
+    list::show(
+        ui,
+        controls,
+        &mut list,
+        list::Spec::default(),
+        &rows,
+        |ui, controls, cell, i| {
+            let layer = &layers[i];
+            let mut types = snap_types(&targets, layer.id);
+            let before = types;
+            snap_row(ui, controls, cell, layer, layer.id == active, &mut types);
+            if types != before {
+                changed.push((layer.id, types));
+            }
+            None
+        },
+    );
+    for (id, types) in changed {
+        state.set_snap_target(active, id, types);
     }
 }
 
@@ -2586,12 +2648,12 @@ pub const FINGER_PAINT: &str = "Paint with finger";
 fn snap_row(
     ui: &mut egui::Ui,
     controls: &mut Controls,
+    cell: &list::Cell,
     layer: &SnapLayer,
     active: bool,
     types: &mut vale_store::SnapTypes,
 ) {
-    let size = vec2(ui.available_width(), PANEL_ROW);
-    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+    let rect = cell.rect;
     let enabled = layer.kind.enabled();
     let mut right = rect.right_center();
     for (label, kind) in layer.kind.toggles().iter().rev() {
@@ -2601,7 +2663,7 @@ fn snap_row(
         right.x = left - widgets::PILL_GAP;
     }
     let color = if active { theme::ACCENT } else { theme::TEXT };
-    let painter = ui.painter();
+    let painter = &cell.painter;
     let kind = Rect::from_center_size(pos2(rect.left() + 10.0, rect.center().y), vec2(18.0, 18.0));
     let icon = if active { theme::ACCENT } else { theme::MUTE };
     icons::paint(
@@ -3714,11 +3776,11 @@ fn row_name(name: &str) -> String {
 /// rows that make a world and that open the properties of the open world.
 /// The open world has a tick.
 fn worlds_menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
-    let Some(list) = state.pad.worlds.take() else {
+    let Some(worlds) = state.pad.worlds.take() else {
         return;
     };
-    let shown = list.len().min(WORLD_ROWS) as f32 * PANEL_ROW;
-    let rule_height = if list.is_empty() { 0.0 } else { 13.0 };
+    let shown = worlds.len().min(WORLD_ROWS) as f32 * PANEL_ROW;
+    let rule_height = if worlds.is_empty() { 0.0 } else { 13.0 };
     let width = geometry::WORLDS_WIDTH.min(rects.screen.width() - 2.0 * geometry::MARGIN);
     // The row of the start screen needs a folder of projects, and the Save
     // row needs a project file.
@@ -3754,23 +3816,42 @@ fn worlds_menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Control
             let ui = &mut ui;
             ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
             let mut rows = |ui: &mut egui::Ui| {
-                for world in &list {
-                    let name = row_name(&world.name);
-                    let row = widgets::text_row(ui, controls, &name, 0.0, false, true);
-                    if current.as_ref() == Some(&world.path) {
-                        let tick = Rect::from_center_size(
-                            pos2(row.rect.right() - 14.0, row.rect.center().y),
-                            vec2(18.0, 18.0),
-                        );
-                        icons::paint(ui.painter(), tick, Icon::Tick, 18.0, theme::ACCENT);
-                    }
-                    if row.clicked() {
-                        state.actions.push(Action::OpenWorld(world.path.clone()));
+                let rows: Vec<list::Row<usize>> = (worlds.iter().enumerate())
+                    .map(|(i, world)| list::Row::new(i, row_name(&world.name)))
+                    .collect();
+                let mut state_list = list::ListState::default();
+                let spec = list::Spec::default();
+                let events = list::show(
+                    ui,
+                    controls,
+                    &mut state_list,
+                    spec,
+                    &rows,
+                    |ui, controls, cell, i| {
+                        if current.as_ref() == Some(&worlds[i].path) {
+                            let tick = Rect::from_center_size(
+                                pos2(cell.rect.right() - 14.0, cell.rect.center().y),
+                                vec2(18.0, 18.0),
+                            );
+                            icons::paint(&cell.painter, tick, Icon::Tick, 18.0, theme::ACCENT);
+                        }
+                        let look = list::Look {
+                            text: &rows[i].name,
+                            ..list::Look::default()
+                        };
+                        list::draw(ui, controls, cell, &look)
+                    },
+                );
+                for event in events {
+                    if let list::Event::Tap(i) = event {
+                        state
+                            .actions
+                            .push(Action::OpenWorld(worlds[i].path.clone()));
                         open = false;
                     }
                 }
             };
-            if list.len() > WORLD_ROWS {
+            if worlds.len() > WORLD_ROWS {
                 egui::ScrollArea::vertical()
                     .max_height(shown)
                     .show(ui, |ui| {
@@ -3780,7 +3861,7 @@ fn worlds_menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Control
             } else {
                 rows(ui);
             }
-            if !list.is_empty() {
+            if !worlds.is_empty() {
                 rule(ui);
             }
             if widgets::text_row(ui, controls, world_form::NEW_WORLD, 0.0, false, true).clicked() {
@@ -3805,7 +3886,7 @@ fn worlds_menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Control
             }
         },
     );
-    state.pad.worlds = open.then_some(list);
+    state.pad.worlds = open.then_some(worlds);
 }
 
 /// The flyout of the modes of a brush cell.

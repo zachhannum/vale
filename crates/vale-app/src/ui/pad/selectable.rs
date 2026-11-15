@@ -5,7 +5,10 @@
 use eframe::egui::{self, Align2, Order, Rect, pos2, vec2};
 
 use super::geometry::Rects;
+use vale_store::LayerId;
+
 use super::icons::{self, Icon};
+use super::list;
 use super::widgets::{self, Controls, PANEL_ROW};
 use super::{PAD, theme};
 use crate::ui::AppState;
@@ -149,7 +152,9 @@ pub(super) fn menu(
                         theme::body(),
                         theme::MUTE,
                     );
-                    tick(ui, row.rect, in_active);
+                    if in_active {
+                        tick(ui.painter(), row.rect);
+                    }
                     if row.clicked() {
                         action = Some(Action::Active);
                     }
@@ -159,13 +164,28 @@ pub(super) fn menu(
                     if widgets::text_row(ui, controls, DESELECT_ALL, 0.0, false, true).clicked() {
                         action = Some(Action::None);
                     }
-                    for ((id, name), on) in layers.iter().zip(&checked) {
-                        let row_name = layer_row_name(name);
-                        let row =
-                            widgets::text_row_as(ui, controls, &row_name, name, 0.0, false, true);
-                        tick(ui, row.rect, *on);
-                        if row.clicked() {
-                            action = Some(Action::Toggle(*id));
+                    let rows: Vec<list::Row<LayerId>> = (layers.iter())
+                        .map(|(id, name)| list::Row {
+                            label: layer_row_name(name),
+                            ..list::Row::new(*id, name.clone())
+                        })
+                        .collect();
+                    let mut state = list::ListState::default();
+                    let spec = list::Spec::default();
+                    let taps =
+                        list::show(ui, controls, &mut state, spec, &rows, |ui, c, cell, i| {
+                            if checked[i] {
+                                tick(&cell.painter, cell.rect);
+                            }
+                            let look = list::Look {
+                                text: &rows[i].name,
+                                ..list::Look::default()
+                            };
+                            list::draw(ui, c, cell, &look)
+                        });
+                    for event in taps {
+                        if let list::Event::Tap(id) = event {
+                            action = Some(Action::Toggle(id));
                         }
                     }
                 });
@@ -188,10 +208,8 @@ enum Action {
 }
 
 /// The tick at the right end of a row that is on.
-fn tick(ui: &egui::Ui, row: Rect, on: bool) {
-    if on {
-        let at = pos2(row.right() - 14.0, row.center().y);
-        let rect = Rect::from_center_size(at, vec2(18.0, 18.0));
-        icons::paint(ui.painter(), rect, Icon::Tick, 18.0, theme::ACCENT);
-    }
+fn tick(painter: &egui::Painter, row: Rect) {
+    let at = pos2(row.right() - 14.0, row.center().y);
+    let rect = Rect::from_center_size(at, vec2(18.0, 18.0));
+    icons::paint(painter, rect, Icon::Tick, 18.0, theme::ACCENT);
 }

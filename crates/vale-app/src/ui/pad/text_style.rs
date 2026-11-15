@@ -198,15 +198,17 @@ pub fn face_rows(
     font: Option<&str>,
     current: Face,
 ) -> Option<Face> {
-    let mut chosen = None;
-    for f in faces_of(state, font) {
-        let name = f.name();
-        let on = f.weight == current.weight && f.italic == current.italic;
-        if widgets::option_row(ui, controls, &name, &name, &[], on).clicked() {
-            chosen = Some(f);
-        }
-    }
-    chosen
+    let faces = faces_of(state, font);
+    let names: Vec<String> = faces.iter().map(|f| f.name()).collect();
+    let choices: Vec<(&str, bool)> = (faces.iter().zip(&names))
+        .map(|(f, n)| {
+            (
+                n.as_str(),
+                f.weight == current.weight && f.italic == current.italic,
+            )
+        })
+        .collect();
+    super::list::options(ui, controls, &choices, str::to_owned).map(|i| faces[i])
 }
 
 /// The cases, one row each, with a mark on `current`. Returns the case of
@@ -216,12 +218,8 @@ pub fn case_rows(
     controls: &mut Controls,
     current: TextCase,
 ) -> Option<TextCase> {
-    let mut chosen = None;
-    for case in TextCase::ALL {
-        let name = case.name();
-        if widgets::option_row(ui, controls, name, name, &[], case == current).clicked() {
-            chosen = Some(case);
-        }
-    }
-    chosen
+    let choices: Vec<(&str, bool)> = (TextCase::ALL.iter())
+        .map(|c| (c.name(), *c == current))
+        .collect();
+    super::list::options(ui, controls, &choices, str::to_owned).map(|i| TextCase::ALL[i])
 }
