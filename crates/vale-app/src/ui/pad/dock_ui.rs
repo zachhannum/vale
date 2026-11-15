@@ -51,92 +51,23 @@ const COAST: f32 = 0.998 / (1.0 - 0.998) / 1000.0;
 /// swipe, in seconds.
 const SPEED_TIME: f64 = 0.1;
 
-/// The distance to the left of a pull of the dock from its edge tab, while
-/// the finger is on the screen.
+/// A pull of the grip of a hidden dock to the left. `lock` is the distance
+/// of the finger when the drag started, so the dock does not jump by the
+/// slop, and `dx` is the distance from there.
+#[derive(Clone, Copy, Debug)]
+struct Pull {
+    lock: f32,
+    dx: f32,
+}
+
+/// The distance to the left of a pull of the dock from its grip, while the
+/// finger is on the screen.
 fn pulling(ctx: &egui::Context) -> Option<f32> {
-    let track: Option<SwipeTrack> = ctx.data(|d| d.get_temp(pull_id()));
-    let t = track.filter(|t| t.sideways == Some(true))?;
-    Some(t.places.last().map_or(0.0, |p| p.1))
+    ctx.data(|d| d.get_temp::<Pull>(pull_id())).map(|p| p.dx)
 }
 
 fn pull_id() -> egui::Id {
     egui::Id::new("pad-dock-pull")
-}
-
-/// Follows a pull of the edge tab to the left, as `track_swipe` follows a
-/// swipe. While the pull goes, the dock comes out with the finger. At its
-/// end, the dock shows if a throw from the release would end past the
-/// middle of the dock, and else it slides back.
-fn track_pull(ctx: &egui::Context, state: &mut AppState, width: f32) {
-    let id = pull_id();
-    let mut track: Option<SwipeTrack> = ctx.data(|d| d.get_temp(id));
-    let tab: Option<Rect> = ctx.data(|d| d.get_temp(egui::Id::new(EDGE_TAB_RECT)));
-    let (time, events) = ctx.input(|i| (i.time, i.events.clone()));
-    let mut end = None;
-    for event in events {
-        match event {
-            egui::Event::PointerButton {
-                pos, pressed: true, ..
-            } => {
-                track = tab.filter(|t| t.contains(pos)).map(|_| SwipeTrack {
-                    origin: pos,
-                    places: vec![(time, 0.0)],
-                    sideways: None,
-                    lock: 0.0,
-                });
-            }
-            egui::Event::PointerMoved(pos) => {
-                if let Some(t) = &mut track {
-                    let d = pos - t.origin;
-                    if t.sideways.is_none() && d.length() > HOLD_SLOP {
-                        t.sideways = Some(-d.x > d.y.abs());
-                        t.lock = -d.x;
-                        t.places.clear();
-                    }
-                    t.places.push((time, -d.x - t.lock));
-                }
-            }
-            egui::Event::PointerButton {
-                pos,
-                pressed: false,
-                ..
-            } => {
-                if let Some(t) = &mut track {
-                    t.places.push((time, -(pos - t.origin).x - t.lock));
-                }
-                end = track.take();
-            }
-            egui::Event::PointerGone => end = track.take(),
-            _ => {}
-        }
-    }
-    if track.as_ref().is_some_and(|t| t.sideways == Some(true)) {
-        ctx.request_repaint();
-    }
-    ctx.data_mut(|d| match &track {
-        Some(t) => {
-            d.insert_temp(id, t.clone());
-        }
-        None => d.remove::<SwipeTrack>(id),
-    });
-    if let Some(mut t) = end.filter(|t| t.sideways == Some(true)) {
-        let dx = t.places.last().map_or(0.0, |p| p.1);
-        let speed = swipe_speed(&mut t.places);
-        let shows = pull_shows(dx, speed, width);
-        if shows {
-            state.pad.dock_mut().collapsed = false;
-        }
-        crate::log_file::write(&format!(
-            "dock pull: {dx:.0} pt at {speed:.0} pt/s of {width:.0} pt, shows {shows}"
-        ));
-        motion::kick(
-            ctx,
-            slide_id(state),
-            pull_at(dx, width),
-            -speed / width.max(1.0),
-        );
-        ctx.request_repaint();
-    }
 }
 
 /// What a finger moves in the dock.
@@ -252,7 +183,6 @@ pub fn show(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, 
         }
     } else {
         track_swipe(ctx, state, rects.dock.width());
-        track_pull(ctx, state, rects.dock.width());
         let slide = slide(ctx, state, rects.dock.width());
         if slide < 1.0 {
             show_dock(ctx, state, controls, rects, slide);
@@ -372,11 +302,6 @@ fn edge_tab(
         vec2(EDGE_TAB.0, EDGE_TAB.1),
     );
     let live = slide >= 1.0;
-    if live {
-        ctx.data_mut(|d| d.insert_temp(egui::Id::new(EDGE_TAB_RECT), rect));
-    } else {
-        ctx.data_mut(|d| d.remove::<Rect>(egui::Id::new(EDGE_TAB_RECT)));
-    }
     let pulled = pulling(ctx).is_some();
     let dock_left = rects.dock.left() + slide * rects.dock.width();
     let mut show = false;
@@ -394,12 +319,56 @@ fn edge_tab(
             let active = pulled || resp.is_pointer_button_down_on();
             let painter = ui.painter().with_clip_rect(rects.screen);
             paint_grip(&painter, pos2(grip_x(dock_left, right), y), active);
-            // A drag of the grip pulls the dock, in `track_pull`.
             show = live && resp.clicked();
+            pull(ui, state, &resp, rects.dock.width());
         });
     if show {
         state.pad.dock_mut().collapsed = false;
     }
+}
+
+/// Follows a drag of the grip of a hidden dock. While the drag goes, the
+/// dock comes out with the finger. At its end, the dock shows by the rule
+/// of `pull_shows`, and else it slides back. `width` is the width of the
+/// dock.
+fn pull(ui: &egui::Ui, state: &mut AppState, resp: &egui::Response, width: f32) {
+    let ctx = ui.ctx();
+    let left = ui.input(|i| Some(i.pointer.press_origin()?.x - i.pointer.interact_pos()?.x));
+    let kept: Option<Pull> = ctx.data(|d| d.get_temp(pull_id()));
+    if resp.dragged()
+        && let Some(left) = left
+    {
+        let mut pull = kept.unwrap_or_else(|| {
+            crate::log_file::write(&format!("dock pull starts at {left:.0} pt"));
+            Pull {
+                lock: left,
+                dx: 0.0,
+            }
+        });
+        pull.dx = left - pull.lock;
+        ctx.data_mut(|d| d.insert_temp(pull_id(), pull));
+        ctx.request_repaint();
+        return;
+    }
+    let Some(pull) = kept else {
+        return;
+    };
+    ctx.data_mut(|d| d.remove::<Pull>(pull_id()));
+    let (dx, speed) = (pull.dx, -ui.input(|i| i.pointer.velocity().x));
+    let shows = pull_shows(dx, speed, width);
+    if shows {
+        state.pad.dock_mut().collapsed = false;
+    }
+    crate::log_file::write(&format!(
+        "dock pull: {dx:.0} pt at {speed:.0} pt/s of {width:.0} pt, shows {shows}"
+    ));
+    motion::kick(
+        ctx,
+        slide_id(state),
+        pull_at(dx, width),
+        -speed / width.max(1.0),
+    );
+    ctx.request_repaint();
 }
 
 /// The middle of the grip of a dock whose left edge is at `dock_left`. The
@@ -1451,8 +1420,6 @@ mod tests {
 
 /// The key of the places of the headers of the dock in the last frame.
 const HEADERS: &str = "pad-dock-headers";
-/// The key of the edge tab in the last frame, while it takes touch.
-const EDGE_TAB_RECT: &str = "pad-dock-edge-tab-rect";
 
 /// The key of the height of the handle of the dock in the last frame that
 /// drew the dock.
