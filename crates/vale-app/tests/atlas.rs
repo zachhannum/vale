@@ -10247,6 +10247,74 @@ fn a_swipe_to_the_right_selects_ramps_in_a_frame_and_the_header_deletes_them() {
 }
 
 #[test]
+fn the_ramp_editor_works_in_a_frame() {
+    use vale_app::ui::pad::Page;
+    use vale_app::ui::pad::classify::CLASSIFY;
+    use vale_app::ui::pad::ramp_editor::{RAMP_NAME, SAVE_RAMP};
+    use vale_app::ui::pad::raster::{COLOR_STOPS, DUPLICATE_RAMP, SAVE_AS_RAMP};
+    for size in [BOARDS[0], (393.0, 852.0)] {
+        let what = format!("{size:?}");
+        let mut h = inset_pad(size);
+        let height = h.state_mut().add_height();
+        let name = h
+            .state()
+            .doc
+            .project
+            .raster_layer(height)
+            .unwrap()
+            .name
+            .clone();
+        h.run_steps(2);
+        show_tab(&mut h, FRAME_TABS[2]);
+        let open = format!("Open {name}");
+        scroll_to(&mut h, &open);
+        tap(&mut h, &open);
+        scroll_to(&mut h, COLOR_STOPS);
+        tap(&mut h, COLOR_STOPS);
+
+        // Back from "Save as ramp…" goes to the color stops.
+        scroll_to(&mut h, SAVE_AS_RAMP);
+        tap(&mut h, SAVE_AS_RAMP);
+        assert_eq!(h.state().atlas.layer_page, Some(Page::RampEditor), "{what}");
+        check_controls(&h, &format!("{what}: ramp editor"));
+        tap(&mut h, "Back to Color stops");
+        assert_eq!(h.state().atlas.layer_page, Some(Page::Stops), "{what}");
+        assert_eq!(h.state().ramp_draft, None, "{what}");
+
+        scroll_to(&mut h, SAVE_AS_RAMP);
+        tap(&mut h, SAVE_AS_RAMP);
+        scroll_to(&mut h, RAMP_NAME);
+        type_text(&mut h, RAMP_NAME, "Frame ramp");
+        scroll_to(&mut h, SAVE_RAMP);
+        tap(&mut h, SAVE_RAMP);
+        assert_eq!(h.state().atlas.layer_page, Some(Page::Ramps), "{what}");
+        let ramp = h.state().ramps.custom().last().unwrap().name.clone();
+        assert_eq!(ramp, "Frame ramp", "{what}");
+
+        // A copy from the Classify form goes back to its ramps.
+        tap(&mut h, "Back to Color stops");
+        tap(&mut h, &format!("Back to {name}"));
+        tap(&mut h, &format!("Back to {}", FRAME_TABS[2]));
+        scroll_to(&mut h, "Open Places");
+        tap(&mut h, "Open Places");
+        scroll_to(&mut h, CLASSIFY);
+        tap(&mut h, CLASSIFY);
+        scroll_to(&mut h, "Bold");
+        tap(&mut h, "Bold");
+        scroll_to(&mut h, "Viridis");
+        tap(&mut h, "Viridis");
+        tap(&mut h, DUPLICATE_RAMP);
+        assert_eq!(h.state().atlas.layer_page, Some(Page::RampEditor), "{what}");
+        assert!(control(&h, "Back to Color ramps").is_some(), "{what}");
+        scroll_to(&mut h, SAVE_RAMP);
+        tap(&mut h, SAVE_RAMP);
+        assert_eq!(h.state().atlas.layer_page, Some(Page::Ramps), "{what}");
+        let ramp = h.state().ramps.custom().last().unwrap().name.clone();
+        assert_eq!(ramp, "Viridis copy", "{what}");
+    }
+}
+
+#[test]
 fn neighbors_differ_in_a_frame_colors_only_that_map() {
     use vale_app::ui::pad::Page;
     use vale_app::ui::pad::classify::{CLASSIFY, NEIGHBORS_DIFFER, REPLACE_RULES};

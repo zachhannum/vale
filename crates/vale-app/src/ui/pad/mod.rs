@@ -56,6 +56,7 @@ pub mod panels_menu;
 pub mod panes;
 pub mod point_card;
 pub mod popover;
+pub mod ramp_editor;
 pub mod raster;
 pub mod readout;
 pub mod rules;
@@ -427,6 +428,8 @@ pub enum Page {
     Classify,
     /// The labels of the colors of the ramp with this index.
     RampLabels(usize),
+    /// The editor of a new ramp, which `AppState::ramp_draft` holds.
+    RampEditor,
     /// The mask of the style of the layer.
     Mask,
     /// The label text of the layer.
@@ -2087,9 +2090,15 @@ pub(super) fn panel_head(state: &mut AppState, panel: Panel) -> Head {
             !state.pad.rules.picked(id).is_empty()
         }
         (Some(LayerRef::Vector(_)), Some(Page::FlowHeight(Some(i)))) => i < rule_count,
+        (Some(LayerRef::Raster(_) | LayerRef::Vector(_)), Some(Page::RampEditor)) => {
+            state.ramp_draft.is_some()
+        }
         _ => false,
     };
     if panel == Panel::Layers && !fits {
+        if state.pad.page == Some(Page::RampEditor) {
+            state.ramp_draft = None;
+        }
         state.pad.page = None;
     }
     let page = state.pad.page.filter(|_| panel == Panel::Layers);
@@ -2116,6 +2125,12 @@ pub(super) fn panel_head(state: &mut AppState, panel: Panel) -> Head {
             if matches!(page, Some(Page::RampLabels(_))) =>
         {
             ("pad-ramp-labels", raster::LABELS, Some(raster::COLOR_RAMPS))
+        }
+        (Panel::Layers, Some(LayerRef::Raster(_) | LayerRef::Vector(_)))
+            if page == Some(Page::RampEditor) =>
+        {
+            let back = ramp_editor::back_page(state).1;
+            ("pad-ramp-editor", ramp_editor::NEW_RAMP_TITLE, Some(back))
         }
         (Panel::Layers, Some(LayerRef::Raster(_))) if page == Some(Page::Stops) => {
             ("pad-stops", raster::COLOR_STOPS, Some(name))
@@ -2293,6 +2308,8 @@ pub(super) fn panel_title(
         state.pad.page = Some(if vector { Page::Classify } else { Page::Stops });
     } else if back && matches!(page, Some(Page::RampLabels(_))) {
         state.pad.page = Some(Page::Ramps);
+    } else if back && page == Some(Page::RampEditor) {
+        ramp_editor::cancel(state);
     } else if let (true, Some(Page::Symbols(i) | Page::MarkerShape(i) | Page::MarkerFill(i))) =
         (back, page)
     {
@@ -2337,6 +2354,7 @@ pub(super) fn panel_body(
                 raster::ramps_body(ui, state, controls, raster::RampUser::Raster(id))
             }
             Some(Page::RampLabels(i)) => raster::labels_body(ui, state, controls, i),
+            Some(Page::RampEditor) => ramp_editor::body(ui, state, controls),
             Some(Page::Stops) => raster::stops_body(ui, state, controls, id),
             Some(Page::Hillshade) => {
                 raster::hillshade_body(ui, state, controls, id);
@@ -2365,6 +2383,7 @@ pub(super) fn panel_body(
                 raster::ramps_body(ui, state, controls, raster::RampUser::Classify(id))
             }
             Some(Page::RampLabels(i)) => raster::labels_body(ui, state, controls, i),
+            Some(Page::RampEditor) => ramp_editor::body(ui, state, controls),
             Some(Page::Mask) => rules::mask_body(ui, state, controls, id),
             Some(Page::FlowHeight(_)) => rules::flow_height_body(ui, state, controls, id),
             Some(Page::LabelText) => fonts::text_body(ui, state, controls, id),
