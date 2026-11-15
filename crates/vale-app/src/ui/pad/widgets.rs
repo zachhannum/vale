@@ -1323,7 +1323,7 @@ pub fn option_row(
 }
 
 /// The width of the label at the left of a row of a form.
-const FORM_LABEL: f32 = 92.0;
+pub const FORM_LABEL: f32 = 92.0;
 
 /// One row of a form: the label at the left, and the place of the control
 /// at the right. The controls of all rows have the same left edge.
