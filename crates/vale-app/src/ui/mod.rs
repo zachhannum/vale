@@ -1940,6 +1940,35 @@ impl AppState {
         }
     }
 
+    /// Deletes the classes `(layer, i)` of `map`, as one undo step.
+    pub fn delete_label_classes(&mut self, map: MapId, list: &[(LayerId, usize)]) {
+        let target = Target::Map(map);
+        let mut layers: Vec<LayerId> = list.iter().map(|(l, _)| *l).collect();
+        layers.sort_by_key(|l| l.0);
+        layers.dedup();
+        self.save_edit();
+        let mut any = false;
+        for layer in layers {
+            let mut places: Vec<usize> = (list.iter())
+                .filter(|(l, _)| *l == layer)
+                .map(|(_, i)| *i)
+                .collect();
+            places.sort_unstable();
+            places.dedup();
+            let mut classes = self.doc.label_classes_in(target, layer);
+            for &i in places.iter().rev() {
+                if i < classes.len() {
+                    classes.remove(i);
+                }
+            }
+            any |= self.doc.set_label_classes(target, layer, &classes);
+        }
+        if any {
+            self.touch();
+            self.save_edit();
+        }
+    }
+
     /// Moves class `i` of `layer` in `map` to the end of the classes of
     /// layer `to`, as one undo step. A placement that the feature type of
     /// `to` does not have becomes its default placement. Returns the new
