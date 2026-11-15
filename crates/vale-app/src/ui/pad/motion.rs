@@ -461,6 +461,27 @@ mod tests {
     }
 
     #[test]
+    fn a_closed_card_shrinks_and_fades_out() {
+        let ctx = egui::Context::default();
+        let card = LayerId::new(egui::Order::Foreground, Id::new("menu"));
+        let ghost = LayerId::new(egui::Order::Foreground, card.id.with("ghost"));
+        let shown = |ctx: &egui::Context, open: bool| {
+            if open {
+                egui::Area::new(card.id).show(ctx, |ui| {
+                    ui.label("Row");
+                });
+                keep(ctx, card, Pos2::ZERO);
+            }
+            paint_exits(ctx);
+            f32::from(u8::from(ctx.memory(|m| m.areas().is_visible(&ghost))))
+        };
+        assert_eq!(frames(&ctx, 2, |ctx| shown(ctx, true)), [0.0, 0.0]);
+        let closing = frames(&ctx, 60, |ctx| shown(ctx, false));
+        assert_eq!(closing[1], 1.0, "{closing:?}");
+        assert_eq!(closing.last(), Some(&0.0), "{closing:?}");
+    }
+
+    #[test]
     fn about_keeps_its_origin() {
         let o = egui::pos2(10.0, 20.0);
         assert_eq!(about(0.5, o) * o, o);

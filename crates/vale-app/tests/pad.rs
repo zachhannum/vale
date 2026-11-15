@@ -15420,7 +15420,7 @@ fn a_swipe_to_the_right_on_a_header_hides_the_dock() {
             &[&[Panel::Layers, Panel::Toolbox], &[Panel::Brush]],
         );
         let before = dock_tabs(&h);
-        drag_header(&mut h, &name, vec2(200.0, 10.0));
+        drag_header(&mut h, &name, vec2(240.0, 10.0));
         let dock = &h.state().pad.docks.world;
         assert!(dock.collapsed, "{name}");
         // The panes stay as they were.
@@ -15525,11 +15525,15 @@ fn a_drag_of_the_handle_to_the_edge_collapses_the_dock_and_the_edge_tab_shows_it
     tap(&mut h, SHOW_DOCK);
     assert!(!h.state().pad.docks.world.collapsed);
     assert!(panel(&h, Panel::Layers).is_some());
-    // A drag of the tab to the left shows it too.
+    // A pull of the tab past the middle of the dock shows it too, and a
+    // short pull leaves it hidden.
     h.state_mut().pad.docks.world.collapsed = true;
     h.run_steps(3);
     let tab = control(&h, SHOW_DOCK).unwrap().center();
-    drag(&mut h, tab, tab - vec2(120.0, 0.0), None);
+    drag(&mut h, tab, tab - vec2(80.0, 0.0), None);
+    assert!(h.state().pad.docks.world.collapsed);
+    let tab = control(&h, SHOW_DOCK).unwrap().center();
+    drag(&mut h, tab, tab - vec2(240.0, 0.0), None);
     assert!(!h.state().pad.docks.world.collapsed);
 }
 
@@ -17202,4 +17206,43 @@ fn the_sheet_rises_on_a_spring_when_a_panel_opens() {
     h.run_steps(120);
     let rest = panel(&h, Panel::Layers).unwrap();
     assert!(first.top() > rest.top() + 50.0, "{first:?} {rest:?}");
+}
+
+#[test]
+fn a_pull_of_the_edge_tab_brings_the_dock_out_with_the_finger() {
+    use vale_app::ui::pad::dock_ui::SHOW_DOCK;
+    let mut h = springy_pad();
+    let rest = panel(&h, Panel::Layers).unwrap().left();
+    h.state_mut().pad.docks.world.collapsed = true;
+    h.run_steps(120);
+    let tab = control(&h, SHOW_DOCK).unwrap().center();
+    touch(&mut h, egui::TouchPhase::Start, tab, None);
+    h.step();
+    let mut lefts = Vec::new();
+    for i in 1..=8 {
+        touch(&mut h, egui::TouchPhase::Move, tab - vec2(20.0 * i as f32, 0.0), None);
+        h.step();
+        lefts.push(panel(&h, Panel::Layers).map(|r| r.left()));
+    }
+    // The dock follows the finger, from the place where the pull started.
+    let (a, b) = (lefts[3].unwrap(), lefts[7].unwrap());
+    assert!((a - b - 80.0).abs() < 1.0, "{lefts:?}");
+    touch(&mut h, egui::TouchPhase::End, tab - vec2(160.0, 0.0), None);
+    h.run_steps(120);
+    assert!(!h.state().pad.docks.world.collapsed);
+    assert_eq!(panel(&h, Panel::Layers).map(|r| r.left()), Some(rest));
+}
+
+#[test]
+fn the_edge_tab_is_at_the_height_of_the_handle() {
+    use vale_app::ui::pad::dock_ui::{DOCK_WIDTH, SHOW_DOCK};
+    let mut h = docked(BOARDS[0], &[&[Panel::Snap]]);
+    let handle = control(&h, DOCK_WIDTH).unwrap().center();
+    // The dock is shorter than its room, so its middle is higher.
+    let room = h.state().pad.rects.unwrap().dock;
+    assert!(handle.y < room.center().y - 50.0, "{handle:?} {room:?}");
+    h.state_mut().pad.docks.world.collapsed = true;
+    h.run_steps(3);
+    let tab = control(&h, SHOW_DOCK).unwrap().center();
+    assert_eq!(tab.y, handle.y);
 }
