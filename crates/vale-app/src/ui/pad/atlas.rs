@@ -6,13 +6,14 @@ use eframe::egui::{self, Align2, Order, Rect, pos2, vec2};
 use eframe::egui_wgpu::wgpu;
 use vale_sphere::{INTERVALS, ProjectionKind, interval_text};
 use vale_store::{
-    Border, BorderStyle, FrameShape, Graticule, GridColumns, LayerId, LayoutGrid, MapId, Neatline,
-    PageUnits, RasterId,
+    Border, BorderStyle, FrameShape, Graticule, GridColumns, LayerId, LayoutGrid, MapId,
+    MapStyleId, Neatline, PageUnits, RasterId,
 };
 
 use super::flyout::{self, Choice, Flyout};
 use super::geometry::{self, GAP, Input, MARGIN, PAD, ROW, Rects, TOUCH, WidthClass};
 use super::icons::Icon;
+use super::list;
 use super::number::Number;
 use super::panes;
 use super::readout;
@@ -50,6 +51,8 @@ pub const NO_MAP_STYLE_ROW: &str = "No map style";
 pub const MAP_STYLE_NAME: &str = "Map style name";
 pub const SAVE_AS_MAP_STYLE: &str = "Save as map style…";
 pub const DELETE_MAP_STYLE: &str = "Delete map style";
+/// The name of the header button that deletes the selected map styles.
+pub const DELETE_MAP_STYLES: &str = "Delete map styles";
 pub const UPDATE_MAP_STYLE: &str = "Update map style";
 pub const RESET_TO_MAP_STYLE: &str = "Reset to map style";
 /// The mark of a map, and of a layer in a map, with local changes.
@@ -129,6 +132,8 @@ pub const AZIMUTH: &str = "Azimuth";
 pub const DISTORTION: &str = "Distortion";
 pub const TISSOT_CIRCLES: &str = "Tissot circles";
 pub const PROJECTION_NAME: &str = "Projection name";
+/// The name field of a custom projection that the user renames.
+pub const CUSTOM_PROJECTION_NAME: &str = "Custom projection name";
 pub const SAVE_PROJECTION: &str = "Save projection";
 pub const DELETE_PROJECTION: &str = "Delete projection";
 /// The name of the row of a custom projection.
@@ -1292,8 +1297,7 @@ fn map_style_rows(
     };
     if widgets::open_row(ui, controls, MAP_STYLE, &value).clicked() {
         state.atlas.map_styles = Some(id);
-        state.atlas.map_style_swipe = None;
-        state.atlas.map_style_name = None;
+        state.atlas.map_style_list = Default::default();
     }
     if edited {
         if widgets::button_row(ui, controls, UPDATE_MAP_STYLE, true).clicked() {
@@ -1307,118 +1311,128 @@ fn map_style_rows(
 }
 
 /// The Map style page of frame `id`: "None" and each map style, with a
-/// check on the map style of the map. A tap links the map style, and a
-/// swipe to the left shows the Delete button of a map style. Below them are
-/// the name of the linked map style and "Save as map style…".
+/// check on the map style of the map. A tap links the map style. A swipe to
+/// the right selects a map style, and a swipe to the left shows its Rename
+/// and Delete buttons. Below them is "Save as map style…".
 pub(super) fn map_style_head(state: &mut AppState, id: vale_store::FrameId) -> Option<Head> {
     let map = state.doc.project.atlas.frame(id)?.map;
     let back_to = |state: &mut AppState| {
         state.atlas.map_styles = None;
-        state.atlas.map_style_swipe = None;
-        state.atlas.map_style_name = None;
+        state.atlas.map_style_list = Default::default();
     };
     let body = move |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| {
         map_style_body(ui, state, controls, map);
     };
     let parts = PageParts::new("pad-atlas-map-style", MAP_STYLE, Some(PROPERTIES));
-    Some(parts.head(Panel::Properties, back_to, no_rows, body))
+    let mut head = parts.head(Panel::Properties, back_to, no_rows, body);
+    let picked = state.atlas.map_style_list.picked.len();
+    let count = state.doc.project.atlas.map_styles.len();
+    let buttons = list::group_buttons(picked, count, &[], Some(DELETE_MAP_STYLES));
+    head.buttons = buttons.map(|buttons| super::PageButtons {
+        buttons,
+        act: Box::new(map_style_group),
+    });
+    Some(head)
+}
+
+/// Does the action of a header button of the selected map styles.
+fn map_style_group(state: &mut AppState, name: &'static str) {
+    let keys: Vec<_> = (state.doc.project.atlas.map_styles.iter())
+        .map(|s| s.id)
+        .collect();
+    let list = &mut state.atlas.map_style_list;
+    if let Some(list::Group::Delete(ids)) =
+        list::group_action(list, &keys, name, Some(DELETE_MAP_STYLES))
+    {
+        state.delete_map_styles(&ids);
+    }
 }
 
 fn map_style_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, map: MapId) {
-    use super::swipe;
     ui.spacing_mut().item_spacing.y = 0.0;
     let doc_atlas = &state.doc.project.atlas;
     let linked = doc_atlas.map(map).and_then(|m| m.style);
-    let styles: Vec<_> = (doc_atlas.map_styles.iter())
-        .map(|s| (s.id, s.name.clone()))
+    let styles: Vec<list::Row<MapStyleId>> = (doc_atlas.map_styles.iter())
+        .map(|s| list::Row {
+            label: map_style_row(&s.name),
+            on: linked == Some(s.id),
+            rename: true,
+            delete: true,
+            ..list::Row::new(s.id, s.name.clone())
+        })
         .collect();
-    // The first row is None, and it has no Delete button.
-    let size = vec2(ui.available_width(), (styles.len() + 1) as f32 * PANEL_ROW);
-    let (area, _) = ui.allocate_exact_size(size, egui::Sense::hover());
-    let place = |i: usize| {
-        let top = area.top() + i as f32 * PANEL_ROW;
-        Rect::from_min_size(pos2(area.left(), top), vec2(area.width(), PANEL_ROW))
+    // None is a list of its own, with no gestures.
+    let none = list::Row {
+        label: NO_MAP_STYLE_ROW.to_owned(),
+        on: linked.is_none(),
+        ..list::Row::new((), NO_MAP_STYLE)
     };
-    swipe::shut_outside(ui, &mut state.atlas.map_style_swipe, |style| {
-        styles
-            .iter()
-            .position(|s| s.0 == style)
-            .map(|i| place(i + 1))
-    });
-    let (name, title, on) = (NO_MAP_STYLE_ROW, NO_MAP_STYLE, linked.is_none());
-    let none = widgets::swipe_option_row(ui, controls, place(0), name, title, on, 0.0);
-    if none.body.clicked() {
-        state.atlas.map_style_swipe = None;
+    let mut gestures = list::ListState::default();
+    let spec = list::Spec::default();
+    let rows = [none];
+    let events = list::show(
+        ui,
+        controls,
+        &mut gestures,
+        spec,
+        &rows,
+        |ui, controls, cell, _| {
+            let look = list::Look {
+                text: NO_MAP_STYLE,
+                check: Some(linked.is_none()),
+                ..list::Look::default()
+            };
+            list::draw(ui, controls, cell, &look)
+        },
+    );
+    if events.contains(&list::Event::Tap(())) && linked.is_some() {
+        state.atlas.map_style_list.shut();
         state.set_map_style_link(map, None);
     }
-    for (i, (style, name)) in styles.iter().enumerate() {
-        let style = *style;
-        if let Some((_, text)) = state.atlas.map_style_name.as_mut().filter(|r| r.0 == style) {
-            // The row is the name field while the user renames the map
-            // style. The name changes when the field loses the focus.
-            let taken = (styles.iter()).any(|(id, n)| *id != style && n == text.trim());
-            let valid = !text.trim().is_empty() && !taken;
-            let field = ui
-                .push_id(("map style", style.0), |ui| {
-                    let (rect, font) = (place(i + 1), theme::body());
-                    widgets::field_at(ui, controls, rect, MAP_STYLE_NAME, None, text, valid, font)
-                })
-                .inner;
-            if field.lost_focus() {
-                let text = state.atlas.map_style_name.take().map(|r| r.1);
-                atlas::rename_map_style(state, style, &text.unwrap_or_default());
-            } else if !field.has_focus() {
-                widgets::focus_all(ui, &field, name);
-            }
-            continue;
-        }
-        let open = state.atlas.map_style_swipe.filter(|s| s.row == style);
-        let shift = swipe::shift(ui, state.atlas.map_style_swipe, style);
-        let on = linked == Some(style);
-        let row = ui
-            .push_id(("map style", style.0), |ui| {
-                let title = map_style_row(name);
-                widgets::swipe_option_row(ui, controls, place(i + 1), &title, name, on, shift)
-            })
-            .inner;
-        if row.delete {
-            state.atlas.map_style_swipe = None;
-            state.atlas.map_style_name = None;
-            state.delete_map_style(style);
-            continue;
-        }
-        if row.rename {
-            state.atlas.map_style_swipe = None;
-            state.atlas.map_style_name = Some((style, name.clone()));
-            continue;
-        }
-        let width = widgets::RENAME_WIDTH;
-        if swipe::drag(
-            ui,
-            &mut state.atlas.map_style_swipe,
-            style,
-            &row.body,
-            width,
-        ) {
-            continue;
-        }
-        if row.body.clicked() {
-            if open.is_some() {
-                state.atlas.map_style_swipe = None;
-            } else if !on {
-                state.atlas.map_style_name = None;
+
+    let rows = styles;
+    let list = &mut state.atlas.map_style_list;
+    let renamed = list.rename.as_ref().map(|r| r.0);
+    let others: Vec<&str> = (rows.iter())
+        .filter(|r| Some(r.key) != renamed)
+        .map(|r| r.name.as_str())
+        .collect();
+    let valid = |name: &str| list::not_blank(name) && !others.contains(&name.trim());
+    let spec = list::Spec {
+        select: true,
+        field: MAP_STYLE_NAME,
+        valid: &valid,
+        ..list::Spec::default()
+    };
+    let events = list::show(ui, controls, list, spec, &rows, |ui, controls, cell, i| {
+        let look = list::Look {
+            text: &rows[i].name,
+            check: Some(rows[i].on),
+            ..list::Look::default()
+        };
+        list::draw(ui, controls, cell, &look)
+    });
+    for event in events {
+        match event {
+            list::Event::Tap(style) if linked != Some(style) => {
                 state.set_map_style_link(map, Some(style));
             }
+            list::Event::Rename(style, name) => {
+                atlas::rename_map_style(state, style, &name);
+            }
+            list::Event::Delete(style) => state.delete_map_style(style),
+            _ => {}
         }
     }
     ui.add_space(14.0);
     if widgets::button_row(ui, controls, SAVE_AS_MAP_STYLE, true).clicked() {
-        state.atlas.map_style_swipe = None;
         // The row of the new map style is its name field.
         let made = state.save_as_map_style(map);
         let name =
             made.and_then(|id| Some((id, state.doc.project.atlas.map_style(id)?.name.clone())));
-        state.atlas.map_style_name = name;
+        let list = &mut state.atlas.map_style_list;
+        list.shut();
+        list.rename = name;
     }
 }
 
@@ -1641,41 +1655,52 @@ fn layers_tab(
     };
     ui.spacing_mut().item_spacing.y = 0.0;
     let edited = state.doc.local_changes(map);
-    let rows: Vec<_> = (state.doc.project.layers().iter())
-        .map(|l| (l.id, layer_icon(l), l.name.clone()))
+    let looks: Vec<_> = (state.doc.project.layers().iter())
+        .map(|l| (layer_icon(l), state.doc.shown(map, l.id)))
+        .collect();
+    let selected = state.selected_vector();
+    let rows: Vec<list::Row<LayerId>> = (state.doc.project.layers().iter())
+        .map(|l| list::Row {
+            label: format!("Layer {}", l.name),
+            on: selected == Some(l.id),
+            trailing: 2.0 * TOUCH,
+            ..list::Row::new(l.id, l.name.clone())
+        })
         .collect();
     if rows.is_empty() {
         ui.add_space(4.0);
         ui.label(egui::RichText::new(NO_LAYERS).color(theme::MUTE));
         return;
     }
+    let mut gestures = list::ListState::default();
+    let spec = list::Spec::default();
+    let events = list::show(
+        ui,
+        controls,
+        &mut gestures,
+        spec,
+        &rows,
+        |ui, controls, cell, i| {
+            let look = list::Look {
+                icon: Some(looks[i].0),
+                text: &rows[i].name,
+                note: edited.contains(&rows[i].key).then_some(EDITED),
+                eye: Some(looks[i].1),
+                open: true,
+                ..list::Look::default()
+            };
+            list::draw(ui, controls, cell, &look)
+        },
+    );
     let mut open = None;
-    for &(layer, icon, ref name) in &rows {
-        let shown = state.doc.shown(map, layer);
-        let (rect, _) =
-            ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), egui::Sense::hover());
-        let row = ui
-            .push_id(layer.0, |ui| {
-                widgets::layer_row(
-                    ui,
-                    controls,
-                    rect,
-                    icon,
-                    name,
-                    Some(shown),
-                    state.selected_vector() == Some(layer),
-                    true,
-                    false,
-                    0.0,
-                    edited.contains(&layer).then_some(EDITED),
-                )
-            })
-            .inner;
-        if row.eye {
-            state.set_map_shown(map, layer, !shown);
-        }
-        if row.open || row.body.is_some_and(|b| b.clicked()) {
-            open = Some(layer);
+    for event in events {
+        match event {
+            list::Event::Tap(layer) | list::Event::Open(layer) => open = Some(layer),
+            list::Event::Control(layer, list::EYE) => {
+                let shown = state.doc.shown(map, layer);
+                state.set_map_shown(map, layer, !shown);
+            }
+            _ => {}
         }
     }
     if let Some(layer) = open {
@@ -2062,15 +2087,7 @@ fn projection_tab(
                 state.atlas.kinds = false;
             }
         }
-        let names: Vec<String> = state.doc.presets().iter().map(|p| p.name.clone()).collect();
-        for name in names {
-            let on = current.as_deref() == Some(name.as_str());
-            let row = widgets::option_row(ui, controls, &custom_row(&name), &name, &[], on);
-            if row.clicked() {
-                atlas::apply_preset(state, id, &name);
-                state.atlas.kinds = false;
-            }
-        }
+        preset_rows(ui, state, controls, id, current.as_deref());
     }
     ui.add_space(6.0);
 
@@ -2160,6 +2177,61 @@ fn projection_tab(
         .any(|p| p.name == state.atlas.preset_name);
     if widgets::button_row(ui, controls, DELETE_PROJECTION, saved).clicked() {
         atlas::delete_preset(state);
+    }
+}
+
+/// The rows of the custom projections, with a check on the projection of
+/// the map of frame `id`. A tap applies a custom projection, and a swipe to
+/// the left shows its Rename and Delete buttons.
+fn preset_rows(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    id: vale_store::FrameId,
+    current: Option<&str>,
+) {
+    let names: Vec<String> = state.doc.presets().iter().map(|p| p.name.clone()).collect();
+    let rows: Vec<list::Row<usize>> = (names.iter().enumerate())
+        .map(|(i, name)| list::Row {
+            label: custom_row(name),
+            on: current == Some(name.as_str()),
+            rename: true,
+            delete: true,
+            ..list::Row::new(i, name.clone())
+        })
+        .collect();
+    let list = &mut state.atlas.preset_list;
+    let renamed = list.rename.as_ref().map(|r| r.0);
+    let others: Vec<&str> = (rows.iter())
+        .filter(|r| Some(r.key) != renamed)
+        .map(|r| r.name.as_str())
+        .collect();
+    let valid = |name: &str| list::not_blank(name) && !others.contains(&name.trim());
+    let spec = list::Spec {
+        field: CUSTOM_PROJECTION_NAME,
+        valid: &valid,
+        ..list::Spec::default()
+    };
+    let events = list::show(ui, controls, list, spec, &rows, |ui, controls, cell, i| {
+        let look = list::Look {
+            text: &rows[i].name,
+            check: Some(rows[i].on),
+            ..list::Look::default()
+        };
+        list::draw(ui, controls, cell, &look)
+    });
+    for event in events {
+        match event {
+            list::Event::Tap(i) => {
+                atlas::apply_preset(state, id, &names[i]);
+                state.atlas.kinds = false;
+            }
+            list::Event::Rename(i, name) => {
+                atlas::rename_preset(state, &names[i], &name);
+            }
+            list::Event::Delete(i) => atlas::delete_preset_named(state, &names[i]),
+            _ => {}
+        }
     }
 }
 

@@ -605,6 +605,8 @@ pub struct AtlasState {
     pub(crate) neatline_shown: bool,
     /// The text of the name field of the custom projections.
     pub preset_name: String,
+    /// The gestures of the rows of the custom projections, by place.
+    pub preset_list: crate::ui::pad::list::ListState<usize>,
     /// The panels of a frame of the iPad layout show their pages at the same
     /// time, so the pages of a tab do not wait for the tab.
     pub every_tab: bool,
@@ -645,8 +647,8 @@ pub struct AtlasState {
     pub label_page: Option<ClassPage>,
     /// The frame whose Map style page the Frame tab shows.
     pub map_styles: Option<FrameId>,
-    /// The map style row of the Map style page that a finger swiped.
-    pub map_style_swipe: Option<crate::ui::pad::Swipe<MapStyleId>>,
+    /// The gestures of the map styles of the Map style page.
+    pub map_style_list: crate::ui::pad::list::ListState<MapStyleId>,
     /// The map style that the user renames on the Map style page, and the
     /// text of its name field.
     pub map_style_name: Option<(MapStyleId, String)>,
@@ -853,6 +855,7 @@ impl Default for AtlasState {
             neatline_color: false,
             neatline_shown: false,
             preset_name: String::new(),
+            preset_list: Default::default(),
             every_tab: false,
             panel_rect: None,
             place: None,
@@ -866,7 +869,7 @@ impl Default for AtlasState {
             label: None,
             label_page: None,
             map_styles: None,
-            map_style_swipe: None,
+            map_style_list: Default::default(),
             map_style_name: None,
             label_segment: ClassSegment::Text,
             label_color: None,
@@ -3958,9 +3961,33 @@ pub fn apply_preset(state: &mut AppState, id: FrameId, name: &str) {
 /// Deletes the custom projection with the name in the name field.
 pub fn delete_preset(state: &mut AppState) {
     let name = state.atlas.preset_name.clone();
-    if state.doc.remove_preset(&name) {
+    delete_preset_named(state, &name);
+}
+
+/// Deletes the custom projection `name`. The name field clears if it has
+/// that name.
+pub fn delete_preset_named(state: &mut AppState, name: &str) {
+    if state.doc.remove_preset(name) && state.atlas.preset_name == name {
         state.atlas.preset_name.clear();
     }
+}
+
+/// Gives the custom projection `from` the name `to`. An empty name or the
+/// name of another custom projection does not apply.
+pub fn rename_preset(state: &mut AppState, from: &str, to: &str) -> bool {
+    let to = to.trim();
+    let presets = &mut state.doc.project.atlas.presets;
+    if to.is_empty() || presets.iter().any(|p| p.name == to) {
+        return false;
+    }
+    let Some(preset) = presets.iter_mut().find(|p| p.name == from) else {
+        return false;
+    };
+    preset.name = to.to_string();
+    if state.atlas.preset_name == from {
+        state.atlas.preset_name = to.to_string();
+    }
+    true
 }
 
 /// The custom projection that has the projection of the map of a frame.

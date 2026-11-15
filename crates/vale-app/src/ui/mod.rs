@@ -1630,6 +1630,20 @@ impl AppState {
         }
     }
 
+    /// Deletes map styles, as one undo step. Each of their maps keeps its
+    /// look.
+    pub fn delete_map_styles(&mut self, ids: &[MapStyleId]) {
+        self.save_edit();
+        let mut deleted = false;
+        for id in ids {
+            deleted |= self.doc.delete_map_style(*id);
+        }
+        if deleted {
+            self.touch();
+            self.save_edit();
+        }
+    }
+
     /// Turns a layer on or off in a map, as one undo step.
     /// The eye of the World workspace keeps its state.
     pub fn set_map_shown(&mut self, map: MapId, layer: LayerId, on: bool) {

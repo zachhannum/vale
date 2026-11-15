@@ -36,8 +36,8 @@ use vale_app::ui::pad::atlas::{
     SNAP_TO_LAYOUT, TISSOT_CIRCLES,
 };
 use vale_app::ui::pad::atlas::{
-    EDITED, MAP_STYLE, MAP_STYLE_NAME, NO_MAP_STYLE_ROW, RESET_TO_MAP_STYLE, SAVE_AS_MAP_STYLE,
-    UPDATE_MAP_STYLE, map_style_row,
+    CUSTOM_PROJECTION_NAME, DELETE_MAP_STYLES, EDITED, MAP_STYLE, MAP_STYLE_NAME, NO_MAP_STYLE,
+    NO_MAP_STYLE_ROW, RESET_TO_MAP_STYLE, SAVE_AS_MAP_STYLE, UPDATE_MAP_STYLE, map_style_row,
 };
 use vale_app::ui::pad::dock_ui::tab_name;
 use vale_app::ui::pad::edge_labels::{
@@ -66,7 +66,7 @@ use vale_app::ui::pad::labels::{
     REPEAT_DISTANCE, REPEAT_LABEL, SHOW_LINE, ZONES, zone_name,
 };
 use vale_app::ui::pad::rules::STROKE_WIDTH;
-use vale_app::ui::pad::widgets::eye_name;
+use vale_app::ui::pad::widgets::{PANEL_ROW, eye_name};
 use vale_app::ui::pad::{
     CLEAR_PATH, DELETE_VERTEX, DESELECT, GRATICULE, MAP_SNAP, MEASURE, PAN, Panel, SNAP,
     SNAP_DISTANCE, SNAP_HINT, SNAPPING, readout_line,
@@ -1233,6 +1233,43 @@ fn a_custom_projection_is_saved_in_the_project_and_picked_again() {
 }
 
 #[test]
+fn a_swipe_to_the_left_renames_and_deletes_a_custom_projection() {
+    use vale_app::ui::pad::widgets::RENAME;
+    let mut h = inset_pad(BOARDS[0]);
+    let map = frame(&h, 1).map;
+    assert!(h.state_mut().doc.save_preset(map, "Home"));
+    assert!(h.state_mut().doc.save_preset(map, "Away"));
+    show_tab(&mut h, "Projection");
+    tap(&mut h, PROJECTION);
+    let presets = |h: &Pad| -> Vec<String> {
+        (h.state().doc.presets().iter())
+            .map(|p| p.name.clone())
+            .collect()
+    };
+
+    // A name that another custom projection has does not apply.
+    for (text, names) in [("Away", ["Home", "Away"]), ("Coast", ["Coast", "Away"])] {
+        let from = presets(&h)[0].clone();
+        scroll_to(&mut h, &custom_row(&from));
+        swipe_row(&mut h, &custom_row(&from), -120.0);
+        tap(&mut h, &format!("{RENAME} {from}"));
+        assert!(control(&h, CUSTOM_PROJECTION_NAME).is_some());
+        h.key_press_modifiers(Modifiers::COMMAND, egui::Key::A);
+        h.run_steps(1);
+        h.event(egui::Event::Text(text.to_owned()));
+        h.run_steps(1);
+        h.key_press(egui::Key::Enter);
+        h.run_steps(2);
+        assert_eq!(presets(&h), names);
+    }
+
+    swipe_row(&mut h, &custom_row("Coast"), -120.0);
+    tap(&mut h, "Delete Coast");
+    assert_eq!(presets(&h), ["Away"]);
+    assert!(control(&h, &custom_row("Coast")).is_none());
+}
+
+#[test]
 fn the_tabs_of_a_frame_work_with_a_finger() {
     for size in BOARDS {
         let mut h = inset_pad(size);
@@ -2125,6 +2162,54 @@ fn the_layers_tab_turns_a_layer_off_in_the_map_of_the_frame_only() {
         h.run_steps(3);
         assert!(control(&h, &eye_name("Rivers", true)).is_some(), "{size:?}");
     }
+}
+
+/// A hold of a finger on a control for half a second, and then a drag of
+/// two rows down.
+fn hold_and_drag(h: &mut Pad, name: &str) {
+    let from = control(h, name)
+        .unwrap_or_else(|| panic!("no row {name}"))
+        .center();
+    touch(h, 1, egui::TouchPhase::Start, from, None);
+    h.run_steps(10);
+    let to = from + vec2(0.0, 2.0 * PANEL_ROW);
+    for i in 1..=6 {
+        let at = from.lerp(to, i as f32 / 6.0);
+        touch(h, 1, egui::TouchPhase::Move, at, None);
+        h.step();
+    }
+    release(h, to, Input::Finger);
+}
+
+#[test]
+fn the_rows_of_the_layers_tab_ignore_swipes_and_holds() {
+    let mut h = inset_pad(BOARDS[0]);
+    let inset = frame(&h, 1).map;
+    show_tab(&mut h, FRAME_TABS[2]);
+    let order = |h: &Pad| -> Vec<String> {
+        (h.state().doc.project.layers().iter())
+            .map(|l| l.name.clone())
+            .collect()
+    };
+    let before = order(&h);
+    for dx in [120.0, -120.0] {
+        swipe_row(&mut h, "Layer Rivers", dx);
+        assert!(control(&h, "Delete Rivers").is_none(), "{dx}");
+        assert!(control(&h, "Rename Rivers").is_none(), "{dx}");
+        assert_eq!(h.state().atlas.layer, None, "{dx}");
+    }
+    hold_and_drag(&mut h, "Layer Rivers");
+    assert_eq!(order(&h), before);
+    assert!(shows(&h, inset, "Rivers"));
+
+    // The eye and a tap still work.
+    tap(&mut h, &eye_name("Rivers", true));
+    assert!(!shows(&h, inset, "Rivers"));
+    h.state_mut().atlas.layer = None;
+    h.run_steps(2);
+    tap(&mut h, "Layer Rivers");
+    let rivers = layer_id(&h, "Rivers");
+    assert_eq!(h.state().atlas.layer, Some((frame(&h, 1).id, rivers)));
 }
 
 #[test]
@@ -7268,6 +7353,45 @@ fn the_legend_panel_renames_and_hides_its_entries() {
     assert!(legend(&h).entries.is_empty());
 }
 
+#[test]
+fn the_legend_rows_ignore_swipes_and_holds() {
+    let mut h = pad();
+    add_frame(&mut h);
+    add_item(&mut h, ItemKind::Legend);
+    let legend = |h: &Pad| match &item(h, 0).item {
+        Furniture::Legend(l) => l.clone(),
+        _ => panic!("not a legend"),
+    };
+    let l = legend(&h);
+    let rows = atlas::legend_rows(h.state_mut(), &l);
+    let labels: Vec<String> = rows.iter().map(|r| r.label.clone()).collect();
+    let names = entry_names(&labels);
+    let key = (rows[0].layer, rows[0].rule.clone());
+    tap(&mut h, ENTRIES);
+    scroll_to(&mut h, &names[0]);
+    let page = Some(ItemPage::Text(TextPart::Entries));
+    for dx in [120.0, -120.0] {
+        swipe_row(&mut h, &names[0], dx);
+        assert!(
+            control(&h, &format!("Delete {}", names[0])).is_none(),
+            "{dx}"
+        );
+        assert_eq!(h.state().atlas.item_page, page, "{dx}");
+    }
+    hold_and_drag(&mut h, &names[0]);
+    assert_eq!(legend(&h), l);
+
+    // The eye and a tap still work.
+    scroll_to(&mut h, &eye_name(&names[0], true));
+    tap(&mut h, &eye_name(&names[0], true));
+    assert!(legend(&h).entries[&key].hidden);
+    tap(&mut h, &names[0]);
+    assert_eq!(
+        h.state().atlas.item_page,
+        Some(ItemPage::Entry(key.0, key.1.clone()))
+    );
+}
+
 fn bar(h: &Pad, index: usize) -> vale_store::ScaleBarItem {
     match item(h, index).item {
         Furniture::ScaleBar(b) => b,
@@ -9386,10 +9510,10 @@ fn the_map_style_page_renames_a_map_style_and_a_swipe_deletes_it() {
     find(&mut h, &row);
     // A short swipe snaps shut.
     swipe_row(&mut h, &row, -30.0);
-    assert_eq!(h.state().atlas.map_style_swipe, None);
+    assert_eq!(h.state().atlas.map_style_list.open, None);
     assert!(control(&h, "Delete Coast map").is_none());
     swipe_row(&mut h, &row, -120.0);
-    let open = h.state().atlas.map_style_swipe.unwrap();
+    let open = h.state().atlas.map_style_list.open.unwrap();
     assert_eq!((open.row, open.moving), (style, false));
     assert_eq!(linked(&h, inset), Some(style));
     tap(&mut h, "Delete Coast map");
@@ -9399,6 +9523,78 @@ fn the_map_style_page_renames_a_map_style_and_a_swipe_deletes_it() {
     same_look(&look(&mut h, 1), &before[1], "inset");
     assert!(control(&h, &row).is_none());
     assert!(control(&h, MAP_STYLE_NAME).is_none());
+}
+
+/// The names of the map styles, in their order.
+fn map_style_names(h: &Pad) -> Vec<String> {
+    (h.state().doc.project.atlas.map_styles.iter())
+        .map(|s| s.name.clone())
+        .collect()
+}
+
+#[test]
+fn a_swipe_to_the_right_selects_map_styles_and_the_header_deletes_them_in_one_step() {
+    use vale_app::ui::pad::list::{DESELECT_ALL, SELECT_ALL};
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = state();
+    s.session = Some(Session::open(&dir.path().join("project.gpkg"), &mut s.doc).unwrap());
+    let mut h = pad_with(s, BOARDS[0]);
+    add_frame(&mut h);
+    add_frame(&mut h);
+    let (main, inset) = (frame(&h, 0).map, frame(&h, 1).map);
+    let a = h.state_mut().save_as_map_style(main).unwrap();
+    let b = h.state_mut().save_as_map_style(inset).unwrap();
+    h.state_mut().save_waiting().unwrap();
+    let names = map_style_names(&h);
+    map_style_page_of(&mut h, 1);
+    let picked = |h: &Pad| h.state().atlas.map_style_list.picked.clone();
+
+    // None has no swipe.
+    find(&mut h, NO_MAP_STYLE_ROW);
+    swipe_row(&mut h, NO_MAP_STYLE_ROW, 120.0);
+    assert!(picked(&h).is_empty());
+    assert!(control(&h, DELETE_MAP_STYLES).is_none());
+    swipe_row(&mut h, NO_MAP_STYLE_ROW, -120.0);
+    assert!(control(&h, &format!("Delete {NO_MAP_STYLE}")).is_none());
+    assert!(control(&h, &format!("Rename {NO_MAP_STYLE}")).is_none());
+
+    // A swipe to the right selects a map style, and a second one deselects
+    // it.
+    swipe_row(&mut h, &map_style_row(&names[1]), 120.0);
+    assert_eq!(picked(&h), [b]);
+    for name in [SELECT_ALL, DELETE_MAP_STYLES, DESELECT_ALL] {
+        assert!(control(&h, name).is_some(), "{name}");
+    }
+    check_controls(&h, "selected map styles");
+    swipe_row(&mut h, &map_style_row(&names[1]), 120.0);
+    assert!(picked(&h).is_empty());
+    assert!(control(&h, DELETE_MAP_STYLES).is_none());
+
+    // The group delete is one undo step.
+    swipe_row(&mut h, &map_style_row(&names[0]), 120.0);
+    tap(&mut h, SELECT_ALL);
+    assert_eq!(picked(&h), [a, b]);
+    tap(&mut h, DELETE_MAP_STYLES);
+    assert!(map_style_names(&h).is_empty());
+    assert!(picked(&h).is_empty());
+    h.state_mut().save_waiting().unwrap();
+    h.state_mut().undo();
+    h.run_steps(2);
+    assert_eq!(map_style_names(&h), names);
+}
+
+#[test]
+fn a_rename_of_a_map_style_refuses_the_name_of_another_map_style() {
+    let mut h = inset_pad(BOARDS[0]);
+    let (main, inset) = (frame(&h, 0).map, frame(&h, 1).map);
+    h.state_mut().save_as_map_style(main).unwrap();
+    h.state_mut().save_as_map_style(inset).unwrap();
+    let names = map_style_names(&h);
+    map_style_page_of(&mut h, 1);
+    rename_by_swipe(&mut h, &names[1], &names[0]);
+    assert_eq!(map_style_names(&h), names);
+    rename_by_swipe(&mut h, &names[1], "Coast");
+    assert_eq!(map_style_names(&h), [names[0].clone(), "Coast".to_owned()]);
 }
 
 #[test]

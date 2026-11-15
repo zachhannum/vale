@@ -59,7 +59,6 @@ pub mod raster;
 pub mod readout;
 pub mod rules;
 pub mod selectable;
-pub mod swipe;
 pub mod table;
 pub mod text_style;
 pub mod theme;
@@ -341,10 +340,6 @@ const NEW_LAYERS: [(&str, GeometryKind); 3] = [
 /// The width of the menu of the new layers.
 const ADD_WIDTH: f32 = 220.0;
 pub use list::{HOLD_SLOP, HOLD_TIME};
-
-/// A row of a list that a finger moved to the left, to show its Delete
-/// button.
-pub type Swipe<K = LayerId> = swipe::Swipe<K>;
 
 /// A panel that a button of the layout opens.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, clap::ValueEnum)]
