@@ -140,9 +140,14 @@ pub struct Row<K> {
     pub on: bool,
     pub rename: bool,
     pub delete: bool,
+    /// A swipe to the right selects the row, in a list with
+    /// [`Spec::select`].
+    pub select: bool,
     /// The width at the right of the row that the controls of the caller
     /// take, from the right edge of the highlight.
     pub trailing: f32,
+    /// The rows of a list with [`Spec::reorder`] are `PANEL_ROW` tall.
+    pub height: f32,
 }
 
 impl<K> Row<K> {
@@ -156,7 +161,9 @@ impl<K> Row<K> {
             on: false,
             rename: false,
             delete: false,
+            select: true,
             trailing: 0.0,
+            height: PANEL_ROW,
         }
     }
 
@@ -235,8 +242,8 @@ enum Claim {
     Mark,
 }
 
-/// Draws the rows one below the other, `PANEL_ROW` apart, and follows the
-/// gestures of `spec`. `cell` draws the content of row `i` and returns the
+/// Draws the rows one below the other, each [`Row::height`] tall, and
+/// follows the gestures of `spec`. `cell` draws the content of row `i` and returns the
 /// control of the caller that the user tapped.
 pub fn show<K>(
     ui: &mut egui::Ui,
@@ -266,21 +273,27 @@ where
     {
         state.rename = None;
     }
-    let size = vec2(ui.available_width(), rows.len() as f32 * PANEL_ROW);
+    let tops: Vec<f32> = (rows.iter())
+        .scan(0.0, |y, r| {
+            *y += r.height;
+            Some(*y - r.height)
+        })
+        .collect();
+    let size = vec2(ui.available_width(), rows.iter().map(|r| r.height).sum());
     let (area, _) = ui.allocate_exact_size(size, egui::Sense::hover());
     let slot =
         |top: f32| Rect::from_min_size(pos2(area.left(), top), vec2(area.width(), PANEL_ROW));
     // Each row moves to its place on a spring, as after a reorder.
     let (list_id, ctx) = (ui.id(), ui.ctx().clone());
-    let spring = |key: K, i: usize| {
-        let target = i as f32 * PANEL_ROW;
+    let spring = |key: K, target: f32, height: f32| {
         let y = motion::points(&ctx, place_spring(list_id, key), target, motion::SNAPPY);
-        slot(area.top() + y)
+        Rect::from_min_size(
+            pos2(area.left(), area.top() + y),
+            vec2(area.width(), height),
+        )
     };
-    let places: Vec<Rect> = rows
-        .iter()
-        .enumerate()
-        .map(|(i, r)| spring(r.key, i))
+    let places: Vec<Rect> = (rows.iter().zip(&tops))
+        .map(|(r, top)| spring(r.key, *top, r.height))
         .collect();
     let place = |i: usize| places[i];
 
@@ -311,7 +324,8 @@ where
     let others = rows.iter().enumerate().filter(|(i, _)| *i != from);
     for (k, (i, row)) in others.enumerate() {
         // The rows make room at the place where the lifted row goes.
-        let rect = spring(row.key, if k < to { k } else { k + 1 });
+        let at = if k < to { k } else { k + 1 };
+        let rect = spring(row.key, at as f32 * PANEL_ROW, PANEL_ROW);
         paint_still(ui, controls, state, row, rect, false, i, &mut cell);
     }
     motion::set(ui.ctx(), place_spring(list_id, lift.key), top - area.top());
@@ -577,7 +591,7 @@ fn follow<K: Copy + PartialEq + Hash + std::fmt::Debug>(
         }
         claim = if width > 0.0 && (m.x < 0.0 || is_open) {
             Some(Claim::Open)
-        } else if spec.select && m.x > 0.0 {
+        } else if spec.select && row.select && m.x > 0.0 {
             Some(Claim::Mark)
         } else {
             None
@@ -1000,4 +1014,43 @@ pub fn group_action<K: Copy + PartialEq>(
         }
         _ => Some(Group::Extra(name)),
     }
+}
+
+/// A list of choices with no gestures: a row for each choice, with the
+/// check on the choices that are on. `choices` are the text of each row
+/// and its check. A row has the name `label(text)`. Returns the index of
+/// the row that the user tapped.
+pub fn options(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    choices: &[(&str, bool)],
+    label: impl Fn(&str) -> String,
+) -> Option<usize> {
+    let rows: Vec<Row<usize>> = (choices.iter().enumerate())
+        .map(|(i, (text, on))| Row {
+            label: label(text),
+            on: *on,
+            ..Row::new(i, *text)
+        })
+        .collect();
+    let mut state = ListState::default();
+    let events = show(
+        ui,
+        controls,
+        &mut state,
+        Spec::default(),
+        &rows,
+        |ui, c, cell, i| {
+            let look = Look {
+                text: choices[i].0,
+                check: Some(choices[i].1),
+                ..Look::default()
+            };
+            draw(ui, c, cell, &look)
+        },
+    );
+    events.into_iter().find_map(|e| match e {
+        Event::Tap(i) => Some(i),
+        _ => None,
+    })
 }
