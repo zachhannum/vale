@@ -312,15 +312,26 @@ fn scrim(ctx: &egui::Context, id: &str, screen: Rect, alpha: u8) -> bool {
 }
 
 /// Draws a card above a scrim. A touch on the scrim does not put it above
-/// the card.
-fn card_above(ctx: &egui::Context, id: &str, rect: Rect, add_contents: impl FnOnce(&mut egui::Ui)) {
+/// the card. A card with an `origin` grows from it when it appears.
+fn card_above(
+    ctx: &egui::Context,
+    id: &str,
+    rect: Rect,
+    origin: Option<egui::Pos2>,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) {
     let radius = theme::CARD_RADIUS.into();
-    widgets::card(ctx, None, id, rect, Order::Foreground, radius, |ui| {
+    let contents = |ui: &mut egui::Ui| {
         ui.painter()
             .rect_filled(rect, radius, theme::card(false).to_opaque());
         ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
         add_contents(ui);
-    });
+    };
+    let order = Order::Foreground;
+    match origin {
+        Some(origin) => widgets::card_from(ctx, None, id, rect, order, radius, origin, contents),
+        None => widgets::card(ctx, None, id, rect, order, radius, contents),
+    }
     ctx.move_to_top(egui::LayerId::new(Order::Foreground, egui::Id::new(id)));
 }
 
@@ -358,7 +369,8 @@ fn actions_menu(
     let mut open = !scrim(ctx, "pad-project-menu-scrim", screen, 0);
     // The menu covers each control of the list.
     controls.clear();
-    card_above(ctx, "pad-project-menu", rect, |ui| {
+    let origin = menu.button.center().clamp(rect.min, rect.max);
+    card_above(ctx, "pad-project-menu", rect, Some(origin), |ui| {
         let inner = rect.shrink2(vec2(BODY_PAD, 10.0));
         let layout = egui::Layout::top_down(egui::Align::Min);
         let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
@@ -414,7 +426,7 @@ fn dialog(
             let height = ROW + PANEL_ROW + 14.0 + PANEL_ROW + 16.0;
             let top = screen.top() + bands.top + MARGIN + ROW + GAP;
             let rect = Rect::from_min_size(pos2(left, top), vec2(width, height));
-            card_above(ctx, "pad-project-dialog", rect, |ui| {
+            card_above(ctx, "pad-project-dialog", rect, None, |ui| {
                 close |= widgets::title_row(ui, controls, RENAME_TITLE, None, false).close;
                 let inner = ui.available_rect_before_wrap().shrink2(vec2(BODY_PAD, 0.0));
                 let layout = egui::Layout::top_down(egui::Align::Min);
@@ -446,7 +458,7 @@ fn dialog(
             let height = height.min(most);
             let top = (screen.center().y - height / 2.0).max(screen.top() + bands.top);
             let rect = Rect::from_min_size(pos2(left, top), vec2(width, height));
-            card_above(ctx, "pad-project-dialog", rect, |ui| {
+            card_above(ctx, "pad-project-dialog", rect, None, |ui| {
                 close |= widgets::title_row(ui, controls, PROBLEM_TITLE, None, false).close;
                 let inner = ui.available_rect_before_wrap().shrink2(vec2(BODY_PAD, 0.0));
                 let layout = egui::Layout::top_down(egui::Align::Min);
@@ -481,7 +493,7 @@ fn dialog(
             let height = height.min(most);
             let top = (screen.center().y - height / 2.0).max(screen.top() + bands.top);
             let rect = Rect::from_min_size(pos2(left, top), vec2(width, height));
-            card_above(ctx, "pad-project-dialog", rect, |ui| {
+            card_above(ctx, "pad-project-dialog", rect, None, |ui| {
                 close |= widgets::title_row(ui, controls, VERSIONS_TITLE, None, false).close;
                 let inner = ui.available_rect_before_wrap().shrink2(vec2(BODY_PAD, 0.0));
                 let layout = egui::Layout::top_down(egui::Align::Min);
@@ -515,7 +527,7 @@ fn dialog(
             let height = ROW + text_height + PANEL_ROW + 16.0;
             let top = (screen.center().y - height / 2.0).max(screen.top() + bands.top);
             let rect = Rect::from_min_size(pos2(left, top), vec2(width, height));
-            card_above(ctx, "pad-project-dialog", rect, |ui| {
+            card_above(ctx, "pad-project-dialog", rect, None, |ui| {
                 close |= widgets::title_row(ui, controls, DELETE_TITLE, None, false).close;
                 let inner = ui.available_rect_before_wrap().shrink2(vec2(BODY_PAD, 0.0));
                 let layout = egui::Layout::top_down(egui::Align::Min);

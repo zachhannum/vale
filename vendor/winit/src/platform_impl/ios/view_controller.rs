@@ -66,6 +66,12 @@ declare_class!(
                 .preferred_screen_edges_deferring_system_gestures
                 .get()
         }
+
+        #[method(setPreferredScreenEdgesDeferringSystemGestures:)]
+        fn set_preferred_screen_edges_deferring_system_gestures_objc(&self, edges: UIRectEdge) {
+            self.ivars().preferred_screen_edges_deferring_system_gestures.set(edges);
+            self.setNeedsUpdateOfScreenEdgesDeferringSystemGestures();
+        }
     }
 );
 

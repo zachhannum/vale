@@ -1832,7 +1832,8 @@ fn rank_row(
     }
     let at = pos2(rect.left() + 28.0, y);
     painter.text(at, Align2::LEFT_CENTER, name, theme::body(), theme::TEXT);
-    widgets::paint_switch(ui, pos2(handle.left() - 4.0, y), on);
+    let id = ui.id().with(("label-switch", name));
+    widgets::paint_switch(ui, id, pos2(handle.left() - 4.0, y), on);
     let color = if lifted { theme::TEXT } else { theme::MUTE };
     icons::paint(painter, handle, Icon::Grip, widgets::ICON, color);
     out

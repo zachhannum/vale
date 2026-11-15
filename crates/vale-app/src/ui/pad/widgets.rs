@@ -6,7 +6,7 @@ use eframe::egui_wgpu::wgpu;
 
 use super::geometry::{self, CELL, PAD, ROW, Rects, TOUCH};
 use super::icons::{self, Icon};
-use super::theme;
+use super::{motion, theme};
 use crate::globe::backdrop::{card_shape, marker};
 
 /// A control that a finger can hit, as the last frame drew it.
@@ -58,6 +58,60 @@ pub fn card(
     split_card(ctx, backdrop, id, rect, None, order, radius, add_contents);
 }
 
+/// A `card` that grows from `origin` and fades in when it appears, as a
+/// menu grows from its control.
+#[allow(clippy::too_many_arguments)]
+pub fn card_from(
+    ctx: &egui::Context,
+    backdrop: Option<wgpu::TextureFormat>,
+    id: &str,
+    rect: Rect,
+    order: egui::Order,
+    radius: CornerRadius,
+    origin: Pos2,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) {
+    let grow = grow(ctx, egui::LayerId::new(order, egui::Id::new(id)), origin);
+    any_card(
+        ctx,
+        backdrop,
+        id,
+        rect,
+        None,
+        order,
+        radius,
+        Some(grow),
+        add_contents,
+    );
+}
+
+/// The growth of a card that appears: its opacity and its transform. The
+/// transform goes on `layer`, so touches follow the card.
+#[derive(Clone, Copy)]
+pub struct Grow {
+    pub opacity: f32,
+    pub transform: egui::emath::TSTransform,
+}
+
+/// Grows the layer of a card from `origin` while the card appears.
+pub fn grow(ctx: &egui::Context, layer: egui::LayerId, origin: Pos2) -> Grow {
+    let t = motion::appear(ctx, layer.id.with("appear"));
+    let transform = if t == 1.0 {
+        egui::emath::TSTransform::IDENTITY
+    } else {
+        motion::about(
+            motion::APPEAR_SCALE + (1.0 - motion::APPEAR_SCALE) * t,
+            origin,
+        )
+    };
+    ctx.set_transform_layer(layer, transform);
+    motion::keep(ctx, layer, origin);
+    Grow {
+        opacity: t.clamp(0.0, 1.0),
+        transform,
+    }
+}
+
 /// A `card` in two parts, one above `gap` and one below it. The gap is
 /// not a part of the card, and it takes no touch.
 #[allow(clippy::too_many_arguments)]
@@ -69,6 +123,31 @@ pub fn split_card(
     gap: Option<egui::Rangef>,
     order: egui::Order,
     radius: CornerRadius,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) {
+    any_card(
+        ctx,
+        backdrop,
+        id,
+        rect,
+        gap,
+        order,
+        radius,
+        None,
+        add_contents,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn any_card(
+    ctx: &egui::Context,
+    backdrop: Option<wgpu::TextureFormat>,
+    id: &str,
+    rect: Rect,
+    gap: Option<egui::Rangef>,
+    order: egui::Order,
+    radius: CornerRadius,
+    grow: Option<Grow>,
     add_contents: impl FnOnce(&mut egui::Ui),
 ) {
     let gap = gap.filter(|g| g.min > rect.top() && g.max < rect.bottom());
@@ -91,6 +170,9 @@ pub fn split_card(
                 None => Sense::click_and_drag(),
             };
             let (rect, _) = ui.allocate_exact_size(rect.size(), sense);
+            if let Some(grow) = grow {
+                ui.multiply_opacity(grow.opacity);
+            }
             // The blur shows what the frame drew below this order, without
             // the shadow.
             if backdrop.is_some() {
@@ -111,7 +193,12 @@ pub fn split_card(
             }
             for &part in &parts {
                 if let Some(format) = backdrop {
-                    let shape = card_shape(format, part, radius, ctx.pixels_per_point());
+                    // The blur draws at the place of the card after the
+                    // transform of its layer. egui moves the rect of the
+                    // callback with the layer.
+                    let place = grow.map_or(part, |g| g.transform * part);
+                    let mut shape = card_shape(format, place, radius, ctx.pixels_per_point());
+                    shape.rect = part;
                     ui.painter().add(shape);
                 }
                 ui.painter()
@@ -243,6 +330,41 @@ fn fill(ui: &egui::Ui, rect: Rect, resp: &Response, active: bool) {
     }
 }
 
+/// Marks the start of the paint of a control that shrinks under a finger.
+/// `press_end` shrinks what the control paints after this mark.
+pub(super) fn press_start(ui: &egui::Ui) -> egui::layers::ShapeIdx {
+    ui.painter().add(egui::Shape::Noop)
+}
+
+/// Shrinks the paint of the control `resp` since `start` while a finger is
+/// on it, and springs it back after. A wide control shrinks by the same
+/// distance as a control of 160 points, not by the same ratio.
+pub(super) fn press_end(ui: &egui::Ui, resp: &Response, start: egui::layers::ShapeIdx) {
+    let down = resp.is_pointer_button_down_on();
+    let scale = motion::press(ui.ctx(), resp.id, down);
+    if scale == 1.0 {
+        return;
+    }
+    let side = resp.rect.width().max(resp.rect.height()).max(1.0);
+    let scale = 1.0 - (1.0 - scale) * (160.0 / side).min(1.0);
+    let end = ui.painter().add(egui::Shape::Noop);
+    let transform = motion::about(scale, resp.rect.center());
+    ui.ctx().graphics_mut(|g| {
+        g.entry(ui.layer_id())
+            .transform_range(start, end, transform)
+    });
+}
+
+/// The thumb of the segmented control `id` at `rect`. The thumb slides
+/// on a spring from the item before, and `base` is the left edge of the
+/// control, so the thumb moves with the control in a scroll.
+fn slide_thumb(ui: &egui::Ui, id: egui::Id, base: f32, rect: Rect) -> Rect {
+    let ctx = ui.ctx();
+    let left = motion::points(ctx, id.with("left"), rect.left() - base, motion::BOUNCY);
+    let right = motion::points(ctx, id.with("right"), rect.right() - base, motion::BOUNCY);
+    Rect::from_x_y_ranges(base + left..=base + right, rect.y_range())
+}
+
 /// A button with an icon, at a given place.
 pub fn icon_button_at(
     ui: &egui::Ui,
@@ -262,9 +384,11 @@ pub fn icon_button_at(
         enabled,
         Some(active),
     );
+    let start = press_start(ui);
     fill(ui, rect, &resp, active);
     let color = if active { theme::TEXT } else { theme::MUTE };
     icons::paint(ui.painter(), rect, icon, ICON, fade(color, enabled));
+    press_end(ui, &resp, start);
     resp
 }
 
@@ -286,14 +410,26 @@ pub fn segments(
 ) -> Option<usize> {
     let card = ui.max_rect();
     let mut left = card.left() + PAD;
+    let rects: Vec<Rect> = items
+        .iter()
+        .map(|&(label, _)| {
+            let width = (text_width(ui, label, theme::body()) + 2.0 * SEGMENT_PAD).max(TOUCH);
+            let rect = Rect::from_min_size(pos2(left, card.top() + PAD), vec2(width, TOUCH));
+            left += width;
+            rect
+        })
+        .collect();
+    if let Some(&rect) = rects.get(active) {
+        let id = ui.id().with(("segments", items));
+        let thumb = slide_thumb(ui, id, card.left(), rect).shrink(HIGHLIGHT_INSET);
+        ui.painter()
+            .rect_filled(thumb, theme::CONTROL_RADIUS, theme::raise());
+    }
     let mut chosen = None;
-    for (index, &(label, enabled)) in items.iter().enumerate() {
-        let width = (text_width(ui, label, theme::body()) + 2.0 * SEGMENT_PAD).max(TOUCH);
-        let rect = Rect::from_min_size(pos2(left, card.top() + PAD), vec2(width, TOUCH));
-        left += width;
+    for (index, (&(label, enabled), &rect)) in items.iter().zip(&rects).enumerate() {
         let on = index == active;
         let resp = hit(ui, controls, rect, label, Sense::click(), enabled, Some(on));
-        fill(ui, rect, &resp, on);
+        fill(ui, rect, &resp, false);
         let color = fade(if on { theme::TEXT } else { theme::MUTE }, enabled);
         ui.painter().text(
             rect.center(),
@@ -355,16 +491,28 @@ pub fn small_segments_named(
         .sum();
     let scale = inner.width() / total.max(1.0);
     let mut left = inner.left();
+    let items: Vec<Rect> = labels
+        .iter()
+        .map(|label| {
+            let w = (text_width(ui, label, small_segment_font()) + 24.0) * scale;
+            let item = Rect::from_min_size(pos2(left, inner.top()), vec2(w, inner.height()));
+            left += w;
+            item
+        })
+        .collect();
+    if let Some(&item) = items.get(active) {
+        let id = ui.id().with(("small-segments", names));
+        let thumb = slide_thumb(ui, id, rect.left(), item);
+        ui.painter().rect_filled(thumb, 8.0, theme::raise());
+    }
     let mut chosen = None;
-    for (i, label) in labels.iter().enumerate() {
-        let w = (text_width(ui, label, small_segment_font()) + 24.0) * scale;
-        let item = Rect::from_min_size(pos2(left, inner.top()), vec2(w, inner.height()));
-        left += w;
+    for (i, (label, &item)) in labels.iter().zip(&items).enumerate() {
+        let w = item.width();
         let touch = Rect::from_center_size(item.center(), vec2(w, item.height().max(TOUCH)));
         let on = i == active;
         let name = names.get(i).unwrap_or(label);
         let resp = hit(ui, controls, touch, name, Sense::click(), true, Some(on));
-        if on || resp.is_pointer_button_down_on() {
+        if !on && resp.is_pointer_button_down_on() {
             ui.painter().rect_filled(item, 8.0, theme::raise());
         }
         let color = if on { theme::TEXT } else { theme::MUTE };
@@ -629,7 +777,7 @@ pub fn switch_row_enabled(
     if !enabled {
         track.multiply_opacity(theme::OFF);
     }
-    paint_switch(&track, pos2(rect.right(), y), *on);
+    paint_switch(&track, resp.id, pos2(rect.right(), y), *on);
     let at = pos2(rect.left(), y);
     let color = fade(theme::TEXT, enabled);
     ui.painter()
@@ -641,15 +789,14 @@ pub fn switch_row_enabled(
 pub const SWITCH_WIDTH: f32 = SWITCH.x;
 
 /// The track and the thumb of a switch, with the middle of its right edge
-/// at `right`.
-pub fn paint_switch(ui: &egui::Ui, right: Pos2, on: bool) {
+/// at `right`. The thumb of the switch `id` slides on a spring.
+pub fn paint_switch(ui: &egui::Ui, id: egui::Id, right: Pos2, on: bool) {
     let y = right.y;
     let track = Rect::from_min_size(pos2(right.x - SWITCH.x, y - SWITCH.y / 2.0), SWITCH);
     let reach = (SWITCH.x - SWITCH.y) / 2.0;
-    let (color, x) = match on {
-        true => (theme::ACCENT, track.center().x + reach),
-        false => (theme::raise(), track.center().x - reach),
-    };
+    let t = motion::toggle(ui.ctx(), id.with("switch"), on);
+    let color = theme::raise().lerp_to_gamma(theme::ACCENT, t.clamp(0.0, 1.0));
+    let x = track.center().x - reach + 2.0 * reach * t;
     let painter = ui.painter();
     painter.rect_filled(track, SWITCH.y / 2.0, theme::track());
     painter.rect_filled(track, SWITCH.y / 2.0, color);
@@ -1648,38 +1795,60 @@ pub fn choice_field(
     let mut chosen = None;
     let id = format!("pad-choices-{}", ui.id().with(name).value());
     let radius = theme::CARD_RADIUS.into();
-    card(&ctx, None, &id, rect, egui::Order::Tooltip, radius, |ui| {
-        ui.painter().rect_filled(rect, radius, theme::menu());
-        let inner = rect.shrink2(vec2(BODY_PAD, 10.0));
-        let layout = egui::Layout::top_down(egui::Align::Min);
-        let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
-        ui.set_clip_rect(inner);
-        ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
-        egui::ScrollArea::vertical()
-            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-            .show(&mut ui, |ui| {
-                for (index, choice) in choices.iter().enumerate() {
-                    let on = current == Some(index);
-                    let row_name = choice_row_name(name, choice);
-                    let row = text_row_as(ui, controls, &row_name, choice, 0.0, false, true);
-                    // The current value has a tick and no highlight.
-                    let info = || {
-                        egui::WidgetInfo::selected(egui::WidgetType::Button, true, on, &row_name)
-                    };
-                    row.widget_info(info);
-                    if on {
-                        let tick = Rect::from_center_size(
-                            pos2(row.rect.right() - 14.0, row.rect.center().y),
-                            vec2(18.0, 18.0),
-                        );
-                        icons::paint(ui.painter(), tick, Icon::Tick, 18.0, theme::ACCENT);
+    let origin = pos2(
+        button.center().x,
+        if y >= below {
+            rect.top()
+        } else {
+            rect.bottom()
+        },
+    );
+    card_from(
+        &ctx,
+        None,
+        &id,
+        rect,
+        egui::Order::Tooltip,
+        radius,
+        origin,
+        |ui| {
+            ui.painter().rect_filled(rect, radius, theme::menu());
+            let inner = rect.shrink2(vec2(BODY_PAD, 10.0));
+            let layout = egui::Layout::top_down(egui::Align::Min);
+            let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
+            ui.set_clip_rect(inner);
+            ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+            egui::ScrollArea::vertical()
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                .show(&mut ui, |ui| {
+                    for (index, choice) in choices.iter().enumerate() {
+                        let on = current == Some(index);
+                        let row_name = choice_row_name(name, choice);
+                        let row = text_row_as(ui, controls, &row_name, choice, 0.0, false, true);
+                        // The current value has a tick and no highlight.
+                        let info = || {
+                            egui::WidgetInfo::selected(
+                                egui::WidgetType::Button,
+                                true,
+                                on,
+                                &row_name,
+                            )
+                        };
+                        row.widget_info(info);
+                        if on {
+                            let tick = Rect::from_center_size(
+                                pos2(row.rect.right() - 14.0, row.rect.center().y),
+                                vec2(18.0, 18.0),
+                            );
+                            icons::paint(ui.painter(), tick, Icon::Tick, 18.0, theme::ACCENT);
+                        }
+                        if row.clicked() {
+                            chosen = Some(index);
+                        }
                     }
-                    if row.clicked() {
-                        chosen = Some(index);
-                    }
-                }
-            });
-    });
+                });
+        },
+    );
     if chosen.is_some() {
         *open = false;
     }
@@ -2437,13 +2606,21 @@ pub fn choice_row(
     ui.painter()
         .rect_filled(track, theme::CONTROL_RADIUS, theme::track());
     let width = field.width() / choices.len() as f32;
+    if let Some(index) = active.filter(|&i| i < choices.len()) {
+        let min = pos2(field.left() + index as f32 * width, field.top());
+        let rect = Rect::from_min_size(min, vec2(width, TOUCH)).intersect(track);
+        let id = ui.id().with(("choice-row", label));
+        let thumb = slide_thumb(ui, id, field.left(), rect).shrink(2.0);
+        ui.painter()
+            .rect_filled(thumb, theme::CONTROL_RADIUS - 2.0, theme::raise());
+    }
     let mut chosen = None;
     for (index, choice) in choices.iter().enumerate() {
         let min = pos2(field.left() + index as f32 * width, field.top());
         let rect = Rect::from_min_size(min, vec2(width, TOUCH));
         let on = active == Some(index);
         let resp = hit(ui, controls, rect, choice, Sense::click(), true, Some(on));
-        if on || resp.is_pointer_button_down_on() {
+        if !on && resp.is_pointer_button_down_on() {
             let thumb = rect.intersect(track).shrink(2.0);
             ui.painter()
                 .rect_filled(thumb, theme::CONTROL_RADIUS - 2.0, theme::raise());
@@ -2488,6 +2665,7 @@ pub fn chips(
     for (index, (choice, rect)) in choices.iter().zip(rects).enumerate() {
         let on = active == index;
         let resp = hit(ui, controls, rect, choice, Sense::click(), true, Some(on));
+        let start = press_start(ui);
         let back = rect.shrink(HIGHLIGHT_INSET);
         let pressed = on || resp.is_pointer_button_down_on();
         let fill = if pressed {
@@ -2504,6 +2682,7 @@ pub fn chips(
             theme::body(),
             color,
         );
+        press_end(ui, &resp, start);
         if resp.clicked() && !on {
             chosen = Some(index);
         }
@@ -2531,6 +2710,7 @@ pub fn chip_row(
                 let rect = Rect::from_min_size(at, vec2(wide.max(TOUCH), TOUCH));
                 at.x = rect.right();
                 let resp = hit(ui, controls, rect, name, Sense::click(), true, None);
+                let start = press_start(ui);
                 let back = rect.shrink(HIGHLIGHT_INSET);
                 let fill = if resp.is_pointer_button_down_on() {
                     theme::raise()
@@ -2546,6 +2726,7 @@ pub fn chip_row(
                     theme::body(),
                     theme::TEXT,
                 );
+                press_end(ui, &resp, start);
                 if resp.clicked() {
                     chosen = Some(index);
                 }
@@ -2593,6 +2774,7 @@ pub fn pill_toggle(
         *on = !*on;
     }
     let pressed = resp.is_pointer_button_down_on();
+    let start = press_start(ui);
     let painter = ui.painter();
     let radius = PILL / 2.0;
     let (back, text) = match *on {
@@ -2614,6 +2796,7 @@ pub fn pill_toggle(
         theme::body(),
         fade(text, enabled),
     );
+    press_end(ui, &resp, start);
     (pill.left(), changed)
 }
 
@@ -2656,6 +2839,7 @@ pub fn tiles(
         let rect = Rect::from_min_size(min, vec2(side, height));
         let on = active == Some(index);
         let resp = hit(ui, controls, rect, name, Sense::click(), true, Some(on));
+        let start = press_start(ui);
         let fill = if on || resp.is_pointer_button_down_on() {
             theme::raise()
         } else {
@@ -2686,6 +2870,7 @@ pub fn tiles(
         let middle = pos2(rect.center().x, rect.bottom() - 4.0 - TILE_NAME / 2.0);
         let at = middle - galley.size() / 2.0;
         painter.galley(at, galley, color);
+        press_end(ui, &resp, start);
         if resp.clicked() {
             chosen = Some(index);
         }
@@ -2797,6 +2982,7 @@ pub fn accent_button(
         pos2(right.x, right.y + TOUCH / 2.0),
     );
     let resp = hit(ui, controls, rect, name, Sense::click(), true, None);
+    let start = press_start(ui);
     let color = if resp.is_pointer_button_down_on() {
         theme::ACCENT
     } else {
@@ -2812,6 +2998,7 @@ pub fn accent_button(
         theme::body(),
         theme::CANVAS,
     );
+    press_end(ui, &resp, start);
     resp
 }
 
@@ -2835,6 +3022,7 @@ pub fn button_row_in(
 ) -> Response {
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), Sense::hover());
     let resp = hit(ui, controls, rect, name, Sense::click(), enabled, None);
+    let start = press_start(ui);
     let back = rect.shrink(HIGHLIGHT_INSET);
     let color = if resp.is_pointer_button_down_on() {
         fill
@@ -2851,6 +3039,7 @@ pub fn button_row_in(
         theme::body(),
         theme::CANVAS,
     );
+    press_end(ui, &resp, start);
     resp
 }
 

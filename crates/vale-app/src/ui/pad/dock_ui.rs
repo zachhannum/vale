@@ -8,7 +8,7 @@ use super::geometry::{self, PAD, ROW, Rects, TOUCH, WidthClass};
 use super::icons::{self, Icon};
 use super::panes::{self, BAR, Drop};
 use super::widgets::{self, BODY_PAD, Controls, ICON};
-use super::{HOLD_SLOP, HOLD_TIME, point_card, popover, theme};
+use super::{HOLD_SLOP, HOLD_TIME, motion, point_card, popover, theme};
 use super::{Head, Panel, panel_body, panel_head, panel_icon, panel_name, panel_title, panel_top};
 use crate::ui::AppState;
 
@@ -24,8 +24,6 @@ pub const HANDLE: (f32, f32) = (TOUCH, 120.0);
 const HANDLE_IN: f32 = 20.0;
 /// The padding at each side of the name of a tab.
 const TAB_PAD: f32 = 12.0;
-/// The time of the slide of the dock.
-pub const SLIDE_TIME: f32 = 0.25;
 /// A drag of the width handle this far past the narrowest dock collapses
 /// the dock.
 pub const COLLAPSE_DRAG: f32 = 40.0;
@@ -33,8 +31,11 @@ pub const COLLAPSE_DRAG: f32 = 40.0;
 pub const SHOW_DOCK: &str = "Show dock";
 /// The text of a drag of the width handle that collapses the dock.
 pub const HIDE_DOCK: &str = "Hide dock";
-/// The touch area of the tab of a collapsed dock.
+/// The touch area of the grip of a collapsed dock.
 const EDGE_TAB: (f32, f32) = (TOUCH, 72.0);
+/// The distance of the middle of the grip of a hidden dock from the right
+/// edge of the screen.
+const GRIP_INSET: f32 = 10.0;
 /// The row of the menu of a tab that moves the tab to a new pane.
 pub const MOVE_TO_NEW_PANE: &str = "Move to new pane";
 /// The width of the menu of a tab.
@@ -49,6 +50,25 @@ const COAST: f32 = 0.998 / (1.0 - 0.998) / 1000.0;
 /// The time of the last places of the finger that give the speed of a
 /// swipe, in seconds.
 const SPEED_TIME: f64 = 0.1;
+
+/// A pull of the grip of a hidden dock to the left. `lock` is the distance
+/// of the finger when the drag started, so the dock does not jump by the
+/// slop, and `dx` is the distance from there.
+#[derive(Clone, Copy, Debug)]
+struct Pull {
+    lock: f32,
+    dx: f32,
+}
+
+/// The distance to the left of a pull of the dock from its grip, while the
+/// finger is on the screen.
+fn pulling(ctx: &egui::Context) -> Option<f32> {
+    ctx.data(|d| d.get_temp::<Pull>(pull_id())).map(|p| p.dx)
+}
+
+fn pull_id() -> egui::Id {
+    egui::Id::new("pad-dock-pull")
+}
 
 /// What a finger moves in the dock.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -170,7 +190,7 @@ pub fn show(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, 
         if state.pad.dock().collapsed {
             state.pad.pane_menu = None;
             if !state.pad.panels_menu {
-                edge_tab(ctx, state, controls, rects);
+                edge_tab(ctx, state, controls, rects, slide);
             }
         }
     }
@@ -179,49 +199,111 @@ pub fn show(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, 
 
 /// How far the dock is off the right edge, from 0 on the screen to 1 off
 /// it. During a swipe, the dock moves with the finger, and after the swipe
-/// it slides on from there. `width` is the width of the dock.
+/// it springs on from there with the speed of the finger. `width` is the
+/// width of the dock.
 fn slide(ctx: &egui::Context, state: &AppState, width: f32) -> f32 {
     let collapsed = state.pad.dock().collapsed;
-    let id = egui::Id::new(("pad-dock-slide", state.pad.workspace as u8));
-    let t = ctx.animate_bool_with_time(id, collapsed, SLIDE_TIME);
-    let end = f32::from(u8::from(collapsed));
+    let id = slide_id(state);
     if let Some(DockDrag::Swipe { dx, .. }) = state.pad.dock_drag {
         // The header stays under the finger, so the dock keeps the drag.
-        return (dx / width.max(1.0)).clamp(0.0, 0.9);
+        let at = swipe_at(dx, width);
+        motion::set(ctx, id, at);
+        return at;
     }
-    let release = release_id(state);
-    let from: Option<(f32, f64)> = ctx.data(|d| d.get_temp(release));
-    let base = if state.headless { end } else { t };
-    let Some((from, start)) = from else {
-        return base;
-    };
-    let p = ((ctx.input(|i| i.time) - start) as f32 / SLIDE_TIME).clamp(0.0, 1.0);
-    if state.headless || p >= 1.0 {
-        ctx.data_mut(|d| d.remove::<(f32, f64)>(release));
-        return base;
+    if let Some(dx) = pulling(ctx) {
+        let at = pull_at(dx, width);
+        motion::set(ctx, id, at);
+        return at;
     }
-    ctx.request_repaint();
-    let ease = 1.0 - (1.0 - p) * (1.0 - p);
-    from + (end - from) * ease
+    motion::value(ctx, id, f32::from(u8::from(collapsed)), motion::SNAPPY)
 }
 
-/// The place of the dock at the end of a swipe, and the time of the end.
-fn release_id(state: &AppState) -> egui::Id {
-    egui::Id::new(("pad-dock-release", state.pad.workspace as u8))
+/// A distance `over` past the end of a drag, as the finger moves it. The
+/// distance shrinks more the farther it goes, as a scroll view of UIKit
+/// does past its end. `range` is the size of the view.
+fn rubber(over: f32, range: f32) -> f32 {
+    let range = range.max(1.0);
+    (1.0 - 1.0 / (over.max(0.0) * 0.55 / range + 1.0)) * range
+}
+
+/// The slide of a dock `width` points wide during a swipe of `dx` points
+/// to the right. A swipe to the left pulls against the edge of the screen.
+fn swipe_at(dx: f32, width: f32) -> f32 {
+    let x = if dx < 0.0 { -rubber(-dx, width) } else { dx };
+    (x / width.max(1.0)).min(1.0)
+}
+
+/// The slide of a dock `width` points wide during a pull of `dx` points to
+/// the left from the edge tab.
+fn pull_at(dx: f32, width: f32) -> f32 {
+    let x = if dx > width {
+        width + rubber(dx - width, width)
+    } else {
+        dx
+    };
+    (1.0 - x / width.max(1.0)).min(1.0)
+}
+
+/// The heights of the panes on the screen. Each one follows the height of
+/// its pane on a spring, so the panes move when a panel opens, closes, or
+/// folds. A new pane grows from zero. During a drag of a bar, the heights
+/// follow the finger.
+fn shown_heights(
+    ctx: &egui::Context,
+    state: &AppState,
+    heights: &[f32],
+    folded: &[bool],
+) -> Vec<f32> {
+    let pass = ctx.cumulative_pass_nr();
+    let resized: Option<u64> = ctx.data(|d| d.get_temp(resize_id()));
+    let resizing = resized.is_some_and(|p| p + 2 >= pass);
+    let workspace = state.pad.workspace as u8;
+    (state.pad.dock().panes.iter().zip(heights).zip(folded))
+        .map(|((pane, &height), &folded)| {
+            let target = if folded { ROW } else { height };
+            let id = egui::Id::new(("pad-pane-height", workspace, pane.tabs[0] as u8));
+            if resizing {
+                motion::set(ctx, id, target);
+                return target;
+            }
+            motion::points_from(ctx, id, 0.0, target, motion::SNAPPY).max(0.0)
+        })
+        .collect()
+}
+
+/// The pass of the last drag of a bar of the dock.
+fn resize_id() -> egui::Id {
+    egui::Id::new("pad-dock-resize")
+}
+
+/// The spring of the slide of the dock.
+fn slide_id(state: &AppState) -> egui::Id {
+    egui::Id::new(("pad-dock-slide", state.pad.workspace as u8))
 }
 
 /// The tab at the middle of the right edge that shows a collapsed dock,
 /// with a tap or a drag to the left.
-fn edge_tab(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
+fn edge_tab(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    controls: &mut Controls,
+    rects: &Rects,
+    slide: f32,
+) {
     let right = rects.screen.right() - rects.bands.right;
+    // The grip is at the height that it had on the dock.
+    let y: f32 = ctx
+        .data(|d| d.get_temp(handle_y_id()))
+        .unwrap_or(rects.dock.center().y)
+        .min(rects.dock.bottom() - EDGE_TAB.1 / 2.0)
+        .max(rects.dock.top() + EDGE_TAB.1 / 2.0);
     let rect = Rect::from_min_size(
-        pos2(right - EDGE_TAB.0, rects.dock.center().y - EDGE_TAB.1 / 2.0),
+        pos2(right - EDGE_TAB.0, y - EDGE_TAB.1 / 2.0),
         vec2(EDGE_TAB.0, EDGE_TAB.1),
     );
-    let visible = Rect::from_min_max(
-        pos2(right - 16.0, rect.top() + 8.0),
-        pos2(rects.screen.right(), rect.bottom() - 8.0),
-    );
+    let live = slide >= 1.0;
+    let pulled = pulling(ctx).is_some();
+    let dock_left = rects.dock.left() + slide * rects.dock.width();
     let mut show = false;
     egui::Area::new(egui::Id::new("pad-dock-edge-tab"))
         .order(Order::Middle)
@@ -231,36 +313,69 @@ fn edge_tab(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, 
         .fade_in(false)
         .show(ctx, |ui| {
             let (_, _) = ui.allocate_exact_size(rect.size(), Sense::hover());
+            let mut scratch = Controls::new();
+            let controls = if live { &mut *controls } else { &mut scratch };
             let resp = widgets::drag_area(ui, controls, rect, SHOW_DOCK);
-            let r = theme::CONTROL_RADIUS as u8;
-            let radius = egui::CornerRadius {
-                nw: r,
-                sw: r,
-                ne: 0,
-                se: 0,
-            };
-            let painter = ui.painter();
-            let fill = if resp.is_pointer_button_down_on() {
-                theme::card(false).to_opaque().blend(theme::raise())
-            } else {
-                theme::card(false).to_opaque()
-            };
-            painter.add(theme::shadow().as_shape(visible, r));
-            painter.rect_filled(visible, radius, fill);
-            let pill = Rect::from_center_size(
-                pos2(visible.left() + 8.0, visible.center().y),
-                vec2(4.0, 28.0),
-            );
-            painter.rect_filled(pill, 2.0, theme::MUTE.gamma_multiply(0.7));
-            let left = ui.input(|i| {
-                let origin = i.pointer.press_origin()?;
-                Some(origin.x - i.pointer.interact_pos()?.x)
-            });
-            show = resp.clicked() || (resp.dragged() && left.is_some_and(|d| d >= 2.0 * HOLD_SLOP));
+            let active = pulled || resp.is_pointer_button_down_on();
+            let painter = ui.painter().with_clip_rect(rects.screen);
+            paint_grip(&painter, pos2(grip_x(dock_left, right), y), active);
+            show = live && resp.clicked();
+            pull(ui, state, &resp, rects.dock.width());
         });
     if show {
         state.pad.dock_mut().collapsed = false;
     }
+}
+
+/// Follows a drag of the grip of a hidden dock. While the drag goes, the
+/// dock comes out with the finger. At its end, the dock shows by the rule
+/// of `pull_shows`, and else it slides back. `width` is the width of the
+/// dock.
+fn pull(ui: &egui::Ui, state: &mut AppState, resp: &egui::Response, width: f32) {
+    let ctx = ui.ctx();
+    let left = ui.input(|i| Some(i.pointer.press_origin()?.x - i.pointer.interact_pos()?.x));
+    let kept: Option<Pull> = ctx.data(|d| d.get_temp(pull_id()));
+    if resp.dragged()
+        && let Some(left) = left
+    {
+        let mut pull = kept.unwrap_or_else(|| {
+            crate::log_file::write(&format!("dock pull starts at {left:.0} pt"));
+            Pull {
+                lock: left,
+                dx: 0.0,
+            }
+        });
+        pull.dx = left - pull.lock;
+        ctx.data_mut(|d| d.insert_temp(pull_id(), pull));
+        ctx.request_repaint();
+        return;
+    }
+    let Some(pull) = kept else {
+        return;
+    };
+    ctx.data_mut(|d| d.remove::<Pull>(pull_id()));
+    let (dx, speed) = (pull.dx, -ui.input(|i| i.pointer.velocity().x));
+    let shows = pull_shows(dx, speed, width);
+    if shows {
+        state.pad.dock_mut().collapsed = false;
+    }
+    crate::log_file::write(&format!(
+        "dock pull: {dx:.0} pt at {speed:.0} pt/s of {width:.0} pt, shows {shows}"
+    ));
+    motion::kick(
+        ctx,
+        slide_id(state),
+        pull_at(dx, width),
+        -speed / width.max(1.0),
+    );
+    ctx.request_repaint();
+}
+
+/// The middle of the grip of a dock whose left edge is at `dock_left`. The
+/// grip rides on the edge of the dock, and it stops at the right edge of
+/// the screen, at `right`, so it stays in view while the dock is hidden.
+fn grip_x(dock_left: f32, right: f32) -> f32 {
+    dock_left.min(right - GRIP_INSET)
 }
 
 /// The menu of a tab after a long press: "Close <panel>", and in a dock
@@ -356,10 +471,12 @@ fn show_dock(
         .collect();
     let space = room.height() - FOOT;
     let heights = panes::fit(&wanted, space);
-    let total = heights.iter().sum::<f32>() + BAR * heights.len() as f32 + FOOT;
+    let shown = shown_heights(ctx, state, &heights, &folded);
+    let total = shown.iter().sum::<f32>() + BAR * shown.len() as f32 + FOOT;
     let rect = Rect::from_min_size(room.min, vec2(room.width(), total.min(room.height())));
     // A collapsing dock slides off the right edge.
     let rect = rect.translate(vec2((slide * room.width()).round(), 0.0));
+    ctx.data_mut(|d| d.insert_temp(handle_y_id(), rect.center().y));
     let radius = geometry::edge_radius(rect, rects.screen);
     let names = rect.width() - rects.bands.right >= panes::NAMES_WIDTH;
     let backdrop = state.globe.backdrop();
@@ -378,11 +495,7 @@ fn show_dock(
             let mut top = rect.top();
             for (i, head) in heads.iter_mut().enumerate() {
                 let pane_rect =
-                    Rect::from_min_size(pos2(rect.left(), top), vec2(rect.width(), heights[i]));
-                let pane_rect = match folded[i] {
-                    true => Rect::from_min_size(pane_rect.min, vec2(rect.width(), ROW)),
-                    false => pane_rect,
-                };
+                    Rect::from_min_size(pos2(rect.left(), top), vec2(rect.width(), shown[i]));
                 let inner = geometry::edge_content(pane_rect, rects.screen, rects.bands);
                 let mut child = ui.new_child(
                     egui::UiBuilder::new()
@@ -440,6 +553,8 @@ fn show_dock(
                     let delta = resp.drag_delta().y;
                     let dock = state.pad.dock_mut();
                     dock.resize(i, delta, &heights, &natural, space);
+                    let pass = ctx.cumulative_pass_nr();
+                    ctx.data_mut(|d| d.insert_temp(resize_id(), pass));
                     ctx.request_repaint();
                 }
                 if resp.double_clicked() {
@@ -604,6 +719,7 @@ fn paint_drop(
 /// the width during its drag. A card or a menu that covers the place of the
 /// handle hides it.
 pub fn handle(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
+    // The edge tab paints the grip of a hidden dock.
     let Some(dock) = state.pad.dock_rect else {
         return;
     };
@@ -668,15 +784,13 @@ pub fn handle(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
                     dock.width = start;
                 }
             }
-            // A grip on a dark capsule shows over a white page and over the
-            // dark canvas.
-            let center = pos2(dock.left(), rect.center().y);
-            let capsule = Rect::from_center_size(center, vec2(12.0, 64.0));
-            let back = theme::card(false).to_opaque();
-            ui.painter().rect_filled(capsule, 6.0, back);
-            let pill = Rect::from_center_size(center, vec2(4.0, 48.0));
-            let color = if active { theme::ACCENT } else { theme::TEXT };
-            ui.painter().rect_filled(pill, 2.0, color);
+            let right = rects.screen.right() - rects.bands.right;
+            let painter = ui.painter().with_clip_rect(rects.screen);
+            paint_grip(
+                &painter,
+                pos2(grip_x(dock.left(), right), rect.center().y),
+                active,
+            );
             if active {
                 let (start, width) = (state.pad.width_drag)
                     .unwrap_or((state.pad.dock().width, state.pad.dock().width));
@@ -685,29 +799,40 @@ pub fn handle(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
                 let dock = state.pad.dock_mut();
                 dock.set_width(width);
                 dock.width = dock.width.min(most);
-                let text = if width <= panes::MIN_WIDTH - COLLAPSE_DRAG {
-                    HIDE_DOCK.to_owned()
-                } else {
-                    format!("{} pt", dock.width.round())
-                };
                 state.pad.dock_drag = Some(DockDrag::Width);
-                let painter = ctx.layer_painter(egui::LayerId::new(
-                    Order::Foreground,
-                    "pad-dock-width".into(),
-                ));
-                let galley = painter.layout_no_wrap(text, theme::body(), theme::TEXT);
-                let size = galley.size() + vec2(24.0, 14.0);
-                let label = Rect::from_min_size(
-                    pos2(rect.left() - 8.0 - size.x, rect.center().y - size.y / 2.0),
-                    size,
-                );
-                painter.rect_filled(label, theme::CONTROL_RADIUS, theme::card(false).to_opaque());
-                painter.galley(label.center() - galley.size() / 2.0, galley, theme::TEXT);
+                // Past the narrowest dock, a label says that the release
+                // hides the dock.
+                if width <= panes::MIN_WIDTH - COLLAPSE_DRAG {
+                    let painter = ctx.layer_painter(egui::LayerId::new(
+                        Order::Foreground,
+                        "pad-dock-width".into(),
+                    ));
+                    let galley =
+                        painter.layout_no_wrap(HIDE_DOCK.to_owned(), theme::body(), theme::TEXT);
+                    let size = galley.size() + vec2(24.0, 14.0);
+                    let label = Rect::from_min_size(
+                        pos2(rect.left() - 8.0 - size.x, rect.center().y - size.y / 2.0),
+                        size,
+                    );
+                    let fill = theme::card(false).to_opaque();
+                    painter.rect_filled(label, theme::CONTROL_RADIUS, fill);
+                    painter.galley(label.center() - galley.size() / 2.0, galley, theme::TEXT);
+                }
                 ctx.request_repaint();
             } else if state.pad.dock_drag == Some(DockDrag::Width) {
                 state.pad.dock_drag = None;
             }
         });
+}
+
+/// Paints the grip of the width handle at `center`. A grip on a dark
+/// capsule shows over a white page and over the dark canvas.
+fn paint_grip(painter: &egui::Painter, center: Pos2, active: bool) {
+    let capsule = Rect::from_center_size(center, vec2(12.0, 64.0));
+    painter.rect_filled(capsule, 6.0, theme::card(false).to_opaque());
+    let pill = Rect::from_center_size(center, vec2(4.0, 48.0));
+    let color = if active { theme::ACCENT } else { theme::TEXT };
+    painter.rect_filled(pill, 2.0, color);
 }
 
 /// The sheet of a compact screen: the pane of the last focus, with its
@@ -1215,6 +1340,20 @@ fn swipe_speed(places: &mut Vec<(f64, f32)>) -> f32 {
     if time > 0.0 { (x - from) / time } else { 0.0 }
 }
 
+/// The share of the width of the dock that a pull from the grip must reach,
+/// with its throw, to show the dock.
+const PULL_SHOWS: f32 = 0.3;
+/// The speed to the right, in points per second, of a flick back that
+/// leaves the dock hidden after a pull.
+const FLICK_BACK: f32 = 300.0;
+
+/// A pull of `dx` points from the grip of a hidden dock that ends at
+/// `speed` shows a dock `width` points wide if its throw would reach
+/// `PULL_SHOWS` of the dock. A flick back to the right leaves it hidden.
+fn pull_shows(dx: f32, speed: f32, width: f32) -> bool {
+    speed > -FLICK_BACK && dx + speed.max(0.0) * COAST >= width * PULL_SHOWS
+}
+
 /// A swipe of `dx` points that ends at `speed` hides a dock `width`
 /// points wide if its throw would end past the middle of the dock.
 fn swipe_hides(dx: f32, speed: f32, width: f32) -> bool {
@@ -1237,6 +1376,38 @@ mod tests {
     }
 
     #[test]
+    fn a_swipe_past_the_open_dock_pulls_against_the_edge() {
+        assert_eq!(swipe_at(170.0, 340.0), 0.5);
+        assert_eq!(swipe_at(500.0, 340.0), 1.0);
+        let back = swipe_at(-100.0, 340.0);
+        assert!(back < 0.0 && back > -100.0 / 340.0, "{back}");
+        assert!(swipe_at(-400.0, 340.0) > -0.55);
+        // A pull from the edge tab is the mirror of a swipe.
+        assert_eq!(pull_at(170.0, 340.0), 0.5);
+        assert_eq!(pull_at(-50.0, 340.0), 1.0);
+        let far = pull_at(440.0, 340.0);
+        assert!(far < 0.0 && far > -100.0 / 340.0, "{far}");
+    }
+
+    #[test]
+    fn the_grip_rides_the_dock_and_stops_at_the_edge() {
+        assert_eq!(grip_x(854.0, 1194.0), 854.0);
+        assert_eq!(grip_x(1190.0, 1194.0), 1184.0);
+        assert_eq!(grip_x(1194.0, 1194.0), 1184.0);
+    }
+
+    #[test]
+    fn a_pull_of_a_third_of_the_dock_shows_it() {
+        // A slow pull shows the dock past 30 percent of its width.
+        assert!(!pull_shows(90.0, 0.0, 340.0));
+        assert!(pull_shows(110.0, 0.0, 340.0));
+        // A quick short flick coasts on.
+        assert!(pull_shows(30.0, 400.0, 340.0));
+        // A flick back to the right leaves the dock hidden.
+        assert!(!pull_shows(200.0, -600.0, 340.0));
+    }
+
+    #[test]
     fn a_throw_past_the_middle_hides_the_dock() {
         // A slow swipe hides the dock past half its width.
         assert!(!swipe_hides(160.0, 0.0, 340.0));
@@ -1251,6 +1422,12 @@ mod tests {
 /// The key of the places of the headers of the dock in the last frame.
 const HEADERS: &str = "pad-dock-headers";
 
+/// The key of the height of the handle of the dock in the last frame that
+/// drew the dock.
+fn handle_y_id() -> egui::Id {
+    egui::Id::new("pad-dock-handle-y")
+}
+
 /// A swipe of the dock that a finger makes on a header.
 #[derive(Clone, Debug, Default)]
 struct SwipeTrack {
@@ -1260,6 +1437,9 @@ struct SwipeTrack {
     /// `Some(true)` once the finger moved past `HOLD_SLOP` and more to the
     /// right than up or down, `Some(false)` for another way.
     sideways: Option<bool>,
+    /// The distance of the finger when the swipe started. The dock moves
+    /// from there, so it does not jump by the slop.
+    lock: f32,
 }
 
 /// Follows a swipe on a header of the dock in the events of the frame, in
@@ -1286,6 +1466,7 @@ fn track_swipe(ctx: &egui::Context, state: &mut AppState, width: f32) {
                     origin: pos,
                     places: vec![(time, 0.0)],
                     sideways: None,
+                    lock: 0.0,
                 });
             }
             egui::Event::PointerMoved(pos) => {
@@ -1293,8 +1474,10 @@ fn track_swipe(ctx: &egui::Context, state: &mut AppState, width: f32) {
                     let d = pos - t.origin;
                     if t.sideways.is_none() && d.length() > HOLD_SLOP {
                         t.sideways = Some(d.x > d.y.abs());
+                        t.lock = d.x;
+                        t.places.clear();
                     }
-                    t.places.push((time, d.x.max(0.0)));
+                    t.places.push((time, d.x - t.lock));
                 }
             }
             egui::Event::PointerButton {
@@ -1303,7 +1486,7 @@ fn track_swipe(ctx: &egui::Context, state: &mut AppState, width: f32) {
                 ..
             } => {
                 if let Some(t) = &mut track {
-                    t.places.push((time, (pos - t.origin).x.max(0.0)));
+                    t.places.push((time, (pos - t.origin).x - t.lock));
                 }
                 if let Some(mut t) = track.take()
                     && t.sideways == Some(true)
@@ -1347,8 +1530,8 @@ fn track_swipe(ctx: &egui::Context, state: &mut AppState, width: f32) {
             state.pad.dock_mut().collapsed = true;
             state.pad.pane_menu = None;
         }
-        let at = (dx / width.max(1.0)).clamp(0.0, 0.9);
-        ctx.data_mut(|d| d.insert_temp(release_id(state), (at, time)));
+        let at = swipe_at(dx, width);
+        motion::kick(ctx, slide_id(state), at, speed / width.max(1.0));
         state.pad.dock_drag = None;
         ctx.request_repaint();
     }

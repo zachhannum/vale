@@ -4,7 +4,7 @@
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Shape, Stroke, pos2, vec2};
 
 use super::geometry::{self, Bands};
-use super::theme;
+use super::{theme, widgets};
 use crate::ui::token_field;
 
 /// The fill of a popover.
@@ -117,6 +117,15 @@ pub fn show(
     let pass = ctx.cumulative_pass_nr();
     ctx.data_mut(|d| d.insert_temp(rect_id(), (pass, rect)));
 
+    // The card grows from the tip of its arrow.
+    let tip = pos2(
+        anchor
+            .center()
+            .x
+            .clamp(rect.left() + 20.0, rect.right() - 20.0),
+        if below { rect.top() } else { rect.bottom() },
+    );
+    let grow = widgets::grow(ctx, egui::LayerId::new(egui::Order::Tooltip, id), tip);
     egui::Area::new(id)
         .order(egui::Order::Tooltip)
         .fixed_pos(rect.min)
@@ -126,6 +135,7 @@ pub fn show(
         .show(ctx, |ui| {
             let radius = theme::CARD_RADIUS;
             let (card, _) = ui.allocate_exact_size(rect.size(), Sense::click());
+            ui.multiply_opacity(grow.opacity);
             let painter = ui.painter();
             painter.add(theme::shadow().as_shape(card, radius));
             painter.rect_filled(card, radius, FILL);

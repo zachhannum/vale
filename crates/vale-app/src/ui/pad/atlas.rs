@@ -235,6 +235,11 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     state.pad.sheet_offset = input
         .sheet_offset
         .clamp(-rects.sheet_rise, rects.sheet_travel);
+    if input.panel {
+        input.sheet_offset =
+            super::shown_sheet_offset(&ctx, state.pad.sheet_offset, rects.sheet_travel);
+        rects = geometry::layout(&input);
+    }
 
     let mut controls = std::mem::take(&mut state.pad.controls);
     controls.clear();
@@ -259,6 +264,11 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     input.sheet_offset = state.pad.sheet_offset;
     input.column = column_input(state, state.measuring());
     rects = geometry::layout(&input);
+    if input.panel {
+        input.sheet_offset =
+            super::shown_sheet_offset(&ctx, state.pad.sheet_offset, rects.sheet_travel);
+        rects = geometry::layout(&input);
+    }
     super::table::check(state);
     super::table::widen(state, &mut rects);
     if super::labels::wide(state) && class != WidthClass::Compact {
@@ -925,16 +935,18 @@ fn pressed_outside(ctx: &egui::Context, menu: Rect, button: Rect) -> bool {
     pressed.is_some_and(|pos| !menu.contains(pos) && !button.contains(pos))
 }
 
-/// A blur card for a menu, with rows from the top.
+/// A blur card for a menu, with rows from the top, that grows from `origin`.
 fn menu_card(
     ctx: &egui::Context,
     backdrop: Option<wgpu::TextureFormat>,
     id: &str,
     rect: Rect,
+    origin: egui::Pos2,
     contents: impl FnOnce(&mut egui::Ui),
 ) {
     let radius = theme::CARD_RADIUS.into();
-    widgets::card(ctx, backdrop, id, rect, Order::Foreground, radius, |ui| {
+    let order = Order::Foreground;
+    widgets::card_from(ctx, backdrop, id, rect, order, radius, origin, |ui| {
         let inner = rect.shrink2(vec2(BODY_PAD, 10.0));
         let layout = egui::Layout::top_down(egui::Align::Min);
         let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
@@ -961,7 +973,9 @@ fn workspace_menu(
     if pressed_outside(ctx, rect, rects.workspace) {
         state.pad.menu = false;
     }
-    menu_card(ctx, state.globe.backdrop(), "pad-menu", rect, |ui| {
+    let origin = rects.workspace.center().clamp(rect.min, rect.max);
+    let backdrop = state.globe.backdrop();
+    menu_card(ctx, backdrop, "pad-menu", rect, origin, |ui| {
         if widgets::text_row(ui, controls, WORKSPACES[0], 0.0, false, true).clicked() {
             state.workspace = Workspace::Globe;
             state.pad.menu = false;

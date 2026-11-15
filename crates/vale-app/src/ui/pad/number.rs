@@ -819,7 +819,9 @@ impl<'a> Number<'a> {
         );
         let backdrop = widgets::backdrop(ctx);
         let radius = theme::CARD_RADIUS.into();
-        widgets::card(ctx, backdrop, &id, card, Order::Foreground, radius, |ui| {
+        let origin = anchor.center().clamp(card.min, card.max);
+        let order = Order::Foreground;
+        widgets::card_from(ctx, backdrop, &id, card, order, radius, origin, |ui| {
             let inner = ui.max_rect().shrink(PAD);
             let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner));
             widgets::keypad(&mut ui, controls, KEYPAD);

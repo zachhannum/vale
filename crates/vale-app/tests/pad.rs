@@ -15420,7 +15420,7 @@ fn a_swipe_to_the_right_on_a_header_hides_the_dock() {
             &[&[Panel::Layers, Panel::Toolbox], &[Panel::Brush]],
         );
         let before = dock_tabs(&h);
-        drag_header(&mut h, &name, vec2(200.0, 10.0));
+        drag_header(&mut h, &name, vec2(240.0, 10.0));
         let dock = &h.state().pad.docks.world;
         assert!(dock.collapsed, "{name}");
         // The panes stay as they were.
@@ -15525,11 +15525,15 @@ fn a_drag_of_the_handle_to_the_edge_collapses_the_dock_and_the_edge_tab_shows_it
     tap(&mut h, SHOW_DOCK);
     assert!(!h.state().pad.docks.world.collapsed);
     assert!(panel(&h, Panel::Layers).is_some());
-    // A drag of the tab to the left shows it too.
+    // A pull of the tab past the middle of the dock shows it too, and a
+    // short pull leaves it hidden.
     h.state_mut().pad.docks.world.collapsed = true;
     h.run_steps(3);
     let tab = control(&h, SHOW_DOCK).unwrap().center();
-    drag(&mut h, tab, tab - vec2(120.0, 0.0), None);
+    drag(&mut h, tab, tab - vec2(80.0, 0.0), None);
+    assert!(h.state().pad.docks.world.collapsed);
+    let tab = control(&h, SHOW_DOCK).unwrap().center();
+    drag(&mut h, tab, tab - vec2(240.0, 0.0), None);
     assert!(!h.state().pad.docks.world.collapsed);
 }
 
@@ -17130,4 +17134,143 @@ fn a_flow_line_picks_its_height_layer_when_the_world_has_two() {
     // Back goes to the page of the rule.
     tap(&mut h, "Back to Default");
     assert_eq!(h.state().pad.page, Some(Page::Rule(0)));
+}
+
+/// A ProMotion layout whose chrome moves on springs, as in the app.
+fn springy_pad() -> Pad {
+    let mut h = promotion_pad();
+    h.state_mut().headless = false;
+    h.run_steps(120);
+    h
+}
+
+/// The left edges of the Layers pane in each of `frames` frames.
+fn layers_lefts(h: &mut Pad, frames: usize) -> Vec<f32> {
+    (0..frames)
+        .map(|_| {
+            h.step();
+            panel(h, Panel::Layers).map_or(f32::MAX, |r| r.left())
+        })
+        .collect()
+}
+
+#[test]
+fn the_dock_springs_past_its_place_when_it_shows() {
+    let mut h = springy_pad();
+    let rest = panel(&h, Panel::Layers).unwrap().left();
+    h.state_mut().pad.docks.world.collapsed = true;
+    h.run_steps(120);
+    h.state_mut().pad.docks.world.collapsed = false;
+    let lefts = layers_lefts(&mut h, 120);
+    assert!(lefts[0] > rest + 50.0, "{lefts:?}");
+    let least = lefts.iter().copied().fold(f32::MAX, f32::min);
+    assert!(least < rest, "{lefts:?}");
+    assert_eq!(lefts.last(), Some(&rest));
+}
+
+#[test]
+fn with_reduce_motion_the_dock_shows_at_once() {
+    let mut h = springy_pad();
+    h.state_mut().reduce_motion = true;
+    let rest = panel(&h, Panel::Layers).unwrap().left();
+    h.state_mut().pad.docks.world.collapsed = true;
+    h.run_steps(2);
+    h.state_mut().pad.docks.world.collapsed = false;
+    assert_eq!(layers_lefts(&mut h, 2)[1], rest);
+}
+
+#[test]
+fn a_new_pane_grows_from_zero_on_a_spring() {
+    let mut h = springy_pad();
+    let layers = panel(&h, Panel::Layers).unwrap();
+    h.state_mut().pad.docks.world.open_tabs(&[Panel::Brush]);
+    h.step();
+    h.step();
+    let first = panel(&h, Panel::Brush).unwrap();
+    h.run_steps(120);
+    let rest = panel(&h, Panel::Brush).unwrap();
+    assert!(first.height() < rest.height() / 2.0, "{first:?} {rest:?}");
+    // The pane above makes room on a spring too, and it rests.
+    assert!(panel(&h, Panel::Layers).unwrap().height() <= layers.height());
+}
+
+#[test]
+fn the_sheet_rises_on_a_spring_when_a_panel_opens() {
+    let mut h = phone(false);
+    h.state_mut().headless = false;
+    h.run_steps(30);
+    h.state_mut().pad.docks.world.open_tabs(&[Panel::Layers]);
+    h.step();
+    h.step();
+    let first = panel(&h, Panel::Layers).unwrap();
+    h.run_steps(120);
+    let rest = panel(&h, Panel::Layers).unwrap();
+    assert!(first.top() > rest.top() + 50.0, "{first:?} {rest:?}");
+}
+
+#[test]
+fn a_pull_of_the_edge_tab_brings_the_dock_out_with_the_finger() {
+    use vale_app::ui::pad::dock_ui::SHOW_DOCK;
+    let mut h = springy_pad();
+    let rest = panel(&h, Panel::Layers).unwrap().left();
+    h.state_mut().pad.docks.world.collapsed = true;
+    h.run_steps(120);
+    let tab = control(&h, SHOW_DOCK).unwrap().center();
+    touch(&mut h, egui::TouchPhase::Start, tab, None);
+    h.step();
+    let mut lefts = Vec::new();
+    for i in 1..=8 {
+        touch(
+            &mut h,
+            egui::TouchPhase::Move,
+            tab - vec2(20.0 * i as f32, 0.0),
+            None,
+        );
+        h.step();
+        lefts.push(panel(&h, Panel::Layers).map(|r| r.left()));
+    }
+    // The dock follows the finger, from the place where the pull started.
+    let (a, b) = (lefts[3].unwrap(), lefts[7].unwrap());
+    assert!((a - b - 80.0).abs() < 1.0, "{lefts:?}");
+    touch(&mut h, egui::TouchPhase::End, tab - vec2(160.0, 0.0), None);
+    h.run_steps(120);
+    assert!(!h.state().pad.docks.world.collapsed);
+    assert_eq!(panel(&h, Panel::Layers).map(|r| r.left()), Some(rest));
+}
+
+#[test]
+fn the_edge_tab_is_at_the_height_of_the_handle() {
+    use vale_app::ui::pad::dock_ui::{DOCK_WIDTH, SHOW_DOCK};
+    let mut h = docked(BOARDS[0], &[&[Panel::Snap]]);
+    let handle = control(&h, DOCK_WIDTH).unwrap().center();
+    // The dock is shorter than its room, so its middle is higher.
+    let room = h.state().pad.rects.unwrap().dock;
+    assert!(handle.y < room.center().y - 50.0, "{handle:?} {room:?}");
+    h.state_mut().pad.docks.world.collapsed = true;
+    h.run_steps(3);
+    let tab = control(&h, SHOW_DOCK).unwrap().center();
+    assert_eq!(tab.y, handle.y);
+}
+
+#[test]
+fn a_slow_pull_of_a_third_of_the_dock_shows_it() {
+    use vale_app::ui::pad::dock_ui::SHOW_DOCK;
+    for (reach, shows) in [(60.0, false), (140.0, true)] {
+        let mut h = springy_pad();
+        h.state_mut().pad.docks.world.collapsed = true;
+        h.run_steps(120);
+        let tab = control(&h, SHOW_DOCK).unwrap().center();
+        touch(&mut h, egui::TouchPhase::Start, tab, None);
+        h.step();
+        for i in 1..=10 {
+            let at = tab - vec2(reach * i as f32 / 10.0, 0.0);
+            touch(&mut h, egui::TouchPhase::Move, at, None);
+            h.step();
+        }
+        // The finger stops before it lifts, so the pull has no speed.
+        h.run_steps(20);
+        touch(&mut h, egui::TouchPhase::End, tab - vec2(reach, 0.0), None);
+        h.run_steps(120);
+        assert_eq!(!h.state().pad.docks.world.collapsed, shows, "{reach}");
+    }
 }

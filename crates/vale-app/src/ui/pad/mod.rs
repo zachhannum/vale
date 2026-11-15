@@ -48,6 +48,7 @@ pub mod grid_labels;
 pub mod icons;
 pub mod label_text;
 pub mod labels;
+pub mod motion;
 pub mod number;
 pub mod panels_menu;
 pub mod panes;
@@ -719,6 +720,10 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     state.pad.sheet_offset = input
         .sheet_offset
         .clamp(-rects.sheet_rise, rects.sheet_travel);
+    if input.panel {
+        input.sheet_offset = state.pad.sheet_offset;
+        rects = geometry::layout(&input);
+    }
 
     let mut controls = std::mem::take(&mut state.pad.controls);
     controls.clear();
@@ -751,6 +756,10 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     input.column = column_input(state);
     input.sheet_offset = state.pad.sheet_offset;
     rects = geometry::layout(&input);
+    if input.panel {
+        input.sheet_offset = shown_sheet_offset(&ctx, state.pad.sheet_offset, rects.sheet_travel);
+        rects = geometry::layout(&input);
+    }
     table::check(state);
     table::widen(state, &mut rects);
     expression::widen(state, &mut rects);
@@ -994,6 +1003,7 @@ pub(super) fn dock_button(
     let shown = enabled && !dock.collapsed;
     let sense = egui::Sense::click();
     let resp = widgets::hit(ui, controls, rect, DOCK, sense, enabled, Some(shown));
+    let start = widgets::press_start(ui);
     let painter = ui.painter();
     let inner = rect.shrink(widgets::HIGHLIGHT_INSET);
     if shown {
@@ -1006,6 +1016,7 @@ pub(super) fn dock_button(
     let color = if shown { theme::ACCENT } else { theme::MUTE };
     let color = widgets::fade(color, enabled);
     icons::paint(painter, rect, Icon::Dock, widgets::ICON, color);
+    widgets::press_end(ui, &resp, start);
     if resp.clicked() {
         let dock = state.pad.dock_mut();
         dock.collapsed = !dock.collapsed;
@@ -1709,13 +1720,14 @@ fn merge_menu(
     let mut keep = None;
     let radius = theme::CARD_RADIUS.into();
     let backdrop = state.globe.backdrop();
-    widgets::card(
+    widgets::card_from(
         ctx,
         backdrop,
         "pad-merge",
         rect,
         Order::Foreground,
         radius,
+        cell.center().clamp(rect.min, rect.max),
         |ui| {
             let inner = rect.shrink2(vec2(widgets::BODY_PAD, 10.0));
             let layout = egui::Layout::top_down(egui::Align::Min);
@@ -2352,10 +2364,30 @@ fn take_raise(ctx: &egui::Context) -> bool {
 
 /// Moves the sheet with a drag on its title row. At the end of the drag, the
 /// sheet goes to the nearer of its two places. A tap changes the place.
+/// The spring of the offset of the sheet.
+fn sheet_spring() -> egui::Id {
+    egui::Id::new("pad-sheet-offset")
+}
+
+/// The offset of the sheet on the screen. It follows `offset` on a spring.
+/// A sheet that the last frame did not show rises from its title row, at
+/// the offset `travel`.
+fn shown_sheet_offset(ctx: &egui::Context, offset: f32, travel: f32) -> f32 {
+    let id = sheet_spring();
+    let pass = ctx.cumulative_pass_nr();
+    let seen: Option<u64> = ctx.data(|d| d.get_temp(id.with("seen")));
+    ctx.data_mut(|d| d.insert_temp(id.with("seen"), pass));
+    if seen.is_none_or(|p| p + 1 < pass) {
+        motion::set(ctx, id, travel.max(offset));
+    }
+    motion::points(ctx, id, offset, motion::SNAPPY)
+}
+
 fn sheet_drag(ui: &egui::Ui, pad: &mut PadState, bar: &egui::Response, rects: &Rects) {
     let (rise, travel) = (rects.sheet_rise, rects.sheet_travel);
     if bar.dragged() {
         pad.sheet_offset = (pad.sheet_offset + bar.drag_delta().y).clamp(-rise, travel);
+        motion::set(ui.ctx(), sheet_spring(), pad.sheet_offset);
         ui.ctx().request_repaint();
     }
     // The places of the sheet: the full height, the half height, and the
@@ -2364,6 +2396,7 @@ fn sheet_drag(ui: &egui::Ui, pad: &mut PadState, bar: &egui::Response, rects: &R
     let offset = pad.sheet_offset;
     pad.sheet_offset = if bar.drag_stopped() {
         let speed = ui.input(|i| i.pointer.velocity().y);
+        motion::kick(ui.ctx(), sheet_spring(), offset, speed);
         if speed > 300.0 {
             places.into_iter().find(|p| *p > offset).unwrap_or(travel)
         } else if speed < -300.0 {
@@ -3095,7 +3128,7 @@ fn layer_list(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
     let others = rows.iter().enumerate().filter(|(i, _)| *i != from);
     for (k, (_, row)) in others.enumerate() {
         // The rows make room at the place where the lifted row goes.
-        let rect = place(if k < to { k } else { k + 1 });
+        let rect = row_place(ui, row.id, area, if k < to { k } else { k + 1 });
         let on = selected == Some(row.layer);
         let (icon, name, visible) = (row.icon, &row.name, Some(row.visible));
         widgets::layer_row(
@@ -3105,6 +3138,7 @@ fn layer_list(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
     let row = &rows[from];
     let (icon, name, visible) = (row.icon, &row.name, Some(row.visible));
     let rect = slot(top);
+    motion::set(ui.ctx(), row_spring(ui, row.id), top - area.top());
     widgets::layer_row(
         ui, controls, rect, icon, name, visible, true, false, true, 0.0, None,
     );
@@ -3114,6 +3148,22 @@ fn layer_list(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
             state.move_layer(reorder.layer, to);
         }
     }
+}
+
+/// The spring of the place of the row of layer `id` in the layer list.
+fn row_spring(ui: &egui::Ui, id: LayerId) -> egui::Id {
+    ui.id().with(("layer-row", id))
+}
+
+/// The place of the row of layer `id` at index `i` of the list in `area`.
+/// The row moves to its place on a spring, as after a reorder.
+fn row_place(ui: &egui::Ui, id: LayerId, area: Rect, i: usize) -> Rect {
+    let target = i as f32 * PANEL_ROW;
+    let y = motion::points(ui.ctx(), row_spring(ui, id), target, motion::SNAPPY);
+    Rect::from_min_size(
+        pos2(area.left(), area.top() + y),
+        vec2(area.width(), PANEL_ROW),
+    )
 }
 
 /// The rows of the layer list that take touch. A sideways drag on a row
@@ -3134,7 +3184,7 @@ fn swipe_rows(
         rows.iter().position(|row| row.id == layer).map(place)
     });
     for (i, row) in rows.iter().enumerate() {
-        let (id, rect) = (row.id, place(i));
+        let (id, rect) = (row.id, row_place(ui, row.id, area, i));
         if let Some((_, text)) = state.pad.rename.as_mut().filter(|r| r.0 == id) {
             // The row is the name field while the user renames the layer. The
             // name changes when the field loses the focus.
@@ -3267,13 +3317,14 @@ fn add_menu(
     }
     let radius = theme::CARD_RADIUS.into();
     let backdrop = state.globe.backdrop();
-    widgets::card(
+    widgets::card_from(
         ctx,
         backdrop,
         "pad-add-layer",
         rect,
         Order::Foreground,
         radius,
+        button.center().clamp(rect.min, rect.max),
         |ui| {
             let inner = rect.shrink2(vec2(BODY_PAD, 10.0));
             let layout = egui::Layout::top_down(egui::Align::Min);
@@ -3647,13 +3698,18 @@ fn held_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls,
         rect = rect.translate(vec2(panel.right() + geometry::GAP - rect.left(), 0.0));
     }
     let mut clicked = None;
-    widgets::card(
+    // The card grows from the place where the pen left the canvas.
+    let hold = ctx
+        .input(|i| i.pointer.latest_pos())
+        .unwrap_or(rect.center_top());
+    widgets::card_from(
         ctx,
         state.globe.backdrop(),
         "pad-held",
         rect,
         Order::Middle,
         theme::CARD_RADIUS.into(),
+        hold.clamp(rect.min, rect.max),
         |ui| {
             let middle = rect.center().y;
             let left = rect.left() + BODY_PAD;
@@ -3709,13 +3765,14 @@ fn menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rect
     }
     let radius = theme::CARD_RADIUS.into();
     let backdrop = state.globe.backdrop();
-    widgets::card(
+    widgets::card_from(
         ctx,
         backdrop,
         "pad-menu",
         rect,
         Order::Foreground,
         radius,
+        rects.workspace.center().clamp(rect.min, rect.max),
         |ui| {
             let inner = rect.shrink2(vec2(BODY_PAD, 10.0));
             let layout = egui::Layout::top_down(egui::Align::Min);
@@ -3795,13 +3852,14 @@ fn worlds_menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Control
     let current = state.session.as_ref().map(|s| s.path().to_path_buf());
     let radius = theme::CARD_RADIUS.into();
     let backdrop = state.globe.backdrop();
-    widgets::card(
+    widgets::card_from(
         ctx,
         backdrop,
         "pad-worlds",
         rect,
         Order::Foreground,
         radius,
+        rects.workspace.center().clamp(rect.min, rect.max),
         |ui| {
             let inner = rect.shrink2(vec2(BODY_PAD, 10.0));
             let layout = egui::Layout::top_down(egui::Align::Min);

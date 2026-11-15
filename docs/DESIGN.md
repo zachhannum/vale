@@ -688,12 +688,14 @@ These rules apply to the dock:
 - A double tap on the bar below a pane makes the pane as tall as the dock allows. The other panes get as short as they can.
 - A drag of the empty part of a header moves the pane to another place in the column.
 - A drag of a tab onto the tab row of another pane adds it as a tab. A drag of a tab to a place in the column makes it a pane of its own.
-- A drag on a header that starts sideways to the right moves the whole dock with the finger. The swipe follows the touch events in their order, so a quick flick that starts and ends between two frames also counts. At the release, the dock collapses as an overlay sidebar of UIKit does: the speed of the finger in its last 0.1 seconds gives the distance that a throw would coast, with the deceleration rate 0.998 of UIKit. If the dock would then be past half its width, it collapses. Else it slides back. A drag that starts up, down, or to the left moves the pane or the tab.
-- The handle "Dock width" at the middle of the left edge of the dock changes its width. Its grip is on the edge, on a dark capsule. Its touch area is 44 by 120 points on the edge, 20 points of it in the dock, as the resize handles of iPadOS are. It takes only a drag, so a tap there still reaches the row of the pane below it. A touch on the dock does not cover the grip. The width goes from 300 to 520 points. During the drag, a label shows the width. The dock is 340 points wide at first.
+- A drag on a header that starts sideways to the right moves the whole dock with the finger, from the place where the swipe started. Past the open place, the dock pulls against the edge of the screen. The swipe follows the touch events in their order, so a quick flick that starts and ends between two frames also counts. At the release, the dock collapses as an overlay sidebar of UIKit does: the speed of the finger in its last 0.1 seconds gives the distance that a throw would coast, with the deceleration rate 0.998 of UIKit. If the dock would then be past half its width, it collapses. Else it slides back. A drag that starts up, down, or to the left moves the pane or the tab.
+- The handle "Dock width" at the middle of the left edge of the dock changes its width. Its grip is on the edge, on a dark capsule. Its touch area is 44 by 120 points on the edge, 20 points of it in the dock, as the resize handles of iPadOS are. It takes only a drag, so a tap there still reaches the row of the pane below it. A touch on the dock does not cover the grip. The width goes from 300 to 520 points. During a drag past the narrowest width, a label says "Hide dock". The dock is 340 points wide at first.
 - The dock is as tall as its panes, and it ends 8 points above the bottom band. If the panes do not fit, each pane that does not fit gets shorter and scrolls its content. A pane with content that fits keeps its height.
 - A pane is never shorter than its header and two rows. If the panes still do not fit, the last panes join the last pane that fits, as tabs. When the room is there again, they are panes of their own again.
-- The dock can collapse. It then slides off the right edge in 0.25 seconds, and it keeps its layout. The Dock button in the top row collapses the dock and shows it again. The button has the accent color while the dock shows, and it is off while the dock has no pane. A swipe to the right on a header, and a drag of the width handle 40 points past the narrowest width, also collapse the dock.
-- A slim tab at the middle of the right edge shows a collapsed dock again, with a tap or a drag to the left. A panel that opens also shows the dock.
+- The dock can collapse. It then slides off the right edge, and it keeps its layout. The Dock button in the top row collapses the dock and shows it again. The button has the accent color while the dock shows, and it is off while the dock has no pane. A swipe to the right on a header, and a drag of the width handle 40 points past the narrowest width, also collapse the dock.
+- The grip of the width handle stays at the right edge while the dock is hidden. It rides on the left edge of the dock as the dock slides, and it stops 10 points from the right edge of the screen, at the height that it had on the dock. A tap on the grip shows the dock. A drag to the left on the grip pulls the dock out with the finger. At the release, the dock shows if the pull and the distance that a throw would coast reach 30 percent of its width. Else, and after a flick back to the right, it slides back. The log file gets the distance and the speed of each pull. A panel that opens also shows the dock.
+
+- The app defers the system gestures at the right edge of the screen, so a touch there goes to the grip first. A system gesture at that edge needs a second swipe.
 - The dock floats over the canvas. The globe and the flat map do not move when the dock shows, hides, or changes its width. At 600 points or more, a page fits at the left of a dock of the default width, 340 points, and its width handle, whether the dock shows or not. This is the place where a page opens, and where a double tap fits it.
 - Each workspace has its own dock. The file `panels.txt`, in the folder that holds the state of the last run, keeps the open panes, the folded panes, and the width of each dock. It also keeps the arrangement of the panels of a frame, the collapsed state, and the panels that you closed. The project file does not hold them.
 
@@ -702,6 +704,27 @@ The Panels button opens the Panels menu below the top row. The menu has a tile f
 The World workspace has the tiles Layers, Attributes, Toolbox, Brush, and Snap. The Atlas workspace has two groups of tiles. The group Selection holds Properties, Projection, Layers, and Labels, and the group Atlas holds Pages, Attributes, Brush, and Snap. The section "Maps and the atlas" gives the panels of the Atlas workspace.
 
 On a compact screen, the dock is the sheet. The sheet shows the pane of the last focus, with its tab row and a close button. A long press on a tab opens a menu with "Close" and the name of the panel. The sheet has no bars and no handle, and its tabs do not move.
+
+### Motion
+
+The chrome moves on springs, as iPadOS moves its controls. A spring moves a value to its target with a velocity, and a small overshoot. A spring that gets a new target during a move keeps its velocity, so the move turns around smoothly. A spring has a response, which is the time of one swing, and a bounce, from 0 for no overshoot to 1 for no friction.
+
+| Spring | Response | Bounce | Use |
+|---|---|---|---|
+| Snappy | 0.32 s | 0.15 | The dock, the sheet, the panes, and the rows |
+| Bouncy | 0.36 s | 0.24 | Menus, popovers, and the thumbs of controls |
+| Press | 0.22 s | 0.3 | A control under a finger |
+
+- The dock slides on and off. After a swipe or a pull, the dock continues at the speed of the finger.
+- The panes of the dock move to their new places and heights when a panel opens, closes, or folds. A new pane grows from a height of zero.
+- The sheet moves to its detent at the speed of the finger.
+- A menu, a flyout, or a popover grows from 90 percent of its size at its control, and it fades in. When it closes, it shrinks back to its control and fades out in about 0.2 seconds, with no bounce. The closing card is a picture of its last frame, and it takes no touch.
+- A button, a chip, a pill, or a tile shrinks to 96 percent of its size under a finger. A wide control shrinks by the same distance as a control of 160 points.
+- The thumb of a segmented control or a switch slides to the new choice.
+- A row that you swipe snaps open or shut at the speed of the finger. During a reorder of the layers, the other rows move aside on springs.
+- The globe, the flat view, the pen strokes, and the map frames do not move on springs.
+
+When Reduce Motion is on in iPadOS, each value goes to its target at once. Headless renders and the tests do the same.
 
 ### iPhone layout
 

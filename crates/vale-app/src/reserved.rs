@@ -116,4 +116,24 @@ pub mod uikit {
             Some(interaction)
         }
     }
+
+    /// Gives the app the first touch at the right edge of the screen, where
+    /// the dock and its edge tab are. A system gesture at that edge then
+    /// needs a second swipe.
+    pub fn defer_right_edge(controller: NonNull<c_void>) {
+        // SAFETY: winit keeps its view controller for the life of the
+        // window.
+        let controller: &AnyObject = unsafe { controller.cast::<AnyObject>().as_ref() };
+        let set = sel!(setPreferredScreenEdgesDeferringSystemGestures:);
+        // SAFETY: each object answers respondsToSelector:.
+        let known: bool = unsafe { msg_send![controller, respondsToSelector: set] };
+        if known {
+            let right = objc2_ui_kit::UIRectEdge::Right;
+            // SAFETY: the view controller of the vendored winit has this
+            // method, with one UIRectEdge argument.
+            let _: () = unsafe {
+                msg_send![controller, setPreferredScreenEdgesDeferringSystemGestures: right]
+            };
+        }
+    }
 }

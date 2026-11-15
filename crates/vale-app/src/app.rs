@@ -77,6 +77,10 @@ impl eframe::App for ValeApp {
             state.pad.camera = regions.camera;
             state.pad.fold = regions.fold;
         }
+        #[cfg(target_os = "ios")]
+        {
+            state.reduce_motion = objc2_ui_kit::UIAccessibilityIsReduceMotionEnabled();
+        }
         ui::draw(ui, state);
         self.probe.update(state);
 
@@ -492,6 +496,9 @@ pub fn run_window(
                         let wake = move || ctx.request_repaint();
                         crate::files::uikit::Picker::new(controller, picked, exports, wake)
                     });
+                    if let Some(controller) = handle.ui_view_controller {
+                        crate::reserved::uikit::defer_right_edge(controller);
+                    }
                     let (fonts, ctx) = (app.fonts.clone(), cc.egui_ctx.clone());
                     app.font_picker = handle.ui_view_controller.and_then(|controller| {
                         let wake = move || ctx.request_repaint();
