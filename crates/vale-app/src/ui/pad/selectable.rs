@@ -123,13 +123,14 @@ pub(super) fn menu(
     let in_active = matches!(state.selectable, crate::ui::select::Selectable::Active);
     let radius = theme::CARD_RADIUS.into();
     let backdrop = state.globe.backdrop();
-    widgets::card(
+    widgets::card_from(
         ctx,
         backdrop,
         "pad-selectable",
         rect,
         Order::Foreground,
         radius,
+        cell.center().clamp(rect.min, rect.max),
         |ui| {
             let inner = rect.shrink2(vec2(widgets::BODY_PAD, 10.0));
             let layout = egui::Layout::top_down(egui::Align::Min);

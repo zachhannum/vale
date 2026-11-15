@@ -720,7 +720,9 @@ pub fn band_card(
     };
     let mut removed = false;
     let radius = theme::CARD_RADIUS.into();
-    widgets::card(ctx, backdrop, key, rect, Order::Foreground, radius, |ui| {
+    // The card grows from the tip of its point.
+    let order = Order::Foreground;
+    widgets::card_from(ctx, backdrop, key, rect, order, radius, point[1], |ui| {
         let inner = rect.shrink(CARD_PAD);
         let layout = egui::Layout::top_down(egui::Align::Min);
         let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
@@ -979,7 +981,9 @@ pub fn reset_card(
     let radius = theme::CARD_RADIUS.into();
     let key = "pad-reset-stops";
     let backdrop = state.globe.backdrop();
-    widgets::card(ctx, backdrop, key, rect, Order::Foreground, radius, |ui| {
+    // The card grows from the tip of its point.
+    let order = Order::Foreground;
+    widgets::card_from(ctx, backdrop, key, rect, order, radius, point[1], |ui| {
         let inner = rect.shrink(CARD_PAD);
         let layout = egui::Layout::top_down(egui::Align::Min);
         let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
@@ -1088,7 +1092,9 @@ pub fn ramp_card(
     let radius = theme::CARD_RADIUS.into();
     let key = "pad-ramp";
     let backdrop = state.globe.backdrop();
-    widgets::card(ctx, backdrop, key, rect, Order::Foreground, radius, |ui| {
+    // The card grows from the tip of its point.
+    let order = Order::Foreground;
+    widgets::card_from(ctx, backdrop, key, rect, order, radius, point[1], |ui| {
         let inner = rect.shrink(CARD_PAD);
         let layout = egui::Layout::top_down(egui::Align::Min);
         let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));

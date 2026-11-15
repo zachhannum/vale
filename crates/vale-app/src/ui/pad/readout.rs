@@ -314,13 +314,19 @@ pub(super) fn view_menu(
     if !list.is_some_and(|l| l.left() == menu.left()) {
         state.pad.view_menu_rect = Some(menu);
         let backdrop = state.globe.backdrop();
-        menu_card(ctx, backdrop, "pad-view-menu", menu, |ui| {
+        let origin = button.center().clamp(menu.min, menu.max);
+        menu_card(ctx, backdrop, "pad-view-menu", menu, origin, |ui| {
             view_rows(ui, state, controls, flat);
         });
     }
     if let Some(list) = list {
         state.pad.projections_rect = Some(list);
-        projections(ctx, state, controls, list);
+        // The list grows from the Projection row, or from the menu that it
+        // covers.
+        let row = controls.iter().find(|c| c.name == PROJECTION);
+        let opener = row.map_or(menu, |c| c.rect);
+        let origin = opener.center().clamp(list.min, list.max);
+        projections(ctx, state, controls, list, origin);
     }
 }
 
@@ -398,17 +404,19 @@ fn view_tabs(ui: &mut egui::Ui, controls: &mut Controls, view: WorldView) -> Opt
     chosen
 }
 
-/// A blur card for a menu, with rows from the top. The blur also shows the
-/// cards below the menu.
+/// A blur card for a menu, with rows from the top, that grows from `origin`.
+/// The blur also shows the cards below the menu.
 fn menu_card(
     ctx: &egui::Context,
     backdrop: Option<wgpu::TextureFormat>,
     id: &str,
     rect: Rect,
+    origin: egui::Pos2,
     contents: impl FnOnce(&mut egui::Ui),
 ) {
     let radius = theme::CARD_RADIUS.into();
-    widgets::card(ctx, backdrop, id, rect, Order::Foreground, radius, |ui| {
+    let order = Order::Foreground;
+    widgets::card_from(ctx, backdrop, id, rect, order, radius, origin, |ui| {
         let inner = rect.shrink2(vec2(BODY_PAD, 10.0));
         let layout = egui::Layout::top_down(egui::Align::Min);
         let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
@@ -419,9 +427,15 @@ fn menu_card(
 
 /// The list of the projections of the flat view in `rect`. A tap on a row
 /// picks the projection and closes the list.
-fn projections(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rect: Rect) {
+fn projections(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    controls: &mut Controls,
+    rect: Rect,
+    origin: egui::Pos2,
+) {
     let backdrop = state.globe.backdrop();
-    menu_card(ctx, backdrop, "pad-projections", rect, |ui| {
+    menu_card(ctx, backdrop, "pad-projections", rect, origin, |ui| {
         let spec = state.globe.flat.spec();
         for kind in ProjectionKind::ALL {
             let row = widgets::text_row(ui, controls, kind.name(), 0.0, false, true);

@@ -1710,13 +1710,14 @@ fn merge_menu(
     let mut keep = None;
     let radius = theme::CARD_RADIUS.into();
     let backdrop = state.globe.backdrop();
-    widgets::card(
+    widgets::card_from(
         ctx,
         backdrop,
         "pad-merge",
         rect,
         Order::Foreground,
         radius,
+        cell.center().clamp(rect.min, rect.max),
         |ui| {
             let inner = rect.shrink2(vec2(widgets::BODY_PAD, 10.0));
             let layout = egui::Layout::top_down(egui::Align::Min);
@@ -3268,13 +3269,14 @@ fn add_menu(
     }
     let radius = theme::CARD_RADIUS.into();
     let backdrop = state.globe.backdrop();
-    widgets::card(
+    widgets::card_from(
         ctx,
         backdrop,
         "pad-add-layer",
         rect,
         Order::Foreground,
         radius,
+        button.center().clamp(rect.min, rect.max),
         |ui| {
             let inner = rect.shrink2(vec2(BODY_PAD, 10.0));
             let layout = egui::Layout::top_down(egui::Align::Min);
@@ -3648,13 +3650,18 @@ fn held_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls,
         rect = rect.translate(vec2(panel.right() + geometry::GAP - rect.left(), 0.0));
     }
     let mut clicked = None;
-    widgets::card(
+    // The card grows from the place where the pen left the canvas.
+    let hold = ctx
+        .input(|i| i.pointer.latest_pos())
+        .unwrap_or(rect.center_top());
+    widgets::card_from(
         ctx,
         state.globe.backdrop(),
         "pad-held",
         rect,
         Order::Middle,
         theme::CARD_RADIUS.into(),
+        hold.clamp(rect.min, rect.max),
         |ui| {
             let middle = rect.center().y;
             let left = rect.left() + BODY_PAD;
@@ -3710,13 +3717,14 @@ fn menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rect
     }
     let radius = theme::CARD_RADIUS.into();
     let backdrop = state.globe.backdrop();
-    widgets::card(
+    widgets::card_from(
         ctx,
         backdrop,
         "pad-menu",
         rect,
         Order::Foreground,
         radius,
+        rects.workspace.center().clamp(rect.min, rect.max),
         |ui| {
             let inner = rect.shrink2(vec2(BODY_PAD, 10.0));
             let layout = egui::Layout::top_down(egui::Align::Min);
@@ -3796,13 +3804,14 @@ fn worlds_menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Control
     let current = state.session.as_ref().map(|s| s.path().to_path_buf());
     let radius = theme::CARD_RADIUS.into();
     let backdrop = state.globe.backdrop();
-    widgets::card(
+    widgets::card_from(
         ctx,
         backdrop,
         "pad-worlds",
         rect,
         Order::Foreground,
         radius,
+        rects.workspace.center().clamp(rect.min, rect.max),
         |ui| {
             let inner = rect.shrink2(vec2(BODY_PAD, 10.0));
             let layout = egui::Layout::top_down(egui::Align::Min);

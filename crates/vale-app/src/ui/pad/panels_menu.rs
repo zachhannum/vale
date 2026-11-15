@@ -159,13 +159,15 @@ pub fn show(
     let mut close = false;
     let mut reset = false;
     let backdrop = state.globe.backdrop();
-    widgets::card(
+    let origin = button.map_or(rect.right_top(), |b| b.center().clamp(rect.min, rect.max));
+    widgets::card_from(
         ctx,
         backdrop,
         "pad-panels-menu",
         rect,
         Order::Foreground,
         radius,
+        origin,
         |ui| {
             let width = (inner.width() - (COLUMNS - 1) as f32 * TILE_GAP) / COLUMNS as f32;
             let mut top = inner.top();

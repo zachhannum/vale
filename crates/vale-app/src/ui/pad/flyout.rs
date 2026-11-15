@@ -457,13 +457,14 @@ pub fn show(
     }
     let mut chosen = None;
     let radius = theme::CARD_RADIUS.into();
-    widgets::card(
+    widgets::card_from(
         ctx,
         backdrop,
         &key.id(),
         rect,
         Order::Foreground,
         radius,
+        cell.center().clamp(rect.min, rect.max),
         |ui| {
             let inner = rect.shrink2(vec2(BODY_PAD, 10.0));
             let layout = egui::Layout::top_down(egui::Align::Min);
