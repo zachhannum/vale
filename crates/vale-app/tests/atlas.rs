@@ -3269,7 +3269,7 @@ fn open_rivers_rule(h: &mut Pad) {
     scroll_to(h, "Open Rivers");
     tap(h, "Open Rivers");
     scroll_to(h, "Default");
-    tap(h, "Default");
+    quick_tap(h, "Default");
     scroll_to(h, &format!("{STROKE_WIDTH} value"));
 }
 
@@ -3438,13 +3438,12 @@ fn the_style_controls_of_a_frame_work_with_a_finger() {
         let last = h.state().doc.map_style(inset, layer_id(&h, "Rivers"));
         let last = last.unwrap().style.rules.last().unwrap().name.clone();
         scroll_to(&mut h, &last);
-        tap(&mut h, &last);
-        scroll_to(&mut h, MOVE_UP);
-        tap(&mut h, MOVE_UP);
-        for name in [MOVE_UP, MOVE_DOWN, DELETE_RULE] {
-            scroll_to(&mut h, name);
-            assert!(control(&h, name).is_some(), "{what}: {name}");
-            check_controls(&h, &format!("{what}: {name}"));
+        quick_tap(&mut h, &last);
+        scroll_to(&mut h, DELETE_RULE);
+        assert!(control(&h, DELETE_RULE).is_some(), "{what}");
+        check_controls(&h, &format!("{what}: {DELETE_RULE}"));
+        for name in [MOVE_UP, MOVE_DOWN] {
+            assert!(control(&h, name).is_none(), "{what}: {name}");
         }
         assert_eq!(rivers_rules(&h, None), globe, "{what}");
         assert_eq!(rivers_rules(&h, Some(main)), globe, "{what}");
@@ -3463,7 +3462,7 @@ fn the_style_controls_of_a_frame_work_with_a_finger() {
         scroll_to(&mut h, COPY_GLOBE_STYLE);
         assert!(control(&h, RESET_TO_MAP_STYLE).is_none(), "{what}");
         scroll_up_to(&mut h, "Default");
-        tap(&mut h, "Default");
+        quick_tap(&mut h, "Default");
         scroll_to(&mut h, &format!("{STROKE_WIDTH} value"));
         widen(&mut h);
         tap(&mut h, "Back to Rivers");
@@ -9816,7 +9815,7 @@ fn rivers_rule_names(h: &Pad, map: Option<MapId>) -> Vec<String> {
 /// and deletes it. After each step, `check` gets the rules that the panel
 /// shows.
 fn add_move_and_delete(h: &mut Pad, map: MapId, check: &dyn Fn(&Pad, &str)) {
-    use vale_app::ui::pad::rules::{ADD_RULE, DELETE_RULE, MOVE_UP};
+    use vale_app::ui::pad::rules::{ADD_RULE, DELETE_RULE};
     let globe = rivers_rule_names(h, None);
     let n = globe.len();
     show_tab(h, FRAME_TABS[2]);
@@ -9829,13 +9828,36 @@ fn add_move_and_delete(h: &mut Pad, map: MapId, check: &dyn Fn(&Pad, &str)) {
     assert_eq!(added[..n], globe[..]);
     check(h, "add");
 
-    scroll_to(h, MOVE_UP);
-    tap(h, MOVE_UP);
+    // A hold and a drag move the new rule up.
+    tap(h, "Back to Rivers");
+    scroll_to(h, &added[n]);
+    let from = control(h, &added[n]).unwrap().center();
+    let to = control(h, &added[n - 1]).unwrap().center();
+    touch(h, 1, egui::TouchPhase::Start, from, None);
+    for _ in 0..200 {
+        h.step();
+        if h.state().pad.rules.list.lift.is_some() {
+            break;
+        }
+    }
+    for i in 1..=6 {
+        touch(
+            h,
+            1,
+            egui::TouchPhase::Move,
+            from.lerp(to, i as f32 / 6.0),
+            None,
+        );
+        h.step();
+    }
+    touch(h, 1, egui::TouchPhase::End, to, None);
+    h.run_steps(3);
     let moved = rivers_rule_names(h, Some(map));
     assert_eq!(moved[n - 1], added[n]);
     assert_eq!(moved[n], added[n - 1]);
     check(h, "move");
 
+    quick_tap(h, &added[n]);
     scroll_to(h, DELETE_RULE);
     tap(h, DELETE_RULE);
     assert_eq!(rivers_rule_names(h, Some(map)), globe);

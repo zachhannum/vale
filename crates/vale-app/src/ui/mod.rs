@@ -1520,6 +1520,37 @@ impl AppState {
         removed
     }
 
+    /// Gives rule `i` of the style of layer `layer` a new name. A blank name
+    /// and a name that another rule of the style has do not apply. The
+    /// legend entries of the rule move to the new name in the same undo
+    /// step. Returns `true` if the name changed.
+    pub fn rename_rule(&mut self, layer: LayerId, i: usize, name: &str) -> bool {
+        let name = name.trim();
+        let Some(entry) = self.doc.entry_mut(layer) else {
+            return false;
+        };
+        let rules = &mut entry.style.style.rules;
+        let names: Vec<String> = rules.iter().map(|r| r.name.clone()).collect();
+        if i >= rules.len()
+            || names[i] == name
+            || !pad::rules::rule_name_free(&names, Some(i), name)
+        {
+            return false;
+        }
+        rules[i].name = name.to_owned();
+        let old = (layer, names[i].clone());
+        let pages = self.doc.project.atlas.pages.iter_mut();
+        for item in pages.flat_map(|p| &mut p.furniture) {
+            if let vale_store::Furniture::Legend(legend) = &mut item.item
+                && let Some(entry) = legend.entries.remove(&old)
+            {
+                legend.entries.insert((layer, name.to_owned()), entry);
+            }
+        }
+        self.touch();
+        true
+    }
+
     /// Removes a layer of each kind, with no save.
     fn drop_layer(&mut self, id: LayerId) -> bool {
         match self.doc.layer(id).map(|layer| layer.kind) {

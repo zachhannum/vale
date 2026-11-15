@@ -14,11 +14,11 @@ use vale_style::{
 
 use super::classify::CLASSIFY;
 use super::furniture::{ANGLE, LINE_COLOR, LINE_WIDTH, fill_kind_rows};
+use super::geometry::TOUCH;
 use super::number::Number;
 use super::raster::{self, heading};
-use super::selectable::{DESELECT_ALL, SELECT_ALL};
 use super::widgets::{self, Controls, Keys, PANEL_ROW};
-use super::{Icon, Page, filter, theme};
+use super::{Icon, Page, filter, list, theme};
 use crate::document::Document;
 use crate::globe::symbol::paint_symbol;
 use crate::rule_edit::{self, Change};
@@ -103,11 +103,14 @@ pub const SCATTER: &str = "Scatter";
 pub const SPACING: &str = "Spacing";
 pub const SIZE_VARIATION: &str = "Size variation";
 pub const ROTATION_VARIATION: &str = "Rotation variation";
+/// The buttons of the desktop editor that move a rule.
 pub const MOVE_UP: &str = "Move rule up";
 pub const MOVE_DOWN: &str = "Move rule down";
 pub const DELETE_RULE: &str = "Delete rule";
 pub const EDIT_RULES: &str = "Edit rules";
 pub const DELETE_RULES: &str = "Delete rules";
+/// The name field of a rule that the user renames in the list.
+pub const RULE_NAME: &str = "Rule name";
 /// The row of the mask of a layer, and the title of its page.
 pub const MASK: &str = "Mask";
 /// The row of the mask page and the text of the Mask row with no mask.
@@ -174,20 +177,20 @@ pub struct RulesState {
     field: Option<(LayerId, usize, &'static str)>,
     /// The Classify form.
     pub(super) classify: super::classify::Draft,
-    /// The layer of the selected rules, and the indices of the rules.
-    pub select: Option<(LayerId, Vec<usize>)>,
-    /// The rule row that a finger swipes to the right, and the distance of
-    /// the row from its place.
-    swipe: Option<(LayerId, usize, f32)>,
+    /// The list of the rules. A key is a layer and the index of a rule.
+    pub list: list::ListState<(LayerId, usize)>,
 }
 
 impl RulesState {
     /// The indices of the selected rules of layer `id`, first rule first.
     pub fn picked(&self, id: LayerId) -> Vec<usize> {
-        match &self.select {
-            Some((layer, picked)) if *layer == id => picked.clone(),
-            _ => Vec::new(),
-        }
+        let picked = self.list.picked.iter();
+        picked.filter(|k| k.0 == id).map(|k| k.1).collect()
+    }
+
+    /// Selects the rules `picked` of layer `id`.
+    pub fn pick(&mut self, id: LayerId, picked: &[usize]) {
+        self.list.picked = picked.iter().map(|i| (id, *i)).collect();
     }
 }
 
@@ -201,9 +204,8 @@ pub fn selection_title(state: &AppState, id: LayerId) -> String {
 
 /// The Style section: a row for each rule, first rule first, and the row
 /// that adds a rule. A later rule draws on top. A tap on a rule opens its
-/// page. A swipe to the right on a rule selects it or deselects it, as in
-/// the layer list of Procreate, and a tap on a selected rule opens the page
-/// of the selected rules. [`selection_buttons`] gives the other actions.
+/// page, and a tap on a selected rule opens the page of the selected rules.
+/// [`selection_buttons`] gives the actions of the selected rules.
 pub fn section(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id: LayerId) {
     let Some(kind) = state.doc.layer(id).and_then(|l| l.geometry()) else {
         return;
@@ -211,50 +213,73 @@ pub fn section(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
     let Some(entry) = state.doc.entry(id) else {
         return;
     };
-    let rows: Vec<(String, String)> = entry
+    let names: Vec<String> = entry
         .style
         .style
         .rules
         .iter()
-        .map(|r| (r.name.clone(), row_filter(&r.filter)))
+        .map(|r| r.name.clone())
         .collect();
-    let mut picked = state.pad.rules.picked(id);
-    picked.retain(|i| *i < rows.len());
+    let filters: Vec<String> = (entry.style.style.rules.iter())
+        .map(|r| row_filter(&r.filter))
+        .collect();
+    let rows: Vec<list::Row<(LayerId, usize)>> = (names.iter().enumerate())
+        .map(|(i, name)| list::Row {
+            rename: true,
+            delete: true,
+            trailing: TOUCH,
+            ..list::Row::new((id, i), name.clone())
+        })
+        .collect();
 
     heading(ui, STYLE);
-    for (i, (name, filter)) in rows.iter().enumerate() {
-        let on = picked.contains(&i);
-        let swipe = state.pad.rules.swipe.filter(|s| s.0 == id && s.1 == i);
-        let shift = swipe.map_or(0.0, |s| s.2);
-        let row = widgets::swipe_select_row(ui, controls, name, filter, on, shift);
-        let moved = ui.input(|i| Some(i.pointer.interact_pos()? - i.pointer.press_origin()?));
-        let took = widgets::take_drag(ui, &row, |m| m.x > m.y.abs());
-        if took {
-            state.pad.rules.swipe = Some((id, i, 0.0));
-        }
-        if let Some((_, _, dx)) = state.pad.rules.swipe.filter(|s| s.0 == id && s.1 == i) {
-            if row.dragged() || took {
-                let dx = moved.map_or(dx, |d| d.x.clamp(0.0, widgets::SWIPE_SELECT));
-                state.pad.rules.swipe = Some((id, i, dx));
-            } else {
-                // The finger is up: a swipe past the middle selects the
-                // rule or deselects it.
-                if dx >= widgets::SWIPE_SELECT / 2.0 {
-                    if on {
-                        picked.retain(|p| *p != i);
-                    } else {
-                        picked.push(i);
-                        picked.sort_unstable();
-                    }
-                }
-                state.pad.rules.swipe = None;
+    let renamed = state.pad.rules.list.rename.as_ref().map(|r| r.0.1);
+    let valid = |name: &str| rule_name_free(&names, renamed, name);
+    let spec = list::Spec {
+        select: true,
+        reorder: true,
+        field: RULE_NAME,
+        valid: &valid,
+    };
+    let before = state.pad.rules.list.picked.clone();
+    let rules = &mut state.pad.rules.list;
+    let look = |i: usize| list::Look {
+        text: &names[i],
+        note: Some(&filters[i]),
+        open: true,
+        ..list::Look::default()
+    };
+    // The fields have the same keys, so the list has an ID of its own.
+    let events = ui
+        .push_id("pad-rule-list", |ui| {
+            list::show(ui, controls, rules, spec, &rows, |ui, controls, cell, i| {
+                list::draw(ui, controls, cell, &look(i))
+            })
+        })
+        .inner;
+    let picked = &state.pad.rules.list.picked;
+    if *picked != before && !picked.is_empty() {
+        state.pad.field_list.picked.clear();
+    }
+    for event in events {
+        match event {
+            list::Event::Tap(key) | list::Event::Open(key) => {
+                let on = state.pad.rules.list.is_picked(key);
+                state.pad.page = Some(if on { Page::Rules } else { Page::Rule(key.1) });
             }
-            ui.ctx().request_repaint();
-        } else if row.clicked() {
-            state.pad.page = Some(if on { Page::Rules } else { Page::Rule(i) });
+            list::Event::Rename((_, i), name) => {
+                state.rename_rule(id, i, &name);
+            }
+            list::Event::Delete((_, i)) => remove_rules(state, id, &[i]),
+            list::Event::Move { from, to, .. } => {
+                if let Some(entry) = state.doc.entry_mut(id) {
+                    entry.style.style.move_rule_to(from, to);
+                    state.touch();
+                }
+            }
+            list::Event::Control(..) | list::Event::Lift(_) => {}
         }
     }
-    state.pad.rules.select = (!picked.is_empty()).then(|| (id, picked.clone()));
     if widgets::button_row(ui, controls, ADD_RULE, true).clicked()
         && let Some(entry) = state.doc.entry_mut(id)
     {
@@ -273,6 +298,30 @@ pub fn section(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
     }
 }
 
+/// True if `name` can be the name of rule `renamed` of a style with the
+/// rule names `names`: it is not blank, and no other rule has it.
+pub fn rule_name_free(names: &[String], renamed: Option<usize>, name: &str) -> bool {
+    let name = name.trim();
+    let other = |(i, n): (usize, &String)| Some(i) != renamed && n == name;
+    !name.is_empty() && !names.iter().enumerate().any(other)
+}
+
+/// Removes the rules `picked` of layer `id`, in one undo step.
+fn remove_rules(state: &mut AppState, id: LayerId, picked: &[usize]) {
+    if let Some(entry) = state.doc.entry_mut(id) {
+        let mut picked = picked.to_vec();
+        picked.sort_unstable();
+        picked.dedup();
+        for &i in picked.iter().rev() {
+            if i < entry.style.style.rules.len() {
+                entry.style.style.rules.remove(i);
+            }
+        }
+        state.pad.rules = RulesState::default();
+        state.touch();
+    }
+}
+
 /// The buttons of the selected rules of layer `id`, which has `count`
 /// rules, in the back row of the panel of the layer: "Select all" while a
 /// rule is not selected, "Edit rules", "Delete rules", and "Deselect all".
@@ -282,38 +331,23 @@ pub fn selection_buttons(
     id: LayerId,
     count: usize,
 ) -> Option<Vec<(&'static str, Icon)>> {
-    let picked = state.pad.rules.picked(id);
-    if picked.is_empty() {
-        return None;
-    }
-    let mut buttons = vec![
-        (EDIT_RULES, Icon::Brush),
-        (DELETE_RULES, Icon::Trash),
-        (DESELECT_ALL, Icon::Close),
-    ];
-    if picked.len() < count {
-        buttons.insert(0, (SELECT_ALL, Icon::Tick));
-    }
-    Some(buttons)
+    let picked = state.pad.rules.picked(id).len();
+    let extras = [(EDIT_RULES, Icon::Brush)];
+    list::group_buttons(picked, count, &extras, Some(DELETE_RULES))
 }
 
 /// Does the action of the button `name` of [`selection_buttons`].
-pub fn selection_action(state: &mut AppState, id: LayerId, name: &str) {
-    let picked = state.pad.rules.picked(id);
+pub fn selection_action(state: &mut AppState, id: LayerId, name: &'static str) {
     let count = state.doc.entry(id).map_or(0, |e| e.style.style.rules.len());
-    match name {
-        SELECT_ALL => state.pad.rules.select = Some((id, (0..count).collect())),
-        EDIT_RULES => state.pad.page = Some(Page::Rules),
-        DELETE_RULES => {
-            if let Some(entry) = state.doc.entry_mut(id) {
-                for &i in picked.iter().rev() {
-                    entry.style.style.rules.remove(i);
-                }
-                state.pad.rules = RulesState::default();
-                state.touch();
-            }
+    let keys: Vec<(LayerId, usize)> = (0..count).map(|i| (id, i)).collect();
+    let rules = &mut state.pad.rules.list;
+    match list::group_action(rules, &keys, name, Some(DELETE_RULES)) {
+        Some(list::Group::Delete(picked)) => {
+            let picked: Vec<usize> = picked.iter().map(|k| k.1).collect();
+            remove_rules(state, id, &picked);
         }
-        _ => state.pad.rules.select = None,
+        Some(list::Group::Extra(EDIT_RULES)) => state.pad.page = Some(Page::Rules),
+        _ => {}
     }
 }
 
@@ -808,8 +842,8 @@ fn row_filter(filter: &Filter) -> String {
     }
 }
 
-/// The page of rule `i`: the conditions of the filter, the scale range, the stroke, the fill, and the buttons that move and delete the
-/// rule. A tap on a color opens a color picker below it.
+/// The page of rule `i`: the conditions of the filter, the scale range,
+/// the stroke, the fill, and the button that deletes the rule. A tap on a color opens a color picker below it.
 pub fn rule_body(
     ui: &mut egui::Ui,
     state: &mut AppState,
@@ -827,7 +861,6 @@ pub fn rule_body(
         return;
     };
     let rule = rule.clone();
-    let count = state.doc.entry(id).map_or(0, |e| e.style.style.rules.len());
     ui.spacing_mut().item_spacing.y = 0.0;
     let mut changed = rule.clone();
 
@@ -849,21 +882,6 @@ pub fn rule_body(
     }
 
     ui.add_space(8.0);
-    let moved = if widgets::button_row(ui, controls, MOVE_UP, i > 0).clicked() {
-        Some(true)
-    } else if widgets::button_row(ui, controls, MOVE_DOWN, i + 1 < count).clicked() {
-        Some(false)
-    } else {
-        None
-    };
-    if let Some(up) = moved
-        && let Some(entry) = state.doc.entry_mut(id)
-    {
-        let to = entry.style.style.move_rule(i, up);
-        state.pad.page = Some(Page::Rule(to));
-        state.pad.rules = RulesState::default();
-        state.touch();
-    }
     if widgets::button_row_in(ui, controls, DELETE_RULE, true, theme::WARN).clicked()
         && let Some(entry) = state.doc.entry_mut(id)
     {

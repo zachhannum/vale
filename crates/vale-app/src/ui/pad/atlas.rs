@@ -1798,9 +1798,9 @@ fn layer_head(state: &mut AppState, id: vale_store::FrameId) -> Option<Head> {
             }
         };
         // The selection of the rules stays.
-        let select = state.pad.rules.select.take();
+        let picked = std::mem::take(&mut state.pad.rules.list.picked);
         state.pad.rules = Default::default();
-        state.pad.rules.select = select;
+        state.pad.rules.list.picked = picked;
     };
     let table = page == Some(Page::Table);
     // The table fills the page, and its rows have their own scroll. The

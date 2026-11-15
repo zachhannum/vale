@@ -474,6 +474,9 @@ pub struct PadState {
     add_button: Option<Rect>,
     /// The gestures and the selected rows of the layer list.
     pub layer_list: list::ListState<LayerId>,
+    /// The list of the fields of a vector layer. A key is a layer and the
+    /// index of a field.
+    pub field_list: list::ListState<(LayerId, usize)>,
     /// The text of the name field of the panel of a vector layer.
     name: Option<(LayerRef, String)>,
     /// The list of the projections of the flat view is open.
@@ -2179,9 +2182,17 @@ pub(super) fn panel_head(state: &mut AppState, panel: Panel) -> Head {
     };
     let buttons = match (layer, page) {
         (Some(LayerRef::Vector(id)), None) => {
-            rules::selection_buttons(state, id, rule_count).map(|buttons| PageButtons {
+            let rule_buttons = rules::selection_buttons(state, id, rule_count);
+            let rule_buttons = rule_buttons.map(|buttons| PageButtons {
                 buttons,
                 act: Box::new(move |state, name| rules::selection_action(state, id, name)),
+            });
+            rule_buttons.or_else(|| {
+                let buttons = fields::selection_buttons(state, id)?;
+                Some(PageButtons {
+                    buttons,
+                    act: Box::new(move |state, name| fields::selection_action(state, id, name)),
+                })
             })
         }
         (None, None) if list => {

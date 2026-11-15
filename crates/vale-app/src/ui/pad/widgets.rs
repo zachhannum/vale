@@ -1154,59 +1154,6 @@ pub fn sideways(moved: egui::Vec2) -> bool {
 
 pub use super::list::SWIPE_SELECT;
 
-/// A row of a list that a swipe to the right selects, as in the layer list
-/// of Procreate: the name at the left, and `value` and an arrow at the
-/// right. A selected row has a tint of the accent color. `shift` moves the
-/// row to the right during a swipe, and a check shows behind it.
-pub fn swipe_select_row(
-    ui: &mut egui::Ui,
-    controls: &mut Controls,
-    name: &str,
-    value: &str,
-    on: bool,
-    shift: f32,
-) -> Response {
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), Sense::hover());
-    let resp = hit(ui, controls, rect, name, Sense::click(), true, Some(on));
-    let painter = ui.painter();
-    let back = rect.expand2(vec2(8.0, -HIGHLIGHT_INSET));
-    if shift > 0.0 {
-        // The check behind the row tells what the swipe does.
-        let mark = Rect::from_center_size(
-            pos2(rect.left() + shift.min(SWIPE_SELECT) / 2.0, rect.center().y),
-            vec2(18.0, 18.0),
-        );
-        let color = if shift >= SWIPE_SELECT / 2.0 {
-            theme::ACCENT
-        } else {
-            theme::MUTE
-        };
-        let icon = if on { Icon::Close } else { Icon::Tick };
-        icons::paint(painter, mark, icon, 18.0, color);
-    }
-    let moved = vec2(shift, 0.0);
-    if on {
-        let tint = theme::ACCENT.gamma_multiply(0.25);
-        painter.rect_filled(back.translate(moved), 5.0, tint);
-    } else if resp.is_pointer_button_down_on() {
-        painter.rect_filled(back.translate(moved), 5.0, theme::raise());
-    }
-    let row = rect.translate(moved);
-    painter.text(
-        pos2(row.left(), row.center().y),
-        Align2::LEFT_CENTER,
-        name,
-        theme::body(),
-        theme::TEXT,
-    );
-    if !value.is_empty() {
-        let at = pos2(row.right() - ICON - 8.0, row.center().y);
-        painter.text(at, Align2::RIGHT_CENTER, value, theme::body(), theme::MUTE);
-    }
-    paint_open(ui, row);
-    resp
-}
-
 /// The size of the square of a compass dial.
 const DIAL: f32 = 4.0 * TOUCH;
 

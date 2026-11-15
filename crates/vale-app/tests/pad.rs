@@ -8755,7 +8755,7 @@ fn selected_rules_take_one_stroke_and_keep_their_fills() {
         swipe_right(&mut h, "Default");
         assert_eq!(picked(&h), [2], "{what}");
         // A tap on a selected rule edits the selection.
-        tap(&mut h, "Rule 2");
+        quick_tap(&mut h, "Rule 2");
         assert_eq!(h.state().pad.page, Some(Page::Rules), "{what}");
         tap(&mut h, "Back to Land");
         tap(&mut h, SELECT_ALL);
@@ -8793,7 +8793,7 @@ fn selected_rules_take_one_stroke_and_keep_their_fills() {
         tap(&mut h, DELETE_RULES);
         save_frames(&mut h);
         assert_eq!(rule_names(&h, land), ["Default", "Rule 2"], "{what}");
-        assert!(h.state().pad.rules.select.is_none(), "{what}");
+        assert!(picked(&h).is_empty(), "{what}");
         tap(&mut h, "Undo");
         assert_eq!(rule_names(&h, land), ["Default", "Rule 1", "Rule 2"]);
 
@@ -8802,8 +8802,8 @@ fn selected_rules_take_one_stroke_and_keep_their_fills() {
         let rect = control(&h, "Rule 1").unwrap();
         let from = rect.left_center() + vec2(40.0, 0.0);
         drag(&mut h, from, from + vec2(12.0, 0.0), None);
-        assert!(h.state().pad.rules.select.is_none(), "{what}");
-        tap(&mut h, "Rule 1");
+        assert!(picked(&h).is_empty(), "{what}");
+        quick_tap(&mut h, "Rule 1");
         assert_eq!(h.state().pad.page, Some(Page::Rule(1)), "{what}");
     }
 }
@@ -8845,7 +8845,7 @@ fn a_drag_on_a_rule_row_scrolls_as_a_drag_between_rows() {
             h.step();
             places.push(control(&h, "Rule 2").unwrap().center().y);
         }
-        assert!(h.state().pad.rules.select.is_none());
+        assert!(h.state().pad.rules.list.picked.is_empty());
         assert_eq!(h.state().pad.page, None);
         places
     };
@@ -8865,6 +8865,222 @@ fn a_drag_to_the_side_on_a_rule_row_selects_it_and_does_not_scroll() {
     swipe_right(&mut h, "Default");
     assert_eq!(h.state().pad.rules.picked(land), [0]);
     assert_eq!(control(&h, "Default").unwrap().top(), before);
+}
+
+/// A layout with Land open in the Layers panel, and three rules in the
+/// style of Land: "Default", "Rule 1", and "Rule 2".
+fn three_rules(size: (f32, f32), dir: &std::path::Path) -> (Pad, vale_store::LayerId) {
+    use vale_store::GeometryKind;
+    let mut h = saved_pad(size, dir);
+    let land = vector(&h, "Land");
+    let entry = h.state_mut().doc.entry_mut(land).unwrap();
+    entry.style.add_rule(GeometryKind::Polygon);
+    entry.style.add_rule(GeometryKind::Polygon);
+    h.state_mut().touch();
+    save_frames(&mut h);
+    open_panel(&mut h, "Layers");
+    tap(&mut h, "Open Land");
+    (h, land)
+}
+
+#[test]
+fn a_group_delete_of_rules_is_one_undo_step() {
+    use vale_app::ui::pad::rules::DELETE_RULES;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, land) = three_rules(BOARDS[0], dir.path());
+    swipe_right(&mut h, "Rule 1");
+    swipe_right(&mut h, "Default");
+    assert_eq!(h.state().pad.rules.picked(land), [0, 1]);
+    tap(&mut h, DELETE_RULES);
+    save_frames(&mut h);
+    assert_eq!(rule_names(&h, land), ["Rule 2"]);
+    assert!(h.state().pad.rules.list.picked.is_empty());
+    h.state_mut().undo();
+    h.run_steps(2);
+    assert_eq!(rule_names(&h, land), ["Default", "Rule 1", "Rule 2"]);
+}
+
+#[test]
+fn a_swipe_to_the_left_renames_a_rule_and_keeps_its_legend_entry() {
+    use vale_app::ui::pad::rules::RULE_NAME;
+    use vale_app::ui::pad::widgets::RENAME;
+    use vale_store::{Furniture, LegendEntry, LegendItem};
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, land) = three_rules(BOARDS[0], dir.path());
+    let mut legend = LegendItem::default();
+    let entry = LegendEntry {
+        name: None,
+        hidden: true,
+    };
+    legend
+        .entries
+        .insert((land, "Rule 1".into()), entry.clone());
+    let atlas = &mut h.state_mut().doc.project.atlas;
+    let page = atlas.pages[0].id;
+    let item = atlas.add_furniture(page, [0.0, 0.0, 40.0, 40.0], Furniture::Legend(legend));
+    let item = item.unwrap();
+    save_frames(&mut h);
+    let entries = |h: &Pad| match &h.state().doc.project.atlas.furniture(item).unwrap().item {
+        Furniture::Legend(l) => l.entries.clone(),
+        _ => unreachable!(),
+    };
+    let rename = |h: &mut Pad, row: &str, text: &str| {
+        swipe_left(h, row);
+        tap(h, &format!("{RENAME} {row}"));
+        assert!(control(h, RULE_NAME).is_some());
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+        h.run_steps(1);
+        h.key_press(egui::Key::Backspace);
+        h.run_steps(1);
+        if !text.is_empty() {
+            h.event(egui::Event::Text(text.to_owned()));
+            h.run_steps(1);
+        }
+        h.key_press(egui::Key::Enter);
+        h.run_steps(2);
+    };
+
+    scroll_to_control(&mut h, "Rule 1");
+    rename(&mut h, "Rule 1", "Rivers");
+    assert_eq!(rule_names(&h, land), ["Default", "Rivers", "Rule 2"]);
+    assert_eq!(entries(&h).get(&(land, "Rivers".into())), Some(&entry));
+    assert!(!entries(&h).contains_key(&(land, "Rule 1".into())));
+    // The rule and its legend entry come back in one undo step.
+    save_frames(&mut h);
+    h.state_mut().undo();
+    h.run_steps(2);
+    assert_eq!(rule_names(&h, land), ["Default", "Rule 1", "Rule 2"]);
+    assert_eq!(entries(&h).get(&(land, "Rule 1".into())), Some(&entry));
+
+    // An empty name and the name of another rule do not apply.
+    rename(&mut h, "Rule 1", "");
+    assert_eq!(rule_names(&h, land), ["Default", "Rule 1", "Rule 2"]);
+    rename(&mut h, "Rule 1", "Rule 2");
+    assert_eq!(rule_names(&h, land), ["Default", "Rule 1", "Rule 2"]);
+    assert!(!h.state_mut().rename_rule(land, 1, "Default"));
+    assert!(!h.state_mut().rename_rule(land, 1, " "));
+    assert_eq!(rule_names(&h, land), ["Default", "Rule 1", "Rule 2"]);
+}
+
+#[test]
+fn a_swipe_to_the_right_selects_fields_and_the_header_deletes_them_in_one_step() {
+    use vale_app::ui::pad::fields::DELETE_FIELDS;
+    use vale_app::ui::pad::list::SELECT_ALL;
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = saved_pad(BOARDS[0], dir.path());
+    let places = vector(&h, "Places");
+    let names = |h: &Pad| -> Vec<String> {
+        let layer = h.state().doc.layer(places).unwrap();
+        layer.fields.iter().map(|f| f.name.clone()).collect()
+    };
+    let before = names(&h);
+    assert!(before.len() >= 3, "{before:?}");
+    open_panel(&mut h, "Layers");
+    tap(&mut h, "Open Places");
+    swipe_right(&mut h, &before[0]);
+    swipe_right(&mut h, &before[1]);
+    assert_eq!(h.state().pad.field_list.picked, [(places, 0), (places, 1)]);
+    assert!(control(&h, SELECT_ALL).is_some());
+    // A second swipe deselects the field.
+    swipe_right(&mut h, &before[1]);
+    assert_eq!(h.state().pad.field_list.picked, [(places, 0)]);
+    swipe_right(&mut h, &before[2]);
+    tap(&mut h, DELETE_FIELDS);
+    let left: Vec<String> = [&before[1..2], &before[3..]].concat();
+    assert_eq!(names(&h), left);
+    assert!(h.state().pad.field_list.picked.is_empty());
+    step_and_save(&mut h, false);
+    h.state_mut().undo();
+    h.run_steps(2);
+    assert_eq!(names(&h), before);
+}
+
+#[test]
+fn a_swipe_to_the_left_renames_and_deletes_a_field() {
+    use vale_app::ui::pad::fields::FIELD_NAME;
+    use vale_app::ui::pad::widgets::RENAME;
+    let mut h = pad(BOARDS[0]);
+    let places = vector(&h, "Places");
+    let names = |h: &Pad| -> Vec<String> {
+        let layer = h.state().doc.layer(places).unwrap();
+        layer.fields.iter().map(|f| f.name.clone()).collect()
+    };
+    let before = names(&h);
+    open_panel(&mut h, "Layers");
+    tap(&mut h, "Open Places");
+    let first = before[0].clone();
+    scroll_to_control(&mut h, &first);
+    swipe_left(&mut h, &first);
+    tap(&mut h, &format!("{RENAME} {first}"));
+    assert!(control(&h, FIELD_NAME).is_some());
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.run_steps(1);
+    h.event(egui::Event::Text("renamed".to_owned()));
+    h.run_steps(1);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    assert_eq!(names(&h)[0], "renamed");
+    // The name of another field does not apply.
+    swipe_left(&mut h, "renamed");
+    tap(&mut h, &format!("{RENAME} renamed"));
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.run_steps(1);
+    h.event(egui::Event::Text(before[1].clone()));
+    h.run_steps(1);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    assert_eq!(names(&h)[0], "renamed");
+    swipe_left(&mut h, "renamed");
+    tap(&mut h, "Delete renamed");
+    assert_eq!(names(&h), before[1..]);
+}
+
+#[test]
+fn a_selection_of_rules_clears_the_selection_of_fields() {
+    let mut h = pad(BOARDS[0]);
+    let places = vector(&h, "Places");
+    let field = h.state().doc.layer(places).unwrap().fields[0].name.clone();
+    open_panel(&mut h, "Layers");
+    tap(&mut h, "Open Places");
+    swipe_right(&mut h, &field);
+    assert_eq!(h.state().pad.field_list.picked, [(places, 0)]);
+    swipe_right(&mut h, "Default");
+    assert_eq!(h.state().pad.rules.picked(places), [0]);
+    assert!(h.state().pad.field_list.picked.is_empty());
+    swipe_right(&mut h, &field);
+    assert_eq!(h.state().pad.field_list.picked, [(places, 0)]);
+    assert!(h.state().pad.rules.list.picked.is_empty());
+}
+
+/// Holds a finger on the rule row `name` until it lifts, drags it onto the
+/// row `onto`, and lets go.
+fn hold_drag_rule(h: &mut Pad, name: &str, onto: &str) {
+    scroll_to_control(h, name);
+    let from = control(h, name).unwrap().center();
+    let to = control(h, onto).unwrap().center();
+    touch(h, egui::TouchPhase::Start, from, None);
+    for _ in 0..200 {
+        h.step();
+        if h.state().pad.rules.list.lift.is_some() {
+            break;
+        }
+    }
+    assert!(h.state().pad.rules.list.lift.is_some(), "no lift");
+    for i in 1..=6 {
+        let pos = from.lerp(to, i as f32 / 6.0);
+        touch(h, egui::TouchPhase::Move, pos, None);
+        h.step();
+    }
+    touch(h, egui::TouchPhase::End, to, None);
+    h.run_steps(3);
+}
+
+/// A swipe to the left on the row `name`, which opens it.
+fn swipe_left(h: &mut Pad, name: &str) {
+    scroll_to_control(h, name);
+    let rect = control(h, name).unwrap_or_else(|| panic!("no control `{name}`"));
+    let from = rect.center();
+    drag(h, from, from - vec2(120.0, 0.0), None);
 }
 
 /// A swipe to the right on the row `name`.
@@ -8889,7 +9105,7 @@ fn open_rule(h: &mut Pad, layer: &str, rule: &str) {
     open_panel(h, "Layers");
     tap(h, &format!("Open {layer}"));
     scroll_to_control(h, rule);
-    tap(h, rule);
+    quick_tap(h, rule);
     assert!(matches!(h.state().pad.page, Some(Page::Rule(_))));
 }
 
@@ -8950,7 +9166,7 @@ fn classify_makes_quantile_rules_in_one_undo_step() {
         "{texts:?}"
     );
     scroll_to_control(&mut h, &middle);
-    tap(&mut h, &middle);
+    quick_tap(&mut h, &middle);
     assert_eq!(h.state().pad.page, Some(Page::Rule(1)));
     for n in 1..=2 {
         let remove = format!("Remove condition {n}");
@@ -9418,7 +9634,7 @@ fn the_classify_form_fits_a_finger() {
 
 #[test]
 fn the_style_section_adds_moves_and_deletes_rules() {
-    use vale_app::ui::pad::rules::{ADD_RULE, DELETE_RULE, MOVE_UP};
+    use vale_app::ui::pad::rules::{ADD_RULE, DELETE_RULE, MOVE_DOWN, MOVE_UP};
     for size in [BOARDS[0], BOARDS[3]] {
         let what = format!("{size:?}");
         let dir = tempfile::tempdir().unwrap();
@@ -9441,10 +9657,17 @@ fn the_style_section_adds_moves_and_deletes_rules() {
         assert_eq!(first.width, last.width, "{what}");
         assert_ne!(first.color, last.color, "{what}");
 
-        scroll_to_control(&mut h, MOVE_UP);
-        tap(&mut h, MOVE_UP);
+        // The rule page has no move buttons. A hold and a drag move a rule.
+        scroll_to_control(&mut h, DELETE_RULE);
+        for name in [MOVE_UP, MOVE_DOWN] {
+            assert!(control(&h, name).is_none(), "{what}: {name}");
+        }
+        tap(&mut h, "Back to Rivers");
+        hold_drag_rule(&mut h, "Rule 2", "Rule 1");
         save_frames(&mut h);
         assert_eq!(rule_names(&h, rivers), ["Default", "Rule 2", "Rule 1"]);
+        assert!(h.state().pad.rules.list.lift.is_none(), "{what}");
+        quick_tap(&mut h, "Rule 2");
         assert_eq!(h.state().pad.page, Some(Page::Rule(1)), "{what}");
         scroll_to_control(&mut h, DELETE_RULE);
         tap(&mut h, DELETE_RULE);
@@ -9491,10 +9714,12 @@ fn a_rule_page_sets_the_filter_and_the_scale_range() {
         assert!(rule(&h).filter.error().is_none(), "{what}");
 
         // The button of a condition removes it.
-        let first = format!("{REMOVE_CONDITION} 1");
-        scroll_to_control(&mut h, &first);
-        tap(&mut h, &first);
-        let text = "featurecla = 'River'";
+        // On a phone, the open value menu covers the button of the first
+        // condition.
+        let second = format!("{REMOVE_CONDITION} 2");
+        scroll_to_control(&mut h, &second);
+        tap(&mut h, &second);
+        let text = "scalerank < 5";
         assert_eq!(filter(&h).as_deref(), Some(text), "{what}");
 
         // Code takes any filter, and warns about a wrong one.
@@ -10556,7 +10781,7 @@ fn the_style_editor_opens_on_the_globe_and_the_flat_view_and_fits_a_finger() {
             scroll_to_control(&mut h, ADD_RULE);
             assert!(control(&h, "Default").is_some(), "{what}");
             check_controls(&h, &format!("{what} with the Style section"));
-            tap(&mut h, "Default");
+            quick_tap(&mut h, "Default");
             for name in [STROKE, STROKE_COLOR, FILL_COLOR, "Back to Land"] {
                 scroll_to_control(&mut h, name);
                 assert!(control(&h, name).is_some(), "{what}: {name}");
@@ -14290,7 +14515,7 @@ fn the_apply_mask_switch_of_selected_rules_sets_each_rule() {
     };
     open_panel(&mut h, "Layers");
     tap(&mut h, "Open Land");
-    h.state_mut().pad.rules.select = Some((land, vec![0, 1]));
+    h.state_mut().pad.rules.pick(land, &[0, 1]);
     h.run_steps(2);
     tap(&mut h, EDIT_RULES);
     assert_eq!(h.state().pad.page, Some(Page::Rules));
