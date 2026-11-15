@@ -5,8 +5,8 @@ use std::hash::Hash;
 
 use eframe::egui::{self, Pos2, Rect, Response, vec2};
 
-/// The time that a row takes to snap open or shut, in seconds.
-const SNAP_TIME: f32 = 0.15;
+use super::motion;
+
 
 /// A row of a list that a finger moved to the left, to show its Delete
 /// button. `K` identifies the row.
@@ -48,16 +48,24 @@ pub fn shift<K: Copy + PartialEq + Hash + std::fmt::Debug>(
 ) -> f32 {
     let swipe = swipe.filter(|s| s.row == row);
     let (target, moving) = swipe.map_or((0.0, false), |s| (s.offset, s.moving));
-    let time = if moving { 0.0 } else { SNAP_TIME };
-    let anim = ui.id().with(("swipe", row));
-    ui.ctx().animate_value_with_time(anim, target, time)
+    let id = spring_id(ui, row);
+    if moving {
+        motion::set(ui.ctx(), id, target);
+        return target;
+    }
+    motion::points(ui.ctx(), id, target, motion::SNAPPY)
+}
+
+/// The spring of the offset of row `row`.
+fn spring_id<K: Hash + std::fmt::Debug>(ui: &egui::Ui, row: K) -> egui::Id {
+    ui.id().with(("swipe", row))
 }
 
 /// Follows a sideways drag of the body of row `row`. A drag that starts
 /// sideways moves the row, and the row opens or shuts when the finger lifts.
 /// The buttons behind the row are `width` wide. Returns true if the row
 /// moves with the finger, so that the body takes no other touch.
-pub fn drag<K: Copy + PartialEq>(
+pub fn drag<K: Copy + PartialEq + Hash + std::fmt::Debug>(
     ui: &egui::Ui,
     swipe: &mut Option<Swipe<K>>,
     row: K,
@@ -83,8 +91,11 @@ pub fn drag<K: Copy + PartialEq>(
         open.offset = (open.base + dx).clamp(-width, 0.0);
         *swipe = Some(open);
     } else {
-        // The finger is up: the row opens or shuts.
+        // The finger is up: the row opens or shuts, and it springs on
+        // with the speed of the finger.
         let opened = open.offset < -width / 2.0;
+        let speed = ui.input(|i| i.pointer.velocity().x);
+        motion::kick(ui.ctx(), spring_id(ui, row), open.offset, speed);
         *swipe = opened.then_some(Swipe {
             offset: -width,
             moving: false,
