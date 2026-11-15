@@ -15,6 +15,7 @@ use vale_app::headless;
 use vale_app::pen::{PenEvent, PenPhase, PenQueue};
 use vale_app::projects::Locations;
 use vale_app::session::Session;
+use vale_app::ui::export_form::{self, EXPORT};
 use vale_app::ui::gradient::{COLUMN, ColumnParts, GRADIENT, band_row, widest_gap_value};
 use vale_app::ui::pad::eyedropper;
 use vale_app::ui::pad::flyout::Flyout;
@@ -5113,6 +5114,93 @@ fn the_menu_of_the_worlds_opens_another_world() {
         touch(&mut h, egui::TouchPhase::End, off, None);
         h.run_steps(2);
         assert!(h.state().pad.worlds.is_none(), "{size:?}");
+    }
+}
+
+#[test]
+fn the_world_menu_of_the_atlas_ends_with_export() {
+    for size in BOARDS {
+        let mut h = pad(size);
+        let compact = h.state().pad.rects.unwrap().class == WidthClass::Compact;
+        // The globe workspace has no Export row.
+        open_worlds(&mut h);
+        assert!(control(&h, EXPORT).is_none(), "{size:?}");
+        h.state_mut().pad.worlds = None;
+        h.state_mut().workspace = Workspace::Atlas;
+        h.run_steps(3);
+
+        if compact {
+            // The workspace menu holds the row, after the Worlds row.
+            tap(&mut h, "Workspace");
+            let menu = h.state().pad.menu_rect.unwrap();
+            let rows = ["World", "Atlas", WORLDS_ROW, EXPORT];
+            let tops = rows.map(|name| {
+                let row = control(&h, name).unwrap_or_else(|| panic!("{size:?}: no {name}"));
+                assert!(menu.contains_rect(row) && row.height() >= 44.0, "{name}");
+                row.top()
+            });
+            assert!(tops.is_sorted(), "{size:?}: {tops:?}");
+            tap(&mut h, WORLDS_ROW);
+            assert!(control(&h, EXPORT).is_none(), "{size:?}");
+            continue;
+        }
+        open_worlds(&mut h);
+        let menu = h.state().pad.worlds_rect.unwrap();
+        let export = control(&h, EXPORT).unwrap_or_else(|| panic!("{size:?}: no Export"));
+        assert!(menu.contains_rect(export), "{size:?}");
+        let rows = h
+            .state()
+            .pad
+            .controls
+            .iter()
+            .filter(|c| menu.contains_rect(c.rect));
+        let last = rows.map(|c| c.rect.top()).fold(0.0, f32::max);
+        assert_eq!(export.top(), last, "{size:?}");
+        assert!(export.top() > control(&h, WORLD_PROPERTIES).unwrap().bottom());
+    }
+}
+
+#[test]
+fn the_export_row_opens_the_export_form() {
+    for size in BOARDS {
+        let mut h = pad(size);
+        h.state_mut().workspace = Workspace::Atlas;
+        h.run_steps(3);
+        let rects = h.state().pad.rects.unwrap();
+        if rects.class == WidthClass::Compact {
+            tap(&mut h, "Workspace");
+        } else {
+            tap(&mut h, WORLDS);
+        }
+        tap(&mut h, EXPORT);
+        assert!(h.state().export_form.is_some(), "{size:?}");
+        assert!(h.state().pad.worlds.is_none() && !h.state().pad.menu);
+        h.run_steps(2);
+        let id = egui::Id::new("export-form");
+        let form = h.ctx.memory(|m| m.area_rect(id)).unwrap();
+        if rects.class == WidthClass::Compact {
+            assert_eq!(form.width(), size.0, "{size:?}");
+            assert_eq!(form.bottom(), size.1, "{size:?}");
+            assert!(form.top() <= rects.bands.top + 1.0, "{size:?}");
+        } else {
+            assert_eq!(form.width(), export_form::WIDTH, "{size:?}");
+            assert_eq!(form.center().x, size.0 / 2.0, "{size:?}");
+        }
+        // The form covers each other control.
+        let names: Vec<&str> = h
+            .state()
+            .pad
+            .controls
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
+        assert!(names.contains(&export_form::CANCEL), "{size:?}");
+        assert!(
+            !names.contains(&WORLDS) && !names.contains(&"Workspace"),
+            "{size:?}"
+        );
+        tap(&mut h, export_form::CANCEL);
+        assert!(h.state().export_form.is_none(), "{size:?}");
     }
 }
 

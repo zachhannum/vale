@@ -8,9 +8,10 @@ use std::sync::{Arc, mpsc};
 use image::{DynamicImage, ImageFormat, RgbaImage};
 use kurbo::{Point, Rect, Shape};
 use vale_labeler::Fonts;
+use vale_render::Rgba;
 use vale_render::{DisplayList, FillRule, Item, PdfDocument};
 use vale_sphere::Projection;
-use vale_store::{FrameRecord, ImageId, LayerId, PageRecord, RasterId};
+use vale_store::{FrameRecord, ImageId, LayerId, PageId, PageRecord, RasterId};
 
 use crate::atlas::{self, FrameTarget, PT_PER_MM};
 use crate::document::Document;
@@ -114,6 +115,9 @@ pub struct PdfExport {
     gpu: bool,
     /// The most pixels on a side of a texture of the GPU.
     max_side: u32,
+    /// The raster layers and the image layers of a frame go to the GPU.
+    /// Without them, a frame has its vector layers only.
+    layers: bool,
 }
 
 enum Output {
@@ -121,6 +125,12 @@ enum Output {
     /// One file for each page.
     Png {
         paths: Vec<PathBuf>,
+    },
+    /// One image for each page, in memory.
+    Images {
+        /// The pixels in one point of each image.
+        ratio: f64,
+        images: Vec<(PageId, Rgba)>,
     },
 }
 
@@ -177,7 +187,31 @@ impl PdfExport {
             options,
             gpu: true,
             max_side: MAX_SIDE,
+            layers: true,
         })
+    }
+
+    /// An export of `pages` to images in memory, with `ratio` pixels in one
+    /// point. A frame has its vector layers only, so the export needs no
+    /// GPU.
+    pub fn images(doc: Document, pages: Vec<PageRecord>, ratio: f64) -> anyhow::Result<Self> {
+        let options = ExportOptions::default();
+        let mut job = PdfExport::new(doc, PathBuf::from("pages.png"), pages, options)?;
+        job.output = Some(Output::Images {
+            ratio,
+            images: Vec::new(),
+        });
+        job.gpu = false;
+        job.layers = false;
+        Ok(job)
+    }
+
+    /// Takes the images of the pages that the export finished.
+    pub fn take_images(&mut self) -> Vec<(PageId, Rgba)> {
+        match &mut self.output {
+            Some(Output::Images { images, .. }) => std::mem::take(images),
+            _ => Vec::new(),
+        }
     }
 
     pub fn path(&self) -> &Path {
@@ -527,9 +561,10 @@ impl PdfExport {
                 let bbox = atlas::shape_bbox(&frame.shape).intersect(page_rect);
                 let raster_area = bbox.width() > 0.0 && bbox.height() > 0.0;
                 let masked = self.gpu && !frame_raster_masks(&self.doc, frame).is_empty();
-                let layered = !self.shown_rasters(frame).is_empty()
-                    || !self.shown_images(frame).is_empty()
-                    || masked;
+                let layered = self.layers
+                    && (!self.shown_rasters(frame).is_empty()
+                        || !self.shown_images(frame).is_empty()
+                        || masked);
                 if !layered || !raster_area {
                     let target = FrameTarget {
                         origin: Point::ZERO,
@@ -587,13 +622,20 @@ impl PdfExport {
                     headless::write_file(&paths[self.page], &bytes)?;
                 }
                 Some(Output::Pdf(pdf)) => pdf.add_page(&list)?,
+                Some(Output::Images { ratio, images }) => {
+                    let image = vale_render::render_rgba(&list, *ratio)?;
+                    images.push((page.id, image));
+                }
                 None => unreachable!("the export has an output"),
             }
             self.page += 1;
             if self.page < self.pages.len() {
                 return Ok(ExportStep::More);
             }
-            if matches!(self.output, Some(Output::Png { .. })) {
+            if matches!(
+                self.output,
+                Some(Output::Png { .. } | Output::Images { .. })
+            ) {
                 return Ok(ExportStep::Done(Ok(self.path.clone())));
             }
             let Some(Output::Pdf(pdf)) = self.output.take() else {

@@ -1,9 +1,67 @@
 //! The form that exports pages of the atlas to a PDF file or to PNG files.
 
+use eframe::egui::{self, Align2, Order, Rect, Sense, pos2, vec2};
 use vale_store::PageId;
 
-use super::{AppState, ExportFormat, ExportSpec, atlas};
+use super::pad::geometry::{GAP, MARGIN, ROW, Rects, WidthClass};
+use super::pad::icons::{self, Icon};
+use super::pad::number::Number;
+use super::pad::theme;
+use super::pad::widgets::{self, BODY_PAD, Controls, Keys, keypad_below};
+use super::{Action, AppState, ExportFormat, ExportSpec, atlas, export_thumbs};
 use crate::atlas_export::DEFAULT_PPI;
+
+/// The row of the world menu that opens the form, and the button of the
+/// form that starts the export.
+pub const EXPORT: &str = "Export…";
+pub const TITLE: &str = "Export";
+pub const CANCEL: &str = "Cancel";
+pub const CANCEL_EXPORT: &str = "Cancel export";
+pub const FORMAT: &str = "Format";
+/// The choices of the format, in the order of `FORMATS_ORDER`.
+pub const FORMATS: [&str; 2] = ["PDF", "PNG"];
+const FORMATS_ORDER: [ExportFormat; 2] = [ExportFormat::Pdf, ExportFormat::Png];
+pub const PAGES: &str = "Pages";
+/// The choices of the pages, in the order of `MODES`.
+pub const PAGE_CHOICES: [&str; 3] = ["All", "This page", "Range"];
+const MODES: [PagesMode; 3] = [PagesMode::All, PagesMode::This, PagesMode::Range];
+pub const FROM: &str = "From";
+pub const TO: &str = "To";
+pub const OPTIONS: &str = "Options";
+pub const RASTER_RESOLUTION: &str = "Raster resolution";
+pub const RESOLUTION: &str = "Resolution";
+pub const TRANSPARENT_PAPER: &str = "Transparent paper";
+pub const NAME: &str = "Name";
+/// The steps of the resolution stepper, in pixels per inch.
+const PPI_STEPS: [f64; 4] = [72.0, 150.0, 300.0, 600.0];
+/// The width of the form in the iPad layout.
+pub const WIDTH: f32 = 540.0;
+/// The ID of the card of the form.
+const CARD: &str = "export-form";
+/// The ID of the strip of the pages.
+const STRIP: &str = "export-strip";
+/// The space above the pictures of the strip.
+const STRIP_TOP: f32 = 16.0;
+/// The space between two pictures of the strip.
+const STRIP_GAP: f32 = 14.0;
+/// The space between a picture and the ring of a selected page.
+const RING: f32 = 5.0;
+/// The time that a finger stays still on a page before a drag selects a
+/// run of pages, in seconds.
+pub const HOLD: f64 = 0.3;
+/// The width of the band at each end of the strip where a run scrolls
+/// the strip.
+const EDGE: f32 = 40.0;
+/// The speed of the scroll of a run at an end of the strip, in points per
+/// second.
+const EDGE_SPEED: f32 = 480.0;
+/// The space below the last row.
+const BOTTOM: f32 = 20.0;
+
+/// The name of the picture of a page in the strip.
+pub fn page_name(index: usize) -> String {
+    format!("Page {}", index + 1)
+}
 
 /// The fewest pixels per inch of an export.
 pub const MIN_PPI: u32 = 72;
@@ -60,6 +118,8 @@ pub struct ExportForm {
     pub name: String,
     /// The page that the strip scrolls to on the next frame.
     pub center_on: Option<usize>,
+    /// The error of the last export of the form.
+    pub error: Option<String>,
 }
 
 impl ExportForm {
@@ -86,6 +146,7 @@ impl ExportForm {
             transparent: options.transparent,
             name,
             center_on: None,
+            error: None,
         };
         form.set_mode(PagesMode::All);
         form.center_on = Some(form.open);
@@ -205,6 +266,396 @@ impl ExportForm {
             name: self.name.trim().to_string(),
         }
     }
+}
+
+/// A run of pages that a drag selects: the first page, the tick that the
+/// run gives, and the ticks before the run.
+#[derive(Clone)]
+struct Run {
+    first: usize,
+    on: bool,
+    before: Vec<bool>,
+}
+
+/// The strip of the pages: a picture of each page, with a tick on each
+/// page that the export has. A tap ticks or clears a page. A finger that
+/// stays still for `HOLD`, then moves, ticks or clears each page that it
+/// goes over; at an end of the strip, the strip scrolls. A quick drag
+/// scrolls the strip.
+fn strip(
+    ui: &mut egui::Ui,
+    state: &AppState,
+    form: &mut ExportForm,
+    controls: &mut Controls,
+    enabled: bool,
+) {
+    let pages = &state.doc.project.atlas.pages;
+    let sizes: Vec<egui::Vec2> = (form.page_ids.iter())
+        .map(|id| {
+            let page = pages.iter().find(|p| p.id == *id);
+            page.map_or(vec2(112.0, export_thumbs::HEIGHT), export_thumbs::size)
+        })
+        .collect();
+    let height = STRIP_TOP + export_thumbs::HEIGHT + 2.0 * RING;
+    let width = ui.available_width();
+    let content = sizes.iter().map(|s| s.x).sum::<f32>()
+        + STRIP_GAP * sizes.len().saturating_sub(1) as f32
+        + 2.0 * RING;
+    // A strip that is narrower than the form is in the middle of it.
+    let lead = ((width - content) / 2.0).max(0.0) + RING;
+    let lefts: Vec<f32> = (sizes.iter())
+        .scan(lead, |x, size| {
+            let left = *x;
+            *x += size.x + STRIP_GAP;
+            Some(left)
+        })
+        .collect();
+    let mut scroll = egui::ScrollArea::horizontal()
+        .id_salt(STRIP)
+        .max_height(height)
+        .auto_shrink([false, true])
+        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden);
+    if let Some(index) = form.center_on.take()
+        && let (Some(left), Some(size)) = (lefts.get(index), sizes.get(index))
+    {
+        let most = (content + 2.0 * (lead - RING) - width).max(0.0);
+        let offset = (left + size.x / 2.0 - width / 2.0).clamp(0.0, most);
+        scroll = scroll.horizontal_scroll_offset(offset);
+    }
+    let run_id = egui::Id::new(STRIP).with("run");
+    scroll.show(ui, |ui| {
+        let total = (content + 2.0 * (lead - RING)).max(width);
+        let (area, _) = ui.allocate_exact_size(vec2(total, height), Sense::hover());
+        let visible = ui.clip_rect();
+        let rects: Vec<Rect> = (lefts.iter().zip(&sizes))
+            .map(|(left, size)| {
+                Rect::from_min_size(
+                    pos2(area.left() + left, area.top() + STRIP_TOP + RING),
+                    *size,
+                )
+            })
+            .collect();
+        let mut run: Option<Run> = ui.data(|d| d.get_temp(run_id));
+        let mut dragging = false;
+        // The drag of a run starts in the frame after the run.
+        let mut taken = false;
+        for (index, &rect) in rects.iter().enumerate() {
+            let name = page_name(index);
+            let resp = widgets::tap_area(ui, controls, rect.expand(RING), &name, enabled);
+            let held = ui.input(|i| {
+                let start = i.pointer.press_start_time().unwrap_or(i.time);
+                i.time - start >= HOLD
+            });
+            if widgets::take_drag(ui, &resp, |_| held) {
+                let on = !form.selected[index];
+                taken = true;
+                run = Some(Run {
+                    first: index,
+                    on,
+                    before: form.selected.clone(),
+                });
+            }
+            if resp.dragged() {
+                dragging = true;
+            } else if resp.clicked() {
+                form.toggle(index);
+            }
+            let page = form
+                .page_ids
+                .get(index)
+                .and_then(|id| pages.iter().find(|p| p.id == *id));
+            paint_page(ui, state, page, rect, form.selected[index], enabled);
+        }
+        match (&run, dragging) {
+            (Some(run), true) => {
+                let x = ui.input(|i| i.pointer.latest_pos()).map_or(0.0, |p| p.x);
+                let last = (rects.iter())
+                    .rposition(|r| x >= r.left() - STRIP_GAP / 2.0)
+                    .unwrap_or(0);
+                form.selected.clone_from(&run.before);
+                form.select_run(run.first, last, run.on);
+                let dt = ui.input(|i| i.stable_dt).min(0.1);
+                let step = EDGE_SPEED * dt;
+                if x < visible.left() + EDGE {
+                    ui.scroll_with_delta(vec2(step, 0.0));
+                    ui.ctx().request_repaint();
+                } else if x > visible.right() - EDGE {
+                    ui.scroll_with_delta(vec2(-step, 0.0));
+                    ui.ctx().request_repaint();
+                }
+            }
+            (Some(_), false) if !taken => run = None,
+            _ => {}
+        }
+        ui.data_mut(|d| match run {
+            Some(run) => {
+                d.insert_temp(run_id, run);
+            }
+            None => d.remove::<Run>(run_id),
+        });
+    });
+}
+
+/// The picture of a page in the strip, with the ring and the tick of a
+/// selected page. The page is dim with an empty circle while it is not
+/// selected. The paper color shows until the picture is ready.
+fn paint_page(
+    ui: &egui::Ui,
+    state: &AppState,
+    page: Option<&vale_store::PageRecord>,
+    rect: Rect,
+    on: bool,
+    enabled: bool,
+) {
+    let painter = ui.painter();
+    let dim = |color: egui::Color32| match (on, enabled) {
+        (true, true) => color,
+        (true, false) | (false, true) => color.gamma_multiply(theme::OFF),
+        (false, false) => color.gamma_multiply(theme::OFF * theme::OFF),
+    };
+    if on {
+        let ring = rect.expand(RING - 1.5);
+        let stroke = egui::Stroke::new(3.0, widgets::fade(theme::ACCENT, enabled));
+        painter.rect_stroke(ring, 6.0, stroke, egui::StrokeKind::Middle);
+    }
+    let paper = page.map_or([255; 3], |p| p.paper);
+    let paper = egui::Color32::from_rgb(paper[0], paper[1], paper[2]);
+    painter.rect_filled(rect, 3.0, dim(paper));
+    let texture = page.and_then(|p| state.export_thumbs.texture(p.id));
+    if let Some(texture) = texture {
+        let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+        painter.image(texture, rect, uv, dim(egui::Color32::WHITE));
+    }
+    let badge = Rect::from_center_size(rect.right_bottom() - vec2(15.0, 15.0), vec2(20.0, 20.0));
+    if on {
+        painter.circle_filled(badge.center(), 10.0, widgets::fade(theme::ACCENT, enabled));
+        icons::paint(painter, badge, Icon::Tick, 14.0, theme::CANVAS);
+    } else {
+        let fill = egui::Color32::from_white_alpha(217);
+        painter.circle_filled(badge.center(), 10.0, dim(fill));
+        let stroke = egui::Stroke::new(1.5, dim(theme::MUTE));
+        painter.circle_stroke(badge.center(), 9.25, stroke);
+    }
+}
+
+/// What the user did on the form in one frame.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum Did {
+    Nothing,
+    Close,
+    Export,
+}
+
+/// The form in the iPad layout: a form sheet near the top of the screen,
+/// over a dark fill that takes each touch. On a compact screen, the form
+/// is a sheet with the height of the screen.
+pub fn pad(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
+    let Some(mut form) = state.export_form.take() else {
+        return;
+    };
+    let busy = state.atlas_export.is_some();
+    let compact = rects.class == WidthClass::Compact;
+    let screen = rects.screen;
+    // Each frame has the height of the rows of the frame before it.
+    let body_id = egui::Id::new(CARD).with("body");
+    let body = ctx.data(|d| d.get_temp::<f32>(body_id)).unwrap_or(460.0);
+    let (rect, radius) = if compact {
+        let rect = Rect::from_min_max(pos2(screen.left(), rects.bands.top), screen.max);
+        let r = theme::SHEET_RADIUS as u8;
+        let radius = egui::CornerRadius {
+            nw: r,
+            ne: r,
+            sw: 0,
+            se: 0,
+        };
+        (rect, radius)
+    } else {
+        // On a partially folded device, the form is in one part of the
+        // canvas.
+        let part = super::pad::geometry::canvas_part(screen, rects.fold);
+        let bottom = part.bottom() - rects.bands.bottom;
+        let width = WIDTH.min(part.width() - 2.0 * MARGIN);
+        let top = rects.workspace.bottom() + GAP;
+        let height = (ROW + body).min(bottom - top - GAP).max(ROW);
+        let rect = Rect::from_min_size(
+            pos2(part.center().x - width / 2.0, top),
+            vec2(width, height),
+        );
+        (rect, theme::CARD_RADIUS.into())
+    };
+
+    egui::Area::new(egui::Id::new(CARD).with("scrim"))
+        .order(Order::Foreground)
+        .fixed_pos(screen.min)
+        .constrain(false)
+        .fade_in(false)
+        .show(ctx, |ui| {
+            let (rect, _) = ui.allocate_exact_size(screen.size(), Sense::click_and_drag());
+            ui.painter()
+                .rect_filled(rect, 0.0, egui::Color32::from_black_alpha(120));
+        });
+
+    // The form covers each other control.
+    controls.clear();
+    let mut did = Did::Nothing;
+    let mut stop = false;
+    widgets::card(ctx, None, CARD, rect, Order::Foreground, radius, |ui| {
+        ui.painter()
+            .rect_filled(rect, radius, theme::card(false).to_opaque());
+        ui.spacing_mut().item_spacing.y = 0.0;
+        let ready = form.can_export() && !busy;
+        let bar = widgets::form_bar(ui, controls, TITLE, CANCEL, EXPORT, ready);
+        if bar.cancel {
+            did = Did::Close;
+        } else if bar.action {
+            did = Did::Export;
+        }
+        let out = egui::ScrollArea::vertical()
+            .id_salt(CARD)
+            .max_height(rect.height() - ROW)
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                let margin = egui::Margin::symmetric(BODY_PAD as i8, 0);
+                egui::Frame::NONE.inner_margin(margin).show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    rows(ui, state, &mut form, controls, busy);
+                    if busy {
+                        stop = progress(ui, state, controls);
+                    } else if let Some(error) = &form.error {
+                        let size = vec2(ui.available_width(), 36.0);
+                        let (line, _) = ui.allocate_exact_size(size, Sense::hover());
+                        let at = pos2(line.left() + 2.0, line.center().y);
+                        let painter = ui.painter().with_clip_rect(line);
+                        painter.text(at, Align2::LEFT_CENTER, error, theme::body(), theme::WARN);
+                    }
+                    let bottom = if compact { rects.bands.bottom } else { 0.0 };
+                    ui.add_space(BOTTOM + bottom);
+                });
+            });
+        ctx.data_mut(|d| d.insert_temp(body_id, out.content_size.y));
+    });
+    // A touch on the dark fill does not put it above the card.
+    ctx.move_to_top(egui::LayerId::new(Order::Foreground, egui::Id::new(CARD)));
+    if stop {
+        state.actions.push(Action::CancelExport);
+    }
+    match did {
+        Did::Nothing => state.export_form = Some(form),
+        Did::Close => {
+            if busy {
+                state.actions.push(Action::CancelExport);
+            }
+            widgets::close_keypad(ctx);
+        }
+        Did::Export => {
+            form.error = None;
+            state.export_options = form.options();
+            state.actions.push(Action::ExportDialog(form.spec()));
+            state.export_form = Some(form);
+        }
+    }
+}
+
+/// The rows of the form below its bar.
+fn rows(
+    ui: &mut egui::Ui,
+    state: &AppState,
+    form: &mut ExportForm,
+    controls: &mut Controls,
+    busy: bool,
+) {
+    let enabled = !busy;
+    strip(ui, state, form, controls, enabled);
+
+    widgets::form_label(ui, FORMAT);
+    let active = FORMATS_ORDER.iter().position(|f| *f == form.format);
+    if let Some(index) = widgets::segmented(ui, controls, &FORMATS, active, enabled) {
+        form.format = FORMATS_ORDER[index];
+    }
+
+    widgets::form_label(ui, PAGES);
+    let active = MODES.iter().position(|m| *m == form.pages);
+    if let Some(index) = widgets::segmented(ui, controls, &PAGE_CHOICES, active, enabled) {
+        form.set_mode(MODES[index]);
+    }
+    if form.pages == PagesMode::Range {
+        ui.add_space(4.0);
+        let count = form.page_ids.len();
+        let valid = move |text: &str| {
+            let n = text.trim().parse::<usize>().ok();
+            n.is_some_and(|n| (1..=count).contains(&n))
+        };
+        for name in [FROM, TO] {
+            let shown = if name == FROM { &form.from } else { &form.to }.clone();
+            if busy {
+                widgets::value_row(ui, name, &shown);
+                continue;
+            }
+            let typed =
+                widgets::key_field(ui, controls, name, name, "", &shown, Keys::Number, valid);
+            if let Some(text) = typed {
+                let (from, to) = match name == FROM {
+                    true => (text, form.to.clone()),
+                    false => (form.from.clone(), text),
+                };
+                form.set_from_to(&from, &to);
+            }
+            keypad_below(ui, controls, name);
+        }
+    }
+
+    widgets::form_label(ui, OPTIONS);
+    let label = match form.format {
+        ExportFormat::Pdf => RASTER_RESOLUTION,
+        ExportFormat::Png => RESOLUTION,
+    };
+    let range = f64::from(MIN_PPI)..=f64::from(MAX_PPI);
+    let stepper = Number::new(label, f64::from(form.ppi), range)
+        .choices(&PPI_STEPS)
+        .unit("ppi")
+        .enabled(enabled)
+        .stepper(ui, controls);
+    if let Some(ppi) = stepper {
+        form.set_ppi(ppi.round() as u32);
+    }
+    if form.format == ExportFormat::Png {
+        let on = &mut form.transparent;
+        widgets::switch_row_enabled(
+            ui,
+            controls,
+            TRANSPARENT_PAPER,
+            TRANSPARENT_PAPER,
+            on,
+            enabled,
+        );
+    }
+
+    widgets::form_label(ui, NAME);
+    let ext = form.format.ext();
+    widgets::file_name_field(ui, controls, NAME, &mut form.name, ext, enabled);
+}
+
+/// The progress of the export that runs, and the button that stops it.
+/// Returns true if the user stopped the export.
+fn progress(ui: &mut egui::Ui, state: &AppState, controls: &mut Controls) -> bool {
+    let text = state.atlas_export_progress().unwrap_or_default();
+    ui.add_space(14.0);
+    let (line, _) = ui.allocate_exact_size(vec2(ui.available_width(), 20.0), Sense::hover());
+    let at = pos2(line.left() + 2.0, line.center().y);
+    ui.painter()
+        .text(at, Align2::LEFT_CENTER, text, theme::body(), theme::TEXT);
+    ui.add_space(8.0);
+    let (bar, _) = ui.allocate_exact_size(vec2(ui.available_width(), 6.0), Sense::hover());
+    ui.painter().rect_filled(bar, 3.0, theme::raise());
+    let (page, count) = state
+        .atlas_export
+        .as_ref()
+        .map_or((0, 1), |job| job.progress());
+    let done = (page.saturating_sub(1) as f32 / count.max(1) as f32).clamp(0.0, 1.0);
+    let filled = Rect::from_min_size(bar.min, vec2(bar.width() * done, bar.height()));
+    ui.painter().rect_filled(filled, 3.0, theme::ACCENT);
+    ui.add_space(12.0);
+    widgets::button_row_in(ui, controls, CANCEL_EXPORT, true, theme::WARN).clicked()
 }
 
 #[cfg(test)]

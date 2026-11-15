@@ -16,9 +16,10 @@ use crate::measure::Measure;
 use crate::pipeline::Pipeline;
 use crate::projects::{self, Locations};
 use crate::session::Session;
+use crate::ui::export_form::ExportForm;
 use crate::ui::pad::Panel;
 use crate::ui::world_form::FormMode;
-use crate::ui::{Action, AppState, Layout, Workspace, is_height};
+use crate::ui::{Action, AppState, ExportFormat, Layout, Workspace, is_height};
 
 #[derive(Parser, Clone, Debug)]
 #[command(
@@ -89,6 +90,16 @@ pub struct Args {
     /// Open the form of a new raster layer.
     #[arg(long)]
     pub raster_form: bool,
+    /// With --workspace atlas: open the export form.
+    #[arg(long)]
+    pub export_form: bool,
+    /// With --export-form: the format of the form.
+    #[arg(long, value_enum, value_name = "FORMAT", requires = "export_form")]
+    pub export_format: Option<ExportFormat>,
+    /// With --export-form: the first and the last page of the range of the
+    /// form. An atlas with fewer pages gets new pages.
+    #[arg(long, value_name = "A-B", requires = "export_form")]
+    pub export_range: Option<String>,
     /// With --layout pad and --panel layers: open the page of the color stops
     /// of the selected raster layer.
     #[arg(long)]
@@ -292,6 +303,31 @@ pub fn apply_frame(args: &Args, state: &mut AppState) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Opens the export form of `--export-form`, with the format of
+/// `--export-format` and the range of `--export-range`.
+pub fn apply_export_form(args: &Args, state: &mut AppState) -> anyhow::Result<()> {
+    if !args.export_form {
+        return Ok(());
+    }
+    let range = args.export_range()?;
+    if let Some((_, last)) = range {
+        let (open, selection) = (state.atlas.page, state.atlas.selection);
+        while state.doc.project.atlas.pages.len() < last {
+            crate::ui::atlas::add_page(state);
+        }
+        (state.atlas.page, state.atlas.selection) = (open, selection);
+    }
+    let mut form = ExportForm::new(state);
+    if let Some(format) = args.export_format {
+        form.format = format;
+    }
+    if let Some((first, last)) = range {
+        form.set_from_to(&first.to_string(), &last.to_string());
+    }
+    state.export_form = Some(form);
+    Ok(())
+}
+
 /// Applies `--measure` to the open workspace.
 pub fn apply_measure(args: &Args, state: &mut AppState) -> anyhow::Result<()> {
     if let Some(spec) = &args.measure {
@@ -301,6 +337,22 @@ pub fn apply_measure(args: &Args, state: &mut AppState) -> anyhow::Result<()> {
 }
 
 impl Args {
+    /// The first and the last page number of `--export-range`.
+    pub fn export_range(&self) -> anyhow::Result<Option<(usize, usize)>> {
+        let Some(text) = &self.export_range else {
+            return Ok(None);
+        };
+        let numbers = text.split_once('-').and_then(|(a, b)| {
+            let a = a.trim().parse::<usize>().ok()?;
+            let b = b.trim().parse::<usize>().ok()?;
+            Some((a, b))
+        });
+        match numbers {
+            Some((a, b)) if a >= 1 && a <= b => Ok(Some((a, b))),
+            _ => bail!("`{text}` is not a range of pages, for example 2-3"),
+        }
+    }
+
     /// The one-based page number and output path of `--export-page`.
     pub fn page_export(&self) -> anyhow::Result<Option<(usize, PathBuf)>> {
         if self.export_page.is_empty() {

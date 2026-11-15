@@ -44,6 +44,7 @@ pub mod browser;
 pub mod dock;
 pub mod elevation;
 pub mod export_form;
+pub mod export_thumbs;
 pub mod expr_field;
 pub mod expr_help;
 pub mod font_dialog;
@@ -248,7 +249,7 @@ pub fn is_heightmap_path(path: &Path) -> bool {
     ext.is_some_and(|e| ["png", "tif", "tiff"].contains(&e.to_ascii_lowercase().as_str()))
 }
 
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
 pub enum ExportFormat {
     #[default]
     Pdf,
@@ -564,6 +565,8 @@ pub struct AppState {
     pub export_form: Option<export_form::ExportForm>,
     /// The options of the last export form of the session.
     pub export_options: export_form::Options,
+    /// The pictures of the pages in the strip of the export form.
+    pub export_thumbs: export_thumbs::Thumbs,
     /// The color ramps of the app.
     pub ramps: crate::ramps::Ramps,
     /// The text of the last import of a color ramp.
@@ -770,6 +773,7 @@ impl AppState {
             atlas_export: None,
             export_form: None,
             export_options: export_form::Options::default(),
+            export_thumbs: Default::default(),
             ramps: Default::default(),
             ramp_note: None,
             symbol_note: None,
@@ -3978,8 +3982,7 @@ impl AppState {
             }
             ExportStep::Capture(draw) => {
                 let Some(ui) = ui else {
-                    self.end_export_frame();
-                    self.status = "A raster layer needs a GPU for export".to_string();
+                    self.fail_export("A raster layer needs a GPU for export".to_string());
                     return;
                 };
                 // The globe gets the frame of the export with the frames of
@@ -4036,8 +4039,7 @@ impl AppState {
                     }));
                 }
                 let Some((callback, receiver)) = self.globe.capture_frame(canvas, draw) else {
-                    self.end_export_frame();
-                    self.status = "The GPU is not ready for raster export".to_string();
+                    self.fail_export("The GPU is not ready for raster export".to_string());
                     return;
                 };
                 callbacks.push(callback);
@@ -4055,6 +4057,7 @@ impl AppState {
             }
             ExportStep::Done(Ok(path)) => {
                 self.end_export_frame();
+                self.export_form = None;
                 let files = job.files();
                 if files.len() > 1 {
                     let folder = path.parent().unwrap_or(&path);
@@ -4066,11 +4069,17 @@ impl AppState {
                     self.share = Some(path);
                 }
             }
-            ExportStep::Done(Err(error)) => {
-                self.end_export_frame();
-                self.status = format!("{error:#}");
-            }
+            ExportStep::Done(Err(error)) => self.fail_export(format!("{error:#}")),
         }
+    }
+
+    /// Ends an export that failed. The export form shows the error.
+    fn fail_export(&mut self, error: String) {
+        self.end_export_frame();
+        if let Some(form) = &mut self.export_form {
+            form.error = Some(error.clone());
+        }
+        self.status = error;
     }
 
     /// Stops the PDF export before it composes another page.
@@ -4429,6 +4438,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     }
     state.poll_export();
     state.poll_atlas_export(Some(ui));
+    export_thumbs::poll(ui.ctx(), state);
     if state.atlas_export.is_some() {
         ui.ctx().request_repaint();
     }

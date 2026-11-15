@@ -4,8 +4,8 @@ use anyhow::Context;
 use clap::Parser;
 use vale_app::app::run_window;
 use vale_app::cli::{
-    Args, apply_frame, apply_globe, apply_import, apply_measure, apply_view, export_heightmap,
-    parse_pair,
+    Args, apply_export_form, apply_frame, apply_globe, apply_import, apply_measure, apply_view,
+    export_heightmap, parse_pair,
 };
 use vale_app::globe::{FACE_SIZE, WINDOW_FACE_SIZE};
 use vale_app::headless;
@@ -109,6 +109,7 @@ fn run() -> anyhow::Result<u8> {
         if args.raster_form {
             state.raster_form = Some(RasterForm::open(&state));
         }
+        apply_export_form(&args, &mut state)?;
         if let Some(session) = &session {
             state.open_rasters(session.load_display_maps()?);
         }

@@ -2258,6 +2258,31 @@ pub fn choice_row(
             ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), Sense::hover());
         Rect::from_center_size(row.center(), vec2(row.width(), TOUCH))
     };
+    segmented_at(ui, controls, field, choices, active, true)
+}
+
+/// A segmented control that fills the width of the form, with no label.
+/// Returns the choice that the user made.
+pub fn segmented(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    choices: &[&str],
+    active: Option<usize>,
+    enabled: bool,
+) -> Option<usize> {
+    let (field, _) = ui.allocate_exact_size(vec2(ui.available_width(), TOUCH), Sense::hover());
+    segmented_at(ui, controls, field, choices, active, enabled)
+}
+
+/// The choices of a segmented control in `field`.
+fn segmented_at(
+    ui: &egui::Ui,
+    controls: &mut Controls,
+    field: Rect,
+    choices: &[&str],
+    active: Option<usize>,
+    enabled: bool,
+) -> Option<usize> {
     let track = field.shrink(HIGHLIGHT_INSET);
     ui.painter()
         .rect_filled(track, theme::CONTROL_RADIUS, theme::track());
@@ -2265,7 +2290,7 @@ pub fn choice_row(
     if let Some(index) = active.filter(|&i| i < choices.len()) {
         let min = pos2(field.left() + index as f32 * width, field.top());
         let rect = Rect::from_min_size(min, vec2(width, TOUCH)).intersect(track);
-        let id = ui.id().with(("choice-row", label));
+        let id = ui.id().with(("choice-row", choices));
         let thumb = slide_thumb(ui, id, field.x_range(), rect).shrink(2.0);
         ui.painter()
             .rect_filled(thumb, theme::CONTROL_RADIUS - 2.0, theme::raise());
@@ -2275,13 +2300,22 @@ pub fn choice_row(
         let min = pos2(field.left() + index as f32 * width, field.top());
         let rect = Rect::from_min_size(min, vec2(width, TOUCH));
         let on = active == Some(index);
-        let resp = hit(ui, controls, rect, choice, Sense::click(), true, Some(on));
+        let resp = hit(
+            ui,
+            controls,
+            rect,
+            choice,
+            Sense::click(),
+            enabled,
+            Some(on),
+        );
         if !on && resp.is_pointer_button_down_on() {
             let thumb = rect.intersect(track).shrink(2.0);
+            let fill = fade(theme::raise(), enabled);
             ui.painter()
-                .rect_filled(thumb, theme::CONTROL_RADIUS - 2.0, theme::raise());
+                .rect_filled(thumb, theme::CONTROL_RADIUS - 2.0, fill);
         }
-        let color = if on { theme::TEXT } else { theme::MUTE };
+        let color = fade(if on { theme::TEXT } else { theme::MUTE }, enabled);
         let at = rect.center();
         ui.painter()
             .text(at, Align2::CENTER_CENTER, *choice, theme::body(), color);
@@ -2290,6 +2324,104 @@ pub fn choice_row(
         }
     }
     chosen
+}
+
+/// The height of the label above a group of rows of a form.
+pub const FORM_LABEL_HEIGHT: f32 = 34.0;
+
+/// A small label above a group of rows of a form.
+pub fn form_label(ui: &mut egui::Ui, text: &str) {
+    let size = vec2(ui.available_width(), FORM_LABEL_HEIGHT);
+    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+    let at = pos2(rect.left() + 2.0, rect.bottom() - 6.0);
+    ui.painter()
+        .text(at, Align2::LEFT_BOTTOM, text, theme::hint(), theme::MUTE);
+}
+
+/// A field for a file name that fills the width of the form, with the
+/// extension of the file dim after the text.
+pub fn file_name_field(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    name: &str,
+    text: &mut String,
+    ext: &str,
+    enabled: bool,
+) -> Response {
+    let (field, _) = ui.allocate_exact_size(vec2(ui.available_width(), TOUCH), Sense::hover());
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(field));
+    if !enabled {
+        child.disable();
+    }
+    let valid = !text.trim().is_empty();
+    let resp = field_at(
+        &mut child,
+        controls,
+        field,
+        name,
+        None,
+        text,
+        valid,
+        theme::body(),
+    );
+    let left = field.left() + 12.0 + text_width(ui, text, theme::body());
+    let clip = field.shrink2(vec2(12.0, 0.0));
+    let at = pos2(left.min(clip.right()), field.center().y);
+    let color = fade(theme::MUTE, enabled);
+    (ui.painter().with_clip_rect(clip)).text(
+        at,
+        Align2::LEFT_CENTER,
+        format!(".{ext}"),
+        theme::body(),
+        color,
+    );
+    resp
+}
+
+/// What the user did on the bar of a form.
+pub struct FormBar {
+    pub cancel: bool,
+    pub action: bool,
+}
+
+/// The bar at the top of a form: the cancel button at the left, the title
+/// in the middle, and the action button on the accent color at the right.
+pub fn form_bar(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    title: &str,
+    cancel: &str,
+    action: &str,
+    enabled: bool,
+) -> FormBar {
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::hover());
+    let y = rect.center().y;
+    let width = text_width(ui, cancel, theme::body()) + 2.0 * BODY_PAD;
+    let left = Rect::from_min_size(pos2(rect.left() + PAD, y - TOUCH / 2.0), vec2(width, TOUCH));
+    let resp = hit(ui, controls, left, cancel, Sense::click(), true, None);
+    fill(ui, left, &resp, false);
+    ui.painter().text(
+        left.center(),
+        Align2::CENTER_CENTER,
+        cancel,
+        theme::body(),
+        theme::ACCENT,
+    );
+    let right = pos2(rect.right() - BODY_PAD, y);
+    let action = accent_button_in(ui, controls, right, action, enabled);
+    ui.painter().text(
+        rect.center(),
+        Align2::CENTER_CENTER,
+        title,
+        theme::title(),
+        theme::TEXT,
+    );
+    let line = Rect::from_min_max(pos2(rect.left(), rect.bottom() - 1.0), rect.right_bottom());
+    ui.painter().rect_filled(line, 0.0, theme::divider());
+    FormBar {
+        cancel: resp.clicked(),
+        action: action.clicked(),
+    }
 }
 
 /// The padding at the left and the right of the text of a chip.
@@ -2632,28 +2764,35 @@ pub fn accent_button(
     right: egui::Pos2,
     name: &str,
 ) -> Response {
+    accent_button_in(ui, controls, right, name, true)
+}
+
+/// An `accent_button` that is gray and takes no tap while `enabled` is
+/// false.
+pub fn accent_button_in(
+    ui: &egui::Ui,
+    controls: &mut Controls,
+    right: egui::Pos2,
+    name: &str,
+    enabled: bool,
+) -> Response {
     let width = text_width(ui, name, theme::body()) + 2.0 * 18.0;
     let rect = Rect::from_min_max(
         pos2(right.x - width, right.y - TOUCH / 2.0),
         pos2(right.x, right.y + TOUCH / 2.0),
     );
-    let resp = hit(ui, controls, rect, name, Sense::click(), true, None);
+    let resp = hit(ui, controls, rect, name, Sense::click(), enabled, None);
     let start = press_start(ui);
-    let color = if resp.is_pointer_button_down_on() {
-        theme::ACCENT
-    } else {
-        theme::ACCENT.gamma_multiply(0.8)
+    let (color, text) = match (enabled, resp.is_pointer_button_down_on()) {
+        (false, _) => (theme::raise(), fade(theme::MUTE, false)),
+        (true, true) => (theme::ACCENT, theme::CANVAS),
+        (true, false) => (theme::ACCENT.gamma_multiply(0.8), theme::CANVAS),
     };
     let back = rect.shrink(HIGHLIGHT_INSET);
     ui.painter().rect_filled(back, theme::CONTROL_RADIUS, color);
     let at = rect.center();
-    ui.painter().text(
-        at,
-        Align2::CENTER_CENTER,
-        name,
-        theme::body(),
-        theme::CANVAS,
-    );
+    ui.painter()
+        .text(at, Align2::CENTER_CENTER, name, theme::body(), text);
     press_end(ui, &resp, start);
     resp
 }

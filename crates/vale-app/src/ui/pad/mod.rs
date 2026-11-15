@@ -10,6 +10,7 @@ use vale_terrain::Mode;
 
 pub use super::LayerRef;
 use super::atlas::{AtlasTool, FrameTab};
+use super::export_form;
 use super::raster_form::{self, RasterForm};
 use super::select;
 use super::world_form::{self, WorldForm};
@@ -3745,6 +3746,25 @@ fn menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rect
     );
 }
 
+/// The row of a menu that opens the export form, with the share icon.
+/// Returns true if the user tapped it.
+pub(super) fn export_form_row(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+) -> bool {
+    let row = widgets::text_row(ui, controls, export_form::EXPORT, 0.0, false, true);
+    let icon = Rect::from_center_size(
+        pos2(row.rect.right() - 12.0, row.rect.center().y),
+        vec2(20.0, 20.0),
+    );
+    icons::paint(ui.painter(), icon, Icon::Share, 20.0, theme::MUTE);
+    if row.clicked() {
+        state.export_form = Some(export_form::ExportForm::new(state));
+    }
+    row.clicked()
+}
+
 /// A line between two groups of rows of a menu.
 fn rule(ui: &mut egui::Ui) {
     let (rule, _) = ui.allocate_exact_size(vec2(ui.available_width(), 13.0), egui::Sense::hover());
@@ -3785,6 +3805,13 @@ fn worlds_menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Control
     // The row of the start screen needs a folder of projects, and the Save
     // row needs a project file.
     let rows = 2.0 + f32::from(state.projects.any()) + f32::from(state.session.is_some());
+    // The Export row is in the Atlas workspace, after a divider. On a
+    // compact screen, it is in the workspace menu.
+    let export = state.workspace == Workspace::Atlas && rects.class != WidthClass::Compact;
+    let (rows, rule_height) = match export {
+        true => (rows + 1.0, rule_height + 13.0),
+        false => (rows, rule_height),
+    };
     let size = vec2(width, 10.0 + shown + rule_height + rows * PANEL_ROW + 10.0);
     let rect = Rect::from_min_size(rects.menu, size);
     let room = Rect::from_x_y_ranges(rects.screen.x_range(), rects.menu.y..=rects.panel_bottom);
@@ -3883,6 +3910,12 @@ fn worlds_menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Control
             {
                 state.actions.push(Action::ShowProjects);
                 open = false;
+            }
+            if export {
+                rule(ui);
+                if export_form_row(ui, state, controls) {
+                    open = false;
+                }
             }
         },
     );
