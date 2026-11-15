@@ -16,7 +16,7 @@ use vale_store::{
 use vale_style::LabelClass;
 use vale_terrain::{Bands, Heightmap, Mode};
 
-use crate::atlas_export::{ExportStep, PdfExport};
+use crate::atlas_export::{DEFAULT_PPI, ExportOptions, ExportStep, PdfExport};
 use crate::document::{Document, Target};
 use crate::files::{Availability, ExportEvent, Files, PlainFiles, SystemEvents};
 use crate::globe::combine::{PolygonMode, StrokeArea};
@@ -43,6 +43,7 @@ pub mod atlas;
 pub mod browser;
 pub mod dock;
 pub mod elevation;
+pub mod export_form;
 pub mod expr_field;
 pub mod expr_help;
 pub mod font_dialog;
@@ -71,11 +72,15 @@ pub mod world_form;
 pub enum Action {
     OpenDialog,
     OpenFiles(Vec<PathBuf>),
-    /// Asks for the file of an export of the open page.
-    ExportDialog(ExportFormat),
-    /// Exports the open page to this PNG or PDF file.
+    /// Asks for the file, or the folder of several PNG files, of an export.
+    ExportDialog(ExportSpec),
+    /// Exports the pages of the spec to this file. Several PNG pages go to
+    /// this folder.
+    ExportPages(ExportSpec, PathBuf),
+    /// Exports the open page to this PNG or PDF file, with the default
+    /// options.
     Export(PathBuf),
-    /// Exports all pages to this PDF file.
+    /// Exports all pages to this PDF file, with the default options.
     ExportAtlas(PathBuf),
     /// Stops the PDF export before its next page.
     CancelExport,
@@ -223,17 +228,85 @@ impl Note {
     }
 }
 
+impl Action {
+    /// Asks for the file of an export of the open page.
+    pub fn export_page(state: &AppState, format: ExportFormat) -> Self {
+        let page = atlas::open_page(state).id;
+        Action::ExportDialog(ExportSpec::new(state, format, vec![page]))
+    }
+
+    /// Asks for the PDF file of an export of all pages.
+    pub fn export_atlas(state: &AppState) -> Self {
+        let pages = state.doc.project.atlas.pages.iter().map(|p| p.id).collect();
+        Action::ExportDialog(ExportSpec::new(state, ExportFormat::Pdf, pages))
+    }
+}
+
 /// True if the extension of the file is that of a PNG or TIFF image.
 pub fn is_heightmap_path(path: &Path) -> bool {
     let ext = path.extension().and_then(|e| e.to_str());
     ext.is_some_and(|e| ["png", "tif", "tiff"].contains(&e.to_ascii_lowercase().as_str()))
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub enum ExportFormat {
-    Png,
+    #[default]
     Pdf,
-    AtlasPdf,
+    Png,
+}
+
+impl ExportFormat {
+    /// The file extension of the format.
+    pub fn ext(self) -> &'static str {
+        match self {
+            ExportFormat::Pdf => "pdf",
+            ExportFormat::Png => "png",
+        }
+    }
+}
+
+/// The pages and the options of an export.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExportSpec {
+    pub format: ExportFormat,
+    /// The pages in the order of the atlas.
+    pub pages: Vec<vale_store::PageId>,
+    /// The pixels per inch of a PNG page and of a raster image in a PDF.
+    pub ppi: u32,
+    /// The pages have no paper fill.
+    pub transparent: bool,
+    /// The file name with no extension.
+    pub name: String,
+}
+
+impl ExportSpec {
+    /// An export of these pages with the default options.
+    pub fn new(state: &AppState, format: ExportFormat, pages: Vec<vale_store::PageId>) -> Self {
+        ExportSpec {
+            format,
+            pages,
+            ppi: DEFAULT_PPI,
+            transparent: false,
+            name: state.export_stem(),
+        }
+    }
+
+    /// The options of the exporter.
+    pub fn options(&self) -> ExportOptions {
+        ExportOptions {
+            transparent: self.transparent,
+        }
+    }
+
+    /// The file name of one file of the export.
+    pub fn file_name(&self) -> String {
+        format!("{}.{}", self.name, self.format.ext())
+    }
+
+    /// True if the export writes several files into a folder.
+    pub fn is_folder(&self) -> bool {
+        self.format == ExportFormat::Png && self.pages.len() > 1
+    }
 }
 
 /// A full-window view with its own canvas and panels.
@@ -487,6 +560,10 @@ pub struct AppState {
     pub export_note: Option<Note>,
     /// The PDF export that composes one page in each UI frame.
     pub atlas_export: Option<PdfExport>,
+    /// The open export form.
+    pub export_form: Option<export_form::ExportForm>,
+    /// The options of the last export form of the session.
+    pub export_options: export_form::Options,
     /// The color ramps of the app.
     pub ramps: crate::ramps::Ramps,
     /// The text of the last import of a color ramp.
@@ -691,6 +768,8 @@ impl AppState {
             import_note: None,
             export_note: None,
             atlas_export: None,
+            export_form: None,
+            export_options: export_form::Options::default(),
             ramps: Default::default(),
             ramp_note: None,
             symbol_note: None,
@@ -3851,12 +3930,17 @@ impl AppState {
 
     /// Starts a PDF export of `pages`. The document and the pages are a
     /// snapshot of the time that the export starts.
-    fn start_pdf_export(&mut self, path: PathBuf, pages: Vec<vale_store::PageRecord>) {
+    fn start_pdf_export(
+        &mut self,
+        path: PathBuf,
+        pages: Vec<vale_store::PageRecord>,
+        options: ExportOptions,
+    ) {
         if self.atlas_export.is_some() {
             self.status = "A PDF is already exporting".to_string();
             return;
         }
-        match PdfExport::new(self.doc.clone(), path, pages) {
+        match PdfExport::new(self.doc.clone(), path, pages, options) {
             Ok(mut job) => {
                 let side = self.globe.max_face_size().min(u32::MAX as usize) as u32;
                 job.set_max_side(self.export_max_side.unwrap_or(side));
@@ -3879,10 +3963,7 @@ impl AppState {
     pub fn atlas_export_progress(&self) -> Option<String> {
         let job = self.atlas_export.as_ref()?;
         let (page, count) = job.progress();
-        Some(format!(
-            "Exporting {}: page {page} of {count}",
-            file_name(job.path())
-        ))
+        Some(format!("Exporting page {page} of {count}"))
     }
 
     /// Composes the next page of a PDF export.
@@ -3974,6 +4055,12 @@ impl AppState {
             }
             ExportStep::Done(Ok(path)) => {
                 self.end_export_frame();
+                let files = job.files();
+                if files.len() > 1 {
+                    let folder = path.parent().unwrap_or(&path);
+                    self.status = format!("Exported {} pages to {}", files.len(), folder.display());
+                    return;
+                }
                 self.status = format!("Exported {}", path.display());
                 if self.share_exports {
                     self.share = Some(path);
@@ -4018,6 +4105,17 @@ impl AppState {
         let stem = session::file_stem(&self.doc.project.world.name);
         let stem = if stem.is_empty() { "raster" } else { &stem };
         format!("{stem}.{ext}")
+    }
+
+    /// The file name with no extension of an export of atlas pages, from
+    /// the name of the world.
+    pub fn export_stem(&self) -> String {
+        let stem = session::file_stem(&self.doc.project.world.name);
+        if stem.is_empty() {
+            "atlas".to_string()
+        } else {
+            stem
+        }
     }
 
     /// Starts the export of a raster layer to a GeoTIFF or PNG file. A layer that
@@ -4085,11 +4183,22 @@ impl AppState {
             }
             Action::Export(path) => {
                 let page = atlas::open_page(self).clone();
-                self.start_pdf_export(path, vec![page]);
+                self.start_pdf_export(path, vec![page], ExportOptions::default());
             }
             Action::ExportAtlas(path) => {
                 let pages = self.doc.project.atlas.pages.clone();
-                self.start_pdf_export(path, pages);
+                self.start_pdf_export(path, pages, ExportOptions::default());
+            }
+            Action::ExportPages(spec, path) => {
+                let pages: Vec<_> = (self.doc.project.atlas.pages.iter())
+                    .filter(|page| spec.pages.contains(&page.id))
+                    .cloned()
+                    .collect();
+                let path = match spec.is_folder() {
+                    true => path.join(spec.file_name()),
+                    false => path,
+                };
+                self.start_pdf_export(path, pages, spec.options());
             }
             Action::CancelExport => self.cancel_atlas_export(),
             Action::ImportHeightmap(path) => {

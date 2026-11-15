@@ -11,7 +11,6 @@ use crate::projects::Location;
 #[cfg(not(target_os = "ios"))]
 use crate::session::EXTENSION;
 use crate::session::Session;
-use crate::ui::ExportFormat;
 use crate::ui::{self, Action, AppState};
 
 /// What a file from the file picker of the system is for.
@@ -225,20 +224,14 @@ impl eframe::App for ValeApp {
                     state.run_action(Action::ExportHeightmap(path));
                 }
                 #[cfg(target_os = "ios")]
-                Action::ExportDialog(format) if self.sharing.is_none() => {
+                Action::ExportDialog(spec) if self.sharing.is_none() => {
                     crate::files::clear_exports();
-                    let (index, _) = crate::ui::atlas::page_index(state);
-                    let (name, atlas) = match format {
-                        ExportFormat::Png => (format!("page-{}.png", index + 1), false),
-                        ExportFormat::Pdf => (format!("page-{}.pdf", index + 1), false),
-                        ExportFormat::AtlasPdf => ("atlas.pdf".to_string(), true),
+                    let dir = crate::files::export_dir();
+                    let path = match spec.is_folder() {
+                        true => dir,
+                        false => dir.join(spec.file_name()),
                     };
-                    let path = crate::files::export_dir().join(name);
-                    state.run_action(if atlas {
-                        Action::ExportAtlas(path)
-                    } else {
-                        Action::Export(path)
-                    });
+                    state.run_action(Action::ExportPages(spec, path));
                 }
                 #[cfg(not(target_os = "ios"))]
                 Action::ExportHeightmapDialog | Action::ExportHeightmapPngDialog => {
@@ -268,19 +261,19 @@ impl eframe::App for ValeApp {
                     }
                 }
                 #[cfg(not(target_os = "ios"))]
-                Action::ExportDialog(format) => {
-                    let (index, _) = crate::ui::atlas::page_index(state);
-                    let (name, atlas) = match format {
-                        ExportFormat::Png => (format!("page-{}.png", index + 1), false),
-                        ExportFormat::Pdf => (format!("page-{}.pdf", index + 1), false),
-                        ExportFormat::AtlasPdf => ("atlas.pdf".to_string(), true),
+                Action::ExportDialog(spec) => {
+                    let picked = match spec.is_folder() {
+                        true => rfd::FileDialog::new().pick_folder(),
+                        false => {
+                            let ext = spec.format.ext();
+                            let filter = ext.to_ascii_uppercase();
+                            (rfd::FileDialog::new().set_file_name(spec.file_name()))
+                                .add_filter(filter, &[ext])
+                                .save_file()
+                        }
                     };
-                    if let Some(path) = rfd::FileDialog::new().set_file_name(name).save_file() {
-                        state.run_action(if atlas {
-                            Action::ExportAtlas(path)
-                        } else {
-                            Action::Export(path)
-                        });
+                    if let Some(path) = picked {
+                        state.run_action(Action::ExportPages(spec, path));
                     }
                 }
                 #[cfg(not(target_os = "ios"))]

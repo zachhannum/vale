@@ -2412,15 +2412,17 @@ fn page_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
     ui.add_space(6.0);
     let ready = state.atlas_export.is_none();
     if widgets::button_row(ui, controls, EXPORT_PAGE_PNG, ready).clicked() {
-        state.actions.push(Action::ExportDialog(ExportFormat::Png));
-    }
-    if widgets::button_row(ui, controls, EXPORT_PAGE_PDF, ready).clicked() {
-        state.actions.push(Action::ExportDialog(ExportFormat::Pdf));
-    }
-    if widgets::button_row(ui, controls, EXPORT_ATLAS_PDF, ready).clicked() {
         state
             .actions
-            .push(Action::ExportDialog(ExportFormat::AtlasPdf));
+            .push(Action::export_page(state, ExportFormat::Png));
+    }
+    if widgets::button_row(ui, controls, EXPORT_PAGE_PDF, ready).clicked() {
+        state
+            .actions
+            .push(Action::export_page(state, ExportFormat::Pdf));
+    }
+    if widgets::button_row(ui, controls, EXPORT_ATLAS_PDF, ready).clicked() {
+        state.actions.push(Action::export_atlas(state));
     }
     if let Some(progress) = state.atlas_export_progress() {
         ui.label(progress);

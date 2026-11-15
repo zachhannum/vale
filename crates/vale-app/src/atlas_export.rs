@@ -1,4 +1,4 @@
-//! PDF export of atlas pages.
+//! PDF and PNG export of atlas pages.
 
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
@@ -29,6 +29,16 @@ pub fn pixel_ratio(dpi: u32) -> f64 {
 
 /// The most pixels on a side of a texture that each GPU takes.
 pub const MAX_SIDE: u32 = 8192;
+
+/// The pixels per inch of an export with the default options.
+pub const DEFAULT_PPI: u32 = 300;
+
+/// The options of an export.
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
+pub struct ExportOptions {
+    /// The page has no paper fill.
+    pub transparent: bool,
+}
 
 /// The fewest rows of pixels in a strip of an exported frame.
 pub const MIN_STRIP_ROWS: u32 = 64;
@@ -99,6 +109,7 @@ pub struct PdfExport {
     pipeline: Pipeline,
     fonts: Fonts,
     output: Option<Output>,
+    options: ExportOptions,
     /// The raster masks of a frame with no raster layers get a capture.
     gpu: bool,
     /// The most pixels on a side of a texture of the GPU.
@@ -107,20 +118,47 @@ pub struct PdfExport {
 
 enum Output {
     Pdf(Box<PdfDocument>),
-    Png,
+    /// One file for each page.
+    Png {
+        paths: Vec<PathBuf>,
+    },
+}
+
+/// The PNG files of an export of `pages` to `path`. One page goes to
+/// `path`. Each of several pages goes to `<name>-<page number>.png` next to
+/// `path`, with the number of the page in the atlas of `doc`.
+pub fn png_paths(doc: &Document, path: &Path, pages: &[PageRecord]) -> Vec<PathBuf> {
+    if pages.len() == 1 {
+        return vec![path.to_path_buf()];
+    }
+    let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+    let atlas = &doc.project.atlas.pages;
+    (pages.iter().enumerate())
+        .map(|(index, page)| {
+            let number = atlas.iter().position(|p| p.id == page.id).unwrap_or(index) + 1;
+            path.with_file_name(format!("{stem}-{number}.png"))
+        })
+        .collect()
 }
 
 impl PdfExport {
-    pub fn new(doc: Document, path: PathBuf, pages: Vec<PageRecord>) -> anyhow::Result<Self> {
+    pub fn new(
+        doc: Document,
+        path: PathBuf,
+        pages: Vec<PageRecord>,
+        options: ExportOptions,
+    ) -> anyhow::Result<Self> {
         if pages.is_empty() {
             anyhow::bail!("the atlas has no pages");
         }
         let ext = path.extension().and_then(|e| e.to_str());
         let output = match ext.map(str::to_ascii_lowercase).as_deref() {
             Some("pdf") => Output::Pdf(Box::new(PdfDocument::new())),
-            Some("png") if pages.len() == 1 => Output::Png,
+            Some("png") => Output::Png {
+                paths: png_paths(&doc, &path, &pages),
+            },
             _ => anyhow::bail!(
-                "cannot export to {}; use a .pdf file, or .png for one page",
+                "cannot export to {}; use a .pdf or .png file",
                 path.display()
             ),
         };
@@ -136,6 +174,7 @@ impl PdfExport {
             pipeline: Pipeline::new(),
             fonts,
             output: Some(output),
+            options,
             gpu: true,
             max_side: MAX_SIDE,
         })
@@ -143,6 +182,14 @@ impl PdfExport {
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// The files that the export writes.
+    pub fn files(&self) -> Vec<PathBuf> {
+        match &self.output {
+            Some(Output::Png { paths }) => paths.clone(),
+            _ => vec![self.path.clone()],
+        }
     }
 
     /// Gives the export the raster values under the features.
@@ -198,9 +245,12 @@ impl PdfExport {
         }
     }
 
-    fn page_list(page: &PageRecord) -> DisplayList {
+    fn page_list(page: &PageRecord, transparent: bool) -> DisplayList {
         let size = Point::new(page.width_mm * PT_PER_MM, page.height_mm * PT_PER_MM);
         let mut list = DisplayList::new(size.x, size.y);
+        if transparent {
+            return list;
+        }
         list.push(Item::Fill {
             path: Rect::new(0.0, 0.0, size.x, size.y).to_path(0.1),
             color: paper_color(page),
@@ -467,7 +517,8 @@ impl PdfExport {
             }
 
             if self.list.is_none() {
-                self.list = Some(Self::page_list(&self.pages[self.page]));
+                let transparent = self.options.transparent;
+                self.list = Some(Self::page_list(&self.pages[self.page], transparent));
                 self.frame = 0;
             }
             let page = self.pages[self.page].clone();
@@ -530,18 +581,20 @@ impl PdfExport {
                 self.list.as_mut().unwrap().items.extend(items);
             }
             let list = self.list.take().unwrap();
-            if matches!(self.output, Some(Output::Png)) {
-                let bytes = vale_render::render_png(&list, pixel_ratio(page.dpi))?;
-                headless::write_file(&self.path, &bytes)?;
-                return Ok(ExportStep::Done(Ok(self.path.clone())));
+            match &mut self.output {
+                Some(Output::Png { paths }) => {
+                    let bytes = vale_render::render_png(&list, pixel_ratio(page.dpi))?;
+                    headless::write_file(&paths[self.page], &bytes)?;
+                }
+                Some(Output::Pdf(pdf)) => pdf.add_page(&list)?,
+                None => unreachable!("the export has an output"),
             }
-            let Some(Output::Pdf(pdf)) = &mut self.output else {
-                unreachable!("the output is a PDF")
-            };
-            pdf.add_page(&list)?;
             self.page += 1;
             if self.page < self.pages.len() {
                 return Ok(ExportStep::More);
+            }
+            if matches!(self.output, Some(Output::Png { .. })) {
+                return Ok(ExportStep::Done(Ok(self.path.clone())));
             }
             let Some(Output::Pdf(pdf)) = self.output.take() else {
                 unreachable!("the output is a PDF")
@@ -587,20 +640,22 @@ fn strip(whole: &FrameDraw, (col, row): (u32, u32), [cols, rows]: [u32; 2]) -> F
 
 /// Writes vector pages as one PDF without a window.
 pub fn export_pdf(doc: &Document, pages: Vec<PageRecord>, path: &Path) -> anyhow::Result<()> {
-    let mut job = PdfExport::new(doc.clone(), path.to_path_buf(), pages)?;
-    job.gpu = false;
-    loop {
-        match job.step() {
-            ExportStep::More => {}
-            ExportStep::Capture(_) => anyhow::bail!("a raster layer needs a GPU for export"),
-            ExportStep::Done(result) => return result.map(|_| ()),
-        }
-    }
+    export_pages(doc, pages, path, ExportOptions::default())
 }
 
 /// Writes one vector page to a PNG or PDF without a window.
 pub fn export_page(doc: &Document, page: PageRecord, path: &Path) -> anyhow::Result<()> {
-    let mut job = PdfExport::new(doc.clone(), path.to_path_buf(), vec![page])?;
+    export_pages(doc, vec![page], path, ExportOptions::default())
+}
+
+/// Writes vector pages to one PDF, or to PNG files, without a window.
+pub fn export_pages(
+    doc: &Document,
+    pages: Vec<PageRecord>,
+    path: &Path,
+    options: ExportOptions,
+) -> anyhow::Result<()> {
+    let mut job = PdfExport::new(doc.clone(), path.to_path_buf(), pages, options)?;
     job.gpu = false;
     loop {
         match job.step() {

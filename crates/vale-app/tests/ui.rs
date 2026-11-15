@@ -23,8 +23,7 @@ use vale_app::ui::panels::{ADD_MAP_FRAME, ADD_MENU, VERTEX_TOOL};
 use vale_app::ui::panels::{DELETE_LAYER, LAYER_NAME, LAYERS_MENU, OPACITY, WORLD_BUTTON};
 use vale_app::ui::world_form::{CREATE, FormMode, NEW_WORLD, WorldForm};
 use vale_app::ui::{
-    Action, AppState, ExportFormat, LayerRef, Layout, RasterSpec, Workspace, draw,
-    is_heightmap_path,
+    Action, AppState, LayerRef, Layout, RasterSpec, Workspace, draw, is_heightmap_path,
 };
 use vale_sphere::{ProjectionKind, ProjectionSpec};
 use vale_store::{
@@ -612,11 +611,8 @@ fn toolbar_buttons_push_actions() {
     assert!(h.state().actions.contains(&Action::OpenDialog));
     h.get_by_label("Export atlas PDF…").click();
     h.run_steps(1);
-    assert!(
-        h.state()
-            .actions
-            .contains(&Action::ExportDialog(ExportFormat::AtlasPdf))
-    );
+    let atlas = Action::export_atlas(h.state());
+    assert!(h.state().actions.contains(&atlas));
 }
 
 #[test]
@@ -730,12 +726,12 @@ fn the_atlas_export_writes_each_page_and_can_be_canceled() {
     state.run_action(Action::ExportAtlas(out.clone()));
     assert_eq!(
         state.atlas_export_progress().as_deref(),
-        Some("Exporting atlas.pdf: page 1 of 20")
+        Some("Exporting page 1 of 20")
     );
     state.poll_atlas_export(None);
     assert_eq!(
         state.atlas_export_progress().as_deref(),
-        Some("Exporting atlas.pdf: page 2 of 20")
+        Some("Exporting page 2 of 20")
     );
     state.run_action(Action::CancelExport);
     assert!(state.atlas_export.is_none() && !out.exists());

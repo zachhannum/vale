@@ -73,7 +73,7 @@ use vale_app::ui::pad::{
     SNAP_DISTANCE, SNAP_HINT, SNAPPING, readout_line,
 };
 use vale_app::ui::select::{DELETE as DELETE_SELECTION, TOOL as SELECT_TOOL};
-use vale_app::ui::{Action, AppState, ExportFormat, Layout, Screen, Workspace, draw};
+use vale_app::ui::{Action, AppState, Layout, Screen, Workspace, draw};
 use vale_labeler::{Placement, PolygonMode};
 use vale_render::Item;
 use vale_sphere::measure::{path_length, ring_area};
@@ -684,11 +684,8 @@ fn the_page_panel_exports_one_page_or_the_atlas() {
     let at = control(&h, EXPORT_ATLAS_PDF).unwrap().center();
     tap_with(&mut h, at, Input::Finger);
     h.step();
-    assert!(
-        h.state()
-            .actions
-            .contains(&Action::ExportDialog(ExportFormat::AtlasPdf))
-    );
+    let atlas = Action::export_atlas(h.state());
+    assert!(h.state().actions.contains(&atlas));
 }
 
 #[test]

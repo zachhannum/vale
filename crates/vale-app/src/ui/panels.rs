@@ -321,21 +321,23 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                 .add_enabled(ready, egui::Button::new("Export page PNG…"))
                 .clicked()
             {
-                state.actions.push(Action::ExportDialog(ExportFormat::Png));
+                state
+                    .actions
+                    .push(Action::export_page(state, ExportFormat::Png));
             }
             if ui
                 .add_enabled(ready, egui::Button::new("Export page PDF…"))
                 .clicked()
             {
-                state.actions.push(Action::ExportDialog(ExportFormat::Pdf));
+                state
+                    .actions
+                    .push(Action::export_page(state, ExportFormat::Pdf));
             }
             if ui
                 .add_enabled(ready, egui::Button::new("Export atlas PDF…"))
                 .clicked()
             {
-                state
-                    .actions
-                    .push(Action::ExportDialog(ExportFormat::AtlasPdf));
+                state.actions.push(Action::export_atlas(state));
             }
             if state.atlas_export.is_some() && ui.button("Cancel export").clicked() {
                 state.actions.push(Action::CancelExport);

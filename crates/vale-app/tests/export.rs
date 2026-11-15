@@ -8,7 +8,8 @@ use vale_app::document::Document;
 use vale_app::files::ExportEvent;
 use vale_app::session::Session;
 use vale_app::ui::panels::EXPORT_GEOTIFF;
-use vale_app::ui::{Action, AppState, LayerRef, Workspace, draw};
+use vale_app::ui::{Action, AppState, ExportFormat, ExportSpec, LayerRef, Workspace, draw};
+use vale_store::PageId;
 use vale_terrain::math::lonlat_to_dir;
 use vale_terrain::{EquirectGrid, Heightmap, Limits, Mode, Stamp};
 
@@ -463,4 +464,122 @@ fn a_png_of_a_page_has_the_resolution_of_the_page() {
     // 254 mm is 10 inches. The image can have one more pixel for a part of a pixel.
     assert!((720..=721).contains(&width(72)));
     assert!((1500..=1501).contains(&width(150)));
+}
+
+/// A state with no window, with three new pages of 100 × 50 mm and no
+/// frames after the pages of the sample. Gives the IDs of the new pages.
+fn atlas_state() -> (AppState, Vec<PageId>) {
+    let mut state = AppState::new(Document::sample()).unwrap();
+    state.headless = true;
+    let mut pages = Vec::new();
+    for _ in 0..3 {
+        vale_app::ui::atlas::add_page(&mut state);
+        vale_app::ui::atlas::edit_page(&mut state, |p| {
+            p.width_mm = 100.0;
+            p.height_mm = 50.0;
+            p.frames.clear();
+        });
+        pages.push(state.atlas.page);
+    }
+    (state, pages)
+}
+
+fn spec(state: &AppState, format: ExportFormat, pages: Vec<PageId>, ppi: u32) -> ExportSpec {
+    ExportSpec {
+        ppi,
+        name: "pages".to_string(),
+        ..ExportSpec::new(state, format, pages)
+    }
+}
+
+/// The page number of each page in the atlas.
+fn numbers(state: &AppState, pages: &[PageId]) -> Vec<usize> {
+    let atlas = &state.doc.project.atlas.pages;
+    let number = |id: &PageId| atlas.iter().position(|p| p.id == *id).unwrap() + 1;
+    pages.iter().map(number).collect()
+}
+
+#[test]
+fn two_png_pages_have_the_resolution_of_each_page() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut state, pages) = atlas_state();
+    for (page, dpi) in [(pages[0], 72), (pages[1], 144)] {
+        state.atlas.page = page;
+        vale_app::ui::atlas::edit_page(&mut state, |p| p.dpi = dpi);
+    }
+    let two = vec![pages[0], pages[1]];
+    let spec = spec(&state, ExportFormat::Png, two.clone(), 300);
+    state.run_action(Action::ExportPages(spec, dir.path().to_path_buf()));
+    assert!(state.status.starts_with("Exported"), "{}", state.status);
+    let numbers = numbers(&state, &two);
+    let size =
+        |n: usize| image::image_dimensions(dir.path().join(format!("pages-{n}.png"))).unwrap();
+    // 100 × 50 mm is 283.5 × 141.7 points. The image can have one more pixel for a part of a pixel.
+    let (low, high) = (size(numbers[0]), size(numbers[1]));
+    assert!(
+        (284..=285).contains(&low.0) && (142..=143).contains(&low.1),
+        "{low:?}"
+    );
+    assert!(
+        (567..=568).contains(&high.0) && (284..=285).contains(&high.1),
+        "{high:?}"
+    );
+}
+
+#[test]
+fn a_png_with_transparent_paper_has_clear_corners() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut state, pages) = atlas_state();
+    let mut corner = |transparent: bool| {
+        let path = dir.path().join(format!("{transparent}.png"));
+        let spec = ExportSpec {
+            transparent,
+            ..spec(&state, ExportFormat::Png, vec![pages[0]], 72)
+        };
+        state.run_action(Action::ExportPages(spec, path.clone()));
+        image::open(&path).unwrap().into_rgba8().get_pixel(0, 0)[3]
+    };
+    assert_eq!(corner(true), 0);
+    assert_eq!(corner(false), 255);
+}
+
+#[test]
+fn three_png_pages_go_to_one_file_each_with_the_page_number() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut state, pages) = atlas_state();
+    let spec = spec(&state, ExportFormat::Png, pages.clone(), 72);
+    state.run_action(Action::ExportPages(spec, dir.path().to_path_buf()));
+    assert!(
+        state.status.starts_with("Exported 3 pages"),
+        "{}",
+        state.status
+    );
+    let mut names: Vec<_> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    names.sort();
+    let mut want: Vec<_> = (numbers(&state, &pages).iter())
+        .map(|n| format!("pages-{n}.png"))
+        .collect();
+    want.sort();
+    assert_eq!(names, want);
+    for name in names {
+        let bytes = std::fs::read(dir.path().join(name)).unwrap();
+        assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
+    }
+}
+
+#[test]
+fn several_pdf_pages_go_to_one_pdf() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut state, pages) = atlas_state();
+    let path = dir.path().join("pages.pdf");
+    let spec = spec(&state, ExportFormat::Pdf, pages, 300);
+    state.run_action(Action::ExportPages(spec, path.clone()));
+    let bytes = std::fs::read(&path).unwrap();
+    assert!(bytes.starts_with(b"%PDF-"));
+    let text = String::from_utf8_lossy(&bytes);
+    assert!(text.contains("/Count 3"), "{text}");
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
 }
