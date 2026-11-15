@@ -6,7 +6,7 @@ use eframe::egui_wgpu::wgpu;
 
 use super::geometry::{self, CELL, PAD, ROW, Rects, TOUCH};
 use super::icons::{self, Icon};
-use super::theme;
+use super::{motion, theme};
 use crate::globe::backdrop::{card_shape, marker};
 
 /// A control that a finger can hit, as the last frame drew it.
@@ -58,6 +58,46 @@ pub fn card(
     split_card(ctx, backdrop, id, rect, None, order, radius, add_contents);
 }
 
+/// A `card` that grows from `origin` and fades in when it appears, as a
+/// menu grows from its control.
+#[allow(clippy::too_many_arguments)]
+pub fn card_from(
+    ctx: &egui::Context,
+    backdrop: Option<wgpu::TextureFormat>,
+    id: &str,
+    rect: Rect,
+    order: egui::Order,
+    radius: CornerRadius,
+    origin: Pos2,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) {
+    let grow = grow(ctx, egui::LayerId::new(order, egui::Id::new(id)), origin);
+    any_card(ctx, backdrop, id, rect, None, order, radius, Some(grow), add_contents);
+}
+
+/// The growth of a card that appears: its opacity and its transform. The
+/// transform goes on `layer`, so touches follow the card.
+#[derive(Clone, Copy)]
+pub struct Grow {
+    pub opacity: f32,
+    pub transform: egui::emath::TSTransform,
+}
+
+/// Grows the layer of a card from `origin` while the card appears.
+pub fn grow(ctx: &egui::Context, layer: egui::LayerId, origin: Pos2) -> Grow {
+    let t = motion::appear(ctx, layer.id.with("appear"));
+    let transform = if t == 1.0 {
+        egui::emath::TSTransform::IDENTITY
+    } else {
+        motion::about(motion::APPEAR_SCALE + (1.0 - motion::APPEAR_SCALE) * t, origin)
+    };
+    ctx.set_transform_layer(layer, transform);
+    Grow {
+        opacity: t.clamp(0.0, 1.0),
+        transform,
+    }
+}
+
 /// A `card` in two parts, one above `gap` and one below it. The gap is
 /// not a part of the card, and it takes no touch.
 #[allow(clippy::too_many_arguments)]
@@ -69,6 +109,21 @@ pub fn split_card(
     gap: Option<egui::Rangef>,
     order: egui::Order,
     radius: CornerRadius,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) {
+    any_card(ctx, backdrop, id, rect, gap, order, radius, None, add_contents);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn any_card(
+    ctx: &egui::Context,
+    backdrop: Option<wgpu::TextureFormat>,
+    id: &str,
+    rect: Rect,
+    gap: Option<egui::Rangef>,
+    order: egui::Order,
+    radius: CornerRadius,
+    grow: Option<Grow>,
     add_contents: impl FnOnce(&mut egui::Ui),
 ) {
     let gap = gap.filter(|g| g.min > rect.top() && g.max < rect.bottom());
@@ -91,6 +146,9 @@ pub fn split_card(
                 None => Sense::click_and_drag(),
             };
             let (rect, _) = ui.allocate_exact_size(rect.size(), sense);
+            if let Some(grow) = grow {
+                ui.multiply_opacity(grow.opacity);
+            }
             // The blur shows what the frame drew below this order, without
             // the shadow.
             if backdrop.is_some() {
@@ -111,7 +169,12 @@ pub fn split_card(
             }
             for &part in &parts {
                 if let Some(format) = backdrop {
-                    let shape = card_shape(format, part, radius, ctx.pixels_per_point());
+                    // The blur draws at the place of the card after the
+                    // transform of its layer. egui moves the rect of the
+                    // callback with the layer.
+                    let place = grow.map_or(part, |g| g.transform * part);
+                    let mut shape = card_shape(format, place, radius, ctx.pixels_per_point());
+                    shape.rect = part;
                     ui.painter().add(shape);
                 }
                 ui.painter()
