@@ -1846,6 +1846,9 @@ fn layer_head(state: &mut AppState, id: vale_store::FrameId) -> Option<Head> {
         }
     };
     let mut head = parts.head(Panel::Layers, back_to, top, body);
+    if page == Some(Page::Ramps) {
+        head.buttons = ramp_buttons(state, super::raster::RampUser::Classify(layer));
+    }
     if page.is_none() {
         let buttons = super::rules::selection_buttons(state, layer, rules.len());
         head.buttons = buttons.map(|buttons| super::PageButtons {
@@ -1858,6 +1861,14 @@ fn layer_head(state: &mut AppState, id: vale_store::FrameId) -> Option<Head> {
         });
     }
     Some(head)
+}
+
+/// The header buttons of the selected color ramps.
+fn ramp_buttons(state: &AppState, user: super::raster::RampUser) -> Option<super::PageButtons> {
+    super::raster::ramp_buttons(state).map(|buttons| super::PageButtons {
+        buttons,
+        act: Box::new(move |state, name| super::raster::ramp_group(state, user, name)),
+    })
 }
 
 /// The rows that set the style of a layer in a map from its map style or
@@ -1986,7 +1997,11 @@ fn raster_head(
             style_source_rows(ui, state, controls, map, layer);
         }
     };
-    Some(parts.head(Panel::Layers, back_to, no_rows, body))
+    let mut head = parts.head(Panel::Layers, back_to, no_rows, body);
+    if page == Some(Page::Ramps) {
+        head.buttons = ramp_buttons(state, super::raster::RampUser::Raster(raster));
+    }
+    Some(head)
 }
 
 /// The panel of an image layer in the Layers tab of frame `id`: the

@@ -413,9 +413,8 @@ pub fn ramps_body(
             ..list::Row::new(i, ramp.name.clone())
         })
         .collect();
-    // The page of the Atlas has no header buttons for the selected ramps.
     let spec = list::Spec {
-        select: state.pad.workspace != super::Workspace::Atlas,
+        select: true,
         ..list::Spec::default()
     };
     let mut places = vec![Rect::NOTHING; rows.len()];

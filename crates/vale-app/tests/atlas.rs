@@ -9969,6 +9969,41 @@ fn classify_in_a_frame_picks_a_ramp_with_a_finger() {
 }
 
 #[test]
+fn a_swipe_to_the_right_selects_ramps_in_a_frame_and_the_header_deletes_them() {
+    use vale_app::ui::pad::Page;
+    use vale_app::ui::pad::classify::CLASSIFY;
+    use vale_app::ui::pad::list::{DESELECT_ALL, SELECT_ALL};
+    use vale_app::ui::pad::raster::DELETE_RAMPS;
+    let mut h = inset_pad(BOARDS[0]);
+    for name in ["Sand", "Moss", "Ash"] {
+        let colors = vec![[33, 113, 181], [140, 81, 10]];
+        h.state_mut().ramps.add(name, colors).unwrap();
+    }
+    show_tab(&mut h, FRAME_TABS[2]);
+    scroll_to(&mut h, "Open Places");
+    tap(&mut h, "Open Places");
+    scroll_to(&mut h, CLASSIFY);
+    tap(&mut h, CLASSIFY);
+    scroll_to(&mut h, "Bold");
+    tap(&mut h, "Bold");
+    assert_eq!(h.state().atlas.layer_page, Some(Page::Ramps));
+    for name in ["Sand", "Ash"] {
+        scroll_to(&mut h, name);
+        swipe_right(&mut h, name);
+    }
+    for name in [SELECT_ALL, DELETE_RAMPS, DESELECT_ALL] {
+        assert!(control(&h, name).is_some(), "{name}");
+    }
+    check_controls(&h, "selected ramps in a frame");
+    tap(&mut h, DELETE_RAMPS);
+    let custom: Vec<_> = (h.state().ramps.custom().iter())
+        .map(|r| r.name.clone())
+        .collect();
+    assert_eq!(custom, ["Moss"]);
+    assert!(control(&h, DELETE_RAMPS).is_none());
+}
+
+#[test]
 fn neighbors_differ_in_a_frame_colors_only_that_map() {
     use vale_app::ui::pad::Page;
     use vale_app::ui::pad::classify::{CLASSIFY, NEIGHBORS_DIFFER, REPLACE_RULES};
