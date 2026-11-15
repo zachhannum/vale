@@ -122,9 +122,13 @@ fn track_pull(ctx: &egui::Context, state: &mut AppState, width: f32) {
     if let Some(mut t) = end.filter(|t| t.sideways == Some(true)) {
         let dx = t.places.last().map_or(0.0, |p| p.1);
         let speed = swipe_speed(&mut t.places);
-        if swipe_hides(dx, speed, width) {
+        let shows = pull_shows(dx, speed, width);
+        if shows {
             state.pad.dock_mut().collapsed = false;
         }
+        crate::log_file::write(&format!(
+            "dock pull: {dx:.0} pt at {speed:.0} pt/s of {width:.0} pt, shows {shows}"
+        ));
         motion::kick(
             ctx,
             slide_id(state),
@@ -1366,6 +1370,20 @@ fn swipe_speed(places: &mut Vec<(f64, f32)>) -> f32 {
     if time > 0.0 { (x - from) / time } else { 0.0 }
 }
 
+/// The share of the width of the dock that a pull from the grip must reach,
+/// with its throw, to show the dock.
+const PULL_SHOWS: f32 = 0.3;
+/// The speed to the right, in points per second, of a flick back that
+/// leaves the dock hidden after a pull.
+const FLICK_BACK: f32 = 300.0;
+
+/// A pull of `dx` points from the grip of a hidden dock that ends at
+/// `speed` shows a dock `width` points wide if its throw would reach
+/// `PULL_SHOWS` of the dock. A flick back to the right leaves it hidden.
+fn pull_shows(dx: f32, speed: f32, width: f32) -> bool {
+    speed > -FLICK_BACK && dx + speed.max(0.0) * COAST >= width * PULL_SHOWS
+}
+
 /// A swipe of `dx` points that ends at `speed` hides a dock `width`
 /// points wide if its throw would end past the middle of the dock.
 fn swipe_hides(dx: f32, speed: f32, width: f32) -> bool {
@@ -1406,6 +1424,17 @@ mod tests {
         assert_eq!(grip_x(854.0, 1194.0), 854.0);
         assert_eq!(grip_x(1190.0, 1194.0), 1184.0);
         assert_eq!(grip_x(1194.0, 1194.0), 1184.0);
+    }
+
+    #[test]
+    fn a_pull_of_a_third_of_the_dock_shows_it() {
+        // A slow pull shows the dock past 30 percent of its width.
+        assert!(!pull_shows(90.0, 0.0, 340.0));
+        assert!(pull_shows(110.0, 0.0, 340.0));
+        // A quick short flick coasts on.
+        assert!(pull_shows(30.0, 400.0, 340.0));
+        // A flick back to the right leaves the dock hidden.
+        assert!(!pull_shows(200.0, -600.0, 340.0));
     }
 
     #[test]

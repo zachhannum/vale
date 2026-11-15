@@ -17251,3 +17251,26 @@ fn the_edge_tab_is_at_the_height_of_the_handle() {
     let tab = control(&h, SHOW_DOCK).unwrap().center();
     assert_eq!(tab.y, handle.y);
 }
+
+#[test]
+fn a_slow_pull_of_a_third_of_the_dock_shows_it() {
+    use vale_app::ui::pad::dock_ui::SHOW_DOCK;
+    for (reach, shows) in [(60.0, false), (140.0, true)] {
+        let mut h = springy_pad();
+        h.state_mut().pad.docks.world.collapsed = true;
+        h.run_steps(120);
+        let tab = control(&h, SHOW_DOCK).unwrap().center();
+        touch(&mut h, egui::TouchPhase::Start, tab, None);
+        h.step();
+        for i in 1..=10 {
+            let at = tab - vec2(reach * i as f32 / 10.0, 0.0);
+            touch(&mut h, egui::TouchPhase::Move, at, None);
+            h.step();
+        }
+        // The finger stops before it lifts, so the pull has no speed.
+        h.run_steps(20);
+        touch(&mut h, egui::TouchPhase::End, tab - vec2(reach, 0.0), None);
+        h.run_steps(120);
+        assert_eq!(!h.state().pad.docks.world.collapsed, shows, "{reach}");
+    }
+}
