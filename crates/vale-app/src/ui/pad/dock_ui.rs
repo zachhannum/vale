@@ -191,6 +191,33 @@ fn slide(ctx: &egui::Context, state: &AppState, width: f32) -> f32 {
     motion::value(ctx, id, f32::from(u8::from(collapsed)), motion::SNAPPY)
 }
 
+/// The heights of the panes on the screen. Each one follows the height of
+/// its pane on a spring, so the panes move when a panel opens, closes, or
+/// folds. A new pane grows from zero. During a drag of a bar, the heights
+/// follow the finger.
+fn shown_heights(ctx: &egui::Context, state: &AppState, heights: &[f32], folded: &[bool]) -> Vec<f32> {
+    let pass = ctx.cumulative_pass_nr();
+    let resized: Option<u64> = ctx.data(|d| d.get_temp(resize_id()));
+    let resizing = resized.is_some_and(|p| p + 2 >= pass);
+    let workspace = state.pad.workspace as u8;
+    (state.pad.dock().panes.iter().zip(heights).zip(folded))
+        .map(|((pane, &height), &folded)| {
+            let target = if folded { ROW } else { height };
+            let id = egui::Id::new(("pad-pane-height", workspace, pane.tabs[0] as u8));
+            if resizing {
+                motion::set(ctx, id, target);
+                return target;
+            }
+            motion::points_from(ctx, id, 0.0, target, motion::SNAPPY).max(0.0)
+        })
+        .collect()
+}
+
+/// The pass of the last drag of a bar of the dock.
+fn resize_id() -> egui::Id {
+    egui::Id::new("pad-dock-resize")
+}
+
 /// The spring of the slide of the dock.
 fn slide_id(state: &AppState) -> egui::Id {
     egui::Id::new(("pad-dock-slide", state.pad.workspace as u8))
@@ -342,7 +369,8 @@ fn show_dock(
         .collect();
     let space = room.height() - FOOT;
     let heights = panes::fit(&wanted, space);
-    let total = heights.iter().sum::<f32>() + BAR * heights.len() as f32 + FOOT;
+    let shown = shown_heights(ctx, state, &heights, &folded);
+    let total = shown.iter().sum::<f32>() + BAR * shown.len() as f32 + FOOT;
     let rect = Rect::from_min_size(room.min, vec2(room.width(), total.min(room.height())));
     // A collapsing dock slides off the right edge.
     let rect = rect.translate(vec2((slide * room.width()).round(), 0.0));
@@ -364,11 +392,7 @@ fn show_dock(
             let mut top = rect.top();
             for (i, head) in heads.iter_mut().enumerate() {
                 let pane_rect =
-                    Rect::from_min_size(pos2(rect.left(), top), vec2(rect.width(), heights[i]));
-                let pane_rect = match folded[i] {
-                    true => Rect::from_min_size(pane_rect.min, vec2(rect.width(), ROW)),
-                    false => pane_rect,
-                };
+                    Rect::from_min_size(pos2(rect.left(), top), vec2(rect.width(), shown[i]));
                 let inner = geometry::edge_content(pane_rect, rects.screen, rects.bands);
                 let mut child = ui.new_child(
                     egui::UiBuilder::new()
@@ -426,6 +450,8 @@ fn show_dock(
                     let delta = resp.drag_delta().y;
                     let dock = state.pad.dock_mut();
                     dock.resize(i, delta, &heights, &natural, space);
+                    let pass = ctx.cumulative_pass_nr();
+                    ctx.data_mut(|d| d.insert_temp(resize_id(), pass));
                     ctx.request_repaint();
                 }
                 if resp.double_clicked() {
