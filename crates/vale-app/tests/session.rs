@@ -5,8 +5,9 @@ use std::time::Instant;
 use vale_app::document::Document;
 use vale_app::memory;
 use vale_app::pipeline::Quality;
+use vale_app::ramps::DraftFrom;
 use vale_app::session::{SAVE_DELAY, Session, latest_project, new_project_path, worlds};
-use vale_app::ui::{Action, AppState, LayerRef, RasterSpec, Workspace};
+use vale_app::ui::{Action, AppState, LayerRef, RampSource, RasterSpec, Workspace};
 use vale_store::{
     GeometryKind, Hillshade, Project, ProjectFile, RasterDisplay, RasterId, Smoothing, Units, World,
 };
@@ -2222,4 +2223,62 @@ fn a_file_of_version_34_opens_and_its_maps_look_the_same() {
     drop(Session::open(&path, &mut doc).unwrap());
     let (_, second) = ProjectFile::open(&path).unwrap();
     assert_eq!(first, second);
+}
+
+#[test]
+fn a_saved_draft_adds_a_custom_ramp() {
+    let mut state = AppState::new(Document::empty()).unwrap();
+    state.headless = true;
+    let climate = RasterSpec {
+        name: "Climate".to_string(),
+        unit: "class".to_string(),
+        min: 0.0,
+        max: 300.0,
+        face_size: 128,
+    };
+    let climate = state.add_raster(climate).unwrap();
+    let count = state.ramps.custom().len();
+
+    state.run_action(Action::NewRamp(Some(climate), RampSource::Bands(climate)));
+    let colors = state.globe.bands_mut(climate).unwrap().colors().to_vec();
+    let draft = state.ramp_draft.as_mut().unwrap();
+    assert_eq!(draft.name, "Climate");
+    assert_eq!(draft.colors, colors);
+    assert_eq!(draft.from, DraftFrom::Stops);
+    draft.qualitative = true;
+    draft.labels[0] = "Low".to_string();
+    state.save_ramp_draft().unwrap();
+    assert!(state.ramp_draft.is_none());
+    let ramp = state.ramps.list().last().unwrap();
+    assert_eq!(ramp.name, "Climate");
+    assert_eq!(ramp.colors, colors);
+    assert_eq!(ramp.labels[0], "Low");
+    assert!(ramp.qualitative && !ramp.built_in);
+    assert_eq!(state.ramps.custom().len(), count + 1);
+    let note = state.ramp_note.as_ref().unwrap();
+    let text = format!("Added Climate ({} colors)", colors.len());
+    assert_eq!((note.text.as_str(), note.warning), (text.as_str(), false));
+    assert_eq!(note.layer, Some(climate));
+
+    // A second draft of the layer gets a free name. A taken name does not
+    // save, and the draft stays open.
+    state.run_action(Action::NewRamp(Some(climate), RampSource::Bands(climate)));
+    let draft = state.ramp_draft.as_mut().unwrap();
+    assert_eq!(draft.name, "Climate 2");
+    draft.name = "Viridis".to_string();
+    assert!(state.save_ramp_draft().is_err());
+    assert!(state.ramp_draft.is_some());
+
+    // A copy of a built-in ramp, and a blank ramp with no layer.
+    state.run_action(Action::NewRamp(None, RampSource::Copy(0)));
+    let draft = state.ramp_draft.as_ref().unwrap();
+    assert_eq!(draft.name, "Viridis copy");
+    assert_eq!(draft.layer, None);
+    state.run_action(Action::NewRamp(None, RampSource::Blank));
+    let draft = state.ramp_draft.as_mut().unwrap();
+    assert_eq!(draft.colors.len(), 2);
+    draft.name = "Mine".to_string();
+    state.save_ramp_draft().unwrap();
+    assert_eq!(state.ramps.list().last().unwrap().name, "Mine");
+    assert_eq!(state.ramps.custom().len(), count + 2);
 }

@@ -69,6 +69,17 @@ pub mod token_field;
 pub mod vertex;
 pub mod world_form;
 
+/// The colors of a new ramp in the editor.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum RampSource {
+    /// White and black.
+    Blank,
+    /// A copy of the ramp at this index of the library.
+    Copy(usize),
+    /// The band colors and the band names of a raster layer.
+    Bands(RasterId),
+}
+
 /// A request that needs the host: a dialog or a file.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
@@ -113,6 +124,9 @@ pub enum Action {
     /// ramps. The panel of this raster layer, or the ramp page of the
     /// Classify form with no layer, shows the result.
     ImportRamp(Option<RasterId>, PathBuf),
+    /// Opens the editor of a new ramp. The panel of this raster layer, or
+    /// the ramp page of the Classify form with no layer, shows the result.
+    NewRamp(Option<RasterId>, RampSource),
     /// Asks for an SVG file to add to the symbols of the project.
     AddSymbolDialog,
     /// Adds this SVG file to the symbols of the project, and saves.
@@ -604,6 +618,8 @@ pub struct AppState {
     pub ramps: crate::ramps::Ramps,
     /// The text of the last import of a color ramp.
     pub ramp_note: Option<Note>,
+    /// The ramp in the editor.
+    pub ramp_draft: Option<crate::ramps::Draft>,
     /// The text of the last addition of a symbol.
     pub symbol_note: Option<Note>,
     /// The raster layers of the last import and of the last export.
@@ -817,6 +833,7 @@ impl AppState {
             export_thumbs: Default::default(),
             ramps: Default::default(),
             ramp_note: None,
+            ramp_draft: None,
             symbol_note: None,
             import_layer: None,
             image_import: None,
@@ -4026,6 +4043,57 @@ impl AppState {
         Ok((ramp, count))
     }
 
+    /// Opens the editor of a new ramp.
+    fn new_ramp(&mut self, layer: Option<RasterId>, source: RampSource) {
+        use crate::ramps::Draft;
+        self.open_ramps();
+        let draft = match source {
+            RampSource::Blank => Some(Draft::new()),
+            RampSource::Copy(index) => {
+                let ramps = &self.ramps;
+                ramps.list().get(index).map(|r| Draft::copy(r, ramps))
+            }
+            RampSource::Bands(id) => {
+                let name = self.doc.project.raster_layer(id).map(|l| l.name.clone());
+                let bands = self.globe.bands_mut(id);
+                let bands = bands.map(|b| (b.colors().to_vec(), b.names().to_vec()));
+                bands.map(|(colors, names)| {
+                    let name = name.as_deref().unwrap_or("Ramp");
+                    Draft::from_bands(name, &colors, &names, &self.ramps)
+                })
+            }
+        };
+        self.ramp_draft = draft.map(|d| crate::ramps::Draft { layer, ..d });
+    }
+
+    /// Adds the ramp in the editor to the ramps, and closes the editor. A
+    /// blank or taken name keeps the editor open.
+    pub fn save_ramp_draft(&mut self) -> Result<(), String> {
+        let Some(draft) = &self.ramp_draft else {
+            return Err("No ramp to save.".to_owned());
+        };
+        if !draft.can_save(&self.ramps) {
+            return Err("Enter a new name.".to_owned());
+        }
+        let (ramp, layer) = (draft.to_ramp(), draft.layer);
+        let count = ramp.colors.len();
+        let note = match self.ramps.add_ramp(ramp) {
+            Ok(name) => {
+                self.ramp_draft = None;
+                Note::new(format!("Added {name} ({count} colors)"), false, layer)
+            }
+            Err(e) => Note::new(e.to_string(), true, layer),
+        };
+        self.status = note.text.clone();
+        let result = if note.warning {
+            Err(note.text.clone())
+        } else {
+            Ok(())
+        };
+        self.ramp_note = Some(note);
+        result
+    }
+
     /// Gives the bands of a part of a raster layer the colors of a ramp.
     /// With `keep`, the layer keeps its stops. Otherwise, the part gets one
     /// band for each color.
@@ -4458,6 +4526,7 @@ impl AppState {
                 self.status = note.text.clone();
                 self.ramp_note = Some(note);
             }
+            Action::NewRamp(layer, source) => self.new_ramp(layer, source),
             Action::SetFont(FontTarget::Layer(id), family) => {
                 if let Some(entry) = self.doc.entry_mut(id) {
                     crate::fonts::set_font(&mut entry.style.label.font, &family);
