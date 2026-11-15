@@ -233,6 +233,7 @@ fn paint_tile(ui: &egui::Ui, controls: &mut Controls, rect: Rect, tile: &Tile) -
         true,
         Some(tile.open),
     );
+    let start = widgets::press_start(ui);
     let fill = if tile.open {
         theme::ACCENT.gamma_multiply(0.3)
     } else {
@@ -255,6 +256,7 @@ fn paint_tile(ui: &egui::Ui, controls: &mut Controls, rect: Rect, tile: &Tile) -
     let color = if tile.open { theme::TEXT } else { theme::MUTE };
     let at = pos2(rect.center().x, rect.bottom() - 18.0);
     painter.text(at, Align2::CENTER_CENTER, tile.name, theme::hint(), color);
+    widgets::press_end(ui, &resp, start);
     resp.clicked()
 }
 

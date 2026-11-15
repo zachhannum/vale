@@ -1004,6 +1004,7 @@ pub(super) fn dock_button(
     let shown = enabled && !dock.collapsed;
     let sense = egui::Sense::click();
     let resp = widgets::hit(ui, controls, rect, DOCK, sense, enabled, Some(shown));
+    let start = widgets::press_start(ui);
     let painter = ui.painter();
     let inner = rect.shrink(widgets::HIGHLIGHT_INSET);
     if shown {
@@ -1016,6 +1017,7 @@ pub(super) fn dock_button(
     let color = if shown { theme::ACCENT } else { theme::MUTE };
     let color = widgets::fade(color, enabled);
     icons::paint(painter, rect, Icon::Dock, widgets::ICON, color);
+    widgets::press_end(ui, &resp, start);
     if resp.clicked() {
         let dock = state.pad.dock_mut();
         dock.collapsed = !dock.collapsed;
@@ -3127,7 +3129,7 @@ fn layer_list(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
     let others = rows.iter().enumerate().filter(|(i, _)| *i != from);
     for (k, (_, row)) in others.enumerate() {
         // The rows make room at the place where the lifted row goes.
-        let rect = place(if k < to { k } else { k + 1 });
+        let rect = row_place(ui, row.id, area, if k < to { k } else { k + 1 });
         let on = selected == Some(row.layer);
         let (icon, name, visible) = (row.icon, &row.name, Some(row.visible));
         widgets::layer_row(
@@ -3137,6 +3139,7 @@ fn layer_list(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
     let row = &rows[from];
     let (icon, name, visible) = (row.icon, &row.name, Some(row.visible));
     let rect = slot(top);
+    motion::set(ui.ctx(), row_spring(ui, row.id), top - area.top());
     widgets::layer_row(
         ui, controls, rect, icon, name, visible, true, false, true, 0.0, None,
     );
@@ -3146,6 +3149,19 @@ fn layer_list(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
             state.move_layer(reorder.layer, to);
         }
     }
+}
+
+/// The spring of the place of the row of layer `id` in the layer list.
+fn row_spring(ui: &egui::Ui, id: LayerId) -> egui::Id {
+    ui.id().with(("layer-row", id))
+}
+
+/// The place of the row of layer `id` at index `i` of the list in `area`.
+/// The row moves to its place on a spring, as after a reorder.
+fn row_place(ui: &egui::Ui, id: LayerId, area: Rect, i: usize) -> Rect {
+    let target = i as f32 * PANEL_ROW;
+    let y = motion::points(ui.ctx(), row_spring(ui, id), target, motion::SNAPPY);
+    Rect::from_min_size(pos2(area.left(), area.top() + y), vec2(area.width(), PANEL_ROW))
 }
 
 /// The rows of the layer list that take touch. A sideways drag on a row
@@ -3166,7 +3182,7 @@ fn swipe_rows(
         rows.iter().position(|row| row.id == layer).map(place)
     });
     for (i, row) in rows.iter().enumerate() {
-        let (id, rect) = (row.id, place(i));
+        let (id, rect) = (row.id, row_place(ui, row.id, area, i));
         if let Some((_, text)) = state.pad.rename.as_mut().filter(|r| r.0 == id) {
             // The row is the name field while the user renames the layer. The
             // name changes when the field loses the focus.
