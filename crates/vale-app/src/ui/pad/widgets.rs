@@ -306,6 +306,29 @@ fn fill(ui: &egui::Ui, rect: Rect, resp: &Response, active: bool) {
     }
 }
 
+/// Marks the start of the paint of a control that shrinks under a finger.
+/// `press_end` shrinks what the control paints after this mark.
+pub(super) fn press_start(ui: &egui::Ui) -> egui::layers::ShapeIdx {
+    ui.painter().add(egui::Shape::Noop)
+}
+
+/// Shrinks the paint of the control `resp` since `start` while a finger is
+/// on it, and springs it back after. A wide control shrinks by the same
+/// distance as a control of 160 points, not by the same ratio.
+pub(super) fn press_end(ui: &egui::Ui, resp: &Response, start: egui::layers::ShapeIdx) {
+    let down = resp.is_pointer_button_down_on();
+    let scale = motion::press(ui.ctx(), resp.id, down);
+    if scale == 1.0 {
+        return;
+    }
+    let side = resp.rect.width().max(resp.rect.height()).max(1.0);
+    let scale = 1.0 - (1.0 - scale) * (160.0 / side).min(1.0);
+    let end = ui.painter().add(egui::Shape::Noop);
+    let transform = motion::about(scale, resp.rect.center());
+    ui.ctx()
+        .graphics_mut(|g| g.entry(ui.layer_id()).transform_range(start, end, transform));
+}
+
 /// The thumb of the segmented control `id` at `rect`. The thumb slides
 /// on a spring from the item before, and `base` is the left edge of the
 /// control, so the thumb moves with the control in a scroll.
@@ -335,9 +358,11 @@ pub fn icon_button_at(
         enabled,
         Some(active),
     );
+    let start = press_start(ui);
     fill(ui, rect, &resp, active);
     let color = if active { theme::TEXT } else { theme::MUTE };
     icons::paint(ui.painter(), rect, icon, ICON, fade(color, enabled));
+    press_end(ui, &resp, start);
     resp
 }
 
@@ -2593,6 +2618,7 @@ pub fn chips(
     for (index, (choice, rect)) in choices.iter().zip(rects).enumerate() {
         let on = active == index;
         let resp = hit(ui, controls, rect, choice, Sense::click(), true, Some(on));
+        let start = press_start(ui);
         let back = rect.shrink(HIGHLIGHT_INSET);
         let pressed = on || resp.is_pointer_button_down_on();
         let fill = if pressed {
@@ -2609,6 +2635,7 @@ pub fn chips(
             theme::body(),
             color,
         );
+        press_end(ui, &resp, start);
         if resp.clicked() && !on {
             chosen = Some(index);
         }
@@ -2636,6 +2663,7 @@ pub fn chip_row(
                 let rect = Rect::from_min_size(at, vec2(wide.max(TOUCH), TOUCH));
                 at.x = rect.right();
                 let resp = hit(ui, controls, rect, name, Sense::click(), true, None);
+                let start = press_start(ui);
                 let back = rect.shrink(HIGHLIGHT_INSET);
                 let fill = if resp.is_pointer_button_down_on() {
                     theme::raise()
@@ -2651,6 +2679,7 @@ pub fn chip_row(
                     theme::body(),
                     theme::TEXT,
                 );
+                press_end(ui, &resp, start);
                 if resp.clicked() {
                     chosen = Some(index);
                 }
@@ -2698,6 +2727,7 @@ pub fn pill_toggle(
         *on = !*on;
     }
     let pressed = resp.is_pointer_button_down_on();
+    let start = press_start(ui);
     let painter = ui.painter();
     let radius = PILL / 2.0;
     let (back, text) = match *on {
@@ -2719,6 +2749,7 @@ pub fn pill_toggle(
         theme::body(),
         fade(text, enabled),
     );
+    press_end(ui, &resp, start);
     (pill.left(), changed)
 }
 
@@ -2761,6 +2792,7 @@ pub fn tiles(
         let rect = Rect::from_min_size(min, vec2(side, height));
         let on = active == Some(index);
         let resp = hit(ui, controls, rect, name, Sense::click(), true, Some(on));
+        let start = press_start(ui);
         let fill = if on || resp.is_pointer_button_down_on() {
             theme::raise()
         } else {
@@ -2791,6 +2823,7 @@ pub fn tiles(
         let middle = pos2(rect.center().x, rect.bottom() - 4.0 - TILE_NAME / 2.0);
         let at = middle - galley.size() / 2.0;
         painter.galley(at, galley, color);
+        press_end(ui, &resp, start);
         if resp.clicked() {
             chosen = Some(index);
         }
@@ -2902,6 +2935,7 @@ pub fn accent_button(
         pos2(right.x, right.y + TOUCH / 2.0),
     );
     let resp = hit(ui, controls, rect, name, Sense::click(), true, None);
+    let start = press_start(ui);
     let color = if resp.is_pointer_button_down_on() {
         theme::ACCENT
     } else {
@@ -2917,6 +2951,7 @@ pub fn accent_button(
         theme::body(),
         theme::CANVAS,
     );
+    press_end(ui, &resp, start);
     resp
 }
 
@@ -2940,6 +2975,7 @@ pub fn button_row_in(
 ) -> Response {
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), Sense::hover());
     let resp = hit(ui, controls, rect, name, Sense::click(), enabled, None);
+    let start = press_start(ui);
     let back = rect.shrink(HIGHLIGHT_INSET);
     let color = if resp.is_pointer_button_down_on() {
         fill
@@ -2956,6 +2992,7 @@ pub fn button_row_in(
         theme::body(),
         theme::CANVAS,
     );
+    press_end(ui, &resp, start);
     resp
 }
 
