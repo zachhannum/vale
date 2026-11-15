@@ -72,7 +72,17 @@ pub fn card_from(
     add_contents: impl FnOnce(&mut egui::Ui),
 ) {
     let grow = grow(ctx, egui::LayerId::new(order, egui::Id::new(id)), origin);
-    any_card(ctx, backdrop, id, rect, None, order, radius, Some(grow), add_contents);
+    any_card(
+        ctx,
+        backdrop,
+        id,
+        rect,
+        None,
+        order,
+        radius,
+        Some(grow),
+        add_contents,
+    );
 }
 
 /// The growth of a card that appears: its opacity and its transform. The
@@ -89,7 +99,10 @@ pub fn grow(ctx: &egui::Context, layer: egui::LayerId, origin: Pos2) -> Grow {
     let transform = if t == 1.0 {
         egui::emath::TSTransform::IDENTITY
     } else {
-        motion::about(motion::APPEAR_SCALE + (1.0 - motion::APPEAR_SCALE) * t, origin)
+        motion::about(
+            motion::APPEAR_SCALE + (1.0 - motion::APPEAR_SCALE) * t,
+            origin,
+        )
     };
     ctx.set_transform_layer(layer, transform);
     Grow {
@@ -111,7 +124,17 @@ pub fn split_card(
     radius: CornerRadius,
     add_contents: impl FnOnce(&mut egui::Ui),
 ) {
-    any_card(ctx, backdrop, id, rect, gap, order, radius, None, add_contents);
+    any_card(
+        ctx,
+        backdrop,
+        id,
+        rect,
+        gap,
+        order,
+        radius,
+        None,
+        add_contents,
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -325,8 +348,10 @@ pub(super) fn press_end(ui: &egui::Ui, resp: &Response, start: egui::layers::Sha
     let scale = 1.0 - (1.0 - scale) * (160.0 / side).min(1.0);
     let end = ui.painter().add(egui::Shape::Noop);
     let transform = motion::about(scale, resp.rect.center());
-    ui.ctx()
-        .graphics_mut(|g| g.entry(ui.layer_id()).transform_range(start, end, transform));
+    ui.ctx().graphics_mut(|g| {
+        g.entry(ui.layer_id())
+            .transform_range(start, end, transform)
+    });
 }
 
 /// The thumb of the segmented control `id` at `rect`. The thumb slides
@@ -1769,39 +1794,60 @@ pub fn choice_field(
     let mut chosen = None;
     let id = format!("pad-choices-{}", ui.id().with(name).value());
     let radius = theme::CARD_RADIUS.into();
-    let origin = pos2(button.center().x, if y >= below { rect.top() } else { rect.bottom() });
-    card_from(&ctx, None, &id, rect, egui::Order::Tooltip, radius, origin, |ui| {
-        ui.painter().rect_filled(rect, radius, theme::menu());
-        let inner = rect.shrink2(vec2(BODY_PAD, 10.0));
-        let layout = egui::Layout::top_down(egui::Align::Min);
-        let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
-        ui.set_clip_rect(inner);
-        ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
-        egui::ScrollArea::vertical()
-            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-            .show(&mut ui, |ui| {
-                for (index, choice) in choices.iter().enumerate() {
-                    let on = current == Some(index);
-                    let row_name = choice_row_name(name, choice);
-                    let row = text_row_as(ui, controls, &row_name, choice, 0.0, false, true);
-                    // The current value has a tick and no highlight.
-                    let info = || {
-                        egui::WidgetInfo::selected(egui::WidgetType::Button, true, on, &row_name)
-                    };
-                    row.widget_info(info);
-                    if on {
-                        let tick = Rect::from_center_size(
-                            pos2(row.rect.right() - 14.0, row.rect.center().y),
-                            vec2(18.0, 18.0),
-                        );
-                        icons::paint(ui.painter(), tick, Icon::Tick, 18.0, theme::ACCENT);
+    let origin = pos2(
+        button.center().x,
+        if y >= below {
+            rect.top()
+        } else {
+            rect.bottom()
+        },
+    );
+    card_from(
+        &ctx,
+        None,
+        &id,
+        rect,
+        egui::Order::Tooltip,
+        radius,
+        origin,
+        |ui| {
+            ui.painter().rect_filled(rect, radius, theme::menu());
+            let inner = rect.shrink2(vec2(BODY_PAD, 10.0));
+            let layout = egui::Layout::top_down(egui::Align::Min);
+            let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
+            ui.set_clip_rect(inner);
+            ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+            egui::ScrollArea::vertical()
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                .show(&mut ui, |ui| {
+                    for (index, choice) in choices.iter().enumerate() {
+                        let on = current == Some(index);
+                        let row_name = choice_row_name(name, choice);
+                        let row = text_row_as(ui, controls, &row_name, choice, 0.0, false, true);
+                        // The current value has a tick and no highlight.
+                        let info = || {
+                            egui::WidgetInfo::selected(
+                                egui::WidgetType::Button,
+                                true,
+                                on,
+                                &row_name,
+                            )
+                        };
+                        row.widget_info(info);
+                        if on {
+                            let tick = Rect::from_center_size(
+                                pos2(row.rect.right() - 14.0, row.rect.center().y),
+                                vec2(18.0, 18.0),
+                            );
+                            icons::paint(ui.painter(), tick, Icon::Tick, 18.0, theme::ACCENT);
+                        }
+                        if row.clicked() {
+                            chosen = Some(index);
+                        }
                     }
-                    if row.clicked() {
-                        chosen = Some(index);
-                    }
-                }
-            });
-    });
+                });
+        },
+    );
     if chosen.is_some() {
         *open = false;
     }

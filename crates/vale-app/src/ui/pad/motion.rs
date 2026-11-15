@@ -69,7 +69,8 @@ impl State {
             let b = (v0 + zeta * omega * x0) / wd;
             let (sin, cos) = (wd * t).sin_cos();
             let x = decay * (x0 * cos + b * sin);
-            let v = decay * ((b * wd - zeta * omega * x0) * cos - (x0 * wd + zeta * omega * b) * sin);
+            let v =
+                decay * ((b * wd - zeta * omega * x0) * cos - (x0 * wd + zeta * omega * b) * sin);
             (x, v)
         } else {
             let b = v0 + omega * x0;
@@ -224,7 +225,9 @@ pub fn press(ctx: &egui::Context, id: Id, down: bool) -> f32 {
 /// A scale by `scale` about `origin`.
 pub fn about(scale: f32, origin: Pos2) -> TSTransform {
     let o = origin.to_vec2();
-    TSTransform::from_translation(o) * TSTransform::from_scaling(scale) * TSTransform::from_translation(-o)
+    TSTransform::from_translation(o)
+        * TSTransform::from_scaling(scale)
+        * TSTransform::from_translation(-o)
 }
 
 #[cfg(test)]
@@ -299,10 +302,59 @@ mod tests {
         assert_eq!(appear(&ctx, Id::new("a")), 1.0);
     }
 
+    /// The values of `f` in `frames` frames of a context at 60 frames per
+    /// second.
+    fn frames(
+        ctx: &egui::Context,
+        frames: usize,
+        mut f: impl FnMut(&egui::Context) -> f32,
+    ) -> Vec<f32> {
+        (0..frames)
+            .map(|_| {
+                let mut v = 0.0;
+                let input = egui::RawInput {
+                    predicted_dt: 1.0 / 60.0,
+                    ..Default::default()
+                };
+                let mut out = ctx.run_ui(input, |ui| v = f(ui.ctx()));
+                out.textures_delta.clear();
+                v
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_card_appears_from_zero_and_again_after_a_frame_away() {
+        let ctx = egui::Context::default();
+        let id = Id::new("card");
+        let shown = frames(&ctx, 60, |ctx| appear(ctx, id));
+        assert!(shown[0] < 0.5, "{shown:?}");
+        assert!(shown.iter().any(|&t| t > 1.0), "{shown:?}");
+        assert_eq!(shown.last(), Some(&1.0));
+        frames(&ctx, 1, |_| 0.0);
+        assert!(frames(&ctx, 1, |ctx| appear(ctx, id))[0] < 0.5);
+    }
+
+    #[test]
+    fn a_press_shrinks_and_springs_back() {
+        let ctx = egui::Context::default();
+        let id = Id::new("button");
+        frames(&ctx, 1, |ctx| press(ctx, id, false));
+        let down = frames(&ctx, 60, |ctx| press(ctx, id, true));
+        assert!(down[0] < 1.0 && down[0] > PRESS_SCALE, "{down:?}");
+        assert_eq!(down.last(), Some(&PRESS_SCALE));
+        let up = frames(&ctx, 60, |ctx| press(ctx, id, false));
+        assert!(up.iter().any(|&s| s > 1.0), "{up:?}");
+        assert_eq!(up.last(), Some(&1.0));
+    }
+
     #[test]
     fn about_keeps_its_origin() {
         let o = egui::pos2(10.0, 20.0);
         assert_eq!(about(0.5, o) * o, o);
-        assert_eq!(about(0.5, o) * egui::pos2(30.0, 20.0), egui::pos2(20.0, 20.0));
+        assert_eq!(
+            about(0.5, o) * egui::pos2(30.0, 20.0),
+            egui::pos2(20.0, 20.0)
+        );
     }
 }

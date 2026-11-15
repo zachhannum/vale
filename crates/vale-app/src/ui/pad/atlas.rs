@@ -236,7 +236,8 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         .sheet_offset
         .clamp(-rects.sheet_rise, rects.sheet_travel);
     if input.panel {
-        input.sheet_offset = super::shown_sheet_offset(&ctx, state.pad.sheet_offset, rects.sheet_travel);
+        input.sheet_offset =
+            super::shown_sheet_offset(&ctx, state.pad.sheet_offset, rects.sheet_travel);
         rects = geometry::layout(&input);
     }
 

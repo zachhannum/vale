@@ -17131,3 +17131,75 @@ fn a_flow_line_picks_its_height_layer_when_the_world_has_two() {
     tap(&mut h, "Back to Default");
     assert_eq!(h.state().pad.page, Some(Page::Rule(0)));
 }
+
+/// A ProMotion layout whose chrome moves on springs, as in the app.
+fn springy_pad() -> Pad {
+    let mut h = promotion_pad();
+    h.state_mut().headless = false;
+    h.run_steps(120);
+    h
+}
+
+/// The left edges of the Layers pane in each of `frames` frames.
+fn layers_lefts(h: &mut Pad, frames: usize) -> Vec<f32> {
+    (0..frames)
+        .map(|_| {
+            h.step();
+            panel(h, Panel::Layers).map_or(f32::MAX, |r| r.left())
+        })
+        .collect()
+}
+
+#[test]
+fn the_dock_springs_past_its_place_when_it_shows() {
+    let mut h = springy_pad();
+    let rest = panel(&h, Panel::Layers).unwrap().left();
+    h.state_mut().pad.docks.world.collapsed = true;
+    h.run_steps(120);
+    h.state_mut().pad.docks.world.collapsed = false;
+    let lefts = layers_lefts(&mut h, 120);
+    assert!(lefts[0] > rest + 50.0, "{lefts:?}");
+    let least = lefts.iter().copied().fold(f32::MAX, f32::min);
+    assert!(least < rest, "{lefts:?}");
+    assert_eq!(lefts.last(), Some(&rest));
+}
+
+#[test]
+fn with_reduce_motion_the_dock_shows_at_once() {
+    let mut h = springy_pad();
+    h.state_mut().reduce_motion = true;
+    let rest = panel(&h, Panel::Layers).unwrap().left();
+    h.state_mut().pad.docks.world.collapsed = true;
+    h.run_steps(2);
+    h.state_mut().pad.docks.world.collapsed = false;
+    assert_eq!(layers_lefts(&mut h, 2)[1], rest);
+}
+
+#[test]
+fn a_new_pane_grows_from_zero_on_a_spring() {
+    let mut h = springy_pad();
+    let layers = panel(&h, Panel::Layers).unwrap();
+    h.state_mut().pad.docks.world.open_tabs(&[Panel::Brush]);
+    h.step();
+    h.step();
+    let first = panel(&h, Panel::Brush).unwrap();
+    h.run_steps(120);
+    let rest = panel(&h, Panel::Brush).unwrap();
+    assert!(first.height() < rest.height() / 2.0, "{first:?} {rest:?}");
+    // The pane above makes room on a spring too, and it rests.
+    assert!(panel(&h, Panel::Layers).unwrap().height() <= layers.height());
+}
+
+#[test]
+fn the_sheet_rises_on_a_spring_when_a_panel_opens() {
+    let mut h = phone(false);
+    h.state_mut().headless = false;
+    h.run_steps(30);
+    h.state_mut().pad.docks.world.open_tabs(&[Panel::Layers]);
+    h.step();
+    h.step();
+    let first = panel(&h, Panel::Layers).unwrap();
+    h.run_steps(120);
+    let rest = panel(&h, Panel::Layers).unwrap();
+    assert!(first.top() > rest.top() + 50.0, "{first:?} {rest:?}");
+}

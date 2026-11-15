@@ -7,7 +7,6 @@ use eframe::egui::{self, Pos2, Rect, Response, vec2};
 
 use super::motion;
 
-
 /// A row of a list that a finger moved to the left, to show its Delete
 /// button. `K` identifies the row.
 #[derive(Copy, Clone, Debug, PartialEq)]

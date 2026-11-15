@@ -119,7 +119,10 @@ pub fn show(
 
     // The card grows from the tip of its arrow.
     let tip = pos2(
-        anchor.center().x.clamp(rect.left() + 20.0, rect.right() - 20.0),
+        anchor
+            .center()
+            .x
+            .clamp(rect.left() + 20.0, rect.right() - 20.0),
         if below { rect.top() } else { rect.bottom() },
     );
     let grow = widgets::grow(ctx, egui::LayerId::new(egui::Order::Tooltip, id), tip);

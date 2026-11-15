@@ -757,8 +757,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     input.sheet_offset = state.pad.sheet_offset;
     rects = geometry::layout(&input);
     if input.panel {
-        input.sheet_offset =
-            shown_sheet_offset(&ctx, state.pad.sheet_offset, rects.sheet_travel);
+        input.sheet_offset = shown_sheet_offset(&ctx, state.pad.sheet_offset, rects.sheet_travel);
         rects = geometry::layout(&input);
     }
     table::check(state);
@@ -3161,7 +3160,10 @@ fn row_spring(ui: &egui::Ui, id: LayerId) -> egui::Id {
 fn row_place(ui: &egui::Ui, id: LayerId, area: Rect, i: usize) -> Rect {
     let target = i as f32 * PANEL_ROW;
     let y = motion::points(ui.ctx(), row_spring(ui, id), target, motion::SNAPPY);
-    Rect::from_min_size(pos2(area.left(), area.top() + y), vec2(area.width(), PANEL_ROW))
+    Rect::from_min_size(
+        pos2(area.left(), area.top() + y),
+        vec2(area.width(), PANEL_ROW),
+    )
 }
 
 /// The rows of the layer list that take touch. A sideways drag on a row

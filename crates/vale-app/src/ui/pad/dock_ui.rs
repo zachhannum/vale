@@ -195,7 +195,12 @@ fn slide(ctx: &egui::Context, state: &AppState, width: f32) -> f32 {
 /// its pane on a spring, so the panes move when a panel opens, closes, or
 /// folds. A new pane grows from zero. During a drag of a bar, the heights
 /// follow the finger.
-fn shown_heights(ctx: &egui::Context, state: &AppState, heights: &[f32], folded: &[bool]) -> Vec<f32> {
+fn shown_heights(
+    ctx: &egui::Context,
+    state: &AppState,
+    heights: &[f32],
+    folded: &[bool],
+) -> Vec<f32> {
     let pass = ctx.cumulative_pass_nr();
     let resized: Option<u64> = ctx.data(|d| d.get_temp(resize_id()));
     let resizing = resized.is_some_and(|p| p + 2 >= pass);
