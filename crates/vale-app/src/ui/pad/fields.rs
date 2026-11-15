@@ -107,19 +107,14 @@ pub fn list(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id
         open: true,
         ..list::Look::default()
     };
-    // The rules have the same keys, so the list has an ID of its own.
-    let events = ui
-        .push_id("pad-field-list", |ui| {
-            list::show(
-                ui,
-                controls,
-                fields,
-                spec,
-                &rows,
-                |ui, controls, cell, i| list::draw(ui, controls, cell, &look(i)),
-            )
-        })
-        .inner;
+    let events = list::show(
+        ui,
+        controls,
+        fields,
+        spec,
+        &rows,
+        |ui, controls, cell, i| list::draw(ui, controls, cell, &look(i)),
+    );
     let picked = &state.pad.field_list.picked;
     if *picked != before && !picked.is_empty() {
         state.pad.rules.list.picked.clear();

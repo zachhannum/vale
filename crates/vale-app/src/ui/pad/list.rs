@@ -251,6 +251,23 @@ pub fn show<K>(
     state: &mut ListState<K>,
     spec: Spec,
     rows: &[Row<K>],
+    cell: impl FnMut(&mut egui::Ui, &mut Controls, &Cell, usize) -> Option<Trail>,
+) -> Vec<Event<K>>
+where
+    K: Copy + PartialEq + Hash + std::fmt::Debug + Send + Sync + 'static,
+{
+    // Two lists with the same keys in one parent have different IDs.
+    let salt = (std::any::type_name::<K>(), spec.field);
+    ui.push_id(salt, |ui| show_rows(ui, controls, state, spec, rows, cell))
+        .inner
+}
+
+fn show_rows<K>(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    state: &mut ListState<K>,
+    spec: Spec,
+    rows: &[Row<K>],
     mut cell: impl FnMut(&mut egui::Ui, &mut Controls, &Cell, usize) -> Option<Trail>,
 ) -> Vec<Event<K>>
 where
