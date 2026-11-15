@@ -720,6 +720,10 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     state.pad.sheet_offset = input
         .sheet_offset
         .clamp(-rects.sheet_rise, rects.sheet_travel);
+    if input.panel {
+        input.sheet_offset = state.pad.sheet_offset;
+        rects = geometry::layout(&input);
+    }
 
     let mut controls = std::mem::take(&mut state.pad.controls);
     controls.clear();
@@ -752,6 +756,11 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     input.column = column_input(state);
     input.sheet_offset = state.pad.sheet_offset;
     rects = geometry::layout(&input);
+    if input.panel {
+        input.sheet_offset =
+            shown_sheet_offset(&ctx, state.pad.sheet_offset, rects.sheet_travel);
+        rects = geometry::layout(&input);
+    }
     table::check(state);
     table::widen(state, &mut rects);
     expression::widen(state, &mut rects);
@@ -2354,10 +2363,30 @@ fn take_raise(ctx: &egui::Context) -> bool {
 
 /// Moves the sheet with a drag on its title row. At the end of the drag, the
 /// sheet goes to the nearer of its two places. A tap changes the place.
+/// The spring of the offset of the sheet.
+fn sheet_spring() -> egui::Id {
+    egui::Id::new("pad-sheet-offset")
+}
+
+/// The offset of the sheet on the screen. It follows `offset` on a spring.
+/// A sheet that the last frame did not show rises from its title row, at
+/// the offset `travel`.
+fn shown_sheet_offset(ctx: &egui::Context, offset: f32, travel: f32) -> f32 {
+    let id = sheet_spring();
+    let pass = ctx.cumulative_pass_nr();
+    let seen: Option<u64> = ctx.data(|d| d.get_temp(id.with("seen")));
+    ctx.data_mut(|d| d.insert_temp(id.with("seen"), pass));
+    if seen.is_none_or(|p| p + 1 < pass) {
+        motion::set(ctx, id, travel.max(offset));
+    }
+    motion::points(ctx, id, offset, motion::SNAPPY)
+}
+
 fn sheet_drag(ui: &egui::Ui, pad: &mut PadState, bar: &egui::Response, rects: &Rects) {
     let (rise, travel) = (rects.sheet_rise, rects.sheet_travel);
     if bar.dragged() {
         pad.sheet_offset = (pad.sheet_offset + bar.drag_delta().y).clamp(-rise, travel);
+        motion::set(ui.ctx(), sheet_spring(), pad.sheet_offset);
         ui.ctx().request_repaint();
     }
     // The places of the sheet: the full height, the half height, and the
@@ -2366,6 +2395,7 @@ fn sheet_drag(ui: &egui::Ui, pad: &mut PadState, bar: &egui::Response, rects: &R
     let offset = pad.sheet_offset;
     pad.sheet_offset = if bar.drag_stopped() {
         let speed = ui.input(|i| i.pointer.velocity().y);
+        motion::kick(ui.ctx(), sheet_spring(), offset, speed);
         if speed > 300.0 {
             places.into_iter().find(|p| *p > offset).unwrap_or(travel)
         } else if speed < -300.0 {

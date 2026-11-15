@@ -235,6 +235,10 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     state.pad.sheet_offset = input
         .sheet_offset
         .clamp(-rects.sheet_rise, rects.sheet_travel);
+    if input.panel {
+        input.sheet_offset = super::shown_sheet_offset(&ctx, state.pad.sheet_offset, rects.sheet_travel);
+        rects = geometry::layout(&input);
+    }
 
     let mut controls = std::mem::take(&mut state.pad.controls);
     controls.clear();
@@ -259,6 +263,11 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     input.sheet_offset = state.pad.sheet_offset;
     input.column = column_input(state, state.measuring());
     rects = geometry::layout(&input);
+    if input.panel {
+        input.sheet_offset =
+            super::shown_sheet_offset(&ctx, state.pad.sheet_offset, rects.sheet_travel);
+        rects = geometry::layout(&input);
+    }
     super::table::check(state);
     super::table::widen(state, &mut rects);
     if super::labels::wide(state) && class != WidthClass::Compact {
