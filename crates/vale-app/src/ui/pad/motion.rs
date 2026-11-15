@@ -268,7 +268,9 @@ pub fn keep(ctx: &egui::Context, layer: LayerId, origin: Pos2) {
 /// out. The UI calls this after it draws everything else.
 pub fn paint_exits(ctx: &egui::Context) {
     let pass = ctx.cumulative_pass_nr();
-    let kept: Vec<Shown> = ctx.data_mut(|d| d.remove_temp(kept_id())).unwrap_or_default();
+    let kept: Vec<Shown> = ctx
+        .data_mut(|d| d.remove_temp(kept_id()))
+        .unwrap_or_default();
     let mut pictures: Vec<Picture> = ctx.data(|d| d.get_temp(pictures_id())).unwrap_or_default();
     for k in kept {
         // A blur reads the screen of its own frame, so a picture leaves it

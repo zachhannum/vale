@@ -17220,7 +17220,12 @@ fn a_pull_of_the_edge_tab_brings_the_dock_out_with_the_finger() {
     h.step();
     let mut lefts = Vec::new();
     for i in 1..=8 {
-        touch(&mut h, egui::TouchPhase::Move, tab - vec2(20.0 * i as f32, 0.0), None);
+        touch(
+            &mut h,
+            egui::TouchPhase::Move,
+            tab - vec2(20.0 * i as f32, 0.0),
+            None,
+        );
         h.step();
         lefts.push(panel(&h, Panel::Layers).map(|r| r.left()));
     }

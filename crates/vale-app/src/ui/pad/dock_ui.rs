@@ -122,7 +122,12 @@ fn track_pull(ctx: &egui::Context, state: &mut AppState, width: f32) {
         if swipe_hides(dx, speed, width) {
             state.pad.dock_mut().collapsed = false;
         }
-        motion::kick(ctx, slide_id(state), pull_at(dx, width), -speed / width.max(1.0));
+        motion::kick(
+            ctx,
+            slide_id(state),
+            pull_at(dx, width),
+            -speed / width.max(1.0),
+        );
         ctx.request_repaint();
     }
 }
@@ -295,7 +300,11 @@ fn swipe_at(dx: f32, width: f32) -> f32 {
 /// The slide of a dock `width` points wide during a pull of `dx` points to
 /// the left from the edge tab.
 fn pull_at(dx: f32, width: f32) -> f32 {
-    let x = if dx > width { width + rubber(dx - width, width) } else { dx };
+    let x = if dx > width {
+        width + rubber(dx - width, width)
+    } else {
+        dx
+    };
     (1.0 - x / width.max(1.0)).min(1.0)
 }
 
@@ -761,7 +770,11 @@ pub fn handle(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
         let shown: Option<(Rect, u64)> = ctx.data(|d| d.get_temp(egui::Id::new(SHOWN_DOCK)));
         if let Some((dock, _)) = shown.filter(|s| s.1 == ctx.cumulative_pass_nr()) {
             let layer = egui::LayerId::new(Order::Middle, egui::Id::new("pad-dock-handle"));
-            paint_grip(&ctx.layer_painter(layer), pos2(dock.left(), dock.center().y), false);
+            paint_grip(
+                &ctx.layer_painter(layer),
+                pos2(dock.left(), dock.center().y),
+                false,
+            );
         }
         return;
     };
