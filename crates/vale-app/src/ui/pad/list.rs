@@ -309,15 +309,16 @@ where
             vec2(area.width(), height),
         )
     };
-    let places: Vec<Rect> = (rows.iter().zip(&tops))
-        .map(|(r, top)| spring(r.key, *top, r.height))
-        .collect();
-    let place = |i: usize| places[i];
-
+    // A spring steps once in a frame, so each row asks for one place: its
+    // place in the list, or its place while another row is lifted.
     let lift = state.lift.filter(|_| spec.reorder);
     let lift = lift.and_then(|l| Some((l, place_of(l.key)?)));
     let Some((lift, from)) = lift else {
         state.lift = None;
+        let places: Vec<Rect> = (rows.iter().zip(&tops))
+            .map(|(r, top)| spring(r.key, *top, r.height))
+            .collect();
+        let place = |i: usize| places[i];
         rows_live(
             ui,
             controls,
@@ -335,7 +336,7 @@ where
     };
     set_lifted(ui.ctx());
     let (pointer, down) = ui.input(|i| (i.pointer.interact_pos(), i.pointer.any_down()));
-    let y = pointer.map_or(place(from).top() + lift.grab, |p| p.y);
+    let y = pointer.map_or(area.top() + tops[from] + lift.grab, |p| p.y);
     let top = (y - lift.grab).clamp(area.top(), area.bottom() - PANEL_ROW);
     let to = ((top - area.top()) / PANEL_ROW).round() as usize;
     let others = rows.iter().enumerate().filter(|(i, _)| *i != from);

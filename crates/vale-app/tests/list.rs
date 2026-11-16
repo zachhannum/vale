@@ -16,6 +16,8 @@ struct Bare {
     names: Vec<String>,
     events: Vec<Event<usize>>,
     controls: Controls,
+    /// The place where each row was painted in the last frame.
+    cells: Vec<Rect>,
 }
 
 type H = Harness<'static, Bare>;
@@ -48,6 +50,7 @@ fn frame(ui: &mut egui::Ui, bare: &mut Bare) {
                 field: FIELD,
                 ..Spec::default()
             };
+            let mut cells = vec![Rect::NOTHING; rows.len()];
             let events = list::show(
                 ui,
                 &mut bare.controls,
@@ -55,6 +58,7 @@ fn frame(ui: &mut egui::Ui, bare: &mut Bare) {
                 spec,
                 &rows,
                 |ui, controls, cell, i| {
+                    cells[i] = cell.rect;
                     let look = list::Look {
                         text: &rows[i].name,
                         ..list::Look::default()
@@ -75,6 +79,7 @@ fn frame(ui: &mut egui::Ui, bare: &mut Bare) {
                     _ => {}
                 }
             }
+            bare.cells = cells;
             bare.events.extend(events);
         });
 }
@@ -91,6 +96,7 @@ fn harness(select: bool, reorder: bool, actions: bool) -> H {
         names: (0..20).map(|i| format!("Row {i}")).collect(),
         events: Vec::new(),
         controls: Controls::new(),
+        cells: Vec::new(),
     };
     let mut h = Harness::builder()
         .with_size(vec2(400.0, 400.0))
@@ -276,6 +282,34 @@ fn a_hold_and_a_drag_move_a_row() {
     );
     assert_eq!(h.state().names[..4], ["Row 0", "Row 2", "Row 3", "Row 1"]);
     assert!(h.state().list.lift.is_none());
+}
+
+#[test]
+fn the_other_rows_make_room_while_a_row_is_lifted() {
+    let mut h = all();
+    let (two, three) = (row(&h, "Row 2"), row(&h, "Row 3"));
+    let from = hold(&mut h, "Row 1");
+    events(&mut h);
+    let to = three.center();
+    for i in 1..=6 {
+        let at = from.lerp(to, i as f32 / 6.0);
+        touch(&mut h, egui::TouchPhase::Move, at);
+        h.step();
+    }
+    // The finger stays over row 3 until the springs rest.
+    for _ in 0..40 {
+        touch(&mut h, egui::TouchPhase::Move, to);
+        h.step();
+    }
+    let up = two.height();
+    let cells = &h.state().cells;
+    assert!((cells[2].top() - (two.top() - up)).abs() < 1.0, "{cells:?}");
+    assert!(
+        (cells[3].top() - (three.top() - up)).abs() < 1.0,
+        "{cells:?}"
+    );
+    touch(&mut h, egui::TouchPhase::End, to);
+    h.run_steps(3);
 }
 
 #[test]
