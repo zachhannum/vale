@@ -131,14 +131,18 @@ pub fn form_card(
     let scrim_id = egui::Id::new(id).with("scrim");
     let scrim = egui::LayerId::new(order, scrim_id);
     let shade = motion::appear_on(ctx, scrim_id.with("appear"), motion::SNAPPY).clamp(0.0, 1.0);
-    motion::keep_with(ctx, scrim, screen.min, motion::Exit::Fade);
+    motion::under_fill(ctx);
+    // The fill covers the whole screen, also the safe area.
+    let whole = ctx.viewport_rect().union(screen);
+    motion::keep_with(ctx, scrim, whole.min, motion::Exit::Fade);
     egui::Area::new(scrim_id)
         .order(order)
-        .fixed_pos(screen.min)
+        .fixed_pos(whole.min)
+        .constrain_to(whole)
         .constrain(false)
         .fade_in(false)
         .show(ctx, |ui| {
-            let (rect, _) = ui.allocate_exact_size(screen.size(), Sense::click_and_drag());
+            let (rect, _) = ui.allocate_exact_size(whole.size(), Sense::click_and_drag());
             ui.multiply_opacity(shade);
             ui.painter()
                 .rect_filled(rect, 0.0, Color32::from_black_alpha(120));

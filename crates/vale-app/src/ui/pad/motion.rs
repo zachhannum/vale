@@ -272,6 +272,18 @@ fn pictures_id() -> Id {
     Id::new("pad-motion-pictures")
 }
 
+fn fill_id() -> Id {
+    Id::new("pad-motion-fill")
+}
+
+/// Tells `paint_exits` that a form shows over a dark fill in this frame.
+/// The pictures of the cards that close then paint in the middle order,
+/// below the fill.
+pub fn under_fill(ctx: &egui::Context) {
+    let pass = ctx.cumulative_pass_nr();
+    ctx.data_mut(|d| d.insert_temp(fill_id(), pass));
+}
+
 /// Keeps the picture of the card on `layer` at the end of the frame, so the
 /// card can shrink to `origin` and fade out after it closes.
 pub fn keep(ctx: &egui::Context, layer: LayerId, origin: Pos2) {
@@ -320,6 +332,7 @@ pub fn paint_exits(ctx: &egui::Context) {
         });
     }
     let instant = instant(ctx);
+    let fill = ctx.data(|d| d.get_temp::<u64>(fill_id())) == Some(pass);
     pictures.retain(|p| {
         if p.pass == pass {
             return true;
@@ -335,17 +348,22 @@ pub fn paint_exits(ctx: &egui::Context) {
         if t <= 0.0 {
             return false;
         }
-        paint_picture(ctx, p, t);
+        paint_picture(ctx, p, t, fill);
         true
     });
     ctx.data_mut(|d| d.insert_temp(pictures_id(), pictures));
 }
 
 /// Paints the picture of a closed card at `t` of its size and opacity,
-/// from 1 when it closes to 0 when it is gone.
-fn paint_picture(ctx: &egui::Context, picture: &Picture, t: f32) {
+/// from 1 when it closes to 0 when it is gone. Under a dark `fill`, the
+/// picture is at most in the middle order.
+fn paint_picture(ctx: &egui::Context, picture: &Picture, t: f32, fill: bool) {
     let id = picture.layer.id.with("ghost");
-    let layer = LayerId::new(picture.layer.order, id);
+    let order = match fill {
+        true => picture.layer.order.min(egui::Order::Middle),
+        false => picture.layer.order,
+    };
+    let layer = LayerId::new(order, id);
     let (transform, opacity) = match picture.exit {
         Exit::Shrink => {
             let scale = APPEAR_SCALE + (1.0 - APPEAR_SCALE) * t;
@@ -361,7 +379,7 @@ fn paint_picture(ctx: &egui::Context, picture: &Picture, t: f32) {
     // The pictures paint in the order that the cards were kept.
     ctx.move_to_top(layer);
     egui::Area::new(id)
-        .order(picture.layer.order)
+        .order(order)
         .fixed_pos(picture.origin)
         .interactable(false)
         .movable(false)

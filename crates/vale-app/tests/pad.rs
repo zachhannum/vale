@@ -5203,6 +5203,81 @@ fn the_dark_fill_of_a_form_covers_the_chrome() {
     }
 }
 
+/// True if `r` is the dark fill of a form: black, see-through, and at
+/// least as wide as the screen in the safe area.
+fn is_fill(r: &egui::epaint::RectShape) -> bool {
+    let black = r.fill.r() == 0 && r.fill.g() == 0 && r.fill.b() == 0;
+    black && r.fill.a() > 0 && r.fill.a() < 255 && r.rect.width() >= BOARDS[0].0
+}
+
+/// The layers of the middle and the foreground that the last frame
+/// painted above the dark fill of the export form, and the rect of the
+/// fill with its clip.
+fn above_the_fill(h: &Pad) -> (Vec<egui::Id>, Option<Rect>) {
+    let card = egui::Id::new(export_form::CARD);
+    let scrim = card.with("scrim");
+    let above = h.ctx.memory(|m| {
+        let shown: Vec<egui::LayerId> = (m.layer_ids())
+            .filter(|l| matches!(l.order, egui::Order::Middle | egui::Order::Foreground))
+            .filter(|l| m.areas().is_visible(l))
+            .collect();
+        let at = shown.iter().position(|l| l.id == scrim);
+        at.map_or_else(Vec::new, |at| {
+            shown[at + 1..].iter().map(|l| l.id).collect()
+        })
+    });
+    let fill = (h.output().shapes.iter()).find_map(|c| match &c.shape {
+        egui::Shape::Rect(r) if is_fill(r) => Some(r.rect.intersect(c.clip_rect)),
+        _ => None,
+    });
+    (above, fill)
+}
+
+#[test]
+fn the_dark_fill_covers_the_screen_while_the_menu_closes_and_the_form_opens() {
+    let size = BOARDS[0];
+    let mut h = pad(size);
+    let insets = egui::epaint::MarginF32 {
+        left: 0.0,
+        right: 0.0,
+        top: BANDS.0,
+        bottom: BANDS.1,
+    };
+    h.input_mut().safe_area_insets = Some(egui::SafeAreaInsets(insets));
+    h.state_mut().workspace = Workspace::Atlas;
+    h.run_steps(3);
+    open_panel(&mut h, "Layers");
+    assert!(h.state().pad.is_open(Panel::Layers));
+    // The springs run.
+    h.state_mut().headless = false;
+    h.run_steps(30);
+    open_worlds(&mut h);
+    h.run_steps(30);
+    let pos = control(&h, EXPORT).unwrap().center();
+    touch(&mut h, egui::TouchPhase::Start, pos, None);
+    h.step();
+    touch(&mut h, egui::TouchPhase::End, pos, None);
+    let screen = Rect::from_min_size(Pos2::ZERO, size.into());
+    let card = egui::Id::new(export_form::CARD);
+    let mut seen = false;
+    for frame in 0..60 {
+        h.step();
+        let (above, fill) = above_the_fill(&h);
+        let Some(fill) = fill else {
+            // The fill shows from its second frame.
+            assert!(frame < 2 && !seen, "{frame}: no fill");
+            continue;
+        };
+        seen = true;
+        assert_eq!(above, [card], "{frame}: the layers above the fill");
+        assert!(
+            fill.contains_rect(screen),
+            "{frame}: the fill covers {fill:?}"
+        );
+    }
+    assert!(seen && h.state().export_form.is_some());
+}
+
 #[test]
 fn the_export_row_opens_the_export_form() {
     for size in BOARDS {
