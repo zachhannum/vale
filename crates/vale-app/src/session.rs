@@ -262,8 +262,7 @@ impl Session {
         }
     }
 
-    /// True if the working copy holds a change for longer than
-    /// `WRITE_BACK_DELAY`.
+    /// True if the working copy has a change that is due for a write-back.
     pub fn write_back_due(&self, now: Instant) -> bool {
         self.work.as_ref().is_some_and(|work| work.due(now))
     }
