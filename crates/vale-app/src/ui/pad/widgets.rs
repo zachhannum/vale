@@ -2916,6 +2916,43 @@ pub fn button_row_in(
     resp
 }
 
+/// A button row split into equal buttons, one for each pair of a control
+/// name and a text. Returns the index of the tapped button.
+pub fn button_cells(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    buttons: &[(&str, &str)],
+) -> Option<usize> {
+    let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), Sense::hover());
+    let width = row.width() / buttons.len().max(1) as f32;
+    let mut tapped = None;
+    for (i, (name, text)) in buttons.iter().enumerate() {
+        let rect = Rect::from_min_size(
+            pos2(row.left() + i as f32 * width, row.top()),
+            vec2(width, row.height()),
+        );
+        let resp = hit(ui, controls, rect, name, Sense::click(), true, None);
+        let color = if resp.is_pointer_button_down_on() {
+            theme::ACCENT
+        } else {
+            theme::ACCENT.gamma_multiply(0.8)
+        };
+        let back = rect.shrink(HIGHLIGHT_INSET);
+        ui.painter().rect_filled(back, theme::CONTROL_RADIUS, color);
+        ui.painter().text(
+            rect.center(),
+            Align2::CENTER_CENTER,
+            text,
+            theme::body(),
+            theme::CANVAS,
+        );
+        if resp.clicked() {
+            tapped = Some(i);
+        }
+    }
+    tapped
+}
+
 /// The height of the square of saturation and value of the color picker.
 const PICKER_SQUARE: f32 = 180.0;
 /// The number of cells along each side of the meshes of the color picker.

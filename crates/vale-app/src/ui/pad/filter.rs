@@ -392,10 +392,8 @@ fn blocks(
         match_row(ui, controls, rows, model.all);
     }
     list(ui, controls, rows, &[], &model.items);
-    add_row(ui, controls, &rows.name(ADD_CONDITION, &[]), ADD_CONDITION)
-        .then(|| rows.acts.push(Act::AddRule(Vec::new())));
-    add_row(ui, controls, &rows.name(ADD_GROUP, &[]), ADD_GROUP)
-        .then(|| rows.acts.push(Act::AddGroup(Vec::new())));
+    ui.add_space(4.0);
+    add_buttons(ui, controls, rows, &[]);
 }
 
 /// The row "Match all of these conditions", with a menu of all and any.
@@ -1072,12 +1070,7 @@ fn group_card(
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
     child.spacing_mut().item_spacing.y = 0.0;
     list(&mut child, controls, rows, path, items);
-    let add = rows.name(ADD_CONDITION, path);
-    add_row(&mut child, controls, &add, ADD_CONDITION)
-        .then(|| rows.acts.push(Act::AddRule(path.to_vec())));
-    let add = rows.name(ADD_GROUP, path);
-    add_row(&mut child, controls, &add, ADD_GROUP)
-        .then(|| rows.acts.push(Act::AddGroup(path.to_vec())));
+    add_buttons(&mut child, controls, rows, path);
     let bottom = child.min_rect().bottom() + SPACE / 2.0;
     let rest = (bottom - ui.cursor().top()).max(0.0);
     ui.allocate_exact_size(vec2(width, rest), Sense::hover());
@@ -1089,25 +1082,16 @@ fn group_card(
     );
 }
 
-/// A row with a plus and `label` in the accent color. Returns true on a
-/// tap.
-pub fn add_row(ui: &mut egui::Ui, controls: &mut Controls, name: &str, label: &str) -> bool {
-    let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), TOUCH), Sense::hover());
-    let w = 16.0 + 18.0 + 8.0 + text_width(ui, label, theme::body()) + 16.0;
-    let rect = Rect::from_min_size(row.min, vec2(w.min(row.width()), row.height()));
-    let resp = widgets::hit(ui, controls, rect, name, Sense::click(), true, None);
-    if resp.is_pointer_button_down_on() {
-        ui.painter()
-            .rect_filled(rect, theme::CONTROL_RADIUS, theme::raise());
+/// The buttons Add condition and Add group of the group at `path`.
+fn add_buttons(ui: &mut egui::Ui, controls: &mut Controls, rows: &mut Rows, path: &[usize]) {
+    let condition = rows.name(ADD_CONDITION, path);
+    let group = rows.name(ADD_GROUP, path);
+    let buttons = [(&*condition, ADD_CONDITION), (&*group, ADD_GROUP)];
+    match widgets::button_cells(ui, controls, &buttons) {
+        Some(0) => rows.acts.push(Act::AddRule(path.to_vec())),
+        Some(_) => rows.acts.push(Act::AddGroup(path.to_vec())),
+        None => {}
     }
-    let icon = Rect::from_center_size(
-        pos2(rect.left() + 16.0 + 9.0, row.center().y),
-        vec2(18.0, 18.0),
-    );
-    icons::paint(ui.painter(), icon, Icon::Plus, 18.0, theme::ACCENT);
-    let at = pos2(icon.right() + 8.0, row.center().y);
-    (ui.painter()).text(at, Align2::LEFT_CENTER, label, theme::body(), theme::ACCENT);
-    resp.clicked()
 }
 
 /// The line "Matches N of M features" and a meter of the part.
