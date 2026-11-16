@@ -59,11 +59,27 @@ pub enum Dialog {
         modified: Option<SystemTime>,
         others: Vec<Version>,
     },
+    /// Another device changed the file of the open project, which has
+    /// changes of its own.
+    SourceChanged {
+        name: String,
+    },
 }
 
 /// The title of the dialog with the versions of a file.
 pub const VERSIONS_TITLE: &str = "Conflicting versions";
 pub const VERSIONS_TEXT: &str = "This world was changed on two devices. Choose the version to keep. The other versions will be deleted.";
+
+/// The dialog that asks which version of the open project stays.
+pub const CHANGED_TITLE: &str = "World changed on another device";
+pub const CHANGED_TEXT: &str =
+    "Another device saved a newer version of this world. Your changes here are not in it.";
+pub const USE_OTHER: &str = "Use other version";
+pub const KEEP_BOTH: &str = "Keep both";
+
+/// The screen that waits for the download of a project.
+pub const WAIT_HINT: &str = "A newer version is in iCloud Drive.";
+pub const OPEN_THIS_COPY: &str = "Open this copy";
 
 /// The name of the button that keeps a version.
 pub fn keep_name(device: &str, modified: Option<SystemTime>) -> String {
@@ -104,10 +120,10 @@ pub fn info_line(entry: &Entry, pad: bool, locations: bool) -> (String, bool) {
         (Some(_), _) => return ("Cannot read file".to_string(), true),
         (None, Availability::InCloud) => ("Not downloaded".to_string(), false),
         (None, Availability::Downloading) => ("Downloading…".to_string(), false),
-        (None, Availability::Here) if !entry.conflicts.is_empty() => {
+        (None, Availability::Here | Availability::Stale) if !entry.conflicts.is_empty() => {
             (format!("{} versions", entry.conflicts.len() + 1), true)
         }
-        (None, Availability::Here) => {
+        (None, Availability::Here | Availability::Stale) => {
             let date = entry.modified.map(projects::date_text);
             (date.unwrap_or_default(), false)
         }
@@ -122,7 +138,7 @@ pub fn info_line(entry: &Entry, pad: bool, locations: bool) -> (String, bool) {
 
 /// Acts on a tap on a project that the app can read.
 pub fn open_entry(state: &mut AppState, entry: &Entry) {
-    if entry.availability != Availability::Here {
+    if !entry.availability.on_device() {
         state.actions.push(Action::Download(entry.path.clone()));
     } else if !entry.conflicts.is_empty() {
         state.browser.dialog = Some(Dialog::Versions {
@@ -155,8 +171,6 @@ pub struct BrowserState {
     /// The pictures of the entries that the screen showed.
     textures: HashMap<PathBuf, egui::TextureHandle>,
     pub dialog: Option<Dialog>,
-    /// The project that opens after its download.
-    pub pending: Option<PathBuf>,
     /// The time of the last read of the folders while a download runs.
     pub polled: Option<Instant>,
 }
@@ -348,6 +362,11 @@ pub fn dialogs(ui: &mut egui::Ui, state: &mut AppState) {
     let Some(dialog) = &mut state.browser.dialog else {
         return;
     };
+    // The iPad layout draws this dialog over its workspaces.
+    let pad = state.layout == crate::ui::Layout::Pad;
+    if pad && matches!(dialog, Dialog::SourceChanged { .. }) {
+        return;
+    }
     let ctx = ui.ctx().clone();
     let mut close = false;
     let mut action = None;
@@ -391,6 +410,23 @@ pub fn dialogs(ui: &mut egui::Ui, state: &mut AppState) {
                 }
             });
             close |= modal.should_close();
+        }
+        Dialog::SourceChanged { name } => {
+            // The dialog has no close, because the changes wait for an answer.
+            Modal::new(Id::new("source_changed")).show(&ctx, |ui| {
+                ui.set_width(360.0);
+                ui.heading(format!("{CHANGED_TITLE}: {name}"));
+                ui.label(CHANGED_TEXT);
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button(USE_OTHER).clicked() {
+                        action = Some(Action::UseOtherVersion);
+                    }
+                    if ui.button(KEEP_BOTH).clicked() {
+                        action = Some(Action::KeepBoth);
+                    }
+                });
+            });
         }
         Dialog::Delete { path, name } => {
             let modal = Modal::new(Id::new("delete_project")).show(&ctx, |ui| {

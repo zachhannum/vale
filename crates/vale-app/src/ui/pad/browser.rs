@@ -13,8 +13,8 @@ use super::{HOLD_SLOP, HOLD_TIME, rule, theme};
 use crate::files::Availability;
 use crate::projects::Entry;
 use crate::ui::browser::{
-    ActionsMenu, Dialog, PROBLEM_TITLE, TRY_OPEN, VERSIONS_TEXT, VERSIONS_TITLE, info_line,
-    open_entry, problem_text, version_buttons,
+    ActionsMenu, CHANGED_TEXT, CHANGED_TITLE, Dialog, KEEP_BOTH, PROBLEM_TITLE, TRY_OPEN,
+    USE_OTHER, VERSIONS_TEXT, VERSIONS_TITLE, info_line, open_entry, problem_text, version_buttons,
 };
 use crate::ui::world_form::{self, WorldForm};
 use crate::ui::{Action, AppState};
@@ -398,6 +398,18 @@ fn actions_menu(
     }
 }
 
+/// Draws the dialog of the start screen that shows over a workspace.
+pub fn editor_dialog(ctx: &egui::Context, state: &mut AppState) {
+    if state.browser.dialog.is_none() {
+        return;
+    }
+    let mut controls = std::mem::take(&mut state.pad.controls);
+    let screen = ctx.viewport_rect();
+    let bands = Bands::of(ctx);
+    dialog(ctx, state, &mut controls, screen, &bands);
+    state.pad.controls = controls;
+}
+
 /// The dialog that asks for a new name, or the dialog that asks before a
 /// delete. The rename dialog is near the top of the screen, so that the
 /// keyboard of the system does not cover it.
@@ -518,6 +530,44 @@ fn dialog(
                             ui.add_space(VERSION_GAP);
                         }
                     });
+            });
+        }
+        Dialog::SourceChanged { .. } => {
+            // The changes wait for an answer, so the dialog has no close.
+            close = false;
+            let text_height = 66.0;
+            let height = ROW + text_height + 2.0 * (PANEL_ROW + VERSION_GAP) + 16.0;
+            let top = (screen.center().y - height / 2.0).max(screen.top() + bands.top);
+            let rect = Rect::from_min_size(pos2(left, top), vec2(width, height));
+            card_above(ctx, "pad-project-dialog", rect, None, |ui| {
+                let (title, _) =
+                    ui.allocate_exact_size(vec2(ui.available_width(), ROW), egui::Sense::hover());
+                let text = egui::RichText::new(CHANGED_TITLE).font(theme::title());
+                let label = egui::Label::new(text.color(theme::TEXT));
+                let layout = egui::Layout::left_to_right(egui::Align::Center);
+                let builder = egui::UiBuilder::new()
+                    .max_rect(title.shrink2(vec2(BODY_PAD, 0.0)))
+                    .layout(layout);
+                ui.scope_builder(builder, |ui| ui.add(label.selectable(false).truncate()));
+                let inner = ui.available_rect_before_wrap().shrink2(vec2(BODY_PAD, 0.0));
+                let layout = egui::Layout::top_down(egui::Align::Min);
+                let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
+                let ui = &mut ui;
+                ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+                let size = vec2(ui.available_width(), text_height);
+                ui.allocate_ui_with_layout(size, layout, |ui| {
+                    ui.set_min_height(text_height);
+                    let text = egui::RichText::new(CHANGED_TEXT).font(theme::body());
+                    ui.add(egui::Label::new(text.color(theme::MUTE)).wrap());
+                });
+                let other = widgets::button_row_in(ui, controls, USE_OTHER, true, theme::WARN);
+                if other.clicked() {
+                    action = Some(Action::UseOtherVersion);
+                }
+                ui.add_space(VERSION_GAP);
+                if widgets::button_row(ui, controls, KEEP_BOTH, true).clicked() {
+                    action = Some(Action::KeepBoth);
+                }
             });
         }
         Dialog::Delete { path, name } => {

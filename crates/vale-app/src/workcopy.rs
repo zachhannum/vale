@@ -93,6 +93,23 @@ impl WorkCopy {
         }
     }
 
+    /// True if the copy has a change that the source does not hold.
+    pub fn is_dirty(&self) -> bool {
+        self.dirty.is_some()
+    }
+
+    /// True if the source changed after the copy or the last write-back.
+    pub fn source_changed(&self) -> bool {
+        self.source.exists() && stamp_of(&self.source) != self.stamp
+    }
+
+    /// The time to the next write-back. `None`: the copy has no change.
+    pub fn due_in(&self, now: Instant) -> Option<Duration> {
+        let first = self.dirty? + WRITE_BACK_DELAY;
+        let idle = self.last.map_or(first, |last| last + WRITE_BACK_IDLE);
+        Some(first.min(idle).saturating_duration_since(now))
+    }
+
     /// Drops the changes that the source does not hold.
     pub fn forget(&mut self) {
         self.dirty = None;
