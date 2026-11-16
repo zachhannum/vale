@@ -215,13 +215,18 @@ pub fn kick(ctx: &egui::Context, id: Id, value: f32, velocity: f32) {
 /// that shows the card. A card that the last frame did not show starts
 /// again at 0.
 pub fn appear(ctx: &egui::Context, id: Id) -> f32 {
+    appear_on(ctx, id, BOUNCY)
+}
+
+/// An `appear` on `spring`.
+pub fn appear_on(ctx: &egui::Context, id: Id, spring: Spring) -> f32 {
     let pass = ctx.cumulative_pass_nr();
     let seen: Option<u64> = ctx.data(|d| d.get_temp(id.with("seen")));
     ctx.data_mut(|d| d.insert_temp(id.with("seen"), pass));
     if seen.is_none_or(|p| p + 1 < pass) {
         set(ctx, id, 0.0);
     }
-    value(ctx, id, 1.0, BOUNCY)
+    value(ctx, id, 1.0, spring)
 }
 
 /// The scale of a control that a finger is `down` on.
@@ -230,11 +235,23 @@ pub fn press(ctx: &egui::Context, id: Id, down: bool) -> f32 {
     1.0 - (1.0 - PRESS_SCALE) * t
 }
 
+/// How the picture of a closed card leaves the screen.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Exit {
+    /// It shrinks to its origin and fades out.
+    Shrink,
+    /// It moves down by this many points.
+    Slide(f32),
+    /// It fades out in its place.
+    Fade,
+}
+
 /// A card that the frame shows, with the place that it grows from.
 #[derive(Clone)]
 struct Shown {
     layer: LayerId,
     origin: Pos2,
+    exit: Exit,
 }
 
 /// The last picture of a card, and the last pass that showed it.
@@ -242,6 +259,7 @@ struct Shown {
 struct Picture {
     layer: LayerId,
     origin: Pos2,
+    exit: Exit,
     shapes: Arc<Vec<ClippedShape>>,
     pass: u64,
 }
@@ -257,9 +275,18 @@ fn pictures_id() -> Id {
 /// Keeps the picture of the card on `layer` at the end of the frame, so the
 /// card can shrink to `origin` and fade out after it closes.
 pub fn keep(ctx: &egui::Context, layer: LayerId, origin: Pos2) {
+    keep_with(ctx, layer, origin, Exit::Shrink);
+}
+
+/// A `keep` with the way the picture leaves the screen.
+pub fn keep_with(ctx: &egui::Context, layer: LayerId, origin: Pos2, exit: Exit) {
     ctx.data_mut(|d| {
         let kept: &mut Vec<Shown> = d.get_temp_mut_or_default(kept_id());
-        kept.push(Shown { layer, origin });
+        kept.push(Shown {
+            layer,
+            origin,
+            exit,
+        });
     });
 }
 
@@ -287,6 +314,7 @@ pub fn paint_exits(ctx: &egui::Context) {
         pictures.push(Picture {
             layer: k.layer,
             origin: k.origin,
+            exit: k.exit,
             shapes: Arc::new(shapes),
             pass,
         });
@@ -318,8 +346,20 @@ pub fn paint_exits(ctx: &egui::Context) {
 fn paint_picture(ctx: &egui::Context, picture: &Picture, t: f32) {
     let id = picture.layer.id.with("ghost");
     let layer = LayerId::new(picture.layer.order, id);
-    let scale = APPEAR_SCALE + (1.0 - APPEAR_SCALE) * t;
-    ctx.set_transform_layer(layer, about(scale, picture.origin));
+    let (transform, opacity) = match picture.exit {
+        Exit::Shrink => {
+            let scale = APPEAR_SCALE + (1.0 - APPEAR_SCALE) * t;
+            (about(scale, picture.origin), t)
+        }
+        Exit::Slide(distance) => {
+            let down = egui::vec2(0.0, (1.0 - t) * distance);
+            (TSTransform::from_translation(down), 1.0)
+        }
+        Exit::Fade => (TSTransform::IDENTITY, t),
+    };
+    ctx.set_transform_layer(layer, transform);
+    // The pictures paint in the order that the cards were kept.
+    ctx.move_to_top(layer);
     egui::Area::new(id)
         .order(picture.layer.order)
         .fixed_pos(picture.origin)
@@ -329,7 +369,7 @@ fn paint_picture(ctx: &egui::Context, picture: &Picture, t: f32) {
         .fade_in(false)
         .show(ctx, |ui| {
             let mut painter = ui.painter().clone();
-            painter.set_opacity(t);
+            painter.set_opacity(opacity);
             for c in picture.shapes.iter() {
                 painter.with_clip_rect(c.clip_rect).add(c.shape.clone());
             }

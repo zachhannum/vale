@@ -5165,20 +5165,16 @@ fn the_world_menu_ends_with_export_in_both_workspaces() {
 #[test]
 fn the_dark_fill_of_a_form_covers_the_chrome() {
     type Open = fn(&mut AppState);
-    let forms: [(&str, &str, Open); 3] = [
-        ("export-form", "scrim", |s| {
-            s.export_form = Some(ExportForm::new(s))
-        }),
-        ("world-form", "world-form-scrim", |s| {
+    let forms: [(&str, Open); 3] = [
+        ("export-form", |s| s.export_form = Some(ExportForm::new(s))),
+        ("world-form", |s| {
             s.world_form = Some(WorldForm::new_world())
         }),
-        ("raster-form", "raster-form-scrim", |s| {
-            s.raster_form = Some(RasterForm::open(s))
-        }),
+        ("raster-form", |s| s.raster_form = Some(RasterForm::open(s))),
     ];
     for size in BOARDS {
         for workspace in [Workspace::Globe, Workspace::Atlas] {
-            for (card, scrim, open) in forms {
+            for (card, open) in forms {
                 // The raster form opens from the Layers panel of the World
                 // workspace.
                 if card == "raster-form" && workspace == Workspace::Atlas {
@@ -5190,10 +5186,7 @@ fn the_dark_fill_of_a_form_covers_the_chrome() {
                 open(h.state_mut());
                 h.run_steps(3);
                 let card = egui::Id::new(card);
-                let scrim = match scrim {
-                    "scrim" => card.with("scrim"),
-                    name => egui::Id::new(name),
-                };
+                let scrim = card.with("scrim");
                 let what = format!("{size:?} {workspace:?} {card:?}");
                 let shown: Vec<egui::LayerId> = h.ctx.memory(|m| {
                     m.layer_ids()

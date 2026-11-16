@@ -1,6 +1,6 @@
 //! The form that makes a new world and that edits the world of the project.
 
-use eframe::egui::{self, Order, Rect, pos2, vec2};
+use eframe::egui::{self, Rect, pos2, vec2};
 use vale_store::{Units, World};
 
 use super::pad::geometry::{GAP, MARGIN, ROW, Rects};
@@ -346,23 +346,12 @@ pub fn pad(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
         vec2(width, height),
     );
 
-    egui::Area::new(egui::Id::new("world-form-scrim"))
-        .order(Order::Foreground)
-        .fixed_pos(screen.min)
-        .constrain(false)
-        .fade_in(false)
-        .show(ctx, |ui| {
-            let (rect, _) = ui.allocate_exact_size(screen.size(), egui::Sense::click_and_drag());
-            ui.painter()
-                .rect_filled(rect, 0.0, egui::Color32::from_black_alpha(120));
-        });
-
     // The form covers each other control.
     controls.clear();
     let mut did = Did::Nothing;
     let busy = state.globe.busy();
     let radius = theme::CARD_RADIUS.into();
-    widgets::card(ctx, None, CARD, rect, Order::Foreground, radius, |ui| {
+    widgets::form_card(ctx, CARD, screen, rect, radius, false, |ui| {
         ui.painter()
             .rect_filled(rect, radius, theme::card(false).to_opaque());
         ui.spacing_mut().item_spacing.y = 0.0;
@@ -425,11 +414,5 @@ pub fn pad(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
             }
         }
     });
-    // The dark fill is above the chrome, and the card is above the fill.
-    ctx.move_to_top(egui::LayerId::new(
-        Order::Foreground,
-        egui::Id::new("world-form-scrim"),
-    ));
-    ctx.move_to_top(egui::LayerId::new(Order::Foreground, egui::Id::new(CARD)));
     finish(state, form, did);
 }

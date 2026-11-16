@@ -665,7 +665,7 @@ fn shift_click_on_the_desktop_strip_selects_a_run() {
     assert_eq!(ticks(&h), [true, true, true, true, false]);
     let form = h.state().export_form.as_ref().unwrap();
     assert_eq!(form.pages, PagesMode::Range);
-    assert_eq!((form.from.as_str(), form.to.as_str()), ("1", "4"));
+    assert_eq!(form.range, "1–4");
 }
 
 #[test]

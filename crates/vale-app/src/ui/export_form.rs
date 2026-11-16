@@ -1,12 +1,12 @@
 //! The form that exports pages of the atlas to a PDF file or to PNG files.
 
-use eframe::egui::{self, Align2, Order, Rect, Sense, pos2, vec2};
+use eframe::egui::{self, Align2, Rect, Sense, pos2, vec2};
 use vale_store::{PageId, PageRecord};
 
-use super::pad::geometry::{GAP, MARGIN, ROW, Rects, WidthClass};
+use super::pad::geometry::{GAP, MARGIN, ROW, Rects, TOUCH, WidthClass};
 use super::pad::icons::{self, Icon};
 use super::pad::theme;
-use super::pad::widgets::{self, BODY_PAD, Controls, Keys, keypad_below};
+use super::pad::widgets::{self, BODY_PAD, Controls};
 use super::{Action, AppState, ExportFormat, ExportSpec, atlas, export_thumbs};
 use crate::atlas::preset_of;
 use crate::atlas_export::page_pixels;
@@ -27,8 +27,8 @@ pub const PAGES: &str = "Pages";
 /// The choices of the pages, in the order of `MODES`.
 pub const PAGE_CHOICES: [&str; 3] = ["All", "This page", "Range"];
 const MODES: [PagesMode; 3] = [PagesMode::All, PagesMode::This, PagesMode::Range];
-pub const FROM: &str = "From";
-pub const TO: &str = "To";
+/// The name of the field of the range, which has no label.
+pub const RANGE: &str = "Page range";
 pub const OPTIONS: &str = "Options";
 pub const TRANSPARENT_PAPER: &str = "Transparent paper";
 pub const NAME: &str = "Name";
@@ -44,7 +44,7 @@ pub const NO_VALUE: &str = "–";
 /// The width of the form in the iPad layout.
 pub const WIDTH: f32 = 540.0;
 /// The ID of the card of the form.
-const CARD: &str = "export-form";
+pub const CARD: &str = "export-form";
 /// The ID of the strip of the pages.
 const STRIP: &str = "export-strip";
 /// The space above the pictures of the strip.
@@ -93,7 +93,7 @@ pub enum PagesMode {
     All,
     /// The open page.
     This,
-    /// The ticked pages of the strip, or the pages from `from` to `to`.
+    /// The ticked pages of the strip, or the pages of `range`.
     Range,
 }
 
@@ -108,10 +108,8 @@ pub struct ExportForm {
     /// One tick for each page of the strip.
     pub selected: Vec<bool>,
     pub pages: PagesMode,
-    /// The page number of the first page of the range, as typed.
-    pub from: String,
-    /// The page number of the last page of the range, as typed.
-    pub to: String,
+    /// The page numbers of the range, for example "1–4, 7".
+    pub range: String,
     pub transparent: bool,
     /// The file name with no extension.
     pub name: String,
@@ -141,8 +139,7 @@ impl ExportForm {
             open: open.min(count.saturating_sub(1)),
             selected: vec![false; count],
             pages: PagesMode::All,
-            from: String::new(),
-            to: String::new(),
+            range: String::new(),
             transparent: options.transparent,
             name,
             center_on: None,
@@ -169,19 +166,17 @@ impl ExportForm {
         match mode {
             PagesMode::All => {
                 self.selected.fill(true);
-                self.from.clear();
-                self.to.clear();
+                self.range.clear();
             }
             PagesMode::This => {
                 self.selected.fill(false);
                 if let Some(tick) = self.selected.get_mut(self.open) {
                     *tick = true;
                 }
-                self.from.clear();
-                self.to.clear();
+                self.range.clear();
                 self.center_on = Some(self.open);
             }
-            PagesMode::Range => self.fill_range(),
+            PagesMode::Range => self.range = range_text(&self.selected),
         }
     }
 
@@ -203,43 +198,25 @@ impl ExportForm {
         self.set_mode(PagesMode::Range);
     }
 
-    /// Sets the text of the range. Two page numbers in order tick the pages
-    /// from the first to the last.
-    pub fn set_from_to(&mut self, from: &str, to: &str) {
+    /// Sets the text of the range as the user types it, and ticks the
+    /// pages that it gives.
+    pub fn set_range(&mut self, text: &str) {
         self.pages = PagesMode::Range;
-        self.from = from.to_string();
-        self.to = to.to_string();
+        self.range = text.to_string();
+        self.selected.fill(false);
         let count = self.selected.len();
-        let number = |text: &str| {
-            let n = text.trim().parse::<usize>().ok()?;
-            (1..=count).contains(&n).then_some(n - 1)
-        };
-        if let (Some(first), Some(last)) = (number(from), number(to))
-            && first <= last
-        {
-            for (index, tick) in self.selected.iter_mut().enumerate() {
-                *tick = (first..=last).contains(&index);
+        for (first, last) in range_runs(text).flatten() {
+            let last = last.min(count);
+            let first = first.clamp(1, last.max(1));
+            if let Some(run) = self.selected.get_mut(first.saturating_sub(1)..last) {
+                run.fill(true);
             }
         }
     }
 
-    /// Fills the range from the ticks: one run of pages gives its first and
-    /// last page numbers, and gaps give an empty range.
-    fn fill_range(&mut self) {
-        let ticked: Vec<usize> = (self.selected.iter().enumerate())
-            .filter(|(_, tick)| **tick)
-            .map(|(index, _)| index)
-            .collect();
-        match (ticked.first(), ticked.last()) {
-            (Some(&first), Some(&last)) if last - first + 1 == ticked.len() => {
-                self.from = (first + 1).to_string();
-                self.to = (last + 1).to_string();
-            }
-            _ => {
-                self.from.clear();
-                self.to.clear();
-            }
-        }
+    /// Writes the range of the ticked pages in the form of `range_text`.
+    pub fn normalize_range(&mut self) {
+        self.range = range_text(&self.selected);
     }
 
     /// True if the form has a page and a name.
@@ -278,6 +255,51 @@ impl ExportForm {
             name: self.name.trim().to_string(),
         }
     }
+}
+
+/// The ticked pages as text: runs of page numbers in order, with an en
+/// dash in a run of two or more pages, for example "1–4, 7, 9–10".
+pub fn range_text(selected: &[bool]) -> String {
+    let mut runs: Vec<(usize, usize)> = Vec::new();
+    for (index, _) in selected.iter().enumerate().filter(|(_, tick)| **tick) {
+        match runs.last_mut() {
+            Some((_, last)) if *last + 1 == index + 1 => *last = index + 1,
+            _ => runs.push((index + 1, index + 1)),
+        }
+    }
+    let text: Vec<String> = (runs.iter())
+        .map(|&(first, last)| match first == last {
+            true => first.to_string(),
+            false => format!("{first}–{last}"),
+        })
+        .collect();
+    text.join(", ")
+}
+
+/// The items of a page range, separated by commas or spaces. An item is a
+/// page number, or two page numbers with a hyphen, an en dash, or an em
+/// dash between them, in either order. Each item gives its first and last
+/// page number, or `None` if it is not a page or a run of pages. A page
+/// number of 0 is not a page.
+pub fn range_runs(text: &str) -> impl Iterator<Item = Option<(usize, usize)>> {
+    let mut text = text.replace(['–', '—'], "-");
+    while text.contains(" -") || text.contains("- ") {
+        text = text.replace(" -", "-").replace("- ", "-");
+    }
+    let items: Vec<String> = (text.split(|c: char| c == ',' || c.is_whitespace()))
+        .filter(|item| !item.is_empty())
+        .map(str::to_string)
+        .collect();
+    items.into_iter().map(|item| {
+        let number = |n: &str| n.parse::<usize>().ok().filter(|n| *n >= 1);
+        match item.split_once('-') {
+            Some((a, b)) => {
+                let (a, b) = (number(a)?, number(b)?);
+                Some((a.min(b), a.max(b)))
+            }
+            None => number(&item).map(|n| (n, n)),
+        }
+    })
 }
 
 /// The read-only facts of the export of the selected pages.
@@ -549,22 +571,11 @@ pub fn pad(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
         (rect, theme::CARD_RADIUS.into())
     };
 
-    egui::Area::new(egui::Id::new(CARD).with("scrim"))
-        .order(Order::Foreground)
-        .fixed_pos(screen.min)
-        .constrain(false)
-        .fade_in(false)
-        .show(ctx, |ui| {
-            let (rect, _) = ui.allocate_exact_size(screen.size(), Sense::click_and_drag());
-            ui.painter()
-                .rect_filled(rect, 0.0, egui::Color32::from_black_alpha(120));
-        });
-
     // The form covers each other control.
     controls.clear();
     let mut did = Did::Nothing;
     let mut stop = false;
-    widgets::card(ctx, None, CARD, rect, Order::Foreground, radius, |ui| {
+    widgets::form_card(ctx, CARD, screen, rect, radius, compact, |ui| {
         ui.painter()
             .rect_filled(rect, radius, theme::card(false).to_opaque());
         ui.spacing_mut().item_spacing.y = 0.0;
@@ -601,17 +612,8 @@ pub fn pad(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
             });
         ctx.data_mut(|d| d.insert_temp(body_id, out.content_size.y));
     });
-    // The dark fill is above the chrome, and the card is above the fill.
-    ctx.move_to_top(egui::LayerId::new(
-        Order::Foreground,
-        egui::Id::new(CARD).with("scrim"),
-    ));
-    ctx.move_to_top(egui::LayerId::new(Order::Foreground, egui::Id::new(CARD)));
     if stop {
         state.actions.push(Action::CancelExport);
-    }
-    if did == Did::Close {
-        widgets::close_keypad(ctx);
     }
     finish(state, form, did, busy);
 }
@@ -789,13 +791,19 @@ fn desktop_rows(ui: &mut egui::Ui, form: &mut ExportForm) {
         }
         if form.pages == PagesMode::Range {
             ui.add_space(8.0);
-            let (mut from, mut to) = (form.from.clone(), form.to.clone());
-            ui.label(FROM);
-            let a = ui.add(egui::TextEdit::singleline(&mut from).desired_width(36.0));
-            ui.label(TO);
-            let b = ui.add(egui::TextEdit::singleline(&mut to).desired_width(36.0));
-            if a.changed() || b.changed() {
-                form.set_from_to(&from, &to);
+            let mut text = form.range.clone();
+            let edit = egui::TextEdit::singleline(&mut text).desired_width(ui.available_width());
+            let resp = ui.add(edit.id_salt(RANGE));
+            resp.widget_info(|| {
+                let mut info = egui::WidgetInfo::text_edit(true, &text, &text, "");
+                info.label = Some(RANGE.to_owned());
+                info
+            });
+            if resp.changed() {
+                form.set_range(&text);
+            }
+            if resp.lost_focus() {
+                form.normalize_range();
             }
         }
     });
@@ -840,28 +848,7 @@ fn rows(
     }
     if form.pages == PagesMode::Range {
         ui.add_space(4.0);
-        let count = form.page_ids.len();
-        let valid = move |text: &str| {
-            let n = text.trim().parse::<usize>().ok();
-            n.is_some_and(|n| (1..=count).contains(&n))
-        };
-        for name in [FROM, TO] {
-            let shown = if name == FROM { &form.from } else { &form.to }.clone();
-            if busy {
-                widgets::value_row(ui, name, &shown);
-                continue;
-            }
-            let typed =
-                widgets::key_field(ui, controls, name, name, "", &shown, Keys::Number, valid);
-            if let Some(text) = typed {
-                let (from, to) = match name == FROM {
-                    true => (text, form.to.clone()),
-                    false => (form.from.clone(), text),
-                };
-                form.set_from_to(&from, &to);
-            }
-            keypad_below(ui, controls, name);
-        }
+        range_field(ui, controls, form, enabled);
     }
 
     if form.format == ExportFormat::Png {
@@ -880,6 +867,35 @@ fn rows(
     widgets::form_label(ui, NAME);
     let ext = form.format.ext();
     widgets::file_name_field(ui, controls, NAME, &mut form.name, ext, enabled);
+}
+
+/// The field of the range, below the choice of the pages, which ticks the
+/// pages as the user types. When it loses the focus, it shows the range in
+/// the form of `range_text`.
+fn range_field(ui: &mut egui::Ui, controls: &mut Controls, form: &mut ExportForm, enabled: bool) {
+    let (field, _) = ui.allocate_exact_size(vec2(ui.available_width(), TOUCH), Sense::hover());
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(field));
+    if !enabled {
+        child.disable();
+    }
+    let mut text = form.range.clone();
+    let valid = range_runs(&text).all(|run| run.is_some());
+    let resp = widgets::field_at(
+        &mut child,
+        controls,
+        field,
+        RANGE,
+        None,
+        &mut text,
+        valid,
+        theme::body(),
+    );
+    if resp.changed() {
+        form.set_range(&text);
+    }
+    if resp.lost_focus() {
+        form.normalize_range();
+    }
 }
 
 /// The Details section: the page size, the resolution, the image size, and
@@ -957,28 +973,61 @@ mod tests {
         form.select_run(3, 1, true);
         assert_eq!(form.pages, PagesMode::Range);
         assert_eq!(ticks(&form), [0, 1, 2, 3]);
-        assert_eq!((form.from.as_str(), form.to.as_str()), ("1", "4"));
+        assert_eq!(form.range, "1–4");
     }
 
     #[test]
-    fn gaps_in_the_strip_give_an_empty_range() {
-        let mut form = form(6, 0);
-        form.toggle(2);
+    fn gaps_in_the_strip_give_runs_and_single_pages() {
+        let mut form = form(10, 0);
+        form.toggle(4);
+        form.toggle(5);
         assert_eq!(form.pages, PagesMode::Range);
-        assert_eq!(ticks(&form), [0, 1, 3, 4, 5]);
-        assert_eq!((form.from.as_str(), form.to.as_str()), ("", ""));
+        assert_eq!(form.range, "1–4, 7–10");
+        form.select_run(0, 9, false);
+        for index in [1, 4, 6] {
+            form.toggle(index);
+        }
+        assert_eq!(form.range, "2, 5, 7");
+        form.select_run(0, 9, false);
+        assert_eq!(form.range, "");
     }
 
     #[test]
-    fn an_edit_of_the_range_ticks_the_strip() {
-        let mut form = form(6, 0);
-        form.set_from_to("2", "4");
+    fn a_typed_range_ticks_its_pages() {
+        let mut form = form(10, 0);
+        form.set_range("1-4, 7–10");
         assert_eq!(form.pages, PagesMode::Range);
-        assert_eq!(ticks(&form), [1, 2, 3]);
-        // A number outside the atlas leaves the strip as it is.
-        form.set_from_to("2", "9");
-        assert_eq!(ticks(&form), [1, 2, 3]);
-        assert_eq!(form.to, "9");
+        assert_eq!(ticks(&form), [0, 1, 2, 3, 6, 7, 8, 9]);
+        // The text stays as typed while the field has the focus.
+        assert_eq!(form.range, "1-4, 7–10");
+        form.set_range("2 — 3 5");
+        assert_eq!(ticks(&form), [1, 2, 4]);
+    }
+
+    #[test]
+    fn a_typed_range_reverses_clamps_and_ignores_what_is_not_a_page() {
+        let mut form = form(8, 0);
+        form.set_range("3-1, 12, x, 0");
+        assert_eq!(ticks(&form), [0, 1, 2, 7]);
+        form.set_range("x");
+        assert_eq!(ticks(&form), Vec::<usize>::new());
+        assert!(!form.can_export());
+    }
+
+    #[test]
+    fn a_range_is_normalized_when_the_field_loses_the_focus() {
+        let mut form = form(10, 0);
+        form.set_range("9-7,1 2-3, 3");
+        form.normalize_range();
+        assert_eq!(form.range, "1–3, 7–9");
+        form.set_range("abc");
+        form.normalize_range();
+        assert_eq!(form.range, "");
+        // A range of each page stays a range.
+        form.set_range("1-10");
+        form.normalize_range();
+        assert_eq!(form.pages, PagesMode::Range);
+        assert_eq!(form.range, "1–10");
     }
 
     #[test]

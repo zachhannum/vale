@@ -312,25 +312,28 @@ fn the_export_form_flags_open_the_form_with_a_format_and_a_range() {
         "--export-format",
         "png",
         "--export-range",
-        "2-3",
+        "2-3,5",
     ]);
-    assert_eq!(a.export_range().unwrap(), Some((2, 3)));
+    assert_eq!(a.export_range().unwrap(), Some(vec![(2, 3), (5, 5)]));
     let mut state = AppState::new(Document::sample()).unwrap();
     let open = state.atlas.page;
     apply_export_form(&a, &mut state).unwrap();
-    assert!(state.doc.project.atlas.pages.len() >= 3);
+    assert!(state.doc.project.atlas.pages.len() >= 5);
     assert_eq!(state.atlas.page, open);
     let form = state.export_form.unwrap();
     assert_eq!(form.format, ExportFormat::Png);
     assert_eq!(form.pages, PagesMode::Range);
-    assert_eq!(form.selected[..3], [false, true, true]);
+    assert_eq!(form.selected[..5], [false, true, true, false, true]);
+    assert_eq!(form.range, "2–3, 5");
 
     let a = parse(&["--export-form"]);
     let mut state = AppState::new(Document::sample()).unwrap();
     apply_export_form(&a, &mut state).unwrap();
     assert_eq!(state.export_form.unwrap().format, ExportFormat::Pdf);
 
-    for bad in ["3-2", "0-1", "2", "a-b"] {
+    let a = parse(&["--export-form", "--export-range", "4–2, 7"]);
+    assert_eq!(a.export_range().unwrap(), Some(vec![(2, 4), (7, 7)]));
+    for bad in ["0-1", "", "a-b", "2,x"] {
         let a = parse(&["--export-form", "--export-range", bad]);
         assert!(a.export_range().is_err(), "{bad}");
     }

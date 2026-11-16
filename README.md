@@ -137,7 +137,7 @@ cargo run --release -p vale-app -- --project path/to/world.gpkg --export-heightm
 | `--raster-form` | Open the form of a new raster layer at the start |
 | `--export-form` | With `--workspace atlas`, open the export form at the start |
 | `--export-format <FORMAT>` | With `--export-form`, the format of the form: `pdf` or `png` |
-| `--export-range <A-B>` | With `--export-form`, the first and the last page of the range of the form. An atlas with fewer pages gets new pages. |
+| `--export-range <PAGES>` | With `--export-form`, the pages of the range of the form, for example `1-4,7`. An atlas with fewer pages gets new pages. |
 | `--stops-page` | With `--panel layers`, open the page of the color stops of the active raster layer |
 | `--import-heightmap <FILE>` | Import this equirectangular PNG or TIFF heightmap into the globe |
 | `--export-heightmap <FILE>` | Export the first height layer of the project file of `--project` to this GeoTIFF file, or to a 16-bit PNG file if the name ends in `.png`, and exit |

@@ -732,10 +732,7 @@ fn a_hold_then_a_drag_selects_a_run_of_pages_and_a_quick_drag_scrolls() {
     release(&mut h, to, Input::Finger);
     assert_eq!(ticked(&h), [0, 1, 2, 3]);
     assert_eq!(export_form(&h).pages, PagesMode::Range);
-    assert_eq!(
-        (export_form(&h).from.as_str(), export_form(&h).to.as_str()),
-        ("1", "4")
-    );
+    assert_eq!(export_form(&h).range, "1–4");
 
     // A quick drag scrolls the strip and changes no tick.
     let before = control(&h, &page_name(3)).unwrap();
@@ -771,6 +768,55 @@ fn the_strip_opens_centered_on_the_open_page() {
         "{page:?}"
     );
     assert!(control(&h, &page_name(0)).is_none());
+}
+
+#[test]
+fn the_range_field_ticks_the_pages_as_you_type_and_tidies_the_range_after() {
+    let mut h = export_pad(6, 0);
+    tap(&mut h, &page_name(2));
+    assert_eq!(export_form(&h).range, "1–2, 4–6");
+    // A page number past the last page gives the last page.
+    type_text(&mut h, export_form::RANGE, "3-1, 9 ,x");
+    assert_eq!(ticked(&h), [0, 1, 2, 5]);
+    assert_eq!(export_form(&h).range, "3-1, 9 ,x");
+    // Return takes the focus from the field.
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    assert_eq!(export_form(&h).range, "1–3, 6");
+    assert_eq!(export_form(&h).pages, PagesMode::Range);
+}
+
+/// The rect of the card of the export form on the screen.
+fn export_card(h: &Pad) -> Rect {
+    let layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::new(export_form::CARD));
+    let rect = h.ctx.memory(|m| m.area_rect(layer.id)).expect("the card");
+    h.ctx.layer_transform_to_global(layer).unwrap_or_default() * rect
+}
+
+#[test]
+fn the_export_form_grows_from_its_middle_and_shows_at_once_with_no_motion() {
+    let mut h = pad_with(default_state(), BOARDS[0]);
+    let open = |h: &mut Pad| {
+        let form = ExportForm::new(h.state());
+        h.state_mut().export_form = Some(form);
+        h.step();
+        export_card(h)
+    };
+    let first = open(&mut h);
+    h.run_steps(20);
+    let last = export_card(&h);
+    assert_eq!((first.top(), first.width()), (last.top(), last.width()));
+
+    // With motion, the card starts at 90 percent of its width.
+    h.state_mut().export_form = None;
+    h.state_mut().headless = false;
+    h.run_steps(20);
+    let first = open(&mut h);
+    assert!(first.width() < last.width() * 0.95, "{first:?} {last:?}");
+    assert!((first.center().x - last.center().x).abs() < 1.0);
+    h.run_steps(40);
+    let rest = export_card(&h);
+    assert_eq!((rest.top(), rest.width()), (last.top(), last.width()));
 }
 
 #[test]

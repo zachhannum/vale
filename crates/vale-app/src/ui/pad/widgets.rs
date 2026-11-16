@@ -112,6 +112,67 @@ pub fn grow(ctx: &egui::Context, layer: egui::LayerId, origin: Pos2) -> Grow {
     }
 }
 
+/// A form card over a dark fill that takes each touch, in the foreground.
+/// The card grows from its middle and fades in, and a `sheet` slides up
+/// from the bottom edge of `screen`. The fill fades in. After the form
+/// closes, the card shrinks and fades out, or the sheet slides down, and
+/// the fill fades out.
+#[allow(clippy::too_many_arguments)]
+pub fn form_card(
+    ctx: &egui::Context,
+    id: &str,
+    screen: Rect,
+    rect: Rect,
+    radius: CornerRadius,
+    sheet: bool,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) {
+    let order = egui::Order::Foreground;
+    let scrim_id = egui::Id::new(id).with("scrim");
+    let scrim = egui::LayerId::new(order, scrim_id);
+    let shade = motion::appear_on(ctx, scrim_id.with("appear"), motion::SNAPPY).clamp(0.0, 1.0);
+    motion::keep_with(ctx, scrim, screen.min, motion::Exit::Fade);
+    egui::Area::new(scrim_id)
+        .order(order)
+        .fixed_pos(screen.min)
+        .constrain(false)
+        .fade_in(false)
+        .show(ctx, |ui| {
+            let (rect, _) = ui.allocate_exact_size(screen.size(), Sense::click_and_drag());
+            ui.multiply_opacity(shade);
+            ui.painter()
+                .rect_filled(rect, 0.0, Color32::from_black_alpha(120));
+        });
+    let layer = egui::LayerId::new(order, egui::Id::new(id));
+    let grow = if sheet {
+        let t = motion::appear_on(ctx, layer.id.with("appear"), motion::SNAPPY);
+        let distance = screen.bottom() - rect.top();
+        let transform = egui::emath::TSTransform::from_translation(vec2(0.0, (1.0 - t) * distance));
+        ctx.set_transform_layer(layer, transform);
+        motion::keep_with(ctx, layer, rect.center(), motion::Exit::Slide(distance));
+        Grow {
+            opacity: 1.0,
+            transform,
+        }
+    } else {
+        grow(ctx, layer, rect.center())
+    };
+    any_card(
+        ctx,
+        None,
+        id,
+        rect,
+        None,
+        order,
+        radius,
+        Some(grow),
+        add_contents,
+    );
+    // The dark fill is above the chrome, and the card is above the fill.
+    ctx.move_to_top(scrim);
+    ctx.move_to_top(layer);
+}
+
 /// A `card` in two parts, one above `gap` and one below it. The gap is
 /// not a part of the card, and it takes no touch.
 #[allow(clippy::too_many_arguments)]
