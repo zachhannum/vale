@@ -13,7 +13,9 @@ use super::pad::atlas::{
 };
 use super::raster_form::RasterForm;
 use super::world_form::{self, WorldForm};
-use super::{Action, AppState, LayerRef, SaveMark, Workspace, atlas, elevation, pad, select};
+use super::{
+    Action, AppState, LayerRef, SaveMark, Workspace, atlas, elevation, orient, pad, select,
+};
 use vale_terrain::Mode;
 
 use crate::globe::brush::{
@@ -1405,9 +1407,27 @@ pub fn left(ui: &mut egui::Ui, state: &mut AppState) {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 world_section(ui, state);
                 layers_section(ui, state);
+                toolbox_section(ui, state);
                 map_section(ui, state);
             });
         });
+}
+
+fn toolbox_section(ui: &mut egui::Ui, state: &mut AppState) {
+    ui.heading(pad::TOOLBOX);
+    let enabled = state
+        .orient_input()
+        .is_some_and(|id| state.can_orient_downhill(id));
+    let button = egui::Button::new(orient::ORIENT_DOWNHILL);
+    if ui.add_enabled(enabled, button).clicked() {
+        state.run_orient_downhill();
+    }
+    if let Some(hint) = state.orient_hint() {
+        ui.weak(hint);
+    } else if let Some(note) = &state.toolbox_note {
+        ui.weak(note);
+    }
+    ui.add_space(6.0);
 }
 
 fn world_section(ui: &mut egui::Ui, state: &mut AppState) {

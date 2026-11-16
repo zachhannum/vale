@@ -17593,7 +17593,8 @@ fn valley_pad(lines: &[&[[f64; 2]]]) -> (Pad, vale_store::LayerId, RasterId) {
 }
 
 #[test]
-fn orient_lines_downhill_reverses_each_uphill_line_in_one_undo_step() {
+fn orient_lines_downhill_runs_from_the_toolbox_in_one_undo_step() {
+    use vale_app::ui::orient::ORIENT_DOWNHILL;
     use vale_store::Geometry;
     let up: &[[f64; 2]] = &[[0.5, -38.0], [0.5, -20.0], [0.5, -5.0]];
     let down: &[[f64; 2]] = &[[0.3, -5.0], [0.3, -30.0]];
@@ -17607,9 +17608,13 @@ fn orient_lines_downhill_reverses_each_uphill_line_in_one_undo_step() {
     pad.layer = Some(LayerRef::Vector(streams));
     pad.open(Panel::Layers);
     h.run_steps(2);
-    check_controls(&h, "the panel of a line layer");
-    // The operation belongs to the toolbox, so the panel has no row for it.
-    assert!(h.query_by_label("Orient lines downhill").is_none());
+    // The operation belongs to the toolbox, so the panel of the layer has
+    // no row for it.
+    assert!(h.query_by_label(ORIENT_DOWNHILL).is_none());
+    h.state_mut().select(Some(LayerRef::Vector(streams)));
+    h.state_mut().pad.open(Panel::Toolbox);
+    h.run_steps(2);
+    check_controls(&h, "the Toolbox panel");
     let lines = |h: &Pad| -> Vec<Geometry> {
         let layer = h.state().doc.layer(streams).unwrap();
         layer.features.iter().map(|f| f.geometry.clone()).collect()
@@ -17619,13 +17624,66 @@ fn orient_lines_downhill_reverses_each_uphill_line_in_one_undo_step() {
     let before = lines(&h);
     assert_eq!(before, [line(up), line(down), line(also_up)]);
 
-    assert_eq!(h.state_mut().orient_downhill(streams), 2);
-    h.run_steps(2);
+    tap(&mut h, ORIENT_DOWNHILL);
     assert_eq!(lines(&h), [reversed(up), line(down), reversed(also_up)]);
+    assert!(h.query_by_label("Reversed 2 lines.").is_some());
     // One undo puts back each line.
     h.state_mut().undo();
     h.run_steps(2);
     assert_eq!(lines(&h), before);
+}
+
+#[test]
+fn orient_lines_downhill_changes_only_the_selected_lines() {
+    use vale_app::globe::select::FeatureRef;
+    use vale_store::Geometry;
+    let up: &[[f64; 2]] = &[[0.5, -38.0], [0.5, -5.0]];
+    let also_up: &[[f64; 2]] = &[[0.2, -30.0], [0.2, -10.0]];
+    let (mut h, streams, _) = valley_pad(&[up, also_up]);
+    let state = h.state_mut();
+    state.select(Some(LayerRef::Vector(streams)));
+    let uuid = state.doc.layer(streams).unwrap().features[1].uuid();
+    state.feature_selection = vec![FeatureRef {
+        layer: streams,
+        uuid,
+    }];
+    state.run_orient_downhill();
+    let lines: Vec<Geometry> = (state.doc.layer(streams).unwrap().features.iter())
+        .map(|f| f.geometry.clone())
+        .collect();
+    let reversed = also_up.iter().rev().copied().collect();
+    assert_eq!(
+        lines,
+        [
+            Geometry::Lines(vec![up.to_vec()]),
+            Geometry::Lines(vec![reversed])
+        ]
+    );
+}
+
+#[test]
+fn orient_lines_downhill_needs_a_line_layer_and_a_height_layer() {
+    use vale_app::ui::orient::{NEEDS_HEIGHT, ORIENT_DOWNHILL, SELECT_LINE_LAYER};
+    let (mut h, streams, height) = valley_pad(&[&[[0.5, -38.0], [0.5, -5.0]]]);
+    h.state_mut().pad.open(Panel::Toolbox);
+    h.state_mut().select(Some(LayerRef::Raster(height)));
+    h.run_steps(2);
+    assert!(h.query_by_label(SELECT_LINE_LAYER).is_some());
+    assert!(control(&h, ORIENT_DOWNHILL).is_none());
+    assert!(h.query_by_label(ORIENT_DOWNHILL).is_some());
+    h.state_mut().select(Some(LayerRef::Vector(streams)));
+    h.run_steps(2);
+    assert!(h.query_by_label(SELECT_LINE_LAYER).is_none());
+    assert!(h.query_by_label(NEEDS_HEIGHT).is_none());
+    assert_eq!(h.state().orient_hint(), None);
+
+    let mut h = empty_pad(BOARDS[1]);
+    let state = h.state_mut();
+    let lines = state.doc.add_layer(vale_store::GeometryKind::Line);
+    state.select(Some(LayerRef::Vector(lines)));
+    state.pad.open(Panel::Toolbox);
+    h.run_steps(2);
+    assert!(h.query_by_label(NEEDS_HEIGHT).is_some());
 }
 
 #[test]
