@@ -301,13 +301,13 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                     state.actions.push(Action::ExportHeightmapPngDialog);
                 }
             }
-            if state.workspace != Workspace::Atlas {
-                return;
-            }
-            // Cmd+E opens the export form.
+            // Cmd+E opens the export form in both workspaces.
             let shortcut = export_form::shortcut();
             if state.export_form.is_none() && ui.input_mut(|i| i.consume_shortcut(&shortcut)) {
                 state.export_form = Some(ExportForm::new(state));
+            }
+            if state.workspace != Workspace::Atlas {
+                return;
             }
             ui.separator();
             select::view_menu(ui, state);

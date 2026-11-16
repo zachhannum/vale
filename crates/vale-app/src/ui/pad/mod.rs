@@ -789,6 +789,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     }
     world_form::pad(&ctx, state, &mut controls, &rects);
     raster_form::pad(&ctx, state, &mut controls, &rects);
+    crate::ui::export_form::pad(&ctx, state, &mut controls, &rects);
     super::region::pad(&ctx, state, &mut controls, &rects);
     readout::banner(&ctx, state, &rects);
     dock_ui::handle(&ctx, state, &mut controls, &rects);
@@ -3697,10 +3698,10 @@ fn held_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls,
     }
 }
 
-/// The workspace menu of the compact layout: the two workspaces and the
-/// Worlds row.
+/// The workspace menu of the compact layout: the two workspaces, the Worlds
+/// row, and the Export row.
 fn menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
-    let height = 10.0 + 3.0 * PANEL_ROW + 2.0 * 13.0 + 10.0;
+    let height = 10.0 + 4.0 * PANEL_ROW + 3.0 * 13.0 + 10.0;
     let size = vec2(geometry::MENU_WIDTH, height);
     let rect = Rect::from_min_size(rects.menu, size);
     state.pad.menu_rect = Some(rect);
@@ -3741,6 +3742,10 @@ fn menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rect
             if widgets::text_row(ui, controls, WORLDS_ROW, 0.0, false, true).clicked() {
                 state.pad.menu = false;
                 toggle_worlds(state);
+            }
+            rule(ui);
+            if export_form_row(ui, state, controls) {
+                state.pad.menu = false;
             }
         },
     );
@@ -3805,9 +3810,9 @@ fn worlds_menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Control
     // The row of the start screen needs a folder of projects, and the Save
     // row needs a project file.
     let rows = 2.0 + f32::from(state.projects.any()) + f32::from(state.session.is_some());
-    // The Export row is in the Atlas workspace, after a divider. On a
-    // compact screen, it is in the workspace menu.
-    let export = state.workspace == Workspace::Atlas && rects.class != WidthClass::Compact;
+    // The Export row is last, after a divider. On a compact screen, it is in
+    // the workspace menu.
+    let export = rects.class != WidthClass::Compact;
     let (rows, rule_height) = match export {
         true => (rows + 1.0, rule_height + 13.0),
         false => (rows, rule_height),

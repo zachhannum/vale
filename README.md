@@ -82,7 +82,7 @@ Click "Atlas" in the tool bar to open the pages of the atlas. On iPad, tap "Atla
 - In the label controls of a point layer or a line layer, click the font to search the fonts of the system and select one. On iPad, open the layer and tap "Font" to open the font picker of iPadOS.
 - The Attributes tile of the Panels menu, or the Attributes button and ⌘I on the desktop, shows the inspector of the World workspace. An edit changes each map. The row Features of a vector layer in the Layers tab opens the attribute table, and so does "Open attribute table" on the desktop.
 - The inspector lists the labels that did not fit.
-- Export pages to one PDF, or to one PNG file for each page. On iPad, "Export…" in the world menu of the Atlas workspace opens the export form. On the desktop, "Export…" in the tool bar or ⌘E opens it. The form has a strip of the pages and a switch for transparent paper. A PDF keeps text selectable. The form shows the page progress, and Cancel export stops the work.
+- Export pages to one PDF, or to one PNG file for each page. On iPad, "Export…" in the world menu opens the export form. On the desktop, "Export…" in the tool bar or ⌘E opens it. The form has a strip of the pages and a switch for transparent paper. A PDF keeps text selectable. The form shows the page progress, and Cancel export stops the work.
 
 ## Open your own data
 

@@ -622,7 +622,7 @@ fn toolbar_buttons_push_actions() {
 }
 
 #[test]
-fn command_e_opens_the_export_form_in_the_atlas_workspace() {
+fn command_e_opens_the_export_form_in_both_workspaces() {
     for workspace in [Workspace::Globe, Workspace::Atlas] {
         let mut state = state_with(Document::sample());
         state.workspace = workspace;
@@ -632,8 +632,7 @@ fn command_e_opens_the_export_form_in_the_atlas_workspace() {
         h.run_steps(2);
         h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::E);
         h.run_steps(2);
-        let open = h.state().export_form.is_some();
-        assert_eq!(open, workspace == Workspace::Atlas, "{workspace:?}");
+        assert!(h.state().export_form.is_some(), "{workspace:?}");
     }
 }
 
