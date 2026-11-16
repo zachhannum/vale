@@ -1020,23 +1020,44 @@ mod tests {
     }
 
     #[test]
-    fn a_short_window_makes_the_sliders_short_and_then_leaves_them_out() {
-        let slider = |height: f32| match layout(&board(1024.0, height)).brush_card {
-            BrushCard::Full(track) => track,
-            _ => 0.0,
-        };
-        assert_eq!(slider(1194.0), TRACK);
-        assert_eq!(slider(834.0), TRACK);
-        assert_eq!(slider(744.0), 101.5);
-        assert_eq!(slider(721.0), TRACK_MIN);
+    fn a_short_window_makes_the_sliders_short_then_bare_and_then_leaves_them_out() {
+        let card = |height: f32| layout(&board(1024.0, height)).brush_card;
+        assert_eq!(card(1194.0), BrushCard::Full(TRACK));
+        assert_eq!(card(834.0), BrushCard::Full(TRACK));
+        assert_eq!(card(744.0), BrushCard::Full(101.5));
+        assert_eq!(card(721.0), BrushCard::Full(TRACK_MIN));
+        // The sliders lose their value and their name, and the tracks are
+        // longer.
+        assert_eq!(card(720.0), BrushCard::Bare(TRACK));
+        assert_eq!(card(690.0), BrushCard::Bare(110.5));
+        assert_eq!(card(649.0), BrushCard::Bare(TRACK_MIN));
+        let r = layout(&board(1024.0, 649.0));
+        assert_eq!(r.tools.height(), r.column_content);
+        assert_eq!(r.tools.bottom(), 649.0 - 20.0 - DOCK_FOOT);
         // The Brush panel holds the sliders.
-        assert_eq!(slider(720.0), 0.0);
-        let r = layout(&board(1024.0, 720.0));
+        assert_eq!(card(648.0), BrushCard::Button);
+        let r = layout(&board(1024.0, 648.0));
         assert_eq!(r.tools.height(), r.column_content);
         // Then the column scrolls.
         let r = layout(&board(1024.0, 300.0));
         assert!(r.column_content > r.tools.height());
         assert_eq!(r.tools.bottom(), 300.0 - 20.0 - DOCK_FOOT);
+    }
+
+    #[test]
+    fn the_inner_screen_of_iphone_duo_in_landscape_has_bare_sliders() {
+        let mut input = board(951.0, 669.0);
+        input.bands.bottom = 34.0;
+        input.fold = Some(rect(461.0, 0.0, 28.0, 669.0));
+        let r = layout(&input);
+        assert_eq!(r.brush_card, BrushCard::Bare(93.0));
+        assert_eq!(r.tools.height(), r.column_content);
+        assert_eq!(r.tools.bottom(), 669.0 - 34.0 - DOCK_FOOT);
+        // In portrait, the sliders have their labels.
+        let mut input = board(669.0, 951.0);
+        input.bands.bottom = 34.0;
+        input.fold = Some(rect(0.0, 461.0, 669.0, 28.0));
+        assert_eq!(layout(&input).brush_card, BrushCard::Full(TRACK));
     }
 
     #[test]

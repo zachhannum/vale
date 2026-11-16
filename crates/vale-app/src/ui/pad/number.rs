@@ -864,6 +864,14 @@ impl<'a> Number<'a> {
         self.bubble_named(ui, value, None, note, anchor);
     }
 
+    /// The text of the bubble: the value, with `name` before it.
+    fn bubble_text(&self, value: f64, name: Option<&str>) -> String {
+        match name {
+            Some(name) => format!("{name} {}", self.value_text(value)),
+            None => self.value_text(value),
+        }
+    }
+
     /// The bubble, with `name` before the value.
     fn bubble_named(
         &self,
@@ -883,11 +891,8 @@ impl<'a> Number<'a> {
             painter.circle_stroke(center, r, dark);
             painter.circle_stroke(center, r, egui::Stroke::new(1.5, theme::TEXT));
         }
-        let text = match name {
-            Some(name) => format!("{name} {}", self.value_text(value)),
-            None => self.value_text(value),
-        };
-        let text = painter.layout_no_wrap(text, theme::title(), theme::TEXT);
+        let text =
+            painter.layout_no_wrap(self.bubble_text(value, name), theme::title(), theme::TEXT);
         let note = note.map(|n| painter.layout_no_wrap(n.to_owned(), theme::small(), theme::MUTE));
         let note_size = note.as_ref().map_or(vec2(0.0, -2.0), |n| n.size());
         // A width that does not follow each digit, so the bubble stays put.
@@ -1144,6 +1149,15 @@ fn paint_track(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_bubble_of_a_bare_slider_shows_its_name() {
+        let n = Number::new("Brush size", 2.0, 0.0..=10.0)
+            .label("Size")
+            .unit("pt");
+        assert_eq!(n.bubble_text(2.0, None), "2 pt");
+        assert_eq!(n.bubble_text(2.0, Some(n.label)), "Size 2 pt");
+    }
 
     #[test]
     fn a_mixed_value_shows_mixed() {

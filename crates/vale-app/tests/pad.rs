@@ -16949,6 +16949,24 @@ fn the_inner_screen_of_iphone_duo_has_the_layout_of_its_width() {
 }
 
 #[test]
+fn the_inner_screen_of_iphone_duo_in_landscape_has_the_brush_sliders_in_the_column() {
+    let mut h = duo_inner((951.0, 669.0), [0.0, 0.0, 34.0, 0.0], false);
+    let r = h.state().pad.rects.unwrap();
+    assert_eq!(r.brush_card, BrushCard::Bare(93.0));
+    assert_eq!(r.tools.height(), r.column_content);
+    for name in ["Size", "Flow"] {
+        let rect = control(&h, name).unwrap_or_else(|| panic!("{name}"));
+        assert!(r.tools.contains_rect(rect), "{name}");
+        assert!(rect.height() > rect.width(), "{name}");
+    }
+    let slider = control(&h, "Size").unwrap();
+    let size = h.state().globe.brush.size_points;
+    drag(&mut h, slider.center(), slider.center_bottom(), None);
+    assert!(h.state().globe.brush.size_points < size);
+    check_controls(&h, "inner landscape");
+}
+
+#[test]
 #[ignore = "gpu"]
 fn the_screenshots_of_the_inner_screen_of_iphone_duo_show_both_workspaces() {
     let _gpu = one_gpu_test();
