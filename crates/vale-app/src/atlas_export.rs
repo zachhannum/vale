@@ -28,6 +28,18 @@ pub fn pixel_ratio(dpi: u32) -> f64 {
     f64::from(dpi) / 72.0
 }
 
+/// The pixels of a length of `points` in a raster export at `dpi`.
+pub fn pixels(points: f64, dpi: u32) -> u32 {
+    (points * pixel_ratio(dpi)).ceil().max(1.0) as u32
+}
+
+/// The width and the height of a page in a PNG export, in pixels. A map
+/// frame that fills the page has raster images of the same size.
+pub fn page_pixels(page: &PageRecord) -> [u32; 2] {
+    let side = |mm: f64| pixels(mm * PT_PER_MM, page.dpi);
+    [side(page.width_mm), side(page.height_mm)]
+}
+
 /// The most pixels on a side of a texture that each GPU takes.
 pub const MAX_SIDE: u32 = 8192;
 
@@ -332,10 +344,9 @@ impl PdfExport {
         }
         let point_min = Point::new(bbox.x0 * PT_PER_MM, bbox.y0 * PT_PER_MM);
         let ratio = pixel_ratio(page.dpi);
-        let pixel = |points: f64| (points * ratio).ceil().max(1.0) as u32;
         let size = [
-            pixel(bbox.width() * PT_PER_MM),
-            pixel(bbox.height() * PT_PER_MM),
+            pixels(bbox.width() * PT_PER_MM, page.dpi),
+            pixels(bbox.height() * PT_PER_MM, page.dpi),
         ];
         let point_size = Point::new(f64::from(size[0]) / ratio, f64::from(size[1]) / ratio);
         let image_rect = Rect::from_origin_size(point_min, (point_size.x, point_size.y));

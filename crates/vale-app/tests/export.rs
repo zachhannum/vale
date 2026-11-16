@@ -7,6 +7,7 @@ use vale_app::cli::{Args, export_heightmap};
 use vale_app::document::Document;
 use vale_app::files::ExportEvent;
 use vale_app::session::Session;
+use vale_app::ui::export_form::{self, ExportForm};
 use vale_app::ui::panels::EXPORT_GEOTIFF;
 use vale_app::ui::{Action, AppState, ExportFormat, ExportSpec, LayerRef, Workspace, draw};
 use vale_store::PageId;
@@ -609,4 +610,91 @@ fn several_pdf_pages_go_to_one_pdf() {
     let text = String::from_utf8_lossy(&bytes);
     assert!(text.contains("/Count 3"), "{text}");
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+}
+
+/// A document whose atlas has one page of `width` × `height` mm at each
+/// of `dpis`, with no frames.
+fn details_doc(width: f64, height: f64, dpis: &[u32]) -> (Document, Vec<PageId>) {
+    let mut doc = Document::sample();
+    let mut base = doc.project.atlas.pages[0].clone();
+    base.frames.clear();
+    base.furniture.clear();
+    (base.width_mm, base.height_mm) = (width, height);
+    base.units = vale_store::PageUnits::Mm;
+    let pages: Vec<_> = (dpis.iter().enumerate())
+        .map(|(i, &dpi)| vale_store::PageRecord {
+            id: PageId(100 + i as u32),
+            dpi,
+            ..base.clone()
+        })
+        .collect();
+    let ids = pages.iter().map(|p| p.id).collect();
+    doc.project.atlas.pages = pages;
+    (doc, ids)
+}
+
+fn details_form(ids: Vec<PageId>, format: ExportFormat) -> ExportForm {
+    let options = export_form::Options {
+        format,
+        transparent: false,
+    };
+    ExportForm::with_pages(ids, 0, options, "pages".to_string())
+}
+
+#[test]
+fn the_details_of_an_a4_landscape_page_match_the_png() {
+    let (doc, ids) = details_doc(297.0, 210.0, &[300]);
+    let details = details_form(ids, ExportFormat::Pdf).details(&doc);
+    assert_eq!(details.page_size, "A4 landscape · 297 × 210 mm");
+    assert_eq!(details.resolution, "300 dpi");
+    assert_eq!(details.files, "1 file · 1 page");
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("a4.png");
+    let page = doc.project.atlas.pages[0].clone();
+    vale_app::atlas_export::export_page(&doc, page, &path).unwrap();
+    let (w, h) = image::image_dimensions(&path).unwrap();
+    let group = |n: u32| vale_app::color_key::number_text(f64::from(n));
+    assert_eq!(
+        details.image_size,
+        format!("{} × {} px", group(w), group(h))
+    );
+    assert_eq!(details.image_size, "3,508 × 2,481 px");
+}
+
+#[test]
+fn pages_with_different_resolutions_give_mixed_details() {
+    let (doc, ids) = details_doc(297.0, 210.0, &[150, 300]);
+    let details = details_form(ids, ExportFormat::Pdf).details(&doc);
+    assert_eq!(details.page_size, "A4 landscape · 297 × 210 mm");
+    assert_eq!(details.resolution, export_form::MIXED);
+    assert_eq!(details.image_size, export_form::MIXED);
+    assert_eq!(details.files, "1 file · 2 pages");
+}
+
+#[test]
+fn three_png_pages_give_three_files_and_no_page_gives_no_details() {
+    let (doc, ids) = details_doc(100.0, 50.0, &[72, 72, 72]);
+    let mut form = details_form(ids, ExportFormat::Png);
+    let details = form.details(&doc);
+    assert_eq!(details.files, "3 files");
+    assert_eq!(details.page_size, "100 × 50 mm");
+    form.select_run(0, 2, false);
+    let details = form.details(&doc);
+    for value in [
+        details.page_size,
+        details.resolution,
+        details.image_size,
+        details.files,
+    ] {
+        assert_eq!(value, export_form::NO_VALUE);
+    }
+}
+
+#[test]
+fn a_page_in_inches_shows_its_size_in_inches() {
+    let (mut doc, ids) = details_doc(279.4, 215.9, &[300]);
+    doc.project.atlas.pages[0].units = vale_store::PageUnits::In;
+    let details = details_form(ids, ExportFormat::Png).details(&doc);
+    assert_eq!(details.page_size, "Letter landscape · 11 × 8.5 in");
+    assert_eq!(details.resolution, "300 dpi");
 }

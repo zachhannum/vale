@@ -15,5 +15,5 @@ These mockups show a proposal for the export command and its options. `export.ht
 This command makes the picture:
 
 ```sh
-google-chrome --headless --no-sandbox --hide-scrollbars --allow-file-access-from-files --force-device-scale-factor=2 --window-size=1234,8190 --screenshot=screens/export.png "file://$PWD/export.html"
+google-chrome --headless --no-sandbox --hide-scrollbars --allow-file-access-from-files --force-device-scale-factor=2 --window-size=1234,8220 --screenshot=screens/export.png "file://$PWD/export.html"
 ```

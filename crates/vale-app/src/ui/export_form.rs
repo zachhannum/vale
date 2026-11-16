@@ -1,13 +1,17 @@
 //! The form that exports pages of the atlas to a PDF file or to PNG files.
 
 use eframe::egui::{self, Align2, Order, Rect, Sense, pos2, vec2};
-use vale_store::PageId;
+use vale_store::{PageId, PageRecord};
 
 use super::pad::geometry::{GAP, MARGIN, ROW, Rects, WidthClass};
 use super::pad::icons::{self, Icon};
 use super::pad::theme;
 use super::pad::widgets::{self, BODY_PAD, Controls, Keys, keypad_below};
 use super::{Action, AppState, ExportFormat, ExportSpec, atlas, export_thumbs};
+use crate::atlas::preset_of;
+use crate::atlas_export::page_pixels;
+use crate::color_key::number_text;
+use crate::document::Document;
 
 /// The row of the world menu that opens the form, and the button of the
 /// form that starts the export.
@@ -28,6 +32,16 @@ pub const TO: &str = "To";
 pub const OPTIONS: &str = "Options";
 pub const TRANSPARENT_PAPER: &str = "Transparent paper";
 pub const NAME: &str = "Name";
+pub const DETAILS: &str = "Details";
+pub const PAGE_SIZE: &str = "Page size";
+pub const RESOLUTION: &str = "Resolution";
+pub const IMAGE_SIZE: &str = "Image size";
+pub const RASTER_SIZE: &str = "Raster size";
+pub const FILES: &str = "Files";
+/// The value of a detail that differs between the selected pages.
+pub const MIXED: &str = "Mixed";
+/// The value of a detail with no selected page.
+pub const NO_VALUE: &str = "–";
 /// The width of the form in the iPad layout.
 pub const WIDTH: f32 = 540.0;
 /// The ID of the card of the form.
@@ -234,6 +248,31 @@ impl ExportForm {
         self.selected.contains(&true) && !self.name.trim().is_empty()
     }
 
+    /// The details of the export of the ticked pages of `doc`.
+    pub fn details(&self, doc: &Document) -> Details {
+        let pages: Vec<&PageRecord> = (self.page_ids.iter().zip(&self.selected))
+            .filter(|(_, tick)| **tick)
+            .filter_map(|(id, _)| doc.project.atlas.pages.iter().find(|p| p.id == *id))
+            .collect();
+        let pixels = |page: &&PageRecord| {
+            let [w, h] = page_pixels(page);
+            let side = |n: u32| number_text(f64::from(n));
+            format!("{} × {} px", side(w), side(h))
+        };
+        let count = pages.len();
+        let files = match (count, self.format) {
+            (0, _) => NO_VALUE.to_string(),
+            (n, ExportFormat::Pdf) => format!("1 file · {}", plural(n, "page")),
+            (n, ExportFormat::Png) => plural(n, "file"),
+        };
+        Details {
+            page_size: shared(pages.iter().map(|p| page_size_text(p))),
+            resolution: shared(pages.iter().map(|p| format!("{} dpi", p.dpi))),
+            image_size: shared(pages.iter().map(pixels)),
+            files,
+        }
+    }
+
     /// The export of the ticked pages.
     pub fn spec(&self) -> ExportSpec {
         let pages = (self.page_ids.iter().zip(&self.selected))
@@ -246,6 +285,68 @@ impl ExportForm {
             transparent: self.transparent,
             name: self.name.trim().to_string(),
         }
+    }
+}
+
+/// The read-only facts of the export of the selected pages.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Details {
+    /// The paper size and the orientation of a named size, and the size in
+    /// the units of the page, for example "A4 landscape · 297 × 210 mm".
+    pub page_size: String,
+    /// The resolution, for example "300 dpi".
+    pub resolution: String,
+    /// The size in pixels of each page in a PNG, or of the raster images of
+    /// a map frame that fills the page in a PDF.
+    pub image_size: String,
+    /// The number of files, and the number of pages of a PDF.
+    pub files: String,
+}
+
+/// The label of the row of the pixel size for a format.
+pub fn image_label(format: ExportFormat) -> &'static str {
+    match format {
+        ExportFormat::Pdf => RASTER_SIZE,
+        ExportFormat::Png => IMAGE_SIZE,
+    }
+}
+
+/// The size of a page as text, for example "A4 landscape · 297 × 210 mm",
+/// or "11 × 9 in" for a size with no name.
+pub fn page_size_text(page: &PageRecord) -> String {
+    let (w, h, units) = (page.width_mm, page.height_mm, page.units);
+    let size = format!(
+        "{} × {} {}",
+        super::pad::atlas::length_text(w, units),
+        super::pad::atlas::length_text(h, units),
+        super::pad::atlas::unit_name(units),
+    );
+    match preset_of(w, h) {
+        "Custom" => size,
+        name => {
+            let orientation = super::pad::atlas::ORIENTATIONS[usize::from(w > h)];
+            format!("{name} {} · {size}", orientation.to_lowercase())
+        }
+    }
+}
+
+/// The text that the selected pages share, "Mixed" if they differ, or "–"
+/// with no page.
+fn shared(values: impl IntoIterator<Item = String>) -> String {
+    let mut values = values.into_iter();
+    let Some(first) = values.next() else {
+        return NO_VALUE.to_string();
+    };
+    match values.all(|v| v == first) {
+        true => first,
+        false => MIXED.to_string(),
+    }
+}
+
+fn plural(count: usize, one: &str) -> String {
+    match count {
+        1 => format!("1 {one}"),
+        n => format!("{n} {one}s"),
     }
 }
 
@@ -634,6 +735,25 @@ pub fn desktop(ctx: &egui::Context, state: &mut AppState) {
                 .show(ui, |ui| desktop_rows(ui, &mut form));
         });
         ui.add_space(8.0);
+        ui.label(egui::RichText::new(DETAILS).strong());
+        let details = form.details(&state.doc);
+        egui::Grid::new((CARD, "details"))
+            .num_columns(2)
+            .spacing([10.0, 4.0])
+            .show(ui, |ui| {
+                let rows = [
+                    (PAGE_SIZE, &details.page_size),
+                    (RESOLUTION, &details.resolution),
+                    (image_label(form.format), &details.image_size),
+                    (FILES, &details.files),
+                ];
+                for (label, value) in rows {
+                    ui.label(label);
+                    ui.weak(value.as_str());
+                    ui.end_row();
+                }
+            });
+        ui.add_space(8.0);
         if busy {
             ui.label(state.atlas_export_progress().unwrap_or_default());
             let (page, count) = (state.atlas_export.as_ref()).map_or((0, 1), |job| job.progress());
@@ -775,6 +895,13 @@ fn rows(
     widgets::form_label(ui, NAME);
     let ext = form.format.ext();
     widgets::file_name_field(ui, controls, NAME, &mut form.name, ext, enabled);
+
+    let details = form.details(&state.doc);
+    widgets::form_label(ui, DETAILS);
+    widgets::detail_row(ui, PAGE_SIZE, &details.page_size);
+    widgets::detail_row(ui, RESOLUTION, &details.resolution);
+    widgets::detail_row(ui, image_label(form.format), &details.image_size);
+    widgets::detail_row(ui, FILES, &details.files);
 }
 
 /// The progress of the export that runs, and the button that stops it.

@@ -5255,6 +5255,28 @@ fn the_export_row_opens_the_export_form() {
 }
 
 #[test]
+fn the_export_form_shows_the_details_in_its_card() {
+    let mut h = pad((1194.0, 834.0));
+    h.state_mut().workspace = Workspace::Atlas;
+    h.run_steps(2);
+    let form = ExportForm::new(h.state());
+    h.state_mut().export_form = Some(form);
+    h.run_steps(3);
+    let card = (h.ctx)
+        .memory(|m| m.area_rect(egui::Id::new("export-form")))
+        .unwrap();
+    assert!(card.bottom() <= 834.0, "{card:?}");
+    for label in [
+        export_form::PAGE_SIZE,
+        export_form::RESOLUTION,
+        export_form::FILES,
+    ] {
+        let row = h.get_by_label(label).rect();
+        assert!(card.contains_rect(row), "{label}: {row:?} {card:?}");
+    }
+}
+
+#[test]
 fn the_world_form_makes_a_new_world_with_a_small_radius() {
     for size in BOARDS {
         let mut h = painted_pad(size);

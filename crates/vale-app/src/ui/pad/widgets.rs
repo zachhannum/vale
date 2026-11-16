@@ -1352,6 +1352,19 @@ pub fn value_row(ui: &mut egui::Ui, label: &str, value: &str) {
         .text(at, Align2::LEFT_CENTER, value, theme::body(), theme::TEXT);
 }
 
+/// A row with a fact that the user cannot change: the label at the left
+/// and the value in the muted color at the right.
+pub fn detail_row(ui: &mut egui::Ui, label: &str, value: &str) {
+    let (rect, resp) =
+        ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), Sense::hover());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, label));
+    let painter = ui.painter().with_clip_rect(rect);
+    let at = pos2(rect.left() + 2.0, rect.center().y);
+    painter.text(at, Align2::LEFT_CENTER, label, theme::body(), theme::TEXT);
+    let at = pos2(rect.right() - 2.0, rect.center().y);
+    painter.text(at, Align2::RIGHT_CENTER, value, theme::body(), theme::MUTE);
+}
+
 /// A row of a form with a field for one line of text. `name` is the name
 /// of the control. `suffix` is a unit at the right end of the field. The
 /// text has the warning color if it is not `valid`.
