@@ -520,12 +520,15 @@ fn empty_page(
         .max_height(5.0 * PANEL_ROW)
         .id_salt("pad-chip-empty");
     scroll.show(ui, |ui| {
-        for other in (help.fields.iter()).filter(|f| chip.subject.field() != Some(f.as_str())) {
-            let name = use_field(other);
-            let on = format.empty == Empty::Field(other.clone());
-            if widgets::option_row(ui, controls, &name, &name, &[], on).clicked() {
-                out = with(Empty::Field(other.clone()), true);
-            }
+        let others: Vec<&String> = (help.fields.iter())
+            .filter(|f| chip.subject.field() != Some(f.as_str()))
+            .collect();
+        let names: Vec<String> = others.iter().map(|f| use_field(f)).collect();
+        let choices: Vec<(&str, bool)> = (others.iter().zip(&names))
+            .map(|(f, n)| (n.as_str(), format.empty == Empty::Field((*f).clone())))
+            .collect();
+        if let Some(i) = super::list::options(ui, controls, &choices, str::to_owned) {
+            out = with(Empty::Field(others[i].clone()), true);
         }
     });
     out

@@ -5,7 +5,9 @@ use eframe::egui::{self, Align2, Order, Pos2, Rect, Sense, Vec2, pos2, vec2};
 use vale_store::{BlendMode, Hillshade, LayerId, RasterDisplay, RasterId, Smoothing};
 use vale_terrain::{Bands, MAX_BANDS, Part, StopLine};
 
-use super::geometry::{PAD, Rects};
+use super::geometry::{PAD, Rects, TOUCH};
+use super::icons::Icon;
+use super::list;
 use super::number::Number;
 use super::theme;
 use super::widgets::{self, Controls, PANEL_ROW};
@@ -138,6 +140,8 @@ pub struct StyleState {
     ramp_anchor: Option<Rect>,
     /// The card of a ramp in the last frame.
     pub ramp_card: Option<Rect>,
+    /// The list of the ramps. A row is the index of a ramp.
+    pub ramp_list: list::ListState<usize>,
     /// The part of the bands that the user chose on the card of a ramp.
     /// `None`: the part that the colors of the ramp give.
     ramp_part: Option<Part>,
@@ -396,22 +400,87 @@ pub fn ramps_body(
     {
         style.ramp = None;
     }
-    for (index, ramp) in state.ramps.list().iter().enumerate() {
-        let open = style.ramp == Some((user, index));
-        let row = ramp_row(
-            ui,
-            controls,
-            &ramp.name,
-            &ramp.colors,
-            open || chosen == Some(index),
-        );
-        if row.clicked() {
-            style.ramp = (!open).then_some((user, index));
-            style.ramp_part = None;
+    let open = style.ramp.map(|(_, i)| i);
+    let ramps = state.ramps.list();
+    let rows: Vec<list::Row<usize>> = ramps
+        .iter()
+        .enumerate()
+        .map(|(i, ramp)| list::Row {
+            label: short_name(&ramp.name),
+            on: open == Some(i) || chosen == Some(i),
+            delete: !ramp.built_in,
+            select: !ramp.built_in,
+            ..list::Row::new(i, ramp.name.clone())
+        })
+        .collect();
+    let spec = list::Spec {
+        select: true,
+        ..list::Spec::default()
+    };
+    let mut places = vec![Rect::NOTHING; rows.len()];
+    let list = &mut style.ramp_list;
+    let events = list::show(ui, controls, list, spec, &rows, |ui, controls, cell, i| {
+        places[i] = cell.rect;
+        let moved = cell.rect.translate(vec2(cell.shift.max(0.0), 0.0));
+        paint_bar(&cell.painter, moved, &ramps[i].colors);
+        let look = list::Look {
+            text: &rows[i].label,
+            ..list::Look::default()
+        };
+        list::draw(ui, controls, cell, &look)
+    });
+    for event in events {
+        match event {
+            list::Event::Tap(index) => {
+                let style = &mut state.pad.style;
+                style.ramp = (open != Some(index)).then_some((user, index));
+                style.ramp_part = None;
+            }
+            list::Event::Delete(index) => remove_ramps(state, user, &[index]),
+            _ => {}
         }
-        if style.ramp == Some((user, index)) {
-            style.ramp_anchor = Some(row.rect);
-        }
+    }
+    let style = &mut state.pad.style;
+    style.ramp_anchor =
+        (style.ramp.and_then(|(_, i)| places.get(i).copied())).filter(|r| r.is_positive());
+}
+
+/// The name of the header button that deletes the selected ramps.
+pub const DELETE_RAMPS: &str = "Delete ramps";
+
+/// The buttons of the header of the page of the color ramps while ramps
+/// are selected.
+pub(super) fn ramp_buttons(state: &AppState) -> Option<Vec<(&'static str, Icon)>> {
+    let picked = state.pad.style.ramp_list.picked.len();
+    let count = state.ramps.custom().len();
+    list::group_buttons(picked, count, &[], Some(DELETE_RAMPS))
+}
+
+/// Does the action of a header button of the selected ramps.
+pub(super) fn ramp_group(state: &mut AppState, user: RampUser, name: &'static str) {
+    let keys: Vec<usize> = (state.ramps.list().iter().enumerate())
+        .filter(|(_, r)| !r.built_in)
+        .map(|(i, _)| i)
+        .collect();
+    let list = &mut state.pad.style.ramp_list;
+    if let Some(list::Group::Delete(indices)) =
+        list::group_action(list, &keys, name, Some(DELETE_RAMPS))
+    {
+        remove_ramps(state, user, &indices);
+    }
+}
+
+/// Deletes the custom ramps at `indices`, and closes the card of a ramp.
+fn remove_ramps(state: &mut AppState, user: RampUser, indices: &[usize]) {
+    state.pad.style.ramp = None;
+    state.pad.style.ramp_list = list::ListState::default();
+    let mut sorted = indices.to_vec();
+    sorted.sort_unstable();
+    for &index in sorted.iter().rev() {
+        super::classify::ramp_removed(state, index);
+    }
+    if let Err(e) = state.ramps.remove_all(&sorted) {
+        state.ramp_note = Some(crate::ui::Note::new(e.to_string(), true, user.raster()));
     }
 }
 
@@ -471,15 +540,11 @@ pub fn blend_rows(
     controls: &mut Controls,
     current: BlendMode,
 ) -> Option<BlendMode> {
-    let mut chosen = None;
-    for mode in BlendMode::ALL {
-        let label = elevation::blend_label(mode);
-        let name = format!("{BLEND} {label}");
-        if widgets::option_row(ui, controls, &name, label, &[], mode == current).clicked() {
-            chosen = Some(mode);
-        }
-    }
-    chosen
+    let choices: Vec<(&str, bool)> = (BlendMode::ALL.iter())
+        .map(|m| (elevation::blend_label(*m), *m == current))
+        .collect();
+    let name = |label: &str| format!("{BLEND} {label}");
+    list::options(ui, controls, &choices, name).map(|i| BlendMode::ALL[i])
 }
 
 /// The page of the hillshade of the Layers panel: the switch, and while the
@@ -623,17 +688,24 @@ pub(super) fn ramp_row(
     colors: &[vale_terrain::Rgb],
     open: bool,
 ) -> egui::Response {
-    let short: String = if name.chars().count() > RAMP_NAME {
+    let row = widgets::text_row(ui, controls, &short_name(name), 0.0, open, true);
+    paint_bar(ui.painter(), row.rect, colors);
+    row
+}
+
+/// The name of a ramp, shortened to `RAMP_NAME` characters.
+fn short_name(name: &str) -> String {
+    if name.chars().count() > RAMP_NAME {
         name.chars().take(RAMP_NAME - 1).chain(['…']).collect()
     } else {
         name.to_owned()
-    };
-    let row = widgets::text_row(ui, controls, &short, 0.0, open, true);
+    }
+}
+
+/// Paints the bar of the colors of a ramp at the right of a row.
+fn paint_bar(painter: &egui::Painter, row: Rect, colors: &[vale_terrain::Rgb]) {
     let bar = Rect::from_min_size(
-        pos2(
-            row.rect.right() - RAMP_BAR.x,
-            row.rect.center().y - RAMP_BAR.y / 2.0,
-        ),
+        pos2(row.right() - RAMP_BAR.x, row.center().y - RAMP_BAR.y / 2.0),
         RAMP_BAR,
     );
     let step = bar.width() / colors.len().max(1) as f32;
@@ -641,9 +713,8 @@ pub(super) fn ramp_row(
         let left = bar.left() + step * i as f32;
         let block = Rect::from_x_y_ranges(left..=left + step, bar.y_range());
         let color = egui::Color32::from_rgb(c[0], c[1], c[2]);
-        ui.painter().rect_filled(block, 0.0, color);
+        painter.rect_filled(block, 0.0, color);
     }
-    row
 }
 
 /// A small muted text across the panel.
@@ -1137,8 +1208,8 @@ pub fn ramp_card(
         (RampChoice::Use, RampUser::Raster(_)) => Ok(()),
         (RampChoice::Reverse, _) => state.ramps.reverse(index).map_err(|e| e.to_string()),
         (RampChoice::Delete, _) => {
-            super::classify::ramp_removed(state, index);
-            state.ramps.remove(index).map_err(|e| e.to_string())
+            remove_ramps(state, user, &[index]);
+            Ok(())
         }
         (RampChoice::Labels, _) => {
             state.pad.page = Some(Page::RampLabels(index));
@@ -1160,26 +1231,61 @@ pub fn labels_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Contr
     ui.spacing_mut().item_spacing.y = 0.0;
     note(ui, LABELS_HINT);
     ui.add_space(4.0);
-    for (i, (color, label)) in ramp.colors.iter().zip(&ramp.labels).enumerate() {
-        let name = format!("Label {}", i + 1);
-        let top = ui.cursor().top();
-        if ramp.built_in {
-            widgets::value_row(ui, "", label);
-        } else {
-            let mut text = label.clone();
-            let field = widgets::text_field(ui, controls, &name, "", None, &mut text, true);
-            if field.changed()
-                && let Err(e) = state.ramps.set_label(index, i, &text)
-            {
-                state.ramp_note = Some(crate::ui::Note::new(e.to_string(), true, None));
+    // The field of a row takes the touches at the right of the swatch.
+    let trailing = ui.available_width() + 8.0 - widgets::FORM_LABEL;
+    let rows: Vec<list::Row<usize>> = (0..ramp.colors.len())
+        .map(|i| list::Row {
+            trailing,
+            ..list::Row::new(i, format!("Color {}", i + 1))
+        })
+        .collect();
+    let mut typed = None;
+    let mut list = list::ListState::default();
+    let spec = list::Spec::default();
+    list::show(
+        ui,
+        controls,
+        &mut list,
+        spec,
+        &rows,
+        |ui, controls, cell, i| {
+            let rect = cell.rect;
+            let swatch =
+                Rect::from_center_size(pos2(rect.left() + 16.0, rect.center().y), vec2(32.0, 24.0));
+            let color = ramp.colors[i];
+            let fill = egui::Color32::from_rgb(color[0], color[1], color[2]);
+            cell.painter.rect_filled(swatch, 4.0, fill);
+            let field = Rect::from_min_max(
+                pos2(
+                    rect.left() + widgets::FORM_LABEL,
+                    rect.center().y - TOUCH / 2.0,
+                ),
+                pos2(rect.right(), rect.center().y + TOUCH / 2.0),
+            );
+            let label = &ramp.labels[i];
+            if ramp.built_in {
+                let at = pos2(field.left() + 12.0, field.center().y);
+                let (font, color) = (theme::body(), theme::TEXT);
+                cell.painter
+                    .text(at, Align2::LEFT_CENTER, label, font, color);
+                return None;
             }
-        }
-        let swatch = Rect::from_center_size(
-            pos2(ui.max_rect().left() + 16.0, top + PANEL_ROW / 2.0),
-            vec2(32.0, 24.0),
-        );
-        let fill = egui::Color32::from_rgb(color[0], color[1], color[2]);
-        ui.painter().rect_filled(swatch, 4.0, fill);
+            let name = format!("Label {}", i + 1);
+            let mut text = label.clone();
+            let font = theme::body();
+            let edit = ui.push_id(("ramp-label", i), |ui| {
+                widgets::field_at(ui, controls, field, &name, None, &mut text, true, font)
+            });
+            if edit.inner.changed() {
+                typed = Some((i, text));
+            }
+            None
+        },
+    );
+    if let Some((i, text)) = typed
+        && let Err(e) = state.ramps.set_label(index, i, &text)
+    {
+        state.ramp_note = Some(crate::ui::Note::new(e.to_string(), true, None));
     }
 }
 

@@ -4,9 +4,10 @@
 use eframe::egui::{self, Rect, pos2, vec2};
 use vale_store::{Field, FieldType, LayerId, Value};
 
+use super::geometry::TOUCH;
 use super::icons::{self, Icon};
 use super::widgets::{self, Controls, ICON};
-use super::{Page, raster, theme};
+use super::{Page, list, raster, theme};
 use crate::ui::AppState;
 use crate::ui::new_feature::can_take_focus;
 
@@ -69,20 +70,68 @@ fn take_draft(state: &mut AppState, id: LayerId, page: Page, field: Option<&Fiel
 }
 
 /// The list of the fields in the panel of a vector layer: one row for each
-/// field, with its type, and the row that adds a field.
+/// field, with its type, and the row that adds a field. A tap on a field
+/// opens its page.
 pub fn list(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id: LayerId) {
     let Some(layer) = state.doc.layer(id) else {
         return;
     };
-    let fields: Vec<(String, FieldType)> = layer
-        .fields
-        .iter()
-        .map(|f| (f.name.clone(), f.kind))
+    let names: Vec<String> = layer.fields.iter().map(|f| f.name.clone()).collect();
+    let kinds: Vec<&str> = layer.fields.iter().map(|f| f.kind.label()).collect();
+    let rows: Vec<list::Row<(LayerId, usize)>> = (names.iter().enumerate())
+        .map(|(i, name)| list::Row {
+            rename: true,
+            delete: true,
+            trailing: TOUCH,
+            ..list::Row::new((id, i), name.clone())
+        })
         .collect();
     raster::heading(ui, FIELDS);
-    for (i, (name, kind)) in fields.iter().enumerate() {
-        if widgets::open_row(ui, controls, name, kind.label()).clicked() {
-            state.pad.page = Some(Page::Field(i));
+    let renamed = state.pad.field_list.rename.as_ref().map(|r| r.0.1);
+    let valid = |name: &str| {
+        let name = name.trim();
+        let old = renamed.and_then(|i| names.get(i));
+        old.is_some_and(|old| old == name || layer.name_free(name, Some(old)))
+    };
+    let spec = list::Spec {
+        select: true,
+        field: FIELD_NAME,
+        valid: &valid,
+        ..list::Spec::default()
+    };
+    let before = state.pad.field_list.picked.clone();
+    let fields = &mut state.pad.field_list;
+    let look = |i: usize| list::Look {
+        text: &names[i],
+        note: Some(kinds[i]),
+        open: true,
+        ..list::Look::default()
+    };
+    let events = list::show(
+        ui,
+        controls,
+        fields,
+        spec,
+        &rows,
+        |ui, controls, cell, i| list::draw(ui, controls, cell, &look(i)),
+    );
+    let picked = &state.pad.field_list.picked;
+    if *picked != before && !picked.is_empty() {
+        state.pad.rules.list.picked.clear();
+    }
+    for event in events {
+        match event {
+            list::Event::Tap((_, i)) | list::Event::Open((_, i)) => {
+                state.pad.page = Some(Page::Field(i))
+            }
+            list::Event::Rename((_, i), name) => {
+                let (old, new) = (names[i].clone(), name.trim().to_string());
+                if old != new {
+                    state.edit_schema(id, |doc| doc.rename_field(id, &old, &new));
+                }
+            }
+            list::Event::Delete((_, i)) => remove_fields(state, id, &[i]),
+            _ => {}
         }
     }
     let add = widgets::text_row(ui, controls, ADD_FIELD, 0.0, false, true);
@@ -93,6 +142,49 @@ pub fn list(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id
     icons::paint(ui.painter(), plus, Icon::Plus, ICON, theme::MUTE);
     if add.clicked() {
         state.pad.page = Some(Page::NewField);
+    }
+}
+
+/// The name of the header button that deletes the selected fields.
+pub const DELETE_FIELDS: &str = "Delete fields";
+
+/// Removes the fields `picked` of layer `id`, in one undo step.
+fn remove_fields(state: &mut AppState, id: LayerId, picked: &[usize]) {
+    let Some(layer) = state.doc.layer(id) else {
+        return;
+    };
+    let names: Vec<String> = (picked.iter())
+        .filter_map(|i| layer.fields.get(*i))
+        .map(|f| f.name.clone())
+        .collect();
+    state.edit_schema(id, |doc| {
+        let mut changed = false;
+        for name in &names {
+            changed |= doc.project.remove_field(id, name);
+        }
+        changed
+    });
+    state.pad.field_list = list::ListState::default();
+}
+
+/// The buttons of the selected fields of layer `id`. `None`: no field is
+/// selected.
+pub fn selection_buttons(state: &AppState, id: LayerId) -> Option<Vec<(&'static str, Icon)>> {
+    let picked = state.pad.field_list.picked.iter().filter(|k| k.0 == id);
+    let count = state.doc.layer(id).map_or(0, |l| l.fields.len());
+    list::group_buttons(picked.count(), count, &[], Some(DELETE_FIELDS))
+}
+
+/// Does the action of the button `name` of [`selection_buttons`].
+pub fn selection_action(state: &mut AppState, id: LayerId, name: &'static str) {
+    let count = state.doc.layer(id).map_or(0, |l| l.fields.len());
+    let keys: Vec<(LayerId, usize)> = (0..count).map(|i| (id, i)).collect();
+    let fields = &mut state.pad.field_list;
+    if let Some(list::Group::Delete(picked)) =
+        list::group_action(fields, &keys, name, Some(DELETE_FIELDS))
+    {
+        let picked: Vec<usize> = picked.iter().map(|k| k.1).collect();
+        remove_fields(state, id, &picked);
     }
 }
 

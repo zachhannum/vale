@@ -4,6 +4,8 @@
 //! when the user edits in Blocks, so text that the user does not edit stays
 //! as it is.
 
+use std::collections::HashMap;
+
 use eframe::egui::{self, Align2, Color32, Rect, Sense, Shape, Stroke, pos2, vec2};
 use vale_store::{FieldType, GeometryKind, Value};
 use vale_style::expr::editor::{CmpOp, Cond, Conditions, Subject, ops_for};
@@ -13,6 +15,7 @@ use super::expression;
 use super::geometry::TOUCH;
 use super::icons::{self, Icon};
 use super::label_text::{BLOCKS, CODE};
+use super::list;
 use super::popover;
 use super::theme;
 use super::widgets::{self, Controls, Keys};
@@ -159,6 +162,18 @@ pub struct Rows<'a> {
     /// The control of the open menu.
     pub anchor: Option<Rect>,
     pub acts: Vec<Act>,
+    /// The lists of the conditions on the iPad. A swipe to the left on a
+    /// condition shows its Delete button. `None`: each condition has a
+    /// remove button.
+    pub swipe: Option<Swipe>,
+}
+
+/// The lists of the conditions of an editor, by the path of their group.
+#[derive(Clone, Default)]
+pub struct Swipe {
+    lists: HashMap<Vec<usize>, list::ListState<usize>>,
+    /// The height of each condition in the last frame.
+    heights: HashMap<Vec<usize>, f32>,
 }
 
 impl Rows<'_> {
@@ -194,6 +209,7 @@ struct EditorState {
     typed: String,
     menu: Option<(Vec<usize>, Menu)>,
     search: String,
+    swipe: Swipe,
 }
 
 /// True if no part of the text fits a condition.
@@ -213,6 +229,32 @@ pub fn editor(
     help: &ExprHelp,
     count: Option<(usize, usize)>,
     none: &str,
+) -> Edit {
+    editor_in(ui, controls, salt, (current, help), count, none, true)
+}
+
+/// The filter editor of the desktop layout. Each condition has a remove
+/// button in place of the swipe.
+pub fn desk_editor(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    salt: impl std::hash::Hash + std::fmt::Debug,
+    current: &str,
+    help: &ExprHelp,
+    count: Option<(usize, usize)>,
+    none: &str,
+) -> Edit {
+    editor_in(ui, controls, salt, (current, help), count, none, false)
+}
+
+fn editor_in(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    salt: impl std::hash::Hash + std::fmt::Debug,
+    (current, help): (&str, &ExprHelp),
+    count: Option<(usize, usize)>,
+    none: &str,
+    swipe: bool,
 ) -> Edit {
     let id = ui.id().with(("pad-filter", salt));
     let mut st: EditorState = ui.data(|d| d.get_temp(id)).unwrap_or_default();
@@ -268,8 +310,12 @@ pub fn editor(
             menu: st.menu.clone(),
             anchor: None,
             acts: Vec::new(),
+            swipe: swipe.then(|| std::mem::take(&mut st.swipe)),
         };
         blocks(ui, controls, &mut rows, model, none);
+        if let Some(swipe) = rows.swipe.take() {
+            st.swipe = swipe;
+        }
         let menu_acts = menu_popover(
             ui,
             controls,
@@ -299,6 +345,10 @@ pub fn editor(
                     (changed, step) = (true, true);
                 }
                 act => {
+                    if matches!(act, Act::Remove(_)) {
+                        // The paths of the rows change.
+                        st.swipe = Swipe::default();
+                    }
                     let typing = matches!(act, Act::SetValue(_, _, _, false));
                     let keep = matches!(act, Act::Toggle(..) | Act::SetValue(..));
                     if apply(&mut model.items, act, help) {
@@ -389,26 +439,133 @@ fn list(
     group: &[usize],
     items: &[Cond],
 ) {
+    if rows.swipe.is_some() {
+        swipe_list(ui, controls, rows, group, items);
+        return;
+    }
     for (i, cond) in items.iter().enumerate() {
         let mut path = group.to_vec();
         path.push(i);
-        match cond {
-            Cond::Rule {
-                subject,
-                op,
-                values,
-            } => {
-                rule_row(ui, controls, rows, &path, (subject, *op, values), None, 0.0);
+        condition(ui, controls, rows, &path, cond);
+        ui.add_space(GAP);
+    }
+}
+
+/// The space between two conditions.
+const GAP: f32 = 6.0;
+
+/// The conditions in the group at `group` through the list of the iPad.
+fn swipe_list(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    rows: &mut Rows,
+    group: &[usize],
+    items: &[Cond],
+) {
+    let path_of = |i: usize| [group, &[i]].concat();
+    let Some(swipe) = rows.swipe.as_mut() else {
+        return;
+    };
+    let mut state = swipe.lists.remove(group).unwrap_or_default();
+    let list_rows: Vec<list::Row<usize>> = (items.iter().enumerate())
+        .map(|(i, cond)| {
+            let path = path_of(i);
+            let kind = match cond {
+                Cond::Group { items, .. } if !items.is_empty() => GROUP_ROW,
+                _ => CONDITION_ROW,
+            };
+            let name = rows.name(kind, &path);
+            let guess = row_height(1) + GAP;
+            let height = (rows.swipe.as_ref()).and_then(|s| s.heights.get(&path).copied());
+            list::Row {
+                label: capitalize(&name),
+                delete: true,
+                height: height.unwrap_or(guess),
+                ..list::Row::new(i, name)
             }
-            Cond::Group { items, .. } if items.is_empty() => {
-                hole_row(ui, controls, rows, &path, None, 0.0);
-            }
-            Cond::Group { all, items } => group_card(ui, controls, rows, &path, *all, items),
-            Cond::Code(text) => {
-                code_row(ui, controls, rows, &path, text, None, 0.0);
-            }
+        })
+        .collect();
+    let mut heights = Vec::new();
+    let spec = list::Spec::default();
+    let events = list::show(
+        ui,
+        controls,
+        &mut state,
+        spec,
+        &list_rows,
+        |ui, controls, cell, i| {
+            let path = path_of(i);
+            let inner = Rect::from_min_max(
+                cell.rect.min + vec2(0.0, GAP / 2.0),
+                pos2(cell.rect.right(), f32::INFINITY),
+            );
+            let layout = egui::Layout::top_down(egui::Align::Min);
+            let builder = egui::UiBuilder::new()
+                .id_salt(("condition", i))
+                .max_rect(inner)
+                .layout(layout);
+            let mut child = ui.new_child(builder);
+            child.set_clip_rect(cell.painter.clip_rect());
+            child.spacing_mut().item_spacing.y = 0.0;
+            condition(&mut child, controls, rows, &path, &items[i]);
+            heights.push((path, child.min_rect().height() + GAP));
+            None
+        },
+    );
+    let Some(swipe) = rows.swipe.as_mut() else {
+        return;
+    };
+    swipe.lists.insert(group.to_vec(), state);
+    for (path, height) in heights {
+        let old = swipe.heights.insert(path, height);
+        if old.is_none_or(|h| (h - height).abs() > 0.5) {
+            ui.ctx().request_repaint();
         }
-        ui.add_space(6.0);
+    }
+    for event in events {
+        if let list::Event::Delete(i) = event {
+            rows.acts.push(Act::Remove(path_of(i)));
+        }
+    }
+}
+
+/// The start of the name of the row of a condition and of a group, after
+/// "Delete".
+const CONDITION_ROW: &str = "condition";
+const GROUP_ROW: &str = "group";
+
+/// The text with a capital first letter.
+fn capitalize(text: &str) -> String {
+    let mut chars = text.chars();
+    chars
+        .next()
+        .map(|c| c.to_uppercase().chain(chars).collect())
+        .unwrap_or_default()
+}
+
+/// The row of the condition at `path`.
+fn condition(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    rows: &mut Rows,
+    path: &[usize],
+    cond: &Cond,
+) {
+    match cond {
+        Cond::Rule {
+            subject,
+            op,
+            values,
+        } => {
+            rule_row(ui, controls, rows, path, (subject, *op, values), None, 0.0);
+        }
+        Cond::Group { items, .. } if items.is_empty() => {
+            hole_row(ui, controls, rows, path, None, 0.0);
+        }
+        Cond::Group { all, items } => group_card(ui, controls, rows, path, *all, items),
+        Cond::Code(text) => {
+            code_row(ui, controls, rows, path, text, None, 0.0);
+        }
     }
 }
 
@@ -581,6 +738,9 @@ fn remove_button(
     path: &[usize],
     row: Rect,
 ) {
+    if rows.swipe.is_some() {
+        return;
+    }
     let center = pos2(
         row.right() - SPACE / 2.0 - TOUCH / 2.0,
         row.top() + SPACE + CONTROL / 2.0,
@@ -639,7 +799,7 @@ pub fn rule_row(
         pieces.push((trail, Piece::Trail));
     }
     let widths: Vec<f32> = pieces.iter().map(|(w, _)| *w).collect();
-    let (row, places) = simple_row(ui, lead, &widths);
+    let (row, places) = simple_row(ui, lead, &widths, rows.swipe.is_none());
     let mut out = Rect::NOTHING;
     for (rect, (_, piece)) in places.into_iter().zip(pieces) {
         match piece {
@@ -777,7 +937,7 @@ pub fn hole_row(
     trail: f32,
 ) -> Rect {
     let w = text_width(ui, HOLE, theme::body()) + 28.0;
-    let (row, places) = simple_row(ui, lead, &[w, trail]);
+    let (row, places) = simple_row(ui, lead, &[w, trail], rows.swipe.is_none());
     let place = places[0].shrink2(vec2(0.0, 4.0));
     let name = rows.name(HOLE, path);
     let resp = widgets::hit(ui, controls, places[0], &name, Sense::click(), true, None);
@@ -800,11 +960,18 @@ pub fn hole_row(
 
 /// A row with a lead word and pieces of these widths in lines that wrap.
 /// A width of 0 has no place. Returns the row and the place of each piece.
-fn simple_row(ui: &mut egui::Ui, lead: Option<&str>, widths: &[f32]) -> (Rect, Vec<Rect>) {
+/// The row keeps a place for the `remove` button at the right.
+fn simple_row(
+    ui: &mut egui::Ui,
+    lead: Option<&str>,
+    widths: &[f32],
+    remove: bool,
+) -> (Rect, Vec<Rect>) {
     let width = ui.available_width();
     let x0 = SPACE + lead.map_or(0.0, |l| text_width(ui, l, theme::body()) + SPACE);
     let kept: Vec<f32> = widths.iter().copied().filter(|w| *w > 0.0).collect();
-    let (places, lines) = flow(&kept, x0, width - SPACE - TOUCH);
+    let button = if remove { TOUCH } else { 0.0 };
+    let (places, lines) = flow(&kept, x0, width - SPACE - button);
     let (row, _) = ui.allocate_exact_size(vec2(width, row_height(lines)), Sense::hover());
     ui.painter()
         .rect_filled(row, ROW_RADIUS, Color32::from_white_alpha(10));
@@ -839,7 +1006,7 @@ pub fn code_row(
 ) -> Rect {
     let most = ui.available_width() - 3.0 * SPACE - TOUCH;
     let w = (text_width(ui, text, theme::mono()) + 24.0).min(most.max(TOUCH));
-    let (row, places) = simple_row(ui, lead, &[w, trail]);
+    let (row, places) = simple_row(ui, lead, &[w, trail], rows.swipe.is_none());
     let place = places[0];
     let name = rows.name(CODE_ROW, path);
     let resp = widgets::hit(ui, controls, place, &name, Sense::click(), true, None);
@@ -892,7 +1059,9 @@ fn group_card(
         vec2(TOUCH, TOUCH),
     );
     let name = rows.name(REMOVE_GROUP, path);
-    if widgets::icon_button_at(ui, controls, remove, &name, Icon::Close, false, true).clicked() {
+    if rows.swipe.is_none()
+        && widgets::icon_button_at(ui, controls, remove, &name, Icon::Close, false, true).clicked()
+    {
         rows.acts.push(Act::Remove(path.to_vec()));
     }
     let inner = Rect::from_min_max(
@@ -997,11 +1166,9 @@ pub fn menu_popover(
                 } else {
                     [ALL_OF, ANY_OF]
                 };
-                for (i, word) in words.iter().enumerate() {
-                    let on = all == (i == 0);
-                    if widgets::option_row(ui, controls, word, word, &[], on).clicked() {
-                        acts.push(Act::SetAll(path.clone(), i == 0));
-                    }
+                let choices = [(words[0], all), (words[1], !all)];
+                if let Some(i) = list::options(ui, controls, &choices, str::to_owned) {
+                    acts.push(Act::SetAll(path.clone(), i == 0));
                 }
             }
             (Menu::Field, Some(Cond::Rule { subject, .. })) => {
@@ -1017,66 +1184,55 @@ pub fn menu_popover(
                 egui::ScrollArea::vertical()
                     .max_height(320.0)
                     .show(ui, |ui| {
-                        for name in shown {
-                            let on = subject.field() == Some(name);
-                            if widgets::option_row(ui, controls, name, name, &[], on).clicked() {
-                                let s = Subject::Field(name.clone());
-                                acts.push(Act::SetSubject(path.clone(), s));
-                            }
+                        let shown: Vec<&String> = shown.collect();
+                        let choices: Vec<(&str, bool)> = (shown.iter())
+                            .map(|n| (n.as_str(), subject.field() == Some(n.as_str())))
+                            .collect();
+                        if let Some(i) = list::options(ui, controls, &choices, str::to_owned) {
+                            let s = Subject::Field(shown[i].clone());
+                            acts.push(Act::SetSubject(path.clone(), s));
                         }
                         if !measures.is_empty() {
                             widgets::list_heading(ui, GEOMETRY);
                         }
-                        for m in measures {
-                            let label = m.label();
-                            let on = m.same_kind(subject);
-                            if widgets::option_row(ui, controls, &label, &label, &[], on).clicked()
-                            {
-                                acts.push(Act::SetSubject(path.clone(), m));
-                            }
+                        if let Some(s) = subject_rows(ui, controls, &measures, subject) {
+                            acts.push(Act::SetSubject(path.clone(), s));
                         }
                         if !rasters.is_empty() {
                             widgets::list_heading(ui, RASTER);
                         }
-                        for r in rasters {
-                            let label = r.label();
-                            let on = r.same_kind(subject);
-                            if widgets::option_row(ui, controls, &label, &label, &[], on).clicked()
-                            {
-                                acts.push(Act::SetSubject(path.clone(), r));
-                            }
+                        if let Some(s) = subject_rows(ui, controls, &rasters, subject) {
+                            acts.push(Act::SetSubject(path.clone(), s));
                         }
                     });
             }
             (Menu::Unit, Some(Cond::Rule { subject, .. })) => {
                 if let Subject::Measure(m, _) = subject {
                     let unit = unit_of(subject);
-                    for u in m.units() {
-                        let label = u.label();
-                        let on = unit == Some(*u);
-                        if widgets::option_row(ui, controls, label, label, &[], on).clicked() {
-                            acts.push(Act::SetUnit(path.clone(), *u));
-                        }
+                    let units = m.units();
+                    let choices: Vec<(&str, bool)> = (units.iter())
+                        .map(|u| (u.label(), unit == Some(*u)))
+                        .collect();
+                    if let Some(i) = list::options(ui, controls, &choices, str::to_owned) {
+                        acts.push(Act::SetUnit(path.clone(), units[i]));
                     }
                 }
             }
             (Menu::Stat, Some(Cond::Rule { subject, .. })) => {
                 let stat = stat_of(subject, help);
-                for st in Stat::ALL {
-                    let label = st.label();
-                    let on = stat == Some(st);
-                    if widgets::option_row(ui, controls, label, label, &[], on).clicked() {
-                        acts.push(Act::SetStat(path.clone(), st));
-                    }
+                let choices: Vec<(&str, bool)> = (Stat::ALL.iter())
+                    .map(|st| (st.label(), stat == Some(*st)))
+                    .collect();
+                if let Some(i) = list::options(ui, controls, &choices, str::to_owned) {
+                    acts.push(Act::SetStat(path.clone(), Stat::ALL[i]));
                 }
             }
             (Menu::Comparison, Some(Cond::Rule { subject, op, .. })) => {
                 let kind = help.subject_type(subject).unwrap_or(FieldType::Text);
-                for o in ops_for(kind) {
-                    let label = o.label();
-                    if widgets::option_row(ui, controls, label, label, &[], o == op).clicked() {
-                        acts.push(Act::SetOp(path.clone(), *o));
-                    }
+                let ops = ops_for(kind);
+                let choices: Vec<(&str, bool)> = ops.iter().map(|o| (o.label(), o == op)).collect();
+                if let Some(i) = list::options(ui, controls, &choices, str::to_owned) {
+                    acts.push(Act::SetOp(path.clone(), ops[i]));
                 }
             }
             (
@@ -1088,11 +1244,10 @@ pub fn menu_popover(
                 }),
             ) => {
                 if help.subject_type(subject) == Some(FieldType::Bool) {
-                    for (word, b) in [(YES, true), (NO, false)] {
-                        let on = values.get(*k) == Some(&Value::Bool(b));
-                        if widgets::option_row(ui, controls, word, word, &[], on).clicked() {
-                            acts.push(Act::SetValue(path.clone(), *k, Value::Bool(b), true));
-                        }
+                    let on = |b: bool| values.get(*k) == Some(&Value::Bool(b));
+                    let choices = [(YES, on(true)), (NO, on(false))];
+                    if let Some(i) = list::options(ui, controls, &choices, str::to_owned) {
+                        acts.push(Act::SetValue(path.clone(), *k, Value::Bool(i == 0), true));
                     }
                 } else {
                     text_values(
@@ -1112,6 +1267,22 @@ pub fn menu_popover(
         acts.push(Act::Menu(None));
     }
     acts
+}
+
+/// A row for each subject, with a mark on the kind of `subject`. Returns
+/// the subject of a tap.
+fn subject_rows(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    subjects: &[Subject],
+    subject: &Subject,
+) -> Option<Subject> {
+    let labels: Vec<String> = subjects.iter().map(|s| s.label()).collect();
+    let choices: Vec<(&str, bool)> = (subjects.iter().zip(&labels))
+        .map(|(s, l)| (l.as_str(), s.same_kind(subject)))
+        .collect();
+    let i = list::options(ui, controls, &choices, str::to_owned)?;
+    Some(subjects[i].clone())
 }
 
 /// A search field at the top of a menu, with `name` as its hint.
@@ -1164,16 +1335,19 @@ fn text_values(
     egui::ScrollArea::vertical()
         .max_height(320.0)
         .show(ui, |ui| {
-            for v in shown {
-                let value = Value::Text(v.clone());
-                let on = if one_of {
-                    values.contains(&value)
-                } else {
-                    values.get(k) == Some(&value)
-                };
-                if widgets::option_row(ui, controls, v, v, &[], on).clicked() {
-                    pick(v, acts);
-                }
+            let choices: Vec<(&str, bool)> = (shown.iter())
+                .map(|v| {
+                    let value = Value::Text((*v).clone());
+                    let on = if one_of {
+                        values.contains(&value)
+                    } else {
+                        values.get(k) == Some(&value)
+                    };
+                    (v.as_str(), on)
+                })
+                .collect();
+            if let Some(i) = list::options(ui, controls, &choices, str::to_owned) {
+                pick(shown[i], acts);
             }
         });
 }

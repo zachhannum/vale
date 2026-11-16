@@ -1291,6 +1291,16 @@ impl AppState {
     /// `false` if the project has no such layer.
     pub fn remove_raster(&mut self, id: RasterId) -> bool {
         self.save_edit();
+        if !self.drop_raster(id) {
+            return false;
+        }
+        self.sync_globe();
+        self.save_edit();
+        true
+    }
+
+    /// Removes a raster layer and its heightmap, with no save.
+    fn drop_raster(&mut self, id: RasterId) -> bool {
         if self.doc.project.remove_raster(id).is_none() {
             return false;
         }
@@ -1298,8 +1308,6 @@ impl AppState {
         if self.pad.layer == Some(LayerRef::Raster(id)) {
             self.pad.layer = None;
         }
-        self.sync_globe();
-        self.save_edit();
         true
     }
 
@@ -1481,15 +1489,77 @@ impl AppState {
     pub fn remove_layer(&mut self, id: LayerId) -> bool {
         match self.doc.layer(id).map(|layer| layer.kind) {
             Some(LayerKind::Raster(raster)) => self.remove_raster(raster),
-            Some(LayerKind::Image(image)) => {
+            Some(LayerKind::Image(_)) => {
                 self.save_edit();
+                let removed = self.drop_layer(id);
+                self.sync_globe();
+                self.touch();
+                self.save_edit();
+                removed
+            }
+            Some(LayerKind::Vector(_)) => {
+                let removed = self.drop_layer(id);
+                self.sync_globe();
+                self.touch();
+                removed
+            }
+            None => false,
+        }
+    }
+
+    /// Removes layers of each kind as one undo step. Returns the number of
+    /// the removed layers.
+    pub fn remove_layers(&mut self, ids: &[LayerId]) -> usize {
+        self.save_edit();
+        let removed = ids.iter().filter(|id| self.drop_layer(**id)).count();
+        if removed > 0 {
+            self.sync_globe();
+            self.touch();
+            self.save_edit();
+        }
+        removed
+    }
+
+    /// Gives rule `i` of the style of layer `layer` a new name. A blank name
+    /// and a name that another rule of the style has do not apply. The
+    /// legend entries of the rule move to the new name in the same undo
+    /// step. Returns `true` if the name changed.
+    pub fn rename_rule(&mut self, layer: LayerId, i: usize, name: &str) -> bool {
+        let name = name.trim();
+        let Some(entry) = self.doc.entry_mut(layer) else {
+            return false;
+        };
+        let rules = &mut entry.style.style.rules;
+        let names: Vec<String> = rules.iter().map(|r| r.name.clone()).collect();
+        if i >= rules.len()
+            || names[i] == name
+            || !pad::rules::rule_name_free(&names, Some(i), name)
+        {
+            return false;
+        }
+        rules[i].name = name.to_owned();
+        let old = (layer, names[i].clone());
+        let pages = self.doc.project.atlas.pages.iter_mut();
+        for item in pages.flat_map(|p| &mut p.furniture) {
+            if let vale_store::Furniture::Legend(legend) = &mut item.item
+                && let Some(entry) = legend.entries.remove(&old)
+            {
+                legend.entries.insert((layer, name.to_owned()), entry);
+            }
+        }
+        self.touch();
+        true
+    }
+
+    /// Removes a layer of each kind, with no save.
+    fn drop_layer(&mut self, id: LayerId) -> bool {
+        match self.doc.layer(id).map(|layer| layer.kind) {
+            Some(LayerKind::Raster(raster)) => self.drop_raster(raster),
+            Some(LayerKind::Image(image)) => {
                 let removed = self.doc.project.remove_image(image).is_some();
                 if self.pad.layer == Some(LayerRef::Image(image)) {
                     self.pad.layer = None;
                 }
-                self.sync_globe();
-                self.touch();
-                self.save_edit();
                 removed
             }
             Some(LayerKind::Vector(_)) => {
@@ -1497,8 +1567,6 @@ impl AppState {
                 if self.pad.layer == Some(LayerRef::Vector(id)) {
                     self.pad.layer = None;
                 }
-                self.sync_globe();
-                self.touch();
                 removed
             }
             None => false,
@@ -1588,6 +1656,20 @@ impl AppState {
     pub fn delete_map_style(&mut self, id: MapStyleId) {
         self.save_edit();
         if self.doc.delete_map_style(id) {
+            self.touch();
+            self.save_edit();
+        }
+    }
+
+    /// Deletes map styles, as one undo step. Each of their maps keeps its
+    /// look.
+    pub fn delete_map_styles(&mut self, ids: &[MapStyleId]) {
+        self.save_edit();
+        let mut deleted = false;
+        for id in ids {
+            deleted |= self.doc.delete_map_style(*id);
+        }
+        if deleted {
             self.touch();
             self.save_edit();
         }
@@ -1898,6 +1980,35 @@ impl AppState {
         classes.remove(i);
         self.save_edit();
         if self.doc.set_label_classes(target, layer, &classes) {
+            self.touch();
+            self.save_edit();
+        }
+    }
+
+    /// Deletes the classes `(layer, i)` of `map`, as one undo step.
+    pub fn delete_label_classes(&mut self, map: MapId, list: &[(LayerId, usize)]) {
+        let target = Target::Map(map);
+        let mut layers: Vec<LayerId> = list.iter().map(|(l, _)| *l).collect();
+        layers.sort_by_key(|l| l.0);
+        layers.dedup();
+        self.save_edit();
+        let mut any = false;
+        for layer in layers {
+            let mut places: Vec<usize> = (list.iter())
+                .filter(|(l, _)| *l == layer)
+                .map(|(_, i)| *i)
+                .collect();
+            places.sort_unstable();
+            places.dedup();
+            let mut classes = self.doc.label_classes_in(target, layer);
+            for &i in places.iter().rev() {
+                if i < classes.len() {
+                    classes.remove(i);
+                }
+            }
+            any |= self.doc.set_label_classes(target, layer, &classes);
+        }
+        if any {
             self.touch();
             self.save_edit();
         }
@@ -2589,7 +2700,7 @@ impl AppState {
         self.image_tiles.clear();
         self.pad.layer = None;
         self.pad.add = false;
-        self.pad.reorder = None;
+        self.pad.layer_list = Default::default();
         // A layer of the next world can have the ID of an old layer.
         self.pipeline = Pipeline::new();
         self.touch();

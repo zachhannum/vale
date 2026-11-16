@@ -94,6 +94,7 @@ pub fn block(
             menu,
             anchor: None,
             acts: Vec::new(),
+            swipe: None,
         };
         let row_top = child.cursor().top();
         let lead = Some(WHEN);

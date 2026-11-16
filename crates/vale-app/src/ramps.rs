@@ -157,6 +157,22 @@ impl Ramps {
         self.write()
     }
 
+    /// Deletes the custom ramps at `indices` with one write. A built-in
+    /// ramp stays.
+    pub fn remove_all(&mut self, indices: &[usize]) -> std::io::Result<()> {
+        let before = self.list.len();
+        let mut i = 0;
+        self.list.retain(|ramp| {
+            let keep = ramp.built_in || !indices.contains(&i);
+            i += 1;
+            keep
+        });
+        if self.list.len() == before {
+            return Ok(());
+        }
+        self.write()
+    }
+
     /// A stop of the app during the write leaves the old file.
     fn write(&self) -> std::io::Result<()> {
         let Some(dir) = &self.dir else {

@@ -9,6 +9,7 @@ use vale_sphere::{ProjectionKind, ProjectionSpec};
 
 use super::geometry::{self, PAD, ROW, Rects, TOUCH};
 use super::icons::{self, Icon};
+use super::list;
 use super::widgets::{self, BODY_PAD, Controls, PANEL_ROW};
 use super::{DIVIDER, GRATICULE, PROJECTION, RECENTER, RESET, VIEW, VIEWS, theme};
 use crate::globe::WorldView;
@@ -437,16 +438,35 @@ fn projections(
     let backdrop = state.globe.backdrop();
     menu_card(ctx, backdrop, "pad-projections", rect, origin, |ui| {
         let spec = state.globe.flat.spec();
-        for kind in ProjectionKind::ALL {
-            let row = widgets::text_row(ui, controls, kind.name(), 0.0, false, true);
-            if kind == spec.kind {
-                let tick = Rect::from_center_size(
-                    pos2(row.rect.right() - 14.0, row.rect.center().y),
-                    vec2(18.0, 18.0),
-                );
-                icons::paint(ui.painter(), tick, Icon::Tick, 18.0, theme::ACCENT);
-            }
-            if row.clicked() {
+        let kinds = ProjectionKind::ALL;
+        let rows: Vec<list::Row<usize>> = (kinds.iter().enumerate())
+            .map(|(i, kind)| list::Row::new(i, kind.name()))
+            .collect();
+        let mut taps = list::ListState::default();
+        let events = list::show(
+            ui,
+            controls,
+            &mut taps,
+            list::Spec::default(),
+            &rows,
+            |ui, c, cell, i| {
+                if kinds[i] == spec.kind {
+                    let tick = Rect::from_center_size(
+                        pos2(cell.rect.right() - 14.0, cell.rect.center().y),
+                        vec2(18.0, 18.0),
+                    );
+                    icons::paint(&cell.painter, tick, Icon::Tick, 18.0, theme::ACCENT);
+                }
+                let look = list::Look {
+                    text: kinds[i].name(),
+                    ..list::Look::default()
+                };
+                list::draw(ui, c, cell, &look)
+            },
+        );
+        for event in events {
+            if let list::Event::Tap(i) = event {
+                let kind = kinds[i];
                 state.globe.flat.set_spec(ProjectionSpec { kind, ..spec });
                 state.pad.projections = false;
             }

@@ -11,19 +11,21 @@ use vale_style::{LabelClass, LabelFallback, LabelPlacement, LabelPosition};
 use super::atlas::{FRAME_TABS, named_tabs};
 use super::filter;
 use super::geometry::TOUCH;
-use super::icons::{self, Icon};
 use super::label_text;
+use super::list::{self, ListState};
 use super::number::Number;
 use super::text_style::{self, TextEdit, TextEvent, TextSpec};
 use super::widgets::{self, Controls, PANEL_ROW};
-use super::{Head, PageParts, Panel, theme};
+use super::{Head, PageButtons, PageParts, Panel, theme};
 use crate::fonts;
-use crate::ui::atlas::{ClassColor, ClassDrag, ClassPage, ClassSegment};
+use crate::ui::atlas::{ClassColor, ClassPage, ClassSegment};
 use crate::ui::expr_help::{self, ExprHelp};
 use crate::ui::{Action, AppState, FontTarget};
 
 pub const ADD_CLASS: &str = "Add class";
 pub const DELETE_CLASS: &str = "Delete class";
+/// The header button that deletes the selected classes.
+pub const DELETE_CLASSES: &str = "Delete classes";
 pub const NO_LABEL_LAYERS: &str = "This map has no vector layers.";
 pub const NO_CLASSES: &str = "No layer of this map has labels.";
 pub const CLASS_NAME: &str = "Class name";
@@ -148,14 +150,14 @@ pub const NO_ABBREVIATIONS: &str = "This class has no abbreviations.";
 /// "Word 1".
 pub const WORD: &str = "Word";
 pub const SHORT_FORM: &str = "Short form";
-/// The start of the name of the delete button of a row of the
+/// The start of the name of the Delete button behind a row of the
 /// Abbreviations page. The number of the row follows.
 pub const DELETE_ABBREVIATION: &str = "Delete abbreviation";
+/// The start of the name of a row of the Abbreviations page. The number
+/// of the row follows.
+pub const ABBREVIATION: &str = "Abbreviation";
 pub const MOVE_UP: &str = "Move up";
 pub const MOVE_DOWN: &str = "Move down";
-/// The start of the name of the handle of a row of the class list. The
-/// name of the class follows.
-pub const REORDER: &str = "Reorder";
 /// The smallest and the largest size of a label, in points.
 pub const SIZES: (f64, f64) = (4.0, 72.0);
 /// The smallest and the largest letter spacing, as fractions of the size.
@@ -255,20 +257,20 @@ fn show_class(state: &mut AppState, frame: FrameId, layer: LayerId, i: usize) {
     state.atlas.label_page = None;
     state.atlas.label_segment = ClassSegment::Text;
     state.atlas.label_color = None;
-    state.atlas.position_drag = None;
-    state.atlas.fallback_drag = None;
+    state.atlas.position_list = ListState::default();
+    state.atlas.fallback_list = ListState::default();
+    state.atlas.abbreviation_list = ListState::default();
 }
 
 /// The label classes of the map of frame `id` in priority order, and the
-/// button that adds a class. A tap on a class opens its panel, and a drag
-/// on the handle of a row moves the class in the order.
+/// button that adds a class. A tap on a class opens its panel.
 pub(super) fn tab(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id: FrameId) {
     let Some(map) = state.doc.project.atlas.frame(id).map(|f| f.map) else {
         return;
     };
     ui.spacing_mut().item_spacing.y = 0.0;
     if state.label_layers().is_empty() {
-        state.atlas.label_drag = None;
+        state.atlas.label_list = ListState::default();
         hint(ui, NO_LABEL_LAYERS);
         return;
     }
@@ -284,7 +286,7 @@ pub(super) fn tab(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Contro
         .collect();
     let mut open = None;
     if list.is_empty() {
-        state.atlas.label_drag = None;
+        state.atlas.label_list = ListState::default();
         hint(ui, NO_CLASSES);
     } else {
         open = class_rows(ui, state, controls, map, &list);
@@ -300,8 +302,9 @@ pub(super) fn tab(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Contro
 
 /// The rows of the class list: the layer, the place in the classes of the
 /// layer, the name of the class, and the name of the layer or an empty
-/// text. Returns the
-/// class that the user taps.
+/// text. A swipe to the right selects a class, a swipe to the left shows
+/// Rename and Delete, and a hold lifts a class to a new place in the
+/// order. Returns the class that the user taps.
 fn class_rows(
     ui: &mut egui::Ui,
     state: &mut AppState,
@@ -309,111 +312,77 @@ fn class_rows(
     map: MapId,
     list: &[(LayerId, usize, String, String)],
 ) -> Option<(LayerId, usize)> {
-    let size = vec2(ui.available_width(), list.len() as f32 * PANEL_ROW);
-    let (area, _) = ui.allocate_exact_size(size, egui::Sense::hover());
-    let slot =
-        |top: f32| Rect::from_min_size(pos2(area.left(), top), vec2(area.width(), PANEL_ROW));
-    let place = |k: usize| slot(area.top() + k as f32 * PANEL_ROW);
-    let (pointer, down) = ui.input(|i| (i.pointer.interact_pos(), i.pointer.any_down()));
-
-    let Some(drag) = state.atlas.label_drag.filter(|d| d.from < list.len()) else {
-        state.atlas.label_drag = None;
-        let mut open = None;
-        for (k, (layer, i, name, layer_name)) in list.iter().enumerate() {
-            let rect = place(k);
-            let row = ui
-                .push_id(("class", layer.0, *i), |ui| {
-                    class_row(ui, Some(&mut *controls), rect, name, layer_name, false)
-                })
-                .inner;
-            let Some((body, handle)) = row else { continue };
-            if body.clicked() {
-                open = Some((*layer, *i));
-            }
-            if handle.drag_started() || handle.dragged() {
-                let y = pointer.map_or(rect.center().y, |p| p.y);
-                state.atlas.label_drag = Some(ClassDrag {
-                    from: k,
-                    grab: y - rect.top(),
-                });
-                ui.ctx().request_repaint();
-            }
-        }
-        return open;
+    let rows: Vec<list::Row<(MapId, LayerId, usize)>> = (list.iter())
+        .map(|(layer, i, name, _)| list::Row {
+            rename: true,
+            delete: true,
+            ..list::Row::new((map, *layer, *i), name.clone())
+        })
+        .collect();
+    let spec = list::Spec {
+        select: true,
+        reorder: true,
+        field: CLASS_NAME,
+        ..list::Spec::default()
     };
-
-    // The lifted row follows the finger, and the other rows make room at
-    // the place where it goes.
-    let from = drag.from;
-    let y = pointer.map_or(place(from).top() + drag.grab, |p| p.y);
-    let top = (y - drag.grab).clamp(area.top(), area.bottom() - PANEL_ROW);
-    let to = ((top - area.top()) / PANEL_ROW).round() as usize;
-    let others = list.iter().enumerate().filter(|(k, _)| *k != from);
-    for (n, (_, (_, _, name, layer_name))) in others.enumerate() {
-        let rect = place(if n < to { n } else { n + 1 });
-        class_row(ui, None, rect, name, layer_name, false);
-    }
-    let (_, _, name, layer_name) = &list[from];
-    class_row(ui, None, slot(top), name, layer_name, true);
-    if down {
-        ui.ctx().request_repaint();
-    } else {
-        state.atlas.label_drag = None;
-        if to != from {
-            state.reorder_label_classes(map, from, to);
+    let classes = &mut state.atlas.label_list;
+    let events = list::show(
+        ui,
+        controls,
+        classes,
+        spec,
+        &rows,
+        |ui, controls, cell, k| {
+            let of = &list[k].3;
+            let look = list::Look {
+                text: &rows[k].name,
+                note: (!of.is_empty()).then_some(of.as_str()),
+                ..list::Look::default()
+            };
+            list::draw(ui, controls, cell, &look)
+        },
+    );
+    let mut open = None;
+    for event in events {
+        match event {
+            list::Event::Tap((_, layer, i)) => open = Some((layer, i)),
+            list::Event::Rename((_, layer, i), name) => {
+                state.label_class_step(map, layer, i, |c| c.name = name);
+            }
+            list::Event::Delete((_, layer, i)) => state.delete_label_class(map, layer, i),
+            list::Event::Move { from, to, .. } => state.reorder_label_classes(map, from, to),
+            _ => {}
         }
     }
-    None
+    open
 }
 
-/// One row of the class list in `rect`: the name of the class, the name of
-/// its layer, and the handle at the right. With `controls`, the row takes a
-/// tap, its handle takes a drag, and the function returns both. A `lifted`
-/// row shows above the others.
-fn class_row(
-    ui: &egui::Ui,
-    controls: Option<&mut Controls>,
-    rect: Rect,
-    name: &str,
-    layer_name: &str,
-    lifted: bool,
-) -> Option<(egui::Response, egui::Response)> {
-    let handle = Rect::from_center_size(
-        pos2(rect.right() - TOUCH / 2.0 + 8.0, rect.center().y),
-        vec2(TOUCH, TOUCH),
-    );
-    let body = Rect::from_min_max(rect.min, pos2(handle.left(), rect.bottom()));
-    let out = controls.map(|controls| {
-        let body = widgets::tap_area(ui, controls, body, name, true);
-        let grip = format!("{REORDER} {name}");
-        (body, widgets::drag_area(ui, controls, handle, &grip))
-    });
-    let highlight = rect.expand2(vec2(8.0, -widgets::HIGHLIGHT_INSET));
-    let painter = ui.painter();
-    if lifted {
-        let shadow = highlight.translate(vec2(0.0, 2.0)).expand(2.0);
-        painter.rect_filled(shadow, 7.0, egui::Color32::from_black_alpha(60));
-        painter.rect_filled(highlight, 5.0, theme::card(false).to_opaque());
+/// The header buttons of the selected classes of the Labels tab of frame
+/// `id`.
+pub(super) fn class_group_buttons(state: &AppState, id: FrameId) -> Option<PageButtons> {
+    let map = state.doc.project.atlas.frame(id)?.map;
+    let picked = state.atlas.label_list.picked.iter();
+    let picked = picked.filter(|k| k.0 == map).count();
+    let count = state.label_class_list(map).len();
+    let buttons = list::group_buttons(picked, count, &[], Some(DELETE_CLASSES))?;
+    Some(PageButtons {
+        buttons,
+        act: Box::new(move |state, name| class_group(state, map, name)),
+    })
+}
+
+/// Does the action of a header button of the selected classes of `map`.
+fn class_group(state: &mut AppState, map: MapId, name: &'static str) {
+    let keys: Vec<(MapId, LayerId, usize)> = (state.label_class_list(map).into_iter())
+        .map(|(layer, i, _)| (map, layer, i))
+        .collect();
+    let classes = &mut state.atlas.label_list;
+    if let Some(list::Group::Delete(keys)) =
+        list::group_action(classes, &keys, name, Some(DELETE_CLASSES))
+    {
+        let keys: Vec<(LayerId, usize)> = keys.iter().map(|k| (k.1, k.2)).collect();
+        state.delete_label_classes(map, &keys);
     }
-    let pressed = out
-        .as_ref()
-        .is_some_and(|(b, _)| b.is_pointer_button_down_on());
-    if lifted || pressed {
-        painter.rect_filled(highlight, 5.0, theme::raise());
-    }
-    let at = pos2(rect.left(), rect.center().y);
-    painter.text(at, Align2::LEFT_CENTER, name, theme::body(), theme::TEXT);
-    let at = pos2(handle.left() - 4.0, rect.center().y);
-    painter.text(
-        at,
-        Align2::RIGHT_CENTER,
-        layer_name,
-        theme::body(),
-        theme::MUTE,
-    );
-    let color = if lifted { theme::TEXT } else { theme::MUTE };
-    icons::paint(painter, handle, Icon::Grip, widgets::ICON, color);
-    out
 }
 
 /// The panel of the open label class of frame `id`, or of one of its pages,
@@ -435,11 +404,7 @@ pub(super) fn class_head(state: &mut AppState, id: FrameId) -> Option<Head> {
         Some(ClassPage::Abbreviations) => ("pad-atlas-abbreviations", ABBREVIATIONS, FALLBACKS),
         None => ("pad-atlas-class", class.name.as_str(), FRAME_TABS[3]),
     };
-    let mut parts = PageParts::new(key, title, Some(back));
-    // The panel stays still while a finger drags a row of a rank.
-    if state.atlas.position_drag.is_some() || state.atlas.fallback_drag.is_some() {
-        parts.scroll = egui::scroll_area::ScrollSource::NONE;
-    }
+    let parts = PageParts::new(key, title, Some(back));
     let back_to = move |state: &mut AppState| match page {
         Some(ClassPage::Abbreviations) => state.atlas.label_page = Some(ClassPage::Fallbacks),
         Some(_) => state.atlas.label_page = None,
@@ -776,7 +741,6 @@ fn placement_segment(
         let value = format!("{on} of {}", class.positions.len());
         if widgets::open_row(ui, controls, POSITIONS, &value).clicked() {
             state.atlas.label_page = Some(ClassPage::Positions);
-            state.atlas.position_drag = None;
         }
     }
     let offset = Number::new(OFFSET, class.offset, OFFSETS.0..=OFFSETS.1)
@@ -1189,7 +1153,6 @@ fn conflicts_segment(
     };
     if widgets::open_row(ui, controls, FALLBACKS, &value).clicked() {
         state.atlas.label_page = Some(ClassPage::Fallbacks);
-        state.atlas.fallback_drag = None;
     }
 }
 
@@ -1209,9 +1172,8 @@ fn move_item<T>(list: &mut Vec<T>, from: usize, to: usize) {
 
 /// The ranked fallbacks of a class that its feature type can use, and the
 /// options of the fallbacks, in a section for each fallback. A tap on a row
-/// turns its fallback on or off, and a drag on the handle of a row moves
-/// the fallback in the rank. Truncation stays the last fallback that
-/// changes the text.
+/// turns its fallback on or off, and a hold lifts a row to a new place in
+/// the rank. Truncation stays the last fallback that changes the text.
 fn fallbacks_page(
     ui: &mut egui::Ui,
     state: &mut AppState,
@@ -1225,26 +1187,30 @@ fn fallbacks_page(
     let shown: Vec<usize> = (0..class.fallbacks.len())
         .filter(|&k| fallback_applies(kind, class.fallbacks[k].fallback))
         .collect();
-    let rows: Vec<(&str, bool)> = (shown.iter())
-        .map(|&k| (class.fallbacks[k].fallback.name(), class.fallbacks[k].on))
+    let rows: Vec<(LabelFallback, &str, bool)> = (shown.iter())
+        .map(|&k| {
+            let r = &class.fallbacks[k];
+            (r.fallback, r.fallback.name(), r.on)
+        })
         .collect();
-    match rank_list(ui, controls, &mut state.atlas.fallback_drag, &rows) {
-        Some(RankEvent::Toggle(n)) => {
-            let k = shown[n];
-            state.label_class_step(map, layer, i, |c| {
-                if let Some(r) = c.fallbacks.get_mut(k) {
-                    r.on = !r.on;
-                }
-            });
+    for event in rank_list(ui, controls, &mut state.atlas.fallback_list, &rows) {
+        match event {
+            list::Event::Tap(f) => {
+                state.label_class_step(map, layer, i, |c| {
+                    if let Some(r) = c.fallbacks.iter_mut().find(|r| r.fallback == f) {
+                        r.on = !r.on;
+                    }
+                });
+            }
+            list::Event::Move { from, to, .. } => {
+                let (from, to) = (shown[from], shown[to]);
+                state.label_class_step(map, layer, i, |c| {
+                    move_item(&mut c.fallbacks, from, to);
+                    vale_style::FallbackRank::normalize(&mut c.fallbacks);
+                });
+            }
+            _ => {}
         }
-        Some(RankEvent::Move(from, to)) => {
-            let (from, to) = (shown[from], shown[to]);
-            state.label_class_step(map, layer, i, |c| {
-                move_item(&mut c.fallbacks, from, to);
-                vale_style::FallbackRank::normalize(&mut c.fallbacks);
-            });
-        }
-        None => {}
     }
     if kind == GeometryKind::Line {
         hint(ui, LINE_FALLBACKS);
@@ -1446,8 +1412,8 @@ fn segment_row(
 /// The space between two fields of a row of the Abbreviations page.
 const FIELD_GAP: f32 = 8.0;
 
-/// The words and the short forms of a class, one pair on each row, with
-/// a delete button at the right of each row.
+/// The words and the short forms of a class, one pair on each row. A
+/// swipe to the left on a row shows its Delete button.
 fn abbreviations_page(
     ui: &mut egui::Ui,
     state: &mut AppState,
@@ -1455,62 +1421,88 @@ fn abbreviations_page(
     (_, map, layer, i): ClassAt,
     class: &LabelClass,
 ) {
-    let list = &class.abbreviations;
-    if list.is_empty() {
+    let pairs = &class.abbreviations;
+    if pairs.is_empty() {
+        state.atlas.abbreviation_list = ListState::default();
         hint(ui, NO_ABBREVIATIONS);
     } else {
         let (head, _) =
             ui.allocate_exact_size(vec2(ui.available_width(), 28.0), egui::Sense::hover());
-        let (word, short, _) = abbreviation_columns(head);
+        let (word, short) = abbreviation_columns(head);
         for (column, text) in [(word, WORD), (short, SHORT_FORM)] {
             let at = pos2(column.left() + 12.0, column.center().y);
             ui.painter()
                 .text(at, Align2::LEFT_CENTER, text, theme::small(), theme::MUTE);
         }
     }
-    let mut delete = None;
-    for (k, (long, short)) in list.iter().enumerate() {
-        let (row, _) =
-            ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), egui::Sense::hover());
-        let (word_rect, short_rect, button) = abbreviation_columns(row);
-        let n = k + 1;
-        let (mut long, mut short) = (long.clone(), short.clone());
-        let font = theme::body();
-        let name = format!("{WORD} {n}");
-        let word = widgets::field_at(
-            ui,
-            controls,
-            word_rect,
-            &name,
-            None,
-            &mut long,
-            true,
-            font.clone(),
-        );
-        let name = format!("{SHORT_FORM} {n}");
-        let shorter = widgets::field_at(
-            ui, controls, short_rect, &name, None, &mut short, true, font,
-        );
-        if word.changed() || shorter.changed() {
-            state.edit_label_class(map, layer, i, |c| {
-                if let Some(pair) = c.abbreviations.get_mut(k) {
-                    *pair = (long, short);
+    let rows: Vec<list::Row<usize>> = (0..pairs.len())
+        .map(|k| list::Row {
+            label: format!("{ABBREVIATION} {}", k + 1),
+            delete: true,
+            ..list::Row::new(k, format!("abbreviation {}", k + 1))
+        })
+        .collect();
+    let mut edit = None;
+    let rows_state = &mut state.atlas.abbreviation_list;
+    let spec = list::Spec::default();
+    let events = list::show(
+        ui,
+        controls,
+        rows_state,
+        spec,
+        &rows,
+        |ui, controls, cell, k| {
+            let (word_rect, short_rect) = abbreviation_columns(cell.rect);
+            let (mut long, mut short) = pairs[k].clone();
+            if !cell.live {
+                // The fields take no touch while a swipe moves the row.
+                for (rect, text) in [(word_rect, &long), (short_rect, &short)] {
+                    let back = rect.shrink(widgets::HIGHLIGHT_INSET);
+                    (cell.painter).rect_filled(back, theme::CONTROL_RADIUS, theme::raise());
+                    let at = pos2(rect.left() + 12.0, rect.center().y);
+                    (cell.painter).text(at, Align2::LEFT_CENTER, text, theme::body(), theme::TEXT);
+                }
+                return None;
+            }
+            let n = k + 1;
+            let font = theme::body();
+            let name = format!("{WORD} {n}");
+            let word = widgets::field_at(
+                ui,
+                controls,
+                word_rect,
+                &name,
+                None,
+                &mut long,
+                true,
+                font.clone(),
+            );
+            let name = format!("{SHORT_FORM} {n}");
+            let shorter = widgets::field_at(
+                ui, controls, short_rect, &name, None, &mut short, true, font,
+            );
+            if word.changed() || shorter.changed() {
+                edit = Some((k, long, short));
+            }
+            None
+        },
+    );
+    if let Some((k, long, short)) = edit {
+        state.edit_label_class(map, layer, i, |c| {
+            if let Some(pair) = c.abbreviations.get_mut(k) {
+                *pair = (long, short);
+            }
+        });
+    }
+    for event in events {
+        if let list::Event::Delete(k) = event {
+            widgets::close_keypad(ui.ctx());
+            state.label_class_step(map, layer, i, |c| {
+                if k < c.abbreviations.len() {
+                    c.abbreviations.remove(k);
                 }
             });
         }
-        let name = format!("{DELETE_ABBREVIATION} {n}");
-        if widgets::icon_button_at(ui, controls, button, &name, Icon::Close, false, true).clicked()
-        {
-            delete = Some(k);
-        }
-    }
-    if let Some(k) = delete {
-        widgets::close_keypad(ui.ctx());
-        state.label_class_step(map, layer, i, |c| {
-            if k < c.abbreviations.len() {
-                c.abbreviations.remove(k);
-            }
-        });
     }
     ui.add_space(6.0);
     if widgets::button_row(ui, controls, ADD_ABBREVIATION, true).clicked() {
@@ -1520,21 +1512,19 @@ fn abbreviations_page(
     }
 }
 
-/// The field of the word, the field of the short form, and the delete
-/// button of a row of the Abbreviations page.
-fn abbreviation_columns(row: Rect) -> (Rect, Rect, Rect) {
-    let button = Rect::from_center_size(
-        pos2(row.right() - TOUCH / 2.0 + 8.0, row.center().y),
-        vec2(TOUCH, TOUCH),
-    );
-    let width = (button.left() - row.left() - 2.0 * FIELD_GAP).max(2.0 * TOUCH);
+/// The field of the word and the field of the short form of a row of the
+/// Abbreviations page. The space at the right of the fields takes the
+/// swipe of the row.
+fn abbreviation_columns(row: Rect) -> (Rect, Rect) {
+    let right = row.right() + 8.0 - TOUCH;
+    let width = (right - row.left() - 2.0 * FIELD_GAP).max(2.0 * TOUCH);
     let word_width = (width * 0.55).round();
     let field = |left: f32, width: f32| {
         Rect::from_min_size(pos2(left, row.center().y - TOUCH / 2.0), vec2(width, TOUCH))
     };
     let word = field(row.left(), word_width);
     let short = field(word.right() + FIELD_GAP, width - word_width);
-    (word, short, button)
+    (word, short)
 }
 
 /// The buttons at the bottom of each segment of the panel of a class.
@@ -1545,17 +1535,6 @@ fn class_buttons(
     (_, map, layer, i): ClassAt,
 ) {
     ui.add_space(6.0);
-    let list = state.label_class_list(map);
-    let count = list.len();
-    let at = list.iter().position(|(l, j, _)| (*l, *j) == (layer, i));
-    if let Some(at) = at {
-        if widgets::button_row(ui, controls, MOVE_UP, at > 0).clicked() {
-            state.reorder_label_classes(map, at, at - 1);
-        }
-        if widgets::button_row(ui, controls, MOVE_DOWN, at + 1 < count).clicked() {
-            state.reorder_label_classes(map, at, at + 1);
-        }
-    }
     let delete = widgets::button_row_in(ui, controls, DELETE_CLASS, true, theme::WARN);
     if delete.clicked() {
         state.delete_label_class(map, layer, i);
@@ -1709,134 +1688,60 @@ fn positions_page(
 ) {
     let list = &class.positions;
     diagram(ui, list);
-    let rows: Vec<(&str, bool)> = list.iter().map(|r| (r.position.name(), r.on)).collect();
-    match rank_list(ui, controls, &mut state.atlas.position_drag, &rows) {
-        Some(RankEvent::Toggle(k)) => {
-            state.label_class_step(map, layer, i, |c| {
-                if let Some(r) = c.positions.get_mut(k) {
-                    r.on = !r.on;
-                }
-            });
+    let rows: Vec<(LabelPosition, &str, bool)> = (list.iter())
+        .map(|r| (r.position, r.position.name(), r.on))
+        .collect();
+    for event in rank_list(ui, controls, &mut state.atlas.position_list, &rows) {
+        match event {
+            list::Event::Tap(p) => {
+                state.label_class_step(map, layer, i, |c| {
+                    if let Some(r) = c.positions.iter_mut().find(|r| r.position == p) {
+                        r.on = !r.on;
+                    }
+                });
+            }
+            list::Event::Move { from, to, .. } => {
+                state.label_class_step(map, layer, i, |c| move_item(&mut c.positions, from, to));
+            }
+            _ => {}
         }
-        Some(RankEvent::Move(from, to)) => {
-            state.label_class_step(map, layer, i, |c| move_item(&mut c.positions, from, to));
-        }
-        None => {}
     }
 }
 
-/// A change of a ranked list.
-enum RankEvent {
-    /// A tap on a row turns it on or off.
-    Toggle(usize),
-    /// A drop moves a row from one place to another.
-    Move(usize, usize),
-}
-
-/// A ranked list of rows, each with a name and a switch, best first. A tap
-/// on a row turns it on or off, and a drag on the handle of a row moves the
-/// row in the rank. `drag` holds the row that a finger drags.
-fn rank_list(
+/// A ranked list of rows, each with a key, a name, and a switch, best
+/// first. A tap on a row turns it on or off, and a hold lifts a row to a
+/// new place in the rank.
+fn rank_list<K>(
     ui: &mut egui::Ui,
     controls: &mut Controls,
-    drag: &mut Option<ClassDrag>,
-    list: &[(&str, bool)],
-) -> Option<RankEvent> {
-    let rank = ranks(list.iter().map(|r| r.1));
-    let size = vec2(ui.available_width(), list.len() as f32 * PANEL_ROW);
-    let (area, _) = ui.allocate_exact_size(size, egui::Sense::hover());
-    let slot =
-        |top: f32| Rect::from_min_size(pos2(area.left(), top), vec2(area.width(), PANEL_ROW));
-    let place = |k: usize| slot(area.top() + k as f32 * PANEL_ROW);
-    let (pointer, down) = ui.input(|i| (i.pointer.interact_pos(), i.pointer.any_down()));
-
-    let Some(held) = drag.filter(|d| d.from < list.len()) else {
-        *drag = None;
-        let mut event = None;
-        for (k, &(name, on)) in list.iter().enumerate() {
-            let rect = place(k);
-            let row = (name, on, rank[k]);
-            let Some((body, handle)) = rank_row(ui, Some(&mut *controls), rect, row, false) else {
-                continue;
-            };
-            if body.clicked() {
-                event = Some(RankEvent::Toggle(k));
-            }
-            if handle.drag_started() || handle.dragged() {
-                let y = pointer.map_or(rect.center().y, |p| p.y);
-                *drag = Some(ClassDrag {
-                    from: k,
-                    grab: y - rect.top(),
-                });
-                ui.ctx().request_repaint();
-            }
-        }
-        return event;
+    state: &mut ListState<K>,
+    items: &[(K, &str, bool)],
+) -> Vec<list::Event<K>>
+where
+    K: Copy + PartialEq + std::hash::Hash + std::fmt::Debug + Send + Sync + 'static,
+{
+    let rank = ranks(items.iter().map(|r| r.2));
+    let rows: Vec<list::Row<K>> = (items.iter())
+        .map(|&(key, name, _)| list::Row::new(key, name))
+        .collect();
+    let spec = list::Spec {
+        reorder: true,
+        ..list::Spec::default()
     };
-
-    // The lifted row follows the finger, and the other rows make room at
-    // the place where it goes.
-    let from = held.from;
-    let y = pointer.map_or(place(from).top() + held.grab, |p| p.y);
-    let top = (y - held.grab).clamp(area.top(), area.bottom() - PANEL_ROW);
-    let to = ((top - area.top()) / PANEL_ROW).round() as usize;
-    let others = list.iter().enumerate().filter(|(k, _)| *k != from);
-    for (n, (k, &(name, on))) in others.enumerate() {
-        let rect = place(if n < to { n } else { n + 1 });
-        rank_row(ui, None, rect, (name, on, rank[k]), false);
-    }
-    let (name, on) = list[from];
-    rank_row(ui, None, slot(top), (name, on, rank[from]), true);
-    if down {
-        ui.ctx().request_repaint();
+    list::show(ui, controls, state, spec, &rows, |ui, _, cell, k| {
+        let (_, name, on) = items[k];
+        let (rect, painter) = (cell.rect, &cell.painter);
+        let y = rect.center().y;
+        if let Some(n) = rank[k] {
+            let at = pos2(rect.left(), y);
+            painter.text(at, Align2::LEFT_CENTER, n, theme::mono(), theme::MUTE);
+        }
+        let at = pos2(rect.left() + 28.0, y);
+        painter.text(at, Align2::LEFT_CENTER, name, theme::body(), theme::TEXT);
+        let id = ui.id().with(("label-switch", name));
+        widgets::paint_switch(ui, id, pos2(rect.right(), y), on);
         None
-    } else {
-        *drag = None;
-        (to != from).then_some(RankEvent::Move(from, to))
-    }
-}
-
-/// One row of a ranked list in `rect`: the rank, the name, the switch, and
-/// the handle at the right. With `controls`, the row takes a tap, its
-/// handle takes a drag, and the function returns both. A `lifted` row shows
-/// above the others.
-fn rank_row(
-    ui: &egui::Ui,
-    controls: Option<&mut Controls>,
-    rect: Rect,
-    (name, on, rank): (&str, bool, Option<usize>),
-    lifted: bool,
-) -> Option<(egui::Response, egui::Response)> {
-    let handle = Rect::from_center_size(
-        pos2(rect.right() - TOUCH / 2.0 + 8.0, rect.center().y),
-        vec2(TOUCH, TOUCH),
-    );
-    let body = Rect::from_min_max(rect.min, pos2(handle.left(), rect.bottom()));
-    let out = controls.map(|controls| {
-        let body = widgets::tap_area(ui, controls, body, name, true);
-        let grip = format!("{REORDER} {name}");
-        (body, widgets::drag_area(ui, controls, handle, &grip))
-    });
-    let highlight = rect.expand2(vec2(8.0, -widgets::HIGHLIGHT_INSET));
-    let painter = ui.painter();
-    if lifted {
-        let shadow = highlight.translate(vec2(0.0, 2.0)).expand(2.0);
-        painter.rect_filled(shadow, 7.0, egui::Color32::from_black_alpha(60));
-        painter.rect_filled(highlight, 5.0, theme::card(false).to_opaque());
-        painter.rect_filled(highlight, 5.0, theme::raise());
-    }
-    let y = rect.center().y;
-    if let Some(n) = rank {
-        let at = pos2(rect.left(), y);
-        painter.text(at, Align2::LEFT_CENTER, n, theme::mono(), theme::MUTE);
-    }
-    let at = pos2(rect.left() + 28.0, y);
-    painter.text(at, Align2::LEFT_CENTER, name, theme::body(), theme::TEXT);
-    let id = ui.id().with(("label-switch", name));
-    widgets::paint_switch(ui, id, pos2(handle.left() - 4.0, y), on);
-    let color = if lifted { theme::TEXT } else { theme::MUTE };
-    icons::paint(painter, handle, Icon::Grip, widgets::ICON, color);
-    out
+    })
 }
 
 /// Closes the color picker of the label class when it did not show in this

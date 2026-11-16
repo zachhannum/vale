@@ -922,6 +922,17 @@ impl Style {
         }
     }
 
+    /// Moves the rule at `from` to the place `to`, and returns its new index.
+    pub fn move_rule_to(&mut self, from: usize, to: usize) -> usize {
+        if from >= self.rules.len() {
+            return from;
+        }
+        let to = to.min(self.rules.len() - 1);
+        let rule = self.rules.remove(from);
+        self.rules.insert(to, rule);
+        to
+    }
+
     /// The rules that draw at the scale denominator `scale`.
     pub fn visible(&self, scale: f64) -> impl Iterator<Item = &Rule> {
         self.rules.iter().filter(move |r| r.in_scale(scale))

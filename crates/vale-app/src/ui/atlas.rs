@@ -20,6 +20,7 @@ use vale_store::RasterId;
 use super::AppState;
 use super::frame_tiles::{FrameLists, FramePaint, Layer, Screen, Shown, Spill, Tiles};
 use super::map_texture::{self, MapTexture};
+use super::pad::list::ListState;
 use crate::atlas::{self as math, FrameTarget, Handle, PT_PER_MM, PagePreset, Vertex};
 use crate::distortion::ScaleError;
 use crate::document::Document;
@@ -34,6 +35,7 @@ use crate::page_snap;
 use crate::pipeline::{FrameDetail, Pipeline, Quality};
 use crate::region::{Region, RegionKind, fit, suggest};
 use crate::view::ViewTransform;
+use vale_style::{LabelFallback, LabelPosition};
 
 pub mod features;
 pub mod measure;
@@ -439,16 +441,6 @@ pub enum ClassColor {
     GridHalo,
 }
 
-/// A row that a finger drags by its handle: a label class in the Labels
-/// tab, or a position on the Positions page.
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub struct ClassDrag {
-    /// The place of the row in its list.
-    pub from: usize,
-    /// The distance from the top of the row to the finger.
-    pub grab: f32,
-}
-
 /// The pan and the zoom of the page on the screen.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct PageView {
@@ -613,6 +605,8 @@ pub struct AtlasState {
     pub(crate) neatline_shown: bool,
     /// The text of the name field of the custom projections.
     pub preset_name: String,
+    /// The gestures of the rows of the custom projections, by place.
+    pub preset_list: crate::ui::pad::list::ListState<usize>,
     /// The panels of a frame of the iPad layout show their pages at the same
     /// time, so the pages of a tab do not wait for the tab.
     pub every_tab: bool,
@@ -653,8 +647,8 @@ pub struct AtlasState {
     pub label_page: Option<ClassPage>,
     /// The frame whose Map style page the Frame tab shows.
     pub map_styles: Option<FrameId>,
-    /// The map style row of the Map style page that a finger swiped.
-    pub map_style_swipe: Option<crate::ui::pad::Swipe<MapStyleId>>,
+    /// The gestures of the map styles of the Map style page.
+    pub map_style_list: crate::ui::pad::list::ListState<MapStyleId>,
     /// The map style that the user renames on the Map style page, and the
     /// text of its name field.
     pub map_style_name: Option<(MapStyleId, String)>,
@@ -664,12 +658,14 @@ pub struct AtlasState {
     pub label_color: Option<ClassColor>,
     /// The color picker of the label class showed in this frame.
     pub(crate) label_color_shown: bool,
-    /// The label class that a finger drags in the Labels tab.
-    pub label_drag: Option<ClassDrag>,
-    /// The position that a finger drags on the Positions page.
-    pub position_drag: Option<ClassDrag>,
-    /// The fallback that a finger drags on the Fallbacks page.
-    pub fallback_drag: Option<ClassDrag>,
+    /// The list of the label classes of the Labels tab.
+    pub label_list: ListState<(MapId, LayerId, usize)>,
+    /// The list of the Positions page.
+    pub position_list: ListState<LabelPosition>,
+    /// The list of the Fallbacks page.
+    pub fallback_list: ListState<LabelFallback>,
+    /// The list of the Abbreviations page.
+    pub abbreviation_list: ListState<usize>,
     /// The frame whose Edge labels page the Frame tab shows.
     pub edge: Option<FrameId>,
     /// The set of edge labels that the page shows.
@@ -859,6 +855,7 @@ impl Default for AtlasState {
             neatline_color: false,
             neatline_shown: false,
             preset_name: String::new(),
+            preset_list: Default::default(),
             every_tab: false,
             panel_rect: None,
             place: None,
@@ -872,14 +869,15 @@ impl Default for AtlasState {
             label: None,
             label_page: None,
             map_styles: None,
-            map_style_swipe: None,
+            map_style_list: Default::default(),
             map_style_name: None,
             label_segment: ClassSegment::Text,
             label_color: None,
             label_color_shown: false,
-            label_drag: None,
-            position_drag: None,
-            fallback_drag: None,
+            label_list: ListState::default(),
+            position_list: ListState::default(),
+            fallback_list: ListState::default(),
+            abbreviation_list: ListState::default(),
             edge: None,
             edge_set: EdgeSet::Meridians,
             edge_styles: false,
@@ -3963,9 +3961,33 @@ pub fn apply_preset(state: &mut AppState, id: FrameId, name: &str) {
 /// Deletes the custom projection with the name in the name field.
 pub fn delete_preset(state: &mut AppState) {
     let name = state.atlas.preset_name.clone();
-    if state.doc.remove_preset(&name) {
+    delete_preset_named(state, &name);
+}
+
+/// Deletes the custom projection `name`. The name field clears if it has
+/// that name.
+pub fn delete_preset_named(state: &mut AppState, name: &str) {
+    if state.doc.remove_preset(name) && state.atlas.preset_name == name {
         state.atlas.preset_name.clear();
     }
+}
+
+/// Gives the custom projection `from` the name `to`. An empty name or the
+/// name of another custom projection does not apply.
+pub fn rename_preset(state: &mut AppState, from: &str, to: &str) -> bool {
+    let to = to.trim();
+    let presets = &mut state.doc.project.atlas.presets;
+    if to.is_empty() || presets.iter().any(|p| p.name == to) {
+        return false;
+    }
+    let Some(preset) = presets.iter_mut().find(|p| p.name == from) else {
+        return false;
+    };
+    preset.name = to.to_string();
+    if state.atlas.preset_name == from {
+        state.atlas.preset_name = to.to_string();
+    }
+    true
 }
 
 /// The custom projection that has the projection of the map of a frame.

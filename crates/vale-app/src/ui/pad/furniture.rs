@@ -12,11 +12,12 @@ use vale_store::{
 use super::geometry::TOUCH;
 use super::icons::{self, Icon};
 use super::label_text;
+use super::list;
 use super::number::Number;
 use super::raster::heading;
 use super::text_style::{self, TextEvent, TextSpec, rgba_rows};
 use super::widgets::keypad_below;
-use super::widgets::{self, Controls, HIGHLIGHT_INSET, Keys, PANEL_ROW};
+use super::widgets::{self, Controls, HIGHLIGHT_INSET, Keys};
 use super::{Head, PageParts, Panel, theme};
 use crate::ui::atlas::{self, BarPage, BarPick, ClassColor, ItemKind, ItemPage, TextPart};
 use crate::ui::expr_help::ExprHelp;
@@ -605,9 +606,9 @@ fn entry_rows(
         hint(ui, text);
         return;
     }
-    let labels: Vec<String> = rows.iter().map(|r| r.label.clone()).collect();
-    for (row, name) in rows.iter().zip(entry_names(&labels)) {
-        let (tap, eye) = eye_row(ui, controls, &name, &row.label, row.hidden);
+    let items: Vec<_> = rows.iter().map(|r| (r.label.clone(), r.hidden)).collect();
+    for (i, tap, eye) in eye_list(ui, controls, &items) {
+        let row = &rows[i];
         let key = (row.layer, row.rule.clone());
         if eye {
             let hidden = !row.hidden;
@@ -620,33 +621,64 @@ fn entry_rows(
     }
 }
 
-/// A row with a text that opens a page and an eye at the right. Gives
-/// whether the text and the eye were tapped.
-fn eye_row(
+/// A list of rows with a text that opens a page and an eye at the right.
+/// Each item is a text and whether it is hidden. Gives the place of each
+/// row whose text or eye was tapped, with whether the text and the eye were
+/// tapped.
+fn eye_list(
     ui: &mut egui::Ui,
     controls: &mut Controls,
-    name: &str,
-    label: &str,
-    hidden: bool,
-) -> (bool, bool) {
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), Sense::hover());
-    let center = pos2(rect.right() + 8.0 - TOUCH / 2.0, rect.center().y);
-    let eye = Rect::from_center_size(center, vec2(TOUCH, TOUCH));
-    let text = Rect::from_min_max(rect.min, pos2(eye.left() - 4.0, rect.max.y));
-    let tap = widgets::tap_area(ui, controls, text, name, true);
-    let painter = ui.painter().with_clip_rect(ui.clip_rect().intersect(text));
-    let color = widgets::fade(theme::TEXT, !hidden);
-    painter.text(
-        text.left_center(),
-        Align2::LEFT_CENTER,
-        label,
-        theme::body(),
-        color,
+    items: &[(String, bool)],
+) -> Vec<(usize, bool, bool)> {
+    let labels: Vec<String> = items.iter().map(|i| i.0.clone()).collect();
+    let names = entry_names(&labels);
+    let rows: Vec<list::Row<usize>> = (names.iter().enumerate())
+        .map(|(i, name)| list::Row {
+            trailing: TOUCH,
+            ..list::Row::new(i, name.clone())
+        })
+        .collect();
+    let mut gestures = list::ListState::default();
+    let spec = list::Spec::default();
+    let events = list::show(
+        ui,
+        controls,
+        &mut gestures,
+        spec,
+        &rows,
+        |ui, controls, cell, i| {
+            let (label, hidden) = (&items[i].0, items[i].1);
+            let rect = cell.rect;
+            let text = Rect::from_min_max(rect.min, pos2(cell.trailing.left() - 4.0, rect.max.y));
+            let painter = cell
+                .painter
+                .with_clip_rect(cell.painter.clip_rect().intersect(text));
+            let color = widgets::fade(theme::TEXT, !hidden);
+            painter.text(
+                text.left_center(),
+                Align2::LEFT_CENTER,
+                label,
+                theme::body(),
+                color,
+            );
+            let eye = Rect::from_center_size(cell.trailing.center(), vec2(TOUCH, TOUCH));
+            let icon = if hidden { Icon::EyeOff } else { Icon::Eye };
+            if !cell.live {
+                icons::paint(&cell.painter, eye, icon, widgets::ICON, theme::MUTE);
+                return None;
+            }
+            let name = widgets::eye_name(&names[i], !hidden);
+            let eye = widgets::icon_button_at(ui, controls, eye, &name, icon, false, true);
+            eye.clicked().then_some(list::Trail::Control(list::EYE))
+        },
     );
-    let icon = if hidden { Icon::EyeOff } else { Icon::Eye };
-    let eye_name = widgets::eye_name(name, !hidden);
-    let eye = widgets::icon_button_at(ui, controls, eye, &eye_name, icon, false, true);
-    (tap.clicked(), eye.clicked())
+    (events.into_iter())
+        .filter_map(|event| match event {
+            list::Event::Tap(i) => Some((i, true, false)),
+            list::Event::Control(i, list::EYE) => Some((i, false, true)),
+            _ => None,
+        })
+        .collect()
 }
 
 /// The page of the name of an entry of a legend. An empty name, or the
@@ -1009,9 +1041,9 @@ fn band_rows(
         return;
     };
     let rows: Vec<_> = data.rows.into_iter().rev().collect();
-    let labels: Vec<String> = rows.iter().map(|r| r.label.clone()).collect();
-    for (row, name) in rows.iter().zip(entry_names(&labels)) {
-        let (tap, eye) = eye_row(ui, controls, &name, &row.label, row.hidden);
+    let items: Vec<_> = rows.iter().map(|r| (r.label.clone(), r.hidden)).collect();
+    for (i, tap, eye) in eye_list(ui, controls, &items) {
+        let row = &rows[i];
         if eye {
             let hidden = !row.hidden;
             atlas::edit_band(state, id, row.key.clone(), true, |e| e.hidden = hidden);

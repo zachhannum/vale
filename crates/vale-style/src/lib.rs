@@ -536,6 +536,22 @@ mod tests {
     }
 
     #[test]
+    fn move_rule_to_takes_a_rule_to_any_place() {
+        let mut st = Style {
+            rules: ["a", "b", "c", "d"]
+                .map(|n| Rule::new(n, Vec::new()))
+                .to_vec(),
+            mask: None,
+        };
+        assert_eq!(st.move_rule_to(0, 2), 2);
+        assert_eq!(st.move_rule_to(3, 0), 0);
+        assert_eq!(st.move_rule_to(1, 9), 3);
+        assert_eq!(st.move_rule_to(9, 0), 9);
+        let names: Vec<_> = st.rules.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["d", "c", "a", "b"]);
+    }
+
+    #[test]
     fn rule_stroke_and_fill() {
         let mut r = Rule::new("r", Vec::new());
         let s = Stroke::solid(Color::rgb(1, 2, 3), 2.5);
