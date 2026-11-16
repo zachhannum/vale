@@ -3183,3 +3183,109 @@ fn the_desktop_style_editor_picks_the_height_layer_of_flow() {
     let entry = h.state().doc.entry(rivers).unwrap();
     assert_eq!(entry.style.flow_height.as_ref(), Some(&heights[1]));
 }
+
+#[test]
+fn the_desktop_ramp_menus_open_the_editor_window() {
+    use vale_app::ui::RampSource;
+    use vale_app::ui::pad::classify::CLASSIFY;
+    use vale_app::ui::pad::ramp_editor::{ADD_COLOR, NEW_RAMP_TITLE, RAMP_NAME, SAVE_RAMP};
+    use vale_app::ui::pad::raster::{COLOR_RAMPS, DUPLICATE_RAMP, NEW_RAMP, SAVE_AS_RAMP};
+    use vale_app::ui::region::CANCEL;
+
+    // The window is tall enough for the color ramps of the panel.
+    let mut state = state_with(Document::sample());
+    state.workspace = Workspace::Globe;
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(SIZE.0 as f32, 1600.0))
+        .with_pixels_per_point(1.0)
+        .build_ui_state(|ui, state: &mut AppState| draw(ui, state), state);
+    let height = h.state_mut().add_raster(RasterSpec::height("Height", 64));
+    let height = height.unwrap();
+    h.state_mut().select(Some(LayerRef::Raster(height)));
+    h.state_mut().globe.preview.panel = true;
+    h.run_steps(3);
+    let click = |h: &mut Harness<'static, AppState>, name: &str| {
+        h.get_by_label(name).click();
+        h.run_steps(4);
+    };
+    // The host runs the actions that the menus push.
+    let run_actions = |h: &mut Harness<'static, AppState>| {
+        for action in std::mem::take(&mut h.state_mut().actions) {
+            h.state_mut().run_action(action);
+        }
+        h.run_steps(2);
+    };
+
+    // "New ramp…" opens the window with white and black.
+    click(&mut h, COLOR_RAMPS);
+    click(&mut h, NEW_RAMP);
+    let blank = Action::NewRamp(Some(height), RampSource::Blank);
+    assert_eq!(h.state().actions, [blank]);
+    run_actions(&mut h);
+    assert!(h.query_by_label(NEW_RAMP_TITLE).is_some());
+    assert_eq!(h.state().ramp_draft.as_ref().unwrap().colors.len(), 2);
+    click(&mut h, ADD_COLOR);
+    assert_eq!(h.state().ramp_draft.as_ref().unwrap().colors.len(), 3);
+    assert!(h.query_by_label(SAVE_RAMP).is_some());
+    // "Cancel" closes the window with no new ramp.
+    let count = h.state().ramps.list().len();
+    click(&mut h, CANCEL);
+    assert!(h.state().ramp_draft.is_none());
+    assert!(h.query_by_label(SAVE_RAMP).is_none());
+    assert_eq!(h.state().ramps.list().len(), count);
+
+    // "Save as ramp…" takes the band colors of the layer.
+    click(&mut h, COLOR_RAMPS);
+    click(&mut h, SAVE_AS_RAMP);
+    run_actions(&mut h);
+    let draft = h.state().ramp_draft.clone().unwrap();
+    assert_eq!(draft.colors, h.state().globe.map.bands.colors());
+    click(&mut h, CANCEL);
+
+    // "Duplicate…" in the menu of a ramp copies the ramp.
+    let ramp = h.state().ramps.list()[0].clone();
+    click(&mut h, COLOR_RAMPS);
+    let menu = format!("{} ({}) ⏵", ramp.name, ramp.colors.len());
+    click(&mut h, &menu);
+    click(&mut h, DUPLICATE_RAMP);
+    let copy = Action::NewRamp(Some(height), RampSource::Copy(0));
+    assert_eq!(h.state().actions, [copy]);
+    run_actions(&mut h);
+    let draft = h.state().ramp_draft.clone().unwrap();
+    assert_eq!(draft.name, format!("{} copy", ramp.name));
+    assert_eq!(draft.colors, ramp.colors);
+    click(&mut h, CANCEL);
+
+    // The name field of the menu of a custom ramp renames the ramp. The
+    // name of another ramp changes nothing.
+    h.state_mut()
+        .ramps
+        .add("Sand", vec![[1; 3], [2; 3]])
+        .unwrap();
+    for (from, to, after) in [("Sand", "Viridis", "Sand"), ("Sand", "Dunes", "Dunes")] {
+        click(&mut h, COLOR_RAMPS);
+        click(&mut h, &format!("{from} (2) ⏵"));
+        type_in(&mut h, RAMP_NAME, to);
+        let custom = h.state().ramps.custom();
+        assert_eq!(custom.last().unwrap().name, after, "{to}");
+        h.key_press(egui::Key::Escape);
+        h.run_steps(2);
+    }
+
+    // The Classify section of a vector layer has "New ramp…" and
+    // "Duplicate…" for its ramp.
+    let layers = h.state().doc.project.layers();
+    let land = layers.iter().find(|l| l.name == "Land").unwrap().id;
+    h.state_mut().select(Some(LayerRef::Vector(land)));
+    h.run_steps(2);
+    click(&mut h, CLASSIFY);
+    click(&mut h, NEW_RAMP);
+    click(&mut h, DUPLICATE_RAMP);
+    let actions = [
+        Action::NewRamp(None, RampSource::Blank),
+        Action::NewRamp(None, RampSource::Copy(0)),
+    ];
+    assert_eq!(h.state().actions, actions);
+    run_actions(&mut h);
+    assert!(h.query_by_label(SAVE_RAMP).is_some());
+}

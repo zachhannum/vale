@@ -272,7 +272,7 @@ pub fn section(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
                     state.touch();
                 }
             }
-            list::Event::Control(..) | list::Event::Lift(_) => {}
+            list::Event::Control(..) | list::Event::Lift(_) | list::Event::Action(..) => {}
         }
     }
     if widgets::button_row(ui, controls, ADD_RULE, true).clicked()

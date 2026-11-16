@@ -1752,6 +1752,7 @@ fn layer_head(state: &mut AppState, id: vale_store::FrameId) -> Option<Head> {
         Some(Page::Classify | Page::Ramps | Page::RampLabels(_) | Page::Mask) => {
             state.atlas.layer_page
         }
+        Some(Page::RampEditor) if state.ramp_draft.is_some() => state.atlas.layer_page,
         Some(Page::Table) => state.atlas.layer_page,
         Some(Page::Rules) if !state.pad.rules.picked(layer).is_empty() => state.atlas.layer_page,
         _ => None,
@@ -1784,6 +1785,11 @@ fn layer_head(state: &mut AppState, id: vale_store::FrameId) -> Option<Head> {
             super::raster::LABELS,
             super::raster::COLOR_RAMPS,
         ),
+        Some(Page::RampEditor) => (
+            "pad-atlas-classify-ramp-editor",
+            super::ramp_editor::NEW_RAMP_TITLE,
+            super::raster::COLOR_RAMPS,
+        ),
         Some(Page::Table) => ("pad-atlas-table", super::table::TITLE, name.as_str()),
         Some(Page::Rules) => ("pad-atlas-rules", rule_name.as_str(), name.as_str()),
         Some(_) => ("pad-atlas-rule", rule_name.as_str(), name.as_str()),
@@ -1797,6 +1803,10 @@ fn layer_head(state: &mut AppState, id: vale_store::FrameId) -> Option<Head> {
             }
             Some(Page::Ramps) => Some(Page::Classify),
             Some(Page::RampLabels(_)) => Some(Page::Ramps),
+            Some(Page::RampEditor) => {
+                state.ramp_draft = None;
+                Some(Page::Ramps)
+            }
             Some(_) => None,
             None => {
                 state.atlas.layer = None;
@@ -1841,6 +1851,7 @@ fn layer_head(state: &mut AppState, id: vale_store::FrameId) -> Option<Head> {
                 super::raster::RampUser::Classify(layer),
             ),
             Some(Page::RampLabels(i)) => super::raster::labels_body(ui, state, controls, i),
+            Some(Page::RampEditor) => super::ramp_editor::body(ui, state, controls),
             _ => super::rules::section(ui, state, controls, layer),
         });
         if page.is_none() {
@@ -1947,12 +1958,18 @@ fn raster_head(
         matches!(
             p,
             Page::Stops | Page::Ramps | Page::RampLabels(_) | Page::Hillshade | Page::Blend
-        )
+        ) || *p == Page::RampEditor && state.ramp_draft.is_some()
     });
     state.atlas.layer_page = page;
+    let editor_back = super::ramp_editor::back_page(state);
     let (key, title, back) = match page {
         Some(Page::Ramps) => ("pad-atlas-ramps", COLOR_RAMPS, COLOR_STOPS),
         Some(Page::RampLabels(_)) => ("pad-atlas-ramp-labels", LABELS, COLOR_RAMPS),
+        Some(Page::RampEditor) => (
+            "pad-atlas-ramp-editor",
+            super::ramp_editor::NEW_RAMP_TITLE,
+            editor_back.1,
+        ),
         Some(Page::Stops) => ("pad-atlas-stops", COLOR_STOPS, name.as_str()),
         Some(Page::Hillshade) => ("pad-atlas-hillshade", HILLSHADE, name.as_str()),
         Some(_) => ("pad-atlas-blend", BLEND, name.as_str()),
@@ -1963,6 +1980,10 @@ fn raster_head(
         state.atlas.layer_page = match page {
             Some(Page::Ramps) => Some(Page::Stops),
             Some(Page::RampLabels(_)) => Some(Page::Ramps),
+            Some(Page::RampEditor) => {
+                state.ramp_draft = None;
+                Some(editor_back.0)
+            }
             Some(_) => None,
             None => {
                 state.atlas.layer = None;
@@ -1981,6 +2002,7 @@ fn raster_head(
                 super::raster::RampUser::Raster(raster),
             ),
             Some(Page::RampLabels(i)) => super::raster::labels_body(ui, state, controls, i),
+            Some(Page::RampEditor) => super::ramp_editor::body(ui, state, controls),
             Some(Page::Hillshade) => {
                 super::raster::hillshade_body(ui, state, controls, raster);
             }

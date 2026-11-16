@@ -17,7 +17,7 @@ use super::pad::classify::{
 };
 use super::pad::filter;
 use super::pad::furniture::{ANGLE, LINE_COLOR, LINE_WIDTH};
-use super::pad::raster::IMPORT_RAMP;
+use super::pad::raster::{DUPLICATE_RAMP, IMPORT_RAMP, NEW_RAMP};
 use super::pad::rules::{
     ADD_RULE, ALL_FEATURES, BAD_RANGE, BRUSH, DASH, DASHED, DASHES, DELETE_RULE, DELETE_RULES,
     EXPRESSION, FILL, FILTER, FLOW, FLOW_MIN, GAP, HEIGHT_LAYER, LINE, MAX_SCALE, MIN_SCALE,
@@ -31,7 +31,7 @@ use super::pad::rules::{
     SIZE_VARIATION, SPACING, SVG_SYMBOL, SYMBOL, TINT, marker_radius, new_tint, numeric_fields,
     pick_symbol, property_field, to_circle, with_field,
 };
-use super::{Action, Note, number};
+use super::{Action, Note, RampSource, number};
 use crate::classify::{self, Method, Step};
 use crate::globe::symbol::paint_symbol;
 use crate::ramps::Ramp;
@@ -1049,9 +1049,23 @@ pub fn classify(
                         }
                     });
             });
-            if ui.button(IMPORT_RAMP).clicked() {
-                library.actions.push(Action::ImportRampDialog(None));
-            }
+            ui.horizontal(|ui| {
+                if ui.button(IMPORT_RAMP).clicked() {
+                    library.actions.push(Action::ImportRampDialog(None));
+                }
+                if ui.button(NEW_RAMP).clicked() {
+                    library
+                        .actions
+                        .push(Action::NewRamp(None, RampSource::Blank));
+                }
+                let duplicate =
+                    ui.add_enabled(ramp < ramps.len(), egui::Button::new(DUPLICATE_RAMP));
+                if duplicate.clicked() {
+                    library
+                        .actions
+                        .push(Action::NewRamp(None, RampSource::Copy(ramp)));
+                }
+            });
             ui.checkbox(&mut reverse, REVERSE);
             if ui.button(REPLACE_RULES).clicked()
                 && let Some(r) = ramps.get(ramp)

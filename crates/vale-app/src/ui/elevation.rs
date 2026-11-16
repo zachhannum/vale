@@ -9,6 +9,7 @@ use super::gradient::{self, DESKTOP};
 use super::pad::raster::RampChoice;
 use super::{Action, AppState, LayerRef, number, pad, style_editor};
 use crate::globe::preview::{LAKE_KM2_RANGE, Preview};
+use crate::ramps::Ramps;
 use crate::world;
 
 /// The range of the factor of the width of a river line.
@@ -277,6 +278,19 @@ fn body(ui: &mut egui::Ui, state: &mut AppState) {
             state.actions.push(Action::ImportRampDialog(Some(id)));
             ui.close();
         }
+        if ui.button(pad::raster::NEW_RAMP).clicked() {
+            state
+                .actions
+                .push(Action::NewRamp(Some(id), super::RampSource::Blank));
+            ui.close();
+        }
+        if ui.button(pad::raster::SAVE_AS_RAMP).clicked() {
+            state
+                .actions
+                .push(Action::NewRamp(Some(id), super::RampSource::Bands(id)));
+            ui.close();
+        }
+        ui.separator();
         ramp_menus(ui, state, id);
     });
     if let Some(note) = state.ramp_note.as_ref().filter(|n| n.layer == Some(id)) {
@@ -299,6 +313,7 @@ fn ramp_menus(ui: &mut egui::Ui, state: &mut AppState, id: RasterId) {
     let split = layer.sea().is_some();
     let mut chosen = None;
     let mut labeled = None;
+    let mut renamed = None;
     for (index, ramp) in state.ramps.list().iter().enumerate() {
         let colors = ramp.colors.len();
         // The part that the user chose stays in the memory of egui.
@@ -319,6 +334,12 @@ fn ramp_menus(ui: &mut egui::Ui, state: &mut AppState, id: RasterId) {
                 });
                 ui.separator();
             }
+            if !ramp.built_in {
+                if let Some(text) = name_field(ui, &state.ramps, index, &ramp.name) {
+                    renamed = Some((index, text));
+                }
+                ui.separator();
+            }
             let mut choose = |ui: &mut egui::Ui, text: &str, choice: RampChoice| {
                 if ui.button(text).clicked() {
                     chosen = Some((index, part, choice));
@@ -336,8 +357,9 @@ fn ramp_menus(ui: &mut egui::Ui, state: &mut AppState, id: RasterId) {
                 let fresh = format!("Make {colors} {kind}bands");
                 choose(ui, &fresh, RampChoice::Apply(false));
             }
+            ui.separator();
+            choose(ui, pad::raster::DUPLICATE_RAMP, RampChoice::Duplicate);
             if !ramp.built_in {
-                ui.separator();
                 choose(ui, pad::raster::REVERSE_RAMP, RampChoice::Reverse);
                 choose(ui, pad::raster::DELETE_RAMP, RampChoice::Delete);
             }
@@ -369,6 +391,11 @@ fn ramp_menus(ui: &mut egui::Ui, state: &mut AppState, id: RasterId) {
     {
         state.ramp_note = Some(super::Note::new(e.to_string(), true, Some(id)));
     }
+    if let Some((index, text)) = renamed
+        && let Err(e) = state.ramps.rename(index, &text)
+    {
+        state.ramp_note = Some(super::Note::new(e.to_string(), true, Some(id)));
+    }
     let Some((index, part, choice)) = chosen else {
         return;
     };
@@ -376,11 +403,48 @@ fn ramp_menus(ui: &mut egui::Ui, state: &mut AppState, id: RasterId) {
         RampChoice::Apply(keep) => state.apply_ramp(id, index, keep, part),
         RampChoice::Reverse => state.ramps.reverse(index).map_err(|e| e.to_string()),
         RampChoice::Delete => state.ramps.remove(index).map_err(|e| e.to_string()),
+        RampChoice::Duplicate => {
+            let source = super::RampSource::Copy(index);
+            state.actions.push(Action::NewRamp(Some(id), source));
+            Ok(())
+        }
         RampChoice::Labels | RampChoice::Use => Ok(()),
     };
     if let Err(text) = result {
         state.ramp_note = Some(super::Note::new(text, true, Some(id)));
     }
+}
+
+/// The name field of custom ramp `index` in its menu. A blank or taken name
+/// gets the warning color. Returns the new name when the field loses the
+/// focus.
+fn name_field(ui: &mut egui::Ui, ramps: &Ramps, index: usize, name: &str) -> Option<String> {
+    // The text that the user types stays in the memory of egui.
+    let key = egui::Id::new(("ramp-name", index));
+    let mut text: String = ui
+        .data(|d| d.get_temp(key))
+        .unwrap_or_else(|| name.to_owned());
+    let valid = ramps.can_rename(index, &text);
+    ui.horizontal(|ui| {
+        let label = ui.label(pad::ramp_editor::RAMP_NAME);
+        let mut edit = egui::TextEdit::singleline(&mut text).desired_width(140.0);
+        if !valid {
+            edit = edit.text_color(ui.visuals().warn_fg_color);
+        }
+        let field = ui.add(edit).labelled_by(label.id);
+        if field.lost_focus() {
+            ui.data_mut(|d| d.remove::<String>(key));
+            return (valid && text.trim() != name).then_some(text);
+        }
+        if field.has_focus() {
+            ui.data_mut(|d| d.insert_temp(key, text.clone()));
+        } else {
+            // A menu that closes during a rename drops the text.
+            ui.data_mut(|d| d.remove::<String>(key));
+        }
+        None
+    })
+    .inner
 }
 
 /// The name of the unit field.

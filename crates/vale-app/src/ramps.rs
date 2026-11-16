@@ -5,10 +5,20 @@
 
 use std::path::{Path, PathBuf};
 
-use vale_terrain::Rgb;
+use vale_store::RasterId;
+use vale_terrain::{MAX_BANDS, Rgb};
 
 /// The file in the folder of the state that holds the ramps.
 const RAMPS_FILE: &str = "ramps.txt";
+
+/// The word before the colors of a qualitative custom ramp in the file.
+const QUALITATIVE_WORD: &str = "qualitative";
+
+/// The fewest colors of a ramp that the editor makes.
+pub const MIN_COLORS: usize = 2;
+
+/// The most colors of a ramp that the editor makes.
+pub const MAX_COLORS: usize = MAX_BANDS;
 
 /// The colors of the blocks of a legend, from the lowest band.
 #[derive(Clone, Debug, PartialEq)]
@@ -111,18 +121,60 @@ impl Ramps {
     /// Adds a ramp at the end, and returns its name. A name that another
     /// ramp has gets a number.
     pub fn add(&mut self, name: &str, colors: Vec<Rgb>) -> std::io::Result<String> {
+        self.add_ramp(Ramp::new(name, colors))
+    }
+
+    /// Adds a ramp at the end as a custom ramp, and returns its name. A name
+    /// that another ramp has gets a number.
+    pub fn add_ramp(&mut self, mut ramp: Ramp) -> std::io::Result<String> {
+        ramp.name = self.free_name(&ramp.name);
+        ramp.built_in = false;
+        ramp.labels.resize(ramp.colors.len(), String::new());
+        for label in &mut ramp.labels {
+            *label = label.replace(['\t', '\n', '\r'], " ");
+        }
+        let name = ramp.name.clone();
+        self.list.push(ramp);
+        self.write()?;
+        Ok(name)
+    }
+
+    /// Whether a ramp has this name.
+    pub fn taken(&self, name: &str) -> bool {
+        self.list.iter().any(|r| r.name == name)
+    }
+
+    /// This name, or with a number if another ramp has the name. Tabs and
+    /// line breaks become spaces.
+    pub fn free_name(&self, name: &str) -> String {
         let name = name.replace(['\t', '\n', '\r'], " ");
-        let taken = |n: &str| self.list.iter().any(|r| r.name == n);
-        let name = (1..)
+        (1..)
             .map(|i| match i {
                 1 => name.clone(),
                 _ => format!("{name} {i}"),
             })
-            .find(|n| !taken(n))
-            .unwrap_or_default();
-        self.list.push(Ramp::new(name.clone(), colors));
-        self.write()?;
-        Ok(name)
+            .find(|n| !self.taken(n))
+            .unwrap_or_default()
+    }
+
+    /// True if custom ramp `index` can take `name`: the name is not blank,
+    /// and no other ramp has it.
+    pub fn can_rename(&self, index: usize, name: &str) -> bool {
+        let name = name.trim();
+        self.list.get(index).is_some_and(|r| !r.built_in)
+            && !name.is_empty()
+            && !(self.list.iter().enumerate()).any(|(i, r)| i != index && r.name == name)
+    }
+
+    /// Gives custom ramp `index` a new name, without the spaces at its ends.
+    /// A built-in ramp, a blank name, and the name of another ramp change
+    /// nothing.
+    pub fn rename(&mut self, index: usize, name: &str) -> std::io::Result<()> {
+        if !self.can_rename(index, name) {
+            return Ok(());
+        }
+        self.list[index].name = name.trim().replace(['\t', '\n', '\r'], " ");
+        self.write()
     }
 
     /// Reverses the order of the colors of a custom ramp. A built-in ramp
@@ -185,13 +237,183 @@ impl Ramps {
     }
 }
 
+/// The page that opened the editor of a ramp, and that Back returns to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DraftFrom {
+    Stops,
+    Ramps,
+}
+
+/// A ramp in the editor, before the save.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Draft {
+    pub name: String,
+    pub colors: Vec<Rgb>,
+    /// The label of each color.
+    pub labels: Vec<String>,
+    pub qualitative: bool,
+    /// The row of the color picker.
+    pub selected: Option<usize>,
+    pub from: DraftFrom,
+    /// The raster layer whose panel shows the note of the save.
+    pub layer: Option<RasterId>,
+}
+
+impl Default for Draft {
+    fn default() -> Self {
+        Draft::new()
+    }
+}
+
+impl Draft {
+    /// A new ramp from white to black, with no name.
+    pub fn new() -> Draft {
+        Draft {
+            name: String::new(),
+            colors: vec![[255; 3], [0; 3]],
+            labels: vec![String::new(); 2],
+            qualitative: false,
+            selected: None,
+            from: DraftFrom::Ramps,
+            layer: None,
+        }
+    }
+
+    /// A custom copy of a ramp, with its labels. The name ends in "copy".
+    pub fn copy(ramp: &Ramp, ramps: &Ramps) -> Draft {
+        let mut draft = Draft {
+            name: ramps.free_name(&format!("{} copy", ramp.name)),
+            colors: ramp.colors.clone(),
+            labels: ramp.labels.clone(),
+            qualitative: ramp.qualitative,
+            ..Draft::new()
+        };
+        draft.fit();
+        draft
+    }
+
+    /// A ramp of the colors and the names of bands, from the lowest band.
+    pub fn from_bands(name: &str, colors: &[Rgb], names: &[String], ramps: &Ramps) -> Draft {
+        let mut draft = Draft {
+            name: ramps.free_name(name),
+            colors: colors.to_vec(),
+            labels: names.to_vec(),
+            from: DraftFrom::Stops,
+            ..Draft::new()
+        };
+        draft.fit();
+        draft
+    }
+
+    /// Gives each color one label, and keeps the count of the colors from
+    /// `MIN_COLORS` to `MAX_COLORS`. Missing colors copy the last color.
+    fn fit(&mut self) {
+        self.colors.truncate(MAX_COLORS);
+        let last = self.colors.last().copied().unwrap_or([255; 3]);
+        while self.colors.len() < MIN_COLORS {
+            self.colors.push(last);
+        }
+        self.labels.resize(self.colors.len(), String::new());
+    }
+
+    pub fn can_add(&self) -> bool {
+        self.colors.len() < MAX_COLORS
+    }
+
+    pub fn can_remove(&self) -> bool {
+        self.colors.len() > MIN_COLORS
+    }
+
+    /// Adds a copy of the selected color, or of the last color, after it,
+    /// and selects the new row.
+    pub fn add_color(&mut self) -> bool {
+        if !self.can_add() {
+            return false;
+        }
+        let last = self.colors.len() - 1;
+        let at = self.selected.map_or(last, |i| i.min(last));
+        self.colors.insert(at + 1, self.colors[at]);
+        self.labels.insert(at + 1, String::new());
+        self.selected = Some(at + 1);
+        true
+    }
+
+    /// Removes a color and its label.
+    pub fn remove(&mut self, index: usize) -> bool {
+        if !self.can_remove() || index >= self.colors.len() {
+            return false;
+        }
+        self.colors.remove(index);
+        self.labels.remove(index);
+        self.selected = match self.selected {
+            Some(i) if i == index => None,
+            Some(i) if i > index => Some(i - 1),
+            other => other,
+        };
+        true
+    }
+
+    /// Moves a color and its label one row toward the first color.
+    pub fn move_up(&mut self, index: usize) -> bool {
+        index > 0 && self.swap(index - 1, index)
+    }
+
+    /// Moves a color and its label one row toward the last color.
+    pub fn move_down(&mut self, index: usize) -> bool {
+        self.swap(index, index + 1)
+    }
+
+    /// Swaps two adjacent rows. The selection stays with its color.
+    fn swap(&mut self, a: usize, b: usize) -> bool {
+        if b >= self.colors.len() {
+            return false;
+        }
+        self.colors.swap(a, b);
+        self.labels.swap(a, b);
+        self.selected = match self.selected {
+            Some(i) if i == a => Some(b),
+            Some(i) if i == b => Some(a),
+            other => other,
+        };
+        true
+    }
+
+    /// The name of the save: the name with no space at the ends, and spaces
+    /// for tabs and line breaks.
+    fn clean_name(&self) -> String {
+        self.name.trim().replace(['\t', '\n', '\r'], " ")
+    }
+
+    /// A ramp can save with a name that is not blank and that no other
+    /// ramp has.
+    pub fn can_save(&self, ramps: &Ramps) -> bool {
+        let name = self.clean_name();
+        !name.is_empty() && !ramps.taken(&name)
+    }
+
+    /// The custom ramp of the draft.
+    pub fn to_ramp(&self) -> Ramp {
+        Ramp {
+            name: self.clean_name(),
+            colors: self.colors.clone(),
+            labels: self.labels.clone(),
+            built_in: false,
+            qualitative: self.qualitative,
+        }
+    }
+}
+
 /// One line for each ramp: the name, a tab, the colors, and then a tab and
-/// a label for each color if a color has a label.
+/// a label for each color if a color has a label. The colors of a
+/// qualitative ramp follow the word `qualitative`.
 fn text(list: &[Ramp]) -> String {
     list.iter()
         .map(|ramp| {
-            let colors: Vec<String> = ramp.colors.iter().map(|c| hex(*c)).collect();
-            let mut line = format!("{}\t{}", ramp.name, colors.join(" "));
+            let mut words: Vec<String> = ramp.colors.iter().map(|c| hex(*c)).collect();
+            if ramp.qualitative {
+                words.insert(0, QUALITATIVE_WORD.to_owned());
+            }
+            let mut line = format!("{}\t{}", ramp.name, words.join(" "));
             if ramp.labels.iter().any(|l| !l.is_empty()) {
                 for label in &ramp.labels {
                     line.push('\t');
@@ -210,9 +432,12 @@ fn parse(text: &str) -> Vec<Ramp> {
         .filter_map(|line| {
             let mut parts = line.split('\t');
             let (name, colors) = (parts.next()?, parts.next()?);
-            let colors: Option<Vec<Rgb>> = colors.split_whitespace().map(parse_hex).collect();
+            let mut words = colors.split_whitespace().peekable();
+            let qualitative = words.next_if_eq(&QUALITATIVE_WORD).is_some();
+            let colors: Option<Vec<Rgb>> = words.map(parse_hex).collect();
             let colors = colors.filter(|c| !c.is_empty())?;
             let mut ramp = Ramp::new(name, colors);
+            ramp.qualitative = qualitative;
             for (label, text) in ramp.labels.iter_mut().zip(parts) {
                 *label = text.to_owned();
             }
@@ -684,5 +909,169 @@ mod tests {
         ramps.open(None);
         ramps.add("A", vec![[0; 3]]).unwrap();
         assert_eq!(ramps.custom().len(), 1);
+    }
+
+    #[test]
+    fn the_qualitative_flag_and_labels_stay_in_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ramps = Ramps::default();
+        ramps.open(Some(dir.path()));
+        let mut zones = Ramp::new("Zones", vec![[170; 3], [187; 3]]);
+        zones.qualitative = true;
+        zones.labels = vec!["Wet".to_owned(), "Dry\tland".to_owned()];
+        assert_eq!(ramps.add_ramp(zones).unwrap(), "Zones");
+        let file = std::fs::read_to_string(dir.path().join(RAMPS_FILE)).unwrap();
+        assert!(
+            file.starts_with("Zones\tqualitative #aaaaaa #bbbbbb\t"),
+            "{file}"
+        );
+        let mut again = Ramps::default();
+        again.open(Some(dir.path()));
+        let zones = &again.custom()[0];
+        assert!(zones.qualitative && !zones.built_in);
+        assert_eq!(zones.labels, ["Wet", "Dry land"]);
+        assert_eq!(zones.colors, [[170; 3], [187; 3]]);
+    }
+
+    #[test]
+    fn a_custom_ramp_takes_a_free_name_and_keeps_it_in_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ramps = Ramps::default();
+        ramps.open(Some(dir.path()));
+        ramps.add("Sand", vec![[1; 3], [2; 3]]).unwrap();
+        ramps.add("Moss", vec![[3; 3], [4; 3]]).unwrap();
+        let sand = ramps.list().iter().position(|r| r.name == "Sand").unwrap();
+        let viridis = ramps
+            .list()
+            .iter()
+            .position(|r| r.name == "Viridis")
+            .unwrap();
+        assert!(ramps.can_rename(sand, "Sand"));
+        for name in ["", "  ", "Moss", "Viridis"] {
+            assert!(!ramps.can_rename(sand, name), "{name:?}");
+        }
+        assert!(!ramps.can_rename(viridis, "Greenery"));
+        ramps.rename(sand, "Moss").unwrap();
+        ramps.rename(viridis, "Greenery").unwrap();
+        assert_eq!(ramps.list()[viridis].name, "Viridis");
+        ramps.rename(sand, "  Dunes ").unwrap();
+        assert_eq!(ramps.list()[sand].name, "Dunes");
+        let mut again = Ramps::default();
+        again.open(Some(dir.path()));
+        let names: Vec<_> = again.custom().iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["Dunes", "Moss"]);
+    }
+
+    #[test]
+    fn an_old_line_has_no_qualitative_flag() {
+        let list = parse("Old\t#010203 #040506\n");
+        assert!(!list[0].qualitative);
+        assert_eq!(list[0].colors, [[1, 2, 3], [4, 5, 6]]);
+    }
+
+    #[test]
+    fn a_free_name_gets_a_number() {
+        let mut ramps = Ramps::default();
+        assert!(ramps.taken("Viridis"));
+        assert!(!ramps.taken("viridis"));
+        assert_eq!(ramps.free_name("Viridis"), "Viridis 2");
+        assert_eq!(ramps.free_name("Mine"), "Mine");
+        ramps.add("Viridis 2", vec![[0; 3]]).unwrap();
+        assert_eq!(ramps.free_name("Viridis"), "Viridis 3");
+        assert_eq!(ramps.free_name("A\tB"), "A B");
+    }
+
+    #[test]
+    fn a_copy_of_a_built_in_ramp_is_custom_with_its_labels() {
+        let mut ramps = Ramps::default();
+        let koppen = ramps.list().iter().find(|r| r.name == KOPPEN).unwrap();
+        let draft = Draft::copy(koppen, &ramps);
+        assert_eq!(draft.name, "Köppen climate copy");
+        assert_eq!(draft.labels, koppen.labels);
+        assert_eq!(draft.colors, koppen.colors);
+        assert!(draft.qualitative);
+        assert_eq!(draft.from, DraftFrom::Ramps);
+        assert!(draft.can_save(&ramps));
+        let ramp = draft.to_ramp();
+        assert!(!ramp.built_in);
+        ramps.add_ramp(ramp).unwrap();
+        let copy = ramps.custom().last().unwrap();
+        assert_eq!(copy.name, "Köppen climate copy");
+        assert!(copy.qualitative && !copy.built_in);
+        let again = Draft::copy(&ramps.list()[0], &ramps);
+        assert_eq!(again.name, "Viridis copy");
+        let koppen = ramps.list().iter().find(|r| r.name == KOPPEN).unwrap();
+        assert_eq!(Draft::copy(koppen, &ramps).name, "Köppen climate copy 2");
+    }
+
+    #[test]
+    fn a_draft_has_two_to_32_colors() {
+        let mut draft = Draft::new();
+        assert_eq!(draft.colors, [[255; 3], [0; 3]]);
+        assert!(!draft.can_remove());
+        assert!(!draft.remove(0));
+        draft.selected = Some(0);
+        assert!(draft.add_color());
+        assert_eq!(draft.colors, [[255; 3], [255; 3], [0; 3]]);
+        assert_eq!(draft.selected, Some(1));
+        draft.selected = None;
+        while draft.add_color() {}
+        assert_eq!(draft.colors.len(), MAX_COLORS);
+        assert_eq!(MAX_COLORS, 32);
+        assert_eq!(draft.labels.len(), MAX_COLORS);
+        assert_eq!(draft.selected, Some(MAX_COLORS - 1));
+        assert!(!draft.can_add());
+        assert!(draft.remove(MAX_COLORS - 1));
+        assert_eq!(draft.selected, None);
+        assert_eq!(draft.labels.len(), MAX_COLORS - 1);
+    }
+
+    #[test]
+    fn a_blank_or_taken_name_cannot_save() {
+        let mut ramps = Ramps::default();
+        let mut draft = Draft::new();
+        assert!(!draft.can_save(&ramps));
+        draft.name = "   ".to_owned();
+        assert!(!draft.can_save(&ramps));
+        draft.name = "Viridis ".to_owned();
+        assert!(!draft.can_save(&ramps));
+        draft.name = " Ocean ".to_owned();
+        assert!(draft.can_save(&ramps));
+        assert_eq!(draft.to_ramp().name, "Ocean");
+        ramps.add_ramp(draft.to_ramp()).unwrap();
+        assert!(!draft.can_save(&ramps));
+    }
+
+    #[test]
+    fn colors_move_with_their_labels() {
+        let mut draft = Draft::new();
+        draft.labels = vec!["Light".to_owned(), "Dark".to_owned()];
+        draft.selected = Some(0);
+        assert!(!draft.move_up(0));
+        assert!(draft.move_down(0));
+        assert_eq!(draft.colors, [[0; 3], [255; 3]]);
+        assert_eq!(draft.labels, ["Dark", "Light"]);
+        assert_eq!(draft.selected, Some(1));
+        assert!(!draft.move_down(1));
+        assert!(draft.move_up(1));
+        assert_eq!(draft.labels, ["Light", "Dark"]);
+        assert_eq!(draft.selected, Some(0));
+    }
+
+    #[test]
+    fn a_draft_from_bands_takes_their_colors_and_names() {
+        let ramps = Ramps::default();
+        let colors = [[1; 3], [2; 3], [3; 3]];
+        let names = ["Sea".to_owned(), "Land".to_owned()];
+        let draft = Draft::from_bands("Viridis", &colors, &names, &ramps);
+        assert_eq!(draft.name, "Viridis 2");
+        assert_eq!(draft.colors, colors);
+        assert_eq!(draft.labels, ["Sea", "Land", ""]);
+        assert!(!draft.qualitative);
+        assert_eq!(draft.from, DraftFrom::Stops);
+        let one = Draft::from_bands("One", &[[7; 3]], &[], &ramps);
+        assert_eq!(one.colors, [[7; 3], [7; 3]]);
+        let many = Draft::from_bands("Many", &[[0; 3]; 40], &[], &ramps);
+        assert_eq!(many.colors.len(), MAX_COLORS);
     }
 }

@@ -13,7 +13,7 @@ use super::theme;
 use super::widgets::{self, Controls, PANEL_ROW};
 use super::{Page, Panel};
 use crate::globe::preview::{LAKE_KM2, LAKE_KM2_RANGE};
-use crate::ui::{Action, AppState, elevation, gradient};
+use crate::ui::{Action, AppState, RampSource, elevation, gradient};
 use crate::world;
 
 /// The name of the segmented control of the displays.
@@ -53,6 +53,13 @@ pub const COLOR_STOPS: &str = "Color stops";
 /// bands.
 pub const FULL: &str = "Maximum of 32 bands reached.";
 pub const IMPORT_RAMP: &str = "Import ramp…";
+/// The rows that open the editor of a new ramp, and the item of the desktop
+/// menu of a ramp that opens it with a copy.
+pub const NEW_RAMP: &str = "New ramp…";
+pub const SAVE_AS_RAMP: &str = "Save as ramp…";
+pub const DUPLICATE_RAMP: &str = "Duplicate…";
+/// The button behind the row of a ramp that opens the editor with a copy.
+pub const DUPLICATE: &str = "Duplicate";
 /// The text below the import row while the app has no ramps.
 pub const IMPORT_RAMP_HINT: &str = "A row of color blocks, lowest band first.";
 /// The buttons of the card of a ramp.
@@ -347,6 +354,18 @@ pub fn stops_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Contro
         state.pad.page = Some(Page::Ramps);
     }
     state.globe.preview.selected = selected.map(|index| (id, index));
+    if widgets::text_row(ui, controls, SAVE_AS_RAMP, 0.0, false, true).clicked() {
+        open_editor(state, Some(id), RampSource::Bands(id));
+    }
+}
+
+/// Opens the page of the editor of a new ramp.
+fn open_editor(state: &mut AppState, layer: Option<RasterId>, source: RampSource) {
+    state.run_action(Action::NewRamp(layer, source));
+    if state.ramp_draft.is_some() {
+        state.pad.style.ramp = None;
+        state.pad.page = Some(Page::RampEditor);
+    }
 }
 
 /// The part of the app that the page of the color ramps serves.
@@ -380,6 +399,9 @@ pub fn ramps_body(
     if widgets::text_row(ui, controls, IMPORT_RAMP, 0.0, false, true).clicked() {
         state.actions.push(Action::ImportRampDialog(user.raster()));
     }
+    if widgets::text_row(ui, controls, NEW_RAMP, 0.0, false, true).clicked() {
+        open_editor(state, user.raster(), RampSource::Blank);
+    }
     state.open_ramps();
     match &state.ramp_note {
         Some(n) if n.layer == user.raster() => {
@@ -408,17 +430,22 @@ pub fn ramps_body(
         .map(|(i, ramp)| list::Row {
             label: short_name(&ramp.name),
             on: open == Some(i) || chosen == Some(i),
+            rename: !ramp.built_in,
             delete: !ramp.built_in,
+            actions: &[DUPLICATE],
             select: !ramp.built_in,
             ..list::Row::new(i, ramp.name.clone())
         })
         .collect();
+    let list = &mut style.ramp_list;
+    let renamed = list.rename.as_ref().map(|r| r.0);
+    let valid = |name: &str| renamed.is_some_and(|i| state.ramps.can_rename(i, name));
     let spec = list::Spec {
         select: true,
+        valid: &valid,
         ..list::Spec::default()
     };
     let mut places = vec![Rect::NOTHING; rows.len()];
-    let list = &mut style.ramp_list;
     let events = list::show(ui, controls, list, spec, &rows, |ui, controls, cell, i| {
         places[i] = cell.rect;
         let moved = cell.rect.translate(vec2(cell.shift.max(0.0), 0.0));
@@ -436,7 +463,16 @@ pub fn ramps_body(
                 style.ramp = (open != Some(index)).then_some((user, index));
                 style.ramp_part = None;
             }
+            list::Event::Rename(index, name) => {
+                if let Err(e) = state.ramps.rename(index, &name) {
+                    state.ramp_note =
+                        Some(crate::ui::Note::new(e.to_string(), true, user.raster()));
+                }
+            }
             list::Event::Delete(index) => remove_ramps(state, user, &[index]),
+            list::Event::Action(index, DUPLICATE) => {
+                open_editor(state, user.raster(), RampSource::Copy(index));
+            }
             _ => {}
         }
     }
@@ -656,6 +692,8 @@ pub enum RampChoice {
     Labels,
     /// Picks the ramp for the Classify form.
     Use,
+    /// Opens the editor of a new ramp with a copy.
+    Duplicate,
 }
 
 /// The parts of the bands, in the order of `PART_NAMES`.
@@ -1213,6 +1251,10 @@ pub fn ramp_card(
         }
         (RampChoice::Labels, _) => {
             state.pad.page = Some(Page::RampLabels(index));
+            Ok(())
+        }
+        (RampChoice::Duplicate, _) => {
+            open_editor(state, user.raster(), RampSource::Copy(index));
             Ok(())
         }
     };
