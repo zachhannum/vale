@@ -87,6 +87,11 @@ impl PageUnits {
     }
 }
 
+/// The resolution of a new page, in dots per inch.
+pub const DEFAULT_DPI: u32 = 300;
+/// The resolutions that a page can have, in dots per inch.
+pub const DPI_RANGE: std::ops::RangeInclusive<u32> = 36..=1200;
+
 /// A page, its map frames, and its furniture.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PageRecord {
@@ -98,6 +103,8 @@ pub struct PageRecord {
     pub units: PageUnits,
     /// The color of the paper.
     pub paper: Rgb,
+    /// The resolution of a raster export, in dots per inch.
+    pub dpi: u32,
     /// From the bottom frame to the top frame.
     pub frames: Vec<FrameRecord>,
     /// From the bottom item to the top item.
@@ -1515,6 +1522,7 @@ impl Atlas {
                 height_mm,
                 units,
                 paper: [0xff, 0xff, 0xff],
+                dpi: DEFAULT_DPI,
                 frames: Vec::new(),
                 furniture: Vec::new(),
             }],
@@ -1547,6 +1555,7 @@ impl Atlas {
             height_mm,
             units,
             paper: [0xff, 0xff, 0xff],
+            dpi: DEFAULT_DPI,
             frames: Vec::new(),
             furniture: Vec::new(),
         };

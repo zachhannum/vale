@@ -176,6 +176,10 @@ fn the_desktop_page_panel_has_the_paper_color() {
     h.state_mut().atlas.selection = AtlasSelection::Page;
     h.run_steps(3);
     assert!(h.get_all_by_label("Paper color").next().is_some());
+    assert!(h.get_all_by_label("Resolution").next().is_some());
+    h.get_by_label("Pixel preview").click();
+    h.run_steps(3);
+    assert!(h.state().atlas.pixel_preview);
 }
 
 #[test]

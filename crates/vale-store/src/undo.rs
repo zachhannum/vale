@@ -18,8 +18,8 @@ use flate2::write::DeflateEncoder;
 use rusqlite::{OptionalExtension, Transaction, params};
 
 use crate::atlas::{
-    Atlas, Border, CoordFormat, EdgeLabels, FrameId, FrameRecord, FrameShape, Furniture,
-    FurnitureId, FurnitureRecord, Graticule, LayoutGrid, MapId, MapRecord, MapStyleId,
+    Atlas, Border, CoordFormat, DEFAULT_DPI, EdgeLabels, FrameId, FrameRecord, FrameShape,
+    Furniture, FurnitureId, FurnitureRecord, Graticule, LayoutGrid, MapId, MapRecord, MapStyleId,
     MapStyleRecord, Neatline, PageId, PageRecord, PageUnits, ProjectionPreset, encode_rings,
     read_rings,
 };
@@ -738,6 +738,16 @@ fn put_atlas(out: &mut Vec<u8>, atlas: &Atlas) {
         out.push(frame.neatline.color[3]);
     }
     put_map_styles(out, atlas);
+    put_resolutions(out, atlas);
+}
+
+/// The resolution of each page.
+fn put_resolutions(out: &mut Vec<u8>, atlas: &Atlas) {
+    put_u32(out, atlas.pages.len());
+    for page in &atlas.pages {
+        put_u32(out, page.id.0 as usize);
+        put_u32(out, page.dpi as usize);
+    }
 }
 
 fn opaque([r, g, b]: [u8; 3]) -> Rgba {
@@ -889,6 +899,7 @@ fn atlas(r: &mut Reader) -> Option<AtlasImage> {
             height_mm,
             units,
             paper: [0xff, 0xff, 0xff],
+            dpi: DEFAULT_DPI,
             frames,
             furniture: Vec::new(),
         });
@@ -999,6 +1010,13 @@ fn atlas(r: &mut Reader) -> Option<AtlasImage> {
             let own = styles_of(r)?;
             let map = maps.iter_mut().find(|m| m.id == id)?;
             (map.style, map.shown, map.styles) = (style, shown, own);
+        }
+    }
+    if !r.0.is_empty() {
+        for _ in 0..count(r)? {
+            let id = PageId(r.u32()?);
+            let dpi = r.u32()?;
+            pages.iter_mut().find(|p| p.id == id)?.dpi = dpi;
         }
     }
     let image = (maps, pages, presets, grid, styles, next_style);
@@ -1598,6 +1616,7 @@ mod tests {
         let (mut out, mut styles) = (Vec::new(), Vec::new());
         put_atlas(&mut out, atlas);
         put_map_styles(&mut styles, atlas);
+        put_resolutions(&mut styles, atlas);
         out.truncate(out.len() - styles.len());
         out
     }
@@ -1702,6 +1721,20 @@ mod tests {
         assert_eq!(tail[12..], [0xff, 0xff, 0xff, 0, 0, 0, 0]);
         let image = atlas(&mut Reader(&out)).unwrap();
         assert_eq!((image.0, image.1), (before.maps, before.pages));
+    }
+
+    #[test]
+    fn an_atlas_image_keeps_the_resolution_of_a_page() {
+        let mut before = Atlas::new(Units::Metric);
+        before.pages[0].dpi = 96;
+        let mut out = Vec::new();
+        put_atlas(&mut out, &before);
+        assert_eq!(atlas(&mut Reader(&out)).unwrap().1[0].dpi, 96);
+        // An image of an older build ends after the map styles.
+        let mut resolutions = Vec::new();
+        put_resolutions(&mut resolutions, &before);
+        out.truncate(out.len() - resolutions.len());
+        assert_eq!(atlas(&mut Reader(&out)).unwrap().1[0].dpi, DEFAULT_DPI);
     }
 
     #[test]

@@ -441,3 +441,26 @@ fn the_command_line_exports_the_heightmap_as_a_png() {
     );
     assert!(image.into_raw() == equirect(&map), "the levels differ");
 }
+
+#[test]
+fn a_png_of_a_page_has_the_resolution_of_the_page() {
+    let dir = tempfile::tempdir().unwrap();
+    let doc = Document::sample();
+    let mut page = doc.project.atlas.pages[0].clone();
+    page.frames.clear();
+    page.furniture.clear();
+    (page.width_mm, page.height_mm) = (254.0, 127.0);
+    let width = |dpi: u32| {
+        let path = dir.path().join(format!("{dpi}.png"));
+        let page = vale_store::PageRecord {
+            dpi,
+            ..page.clone()
+        };
+        vale_app::atlas_export::export_page(&doc, page, &path).unwrap();
+        let bytes = std::fs::read(path).unwrap();
+        u32::from_be_bytes(bytes[16..20].try_into().unwrap())
+    };
+    // 254 mm is 10 inches. The image can have one more pixel for a part of a pixel.
+    assert!((720..=721).contains(&width(72)));
+    assert!((1500..=1501).contains(&width(150)));
+}

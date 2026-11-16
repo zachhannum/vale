@@ -1620,6 +1620,11 @@ pub struct Group {
     /// The distance in pixels that the cover grows by. A negative offset
     /// shrinks it.
     pub cover_offset: f32,
+    /// The squares of the pixels of a page on the screen: the left and the top
+    /// of the page and the side of a square, in pixels of the screen. Each
+    /// square shows the target at its middle. A side of 0 shows each pixel of
+    /// the target.
+    pub pixel_grid: [f32; 3],
     /// A one-time copy of the target. A captured group does not paint on the
     /// screen.
     pub capture: Option<Arc<Capture>>,
@@ -1870,7 +1875,7 @@ impl Resources {
         self.target_count += 1;
         let place = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("group place"),
-            size: 32,
+            size: 48,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -2016,6 +2021,10 @@ impl Resources {
             screen[0] as f32,
             screen[1] as f32,
             if target.mask.is_some() { 1.0 } else { 0.0 },
+            0.0,
+            group.pixel_grid[0],
+            group.pixel_grid[1],
+            group.pixel_grid[2],
             0.0,
         ];
         queue.write_buffer(&target.place, 0, bytemuck::bytes_of(&place));

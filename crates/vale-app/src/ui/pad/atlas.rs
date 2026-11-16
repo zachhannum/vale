@@ -110,6 +110,8 @@ pub const STROKE_COLOR: &str = "Stroke color";
 pub const STROKE_WIDTH: &str = "Stroke width";
 pub const REFERENCE_GRID: &str = "Reference grid";
 pub const PAPER_COLOR: &str = "Paper color";
+pub const RESOLUTION: &str = "Resolution";
+pub const PIXEL_PREVIEW: &str = "Pixel preview";
 pub const SNAP_TO_LAYOUT: &str = "Snap to layout";
 pub const EXIT_FRAME: &str = "Exit frame";
 pub const LAYOUT_GRID: &str = "Layout grid";
@@ -2385,6 +2387,25 @@ fn page_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
     let which = ClassColor::Paper;
     if let Some(c) = text_style::rgb_rows(ui, state, controls, PAPER_COLOR, which, paper) {
         atlas::set_paper(state, c);
+    }
+    let shown = page.dpi.to_string();
+    let typed = widgets::key_field(
+        ui,
+        controls,
+        RESOLUTION,
+        RESOLUTION,
+        "dpi",
+        &shown,
+        keys,
+        |t| atlas::parse_dpi(t).is_some(),
+    );
+    if let Some(dpi) = typed.as_deref().and_then(atlas::parse_dpi) {
+        atlas::edit_page(state, |p| p.dpi = dpi);
+    }
+    keypad_below(ui, controls, RESOLUTION);
+    let mut preview = state.atlas.pixel_preview;
+    if widgets::switch_row(ui, controls, PIXEL_PREVIEW, PIXEL_PREVIEW, &mut preview) {
+        state.atlas.pixel_preview = preview;
     }
     grid_rows(ui, state, controls, units);
 

@@ -4477,11 +4477,12 @@ impl Globe {
     /// map frames of a page, one for each frame, or `None` with no wgpu
     /// renderer. A frame draws the layers of the list that its map shows, in
     /// the flat map of its projection, in a target of its own. It draws no
-    /// rivers.
+    /// rivers. `pixel_grid` is the `Group::pixel_grid` of each frame.
     pub fn paint_frames(
         &mut self,
         canvas: Canvas,
         frames: Vec<FrameDraw>,
+        pixel_grid: [f32; 3],
     ) -> Option<Vec<(u32, GlobeCallback)>> {
         let format = self.format?;
         self.queue_changes();
@@ -4504,6 +4505,7 @@ impl Globe {
                     vector: None,
                     cover: None,
                     cover_offset: 0.0,
+                    pixel_grid,
                 },
             ));
         }
@@ -4550,6 +4552,7 @@ impl Globe {
             vector: None,
             cover: None,
             cover_offset: 0.0,
+            pixel_grid: [0.0; 3],
         };
         let gpu = self.gpu_frame(format, smooth_full, &river_layers, None);
         let callback = GlobeCallback {
@@ -4660,6 +4663,7 @@ impl Globe {
             vector: None,
             cover: Some(cover),
             cover_offset: mask.offset * point_scale(canvas.pixels_per_point, Some(&frame.place)),
+            pixel_grid: [0.0; 3],
         };
         let gpu = self.gpu_frame(format, smooth_full, &river_layers, None);
         let callback = GlobeCallback {
@@ -5165,6 +5169,7 @@ impl Globe {
                 vector: None,
                 cover: None,
                 cover_offset: 0.0,
+                pixel_grid: [0.0; 3],
             };
             out.push(callback(GpuJob::Group(Box::new(group))));
         };
@@ -5200,6 +5205,7 @@ impl Globe {
                         vector: None,
                         cover: Some(cover),
                         cover_offset: mask.offset * canvas.pixels_per_point,
+                        pixel_grid: [0.0; 3],
                     };
                     let frame = frame.clone();
                     out.push(Paint::Masked(

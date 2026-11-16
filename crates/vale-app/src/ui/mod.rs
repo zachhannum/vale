@@ -16,7 +16,7 @@ use vale_store::{
 use vale_style::LabelClass;
 use vale_terrain::{Bands, Heightmap, Mode};
 
-use crate::atlas_export::{ExportStep, PdfExport, RASTER_PIXEL_RATIO};
+use crate::atlas_export::{ExportStep, PdfExport};
 use crate::document::{Document, Target};
 use crate::files::{Availability, ExportEvent, Files, PlainFiles, SystemEvents};
 use crate::globe::combine::{PolygonMode, StrokeArea};
@@ -478,6 +478,9 @@ pub struct AppState {
     pub status: String,
     /// The GPU renderer of the maps of the atlas, in a window with a GPU.
     pub map_renderer: Option<map_texture::MapRenderer>,
+    /// The most pixels on a side of a strip of an exported frame, in place of
+    /// the largest texture of the device.
+    pub export_max_side: Option<u32>,
     /// The text of the last import of a heightmap.
     pub import_note: Option<Note>,
     /// The text of the last export of the heightmap.
@@ -669,6 +672,7 @@ impl AppState {
             layout: Layout::default(),
             pad: pad::PadState::default(),
             map_renderer: None,
+            export_max_side: None,
             globe: Globe::default(),
             doc,
             pipeline: Pipeline::new(),
@@ -3854,6 +3858,8 @@ impl AppState {
         }
         match PdfExport::new(self.doc.clone(), path, pages) {
             Ok(mut job) => {
+                let side = self.globe.max_face_size().min(u32::MAX as usize) as u32;
+                job.set_max_side(self.export_max_side.unwrap_or(side));
                 let rasters = self.pipeline.rasters_mut();
                 rasters.poll(true);
                 job.set_rasters(rasters.frozen());
@@ -3932,7 +3938,7 @@ impl AppState {
                 }
                 let canvas = crate::globe::Canvas {
                     background: egui::Color32::TRANSPARENT,
-                    pixels_per_point: RASTER_PIXEL_RATIO as f32,
+                    pixels_per_point: job.pixel_ratio() as f32,
                 };
                 let mut callbacks = Vec::new();
                 let mut covers = Vec::new();

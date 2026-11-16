@@ -520,6 +520,7 @@ mod tests {
             height_mm: 200.0,
             units: PageUnits::Mm,
             paper: [0xff; 3],
+            dpi: vale_store::DEFAULT_DPI,
             frames: vec![
                 frame(0, FrameShape::Rectangle([20.0, 20.0, 120.0, 100.0])),
                 frame(1, FrameShape::Rectangle([200.0, 150.0, 240.0, 180.0])),

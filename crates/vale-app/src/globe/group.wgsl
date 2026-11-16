@@ -9,6 +9,9 @@ struct Place {
     // The width and the height of the screen in pixels, then 1 if the mask
     // is on.
     screen: vec4<f32>,
+    // The left and the top of the squares of the pixels of a page, and their
+    // side, in pixels of the screen. A side of 0 turns the squares off.
+    grid: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> place: Place;
@@ -24,7 +27,14 @@ fn vs_group(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
 
 @fragment
 fn fs_group(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
-    let p = vec2<i32>(floor(frag.xy - place.rect.xy));
+    var p = vec2<i32>(floor(frag.xy - place.rect.xy));
+    if place.grid.z > 0.0 {
+        // Each square shows the target at its middle.
+        let side = place.grid.z;
+        let middle = place.grid.xy + (floor((frag.xy - place.grid.xy) / side) + 0.5) * side;
+        let last = vec2<i32>(textureDimensions(layers, 0)) - vec2<i32>(1, 1);
+        p = clamp(vec2<i32>(floor(middle - place.rect.xy)), vec2<i32>(0, 0), last);
+    }
     var color = textureLoad(layers, p, 0);
     if place.screen.z > 0.5 {
         color = color * textureLoad(mask, p, 0).r;

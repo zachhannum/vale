@@ -54,6 +54,9 @@ pub struct Args {
     /// 1, on the open page. A page with fewer frames gets new frames.
     #[arg(long, value_name = "N")]
     pub frame: Option<usize>,
+    /// With --workspace atlas: show the page at its resolution.
+    #[arg(long)]
+    pub pixel_preview: bool,
     /// With --layout pad: the width of the dock, in points.
     #[arg(long, value_name = "POINTS")]
     pub dock_width: Option<f32>,
@@ -268,9 +271,11 @@ pub fn parse_measure(s: &str) -> anyhow::Result<Measure> {
     Ok(path)
 }
 
-/// Applies `--frame`: selects the frame with this number on the open page.
+/// Applies `--pixel-preview` and `--frame`, which selects the frame with this number on the open
+/// page.
 pub fn apply_frame(args: &Args, state: &mut AppState) -> anyhow::Result<()> {
     use crate::ui::atlas::{self, AtlasSelection};
+    state.atlas.pixel_preview |= args.pixel_preview;
     let Some(n) = args.frame else {
         return Ok(());
     };

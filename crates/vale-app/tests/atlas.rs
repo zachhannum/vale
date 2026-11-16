@@ -39,6 +39,7 @@ use vale_app::ui::pad::atlas::{
     CUSTOM_PROJECTION_NAME, DELETE_MAP_STYLES, EDITED, MAP_STYLE, MAP_STYLE_NAME, NO_MAP_STYLE,
     NO_MAP_STYLE_ROW, RESET_TO_MAP_STYLE, SAVE_AS_MAP_STYLE, UPDATE_MAP_STYLE, map_style_row,
 };
+use vale_app::ui::pad::atlas::{PIXEL_PREVIEW, RESOLUTION};
 use vale_app::ui::pad::dock_ui::tab_name;
 use vale_app::ui::pad::edge_labels::{
     EDGE_LABELS, HALO as EDGE_HALO, HALO_WIDTH as EDGE_HALO_WIDTH, OFFSET as EDGE_OFFSET,
@@ -675,6 +676,7 @@ fn the_page_panel_exports_one_page_or_the_atlas() {
     let mut h = pad();
     h.state_mut().atlas.selection = AtlasSelection::Page;
     h.run_steps(2);
+    scroll_to(&mut h, EXPORT_ATLAS_PDF);
     for name in [EXPORT_PAGE_PNG, EXPORT_PAGE_PDF, EXPORT_ATLAS_PDF] {
         assert!(control(&h, name).is_some(), "{name}");
     }
@@ -1542,6 +1544,49 @@ fn a_zoom_of_the_page_draws_scaled_tiles_and_then_sharp_ones() {
     let painted = h.state().atlas.frame_paint(id).unwrap();
     assert_eq!(painted.scales, vec![zoomed]);
     assert_eq!(painted.blank, 0);
+}
+
+#[test]
+fn the_panel_of_the_page_sets_the_resolution_and_the_pixel_preview() {
+    let mut h = pad();
+    let page = h.state().atlas.place.unwrap().rect;
+    tap_with(&mut h, page.center(), Input::Finger);
+    assert_eq!(open_page(&h).dpi, vale_store::DEFAULT_DPI);
+    tap(&mut h, RESOLUTION);
+    for key in ["1", "5", "0"] {
+        tap(&mut h, &format!("{RESOLUTION} {key}"));
+    }
+    tap(&mut h, &format!("{RESOLUTION} Done"));
+    assert_eq!(open_page(&h).dpi, 150);
+    assert!(!h.state().atlas.pixel_preview);
+    tap(&mut h, PIXEL_PREVIEW);
+    assert!(h.state().atlas.pixel_preview);
+}
+
+#[test]
+fn the_pixel_preview_draws_the_frames_at_the_resolution_of_the_page() {
+    let mut h = zoomed_pad(3.0);
+    let id = frame(&h, 0).id;
+    let screen = place(&h).pixels_per_page_point(2.0);
+    // 36 dots per inch are half a pixel in each page point.
+    atlas::edit_page(h.state_mut(), |p| p.dpi = 36);
+    assert!(screen > 0.5, "{screen}");
+    h.state_mut().atlas.pixel_preview = true;
+    settle(&mut h);
+    let painted = h.state().atlas.frame_paint(id).unwrap();
+    assert_eq!((painted.scales.clone(), painted.blank), (vec![0.5], 0));
+
+    // A page with more pixels than the screen shows at the scale of the screen.
+    atlas::edit_page(h.state_mut(), |p| p.dpi = 1200);
+    settle(&mut h);
+    let painted = h.state().atlas.frame_paint(id).unwrap();
+    assert_eq!(painted.scales, vec![screen]);
+
+    atlas::edit_page(h.state_mut(), |p| p.dpi = 36);
+    h.state_mut().atlas.pixel_preview = false;
+    settle(&mut h);
+    let painted = h.state().atlas.frame_paint(id).unwrap();
+    assert_eq!(painted.scales, vec![screen]);
 }
 
 #[test]
@@ -3026,12 +3071,13 @@ fn a_region_of_a_list_draws_again_to_the_texture_of_the_same_size() {
     });
     let list = vale_render::PreparedList::new(&list).unwrap();
     let at = kurbo::Affine::translate((-512.0, -512.0));
-    let first = draw_region(&ctx, None, None, &list, at, [64, 64]).unwrap();
+    let linear = egui::TextureFilter::Linear;
+    let first = draw_region(&ctx, None, None, &list, at, ([64, 64], linear)).unwrap();
     assert_eq!(first.size(), [64, 64]);
     let id = first.id();
-    let again = draw_region(&ctx, None, Some(first), &list, at, [64, 64]).unwrap();
+    let again = draw_region(&ctx, None, Some(first), &list, at, ([64, 64], linear)).unwrap();
     assert_eq!(again.id(), id);
-    let other = draw_region(&ctx, None, Some(again), &list, at, [32, 32]).unwrap();
+    let other = draw_region(&ctx, None, Some(again), &list, at, ([32, 32], linear)).unwrap();
     assert_ne!(other.id(), id);
 }
 

@@ -36,7 +36,7 @@ use crate::{
 };
 
 /// The version of the `vale_` tables that this code writes.
-pub const FORMAT_VERSION: u32 = 39;
+pub const FORMAT_VERSION: u32 = 40;
 
 /// One step for each format version. Step `n` changes a file of version `n`
 /// to version `n + 1`. A new version adds a step and never changes an old one.
@@ -80,6 +80,7 @@ const MIGRATIONS: &[fn(&Transaction) -> rusqlite::Result<()>] = &[
     v37,
     v38,
     v39,
+    v40,
 ];
 
 /// `GPKG` in ASCII.
@@ -1364,6 +1365,16 @@ fn v39(tx: &Transaction) -> rusqlite::Result<()> {
     )
 }
 
+/// The resolution of a page. An older page has 300 dots per inch.
+fn v40(tx: &Transaction) -> rusqlite::Result<()> {
+    let sql = "SELECT count(*) FROM pragma_table_info('vale_page') WHERE name = 'dpi'";
+    let count: i64 = tx.query_row(sql, [], |r| r.get(0))?;
+    if count == 0 {
+        tx.execute_batch("ALTER TABLE vale_page ADD COLUMN dpi INTEGER NOT NULL DEFAULT 300")?;
+    }
+    Ok(())
+}
+
 /// The point symbols that the user adds. An older file has none.
 fn v27(tx: &Transaction) -> rusqlite::Result<()> {
     tx.execute_batch(
@@ -2025,8 +2036,8 @@ fn write_atlas(tx: &Transaction, project: &Project) -> Result<(), StoreError> {
         }
     }
     let mut page = tx.prepare(
-        "INSERT INTO vale_page (id, position, name, width_mm, height_mm, units, paper)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        "INSERT INTO vale_page (id, position, name, width_mm, height_mm, units, paper, dpi)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
     )?;
     let mut frame = tx.prepare(
         "INSERT INTO vale_frame (id, page_id, position, map_id, shape, rings, center_lon,
@@ -2050,7 +2061,8 @@ fn write_atlas(tx: &Transaction, project: &Project) -> Result<(), StoreError> {
             p.width_mm,
             p.height_mm,
             units,
-            hex(p.paper)
+            hex(p.paper),
+            p.dpi
         ])?;
         for (position, f) in p.frames.iter().enumerate() {
             frame.execute(params![
@@ -3135,7 +3147,8 @@ fn load_atlas(conn: &Connection, units: Units) -> Result<Atlas, StoreError> {
         map.labels.insert(LayerId(r.get(1)?), r.get(2)?);
     }
     let mut rows = conn.prepare(
-        "SELECT id, name, width_mm, height_mm, units, paper FROM vale_page ORDER BY position",
+        "SELECT id, name, width_mm, height_mm, units, paper, dpi FROM vale_page
+         ORDER BY position",
     )?;
     let mut rows = rows.query([])?;
     while let Some(r) = rows.next()? {
@@ -3149,6 +3162,7 @@ fn load_atlas(conn: &Connection, units: Units) -> Result<Atlas, StoreError> {
             units: PageUnits::from_id(&units)
                 .ok_or_else(|| corrupt(format!("page units {units:?}")))?,
             paper: parse_color(&paper).ok_or_else(|| corrupt(format!("paper {paper:?}")))?,
+            dpi: r.get(6)?,
             frames: Vec::new(),
             furniture: Vec::new(),
         });
@@ -4856,6 +4870,32 @@ mod tests {
                 assert_eq!(frame.border, Border::default());
             }
         }
+    }
+
+    #[test]
+    fn a_page_keeps_its_resolution() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World::default());
+        project.atlas.pages[0].dpi = 150;
+        drop(ProjectFile::create(&path(&dir), &project).unwrap());
+        let (_, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(loaded.atlas.pages[0].dpi, 150);
+    }
+
+    #[test]
+    fn a_file_of_version_39_has_pages_of_300_dpi() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = Project::new(World::default());
+        drop(ProjectFile::create(&path(&dir), &project).unwrap());
+        let conn = Connection::open(path(&dir)).unwrap();
+        conn.execute_batch("ALTER TABLE vale_page DROP COLUMN dpi;")
+            .unwrap();
+        drop(conn);
+        set_format_version(&dir, 39);
+
+        let (file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(format_version(&file.conn).unwrap(), FORMAT_VERSION);
+        assert_eq!(loaded.atlas.pages[0].dpi, atlas::DEFAULT_DPI);
     }
 
     #[test]

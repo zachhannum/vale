@@ -22,8 +22,13 @@ use crate::pipeline::{FrameDetail, Pipeline, Quality, paper_color};
 use crate::raster_style;
 use crate::{furniture, headless};
 
-/// The pixels in one point of an exported raster layer: 300 pixels per inch.
-pub const RASTER_PIXEL_RATIO: f64 = 300.0 / 72.0;
+/// The pixels in one point of a raster export at `dpi` dots per inch.
+pub fn pixel_ratio(dpi: u32) -> f64 {
+    f64::from(dpi) / 72.0
+}
+
+/// The most pixels on a side of a texture that each GPU takes.
+pub const MAX_SIDE: u32 = 8192;
 
 /// The fewest rows of pixels in a strip of an exported frame.
 pub const MIN_STRIP_ROWS: u32 = 64;
@@ -42,10 +47,14 @@ struct PendingCapture {
     /// The whole frame.
     whole: FrameDraw,
     /// The strip of the frame that the GPU draws next. A frame with one
-    /// strip has a strip of the whole frame.
+    /// strip has a strip of the whole frame. A strip has at most `max_side`
+    /// pixels on a side, so a wide frame has more than one strip in a row.
     draw: FrameDraw,
-    /// The first row of pixels of the strip.
+    /// The first row and the first column of pixels of the strip.
     row: u32,
+    col: u32,
+    /// The most pixels on a side of a texture of the GPU.
+    max_side: u32,
     /// The premultiplied pixels of the whole frame, with the strips that
     /// the GPU drew.
     rgba: Vec<u8>,
@@ -92,6 +101,8 @@ pub struct PdfExport {
     output: Option<Output>,
     /// The raster masks of a frame with no raster layers get a capture.
     gpu: bool,
+    /// The most pixels on a side of a texture of the GPU.
+    max_side: u32,
 }
 
 enum Output {
@@ -126,6 +137,7 @@ impl PdfExport {
             fonts,
             output: Some(output),
             gpu: true,
+            max_side: MAX_SIDE,
         })
     }
 
@@ -136,6 +148,11 @@ impl PdfExport {
     /// Gives the export the raster values under the features.
     pub fn set_rasters(&mut self, rasters: crate::raster_values::RasterCache) {
         *self.pipeline.rasters_mut() = rasters;
+    }
+
+    /// Sets the most pixels on a side of a texture of the GPU.
+    pub fn set_max_side(&mut self, side: u32) {
+        self.max_side = side.max(MIN_STRIP_ROWS);
     }
 
     /// The page that the next step composes, and the total page count.
@@ -150,12 +167,13 @@ impl PdfExport {
         let Some(pending) = &mut self.pending else {
             return false;
         };
-        let rows = pending.draw.rect[3];
+        let [.., cols, rows] = pending.draw.rect;
         let half = rows.div_ceil(2).max(MIN_STRIP_ROWS);
         if pending.receivers.is_some() || half >= rows {
             return false;
         }
-        pending.draw = strip(&pending.whole, pending.row, half);
+        let at = (pending.col, pending.row);
+        pending.draw = strip(&pending.whole, at, [cols, half]);
         true
     }
 
@@ -201,6 +219,12 @@ impl PdfExport {
             .collect()
     }
 
+    /// The pixels in one point of the raster images of the page that the
+    /// export draws.
+    pub fn pixel_ratio(&self) -> f64 {
+        pixel_ratio(self.pages[self.page.min(self.pages.len() - 1)].dpi)
+    }
+
     fn shown_images(&self, frame: &FrameRecord) -> Vec<ImageId> {
         self.doc
             .project
@@ -226,15 +250,13 @@ impl PdfExport {
             anyhow::bail!("the map frame has no area on the page");
         }
         let point_min = Point::new(bbox.x0 * PT_PER_MM, bbox.y0 * PT_PER_MM);
-        let pixel = |points: f64| (points * RASTER_PIXEL_RATIO).ceil().max(1.0) as u32;
+        let ratio = pixel_ratio(page.dpi);
+        let pixel = |points: f64| (points * ratio).ceil().max(1.0) as u32;
         let size = [
             pixel(bbox.width() * PT_PER_MM),
             pixel(bbox.height() * PT_PER_MM),
         ];
-        let point_size = Point::new(
-            f64::from(size[0]) / RASTER_PIXEL_RATIO,
-            f64::from(size[1]) / RASTER_PIXEL_RATIO,
-        );
+        let point_size = Point::new(f64::from(size[0]) / ratio, f64::from(size[1]) / ratio);
         let image_rect = Rect::from_origin_size(point_min, (point_size.x, point_size.y));
         let page_target = FrameTarget {
             origin: Point::ZERO,
@@ -253,7 +275,7 @@ impl PdfExport {
         let unit_projection =
             Projection::new(spec, 1.0).map_err(|error| anyhow::anyhow!("projection: {error}"))?;
         let mask_list = Pipeline::frame_mask(frame, capture_target, (part.width(), part.height()));
-        let image = vale_render::render_rgba(&mask_list, RASTER_PIXEL_RATIO)?;
+        let image = vale_render::render_rgba(&mask_list, ratio)?;
         let mask = Arc::new(Mask {
             id: MASK_ID.fetch_add(1, Ordering::Relaxed),
             size,
@@ -272,18 +294,15 @@ impl PdfExport {
         let draw = FrameDraw {
             id: next_draw_id(),
             place: FramePlace {
-                center: [
-                    (vt.origin.x * RASTER_PIXEL_RATIO) as f32,
-                    (vt.origin.y * RASTER_PIXEL_RATIO) as f32,
-                ],
+                center: [(vt.origin.x * ratio) as f32, (vt.origin.y * ratio) as f32],
                 map_center: [
                     (vt.view.center.x / radius) as f32,
                     (vt.view.center.y / radius) as f32,
                 ],
-                units_to_pixels: (vt.view.scale * radius * RASTER_PIXEL_RATIO) as f32,
+                units_to_pixels: (vt.view.scale * radius * ratio) as f32,
                 rotation: vt.view.rotation,
                 points_per_radian: radius * PT_PER_MM * 1000.0 / frame.scale,
-                pixels_per_page_point: RASTER_PIXEL_RATIO as f32,
+                pixels_per_page_point: ratio as f32,
             },
             rect: [0, 0, size[0], size[1]],
             mesh: Arc::new(FlatMesh::new(&unit_projection)),
@@ -301,8 +320,10 @@ impl PdfExport {
         Ok(PendingCapture {
             rgba: vec![0; pixel_count * 4],
             row: 0,
-            whole: draw.clone(),
-            draw,
+            col: 0,
+            max_side: self.max_side,
+            draw: strip(&draw, (0, 0), [self.max_side, self.max_side]),
+            whole: draw,
             layered,
             masks: (masks.into_iter())
                 .map(|(layer, mask)| (layer, mask, vec![0; pixel_count]))
@@ -312,11 +333,8 @@ impl PdfExport {
             part: image_rect,
             image_rect,
             pixels: FrameTarget {
-                origin: Point::new(
-                    -point_min.x * RASTER_PIXEL_RATIO,
-                    -point_min.y * RASTER_PIXEL_RATIO,
-                ),
-                pts_per_mm: PT_PER_MM * RASTER_PIXEL_RATIO,
+                origin: Point::new(-point_min.x * ratio, -point_min.y * ratio),
+                pts_per_mm: PT_PER_MM * ratio,
             },
             receivers: None,
         })
@@ -328,7 +346,7 @@ impl PdfExport {
     fn take_strip(&mut self, captured: Vec<Option<Captured>>) -> anyhow::Result<bool> {
         let pending = self.pending.as_mut().expect("a capture is pending");
         let [.., width, height] = pending.whole.rect;
-        let rows = pending.draw.rect[3];
+        let [.., cols, rows] = pending.draw.rect;
         let mut captured = captured.into_iter();
         let covers = pending.masks.iter_mut().map(|(_, _, cover)| (cover, 1));
         let outs = std::iter::once((&mut pending.rgba, 4)).chain(covers);
@@ -336,18 +354,26 @@ impl PdfExport {
             let Some(strip) = captured.next().flatten() else {
                 continue;
             };
-            if strip.size != [width, rows] || strip.rgba.len() != (width * rows * bytes) as usize {
+            if strip.size != [cols, rows] || strip.rgba.len() != (cols * rows * bytes) as usize {
                 anyhow::bail!("the raster capture has the wrong size");
             }
-            let start = (pending.row * width * bytes) as usize;
-            out[start..start + strip.rgba.len()].copy_from_slice(&strip.rgba);
+            let line = (cols * bytes) as usize;
+            for (r, src) in strip.rgba.chunks_exact(line).enumerate() {
+                let start = (((pending.row + r as u32) * width + pending.col) * bytes) as usize;
+                out[start..start + line].copy_from_slice(src);
+            }
         }
-        pending.row += rows;
+        pending.col += cols;
+        if pending.col >= width {
+            pending.col = 0;
+            pending.row += rows;
+        }
         pending.receivers = None;
         if pending.row >= height {
             return Ok(true);
         }
-        pending.draw = strip(&pending.whole, pending.row, rows);
+        let at = (pending.col, pending.row);
+        pending.draw = strip(&pending.whole, at, [pending.max_side, rows]);
         Ok(false)
     }
 
@@ -505,7 +531,7 @@ impl PdfExport {
             }
             let list = self.list.take().unwrap();
             if matches!(self.output, Some(Output::Png)) {
-                let bytes = vale_render::render_png(&list, RASTER_PIXEL_RATIO)?;
+                let bytes = vale_render::render_png(&list, pixel_ratio(page.dpi))?;
                 headless::write_file(&self.path, &bytes)?;
                 return Ok(ExportStep::Done(Ok(self.path.clone())));
             }
@@ -531,22 +557,29 @@ impl PdfExport {
     }
 }
 
-/// The strip of `rows` rows of a frame from row `row`. Each strip has its
-/// own id and the part of the mask under it.
-fn strip(whole: &FrameDraw, row: u32, rows: u32) -> FrameDraw {
+/// The strip of `cols` columns and `rows` rows of a frame from the column
+/// and the row `(col, row)`. Each strip has its own id and the part of the
+/// mask under it.
+fn strip(whole: &FrameDraw, (col, row): (u32, u32), [cols, rows]: [u32; 2]) -> FrameDraw {
     let [.., width, height] = whole.rect;
-    let rows = rows.min(height - row);
+    let (cols, rows) = (cols.min(width - col), rows.min(height - row));
     let mut draw = whole.clone();
     draw.id = next_draw_id();
+    draw.place.center[0] -= col as f32;
     draw.place.center[1] -= row as f32;
-    draw.rect = [0, 0, width, rows];
+    draw.rect = [0, 0, cols, rows];
     draw.mask = whole.mask.as_ref().map(|mask| {
         let w = mask.size[0] as usize;
-        let at = row as usize * w;
+        let (col, cols) = (col as usize, cols as usize);
+        let lines = mask.alpha.chunks_exact(w).skip(row as usize);
+        let alpha = (lines.take(rows as usize))
+            .flat_map(|line| &line[col..col + cols])
+            .copied()
+            .collect();
         Arc::new(Mask {
             id: MASK_ID.fetch_add(1, Ordering::Relaxed),
-            size: [mask.size[0], rows],
-            alpha: mask.alpha[at..at + rows as usize * w].to_vec(),
+            size: [cols as u32, rows],
+            alpha,
         })
     });
     draw
