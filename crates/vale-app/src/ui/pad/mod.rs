@@ -63,6 +63,7 @@ pub mod selectable;
 pub mod table;
 pub mod text_style;
 pub mod theme;
+pub mod toolbox;
 pub mod value;
 pub mod widgets;
 
@@ -102,9 +103,6 @@ pub const MOVE_SHARED: &str = "Move shared vertices";
 pub const DELETE_VERTEX: &str = "Delete vertex";
 /// The button of the Vertex tool that smooths the selected part.
 pub const SMOOTH_VERTICES: &str = "Smooth vertices";
-/// The row of the panel of a line layer that reverses each line that runs
-/// uphill.
-pub const ORIENT_DOWNHILL: &str = "Orient lines downhill";
 
 /// A tool of the Vector cell.
 pub struct VectorTool {
@@ -462,6 +460,8 @@ pub struct PadState {
     /// The page of the panel of the layer of `layer` that the Layers panel
     /// shows.
     pub page: Option<Page>,
+    /// The page and the search of the Toolbox panel.
+    pub toolbox: toolbox::ToolboxState,
     /// The texts of the open page of a field.
     field: Option<fields::Draft>,
     /// The layer that the Layers panel shows. `None`: the panel shows the
@@ -2184,7 +2184,7 @@ pub(super) fn panel_head(state: &mut AppState, panel: Panel) -> Head {
         ),
         (Panel::Layers, Some(LayerRef::Vector(_))) => ("pad-vector", name, Some("Layers")),
         (Panel::Layers, None) => (panel.key(), "Layers", None),
-        (Panel::Toolbox, _) => (panel.key(), TOOLBOX, None),
+        (Panel::Toolbox, _) => toolbox::head(state.pad.toolbox.page),
         (Panel::Attributes, _) => (panel.key(), select::ATTRIBUTES, None),
         (_, _) => (panel.key(), panel_name(state, panel), None),
     };
@@ -2268,6 +2268,12 @@ pub(super) fn panel_title(
     action: Option<&egui::Response>,
 ) {
     let (panel, layer, page) = (head.panel, head.layer, head.page);
+    if panel == Panel::Toolbox {
+        if back {
+            toolbox::back(state);
+        }
+        return;
+    }
     match action {
         Some(focus) if panel == Panel::Attributes => {
             if focus.clicked() {
@@ -2366,7 +2372,7 @@ pub(super) fn panel_body(
             _ => vector_body(ui, state, controls, id),
         },
         (Panel::Layers, None) => layers_body(ui, state, controls),
-        (Panel::Toolbox, _) => toolbox_body(ui, state),
+        (Panel::Toolbox, _) => toolbox::body(ui, state, controls),
         (Panel::Attributes, _) => select::body(ui, state, controls),
         _ => {}
     }
@@ -3372,12 +3378,6 @@ fn vector_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
     if widgets::open_row(ui, controls, table::FEATURES, &features).clicked() {
         state.open_table(id);
     }
-    if kind == "Lines" {
-        let enabled = state.can_orient_downhill(id);
-        if widgets::text_row(ui, controls, ORIENT_DOWNHILL, 0.0, false, enabled).clicked() {
-            state.orient_downhill(id);
-        }
-    }
     rules::section(ui, state, controls, id);
     if kind != "Polygons" {
         fonts::section(ui, state, controls, id);
@@ -3560,20 +3560,6 @@ fn image_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, 
         state.pad.page = Some(Page::Blend);
     }
     image_note(ui, state, Some(id));
-}
-
-fn toolbox_body(ui: &mut egui::Ui, state: &mut AppState) {
-    ui.add_space(4.0);
-    ui.label(egui::RichText::new("No tools yet.").color(theme::MUTE));
-    // Temporary controls, for the tests of the brush on the device.
-    ui.checkbox(&mut state.globe.debug, "Debug");
-    if state.globe.debug {
-        // The frame time needs a new frame at each refresh of the screen.
-        if !state.headless {
-            ui.ctx().request_repaint();
-        }
-        panels::debug_controls(ui, state);
-    }
 }
 
 /// The width of a button of the card of a held stroke, and the least width

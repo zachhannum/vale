@@ -2336,7 +2336,7 @@ pub fn choice_row(
             ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), Sense::hover());
         Rect::from_center_size(row.center(), vec2(row.width(), TOUCH))
     };
-    segmented_at(ui, controls, field, choices, active, true)
+    segmented_at(ui, controls, field, choices, active, |_| true)
 }
 
 /// A segmented control that fills the width of the form, with no label.
@@ -2349,17 +2349,18 @@ pub fn segmented(
     enabled: bool,
 ) -> Option<usize> {
     let (field, _) = ui.allocate_exact_size(vec2(ui.available_width(), TOUCH), Sense::hover());
-    segmented_at(ui, controls, field, choices, active, enabled)
+    segmented_at(ui, controls, field, choices, active, |_| enabled)
 }
 
-/// The choices of a segmented control in `field`.
-fn segmented_at(
+/// The choices of a segmented control in `field`. `enabled` tells for the
+/// index of a choice if the choice takes a tap.
+pub fn segmented_at(
     ui: &egui::Ui,
     controls: &mut Controls,
     field: Rect,
     choices: &[&str],
     active: Option<usize>,
-    enabled: bool,
+    enabled: impl Fn(usize) -> bool,
 ) -> Option<usize> {
     let track = field.shrink(HIGHLIGHT_INSET);
     ui.painter()
@@ -2378,6 +2379,7 @@ fn segmented_at(
         let min = pos2(field.left() + index as f32 * width, field.top());
         let rect = Rect::from_min_size(min, vec2(width, TOUCH));
         let on = active == Some(index);
+        let enabled = enabled(index);
         let resp = hit(
             ui,
             controls,

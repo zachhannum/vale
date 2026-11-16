@@ -2,7 +2,7 @@
 
 use eframe::egui;
 use vale_sphere::{ProjectionKind, ProjectionSpec};
-use vale_store::{GeometryKind, World};
+use vale_store::{GeometryKind, LayerId, World};
 
 use super::export_form::{self, ExportForm};
 use super::number;
@@ -13,7 +13,9 @@ use super::pad::atlas::{
 };
 use super::raster_form::RasterForm;
 use super::world_form::{self, WorldForm};
-use super::{Action, AppState, LayerRef, SaveMark, Workspace, atlas, elevation, pad, select};
+use super::{
+    Action, AppState, LayerRef, SaveMark, Workspace, atlas, elevation, orient, pad, select,
+};
 use vale_terrain::Mode;
 
 use crate::globe::brush::{
@@ -728,14 +730,6 @@ fn selected_layer(ui: &mut egui::Ui, state: &mut AppState) {
     {
         ui.label(&note.text);
     }
-    if let LayerRef::Vector(id) = layer
-        && state.doc.layer(id).and_then(|l| l.geometry()) == Some(GeometryKind::Line)
-    {
-        let enabled = state.can_orient_downhill(id);
-        if (ui.add_enabled(enabled, egui::Button::new(pad::ORIENT_DOWNHILL))).clicked() {
-            state.orient_downhill(id);
-        }
-    }
     if ui.button(DELETE_LAYER).clicked() {
         state.remove_layer(id);
     }
@@ -1413,9 +1407,79 @@ pub fn left(ui: &mut egui::Ui, state: &mut AppState) {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 world_section(ui, state);
                 layers_section(ui, state);
+                toolbox_section(ui, state);
                 map_section(ui, state);
             });
         });
+}
+
+fn toolbox_section(ui: &mut egui::Ui, state: &mut AppState) {
+    use pad::toolbox::{self, GROUPS};
+    ui.heading(pad::TOOLBOX);
+    for (group, ops) in GROUPS {
+        ui.weak(group);
+        for &(name, _) in ops {
+            let ready = toolbox::exists(name);
+            ui.add_enabled(ready, egui::Label::new(name));
+            if ready {
+                orient_form(ui, state);
+            }
+        }
+    }
+    ui.add_space(6.0);
+}
+
+/// The inputs of "Orient lines downhill", its Run button, and its hint or
+/// its result.
+fn orient_form(ui: &mut egui::Ui, state: &mut AppState) {
+    use pad::toolbox::{FEATURES, LINES, NONE, RUN};
+    ui.indent("orient", |ui| {
+        let lines = state.orient_lines();
+        let mut chosen = lines;
+        let layers = state.line_layers();
+        let name = |id: Option<LayerId>| {
+            let found = layers.iter().find(|(l, _)| Some(*l) == id);
+            found.map_or(NONE, |(_, name)| name.as_str()).to_owned()
+        };
+        egui::ComboBox::from_label(LINES)
+            .selected_text(name(lines))
+            .show_ui(ui, |ui| {
+                for (id, layer) in &layers {
+                    ui.selectable_value(&mut chosen, Some(*id), layer);
+                }
+            });
+        if chosen != lines {
+            state.orient.lines = chosen;
+            state.toolbox_note = None;
+        }
+        let height = state.orient_height();
+        let mut chosen = height;
+        let heights = state.held_heights();
+        let found = heights.iter().find(|(h, _)| Some(*h) == height);
+        let text = found.map_or(NONE, |(_, name)| name.as_str()).to_owned();
+        egui::ComboBox::from_label(pad::rules::HEIGHT_LAYER)
+            .selected_text(text)
+            .show_ui(ui, |ui| {
+                for (id, layer) in &heights {
+                    ui.selectable_value(&mut chosen, Some(*id), layer);
+                }
+            });
+        if chosen != height {
+            state.orient.height = chosen;
+            state.toolbox_note = None;
+        }
+        let selected = lines.map_or(0, |id| state.selected_in(id));
+        ui.label(format!("{FEATURES}: {}", orient::features_text(selected)));
+        let run = egui::Button::new(RUN);
+        if ui.add_enabled(state.can_orient_downhill(), run).clicked() {
+            state.run_orient_downhill();
+        }
+        if let Some(hint) = state.orient_hint() {
+            ui.weak(hint);
+        } else if let Some(note) = &state.toolbox_note {
+            ui.weak(note);
+        }
+    });
 }
 
 fn world_section(ui: &mut egui::Ui, state: &mut AppState) {

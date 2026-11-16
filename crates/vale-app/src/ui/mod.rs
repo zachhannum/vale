@@ -614,6 +614,10 @@ pub struct AppState {
     /// `None` for the layer: the import failed. A GeoJSON import that
     /// fails also puts its text here.
     pub image_note: Option<(Note, Option<ImageId>)>,
+    /// The result of the last run of a toolbox operation.
+    pub toolbox_note: Option<String>,
+    /// The inputs that the user chose for "Orient lines downhill".
+    pub orient: orient::OrientInputs,
     /// The tiles of the images of a project with no file.
     pub image_tiles: ImageTiles,
     pub export_layer: Option<RasterId>,
@@ -817,6 +821,8 @@ impl AppState {
             import_layer: None,
             image_import: None,
             image_note: None,
+            toolbox_note: None,
+            orient: orient::OrientInputs::default(),
             image_tiles: ImageTiles::new(),
             export_layer: None,
             share_exports: false,
