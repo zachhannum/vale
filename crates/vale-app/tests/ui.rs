@@ -3188,7 +3188,7 @@ fn the_desktop_style_editor_picks_the_height_layer_of_flow() {
 fn the_desktop_ramp_menus_open_the_editor_window() {
     use vale_app::ui::RampSource;
     use vale_app::ui::pad::classify::CLASSIFY;
-    use vale_app::ui::pad::ramp_editor::{ADD_COLOR, NEW_RAMP_TITLE, SAVE_RAMP};
+    use vale_app::ui::pad::ramp_editor::{ADD_COLOR, NEW_RAMP_TITLE, RAMP_NAME, SAVE_RAMP};
     use vale_app::ui::pad::raster::{COLOR_RAMPS, DUPLICATE_RAMP, NEW_RAMP, SAVE_AS_RAMP};
     use vale_app::ui::region::CANCEL;
 
@@ -3255,6 +3255,22 @@ fn the_desktop_ramp_menus_open_the_editor_window() {
     assert_eq!(draft.name, format!("{} copy", ramp.name));
     assert_eq!(draft.colors, ramp.colors);
     click(&mut h, CANCEL);
+
+    // The name field of the menu of a custom ramp renames the ramp. The
+    // name of another ramp changes nothing.
+    h.state_mut()
+        .ramps
+        .add("Sand", vec![[1; 3], [2; 3]])
+        .unwrap();
+    for (from, to, after) in [("Sand", "Viridis", "Sand"), ("Sand", "Dunes", "Dunes")] {
+        click(&mut h, COLOR_RAMPS);
+        click(&mut h, &format!("{from} (2) ⏵"));
+        type_in(&mut h, RAMP_NAME, to);
+        let custom = h.state().ramps.custom();
+        assert_eq!(custom.last().unwrap().name, after, "{to}");
+        h.key_press(egui::Key::Escape);
+        h.run_steps(2);
+    }
 
     // The Classify section of a vector layer has "New ramp…" and
     // "Duplicate…" for its ramp.

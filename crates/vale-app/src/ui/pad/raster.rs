@@ -428,17 +428,21 @@ pub fn ramps_body(
         .map(|(i, ramp)| list::Row {
             label: short_name(&ramp.name),
             on: open == Some(i) || chosen == Some(i),
+            rename: !ramp.built_in,
             delete: !ramp.built_in,
             select: !ramp.built_in,
             ..list::Row::new(i, ramp.name.clone())
         })
         .collect();
+    let list = &mut style.ramp_list;
+    let renamed = list.rename.as_ref().map(|r| r.0);
+    let valid = |name: &str| renamed.is_some_and(|i| state.ramps.can_rename(i, name));
     let spec = list::Spec {
         select: true,
+        valid: &valid,
         ..list::Spec::default()
     };
     let mut places = vec![Rect::NOTHING; rows.len()];
-    let list = &mut style.ramp_list;
     let events = list::show(ui, controls, list, spec, &rows, |ui, controls, cell, i| {
         places[i] = cell.rect;
         let moved = cell.rect.translate(vec2(cell.shift.max(0.0), 0.0));
@@ -455,6 +459,12 @@ pub fn ramps_body(
                 let style = &mut state.pad.style;
                 style.ramp = (open != Some(index)).then_some((user, index));
                 style.ramp_part = None;
+            }
+            list::Event::Rename(index, name) => {
+                if let Err(e) = state.ramps.rename(index, &name) {
+                    state.ramp_note =
+                        Some(crate::ui::Note::new(e.to_string(), true, user.raster()));
+                }
             }
             list::Event::Delete(index) => remove_ramps(state, user, &[index]),
             _ => {}

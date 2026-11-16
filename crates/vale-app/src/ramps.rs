@@ -157,6 +157,26 @@ impl Ramps {
             .unwrap_or_default()
     }
 
+    /// True if custom ramp `index` can take `name`: the name is not blank,
+    /// and no other ramp has it.
+    pub fn can_rename(&self, index: usize, name: &str) -> bool {
+        let name = name.trim();
+        self.list.get(index).is_some_and(|r| !r.built_in)
+            && !name.is_empty()
+            && !(self.list.iter().enumerate()).any(|(i, r)| i != index && r.name == name)
+    }
+
+    /// Gives custom ramp `index` a new name, without the spaces at its ends.
+    /// A built-in ramp, a blank name, and the name of another ramp change
+    /// nothing.
+    pub fn rename(&mut self, index: usize, name: &str) -> std::io::Result<()> {
+        if !self.can_rename(index, name) {
+            return Ok(());
+        }
+        self.list[index].name = name.trim().replace(['\t', '\n', '\r'], " ");
+        self.write()
+    }
+
     /// Reverses the order of the colors of a custom ramp. A built-in ramp
     /// does not change.
     pub fn reverse(&mut self, index: usize) -> std::io::Result<()> {
@@ -911,6 +931,35 @@ mod tests {
         assert!(zones.qualitative && !zones.built_in);
         assert_eq!(zones.labels, ["Wet", "Dry land"]);
         assert_eq!(zones.colors, [[170; 3], [187; 3]]);
+    }
+
+    #[test]
+    fn a_custom_ramp_takes_a_free_name_and_keeps_it_in_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ramps = Ramps::default();
+        ramps.open(Some(dir.path()));
+        ramps.add("Sand", vec![[1; 3], [2; 3]]).unwrap();
+        ramps.add("Moss", vec![[3; 3], [4; 3]]).unwrap();
+        let sand = ramps.list().iter().position(|r| r.name == "Sand").unwrap();
+        let viridis = ramps
+            .list()
+            .iter()
+            .position(|r| r.name == "Viridis")
+            .unwrap();
+        assert!(ramps.can_rename(sand, "Sand"));
+        for name in ["", "  ", "Moss", "Viridis"] {
+            assert!(!ramps.can_rename(sand, name), "{name:?}");
+        }
+        assert!(!ramps.can_rename(viridis, "Greenery"));
+        ramps.rename(sand, "Moss").unwrap();
+        ramps.rename(viridis, "Greenery").unwrap();
+        assert_eq!(ramps.list()[viridis].name, "Viridis");
+        ramps.rename(sand, "  Dunes ").unwrap();
+        assert_eq!(ramps.list()[sand].name, "Dunes");
+        let mut again = Ramps::default();
+        again.open(Some(dir.path()));
+        let names: Vec<_> = again.custom().iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["Dunes", "Moss"]);
     }
 
     #[test]

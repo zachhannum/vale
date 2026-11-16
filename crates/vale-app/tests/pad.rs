@@ -6683,8 +6683,6 @@ fn a_swipe_to_the_left_deletes_a_custom_ramp() {
     use vale_app::ui::pad::raster::DELETE_RAMP;
     let mut h = ramps_page(&["Sand", "Moss"]);
     swipe_left_from_top(&mut h, "Moss");
-    // A custom ramp has Delete and no Rename.
-    assert!(control(&h, "Rename Moss").is_none());
     tap(&mut h, "Delete Moss");
     assert_eq!(custom_ramps(&h), ["Sand"]);
     // The card of a custom ramp keeps its Delete button.
@@ -6692,6 +6690,34 @@ fn a_swipe_to_the_left_deletes_a_custom_ramp() {
     tap(&mut h, "Sand");
     tap(&mut h, DELETE_RAMP);
     assert!(custom_ramps(&h).is_empty());
+}
+
+#[test]
+fn a_swipe_to_the_left_renames_a_custom_ramp() {
+    use vale_app::ui::pad::widgets::RENAME;
+    let mut h = ramps_page(&["Sand", "Moss"]);
+    let rename = |h: &mut Pad, row: &str, text: &str| {
+        swipe_left_from_top(h, row);
+        tap(h, &format!("{RENAME} {row}"));
+        assert!(control(h, "Name").is_some());
+        check_controls(h, "rename a ramp");
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+        h.run_steps(1);
+        h.event(egui::Event::Text(text.to_owned()));
+        h.run_steps(1);
+        h.key_press(egui::Key::Enter);
+        h.run_steps(2);
+    };
+    rename(&mut h, "Sand", "Dunes");
+    assert_eq!(custom_ramps(&h), ["Dunes", "Moss"]);
+    assert!(control(&h, "Dunes").is_some());
+    // The name of another ramp, custom or built-in, changes nothing.
+    rename(&mut h, "Dunes", "Moss");
+    rename(&mut h, "Dunes", "Viridis");
+    assert_eq!(custom_ramps(&h), ["Dunes", "Moss"]);
+    // A built-in ramp has no Rename.
+    swipe_left_from_top(&mut h, "Viridis");
+    assert!(control(&h, &format!("{RENAME} Viridis")).is_none());
 }
 
 #[test]
