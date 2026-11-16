@@ -759,20 +759,6 @@ fn paint_row<K>(
         }
     }
     let highlight = rect.expand2(vec2(8.0, -HIGHLIGHT_INSET));
-    if shift > 0.0 {
-        // The check behind the row tells what the swipe does.
-        let mark = Rect::from_center_size(
-            pos2(rect.left() + shift.min(SWIPE_SELECT) / 2.0, rect.center().y),
-            vec2(18.0, 18.0),
-        );
-        let color = if shift >= SWIPE_SELECT / 2.0 {
-            theme::ACCENT
-        } else {
-            theme::MUTE
-        };
-        let icon = if picked { Icon::Close } else { Icon::Tick };
-        icons::paint(ui.painter(), mark, icon, 18.0, color);
-    }
     let left = rect.left() - 8.0;
     let clip = Rect::from_x_y_ranges(left..=edge + shift.min(0.0), rect.y_range());
     let painter = ui.painter().with_clip_rect(ui.clip_rect().intersect(clip));
