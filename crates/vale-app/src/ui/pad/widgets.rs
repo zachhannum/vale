@@ -356,13 +356,18 @@ pub(super) fn press_end(ui: &egui::Ui, resp: &Response, start: egui::layers::Sha
 }
 
 /// The thumb of the segmented control `id` at `rect`. The thumb slides
-/// on a spring from the item before, and `base` is the left edge of the
-/// control, so the thumb moves with the control in a scroll.
-fn slide_thumb(ui: &egui::Ui, id: egui::Id, base: f32, rect: Rect) -> Rect {
+/// on a spring from the item before. `span` is the horizontal extent of
+/// the items, and the spring runs in fractions of it, so the thumb moves
+/// with the control in a scroll and stays on its item when the control
+/// changes width.
+fn slide_thumb(ui: &egui::Ui, id: egui::Id, span: egui::Rangef, rect: Rect) -> Rect {
     let ctx = ui.ctx();
-    let left = motion::points(ctx, id.with("left"), rect.left() - base, motion::BOUNCY);
-    let right = motion::points(ctx, id.with("right"), rect.right() - base, motion::BOUNCY);
-    Rect::from_x_y_ranges(base + left..=base + right, rect.y_range())
+    let width = span.span().max(1.0);
+    let at = |x: f32| (x - span.min) / width;
+    let left = motion::value(ctx, id.with("left"), at(rect.left()), motion::BOUNCY);
+    let right = motion::value(ctx, id.with("right"), at(rect.right()), motion::BOUNCY);
+    let x = |f: f32| span.min + f * width;
+    Rect::from_x_y_ranges(x(left)..=x(right), rect.y_range())
 }
 
 /// A button with an icon, at a given place.
@@ -421,7 +426,8 @@ pub fn segments(
         .collect();
     if let Some(&rect) = rects.get(active) {
         let id = ui.id().with(("segments", items));
-        let thumb = slide_thumb(ui, id, card.left(), rect).shrink(HIGHLIGHT_INSET);
+        let thumb =
+            slide_thumb(ui, id, egui::Rangef::new(card.left(), left), rect).shrink(HIGHLIGHT_INSET);
         ui.painter()
             .rect_filled(thumb, theme::CONTROL_RADIUS, theme::raise());
     }
@@ -502,7 +508,7 @@ pub fn small_segments_named(
         .collect();
     if let Some(&item) = items.get(active) {
         let id = ui.id().with(("small-segments", names));
-        let thumb = slide_thumb(ui, id, rect.left(), item);
+        let thumb = slide_thumb(ui, id, rect.x_range(), item);
         ui.painter().rect_filled(thumb, 8.0, theme::raise());
     }
     let mut chosen = None;
@@ -2260,7 +2266,7 @@ pub fn choice_row(
         let min = pos2(field.left() + index as f32 * width, field.top());
         let rect = Rect::from_min_size(min, vec2(width, TOUCH)).intersect(track);
         let id = ui.id().with(("choice-row", label));
-        let thumb = slide_thumb(ui, id, field.left(), rect).shrink(2.0);
+        let thumb = slide_thumb(ui, id, field.x_range(), rect).shrink(2.0);
         ui.painter()
             .rect_filled(thumb, theme::CONTROL_RADIUS - 2.0, theme::raise());
     }
@@ -2987,5 +2993,21 @@ mod tests {
         assert_eq!(compass_angle(c, at(47.0)), Some(45.0));
         assert_eq!(compass_angle(c, at(358.0)), Some(0.0));
         assert_eq!(compass_angle(c, at(50.0)), Some(50.0));
+    }
+
+    #[test]
+    fn a_thumb_stays_on_its_item_when_the_control_changes_width() {
+        let ctx = egui::Context::default();
+        let id = egui::Id::new("thumb");
+        let mut thumb = Rect::NOTHING;
+        for width in [300.0, 200.0] {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                let span = egui::Rangef::new(10.0, 10.0 + width);
+                let item = Rect::from_x_y_ranges(10.0 + width / 2.0..=10.0 + width, 0.0..=44.0);
+                thumb = slide_thumb(ui, id, span, item);
+            });
+            out.textures_delta.clear();
+        }
+        assert_eq!(thumb.x_range(), egui::Rangef::new(110.0, 210.0));
     }
 }
