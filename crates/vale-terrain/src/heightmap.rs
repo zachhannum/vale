@@ -33,6 +33,13 @@ pub enum Mode {
     Lower,
     Smooth,
     Flatten,
+    /// Paints toward `Stamp::level`, as a paint brush does. `Stamp::strength`
+    /// is the opacity, from 0 to 1. In one stroke, a texel moves toward its
+    /// level at the start of the stroke plus the opacity times the change to
+    /// `Stamp::level`, and it does not go past that level. A hard stamp with
+    /// full flow and full opacity sets `Stamp::level`. With no open stroke,
+    /// each stamp is a stroke.
+    Value,
     /// Pulls each texel toward the nearest step level. The step levels are
     /// sea level and each multiple of `Stamp::level` above and below it. A
     /// texel does not cross sea level, and a texel below sea level stays
@@ -160,14 +167,14 @@ pub struct Stamp {
     /// The effect at the center, from 0 to 1. Pressure sets this value.
     pub flow: f64,
     pub mode: Mode,
-    /// The target of the flatten mode. In the terrace mode, the height
-    /// between two step levels, in 16-bit steps.
+    /// The target of the flatten mode and the value mode. In the terrace
+    /// mode, the height between two step levels, in 16-bit steps.
     pub level: u16,
     /// The largest change of the raise and lower modes, in 16-bit steps. In
     /// the noise mode, the largest rise. In the warp mode, the largest offset
     /// as an angle, in radians. In the shape mode, the shape from -1 to 1.
     /// `stamp_plan` changes it to the bend of the curve, `SHAPE_BEND` to the
-    /// power of the shape.
+    /// power of the shape. In the value mode, the opacity from 0 to 1.
     pub strength: f64,
     /// The largest drop of the noise mode, in 16-bit steps.
     pub lower: f64,
@@ -1022,6 +1029,10 @@ impl Heightmap {
                 _ => stamp.strength,
             };
             (strength, scale)
+        } else if stamp.mode == Mode::Value {
+            // The shader gets the same 32-bit opacity.
+            let opacity = stamp.strength.clamp(0.0, 1.0) as f32;
+            (f64::from(opacity), stamp.scale)
         } else if stamp.mode == Mode::Shape {
             // The shader gets the same 32-bit bend.
             let bend = SHAPE_BEND.powf(stamp.strength.clamp(-1.0, 1.0));
@@ -1161,7 +1172,18 @@ impl Heightmap {
         for ty in rect.y0 / t..=(rect.y1 - 1) / t {
             for tx in rect.x0 / t..=(rect.x1 - 1) / t {
                 let index = (face * self.per_side + ty) * self.per_side + tx;
+                // The value mode reads the tile from the start of the stroke.
+                // A tile that the stroke did not change is the same as at its
+                // start.
+                let start = match (&self.stroke, stamp.mode) {
+                    (Some(saved), Mode::Value) => saved
+                        .tiles
+                        .get(&index)
+                        .map(|tile| (tile.clone(), saved.base)),
+                    _ => None,
+                };
                 let tile = &mut self.tiles[index];
+                let start = start.unwrap_or_else(|| (tile.clone(), base));
                 let mut texels = Texels::Shared(tile.as_deref());
                 for y in rect.y0.max(ty * t)..rect.y1.min((ty + 1) * t) {
                     let fv = self.flat[y];
@@ -1177,6 +1199,12 @@ impl Heightmap {
                             Mode::Raise | Mode::Uplift => old + amount * stamp.strength,
                             Mode::Lower => old - amount * stamp.strength,
                             Mode::Flatten => old + (f64::from(stamp.level) - old) * amount.min(1.0),
+                            Mode::Value => {
+                                let start = start.0.as_ref().map_or(start.1, |tile| tile[offset]);
+                                let start = f64::from(start);
+                                let cap = start + (f64::from(stamp.level) - start) * stamp.strength;
+                                old + (cap - old) * amount.min(1.0)
+                            }
                             Mode::Terrace => {
                                 old + (terrace_level(old, sea, stamp.level) - old) * amount.min(1.0)
                             }
@@ -3367,6 +3395,7 @@ mod tests {
             Mode::Lower,
             Mode::Smooth,
             Mode::Flatten,
+            Mode::Value,
             Mode::Weather,
             Mode::Uplift,
             Mode::Warp,
@@ -3401,6 +3430,64 @@ mod tests {
             assert!(map.redo() && map.redo() && !map.redo(), "{mode:?}");
             assert!(texels(&map) == after, "{mode:?}: two redo steps");
         }
+    }
+
+    /// A value stamp at the center of face 0 to `level`, with `flow` and
+    /// `opacity`.
+    fn value(map: &Heightmap, level: u16, flow: f64, opacity: f64) -> Stamp {
+        Stamp {
+            mode: Mode::Value,
+            level,
+            flow,
+            strength: opacity,
+            ..raise(map.texel_dir(0, 32, 32), 0.1)
+        }
+    }
+
+    #[test]
+    fn a_hard_value_stamp_sets_the_exact_level() {
+        let mut map = Heightmap::with_tile_size(64, 16, 30_000);
+        let stamp = value(&map, 41_234, 1.0, 1.0);
+        assert!(stroke(&mut map, stamp));
+        assert_eq!(map.texel(0, 32, 32), 41_234);
+        assert_eq!(map.texel(0, 30, 33), 41_234);
+        // Ground above the level goes down to it.
+        let stamp = value(&map, 12_345, 1.0, 1.0);
+        assert!(stroke(&mut map, stamp));
+        assert_eq!(map.texel(0, 32, 32), 12_345);
+    }
+
+    #[test]
+    fn opacity_caps_a_value_stroke() {
+        let mut map = Heightmap::with_tile_size(64, 16, 30_000);
+        let stamp = value(&map, 40_000, 0.5, 0.5);
+        map.begin_stroke();
+        for _ in 0..30 {
+            map.stamp(&stamp);
+            assert!(map.texel(0, 32, 32) <= 35_000);
+        }
+        assert!(map.end_stroke());
+        assert!(map.texel(0, 32, 32).abs_diff(35_000) <= 1);
+    }
+
+    #[test]
+    fn a_new_value_stroke_starts_again() {
+        let mut map = Heightmap::with_tile_size(64, 16, 30_000);
+        let stamp = value(&map, 40_000, 0.5, 0.5);
+        for _ in 0..2 {
+            map.begin_stroke();
+            for _ in 0..30 {
+                map.stamp(&stamp);
+            }
+            assert!(map.end_stroke());
+        }
+        // The second stroke goes half the way from 35000 to the level.
+        assert!(map.texel(0, 32, 32).abs_diff(37_500) <= 1);
+        // One stroke is one undo step.
+        assert!(map.undo());
+        assert!(map.texel(0, 32, 32).abs_diff(35_000) <= 1);
+        assert!(map.undo() && !map.can_undo());
+        assert_eq!(map.texel(0, 32, 32), 30_000);
     }
 
     #[test]
@@ -5102,13 +5189,14 @@ mod tests {
             Mode::Lower,
             Mode::Smooth,
             Mode::Flatten,
+            Mode::Value,
             Mode::Weather,
             Mode::Warp,
             Mode::Push,
             Mode::Noise,
         ];
         for mode in modes {
-            // The flatten mode goes down to level 0.
+            // The flatten mode and the value mode go down to level 0.
             assert_limits_bind(mode, 0, |floor| Limits {
                 floor,
                 ..Limits::default()
@@ -5143,13 +5231,14 @@ mod tests {
             Mode::Ridge,
             Mode::Smooth,
             Mode::Flatten,
+            Mode::Value,
             Mode::Weather,
             Mode::Warp,
             Mode::Push,
             Mode::Noise,
         ];
         for mode in modes {
-            // The flatten mode goes up to the highest level.
+            // The flatten mode and the value mode go up to the highest level.
             assert_limits_bind(mode, 65535, |ceiling| Limits {
                 ceiling,
                 ..Limits::default()
@@ -5190,6 +5279,7 @@ mod tests {
             Mode::Uplift,
             Mode::Smooth,
             Mode::Flatten,
+            Mode::Value,
             Mode::Weather,
             Mode::Warp,
             Mode::Push,

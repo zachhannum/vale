@@ -110,9 +110,11 @@ impl Gpu {
         map
     }
 
-    /// Applies the stamps to the GPU heightmap and to the CPU heightmap.
-    /// Returns the number of batches.
+    /// Applies the stamps to the GPU heightmap and to the CPU heightmap, as
+    /// one stroke. Returns the number of batches.
     fn stamp(&self, map: &GpuHeightmap, cpu: &mut Heightmap, stamps: &[Stamp]) -> usize {
+        map.begin_stroke(&self.queue);
+        cpu.begin_stroke();
         let mut batches = 1;
         let mut enc = self.encoder();
         for stamp in stamps {
@@ -230,13 +232,14 @@ fn hills(n: usize) -> Heightmap {
     map
 }
 
-const MODES: [Mode; 6] = [
+const MODES: [Mode; 7] = [
     Mode::Raise,
     Mode::Lower,
     Mode::Smooth,
     Mode::Flatten,
     Mode::Terrace,
     Mode::Shape,
+    Mode::Value,
 ];
 
 fn tolerance(mode: Mode) -> u16 {
@@ -256,8 +259,13 @@ fn stamp(center: V3, radius: f64, hardness: f64, mode: Mode) -> Stamp {
         mode,
         // The flatten target, or the terrace step. The hills cross sea level.
         level: if mode == Mode::Terrace { 1500 } else { 52000 },
-        // The shape of the shape mode is toward old land.
-        strength: if mode == Mode::Shape { -0.7 } else { 3000.0 },
+        // The shape of the shape mode is toward old land, and the opacity
+        // of the value mode is less than full.
+        strength: match mode {
+            Mode::Shape => -0.7,
+            Mode::Value => 0.6,
+            _ => 3000.0,
+        },
         lower: 3000.0,
         talus: 0.0,
         scale: 0.1,
@@ -1301,6 +1309,7 @@ fn run_groups(cpu: &mut Heightmap, stamps: &[Stamp]) -> GroupRun {
     gpu.submit(enc);
     single.begin_batch();
 
+    cpu.begin_stroke();
     for stamp in stamps {
         cpu.stamp(stamp);
     }
@@ -1323,10 +1332,15 @@ fn run_groups(cpu: &mut Heightmap, stamps: &[Stamp]) -> GroupRun {
 /// A stamp with a small effect, so that many of them on one texel stay
 /// inside the range of the levels.
 fn light(lon: f64, lat: f64, radius: f64, mode: Mode) -> Stamp {
+    let base = stamp(lonlat_to_dir(lon, lat), radius, 0.5, mode);
     Stamp {
         flow: 0.1,
-        strength: 1500.0,
-        ..stamp(lonlat_to_dir(lon, lat), radius, 0.5, mode)
+        strength: if mode == Mode::Value {
+            base.strength
+        } else {
+            1500.0
+        },
+        ..base
     }
 }
 
@@ -1351,8 +1365,8 @@ fn groups_match_single_stamps_and_the_cpu_for_a_stroke() {
         ("face edge", (31.0, 2.0), (59.0, 5.0)),
         ("cube corner", (35.0, 25.264), (55.0, 45.264)),
     ];
-    let modes = [Mode::Raise, Mode::Lower, Mode::Flatten];
-    let mut worst = [0; 3];
+    let modes = [Mode::Raise, Mode::Lower, Mode::Flatten, Mode::Value];
+    let mut worst = [0; 4];
     for (m, mode) in modes.into_iter().enumerate() {
         for (place, from, to) in lines {
             let stamps = stroke(from, to, 240, 0.02, mode);
@@ -1380,7 +1394,7 @@ fn groups_match_single_stamps_and_the_cpu_for_a_stroke() {
             let expected = if place == "cube corner" { 3 } else { 2 };
             assert_eq!(touched, expected, "{mode:?} stroke at the {place}");
             let limit = match mode {
-                Mode::Flatten => TOLERANCE,
+                Mode::Flatten | Mode::Value => TOLERANCE,
                 _ => ADD_STROKE_TOLERANCE,
             };
             assert!(
@@ -1391,6 +1405,82 @@ fn groups_match_single_stamps_and_the_cpu_for_a_stroke() {
         }
     }
     eprintln!("stroke in groups, largest difference for {modes:?}: {worst:?}");
+}
+
+/// Two value strokes on the same place. The second stroke starts from the
+/// levels after the first. Some of the tiles under the strokes have no
+/// memory.
+#[test]
+#[ignore = "gpu"]
+fn gpu_matches_cpu_for_two_value_strokes() {
+    let gpu = gpu();
+    let mut cpu = hills(256);
+    let part = TexelRect {
+        x0: 0,
+        y0: 0,
+        x1: 100,
+        y1: 256,
+    };
+    cpu.store_rect(0, part, &[0; 100 * 256]);
+    let map = gpu.copy_with_tiles(&cpu, 32);
+    let stamps: Vec<Stamp> = (0..40)
+        .map(|i| Stamp {
+            flow: 0.5,
+            ..stamp(
+                lonlat_to_dir(-6.0 + 0.3 * i as f64, 2.0),
+                0.08,
+                0.5,
+                Mode::Value,
+            )
+        })
+        .collect();
+    let mut after = Vec::new();
+    for _ in 0..2 {
+        gpu.stamp(&map, &mut cpu, &stamps);
+        assert!(cpu.end_stroke());
+        let faces = gpu.read_all(&map);
+        let difference = max_difference(&cpu, &faces);
+        assert!(difference <= TOLERANCE, "{difference}");
+        after.push(faces);
+    }
+    assert!(after[0] != after[1], "the second stroke changes the levels");
+}
+
+/// A value stroke on a pool with no room for the levels of each tile from
+/// the start of the stroke. The stamps do not overlap, so the tiles with no
+/// room give the same levels.
+#[test]
+#[ignore = "gpu"]
+fn a_value_stroke_on_a_full_pool_matches_the_cpu() {
+    let gpu = gpu();
+    // 6 faces of 36 by 36 tiles of 16 texels. The pool holds 8192 tiles.
+    let (n, tile) = (576, 16);
+    let mut cpu = hills(n);
+    let map = gpu.copy_with_tiles(&cpu, tile);
+    let level_tiles = FACES * 36 * 36;
+    assert_eq!(map.allocated_tiles(), level_tiles);
+    let centers = [
+        (0.0, 0.0),
+        (90.0, 0.0),
+        (180.0, 0.0),
+        (-90.0, 0.0),
+        (0.0, 90.0),
+        (0.0, -90.0),
+    ];
+    let stamps: Vec<Stamp> = centers
+        .iter()
+        .map(|&(lon, lat)| stamp(lonlat_to_dir(lon, lat), 0.3, 0.5, Mode::Value))
+        .collect();
+    for _ in 0..2 {
+        gpu.stamp(&map, &mut cpu, &stamps);
+        cpu.end_stroke();
+        assert_eq!(map.allocated_tiles(), 8192);
+        let difference = max_difference(&cpu, &gpu.read_all(&map));
+        assert!(difference <= TOLERANCE, "{difference}");
+    }
+    map.begin_stroke(&gpu.queue);
+    gpu.submit(gpu.encoder());
+    assert_eq!(map.allocated_tiles(), level_tiles);
 }
 
 #[test]
@@ -1485,10 +1575,10 @@ fn stamps_far_apart_are_not_one_group() {
     assert!(difference <= ADD_STROKE_TOLERANCE, "{difference}");
 }
 
-/// The memory of the table of the tiles, in bytes.
+/// The memory of the table of the tiles and of its start set, in bytes.
 fn table_bytes(n: usize) -> usize {
     let per_side = n.div_ceil(TILE_SIZE);
-    FACES * per_side * per_side * 4
+    2 * FACES * per_side * per_side * 4
 }
 
 #[test]
