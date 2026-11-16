@@ -20,8 +20,8 @@ use objc2_foundation::{
     NSDictionary, NSError, NSFileCoordinator, NSFileCoordinatorReadingOptions,
     NSFileCoordinatorWritingOptions, NSFileManager, NSFileVersion, NSFileVersionReplacingOptions,
     NSNotification, NSNotificationCenter, NSNotificationName, NSNumber, NSString, NSURL,
-    NSURLUbiquitousItemDownloadingStatusKey, NSURLUbiquitousItemDownloadingStatusNotDownloaded,
-    NSURLUbiquitousItemIsDownloadingKey,
+    NSURLUbiquitousItemDownloadingStatusCurrent, NSURLUbiquitousItemDownloadingStatusKey,
+    NSURLUbiquitousItemDownloadingStatusNotDownloaded, NSURLUbiquitousItemIsDownloadingKey,
 };
 use objc2_ui_kit::{
     UIApplication, UIApplicationDelegate, UIApplicationDidBecomeActiveNotification,
@@ -105,16 +105,24 @@ impl Files for CloudFiles {
             return Availability::Here;
         };
         // SAFETY: the statics are constants of Foundation.
-        let (status_key, downloading_key, not_downloaded) = unsafe {
+        let (status_key, downloading_key, current, not_downloaded) = unsafe {
             (
                 NSURLUbiquitousItemDownloadingStatusKey,
                 NSURLUbiquitousItemIsDownloadingKey,
+                NSURLUbiquitousItemDownloadingStatusCurrent,
                 NSURLUbiquitousItemDownloadingStatusNotDownloaded,
             )
         };
         let status = resource(&url, status_key).and_then(|v| v.downcast::<NSString>().ok());
-        if status.is_none_or(|status| &*status != not_downloaded) {
+        // A file with no status is not in the sync service.
+        let Some(status) = status else {
             return Availability::Here;
+        };
+        if &*status == current {
+            return Availability::Here;
+        }
+        if &*status != not_downloaded {
+            return Availability::Stale;
         }
         let downloading =
             resource(&url, downloading_key).and_then(|v| v.downcast::<NSNumber>().ok());

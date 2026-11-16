@@ -203,7 +203,7 @@ impl Locations {
 
     /// The project files of each folder that are on the device.
     pub fn paths(&self, files: &dyn Files) -> Vec<PathBuf> {
-        let here = |entry: &Entry| entry.availability == Availability::Here;
+        let here = |entry: &Entry| entry.availability.on_device();
         let entries = self.list_names(files).into_iter().filter(here);
         entries.map(|entry| entry.path).collect()
     }
@@ -281,8 +281,9 @@ fn availability(path: &Path, files: &dyn Files) -> Availability {
 
 fn list_dir(dir: &Path, location: Location, files: &dyn Files) -> Vec<Entry> {
     let entry_of = |path: PathBuf| match availability(&path, files) {
-        Availability::Here => Entry {
+        availability @ (Availability::Here | Availability::Stale) => Entry {
             location,
+            availability,
             conflicts: files.conflicts(&path),
             ..entry(&path)
         },
