@@ -1073,6 +1073,21 @@ fn a_press_on_the_globe_picks_the_flatten_level() {
     assert!(!globe.pick_level);
     assert_eq!(globe.stats.last().unwrap().id, 1);
 
+    // The value mode picks its own level, and it does not paint.
+    h.state_mut().globe.brush.mode = Mode::Value;
+    h.state_mut().globe.pick_level = true;
+    h.run_steps(1);
+    button(&mut h, egui::PointerButton::Primary, c, true);
+    h.step();
+    button(&mut h, egui::PointerButton::Primary, c, false);
+    h.run_steps(2);
+    let globe = &h.state().globe;
+    assert_eq!(globe.brush.value_level, Some(raised));
+    assert_eq!(globe.brush.flatten_level, Some(base));
+    assert!(!globe.pick_level);
+    assert_eq!(globe.stats.last().unwrap().id, 1);
+    h.state_mut().globe.brush.mode = Mode::Flatten;
+
     // The next stroke moves the ground to that level.
     mouse_stroke(&mut h);
     settle(&mut h);
@@ -1082,6 +1097,39 @@ fn a_press_on_the_globe_picks_the_flatten_level() {
     std::fs::create_dir_all("../../target/app").unwrap();
     let frame = h.render().unwrap();
     frame.save("../../target/app/test-brush-panel.png").unwrap();
+}
+
+#[test]
+fn the_brush_panel_has_the_rate_of_flatten_and_the_opacity_and_level_of_value() {
+    // Other panels also have a Rate or an Opacity, so the test counts them.
+    let count = |h: &Harness<'static, AppState>, label: &str| h.query_all_by_label(label).count();
+    let mut h = harness();
+    h.state_mut().globe.tool = Tool::Brush;
+    h.run_steps(2);
+    let label = |h: &Harness<'static, AppState>| {
+        let names = ["Rate", "Opacity", "Strength"];
+        names.map(|name| count(h, name))
+    };
+    let [rate, opacity, strength] = label(&h);
+    assert!(strength > 0);
+    h.get_by_label("Flatten").click();
+    h.run_steps(2);
+    let [flat_rate, flat_opacity, flat_strength] = label(&h);
+    assert!(flat_rate > rate && flat_strength < strength);
+    assert_eq!(flat_opacity, opacity);
+    assert!(h.query_by_label("Flatten level").is_some());
+
+    h.get_by_label("Value").click();
+    h.run_steps(2);
+    assert_eq!(h.state().globe.brush.mode, vale_terrain::Mode::Value);
+    // The Opacity slider takes the place of the Rate slider.
+    assert_eq!(
+        label(&h),
+        [rate, flat_opacity + flat_rate - rate, flat_strength]
+    );
+    assert!(h.query_by_label("Flatten level").is_none());
+    assert!(h.query_by_label("Pick from globe").is_some());
+    assert!(h.query_by_label("Level at stroke start").is_some());
 }
 
 #[test]

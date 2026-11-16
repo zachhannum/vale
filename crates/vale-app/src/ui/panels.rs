@@ -19,10 +19,10 @@ use super::{
 use vale_terrain::Mode;
 
 use crate::globe::brush::{
-    BASIN_AGE, BASIN_DENSITY, BASIN_LAKES, CHANNEL_HELP, CHANNEL_KM, EROSION, FLOODPLAIN_WIDTH_KM,
-    FLOW, NOISE_GRAIN, NOISE_M, RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_MAGMA, RIDGE_OFFSET_KM,
-    RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM, SCALE_KM, SEED, SHAPE, STRENGTH_M, TALUS_DEG,
-    TERRACE_STEP_M, WARP_KM, needs_height, shape_text,
+    BASIN_AGE, BASIN_DENSITY, BASIN_LAKES, CHANNEL_HELP, CHANNEL_KM, EROSION, FLATTEN_RATE,
+    FLOODPLAIN_WIDTH_KM, FLOW, NOISE_GRAIN, NOISE_M, OPACITY as BRUSH_OPACITY, RANGE_SPACING_KM,
+    RIDGE_CREST_M, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM, SCALE_KM, SEED,
+    SHAPE, STRENGTH_M, TALUS_DEG, TERRACE_STEP_M, WARP_KM, needs_height, picks_level, shape_text,
 };
 use crate::globe::combine::PolygonMode;
 use crate::globe::sweep;
@@ -997,6 +997,7 @@ fn brush_modes(ui: &mut egui::Ui, current: &mut Mode, height: bool) {
             (Mode::Lower, "Lower"),
             (Mode::Smooth, "Smooth"),
             (Mode::Flatten, "Flatten"),
+            (Mode::Value, "Value"),
             (Mode::Carve, "Carve"),
             (Mode::Ridge, "Ridge"),
             (Mode::Deposit, "Deposit"),
@@ -1145,6 +1146,14 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
         seed(ui, state);
     } else if globe.brush.mode == Mode::Push {
         // The motion of the pen and the flow set the distance.
+    } else if globe.brush.mode == Mode::Flatten {
+        number::slider("Rate", &mut globe.brush.flatten_rate, FLATTEN_RATE)
+            .percent()
+            .show(ui);
+    } else if globe.brush.mode == Mode::Value {
+        number::slider("Opacity", &mut globe.brush.opacity, BRUSH_OPACITY)
+            .percent()
+            .show(ui);
     } else {
         // The height sliders show a height in meters as a value of the
         // layer.
@@ -1363,13 +1372,16 @@ pub(super) fn brush_settings(ui: &mut egui::Ui, state: &mut AppState) {
     }
     let globe = &mut state.globe;
 
-    if globe.brush.mode != Mode::Flatten {
+    if !picks_level(globe.brush.mode) {
         globe.pick_level = false;
         return;
     }
     ui.add_space(6.0);
-    ui.strong("Flatten level");
-    match globe.brush.flatten_level {
+    ui.strong(match globe.brush.mode {
+        Mode::Value => "Value",
+        _ => "Flatten level",
+    });
+    match globe.brush.target_level() {
         Some(level) => {
             // The button has its own row, so the panel keeps its width.
             let mut value = globe.brush.value(level);
@@ -1382,10 +1394,10 @@ pub(super) fn brush_settings(ui: &mut egui::Ui, state: &mut AppState) {
                 .suffix(format!(" {unit}"))
                 .show(ui);
             if stepper.changed() {
-                globe.brush.flatten_level = Some(globe.brush.level(value));
+                *globe.brush.target_level_mut() = Some(globe.brush.level(value));
             }
             if ui.button("Use stroke start").clicked() {
-                globe.brush.flatten_level = None;
+                *globe.brush.target_level_mut() = None;
             }
         }
         None => {

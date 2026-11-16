@@ -19,7 +19,7 @@ use crate::pen::PenSwitch;
 const TOOLS_FILE: &str = "tools.txt";
 
 /// The brush modes, with their names in the file.
-const MODES: [(Mode, &str); 16] = [
+const MODES: [(Mode, &str); 17] = [
     (Mode::Raise, "raise"),
     (Mode::Lower, "lower"),
     (Mode::Smooth, "smooth"),
@@ -36,6 +36,7 @@ const MODES: [(Mode, &str); 16] = [
     (Mode::Push, "push"),
     (Mode::Noise, "noise"),
     (Mode::Basin, "basin"),
+    (Mode::Value, "value"),
 ];
 
 /// The tools, with their names in the file.
@@ -62,7 +63,7 @@ const POLYGON_MODES: [(PolygonMode, &str); 3] = [
 type Field<T> = (&'static str, fn(&mut BrushSettings) -> &mut T);
 
 /// The brush settings that one mode uses and all modes share.
-const FLOATS: [Field<f64>; 23] = [
+const FLOATS: [Field<f64>; 25] = [
     ("noise_raise_m", |b| &mut b.noise_raise_m),
     ("noise_lower_m", |b| &mut b.noise_lower_m),
     ("talus_deg", |b| &mut b.talus_deg),
@@ -86,6 +87,8 @@ const FLOATS: [Field<f64>; 23] = [
     ("ceiling_m", |b| &mut b.ceiling_m),
     ("shape", |b| &mut b.shape),
     ("terrace_step_m", |b| &mut b.terrace_step_m),
+    ("flatten_rate", |b| &mut b.flatten_rate),
+    ("value_opacity", |b| &mut b.opacity),
 ];
 
 const BOOLS: [Field<bool>; 4] = [
@@ -747,6 +750,27 @@ mod tests {
         next.choose(Choice::Tool(Tool::PolygonBrush));
         assert_eq!(next.line.smoothing, 0.6);
         assert_eq!(next.line.polygon_mode, PolygonMode::Add);
+    }
+
+    #[test]
+    fn the_value_mode_its_opacity_and_the_flatten_rate_stay_after_a_write_and_a_read() {
+        let mut globe = Globe::new();
+        globe.choose(Choice::Brush(Mode::Value));
+        globe.brush.flatten_rate = 0.65;
+        globe.brush.opacity = 0.4;
+        let snap = SnapSettings::default();
+        let text = globe.tools.text(&globe.brush, &globe.line, &snap);
+
+        let mut next = Globe::new();
+        let (brush, line) = (&mut next.brush, &mut next.line);
+        let mut tool = Tool::Pan;
+        let mut next_snap = SnapSettings::default();
+        next.tools
+            .load(&text, &mut tool, brush, line, &mut next_snap);
+        assert_eq!(tool, Tool::Brush);
+        assert_eq!(next.brush.mode, Mode::Value);
+        assert_eq!(next.brush.flatten_rate, 0.65);
+        assert_eq!(next.brush.opacity, 0.4);
     }
 
     #[test]

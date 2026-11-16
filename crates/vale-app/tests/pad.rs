@@ -2075,6 +2075,7 @@ fn a_finger_hits_each_control_at_the_first_try() {
         ("Lower", Mode::Lower),
         ("Smooth", Mode::Smooth),
         ("Flatten", Mode::Flatten),
+        ("Value", Mode::Value),
         ("Raise", Mode::Raise),
     ] {
         choose_mode(&mut h, name);
@@ -2958,6 +2959,50 @@ fn the_brush_panel_locks_the_size_and_sets_the_flatten_level() {
     tap(&mut h, STROKE_START);
     assert_eq!(h.state().globe.brush.flatten_level, None);
     check_controls(&h, "the Flatten mode");
+}
+
+#[test]
+fn the_brush_panel_sets_the_value_its_opacity_and_the_flatten_rate() {
+    use vale_app::ui::pad::{FLATTEN_LEVEL, PICK_LEVEL, STROKE_START, VALUE_LEVEL};
+    let mut h = pad(BOARDS[1]);
+    tap(&mut h, "Brush settings");
+    choose_mode(&mut h, "Flatten");
+    assert!(control(&h, "Brush strength").is_none());
+    assert!(control(&h, "Brush opacity").is_none());
+    type_value(&mut h, "Brush rate", "60");
+    assert!((h.state().globe.brush.flatten_rate - 0.6).abs() < 1e-9);
+    h.state_mut().globe.brush.flatten_level = Some(100);
+
+    open_group(&mut h, group_of("Value"));
+    screenshot::save(&mut h, "pad-sculpt-modes");
+    tap(&mut h, "Value");
+    assert_eq!(h.state().globe.brush.mode, Mode::Value);
+    assert_eq!(toggled(&h, SCULPT), Some(true));
+    assert!(control(&h, "Brush strength").is_none());
+    assert!(control(&h, "Brush rate").is_none());
+    assert_eq!(h.state().globe.brush.opacity, 1.0);
+    type_value(&mut h, "Brush opacity", "40");
+    assert!((h.state().globe.brush.opacity - 0.4).abs() < 1e-9);
+
+    // The value mode has its own level.
+    assert_eq!(h.state().globe.brush.value_level, None);
+    assert!(h.query_by_label("Level at stroke start").is_some());
+    tap(&mut h, PICK_LEVEL);
+    assert!(h.state().globe.pick_level);
+    let brush = &mut h.state_mut().globe.brush;
+    brush.value_level = Some(brush.level(1000.0));
+    h.run_steps(2);
+    assert!(control(&h, FLATTEN_LEVEL).is_none());
+    type_value(&mut h, VALUE_LEVEL, "1200");
+    let brush = h.state().globe.brush;
+    let level = brush.value(brush.value_level.unwrap());
+    assert!((level - 1200.0).abs() < 0.2, "{level}");
+    assert_eq!(brush.flatten_level, Some(100));
+    check_controls(&h, "the Value mode");
+    screenshot::save(&mut h, "pad-value");
+    tap(&mut h, STROKE_START);
+    assert_eq!(h.state().globe.brush.value_level, None);
+    assert_eq!(h.state().globe.brush.flatten_level, Some(100));
 }
 
 #[test]
