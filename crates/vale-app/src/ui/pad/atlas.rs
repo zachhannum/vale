@@ -347,6 +347,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     if state.pad.worlds.is_some() {
         worlds_menu(&ctx, state, &mut controls, &rects);
     }
+    crate::ui::world_form::pad(&ctx, state, &mut controls, &rects);
     crate::ui::export_form::pad(&ctx, state, &mut controls, &rects);
     readout::banner(&ctx, state, &rects);
     super::dock_ui::handle(&ctx, state, &mut controls, &rects);

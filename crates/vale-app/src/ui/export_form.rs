@@ -515,7 +515,11 @@ pub fn pad(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
             });
         ctx.data_mut(|d| d.insert_temp(body_id, out.content_size.y));
     });
-    // A touch on the dark fill does not put it above the card.
+    // The dark fill is above the chrome, and the card is above the fill.
+    ctx.move_to_top(egui::LayerId::new(
+        Order::Foreground,
+        egui::Id::new(CARD).with("scrim"),
+    ));
     ctx.move_to_top(egui::LayerId::new(Order::Foreground, egui::Id::new(CARD)));
     if stop {
         state.actions.push(Action::CancelExport);
