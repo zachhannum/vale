@@ -38,6 +38,7 @@ use crate::resume::{self, Resume};
 use crate::session::{self, Session};
 use crate::tools::{self, Choice, Tools};
 use crate::workcopy;
+use browser::Dialog;
 
 pub mod atlas;
 pub mod browser;
@@ -150,6 +151,17 @@ pub enum Action {
     Save,
     /// Gets this project file from iCloud Drive, and then opens its world.
     Download(PathBuf),
+    /// Opens the version on the device of the project that waits for its
+    /// download.
+    OpenThisCopy,
+    /// Stops the wait for the download of a project.
+    CancelWait,
+    /// Drops the changes of the open project, and opens the version of its
+    /// file that another device saved.
+    UseOtherVersion,
+    /// Writes the changes of the open project to a new file beside its file,
+    /// which another device changed.
+    KeepBoth,
     /// Keeps one version of a project file that two devices changed. The
     /// number is an index into the other versions. `None` keeps the version
     /// of this device.
@@ -174,6 +186,10 @@ pub enum FontTarget {
 
 /// The time between two reads of the projects folders while a download runs.
 pub const DOWNLOAD_POLL: Duration = Duration::from_secs(1);
+
+/// The time between two looks at the file of the open project in a sync
+/// service.
+pub const SOURCE_WATCH: Duration = Duration::from_secs(2);
 
 /// The state of the save of the open project.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -502,6 +518,13 @@ struct Opening {
     done: mpsc::Receiver<Result<Opened, StoreError>>,
 }
 
+/// A project file in a sync service that waits for its current version.
+pub struct Waiting {
+    pub path: PathBuf,
+    /// The view of the last run, for the project of the last run.
+    pub view: Option<resume::View>,
+}
+
 /// A project file that opened, with the heightmaps of `open_rasters`.
 struct Opened {
     session: Session,
@@ -703,6 +726,10 @@ pub struct AppState {
     pub export_strips: u64,
     /// The project file that a thread opens.
     opening: Option<Opening>,
+    /// The project file that waits for its download before it opens.
+    pub waiting: Option<Waiting>,
+    /// The time of the last look at the file of the open project.
+    watched_at: Option<Instant>,
     /// The edit count at the last save.
     saved_edits: u64,
     /// The selection from before the change that waits for its save.
@@ -837,6 +864,8 @@ impl AppState {
             export_waits: 0,
             export_strips: 0,
             opening: None,
+            waiting: None,
+            watched_at: None,
             saved_edits: 0,
             selection_before: StepSelection::default(),
             line_edits: 0,
@@ -2493,7 +2522,10 @@ impl AppState {
         if session.saves() != saves {
             self.saved_at = Some(now);
         }
-        let due = !hold && session.write_back_due(now);
+        let asking = matches!(self.browser.dialog, Some(Dialog::SourceChanged { .. }));
+        // While the dialog asks which version stays, the changes wait.
+        let due = !hold && !asking && session.write_back_due(now);
+        let write_wait = session.write_back_in(now);
         let result = match result {
             // The project file gets a change that is some minutes old.
             Ok(wait) if due => self.write_back().map(|()| wait),
@@ -2511,11 +2543,69 @@ impl AppState {
                 None
             }
         };
+        let watch_wait = self.watch_source(hold, now);
         // The save mark turns for a short time after a save.
         let mark_wait = self
             .saved_at
             .and_then(|at| SAVE_MARK_TIME.checked_sub(now.saturating_duration_since(at)));
-        [wait, resume_wait, mark_wait].into_iter().flatten().min()
+        let waits = [wait, resume_wait, mark_wait, write_wait, watch_wait];
+        waits.into_iter().flatten().min()
+    }
+
+    /// Looks at the file of the open project in a sync service, one time in
+    /// `SOURCE_WATCH`. If another device changed the file, the world opens
+    /// again from the file, or a dialog asks which version stays. Returns
+    /// the time to the next look.
+    fn watch_source(&mut self, hold: bool, now: Instant) -> Option<Duration> {
+        let source = self.session.as_ref()?.watched_source()?.to_path_buf();
+        let since = self.watched_at.map(|at| now.saturating_duration_since(at));
+        if let Some(wait) = since.and_then(|since| SOURCE_WATCH.checked_sub(since)) {
+            return Some(wait).filter(|wait| !wait.is_zero());
+        }
+        if hold || self.opening.is_some() || self.globe.busy() {
+            return Some(SOURCE_WATCH);
+        }
+        self.watched_at = Some(now);
+        let session = self.session.as_ref()?;
+        let asking = matches!(self.browser.dialog, Some(Dialog::SourceChanged { .. }));
+        if self.files.availability(&source) == Availability::Stale {
+            let _ = self.files.start_download(&source);
+        } else if !session.source_changed() {
+            // A write-back of the changes ends the question.
+            if asking {
+                self.browser.dialog = None;
+            }
+        } else if !asking {
+            let name = self.doc.project.world.name.clone();
+            let clean = !session.has_changes() && self.edits() == self.saved_edits;
+            if clean && self.new_feature.is_none() {
+                self.reload_from_source(false);
+                self.status = format!("Updated {name} from another device");
+            } else {
+                self.browser.dialog = Some(Dialog::SourceChanged { name });
+            }
+        }
+        Some(SOURCE_WATCH)
+    }
+
+    /// Opens the world of the open project again from its file, at the same
+    /// view. `discard`: the changes that the file does not hold go away.
+    fn reload_from_source(&mut self, discard: bool) {
+        let view = self.resume_now().view;
+        let Some(session) = self.session.take() else {
+            return;
+        };
+        let path = session
+            .watched_source()
+            .unwrap_or(session.path())
+            .to_path_buf();
+        // The working copy goes away before the new open makes it again.
+        if discard {
+            session.discard();
+        } else {
+            drop(session);
+        }
+        self.open_world_now(&path, view);
     }
 
     /// The state of the save, for the save mark. `None`: no project file is
@@ -2856,7 +2946,8 @@ impl AppState {
     /// `true` while a download runs.
     pub fn poll_downloads(&mut self, now: Instant) -> bool {
         let downloading = |entry: &projects::Entry| entry.availability == Availability::Downloading;
-        if self.browser.pending.is_none() && !self.browser.entries.iter().any(downloading) {
+        let browsing = self.screen == Screen::Browser;
+        if self.waiting.is_none() && !(browsing && self.browser.entries.iter().any(downloading)) {
             self.browser.polled = None;
             return false;
         }
@@ -2865,19 +2956,40 @@ impl AppState {
             return true;
         }
         self.browser.polled = Some(now);
-        self.reload_projects();
-        if let Some(path) = self.browser.pending.clone() {
-            let entry = self.browser.entries.iter().find(|e| e.path == path);
-            match entry.map(|entry| entry.availability) {
-                Some(Availability::Here) => {
-                    self.browser.pending = None;
-                    self.actions.push(Action::OpenWorld(path));
+        if browsing {
+            self.reload_projects();
+        }
+        if let Some(path) = self.waiting.as_ref().map(|w| w.path.clone()) {
+            match self.files.availability(&path) {
+                Availability::Here if path.is_file() => {
+                    let view = self.waiting.take().and_then(|w| w.view);
+                    self.open_world_at(&path, view);
                 }
-                Some(_) => {}
-                None => self.browser.pending = None,
+                Availability::Here => self.end_wait(),
+                Availability::InCloud => {
+                    let _ = self.files.start_download(&path);
+                }
+                Availability::Downloading | Availability::Stale => {}
             }
         }
         true
+    }
+
+    /// Stops the wait for a download. With no open world, the start screen
+    /// shows.
+    fn end_wait(&mut self) {
+        self.waiting = None;
+        if self.session.is_none() {
+            self.show_projects();
+        }
+    }
+
+    /// The name of the project file that waits for its download, and `true`
+    /// if the device has an older version of it.
+    pub fn waiting(&self) -> Option<(String, bool)> {
+        let path = &self.waiting.as_ref()?.path;
+        let stem = path.file_stem()?.to_string_lossy().into_owned();
+        Some((stem, self.files.availability(path) == Availability::Stale))
     }
 
     /// Reads the projects folders again.
@@ -2963,13 +3075,7 @@ impl AppState {
     fn open_external(&mut self, path: &Path) {
         let local = self.projects.dir(Location::Local).map(Path::to_path_buf);
         let (Some(local), None) = (local, self.projects.location_of(path)) else {
-            let files = self.files.as_ref();
-            if files.availability(path) == Availability::Here {
-                self.open_world(path);
-            } else {
-                self.show_projects();
-                self.run_action(Action::Download(path.to_path_buf()));
-            }
+            self.open_world(path);
             return;
         };
         let stem = path.file_stem().unwrap_or_default().to_string_lossy();
@@ -2995,12 +3101,47 @@ impl AppState {
 
     /// Opens the world of a project file, at a view of an earlier run. In a
     /// window, a thread reads the file, and `poll_open` shows the world.
+    /// A project file in a sync service opens at its current version, so
+    /// it waits for its download first.
     fn open_world_at(&mut self, path: &Path, view: Option<resume::View>) {
         let open = self.session.as_ref().is_some_and(|s| s.path() == path);
         if open {
             self.screen = Screen::Editor;
         }
-        if open || self.opening.is_some() || !self.save_now() {
+        if open || self.opening.is_some() {
+            return;
+        }
+        if self.files.availability(path) != Availability::Here {
+            self.wait_for(path, view);
+            return;
+        }
+        self.open_world_now(path, view);
+    }
+
+    /// Asks the sync service for the current version of a project file, and
+    /// opens the world when it is on the device.
+    fn wait_for(&mut self, path: &Path, view: Option<resume::View>) {
+        match self.files.start_download(path) {
+            Ok(()) => {
+                self.waiting = Some(Waiting {
+                    path: path.to_path_buf(),
+                    view,
+                });
+                self.browser.polled = None;
+            }
+            Err(e) => {
+                self.status = format!("Could not start download: {e}");
+                // A device with no connection opens the version that it has.
+                if self.files.availability(path) == Availability::Stale {
+                    self.open_world_now(path, view);
+                }
+            }
+        }
+    }
+
+    /// Opens the world of a project file with no look at the sync service.
+    fn open_world_now(&mut self, path: &Path, view: Option<resume::View>) {
+        if self.opening.is_some() || !self.save_now() {
             return;
         }
         let work_dir = self.projects.work_dir(path);
@@ -4373,11 +4514,22 @@ impl AppState {
             Action::ShowProjects => self.show_projects(),
             Action::Save => self.save(Instant::now()),
             Action::Download(path) => {
-                match self.files.start_download(&path) {
-                    Ok(()) => self.browser.pending = Some(path),
-                    Err(e) => self.status = format!("Could not start download: {e}"),
-                }
+                self.wait_for(&path, None);
                 self.reload_projects();
+            }
+            Action::OpenThisCopy => {
+                if let Some(waiting) = self.waiting.take() {
+                    self.open_world_now(&waiting.path, waiting.view);
+                }
+            }
+            Action::CancelWait => self.end_wait(),
+            Action::UseOtherVersion => {
+                self.browser.dialog = None;
+                self.reload_from_source(true);
+            }
+            Action::KeepBoth => {
+                self.browser.dialog = None;
+                self.save_now();
             }
             Action::KeepVersion(path, keep) => {
                 if let Err(e) = self.files.resolve(&path, keep) {
@@ -4402,9 +4554,34 @@ impl AppState {
 }
 
 /// Draws the screen that shows while a thread opens a project file.
-fn draw_opening(ui: &mut egui::Ui, state: &AppState) {
+fn draw_opening(ui: &mut egui::Ui, state: &mut AppState) {
     let name = state.opening().unwrap_or_default();
-    let text = format!("Opening {name}…");
+    draw_wait(ui, state, &format!("Opening {name}…"), None, &[]);
+}
+
+/// Draws the screen that shows while a project waits for its download.
+fn draw_waiting(ui: &mut egui::Ui, state: &mut AppState) {
+    let (name, on_device) = state.waiting().unwrap_or_default();
+    let text = format!("Downloading {name}…");
+    let mut buttons = Vec::new();
+    if on_device {
+        buttons.push((browser::OPEN_THIS_COPY, Action::OpenThisCopy));
+    }
+    buttons.push(("Cancel", Action::CancelWait));
+    let hint = on_device.then_some(browser::WAIT_HINT);
+    draw_wait(ui, state, &text, hint, &buttons);
+}
+
+/// Draws a screen with a spinner, a line of text, a hint, and buttons.
+fn draw_wait(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    text: &str,
+    hint: Option<&str>,
+    buttons: &[(&str, Action)],
+) {
+    let mut controls = std::mem::take(&mut state.pad.controls);
+    controls.clear();
     // The test harness puts a margin around the UI. See `browser::draw`.
     let screen = ui.ctx().viewport_rect();
     ui.scope_builder(egui::UiBuilder::new().max_rect(screen), |ui| {
@@ -4433,14 +4610,43 @@ fn draw_opening(ui: &mut egui::Ui, state: &AppState) {
             spinner,
             egui::Spinner::new().size(size).color(spinner_color),
         );
-        let label =
-            egui::Label::new(egui::RichText::new(text).font(font).color(color)).selectable(false);
-        let below = egui::Rect::from_center_size(
+        let label = egui::RichText::new(text).font(font.clone()).color(color);
+        let label = egui::Label::new(label).selectable(false);
+        let mut below = egui::Rect::from_center_size(
             center + egui::vec2(0.0, size / 2.0 + gap / 2.0),
             egui::vec2(screen.width(), size),
         );
         ui.put(below, label);
+        if let Some(hint) = hint {
+            below = below.translate(egui::vec2(0.0, size));
+            let hint = egui::RichText::new(hint).font(font).color(color);
+            ui.put(below, egui::Label::new(hint).selectable(false));
+        }
+        let width = if pad { 280.0 } else { 200.0 };
+        let row = if pad { pad::widgets::PANEL_ROW } else { 24.0 };
+        let mut top = below.bottom() + gap;
+        for (name, action) in buttons {
+            let rect = egui::Rect::from_min_size(
+                egui::pos2(center.x - width / 2.0, top),
+                egui::vec2(width, row),
+            );
+            let clicked = ui
+                .scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+                    if pad {
+                        pad::widgets::button_row(ui, &mut controls, name, true).clicked()
+                    } else {
+                        let button = egui::Button::new(*name).min_size(rect.size());
+                        ui.add(button).clicked()
+                    }
+                })
+                .inner;
+            if clicked {
+                state.actions.push(action.clone());
+            }
+            top += row + gap / 2.0;
+        }
     });
+    state.pad.controls = controls;
 }
 
 /// Draws the whole UI.
@@ -4499,10 +4705,16 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         state.frames += 1;
         return;
     }
+    let browsing = state.screen == Screen::Browser;
+    if (browsing || state.waiting.is_some()) && state.poll_downloads(Instant::now()) {
+        ui.ctx().request_repaint_after(DOWNLOAD_POLL);
+    }
+    if state.waiting.is_some() {
+        draw_waiting(ui, state);
+        state.frames += 1;
+        return;
+    }
     if state.screen == Screen::Browser {
-        if state.poll_downloads(Instant::now()) {
-            ui.ctx().request_repaint_after(DOWNLOAD_POLL);
-        }
         browser::draw(ui, state);
         state.frames += 1;
         return;
@@ -4525,6 +4737,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
             Workspace::Atlas => pad::atlas::draw(ui, state),
         }
         pad::eyedropper::draw(ui.ctx(), &mut state.pad.controls);
+        pad::browser::editor_dialog(ui.ctx(), state);
         font_dialog::show(ui.ctx(), state);
         pad::motion::paint_exits(ui.ctx());
         state.frames += 1;

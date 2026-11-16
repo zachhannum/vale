@@ -11,6 +11,10 @@ use vale_store::ProjectFile;
 use crate::files::Files;
 use crate::session::new_project_path;
 
+/// The time with no change after which the working copy goes back to the
+/// source.
+pub const WRITE_BACK_IDLE: Duration = Duration::from_secs(15);
+
 /// The longest time that a change waits in the working copy while the
 /// project is open.
 pub const WRITE_BACK_DELAY: Duration = Duration::from_secs(120);
@@ -35,6 +39,8 @@ pub struct WorkCopy {
     stamp: Option<Stamp>,
     /// The time of the first change that the source does not hold.
     dirty: Option<Instant>,
+    /// The time of the last change.
+    last: Option<Instant>,
 }
 
 impl WorkCopy {
@@ -61,6 +67,7 @@ impl WorkCopy {
             work,
             stamp,
             dirty: None,
+            last: None,
         };
         copy.write_origin()?;
         Ok(copy)
@@ -78,6 +85,7 @@ impl WorkCopy {
 
     /// Call this after each change of the copy.
     pub fn mark_changed(&mut self, now: Instant) {
+        self.last = Some(now);
         if self.dirty.is_none() {
             self.dirty = Some(now);
             // The copy keeps the change if the app stops here.
@@ -85,15 +93,36 @@ impl WorkCopy {
         }
     }
 
+    /// True if the copy has a change that the source does not hold.
+    pub fn is_dirty(&self) -> bool {
+        self.dirty.is_some()
+    }
+
+    /// True if the source changed after the copy or the last write-back.
+    pub fn source_changed(&self) -> bool {
+        self.source.exists() && stamp_of(&self.source) != self.stamp
+    }
+
+    /// The time to the next write-back. `None`: the copy has no change.
+    pub fn due_in(&self, now: Instant) -> Option<Duration> {
+        let first = self.dirty? + WRITE_BACK_DELAY;
+        let idle = self.last.map_or(first, |last| last + WRITE_BACK_IDLE);
+        Some(first.min(idle).saturating_duration_since(now))
+    }
+
     /// Drops the changes that the source does not hold.
     pub fn forget(&mut self) {
         self.dirty = None;
     }
 
-    /// True if a change waits longer than `WRITE_BACK_DELAY`.
+    /// True if the copy has a change, and the last change is older than
+    /// `WRITE_BACK_IDLE` or the first change is older than
+    /// `WRITE_BACK_DELAY`.
     pub fn due(&self, now: Instant) -> bool {
-        self.dirty
-            .is_some_and(|at| now.duration_since(at) >= WRITE_BACK_DELAY)
+        let older =
+            |at: Option<Instant>, limit| at.is_some_and(|at| now.duration_since(at) >= limit);
+        self.dirty.is_some()
+            && (older(self.last, WRITE_BACK_IDLE) || older(self.dirty, WRITE_BACK_DELAY))
     }
 
     /// Writes the copy to the source as one whole file, if the copy has a
@@ -232,4 +261,43 @@ pub fn recover(dir: &Path, files: &dyn Files) -> (Vec<PathBuf>, Vec<String>) {
         }
     }
     (saved, errors)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::files::PlainFiles;
+
+    fn copy(dir: &Path) -> WorkCopy {
+        let source = dir.join("World.gpkg");
+        std::fs::write(&source, "x").unwrap();
+        WorkCopy::open(&source, &dir.join("work"), &PlainFiles).unwrap()
+    }
+
+    #[test]
+    fn a_change_is_due_when_it_is_idle_for_the_idle_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut copy = copy(dir.path());
+        let t = Instant::now();
+        assert!(!copy.due(t + WRITE_BACK_DELAY));
+        copy.mark_changed(t);
+        assert!(!copy.due(t + WRITE_BACK_IDLE - Duration::from_secs(1)));
+        assert!(copy.due(t + WRITE_BACK_IDLE));
+    }
+
+    #[test]
+    fn steady_changes_are_due_after_the_longest_delay() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut copy = copy(dir.path());
+        let t = Instant::now();
+        let step = Duration::from_secs(5);
+        let mut now = t;
+        while now < t + WRITE_BACK_DELAY {
+            copy.mark_changed(now);
+            assert!(!copy.due(now));
+            now += step;
+        }
+        copy.mark_changed(now);
+        assert!(copy.due(now));
+    }
 }

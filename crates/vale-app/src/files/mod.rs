@@ -88,6 +88,16 @@ pub enum Availability {
     InCloud,
     /// The device gets the file from the sync service.
     Downloading,
+    /// The device has an older version of the file, and the sync service
+    /// has a newer one.
+    Stale,
+}
+
+impl Availability {
+    /// True if the device has a version of the file.
+    pub fn on_device(self) -> bool {
+        matches!(self, Availability::Here | Availability::Stale)
+    }
 }
 
 /// One of the versions of a file that two devices changed.

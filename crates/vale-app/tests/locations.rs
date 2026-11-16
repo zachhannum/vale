@@ -1,5 +1,6 @@
 //! The two folders of the projects: the start screen, the form of a new
-//! world, the download of a project, and the versions of a project.
+//! world, the download of a project, the versions of a project, and the
+//! watch of the file of the open project.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -13,8 +14,11 @@ use egui_kittest::kittest::Queryable;
 use vale_app::document::Document;
 use vale_app::files::{Availability, Files, Version};
 use vale_app::projects::{Location, Locations};
+use vale_app::resume::Resume;
 use vale_app::session::new_project_path;
-use vale_app::ui::browser::{Dialog, info_line, keep_name};
+use vale_app::ui::browser::{
+    CHANGED_TITLE, Dialog, KEEP_BOTH, OPEN_THIS_COPY, USE_OTHER, info_line, keep_name,
+};
 use vale_app::ui::world_form::{CREATE, NEW_WORLD};
 use vale_app::ui::{Action, AppState, Layout, Screen, draw};
 use vale_store::{Project, ProjectFile, World};
@@ -30,6 +34,18 @@ struct Fake {
     availability: HashMap<PathBuf, Availability>,
     conflicts: HashMap<PathBuf, Vec<Version>>,
     kept: Vec<(PathBuf, Option<usize>)>,
+    downloads: Vec<PathBuf>,
+}
+
+impl FakeFiles {
+    fn set(&self, path: &Path, availability: Availability) {
+        let mut fake = self.0.borrow_mut();
+        fake.availability.insert(path.to_path_buf(), availability);
+    }
+
+    fn downloads(&self) -> Vec<PathBuf> {
+        self.0.borrow().downloads.clone()
+    }
 }
 
 impl Files for FakeFiles {
@@ -40,8 +56,12 @@ impl Files for FakeFiles {
 
     fn start_download(&self, path: &Path) -> std::io::Result<()> {
         let mut fake = self.0.borrow_mut();
-        fake.availability
-            .insert(path.to_path_buf(), Availability::Downloading);
+        fake.downloads.push(path.to_path_buf());
+        // An older version stays at the path while the new one comes.
+        if fake.availability.get(path) == Some(&Availability::InCloud) {
+            fake.availability
+                .insert(path.to_path_buf(), Availability::Downloading);
+        }
         Ok(())
     }
 
@@ -509,4 +529,203 @@ fn the_projects_of_an_older_version_move_to_the_local_folder() {
     assert_eq!(file_names(&dirs.local), ["Aurelia 2.gpkg", "Aurelia.gpkg"]);
     assert_eq!(file_names(&dirs.state), [] as [&str; 0]);
     assert_eq!(Locations::single(&dirs.local).adopt_old_projects(), 0);
+}
+
+/// The time of a frame that is `secs` seconds after now.
+fn after(secs: u64) -> Instant {
+    Instant::now() + Duration::from_secs(secs)
+}
+
+#[test]
+fn an_older_version_on_the_device_opens_after_the_download_of_the_current_version() {
+    for layout in [Layout::Pad, Layout::Desktop] {
+        let dirs = Dirs::new();
+        let path = create(&dirs.cloud, "Aurelia");
+        let files = FakeFiles::default();
+        files.set(&path, Availability::Stale);
+        let mut h = app(dirs.locations(true), files.clone(), layout);
+        assert!(!info_line(&h.state().browser.entries[0], true, false).1);
+
+        click(&mut h, "Open Aurelia");
+        assert!(h.state().session.is_none(), "{layout:?}");
+        assert!(h.state().waiting.is_some());
+        assert_eq!(files.downloads(), std::slice::from_ref(&path));
+        h.get_by_label("Downloading Aurelia…");
+
+        files.set(&path, Availability::Here);
+        assert!(h.state_mut().poll_downloads(after(2)));
+        run(&mut h);
+        assert_eq!(h.state().screen, Screen::Editor, "{layout:?}");
+        assert_eq!(open_path(&h), path);
+        assert!(h.state().waiting.is_none());
+    }
+}
+
+#[test]
+fn each_way_to_open_a_project_waits_for_the_current_version() {
+    let dirs = Dirs::new();
+    let path = create(&dirs.cloud, "Aurelia");
+    let files = FakeFiles::default();
+    files.set(&path, Availability::Stale);
+    let mut h = app(dirs.locations(true), files.clone(), Layout::Pad);
+
+    // The menu of the worlds and the recent list.
+    h.state_mut().run_action(Action::OpenWorld(path.clone()));
+    assert!(h.state().session.is_none());
+    assert!(h.state().waiting.is_some());
+    run(&mut h);
+    click(&mut h, "Cancel");
+    assert!(h.state().waiting.is_none());
+    assert_eq!(h.state().screen, Screen::Browser);
+
+    // The Files app.
+    h.state().system.open(path.clone());
+    h.state_mut().poll_system();
+    run(&mut h);
+    assert!(h.state().session.is_none());
+    assert!(h.state().waiting.is_some());
+    files.set(&path, Availability::Here);
+    h.state_mut().poll_downloads(after(2));
+    run(&mut h);
+    assert_eq!(open_path(&h), path);
+}
+
+#[test]
+fn the_project_of_the_last_run_waits_for_its_current_version() {
+    let dirs = Dirs::new();
+    let path = create(&dirs.cloud, "Aurelia");
+    let resume = Resume {
+        project: Some(path.clone()),
+        view: None,
+    };
+    resume.write(&dirs.state).unwrap();
+    let files = FakeFiles::default();
+    files.set(&path, Availability::Stale);
+    let mut h = app(dirs.locations(true), files.clone(), Layout::Pad);
+    h.state_mut().restore();
+    run(&mut h);
+    assert!(h.state().session.is_none());
+    h.get_by_label("Downloading Aurelia…");
+
+    files.set(&path, Availability::Here);
+    h.state_mut().poll_downloads(after(2));
+    run(&mut h);
+    assert_eq!(h.state().screen, Screen::Editor);
+    assert_eq!(open_path(&h), path);
+}
+
+#[test]
+fn with_no_connection_you_can_open_the_copy_on_the_device() {
+    for layout in [Layout::Pad, Layout::Desktop] {
+        let dirs = Dirs::new();
+        let path = create(&dirs.cloud, "Aurelia");
+        let files = FakeFiles::default();
+        files.set(&path, Availability::Stale);
+        let mut h = app(dirs.locations(true), files.clone(), layout);
+        click(&mut h, "Open Aurelia");
+        h.state_mut().poll_downloads(after(30));
+        run(&mut h);
+        assert!(h.state().session.is_none());
+        click(&mut h, OPEN_THIS_COPY);
+        assert_eq!(h.state().screen, Screen::Editor, "{layout:?}");
+        assert_eq!(open_path(&h), path);
+    }
+
+    // A file that is not on the device has no copy to open.
+    let dirs = Dirs::new();
+    let path = create(&dirs.cloud, "Aurelia");
+    let files = FakeFiles::default();
+    files.set(&path, Availability::InCloud);
+    let mut h = app(dirs.locations(true), files, Layout::Pad);
+    h.state_mut().run_action(Action::OpenWorld(path));
+    run(&mut h);
+    h.get_by_label("Downloading Aurelia…");
+    assert!(h.query_by_label(OPEN_THIS_COPY).is_none());
+}
+
+#[test]
+fn a_new_version_from_another_device_opens_when_the_world_has_no_unsaved_change() {
+    let dirs = Dirs::new();
+    let path = create(&dirs.cloud, "Aurelia");
+    let files = FakeFiles::default();
+    let mut h = app(dirs.locations(true), files.clone(), Layout::Pad);
+    click(&mut h, "Open Aurelia");
+    let view = h.state().globe.view;
+    h.state_mut().save_tick(false, after(0));
+
+    std::thread::sleep(Duration::from_millis(20));
+    vale_app::projects::rename(&path, "Theirs").unwrap();
+    // The device has the old version while the new one comes.
+    files.set(&path, Availability::Stale);
+    h.state_mut().save_tick(false, after(3));
+    assert_eq!(files.downloads(), std::slice::from_ref(&path));
+    assert_eq!(h.state().doc.project.world.name, "Aurelia");
+
+    files.set(&path, Availability::Here);
+    h.state_mut().save_tick(false, after(6));
+    run(&mut h);
+    assert_eq!(h.state().doc.project.world.name, "Theirs");
+    assert_eq!(open_path(&h), path);
+    assert_eq!(h.state().globe.view, view);
+    assert_eq!(h.state().browser.dialog, None);
+    assert_eq!(file_names(&dirs.cloud), ["Aurelia.gpkg"]);
+}
+
+/// The app with the world "Aurelia" open, with the unsaved name "Mine", and
+/// a new version of the file from another device with the name "Theirs".
+fn changed_on_two_devices(dirs: &Dirs, layout: Layout) -> (App, PathBuf) {
+    let path = create(&dirs.cloud, "Aurelia");
+    let mut h = app(dirs.locations(true), FakeFiles::default(), layout);
+    click(&mut h, "Open Aurelia");
+    rename_open_world(&mut h, "Mine");
+    std::thread::sleep(Duration::from_millis(20));
+    vale_app::projects::rename(&path, "Theirs").unwrap();
+    h.state_mut().save_tick(false, after(4));
+    assert!(matches!(
+        h.state().browser.dialog,
+        Some(Dialog::SourceChanged { .. })
+    ));
+    // The changes wait for an answer.
+    h.state_mut().save_tick(false, after(30));
+    assert_eq!(file_names(&dirs.cloud), ["Aurelia.gpkg"]);
+    run(&mut h);
+    (h, path)
+}
+
+#[test]
+fn a_new_version_of_a_world_with_unsaved_changes_asks_which_version_stays() {
+    for layout in [Layout::Pad, Layout::Desktop] {
+        let dirs = Dirs::new();
+        let (mut h, path) = changed_on_two_devices(&dirs, layout);
+        h.get_by_label_contains(CHANGED_TITLE);
+        click(&mut h, USE_OTHER);
+        assert_eq!(h.state().doc.project.world.name, "Theirs", "{layout:?}");
+        assert_eq!(open_path(&h), path);
+        assert_eq!(h.state().browser.dialog, None);
+        h.state_mut().show_projects();
+        assert_eq!(file_names(&dirs.cloud), ["Aurelia.gpkg"]);
+        assert_eq!(world_name(&path), "Theirs");
+
+        let dirs = Dirs::new();
+        let (mut h, path) = changed_on_two_devices(&dirs, layout);
+        click(&mut h, KEEP_BOTH);
+        let conflict = dirs.cloud.join("Aurelia conflict.gpkg");
+        assert_eq!(world_name(&conflict), "Mine", "{layout:?}");
+        assert_eq!(world_name(&path), "Theirs");
+        assert_eq!(open_path(&h), conflict);
+        assert_eq!(h.state().browser.dialog, None);
+        assert!(h.state().status.contains("Aurelia conflict"));
+    }
+}
+
+#[test]
+fn the_project_file_gets_a_change_after_15_seconds_with_no_change() {
+    let dirs = Dirs::new();
+    let path = create(&dirs.cloud, "Aurelia");
+    let mut h = app(dirs.locations(true), FakeFiles::default(), Layout::Pad);
+    click(&mut h, "Open Aurelia");
+    rename_open_world(&mut h, "Borea");
+    assert_eq!(world_name(&path), "Aurelia");
+    h.state_mut().save_tick(false, after(16));
+    assert_eq!(world_name(&path), "Borea");
 }

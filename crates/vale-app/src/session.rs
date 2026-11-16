@@ -262,8 +262,31 @@ impl Session {
         }
     }
 
-    /// True if the working copy holds a change for longer than
-    /// `WRITE_BACK_DELAY`.
+    /// The project file that the working copy watches. `None`: the app
+    /// edits the project file in place.
+    pub fn watched_source(&self) -> Option<&Path> {
+        self.work.as_ref().map(WorkCopy::source)
+    }
+
+    /// True if another program changed the project file after the working
+    /// copy or the last write-back.
+    pub fn source_changed(&self) -> bool {
+        self.work.as_ref().is_some_and(WorkCopy::source_changed)
+    }
+
+    /// True if the project has a change that the project file does not
+    /// hold.
+    pub fn has_changes(&self) -> bool {
+        self.waits() || self.work.as_ref().is_some_and(WorkCopy::is_dirty)
+    }
+
+    /// The time to the next write-back of the working copy. `None`: the
+    /// copy has no change.
+    pub fn write_back_in(&self, now: Instant) -> Option<Duration> {
+        self.work.as_ref()?.due_in(now)
+    }
+
+    /// True if the working copy has a change that is due for a write-back.
     pub fn write_back_due(&self, now: Instant) -> bool {
         self.work.as_ref().is_some_and(|work| work.due(now))
     }
