@@ -813,6 +813,9 @@ fn paint_row<K>(
     }
 }
 
+/// The space at the left of each button behind a row.
+const BUTTON_GAP: f32 = 6.0;
+
 /// A button behind a row that a swipe moves `shift` to the left. Slot 0 is
 /// at the right edge. The `last` button grows to fill the open part of
 /// the row. The button takes touch when the row is open past it. Returns
@@ -840,7 +843,8 @@ fn behind(
         reveal.max(right - DELETE_WIDTH)
     };
     let highlight = rect.expand2(vec2(8.0, -HIGHLIGHT_INSET));
-    let back = Rect::from_x_y_ranges(left..=right, highlight.y_range());
+    // The buttons have a gap between them and at the left of the first one.
+    let back = Rect::from_x_y_ranges(left + BUTTON_GAP..=right, highlight.y_range());
     let painter = ui.painter().with_clip_rect(ui.clip_rect().intersect(back));
     let color = match text {
         "Delete" => theme::WARN,
@@ -848,7 +852,7 @@ fn behind(
         _ => theme::ACCENT,
     };
     painter.rect_filled(back, 5.0, color);
-    let at = pos2(right - DELETE_WIDTH / 2.0, rect.center().y);
+    let at = pos2(right - (DELETE_WIDTH - BUTTON_GAP) / 2.0, rect.center().y);
     painter.text(
         at,
         Align2::CENTER_CENTER,
