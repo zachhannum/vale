@@ -249,6 +249,19 @@ pub fn is_heightmap_path(path: &Path) -> bool {
     ext.is_some_and(|e| ["png", "tif", "tiff"].contains(&e.to_ascii_lowercase().as_str()))
 }
 
+/// What became of a capture that an export asked for.
+enum CaptureResult {
+    /// The GPU draws the capture in this UI frame.
+    Sent,
+    /// The frame draws in smaller strips. The export asks again.
+    Split,
+    /// The GPU does not have the tiles of the frame yet.
+    Waiting,
+    /// No GPU draws this UI frame.
+    NoGpu,
+    Failed(String),
+}
+
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
 pub enum ExportFormat {
     #[default]
@@ -3977,81 +3990,22 @@ impl AppState {
                 self.atlas_export = Some(job);
                 self.status = self.atlas_export_progress().unwrap_or_default();
             }
-            ExportStep::Capture(draw) => {
-                let Some(ui) = ui else {
-                    self.fail_export("A raster layer needs a GPU for export".to_string());
-                    return;
-                };
-                // The globe gets the frame of the export with the frames of
-                // the screen. Without the atlas on the screen, it gets the
-                // frame of the export in each UI frame.
-                let new = self.export_frame.as_ref().map(|d| d.id) != Some(draw.id);
-                self.export_frame = Some(draw.clone());
-                let (at, screen) = &self.screen_frames;
-                let atlas = at + 1 >= self.frames;
-                if new || !atlas {
-                    let screen = if atlas { screen.clone() } else { Vec::new() };
-                    self.want_with_export(&screen);
+            ExportStep::Capture(draw) => match self.serve_capture(&mut job, draw, ui) {
+                CaptureResult::NoGpu => {
+                    self.fail_export("A raster layer needs a GPU for export".to_string())
                 }
-                // A frame that needs more tiles than the budget of the detail
-                // maps draws in strips.
-                if !self.globe.frame_fits(draw.id) && job.split_capture() {
-                    self.atlas_export = Some(job);
-                    return;
-                }
-                // The GPU keeps a copy of the raster layer of each mask. A
-                // mask of a raster layer that the globe does not hold has no
-                // cover.
-                let masks = job.capture_masks();
-                let rasters: Vec<_> = masks.iter().map(|m| m.raster).collect();
-                if rasters != self.mask_rasters.1 {
-                    self.mask_rasters.1 = rasters;
-                    self.send_mask_rasters();
-                }
-                let held = |m: &crate::globe::RasterMask| self.globe.holds(m.raster);
-                let masks_ready = (masks.iter())
-                    .filter(|m| held(m))
-                    .all(|m| self.globe.mask_ready(&draw, m));
-                if !self.globe.frame_ready(&draw) || !masks_ready {
+                CaptureResult::Failed(error) => self.fail_export(error),
+                CaptureResult::Split => self.atlas_export = Some(job),
+                CaptureResult::Waiting => {
                     self.export_waits += 1;
                     self.atlas_export = Some(job);
-                    return;
                 }
-                let canvas = crate::globe::Canvas {
-                    background: egui::Color32::TRANSPARENT,
-                    pixels_per_point: job.pixel_ratio() as f32,
-                };
-                let mut callbacks = Vec::new();
-                let mut covers = Vec::new();
-                for (index, mask) in masks.iter().enumerate() {
-                    let capture = match self.globe.holds(mask.raster) {
-                        true => self
-                            .globe
-                            .capture_frame_mask(canvas, &draw, mask, index as u16),
-                        false => None,
-                    };
-                    covers.push(capture.map(|(callback, receiver)| {
-                        callbacks.push(callback);
-                        receiver
-                    }));
+                CaptureResult::Sent => {
+                    self.export_strips += 1;
+                    self.atlas_export = Some(job);
+                    self.status = self.atlas_export_progress().unwrap_or_default();
                 }
-                let Some((callback, receiver)) = self.globe.capture_frame(canvas, draw) else {
-                    self.fail_export("The GPU is not ready for raster export".to_string());
-                    return;
-                };
-                callbacks.push(callback);
-                job.set_capture_receiver(receiver, covers);
-                self.export_strips += 1;
-                for callback in callbacks {
-                    ui.painter()
-                        .add(eframe::egui_wgpu::Callback::new_paint_callback(
-                            ui.max_rect(),
-                            callback,
-                        ));
-                }
-                self.atlas_export = Some(job);
-                self.status = self.atlas_export_progress().unwrap_or_default();
-            }
+            },
             ExportStep::Done(Ok(path)) => {
                 self.end_export_frame();
                 self.export_form = None;
@@ -4068,6 +4022,81 @@ impl AppState {
             }
             ExportStep::Done(Err(error)) => self.fail_export(format!("{error:#}")),
         }
+    }
+
+    /// Gives the GPU the capture of a frame or a strip that an export asks
+    /// for. The globe draws one export frame at a time.
+    fn serve_capture(
+        &mut self,
+        job: &mut PdfExport,
+        draw: crate::globe::FrameDraw,
+        ui: Option<&egui::Ui>,
+    ) -> CaptureResult {
+        let Some(ui) = ui else {
+            return CaptureResult::NoGpu;
+        };
+        // The globe gets the frame of the export with the frames of the
+        // screen. Without the atlas on the screen, it gets the frame of the
+        // export in each UI frame.
+        let new = self.export_frame.as_ref().map(|d| d.id) != Some(draw.id);
+        self.export_frame = Some(draw.clone());
+        let (at, screen) = &self.screen_frames;
+        let atlas = at + 1 >= self.frames;
+        if new || !atlas {
+            let screen = if atlas { screen.clone() } else { Vec::new() };
+            self.want_with_export(&screen);
+        }
+        // A frame that needs more tiles than the budget of the detail maps
+        // draws in strips.
+        if !self.globe.frame_fits(draw.id) && job.split_capture() {
+            return CaptureResult::Split;
+        }
+        // The GPU keeps a copy of the raster layer of each mask. A mask of a
+        // raster layer that the globe does not hold has no cover.
+        let masks = job.capture_masks();
+        let rasters: Vec<_> = masks.iter().map(|m| m.raster).collect();
+        if rasters != self.mask_rasters.1 {
+            self.mask_rasters.1 = rasters;
+            self.send_mask_rasters();
+        }
+        let held = |m: &crate::globe::RasterMask| self.globe.holds(m.raster);
+        let masks_ready = (masks.iter())
+            .filter(|m| held(m))
+            .all(|m| self.globe.mask_ready(&draw, m));
+        if !self.globe.frame_ready(&draw) || !masks_ready {
+            return CaptureResult::Waiting;
+        }
+        let canvas = crate::globe::Canvas {
+            background: egui::Color32::TRANSPARENT,
+            pixels_per_point: job.pixel_ratio() as f32,
+        };
+        let mut callbacks = Vec::new();
+        let mut covers = Vec::new();
+        for (index, mask) in masks.iter().enumerate() {
+            let capture = match self.globe.holds(mask.raster) {
+                true => self
+                    .globe
+                    .capture_frame_mask(canvas, &draw, mask, index as u16),
+                false => None,
+            };
+            covers.push(capture.map(|(callback, receiver)| {
+                callbacks.push(callback);
+                receiver
+            }));
+        }
+        let Some((callback, receiver)) = self.globe.capture_frame(canvas, draw) else {
+            return CaptureResult::Failed("The GPU is not ready for raster export".to_string());
+        };
+        callbacks.push(callback);
+        job.set_capture_receiver(receiver, covers);
+        for callback in callbacks {
+            ui.painter()
+                .add(eframe::egui_wgpu::Callback::new_paint_callback(
+                    ui.max_rect(),
+                    callback,
+                ));
+        }
+        CaptureResult::Sent
     }
 
     /// Ends an export that failed. The export form shows the error.
@@ -4440,7 +4469,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     }
     state.poll_export();
     state.poll_atlas_export(Some(ui));
-    export_thumbs::poll(ui.ctx(), state);
+    export_thumbs::poll(ui, state);
     if state.atlas_export.is_some() {
         ui.ctx().request_repaint();
     }

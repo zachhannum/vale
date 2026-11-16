@@ -201,8 +201,8 @@ impl PdfExport {
     }
 
     /// An export of `pages` to images in memory, with `ratio` pixels in one
-    /// point. A frame has its vector layers only, so the export needs no
-    /// GPU.
+    /// point. The raster images of the frames also have `ratio` pixels in
+    /// one point.
     pub fn images(doc: Document, pages: Vec<PageRecord>, ratio: f64) -> anyhow::Result<Self> {
         let options = ExportOptions::default();
         let mut job = PdfExport::new(doc, PathBuf::from("pages.png"), pages, options)?;
@@ -210,9 +210,23 @@ impl PdfExport {
             ratio,
             images: Vec::new(),
         });
-        job.gpu = false;
-        job.layers = false;
         Ok(job)
+    }
+
+    /// The page that the next step composes. `None`: the export has no more
+    /// pages.
+    pub fn page_id(&self) -> Option<PageId> {
+        self.pages.get(self.page).map(|page| page.id)
+    }
+
+    /// Leaves out the page that the export composes, and goes on with the
+    /// next page.
+    pub fn skip_page(&mut self) {
+        self.pending = None;
+        self.list = None;
+        self.frame = 0;
+        self.pipeline.clear_page_masks();
+        self.page += 1;
     }
 
     /// Takes the images of the pages that the export finished.
@@ -315,7 +329,15 @@ impl PdfExport {
     /// The pixels in one point of the raster images of the page that the
     /// export draws.
     pub fn pixel_ratio(&self) -> f64 {
-        pixel_ratio(self.pages[self.page.min(self.pages.len() - 1)].dpi)
+        self.page_ratio(&self.pages[self.page.min(self.pages.len() - 1)])
+    }
+
+    /// The pixels in one point of the raster images of `page`.
+    fn page_ratio(&self, page: &PageRecord) -> f64 {
+        match &self.output {
+            Some(Output::Images { ratio, .. }) => *ratio,
+            _ => pixel_ratio(page.dpi),
+        }
     }
 
     fn shown_images(&self, frame: &FrameRecord) -> Vec<ImageId> {
@@ -343,11 +365,9 @@ impl PdfExport {
             anyhow::bail!("the map frame has no area on the page");
         }
         let point_min = Point::new(bbox.x0 * PT_PER_MM, bbox.y0 * PT_PER_MM);
-        let ratio = pixel_ratio(page.dpi);
-        let size = [
-            pixels(bbox.width() * PT_PER_MM, page.dpi),
-            pixels(bbox.height() * PT_PER_MM, page.dpi),
-        ];
+        let ratio = self.page_ratio(page);
+        let side = |mm: f64| (mm * PT_PER_MM * ratio).ceil().max(1.0) as u32;
+        let size = [side(bbox.width()), side(bbox.height())];
         let point_size = Point::new(f64::from(size[0]) / ratio, f64::from(size[1]) / ratio);
         let image_rect = Rect::from_origin_size(point_min, (point_size.x, point_size.y));
         let page_target = FrameTarget {
@@ -558,6 +578,9 @@ impl PdfExport {
                 self.finish_capture()?;
             }
 
+            if self.page >= self.pages.len() {
+                return self.finish();
+            }
             if self.list.is_none() {
                 let transparent = self.options.transparent;
                 self.list = Some(Self::page_list(&self.pages[self.page], transparent));
@@ -640,23 +663,24 @@ impl PdfExport {
             if self.page < self.pages.len() {
                 return Ok(ExportStep::More);
             }
-            if matches!(
-                self.output,
-                Some(Output::Png { .. } | Output::Images { .. })
-            ) {
-                return Ok(ExportStep::Done(Ok(self.path.clone())));
-            }
-            let Some(Output::Pdf(pdf)) = self.output.take() else {
-                unreachable!("the output is a PDF")
-            };
-            let bytes = pdf.finish()?;
-            headless::write_file(&self.path, &bytes)?;
-            Ok(ExportStep::Done(Ok(self.path.clone())))
+            self.finish()
         })();
         match result {
             Ok(step) => step,
             Err(error) => ExportStep::Done(Err(error)),
         }
+    }
+
+    /// Writes the PDF file after the last page.
+    fn finish(&mut self) -> anyhow::Result<ExportStep> {
+        if let Some(Output::Pdf(_)) = self.output {
+            let Some(Output::Pdf(pdf)) = self.output.take() else {
+                unreachable!("the output is a PDF")
+            };
+            let bytes = pdf.finish()?;
+            headless::write_file(&self.path, &bytes)?;
+        }
+        Ok(ExportStep::Done(Ok(self.path.clone())))
     }
 }
 

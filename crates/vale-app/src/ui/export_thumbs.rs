@@ -1,13 +1,16 @@
 //! The small pictures of the pages in the strip of the export form. A job
-//! draws one page in each UI frame, with the vector layers of the frames
-//! only, and the pictures stay until the page or the maps change.
+//! draws the pages as the export does, with the raster layers and the image
+//! layers of the frames from the GPU. It draws at most one page or one
+//! capture in each UI frame. Without a GPU, a page with a capture keeps no
+//! picture. The pictures stay until the page, the maps, or the raster
+//! layers change.
 
 use std::collections::HashMap;
 
 use eframe::egui;
 use vale_store::{PageId, PageRecord};
 
-use super::AppState;
+use super::{AppState, CaptureResult};
 use crate::atlas::PT_PER_MM;
 use crate::atlas_export::{ExportStep, PdfExport};
 
@@ -20,8 +23,20 @@ pub const MAX_WIDTH: f32 = 160.0;
 /// The pixels in one point of a picture.
 const PIXELS: f32 = 2.0;
 
-/// The change count of the maps and the page at the time of a picture.
-type Key = (u64, PageRecord);
+/// The change count of the maps, the newest edit of the raster layers, and
+/// the page at the time of a picture.
+type Key = (Generation, PageRecord);
+
+/// The change count of the maps and the newest edit of the raster layers.
+pub type Generation = (u64, u64);
+
+/// The generation of the maps and the raster layers of `state`.
+pub fn generation(state: &AppState) -> Generation {
+    let globe = &state.globe;
+    let rasters = globe.rasters().into_iter();
+    let edits = rasters.filter_map(|id| globe.raster_edits(id)).max();
+    (state.map_generation, edits.unwrap_or(0))
+}
 
 /// The size of the picture of a page in the strip.
 pub fn size(page: &PageRecord) -> egui::Vec2 {
@@ -32,6 +47,7 @@ pub fn size(page: &PageRecord) -> egui::Vec2 {
 struct Thumb {
     key: Key,
     texture: egui::TextureHandle,
+    image: egui::ColorImage,
 }
 
 /// The job that draws the pictures of some pages.
@@ -57,30 +73,67 @@ impl Thumbs {
         self.cache.get(&page).map(|thumb| thumb.texture.id())
     }
 
+    /// The pixels of the picture of a page, if it is ready.
+    pub fn image(&self, page: PageId) -> Option<&egui::ColorImage> {
+        self.cache.get(&page).map(|thumb| &thumb.image)
+    }
+
+    /// True if a job tried to draw the page in its present state and could
+    /// not.
+    pub fn failed(&self, generation: Generation, page: &PageRecord) -> bool {
+        (self.failed.get(&page.id)).is_some_and(|key| key.0 == generation && key.1 == *page)
+    }
+
+    /// True if a job draws pictures.
+    pub fn busy(&self) -> bool {
+        self.job.is_some()
+    }
+
+    /// True if the page has no picture of its present state, and no job
+    /// tried to draw that state.
+    fn stale(&self, generation: Generation, page: &PageRecord) -> bool {
+        let key = (generation, page.clone());
+        let thumb = self.cache.get(&page.id);
+        thumb.is_none_or(|t| t.key != key) && self.failed.get(&page.id) != Some(&key)
+    }
+
     /// True if the picture of each page of `pages` shows its present state.
-    pub fn ready(&self, generation: u64, pages: &[PageRecord]) -> bool {
+    pub fn ready(&self, generation: Generation, pages: &[PageRecord]) -> bool {
         pages.iter().all(|page| {
             (self.cache.get(&page.id)).is_some_and(|t| t.key.0 == generation && t.key.1 == *page)
         })
     }
 }
 
-/// Draws the next page of the pictures of the export form. It does
-/// nothing while no export form is open or while an export runs.
-pub fn poll(ctx: &egui::Context, state: &mut AppState) {
-    if state.export_form.is_none() || state.atlas_export.is_some() {
+/// True if the export form is open and a picture of a page is not ready.
+pub fn pending(state: &AppState) -> bool {
+    let generation = generation(state);
+    let thumbs = &state.export_thumbs;
+    let pages = &state.doc.project.atlas.pages;
+    state.export_form.is_some()
+        && (thumbs.busy() || pages.iter().any(|page| thumbs.stale(generation, page)))
+}
+
+/// Draws the next page of the pictures of the export form, or gives the GPU
+/// the next capture of the page. It does nothing while an export runs, and
+/// it stops the job when the form closes.
+pub fn poll(ui: &egui::Ui, state: &mut AppState) {
+    if state.atlas_export.is_some() {
         return;
     }
-    let generation = state.map_generation;
+    if state.export_form.is_none() {
+        if state.export_thumbs.job.take().is_some() {
+            state.end_export_frame();
+        }
+        return;
+    }
+    let ctx = ui.ctx();
+    let generation = generation(state);
     let pages = &state.doc.project.atlas.pages;
     let thumbs = &mut state.export_thumbs;
     if thumbs.job.is_none() {
         let stale: Vec<PageRecord> = (pages.iter())
-            .filter(|page| {
-                let key = (generation, (*page).clone());
-                let thumb = thumbs.cache.get(&page.id);
-                thumb.is_none_or(|t| t.key != key) && thumbs.failed.get(&page.id) != Some(&key)
-            })
+            .filter(|page| thumbs.stale(generation, page))
             .cloned()
             .collect();
         let Some(first) = stale.first() else {
@@ -104,11 +157,11 @@ pub fn poll(ctx: &egui::Context, state: &mut AppState) {
             }
         }
     }
-    let thumbs = &mut state.export_thumbs;
-    let Some(job) = &mut thumbs.job else {
+    let Some(mut job) = state.export_thumbs.job.take() else {
         return;
     };
     let step = job.export.step();
+    let thumbs = &mut state.export_thumbs;
     for (id, image) in job.export.take_images() {
         let Some(key) = job.keys.remove(&id) else {
             continue;
@@ -116,19 +169,47 @@ pub fn poll(ctx: &egui::Context, state: &mut AppState) {
         let size = [image.width, image.height];
         let color = egui::ColorImage::from_rgba_premultiplied(size, &image.data);
         let name = format!("export-page-{}", id.0);
-        let texture = ctx.load_texture(name, color, egui::TextureOptions::LINEAR);
-        thumbs.cache.insert(id, Thumb { key, texture });
+        let texture = ctx.load_texture(name, color.clone(), egui::TextureOptions::LINEAR);
+        let image = color;
+        thumbs.cache.insert(
+            id,
+            Thumb {
+                key,
+                texture,
+                image,
+            },
+        );
     }
+    ctx.request_repaint();
     match step {
-        ExportStep::More => ctx.request_repaint(),
-        other => {
-            if let ExportStep::Done(Err(error)) = other {
+        ExportStep::More => state.export_thumbs.job = Some(job),
+        ExportStep::Capture(draw) => {
+            // Without a GPU, the page keeps no picture.
+            let result = match state.globe.format {
+                Some(_) => state.serve_capture(&mut job.export, draw, Some(ui)),
+                None => CaptureResult::NoGpu,
+            };
+            match result {
+                CaptureResult::Sent | CaptureResult::Split | CaptureResult::Waiting => {}
+                CaptureResult::NoGpu | CaptureResult::Failed(_) => {
+                    if let CaptureResult::Failed(error) = result {
+                        log::warn!("page pictures: {error}");
+                    }
+                    let page = job.export.page_id();
+                    let key = page.and_then(|page| job.keys.remove(&page));
+                    state.export_thumbs.failed.extend(page.zip(key));
+                    job.export.skip_page();
+                    state.end_export_frame();
+                }
+            }
+            state.export_thumbs.job = Some(job);
+        }
+        ExportStep::Done(result) => {
+            if let Err(error) = result {
                 log::warn!("page pictures: {error:#}");
             }
-            if let Some(job) = thumbs.job.take() {
-                thumbs.failed.extend(job.keys);
-            }
-            ctx.request_repaint();
+            state.export_thumbs.failed.extend(job.keys);
+            state.end_export_frame();
         }
     }
 }

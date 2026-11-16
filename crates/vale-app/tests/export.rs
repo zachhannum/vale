@@ -690,3 +690,58 @@ fn a_page_in_inches_shows_its_size_in_inches() {
     assert_eq!(details.page_size, "Letter landscape · 11 × 8.5 in");
     assert_eq!(details.resolution, "300 dpi");
 }
+
+/// The page of the export form with no GPU, with one frame over a height
+/// layer.
+fn thumbs_without_gpu() -> (
+    egui_kittest::Harness<'static, AppState>,
+    vale_store::LayerId,
+) {
+    let mut state = AppState::new(Document::empty()).unwrap();
+    state.headless = true;
+    state.workspace = Workspace::Atlas;
+    vale_app::ui::atlas::add_frame(&mut state).expect("a page takes a frame");
+    state.globe.set_face_size(FACE_SIZE);
+    let height = state.add_height();
+    let layers = state.doc.project.layers();
+    let layer = layers
+        .iter()
+        .find(|l| l.raster() == Some(height))
+        .unwrap()
+        .id;
+    state.export_form = Some(ExportForm::new(&state));
+    let h = egui_kittest::Harness::builder()
+        .with_size(eframe::egui::vec2(1194.0, 834.0))
+        .with_pixels_per_point(1.0)
+        .build_ui_state(|ui, state: &mut AppState| draw(ui, state), state);
+    (h, layer)
+}
+
+#[test]
+fn without_a_gpu_a_page_with_a_raster_layer_keeps_no_picture_and_is_not_retried() {
+    let (mut h, _) = thumbs_without_gpu();
+    h.run_steps(6);
+    let state = h.state();
+    let page = state.doc.project.atlas.pages[0].clone();
+    let generation = vale_app::ui::export_thumbs::generation(state);
+    assert!(state.export_thumbs.image(page.id).is_none());
+    assert!(state.export_thumbs.failed(generation, &page));
+    assert!(!state.export_thumbs.busy());
+    for _ in 0..4 {
+        h.run_steps(1);
+        assert!(!h.state().export_thumbs.busy(), "the job runs again");
+    }
+}
+
+#[test]
+fn without_a_gpu_a_page_with_vector_layers_only_gets_a_picture() {
+    let (mut h, layer) = thumbs_without_gpu();
+    let map = h.state().doc.project.atlas.pages[0].frames[0].map;
+    assert!(h.state_mut().doc.set_shown(map, layer, false));
+    h.state_mut().touch();
+    h.run_steps(6);
+    let state = h.state();
+    let page = &state.doc.project.atlas.pages[0];
+    let image = state.export_thumbs.image(page.id).expect("a picture");
+    assert_eq!(image.size[1], 158);
+}

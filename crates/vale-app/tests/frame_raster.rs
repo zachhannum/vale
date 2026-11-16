@@ -272,6 +272,33 @@ fn a_pdf_export_embeds_the_raster_layers_of_a_frame() {
     );
 }
 
+#[test]
+#[ignore = "gpu"]
+fn the_picture_of_a_page_in_the_export_form_shows_the_raster_layers() {
+    let _gpu = one_gpu_test();
+    let level = 40000;
+    let (mut h, _) = atlas(level);
+    let form = vale_app::ui::export_form::ExportForm::new(h.state());
+    h.state_mut().export_form = Some(form);
+    let page = vale_app::ui::atlas::open_page(h.state()).id;
+    for _ in 0..60 {
+        h.run_steps(1);
+        if h.state().export_thumbs.image(page).is_some() && !h.state().export_thumbs.busy() {
+            break;
+        }
+    }
+    let image = h.state().export_thumbs.image(page).expect("a picture");
+    let grey = grey_of(level);
+    let raster = (image.pixels.iter())
+        .filter(|p| p.r().abs_diff(grey) <= 3 && p.r() == p.g() && p.g() == p.b())
+        .count();
+    assert!(
+        raster > image.pixels.len() / 10,
+        "{raster} of {} pixels have the grey of the raster layer",
+        image.pixels.len()
+    );
+}
+
 /// The widest raster image of a PDF file, in pixels.
 fn widest_image(pdf: &[u8]) -> u32 {
     let raw = String::from_utf8_lossy(pdf);
