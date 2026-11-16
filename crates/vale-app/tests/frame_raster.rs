@@ -11,7 +11,7 @@ use kurbo::Point;
 use vale_app::atlas::anchor;
 use vale_app::document::Document;
 use vale_app::headless;
-use vale_app::ui::{Action, AppState, Layout, Workspace};
+use vale_app::ui::{Action, AppState, ExportFormat, ExportSpec, Layout, Workspace};
 use vale_store::{BlendMode, RasterDisplay, RasterId};
 
 type App = Harness<'static, AppState>;
@@ -270,6 +270,113 @@ fn a_pdf_export_embeds_the_raster_layers_of_a_frame() {
         pixel[0].abs_diff(want) <= 3 && pixel[0] == pixel[1] && pixel[1] == pixel[2],
         "{pixel:?} and {want}"
     );
+}
+
+#[test]
+#[ignore = "gpu"]
+fn the_picture_of_a_page_in_the_export_form_shows_the_raster_layers() {
+    let _gpu = one_gpu_test();
+    let level = 40000;
+    let (mut h, _) = atlas(level);
+    let form = vale_app::ui::export_form::ExportForm::new(h.state());
+    h.state_mut().export_form = Some(form);
+    let page = vale_app::ui::atlas::open_page(h.state()).id;
+    for _ in 0..60 {
+        h.run_steps(1);
+        if h.state().export_thumbs.image(page).is_some() && !h.state().export_thumbs.busy() {
+            break;
+        }
+    }
+    let image = h.state().export_thumbs.image(page).expect("a picture");
+    let grey = grey_of(level);
+    let raster = (image.pixels.iter())
+        .filter(|p| p.r().abs_diff(grey) <= 3 && p.r() == p.g() && p.g() == p.b())
+        .count();
+    assert!(
+        raster > image.pixels.len() / 10,
+        "{raster} of {} pixels have the grey of the raster layer",
+        image.pixels.len()
+    );
+}
+
+#[test]
+#[ignore = "gpu"]
+fn the_picture_of_a_page_shows_the_raster_layers_after_a_frame_that_egui_did_not_paint() {
+    let _gpu = one_gpu_test();
+    let level = 40000;
+    let (mut h, _) = atlas(level);
+    // The globe workspace does not show the frames of the atlas.
+    h.state_mut().workspace = Workspace::Globe;
+    h.run_steps(4);
+    let form = vale_app::ui::export_form::ExportForm::new(h.state());
+    h.state_mut().export_form = Some(form);
+    let page = vale_app::ui::atlas::open_page(h.state()).clone();
+    // The UI frames run, and the GPU draws none of them. egui drops the
+    // captures of these frames.
+    h.set_render_every_step(false);
+    h.run_steps(20);
+    h.set_render_every_step(true);
+    for _ in 0..60 {
+        h.run_steps(1);
+        let thumbs = &h.state().export_thumbs;
+        if thumbs.image(page.id).is_some() && !thumbs.busy() {
+            break;
+        }
+    }
+    let state = h.state();
+    let generation = vale_app::ui::export_thumbs::generation(state);
+    assert!(!state.export_thumbs.failed(generation, &page));
+    let image = state.export_thumbs.image(page.id).expect("a picture");
+    let grey = grey_of(level);
+    let raster = (image.pixels.iter())
+        .filter(|p| p.r().abs_diff(grey) <= 3 && p.r() == p.g() && p.g() == p.b())
+        .count();
+    assert!(
+        raster > image.pixels.len() / 10,
+        "{raster} of {} pixels have the grey of the raster layer",
+        image.pixels.len()
+    );
+}
+
+/// The widest raster image of a PDF file, in pixels.
+fn widest_image(pdf: &[u8]) -> u32 {
+    let raw = String::from_utf8_lossy(pdf);
+    (raw.match_indices("/Width"))
+        .filter_map(|(at, key)| {
+            let rest = raw[at + key.len()..].trim_start();
+            let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+            digits.parse().ok()
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_pdf_of_a_page_at_150_dpi_has_a_raster_image_half_as_wide_as_one_at_300_dpi() {
+    let _gpu = one_gpu_test();
+    let (mut h, _) = atlas(40000);
+    let dir = tempfile::tempdir().unwrap();
+    h.state_mut().headless = false;
+    let mut width = |dpi: u32| {
+        let path = dir.path().join(format!("{dpi}.pdf"));
+        vale_app::ui::atlas::edit_page(h.state_mut(), |p| p.dpi = dpi);
+        let page = h.state().atlas.page;
+        let spec = ExportSpec::new(h.state(), ExportFormat::Pdf, vec![page]);
+        h.state_mut()
+            .run_action(Action::ExportPages(spec, path.clone()));
+        for _ in 0..60 {
+            h.run_steps(1);
+            if h.state().atlas_export.is_none() {
+                break;
+            }
+        }
+        let status = &h.state().status;
+        assert!(status.starts_with("Exported"), "{status}");
+        widest_image(&std::fs::read(path).unwrap())
+    };
+    let (high, low) = (width(300), width(150));
+    assert!(low > 0 && high.abs_diff(2 * low) <= 2, "{high} and {low}");
 }
 
 #[test]

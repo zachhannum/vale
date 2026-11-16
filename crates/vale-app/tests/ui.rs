@@ -14,6 +14,7 @@ use vale_app::headless;
 use vale_app::projects::Locations;
 use vale_app::session::Session;
 use vale_app::ui::atlas::{AtlasSelection, AtlasTool, FrameTab};
+use vale_app::ui::export_form::{self, ExportForm, PagesMode, page_name};
 use vale_app::ui::pad::atlas::{
     ADD_PAGE, CENTER_ON_FRAME, FRAME_TABS, MAP_NAME, NEXT_PAGE, PAGE_NAME, PREVIOUS_PAGE, SCALE,
 };
@@ -23,8 +24,7 @@ use vale_app::ui::panels::{ADD_MAP_FRAME, ADD_MENU, VERTEX_TOOL};
 use vale_app::ui::panels::{DELETE_LAYER, LAYER_NAME, LAYERS_MENU, OPACITY, WORLD_BUTTON};
 use vale_app::ui::world_form::{CREATE, FormMode, NEW_WORLD, WorldForm};
 use vale_app::ui::{
-    Action, AppState, ExportFormat, LayerRef, Layout, RasterSpec, Workspace, draw,
-    is_heightmap_path,
+    Action, AppState, LayerRef, Layout, RasterSpec, Workspace, draw, is_heightmap_path,
 };
 use vale_sphere::{ProjectionKind, ProjectionSpec};
 use vale_store::{
@@ -610,13 +610,62 @@ fn toolbar_buttons_push_actions() {
     h.get_by_label("Open GeoJSON…").click();
     h.run_steps(1);
     assert!(h.state().actions.contains(&Action::OpenDialog));
-    h.get_by_label("Export atlas PDF…").click();
+    // The label of the button has the shortcut.
+    h.get_by_label_contains(export_form::EXPORT).click();
+    h.run_steps(2);
+    assert!(h.state().export_form.is_some());
+    // The form starts the export of each page.
+    h.get_by_label(export_form::EXPORT).click();
     h.run_steps(1);
-    assert!(
-        h.state()
-            .actions
-            .contains(&Action::ExportDialog(ExportFormat::AtlasPdf))
-    );
+    let atlas = Action::export_atlas(h.state());
+    assert!(h.state().actions.contains(&atlas));
+}
+
+#[test]
+fn command_e_opens_the_export_form_in_both_workspaces() {
+    for workspace in [Workspace::Globe, Workspace::Atlas] {
+        let mut state = state_with(Document::sample());
+        state.workspace = workspace;
+        let mut h = Harness::builder()
+            .with_size(egui::vec2(SIZE.0 as f32, SIZE.1 as f32))
+            .build_ui_state(|ui, state: &mut AppState| draw(ui, state), state);
+        h.run_steps(2);
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::E);
+        h.run_steps(2);
+        assert!(h.state().export_form.is_some(), "{workspace:?}");
+    }
+}
+
+#[test]
+fn shift_click_on_the_desktop_strip_selects_a_run() {
+    let mut state = state_with(Document::sample());
+    while state.doc.project.atlas.pages.len() < 5 {
+        vale_app::ui::atlas::add_page(&mut state);
+    }
+    state.atlas.page = state.doc.project.atlas.pages[0].id;
+    state.export_form = Some(ExportForm::new(&state));
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(SIZE.0 as f32, SIZE.1 as f32))
+        .build_ui_state(|ui, state: &mut AppState| draw(ui, state), state);
+    h.run_steps(2);
+    h.get_by_label(export_form::PAGE_CHOICES[1]).click();
+    h.run_steps(2);
+    let ticks = |h: &Harness<'static, AppState>| -> Vec<bool> {
+        h.state().export_form.as_ref().unwrap().selected.clone()
+    };
+    assert_eq!(ticks(&h), [true, false, false, false, false]);
+    // A click ticks one page.
+    h.get_by_label(&page_name(1)).click();
+    h.run_steps(2);
+    assert_eq!(ticks(&h), [true, true, false, false, false]);
+    // A Shift+click ticks each page from the page of the last click.
+    h.get_by_label(&page_name(3))
+        .click_modifiers(egui::Modifiers::SHIFT);
+    h.run_steps(2);
+    assert_eq!(ticks(&h), [true, true, true, true, false]);
+    let form = h.state().export_form.as_ref().unwrap();
+    assert_eq!(form.pages, PagesMode::Range);
+    assert_eq!(form.range, "1–4");
 }
 
 #[test]
@@ -628,7 +677,7 @@ fn file_buttons_can_be_hidden() {
         .build_ui_state(|ui, state: &mut AppState| draw(ui, state), state);
     h.run_steps(2);
     assert!(h.query_by_label("Open GeoJSON…").is_none());
-    assert!(h.query_by_label("Export atlas PDF…").is_none());
+    assert!(h.query_by_label_contains(export_form::EXPORT).is_none());
 }
 
 #[test]
@@ -730,12 +779,12 @@ fn the_atlas_export_writes_each_page_and_can_be_canceled() {
     state.run_action(Action::ExportAtlas(out.clone()));
     assert_eq!(
         state.atlas_export_progress().as_deref(),
-        Some("Exporting atlas.pdf: page 1 of 20")
+        Some("Exporting page 1 of 20")
     );
     state.poll_atlas_export(None);
     assert_eq!(
         state.atlas_export_progress().as_deref(),
-        Some("Exporting atlas.pdf: page 2 of 20")
+        Some("Exporting page 2 of 20")
     );
     state.run_action(Action::CancelExport);
     assert!(state.atlas_export.is_none() && !out.exists());

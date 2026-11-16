@@ -1,0 +1,395 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<style>
+@font-face { font-family: UI; src: local("Ubuntu"), local("Ubuntu Regular"), local("Ubuntu-Regular"); }
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { width: 1234px; background: rgb(8,9,10); color: rgb(231,233,236); font-family: UI, sans-serif; padding: 20px; }
+h2 { font-weight: normal; font-size: 22px; margin: 18px 2px 4px; }
+.cap { font-size: 15px; color: rgb(174,181,190); margin: 0 0 10px 2px; max-width: 1190px; line-height: 1.4; }
+.cap b { color: rgb(231,233,236); font-weight: normal; }
+.shot { width: 1194px; height: 834px; position: relative; overflow: hidden; border-radius: 18px; margin-bottom: 26px;
+  background: url(assets/atlas.png) no-repeat; background-size: 1194px 834px; }
+.shot.now { background-image: url(assets/pages.png); }
+.map { position: absolute; left: 205px; top: 300px; width: 495px; height: 230px;
+  background: url(assets/atlas-frame.png) no-repeat -205px -300px; background-size: 1194px 834px; }
+.phones { display: flex; gap: 7px; margin-bottom: 26px; }
+.phone { width: 393px; height: 852px; position: relative; overflow: hidden; border-radius: 48px; flex: none;
+  background: url(assets/phone.png) no-repeat; background-size: 393px 852px; }
+.phone .map { left: 85px; top: 195px; width: 272px; height: 115px;
+  background-image: url(assets/phone-frame.png); background-position: -85px -195px; background-size: 393px 852px; }
+svg.i { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.ring { position: absolute; border: 2px dashed rgb(255,196,87); border-radius: 12px; pointer-events: none; }
+.pagecard { position: absolute; left: 72px; top: 755px; width: 194px; height: 50px; background: rgb(24,26,30); border-radius: 14px;
+  display: flex; align-items: center; justify-content: space-between; padding: 0 18px; font-size: 15px; color: rgb(231,233,236); }
+.phone .pagecard { left: 16px; top: 690px; }
+.pagecard span { color: rgb(110,115,122); font-size: 18px; }
+.dimmer { position: absolute; inset: 0; background: rgba(0,0,0,.45); }
+
+/* The world menu, drawn over the menu of the app. */
+.menu { position: absolute; width: 300px; border-radius: 16px; padding: 6px 0; box-shadow: 0 10px 34px rgba(0,0,0,.55);
+  background: linear-gradient(170deg, rgb(28,30,34) 0%, rgb(46,48,53) 70%, rgb(62,64,69) 100%); }
+.mrow { height: 48px; display: flex; align-items: center; justify-content: space-between; padding: 0 16px; font-size: 15px; color: rgb(231,233,236); }
+.mrow svg.i { width: 20px; height: 20px; color: rgb(205,209,214); }
+.mrow.hi { background: rgba(255,255,255,.1); }
+.mrow .tick { width: 20px; color: rgb(110,214,190); }
+.mrow .w { display: flex; align-items: center; gap: 8px; }
+.msep { height: 1px; background: rgba(255,255,255,.12); margin: 6px 0; }
+.msec { font-size: 12px; color: rgb(140,147,156); padding: 8px 16px 2px; }
+
+/* The export form: a form sheet in the middle of the iPad screen. */
+.form { position: absolute; background: rgb(30,33,38); border-radius: 16px; box-shadow: 0 18px 60px rgba(0,0,0,.65); overflow: hidden; }
+.fbar { height: 56px; display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; padding: 0 18px; border-bottom: 1px solid rgba(255,255,255,.08); font-size: 16px; }
+.fbar .l { color: rgb(110,214,190); }
+.fbar .r { justify-self: end; height: 36px; padding: 0 16px; border-radius: 10px; background: rgb(60,170,145); color: rgb(12,22,20); display: flex; align-items: center; }
+.fbar .r.off { background: rgba(255,255,255,.1); color: rgb(110,115,122); }
+.fbody { padding: 4px 20px 20px; }
+.lab { font-size: 13px; color: rgb(140,147,156); margin: 16px 2px 6px; }
+.group { background: rgb(40,44,50); border-radius: 12px; overflow: hidden; }
+.grow { min-height: 50px; display: flex; align-items: center; justify-content: space-between; padding: 0 14px; font-size: 15px; border-top: 1px solid rgba(255,255,255,.07); gap: 12px; }
+.grow:first-child { border-top: none; }
+.grow .sub { font-size: 12.5px; color: rgb(140,147,156); margin-top: 2px; }
+.grow .v { color: rgb(174,181,190); display: flex; align-items: center; gap: 10px; }
+.grow .tick { color: rgb(110,214,190); font-size: 18px; }
+.ficon { width: 34px; height: 34px; border-radius: 8px; background: rgb(56,60,67); display: flex; align-items: center; justify-content: center; font-size: 10px; letter-spacing: .04em; color: rgb(205,209,214); flex: none; }
+.fname { display: flex; align-items: center; gap: 12px; }
+.seg { display: flex; background: rgb(18,20,23); border-radius: 10px; padding: 3px; }
+.seg div { flex: 1; height: 36px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 15px; color: rgb(174,181,190); }
+.seg div.on { background: rgb(56,60,67); color: rgb(231,233,236); }
+.num { min-width: 52px; height: 34px; border-radius: 8px; background: rgb(56,60,67); display: inline-flex; align-items: center; justify-content: center; color: rgb(231,233,236); padding: 0 10px; }
+.step { display: flex; background: rgb(18,20,23); border-radius: 10px; }
+.step div { width: 40px; height: 34px; display: flex; align-items: center; justify-content: center; font-size: 19px; color: rgb(205,209,214); }
+.sw { width: 46px; height: 28px; border-radius: 14px; background: rgba(255,255,255,.18); position: relative; flex: none; }
+.sw::after { content: ""; position: absolute; left: 2px; top: 2px; width: 24px; height: 24px; border-radius: 12px; background: #eee; }
+.sw.on { background: rgb(60,170,145); } .sw.on::after { left: 20px; }
+.field { height: 40px; border-radius: 10px; background: rgb(40,44,50); display: flex; align-items: center; padding: 0 14px; font-size: 15px; }
+.field i { font-style: normal; color: rgb(140,147,156); margin-left: 2px; }
+.hint { font-size: 13px; color: rgb(140,147,156); margin: 8px 4px 0; line-height: 1.35; }
+.dim { opacity: .4; }
+.progress { height: 6px; border-radius: 3px; background: rgb(56,60,67); margin-top: 8px; overflow: hidden; }
+.progress i { display: block; height: 6px; width: 48%; background: rgb(69,196,168); }
+.cancel { margin-top: 12px; height: 44px; border-radius: 12px; background: rgba(240,120,90,.18); color: rgb(245,140,110); display: flex; align-items: center; justify-content: center; font-size: 15px; }
+/* The page strip at the top of the form. */
+.strip { display: flex; gap: 14px; padding: 16px 0 4px; justify-content: center; }
+.pg { text-align: center; font-size: 12px; color: rgb(174,181,190); }
+.pg .p { width: 112px; height: 79px; background: #fff; border-radius: 3px; position: relative; overflow: hidden; margin-bottom: 6px; outline: 3px solid transparent; outline-offset: 2px; }
+.pg .p div { position: absolute; inset: 8px; background: url(assets/atlas-frame.png) no-repeat; }
+.pg.on .p { outline-color: rgb(69,196,168); }
+.pg.off .p { opacity: .35; }
+.pg .c { position: absolute; right: 5px; bottom: 5px; width: 20px; height: 20px; border-radius: 10px; background: rgb(60,170,145); color: rgb(12,22,20); font-size: 13px; display: flex; align-items: center; justify-content: center; }
+.pg.off .c { background: rgba(255,255,255,.85); border: 1.5px solid rgb(140,147,156); color: transparent; }
+
+/* The system share sheet, drawn roughly. */
+.share { position: absolute; background: rgb(44,44,46); border-radius: 16px; box-shadow: 0 12px 44px rgba(0,0,0,.6); width: 380px; overflow: hidden; font-family: -apple-system, UI, sans-serif; }
+.share .head { display: flex; gap: 12px; align-items: center; padding: 16px; border-bottom: 1px solid rgba(255,255,255,.08); }
+.thumb { width: 56px; height: 40px; background: #fff; border-radius: 3px; position: relative; overflow: hidden; flex: none; }
+.thumb div { position: absolute; inset: 6px; background: url(assets/atlas-frame.png) no-repeat; background-size: 140px 98px; background-position: -24px -35px; }
+.share .t1 { font-size: 15px; } .share .t2 { font-size: 12px; color: rgb(152,152,157); margin-top: 3px; }
+.share .apps { display: flex; gap: 14px; padding: 16px; border-bottom: 1px solid rgba(255,255,255,.08); }
+.app { width: 60px; text-align: center; font-size: 11px; color: rgb(220,220,224); }
+.app i { display: block; width: 60px; height: 60px; border-radius: 14px; margin-bottom: 6px; }
+.share .list { margin: 12px; background: rgb(58,58,60); border-radius: 12px; }
+.share .list div { height: 44px; display: flex; align-items: center; justify-content: space-between; padding: 0 14px; font-size: 15px; border-top: 1px solid rgba(255,255,255,.08); }
+.share .list div:first-child { border-top: none; }
+.share .list svg { width: 20px; height: 20px; }
+.grab { width: 36px; height: 5px; border-radius: 3px; background: rgb(80,85,92); margin: 8px auto 0; }
+
+/* The desktop window. */
+.win { width: 1194px; height: 640px; position: relative; overflow: hidden; border-radius: 12px; background: rgb(22,24,27); margin-bottom: 26px; border: 1px solid rgba(255,255,255,.1); }
+.mbar { height: 26px; background: rgb(30,32,36); display: flex; align-items: center; gap: 18px; padding: 0 16px; font-size: 13px; color: rgb(220,222,226); }
+.mbar .on { background: rgba(255,255,255,.14); border-radius: 4px; padding: 1px 8px; margin: 0 -8px; }
+.tbar { height: 52px; background: rgb(40,43,48); display: flex; align-items: center; padding: 0 14px; gap: 10px; font-size: 13px; border-bottom: 1px solid rgba(0,0,0,.5); }
+.dots { display: flex; gap: 8px; margin-right: 8px; } .dots i { width: 12px; height: 12px; border-radius: 6px; background: rgb(255,95,87); } .dots i:nth-child(2) { background: rgb(254,188,46); } .dots i:nth-child(3) { background: rgb(40,200,64); }
+.tb { height: 28px; padding: 0 10px; border-radius: 6px; display: flex; align-items: center; gap: 6px; color: rgb(220,222,226); }
+.tb.bg { background: rgba(255,255,255,.08); }
+.tb svg.i { width: 16px; height: 16px; }
+.mute { color: rgb(150,156,164); }
+.dmenu { position: absolute; top: 26px; width: 250px; background: rgba(50,53,58,.97); border-radius: 0 0 8px 8px; box-shadow: 0 12px 30px rgba(0,0,0,.5); padding: 5px; font-size: 13px; }
+.dmenu div { display: flex; justify-content: space-between; padding: 4px 10px; border-radius: 4px; }
+.dmenu div span:last-child { color: rgb(150,156,164); }
+.dmenu div.hi { background: rgb(60,170,145); color: rgb(12,22,20); }
+.dmenu div.hi span:last-child { color: rgb(12,22,20); }
+.dmenu hr { border: none; height: 1px; background: rgba(255,255,255,.12); margin: 4px 6px; }
+.dsheet { position: absolute; left: 357px; top: 78px; width: 480px; background: rgb(46,49,54); border-radius: 0 0 12px 12px; box-shadow: 0 18px 50px rgba(0,0,0,.6); padding: 18px 20px; font-size: 13px; }
+.dsheet h4 { font-weight: normal; font-size: 15px; margin-bottom: 14px; }
+.drow { display: grid; grid-template-columns: 130px 1fr; align-items: center; min-height: 30px; margin-bottom: 8px; }
+.drow > span:first-child { text-align: right; padding-right: 12px; color: rgb(200,204,210); }
+.dseg { display: inline-flex; background: rgb(30,33,37); border-radius: 6px; padding: 2px; }
+.dseg div { padding: 3px 14px; border-radius: 5px; color: rgb(190,194,200); }
+.dseg div.on { background: rgb(90,95,102); color: #fff; }
+.dfield { display: inline-block; background: rgb(30,33,37); border-radius: 5px; padding: 4px 8px; min-width: 44px; text-align: center; }
+.dbtns { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; }
+.dbtns div { padding: 5px 16px; border-radius: 6px; background: rgb(80,84,90); }
+.dbtns div.pri { background: rgb(60,170,145); color: rgb(12,22,20); }
+</style></head><body>
+
+<svg width="0" height="0" style="position:absolute">
+  <symbol id="share" viewBox="0 0 24 24"><path d="M8.5 9.5H6.5v11h11v-11h-2M12 3.5v11M8.5 7l3.5-3.5L15.5 7"/></symbol>
+  <symbol id="plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/></symbol>
+  <symbol id="folder" viewBox="0 0 24 24"><path d="M3.5 6.5a1 1 0 011-1h5l2 2h8a1 1 0 011 1v10a1 1 0 01-1 1h-15a1 1 0 01-1-1z"/></symbol>
+  <symbol id="print" viewBox="0 0 24 24"><path d="M7 9V4h10v5M7 17H5a1 1 0 01-1-1v-6a1 1 0 011-1h14a1 1 0 011 1v6a1 1 0 01-1 1h-2M7 14h10v6H7z"/></symbol>
+  <symbol id="copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 00-1-1H5a1 1 0 00-1 1v10a1 1 0 001 1h3"/></symbol>
+  <symbol id="undo" viewBox="0 0 24 24"><path d="M9 14L4 9l5-5M4 9h10a6 6 0 010 12h-3"/></symbol>
+  <symbol id="redo" viewBox="0 0 24 24"><path d="M15 14l5-5-5-5M20 9H10a6 6 0 000 12h3"/></symbol>
+  <symbol id="dock" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="1.5"/><path d="M14.5 4.5v15M17 8h1"/></symbol>
+</svg>
+
+<!-- Parts that several screens share. -->
+<template id="base"><div class="map"></div><div class="pagecard"><span>‹</span>Page 1 of 3<span>›</span></div></template>
+
+<template id="menu-rows">
+  <div class="mrow"><span class="w"><span class="tick">✓</span>Kareth</span></div>
+  <div class="mrow"><span class="w"><span class="tick"></span>Ostmark</span></div>
+  <div class="msep"></div>
+  <div class="mrow">New world…<svg class="i"><use href="#plus"/></svg></div>
+  <div class="mrow">World properties<svg class="i"><use href="#info"/></svg></div>
+  <div class="msep"></div>
+  <div class="mrow hi">Export…<svg class="i"><use href="#share"/></svg></div>
+</template>
+
+<!-- The page strip, in the PDF form. Pages 2 and 3 show other parts of the sample map. -->
+<template id="strip-all">
+  <div class="strip">
+    <div class="pg on"><div class="p"><div style="background-size:224px 157px; background-position:-37px -55px;"></div><span class="c">✓</span></div></div>
+    <div class="pg on"><div class="p"><div style="background-size:520px 363px; background-position:-210px -130px;"></div><span class="c">✓</span></div></div>
+    <div class="pg on"><div class="p"><div style="background-size:520px 363px; background-position:-110px -150px;"></div><span class="c">✓</span></div></div>
+  </div>
+</template>
+<template id="strip-one">
+  <div class="strip">
+    <div class="pg on"><div class="p"><div style="background-size:224px 157px; background-position:-37px -55px;"></div><span class="c">✓</span></div></div>
+    <div class="pg off"><div class="p"><div style="background-size:520px 363px; background-position:-210px -130px;"></div><span class="c">✓</span></div></div>
+    <div class="pg off"><div class="p"><div style="background-size:520px 363px; background-position:-110px -150px;"></div><span class="c">✓</span></div></div>
+  </div>
+</template>
+
+<template id="formats-pdf">
+  <div class="lab">Format</div>
+  <div class="seg"><div class="on">PDF</div><div>PNG</div><div>SVG</div></div>
+</template>
+<template id="formats-png">
+  <div class="lab">Format</div>
+  <div class="seg"><div>PDF</div><div class="on">PNG</div><div>SVG</div></div>
+</template>
+
+<h2>Export from the world menu</h2>
+<p class="cap">The pictures come from the app. The menus, the forms, and the sheets on top of them are HTML. The base is the Atlas workspace of the iPad layout at 1194 by 834 points. The flow is: the world menu, then the export form with the options, then the share sheet of the system.</p>
+
+<p class="cap"><b>1. Now.</b> The three export rows are at the bottom of the Pages panel, below the paper color and the layout grid. You open the panel with a tap on the page outside the frames, and then you scroll.</p>
+<div class="shot now"></div>
+
+<p class="cap"><b>2. The world menu.</b> The folder button opens the world menu. "Export…" is the last row, after a divider, with the share icon. The row shows in both workspaces. Nothing on the screen changes until you open the menu.</p>
+<div class="shot" data-base>
+  <div class="menu" style="left:16px; top:84px;" data-rows></div>
+</div>
+
+<p class="cap"><b>3. The export form, PDF, all pages.</b> "Export…" opens a form sheet in the middle of the screen. The strip at the top shows the pages that go in the file. A tap on a page adds it or removes it, and Pages follows. A PDF has no options. Its raster layers have the resolution of each page. Details shows the size, the resolution, and the pixel size of the pages. "Export…" at the top right makes the file and then opens the share sheet.</p>
+<div class="shot" data-base>
+  <div class="dimmer"></div>
+  <div class="form" style="left:327px; top:60px; width:540px;">
+    <div class="fbar"><span class="l">Cancel</span><span>Export</span><span class="r">Export…</span></div>
+    <div class="fbody">
+      <template data-use="strip-all"></template>
+      <template data-use="formats-pdf"></template>
+      <div class="lab">Pages</div>
+      <div class="seg"><div class="on">All</div><div>This page</div><div>Range</div></div>
+      <div class="lab">Name</div>
+      <div class="field">Kareth atlas<i>.pdf</i></div>
+      <div class="lab">Details</div>
+      <div class="group">
+        <div class="grow"><span>Page size</span><span class="v">A4 landscape · 297 × 210 mm</span></div>
+        <div class="grow"><span>Resolution</span><span class="v">300 dpi</span></div>
+        <div class="grow"><span>Raster size</span><span class="v">3,508 × 2,481 px</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<p class="cap"><b>4. The export form, PNG, one page.</b> The options change with the format. PNG has a switch that leaves out the paper color, for an overlay in a virtual tabletop. "This page" leaves only the open page selected in the strip. With more than one page, PNG makes one file for each page.</p>
+<div class="shot" data-base>
+  <div class="dimmer"></div>
+  <div class="form" style="left:327px; top:60px; width:540px;">
+    <div class="fbar"><span class="l">Cancel</span><span>Export</span><span class="r">Export…</span></div>
+    <div class="fbody">
+      <template data-use="strip-one"></template>
+      <template data-use="formats-png"></template>
+      <div class="lab">Pages</div>
+      <div class="seg"><div>All</div><div class="on">This page</div><div>Range</div></div>
+      <div class="lab">Options</div>
+      <div class="group">
+        <div class="grow"><span>Transparent paper</span><span class="sw"></span></div>
+      </div>
+      <div class="lab">Name</div>
+      <div class="field">Kareth atlas – Page 1<i>.png</i></div>
+      <div class="lab">Details</div>
+      <div class="group">
+        <div class="grow"><span>Page size</span><span class="v">A4 landscape · 297 × 210 mm</span></div>
+        <div class="grow"><span>Resolution</span><span class="v">300 dpi</span></div>
+        <div class="grow"><span>Image size</span><span class="v">3,508 × 2,481 px</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<p class="cap"><b>5. A range of pages.</b> "Range" shows one field below the choice, with the page numbers of the range, for example "1–4, 7". The strip follows the field as you type, and a tap in the strip writes the pages that you tap in the field.</p>
+<div class="shot" data-base>
+  <div class="dimmer"></div>
+  <div class="form" style="left:327px; top:60px; width:540px;">
+    <div class="fbar"><span class="l">Cancel</span><span>Export</span><span class="r">Export…</span></div>
+    <div class="fbody">
+      <div class="strip">
+        <div class="pg off"><div class="p"><div style="background-size:224px 157px; background-position:-37px -55px;"></div><span class="c">✓</span></div></div>
+        <div class="pg on"><div class="p"><div style="background-size:520px 363px; background-position:-210px -130px;"></div><span class="c">✓</span></div></div>
+        <div class="pg on"><div class="p"><div style="background-size:520px 363px; background-position:-110px -150px;"></div><span class="c">✓</span></div></div>
+      </div>
+      <template data-use="formats-pdf"></template>
+      <div class="lab">Pages</div>
+      <div class="seg"><div>All</div><div>This page</div><div class="on">Range</div></div>
+      <div class="field" style="margin-top:8px;">2–3</div>
+      <div class="lab">Name</div>
+      <div class="field">Kareth atlas<i>.pdf</i></div>
+    </div>
+  </div>
+</div>
+
+<p class="cap"><b>6. Export in progress.</b> The controls of the form are off, and the bottom of the form shows the progress and "Cancel export". "Cancel" at the top left also stops the export.</p>
+<div class="shot" data-base>
+  <div class="dimmer"></div>
+  <div class="form" style="left:327px; top:60px; width:540px;">
+    <div class="fbar"><span class="l">Cancel</span><span>Export</span><span class="r off">Export…</span></div>
+    <div class="fbody">
+      <div class="dim">
+        <template data-use="strip-all"></template>
+        <template data-use="formats-pdf"></template>
+        <div class="lab">Pages</div>
+        <div class="seg"><div class="on">All</div><div>This page</div><div>Range</div></div>
+      </div>
+      <div class="hint" style="margin-top:18px; color: rgb(231,233,236)">Exporting page 2 of 3</div>
+      <div class="progress"><i></i></div>
+      <div class="cancel">Cancel export</div>
+    </div>
+  </div>
+</div>
+
+<p class="cap"><b>7. The share sheet.</b> When the file is ready, the share sheet of the system opens from "Export…". After a share or a save, the form closes. If you close the share sheet with no target, the form stays open with its options. The sheet is drawn roughly here.</p>
+<div class="shot" data-base>
+  <div class="dimmer"></div>
+  <div class="form" style="left:327px; top:60px; width:540px;">
+    <div class="fbar"><span class="l">Cancel</span><span>Export</span><span class="r">Export…</span></div>
+    <div class="fbody">
+      <template data-use="strip-all"></template>
+      <template data-use="formats-pdf"></template>
+      <div class="lab">Pages</div>
+      <div class="seg"><div class="on">All</div><div>This page</div><div>Range</div></div>
+      <div class="lab">Name</div>
+      <div class="field">Kareth atlas<i>.pdf</i></div>
+    </div>
+  </div>
+  <div class="share" style="left:520px; top:104px;">
+    <div class="head"><div class="thumb"><div></div></div><div><div class="t1">Kareth atlas.pdf</div><div class="t2">PDF document · 3 pages · 4.2 MB</div></div></div>
+    <div class="apps">
+      <div class="app"><i style="background: linear-gradient(rgb(90,200,250), rgb(0,122,255));"></i>AirDrop</div>
+      <div class="app"><i style="background: linear-gradient(rgb(110,220,120), rgb(52,199,89));"></i>Messages</div>
+      <div class="app"><i style="background: linear-gradient(rgb(100,180,255), rgb(10,132,255));"></i>Mail</div>
+      <div class="app"><i style="background: linear-gradient(rgb(255,180,80), rgb(255,149,0));"></i>Books</div>
+      <div class="app"><i style="background: rgb(72,72,74);"></i>More</div>
+    </div>
+    <div class="list">
+      <div>Save to Files<svg class="i"><use href="#folder"/></svg></div>
+      <div>Print<svg class="i"><use href="#print"/></svg></div>
+      <div>Copy<svg class="i"><use href="#copy"/></svg></div>
+    </div>
+  </div>
+</div>
+
+<h2>iPhone</h2>
+<p class="cap"><b>8. iPhone 16, portrait.</b> On a compact screen, the workspace menu holds the world rows, so "Export…" is its last row. The form fills the screen as a sheet, with the same sections in a scrolling list. The share sheet follows it.</p>
+<div class="phones">
+  <div class="phone" data-base>
+    <div class="menu" style="left:16px; top:119px; width:300px;" data-rows></div>
+  </div>
+  <div class="phone" data-base>
+    <div class="dimmer"></div>
+    <div class="form" style="left:0; right:0; top:59px; bottom:0; border-radius:16px 16px 0 0;">
+      <div class="fbar"><span class="l">Cancel</span><span>Export</span><span class="r">Export…</span></div>
+      <div class="fbody" style="padding: 0 16px;">
+        <div class="strip" style="gap:10px; transform: scale(.9); transform-origin: top center; margin-bottom:-8px;">
+          <div class="pg on"><div class="p" style="width:96px; height:68px;"><div style="background-size:224px 157px; background-position:-37px -55px;"></div><span class="c">✓</span></div></div>
+          <div class="pg on"><div class="p" style="width:96px; height:68px;"><div style="background-size:520px 363px; background-position:-210px -130px;"></div><span class="c">✓</span></div></div>
+          <div class="pg on"><div class="p" style="width:96px; height:68px;"><div style="background-size:520px 363px; background-position:-110px -150px;"></div><span class="c">✓</span></div></div>
+        </div>
+        <template data-use="formats-pdf"></template>
+        <div class="lab">Pages</div>
+        <div class="seg"><div class="on">All</div><div>This page</div><div>Range</div></div>
+        <div class="lab">Name</div>
+        <div class="field">Kareth atlas<i>.pdf</i></div>
+      </div>
+    </div>
+  </div>
+  <div class="phone" data-base>
+    <div class="dimmer"></div>
+    <div class="form" style="left:0; right:0; top:59px; bottom:0; border-radius:16px 16px 0 0;">
+      <div class="fbar"><span class="l">Cancel</span><span>Export</span><span class="r">Export…</span></div>
+    </div>
+    <div class="share" style="left:0; right:0; bottom:0; width:auto; border-radius:22px 22px 0 0; padding-bottom:34px;">
+      <div class="grab"></div>
+      <div class="head"><div class="thumb"><div></div></div><div><div class="t1">Kareth atlas.pdf</div><div class="t2">PDF document · 3 pages · 4.2 MB</div></div></div>
+      <div class="apps">
+        <div class="app"><i style="background: linear-gradient(rgb(90,200,250), rgb(0,122,255));"></i>AirDrop</div>
+        <div class="app"><i style="background: linear-gradient(rgb(110,220,120), rgb(52,199,89));"></i>Messages</div>
+        <div class="app"><i style="background: linear-gradient(rgb(100,180,255), rgb(10,132,255));"></i>Mail</div>
+        <div class="app"><i style="background: linear-gradient(rgb(255,180,80), rgb(255,149,0));"></i>Books</div>
+      </div>
+      <div class="list">
+        <div>Save to Files<svg class="i"><use href="#folder"/></svg></div>
+        <div>Print<svg class="i"><use href="#print"/></svg></div>
+        <div>Copy<svg class="i"><use href="#copy"/></svg></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<h2>Desktop</h2>
+<p class="cap"><b>9. Desktop.</b> File › Export… with ⌘E opens a sheet of the window with the same options. "Export…" in the sheet opens the save panel of macOS. The tool bar has no export button. The window is schematic, because the app does not have the desktop layout yet.</p>
+<div class="win">
+  <div class="mbar"><b style="font-weight:600"></b><span>Vale</span><span class="on">File</span><span>Edit</span><span>View</span><span>Page</span><span>Window</span><span>Help</span></div>
+  <div class="tbar">
+    <div class="dots"><i></i><i></i><i></i></div>
+    <span>Kareth</span><span class="mute">Kareth.gpkg</span>
+    <div class="tb bg" style="margin-left:8px">World</div><div class="tb" style="background: rgba(69,196,168,.25); color: rgb(110,214,190)">Atlas</div>
+    <div style="flex:1"></div>
+    <div class="tb">‹</div><div class="tb">Page 1 of 3</div><div class="tb">›</div>
+    <div class="tb bg">Add ▾</div>
+    <div style="flex:1"></div>
+    <div class="tb"><svg class="i"><use href="#undo"/></svg></div><div class="tb"><svg class="i"><use href="#redo"/></svg></div><div class="tb"><svg class="i"><use href="#dock"/></svg></div>
+  </div>
+  <div style="position:absolute; left:232px; top:130px; width:730px; height:470px; background:#fff; border-radius:2px;">
+    <div style="position:absolute; left:110px; top:120px; width:495px; height:230px; background: url(assets/atlas-frame.png) no-repeat -205px -300px; background-size: 1194px 834px;"></div>
+  </div>
+  <div class="dmenu" style="left:52px;">
+    <div><span>New world…</span><span>⌘N</span></div>
+    <div><span>Open…</span><span>⌘O</span></div>
+    <hr>
+    <div><span>Save</span><span>⌘S</span></div>
+    <div><span>World properties</span><span></span></div>
+    <hr>
+    <div class="hi"><span>Export…</span><span>⌘E</span></div>
+  </div>
+  <div class="dsheet">
+    <h4>Export</h4>
+    <div class="drow"><span>Format</span><span><span class="dseg"><div class="on">PDF</div><div>PNG</div><div>SVG</div></span></span></div>
+    <div class="drow"><span>Pages</span><span><span class="dseg"><div class="on">All</div><div>This page</div><div>Range</div></span></span></div>
+    <div class="drow"><span>Page size</span><span class="mute">A4 landscape · 297 × 210 mm</span></div>
+    <div class="drow"><span>Resolution</span><span class="mute">300 dpi</span></div>
+    <div class="drow"><span>Raster size</span><span class="mute">3,508 × 2,481 px</span></div>
+    <div class="dbtns"><div>Cancel</div><div class="pri">Export…</div></div>
+  </div>
+</div>
+
+<script>
+const tpl = id => document.getElementById(id).content;
+document.querySelectorAll('[data-base]').forEach(s => s.prepend(tpl('base').cloneNode(true)));
+document.querySelectorAll('[data-rows]').forEach(m => m.append(tpl('menu-rows').cloneNode(true)));
+document.querySelectorAll('template[data-use]').forEach(t => t.replaceWith(tpl(t.dataset.use).cloneNode(true)));
+</script>
+</body></html>

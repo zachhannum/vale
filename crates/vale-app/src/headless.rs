@@ -482,9 +482,11 @@ pub fn ui_png_safe(
         )
     };
     // The heightmap goes to the GPU in parts. Each render sends one part.
+    // The pictures of the pages of the export form draw in later renders.
     for _ in 0..UPLOAD_STEPS {
         let globe = &harness.state().globe;
-        if !globe.busy() && !globe.loading() {
+        if !globe.busy() && !globe.loading() && !crate::ui::export_thumbs::pending(harness.state())
+        {
             break;
         }
         harness.step();

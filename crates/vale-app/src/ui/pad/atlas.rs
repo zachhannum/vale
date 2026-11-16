@@ -20,11 +20,11 @@ use super::readout;
 use super::text_style;
 use super::widgets::{self, BODY_PAD, Controls, Keys, PANEL_ROW, keypad_below};
 use super::{GRATICULE, Head, PageParts, Panel, WORKSPACES, WORLDS_ROW};
-use super::{NO_LAYERS, layer_icon, rule, theme, toggle_worlds, worlds_menu};
+use super::{NO_LAYERS, export_form_row, layer_icon, rule, theme, toggle_worlds, worlds_menu};
 use crate::atlas::{self as math, PAGE_PRESETS};
 use crate::distortion::{self, ScaleError};
 use crate::ui::atlas::{self, AtlasSelection, AtlasTool, ClassColor};
-use crate::ui::{Action, AppState, ExportFormat, Workspace};
+use crate::ui::{AppState, Workspace};
 use crate::ui::{region, select};
 
 /// The name of the cell of the Frame tool. Its label is "Frame", as the
@@ -150,10 +150,6 @@ pub const HEIGHT: &str = "Height";
 pub const UNIT_NAMES: [&str; 2] = ["mm", "in"];
 pub const ADD_PAGE: &str = "Add page";
 pub const DELETE_PAGE: &str = "Delete page";
-pub const EXPORT_PAGE_PNG: &str = "Export page PNG…";
-pub const EXPORT_PAGE_PDF: &str = "Export page PDF…";
-pub const EXPORT_ATLAS_PDF: &str = "Export atlas PDF…";
-pub const CANCEL_EXPORT: &str = "Cancel export";
 
 const TOOL_CELLS: usize = 7;
 /// The smallest space at each side of the text of a tab.
@@ -351,6 +347,8 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     if state.pad.worlds.is_some() {
         worlds_menu(&ctx, state, &mut controls, &rects);
     }
+    crate::ui::world_form::pad(&ctx, state, &mut controls, &rects);
+    crate::ui::export_form::pad(&ctx, state, &mut controls, &rects);
     readout::banner(&ctx, state, &rects);
     super::dock_ui::handle(&ctx, state, &mut controls, &rects);
 
@@ -969,8 +967,8 @@ fn workspace_menu(
     rects: &Rects,
 ) {
     let compact = rects.class == WidthClass::Compact;
-    let rows = if compact { 3.0 } else { 2.0 };
-    let rules = if compact { 1.0 } else { 0.0 };
+    let rows = if compact { 4.0 } else { 2.0 };
+    let rules = if compact { 2.0 } else { 0.0 };
     let size = vec2(
         geometry::MENU_WIDTH,
         10.0 + rows * PANEL_ROW + rules * 13.0 + 10.0,
@@ -996,6 +994,12 @@ fn workspace_menu(
         if compact && widgets::text_row(ui, controls, WORLDS_ROW, 0.0, false, true).clicked() {
             state.pad.menu = false;
             toggle_worlds(state);
+        }
+        if compact {
+            rule(ui);
+            if export_form_row(ui, state, controls) {
+                state.pad.menu = false;
+            }
         }
     });
 }
@@ -2408,26 +2412,6 @@ fn page_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
         state.atlas.pixel_preview = preview;
     }
     grid_rows(ui, state, controls, units);
-
-    ui.add_space(6.0);
-    let ready = state.atlas_export.is_none();
-    if widgets::button_row(ui, controls, EXPORT_PAGE_PNG, ready).clicked() {
-        state.actions.push(Action::ExportDialog(ExportFormat::Png));
-    }
-    if widgets::button_row(ui, controls, EXPORT_PAGE_PDF, ready).clicked() {
-        state.actions.push(Action::ExportDialog(ExportFormat::Pdf));
-    }
-    if widgets::button_row(ui, controls, EXPORT_ATLAS_PDF, ready).clicked() {
-        state
-            .actions
-            .push(Action::ExportDialog(ExportFormat::AtlasPdf));
-    }
-    if let Some(progress) = state.atlas_export_progress() {
-        ui.label(progress);
-        if widgets::button_row_in(ui, controls, CANCEL_EXPORT, true, theme::WARN).clicked() {
-            state.actions.push(Action::CancelExport);
-        }
-    }
 
     ui.add_space(6.0);
     if widgets::button_row(ui, controls, ADD_PAGE, true).clicked() {

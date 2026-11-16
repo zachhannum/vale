@@ -1,4 +1,4 @@
-//! PDF export of atlas pages.
+//! PDF and PNG export of atlas pages.
 
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
@@ -8,9 +8,10 @@ use std::sync::{Arc, mpsc};
 use image::{DynamicImage, ImageFormat, RgbaImage};
 use kurbo::{Point, Rect, Shape};
 use vale_labeler::Fonts;
+use vale_render::Rgba;
 use vale_render::{DisplayList, FillRule, Item, PdfDocument};
 use vale_sphere::Projection;
-use vale_store::{FrameRecord, ImageId, LayerId, PageRecord, RasterId};
+use vale_store::{FrameRecord, ImageId, LayerId, PageId, PageRecord, RasterId};
 
 use crate::atlas::{self, FrameTarget, PT_PER_MM};
 use crate::document::Document;
@@ -27,8 +28,30 @@ pub fn pixel_ratio(dpi: u32) -> f64 {
     f64::from(dpi) / 72.0
 }
 
+/// The pixels of a length of `points` in a raster export at `dpi`.
+pub fn pixels(points: f64, dpi: u32) -> u32 {
+    (points * pixel_ratio(dpi)).ceil().max(1.0) as u32
+}
+
+/// The width and the height of a page in a PNG export, in pixels. A map
+/// frame that fills the page has raster images of the same size.
+pub fn page_pixels(page: &PageRecord) -> [u32; 2] {
+    let side = |mm: f64| pixels(mm * PT_PER_MM, page.dpi);
+    [side(page.width_mm), side(page.height_mm)]
+}
+
 /// The most pixels on a side of a texture that each GPU takes.
 pub const MAX_SIDE: u32 = 8192;
+/// The most times that egui drops the capture of one strip before the
+/// export fails.
+const MAX_LOST: u32 = 60;
+
+/// The options of an export.
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
+pub struct ExportOptions {
+    /// The page has no paper fill.
+    pub transparent: bool,
+}
 
 /// The fewest rows of pixels in a strip of an exported frame.
 pub const MIN_STRIP_ROWS: u32 = 64;
@@ -72,6 +95,9 @@ struct PendingCapture {
     /// The capture of the strip, then the capture of the cover of each
     /// mask, with what arrived. `None` is a mask with no cover.
     receivers: Option<Vec<Receiver>>,
+    /// The captures of the strip that egui dropped before the GPU drew
+    /// them, as in a UI frame that egui ran and did not paint.
+    lost: u32,
 }
 
 /// A capture that the GPU makes, and its result once it arrives.
@@ -99,28 +125,68 @@ pub struct PdfExport {
     pipeline: Pipeline,
     fonts: Fonts,
     output: Option<Output>,
+    options: ExportOptions,
     /// The raster masks of a frame with no raster layers get a capture.
     gpu: bool,
     /// The most pixels on a side of a texture of the GPU.
     max_side: u32,
+    /// The raster layers and the image layers of a frame go to the GPU.
+    /// Without them, a frame has its vector layers only.
+    layers: bool,
+    /// The pages that have their vector layers only, because their
+    /// capture failed.
+    vector_pages: Vec<usize>,
 }
 
 enum Output {
     Pdf(Box<PdfDocument>),
-    Png,
+    /// One file for each page.
+    Png {
+        paths: Vec<PathBuf>,
+    },
+    /// One image for each page, in memory.
+    Images {
+        /// The pixels in one point of each image.
+        ratio: f64,
+        images: Vec<(PageId, Rgba)>,
+    },
+}
+
+/// The PNG files of an export of `pages` to `path`. One page goes to
+/// `path`. Each of several pages goes to `<name>-<page number>.png` next to
+/// `path`, with the number of the page in the atlas of `doc`.
+pub fn png_paths(doc: &Document, path: &Path, pages: &[PageRecord]) -> Vec<PathBuf> {
+    if pages.len() == 1 {
+        return vec![path.to_path_buf()];
+    }
+    let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+    let atlas = &doc.project.atlas.pages;
+    (pages.iter().enumerate())
+        .map(|(index, page)| {
+            let number = atlas.iter().position(|p| p.id == page.id).unwrap_or(index) + 1;
+            path.with_file_name(format!("{stem}-{number}.png"))
+        })
+        .collect()
 }
 
 impl PdfExport {
-    pub fn new(doc: Document, path: PathBuf, pages: Vec<PageRecord>) -> anyhow::Result<Self> {
+    pub fn new(
+        doc: Document,
+        path: PathBuf,
+        pages: Vec<PageRecord>,
+        options: ExportOptions,
+    ) -> anyhow::Result<Self> {
         if pages.is_empty() {
             anyhow::bail!("the atlas has no pages");
         }
         let ext = path.extension().and_then(|e| e.to_str());
         let output = match ext.map(str::to_ascii_lowercase).as_deref() {
             Some("pdf") => Output::Pdf(Box::new(PdfDocument::new())),
-            Some("png") if pages.len() == 1 => Output::Png,
+            Some("png") => Output::Png {
+                paths: png_paths(&doc, &path, &pages),
+            },
             _ => anyhow::bail!(
-                "cannot export to {}; use a .pdf file, or .png for one page",
+                "cannot export to {}; use a .pdf or .png file",
                 path.display()
             ),
         };
@@ -136,13 +202,61 @@ impl PdfExport {
             pipeline: Pipeline::new(),
             fonts,
             output: Some(output),
+            options,
             gpu: true,
             max_side: MAX_SIDE,
+            layers: true,
+            vector_pages: Vec::new(),
         })
+    }
+
+    /// An export of `pages` to images in memory, with `ratio` pixels in one
+    /// point. The raster images of the frames also have `ratio` pixels in
+    /// one point.
+    pub fn images(doc: Document, pages: Vec<PageRecord>, ratio: f64) -> anyhow::Result<Self> {
+        let options = ExportOptions::default();
+        let mut job = PdfExport::new(doc, PathBuf::from("pages.png"), pages, options)?;
+        job.output = Some(Output::Images {
+            ratio,
+            images: Vec::new(),
+        });
+        Ok(job)
+    }
+
+    /// Composes the page that the export composes again, with the vector
+    /// layers of its frames only.
+    pub fn drop_page_layers(&mut self) {
+        self.pending = None;
+        self.list = None;
+        self.frame = 0;
+        self.pipeline.clear_page_masks();
+        self.vector_pages.push(self.page);
+    }
+
+    /// True if the export composes or composed `page` with the vector
+    /// layers of its frames only.
+    pub fn vector_only(&self, page: PageId) -> bool {
+        (self.vector_pages.iter()).any(|&i| self.pages.get(i).is_some_and(|p| p.id == page))
+    }
+
+    /// Takes the images of the pages that the export finished.
+    pub fn take_images(&mut self) -> Vec<(PageId, Rgba)> {
+        match &mut self.output {
+            Some(Output::Images { images, .. }) => std::mem::take(images),
+            _ => Vec::new(),
+        }
     }
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// The files that the export writes.
+    pub fn files(&self) -> Vec<PathBuf> {
+        match &self.output {
+            Some(Output::Png { paths }) => paths.clone(),
+            _ => vec![self.path.clone()],
+        }
     }
 
     /// Gives the export the raster values under the features.
@@ -198,9 +312,12 @@ impl PdfExport {
         }
     }
 
-    fn page_list(page: &PageRecord) -> DisplayList {
+    fn page_list(page: &PageRecord, transparent: bool) -> DisplayList {
         let size = Point::new(page.width_mm * PT_PER_MM, page.height_mm * PT_PER_MM);
         let mut list = DisplayList::new(size.x, size.y);
+        if transparent {
+            return list;
+        }
         list.push(Item::Fill {
             path: Rect::new(0.0, 0.0, size.x, size.y).to_path(0.1),
             color: paper_color(page),
@@ -222,7 +339,15 @@ impl PdfExport {
     /// The pixels in one point of the raster images of the page that the
     /// export draws.
     pub fn pixel_ratio(&self) -> f64 {
-        pixel_ratio(self.pages[self.page.min(self.pages.len() - 1)].dpi)
+        self.page_ratio(&self.pages[self.page.min(self.pages.len() - 1)])
+    }
+
+    /// The pixels in one point of the raster images of `page`.
+    fn page_ratio(&self, page: &PageRecord) -> f64 {
+        match &self.output {
+            Some(Output::Images { ratio, .. }) => *ratio,
+            _ => pixel_ratio(page.dpi),
+        }
     }
 
     fn shown_images(&self, frame: &FrameRecord) -> Vec<ImageId> {
@@ -250,12 +375,9 @@ impl PdfExport {
             anyhow::bail!("the map frame has no area on the page");
         }
         let point_min = Point::new(bbox.x0 * PT_PER_MM, bbox.y0 * PT_PER_MM);
-        let ratio = pixel_ratio(page.dpi);
-        let pixel = |points: f64| (points * ratio).ceil().max(1.0) as u32;
-        let size = [
-            pixel(bbox.width() * PT_PER_MM),
-            pixel(bbox.height() * PT_PER_MM),
-        ];
+        let ratio = self.page_ratio(page);
+        let side = |mm: f64| (mm * PT_PER_MM * ratio).ceil().max(1.0) as u32;
+        let size = [side(bbox.width()), side(bbox.height())];
         let point_size = Point::new(f64::from(size[0]) / ratio, f64::from(size[1]) / ratio);
         let image_rect = Rect::from_origin_size(point_min, (point_size.x, point_size.y));
         let page_target = FrameTarget {
@@ -337,6 +459,7 @@ impl PdfExport {
                 pts_per_mm: PT_PER_MM * ratio,
             },
             receivers: None,
+            lost: 0,
         })
     }
 
@@ -369,6 +492,7 @@ impl PdfExport {
             pending.row += rows;
         }
         pending.receivers = None;
+        pending.lost = 0;
         if pending.row >= height {
             return Ok(true);
         }
@@ -443,20 +567,39 @@ impl PdfExport {
                 let Some(receivers) = &mut pending.receivers else {
                     return Ok(ExportStep::Capture(pending.draw.clone()));
                 };
+                let mut lost = false;
+                let mut failed = None;
                 for (receiver, got) in receivers.iter_mut().flatten() {
                     if got.is_some() {
                         continue;
                     }
                     match receiver.try_recv() {
                         Ok(Ok(captured)) => *got = Some(captured),
-                        Ok(Err(error)) => anyhow::bail!(error),
+                        Ok(Err(error)) => failed = Some(error),
                         Err(mpsc::TryRecvError::Empty) => return Ok(ExportStep::More),
-                        Err(mpsc::TryRecvError::Disconnected) => {
-                            anyhow::bail!("the raster capture stopped")
-                        }
+                        Err(mpsc::TryRecvError::Disconnected) => lost = true,
                     }
                 }
-                let captured = (receivers.drain(..))
+                // A capture that egui dropped goes to the GPU again.
+                if lost && failed.is_none() {
+                    pending.receivers = None;
+                    pending.lost += 1;
+                    if pending.lost <= MAX_LOST {
+                        return Ok(ExportStep::Capture(pending.draw.clone()));
+                    }
+                    failed = Some("the raster capture stopped".to_string());
+                }
+                if let Some(error) = failed {
+                    // A picture of a page has the vector layers at least.
+                    if !matches!(self.output, Some(Output::Images { .. })) {
+                        anyhow::bail!(error);
+                    }
+                    log::warn!("page pictures: {error}");
+                    self.drop_page_layers();
+                    return Ok(ExportStep::More);
+                }
+                let receivers = pending.receivers.take().unwrap_or_default();
+                let captured = (receivers.into_iter())
                     .map(|r| r.and_then(|(_, got)| got))
                     .collect();
                 if !self.take_strip(captured)? {
@@ -466,8 +609,12 @@ impl PdfExport {
                 self.finish_capture()?;
             }
 
+            if self.page >= self.pages.len() {
+                return self.finish();
+            }
             if self.list.is_none() {
-                self.list = Some(Self::page_list(&self.pages[self.page]));
+                let transparent = self.options.transparent;
+                self.list = Some(Self::page_list(&self.pages[self.page], transparent));
                 self.frame = 0;
             }
             let page = self.pages[self.page].clone();
@@ -476,9 +623,11 @@ impl PdfExport {
                 let bbox = atlas::shape_bbox(&frame.shape).intersect(page_rect);
                 let raster_area = bbox.width() > 0.0 && bbox.height() > 0.0;
                 let masked = self.gpu && !frame_raster_masks(&self.doc, frame).is_empty();
-                let layered = !self.shown_rasters(frame).is_empty()
-                    || !self.shown_images(frame).is_empty()
-                    || masked;
+                let layered = self.layers
+                    && !self.vector_pages.contains(&self.page)
+                    && (!self.shown_rasters(frame).is_empty()
+                        || !self.shown_images(frame).is_empty()
+                        || masked);
                 if !layered || !raster_area {
                     let target = FrameTarget {
                         origin: Point::ZERO,
@@ -530,30 +679,40 @@ impl PdfExport {
                 self.list.as_mut().unwrap().items.extend(items);
             }
             let list = self.list.take().unwrap();
-            if matches!(self.output, Some(Output::Png)) {
-                let bytes = vale_render::render_png(&list, pixel_ratio(page.dpi))?;
-                headless::write_file(&self.path, &bytes)?;
-                return Ok(ExportStep::Done(Ok(self.path.clone())));
+            match &mut self.output {
+                Some(Output::Png { paths }) => {
+                    let bytes = vale_render::render_png(&list, pixel_ratio(page.dpi))?;
+                    headless::write_file(&paths[self.page], &bytes)?;
+                }
+                Some(Output::Pdf(pdf)) => pdf.add_page(&list)?,
+                Some(Output::Images { ratio, images }) => {
+                    let image = vale_render::render_rgba(&list, *ratio)?;
+                    images.push((page.id, image));
+                }
+                None => unreachable!("the export has an output"),
             }
-            let Some(Output::Pdf(pdf)) = &mut self.output else {
-                unreachable!("the output is a PDF")
-            };
-            pdf.add_page(&list)?;
             self.page += 1;
             if self.page < self.pages.len() {
                 return Ok(ExportStep::More);
             }
-            let Some(Output::Pdf(pdf)) = self.output.take() else {
-                unreachable!("the output is a PDF")
-            };
-            let bytes = pdf.finish()?;
-            headless::write_file(&self.path, &bytes)?;
-            Ok(ExportStep::Done(Ok(self.path.clone())))
+            self.finish()
         })();
         match result {
             Ok(step) => step,
             Err(error) => ExportStep::Done(Err(error)),
         }
+    }
+
+    /// Writes the PDF file after the last page.
+    fn finish(&mut self) -> anyhow::Result<ExportStep> {
+        if let Some(Output::Pdf(_)) = self.output {
+            let Some(Output::Pdf(pdf)) = self.output.take() else {
+                unreachable!("the output is a PDF")
+            };
+            let bytes = pdf.finish()?;
+            headless::write_file(&self.path, &bytes)?;
+        }
+        Ok(ExportStep::Done(Ok(self.path.clone())))
     }
 }
 
@@ -587,20 +746,22 @@ fn strip(whole: &FrameDraw, (col, row): (u32, u32), [cols, rows]: [u32; 2]) -> F
 
 /// Writes vector pages as one PDF without a window.
 pub fn export_pdf(doc: &Document, pages: Vec<PageRecord>, path: &Path) -> anyhow::Result<()> {
-    let mut job = PdfExport::new(doc.clone(), path.to_path_buf(), pages)?;
-    job.gpu = false;
-    loop {
-        match job.step() {
-            ExportStep::More => {}
-            ExportStep::Capture(_) => anyhow::bail!("a raster layer needs a GPU for export"),
-            ExportStep::Done(result) => return result.map(|_| ()),
-        }
-    }
+    export_pages(doc, pages, path, ExportOptions::default())
 }
 
 /// Writes one vector page to a PNG or PDF without a window.
 pub fn export_page(doc: &Document, page: PageRecord, path: &Path) -> anyhow::Result<()> {
-    let mut job = PdfExport::new(doc.clone(), path.to_path_buf(), vec![page])?;
+    export_pages(doc, vec![page], path, ExportOptions::default())
+}
+
+/// Writes vector pages to one PDF, or to PNG files, without a window.
+pub fn export_pages(
+    doc: &Document,
+    pages: Vec<PageRecord>,
+    path: &Path,
+    options: ExportOptions,
+) -> anyhow::Result<()> {
+    let mut job = PdfExport::new(doc.clone(), path.to_path_buf(), pages, options)?;
     job.gpu = false;
     loop {
         match job.step() {

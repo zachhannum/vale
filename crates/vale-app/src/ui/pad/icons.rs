@@ -112,6 +112,8 @@ pub enum Icon {
     NorthArrow,
     /// A bar of colors with a scale below it.
     ColorKey,
+    /// A box with an arrow that points up out of it.
+    Share,
 }
 
 impl Icon {
@@ -180,6 +182,7 @@ impl Icon {
                 "M3 5h6c1.66 0 3 1.34 3 3v12c0-1.1-.9-2-2-2H3zM21 5h-6c-1.66 0-3 1.34-3 3v12c0-1.1.9-2 2-2h7z"
             }
             Icon::Folder => "M3 5h6l2 3h10v11H3z",
+            Icon::Share => "M8.5 9.5H6.5v11h11v-11h-2M12 3.5v11M8.5 7l3.5-3.5L15.5 7",
             Icon::Legend => "M3 5h5v5H3zM3 14h5v5H3zM11 7.5h10M11 16.5h7",
             Icon::ScaleBar => "M3 9v6M21 9v6M3 12h18M12 10v4",
             Icon::NorthArrow => "M6 21l6-18 6 18M8.5 14h7",
@@ -554,6 +557,7 @@ mod tests {
             Icon::ScaleBar,
             Icon::NorthArrow,
             Icon::ColorKey,
+            Icon::Share,
         ] {
             let lines = parse(icon.path());
             let circles = icon.circles();

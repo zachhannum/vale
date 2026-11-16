@@ -11,6 +11,7 @@ use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use kurbo::Point;
 use vale_app::atlas::{Handle, anchor, frame_transform, shape_bbox};
+use vale_app::atlas_export::{ExportOptions, PdfExport};
 use vale_app::document::{Document, Target};
 use vale_app::furniture::rect_of;
 use vale_app::projects::Locations;
@@ -18,15 +19,16 @@ use vale_app::session::{Session, new_project_path};
 use vale_app::ui::atlas::measure::measure_lines;
 use vale_app::ui::atlas::{self as atlas, BarPage, BarPick, ItemKind, ItemPage, TextPart};
 use vale_app::ui::atlas::{AtlasSelection, AtlasTool, FrameTab};
+use vale_app::ui::export_form::{self, ExportForm, PagesMode, page_name};
 use vale_app::ui::map_texture::MapRenderer;
 use vale_app::ui::pad::atlas::{
     ADD_HOLE, ADD_PAGE, AUTO_INTERVAL, BORDER, BORDER_DISTANCE, BORDER_STROKE, BORDER_STYLES,
     BORDER_WIDTH, CENTER_ON_FRAME, COPY_GLOBE_STYLE, DELETE_PAGE, DELETE_PROJECTION,
-    EXPORT_ATLAS_PDF, EXPORT_PAGE_PDF, EXPORT_PAGE_PNG, FIRST_PARALLEL, FRAME_TABS, FRAME_TOOL,
-    GRATICULE_COLOR, GRATICULE_WIDTH, HEIGHT, INTERVAL, LABEL_FORMATS, MAP_NAME, NEATLINE,
-    NEATLINE_COLOR, NEATLINE_WIDTH, NEXT_PAGE, OBLIQUE, PAPER_COLOR, POLYGON, PREVIOUS_PAGE,
-    PROJECTION, REFERENCE_GRID, SAVE_PROJECTION, SCALE, SECOND_COLOR, SIZE, STROKE_COLOR,
-    STROKE_WIDTH as BORDER_STROKE_WIDTH, VERTEX, WIDTH, custom_row, page_title, readout_text,
+    FIRST_PARALLEL, FRAME_TABS, FRAME_TOOL, GRATICULE_COLOR, GRATICULE_WIDTH, HEIGHT, INTERVAL,
+    LABEL_FORMATS, MAP_NAME, NEATLINE, NEATLINE_COLOR, NEATLINE_WIDTH, NEXT_PAGE, OBLIQUE,
+    PAPER_COLOR, POLYGON, PREVIOUS_PAGE, PROJECTION, REFERENCE_GRID, SAVE_PROJECTION, SCALE,
+    SECOND_COLOR, SIZE, STROKE_COLOR, STROKE_WIDTH as BORDER_STROKE_WIDTH, VERTEX, WIDTH,
+    custom_row, page_title, readout_text,
 };
 use vale_app::ui::pad::atlas::{
     BORDER_GAP, DISTANCE_BY_SIDE, FURNITURE, GRID_COLUMN_NAMES, PROPERTIES, SIDE_DISTANCES,
@@ -672,23 +674,218 @@ fn the_panel_of_the_page_sets_the_page_size() {
 }
 
 #[test]
-fn the_page_panel_exports_one_page_or_the_atlas() {
-    let mut h = pad();
-    h.state_mut().atlas.selection = AtlasSelection::Page;
-    h.run_steps(2);
-    scroll_to(&mut h, EXPORT_ATLAS_PDF);
-    for name in [EXPORT_PAGE_PNG, EXPORT_PAGE_PDF, EXPORT_ATLAS_PDF] {
-        assert!(control(&h, name).is_some(), "{name}");
-    }
-
-    let at = control(&h, EXPORT_ATLAS_PDF).unwrap().center();
+fn the_page_panel_has_no_export_rows() {
+    let mut h = inset_pad(BOARDS[0]);
+    let at = screen(&h, Point::new(4.0, 50.0));
     tap_with(&mut h, at, Input::Finger);
-    h.step();
+    assert_eq!(h.state().atlas.selection, AtlasSelection::Page);
+    scroll_to(&mut h, ADD_PAGE);
+    assert!(control(&h, ADD_PAGE).is_some());
+    let names = &h.state().pad.controls;
+    assert!(
+        !names.iter().any(|c| c.name.starts_with("Export")),
+        "{names:?}"
+    );
+}
+
+/// The Atlas workspace with `count` pages, with page `open` open, and the
+/// export form open.
+fn export_pad(count: usize, open: usize) -> Pad {
+    let mut s = default_state();
+    while s.doc.project.atlas.pages.len() < count {
+        atlas::add_page(&mut s);
+    }
+    s.atlas.page = s.doc.project.atlas.pages[open].id;
+    s.atlas.selection = AtlasSelection::None;
+    s.export_form = Some(ExportForm::new(&s));
+    pad_with(s, BOARDS[0])
+}
+
+fn export_form(h: &Pad) -> &ExportForm {
+    h.state()
+        .export_form
+        .as_ref()
+        .expect("the export form is open")
+}
+
+fn ticked(h: &Pad) -> Vec<usize> {
+    let selected = &export_form(h).selected;
+    (0..selected.len()).filter(|&i| selected[i]).collect()
+}
+
+#[test]
+fn a_hold_then_a_drag_selects_a_run_of_pages_and_a_quick_drag_scrolls() {
+    let mut h = export_pad(8, 0);
+    tap(&mut h, export_form::PAGE_CHOICES[1]);
+    assert_eq!(ticked(&h), [0]);
+
+    // A finger stays still on page 2, then moves to page 4.
+    let from = control(&h, &page_name(1)).unwrap().center();
+    let to = control(&h, &page_name(3)).unwrap().center();
+    touch(&mut h, 1, egui::TouchPhase::Start, from, None);
+    h.run_steps(8);
+    for i in 1..=8 {
+        let at = from.lerp(to, i as f32 / 8.0);
+        touch(&mut h, 1, egui::TouchPhase::Move, at, None);
+        h.step();
+    }
+    release(&mut h, to, Input::Finger);
+    assert_eq!(ticked(&h), [0, 1, 2, 3]);
+    assert_eq!(export_form(&h).pages, PagesMode::Range);
+    assert_eq!(export_form(&h).range, "1–4");
+
+    // A quick drag scrolls the strip and changes no tick.
+    let before = control(&h, &page_name(3)).unwrap();
+    let from = before.center();
+    drag(&mut h, from, from - vec2(200.0, 0.0), Input::Finger);
+    h.run_steps(10);
+    let after = control(&h, &page_name(3)).unwrap();
+    assert!(
+        after.center().x < before.center().x - 100.0,
+        "{before:?} {after:?}"
+    );
+    assert_eq!(ticked(&h), [0, 1, 2, 3]);
+}
+
+#[test]
+fn a_tap_on_a_page_of_the_strip_ticks_or_clears_it() {
+    let mut h = export_pad(3, 0);
+    assert_eq!(ticked(&h), [0, 1, 2]);
+    tap(&mut h, &page_name(1));
+    assert_eq!(ticked(&h), [0, 2]);
+    assert_eq!(export_form(&h).pages, PagesMode::Range);
+    tap(&mut h, &page_name(1));
+    assert_eq!(ticked(&h), [0, 1, 2]);
+}
+
+#[test]
+fn the_strip_opens_centered_on_the_open_page() {
+    let mut h = export_pad(9, 6);
+    h.run_steps(2);
+    let page = control(&h, &page_name(6)).unwrap();
+    assert!(
+        (page.center().x - BOARDS[0].0 / 2.0).abs() < 1.0,
+        "{page:?}"
+    );
+    assert!(control(&h, &page_name(0)).is_none());
+}
+
+#[test]
+fn the_range_field_ticks_the_pages_as_you_type_and_tidies_the_range_after() {
+    let mut h = export_pad(6, 0);
+    tap(&mut h, &page_name(2));
+    assert_eq!(export_form(&h).range, "1–2, 4–6");
+    // A page number past the last page gives the last page.
+    type_text(&mut h, export_form::RANGE, "3-1, 9 ,x");
+    assert_eq!(ticked(&h), [0, 1, 2, 5]);
+    assert_eq!(export_form(&h).range, "3-1, 9 ,x");
+    // Return takes the focus from the field.
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    assert_eq!(export_form(&h).range, "1–3, 6");
+    assert_eq!(export_form(&h).pages, PagesMode::Range);
+}
+
+/// The rect of the card of the export form on the screen.
+fn export_card(h: &Pad) -> Rect {
+    let layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::new(export_form::CARD));
+    let rect = h.ctx.memory(|m| m.area_rect(layer.id)).expect("the card");
+    h.ctx.layer_transform_to_global(layer).unwrap_or_default() * rect
+}
+
+#[test]
+fn the_export_form_grows_from_its_middle_and_shows_at_once_with_no_motion() {
+    let mut h = pad_with(default_state(), BOARDS[0]);
+    let open = |h: &mut Pad| {
+        let form = ExportForm::new(h.state());
+        h.state_mut().export_form = Some(form);
+        h.step();
+        export_card(h)
+    };
+    let first = open(&mut h);
+    h.run_steps(20);
+    let last = export_card(&h);
+    assert_eq!((first.top(), first.width()), (last.top(), last.width()));
+
+    // With motion, the card starts at 90 percent of its width.
+    h.state_mut().export_form = None;
+    h.state_mut().headless = false;
+    h.run_steps(20);
+    let first = open(&mut h);
+    assert!(first.width() < last.width() * 0.95, "{first:?} {last:?}");
+    assert!((first.center().x - last.center().x).abs() < 1.0);
+    h.run_steps(40);
+    let rest = export_card(&h);
+    assert_eq!((rest.top(), rest.width()), (last.top(), last.width()));
+}
+
+#[test]
+fn export_asks_for_the_file_of_the_spec_of_the_form() {
+    let mut h = export_pad(3, 1);
+    tap(&mut h, export_form::FORMATS[1]);
+    tap(&mut h, export_form::PAGE_CHOICES[1]);
+    h.state_mut().actions.clear();
+    tap(&mut h, export_form::EXPORT);
+    let form = export_form(&h).clone();
+    assert_eq!(form.format, ExportFormat::Png);
+    let spec = form.spec();
+    assert_eq!(spec.pages, [h.state().doc.project.atlas.pages[1].id]);
+    assert_eq!(h.state().actions, [Action::ExportDialog(spec)]);
+    assert_eq!(h.state().export_options.format, ExportFormat::Png);
+}
+
+#[test]
+fn while_an_export_runs_the_form_is_off_and_cancel_stops_the_export() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = export_pad(2, 0);
+    let start = |h: &mut Pad| {
+        let s = h.state_mut();
+        let page = s.doc.project.atlas.pages[0].clone();
+        let pages = vec![page; 40];
+        let path = dir.path().join("atlas.pdf");
+        let options = ExportOptions::default();
+        s.atlas_export = Some(PdfExport::new(s.doc.clone(), path, pages, options).unwrap());
+        h.run_steps(2);
+    };
+    start(&mut h);
+    assert!(h.state().atlas_export.is_some());
+    for name in [export_form::EXPORT, export_form::FORMATS[1], &page_name(1)] {
+        assert!(control(&h, name).is_none(), "{name}");
+    }
     assert!(
         h.state()
-            .actions
-            .contains(&Action::ExportDialog(ExportFormat::AtlasPdf))
+            .atlas_export_progress()
+            .unwrap()
+            .starts_with("Exporting page")
     );
+
+    tap(&mut h, export_form::CANCEL_EXPORT);
+    let actions = std::mem::take(&mut h.state_mut().actions);
+    assert_eq!(actions, [Action::CancelExport]);
+    h.state_mut().run_action(Action::CancelExport);
+    h.run_steps(2);
+    assert!(h.state().atlas_export.is_none() && h.state().export_form.is_some());
+    assert!(control(&h, export_form::EXPORT).is_some());
+
+    // Cancel in the bar also stops the export, and closes the form.
+    start(&mut h);
+    tap(&mut h, export_form::CANCEL);
+    assert_eq!(h.state().actions, [Action::CancelExport]);
+    assert!(h.state().export_form.is_none());
+}
+
+#[test]
+fn an_export_error_shows_in_the_form() {
+    let mut h = export_pad(1, 0);
+    let s = h.state_mut();
+    let pages = s.doc.project.atlas.pages.clone();
+    // A folder that does not exist makes the write fail.
+    let path = std::path::PathBuf::from("/nonexistent/folder/atlas.pdf");
+    let options = ExportOptions::default();
+    s.atlas_export = Some(PdfExport::new(s.doc.clone(), path, pages, options).unwrap());
+    h.run_steps(4);
+    assert!(h.state().atlas_export.is_none());
+    assert!(export_form(&h).error.is_some());
 }
 
 #[test]

@@ -3,12 +3,15 @@ use std::path::{Path, PathBuf};
 use clap::Parser;
 use tiff::decoder::{Decoder, DecodingResult};
 use tiff::tags::Tag;
+use vale_app::atlas_export::{ExportStep, PdfExport};
 use vale_app::cli::{Args, export_heightmap};
 use vale_app::document::Document;
 use vale_app::files::ExportEvent;
 use vale_app::session::Session;
+use vale_app::ui::export_form::{self, ExportForm};
 use vale_app::ui::panels::EXPORT_GEOTIFF;
-use vale_app::ui::{Action, AppState, LayerRef, Workspace, draw};
+use vale_app::ui::{Action, AppState, ExportFormat, ExportSpec, LayerRef, Workspace, draw};
+use vale_store::PageId;
 use vale_terrain::math::lonlat_to_dir;
 use vale_terrain::{EquirectGrid, Heightmap, Limits, Mode, Stamp};
 
@@ -256,7 +259,7 @@ fn the_worker_exports_the_heightmap_and_gives_a_note() {
     assert_eq!(note.text, "Exported Terra.tif (256 × 128)");
     assert!(!note.warning);
     assert_eq!(state.status, note.text);
-    assert_eq!(state.share, None);
+    assert!(state.share.is_empty());
     assert!(state.can_export() && !second.exists());
     let (size, levels) = read_tiff(&out);
     assert_eq!(size, (256, 128));
@@ -266,7 +269,7 @@ fn the_worker_exports_the_heightmap_and_gives_a_note() {
     state.share_exports = true;
     state.headless = true;
     state.run_action(Action::ExportHeightmap(out.clone()));
-    assert_eq!(state.share, Some(out));
+    assert_eq!(state.share, [out]);
 }
 
 #[test]
@@ -281,7 +284,7 @@ fn an_export_to_a_path_that_cannot_be_written_gives_a_warning() {
     assert!(note.warning);
     assert!(note.text.starts_with("cannot write "), "{}", note.text);
     assert_eq!(state.status, note.text);
-    assert_eq!(state.share, None);
+    assert!(state.share.is_empty());
     assert!(!state.globe.exporting() && state.can_export());
 }
 
@@ -333,32 +336,45 @@ fn the_export_file_has_the_name_of_the_world() {
 }
 
 #[test]
+fn the_export_of_pages_keeps_the_name_of_the_world() {
+    let mut state = AppState::new(Document::sample()).unwrap();
+    let mut stem = |text: &str| -> String {
+        state.doc.project.world.name = text.to_string();
+        state.export_stem()
+    };
+    assert_eq!(stem("Earth (sample)"), "Earth (sample)");
+    assert_eq!(stem("a/b:c"), "a_b_c");
+    assert_eq!(stem(" Terra\\Nova? "), "Terra_Nova_");
+    assert_eq!(stem(""), "atlas");
+}
+
+#[test]
 fn the_end_of_the_hand_off_to_the_files_app_sets_the_note() {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("Terra.tif");
     let mut state = state();
     state.share_exports = true;
-    let export = |state: &mut AppState| -> PathBuf {
+    let export = |state: &mut AppState| -> Vec<PathBuf> {
         state.run_action(Action::ExportHeightmap(out.clone()));
         assert_eq!(
             state.export_note.as_ref().unwrap().text,
             "Exported Terra.tif (256 × 128)"
         );
-        state.share.take().unwrap()
+        std::mem::take(&mut state.share)
     };
 
-    let path = export(&mut state);
-    state.end_share(ExportEvent::Saved, &path);
+    let paths = export(&mut state);
+    state.end_share(ExportEvent::Saved, &paths);
     let note = state.export_note.clone().unwrap();
     assert_eq!(note.text, "Saved Terra.tif to Files");
     assert!(!note.warning);
     assert_eq!(state.status, note.text);
 
     // A cancelled hand-off leaves no file and no text.
-    let path = export(&mut state);
-    assert!(path.is_file());
-    state.end_share(ExportEvent::Cancelled, &path);
-    assert!(!path.exists());
+    let paths = export(&mut state);
+    assert!(paths[0].is_file());
+    state.end_share(ExportEvent::Cancelled, &paths);
+    assert!(!paths[0].exists());
     assert_eq!(state.export_note, None);
     assert_eq!(state.status, "");
     assert!(state.can_export());
@@ -463,4 +479,342 @@ fn a_png_of_a_page_has_the_resolution_of_the_page() {
     // 254 mm is 10 inches. The image can have one more pixel for a part of a pixel.
     assert!((720..=721).contains(&width(72)));
     assert!((1500..=1501).contains(&width(150)));
+}
+
+/// A state with no window, with three new pages of 100 × 50 mm at 72 dots
+/// per inch and no frames after the pages of the sample. Gives the IDs of the new pages.
+fn atlas_state() -> (AppState, Vec<PageId>) {
+    let mut state = AppState::new(Document::sample()).unwrap();
+    state.headless = true;
+    let mut pages = Vec::new();
+    for _ in 0..3 {
+        vale_app::ui::atlas::add_page(&mut state);
+        vale_app::ui::atlas::edit_page(&mut state, |p| {
+            p.width_mm = 100.0;
+            p.height_mm = 50.0;
+            p.dpi = 72;
+            p.frames.clear();
+        });
+        pages.push(state.atlas.page);
+    }
+    (state, pages)
+}
+
+fn spec(state: &AppState, format: ExportFormat, pages: Vec<PageId>) -> ExportSpec {
+    ExportSpec {
+        name: "pages".to_string(),
+        ..ExportSpec::new(state, format, pages)
+    }
+}
+
+/// The page number of each page in the atlas.
+fn numbers(state: &AppState, pages: &[PageId]) -> Vec<usize> {
+    let atlas = &state.doc.project.atlas.pages;
+    let number = |id: &PageId| atlas.iter().position(|p| p.id == *id).unwrap() + 1;
+    pages.iter().map(number).collect()
+}
+
+#[test]
+fn two_png_pages_have_the_resolution_of_each_page() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut state, pages) = atlas_state();
+    for (page, dpi) in [(pages[0], 72), (pages[1], 144)] {
+        state.atlas.page = page;
+        vale_app::ui::atlas::edit_page(&mut state, |p| p.dpi = dpi);
+    }
+    let two = vec![pages[0], pages[1]];
+    let spec = spec(&state, ExportFormat::Png, two.clone());
+    state.run_action(Action::ExportPages(spec, dir.path().to_path_buf()));
+    assert!(state.status.starts_with("Exported"), "{}", state.status);
+    let numbers = numbers(&state, &two);
+    let size =
+        |n: usize| image::image_dimensions(dir.path().join(format!("pages-{n}.png"))).unwrap();
+    // 100 × 50 mm is 283.5 × 141.7 points. The image can have one more pixel for a part of a pixel.
+    let (low, high) = (size(numbers[0]), size(numbers[1]));
+    assert!(
+        (284..=285).contains(&low.0) && (142..=143).contains(&low.1),
+        "{low:?}"
+    );
+    assert!(
+        (567..=568).contains(&high.0) && (284..=285).contains(&high.1),
+        "{high:?}"
+    );
+}
+
+#[test]
+fn a_png_with_transparent_paper_has_clear_corners() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut state, pages) = atlas_state();
+    let mut corner = |transparent: bool| {
+        let path = dir.path().join(format!("{transparent}.png"));
+        let spec = ExportSpec {
+            transparent,
+            ..spec(&state, ExportFormat::Png, vec![pages[0]])
+        };
+        state.run_action(Action::ExportPages(spec, path.clone()));
+        image::open(&path).unwrap().into_rgba8().get_pixel(0, 0)[3]
+    };
+    assert_eq!(corner(true), 0);
+    assert_eq!(corner(false), 255);
+}
+
+#[test]
+fn three_png_pages_go_to_one_file_each_with_the_page_number() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut state, pages) = atlas_state();
+    let spec = spec(&state, ExportFormat::Png, pages.clone());
+    state.run_action(Action::ExportPages(spec, dir.path().to_path_buf()));
+    assert!(
+        state.status.starts_with("Exported 3 pages"),
+        "{}",
+        state.status
+    );
+    let mut names: Vec<_> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    names.sort();
+    let mut want: Vec<_> = (numbers(&state, &pages).iter())
+        .map(|n| format!("pages-{n}.png"))
+        .collect();
+    want.sort();
+    assert_eq!(names, want);
+    for name in names {
+        let bytes = std::fs::read(dir.path().join(name)).unwrap();
+        assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
+    }
+}
+
+#[test]
+fn the_files_app_gets_each_png_page_and_a_cancel_removes_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut state, pages) = atlas_state();
+    state.share_exports = true;
+    let spec = spec(&state, ExportFormat::Png, pages);
+    state.run_action(Action::ExportPages(spec, dir.path().to_path_buf()));
+    let paths = std::mem::take(&mut state.share);
+    assert_eq!(paths.len(), 3);
+    assert!(paths.iter().all(|p| p.is_file()));
+    state.end_share(ExportEvent::Cancelled, &paths);
+    assert!(paths.iter().all(|p| !p.exists()));
+}
+
+#[test]
+fn several_pdf_pages_go_to_one_pdf() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut state, pages) = atlas_state();
+    let path = dir.path().join("pages.pdf");
+    let spec = spec(&state, ExportFormat::Pdf, pages);
+    state.run_action(Action::ExportPages(spec, path.clone()));
+    let bytes = std::fs::read(&path).unwrap();
+    assert!(bytes.starts_with(b"%PDF-"));
+    let text = String::from_utf8_lossy(&bytes);
+    assert!(text.contains("/Count 3"), "{text}");
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+}
+
+/// A document whose atlas has one page of `width` × `height` mm at each
+/// of `dpis`, with no frames.
+fn details_doc(width: f64, height: f64, dpis: &[u32]) -> (Document, Vec<PageId>) {
+    let mut doc = Document::sample();
+    let mut base = doc.project.atlas.pages[0].clone();
+    base.frames.clear();
+    base.furniture.clear();
+    (base.width_mm, base.height_mm) = (width, height);
+    base.units = vale_store::PageUnits::Mm;
+    let pages: Vec<_> = (dpis.iter().enumerate())
+        .map(|(i, &dpi)| vale_store::PageRecord {
+            id: PageId(100 + i as u32),
+            dpi,
+            ..base.clone()
+        })
+        .collect();
+    let ids = pages.iter().map(|p| p.id).collect();
+    doc.project.atlas.pages = pages;
+    (doc, ids)
+}
+
+fn details_form(ids: Vec<PageId>, format: ExportFormat) -> ExportForm {
+    let options = export_form::Options {
+        format,
+        transparent: false,
+    };
+    ExportForm::with_pages(ids, 0, options, "pages".to_string())
+}
+
+#[test]
+fn the_details_of_an_a4_landscape_page_match_the_png() {
+    let (doc, ids) = details_doc(297.0, 210.0, &[300]);
+    let details = details_form(ids, ExportFormat::Pdf).details(&doc);
+    assert_eq!(details.page_size, "A4 landscape · 297 × 210 mm");
+    assert_eq!(details.resolution, "300 dpi");
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("a4.png");
+    let page = doc.project.atlas.pages[0].clone();
+    vale_app::atlas_export::export_page(&doc, page, &path).unwrap();
+    let (w, h) = image::image_dimensions(&path).unwrap();
+    let group = |n: u32| vale_app::color_key::number_text(f64::from(n));
+    assert_eq!(
+        details.image_size,
+        format!("{} × {} px", group(w), group(h))
+    );
+    assert_eq!(details.image_size, "3,508 × 2,481 px");
+}
+
+#[test]
+fn pages_with_different_resolutions_give_mixed_details() {
+    let (doc, ids) = details_doc(297.0, 210.0, &[150, 300]);
+    let details = details_form(ids, ExportFormat::Pdf).details(&doc);
+    assert_eq!(details.page_size, "A4 landscape · 297 × 210 mm");
+    assert_eq!(details.resolution, export_form::MIXED);
+    assert_eq!(details.image_size, export_form::MIXED);
+}
+
+#[test]
+fn no_selected_page_gives_no_details() {
+    let (doc, ids) = details_doc(100.0, 50.0, &[72, 72, 72]);
+    let mut form = details_form(ids, ExportFormat::Png);
+    let details = form.details(&doc);
+    assert_eq!(details.page_size, "100 × 50 mm");
+    form.select_run(0, 2, false);
+    let details = form.details(&doc);
+    for value in [details.page_size, details.resolution, details.image_size] {
+        assert_eq!(value, export_form::NO_VALUE);
+    }
+}
+
+#[test]
+fn a_page_in_inches_shows_its_size_in_inches() {
+    let (mut doc, ids) = details_doc(279.4, 215.9, &[300]);
+    doc.project.atlas.pages[0].units = vale_store::PageUnits::In;
+    let details = details_form(ids, ExportFormat::Png).details(&doc);
+    assert_eq!(details.page_size, "Letter landscape · 11 × 8.5 in");
+    assert_eq!(details.resolution, "300 dpi");
+}
+
+/// The page of the export form with no GPU, with one frame over a height
+/// layer.
+fn thumbs_without_gpu() -> (
+    egui_kittest::Harness<'static, AppState>,
+    vale_store::LayerId,
+) {
+    let mut state = AppState::new(Document::empty()).unwrap();
+    state.headless = true;
+    state.workspace = Workspace::Atlas;
+    vale_app::ui::atlas::add_frame(&mut state).expect("a page takes a frame");
+    state.globe.set_face_size(FACE_SIZE);
+    let height = state.add_height();
+    let layers = state.doc.project.layers();
+    let layer = layers
+        .iter()
+        .find(|l| l.raster() == Some(height))
+        .unwrap()
+        .id;
+    state.export_form = Some(ExportForm::new(&state));
+    let h = egui_kittest::Harness::builder()
+        .with_size(eframe::egui::vec2(1194.0, 834.0))
+        .with_pixels_per_point(1.0)
+        .build_ui_state(|ui, state: &mut AppState| draw(ui, state), state);
+    (h, layer)
+}
+
+#[test]
+fn without_a_gpu_a_page_with_a_raster_layer_gets_its_vector_layers_and_is_not_retried() {
+    let (mut h, _) = thumbs_without_gpu();
+    h.run_steps(6);
+    let state = h.state();
+    let page = state.doc.project.atlas.pages[0].clone();
+    let generation = vale_app::ui::export_thumbs::generation(state);
+    let image = state.export_thumbs.image(page.id).expect("a picture");
+    assert_eq!(image.size[1], 158);
+    assert!(state.export_thumbs.failed(generation, &page));
+    assert!(!state.export_thumbs.busy());
+    for _ in 0..4 {
+        h.run_steps(1);
+        assert!(!h.state().export_thumbs.busy(), "the job runs again");
+    }
+}
+
+#[test]
+fn without_a_gpu_a_page_with_vector_layers_only_gets_a_picture() {
+    let (mut h, layer) = thumbs_without_gpu();
+    let map = h.state().doc.project.atlas.pages[0].frames[0].map;
+    assert!(h.state_mut().doc.set_shown(map, layer, false));
+    h.state_mut().touch();
+    h.run_steps(6);
+    let state = h.state();
+    let page = &state.doc.project.atlas.pages[0];
+    let image = state.export_thumbs.image(page.id).expect("a picture");
+    assert_eq!(image.size[1], 158);
+}
+
+/// Steps `export` until it asks for a capture.
+fn step_to_capture(export: &mut PdfExport) {
+    for _ in 0..100 {
+        match export.step() {
+            ExportStep::Capture(_) => return,
+            ExportStep::More => {}
+            ExportStep::Done(result) => panic!("the export ended: {:?}", result.err()),
+        }
+    }
+    panic!("no capture");
+}
+
+/// Gives `export` a capture that egui dropped before the GPU drew it.
+fn drop_capture(export: &mut PdfExport) {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    drop(sender);
+    export.set_capture_receiver(receiver, Vec::new());
+}
+
+#[test]
+fn a_dropped_capture_goes_to_the_gpu_again_and_a_picture_falls_back_to_the_vector_layers() {
+    let (h, _) = thumbs_without_gpu();
+    let doc = h.state().doc.clone();
+    let page = doc.project.atlas.pages[0].clone();
+    let mut export = PdfExport::images(doc, vec![page.clone()], 0.5).unwrap();
+    step_to_capture(&mut export);
+    for _ in 0..60 {
+        drop_capture(&mut export);
+        assert!(matches!(export.step(), ExportStep::Capture(_)));
+    }
+    assert!(!export.vector_only(page.id));
+    // After the sixtieth time, the page has its vector layers only.
+    drop_capture(&mut export);
+    let mut done = false;
+    for _ in 0..100 {
+        match export.step() {
+            ExportStep::More => {}
+            ExportStep::Capture(_) => panic!("a page with the vector layers only has no capture"),
+            ExportStep::Done(result) => {
+                result.unwrap();
+                done = true;
+                break;
+            }
+        }
+    }
+    assert!(done && export.vector_only(page.id));
+    let images = export.take_images();
+    assert_eq!(images.len(), 1);
+    assert_eq!(images[0].0, page.id);
+}
+
+#[test]
+fn a_pdf_export_fails_when_egui_drops_each_capture() {
+    let (h, _) = thumbs_without_gpu();
+    let doc = h.state().doc.clone();
+    let dir = tempfile::tempdir().unwrap();
+    let pages = doc.project.atlas.pages.clone();
+    let path = dir.path().join("atlas.pdf");
+    let options = vale_app::atlas_export::ExportOptions::default();
+    let mut export = PdfExport::new(doc, path, pages, options).unwrap();
+    step_to_capture(&mut export);
+    for _ in 0..61 {
+        drop_capture(&mut export);
+        if let ExportStep::Done(result) = export.step() {
+            assert!(result.is_err());
+            return;
+        }
+    }
+    panic!("the export goes on");
 }

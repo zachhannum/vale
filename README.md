@@ -82,7 +82,7 @@ Click "Atlas" in the tool bar to open the pages of the atlas. On iPad, tap "Atla
 - In the label controls of a point layer or a line layer, click the font to search the fonts of the system and select one. On iPad, open the layer and tap "Font" to open the font picker of iPadOS.
 - The Attributes tile of the Panels menu, or the Attributes button and ⌘I on the desktop, shows the inspector of the World workspace. An edit changes each map. The row Features of a vector layer in the Layers tab opens the attribute table, and so does "Open attribute table" on the desktop.
 - The inspector lists the labels that did not fit.
-- Export the open page to PNG or PDF, or export all pages to one PDF. A PDF keeps text selectable. The app shows the page progress, and Cancel export stops the work.
+- Export pages to one PDF, or to one PNG file for each page. On iPad, "Export…" in the world menu opens the export form. On the desktop, "Export…" in the tool bar or ⌘E opens it. The form has a strip of the pages and a switch for transparent paper. A PDF keeps text selectable. The form shows the page progress, and Cancel export stops the work.
 
 ## Open your own data
 
@@ -135,6 +135,9 @@ cargo run --release -p vale-app -- --project path/to/world.gpkg --export-heightm
 | `--zoom <F>` | Zoom factor on the fitted view, on the globe and on the map |
 | `--face-size <N>` | Pixels on one edge of a face of a raster layer that the app makes with no choice from you, for example at an import. The form of a new raster layer also offers this size and starts on it. With no flag, the window uses 8192 and a run without a window uses 1024. A raster layer of a project file keeps its own face size. |
 | `--raster-form` | Open the form of a new raster layer at the start |
+| `--export-form` | With `--workspace atlas`, open the export form at the start |
+| `--export-format <FORMAT>` | With `--export-form`, the format of the form: `pdf` or `png` |
+| `--export-range <PAGES>` | With `--export-form`, the pages of the range of the form, for example `1-4,7`. An atlas with fewer pages gets new pages. |
 | `--stops-page` | With `--panel layers`, open the page of the color stops of the active raster layer |
 | `--import-heightmap <FILE>` | Import this equirectangular PNG or TIFF heightmap into the globe |
 | `--export-heightmap <FILE>` | Export the first height layer of the project file of `--project` to this GeoTIFF file, or to a 16-bit PNG file if the name ends in `.png`, and exit |

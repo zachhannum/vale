@@ -15,6 +15,7 @@ use vale_app::headless;
 use vale_app::pen::{PenEvent, PenPhase, PenQueue};
 use vale_app::projects::Locations;
 use vale_app::session::Session;
+use vale_app::ui::export_form::{self, EXPORT, ExportForm};
 use vale_app::ui::gradient::{COLUMN, ColumnParts, GRADIENT, band_row, widest_gap_value};
 use vale_app::ui::pad::eyedropper;
 use vale_app::ui::pad::flyout::Flyout;
@@ -4468,15 +4469,16 @@ fn the_top_row_and_the_panels_match_the_split_view_boards() {
         assert_eq!(r.brush.unwrap().bottom(), r.tools.top() - 8.0);
         assert_eq!(r.tools.bottom(), 834.0 - 20.0 - 8.0);
 
-        // The menu holds the workspaces and the Worlds row.
+        // The menu holds the workspaces, the Worlds row, and the Export row.
         tap(&mut h, "Workspace");
         let menu = h.state().pad.menu_rect.unwrap();
         assert_eq!(
             menu,
-            Rect::from_min_size(pos2(16.0, 84.0), vec2(240.0, 190.0))
+            Rect::from_min_size(pos2(16.0, 84.0), vec2(240.0, 251.0))
         );
-        let tops = ["World", "Atlas", WORLDS_ROW].map(|name| control(&h, name).unwrap().top());
-        assert_eq!(tops, [94.0, 155.0, 216.0]);
+        let rows = ["World", "Atlas", WORLDS_ROW, EXPORT];
+        let tops = rows.map(|name| control(&h, name).unwrap().top());
+        assert_eq!(tops, [94.0, 155.0, 216.0, 277.0]);
         assert!(control(&h, "Toolbox").is_none());
         h.state_mut().pad.menu = false;
         h.run_steps(2);
@@ -5113,6 +5115,228 @@ fn the_menu_of_the_worlds_opens_another_world() {
         touch(&mut h, egui::TouchPhase::End, off, None);
         h.run_steps(2);
         assert!(h.state().pad.worlds.is_none(), "{size:?}");
+    }
+}
+
+#[test]
+fn the_world_menu_ends_with_export_in_both_workspaces() {
+    for size in BOARDS {
+        for workspace in [Workspace::Globe, Workspace::Atlas] {
+            let mut h = pad(size);
+            h.state_mut().workspace = workspace;
+            h.run_steps(3);
+            let compact = h.state().pad.rects.unwrap().class == WidthClass::Compact;
+            if compact {
+                // The workspace menu holds the row, after the Worlds row.
+                tap(&mut h, "Workspace");
+                let menu = h.state().pad.menu_rect.unwrap();
+                let rows = ["World", "Atlas", WORLDS_ROW, EXPORT];
+                let tops = rows.map(|name| {
+                    let row = control(&h, name)
+                        .unwrap_or_else(|| panic!("{size:?} {workspace:?}: no {name}"));
+                    assert!(menu.contains_rect(row) && row.height() >= 44.0, "{name}");
+                    row.top()
+                });
+                assert!(tops.is_sorted(), "{size:?} {workspace:?}: {tops:?}");
+                tap(&mut h, WORLDS_ROW);
+                assert!(control(&h, EXPORT).is_none(), "{size:?} {workspace:?}");
+                continue;
+            }
+            open_worlds(&mut h);
+            let menu = h.state().pad.worlds_rect.unwrap();
+            let export =
+                control(&h, EXPORT).unwrap_or_else(|| panic!("{size:?} {workspace:?}: no Export"));
+            assert!(menu.contains_rect(export), "{size:?} {workspace:?}");
+            let rows = h
+                .state()
+                .pad
+                .controls
+                .iter()
+                .filter(|c| menu.contains_rect(c.rect));
+            let last = rows.map(|c| c.rect.top()).fold(0.0, f32::max);
+            assert_eq!(export.top(), last, "{size:?} {workspace:?}");
+            assert!(export.top() > control(&h, WORLD_PROPERTIES).unwrap().bottom());
+            tap(&mut h, EXPORT);
+            assert!(h.state().export_form.is_some(), "{size:?} {workspace:?}");
+        }
+    }
+}
+
+#[test]
+fn the_dark_fill_of_a_form_covers_the_chrome() {
+    type Open = fn(&mut AppState);
+    let forms: [(&str, Open); 3] = [
+        ("export-form", |s| s.export_form = Some(ExportForm::new(s))),
+        ("world-form", |s| {
+            s.world_form = Some(WorldForm::new_world())
+        }),
+        ("raster-form", |s| s.raster_form = Some(RasterForm::open(s))),
+    ];
+    for size in BOARDS {
+        for workspace in [Workspace::Globe, Workspace::Atlas] {
+            for (card, open) in forms {
+                // The raster form opens from the Layers panel of the World
+                // workspace.
+                if card == "raster-form" && workspace == Workspace::Atlas {
+                    continue;
+                }
+                let mut h = pad(size);
+                h.state_mut().workspace = workspace;
+                h.run_steps(3);
+                open(h.state_mut());
+                h.run_steps(3);
+                let card = egui::Id::new(card);
+                let scrim = card.with("scrim");
+                let what = format!("{size:?} {workspace:?} {card:?}");
+                let shown: Vec<egui::LayerId> = h.ctx.memory(|m| {
+                    m.layer_ids()
+                        .filter(|l| l.order == egui::Order::Foreground)
+                        .filter(|l| m.areas().is_visible(l))
+                        .collect()
+                });
+                let n = shown.len();
+                assert!(n >= 2, "{what}");
+                assert_eq!(shown[n - 1].id, card, "{what}");
+                assert_eq!(shown[n - 2].id, scrim, "{what}");
+            }
+        }
+    }
+}
+
+/// True if `r` is the dark fill of a form: black, see-through, and at
+/// least as wide as the screen in the safe area.
+fn is_fill(r: &egui::epaint::RectShape) -> bool {
+    let black = r.fill.r() == 0 && r.fill.g() == 0 && r.fill.b() == 0;
+    black && r.fill.a() > 0 && r.fill.a() < 255 && r.rect.width() >= BOARDS[0].0
+}
+
+/// The layers of the middle and the foreground that the last frame
+/// painted above the dark fill of the export form, and the rect of the
+/// fill with its clip.
+fn above_the_fill(h: &Pad) -> (Vec<egui::Id>, Option<Rect>) {
+    let card = egui::Id::new(export_form::CARD);
+    let scrim = card.with("scrim");
+    let above = h.ctx.memory(|m| {
+        let shown: Vec<egui::LayerId> = (m.layer_ids())
+            .filter(|l| matches!(l.order, egui::Order::Middle | egui::Order::Foreground))
+            .filter(|l| m.areas().is_visible(l))
+            .collect();
+        let at = shown.iter().position(|l| l.id == scrim);
+        at.map_or_else(Vec::new, |at| {
+            shown[at + 1..].iter().map(|l| l.id).collect()
+        })
+    });
+    let fill = (h.output().shapes.iter()).find_map(|c| match &c.shape {
+        egui::Shape::Rect(r) if is_fill(r) => Some(r.rect.intersect(c.clip_rect)),
+        _ => None,
+    });
+    (above, fill)
+}
+
+#[test]
+fn the_dark_fill_covers_the_screen_while_the_menu_closes_and_the_form_opens() {
+    let size = BOARDS[0];
+    let mut h = pad(size);
+    let insets = egui::epaint::MarginF32 {
+        left: 0.0,
+        right: 0.0,
+        top: BANDS.0,
+        bottom: BANDS.1,
+    };
+    h.input_mut().safe_area_insets = Some(egui::SafeAreaInsets(insets));
+    h.state_mut().workspace = Workspace::Atlas;
+    h.run_steps(3);
+    open_panel(&mut h, "Layers");
+    assert!(h.state().pad.is_open(Panel::Layers));
+    // The springs run.
+    h.state_mut().headless = false;
+    h.run_steps(30);
+    open_worlds(&mut h);
+    h.run_steps(30);
+    let pos = control(&h, EXPORT).unwrap().center();
+    touch(&mut h, egui::TouchPhase::Start, pos, None);
+    h.step();
+    touch(&mut h, egui::TouchPhase::End, pos, None);
+    let screen = Rect::from_min_size(Pos2::ZERO, size.into());
+    let card = egui::Id::new(export_form::CARD);
+    let mut seen = false;
+    for frame in 0..60 {
+        h.step();
+        let (above, fill) = above_the_fill(&h);
+        let Some(fill) = fill else {
+            // The fill shows from its second frame.
+            assert!(frame < 2 && !seen, "{frame}: no fill");
+            continue;
+        };
+        seen = true;
+        assert_eq!(above, [card], "{frame}: the layers above the fill");
+        assert!(
+            fill.contains_rect(screen),
+            "{frame}: the fill covers {fill:?}"
+        );
+    }
+    assert!(seen && h.state().export_form.is_some());
+}
+
+#[test]
+fn the_export_row_opens_the_export_form() {
+    for size in BOARDS {
+        let mut h = pad(size);
+        h.state_mut().workspace = Workspace::Atlas;
+        h.run_steps(3);
+        let rects = h.state().pad.rects.unwrap();
+        if rects.class == WidthClass::Compact {
+            tap(&mut h, "Workspace");
+        } else {
+            tap(&mut h, WORLDS);
+        }
+        tap(&mut h, EXPORT);
+        assert!(h.state().export_form.is_some(), "{size:?}");
+        assert!(h.state().pad.worlds.is_none() && !h.state().pad.menu);
+        h.run_steps(2);
+        let id = egui::Id::new("export-form");
+        let form = h.ctx.memory(|m| m.area_rect(id)).unwrap();
+        if rects.class == WidthClass::Compact {
+            assert_eq!(form.width(), size.0, "{size:?}");
+            assert_eq!(form.bottom(), size.1, "{size:?}");
+            assert!(form.top() <= rects.bands.top + 1.0, "{size:?}");
+        } else {
+            assert_eq!(form.width(), export_form::WIDTH, "{size:?}");
+            assert_eq!(form.center().x, size.0 / 2.0, "{size:?}");
+        }
+        // The form covers each other control.
+        let names: Vec<&str> = h
+            .state()
+            .pad
+            .controls
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
+        assert!(names.contains(&export_form::CANCEL), "{size:?}");
+        assert!(
+            !names.contains(&WORLDS) && !names.contains(&"Workspace"),
+            "{size:?}"
+        );
+        tap(&mut h, export_form::CANCEL);
+        assert!(h.state().export_form.is_none(), "{size:?}");
+    }
+}
+
+#[test]
+fn the_export_form_shows_the_details_in_its_card() {
+    let mut h = pad((1194.0, 834.0));
+    h.state_mut().workspace = Workspace::Atlas;
+    h.run_steps(2);
+    let form = ExportForm::new(h.state());
+    h.state_mut().export_form = Some(form);
+    h.run_steps(3);
+    let card = (h.ctx)
+        .memory(|m| m.area_rect(egui::Id::new("export-form")))
+        .unwrap();
+    assert!(card.bottom() <= 834.0, "{card:?}");
+    for label in [export_form::PAGE_SIZE, export_form::RESOLUTION] {
+        let row = h.get_by_label(label).rect();
+        assert!(card.contains_rect(row), "{label}: {row:?} {card:?}");
     }
 }
 

@@ -4,6 +4,7 @@ use eframe::egui;
 use vale_sphere::{ProjectionKind, ProjectionSpec};
 use vale_store::{GeometryKind, World};
 
+use super::export_form::{self, ExportForm};
 use super::number;
 use super::pad::PAN;
 use super::pad::atlas::{
@@ -12,9 +13,7 @@ use super::pad::atlas::{
 };
 use super::raster_form::RasterForm;
 use super::world_form::{self, WorldForm};
-use super::{
-    Action, AppState, ExportFormat, LayerRef, SaveMark, Workspace, atlas, elevation, pad, select,
-};
+use super::{Action, AppState, LayerRef, SaveMark, Workspace, atlas, elevation, pad, select};
 use vale_terrain::Mode;
 
 use crate::globe::brush::{
@@ -302,6 +301,11 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                     state.actions.push(Action::ExportHeightmapPngDialog);
                 }
             }
+            // Cmd+E opens the export form in both workspaces.
+            let shortcut = export_form::shortcut();
+            if state.export_form.is_none() && ui.input_mut(|i| i.consume_shortcut(&shortcut)) {
+                state.export_form = Some(ExportForm::new(state));
+            }
             if state.workspace != Workspace::Atlas {
                 return;
             }
@@ -316,29 +320,11 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
             if ui.button("Open GeoJSON…").clicked() {
                 state.actions.push(Action::OpenDialog);
             }
-            let ready = state.atlas_export.is_none();
-            if ui
-                .add_enabled(ready, egui::Button::new("Export page PNG…"))
-                .clicked()
-            {
-                state.actions.push(Action::ExportDialog(ExportFormat::Png));
-            }
-            if ui
-                .add_enabled(ready, egui::Button::new("Export page PDF…"))
-                .clicked()
-            {
-                state.actions.push(Action::ExportDialog(ExportFormat::Pdf));
-            }
-            if ui
-                .add_enabled(ready, egui::Button::new("Export atlas PDF…"))
-                .clicked()
-            {
-                state
-                    .actions
-                    .push(Action::ExportDialog(ExportFormat::AtlasPdf));
-            }
-            if state.atlas_export.is_some() && ui.button("Cancel export").clicked() {
-                state.actions.push(Action::CancelExport);
+            let shortcut = export_form::shortcut();
+            let export = egui::Button::new(export_form::EXPORT)
+                .shortcut_text(ui.ctx().format_shortcut(&shortcut));
+            if ui.add(export).clicked() {
+                state.export_form = Some(ExportForm::new(state));
             }
         });
     });
