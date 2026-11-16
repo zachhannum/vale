@@ -647,7 +647,6 @@ fn the_details_of_an_a4_landscape_page_match_the_png() {
     let details = details_form(ids, ExportFormat::Pdf).details(&doc);
     assert_eq!(details.page_size, "A4 landscape · 297 × 210 mm");
     assert_eq!(details.resolution, "300 dpi");
-    assert_eq!(details.files, "1 file · 1 page");
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("a4.png");
     let page = doc.project.atlas.pages[0].clone();
@@ -668,24 +667,17 @@ fn pages_with_different_resolutions_give_mixed_details() {
     assert_eq!(details.page_size, "A4 landscape · 297 × 210 mm");
     assert_eq!(details.resolution, export_form::MIXED);
     assert_eq!(details.image_size, export_form::MIXED);
-    assert_eq!(details.files, "1 file · 2 pages");
 }
 
 #[test]
-fn three_png_pages_give_three_files_and_no_page_gives_no_details() {
+fn no_selected_page_gives_no_details() {
     let (doc, ids) = details_doc(100.0, 50.0, &[72, 72, 72]);
     let mut form = details_form(ids, ExportFormat::Png);
     let details = form.details(&doc);
-    assert_eq!(details.files, "3 files");
     assert_eq!(details.page_size, "100 × 50 mm");
     form.select_run(0, 2, false);
     let details = form.details(&doc);
-    for value in [
-        details.page_size,
-        details.resolution,
-        details.image_size,
-        details.files,
-    ] {
+    for value in [details.page_size, details.resolution, details.image_size] {
         assert_eq!(value, export_form::NO_VALUE);
     }
 }

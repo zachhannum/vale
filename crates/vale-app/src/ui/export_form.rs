@@ -37,7 +37,6 @@ pub const PAGE_SIZE: &str = "Page size";
 pub const RESOLUTION: &str = "Resolution";
 pub const IMAGE_SIZE: &str = "Image size";
 pub const RASTER_SIZE: &str = "Raster size";
-pub const FILES: &str = "Files";
 /// The value of a detail that differs between the selected pages.
 pub const MIXED: &str = "Mixed";
 /// The value of a detail with no selected page.
@@ -259,17 +258,10 @@ impl ExportForm {
             let side = |n: u32| number_text(f64::from(n));
             format!("{} × {} px", side(w), side(h))
         };
-        let count = pages.len();
-        let files = match (count, self.format) {
-            (0, _) => NO_VALUE.to_string(),
-            (n, ExportFormat::Pdf) => format!("1 file · {}", plural(n, "page")),
-            (n, ExportFormat::Png) => plural(n, "file"),
-        };
         Details {
             page_size: shared(pages.iter().map(|p| page_size_text(p))),
             resolution: shared(pages.iter().map(|p| format!("{} dpi", p.dpi))),
             image_size: shared(pages.iter().map(pixels)),
-            files,
         }
     }
 
@@ -299,8 +291,6 @@ pub struct Details {
     /// The size in pixels of each page in a PNG, or of the raster images of
     /// a map frame that fills the page in a PDF.
     pub image_size: String,
-    /// The number of files, and the number of pages of a PDF.
-    pub files: String,
 }
 
 /// The label of the row of the pixel size for a format.
@@ -340,13 +330,6 @@ fn shared(values: impl IntoIterator<Item = String>) -> String {
     match values.all(|v| v == first) {
         true => first,
         false => MIXED.to_string(),
-    }
-}
-
-fn plural(count: usize, one: &str) -> String {
-    match count {
-        1 => format!("1 {one}"),
-        n => format!("{n} {one}s"),
     }
 }
 
@@ -758,7 +741,6 @@ pub fn desktop(ctx: &egui::Context, state: &mut AppState) {
                     (PAGE_SIZE, &details.page_size),
                     (RESOLUTION, &details.resolution),
                     (image_label(form.format), &details.image_size),
-                    (FILES, &details.files),
                 ];
                 for (label, value) in rows {
                     ui.label(label);
@@ -908,7 +890,6 @@ fn details_rows(ui: &mut egui::Ui, state: &AppState, form: &ExportForm) {
     widgets::detail_row(ui, PAGE_SIZE, &details.page_size);
     widgets::detail_row(ui, RESOLUTION, &details.resolution);
     widgets::detail_row(ui, image_label(form.format), &details.image_size);
-    widgets::detail_row(ui, FILES, &details.files);
 }
 
 /// The progress of the export that runs, and the button that stops it.

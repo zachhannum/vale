@@ -5266,11 +5266,7 @@ fn the_export_form_shows_the_details_in_its_card() {
         .memory(|m| m.area_rect(egui::Id::new("export-form")))
         .unwrap();
     assert!(card.bottom() <= 834.0, "{card:?}");
-    for label in [
-        export_form::PAGE_SIZE,
-        export_form::RESOLUTION,
-        export_form::FILES,
-    ] {
+    for label in [export_form::PAGE_SIZE, export_form::RESOLUTION] {
         let row = h.get_by_label(label).rect();
         assert!(card.contains_rect(row), "{label}: {row:?} {card:?}");
     }
