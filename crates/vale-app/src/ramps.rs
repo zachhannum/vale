@@ -236,7 +236,7 @@ fn parse_hex(text: &str) -> Option<Rgb> {
 
 /// The built-in ramps. The last two are qualitative, and the Köppen ramp
 /// follows them.
-const BUILT_IN: [(&str, &[Rgb]); 8] = [
+const BUILT_IN: [(&str, &[Rgb]); 15] = [
     (
         "Viridis",
         &[
@@ -298,6 +298,127 @@ const BUILT_IN: [(&str, &[Rgb]); 8] = [
         ],
     ),
     (
+        "Hypsometric",
+        &[
+            [38, 115, 60],
+            [72, 145, 70],
+            [120, 170, 85],
+            [170, 195, 105],
+            [215, 215, 130],
+            [235, 210, 130],
+            [225, 180, 105],
+            [205, 145, 80],
+            [180, 110, 65],
+            [150, 85, 55],
+            [125, 75, 60],
+            [150, 130, 120],
+            [190, 180, 175],
+            [230, 226, 222],
+            [255, 255, 255],
+        ],
+    ),
+    (
+        "Relief",
+        &[
+            [156, 180, 150],
+            [178, 196, 155],
+            [200, 210, 162],
+            [220, 220, 170],
+            [234, 226, 178],
+            [240, 224, 180],
+            [238, 214, 176],
+            [232, 206, 178],
+            [236, 222, 206],
+            [246, 240, 232],
+        ],
+    ),
+    (
+        "Alpine",
+        &[
+            [86, 130, 70],
+            [120, 155, 85],
+            [160, 175, 105],
+            [150, 150, 110],
+            [140, 125, 105],
+            [125, 115, 105],
+            [150, 145, 140],
+            [185, 182, 180],
+            [220, 220, 220],
+            [250, 250, 250],
+        ],
+    ),
+    (
+        "Desert",
+        &[
+            [240, 225, 185],
+            [232, 205, 150],
+            [222, 182, 120],
+            [210, 155, 95],
+            [190, 125, 75],
+            [165, 95, 60],
+            [135, 75, 50],
+            [110, 65, 50],
+            [150, 120, 100],
+            [200, 185, 165],
+        ],
+    ),
+    (
+        "Volcanic",
+        &[
+            [30, 28, 28],
+            [55, 45, 42],
+            [85, 55, 45],
+            [120, 60, 40],
+            [160, 65, 35],
+            [200, 80, 30],
+            [235, 120, 40],
+            [250, 175, 70],
+            [255, 230, 150],
+        ],
+    ),
+    (
+        "Bathymetry",
+        &[
+            [8, 29, 74],
+            [12, 44, 104],
+            [18, 62, 134],
+            [28, 84, 160],
+            [42, 108, 184],
+            [62, 134, 204],
+            [90, 160, 218],
+            [124, 186, 230],
+            [160, 208, 238],
+            [198, 230, 246],
+        ],
+    ),
+    (
+        "Topography",
+        &[
+            [10, 30, 80],
+            [16, 50, 115],
+            [26, 76, 150],
+            [42, 105, 180],
+            [70, 138, 205],
+            [110, 172, 225],
+            [160, 205, 240],
+            [200, 230, 248],
+            [52, 128, 72],
+            [95, 155, 80],
+            [145, 180, 95],
+            [195, 205, 115],
+            [230, 215, 130],
+            [225, 185, 105],
+            [205, 150, 80],
+            [180, 115, 65],
+            [150, 90, 60],
+            [130, 95, 80],
+            [165, 150, 140],
+            [205, 198, 192],
+            [240, 238, 236],
+            [255, 255, 255],
+        ],
+    ),
+    (
         "Bold",
         &[
             [27, 158, 119],
@@ -326,7 +447,7 @@ const BUILT_IN: [(&str, &[Rgb]); 8] = [
 ];
 
 /// The index in `BUILT_IN` of the first qualitative ramp.
-const QUALITATIVE: usize = 6;
+const QUALITATIVE: usize = 13;
 
 /// The name of the ramp of the climate classes of Köppen and Geiger.
 pub const KOPPEN: &str = "Köppen climate";
@@ -421,6 +542,7 @@ fn cycle(colors: &[Rgb], n: usize) -> Vec<Rgb> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vale_terrain::Part;
 
     #[test]
     fn the_custom_ramps_stay_in_the_folder() {
@@ -535,6 +657,25 @@ mod tests {
         let list = parse("A\t#010203 #ffffff\nno tab\nB\t#12345\nC\t\n");
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].colors, [[1, 2, 3], [255, 255, 255]]);
+    }
+
+    #[test]
+    fn the_topography_ramps_split_at_sea_level() {
+        let ramps = Ramps::default();
+        let colors = |name: &str| {
+            let ramp = ramps.list().iter().find(|r| r.name == name).unwrap();
+            assert!(ramp.built_in && !ramp.qualitative, "{name}");
+            ramp.colors.clone()
+        };
+        let height = vale_terrain::Bands::with_range(-8000.0, 8000.0, true).unwrap();
+        for land in ["Hypsometric", "Relief", "Alpine", "Desert", "Volcanic"] {
+            assert_eq!(height.part(&colors(land)), Part::Land, "{land}");
+        }
+        assert_eq!(height.part(&colors("Bathymetry")), Part::Sea);
+        let topography = colors("Topography");
+        assert_eq!(height.part(&topography), Part::All);
+        assert_eq!(height.part(&topography[..8]), Part::Sea);
+        assert_eq!(height.part(&topography[8..]), Part::Land);
     }
 
     #[test]
