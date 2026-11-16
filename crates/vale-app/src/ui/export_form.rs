@@ -610,6 +610,8 @@ pub fn pad(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
                         let painter = ui.painter().with_clip_rect(line);
                         painter.text(at, Align2::LEFT_CENTER, error, theme::body(), theme::WARN);
                     }
+                    // The progress is above the details, so it stays in view.
+                    details_rows(ui, state, &form);
                     let bottom = if compact { rects.bands.bottom } else { 0.0 };
                     ui.add_space(BOTTOM + bottom);
                 });
@@ -735,6 +737,17 @@ pub fn desktop(ctx: &egui::Context, state: &mut AppState) {
                 .show(ui, |ui| desktop_rows(ui, &mut form));
         });
         ui.add_space(8.0);
+        ui.add_space(8.0);
+        if busy {
+            ui.label(state.atlas_export_progress().unwrap_or_default());
+            let (page, count) = (state.atlas_export.as_ref()).map_or((0, 1), |job| job.progress());
+            let done = (page.saturating_sub(1) as f32 / count.max(1) as f32).clamp(0.0, 1.0);
+            ui.add(egui::ProgressBar::new(done));
+            stop = ui.button(CANCEL_EXPORT).clicked();
+        } else if let Some(error) = &form.error {
+            ui.colored_label(ui.visuals().warn_fg_color, error);
+        }
+        ui.add_space(8.0);
         ui.label(egui::RichText::new(DETAILS).strong());
         let details = form.details(&state.doc);
         egui::Grid::new((CARD, "details"))
@@ -753,16 +766,6 @@ pub fn desktop(ctx: &egui::Context, state: &mut AppState) {
                     ui.end_row();
                 }
             });
-        ui.add_space(8.0);
-        if busy {
-            ui.label(state.atlas_export_progress().unwrap_or_default());
-            let (page, count) = (state.atlas_export.as_ref()).map_or((0, 1), |job| job.progress());
-            let done = (page.saturating_sub(1) as f32 / count.max(1) as f32).clamp(0.0, 1.0);
-            ui.add(egui::ProgressBar::new(done));
-            stop = ui.button(CANCEL_EXPORT).clicked();
-        } else if let Some(error) = &form.error {
-            ui.colored_label(ui.visuals().warn_fg_color, error);
-        }
         ui.add_space(8.0);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let ready = form.can_export() && !busy;
@@ -895,7 +898,11 @@ fn rows(
     widgets::form_label(ui, NAME);
     let ext = form.format.ext();
     widgets::file_name_field(ui, controls, NAME, &mut form.name, ext, enabled);
+}
 
+/// The Details section: the page size, the resolution, the image size, and
+/// the files of the selected pages.
+fn details_rows(ui: &mut egui::Ui, state: &AppState, form: &ExportForm) {
     let details = form.details(&state.doc);
     widgets::form_label(ui, DETAILS);
     widgets::detail_row(ui, PAGE_SIZE, &details.page_size);
