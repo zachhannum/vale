@@ -172,7 +172,7 @@ pub fn rules(
 }
 
 /// The menu of the height layer of the Flow lines of the layer, if a rule of
-/// `picked` is a Flow line and the project has more than one height layer.
+/// `picked` is a Flow line and the project has a height layer.
 /// Returns true if the user picked a layer.
 fn flow_height_row(
     ui: &mut egui::Ui,
@@ -188,7 +188,7 @@ fn flow_height_row(
         .filter(|(_, unit)| unit == super::HEIGHT_UNIT)
         .map(|(name, _)| name.as_str())
         .collect();
-    if heights.len() < 2 || !picked.iter().any(flow) {
+    if heights.is_empty() || !picked.iter().any(flow) {
         return false;
     }
     let current = (heights.iter())

@@ -18229,15 +18229,23 @@ fn a_rule_page_sets_the_flow_line_type_and_its_smallest_width() {
 }
 
 #[test]
-fn a_flow_line_picks_its_height_layer_when_the_world_has_two() {
+fn a_flow_line_picks_its_height_layer() {
     use vale_app::ui::pad::rules::{FLOW, HEIGHT_LAYER, height_layers};
     let mut h = pad(BOARDS[1]);
     let rivers = vector(&h, "Rivers");
     open_rule(&mut h, "Rivers", "Default");
     scroll_to_control(&mut h, FLOW);
     tap(&mut h, FLOW);
-    // With one height layer, the row does not show.
-    assert!(control(&h, HEIGHT_LAYER).is_none());
+    // With one height layer, the row names it, and its page has one row.
+    let heights = height_layers(&h.state().doc);
+    assert_eq!(heights.len(), 1, "{heights:?}");
+    scroll_to_control(&mut h, HEIGHT_LAYER);
+    assert!(control(&h, HEIGHT_LAYER).is_some());
+    tap(&mut h, HEIGHT_LAYER);
+    assert_eq!(h.state().pad.page, Some(Page::FlowHeight(Some(0))));
+    assert!(h.query_by_label(&heights[0]).is_some());
+    let entry = h.state().doc.entry(rivers).unwrap();
+    assert_eq!(entry.style.flow_height, None);
     let mut h = pad(BOARDS[1]);
     h.state_mut().add_height();
     h.run_steps(2);
