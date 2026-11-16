@@ -114,6 +114,20 @@ pub enum Icon {
     ColorKey,
     /// A box with an arrow that points up out of it.
     Share,
+    /// A mountain profile on a base line, for Polygonize.
+    Polygonize,
+    /// Three waves, for Contour lines.
+    Contours,
+    /// A line that bends down to an arrowhead at its lower end.
+    Orient,
+    /// A smooth wave, for the Smooth operation of lines.
+    SmoothLine,
+    /// A zigzag with a dot at each vertex.
+    Simplify,
+    /// A square with dashes where its parts met.
+    Dissolve,
+    /// A band that cuts a circle.
+    Clip,
 }
 
 impl Icon {
@@ -182,6 +196,17 @@ impl Icon {
                 "M3 5h6c1.66 0 3 1.34 3 3v12c0-1.1-.9-2-2-2H3zM21 5h-6c-1.66 0-3 1.34-3 3v12c0-1.1.9-2 2-2h7z"
             }
             Icon::Folder => "M3 5h6l2 3h10v11H3z",
+            Icon::Polygonize => "M3 18l5-8 4 5 3-4 6 7zM3 21h18",
+            Icon::Contours => {
+                "M4 12c3-6 6 1 9-4s5-2 7-4M4 16c3-6 6 2 9-4s5-3 7-5M4 20c3-5 6 1 9-3s5-2 7-4"
+            }
+            Icon::Orient => "M4 4c4 2 3 7 7 9s5 5 9 7M15 20h5v-5",
+            Icon::SmoothLine => "M3 17c3-8 6-8 9-4s6 4 9-4",
+            Icon::Simplify => "M3 17l5-7 4 4 4-8 5 9",
+            Icon::Dissolve => "M4 5h16v14H4zM11 7v2M11 11v2M11 15v2M6 12h2",
+            Icon::Clip => {
+                "M3 9h18v6H3zM5.7 9C6.5 3.5 17.5 3.5 18.3 9M5.7 15C6.5 20.5 17.5 20.5 18.3 15"
+            }
             Icon::Share => "M8.5 9.5H6.5v11h11v-11h-2M12 3.5v11M8.5 7l3.5-3.5L15.5 7",
             Icon::Legend => "M3 5h5v5H3zM3 14h5v5H3zM11 7.5h10M11 16.5h7",
             Icon::ScaleBar => "M3 9v6M21 9v6M3 12h18M12 10v4",
@@ -239,6 +264,14 @@ impl Icon {
             Icon::Grid => &[(12.0, 12.0, 9.0, false)],
             Icon::Reshape => &[(6.0, 8.0, 1.5, true), (18.0, 8.0, 1.5, true)],
             Icon::Tag => &[(7.5, 8.5, 1.5, true)],
+            Icon::Orient => &[(4.0, 4.0, 1.5, true)],
+            Icon::Simplify => &[
+                (3.0, 17.0, 1.2, true),
+                (8.0, 10.0, 1.2, true),
+                (12.0, 14.0, 1.2, true),
+                (16.0, 6.0, 1.2, true),
+                (21.0, 15.0, 1.2, true),
+            ],
             Icon::More => &[
                 (5.0, 12.0, 1.5, true),
                 (12.0, 12.0, 1.5, true),
@@ -558,6 +591,13 @@ mod tests {
             Icon::NorthArrow,
             Icon::ColorKey,
             Icon::Share,
+            Icon::Polygonize,
+            Icon::Contours,
+            Icon::Orient,
+            Icon::SmoothLine,
+            Icon::Simplify,
+            Icon::Dissolve,
+            Icon::Clip,
         ] {
             let lines = parse(icon.path());
             let circles = icon.circles();

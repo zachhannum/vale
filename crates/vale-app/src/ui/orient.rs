@@ -8,10 +8,30 @@ use super::{AppState, is_height};
 
 /// The name of the operation in the toolbox.
 pub const ORIENT_DOWNHILL: &str = "Orient lines downhill";
-/// The hint of the operation when the selected layer is not a line layer.
-pub const SELECT_LINE_LAYER: &str = "Select a line layer.";
+/// What the operation does, below its name on its page.
+pub const ORIENT_ABOUT: &str =
+    "Reverses each line that runs uphill, so it starts at its higher end.";
+/// The hint of the operation when the world has no line layer.
+pub const NEEDS_LINES: &str = "Add a line layer.";
 /// The hint of the operation when the world has no height layer.
 pub const NEEDS_HEIGHT: &str = "Add a height layer.";
+
+/// The layers that the user chose for "Orient lines downhill". `None`, or
+/// a layer that is gone, gives the default layer.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct OrientInputs {
+    pub lines: Option<LayerId>,
+    pub height: Option<RasterId>,
+}
+
+/// The text of the features that the operation changes: "All", or the
+/// number of selected features.
+pub fn features_text(selected: usize) -> String {
+    match selected {
+        0 => "All".to_string(),
+        n => format!("{n} selected"),
+    }
+}
 
 /// The line with its parts and its vertices in the opposite order, if its
 /// first vertex is lower than its last vertex. `level` gives the height at
@@ -33,33 +53,61 @@ pub fn downhill(g: &Geometry, level: impl Fn(LonLat) -> f64) -> Option<Geometry>
 }
 
 impl AppState {
-    /// The height layer that "Orient lines downhill" reads: the first
-    /// height layer that the globe holds.
-    fn orient_height(&self) -> Option<RasterId> {
-        let rasters = self.doc.project.rasters();
-        let fit = |r: &&vale_store::Raster| is_height(r) && self.globe.holds(r.id);
-        rasters.iter().find(fit).map(|r| r.id)
+    /// The line layers of the world, with their names.
+    pub fn line_layers(&self) -> Vec<(LayerId, String)> {
+        (self.doc.project.layers().iter())
+            .filter(|l| l.geometry() == Some(GeometryKind::Line))
+            .map(|l| (l.id, l.name.clone()))
+            .collect()
     }
 
-    /// True if "Orient lines downhill" can run on layer `layer`.
-    pub fn can_orient_downhill(&self, layer: LayerId) -> bool {
-        let lines = self.doc.layer(layer).and_then(|l| l.geometry()) == Some(GeometryKind::Line);
-        lines && !self.globe.busy() && self.orient_height().is_some()
+    /// The height layers that the globe holds, with their names.
+    pub fn held_heights(&self) -> Vec<(RasterId, String)> {
+        let project = &self.doc.project;
+        (project.layers().iter())
+            .filter_map(|l| {
+                let raster = project.raster(l.raster()?)?;
+                let fit = is_height(raster) && self.globe.holds(raster.id);
+                fit.then(|| (raster.id, l.name.clone()))
+            })
+            .collect()
     }
 
-    /// The input of "Orient lines downhill" in the toolbox: the selected
-    /// layer, if it is a line layer.
-    pub fn orient_input(&self) -> Option<LayerId> {
-        let id = self.selected_vector()?;
-        let lines = self.doc.layer(id).and_then(|l| l.geometry()) == Some(GeometryKind::Line);
-        lines.then_some(id)
+    /// The line layer of "Orient lines downhill": the chosen layer, else
+    /// the selected layer if it is a line layer, else the first line layer.
+    pub fn orient_lines(&self) -> Option<LayerId> {
+        let lines = self.line_layers();
+        let has = |id: Option<LayerId>| id.filter(|id| lines.iter().any(|(l, _)| l == id));
+        (has(self.orient.lines))
+            .or_else(|| has(self.selected_vector()))
+            .or_else(|| lines.first().map(|(id, _)| *id))
     }
 
-    /// The hint below "Orient lines downhill" in the toolbox when it cannot
-    /// run.
+    /// The height layer of "Orient lines downhill": the chosen layer, else
+    /// the first height layer that the globe holds.
+    pub fn orient_height(&self) -> Option<RasterId> {
+        let heights = self.held_heights();
+        let chosen = self.orient.height;
+        (chosen.filter(|id| heights.iter().any(|(h, _)| h == id)))
+            .or_else(|| heights.first().map(|(id, _)| *id))
+    }
+
+    /// The number of selected features in layer `layer`.
+    pub fn selected_in(&self, layer: LayerId) -> usize {
+        (self.feature_selection.iter())
+            .filter(|f| f.layer == layer)
+            .count()
+    }
+
+    /// True if "Orient lines downhill" can run on its inputs.
+    pub fn can_orient_downhill(&self) -> bool {
+        self.orient_lines().is_some() && self.orient_height().is_some() && !self.globe.busy()
+    }
+
+    /// The hint of "Orient lines downhill" when it has no input.
     pub fn orient_hint(&self) -> Option<&'static str> {
-        if self.orient_input().is_none() {
-            Some(SELECT_LINE_LAYER)
+        if self.orient_lines().is_none() {
+            Some(NEEDS_LINES)
         } else if self.orient_height().is_none() {
             Some(NEEDS_HEIGHT)
         } else {
@@ -67,13 +115,13 @@ impl AppState {
         }
     }
 
-    /// Runs "Orient lines downhill" from the toolbox on its input, and
+    /// Runs "Orient lines downhill" from the toolbox on its inputs, and
     /// keeps the result for the note of the toolbox.
     pub fn run_orient_downhill(&mut self) {
-        let Some(layer) = self.orient_input() else {
+        let (Some(layer), Some(height)) = (self.orient_lines(), self.orient_height()) else {
             return;
         };
-        let n = self.orient_downhill(layer);
+        let n = self.orient_downhill(layer, height);
         self.toolbox_note = Some(match n {
             0 => "All lines run downhill.".to_string(),
             1 => "Reversed 1 line.".to_string(),
@@ -81,16 +129,16 @@ impl AppState {
         });
     }
 
-    /// Reverses each line of layer `layer` that runs uphill, in one undo
-    /// step. If the layer has selected features, only those change. Returns
-    /// the number of reversed lines.
-    pub fn orient_downhill(&mut self, layer: LayerId) -> usize {
-        if !self.can_orient_downhill(layer) {
-            return 0;
-        }
-        let (Some(height), Some(lines)) = (self.orient_height(), self.doc.layer(layer)) else {
+    /// Reverses each line of layer `layer` that runs uphill on height
+    /// layer `height`, in one undo step. If the layer has selected
+    /// features, only those change. Returns the number of reversed lines.
+    pub fn orient_downhill(&mut self, layer: LayerId, height: RasterId) -> usize {
+        let Some(lines) = self.doc.layer(layer) else {
             return 0;
         };
+        if lines.geometry() != Some(GeometryKind::Line) || self.globe.busy() {
+            return 0;
+        }
         let Some(map) = self.globe.value_map(height) else {
             return 0;
         };

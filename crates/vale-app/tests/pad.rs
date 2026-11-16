@@ -15760,18 +15760,21 @@ fn docked(size: (f32, f32), panes: &[&[Panel]]) -> Pad {
 #[test]
 fn each_pane_has_a_bar_below_it_that_changes_its_height() {
     use vale_app::ui::pad::panes::BAR;
-    let mut h = docked(BOARDS[0], &[&[Panel::Layers], &[Panel::Toolbox]]);
-    let (layers, toolbox) = (
+    let mut h = docked(BOARDS[0], &[&[Panel::Layers], &[Panel::Attributes]]);
+    let (layers, attributes) = (
         panel(&h, Panel::Layers).unwrap(),
-        panel(&h, Panel::Toolbox).unwrap(),
+        panel(&h, Panel::Attributes).unwrap(),
     );
     assert_eq!(layers.top(), h.state().pad.rects.unwrap().column_top);
-    assert_eq!(toolbox.top(), layers.bottom() + BAR);
-    assert_eq!((toolbox.left(), toolbox.right()), (layers.left(), 1194.0));
+    assert_eq!(attributes.top(), layers.bottom() + BAR);
+    assert_eq!(
+        (attributes.left(), attributes.right()),
+        (layers.left(), 1194.0)
+    );
 
     // The last pane has a bar too, at the bottom of the dock.
     let dock = h.state().pad.dock_rect.unwrap();
-    assert_eq!(dock.bottom(), toolbox.bottom() + BAR + 10.0);
+    assert_eq!(dock.bottom(), attributes.bottom() + BAR + 10.0);
 
     // The pane above the bar gets shorter. The pane below it shows all its
     // content, so it keeps its height and moves up.
@@ -15779,13 +15782,16 @@ fn each_pane_has_a_bar_below_it_that_changes_its_height() {
     drag(&mut h, bar, bar - vec2(0.0, 40.0), None);
     let (above, below) = (
         panel(&h, Panel::Layers).unwrap(),
-        panel(&h, Panel::Toolbox).unwrap(),
+        panel(&h, Panel::Attributes).unwrap(),
     );
     assert!(
         (above.height() - (layers.height() - 40.0)).abs() < 1.0,
         "{above:?}"
     );
-    assert!((below.height() - toolbox.height()).abs() < 1.0, "{below:?}");
+    assert!(
+        (below.height() - attributes.height()).abs() < 1.0,
+        "{below:?}"
+    );
     assert_eq!(below.top(), above.bottom() + BAR);
     let panes = &h.state().pad.docks.world.panes;
     assert!(panes[0].height.is_some() && panes[1].height.is_none());
@@ -17592,9 +17598,18 @@ fn valley_pad(lines: &[&[[f64; 2]]]) -> (Pad, vale_store::LayerId, RasterId) {
     (h, streams, height)
 }
 
+/// Opens the Toolbox panel and the page of "Orient lines downhill".
+fn open_orient(h: &mut Pad) {
+    use vale_app::ui::orient::ORIENT_DOWNHILL;
+    h.state_mut().pad.open(Panel::Toolbox);
+    h.run_steps(2);
+    tap(h, ORIENT_DOWNHILL);
+}
+
 #[test]
 fn orient_lines_downhill_runs_from_the_toolbox_in_one_undo_step() {
     use vale_app::ui::orient::ORIENT_DOWNHILL;
+    use vale_app::ui::pad::toolbox::RUN;
     use vale_store::Geometry;
     let up: &[[f64; 2]] = &[[0.5, -38.0], [0.5, -20.0], [0.5, -5.0]];
     let down: &[[f64; 2]] = &[[0.3, -5.0], [0.3, -30.0]];
@@ -17611,10 +17626,13 @@ fn orient_lines_downhill_runs_from_the_toolbox_in_one_undo_step() {
     // The operation belongs to the toolbox, so the panel of the layer has
     // no row for it.
     assert!(h.query_by_label(ORIENT_DOWNHILL).is_none());
+    h.state_mut().pad.close(Panel::Layers);
     h.state_mut().select(Some(LayerRef::Vector(streams)));
     h.state_mut().pad.open(Panel::Toolbox);
     h.run_steps(2);
     check_controls(&h, "the Toolbox panel");
+    tap(&mut h, ORIENT_DOWNHILL);
+    check_controls(&h, "the page of Orient lines downhill");
     let lines = |h: &Pad| -> Vec<Geometry> {
         let layer = h.state().doc.layer(streams).unwrap();
         layer.features.iter().map(|f| f.geometry.clone()).collect()
@@ -17624,29 +17642,35 @@ fn orient_lines_downhill_runs_from_the_toolbox_in_one_undo_step() {
     let before = lines(&h);
     assert_eq!(before, [line(up), line(down), line(also_up)]);
 
-    tap(&mut h, ORIENT_DOWNHILL);
+    tap(&mut h, RUN);
     assert_eq!(lines(&h), [reversed(up), line(down), reversed(also_up)]);
     assert!(h.query_by_label("Reversed 2 lines.").is_some());
     // One undo puts back each line.
     h.state_mut().undo();
     h.run_steps(2);
     assert_eq!(lines(&h), before);
+    // The back button opens the grid again.
+    tap(&mut h, "Back to Toolbox");
+    assert!(control(&h, ORIENT_DOWNHILL).is_some());
 }
 
 #[test]
 fn orient_lines_downhill_changes_only_the_selected_lines() {
     use vale_app::globe::select::FeatureRef;
+    use vale_app::ui::orient::features_text;
     use vale_store::Geometry;
     let up: &[[f64; 2]] = &[[0.5, -38.0], [0.5, -5.0]];
     let also_up: &[[f64; 2]] = &[[0.2, -30.0], [0.2, -10.0]];
     let (mut h, streams, _) = valley_pad(&[up, also_up]);
     let state = h.state_mut();
     state.select(Some(LayerRef::Vector(streams)));
+    assert_eq!(features_text(state.selected_in(streams)), "All");
     let uuid = state.doc.layer(streams).unwrap().features[1].uuid();
     state.feature_selection = vec![FeatureRef {
         layer: streams,
         uuid,
     }];
+    assert_eq!(features_text(state.selected_in(streams)), "1 selected");
     state.run_orient_downhill();
     let lines: Vec<Geometry> = (state.doc.layer(streams).unwrap().features.iter())
         .map(|f| f.geometry.clone())
@@ -17663,27 +17687,88 @@ fn orient_lines_downhill_changes_only_the_selected_lines() {
 
 #[test]
 fn orient_lines_downhill_needs_a_line_layer_and_a_height_layer() {
-    use vale_app::ui::orient::{NEEDS_HEIGHT, ORIENT_DOWNHILL, SELECT_LINE_LAYER};
-    let (mut h, streams, height) = valley_pad(&[&[[0.5, -38.0], [0.5, -5.0]]]);
-    h.state_mut().pad.open(Panel::Toolbox);
-    h.state_mut().select(Some(LayerRef::Raster(height)));
-    h.run_steps(2);
-    assert!(h.query_by_label(SELECT_LINE_LAYER).is_some());
-    assert!(control(&h, ORIENT_DOWNHILL).is_none());
-    assert!(h.query_by_label(ORIENT_DOWNHILL).is_some());
-    h.state_mut().select(Some(LayerRef::Vector(streams)));
-    h.run_steps(2);
-    assert!(h.query_by_label(SELECT_LINE_LAYER).is_none());
-    assert!(h.query_by_label(NEEDS_HEIGHT).is_none());
-    assert_eq!(h.state().orient_hint(), None);
-
+    use vale_app::ui::orient::{NEEDS_HEIGHT, NEEDS_LINES};
+    use vale_app::ui::pad::toolbox::RUN;
     let mut h = empty_pad(BOARDS[1]);
     let state = h.state_mut();
-    let lines = state.doc.add_layer(vale_store::GeometryKind::Line);
-    state.select(Some(LayerRef::Vector(lines)));
-    state.pad.open(Panel::Toolbox);
+    for (id, _) in state.line_layers() {
+        assert!(state.remove_layer(id));
+    }
+    open_orient(&mut h);
+    assert!(h.query_by_label(NEEDS_LINES).is_some());
+    assert!(control(&h, RUN).is_none());
+    assert!(h.query_by_label(RUN).is_some());
+
+    h.state_mut().doc.add_layer(vale_store::GeometryKind::Line);
     h.run_steps(2);
+    assert!(h.query_by_label(NEEDS_LINES).is_none());
     assert!(h.query_by_label(NEEDS_HEIGHT).is_some());
+    assert!(control(&h, RUN).is_none());
+
+    let (mut h, _, _) = valley_pad(&[&[[0.5, -38.0], [0.5, -5.0]]]);
+    open_orient(&mut h);
+    assert_eq!(h.state().orient_hint(), None);
+    assert!(control(&h, RUN).is_some());
+}
+
+#[test]
+fn the_toolbox_shows_the_operations_that_do_not_exist_yet_as_faded_tiles() {
+    use vale_app::ui::pad::toolbox::{GROUPS, exists};
+    let mut h = empty_pad(BOARDS[1]);
+    h.state_mut().pad.open(Panel::Toolbox);
+    h.run_steps(2);
+    let names: Vec<&str> = (GROUPS.iter())
+        .flat_map(|(_, ops)| ops.iter().map(|(name, _)| *name))
+        .filter(|name| !exists(name))
+        .collect();
+    assert_eq!(names.len(), 6);
+    for name in names {
+        assert!(control(&h, name).is_none(), "{name}");
+        assert!(h.query_all_by_label(name).next().is_some(), "{name}");
+    }
+}
+
+#[test]
+fn the_search_of_the_toolbox_filters_the_tiles() {
+    use vale_app::ui::orient::ORIENT_DOWNHILL;
+    use vale_app::ui::pad::toolbox::{NO_MATCH, SEARCH};
+    let mut h = empty_pad(BOARDS[1]);
+    h.state_mut().pad.open(Panel::Toolbox);
+    h.run_steps(2);
+    assert!(control(&h, SEARCH).is_some());
+    assert!(h.query_by_label("Polygonize").is_some());
+    h.state_mut().pad.toolbox.search = "orient".into();
+    h.run_steps(2);
+    assert!(control(&h, ORIENT_DOWNHILL).is_some());
+    assert!(h.query_by_label("Polygonize").is_none());
+    assert!(h.query_by_label("Clip").is_none());
+    h.state_mut().pad.toolbox.search = "xyz".into();
+    h.run_steps(2);
+    assert!(h.query_by_label(NO_MATCH).is_some());
+}
+
+#[test]
+fn the_lines_page_of_orient_lines_downhill_picks_the_line_layer() {
+    use vale_app::ui::pad::toolbox::{LINES, ToolPage};
+    let (mut h, streams, _) = valley_pad(&[&[[0.5, -38.0], [0.5, -5.0]]]);
+    let state = h.state_mut();
+    let other = state.doc.add_layer(vale_store::GeometryKind::Line);
+    assert!(state.doc.rename_layer(other, "Roads"));
+    state.select(Some(LayerRef::Vector(streams)));
+    open_orient(&mut h);
+    assert_eq!(h.state().orient_lines(), Some(streams));
+    tap(&mut h, LINES);
+    assert_eq!(h.state().pad.toolbox.page, Some(ToolPage::OrientLines));
+    check_controls(&h, "the Lines page");
+    tap(&mut h, "Roads");
+    assert_eq!(h.state().orient_lines(), Some(other));
+    tap(&mut h, "Back to Orient lines downhill");
+    assert_eq!(h.state().pad.toolbox.page, Some(ToolPage::Orient));
+    // A chosen layer that is gone gives the default layer again.
+    h.state_mut().select(Some(LayerRef::Vector(streams)));
+    assert!(h.state_mut().remove_layer(other));
+    h.run_steps(2);
+    assert_eq!(h.state().orient_lines(), Some(streams));
 }
 
 #[test]

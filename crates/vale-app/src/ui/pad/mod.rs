@@ -11,7 +11,6 @@ use vale_terrain::Mode;
 pub use super::LayerRef;
 use super::atlas::{AtlasTool, FrameTab};
 use super::export_form;
-use super::orient;
 use super::raster_form::{self, RasterForm};
 use super::select;
 use super::world_form::{self, WorldForm};
@@ -64,6 +63,7 @@ pub mod selectable;
 pub mod table;
 pub mod text_style;
 pub mod theme;
+pub mod toolbox;
 pub mod value;
 pub mod widgets;
 
@@ -460,6 +460,8 @@ pub struct PadState {
     /// The page of the panel of the layer of `layer` that the Layers panel
     /// shows.
     pub page: Option<Page>,
+    /// The page and the search of the Toolbox panel.
+    pub toolbox: toolbox::ToolboxState,
     /// The texts of the open page of a field.
     field: Option<fields::Draft>,
     /// The layer that the Layers panel shows. `None`: the panel shows the
@@ -2182,7 +2184,7 @@ pub(super) fn panel_head(state: &mut AppState, panel: Panel) -> Head {
         ),
         (Panel::Layers, Some(LayerRef::Vector(_))) => ("pad-vector", name, Some("Layers")),
         (Panel::Layers, None) => (panel.key(), "Layers", None),
-        (Panel::Toolbox, _) => (panel.key(), TOOLBOX, None),
+        (Panel::Toolbox, _) => toolbox::head(state.pad.toolbox.page),
         (Panel::Attributes, _) => (panel.key(), select::ATTRIBUTES, None),
         (_, _) => (panel.key(), panel_name(state, panel), None),
     };
@@ -2266,6 +2268,12 @@ pub(super) fn panel_title(
     action: Option<&egui::Response>,
 ) {
     let (panel, layer, page) = (head.panel, head.layer, head.page);
+    if panel == Panel::Toolbox {
+        if back {
+            toolbox::back(state);
+        }
+        return;
+    }
     match action {
         Some(focus) if panel == Panel::Attributes => {
             if focus.clicked() {
@@ -2364,7 +2372,7 @@ pub(super) fn panel_body(
             _ => vector_body(ui, state, controls, id),
         },
         (Panel::Layers, None) => layers_body(ui, state, controls),
-        (Panel::Toolbox, _) => toolbox_body(ui, state, controls),
+        (Panel::Toolbox, _) => toolbox::body(ui, state, controls),
         (Panel::Attributes, _) => select::body(ui, state, controls),
         _ => {}
     }
@@ -3552,29 +3560,6 @@ fn image_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, 
         state.pad.page = Some(Page::Blend);
     }
     image_note(ui, state, Some(id));
-}
-
-fn toolbox_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
-    let enabled = state
-        .orient_input()
-        .is_some_and(|id| state.can_orient_downhill(id));
-    if widgets::button_row(ui, controls, orient::ORIENT_DOWNHILL, enabled).clicked() {
-        state.run_orient_downhill();
-    }
-    let note = state.orient_hint().or(state.toolbox_note.as_deref());
-    if let Some(note) = note {
-        ui.label(egui::RichText::new(note).color(theme::MUTE));
-    }
-    ui.add_space(8.0);
-    // Temporary controls, for the tests of the brush on the device.
-    ui.checkbox(&mut state.globe.debug, "Debug");
-    if state.globe.debug {
-        // The frame time needs a new frame at each refresh of the screen.
-        if !state.headless {
-            ui.ctx().request_repaint();
-        }
-        panels::debug_controls(ui, state);
-    }
 }
 
 /// The width of a button of the card of a held stroke, and the least width
