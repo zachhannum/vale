@@ -31,9 +31,6 @@ pub fn pixel_ratio(dpi: u32) -> f64 {
 /// The most pixels on a side of a texture that each GPU takes.
 pub const MAX_SIDE: u32 = 8192;
 
-/// The pixels per inch of an export with the default options.
-pub const DEFAULT_PPI: u32 = 300;
-
 /// The options of an export.
 #[derive(Copy, Clone, Debug, Default, PartialEq)]
 pub struct ExportOptions {

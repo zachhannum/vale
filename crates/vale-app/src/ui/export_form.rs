@@ -5,11 +5,9 @@ use vale_store::PageId;
 
 use super::pad::geometry::{GAP, MARGIN, ROW, Rects, WidthClass};
 use super::pad::icons::{self, Icon};
-use super::pad::number::Number;
 use super::pad::theme;
 use super::pad::widgets::{self, BODY_PAD, Controls, Keys, keypad_below};
 use super::{Action, AppState, ExportFormat, ExportSpec, atlas, export_thumbs};
-use crate::atlas_export::DEFAULT_PPI;
 
 /// The row of the world menu that opens the form, and the button of the
 /// form that starts the export.
@@ -28,12 +26,8 @@ const MODES: [PagesMode; 3] = [PagesMode::All, PagesMode::This, PagesMode::Range
 pub const FROM: &str = "From";
 pub const TO: &str = "To";
 pub const OPTIONS: &str = "Options";
-pub const RASTER_RESOLUTION: &str = "Raster resolution";
-pub const RESOLUTION: &str = "Resolution";
 pub const TRANSPARENT_PAPER: &str = "Transparent paper";
 pub const NAME: &str = "Name";
-/// The steps of the resolution stepper, in pixels per inch.
-const PPI_STEPS: [f64; 4] = [72.0, 150.0, 300.0, 600.0];
 /// The width of the form in the iPad layout.
 pub const WIDTH: f32 = 540.0;
 /// The ID of the card of the form.
@@ -63,16 +57,10 @@ pub fn page_name(index: usize) -> String {
     format!("Page {}", index + 1)
 }
 
-/// The fewest pixels per inch of an export.
-pub const MIN_PPI: u32 = 72;
-/// The most pixels per inch of an export.
-pub const MAX_PPI: u32 = 600;
-
 /// The options of the form that the next form of the session starts with.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Options {
     pub format: ExportFormat,
-    pub ppi: u32,
     pub transparent: bool,
 }
 
@@ -80,7 +68,6 @@ impl Default for Options {
     fn default() -> Self {
         Options {
             format: ExportFormat::Pdf,
-            ppi: DEFAULT_PPI,
             transparent: false,
         }
     }
@@ -112,7 +99,6 @@ pub struct ExportForm {
     pub from: String,
     /// The page number of the last page of the range, as typed.
     pub to: String,
-    pub ppi: u32,
     pub transparent: bool,
     /// The file name with no extension.
     pub name: String,
@@ -144,7 +130,6 @@ impl ExportForm {
             pages: PagesMode::All,
             from: String::new(),
             to: String::new(),
-            ppi: options.ppi.clamp(MIN_PPI, MAX_PPI),
             transparent: options.transparent,
             name,
             center_on: None,
@@ -160,14 +145,8 @@ impl ExportForm {
     pub fn options(&self) -> Options {
         Options {
             format: self.format,
-            ppi: self.ppi,
             transparent: self.transparent,
         }
-    }
-
-    /// Sets the pixels per inch, inside `MIN_PPI` and `MAX_PPI`.
-    pub fn set_ppi(&mut self, ppi: u32) {
-        self.ppi = ppi.clamp(MIN_PPI, MAX_PPI);
     }
 
     /// Ticks the pages of a choice. "This page" scrolls the strip to the
@@ -264,7 +243,6 @@ impl ExportForm {
         ExportSpec {
             format: self.format,
             pages,
-            ppi: self.ppi,
             transparent: self.transparent,
             name: self.name.trim().to_string(),
         }
@@ -714,19 +692,6 @@ fn desktop_rows(ui: &mut egui::Ui, form: &mut ExportForm) {
     });
     ui.end_row();
 
-    ui.label(match form.format {
-        ExportFormat::Pdf => RASTER_RESOLUTION,
-        ExportFormat::Png => RESOLUTION,
-    });
-    let mut ppi = form.ppi;
-    let drag = egui::DragValue::new(&mut ppi)
-        .range(MIN_PPI..=MAX_PPI)
-        .suffix(" ppi");
-    if ui.add(drag).changed() {
-        form.set_ppi(ppi);
-    }
-    ui.end_row();
-
     if form.format == ExportFormat::Png {
         ui.label("");
         ui.checkbox(&mut form.transparent, TRANSPARENT_PAPER);
@@ -790,21 +755,8 @@ fn rows(
         }
     }
 
-    widgets::form_label(ui, OPTIONS);
-    let label = match form.format {
-        ExportFormat::Pdf => RASTER_RESOLUTION,
-        ExportFormat::Png => RESOLUTION,
-    };
-    let range = f64::from(MIN_PPI)..=f64::from(MAX_PPI);
-    let stepper = Number::new(label, f64::from(form.ppi), range)
-        .choices(&PPI_STEPS)
-        .unit("ppi")
-        .enabled(enabled)
-        .stepper(ui, controls);
-    if let Some(ppi) = stepper {
-        form.set_ppi(ppi.round() as u32);
-    }
     if form.format == ExportFormat::Png {
+        widgets::form_label(ui, OPTIONS);
         let on = &mut form.transparent;
         widgets::switch_row_enabled(
             ui,

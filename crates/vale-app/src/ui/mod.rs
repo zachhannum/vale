@@ -16,7 +16,7 @@ use vale_store::{
 use vale_style::LabelClass;
 use vale_terrain::{Bands, Heightmap, Mode};
 
-use crate::atlas_export::{DEFAULT_PPI, ExportOptions, ExportStep, PdfExport};
+use crate::atlas_export::{ExportOptions, ExportStep, PdfExport};
 use crate::document::{Document, Target};
 use crate::files::{Availability, ExportEvent, Files, PlainFiles, SystemEvents};
 use crate::globe::combine::{PolygonMode, StrokeArea};
@@ -272,8 +272,6 @@ pub struct ExportSpec {
     pub format: ExportFormat,
     /// The pages in the order of the atlas.
     pub pages: Vec<vale_store::PageId>,
-    /// The pixels per inch of a PNG page and of a raster image in a PDF.
-    pub ppi: u32,
     /// The pages have no paper fill.
     pub transparent: bool,
     /// The file name with no extension.
@@ -286,7 +284,6 @@ impl ExportSpec {
         ExportSpec {
             format,
             pages,
-            ppi: DEFAULT_PPI,
             transparent: false,
             name: state.export_stem(),
         }

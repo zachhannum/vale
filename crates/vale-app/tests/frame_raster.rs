@@ -287,18 +287,16 @@ fn widest_image(pdf: &[u8]) -> u32 {
 
 #[test]
 #[ignore = "gpu"]
-fn a_pdf_at_150_ppi_has_a_raster_image_half_as_wide_as_one_at_300_ppi() {
+fn a_pdf_of_a_page_at_150_dpi_has_a_raster_image_half_as_wide_as_one_at_300_dpi() {
     let _gpu = one_gpu_test();
     let (mut h, _) = atlas(40000);
     let dir = tempfile::tempdir().unwrap();
     h.state_mut().headless = false;
-    let mut width = |ppi: u32| {
-        let path = dir.path().join(format!("{ppi}.pdf"));
+    let mut width = |dpi: u32| {
+        let path = dir.path().join(format!("{dpi}.pdf"));
+        vale_app::ui::atlas::edit_page(h.state_mut(), |p| p.dpi = dpi);
         let page = h.state().atlas.page;
-        let spec = ExportSpec {
-            ppi,
-            ..ExportSpec::new(h.state(), ExportFormat::Pdf, vec![page])
-        };
+        let spec = ExportSpec::new(h.state(), ExportFormat::Pdf, vec![page]);
         h.state_mut()
             .run_action(Action::ExportPages(spec, path.clone()));
         for _ in 0..60 {

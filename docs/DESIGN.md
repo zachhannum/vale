@@ -961,7 +961,7 @@ The atlas exports to three formats.
 | SVG | More work in Illustrator or Inkscape | One file per page, with layers kept as groups. |
 | PNG or TIFF | Web and virtual tabletop tools | One file per page at the resolution of the page, rendered in tiles. |
 
-The Export form sets the pages, the format, and the options of an export. At the top, a strip shows a picture of each page, and it opens on the open page. A tap on a page selects it or clears it. A hold and then a drag selects a run of pages. "Format" is PDF or PNG. "Pages" is All, This page, or Range. A range has the fields From and To, and the strip and the fields follow each other. A PDF has the raster resolution of its raster images. A PNG has the resolution and the switch "Transparent paper". A resolution is from 72 ppi to 600 ppi, and the default is 300 ppi. The name is the file name, and it starts as the name of the world. Several PNG pages give one file per page, with the name `<name>-<page number>.png`.
+The Export form sets the pages, the format, and the options of an export. At the top, a strip shows a picture of each page, and it opens on the open page. A tap on a page selects it or clears it. A hold and then a drag selects a run of pages. "Format" is PDF or PNG. "Pages" is All, This page, or Range. A range has the fields From and To, and the strip and the fields follow each other. A PNG has the switch "Transparent paper". The export uses the resolution of each page. The name is the file name, and it starts as the name of the world. Several PNG pages give one file per page, with the name `<name>-<page number>.png`.
 
 Export uses RGB color in version 1. CMYK output for commercial print is an open question.
 
