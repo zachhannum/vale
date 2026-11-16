@@ -183,7 +183,7 @@ svg.i { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-widt
   <div class="menu" style="left:16px; top:84px;" data-rows></div>
 </div>
 
-<p class="cap"><b>3. The export form, PDF, all pages.</b> "Export…" opens a form sheet in the middle of the screen. The strip at the top shows the pages that go in the file. A tap on a page adds it or removes it, and Pages follows. The PDF options are the resolution of the raster layers in the file. "Export…" at the top right makes the file and then opens the share sheet.</p>
+<p class="cap"><b>3. The export form, PDF, all pages.</b> "Export…" opens a form sheet in the middle of the screen. The strip at the top shows the pages that go in the file. A tap on a page adds it or removes it, and Pages follows. A PDF has no options. Its raster layers have the resolution of each page. "Export…" at the top right makes the file and then opens the share sheet.</p>
 <div class="shot" data-base>
   <div class="dimmer"></div>
   <div class="form" style="left:327px; top:60px; width:540px;">
@@ -193,17 +193,13 @@ svg.i { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-widt
       <template data-use="formats-pdf"></template>
       <div class="lab">Pages</div>
       <div class="seg"><div class="on">All</div><div>This page</div><div>Range</div></div>
-      <div class="lab">Options</div>
-      <div class="group">
-        <div class="grow"><span>Raster resolution</span><span class="v">300 ppi<span class="step"><div>−</div><div>+</div></span></span></div>
-      </div>
       <div class="lab">Name</div>
       <div class="field">Kareth atlas<i>.pdf</i></div>
     </div>
   </div>
 </div>
 
-<p class="cap"><b>4. The export form, PNG, one page.</b> The options change with the format. PNG has the resolution and a switch that leaves out the paper color, for an overlay in a virtual tabletop. "This page" leaves only the open page selected in the strip. With more than one page, PNG makes one file for each page.</p>
+<p class="cap"><b>4. The export form, PNG, one page.</b> The options change with the format. PNG has a switch that leaves out the paper color, for an overlay in a virtual tabletop. "This page" leaves only the open page selected in the strip. With more than one page, PNG makes one file for each page.</p>
 <div class="shot" data-base>
   <div class="dimmer"></div>
   <div class="form" style="left:327px; top:60px; width:540px;">
@@ -215,7 +211,6 @@ svg.i { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-widt
       <div class="seg"><div>All</div><div class="on">This page</div><div>Range</div></div>
       <div class="lab">Options</div>
       <div class="group">
-        <div class="grow"><span>Resolution</span><span class="v">300 ppi<span class="step"><div>−</div><div>+</div></span></span></div>
         <div class="grow"><span>Transparent paper</span><span class="sw"></span></div>
       </div>
       <div class="lab">Name</div>
@@ -259,8 +254,6 @@ svg.i { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-widt
         <template data-use="formats-pdf"></template>
         <div class="lab">Pages</div>
         <div class="seg"><div class="on">All</div><div>This page</div><div>Range</div></div>
-        <div class="lab">Options</div>
-        <div class="group"><div class="grow"><span>Raster resolution</span><span class="v">300 ppi</span></div></div>
       </div>
       <div class="hint" style="margin-top:18px; color: rgb(231,233,236)">Exporting page 2 of 3</div>
       <div class="progress"><i></i></div>
@@ -279,8 +272,6 @@ svg.i { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-widt
       <template data-use="formats-pdf"></template>
       <div class="lab">Pages</div>
       <div class="seg"><div class="on">All</div><div>This page</div><div>Range</div></div>
-      <div class="lab">Options</div>
-      <div class="group"><div class="grow"><span>Raster resolution</span><span class="v">300 ppi<span class="step"><div>−</div><div>+</div></span></span></div></div>
       <div class="lab">Name</div>
       <div class="field">Kareth atlas<i>.pdf</i></div>
     </div>
@@ -321,8 +312,6 @@ svg.i { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-widt
         <template data-use="formats-pdf"></template>
         <div class="lab">Pages</div>
         <div class="seg"><div class="on">All</div><div>This page</div><div>Range</div></div>
-        <div class="lab">Options</div>
-        <div class="group"><div class="grow"><span>Raster resolution</span><span class="v">300 ppi</span></div></div>
         <div class="lab">Name</div>
         <div class="field">Kareth atlas<i>.pdf</i></div>
       </div>
@@ -381,7 +370,6 @@ svg.i { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-widt
     <h4>Export</h4>
     <div class="drow"><span>Format</span><span><span class="dseg"><div class="on">PDF</div><div>PNG</div><div>SVG</div></span></span></div>
     <div class="drow"><span>Pages</span><span><span class="dseg"><div class="on">All</div><div>This page</div><div>Range</div></span></span></div>
-    <div class="drow"><span>Raster resolution</span><span><span class="dfield">300</span> ppi</span></div>
     <div class="dbtns"><div>Cancel</div><div class="pri">Export…</div></div>
   </div>
 </div>
