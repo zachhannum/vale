@@ -398,6 +398,31 @@ impl<'a> Number<'a> {
     /// and the label at the bottom. Returns the new value when the user
     /// changes it. The keypad opens at the side of the card.
     pub fn vertical(self, ui: &mut egui::Ui, controls: &mut Controls, height: f32) -> Option<f64> {
+        self.column(ui, controls, height, None)
+    }
+
+    /// Adds the slider as a column `height` high, with the track only and
+    /// half of `space` above and below it. During a drag, the bubble shows
+    /// the label and the value.
+    pub fn vertical_bare(
+        self,
+        ui: &mut egui::Ui,
+        controls: &mut Controls,
+        height: f32,
+        space: f32,
+    ) -> Option<f64> {
+        self.column(ui, controls, height, Some(space))
+    }
+
+    /// A vertical slider. With `bare`, the half of it above and below the
+    /// track, and no value and no label.
+    fn column(
+        self,
+        ui: &mut egui::Ui,
+        controls: &mut Controls,
+        height: f32,
+        bare: Option<f32>,
+    ) -> Option<f64> {
         let enabled = self.enabled;
         let width = ui.available_width().min(CELL.0);
         super::widgets::skip_fold(ui, height);
@@ -412,9 +437,10 @@ impl<'a> Number<'a> {
             None,
         );
         let x = rect.center().x;
+        let inset = bare.map_or(22.0, |space| space / 2.0);
         let track = Rect::from_min_max(
-            pos2(x - COLUMN / 2.0, rect.top() + 22.0),
-            pos2(x + COLUMN / 2.0, rect.bottom() - 22.0),
+            pos2(x - COLUMN / 2.0, rect.top() + inset),
+            pos2(x + COLUMN / 2.0, rect.bottom() - inset),
         );
         let top = track.top() + TRACK_INSET;
         let bottom = track.bottom() - TRACK_INSET;
@@ -425,20 +451,23 @@ impl<'a> Number<'a> {
         let marks: Vec<f32> = self.default.iter().map(|d| y_of(*d)).collect();
         let held = resp.dragged() || resp.is_pointer_button_down_on();
         paint_track(ui, track, y_of(value), &marks, true, enabled, held);
-        let color = fade(theme::MUTE, enabled);
-        let at = pos2(x, rect.bottom() - 4.0);
-        let painter = ui.painter();
-        painter.text(at, Align2::CENTER_BOTTOM, self.label, theme::small(), color);
+        if bare.is_none() {
+            let color = fade(theme::MUTE, enabled);
+            let at = pos2(x, rect.bottom() - 4.0);
+            let painter = ui.painter();
+            painter.text(at, Align2::CENTER_BOTTOM, self.label, theme::small(), color);
 
-        // The field covers the value at the top. It takes the touches there
-        // from the track.
-        let field = Rect::from_min_size(rect.min, vec2(rect.width(), TOUCH));
-        let back = Rect::from_min_size(rect.min, vec2(rect.width(), 20.0));
-        let typed = self.field(ui, controls, field, back, value, Look::Plain);
-        out = typed.or(out);
-        self.keypad_beside(ui, controls, rect);
+            // The field covers the value at the top. It takes the touches
+            // there from the track.
+            let field = Rect::from_min_size(rect.min, vec2(rect.width(), TOUCH));
+            let back = Rect::from_min_size(rect.min, vec2(rect.width(), 20.0));
+            let typed = self.field(ui, controls, field, back, value, Look::Plain);
+            out = typed.or(out);
+            self.keypad_beside(ui, controls, rect);
+        }
         if let Some(drag) = dragging(ui, &resp) {
-            self.bubble(ui, value, drag.note, rect);
+            let named = bare.is_some().then_some(self.label);
+            self.bubble_named(ui, value, named, drag.note, rect);
         }
         out.filter(|v| *v != self.value)
     }
@@ -832,6 +861,18 @@ impl<'a> Number<'a> {
     /// below it, and the circle of the preview. The bubble is next to the
     /// panel or the card that holds `anchor`, at the height of `anchor`.
     fn bubble(&self, ui: &egui::Ui, value: f64, note: Option<&str>, anchor: Rect) {
+        self.bubble_named(ui, value, None, note, anchor);
+    }
+
+    /// The bubble, with `name` before the value.
+    fn bubble_named(
+        &self,
+        ui: &egui::Ui,
+        value: f64,
+        name: Option<&str>,
+        note: Option<&str>,
+        anchor: Rect,
+    ) {
         let ctx = ui.ctx();
         let id = egui::Id::new(("pad slider bubble", self.name));
         let painter = ctx.layer_painter(egui::LayerId::new(Order::Tooltip, id));
@@ -842,7 +883,11 @@ impl<'a> Number<'a> {
             painter.circle_stroke(center, r, dark);
             painter.circle_stroke(center, r, egui::Stroke::new(1.5, theme::TEXT));
         }
-        let text = painter.layout_no_wrap(self.value_text(value), theme::title(), theme::TEXT);
+        let text = match name {
+            Some(name) => format!("{name} {}", self.value_text(value)),
+            None => self.value_text(value),
+        };
+        let text = painter.layout_no_wrap(text, theme::title(), theme::TEXT);
         let note = note.map(|n| painter.layout_no_wrap(n.to_owned(), theme::small(), theme::MUTE));
         let note_size = note.as_ref().map_or(vec2(0.0, -2.0), |n| n.size());
         // A width that does not follow each digit, so the bubble stays put.

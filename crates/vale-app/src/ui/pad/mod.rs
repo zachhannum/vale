@@ -1257,11 +1257,12 @@ fn tool_column(ctx: &egui::Context, state: &mut AppState, controls: &mut Control
         } else if state.globe.measuring() {
             measure_cells(ui, state, controls);
         } else if has_strip(&state.globe) {
-            let track = match rects.brush_card {
-                BrushCard::Full(track) => track,
-                _ => 0.0,
+            let slide = match rects.brush_card {
+                BrushCard::Full(track) => Slide::Column(track),
+                BrushCard::Bare(track) => Slide::Bare(track),
+                _ => Slide::Column(0.0),
             };
-            strip_controls(ui, state, controls, Slide::Column(track));
+            strip_controls(ui, state, controls, slide);
             deselect_cell(ui, state, controls);
             brush_button(ui, state, controls);
         } else {
@@ -1468,6 +1469,9 @@ enum Slide {
     /// The tool column, with tracks of this length. Zero: the Brush panel
     /// holds the sliders.
     Column(f32),
+    /// The tool column, with tracks of this length and no values and no
+    /// names.
+    Bare(f32),
 }
 
 /// The controls of the brush and of the vector tools. Each control shows
@@ -1475,7 +1479,7 @@ enum Slide {
 fn strip_controls(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, slide: Slide) {
     let height = match slide {
         Slide::Row(height) => height,
-        Slide::Column(_) => 0.0,
+        Slide::Column(_) | Slide::Bare(_) => 0.0,
     };
     let slide =
         |number: Number<'_>, ui: &mut egui::Ui, controls: &mut Controls, length: f32| match slide {
@@ -1484,6 +1488,12 @@ fn strip_controls(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Contro
                 number.vertical(ui, controls, track + geometry::SLIDER_TEXT)
             }
             Slide::Column(_) => None,
+            Slide::Bare(track) => number.vertical_bare(
+                ui,
+                controls,
+                track + geometry::SLIDER_GAP,
+                geometry::SLIDER_GAP,
+            ),
         };
     let paint = state.globe.brushing();
     let line = state.globe.drawing();

@@ -59,8 +59,12 @@ pub const COLUMN_DIVIDER: f32 = 13.0;
 pub const SLIDER_TEXT: f32 = 44.0;
 /// The length of the track of a vertical slider of the tool column.
 pub const TRACK: f32 = 120.0;
-/// Below this length, the sliders go to the Brush panel.
+/// Below this length, the sliders lose their value and their name, and
+/// then the Brush panel holds them.
 pub const TRACK_MIN: f32 = 90.0;
+/// The space of a vertical slider of the tool column with no value and no
+/// name, above and below its track.
+pub const SLIDER_GAP: f32 = 8.0;
 /// The space from the tool column to the readout.
 pub const READOUT_GAP: f32 = 16.0;
 /// The width of the actions bar of the World workspace: Undo, Redo, a
@@ -191,6 +195,9 @@ pub enum BrushCard {
     /// The two sliders, each with this length, and the Brush button. In
     /// the tool column, the length of the track of each slider.
     Full(f32),
+    /// In the tool column, the sliders with no value and no name, with
+    /// tracks of this length.
+    Bare(f32),
     /// The Brush button alone. The Brush panel holds the two sliders.
     Button,
     /// An open sheet covers the place of the card.
@@ -360,8 +367,8 @@ pub fn canvas_part(screen: Rect, fold: Option<Rect>) -> Rect {
     )
 }
 
-/// The height of the contents of the tool column from `top`, and the gap
-/// of the column. A control that would be in `gap` moves below it, and so
+/// The height of the contents of the tool column from `top`, with sliders
+/// `slider` high, and the gap of the column. A control that would be in `gap` moves below it, and so
 /// does a divider just above it. The gap of the column starts at the
 /// bottom of the last control above it.
 fn column_height(
@@ -395,7 +402,7 @@ fn column_height(
     let lead = c.lead.min(c.cells);
     cell(lead, &mut add);
     if slider > 0.0 {
-        (0..c.sliders).for_each(|_| add(slider + SLIDER_TEXT, false));
+        (0..c.sliders).for_each(|_| add(slider, false));
     }
     cell(c.cells - lead + usize::from(c.brush_button), &mut add);
     let gap = gap.zip(start).map(|(g, start)| Rangef::new(start, g.max));
@@ -559,28 +566,28 @@ pub fn layout(input: &Input) -> Rects {
         Rangef::new(f.top() - space, f.bottom() + space)
     });
     let fits = |slider: f32| column_height(column_top, &c, slider, gap).0 <= room;
-    // The sliders become shorter, and then the Brush panel holds them.
-    let mut slider = if c.sliders == 0 {
-        0.0
-    } else {
-        let track = ((room - fixed) / c.sliders as f32 - SLIDER_TEXT).min(TRACK);
+    // The length of the tracks of sliders with `space` above and below
+    // each track. Zero: the sliders do not fit.
+    let track = |space: f32| {
+        let mut track = ((room - fixed) / c.sliders as f32 - space).min(TRACK);
+        while gap.is_some() && track >= TRACK_MIN && !fits(track + space) {
+            track -= 1.0;
+        }
         if track >= TRACK_MIN { track } else { 0.0 }
     };
-    while gap.is_some() && slider > 0.0 && !fits(slider) {
-        slider = if slider - 1.0 >= TRACK_MIN {
-            slider - 1.0
-        } else {
-            0.0
-        };
-    }
-    let plain = fixed
-        + if slider > 0.0 {
-            c.sliders as f32 * (slider + SLIDER_TEXT)
-        } else {
-            0.0
-        };
+    // The sliders become shorter, then they lose their value and their
+    // name, and then the Brush panel holds them.
+    let (slider, space) = if c.sliders == 0 {
+        (0.0, 0.0)
+    } else if track(SLIDER_TEXT) > 0.0 {
+        (track(SLIDER_TEXT), SLIDER_TEXT)
+    } else {
+        (track(SLIDER_GAP), SLIDER_GAP)
+    };
+    let extent = if slider > 0.0 { slider + space } else { 0.0 };
+    let plain = fixed + c.sliders as f32 * extent;
     let (mut column_content, mut column_gap) = match gap {
-        Some(_) => column_height(column_top, &c, slider, gap),
+        Some(_) => column_height(column_top, &c, extent, gap),
         None => (plain, None),
     };
     let mut room = room;
@@ -597,10 +604,12 @@ pub fn layout(input: &Input) -> Rects {
         .min(room)
         .max(COLUMN_CELL + 2.0 * COLUMN_INSET);
     let tools = Rect::from_min_size(pos2(edge, column_top), vec2(bands.left + COLUMN, height));
-    let brush_card = if slider > 0.0 {
+    let brush_card = if slider == 0.0 {
+        BrushCard::Button
+    } else if space == SLIDER_TEXT {
         BrushCard::Full(slider)
     } else {
-        BrushCard::Button
+        BrushCard::Bare(slider)
     };
     let column_right = tools.right() + GAP;
 
