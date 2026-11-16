@@ -1,9 +1,9 @@
 //! The small pictures of the pages in the strip of the export form. A job
 //! draws the pages as the export does, with the raster layers and the image
 //! layers of the frames from the GPU. It draws at most one page or one
-//! capture in each UI frame. Without a GPU, a page with a capture keeps no
-//! picture. The pictures stay until the page, the maps, or the raster
-//! layers change.
+//! capture in each UI frame. If the GPU cannot draw the capture of a page,
+//! the page has its vector layers only. The pictures stay until the page,
+//! the maps, or the raster layers change.
 
 use std::collections::HashMap;
 
@@ -22,6 +22,9 @@ pub const MIN_WIDTH: f32 = 56.0;
 pub const MAX_WIDTH: f32 = 160.0;
 /// The pixels in one point of a picture.
 const PIXELS: f32 = 2.0;
+/// The longest time that a page waits for the GPU, in seconds. After it,
+/// the page has its vector layers only.
+const WAIT_LIMIT: f64 = 20.0;
 
 /// The change count of the maps, the newest edit of the raster layers, and
 /// the page at the time of a picture.
@@ -54,6 +57,8 @@ struct Thumb {
 struct Job {
     export: PdfExport,
     keys: HashMap<PageId, Key>,
+    /// The time that the capture of the page started to wait for the GPU.
+    waits_since: Option<f64>,
 }
 
 /// The pictures of the pages, and the job that draws the pictures that are
@@ -148,7 +153,11 @@ pub fn poll(ui: &egui::Ui, state: &mut AppState) {
             Ok(mut export) => {
                 let rasters = state.pipeline.rasters_mut();
                 export.set_rasters(rasters.frozen());
-                state.export_thumbs.job = Some(Job { export, keys });
+                state.export_thumbs.job = Some(Job {
+                    export,
+                    keys,
+                    waits_since: None,
+                });
             }
             Err(error) => {
                 log::warn!("page pictures: {error:#}");
@@ -166,6 +175,11 @@ pub fn poll(ui: &egui::Ui, state: &mut AppState) {
         let Some(key) = job.keys.remove(&id) else {
             continue;
         };
+        // The job does not try a page with the vector layers only again
+        // until the page changes.
+        if job.export.vector_only(id) {
+            thumbs.failed.insert(id, key.clone());
+        }
         let size = [image.width, image.height];
         let color = egui::ColorImage::from_rgba_premultiplied(size, &image.data);
         let name = format!("export-page-{}", id.0);
@@ -184,23 +198,31 @@ pub fn poll(ui: &egui::Ui, state: &mut AppState) {
     match step {
         ExportStep::More => state.export_thumbs.job = Some(job),
         ExportStep::Capture(draw) => {
-            // Without a GPU, the page keeps no picture.
             let result = match state.globe.format {
                 Some(_) => state.serve_capture(&mut job.export, draw, Some(ui)),
                 None => CaptureResult::NoGpu,
             };
-            match result {
-                CaptureResult::Sent | CaptureResult::Split | CaptureResult::Waiting => {}
-                CaptureResult::NoGpu | CaptureResult::Failed(_) => {
-                    if let CaptureResult::Failed(error) = result {
-                        log::warn!("page pictures: {error}");
-                    }
-                    let page = job.export.page_id();
-                    let key = page.and_then(|page| job.keys.remove(&page));
-                    state.export_thumbs.failed.extend(page.zip(key));
-                    job.export.skip_page();
-                    state.end_export_frame();
+            let now = ctx.input(|i| i.time);
+            let failed = match result {
+                CaptureResult::Waiting => {
+                    let since = *job.waits_since.get_or_insert(now);
+                    now - since > WAIT_LIMIT
                 }
+                CaptureResult::Sent | CaptureResult::Split => {
+                    job.waits_since = None;
+                    false
+                }
+                CaptureResult::NoGpu => true,
+                CaptureResult::Failed(error) => {
+                    log::warn!("page pictures: {error}");
+                    true
+                }
+            };
+            // The page gets a picture of its vector layers.
+            if failed {
+                job.waits_since = None;
+                job.export.drop_page_layers();
+                state.end_export_frame();
             }
             state.export_thumbs.job = Some(job);
         }

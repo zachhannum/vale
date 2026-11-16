@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use clap::Parser;
 use tiff::decoder::{Decoder, DecodingResult};
 use tiff::tags::Tag;
+use vale_app::atlas_export::{ExportStep, PdfExport};
 use vale_app::cli::{Args, export_heightmap};
 use vale_app::document::Document;
 use vale_app::files::ExportEvent;
@@ -718,13 +719,14 @@ fn thumbs_without_gpu() -> (
 }
 
 #[test]
-fn without_a_gpu_a_page_with_a_raster_layer_keeps_no_picture_and_is_not_retried() {
+fn without_a_gpu_a_page_with_a_raster_layer_gets_its_vector_layers_and_is_not_retried() {
     let (mut h, _) = thumbs_without_gpu();
     h.run_steps(6);
     let state = h.state();
     let page = state.doc.project.atlas.pages[0].clone();
     let generation = vale_app::ui::export_thumbs::generation(state);
-    assert!(state.export_thumbs.image(page.id).is_none());
+    let image = state.export_thumbs.image(page.id).expect("a picture");
+    assert_eq!(image.size[1], 158);
     assert!(state.export_thumbs.failed(generation, &page));
     assert!(!state.export_thumbs.busy());
     for _ in 0..4 {
@@ -744,4 +746,75 @@ fn without_a_gpu_a_page_with_vector_layers_only_gets_a_picture() {
     let page = &state.doc.project.atlas.pages[0];
     let image = state.export_thumbs.image(page.id).expect("a picture");
     assert_eq!(image.size[1], 158);
+}
+
+/// Steps `export` until it asks for a capture.
+fn step_to_capture(export: &mut PdfExport) {
+    for _ in 0..100 {
+        match export.step() {
+            ExportStep::Capture(_) => return,
+            ExportStep::More => {}
+            ExportStep::Done(result) => panic!("the export ended: {:?}", result.err()),
+        }
+    }
+    panic!("no capture");
+}
+
+/// Gives `export` a capture that egui dropped before the GPU drew it.
+fn drop_capture(export: &mut PdfExport) {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    drop(sender);
+    export.set_capture_receiver(receiver, Vec::new());
+}
+
+#[test]
+fn a_dropped_capture_goes_to_the_gpu_again_and_a_picture_falls_back_to_the_vector_layers() {
+    let (h, _) = thumbs_without_gpu();
+    let doc = h.state().doc.clone();
+    let page = doc.project.atlas.pages[0].clone();
+    let mut export = PdfExport::images(doc, vec![page.clone()], 0.5).unwrap();
+    step_to_capture(&mut export);
+    for _ in 0..60 {
+        drop_capture(&mut export);
+        assert!(matches!(export.step(), ExportStep::Capture(_)));
+    }
+    assert!(!export.vector_only(page.id));
+    // After the sixtieth time, the page has its vector layers only.
+    drop_capture(&mut export);
+    let mut done = false;
+    for _ in 0..100 {
+        match export.step() {
+            ExportStep::More => {}
+            ExportStep::Capture(_) => panic!("a page with the vector layers only has no capture"),
+            ExportStep::Done(result) => {
+                result.unwrap();
+                done = true;
+                break;
+            }
+        }
+    }
+    assert!(done && export.vector_only(page.id));
+    let images = export.take_images();
+    assert_eq!(images.len(), 1);
+    assert_eq!(images[0].0, page.id);
+}
+
+#[test]
+fn a_pdf_export_fails_when_egui_drops_each_capture() {
+    let (h, _) = thumbs_without_gpu();
+    let doc = h.state().doc.clone();
+    let dir = tempfile::tempdir().unwrap();
+    let pages = doc.project.atlas.pages.clone();
+    let path = dir.path().join("atlas.pdf");
+    let options = vale_app::atlas_export::ExportOptions::default();
+    let mut export = PdfExport::new(doc, path, pages, options).unwrap();
+    step_to_capture(&mut export);
+    for _ in 0..61 {
+        drop_capture(&mut export);
+        if let ExportStep::Done(result) = export.step() {
+            assert!(result.is_err());
+            return;
+        }
+    }
+    panic!("the export goes on");
 }

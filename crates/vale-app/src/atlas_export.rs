@@ -42,6 +42,9 @@ pub fn page_pixels(page: &PageRecord) -> [u32; 2] {
 
 /// The most pixels on a side of a texture that each GPU takes.
 pub const MAX_SIDE: u32 = 8192;
+/// The most times that egui drops the capture of one strip before the
+/// export fails.
+const MAX_LOST: u32 = 60;
 
 /// The options of an export.
 #[derive(Copy, Clone, Debug, Default, PartialEq)]
@@ -92,6 +95,9 @@ struct PendingCapture {
     /// The capture of the strip, then the capture of the cover of each
     /// mask, with what arrived. `None` is a mask with no cover.
     receivers: Option<Vec<Receiver>>,
+    /// The captures of the strip that egui dropped before the GPU drew
+    /// them, as in a UI frame that egui ran and did not paint.
+    lost: u32,
 }
 
 /// A capture that the GPU makes, and its result once it arrives.
@@ -127,6 +133,9 @@ pub struct PdfExport {
     /// The raster layers and the image layers of a frame go to the GPU.
     /// Without them, a frame has its vector layers only.
     layers: bool,
+    /// The pages that have their vector layers only, because their
+    /// capture failed.
+    vector_pages: Vec<usize>,
 }
 
 enum Output {
@@ -197,6 +206,7 @@ impl PdfExport {
             gpu: true,
             max_side: MAX_SIDE,
             layers: true,
+            vector_pages: Vec::new(),
         })
     }
 
@@ -213,20 +223,20 @@ impl PdfExport {
         Ok(job)
     }
 
-    /// The page that the next step composes. `None`: the export has no more
-    /// pages.
-    pub fn page_id(&self) -> Option<PageId> {
-        self.pages.get(self.page).map(|page| page.id)
-    }
-
-    /// Leaves out the page that the export composes, and goes on with the
-    /// next page.
-    pub fn skip_page(&mut self) {
+    /// Composes the page that the export composes again, with the vector
+    /// layers of its frames only.
+    pub fn drop_page_layers(&mut self) {
         self.pending = None;
         self.list = None;
         self.frame = 0;
         self.pipeline.clear_page_masks();
-        self.page += 1;
+        self.vector_pages.push(self.page);
+    }
+
+    /// True if the export composes or composed `page` with the vector
+    /// layers of its frames only.
+    pub fn vector_only(&self, page: PageId) -> bool {
+        (self.vector_pages.iter()).any(|&i| self.pages.get(i).is_some_and(|p| p.id == page))
     }
 
     /// Takes the images of the pages that the export finished.
@@ -449,6 +459,7 @@ impl PdfExport {
                 pts_per_mm: PT_PER_MM * ratio,
             },
             receivers: None,
+            lost: 0,
         })
     }
 
@@ -481,6 +492,7 @@ impl PdfExport {
             pending.row += rows;
         }
         pending.receivers = None;
+        pending.lost = 0;
         if pending.row >= height {
             return Ok(true);
         }
@@ -555,20 +567,39 @@ impl PdfExport {
                 let Some(receivers) = &mut pending.receivers else {
                     return Ok(ExportStep::Capture(pending.draw.clone()));
                 };
+                let mut lost = false;
+                let mut failed = None;
                 for (receiver, got) in receivers.iter_mut().flatten() {
                     if got.is_some() {
                         continue;
                     }
                     match receiver.try_recv() {
                         Ok(Ok(captured)) => *got = Some(captured),
-                        Ok(Err(error)) => anyhow::bail!(error),
+                        Ok(Err(error)) => failed = Some(error),
                         Err(mpsc::TryRecvError::Empty) => return Ok(ExportStep::More),
-                        Err(mpsc::TryRecvError::Disconnected) => {
-                            anyhow::bail!("the raster capture stopped")
-                        }
+                        Err(mpsc::TryRecvError::Disconnected) => lost = true,
                     }
                 }
-                let captured = (receivers.drain(..))
+                // A capture that egui dropped goes to the GPU again.
+                if lost && failed.is_none() {
+                    pending.receivers = None;
+                    pending.lost += 1;
+                    if pending.lost <= MAX_LOST {
+                        return Ok(ExportStep::Capture(pending.draw.clone()));
+                    }
+                    failed = Some("the raster capture stopped".to_string());
+                }
+                if let Some(error) = failed {
+                    // A picture of a page has the vector layers at least.
+                    if !matches!(self.output, Some(Output::Images { .. })) {
+                        anyhow::bail!(error);
+                    }
+                    log::warn!("page pictures: {error}");
+                    self.drop_page_layers();
+                    return Ok(ExportStep::More);
+                }
+                let receivers = pending.receivers.take().unwrap_or_default();
+                let captured = (receivers.into_iter())
                     .map(|r| r.and_then(|(_, got)| got))
                     .collect();
                 if !self.take_strip(captured)? {
@@ -593,6 +624,7 @@ impl PdfExport {
                 let raster_area = bbox.width() > 0.0 && bbox.height() > 0.0;
                 let masked = self.gpu && !frame_raster_masks(&self.doc, frame).is_empty();
                 let layered = self.layers
+                    && !self.vector_pages.contains(&self.page)
                     && (!self.shown_rasters(frame).is_empty()
                         || !self.shown_images(frame).is_empty()
                         || masked);

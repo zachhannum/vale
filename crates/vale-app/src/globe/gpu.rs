@@ -1694,11 +1694,7 @@ impl CaptureReadback {
                     .slice(..)
                     .get_mapped_range()
                     .expect("capture is mapped");
-                let width = (size[0] * pixel) as usize;
-                let mut rgba = Vec::with_capacity(width * size[1] as usize);
-                for source in bytes.chunks(row as usize) {
-                    rgba.extend_from_slice(&source[..width]);
-                }
+                let mut rgba = unpad_rows(&bytes, row, size, pixel);
                 drop(bytes);
                 mapped.unmap();
                 if pixel == 4
@@ -1719,6 +1715,17 @@ impl CaptureReadback {
             drop(token);
         });
     }
+}
+
+/// The pixels of a readback of `size` pixels with `pixel` bytes each,
+/// without the padding at the end of each row of `row` bytes.
+fn unpad_rows(bytes: &[u8], row: u32, size: [u32; 2], pixel: u32) -> Vec<u8> {
+    let width = (size[0] * pixel) as usize;
+    let mut out = Vec::with_capacity(width * size[1] as usize);
+    for source in bytes.chunks(row as usize).take(size[1] as usize) {
+        out.extend_from_slice(&source[..width]);
+    }
+    out
 }
 
 /// The longest time that the target of a group stays after the last frame
@@ -3362,6 +3369,23 @@ pub fn nearest_places(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_readback_of_a_picture_224_pixels_wide_loses_the_row_padding() {
+        let (size, pixel): ([u32; 2], u32) = ([224, 3], 4);
+        let row = (size[0] * pixel).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+        assert_eq!(row, 1024);
+        let mut bytes = vec![0xee; (row * size[1]) as usize];
+        for y in 0..size[1] {
+            for x in 0..size[0] * pixel {
+                bytes[(y * row + x) as usize] = (y * 7 + x % 5) as u8;
+            }
+        }
+        let rgba = unpad_rows(&bytes, row, size, pixel);
+        assert_eq!(rgba.len(), 224 * 3 * 4);
+        assert!(!rgba.contains(&0xee));
+        assert_eq!(rgba[896], 7);
+    }
 
     /// The strips cover the rectangle from the top, with no gap and no
     /// overlap. Returns the number of strips.
