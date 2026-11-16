@@ -140,6 +140,8 @@ pub struct Row<K> {
     pub on: bool,
     pub rename: bool,
     pub delete: bool,
+    /// The names of more buttons behind the row, at the left of Rename.
+    pub actions: &'static [&'static str],
     /// A swipe to the right selects the row, in a list with
     /// [`Spec::select`].
     pub select: bool,
@@ -161,6 +163,7 @@ impl<K> Row<K> {
             on: false,
             rename: false,
             delete: false,
+            actions: &[],
             select: true,
             trailing: 0.0,
             height: PANEL_ROW,
@@ -169,7 +172,12 @@ impl<K> Row<K> {
 
     /// The width of the buttons behind the row.
     fn behind(&self) -> f32 {
-        (usize::from(self.rename) + usize::from(self.delete)) as f32 * DELETE_WIDTH
+        self.buttons() as f32 * DELETE_WIDTH
+    }
+
+    /// The number of buttons behind the row.
+    fn buttons(&self) -> usize {
+        usize::from(self.rename) + usize::from(self.delete) + self.actions.len()
     }
 }
 
@@ -210,6 +218,8 @@ pub enum Event<K> {
     Lift(K),
     Rename(K, String),
     Delete(K),
+    /// A button of [`Row::actions`], by name.
+    Action(K, &'static str),
     /// The lifted row went from one place to another.
     Move {
         key: K,
@@ -513,6 +523,11 @@ fn rows_live<K>(
             state.rename = Some((key, row.name.clone()));
             continue;
         }
+        if let Some(action) = out.action {
+            state.open = None;
+            events.push(Event::Action(key, action));
+            continue;
+        }
         if let Some(trail) = out.trail {
             state.open = None;
             events.push(match trail {
@@ -644,8 +659,9 @@ fn follow<K: Copy + PartialEq + Hash + std::fmt::Debug>(
             state.open = Some(open);
         } else {
             // The finger is up: the row opens or shuts, and it springs on
-            // with the speed of the finger.
-            let opened = open.offset < -width / 2.0;
+            // with the speed of the finger. A swipe past half the buttons,
+            // or past one button, opens the row.
+            let opened = open.offset < -(width / 2.0).min(DELETE_WIDTH);
             let speed = ui.input(|i| i.pointer.velocity().x);
             motion::kick(ui.ctx(), shift_spring(ui.id(), key), open.offset, speed);
             state.open = opened.then_some(Open {
@@ -710,6 +726,7 @@ struct RowOut {
     body: Response,
     delete: bool,
     rename: bool,
+    action: Option<&'static str>,
     trail: Option<Trail>,
 }
 
@@ -744,19 +761,30 @@ fn paint_row<K>(
         true,
         Some(row.on || picked),
     );
-    let (mut delete, mut rename) = (false, false);
+    let (mut delete, mut rename, mut action) = (false, false, None);
     if shift < 0.0 {
+        // Delete is at the right edge, then Rename, then the actions.
         let mut slot = 0;
-        let count = usize::from(row.rename) + usize::from(row.delete);
+        let count = row.buttons();
         if row.delete {
             let name = widgets::delete_name(&row.name);
-            let last = count == 1;
+            let last = slot + 1 == count;
             delete = behind(ui, controls, rect, shift, slot, last, "Delete", &name);
             slot += 1;
         }
         if row.rename {
             let name = format!("{RENAME} {}", row.name);
-            rename = behind(ui, controls, rect, shift, slot, true, RENAME, &name);
+            let last = slot + 1 == count;
+            rename = behind(ui, controls, rect, shift, slot, last, RENAME, &name);
+            slot += 1;
+        }
+        for &text in row.actions {
+            let name = format!("{text} {}", row.name);
+            let last = slot + 1 == count;
+            if behind(ui, controls, rect, shift, slot, last, text, &name) {
+                action = Some(text);
+            }
+            slot += 1;
         }
     }
     let highlight = rect.expand2(vec2(8.0, -HIGHLIGHT_INSET));
@@ -780,6 +808,7 @@ fn paint_row<K>(
         body,
         delete,
         rename,
+        action,
         trail,
     }
 }
@@ -813,10 +842,10 @@ fn behind(
     let highlight = rect.expand2(vec2(8.0, -HIGHLIGHT_INSET));
     let back = Rect::from_x_y_ranges(left..=right, highlight.y_range());
     let painter = ui.painter().with_clip_rect(ui.clip_rect().intersect(back));
-    let color = if text == RENAME {
-        theme::MUTE
-    } else {
-        theme::WARN
+    let color = match text {
+        "Delete" => theme::WARN,
+        RENAME => theme::MUTE,
+        _ => theme::ACCENT,
     };
     painter.rect_filled(back, 5.0, color);
     let at = pos2(right - DELETE_WIDTH / 2.0, rect.center().y);

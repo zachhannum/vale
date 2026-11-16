@@ -53,11 +53,13 @@ pub const COLOR_STOPS: &str = "Color stops";
 /// bands.
 pub const FULL: &str = "Maximum of 32 bands reached.";
 pub const IMPORT_RAMP: &str = "Import ramp…";
-/// The rows that open the editor of a new ramp, and the button of the card
-/// of a ramp that opens it with a copy.
+/// The rows that open the editor of a new ramp, and the item of the desktop
+/// menu of a ramp that opens it with a copy.
 pub const NEW_RAMP: &str = "New ramp…";
 pub const SAVE_AS_RAMP: &str = "Save as ramp…";
 pub const DUPLICATE_RAMP: &str = "Duplicate…";
+/// The button behind the row of a ramp that opens the editor with a copy.
+pub const DUPLICATE: &str = "Duplicate";
 /// The text below the import row while the app has no ramps.
 pub const IMPORT_RAMP_HINT: &str = "A row of color blocks, lowest band first.";
 /// The buttons of the card of a ramp.
@@ -430,6 +432,7 @@ pub fn ramps_body(
             on: open == Some(i) || chosen == Some(i),
             rename: !ramp.built_in,
             delete: !ramp.built_in,
+            actions: &[DUPLICATE],
             select: !ramp.built_in,
             ..list::Row::new(i, ramp.name.clone())
         })
@@ -467,6 +470,9 @@ pub fn ramps_body(
                 }
             }
             list::Event::Delete(index) => remove_ramps(state, user, &[index]),
+            list::Event::Action(index, DUPLICATE) => {
+                open_editor(state, user.raster(), RampSource::Copy(index));
+            }
             _ => {}
         }
     }
@@ -1168,7 +1174,6 @@ pub fn ramp_card(
                 Part::All,
             ),
         };
-    buttons.push((DUPLICATE_RAMP, theme::TEXT, RampChoice::Duplicate));
     // A built-in ramp does not change.
     if !built_in {
         buttons.push((EDIT_LABELS, theme::TEXT, RampChoice::Labels));

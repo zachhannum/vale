@@ -3411,6 +3411,14 @@ fn the_blur_behind_a_card_shows_the_raster_layers_of_a_frame() {
     assert!(shown.iter().zip(&hidden).all(|(s, h)| s <= h));
 }
 
+/// A swipe of a finger to the left on the row `name`, which opens the
+/// buttons behind it.
+fn swipe_left(h: &mut Pad, name: &str) {
+    let rect = control(h, name).unwrap_or_else(|| panic!("no control `{name}`"));
+    let from = rect.right_center() - vec2(10.0, 0.0);
+    drag(h, from, from - vec2(120.0, 0.0), Input::Finger);
+}
+
 /// A swipe of a finger to the right on the row `name`.
 fn swipe_right(h: &mut Pad, name: &str) {
     let rect = control(h, name).unwrap_or_else(|| panic!("no control `{name}`"));
@@ -10251,7 +10259,7 @@ fn the_ramp_editor_works_in_a_frame() {
     use vale_app::ui::pad::Page;
     use vale_app::ui::pad::classify::CLASSIFY;
     use vale_app::ui::pad::ramp_editor::{RAMP_NAME, SAVE_RAMP};
-    use vale_app::ui::pad::raster::{COLOR_STOPS, DUPLICATE_RAMP, SAVE_AS_RAMP};
+    use vale_app::ui::pad::raster::{COLOR_STOPS, DUPLICATE, SAVE_AS_RAMP};
     for size in [BOARDS[0], (393.0, 852.0)] {
         let what = format!("{size:?}");
         let mut h = inset_pad(size);
@@ -10302,8 +10310,8 @@ fn the_ramp_editor_works_in_a_frame() {
         scroll_to(&mut h, "Bold");
         tap(&mut h, "Bold");
         scroll_to(&mut h, "Viridis");
-        tap(&mut h, "Viridis");
-        tap(&mut h, DUPLICATE_RAMP);
+        swipe_left(&mut h, "Viridis");
+        tap(&mut h, &format!("{DUPLICATE} Viridis"));
         assert_eq!(h.state().atlas.layer_page, Some(Page::RampEditor), "{what}");
         assert!(control(&h, "Back to Color ramps").is_some(), "{what}");
         scroll_to(&mut h, SAVE_RAMP);

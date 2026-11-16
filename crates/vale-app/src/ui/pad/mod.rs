@@ -3220,7 +3220,7 @@ fn layer_list(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
                     state.set_layer_visible(id, !visible);
                 }
             }
-            list::Event::Control(..) => {}
+            list::Event::Control(..) | list::Event::Action(..) => {}
             list::Event::Rename(id, name) => {
                 state.doc.rename_layer(id, &name);
             }

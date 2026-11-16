@@ -6721,16 +6721,34 @@ fn a_swipe_to_the_left_renames_a_custom_ramp() {
 }
 
 #[test]
-fn a_built_in_ramp_has_no_swipe() {
-    use vale_app::ui::pad::raster::DELETE_RAMPS;
+fn a_built_in_ramp_swipes_to_duplicate_only() {
+    use vale_app::ui::pad::raster::{DELETE_RAMPS, DUPLICATE, DUPLICATE_RAMP};
+    use vale_app::ui::pad::widgets::RENAME;
     let mut h = ramps_page(&["Sand"]);
     let before = control(&h, "Viridis").unwrap();
     swipe_left_from_top(&mut h, "Viridis");
+    assert!(control(&h, &format!("{DUPLICATE} Viridis")).is_some());
+    assert!(control(&h, &format!("{RENAME} Viridis")).is_none());
     assert!(control(&h, "Delete Viridis").is_none());
+    check_controls(&h, "the swipe of a built-in ramp");
     swipe_right(&mut h, "Viridis");
     assert!(h.state().pad.style.ramp_list.picked.is_empty());
     assert!(control(&h, DELETE_RAMPS).is_none());
     assert_eq!(control(&h, "Viridis"), Some(before));
+
+    // A custom ramp swipes to Duplicate, Rename, and Delete.
+    swipe_left_from_top(&mut h, "Sand");
+    for name in [DUPLICATE, RENAME, "Delete"] {
+        assert!(control(&h, &format!("{name} Sand")).is_some(), "{name}");
+    }
+    check_controls(&h, "the swipe of a custom ramp");
+    screenshot::save(&mut h, "pad-ramp-swipe");
+    // The card of a ramp has no Duplicate. The first tap closes the open
+    // row, and the next one opens the card.
+    while h.state().pad.style.ramp_card.is_none() {
+        tap(&mut h, "Sand");
+    }
+    assert!(control(&h, DUPLICATE_RAMP).is_none());
 }
 
 #[test]
@@ -6893,7 +6911,7 @@ fn a_new_ramp_is_built_color_by_color() {
 fn duplicate_copies_a_built_in_ramp_and_its_labels() {
     use vale_app::ramps::KOPPEN;
     use vale_app::ui::pad::ramp_editor::SAVE_RAMP;
-    use vale_app::ui::pad::raster::DUPLICATE_RAMP;
+    use vale_app::ui::pad::raster::DUPLICATE;
     let mut h = painted_pad(BOARDS[0]);
     open_ramps_page(&mut h);
     let koppen = h
@@ -6904,9 +6922,8 @@ fn duplicate_copies_a_built_in_ramp_and_its_labels() {
         .find(|r| r.name == KOPPEN)
         .cloned()
         .unwrap();
-    scroll_to_control(&mut h, KOPPEN);
-    tap(&mut h, KOPPEN);
-    tap(&mut h, DUPLICATE_RAMP);
+    swipe_left_from_top(&mut h, KOPPEN);
+    tap(&mut h, &format!("{DUPLICATE} {KOPPEN}"));
     assert_eq!(h.state().pad.page, Some(Page::RampEditor));
     assert!(control(&h, "Back to Color ramps").is_some());
     let draft = h.state().ramp_draft.clone().unwrap();
@@ -6954,7 +6971,7 @@ fn save_ramp_is_off_for_a_blank_or_taken_name() {
 #[test]
 fn duplicate_from_classify_returns_to_its_ramps() {
     use vale_app::ui::pad::ramp_editor::SAVE_RAMP;
-    use vale_app::ui::pad::raster::DUPLICATE_RAMP;
+    use vale_app::ui::pad::raster::DUPLICATE;
     let mut h = pad(BOARDS[0]);
     let rivers = vector(&h, "Rivers");
     open_classify(&mut h, "Rivers");
@@ -6963,16 +6980,14 @@ fn duplicate_from_classify_returns_to_its_ramps() {
     scroll_to_control(&mut h, "Bold");
     tap(&mut h, "Bold");
     assert_eq!(h.state().pad.page, Some(Page::Ramps));
-    scroll_to_control(&mut h, "Viridis");
-    tap(&mut h, "Viridis");
-    tap(&mut h, DUPLICATE_RAMP);
+    swipe_left_from_top(&mut h, "Viridis");
+    tap(&mut h, &format!("{DUPLICATE} Viridis"));
     assert_eq!(h.state().pad.page, Some(Page::RampEditor));
     tap(&mut h, "Back to Color ramps");
     assert_eq!(h.state().pad.page, Some(Page::Ramps));
 
-    scroll_to_control(&mut h, "Viridis");
-    tap(&mut h, "Viridis");
-    tap(&mut h, DUPLICATE_RAMP);
+    swipe_left_from_top(&mut h, "Viridis");
+    tap(&mut h, &format!("{DUPLICATE} Viridis"));
     scroll_to_control(&mut h, SAVE_RAMP);
     tap(&mut h, SAVE_RAMP);
     assert_eq!(h.state().pad.page, Some(Page::Ramps));
