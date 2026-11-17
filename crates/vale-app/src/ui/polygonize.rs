@@ -295,10 +295,14 @@ impl AppState {
         let Some(bands) = self.raster_bands(raster) else {
             return false;
         };
-        let (Some(run), Some(map)) = (&self.polygonize.last, self.globe.value_map(raster)) else {
+        let Some(run) = &self.polygonize.last else {
             return false;
         };
-        let changed = !map.same_tiles(&run.levels) || bands != run.bands;
+        // The snapshot is of the whole heightmap or of the reduced one, as the
+        // globe held it at the run.
+        let maps = [self.globe.raster_map(raster), self.globe.value_map(raster)];
+        let same = maps.iter().flatten().any(|m| m.same_tiles(&run.levels));
+        let changed = !same || bands != run.bands;
         changed && !self.polygonize_outputs().is_empty()
     }
 
@@ -381,7 +385,24 @@ impl AppState {
         };
         let below = clean(&self.polygonize.below, BATHYMETRY);
         let sea = bands.sea().filter(|_| split);
-        let map = self.globe.value_map(raster)?;
+        // The trace reads the whole heightmap. The globe holds it for the
+        // active layer, and the project file holds it for another layer.
+        let loaded;
+        let map = match self.globe.raster_map(raster) {
+            Some(map) => map,
+            None => {
+                let record = self.doc.project.raster(raster)?;
+                let session = self.session.as_ref()?;
+                loaded = match session.load_map(record) {
+                    Ok(map) => map,
+                    Err(e) => {
+                        self.status = format!("Could not read the raster layer: {e}");
+                        return None;
+                    }
+                };
+                &loaded
+            }
+        };
         let start = Instant::now();
         let layers = outputs(
             map,
@@ -391,7 +412,13 @@ impl AppState {
             (&above, sea.map(|s| (s, below.as_str()))),
         );
         let time = start.elapsed();
-        let levels = map.snapshot();
+        // A loaded heightmap shares no tile with the globe, so the snapshot
+        // to compare is of the reduced heightmap.
+        let held = self
+            .globe
+            .raster_map(raster)
+            .or(self.globe.value_map(raster));
+        let levels = held.unwrap_or(map).snapshot();
         // The new layers take the places of the layers that they replace.
         let replaced: Vec<LayerId> = match &self.polygonize.last {
             Some(run) if run.raster == raster => self.polygonize_outputs(),

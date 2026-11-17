@@ -18858,3 +18858,34 @@ fn an_out_of_date_polygonize_layer_runs_again_from_its_panel() {
     assert_eq!(h.state().pad.layer, Some(LayerRef::Vector(new)));
     assert!(h.query_by_label(STALE_LAYER).is_none());
 }
+
+#[test]
+fn polygonize_reads_the_whole_heightmap_of_a_large_layer() {
+    use vale_app::globe::DISPLAY_CAP;
+    use vale_app::ui::RasterSpec;
+    use vale_app::ui::polygonize::TOPOGRAPHY;
+    use vale_terrain::math::{dir_to_lonlat, lonlat_to_dir};
+    let mut h = empty_pad(BOARDS[1]);
+    let state = h.state_mut();
+    let n = 2 * DISPLAY_CAP as usize;
+    let height = state.add_raster(RasterSpec::height("Height", n)).unwrap();
+    // An island of 2 by 2 texels. The reduced copy takes the mean of 2 by 2
+    // texels at most, so the island is in a lower band there.
+    let map = state.globe.raster_map_mut(height).unwrap();
+    map.fill(meters_to_level(-3000.0));
+    let (face, x, y) = map.texel_of(lonlat_to_dir(10.0, 5.0));
+    let (x, y) = (x | 1, y | 1);
+    for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+        map.set(face, x + dx, y + dy, meters_to_level(900.0));
+    }
+    let middle = dir_to_lonlat(map.texel_dir(face, x, y));
+    h.run_steps(2);
+    let state = h.state_mut();
+    state.polygonize.smooth = 0.0;
+    let layers = state.polygonize().unwrap();
+    let topo = (layers.iter())
+        .find(|id| state.doc.layer(**id).unwrap().name == TOPOGRAPHY)
+        .unwrap();
+    let found = bands_at(state, &[*topo], [middle.0, middle.1]);
+    assert_eq!(found, [500.0]);
+}
