@@ -593,6 +593,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn manual_time_of_a_busy_world_of_2048_pixel_faces() {
         let wave = |d: V3| {
             let s = (40.0 * d[0]).sin() + (50.0 * d[1]).cos() + (45.0 * d[2] + 1.0).sin();
@@ -608,6 +609,15 @@ mod tests {
         let bands = polygonize(&map, &limits, trace);
         let points: usize = bands.iter().flat_map(|b| &b.rings).map(|r| r.len()).sum();
         eprintln!("{:?}, {points} points", start.elapsed());
+    }
+
+    #[test]
+    fn a_snapshot_shares_its_tiles_until_a_change() {
+        let mut map = map_of(8, |d| (d[0] * 100.0 + 200.0) as u16);
+        let snapshot = map.snapshot();
+        assert!(map.same_tiles(&snapshot));
+        map.set(0, 1, 1, 7);
+        assert!(!map.same_tiles(&snapshot));
     }
 
     #[test]

@@ -509,6 +509,20 @@ impl Heightmap {
         }
     }
 
+    /// True if the two maps share each tile, as a map and its snapshot do
+    /// until one of them changes.
+    pub fn same_tiles(&self, other: &Heightmap) -> bool {
+        let same = |a: &Option<Tile>, b: &Option<Tile>| match (a, b) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        };
+        self.n == other.n
+            && self.base == other.base
+            && self.tiles.len() == other.tiles.len()
+            && self.tiles.iter().zip(&other.tiles).all(|(a, b)| same(a, b))
+    }
+
     pub fn face_size(&self) -> usize {
         self.n
     }

@@ -60,6 +60,7 @@ pub mod number;
 pub mod orient;
 pub mod pad;
 pub mod panels;
+pub mod polygonize;
 pub mod ramp_editor;
 pub mod raster_form;
 pub mod region;
@@ -635,6 +636,7 @@ pub struct AppState {
     pub toolbox_note: Option<String>,
     /// The inputs that the user chose for "Orient lines downhill".
     pub orient: orient::OrientInputs,
+    pub polygonize: polygonize::PolygonizeState,
     /// The tiles of the images of a project with no file.
     pub image_tiles: ImageTiles,
     pub export_layer: Option<RasterId>,
@@ -843,6 +845,7 @@ impl AppState {
             image_note: None,
             toolbox_note: None,
             orient: orient::OrientInputs::default(),
+            polygonize: polygonize::PolygonizeState::default(),
             image_tiles: ImageTiles::new(),
             export_layer: None,
             share_exports: false,

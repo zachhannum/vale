@@ -5,11 +5,15 @@ use eframe::egui::{self, Align2, Rect, Sense, pos2, vec2};
 
 use super::geometry::TOUCH;
 use super::icons::{self, Icon};
+use super::number::Number;
 use super::rules::HEIGHT_LAYER;
 use super::widgets::{self, Controls, PANEL_ROW};
 use super::{TOOLBOX, filter, panels, theme};
 use crate::ui::AppState;
 use crate::ui::orient::{self, ORIENT_ABOUT, ORIENT_DOWNHILL};
+use crate::ui::polygonize::{
+    self, ABOVE, BELOW, INPUT, LIMITS, NEEDS_RASTER, POLYGONIZE, POLYGONIZE_ABOUT, SMOOTH, SPLIT,
+};
 
 /// The hint of the search field of the grid.
 pub const SEARCH: &str = "Search operations";
@@ -31,7 +35,7 @@ pub const GROUPS: [(&str, &[(&str, Icon)]); 3] = [
     (
         "Terrain",
         &[
-            ("Polygonize", Icon::Polygonize),
+            (POLYGONIZE, Icon::Polygonize),
             ("Contour lines", Icon::Contours),
         ],
     ),
@@ -52,7 +56,7 @@ pub const GROUPS: [(&str, &[(&str, Icon)]); 3] = [
 /// True for an operation that exists. The tile of another operation is
 /// faded and takes no tap.
 pub fn exists(name: &str) -> bool {
-    name == ORIENT_DOWNHILL
+    name == ORIENT_DOWNHILL || name == POLYGONIZE
 }
 
 /// A page of the Toolbox panel.
@@ -63,6 +67,9 @@ pub enum ToolPage {
     OrientLines,
     /// The height layers that "Orient lines downhill" can take.
     OrientHeight,
+    Polygonize,
+    /// The raster layers that "Polygonize" can take.
+    PolygonizeInput,
 }
 
 /// The state of the Toolbox panel.
@@ -81,6 +88,8 @@ pub(super) fn head(page: Option<ToolPage>) -> (&'static str, &'static str, Optio
         Some(ToolPage::Orient) => ("pad-orient", ORIENT_DOWNHILL, Some(TOOLBOX)),
         Some(ToolPage::OrientLines) => ("pad-orient-lines", LINES, Some(ORIENT_DOWNHILL)),
         Some(ToolPage::OrientHeight) => ("pad-orient-height", HEIGHT_LAYER, Some(ORIENT_DOWNHILL)),
+        Some(ToolPage::Polygonize) => ("pad-polygonize", POLYGONIZE, Some(TOOLBOX)),
+        Some(ToolPage::PolygonizeInput) => ("pad-polygonize-input", INPUT, Some(POLYGONIZE)),
     }
 }
 
@@ -89,6 +98,7 @@ pub(super) fn back(state: &mut AppState) {
     let page = &mut state.pad.toolbox.page;
     *page = match page {
         Some(ToolPage::OrientLines | ToolPage::OrientHeight) => Some(ToolPage::Orient),
+        Some(ToolPage::PolygonizeInput) => Some(ToolPage::Polygonize),
         _ => None,
     };
 }
@@ -100,6 +110,8 @@ pub(super) fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Contr
         Some(ToolPage::Orient) => orient_body(ui, state, controls),
         Some(ToolPage::OrientLines) => lines_body(ui, state, controls),
         Some(ToolPage::OrientHeight) => height_body(ui, state, controls),
+        Some(ToolPage::Polygonize) => polygonize_body(ui, state, controls),
+        Some(ToolPage::PolygonizeInput) => input_body(ui, state, controls),
     }
 }
 
@@ -127,8 +139,14 @@ fn grid_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
     }
     for (group, ops) in groups {
         widgets::list_heading(ui, group);
-        if tiles(ui, controls, &ops) == Some(ORIENT_DOWNHILL) {
-            state.pad.toolbox.page = Some(ToolPage::Orient);
+        let page = match tiles(ui, controls, &ops) {
+            Some(ORIENT_DOWNHILL) => Some(ToolPage::Orient),
+            Some(POLYGONIZE) => Some(ToolPage::Polygonize),
+            _ => None,
+        };
+        if page.is_some() {
+            state.pad.toolbox.page = page;
+            state.toolbox_note = None;
         }
     }
     ui.add_space(16.0);
@@ -291,6 +309,72 @@ fn output_row(ui: &mut egui::Ui, controls: &mut Controls) {
         pos2(row.right(), row.center().y + TOUCH / 2.0),
     );
     widgets::segmented_at(ui, controls, field, &choices, Some(1), |i| i == 1);
+}
+
+fn polygonize_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
+    hero(ui, Icon::Polygonize, POLYGONIZE_ABOUT);
+    let input = state.polygonize_input();
+    let input_name = (state.held_rasters().into_iter())
+        .find(|(id, _)| Some(*id) == input)
+        .map_or(NONE.to_owned(), |(_, name)| name);
+    ui.spacing_mut().item_spacing.y = 0.0;
+    if widgets::open_row(ui, controls, INPUT, &input_name).clicked() {
+        state.pad.toolbox.page = Some(ToolPage::PolygonizeInput);
+    }
+    if let Some(limits) = state.polygonize_limits() {
+        widgets::detail_row(ui, LIMITS, &format!("{limits}, from the layer"));
+    }
+    let smooth = Number::new(SMOOTH, state.polygonize.smooth, 0.0..=1.0)
+        .shown(100.0, "%")
+        .step(0.01)
+        .slider(ui, controls);
+    if let Some(smooth) = smooth {
+        state.polygonize.smooth = smooth;
+    }
+    widgets::list_heading(ui, OUTPUT);
+    if state.polygonize_can_split() {
+        widgets::switch_row(ui, controls, SPLIT, SPLIT, &mut state.polygonize.split);
+        if state.polygonize.split {
+            let p = &mut state.polygonize;
+            widgets::text_field(ui, controls, ABOVE, ABOVE, None, &mut p.above, true);
+            widgets::text_field(ui, controls, BELOW, BELOW, None, &mut p.below, true);
+        }
+    }
+    let stale = state.polygonize_stale();
+    if let Some(names) = &stale {
+        let text = polygonize::stale_text(names);
+        ui.add_space(8.0);
+        ui.label(egui::RichText::new(text).color(theme::MUTE));
+    }
+    ui.add_space(12.0);
+    if widgets::button_row(ui, controls, RUN, state.can_polygonize()).clicked() {
+        state.run_polygonize();
+    }
+    ui.add_space(8.0);
+    let note = match input {
+        None => Some(NEEDS_RASTER),
+        Some(_) => state.toolbox_note.as_deref().filter(|_| stale.is_none()),
+    };
+    if let Some(note) = note {
+        ui.label(egui::RichText::new(note).color(theme::MUTE));
+    }
+}
+
+fn input_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
+    let current = state.polygonize_input();
+    ui.spacing_mut().item_spacing.y = 0.0;
+    ui.add_space(8.0);
+    let layers = state.held_rasters();
+    if layers.is_empty() {
+        ui.label(egui::RichText::new(NEEDS_RASTER).color(theme::MUTE));
+    }
+    for (id, name) in layers {
+        let on = current == Some(id);
+        if widgets::option_row(ui, controls, &name, &name, &[], on).clicked() && !on {
+            state.polygonize.raster = Some(id);
+            state.toolbox_note = None;
+        }
+    }
 }
 
 fn lines_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {

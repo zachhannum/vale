@@ -736,33 +736,68 @@ pub(super) fn to_polygons_many(rings: &[Vec<PathVertex>]) -> Vec<Vec<Vec<LonLat>
     }
     outers.extend(join_at_edge(&parts));
     let areas: Vec<f64> = outers.iter().map(|r| flat_area(r)).collect();
+    let boxes: Vec<[f64; 4]> = outers.iter().map(|r| flat_box(r)).collect();
     let mut out: Vec<Vec<Vec<LonLat>>> = outers.into_iter().map(|r| vec![r]).collect();
+    let mut world: Option<usize> = None;
     for hole in holes {
         let p = [
             (hole[0][0] + hole[1][0]) / 2.0,
             (hole[0][1] + hole[1][1]) / 2.0,
         ];
+        let in_box = |b: &[f64; 4]| p[0] >= b[0] && p[1] >= b[1] && p[0] <= b[2] && p[1] <= b[3];
         // An island in a lake can hold a lake too, so the hole goes in the
         // smallest outer ring around it.
-        let holder = (0..out.len().min(areas.len()))
-            .filter(|&i| flat_contains(&out[i][0], p))
+        let holder = (0..areas.len())
+            .filter(|&i| in_box(&boxes[i]) && flat_contains(&out[i][0], p))
             .min_by(|&a, &b| areas[a].total_cmp(&areas[b]));
-        match holder.map(|i| &mut out[i]) {
-            Some(poly) => poly.push(hole),
-            // The area outside all outer rings is in the polygon.
-            None => out.push(vec![
-                vec![
-                    [-180.0, -90.0],
-                    [180.0, -90.0],
-                    [180.0, 90.0],
-                    [-180.0, 90.0],
-                    [-180.0, -90.0],
-                ],
-                hole,
-            ]),
+        match (holder, world) {
+            (Some(i), _) | (None, Some(i)) => out[i].push(hole),
+            // The area outside all outer rings is in one polygon.
+            (None, None) => {
+                world = Some(out.len());
+                out.push(vec![
+                    vec![
+                        [-180.0, -90.0],
+                        [180.0, -90.0],
+                        [180.0, 90.0],
+                        [-180.0, 90.0],
+                        [-180.0, -90.0],
+                    ],
+                    hole,
+                ]);
+            }
         }
     }
     out
+}
+
+/// The polygons in longitude and latitude of the area on the left of simple
+/// rings on the sphere that do not cross each other.
+pub fn sphere_polygons(rings: &[Vec<V3>]) -> Vec<Vec<Vec<LonLat>>> {
+    let rings: Vec<Vec<PathVertex>> = (rings.iter())
+        .map(|r| r.iter().map(|&d| PathVertex::Free(d)).collect())
+        .collect();
+    to_polygons_many(&rings)
+}
+
+/// The least longitude, the least latitude, the greatest longitude, and the
+/// greatest latitude of a ring.
+fn flat_box(ring: &[LonLat]) -> [f64; 4] {
+    let mut b = [
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    ];
+    for p in ring {
+        b = [
+            b[0].min(p[0]),
+            b[1].min(p[1]),
+            b[2].max(p[0]),
+            b[3].max(p[1]),
+        ];
+    }
+    b
 }
 
 /// The outer rings of parts that each go from the 180 degree meridian to it.
