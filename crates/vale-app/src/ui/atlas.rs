@@ -373,6 +373,10 @@ pub enum ClassPage {
     Layer,
     /// The placements of the feature type of the layer.
     Placement,
+    /// The orientations of a line class.
+    Orientation,
+    /// The positions along the line of a line class.
+    LinePosition,
     /// The faces of the font family of the class.
     Style,
     /// The cases of the text.

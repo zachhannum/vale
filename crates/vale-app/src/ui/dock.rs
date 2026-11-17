@@ -985,14 +985,118 @@ fn page_panel(ui: &mut egui::Ui, state: &mut AppState) {
     ui.add_space(6.0);
 }
 
+/// The options of a line class: the orientation, the position, the
+/// direction, the repeat, the overrun, the spread, the join, the minimum
+/// length, the curve limit, and the smoothing.
+fn line_label_controls(ui: &mut egui::Ui, class: &mut vale_style::LabelClass) {
+    use super::pad::labels::{
+        ANCHOR_DISTANCE, ANCHOR_DISTANCES, ANCHOR_PERCENT, ANCHOR_PERCENTS, ANCHOR_TOLERANCE,
+        BY_DIRECTION, CURVE_LIMIT, CURVE_LIMITS, FOLLOW_DIRECTION, LINE_OVERRUNS, LINE_POSITION,
+        LINE_SPREADS, MERGE_LINES, MIN_LENGTH, MIN_LENGTHS, ORIENTATION, OVERRUN, REPEAT,
+        REPEAT_INTERVAL, REPEAT_INTERVALS, SMOOTHING, SMOOTHINGS, SPREAD, SPREAD_FILL,
+    };
+    use vale_style::{LineAnchor, LineOrientation};
+    egui::ComboBox::from_label(ORIENTATION)
+        .selected_text(class.orientation.name())
+        .show_ui(ui, |ui| {
+            for o in LineOrientation::ALL {
+                ui.selectable_value(&mut class.orientation, o, o.name());
+            }
+        });
+    egui::ComboBox::from_label(LINE_POSITION)
+        .selected_text(class.line_anchor.name())
+        .show_ui(ui, |ui| {
+            for a in LineAnchor::ALL {
+                ui.selectable_value(&mut class.line_anchor, a, a.name());
+            }
+        });
+    let best = class.line_anchor == LineAnchor::Best;
+    if !best {
+        let ((lo, hi), suffix, step) = if class.anchor_percent {
+            (ANCHOR_PERCENTS, " %", 1.0)
+        } else {
+            (ANCHOR_DISTANCES, " pt", 5.0)
+        };
+        number::stepper(ANCHOR_DISTANCE, &mut class.anchor_distance)
+            .range(lo..=hi)
+            .step(step)
+            .suffix(suffix)
+            .show(ui);
+        number::stepper(ANCHOR_TOLERANCE, &mut class.anchor_tolerance)
+            .range(lo..=hi)
+            .step(step)
+            .suffix(suffix)
+            .show(ui);
+        ui.checkbox(&mut class.anchor_percent, ANCHOR_PERCENT);
+    }
+    ui.checkbox(&mut class.by_direction, BY_DIRECTION);
+    ui.checkbox(&mut class.follow_direction, FOLLOW_DIRECTION);
+    if best {
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut class.repeat, REPEAT);
+            if class.repeat {
+                number::stepper(REPEAT_INTERVAL, &mut class.repeat_distance)
+                    .range(REPEAT_INTERVALS.0..=REPEAT_INTERVALS.1)
+                    .step(10.0)
+                    .suffix(" pt")
+                    .show(ui);
+            }
+        });
+    }
+    number::stepper(OVERRUN, &mut class.overrun)
+        .range(LINE_OVERRUNS.0..=LINE_OVERRUNS.1)
+        .step(0.5)
+        .suffix(" pt")
+        .show(ui);
+    let along = matches!(
+        class.orientation,
+        LineOrientation::Curved | LineOrientation::Straight
+    );
+    if along {
+        ui.horizontal(|ui| {
+            if !class.spread_fill {
+                number::stepper(SPREAD, &mut class.line_spread)
+                    .range(LINE_SPREADS.0..=LINE_SPREADS.1)
+                    .step(0.1)
+                    .suffix("×")
+                    .show(ui);
+            }
+            ui.checkbox(&mut class.spread_fill, SPREAD_FILL);
+        });
+    }
+    ui.checkbox(&mut class.merge_lines, MERGE_LINES);
+    number::stepper(MIN_LENGTH, &mut class.min_length)
+        .range(MIN_LENGTHS.0..=MIN_LENGTHS.1)
+        .step(5.0)
+        .suffix(" pt")
+        .show(ui);
+    if class.orientation == LineOrientation::Curved {
+        let mut degrees = class.curve_limit.to_degrees();
+        let stepper = number::stepper(CURVE_LIMIT, &mut degrees)
+            .range(CURVE_LIMITS.0..=CURVE_LIMITS.1)
+            .step(1.0)
+            .decimals(0)
+            .suffix("°");
+        if stepper.show(ui).changed() {
+            class.curve_limit = degrees.to_radians();
+        }
+    }
+    if along {
+        number::slider(SMOOTHING, &mut class.smoothing, SMOOTHINGS.0..=SMOOTHINGS.1)
+            .step(0.1)
+            .suffix("×")
+            .show(ui);
+    }
+}
+
 /// The label classes of the map of a frame in priority order, and the
 /// controls of the open class.
 fn labels_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
     use super::pad::labels::{
         ADD_CLASS, BUFFER, CASE, CURVE_LIMIT, DELETE_CLASS, DUPLICATE_DISTANCE, FOLLOW_PARALLELS,
         HALO, HALO_WIDTH, LABEL_SIZE, LETTER_SPACING, MOVE_DOWN, MOVE_UP, NO_LABEL_LAYERS, OFFSET,
-        PLACEMENT, POSITIONS, REMOVE_DUPLICATES, REPEAT, REPEAT_INTERVAL, SMOOTHING, SPREAD,
-        SPREADS, STYLE, UPSIDE_DOWN, can_follow_parallels, follows_parallels,
+        PLACEMENT, POSITIONS, REMOVE_DUPLICATES, SPREAD, SPREADS, STYLE, UPSIDE_DOWN,
+        can_follow_parallels, follows_parallels,
     };
     use super::pad::labels::{
         AVOID_POLYGONS, INSIDE, LARGEST_PART, LEADER_LINE, LEADER_START, MIN_AREA, MIN_AREAS,
@@ -1157,20 +1261,10 @@ fn labels_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
     if follows_parallels(kind, &class) {
         ui.checkbox(&mut class.no_flip, UPSIDE_DOWN);
     }
-    let curved = kind == GeometryKind::Line
-        || (kind == GeometryKind::Polygon
-            && class.placement != vale_style::LabelPlacement::Horizontal);
+    let curved =
+        kind == GeometryKind::Polygon && class.placement != vale_style::LabelPlacement::Horizontal;
     if kind == GeometryKind::Line {
-        ui.horizontal(|ui| {
-            ui.checkbox(&mut class.repeat, REPEAT);
-            if class.repeat {
-                number::stepper(REPEAT_INTERVAL, &mut class.repeat_distance)
-                    .range(50.0..=2000.0)
-                    .step(10.0)
-                    .suffix(" pt")
-                    .show(ui);
-            }
-        });
+        line_label_controls(ui, &mut class);
     }
     if curved {
         let mut degrees = class.curve_limit.to_degrees();
@@ -1222,12 +1316,6 @@ fn labels_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
             .range(MIN_AREAS.0..=MIN_AREAS.1)
             .step(50.0)
             .suffix(" pt²")
-            .show(ui);
-    }
-    if kind == GeometryKind::Line {
-        number::slider(SMOOTHING, &mut class.smoothing, 0.0..=5.0)
-            .step(0.1)
-            .suffix("×")
             .show(ui);
     }
     number::stepper(BUFFER, &mut class.buffer)

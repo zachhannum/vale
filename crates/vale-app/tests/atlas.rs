@@ -64,6 +64,10 @@ use vale_app::ui::pad::labels::{
     STYLE, TEXT, UPSIDE_DOWN,
 };
 use vale_app::ui::pad::labels::{
+    ANCHOR_DISTANCE, ANCHOR_PERCENT, ANCHOR_TOLERANCE, BY_DIRECTION, FOLLOW_DIRECTION,
+    LINE_POSITION, MERGE_LINES, MIN_LENGTH, ORIENTATION, SPREAD_FILL,
+};
+use vale_app::ui::pad::labels::{
     ANCHOR_GAP, AVOID_POLYGONS, DASH, DASH_GAP, DASHED, END_SIZE, LABEL_GAP, LARGEST_PART,
     LEADER_LINE, LINE_WIDTH, MATCH_HALO, MATCH_TEXT, MIN_AREA, OVER_HOLES, OVERRUN,
     REPEAT_DISTANCE, REPEAT_LABEL, SHOW_LINE, ZONES, zone_name,
@@ -4754,13 +4758,48 @@ fn the_controls_of_the_labels_tab_work_with_a_finger() {
         tap(&mut h, "Rivers");
         assert_eq!(h.state().atlas.label_segment, ClassSegment::Text, "{what}");
         tap(&mut h, SEGMENTS[1].0);
-        let numbers = [OFFSET, REPEAT_INTERVAL, CURVE_LIMIT].map(value_of);
-        for name in [&numbers[0], REPEAT, &numbers[1], &numbers[2], SMOOTHING] {
+        let numbers = [
+            OFFSET,
+            REPEAT_INTERVAL,
+            OVERRUN,
+            SPREAD,
+            MIN_LENGTH,
+            CURVE_LIMIT,
+        ];
+        let numbers = numbers.map(value_of);
+        let rows = [
+            ORIENTATION,
+            LINE_POSITION,
+            BY_DIRECTION,
+            FOLLOW_DIRECTION,
+            REPEAT,
+            SPREAD_FILL,
+            MERGE_LINES,
+            SMOOTHING,
+        ];
+        for name in numbers.iter().map(String::as_str).chain(rows) {
+            scroll_up_to(&mut h, ORIENTATION);
             scroll_to(&mut h, name);
             assert!(control(&h, name).is_some(), "{what}: {name}");
+            check_controls(&h, &format!("{what}: line placement segment at {name}"));
         }
         assert!(control(&h, POSITIONS).is_none(), "{what}");
-        check_controls(&h, &format!("{what}: line placement segment"));
+        scroll_up_to(&mut h, ORIENTATION);
+        tap(&mut h, ORIENTATION);
+        check_controls(&h, &format!("{what}: orientation page"));
+        tap(&mut h, vale_style::LineOrientation::Straight.name());
+        tap(&mut h, LINE_POSITION);
+        check_controls(&h, &format!("{what}: position page"));
+        tap(&mut h, vale_style::LineAnchor::FromEnd.name());
+        for name in [ANCHOR_DISTANCE, ANCHOR_TOLERANCE].map(value_of) {
+            scroll_to(&mut h, &name);
+            assert!(control(&h, &name).is_some(), "{what}: {name}");
+        }
+        scroll_to(&mut h, ANCHOR_PERCENT);
+        check_controls(&h, &format!("{what}: anchor options"));
+        if size == BOARDS[0] {
+            screenshot::save(&mut h, "pad-atlas-label-line-placement");
+        }
         tap(&mut h, "Back to Labels");
         tap(&mut h, "Class 1");
         scroll_to(&mut h, DELETE_CLASS);
@@ -5578,6 +5617,171 @@ fn the_labels_tab_edits_a_polygon_class() {
 /// The labeler placement of the first class of a layer.
 fn labeler_placement(h: &Pad, map: MapId, layer: &str, kind: GeometryKind) -> Placement {
     vale_app::labels::placement(&classes(h, map, layer)[0], kind)
+}
+
+/// A pad with the Placement segment of the class of the rivers.
+fn rivers_placement(size: (f32, f32)) -> (Pad, MapId) {
+    let mut h = labels_pad(size);
+    let map = frame(&h, 0).map;
+    tap(&mut h, "Rivers");
+    tap(&mut h, SEGMENTS[1].0);
+    (h, map)
+}
+
+/// The labeler placement of the class of the rivers.
+fn river_placement(h: &Pad, map: MapId) -> vale_labeler::LinePlacement {
+    match labeler_placement(h, map, "Rivers", GeometryKind::Line) {
+        Placement::Line(line) => line,
+        other => panic!("not a line placement: {other:?}"),
+    }
+}
+
+/// True if the Placement segment of a line class shows the control `name`,
+/// after a scroll from the top to the control or to the bottom.
+fn line_row(h: &mut Pad, name: &str) -> bool {
+    scroll_up_to(h, ORIENTATION);
+    scroll_to(h, name);
+    control(h, name).is_some()
+}
+
+#[test]
+fn the_orientation_page_sets_the_orientation_of_a_line_class() {
+    use vale_labeler::LineOrientation as Labeler;
+    use vale_style::LineOrientation;
+    let (mut h, map) = rivers_placement(BOARDS[0]);
+    let labeler = [
+        Labeler::Curved,
+        Labeler::Straight,
+        Labeler::Horizontal,
+        Labeler::Perpendicular,
+    ];
+    for (orientation, want) in LineOrientation::ALL.into_iter().zip(labeler) {
+        scroll_up_to(&mut h, ORIENTATION);
+        tap(&mut h, ORIENTATION);
+        for o in LineOrientation::ALL {
+            assert!(control(&h, o.name()).is_some(), "{}", o.name());
+        }
+        tap(&mut h, orientation.name());
+        assert_eq!(h.state().atlas.label_page, None);
+        assert_eq!(classes(&h, map, "Rivers")[0].orientation, orientation);
+        assert_eq!(river_placement(&h, map).orientation, want);
+
+        // The curve limit is for curved text, and the smoothing and the
+        // spread are for text along the line.
+        let curved = orientation == LineOrientation::Curved;
+        let along = curved || orientation == LineOrientation::Straight;
+        let what = orientation.name();
+        assert_eq!(line_row(&mut h, &value_of(CURVE_LIMIT)), curved, "{what}");
+        assert_eq!(line_row(&mut h, SMOOTHING), along, "{what}");
+        assert_eq!(line_row(&mut h, &value_of(SPREAD)), along, "{what}");
+        assert_eq!(line_row(&mut h, SPREAD_FILL), along, "{what}");
+    }
+}
+
+#[test]
+fn the_position_page_sets_the_anchor_of_a_line_class() {
+    use vale_labeler::LineAnchor as Labeler;
+    use vale_style::LineAnchor;
+    let (mut h, map) = rivers_placement(BOARDS[0]);
+    assert!(!line_row(&mut h, &value_of(ANCHOR_DISTANCE)));
+    let labeler = [
+        Labeler::Best,
+        Labeler::FromStart,
+        Labeler::FromEnd,
+        Labeler::BeforeStart,
+        Labeler::AfterEnd,
+    ];
+    for (anchor, want) in LineAnchor::ALL.into_iter().zip(labeler).rev() {
+        scroll_up_to(&mut h, LINE_POSITION);
+        tap(&mut h, LINE_POSITION);
+        for a in LineAnchor::ALL {
+            assert!(control(&h, a.name()).is_some(), "{}", a.name());
+        }
+        tap(&mut h, anchor.name());
+        assert_eq!(h.state().atlas.label_page, None);
+        assert_eq!(classes(&h, map, "Rivers")[0].line_anchor, anchor);
+        assert_eq!(river_placement(&h, map).anchor, want);
+        // The labeler does not repeat a label with an anchor.
+        let best = anchor == LineAnchor::Best;
+        let what = anchor.name();
+        assert_eq!(control(&h, REPEAT).is_some(), best, "{what}");
+        assert_eq!(
+            control(&h, &value_of(REPEAT_INTERVAL)).is_some(),
+            best,
+            "{what}"
+        );
+        for name in [ANCHOR_DISTANCE, ANCHOR_TOLERANCE] {
+            assert_eq!(control(&h, &value_of(name)).is_some(), !best, "{what}");
+        }
+        assert_eq!(control(&h, ANCHOR_PERCENT).is_some(), !best, "{what}");
+    }
+
+    // The distance and the tolerance are in points, or in percent of the
+    // length.
+    scroll_up_to(&mut h, LINE_POSITION);
+    tap(&mut h, LINE_POSITION);
+    tap(&mut h, LineAnchor::FromStart.name());
+    set_number(&mut h, ANCHOR_DISTANCE, "300");
+    set_number(&mut h, ANCHOR_TOLERANCE, "40");
+    let line = river_placement(&h, map);
+    assert_eq!((line.anchor_distance, line.anchor_tolerance), (300.0, 40.0));
+    assert!(!line.anchor_percent);
+    scroll_to(&mut h, ANCHOR_PERCENT);
+    tap(&mut h, ANCHOR_PERCENT);
+    assert!(classes(&h, map, "Rivers")[0].anchor_percent);
+    assert!(river_placement(&h, map).anchor_percent);
+    set_number(&mut h, ANCHOR_DISTANCE, "250");
+    set_number(&mut h, ANCHOR_TOLERANCE, "10");
+    let class = classes(&h, map, "Rivers")[0].clone();
+    assert_eq!(
+        (class.anchor_distance, class.anchor_tolerance),
+        (100.0, 10.0)
+    );
+    let line = river_placement(&h, map);
+    assert_eq!((line.anchor_distance, line.anchor_tolerance), (100.0, 10.0));
+}
+
+#[test]
+fn the_line_options_change_the_class_and_the_labeler_placement() {
+    let (mut h, map) = rivers_placement(BOARDS[0]);
+    let start = classes(&h, map, "Rivers")[0].clone();
+    type Get = fn(&vale_labeler::LinePlacement) -> bool;
+    let switches: [(&str, Get); 4] = [
+        (BY_DIRECTION, |l| l.by_direction),
+        (FOLLOW_DIRECTION, |l| l.follow_direction),
+        (MERGE_LINES, |l| l.merge_connected),
+        (SPREAD_FILL, |l| l.spread_fill),
+    ];
+    for (name, get) in switches {
+        let before = get(&river_placement(&h, map));
+        scroll_to(&mut h, name);
+        tap(&mut h, name);
+        assert_eq!(get(&river_placement(&h, map)), !before, "{name}");
+    }
+    let class = classes(&h, map, "Rivers")[0].clone();
+    assert_eq!(class.by_direction, !start.by_direction);
+    assert_eq!(class.follow_direction, !start.follow_direction);
+    assert_eq!(class.merge_lines, !start.merge_lines);
+    assert!(class.spread_fill);
+    // The spread has no limit while it fills the line.
+    assert!(!line_row(&mut h, &value_of(SPREAD)));
+    scroll_to(&mut h, SPREAD_FILL);
+    tap(&mut h, SPREAD_FILL);
+    assert!(!classes(&h, map, "Rivers")[0].spread_fill);
+
+    set_number(&mut h, OVERRUN, "12");
+    set_number(&mut h, SPREAD, "5");
+    set_number(&mut h, MIN_LENGTH, "80");
+    let class = classes(&h, map, "Rivers")[0].clone();
+    assert_eq!(
+        (class.overrun, class.line_spread, class.min_length),
+        (12.0, 2.0, 80.0)
+    );
+    let line = river_placement(&h, map);
+    assert_eq!(
+        (line.overrun, line.max_spread, line.min_length),
+        (12.0, 2.0, 80.0)
+    );
 }
 
 /// A pad with the Labels tab of a frame, and a polygon class "Land" with the text "Land".
@@ -6988,6 +7192,25 @@ fn each_change_of_a_placement_option_is_one_undo_step() {
     assert!(!class(&h, "Rivers").repeat);
     tap(&mut h, "Undo");
     assert!(class(&h, "Rivers").repeat);
+
+    // A switch and a choice of the line options.
+    let start = class(&h, "Rivers");
+    scroll_to(&mut h, FOLLOW_DIRECTION);
+    tap(&mut h, FOLLOW_DIRECTION);
+    assert!(class(&h, "Rivers").follow_direction);
+    scroll_up_to(&mut h, ORIENTATION);
+    tap(&mut h, ORIENTATION);
+    tap(&mut h, vale_style::LineOrientation::Straight.name());
+    assert_eq!(
+        class(&h, "Rivers").orientation,
+        vale_style::LineOrientation::Straight
+    );
+    tap(&mut h, "Undo");
+    let c = class(&h, "Rivers");
+    assert_eq!(c.orientation, vale_style::LineOrientation::Curved);
+    assert!(c.follow_direction);
+    tap(&mut h, "Undo");
+    assert_eq!(class(&h, "Rivers"), start);
 }
 
 fn item(h: &Pad, index: usize) -> FurnitureRecord {
