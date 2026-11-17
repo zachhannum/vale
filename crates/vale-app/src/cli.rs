@@ -16,6 +16,7 @@ use crate::measure::Measure;
 use crate::pipeline::Pipeline;
 use crate::projects::{self, Locations};
 use crate::session::Session;
+use crate::text_size::TextSize;
 use crate::ui::export_form::ExportForm;
 use crate::ui::pad::Panel;
 use crate::ui::world_form::FormMode;
@@ -160,6 +161,9 @@ pub struct Args {
     /// `59,0,34,0`.
     #[arg(long, value_name = "T,R,B,L", value_delimiter = ',')]
     pub safe_area: Option<Vec<f32>>,
+    /// The text size setting of the system, as in Larger Text on iOS.
+    #[arg(long, value_enum, default_value_t = TextSize::Large)]
+    pub text_size: TextSize,
     /// The region that the system reserves around a camera, in headless
     /// output: the left edge, the top edge, the width, and the height, in
     /// points. The outer screen of iPhone Duo in portrait has about

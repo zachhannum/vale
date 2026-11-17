@@ -93,6 +93,7 @@ objc2-ui-kit = { version = "0.3.2", default-features = false, features = [
     "UIGeometry",
     "UIWindow",
     "UIAccessibility",
+    "UIContentSizeCategory",
 ] }
 objc2-uniform-type-identifiers = { version = "0.3.2", default-features = false, features = [
     "std",

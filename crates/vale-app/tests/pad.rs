@@ -611,6 +611,26 @@ fn each_control_is_large_and_is_outside_the_system_bands() {
     }
 }
 
+#[test]
+fn panel_text_follows_the_text_size_of_the_system() {
+    use vale_app::text_size::TextSize;
+    use vale_app::ui::pad::theme;
+    for size in BOARDS {
+        let mut h = painted_pad(size);
+        assert_eq!(theme::body().size, 15.0);
+        h.state_mut().text_size = TextSize::Accessibility5;
+        let pad = &mut h.state_mut().pad;
+        pad.close(Panel::Brush);
+        pad.open(Panel::Layers);
+        h.run_steps(2);
+        assert_eq!(theme::body().size, 24.5, "{size:?}");
+        for name in ["Layer Land", "Hide Rivers", "Open Places", ADD_LAYER] {
+            assert!(control(&h, name).is_some(), "{size:?}: {name}");
+        }
+        check_controls(&h, &format!("{size:?} with the largest text"));
+    }
+}
+
 /// The name of a raster layer, from its layer record.
 fn raster_name(h: &Pad, id: vale_store::RasterId) -> String {
     let layer = h.state().doc.project.raster_layer(id);
