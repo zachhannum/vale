@@ -28,6 +28,60 @@ pub struct BandRings {
     pub whole: bool,
 }
 
+/// The rings of each limit. Two bands share the rings of the limit between
+/// them, so each ring is here one time.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Contours {
+    /// The rings of each limit, each with the higher values on its left.
+    pub limits: Vec<Vec<Vec<V3>>>,
+    /// The band of the first texel. With no ring, this band covers the
+    /// whole sphere.
+    first: usize,
+}
+
+impl Contours {
+    /// The number of bands.
+    pub fn bands_len(&self) -> usize {
+        self.limits.len() + 1
+    }
+
+    /// The rings of band `band`: the rings of the limit below it, and the
+    /// rings of the limit above it in reverse.
+    pub fn band(&self, band: usize) -> BandRings {
+        let mut rings = Vec::new();
+        if band > 0 {
+            rings.extend(self.limits[band - 1].iter().cloned());
+        }
+        if band < self.limits.len() {
+            let above = self.limits[band].iter();
+            rings.extend(above.map(|r| r.iter().rev().copied().collect()));
+        }
+        BandRings {
+            whole: rings.is_empty() && band == self.first,
+            rings,
+        }
+    }
+
+    /// The rings of band `band`, each with a flag that is true for a ring
+    /// to read in reverse, with no copy.
+    pub fn band_rings(&self, band: usize) -> impl Iterator<Item = (&[V3], bool)> {
+        let below = (band > 0).then(|| &self.limits[band - 1]);
+        let above = self.limits.get(band);
+        let below = below.into_iter().flatten().map(|r| (r.as_slice(), false));
+        below.chain(above.into_iter().flatten().map(|r| (r.as_slice(), true)))
+    }
+
+    /// True if band `band` covers the whole sphere.
+    pub fn is_whole(&self, band: usize) -> bool {
+        self.band_rings(band).next().is_none() && band == self.first
+    }
+
+    /// The rings of each band.
+    pub fn bands(&self) -> Vec<BandRings> {
+        (0..self.bands_len()).map(|b| self.band(b)).collect()
+    }
+}
+
 /// The parameters of `polygonize`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Trace {
@@ -38,10 +92,18 @@ pub struct Trace {
     pub tolerance: f64,
 }
 
-/// The rings of each band of `map`. `limits` are the levels of the edges
+/// The rings of each limit of `map`. `limits` are the levels of the edges
 /// between the bands, in ascending order, so band `i` goes from limit
 /// `i - 1` to limit `i`. A texel at a limit is in the upper band.
-pub fn polygonize(map: &Heightmap, limits: &[f64], trace: Trace) -> Vec<BandRings> {
+///
+/// `progress` gets the share of the work that is done, from 0 to 1. If it
+/// returns `false`, the trace stops and returns `None`.
+pub fn polygonize(
+    map: &Heightmap,
+    limits: &[f64],
+    trace: Trace,
+    progress: &dyn Fn(f64) -> bool,
+) -> Option<Contours> {
     let n = map.face_size();
     let mesh = Mesh::new(map);
     let filter = Filter::new(trace.sigma, n);
@@ -52,7 +114,7 @@ pub fn polygonize(map: &Heightmap, limits: &[f64], trace: Trace) -> Vec<BandRing
     for face in 0..FACES {
         let field = filter.face(map, face, threads);
         if face == 0 {
-            first = field[0];
+            first = f32::from(field[0]);
         }
         // The cells of the corners of the texel grid inside the face, in
         // bands of rows.
@@ -75,13 +137,19 @@ pub fn polygonize(map: &Heightmap, limits: &[f64], trace: Trace) -> Vec<BandRing
             }
         }
         borders.push(Border::of(&field, n));
+        drop(field);
+        if !progress((face + 1) as f64 / (FACES + 1) as f64) {
+            return None;
+        }
     }
     mesh.for_each_edge_cell(|ids| {
         let mut values = [0.0f32; 4];
         for (v, &id) in values.iter_mut().zip(ids) {
             *v = mesh.border_value(&borders, id);
         }
-        mesh.march(&mut lines, ids, &values[..ids.len()], limits);
+        let mut find =
+            |l: &mut Lines, t: usize, _: usize, a: Corner, b: Corner| l.crossing(a, b, limits[t]);
+        mesh.march(&mut lines, ids, &values[..ids.len()], limits, &mut find);
     });
     let tolerance = trace.tolerance * FRAC_PI_2 / n as f64;
     let rings: Vec<Vec<Vec<V3>>> = std::thread::scope(|s| {
@@ -92,27 +160,11 @@ pub fn polygonize(map: &Heightmap, limits: &[f64], trace: Trace) -> Vec<BandRing
             .map(|j| j.join().expect("a ring"))
             .collect()
     });
-    let band_of = |v: f32| limits.partition_point(|&t| t <= v as f64);
-    let whole = band_of(first);
-    (0..=limits.len())
-        .map(|band| {
-            let mut out = Vec::new();
-            if band > 0 {
-                out.extend(rings[band - 1].iter().cloned());
-            }
-            if band < limits.len() {
-                out.extend(
-                    rings[band]
-                        .iter()
-                        .map(|r| r.iter().rev().copied().collect()),
-                );
-            }
-            BandRings {
-                whole: out.is_empty() && band == whole,
-                rings: out,
-            }
-        })
-        .collect()
+    progress(1.0);
+    Some(Contours {
+        limits: rings,
+        first: limits.partition_point(|&t| t <= first as f64),
+    })
 }
 
 /// The values of the texels at the four edges of one face, after the
@@ -121,12 +173,13 @@ pub fn polygonize(map: &Heightmap, limits: &[f64], trace: Trace) -> Vec<BandRing
 struct Border([Vec<f32>; 4]);
 
 impl Border {
-    fn of(field: &[f32], n: usize) -> Border {
+    fn of(field: &[u16], n: usize) -> Border {
+        let row = |r: &[u16]| r.iter().map(|&v| f32::from(v)).collect();
         Border([
-            field[..n].to_vec(),
-            field[(n - 1) * n..].to_vec(),
-            (0..n).map(|y| field[y * n]).collect(),
-            (0..n).map(|y| field[y * n + n - 1]).collect(),
+            row(&field[..n]),
+            row(&field[(n - 1) * n..]),
+            (0..n).map(|y| f32::from(field[y * n])).collect(),
+            (0..n).map(|y| f32::from(field[y * n + n - 1])).collect(),
         ])
     }
 }
@@ -159,12 +212,12 @@ impl Filter {
         Filter { kernel, reach }
     }
 
-    /// The filtered levels of one face, row by row. The filter reads past
-    /// each face edge.
-    fn face(&self, map: &Heightmap, face: usize, threads: usize) -> Vec<f32> {
+    /// The filtered levels of one face, row by row, to the nearest level.
+    /// The filter reads past each face edge.
+    fn face(&self, map: &Heightmap, face: usize, threads: usize) -> Vec<u16> {
         let n = map.face_size();
-        let mut out = vec![0.0f32; n * n];
-        let mut jobs: Vec<Vec<(usize, &mut [f32])>> = (0..threads).map(|_| Vec::new()).collect();
+        let mut out = vec![0u16; n * n];
+        let mut jobs: Vec<Vec<(usize, &mut [u16])>> = (0..threads).map(|_| Vec::new()).collect();
         for (k, chunk) in out.chunks_mut(FILTER_ROWS * n).enumerate() {
             jobs[k % threads].push((k * FILTER_ROWS, chunk));
         }
@@ -181,7 +234,7 @@ impl Filter {
     }
 
     /// The filtered levels of the rows from `y0`, as many as `out` holds.
-    fn rows(&self, map: &Heightmap, face: usize, y0: usize, out: &mut [f32]) {
+    fn rows(&self, map: &Heightmap, face: usize, y0: usize, out: &mut [u16]) {
         let n = map.face_size();
         let r = self.reach;
         let count = out.len() / n;
@@ -223,13 +276,17 @@ impl Filter {
                 *o = window.iter().zip(&self.kernel).map(|(v, w)| v * w).sum();
             }
         }
+        let mut sum = vec![0.0f32; n];
         for (y, row) in out.chunks_mut(n).enumerate() {
-            row.fill(0.0);
+            sum.fill(0.0);
             for (i, w) in self.kernel.iter().enumerate() {
                 let source = &across[(y + i) * n..(y + i + 1) * n];
-                for (o, v) in row.iter_mut().zip(source) {
+                for (o, v) in sum.iter_mut().zip(source) {
                     *o += v * w;
                 }
+            }
+            for (o, v) in row.iter_mut().zip(&sum) {
+                *o = v.round() as u16;
             }
         }
     }
@@ -290,15 +347,28 @@ impl<'a> Mesh<'a> {
     /// The segments of the cells of the corners `(i, j)` of the texel grid
     /// of a face, for `i` from 1 to `n - 1` and `j` in `rows`. All texels of
     /// these cells are in the face.
+    ///
+    /// Two cells of the rows share a crossing through a buffer of the row,
+    /// not through a key. Only a crossing on the first row or the last row
+    /// of texels of the rows, or on the first or the last column, has a key,
+    /// because a cell of other rows or of a face edge shares it.
     fn march_inside(
         &self,
         face: usize,
-        field: &[f32],
+        field: &[u16],
         rows: Range<usize>,
         limits: &[f64],
     ) -> Vec<Lines> {
         let n = self.n;
         let mut lines: Vec<Lines> = limits.iter().map(|_| Lines::default()).collect();
+        // Each entry holds the row of its crossing in the high half, so a
+        // buffer needs no reset. A row of texels uses the buffer of its
+        // parity, because a cell reads the row below it and writes the row
+        // above it.
+        let empty = u64::MAX;
+        let mut across = vec![[vec![empty; n], vec![empty; n]]; limits.len()];
+        let mut up = vec![vec![empty; n]; limits.len()];
+        let (first, last) = (rows.start, rows.end - 1);
         // A face of a negative axis looks at its grid from behind.
         let flip = face % 2 == 1;
         for j in rows {
@@ -307,9 +377,34 @@ impl<'a> Mesh<'a> {
                 if flip {
                     corners.reverse();
                 }
-                let values = corners.map(|(x, y)| field[y * n + x]);
+                let values = corners.map(|(x, y)| f32::from(field[y * n + x]));
                 let ids = corners.map(|(x, y)| self.id(face, x, y));
-                self.march(&mut lines, &ids, &values, limits);
+                let mut find = |lines: &mut Lines, t: usize, edge: usize, a: Corner, b: Corner| {
+                    // The edges of the cell from corner `edge` to the next
+                    // corner, in the order of `corners`.
+                    let side = match (edge, flip) {
+                        (0, false) | (2, true) => Side::Below,
+                        (1, _) => Side::Right,
+                        (2, false) | (0, true) => Side::Above,
+                        _ => Side::Left,
+                    };
+                    let (keyed, slot, tag) = match side {
+                        Side::Below => (j == first, &mut across[t][(j - 1) % 2][i - 1], j - 1),
+                        Side::Above => (j == last, &mut across[t][j % 2][i - 1], j),
+                        Side::Left => (i == 1, &mut up[t][i - 1], j),
+                        Side::Right => (i == n - 1, &mut up[t][i], j),
+                    };
+                    if keyed {
+                        return lines.crossing(a, b, limits[t]);
+                    }
+                    if *slot != empty && (*slot >> 32) as usize == tag {
+                        return *slot as u32;
+                    }
+                    let c = lines.point(a, b, limits[t]);
+                    *slot = ((tag as u64) << 32) | u64::from(c);
+                    c
+                };
+                self.march(&mut lines, &ids, &values, limits, &mut find);
             }
         }
         lines
@@ -317,7 +412,14 @@ impl<'a> Mesh<'a> {
 
     /// Adds the segments of one cell to the lines of each limit that the
     /// values of the cell go over.
-    fn march(&self, lines: &mut [Lines], ids: &[u32], values: &[f32], limits: &[f64]) {
+    fn march(
+        &self,
+        lines: &mut [Lines],
+        ids: &[u32],
+        values: &[f32],
+        limits: &[f64],
+        find: &mut Find,
+    ) {
         let lo = values.iter().copied().fold(f32::INFINITY, f32::min) as f64;
         let hi = values.iter().copied().fold(f32::NEG_INFINITY, f32::max) as f64;
         let first = limits.partition_point(|&t| t <= lo);
@@ -330,7 +432,9 @@ impl<'a> Mesh<'a> {
             *d = self.dir(id);
         }
         for t in first..last {
-            lines[t].march(ids, values, &dirs[..ids.len()], limits[t]);
+            let mut find =
+                |l: &mut Lines, edge: usize, a: Corner, b: Corner| find(l, t, edge, a, b);
+            lines[t].march(ids, values, &dirs[..ids.len()], limits[t], &mut find);
         }
     }
 
@@ -385,7 +489,8 @@ impl<'a> Mesh<'a> {
     }
 }
 
-/// The segments of one limit, keyed by the mesh edge of each crossing.
+/// The segments of one limit. A crossing that a cell of another part of
+/// the work can share has the key of its mesh edge.
 #[derive(Default)]
 struct Lines {
     crossings: HashMap<u64, u32>,
@@ -393,7 +498,20 @@ struct Lines {
     next: Vec<u32>,
 }
 
+/// A texel of a cell: its id, its value, and its direction.
 type Corner = (u32, f32, V3);
+
+/// Gives the crossing of the limit with index `t` on edge `edge` of a cell,
+/// from corner `a` to corner `b`.
+type Find<'a> = dyn FnMut(&mut Lines, usize, usize, Corner, Corner) -> u32 + 'a;
+
+/// An edge of a cell inside a face.
+enum Side {
+    Below,
+    Right,
+    Above,
+    Left,
+}
 
 /// A crossing is never closer than this to a texel center, as a share of
 /// the mesh edge. Two cells that meet at a texel at the limit then still
@@ -401,19 +519,28 @@ type Corner = (u32, f32, V3);
 const MIN_SHARE: f64 = 1e-3;
 
 impl Lines {
-    /// Adds the crossings and the segments of `other`. A crossing on the
-    /// same mesh edge is the same crossing.
+    /// Adds the crossings and the segments of `other`. A crossing with the
+    /// key of a crossing here is the same crossing.
     fn absorb(&mut self, other: Lines) {
-        let mut index = vec![0u32; other.points.len()];
+        const NEW: u32 = u32::MAX;
+        let mut index = vec![NEW; other.points.len()];
+        let mut keyed: Vec<(u32, u64)> = (other.crossings.iter()).map(|(&k, &i)| (i, k)).collect();
         // In the order of `other`, so each run gives the same rings.
-        let mut keys: Vec<(u32, u64)> = other.crossings.into_iter().map(|(k, i)| (i, k)).collect();
-        keys.sort_unstable();
-        for (i, key) in keys {
-            index[i as usize] = *self.crossings.entry(key).or_insert_with(|| {
-                self.points.push(other.points[i as usize]);
+        keyed.sort_unstable();
+        for &(i, key) in &keyed {
+            if let Some(&here) = self.crossings.get(&key) {
+                index[i as usize] = here;
+            }
+        }
+        for (i, slot) in index.iter_mut().enumerate() {
+            if *slot == NEW {
+                self.points.push(other.points[i]);
                 self.next.push(u32::MAX);
-                (self.points.len() - 1) as u32
-            });
+                *slot = (self.points.len() - 1) as u32;
+            }
+        }
+        for (i, key) in keyed {
+            self.crossings.entry(key).or_insert(index[i as usize]);
         }
         for (i, &to) in other.next.iter().enumerate() {
             if to != u32::MAX {
@@ -422,28 +549,44 @@ impl Lines {
         }
     }
 
+    /// A new crossing of `limit` on the mesh edge between two corners. Both
+    /// cells of the edge get the same point, from the corner of the lower
+    /// id.
+    fn point(&mut self, a: Corner, b: Corner, limit: f64) -> u32 {
+        let ((_, va, da), (_, vb, db)) = match a.0 < b.0 {
+            true => (a, b),
+            false => (b, a),
+        };
+        let share =
+            ((limit - va as f64) / (vb as f64 - va as f64)).clamp(MIN_SHARE, 1.0 - MIN_SHARE);
+        self.points
+            .push(normalize(add(scale(da, 1.0 - share), scale(db, share))));
+        self.next.push(u32::MAX);
+        (self.points.len() - 1) as u32
+    }
+
     /// The crossing of `limit` on the mesh edge between two corners, each
     /// with its texel, its value, and its direction.
     fn crossing(&mut self, a: Corner, b: Corner, limit: f64) -> u32 {
         let key = (u64::from(a.0.min(b.0)) << 32) | u64::from(a.0.max(b.0));
-        *self.crossings.entry(key).or_insert_with(|| {
-            // The same point from both cells: interpolate from the lower id.
-            let ((_, va, da), (_, vb, db)) = match a.0 < b.0 {
-                true => (a, b),
-                false => (b, a),
-            };
-            let share =
-                ((limit - va as f64) / (vb as f64 - va as f64)).clamp(MIN_SHARE, 1.0 - MIN_SHARE);
-            self.points
-                .push(normalize(add(scale(da, 1.0 - share), scale(db, share))));
-            self.next.push(u32::MAX);
-            (self.points.len() - 1) as u32
-        })
+        if let Some(&c) = self.crossings.get(&key) {
+            return c;
+        }
+        let c = self.point(a, b, limit);
+        self.crossings.insert(key, c);
+        c
     }
 
     /// Adds the segments of a cell whose values go over `limit`. Each segment
     /// has the values at the limit or higher on its left.
-    fn march(&mut self, ids: &[u32], values: &[f32], dirs: &[V3], limit: f64) {
+    fn march(
+        &mut self,
+        ids: &[u32],
+        values: &[f32],
+        dirs: &[V3],
+        limit: f64,
+        find: &mut dyn FnMut(&mut Lines, usize, Corner, Corner) -> u32,
+    ) {
         let k = ids.len();
         let up = |i: usize| values[i] as f64 >= limit;
         // The exits go from a high corner to a low corner, the entries from a
@@ -458,7 +601,7 @@ impl Lines {
                 continue;
             }
             let corner = |i: usize| (ids[i], values[i], dirs[i]);
-            let c = self.crossing(corner(i), corner(j), limit);
+            let c = find(self, i, corner(i), corner(j));
             order[ne + nn] = (up(i), c);
             if up(i) {
                 exits[ne] = c;
@@ -625,7 +768,9 @@ mod tests {
     fn a_cap_gives_one_ring_on_each_side() {
         let pole = lonlat_to_dir(20.0, 10.0);
         let map = map_of(32, |d| if angle(d, pole) < 0.5 { 1000 } else { 0 });
-        let bands = polygonize(&map, &[500.0], SHARP);
+        let bands = polygonize(&map, &[500.0], SHARP, &|_| true)
+            .unwrap()
+            .bands();
         assert_eq!(bands.len(), 2);
         assert_eq!(bands[0].rings.len(), 1);
         assert_eq!(bands[1].rings.len(), 1);
@@ -641,7 +786,9 @@ mod tests {
         // A cube corner is at the direction (1, 1, 1).
         let corner = normalize([1.0, 1.0, 1.0]);
         let map = map_of(16, |d| if angle(d, corner) < 0.4 { 1000 } else { 0 });
-        let bands = polygonize(&map, &[500.0], SHARP);
+        let bands = polygonize(&map, &[500.0], SHARP, &|_| true)
+            .unwrap()
+            .bands();
         assert_eq!(bands[1].rings.len(), 1);
         let ring = &bands[1].rings[0];
         for p in ring {
@@ -663,7 +810,9 @@ mod tests {
             a if a < 0.6 => 1000,
             _ => 0,
         });
-        let bands = polygonize(&map, &[500.0], SHARP);
+        let bands = polygonize(&map, &[500.0], SHARP, &|_| true)
+            .unwrap()
+            .bands();
         // The coast, the shore of the lake, and the coast of the small
         // island are rings of both bands.
         assert_eq!(bands[0].rings.len(), 3);
@@ -680,7 +829,9 @@ mod tests {
     #[test]
     fn a_band_with_no_ring_is_whole_or_empty() {
         let map = map_of(8, |_| 700);
-        let bands = polygonize(&map, &[500.0, 900.0], SHARP);
+        let bands = polygonize(&map, &[500.0, 900.0], SHARP, &|_| true)
+            .unwrap()
+            .bands();
         let whole: Vec<bool> = bands.iter().map(|b| b.whole).collect();
         assert_eq!(whole, [false, true, false]);
     }
@@ -689,7 +840,9 @@ mod tests {
     fn a_texel_at_a_limit_is_in_the_upper_band() {
         let c = lonlat_to_dir(0.0, 0.0);
         let map = map_of(16, |d| if angle(d, c) < 0.3 { 500 } else { 0 });
-        let bands = polygonize(&map, &[500.0], SHARP);
+        let bands = polygonize(&map, &[500.0], SHARP, &|_| true)
+            .unwrap()
+            .bands();
         assert_eq!(bands[1].rings.len(), 1);
     }
 
@@ -701,7 +854,9 @@ mod tests {
             sigma: 1.0,
             tolerance: 0.2,
         };
-        let bands = polygonize(&map, &[1000.0, 2000.0], trace);
+        let bands = polygonize(&map, &[1000.0, 2000.0], trace, &|_| true)
+            .unwrap()
+            .bands();
         // The hole of band 1 is the outer ring of band 2, in reverse.
         let upper = &bands[2].rings[0];
         let hole: Vec<V3> = bands[1]
@@ -723,7 +878,7 @@ mod tests {
         };
         let map = map_of(16, wave);
         let limits = [1500.0, 2500.0, 3000.0, 3500.0, 4500.0];
-        let bands = polygonize(&map, &limits, SHARP);
+        let bands = polygonize(&map, &limits, SHARP, &|_| true).unwrap().bands();
         let step = FRAC_PI_2 / 16.0;
         let mut count = 0;
         for band in &bands {
@@ -751,7 +906,7 @@ mod tests {
             tolerance: 0.1,
         };
         let start = std::time::Instant::now();
-        let bands = polygonize(&map, &limits, trace);
+        let bands = polygonize(&map, &limits, trace, &|_| true).unwrap().bands();
         let points: usize = bands.iter().flat_map(|b| &b.rings).map(|r| r.len()).sum();
         eprintln!("{:?}, {points} points", start.elapsed());
     }
@@ -796,7 +951,7 @@ mod tests {
             tolerance: 0.1,
         };
         let start = std::time::Instant::now();
-        let bands = polygonize(&map, &limits, trace);
+        let bands = polygonize(&map, &limits, trace, &|_| true).unwrap().bands();
         let points: usize = bands.iter().flat_map(|b| &b.rings).map(|r| r.len()).sum();
         eprintln!("trace {:?}, {points} points", start.elapsed());
     }

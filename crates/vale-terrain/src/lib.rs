@@ -60,7 +60,7 @@ pub use heightmap::{
 };
 pub use lake::LAKE_MIN_AREA;
 pub use line::{LINE_SEGMENTS, LINE_SPACING, LinePlan, LineSegment, StrokeLine};
-pub use polygonize::{BandRings, Trace, polygonize};
+pub use polygonize::{BandRings, Contours, Trace, polygonize};
 #[cfg(feature = "gpu")]
 pub use pyramid::{FIELD_WGSL, GpuPyramid, PyramidPipelines, pyramid_layout};
 pub use rain::Rain;
