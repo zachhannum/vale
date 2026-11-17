@@ -45,7 +45,7 @@ pub use cube::{
     level_to_meters, meters_to_level, unwarp, warp,
 };
 pub use equirect::{Equirect, EquirectGrid};
-pub use erode::{ErodeBrush, ErodeGrid, ErodeStep, ErodeTuning, Erosion, OuterFlow};
+pub use erode::{ErodeBrush, ErodeGrid, ErodeStep, Erosion, OuterFlow};
 pub use flow::{
     CHANNEL_SCALE, ChannelMap, ChannelWindow, CoarseHeights, FLOW_REACH, FLOW_SIZE, FlowMap,
     FlowSample, RIDGE_REACH, RIVER_MIN_AREA, RIVER_MIN_CELLS, RIVER_OCTAVES, WINDOW_CELLS,
