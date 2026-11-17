@@ -211,6 +211,7 @@ The job `testflight` in `.github/workflows/ios.yml` does the work, with `scripts
 - Pattern fills, texture fills, hatch fills, and edge effects. In the style editor, only the size and the rotation of a point symbol can come from a field.
 - Manual label changes.
 - The overview of the pages, page templates, and SVG export.
+- The toolbox operations other than Polygonize and Orient lines downhill. The project file does not keep the record of a Polygonize run, so the out-of-date mark of its layers lasts until the app closes.
 - Editing tools other than the line tool, the polygon tool, the Polygon brush, the point tool, the Select tool, reshape, split, Subtract, merge, Vertex, and the attribute table.
 
 ## The labeler demo

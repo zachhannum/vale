@@ -404,9 +404,13 @@ All operations work on the sphere. They live in the core crates, so the command 
 
 ### Polygonize
 
-The polygonize operation traces the value of each color stop on each cube face, joins the outlines across face edges, and smooths them. It writes one polygon layer. It can also split the output at a value into two layers, for example Topography and Bathymetry at 0 m. Each polygon of a heightmap has an `elev_min` attribute, and a normal style rule colors it.
+The polygonize operation traces the value of each color stop of a raster layer, and it writes one polygon layer. The pixel centers of all six faces are the points of one mesh. The mesh has a quad between four pixels of a face, a quad across each face edge, and a triangle at each cube corner. Marching squares on this mesh gives each stop as closed rings. Two cells put the crossing on the edge between them at the same point, so the rings have no gap at a face edge or a cube corner. A pixel at a stop is in the upper band, as in the preview.
 
-The polygons are an output layer of the toolbox. When the heightmap changes, the layer shows that it is out of date, and you run the operation again. A map can use the polygons, so topography stays vector in PDF and SVG. It can also use the stepped raster with the lines of its stops.
+The operation reads the copy of the layer that the preview shows, with a face of 2,048 pixels at most. The Smooth control sets the width of a Gaussian filter on the values before the trace, from 0 to 2 pixels. Each vertex that is less than 0.1 pixels from the simpler ring goes.
+
+Each band with an area is one feature. A feature of a height layer has the attributes `elev_min` and `elev_max`, and a feature of another raster layer has `value_min` and `value_max`. The style has a rule for each band, with the color of the band. On a height layer, the operation can split the output at 0 m into two layers, for example Topography and Bathymetry.
+
+The polygons are an output layer of the toolbox. When the heightmap changes, the page of the operation and the panel of each output layer show that it is out of date. Run again in the panel runs the operation one more time. A new run replaces the output layers of the last run on the same input, as one undo step. A map can use the polygons, so topography stays vector in PDF and SVG. It can also use the stepped raster with the lines of its stops.
 
 ### Lines
 
