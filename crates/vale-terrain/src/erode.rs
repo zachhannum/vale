@@ -51,6 +51,15 @@ pub struct ErodeTuning {
     /// largest features in cells.
     pub rough: f64,
     pub rough_cells: f64,
+    /// The part of the curvature of a hollow that fills it in each step, at
+    /// most down to no erosion.
+    pub infill: f64,
+    /// The power of the weight of the brush in the stream power.
+    pub weight_power: f64,
+    /// For the fine cells of two grids: the deepest gully below the ground of
+    /// the coarse cells, as a factor of the slope of that ground over one
+    /// fine cell. Zero for one grid.
+    pub detail_depth: f64,
 }
 
 impl Default for ErodeTuning {
@@ -59,6 +68,9 @@ impl Default for ErodeTuning {
             area_exponent: 0.5,
             rough: ROUGH,
             rough_cells: ROUGH_CELLS,
+            infill: 0.0,
+            weight_power: 1.0,
+            detail_depth: 0.0,
         }
     }
 }
@@ -567,6 +579,9 @@ pub struct Erosion {
     /// needed yet is NaN.
     rough: Vec<f32>,
     tuning: ErodeTuning,
+    /// With two grids, the height of the ground of the coarse cells at each
+    /// fine cell.
+    base: Option<Vec<f32>>,
 }
 
 /// The effect of the brushes of one step.
@@ -723,6 +738,7 @@ impl Erosion {
             rough_seed: None,
             rough: Vec::new(),
             tuning: ErodeTuning::default(),
+            base: None,
         }
     }
 
@@ -1039,6 +1055,9 @@ impl Erosion {
             let old = f64::from(self.heights[i]);
             let height = limits.apply(old, (old + rise).min(65535.0)) as f32;
             self.heights[i] = height;
+            if let Some(base) = &mut self.base {
+                base[i] += height - old as f32;
+            }
             let level = height.round() as u16;
             if level != self.levels[i] {
                 self.levels[i] = level;
@@ -1282,6 +1301,7 @@ impl Erosion {
             Some((x0, y0, width)) => (y0 + i as usize / width) * side + x0 + i as usize % width,
             None => i as usize,
         };
+        let old = (self.tuning.infill > 0.0).then(|| self.heights.clone());
         // Each receiver has its new height before the cells above it.
         for &at in &flow.order {
             let i = cell(at);
@@ -1298,13 +1318,28 @@ impl Erosion {
             let diagonal = !self.neighbors(i)[..4].contains(&(to as u32));
             let length = if diagonal { SQRT_2 } else { 1.0 };
             let area = f64::from(flow.area[at as usize]) / self.min_area;
-            let mut power =
-                rate * f64::from(weights[i]) * area.powf(self.tuning.area_exponent) / length;
+            let weight = f64::from(weights[i]).powf(self.tuning.weight_power);
+            let mut power = rate * weight * area.powf(self.tuning.area_exponent) / length;
             if self.rough_seed.is_some() {
                 power *= 1.0 + self.tuning.rough * (1.0 - 2.0 * f64::from(self.rough[i]));
             }
             let new = f64::from(below) + f64::from(height - below) / (1.0 + power);
-            let new = (new as f32).clamp(below, height);
+            let mut new = (new as f32).clamp(below, height);
+            if let Some(old) = &old {
+                let near = self.neighbors(i);
+                let at = |k: usize| match near[k] {
+                    NONE => old[i],
+                    j => old[j as usize],
+                };
+                let card: f32 = (0..4).map(at).sum();
+                let diag: f32 = (4..8).map(at).sum();
+                let curve = (4.0 * card + diag - 20.0 * old[i]) / 6.0;
+                let fill = self.tuning.infill as f32 * curve.max(0.0) * weights[i];
+                new = (new + fill).min(height);
+            }
+            if let Some(base) = &self.base {
+                new = new.max(self.floor(base, i).min(height));
+            }
             self.heights[i] = limits.apply(f64::from(height), f64::from(new)) as f32;
         }
         if place.is_none() {
@@ -1329,6 +1364,94 @@ impl Erosion {
             step.rects = self.rects(brushes, &hits);
         }
         step
+    }
+
+    /// The lowest height of a fine cell: the ground of the coarse cells less
+    /// `detail_depth` times its slope over one cell.
+    fn floor(&self, base: &[f32], i: usize) -> f32 {
+        let near = self.neighbors(i);
+        let at = |k: usize| match near[k] {
+            NONE => base[i],
+            j => base[j as usize],
+        };
+        let (dx, dy) = ((at(0) - at(1)) * 0.5, (at(2) - at(3)) * 0.5);
+        let slope = (dx * dx + dy * dy).sqrt();
+        base[i] - self.tuning.detail_depth as f32 * slope
+    }
+
+    /// The fine cells of two grids. Lowers the cells by the drops of a step
+    /// of the coarse cells, and then lowers them `count` times as `steps`
+    /// does, but not below the floor of `floor`. The result has the drops of
+    /// both. The cells must be those of a window.
+    #[doc(hidden)]
+    pub fn detail_steps(
+        &mut self,
+        brushes: &[ErodeBrush],
+        rate: f64,
+        count: usize,
+        coarse: &ErodeStep,
+    ) -> ErodeStep {
+        let Cells::Window { window, .. } = &self.cells else {
+            panic!("the erosion has no window");
+        };
+        let window = *window;
+        let side = self.side;
+        if self.base.is_none() {
+            self.base = Some(self.heights.clone());
+        }
+        let before = self.levels.clone();
+        let n = self.face_size;
+        let cell = window.cell as i64;
+        let mut rects = coarse.rects();
+        if let Some(rect) = rects[window.face] {
+            let cells = |a: usize, b: usize, first: i64| {
+                let lo = ((a as i64 - first) / cell).max(0) as usize;
+                let hi = (((b as i64 - first) + cell - 1) / cell).clamp(0, side as i64) as usize;
+                lo..hi
+            };
+            for y in cells(rect.y0, rect.y1, window.y0) {
+                for x in cells(rect.x0, rect.x1, window.x0) {
+                    let tx = window.x0 + x as i64 * cell + cell / 2;
+                    let ty = window.y0 + y as i64 * cell + cell / 2;
+                    if tx < 0 || ty < 0 || tx >= n as i64 || ty >= n as i64 {
+                        continue;
+                    }
+                    let drop = coarse
+                        .drop_at(n, window.face, tx as usize, ty as usize)
+                        .round() as f32;
+                    if drop <= 0.0 {
+                        continue;
+                    }
+                    let i = y * side + x;
+                    self.heights[i] = (self.heights[i] - drop).max(0.0);
+                    if let Some(base) = &mut self.base {
+                        base[i] = (base[i] - drop).max(0.0);
+                    }
+                    let level = self.heights[i].round() as u16;
+                    if level != self.levels[i] {
+                        self.levels[i] = level;
+                        self.stale = true;
+                    }
+                }
+            }
+        }
+        let step = self.steps(brushes, rate, count);
+        for (sum, rect) in rects.iter_mut().zip(step.rects) {
+            *sum = match (*sum, rect) {
+                (Some(a), Some(b)) => Some(a.union(b)),
+                (a, b) => a.or(b),
+            };
+        }
+        let drops = before
+            .iter()
+            .zip(&self.levels)
+            .map(|(&b, &l)| b.saturating_sub(l))
+            .collect();
+        ErodeStep {
+            drops,
+            rects,
+            ..step
+        }
     }
 
     /// Lowers the cells under the brushes `count` times. The strengths of

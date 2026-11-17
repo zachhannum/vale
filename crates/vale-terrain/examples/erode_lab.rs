@@ -11,9 +11,9 @@ use std::path::{Path, PathBuf};
 
 use image::{Rgb, RgbImage};
 use vale_terrain::{
-    ChannelShape, CoarseHeights, ELEV_MAX, ELEV_MIN, ErodeBrush, Erosion, Heightmap, Limits, Mode,
-    OuterFlow, Rain, Stamp, WINDOW_CELLS, Window, WindowHeights, face_dir, meters_to_level,
-    talus_levels, unwarp,
+    ChannelShape, CoarseHeights, ELEV_MAX, ELEV_MIN, ErodeBrush, ErodeTuning, Erosion, Heightmap,
+    Limits, Mode, OuterFlow, Rain, Stamp, WINDOW_CELLS, Window, WindowHeights, face_dir,
+    meters_to_level, talus_levels, unwarp,
 };
 
 const N: usize = 2048;
@@ -51,7 +51,13 @@ struct Variant {
     /// The cells in the brush radius of `brush_window`.
     cells: f64,
     rough: bool,
-    tuning: vale_terrain::ErodeTuning,
+    tuning: ErodeTuning,
+    /// With two grids, the cells in the brush radius of the fine grid, its
+    /// settings, and the factor of its rate.
+    fine: Option<f64>,
+    fine_rough: bool,
+    fine_tuning: ErodeTuning,
+    fine_rate: f64,
 }
 
 fn variant(name: &str, cells: f64, rough: bool) -> Variant {
@@ -59,7 +65,11 @@ fn variant(name: &str, cells: f64, rough: bool) -> Variant {
         name: name.to_string(),
         cells,
         rough,
-        tuning: vale_terrain::ErodeTuning::default(),
+        tuning: ErodeTuning::default(),
+        fine: None,
+        fine_rough: false,
+        fine_tuning: ErodeTuning::default(),
+        fine_rate: 1.0,
     }
 }
 
@@ -99,11 +109,20 @@ fn start_map() -> Heightmap {
     map
 }
 
+thread_local! {
+    /// Whether the stroke of this thread has the second path.
+    static ALT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// The path of the stroke, in texels: an S curve through the face center,
 /// about 7 radii long, at an angle to the texel grid.
 fn path(radius: f64) -> Vec<(f64, f64)> {
     let length = 7.0 * radius;
-    let (c, s) = (0.93f64, -0.37f64);
+    let (c, s) = if ALT.get() {
+        (0.6f64, 0.8f64)
+    } else {
+        (0.93f64, -0.37f64)
+    };
     let center = (N as f64 / 2.0, N as f64 / 2.0);
     (0..=200)
         .map(|k| {
@@ -191,6 +210,45 @@ fn near_side(window: &Window, center: [f64; 3], radius: f64) -> bool {
     u.min(v).min(cells - u).min(cells - v) < room
 }
 
+/// Makes or moves the window of the cells of a stroke as the app does.
+fn track(
+    erosion: &mut Option<(Erosion, Window)>,
+    map: &Heightmap,
+    cells: f64,
+    first: [f64; 3],
+    last: [f64; 3],
+    radius: f64,
+    outer: Option<&OuterFlow>,
+) {
+    match erosion {
+        None => {
+            let window = brush_window(first, radius, cells);
+            let heights = WindowHeights::new(map, window);
+            let e = match outer {
+                Some(outer) => Erosion::window_in(&heights, outer),
+                None => Erosion::window_alone(&heights),
+            };
+            *erosion = Some((e, window));
+        }
+        Some((e, window)) if near_side(window, last, radius) => {
+            let next = brush_window(last, radius, cells);
+            if next != *window {
+                let heights = WindowHeights::new(map, next);
+                *e = e.moved(&heights, outer);
+                *window = next;
+            }
+        }
+        Some(_) => {}
+    }
+}
+
+/// The rate of the steps of one uplift request on the cells of `window`.
+fn uplift_rate(window: &Window, radius: f64, stamps: usize) -> f64 {
+    let cell = FRAC_PI_2 * window.cell as f64 / N as f64;
+    let cells = radius / cell;
+    EROSION * UPLIFT_ERODE_RATE * (cells / 16.0).sqrt() * stamps as f64
+}
+
 /// Paints one stroke on `map` as the app does. With `erode` false, an
 /// uplift stroke only raises the texels.
 fn paint(map: &mut Heightmap, mode: StrokeMode, radius_texels: f64, v: &Variant, erode: bool) {
@@ -203,7 +261,9 @@ fn paint(map: &mut Heightmap, mode: StrokeMode, radius_texels: f64, v: &Variant,
     let places = stamp_places(radius_texels, passes);
     let strength = STAMP_SPACING / span * STRENGTH_M * (1.0 + UPLIFT_GAIN * EROSION);
     let mut erosion: Option<(Erosion, Window)> = None;
+    let mut fine: Option<(Erosion, Window)> = None;
     let outer = (mode == StrokeMode::Erode).then(|| OuterFlow::global(&CoarseHeights::new(map), N));
+    let seed = v.rough.then_some(SEED);
     for chunk in places.chunks(group) {
         let stamps: Vec<Stamp> = chunk
             .iter()
@@ -220,36 +280,21 @@ fn paint(map: &mut Heightmap, mode: StrokeMode, radius_texels: f64, v: &Variant,
             lift(map);
             continue;
         }
-        let (first, last) = (stamps[0], stamps[stamps.len() - 1]);
-        match &mut erosion {
-            None => {
-                let window = brush_window(first.center, radius, v.cells);
-                let heights = WindowHeights::new(map, window);
-                let e = match &outer {
-                    Some(outer) => Erosion::window_in(&heights, outer),
-                    None => Erosion::window_alone(&heights),
-                };
-                erosion = Some((e, window));
-            }
-            Some((e, window)) if near_side(window, last.center, radius) => {
-                let next = brush_window(last.center, radius, v.cells);
-                if next != *window {
-                    let heights = WindowHeights::new(map, next);
-                    *e = e.moved(&heights, outer.as_ref());
-                    *window = next;
-                }
-            }
-            Some(_) => {}
+        let (first, last) = (stamps[0].center, stamps[stamps.len() - 1].center);
+        track(
+            &mut erosion,
+            map,
+            v.cells,
+            first,
+            last,
+            radius,
+            outer.as_ref(),
+        );
+        if let Some(cells) = v.fine {
+            track(&mut fine, map, cells, first, last, radius, outer.as_ref());
         }
         // The cells of the worker read the ground before the stamps.
         lift(map);
-        let (e, window) = erosion.as_mut().unwrap();
-        e.set_limits(Limits::default());
-        e.set_rain(Rain::default());
-        e.set_channel(ChannelShape::default());
-        e.set_tuning(v.tuning);
-        let seed = v.rough.then_some(SEED);
-        e.set_rough(seed);
         let brushes: Vec<ErodeBrush> = stamps
             .iter()
             .map(|s| ErodeBrush {
@@ -259,21 +304,36 @@ fn paint(map: &mut Heightmap, mode: StrokeMode, radius_texels: f64, v: &Variant,
                 flow: s.flow,
             })
             .collect();
+        let (e, window) = erosion.as_mut().unwrap();
+        e.set_tuning(v.tuning);
+        e.set_rough(seed);
         let step = match mode {
             StrokeMode::Uplift => {
-                let cell = FRAC_PI_2 * window.cell as f64 / N as f64;
-                let cells = radius / cell;
-                let rate =
-                    EROSION * UPLIFT_ERODE_RATE * (cells / 16.0).sqrt() * stamps.len() as f64;
+                let rate = uplift_rate(window, radius, stamps.len());
                 match seed {
                     Some(seed) => e.uplift(&brushes, strength, seed),
                     None => e.raise(&brushes, strength),
                 }
                 e.steps(&brushes, rate, UPLIFT_STEPS)
             }
-            StrokeMode::Erode => {
-                let rate = STRENGTH_M * ERODE_RATE * ERODE_SECONDS;
-                e.step(&brushes, rate)
+            StrokeMode::Erode => e.step(&brushes, STRENGTH_M * ERODE_RATE * ERODE_SECONDS),
+        };
+        let step = match &mut fine {
+            None => step,
+            Some((f, window)) => {
+                f.set_tuning(v.fine_tuning);
+                f.set_rough(v.fine_rough.then_some(SEED));
+                match mode {
+                    StrokeMode::Uplift => {
+                        let rate = uplift_rate(window, radius, stamps.len()) * v.fine_rate;
+                        f.raise(&brushes, strength);
+                        f.detail_steps(&brushes, rate, UPLIFT_STEPS, &step)
+                    }
+                    StrokeMode::Erode => {
+                        let rate = STRENGTH_M * ERODE_RATE * ERODE_SECONDS * v.fine_rate;
+                        f.detail_steps(&brushes, rate, 1, &step)
+                    }
+                }
             }
         };
         map.erode(&step);
@@ -348,6 +408,11 @@ struct Measures {
     concavity: f64,
     junction: f64,
     straight: f64,
+    /// Horton's length ratio of the Strahler streams.
+    length_ratio: f64,
+    /// The mean resultant length of the directions of the first-order
+    /// channels near each first-order channel cell.
+    coherence: f64,
     channels: usize,
     /// The mean rise of the texels under the stroke, as a part of the rise
     /// of the stroke without erosion. For an erode stroke, the mean drop in
@@ -359,22 +424,26 @@ struct Measures {
 }
 
 /// The target ranges, and the width that a distance of 1 has.
-const TARGETS: [(&str, f64, f64, f64); 5] = [
+const TARGETS: [(&str, f64, f64, f64); 7] = [
     ("Rb", 3.0, 5.0, 1.0),
     ("Hack h", 0.5, 0.6, 0.1),
     ("theta", 0.4, 0.6, 0.1),
     ("junction", 40.0, 75.0, 15.0),
     ("straight", 0.0, 0.15, 0.1),
+    ("RL", 1.5, 3.5, 0.5),
+    ("elongation", 0.5, 1.0, 0.1),
 ];
 
 impl Measures {
-    fn values(&self) -> [f64; 5] {
+    fn values(&self) -> [f64; 7] {
         [
             self.bifurcation,
             self.hack,
             self.concavity,
             self.junction,
             self.straight,
+            self.length_ratio,
+            self.coherence,
         ]
     }
 
@@ -519,6 +588,30 @@ fn measure(h: &[f64], r: &Region, min_area: f64, reach: usize) -> Measures {
         .map(|o| (o as f64, (streams[o] as f64).ln()))
         .collect();
     let bifurcation = (-fit(&points)).exp();
+    // The mean length of the streams of each order. A cell adds its step to
+    // its receiver to the length of its stream.
+    let mut lengths = vec![0.0f64; 64];
+    for i in 0..count {
+        if !channel(i) {
+            continue;
+        }
+        let j = receiver[i];
+        let step = if j == OUT {
+            1.0
+        } else {
+            let (dx, dy) = (
+                (i % r.w) as f64 - (j % r.w) as f64,
+                (i / r.w) as f64 - (j / r.w) as f64,
+            );
+            (dx * dx + dy * dy).sqrt()
+        };
+        lengths[order_of[i] as usize] += step;
+    }
+    let points: Vec<(f64, f64)> = (1..=last)
+        .filter(|&o| streams[o] > 0)
+        .map(|o| (o as f64, (lengths[o] / streams[o] as f64).ln()))
+        .collect();
+    let length_ratio = fit(&points).exp();
 
     let cells: Vec<usize> = (0..count).filter(|&i| channel(i)).collect();
     let hack_points: Vec<(f64, f64)> = cells
@@ -639,10 +732,57 @@ fn measure(h: &[f64], r: &Region, min_area: f64, reach: usize) -> Measures {
         concavity,
         junction,
         straight: straight as f64 / total.max(1) as f64,
+        length_ratio,
+        coherence: {
+            // The elongation ratio of Schumm of the small basins: the
+            // diameter of the circle of the area over the length.
+            let mut ratios: Vec<f64> = cells
+                .iter()
+                .filter(|&&i| area[i] <= 10.0 * min_area && length[i] > 0.0)
+                .map(|&i| 2.0 * (area[i] / std::f64::consts::PI).sqrt() / length[i])
+                .collect();
+            ratios.sort_by(f64::total_cmp);
+            ratios.get(ratios.len() / 2).copied().unwrap_or(f64::NAN)
+        },
         channels: cells.len(),
         kept: f64::NAN,
         relief: f64::NAN,
     }
+}
+
+/// The mean resultant length of the downstream directions of the first-order
+/// channel cells within 4 times `reach` texels of each of them.
+fn coherence(cells: &[usize], order: &[u32], receiver: &[usize], r: &Region, reach: usize) -> f64 {
+    let ones: Vec<(f64, f64, f64, f64)> = cells
+        .iter()
+        .filter(|&&i| order[i] == 1)
+        .filter_map(|&i| {
+            let mut at = i;
+            for _ in 0..reach {
+                let j = receiver[at];
+                if j == usize::MAX {
+                    break;
+                }
+                at = j;
+            }
+            let (x, y) = ((i % r.w) as f64, (i / r.w) as f64);
+            let (dx, dy) = ((at % r.w) as f64 - x, (at / r.w) as f64 - y);
+            let len = (dx * dx + dy * dy).sqrt();
+            (len > 0.0).then(|| (x, y, dx / len, dy / len))
+        })
+        .collect();
+    let near = (4 * reach) as f64;
+    let mut sum = 0.0;
+    for &(x, y, _, _) in &ones {
+        let (mut sx, mut sy, mut n) = (0.0, 0.0, 0.0);
+        for &(x2, y2, dx, dy) in &ones {
+            if (x2 - x).powi(2) + (y2 - y).powi(2) < near * near {
+                (sx, sy, n) = (sx + dx, sy + dy, n + 1.0);
+            }
+        }
+        sum += (sx * sx + sy * sy).sqrt() / n;
+    }
+    sum / ones.len().max(1) as f64
 }
 
 fn percentile(values: &[f64], p: f64) -> f64 {
@@ -682,10 +822,76 @@ fn pictures(h: &[f64], r: &Region) -> (RgbImage, RgbImage) {
     (ramp, bands)
 }
 
+/// A hillshade from the northwest at 2 times the size, for a person who
+/// looks at the valleys.
+fn shade(h: &[f64], r: &Region) -> RgbImage {
+    let span = (ELEV_MAX - ELEV_MIN) / 65535.0;
+    let texel_m = WORLD_KM * 1000.0 * FRAC_PI_2 / N as f64;
+    let z = 40.0 * span / texel_m;
+    let at = |x: usize, y: usize| h[y.min(r.h - 1) * r.w + x.min(r.w - 1)];
+    RgbImage::from_fn(2 * r.w as u32, 2 * r.h as u32, |x, y| {
+        let (x, y) = (x as usize / 2, y as usize / 2);
+        let dx = (at(x + 1, y) - at(x.saturating_sub(1), y)) * z / 2.0;
+        let dy = (at(x, y + 1) - at(x, y.saturating_sub(1))) * z / 2.0;
+        let n = (dx * dx + dy * dy + 1.0).sqrt();
+        let light = ((dx - dy) * -0.5 + 0.7071) / n;
+        let v = (light.clamp(0.0, 1.0) * 255.0) as u8;
+        Rgb([v, v, v])
+    })
+}
+
+/// Joins the pictures of `names` side by side, for each mode, radius, and
+/// style.
+fn montage(out: &Path, names: &[&str]) {
+    for mode in ["uplift", "erode"] {
+        for radius in [60, 150] {
+            for style in ["ramp", "bands", "shade"] {
+                let pics: Vec<RgbImage> = names
+                    .iter()
+                    .filter_map(|name| {
+                        image::open(out.join(format!(
+                            "{}-{mode}-{radius}-{style}.png",
+                            name.to_lowercase()
+                        )))
+                        .ok()
+                        .map(|p| p.to_rgb8())
+                    })
+                    .collect();
+                if pics.is_empty() {
+                    continue;
+                }
+                let gap = 12;
+                let w = pics.iter().map(|p| p.width() + gap).sum::<u32>() - gap;
+                let h = pics.iter().map(RgbImage::height).max().unwrap();
+                let mut all = RgbImage::from_pixel(w, h, Rgb([255, 255, 255]));
+                let mut x = 0;
+                for p in &pics {
+                    image::imageops::replace(&mut all, p, i64::from(x), 0);
+                    x += p.width() + gap;
+                }
+                all.save(out.join(format!("montage-{mode}-{radius}-{style}.png")))
+                    .unwrap();
+                // The same pictures one above the other.
+                let w = pics.iter().map(RgbImage::width).max().unwrap();
+                let h = pics.iter().map(|p| p.height() + gap).sum::<u32>() - gap;
+                let mut all = RgbImage::from_pixel(w, h, Rgb([255, 255, 255]));
+                let mut y = 0;
+                for p in &pics {
+                    image::imageops::replace(&mut all, p, 0, i64::from(y));
+                    y += p.height() + gap;
+                }
+                all.save(out.join(format!("stack-{mode}-{radius}-{style}.png")))
+                    .unwrap();
+            }
+        }
+    }
+}
+
 struct Run {
     variant: String,
     mode: StrokeMode,
     radius: f64,
+    alt: bool,
     measures: Measures,
     seconds: f64,
 }
@@ -693,7 +899,15 @@ struct Run {
 fn run(v: &Variant, mode: StrokeMode, radius: f64, base: &Heightmap, out: &Path) -> Run {
     let r = region(radius);
     let before = heights(base, &r);
-    let mut map = base.snapshot();
+    // The range of an uplift stroke without erosion. An erode stroke
+    // starts on it.
+    let mut lifted = base.snapshot();
+    paint(&mut lifted, StrokeMode::Uplift, radius, v, false);
+    let mut map = match mode {
+        StrokeMode::Uplift => base.snapshot(),
+        StrokeMode::Erode => lifted.snapshot(),
+    };
+    let lifted = heights(&lifted, &r);
     let start = std::time::Instant::now();
     paint(&mut map, mode, radius, v, true);
     let seconds = start.elapsed().as_secs_f64();
@@ -709,35 +923,68 @@ fn run(v: &Variant, mode: StrokeMode, radius: f64, base: &Heightmap, out: &Path)
     let inside: Vec<usize> = (0..r.mask.len()).filter(|&i| r.mask[i]).collect();
     let mean_change =
         inside.iter().map(|&i| after[i] - before[i]).sum::<f64>() / inside.len() as f64;
-    m.kept = match mode {
-        StrokeMode::Uplift => {
-            let mut lifted = base.snapshot();
-            paint(&mut lifted, mode, radius, v, false);
-            let lifted = heights(&lifted, &r);
-            let rise =
-                inside.iter().map(|&i| lifted[i] - before[i]).sum::<f64>() / inside.len() as f64;
-            eprintln!("rise {} m, kept {} m", rise * span, mean_change * span);
-            mean_change / rise
-        }
-        StrokeMode::Erode => -mean_change * span,
-    };
+    let rise = inside.iter().map(|&i| lifted[i] - before[i]).sum::<f64>() / inside.len() as f64;
+    m.kept = mean_change / rise;
     let values: Vec<f64> = inside.iter().map(|&i| after[i]).collect();
     m.relief = (percentile(&values, 0.99) - percentile(&values, 0.01)) * span;
+    if ALT.get() {
+        return Run {
+            variant: v.name.clone(),
+            mode,
+            radius,
+            alt: true,
+            measures: m,
+            seconds,
+        };
+    }
     let (ramp, bands) = pictures(&after, &r);
     let stem = format!("{}-{:?}-{}", v.name, mode, radius).to_lowercase();
     ramp.save(out.join(format!("{stem}-ramp.png"))).unwrap();
     bands.save(out.join(format!("{stem}-bands.png"))).unwrap();
+    shade(&after, &r)
+        .save(out.join(format!("{stem}-shade.png")))
+        .unwrap();
     Run {
         variant: v.name.clone(),
         mode,
         radius,
+        alt: false,
         measures: m,
         seconds,
     }
 }
 
+fn tuned(name: &str, cells: f64, rough: bool, f: impl Fn(&mut ErodeTuning)) -> Variant {
+    let mut v = variant(name, cells, rough);
+    f(&mut v.tuning);
+    v
+}
+
 fn variants() -> Vec<Variant> {
-    vec![variant("main", 16.0, false), variant("branch", 32.0, true)]
+    let mut out = vec![
+        variant("main", 16.0, false),
+        variant("branch", 32.0, true),
+        variant("b32-smooth", 32.0, false),
+        variant("b16-rough", 16.0, true),
+        tuned("b32-m06", 32.0, true, |t| t.area_exponent = 0.6),
+        tuned("b32-w05", 32.0, true, |t| t.weight_power = 0.5),
+        tuned("b32-rough05", 32.0, true, |t| t.rough = 0.5),
+        tuned("b32-rough8", 32.0, true, |t| t.rough_cells = 8.0),
+    ];
+    for d in [0.05, 0.1, 0.2, 0.4] {
+        out.push(tuned(&format!("b32-fill{d}"), 32.0, true, |t| t.infill = d));
+    }
+    out.push(variant("c8", 8.0, false));
+    for coarse in [8.0, 16.0] {
+        for depth in [1.0, 2.0, 4.0] {
+            let mut v = variant(&format!("L{coarse}-{depth}"), coarse, false);
+            v.fine = Some(32.0);
+            v.fine_rough = true;
+            v.fine_tuning.detail_depth = depth;
+            out.push(v);
+        }
+    }
+    out
 }
 
 fn main() {
@@ -754,22 +1001,27 @@ fn main() {
     for v in &all {
         for mode in [StrokeMode::Uplift, StrokeMode::Erode] {
             for radius in [60.0, 150.0] {
-                jobs.push((v, mode, radius));
+                for alt in [false, true] {
+                    jobs.push((v, mode, radius, alt));
+                }
             }
         }
     }
     let runs: Vec<Run> = std::thread::scope(|s| {
         let handles: Vec<_> = jobs
             .iter()
-            .map(|&(v, mode, radius)| {
+            .map(|&(v, mode, radius, alt)| {
                 let (base, out) = (&base, &out);
-                s.spawn(move || run(v, mode, radius, base, out))
+                s.spawn(move || {
+                    ALT.set(alt);
+                    run(v, mode, radius, base, out)
+                })
             })
             .collect();
         handles.into_iter().map(|h| h.join().unwrap()).collect()
     });
     println!(
-        "{:<16} {:<6} {:>4} {:>6} | {:>5} {:>5} {:>5} {:>5} {:>5} | {:>6} {:>6} {:>6} {:>5}",
+        "{:<16} {:<6} {:>4} {:>6} | {:>5} {:>5} {:>5} {:>5} {:>5} {:>5} {:>5} | {:>6} {:>6} {:>6} {:>5}",
         "variant",
         "mode",
         "r",
@@ -779,6 +1031,8 @@ fn main() {
         "theta",
         "junc",
         "strt",
+        "RL",
+        "Re",
         "chan",
         "kept",
         "relief",
@@ -787,16 +1041,18 @@ fn main() {
     for run in &runs {
         let m = &run.measures;
         println!(
-            "{:<16} {:<6} {:>4} {:>6.2} | {:>5.2} {:>5.2} {:>5.2} {:>5.1} {:>5.2} | {:>6} {:>6.2} {:>6.0} {:>5.1}",
+            "{:<16} {:<6} {:>4} {:>6.2} | {:>5.2} {:>5.2} {:>5.2} {:>5.1} {:>5.2} {:>5.2} {:>5.2} | {:>6} {:>6.2} {:>6.0} {:>5.1}",
             run.variant,
             format!("{:?}", run.mode),
-            run.radius,
+            format!("{}{}", run.radius, if run.alt { "a" } else { "" }),
             m.score(),
             m.bifurcation,
             m.hack,
             m.concavity,
             m.junction,
             m.straight,
+            m.length_ratio,
+            m.coherence,
             m.channels,
             m.kept,
             m.relief,
@@ -817,5 +1073,9 @@ fn main() {
     totals.sort_by(|a, b| a.1.total_cmp(&b.1));
     for (name, score) in totals {
         println!("total {name:<16} {score:.2}");
+    }
+    if let Ok(names) = std::env::var("MONTAGE") {
+        let names: Vec<&str> = names.split(',').collect();
+        montage(&out, &names);
     }
 }
