@@ -187,8 +187,8 @@ struct StepSettings {
     limits: Limits,
     rain: Rain,
     channel: ChannelShape,
-    /// The seed of the rough ground, if the steps have rough ground.
-    rough: Option<u32>,
+    /// The seed and the branching of the flow noise.
+    branching: (u32, f64),
 }
 
 /// What a request does to the cells before its steps.
@@ -223,8 +223,8 @@ pub struct Eroder {
     rain: Rain,
     /// The channels of each later request.
     channel: ChannelShape,
-    /// The seed of the rough ground of each later request.
-    rough: Option<u32>,
+    /// The seed and the branching of the flow noise of each later request.
+    branching: (u32, f64),
 }
 
 /// The number of steps that lower the cells after an uplift.
@@ -233,8 +233,8 @@ const UPLIFT_STEPS: usize = 4;
 /// Without a lift, lowers the cells under the brushes one time. With an
 /// uplift, raises those cells and then lowers them `UPLIFT_STEPS` times.
 /// The cells and the step keep `limits`, and the step has `rain`, `channel`,
-/// and the rough ground of `rough`. A range keeps the limits of its line,
-/// and it has no rough ground.
+/// and the flow noise of `branching`. A range keeps the limits of its line,
+/// and it has no flow noise.
 fn step(
     erosion: &mut Erosion,
     brushes: &[ErodeBrush],
@@ -245,14 +245,16 @@ fn step(
     erosion.set_limits(settings.limits);
     erosion.set_rain(settings.rain);
     erosion.set_channel(settings.channel);
-    let rough = settings.rough.filter(|_| !matches!(lift, Lift::Range(..)));
-    erosion.set_rough(rough);
+    let (seed, branching) = settings.branching;
+    let branching = if matches!(lift, Lift::Range(..)) {
+        0.0
+    } else {
+        branching
+    };
+    erosion.set_branching(seed, branching);
     match lift {
         Lift::Raise(uplift) if uplift > 0.0 => {
-            match rough {
-                Some(seed) => erosion.uplift(brushes, uplift, seed),
-                None => erosion.raise(brushes, uplift),
-            }
+            erosion.raise(brushes, uplift);
             erosion.steps(brushes, rate, UPLIFT_STEPS)
         }
         Lift::Range(line, u) => erode_range(erosion, &line, u, rate),
@@ -298,7 +300,7 @@ impl Eroder {
             waiting: 0,
             rain: Rain::default(),
             channel: ChannelShape::default(),
-            rough: None,
+            branching: (0, 0.0),
         }
     }
 
@@ -311,10 +313,10 @@ impl Eroder {
         self.rain = rain;
     }
 
-    /// Sets the seed of the rough ground of each later request. With
-    /// `None`, the requests have no rough ground.
-    pub fn set_rough(&mut self, seed: Option<u32>) {
-        self.rough = seed;
+    /// Sets the seed and the branching of the flow noise of each later
+    /// request.
+    pub fn set_branching(&mut self, seed: u32, branching: f64) {
+        self.branching = (seed, branching);
     }
 
     /// Sets the channels of each later request.
@@ -376,7 +378,7 @@ impl Eroder {
             limits,
             rain: self.rain,
             channel: self.channel,
-            rough: self.rough,
+            branching: self.branching,
         };
         match &mut self.work {
             Some(work) => {

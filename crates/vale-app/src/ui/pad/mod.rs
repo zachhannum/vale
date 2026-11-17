@@ -17,10 +17,10 @@ use super::world_form::{self, WorldForm};
 use super::{Action, AppState, Note, SaveMark, Workspace, globe, is_height, panels};
 use crate::globe::Tool;
 use crate::globe::brush::{
-    BASIN_AGE, BASIN_DENSITY, BASIN_LAKES, CHANNEL_KM, EROSION, FLATTEN_RATE, FLOODPLAIN_WIDTH_KM,
-    FLOW, NOISE_GRAIN, NOISE_M, RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_MAGMA, RIDGE_OFFSET_KM,
-    RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM, SCALE_KM, SEED, SHAPE, STRENGTH_M, TALUS_DEG,
-    TERRACE_STEP_M, WARP_KM, needs_height, shape_text,
+    BASIN_AGE, BASIN_DENSITY, BASIN_LAKES, BRANCHING, CHANNEL_KM, EROSION, FLATTEN_RATE,
+    FLOODPLAIN_WIDTH_KM, FLOW, NOISE_GRAIN, NOISE_M, RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_MAGMA,
+    RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM, SCALE_KM, SEED, SHAPE, STRENGTH_M,
+    TALUS_DEG, TERRACE_STEP_M, WARP_KM, needs_height, shape_text,
 };
 use crate::globe::brush::{BrushSettings, brush_radius};
 use crate::globe::combine::PolygonMode;
@@ -2962,6 +2962,13 @@ fn tool_rows(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
             .percent()
             .default(defaults.erosion);
         apply(number.slider(ui, controls), &mut brush.erosion);
+    }
+    if matches!(brush.mode, Mode::Erode | Mode::Uplift) {
+        let number = Number::new("Brush branching", brush.branching, BRANCHING)
+            .label("Branching")
+            .percent()
+            .default(defaults.branching);
+        apply(number.slider(ui, controls), &mut brush.branching);
     }
     if matches!(
         brush.mode,
