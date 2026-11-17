@@ -7,12 +7,17 @@
 //! same point, so the rings have no gap at a face edge or a cube corner. The
 //! rings of two limits do not cross, because the larger limit is inside the
 //! smaller limit in each cell.
+//!
+//! The trace reads the whole face size. It filters and traces one face at a
+//! time, so the memory holds the values of one face and of the texels at the
+//! edges of the faces.
 
 use std::collections::HashMap;
 use std::f64::consts::FRAC_PI_2;
+use std::ops::Range;
 
 use crate::cube::{FACES, face_dir, unwarp};
-use crate::heightmap::Heightmap;
+use crate::heightmap::{Heightmap, TexelRect};
 use crate::math::{V3, add, cross, dot, normalize, scale};
 
 /// The rings of one band, each with the band on its left.
@@ -38,36 +43,57 @@ pub struct Trace {
 /// `i - 1` to limit `i`. A texel at a limit is in the upper band.
 pub fn polygonize(map: &Heightmap, limits: &[f64], trace: Trace) -> Vec<BandRings> {
     let n = map.face_size();
-    let field = smooth_field(map, trace.sigma);
     let mesh = Mesh::new(map);
+    let filter = Filter::new(trace.sigma, n);
+    let threads = std::thread::available_parallelism().map_or(4, |t| t.get());
     let mut lines: Vec<Lines> = limits.iter().map(|_| Lines::default()).collect();
-    let mut values = [0.0f32; 4];
-    let mut dirs = [[0.0; 3]; 4];
-    mesh.for_each_cell(|ids| {
-        let k = ids.len();
-        for (v, &id) in values.iter_mut().zip(ids) {
-            *v = field[id as usize];
+    let mut borders = Vec::with_capacity(FACES);
+    let mut first = 0.0;
+    for face in 0..FACES {
+        let field = filter.face(map, face, threads);
+        if face == 0 {
+            first = field[0];
         }
-        let lo = values[..k].iter().copied().fold(f32::INFINITY, f32::min) as f64;
-        let hi = values[..k]
-            .iter()
-            .copied()
-            .fold(f32::NEG_INFINITY, f32::max) as f64;
-        let first = limits.partition_point(|&t| t <= lo);
-        let last = limits.partition_point(|&t| t <= hi);
-        for (t, &limit) in limits.iter().enumerate().take(last).skip(first) {
-            for (d, &id) in dirs.iter_mut().zip(ids) {
-                *d = mesh.dir(id);
+        // The cells of the corners of the texel grid inside the face, in
+        // bands of rows.
+        let rows = 1..n;
+        let step = rows.len().div_ceil(threads).max(1);
+        let parts: Vec<Vec<Lines>> = std::thread::scope(|s| {
+            let jobs: Vec<_> = (rows.step_by(step))
+                .map(|j| {
+                    let (mesh, field) = (&mesh, &field);
+                    s.spawn(move || mesh.march_inside(face, field, j..(j + step).min(n), limits))
+                })
+                .collect();
+            jobs.into_iter()
+                .map(|j| j.join().expect("a trace"))
+                .collect()
+        });
+        for part in parts {
+            for (all, part) in lines.iter_mut().zip(part) {
+                all.absorb(part);
             }
-            lines[t].march(ids, &values[..k], &dirs[..k], limit);
         }
+        borders.push(Border::of(&field, n));
+    }
+    mesh.for_each_edge_cell(|ids| {
+        let mut values = [0.0f32; 4];
+        for (v, &id) in values.iter_mut().zip(ids) {
+            *v = mesh.border_value(&borders, id);
+        }
+        mesh.march(&mut lines, ids, &values[..ids.len()], limits);
     });
-    let step = FRAC_PI_2 / n as f64;
-    let rings: Vec<Vec<Vec<V3>>> = (lines.into_iter())
-        .map(|l| l.rings(trace.tolerance * step))
-        .collect();
+    let tolerance = trace.tolerance * FRAC_PI_2 / n as f64;
+    let rings: Vec<Vec<Vec<V3>>> = std::thread::scope(|s| {
+        let jobs: Vec<_> = (lines.into_iter())
+            .map(|l| s.spawn(move || l.rings(tolerance)))
+            .collect();
+        jobs.into_iter()
+            .map(|j| j.join().expect("a ring"))
+            .collect()
+    });
     let band_of = |v: f32| limits.partition_point(|&t| t <= v as f64);
-    let whole = band_of(field[0]);
+    let whole = band_of(first);
     (0..=limits.len())
         .map(|band| {
             let mut out = Vec::new();
@@ -89,78 +115,122 @@ pub fn polygonize(map: &Heightmap, limits: &[f64], trace: Trace) -> Vec<BandRing
         .collect()
 }
 
-/// The levels of all faces, face by face and row by row, after a Gaussian
-/// filter of width `sigma` texels. The filter reads past each face edge.
-fn smooth_field(map: &Heightmap, sigma: f64) -> Vec<f32> {
-    let n = map.face_size();
-    let reach = (3.0 * sigma).ceil() as usize;
-    let reach = reach.min(n / 2 - 1);
-    let mut field = vec![0.0f32; FACES * n * n];
-    if reach == 0 {
-        let mut row = Vec::with_capacity(n * n);
-        for (face, out) in field.chunks_mut(n * n).enumerate() {
-            row.clear();
-            let rect = crate::heightmap::TexelRect {
-                x0: 0,
-                y0: 0,
-                x1: n,
-                y1: n,
-            };
-            map.read_rect(face, rect, &mut row);
-            for (o, &v) in out.iter_mut().zip(&row) {
-                *o = f32::from(v);
-            }
-        }
-        return field;
+/// The values of the texels at the four edges of one face, after the
+/// filter: the first row, the last row, the first column, and the last
+/// column.
+struct Border([Vec<f32>; 4]);
+
+impl Border {
+    fn of(field: &[f32], n: usize) -> Border {
+        Border([
+            field[..n].to_vec(),
+            field[(n - 1) * n..].to_vec(),
+            (0..n).map(|y| field[y * n]).collect(),
+            (0..n).map(|y| field[y * n + n - 1]).collect(),
+        ])
     }
-    let kernel: Vec<f32> = {
+}
+
+/// The Gaussian filter on the levels.
+struct Filter {
+    kernel: Vec<f32>,
+    reach: usize,
+}
+
+/// The number of rows that one job of the filter makes.
+const FILTER_ROWS: usize = 256;
+
+impl Filter {
+    /// A filter of width `sigma` texels for a face size of `n`. A width of
+    /// 0 keeps the levels.
+    fn new(sigma: f64, n: usize) -> Filter {
+        let reach = ((3.0 * sigma).ceil() as usize).min((n / 2).saturating_sub(1));
         let raw: Vec<f64> = (0..=2 * reach)
             .map(|i| {
                 let x = i as f64 - reach as f64;
-                (-x * x / (2.0 * sigma * sigma)).exp()
+                match reach {
+                    0 => 1.0,
+                    _ => (-x * x / (2.0 * sigma * sigma)).exp(),
+                }
             })
             .collect();
         let sum: f64 = raw.iter().sum();
-        raw.iter().map(|w| (w / sum) as f32).collect()
-    };
-    std::thread::scope(|s| {
-        for (face, out) in field.chunks_mut(n * n).enumerate() {
-            let kernel = &kernel;
-            s.spawn(move || blur_face(map, face, reach, kernel, out));
-        }
-    });
-    field
-}
+        let kernel = raw.iter().map(|w| (w / sum) as f32).collect();
+        Filter { kernel, reach }
+    }
 
-/// The filtered levels of one face. The rows of the margin of `reach`
-/// texels come from the faces next to it.
-fn blur_face(map: &Heightmap, face: usize, reach: usize, kernel: &[f32], out: &mut [f32]) {
-    let n = map.face_size();
-    let wide = n + 2 * reach;
-    let r = reach as i64;
-    let mut source = vec![0.0f32; wide * wide];
-    for y in 0..wide {
-        for x in 0..wide {
-            let (fx, fy) = (x as i64 - r, y as i64 - r);
-            source[y * wide + x] = f32::from(map.get(face, fx, fy));
+    /// The filtered levels of one face, row by row. The filter reads past
+    /// each face edge.
+    fn face(&self, map: &Heightmap, face: usize, threads: usize) -> Vec<f32> {
+        let n = map.face_size();
+        let mut out = vec![0.0f32; n * n];
+        let mut jobs: Vec<Vec<(usize, &mut [f32])>> = (0..threads).map(|_| Vec::new()).collect();
+        for (k, chunk) in out.chunks_mut(FILTER_ROWS * n).enumerate() {
+            jobs[k % threads].push((k * FILTER_ROWS, chunk));
         }
-    }
-    // Rows first, over all rows of the margin, then columns of the face.
-    let mut rows = vec![0.0f32; wide * n];
-    for y in 0..wide {
-        let line = &source[y * wide..(y + 1) * wide];
-        for x in 0..n {
-            let window = &line[x..x + kernel.len()];
-            rows[y * n + x] = window.iter().zip(kernel).map(|(v, w)| v * w).sum();
-        }
-    }
-    for y in 0..n {
-        for x in 0..n {
-            let mut sum = 0.0;
-            for (i, w) in kernel.iter().enumerate() {
-                sum += rows[(y + i) * n + x] * w;
+        std::thread::scope(|s| {
+            for job in jobs {
+                s.spawn(move || {
+                    for (y0, chunk) in job {
+                        self.rows(map, face, y0, chunk);
+                    }
+                });
             }
-            out[y * n + x] = sum;
+        });
+        out
+    }
+
+    /// The filtered levels of the rows from `y0`, as many as `out` holds.
+    fn rows(&self, map: &Heightmap, face: usize, y0: usize, out: &mut [f32]) {
+        let n = map.face_size();
+        let r = self.reach;
+        let count = out.len() / n;
+        let wide = n + 2 * r;
+        let mut line = vec![0.0f32; wide];
+        let mut texels = Vec::with_capacity(n);
+        // The rows of the margin first get the filter along the row.
+        let mut across = vec![0.0f32; (count + 2 * r) * n];
+        for (k, row) in across.chunks_mut(n).enumerate() {
+            let fy = (y0 + k) as i64 - r as i64;
+            if (0..n as i64).contains(&fy) {
+                texels.clear();
+                let y = fy as usize;
+                let rect = TexelRect {
+                    x0: 0,
+                    y0: y,
+                    x1: n,
+                    y1: y + 1,
+                };
+                map.read_rect(face, rect, &mut texels);
+                for (l, &t) in line[r..r + n].iter_mut().zip(&texels) {
+                    *l = f32::from(t);
+                }
+                for i in 0..r {
+                    line[i] = f32::from(map.get(face, i as i64 - r as i64, fy));
+                    line[r + n + i] = f32::from(map.get(face, (n + i) as i64, fy));
+                }
+            } else {
+                for (x, l) in line.iter_mut().enumerate() {
+                    *l = f32::from(map.get(face, x as i64 - r as i64, fy));
+                }
+            }
+            if r == 0 {
+                row.copy_from_slice(&line);
+                continue;
+            }
+            for (x, o) in row.iter_mut().enumerate() {
+                let window = &line[x..x + self.kernel.len()];
+                *o = window.iter().zip(&self.kernel).map(|(v, w)| v * w).sum();
+            }
+        }
+        for (y, row) in out.chunks_mut(n).enumerate() {
+            row.fill(0.0);
+            for (i, w) in self.kernel.iter().enumerate() {
+                let source = &across[(y + i) * n..(y + i + 1) * n];
+                for (o, v) in row.iter_mut().zip(source) {
+                    *o += v * w;
+                }
+            }
         }
     }
 }
@@ -183,10 +253,27 @@ impl<'a> Mesh<'a> {
         ((face * self.n + y) * self.n + x) as u32
     }
 
+    fn split(&self, id: u32) -> (usize, usize, usize) {
+        let (id, n) = (id as usize, self.n);
+        (id / (n * n), id % n, id / n % n)
+    }
+
     fn dir(&self, id: u32) -> V3 {
-        let id = id as usize;
-        let n = self.n;
-        self.map.texel_dir(id / (n * n), id % n, id / n % n)
+        let (face, x, y) = self.split(id);
+        self.map.texel_dir(face, x, y)
+    }
+
+    /// The filtered value of a texel at the edge of its face.
+    fn border_value(&self, borders: &[Border], id: u32) -> f32 {
+        let (face, x, y) = self.split(id);
+        let b = &borders[face].0;
+        let last = self.n - 1;
+        match (x, y) {
+            (_, 0) => b[0][x],
+            (_, y) if y == last => b[1][x],
+            (0, _) => b[2][y],
+            _ => b[3][y],
+        }
     }
 
     /// The texel at a place that can be past the face edge on one axis.
@@ -200,51 +287,88 @@ impl<'a> Mesh<'a> {
         self.id(f, x, y)
     }
 
-    /// Calls `f` with the texels of each cell, counterclockwise seen from
-    /// outside the sphere. Each cell is the cell of one corner of the texel
-    /// grid, so the cells cover the sphere once.
-    fn for_each_cell(&self, mut f: impl FnMut(&[u32])) {
+    /// The segments of the cells of the corners `(i, j)` of the texel grid
+    /// of a face, for `i` from 1 to `n - 1` and `j` in `rows`. All texels of
+    /// these cells are in the face.
+    fn march_inside(
+        &self,
+        face: usize,
+        field: &[f32],
+        rows: Range<usize>,
+        limits: &[f64],
+    ) -> Vec<Lines> {
         let n = self.n;
-        for face in 0..FACES {
-            // A face of a negative axis looks at its grid from behind.
-            let flip = face % 2 == 1;
-            for j in 0..=n {
-                for i in 0..=n {
-                    let inside = i > 0 && j > 0 && i < n && j < n;
-                    if inside {
-                        let mut ids = [
-                            self.id(face, i - 1, j - 1),
-                            self.id(face, i, j - 1),
-                            self.id(face, i, j),
-                            self.id(face, i - 1, j),
-                        ];
-                        if flip {
-                            ids.reverse();
-                        }
-                        f(&ids);
-                        continue;
-                    }
-                    let (i, j) = (i as i64, j as i64);
-                    let n = n as i64;
-                    let around = [(i - 1, j - 1), (i, j - 1), (i, j), (i - 1, j)];
-                    let mut ids: Vec<u32> = Vec::with_capacity(4);
-                    for (x, y) in around {
-                        let out_x = !(0..n).contains(&x);
-                        let out_y = !(0..n).contains(&y);
-                        if out_x && out_y {
-                            continue;
-                        }
-                        ids.push(self.past_edge(face, x, y));
-                    }
-                    let owner = ids.iter().map(|&id| id as usize / (self.n * self.n));
-                    if owner.min() != Some(face) {
-                        continue;
-                    }
-                    if self.clockwise(&ids) {
-                        ids.reverse();
-                    }
-                    f(&ids);
+        let mut lines: Vec<Lines> = limits.iter().map(|_| Lines::default()).collect();
+        // A face of a negative axis looks at its grid from behind.
+        let flip = face % 2 == 1;
+        for j in rows {
+            for i in 1..n {
+                let mut corners = [(i - 1, j - 1), (i, j - 1), (i, j), (i - 1, j)];
+                if flip {
+                    corners.reverse();
                 }
+                let values = corners.map(|(x, y)| field[y * n + x]);
+                let ids = corners.map(|(x, y)| self.id(face, x, y));
+                self.march(&mut lines, &ids, &values, limits);
+            }
+        }
+        lines
+    }
+
+    /// Adds the segments of one cell to the lines of each limit that the
+    /// values of the cell go over.
+    fn march(&self, lines: &mut [Lines], ids: &[u32], values: &[f32], limits: &[f64]) {
+        let lo = values.iter().copied().fold(f32::INFINITY, f32::min) as f64;
+        let hi = values.iter().copied().fold(f32::NEG_INFINITY, f32::max) as f64;
+        let first = limits.partition_point(|&t| t <= lo);
+        let last = limits.partition_point(|&t| t <= hi);
+        if first == last {
+            return;
+        }
+        let mut dirs = [[0.0; 3]; 4];
+        for (d, &id) in dirs.iter_mut().zip(ids) {
+            *d = self.dir(id);
+        }
+        for t in first..last {
+            lines[t].march(ids, values, &dirs[..ids.len()], limits[t]);
+        }
+    }
+
+    /// Calls `f` with the texels of each cell of a corner of the texel grid
+    /// on a face edge, counterclockwise seen from outside the sphere. A cell
+    /// on a face edge has four texels, and a cell at a cube corner has
+    /// three.
+    fn for_each_edge_cell(&self, mut f: impl FnMut(&[u32])) {
+        let n = self.n;
+        let edge = (0..=n).flat_map(|j| {
+            let inner = (1..n).filter(move |_| j == 0 || j == n);
+            [0, n].into_iter().chain(inner).map(move |i| (i, j))
+        });
+        let corners: Vec<(usize, usize)> = edge.collect();
+        for face in 0..FACES {
+            for &(i, j) in &corners {
+                let (i, j) = (i as i64, j as i64);
+                let n = n as i64;
+                let around = [(i - 1, j - 1), (i, j - 1), (i, j), (i - 1, j)];
+                let mut ids: Vec<u32> = Vec::with_capacity(4);
+                for (x, y) in around {
+                    let out_x = !(0..n).contains(&x);
+                    let out_y = !(0..n).contains(&y);
+                    if out_x && out_y {
+                        continue;
+                    }
+                    ids.push(self.past_edge(face, x, y));
+                }
+                // Each cell of a face edge belongs to the face with the least
+                // index.
+                let owner = ids.iter().map(|&id| self.split(id).0);
+                if owner.min() != Some(face) {
+                    continue;
+                }
+                if self.clockwise(&ids) {
+                    ids.reverse();
+                }
+                f(&ids);
             }
         }
     }
@@ -277,6 +401,27 @@ type Corner = (u32, f32, V3);
 const MIN_SHARE: f64 = 1e-3;
 
 impl Lines {
+    /// Adds the crossings and the segments of `other`. A crossing on the
+    /// same mesh edge is the same crossing.
+    fn absorb(&mut self, other: Lines) {
+        let mut index = vec![0u32; other.points.len()];
+        // In the order of `other`, so each run gives the same rings.
+        let mut keys: Vec<(u32, u64)> = other.crossings.into_iter().map(|(k, i)| (i, k)).collect();
+        keys.sort_unstable();
+        for (i, key) in keys {
+            index[i as usize] = *self.crossings.entry(key).or_insert_with(|| {
+                self.points.push(other.points[i as usize]);
+                self.next.push(u32::MAX);
+                (self.points.len() - 1) as u32
+            });
+        }
+        for (i, &to) in other.next.iter().enumerate() {
+            if to != u32::MAX {
+                self.next[index[i] as usize] = index[to as usize];
+            }
+        }
+    }
+
     /// The crossing of `limit` on the mesh edge between two corners, each
     /// with its texel, its value, and its direction.
     fn crossing(&mut self, a: Corner, b: Corner, limit: f64) -> u32 {
@@ -618,6 +763,42 @@ mod tests {
         assert!(map.same_tiles(&snapshot));
         map.set(0, 1, 1, 7);
         assert!(!map.same_tiles(&snapshot));
+    }
+
+    #[test]
+    #[ignore]
+    fn manual_time_of_a_painted_world_of_8192_pixel_faces() {
+        // Continents with coasts that have detail at each scale.
+        let level = |d: V3| {
+            let mut s = 0.0;
+            for k in 0..9 {
+                let f = 3.0 * 2f64.powi(k);
+                let a = 1.0 / 2f64.powi(k);
+                s += a
+                    * ((f * d[0] + k as f64).sin() * (f * d[1] + 2.0 * k as f64).cos()
+                        + (f * d[2] + 0.5 * k as f64).sin());
+            }
+            (32768.0 + s * 6000.0).clamp(0.0, 65535.0) as u16
+        };
+        let n = 8192;
+        let mut map = Heightmap::new(n, 0);
+        let start = std::time::Instant::now();
+        for face in 0..FACES {
+            let levels: Vec<u16> = (0..n * n)
+                .map(|i| level(map.texel_dir(face, i % n, i / n)))
+                .collect();
+            map.store_face(face, &levels);
+        }
+        eprintln!("paint {:?}", start.elapsed());
+        let limits: Vec<f64> = (1..12).map(|i| i as f64 * 5461.0).collect();
+        let trace = Trace {
+            sigma: 1.2,
+            tolerance: 0.1,
+        };
+        let start = std::time::Instant::now();
+        let bands = polygonize(&map, &limits, trace);
+        let points: usize = bands.iter().flat_map(|b| &b.rings).map(|r| r.len()).sum();
+        eprintln!("trace {:?}, {points} points", start.elapsed());
     }
 
     #[test]
