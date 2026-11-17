@@ -187,15 +187,16 @@ struct StepSettings {
     limits: Limits,
     rain: Rain,
     channel: ChannelShape,
+    /// The seed of the rough ground, if the steps have rough ground.
+    rough: Option<u32>,
 }
 
 /// What a request does to the cells before its steps.
 pub enum Lift {
     /// Nothing. The request is one step.
     None,
-    /// Each brush raises its cells by this number of levels at full effect,
-    /// with the rough ground of the seed.
-    Raise(f64, u32),
+    /// Each brush raises its cells by this number of levels at full effect.
+    Raise(f64),
     /// The cells under the distances along the line take the levels of the
     /// range, as `erode_range`. The rate of the request is the erosion
     /// setting, and the request has no brushes.
@@ -222,15 +223,18 @@ pub struct Eroder {
     rain: Rain,
     /// The channels of each later request.
     channel: ChannelShape,
+    /// The seed of the rough ground of each later request.
+    rough: Option<u32>,
 }
 
 /// The number of steps that lower the cells after an uplift.
 const UPLIFT_STEPS: usize = 4;
 
 /// Without a lift, lowers the cells under the brushes one time. With an
-/// uplift, raises those cells with rough ground and then lowers them `UPLIFT_STEPS` times.
-/// The cells and the step keep `limits`, and the step has `rain` and
-/// `channel`. A range keeps the limits of its line.
+/// uplift, raises those cells and then lowers them `UPLIFT_STEPS` times.
+/// The cells and the step keep `limits`, and the step has `rain`, `channel`,
+/// and the rough ground of `rough`. A range keeps the limits of its line,
+/// and it has no rough ground.
 fn step(
     erosion: &mut Erosion,
     brushes: &[ErodeBrush],
@@ -241,9 +245,14 @@ fn step(
     erosion.set_limits(settings.limits);
     erosion.set_rain(settings.rain);
     erosion.set_channel(settings.channel);
+    let rough = settings.rough.filter(|_| !matches!(lift, Lift::Range(..)));
+    erosion.set_rough(rough);
     match lift {
-        Lift::Raise(uplift, seed) if uplift > 0.0 => {
-            erosion.uplift(brushes, uplift, seed);
+        Lift::Raise(uplift) if uplift > 0.0 => {
+            match rough {
+                Some(seed) => erosion.uplift(brushes, uplift, seed),
+                None => erosion.raise(brushes, uplift),
+            }
             erosion.steps(brushes, rate, UPLIFT_STEPS)
         }
         Lift::Range(line, u) => erode_range(erosion, &line, u, rate),
@@ -289,6 +298,7 @@ impl Eroder {
             waiting: 0,
             rain: Rain::default(),
             channel: ChannelShape::default(),
+            rough: None,
         }
     }
 
@@ -299,6 +309,12 @@ impl Eroder {
     /// Sets the rain of each later request.
     pub fn set_rain(&mut self, rain: Rain) {
         self.rain = rain;
+    }
+
+    /// Sets the seed of the rough ground of each later request. With
+    /// `None`, the requests have no rough ground.
+    pub fn set_rough(&mut self, seed: Option<u32>) {
+        self.rough = seed;
     }
 
     /// Sets the channels of each later request.
@@ -360,6 +376,7 @@ impl Eroder {
             limits,
             rain: self.rain,
             channel: self.channel,
+            rough: self.rough,
         };
         match &mut self.work {
             Some(work) => {
@@ -494,7 +511,7 @@ mod tests {
         eroder.begin(global(&map));
         eroder.request(brush(true), 1.0, Lift::None, Limits::default());
         assert!(eroder.poll().unwrap().is_empty());
-        eroder.request(brush(true), 1.0, Lift::Raise(5000.0, 0), Limits::default());
+        eroder.request(brush(true), 1.0, Lift::Raise(5000.0), Limits::default());
         assert!(!eroder.poll().unwrap().is_empty());
     }
 
@@ -550,7 +567,7 @@ mod tests {
         for sync in [true, false] {
             let mut eroder = Eroder::new(sync);
             eroder.begin(ground(0.0));
-            eroder.request(at(8.0), 1.0, Lift::Raise(5000.0, 0), Limits::default());
+            eroder.request(at(8.0), 1.0, Lift::Raise(5000.0), Limits::default());
             assert!(!wait(&mut eroder).is_empty());
             // The hill at 8 degrees is in the new window, so a step without
             // uplift lowers it there.

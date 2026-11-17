@@ -33,7 +33,9 @@ const NEAR_ROOM: usize = 8;
 const RAIN_STRIDE: usize = 8;
 
 /// The rough ground of an uplift lowers the rise of a cell by this part of
-/// the rise at most. Its features are about `ROUGH_CELLS` cells in size.
+/// the rise at most. With rough ground, a step lowers the stream power of a
+/// cell by this part at most. The features of the rough ground are about
+/// `ROUGH_CELLS` cells in size.
 const ROUGH: f64 = 0.3;
 const ROUGH_CELLS: f64 = 4.0;
 
@@ -536,6 +538,12 @@ pub struct Erosion {
     /// The rain of each cell, from the heights of the first step after a
     /// change of `rain`. It is empty when each cell gets the same rain.
     rain_cells: Vec<f32>,
+    /// The seed of the rough ground of each later step, if it has rough
+    /// ground.
+    rough_seed: Option<u32>,
+    /// The rough ground of each cell, from 0 to 1. A cell that no step
+    /// needed yet is NaN.
+    rough: Vec<f32>,
 }
 
 /// The effect of the brushes of one step.
@@ -689,6 +697,48 @@ impl Erosion {
             channel: ChannelShape::default(),
             rain: Rain::default(),
             rain_cells: Vec::new(),
+            rough_seed: None,
+            rough: Vec::new(),
+        }
+    }
+
+    /// Sets the seed of the rough ground of each later step. With `None`,
+    /// the steps have no rough ground.
+    pub fn set_rough(&mut self, seed: Option<u32>) {
+        if seed != self.rough_seed {
+            self.rough_seed = seed;
+            self.rough.clear();
+        }
+    }
+
+    /// The rough ground of cell `i` with `seed`, from 0 to 1: a fractal
+    /// noise of its direction with features of `ROUGH_CELLS` cells.
+    fn rough_of(&self, i: usize, seed: u32) -> f64 {
+        let side = self.side;
+        let (row, x) = (i / side, i % side);
+        let face = self.faces().start + row / side;
+        let dir = face_dir(face, self.flat_u[x], self.flat_v[row % side]);
+        let noise = fractal(dir, ROUGH_CELLS * self.cell_angle(), seed ^ SALT_ROUGH);
+        0.5 * (1.0 - noise).clamp(0.0, 2.0)
+    }
+
+    /// Computes the rough ground of the cells in `spans` that do not have it.
+    fn fill_rough(&mut self, spans: &[Option<(usize, usize)>]) {
+        let Some(seed) = self.rough_seed else {
+            return;
+        };
+        if self.rough.is_empty() {
+            self.rough = vec![f32::NAN; self.heights.len()];
+        }
+        for (row, span) in spans.iter().enumerate() {
+            let Some((first, last)) = *span else {
+                continue;
+            };
+            for i in row * self.side + first..=row * self.side + last {
+                if self.rough[i].is_nan() {
+                    self.rough[i] = self.rough_of(i, seed) as f32;
+                }
+            }
         }
     }
 
@@ -983,8 +1033,6 @@ impl Erosion {
         rises.sort_unstable_by_key(|&(i, _)| i);
         // A step gives the drops of the cells with a weight only.
         let weights = self.weights(brushes).cells;
-        let size = ROUGH_CELLS * self.cell_angle();
-        let first = self.faces().start;
         let limits = self.limits;
         for run in rises.chunk_by(|a, b| a.0 == b.0) {
             let i = run[0].0;
@@ -998,11 +1046,7 @@ impl Erosion {
             }
             let mut height = raised;
             if weights[i] > 0.0 {
-                let (row, x) = (i / side, i % side);
-                let dir = face_dir(first + row / side, self.flat_u[x], self.flat_v[row % side]);
-                let noise = fractal(dir, size, seed ^ SALT_ROUGH);
-                let rough = 0.5 * (1.0 - noise).clamp(0.0, 2.0);
-                let rough_rise = rise * (1.0 - ROUGH * rough);
+                let rough_rise = rise * (1.0 - ROUGH * self.rough_of(i, seed));
                 height = height.min(limits.apply(old, (old + rough_rise).min(65535.0)) as f32);
             }
             self.heights[i] = height;
@@ -1158,6 +1202,7 @@ impl Erosion {
         if spans.iter().all(Option::is_none) {
             return step;
         }
+        self.fill_rough(&spans);
         // The flow, and the index in the grid of each cell of the flow.
         let (flow, place) = match &self.cells {
             Cells::Window { window, solid, .. } if near => {
@@ -1220,7 +1265,10 @@ impl Erosion {
             let diagonal = !self.neighbors(i)[..4].contains(&(to as u32));
             let length = if diagonal { SQRT_2 } else { 1.0 };
             let area = f64::from(flow.area[at as usize]) / self.min_area;
-            let power = rate * f64::from(weights[i]) * area.sqrt() / length;
+            let mut power = rate * f64::from(weights[i]) * area.sqrt() / length;
+            if self.rough_seed.is_some() {
+                power *= 1.0 - ROUGH * f64::from(self.rough[i]);
+            }
             let new = f64::from(below) + f64::from(height - below) / (1.0 + power);
             let new = (new as f32).clamp(below, height);
             self.heights[i] = limits.apply(f64::from(height), f64::from(new)) as f32;
@@ -2002,6 +2050,33 @@ mod tests {
         let (a, _, _) = uplifted(7);
         assert!(a == uplifted(7).0);
         assert!(a != uplifted(8).0);
+    }
+
+    /// The drops of one step on a valley, with the rough ground of `seed`.
+    fn rough_drops(seed: Option<u32>) -> Vec<u16> {
+        let m = 48;
+        let mut erosion = Erosion::global(&strip(m, 40.0), 8192);
+        erosion.set_rough(seed);
+        let brush = ErodeBrush {
+            center: cell_dir(m, 0, 24, 24),
+            radius: 0.6,
+            hardness: 1.0,
+            flow: 1.0,
+        };
+        erosion.step(&[brush], 2.0).drops().to_vec()
+    }
+
+    #[test]
+    fn rough_ground_lowers_the_stream_power_of_a_step_by_a_part_of_it() {
+        let (plain, rough) = (rough_drops(None), rough_drops(Some(7)));
+        assert!(rough_drops(Some(7)) == rough);
+        let mut less = 0;
+        for (&a, &b) in plain.iter().zip(&rough) {
+            assert!(b <= a, "{b} over {a}");
+            less += usize::from(b < a);
+        }
+        assert!(less > 20, "{less}");
+        assert!(rough != rough_drops(Some(8)));
     }
 
     #[test]
