@@ -239,7 +239,7 @@ const MODES: [Mode; 7] = [
     Mode::Flatten,
     Mode::Terrace,
     Mode::Shape,
-    Mode::Value,
+    Mode::Paint,
 ];
 
 fn tolerance(mode: Mode) -> u16 {
@@ -260,10 +260,10 @@ fn stamp(center: V3, radius: f64, hardness: f64, mode: Mode) -> Stamp {
         // The flatten target, or the terrace step. The hills cross sea level.
         level: if mode == Mode::Terrace { 1500 } else { 52000 },
         // The shape of the shape mode is toward old land, and the opacity
-        // of the value mode is less than full.
+        // of the paint mode is less than full.
         strength: match mode {
             Mode::Shape => -0.7,
-            Mode::Value => 0.6,
+            Mode::Paint => 0.6,
             _ => 3000.0,
         },
         lower: 3000.0,
@@ -1335,7 +1335,7 @@ fn light(lon: f64, lat: f64, radius: f64, mode: Mode) -> Stamp {
     let base = stamp(lonlat_to_dir(lon, lat), radius, 0.5, mode);
     Stamp {
         flow: 0.1,
-        strength: if mode == Mode::Value {
+        strength: if mode == Mode::Paint {
             base.strength
         } else {
             1500.0
@@ -1365,7 +1365,7 @@ fn groups_match_single_stamps_and_the_cpu_for_a_stroke() {
         ("face edge", (31.0, 2.0), (59.0, 5.0)),
         ("cube corner", (35.0, 25.264), (55.0, 45.264)),
     ];
-    let modes = [Mode::Raise, Mode::Lower, Mode::Flatten, Mode::Value];
+    let modes = [Mode::Raise, Mode::Lower, Mode::Flatten, Mode::Paint];
     let mut worst = [0; 4];
     for (m, mode) in modes.into_iter().enumerate() {
         for (place, from, to) in lines {
@@ -1394,7 +1394,7 @@ fn groups_match_single_stamps_and_the_cpu_for_a_stroke() {
             let expected = if place == "cube corner" { 3 } else { 2 };
             assert_eq!(touched, expected, "{mode:?} stroke at the {place}");
             let limit = match mode {
-                Mode::Flatten | Mode::Value => TOLERANCE,
+                Mode::Flatten | Mode::Paint => TOLERANCE,
                 _ => ADD_STROKE_TOLERANCE,
             };
             assert!(
@@ -1407,12 +1407,12 @@ fn groups_match_single_stamps_and_the_cpu_for_a_stroke() {
     eprintln!("stroke in groups, largest difference for {modes:?}: {worst:?}");
 }
 
-/// Two value strokes on the same place. The second stroke starts from the
+/// Two paint strokes on the same place. The second stroke starts from the
 /// levels after the first. Some of the tiles under the strokes have no
 /// memory.
 #[test]
 #[ignore = "gpu"]
-fn gpu_matches_cpu_for_two_value_strokes() {
+fn gpu_matches_cpu_for_two_paint_strokes() {
     let gpu = gpu();
     let mut cpu = hills(256);
     let part = TexelRect {
@@ -1430,7 +1430,7 @@ fn gpu_matches_cpu_for_two_value_strokes() {
                 lonlat_to_dir(-6.0 + 0.3 * i as f64, 2.0),
                 0.08,
                 0.5,
-                Mode::Value,
+                Mode::Paint,
             )
         })
         .collect();
@@ -1446,12 +1446,12 @@ fn gpu_matches_cpu_for_two_value_strokes() {
     assert!(after[0] != after[1], "the second stroke changes the levels");
 }
 
-/// A value stroke on a pool with no room for the levels of each tile from
+/// A paint stroke on a pool with no room for the levels of each tile from
 /// the start of the stroke. The stamps do not overlap, so the tiles with no
 /// room give the same levels.
 #[test]
 #[ignore = "gpu"]
-fn a_value_stroke_on_a_full_pool_matches_the_cpu() {
+fn a_paint_stroke_on_a_full_pool_matches_the_cpu() {
     let gpu = gpu();
     // 6 faces of 36 by 36 tiles of 16 texels. The pool holds 8192 tiles.
     let (n, tile) = (576, 16);
@@ -1469,7 +1469,7 @@ fn a_value_stroke_on_a_full_pool_matches_the_cpu() {
     ];
     let stamps: Vec<Stamp> = centers
         .iter()
-        .map(|&(lon, lat)| stamp(lonlat_to_dir(lon, lat), 0.3, 0.5, Mode::Value))
+        .map(|&(lon, lat)| stamp(lonlat_to_dir(lon, lat), 0.3, 0.5, Mode::Paint))
         .collect();
     for _ in 0..2 {
         gpu.stamp(&map, &mut cpu, &stamps);

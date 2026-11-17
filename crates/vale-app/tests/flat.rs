@@ -599,8 +599,8 @@ fn the_flat_view_blends_the_raster_layers_by_their_opacity() {
 }
 
 /// A flat harness with a selected rain layer from 0 to 4000 mm, and the
-/// brush in the value mode with a hard tip.
-fn value_harness() -> App {
+/// brush in the paint mode with a hard tip.
+fn paint_harness() -> App {
     let mut h = flat_harness();
     let rain = vale_app::ui::RasterSpec {
         name: "Rain".to_string(),
@@ -615,7 +615,7 @@ fn value_harness() -> App {
     assert!(!state.globe.is_height());
     state.globe.tool = Tool::Brush;
     let brush = &mut state.globe.brush;
-    brush.mode = Mode::Value;
+    brush.mode = Mode::Paint;
     (brush.hardness, brush.flow) = (1.0, 1.0);
     h.run_steps(3);
     h
@@ -643,12 +643,12 @@ fn level_under(h: &App, pos: Pos2) -> u16 {
 
 #[test]
 #[ignore = "gpu"]
-fn a_hard_value_stroke_sets_the_value_of_a_raster_layer() {
+fn a_hard_paint_stroke_sets_the_value_of_a_raster_layer() {
     let _gpu = one_gpu_test();
-    let mut h = value_harness();
+    let mut h = paint_harness();
     let c = h.state().globe.rect.center();
     let target = h.state().globe.brush.level(3000.0);
-    h.state_mut().globe.brush.value_level = Some(target);
+    h.state_mut().globe.brush.paint_level = target;
     h.run_steps(1);
     mouse_path(
         &mut h,
@@ -659,14 +659,14 @@ fn a_hard_value_stroke_sets_the_value_of_a_raster_layer() {
 
 #[test]
 #[ignore = "gpu"]
-fn a_value_stroke_at_half_opacity_stays_at_half_after_two_passes() {
+fn a_paint_stroke_at_half_opacity_stays_at_half_after_two_passes() {
     let _gpu = one_gpu_test();
-    let mut h = value_harness();
+    let mut h = paint_harness();
     let c = h.state().globe.rect.center();
     let start = level_under(&h, c);
     let target = h.state().globe.brush.level(4000.0);
     let brush = &mut h.state_mut().globe.brush;
-    (brush.value_level, brush.opacity) = (Some(target), 0.5);
+    (brush.paint_level, brush.opacity) = (target, 0.5);
     h.run_steps(1);
     let (left, right) = (c - Vec2::new(20.0, 0.0), c + Vec2::new(20.0, 0.0));
     mouse_path(&mut h, &[left, c, right, c, left]);

@@ -2593,12 +2593,11 @@ impl Globe {
         }
     }
 
-    /// Sets the level of the flatten mode or the value mode from the
-    /// heightmap at a place. During a stroke the heightmap is behind the GPU,
-    /// and the level does not change.
+    /// Sets the flatten level from the heightmap at a place. During a stroke
+    /// the heightmap is behind the GPU, and the level does not change.
     pub fn pick(&mut self, dir: Option<V3>) {
         if let Some(dir) = dir.filter(|_| !self.busy()) {
-            *self.brush.target_level_mut() = Some(self.map.sample(dir));
+            self.brush.flatten_level = Some(self.map.sample(dir));
             self.pick_level = false;
         }
     }
@@ -3369,7 +3368,7 @@ impl Globe {
                     }
                     self.strokes += 1;
                     self.map.begin_stroke();
-                    if self.brush.mode == Mode::Value {
+                    if self.brush.mode == Mode::Paint {
                         // The stamps of the last stroke are in the queue
                         // before this change.
                         let tag = self.tag();

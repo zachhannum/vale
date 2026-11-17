@@ -20,7 +20,7 @@ use crate::globe::brush::{
     BASIN_AGE, BASIN_DENSITY, BASIN_LAKES, CHANNEL_KM, EROSION, FLATTEN_RATE, FLOODPLAIN_WIDTH_KM,
     FLOW, NOISE_GRAIN, NOISE_M, RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_MAGMA, RIDGE_OFFSET_KM,
     RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM, SCALE_KM, SEED, SHAPE, STRENGTH_M, TALUS_DEG,
-    TERRACE_STEP_M, WARP_KM, needs_height, picks_level, shape_text,
+    TERRACE_STEP_M, WARP_KM, needs_height, shape_text,
 };
 use crate::globe::brush::{BrushSettings, brush_radius};
 use crate::globe::combine::PolygonMode;
@@ -215,7 +215,7 @@ pub const SCULPT_MODES: [(&str, Icon, Mode); 8] = [
     ("Lower", Icon::Lower, Mode::Lower),
     ("Smooth", Icon::Smooth, Mode::Smooth),
     ("Flatten", Icon::Flatten, Mode::Flatten),
-    ("Value", Icon::Value, Mode::Value),
+    ("Paint", Icon::Paint, Mode::Paint),
     ("Warp", Icon::Warp, Mode::Warp),
     ("Push", Icon::Push, Mode::Push),
     ("Noise", Icon::Noise, Mode::Noise),
@@ -718,7 +718,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     state.pad.flyouts.begin_frame();
     state.pad.menu_rect = None;
     state.pad.add_button = None;
-    if !state.globe.brushing() || !picks_level(state.globe.brush.mode) {
+    if !state.globe.brushing() || state.globe.brush.mode != Mode::Flatten {
         state.globe.pick_level = false;
     }
     let flyouts = &mut state.pad.flyouts;
@@ -2858,11 +2858,16 @@ fn tool_rows(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
             .percent()
             .default(defaults.flatten_rate);
         apply(number.slider(ui, controls), &mut brush.flatten_rate);
-    } else if brush.mode == Mode::Value {
+    } else if brush.mode == Mode::Paint {
         let number = percent("Brush opacity", brush.opacity)
             .label("Opacity")
             .default(defaults.opacity);
         apply(number.slider(ui, controls), &mut brush.opacity);
+        let value = brush.value(brush.paint_level);
+        let number = level(PAINT_VALUE, value, brush.value_range, &unit).label("Value");
+        if let Some(value) = number.slider(ui, controls) {
+            brush.paint_level = brush.level(value);
+        }
     } else if brush.mode == Mode::Noise {
         let number = meters("Brush raise", "Raise", brush.noise_raise_m, NOISE_M)
             .scale(Scale::Square)
@@ -3077,15 +3082,14 @@ fn ridge_rows(
 pub const LOCK_SIZE: &str = "Lock size";
 /// The name of the stepper of the level of the flatten mode.
 pub const FLATTEN_LEVEL: &str = "Flatten level";
-/// The name of the stepper of the level of the value mode.
-pub const VALUE_LEVEL: &str = "Value level";
-/// The name of the button that sets the level at each stroke start.
+/// The name of the button that sets the flatten level at each stroke start.
 pub const STROKE_START: &str = "Use stroke start";
-/// The name of the switch that takes the level from the globe.
+/// The name of the switch that takes the flatten level from the globe.
 pub const PICK_LEVEL: &str = "Pick from globe";
+/// The name of the slider of the value of the paint mode.
+pub const PAINT_VALUE: &str = "Brush value";
 
-/// The lock of the size, and the level of the flatten mode or the value
-/// mode.
+/// The lock of the size, and the level of the flatten mode.
 fn flatten_rows(
     ui: &mut egui::Ui,
     controls: &mut Controls,
@@ -3097,24 +3101,19 @@ fn flatten_rows(
     if widgets::switch_row(ui, controls, LOCK_SIZE, LOCK_SIZE, &mut lock) {
         globe.brush.set_lock(lock, globe_radius);
     }
-    if !picks_level(globe.brush.mode) {
+    if globe.brush.mode != Mode::Flatten {
         globe.pick_level = false;
         return;
     }
     let brush = &mut globe.brush;
-    match brush.target_level() {
+    match brush.flatten_level {
         Some(at) => {
-            let number = match brush.mode {
-                Mode::Value => {
-                    level(VALUE_LEVEL, brush.value(at), brush.value_range, unit).label("Value")
-                }
-                _ => level(FLATTEN_LEVEL, brush.value(at), brush.value_range, unit),
-            };
+            let number = level(FLATTEN_LEVEL, brush.value(at), brush.value_range, unit);
             if let Some(value) = number.stepper(ui, controls) {
-                *brush.target_level_mut() = Some(brush.level(value));
+                brush.flatten_level = Some(brush.level(value));
             }
             if widgets::button_row(ui, controls, STROKE_START, true).clicked() {
-                *brush.target_level_mut() = None;
+                brush.flatten_level = None;
             }
         }
         None => raster::note(ui, "Level at stroke start"),

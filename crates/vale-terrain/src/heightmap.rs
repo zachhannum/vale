@@ -39,7 +39,7 @@ pub enum Mode {
     /// `Stamp::level`, and it does not go past that level. A hard stamp with
     /// full flow and full opacity sets `Stamp::level`. With no open stroke,
     /// each stamp is a stroke.
-    Value,
+    Paint,
     /// Pulls each texel toward the nearest step level. The step levels are
     /// sea level and each multiple of `Stamp::level` above and below it. A
     /// texel does not cross sea level, and a texel below sea level stays
@@ -167,14 +167,14 @@ pub struct Stamp {
     /// The effect at the center, from 0 to 1. Pressure sets this value.
     pub flow: f64,
     pub mode: Mode,
-    /// The target of the flatten mode and the value mode. In the terrace
+    /// The target of the flatten mode and the paint mode. In the terrace
     /// mode, the height between two step levels, in 16-bit steps.
     pub level: u16,
     /// The largest change of the raise and lower modes, in 16-bit steps. In
     /// the noise mode, the largest rise. In the warp mode, the largest offset
     /// as an angle, in radians. In the shape mode, the shape from -1 to 1.
     /// `stamp_plan` changes it to the bend of the curve, `SHAPE_BEND` to the
-    /// power of the shape. In the value mode, the opacity from 0 to 1.
+    /// power of the shape. In the paint mode, the opacity from 0 to 1.
     pub strength: f64,
     /// The largest drop of the noise mode, in 16-bit steps.
     pub lower: f64,
@@ -1029,7 +1029,7 @@ impl Heightmap {
                 _ => stamp.strength,
             };
             (strength, scale)
-        } else if stamp.mode == Mode::Value {
+        } else if stamp.mode == Mode::Paint {
             // The shader gets the same 32-bit opacity.
             let opacity = stamp.strength.clamp(0.0, 1.0) as f32;
             (f64::from(opacity), stamp.scale)
@@ -1172,11 +1172,11 @@ impl Heightmap {
         for ty in rect.y0 / t..=(rect.y1 - 1) / t {
             for tx in rect.x0 / t..=(rect.x1 - 1) / t {
                 let index = (face * self.per_side + ty) * self.per_side + tx;
-                // The value mode reads the tile from the start of the stroke.
+                // The paint mode reads the tile from the start of the stroke.
                 // A tile that the stroke did not change is the same as at its
                 // start.
                 let start = match (&self.stroke, stamp.mode) {
-                    (Some(saved), Mode::Value) => saved
+                    (Some(saved), Mode::Paint) => saved
                         .tiles
                         .get(&index)
                         .map(|tile| (tile.clone(), saved.base)),
@@ -1199,7 +1199,7 @@ impl Heightmap {
                             Mode::Raise | Mode::Uplift => old + amount * stamp.strength,
                             Mode::Lower => old - amount * stamp.strength,
                             Mode::Flatten => old + (f64::from(stamp.level) - old) * amount.min(1.0),
-                            Mode::Value => {
+                            Mode::Paint => {
                                 let start = start.0.as_ref().map_or(start.1, |tile| tile[offset]);
                                 let start = f64::from(start);
                                 let cap = start + (f64::from(stamp.level) - start) * stamp.strength;
@@ -3395,7 +3395,7 @@ mod tests {
             Mode::Lower,
             Mode::Smooth,
             Mode::Flatten,
-            Mode::Value,
+            Mode::Paint,
             Mode::Weather,
             Mode::Uplift,
             Mode::Warp,
@@ -3432,11 +3432,11 @@ mod tests {
         }
     }
 
-    /// A value stamp at the center of face 0 to `level`, with `flow` and
+    /// A paint stamp at the center of face 0 to `level`, with `flow` and
     /// `opacity`.
     fn value(map: &Heightmap, level: u16, flow: f64, opacity: f64) -> Stamp {
         Stamp {
-            mode: Mode::Value,
+            mode: Mode::Paint,
             level,
             flow,
             strength: opacity,
@@ -3445,7 +3445,7 @@ mod tests {
     }
 
     #[test]
-    fn a_hard_value_stamp_sets_the_exact_level() {
+    fn a_hard_paint_stamp_sets_the_exact_level() {
         let mut map = Heightmap::with_tile_size(64, 16, 30_000);
         let stamp = value(&map, 41_234, 1.0, 1.0);
         assert!(stroke(&mut map, stamp));
@@ -3458,7 +3458,7 @@ mod tests {
     }
 
     #[test]
-    fn opacity_caps_a_value_stroke() {
+    fn opacity_caps_a_paint_stroke() {
         let mut map = Heightmap::with_tile_size(64, 16, 30_000);
         let stamp = value(&map, 40_000, 0.5, 0.5);
         map.begin_stroke();
@@ -3471,7 +3471,7 @@ mod tests {
     }
 
     #[test]
-    fn a_new_value_stroke_starts_again() {
+    fn a_new_paint_stroke_starts_again() {
         let mut map = Heightmap::with_tile_size(64, 16, 30_000);
         let stamp = value(&map, 40_000, 0.5, 0.5);
         for _ in 0..2 {
@@ -5189,14 +5189,14 @@ mod tests {
             Mode::Lower,
             Mode::Smooth,
             Mode::Flatten,
-            Mode::Value,
+            Mode::Paint,
             Mode::Weather,
             Mode::Warp,
             Mode::Push,
             Mode::Noise,
         ];
         for mode in modes {
-            // The flatten mode and the value mode go down to level 0.
+            // The flatten mode and the paint mode go down to level 0.
             assert_limits_bind(mode, 0, |floor| Limits {
                 floor,
                 ..Limits::default()
@@ -5231,14 +5231,14 @@ mod tests {
             Mode::Ridge,
             Mode::Smooth,
             Mode::Flatten,
-            Mode::Value,
+            Mode::Paint,
             Mode::Weather,
             Mode::Warp,
             Mode::Push,
             Mode::Noise,
         ];
         for mode in modes {
-            // The flatten mode and the value mode go up to the highest level.
+            // The flatten mode and the paint mode go up to the highest level.
             assert_limits_bind(mode, 65535, |ceiling| Limits {
                 ceiling,
                 ..Limits::default()
@@ -5279,7 +5279,7 @@ mod tests {
             Mode::Uplift,
             Mode::Smooth,
             Mode::Flatten,
-            Mode::Value,
+            Mode::Paint,
             Mode::Weather,
             Mode::Warp,
             Mode::Push,

@@ -36,7 +36,7 @@ const MODES: [(Mode, &str); 17] = [
     (Mode::Push, "push"),
     (Mode::Noise, "noise"),
     (Mode::Basin, "basin"),
-    (Mode::Value, "value"),
+    (Mode::Paint, "paint"),
 ];
 
 /// The tools, with their names in the file.
@@ -88,7 +88,7 @@ const FLOATS: [Field<f64>; 25] = [
     ("shape", |b| &mut b.shape),
     ("terrace_step_m", |b| &mut b.terrace_step_m),
     ("flatten_rate", |b| &mut b.flatten_rate),
-    ("value_opacity", |b| &mut b.opacity),
+    ("paint_opacity", |b| &mut b.opacity),
 ];
 
 const BOOLS: [Field<bool>; 4] = [
@@ -753,9 +753,9 @@ mod tests {
     }
 
     #[test]
-    fn the_value_mode_its_opacity_and_the_flatten_rate_stay_after_a_write_and_a_read() {
+    fn the_paint_mode_its_opacity_and_the_flatten_rate_stay_after_a_write_and_a_read() {
         let mut globe = Globe::new();
-        globe.choose(Choice::Brush(Mode::Value));
+        globe.choose(Choice::Brush(Mode::Paint));
         globe.brush.flatten_rate = 0.65;
         globe.brush.opacity = 0.4;
         let snap = SnapSettings::default();
@@ -768,7 +768,7 @@ mod tests {
         next.tools
             .load(&text, &mut tool, brush, line, &mut next_snap);
         assert_eq!(tool, Tool::Brush);
-        assert_eq!(next.brush.mode, Mode::Value);
+        assert_eq!(next.brush.mode, Mode::Paint);
         assert_eq!(next.brush.flatten_rate, 0.65);
         assert_eq!(next.brush.opacity, 0.4);
     }

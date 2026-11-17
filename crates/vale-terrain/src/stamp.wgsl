@@ -110,7 +110,7 @@ const NOISE = 13u;
 const TERRACE = 14u;
 const SHAPE = 15u;
 // The start set of the tiles holds the levels from the start of the stroke.
-const VALUE = 16u;
+const PAINT = 16u;
 
 // The same number as `WARP_MARGIN` in `heightmap.rs`.
 const WARP_MARGIN = 3.0;
@@ -2227,7 +2227,7 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<u32> {
                     change = (curve - old) * min(amount, 1.0);
                 }
             }
-            case VALUE {
+            case PAINT {
                 // The texel moves toward its level at the start of the stroke
                 // plus the opacity times the change to the target. The
                 // strength is the opacity.

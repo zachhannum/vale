@@ -13,7 +13,7 @@ use vale_terrain::Mode;
 
 use crate::document::Document;
 use crate::globe::Canvas;
-use crate::globe::brush::{FIXED_FLOW, Sample, pen_flow, picks_level, slerp};
+use crate::globe::brush::{FIXED_FLOW, Sample, pen_flow, slerp};
 use crate::globe::combine::PolygonMode;
 use crate::globe::flat::FlatView;
 use crate::globe::math::V3;
@@ -56,13 +56,13 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         .show(ui, |ui| canvas(ui, state, BACKGROUND));
 }
 
-/// Starts a stroke, or starts to pick the level of the brush.
+/// Starts a stroke, or starts to pick the flatten level.
 fn press(globe: &mut Globe) {
     if globe.stroking() {
         globe.line_down();
     } else if globe.placing() {
         globe.point_down();
-    } else if globe.pick_level && picks_level(globe.brush.mode) {
+    } else if globe.pick_level && globe.brush.mode == Mode::Flatten {
         globe.input.picking = true;
     } else {
         globe.pen_down();

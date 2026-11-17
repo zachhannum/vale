@@ -24,7 +24,7 @@ pub const FLOW: std::ops::RangeInclusive<f64> = 0.01..=1.0;
 /// The limits of the rate of the flatten mode, the part of the way to the
 /// level that one stamp at full flow goes.
 pub const FLATTEN_RATE: std::ops::RangeInclusive<f64> = 0.01..=1.0;
-/// The limits of the opacity of the value mode.
+/// The limits of the opacity of the paint mode.
 pub const OPACITY: std::ops::RangeInclusive<f64> = 0.0..=1.0;
 /// The limits of the strength setting, in meters.
 pub const STRENGTH_M: std::ops::RangeInclusive<f64> = 50.0..=6000.0;
@@ -109,9 +109,9 @@ pub struct BrushSettings {
     /// The part of the way to the level that one stamp of the flatten mode
     /// goes at full flow.
     pub flatten_rate: f64,
-    /// The target of the value mode, as `flatten_level`.
-    pub value_level: Option<u16>,
-    /// The most that one stroke of the value mode moves a texel toward the
+    /// The level that the paint mode paints.
+    pub paint_level: u16,
+    /// The most that one stroke of the paint mode moves a texel toward the
     /// level, from 0 to 1.
     pub opacity: f64,
     /// The height between two step levels of the terrace mode, in meters.
@@ -194,7 +194,7 @@ impl Default for BrushSettings {
             noise_lower_m: 1500.0,
             flatten_level: None,
             flatten_rate: 0.3,
-            value_level: None,
+            paint_level: 32768,
             opacity: 1.0,
             terrace_step_m: 200.0,
             shape: -0.5,
@@ -259,12 +259,6 @@ pub fn needs_height(mode: Mode) -> bool {
     )
 }
 
-/// True if a brush mode paints toward a level that the user can pick on the
-/// globe.
-pub fn picks_level(mode: Mode) -> bool {
-    matches!(mode, Mode::Flatten | Mode::Value)
-}
-
 /// The limits of a locked radius, in radians.
 const LOCK_RADIUS: std::ops::RangeInclusive<f64> = 1e-4..=MAX_BRUSH_RADIUS;
 
@@ -273,16 +267,8 @@ impl BrushSettings {
     /// start of the stroke.
     pub fn target_level(&self) -> Option<u16> {
         match self.mode {
-            Mode::Value => self.value_level,
+            Mode::Paint => Some(self.paint_level),
             _ => self.flatten_level,
-        }
-    }
-
-    /// The level of `target_level`, to change it.
-    pub fn target_level_mut(&mut self) -> &mut Option<u16> {
-        match self.mode {
-            Mode::Value => &mut self.value_level,
-            _ => &mut self.flatten_level,
         }
     }
 
@@ -549,8 +535,8 @@ impl Tip<'_> {
                 | Mode::Push
                 | Mode::Noise => flow,
                 // The flow of a mouse gives the full height of the ridge, and
-                // the full change of the value mode.
-                Mode::OceanRidge | Mode::Range | Mode::Basin | Mode::Value => {
+                // the full change of the paint mode.
+                Mode::OceanRidge | Mode::Range | Mode::Basin | Mode::Paint => {
                     (input / FIXED_FLOW).min(1.0) * self.brush.flow
                 }
                 // These modes move toward a target, so each stamp does less.
@@ -575,7 +561,7 @@ impl Tip<'_> {
                         * (1.0 + UPLIFT_GAIN * self.brush.erosion.clamp(0.0, 1.0))
                 }
                 Mode::Noise => STAMP_SPACING / span * self.brush.noise_raise_m,
-                Mode::Value => self.brush.opacity.clamp(0.0, 1.0),
+                Mode::Paint => self.brush.opacity.clamp(0.0, 1.0),
                 _ => STAMP_SPACING / span * self.brush.strength_m,
             },
             lower: self.brush.noise_lower_m * STAMP_SPACING / span,
@@ -763,7 +749,7 @@ fn stamp_cost(plan: &StampPlan) -> usize {
         Mode::Raise
         | Mode::Lower
         | Mode::Flatten
-        | Mode::Value
+        | Mode::Paint
         | Mode::Terrace
         | Mode::Carve
         | Mode::Ridge
@@ -928,28 +914,26 @@ mod tests {
     }
 
     #[test]
-    fn a_value_stamp_has_the_opacity_and_the_value_level() {
+    fn a_paint_stamp_has_the_opacity_and_the_paint_level() {
         let mut brush = BrushSettings {
-            mode: Mode::Value,
+            mode: Mode::Paint,
             opacity: 0.4,
+            paint_level: 40_000,
             ..BrushSettings::default()
         };
-        assert!(picks_level(Mode::Value) && picks_level(Mode::Flatten));
-        assert!(!needs_height(Mode::Value));
-        // With no level, the stamp paints toward the level under the start.
+        assert!(!needs_height(Mode::Paint));
+        // The stamp paints the paint level, not the level under the start.
         let stamp = first_stamp(&brush, FIXED_FLOW);
         assert_eq!(
             (stamp.mode, stamp.level, stamp.strength),
-            (Mode::Value, 7, 0.4)
+            (Mode::Paint, 40_000, 0.4)
         );
         // A mouse at full flow gives the full flow.
         assert_eq!(stamp.flow, 1.0);
         assert_eq!(first_stamp(&brush, FIXED_FLOW / 2.0).flow, 0.5);
 
-        // The value mode has its own level.
+        // The paint mode has its own level.
         brush.flatten_level = Some(100);
-        *brush.target_level_mut() = Some(40_000);
-        assert_eq!(brush.value_level, Some(40_000));
         assert_eq!(first_stamp(&brush, 1.0).level, 40_000);
         brush.mode = Mode::Flatten;
         assert_eq!(brush.target_level(), Some(100));

@@ -11,7 +11,7 @@ pub enum Icon {
     Smooth,
     Flatten,
     /// A drop of paint.
-    Value,
+    Paint,
     /// A profile of flat steps with steep sides.
     Terrace,
     /// A hill with a convex slope and a concave slope.
@@ -140,7 +140,7 @@ impl Icon {
             Icon::Lower => "M3 7c4 0 5 11 9 11s5-11 9-11",
             Icon::Smooth => "M3 12c3-4 6-4 9 0s6 4 9 0",
             Icon::Flatten => "M4 12h16",
-            Icon::Value => "M12 3C9 8 6 11 6 15c0 3.3 2.7 6 6 6s6-2.7 6-6c0-4-3-7-6-12z",
+            Icon::Paint => "M12 3C9 8 6 11 6 15c0 3.3 2.7 6 6 6s6-2.7 6-6c0-4-3-7-6-12z",
             Icon::Terrace => "M2 19h5l1.5-5h5l1.5-5h7",
             Icon::Shape => "M3 19C3 11 6 6 12 6c1 7 4 13 9 13",
             Icon::Carve => "M3 7c4 0 5 9 9 9s5-9 9-9M12 16v5",
@@ -523,7 +523,7 @@ mod tests {
             Icon::Lower,
             Icon::Smooth,
             Icon::Flatten,
-            Icon::Value,
+            Icon::Paint,
             Icon::Terrace,
             Icon::Shape,
             Icon::Carve,

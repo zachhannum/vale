@@ -306,7 +306,7 @@ impl ProtoApp {
                 // These modes move toward a target, so each stamp does less.
                 Mode::Smooth
                 | Mode::Flatten
-                | Mode::Value
+                | Mode::Paint
                 | Mode::Terrace
                 | Mode::Shape
                 | Mode::Deposit => flow * 0.3,

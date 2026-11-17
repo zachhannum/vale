@@ -2546,7 +2546,7 @@ pub enum Op {
         column: usize,
         row: usize,
     },
-    /// Starts a stroke of the value mode.
+    /// Starts a stroke of the paint mode.
     BeginStroke,
     /// Writes the channel map of the rivers of a layer, for the picture.
     LayerChannels(Arc<ChannelMap>),

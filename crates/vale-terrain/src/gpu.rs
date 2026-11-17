@@ -782,7 +782,7 @@ impl GpuHeightmap {
     }
 
     /// The number of tiles that hold memory, with the tiles of the levels
-    /// from the start of a value stroke.
+    /// from the start of a paint stroke.
     pub fn allocated_tiles(&self) -> usize {
         self.state().pool.allocated_tiles()
     }
@@ -901,14 +901,14 @@ impl GpuHeightmap {
         pool.upload(&self.device, queue, 0, face as usize, rect, data);
     }
 
-    /// Starts a stroke of the value mode. A value stamp reads the levels
+    /// Starts a stroke of the paint mode. A paint stamp reads the levels
     /// from the start of the stroke, so this call takes away the levels of
     /// the last stroke. The change runs at the next submit, so submit each
     /// encoder that holds stamps before this call.
     ///
     /// The levels from the start of a stroke take memory in the pool. If the
     /// pool has no room for a tile, the tile has no such levels, and each
-    /// value stamp on it acts as a stroke.
+    /// paint stamp on it acts as a stroke.
     pub fn begin_stroke(&self, queue: &wgpu::Queue) {
         let state = &mut *self.state();
         for (face, tx, ty) in state.starts.drain(..) {
@@ -1016,7 +1016,7 @@ impl GpuHeightmap {
                 self.ensure(queue, state, face, rect);
             }
         }
-        if mode == Mode::Value {
+        if mode == Mode::Paint {
             for &(face, rect) in &touched {
                 self.keep_start(queue, enc, state, face, rect);
             }
@@ -1040,7 +1040,7 @@ impl GpuHeightmap {
                     Mode::Noise => 13,
                     Mode::Terrace => 14,
                     Mode::Shape => 15,
-                    Mode::Value => 16,
+                    Mode::Paint => 16,
                 },
                 reach: first.reach as i32,
                 size: self.face_size as i32,
