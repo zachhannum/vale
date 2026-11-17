@@ -32,16 +32,22 @@ const NEAR_ROOM: usize = 8;
 /// The rain of a cell is a blend of the 4 places around it.
 const RAIN_STRIDE: usize = 8;
 
-/// The rough ground of an uplift lowers the rise of a cell by this part of
-/// the rise at most. With rough ground, a step changes the stream power of a
-/// cell by this part at most, up or down. The largest features of the rough
-/// ground are about `ROUGH_CELLS` cells in size.
-const ROUGH: f64 = 0.3;
+/// The largest features of the rough ground of `ErodeTuning` are about this
+/// number of cells in size.
 const ROUGH_CELLS: f64 = 16.0;
 
-const SALT_ROUGH: u32 = 0x3c6e_f372;
+/// With a seed, the flow of a step follows the levels plus a noise of
+/// `ROUTE_NOISE` times the slope over `ROUTE_CELLS` cells, with features of
+/// `ROUTE_CELLS` cells. Thus the streams of an even slope join, and the
+/// valleys branch.
+const ROUTE_NOISE: f64 = 1.0;
+const ROUTE_CELLS: f64 = 8.0;
 
-/// Settings of the step for experiments.
+const SALT_ROUGH: u32 = 0x3c6e_f372;
+const SALT_WARP: u32 = 0x1f83_d9ab;
+const SALT_ROUTE: u32 = 0x6a09_e667;
+
+/// Settings of the step for experiments. The default has no rough ground.
 #[doc(hidden)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ErodeTuning {
@@ -60,17 +66,28 @@ pub struct ErodeTuning {
     /// the coarse cells, as a factor of the slope of that ground over one
     /// fine cell. Zero for one grid.
     pub detail_depth: f64,
+    /// For the fine cells of two grids: the largest move of the drops of the
+    /// coarse cells, in coarse cells, by a noise with features of 3 coarse
+    /// cells.
+    pub warp: f64,
+    /// The flow follows the levels plus a noise of this many times the
+    /// slope over `route_cells` cells, with features of `route_cells`.
+    pub route_noise: f64,
+    pub route_cells: f64,
 }
 
 impl Default for ErodeTuning {
     fn default() -> ErodeTuning {
         ErodeTuning {
             area_exponent: 0.5,
-            rough: ROUGH,
+            rough: 0.0,
             rough_cells: ROUGH_CELLS,
             infill: 0.0,
             weight_power: 1.0,
             detail_depth: 0.0,
+            warp: 0.0,
+            route_noise: ROUTE_NOISE,
+            route_cells: ROUTE_CELLS,
         }
     }
 }
@@ -582,6 +599,8 @@ pub struct Erosion {
     /// With two grids, the height of the ground of the coarse cells at each
     /// fine cell.
     base: Option<Vec<f32>>,
+    /// The noise of the flow of each cell, from -1 to 1. NaN: not computed.
+    route: Vec<f32>,
 }
 
 /// The effect of the brushes of one step.
@@ -739,6 +758,7 @@ impl Erosion {
             rough: Vec::new(),
             tuning: ErodeTuning::default(),
             base: None,
+            route: Vec::new(),
         }
     }
 
@@ -747,6 +767,7 @@ impl Erosion {
         if tuning != self.tuning {
             self.tuning = tuning;
             self.rough.clear();
+            self.route.clear();
         }
     }
 
@@ -928,15 +949,62 @@ impl Erosion {
     }
 
     fn drain(&self) -> Drain {
+        let levels = if self.routes() {
+            self.routed(0..self.levels.len())
+        } else {
+            self.levels.clone()
+        };
         let rain = &self.rain_cells;
         match &self.cells {
-            Cells::Global(grid) => self.drain_on(grid, &self.levels, &[], rain),
+            Cells::Global(grid) => self.drain_on(grid, &levels, &[], rain),
             Cells::Window {
                 window,
                 inflow,
                 solid,
-            } => self.drain_on(&WindowGrid { window, solid }, &self.levels, inflow, rain),
+            } => self.drain_on(&WindowGrid { window, solid }, &levels, inflow, rain),
         }
+    }
+
+    /// Whether the flow follows the noise of the seed of `set_rough`.
+    fn routes(&self) -> bool {
+        self.tuning.route_noise > 0.0 && self.rough_seed.is_some()
+    }
+
+    /// Computes the noise of the flow of each cell.
+    fn fill_route(&mut self) {
+        if !self.routes() || !self.route.is_empty() {
+            return;
+        }
+        let seed = self.rough_seed.unwrap_or(0) ^ SALT_ROUTE;
+        let size = self.tuning.route_cells * self.cell_angle();
+        let side = self.side;
+        self.route = (0..self.levels.len())
+            .map(|i| {
+                let (row, x) = (i / side, i % side);
+                let face = self.faces().start + row / side;
+                let dir = face_dir(face, self.flat_u[x], self.flat_v[row % side]);
+                fractal(dir, size, seed) as f32
+            })
+            .collect();
+    }
+
+    fn routed(&self, cells: impl Iterator<Item = usize>) -> Vec<u16> {
+        let amount = (self.tuning.route_noise * self.tuning.route_cells) as f32;
+        cells
+            .map(|i| {
+                let near = self.neighbors(i);
+                let level = f32::from(self.levels[i]);
+                let at = |k: usize| match near[k] {
+                    NONE => level,
+                    j => f32::from(self.levels[j as usize]),
+                };
+                let (dx, dy) = ((at(0) - at(1)) * 0.5, (at(2) - at(3)) * 0.5);
+                let slope = (dx * dx + dy * dy).sqrt();
+                (level + amount * slope * self.route[i])
+                    .round()
+                    .clamp(0.0, 65535.0) as u16
+            })
+            .collect()
     }
 
     /// The flow on a grid. With no `rain`, each cell gets the same rain.
@@ -1067,8 +1135,8 @@ impl Erosion {
     }
 
     /// Raises the cells under the brushes as `raise` does, and adds rough
-    /// ground. The rough ground lowers the rise of a cell by `ROUGH` of the
-    /// rise at most, by a fractal noise of its direction with the seed
+    /// ground. The rough ground lowers the rise of a cell by the `rough` part
+    /// of `ErodeTuning` of the rise at most, by a fractal noise of its direction with the seed
     /// `seed`. The noise does not change between strokes. The levels get the
     /// rise without the rough ground, as the texels do, so the next step
     /// gives the drops of the rough ground. A cell that the rise takes to a
@@ -1091,6 +1159,9 @@ impl Erosion {
             let rise: f64 = run.iter().map(|&(_, rise)| rise).sum();
             let old = f64::from(self.heights[i]);
             let raised = limits.apply(old, (old + rise).min(65535.0)) as f32;
+            if let Some(base) = &mut self.base {
+                base[i] += raised - old as f32;
+            }
             let level = raised.round() as u16;
             if level != self.levels[i] {
                 self.levels[i] = level;
@@ -1255,6 +1326,7 @@ impl Erosion {
             return step;
         }
         self.fill_rough(&spans);
+        self.fill_route();
         // The flow, and the index in the grid of each cell of the flow.
         let (flow, place) = match &self.cells {
             Cells::Window { window, solid, .. } if near => {
@@ -1267,11 +1339,14 @@ impl Erosion {
                     width,
                     height,
                 };
-                let rows = (y0..y0 + height).map(|y| y * self.side + x0);
-                let levels: Vec<u16> = rows
-                    .flat_map(|first| &self.levels[first..first + width])
-                    .copied()
-                    .collect();
+                let side = self.side;
+                let cells =
+                    (y0..y0 + height).flat_map(|y| (0..width).map(move |x| y * side + x0 + x));
+                let levels: Vec<u16> = if self.routes() {
+                    self.routed(cells)
+                } else {
+                    cells.map(|i| self.levels[i]).collect()
+                };
                 let rain = if self.rain.is_even() {
                     Vec::new()
                 } else {
@@ -1309,9 +1384,22 @@ impl Erosion {
             if weights[i] <= 0.0 || to == OUT {
                 continue;
             }
-            let to = cell(to);
-            let below = self.heights[to];
+            let mut to = cell(to);
             let height = self.heights[i];
+            if self.routes() && height <= self.heights[to] {
+                // The noise of the flow gave a receiver that is not lower.
+                // The cell drains to its lowest neighbor.
+                let lowest = self
+                    .neighbors(i)
+                    .into_iter()
+                    .filter(|&j| j != NONE)
+                    .map(|j| j as usize)
+                    .min_by(|&a, &b| self.heights[a].total_cmp(&self.heights[b]));
+                if let Some(j) = lowest {
+                    to = j;
+                }
+            }
+            let below = self.heights[to];
             if height <= below {
                 continue;
             }
@@ -1411,8 +1499,20 @@ impl Erosion {
             };
             for y in cells(rect.y0, rect.y1, window.y0) {
                 for x in cells(rect.x0, rect.x1, window.x0) {
-                    let tx = window.x0 + x as i64 * cell + cell / 2;
-                    let ty = window.y0 + y as i64 * cell + cell / 2;
+                    let mut tx = window.x0 + x as i64 * cell + cell / 2;
+                    let mut ty = window.y0 + y as i64 * cell + cell / 2;
+                    if self.tuning.warp > 0.0 {
+                        let coarse_cell = match coarse.grid() {
+                            ErodeGrid::Window(w) => w.cell as f64,
+                            ErodeGrid::Global { size } => (n / size) as f64,
+                        };
+                        let dir = window.cell_dir(x, y);
+                        let size = 3.0 * coarse_cell * FRAC_PI_2 / n as f64;
+                        let seed = self.rough_seed.unwrap_or(0) ^ SALT_WARP;
+                        let amount = self.tuning.warp * coarse_cell;
+                        tx += (amount * fractal(dir, size, seed)).round() as i64;
+                        ty += (amount * fractal(dir, size, seed ^ 0x55)).round() as i64;
+                    }
                     if tx < 0 || ty < 0 || tx >= n as i64 || ty >= n as i64 {
                         continue;
                     }
@@ -2166,47 +2266,39 @@ mod tests {
         assert!(run() == run());
     }
 
-    /// The levels after an uplift of flat land with `seed`, the drops of a
-    /// weak step after it, and the cells of the brush.
-    fn uplifted(seed: u32) -> (Vec<u16>, Vec<u16>, Vec<usize>) {
-        let m = 64;
-        let flat = CoarseHeights::from_fn(m, |_| meters_to_level(OCEAN));
-        let center = lonlat_to_dir(10.0, 5.0);
+    /// The largest area that drains through a cell of a plane slope of face
+    /// 0 after one step with the noise of the flow of `seed`, in cells.
+    fn largest_stream(seed: Option<u32>) -> f64 {
+        let m = 128;
+        let heights = from_cells(m, |face, x, y| {
+            if face != 0 || !(8..m - 8).contains(&x) || !(8..m - 8).contains(&y) {
+                return OCEAN;
+            }
+            100.0 + 20.0 * x as f64
+        });
+        let mut erosion = Erosion::global(&heights, 8192);
+        erosion.set_rough(seed);
         let brush = ErodeBrush {
-            center,
-            radius: 0.2,
+            center: cell_dir(m, 0, 64, 64),
+            radius: 0.7,
             hardness: 1.0,
             flow: 1.0,
         };
-        let mut erosion = Erosion::global(&flat, 1024);
-        erosion.uplift(&[brush], 4000.0, seed);
-        let step = erosion.step(&[brush], 1e-6);
-        let inner = (0..6 * m * m).filter(|&i| {
-            let dir = cell_dir(m, i / (m * m), i % m, i / m % m);
-            angle(dir, center) < 0.15
-        });
-        (
-            erosion.levels.clone(),
-            step.drops().to_vec(),
-            inner.collect(),
-        )
+        erosion.step(&[brush], 2.0);
+        let flow = erosion.flow.as_ref().unwrap();
+        let cell = (FRAC_PI_2 / m as f64).powi(2);
+        flow.area
+            .iter()
+            .map(|&a| f64::from(a) / cell)
+            .fold(0.0, f64::max)
     }
 
     #[test]
-    fn an_uplift_gives_rough_ground_that_the_drops_carry_to_the_texels() {
-        let (_, drops, inner) = uplifted(7);
-        let inner: Vec<u16> = inner.iter().map(|&i| drops[i]).collect();
-        let (low, high) = (inner.iter().min().unwrap(), inner.iter().max().unwrap());
-        // The rough ground lowers a rise of 4000 levels by 30 percent at most.
-        assert!(*high <= 1200, "{high}");
-        assert!(high - low > 300, "{low} {high}");
-    }
-
-    #[test]
-    fn equal_uplifts_give_equal_levels() {
-        let (a, _, _) = uplifted(7);
-        assert!(a == uplifted(7).0);
-        assert!(a != uplifted(8).0);
+    fn the_noise_of_the_flow_joins_the_streams_of_a_slope() {
+        let (plain, noisy) = (largest_stream(None), largest_stream(Some(7)));
+        assert!(noisy > 2.0 * plain, "{plain} {noisy}");
+        assert!(largest_stream(Some(7)) == noisy);
+        assert!(largest_stream(Some(8)) != noisy);
     }
 
     /// The drops of one step on a slope of face 0, with the rough ground of
