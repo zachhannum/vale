@@ -3207,6 +3207,30 @@ const RANGE_ROWS: [&str; 6] = [
 ];
 
 #[test]
+fn the_brush_panel_has_the_branching_of_the_erode_and_uplift_modes() {
+    let mut h = pad(BOARDS[0]);
+    tap(&mut h, "Brush settings");
+    for (mode, shown) in [
+        ("Raise", false),
+        ("Range", false),
+        ("Erode", true),
+        ("Uplift", true),
+    ] {
+        choose_mode(&mut h, mode);
+        assert_eq!(row_of(&h, "Brush branching").is_some(), shown, "{mode}");
+    }
+    // The setting goes from 0 to 100 percent, and the two modes share it.
+    assert_eq!(h.state().globe.brush.branching, 0.5);
+    slide_to_end(&mut h, "Brush branching", false);
+    assert_eq!(h.state().globe.brush.branching, 0.0);
+    choose_mode(&mut h, "Erode");
+    assert_eq!(h.state().globe.brush.branching, 0.0);
+    slide_to_end(&mut h, "Brush branching", true);
+    assert_eq!(h.state().globe.brush.branching, 1.0);
+    check_controls(&h, "the Erode mode");
+}
+
+#[test]
 fn the_brush_panel_has_the_sliders_of_the_range_mode() {
     let mut h = pad(BOARDS[0]);
     tap(&mut h, "Brush settings");

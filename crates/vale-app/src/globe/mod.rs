@@ -3604,6 +3604,8 @@ impl Globe {
         let rate = self.brush.strength_m * ERODE_RATE * seconds;
         self.eroder.set_rain(self.world_rain);
         self.eroder
+            .set_branching(self.world_seed, self.brush.branching);
+        self.eroder
             .set_channel(self.brush.channel_shape(self.world_km));
         self.eroder
             .request(brushes, rate, Lift::None, self.brush.limits());
@@ -3685,6 +3687,8 @@ impl Globe {
         let rate = erosion * UPLIFT_ERODE_RATE * (cells / 16.0).sqrt() * stamps.len() as f64;
         let limits = self.brush.limits();
         self.eroder.set_rain(self.world_rain);
+        self.eroder
+            .set_branching(self.world_seed, self.brush.branching);
         self.eroder
             .set_channel(self.brush.channel_shape(self.world_km));
         let lift = Lift::Raise(stamps[0].strength);

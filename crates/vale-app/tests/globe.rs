@@ -3506,6 +3506,28 @@ fn set_slider(h: &mut Harness<'static, AppState>, label: &str, value: f64) {
 }
 
 #[test]
+fn the_brush_panel_has_the_branching_of_the_erode_and_uplift_modes() {
+    for mode in ["Raise", "Erode", "Uplift", "Range", "Basin"] {
+        let mut h = harness();
+        h.state_mut().globe.tool = Tool::Brush;
+        h.run_steps(2);
+        h.get_by_label(mode).click();
+        h.run_steps(2);
+        let shown = matches!(mode, "Erode" | "Uplift");
+        let found = h.query_all_by_label("Branching").next().is_some();
+        assert_eq!(found, shown, "{mode}");
+        if shown {
+            assert_eq!(h.state().globe.brush.branching, 0.5, "{mode}");
+            set_slider(&mut h, "Branching", 20.0);
+            assert!(
+                (h.state().globe.brush.branching - 0.2).abs() < 1e-9,
+                "{mode}"
+            );
+        }
+    }
+}
+
+#[test]
 fn the_brush_panel_has_the_wind_and_the_rain_shadow_of_the_erode_and_uplift_modes() {
     for mode in ["Raise", "Erode", "Uplift", "Warp"] {
         let mut h = harness();

@@ -8,6 +8,7 @@
 
 use std::f64::consts::{FRAC_PI_2, SQRT_2};
 
+use crate::basin::fractal;
 use crate::channel::{ChannelCut, ChannelLines, ChannelShape};
 use crate::cube::{FACES, face_dir, face_of, unwarp, warp};
 use crate::flow::{
@@ -30,6 +31,15 @@ const NEAR_ROOM: usize = 8;
 /// The number of cells between two places where a step computes the rain.
 /// The rain of a cell is a blend of the 4 places around it.
 const RAIN_STRIDE: usize = 8;
+
+/// With a branching of 0.5, the flow of a step follows the levels plus a
+/// noise of `ROUTE_NOISE` times the slope over `ROUTE_CELLS` cells, with
+/// features of `ROUTE_CELLS` cells. Thus the streams of an even slope join,
+/// and the valleys branch.
+const ROUTE_NOISE: f64 = 1.0;
+const ROUTE_CELLS: f64 = 8.0;
+
+const SALT_ROUTE: u32 = 0x6a09_e667;
 
 /// One touch of the erode brush on the sphere.
 #[derive(Clone, Copy, Debug)]
@@ -528,6 +538,14 @@ pub struct Erosion {
     /// The rain of each cell, from the heights of the first step after a
     /// change of `rain`. It is empty when each cell gets the same rain.
     rain_cells: Vec<f32>,
+    /// The seed of the noise of the flow.
+    route_seed: u32,
+    /// The noise of the flow is this many times the slope over `ROUTE_CELLS`
+    /// cells. Zero: the flow follows the levels.
+    route_amount: f64,
+    /// The noise of the flow of each cell, from about -1 to 1. NaN: not
+    /// computed.
+    route: Vec<f32>,
 }
 
 /// The effect of the brushes of one step.
@@ -651,6 +669,8 @@ impl Erosion {
         erosion.heights = kept;
         erosion.limits = self.limits;
         erosion.rain = self.rain;
+        erosion.route_seed = self.route_seed;
+        erosion.route_amount = self.route_amount;
         erosion
     }
 
@@ -681,6 +701,20 @@ impl Erosion {
             channel: ChannelShape::default(),
             rain: Rain::default(),
             rain_cells: Vec::new(),
+            route_seed: 0,
+            route_amount: 0.0,
+            route: Vec::new(),
+        }
+    }
+
+    /// Sets the flow noise of each later step: the seed, and the branching
+    /// from 0 to 1.
+    pub fn set_branching(&mut self, seed: u32, branching: f64) {
+        let branching = if branching.is_nan() { 0.0 } else { branching };
+        self.route_amount = 2.0 * branching.clamp(0.0, 1.0) * ROUTE_NOISE;
+        if seed != self.route_seed {
+            self.route_seed = seed;
+            self.route.clear();
         }
     }
 
@@ -821,15 +855,66 @@ impl Erosion {
     }
 
     fn drain(&self) -> Drain {
+        let levels = if self.routes() {
+            self.routed(0..self.levels.len())
+        } else {
+            self.levels.clone()
+        };
         let rain = &self.rain_cells;
         match &self.cells {
-            Cells::Global(grid) => self.drain_on(grid, &self.levels, &[], rain),
+            Cells::Global(grid) => self.drain_on(grid, &levels, &[], rain),
             Cells::Window {
                 window,
                 inflow,
                 solid,
-            } => self.drain_on(&WindowGrid { window, solid }, &self.levels, inflow, rain),
+            } => self.drain_on(&WindowGrid { window, solid }, &levels, inflow, rain),
         }
+    }
+
+    /// Whether the flow follows the noise of `set_branching`.
+    fn routes(&self) -> bool {
+        self.route_amount > 0.0
+    }
+
+    /// Computes the noise of the flow of the cells that do not have it.
+    fn fill_route(&mut self, cells: impl Iterator<Item = usize>) {
+        if self.route.is_empty() {
+            self.route = vec![f32::NAN; self.levels.len()];
+        }
+        let seed = self.route_seed ^ SALT_ROUTE;
+        let size = ROUTE_CELLS * self.cell_angle();
+        let (side, first_face) = (self.side, self.faces().start);
+        for i in cells {
+            if self.route[i].is_nan() {
+                let (row, x) = (i / side, i % side);
+                let dir = face_dir(
+                    first_face + row / side,
+                    self.flat_u[x],
+                    self.flat_v[row % side],
+                );
+                self.route[i] = fractal(dir, size, seed) as f32;
+            }
+        }
+    }
+
+    /// The levels of `cells` plus the noise of the flow.
+    fn routed(&self, cells: impl Iterator<Item = usize>) -> Vec<u16> {
+        let amount = (self.route_amount * ROUTE_CELLS) as f32;
+        cells
+            .map(|i| {
+                let near = self.neighbors(i);
+                let level = f32::from(self.levels[i]);
+                let at = |k: usize| match near[k] {
+                    NONE => level,
+                    j => f32::from(self.levels[j as usize]),
+                };
+                let (dx, dy) = ((at(0) - at(1)) * 0.5, (at(2) - at(3)) * 0.5);
+                let slope = (dx * dx + dy * dy).sqrt();
+                (level + amount * slope * self.route[i])
+                    .round()
+                    .clamp(0.0, 65535.0) as u16
+            })
+            .collect()
     }
 
     /// The flow on a grid. With no `rain`, each cell gets the same rain.
@@ -956,6 +1041,14 @@ impl Erosion {
         }
     }
 
+    /// The width of a cell at the center of a face, in radians.
+    fn cell_angle(&self) -> f64 {
+        match &self.cells {
+            Cells::Global(grid) => FRAC_PI_2 / grid.m as f64,
+            Cells::Window { window, .. } => FRAC_PI_2 * window.cell as f64 / self.face_size as f64,
+        }
+    }
+
     /// Sets each cell under the brushes one time. `level` gives the new
     /// level of a cell from its direction and its level. With `None`, the
     /// cell does not change. The next step has no drop for a cell that only
@@ -987,10 +1080,7 @@ impl Erosion {
     /// brush grows by the width of a cell and a half.
     fn rects(&self, brushes: &[ErodeBrush], hits: &[bool]) -> [Option<TexelRect>; FACES] {
         let n = self.face_size;
-        let cell = match &self.cells {
-            Cells::Global(grid) => FRAC_PI_2 / grid.m as f64,
-            Cells::Window { window, .. } => FRAC_PI_2 * window.cell as f64 / n as f64,
-        };
+        let cell = self.cell_angle();
         let mut rects = [None; FACES];
         for (brush, _) in brushes.iter().zip(hits).filter(|&(_, &hit)| hit) {
             let radius = brush.radius.clamp(1e-6, MAX_BRUSH_RADIUS) + 1.5 * cell;
@@ -1100,10 +1190,22 @@ impl Erosion {
         if spans.iter().all(Option::is_none) {
             return step;
         }
+        let near = (near && matches!(self.cells, Cells::Window { .. })).then(|| self.near(&spans));
+        let side = self.side;
+        let box_cells = |(x0, y0, width, height): (usize, usize, usize, usize)| {
+            (y0..y0 + height).flat_map(move |y| (0..width).map(move |x| y * side + x0 + x))
+        };
+        if self.routes() {
+            match near {
+                Some(rect) => self.fill_route(box_cells(rect)),
+                None if self.flow.is_none() || self.stale => self.fill_route(0..self.levels.len()),
+                None => {}
+            }
+        }
         // The flow, and the index in the grid of each cell of the flow.
-        let (flow, place) = match &self.cells {
-            Cells::Window { window, solid, .. } if near => {
-                let (x0, y0, width, height) = self.near(&spans);
+        let (flow, place) = match (&self.cells, near) {
+            (Cells::Window { window, solid, .. }, Some(rect)) => {
+                let (x0, y0, width, height) = rect;
                 let grid = BoxGrid {
                     window,
                     solid,
@@ -1112,11 +1214,12 @@ impl Erosion {
                     width,
                     height,
                 };
-                let rows = (y0..y0 + height).map(|y| y * self.side + x0);
-                let levels: Vec<u16> = rows
-                    .flat_map(|first| &self.levels[first..first + width])
-                    .copied()
-                    .collect();
+                let cells = box_cells(rect);
+                let levels: Vec<u16> = if self.routes() {
+                    self.routed(cells)
+                } else {
+                    cells.map(|i| self.levels[i]).collect()
+                };
                 let rain = if self.rain.is_even() {
                     Vec::new()
                 } else {
@@ -1140,7 +1243,6 @@ impl Erosion {
             }
         };
         self.stale = false;
-        let side = self.side;
         let limits = self.limits;
         let cell = |i: u32| match place {
             Some((x0, y0, width)) => (y0 + i as usize / width) * side + x0 + i as usize % width,
@@ -1153,9 +1255,22 @@ impl Erosion {
             if weights[i] <= 0.0 || to == OUT {
                 continue;
             }
-            let to = cell(to);
-            let below = self.heights[to];
+            let mut to = cell(to);
             let height = self.heights[i];
+            if self.routes() && height <= self.heights[to] {
+                // The noise of the flow gave a receiver that is not lower.
+                // The cell drains to its lowest neighbor.
+                let lowest = self
+                    .neighbors(i)
+                    .into_iter()
+                    .filter(|&j| j != NONE)
+                    .map(|j| j as usize)
+                    .min_by(|&a, &b| self.heights[a].total_cmp(&self.heights[b]));
+                if let Some(j) = lowest {
+                    to = j;
+                }
+            }
+            let below = self.heights[to];
             if height <= below {
                 continue;
             }
@@ -1901,6 +2016,86 @@ mod tests {
         };
         // Two equal runs give equal levels.
         assert!(run() == run());
+    }
+
+    /// An erosion of a plane slope of face 0 that goes down to the west,
+    /// with the branching of `branching`, and the brush of a step on it.
+    /// `bend` adds a valley along the middle row.
+    fn slope(branching: Option<(u32, f64)>, bend: f64) -> (Erosion, ErodeBrush) {
+        let m = 128;
+        let heights = from_cells(m, |face, x, y| {
+            if face != 0 || !(8..m - 8).contains(&x) || !(8..m - 8).contains(&y) {
+                return OCEAN;
+            }
+            100.0 + 20.0 * x as f64 + bend * (y as f64 - 64.0).abs()
+        });
+        let mut erosion = Erosion::global(&heights, 8192);
+        if let Some((seed, branching)) = branching {
+            erosion.set_branching(seed, branching);
+        }
+        let brush = ErodeBrush {
+            center: cell_dir(m, 0, 64, 64),
+            radius: 0.7,
+            hardness: 1.0,
+            flow: 1.0,
+        };
+        (erosion, brush)
+    }
+
+    /// The largest area that drains through a cell of an even slope after
+    /// one step with `branching`, in cells.
+    fn largest_stream(branching: Option<(u32, f64)>) -> f64 {
+        let (mut erosion, brush) = slope(branching, 0.0);
+        erosion.step(&[brush], 2.0);
+        let flow = erosion.flow.as_ref().unwrap();
+        let cell = (FRAC_PI_2 / 128.0f64).powi(2);
+        flow.area
+            .iter()
+            .map(|&a| f64::from(a) / cell)
+            .fold(0.0, f64::max)
+    }
+
+    /// The drops of a step and of 4 steps after it on a slope with a
+    /// valley, with `branching`.
+    fn slope_drops(branching: Option<(u32, f64)>) -> Vec<u16> {
+        let (mut erosion, brush) = slope(branching, 5.0);
+        let mut drops = erosion.step(&[brush], 2.0).drops().to_vec();
+        drops.extend_from_slice(erosion.steps(&[brush], 2.0, 4).drops());
+        drops
+    }
+
+    #[test]
+    fn a_branching_of_0_gives_the_drops_of_no_branching() {
+        let plain = slope_drops(None);
+        assert!(plain.iter().any(|&d| d > 0));
+        assert!(slope_drops(Some((7, 0.0))) == plain);
+        assert!(slope_drops(Some((7, -1.0))) == plain);
+    }
+
+    #[test]
+    fn a_branching_of_one_half_joins_the_streams_of_an_even_slope() {
+        let (plain, noisy) = (largest_stream(None), largest_stream(Some((7, 0.5))));
+        assert!(noisy > 2.0 * plain, "{plain} {noisy}");
+    }
+
+    #[test]
+    fn equal_seeds_and_branchings_give_equal_drops() {
+        let drops = slope_drops(Some((7, 0.5)));
+        assert!(slope_drops(Some((7, 0.5))) == drops);
+        assert!(slope_drops(Some((8, 0.5))) != drops);
+        assert!(slope_drops(Some((7, 1.0))) != drops);
+    }
+
+    #[test]
+    fn a_new_seed_gives_new_noise_and_the_same_seed_keeps_it() {
+        let (mut erosion, brush) = slope(Some((7, 0.5)), 5.0);
+        erosion.step(&[brush], 2.0);
+        let noise = erosion.route.clone();
+        assert!(noise.iter().all(|n| !n.is_nan()));
+        erosion.set_branching(7, 1.0);
+        assert!(erosion.route.iter().zip(&noise).all(|(a, b)| a == b));
+        erosion.set_branching(8, 1.0);
+        assert!(erosion.route.is_empty());
     }
 
     #[test]

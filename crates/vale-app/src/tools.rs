@@ -65,11 +65,12 @@ const POLYGON_MODES: [(PolygonMode, &str); 3] = [
 type Field<T> = (&'static str, fn(&mut BrushSettings) -> &mut T);
 
 /// The brush settings that one mode uses and all modes share.
-const FLOATS: [Field<f64>; 25] = [
+const FLOATS: [Field<f64>; 26] = [
     ("noise_raise_m", |b| &mut b.noise_raise_m),
     ("noise_lower_m", |b| &mut b.noise_lower_m),
     ("talus_deg", |b| &mut b.talus_deg),
     ("erosion", |b| &mut b.erosion),
+    ("branching", |b| &mut b.branching),
     ("warp_km", |b| &mut b.warp_km),
     ("scale_km", |b| &mut b.scale_km),
     ("noise_relief", |b| &mut b.noise_relief),
@@ -710,6 +711,7 @@ mod tests {
         globe.brush.hardness = 0.75;
         globe.brush.noise_ridged = true;
         globe.brush.channel_km = 2.5;
+        globe.brush.branching = 0.8;
         globe.choose(Choice::Tool(Tool::Line));
         globe.line.smoothing = 0.1;
         globe.line.fit = true;

@@ -19,10 +19,11 @@ use super::{
 use vale_terrain::Mode;
 
 use crate::globe::brush::{
-    BASIN_AGE, BASIN_DENSITY, BASIN_LAKES, CHANNEL_HELP, CHANNEL_KM, EROSION, FLATTEN_RATE,
-    FLOODPLAIN_WIDTH_KM, FLOW, NOISE_GRAIN, NOISE_M, OPACITY as BRUSH_OPACITY, RANGE_SPACING_KM,
-    RIDGE_CREST_M, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM, SCALE_KM, SEED,
-    SHAPE, STRENGTH_M, TALUS_DEG, TERRACE_STEP_M, WARP_KM, needs_height, shape_text,
+    BASIN_AGE, BASIN_DENSITY, BASIN_LAKES, BRANCHING, CHANNEL_HELP, CHANNEL_KM, EROSION,
+    FLATTEN_RATE, FLOODPLAIN_WIDTH_KM, FLOW, NOISE_GRAIN, NOISE_M, OPACITY as BRUSH_OPACITY,
+    RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM,
+    RIDGE_SPREAD_MM, SCALE_KM, SEED, SHAPE, STRENGTH_M, TALUS_DEG, TERRACE_STEP_M, WARP_KM,
+    needs_height, shape_text,
 };
 use crate::globe::combine::PolygonMode;
 use crate::globe::sweep;
@@ -1279,6 +1280,11 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
     }
     if matches!(globe.brush.mode, Mode::Uplift | Mode::Range | Mode::Basin) {
         number::slider("Erosion", &mut globe.brush.erosion, EROSION).show(ui);
+    }
+    if matches!(globe.brush.mode, Mode::Erode | Mode::Uplift) {
+        number::slider("Branching", &mut globe.brush.branching, BRANCHING)
+            .percent()
+            .show(ui);
     }
     if matches!(
         globe.brush.mode,

@@ -73,6 +73,8 @@ pub const CHANNEL_HELP: &str = "Width of a river that drains 1,000,000 km².";
 pub const UPLIFT_GAIN: f64 = 1.0;
 /// The limits of the erosion setting of the uplift mode.
 pub const EROSION: std::ops::RangeInclusive<f64> = 0.0..=1.0;
+/// The limits of the branching setting of the erode mode and the uplift mode.
+pub const BRANCHING: std::ops::RangeInclusive<f64> = 0.0..=1.0;
 
 /// The limits of the age and the lakes of the basin mode.
 pub const BASIN_AGE: std::ops::RangeInclusive<f64> = 0.0..=1.0;
@@ -124,6 +126,9 @@ pub struct BrushSettings {
     /// The strength of the erosion of the uplift mode, from 0 to 1. At 0,
     /// the mode gives the result of the raise mode.
     pub erosion: f64,
+    /// How much the valleys of the erode mode and the uplift mode branch,
+    /// from 0 to 1. At 0, the water follows the steepest slope.
+    pub branching: f64,
     /// The largest distance that one pass of the warp mode moves the ground,
     /// in kilometers.
     pub warp_km: f64,
@@ -200,6 +205,7 @@ impl Default for BrushSettings {
             shape: -0.5,
             talus_deg: 0.5,
             erosion: 0.5,
+            branching: 0.5,
             warp_km: 50.0,
             scale_km: 200.0,
             noise_ridged: false,

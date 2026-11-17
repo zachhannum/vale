@@ -16,7 +16,7 @@ use super::math::V3;
 /// The radius of the brush is this number of cells of its window or more, if
 /// the texels of the heightmap are small enough. With fewer cells, the
 /// valleys of the erosion are too wide for the brush.
-const BRUSH_RADIUS_CELLS: f64 = 16.0;
+const BRUSH_RADIUS_CELLS: f64 = 32.0;
 
 /// A window moves when the brush of its stroke is nearer to its side than
 /// this number of brush radii.
@@ -187,6 +187,8 @@ struct StepSettings {
     limits: Limits,
     rain: Rain,
     channel: ChannelShape,
+    /// The seed and the branching of the flow noise.
+    branching: (u32, f64),
 }
 
 /// What a request does to the cells before its steps.
@@ -221,6 +223,8 @@ pub struct Eroder {
     rain: Rain,
     /// The channels of each later request.
     channel: ChannelShape,
+    /// The seed and the branching of the flow noise of each later request.
+    branching: (u32, f64),
 }
 
 /// The number of steps that lower the cells after an uplift.
@@ -228,8 +232,9 @@ const UPLIFT_STEPS: usize = 4;
 
 /// Without a lift, lowers the cells under the brushes one time. With an
 /// uplift, raises those cells and then lowers them `UPLIFT_STEPS` times.
-/// The cells and the step keep `limits`, and the step has `rain` and
-/// `channel`. A range keeps the limits of its line.
+/// The cells and the step keep `limits`, and the step has `rain`, `channel`,
+/// and the flow noise of `branching`. A range keeps the limits of its line,
+/// and it has no flow noise.
 fn step(
     erosion: &mut Erosion,
     brushes: &[ErodeBrush],
@@ -240,6 +245,13 @@ fn step(
     erosion.set_limits(settings.limits);
     erosion.set_rain(settings.rain);
     erosion.set_channel(settings.channel);
+    let (seed, branching) = settings.branching;
+    let branching = if matches!(lift, Lift::Range(..)) {
+        0.0
+    } else {
+        branching
+    };
+    erosion.set_branching(seed, branching);
     match lift {
         Lift::Raise(uplift) if uplift > 0.0 => {
             erosion.raise(brushes, uplift);
@@ -288,6 +300,7 @@ impl Eroder {
             waiting: 0,
             rain: Rain::default(),
             channel: ChannelShape::default(),
+            branching: (0, 0.0),
         }
     }
 
@@ -298,6 +311,12 @@ impl Eroder {
     /// Sets the rain of each later request.
     pub fn set_rain(&mut self, rain: Rain) {
         self.rain = rain;
+    }
+
+    /// Sets the seed and the branching of the flow noise of each later
+    /// request.
+    pub fn set_branching(&mut self, seed: u32, branching: f64) {
+        self.branching = (seed, branching);
     }
 
     /// Sets the channels of each later request.
@@ -359,6 +378,7 @@ impl Eroder {
             limits,
             rain: self.rain,
             channel: self.channel,
+            branching: self.branching,
         };
         match &mut self.work {
             Some(work) => {
@@ -503,10 +523,10 @@ mod tests {
         let texel = FRAC_PI_2 / 8192.0;
         let cases = [
             (10.0, 1),
-            (31.0, 1),
-            (33.0, 2),
-            (100.0, 4),
-            (255.0, 8),
+            (63.0, 1),
+            (65.0, 2),
+            (100.0, 2),
+            (255.0, 4),
             (600.0, 16),
         ];
         for (radius, cell) in cases {
@@ -575,13 +595,13 @@ mod tests {
         // The view, the radius of the brush in texels, and the cell of the
         // window of the brush.
         let cases = [
-            (None, 100.0, Some(4)),
-            (None, 255.0, Some(8)),
-            (None, 257.0, None),
+            (None, 100.0, Some(2)),
+            (None, 511.0, Some(8)),
+            (None, 513.0, None),
             (None, 600.0, None),
             (Some(near), 31.0, Some(1)),
-            (Some(near), 63.0, Some(2)),
-            (Some(near), 65.0, None),
+            (Some(near), 127.0, Some(2)),
+            (Some(near), 129.0, None),
             (Some(near), 600.0, None),
         ];
         for (view, radius, cell) in cases {

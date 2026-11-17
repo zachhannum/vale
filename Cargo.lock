@@ -4093,6 +4093,7 @@ name = "vale-terrain"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
+ "image",
  "pollster 0.4.0",
  "wgpu",
 ]
