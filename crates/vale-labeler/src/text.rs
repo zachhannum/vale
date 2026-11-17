@@ -370,6 +370,7 @@ impl Face {
 }
 
 /// One positioned glyph.
+#[derive(Clone)]
 pub(crate) struct ShapedGlyph {
     pub id: u32,
     /// Pen position along the baseline, from the label origin.
@@ -448,6 +449,7 @@ fn ink_profile(path: &BezPath, size: f64) -> Vec<Option<(f64, f64)>> {
     out
 }
 
+#[derive(Clone)]
 pub(crate) struct ShapedRun {
     pub font: FontData,
     pub font_size: f32,
@@ -455,6 +457,7 @@ pub(crate) struct ShapedRun {
     pub glyphs: Vec<ShapedGlyph>,
 }
 
+#[derive(Clone)]
 pub(crate) struct ShapedText {
     pub runs: Vec<ShapedRun>,
     pub advance: f64,
@@ -478,6 +481,22 @@ impl ShapedText {
         self.runs
             .iter()
             .flat_map(|r| r.glyphs.iter().map(move |g| (r, g)))
+    }
+
+    /// A copy with `extra` space after each glyph but the last.
+    pub fn spread(&self, extra: f64) -> ShapedText {
+        let mut out = self.clone();
+        let mut i = 0.0;
+        for run in &mut out.runs {
+            for g in &mut run.glyphs {
+                g.x += extra * i;
+                i += 1.0;
+            }
+        }
+        let gaps = (i - 1.0).max(0.0);
+        out.advance += extra * gaps;
+        out.ink_bounds.x1 += extra * gaps;
+        out
     }
 
     /// The text with its letters narrowed to `scale` of their width.

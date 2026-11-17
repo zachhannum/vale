@@ -108,30 +108,100 @@ pub enum LineSide {
     Centered,
 }
 
+/// How the text of a line label lies on the line.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub enum LineOrientation {
+    /// The letters follow a parallel copy of the line.
+    #[default]
+    Curved,
+    /// Straight text along the chord of the line under the label.
+    Straight,
+    /// Horizontal text at a point of the line.
+    Horizontal,
+    /// Straight text at a right angle to the line.
+    Perpendicular,
+}
+
+/// Where a line label goes along its line.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub enum LineAnchor {
+    /// Any position, from the middle out.
+    #[default]
+    Best,
+    /// The start of the label at the distance from the start of the line.
+    FromStart,
+    /// The end of the label at the distance from the end of the line.
+    FromEnd,
+    /// The end of the label at the distance before the start of the line, on a straight
+    /// extension of the line.
+    BeforeStart,
+    /// The start of the label at the distance after the end of the line, on a straight
+    /// extension of the line.
+    AfterEnd,
+}
+
 /// Placement rules for line features.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LinePlacement {
     /// Preference order of sides.
     pub sides: Vec<LineSide>,
+    pub orientation: LineOrientation,
     /// Gap between the stroke edge and the text.
     pub offset: f64,
-    /// Distance between repeated labels; `None` gives one label per feature.
+    /// Distance between repeated labels; `None` gives one label per feature. A label with an
+    /// anchor other than [`LineAnchor::Best`] has no repeats.
     pub repeat_distance: Option<f64>,
     /// The angle between two neighbor glyphs, in radians, above which a candidate costs more.
     /// A candidate that turns more than 1.6 times this angle is not used.
     pub max_glyph_turn: f64,
     /// Smoothing window, in multiples of the font size.
     pub smoothing: f64,
+    pub anchor: LineAnchor,
+    /// The distance of the anchor, in page units, or in percent of the line length if
+    /// `anchor_percent` is true.
+    pub anchor_distance: f64,
+    /// How far the label can move from the anchor, in the unit of `anchor_distance`.
+    pub anchor_tolerance: f64,
+    pub anchor_percent: bool,
+    /// [`LineSide::Above`] is left of the line in the direction of its vertices, and
+    /// [`LineSide::Below`] is right of it.
+    pub by_direction: bool,
+    /// The text reads in the direction of the vertices, also where it is upside down.
+    pub follow_direction: bool,
+    /// The distance that a label can go past the ends of the line, in page units.
+    pub overrun: f64,
+    /// Lines of the class with the same text that meet end to end get one label. The label
+    /// belongs to the first feature of the chain, and the other features have no result.
+    pub merge_connected: bool,
+    /// The most extra space between two letters of curved and straight text, in multiples of
+    /// the font size. The letters spread to fill the line up to this limit.
+    pub max_spread: f64,
+    /// The letters of curved and straight text spread to fill the line, with no limit.
+    pub spread_fill: bool,
+    /// A visible line shorter than this gets no label, in page units.
+    pub min_length: f64,
 }
 
 impl Default for LinePlacement {
     fn default() -> Self {
         Self {
             sides: vec![LineSide::Above, LineSide::Below],
+            orientation: LineOrientation::Curved,
             offset: 2.0,
             repeat_distance: None,
             max_glyph_turn: 0.30,
             smoothing: 1.5,
+            anchor: LineAnchor::Best,
+            anchor_distance: 0.0,
+            anchor_tolerance: 0.0,
+            anchor_percent: false,
+            by_direction: false,
+            follow_direction: false,
+            overrun: 0.0,
+            merge_connected: false,
+            max_spread: 0.0,
+            spread_fill: false,
+            min_length: 0.0,
         }
     }
 }
@@ -616,6 +686,8 @@ pub enum UnplacedReason {
     OutOfBounds,
     Obstructed,
     LineTooShort,
+    /// The visible line is shorter than the class allows.
+    BelowMinimumLength,
     TooCurved,
     /// The label does not fit inside the visible part of the polygon.
     AreaTooSmall,
