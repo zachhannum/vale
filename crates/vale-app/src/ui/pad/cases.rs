@@ -75,7 +75,7 @@ pub fn block(
     let top = ui.cursor().top();
     let (title, _) = ui.allocate_exact_size(vec2(width, 40.0), Sense::hover());
     let at = pos2(title.left() + 14.0, title.center().y + 2.0);
-    let font = egui::FontId::proportional(17.0);
+    let font = theme::font(17.0);
     (ui.painter()).text(at, Align2::LEFT_CENTER, CASES, font, FUNCTION_TEXT);
     let inner = Rect::from_min_max(
         pos2(left + SPACE * 1.5, ui.cursor().top()),

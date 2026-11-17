@@ -79,6 +79,7 @@ impl eframe::App for ValeApp {
         #[cfg(target_os = "ios")]
         {
             state.reduce_motion = objc2_ui_kit::UIAccessibilityIsReduceMotionEnabled();
+            state.text_size = crate::text_size::TextSize::system();
         }
         ui::draw(ui, state);
         self.probe.update(state);

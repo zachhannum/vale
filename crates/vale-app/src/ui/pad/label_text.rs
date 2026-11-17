@@ -763,7 +763,7 @@ pub fn bar_chip(
     label: (&str, Color32),
     note: &str,
 ) -> bool {
-    let note_font = egui::FontId::proportional(12.0);
+    let note_font = theme::font(12.0);
     let width_of = |t: &str, f: egui::FontId| {
         ui.painter()
             .layout_no_wrap(t.into(), f, theme::TEXT)

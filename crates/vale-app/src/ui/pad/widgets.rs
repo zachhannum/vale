@@ -518,7 +518,7 @@ pub fn segments(
 
 /// The font of a small segmented control.
 fn small_segment_font() -> egui::FontId {
-    egui::FontId::proportional(13.0)
+    theme::font(13.0)
 }
 
 /// The padding of the track of a small segmented control.
@@ -2255,7 +2255,7 @@ pub fn keypad(ui: &mut egui::Ui, controls: &mut Controls, height: f32) -> bool {
                 (false, _) => theme::raise(),
             };
             ui.painter().rect_filled(back, theme::CONTROL_RADIUS, fill);
-            let font = egui::FontId::proportional(theme::body().size + 2.0);
+            let font = theme::font(17.0);
             match key {
                 Key::Delete => icons::paint(ui.painter(), at, Icon::Delete, ICON, theme::TEXT),
                 _ => {

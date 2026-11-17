@@ -281,7 +281,7 @@ fn labels(ui: &mut egui::Ui, area: Rect, m: &Metrics, bands: &Bands, unit: &str)
     let span = bands.max() - bands.min();
     let bar = bar_rect(area, m);
     let sea = bands.sea();
-    let font = egui::FontId::proportional(12.0);
+    let font = theme::font(12.0);
     let y = labels.center().y;
     let painter = ui.painter();
     let min = world::value_text(bands.min(), span, unit);

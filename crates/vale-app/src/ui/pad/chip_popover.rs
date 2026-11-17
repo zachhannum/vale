@@ -125,7 +125,7 @@ pub fn contents(
 fn header(ui: &mut egui::Ui, chip: &Chip, help: &ExprHelp) {
     let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), Sense::hover());
     let y = row.center().y + 2.0;
-    let name_font = egui::FontId::proportional(16.0);
+    let name_font = theme::font(16.0);
     let painter = ui.painter();
     painter.text(
         pos2(row.left(), y),
@@ -416,7 +416,7 @@ pub fn page_contents(
     };
     let sample = help.eval(&Template::new(vec![piece]).to_text());
     let painter = ui.painter();
-    let name_font = egui::FontId::proportional(16.0);
+    let name_font = theme::font(16.0);
     let at = pos2(row.left(), y);
     painter.text(
         at,
@@ -552,7 +552,7 @@ fn wrap_page(ui: &mut egui::Ui, controls: &mut Controls, chip: &Chip) -> Option<
         for category in categories {
             let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 28.0), Sense::hover());
             let at = pos2(row.left(), row.bottom() - 4.0);
-            let font = egui::FontId::proportional(12.0);
+            let font = theme::font(12.0);
             ui.painter()
                 .text(at, Align2::LEFT_BOTTOM, category.name(), font, theme::MUTE);
             for f in FUNCTIONS.iter().filter(|f| f.category == category) {

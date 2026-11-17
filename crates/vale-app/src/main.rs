@@ -117,6 +117,7 @@ fn run() -> anyhow::Result<u8> {
     };
     if !headless_run {
         let mut state = new_state(doc, WINDOW_FACE_SIZE)?;
+        state.text_size = args.text_size;
         apply_import(&args, &mut state, false)?;
         // The start screen opens only if the last run ended there.
         let restore = args.starts_on_projects(true) && !args.start_screen;
@@ -206,6 +207,7 @@ fn run() -> anyhow::Result<u8> {
             // import. So the import runs after the renderer is there.
             let (camera, fold) = (args.camera_region()?, args.fold_region()?);
             let import = |state: &mut AppState| {
+                state.text_size = args.text_size;
                 state.pad.camera = camera;
                 state.pad.fold = fold;
                 apply_import(&args, state, true)?;

@@ -1137,7 +1137,7 @@ fn measure_overlay(
         let Some(mid) = globe.project(slerp(a, b, 0.5)) else {
             continue;
         };
-        let font = egui::FontId::proportional(12.0);
+        let font = theme::font(12.0);
         let galley = painter.layout_no_wrap(text, font, theme::TEXT);
         let pill = egui::Rect::from_center_size(mid, galley.size() + egui::vec2(12.0, 4.0));
         if on_screen < pill.width() + 8.0 {

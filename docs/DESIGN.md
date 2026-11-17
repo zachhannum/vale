@@ -732,6 +732,8 @@ The chrome moves on springs, as iPadOS moves its controls. A spring moves a valu
 
 When Reduce Motion is on in iPadOS, each value goes to its target at once. Headless renders and the tests do the same.
 
+The text of the UI follows the setting Larger Text in iPadOS and iOS. The sizes of the design are for the default size, Large. Each text size changes by the factor of the body text of the system, and the factor stops at the first accessibility size, because the panels have a fixed width. Text is never smaller than 9 points. The text of the maps and the pages does not change.
+
 ### iPhone layout
 
 The iPhone layout is the compact layout of the iPad, below 600 points, with these changes:

@@ -64,11 +64,11 @@ pub fn close_name(title: &str) -> String {
 }
 
 fn title_font() -> FontId {
-    FontId::proportional(28.0)
+    theme::font(28.0)
 }
 
 fn date_font() -> FontId {
-    FontId::proportional(12.0)
+    theme::font(12.0)
 }
 
 /// One line of text that ends with "…" if it is wider than `width`.
