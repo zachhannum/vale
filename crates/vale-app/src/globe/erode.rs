@@ -193,8 +193,9 @@ struct StepSettings {
 pub enum Lift {
     /// Nothing. The request is one step.
     None,
-    /// Each brush raises its cells by this number of levels at full effect.
-    Raise(f64),
+    /// Each brush raises its cells by this number of levels at full effect,
+    /// with the rough ground of the seed.
+    Raise(f64, u32),
     /// The cells under the distances along the line take the levels of the
     /// range, as `erode_range`. The rate of the request is the erosion
     /// setting, and the request has no brushes.
@@ -227,7 +228,7 @@ pub struct Eroder {
 const UPLIFT_STEPS: usize = 4;
 
 /// Without a lift, lowers the cells under the brushes one time. With an
-/// uplift, raises those cells and then lowers them `UPLIFT_STEPS` times.
+/// uplift, raises those cells with rough ground and then lowers them `UPLIFT_STEPS` times.
 /// The cells and the step keep `limits`, and the step has `rain` and
 /// `channel`. A range keeps the limits of its line.
 fn step(
@@ -241,8 +242,8 @@ fn step(
     erosion.set_rain(settings.rain);
     erosion.set_channel(settings.channel);
     match lift {
-        Lift::Raise(uplift) if uplift > 0.0 => {
-            erosion.raise(brushes, uplift);
+        Lift::Raise(uplift, seed) if uplift > 0.0 => {
+            erosion.uplift(brushes, uplift, seed);
             erosion.steps(brushes, rate, UPLIFT_STEPS)
         }
         Lift::Range(line, u) => erode_range(erosion, &line, u, rate),
@@ -493,7 +494,7 @@ mod tests {
         eroder.begin(global(&map));
         eroder.request(brush(true), 1.0, Lift::None, Limits::default());
         assert!(eroder.poll().unwrap().is_empty());
-        eroder.request(brush(true), 1.0, Lift::Raise(5000.0), Limits::default());
+        eroder.request(brush(true), 1.0, Lift::Raise(5000.0, 0), Limits::default());
         assert!(!eroder.poll().unwrap().is_empty());
     }
 
@@ -549,7 +550,7 @@ mod tests {
         for sync in [true, false] {
             let mut eroder = Eroder::new(sync);
             eroder.begin(ground(0.0));
-            eroder.request(at(8.0), 1.0, Lift::Raise(5000.0), Limits::default());
+            eroder.request(at(8.0), 1.0, Lift::Raise(5000.0, 0), Limits::default());
             assert!(!wait(&mut eroder).is_empty());
             // The hill at 8 degrees is in the new window, so a step without
             // uplift lowers it there.

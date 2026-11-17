@@ -3687,7 +3687,7 @@ impl Globe {
         self.eroder.set_rain(self.world_rain);
         self.eroder
             .set_channel(self.brush.channel_shape(self.world_km));
-        let lift = Lift::Raise(stamps[0].strength);
+        let lift = Lift::Raise(stamps[0].strength, self.world_seed);
         self.eroder.request(brushes.collect(), rate, lift, limits);
         uplift.asked = stamps;
     }
