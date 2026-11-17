@@ -345,6 +345,39 @@ fn gpu_matches_cpu_for_one_stamp() {
     eprintln!("one stamp, largest difference for {MODES:?}: {worst:?}");
 }
 
+/// A brush near the size of a texel takes many samples in each texel, and a
+/// hard brush takes them in the texels at its edge.
+#[test]
+#[ignore = "gpu"]
+fn gpu_matches_cpu_for_stamps_near_the_texel_size() {
+    let n = 256;
+    let texel = std::f64::consts::FRAC_PI_2 / n as f64;
+    let places = [
+        ("face center", lonlat_to_dir(1.3, 0.7)),
+        ("face edge", lonlat_to_dir(45.0, 0.2)),
+        ("cube corner", lonlat_to_dir(44.6, 35.0)),
+    ];
+    let mut worst = [0; MODES.len()];
+    for (m, mode) in MODES.into_iter().enumerate() {
+        for (place, center) in places {
+            for radius in [0.6, 1.0, 1.9, 2.5, 12.0] {
+                for hardness in [0.0, 0.5, 1.0] {
+                    let mut cpu = hills(n);
+                    let stamp = stamp(center, radius * texel, hardness, mode);
+                    let difference = run(&mut cpu, &[stamp]).difference;
+                    assert!(
+                        difference <= tolerance(mode),
+                        "{mode:?} at the {place}, radius {radius} texels, hardness {hardness}: \
+                         the difference is {difference}"
+                    );
+                    worst[m] = worst[m].max(difference);
+                }
+            }
+        }
+    }
+    eprintln!("stamps near the texel size, largest difference for {MODES:?}: {worst:?}");
+}
+
 /// A stroke of stamps that overlap, across a face edge and near a cube
 /// corner. The stroke needs more than one batch.
 #[test]

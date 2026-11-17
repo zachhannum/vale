@@ -708,47 +708,98 @@ fn channel_drop(at: vec2<i32>) -> f32 {
     return drop;
 }
 
+// The same numbers as `COVERAGE_BAND`, `COVERAGE_SAMPLES`,
+// `SMALL_BRUSH_SAMPLES`, `SMALL_BRUSH`, and `COVERAGE_REACH` in
+// `heightmap.rs`.
+const COVERAGE_BAND = 8.0;
+const COVERAGE_SAMPLES = 4;
+const SMALL_BRUSH_SAMPLES = 8;
+const SMALL_BRUSH = 2.0;
+const COVERAGE_REACH = 0.75;
+
 // The effect of a stamp at a texel, from 0 to the flow of the stamp. It is 0
-// outside the rectangle of the stamp and outside the brush circle.
+// outside the rectangle of the stamp and where the brush does not cover the
+// texel. The steps are those of `Falloff::texel`.
 fn amount_at(stamp: Stamp, p: vec2<i32>) -> f32 {
-    return brush_at(stamp, p).x;
+    if any(p < stamp.rect.xy) || any(p >= stamp.rect.zw) {
+        return 0.0;
+    }
+    let angle = angle_at(stamp, p, vec2<f32>(0.0));
+    let texel = 2.0 * PI_4 / f32(group.size);
+    if (1.0 - stamp.hardness) * stamp.radius >= COVERAGE_BAND * texel {
+        return weight_at(stamp, angle) * stamp.flow;
+    }
+    let reach = COVERAGE_REACH * texel;
+    if angle + reach <= stamp.hardness * stamp.radius {
+        return stamp.flow;
+    }
+    if angle - reach >= stamp.radius {
+        return 0.0;
+    }
+    var k = COVERAGE_SAMPLES;
+    if stamp.radius < SMALL_BRUSH * texel {
+        k = SMALL_BRUSH_SAMPLES;
+    }
+    var sum = 0.0;
+    for (var j = 0; j < k; j++) {
+        for (var i = 0; i < k; i++) {
+            let at = (vec2<f32>(f32(i), f32(j)) + 0.5) / f32(k) - 0.5;
+            sum += weight_at(stamp, angle_at(stamp, p, at));
+        }
+    }
+    return sum / f32(k * k) * stamp.flow;
 }
 
-// The effect of a stamp at a texel, as `amount_at` gives it, and the angle
-// from the brush center to the texel. Both are 0 outside the brush.
+// The effect of a stamp at a texel center without the coverage of the
+// texel, and the angle from the brush center to the texel. Both are 0
+// outside the brush.
 fn brush_at(stamp: Stamp, p: vec2<i32>) -> vec2<f32> {
     // `Heightmap::stamp` visits the texels of this rectangle only.
     if any(p < stamp.rect.xy) || any(p >= stamp.rect.zw) {
         return vec2<f32>(0.0);
     }
+    let angle = angle_at(stamp, p, vec2<f32>(0.0));
+    if angle >= stamp.radius {
+        return vec2<f32>(0.0);
+    }
+    return vec2<f32>(weight_at(stamp, angle) * stamp.flow, angle);
+}
+
+// The angle from the brush center to a place in texel `p`. `offset` is the
+// place from the texel center, in texels. The angle is larger than any
+// brush radius where it is too large to compute.
+fn angle_at(stamp: Stamp, p: vec2<i32>, offset: vec2<f32>) -> f32 {
     let n = f32(group.size);
-    let theta = ((vec2<f32>(p) + 0.5) / n * 2.0 - 1.0) * PI_4;
+    let theta = ((vec2<f32>(p) + 0.5 + offset) / n * 2.0 - 1.0) * PI_4;
     let cos_theta = cos_series(theta);
-    // The angle from the brush center to the texel along each face axis.
+    // The angle from the brush center to the place along each face axis.
     // The whole part of the center keeps the difference exact.
-    let step = (vec2<f32>(p - stamp.center) + 0.5 - stamp.center_rest) * (2.0 * PI_4 / n);
-    // The flat coordinates of the texel minus those of the center.
+    let step = (vec2<f32>(p - stamp.center) + 0.5 + offset - stamp.center_rest) * (2.0 * PI_4 / n);
+    // The flat coordinates of the place minus those of the center.
     let d = sin_series(step) / (cos_theta * stamp.cos_center);
     let flat = stamp.flat + d;
-    // The tangent of the angle between (1, center) and (1, texel), from
+    // The tangent of the angle between (1, center) and (1, place), from
     // the cross product and the dot product.
     let twist = d.x * stamp.flat.y - d.y * stamp.flat.x;
     let across = sqrt(twist * twist + dot(d, d));
     let along = 1.0 + dot(flat, stamp.flat);
     if across >= MAX_TANGENT * along {
-        return vec2<f32>(0.0);
+        return 4.0;
     }
-    let angle = atan_series(across / along);
+    return atan_series(across / along);
+}
+
+// The falloff of a stamp at an angle from its center, from 0 to 1.
+fn weight_at(stamp: Stamp, angle: f32) -> f32 {
     if angle >= stamp.radius {
-        return vec2<f32>(0.0);
+        return 0.0;
     }
     let k = angle / stamp.radius;
-    var weight = 1.0;
-    if k > stamp.hardness {
-        let t = (k - stamp.hardness) / (1.0 - stamp.hardness);
-        weight = 1.0 - t * t * (3.0 - 2.0 * t);
+    if k <= stamp.hardness {
+        return 1.0;
     }
-    return vec2<f32>(weight * stamp.flow, angle);
+    let t = (k - stamp.hardness) / (1.0 - stamp.hardness);
+    return 1.0 - t * t * (3.0 - 2.0 * t);
 }
 
 // A hash of a lattice point. The steps are those of `hash` in

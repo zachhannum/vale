@@ -228,6 +228,31 @@ pub fn talus_levels(angle_deg: f64, face_size: usize, world_radius_m: f64) -> f6
     angle_deg.to_radians().tan() * texel_m / ((ELEV_MAX - ELEV_MIN) / 65535.0)
 }
 
+/// The brush effect at a texel is the mean of the falloff over the area of
+/// the texel. Where the falloff band of a brush is narrower than this number
+/// of texels, the brush takes a grid of samples in each texel that the band
+/// crosses. A wider band takes the sample at the texel center, because the
+/// mean is then within about 0.4 percent of that sample. The band is the part
+/// of the radius between the hard core and the edge. The texel size is the
+/// one at the center of a face.
+const COVERAGE_BAND: f64 = 8.0;
+
+/// The number of samples along each side of a texel. The samples are at the
+/// centers of a grid of equal cells in the texel.
+const COVERAGE_SAMPLES: usize = 4;
+
+/// The number of samples along each side of a texel for a brush with a
+/// radius of less than `SMALL_BRUSH` texels. With 4 by 4 samples, the effect
+/// of a thin stroke changes by up to 4 percent from texel to texel.
+const SMALL_BRUSH_SAMPLES: usize = 8;
+
+/// The radius of a small brush, in texels.
+const SMALL_BRUSH: f64 = 2.0;
+
+/// The distance from a texel center to its farthest sample is less than this
+/// part of the texel size. A texel is no larger than one at a face center.
+const COVERAGE_REACH: f64 = 0.75;
+
 /// The effect of one stamp at each place on one face.
 struct Falloff {
     /// The brush center along the face axis and along the two face
@@ -237,32 +262,89 @@ struct Falloff {
     cos_radius: f64,
     hardness: f64,
     flow: f64,
+    /// The number of texels along one side of the face.
+    n: usize,
+    /// The falloff band is narrower than `COVERAGE_BAND` texels.
+    fine: bool,
+    /// The number of samples along each side of a texel.
+    samples: usize,
 }
 
 impl Falloff {
-    fn new(face: usize, stamp: &Stamp) -> Falloff {
+    fn new(face: usize, stamp: &Stamp, n: usize) -> Falloff {
         let axis = face / 2;
         let sign = if face.is_multiple_of(2) { 1.0 } else { -1.0 };
         let c = stamp.center;
+        let hardness = stamp.hardness.clamp(0.0, 0.999);
+        let texel = FRAC_PI_2 / n as f64;
         Falloff {
             center: [c[axis] * sign, c[(axis + 1) % 3], c[(axis + 2) % 3]],
             radius: stamp.radius,
             cos_radius: stamp.radius.cos(),
-            hardness: stamp.hardness.clamp(0.0, 0.999),
+            hardness,
             flow: stamp.flow,
+            n,
+            fine: (1.0 - hardness) * stamp.radius < COVERAGE_BAND * texel,
+            samples: if stamp.radius < SMALL_BRUSH * texel {
+                SMALL_BRUSH_SAMPLES
+            } else {
+                COVERAGE_SAMPLES
+            },
         }
+    }
+
+    /// The cosine of the angle from the brush center to a flat face
+    /// coordinate.
+    fn cos_angle(&self, fu: f64, fv: f64) -> f64 {
+        let [cn, cu, cv] = self.center;
+        (cn + fu * cu + fv * cv) / (1.0 + fu * fu + fv * fv).sqrt()
     }
 
     /// The effect at a flat face coordinate, or `None` outside the brush
     /// circle.
     fn amount(&self, fu: f64, fv: f64) -> Option<f64> {
-        let [cn, cu, cv] = self.center;
-        let cos_angle = (cn + fu * cu + fv * cv) / (1.0 + fu * fu + fv * fv).sqrt();
+        let cos_angle = self.cos_angle(fu, fv);
         if cos_angle <= self.cos_radius {
             return None;
         }
         let k = cos_angle.min(1.0).acos() / self.radius;
         Some(falloff(k, self.hardness) * self.flow)
+    }
+
+    /// The effect at texel `(x, y)`, or `None` where the brush does not
+    /// cover the texel. `flat` holds the flat face coordinate of each texel
+    /// center.
+    fn texel(&self, x: usize, y: usize, flat: &[f64]) -> Option<f64> {
+        let (fu, fv) = (flat[x], flat[y]);
+        if !self.fine {
+            return self.amount(fu, fv);
+        }
+        let angle = self.cos_angle(fu, fv).clamp(-1.0, 1.0).acos();
+        let reach = COVERAGE_REACH * FRAC_PI_2 / self.n as f64;
+        if angle + reach <= self.hardness * self.radius {
+            return Some(self.flow);
+        }
+        if angle - reach >= self.radius {
+            return None;
+        }
+        let (n, k) = (self.n as f64, self.samples);
+        let at =
+            |i: usize, s: usize| unwarp((i as f64 + (s as f64 + 0.5) / k as f64) / n * 2.0 - 1.0);
+        let mut us = [0.0; SMALL_BRUSH_SAMPLES];
+        let mut vs = [0.0; SMALL_BRUSH_SAMPLES];
+        for s in 0..k {
+            (us[s], vs[s]) = (at(x, s), at(y, s));
+        }
+        let mut sum = 0.0;
+        for &v in &vs[..k] {
+            for &u in &us[..k] {
+                let cos_angle = self.cos_angle(u, v);
+                if cos_angle > self.cos_radius {
+                    sum += falloff(cos_angle.min(1.0).acos() / self.radius, self.hardness);
+                }
+            }
+        }
+        (sum > 0.0).then(|| sum / (k * k) as f64 * self.flow)
     }
 }
 
@@ -1082,7 +1164,7 @@ impl Heightmap {
 
     fn stamp_face(&mut self, face: usize, rect: TexelRect, stamp: &Stamp, reach: usize) -> usize {
         let (t, base) = (self.tile, self.base);
-        let falloff = Falloff::new(face, stamp);
+        let falloff = Falloff::new(face, stamp, self.n);
         // The smooth mode and the shape mode read neighbors, so they need the
         // values from before.
         // Near a face edge, the neighbors are on the next face.
@@ -1189,7 +1271,7 @@ impl Heightmap {
                     let fv = self.flat[y];
                     for x in rect.x0.max(tx * t)..rect.x1.min((tx + 1) * t) {
                         let fu = self.flat[x];
-                        let Some(amount) = falloff.amount(fu, fv) else {
+                        let Some(amount) = falloff.texel(x, y, &self.flat) else {
                             continue;
                         };
                         let offset = (y - ty * t) * t + (x - tx * t);
@@ -1363,15 +1445,14 @@ impl Heightmap {
     /// the room from the lower texel up to the ceiling. A pair with a texel
     /// outside the limits does not move.
     fn weather_face(&mut self, face: usize, rect: TexelRect, stamp: &Stamp) -> usize {
-        let falloff = Falloff::new(face, stamp);
+        let falloff = Falloff::new(face, stamp, self.n);
         let (w, h) = (rect.x1 - rect.x0, rect.y1 - rect.y0);
         // The effect at each texel, with a margin of one texel of zeros.
         let row = w + 2;
         let mut amounts = vec![0.0; row * (h + 2)];
         for y in 0..h {
-            let fv = self.flat[rect.y0 + y];
             for x in 0..w {
-                let amount = falloff.amount(self.flat[rect.x0 + x], fv);
+                let amount = falloff.texel(rect.x0 + x, rect.y0 + y, &self.flat);
                 amounts[(y + 1) * row + x + 1] = amount.unwrap_or(0.0);
             }
         }
@@ -1979,8 +2060,9 @@ mod tests {
         assert!((sum * 6.0 - sphere).abs() / sphere < 1e-3, "{}", sum * 6.0);
     }
 
-    /// The ground area that one stamp changes, in steradians. The tiles are
-    /// small, so the stamp crosses many tile edges.
+    /// The ground area that one stamp changes, in steradians. A texel that
+    /// the brush covers in part counts by the part of the full rise. The
+    /// tiles are small, so the stamp crosses many tile edges.
     fn painted_area(center: V3, radius: f64) -> f64 {
         let n = 256;
         let mut map = Heightmap::with_tile_size(n, 32, 0);
@@ -1989,9 +2071,8 @@ mod tests {
         for face in 0..FACES {
             for y in 0..n {
                 for x in 0..n {
-                    if map.get(face, x as i64, y as i64) > 0 {
-                        area += map.texel_solid_angle(x, y);
-                    }
+                    let rise = f64::from(map.get(face, x as i64, y as i64)) / 1000.0;
+                    area += rise * map.texel_solid_angle(x, y);
                 }
             }
         }
@@ -2486,7 +2567,111 @@ mod tests {
                 }
             }
         }
-        assert_eq!(sum, 3970950523126258947);
+        assert_eq!(sum, 18151904666013036291);
+    }
+
+    /// The rise of each texel column of face 0 after a raise stroke of
+    /// `radius` texels at 20 degrees to the rows. Only the columns away from
+    /// the ends of the stroke are in the list.
+    fn column_rises(radius: f64, hardness: f64) -> Vec<f64> {
+        let n = 256;
+        let texel = FRAC_PI_2 / n as f64;
+        let mut map = Heightmap::with_tile_size(n, 64, 30000);
+        // The stroke is a straight line in the equal-angle coordinates, so
+        // the stamps are at equal steps of texels.
+        let (start, end) = (-0.15, 0.15);
+        let slope = 20f64.to_radians().tan();
+        let spacing = 0.12 * radius * 20f64.to_radians().cos() * 2.0 / n as f64;
+        let mut su = start;
+        while su <= end {
+            let (fu, fv) = (unwarp(su), unwarp(0.01 + slope * su));
+            map.stamp(&Stamp {
+                hardness,
+                strength: 200.0,
+                ..raise(face_dir(0, fu, fv), radius * texel)
+            });
+            su += spacing;
+        }
+        let margin = 0.02;
+        (0..n)
+            .filter(|&x| {
+                let s = (x as f64 + 0.5) / n as f64 * 2.0 - 1.0;
+                s > start + margin && s < end - margin
+            })
+            .map(|x| {
+                (0..n)
+                    .map(|y| f64::from(map.get(0, x as i64, y as i64)) - 30000.0)
+                    .sum()
+            })
+            .collect()
+    }
+
+    /// A thin stroke puts the same amount of ground in each texel column
+    /// that it crosses. With one sample at each texel center, a brush that
+    /// is not much larger than a texel misses some texels and hits others.
+    #[test]
+    fn a_thin_stroke_is_even_from_texel_to_texel() {
+        for radius in [0.6, 1.5] {
+            for hardness in [0.0, 0.9] {
+                let rises = column_rises(radius, hardness);
+                assert!(rises.len() > 20);
+                let low = rises.iter().copied().fold(f64::MAX, f64::min);
+                let high = rises.iter().copied().fold(f64::MIN, f64::max);
+                assert!(
+                    high / low < 1.02,
+                    "radius {radius}, hardness {hardness}: {low} to {high}"
+                );
+            }
+        }
+    }
+
+    /// A brush with a wide falloff band takes one sample at each texel
+    /// center.
+    #[test]
+    fn a_large_soft_brush_samples_the_texel_centers() {
+        let n = 256;
+        let texel = FRAC_PI_2 / n as f64;
+        let mut map = Heightmap::with_tile_size(n, 64, 30000);
+        let stamp = Stamp {
+            hardness: 0.0,
+            strength: 900.0,
+            ..raise(face_dir(0, 0.031, -0.017), 8.5 * texel)
+        };
+        let falloff = Falloff::new(0, &stamp, n);
+        assert!(!falloff.fine);
+        map.stamp(&stamp);
+        let mut changed = 0;
+        for y in 0..n {
+            for x in 0..n {
+                let amount = falloff.amount(map.flat[x], map.flat[y]);
+                assert_eq!(falloff.texel(x, y, &map.flat), amount);
+                let expected = (30000.0 + amount.unwrap_or(0.0) * 900.0).round();
+                assert_eq!(f64::from(map.get(0, x as i64, y as i64)), expected);
+                changed += usize::from(amount.is_some());
+            }
+        }
+        assert!(changed > 200, "{changed}");
+    }
+
+    /// The effect at a texel that a hard brush covers in part is the part
+    /// that it covers.
+    #[test]
+    fn a_hard_brush_has_a_smooth_edge() {
+        let n = 256;
+        let texel = FRAC_PI_2 / n as f64;
+        let stamp = raise(face_dir(0, 0.031, -0.017), 10.3 * texel);
+        let falloff = Falloff::new(0, &stamp, n);
+        assert!(falloff.fine);
+        let flat = Heightmap::new(n, 0).flat;
+        let amounts: Vec<f64> = (0..n * n)
+            .filter_map(|i| falloff.texel(i % n, i / n, &flat))
+            .collect();
+        let part = amounts.iter().filter(|&&a| a < 0.9).count();
+        assert!(part > 30, "{part}");
+        // The sum of the effects is the area of the circle in texels.
+        let area = amounts.iter().sum::<f64>();
+        let circle = std::f64::consts::PI * 10.3 * 10.3;
+        assert!((area - circle).abs() / circle < 0.01, "{area} {circle}");
     }
 
     /// The latitude of the river in `valley`.
@@ -3028,11 +3213,11 @@ mod tests {
         // The pairs are the ridge height and the change of each texel with
         // the full effect of the brush.
         let channels = map.channels().expect("the map has channels").clone();
-        let falloff = Falloff::new(0, &stamp);
+        let falloff = Falloff::new(0, &stamp, 256);
         let mut pairs = Vec::new();
         for (i, (new, old)) in after.iter().zip(&before).enumerate() {
             let (x, y) = (i % 256, i / 256);
-            let amount = falloff.amount(map.flat[x], map.flat[y]);
+            let amount = falloff.texel(x, y, &map.flat);
             if amount.is_none() {
                 assert_eq!(new, old);
             }
@@ -4104,7 +4289,7 @@ mod tests {
                     // The texels under the brush.
                     let mut under = vec![false; before.len()];
                     for (face, x, y) in plan_texels(&plan) {
-                        let falloff = Falloff::new(face, &plan.stamp);
+                        let falloff = Falloff::new(face, &plan.stamp, n);
                         let amount = falloff.amount(map.flat[x], map.flat[y]);
                         under[(face * n + y) * n + x] = amount.is_some();
                     }
@@ -4426,7 +4611,7 @@ mod tests {
             let plan = map.stamp_plan(&stamp);
             let mut under = vec![false; before.len()];
             for (face, x, y) in plan_texels(&plan) {
-                let falloff = Falloff::new(face, &plan.stamp);
+                let falloff = Falloff::new(face, &plan.stamp, n);
                 let amount = falloff.amount(map.flat[x], map.flat[y]);
                 under[(face * n + y) * n + x] = amount.is_some();
             }
@@ -4538,8 +4723,8 @@ mod tests {
                 map.stamp(&stamp);
                 let mut changed = 0;
                 for (face, x, y) in plan_texels(&plan) {
-                    let falloff = Falloff::new(face, &plan.stamp);
-                    let amount = falloff.amount(map.flat[x], map.flat[y]).unwrap_or(0.0);
+                    let falloff = Falloff::new(face, &plan.stamp, n);
+                    let amount = falloff.texel(x, y, &map.flat).unwrap_or(0.0);
                     let p = map.texel_dir(face, x, y);
                     let value = fractal(p, &plan.stamp, octaves);
                     assert!((-1.0..=1.0).contains(&value));
@@ -4602,8 +4787,8 @@ mod tests {
         let octaves = noise_octaves(plan.stamp.scale, n);
         map.stamp(&stamp);
         for (face, x, y) in plan_texels(&plan) {
-            let falloff = Falloff::new(face, &plan.stamp);
-            let amount = falloff.amount(map.flat[x], map.flat[y]).unwrap_or(0.0);
+            let falloff = Falloff::new(face, &plan.stamp, n);
+            let amount = falloff.texel(x, y, &map.flat).unwrap_or(0.0);
             let value = fractal(map.texel_dir(face, x, y), &plan.stamp, octaves);
             let size = if value > 0.0 { 8000.0 } else { 2000.0 };
             let expected = (old + amount * size * value).round();
