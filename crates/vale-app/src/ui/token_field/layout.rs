@@ -7,6 +7,7 @@ use eframe::egui::{FontId, Pos2, Rect, Vec2, pos2, vec2};
 
 use super::caret::Caret;
 use super::{BoxKind, Boxed, Glyph, Look, Node};
+use crate::ui::pad::theme;
 
 /// The sizes of a field.
 #[derive(Clone, Debug, PartialEq)]
@@ -44,9 +45,9 @@ impl Metrics {
     pub fn pad() -> Self {
         Metrics {
             chip: 32.0,
-            font: FontId::proportional(15.0),
-            small: FontId::proportional(11.0),
-            glyph_font: FontId::monospace(10.5),
+            font: theme::font(15.0),
+            small: theme::font(11.0),
+            glyph_font: theme::mono_font(10.5),
             glyph: 22.0,
             radius: 8.0,
             chip_pad: (5.0, 10.0),
@@ -64,9 +65,9 @@ impl Metrics {
     pub fn desktop() -> Self {
         Metrics {
             chip: 24.0,
-            font: FontId::proportional(13.0),
-            small: FontId::proportional(10.0),
-            glyph_font: FontId::monospace(9.0),
+            font: theme::font(13.0),
+            small: theme::font(10.0),
+            glyph_font: theme::mono_font(9.0),
             glyph: 17.0,
             radius: 6.0,
             chip_pad: (4.0, 7.0),

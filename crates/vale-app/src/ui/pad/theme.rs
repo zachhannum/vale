@@ -53,25 +53,57 @@ pub fn shadow() -> egui::Shadow {
     }
 }
 
+thread_local! {
+    static TEXT_SCALE: std::cell::Cell<f32> = const { std::cell::Cell::new(1.0) };
+}
+
+/// The smallest text size in points.
+const MIN_TEXT: f32 = 9.0;
+
+/// Sets the factor of the text size setting of the system. The UI reads it
+/// on the thread that draws.
+pub fn set_text_scale(scale: f32) {
+    TEXT_SCALE.with(|s| s.set(scale));
+}
+
+pub fn text_scale() -> f32 {
+    TEXT_SCALE.with(std::cell::Cell::get)
+}
+
+/// A text size in points at the text size setting, to half a point.
+pub fn text(size: f32) -> f32 {
+    ((size * text_scale() * 2.0).round() / 2.0).max(MIN_TEXT.min(size))
+}
+
+/// A proportional font of `size` points at the text size setting.
+pub fn font(size: f32) -> FontId {
+    FontId::proportional(text(size))
+}
+
+/// A monospace font of `size` points at the text size setting.
+pub fn mono_font(size: f32) -> FontId {
+    FontId::monospace(text(size))
+}
+
 pub fn body() -> FontId {
-    FontId::proportional(15.0)
+    font(15.0)
 }
 
 pub fn title() -> FontId {
-    FontId::proportional(16.0)
+    font(16.0)
 }
 
 /// The font of a hint next to a name.
 pub fn hint() -> FontId {
-    FontId::proportional(13.0)
+    font(13.0)
 }
 
 pub fn small() -> FontId {
-    FontId::proportional(10.0)
+    font(10.0)
 }
 
 pub fn mono() -> FontId {
-    FontId::monospace(12.0)
+    mono_font(12.0)
 }
 
 /// Sets the style of the egui widgets in a panel.
@@ -85,11 +117,25 @@ pub fn apply(ui: &mut egui::Ui) {
     style.spacing.slider_width = 140.0;
     style.visuals.override_text_color = Some(TEXT);
     for (text_style, font) in &mut style.text_styles {
-        font.size = match text_style {
+        font.size = text(match text_style {
             egui::TextStyle::Heading => 16.0,
             egui::TextStyle::Small => 12.0,
             egui::TextStyle::Monospace => 12.0,
             _ => 15.0,
-        };
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn small_text_stays_readable_at_the_smallest_size() {
+        set_text_scale(14.0 / 17.0);
+        assert_eq!(small().size, 9.0);
+        assert_eq!(body().size, 12.5);
+        set_text_scale(1.0);
+        assert_eq!(small().size, 10.0);
     }
 }

@@ -459,7 +459,7 @@ fn preview(ui: &mut egui::Ui, help: &ExprHelp, text: &str, range: Option<&ValueR
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 12.0, Color32::from_white_alpha(13));
     let label = value.label().unwrap_or_else(|| NO_VALUE.to_owned());
-    let big = egui::FontId::proportional(24.0);
+    let big = theme::font(24.0);
     let left = rect.left() + 16.0;
     painter.text(
         pos2(left, rect.top() + 26.0),

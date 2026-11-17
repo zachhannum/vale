@@ -203,7 +203,7 @@ pub(super) fn overlay(ui: &egui::Ui, state: &mut AppState, place: PagePlace, are
         painter.line(part.clone(), line);
     }
     for (mid, on_screen, text) in labels {
-        let font = egui::FontId::proportional(12.0);
+        let font = theme::font(12.0);
         let galley = painter.layout_no_wrap(text, font, theme::TEXT);
         let pill = Rect::from_center_size(mid, galley.size() + egui::vec2(12.0, 4.0));
         if on_screen < pill.width() + 8.0 {

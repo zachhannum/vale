@@ -685,13 +685,11 @@ fn completion_list(
                 }
                 let mid = row.center().y;
                 let (color, font) = match item {
-                    Item::Field(_) | Item::Page(..) => {
-                        (theme::TEXT, egui::FontId::proportional(13.0))
-                    }
+                    Item::Field(_) | Item::Page(..) => (theme::TEXT, theme::font(13.0)),
                     Item::Measure(_) | Item::Raster(_) | Item::Var(_) => {
-                        (VARIABLE_TEXT, egui::FontId::proportional(13.0))
+                        (VARIABLE_TEXT, theme::font(13.0))
                     }
-                    Item::Function(..) => (FUNCTION_TEXT, egui::FontId::monospace(12.5)),
+                    Item::Function(..) => (FUNCTION_TEXT, theme::mono_font(12.5)),
                 };
                 let mut x = row.left() + 8.0;
                 match (item, glyph) {
