@@ -41,6 +41,28 @@ const ROUGH_CELLS: f64 = 16.0;
 
 const SALT_ROUGH: u32 = 0x3c6e_f372;
 
+/// Settings of the step for experiments.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ErodeTuning {
+    /// The exponent of the area in the stream power.
+    pub area_exponent: f64,
+    /// The rough ground: its part of the stream power, and the size of its
+    /// largest features in cells.
+    pub rough: f64,
+    pub rough_cells: f64,
+}
+
+impl Default for ErodeTuning {
+    fn default() -> ErodeTuning {
+        ErodeTuning {
+            area_exponent: 0.5,
+            rough: ROUGH,
+            rough_cells: ROUGH_CELLS,
+        }
+    }
+}
+
 /// One touch of the erode brush on the sphere.
 #[derive(Clone, Copy, Debug)]
 pub struct ErodeBrush {
@@ -544,6 +566,7 @@ pub struct Erosion {
     /// The rough ground of each cell, from 0 to 1. A cell that no step
     /// needed yet is NaN.
     rough: Vec<f32>,
+    tuning: ErodeTuning,
 }
 
 /// The effect of the brushes of one step.
@@ -699,6 +722,15 @@ impl Erosion {
             rain_cells: Vec::new(),
             rough_seed: None,
             rough: Vec::new(),
+            tuning: ErodeTuning::default(),
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn set_tuning(&mut self, tuning: ErodeTuning) {
+        if tuning != self.tuning {
+            self.tuning = tuning;
+            self.rough.clear();
         }
     }
 
@@ -718,7 +750,8 @@ impl Erosion {
         let (row, x) = (i / side, i % side);
         let face = self.faces().start + row / side;
         let dir = face_dir(face, self.flat_u[x], self.flat_v[row % side]);
-        let noise = fractal(dir, ROUGH_CELLS * self.cell_angle(), seed ^ SALT_ROUGH);
+        let size = self.tuning.rough_cells * self.cell_angle();
+        let noise = fractal(dir, size, seed ^ SALT_ROUGH);
         0.5 * (1.0 - noise).clamp(0.0, 2.0)
     }
 
@@ -1046,7 +1079,7 @@ impl Erosion {
             }
             let mut height = raised;
             if weights[i] > 0.0 {
-                let rough_rise = rise * (1.0 - ROUGH * self.rough_of(i, seed));
+                let rough_rise = rise * (1.0 - self.tuning.rough * self.rough_of(i, seed));
                 height = height.min(limits.apply(old, (old + rough_rise).min(65535.0)) as f32);
             }
             self.heights[i] = height;
@@ -1265,9 +1298,10 @@ impl Erosion {
             let diagonal = !self.neighbors(i)[..4].contains(&(to as u32));
             let length = if diagonal { SQRT_2 } else { 1.0 };
             let area = f64::from(flow.area[at as usize]) / self.min_area;
-            let mut power = rate * f64::from(weights[i]) * area.sqrt() / length;
+            let mut power =
+                rate * f64::from(weights[i]) * area.powf(self.tuning.area_exponent) / length;
             if self.rough_seed.is_some() {
-                power *= 1.0 + ROUGH * (1.0 - 2.0 * f64::from(self.rough[i]));
+                power *= 1.0 + self.tuning.rough * (1.0 - 2.0 * f64::from(self.rough[i]));
             }
             let new = f64::from(below) + f64::from(height - below) / (1.0 + power);
             let new = (new as f32).clamp(below, height);
