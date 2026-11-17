@@ -18647,11 +18647,13 @@ fn polygonize_splits_a_heightmap_into_topography_and_bathymetry() {
     state.save_waiting().unwrap();
     open_polygonize(&mut h);
     check_controls(&h, "the page of Polygonize");
+    screenshot::save(&mut h, "pad-polygonize");
     for name in [INPUT, SMOOTH, SPLIT, ABOVE, BELOW, RUN] {
         assert!(h.query_by_label(name).is_some(), "{name}");
     }
     let before = h.state().doc.project.layers().len();
     tap(&mut h, RUN);
+    screenshot::save(&mut h, "pad-polygonize-run");
     let state = h.state();
     let names: Vec<&str> = (state.doc.project.layers().iter())
         .map(|l| l.name.as_str())
@@ -18810,6 +18812,7 @@ fn polygonize_marks_its_layers_out_of_date_and_a_new_run_replaces_them() {
     h.run_steps(2);
     let stale = "Bathymetry and Topography are out of date. This run replaces them.";
     assert!(h.query_by_label(stale).is_some());
+    screenshot::save(&mut h, "pad-polygonize-stale");
     tap(&mut h, RUN);
     let second = h.state().polygonize_outputs();
     assert_eq!(second.len(), 2);
@@ -18821,4 +18824,37 @@ fn polygonize_marks_its_layers_out_of_date_and_a_new_run_replaces_them() {
     h.run_steps(2);
     assert!(first.iter().all(|id| h.state().doc.layer(*id).is_some()));
     assert!(second.iter().all(|id| h.state().doc.layer(*id).is_none()));
+}
+
+#[test]
+fn an_out_of_date_polygonize_layer_runs_again_from_its_panel() {
+    use vale_app::ui::polygonize::{RUN_AGAIN, STALE_LAYER, TOPOGRAPHY};
+    use vale_terrain::math::lonlat_to_dir;
+    let (mut h, height) = islands_pad();
+    h.state_mut().polygonize().unwrap();
+    let first = h.state().polygonize_outputs();
+    let topo = |h: &Pad| {
+        (h.state().doc.project.layers().iter())
+            .find(|l| l.name == TOPOGRAPHY)
+            .map(|l| l.id)
+            .unwrap()
+    };
+    let old = topo(&h);
+    let pad = &mut h.state_mut().pad;
+    pad.layer = Some(LayerRef::Vector(old));
+    pad.open(Panel::Layers);
+    h.run_steps(2);
+    assert!(h.query_by_label(STALE_LAYER).is_none());
+    let map = h.state_mut().globe.raster_map_mut(height).unwrap();
+    let (face, x, y) = map.texel_of(lonlat_to_dir(-60.0, -20.0));
+    map.set(face, x, y, meters_to_level(800.0));
+    h.run_steps(2);
+    assert!(h.query_by_label(STALE_LAYER).is_some());
+    check_controls(&h, "the panel of an out-of-date layer");
+    tap(&mut h, RUN_AGAIN);
+    assert!(first.iter().all(|id| h.state().doc.layer(*id).is_none()));
+    let new = topo(&h);
+    assert_ne!(new, old);
+    assert_eq!(h.state().pad.layer, Some(LayerRef::Vector(new)));
+    assert!(h.query_by_label(STALE_LAYER).is_none());
 }

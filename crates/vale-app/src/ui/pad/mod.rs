@@ -3583,6 +3583,24 @@ fn vector_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
     }
     state.pad.name = Some((of, text));
     widgets::value_row(ui, "Type", kind);
+    if state.is_stale_output(id) {
+        use crate::ui::polygonize::{RUN_AGAIN, STALE_LAYER};
+        ui.add_space(8.0);
+        ui.label(egui::RichText::new(STALE_LAYER).color(theme::MUTE));
+        ui.add_space(8.0);
+        if widgets::button_row(ui, controls, RUN_AGAIN, state.can_polygonize()).clicked() {
+            let old = state.doc.layer(id).map(|l| l.name.clone());
+            state.run_polygonize_again();
+            // The panel shows the new layer of the same name.
+            let outputs = state.polygonize_outputs();
+            let named = |o: &&LayerId| state.doc.layer(**o).map(|l| l.name.clone()) == old;
+            let same = outputs.iter().find(named);
+            if let Some(&new) = same.or(outputs.last()) {
+                state.pad.layer = Some(LayerRef::Vector(new));
+            }
+        }
+        ui.add_space(8.0);
+    }
     if widgets::open_row(ui, controls, table::FEATURES, &features).clicked() {
         state.open_table(id);
     }

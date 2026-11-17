@@ -198,6 +198,11 @@ pub fn band_rules(bands: &Bands, height: bool, which: &[usize]) -> Vec<vale_styl
     classify::make_rules(&template, kind, &classes, &colors, Step::None)
 }
 
+/// The note of an output layer whose input changed, in the panel of the
+/// layer, and its button.
+pub const STALE_LAYER: &str = "Out of date. The input changed after the last run.";
+pub const RUN_AGAIN: &str = "Run again";
+
 /// The note of the outputs of a run whose input changed.
 pub fn stale_text(names: &[String]) -> String {
     match names.len() {
@@ -281,23 +286,50 @@ impl AppState {
             .collect()
     }
 
-    /// The names of the outputs of the last run, if its input changed after
-    /// the run. A new run replaces those layers.
+    /// True if the input of the last run changed after the run, and the
+    /// project still has an output of the run.
+    fn last_run_stale(&mut self) -> bool {
+        let Some(raster) = self.polygonize.last.as_ref().map(|r| r.raster) else {
+            return false;
+        };
+        let Some(bands) = self.raster_bands(raster) else {
+            return false;
+        };
+        let (Some(run), Some(map)) = (&self.polygonize.last, self.globe.value_map(raster)) else {
+            return false;
+        };
+        let changed = !map.same_tiles(&run.levels) || bands != run.bands;
+        changed && !self.polygonize_outputs().is_empty()
+    }
+
+    /// The names of the outputs of the last run, if its input is the input
+    /// of the page and it changed after the run. A new run replaces those
+    /// layers.
     pub fn polygonize_stale(&mut self) -> Option<Vec<String>> {
-        let outputs = self.polygonize_outputs();
-        let run = self.polygonize.last.as_ref()?;
-        let raster = run.raster;
-        if outputs.is_empty() || Some(raster) != self.polygonize_input() {
+        let raster = self.polygonize.last.as_ref()?.raster;
+        if Some(raster) != self.polygonize_input() || !self.last_run_stale() {
             return None;
         }
-        let bands = self.raster_bands(raster)?;
-        let run = self.polygonize.last.as_ref()?;
-        let map = self.globe.value_map(raster)?;
-        let stale = !map.same_tiles(&run.levels) || bands != run.bands;
-        let names = (outputs.iter())
+        let names = (self.polygonize_outputs().iter())
             .filter_map(|id| Some(self.doc.layer(*id)?.name.clone()))
             .collect();
-        stale.then_some(names)
+        Some(names)
+    }
+
+    /// True if layer `id` is an output of the last run, and the input of
+    /// the run changed after it.
+    pub fn is_stale_output(&mut self, id: LayerId) -> bool {
+        self.polygonize_outputs().contains(&id) && self.last_run_stale()
+    }
+
+    /// Runs "Polygonize" again on the input of the last run, with the
+    /// parameters of the page. The new layers replace the old outputs.
+    pub fn run_polygonize_again(&mut self) {
+        let Some(raster) = self.polygonize.last.as_ref().map(|r| r.raster) else {
+            return;
+        };
+        self.polygonize.raster = Some(raster);
+        self.run_polygonize();
     }
 
     /// True if "Polygonize" can run on its input.
