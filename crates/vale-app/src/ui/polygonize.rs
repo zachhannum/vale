@@ -2,11 +2,14 @@
 //! layer, with the band limits of its color stops.
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use vale_store::{Feature, Geometry, GeometryKind, LayerId, LonLat, RasterId, Value};
 use vale_style::{Color, LayerStyle};
-use vale_terrain::{BandRings, Bands, Heightmap, Trace, polygonize};
+use vale_terrain::{Bands, Contours, Heightmap, Trace, polygonize};
 
 use super::{AppState, is_height};
 use crate::classify::{self, Class, Step};
@@ -20,7 +23,7 @@ pub const POLYGONIZE_ABOUT: &str =
 /// The hint of the operation when the world has no raster layer.
 pub const NEEDS_RASTER: &str = "Add a raster layer.";
 pub const INPUT: &str = "Input";
-pub const LIMITS: &str = "Limits";
+pub const BANDS: &str = "Bands";
 pub const SMOOTH: &str = "Smooth";
 pub const SPLIT: &str = "Split into two layers at 0 m";
 pub const ABOVE: &str = "Above";
@@ -46,6 +49,8 @@ pub struct PolygonizeState {
     pub above: String,
     pub below: String,
     pub last: Option<Run>,
+    /// The run that the worker does.
+    pub job: Option<Job>,
 }
 
 impl Default for PolygonizeState {
@@ -57,6 +62,7 @@ impl Default for PolygonizeState {
             above: TOPOGRAPHY.to_owned(),
             below: BATHYMETRY.to_owned(),
             last: None,
+            job: None,
         }
     }
 }
@@ -98,8 +104,8 @@ pub fn limit_levels(bands: &Bands) -> Vec<f64> {
 }
 
 /// The polygons of one band.
-fn band_polygons(band: &BandRings) -> Vec<Vec<Vec<LonLat>>> {
-    if band.whole {
+fn band_polygons(contours: &Contours, band: usize) -> Vec<Vec<Vec<LonLat>>> {
+    if contours.is_whole(band) {
         let world = vec![
             [-180.0, -90.0],
             [180.0, -90.0],
@@ -109,44 +115,87 @@ fn band_polygons(band: &BandRings) -> Vec<Vec<Vec<LonLat>>> {
         ];
         return vec![vec![world]];
     }
-    sphere_polygons(&band.rings)
+    sphere_polygons(contours.band_rings(band))
 }
 
+/// The names of the output layers: the layer above the split, and the
+/// index of the band above the split with the name of the layer below it,
+/// if the output splits.
+#[derive(Clone, Debug)]
+pub struct Names {
+    pub above: String,
+    pub split: Option<(usize, String)>,
+}
+
+/// The number of threads that make the polygons. Each thread holds the
+/// copies of the rings of one band.
+const MAKE_THREADS: usize = 4;
+
+/// The share of the progress of a run that the trace takes. The polygons
+/// in longitude and latitude take the rest.
+const TRACE_SHARE: f64 = 0.6;
+
 /// The output layers of a run: one feature for each band that has an
-/// area. `split` is the index of the band above the split, if the output
-/// splits, with the names of the layers above it and below it.
+/// area. `progress` gets the share of the work that is done, from 0 to 1.
+/// `None` if `stop` became true.
 pub fn outputs(
     map: &Heightmap,
     bands: &Bands,
     height: bool,
     smooth: f64,
-    names: (&str, Option<(usize, &str)>),
-) -> Vec<Output> {
+    names: &Names,
+    progress: &(dyn Fn(f64) + Sync),
+    stop: &AtomicBool,
+) -> Option<Vec<Output>> {
     let trace = Trace {
         sigma: smooth.clamp(0.0, 1.0) * MAX_SIGMA,
         tolerance: TOLERANCE,
     };
-    let rings = polygonize(map, &limit_levels(bands), trace);
+    let traced = |share: f64| {
+        progress(share * TRACE_SHARE);
+        !stop.load(Ordering::Relaxed)
+    };
+    let contours = polygonize(map, &limit_levels(bands), trace, &traced)?;
+    // The polygons of the bands, on all cores. Each thread takes the next
+    // band that no thread has.
+    let count = contours.bands_len();
+    let next = AtomicUsize::new(0);
+    let done = AtomicUsize::new(0);
+    let polygons: Vec<Mutex<Vec<Vec<Vec<LonLat>>>>> =
+        (0..count).map(|_| Mutex::new(Vec::new())).collect();
+    std::thread::scope(|s| {
+        for _ in 0..MAKE_THREADS.min(count) {
+            s.spawn(|| {
+                loop {
+                    let k = next.fetch_add(1, Ordering::Relaxed);
+                    if k >= count || stop.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    let made = band_polygons(&contours, k);
+                    *polygons[k].lock().expect("polygons") = made;
+                    let finished = done.fetch_add(1, Ordering::Relaxed) + 1;
+                    progress(TRACE_SHARE + (1.0 - TRACE_SHARE) * finished as f64 / count as f64);
+                }
+            });
+        }
+    });
+    if stop.load(Ordering::Relaxed) {
+        return None;
+    }
+    drop(contours);
     let (min_field, max_field) = limit_fields(height);
     let stops = bands.stops();
-    let (above, split) = names;
-    let mut out = vec![Output {
-        name: above.to_owned(),
+    let layer = |name: &str| Output {
+        name: name.to_owned(),
         features: Vec::new(),
         bands: Vec::new(),
-    }];
-    if let Some((_, below)) = split {
-        out.insert(
-            0,
-            Output {
-                name: below.to_owned(),
-                features: Vec::new(),
-                bands: Vec::new(),
-            },
-        );
+    };
+    let mut out = vec![layer(&names.above)];
+    if let Some((_, below)) = &names.split {
+        out.insert(0, layer(below));
     }
-    for (k, band) in rings.iter().enumerate() {
-        let polygons = band_polygons(band);
+    for (k, polygons) in polygons.into_iter().enumerate() {
+        let polygons = polygons.into_inner().expect("polygons");
         if polygons.is_empty() {
             continue;
         }
@@ -154,17 +203,17 @@ pub fn outputs(
             (min_field.to_owned(), Value::Number(stops[k].value)),
             (max_field.to_owned(), Value::Number(stops[k + 1].value)),
         ]);
-        let layer = match split {
+        let index = match names.split {
             Some((sea, _)) if k >= sea => 1,
             _ => 0,
         };
-        let layer = layer.min(out.len() - 1);
-        out[layer]
+        let index = index.min(out.len() - 1);
+        out[index]
             .features
             .push(Feature::new(Geometry::Polygons(polygons), attributes));
-        out[layer].bands.push(k);
+        out[index].bands.push(k);
     }
-    out
+    Some(out)
 }
 
 /// A rule for each band, with the color of the band.
@@ -258,12 +307,10 @@ impl AppState {
         self.globe.bands_mut(id).map(|b| b.clone())
     }
 
-    /// The number of limits between the bands of the input of
-    /// "Polygonize".
-    pub fn polygonize_limits(&mut self) -> Option<usize> {
+    /// The number of bands of the input of "Polygonize".
+    pub fn polygonize_bands(&mut self) -> Option<usize> {
         let id = self.polygonize_input()?;
-        let bands = self.raster_bands(id)?;
-        Some(bands.stops().len().saturating_sub(2))
+        Some(self.raster_bands(id)?.colors().len())
     }
 
     /// True if the input of "Polygonize" splits at sea level.
@@ -338,34 +385,103 @@ impl AppState {
 
     /// True if "Polygonize" can run on its input.
     pub fn can_polygonize(&self) -> bool {
-        self.polygonize_input().is_some() && !self.globe.busy()
+        let idle = self.polygonize.job.is_none() && !self.globe.busy();
+        self.polygonize_input().is_some() && idle
     }
 
     /// Runs "Polygonize" from the toolbox, and keeps the result for the
     /// note of the toolbox.
     pub fn run_polygonize(&mut self) {
-        let Some(ids) = self.polygonize() else {
+        if self.polygonize.job.is_some() || self.globe.busy() {
+            return;
+        }
+        let Some(job) = self.start_polygonize() else {
             return;
         };
-        let time = self
-            .polygonize
-            .last
-            .as_ref()
-            .map_or_else(Duration::default, |r| r.time);
-        let names: Vec<String> = (ids.iter())
-            .filter_map(|id| Some(self.doc.layer(*id)?.name.clone()))
-            .collect();
-        self.toolbox_note = Some(format!(
-            "Made {} in {}.",
-            names.join(" and "),
-            time_text(time)
-        ));
+        self.polygonize.job = Some(job);
+        self.toolbox_note = None;
+        if self.headless {
+            self.poll_polygonize(true);
+        }
     }
 
-    /// Makes the polygons of the bands of the input layer, as one undo
-    /// step. The new layers replace the outputs of the last run on the same
-    /// input. Returns the new layers.
+    /// Stops the run of "Polygonize" that the worker does.
+    pub fn cancel_polygonize(&mut self) {
+        if let Some(job) = &self.polygonize.job {
+            job.stop.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// The progress of the run of "Polygonize", from 0 to 1, and its text.
+    /// `None` when no run works.
+    pub fn polygonize_progress(&self) -> Option<(f32, String)> {
+        let job = self.polygonize.job.as_ref()?;
+        let share = job.share();
+        let text = match job.phase() {
+            Phase::Read => "Reading the layer…".to_owned(),
+            Phase::Trace => format!("Tracing the bands… {}%", (share * 100.0).round()),
+            Phase::Make => format!("Making the polygons… {}%", (share * 100.0).round()),
+        };
+        Some((share, text))
+    }
+
+    /// Takes the result of the worker of "Polygonize", if it is done, and
+    /// adds its layers. Call it in each frame. `block`: waits for the
+    /// worker.
+    pub fn poll_polygonize(&mut self, block: bool) {
+        let Some(job) = &self.polygonize.job else {
+            return;
+        };
+        // A stroke that is not done keeps the layers for a later frame.
+        if self.globe.busy() && !block {
+            return;
+        }
+        let result = match block {
+            true => job.rx.recv().ok(),
+            false => match job.rx.try_recv() {
+                Ok(result) => Some(result),
+                Err(mpsc::TryRecvError::Empty) => return,
+                Err(mpsc::TryRecvError::Disconnected) => None,
+            },
+        };
+        let job = self.polygonize.job.take().expect("a job");
+        match result {
+            Some(Ok(Some(layers))) => {
+                let time = job.start.elapsed();
+                let ids = self.add_polygonize_layers(job, layers, time);
+                let names: Vec<String> = (ids.iter())
+                    .filter_map(|id| Some(self.doc.layer(*id)?.name.clone()))
+                    .collect();
+                self.toolbox_note = Some(format!(
+                    "Made {} in {}.",
+                    names.join(" and "),
+                    time_text(time)
+                ));
+                crate::log_file::write(&format!(
+                    "polygonize: {:?}; {}",
+                    time,
+                    crate::log_file::memory()
+                ));
+            }
+            Some(Ok(None)) => self.toolbox_note = Some(STOPPED.to_owned()),
+            Some(Err(e)) => self.toolbox_note = Some(format!("Could not polygonize: {e}")),
+            None => {
+                self.toolbox_note = Some(format!("Could not polygonize: {}", "the run stopped"))
+            }
+        }
+    }
+
+    /// Runs "Polygonize" on its input and waits for the result. Returns the
+    /// new layers.
     pub fn polygonize(&mut self) -> Option<Vec<LayerId>> {
+        let job = self.start_polygonize()?;
+        self.polygonize.job = Some(job);
+        self.poll_polygonize(true);
+        Some(self.polygonize_outputs())
+    }
+
+    /// Starts the worker of "Polygonize" on its input.
+    fn start_polygonize(&mut self) -> Option<Job> {
         let raster = self.polygonize_input()?;
         if self.globe.busy() {
             return None;
@@ -384,41 +500,51 @@ impl AppState {
             (false, false) => format!("{name} polygons"),
         };
         let below = clean(&self.polygonize.below, BATHYMETRY);
-        let sea = bands.sea().filter(|_| split);
-        // The trace reads the whole heightmap. The globe holds it for the
-        // active layer, and the project file holds it for another layer.
-        let loaded;
-        let map = match self.globe.raster_map(raster) {
-            Some(map) => map,
+        let names = Names {
+            above,
+            split: bands.sea().filter(|_| split).map(|s| (s, below)),
+        };
+        // The worker reads the whole heightmap: a snapshot of the tiles that
+        // the globe holds for the active layer, or the tiles of the project
+        // file for another layer.
+        let source = match self.globe.raster_map(raster) {
+            Some(map) => Source::Map(Box::new(map.snapshot())),
             None => {
-                let record = self.doc.project.raster(raster)?;
-                let session = self.session.as_ref()?;
-                loaded = match session.load_map(record) {
-                    Ok(map) => map,
-                    Err(e) => {
-                        self.status = format!("Could not read the raster layer: {e}");
-                        return None;
-                    }
-                };
-                &loaded
+                self.save_edit();
+                let record = self.doc.project.raster(raster)?.clone();
+                let database = self.session.as_ref()?.database().to_path_buf();
+                Source::File(database, record)
             }
         };
-        let start = Instant::now();
-        let layers = outputs(
-            map,
-            &bands,
-            height,
-            self.polygonize.smooth,
-            (&above, sea.map(|s| (s, below.as_str()))),
-        );
-        let time = start.elapsed();
-        // A loaded heightmap shares no tile with the globe, so the snapshot
-        // to compare is of the reduced heightmap.
+        // The snapshot to compare later is of the heightmap that the globe
+        // holds, whole or reduced.
         let held = self
             .globe
             .raster_map(raster)
             .or(self.globe.value_map(raster));
-        let levels = held.unwrap_or(map).snapshot();
+        let levels = held?.snapshot();
+        Some(Job::start(
+            raster,
+            source,
+            Params {
+                bands,
+                height,
+                smooth: self.polygonize.smooth,
+                names,
+            },
+            levels,
+        ))
+    }
+
+    /// Adds the output layers of a run, as one undo step. They replace the
+    /// outputs of the last run on the same input. Returns the new layers.
+    fn add_polygonize_layers(
+        &mut self,
+        job: Job,
+        layers: Vec<Output>,
+        time: Duration,
+    ) -> Vec<LayerId> {
+        let (raster, bands, height) = (job.raster, job.bands, job.height);
         // The new layers take the places of the layers that they replace.
         let replaced: Vec<LayerId> = match &self.polygonize.last {
             Some(run) if run.raster == raster => self.polygonize_outputs(),
@@ -459,12 +585,127 @@ impl AppState {
         self.save_edit();
         self.polygonize.last = Some(Run {
             raster,
-            levels,
+            levels: job.levels,
             bands,
             outputs: ids.clone(),
             time,
         });
-        Some(ids)
+        ids
+    }
+}
+
+/// The note of a run that the user stopped.
+pub const STOPPED: &str = "Stopped.";
+pub const CANCEL: &str = "Cancel";
+
+/// Where the worker gets the heightmap.
+enum Source {
+    Map(Box<Heightmap>),
+    File(PathBuf, vale_store::Raster),
+}
+
+/// The parameters of a run.
+struct Params {
+    bands: Bands,
+    height: bool,
+    smooth: f64,
+    names: Names,
+}
+
+/// The step of a run that the worker does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Phase {
+    Read,
+    Trace,
+    Make,
+}
+
+type JobResult = Result<Option<Vec<Output>>, String>;
+
+/// A run of "Polygonize" on a worker thread.
+pub struct Job {
+    raster: RasterId,
+    bands: Bands,
+    height: bool,
+    levels: Heightmap,
+    start: Instant,
+    rx: mpsc::Receiver<JobResult>,
+    /// The share of the work that is done, in thousandths.
+    done: Arc<AtomicU32>,
+    /// The worker reads the file while this is true.
+    reading: Arc<AtomicBool>,
+    stop: Arc<AtomicBool>,
+}
+
+impl Job {
+    fn start(raster: RasterId, source: Source, params: Params, levels: Heightmap) -> Job {
+        let (tx, rx) = mpsc::sync_channel(1);
+        let done = Arc::new(AtomicU32::new(0));
+        let reading = Arc::new(AtomicBool::new(matches!(source, Source::File(..))));
+        let stop = Arc::new(AtomicBool::new(false));
+        let (bands, height) = (params.bands.clone(), params.height);
+        let worker = {
+            let (done, reading, stop) = (done.clone(), reading.clone(), stop.clone());
+            move || {
+                let map = match source {
+                    Source::Map(map) => *map,
+                    Source::File(database, record) => {
+                        match crate::session::Session::read_map(&database, &record, &stop) {
+                            Ok(Some(map)) => map,
+                            Ok(None) => {
+                                let _ = tx.send(Ok(None));
+                                return;
+                            }
+                            Err(e) => {
+                                let _ = tx.send(Err(e.to_string()));
+                                return;
+                            }
+                        }
+                    }
+                };
+                reading.store(false, Ordering::Relaxed);
+                let progress = |share: f64| {
+                    let share = (share.clamp(0.0, 1.0) * 1000.0) as u32;
+                    done.fetch_max(share, Ordering::Relaxed);
+                };
+                let p = &params;
+                let out = outputs(
+                    &map, &p.bands, p.height, p.smooth, &p.names, &progress, &stop,
+                );
+                let _ = tx.send(Ok(out));
+            }
+        };
+        let spawned = std::thread::Builder::new()
+            .name("vale-polygonize".to_string())
+            .spawn(worker);
+        // With no thread, the channel has no sender, and the job fails.
+        drop(spawned);
+        Job {
+            raster,
+            bands,
+            height,
+            levels,
+            start: Instant::now(),
+            rx,
+            done,
+            reading,
+            stop,
+        }
+    }
+
+    /// The share of the work that is done, from 0 to 1.
+    pub fn share(&self) -> f32 {
+        self.done.load(Ordering::Relaxed) as f32 / 1000.0
+    }
+
+    pub fn phase(&self) -> Phase {
+        if self.reading.load(Ordering::Relaxed) {
+            Phase::Read
+        } else if f64::from(self.share()) < TRACE_SHARE {
+            Phase::Trace
+        } else {
+            Phase::Make
+        }
     }
 }
 

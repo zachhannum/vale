@@ -12,7 +12,8 @@ use super::{TOOLBOX, filter, panels, theme};
 use crate::ui::AppState;
 use crate::ui::orient::{self, ORIENT_ABOUT, ORIENT_DOWNHILL};
 use crate::ui::polygonize::{
-    self, ABOVE, BELOW, INPUT, LIMITS, NEEDS_RASTER, POLYGONIZE, POLYGONIZE_ABOUT, SMOOTH, SPLIT,
+    self, ABOVE, BANDS, BELOW, CANCEL, INPUT, NEEDS_RASTER, POLYGONIZE, POLYGONIZE_ABOUT, SMOOTH,
+    SPLIT,
 };
 
 /// The hint of the search field of the grid.
@@ -321,8 +322,8 @@ fn polygonize_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Contr
     if widgets::open_row(ui, controls, INPUT, &input_name).clicked() {
         state.pad.toolbox.page = Some(ToolPage::PolygonizeInput);
     }
-    if let Some(limits) = state.polygonize_limits() {
-        widgets::detail_row(ui, LIMITS, &format!("{limits}, from the layer"));
+    if let Some(bands) = state.polygonize_bands() {
+        widgets::detail_row(ui, BANDS, &format!("{bands}, from the color stops"));
     }
     let smooth = Number::new(SMOOTH, state.polygonize.smooth, 0.0..=1.0)
         .shown(100.0, "%")
@@ -347,6 +348,16 @@ fn polygonize_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Contr
         ui.label(egui::RichText::new(text).color(theme::MUTE));
     }
     ui.add_space(12.0);
+    if let Some((share, text)) = state.polygonize_progress() {
+        progress_bar(ui, share);
+        ui.add_space(6.0);
+        ui.label(egui::RichText::new(text).color(theme::MUTE));
+        ui.add_space(8.0);
+        if widgets::button_row(ui, controls, CANCEL, true).clicked() {
+            state.cancel_polygonize();
+        }
+        return;
+    }
     if widgets::button_row(ui, controls, RUN, state.can_polygonize()).clicked() {
         state.run_polygonize();
     }
@@ -358,6 +369,20 @@ fn polygonize_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Contr
     if let Some(note) = note {
         ui.label(egui::RichText::new(note).color(theme::MUTE));
     }
+}
+
+/// The height of the bar of the progress of a run.
+const PROGRESS_HEIGHT: f32 = 6.0;
+
+/// A bar that fills from the left with the share of the work that is done.
+fn progress_bar(ui: &mut egui::Ui, share: f32) {
+    let size = vec2(ui.available_width(), PROGRESS_HEIGHT);
+    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+    let radius = PROGRESS_HEIGHT / 2.0;
+    ui.painter().rect_filled(rect, radius, theme::raise());
+    let mut fill = rect;
+    fill.set_width(rect.width() * share.clamp(0.0, 1.0));
+    ui.painter().rect_filled(fill, radius, theme::ACCENT);
 }
 
 fn input_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {

@@ -18889,3 +18889,186 @@ fn polygonize_reads_the_whole_heightmap_of_a_large_layer() {
     let found = bands_at(state, &[*topo], [middle.0, middle.1]);
     assert_eq!(found, [500.0]);
 }
+
+/// A level of value noise with coasts at each scale, from the face and the
+/// texel, with no trigonometry, so a large map paints fast.
+fn noise_level(face: usize, x: usize, y: usize, n: usize) -> u16 {
+    let hash = |a: u64, b: u64, c: u64| {
+        let mut h = a.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ b.wrapping_mul(0xc2b2_ae3d_27d4_eb4f);
+        h ^= c.wrapping_mul(0x1656_67b1_9e37_79f9);
+        h ^= h >> 29;
+        h = h.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        ((h >> 40) as f64) / (1u64 << 24) as f64 - 0.5
+    };
+    let mut s = 0.0;
+    let mut cell = n / 4;
+    let mut amp = 1.0;
+    while cell >= 4 {
+        let (gx, gy) = (x / cell, y / cell);
+        let (fx, fy) = (
+            (x % cell) as f64 / cell as f64,
+            (y % cell) as f64 / cell as f64,
+        );
+        let at = |i: usize, j: usize| {
+            hash(
+                face as u64 * 7 + cell as u64,
+                (gx + i) as u64,
+                (gy + j) as u64,
+            )
+        };
+        let top = at(0, 0) * (1.0 - fx) + at(1, 0) * fx;
+        let bottom = at(0, 1) * (1.0 - fx) + at(1, 1) * fx;
+        s += amp * (top * (1.0 - fy) + bottom * fy);
+        cell /= 2;
+        amp *= 0.6;
+    }
+    meters_to_level(s * 9000.0)
+}
+
+#[test]
+#[ignore]
+fn manual_polygonize_a_painted_world_of_8192_pixel_faces() {
+    use vale_app::ui::RasterSpec;
+    let mut h = empty_pad(BOARDS[1]);
+    let state = h.state_mut();
+    let n = 8192;
+    let height = state.add_raster(RasterSpec::height("Height", n)).unwrap();
+    let map = state.globe.raster_map_mut(height).unwrap();
+    let start = std::time::Instant::now();
+    for face in 0..vale_terrain::FACES {
+        let levels: Vec<u16> = (0..n * n)
+            .map(|i| noise_level(face, i % n, i / n, n))
+            .collect();
+        map.store_face(face, &levels);
+    }
+    eprintln!(
+        "paint {:?}, heap {} MB",
+        start.elapsed(),
+        vale_app::log_file::heap_bytes() >> 20
+    );
+    let peak = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let watch = {
+        let (peak, done) = (peak.clone(), done.clone());
+        std::thread::spawn(move || {
+            while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                peak.fetch_max(
+                    vale_app::log_file::heap_bytes(),
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        })
+    };
+    let status = || std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+    let line = |key: &str| {
+        status()
+            .lines()
+            .find(|l| l.starts_with(key))
+            .unwrap_or("")
+            .to_owned()
+    };
+    // The painting above leaves its peak, so the peak of the run starts here.
+    let _ = std::fs::write("/proc/self/clear_refs", "5");
+    eprintln!("before: {} {}", line("VmRSS"), line("VmHWM"));
+    let start = std::time::Instant::now();
+    let layers = h.state_mut().polygonize().unwrap();
+    eprintln!("polygonize {:?}", start.elapsed());
+    eprintln!("after: {} {}", line("VmRSS"), line("VmHWM"));
+    let start = std::time::Instant::now();
+    h.run_steps(2);
+    done.store(true, std::sync::atomic::Ordering::Relaxed);
+    watch.join().unwrap();
+    eprintln!("two frames {:?}", start.elapsed());
+    let points: usize = (layers.iter())
+        .flat_map(|id| &h.state().doc.layer(*id).unwrap().features)
+        .map(|f| match &f.geometry {
+            vale_store::Geometry::Polygons(p) => p.iter().flatten().map(Vec::len).sum::<usize>(),
+            _ => 0,
+        })
+        .sum();
+    eprintln!(
+        "{points} points, peak heap {} MB",
+        peak.load(std::sync::atomic::Ordering::Relaxed) >> 20
+    );
+}
+
+#[test]
+fn polygonize_shows_its_progress_and_stops_on_cancel() {
+    use vale_app::globe::DISPLAY_CAP;
+    use vale_app::ui::RasterSpec;
+    use vale_app::ui::pad::toolbox::RUN;
+    use vale_app::ui::polygonize::{BANDS, CANCEL, STOPPED};
+    let mut h = empty_pad(BOARDS[1]);
+    let state = h.state_mut();
+    let n = 2 * DISPLAY_CAP as usize;
+    let height = state.add_raster(RasterSpec::height("Height", n)).unwrap();
+    // The trace goes over each cell of a face, so a plain map takes as long
+    // as a painted one.
+    let map = state.globe.raster_map_mut(height).unwrap();
+    map.fill(meters_to_level(-3000.0));
+    h.run_steps(2);
+    open_polygonize(&mut h);
+    assert!(h.query_by_label_contains(BANDS).is_some());
+    let before = h.state().doc.project.layers().len();
+    // The run does not wait for the worker outside of the tests.
+    h.state_mut().headless = false;
+    tap(&mut h, RUN);
+    h.state_mut().headless = true;
+    assert!(h.state().polygonize.job.is_some());
+    assert!(h.state().polygonize_progress().is_some());
+    h.run_steps(1);
+    assert!(control(&h, RUN).is_none());
+    check_controls(&h, "the page of a run of Polygonize");
+    screenshot::save(&mut h, "pad-polygonize-progress");
+    tap(&mut h, CANCEL);
+    h.state_mut().poll_polygonize(true);
+    h.run_steps(2);
+    assert!(h.state().polygonize.job.is_none());
+    assert_eq!(h.state().doc.project.layers().len(), before);
+    assert!(h.query_by_label(STOPPED).is_some());
+    assert!(control(&h, RUN).is_some());
+}
+
+#[test]
+fn polygonize_reads_a_layer_that_is_not_active_from_the_project_file() {
+    use vale_app::globe::DISPLAY_CAP;
+    use vale_app::ui::RasterSpec;
+    use vale_app::ui::polygonize::TOPOGRAPHY;
+    use vale_terrain::math::{dir_to_lonlat, lonlat_to_dir};
+    let mut h = empty_pad(BOARDS[1]);
+    let dir = tempfile::tempdir().unwrap();
+    let state = h.state_mut();
+    state.session = Some(Session::open(&dir.path().join("w.gpkg"), &mut state.doc).unwrap());
+    let n = 2 * DISPLAY_CAP as usize;
+    let height = state.add_raster(RasterSpec::height("Height", n)).unwrap();
+    let map = state.globe.raster_map_mut(height).unwrap();
+    map.fill(meters_to_level(-3000.0));
+    let (face, x, y) = map.texel_of(lonlat_to_dir(10.0, 5.0));
+    for dy in 0..8 {
+        for dx in 0..8 {
+            map.set(face, x + dx, y + dy, meters_to_level(900.0));
+        }
+    }
+    let middle = dir_to_lonlat(map.texel_dir(face, x + 4, y + 4));
+    h.run_steps(2);
+    h.state_mut().save_waiting().unwrap();
+    let other = h
+        .state_mut()
+        .add_raster(RasterSpec::height("Other", 64))
+        .unwrap();
+    let state = h.state_mut();
+    state.select(Some(LayerRef::Raster(other)));
+    state.polygonize.raster = Some(height);
+    h.run_steps(4);
+    assert!(
+        h.state().globe.raster_map(height).is_none(),
+        "the globe holds the layer"
+    );
+    let state = h.state_mut();
+    let layers = state.polygonize().unwrap();
+    let topo = (layers.iter())
+        .find(|id| state.doc.layer(**id).unwrap().name == TOPOGRAPHY)
+        .unwrap();
+    assert_eq!(bands_at(state, &[*topo], [middle.0, middle.1]), [500.0]);
+}

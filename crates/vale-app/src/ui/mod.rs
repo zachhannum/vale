@@ -4757,6 +4757,10 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         ui.ctx().request_repaint();
     }
     state.poll_export();
+    state.poll_polygonize(false);
+    if state.polygonize.job.is_some() {
+        ui.ctx().request_repaint();
+    }
     state.poll_atlas_export(Some(ui));
     export_thumbs::poll(ui, state);
     if state.atlas_export.is_some() {

@@ -1559,6 +1559,13 @@ fn polygonize_form(ui: &mut egui::Ui, state: &mut AppState) {
         if let Some(names) = &stale {
             ui.weak(polygonize::stale_text(names));
         }
+        if let Some((share, text)) = state.polygonize_progress() {
+            ui.add(egui::ProgressBar::new(share).text(text));
+            if ui.button(polygonize::CANCEL).clicked() {
+                state.cancel_polygonize();
+            }
+            return;
+        }
         let run = egui::Button::new(RUN);
         if ui.add_enabled(state.can_polygonize(), run).clicked() {
             state.run_polygonize();

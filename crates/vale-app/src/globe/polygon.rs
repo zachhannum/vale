@@ -772,10 +772,14 @@ pub(super) fn to_polygons_many(rings: &[Vec<PathVertex>]) -> Vec<Vec<Vec<LonLat>
 }
 
 /// The polygons in longitude and latitude of the area on the left of simple
-/// rings on the sphere that do not cross each other.
-pub fn sphere_polygons(rings: &[Vec<V3>]) -> Vec<Vec<Vec<LonLat>>> {
-    let rings: Vec<Vec<PathVertex>> = (rings.iter())
-        .map(|r| r.iter().map(|&d| PathVertex::Free(d)).collect())
+/// rings on the sphere that do not cross each other. A ring with the flag
+/// goes in reverse.
+pub fn sphere_polygons<'a>(rings: impl Iterator<Item = (&'a [V3], bool)>) -> Vec<Vec<Vec<LonLat>>> {
+    let rings: Vec<Vec<PathVertex>> = rings
+        .map(|(r, reverse)| match reverse {
+            false => r.iter().map(|&d| PathVertex::Free(d)).collect(),
+            true => r.iter().rev().map(|&d| PathVertex::Free(d)).collect(),
+        })
         .collect();
     to_polygons_many(&rings)
 }
