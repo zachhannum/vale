@@ -32,10 +32,6 @@ const NEAR_ROOM: usize = 8;
 /// The rain of a cell is a blend of the 4 places around it.
 const RAIN_STRIDE: usize = 8;
 
-/// Hillslope creep moves a cell above the mean of its neighbors toward the
-/// mean. The creep of a step is this number times the rate of the step.
-const CREEP: f64 = 0.1;
-
 /// The rough ground of an uplift lowers the rise of a cell by this part of
 /// the rise at most. Its features are about `ROUGH_CELLS` cells in size.
 const ROUGH: f64 = 0.3;
@@ -540,8 +536,6 @@ pub struct Erosion {
     /// The rain of each cell, from the heights of the first step after a
     /// change of `rain`. It is empty when each cell gets the same rain.
     rain_cells: Vec<f32>,
-    /// The creep of a step for each unit of its rate.
-    creep: f64,
 }
 
 /// The effect of the brushes of one step.
@@ -695,7 +689,6 @@ impl Erosion {
             channel: ChannelShape::default(),
             rain: Rain::default(),
             rain_cells: Vec::new(),
-            creep: CREEP,
         }
     }
 
@@ -1016,14 +1009,6 @@ impl Erosion {
         }
     }
 
-    /// Calls `f` with no creep in the steps.
-    pub(crate) fn without_creep<T>(&mut self, f: impl FnOnce(&mut Erosion) -> T) -> T {
-        let creep = std::mem::replace(&mut self.creep, 0.0);
-        let result = f(self);
-        self.creep = creep;
-        result
-    }
-
     /// The width of a cell at the center of a face, in radians.
     fn cell_angle(&self) -> f64 {
         match &self.cells {
@@ -1239,36 +1224,6 @@ impl Erosion {
             let new = f64::from(below) + f64::from(height - below) / (1.0 + power);
             let new = (new as f32).clamp(below, height);
             self.heights[i] = limits.apply(f64::from(height), f64::from(new)) as f32;
-        }
-        // Hillslope creep lowers each cell above the mean of its neighbors
-        // toward the mean, so the crests round. A step only lowers the
-        // texels, so the creep does not raise a cell. A cell stays at or
-        // above its receiver.
-        let mut creeps = Vec::new();
-        for &at in &flow.order {
-            let i = cell(at);
-            let to = flow.receiver[at as usize];
-            if weights[i] <= 0.0 || to == OUT {
-                continue;
-            }
-            let below = f64::from(self.heights[cell(to)]);
-            let height = f64::from(self.heights[i]);
-            let (sum, count) = self
-                .neighbors(i)
-                .iter()
-                .filter(|&&j| j != NONE)
-                .fold((0.0, 0.0), |(s, c), &j| {
-                    (s + f64::from(self.heights[j as usize]), c + 1.0)
-                });
-            if count == 0.0 || height <= below || height <= sum / count {
-                continue;
-            }
-            let c = self.creep * rate * f64::from(weights[i]);
-            let new = (height - (height - sum / count) * c / (1.0 + c)).max(below);
-            creeps.push((i, limits.apply(height, new) as f32));
-        }
-        for (i, height) in creeps {
-            self.heights[i] = height;
         }
         if place.is_none() {
             self.flow = Some(flow);
@@ -2004,74 +1959,6 @@ mod tests {
         };
         // Two equal runs give equal levels.
         assert!(run() == run());
-    }
-
-    /// The levels of a ridge on face 0 along `x`, with its crest at row 24,
-    /// after `count` steps of a brush over it, with or without creep.
-    fn eroded_ridge(creep: bool, count: usize) -> (usize, Vec<u16>) {
-        let m = 48;
-        let heights = from_cells(m, |face, x, y| {
-            let across = (y as f64 - 24.0).abs();
-            if face != 0 || !(8..m - 8).contains(&x) || across > 10.4 {
-                return OCEAN;
-            }
-            2500.0 + 20.0 * x as f64 - 200.0 * across
-        });
-        let mut erosion = Erosion::global(&heights, 8192);
-        if !creep {
-            erosion.creep = 0.0;
-        }
-        let brush = ErodeBrush {
-            center: cell_dir(m, 0, 24, 24),
-            radius: 0.6,
-            hardness: 1.0,
-            flow: 1.0,
-        };
-        for _ in 0..count {
-            erosion.step(&[brush], 0.5);
-            assert_eq!(pit_cells(&erosion), 0);
-        }
-        (m, erosion.levels.clone())
-    }
-
-    #[test]
-    fn creep_rounds_the_crest_of_a_ridge_and_keeps_the_valley_floor() {
-        // The steepness of the crest is the mean drop from the crest to the
-        // rows next to it.
-        let crest = |(m, levels): &(usize, Vec<u16>)| {
-            let drops = (16..32).map(|x| {
-                let at = |y: usize| f64::from(levels[y * m + x]);
-                at(24) - 0.5 * (at(23) + at(25))
-            });
-            drops.sum::<f64>() / 16.0
-        };
-        let (before, without, with) = (
-            eroded_ridge(false, 0),
-            eroded_ridge(false, 20),
-            eroded_ridge(true, 20),
-        );
-        assert!(
-            crest(&with) < 0.8 * crest(&without),
-            "{} {}",
-            crest(&with),
-            crest(&without)
-        );
-        assert!(crest(&without) <= crest(&before) + 1.0);
-        // The lowest land under the brush is the floor of the valley.
-        let floor = |(m, levels): &(usize, Vec<u16>)| {
-            let cells = (14..34).flat_map(|y| (16..32).map(move |x| y * m + x));
-            cells.map(|i| levels[i]).min().unwrap()
-        };
-        let (a, b) = (floor(&without), floor(&with));
-        assert!(a.abs_diff(b) <= 20, "{a} {b}");
-    }
-
-    #[test]
-    fn creep_does_not_raise_a_cell() {
-        let (m, before) = eroded_ridge(false, 0);
-        let (_, after) = eroded_ridge(true, 10);
-        assert!(before.iter().zip(&after).all(|(b, a)| a <= b));
-        assert_eq!(after.len(), 6 * m * m);
     }
 
     /// The levels after an uplift of flat land with `seed`, the drops of a

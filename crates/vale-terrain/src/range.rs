@@ -346,9 +346,7 @@ pub fn erode_range(
     // A slope with no valley erodes less with smaller cells, so the rate
     // grows with the number of cells in the radius.
     let rate = amount * RANGE_ERODE_RATE * (cells / 16.0).sqrt();
-    // The rivers leave the belt through the saddles between the ridges, so
-    // the steps have no creep.
-    erosion.without_creep(|erosion| erosion.steps(&brushes, rate, RANGE_STEPS))
+    erosion.steps(&brushes, rate, RANGE_STEPS)
 }
 
 #[cfg(test)]
