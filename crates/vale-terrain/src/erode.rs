@@ -33,11 +33,11 @@ const NEAR_ROOM: usize = 8;
 const RAIN_STRIDE: usize = 8;
 
 /// The rough ground of an uplift lowers the rise of a cell by this part of
-/// the rise at most. With rough ground, a step lowers the stream power of a
-/// cell by this part at most. The features of the rough ground are about
-/// `ROUGH_CELLS` cells in size.
+/// the rise at most. With rough ground, a step changes the stream power of a
+/// cell by this part at most, up or down. The largest features of the rough
+/// ground are about `ROUGH_CELLS` cells in size.
 const ROUGH: f64 = 0.3;
-const ROUGH_CELLS: f64 = 4.0;
+const ROUGH_CELLS: f64 = 16.0;
 
 const SALT_ROUGH: u32 = 0x3c6e_f372;
 
@@ -1267,7 +1267,7 @@ impl Erosion {
             let area = f64::from(flow.area[at as usize]) / self.min_area;
             let mut power = rate * f64::from(weights[i]) * area.sqrt() / length;
             if self.rough_seed.is_some() {
-                power *= 1.0 - ROUGH * f64::from(self.rough[i]);
+                power *= 1.0 + ROUGH * (1.0 - 2.0 * f64::from(self.rough[i]));
             }
             let new = f64::from(below) + f64::from(height - below) / (1.0 + power);
             let new = (new as f32).clamp(below, height);
@@ -2052,14 +2052,21 @@ mod tests {
         assert!(a != uplifted(8).0);
     }
 
-    /// The drops of one step on a valley, with the rough ground of `seed`.
+    /// The drops of one step on a slope of face 0, with the rough ground of
+    /// `seed`. The slope is about 7 features of the rough ground wide.
     fn rough_drops(seed: Option<u32>) -> Vec<u16> {
-        let m = 48;
-        let mut erosion = Erosion::global(&strip(m, 40.0), 8192);
+        let m = 128;
+        let heights = from_cells(m, |face, x, y| {
+            if face != 0 || !(8..m - 8).contains(&x) || !(8..m - 8).contains(&y) {
+                return OCEAN;
+            }
+            100.0 + 20.0 * x as f64 + 5.0 * (y as f64 - 64.0).abs()
+        });
+        let mut erosion = Erosion::global(&heights, 8192);
         erosion.set_rough(seed);
         let brush = ErodeBrush {
-            center: cell_dir(m, 0, 24, 24),
-            radius: 0.6,
+            center: cell_dir(m, 0, 64, 64),
+            radius: 0.7,
             hardness: 1.0,
             flow: 1.0,
         };
@@ -2067,16 +2074,19 @@ mod tests {
     }
 
     #[test]
-    fn rough_ground_lowers_the_stream_power_of_a_step_by_a_part_of_it() {
+    fn rough_ground_changes_the_stream_power_up_and_down_and_keeps_the_depth() {
         let (plain, rough) = (rough_drops(None), rough_drops(Some(7)));
         assert!(rough_drops(Some(7)) == rough);
-        let mut less = 0;
+        assert!(rough != rough_drops(Some(8)));
+        let (mut more, mut less) = (0, 0);
         for (&a, &b) in plain.iter().zip(&rough) {
-            assert!(b <= a, "{b} over {a}");
+            more += usize::from(b > a);
             less += usize::from(b < a);
         }
-        assert!(less > 20, "{less}");
-        assert!(rough != rough_drops(Some(8)));
+        assert!(more > 10 && less > 10, "{more} more, {less} less");
+        let sum = |drops: &[u16]| drops.iter().map(|&d| f64::from(d)).sum::<f64>();
+        let ratio = sum(&rough) / sum(&plain);
+        assert!((0.8..1.2).contains(&ratio), "{ratio}");
     }
 
     #[test]
