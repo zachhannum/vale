@@ -3151,7 +3151,8 @@ fn an_update_after_stamps_matches_a_full_build() {
     assert!(after == cpu_levels(&read));
 }
 
-/// A shader that writes `field` at a list of points, one pixel each.
+/// A shader that writes `field` and its slope at a list of points, one pixel
+/// each.
 const FIELD_TEST_WGSL: &str = "
 struct Params {
     n: u32,
@@ -3171,7 +3172,7 @@ fn vs_main(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
 @fragment
 fn fs_main(@builtin(position) at: vec4<f32>) -> @location(0) vec4<f32> {
     let p = points[u32(at.x)];
-    return vec4<f32>(field(p.xyz, params.n, p.w, params.max_level).x, 0.0, 0.0, 1.0);
+    return vec4<f32>(field(p.xyz, params.n, p.w, params.max_level), 1.0);
 }
 ";
 
@@ -3200,12 +3201,13 @@ fn fragment_buffer(binding: u32, ty: wgpu::BufferBindingType) -> wgpu::BindGroup
 }
 
 /// The values of `field` in the shader at each point: a direction and a lod.
+/// Each value has the slope after it, as `field` gives it.
 fn shader_field(
     gpu: &Gpu,
     tiles: &GpuTiles,
     pyramid: &GpuPyramid,
     points: &[[f32; 4]],
-) -> Vec<f32> {
+) -> Vec<[f32; 3]> {
     let device = &gpu.device;
     let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: None,
@@ -3254,7 +3256,7 @@ fn shader_field(
         ],
         immediate_size: 0,
     });
-    let format = wgpu::TextureFormat::R32Float;
+    let format = wgpu::TextureFormat::Rgba32Float;
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: None,
         layout: Some(&pipeline_layout),
@@ -3293,7 +3295,7 @@ fn shader_field(
     });
     let view = target.create_view(&Default::default());
     let row_bytes =
-        (points.len() * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize);
+        (points.len() * 16).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize);
     let out = device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
         size: row_bytes as u64,
@@ -3345,8 +3347,13 @@ fn shader_field(
         .expect("the readback runs")
         .expect("the buffer maps");
     let bytes = out.get_mapped_range(..).expect("the buffer is mapped");
-    let values = bytes[..points.len() * 4].as_chunks::<4>().0;
-    values.iter().map(|b| f32::from_le_bytes(*b)).collect()
+    let values = bytes[..points.len() * 16].as_chunks::<16>().0;
+    values
+        .iter()
+        .map(|b| {
+            std::array::from_fn(|i| f32::from_le_bytes(b[4 * i..4 * i + 4].try_into().unwrap()))
+        })
+        .collect()
 }
 
 /// Directions at the face middles, on and next to the face edges, at and
@@ -3404,20 +3411,22 @@ fn the_shader_field_matches_the_cpu_field() {
     assert_fields_match(&points, &values, &Pyramid::new(&cpu));
 }
 
-/// Checks that the shader field at each point is within 1e-3 of the range of
-/// the map from the CPU field.
-fn assert_fields_match(points: &[[f32; 4]], values: &[f32], field: &Pyramid) {
+/// Checks that the shader field and its slope at each point are within 1e-3
+/// of the range of the map from the CPU field.
+fn assert_fields_match(points: &[[f32; 4]], values: &[[f32; 3]], field: &Pyramid) {
     let all: Vec<u16> = (0..FACES).flat_map(|f| field.face(0, f).to_vec()).collect();
     let (low, high) = (all.iter().min().unwrap(), all.iter().max().unwrap());
     let range = f64::from(high - low) / 65535.0;
     for (point, value) in points.iter().zip(values) {
         let d = [point[0], point[1], point[2]].map(f64::from);
-        let expected = field.field(d, f64::from(point[3]));
-        let difference = (f64::from(*value) - expected).abs();
-        assert!(
-            difference <= 1e-3 * range,
-            "{point:?}: the shader gives {value}, the CPU gives {expected}"
-        );
+        let expected = field.field_slope(d, f64::from(point[3]));
+        for (value, expected) in value.iter().zip(expected) {
+            let difference = (f64::from(*value) - expected).abs();
+            assert!(
+                difference <= 1e-3 * range,
+                "{point:?}: the shader gives {value}, the CPU gives {expected}"
+            );
+        }
     }
 }
 

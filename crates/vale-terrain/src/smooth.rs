@@ -4,7 +4,8 @@
 //! Level 0 is the map. Each texel of level `k` is the rounded mean of a 2 by
 //! 2 block of level `k - 1`. A level halves the face size and rounds down, as
 //! the mip levels of a texture do. `field.wgsl` reads the same values on the
-//! GPU.
+//! GPU. The value at a place is the uniform cubic B-spline of the 4 by 4
+//! texels around it.
 
 use std::collections::HashMap;
 use std::f64::consts::{FRAC_PI_4, PI};
@@ -124,15 +125,22 @@ impl Pyramid {
 }
 
 impl Pyramid {
-    /// The bilinear value at a direction at one level, from 0 to 1.
-    pub fn bilinear(&self, level: u32, d: V3) -> f64 {
-        Levels::bilinear(self, level, d)
+    /// The value at a direction at one level, from 0 to 1, and its slope.
+    /// See `Levels::spline`.
+    pub fn spline(&self, level: u32, d: V3) -> [f64; 3] {
+        Levels::spline(self, level, d)
     }
 
     /// The value that the display shows at a direction, from 0 to 1. See
     /// `Levels::field`.
     pub fn field(&self, d: V3, lod: f64) -> f64 {
         Levels::field(self, d, lod)
+    }
+
+    /// The value that the display shows at a direction, and its slope. See
+    /// `Levels::field_slope`.
+    pub fn field_slope(&self, d: V3, lod: f64) -> [f64; 3] {
+        Levels::field_slope(self, d, lod)
     }
 }
 
@@ -163,8 +171,10 @@ pub(crate) trait Levels {
         f64::from(self.get(level, face, x as usize, y as usize)) / 65535.0
     }
 
-    /// The texel of the next face that touches a texel on a face edge. `x`
-    /// or `y` is one texel past the face.
+    /// The texel of the next face at a texel past a face edge. `x` or `y`
+    /// is one or two texels past the face. The texel one step past the face
+    /// is the texel of the next face that touches the edge there, and the
+    /// texel two steps past is the texel after it, away from the edge.
     fn across(&self, level: u32, face: usize, x: i64, y: i64) -> f64 {
         let m = i64::from(level_size(self.face_size(), level));
         let flat_at = |i: i64| {
@@ -176,23 +186,30 @@ pub(crate) trait Levels {
         p[axis] = 1.0 - 2.0 * (face % 2) as f64;
         p[(axis + 1) % 3] = flat_at(x);
         p[(axis + 2) % 3] = flat_at(y);
-        let next = if y < 0 || y >= m {
-            (axis + 2) % 3
+        let (next, past) = if y < 0 || y >= m {
+            ((axis + 2) % 3, y)
         } else {
-            (axis + 1) % 3
+            ((axis + 1) % 3, x)
         };
+        // The number of steps past the face, after the first.
+        let extra = if past < 0 { -past - 1 } else { past - m };
         let to = next * 2 + usize::from(p[next] < 0.0);
-        let index = |f: f64| {
+        let index = |i: usize| {
+            let f = p[(next + i) % 3];
             let s = (f / p[next].abs()).atan() / FRAC_PI_4;
-            (((s * 0.5 + 0.5) * m as f64).floor() as i64).clamp(0, m - 1)
+            let c = (((s * 0.5 + 0.5) * m as f64).floor() as i64).clamp(0, m - 1);
+            // The axis of this face goes away from the edge on the next face.
+            if (next + i) % 3 == axis {
+                (c - extra * p[axis] as i64).clamp(0, m - 1)
+            } else {
+                c
+            }
         };
-        let (cx, cy) = (index(p[(next + 1) % 3]), index(p[(next + 2) % 3]));
-        self.load(level, to, cx, cy)
+        self.load(level, to, index(1), index(2))
     }
 
-    /// The level of a texel, from 0 to 1. A texel one step past the face
-    /// comes from the next face, and a texel past a cube corner is the mean
-    /// of the three corner texels.
+    /// The level of a texel, from 0 to 1. A texel one or two steps past the
+    /// face comes from the next face.
     fn texel(&self, level: u32, face: usize, x: i64, y: i64) -> f64 {
         let last = i64::from(level_size(self.face_size(), level)) - 1;
         let (cx, cy) = (x.clamp(0, last), y.clamp(0, last));
@@ -200,50 +217,111 @@ pub(crate) trait Levels {
             return self.load(level, face, x, y);
         }
         if x != cx && y != cy {
-            let sum = self.load(level, face, cx, cy)
-                + self.across(level, face, x, cy)
-                + self.across(level, face, cx, y);
+            // Three faces meet at a cube corner, so no texel is there. A
+            // texel `kx` and `ky` steps past the corner is the mean of the
+            // texel `kx` and `ky` steps in from the corner and of that texel
+            // turned a quarter turn each way, so each face finds the same
+            // values near the corner.
+            let kx = if x < 0 { -x } else { x - last };
+            let ky = if y < 0 { -y } else { y - last };
+            let inside = |i: i64, k: i64| (if i < 0 { k - 1 } else { last + 1 - k }).clamp(0, last);
+            let past = |i: i64, k: i64| if i < 0 { -k } else { last + k };
+            let sum = self.load(level, face, inside(x, kx), inside(y, ky))
+                + self.across(level, face, inside(x, ky), past(y, kx))
+                + self.across(level, face, past(x, ky), inside(y, kx));
             return sum / 3.0;
         }
         self.across(level, face, x, y)
     }
 
-    /// The bilinear value at a direction at one level, from 0 to 1.
-    fn bilinear(&self, level: u32, d: V3) -> f64 {
+    /// The value at a direction at one level, from 0 to 1, and its change
+    /// across one texel of that level along the x and the y axis of the
+    /// face. The value is the uniform cubic B-spline of the 4 by 4 texels
+    /// around the place, and the slope is the derivative of the same spline.
+    fn spline(&self, level: u32, d: V3) -> [f64; 3] {
         let m = f64::from(level_size(self.face_size(), level));
         let (face, a, b) = face_of(d);
         let f = [
             (warp(a) * 0.5 + 0.5) * m - 0.5,
             (warp(b) * 0.5 + 0.5) * m - 0.5,
         ];
-        let (x, y) = (f[0].floor() as i64, f[1].floor() as i64);
+        let (x, y) = (f[0].floor() as i64 - 1, f[1].floor() as i64 - 1);
         let (tx, ty) = (f[0] - f[0].floor(), f[1] - f[1].floor());
-        let h00 = self.texel(level, face, x, y);
-        let h10 = self.texel(level, face, x + 1, y);
-        let h01 = self.texel(level, face, x, y + 1);
-        let h11 = self.texel(level, face, x + 1, y + 1);
-        let mix = |a: f64, b: f64, t: f64| a + (b - a) * t;
-        mix(mix(h00, h10, tx), mix(h01, h11, tx), ty)
+        let (wx, sx) = (spline_weights(tx), spline_slopes(tx));
+        let (wy, sy) = (spline_weights(ty), spline_slopes(ty));
+        let rows: [[f64; 4]; 4] = std::array::from_fn(|r| {
+            std::array::from_fn(|c| self.texel(level, face, x + c as i64, y + r as i64))
+        });
+        // The sum is of the differences from one texel, as in `field.wgsl`.
+        let base = rows[1][1];
+        let mut h = [base, 0.0, 0.0];
+        for (r, row) in rows.iter().enumerate() {
+            let dot = |w: [f64; 4]| (0..4).map(|c| w[c] * (row[c] - base)).sum::<f64>();
+            let v = dot(wx);
+            h[0] += wy[r] * v;
+            h[1] += wy[r] * dot(sx);
+            h[2] += sy[r] * v;
+        }
+        h
+    }
+
+    /// `spline` at a level, with the slope across one texel of level 0.
+    fn level_spline(&self, level: u32, d: V3) -> [f64; 3] {
+        let [h, sx, sy] = self.spline(level, d);
+        let scale = f64::from(1u32 << level);
+        [h, sx / scale, sy / scale]
     }
 
     /// The value that the display shows at a direction, from 0 to 1. A `lod`
-    /// of 0 or less is the bilinear map. Between two whole levels, the value
-    /// is the blend of the bilinear values of both. A `lod` past the
-    /// coarsest level is that level.
+    /// of 0 or less is the spline of the map. Between two whole levels, the
+    /// value is the blend of the splines of both. A `lod` past the coarsest
+    /// level is that level.
     fn field(&self, d: V3, lod: f64) -> f64 {
+        self.field_slope(d, lod)[0]
+    }
+
+    /// `field`, and its slope across one texel of level 0, as in
+    /// `field.wgsl`.
+    fn field_slope(&self, d: V3, lod: f64) -> [f64; 3] {
         if lod.is_nan() || lod <= 0.0 {
-            return self.bilinear(0, d);
+            return self.spline(0, d);
         }
         let top = self.max_level();
         let lod = lod.min(f64::from(top));
         let k = lod.floor() as u32;
         if k >= top {
-            return self.bilinear(top, d);
+            return self.level_spline(top, d);
         }
         let t = lod - f64::from(k);
-        let a = self.bilinear(k, d);
-        a + (self.bilinear(k + 1, d) - a) * t
+        let a = self.level_spline(k, d);
+        let b = self.level_spline(k + 1, d);
+        std::array::from_fn(|i| a[i] + (b[i] - a[i]) * t)
     }
+}
+
+/// The weights of the uniform cubic B-spline at `t` from 0 to 1, for the
+/// texels at -1, 0, 1, and 2.
+fn spline_weights(t: f64) -> [f64; 4] {
+    let s = 1.0 - t;
+    let (t2, t3) = (t * t, t * t * t);
+    [
+        s * s * s / 6.0,
+        (3.0 * t3 - 6.0 * t2 + 4.0) / 6.0,
+        (3.0 * (t + t2 - t3) + 1.0) / 6.0,
+        t3 / 6.0,
+    ]
+}
+
+/// The derivatives of `spline_weights` by `t`.
+fn spline_slopes(t: f64) -> [f64; 4] {
+    let s = 1.0 - t;
+    let t2 = t * t;
+    [
+        -s * s * 0.5,
+        (3.0 * t2 - 4.0 * t) * 0.5,
+        (1.0 + 2.0 * t - 3.0 * t2) * 0.5,
+        t2 * 0.5,
+    ]
 }
 
 /// The levels of `Pyramid` of a reduced copy of a heightmap, made only for
@@ -467,24 +545,80 @@ mod tests {
         assert_eq!(next_level(&[7], 1), vec![7]);
     }
 
+    /// The spline of 4 by 4 texels of level 0 of `map` on a face, with the
+    /// texel `(x, y)` at the second column and row, at `(tx, ty)` from it.
+    fn spline_at(map: &Heightmap, face: usize, x: usize, y: usize, tx: f64, ty: f64) -> f64 {
+        let (wx, wy) = (spline_weights(tx), spline_weights(ty));
+        let mut sum = 0.0;
+        for (r, wy) in wy.iter().enumerate() {
+            for (c, wx) in wx.iter().enumerate() {
+                let level = map.get(face, (x + c) as i64 - 1, (y + r) as i64 - 1);
+                sum += wx * wy * f64::from(level) / 65535.0;
+            }
+        }
+        sum
+    }
+
     #[test]
-    fn lod_zero_is_the_bilinear_map() {
+    fn lod_zero_is_the_spline_of_the_map() {
         let map = waves(16);
         let p = Pyramid::new(&map);
-        let level = |face, x, y| f64::from(map.get(face, x, y)) / 65535.0;
+        let flat = |i: usize, t: f64| unwarp(((i as f64 + 0.5 + t) / 16.0) * 2.0 - 1.0);
         for face in 0..FACES {
             for &(x, y) in &[(3, 4), (7, 7), (12, 1)] {
                 let center = p.field(map.texel_dir(face, x, y), 0.0);
-                assert!((center - level(face, x as i64, y as i64)).abs() < 1e-9);
+                assert!((center - spline_at(&map, face, x, y, 0.0, 0.0)).abs() < 1e-9);
                 // A third of the way to the next texel in x and in y.
-                let flat = |i: usize| unwarp(((i as f64 + 0.5 + 1.0 / 3.0) / 16.0) * 2.0 - 1.0);
-                let d = face_dir(face, flat(x), flat(y));
-                let (x, y) = (x as i64, y as i64);
-                let top = (2.0 * level(face, x, y) + level(face, x + 1, y)) / 3.0;
-                let bottom = (2.0 * level(face, x, y + 1) + level(face, x + 1, y + 1)) / 3.0;
-                let expected = (2.0 * top + bottom) / 3.0;
+                let d = face_dir(face, flat(x, 1.0 / 3.0), flat(y, 1.0 / 3.0));
+                let expected = spline_at(&map, face, x, y, 1.0 / 3.0, 1.0 / 3.0);
                 assert!((p.field(d, 0.0) - expected).abs() < 1e-9);
                 assert!((p.field(d, -2.0) - expected).abs() < 1e-9);
+            }
+        }
+    }
+
+    #[test]
+    fn the_spline_keeps_a_ramp_and_its_coast() {
+        // A ramp along x on face 0 keeps each value, so a coast on smooth
+        // ground stays where the texels put it.
+        let n = 16;
+        let mut map = Heightmap::new(n, 0);
+        let full = TexelRect {
+            x0: 0,
+            y0: 0,
+            x1: n,
+            y1: n,
+        };
+        let ramp = |x: f64| 20000.0 + 1500.0 * x;
+        let data: Vec<u16> = (0..n * n).map(|i| ramp((i % n) as f64) as u16).collect();
+        map.store_rect(0, full, &data);
+        let p = Pyramid::new(&map);
+        let flat = |x: f64| unwarp(((x + 0.5) / n as f64) * 2.0 - 1.0);
+        for x in [2.0, 3.3, 7.5, 11.9] {
+            for y in [2.0, 6.7, 12.2] {
+                let [h, sx, sy] = p.field_slope(face_dir(0, flat(x), flat(y)), 0.0);
+                assert!((h - ramp(x) / 65535.0).abs() < 1e-9, "{x} {y}");
+                assert!((sx - 1500.0 / 65535.0).abs() < 1e-9);
+                assert!(sy.abs() < 1e-9);
+            }
+        }
+    }
+
+    #[test]
+    fn the_slope_is_the_derivative_of_the_value() {
+        let map = waves(32);
+        let p = Pyramid::new(&map);
+        let m = 32.0;
+        let flat = |x: f64| unwarp(((x + 0.5) / m) * 2.0 - 1.0);
+        let e = 1e-4;
+        for lod in [0.0, 0.6, 2.0] {
+            for &(x, y) in &[(5.2, 9.7), (16.0, 16.5), (24.9, 3.1)] {
+                let at = |x: f64, y: f64| p.field(face_dir(2, flat(x), flat(y)), lod);
+                let [_, sx, sy] = p.field_slope(face_dir(2, flat(x), flat(y)), lod);
+                let dx = (at(x + e, y) - at(x - e, y)) / (2.0 * e);
+                let dy = (at(x, y + e) - at(x, y - e)) / (2.0 * e);
+                assert!((sx - dx).abs() < 1e-6, "{lod} {x} {y}: {sx} {dx}");
+                assert!((sy - dy).abs() < 1e-6, "{lod} {x} {y}: {sy} {dy}");
             }
         }
     }
@@ -500,8 +634,8 @@ mod tests {
             assert!((p.field(d, k + 1e-6) - at).abs() < 1e-5);
             assert!((p.field(d, k - 1e-6) - at).abs() < 1e-5);
         }
-        assert!((p.field(d, 0.5) - (p.bilinear(0, d) + p.bilinear(1, d)) / 2.0).abs() < 1e-12);
-        assert_eq!(p.field(d, 9.0), p.bilinear(3, d));
+        assert!((p.field(d, 0.5) - (p.spline(0, d)[0] + p.spline(1, d)[0]) / 2.0).abs() < 1e-12);
+        assert_eq!(p.field(d, 9.0), p.spline(3, d)[0]);
     }
 
     /// The largest step of the field along a short arc through `at`, in
