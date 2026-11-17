@@ -1354,7 +1354,7 @@ fn smoothstep(t: f64) -> f64 {
 
 /// A fractal noise of a direction, from about -1 to 1, with features of
 /// `size` radians and two smaller octaves.
-fn fractal(p: V3, size: f64, seed: u32) -> f64 {
+pub(crate) fn fractal(p: V3, size: f64, seed: u32) -> f64 {
     (0..3)
         .map(|k| {
             let scale_k = f64::from(1u32 << k);
