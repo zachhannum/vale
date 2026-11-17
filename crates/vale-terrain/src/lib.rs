@@ -20,6 +20,7 @@ mod heightmap;
 mod lake;
 mod line;
 pub mod math;
+mod polygonize;
 #[cfg(feature = "gpu")]
 mod pyramid;
 mod rain;
@@ -59,6 +60,7 @@ pub use heightmap::{
 };
 pub use lake::LAKE_MIN_AREA;
 pub use line::{LINE_SEGMENTS, LINE_SPACING, LinePlan, LineSegment, StrokeLine};
+pub use polygonize::{BandRings, Trace, polygonize};
 #[cfg(feature = "gpu")]
 pub use pyramid::{FIELD_WGSL, GpuPyramid, PyramidPipelines, pyramid_layout};
 pub use rain::Rain;
