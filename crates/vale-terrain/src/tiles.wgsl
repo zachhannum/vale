@@ -34,7 +34,8 @@ fn tile_level(face: i32, at: vec2<i32>) -> u32 {
 }
 
 // The level of a texel of a face at pyramid level `k`. The texel is on the
-// face of that level, and `k` is below `tiles.levels`.
+// face of that level, and `k` is below `tiles.levels`. A pool with a start
+// set has it at `k` equal to `tiles.levels`, with the texels of level 0.
 fn tile_level_of(face: i32, at: vec2<i32>, k: u32) -> u32 {
     let side = i32(tiles.tile);
     let entry = textureLoad(tile_table, at / side, i32(k) * 6 + face, 0).r;

@@ -110,9 +110,11 @@ impl Gpu {
         map
     }
 
-    /// Applies the stamps to the GPU heightmap and to the CPU heightmap.
-    /// Returns the number of batches.
+    /// Applies the stamps to the GPU heightmap and to the CPU heightmap, as
+    /// one stroke. Returns the number of batches.
     fn stamp(&self, map: &GpuHeightmap, cpu: &mut Heightmap, stamps: &[Stamp]) -> usize {
+        map.begin_stroke(&self.queue);
+        cpu.begin_stroke();
         let mut batches = 1;
         let mut enc = self.encoder();
         for stamp in stamps {
@@ -230,13 +232,14 @@ fn hills(n: usize) -> Heightmap {
     map
 }
 
-const MODES: [Mode; 6] = [
+const MODES: [Mode; 7] = [
     Mode::Raise,
     Mode::Lower,
     Mode::Smooth,
     Mode::Flatten,
     Mode::Terrace,
     Mode::Shape,
+    Mode::Paint,
 ];
 
 fn tolerance(mode: Mode) -> u16 {
@@ -256,8 +259,13 @@ fn stamp(center: V3, radius: f64, hardness: f64, mode: Mode) -> Stamp {
         mode,
         // The flatten target, or the terrace step. The hills cross sea level.
         level: if mode == Mode::Terrace { 1500 } else { 52000 },
-        // The shape of the shape mode is toward old land.
-        strength: if mode == Mode::Shape { -0.7 } else { 3000.0 },
+        // The shape of the shape mode is toward old land, and the opacity
+        // of the paint mode is less than full.
+        strength: match mode {
+            Mode::Shape => -0.7,
+            Mode::Paint => 0.6,
+            _ => 3000.0,
+        },
         lower: 3000.0,
         talus: 0.0,
         scale: 0.1,
@@ -335,6 +343,39 @@ fn gpu_matches_cpu_for_one_stamp() {
         }
     }
     eprintln!("one stamp, largest difference for {MODES:?}: {worst:?}");
+}
+
+/// A brush near the size of a texel takes many samples in each texel, and a
+/// hard brush takes them in the texels at its edge.
+#[test]
+#[ignore = "gpu"]
+fn gpu_matches_cpu_for_stamps_near_the_texel_size() {
+    let n = 256;
+    let texel = std::f64::consts::FRAC_PI_2 / n as f64;
+    let places = [
+        ("face center", lonlat_to_dir(1.3, 0.7)),
+        ("face edge", lonlat_to_dir(45.0, 0.2)),
+        ("cube corner", lonlat_to_dir(44.6, 35.0)),
+    ];
+    let mut worst = [0; MODES.len()];
+    for (m, mode) in MODES.into_iter().enumerate() {
+        for (place, center) in places {
+            for radius in [0.6, 1.0, 1.9, 2.5, 12.0] {
+                for hardness in [0.0, 0.5, 1.0] {
+                    let mut cpu = hills(n);
+                    let stamp = stamp(center, radius * texel, hardness, mode);
+                    let difference = run(&mut cpu, &[stamp]).difference;
+                    assert!(
+                        difference <= tolerance(mode),
+                        "{mode:?} at the {place}, radius {radius} texels, hardness {hardness}: \
+                         the difference is {difference}"
+                    );
+                    worst[m] = worst[m].max(difference);
+                }
+            }
+        }
+    }
+    eprintln!("stamps near the texel size, largest difference for {MODES:?}: {worst:?}");
 }
 
 /// A stroke of stamps that overlap, across a face edge and near a cube
@@ -1301,6 +1342,7 @@ fn run_groups(cpu: &mut Heightmap, stamps: &[Stamp]) -> GroupRun {
     gpu.submit(enc);
     single.begin_batch();
 
+    cpu.begin_stroke();
     for stamp in stamps {
         cpu.stamp(stamp);
     }
@@ -1323,10 +1365,15 @@ fn run_groups(cpu: &mut Heightmap, stamps: &[Stamp]) -> GroupRun {
 /// A stamp with a small effect, so that many of them on one texel stay
 /// inside the range of the levels.
 fn light(lon: f64, lat: f64, radius: f64, mode: Mode) -> Stamp {
+    let base = stamp(lonlat_to_dir(lon, lat), radius, 0.5, mode);
     Stamp {
         flow: 0.1,
-        strength: 1500.0,
-        ..stamp(lonlat_to_dir(lon, lat), radius, 0.5, mode)
+        strength: if mode == Mode::Paint {
+            base.strength
+        } else {
+            1500.0
+        },
+        ..base
     }
 }
 
@@ -1351,8 +1398,8 @@ fn groups_match_single_stamps_and_the_cpu_for_a_stroke() {
         ("face edge", (31.0, 2.0), (59.0, 5.0)),
         ("cube corner", (35.0, 25.264), (55.0, 45.264)),
     ];
-    let modes = [Mode::Raise, Mode::Lower, Mode::Flatten];
-    let mut worst = [0; 3];
+    let modes = [Mode::Raise, Mode::Lower, Mode::Flatten, Mode::Paint];
+    let mut worst = [0; 4];
     for (m, mode) in modes.into_iter().enumerate() {
         for (place, from, to) in lines {
             let stamps = stroke(from, to, 240, 0.02, mode);
@@ -1380,7 +1427,7 @@ fn groups_match_single_stamps_and_the_cpu_for_a_stroke() {
             let expected = if place == "cube corner" { 3 } else { 2 };
             assert_eq!(touched, expected, "{mode:?} stroke at the {place}");
             let limit = match mode {
-                Mode::Flatten => TOLERANCE,
+                Mode::Flatten | Mode::Paint => TOLERANCE,
                 _ => ADD_STROKE_TOLERANCE,
             };
             assert!(
@@ -1391,6 +1438,82 @@ fn groups_match_single_stamps_and_the_cpu_for_a_stroke() {
         }
     }
     eprintln!("stroke in groups, largest difference for {modes:?}: {worst:?}");
+}
+
+/// Two paint strokes on the same place. The second stroke starts from the
+/// levels after the first. Some of the tiles under the strokes have no
+/// memory.
+#[test]
+#[ignore = "gpu"]
+fn gpu_matches_cpu_for_two_paint_strokes() {
+    let gpu = gpu();
+    let mut cpu = hills(256);
+    let part = TexelRect {
+        x0: 0,
+        y0: 0,
+        x1: 100,
+        y1: 256,
+    };
+    cpu.store_rect(0, part, &[0; 100 * 256]);
+    let map = gpu.copy_with_tiles(&cpu, 32);
+    let stamps: Vec<Stamp> = (0..40)
+        .map(|i| Stamp {
+            flow: 0.5,
+            ..stamp(
+                lonlat_to_dir(-6.0 + 0.3 * i as f64, 2.0),
+                0.08,
+                0.5,
+                Mode::Paint,
+            )
+        })
+        .collect();
+    let mut after = Vec::new();
+    for _ in 0..2 {
+        gpu.stamp(&map, &mut cpu, &stamps);
+        assert!(cpu.end_stroke());
+        let faces = gpu.read_all(&map);
+        let difference = max_difference(&cpu, &faces);
+        assert!(difference <= TOLERANCE, "{difference}");
+        after.push(faces);
+    }
+    assert!(after[0] != after[1], "the second stroke changes the levels");
+}
+
+/// A paint stroke on a pool with no room for the levels of each tile from
+/// the start of the stroke. The stamps do not overlap, so the tiles with no
+/// room give the same levels.
+#[test]
+#[ignore = "gpu"]
+fn a_paint_stroke_on_a_full_pool_matches_the_cpu() {
+    let gpu = gpu();
+    // 6 faces of 36 by 36 tiles of 16 texels. The pool holds 8192 tiles.
+    let (n, tile) = (576, 16);
+    let mut cpu = hills(n);
+    let map = gpu.copy_with_tiles(&cpu, tile);
+    let level_tiles = FACES * 36 * 36;
+    assert_eq!(map.allocated_tiles(), level_tiles);
+    let centers = [
+        (0.0, 0.0),
+        (90.0, 0.0),
+        (180.0, 0.0),
+        (-90.0, 0.0),
+        (0.0, 90.0),
+        (0.0, -90.0),
+    ];
+    let stamps: Vec<Stamp> = centers
+        .iter()
+        .map(|&(lon, lat)| stamp(lonlat_to_dir(lon, lat), 0.3, 0.5, Mode::Paint))
+        .collect();
+    for _ in 0..2 {
+        gpu.stamp(&map, &mut cpu, &stamps);
+        cpu.end_stroke();
+        assert_eq!(map.allocated_tiles(), 8192);
+        let difference = max_difference(&cpu, &gpu.read_all(&map));
+        assert!(difference <= TOLERANCE, "{difference}");
+    }
+    map.begin_stroke(&gpu.queue);
+    gpu.submit(gpu.encoder());
+    assert_eq!(map.allocated_tiles(), level_tiles);
 }
 
 #[test]
@@ -1485,10 +1608,10 @@ fn stamps_far_apart_are_not_one_group() {
     assert!(difference <= ADD_STROKE_TOLERANCE, "{difference}");
 }
 
-/// The memory of the table of the tiles, in bytes.
+/// The memory of the table of the tiles and of its start set, in bytes.
 fn table_bytes(n: usize) -> usize {
     let per_side = n.div_ceil(TILE_SIZE);
-    FACES * per_side * per_side * 4
+    2 * FACES * per_side * per_side * 4
 }
 
 #[test]
@@ -3061,7 +3184,8 @@ fn an_update_after_stamps_matches_a_full_build() {
     assert!(after == cpu_levels(&read));
 }
 
-/// A shader that writes `field` at a list of points, one pixel each.
+/// A shader that writes `field` and its slope at a list of points, one pixel
+/// each.
 const FIELD_TEST_WGSL: &str = "
 struct Params {
     n: u32,
@@ -3081,7 +3205,7 @@ fn vs_main(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
 @fragment
 fn fs_main(@builtin(position) at: vec4<f32>) -> @location(0) vec4<f32> {
     let p = points[u32(at.x)];
-    return vec4<f32>(field(p.xyz, params.n, p.w, params.max_level).x, 0.0, 0.0, 1.0);
+    return vec4<f32>(field(p.xyz, params.n, p.w, params.max_level), 1.0);
 }
 ";
 
@@ -3110,12 +3234,13 @@ fn fragment_buffer(binding: u32, ty: wgpu::BufferBindingType) -> wgpu::BindGroup
 }
 
 /// The values of `field` in the shader at each point: a direction and a lod.
+/// Each value has the slope after it, as `field` gives it.
 fn shader_field(
     gpu: &Gpu,
     tiles: &GpuTiles,
     pyramid: &GpuPyramid,
     points: &[[f32; 4]],
-) -> Vec<f32> {
+) -> Vec<[f32; 3]> {
     let device = &gpu.device;
     let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: None,
@@ -3164,7 +3289,7 @@ fn shader_field(
         ],
         immediate_size: 0,
     });
-    let format = wgpu::TextureFormat::R32Float;
+    let format = wgpu::TextureFormat::Rgba32Float;
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: None,
         layout: Some(&pipeline_layout),
@@ -3203,7 +3328,7 @@ fn shader_field(
     });
     let view = target.create_view(&Default::default());
     let row_bytes =
-        (points.len() * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize);
+        (points.len() * 16).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize);
     let out = device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
         size: row_bytes as u64,
@@ -3255,8 +3380,13 @@ fn shader_field(
         .expect("the readback runs")
         .expect("the buffer maps");
     let bytes = out.get_mapped_range(..).expect("the buffer is mapped");
-    let values = bytes[..points.len() * 4].as_chunks::<4>().0;
-    values.iter().map(|b| f32::from_le_bytes(*b)).collect()
+    let values = bytes[..points.len() * 16].as_chunks::<16>().0;
+    values
+        .iter()
+        .map(|b| {
+            std::array::from_fn(|i| f32::from_le_bytes(b[4 * i..4 * i + 4].try_into().unwrap()))
+        })
+        .collect()
 }
 
 /// Directions at the face middles, on and next to the face edges, at and
@@ -3314,20 +3444,22 @@ fn the_shader_field_matches_the_cpu_field() {
     assert_fields_match(&points, &values, &Pyramid::new(&cpu));
 }
 
-/// Checks that the shader field at each point is within 1e-3 of the range of
-/// the map from the CPU field.
-fn assert_fields_match(points: &[[f32; 4]], values: &[f32], field: &Pyramid) {
+/// Checks that the shader field and its slope at each point are within 1e-3
+/// of the range of the map from the CPU field.
+fn assert_fields_match(points: &[[f32; 4]], values: &[[f32; 3]], field: &Pyramid) {
     let all: Vec<u16> = (0..FACES).flat_map(|f| field.face(0, f).to_vec()).collect();
     let (low, high) = (all.iter().min().unwrap(), all.iter().max().unwrap());
     let range = f64::from(high - low) / 65535.0;
     for (point, value) in points.iter().zip(values) {
         let d = [point[0], point[1], point[2]].map(f64::from);
-        let expected = field.field(d, f64::from(point[3]));
-        let difference = (f64::from(*value) - expected).abs();
-        assert!(
-            difference <= 1e-3 * range,
-            "{point:?}: the shader gives {value}, the CPU gives {expected}"
-        );
+        let expected = field.field_slope(d, f64::from(point[3]));
+        for (value, expected) in value.iter().zip(expected) {
+            let difference = (f64::from(*value) - expected).abs();
+            assert!(
+                difference <= 1e-3 * range,
+                "{point:?}: the shader gives {value}, the CPU gives {expected}"
+            );
+        }
     }
 }
 

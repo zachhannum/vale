@@ -2546,6 +2546,8 @@ pub enum Op {
         column: usize,
         row: usize,
     },
+    /// Starts a stroke of the paint mode.
+    BeginStroke,
     /// Writes the channel map of the rivers of a layer, for the picture.
     LayerChannels(Arc<ChannelMap>),
     /// Writes the channel map of the rivers.
@@ -3153,6 +3155,12 @@ impl Batch<'_> {
                 self.readbacks.push((stroke, face, rect, readback));
             }
             Op::LayerChannels(_) | Op::UploadLevel { .. } | Op::ReleaseTile { .. } => {}
+            Op::BeginStroke => {
+                // The change runs at the next submit, so the stamps of the
+                // last stroke go first.
+                self.submit();
+                heights.begin_stroke(self.queue);
+            }
             Op::Channels(map) => {
                 // The stamps before the write follow the rivers before it.
                 self.submit();

@@ -65,6 +65,15 @@ pub(crate) struct Pool {
     /// The number of levels in the pool. Level `k` has `max(1, n >> k)`
     /// texels along one side of a face.
     levels: usize,
+    /// The pool has a start set after the levels: one more level in the
+    /// table, with the size of level 0. It holds the texels of level 0 from
+    /// the start of a stroke. A start tile has its own slot, or it shares
+    /// the slot of its tile of level 0.
+    start: bool,
+    /// The number of start tiles with their own slot.
+    starts: u32,
+    /// The number of tiles of all levels, without the start set.
+    level_tiles: u32,
     base: u16,
     /// The slot of each tile plus 1, level by level, face by face, in row
     /// order. 0 is a tile that has no memory. Each face of each level has
@@ -74,7 +83,8 @@ pub(crate) struct Pool {
     table_view: wgpu::TextureView,
     uniforms: wgpu::Buffer,
     chunks: Vec<Chunk>,
-    /// The layers of all chunks for a heightmap with memory in each tile.
+    /// The layers of all chunks for a heightmap with memory in each tile,
+    /// and for each start tile if the chunks have room.
     layers: u32,
     /// The first slot that no tile used.
     next: u32,
@@ -172,17 +182,18 @@ impl Pool {
     /// A pool of `levels` levels with no memory in each tile. Each texel
     /// reads as `base`.
     pub fn new(device: &wgpu::Device, n: usize, tile: usize, base: u16, levels: usize) -> Pool {
-        Pool::with_layout(device, n, tile, base, levels, tiles_layout(device))
+        Pool::with_layout(device, n, tile, base, levels, false, tiles_layout(device))
     }
 
     /// The same as `new`, with a bind group for `layout`, which is a
-    /// `tiles_layout`.
+    /// `tiles_layout`. With `start`, the pool has a start set.
     pub fn with_layout(
         device: &wgpu::Device,
         n: usize,
         tile: usize,
         base: u16,
         levels: usize,
+        start: bool,
         layout: wgpu::BindGroupLayout,
     ) -> Pool {
         assert!(levels >= 1, "a pool has one level at least");
@@ -193,16 +204,28 @@ impl Pool {
                 (FACES * side * side) as u32
             })
             .sum();
-        let layers = tiles.div_ceil(LAYER_SLOTS);
         assert!(
-            layers <= first_layer(CHUNKS),
+            tiles.div_ceil(LAYER_SLOTS) <= first_layer(CHUNKS),
             "the pool holds {tiles} tiles at most"
         );
+        let start_tiles = if start {
+            FACES * per_side * per_side
+        } else {
+            0
+        };
+        let layers = (tiles + start_tiles as u32)
+            .div_ceil(LAYER_SLOTS)
+            .min(first_layer(CHUNKS));
+        let table_levels = levels + usize::from(start);
         let table_texture = texture(
             device,
             "tile table",
             TABLE_FORMAT,
-            [per_side as u32, per_side as u32, (levels * FACES) as u32],
+            [
+                per_side as u32,
+                per_side as u32,
+                (table_levels * FACES) as u32,
+            ],
             wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         );
         let table_view = array_view(&table_texture);
@@ -212,7 +235,7 @@ impl Pool {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: true,
         });
-        let start = Uniforms {
+        let values = Uniforms {
             base: u32::from(base),
             tile: tile as u32,
             levels: levels as u32,
@@ -221,7 +244,7 @@ impl Pool {
         uniforms
             .get_mapped_range_mut(..)
             .expect("the buffer is mapped")
-            .copy_from_slice(bytemuck::bytes_of(&start));
+            .copy_from_slice(bytemuck::bytes_of(&values));
         uniforms.unmap();
         let no_chunk = array_view(&texture(
             device,
@@ -238,8 +261,11 @@ impl Pool {
             tile,
             per_side,
             levels,
+            start,
+            starts: 0,
+            level_tiles: tiles,
             base,
-            table: vec![0; levels * FACES * per_side * per_side],
+            table: vec![0; table_levels * FACES * per_side * per_side],
             table_texture,
             table_view,
             uniforms,
@@ -302,9 +328,26 @@ impl Pool {
         }
     }
 
+    /// The level of the start set in the table. A start tile has the
+    /// texels of its tile of level 0.
+    pub fn start_level(&self) -> usize {
+        debug_assert!(self.start, "the pool has a start set");
+        self.levels
+    }
+
+    /// The number of texels along one side of a face of a level. The start
+    /// set has the size of level 0.
+    fn side(&self, level: usize) -> usize {
+        if level == self.levels {
+            self.n
+        } else {
+            level_size(self.n, level)
+        }
+    }
+
     /// The texels of one tile of a level, clipped to the face.
     pub fn tile_rect(&self, level: usize, tx: usize, ty: usize) -> TexelRect {
-        let n = level_size(self.n, level);
+        let n = self.side(level);
         TexelRect {
             x0: tx * self.tile,
             y0: ty * self.tile,
@@ -420,6 +463,57 @@ impl Pool {
             self.next += 1;
             self.next - 1
         });
+        self.fill_slot(device, queue, number, fill);
+        self.map(queue, level, face, tx, ty, number)
+    }
+
+    /// The slot of a start tile, as `ensure` gives it with no fill. Returns
+    /// `None` and changes nothing if the pool has no room for it. Each tile
+    /// of the levels keeps room for its slot.
+    pub fn try_ensure_start(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        face: usize,
+        tx: usize,
+        ty: usize,
+    ) -> Option<Slot> {
+        let level = self.start_level();
+        if let Some(slot) = self.slot(level, face, tx, ty) {
+            return Some(slot);
+        }
+        if self.level_tiles + self.starts >= self.layers * LAYER_SLOTS {
+            return None;
+        }
+        self.starts += 1;
+        Some(self.ensure(device, queue, level, face, tx, ty, false))
+    }
+
+    /// Gives a start tile the slot of its tile of level 0. The tile of level
+    /// 0 has memory.
+    pub fn share_start(&mut self, queue: &wgpu::Queue, face: usize, tx: usize, ty: usize) {
+        let number = self.table[self.index(0, face, tx, ty)];
+        assert_ne!(number, 0, "the tile of level 0 has memory");
+        let level = self.start_level();
+        self.map(queue, level, face, tx, ty, number - 1);
+    }
+
+    /// Takes a start tile away. It frees its slot, or it stops sharing the
+    /// slot of its tile of level 0. The change runs at the next submit, as
+    /// that of `ensure` does.
+    pub fn release_start(&mut self, queue: &wgpu::Queue, face: usize, tx: usize, ty: usize) {
+        let level = self.start_level();
+        let index = self.index(level, face, tx, ty);
+        let entry = self.table[index];
+        if entry != 0 && entry == self.table[self.index(0, face, tx, ty)] {
+            self.unmap(queue, level, face, tx, ty);
+        } else {
+            self.release(queue, level, face, tx, ty);
+        }
+    }
+
+    /// Gives a slot its chunk, and with `fill` the base level in each texel.
+    fn fill_slot(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, number: u32, fill: bool) {
         let slot = self.place(number);
         if slot.chunk == self.chunks.len() {
             let side = (LAYER_TILES * self.tile) as u32;
@@ -453,6 +547,19 @@ impl Pool {
                 },
             );
         }
+    }
+
+    /// Puts slot `number` in the table for a tile.
+    fn map(
+        &mut self,
+        queue: &wgpu::Queue,
+        level: usize,
+        face: usize,
+        tx: usize,
+        ty: usize,
+        number: u32,
+    ) -> Slot {
+        let slot = self.place(number);
         let index = self.index(level, face, tx, ty);
         self.table[index] = number + 1;
         let place = (slot.x / self.tile) as u32
@@ -475,9 +582,28 @@ impl Pool {
         ty: usize,
     ) {
         let index = self.index(level, face, tx, ty);
-        let entry = std::mem::take(&mut self.table[index]);
-        if entry != 0 {
-            self.free.push(entry - 1);
+        let entry = self.table[index];
+        if entry == 0 {
+            return;
+        }
+        // A start tile that shares the slot stops sharing it.
+        if self.start && level == 0 {
+            let start = self.index(self.levels, face, tx, ty);
+            if self.table[start] == entry {
+                self.unmap(queue, self.levels, face, tx, ty);
+            }
+        }
+        if self.start && level == self.levels {
+            self.starts -= 1;
+        }
+        self.unmap(queue, level, face, tx, ty);
+        self.free.push(entry - 1);
+    }
+
+    /// Takes a tile out of the table, and keeps its slot in use.
+    fn unmap(&mut self, queue: &wgpu::Queue, level: usize, face: usize, tx: usize, ty: usize) {
+        let index = self.index(level, face, tx, ty);
+        if std::mem::take(&mut self.table[index]) != 0 {
             self.write_entry(queue, Pool::table_layer(face, level), tx, ty, 0);
         }
     }
@@ -511,6 +637,7 @@ impl Pool {
             self.table_texture.size(),
         );
         self.next = 0;
+        self.starts = 0;
         self.free.clear();
         if !self.chunks.is_empty() {
             self.chunks.clear();

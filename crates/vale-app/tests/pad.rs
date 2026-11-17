@@ -2075,6 +2075,7 @@ fn a_finger_hits_each_control_at_the_first_try() {
         ("Lower", Mode::Lower),
         ("Smooth", Mode::Smooth),
         ("Flatten", Mode::Flatten),
+        ("Paint", Mode::Paint),
         ("Raise", Mode::Raise),
     ] {
         choose_mode(&mut h, name);
@@ -2958,6 +2959,44 @@ fn the_brush_panel_locks_the_size_and_sets_the_flatten_level() {
     tap(&mut h, STROKE_START);
     assert_eq!(h.state().globe.brush.flatten_level, None);
     check_controls(&h, "the Flatten mode");
+}
+
+#[test]
+fn the_brush_panel_sets_the_paint_value_its_opacity_and_the_flatten_rate() {
+    use vale_app::ui::pad::{FLATTEN_LEVEL, PAINT_VALUE, PICK_LEVEL, STROKE_START};
+    let mut h = pad(BOARDS[1]);
+    tap(&mut h, "Brush settings");
+    choose_mode(&mut h, "Flatten");
+    assert!(control(&h, "Brush strength").is_none());
+    assert!(control(&h, "Brush opacity").is_none());
+    assert!(control(&h, PAINT_VALUE).is_none());
+    type_value(&mut h, "Brush rate", "60");
+    assert!((h.state().globe.brush.flatten_rate - 0.6).abs() < 1e-9);
+    h.state_mut().globe.brush.flatten_level = Some(100);
+
+    open_group(&mut h, group_of("Paint"));
+    screenshot::save(&mut h, "pad-sculpt-modes");
+    tap(&mut h, "Paint");
+    assert_eq!(h.state().globe.brush.mode, Mode::Paint);
+    assert_eq!(toggled(&h, SCULPT), Some(true));
+    assert!(control(&h, "Brush strength").is_none());
+    assert!(control(&h, "Brush rate").is_none());
+    assert_eq!(h.state().globe.brush.opacity, 1.0);
+    type_value(&mut h, "Brush opacity", "40");
+    assert!((h.state().globe.brush.opacity - 0.4).abs() < 1e-9);
+
+    // The paint mode has a Value slider and no level controls.
+    for name in [FLATTEN_LEVEL, STROKE_START, PICK_LEVEL] {
+        assert!(control(&h, name).is_none(), "{name}");
+    }
+    assert!(h.query_by_label("Level at stroke start").is_none());
+    type_value(&mut h, PAINT_VALUE, "1200");
+    let brush = h.state().globe.brush;
+    let level = brush.value(brush.paint_level);
+    assert!((level - 1200.0).abs() < 0.2, "{level}");
+    assert_eq!(brush.flatten_level, Some(100));
+    check_controls(&h, "the Paint mode");
+    screenshot::save(&mut h, "pad-paint");
 }
 
 #[test]

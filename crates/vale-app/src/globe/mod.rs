@@ -3368,6 +3368,12 @@ impl Globe {
                     }
                     self.strokes += 1;
                     self.map.begin_stroke();
+                    if self.brush.mode == Mode::Paint {
+                        // The stamps of the last stroke are in the queue
+                        // before this change.
+                        let tag = self.tag();
+                        self.link.push(tag, Op::BeginStroke);
+                    }
                     let points = self.brush.points(self.radius());
                     self.stats
                         .begin_stroke(self.strokes, self.brush.mode, points);

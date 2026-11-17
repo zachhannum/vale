@@ -362,6 +362,12 @@ const BRUSH_FACES: usize = 3;
 
 struct State {
     pool: Pool,
+    /// The face, the column, and the row of each tile in the start set of
+    /// the pool.
+    starts: Vec<(usize, usize, usize)>,
+    /// One tile, for a copy from a slot to a start slot. The two slots can
+    /// be on one layer of a chunk.
+    staging: Option<wgpu::Texture>,
     /// A warp stamp draws each face that it touches to its own target. Each
     /// other pass uses the first target.
     scratch: [Option<Scratch>; BRUSH_FACES],
@@ -579,6 +585,7 @@ impl GpuHeightmap {
             tile,
             0,
             1,
+            true,
             pipeline.tiles_layout.clone(),
         );
         let tiles_layout = pool.layout().clone();
@@ -699,6 +706,8 @@ impl GpuHeightmap {
             tile,
             state: Mutex::new(State {
                 pool,
+                starts: Vec::new(),
+                staging: None,
                 scratch: [const { None }; BRUSH_FACES],
             }),
             tiles_layout,
@@ -772,7 +781,8 @@ impl GpuHeightmap {
         self.state().pool.bind_group().clone()
     }
 
-    /// The number of tiles that hold memory.
+    /// The number of tiles that hold memory, with the tiles of the levels
+    /// from the start of a paint stroke.
     pub fn allocated_tiles(&self) -> usize {
         self.state().pool.allocated_tiles()
     }
@@ -783,7 +793,8 @@ impl GpuHeightmap {
         let state = self.state();
         let scratch = state.scratch.iter().flatten();
         let scratch: usize = scratch.map(|s| s.size[0] * s.size[1]).sum();
-        state.pool.memory_bytes() + scratch * size_of::<u16>()
+        let staging = state.staging.as_ref().map_or(0, |_| self.tile * self.tile);
+        state.pool.memory_bytes() + (scratch + staging) * size_of::<u16>()
     }
 
     /// The six faces of the channel map as an array of 2D layers. Each texel
@@ -875,6 +886,7 @@ impl GpuHeightmap {
     pub fn clear(&self, queue: &wgpu::Queue, level: u16) {
         let mut state = self.state();
         state.pool.clear(&self.device, queue, level);
+        state.starts.clear();
         state.scratch = [const { None }; BRUSH_FACES];
     }
 
@@ -887,6 +899,21 @@ impl GpuHeightmap {
     pub fn upload(&self, queue: &wgpu::Queue, face: u32, rect: TexelRect, data: &[u16]) {
         let pool = &mut self.state().pool;
         pool.upload(&self.device, queue, 0, face as usize, rect, data);
+    }
+
+    /// Starts a stroke of the paint mode. A paint stamp reads the levels
+    /// from the start of the stroke, so this call takes away the levels of
+    /// the last stroke. The change runs at the next submit, so submit each
+    /// encoder that holds stamps before this call.
+    ///
+    /// The levels from the start of a stroke take memory in the pool. If the
+    /// pool has no room for a tile, the tile has no such levels, and each
+    /// paint stamp on it acts as a stroke.
+    pub fn begin_stroke(&self, queue: &wgpu::Queue) {
+        let state = &mut *self.state();
+        for (face, tx, ty) in state.starts.drain(..) {
+            state.pool.release_start(queue, face, tx, ty);
+        }
     }
 
     /// Starts a batch of stamps. Call it after each submit of an encoder
@@ -989,6 +1016,11 @@ impl GpuHeightmap {
                 self.ensure(queue, state, face, rect);
             }
         }
+        if mode == Mode::Paint {
+            for &(face, rect) in &touched {
+                self.keep_start(queue, enc, state, face, rect);
+            }
+        }
         for (slot, (i, &(face, rect))) in (first_slot..).zip(touched.iter().enumerate()) {
             let offset = slot * self.slot_size;
             let mut uniforms = Uniforms {
@@ -1008,6 +1040,7 @@ impl GpuHeightmap {
                     Mode::Noise => 13,
                     Mode::Terrace => 14,
                     Mode::Shape => 15,
+                    Mode::Paint => 16,
                 },
                 reach: first.reach as i32,
                 size: self.face_size as i32,
@@ -1079,6 +1112,68 @@ impl GpuHeightmap {
             state
                 .pool
                 .ensure(&self.device, queue, 0, face, tx, ty, true);
+        }
+    }
+
+    /// Keeps the levels of each tile of a rectangle in the start set, for
+    /// each tile that has none yet. A tile with no room in the pool shares
+    /// its slot of level 0.
+    fn keep_start(
+        &self,
+        queue: &wgpu::Queue,
+        enc: &mut wgpu::CommandEncoder,
+        state: &mut State,
+        face: usize,
+        rect: TexelRect,
+    ) {
+        let start = state.pool.start_level();
+        for (tx, ty, _) in state.pool.tiles_in(0, rect) {
+            if state.pool.slot(start, face, tx, ty).is_some() {
+                continue;
+            }
+            let from = state
+                .pool
+                .ensure(&self.device, queue, 0, face, tx, ty, true);
+            state.starts.push((face, tx, ty));
+            let Some(to) = state
+                .pool
+                .try_ensure_start(&self.device, queue, face, tx, ty)
+            else {
+                state.pool.share_start(queue, face, tx, ty);
+                continue;
+            };
+            let side = self.tile as u32;
+            let staging = state.staging.get_or_insert_with(|| {
+                self.device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("start tile"),
+                    size: wgpu::Extent3d {
+                        width: side,
+                        height: side,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::R16Uint,
+                    usage: wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST,
+                    view_formats: &[],
+                })
+            });
+            let size = wgpu::Extent3d {
+                width: side,
+                height: side,
+                depth_or_array_layers: 1,
+            };
+            enc.copy_texture_to_texture(
+                state.pool.texels(from, 0, 0),
+                texels(staging, 0, 0, 0),
+                size,
+            );
+            enc.copy_texture_to_texture(
+                texels(staging, 0, 0, 0),
+                state.pool.texels(to, 0, 0),
+                size,
+            );
         }
     }
 

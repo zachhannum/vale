@@ -19,10 +19,10 @@ use super::{
 use vale_terrain::Mode;
 
 use crate::globe::brush::{
-    BASIN_AGE, BASIN_DENSITY, BASIN_LAKES, CHANNEL_HELP, CHANNEL_KM, EROSION, FLOODPLAIN_WIDTH_KM,
-    FLOW, NOISE_GRAIN, NOISE_M, RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_MAGMA, RIDGE_OFFSET_KM,
-    RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM, SCALE_KM, SEED, SHAPE, STRENGTH_M, TALUS_DEG,
-    TERRACE_STEP_M, WARP_KM, needs_height, shape_text,
+    BASIN_AGE, BASIN_DENSITY, BASIN_LAKES, CHANNEL_HELP, CHANNEL_KM, EROSION, FLATTEN_RATE,
+    FLOODPLAIN_WIDTH_KM, FLOW, NOISE_GRAIN, NOISE_M, OPACITY as BRUSH_OPACITY, RANGE_SPACING_KM,
+    RIDGE_CREST_M, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM, SCALE_KM, SEED,
+    SHAPE, STRENGTH_M, TALUS_DEG, TERRACE_STEP_M, WARP_KM, needs_height, shape_text,
 };
 use crate::globe::combine::PolygonMode;
 use crate::globe::sweep;
@@ -997,6 +997,7 @@ fn brush_modes(ui: &mut egui::Ui, current: &mut Mode, height: bool) {
             (Mode::Lower, "Lower"),
             (Mode::Smooth, "Smooth"),
             (Mode::Flatten, "Flatten"),
+            (Mode::Paint, "Paint"),
             (Mode::Carve, "Carve"),
             (Mode::Ridge, "Ridge"),
             (Mode::Deposit, "Deposit"),
@@ -1145,6 +1146,25 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
         seed(ui, state);
     } else if globe.brush.mode == Mode::Push {
         // The motion of the pen and the flow set the distance.
+    } else if globe.brush.mode == Mode::Flatten {
+        number::slider("Rate", &mut globe.brush.flatten_rate, FLATTEN_RATE)
+            .percent()
+            .show(ui);
+    } else if globe.brush.mode == Mode::Paint {
+        let brush = &mut globe.brush;
+        number::slider("Opacity", &mut brush.opacity, BRUSH_OPACITY)
+            .percent()
+            .show(ui);
+        let range = brush.value_range;
+        let mut value = brush.value(brush.paint_level);
+        let slider = number::slider("Value", &mut value, range.0..=range.1)
+            .step(value_step(range))
+            .decimals(world::value_decimals(range.1 - range.0))
+            .suffix(format!(" {unit}"))
+            .show(ui);
+        if slider.changed() {
+            brush.paint_level = brush.level(value);
+        }
     } else {
         // The height sliders show a height in meters as a value of the
         // layer.

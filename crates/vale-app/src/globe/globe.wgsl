@@ -318,13 +318,14 @@ fn hillshade(d: vec3<f32>, pixel: f32) -> f32 {
     }
     east = normalize(east);
     let north = cross(d, east);
-    // The step is one pixel, or one texel of the shown level if that is
-    // larger.
-    let a = max(pixel, PI * 0.5 / u.params.x * exp2(u.detail.x));
-    let gx = shown(normalize(d + east * a)).x - shown(normalize(d - east * a)).x;
-    let gy = shown(normalize(d + north * a)).x - shown(normalize(d - north * a)).x;
+    // The slope of the field at the shown level, or at the level where one
+    // texel is one pixel if that is coarser.
+    let lod = max(u.detail.x, log2(pixel * u.params.x / (PI * 0.5)));
+    let h = field(d, u32(u.params.x), lod, u32(u.detail.y));
+    // The change of the value in one radian to the east and to the north.
+    let g = pixel_slope(d, h.yz, east, north);
     let z = max(1.0, sqrt(pixel * u.shade.w / RELIEF_REF_M));
-    let s = vec2<f32>(gx, gy) / (2.0 * a) * u.shade.z * z * u.light.w;
+    let s = g * u.shade.z * z * u.light.w;
     let n = normalize(vec3<f32>(-s, 1.0));
     let top = select(0.5, 1.0, u.shade.y > 0.5);
     return clamp(0.5 + dot(n, u.light.xyz) - u.light.z, 0.0, top);

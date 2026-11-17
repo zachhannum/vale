@@ -598,6 +598,89 @@ fn the_flat_view_blends_the_raster_layers_by_their_opacity() {
     assert_eq!(middle(&mut h), ground.r());
 }
 
+/// A flat harness with a selected rain layer from 0 to 4000 mm, and the
+/// brush in the paint mode with a hard tip.
+fn paint_harness() -> App {
+    let mut h = flat_harness();
+    let rain = vale_app::ui::RasterSpec {
+        name: "Rain".to_string(),
+        unit: "mm".to_string(),
+        min: 0.0,
+        max: 4000.0,
+        face_size: 128,
+    };
+    let rain = h.state_mut().add_raster(rain).unwrap();
+    let state = h.state_mut();
+    assert_eq!(state.globe.raster(), Some(rain));
+    assert!(!state.globe.is_height());
+    state.globe.tool = Tool::Brush;
+    let brush = &mut state.globe.brush;
+    brush.mode = Mode::Paint;
+    (brush.hardness, brush.flow) = (1.0, 1.0);
+    h.run_steps(3);
+    h
+}
+
+/// A mouse stroke through each point, with a frame at each point.
+fn mouse_path(h: &mut App, points: &[Pos2]) {
+    mouse(h, points[0], true);
+    h.step();
+    for &pos in &points[1..] {
+        h.event(egui::Event::PointerMoved(pos));
+        h.step();
+    }
+    mouse(h, *points.last().unwrap(), false);
+    h.step();
+    settle(h);
+}
+
+/// The level of the brush layer under a screen position.
+fn level_under(h: &App, pos: Pos2) -> u16 {
+    let globe = &h.state().globe;
+    let dir = globe.flat.unproject(globe.rect, pos).unwrap();
+    globe.map.sample(dir)
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_hard_paint_stroke_sets_the_value_of_a_raster_layer() {
+    let _gpu = one_gpu_test();
+    let mut h = paint_harness();
+    let c = h.state().globe.rect.center();
+    let target = h.state().globe.brush.level(3000.0);
+    h.state_mut().globe.brush.paint_level = target;
+    h.run_steps(1);
+    mouse_path(
+        &mut h,
+        &[c - Vec2::new(20.0, 0.0), c, c + Vec2::new(20.0, 0.0)],
+    );
+    assert_eq!(level_under(&h, c), target);
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_paint_stroke_at_half_opacity_stays_at_half_after_two_passes() {
+    let _gpu = one_gpu_test();
+    let mut h = paint_harness();
+    let c = h.state().globe.rect.center();
+    let start = level_under(&h, c);
+    let target = h.state().globe.brush.level(4000.0);
+    let brush = &mut h.state_mut().globe.brush;
+    (brush.paint_level, brush.opacity) = (target, 0.5);
+    h.run_steps(1);
+    let (left, right) = (c - Vec2::new(20.0, 0.0), c + Vec2::new(20.0, 0.0));
+    mouse_path(&mut h, &[left, c, right, c, left]);
+    let half = f64::from(start) + (f64::from(target) - f64::from(start)) * 0.5;
+    let got = f64::from(level_under(&h, c));
+    assert!((got - half).abs() <= 1.0, "{start} {target} {got}");
+
+    // The next stroke starts again from the new value.
+    mouse_path(&mut h, &[left, c, right]);
+    let quarter = half + (f64::from(target) - half) * 0.5;
+    let got = f64::from(level_under(&h, c));
+    assert!((got - quarter).abs() <= 1.0, "{half} {target} {got}");
+}
+
 #[test]
 #[ignore = "gpu"]
 fn the_flat_view_mixes_a_layer_with_the_layers_below_by_its_blend_mode() {

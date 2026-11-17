@@ -1085,6 +1085,41 @@ fn a_press_on_the_globe_picks_the_flatten_level() {
 }
 
 #[test]
+fn the_brush_panel_has_the_rate_of_flatten_and_the_opacity_and_value_of_paint() {
+    // Other panels also have a Rate or an Opacity, so the test counts them.
+    let count = |h: &Harness<'static, AppState>, label: &str| h.query_all_by_label(label).count();
+    let mut h = harness();
+    h.state_mut().globe.tool = Tool::Brush;
+    h.run_steps(2);
+    let label = |h: &Harness<'static, AppState>| {
+        let names = ["Rate", "Opacity", "Strength", "Value"];
+        names.map(|name| count(h, name))
+    };
+    let [rate, opacity, strength, value] = label(&h);
+    assert!(strength > 0);
+    h.get_by_label("Flatten").click();
+    h.run_steps(2);
+    let [flat_rate, flat_opacity, flat_strength, flat_value] = label(&h);
+    assert!(flat_rate > rate && flat_strength < strength);
+    assert_eq!((flat_opacity, flat_value), (opacity, value));
+    assert!(h.query_by_label("Flatten level").is_some());
+
+    h.get_by_label("Paint").click();
+    h.run_steps(2);
+    assert_eq!(h.state().globe.brush.mode, vale_terrain::Mode::Paint);
+    // The Opacity slider and the Value slider take the place of the Rate
+    // slider, and the paint mode has no level at the stroke start.
+    let [paint_rate, paint_opacity, paint_strength, paint_value] = label(&h);
+    assert_eq!(paint_rate, rate);
+    assert_eq!(paint_opacity, flat_opacity + flat_rate - rate);
+    assert_eq!(paint_strength, flat_strength);
+    assert!(paint_value > value);
+    assert!(h.query_by_label("Flatten level").is_none());
+    assert!(h.query_by_label("Pick from globe").is_none());
+    assert!(h.query_by_label("Level at stroke start").is_none());
+}
+
+#[test]
 fn the_brush_panel_locks_the_ground_size_of_the_brush() {
     let mut h = harness();
     assert!(h.query_by_label("Lock size").is_none());
@@ -8938,4 +8973,79 @@ fn manual_pictures_of_a_river_that_the_polygon_brush_cuts() {
     let (img, _) = headless::ui_png(state, (1280.0, 800.0), 1.0).unwrap();
     img.save("../../target/app/test-polygon-brush-river.png")
         .unwrap();
+}
+
+/// The left edge of the sea in each row of the middle of `img`, in pixels,
+/// with land in yellow and sea in red. The edge has the part of a pixel
+/// from the land color, so it moves by less than one pixel.
+fn sea_edges(img: &image::RgbaImage) -> Vec<f64> {
+    let land = |x: u32, y: u32| {
+        let [r, g, _, _] = img.get_pixel(x, y).0;
+        (f64::from(g) / f64::from(r).max(1.0)).min(1.0)
+    };
+    let (w, h) = (img.width(), img.height());
+    (h / 5..4 * h / 5)
+        .filter_map(|y| {
+            let first = (8..w - 8).find(|&x| land(x, y) < 0.5)?;
+            let start = first - 8;
+            let sum: f64 = (start..first + 8).map(|x| land(x, y)).sum();
+            Some(f64::from(start) + sum)
+        })
+        .collect()
+}
+
+/// A low row of single texels on a diagonal: the coast of the channel is a
+/// smooth curve across each texel, with no corner at a texel edge. The test
+/// compares the bend of the coast over a few rows with the bend over half a
+/// texel. Over a quarter of the rows, a smooth curve bends much less, and a
+/// corner bends almost as much.
+#[test]
+#[ignore = "gpu"]
+fn the_coast_of_a_thin_channel_has_no_corner_at_a_texel_edge() {
+    let _gpu = one_gpu_test();
+    let mut h = gpu_harness();
+    show_as(h.state_mut(), RasterDisplay::Bands);
+    hide_rivers(h.state_mut());
+    let globe = &mut h.state_mut().globe;
+    globe.preview.graticule = false;
+    let n = globe.map.face_size();
+    two_bands(&mut globe.map.bands, [255, 0, 0], [255, 255, 0]);
+    globe.map.fill(vale_terrain::meters_to_level(500.0));
+    for i in 0..n {
+        globe
+            .map
+            .set(0, i, i, vale_terrain::meters_to_level(-2000.0));
+    }
+    let middle = globe.map.texel_dir(0, n / 2, n / 2);
+    let lat = middle[2].asin().to_degrees();
+    let lon = middle[1].atan2(middle[0]).to_degrees();
+    globe.view = GlobeView::centered(lon, lat);
+    globe.view.zoom = 1.0;
+    settle(&mut h);
+    let globe = &mut h.state_mut().globe;
+    let radius = globe.view.radius(globe.rect);
+    // A texel is about 60 pixels wide.
+    globe.view.zoom = 60.0 / (radius * std::f64::consts::FRAC_PI_2 / n as f64);
+    let img = canvas_image(&mut h);
+    if std::env::var_os("VALE_SCREENSHOTS").is_some() {
+        save(&img, "test-thin-channel");
+    }
+    let texel =
+        h.state().globe.view.radius(h.state().globe.rect) * std::f64::consts::FRAC_PI_2 / n as f64;
+    let edges = sea_edges(&img);
+    assert!(edges.len() as f64 > 3.0 * texel, "{}", edges.len());
+    // The largest bend of the coast over `k` rows on each side.
+    let bend = |k: usize| {
+        (k..edges.len() - k)
+            .map(|i| (edges[i + k] - 2.0 * edges[i] + edges[i - k]).abs())
+            .fold(0.0, f64::max)
+    };
+    let long = (texel / 2.0).round() as usize;
+    let short = long / 4;
+    let (near, far) = (bend(short), bend(long));
+    assert!(far > 1.0, "the coast is straight: {far}");
+    assert!(
+        near < far / 4.0,
+        "a corner: {near} over {short} rows, {far} over {long} rows"
+    );
 }
