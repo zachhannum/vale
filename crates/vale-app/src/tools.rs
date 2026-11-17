@@ -19,7 +19,7 @@ use crate::pen::PenSwitch;
 const TOOLS_FILE: &str = "tools.txt";
 
 /// The brush modes, with their names in the file.
-const MODES: [(Mode, &str); 17] = [
+const MODES: [(Mode, &str); 19] = [
     (Mode::Raise, "raise"),
     (Mode::Lower, "lower"),
     (Mode::Smooth, "smooth"),
@@ -37,6 +37,8 @@ const MODES: [(Mode, &str); 17] = [
     (Mode::Noise, "noise"),
     (Mode::Basin, "basin"),
     (Mode::Paint, "paint"),
+    (Mode::Terrace, "terrace"),
+    (Mode::Shape, "shape"),
 ];
 
 /// The tools, with their names in the file.
@@ -356,6 +358,11 @@ impl Tools {
         for (key, field) in BOOLS {
             lines.push(format!("{key} {}", field(&mut brush)));
         }
+        let flatten_level = brush
+            .flatten_level
+            .map_or("none".to_string(), |l| l.to_string());
+        lines.push(format!("flatten_level {flatten_level}"));
+        lines.push(format!("paint_level {}", brush.paint_level));
         let smoothing = tools.smoothing.map(|s| s.unwrap_or(line.smoothing));
         lines.push(format!(
             "smoothing {} {} {}",
@@ -412,6 +419,18 @@ impl Tools {
             if let Some(v) = boolean(key) {
                 *field(brush) = v;
             }
+        }
+        match value("flatten_level") {
+            Some("none") => brush.flatten_level = None,
+            Some(text) => {
+                if let Ok(level) = text.parse::<u16>() {
+                    brush.flatten_level = Some(level);
+                }
+            }
+            None => {}
+        }
+        if let Some(level) = value("paint_level").and_then(|v| v.parse::<u16>().ok()) {
+            brush.paint_level = level;
         }
         if let Some(settings) = self.mode(brush.mode) {
             settings.apply(brush);
@@ -516,6 +535,7 @@ pub fn write(dir: &Path, text: &str) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::pad::{SCULPT_MODES, TERRAIN_MODES};
 
     struct Globe {
         tools: Tools,
@@ -758,6 +778,8 @@ mod tests {
         globe.choose(Choice::Brush(Mode::Paint));
         globe.brush.flatten_rate = 0.65;
         globe.brush.opacity = 0.4;
+        globe.brush.flatten_level = Some(1234);
+        globe.brush.paint_level = 50_000;
         let snap = SnapSettings::default();
         let text = globe.tools.text(&globe.brush, &globe.line, &snap);
 
@@ -771,6 +793,24 @@ mod tests {
         assert_eq!(next.brush.mode, Mode::Paint);
         assert_eq!(next.brush.flatten_rate, 0.65);
         assert_eq!(next.brush.opacity, 0.4);
+        assert_eq!(next.brush.flatten_level, Some(1234));
+        assert_eq!(next.brush.paint_level, 50_000);
+
+        // A flatten level at the stroke start also stays.
+        globe.brush.flatten_level = None;
+        let text = globe.tools.text(&globe.brush, &globe.line, &snap);
+        let (brush, line) = (&mut next.brush, &mut next.line);
+        next.tools
+            .load(&text, &mut tool, brush, line, &mut next_snap);
+        assert_eq!(next.brush.flatten_level, None);
+    }
+
+    #[test]
+    fn each_brush_mode_has_a_name_in_the_file() {
+        let modes = SCULPT_MODES.iter().chain(&TERRAIN_MODES).map(|m| m.2);
+        for mode in modes {
+            assert!(name(&MODES, mode).is_some(), "{mode:?}");
+        }
     }
 
     #[test]
