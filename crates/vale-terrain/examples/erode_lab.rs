@@ -1,9 +1,11 @@
-//! An experiment harness for the Erode mode and the Uplift mode. It paints
-//! strokes on the CPU the way the app does, scores the result with measures
-//! of drainage networks, and writes pictures of the heights.
+//! A harness to tune the Erode mode and the Uplift mode. It paints strokes
+//! on the CPU the way the app does, scores the result with measures of
+//! drainage networks, and writes pictures of the heights. A variant has the
+//! cells in the brush radius and the branching, for example `c32-b0.5`.
+//! `MONTAGE=a,b` also joins the pictures of the variants `a` and `b`.
 //!
 //! ```sh
-//! cargo run --release -p vale-terrain --example erode_lab -- target/erode-lab
+//! cargo run --release -p vale-terrain --example erode_lab -- target/erode-lab [variants…]
 //! ```
 
 use std::f64::consts::{FRAC_PI_2, SQRT_2};
@@ -11,9 +13,9 @@ use std::path::{Path, PathBuf};
 
 use image::{Rgb, RgbImage};
 use vale_terrain::{
-    ChannelShape, CoarseHeights, ELEV_MAX, ELEV_MIN, ErodeBrush, ErodeTuning, Erosion, Heightmap,
-    Limits, Mode, OuterFlow, Stamp, WINDOW_CELLS, Window, WindowHeights, face_dir, meters_to_level,
-    talus_levels, unwarp,
+    ChannelShape, CoarseHeights, ELEV_MAX, ELEV_MIN, ErodeBrush, Erosion, Heightmap, Limits, Mode,
+    OuterFlow, Stamp, WINDOW_CELLS, Window, WindowHeights, face_dir, meters_to_level, talus_levels,
+    unwarp,
 };
 
 const N: usize = 2048;
@@ -50,37 +52,7 @@ struct Variant {
     name: String,
     /// The cells in the brush radius of `brush_window`.
     cells: f64,
-    tuning: ErodeTuning,
-    /// With two grids, the cells in the brush radius of the fine grid, its
-    /// settings, and the factor of its rate.
-    fine: Option<f64>,
-    fine_rough: bool,
-    fine_tuning: ErodeTuning,
-    fine_rate: f64,
-    /// Whether the fine cells get the rough ground of an uplift.
-    fine_uplift: bool,
-}
-
-fn variant(name: &str, cells: f64, rough: bool) -> Variant {
-    Variant {
-        name: name.to_string(),
-        cells,
-        // The rough ground of the branch, and no noise of the flow.
-        tuning: ErodeTuning {
-            rough: if rough { 0.3 } else { 0.0 },
-            route_noise: 0.0,
-            ..ErodeTuning::default()
-        },
-        fine: None,
-        fine_rough: false,
-        fine_tuning: ErodeTuning {
-            rough: 0.3,
-            route_noise: 0.0,
-            ..ErodeTuning::default()
-        },
-        fine_rate: 1.0,
-        fine_uplift: false,
-    }
+    branching: f64,
 }
 
 /// The direction at a place on face 0, in texels. The center of the first
@@ -271,9 +243,7 @@ fn paint(map: &mut Heightmap, mode: StrokeMode, radius_texels: f64, v: &Variant,
     let places = stamp_places(radius_texels, passes);
     let strength = STAMP_SPACING / span * STRENGTH_M * (1.0 + UPLIFT_GAIN * EROSION);
     let mut erosion: Option<(Erosion, Window)> = None;
-    let mut fine: Option<(Erosion, Window)> = None;
     let outer = (mode == StrokeMode::Erode).then(|| OuterFlow::global(&CoarseHeights::new(map), N));
-    let seed = Some(SEED);
     for chunk in places.chunks(group) {
         let stamps: Vec<Stamp> = chunk
             .iter()
@@ -300,9 +270,6 @@ fn paint(map: &mut Heightmap, mode: StrokeMode, radius_texels: f64, v: &Variant,
             radius,
             outer.as_ref(),
         );
-        if let Some(cells) = v.fine {
-            track(&mut fine, map, cells, first, last, radius, outer.as_ref());
-        }
         // The cells of the worker read the ground before the stamps.
         lift(map);
         let brushes: Vec<ErodeBrush> = stamps
@@ -315,45 +282,14 @@ fn paint(map: &mut Heightmap, mode: StrokeMode, radius_texels: f64, v: &Variant,
             })
             .collect();
         let (e, window) = erosion.as_mut().unwrap();
-        e.set_tuning(v.tuning);
-        e.set_rough(seed);
+        e.set_branching(SEED, v.branching);
         let step = match mode {
             StrokeMode::Uplift => {
                 let rate = uplift_rate(window, radius, stamps.len());
-                e.uplift(&brushes, strength, SEED);
+                e.raise(&brushes, strength);
                 e.steps(&brushes, rate, UPLIFT_STEPS)
             }
             StrokeMode::Erode => e.step(&brushes, STRENGTH_M * ERODE_RATE * ERODE_SECONDS),
-        };
-        let step = match &mut fine {
-            Some((f, fw)) if fw.cell == window.cell => {
-                // The grids are the same, so the fine cells only follow.
-                let _ = f;
-                step
-            }
-            None => step,
-            Some((f, window)) => {
-                let mut ft = v.fine_tuning;
-                if !v.fine_rough {
-                    ft.rough = 0.0;
-                }
-                f.set_tuning(ft);
-                f.set_rough(Some(SEED));
-                match mode {
-                    StrokeMode::Uplift => {
-                        let rate = uplift_rate(window, radius, stamps.len()) * v.fine_rate;
-                        match v.fine_uplift {
-                            true => f.uplift(&brushes, strength, SEED),
-                            false => f.raise(&brushes, strength),
-                        }
-                        f.detail_steps(&brushes, rate, UPLIFT_STEPS, &step)
-                    }
-                    StrokeMode::Erode => {
-                        let rate = STRENGTH_M * ERODE_RATE * ERODE_SECONDS * v.fine_rate;
-                        f.detail_steps(&brushes, rate, 1, &step)
-                    }
-                }
-            }
         };
         map.erode(&step);
         if mode == StrokeMode::Uplift {
@@ -937,135 +873,15 @@ fn run(v: &Variant, mode: StrokeMode, radius: f64, base: &Heightmap, out: &Path)
     }
 }
 
-fn tuned(name: &str, cells: f64, rough: bool, f: impl Fn(&mut ErodeTuning)) -> Variant {
-    let mut v = variant(name, cells, rough);
-    f(&mut v.tuning);
-    v
-}
-
 fn variants() -> Vec<Variant> {
-    let mut out = vec![
-        variant("main", 16.0, false),
-        variant("branch", 32.0, true),
-        variant("b32-smooth", 32.0, false),
-        variant("b16-rough", 16.0, true),
-        tuned("b32-m06", 32.0, true, |t| t.area_exponent = 0.6),
-        tuned("b32-w05", 32.0, true, |t| t.weight_power = 0.5),
-        tuned("b32-rough05", 32.0, true, |t| t.rough = 0.5),
-        tuned("b32-rough8", 32.0, true, |t| t.rough_cells = 8.0),
-    ];
-    for d in [0.05, 0.1, 0.2, 0.4] {
-        out.push(tuned(&format!("b32-fill{d}"), 32.0, true, |t| t.infill = d));
-    }
-    out.push(variant("c8", 8.0, false));
-    let layered = |name: &str, coarse: f64, f: &dyn Fn(&mut Variant)| {
-        let mut v = variant(name, coarse, false);
-        v.fine = Some(32.0);
-        v.fine_rough = true;
-        v.fine_tuning.detail_depth = 2.0;
-        f(&mut v);
-        v
-    };
-    out.push(layered("L8-2w", 8.0, &|v| v.fine_tuning.warp = 1.5));
-    out.push(layered("L16-1w", 16.0, &|v| {
-        v.fine_tuning.detail_depth = 1.0;
-        v.fine_tuning.warp = 1.5;
-    }));
-    out.push(layered("L8-2u", 8.0, &|v| v.fine_uplift = true));
-    out.push(layered("L8-2wu", 8.0, &|v| {
-        v.fine_uplift = true;
-        v.fine_tuning.warp = 1.5;
-    }));
-    out.push(layered("L8-4w", 8.0, &|v| {
-        v.fine_tuning.detail_depth = 4.0;
-        v.fine_tuning.warp = 1.5;
-    }));
-    out.push(layered("L8-2r2", 8.0, &|v| v.fine_rate = 2.0));
-    for amount in [0.5, 1.0, 2.0] {
-        for size in [4.0, 8.0] {
-            out.push(tuned(&format!("n{amount}-{size}"), 16.0, false, |t| {
-                t.route_noise = amount;
-                t.route_cells = size;
-            }));
-            out.push(layered(&format!("L8-4n{amount}-{size}"), 8.0, &|v| {
-                v.fine_tuning.detail_depth = 4.0;
-                v.tuning.route_noise = amount;
-                v.tuning.route_cells = size;
-            }));
-        }
-    }
-    for (amount, size) in [
-        (1.0, 16.0),
-        (1.0, 8.0),
-        (2.0, 16.0),
-        (0.5, 16.0),
-        (1.5, 16.0),
-    ] {
-        out.push(tuned(&format!("b32n{amount}-{size}"), 32.0, false, |t| {
-            t.route_noise = amount;
-            t.route_cells = size;
-        }));
-        out.push(tuned(&format!("b32rn{amount}-{size}"), 32.0, true, |t| {
-            t.route_noise = amount;
-            t.route_cells = size;
-        }));
-    }
-    for (amount, size) in [
-        (0.75, 8.0),
-        (0.75, 12.0),
-        (1.0, 12.0),
-        (0.5, 8.0),
-        (0.5, 12.0),
-        (1.0, 6.0),
-    ] {
-        out.push(tuned(&format!("b32n{amount}-{size}"), 32.0, false, |t| {
-            t.route_noise = amount;
-            t.route_cells = size;
-        }));
-    }
-    for (amount, size) in [(0.75, 8.0), (1.5, 8.0), (1.0, 6.0), (1.0, 12.0)] {
-        out.push(tuned(&format!("n{amount}-{size}"), 16.0, false, |t| {
-            t.route_noise = amount;
-            t.route_cells = size;
-        }));
-    }
-    out.push(tuned("rn1-8", 16.0, true, |t| {
-        t.route_noise = 1.0;
-        t.route_cells = 8.0;
-    }));
-    out.push(tuned("n1-8m06", 16.0, false, |t| {
-        t.route_noise = 1.0;
-        t.route_cells = 8.0;
-        t.area_exponent = 0.6;
-    }));
-    let noisy = |t: &mut ErodeTuning| {
-        t.route_noise = 1.0;
-        t.route_cells = 8.0;
-    };
-    out.push(tuned("b32n1-8f05", 32.0, false, |t| {
-        noisy(t);
-        t.infill = 0.05;
-    }));
-    out.push(tuned("b32n1-8w05", 32.0, false, |t| {
-        noisy(t);
-        t.weight_power = 0.5;
-    }));
-    out.push(tuned("b32n1-8m06", 32.0, false, |t| {
-        noisy(t);
-        t.area_exponent = 0.6;
-    }));
-    for depth in [3.0, 6.0, 8.0] {
-        out.push(layered(&format!("L8-{depth}"), 8.0, &|v| {
-            v.fine_tuning.detail_depth = depth
-        }));
-    }
-    for coarse in [8.0, 16.0] {
-        for depth in [1.0, 2.0, 4.0] {
-            let mut v = variant(&format!("L{coarse}-{depth}"), coarse, false);
-            v.fine = Some(32.0);
-            v.fine_rough = true;
-            v.fine_tuning.detail_depth = depth;
-            out.push(v);
+    let mut out = Vec::new();
+    for cells in [16.0, 32.0] {
+        for branching in [0.0, 0.25, 0.5, 0.75, 1.0] {
+            out.push(Variant {
+                name: format!("c{cells}-b{branching}"),
+                cells,
+                branching,
+            });
         }
     }
     out
@@ -1073,14 +889,6 @@ fn variants() -> Vec<Variant> {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    // CROP=in,out,x,y,w,h writes a part of a picture.
-    if let Ok(crop) = std::env::var("CROP") {
-        let c: Vec<&str> = crop.split(',').collect();
-        let n = |i: usize| c[i].parse::<u32>().unwrap();
-        let img = image::open(c[0]).unwrap();
-        img.crop_imm(n(2), n(3), n(4), n(5)).save(c[1]).unwrap();
-        return;
-    }
     let out = PathBuf::from(args.first().map_or("target/erode-lab", String::as_str));
     let only: Vec<&str> = args.iter().skip(1).map(String::as_str).collect();
     std::fs::create_dir_all(&out).unwrap();
