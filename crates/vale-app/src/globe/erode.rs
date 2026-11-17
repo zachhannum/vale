@@ -16,7 +16,7 @@ use super::math::V3;
 /// The radius of the brush is this number of cells of its window or more, if
 /// the texels of the heightmap are small enough. With fewer cells, the
 /// valleys of the erosion are too wide for the brush.
-const BRUSH_RADIUS_CELLS: f64 = 16.0;
+const BRUSH_RADIUS_CELLS: f64 = 32.0;
 
 /// A window moves when the brush of its stroke is nearer to its side than
 /// this number of brush radii.
@@ -503,10 +503,10 @@ mod tests {
         let texel = FRAC_PI_2 / 8192.0;
         let cases = [
             (10.0, 1),
-            (31.0, 1),
-            (33.0, 2),
-            (100.0, 4),
-            (255.0, 8),
+            (63.0, 1),
+            (65.0, 2),
+            (100.0, 2),
+            (255.0, 4),
             (600.0, 16),
         ];
         for (radius, cell) in cases {
@@ -575,13 +575,13 @@ mod tests {
         // The view, the radius of the brush in texels, and the cell of the
         // window of the brush.
         let cases = [
-            (None, 100.0, Some(4)),
-            (None, 255.0, Some(8)),
-            (None, 257.0, None),
+            (None, 100.0, Some(2)),
+            (None, 511.0, Some(8)),
+            (None, 513.0, None),
             (None, 600.0, None),
             (Some(near), 31.0, Some(1)),
-            (Some(near), 63.0, Some(2)),
-            (Some(near), 65.0, None),
+            (Some(near), 127.0, Some(2)),
+            (Some(near), 129.0, None),
             (Some(near), 600.0, None),
         ];
         for (view, radius, cell) in cases {
