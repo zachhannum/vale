@@ -3289,3 +3289,21 @@ fn the_desktop_ramp_menus_open_the_editor_window() {
     run_actions(&mut h);
     assert!(h.query_by_label(SAVE_RAMP).is_some());
 }
+
+#[test]
+fn the_desktop_style_editor_shows_the_height_layer_of_flow_with_one_height_layer() {
+    use vale_app::ui::pad::rules::{FLOW, HEIGHT_LAYER, LINE, height_layers};
+    let mut h = globe_harness();
+    h.state_mut().add_height();
+    h.run_steps(2);
+    open_rivers(&mut h);
+    h.get_all_by_label(LINE).last().unwrap().click();
+    h.run_steps(2);
+    h.get_by_label(FLOW).click();
+    h.run_steps(2);
+    let heights = height_layers(&h.state().doc);
+    assert_eq!(heights.len(), 1, "{heights:?}");
+    h.get_all_by_label(HEIGHT_LAYER).last().unwrap().click();
+    h.run_steps(2);
+    assert!(h.query_all_by_label(&heights[0]).next().is_some());
+}

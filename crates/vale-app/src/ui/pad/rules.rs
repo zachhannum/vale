@@ -1759,7 +1759,7 @@ fn flow_height(state: &AppState, id: LayerId) -> Option<String> {
 }
 
 /// The row of the height layer of the Flow lines of layer `id`, which opens
-/// its page. It shows only if the project has more than one height layer.
+/// its page. It shows if the project has a height layer.
 /// `rule`: the rule of the page, or `None` for the selected rules.
 fn flow_height_row(
     ui: &mut egui::Ui,
@@ -1767,10 +1767,9 @@ fn flow_height_row(
     controls: &mut Controls,
     (id, rule): (LayerId, Option<usize>),
 ) {
-    if height_layers(&state.doc).len() < 2 {
+    let Some(current) = flow_height(state, id) else {
         return;
-    }
-    let current = flow_height(state, id).unwrap_or_default();
+    };
     if widgets::open_row(ui, controls, HEIGHT_LAYER, &current).clicked() {
         state.pad.page = Some(Page::FlowHeight(rule));
         state.pad.rules.picker = None;
