@@ -18993,6 +18993,127 @@ fn manual_polygonize_a_painted_world_of_8192_pixel_faces() {
     );
 }
 
+/// Times the draws of the Polygonize output of a painted world: the build
+/// of its levels, the draws of the globe at each zoom, and a style change.
+/// `VALE_FACE` sets the face size.
+#[test]
+#[ignore = "manual"]
+fn manual_draw_the_polygonize_output_of_a_painted_world() {
+    use std::time::Instant;
+    use vale_app::ui::RasterSpec;
+    use vale_app::ui::budget;
+    use vale_app::ui::globe::vector_layer;
+    let n: usize = std::env::var("VALE_FACE").map_or(8192, |v| v.parse().unwrap());
+    let mut h = empty_pad(BOARDS[1]);
+    let state = h.state_mut();
+    let height = state.add_raster(RasterSpec::height("Height", n)).unwrap();
+    let map = state.globe.raster_map_mut(height).unwrap();
+    for face in 0..vale_terrain::FACES {
+        let levels: Vec<u16> = (0..n * n)
+            .map(|i| noise_level(face, i % n, i / n, n))
+            .collect();
+        map.store_face(face, &levels);
+    }
+    state.polygonize.split = false;
+    let start = Instant::now();
+    let layers = state.polygonize().unwrap();
+    eprintln!("polygonize {:?}", start.elapsed());
+    let id = layers[0];
+    for other in state
+        .doc
+        .project
+        .layers()
+        .iter()
+        .map(|l| l.id)
+        .collect::<Vec<_>>()
+    {
+        if other != id && state.doc.layer(other).is_some() {
+            state.doc.set_visible(other, false);
+        }
+    }
+    let state = h.state_mut();
+    let (doc, pipeline) = (&state.doc, &mut state.pipeline);
+    let layer = doc.layer(id).unwrap();
+    let points: usize = layer
+        .features
+        .iter()
+        .map(|f| vale_app::lod::points(&f.geometry))
+        .sum();
+    let rings: usize = (layer.features.iter())
+        .map(|f| match &f.geometry {
+            vale_store::Geometry::Polygons(p) => p.iter().map(Vec::len).sum::<usize>(),
+            _ => 0,
+        })
+        .sum();
+    eprintln!(
+        "{} features, {rings} rings, {points} points",
+        layer.features.len()
+    );
+    let rect = Rect::from_min_size(Pos2::ZERO, vec2(1194.0, 834.0));
+    let ctx = egui::Context::default();
+    ctx.set_pixels_per_point(2.0);
+    let draw = |pipeline: &mut vale_app::pipeline::Pipeline, doc: &Document, view: &GlobeView| {
+        let start = Instant::now();
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let painter = ui.ctx().layer_painter(egui::LayerId::background());
+            vector_layer(&painter, None, rect, doc, view, id, pipeline);
+        });
+        let time = start.elapsed();
+        out.textures_delta.clear();
+        let cost = (out.shapes.iter())
+            .map(|s| budget::cost(&s.shape))
+            .fold((0, 0), budget::add);
+        (time, cost, budget::too_large(&ctx, id))
+    };
+    let start = Instant::now();
+    draw(pipeline, doc, &GlobeView::centered(10.0, 20.0));
+    pipeline.poll_lod(true);
+    eprintln!("levels {:?}", start.elapsed());
+    let mut view = GlobeView::centered(10.0, 20.0);
+    for zoom in [1.0, 2.0, 4.0, 8.0, 16.0, 64.0] {
+        view.zoom = zoom;
+        let first = draw(pipeline, doc, &view);
+        let again = draw(pipeline, doc, &view);
+        view.rot = view.rot.mul(&vale_app::globe::math::Mat3::axis_angle(
+            [0.0, 1.0, 0.0],
+            0.002,
+        ));
+        let turned = draw(pipeline, doc, &view);
+        eprintln!(
+            "zoom {zoom}: first {:?} {:?} large {}, same {:?}, turned {:?} {:?} large {}",
+            first.0, first.1, first.2, again.0, turned.0, turned.1, turned.2
+        );
+    }
+    // The style loses its strokes.
+    view.zoom = 1.0;
+    draw(pipeline, doc, &view);
+    let state = h.state_mut();
+    let style = &mut state.doc.entry_mut(id).unwrap().style.style;
+    for rule in &mut style.rules {
+        rule.symbolizers
+            .retain(|s| !matches!(s, vale_style::Symbolizer::Stroke(_)));
+    }
+    let (doc, pipeline) = (&state.doc, &mut state.pipeline);
+    let restyled = draw(pipeline, doc, &view);
+    eprintln!(
+        "no strokes: {:?} {:?} large {}",
+        restyled.0, restyled.1, restyled.2
+    );
+    // The frames of the app after a style change, with no globe.
+    let step = |h: &mut Pad, what: &str| {
+        let start = Instant::now();
+        h.step();
+        eprintln!("{what} {:?}", start.elapsed());
+    };
+    step(&mut h, "step");
+    step(&mut h, "step");
+    let style = &mut h.state_mut().doc.entry_mut(id).unwrap().style.style;
+    style.rules[0].symbolizers.clear();
+    step(&mut h, "restyled step");
+    step(&mut h, "step");
+    step(&mut h, "step");
+}
+
 #[test]
 fn polygonize_shows_its_progress_and_stops_on_cancel() {
     use vale_app::globe::DISPLAY_CAP;
